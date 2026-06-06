@@ -122,6 +122,8 @@ The master outline is in [plan.md](plan.md).
 | I: Wayland Protocols Matrix | [appendix-i-wayland-protocols-matrix.md](chapters/appendices/appendix-i-wayland-protocols-matrix.md) |
 | J: Debugging Quick Reference | [appendix-j-debugging-quick-reference.md](chapters/appendices/appendix-j-debugging-quick-reference.md) |
 | K: Remote Display and GPU Virtualisation | [appendix-k-remote-display.md](chapters/appendices/appendix-k-remote-display.md) |
+| L: Shader Toolchain Matrix | [appendix-l-shader-toolchain-matrix.md](chapters/appendices/appendix-l-shader-toolchain-matrix.md) |
+| M: Kernel Configuration Reference | [appendix-m-kernel-config-reference.md](chapters/appendices/appendix-m-kernel-config-reference.md) |
 
 ---
 
