@@ -46,6 +46,8 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 25: GPU Compute](#chapter-25-gpu-compute)
   - [Chapter 26: Hardware Video](#chapter-26-hardware-video)
   - [Chapter 27: VR & AR](#chapter-27-vr--ar)
+  - [Chapter 38: PipeWire and the Video Session Layer](#chapter-38-pipewire-and-the-video-session-layer)
+  - [Chapter 39: Qt and GTK GPU Rendering](#chapter-39-qt-and-gtk-gpu-rendering)
 - **Part VIII — Gaming Layer**
   - [Chapter 28: Windows Compatibility](#chapter-28-windows-compatibility)
   - [Chapter 29: Upscaling, Effects & Overlays](#chapter-29-upscaling-effects--overlays)
@@ -59,6 +61,10 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 35: Dawn and WebGPU](#chapter-35-dawn-and-webgpu)
   - [Chapter 36: The Chromium Compositor — CC and Viz](#chapter-36-the-chromium-compositor--cc-and-viz)
   - [Chapter 37: Skia and 2D Rendering](#chapter-37-skia-and-2d-rendering)
+- **Part XI — Engines & Creative Tools**
+  - [Chapter 40: Bevy and wgpu](#chapter-40-bevy-and-wgpu)
+  - [Chapter 41: Godot 4 RenderingDevice](#chapter-41-godot-4-renderingdevice)
+  - [Chapter 42: Blender GPU — Cycles and EEVEE](#chapter-42-blender-gpu--cycles-and-eevee)
 
 ---
 
@@ -100,7 +106,9 @@ Chapters signal which perspective is emphasised where they diverge.
 - PRIME: multi-GPU buffer passing and render offload
 - GBM: allocating EGL-compatible buffers from userspace; the role of libgbm
 - DRM format modifiers: tiling layouts, hardware compression, cross-driver negotiation
-- **Integrations**: GEM objects are the currency exchanged between GPU drivers, Mesa, and display; DMA-BUF is the zero-copy bridge to VA-API (Ch26), V4L2 (Ch26), Wayland linux-dmabuf (Ch20), and CUDA external memory (Ch25); GBM is the allocation backend EGL uses to create Wayland-presentable surfaces (Ch24); Chromium's SharedImage system (Ch36) is backed by GBM/DMA-BUF objects shared between ANGLE (Ch34), Dawn (Ch35), and Viz
+- The DRM GPU scheduler (`drm_sched`): fair queuing across multiple clients, job priority, preemption, hangcheck timeout, and GPU reset recovery; how a hung shader in one process does not freeze the entire desktop
+- Multi-GPU peer-to-peer DMA: the `p2pdma` kernel framework; NVLink and AMD xGMI/Infinity Fabric interconnects; GPU NUMA topologies and NUMA-aware allocation; implications for ML multi-GPU workloads
+- **Integrations**: GEM objects are the currency exchanged between GPU drivers, Mesa, and display; DMA-BUF is the zero-copy bridge to VA-API (Ch26), V4L2 (Ch26), Wayland linux-dmabuf (Ch20), and CUDA external memory (Ch25); GBM is the allocation backend EGL uses to create Wayland-presentable surfaces (Ch24); Chromium's SharedImage system (Ch36) is backed by GBM/DMA-BUF objects shared between ANGLE (Ch34), Dawn (Ch35), and Viz; `drm_sched` governs command submission fairness for every driver covered in Parts II–III and V
 
 ---
 
@@ -112,7 +120,9 @@ Chapters signal which perspective is emphasised where they diverge.
 - nouveau: reverse-engineered NVIDIA; capabilities, constraints, firmware extraction
 - nvidia-open: the 2022 open kernel module; what changed, what remains closed, Wayland implications
 - Common DRM driver structure: probe, modeset, GEM, GPU scheduler, power management
-- **Integrations**: each driver implements the DRM/KMS interfaces (Ch1, Ch2); GEM objects produced here are consumed by Mesa drivers (RADV for amdgpu, iris/ANV for i915, NVK for nouveau, Ch18/19); amdgpu's firmware model is examined more deeply in the Nouveau context (Ch9) as a contrast
+- AMD HMM and unified memory: Heterogeneous Memory Management, SVM (Shared Virtual Memory), GPU page faults via `amdgpu_mn` migration notifiers; APU zero-copy between CPU and GPU memory domains; implications for ROCm and Steam Deck workloads
+- virtio-gpu: the DRM driver for virtualised GPUs (`drivers/gpu/drm/virtio/`); VirGL 3D acceleration over virtio; Venus (Vulkan-over-virtio-gpu); VFIO passthrough for bare-metal GPU performance in VMs; WSL2 GPU path; DRM render node access in containers and Kubernetes GPU nodes
+- **Integrations**: each driver implements the DRM/KMS interfaces (Ch1, Ch2); GEM objects produced here are consumed by Mesa drivers (RADV for amdgpu, iris/ANV for i915, NVK for nouveau, Ch18/19); amdgpu's firmware model is examined more deeply in the Nouveau context (Ch9) as a contrast; AMD HMM connects to ROCm (Ch25) and APU display (Ch2); virtio-gpu implements the same DRM/GEM interfaces as real hardware drivers, making it a clean worked example of Ch1–Ch4 abstractions
 
 ### Chapter 6: ARM & Embedded GPU Drivers
 - Mali GPU families: Midgard, Bifrost (Panfrost), Valhall CSF (Panthor), Mali-400/450 (Lima)
@@ -120,7 +130,8 @@ Chapters signal which perspective is emphasised where they diverge.
 - Apple Silicon AGX and the Asahi driver; reverse-engineering under NDA constraints
 - Embedded-specific challenges: IOMMU, power domains, display subsystem integration, firmware
 - The role of Device Tree and ACPI in GPU enumeration on ARM platforms
-- **Integrations**: these drivers feed the same DRM/GEM/KMS interfaces as x86 drivers; Panfrost/Panthor pair with Mesa's Panfrost driver; Turnip pairs with the Mesa Turnip Vulkan driver (Ch18); the display subsystem integration here is tighter than x86 — DSI panels and MIPI connectors feed directly into KMS plane/CRTC objects (Ch2)
+- The DRM bridge framework: `drm_bridge` and `drm_panel`; bridge chains for complex encoder topologies (SoC → DSI bridge → HDMI transmitter); USB-C Alt Mode DisplayPort; `drm_bridge_attach` and the chain traversal model; `panel-simple` and the panel driver ecosystem
+- **Integrations**: these drivers feed the same DRM/GEM/KMS interfaces as x86 drivers; Panfrost/Panthor pair with Mesa's Panfrost driver; Turnip pairs with the Mesa Turnip Vulkan driver (Ch18); the display subsystem integration here is tighter than x86 — DSI panels and MIPI connectors feed directly into KMS plane/CRTC objects (Ch2); the DRM bridge framework connects ARM SoC display engines to the same KMS connector/encoder model described in Ch2
 
 ---
 
@@ -182,7 +193,8 @@ Chapters signal which perspective is emphasised where they diverge.
 - Driver selection: environment variables, PCI IDs, device capabilities
 - Mesa's disk shader cache: keying strategy, invalidation, size limits
 - Steam shader pre-compilation and cache warming
-- **Integrations**: the loader opens render nodes (Ch1) via libDRM; GLVND sits between applications and Mesa ICDs, enabling NVIDIA's proprietary driver and Mesa to coexist; the DRI interface here is what EGL (Ch24) and GBM (Ch4) use to obtain drawables; the disk cache feeds compiled shaders into all Mesa hardware drivers (Ch18, Ch19)
+- Vulkan WSI architecture: `VkSurfaceKHR`, `VkSwapchainKHR`, Mesa's `src/vulkan/wsi/` common layer; `wsi_common_wayland.c` and `wsi_common_drm.c`; DRM format modifier negotiation in the swapchain; platform extensions (`VK_KHR_wayland_surface`, `VK_KHR_display`); why `currentExtent` is `UINT32_MAX` on Wayland and what it means for application code
+- **Integrations**: the loader opens render nodes (Ch1) via libDRM; GLVND sits between applications and Mesa ICDs, enabling NVIDIA's proprietary driver and Mesa to coexist; the DRI interface here is what EGL (Ch24) and GBM (Ch4) use to obtain drawables; the disk cache feeds compiled shaders into all Mesa hardware drivers (Ch18, Ch19); WSI common layer is the shared infrastructure all Mesa Vulkan drivers (Ch18) use to present frames to Wayland (Ch20)
 
 ### Chapter 13: Gallium3D: The OpenGL State Tracker
 - Gallium3D design goals: separating API state from hardware
@@ -269,9 +281,10 @@ Chapters signal which perspective is emphasised where they diverge.
 - Backend types: DRM/KMS, nested Wayland, X11
 - The scene graph API: layers, buffers, damage tracking, output layout
 - Input handling via libinput: seats, capabilities, gesture recognition
+- libinput in depth: the evdev kernel event layer; libinput's device abstraction and quirk database; gesture recognition (pinch, swipe, rotate); touch, stylus, and pen tablet protocol support; the full evdev→libinput→wlr_seat→wl_pointer event chain; rate limiting and frame delivery; how compositors implement pointer constraints and relative motion (`zwp_pointer_constraints_v1`, `zwp_relative_pointer_v1`)
 - Implementing output management, idle inhibit, and screencopy protocols
 - Walkthrough: a minimal compositor from scratch
-- **Integrations**: wlroots' DRM backend drives KMS atomic commits (Ch2) and allocates GBM buffers (Ch4); its Vulkan renderer uses Mesa Vulkan drivers (Ch18) for compositing; Sway and Hyprland (Ch22) are direct consumers of wlroots' API; XWayland (Ch23) embeds as a client of wlroots-based compositors; PipeWire screen capture (Ch26) is implemented via wlroots' screencopy protocol
+- **Integrations**: wlroots' DRM backend drives KMS atomic commits (Ch2) and allocates GBM buffers (Ch4); its Vulkan renderer uses Mesa Vulkan drivers (Ch18) for compositing; Sway and Hyprland (Ch22) are direct consumers of wlroots' API; XWayland (Ch23) embeds as a client of wlroots-based compositors; PipeWire screen capture (Ch26) is implemented via wlroots' screencopy protocol; the libinput event chain described here is what Chrome's Ozone/Wayland backend (Ch33) and Qt/GTK applications (Ch39) receive as `wl_pointer` events
 
 ### Chapter 22: Production Compositors
 - Mutter: GNOME Shell integration, Clutter scene graph, effects pipeline, colour management
@@ -319,9 +332,10 @@ Chapters signal which perspective is emphasised where they diverge.
 - VA-API: decode/encode pipeline, surface formats, DMA-BUF export for zero-copy display
 - VDPAU: NVIDIA's video decode path; interop with Vulkan and display
 - V4L2: kernel video capture, stateless codec interfaces, request API
+- libcamera: the V4L2 Media Controller Pipeline abstraction; IPA (Image Processing Algorithm) plugin API; libcamera pipeline handlers for Raspberry Pi CSI, i.MX8, and ISP devices; the `CameraManager`, `Camera`, `Request`/`FrameBuffer` lifecycle; integration with PipeWire via `libcamera-vid` and `libcamera-apps`; Android Camera HAL3 bridge; sensor configuration and RAW capture; why V4L2's `request_api` was not enough and libcamera fills the gap
 - GStreamer: pipeline construction, VA-API and V4L2 elements, zero-copy buffer passing
 - Practical: hardware-accelerated transcoding and playback pipelines
-- **Integrations**: VA-API surfaces are DMA-BUF objects (Ch4) that can be imported directly into Vulkan (Ch24) or handed to the Wayland compositor (Ch20) for zero-copy display; V4L2 capture feeds the same DMA-BUF pipeline; PipeWire acts as the session-level broker routing camera and screen-capture buffers (Ch21, Ch22) to consuming applications; GStreamer's VA-API elements sit atop the Mesa VA-API drivers which run on amdgpu/i915 (Ch5)
+- **Integrations**: VA-API surfaces are DMA-BUF objects (Ch4) that can be imported directly into Vulkan (Ch24) or handed to the Wayland compositor (Ch20) for zero-copy display; V4L2 capture feeds the same DMA-BUF pipeline; libcamera's DMA-BUF output frames feed directly into PipeWire (Ch38) for session-level routing to multiple consumers; PipeWire acts as the session-level broker routing camera and screen-capture buffers (Ch21, Ch22) to consuming applications; GStreamer's VA-API elements sit atop the Mesa VA-API drivers which run on amdgpu/i915 (Ch5)
 
 ### Chapter 27: VR & AR
 - OpenXR: session lifecycle, swapchain management, action system, compositor layers
@@ -329,6 +343,25 @@ Chapters signal which perspective is emphasised where they diverge.
 - Reprojection, timewarp, and latency on Linux
 - Wayland and OpenXR integration; direct mode display
 - **Integrations**: Monado drives the headset display via DRM direct mode (Ch2) and allocates swapchain images via GBM/Vulkan (Ch4, Ch24); reprojection shaders compile through the same NIR/Mesa pipeline (Ch14); OpenXR applications use the same Vulkan queues and synchronisation primitives as desktop apps (Ch24); tracking data from V4L2 cameras (Ch26) feeds Monado's SLAM pipeline
+
+### Chapter 38: PipeWire and the Video Session Layer
+- PipeWire architecture: the graph model (`pw_node`, `pw_port`, `pw_link`); the event loop and `pw_loop`; SPA (Simple Plugin API) as the low-level buffer negotiation layer; the `pw_stream` abstraction for producers and consumers
+- Session management: PipeWire as a replacement for PulseAudio and JACK; `wireplumber` session manager; policy engine; device enumeration via udev/ALSA/V4L2; routing rules and metadata
+- Video capture pipeline: V4L2 source node; `libcamera` → PipeWire adapter (Ch26); DMA-BUF buffer negotiation with `SPA_DATA_DmaBuf`; zero-copy path from camera ISP to consumer
+- Screen capture and portal integration: `xdg-desktop-portal` PipeWire backend; `pw-capture` for compositor screencopy (Ch21, Ch22); OBS Studio as a DMA-BUF consumer; PipeWire's role in the Wayland screen share stack replacing X11 shared memory
+- Remote desktop: `xdg-desktop-portal` remote-desktop interface; PipeWire streaming to RDP/VNC backends; DMA-BUF→CPU copy when the remote encoder needs raw pixels
+- Buffer formats and GPU interop: `SPA_VIDEO_FORMAT_*` and DRM format mapping; DMA-BUF import into Vulkan `VkImage` (Ch24); explicit sync (`DRM_FORMAT_MOD_INVALID` path vs. explicit fence passing); GPU-accelerated encode handoff to VA-API (Ch26)
+- **Integrations**: PipeWire consumes libcamera DMA-BUF frames (Ch26) and compositor screencopy buffers (Ch21, Ch22); its DMA-BUF negotiation relies on GEM/DMA-BUF infrastructure (Ch4); GPU consumers import PipeWire buffers via the same Vulkan external memory path used by ANGLE (Ch34) and Dawn (Ch35); `xdg-desktop-portal` routes screen capture from wlroots (Ch21) and Mutter (Ch22) through PipeWire to OBS and browser tab capture (Ch33)
+
+### Chapter 39: Qt and GTK GPU Rendering
+- Qt6 rendering architecture: the `QRhi` (Qt Rendering Hardware Interface) abstraction; backends — Vulkan, OpenGL, Metal, D3D12; `QSGRenderNode` and the scene graph; `QQuickRenderControl` for off-screen rendering
+- Qt Wayland integration: `QPA` (Qt Platform Abstraction); `qwayland` QPA plugin; `xdg-shell` surface creation; linux-dmabuf swapchain; `zwp_linux_explicit_synchronization_v1` handshake (Ch3, Ch20)
+- Qt shader pipeline: Qt Shader Tools (`qsb`); GLSL → SPIR-V via `glslang`; SPIR-V → HLSL/MSL cross-compilation; how Qt-emitted SPIR-V enters Mesa NIR (Ch14); the QSBC shader cache
+- GTK4 rendering architecture: `GskRenderer` and its backends — `GskGLRenderer`, `GskVulkanRenderer`, `GskNglRenderer`; the scene graph node types; CSS rendering model
+- GTK4 Wayland integration: `GDK` Wayland backend; `GdkSurface`/`GdkVulkanContext`; linux-dmabuf buffer submission; explicit sync support (Ch3, Ch20)
+- GTK4 shader pipeline: GLSL shaders in GTK source; shader compilation at startup; fallback paths; GPU-accelerated CSS effects (blur, colour matrix, clip masks)
+- Font and text rendering in Qt/GTK: FreeType + HarfBuzz shaping; glyph atlas management; comparison with Skia's text path (Ch37); fontconfig integration
+- **Integrations**: Qt6 `QRhi` Vulkan backend and GTK4 `GskVulkanRenderer` are clients of Mesa Vulkan drivers (Ch18); their SPIR-V feeds NIR (Ch14); Wayland surface creation uses linux-dmabuf (Ch20) and the explicit sync protocol (Ch3); PipeWire (Ch38) is the capture backend for Qt Multimedia and GStreamer-GTK widgets; wlroots-based compositors (Ch21) and Mutter (Ch22) serve their Wayland surfaces; their input events arrive via the libinput event chain (Ch21)
 
 ---
 
@@ -357,7 +390,8 @@ Chapters signal which perspective is emphasised where they diverge.
 - Vulkan Validation Layers: error categories, best practices layer, GPU-assisted validation, sync validation
 - Mesa environment variables: MESA_DEBUG, LIBGL_DEBUG, NIR dump flags, RADV_DEBUG
 - GPU hardware performance counters: AMD RadeonGPUProfiler, Intel GPA, NVIDIA Nsight
-- **Integrations**: RenderDoc captures at the Vulkan API boundary (Ch24) and can replay through any Mesa Vulkan driver (Ch18); sync validation in Vulkan Validation Layers exercises the explicit sync paths that run down to DRM sync objects (Ch3); Mesa debug dumps expose NIR at each compilation stage (Ch14) and ACO disassembly (Ch15); performance counters are read from DRM render nodes (Ch1) via vendor-specific ioctls
+- GPU security and isolation: render node (`/dev/dri/renderDN`) threat model — what a compromised render-node client can and cannot do; DRM master vs. non-master privileges; the lack of IOMMU enforcement per-process in mainline and ongoing `drm_context` / `drm_client` isolation work; multi-tenant GPU scheduling fairness and hangcheck blast radius; GPU-side speculative execution side-channels (Rowhammer analogues on GPU DRAM); the Chrome GPU sandbox as a worked example of defence-in-depth (Ch33); Vulkan `VK_EXT_device_address_binding_report` and GPU-assisted validation as developer-facing security tooling
+- **Integrations**: RenderDoc captures at the Vulkan API boundary (Ch24) and can replay through any Mesa Vulkan driver (Ch18); sync validation in Vulkan Validation Layers exercises the explicit sync paths that run down to DRM sync objects (Ch3); Mesa debug dumps expose NIR at each compilation stage (Ch14) and ACO disassembly (Ch15); performance counters are read from DRM render nodes (Ch1) via vendor-specific ioctls; the GPU sandbox model in Chrome (Ch33) is the most complete real-world application of the render-node isolation model described in the security section above
 
 ### Chapter 31: Conformance & Regression Testing
 - dEQP structure: test modules (Vulkan CTS, GLES CTS), running locally, reading results
@@ -488,50 +522,46 @@ Chapters signal which perspective is emphasised where they diverge.
 
 ---
 
-### New Part XI — Engine and Creative Tool Internals
+## Part XI — Engines & Creative Tools
 
-**Rationale**: Bevy, Godot, and Blender are fully open-source, Linux-first Vulkan clients whose internal rendering paths are traceable through the same stack layers covered in Parts I–V. Each chapter is scoped as *"how this engine sits on the Linux stack"*, not a general engine architecture guide. Unreal Engine and Unity are acknowledged as significant Vulkan consumers but are closed-source; their Linux-specific internals are not auditable to the standard this book requires — cover them as named examples within Ch 18 (Vulkan Drivers) or Ch 38, not as standalone chapters.
+**Rationale**: Bevy, Godot, and Blender are fully open-source, Linux-first Vulkan clients whose internal rendering paths are traceable through the same stack layers covered in Parts I–V. Each chapter is scoped as *"how this engine sits on the Linux stack"*, not a general engine architecture guide. Unreal Engine and Unity are acknowledged as significant Vulkan consumers but are closed-source; their Linux-specific internals are not auditable to the standard this book requires — cover them as named examples within Ch 18 (Vulkan Drivers) or Ch 41, not as standalone chapters.
 
-**Insert after Part X (Browser Rendering Stack).** Add to TOC accordingly.
-
----
-
-#### Chapter 38: Bevy and wgpu — A Rust-Native Vulkan Client
+### Chapter 40: Bevy and wgpu — A Rust-Native Vulkan Client
 
 - Bevy's render architecture: the render world, extract/prepare/queue/render stages, render graph
-- `wgpu` as the GPU abstraction: the Vulkan backend on Linux; how `wgpu` maps to `ash` Vulkan bindings and Mesa drivers (Ch 18)
-- Shader pipeline: WGSL → `naga` IR → SPIR-V; how naga-emitted SPIR-V enters Mesa NIR (Ch 14) — the native-Rust peer to Dawn/Tint (Ch 35)
-- Buffer and texture management: `wgpu`'s memory model over Vulkan VMA; GBM/DMA-BUF surface creation for Wayland windows (Ch 4, Ch 24)
-- Wayland window integration: `winit` → Wayland/EGL surface setup; explicit sync handshake (Ch 3, Ch 20)
-- Compute in Bevy: compute passes via `wgpu`, WGSL compute shaders through the same naga/SPIR-V/NIR path (Ch 25)
+- `wgpu` as the GPU abstraction: the Vulkan backend on Linux; how `wgpu` maps to `ash` Vulkan bindings and Mesa drivers (Ch18)
+- Shader pipeline: WGSL → `naga` IR → SPIR-V; how naga-emitted SPIR-V enters Mesa NIR (Ch14) — the native-Rust peer to Dawn/Tint (Ch35)
+- Buffer and texture management: `wgpu`'s memory model over Vulkan VMA; GBM/DMA-BUF surface creation for Wayland windows (Ch4, Ch24)
+- Wayland window integration: `winit` → Wayland/EGL surface setup; explicit sync handshake (Ch3, Ch20)
+- Compute in Bevy: compute passes via `wgpu`, WGSL compute shaders through the same naga/SPIR-V/NIR path (Ch25)
 - Unreal Engine 5 and Unity: sidebar covering their Vulkan RHI on Linux as closed-source counterpoints — what is observable from public documentation vs. what is not auditable
-- **Integrations**: wgpu's Vulkan path is a client of Mesa Vulkan drivers (Ch 18); naga/SPIR-V enters the same NIR front end as Dawn/Tint (Ch 14, Ch 35); the Rust implementation echoes Nova (Ch 10) and the DRM Rust theme; wgpu surface creation uses EGL/GBM (Ch 24, Ch 4); compute shaders share the Vulkan compute queue path (Ch 25)
+- **Integrations**: wgpu's Vulkan path is a client of Mesa Vulkan drivers (Ch18); naga/SPIR-V enters the same NIR front end as Dawn/Tint (Ch14, Ch35); the Rust implementation echoes Nova (Ch10) and the DRM Rust theme; wgpu surface creation uses EGL/GBM (Ch24, Ch4); compute shaders share the Vulkan compute queue path (Ch25)
 
 ---
 
-#### Chapter 39: Godot 4 — RenderingDevice and the Explicit Vulkan Path
+### Chapter 41: Godot 4 — RenderingDevice and the Explicit Vulkan Path
 
 - Godot 4's rendering architecture: the `RenderingDevice` abstraction layer; Forward+ and Mobile rendering paths; Clustered deferred
 - Vulkan backend in depth: how Godot maps its scene graph to Vulkan command buffers; pipeline state objects, descriptor sets, push constants
-- GDShader → GLSL → SPIR-V compilation pipeline; how Godot-emitted SPIR-V traverses Mesa NIR (Ch 14)
-- Wayland and X11 window creation: `DisplayServerWayland` and `DisplayServerX11`; EGL context setup; linux-dmabuf swapchain (Ch 20, Ch 24)
+- GDShader → GLSL → SPIR-V compilation pipeline; how Godot-emitted SPIR-V traverses Mesa NIR (Ch14)
+- Wayland and X11 window creation: `DisplayServerWayland` and `DisplayServerX11`; EGL context setup; linux-dmabuf swapchain (Ch20, Ch24)
 - Memory management: Godot's GPU allocator over Vulkan; buffer staging, texture streaming
-- Compute and GPU particles: compute shader usage in Godot 4; connection to Vulkan compute queues (Ch 25)
-- Godot's CI and conformance: how the project tests its Vulkan backend; interaction with Mesa CTS results (Ch 31)
-- **Integrations**: RenderingDevice's Vulkan backend is a client of Mesa Vulkan drivers (Ch 18); SPIR-V compilation feeds NIR (Ch 14); EGL/Wayland surface path uses linux-dmabuf (Ch 20); GPU particles use the same Vulkan compute queue covered in Ch 25; Godot's explicit sync usage connects to `wp_linux_drm_syncobj` (Ch 3)
+- Compute and GPU particles: compute shader usage in Godot 4; connection to Vulkan compute queues (Ch25)
+- Godot's CI and conformance: how the project tests its Vulkan backend; interaction with Mesa CTS results (Ch31)
+- **Integrations**: RenderingDevice's Vulkan backend is a client of Mesa Vulkan drivers (Ch18); SPIR-V compilation feeds NIR (Ch14); EGL/Wayland surface path uses linux-dmabuf (Ch20); GPU particles use the same Vulkan compute queue covered in Ch25; Godot's explicit sync usage connects to `wp_linux_drm_syncobj` (Ch3)
 
 ---
 
-#### Chapter 40: Blender — Cycles, EEVEE Next, and GPU Compute on Linux
+### Chapter 42: Blender — Cycles, EEVEE Next, and GPU Compute on Linux
 
-- EEVEE Next (Blender 4.x): complete Vulkan rewrite; deferred shading, shadow maps, volumetrics; how EEVEE's render passes map to Vulkan render passes and subpasses (Ch 16, Ch 18)
-- Cycles GPU backend: the multi-backend architecture (HIP for AMD, CUDA/OptiX for NVIDIA, oneAPI for Intel, Vulkan path); how each backend maps to kernel drivers (Ch 5) and compute APIs (Ch 25)
-- GLSL/SPIR-V shader compilation in Blender: Cycles kernel compilation; EEVEE shader generation pipeline; SPIR-V entry into Mesa NIR (Ch 14)
-- OpenColorIO integration: Blender's color management pipeline; connection to KMS color properties and `wp_color_management` (Ch 3, Ch 20)
-- GPU memory management: Blender's `BKE_blendfile` texture streaming; DMA-BUF sharing for viewport compositing (Ch 4)
-- Viewport rendering: EGL/Wayland surface creation for the 3D viewport; OpenGL legacy path vs. Vulkan EEVEE path (Ch 19, Ch 24)
-- Cycles as a GPU compute workload: kernel occupancy, memory bandwidth patterns on AMD/NVIDIA/Intel; how ROCm and HIP relate to the amdgpu kernel driver (Ch 5, Ch 25)
-- **Integrations**: EEVEE Next's Vulkan renderer is a client of Mesa Vulkan drivers (Ch 18) and uses Mesa's Vulkan common infrastructure (Ch 16); Cycles HIP/ROCm runs on amdgpu compute queues (Ch 5, Ch 25); SPIR-V from Blender's GLSL compiler enters the NIR front end (Ch 14); OpenColorIO color transforms connect to KMS color pipeline (Ch 3); viewport EGL context creation follows the path in Ch 24
+- EEVEE Next (Blender 4.x): complete Vulkan rewrite; deferred shading, shadow maps, volumetrics; how EEVEE's render passes map to Vulkan render passes and subpasses (Ch16, Ch18)
+- Cycles GPU backend: the multi-backend architecture (HIP for AMD, CUDA/OptiX for NVIDIA, oneAPI for Intel, Vulkan path); how each backend maps to kernel drivers (Ch5) and compute APIs (Ch25)
+- GLSL/SPIR-V shader compilation in Blender: Cycles kernel compilation; EEVEE shader generation pipeline; SPIR-V entry into Mesa NIR (Ch14)
+- OpenColorIO integration: Blender's color management pipeline; connection to KMS color properties and `wp_color_management` (Ch3, Ch20)
+- GPU memory management: Blender's `BKE_blendfile` texture streaming; DMA-BUF sharing for viewport compositing (Ch4)
+- Viewport rendering: EGL/Wayland surface creation for the 3D viewport; OpenGL legacy path vs. Vulkan EEVEE path (Ch19, Ch24)
+- Cycles as a GPU compute workload: kernel occupancy, memory bandwidth patterns on AMD/NVIDIA/Intel; how ROCm and HIP relate to the amdgpu kernel driver (Ch5, Ch25)
+- **Integrations**: EEVEE Next's Vulkan renderer is a client of Mesa Vulkan drivers (Ch18) and uses Mesa's Vulkan common infrastructure (Ch16); Cycles HIP/ROCm runs on amdgpu compute queues (Ch5, Ch25); SPIR-V from Blender's GLSL compiler enters the NIR front end (Ch14); OpenColorIO color transforms connect to KMS color pipeline (Ch3); viewport EGL context creation follows the path in Ch24
 
 ---
 

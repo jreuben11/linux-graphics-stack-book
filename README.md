@@ -69,6 +69,8 @@ The master outline is in [plan.md](plan.md).
 | Ch 25: GPU Compute | [ch25-gpu-compute.md](chapters/part-07-application-apis-middleware/ch25-gpu-compute.md) |
 | Ch 26: Hardware Video | [ch26-hardware-video.md](chapters/part-07-application-apis-middleware/ch26-hardware-video.md) |
 | Ch 27: VR & AR | [ch27-vr-ar.md](chapters/part-07-application-apis-middleware/ch27-vr-ar.md) |
+| Ch 38: PipeWire and the Video Session Layer | [ch38-pipewire.md](chapters/part-07-application-apis-middleware/ch38-pipewire.md) |
+| Ch 39: Qt and GTK GPU Rendering | [ch39-qt-gtk-rendering.md](chapters/part-07-application-apis-middleware/ch39-qt-gtk-rendering.md) |
 
 ## Part VIII — Gaming Layer
 
@@ -95,6 +97,14 @@ The master outline is in [plan.md](plan.md).
 | Ch 36: The Chromium Compositor — CC and Viz | [ch36-chromium-compositor.md](chapters/part-10-browser-rendering-stack/ch36-chromium-compositor.md) |
 | Ch 37: Skia and 2D Rendering | [ch37-skia-2d-rendering.md](chapters/part-10-browser-rendering-stack/ch37-skia-2d-rendering.md) |
 
+## Part XI — Engines & Creative Tools
+
+| Chapter | File |
+|---|---|
+| Ch 40: Bevy and wgpu — A Rust-Native Vulkan Client | [ch40-bevy-wgpu.md](chapters/part-11-engine-creative-tools/ch40-bevy-wgpu.md) |
+| Ch 41: Godot 4 — RenderingDevice and the Explicit Vulkan Path | [ch41-godot4-rendering-device.md](chapters/part-11-engine-creative-tools/ch41-godot4-rendering-device.md) |
+| Ch 42: Blender — Cycles, EEVEE Next, and GPU Compute on Linux | [ch42-blender-gpu.md](chapters/part-11-engine-creative-tools/ch42-blender-gpu.md) |
+
 ---
 
 ## Appendices
@@ -111,6 +121,7 @@ The master outline is in [plan.md](plan.md).
 | H: DRM Format Modifiers | [appendix-h-drm-format-modifiers.md](chapters/appendices/appendix-h-drm-format-modifiers.md) |
 | I: Wayland Protocols Matrix | [appendix-i-wayland-protocols-matrix.md](chapters/appendices/appendix-i-wayland-protocols-matrix.md) |
 | J: Debugging Quick Reference | [appendix-j-debugging-quick-reference.md](chapters/appendices/appendix-j-debugging-quick-reference.md) |
+| K: Remote Display and GPU Virtualisation | [appendix-k-remote-display.md](chapters/appendices/appendix-k-remote-display.md) |
 
 ---
 
