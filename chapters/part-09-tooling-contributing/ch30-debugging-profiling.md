@@ -16,7 +16,8 @@
 6. [GPU Hardware Performance Counters via DRM](#6-gpu-hardware-performance-counters-via-drm)
 7. [Kernel-Level GPU Debugging](#7-kernel-level-gpu-debugging)
 8. [Profiling the CPU Side: Frame Pacing and Driver Overhead](#8-profiling-the-cpu-side-frame-pacing-and-driver-overhead)
-9. [Integrations](#integrations)
+9. [SPIR-V Shader Debugging Toolchain](#9-spir-v-shader-debugging-toolchain)
+10. [Integrations](#integrations)
 10. [References](#references)
 
 ---
@@ -851,6 +852,142 @@ VkPipelineCreationFeedbackCreateInfo fci = {
 ```
 
 After pipeline creation, `feedback.flags` includes `VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT` and optionally `VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT` (pipeline was in the application's cache) and `VK_PIPELINE_CREATION_FEEDBACK_BASE_PIPELINE_ACCELERATION_BIT`. `feedback.duration` gives the compilation time in nanoseconds. Applications with systematic pipeline stutter should log these durations to identify which pipelines are being compiled late and should be pre-created at startup.
+
+---
+
+## 9. SPIR-V Shader Debugging Toolchain
+
+SPIR-V is the binary intermediate representation consumed by all Vulkan drivers (via `vk_spirv_to_nir()` in Mesa, or the proprietary driver's front end). When a shader misbehaves — producing wrong results, crashing the driver, or failing validation — the SPIR-V toolchain provides the diagnostic and transformation tools to isolate the problem. These tools operate on the binary module between the application's shader compiler and the driver's NIR/ISA compiler.
+
+### spirv-val: Validation
+
+`spirv-val` from the SPIRV-Tools suite ([github.com/KhronosGroup/SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools)) validates a SPIR-V binary against the Khronos specification. It catches structural violations (missing `OpEntryPoint`, invalid capability declarations, type mismatches) that would otherwise cause driver crashes or undefined behaviour:
+
+```bash
+# Validate a SPIR-V binary
+spirv-val --target-env vulkan1.3 shader.spv
+
+# Common errors caught:
+# error: ID '42' is not defined
+# error: OpVariable must be in a function or in the global scope
+# error: Operand 3 of OpImageSample* must be an image type with depth=0
+```
+
+Mesa's Vulkan drivers run `spirv-val` internally in debug builds (`MESA_DEBUG=spirv` enables this at runtime) before passing the module to `vk_spirv_to_nir()`. For Vulkan Validation Layers (`VK_LAYER_KHRONOS_validation`), `spirv-val` is invoked on every `vkCreateShaderModule` call when `VkShaderModuleValidationCacheCreateInfoEXT` or the `VALIDATION_CHECK_ENABLE_VENDOR_SPECIFIC_SHADERS` flag is set.
+
+### spirv-dis and spirv-as: Disassembly and Assembly
+
+`spirv-dis` produces a human-readable SPIR-V assembly listing. `spirv-as` converts it back to binary. The round-trip allows manual editing of SPIR-V to isolate driver bugs:
+
+```bash
+# Capture SPIR-V from an application (via vkCreateShaderModule interception)
+VK_ADD_LAYER_PATH=. ENABLE_SHADER_CAPTURE=1 ./app
+# (depends on a capture layer — or use gfxreconstruct: see Section 7)
+
+# Disassemble to text
+spirv-dis shader.spv -o shader.spvasm
+
+# Inspect and hand-edit to isolate the bug:
+# Remove suspect instructions, simplify control flow, etc.
+
+# Reassemble
+spirv-as shader.spvasm -o shader_edited.spv
+
+# Inject back for testing via RADV_OVERRIDE_SPIRV or a custom loader layer
+```
+
+The SPIR-V assembly format uses OpCode mnemonics directly:
+
+```spirv
+; Fragment shader computing: color = vec4(uv, 0.0, 1.0)
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %uv_in %color_out
+               OpExecutionMode %main OriginUpperLeft
+       %float = OpTypeFloat 32
+     %v4float = OpTypeVector %float 4
+          %13 = OpLoad %v2float %uv_in
+    %x = OpCompositeExtract %float %13 0
+    %y = OpCompositeExtract %float %13 1
+    %zero = OpConstant %float 0.0
+    %one  = OpConstant %float 1.0
+    %color = OpCompositeConstruct %v4float %x %y %zero %one
+               OpStore %color_out %color
+               OpReturn
+               OpFunctionEnd
+```
+
+[Source: SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools), [SPIR-V specification](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html)
+
+### spirv-opt: Optimisation and Reduction
+
+`spirv-opt` applies Khronos-standard optimisation passes to a SPIR-V module. In debugging workflows, it is more commonly used for *reduction* than optimisation: removing passes one by one to find the minimal SPIR-V module that reproduces a bug:
+
+```bash
+# Full optimisation (as a driver would see it after -O2)
+spirv-opt -O shader.spv -o shader_opt.spv
+
+# Apply specific passes for debugging:
+spirv-opt --eliminate-dead-code-aggressive shader.spv -o reduced.spv
+spirv-opt --inline-entry-points-exhaustive shader.spv -o inlined.spv
+spirv-opt --eliminate-dead-branches --merge-blocks shader.spv -o simplified.spv
+
+# Check if the bug reproduces with the reduced module
+spirv-val --target-env vulkan1.3 reduced.spv && ./app_with_override
+```
+
+**SPIR-V fuzz testing:** `spirv-fuzz` (also in SPIRV-Tools) applies semantics-preserving transformations to a SPIR-V module and checks whether the driver produces the same result. Mesa's CI uses spirv-fuzz as part of its shader testing infrastructure for RADV and ANV.
+
+### spirv-cross: Cross-Compilation for Inspection
+
+`spirv-cross` ([github.com/KhronosGroup/SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)) decompiles SPIR-V to GLSL, HLSL, MSL, or GLSL ES. Its primary debugging use is inspecting what a shader actually does at the source level after it has been compiled to SPIR-V:
+
+```bash
+# Decompile to GLSL for readability
+spirv-cross shader.spv --output shader_decompiled.glsl
+
+# Decompile to HLSL (useful when the shader originated as HLSL via DXC)
+spirv-cross shader.spv --hlsl --output shader_decompiled.hlsl
+
+# Reflection: print all uniforms, inputs, outputs
+spirv-cross shader.spv --reflect
+```
+
+The reflection output (`--reflect`) is particularly useful for debugging descriptor binding mismatches: it lists every buffer, texture, and sampler binding by set and binding number, which can be compared against the `VkDescriptorSetLayout` and `VkWriteDescriptorSet` the application creates.
+
+### Driver-Side SPIR-V Debugging: MESA_SHADER_DUMP_PATH
+
+Mesa can dump the internal NIR representation at various stages of the compilation pipeline using environment variables:
+
+```bash
+# Dump NIR after SPIR-V → NIR translation (before any optimisation)
+MESA_SHADER_DUMP_PATH=/tmp/shaders NIR_SPIRV_DEBUG=1 ./app
+
+# RADV-specific: dump ACO ISA
+RADV_DEBUG=shaders ./app
+
+# ANV-specific: dump GEN assembly
+INTEL_DEBUG=vs,fs ./app   # 'vs' = vertex shader, 'fs' = fragment shader
+
+# Zink (OpenGL → Vulkan): dump SPIR-V modules Zink emits
+ZINK_DEBUG=spirv ./app
+```
+
+These dumps expose the NIR representation that the driver's ISA compiler receives, allowing correlation between SPIR-V semantics and the final ISA output — essential for isolating whether a bug is in SPIR-V translation, NIR optimisation, or ISA code generation.
+
+### Workflow: Isolating a Driver Shader Bug
+
+A systematic shader bug isolation workflow:
+
+1. **Capture SPIR-V** using gfxreconstruct (`gfxrecon-capture`) or `VK_LAYER_LUNARG_screenshot` with shader dumps enabled.
+2. **Validate with spirv-val** — if validation fails, the bug is in the application's shader compiler (glslang, DXC, Tint), not the driver.
+3. **Disassemble with spirv-dis** and inspect the module structure.
+4. **Reduce with spirv-opt** — remove optimisation passes until you have the minimal failing module.
+5. **Cross-compile with spirv-cross** to GLSL for readability; compare against original source intent.
+6. **Set MESA_SHADER_DUMP_PATH** and compare NIR dumps between a working and non-working driver version (e.g., via `git bisect`).
+7. **File a Mesa bug** with the minimal SPIR-V module (validated, reduced), the NIR dump, and the driver version (`glxinfo -B` or `vulkaninfo`).
+
+[Source: SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools), [SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross), [Mesa SPIR-V front end](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/compiler/spirv)
 
 ---
 

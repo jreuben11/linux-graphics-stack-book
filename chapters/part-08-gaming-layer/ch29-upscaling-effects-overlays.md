@@ -13,10 +13,12 @@
 3. [gamescope Integration: FSR, NIS, and HDR](#3-gamescope-integration-fsr-nis-and-hdr)
 4. [vkBasalt: Vulkan Layer Post-Processing](#4-vkbasalt-vulkan-layer-post-processing)
 5. [MangoHud: Metrics Overlay Implementation](#5-mangohud-metrics-overlay-implementation)
-6. [ReShade and the FX Effect Ecosystem](#6-reshade-and-the-fx-effect-ecosystem)
-7. [Performance Considerations and Deployment Patterns](#7-performance-considerations-and-deployment-patterns)
-8. [Integrations](#integrations)
-9. [References](#references)
+6. [Upscaling and Framepacing: XeSS, DLSS, and LatencyFleX](#6-upscaling-and-framepacing-xess-dlss-and-latencyflex)
+7. [GameMode: OS-Level Performance Governor](#7-gamemode-os-level-performance-governor)
+8. [ReShade and the FX Effect Ecosystem](#8-reshade-and-the-fx-effect-ecosystem)
+9. [Performance Considerations and Deployment Patterns](#9-performance-considerations-and-deployment-patterns)
+10. [Integrations](#integrations)
+11. [References](#references)
 
 ---
 
@@ -644,7 +646,147 @@ The solution is **mangoapp**: a separate companion process launched alongside ga
 
 ---
 
-## 6. ReShade and the FX Effect Ecosystem
+## 6. Upscaling and Framepacing: XeSS, DLSS, and LatencyFleX
+
+### Intel XeSS (Xe Super Sampling)
+
+**Intel XeSS** ([github.com/intel/xess](https://github.com/intel/xess)) is Intel's temporal upscaling algorithm. Unlike DLSS — which uses tensor cores specific to NVIDIA hardware — XeSS has two code paths:
+
+- **XMX path:** uses Intel's Xe Matrix Extensions (INT8 matrix multiply units present in Intel Arc/DG2 and later) for highest quality. This path is only available on Intel Arc and later GPUs.
+- **DP4a generic path:** uses the `DP4a` dot-product instruction available on AMD RDNA2+, NVIDIA Turing+, and Intel Xe. This path runs on any modern GPU via a generic Vulkan compute shader.
+
+The generic Vulkan path (`libxess.so`) means XeSS works on RADV, NVK, and ANV — making it the most cross-vendor temporal upscaler available on Linux. The API is a C library:
+
+```c
+#include <xess/xess_vk.h>
+
+xess_context_handle_t xessCtx;
+xessVKCreateContext(device, &xessCtx);
+
+xess_vk_init_params_t initParams = {
+    .outputResolution = {displayWidth, displayHeight},
+    .qualitySettings = XESS_QUALITY_SETTING_QUALITY,
+    .initFlags = XESS_INIT_FLAG_NONE,
+};
+xessVKInit(xessCtx, &initParams);
+
+/* Per-frame: */
+xess_vk_execute_params_t execParams = {
+    .jitterOffsetX = jitterX,   /* Sub-pixel jitter for temporal accumulation */
+    .jitterOffsetY = jitterY,
+    .resetHistory = false,
+    .pColorTexture = &colorInput,   /* Low-res rendered frame */
+    .pVelocityTexture = &motionVectors,
+    .pDepthTexture = &depthBuffer,
+    .pOutputTexture = &upscaledOutput, /* Display-resolution output */
+};
+xessVKExecute(xessCtx, commandBuffer, &execParams);
+```
+
+[Source: Intel XeSS SDK](https://github.com/intel/xess), [XeSS Vulkan integration](https://github.com/intel/xess/blob/master/doc/XeSS_Integration_Guide.pdf)
+
+XeSS requires the application to provide:
+1. A low-resolution rendered frame (jittered sub-pixel offset each frame via Halton sequence)
+2. Per-pixel motion vectors in NDC space (x: [-1,1], y: [-1,1])
+3. Depth buffer (for disocclusion detection)
+
+These are the same inputs required by other temporal upscalers (FSR2, DLSS), so game engines with existing TAA or FSR2 integration can adapt to XeSS by swapping the upscale dispatch.
+
+**Native Linux game integration:** XeSS is used in native Linux games via the Vulkan API. Proton-based games using DXVK/VKD3D-Proton can also expose XeSS if the game's DirectX XeSS integration calls through VKD3D-Proton's DXGI/D3D12 layer, which forwards the underlying Vulkan dispatch.
+
+### DLSS on Linux
+
+NVIDIA DLSS (Deep Learning Super Sampling) uses Tensor Core matrix multiply units available only on NVIDIA Turing (RTX 20xx) and later GPUs. On Linux, DLSS availability is complicated by the proprietary NVIDIA NGX SDK, which the open-source NVIDIA drivers do not support:
+
+**DLSS with the proprietary NVIDIA driver:** the NGX SDK (`libnvidia-ngx.so.1`) is part of the proprietary NVIDIA driver package. Applications using Vulkan DLSS (`VK_NV_low_latency2`, NGX Vulkan interface) work normally. Native Linux games using NGX must distribute the NGX SDK shared libraries (`nvngx_dlss.dll` or the Linux equivalent `libnvngx_*.so`).
+
+**DLSS in Proton (Wine/DXVK) games:** the `wine-nvml` layer bridges Windows `nvml.dll` calls to the Linux `libnvidia-ml.so` library. The NGX runtime for DLSS (`nvngx.dll`) is forwarded via `winenvml` and the DXVK/VKD3D-Proton layer. This allows DLSS-enabled Windows games to use DLSS through Proton if the proprietary NVIDIA driver is installed.
+
+**DLSS-to-FSR translation:** for NVIDIA GPUs without DLSS support (or when using RADV/NVK), community projects like **dlss-to-fsr** intercept NGX API calls and redirect them to FidelityFX Super Resolution compute shaders. This allows games that only expose a DLSS upscaling path to run with FSR quality on AMD hardware.
+
+**Open-source NVIDIA drivers (NVK):** NVK does not currently support DLSS because the NGX SDK requires the proprietary firmware blob and tensor-core programming paths that NVK does not implement. FSR2 and XeSS are available on NVK and are the recommended alternatives.
+
+### LatencyFleX: Software Framepacing Without Runtime Support
+
+**LatencyFleX** ([github.com/ishitatsuyuki/LatencyFleX](https://github.com/ishitatsuyuki/LatencyFleX)) is a Vulkan layer that implements *implicit latency reduction* — reducing input-to-photon latency by precisely timing `vkQueueSubmit` calls to avoid queuing GPU work ahead of the display's actual frame deadline.
+
+The core insight: GPU drivers maintain an internal submission queue. If the CPU submits work faster than the GPU can process it, the driver queue fills and added latency accumulates — the "GPU queue stuffing" problem. NVIDIA Reflex and AMD Anti-Lag address this in the driver layer with proprietary APIs (`VK_NV_low_latency2`, `VK_AMD_anti_lag`). LatencyFleX solves the same problem entirely in userspace, without requiring driver support, by throttling CPU submission timing.
+
+```bash
+# Install LatencyFleX Vulkan layer
+cp LatencyFleX/layer/liblatencyflex_layer.so /usr/lib/
+cp LatencyFleX/layer/LatencyFleX.json /usr/share/vulkan/implicit_layer.d/
+
+# Enable globally (or per-application via Steam launch options)
+ENABLE_LATENCYFLEX=1 %command%
+```
+
+LatencyFleX intercepts `vkQueuePresentKHR` and `vkQueueSubmit` to measure the actual display-to-CPU-to-GPU timing loop. Using a feedback control loop, it computes the optimal CPU-side sleep before the next submission to minimise queue depth while maintaining frame throughput. On uncapped-framerate titles (no vsync), this reduces effective input latency by 10–40 ms in typical gaming scenarios without any application modification.
+
+[Source: LatencyFleX](https://github.com/ishitatsuyuki/LatencyFleX), [Vulkan layer specification](https://vulkan.lunarg.com/doc/sdk/latest/linux/layer_configuration.html)
+
+---
+
+## 7. GameMode: OS-Level Performance Governor
+
+**GameMode** ([github.com/FeralInteractive/gamemode](https://github.com/FeralInteractive/gamemode)) is a daemon developed by Feral Interactive that applies OS-level performance tuning when a game is active. It runs as `gamemoded` and exposes a D-Bus API that games and launchers use to request "game mode" activation.
+
+### Architecture
+
+```
+Game / Steam launch option: gamemode %command%
+        ↓
+gamemoderun (wrapper binary)
+        ↓
+D-Bus: com.feralinteractive.GameMode.RegisterGame(pid)
+        ↓
+gamemoded daemon
+  ├── CPU governor: performance
+  ├── CPU scheduler: SCHED_RR (optional, requires CAP_SYS_NICE)
+  ├── GPU performance mode: amdgpu/nvidia/intel power hint
+  ├── inhibit screen blanking (idle inhibit)
+  └── custom scripts: gamemode.ini start/end hooks
+```
+
+**CPU governor:** gamemoded writes `performance` to `/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor`, pinning all CPU cores to maximum frequency during the game session. This eliminates frequency scaling latency (P-state transitions) that can cause micro-stutters in CPU-bound scenes.
+
+**GPU performance hints:** gamemoded communicates with the GPU driver via sysfs:
+
+```bash
+# AMD GPU: force high performance power profile
+echo "high" > /sys/class/drm/card0/device/power_dpm_force_performance_level
+
+# Intel GPU: set to max frequency
+echo 1200000 > /sys/class/drm/card0/gt/gt0/rps_cur_freq_mhz  # not standard; varies by platform
+```
+
+For NVIDIA GPUs, gamemoded uses the `nvidia-smi` interface to set persistence mode and maximum performance state.
+
+**Custom hooks:** `gamemode.ini` (`~/.config/gamemode.ini` or `/etc/gamemode.ini`) supports `[custom]` start/end scripts that run when game mode is activated. Common uses: disable background sync (Syncthing, Dropbox), unload CPU-heavy services.
+
+### D-Bus API and Integration
+
+Games and launchers communicate with `gamemoded` via D-Bus:
+
+```c
+/* Using the libgamemode client library */
+#include <gamemode_client.h>
+
+if (gamemode_request_start() < 0)
+    fprintf(stderr, "GameMode request failed: %s\n", gamemode_error_string());
+
+/* ... game loop ... */
+
+gamemode_request_end();
+```
+
+Steam automatically invokes GameMode for all titles when the "Enable GameMode" option is set in Steam Play settings. The `gamemode %command%` Steam launch option format wraps the game process with the `gamemoderun` binary, which registers the game PID with `gamemoded` on start and deregisters on exit. Multiple simultaneous games are handled by a reference count: governor changes are applied when the count goes above 0 and reverted when it returns to 0.
+
+[Source: Feral GameMode](https://github.com/FeralInteractive/gamemode)
+
+---
+
+## 8. ReShade and the FX Effect Ecosystem
 
 ReShade is a post-processing framework that originated on Windows, where it sits as a D3D/OpenGL interception layer and supports a large community library of `.fx` shaders written in the ReShade FX language (a C-like HLSL dialect with texture sampling annotations). ReShade effects span the gamut from minor sharpening tweaks to complete visual style overhauls (film grain, vignette, chromatic aberration, ambient occlusion, ray-traced reflections).
 
@@ -664,7 +806,7 @@ vkBasalt 0.3.x added the ability to load ReShade FX shaders directly, alongside 
 
 ---
 
-## 7. Performance Considerations and Deployment Patterns
+## 9. Performance Considerations and Deployment Patterns
 
 ### Layer Interception Overhead
 

@@ -14,13 +14,14 @@ The chapter deliberately avoids GPU algorithm design and parallel programming th
 1. [The OpenCL Landscape on Linux: ICD Discovery and Implementation Survey](#1-the-opencl-landscape-on-linux-icd-discovery-and-implementation-survey)
 2. [rusticl: OpenCL on Mesa's Gallium Infrastructure](#2-rusticl-opencl-on-mesas-gallium-infrastructure)
 3. [ROCm: AMD's Compute Stack](#3-rocm-amds-compute-stack)
-4. [Vulkan Compute Pipelines](#4-vulkan-compute-pipelines)
-5. [CUDA–Vulkan Interoperability](#5-cudavulkan-interoperability)
-6. [DMA-BUF Interop: Sharing Buffers Across Compute and Graphics Pipelines](#6-dma-buf-interop-sharing-buffers-across-compute-and-graphics-pipelines)
-7. [Unified Memory and HMM in GPU Compute](#7-unified-memory-and-hmm-in-gpu-compute)
-8. [Practical: GPU-Accelerated Image Processing with Vulkan Compute](#8-practical-gpu-accelerated-image-processing-with-vulkan-compute)
-9. [Integrations](#9-integrations)
-10. [References](#10-references)
+4. [Intel Level Zero, oneAPI, and the Intel Compute Runtime](#4-intel-level-zero-oneapi-and-the-intel-compute-runtime)
+5. [Vulkan Compute Pipelines](#5-vulkan-compute-pipelines)
+6. [CUDA–Vulkan Interoperability](#6-cudavulkan-interoperability)
+7. [DMA-BUF Interop: Sharing Buffers Across Compute and Graphics Pipelines](#7-dma-buf-interop-sharing-buffers-across-compute-and-graphics-pipelines)
+8. [Unified Memory and HMM in GPU Compute](#8-unified-memory-and-hmm-in-gpu-compute)
+9. [Practical: GPU-Accelerated Image Processing with Vulkan Compute](#9-practical-gpu-accelerated-image-processing-with-vulkan-compute)
+10. [Integrations](#10-integrations)
+11. [References](#11-references)
 
 ---
 
@@ -142,7 +143,140 @@ The KFD exposes compute queues directly to userspace through `ioctl` calls on `/
 
 ---
 
-## 4. Vulkan Compute Pipelines
+## 4. Intel Level Zero, oneAPI, and the Intel Compute Runtime
+
+Intel's GPU compute stack is stratified into three layers: the **kernel driver** (i915/Xe), the **compute runtime** (`intel-compute-runtime`, which implements both OpenCL 3.0 and Intel Level Zero), and the **programming model layer** (oneAPI / DPC++ / SYCL). Understanding this layering is essential because the Level Zero API is the *userspace interface* to the compute runtime, while SYCL/oneAPI is the *programmer interface* that compiles down to Level Zero.
+
+### Level Zero: Intel's Low-Level Compute API
+
+**Intel Level Zero** ([github.com/oneapi-src/level-zero](https://github.com/oneapi-src/level-zero)) is an explicit, low-level GPU API analogous to Vulkan — but for compute only. Like Vulkan, Level Zero exposes explicit memory management, command list creation, explicit synchronisation with fences and events, and kernel compilation. The API surface uses the `ze_` prefix:
+
+```c
+#include <level_zero/ze_api.h>
+
+ze_driver_handle_t driver;
+ze_device_handle_t device;
+ze_context_handle_t context;
+
+zeInit(ZE_INIT_FLAG_GPU_ONLY);
+uint32_t count = 1;
+zeDriverGet(&count, &driver);
+uint32_t deviceCount = 1;
+zeDeviceGet(driver, &deviceCount, &device);
+
+ze_context_desc_t ctxDesc = {ZE_STRUCTURE_TYPE_CONTEXT_DESC};
+zeContextCreate(driver, &ctxDesc, &context);
+
+/* Allocate unified shared memory visible to both CPU and GPU */
+ze_device_mem_alloc_desc_t devMemDesc = {ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC};
+ze_host_mem_alloc_desc_t hostMemDesc = {ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC};
+void *buffer;
+zeMemAllocShared(context, &devMemDesc, &hostMemDesc,
+                 size, alignment, device, &buffer);
+```
+
+[Source: Level Zero specification](https://spec.oneapi.io/level-zero/latest/), [oneapi-src/level-zero](https://github.com/oneapi-src/level-zero)
+
+**Command lists and command queues** are distinct. A `ze_command_list_handle_t` records GPU commands (kernel launches, memory copies, barrier insertions). A `ze_command_queue_handle_t` submits command lists for execution. This enables CPU-side parallel command list recording (one list per thread) followed by single-queue submission, matching the Vulkan `VkCommandBuffer`/`VkQueue` distinction:
+
+```c
+ze_command_list_handle_t list;
+ze_command_queue_handle_t queue;
+ze_command_list_desc_t listDesc = {ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC};
+ze_command_queue_desc_t queueDesc = {ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC};
+zeCommandListCreate(context, device, &listDesc, &list);
+zeCommandQueueCreate(context, device, &queueDesc, &queue);
+
+ze_group_count_t groupCount = {N/64, 1, 1};
+zeCommandListAppendLaunchKernel(list, kernel, &groupCount, nullptr, 0, nullptr);
+zeCommandListClose(list);
+zeCommandQueueExecuteCommandLists(queue, 1, &list, fence);
+zeCommandQueueSynchronize(queue, UINT64_MAX);
+```
+
+**Unified Shared Memory (USM)** is Level Zero's memory model: pointers are valid on both CPU and GPU. `zeMemAllocShared()` returns a pointer that the CPU and GPU can both dereference; the IOMMU and driver ensure coherency. This contrasts with OpenCL's buffer object model and with ROCm's opt-in HMM approach.
+
+### intel-compute-runtime: The OpenCL and Level Zero Implementation
+
+**intel-compute-runtime** ([github.com/intel/compute-runtime](https://github.com/intel/compute-runtime)) is Intel's open-source userspace compute stack implementing:
+
+- **OpenCL 3.0** — conformant on Gen9 (Skylake) through Xe2 (Lunar Lake); [Khronos conformance](https://www.khronos.org/conformance/adopters/conformant-products/opencl)
+- **Intel Level Zero** — the primary interface for oneAPI/SYCL workloads
+
+The stack:
+
+```
+SYCL/DPC++ application
+      ↓
+Intel SYCL runtime (libsycl)
+      ↓
+Level Zero loader (libze_loader)
+      ↓
+intel-compute-runtime (libze_intel_gpu)
+      ↓
+i915 / Xe kernel DRM driver
+      ↓
+Intel Gen GPU hardware
+```
+
+The compute runtime uses the **Intel Graphics Compiler (IGC)** ([github.com/intel/intel-graphics-compiler](https://github.com/intel/intel-graphics-compiler)) as its kernel compiler backend. IGC accepts SPIR-V — from SYCL kernels, OpenCL C, or Vulkan GLSL compute shaders — and emits GEN ISA binary. IGC is also used by Intel's ANV Vulkan driver (Chapter 18) for the same SPIR-V→GEN ISA path.
+
+**OpenCL 3.0 conformance:** compute-runtime achieved OpenCL 3.0 conformance for Gen9 and later in 2021. Optional features supported on Intel include: unified shared memory (`cl_intel_unified_shared_memory`), subgroup operations (`cl_intel_subgroups`), and `cl_khr_fp64` double precision.
+
+**rusticl OpenCL 3.0 (Mesa):** Mesa's rusticl OpenCL implementation achieved Khronos OpenCL 3.0 conformance certification in Mesa 24.1 (June 2024) — the first open-source OpenCL implementation to reach this milestone. rusticl uses the Gallium `pipe_context` making it vendor-agnostic (covered in Section 5).
+
+### oneAPI, DPC++, and SYCL
+
+**oneAPI** is Intel's open programming model for heterogeneous compute. **DPC++** (Data Parallel C++) is Intel's SYCL 2020 compiler, built on LLVM. A simple SYCL kernel:
+
+```cpp
+#include <sycl/sycl.hpp>
+using namespace sycl;
+
+queue q(gpu_selector_v);
+buffer<float> a_buf(a.data(), range<1>(N));
+buffer<float> b_buf(b.data(), range<1>(N));
+buffer<float> c_buf(c.data(), range<1>(N));
+
+q.submit([&](handler &h) {
+    auto a_acc = a_buf.get_access<access::mode::read>(h);
+    auto b_acc = b_buf.get_access<access::mode::read>(h);
+    auto c_acc = c_buf.get_access<access::mode::write>(h);
+    h.parallel_for(range<1>(N), [=](id<1> i) {
+        c_acc[i] = a_acc[i] + b_acc[i];
+    });
+});
+q.wait();
+```
+
+The DPC++ compiler compiles device code to SPIR-V, which IGC then compiles to GEN ISA at runtime through compute-runtime. The host code dispatches through the SYCL runtime → Level Zero loader → compute-runtime → i915/Xe kernel.
+
+**Installation on Linux:**
+
+```bash
+# Verify Level Zero device enumeration (Intel GPU)
+ls /dev/dri/renderD*
+clinfo | grep "CL_DEVICE_VERSION"   # Should show OpenCL 3.0
+
+# Install compute-runtime (Debian/Ubuntu)
+apt install intel-opencl-icd intel-level-zero-gpu level-zero
+```
+
+[Source: intel-compute-runtime](https://github.com/intel/compute-runtime), [IGC](https://github.com/intel/intel-graphics-compiler), [oneAPI DPC++ compiler](https://github.com/intel/llvm)
+
+### Choosing Between Intel's Compute Stacks
+
+| Scenario | Recommended stack |
+|---|---|
+| Image processing tightly coupled with OpenGL | OpenCL 3.0 via compute-runtime |
+| Machine learning inference on Intel iGPU | OpenVINO → compute-runtime (Level Zero backend) |
+| Cross-vendor portability (AMD, NVIDIA, Intel) | Vulkan compute or rusticl (Section 5) |
+| High-performance compute with library ecosystem | oneAPI / DPC++ → Level Zero → IGC |
+| GPU-accelerated browser rendering | Dawn (Vulkan backend, Chapter 35) |
+
+---
+
+## 5. Vulkan Compute Pipelines
 
 Vulkan compute pipelines are substantially simpler to create than graphics pipelines. A `VkComputePipelineCreateInfo` requires only a single shader stage (`VkPipelineShaderStageCreateInfo` with `VK_SHADER_STAGE_COMPUTE_BIT`) and a pipeline layout; there are no vertex input, rasterisation, or fragment state structures. This simplicity does not mean compute is limited — compute shaders have full access to all descriptor types, push constants, subgroup operations, and synchronisation primitives.
 
@@ -281,7 +415,7 @@ The `timestampPeriod` field converts raw timestamp ticks to nanoseconds; it is d
 
 ---
 
-## 5. CUDA–Vulkan Interoperability
+## 6. CUDA–Vulkan Interoperability
 
 ### 5a. Overview and Motivation
 
@@ -473,7 +607,7 @@ For multi-GPU configurations (two physical GPUs, e.g., CUDA on NVIDIA + display 
 
 ---
 
-## 6. DMA-BUF Interop: Sharing Buffers Across Compute and Graphics Pipelines
+## 7. DMA-BUF Interop: Sharing Buffers Across Compute and Graphics Pipelines
 
 DMA-BUF is the Linux kernel's mechanism for sharing GPU memory between drivers and API layers without CPU copies. A DMA-BUF file descriptor is a reference to a `dma_buf` kernel object that can be passed across process boundaries, driver boundaries, and API boundaries. The exporting driver calls `dma_buf_export()` and the importing driver calls `dma_buf_attach()` and `dma_buf_map_attachment()`. This infrastructure, described in detail in Chapter 4 (GPU Memory), is the foundation for all zero-copy cross-API compute.
 
@@ -489,7 +623,7 @@ DMA-BUF is the Linux kernel's mechanism for sharing GPU memory between drivers a
 
 ---
 
-## 7. Unified Memory and HMM in GPU Compute
+## 8. Unified Memory and HMM in GPU Compute
 
 ### 7a. HSA Memory Model and Linux HMM
 
@@ -648,7 +782,7 @@ With `VK_MEMORY_PROPERTY_HOST_COHERENT_BIT`, CPU writes are immediately visible 
 
 ---
 
-## 8. Practical: GPU-Accelerated Image Processing with Vulkan Compute
+## 9. Practical: GPU-Accelerated Image Processing with Vulkan Compute
 
 This section builds a complete two-pass separable Gaussian blur on Vulkan compute as a worked example tying together the pipeline creation, barriers, specialisation constants, and timing concepts from Section 4.
 
@@ -757,7 +891,7 @@ vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, query_pool, 3)
 
 ---
 
-## 9. Integrations
+## 10. Integrations
 
 This chapter connects to several other chapters in the book:
 
@@ -783,7 +917,7 @@ This chapter connects to several other chapters in the book:
 
 ---
 
-## 10. References
+## 11. References
 
 1. Vulkan specification — compute pipelines: [https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#pipelines-compute](https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#pipelines-compute)
 

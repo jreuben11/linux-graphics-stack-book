@@ -13,9 +13,10 @@
 - [4. Sway: Tiling with wlroots](#4-sway-tiling-with-wlroots)
 - [5. Hyprland: Animations and Extensibility](#5-hyprland-animations-and-extensibility)
 - [6. gamescope: Valve's Micro-Compositor](#6-gamescope-valves-micro-compositor)
-- [7. Protocol Extension Landscape and Compositor Compatibility](#7-protocol-extension-landscape-and-compositor-compatibility)
-- [8. Common Compositor Debugging Techniques](#8-common-compositor-debugging-techniques)
-- [9. Measuring Compositor Latency and Frame Pacing](#9-measuring-compositor-latency-and-frame-pacing)
+- [7. COSMIC Compositor: Smithay and Rust-Native Wayland](#7-cosmic-compositor-smithay-and-rust-native-wayland)
+- [8. Protocol Extension Landscape and Compositor Compatibility](#8-protocol-extension-landscape-and-compositor-compatibility)
+- [9. Common Compositor Debugging Techniques](#9-common-compositor-debugging-techniques)
+- [10. Measuring Compositor Latency and Frame Pacing](#10-measuring-compositor-latency-and-frame-pacing)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -391,7 +392,101 @@ On Steam Deck, gamescope runs as the session compositor via `gamescope-session`.
 
 ---
 
-## 7. Protocol Extension Landscape and Compositor Compatibility
+## 7. COSMIC Compositor: Smithay and Rust-Native Wayland
+
+System76's COSMIC desktop, introduced with Pop!_OS 24.04, ships **cosmic-comp** — a Wayland compositor written entirely in Rust using the **smithay** Wayland server library. cosmic-comp represents the most production-capable implementation of the smithay stack as of 2025, and its architecture offers a sharply different perspective from the C-centric wlroots ecosystem.
+
+### The smithay Wayland Library
+
+**smithay** ([gitlab.freedesktop.org/smithay/smithay](https://gitlab.freedesktop.org/smithay/smithay)) is a Rust library providing the building blocks for a Wayland compositor: Wayland server protocol dispatch, DRM/KMS direct-mode rendering, input handling, and a suite of higher-level helpers for common compositor patterns (layer shell, xdg-shell, foreign toplevel management).
+
+Key architectural decisions that distinguish smithay from wlroots:
+
+- **Ownership-based safety:** wlroots uses a callback/listener model where objects are passed as pointers; smithay models compositor state as a single `State` struct that implementors define, using Rust's borrow checker to prevent use-after-free in callback chains. The `delegate_*!` macros bind Wayland protocol implementations to methods on this struct.
+- **Backend abstraction:** smithay's `backend::drm` module wraps libdrm and provides `DrmDevice`, `DrmSurface`, and `GbmDevice` wrappers. The `backend::renderer` module provides `GlesRenderer` (for EGL/GLES rendering) and `GlMultiRenderer` for multi-GPU output rendering. smithay supports `MultiRenderer` — a renderer that dispatches to different GPU surfaces — enabling output-aware rendering with different GLES contexts per DRM device.
+- **Explicit state machine:** the `WaylandState` trait and the `CalloopEventLoop` integration make the compositor's main loop explicit and composable. Event sources (Wayland client I/O, DRM page-flip events, input device events, timers) are registered with the calloop event loop, which dispatches them without hidden callbacks.
+
+### cosmic-comp Architecture
+
+cosmic-comp's top-level structure is a single `State` struct containing:
+
+```rust
+// cosmic-comp: src/state.rs
+pub struct State {
+    pub common: Common,
+    pub backend: BackendData,
+}
+
+pub struct Common {
+    pub display_handle: DisplayHandle,
+    pub event_loop: LoopHandle<'static, State>,
+    pub shell: Arc<RwLock<Shell>>,
+    // ... Wayland protocol delegates
+}
+```
+
+[Source: `cosmic-comp/src/state.rs`](https://github.com/pop-os/cosmic-comp/blob/master/src/state.rs)
+
+The `Shell` struct manages the workspace model — COSMIC's distinctive "workspaces-on-outputs" design, where each output has its own independent set of workspaces arranged in a 2D grid. The workspace model is entirely compositor-side logic implemented in Rust, without depending on any shell extension protocol.
+
+### DRM Backend and Rendering
+
+cosmic-comp's DRM backend wraps smithay's `DrmDevice` and uses `GbmAllocator` for GBM-backed buffer allocation:
+
+```rust
+// cosmic-comp: src/backend/kms.rs — surface rendering loop
+fn render_surface(
+    surface: &mut Surface,
+    renderer: &mut GlMultiRenderer,
+    elements: &[CosmicElement<GlMultiRenderer>],
+) -> Result<bool, RenderError<GlMultiRenderer>> {
+    let output_render_elements = /* layer shell, windows, cursor */;
+    surface.compositor.render_frame(renderer, &output_render_elements, CLEAR_COLOR)?;
+    Ok(true)
+}
+```
+
+[Source: `cosmic-comp/src/backend/kms.rs`](https://github.com/pop-os/cosmic-comp/blob/master/src/backend/kms.rs)
+
+The `OutputCompositor` (from smithay's `backend::drm::compositor`) handles the KMS commit path: it manages the triple-buffer swap chain, waits for page-flip events, and handles modeset recovery. Direct-mode scanout (passing a client buffer directly to a KMS plane without compositor GPU processing) is supported for fullscreen Wayland clients via smithay's `DrmCompositor::queue_frame()` with `ScanoutError` fallback.
+
+### XWayland Integration
+
+cosmic-comp embeds XWayland using smithay's `xwayland` crate. The `XWaylandKeyboardGrab` protocol and X11 property-based window class/role detection are used to associate X11 windows with the COSMIC workspace model. All windows — Wayland or X11 — are managed through the unified `Shell::map_window()` abstraction.
+
+### Protocol Support Matrix
+
+As of cosmic-comp 0.1 (Pop!_OS 24.04 LTS):
+
+| Protocol | Status |
+|---|---|
+| `xdg-shell` | Full |
+| `xdg-output-v1` | Supported |
+| `wlr-layer-shell-v1` | Supported (used by cosmic-panel) |
+| `ext-session-lock-v1` | Supported |
+| `wp-drm-lease-v1` | Supported (VR direct-mode display leasing) |
+| `wlr-screencopy-v1` | Supported |
+| `ext-idle-notify-v1` | Supported |
+| `wp-color-management-v1` | Planned |
+
+The use of `wlr-layer-shell-v1` rather than a COSMIC-specific protocol means panel, dock, and notification software written for wlroots compositors runs unmodified under cosmic-comp.
+
+### Comparison with wlroots
+
+| Dimension | wlroots | smithay/cosmic-comp |
+|---|---|---|
+| Language | C | Rust |
+| Rendering backend | wlr_renderer (GLES/Vulkan) | smithay GlesRenderer / GlMultiRenderer |
+| DRM backend | wlr_drm | smithay DrmDevice |
+| Input | libinput via wlr_input_device | smithay input (libinput bindings) |
+| Memory safety | Manual | Enforced by Rust borrow checker |
+| Ecosystem maturity | Large (Sway, Hyprland, KWin via KWinft) | Growing (cosmic-comp primary consumer) |
+
+[Source: smithay](https://github.com/smithay/smithay), [cosmic-comp](https://github.com/pop-os/cosmic-comp)
+
+---
+
+## 8. Protocol Extension Landscape and Compositor Compatibility
 
 ### The Extension Stability Ladder
 
@@ -449,7 +544,7 @@ For high-level application needs — screen capture, file chooser, clipboard, in
 
 ---
 
-## 8. Common Compositor Debugging Techniques
+## 9. Common Compositor Debugging Techniques
 
 ### Protocol-Level Debugging
 
@@ -482,7 +577,7 @@ For GPU hang situations — which manifest as DRM error messages and a frozen di
 
 ---
 
-## 9. Measuring Compositor Latency and Frame Pacing
+## 10. Measuring Compositor Latency and Frame Pacing
 
 ### Measurement Concepts
 

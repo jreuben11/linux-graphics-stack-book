@@ -750,7 +750,19 @@ export XR_RUNTIME_JSON=/usr/share/openxr/1/openxr_monado.json
 export XR_RUNTIME_JSON=~/.local/share/Steam/steamapps/common/SteamVR/steamxr_linux64.json
 ```
 
-A common misconception is that SteamVR is required for native Linux VR. Monado is fully independent; SteamVR is only needed for SteamVR-specific applications or for Lighthouse tracking (though `libsurvive` provides Lighthouse support without SteamVR). For OpenXR-native applications, Monado is typically preferred on Linux for lower latency and better integration with the freedesktop.org stack.
+The active runtime can also be set persistently via the JSON symlink at `~/.config/openxr/1/active_runtime.json` — this is the file that the OpenXR loader reads if `XR_RUNTIME_JSON` is unset. The loader searches this path first, then `/usr/share/openxr/1/active_runtime.json`, then `/etc/openxr/1/active_runtime.json` for system-wide defaults.
+
+**SteamVR on Linux** uses a userspace Vulkan layer (`VK_LAYER_openvr`) to submit reprojected frames. The layer intercepts `vkQueuePresentKHR` and redirects the eye textures to SteamVR's compositor (`vrcompositor`), which handles ATW (Asynchronous Time Warp) and direct-mode display output. SteamVR requires the Vulkan driver to support `VK_KHR_external_memory_fd` and `VK_KHR_external_semaphore_fd` for zero-copy frame handoff — extensions that RADV, ANV, NVK, and the proprietary NVIDIA driver all support.
+
+A common misconception is that SteamVR is required for native Linux VR. Monado is fully independent; SteamVR is only needed for SteamVR-specific applications or for Valve Index Lighthouse tracking. **libsurvive** ([github.com/cntools/libsurvive](https://github.com/cntools/libsurvive)) is an open-source implementation of Lighthouse 1.0 and 2.0 base station tracking that Monado can use without SteamVR. libsurvive interfaces with the base stations via USB and implements the angle-of-arrival computation in software. For OpenXR-native applications, Monado is typically preferred on Linux for lower latency and better integration with the freedesktop.org stack.
+
+**Runtime arbitration for mixed setups:** users who want Monado for some applications and SteamVR for others can use per-launch `XR_RUNTIME_JSON` overrides in Steam launch options:
+
+```
+XR_RUNTIME_JSON=~/.local/share/Steam/steamapps/common/SteamVR/steamxr_linux64.json %command%
+```
+
+The OpenXR loader (from Khronos; package `libopenxr-loader1`) is the only common component between runtimes — it loads the runtime-specified JSON and `dlopen()`s the runtime library named in the `library_path` field. Applications link only against the loader; runtime selection is purely a runtime JSON configuration concern.
 
 ### Monado-Specific Extensions
 
@@ -760,7 +772,82 @@ Monado publishes several vendor (`MNDX`) extensions that expose capabilities not
 - `XR_MNDX_ball_on_a_stick_interaction_profile`: a minimal controller profile for development
 - `XR_EXTX_overlay`: allows OpenXR content to be composited as an overlay layer on top of the Wayland desktop — the AR overlay use case
 
-The future `ext_xr_session` Wayland protocol proposal aims to integrate XR sessions at the Wayland protocol level, enabling the compositor to manage XR session focus and input routing natively. As of 2024 this is a design proposal, not yet merged.
+The future `ext_xr_session` Wayland protocol proposal aims to integrate XR sessions at the Wayland protocol level, enabling the compositor to manage XR session focus and input routing natively. As of 2025 this is a design proposal, not yet merged.
+
+### Hand Tracking: XR_EXT_hand_tracking
+
+`XR_EXT_hand_tracking` is a ratified OpenXR extension that provides a 26-joint skeleton of each hand, updated per-frame. Each joint is described by an `XrHandJointLocationEXT` with position, orientation, and a radius estimate:
+
+```c
+XrHandTrackerEXT handTracker;
+XrHandTrackerCreateInfoEXT createInfo = {
+    .type = XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT,
+    .hand = XR_HAND_LEFT_EXT,
+    .handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT,
+};
+xrCreateHandTrackerEXT(session, &createInfo, &handTracker);
+
+/* Per-frame: */
+XrHandJointLocationsEXT jointLocations = {
+    .type = XR_TYPE_HAND_JOINT_LOCATIONS_EXT,
+    .jointCount = XR_HAND_JOINT_COUNT_EXT,
+    .jointLocations = joints,
+};
+XrHandJointsLocateInfoEXT locateInfo = {
+    .type = XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT,
+    .baseSpace = localSpace,
+    .time = frameState.predictedDisplayTime,
+};
+xrLocateHandJointsEXT(handTracker, &locateInfo, &jointLocations);
+
+if (jointLocations.isActive) {
+    XrPosef wristPose = joints[XR_HAND_JOINT_WRIST_EXT].pose;
+    /* use wristPose.position and wristPose.orientation */
+}
+```
+
+[Source: OpenXR specification, `XR_EXT_hand_tracking`](https://registry.khronos.org/OpenXR/specs/1.0/html/xrspec.html#XR_EXT_hand_tracking)
+
+On Linux, `XR_EXT_hand_tracking` support depends on both the runtime and the hardware. **Monado** implements the extension for depth-camera-based hand tracking (via hand tracking drivers for Intel RealSense and similar). SteamVR exposes the extension for Valve Index (skeletal animation via the capacitive finger sensors) and Meta Quest Link (optical hand tracking over USB). As of 2024, bare-metal optical hand tracking without SteamVR on Linux is limited to camera-based Monado drivers and is hardware-dependent.
+
+The 26-joint skeleton (`XR_HAND_JOINT_SET_DEFAULT_EXT`) covers wrist, palm, and all four finger segments (proximal/intermediate/distal + tip) plus the thumb. The `XR_HAND_JOINT_PALM_EXT` joint is the canonical reference point for placing UI elements relative to the hand.
+
+### Eye Gaze: XR_EXT_eye_gaze_interaction
+
+`XR_EXT_eye_gaze_interaction` provides a 6DOF action space representing the combined gaze direction from the headset's eye-tracking cameras. On Linux, this extension is supported by:
+
+- **SteamVR** for headsets with hardware eye tracking (Pimax Crystal, Varjo Aero when connected via SteamVR)
+- **Monado** via the `XR_EXT_eye_gaze_interaction` driver for cameras/sensors that expose gaze data (implementation status varies by device)
+
+The extension adds a new action space to the standard interaction profile model:
+
+```c
+/* Enumerate eye gaze action */
+XrActionCreateInfo gazeAction = {
+    .type = XR_TYPE_ACTION_CREATE_INFO,
+    .actionType = XR_ACTION_TYPE_POSE_INPUT,
+    .countSubactionPaths = 0,
+};
+strncpy(gazeAction.actionName, "eye_gaze", XR_MAX_ACTION_NAME_SIZE);
+strncpy(gazeAction.localizedActionName, "Eye Gaze", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+xrCreateAction(actionSet, &gazeAction, &gazeActionHandle);
+
+/* Bind to /user/eyes_ext/input/gaze_ext/pose */
+XrPath eyeGazePath;
+xrStringToPath(instance, "/user/eyes_ext/input/gaze_ext/pose", &eyeGazePath);
+/* ... XrActionSuggestedBinding setup ... */
+
+/* Per-frame: locate the gaze space relative to the view space */
+XrSpaceLocation gazeLocation = {XR_TYPE_SPACE_LOCATION};
+xrLocateSpace(gazeSpace, viewSpace, predictedTime, &gazeLocation);
+if (gazeLocation.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) {
+    /* gazeLocation.pose.orientation is the eye gaze direction */
+}
+```
+
+[Source: OpenXR specification, `XR_EXT_eye_gaze_interaction`](https://registry.khronos.org/OpenXR/specs/1.0/html/xrspec.html#XR_EXT_eye_gaze_interaction)
+
+Eye gaze is primarily used for foveated rendering (rendering the gaze point at full resolution, periphery at reduced resolution) and for UI interaction in XR applications. On Linux, foveated rendering via eye gaze requires the compositor to support variable-rate shading (VRS) or texture-based foveated rendering; the `XR_FB_foveation` extension family and the Monado-specific `XR_MNDX_xdev_space` extension cover these cases.
 
 ---
 

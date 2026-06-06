@@ -525,6 +525,87 @@ Connection to XWayland (Chapter 23): Glamor is the mechanism by which XWayland a
 
 ---
 
+## 10. ARM and Embedded OpenGL ES Drivers
+
+The desktop-oriented drivers — radeonsi, iris, Zink — share a common assumption: dedicated PCIe GPU with large VRAM. ARM and embedded platforms operate under completely different constraints: tiny SRAMs, tiled GPU architectures, shared CPU/GPU physical memory, and power envelopes measured in milliwatts. Mesa's Gallium pipe driver model accommodates these differences through dedicated drivers for each GPU family, all sharing NIR and the same `pipe_context` API but differing radically in their register programming, shader compilation, and memory management strategies.
+
+### panfrost: Mali Midgard and Bifrost
+
+**panfrost** covers Mali GPUs from Midgard (T600/T700/T800 series) through Bifrost (G31/G51/G52/G71/G76) — the dominant GPU in mid-range Android devices from 2013 to 2020. The driver was written from scratch by Alyssa Rosenzweig and contributors starting in 2018 using the Panfrost reverse-engineering effort.
+
+The Midgard architecture is a VLIW design; shaders compile to a compact VLIW bundle format. The Bifrost architecture switched to a superscalar in-order design with 128-bit register files and a different instruction encoding. Both architectures use tiled rendering: the GPU divides the framebuffer into 16×16 tiles and processes each tile's geometry and fragment work entirely from on-chip storage, writing the finished tile to DRAM in a single burst. This tile-based deferred rendering (TBDR) model requires the driver to hold all geometry data until the tile pass is dispatched.
+
+The panfrost shader compiler pipeline: GLSL → `glsl_to_nir()` → NIR → Bifrost/Midgard ISA lowering (in Mesa's `src/panfrost/compiler/`). NIR passes handle specific Midgard/Bifrost constraints — for example, Midgard requires a specific register allocation that matches VLIW slot constraints, handled by `midgard_schedule_program()`. The resulting binary is placed in a Tiler Job or Fragment Job descriptor structure that the hardware's job manager fetches from a job chain in DRAM.
+
+```c
+/* Mesa: src/panfrost/lib/pan_job.c — job chain submission */
+struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
+panfrost_flush_jobs(batch);
+/* Emits a SUBMIT_JOB ioctl with the job chain address */
+```
+
+[Source: Mesa `src/panfrost/`](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/panfrost)
+
+panfrost implements OpenGL ES 3.1 on Bifrost; Midgard support is capped at OpenGL ES 3.0. Conformance testing against the dEQP suite runs continuously in Mesa's CI. The `PAN_MESA_DEBUG=trace` and `PAN_MESA_DEBUG=dump` environment variables enable batch-level tracing.
+
+### panthor: Mali Valhall CSF
+
+**panthor** is the Mesa OpenGL ES and Vulkan driver for Mali Valhall (G57/G68/G77/G78 and later) and the newer 5th-generation Mali (G310/G510/G615/G715) which use a Command Stream Frontend (CSF) architecture. The CSF replaced the old job manager with a firmware-based command queue; applications submit ring-buffer commands to a set of firmware queues that the GPU's CSF interprets.
+
+panthor splits into a kernel driver (`drivers/gpu/drm/panthor/` in the Linux kernel, merged in 6.8) and a Mesa userspace driver. The kernel driver manages firmware loading, queue scheduling, and IOMMU table management. The Mesa driver submits graphics and compute command streams through the `DRM_IOCTL_PANTHOR_GROUP_SUBMIT` ioctl to a firmware queue group.
+
+The panthor shader compilation pipeline is shared with panfrost at the NIR level but diverges at the ISA layer: Valhall uses a new fixed-width RISC-V-inspired instruction encoding rather than the Bifrost VLIW format. The compiler lives in `src/panfrost/compiler/valhall/`. Valhall supports OpenGL ES 3.2, Vulkan 1.0, and (on some implementations) Vulkan 1.1.
+
+[Source: Linux kernel `drivers/gpu/drm/panthor/`](https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/panthor), [Mesa `src/panfrost/`](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/panfrost)
+
+### lima: Mali Utgard (Mali-400/450)
+
+**lima** targets Mali Utgard GPUs (Mali-400 MP, Mali-450 MP) — the oldest architecture still in production in ultra-low-cost SoCs (Allwinner A10/A20, Rockchip RK3066). Mali-400 is a fixed-function vertex processor plus a programmable fragment shader (no vertex shaders in the modern sense; vertex processing is done by a separate VPP block). This unusual architecture required a dedicated driver.
+
+lima supports OpenGL ES 2.0 only. The fragment shader compiler targets the Mali-200/400 ISA: shaders pass through NIR and are lowered by `src/gallium/drivers/lima/ir/` to Lima IR, then to binary. Buffer objects and textures are allocated from the SoC's shared CMA memory; there is no separate GPU VRAM.
+
+[Source: Mesa `src/gallium/drivers/lima/`](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/gallium/drivers/lima)
+
+### etnaviv: Vivante GC series
+
+**etnaviv** covers Vivante GC GPU cores embedded in NXP i.MX SoCs and similar platforms. Vivante GC400/GC800/GC2000/GC7000 are the common targets. Vivante is a classic tile-accelerated design with per-pipe shader processors; the GC7000 supports OpenCL 1.x.
+
+etnaviv implements OpenGL ES 2.0/3.0 and, on GC7000+, OpenGL ES 3.1. The shader compiler uses a Vivante-specific NIR lowering pass in `src/gallium/drivers/etnaviv/etna_compiler_nir.c`. The driver leverages the `etnaviv_gem` kernel driver (`drivers/gpu/drm/etnaviv/` in mainline since 4.7) for GEM buffer management and GPU command submission.
+
+```c
+/* etnaviv: src/gallium/drivers/etnaviv/etna_cmd_stream.c */
+etna_cmd_stream_flush(stream, prsc->fence_fd, out_fence_fd);
+/* Wraps DRM_IOCTL_ETNAVIV_GEM_SUBMIT with fence sync support */
+```
+
+[Source: Mesa `src/gallium/drivers/etnaviv/`](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/gallium/drivers/etnaviv)
+
+### freedreno: Qualcomm Adreno (upstream OpenGL ES)
+
+**freedreno** is the Mesa driver for Qualcomm Adreno GPUs (A3xx through A7xx series) — the GPU in Snapdragon SoCs. The driver was begun by Rob Clark in 2012 using microcode dumps from the Qualcomm blob and has grown into one of the most featureful embedded GPU drivers in Mesa.
+
+freedreno supports OpenGL ES 3.2 on Adreno A5xx/A6xx and is the upstream path for OpenGL on non-Android Adreno platforms (Qualcomm laptops, ARM developer boards). The shader compiler pipeline targets the Adreno ISA (called "IR3" after the internal Mesa compiler): NIR is lowered by `src/freedreno/ir3/` to IR3, then to Adreno machine code. IR3 handles the Adreno register file layout, instruction bundles, and predication.
+
+The `msm` kernel DRM driver (`drivers/gpu/drm/msm/`) manages Adreno ring buffer submission, GPU fault recovery, and GPU power management. freedreno userspace uses `DRM_IOCTL_MSM_GEM_SUBMIT` with a command stream packet format (pm4).
+
+```bash
+# freedreno trace capture
+FD_GPU_TRACEPOINTS=1 FD_MESA_DEBUG=instr <application>
+# Captures Adreno command streams; view with fdperf or Perfetto
+```
+
+[Source: Mesa `src/freedreno/`](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/freedreno)
+
+Notably, the Vulkan path on Adreno is handled by the separate **tu** (Turnip) driver (`src/freedreno/vulkan/`) — the split mirrors the radeonsi/RADV and iris/ANV architecture on AMD and Intel. OpenCL on Adreno uses the same pipe driver through rusticl (Chapter 25).
+
+### Shared Infrastructure: CSO, NIR, and the Gallium Pipe Model
+
+All of these drivers share the Gallium `pipe_context` and `pipe_screen` interfaces, the CSO (Constant State Object) system for pre-compiled states, and NIR as the intermediate representation at the shader compiler entry point. The differences are entirely below NIR: each driver implements its own `nir_to_<isa>` lowering, its own command-stream packer, and its own memory allocator tailored to the SoC's IOMMU and CMA constraints. The shared infrastructure means that improvements to NIR optimisation passes (algebraic simplifications, loop unrolling, load/store vectorisation) benefit all of these drivers simultaneously.
+
+The `MESA_LOADER_DRIVER_OVERRIDE` and the libGL/EGL Gallium driver selection mechanism (Chapter 12) also applies to these drivers, enabling them to be loaded by the Mesa loader on any platform where the DRM kernel driver is present.
+
+---
+
 ## Summary
 
 This chapter has traced the OpenGL pipeline from the Gallium pipe interface down to hardware in radeonsi and iris, examined Zink's Vulkan-translation approach, and explored the infrastructure (LLVM backend, Shader DB, Glamor) that surrounds these drivers. The key architectural contrasts to keep in mind:

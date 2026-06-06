@@ -247,6 +247,46 @@ Per-plane colour correction is a newer capability, still stabilising as of kerne
 
 The `wp_color_management_v1` Wayland protocol is the compositor-facing interface that exposes these KMS colour capabilities to Wayland clients. The protocol was merged into the staging area of wayland-protocols in February 2025 (wayland-protocols 1.41) and was adopted by Mutter/GNOME 48 in March 2025. KWin, wlroots, and Weston are at various stages of implementation. The protocol allows clients to attach a colour space description (as an ICC profile or a named colour space tag) to a `wl_surface`, which the compositor uses to select the appropriate plane colour pipeline or GPU conversion path. The compositor-side implementation of this protocol, and the full integration with lcms2 and colord, is covered in depth in Chapter 22.
 
+### Colour Representation: wp_color_representation_v1
+
+`wp_color_management_v1` defines the colour *space* that a surface's pixels inhabit. A companion protocol, `wp_color_representation_v1`, defines the colour *encoding* — how YCbCr video frames are encoded as digital values before they reach the compositor. Without both protocols, a compositor cannot correctly display HDR video received from a media player through a Wayland surface.
+
+`wp_color_representation_v1` was proposed alongside `wp_color_management_v1` in the wayland-protocols staging area and addresses three distinct encoding attributes:
+
+**Colour matrix (YCbCr to RGB conversion):** Video decoders produce YCbCr frames using one of several standardised conversion matrices. The protocol encodes the choice as an enum:
+
+- `COEFFICIENTS_BT601`: SDTV/DVD, used for SD content
+- `COEFFICIENTS_BT709`: HDTV, the default for most HD and 1080p content
+- `COEFFICIENTS_BT2020`: Ultra HD and HDR10 content; wider colour gamut coefficients
+
+Without this information, a compositor that defaults to BT.709 will produce subtly incorrect colours when fed BT.601 content — the skin-tone hue shift is typically the first visible artefact.
+
+**Chroma range (full vs. limited):** Video encoding historically clips luma to 16–235 and chroma to 16–240 (limited range / "studio swing"), reserving headroom for transmission sync signals. Computer-generated content typically uses the full 0–255 range. A mismatch causes crushed blacks and clipped whites. The protocol's `RANGE_FULL` and `RANGE_LIMITED` enum values let the client (e.g., a media player) inform the compositor of the frame's range so that the compositor's KMS plane or GPU conversion path applies the correct expansion.
+
+**Chroma siting:** In subsampled formats (YUV 4:2:0, YUV 4:2:2), chroma samples do not co-locate with luma samples. MPEG-2 cositing places the chroma sample vertically aligned with the top luma row; H.264/AVC and H.265/HEVC default to interstitial chroma siting. The `wp_color_representation_v1::chroma_location` enum exposes common siting positions (`COSITED_TOP`, `MIDPOINT`, etc.) that map directly to the `VkChromaLocation` enum in Vulkan and the `V4L2_YCBCR_ENC_*` flags in the V4L2 kernel API.
+
+**Protocol interaction with wp_color_management_v1:** The two protocols are attached separately to a `wl_surface`. A video player that produces a BT.2020 HDR10 frame would:
+
+1. Create a `wp_color_management_surface_v1` and set the colour space to `PRIMARIES_BT2020`, transfer function `TF_ST2084_PQ` (via `wp_color_management_v1`).
+2. Create a `wp_color_representation_surface_v1` and set `COEFFICIENTS_BT2020`, `RANGE_LIMITED`, chroma siting per the codec standard.
+
+The compositor's KMS implementation then programs the plane's DEGAMMA, CTM, and GAMMA registers (Section 3.3) using the matrix coefficients and range flags from both protocols together, applying a complete BT.2020 PQ → display-native colour pipeline on the hardware scan-out plane — typically with zero GPU involvement.
+
+The kernel-side support for these flags is exposed through the same `drm_color_lut` and `drm_ctm` blobs described in Section 3.2, but hardware YCbCr-to-RGB conversion is implemented as an additional fixed-function stage (CSC — colour space converter) in newer AMD DCN and Intel Xe display engines. The kernel DRM `COLOR_RANGE` and `COLOR_ENCODING` plane properties (introduced in Linux 4.20) are the KMS interface for these flags:
+
+```c
+/* kernel: drivers/gpu/drm/drm_color_mgmt.c */
+drm_plane_create_color_properties(plane,
+    BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) |
+    BIT(DRM_COLOR_YCBCR_BT2020),
+    BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+    DRM_COLOR_YCBCR_BT709, DRM_COLOR_YCBCR_LIMITED_RANGE);
+```
+
+[Source: `drivers/gpu/drm/drm_color_mgmt.c`, `drm_plane_create_color_properties()`](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_color_mgmt.c)
+
+The wayland-protocols staging specification for `wp_color_representation_v1` is tracked at [wayland-protocols staging](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/tree/main/staging/color-representation). As of early 2025 the protocol was under active review with KWin and Mutter targeted as first adopters.
+
 ---
 
 ## 4. Explicit Synchronisation: The Problem and the Solution
