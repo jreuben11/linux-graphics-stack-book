@@ -20,11 +20,12 @@ Chapters signal which perspective is emphasised where they diverge.
 - **Part II — GPU Drivers**
   - [Chapter 5: x86 GPU Drivers](#chapter-5-x86-gpu-drivers)
   - [Chapter 6: ARM & Embedded GPU Drivers](#chapter-6-arm--embedded-gpu-drivers)
-- **Part III — The Nouveau Story**
+- **Part III — The Open NVIDIA Stack**
   - [Chapter 7: Reverse Engineering NVIDIA: History and Methodology](#chapter-7-reverse-engineering-nvidia-history-and-methodology)
   - [Chapter 8: The Nouveau Kernel Driver: nvkm Architecture](#chapter-8-the-nouveau-kernel-driver-nvkm-architecture)
   - [Chapter 9: GSP-RM, Firmware, and the nvidia-open Connection](#chapter-9-gsp-rm-firmware-and-the-nvidia-open-connection)
-  - [Chapter 10: NVK: Building a Vulkan Driver from Scratch](#chapter-10-nvk-building-a-vulkan-driver-from-scratch)
+  - [Chapter 10a: Nova — The Rust NVIDIA Kernel Driver](#nova--the-rust-nvidia-kernel-driver)
+  - [Chapter 10b: NVK: Building a Vulkan Driver from Scratch](#chapter-10-nvk-building-a-vulkan-driver-from-scratch)
   - [Chapter 11: Display, Reclocking, and Power Management](#chapter-11-display-reclocking-and-power-management)
 - **Part IV — Mesa Architecture**
   - [Chapter 12: The Mesa Loader and Driver Dispatch](#chapter-12-the-mesa-loader-and-driver-dispatch)
@@ -164,7 +165,19 @@ Chapters signal which perspective is emphasised where they diverge.
 - The path toward a fully open NVIDIA stack
 - **Integrations**: GSP-RM changes the interface between nvkm and the GPU hardware (Ch8); using GSP-RM firmware unlocks reclocking and power management that were previously blocked (Ch11); the DMA-BUF/explicit sync improvements enabled by nvidia-open are what unblocked proper NVIDIA Wayland support (Ch3, Ch20)
 
-### Chapter 10: NVK: Building a Vulkan Driver from Scratch
+### Nova — The Rust NVIDIA Kernel Driver
+
+- Why a new driver rather than extending nouveau: design constraints of nvkm, opportunity of GSP as a clean hardware abstraction boundary
+- **nova-core**: 1st-level driver; boots the GSP, manages the command queue, abstracts hardware without register-level access; sits outside the DRM tree as a platform driver
+- **nova-drm**: 2nd-level DRM driver (`drivers/gpu/drm/nova/`); implements standard DRM interfaces for userspace; consumes nova-core's GSP abstraction
+- Rust implementation rationale: memory safety in a new driver with no legacy C debt; Rust-for-Linux abstractions used (GPUVM immediate-mode, HRT device driver support, Falcon firmware handling)
+- GPU generation scope: Turing (RTX 20xx) and newer; pre-Turing hardware stays with nouveau
+- Development status as of Linux 7.2: Turing GSP bringup, Falcon firmware hardening, large RPC support, DebugFS for GSP-RM log buffers
+- Co-existence with nouveau in the kernel tree: module selection, migration path for users
+- Contributor landscape: Red Hat (primary), NVIDIA engineers; GSP-RM firmware as the shared dependency with nvidia-open
+- **Integrations**: nova-core is the primary consumer of GSP-RM firmware (Ch 9); nova-drm implements the DRM driver model (Ch 1) and will become the kernel backend for NVK (Ch 10b) as it matures, replacing nvkm (Ch 8) for Turing+ GPUs; the Rust-in-kernel approach echoes the ARM Tyr driver (Ch 6); contributing to nova-drm uses the Rust DRM contribution workflow described in Ch 32
+
+### Chapter 10b: NVK: Building a Vulkan Driver from Scratch
 - Motivation: starting fresh rather than layering on the legacy GL driver
 - Design decisions: object model, memory heaps, descriptor set architecture
 - Shader compilation pipeline: SPIR-V → NIR → nvk backend
@@ -462,69 +475,9 @@ Chapters signal which perspective is emphasised where they diverge.
 
 ---
 
-## TODO — Pending Plan Adjustments
-
-> Identified after in-flight agents began writing Part III. Do not renumber chapters mid-flight. Apply the new chapter and cross-chapter edits as a coordinated revision pass once current drafts are complete.
-
----
-
-### New Chapter: Nova — The Rust NVIDIA Kernel Driver
-
-**Insert as Ch 10** (after current Ch 9). Renumber in the TOC and all cross-references:
-- Current Ch 10 (NVK: Building a Vulkan Driver from Scratch) → Ch 11
-- Current Ch 11 (Display, Reclocking, and Power Management) → Ch 12
-
-**Suggested filename:** `ch10-nova-rust-nvidia-driver.md`
-
-**Chapter outline:**
-
-- Why a new driver rather than extending nouveau: design constraints of nvkm, opportunity of GSP as a clean hardware abstraction boundary
-- **nova-core**: 1st-level driver; boots the GSP, manages the command queue, abstracts hardware without register-level access; sits outside the DRM tree as a platform driver
-- **nova-drm**: 2nd-level DRM driver (`drivers/gpu/drm/nova/`); implements standard DRM interfaces for userspace; consumes nova-core's GSP abstraction
-- Rust implementation rationale: memory safety in a new driver with no legacy C debt; Rust-for-Linux abstractions used (GPUVM immediate-mode, HRT device driver support, Falcon firmware handling)
-- GPU generation scope: Turing (RTX 20xx) and newer; why pre-Turing hardware stays with nouveau
-- Development status as of Linux 7.2: Turing GSP bringup, Falcon firmware hardening, large RPC support, DebugFS for GSP-RM log buffers
-- Co-existence with nouveau in the kernel tree: module selection, migration path for users
-- Contributor landscape: Red Hat (primary), NVIDIA engineers; GSP-RM firmware as the shared dependency with nvidia-open
-- **Integrations**: nova-core is the primary consumer of GSP-RM firmware (Ch 9); nova-drm implements the DRM driver model (Ch 1) and will become the kernel backend for NVK (Ch 11, formerly Ch 10) as it matures, replacing nvkm (Ch 8) for Turing+ GPUs; the Rust-in-kernel approach is also visible in the ARM Tyr driver (Ch 6) and the broader DRM Rust abstraction layer; contributing to nova-drm uses the Rust DRM contribution workflow described in Ch 32
-
----
-
-### Updates to Existing Chapters (apply during revision pass)
-
-**Part III title** — consider renaming *"The Nouveau Story"* to *"The Open NVIDIA Stack"* to reflect the full arc: reverse engineering (Ch 7–8) → GSP-RM (Ch 9) → Nova (Ch 10) → NVK (Ch 11).
-
-**Ch 1 (DRM Architecture)**
-- Add one sentence acknowledging that the DRM driver model now supports Rust implementations; Nova is the in-tree flagship example alongside Tyr.
-
-**Ch 5 (x86 GPU Drivers)**
-- Add `nova` as a distinct bullet alongside `nouveau`; note the generational split (pre-Turing stays in nouveau; Turing+ targets Nova).
-- In the `nvidia-open` bullet: note that GNOME 51 removed EGLStreams from Mutter, completing the ecosystem-wide shift to GBM/DMA-BUF; nvidia-open's GBM path is now the only viable route for GNOME users.
-
-**Ch 8 (Nouveau Kernel Driver: nvkm Architecture)**
-- Add an integration pointer: nova-drm (new Ch 10) is the Turing+ architectural successor; nvkm remains authoritative for pre-Turing and the current in-production Wayland stack.
-
-**Ch 9 (GSP-RM, Firmware, and the nvidia-open Connection)**
-- Update the "path toward a fully open NVIDIA stack" section — the answer is now Nova (Ch 10); point forward explicitly.
-- Integrations: add nova-core as the GSP-RM consumer that supersedes nouveau's retrofitted GSP support.
-
-**Ch 3 (Advanced Display Features) — Explicit sync section**
-- EGLStreams removal and explicit sync adoption are distinct. Now that GNOME 51 has dropped EGLStreams, sharpen the framing: `wp_linux_drm_syncobj` is the only modern NVIDIA Wayland synchronisation path; do not conflate the two mechanisms.
-
-**Ch 22 (Production Compositors) — Mutter/GNOME section**
-- Add: GNOME 51 removed EGLStreams/EGLDevice support from Mutter; NVIDIA users must use the GBM/linux-dmabuf path. Cite as the ecosystem closure point for EGLStreams.
-
-**Ch 24 (Vulkan and EGL) — EGL section**
-- EGLStreams is historical context only (removed in GNOME 51); do not present it as a viable current EGL surface path on Wayland.
-
-**Ch 32 (Contributing to the Linux Graphics Stack)**
-- Add a section on contributing to Rust DRM drivers: Rust-for-Linux abstractions, differences in the review workflow vs. C drivers, Nova and Tyr as reference implementations.
-
----
-
 ## Part XI — Engines & Creative Tools
 
-**Rationale**: Bevy, Godot, and Blender are fully open-source, Linux-first Vulkan clients whose internal rendering paths are traceable through the same stack layers covered in Parts I–V. Each chapter is scoped as *"how this engine sits on the Linux stack"*, not a general engine architecture guide. Unreal Engine and Unity are acknowledged as significant Vulkan consumers but are closed-source; their Linux-specific internals are not auditable to the standard this book requires — cover them as named examples within Ch 18 (Vulkan Drivers) or Ch 41, not as standalone chapters.
+**Rationale**: Bevy, Godot, and Blender are fully open-source, Linux-first Vulkan clients whose internal rendering paths are traceable through the same stack layers covered in Parts I–V. Each chapter is scoped as *"how this engine sits on the Linux stack"*, not a general engine architecture guide. Unreal Engine and Unity are acknowledged as significant Vulkan consumers but are closed-source; their Linux-specific internals are not auditable to the standard this book requires — covered as named examples within Ch 18 (Vulkan Drivers) or Ch 41, not as standalone chapters.
 
 ### Chapter 40: Bevy and wgpu — A Rust-Native Vulkan Client
 
@@ -535,9 +488,7 @@ Chapters signal which perspective is emphasised where they diverge.
 - Wayland window integration: `winit` → Wayland/EGL surface setup; explicit sync handshake (Ch3, Ch20)
 - Compute in Bevy: compute passes via `wgpu`, WGSL compute shaders through the same naga/SPIR-V/NIR path (Ch25)
 - Unreal Engine 5 and Unity: sidebar covering their Vulkan RHI on Linux as closed-source counterpoints — what is observable from public documentation vs. what is not auditable
-- **Integrations**: wgpu's Vulkan path is a client of Mesa Vulkan drivers (Ch18); naga/SPIR-V enters the same NIR front end as Dawn/Tint (Ch14, Ch35); the Rust implementation echoes Nova (Ch10) and the DRM Rust theme; wgpu surface creation uses EGL/GBM (Ch24, Ch4); compute shaders share the Vulkan compute queue path (Ch25)
-
----
+- **Integrations**: wgpu's Vulkan path is a client of Mesa Vulkan drivers (Ch18); naga/SPIR-V enters the same NIR front end as Dawn/Tint (Ch14, Ch35); the Rust implementation echoes Nova and the DRM Rust theme; wgpu surface creation uses EGL/GBM (Ch24, Ch4); compute shaders share the Vulkan compute queue path (Ch25)
 
 ### Chapter 41: Godot 4 — RenderingDevice and the Explicit Vulkan Path
 
@@ -549,8 +500,6 @@ Chapters signal which perspective is emphasised where they diverge.
 - Compute and GPU particles: compute shader usage in Godot 4; connection to Vulkan compute queues (Ch25)
 - Godot's CI and conformance: how the project tests its Vulkan backend; interaction with Mesa CTS results (Ch31)
 - **Integrations**: RenderingDevice's Vulkan backend is a client of Mesa Vulkan drivers (Ch18); SPIR-V compilation feeds NIR (Ch14); EGL/Wayland surface path uses linux-dmabuf (Ch20); GPU particles use the same Vulkan compute queue covered in Ch25; Godot's explicit sync usage connects to `wp_linux_drm_syncobj` (Ch3)
-
----
 
 ### Chapter 42: Blender — Cycles, EEVEE Next, and GPU Compute on Linux
 
