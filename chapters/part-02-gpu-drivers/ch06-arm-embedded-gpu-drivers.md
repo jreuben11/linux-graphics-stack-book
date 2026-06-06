@@ -843,3 +843,7 @@ The `pm_runtime_get_noresume` call increments the usage count so that the device
 25. [LWN: Generic PM domains](https://lwn.net/Articles/493195/) — LWN background article on the `pm_genpd` Generic Power Domain framework.
 26. [Tyr being submitted for Linux 6.18 — Phoronix](https://www.phoronix.com/news/Rust-DRM-Drivers-Linux-6.18-Tyr) — Phoronix news on the Tyr Rust driver submission for Linux 6.18.
 27. [Kernel 6.18: Tyr advances Rust in Linux — Collabora](https://www.collabora.com/news-and-blog/news-and-events/kernel-618-tyr-advances-rust-in-linux.html) — Collabora's post-merge analysis of Tyr's significance for Rust in the Linux kernel.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

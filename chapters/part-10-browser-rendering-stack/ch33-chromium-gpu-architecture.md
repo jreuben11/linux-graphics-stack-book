@@ -378,3 +378,7 @@ An important security property of the DawnWire protocol (Chapter 35) is that it 
 
 20. Chromium OOP-D bug tracking and VizDisplayCompositor flag:  
     https://issues.chromium.org/issues/40542793
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

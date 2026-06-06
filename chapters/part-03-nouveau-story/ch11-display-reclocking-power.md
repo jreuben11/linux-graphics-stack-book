@@ -600,3 +600,7 @@ nouveau's HDR support is partial as of kernel 6.8. The KMS property is present a
 17. [NVIDIA open-gpu-doc](https://github.com/NVIDIA/open-gpu-doc) — NVIDIA's partial hardware documentation (notably does not cover the display engine registers)
 
 18. [nouveau-reclocking utility](https://github.com/ventureoo/nouveau-reclocking) — userspace utility demonstrating the pstate interface usage for GPU reclocking
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

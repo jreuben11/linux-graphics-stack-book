@@ -462,3 +462,7 @@ The community has largely accepted this tradeoff pragmatically. For newer hardwa
 19. [NVK Mesa documentation](https://docs.mesa3d.org/drivers/nvk.html) — Mesa's NVK driver documentation; current GPU support matrix and Vulkan conformance status
 20. [drm/nouveau kernel documentation](https://docs.kernel.org/gpu/nouveau.html) — Kernel documentation for the nouveau DRM driver
 21. [Nouveau kernel source tree](https://gitlab.freedesktop.org/drm/nouveau/kernel/) — Primary development tree for the nouveau kernel driver
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

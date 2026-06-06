@@ -1015,3 +1015,7 @@ New Vulkan extension tests enter the CTS through Khronos's internal review proce
 <a name="ref17"></a>[17] IGT GPU Tools project. *IGT 1.29 release announcement.* September 2024. `https://lists.x.org/archives/xorg-announce/2024-September/003531.html`
 
 <a name="ref18"></a>[18] syzbot. *Monthly DRI report, December 2024*. dri-devel mailing list. `https://www.mail-archive.com/dri-devel@lists.freedesktop.org/msg521925.html`
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

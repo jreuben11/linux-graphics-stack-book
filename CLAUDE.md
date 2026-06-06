@@ -56,3 +56,7 @@ Kernel doc: `https://www.kernel.org/doc/html/latest/gpu/`
 2. Use `WebSearch`/`WebFetch` to verify API signatures, struct definitions, and kernel/Mesa version where features landed.
 3. After drafting, check cross-references against `plan.md` **Integrations** bullets to ensure nothing is missed.
 4. Do not invent kernel interfaces, Mesa internals, or GPU hardware behaviour — if uncertain, say so explicitly in the text with a "Note: needs verification" callout, or look it up.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

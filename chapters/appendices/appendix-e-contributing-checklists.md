@@ -476,3 +476,7 @@ The Wayland protocol checklist connects to **Chapter 20 (Wayland Architecture)**
 19. REUSE compliance tool: [https://reuse.software/](https://reuse.software/)
 
 20. Phoronix — Linux 6.16 DRM misc-next: [https://www.phoronix.com/news/Linux-6.16-DRM-Misc-Next](https://www.phoronix.com/news/Linux-6.16-DRM-Misc-Next)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

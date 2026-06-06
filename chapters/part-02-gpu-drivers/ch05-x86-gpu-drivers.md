@@ -766,3 +766,7 @@ The combination of KFD, HMM, and APU unified memory is what enables large-scale 
 29. [KFD Source — drivers/gpu/drm/amd/amdkfd](https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/amd/amdkfd) — Kernel Fusion Driver source; queue management, SVM allocator, and ROCm HSA ioctl implementations.
 30. [Kernel Source: mm/hmm.c](https://github.com/torvalds/linux/blob/master/mm/hmm.c) — Core HMM implementation; `hmm_range_fault()` and the migrate_vma family.
 31. [Steam Deck Technical Specifications](https://www.steamdeck.com/en/tech) — Van Gogh APU unified memory architecture; the reference platform for APU unified-heap programming guidance.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

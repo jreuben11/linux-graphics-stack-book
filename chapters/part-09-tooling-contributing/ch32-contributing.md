@@ -651,6 +651,8 @@ Key structural patterns in the Asahi driver:
 - **`Arc<Mutex<AsahiInner>>`**: shared device state follows Rust's standard interior-mutability pattern; the borrow checker enforces that the lock is held whenever mutable fields are accessed.
 - **Module decomposition**: `driver::` (platform_driver registration and probe/remove lifecycle), `device::` (per-device state), `gpu::` (firmware communication), `alloc::` (GPU memory management). Each module boundary corresponds to a well-defined ownership boundary.
 
+Beyond Asahi, two other Rust DRM drivers represent the current state of the art: **Nova** (`drivers/nova/` + `drivers/gpu/drm/nova/`), NVIDIA's clean-sheet Rust driver for Turing+ GPUs using GSP-RM firmware (Linux 6.10+, expanded in Linux 7.2 with Turing bring-up and GPUVM immediate-mode support — see Chapter 10), and **Tyr**, a Rust DRM driver for ARM Mali CSF GPUs receiving parallel improvements in the same Linux 7.2 DRM Rust cycle. Both share the same `rust/kernel/drm/` abstraction layer as Asahi. Nova in particular required upstream additions to the DRM Rust bindings — notably the Higher-Ranked Lifetime Types (HRT) constraint for GPUVM VA handles — that benefit all future Rust DRM driver work.
+
 The driver registration illustrates how Rust replaces the C `struct drm_driver` vtable with a trait:
 
 ```rust
@@ -1186,3 +1188,7 @@ For Mesa work, subscribe to GitLab label notifications for the components you ca
 33. XDC 2022/2023 proceedings (HDR and color management talks): [https://indico.freedesktop.org/](https://indico.freedesktop.org/)
 
 34. Wayland Explorer — color-management-v1 protocol reference: [https://wayland.app/protocols/color-management-v1](https://wayland.app/protocols/color-management-v1)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

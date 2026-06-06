@@ -649,3 +649,7 @@ This appendix draws on and extends material from the following chapters:
 14. AMD GPU open. *Display Core Next Architecture*. https://gpuopen.com/amd-display-architecture/
 15. Phoronix. *Intel Enables Xe2 Lunar Lake & Battlemage Graphics By Default With Linux 6.12*. https://www.phoronix.com/news/Linux-6.12-Intel-Xe2-Stable
 16. amd-gfx mailing list. *[PATCH 12/13] drm/amdgpu/display: add all gfx12 modifiers*. https://www.mail-archive.com/amd-gfx@lists.freedesktop.org/msg108855.html
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

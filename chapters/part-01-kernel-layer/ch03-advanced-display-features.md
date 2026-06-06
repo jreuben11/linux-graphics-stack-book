@@ -322,6 +322,8 @@ This protocol closed the NVIDIA Wayland problem. NVIDIA's driver can export a ti
 
 It is worth being explicit about a common misconception: explicit sync does not eliminate implicit sync for drivers that already support it. Mesa-based drivers continue to use implicit `dma_fence` internally for their own queue management. Explicit sync is a bridge to the one significant production driver — NVIDIA's — that cannot participate in implicit fence sharing. The two mechanisms coexist in the kernel: compositors that support both will use implicit fences with Mesa-based clients and explicit fences with NVIDIA clients, depending on what the client exposes.
 
+A second common conflation is between **explicit sync** and **EGLStreams removal**. EGLStreams (`EGL_NV_stream_producer_d3d_texture`, `EGLDevice`) was an NVIDIA-proprietary Wayland buffer-sharing mechanism from the pre-GBM era: the compositor and the NVIDIA driver communicated through an NVIDIA-specific stream rather than `linux-dmabuf`. GNOME 51 (2025) removed EGLStreams support from Mutter entirely, as the mechanism is superseded by GBM-backed `linux-dmabuf` on all current NVIDIA configurations. Explicit sync (`wp_linux_drm_syncobj_v1`) is an entirely orthogonal mechanism that solves GPU fence propagation — it works on top of the same `linux-dmabuf` path that replaced EGLStreams. Removing EGLStreams does not remove explicit sync support; if anything, it simplifies the compositor code that implements it.
+
 ### Sequence diagram: wp_linux_drm_syncobj_v1 surface commit flow
 
 ```
@@ -487,3 +489,7 @@ MST, colour management, and HDR can all be active simultaneously on MST-attached
 23. [lcms2 library documentation and API reference](https://littlecms.com/blog/2020/09/29/lcms2-api/) — ICC profile handling, tone curve extraction, colour transform computation; v2.13+ for ICC v4
 24. [Color management protocol — Wayland Explorer](https://wayland.app/protocols/color-management-v1) — Interactive protocol documentation for wp_color_management_v1
 25. [VESA DisplayPort 1.4 specification (MST chapter)](https://www.vesa.org/vesa-standards/) — Authoritative specification for MST payload slot budgeting and VCPI assignment
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

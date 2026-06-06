@@ -418,3 +418,7 @@ The `chrome://gpu` page reports whether overlay promotion is active for the curr
 14. `zwp_linux_dmabuf_v1` Wayland protocol XML: [https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml)
 
 15. GPU Rasterization guide (Chromium): [https://www.chromium.org/developers/design-documents/chromium-graphics/how-to-get-gpu-rasterization/](https://www.chromium.org/developers/design-documents/chromium-graphics/how-to-get-gpu-rasterization/)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

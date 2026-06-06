@@ -375,3 +375,7 @@ The unanswered question for the decade ahead is whether the GSP-RM architecture 
 19. [NVIDIA Turing Architecture Whitepaper](https://www.nvidia.com/content/dam/en-zz/Solutions/design-visualization/technologies/turing-architecture/NVIDIA-Turing-Architecture-Whitepaper.pdf) — Hardware architecture overview including the GSP's role in the Turing die layout
 
 20. [linux-firmware repository](https://gitlab.kernel.org/public/linux/firmware) — Source for GSP firmware blobs including WHENCE provenance tracking for NVIDIA blobs
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -961,3 +961,7 @@ xrCreateSwapchain(session, &(XrSwapchainCreateInfo){
 17. **XDC 2017 — DRM Leases (Keith Packard, Valve)** — Conference presentation introducing DRM leasing to the X.Org developer community. [https://www.x.org/wiki/Events/XDC2017/packard_drm_lease.pdf](https://www.x.org/wiki/Events/XDC2017/packard_drm_lease.pdf)
 
 18. **LWN — The OpenXR Ecosystem on Linux** (2021) — Overview of the OpenXR runtime landscape on Linux, Monado's conformance status, and the path to mainstream adoption. [https://lwn.net/Articles/874514/](https://lwn.net/Articles/874514/)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

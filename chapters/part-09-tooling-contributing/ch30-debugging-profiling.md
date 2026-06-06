@@ -912,3 +912,7 @@ After pipeline creation, `feedback.flags` includes `VK_PIPELINE_CREATION_FEEDBAC
 28. Vulkan timestamp queries documentation: [https://docs.vulkan.org/samples/latest/samples/api/timestamp_queries/README.html](https://docs.vulkan.org/samples/latest/samples/api/timestamp_queries/README.html)
 29. drm_info tool: [https://github.com/emersion/drm_info](https://github.com/emersion/drm_info)
 30. FlameGraph scripts: [https://github.com/brendangregg/FlameGraph](https://github.com/brendangregg/FlameGraph)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

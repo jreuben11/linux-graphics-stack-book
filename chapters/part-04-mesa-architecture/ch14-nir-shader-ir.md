@@ -763,3 +763,7 @@ NVIDIA (NVK) maps task and mesh shaders to native Tesla/Ampere hardware mesh pip
 23. [Phoronix: Mesa Prepares To Drop Old GLSL-To-TGSI](https://www.phoronix.com/news/Mesa-Stripping-GLSL-To-TGSI) — Coverage of the TGSI removal project that completed Mesa's transition to NIR as the universal shader IR.
 
 24. [Introducing Mesa Intermediate Representations on Intel Drivers](https://blogs.igalia.com/apinheiro/2016/06/introducing-mesa-intermediate-representations-on-intel-drivers-with-a-practical-example/) — Igalia blog post explaining NIR's role in Intel driver compilation with a practical example; useful for understanding the pass pipeline concept.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

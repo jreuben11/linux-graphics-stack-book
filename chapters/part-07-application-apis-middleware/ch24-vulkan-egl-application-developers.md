@@ -483,6 +483,8 @@ The **release point** is set by the application and tells the compositor the tim
 
 **The pre-explicit-sync world.** Before `wp_linux_drm_syncobj_v1`, EGL applications used `EGL_ANDROID_native_fence_sync` and `EGL_KHR_fence_sync` to create fence objects tied to the GL command stream, export them as Android sync file descriptors, and pass them to a compositor via a bespoke protocol or side-channel. This approach worked for Mesa drivers that share the implicit fence infrastructure but was not a universal solution.
 
+**Historical note — EGLStreams.** Before GBM became NVIDIA's Wayland path, NVIDIA shipped an alternative buffer-sharing mechanism called EGLStreams (`EGL_NV_stream_*`). Instead of allocating a GBM buffer object and exporting it as a `linux-dmabuf`, the NVIDIA driver and a supporting compositor (Mutter, KWin) would establish an `EGLStreamKHR` — a producer/consumer pair managed entirely within the EGL layer. Applications that targeted EGLStreams created surfaces via `eglCreateStreamProducerSurfaceKHR` rather than the standard `eglCreateWindowSurface` with a GBM window. GNOME 51 (2025) removed EGLStreams support from Mutter; KDE Plasma removed it earlier. No new application code should use EGLStreams. The standard path for all GPU vendors on Wayland is `EGLDisplay` from `EGL_KHR_platform_wayland` with a GBM-backed `wl_egl_window`, as described in this chapter.
+
 The complete synchronisation chain for a Vulkan Wayland frame is therefore: render to swapchain image → signal timeline semaphore at value N → export DRM syncobj fd → attach as release point to Wayland surface → `wl_surface_commit` → compositor waits on release point before KMS scanout → compositor signals acquire point when display hardware moves to next buffer → application imports acquire point as wait condition for next frame's render submission.
 
 ---
@@ -795,3 +797,7 @@ This chapter connects in both directions with the hardware and protocol chapters
 
 37. Khronos blog, "VK_EXT_present_timing: the Journey to State-of-the-Art Frame Pacing in Vulkan" — background on `VK_KHR_present_wait` limitations and future direction: https://www.khronos.org/blog/vk-ext-present-timing-the-journey-to-state-of-the-art-frame-pacing-in-vulkan
 
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -273,3 +273,7 @@ The table below maps each symptom category in this appendix to the Chapter 30 se
 19. eBPF Tutorial — Monitoring GPU Driver Activity with Kernel Tracepoints. `https://medium.com/@yunwei356/ebpf-tutorial-by-example-monitoring-gpu-driver-activity-with-kernel-tracepoints-db3d8bb01d4e`
 
 20. drm_info source repository (emersion). `https://gitlab.freedesktop.org/emersion/drm_info`
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

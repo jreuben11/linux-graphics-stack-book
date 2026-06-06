@@ -758,3 +758,7 @@ This appendix consolidates material that is treated in depth in the following ch
 21. DRM Memory Management documentation: §"DRM Sync Objects". [https://www.kernel.org/doc/html/v5.4/gpu/drm-mm.html](https://www.kernel.org/doc/html/v5.4/gpu/drm-mm.html)
 
 22. Linux kernel DRM KMS documentation: §"Explicit fencing properties". `Documentation/gpu/drm-kms.rst`. [https://www.kernel.org/doc/html/latest/gpu/drm-kms.html](https://www.kernel.org/doc/html/latest/gpu/drm-kms.html)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

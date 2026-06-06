@@ -599,7 +599,7 @@ The argument to `drm_fbdev_generic_setup()` is the preferred bit depth for the e
 
 **Chapter 30 (Debugging, Profiling, and Security)**: The debugfs tree introduced in Section 8 is the primary introspection mechanism for all GPU debugging described in Chapter 30. RenderDoc, performance counter reads, and `gpu-top` all open DRM device nodes. The render node security risks enumerated in Section 4 (GPU memory exhaustion, speculative side channels, shader JIT attack surfaces) are revisited with mitigation strategies and container isolation patterns.
 
-**Chapter 32 (Contributing to the Linux Graphics Stack)**: The uAPI ABI stability constraint from Section 7 is the single most important constraint for DRM contributors. Chapter 32 explains the review process for UAPI additions, the `drm-misc-next` and `drm-tip` trees, and the documentation requirements for new ioctls.
+**Chapter 32 (Contributing to the Linux Graphics Stack)**: The uAPI ABI stability constraint from Section 7 is the single most important constraint for DRM contributors. Chapter 32 explains the review process for UAPI additions, the `drm-misc-next` and `drm-tip` trees, and the documentation requirements for new ioctls. Chapter 32 also covers Rust DRM driver development: the `rust/kernel/drm/` abstractions for `drm_device`, `drm_gem_object`, and `drm_gpuvm` that are used by the Nova (NVIDIA, Chapter 10) and Tyr (ARM Mali CSF) drivers — the flagship examples of Rust-based DRM driver implementations in the mainline kernel.
 
 ---
 
@@ -648,3 +648,7 @@ The argument to `drm_fbdev_generic_setup()` is the preferred bit depth for the e
 21. [systemd-logind DRM device handling](https://github.com/systemd/systemd) — See `src/login/logind-dbus.c` and `logind-device.c` for the `PauseDevice`/`ResumeDevice` implementation and `DRM_IOCTL_SET_MASTER` orchestration.
 
 22. [XDC 2013 — DRI3 and Present introduction (Keith Packard)](https://www.x.org/wiki/Events/XDC2013/XDC2013KeithPackardDRI3Present/) — The original conference presentation introducing DRI3 and Present; explains the design rationale directly from the author.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

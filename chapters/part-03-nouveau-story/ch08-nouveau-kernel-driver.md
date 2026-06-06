@@ -651,3 +651,7 @@ The capability gating mechanism uses GETPARAM queries for feature presence rathe
 11. [DRM_NOUVEAU_EXEC UAPI header](https://github.com/torvalds/linux/blob/master/include/uapi/drm/nouveau_drm.h) — Canonical source for `drm_nouveau_exec`, `drm_nouveau_sync`, `drm_nouveau_vm_bind` structures
 12. [Danilo Krummrich's drm-gpuvm patches — dri-devel mailing list](https://lore.kernel.org/dri-devel/?q=drm+gpuvm) — Full patch thread with technical rationale for the VM rewrite
 13. [What the Nova GPU driver needs — LWN.net](https://lwn.net/Articles/990736/) — Discusses the longer-term architectural direction for Rust-based GPU driver infrastructure building on the nouveau foundations
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

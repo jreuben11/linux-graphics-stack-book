@@ -721,3 +721,7 @@ finish-args:
 
 30. **"XWayland: the bridge between old and new"** (LWN, 2016):
     https://lwn.net/Articles/683126/
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

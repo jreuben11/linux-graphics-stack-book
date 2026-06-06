@@ -380,3 +380,7 @@ GDS (Global Data Share) is a fixed-function unit for cross-workgroup atomic oper
 20. [Function Call Support in RADV/ACO — Mesa Documentation](https://docs.mesa3d.org/drivers/amd/function-calls.html) — Official Mesa documentation for ACO's function call ABI, the `p_call` pseudo-instruction, and the register preservation conventions used by ray tracing callable shaders.
 
 21. [Mesa 26.0 Ray Tracing Wave32 Optimisation](https://portallinuxferramentas.blogspot.com/2026/01/mesa-260-unlocks-major-ray-tracing.html) — Report on Mesa 26.0 improvements enabling wave32 for RDNA ray tracing shaders, demonstrating ACO's continued performance tuning for newer hardware.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -636,3 +636,7 @@ A common empirical observation in the Linux gaming community is that well-optimi
 24. Notes on Wine architecture and process startup (ArcaneNibble): [`https://arcanenibble.github.io/notes-on-wine-architecture-and-process-startup.html`](https://arcanenibble.github.io/notes-on-wine-architecture-and-process-startup.html)
 
 25. Wine 11.0 NTSYNC and WoW64 coverage: [`https://windowsforum.com/threads/wine-11-0-ntsync-wow64-overhaul-and-wayland-updates-for-better-linux-gaming.406839/`](https://windowsforum.com/threads/wine-11-0-ntsync-wow64-overhaul-and-wayland-updates-for-better-linux-gaming.406839/)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

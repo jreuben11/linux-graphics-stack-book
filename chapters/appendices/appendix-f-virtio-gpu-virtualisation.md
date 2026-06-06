@@ -721,3 +721,7 @@ docker run --rm \
 ---
 
 *Last verified against: Linux kernel 6.14, Mesa 26.0, VirtIO specification 1.2, virglrenderer 1.0, QEMU 9.x, crosvm (ChromeOS main, January 2025).*
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

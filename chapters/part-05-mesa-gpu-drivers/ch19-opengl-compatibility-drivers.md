@@ -559,3 +559,7 @@ Forward references: Chapter 20 (Wayland) will show how radeonsi and iris present
 18. Intel Graphics Developer Reference Manual (Gen9 through Xe2): https://01.org/linuxgraphics/documentation
 19. Marek Olšák, "Optimising radeonsi" — XDC 2018: https://xdc2018.x.org/talks.html
 20. Tom Stellard, "LLVM AMDGPU backend overview" — LLVM Developer Conference 2014: https://llvm.org/devmtg/2014-10/#talk18
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

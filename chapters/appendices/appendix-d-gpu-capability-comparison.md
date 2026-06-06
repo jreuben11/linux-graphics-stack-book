@@ -404,3 +404,7 @@ The following cells are the most likely to change between manuscript submission 
 23. Intel ANV Vulkan Video AV1 decode on Battlemage/LNL (Mesa 25.2 dev): [https://www.phoronix.com/news/Intel-ANV-Vulkan-AV1-Decode](https://www.phoronix.com/news/Intel-ANV-Vulkan-AV1-Decode)
 24. Mesa 25.0 brings Vulkan 1.4 to RADV, ANV, NVK: [https://9to5linux.com/mesa-25-0-linux-graphics-stack-brings-vulkan-1-4-support-on-radv-anv-and-nvk](https://9to5linux.com/mesa-25-0-linux-graphics-stack-brings-vulkan-1-4-support-on-radv-anv-and-nvk)
 25. NVK "ready for prime time" (Collabora blog): [https://www.collabora.com/news-and-blog/news-and-events/nvk-is-now-ready-for-prime-time.html](https://www.collabora.com/news-and-blog/news-and-events/nvk-is-now-ready-for-prime-time.html)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

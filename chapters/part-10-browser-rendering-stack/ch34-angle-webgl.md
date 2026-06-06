@@ -383,3 +383,7 @@ This chapter connects to several other parts of the book.
 15. ANGLE on Wayland (Chromium issue tracker): [https://issues.chromium.org/issues/334275637](https://issues.chromium.org/issues/334275637)
 
 16. Mozilla ANGLE downstream fork: [https://github.com/mozilla/angle](https://github.com/mozilla/angle)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

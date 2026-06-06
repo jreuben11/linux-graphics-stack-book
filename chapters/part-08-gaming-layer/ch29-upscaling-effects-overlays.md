@@ -788,3 +788,7 @@ Anti-cheat systems (EAC, BattlEye) running on Linux via Proton may explicitly se
 17. MangoHud Pull Request #1499 — GPU fdinfo bug fixes, Intel support: <https://github.com/flightlessmango/MangoHud/pull/1499>
 
 18. LWN — "Vulkan's layer system" (Jonathan Corbet, 2017): <https://lwn.net/Articles/724956/>
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -542,3 +542,7 @@ For Flatpak and sandboxed application developers, the stability tier interacts w
 19. **Security Context protocol** (staging): https://wayland.app/protocols/security-context-v1 — `wp_security_context_manager_v1` and Flatpak integration.
 
 20. **wayland-protocols governance and promotion criteria**: https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/CONTRIBUTING.md — Two-compositor rule; staging and stable tier definitions.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

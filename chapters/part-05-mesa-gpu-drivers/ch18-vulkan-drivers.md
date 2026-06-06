@@ -628,3 +628,7 @@ A widespread misconception is that the WSI layer is merely a thin wrapper. In pr
 20. [`wp_linux_drm_syncobj_v1` Explicit Sync Protocol](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml) — GPU timeline fence passing between Vulkan drivers and Wayland compositors
 21. [Mesa 24.2 Release Notes](https://docs.mesa3d.org/relnotes/24.2.0.html) — Battlemage (Intel Xe2/BMG) and A7xx Adreno enablement confirmation
 22. [Improving VK_KHR_display in Mesa — Maister's Graphics Adventures](https://themaister.net/blog/2018/07/02/improving-vk_khr_display-in-mesa-or-lets-make-drm-better/) — Direct-to-display WSI path and DRM atomic modesetting integration
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

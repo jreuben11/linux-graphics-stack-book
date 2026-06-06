@@ -655,3 +655,7 @@ A critical detail: when age is 2 (triple buffering), the damage accumulation mus
 21. [zwp_linux_dmabuf_v1 Wayland protocol](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml) — the protocol XML for client-compositor dmabuf buffer passing and modifier negotiation
 22. [Igalia developer log — "Driver loading and querying in Mesa"](https://blogs.igalia.com/itoral/2014/09/04/driver-loading-and-querying-in-mesa/) — older but still relevant walkthrough of `loader_get_driver_for_fd()` mechanics
 23. [Fedora Wiki — Changes/Vendor Neutral libGL](https://fedoraproject.org/wiki/Changes/Vendor_Neutral_libGL) — the distribution-level transition to GLVND; explains the `50_mesa.json` vendor registration file and the `libEGL_mesa.so`/`libGLX_mesa.so` split
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

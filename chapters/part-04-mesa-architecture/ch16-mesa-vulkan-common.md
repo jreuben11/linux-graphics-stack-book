@@ -463,3 +463,7 @@ The physical device and instance levels have analogous dispatch table structures
 17. [NVK source tree](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/nouveau/vulkan) — NVIDIA Vulkan driver as a clean-slate common-layer consumer
 18. [LWN article on Mesa's Vulkan common layer](https://lwn.net/Articles/893080/) — Accessible overview of the common infrastructure for Linux kernel readers
 19. [Robust pipeline cache serialization (zeux.io)](https://zeux.io/2019/07/17/serializing-pipeline-cache/) — Background on pipeline cache serialisation design considerations applicable to the Mesa implementation
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

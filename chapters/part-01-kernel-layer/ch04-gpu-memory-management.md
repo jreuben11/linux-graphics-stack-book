@@ -826,3 +826,7 @@ Topology discovery tools:
 22. [Panthor driver source (drm_gpuvm usage)](https://elixir.bootlin.com/linux/latest/source/drivers/gpu/drm/panthor/) — Reference implementation of drm_gpuvm integration in the Mali-CSF Panthor driver.
 23. [include/drm/drm_gem.h](https://elixir.bootlin.com/linux/latest/source/include/drm/drm_gem.h) — struct drm_gem_object and drm_gem_object_funcs vtable definitions.
 24. [include/drm/ttm/ttm_placement.h](https://elixir.bootlin.com/linux/latest/source/include/drm/ttm/ttm_placement.h) — TTM placement structures: struct ttm_place, struct ttm_placement, and TTM_PL_* constants.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

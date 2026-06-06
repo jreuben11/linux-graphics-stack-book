@@ -832,3 +832,7 @@ This chapter connects to several other chapters in the book:
 23. Vulkan-CUDA memory interoperability — Mikolaj Gucki (Medium): [https://medium.com/@mikolaj.gucki/vulkan-cuda-memory-interoperability-5442f3b43c3d](https://medium.com/@mikolaj.gucki/vulkan-cuda-memory-interoperability-5442f3b43c3d)
 
 24. ROCm GPU memory documentation: [https://rocm.docs.amd.com/en/docs-6.0.0/conceptual/gpu-memory.html](https://rocm.docs.amd.com/en/docs-6.0.0/conceptual/gpu-memory.html)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

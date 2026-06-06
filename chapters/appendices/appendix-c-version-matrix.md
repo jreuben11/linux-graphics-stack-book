@@ -272,3 +272,7 @@ This appendix cross-references the following chapters:
 25. Mesa LLVMpipe ACO RFC (mesa-dev mailing list, July 2019) — https://lists.freedesktop.org/archives/mesa-dev/2019-July/221006.html
 26. `drivers/gpu/drm/drm_syncobj.c` (Linux kernel source) — https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_syncobj.c
 27. `drivers/gpu/drm/scheduler/sched_main.c` (Linux kernel source) — https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/scheduler/sched_main.c
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

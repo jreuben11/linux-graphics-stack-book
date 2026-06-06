@@ -750,3 +750,7 @@ Because the bridge framework was introduced incrementally (bridges became mainst
 28. [`drm_info` tool](https://gitlab.freedesktop.org/emersion/drm_info) — Utility that dumps all KMS object states, properties, and capabilities; invaluable for debugging
 29. [`weston-info` tool](https://gitlab.freedesktop.org/wayland/weston/) — Reports `wl_output` properties including transform; useful for verifying rotation propagation
 30. [`include/drm/drm_plane.h`](https://elixir.bootlin.com/linux/latest/source/include/drm/drm_plane.h) — `struct drm_plane`, `struct drm_plane_state`, `enum drm_plane_type` declarations
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

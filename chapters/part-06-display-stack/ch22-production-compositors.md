@@ -109,6 +109,12 @@ Mutter's `MetaColorManager` reads ICC profiles from `colord`, maps them to KMS c
 
 `MetaXWaylandManager` supervises the XWayland process. Mutter starts XWayland lazily on first demand from an X11 application and emits a "ready" signal when XWayland's listening socket is available. Override-redirect windows (tooltips, popup menus, xdg-popup equivalents in the X11 world) require special handling because they bypass the normal window manager stack; Mutter tracks them via `META_WINDOW_OVERRIDE_REDIRECT` and composites them above all other windows. See Chapter 23 for the full XWayland architecture.
 
+### EGLStreams Removed in GNOME 51
+
+GNOME 51 (2025) removed `EGLDevice` / `EGLStreams` support from Mutter. EGLStreams was an NVIDIA-proprietary buffer-sharing mechanism dating from the GNOME 3.x era that allowed NVIDIA's proprietary driver to hand buffers to Mutter without going through the GBM / `linux-dmabuf` path used by every other GPU driver. The mechanism required Mutter to maintain a separate code path — a `MetaRendererNativeGpuData` mode for EGLDevice alongside the standard GBM mode — increasing complexity without benefiting users on modern hardware.
+
+The removal is safe because all current NVIDIA configurations on Wayland use GBM and `linux-dmabuf`. NVIDIA's proprietary driver added GBM support in driver version 495; nvidia-open, which ships with all Turing+ GPUs in distributions that adopt it, has used GBM from its first release. Explicit sync via `wp_linux_drm_syncobj_v1` (Chapter 3) — the mechanism that closed the NVIDIA tearing and frame-race issue — operates on top of `linux-dmabuf`, not EGLStreams. The EGLStreams removal does not affect explicit sync. See Chapter 3 for the distinction between these two mechanisms.
+
 ---
 
 ## 3. KWin: KDE Plasma's Compositor
@@ -647,3 +653,7 @@ The `trace-cmd` output, combined with `wp_presentation` feedback data, can produ
 23. [Mutter KMS abstractions documentation](https://github.com/GNOME/mutter/blob/main/doc/mutter-kms-abstractions.md) — official Mutter documentation on MetaKms, MetaKmsDevice, MetaKmsUpdate design
 24. [Phoronix: GNOME Mutter Switches To High Priority KMS Thread](https://www.phoronix.com/news/GNOME-High-Priority-KMS-Thread) — coverage of the 2024 KMS thread priority change from SCHED_RR to high priority
 25. [Phoronix: KDE's KWin Merges Wayland Explicit Sync Support](https://www.phoronix.com/news/KDE-KWin-Lands-Explicit-Sync) — coverage of wp_linux_drm_syncobj_v1 landing in KWin for Plasma 6.1
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

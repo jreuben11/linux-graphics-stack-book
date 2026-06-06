@@ -836,3 +836,7 @@ The `with_damage` throttle flag (`zwlr_screencopy_frame_v1.copy_with_damage`) is
 23. **text-input-unstable-v3.xml**: https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/unstable/text-input/text-input-unstable-v3.xml
 24. **libseat** (seat management library): https://git.sr.ht/~kennylevinsen/seatd
 25. **wlr-protocols repository**: https://gitlab.freedesktop.org/wlroots/wlr-protocols
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

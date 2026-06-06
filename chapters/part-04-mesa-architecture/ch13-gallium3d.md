@@ -600,3 +600,7 @@ The architectural elegance of Zink + the GL state tracker illustrates Gallium's 
 23. [Gallium pipe_context struct reference — freedesktop.org](https://dri.freedesktop.org/docs/gallium/structpipe__context.html) — Doxygen-generated reference for all `pipe_context` function pointers.
 
 24. [Mesa source — freedreno driver: src/gallium/drivers/freedreno/](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/gallium/drivers/freedreno) — Clean ARM GPU Gallium implementation; recommended reference for new embedded GPU backends.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

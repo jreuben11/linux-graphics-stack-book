@@ -251,3 +251,7 @@ This chapter is the final content chapter of Part X and draws together threads f
 17. Multithreaded rasterisation in Chrome — `https://www.chromium.org/developers/design-documents/impl-side-painting/`
 
 18. Google Phoronix: "Google Developing Skia Graphite For Faster Chrome" — `https://www.phoronix.com/news/Chromium-Skia-Graphite`
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

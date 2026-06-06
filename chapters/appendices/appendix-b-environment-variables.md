@@ -677,3 +677,7 @@ This appendix consolidates variables that appear individually throughout the boo
 21. Arch Wiki — AMDGPU. [https://wiki.archlinux.org/title/AMDGPU](https://wiki.archlinux.org/title/AMDGPU)
 22. Arch Wiki — Vulkan. [https://wiki.archlinux.org/title/Vulkan](https://wiki.archlinux.org/title/Vulkan)
 23. Khronos Vulkan Validation Layers — GitHub. [https://github.com/KhronosGroup/Vulkan-ValidationLayers](https://github.com/KhronosGroup/Vulkan-ValidationLayers)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

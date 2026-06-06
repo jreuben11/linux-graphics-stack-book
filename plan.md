@@ -532,3 +532,7 @@ Chapters signal which perspective is emphasised where they diverge.
 - Viewport rendering: EGL/Wayland surface creation for the 3D viewport; OpenGL legacy path vs. Vulkan EEVEE path (Ch 19, Ch 24)
 - Cycles as a GPU compute workload: kernel occupancy, memory bandwidth patterns on AMD/NVIDIA/Intel; how ROCm and HIP relate to the amdgpu kernel driver (Ch 5, Ch 25)
 - **Integrations**: EEVEE Next's Vulkan renderer is a client of Mesa Vulkan drivers (Ch 18) and uses Mesa's Vulkan common infrastructure (Ch 16); Cycles HIP/ROCm runs on amdgpu compute queues (Ch 5, Ch 25); SPIR-V from Blender's GLSL compiler enters the NIR front end (Ch 14); OpenColorIO color transforms connect to KMS color pipeline (Ch 3); viewport EGL context creation follows the path in Ch 24
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

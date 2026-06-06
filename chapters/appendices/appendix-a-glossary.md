@@ -749,3 +749,7 @@ This glossary appendix cross-links to every major chapter in the book. The terms
 21. drm_syncobj timeline support (LWN): [https://lwn.net/Articles/768998/](https://lwn.net/Articles/768998/)
 22. NVIDIA open-gpu-doc: [https://github.com/NVIDIA/open-gpu-doc](https://github.com/NVIDIA/open-gpu-doc)
 23. envytools (Nouveau reverse engineering): [https://github.com/envytools/envytools](https://github.com/envytools/envytools)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

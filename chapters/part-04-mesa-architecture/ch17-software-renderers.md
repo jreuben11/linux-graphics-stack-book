@@ -637,3 +637,7 @@ The Mesa CI documentation (`https://docs.mesa3d.org/ci/`) provides the canonical
 18. LLVM code generation documentation: [https://llvm.org/docs/CodeGenerator.html](https://llvm.org/docs/CodeGenerator.html)
 
 19. VK_EXT_graphics_pipeline_library — Vulkan Documentation Project: [https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_graphics_pipeline_library.html](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_graphics_pipeline_library.html)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

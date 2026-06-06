@@ -130,3 +130,7 @@ The master outline is in [plan.md](plan.md).
 | ANGLE | https://chromium.googlesource.com/angle/angle |
 | Skia | https://skia.googlesource.com/skia |
 | Kernel GPU docs | https://www.kernel.org/doc/html/latest/gpu/ |
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

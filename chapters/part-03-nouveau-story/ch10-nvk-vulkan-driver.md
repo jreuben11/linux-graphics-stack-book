@@ -459,3 +459,7 @@ Authors developing Mesa Vulkan drivers for embedded GPUs — Qualcomm Adreno, AR
 19. [Vulkanised 2024: Faith Ekstrand and Iago Toral — Vulkan.org](https://vulkan.org/user/pages/09.events/vulkanised-2024/) — Presentation on NVK and Mesa Vulkan common infrastructure at the 2024 Vulkan Developer Conference
 
 20. [dEQP-VK test runner documentation](https://android.googlesource.com/platform/external/deqp/) — The Khronos Vulkan Conformance Test Suite runner used to validate NVK conformance
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

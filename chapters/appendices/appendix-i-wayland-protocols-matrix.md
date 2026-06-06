@@ -463,3 +463,7 @@ The "Book Chapter" column in each matrix must be updated whenever chapter assign
 
 25. **drm_syncobj timeline points** — Linux kernel synchronisation object timeline support, kernel 6.6+.
     `https://www.kernel.org/doc/html/latest/gpu/drm-mm.html#drm-sync-objects`
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

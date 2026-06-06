@@ -918,3 +918,7 @@ The transition from VA-API GStreamer elements to Vulkan Video elements is gated 
 30. Collabora: Zero-copy video on Linux — [https://www.collabora.com/news-and-blog/blog/2020/03/23/zero-copy-video-on-linux/](https://www.collabora.com/news-and-blog/blog/2020/03/23/zero-copy-video-on-linux/)
 31. LWN: The V4L2 stateless video codec API — [https://lwn.net/Articles/786714/](https://lwn.net/Articles/786714/)
 32. airlied blog: RADV Vulkan AV1 video decode status — [https://airlied.blogspot.com/2024/02/radv-vulkan-av1-video-decode-status.html](https://airlied.blogspot.com/2024/02/radv-vulkan-av1-video-decode-status.html)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

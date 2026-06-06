@@ -408,3 +408,7 @@ This chapter connects to several other chapters in the book:
 22. WebGPU compute for ML inference — surma.dev: https://surma.dev/things/webgpu/
 
 23. dawn.googlesource.com overview: https://dawn.googlesource.com/dawn/+/refs/heads/chromium-gpu-experimental/README.md
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
