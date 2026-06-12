@@ -1,10 +1,12 @@
-# The Linux Graphics Stack: From Kernel to Compositor
+# The Linux Graphics Stack: From Kernel to Compositor, Browser, and Terminal
 ## Book Plan
 
 ### Audience
-This book serves two audiences:
+This book serves four audiences:
 - **Systems and driver developers** — depth on kernel internals, DRM/Mesa architecture, and driver implementation
 - **Graphics application developers** — understanding the stack beneath Vulkan, EGL, VA-API, and OpenXR
+- **Browser and web platform engineers** — how Chromium/Chrome maps WebGPU, WebGL, and compositing onto the Linux graphics stack
+- **Terminal and TUI developers** — how terminal emulators render pixel graphics (Sixel, Kitty Graphics Protocol, Ghostty) on top of the compositor stack
 
 Chapters signal which perspective is emphasised where they diverge.
 
@@ -17,9 +19,11 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 2: KMS: The Display Pipeline](#chapter-2-kms-the-display-pipeline)
   - [Chapter 3: Advanced Display Features](#chapter-3-advanced-display-features)
   - [Chapter 4: GPU Memory Management](#chapter-4-gpu-memory-management)
+  - [Chapter 51: GPU Power Management and Thermal](#chapter-51-gpu-power-management-and-thermal)
 - **Part II — GPU Drivers**
   - [Chapter 5: x86 GPU Drivers](#chapter-5-x86-gpu-drivers)
   - [Chapter 6: ARM & Embedded GPU Drivers](#chapter-6-arm--embedded-gpu-drivers)
+  - [Chapter 49: Multi-GPU and PRIME Render Offload](#chapter-49-multi-gpu-and-prime-render-offload)
 - **Part III — The Open NVIDIA Stack**
   - [Chapter 7: Reverse Engineering NVIDIA: History and Methodology](#chapter-7-reverse-engineering-nvidia-history-and-methodology)
   - [Chapter 8: The Nouveau Kernel Driver: nvkm Architecture](#chapter-8-the-nouveau-kernel-driver-nvkm-architecture)
@@ -42,6 +46,9 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 21: Building Compositors with wlroots](#chapter-21-building-compositors-with-wlroots)
   - [Chapter 22: Production Compositors](#chapter-22-production-compositors)
   - [Chapter 23: Legacy and Sandboxed App Support](#chapter-23-legacy-and-sandboxed-app-support)
+  - [Chapter 46: The Evolving Wayland Protocol Ecosystem](#chapter-46-the-evolving-wayland-protocol-ecosystem)
+  - [Chapter 53: Display Calibration and colord](#chapter-53-display-calibration-and-colord)
+  - [Chapter 54: The Linux Input Stack](#chapter-54-the-linux-input-stack)
 - **Part VII — Application APIs & Middleware**
   - [Chapter 24: Vulkan and EGL for Application Developers](#chapter-24-vulkan-and-egl-for-application-developers)
   - [Chapter 25: GPU Compute](#chapter-25-gpu-compute)
@@ -49,23 +56,33 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 27: VR & AR](#chapter-27-vr--ar)
   - [Chapter 38: PipeWire and the Video Session Layer](#chapter-38-pipewire-and-the-video-session-layer)
   - [Chapter 39: Qt and GTK GPU Rendering](#chapter-39-qt-and-gtk-gpu-rendering)
+  - [Chapter 47: Font and Text Rendering Pipeline](#chapter-47-font-and-text-rendering-pipeline)
+  - [Chapter 48: ROCm and Machine Learning on Linux GPUs](#chapter-48-rocm-and-machine-learning-on-linux-gpus)
+  - [Chapter 50: Vulkan Video Extensions](#chapter-50-vulkan-video-extensions)
 - **Part VIII — Gaming Layer**
   - [Chapter 28: Windows Compatibility](#chapter-28-windows-compatibility)
   - [Chapter 29: Upscaling, Effects & Overlays](#chapter-29-upscaling-effects--overlays)
+  - [Chapter 56: Ray Tracing on Linux](#chapter-56-ray-tracing-on-linux)
 - **Part IX — Tooling & Contributing**
   - [Chapter 30: Debugging & Profiling](#chapter-30-debugging--profiling)
   - [Chapter 31: Conformance & Regression Testing](#chapter-31-conformance--regression-testing)
   - [Chapter 32: Contributing to the Linux Graphics Stack](#chapter-32-contributing-to-the-linux-graphics-stack)
+  - [Chapter 55: GPU Containers and Cloud Compute](#chapter-55-gpu-containers-and-cloud-compute)
 - **Part X — The Browser Rendering Stack**
   - [Chapter 33: Chromium's Multi-Process GPU Architecture](#chapter-33-chromiums-multi-process-gpu-architecture)
   - [Chapter 34: ANGLE — WebGL on Linux](#chapter-34-angle--webgl-on-linux)
   - [Chapter 35: Dawn and WebGPU](#chapter-35-dawn-and-webgpu)
   - [Chapter 36: The Chromium Compositor — CC and Viz](#chapter-36-the-chromium-compositor--cc-and-viz)
   - [Chapter 37: Skia and 2D Rendering](#chapter-37-skia-and-2d-rendering)
+  - [Chapter 52: Firefox and WebRender](#chapter-52-firefox-and-webrender)
 - **Part XI — Engines & Creative Tools**
   - [Chapter 40: Bevy and wgpu](#chapter-40-bevy-and-wgpu)
   - [Chapter 41: Godot 4 RenderingDevice](#chapter-41-godot-4-renderingdevice)
   - [Chapter 42: Blender GPU — Cycles and EEVEE](#chapter-42-blender-gpu--cycles-and-eevee)
+- **Part XII — Terminal Graphics**
+  - [Chapter 43: Terminal Pixel Protocols — Sixel, Kitty, and iTerm2](#chapter-43-terminal-pixel-protocols--sixel-kitty-and-iterm2)
+  - [Chapter 44: Terminal GPU Rendering Architectures](#chapter-44-terminal-gpu-rendering-architectures)
+  - [Chapter 45: Terminal Integration with the Compositor Stack](#chapter-45-terminal-integration-with-the-compositor-stack)
 
 ---
 
@@ -112,6 +129,17 @@ Chapters signal which perspective is emphasised where they diverge.
 - Multi-GPU peer-to-peer DMA: the `p2pdma` kernel framework; NVLink and AMD xGMI/Infinity Fabric interconnects; GPU NUMA topologies and NUMA-aware allocation; implications for ML multi-GPU workloads
 - **Integrations**: GEM objects are the currency exchanged between GPU drivers, Mesa, and display; DMA-BUF is the zero-copy bridge to VA-API (Ch26), V4L2 (Ch26), Wayland linux-dmabuf (Ch20), and CUDA external memory (Ch25); GBM is the allocation backend EGL uses to create Wayland-presentable surfaces (Ch24); Chromium's SharedImage system (Ch36) is backed by GBM/DMA-BUF objects shared between ANGLE (Ch34), Dawn (Ch35), and Viz; `drm_sched` governs command submission fairness for every driver covered in Parts II–III and V
 
+### Chapter 51: GPU Power Management and Thermal
+- DRM runtime PM framework: `drm_dev_enter`/`drm_dev_exit`; the `autosuspend` delay; linking `drm_device.dev` to the Linux PM core; how `drm_clflush` and KMS DPMS interact with runtime suspend
+- amdgpu power management: `amdgpu_pm_sysfs`; power profiles (auto, low, high, manual, compute); `pp_power_profile_mode`; BACO (Bus Active, Chip Off); GFXOFF; SMU (System Management Unit) firmware; APU vs. dGPU power state differences; `amdgpu.ppfeaturemask`
+- Intel i915/Xe power management: RC6 render C-states; `intel_rc6_enable`; GuC power management; DSSM (Dynamic Shutoff Slow Memory); `i915.enable_dc` display C-states; Xe2 power gating
+- NVIDIA power management: `nvidia-smi -pm 1` persistence mode; `--power-limit` capping; TGP (Total Graphics Power) on laptops; power-on-demand vs. always-on; `nvidia-open` power state differences vs. proprietary driver
+- Nouveau power management: reclocking difficulty (Ch11); safe clock tables via GSP-RM; `nouveau.pstate` module parameter; power regression history and current status
+- Thermal management: `drivers/thermal/` framework; GPU thermal zones; `trip_point` throttle callback; AMD SMU thermal policy vs. Linux thermal; fan control via `thinkfan`, `nbfc`, and the AMD SMU fan curve interface
+- `power-profiles-daemon` and `powerprofilesctl`: how it maps `performance`/`balanced`/`power-saver` profiles to `amdgpu` power profiles and Intel EPP (Energy Performance Preference)
+- Tools and monitoring: `powertop`, `turbostat`, `rocm-smi`, `intel_gpu_top`, `nvtop`, `/sys/class/drm/*/device/power/`
+- **Integrations**: amdgpu power profiles interact with GameMode (Ch29) and ROCm workloads (Ch48); thermal throttling affects conformance test reproducibility (Ch31); Nouveau reclocking (Ch11) is the GPU-specific view of the DRM PM model described here; laptop hybrid graphics (Ch49) adds a layer of power-switching above per-GPU PM; containers and cloud (Ch55) need persistent mode and power capping for predictable GPU performance
+
 ---
 
 ## Part II — GPU Drivers
@@ -134,6 +162,18 @@ Chapters signal which perspective is emphasised where they diverge.
 - The role of Device Tree and ACPI in GPU enumeration on ARM platforms
 - The DRM bridge framework: `drm_bridge` and `drm_panel`; bridge chains for complex encoder topologies (SoC → DSI bridge → HDMI transmitter); USB-C Alt Mode DisplayPort; `drm_bridge_attach` and the chain traversal model; `panel-simple` and the panel driver ecosystem
 - **Integrations**: these drivers feed the same DRM/GEM/KMS interfaces as x86 drivers; Panfrost/Panthor pair with Mesa's Panfrost driver; Turnip pairs with the Mesa Turnip Vulkan driver (Ch18); the display subsystem integration here is tighter than x86 — DSI panels and MIPI connectors feed directly into KMS plane/CRTC objects (Ch2); the DRM bridge framework connects ARM SoC display engines to the same KMS connector/encoder model described in Ch2
+
+### Chapter 49: Multi-GPU and PRIME Render Offload
+- Hybrid graphics hardware: Intel iGPU + NVIDIA/AMD dGPU laptop topology; muxed vs. muxless designs; how the two GPUs share the display pipeline
+- PRIME DRM buffer sharing: `DRM_PRIME_FD_TO_HANDLE` / `DRM_PRIME_HANDLE_TO_FD`; the cross-device DMA-BUF export/import path; `drm_gem_prime_export` and `drm_gem_prime_import` driver callbacks
+- `DRI_PRIME` environment variable: how Mesa's driver selection logic (Ch12) picks the rendering device; `VK_LAYER_MESA_device_select` Vulkan layer; `prime-run` wrapper script
+- Reverse PRIME: rendering on dGPU, scanning out via iGPU KMS; the `xrandr --setprovideroffloadsink` blit path; the pixmap blit through the CPU vs. direct DMA-BUF import
+- Explicit GPU selection in Vulkan: `VkPhysicalDeviceGroupProperties`; `VK_KHR_device_group`; multi-device submission for split-frame rendering
+- AMD SmartShift: CPU + GPU TDP sharing on AMD Advantage platforms; `amdgpu` sysfs interface for SmartShift state
+- `supergfxctl` (ASUS), `system76-power` (System76): vendor tools for runtime GPU switching; the `supergfxd` D-Bus daemon
+- Multi-GPU rendering (not offload): SLI/CrossFire history and removal; why multi-GPU in Vulkan is application-driven, not driver-automatic; `VkDeviceGroupSubmitInfo` and `deviceMask`
+- Peer-to-peer DMA: NVLink and AMD Infinity Fabric; the `p2pdma` kernel framework; GPU NUMA topology; implications for ML multi-GPU (Ch48) and ROCm collective operations
+- **Integrations**: PRIME uses DMA-BUF (Ch4) as the cross-GPU transport; Wayland compositors (Ch21, Ch22) handle PRIME outputs via the DRM backend; gamescope (Ch22) supports PRIME for Steam Deck-like topologies; GPU power management (Ch51) must coordinate power states across both GPUs during offload; GPU containers (Ch55) need PRIME-aware device selection for the correct GPU to handle compute vs. display
 
 ---
 
@@ -317,6 +357,78 @@ Chapters signal which perspective is emphasised where they diverge.
 - Practical: running unmodified X11 applications on a Wayland desktop
 - **Integrations**: XWayland renders X11 client content via Mesa OpenGL (Ch19) and presents it to the Wayland compositor via linux-dmabuf (Ch20); Glamor (Ch19) accelerates 2D X11 drawing inside XWayland; xdg-desktop-portal routes screen capture requests to PipeWire (Ch26) and uses DMA-BUF (Ch4) for zero-copy GPU surface sharing with sandboxed apps
 
+### Chapter 46: The Evolving Wayland Protocol Ecosystem
+
+This chapter covers the wave of staging protocols that reached compositor implementation in 2024–2026, directly addressing the limitation gaps catalogued in Chapter 20 §13. It is a snapshot chapter: protocols at the frontier of shipping but not yet stable. Readers should treat version references as tied to the mid-2026 snapshot (Mutter 50.x, KWin 6.7.x, wlroots 0.18.x, xdg-desktop-portal 1.22.x); the graduation trajectory is clearly signalled where known.
+
+- **Explicit synchronisation in depth: `wp_linux_drm_syncobj_v1`**
+  - Recap of the implicit-sync failure mode for NVIDIA (Ch3, Ch20 §8) — the motivation
+  - DRM timeline sync objects: kernel `drm_syncobj` with timeline semantics; `DRM_IOCTL_SYNCOBJ_CREATE`, `DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL`, `DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT`; point-based vs. binary sync objects
+  - Protocol mechanics in full: `wp_linux_drm_syncobj_manager_v1.get_surface` → `wp_linux_drm_syncobj_surface_v1`; `set_acquire_point(timeline, point)` — compositor waits for GPU finish before read; `set_release_point(timeline, point)` — compositor signals when done, client may reuse buffer; the surface-level granularity (per-commit, not per-device)
+  - Compositor implementations: Mutter (`meta-wayland-linux-drm-syncobj.c`, landed GNOME 46); KWin (`linux_drm_syncobj_v1.cpp`, Plasma 6.0); wlroots (`wlr_linux_drm_syncobj_v1.c`, wlroots 0.17)
+  - Mesa integration: how Mesa's EGL/Vulkan WSI exports acquire/release timeline points alongside the DMA-BUF in `src/egl/drivers/dri2/platform_wayland.c`; the `EGL_ANDROID_native_fence_sync` bridge on the Mesa side
+  - Application impact: what changed for NVIDIA users after Plasma 6 / GNOME 46; residual issues; comparison with the old `zwp_linux_explicit_synchronization_unstable_v1` predecessor
+
+- **HDR colour management: `wp_color_management_v1` v3**
+  - Protocol history: from `wp_color_management` (2019 draft) through `xx_color_management` (breaking redesign) to the v3 staging protocol in wayland-protocols 1.45 (October 2024); why three design iterations were needed
+  - Core concepts: image descriptions vs. output colour profiles; the `wp_image_description_v1` object lifecycle (create → ready/failed events → use → destroy); ICC profile upload via `wp_image_description_creator_icc_v1`; named colour primaries and transfer functions for common colour spaces (sRGB, Display P3, BT.2020, PQ, HLG)
+  - Surface colour management: `wp_color_management_surface_v1.set_image_description(desc, render_intent)`; render intent enum (perceptual, relative, saturation, absolute, relative_bpc); how the compositor applies a colour transform from surface image description to display image description
+  - Output feedback: `wp_color_management_output_v1` and `wp_color_management_surface_feedback_v1`; the preferred image description event; how applications use output feedback to select the optimal colour space for a given display
+  - Compositor implementations: Mutter — `meta-wayland-color-management.c` (SUSE/Red Hat, GNOME 48); KWin — `colormanagement_v1.cpp` (Xaver Hugl, Plasma 6.1); the KMS colour pipeline backend (DEGAMMA_LUT, CTM, GAMMA_LUT properties from Ch3) that both compositors program in response to surface colour requests
+  - HDR in practice: what `wp_color_management_v1` enables that was not possible before; the companion `wp_color_representation_v1` protocol for video colour matrix signalling; current limitations (v3 still staging; toolkit support partial as of mid-2026)
+
+- **Cross-compositor screen capture: `ext-image-copy-capture-v1`**
+  - The capture landscape before this protocol: `zwlr_screencopy_manager_v1` (wlroots-only, `wlr-protocols` repo, never in `wayland-protocols`); Mutter's `org.gnome.Shell.Screenshot` D-Bus API; KWin's `org.kde.KWin.ScreenShot2`; why fragmentation made multi-desktop screen recording libraries (OBS, PipeWire) maintain separate code paths per compositor
+  - Protocol architecture: `ext_image_copy_capture_manager_v1` → `ext_image_copy_capture_session_v1` per capture source (output, toplevel); `ext_image_copy_capture_frame_v1` for each captured frame — attach a DMA-BUF or shm buffer, call `capture`, wait for `ready` or `failed` event; damage region reporting on the frame object for efficient partial capture
+  - Cursor sessions: `ext_image_copy_capture_cursor_session_v1` — separate session for cursor capture; cursor position, hotspot, and bitmap delivered independently; allows overlay rendering of cursor above captured content without compositor embedding the cursor in the frame
+  - Format negotiation: `ext_image_copy_capture_session_v1.get_shm_formats` and `get_dmabuf_formats` events before capture begins; client selects a supported format/modifier pair; same DRM format modifier negotiation as linux-dmabuf (Ch4, Ch20)
+  - Compositor status: wlroots full implementation (`wlr_ext_image_copy_capture_v1.c`); Mutter and KWin implementations in progress as of mid-2026; the protocol is authored by Andri Yngvason and Simon Ser (@emersion, wlroots/sway ecosystem)
+  - PipeWire integration path: how `xdg-desktop-portal`'s screencast backend will migrate from compositor-specific APIs to `ext-image-copy-capture-v1` once Mutter and KWin land implementations; the DMA-BUF frame → PipeWire node → consumer path (Ch38)
+
+- **Frame scheduling: `wp_fifo_v1`**
+  - Problem: clients that render faster than the display refresh rate waste GPU time and add latency; `wp_presentation` (Ch20 §7) provides feedback but no constraint; applications must self-throttle by inspecting `presented` timestamps
+  - `wp_fifo_v1` design: `wp_fifo_manager_v1.get_fifo(wl_surface)` → `wp_fifo_v1`; `set_barrier()` marks a commit as a FIFO barrier — the compositor will not present the *next* commit until the barrier commit has been presented; `wait_barrier()` on a subsequent commit blocks the server-side commit processing until the barrier is consumed; the effect is backpressure — the client's render loop naturally paces to display refresh without polling `wp_presentation` timestamps
+  - Authored by Valve (Derek Foreman, Collabora); designed for gaming workloads on Steam Deck where sub-frame-rate rendering and frame-pacing stability are more important than maximum throughput
+  - Compositor status: Mutter and KWin both have references in the codebase (partial integration, mid-2026); wlroots implementation not yet confirmed
+  - Interaction with `wp_presentation` and VRR: how FIFO constraints interact with variable-refresh-rate displays; the FIFO model on a VRR display (no fixed period to pace against); expected protocol clarifications
+
+- **Portal evolution: GlobalShortcuts, RemoteDesktop, and InputCapture**
+  - `org.freedesktop.portal.GlobalShortcuts` v2 (xdg-desktop-portal 1.20+, stable): `BindShortcuts(session, shortcuts, parent_window, activation_token)` — registers named shortcuts; `Activated`/`Deactivated` signals deliver events; `ConfigureShortcuts()` (added 1.21) opens compositor-native shortcut configuration UI; GNOME and KDE portal backends both implement it; this closes the `XGrabKey` gap for portal-aware applications
+  - RemoteDesktop portal improvements (xdg-desktop-portal 1.21–1.22): clipboard support in remote sessions (1.21.1); session persistence across reconnects; the underlying Wayland path — PipeWire screencast + `virtual-keyboard-unstable-v1` + `pointer-constraints-unstable-v1` — and why this is necessarily higher-latency than X11 network forwarding
+  - InputCapture portal (1.21+): synthetic pointer/keyboard input injection for accessibility tools; `CreateSession`, `GetZones`, `SetPointerBarriers`; clipboard access from captured input; how screen readers and switch-access devices use this without requiring Wayland compositor privileges directly
+  - `wp_security_context_v1` (staging): compositor-side security context attachment for Flatpak connections; how KWin (Plasma 6) uses it to restrict sandbox protocol access; the `xdg-desktop-portal` coupling — the portal daemon calls `wp_security_context_v1` to tag sandboxed client connections with the Flatpak app ID, enabling per-application protocol policy without compositor-specific configuration
+
+- **Protocols still unresolved: tray, network transparency, workspace management**
+  - Status notification / system tray: no `ext-tray-v1` exists in wayland-protocols as of mid-2026; the D-Bus `org.freedesktop.StatusNotifierItem` spec (KDE SNI) is the de-facto cross-desktop mechanism; why designing a Wayland-native tray protocol is architecturally difficult (tray aggregators need compositor cooperation for positioning and rendering, not just event delivery)
+  - `ext-workspace-v1` (staging, wlroots only): virtual desktop management; wlroots full implementation; Mutter and KWin absent — both have their own workspace management APIs and have not converged on the protocol
+  - `ext-session-lock-v1` (staging, wlroots + River): custom lock screen surfaces; wlroots full implementation; Mutter uses `org.gnome.ScreenSaver` D-Bus, KWin uses its own lock screen protocol — desktop compositors resistant to adopting a protocol that controls the security-critical lock screen
+  - Network transparency: Waypipe (`https://gitlab.freedesktop.org/mstoeckl/waypipe`) intercepts Wayland socket traffic and recompresses GPU buffers for SSH forwarding; version 0.11.0 (April 2026); minimal maintenance (one commit in 2.5 years); not production-ready for broad deployment; the architectural reason this is harder than X11 forwarding (DMA-BUF fds cannot cross a network, so all zero-copy paths must be unwound)
+  - Capability discovery: `wl_registry` probing as the only mechanism; why a unified `wp_capabilities_v1` would help but has not been prioritised
+
+- **Integrations**: `wp_linux_drm_syncobj_v1` is the Wayland surface of the DRM sync object infrastructure (Ch3, Ch4); its Mesa implementation is in `src/egl/drivers/dri2/platform_wayland.c` (Ch12); `wp_color_management_v1` programs the KMS colour pipeline (Ch3) through the compositor's KMS backend (Ch21, Ch22); `ext-image-copy-capture-v1` feeds DMA-BUF frames into PipeWire (Ch38) for screen recording and portal screen cast; `wp_fifo_v1` is a counterpart to `wp_presentation` (Ch20 §7) and interacts with VRR KMS properties (Ch3); the portal evolution closes the gaps identified in Ch20 §13 and extends Ch23's coverage of `xdg-desktop-portal`; `wp_security_context_v1` is the Wayland-layer complement to Flatpak's seccomp/namespace sandbox (Ch23)
+
+### Chapter 53: Display Calibration and colord
+- The calibration problem: why uncalibrated displays produce incorrect colours; the ICC profile as a device characterisation standard; matrix vs. LUT profile types
+- `colord` daemon: architecture; `ColorDevice` and `ColorProfile` D-Bus objects (`org.freedesktop.ColorManager`); automatic profile assignment via udev device rules; ICC database at `/var/lib/colord/`; the `cd-create-profile` tool
+- VCGT (Video Card Gamma Table): the `vcgt` ICC tag; how `colord-session` reads the VCGT and loads it into the KMS `GAMMA_LUT` property (Ch3) at login; the `colord-session` D-Bus service and its interaction with logind
+- ArgyllCMS and DisplayCAL: colorimeter and spectrophotometer integration (`i1Display Pro`, `ColorMunki`, `Spyder X`); measurement workflow: `spotread`, `dispcal`, `targen`, `dispread`; generating a three-channel matrix+VCGT profile; the `ti3` measurement file format
+- The calibration → compositor pipeline: `colord` → `wp_color_management_v1` image description (Ch46) → KMS colour pipeline (Ch3); how the D-Bus profile assignment bridges to the Wayland protocol's ICC creator interface
+- GNOME Color and KDE colour management UI: `gnome-color-manager`; KDE's System Settings colour correction panel; how both wrap `colord`'s D-Bus API; per-output profile assignment with multi-monitor setups
+- Night light / blue light reduction: `gammastep`, `wlsunset`, `redshift`; how they modify the KMS `GAMMA_LUT` at a layer independent of ICC VCGT; the interaction between a calibration VCGT and a night-light ramp
+- HDR calibration: MaxCLL/MaxFALL metadata in ICC display profiles; the `colord` roadmap for HDR profiling; current gaps between display profiling and the `wp_color_management_v1` HDR pipeline
+- **Integrations**: colord feeds the KMS GAMMA_LUT (Ch3) and is the system-level bridge to `wp_color_management_v1` (Ch46); compositors (Ch22) consume colord profiles via D-Bus; VA-API video surfaces (Ch26) carry their own colour space metadata independently of display calibration; the ICC profile format used by colord matches the `wp_image_description_creator_icc_v1` interface (Ch46)
+
+### Chapter 54: The Linux Input Stack
+- Kernel input subsystem: `/dev/input/eventN`; `struct input_event` fields (type, code, value); EV_KEY, EV_ABS, EV_REL, EV_SYN event types; `input_register_device`; the `evdev` kernel driver; udev rules for device permissions
+- libinput: the device abstraction layer; `libinput_device`, `libinput_event`; device type detection algorithm; the quirks database (`/usr/share/libinput/*.quirks`); calibration matrices for touchscreens; `libinput debug-events` for diagnosis
+- libwacom: graphics tablet identification; the `wacom.stylus` database; pressure curve specification; multi-ring/strip capability; how libinput uses libwacom for Wacom and non-Wacom tablet devices; `libwacom-list-devices`
+- Gaming controllers: `hid-xbox`, `hid-sony`, `hid-nintendo` kernel drivers; SDL2's `GameController` API above `evdev`; udev rules for unprivileged access; `evdev` gamepad protocol vs. legacy `jsdev`; Steam Input virtual controller layer and `uinput`
+- Pointer constraints on Wayland: `zwp_pointer_constraints_v1`; `zwp_locked_pointer_v1` for FPS mouse look; `zwp_confined_pointer_v1` for drag operations; `zwp_relative_pointer_v1` for raw mouse motion without acceleration; how these map to libinput's relative motion events
+- Touch and gesture protocols: `wl_touch` for multi-touch; `zwp_pointer_gestures_v1` for touchpad pinch/swipe events; `zwp_input_timestamps_v1` for sub-millisecond event timestamps; the full evdev→libinput→`wlr_seat`→`wl_pointer` delivery chain
+- Accessibility input: AT-SPI2 accessibility bus; switch access via `evdev` key events; eye tracking devices (Tobii, VIVE Pro Eye) as `evdev` pointing devices; the InputCapture portal (Ch46) for compositor-level input injection
+- Input latency: the evdev kernel ring buffer; libinput's batching model; Wayland compositor frame-aligned input delivery; how `wp_input_timestamps_v1` enables sub-frame input latency measurement; game input latency via MangoHud (Ch29)
+- **Integrations**: libinput feeds Wayland compositors (Ch21, Ch22) via `wlr_input_device` and Mutter's `MetaSeatNative`; pointer constraint protocols build on the input stack described here (Ch46); gaming controller events reach games via SDL2 which straddles evdev and Wayland; Monado (Ch27) consumes libinput tracking data; the InputCapture portal (Ch46) injects synthetic events back into this stack
+
 ---
 
 ## Part VII — Application APIs & Middleware
@@ -383,6 +495,39 @@ Chapters signal which perspective is emphasised where they diverge.
 - Font and text rendering in Qt/GTK: FreeType + HarfBuzz shaping; glyph atlas management; comparison with Skia's text path (Ch37); fontconfig integration
 - **Integrations**: Qt6 `QRhi` Vulkan backend and GTK4 `GskVulkanRenderer` are clients of Mesa Vulkan drivers (Ch18); their SPIR-V feeds NIR (Ch14); Wayland surface creation uses linux-dmabuf (Ch20) and the explicit sync protocol (Ch3); PipeWire (Ch38) is the capture backend for Qt Multimedia and GStreamer-GTK widgets; wlroots-based compositors (Ch21) and Mutter (Ch22) serve their Wayland surfaces; their input events arrive via the libinput event chain (Ch21)
 
+### Chapter 47: Font and Text Rendering Pipeline
+- FreeType 2: glyph rasterisation pipeline; hinting modes (autohinter, bytecode interpreter, no-hinting); subpixel rendering (LCD filtering, `FT_RENDER_MODE_LCD`); `FT_Load_Glyph` flags; the FreeType LCD filter (`FT_Library_SetLcdFilter`) and patent history; gamma correction for perceptual uniformity
+- HarfBuzz: the OpenType shaping engine; `hb_buffer_t` and `hb_font_t`; GSUB (Glyph Substitution) and GPOS (Glyph Positioning) table processing; Unicode Bidirectional Algorithm (UBA) integration; complex script support (Arabic ligatures, Indic vowel signs, Hangul jamo composition); `hb_shape()` and the cluster model for cursor positioning
+- fontconfig: the font matching pattern language; font families, styles, weights; alias chains (`serif` → `Liberation Serif` → actual file); per-application overrides via `~/.config/fontconfig/fonts.conf`; the binary cache (`~/.cache/fontconfig/`); `fc-list`, `fc-match`, `fc-scan` tools
+- Cairo: 2D compositing library; surfaces (`cairo_image_surface_t`, `cairo_gl_surface_t`, `cairo_xcb_surface_t`); the painting model (source, mask, operator); path construction and filling; text rendering via `cairo_show_glyphs`; the GL and Skia backends
+- Pango: the text layout engine; `PangoLayout` and `PangoLayoutLine`; paragraph layout and line breaking; BiDi text in mixed RTL/LTR paragraphs; font selection via `PangoFontDescription`; integration with Cairo for rendering
+- Glyph atlas management: how Qt (`QFontEngine`), GTK (`PangoCairoFcFontMap`), and Skia pack glyph bitmaps into GPU texture atlases; atlas overflow and LRU eviction; distance field fonts and SDF rendering for scalable glyphs
+- Subpixel rendering on Wayland: why Wayland's composited pixel pipeline broke X11 LCD subpixel rendering (buffer compositing multiplies alpha, destroying channel offsets); the grayscale fallback; per-output subpixel orientation hints via `wl_output.subpixel`; FreeType flags per display
+- Variable fonts: OpenType variable font axes (wght, wdth, slnt, ital); FreeType 2.7+ variable instance support; HarfBuzz variation API; rendering performance implications
+- **Integrations**: FreeType/HarfBuzz are used by Qt (Ch39), GTK (Ch39), Skia (Ch37), Pango, and terminal emulators (Ch44); fontconfig is the font resolver for all of the above; Cairo's GL backend uses Mesa OpenGL (Ch19); Wayland's `wl_output.subpixel` hint (Ch20) controls FreeType rendering mode; the compositor's HiDPI scaling (Ch22) affects font metrics and atlas density
+
+### Chapter 48: ROCm and Machine Learning on Linux GPUs
+- ROCm stack overview: the KFD (Kernel Fusion Driver) at `/dev/kfd`; `amdkfd` kernel module and its relation to `amdgpu` DRM (Ch5); the HSA (Heterogeneous System Architecture) memory model; ROCm hardware support matrix (CDNA vs. RDNA generations)
+- HIP runtime: `hipMalloc` / `hipMemcpy` / `hipLaunchKernelGGL`; HIP as a CUDA-portable API; `hipcc` compiler driver; `hipify-perl` and `hipify-clang` for CUDA→HIP porting
+- ROCm compilation pipeline: HIP C++ → Clang/LLVM → AMDGPU LLVM backend → GCN/CDNA ISA; `amdgcn-amd-amdhsa` target triple; `--offload-arch=gfx942` for MI300X; comparison with Mesa's ACO (Ch15) — ACO is for graphics command streams, LLVM is for compute
+- ML frameworks on ROCm: PyTorch ROCm backend (`torch.version.hip`); TensorFlow ROCm via `tensorflow-rocm`; JAX via `jax[rocm]`; how `hipblaslt` replaces `cuBLAS` and `MIOpen` replaces `cuDNN`
+- Math library ecosystem: rocBLAS (BLAS), rocFFT, rocRAND, MIOpen (DNN primitives), hipSPARSE; kernel autotuning via `Tensile` (convolution/GEMM auto-tuner); `rocm-smi` for device and memory monitoring
+- AMD CDNA3 / MI300X for ML: 192 CUs, HBM3 memory, FP8 support, Unified Memory Architecture (CPU+GPU in one address space); implications for large-model inference; `amdgpu` XGMI (Infinity Fabric) for multi-GPU communication
+- Intel oneAPI on Linux: Level Zero (Ch25); `intel-compute-runtime` as the Level Zero ICD; SYCL/DPC++ compilation via `icpx`; `intel_gpu_top` for Arc workload monitoring; oneAPI vs. ROCm portability story
+- ROCm containers and cloud: Docker/Kubernetes with `--device /dev/kfd --device /dev/dri/renderDN`; ROCm Device Plugin for Kubernetes; AWS EC2 `g4ad` (RDNA2) vs. `p4d` (A100/CUDA); AMD Instinct MI300X cloud availability
+- **Integrations**: ROCm uses `amdgpu`'s KFD compute queue (Ch5), distinct from the DRM render node used by Mesa; HIP kernels compile via the same AMDGPU LLVM backend as `radeonsi` (Ch19) but at a different level; ML inference via Vulkan compute (Ch25) is an alternative for portable inference; GPU containers (Ch55) wrap this stack for cloud ML deployments; multi-GPU collective ops use p2p DMA (Ch49)
+
+### Chapter 50: Vulkan Video Extensions
+- Why Vulkan Video: the fragmentation of VA-API, VDPAU, and codec-specific APIs; the argument for a unified GPU video API inside Vulkan; timeline of `VK_KHR_video_*` specification development (2021–2025)
+- `VK_KHR_video_queue`: the `VkVideoSessionKHR` object; video queue families (`VK_QUEUE_VIDEO_DECODE_BIT_KHR`, `VK_QUEUE_VIDEO_ENCODE_BIT_KHR`); session parameters objects; video format query (`vkGetPhysicalDeviceVideoFormatPropertiesKHR`)
+- `VK_KHR_video_decode_queue`: decode operation lifecycle; reference picture list management; DPB (Decoded Picture Buffer) image arrays; `vkCmdDecodeVideoKHR`; output picture copy vs. DPB alias modes
+- Codec extensions: `VK_KHR_video_decode_h264` and `VK_KHR_video_decode_h265` — codec-specific `VkVideoDecodeH264SessionParametersCreateInfoKHR`; `VK_KHR_video_decode_av1` (ratified 2024)
+- `VK_KHR_video_encode_queue` and `VK_KHR_video_encode_h264`/`h265`: encode quality levels; rate control modes; quantisation parameter ranges; `vkCmdEncodeVideoKHR`
+- Mesa implementation: RADV Vulkan Video on AMD VCN hardware (`src/amd/vulkan/radv_video.c`); ANV Vulkan Video on Intel MFX/VDENC (`src/intel/vulkan/anv_video.c`); current codec and profile support matrix
+- FFmpeg Vulkan hwaccel: `AVCodecContext` with `AV_PIX_FMT_VULKAN`; `AVVkFrame` and `AVVulkanFramesContext`; Vulkan frame pool management; the decoder → Vulkan image → Wayland linux-dmabuf → display zero-copy path
+- Comparison with VA-API: API complexity trade-offs; zero-copy display path; hardware support matrix; migration strategy for applications
+- **Integrations**: Vulkan Video uses the same `VkDevice` (Ch18) and `VkImage`/`VkDeviceMemory` (Ch24) as graphics; decoded frames are `VkImage` objects importable via linux-dmabuf (Ch20) for zero-copy display; PipeWire (Ch38) can receive Vulkan Video decoded frames as DMA-BUF; VA-API (Ch26) remains the more widely supported alternative for applications targeting older hardware
+
 ---
 
 ## Part VIII — Gaming Layer
@@ -404,6 +549,18 @@ Chapters signal which perspective is emphasised where they diverge.
 - LatencyFleX: frame latency reduction layer; how it hooks `VkQueue` submission timing to implement a software-side framepacing feedback loop without special driver support; comparison with NVIDIA's Reflex; integration with MangoHud for latency visualisation
 - GameMode (Feral Interactive): the `gamemoded` daemon; CPU scheduler (`SCHED_BATCH`→`SCHED_OTHER` on game start), I/O scheduler, GPU performance mode (`amdgpu_power_profile_mode`, `nvidia-smi -pm 1`), kernel parameter tuning (`vm.swappiness`, split lock threshold); D-Bus API and how Proton games trigger it automatically via `LD_PRELOAD` shim
 - **Integrations**: FSR runs as a Vulkan compute shader (Ch25) inside gamescope (Ch22), consuming the game's final colour buffer via DMA-BUF (Ch4); vkBasalt intercepts between the application and Mesa Vulkan drivers (Ch18) using the Vulkan layer mechanism, inserting post-process passes before the swapchain present (Ch24); MangoHud hooks the same layer interface to read GPU performance counters exposed via DRM (Ch1); XeSS on RADV/NVK exercises the same generic Vulkan compute path as FSR; GameMode's GPU performance mode interacts with amdgpu's power profile sysfs (Ch5)
+
+### Chapter 56: Ray Tracing on Linux
+- Hardware ray tracing overview: BVH (Bounding Volume Hierarchy) traversal in hardware; NVIDIA RT Cores (Turing+), AMD RDNA2+ Ray Accelerators, Intel Xe DG2/Arc Ray Tracing Units; the difference between fixed-function BVH traversal and shader-based ray casting
+- Vulkan ray tracing extension suite: `VK_KHR_acceleration_structure` (BLAS/TLAS build); `VK_KHR_ray_tracing_pipeline` (shader SBT model); `VK_KHR_ray_query` (inline queries in any shader stage); `VK_KHR_deferred_host_operations` (async AS build on CPU thread pool)
+- Acceleration structure lifecycle: `vkBuildAccelerationStructuresKHR`; BLAS from `VkAccelerationStructureGeometryTrianglesDataKHR`; TLAS from `VkAccelerationStructureInstanceKHR` array; compaction via `VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR`; serialisation for disk caching
+- Ray tracing shader model: ray generation shaders; intersection, any-hit, closest-hit, miss shaders; the shader binding table (SBT) layout; `vkCmdTraceRaysKHR` dispatch; ray payload and callable shaders
+- RADV ray tracing: how RDNA2+ `ra` (Ray Accelerator) instructions are emitted; `radv_device_supports_rt()`; the `RADV_DEBUG=rt` shader dump; RADV ray tracing conformance status in dEQP-VK
+- ANV ray tracing: Intel DG2/Arc Xe-HPG BVH hardware; ANV acceleration structure layout; the `xe_ray_query` Gen12+ ISA instruction
+- NVK ray tracing: Turing/Ampere RT Core mapping in NVK (Ch10b); how the GSP abstraction (Ch9) surfaces RT capabilities; timeline for NVK RT conformance
+- DXR via VKD3D-Proton: D3D12 `CreateRaytracingAccelerationStructure` → VKD3D-Proton → `VK_KHR_acceleration_structure`; game DXR compatibility list; shader binding table translation overhead
+- Blender Cycles and OptiX vs. Vulkan RT: the `CYCLES_DEVICE` selection; OptiX on NVIDIA via CUDA (Ch25); HIP-RT on AMD via ROCm (Ch48); the Vulkan RT path in Cycles for cross-vendor support
+- **Integrations**: acceleration structures are `VkBuffer`-backed GPU memory objects (Ch4, Ch24); ray tracing shaders compile through NIR (Ch14) and ACO (Ch15) for RADV; VKD3D-Proton DXR is the gaming client (Ch28); Blender Cycles is the creative tool client (Ch42); ray queries in compute shaders (Ch25) are the most portable ray tracing path across all three GPU vendors
 
 ---
 
@@ -434,6 +591,17 @@ Chapters signal which perspective is emphasised where they diverge.
 - Wayland protocols: the freedesktop.org proposal process, protocol stability guarantees
 - Finding good first issues across the stack; community norms and communication channels
 - **Integrations**: a single feature (e.g. HDR support) touches every layer — DRM kernel properties (Ch3), Mesa colour management, Vulkan swapchain extensions (Ch24), and compositor protocol (Ch20); this chapter maps how a cross-cutting change propagates through the contributing workflow of each sub-project, and who to coordinate with at each boundary
+
+### Chapter 55: GPU Containers and Cloud Compute
+- Container GPU access model: Linux namespaces do not isolate DRM devices; the `/dev/dri/renderDN` and `/dev/kfd` device mount model; the `render` and `video` udev group approach
+- NVIDIA Container Toolkit: `nvidia-container-runtime` OCI hook; CDI (Container Device Interface) specification; how `/dev/nvidia*`, `/dev/dri/renderDN`, and library injection work inside containers; `nvidia-smi` and NVML inside containers; `NVIDIA_VISIBLE_DEVICES` environment variable
+- ROCm in containers: AMD's official Docker images (`rocm/dev-ubuntu-*`); `--device /dev/kfd --device /dev/dri/renderDN`; the `amdgpu` and `render` group requirements; ROCm version pinning vs. kernel driver version compatibility; `rocm-smi` inside containers
+- Intel GPU in containers: `--device /dev/dri/renderDN`; `vainfo` to verify VA-API inside container; Intel compute runtime ICD path; `intel-gpu-tools` container access for performance counters
+- Kubernetes GPU scheduling: NVIDIA GPU Device Plugin (`nvidia.com/gpu` resource); AMD ROCm Device Plugin (`amd.com/gpu`); Intel GPU Device Plugin (`gpu.intel.com/i915`); `MIG` (Multi-Instance GPU) for NVIDIA A100/H100 partitioning; GPU sharing and time-slicing
+- WSL2 GPU path: `dxcore` Linux kernel driver; `dxgkrnl` virtual GPU DRM driver (`/dev/dxg`); Mesa's `d3d12` Gallium driver for OpenGL/OpenCL via DirectX; `wsl-opengl-iosurface` IPC bridge; DirectML as ML inference path; limitations vs. native Linux (no Vulkan compute, no DMA-BUF)
+- GPU virtualisation: SR-IOV for Intel GVT-g/Xe (time-sliced GPU VM access); AMD MxGPU SR-IOV (spatial partitioning); VFIO GPU passthrough with `vfio-pci` for near-bare-metal VM performance; `mediated device` (`mdev`) framework in the kernel
+- Cloud GPU instances: AWS `g4dn` (NVIDIA T4), `p4d` (A100), `g5g` (Graviton+T4G); GCP A100 and L4 instances; kernel driver version pinning on cloud AMIs; EFA (Elastic Fabric Adapter) and GPU RDMA via P2P DMA for distributed training
+- **Integrations**: container PRIME device selection uses DRI_PRIME (Ch49) to route to the correct GPU; P2P DMA (Ch4) enables direct GPU-to-GPU communication across ROCm (Ch48) multi-GPU training; virtio-gpu (Appendix F) is the alternative VM display path; WSL2's d3d12 Gallium driver is an OpenGL-on-D3D12 layer analogous to Zink (Ch17); GPU power management (Ch51) needs `nvidia-smi -pm 1` persistence mode inside containers for predictable performance
 
 ---
 
@@ -488,6 +656,17 @@ Chapters signal which perspective is emphasised where they diverge.
 - CSS filter and compositing effects: blur, drop-shadow, colour matrix — rasterised via Skia on the GPU
 - **Integrations**: SkiaGanesh uses ANGLE (Ch34) as its GL backend or calls Vulkan directly via Mesa drivers (Ch18); SkiaGraphite uses Dawn (Ch35) as its GPU backend, feeding the same Tint/SPIR-V shader pipeline; glyph atlas textures are managed through the SharedImage system (Ch36); Skia rasterises content into tiles that CC hands to Viz (Ch36) for compositing; font configuration on Linux calls into fontconfig, which is independent of but feeds the same rendering pipeline as Pango/Cairo in GTK applications (Ch22)
 
+### Chapter 52: Firefox and WebRender
+- Firefox's rendering architecture vs. Chromium: retained-mode GPU display list vs. Chromium's tile-raster model; why Gecko moved GPU compositing into WebRender rather than a separate compositor process
+- WebRender: `gfx/wr/` directory structure; the `BuiltDisplayList` wire format; `DisplayItem` types (text, image, border, box-shadow, clip); how CSS properties map to display items; the `RenderBackend` thread model
+- WebRender's render graph: `RenderTask` tree; `PictureTask` for effects; `AlphaTask` for transparency; the `TextureCache` for glyph bitmaps, images, and rendered picture subtrees; `GpuCache` for per-draw-call uniforms
+- Picture caching (`PictureCache`): caching entire CSS stacking contexts as GPU textures; invalidation on property change; tile-based partial invalidation (WR tiles, not CC tiles); how this reduces per-frame GPU work for largely static pages
+- WebRender backends on Linux: the GL backend (`webrender_gl`, using `gleam` GL bindings); Vulkan backend (experimental, `wr_gfx_vk`); software fallback (`swgl` — software WebRender GL, a SIMD-accelerated software rasteriser); backend selection logic
+- WebRender and Wayland: `RenderCompositorNativeLayer` abstraction; `NativeLayerWayland` using `wl_subsurface` for delegated compositing without readback; linux-dmabuf surface submission; the `wp_presentation` feedback path in WebRender's frame timing
+- Gecko's WebGPU implementation: `wgpu-core` (the `wgpu` Rust library) as Gecko's WebGPU backend; how it diverges from Chrome's Dawn (Ch35); `wgpu`'s Vulkan backend on Linux vs. Dawn's Vulkan backend; WGSL compilation via `naga` in wgpu vs. Tint in Dawn
+- Stylo: the Servo-derived parallel CSS layout engine in Firefox; how style values feed `DisplayItem` generation; the thread-parallel style computation model
+- **Integrations**: WebRender uses Mesa OpenGL (Ch19) or Vulkan (Ch18) backends; font rendering uses FreeType/HarfBuzz (Ch47); Wayland linux-dmabuf integration (Ch20) is the zero-copy surface path; Gecko's wgpu WebGPU backend is architecturally parallel to Chrome's Dawn (Ch35); wgpu also underlies Bevy (Ch40), making it a shared Rust GPU abstraction across browser and game engine; picture caching is architecturally analogous to Viz's surface aggregation (Ch36)
+
 ---
 
 ## Part XI — Engines & Creative Tools
@@ -526,6 +705,171 @@ Chapters signal which perspective is emphasised where they diverge.
 - Viewport rendering: EGL/Wayland surface creation for the 3D viewport; OpenGL legacy path vs. Vulkan EEVEE path (Ch19, Ch24)
 - Cycles as a GPU compute workload: kernel occupancy, memory bandwidth patterns on AMD/NVIDIA/Intel; how ROCm and HIP relate to the amdgpu kernel driver (Ch5, Ch25)
 - **Integrations**: EEVEE Next's Vulkan renderer is a client of Mesa Vulkan drivers (Ch18) and uses Mesa's Vulkan common infrastructure (Ch16); Cycles HIP/ROCm runs on amdgpu compute queues (Ch5, Ch25); SPIR-V from Blender's GLSL compiler enters the NIR front end (Ch14); OpenColorIO color transforms connect to KMS color pipeline (Ch3); viewport EGL context creation follows the path in Ch24
+
+---
+
+## Part XII — Terminal Graphics
+
+**Rationale**: Modern GPU-accelerated terminals (kitty, Ghostty, WezTerm) are fully-fledged Wayland/EGL clients that upload pixel graphics as GPU textures and composite them with glyph atlases in the same render pass. The terminal graphics story is therefore not a separate topic — it is the same Linux graphics stack (DRM, GBM, Mesa, linux-dmabuf, KMS) applied to a niche client type with three competing pixel-data protocols layered on top. These chapters map those protocols and rendering architectures onto the infrastructure already established in Parts I–VI.
+
+**Target audience**: Terminal and TUI developers; systems developers who want to understand how a seemingly simple application type drives the full stack from Sixel decode to KMS scanout.
+
+### Chapter 43: Terminal Pixel Protocols — Sixel, Kitty, and iTerm2
+
+- **Sixel: DEC heritage and modern survival**
+  - Origins: VT240/VT340 (1986); the six-pixel vertical band (sixel unit); original 16-color palette; modern 256-register extension in xterm, foot, WezTerm, and mlterm
+  - Encoding mechanics: character range `?`–`~` (6 bits); band structure; the `"` raster-attribute command (DECGRA): `Pa`, `Ph`, `Pv` — pan/pad positioning and pixel dimensions; DCS initialiser `ESC P q [P1;P2;P3]` — aspect ratio, background mode, grid size
+  - Color handling: `#` register selector; palette entry definition (`#n;2;r;g;b` RGB, `#n;1;h;l;s` HLS); up to 256 registers in extended mode; color quantization algorithms (Wu's, median-cut, neural-network); Floyd-Steinberg error diffusion vs. ordered (Bayer 4×4) dithering
+  - Level 1 vs. Level 2: raster attributes enable pre-allocation of exact dimensions; Level 1 requires dynamic growth during decode
+  - Limitations: 256-color cap causing visible banding on photographic content; no transparency layer; synchronisation with scrollback (image anchored at cursor row, misaligns on scroll without explicit compositor-level tracking); bandwidth verbosity (~3–5× JPEG for photographic content)
+  - libsixel: streaming decode API vs. batch encode API; quantization hooks; integration patterns used by foot, xterm, VTE
+
+- **Kitty Graphics Protocol: stateful, chunked, GPU-ready**
+  - Design philosophy: eliminate repeated pixel transmission via server-side image storage; map cleanly to GPU texture management
+  - APC escape framing: `ESC _ G <ctrl> ; <payload> ESC \\` — Application Program Command vs. OSC framing; 7-bit-safe base64 payload; comma-separated key=value control data
+  - Pixel formats (`f` key): 24-bit RGB, 32-bit RGBA, PNG (`f=100`) — PNG allows self-describing dimensions; compression (`o=z`) via RFC 1950 ZLIB deflate
+  - Transmission media (`t` key): direct (inline payload), regular file path, temporary file (auto-delete), POSIX shared memory object — the `t=s` path enables true zero-copy for same-machine clients
+  - Chunking (`m` key): 4 KB chunks, `m=1` for all-but-last, `m=0` to finalise; base64 alignment requirement (multiples of 4 bytes); decompression on final chunk
+  - Image persistence and IDs: 32-bit image ID; multiple placements referencing the same stored image; `a=d` deletion actions (by ID, by pixel coordinates, by z-index range, or all)
+  - Placement system: cell-anchored positioning (`c`×`r` cell rectangle); pixel offsets within cell (`X`, `Y`); source-rectangle cropping (`x`, `y`, `w`, `h`); placement IDs for independent management; z-index layering — negative z renders beneath text, positive above
+  - Unicode placeholder mechanism (`U+10EEEE`): diacritic-encoded row/column/image ID metadata; images move with text when lines are inserted/deleted; enables tmux and pager proxying without decoding the protocol
+  - Relative placements: parent–child positioning with `P`/`Q` keys; dynamic repositioning when parent moves
+  - Animation: frame sequences via `a=T`/`a=f`; per-frame background color, compositing mode, frame gap (ms); terminal-driven playback at display refresh rate
+  - Feature detection: `a=q` query with terminal response; `q=1`/`q=2` response suppression for bulk operations
+  - GPU mapping: IDs and placement table map directly to GPU texture handles and draw-call rectangles; z-index maps to render-layer ordering
+
+- **iTerm2 Inline Images Protocol: simplicity and portability**
+  - Escape sequence: `ESC ] 1337 ; File=[params] : <base64> BEL` (OSC 1337); atomic, stateless, no image IDs
+  - Parameters: `name`, `size`, `width`/`height` (cells / px / %/ auto), `inline`, `preserveAspectRatio`, WezTerm-extension `doNotMoveCursor`
+  - Payload: complete image file (PNG, JPEG, etc.) base64-encoded; relies on image format's own compression — no protocol-level compression
+  - Multipart transmission (iTerm2 3.5+): `MultipartFile`/`FilePart`/`FileEnd` sequence for SSH/tmux compatibility; chunk limits 256 B (legacy tmux) to 1 MiB (modern)
+  - Adoption: iTerm2 (macOS, reference), WezTerm (full), Hyper, Konsole (partial); simpler than Kitty but no animation, no z-index, no cropping at protocol level
+  - Trade-offs vs. Sixel/Kitty: stateless simplicity wins for remote/tmux contexts; bandwidth inefficiency (no chunked compression, no deduplication) is the cost
+
+- **Protocol comparison and selection guidance**
+  - Bandwidth: Kitty (compressed, deduplicated) ≈ original JPEG; Sixel ≈ 3–5× JPEG for photos; iTerm2 ≈ original JPEG (no extra compression)
+  - Feature matrix: animation (Kitty only), z-indexing (Kitty), transparency (Kitty/iTerm2, not Sixel), true-color (Kitty/iTerm2, not Sixel)
+  - Portability: Sixel widest hardware/firmware support (embedded, DEC terminals); Kitty widest GPU-terminal support; iTerm2 best for macOS ecosystem and tmux-over-SSH
+  - Detection: `\033[c` secondary DA query; terminal-specific OSC queries; libsixel and wezterm-imgcat implement auto-detection stacks
+
+- **Integrations**: The pixel data that all three protocols carry ultimately becomes a GPU texture (Ch44); how that texture reaches the display is entirely determined by the terminal's Wayland/EGL/KMS integration (Ch45); color quantization in Sixel is the terminal-layer analogue of the KMS color pipeline (Ch3) but far lower fidelity; Kitty's shared-memory transmission mode (`t=s`) uses POSIX shm and is conceptually related to wl_shm (Ch45) and DMA-BUF (Ch4)
+
+### Chapter 44: Terminal GPU Rendering Architectures
+
+- **Glyph atlas fundamentals**
+  - FreeType rasterization + HarfBuzz text shaping pipeline: ligatures, emoji, bidirectional text; cache miss paths
+  - 2D texture atlas vs. 3D texture array: slice-per-font-size; dynamic atlas expansion without glyph reshuffling; GPU memory layout for fast per-cell lookup
+  - Per-cell quad rendering: (row, col) → screen rect; fragment shader samples glyph + applies foreground/background color
+  - Subpixel rendering: LCD filter geometry (R-G-B vs. V-RGB) vs. greyscale antialiasing; gamma-correct blending; fontconfig's `hintstyle`/`antialias` surface to the atlas rasterizer
+
+- **kitty: mature OpenGL renderer**
+  - OpenGL (not Vulkan): predates widespread Vulkan adoption; no plans to port
+  - 3D texture array glyph atlas: each layer is a 2D grid of cells; `glTexSubImage3D` for incremental updates
+  - Dedicated image texture pool: Kitty-protocol images stored in separate GPU textures; texture handle tracked per image ID
+  - Single-pass compositing: one draw call renders glyph quads + image rectangles; z-index map determines fragment output order; alpha blending with premultiplied alpha
+  - GPU image decode path: image data decoded CPU-side → uploaded via `glTexImage2D`; no GPU-side decode (no astc/etc2 paths)
+  - Performance: 60–120 FPS typical; bottleneck is texture upload on large images or high-DPI glyph atlases
+
+- **Alacritty: minimal OpenGL, latency-optimised**
+  - OpenGL + GLFW abstraction; similar atlas approach; deliberately excludes image protocol support
+  - Focus: sub-millisecond input→visual latency; first GPU terminal to validate the atlas-based approach as practical
+  - Architecture lessons: separation of input polling, terminal state, and render loop; double-buffered atlas to avoid mid-frame updates
+
+- **WezTerm: wgpu multi-backend**
+  - Rust + wgpu abstraction layer: Vulkan (Linux preferred), Metal (macOS), DirectX 12 (Windows), WebGPU (browser), OpenGL ES fallback
+  - Glyph atlas and image compositing: all three protocols (Sixel, Kitty, iTerm2) decoded CPU-side → GPU texture
+  - wgpu on Linux resolves to the Vulkan backend via Mesa drivers (Ch18); shader compilation via naga → SPIR-V → NIR (Ch14)
+  - Known colour issue: HLS colour space handling in Sixel differs from xterm (RGB normalisation mismatch); this is a quantisation artefact, not a Mesa driver bug
+  - Platform-agnostic performance: ~60–90 FPS on Linux Vulkan; slightly behind Ghostty's native approach
+
+- **Ghostty and libghostty: Zig-native, platform-optimised**
+  - Zig implementation: 78.9% Zig, 11.3% Swift (macOS UI layer), 4.7% C; memory safety and SIMD-optimised VT parser
+  - Multi-threaded architecture: separate read, write, and render threads; avoids jank from large VT stream bursts (e.g., `cat` of large files)
+  - Platform-native rendering backends:
+    - macOS: Metal (highest performance, ~120 FPS, ~45 MB RSS)
+    - Linux: OpenGL (current mainline) with Vulkan path in development
+    - Windows: DirectX 12
+  - GPU rendering: per-platform glyph atlas (3D texture arrays); image compositing (Kitty and iTerm2 protocols) done GPU-side in terminal render pass
+  - libghostty: factored-out VT parsing and terminal state machine as a cross-platform C/Zig library; provides the full emulation core without the rendering layer; enables embedding in other applications; API documented at `libghostty.tip.ghostty.org`; WebAssembly target for browser embedding; not yet a stable versioned release (2026)
+  - Performance: benchmarked as fastest terminal on several metrics (0.7 s to `cat` 100 K lines); SIMD parser contribution is the dominant factor over rendering
+
+- **foot: CPU-side software rendering**
+  - Design rationale: Wayland-first, zero GPU dependency — suitable for remote SSH sessions, minimal-RAM embedded deployments
+  - Server-daemon architecture: single `footd` process hosts multiple terminal windows; shared FreeType font cache and glyph library; lower per-window memory footprint (~30–50 MB vs. 60–100 MB for GPU terminals)
+  - Rendering pipeline: FreeType rasterize → 32-bit RGBA software framebuffer → damage-region tracking → `wl_shm` upload to Wayland
+  - Sixel integration: `sixel.c` decoder; decoded image rasterized into software framebuffer at correct cell offset; composited below text (z-order: image then text)
+  - Fractional scaling: `wp_fractional_scale_v1` for HiDPI; DPI-correct glyph sizing without GPU involvement
+  - Frame rate: 50–60 FPS on modern CPUs; drops during bulk scroll redraws; input latency comparable to GPU terminals (5–10 ms) via Wayland frame-clock
+
+- **VTE (GNOME terminal library): GTK4 transition**
+  - Role: GTK widget providing terminal emulation for GNOME Terminal, Tilix, and others; not a standalone terminal
+  - GTK3 path: Cairo CPU rasterization → ~20–30 FPS; full-texture upload each frame
+  - GTK4 path (VTE ≥ 0.76, 2024): GSK (GTK Scene Graph) GPU backend — Vulkan or OpenGL; 60 FPS via display frame-clock integration; lz4 scrollback compression replacing zlib
+  - Sixel support: `vte_terminal_set_enable_sixel()` API; build-time `-Dsixel=true` Meson flag; decoded via libsixel or internal decoder; uploaded to GPU as GSK texture node
+  - GNOME Terminal enablement: not on by default in most distributions; must be explicitly built or configured
+
+- **Compositing pipeline: text + pixel graphics**
+  - Z-ordering model: sort all draw elements (glyph quads, image rectangles) by z-index; back-to-front alpha blend; premultiplied alpha avoids fringe artefacts
+  - Image vs. text layering: negative Kitty z-index embeds image beneath text — useful for background images, sparkline overlays in TUI dashboards (btop++, lazygit)
+  - Single-pass vs. multi-pass rendering: Kitty uses a single render pass; VTE with GTK4/GSK may use multiple GSK render node types (texture node for images, text node for glyphs)
+  - Memory management: GPU texture eviction policy for large image pools (Kitty: LRU eviction when total GPU texture memory exceeds threshold)
+
+- **Integrations**: glyph atlas shaders are plain GLSL/SPIR-V that pass through Mesa NIR (Ch14) and ACO/LLVM backends (Ch15) for AMD/NVIDIA/Intel; WezTerm's wgpu SPIR-V path is structurally identical to Bevy/wgpu (Ch40) and Dawn (Ch35); the libghostty VT parser is architecturally related to the VTE widget and could be embedded in a Wayland compositor's built-in terminal; GTK4 VTE rendering uses the same GSK Vulkan backend as other GTK4 widgets (Ch39); font shaping via HarfBuzz is shared infrastructure with Skia text rendering in Chrome (Ch37) and Pango/Cairo in GTK3 apps
+
+### Chapter 45: Terminal Integration with the Compositor Stack
+
+- **The terminal as a Wayland client**
+  - A GPU-accelerated terminal is indistinguishable from any other Wayland client at the protocol level: it creates a `wl_surface`, acquires a GPU context via EGL, renders its framebuffer, and submits via linux-dmabuf
+  - `xdg_toplevel` surface role: window management, title, app-id; `xdg_surface.configure` → resize → reallocate GBM buffers
+  - Multi-window terminals (kitty, foot server mode): one Wayland connection, multiple `wl_surface` objects; shared EGL display
+
+- **EGL context and GBM buffer allocation**
+  - EGL on Wayland: `eglGetPlatformDisplayEXT(EGL_PLATFORM_WAYLAND_KHR, ...)` → `eglCreateWindowSurface` wrapping a `wl_egl_window`; Mesa's EGL WSI creates GBM-backed buffers internally
+  - GBM buffer allocation: `gbm_device_create` from a DRM render node fd; `gbm_surface_create_with_modifiers2` — DRM format modifier negotiation ensures tiling layout is compatible with KMS scanout
+  - Format modifier negotiation: compositor advertises supported modifiers via `zwp_linux_dmabuf_v1.modifier` events; terminal's EGL/GBM selects an intersection — critical for enabling zero-copy scanout
+  - Double-buffering: two GBM buffers in flight; `eglSwapBuffers` queues a buffer release event; terminal waits for `wl_buffer.release` before reusing
+
+- **DMA-BUF export and linux-dmabuf submission**
+  - After `eglSwapBuffers`, Mesa's WSI exports the GBM backing store as a DMA-BUF fd via `gbm_bo_get_fd`
+  - `zwp_linux_dmabuf_v1.create_params` + `add` (plane, fd, offset, stride, modifier) + `create_immed` → `wl_buffer` handle
+  - `wl_surface.attach(wl_buffer, 0, 0)` + `wl_surface.damage_buffer(...)` + `wl_surface.commit()`
+  - Compositor receives the commit: imports the DMA-BUF into a GPU texture (Mesa `EGLImage` or Vulkan external image); adds to composition list
+
+- **Explicit sync: `wp_linux_drm_syncobj`**
+  - Why implicit fences fail for NVIDIA: GSP-RM does not expose fence timeline objects; the compositor cannot safely read the buffer without an explicit signal
+  - `wp_linux_drm_syncobj_surface_v1.set_acquire_point(timeline, point)` — compositor waits for this point before reading the buffer
+  - `set_release_point(timeline, point)` — compositor signals this point when it has finished reading, allowing the terminal to reuse the buffer
+  - Timeline sync objects are DRM sync objects (Ch3); the same mechanism governs all Wayland clients — the terminal is not special; this chapter grounds the Ch3 theory in a concrete application
+
+- **CPU-path terminals (foot): wl_shm**
+  - Foot allocates anonymous shared memory via `memfd_create` + `mmap`
+  - `wl_shm.create_pool` + `wl_shm_pool.create_buffer` → `wl_buffer` backed by CPU-accessible memory
+  - Compositor imports the shm buffer as a CPU-side texture upload (no DMA-BUF, no GPU-side import)
+  - Performance implication: compositor must do a CPU→GPU upload each frame; zero-copy scanout is impossible; adds ~1–2 ms compositor overhead per frame on large terminals
+
+- **Compositor-side processing**
+  - Damage accumulation: compositor merges damage regions from all client commits; repaints only damaged areas
+  - Buffer import: DMA-BUF-backed buffers imported as `EGLImage` → `GL_TEXTURE_EXTERNAL_OES` or Vulkan `VkImage` with external memory; format modifier preserved
+  - Plane promotion (zero-copy scanout): if the terminal's buffer has the correct DRM format modifier for a KMS plane, the compositor may assign it directly to a KMS overlay plane — no re-render; the terminal pixel data is scanned out directly by the display engine; requires: single terminal window covering exactly one output; no compositor effects (blur, rounding) on the surface; compositor support (wlroots' DRM backend does this; Mutter: partial)
+  - Fallback path: compositor renders all surfaces into its own output framebuffer; terminal buffer is sampled as a texture
+
+- **KMS atomic commit: from compositor to display**
+  - Compositor's output framebuffer (or promoted client buffer) assigned to KMS primary/overlay plane
+  - Atomic commit: `DRM_IOCTL_MODE_ATOMIC` — plane `FB_ID`, `CRTC_ID`, `SRC_*`, `CRTC_*`; fence fd for non-blocking commit
+  - VBLANK: display engine reads framebuffer at next VBLANK; pixel pipeline → connector → physical display
+  - `wp_presentation` feedback: compositor sends `presented` event with VBLANK timestamp and refresh duration; terminal uses this for frame pacing (avoids over-rendering)
+
+- **Colour space and HDR considerations**
+  - All three pixel protocols assume sRGB (no metadata to signal otherwise)
+  - If the KMS pipeline is configured for HDR (`wp_color_management_v1`, Ch3), the compositor will tone-map terminal pixel content from sRGB to the display's colour volume — usually invisibly for text, but can shift image colours
+  - Future extension opportunity: a Kitty protocol extension carrying HDR metadata (`o=hdr` flag + colour volume descriptor) would allow the compositor to handle HDR terminal graphics correctly, mirroring `wp_color_representation_v1` used for VA-API video surfaces (Ch3, Ch26); this remains speculative as of 2026
+
+- **Security model**
+  - Terminal emulators open a DRM render node (`/dev/dri/renderDN`) — no DRM master privilege, no display ownership; threat model is the same as any other GPU client (Ch30 security section)
+  - Terminal pixel graphics do not expand the attack surface: DMA-BUF import into the compositor is mediated by the kernel's DMA-BUF framework; a malformed Sixel/Kitty payload can corrupt terminal state but cannot escape the compositor's process boundary
+  - Sandboxed terminals (Flatpak): must be granted `--device=dri` or use a portal; portal screen-capture for terminal content uses PipeWire (Ch38)
+
+- **Integrations**: this chapter is the concrete application of DRM render nodes (Ch1), GBM/DMA-BUF (Ch4), linux-dmabuf and `wp_presentation` (Ch20), explicit sync / `wp_linux_drm_syncobj` (Ch3), KMS atomic commit (Ch2), and compositor plane promotion (Ch21, Ch22); the wl_shm path used by foot is the same CPU-texture-upload path used by Wayland clients that lack GPU acceleration; the explicit-sync narrative closes the loop opened by Ch3's discussion of NVIDIA's fence limitations; PipeWire screen capture of terminal windows (Ch38) and sandboxed terminal access (Ch23) are the security-adjacent topics this chapter connects to
 
 ---
 

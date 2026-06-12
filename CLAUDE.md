@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a 700-page expert-level technical book: **"The Linux Graphics Stack: From Kernel to Compositor and Browser"**. The full chapter plan lives in `plan.md`.
+This is a 700-page expert-level technical book: **"The Linux Graphics Stack: From Kernel to Compositor, Browser, and Terminal"**. The full chapter plan lives in `plan.md`.
 
 **Three audiences** (chapters signal which perspective is emphasised):
 - **Systems and driver developers** — kernel internals, DRM/Mesa architecture, driver implementation
 - **Graphics application developers** — Vulkan, EGL, VA-API, OpenXR usage and the stack beneath them
 - **Browser and web platform engineers** — how Chromium/Chrome maps WebGPU, WebGL, and compositing onto the Linux graphics stack
+- **Terminal and TUI developers** — how terminal emulators render pixel graphics (Sixel, Kitty Graphics Protocol, Ghostty) on top of the compositor stack
 
 ## Repository Structure
 
@@ -47,6 +48,11 @@ Use `WebSearch` and `WebFetch` to retrieve current upstream source, mailing-list
 - Tint (WGSL compiler): `https://dawn.googlesource.com/dawn/+/refs/heads/main/src/tint/`
 - Skia (2D graphics): `https://skia.googlesource.com/skia`
 - ANGLE (OpenGL ES → Vulkan/Metal/D3D): `https://chromium.googlesource.com/angle/angle`
+- Kitty terminal: `https://github.com/kovidgoyal/kitty` (Kitty Graphics Protocol reference implementation)
+- Ghostty: `https://github.com/ghostty-org/ghostty` (GPU-accelerated terminal, libghosty)
+- foot: `https://codeberg.org/dnkl/foot` (Wayland-native terminal with Sixel support)
+- xterm Sixel: `https://invisible-island.net/xterm/` (reference Sixel implementation)
+- libsixel: `https://github.com/libsixel/libsixel` (encoder/decoder library)
 
 Kernel doc: `https://www.kernel.org/doc/html/latest/gpu/`
 
@@ -55,7 +61,7 @@ Kernel doc: `https://www.kernel.org/doc/html/latest/gpu/`
 1. One chapter per writing session. Research first, then write.
 2. Use `WebSearch`/`WebFetch` to verify API signatures, struct definitions, and kernel/Mesa version where features landed.
 3. After drafting, check cross-references against `plan.md` **Integrations** bullets to ensure nothing is missed.
-4. Do not invent kernel interfaces, Mesa internals, or GPU hardware behaviour — if uncertain, say so explicitly in the text with a "Note: needs verification" callout, or look it up.
+4. Do not invent kernel interfaces, Mesa internals, GPU hardware behaviour, or terminal protocol semantics — if uncertain, say so explicitly in the text with a "Note: needs verification" callout, or look it up.
 
 ---
 

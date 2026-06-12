@@ -20,8 +20,9 @@
 10. [The Wayland Security Model](#10-the-wayland-security-model)
 11. [DRM Leasing: Delegating Connectors to Privileged Clients](#11-drm-leasing-delegating-connectors-to-privileged-clients)
 12. [Protocol Versioning and the Stability Ladder](#12-protocol-versioning-and-the-stability-ladder)
-13. [Integrations](#integrations)
-14. [References](#references)
+13. [Known Limitations and Protocol Gaps](#13-known-limitations-and-protocol-gaps)
+14. [Integrations](#integrations)
+15. [References](#references)
 
 ---
 
@@ -472,6 +473,66 @@ After binding, `wl_proxy_get_version(state->output)` returns the negotiated vers
 The promotion history illustrates the process. `xdg-shell` spent several years as the unstable `zxdg_shell_v6` before the current `xdg_wm_base`-based stable version landed in 2019. GTK, Qt, and SDL each carried both implementations for a multi-year transition period. `wp_presentation` was designed stable-first and shipped in stable form relatively quickly, the positive counter-example. `wp_linux_drm_syncobj_v1` entered staging in 2023 with KWin and Weston as the qualifying implementations; promotion to stable was pending as of 2025. `wp_color_management_v1` survived multiple incompatible unstable drafts (`xx_color_management`) before the stable protocol landed in 2024.
 
 For Flatpak and sandboxed application developers, the stability tier interacts with the portal layer. Flatpak applications run with their Wayland socket proxied; compositors may filter which globals are forwarded to sandboxed clients. Staging protocols that require elevated privilege (e.g. `wp_drm_lease_v1`) are typically not forwarded. For screen capture, screenshot, and input capture, the `xdg-desktop-portal` system provides compositor-agnostic portal APIs that sandboxed applications should prefer over direct `zwlr_` or `zwp_` protocol access. The `wp_security_context_v1` protocol feeds the Flatpak app ID into the compositor's policy engine, allowing per-application capability decisions.
+
+---
+
+## 13. Known Limitations and Protocol Gaps
+
+Wayland's security-first, compositor-centric design solves real problems — the absence of global input snooping, the elimination of the X server's synchronisation races, the clean model for zero-copy GPU buffer sharing. But that same design concentrates authority in the compositor, and the compositor ecosystem has not always delivered the protocols necessary to exercise that authority in a way that matches every X11 capability application developers depended on. This section catalogues the gaps that matter most as of 2025–2026, distinguishing between gaps that have a working solution, gaps that are covered by an in-progress protocol, and gaps that remain genuinely unresolved.
+
+### Global Shortcuts and Keyboard Grab
+
+X11's `XGrabKey` allowed any client to register a keyboard shortcut that fired regardless of focus, with no compositor involvement. Applications such as screenshot tools, media players, clipboard managers, and remote-desktop clients depended on this globally. Wayland's security model prohibits the equivalent — a client cannot observe key events outside its own surfaces — and there is no single unified replacement.
+
+The closest protocol for suppressing compositor shortcuts on behalf of a game or immersive application is `zwp_keyboard_shortcuts_inhibit_manager_v1` (staging), which asks the compositor to stop processing its own shortcuts while the inhibiting surface is focused. This is not a hotkey registration mechanism; it is a suppression mechanism. For actually *registering* global shortcuts, `xdg-desktop-portal` provides a `GlobalShortcuts` portal (version 1.0, freedesktop portal spec 2023) that allows sandboxed and unsandboxed applications alike to register shortcuts through a D-Bus interface, with the compositor backend handling the actual key binding. As of 2025, GNOME (via its portal backend) and KDE Plasma (via `xdg-desktop-portal-kde`) support this portal, but support is compositor-specific and the portal backend must be present. Applications that need global hotkeys without a compositor or portal backend — headless environments, older desktops — have no fallback.
+
+### Input Method Editors and `text-input-v3`
+
+The `zwp_text_input_v3` protocol (staging) is the Wayland mechanism for IME integration: it allows an input method engine (IBus, Fcitx5) to intercept key events, compose candidate strings, and commit text to the focused surface. The protocol has been in staging since 2021 and is implemented by GTK4, Qt 6.2, wlroots, Mutter, and KWin. The practical state in 2025–2026 is better than it has ever been, but a number of gaps persist. Pre-edit text rendering (the in-progress composition string before the user commits a character) requires the application to handle `preedit_string` events and render the pre-edit region itself; applications that use text rendering libraries without pre-edit support (some game engines, legacy toolkits) display no composition preview. Cursor position reporting from client to compositor (`set_cursor_rectangle`) is optional, meaning IME candidate windows may pop up in the wrong screen position on applications that omit it. Clipboard paste from the IME candidate window during composition (the standard CJK workflow in several input methods) has historically been handled inconsistently. These are not Wayland design flaws so much as incomplete implementation coverage; the protocol is sound but the implementation tail is long.
+
+### Screen Capture, Screenshot, and Accessibility
+
+X11's `XGetImage` and the RECORD extension allowed any client to read the contents of any window or the root window. Wayland forbids this by design (Section 10). The replacements are protocol-specific. `ext-image-copy-capture-v1` (staging, proposed successor to `zwlr_screencopy_manager_v1`) provides compositor-side frame capture to DMA-BUF or shared memory. `zwlr_screencopy_manager_v1` (wlroots-specific, not in wayland-protocols) has been the de-facto standard for years but works only on wlroots-based compositors; Mutter implements its own `org.gnome.Shell.Screenshot` D-Bus API instead. The fragmentation means screen capture libraries such as libpipewire-capture and OBS must maintain separate code paths per compositor family. `ext-image-copy-capture-v1` is the first attempt at a compositor-agnostic capture protocol in wayland-protocols itself, and KWin, wlroots, and Mutter are all involved in its review, but it had not reached stable status as of early 2026.
+
+Accessibility tooling faces the same isolation model from the opposite direction: AT-SPI2 (the Linux accessibility bus) relies on applications exposing their widget tree over D-Bus, and screen readers such as Orca consume that tree. AT-SPI2 does not require compositor cooperation for most tasks, so Wayland has not broken it structurally, but the absence of any Wayland-level protocol for injecting synthetic input (the replacement for `XTest`) means that accessibility tools that drive the keyboard or mouse programmatically — test harnesses, on-screen keyboards, switch-access tools — must either go through the compositor's `virtual-keyboard-unstable-v1` and `pointer-constraints-unstable-v1` protocols (which require compositor support and may require elevated privilege) or use `xdg-desktop-portal`'s remote-desktop portal. The remote-desktop portal works in practice but adds a D-Bus round-trip per synthetic event, which affects latency for real-time assistive devices.
+
+### System Tray and Status Icons
+
+X11's freedesktop.org system tray specification (XEMBED, `_NET_SYSTEM_TRAY_S0`) had flaws — it was X11-specific, applet isolation was poor, and icon rendering was opaque — but it provided a standard mechanism that every desktop and every application could rely on. Wayland has no equivalent standard. Each compositor family has its own approach: GNOME Shell absorbs status icons via its own extension mechanism and the `AppIndicator` D-Bus protocol (originating from Ubuntu's libappindicator); KDE Plasma implements the `org.kde.StatusNotifierItem` D-Bus interface (SNI, a proper cross-desktop standard proposed but not yet adopted universally); wlroots-based compositors such as Sway and Hyprland rely on dedicated tray clients (waybar, yambar) that consume the SNI interface via D-Bus. The `ext-tray-v1` protocol proposal has been discussed in wayland-protocols but had not been merged as of 2026. Applications that use cross-platform UI toolkits (Qt 6's `QSystemTrayIcon`, GTK's `GtkStatusIcon`) are routed through StatusNotifierItem on modern desktops, but applications that implement their own tray icon via X11 calls and expect XWayland to bridge them receive inconsistent results depending on whether the compositor's tray aggregator intercepts XWayland system tray requests.
+
+### Remote Display and Network Transparency
+
+X11 was designed with network transparency as a first-class requirement: the X protocol runs over TCP, every drawing command and event is serialisable, and running applications on a remote machine and displaying them locally is built-in. Wayland deliberately abandoned this model. The wire protocol uses Unix domain sockets and file-descriptor passing (`SCM_RIGHTS`) which are fundamentally local-only mechanisms. Remote access to a Wayland session requires compositing the session to a video stream first, then transmitting that stream — a fundamentally different architecture from X11's command-level forwarding.
+
+In practice, remote Wayland access is achieved through `xdg-desktop-portal`'s remote-desktop and screen-cast portals, which expose a PipeWire video stream of the compositor output together with a synthetic input injection channel. RDP backends (`xrdp` with a PipeWire back-end, `gnome-remote-desktop`) implement this path. For latency-sensitive use cases, the result is noticeably worse than X11 forwarding for text-heavy applications: X11 forwarding transmits vector drawing commands (font outlines, window boundaries) which are re-rendered at the client; Wayland remote transmits a lossy-compressed raster video stream regardless of content. The gap is most visible for remote development workflows, where remote terminal sessions under X11 felt native but the equivalent under Wayland requires a VNC or RDP session with visible compression artefacts. Solutions such as Waypipe (which intercepts Wayland socket traffic and recompresses GPU buffers for remote transmission) exist but require specific client support and have not reached broad deployment.
+
+### Protocol Graduation Latency
+
+Several protocols that are widely deployed and depended upon by real applications have remained in `staging/` or the legacy `unstable/` tier for years, creating a stability guarantee mismatch between implementation reality and formal specification status. `zwp_linux_dmabuf_v1` — the protocol that every GPU-accelerated Wayland client uses for zero-copy buffer sharing — has been in the `unstable/` tier for the full decade since it was introduced, because the feedback mechanism (`zwp_linux_dmabuf_feedback_v1`) spent years in design iteration. The feedback mechanism entered staging as part of the `linux-dmabuf-unstable-v1` evolution but the stable version has been blocked on getting the right semantics for multi-GPU and per-surface format modifier tranches. `wp_linux_drm_syncobj_v1`, covering explicit synchronisation (Section 8), entered staging in 2023 and has two qualifying implementations, but stable promotion had not occurred as of early 2026. `wp_color_management_v1` went through multiple incompatible draft designs over four years (`wp_color_management`, `xx_color_management`, `wp_color_management_v1`) before the stable protocol landed in wayland-protocols 1.45 (October 2024) — but even then remains categorised as `staging/` pending broader compositor coverage. Applications that need these capabilities must implement runtime version negotiation and graceful fallback for every protocol they touch, even for functionality that has been de-facto standard since 2018.
+
+### Compositor Capability Fragmentation
+
+The `wl_registry` model means that the set of protocols a compositor advertises is opaque until runtime. An application that requires `wp_linux_drm_syncobj_v1` for correct NVIDIA rendering must either crash gracefully or fall back to implicit sync if the running compositor does not support it. An application that requires `wp_color_management_v1` for correct HDR output must silently emit wrong colours on a compositor that has not yet implemented the protocol. There is no Wayland equivalent of X11's `XQueryExtension` metadata that would allow a client to enumerate all compositor capabilities at session start and make a policy decision — for example, "this compositor is too old for our requirements; recommend upgrading" — without probing each protocol individually.
+
+`wp_capabilities_v1` (informally proposed, not yet in wayland-protocols as of 2026) would address this by providing a single query for a structured capability bitmap. In its absence, the conventional approach — used by GTK, Qt, and SDL — is to probe for each required global in the `wl_registry.global` callback, set internal feature flags, and adapt the rendering path accordingly. This works but increases compositor-detection code complexity substantially for applications targeting a wide range of desktop environments. The `xdg-desktop-portal` introspection interface is a partial solution for sandboxed applications, but it requires the portal daemon to be running and does not expose Wayland protocol capabilities directly.
+
+### Summary
+
+The following table consolidates the status of each gap as of early 2026:
+
+| Gap | X11 mechanism | Wayland replacement | Status |
+|-----|--------------|---------------------|--------|
+| Global shortcuts | `XGrabKey` | `GlobalShortcuts` portal | Working on GNOME/KDE; compositor-specific |
+| Keyboard suppression | `XGrabKeyboard` | `zwp_keyboard_shortcuts_inhibit_v1` | Staging; widely implemented |
+| IME / input method | X IM protocol | `zwp_text_input_v3` | Staging; mostly working, edge cases remain |
+| Screen capture | `XGetImage`, RECORD | `ext-image-copy-capture-v1` | Staging; fragmented by compositor family |
+| Synthetic input | `XTest` | `virtual-keyboard-v1`, remote-desktop portal | Compositor-specific; latency cost |
+| System tray | XEMBED / `_NET_SYSTEM_TRAY` | StatusNotifierItem (D-Bus) | No Wayland-native standard; DE-specific |
+| Remote display | X11 TCP network transparency | PipeWire screen-cast + RDP portal | Video-stream model; worse for text workloads |
+| Protocol stability | X11 extensions (stable once shipped) | `staging/` graduation process | Multi-year lag for widely-deployed protocols |
+| Capability discovery | `XQueryExtension` | Per-global `wl_registry` probing | No unified capability query |
+
+These limitations are real, but it is worth stating their context explicitly: most are gaps in the ecosystem surrounding Wayland rather than flaws in the core protocol design. The Wayland protocol itself is sound. The gaps are in the pace at which compositor implementors, toolkit authors, and wayland-protocols contributors have converged on the protocols needed to cover every X11 use case. That convergence is actively happening — the table above looks substantially better than the equivalent table from 2020 — but it has been slower than early Wayland advocates predicted.
 
 ---
 

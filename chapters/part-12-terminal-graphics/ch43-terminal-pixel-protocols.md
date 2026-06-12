@@ -1,0 +1,336 @@
+# Chapter 43: Terminal Pixel Protocols — Sixel, Kitty, and iTerm2
+
+**Part XII — Terminal Graphics**
+
+**Audiences targeted:** Terminal and TUI developers who need to understand the encoding mechanics and implementation complexity of pixel protocols; graphics application developers who want to understand how pixel data encoded in VT escape sequences ultimately becomes GPU texture data in a modern accelerated terminal. Readers are assumed to have covered Parts I–VI of this book; DRM, KMS, Mesa internals, Wayland protocol design, and compositor architecture are referenced but not re-explained here. Chapter 44 covers what happens to the image data once the terminal has decoded it; Chapter 45 covers how the resulting GPU framebuffer reaches the KMS scanout path.
+
+---
+
+## Table of Contents
+
+1. [The Pixel-in-Terminal Problem](#1-the-pixel-in-terminal-problem)
+2. [Sixel: The DEC Heritage](#2-sixel-the-dec-heritage)
+3. [Kitty Graphics Protocol: Stateful, Chunked, GPU-Ready](#3-kitty-graphics-protocol-stateful-chunked-gpu-ready)
+4. [iTerm2 Inline Images Protocol: Simplicity and Portability](#4-iterm2-inline-images-protocol-simplicity-and-portability)
+5. [Protocol Comparison and Selection Guide](#5-protocol-comparison-and-selection-guide)
+   - [Bandwidth Analysis](#bandwidth-analysis)
+   - [Feature Matrix](#feature-matrix)
+   - [Terminal Support Matrix](#terminal-support-matrix)
+   - [Protocol Detection Strategies](#protocol-detection-strategies)
+   - [Selection Guidance](#selection-guidance)
+   - [The Standardisation Landscape: Fragmentation by Pragmatism](#the-standardisation-landscape-fragmentation-by-pragmatism)
+6. [Integrations](#6-integrations)
+7. [References](#7-references)
+
+---
+
+## 1. The Pixel-in-Terminal Problem
+
+A terminal emulator is, at its core, a two-dimensional array of character cells. Each cell has fixed dimensions determined by the current font metrics — typically 8–16 pixels wide and 16–24 pixels tall — and every glyph rendered into the terminal is aligned to this grid. The grid model descends directly from the hardware terminals of the 1970s, where video memory was organised as rows of character codes and attribute bytes. Modern GPU-accelerated terminals such as kitty, WezTerm, and Ghostty still maintain this abstraction: their data model is a two-dimensional array of cells carrying Unicode codepoints, colour attributes, and rendering flags, and their render loop converts that array into a GPU scene every frame.
+
+This structure is a constraint on how pixel graphics can be expressed, but it is not a prohibition. The constraint forces pixel data to be transmitted as an ancillary data stream, distinct from the character cell stream, using escape sequences that the terminal intercepts and interprets out-of-band from ordinary text. The terminal must then decide where in the cell grid the image belongs, how many cells it occupies, and how to synchronise that image with the cell grid as text scrolls. These are non-trivial problems, and different protocol designs have made different trade-offs between encoding simplicity, bandwidth efficiency, GPU friendliness, and multiplexer compatibility.
+
+The historical context matters for understanding why three separate protocols co-exist today. Digital Equipment Corporation shipped the VT240 in 1984 and the VT340 in 1987, both supporting a graphics mode called ReGIS (Remote Graphic Instruction Set) and a companion bitmap encoding called Sixel. The VT340 had an 800×480 pixel framebuffer addressable in a 16-colour palette, and Sixel was the mechanism for loading raster images into it over a serial connection. Sixel survived into the xterm lineage, was revived by mlterm in the early 2000s, and experienced a renaissance in the 2010s as terminal emulators became capable of rendering it at practical speeds. The xterm implementation remains the reference for the modern Sixel dialect, documented exhaustively in the xterm control sequences reference [Source](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html).
+
+The second protocol, the Kitty Graphics Protocol, was designed from scratch by Kovid Goyal, the author of the kitty terminal emulator, and first shipped around 2017. It was designed with explicit awareness of modern GPU rendering pipelines: the protocol provides image IDs, server-side image persistence, sub-image cropping, z-index layering, and a Unicode placeholder mechanism that allows images to move with text. The protocol specification is maintained at [Source](https://sw.kovidgoyal.net/kitty/graphics-protocol/) and has been adopted by several GPU-accelerated terminals.
+
+The third protocol, iTerm2 Inline Images, originated as a macOS-specific extension in the iTerm2 terminal emulator. Its design is deliberately minimal — a single stateless OSC escape sequence carrying a base64-encoded image file — and its portability advantage is that it requires almost no terminal-side state management. It has been adopted by WezTerm on Linux, Hyper, and partially by Konsole.
+
+The reason three protocols exist is partly historical accident and partly genuine design conflict. Sixel has the widest hardware and firmware support, including embedded systems and SSH sessions to legacy servers that will never be updated. Kitty's protocol has capabilities that Sixel simply cannot express — true-colour RGBA, animation, z-indexing, server-side deduplication — but it requires meaningful terminal-side state management that stateless multiplexers like tmux cannot transparently proxy. iTerm2 finds a middle ground: it is richer than Sixel (true-colour, transparency) but simpler than Kitty (no server-side state, no image IDs). Application developers writing TUI tools, image viewers, or data visualisation libraries must understand all three to target the broadest terminal population.
+
+---
+
+## 2. Sixel: The DEC Heritage
+
+### VT340 Hardware Design and the Sixel Unit
+
+The DEC VT340 drove an 800×480 pixel monochrome or 4-bit colour display. Colour mode supported 16 simultaneously displayable colours chosen from a palette of up to 256 entries, each defined in either HLS or RGB colour space. The firmware contained a DCS (Device Control String) handler that recognised a Sixel data stream and rendered it into a dedicated pixel buffer separate from the character cell raster. The pixel buffer could be scrolled independently and had its own cursor position. [Source](https://www.vt100.net/docs/vt3xx-gp/chapter14.html)
+
+The Sixel unit is the fundamental encoding atom. A single Sixel character encodes six vertically-stacked pixels as a 6-bit bitmask added to the ASCII value 63 (0x3F), producing printable ASCII characters in the range `?` (0x3F) to `~` (0x7E). Bit 0 of the mask is the topmost pixel; bit 5 is the bottommost. A character value of `?` (mask 0b000000) represents six transparent or background pixels; `~` (mask 0b111111) represents six fully-set pixels in the current foreground colour. Images are transmitted row-by-row in horizontal bands six pixels tall, each band being a sequence of Sixel characters. The height of the full image is thus always a multiple of six unless padding is explicitly handled, and the width is the number of Sixel characters per band. To build an image taller than six pixels, the encoder transmits successive bands with a graphics newline (`-` character, ASCII 45) between them.
+
+### DCS Initiator Syntax and Parameters
+
+A Sixel stream is introduced by the DCS (Device Control String) initiator sequence. In 7-bit environments this is `ESC P`; in 8-bit environments it is the single C1 control character DCS (0x90). The full initiator form is:
+
+```
+ESC P P1 ; P2 ; P3 q
+```
+
+The final character `q` identifies the body as Sixel data rather than another DCS sub-protocol. The three parameters are optional and default to zero:
+
+**P1** (aspect ratio): Controls the ratio of vertical to horizontal pixels per Sixel unit. The mapping is: values 0 or 1 select 2:1 (two vertical pixels per horizontal pixel); value 2 selects 5:1 (intended for 60 dpi hardcopy output); values 3 or 4 select 3:1; values 5 or 6 select 2:1; and values 7, 8, or 9 select 1:1 square pixels. The DEC documentation notes that this field is provided for compatibility with existing Digital software and that new applications should set P1 to 0 and use the DECGRA raster attribute command instead. Most modern terminal emulators ignore P1 entirely and render at 1:1 regardless, but the field must be present syntactically. [Source](https://www.vt100.net/docs/vt3xx-gp/chapter14.html)
+
+**P2** (background mode): This parameter controls how pixels that are not explicitly set in any band are rendered. Value 0 or 2 causes unset pixels to be filled with the current background colour register (register 0), making the image opaque. Value 1 causes unset pixels to remain at whatever colour was beneath them, producing transparency. The default (0) is opaque. [Source](https://www.vt100.net/docs/vt3xx-gp/chapter14.html)
+
+**P3** (grid size): Specifies the pixel grid size in centimetres (a legacy field for hardcopy devices). Terminal emulators universally ignore this field.
+
+The DCS string is terminated by the String Terminator `ST`, which in 7-bit form is `ESC \` (two bytes). The full Sixel transmission therefore has the structure `ESC P <params> q <sixel-data> ESC \`.
+
+### DECGRA Raster Attributes
+
+Within the Sixel data stream, before the first band of Sixel characters, an encoder should transmit a DECGRA (DEC Raster Attribute) command to pre-declare the image dimensions. DECGRA uses the `"` character and accepts four parameters:
+
+```
+" Pan ; Pad ; Ph ; Pv
+```
+
+`Pan` and `Pad` together specify the pixel aspect ratio as a numerator/denominator pair (e.g., `"1;1` for square pixels). `Ph` is the image width in pixels and `Pv` is the image height in pixels. These two values do not impose a hard limit on the data that follows — an encoder may transmit more Sixel data than declared — but they enable the terminal to pre-allocate the image buffer and, when P2 is 0 or 2, to pre-clear the declared region to the background colour. A decoder encountering DECGRA before any Sixel data can also use it to avoid dynamic buffer growth during decode. This is the distinction between Level 1 Sixel (no raster attributes, decoder must grow the buffer dynamically as each new band arrives) and Level 2 Sixel (raster attributes present, pre-allocated buffer, all dimensions known before the first band). [Source](https://www.vt100.net/docs/vt3xx-gp/chapter14.html)
+
+### Colour Registers and Palette Management
+
+Sixel colour is managed through a palette of numbered registers. The `#` command selects or defines a register. Used alone with a single number (`#n`), it selects register `n` as the current drawing colour. Used with additional parameters, it defines the colour assigned to that register. RGB definition takes the form `#n;2;r;g;b` where `r`, `g`, `b` are integers in the range 0–100 (percentage of full intensity, not 8-bit values). HLS definition takes the form `#n;1;h;l;s` where `h` is hue in degrees (0–360), `l` is lightness (0–100), and `s` is saturation (0–100).
+
+The original VT340 supported 16 colour registers simultaneously, though the firmware palette could be extended by defining and redefining registers between bands. Modern terminal implementations following the xterm Sixel extension support up to 256 registers, controlled by the X resource `XTerm*numColorRegisters: 256` in xterm [Source](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html). The foot terminal and mlterm both support 256 registers. The 256-register ceiling is the most significant technical limitation of Sixel for photographic content: 24-bit source images must be quantized to at most 256 palette entries before encoding, and this quantisation introduces visible colour banding on photographs, smooth gradients, and natural scenes.
+
+### Colour Quantisation Pipeline
+
+Because Sixel requires palette-indexed colour, any encoder processing a 24-bit true-colour source image must run a colour quantisation algorithm to reduce the colour space to at most 256 representative colours. Three algorithms dominate in practice.
+
+Wu's algorithm (Xiaolin Wu, 1992) partitions the RGB colour cube using a variance-minimisation strategy. The cube is recursively split along the axis of highest variance until the desired number of regions is reached; each region's representative colour is its variance-weighted centroid. Wu's algorithm is fast and produces high-quality results because it minimises the mean squared error of the quantisation, which is perceptually well-correlated with human colour discrimination. It is the algorithm used by libsixel for its default quality level.
+
+Median-cut (Heckbert, 1982) partitions the colour space by finding the axis of greatest extent in a region and splitting at the median along that axis. It is simpler to implement than Wu's method and runs faster on small colour sets, but produces slightly lower quality results because it does not weight regions by population. Median-cut is suitable for simple graphics and diagrams where the colour distribution is already sparse.
+
+Neural-network quantisation (NeuQuant, Dekker, 1994) trains a self-organising map on the image's pixel population. It achieves the highest perceptual quality at the cost of significantly higher CPU time per image, making it appropriate for batch offline processing but not for interactive or real-time image display.
+
+After palette selection, dithering is applied to distribute quantisation error spatially. Floyd-Steinberg error diffusion propagates the quantisation error of each pixel to its right and lower neighbours, producing smooth transitions at the cost of spatial correlation artefacts (worm-like patterns in areas of uniform colour). Bayer ordered dithering uses a threshold matrix to produce a regular patterned appearance that is less spatially correlated but introduces a visible halftone structure at small palette sizes. At 256 colours, Floyd-Steinberg is generally preferred for photographs; Bayer dithering is preferable for sharp-edged illustrations where the pattern is less visible.
+
+### libsixel
+
+The reference Sixel implementation in open source is libsixel [Source](https://github.com/libsixel/libsixel). Its encoding API operates in two modes: a batch API that takes a pixel buffer, quantises it, and writes the complete Sixel stream to an output function; and a streaming API that processes one input row at a time, suitable for progressive image loading or very large images. The core encode function, `sixel_encode`, accepts a pointer to raw pixel data, width, height, depth (bytes per pixel), and an output callback. Quantisation is handled through a separate `sixel_dither_t` object that encapsulates the algorithm choice, palette size, and dithering mode. The quantisation algorithm is selected at context-creation time via `sixel_dither_initialize(dither, pixels, width, height, quality_mode, method_for_largest, method_for_rep, method_for_diffuse, ...)`, where `method_for_largest` (e.g. `LARGE_NORM`, `LARGE_LUM`) and `method_for_rep` (e.g. `REP_CENTER_BOX`, `REP_AVERAGE_COLORS`) together determine how the colour palette is built from the image histogram. There is no setter function on an already-initialised dither object for the quantisation algorithm; it must be selected at initialisation time. The dithering/diffusion type applied after quantisation can be changed separately via `sixel_dither_set_diffusion_type(dither, diffusion_type)`, accepting constants such as `DIFFUSE_FS` (Floyd-Steinberg) or `DIFFUSE_ATKINSON`.
+
+The decode path in libsixel uses a `sixel_decoder_t` object together with a callback-driven parser. The caller creates a decoder context, registers output and error callbacks, and feeds data incrementally. The decoder calls the output callback once per decoded image with the resulting RGBA pixel buffer. This streaming design allows decoding while bytes are still arriving over a network connection, which is important for interactive rendering. The foot terminal emulator integrates this directly in `src/sixel.c` and `src/sixel.h` [Source](https://codeberg.org/dnkl/foot).
+
+### Modern Terminal Support and Limitations
+
+Sixel support as of 2025–2026 is available in xterm (the reference implementation, with Mode 80 DECSDM for Sixel Display Mode and Mode 8452 for sixel scrolling), foot (full support including 256 registers and scrollback via pixel-position tracking), mlterm (long-standing support, one of the earliest revivalists), and WezTerm (full support, though historically an HLS normalisation discrepancy was reported in its colour register handling). Ghostty, the new GPU-accelerated terminal from Mitchell Hashimoto, has prioritised the Kitty and iTerm2 protocols and its Sixel status was not stable as of 2026. The xfce4-terminal and Konsole have partial or in-progress Sixel support. Hardware and firmware terminals including the DEC VT340 itself, Wyse terminals, and certain embedded system consoles have Sixel support in their firmware, making it the only protocol that works on physical serial hardware.
+
+The fundamental limitations of Sixel are structural and cannot be resolved within the protocol. The 256-colour ceiling causes visible banding on any image with more than a few hundred distinct colours; photographic content is particularly affected. There is no transparency channel: Sixel supports only opaque or background-coloured pixels, not alpha-blended pixels. The bandwidth verbosity is substantial: a 1920×1080 photographic image encoded as Sixel at 256 colours with Floyd-Steinberg dithering typically produces between three and five times as many bytes as the equivalent JPEG at similar visual quality, because each six-pixel column is encoded as a single ASCII byte plus repeat counts. The scrollback synchronisation problem is the most operationally irritating limitation: Sixel places an image at the current cursor position, and as the terminal scrolls, the terminal must track the pixel offset of that image in the scrollback buffer. Different terminals implement this with varying degrees of correctness, and all can exhibit misalignment when the terminal is resized or the scrollback limit is reached.
+
+---
+
+## 3. Kitty Graphics Protocol: Stateful, Chunked, GPU-Ready
+
+### Design Goals
+
+The Kitty Graphics Protocol was designed with two explicit objectives that differentiate it from both Sixel and iTerm2. First, it should be possible to transmit an image once and display it multiple times at different positions without retransmitting the pixel data — the terminal must maintain a server-side image store keyed by image ID, analogous to how a GPU driver maintains a texture object. Second, the placement model should map directly to GPU draw calls: an image placement is a cell-anchored rectangle with optional pixel offsets, source-crop parameters, and a z-index, which is the information needed to issue a single textured quad to the GPU with no further processing. The protocol is specified in full at [Source](https://sw.kovidgoyal.net/kitty/graphics-protocol/).
+
+### APC Escape Framing
+
+The Kitty protocol uses Application Program Command (APC) escape sequences, not OSC (Operating System Command). The complete frame structure is:
+
+```
+ESC _ G <key=value pairs, comma-separated> ; <base64 payload> ESC \
+```
+
+The opening `ESC _` introduces an APC string; the `G` immediately following is the Kitty-specific discriminator. Key-value pairs in the control section are separated by commas and use single-letter keys. A semicolon separates the control section from the base64-encoded payload; if there is no payload, the semicolon may be omitted. The sequence is closed by the String Terminator `ESC \`.
+
+APC was chosen over OSC deliberately. APC strings are passed through silently by nearly all terminals that do not implement the protocol — they do not produce visible output and do not disturb the terminal state machine. OSC strings, by contrast, are sometimes intercepted or modified by intermediate terminal multiplexers. Base64 encoding of the payload ensures 7-bit cleanliness: the data traverses any SSH connection or serial link without binary corruption. The control data section uses only printable ASCII characters, so it is equally safe over 7-bit channels.
+
+### Pixel Formats, Compression, and Transmission Media
+
+The `f` key specifies the pixel format of the image data in the payload. `f=24` means raw 24-bit RGB (three bytes per pixel, row-major, top-to-bottom); `f=32` means 32-bit RGBA (four bytes per pixel, straight/non-premultiplied alpha; alpha compositing is performed by the terminal renderer — the Kitty protocol specification does not mandate premultiplied alpha, and implementations should treat the alpha channel as straight alpha; consult the authoritative specification at [Source](https://sw.kovidgoyal.net/kitty/graphics-protocol/) for any format clarifications); `f=100` means PNG (the payload is a complete PNG file, and the terminal extracts dimensions and format from the PNG header itself). The PNG format is the most bandwidth-efficient for photographic content, since PNG applies DEFLATE compression to filtered pixel data. For simple graphics or programmatically generated images, raw `f=32` with zlib compression (described next) is often more convenient because it avoids the overhead of a PNG encoder on the client.
+
+The `o` key specifies optional compression. `o=z` instructs the terminal that the decoded base64 data is RFC 1950 zlib-compressed and must be inflated before pixel interpretation. The distinction between `f=100` and `f=32,o=z` is that PNG carries its own internal DEFLATE framing with filter predictors per row, while `f=32,o=z` wraps raw RGBA pixels in a flat zlib stream with no row filtering. Typical zlib compression ratios on natural images are 3:1 to 10:1 for pixels with low spatial frequency. For highly complex images, the ratio approaches 1:1 and the compression overhead is not justified.
+
+The `t` key controls how the terminal acquires the pixel data. `t=d` (direct) embeds the data inline in the escape sequence payload; `t=f` provides a path to a regular file that the terminal reads; `t=t` provides a path to a temporary file that the terminal reads and then deletes; `t=s` provides the name of a POSIX shared memory object (`/dev/shm/<name>`) that the terminal maps directly without a copy. The `t=s` shared memory path is the most efficient transmission mode for same-machine clients because the pixel data traverses no I/O path at all — the application allocates a POSIX shm object, writes pixel data into it, and sends only the name over the escape sequence. The terminal maps the object, uploads to GPU, and releases the mapping. This is conceptually related to the `wl_shm` buffer passing described in Chapter 45 and to the DMA-BUF zero-copy infrastructure described in Chapter 4, though POSIX shm operates at a higher abstraction level and does not involve DRM buffer objects.
+
+### Chunked Transfer
+
+The `m` key controls multi-chunk transmission. Because escape sequences are transmitted as byte streams, very large images must be split into multiple chunks to avoid blocking the terminal's escape sequence parser or overflowing intermediate buffers in multiplexers. Each chunk is a complete APC escape sequence. All chunks except the last carry `m=1`; the final chunk carries `m=0` to signal completion. The protocol documentation recommends chunks of 4096 bytes of base64-encoded data, which decodes to 3072 bytes of raw data. The base64 chunk length must be a multiple of four bytes (to avoid split codepoints at chunk boundaries) except for the final chunk. The terminal accumulates chunk data until it receives `m=0`, then performs decompression (if `o=z`) and pixel interpretation on the complete buffer.
+
+### Image Persistence and Identifiers
+
+Every image transmitted to the terminal may be assigned a 32-bit image ID via the `i` key. Once transmitted, the image remains stored in the terminal's image store until explicitly deleted. This enables a single image to be displayed at multiple positions simultaneously, or hidden and re-displayed without retransmission. The terminal may also assign IDs automatically if the client requests it via the `I` key (capital I), in which case the terminal responds with the assigned ID.
+
+Deletion is performed with `a=d` (action = delete). The scope of deletion is controlled by further key-value pairs: `d=I` deletes all images with the given `i` value; `d=C` deletes all images whose placements overlap the given cell coordinates; `d=Z` deletes all images with z-index in a given range; and `d=a` (or `d=A`) deletes all stored images. This granular deletion model is important for applications that cycle through large numbers of images, such as image viewers or video players, to prevent unbounded growth of the terminal's image store.
+
+### Placement System
+
+A placement specifies where and how a stored image (or a newly transmitted image) appears on screen. Placements are also identified by IDs (`p` key), allowing multiple independent placements of the same image to be managed separately. The full placement parameter set is:
+
+The `c` and `r` keys specify the width and height of the on-screen rectangle in terminal cells. If both are omitted, the image is scaled to fill as many cells as needed to represent its native pixel dimensions given the cell pixel dimensions. The `X` and `Y` keys (capital) specify sub-cell pixel offsets within the top-left cell of the placement, allowing precise pixel-level positioning rather than cell-grid alignment. The `x`, `y`, `w`, `h` keys (lowercase) specify a source rectangle within the stored image: only the sub-image from pixel (`x`, `y`) with width `w` and height `h` is displayed. This cropping capability is not available in either Sixel or iTerm2 at the protocol level and is particularly useful for sprite sheets or tiled image maps.
+
+The `z` key specifies the z-index for layer ordering. Negative z-index values place the image behind the text layer, allowing background images or sparklines to appear beneath terminal text. Positive values place the image above text. A z-index of zero places the image at the same layer as text, with rendering order determined by arrival order. Multiple images at the same z-index and overlapping position blend in transmission order with alpha compositing. [Source](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
+
+### Unicode Placeholder Mechanism
+
+The most architecturally significant feature of the Kitty protocol for multiplexer compatibility is the Unicode placeholder mechanism. The private-use codepoint U+10EEEE is designated as an image cell marker. When an application uses the Unicode placeholder transmission mode (`U=1`), the terminal renders the image by filling its cell rectangle with U+10EEEE characters. Each such character carries diacritic combining characters that encode the row position, column position, and image ID of the cell. The terminal renders U+10EEEE characters as the corresponding pixel region of the stored image rather than as a glyph.
+
+The consequence of this design is that an image placement behaves identically to ordinary text from the perspective of any software that manipulates the terminal's character buffer without understanding the graphics protocol. When tmux inserts or deletes lines, scrolls the viewport, or reshuffles cell content between panes, the U+10EEEE characters move with the text flow. Because the row/column/image-ID information is encoded in the characters themselves, the terminal can reconstruct the correct image sub-region for each character cell wherever it ends up. Applications that receive terminal content as a character stream and re-emit it (pagers, log viewers, multiplexers) transparently proxy image content without implementing any part of the graphics protocol. The practical limitation of this mechanism is that not all multiplexers handle the diacritic encoding correctly, and some strip combining characters from private-use codepoints, breaking the row/column metadata. [Source](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
+
+### Relative Placements and Animation
+
+The `P` and `Q` keys introduce relative (parent-child) placement relationships. A child placement specifies its position relative to a parent placement ID. When the parent placement moves (because a redraw repositions it), child placements track accordingly. This is useful for annotation overlays, image legends, and compound image objects.
+
+Animation support is provided through a dedicated action set. `a=f` (frame data action) transmits a single animation frame's pixel data and stores it as part of an animation sequence associated with an existing image ID. `a=a` (animation control action) manages playback: it selects the active frame, configures the inter-frame gap in milliseconds (via the `z` key, where negative values indicate a gapless frame), specifies per-frame background RGBA colour for compositing, sets the compositing mode (replace vs. alpha blend with the previous frame), and controls the loop state via the `s` key (1 = stop, 2 = loading mode, 3 = looping). `a=T` is a combined transmit-and-display action for non-animated images. The terminal drives animation playback at its own refresh rate, advancing frames according to the configured gaps. Animation loops can be configured with a finite or infinite repeat count. Neither Sixel nor iTerm2 supports animation at the protocol level, making this a unique capability of the Kitty protocol. [Source](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
+
+### Feature Detection and GPU Mapping
+
+Feature detection uses `a=q` (query action) sent with any pixel format command. A terminal implementing the protocol responds with a status APC escape sequence. The recommended detection approach is to send the `a=q` query followed immediately by a primary Device Attributes (DA1) request (`ESC [ c`); if the graphics query response arrives before the DA1 response, the Kitty protocol is supported. If only the DA1 response arrives, it is not. This sentinel technique works because both sequences travel the same I/O path and the terminal processes them in order. The `q=1` key suppresses the terminal's normal status response (for bulk operations where per-chunk ACKs would create overhead), and `q=2` suppresses error responses as well.
+
+From the GPU rendering perspective, the Kitty protocol is essentially a scene graph serialisation format embedded in an escape sequence stream. Each image ID corresponds to a GPU texture handle managed by the terminal. Each placement corresponds to a draw-call rectangle: position, size, source crop, and alpha blend mode are all known at placement time and can be translated directly to a textured quad draw call with no further analysis. The z-index provides a sort key for render-layer ordering. When a terminal processes a Kitty protocol stream, it is building the same data structure that a game engine builds when loading a sprite set: a texture atlas keyed by ID, a list of draw commands each referencing a texture and specifying on-screen position and source crop, and a depth/layer ordering for overlapping elements. Chapter 44 describes how kitty's OpenGL renderer translates this data structure into GPU calls.
+
+---
+
+## 4. iTerm2 Inline Images Protocol: Simplicity and Portability
+
+### Origin and Adoption
+
+The iTerm2 Inline Images Protocol was introduced in the iTerm2 terminal emulator for macOS as a pragmatic extension for displaying images in the terminal without the encoding complexity of Sixel. Its reference documentation is at [Source](https://iterm2.com/documentation-images.html). Outside of macOS, the protocol has been adopted by WezTerm (full support, documented at [Source](https://wezfurlong.org/wezterm/imgcat.html)), Hyper, and Konsole (partial support). The `imgcat` utility distributed with iTerm2 and ported to other platforms serves as a practical test case for compatibility.
+
+### Escape Sequence and Parameters
+
+The iTerm2 protocol uses OSC (Operating System Command) 1337, the same OSC number that iTerm2 uses for its proprietary extensions. The complete sequence is:
+
+```
+ESC ] 1337 ; File= [parameters] : <base64-encoded image data> BEL
+```
+
+The `File=` keyword introduces a semicolon-separated (internally) parameter list, followed by a colon and the base64-encoded payload. The sequence is closed by BEL (0x07) rather than the String Terminator `ESC \`; both terminators are accepted by most implementations. The parameter list includes:
+
+| Parameter | Values | Default | Meaning |
+|-----------|--------|---------|---------|
+| `name` | base64 string | — | Filename hint (informational only) |
+| `size` | integer | — | Byte size of the decoded data (integrity hint) |
+| `width` | Ncells, Npx, N%, auto | auto | Display width |
+| `height` | Ncells, Npx, N%, auto | auto | Display height |
+| `inline` | 0 or 1 | 0 | 1 = display inline; 0 = download only |
+| `preserveAspectRatio` | 0 or 1 | 1 | Scale to fit while preserving aspect ratio |
+
+WezTerm adds a `doNotMoveCursor` extension parameter that prevents the cursor from advancing below the image, useful for inline widgets that must not consume cell rows.
+
+The payload is a complete image file — PNG, JPEG, GIF, BMP, or any format the terminal's image decoder understands — base64-encoded without chunking. The protocol relies entirely on the image format's own internal compression (DEFLATE in PNG, DCT in JPEG), rather than providing protocol-level compression. This is a deliberate simplicity trade-off: the terminal does not need to implement a decompressor as part of the escape sequence parser; it just hands the decoded bytes to whatever image decoder it has.
+
+### Statelessness and Its Consequences
+
+The defining characteristic of the iTerm2 protocol is its statelessness. There are no image IDs, no server-side image stores, no placements, and no deletion commands. Each escape sequence is a complete, atomic image delivery: the terminal decodes it, displays it at the current cursor position occupying the declared cell rectangle, and forgets about it. If the same image needs to be displayed a second time, the full base64 payload must be retransmitted.
+
+This statelessness has three important consequences. First, it makes the protocol trivially safe across disconnection and reconnection: there is no server-side state to become inconsistent if the terminal is closed and reopened, or if an SSH session is interrupted and resumed. Second, it is compatible with multiplexers like tmux that pass through escape sequences without understanding them, because a stateless sequence cannot have broken state. Third, it limits the protocol's capabilities: there is no mechanism for animation, z-index layering, or source-crop, because all three require server-side state tracking.
+
+### Multipart Transmission
+
+iTerm2 version 3.5 introduced a multipart transmission mechanism for large images in constrained environments. The sequence `MultipartFile=...` initiates a multipart session, `FilePart=...` transmits a chunk, and `FileEnd` closes the session. This was designed to work around legacy tmux's 256-byte-per-line limit on OSC sequence lengths, which precluded sending large images as single sequences. Modern tmux and most multiplexers have removed or raised this limit (to 1 MiB in practice), making the multipart mechanism less necessary but still supported for compatibility.
+
+### Feature Gap Relative to Kitty
+
+The iTerm2 protocol cannot express several capabilities that Kitty supports. There is no animation: each image is a static frame. There is no z-indexing: all images render at the same layer as the cursor position, and there is no mechanism to render behind text. There is no source-crop: the entire image file is decoded and scaled to the declared dimensions. There is no server-side deduplication: the same image data must be retransmitted for each display occurrence. For simple use cases — showing a chart generated by a data pipeline, displaying a preview thumbnail, or rendering a system monitoring sparkline — none of these limitations are relevant. For complex image-intensive TUI applications, image viewers, or animated displays, Kitty's additional capabilities are necessary. [Source](https://iterm2.com/documentation-images.html)
+
+---
+
+## 5. Protocol Comparison and Selection Guide
+
+### Bandwidth Analysis
+
+The bandwidth cost of each protocol can be estimated for a representative test case: a 640×480 photograph transmitted over a network link.
+
+Sixel encodes the image after quantising to 256 colours. Each six-pixel column becomes one ASCII byte, so the raw Sixel data volume before any compression is approximately `ceil(480/6) × 640 = 80 × 640 = 51,200` bytes for the pixel data alone, plus colour register definitions and escape sequence overhead. For photographic content with Floyd-Steinberg dithering applied, the byte count is typically 3–5× that of an equivalent JPEG at similar perceived quality, because Sixel provides no entropy coding or spatial prediction. Run-length encoding (the `!n` repeat syntax in Sixel) helps for simple graphics with large uniform regions but does not compress photographic content significantly.
+
+The Kitty protocol with `f=100` (PNG payload) or `f=32,o=z` (zlib-compressed RGBA) transmits data at approximately the size of the original image file: a PNG for a 640×480 photograph is typically 200–400 KB, and after base64 encoding (a 4:3 expansion) the escape sequence is 267–533 KB. For the same photograph, a JPEG at quality 80 might be 50–80 KB, producing a Kitty sequence of 67–107 KB. The `t=s` shared memory path for local display eliminates the escape sequence overhead entirely, as only the POSIX shm name traverses the VT stream.
+
+The iTerm2 protocol transmits the image file as-is in base64, producing the same byte volume as the Kitty `f=100` path without compression: approximately equal to the original file size after base64 expansion. There is no protocol-level deduplication or compression overhead reduction compared to Kitty's PNG path.
+
+### Feature Matrix
+
+The following table summarises protocol capabilities as of 2025–2026:
+
+| Feature | Sixel | Kitty | iTerm2 |
+|---------|-------|-------|--------|
+| True-colour | No (≤256 palette) | Yes (32-bit RGBA) | Yes (image format) |
+| Alpha transparency | No | Yes (RGBA) | Yes (PNG alpha) |
+| Animation | No | Yes | No |
+| Z-index layering | No | Yes | No |
+| Source-rectangle crop | No | Yes | No |
+| Server-side deduplication | No | Yes (image IDs) | No |
+| GPU-native ID mapping | No | Yes | No |
+| Multiplexer transparency | Partial | Via Unicode placeholder | Yes (stateless) |
+| Protocol-level compression | No | Yes (zlib) | No |
+| SSH over legacy transports | Yes | Yes (base64) | Yes |
+| Hardware terminal support | Yes (firmware) | No | No |
+
+### Terminal Support Matrix
+
+As of 2025–2026, the major terminal emulators support the protocols as follows. xterm supports Sixel comprehensively (256 registers, Mode 80 DECSDM, Mode 8452 scrolling Sixel). foot supports Sixel with 256 registers and correct scrollback tracking, and does not support Kitty or iTerm2. kitty supports its own protocol (as the reference implementation) and has basic Sixel support. WezTerm supports all three protocols with full feature coverage for Kitty and iTerm2 and complete Sixel support [Source](https://wezfurlong.org/wezterm/imgcat.html). Ghostty supports Kitty (as the primary protocol) and iTerm2, with Sixel support in an indeterminate state as of 2026. mlterm supports Sixel comprehensively and has partial Kitty support. Konsole has partial Sixel and partial iTerm2 support. VTE (the GNOME terminal library, powering GNOME Terminal and Tilix) has Sixel support via `vte_terminal_set_enable_sixel()` (requires `-Dsixel=true` at build time). Hyper supports iTerm2.
+
+### Protocol Detection Strategies
+
+A robust image display library must probe for protocol support before sending pixels, because sending an unsupported protocol sequence to a terminal that does not recognise it typically results in garbage text output. Three detection mechanisms are available.
+
+The primary Device Attributes request (`ESC [ c`, or `CSI c`) causes the terminal to respond with a capability list. Parameter `4` in the response list indicates Sixel graphics support; other parameters encode terminal class and optional features. The secondary DA request (`ESC [ > c`) returns terminal name, version, and patch level but not feature capabilities — some tools use it for terminal identification heuristics (WezTerm includes its name, for example) as a complement to the primary DA capability query, but it is not a reliable Sixel probe on its own.
+
+Sixel support is advertised in the primary Device Attributes (DA1) response (`ESC [ c` or `CSI c`). A terminal supporting Sixel includes the parameter value `4` in its DA1 response string — for example, a VT240-compatible terminal might respond `ESC [ ? 62 ; 4 c` to indicate a level-2 terminal with Sixel graphics. [Source](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html) The DECRQM command can additionally query Mode 80 (DECSDM, Sixel Display Mode) to determine whether Sixel rendering is currently enabled on terminals that support it as a switchable mode.
+
+The Kitty protocol includes a native feature detection mechanism: send `a=q` (query action) with a minimal image command followed by a DA1 request. If the terminal responds to the graphics query before the DA1 response, the Kitty protocol is supported. If only the DA1 response arrives, it is not. This is the most reliable detection method for Kitty support and is described in the protocol specification [Source](https://sw.kovidgoyal.net/kitty/graphics-protocol/).
+
+Practical image display tools such as `wezterm imgcat` and `timg` implement a multi-protocol detection stack: probe for Kitty first (most capable), fall back to iTerm2 (widely supported, stateless), and finally fall back to Sixel (maximum compatibility). The libsixel library itself does not perform protocol detection — it is a pure Sixel encode/decode library — but it can be used as the Sixel backend in a multi-protocol detection framework.
+
+### Selection Guidance
+
+For maximum compatibility across the broadest range of terminals, including embedded system consoles, hardware serial terminals, legacy SSH servers, and any terminal for which only xterm-like behaviour is documented, Sixel is the only viable option. The colour fidelity is poor for photographic content, but for simple graphics, charts, and diagrams with a small natural colour count (fewer than 32 colours), Sixel at 256 registers produces acceptable output.
+
+For GPU-accelerated terminals running locally or over a low-latency connection, the Kitty protocol is the correct choice. Its image persistence model reduces repeated bandwidth for any application that redraws the same images frequently (image viewers, dashboard TUIs), and its z-indexing and animation capabilities are not available elsewhere. For applications running inside tmux or over high-latency SSH connections, the Unicode placeholder mechanism is the recommended approach to ensure image positions remain correct as the multiplexer manipulates the scrollback buffer.
+
+For macOS-ecosystem tools, tools that must work reliably in iTerm2 without detecting the specific terminal, or tools that operate over SSH and tmux in environments where Kitty protocol support cannot be assumed, the iTerm2 protocol is the practical choice. Its statelessness eliminates reconnection and resync problems entirely, and its adoption by WezTerm means it covers the two most widely-used GPU terminals on macOS and Linux.
+
+A detection algorithm for a production image display library should:
+
+1. Check for the `TERM` and `TERM_PROGRAM` environment variables. `TERM_PROGRAM=iTerm.app` identifies iTerm2 definitively; `TERM=xterm-kitty` identifies kitty.
+2. Send an `a=q` Kitty query and wait briefly for a response, then send DA1 as a synchronisation sentinel. If the Kitty response arrives first, use Kitty.
+3. Send a DA1 request (`ESC [ c`) and check whether the response includes parameter `4` (Sixel graphics capability). If present, use Sixel as a fallback.
+4. Fall back to iTerm2 for any terminal that reports `TERM_PROGRAM` as a known iTerm2/WezTerm/Hyper value.
+5. If no probe succeeds, emit ASCII art or a text placeholder.
+
+### The Standardisation Landscape: Fragmentation by Pragmatism
+
+The co-existence of three protocols without a clear winner is not an oversight — it is the outcome of the terminal ecosystem's approach to innovation: ship something that works, gain adoption, and hope the ecosystem converges. The result, as of 2026, is that Kitty and iTerm2 became de facto standards through popularity rather than through any standards process.
+
+The most sustained formal effort to define a cross-vendor Sixel successor is the **Good Image Protocol**, proposed in 2020 by Christian Parpart, author of the Contour terminal emulator [Source](https://github.com/contour-terminal/terminal-good-image-protocol). The protocol addresses Sixel's core deficiencies: it uses simpler DCS-framed sequences (`DCS u` for upload, `DCS r` for render, `DCS s` for upload-and-render, `DCS d` for delete), separates image upload from placement in the same way Kitty does, supports full RGBA pixel data, and advertises support via DA1 response code 90. Unlike Kitty's APC framing, the Good Image Protocol's DCS framing is closer to the Sixel lineage, which was a deliberate choice to ease adoption in terminals already implementing Sixel. However, after six years of development the protocol remains in alpha, with Contour as its sole known implementer and no consensus from the broader terminal ecosystem. The [freedesktop.org terminal working group](https://gitlab.freedesktop.org/groups/terminal-wg) discussed it in issue #26 (2020), but reached no formal resolution.
+
+The terminal working group (terminal-wg) itself is the body most positioned to drive standardisation, having been established at freedesktop.org in 2018. Its `specifications` repository hosts active discussion on protocol extensions including unified capability advertisement — a problem that has been open since issue #35 (2019). The core difficulty is terminal capability detection: as described in the detection section above, there is no single authoritative mechanism for a client application to discover which graphics protocols a given terminal supports. Each protocol uses ad-hoc detection (environment variables, DA1 parameter 4 for Sixel, Kitty's `a=q` query), and the terminal-wg discussions on a unified capability advertisement mechanism (issue #49, 2023) remain unresolved as of 2026. The working group also contains no formal IETF, ECMA, or ISO standardisation process — it operates by rough consensus among terminal maintainers, and that consensus has been difficult to form on graphics protocols given the divergent design philosophies of Sixel (palette-indexed, hardware-legacy), Kitty (GPU-native, stateful), and iTerm2 (stateless, simple).
+
+A parallel track that avoids the escape-sequence framing problem entirely is text-mode pixel approximation using Unicode block characters. Tools such as **chafa** [Source](https://github.com/hpjansson/chafa) and the **notcurses** TUI library [Source](https://github.com/dankamongmen/notcurses) render images using Unicode block elements (U+2580–U+259F, half-block characters), Braille patterns (U+2800–U+28FF, 2×4 pixel cells), and the sextant characters introduced in Unicode 13 (U+1FB00–U+1FB3B, six-pixel cells that provide 64 combinations per character position). These approaches require no terminal-specific protocol support — any terminal that renders Unicode correctly can display them — but the effective resolution is constrained by the cell grid: a 16×32 pixel font gives approximately 8×5 "pixels" per character using sextants, or 2×4 sub-cell resolution using Braille. For photographic content the result is obviously low-fidelity, but for charts, sparklines, and iconographic elements in TUI applications these techniques are widely used precisely because they work everywhere. Chafa in particular implements a protocol-aware detection stack: it will use Sixel, Kitty, or iTerm2 if the terminal supports them, and falls back gracefully to Unicode approximation otherwise.
+
+The practical conclusion for application authors is that the three-protocol landscape described in this chapter is stable and unlikely to be displaced by a new standard in the near term. The Good Image Protocol remains a candidate for future convergence but has not achieved the adoption threshold that would make it a safe primary target. Building against Kitty for capable GPU terminals and Sixel for compatibility, with Unicode block fallback for the remainder, is the strategy that current tooling (wezterm-imgcat, timg, chafa) has converged on independently.
+
+---
+
+## 6. Integrations
+
+**Chapter 44 — Terminal GPU Rendering Architectures**: The pixel data decoded by all three protocols described in this chapter ultimately becomes a GPU texture object managed by the terminal's rendering engine. Chapter 44 describes how kitty's OpenGL renderer maps Kitty protocol image IDs to `glTexImage2D`-managed textures, how WezTerm's wgpu path handles the same data, and how the terminal's single-pass compositing loop renders both glyph quads and image quads in z-index order in a single draw call. The protocol-level ID, placement, and z-index abstractions described here correspond directly to the texture handles, draw-call rectangles, and render-layer sort keys in the GPU render loop.
+
+**Chapter 45 — Terminal Integration with the Compositor Stack**: Once the terminal has rendered glyph and image content into its GPU framebuffer, that framebuffer is delivered to the Wayland compositor as a `wl_surface` backed by a DMA-BUF buffer via the `linux-dmabuf` protocol extension. Chapter 45 covers the full path from the terminal's `eglSwapBuffers` call to the compositor's KMS scanout, including format modifier negotiation, release synchronisation via timeline sync objects, and the conditions under which the compositor may promote the terminal's buffer directly to a KMS overlay plane for zero-copy scanout. The pixel protocols described in this chapter are the entry point for image data; Ch45 describes its exit point.
+
+**Chapter 3 — KMS Colour Management**: Sixel colour quantisation is a low-fidelity analogue of the colour pipeline that KMS and the compositor manage for display output. The KMS colour management infrastructure (colour LUTs, CTM matrices, HDR metadata) described in Chapter 3 operates on framebuffers with full floating-point or 10-bit-per-channel colour depth. Sixel's 256-colour palette quantisation achieves approximately 6–8 bits of effective colour resolution per channel, roughly equivalent to the precision of a 6-bit display. The dithering algorithms (Floyd-Steinberg, Bayer) applied to compensate for Sixel's coarse quantisation are the same mathematical techniques applied at the display panel level for dithering 10-bit framebuffers on 8-bit panels. Understanding the KMS colour pipeline provides the theoretical context for why Sixel's colour fidelity limitations are difficult to overcome without abandoning the palette-indexed model.
+
+**Chapter 20 — Wayland Protocol Design**: The Kitty Graphics Protocol's design philosophy — named object IDs, server-side resource persistence, explicit lifetime management via delete operations — is structurally parallel to the Wayland object model described in Chapter 20. A Kitty image ID is a protocol-level handle to a terminal-side resource, just as a `wl_buffer` ID is a protocol-level handle to a compositor-side buffer. The Kitty placement ID is analogous to the `wl_surface` ID: a placement is a visible projection of an image resource, just as a surface is a visible projection of a buffer. The Kitty delete action `a=d` mirrors the `wl_buffer.destroy` or `wl_surface.destroy` Wayland requests. This parallel is not coincidental: both protocols were designed by authors who understood that efficient client-server graphics requires named server-side objects with explicit lifecycle.
+
+**Chapter 4 — DMA-BUF and Memory Sharing**: The Kitty protocol's `t=s` shared memory transmission mode (`t=s`, POSIX shm object path) is a userspace analogue of the DMA-BUF zero-copy buffer sharing described in Chapter 4. Both mechanisms allow pixel data to be transferred from producer to consumer without any copy: the producer (application writing the shm object; GPU driver exporting a DMA-BUF fd) places data in memory once, and the consumer (terminal reading the shm mapping; compositor importing the DMA-BUF) reads it directly. The difference is that POSIX shm is a general-purpose OS mechanism without GPU awareness, while DMA-BUF is a kernel-level mechanism integrated with the DRM memory manager and GPU IOMMU. For same-machine image display, `t=s` achieves zero-copy delivery from application to terminal; the subsequent GPU upload via the terminal's render loop is where the DMA-BUF mechanisms of Chapter 4 take over.
+
+---
+
+## 7. References
+
+1. Kitty Graphics Protocol specification: https://sw.kovidgoyal.net/kitty/graphics-protocol/
+
+2. xterm control sequences (Sixel): https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
+
+3. libsixel: https://github.com/libsixel/libsixel
+
+4. foot terminal (Sixel source in src/sixel.c, src/sixel.h): https://codeberg.org/dnkl/foot
+
+5. iTerm2 Inline Images documentation: https://iterm2.com/documentation-images.html
+
+6. WezTerm image protocol documentation: https://wezfurlong.org/wezterm/imgcat.html
+
+7. DEC VT340 Sixel graphics reference (VT3xx Programmer Reference Manual, Chapter 14): https://www.vt100.net/docs/vt3xx-gp/chapter14.html
+
+8. Good Image Protocol (Contour terminal, Christian Parpart): https://github.com/contour-terminal/terminal-good-image-protocol
+
+9. freedesktop.org terminal working group: https://gitlab.freedesktop.org/groups/terminal-wg
+
+10. chafa (Unicode block/Braille/sextant image renderer): https://github.com/hpjansson/chafa
+
+11. notcurses (TUI library with Unicode graphics support): https://github.com/dankamongmen/notcurses
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

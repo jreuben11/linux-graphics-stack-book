@@ -1,8 +1,8 @@
-# The Linux Graphics Stack: From Kernel to Compositor and Browser
+# The Linux Graphics Stack: From Kernel to Compositor, Browser, and Terminal
 
 An expert-level technical book (~700 pages) covering the Linux graphics stack from DRM kernel drivers through Mesa, Wayland compositors, application APIs, and the browser rendering pipeline.
 
-**Audiences:** Systems and driver developers · Graphics application developers · Browser and web platform engineers
+**Audiences:** Systems and driver developers · Graphics application developers · Browser and web platform engineers · Terminal and TUI developers
 
 The master outline is in [plan.md](plan.md).
 
@@ -16,6 +16,7 @@ The master outline is in [plan.md](plan.md).
 | Ch 2: KMS: The Display Pipeline | [ch02-kms-display-pipeline.md](chapters/part-01-kernel-layer/ch02-kms-display-pipeline.md) |
 | Ch 3: Advanced Display Features | [ch03-advanced-display-features.md](chapters/part-01-kernel-layer/ch03-advanced-display-features.md) |
 | Ch 4: GPU Memory Management | [ch04-gpu-memory-management.md](chapters/part-01-kernel-layer/ch04-gpu-memory-management.md) |
+| Ch 51: GPU Power Management and Thermal | [ch51-gpu-power-management.md](chapters/part-01-kernel-layer/ch51-gpu-power-management.md) |
 
 ## Part II — GPU Drivers
 
@@ -23,6 +24,7 @@ The master outline is in [plan.md](plan.md).
 |---|---|
 | Ch 5: x86 GPU Drivers | [ch05-x86-gpu-drivers.md](chapters/part-02-gpu-drivers/ch05-x86-gpu-drivers.md) |
 | Ch 6: ARM & Embedded GPU Drivers | [ch06-arm-embedded-gpu-drivers.md](chapters/part-02-gpu-drivers/ch06-arm-embedded-gpu-drivers.md) |
+| Ch 49: Multi-GPU and PRIME Render Offload | [ch49-multi-gpu-prime.md](chapters/part-02-gpu-drivers/ch49-multi-gpu-prime.md) |
 
 ## Part III — The Nouveau Story
 
@@ -60,6 +62,9 @@ The master outline is in [plan.md](plan.md).
 | Ch 21: Building Compositors with wlroots | [ch21-building-compositors-wlroots.md](chapters/part-06-display-stack/ch21-building-compositors-wlroots.md) |
 | Ch 22: Production Compositors | [ch22-production-compositors.md](chapters/part-06-display-stack/ch22-production-compositors.md) |
 | Ch 23: Legacy and Sandboxed App Support | [ch23-legacy-sandboxed-app-support.md](chapters/part-06-display-stack/ch23-legacy-sandboxed-app-support.md) |
+| Ch 46: The Evolving Wayland Protocol Ecosystem | [ch46-wayland-protocol-ecosystem.md](chapters/part-06-display-stack/ch46-wayland-protocol-ecosystem.md) |
+| Ch 53: Display Calibration and colord | [ch53-display-calibration-colord.md](chapters/part-06-display-stack/ch53-display-calibration-colord.md) |
+| Ch 54: The Linux Input Stack | [ch54-linux-input-stack.md](chapters/part-06-display-stack/ch54-linux-input-stack.md) |
 
 ## Part VII — Application APIs & Middleware
 
@@ -71,6 +76,9 @@ The master outline is in [plan.md](plan.md).
 | Ch 27: VR & AR | [ch27-vr-ar.md](chapters/part-07-application-apis-middleware/ch27-vr-ar.md) |
 | Ch 38: PipeWire and the Video Session Layer | [ch38-pipewire.md](chapters/part-07-application-apis-middleware/ch38-pipewire.md) |
 | Ch 39: Qt and GTK GPU Rendering | [ch39-qt-gtk-rendering.md](chapters/part-07-application-apis-middleware/ch39-qt-gtk-rendering.md) |
+| Ch 47: Font and Text Rendering Pipeline | [ch47-font-text-rendering.md](chapters/part-07-application-apis-middleware/ch47-font-text-rendering.md) |
+| Ch 48: ROCm and Machine Learning on Linux GPUs | [ch48-rocm-ml-linux.md](chapters/part-07-application-apis-middleware/ch48-rocm-ml-linux.md) |
+| Ch 50: Vulkan Video Extensions | [ch50-vulkan-video.md](chapters/part-07-application-apis-middleware/ch50-vulkan-video.md) |
 
 ## Part VIII — Gaming Layer
 
@@ -78,6 +86,7 @@ The master outline is in [plan.md](plan.md).
 |---|---|
 | Ch 28: Windows Compatibility | [ch28-windows-compatibility.md](chapters/part-08-gaming-layer/ch28-windows-compatibility.md) |
 | Ch 29: Upscaling, Effects & Overlays | [ch29-upscaling-effects-overlays.md](chapters/part-08-gaming-layer/ch29-upscaling-effects-overlays.md) |
+| Ch 56: Ray Tracing on Linux | [ch56-ray-tracing-linux.md](chapters/part-08-gaming-layer/ch56-ray-tracing-linux.md) |
 
 ## Part IX — Tooling & Contributing
 
@@ -86,6 +95,7 @@ The master outline is in [plan.md](plan.md).
 | Ch 30: Debugging & Profiling | [ch30-debugging-profiling.md](chapters/part-09-tooling-contributing/ch30-debugging-profiling.md) |
 | Ch 31: Conformance & Regression Testing | [ch31-conformance-regression-testing.md](chapters/part-09-tooling-contributing/ch31-conformance-regression-testing.md) |
 | Ch 32: Contributing to the Linux Graphics Stack | [ch32-contributing.md](chapters/part-09-tooling-contributing/ch32-contributing.md) |
+| Ch 55: GPU Containers and Cloud Compute | [ch55-gpu-containers-cloud.md](chapters/part-09-tooling-contributing/ch55-gpu-containers-cloud.md) |
 
 ## Part X — The Browser Rendering Stack
 
@@ -96,6 +106,7 @@ The master outline is in [plan.md](plan.md).
 | Ch 35: Dawn and WebGPU | [ch35-dawn-webgpu.md](chapters/part-10-browser-rendering-stack/ch35-dawn-webgpu.md) |
 | Ch 36: The Chromium Compositor — CC and Viz | [ch36-chromium-compositor.md](chapters/part-10-browser-rendering-stack/ch36-chromium-compositor.md) |
 | Ch 37: Skia and 2D Rendering | [ch37-skia-2d-rendering.md](chapters/part-10-browser-rendering-stack/ch37-skia-2d-rendering.md) |
+| Ch 52: Firefox and WebRender | [ch52-firefox-webrender.md](chapters/part-10-browser-rendering-stack/ch52-firefox-webrender.md) |
 
 ## Part XI — Engines & Creative Tools
 
@@ -104,6 +115,14 @@ The master outline is in [plan.md](plan.md).
 | Ch 40: Bevy and wgpu — A Rust-Native Vulkan Client | [ch40-bevy-wgpu.md](chapters/part-11-engine-creative-tools/ch40-bevy-wgpu.md) |
 | Ch 41: Godot 4 — RenderingDevice and the Explicit Vulkan Path | [ch41-godot4-rendering-device.md](chapters/part-11-engine-creative-tools/ch41-godot4-rendering-device.md) |
 | Ch 42: Blender — Cycles, EEVEE Next, and GPU Compute on Linux | [ch42-blender-gpu.md](chapters/part-11-engine-creative-tools/ch42-blender-gpu.md) |
+
+## Part XII — Terminal Graphics
+
+| Chapter | File |
+|---|---|
+| Ch 43: Terminal Pixel Protocols — Sixel, Kitty, and iTerm2 | [ch43-terminal-pixel-protocols.md](chapters/part-12-terminal-graphics/ch43-terminal-pixel-protocols.md) |
+| Ch 44: Terminal GPU Rendering Architectures | [ch44-terminal-gpu-rendering.md](chapters/part-12-terminal-graphics/ch44-terminal-gpu-rendering.md) |
+| Ch 45: Terminal Integration with the Compositor Stack | [ch45-terminal-compositor-integration.md](chapters/part-12-terminal-graphics/ch45-terminal-compositor-integration.md) |
 
 ---
 
@@ -143,6 +162,10 @@ The master outline is in [plan.md](plan.md).
 | ANGLE | https://chromium.googlesource.com/angle/angle |
 | Skia | https://skia.googlesource.com/skia |
 | Kernel GPU docs | https://www.kernel.org/doc/html/latest/gpu/ |
+| Kitty terminal | https://github.com/kovidgoyal/kitty |
+| Ghostty | https://github.com/ghostty-org/ghostty |
+| foot | https://codeberg.org/dnkl/foot |
+| libsixel | https://github.com/libsixel/libsixel |
 
 ---
 
