@@ -555,7 +555,68 @@ A common empirical observation in the Linux gaming community is that well-optimi
 
 ---
 
-## 9. Integrations
+## 9. RTX Remix: Open-Source Neural Rendering Remastering
+
+RTX Remix 1.0 (released March 2025, MIT license) is a game remastering toolkit that replaces the legacy D3D8/D3D9 rendering in classic titles with full path tracing, DLSS 4, and Neural Radiance Cache, using open asset replacement via USD. [Source: RTX Remix GitHub, github.com/NVIDIAGameWorks/rtx-remix](https://github.com/NVIDIAGameWorks/rtx-remix)
+
+RTX Remix demonstrates the full NVIDIA proprietary stack (Chapters 67–70) in a concrete, open-source context and connects directly to the DXVK/VKD3D-Proton translation pipeline described earlier in this chapter.
+
+### Architecture
+
+RTX Remix consists of two open-source components:
+
+**`dxvk-remix`** — a fork of DXVK (§3) that intercepts D3D8 and D3D9 API calls and translates them to Vulkan, then augments the translated frame with path tracing. Unlike standard DXVK, which faithfully emulates the D3D rasterisation pipeline, dxvk-remix injects OptiX ray tracing and RTXDI direct light sampling at the Vulkan level, replacing rasterised lighting with path-traced illumination. The original game's geometry and legacy textures become the scene description; modders can overlay high-resolution USD assets using the Remix runtime.
+
+**`rtx-remix` runtime** — a DLL loaded alongside dxvk-remix that provides:
+- Scene capture to USD (records all draw calls, meshes, and textures to a USD stage for offline asset replacement)
+- USD asset overlay (replaces captured meshes and textures with high-resolution PBR equivalents at runtime)
+- Integration with DLSS 4 Super Resolution and Multi Frame Generation via the NGX SDK (Ch68)
+- Integration with NRD for denoising the path-traced output (Ch70)
+- RTXGI NRC for multi-bounce indirect illumination (Ch70)
+
+The asset replacement workflow is purely USD-based: a modder uses NVIDIA's Omniverse Remix application to open the captured USD stage, replace meshes and textures with high-resolution PBR assets, and export an override USD layer. At game runtime, the RTX Remix runtime composites the override layer over the captured scene via USD's `over` composition arc.
+
+### Running RTX Remix on Linux via Proton
+
+RTX Remix is a Windows DLL injection system — it ships as `d3d8.dll`/`d3d9.dll` drop-in replacements. On Linux, it runs under Wine/Proton using the `dxvk-remix` fork instead of the standard DXVK that Proton ships:
+
+```bash
+# Manual setup: replace Proton's dxvk dlls with dxvk-remix builds
+# 1. Build dxvk-remix for Windows targets (cross-compile via mingw64 or MSVC)
+git clone https://github.com/NVIDIAGameWorks/rtx-remix --recursive
+cd rtx-remix/submodules/dxvk-remix
+./package-release.sh master ~/dxvk-remix-build
+
+# 2. Copy dlls into the game's Proton prefix
+GAME_DIR="$HOME/.steam/steam/steamapps/common/Portal"
+cp ~/dxvk-remix-build/x64/d3d9.dll "$GAME_DIR/"
+cp ~/dxvk-remix-build/x64/NvRemixBridge.exe "$GAME_DIR/"
+
+# 3. Launch via Steam with PROTON_NO_DXVK=1 to prevent Proton overriding the dll
+PROTON_NO_DXVK=1 %command%
+```
+
+The GamingOnLinux community has confirmed RTX Remix working with Portal (D3D9) and several other classic titles under Proton on Linux with proprietary NVIDIA driver ≥ 535. RTX Remix 1.0 added official Linux CI testing for the `dxvk-remix` Vulkan translation layer, though the broader RTX Remix runtime does not have an official NVIDIA Linux support statement.
+
+**Driver requirements on Linux**: proprietary NVIDIA driver ≥ 535 (for path tracing via the OptiX runtime embedded in dxvk-remix); DLSS 4 features require Ada Lovelace (RTX 40xx) or newer. NVK is not supported — the OptiX dependency requires the proprietary kernel module.
+
+### RTX Remix 1.0 Feature Set
+
+RTX Remix 1.0 added:
+- **DLSS 4 Multi Frame Generation** — generates up to 3 intermediate frames, enabling smooth 60+ fps from path-traced renders at 15–20 fps native
+- **Neural Radiance Cache (NRC)** — multi-bounce indirect illumination via the same RTXGI NRC integrated into Omniverse (Ch70 §4.2); this significantly improves lighting quality of indoor scenes that previously had flat ambient illumination in the original D3D9 renderer
+- **Portal RTX** and **Half-Life 2 RTX** are the reference RTX Remix titles demonstrating the full stack on Linux via Proton
+
+### Connection to This Chapter's Earlier Content
+
+RTX Remix sits at the convergence of three threads from this chapter:
+- **DXVK** (§3): dxvk-remix forks DXVK's D3D9 translation layer; all of §3's analysis of DXBC→SPIR-V translation, state cache, and resource hazard tracking applies directly
+- **VKD3D-Proton** (§4): while Remix targets D3D8/9 (not D3D12), the same `VK_KHR_timeline_semaphore` and bindless synchronisation model applies to the Vulkan submission in dxvk-remix
+- **NVAPI emulation via dxvk-nvapi** (§6): dxvk-remix uses the same dxvk-nvapi layer to expose `NvAPI_D3D_GetCurrentSLIState` and `NvAPI_D3D11_IsNvShaderExtnOpCodeSupported` stubs needed by some game shaders
+
+---
+
+## 10. Integrations
 
 **Chapter 1 (DRM Architecture and Render Nodes).** Wine, DXVK, and VKD3D-Proton processes open `/dev/dri/renderDN` render nodes directly for GPU access. The unprivileged render node model is essential: it allows the Wine process running inside a pressure-vessel bubblewrap container — which may not have root — to access the GPU without privilege escalation. The render node permission model is detailed in Chapter 1.
 

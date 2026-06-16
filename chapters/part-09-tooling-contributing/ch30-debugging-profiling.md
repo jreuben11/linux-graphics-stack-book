@@ -633,6 +633,99 @@ nvtxRangePop();
 
 For **NVK** (the open-source NVIDIA Vulkan driver) and **nouveau**, hardware counter support is limited as of early 2025. NVK is under active development but performance counter access via the Vulkan `VK_KHR_performance_query` extension is not yet exposed. Nsight Compute requires the proprietary kernel driver and does not work with NVK/nouveau. This is an honest gap in the open-source NVIDIA tooling and should be expected to improve as NVK matures.
 
+#### NvPerf SDK: Embedded GPU Counter Collection
+
+The **NvPerf SDK** (part of the Nsight Perf SDK package, available at developer.nvidia.com/nsight-perf-sdk) provides a C++ API for embedding GPU performance counter collection directly into application code, without launching the Nsight GUI. This is useful for automated regression testing, CI-integrated performance budgets, and production telemetry. [Source: NvPerf SDK documentation](https://docs.nvidia.com/nsight-perf-sdk/index.html)
+
+NvPerf ships two shared libraries: `libnvperf_host.so` (host-side counter scheduling and decoding) and `libnvperf_target.so` (injected into the GPU driver for counter collection). On Linux, counter collection requires either `CAP_SYS_ADMIN` or the perf event paranoia level set to ≤ 0:
+
+```bash
+# Check current paranoia level
+cat /proc/sys/kernel/perf_event_paranoid
+# -1 = unrestricted, 0 = normal, 1 = no kernel profiling, 2 = disallowed
+
+# Set for the session (requires root, resets on reboot)
+sudo sh -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid'
+# Or persistent via /etc/sysctl.d/99-gpu-perf.conf:
+# kernel.perf_event_paranoid = 0
+
+# Alternative: grant CAP_SYS_ADMIN to the application binary
+sudo setcap cap_sys_admin+ep ./my_renderer
+```
+
+NvPerf integrates with Vulkan via the **NvPerf Range Profiler**, which surrounds Vulkan command buffer submissions with counter-collection ranges:
+
+```cpp
+#include "NvPerfVulkan.h"
+#include "NvPerfRangeProfiler.h"
+
+// Initialise NvPerf for the Vulkan device — once
+NvperfVulkanLoadDriver(vkInstance);
+NvperfVulkanInitDevice(vkPhysicalDevice, vkDevice, vkQueue);
+
+// Create a range profiler session
+nv::perf::profiler::RangeProfilerVulkan profiler;
+profiler.BeginSession(vkQueue, numRangesPerPass, numFrames);
+
+// Per-frame — wrap submissions in named ranges
+profiler.BeginFrame();
+
+vkBeginCommandBuffer(cmd, &beginInfo);
+profiler.PushRange(cmd, "ShadowPass");
+    // ... shadow pass commands ...
+profiler.PushRange(cmd, "GBuffer");
+    // ... G-buffer commands ...
+profiler.PopRange(cmd);  // GBuffer
+profiler.PopRange(cmd);  // ShadowPass
+vkEndCommandBuffer(cmd);
+
+profiler.EndFrame();
+
+// Collect results (available after GPU completes the profiled passes)
+nv::perf::profiler::RangeProfilerSessionMetrics metrics;
+if (profiler.IsCollecting(&metrics)) {
+    for (auto& range : metrics.ranges) {
+        printf("Range '%s': SM Active = %.1f%%,  L2 Hit = %.1f%%\n",
+               range.name.c_str(),
+               range.GetMetricValue("sm__active_cycles_avg.pct_of_peak_sustained_active"),
+               range.GetMetricValue("lts__t_sector_hit_rate.pct"));
+    }
+}
+```
+
+Key counter groups available on NVIDIA GPUs:
+- `sm__*`: SM (Streaming Multiprocessor) occupancy, warp efficiency, instruction throughput
+- `l1tex__*`: L1 texture cache hit rates, sector reads/writes
+- `lts__*`: L2 cache (LTS) hit rates, sector traffic
+- `dram__*`: DRAM bandwidth utilisation (bytes read/written per second)
+- `gpu__*`: overall GPU utilisation, elapsed clocks
+
+The `Nsight Compute` CLI tool (`ncu`) provides the same counter set with no code changes:
+
+```bash
+# Profile a single Vulkan frame capture
+ncu --set full --target-processes all \
+    --export profile_$(date +%s).ncu-rep \
+    ./my_renderer --headless --frames 1
+
+# Query specific counters
+ncu --metrics sm__active_cycles_avg.pct_of_peak_sustained_active,\
+              dram__bytes_read.sum.per_second \
+    ./my_renderer
+```
+
+`nsys` (Nsight Systems) captures the full system timeline including Vulkan API calls, CUDA kernel dispatches, CPU threads, and GPU engine utilisation:
+
+```bash
+# Capture 10 seconds of a running renderer
+nsys profile --trace=cuda,vulkan,nvtx,opengl \
+             --gpu-metrics-set=l2_read_hit_rate \
+             --duration=10 \
+             --output=profile \
+             ./my_renderer
+nsys-ui profile.nsys-rep   # Open in GUI
+```
+
 ### Generic Tools: gpuvis and gfxreconstruct
 
 **gpuvis** ([https://github.com/mikesart/gpuvis](https://github.com/mikesart/gpuvis)) visualises GPU trace data from `ftrace` — specifically the `amdgpu:` and `i915:` trace point families. It provides a timeline view of GPU queue occupancy, fence events, and command submission timing, analogous to Chrome's `about:tracing` for CPU/GPU work. Capture:
