@@ -101,6 +101,27 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 68: DLSS 4, Neural Rendering, and Frame Generation](#chapter-68-dlss-4-neural-rendering-and-frame-generation)
   - [Chapter 69: NVIDIA Omniverse, OpenUSD, and the RTX Renderer](#chapter-69-nvidia-omniverse-openusd-and-the-rtx-renderer)
   - [Chapter 70: RTX Kit — RTXDI, RTXGI, NRD, RTXNS, and RTXNTC](#chapter-70-rtx-kit--rtxdi-rtxgi-nrd-rtxns-and-rtxntc)
+- **Part XVI — Intel Open Graphics Stack**
+  - [Chapter 71: Intel Xe Kernel Driver, Arc GPU Architecture, and the Intel Open Stack](#chapter-71-intel-xe-kernel-driver-arc-gpu-architecture-and-the-intel-open-stack)
+- **Part XVII — AMD Developer Ecosystem**
+  - [Chapter 72: AMD FidelityFX SDK and Radeon Developer Tools](#chapter-72-amd-fidelityfx-sdk-and-radeon-developer-tools)
+- **Part XVI/XVII additions to existing parts**
+  - [Chapter 73: Asahi Linux and the Apple Silicon AGX Driver](#chapter-73-asahi-linux-and-the-apple-silicon-agx-driver) *(Part II)*
+  - [Chapter 74: HDR and Wide Color Gamut on Linux](#chapter-74-hdr-and-wide-color-gamut-on-linux) *(Part VI)*
+  - [Chapter 75: Explicit GPU Synchronisation](#chapter-75-explicit-gpu-synchronisation) *(Part VI)*
+  - [Chapter 76: Modern Vulkan Extensions](#chapter-76-modern-vulkan-extensions) *(Part VII)*
+  - [Chapter 77: Shader Source-to-ISA: The Complete Compilation Toolchain](#chapter-77-shader-source-to-isa-the-complete-compilation-toolchain) *(Part IV)*
+  - [Chapter 78: Gamescope and the Steam Deck: A Complete Gaming Graphics Stack](#chapter-78-gamescope-and-the-steam-deck-a-complete-gaming-graphics-stack) *(Part VIII)*
+  - [Chapter 79: Remote Display, Screen Casting, and GPU-Accelerated Game Streaming](#chapter-79-remote-display-screen-casting-and-gpu-accelerated-game-streaming) *(Part IX)*
+  - [Chapter 80: GPU Security: Isolation, Content Protection, and Confidential Computing](#chapter-80-gpu-security-isolation-content-protection-and-confidential-computing) *(Part IX)*
+- **Part XVIII — Rendering Abstraction Libraries**
+  - [Chapter 81: SDL3 GPU API: A Portable High-Level GPU Abstraction](#chapter-81-sdl3-gpu-api-a-portable-high-level-gpu-abstraction)
+  - [Chapter 82: Vulkan Ecosystem Toolkit: VMA, volk, vk-bootstrap, and Friends](#chapter-82-vulkan-ecosystem-toolkit-vma-volk-vk-bootstrap-and-friends)
+  - [Chapter 83: Filament: Google's Physically Based Rendering Engine on Linux](#chapter-83-filament-googles-physically-based-rendering-engine-on-linux)
+  - [Chapter 84: bgfx, Cross-Platform Rendering Abstractions, and the Frame Graph Pattern](#chapter-84-bgfx-cross-platform-rendering-abstractions-and-the-frame-graph-pattern)
+- **Part XIX — Android Graphics**
+  - [Chapter 85: Android Compositor: SurfaceFlinger, HardwareBuffer, and the Buffer Pipeline](#chapter-85-android-compositor-surfaceflinger-hardwarebuffer-and-the-buffer-pipeline)
+  - [Chapter 86: Vulkan on Android: Drivers, ANGLE, and Mobile GPU Performance](#chapter-86-vulkan-on-android-drivers-angle-and-mobile-gpu-performance)
 
 ---
 
@@ -1106,6 +1127,134 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - **RTXNTC v0.5** (Neural Texture Compression): MLP-encoded textures (4-layer × 32-neuron, ELU, FP8 weights) replacing BC7 at up to 7× VRAM savings; multi-resolution UV hash encoding input; offline encoding — `rtxntc-encode --onnx --quality --format E4M3`; runtime inference via `rtxntc::SampleTexture` (compiles to CoopVec SPIR-V); fallback scalar path for pre-Ada hardware; `.ntc` file format (weights + topology header)
 - Full-frame pipeline integration: RTXGI indirect → RTXDI direct → RTXNS neural materials → NRD denoising → DLSS SR/MFG; combined RTX Kit overhead ~6 ms at 1080p on RTX 4080; build instructions on Linux (CMake + GCC/Clang + CUDA 12.x + Vulkan SDK 1.3.x)
 - **Integrations**: Ch56 (Vulkan ray tracing) — RTXDI calls `vkCmdTraceRaysKHR` over the same `VkAccelerationStructureKHR`; Ch67 (OptiX) — OptiX denoiser is lighter NRD alternative; NRC shares multi-resolution hash encoding with Instant-NGP; Ch68 (DLSS) — NRD feeds DLSS SR; Ray Reconstruction replaces both; Ch69 (Omniverse) — RTX Interactive uses NRD + RTXDI; Project Zorah uses RTXGI NRC; Ch66 (CUDA) — NRC training + RTXNTC encoding are CUDA workloads; Ch61 (SPIR-V) — `cooperative_vector` capability not yet in spirv-val 1.6; use Vulkan layered validation instead
+
+---
+
+## Part XVI — Intel Open Graphics Stack
+
+### Chapter 71: Intel Xe Kernel Driver, Arc GPU Architecture, and the Intel Open Stack
+
+- Intel GPU history: Gen → Iris → Arc; the transition from i915 to xe.ko for discrete GPUs
+- Xe kernel driver architecture: `xe_device`, `xe_gt`, `xe_tile`; LMEM vs GGTT; GMD (Graphics Micro-Driver) model; source `drivers/gpu/drm/xe/`
+- GuC and HuC firmware: ring-less command submission via GuC; context scheduling; HuC media decode assistance; firmware loading vs i915
+- Xe2/Battlemage architecture: Xe2-HPG GPU microarchitecture; Render Slice; L2$ per-DSS; XMX (Xe Matrix Extensions / tensor cores); hardware ray tracing; AV1 hardware encode (VDEnc)
+- Intel ANV Vulkan driver: `src/intel/vulkan/`; BVH builder for ray tracing; sparse binding; ANV on xe vs i915
+- Level Zero and oneAPI: `ze_driver_handle_t`, `ze_context_handle_t`, `ze_command_list_handle_t`; relationship to OpenCL; oneAPI DPC++ compiler (intel/llvm fork)
+- Intel Media Driver: `libva-intel-media-driver` (iHD); MDF/CM kernel architecture; VPP pipeline; AV1 encode path; VA-API interface
+- XeSS: Intel Xe Super Sampling; temporal upscaling using XMX on Arc; DP4a fallback; `xess_context_handle_t`, quality modes
+- **Integrations**: Ch1, Ch4, Ch5, Ch14 (BRW compiler), Ch16, Ch18, Ch24, Ch26, Ch75 (explicit sync), Ch76, Ch77
+
+---
+
+## Part XVII — AMD Developer Ecosystem
+
+### Chapter 72: AMD FidelityFX SDK and Radeon Developer Tools
+
+- AMD developer ecosystem: FidelityFX SDK, AMF, and Radeon tools on GPUOpen (gpuopen.com); all open source
+- FidelityFX SDK architecture: backend abstraction (Vulkan, DX12, native); `ffx_interface_t`; `src/components/` structure; https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK
+- FSR 4: neural upscaling using XMX on RDNA 4; motion vector + depth inputs; temporal accumulation; RCAS sharpening; `FfxFsr3ContextDescription`, `ffxFsr3ContextCreate`, `ffxFsr3ContextDispatch`
+- Other FidelityFX effects: CAS (Contrast Adaptive Sharpening), SPD (Single Pass Downsampler), SSSR (Stochastic Screen Space Reflections), Brixelizer GI (sparse voxel GI)
+- AMF — Advanced Media Framework: `AMFFactory`, `AMFComponent` for VCE/VCN; `amf_surface_t`; Linux VA-API backend; https://github.com/GPUOpen-LibrariesAndSDKs/AMF
+- Radeon GPU Profiler (RGP): frame-level GPU timeline; SQTT (Shader Queue Thread Trace); instruction-level timing; `VK_AMD_gpa_interface`; `.rgp` file format
+- Radeon Memory Visualizer (RMV): heap allocation timeline; VRAM fragmentation; resource lifetime tracking; AMD Radeon Developer Service
+- RenderDoc: AMD-led cross-vendor open source frame debugger; in-process capture layer; serialised RDC format; Python API; https://github.com/baldurk/renderdoc
+- **Integrations**: Ch5, Ch15, Ch18, Ch25, Ch26, Ch29, Ch30, Ch48, Ch56, Ch76
+
+---
+
+## Part XVIII — Rendering Abstraction Libraries
+
+### Chapter 81: SDL3 GPU API: A Portable High-Level GPU Abstraction
+
+- Why SDL3 added SDL_GPU: gap between raw Vulkan and full engines; explicit command buffers without pipeline state object verbosity; released 2024
+- Device creation: `SDL_CreateGPUDevice` with `SDL_GPUShaderFormat` flags; `SDL_ClaimWindowForGPUDevice`; Vulkan always selected on Linux
+- Shaders and pipeline state: `SDL_CreateGPUShader` from SPIR-V; `SDL_GPUGraphicsPipelineCreateInfo`; vertex attributes, rasterizer, depth/stencil, blend
+- Textures and samplers: `SDL_CreateGPUTexture`; usage flags; `SDL_CreateGPUSampler`; upload via `SDL_GPUCopyPass`
+- Buffers: `SDL_CreateGPUBuffer`; `SDL_GPUTransferBuffer` staging pattern
+- Command buffers and render passes: `SDL_AcquireGPUCommandBuffer`, `SDL_BeginGPURenderPass`, `SDL_BindGPUGraphicsPipeline`, `SDL_DrawGPUPrimitives`, `SDL_SubmitGPUCommandBuffer`
+- Compute passes: `SDL_BeginGPUComputePass`, `SDL_DispatchGPUCompute`
+- Swapchain and HDR: `SDL_AcquireGPUSwapchainTexture`; `SDL_GPUSwapchainComposition` (SDR, HDR10_ST2084); present modes
+- SDL_GPU vs Vulkan vs WebGPU: comparison table; sweet spot for indie games and tools
+- **Integrations**: Ch16, Ch18, Ch24, Ch40, Ch61, Ch76, Ch82, Ch84
+
+### Chapter 82: Vulkan Ecosystem Toolkit: VMA, volk, vk-bootstrap, and Friends
+
+- The bootstrapping problem: hundreds of lines before a triangle; ecosystem of helpers that eliminate boilerplate without hiding the GPU model
+- VMA (Vulkan Memory Allocator): `VmaAllocator`; `VMA_MEMORY_USAGE_AUTO`; `vmaCreateBuffer`/`vmaCreateImage`; suballocation (256 MB default blocks); staging pattern; defragmentation; `VmaPool`; https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
+- VMA internals: memory type selection; `VmaVirtualBlock`; budget tracking; `VMA_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT` for mobile TBDR
+- volk: runtime Vulkan function pointer loading; `volkInitialize()`, `volkLoadDevice()`; eliminates loader trampoline overhead; https://github.com/zeux/volk
+- vk-bootstrap: `vkb::InstanceBuilder`, `vkb::PhysicalDeviceSelector`, `vkb::DeviceBuilder`, `vkb::SwapchainBuilder`; 30-line device setup; https://github.com/charles-lunarg/vk-bootstrap
+- SPIRV-Reflect: `SpvReflectShaderModule`; automatic `VkDescriptorSetLayout` generation from SPIR-V; https://github.com/KhronosGroup/SPIRV-Reflect
+- Dear ImGui Vulkan backend: `ImGui_ImplVulkan_Init`, `ImGui_ImplVulkan_RenderDrawData`; descriptor pool management
+- Shader hot-reload: inotify + glslang/DXC at runtime; pipeline recreation dance; shaderc https://github.com/google/shaderc
+- Tracy GPU profiler: `TracyVkContext`, GPU timestamp zones, `VkPhysicalDeviceLimits::timestampPeriod`; zero-overhead in release; https://github.com/wolfpld/tracy
+- Minimal Vulkan application stack: vk-bootstrap + VMA + volk + SPIRV-Reflect + imgui combined skeleton (~200 lines vs 2000 raw)
+- **Integrations**: Ch16, Ch18, Ch24, Ch28, Ch40, Ch61, Ch70, Ch76, Ch77, Ch81
+
+### Chapter 83: Filament: Google's Physically Based Rendering Engine on Linux
+
+- Filament's place: Google's open-source PBR library (not a game engine); production use in Android, Chrome OS, Google Maps 3D, ARCore; C++ with Vulkan backend on Linux; https://github.com/google/filament
+- Three-layer architecture: Engine (resource management, backend), Scene (ECS — Entity/TransformManager/LightManager/RenderableManager), Renderer (frame submission); `filament::backend::Driver` abstraction
+- Engine init and Vulkan backend: `Engine::create(Backend::VULKAN)`; `SwapChain` from native window; `VulkanPlatform` in `src/backend/vulkan/`
+- ECS scene setup: `utils::Entity`; `TransformManager::setTransform`; `LightManager::Builder`; `RenderableManager::Builder` with geometry + material
+- Vertex and index buffers: `VertexBuffer::Builder` attribute declarations; `BufferDescriptor`; `IndexBuffer` with UINT16/UINT32
+- FILAMAT material system: `.mat` file compiled by `matc`; `shadingModel`, `blending`, parameters; PBR model (baseColor, metallic, roughness, reflectance, emissive, normal, AO); `MaterialInstance` for per-object override
+- PBR implementation: Cook-Torrance BRDF, GGX NDF, Smith G, Schlick Fresnel; IBL from KTX2 cubemap; directional/point/spot lights; VSM and DPCF shadow maps
+- FrameGraph: `src/fg/`; resource declaration (`FrameGraphTexture`), pass setup+execute lambdas; automatic aliasing, barrier insertion, pass culling
+- Post-processing: tone mapping (ACES, Filmic), bloom (dual kawase), DoF, FXAA/TAA — all FrameGraph passes; `View::setBloomOptions`
+- Headless rendering: `SwapChain::CONFIG_HEADLESS`; `Renderer::readPixels`; server-side asset rendering and CI screenshot testing
+- matdbg and RenderDoc integration: WebSocket live material editor; RenderDoc capturable app registration
+- **Integrations**: Ch16, Ch18, Ch24, Ch37, Ch40, Ch41, Ch42, Ch61, Ch63, Ch64, Ch76, Ch82
+
+### Chapter 84: bgfx, Cross-Platform Rendering Abstractions, and the Frame Graph Pattern
+
+- Abstraction spectrum: raw Vulkan → VMA+helpers → bgfx → SDL3 GPU → Filament → Bevy/Godot; when each level is appropriate
+- bgfx architecture: `bgfx::init()` selects backend (Vulkan on Linux); frame model (draw calls between `bgfx::frame()` calls); `bgfx::Encoder` for multi-threaded submission; https://github.com/bkaradzic/bgfx
+- bgfx resources: `VertexLayout` declarations; typed opaque handles (`VertexBufferHandle`, `TextureHandle`); `createDynamicVertexBuffer`; format codes (BGFX_TEXTURE_FORMAT_*)
+- bgfx shader system: bgfx superset of GLSL compiled by `shaderc` tool; `bgfx::createUniform`; SPIR-V path for Vulkan backend
+- View and render target system: `bgfx::setViewFrameBuffer`; view ordering (shadow=0, geometry=1, post=2); `bgfx::setViewMode`
+- Multi-threaded encoding: `bgfx::Encoder`; per-thread recording, merged during `bgfx::frame()`; compare to Vulkan secondary command buffers
+- Frame graph pattern: declarative frame description with explicit resource dependencies; automatic resource lifetime, memory aliasing, barrier insertion, topological sort; implementations in Filament, Bevy, WebRender, Unreal RDG
+- Frame graph implementation: builder pattern with resource virtualisation; aliasing between non-overlapping passes shares `VkDeviceMemory` via VMA; 100-line simplified implementation outline
+- Transient resource allocators: ring buffer of pre-allocated `VkImage`/`VkBuffer`; `VMA_POOL_CREATE_LINEAR_ALGORITHM_BIT`; `VmaVirtualBlock` for offset-only management
+- Other notable abstractions: Diligent Engine (`IRenderDevice`, `IDeviceContext`); The Forge (cross-platform, shipped games); LLGL (thin C++ abstraction); Magnum (scientific visualisation)
+- Decision guide: raw Vulkan vs VMA vs bgfx vs SDL3 GPU vs Filament vs Bevy/Godot
+- **Integrations**: Ch16, Ch18, Ch24, Ch28, Ch40, Ch41, Ch52, Ch61, Ch77, Ch81, Ch82, Ch83
+
+---
+
+## Part XIX — Android Graphics
+
+### Chapter 85: Android Compositor: SurfaceFlinger, HardwareBuffer, and the Buffer Pipeline
+
+- Android graphics architecture: Linux kernel (DRM/KMS, DMA-BUF) → HAL layer (Gralloc, HWComposer, EGL) → framework (SurfaceFlinger, BufferQueue, HWUI) → application (Canvas/Skia, Vulkan, GLES)
+- Gralloc: Android's GPU memory allocator HAL; Gralloc4 (AIDL-based, Android 11+); `native_handle_t`; usage flags (HW_RENDER, HW_TEXTURE, HW_COMPOSER); ION/DMA-BUF backing; compare to GBM
+- AHardwareBuffer (NDK, API 26+): `AHardwareBuffer_allocate` with `AHardwareBuffer_Desc`; `AHardwareBuffer_lock`/`unlock`; cross-process sharing via Unix socket; EGL import via `eglGetNativeClientBufferANDROID`; Vulkan import via `VkAndroidHardwareBufferPropertiesANDROID`
+- BufferQueue: `IGraphicBufferProducer`/`IGraphicBufferConsumer`; slot model (up to 64 slots); dequeue→render→queue→acquire→release cycle; double/triple buffering; `frameworks/native/libs/gui/BufferQueue.cpp`
+- SurfaceFlinger: Android's Wayland compositor equivalent; Layer model (BufferLayer, ColorLayer, etc.); composition loop: acquireBuffer → HWComposer::prepare → GPU fallback or direct HW composition → present fence
+- HWComposer and direct scanout: HWC2 API; `setLayerBuffer`, `validateDisplay`, `presentDisplay`; layer composition decision; compare to DRM atomic commit
+- ASurfaceControl (API 29+): `ASurfaceTransaction_create`; `ASurfaceTransaction_setBuffer`, `setPosition`, `setAlpha`, `setZOrder`; `ASurfaceTransaction_apply`; compare to `wl_surface.commit`
+- HWUI: Android's UI rendering engine; RenderThread with Skia/Vulkan pipeline; DisplayList recording; `SkiaOpenGLPipeline` vs `SkiaPipelineVulkan`; RenderNode tree mirrors View hierarchy
+- Sync fences in Android: `android::Fence` wraps DMA-BUF sync file; acquire/release fences per BufferQueue slot; `SyncFileInfo`; compare to `linux-drm-syncobj-v1`
+- Frame end-to-end: Canvas.drawRect → HWUI → Vulkan/GLES commands → GraphicBuffer → SurfaceFlinger → HWC → DRM atomic → scanout
+- Color management and HDR: wide color gamut (P3, Android 8+); HDR support (Android 10+); `AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT`; per-layer dataspace; SurfaceFlinger tone mapping
+- **Integrations**: Ch1, Ch2, Ch4, Ch20, Ch21, Ch22, Ch34, Ch37, Ch38, Ch74, Ch75, Ch86
+
+### Chapter 86: Vulkan on Android: Drivers, ANGLE, and Mobile GPU Performance
+
+- Android Vulkan requirements: Vulkan 1.0 required Android 7.0; hardware requirement Android 10; Vulkan 1.1 target Android 12+; Android loader `/system/lib64/libvulkan.so`; ICD at `/vendor/lib64/hw/vulkan.*.so`
+- Android Vulkan loader: differs from Khronos desktop loader; layer loading from `/data/local/debug/vulkan/`; `android.hardware.vulkan` HIDL/AIDL HAL; `vkCreateInstance` ICD enumeration
+- GPU vendor drivers: Qualcomm Adreno (Vulkan 1.3, Snapdragon 8 Gen 3); ARM Mali (Vulkan 1.1/1.2); Imagination PowerVR; no open source, shipped in `/vendor` partition
+- Mesa on Android — Turnip and freedreno: open-source Adreno drivers shipping on Qualcomm reference platforms; `Android.bp` build rules; Turnip Vulkan 1.3 conformance on Adreno 6xx/7xx; `VK_DRIVER_ID_MESA_TURNIP`
+- ANGLE on Android: default OpenGL ES on Pixel devices (Android 12+) via updatable APEX module; opt-in via developer options; `EGL_ANDROID_GLES_layers`; ANGLE-on-Vulkan performance vs vendor GLES
+- AHardwareBuffer × Vulkan interop: `VK_ANDROID_external_memory_android_hardware_buffer`; `vkGetAndroidHardwareBufferPropertiesANDROID`; `VkImportAndroidHardwareBufferInfoANDROID`; camera YUV via `VkExternalFormatANDROID`; reverse export path
+- Android-specific Vulkan extensions: `VK_KHR_android_surface` (`vkCreateAndroidSurfaceKHR`); `VK_ANDROID_external_format_resolve`; `VK_GOOGLE_display_timing`; `VK_KHR_present_wait`
+- Shader compilation: SPIR-V required (no GLSL at driver); shaderc AAR; `shaderc_compile_into_spv`; Android Baseline Profile (ABP) on Android 14+; Vulkan validation layer from Google Play
+- Memory management on mobile: unified memory (DEVICE_LOCAL | HOST_VISIBLE); `VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT` for MSAA on TBDR; VMA lazy allocation handling; optimal MSAA resolve pattern
+- TBDR architecture: tile-based deferred rendering on Adreno/Mali/PowerVR vs desktop IMR; tile memory; `loadOp=CLEAR`/`storeOp=DONT_CARE` effectively free; `VK_QCOM_render_pass_transform`; why render passes still matter on mobile
+- Android GPU performance tools: Snapdragon GPU Profiler; ARM Streamline/Performance Studio; Android GPU Inspector (AGI, open source); perfetto GPU counter track (Android 12+)
+- Chrome on Android: ANGLE as Chrome GLES backend since Android 8; Dawn Vulkan backend for WebGPU; GPU process with AHardwareBuffer for cross-process textures; Viz compositor with ASurfaceControl
+- **Integrations**: Ch4, Ch6, Ch16, Ch18, Ch24, Ch33, Ch34, Ch35, Ch50, Ch61, Ch76, Ch82, Ch85
 
 ---
 
