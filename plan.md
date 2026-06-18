@@ -122,6 +122,7 @@ Chapters signal which perspective is emphasised where they diverge.
 - **Part XIX — Android Graphics**
   - [Chapter 85: Android Compositor: SurfaceFlinger, HardwareBuffer, and the Buffer Pipeline](#chapter-85-android-compositor-surfaceflinger-hardwarebuffer-and-the-buffer-pipeline)
   - [Chapter 86: Vulkan on Android: Drivers, ANGLE, and Mobile GPU Performance](#chapter-86-vulkan-on-android-drivers-angle-and-mobile-gpu-performance)
+  - [Chapter 87: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform](#chapter-87-android-ar-arcore-architecture-camera-hal-integration-and-the-android-xr-platform)
 
 ---
 
@@ -1255,6 +1256,21 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Android GPU performance tools: Snapdragon GPU Profiler; ARM Streamline/Performance Studio; Android GPU Inspector (AGI, open source); perfetto GPU counter track (Android 12+)
 - Chrome on Android: ANGLE as Chrome GLES backend since Android 8; Dawn Vulkan backend for WebGPU; GPU process with AHardwareBuffer for cross-process textures; Viz compositor with ASurfaceControl
 - **Integrations**: Ch4, Ch6, Ch16, Ch18, Ch24, Ch33, Ch34, Ch35, Ch50, Ch61, Ch76, Ch82, Ch85
+
+### Chapter 87: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform
+
+- ARCore architecture: application-layer SDK (Play Services `com.google.ar.core`) above Camera HAL; three pillars: motion tracking (VIO), environment understanding (planes/depth), light estimation; minimum API 24 (Android 7.0); AR Required vs AR Optional manifest flags; ARCore vs ARKit comparison
+- Android Camera Pipeline and ARCore: Camera HAL3 (`camera_device3_ops_t`, `camera3_stream_t`, `process_capture_request`); Camera2 `CameraDevice.createCaptureSession()`, `CaptureRequest.Builder`, `TEMPLATE_RECORD`; IMU via `SensorEventListener` (`TYPE_ACCELEROMETER`, `TYPE_GYROSCOPE`); Visual-Inertial Odometry (VIO) factor graph / EKF; `ArCamera_getPose()` vs `ArCamera_getDisplayOrientedPose()`
+- Session lifecycle: C API `ArSession_create/resume/pause/destroy`; `ArSession_update()` → `ArFrame`; `ArFrame_acquireCamera()`; `ArPose` 7-element float (quaternion + translation); `ArSession_setCameraTextureName()` for `GL_TEXTURE_EXTERNAL_OES`; `ArConfig` — focus mode, update mode, depth mode, plane finding mode, light estimation mode
+- AR rendering pipeline: camera image as `AHardwareBuffer` → `GL_TEXTURE_EXTERNAL_OES` via `EGLImage` (`EGL_KHR_image_base` + `GL_OES_EGL_image_external`); background full-screen quad with `samplerExternalOES`; view/projection from `ArCamera_getProjectionMatrix/getViewMatrix`; depth occlusion in fragment shader; Vulkan path: `VK_ANDROID_external_memory_android_hardware_buffer`, `vkGetAndroidHardwareBufferPropertiesANDROID`, `VkSamplerYcbcrConversion`
+- Plane detection: `ArSession_getAllTrackables(AR_TRACKABLE_PLANE)`; `AR_PLANE_HORIZONTAL_UPWARD/DOWNWARD_FACING`, `AR_PLANE_VERTICAL`; `ArPlane_getPolygon()`; subsume: `ArPlane_acquireSubsumedBy()`; point clouds: `ArFrame_acquirePointCloud()`, `ArPointCloud_getData()` float[4] per point; Scene Semantics API (Android 12+): `ArSemanticMode_ENABLED`, `ArFrame_acquireSemanticImage()`; Instant Placement
+- Depth API: three sources — stereo camera (Pixel dToF), smooth depth (temporal filter), MotionStereo (parallax on single camera); `ArDepthMode` enum; `ArFrame_acquireDepthImage16Bits()` and `acquireRawDepthImage16Bits()` (16-bit millimeter); confidence image `acquireRawDepthConfidenceImage()`; typical resolution 160×120–240×180; occlusion GLSL pattern
+- Anchors and Cloud Anchors: `ArSession_acquireNewAnchor()`; hit-testing `ArFrame_hitTest()` → `ArHitResultList`; anchor tracking states; Persistent/Geospatial anchors via VPS (Visual Positioning System); `ArEarth_acquireNewAnchor()`; Cloud Anchors: `ArSession_hostCloudAnchorAsync()`, `resolveCloudAnchorAsync()`; `ArFeatureMapQuality`; Cloud Anchor TTL
+- Light estimation: `ArLightEstimateMode_AMBIENT_INTENSITY` (lux + color correction) vs `ENVIRONMENTAL_HDR` (full spherical HDR cubemap); `ArLightEstimate_getEnvironmentalHdrMainLightDirection/Intensity()`; `ArLightEstimate_acquireEnvironmentalHdrCubemap()` → `ArImageCubemap` (6 `ArImage*`); IBL split-sum PBR integration
+- OpenXR on Android and Android XR: ARCore OpenXR loader; extensions `XR_EXT_hand_tracking`, `XR_KHR_android_surface_swapchain`, `XR_ANDROID_trackables`; Android XR platform (Samsung Galaxy headset, 2025); Jetpack XR (`androidx.xr.*`): `Session.create()`, `Entity`, `PanelEntity`, `GltfModelEntity`, `SpatialCapabilities`; Project Moohan reference hardware
+- Recording and Playback: `ArRecordingConfig`, `ArSession_startRecording()` to MP4 with custom tracks; `ArSession_startPlayback()`; `ArDataset` for offline pipelines; deterministic CI/test replay
+- Performance and power: VIO tracking one dedicated CPU core; camera preview 30 fps 640×480 or 1280×720; thermal throttling effect on `ArSession_update()` latency; `Choreographer`/`FrameRateCompatibility` for VSYNC alignment; AR tracking thread decoupled from render thread; AHardwareBuffer zero-copy from HAL → gralloc → ARCore → app
+- **Integrations**: Ch85 (SurfaceFlinger buffer pipeline for AR overlays), Ch86 (Vulkan AHardwareBuffer import, YCbCr conversion), Ch27 (OpenXR on Linux/Monado — compare to ARCore OpenXR), Ch26 (Camera HAL / V4L2 — Linux-side equivalent), Ch6 (ARM Mali/Adreno driver powering ARCore rendering), Ch24 (Vulkan EGL interop analogous to AHardwareBuffer Vulkan path)
 
 ---
 

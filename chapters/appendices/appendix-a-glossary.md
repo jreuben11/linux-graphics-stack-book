@@ -796,11 +796,11 @@ The video codec specified in ITU-T H.265 and ISO/IEC 23008-2 (High Efficiency Vi
 
 ---
 
-### HDCP (High-bandwidth Digital Content Protection — GPU security context)
-HDCP is a content protection protocol (HDCP 1.4 and 2.3) mandated by content providers for protected media playback over HDMI and DisplayPort. In the Linux kernel, HDCP is implemented within the DRM/KMS layer via `drm_hdcp.c` and per-driver callbacks (`drm_connector_helper_funcs.hdcp_enable`); the user-space interface is the KMS connector property `Content Protection` (values: `Undesired`, `Desired`, `Enabled`). From a GPU security perspective, HDCP links to the broader protected content pipeline: on Intel, the HuC firmware (Ch5) participates in HDCP 2.3 authentication; on AMD, the PSP (Platform Security Processor) handles key exchange (`amdgpu_hdcp.c`). Wayland compositors must propagate `Content Protection` property changes from Vulkan/EGL surfaces to KMS; this is handled by the `wp_drm_lease_v1` and related protocols.
+### HDCP (High-bandwidth Digital Content Protection)
+A copy-protection protocol layered over HDMI, DisplayPort, and DVI that encrypts video data between a transmitting source (GPU) and a receiving sink (monitor or receiver). HDCP 1.4 uses a 56-bit key exchange; HDCP 2.x uses RSA/AES with hardware-rooted keys and a more complex authentication handshake. In the Linux kernel, HDCP support is implemented in `drivers/gpu/drm/display/drm_hdcp_helper.c` with GPU-driver-specific hooks; userspace controls HDCP state via the `Content Protection` connector property (values: `UNDESIRED`, `DESIRED`, `ENABLED`). From a GPU security perspective, on Intel GPUs the HuC firmware participates in HDCP 2.3 authentication; on AMD, the PSP (Platform Security Processor) handles key exchange (`amdgpu_hdcp.c`). Wayland compositors must propagate `Content Protection` property changes from Vulkan/EGL surfaces to KMS; this is handled by the `wp_drm_lease_v1` and related protocols. Kernel HDCP support requires cooperation with a userspace HDCP daemon that holds the master key store. HDCP is transparent to rendering; it affects only the encrypted wire transmission.
 
-**Chapter(s):** Ch3 — Advanced Display Features; Ch55 — GPU Containers and Cloud Compute; Ch5 — x86 GPU Drivers  
-**Related:** **GuC**, **HuC (Video Micro Controller, Intel)**, **vfio (Virtual Function I/O)**, **IOMMU group**
+**Chapter(s):** Ch3 — Advanced Display Features; Ch5 — x86 GPU Drivers; Ch55 — GPU Containers and Cloud Compute  
+**Related:** **connector (DRM)**, **DisplayPort**, **KMS**, **atomic modesetting**, **GuC (Graphics Micro Controller, Intel)**, **HuC (Video Micro Controller, Intel)**
 
 ---
 
@@ -907,14 +907,6 @@ The Android Binder interface (`frameworks/native/libs/gui/include/gui/IGraphicBu
 
 **Chapter(s):** Ch80 — SurfaceFlinger and the Android Display Pipeline; Ch82 — Android HardwareBuffer and Cross-Process GPU Memory  
 **Related:** **BufferQueue (Android)**, **ANativeWindow**, **SurfaceFlinger**, **android::Fence**
-
----
-
-### imgui (see Dear ImGui)
-See **Dear ImGui**. The project's canonical short name is `imgui`; the repository and header are `imgui.h`. The term "ImGui" is also used generically for the immediate-mode GUI paradigm, but in Linux graphics tooling it almost always refers to ocornut's library specifically.
-
-**Chapter(s):** Ch30 — Debugging & Profiling  
-**Related:** **Dear ImGui**, **Tracy (profiler)**
 
 ---
 
@@ -1027,10 +1019,10 @@ A C library (`gitlab.freedesktop.org/emersion/libliftoff`) that automatically as
 ---
 
 ### linux-drm-syncobj-v1
-A Wayland protocol extension (defined in the `wayland-protocols` repository as `linux-drm-syncobj-unstable-v1.xml`) that exposes DRM syncobj timeline points to Wayland compositor clients, enabling fully explicit synchronisation between the GPU driver and the compositor. A client imports a DRM syncobj fd into the compositor via `zwp_linux_drm_syncobj_manager_v1`, then attaches acquire and release timeline points to each `wl_buffer` submission. The compositor waits on the acquire point before scanning out the buffer and signals the release point when the display is done with it. This protocol directly solves the NVIDIA implicit-sync problem: NVIDIA's driver can signal the acquire syncobj point when rendering completes, without requiring `dma_resv` participation. Kernel backing is provided by `drivers/gpu/drm/drm_syncobj.c`.
+A Wayland protocol extension (defined in the `wayland-protocols` repository as `linux-drm-syncobj-unstable-v1.xml`) that exposes DRM syncobj timeline points to Wayland compositor clients, enabling fully explicit synchronisation between the GPU driver and the compositor. A client imports a DRM syncobj fd into the compositor via `zwp_linux_drm_syncobj_manager_v1`, then attaches acquire and release timeline points to each `wl_buffer` submission. The compositor waits on the acquire point before scanning out the buffer and signals the release point when the display is done with it. This protocol directly solves the NVIDIA implicit-sync problem: NVIDIA's driver can signal the acquire syncobj point when rendering completes, without requiring `dma_resv` participation. Kernel backing is provided by `drivers/gpu/drm/drm_syncobj.c`. The Mesa implementation resides in `src/egl/drivers/dri2/platform_wayland.c`. Stable as of wayland-protocols 2024.
 
-**Chapter(s):** Ch3 — Advanced Display Features; Ch20 — Wayland Protocol Fundamentals; Ch46 — The Evolving Wayland Protocol Ecosystem  
-**Related:** **drm_syncobj**, **explicit synchronisation**, **DMA fence**, **implicit synchronisation**, **timeline semaphore**
+**Chapter(s):** Ch3 — Advanced Display Features; Ch20 — Wayland Protocol Fundamentals; Ch46 — The Evolving Wayland Protocol Ecosystem; Ch75 — Explicit GPU Synchronisation  
+**Related:** **drm_syncobj**, **explicit synchronisation**, **DMA fence**, **implicit synchronisation**, **timeline semaphore**, **wp_linux_drm_syncobj_surface_v1**, **zwp_linux_dmabuf_v1**
 
 ---
 
@@ -1116,7 +1108,7 @@ Mesa is the open-source implementation of OpenGL, OpenGL ES, Vulkan, OpenCL, and
 
 ---
 
-### mesh shader (hardware perspective)
+### Mesh Shader
 A mesh shader is a programmable GPU pipeline stage that replaces the fixed-function vertex/tessellation/geometry pipeline with two new compute-like stages: the Task shader (optionally culls and generates mesh shader work groups) and the Mesh shader (generates indexed primitives directly in a thread-group, outputting vertices and primitive indices into a shared mesh output). On AMD RDNA2+ hardware, mesh shaders execute on the same CU array as compute shaders and are submitted via `VK_EXT_mesh_shader` draw commands (`vkCmdDrawMeshTasksEXT`); on NVIDIA Turing+, they use dedicated warp-level mesh output buffers. In Mesa, RADV implements `VK_EXT_mesh_shader` with ACO backend support (`src/amd/vulkan/radv_cmd_buffer.c`); ANV implements it for Gen12.5+ (`src/intel/vulkan/anv_cmd_buffer.c`). Mesh shaders are used for GPU-driven rendering where the CPU never touches per-draw primitive counts.
 
 **Chapter(s):** Ch18 — Vulkan Drivers; Ch56 — Ray Tracing on Linux  
@@ -1574,11 +1566,11 @@ RTXNTC (RTX Neural Texture Compression SDK, v0.5, `github.com/NVIDIAGameWorks/RT
 
 ## S
 
-### SASS (NVIDIA ISA)
-SASS (Shader ASSembly) is NVIDIA's native GPU machine code ISA — the actual binary executed by NVIDIA GPU shader processors (SMs, Streaming Multiprocessors). SASS is architecture-specific: `sm_86` for Ampere, `sm_89` for Ada Lovelace, `sm_90` for Hopper, each with distinct instruction encodings. NVIDIA does not publicly document SASS; it is the output of the proprietary PTXAS assembler (which JIT-compiles PTX) or the closed-source `cubin` compiler. In the open-source NVK Vulkan driver (`src/nouveau/compiler/`), the `nak` (NVIDIA Architecture Kernel) compiler translates Mesa NIR to SASS for the corresponding Turing/Ampere hardware. SASS is distinct from PTX — PTX is portable across architectures and JIT-compiled, while SASS is architecture-specific binary that runs directly.
+### SASS (Shader ASSembly)
+SASS (Shader ASSembly) is NVIDIA's device-specific GPU instruction set architecture — the final binary machine code executed by NVIDIA GPU shader processors (SMs, Streaming Multiprocessors). SASS is GPU-generation-specific: SM70 (Volta), SM75 (Turing), SM80/86 (Ampere), SM89 (Ada Lovelace), SM100 (Blackwell) each have distinct instruction encodings; the proprietary PTXAS assembler or the JIT compiler inside `libcuda.so` / `libnvvm.so` lowers PTX intermediate code to SASS at runtime. NVIDIA does not publicly document SASS; it can be inspected via `cuobjdump --dump-sass <binary>` or `nvdisasm` (both bundled with the CUDA Toolkit). Unlike PTX (which is forward-compatible across GPU generations via driver JIT), SASS binaries must be recompiled or cubin-overridden for each GPU architecture — understanding SASS is essential for hand-tuning critical CUDA kernels, as PTX-level optimisations do not always survive the PTX→SASS lowering. In the open-source NVK Vulkan driver (`src/nouveau/compiler/`), the `nak` (NVIDIA Architecture Kernel) compiler translates Mesa NIR directly to SASS for the corresponding Turing/Ampere hardware, bypassing PTX entirely. SASS is distinct from PTX — PTX is portable across architectures and JIT-compiled, while SASS is architecture-specific binary that runs directly on the SM hardware.
 
 **Chapter(s):** Ch10b — NVK: Building a Vulkan Driver from Scratch; Ch25 — GPU Compute; Ch66 — CUDA Runtime, Streams, and NVRTC  
-**Related:** **NVIR / PTX**, **ISA (Instruction Set Architecture)**, **NIR**, **SPIR-V**
+**Related:** **NVIR / PTX**, **ISA (Instruction Set Architecture)**, **NIR**, **SPIR-V**, **CUDA**, **tensor core / XMX**
 
 ---
 
@@ -2138,14 +2130,6 @@ The shared library (`libvulkan.so.1` on Linux) provided by the Khronos Group and
 
 ---
 
-### Vulkan Memory Allocator (see VMA)
-See **VMA (Vulkan Memory Allocator)**. The library's canonical name in GPUOpen documentation is "Vulkan Memory Allocator"; its header is `vk_mem_alloc.h` and its namespace prefix is `vma` / `VMA_`.
-
-**Chapter(s):** Ch24 — Vulkan and EGL for Application Developers  
-**Related:** **VMA (Vulkan Memory Allocator)**, **VkBuffer**, **VkImage**
-
----
-
 ### Vulkan Validation Layers
 A specific Vulkan layer (`VK_LAYER_KHRONOS_validation`, provided by the `vulkan-validation-layers` package or the `Vulkan-ValidationLayers` GitHub repository) that inserts comprehensive API usage checking between the application and the driver. The validation layer checks parameter validity, object lifetime, synchronization hazards (via `VK_EXT_synchronization2`), image layout correctness, pipeline layout compatibility, and render pass conformance. Errors are reported via `VK_EXT_debug_utils` callbacks. The validation layer has substantial CPU overhead and must not be enabled in production; it is the first diagnostic tool to enable when debugging Vulkan crashes or incorrect rendering. It is separate from GPU-assisted validation (`VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT`), which catches shader errors at runtime.
 
@@ -2161,6 +2145,14 @@ NVIDIA Warp (BSD-3, `pip install warp-lang`, `github.com/NVIDIA/warp`) is a Pyth
 
 **Chapter(s):** Ch69 — NVIDIA Omniverse, OpenUSD, and the RTX Renderer  
 **Related:** **CUDA**, **PhysX 5**, **Omniverse (NVIDIA)**, **warp (NVIDIA thread group)**
+
+---
+
+### warp (NVIDIA thread group)
+A warp is NVIDIA's fundamental SIMT (Single Instruction, Multiple Thread) execution unit — a group of 32 threads that execute the same instruction in lockstep on a Streaming Multiprocessor (SM). All 32 threads in a warp share a program counter; divergent branches (where some threads take a different path) are handled via predication or the warp-level SIMT stack, serialising the divergent paths and masking inactive threads. An SM can have dozens of warps in flight simultaneously, hiding memory latency by switching to a ready warp while another warp waits for a cache miss or memory operation. Warp schedulers (typically 4 per SM on Ampere) select eligible warps every cycle. In CUDA, the warp size is always 32 and is exposed as `warpSize` device property and the `__warpSize` built-in; PTX instructions such as `vote.sync`, `shfl.sync`, and `match.sync` operate at warp granularity. NVIDIA mesh shaders produce output at warp-level mesh buffers. Do not confuse with AMD's equivalent concept, the wavefront (64 or 32 lanes depending on GCN/RDNA architecture), or with NVIDIA Warp (`warp-lang`), the Python GPU simulation framework.
+
+**Chapter(s):** Ch25 — GPU Compute; Ch66 — CUDA Runtime, Streams, and NVRTC  
+**Related:** **CUDA**, **wavefront (AMD thread group)**, **compute unit (CU)**, **SASS (Shader ASSembly)**, **Mesh Shader**, **WARP (NVIDIA Python GPU kernel)**
 
 ---
 
