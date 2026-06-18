@@ -23,6 +23,28 @@ This chapter targets **systems and driver developers** who need to understand ho
 
 Ray tracing — the simulation of light transport by casting rays against scene geometry — has been the dominant rendering technique in offline production since the 1980s, but only became practical in real-time graphics with the introduction of dedicated BVH-traversal hardware in 2018. Three major GPU vendors have shipped hardware ray tracing on Linux: NVIDIA via RT Cores (Turing onwards), AMD via Ray Accelerators in RDNA 2 and later, and Intel via Ray Tracing Units in Xe-HPG (Arc/DG2 and later). Despite different names and microarchitectural choices, all three share the same fundamental design goal: offload the hot inner loop of BVH traversal off the programmable shader pipeline and into fixed-function or semi-fixed-function silicon.
 
+```mermaid
+graph LR
+    subgraph "NVIDIA (Turing+)"
+        NV_SM["Shader Multiprocessor\n(SM)"]
+        NV_RT["RT Core\n(fixed-function traversal)"]
+        NV_SM -- "traceRayEXT\n(stall + dispatch)" --> NV_RT
+        NV_RT -- "hit/miss result" --> NV_SM
+    end
+    subgraph "AMD (RDNA 2+)"
+        AMD_WGP["Workgroup Processor\n(WGP)"]
+        AMD_RA["Ray Accelerator\n(instruction-level)"]
+        AMD_WGP -- "IMAGE_BVH_INTERSECT_RAY" --> AMD_RA
+        AMD_RA -- "sorted child ptrs / hit" --> AMD_WGP
+    end
+    subgraph "Intel (Xe-HPG)"
+        INTEL_EU["Execution Unit\n(EU)"]
+        INTEL_RTU["Ray Tracing Unit\n(RTU)"]
+        INTEL_EU -- "send ray-dispatch msg" --> INTEL_RTU
+        INTEL_RTU -- "hit/miss + EU signal" --> INTEL_EU
+    end
+```
+
 ### 1.1 Bounding Volume Hierarchy Primer
 
 A BVH partitions scene geometry into a tree of axis-aligned bounding boxes (AABBs). Each internal node stores several child boxes; each leaf stores one or a small number of primitives. A ray traversal descends the tree by testing the ray against each node's bounding boxes — rejecting subtrees that cannot be hit — and evaluates full ray/triangle intersection only at leaf primitives. In hardware the tree is materialised as a GPU buffer and traversal is driven by dedicated state machines rather than programmable shader threads.
@@ -83,6 +105,18 @@ The Vulkan KHR ray tracing extensions were promoted from NV-specific extensions 
 | `VK_KHR_ray_tracing_pipeline` | Full ray tracing pipeline with SBT and dedicated shader stages |
 | `VK_KHR_ray_query` | Inline ray queries from any shader stage |
 | `VK_KHR_deferred_host_operations` | CPU-side parallelism for AS builds and pipeline compiles |
+
+```mermaid
+graph TD
+    ACCEL["VK_KHR_acceleration_structure\n(BLAS / TLAS build and manage)"]
+    RTP["VK_KHR_ray_tracing_pipeline\n(SBT + dedicated shader stages)"]
+    RQ["VK_KHR_ray_query\n(inline from any shader stage)"]
+    DHO["VK_KHR_deferred_host_operations\n(CPU-parallel AS builds)"]
+
+    ACCEL -- "required by" --> RTP
+    ACCEL -- "required by" --> RQ
+    DHO -. "optional parallelism for" .-> ACCEL
+```
 
 [Source: Ray Tracing in Vulkan – Khronos Blog](https://www.khronos.org/blog/ray-tracing-in-vulkan)
 
@@ -160,6 +194,26 @@ vkDestroyDeferredOperationKHR(device, NULL, &deferredOp);
 ## 3. Acceleration Structure Lifecycle
 
 An acceleration structure is a VkBuffer-backed GPU object. The application allocates the buffer, queries the required scratch size, and then submits a build command. This section traces that lifecycle in code.
+
+```mermaid
+graph TD
+    TLAS["TLAS\n(VkAccelerationStructureKHR\ntype=TOP_LEVEL)"]
+    INST["VkAccelerationStructureInstanceKHR\n(per-instance transform + BLAS ref)"]
+    BLAS_A["BLAS A\n(triangle geometry)"]
+    BLAS_B["BLAS B\n(AABB / procedural geometry)"]
+    BUF_A["VkBuffer\n(device-local backing)"]
+    BUF_B["VkBuffer\n(device-local backing)"]
+    SCRATCH["Scratch VkBuffer\n(temporary build storage)"]
+
+    TLAS --> INST
+    INST -- "accelerationStructureReference" --> BLAS_A
+    INST -- "accelerationStructureReference" --> BLAS_B
+    BLAS_A --> BUF_A
+    BLAS_B --> BUF_B
+    SCRATCH -. "build-time only" .-> TLAS
+    SCRATCH -. "build-time only" .-> BLAS_A
+    SCRATCH -. "build-time only" .-> BLAS_B
+```
 
 ### 3.1 Bottom-Level AS (BLAS) from Triangle Geometry
 
@@ -330,6 +384,26 @@ The full ray tracing pipeline involves five shader stages with well-defined call
 | Any-hit | Triangle candidate hit | Opacity test; may call `ignoreIntersectionEXT` |
 | Closest-hit | Closest confirmed hit | Shading; may recurse via `traceRayEXT` |
 | Miss | No geometry hit | Sky / environment lighting |
+
+```mermaid
+graph TD
+    DISPATCH["vkCmdTraceRaysKHR\n(SBT dispatch)"]
+    RAYGEN["Ray Generation Shader\n(VK_SHADER_STAGE_RAYGEN_BIT_KHR)"]
+    TRAV["BVH Traversal\n(hardware-accelerated)"]
+    ISECT["Intersection Shader\n(VK_SHADER_STAGE_INTERSECTION_BIT_KHR)\ncandidate AABB hit"]
+    ANYHIT["Any-Hit Shader\n(VK_SHADER_STAGE_ANY_HIT_BIT_KHR)\nopacity test"]
+    CLOSESTHIT["Closest-Hit Shader\n(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)\nshading"]
+    MISS["Miss Shader\n(VK_SHADER_STAGE_MISS_BIT_KHR)\nsky / environment"]
+
+    DISPATCH --> RAYGEN
+    RAYGEN -- "traceRayEXT" --> TRAV
+    TRAV -- "AABB candidate" --> ISECT
+    TRAV -- "triangle candidate" --> ANYHIT
+    ANYHIT -- "confirmed hit" --> TRAV
+    TRAV -- "closest confirmed hit" --> CLOSESTHIT
+    TRAV -- "no hit" --> MISS
+    CLOSESTHIT -. "recursive traceRayEXT" .-> TRAV
+```
 
 Ray generation shaders are analogous to compute shaders: they launch a 3D grid via `vkCmdTraceRaysKHR`, and each invocation typically casts one or more primary rays. Closest-hit and miss shaders compute the final radiance sample. Any-hit shaders are the canonical place for alpha-test transparency. Callable shaders (also part of `VK_KHR_ray_tracing_pipeline`) are omitted from the traversal-triggered stages in the table above, though Vulkan defines `VK_SHADER_STAGE_CALLABLE_BIT_KHR` as a distinct shader stage. They are invoked via `executeCallableEXT` from raygen, closest-hit, or miss shaders, not by the traversal engine itself.
 
@@ -524,6 +598,28 @@ RADV implements BVH traversal as a **traversal shader** — a driver-generated s
 
 Mesa 26.0 addressed this through proper **function calls** in the ACO compiler backend. The key change was implementing `p_call` pseudo-instructions that lower to `s_swappc_b64` (AMD's "swap PC" instruction for indirect calls) and defining an ABI for register preservation across call boundaries. With this change, any-hit and intersection shaders compile independently and are called at runtime via their addresses stored in the SBT. [Source: pixelcluster.github.io — Inside Mesa 26.0's RADV RT Improvements](https://pixelcluster.github.io/Mesa-26/)
 
+```mermaid
+graph TD
+    SPIRV["SPIR-V\n(ray tracing pipeline)"]
+    NIR["NIR\n(Mesa IR front-end)"]
+    NIRT["radv_nir_rt_shader.c\n(ray tracing lowering)"]
+    INTR["nir_intrinsic_bvh64_intersect_ray_amd\n(NIR intrinsic)"]
+    ACO["ACO backend compiler\n(NIR → RDNA ISA)"]
+    PCALL["p_call pseudo-instruction\n(Mesa 26.0)"]
+    SWAPPC["s_swappc_b64\n(AMD ISA indirect call)"]
+    BVH["IMAGE_BVH64_INTERSECT_RAY\n(RDNA ISA instruction)"]
+    RA["Ray Accelerator\n(RDNA 2+ hardware)"]
+
+    SPIRV --> NIR
+    NIR --> NIRT
+    NIRT --> INTR
+    INTR --> ACO
+    ACO --> PCALL
+    PCALL --> SWAPPC
+    ACO --> BVH
+    BVH --> RA
+```
+
 The result is that compilation can proceed in parallel across shader groups, and the megashader explosion is contained to the traversal logic itself.
 
 ### 5.4 RADV_DEBUG=rt
@@ -635,6 +731,32 @@ D3D12's `ID3D12Device5::CreateRaytracingAccelerationStructure` takes a `D3D12_BU
 - `D3D12_RAYTRACING_GEOMETRY_DESC` for triangle geometry → `VkAccelerationStructureGeometryTrianglesDataKHR`
 - `D3D12_RAYTRACING_INSTANCE_DESC` → `VkAccelerationStructureInstanceKHR`
 
+```mermaid
+graph LR
+    subgraph "D3D12 / DXR"
+        D3D_BLAS["D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL"]
+        D3D_TLAS["D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL"]
+        D3D_GEOM["D3D12_RAYTRACING_GEOMETRY_DESC\n(triangles)"]
+        D3D_INST["D3D12_RAYTRACING_INSTANCE_DESC"]
+        D3D_DISP["D3D12_DISPATCH_RAYS_DESC"]
+        D3D_SBT["D3D12_GPU_VIRTUAL_ADDRESS_RANGE\n(SBT region)"]
+    end
+    subgraph "Vulkan KHR"
+        VK_BLAS["VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR"]
+        VK_TLAS["VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR"]
+        VK_GEOM["VkAccelerationStructureGeometryTrianglesDataKHR"]
+        VK_INST["VkAccelerationStructureInstanceKHR"]
+        VK_DISP["vkCmdTraceRaysKHR\n(regions)"]
+        VK_SBT["VkStridedDeviceAddressRegionKHR"]
+    end
+    D3D_BLAS -- "VKD3D-Proton" --> VK_BLAS
+    D3D_TLAS -- "VKD3D-Proton" --> VK_TLAS
+    D3D_GEOM -- "VKD3D-Proton" --> VK_GEOM
+    D3D_INST -- "VKD3D-Proton" --> VK_INST
+    D3D_DISP -- "VKD3D-Proton" --> VK_DISP
+    D3D_SBT -- "VKD3D-Proton" --> VK_SBT
+```
+
 The build flags (`D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE`, `FAST_BUILD`, `ALLOW_UPDATE`, `ALLOW_COMPACTION`) map directly to `VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR` and siblings.
 
 The AS backing memory is a D3D12 resource (`ID3D12Resource`) under the hood, which VKD3D-Proton represents as a Vulkan `VkBuffer`. This mapping works naturally because `VK_KHR_acceleration_structure` requires the AS to be backed by a `VkBuffer` with the `VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR` flag — matching D3D12's model of treating the AS as an opaque buffer region.
@@ -672,6 +794,22 @@ One known overhead is the SBT stride translation: where D3D12 games use variable
 ## 9. Blender Cycles
 
 Blender Cycles is a production path-tracing renderer integrated into Blender. It targets multiple GPU backends: CUDA and OptiX for NVIDIA, HIP and HIP-RT for AMD, and (progressively) a Vulkan RT path for vendor-neutral hardware acceleration. Blender 5.0 ships the most recent HIP-RT update relevant to Linux.
+
+```mermaid
+graph TD
+    CYCLES["Blender Cycles\n(path-tracing renderer)"]
+    OPTIX["OptiX backend\n(NVIDIA proprietary)"]
+    HIPRT["HIP-RT backend\n(AMD ROCm)"]
+    VKQ["Vulkan RT backend\n(VK_KHR_ray_query\nfrom compute shaders)"]
+
+    CYCLES --> OPTIX
+    CYCLES --> HIPRT
+    CYCLES --> VKQ
+
+    OPTIX -- "RT Cores\n(Turing+)" --> NV_HW["NVIDIA GPU\n(proprietary driver)"]
+    HIPRT -- "IMAGE_BVH_INTERSECT_RAY\n(RDNA 2+)" --> AMD_HW["AMD GPU\n(ROCm / HIP)"]
+    VKQ -- "rayQueryInitializeEXT\n(any vendor)" --> ANY_HW["AMD / Intel / NVIDIA\n(Mesa or proprietary)"]
+```
 
 ### 9.1 OptiX on NVIDIA (Linux)
 

@@ -43,6 +43,46 @@ The result is a two-stage model:
 
 The additional tooling layer between them — SPIRV-Tools for validation/optimization, spirv-cross for reflection and portability — fills practical gaps: drivers may reject invalid SPIR-V that front ends accidentally emit; applications may need to inspect descriptor bindings at runtime; non-Vulkan platforms (Metal, D3D11) need the SPIR-V translated back to their own shading languages.
 
+```mermaid
+graph TD
+    subgraph "Portable Front Ends (application space / offline)"
+        GLSL["GLSL source"]
+        HLSL["HLSL source"]
+        SlangSrc["Slang source"]
+        WGSL["WGSL source"]
+        glslang["glslang"]
+        DXC["DXC\n(-spirv)"]
+        slangc["slangc\n(-target spirv)"]
+        Tint["Tint"]
+        GLSL --> glslang
+        HLSL --> DXC
+        SlangSrc --> slangc
+        WGSL --> Tint
+    end
+
+    subgraph "Tooling Layer"
+        SPIRVT["SPIRV-Tools\n(spirv-val / spirv-opt)"]
+        spirvcross["spirv-cross\n(reflection / cross-compilation)"]
+    end
+
+    subgraph "Vendor Back Ends (Mesa / driver)"
+        NIR["Mesa spirv_to_nir()\n(src/compiler/spirv/)"]
+        ACO["ACO\n(RDNA ISA)"]
+        BRW["BRW\n(Xe EU ISA)"]
+        NAK["NAK\n(Turing/Ada SASS)"]
+        NIR --> ACO
+        NIR --> BRW
+        NIR --> NAK
+    end
+
+    glslang -- "SPIR-V" --> SPIRVT
+    DXC -- "SPIR-V" --> SPIRVT
+    slangc -- "SPIR-V" --> SPIRVT
+    Tint -- "SPIR-V" --> SPIRVT
+    SPIRVT -- "validated/optimized SPIR-V" --> NIR
+    SPIRVT -. "reflection / portability" .-> spirvcross
+```
+
 ### 1.2 The Full Pipeline
 
 ```
@@ -83,6 +123,22 @@ glslang is the Khronos reference implementation for GLSL (and partial HLSL) pars
 - **SPIR-V emitter**: in `SPIRV/GlslangToSpv.cpp`, walks the `TIntermediate` AST and emits SPIR-V words into a `std::vector<uint32_t>`
 
 The split between the `TShader` object (per-stage parsing) and the `TProgram` object (cross-stage linking) mirrors the GLSL pipeline: each stage can be parsed independently, but the linker resolves interface variables across stages and validates that outputs from one stage match inputs of the next before SPIR-V is generated.
+
+```mermaid
+graph TD
+    Source["GLSL source\n(per stage)"]
+    TShader["glslang::TShader\n(per-stage parsing)"]
+    TIntermediate["glslang::TIntermediate\n(AST: TIntermNode tree)"]
+    TProgram["glslang::TProgram\n(cross-stage linking)"]
+    SpvEmitter["SPIR-V emitter\n(SPIRV/GlslangToSpv.cpp)"]
+    SPIRV["SPIR-V words\n(std::vector<uint32_t>)"]
+
+    Source --> TShader
+    TShader --> TIntermediate
+    TIntermediate --> TProgram
+    TProgram -- "resolves interface variables\nacross stages" --> SpvEmitter
+    SpvEmitter --> SPIRV
+```
 
 ### 2.2 glslangValidator Command-Line Tool
 
@@ -375,6 +431,26 @@ spirv_cross::Compiler         (base: parsing, reflection, resource queries)
 └── spirv_cross::CompilerMSL  (emit Metal Shading Language)
 ```
 
+```mermaid
+graph TD
+    Base["spirv_cross::Compiler\n(base: parsing, reflection,\nresource queries)"]
+    GLSL["spirv_cross::CompilerGLSL\n(emit GLSL / GLSL ES)"]
+    HLSL["spirv_cross::CompilerHLSL\n(emit HLSL)"]
+    MSL["spirv_cross::CompilerMSL\n(emit Metal Shading Language)"]
+
+    Base --> GLSL
+    GLSL --> HLSL
+    Base --> MSL
+
+    MoltenVK["MoltenVK\n(Vulkan on macOS/iOS)"]
+    ANGLE["ANGLE\n(WebGL / non-Vulkan backends)"]
+    Reflect["Reflection\n(descriptor bindings,\npush constants)"]
+
+    MSL -- "used by" --> MoltenVK
+    GLSL -- "used by" --> ANGLE
+    Base -- "used by" --> Reflect
+```
+
 ### 5.3 Compilation Example (SPIR-V → GLSL ES)
 
 ```cpp
@@ -504,6 +580,34 @@ Every Mesa Vulkan driver constructs a `spirv_to_nir_options` matching its hardwa
 
 **Extended instruction sets**: `OpExtInst` instructions from `GLSL.std.450` (sin, cos, pow, etc.) are handled by the `ext_inst_glsl450` callback or by the built-in GLSL 450 handler in `src/compiler/spirv/vtn_glsl450.c`, which emits the corresponding NIR ALU or intrinsic instructions.
 
+```mermaid
+graph LR
+    subgraph "SPIR-V constructs"
+        OpDecorate["OpDecorate / OpMemberDecorate\n(location, binding, built-in)"]
+        OpVariable["OpVariable\n(StorageClass::Input/Output/\nUniformConstant/StorageBuffer)"]
+        OpLoadStore["OpLoad / OpStore\n(on interface variables)"]
+        BuiltIn["BuiltIn variables\n(Position, FragCoord,\nGlobalInvocationId, ...)"]
+        CF["Structured control flow\n(merge blocks, continue targets)"]
+        OpExtInst["OpExtInst\n(GLSL.std.450: sin, cos, pow, ...)"]
+    end
+
+    subgraph "NIR representation"
+        NIRVarProp["nir_variable properties\n(data.location, data.binding)"]
+        NIRVar["nir_variable objects\n(nir_var_shader_in/out,\nnir_var_uniform,\nnir_var_mem_ssbo)"]
+        NIRDeref["nir_intrinsic_load_deref /\nnir_intrinsic_store_deref"]
+        NIRSysVal["nir_intrinsic_load_*\n(e.g. load_global_invocation_id)"]
+        NIRCF["nir_loop / nir_if\nconstructs"]
+        NIRAlu["NIR ALU / intrinsic\ninstructions"]
+    end
+
+    OpDecorate -- "decoration map" --> NIRVarProp
+    OpVariable -- "storage class mapping" --> NIRVar
+    OpLoadStore -- "lowered to" --> NIRDeref
+    BuiltIn -- "lookup table\n(vtn_variables.c)" --> NIRSysVal
+    CF -- "converted to" --> NIRCF
+    OpExtInst -- "ext_inst_glsl450 callback\n(vtn_glsl450.c)" --> NIRAlu
+```
+
 ---
 
 ## 7. Per-Vendor ISA Backends
@@ -530,6 +634,25 @@ ACO is a custom compiler backend for AMD GCN and RDNA GPUs, used exclusively by 
 10. **Wait state insertion** (`aco_insert_waitcnt.cpp`): inserts `s_waitcnt` instructions to synchronize between VMEM, SMEM, export, and LDS operations.
 11. **Hazard resolution** (`aco_insert_NOPs.cpp`): inserts NOP instructions required by RDNA errata.
 12. **Assembly emission** (`aco_assembler.cpp`): encodes final ACO IR into RDNA/GCN machine code words.
+
+```mermaid
+graph TD
+    NIR_IN["NIR shader\n(from spirv_to_nir)"]
+    InstrSel["1. Instruction Selection\n(aco_instruction_selection.cpp)\nNIR → ACO IR pseudo-instructions\ndivergence analysis: scalar vs. vector"]
+    ValNum["2. Value Numbering\n(aco_value_numbering.cpp)\nGlobal value numbering / CSE"]
+    Opt["3. Optimization\n(aco_optimizer.cpp)\nInstruction combining, constant inlining"]
+    ReduceTemp["4. Reduction Temporaries\n(aco_reduce_assign.cpp)\nSubgroup reduction setup"]
+    LiveVar["5. Live-Variable Analysis\n(aco_live_var_analysis.cpp)\nLive ranges for register allocation"]
+    Spill["6. Spilling\n(aco_spill.cpp)\nSpill/reload when register pressure exceeds limit"]
+    Sched["7. Instruction Scheduling\n(aco_scheduler.cpp)\nMaximize ILP, hide memory latency"]
+    RegAlloc["8. Register Allocation\n(aco_register_allocation.cpp)\nLinear-scan SSA allocator\nSGPR + VGPR banks"]
+    HWLower["9. SSA Elimination / HW Lowering\n(aco_lower_to_hw_instr.cpp)\nPseudo-instructions → real HW instructions"]
+    WaitCnt["10. Wait State Insertion\n(aco_insert_waitcnt.cpp)\ns_waitcnt for VMEM/SMEM/LDS sync"]
+    Hazard["11. Hazard Resolution\n(aco_insert_NOPs.cpp)\nNOP insertion for RDNA errata"]
+    Assemble["12. Assembly Emission\n(aco_assembler.cpp)\nACO IR → RDNA/GCN machine code"]
+
+    NIR_IN --> InstrSel --> ValNum --> Opt --> ReduceTemp --> LiveVar --> Spill --> Sched --> RegAlloc --> HWLower --> WaitCnt --> Hazard --> Assemble
+```
 
 **ACO IR example**: A simple multiply-add in ACO IR looks like this after instruction selection (conceptual; ACO IR is an in-memory C++ object graph, not a textual format):
 
@@ -565,6 +688,33 @@ The primary compilation entry points are:
 
 The main NIR-to-EU-IR lowering entry point is `brw_from_nir()` (renamed from `brw_fs_nir.cpp` to `brw_from_nir.cpp` in Mesa 25.x). The function walks NIR instructions and emits Intel's internal `fs_inst` / `vec4_instruction` IR, which the BRW assembler then encodes into EU binaries.
 
+```mermaid
+graph TD
+    NIR_BRW["NIR shader\n(from spirv_to_nir)"]
+
+    subgraph "Per-stage BRW entry points"
+        VS["brw_compile_vs()\n(brw_compile_vs.cpp)"]
+        FS["brw_compile_fs()\n(brw_compile_fs.cpp)"]
+        CS["brw_compile_cs()\n(brw_compile_cs.cpp)"]
+        GS["brw_compile_gs()\n(brw_compile_gs.cpp)"]
+    end
+
+    BRWFromNIR["brw_from_nir()\n(brw_from_nir.cpp)\nNIR → fs_inst / vec4_instruction IR"]
+    BRWAsm["BRW assembler\nEU binary encoding"]
+
+    NIR_BRW --> VS
+    NIR_BRW --> FS
+    NIR_BRW --> CS
+    NIR_BRW --> GS
+
+    VS --> BRWFromNIR
+    FS --> BRWFromNIR
+    CS --> BRWFromNIR
+    GS --> BRWFromNIR
+
+    BRWFromNIR --> BRWAsm
+```
+
 Key compilation characteristics:
 
 - **Explicit predication**: Intel EU shaders use predicated execution (IF/ENDIF blocks in the EU ISA) rather than branch-based divergence. The BRW compiler converts NIR `nir_if` to `BRW_OPCODE_IF` / `BRW_OPCODE_ENDIF` and manages the EU's control flow stack.
@@ -584,6 +734,17 @@ NAK targets NVIDIA's Turing (SM75) and newer GPU microarchitectures (Ampere, Ada
 3. Converts NIR to NAK's own SSA-based IR (`src/nouveau/compiler/nak/ir.rs`)
 4. Applies NAK-specific optimizations and register allocation
 5. Emits Turing/Ampere/Ada SASS (Streaming ASSembler) binary code via NAK's own instruction encoder
+
+```mermaid
+graph TD
+    NIR_NVK["NIR shader\n(from spirv_to_nir via NVK)"]
+    NIROpt["NIR-level optimizations\n(standard Mesa NIR passes)"]
+    NAKIR["NAK SSA-based IR\n(src/nouveau/compiler/nak/ir.rs)"]
+    NAKOpt["NAK-specific optimizations\nand register allocation"]
+    SASS["Turing/Ampere/Ada SASS binary\n(NAK instruction encoder)"]
+
+    NIR_NVK --> NIROpt --> NAKIR --> NAKOpt --> SASS
+```
 
 **NAK vs. PTX**: Earlier open-source NVIDIA compilation approaches relied on PTX (Parallel Thread Execution), NVIDIA's virtual ISA. NAK bypasses PTX entirely and emits SASS directly, giving it full control over instruction scheduling, register allocation, and code generation — the same approach that NVIDIA's proprietary compiler takes. This is possible because Nouveau has reverse-engineered NVIDIA's SASS encoding through the Envytools project. [Source](https://github.com/envytools/envytools).
 
@@ -641,6 +802,24 @@ Mesa 24.x switched the default cache backend from a flat multi-file layout (one 
 ### 8.4 Vulkan Pipeline Cache Integration
 
 At the Vulkan API level, `VkPipelineCache` is the application-visible handle for caching compiled pipeline state. Drivers implement `VkPipelineCache` on top of Mesa's disk_cache: when `vkCreateGraphicsPipeline()` is called, the driver computes a key from the `VkGraphicsPipelineCreateInfo` structure hash, looks up the disk cache, and either retrieves a pre-compiled shader binary or compiles from SPIR-V and stores the result.
+
+```mermaid
+graph TD
+    App["Application\n(vkCreateGraphicsPipeline / vkCreateComputePipeline)"]
+    VkPC["VkPipelineCache\n(Vulkan API handle)"]
+    DiskCache["Mesa disk_cache\n(src/util/disk_cache.c)\nkey: SHA-1(SPIR-V XOR driver UUID)"]
+    CacheDir["$XDG_CACHE_HOME/mesa_shader_cache/\nor MESA_SHADER_CACHE_DIR"]
+    SPIRVtoNIR["spirv_to_nir()\n+ vendor backend\n(ACO / BRW / NAK)"]
+    ISABinary["Compiled ISA binary"]
+
+    App --> VkPC
+    VkPC -- "key lookup" --> DiskCache
+    DiskCache -- "cache miss: compile" --> SPIRVtoNIR
+    SPIRVtoNIR --> ISABinary
+    ISABinary -- "disk_cache_put()" --> DiskCache
+    DiskCache -- "cache hit: disk_cache_get()" --> ISABinary
+    DiskCache --> CacheDir
+```
 
 ### 8.5 Fossilize: Serializing Entire Pipeline State
 

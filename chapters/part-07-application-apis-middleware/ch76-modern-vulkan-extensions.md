@@ -27,6 +27,19 @@ Vulkan was deliberately launched in 2016 with a lean core and a principled exten
 
 Vulkan extensions carry one of three prefixes that encode their provenance and degree of standardisation:
 
+```mermaid
+graph LR
+    VendorExt["VK_NV_ / VK_AMD_ / VK_QCOM_\n(Single-vendor)"]
+    MultiExt["VK_EXT_\n(Multi-vendor)"]
+    KHR["VK_KHR_\n(Khronos-ratified)"]
+    Core["Vulkan Core\n(1.2 / 1.3 / 1.4)"]
+
+    VendorExt -- "inspires" --> MultiExt
+    VendorExt -- "inspires" --> KHR
+    MultiExt -- "ratified" --> KHR
+    KHR -- "promoted" --> Core
+```
+
 - **`VK_KHR_`** — Khronos-ratified extensions. These undergo an IP rights review by the Khronos Board of Promoters and must be approved by vote. KHR extensions are the canonical candidates for eventual promotion to a core Vulkan version.
 - **`VK_EXT_`** — Multi-vendor extensions agreed upon by two or more IHVs but not necessarily ratified (though Khronos has begun retroactively ratifying selected EXT extensions). EXT extensions often reach a broader implementation base than vendor-specific work.
 - **`VK_NV_`, `VK_AMD_`, `VK_QCOM_`, etc.** — Single-vendor extensions that expose proprietary hardware features. They may later inspire a multi-vendor EXT or be superseded by KHR standardisation. `VK_NV_cooperative_matrix` is a canonical example: the NV extension shipped first on Turing GPUs, then drove the KHR standardisation effort that produced `VK_KHR_cooperative_matrix`.
@@ -204,6 +217,28 @@ vkCmdPipelineBarrier2(cmd, &dep2);
 
 Pipelines used inside dynamic rendering sessions must declare their attachment formats via `VkPipelineRenderingCreateInfo` in the pipeline's `pNext` chain instead of referencing a `VkRenderPass` object.
 
+### Dynamic Rendering Frame Loop
+
+The following diagram reflects the explicit frame-recording sequence described above: image layout transitions via `vkCmdPipelineBarrier2` bookend the rendering instance, replacing the implicit transitions that render pass objects previously managed.
+
+```mermaid
+graph TD
+    Acquire["Acquire swapchain image\n(vkAcquireNextImageKHR)"]
+    Barrier1["vkCmdPipelineBarrier2\nUNDEFINED → COLOR_ATTACHMENT_OPTIMAL"]
+    BeginRender["vkCmdBeginRendering\n(VkRenderingInfo + VkRenderingAttachmentInfo)"]
+    DrawCalls["Draw calls\n(pipeline with VkPipelineRenderingCreateInfo)"]
+    EndRender["vkCmdEndRendering"]
+    Barrier2["vkCmdPipelineBarrier2\nCOLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR"]
+    Present["vkQueuePresentKHR"]
+
+    Acquire --> Barrier1
+    Barrier1 --> BeginRender
+    BeginRender --> DrawCalls
+    DrawCalls --> EndRender
+    EndRender --> Barrier2
+    Barrier2 --> Present
+```
+
 ### Mobile vs. Desktop Tile Memory Implications
 
 For tile-based deferred renderers (TBDR) on mobile — ARM Mali, Qualcomm Adreno, Imagination PowerVR — the original render pass subpass mechanism conveyed whether inter-attachment dependencies could be satisfied entirely within tile SRAM, avoiding costly DRAM spills. Dynamic rendering sacrifices this explicit dependency declaration. On Mali, the driver must conservatively assume attachments can't share tile memory across a dynamic rendering instance boundary unless application-provided input attachments or `VK_KHR_dynamic_rendering_local_read` (a Vulkan 1.4 addition) communicate the dependency.
@@ -346,6 +381,35 @@ The fixed vertex → primitive assembly → rasterizer pipeline assumes geometry
 `VK_EXT_mesh_shader`, published in 2022 and broadly adopted across RDNA 2+, Ada Lovelace, and Intel Xe, replaces vertex + tessellation + geometry with two compute-like stages: **task shaders** and **mesh shaders**.
 
 [Source: Khronos Mesh Shading for Vulkan](https://www.khronos.org/blog/mesh-shading-for-vulkan)
+
+### Mesh Shader Pipeline vs. Traditional Vertex Pipeline
+
+`VK_EXT_mesh_shader` replaces vertex + tessellation + geometry stages with two compute-like stages. The diagram shows the replacement described in the text:
+
+```mermaid
+graph LR
+    subgraph "Traditional Vertex Pipeline"
+        VB["Vertex Buffer\n(index + attribute)"]
+        VS["Vertex Shader"]
+        TESS["Tessellation\n(Control + Eval)"]
+        GS["Geometry Shader"]
+        RAST1["Rasteriser"]
+    end
+
+    subgraph "Mesh Shader Pipeline (VK_EXT_mesh_shader)"
+        Dispatch["vkCmdDrawMeshTasksEXT"]
+        TS["Task Shader\n(EmitMeshTasksEXT)"]
+        Payload["taskPayloadSharedEXT\n(broadcast channel)"]
+        MS["Mesh Shader\n(SetMeshOutputsEXT)"]
+        RAST2["Rasteriser"]
+    end
+
+    VB --> VS --> TESS --> GS --> RAST1
+    Dispatch --> TS
+    TS -- "payload" --> Payload
+    Payload --> MS
+    MS --> RAST2
+```
 
 ### Task Shaders and Payload Passing
 
@@ -694,6 +758,28 @@ Shader objects win when:
 | Fragment Output Interface | `VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT` | Blend state + render target formats |
 
 [Source: Vulkan Documentation — VK_EXT_graphics_pipeline_library proposal](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_graphics_pipeline_library.html)
+
+### GPL Segment Decomposition and Linking
+
+The four independently compilable segments and the two linking paths (fast-link at draw time vs. full optimising recompile in background) are shown below:
+
+```mermaid
+graph TD
+    VI["Vertex Input Interface\n(bindings + attributes)"]
+    PreRast["Pre-rasterisation Shaders\n(vertex / tessellation / geometry / mesh\n+ viewport + rasterisation state)"]
+    FragShad["Fragment Shader\n(fragment shader + multisampling\n+ depth-stencil state)"]
+    FragOut["Fragment Output Interface\n(blend state + render target formats)"]
+
+    FastLink["Fast-link executable pipeline\n(VkPipelineLibraryCreateInfoKHR)"]
+    LTOPipeline["LTO-optimised pipeline\n(LINK_TIME_OPTIMIZATION_BIT_EXT\nbackground recompile)"]
+
+    VI --> FastLink
+    PreRast --> FastLink
+    FragShad --> FastLink
+    FragOut --> FastLink
+
+    FastLink -. "background LTO" .-> LTOPipeline
+```
 
 ### Fast Linking vs. Full Compilation
 

@@ -59,6 +59,18 @@ if (rendering_method == "mobile" || textures_per_stage < 48) {
 }
 ```
 
+```mermaid
+graph LR
+    A["rendering_method setting\n+ LIMIT_MAX_TEXTURES_PER_SHADER_STAGE"]
+    B["RenderForwardClustered\n(forward_plus)\nclustered lighting, SDFGI, SSAO"]
+    C["RenderForwardMobile\n(mobile)\nsingle-pass forward, tile-local storage"]
+    D["RendererGL\n(compatibility)\nOpenGL ES 3.0, no RenderingDevice"]
+
+    A -- "forward_plus\nAND textures >= 48" --> B
+    A -- "mobile\nOR textures < 48" --> C
+    A -- "compatibility" --> D
+```
+
 ### What RenderingDevice Is — and Is Not
 
 `RenderingDevice` (commonly abbreviated RD in Godot source) sits beneath both `RenderForwardClustered` and `RenderForwardMobile`. It is Godot's own internal GPU command abstraction — not a third-party library like wgpu, bgfx, or Diligent Engine. Unlike those libraries, RD does not aim to be a stable plugin-facing API; it is Godot's internal boundary above the graphics driver.
@@ -66,6 +78,32 @@ if (rendering_method == "mobile" || textures_per_stage < 48) {
 Every GPU resource in the RD path — buffers, textures, shaders, pipelines, uniform sets — is represented as a `RID` (Resource ID) opaque handle. The `RID` type is an integer handle backed by a free-list allocator inside `RenderingDevice`; the actual Vulkan objects live in a hash map keyed by `RID` inside the driver backend. [Source](https://docs.godotengine.org/en/4.4/classes/class_renderingdevice.html)
 
 The layering is therefore: `SceneTree` → `RenderingServer` → `RendererCompositorRD` → `RenderForwardClustered` / `RenderForwardMobile` → `RenderingDevice` → `RenderingDeviceDriverVulkan` → Vulkan API.
+
+```mermaid
+graph TD
+    SceneTree["SceneTree\n(game / GDScript)"]
+    RS["RenderingServer\n(RenderingServerDefault)"]
+    RC["RendererCompositorRD\n(renderer_compositor_rd.cpp)"]
+    RFP["RenderForwardClustered\n(Forward+)"]
+    RFM["RenderForwardMobile\n(Mobile)"]
+    GL["RendererGL\n(Compatibility / OpenGL ES)"]
+    RD["RenderingDevice\n(rendering_device.cpp)"]
+    RDG["RenderingDeviceGraph\n(DAG / barriers)"]
+    RDDV["RenderingDeviceDriverVulkan\n(rendering_device_driver_vulkan.cpp)"]
+    VK["Vulkan API\n(vkCmd* / vkCreate*)"]
+
+    SceneTree --> RS
+    RS --> RC
+    RC --> RFP
+    RC --> RFM
+    RC --> GL
+    RFP --> RD
+    RFM --> RD
+    RD --> RDG
+    RDG --> RDDV
+    RDDV --> VK
+    GL -. "EGL / OpenGL ES\n(no RenderingDevice)" .-> VK
+```
 
 As of Godot 4.4, `RenderingDevice` is also accessible from GDExtension (Godot's C ABI plugin system), enabling custom render passes written in C++ or Rust plugins without forking the engine. [Source](https://docs.godotengine.org/en/4.4/tutorials/rendering/using_compute_shaders.html)
 
@@ -188,6 +226,25 @@ Resource tracking operates at the level of `RID` handles. When the render graph 
 
 The compile-time flag `RENDER_GRAPH_FULL_BARRIERS` overrides the lazy mode and inserts full pipeline barriers everywhere, useful for debugging barrier-related GPU hangs or validation layer errors. [Source](https://github.com/godotengine/godot/blob/4.4/servers/rendering/rendering_device_graph.cpp)
 
+```mermaid
+graph TD
+    RECORD["RenderingDevice: record GPU commands\n(draw_list_*, compute_list_*)"]
+    DAG["RenderingDeviceGraph\n(DAG of commands + RID dependencies)"]
+    REORDER["Command reordering\n(RENDER_GRAPH_REORDER)\nindependent nodes parallelized"]
+    TRACK["Per-RID resource tracking\n(last VkImageLayout + access mask)"]
+    LAZY["Lazy barrier insertion\n_usage_to_image_layout()\n_usage_to_access_bits()"]
+    BARRIER["vkCmdPipelineBarrier\n(inserted only on layout/access transitions)"]
+    EXEC["RenderingDeviceDriverVulkan\nexecutes command buffer"]
+
+    RECORD --> DAG
+    DAG --> REORDER
+    DAG --> TRACK
+    TRACK --> LAZY
+    LAZY --> BARRIER
+    BARRIER --> EXEC
+    REORDER --> EXEC
+```
+
 Prior to the render graph (Godot 4.0–4.2), barrier insertion was manual: every `RendererSceneRenderRD` pass that wrote a texture called `RD::barrier()` explicitly afterward. The render graph eliminated most of these hand-placed barriers, reducing both barrier count and the risk of missing barriers causing GPU read-after-write hazards.
 
 ---
@@ -197,6 +254,20 @@ Prior to the render graph (Godot 4.0–4.2), barrier insertion was manual: every
 `RenderingDeviceDriverVulkan` is the concrete Vulkan implementation of the abstract `RenderingDeviceDriver` interface. The file is at `drivers/vulkan/rendering_device_driver_vulkan.cpp` (6043 lines in Godot 4.4) — one of the largest single source files in the engine. [Source](https://github.com/godotengine/godot/blob/4.4/drivers/vulkan/rendering_device_driver_vulkan.cpp)
 
 This architecture reflects the Godot 4.3 refactor that split the earlier monolithic `RenderingDeviceVulkan` into a common `RenderingDevice` (which drives the render graph, resource pools, and API surface), an abstract `RenderingDeviceDriver` (defining the pure virtual interface for backend operations), and `RenderingDeviceDriverVulkan` (the Vulkan implementation). The same pattern accommodates the Direct3D 12 backend (experimental in 4.3) and the Metal backend (experimental in 4.4 for Apple Silicon).
+
+```mermaid
+graph TD
+    RD["RenderingDevice\n(render graph, resource pools, API surface)"]
+    RDD["RenderingDeviceDriver\n(pure virtual interface\nrendering_device_driver.h)"]
+    RDDV["RenderingDeviceDriverVulkan\n(rendering_device_driver_vulkan.cpp)"]
+    RDDD3D["RenderingDeviceDriverD3D12\n(experimental, 4.3+)"]
+    RDDMetal["RenderingDeviceDriverMetal\n(experimental, 4.4+ / Apple Silicon)"]
+
+    RD --> RDD
+    RDD --> RDDV
+    RDD --> RDDD3D
+    RDD --> RDDMetal
+```
 
 ### Vulkan Object Mapping
 
@@ -444,6 +515,26 @@ void ShaderRD::_compile_variant(uint32_t p_variant, CompileData p_data) {
 
 [Source](https://github.com/godotengine/godot/blob/4.4/servers/rendering/renderer_rd/shader_rd.cpp)
 
+```mermaid
+graph LR
+    GDS["GDShader source\n(.gdshader)"]
+    PARSE["ShaderLanguage::parse()\n→ AST"]
+    TRANSPILE["ShaderCompilerRD::compile()\n→ GLSL (#version 450)"]
+    GLSLANG["glslang::GlslangToSpv()\n(thirdparty/glslang)\n→ SPIR-V bytecode"]
+    SPIRV["SPIR-V"]
+    VKM["vkCreateShaderModule\n(RenderingDeviceDriverVulkan)"]
+    NIR["vk_spirv_to_nir()\n(Mesa driver backend)\n→ NIR IR"]
+    GPU["GPU ISA\n(ACO / ANV / NVK backend)"]
+
+    GDS --> PARSE
+    PARSE --> TRANSPILE
+    TRANSPILE --> GLSLANG
+    GLSLANG --> SPIRV
+    SPIRV --> VKM
+    VKM --> NIR
+    NIR --> GPU
+```
+
 **Stage 4 — SPIR-V enters Mesa**: `RD::shader_create_from_spirv()` (which calls into `RenderingDeviceDriverVulkan`) submits the SPIR-V to `vkCreateShaderModule`. The Vulkan driver (RADV, ANV, NVK, Turnip, or any other Mesa backend) caches the SPIR-V internally; the actual translation to NIR happens during pipeline creation (`vkCreateGraphicsPipelines` or `vkCreateComputePipelines`). Mesa's `vk_spirv_to_nir()` translates the SPIR-V to the NIR intermediate representation (Chapter 14), after which each driver's backend applies its optimization and code generation passes — ACO on RADV, the Xe-based path on Intel ANV, NVK's own backend.
 
 The SPIR-V that Godot produces via glslang is standard Vulkan SPIR-V. From Mesa's perspective, a Godot shader is indistinguishable from any other Vulkan client's shader.
@@ -533,6 +624,24 @@ Window creation proceeds through the xdg-shell protocol stack. `wayland_thread.w
 
 For HiDPI and fractional scaling, `wp_fractional_scale_manager_v1_get_fractional_scale(fractional_scale_manager, wl_surface)` attaches a fractional scale object that delivers the display's effective scale factor (as a fixed-point multiple of 120) via its `preferred_scale` event.
 
+```mermaid
+graph TD
+    WTC["wayland_thread.window_create()"]
+    WLC["wl_compositor_create_surface()\n→ wl_surface*"]
+    XDG["xdg_wm_base_get_xdg_surface()\n→ xdg_surface*"]
+    TL["xdg_surface_get_toplevel()\n→ xdg_toplevel*"]
+    TITLE["xdg_toplevel_set_title()\n+ add_listener()"]
+    COMMIT["wl_surface_commit()"]
+    FRAC["wp_fractional_scale_manager_v1_get_fractional_scale()\n(HiDPI preferred_scale event)"]
+
+    WTC --> WLC
+    WLC --> XDG
+    XDG --> TL
+    TL --> TITLE
+    TITLE --> COMMIT
+    WLC -. "HiDPI path" .-> FRAC
+```
+
 ### Vulkan Surface Creation
 
 The `wl_surface` pointer is extracted from the Wayland thread's window state and passed to the Vulkan rendering context via a platform data structure:
@@ -581,6 +690,24 @@ RenderingContextDriverVulkanWayland::surface_create(
 ```
 
 [Source](https://github.com/godotengine/godot/blob/4.4/platform/linuxbsd/wayland/rendering_context_driver_vulkan_wayland.cpp)
+
+```mermaid
+graph LR
+    DSW["DisplayServerWayland\n(native Wayland)"]
+    DSX["DisplayServerX11\n(X11 / XWayland)"]
+    RCDVW["RenderingContextDriverVulkanWayland\n(rendering_context_driver_vulkan_wayland.cpp)"]
+    RCDVX["RenderingContextDriverVulkanX11\n(rendering_context_driver_vulkan_x11.cpp)"]
+    WSURF["vkCreateWaylandSurfaceKHR\n→ VkSurfaceKHR"]
+    XSURF["vkCreateXlibSurfaceKHR\n(or vkCreateXcbSurfaceKHR)\n→ VkSurfaceKHR"]
+    SC["VkSwapchainKHR\n(VK_PRESENT_MODE_FIFO_KHR default)"]
+
+    DSW --> RCDVW
+    DSX --> RCDVX
+    RCDVW --> WSURF
+    RCDVX --> XSURF
+    WSURF --> SC
+    XSURF --> SC
+```
 
 ### DisplayServerX11 and XWayland
 

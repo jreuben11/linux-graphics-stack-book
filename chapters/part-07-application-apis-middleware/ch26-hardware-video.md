@@ -29,6 +29,24 @@ Hardware-accelerated video is one of the oldest and least-understood segments of
 
 VA-API (Video Acceleration API) is a vendor-neutral, open-source API for hardware-accelerated video decode, encode, and video processing on Linux. Originally developed by Intel in 2009 and open-sourced as `libva`, it provides an ICD-style dispatch layer that routes API calls to hardware-specific driver plugins. The core library `libva.so` loads the appropriate driver plugin at runtime from `/usr/lib/dri/`; the driver is selected by the environment variable `LIBVA_DRIVER_NAME` or by querying the DRM device for a hint. On AMD hardware the driver name resolves to `radeonsi` and the plugin is `radeonsi_drv_video.so`; on Intel it resolves to `iHD` and loads `iHD_drv_video.so` for Gen 8+ or `i965_drv_video.so` for older hardware; on NVIDIA with the open-source wrapper it loads `nvidia_drv_video.so`.
 
+```mermaid
+graph TD
+    App["Application"]
+    libva["libva.so\n(dispatch layer)"]
+    drv_dir["Driver plugins\n/usr/lib/dri/"]
+    radeonsi["radeonsi_drv_video.so\n(AMD)"]
+    iHD["iHD_drv_video.so\n(Intel Gen8+)"]
+    i965["i965_drv_video.so\n(Intel legacy)"]
+    nvidia["nvidia_drv_video.so\n(NVIDIA wrapper)"]
+
+    App -- "vaGetDisplayDRM\n/dev/dri/renderD128" --> libva
+    libva -- "LIBVA_DRIVER_NAME\nor DRM device hint" --> drv_dir
+    drv_dir --> radeonsi
+    drv_dir --> iHD
+    drv_dir --> i965
+    drv_dir --> nvidia
+```
+
 The capability discovery sequence follows a three-step protocol. After obtaining a `VADisplay` from `vaGetDisplayDRM("/dev/dri/renderD128")`, the application calls:
 
 ```c
@@ -65,6 +83,20 @@ VAStatus vaCreateSurfaces(VADisplay dpy,
 The `format` parameter selects the chroma subsampling family (`VA_RT_FORMAT_YUV420`, `VA_RT_FORMAT_YUV420_10BPC`, `VA_RT_FORMAT_RGB32`). The pixel format within that family is further constrained by `VASurfaceAttrib` entries: `VA_SURFACE_ATTRIB_PIXEL_FORMAT` pins the exact fourcc (for example, `VA_FOURCC_NV12`, `VA_FOURCC_P010`, `VA_FOURCC_AYUV`); `VA_SURFACE_ATTRIB_USAGE_HINT` signals the intended use to the driver (`VA_SURFACE_ATTRIB_USAGE_HINT_DECODER`, `VA_SURFACE_ATTRIB_USAGE_HINT_DISPLAY`, `VA_SURFACE_ATTRIB_USAGE_HINT_ENCODER`). The hint matters for tiling: hardware codecs often decode into tiled GPU memory layouts that are more efficient for the fixed-function decode engine. The display controller can scan out tiled surfaces on modern Intel and AMD hardware (using DRM format modifiers), but an element downstream that reads the surface as a simple linear array will trigger a detiling copy inside the driver.
 
 A `VAConfig` records the codec profile and entrypoint pair plus any driver-specific configuration attributes. A `VAContext` binds a `VAConfig` to a specific output resolution and a set of `VASurface` render targets. Together they represent one decode or encode pipeline instance:
+
+```mermaid
+graph TD
+    VADisplay["VADisplay\n(connection to driver)"]
+    VAConfig["VAConfig\n(profile + entrypoint)"]
+    VAContext["VAContext\n(resolution + render targets)"]
+    VASurface["VASurface\n(GPU-resident frame buffer)"]
+    VABuffer["VABuffer\n(bitstream / metadata)"]
+
+    VADisplay -- "vaCreateConfig" --> VAConfig
+    VAConfig -- "vaCreateContext" --> VAContext
+    VAContext -- "render_targets" --> VASurface
+    VAContext -- "vaBeginPicture\nvaRenderPicture\nvaEndPicture" --> VABuffer
+```
 
 ```c
 VAStatus vaCreateConfig(VADisplay dpy,
@@ -144,6 +176,24 @@ A typical NV12 surface on Intel or AMD exports as one DMA-BUF fd (one object), o
 ### Mesa Gallium VA-API State Tracker
 
 Mesa's VA-API support lives in `src/gallium/frontends/va/` and is the open-source implementation for AMD and Intel (legacy) hardware. The state tracker translates VA-API calls into Gallium `pipe_video_codec` operations, defined in `src/gallium/include/pipe/p_video_codec.h`. The key interface functions are `create_video_codec`, `destroy`, `begin_frame`, `decode_bitstream`, `end_frame`, and `flush`. Each Gallium pipe driver that supports video implements these callbacks using hardware-specific firmware packets.
+
+```mermaid
+graph TD
+    VAAPI["VA-API calls\n(libva application interface)"]
+    StateTracker["Mesa Gallium VA-API state tracker\nsrc/gallium/frontends/va/"]
+    PipeVC["pipe_video_codec\nsrc/gallium/include/pipe/p_video_codec.h"]
+    radeonsi["radeonsi Gallium driver\n(AMD hardware)"]
+    amdgpu["amdgpu kernel DRM driver"]
+    VCN["VCN hardware block\n(Video Core Next)"]
+    HW_IP["AMDGPU_HW_IP_VCN_DEC\nAMDGPU_HW_IP_VCN_ENC queues"]
+
+    VAAPI --> StateTracker
+    StateTracker -- "translate VA-API calls" --> PipeVC
+    PipeVC -- "implements callbacks" --> radeonsi
+    radeonsi -- "firmware command submission" --> amdgpu
+    amdgpu --> HW_IP
+    HW_IP --> VCN
+```
 
 For AMD hardware, the `radeonsi` Gallium driver implements `pipe_video_codec` using the VCN (Video Core Next) hardware block present on GCN5 (Vega) and all RDNA generations. VCN generational capabilities:
 
@@ -246,6 +296,26 @@ This fd can be imported into Vulkan, EGL, or another V4L2 device using `V4L2_MEM
 ### Stateful vs. Stateless Codecs
 
 V4L2 codec devices come in two architectural flavours that have profoundly different programming models, and confusing them is a frequent source of bugs.
+
+```mermaid
+graph LR
+    subgraph "Stateful Codec"
+        S_App["Application\n(NAL units / OBUs)"]
+        S_Driver["Kernel driver\n(full state machine)"]
+        S_Out["Decoded frames\n(display order)"]
+        S_App -- "OUTPUT queue\n(byte stream)" --> S_Driver
+        S_Driver -- "CAPTURE queue\n(reordered)" --> S_Out
+    end
+    subgraph "Stateless Codec"
+        SL_App["Application\n(parsed parameters)"]
+        SL_Ctrl["VIDIOC_S_EXT_CTRLS\n(per-frame controls)"]
+        SL_Driver["Kernel driver\n(thin submission layer)"]
+        SL_Out["Decoded frames\n(DMA-BUF)"]
+        SL_App -- "bitstream parsing\nDPB management" --> SL_Ctrl
+        SL_Ctrl --> SL_Driver
+        SL_Driver -- "CAPTURE queue" --> SL_Out
+    end
+```
 
 A **stateful codec** driver internalises the entire decode state machine. The application feeds NAL units (for H.264/HEVC) or OBUs (for AV1) to the OUTPUT queue as contiguous byte streams, and the driver handles bitstream parsing, DPB reference tracking, output reordering, and error concealment internally. The application receives decoded frames from the CAPTURE queue in display order, ready for immediate display. Stateful codecs are found on Samsung Exynos MFC hardware, Mediatek Vcodec, and some older SoC codecs. They are easy to use but inflexible: the application cannot inspect or control individual decode parameters.
 
@@ -608,6 +678,25 @@ The complete Wayland screen capture path, end-to-end:
 
 The complete path — compositor GPU framebuffer → DRM DMA-BUF → PipeWire screencopy node → application DMA-BUF fd → encoder or display — involves zero CPU copies when DMA-BUF modifier negotiation succeeds. OBS Studio uses this path on Wayland via `xdg-desktop-portal` and PipeWire screen capture.
 
+```mermaid
+graph TD
+    CompFB["Compositor GPU framebuffer"]
+    Portal["xdg-desktop-portal\n(ScreenCast D-Bus interface)"]
+    PW_Node["PipeWire screencopy source node\n(DRM DMA-BUF)"]
+    WP["wireplumber\n(session manager / access policy)"]
+    PW_Stream["Application pw_stream\n(pw_stream_connect)"]
+    AppFD["Application DMA-BUF fd\n(on_process callback)"]
+    Sink["Encoder or display"]
+
+    CompFB -- "zwlr_screencopy_manager_v1\nor ext_image_copy_capture_v1" --> Portal
+    Portal -- "creates" --> PW_Node
+    Portal -- "pipewire_node_id via D-Bus" --> PW_Stream
+    WP -- "verifies portal access token\nlinks nodes" --> PW_Node
+    PW_Node -- "SPA_DATA_DmaBuf" --> PW_Stream
+    PW_Stream --> AppFD
+    AppFD --> Sink
+```
+
 ---
 
 ## 8. Practical: Hardware-Accelerated Transcoding Pipeline
@@ -669,6 +758,22 @@ On a balanced 4K 60fps pipeline the limiting factor is usually encode throughput
 ### The V4L2 Media Controller Problem
 
 Modern camera subsystems on ARM SoCs are not single-device pipelines. A typical ISP (Image Signal Processor) chain consists of: a MIPI CSI-2 sensor, a CSI-2 receiver block, an ISP (pixel pipeline including demosaicing, colour correction, noise reduction), a scaler, and a DMA output engine. Each of these is a separate hardware block. A single V4L2 `/dev/videoN` node cannot represent this topology: there is no standard way to configure sensor crop regions, ISP colour matrix coefficients, or scaler ratios through raw V4L2 ioctls. The Media Controller API was designed to fill this gap.
+
+```mermaid
+graph LR
+    Sensor["MIPI CSI-2 sensor"]
+    CSI2["CSI-2 receiver block"]
+    ISP["ISP\n(demosaicing, colour correction,\nnoise reduction)"]
+    Scaler["Scaler"]
+    DMA["DMA output engine"]
+    Buf["DMA-BUF\n(GPU-importable frame)"]
+
+    Sensor -- "MIPI CSI-2" --> CSI2
+    CSI2 --> ISP
+    ISP --> Scaler
+    Scaler --> DMA
+    DMA --> Buf
+```
 
 ### The Media Controller API
 
@@ -804,6 +909,23 @@ The video decode extensions were promoted from `EXT` to `KHR` in Vulkan specific
 **`VkVideoSessionParametersKHR`** holds per-session codec parameter sets that persist across frames: SPS/PPS for H.264, VPS/SPS/PPS for H.265, sequence header for AV1. These are created once per stream and referenced from every decode command.
 
 **DPB management**: the application allocates a pool of `VkImage` objects as DPB (Decoded Picture Buffer) slots at session creation time. Each DPB image is identified in decode commands via `VkVideoPictureResourceInfoKHR`, which wraps a `VkImageView`. The DPB image array can be backed by either a single layered image or separate images per slot (if `VK_VIDEO_CAPABILITY_SEPARATE_REFERENCE_IMAGES_BIT_KHR` is supported).
+
+```mermaid
+graph TD
+    Profile["Video profile\n(e.g. VkVideoDecodeH264ProfileInfoKHR)"]
+    Session["VkVideoSessionKHR\n(stateful codec context)"]
+    Params["VkVideoSessionParametersKHR\n(SPS/PPS/VPS — persist across frames)"]
+    DPB["DPB VkImage pool\n(Decoded Picture Buffer slots)"]
+    PicRes["VkVideoPictureResourceInfoKHR\n(wraps VkImageView per DPB slot)"]
+    CmdBuf["VkCommandBuffer\n(video queue: VK_QUEUE_VIDEO_DECODE_BIT_KHR)"]
+
+    Profile -- "vkCreateVideoSessionKHR" --> Session
+    Session -- "vkCreateVideoSessionParametersKHR" --> Params
+    Session -- "allocated at session creation" --> DPB
+    DPB -- "identified via" --> PicRes
+    Params -- "referenced from every\nvkCmdDecodeVideoKHR" --> CmdBuf
+    PicRes -- "pSetupReferenceSlot\npReferenceSlots" --> CmdBuf
+```
 
 **Video command buffers**: video operations are recorded into standard `VkCommandBuffer` objects using video-specific commands:
 

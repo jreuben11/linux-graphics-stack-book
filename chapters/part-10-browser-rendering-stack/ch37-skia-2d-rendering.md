@@ -30,6 +30,45 @@ Skia currently offers two GPU backends. **Ganesh** is the original backend, firs
 
 On Linux, Ganesh runs in Chrome through ANGLE (Chapter 34): Ganesh issues OpenGL ES calls that ANGLE translates to Vulkan commands delivered to the Mesa Vulkan driver. Ganesh also has a native Vulkan backend that bypasses ANGLE, but Chrome on Linux has historically used the ANGLE-mediated GL path. Graphite on Linux uses Dawn as its GPU abstraction, producing WebGPU API calls that Dawn translates to Vulkan, again consumed by the Mesa driver.
 
+```mermaid
+graph TD
+    subgraph "Chrome Callers of Skia"
+        VizRenderer["viz::SkiaRenderer\n(compositor DrawQuads)"]
+        OOPR["OOP-R raster workers\n(cc::RasterSource::PlaybackToCanvas)"]
+        Canvas2D["Canvas 2D API\n(CanvasRenderingContext2D)"]
+        PDF["PDF / print / screenshot\n(software rasteriser)"]
+    end
+
+    subgraph "Skia Public API"
+        SkCanvas["SkCanvas"]
+    end
+
+    VizRenderer --> SkCanvas
+    OOPR --> SkCanvas
+    Canvas2D --> SkCanvas
+    PDF --> SkCanvas
+
+    subgraph "GPU Backends"
+        Ganesh["Ganesh\n(GrDirectContext)"]
+        Graphite["Graphite\n(skgpu::graphite::Context)"]
+        SoftwareSk["Software\n(SkBitmap / CPU)"]
+    end
+
+    SkCanvas --> Ganesh
+    SkCanvas --> Graphite
+    SkCanvas --> SoftwareSk
+
+    ANGLE["ANGLE\n(GL ES → Vulkan)"]
+    Dawn["Dawn\n(WebGPU → Vulkan)"]
+    MesaVK["Mesa Vulkan driver"]
+
+    Ganesh -- "OpenGL ES (Linux)" --> ANGLE
+    Ganesh -- "native Vulkan backend" --> MesaVK
+    ANGLE --> MesaVK
+    Graphite --> Dawn
+    Dawn --> MesaVK
+```
+
 Software Skia — `SkCanvas` backed by a CPU `SkBitmap` with no GPU backend — still handles print rendering, PDF output, and certain offscreen operations where a GPU context is unavailable. It is not the focus of this chapter, but it is worth noting that Skia's software rasteriser is the same codebase; only the destination surface changes.
 
 ---
@@ -50,6 +89,31 @@ A `GrOpsTask` is Ganesh's analogue of a Vulkan render pass. It targets a single 
 
 When `GrDirectContext::flush()` runs, it iterates the pending `GrOpsTask`s in dependency order, calling `GrOpsTask::onExecute()` for each. For the GL backend (via ANGLE), this emits `glBindFramebuffer`, `glUseProgram`, `glUniform*`, `glDrawArrays`, and `glDrawElements` calls. For the Vulkan backend, it emits `vkCmdBeginRenderPass`, `vkCmdBindPipeline`, `vkCmdBindDescriptorSets`, `vkCmdDraw`, and `vkCmdEndRenderPass` sequences into a `VkCommandBuffer`.
 
+```mermaid
+graph TD
+    subgraph "GrDirectContext\n(one per GPU context)"
+        GrRC["GrRecordingContext\n(defers resource creation)"]
+        GrRC2["GrResourceCache\n(LRU, GrUniqueKey)"]
+        GrAtlas["GrAtlasManager\n(glyph atlases)"]
+        CmdBuf["pending command buffer"]
+    end
+
+    SkCanvasDraw["SkCanvas::drawPath()\n/ drawTextBlob() / ..."]
+    SkCanvasDraw --> GrRC
+
+    GrRC --> GrOp["GrOp\n(concrete GPU draw call)"]
+    GrOp --> GrOpsTask["GrOpsTask\n(per GrRenderTarget)"]
+
+    GrOpsTask -- "op fusion\nop reordering" --> GrOpsTask
+    GrOpsTask -- "flush()" --> GrExecute["GrOpsTask::onExecute()"]
+
+    GrExecute -- "GL backend" --> GLCalls["glBindFramebuffer\nglUseProgram\nglDrawArrays ..."]
+    GrExecute -- "Vulkan backend" --> VKCalls["vkCmdBeginRenderPass\nvkCmdBindPipeline\nvkCmdDraw ..."]
+
+    GrRC2 -. "cache hit\n(texture / pipeline)" .-> GrExecute
+    GrAtlas -. "glyph bitmap\n(UV lookup)" .-> GrExecute
+```
+
 **Shader management in Ganesh.** Ganesh generates GPU shaders lazily: the first time a particular combination of paint effects and geometry type is encountered, Ganesh assembles the SkSL shader program for that combination and compiles it. On subsequent encounters the compiled program is retrieved from the pipeline cache. This lazy compilation is a known source of first-draw stutter, and it is the primary motivation for Graphite's design (Section 3). The pipeline cache is serialised to disk between sessions so that warm starts avoid recompilation.
 
 **Ganesh's Vulkan backend.** When configured for Vulkan — either via the native Vulkan backend or via ANGLE-on-Vulkan — Ganesh manages a pool of `VkDescriptorPool`s for per-draw descriptor set allocation, a `VkRenderPass` cache keyed on attachment format and load/store ops, and a pipeline state object cache keyed on the SkSL program hash. The `vkCreateGraphicsPipeline` call happens at cache-miss time and is the expensive operation that Graphite eliminates through pre-compilation.
@@ -68,6 +132,37 @@ Graphite's design separates recording from submission into distinct objects with
 
 **`skgpu::graphite::TaskGraph` and `Task`.** Inside a `Recording`, work is structured as a directed acyclic graph of `Task` objects. Each `Task` represents a GPU operation: a `RenderPassTask` draws geometry into a texture, a `CopyBufferToTextureTask` uploads pixel data to a GPU texture, a `ComputeTask` dispatches a compute shader, and so on. The `TaskGraph` executor walks the dependency edges of this DAG and submits tasks in an order that satisfies all dependencies, ensuring that, for example, a blur filter's input texture is fully rendered before the blur pass reads it. This explicit dependency model is a natural fit for both Vulkan (which requires explicit pipeline barriers between passes) and Dawn (which uses WebGPU's automatic resource tracking). [3]
 
+```mermaid
+graph TD
+    subgraph "Recording phase (per-thread, lockless)"
+        Rec1["skgpu::graphite::Recorder\n(thread 1)"]
+        Rec2["skgpu::graphite::Recorder\n(thread 2)"]
+        DrawCtx["DrawContext\n(per active render target)"]
+        DrawList["DrawList\n(accumulated draw commands)"]
+        Recording["Recording\n(immutable, backend-agnostic)"]
+    end
+
+    Rec1 --> DrawCtx
+    Rec2 --> DrawCtx
+    DrawCtx --> DrawList
+    DrawList -- "Recorder::snap()" --> Recording
+
+    subgraph "Submission phase (GPU thread)"
+        Context["skgpu::graphite::Context\n(owns GPU device / resource cache)"]
+        TaskGraph["TaskGraph\n(DAG of Task objects)"]
+        RenderPassTask["RenderPassTask"]
+        CopyTask["CopyBufferToTextureTask"]
+        ComputeTask["ComputeTask"]
+    end
+
+    Recording -- "insertRecording()" --> Context
+    Context --> TaskGraph
+    TaskGraph --> RenderPassTask
+    TaskGraph --> CopyTask
+    TaskGraph --> ComputeTask
+    Context -- "submit()" --> DawnDev["wgpu::Device\n(Dawn)"]
+```
+
 **`skgpu::graphite::DrawPass`** is the Graphite equivalent of Ganesh's `GrOpsTask`. It targets a single `skgpu::graphite::TextureProxy` and batches draw commands into GPU-level draw calls. Unlike Ganesh, where ops are generated one at a time and potentially reordered after the fact, Graphite's `DrawList` already has all draw commands for a render target before the `DrawPass` is built. This foreknowledge enables a sorting pass that groups draws by pipeline key — the key that encodes the combination of geometry type, blend mode, and paint effects — minimising pipeline state changes without any runtime state tracking.
 
 **Pipeline pre-compilation.** The most architecturally significant feature of Graphite is its pre-compilation model. In Graphite, every possible GPU pipeline is identified by a `PipelineKey`, which is a compact representation of the combination of geometry (fill, stroke, tessellated path, text glyph quad, image rect) and paint (blend mode, colour filter, image filter, shader). The `ShaderCodeDictionary` maintains a registry of all `ShaderSnippet` units — modular SkSL functions that implement one piece of a paint effect — and can generate a complete SkSL program for any `PipelineKey` by composing the relevant snippets.
@@ -79,6 +174,24 @@ The result is that `Recording::insertRecording()` never blocks for shader compil
 Additionally, Graphite supports serialising previously compiled pipeline keys via the `ContextOptions::PipelineCallback` mechanism. A running Chrome instance can log which pipeline keys it used during a session and pass them to the next session's pre-compilation list, progressively building a warm cache.
 
 **The Dawn backend for Graphite.** The Graphite Dawn backend maps Graphite GPU objects to Dawn WebGPU objects: `DawnGraphicsPipeline` wraps a `wgpu::RenderPipeline`, `DawnCommandBuffer` wraps a `wgpu::CommandEncoder`, and `DawnTexture` wraps a `wgpu::Texture`. The SkSL shader generation produces WGSL source code (via `SkSL::WGSLCodeGenerator`) which is consumed by the Tint compiler (Chapter 35) and ultimately compiled to SPIR-V by Tint and then to GPU machine code by the Mesa Vulkan driver's ACO or similar backend compiler. The shader path is therefore: **SkSL → WGSL → Tint → SPIR-V → Mesa NIR → ACO → GPU machine code**, with each step described in detail in Chapters 35, 14, and 15 respectively. [4]
+
+```mermaid
+graph LR
+    SkSL["SkSL source\n(ShaderSnippet assembly)"]
+    WGSL["WGSL text\n(SkSL::WGSLCodeGenerator)"]
+    Tint["Tint compiler\n(tint::wgsl::reader → tint::spirv::writer)"]
+    SPIRV["SPIR-V module"]
+    NIR["Mesa NIR\n(spirv_to_nir)"]
+    ACO["ACO / ANV / NVK\nbackend compiler"]
+    ISA["GPU machine code\n(ISA)"]
+
+    SkSL --> WGSL
+    WGSL --> Tint
+    Tint --> SPIRV
+    SPIRV --> NIR
+    NIR --> ACO
+    ACO --> ISA
+```
 
 **2D depth testing.** Graphite introduces an optional 2D depth buffer technique: it assigns monotonically increasing z-values to draw commands in painter's order and enables a depth test on opaque primitives. An opaque draw at z=N occludes all earlier draws that contribute to the same pixels, so the GPU's early-z rejection can skip fragments that would be overdrawn. This reduces overdraw on complex pages significantly without changing the visible result. The technique is analogous to how 3D renderers use depth testing, but applied to a 2D scene with the depth values encoding temporal order rather than physical depth.
 
@@ -103,6 +216,24 @@ The feature flag controls which of two code paths is taken in Chrome's `viz::Ski
 ## 5. Text Rendering on Linux: FreeType, HarfBuzz, and Glyph Atlases
 
 Text rendering in a modern browser involves a pipeline of six distinct subsystems before a glyph reaches the GPU. Understanding each layer is essential for diagnosing text rendering quality issues and performance regressions.
+
+```mermaid
+graph TD
+    JSStr["JavaScript string\n+ CSS font-family"]
+    FC["Fontconfig\n(fc_font_match)\nresolves font-family → file path"]
+    HB["HarfBuzz shaping\n(hb_shape)\nUnicode string → glyph IDs + advances"]
+    FT["FreeType rasterisation\nglyph ID + size → A8 / ARGB bitmap"]
+    SkStrike["SkStrike\n(CPU glyph bitmap cache\nkeyed on SkFont + SkPaint)"]
+    Atlas["GrAtlasManager / AtlasProvider\n(GPU texture atlas 2048×2048\nA8 / ARGB / LCD formats)"]
+    Op["AtlasTextOp / TextAtlasRenderStep\n(batched textured quad draw call)"]
+
+    JSStr --> FC
+    FC -- "font file path" --> HB
+    HB -- "glyph IDs" --> FT
+    FT -- "rasterised bitmap" --> SkStrike
+    SkStrike -- "cache hit / miss" --> Atlas
+    Atlas -- "UV coords into atlas" --> Op
+```
 
 **JavaScript string to glyph IDs: HarfBuzz shaping.** The first step after Blink's layout system has determined which text runs exist at which positions is shaping: converting a Unicode string with a chosen font and script/language context into a sequence of glyph IDs with advance widths and positioning offsets. Chrome uses HarfBuzz for this step, sourced from `third_party/harfbuzz-ng/`. HarfBuzz implements the OpenType specification's GSUB (glyph substitution) and GPOS (glyph positioning) tables, handling complex scripts like Arabic (bidirectional, contextual shaping), Devanagari (matras and conjunct consonants), and Hebrew (bidirectional with cantillation marks) correctly. The shaping call — `hb_shape(font, buffer, features, num_features)` — runs on Blink's main thread and produces an `hb_glyph_info_t` array of glyph IDs plus an `hb_glyph_position_t` array of advances and offsets. In the Blink source, this call is wrapped in `third_party/blink/renderer/platform/fonts/shaping/harfbuzz_shaper.cc`'s `HarfBuzzShaper::Shape()` method. [6]
 
@@ -175,6 +306,36 @@ Skia does not hand-write one GLSL or SPIR-V shader per effect. Instead, it uses 
 **SkSL as a language.** SkSL is syntactically close to GLSL but is a distinct language with Skia-specific built-in variables (`sk_FragColor`, `sk_Position`, `sk_FragCoord`), Skia-specific type names (`half`, `float2`, `float3x3`), and Skia-specific capability queries (`sk_Caps.floatIs32Bits`). SkSL source files live in `src/sksl/` in the Skia repository, and the compiler entry point is `SkSL::Compiler`, defined in `src/sksl/SkSLCompiler.cpp`. The compiler accepts SkSL source text and produces an internal IR (intermediate representation) that is then emitted as the target language. [12]
 
 **The SkSL compiler pipeline.** `SkSL::Compiler` operates in several stages. First, the parser (`src/sksl/SkSLParser.cpp`) converts SkSL source to an abstract syntax tree. Second, the analyser checks types, resolves names, and validates control flow. Third, a set of optimisation passes runs on the IR: constant folding eliminates expressions like `1.0 * x` → `x`; dead code elimination removes unreachable branches; function inlining replaces short function calls with their bodies to reduce call overhead. Fourth, the code generator for the target language emits the final shader text or binary.
+
+```mermaid
+graph TD
+    SkSLSrc["SkSL source text\n(src/sksl/)"]
+
+    subgraph "SkSL::Compiler pipeline"
+        Parser["Parser\n(SkSLParser.cpp)\nSkSL text → AST"]
+        Analyser["Analyser\ntype check / name resolution"]
+        Opts["Optimisation passes\nconstant folding / DCE / inlining"]
+        IR["SkSL IR"]
+    end
+
+    SkSLSrc --> Parser --> Analyser --> Opts --> IR
+
+    GLSL["SkSL::GLSLCodeGenerator\n→ GLSL ES 3.00 / 1.00"]
+    SPIRVG["SkSL::SPIRVCodeGenerator\n→ SPIR-V binary"]
+    WGSLG["SkSL::WGSLCodeGenerator\n→ WGSL text"]
+
+    IR --> GLSL
+    IR --> SPIRVG
+    IR --> WGSLG
+
+    ANGLE2["ANGLE GLSL translator\n→ SPIR-V → vkCreateShaderModule\n(Ganesh GL/ANGLE path)"]
+    MesaVK2["Mesa vkCreateShaderModule\n(Ganesh native Vulkan)"]
+    Tint2["Tint → SPIR-V → Mesa\n(Graphite Dawn path)"]
+
+    GLSL --> ANGLE2
+    SPIRVG --> MesaVK2
+    WGSLG --> Tint2
+```
 
 **GLSL emission.** `SkSL::GLSLCodeGenerator` (in `src/sksl/codegen/SkSLGLSLCodeGenerator.cpp`) walks the IR and emits GLSL compatible with the target GL version. For Ganesh's GL backend (running via ANGLE on Linux), this emits GLSL ES 3.00 or GLSL ES 1.00 depending on the driver's capabilities. The emitted GLSL is compiled by ANGLE's GLSL → SPIR-V compiler (`src/compiler/translator/`) and the result is fed to the Vulkan driver via `vkCreateShaderModule`.
 

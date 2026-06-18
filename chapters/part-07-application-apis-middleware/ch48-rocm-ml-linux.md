@@ -48,6 +48,26 @@ amdgpu DRM driver (Ch5) — GPU initialization, VRAM management, GEM objects
 
 The critical design point is that `amdkfd` is a sub-driver of `amdgpu`: it reuses the DRM driver's already-initialized hardware context. Compute and graphics contexts coexist on the same GPU through this shared kernel driver. [Source: AMD KFD design](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/amd/amdkfd/kfd_device.c)
 
+```mermaid
+graph TD
+    App["User Application\n(PyTorch / JAX / TensorFlow)"]
+    Frameworks["ML Framework ROCm Backends\n(Torch ROCm, TF-ROCm, XLA/HLO)"]
+    MathLibs["Math Libraries\n(MIOpen, hipBLASLt, rocBLAS, rocFFT, RCCL)"]
+    HIP["HIP Runtime\n(libamdhip64.so)"]
+    ROCr["ROCr / HSA Runtime\n(libhsa-runtime64.so)"]
+    HSAKMT["HSAKMT Thunk\n(libhsakmt.so)"]
+    amdkfd["amdkfd Kernel Module\n(/dev/kfd)"]
+    amdgpu["amdgpu DRM Driver\n(GPU init, VRAM, GEM objects)"]
+
+    App --> Frameworks
+    Frameworks --> MathLibs
+    MathLibs --> HIP
+    HIP --> ROCr
+    ROCr --> HSAKMT
+    HSAKMT --> amdkfd
+    amdkfd --> amdgpu
+```
+
 ---
 
 ## KFD: The Kernel Fusion Driver
@@ -143,6 +163,26 @@ Dispatches workgroups to Compute Units
 ```
 
 [Source: AMD GPU scheduling paper](https://par.nsf.gov/servlets/purl/10385873), [kfd_device_queue_manager.c](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/amd/amdkfd/kfd_kernel_queue.c)
+
+```mermaid
+graph TD
+    Launch["hipLaunchKernelGGL()\n(user-space HIP call)"]
+    AQL["AQL Dispatch Packet\nwritten to ring buffer\n(user-space MMIO write)"]
+    Doorbell["Doorbell Write\n(notifies Command Processor)"]
+    MES["MES Firmware\n(Micro Engine Scheduler)\ndetects non-empty queue"]
+    MQD["MQD\n(Memory Queue Descriptor)\nloaded → HQD registers"]
+    HQD["HQD\n(Hardware Queue Descriptor)\nin Command Processor"]
+    CP["Command Processor\nreads AQL Dispatch Packet"]
+    CU["Compute Units\nexecute workgroups"]
+
+    Launch --> AQL
+    AQL --> Doorbell
+    Doorbell --> MES
+    MES --> MQD
+    MQD --> HQD
+    HQD --> CP
+    CP --> CU
+```
 
 The AQL Dispatch Packet format (64 bytes) is defined by the HSA specification and is the same structure used by the HSA runtime, HIP runtime, and OpenCL runtime:
 
@@ -404,6 +444,34 @@ HIP C++ source (.hip / .cu)
 
 [Source: Clang HIP Support documentation](https://clang.llvm.org/docs/HIPSupport.html)
 
+```mermaid
+graph TD
+    HIPSrc["HIP C++ Source\n(.hip / .cu)"]
+    FrontEnd["amdclang++\n(HIP dialect front end)"]
+    LLVMIR["LLVM IR\n(device + host, per translation unit)"]
+
+    subgraph "Device Path"
+        AMDGPUBackend["LLVM AMDGPU Backend\n→ AMDGPU bitcode"]
+        DevLibs["device-libs linking\n(ocml.bc, ockl.bc, asan_dev.bc)"]
+        LLD["lld AMDGPU ELF Linker\n→ GCN ELF"]
+        Bundler["clang-offload-bundler\n→ .hipfatbin"]
+    end
+
+    subgraph "Host Path"
+        X86Backend["x86-64 Backend\n→ object file"]
+        FatBinSec[".hipFatBinSegment ELF section\n(fat binary embedded)"]
+    end
+
+    HIPSrc --> FrontEnd
+    FrontEnd --> LLVMIR
+    LLVMIR --> AMDGPUBackend
+    LLVMIR --> X86Backend
+    AMDGPUBackend --> DevLibs
+    DevLibs --> LLD
+    LLD --> Bundler
+    X86Backend --> FatBinSec
+```
+
 ### Target Triple
 
 The canonical AMD GPU target triple for HSA compute is:
@@ -566,6 +634,34 @@ NHWC (channels-last) batch normalisation is enabled by default from ROCm 7.0+, m
 ## Math Library Ecosystem
 
 ROCm's math stack has been consolidated into the `rocm-libraries` GitHub repository as of ROCm 7.0. The major libraries:
+
+```mermaid
+graph TD
+    subgraph "Portable HIP API Layer"
+        hipBLAS["hipBLAS / hipBLASLt"]
+        hipFFT["hipFFT"]
+        hipRAND["hipRAND"]
+        hipSPARSE["hipSPARSE / hipSPARSELt"]
+    end
+
+    subgraph "AMD Backend Libraries"
+        rocBLAS["rocBLAS"]
+        rocFFT["rocFFT"]
+        rocRAND["rocRAND"]
+        rocSPARSE["rocSPARSE"]
+    end
+
+    Tensile["Tensile\n(Assembly Kernel Autotuner)"]
+    MIOpen["MIOpen\n(Deep Learning Primitives)"]
+    RCCL["RCCL\n(Collective Communications)"]
+
+    hipBLAS --> rocBLAS
+    hipFFT --> rocFFT
+    hipRAND --> rocRAND
+    hipSPARSE --> rocSPARSE
+    Tensile --> rocBLAS
+    Tensile --> hipBLAS
+```
 
 ### rocBLAS
 
@@ -804,6 +900,25 @@ Intel's GPU compute stack on Linux follows a parallel architecture to ROCm. The 
 - **SYCL/DPC++** — the primary programming model
 
 [Source: Intel oneAPI Level Zero](https://www.intel.com/content/www/us/en/docs/dpcpp-cpp-compiler/developer-guide-reference/2023-0/intel-oneapi-level-zero.html)
+
+```mermaid
+graph TD
+    App["User Application\n(PyTorch-IPEX / SYCL / OpenCL)"]
+    SYCL["SYCL / DPC++\n(primary programming model)"]
+    OpenCL["OpenCL 3.0\n(legacy workloads)"]
+    LevelZero["Level Zero\n(low-level direct-to-metal API)"]
+    IGC["IGC\n(Intel Graphics Compiler)\nJIT compiles SPIR-V → GPU ISA"]
+    NEO["NEO Runtime\n(intel-compute-runtime)"]
+    XeDriver["xe / i915 Kernel Driver"]
+
+    App --> SYCL
+    App --> OpenCL
+    SYCL --> LevelZero
+    OpenCL --> LevelZero
+    LevelZero --> IGC
+    LevelZero --> NEO
+    NEO --> XeDriver
+```
 
 ### SYCL/DPC++ Compilation
 

@@ -35,6 +35,29 @@ After reading this chapter, the reader will understand how to select the right V
 
 The Vulkan loader sits between every application and the driver. On Linux the loader ships as `libvulkan.so.1`, installed by `libvulkan1` on Debian/Ubuntu or `vulkan-loader` on Fedora. When an application calls `vkCreateInstance`, the loader reads ICD manifest JSON files from a set of well-known directories: `/usr/share/vulkan/icd.d/`, `/etc/vulkan/icd.d/`, and, for per-user overrides, `$XDG_DATA_HOME/vulkan/icd.d/`. Each manifest names a shared library and a Vulkan API version. Mesa installs three primary manifests: `radeon_icd.x86_64.json` pointing at `libvulkan_radeon.so` (the RADV driver), `intel_icd.x86_64.json` pointing at `libvulkan_intel.so` (the ANV driver), and `nouveau_icd.x86_64.json` pointing at `libvulkan_nouveau.so` (the NVK driver). Software rendering is available through `lvp_icd.x86_64.json` (Lavapipe). Corresponding 32-bit manifests ending in `i686.json` support 32-bit Vulkan applications on 64-bit systems.
 
+```mermaid
+graph TD
+    App["Application"]
+    Loader["libvulkan.so.1\n(Vulkan Loader)"]
+    subgraph "ICD Manifest Directories"
+        SysDir["/usr/share/vulkan/icd.d/\n/etc/vulkan/icd.d/"]
+        UserDir["$XDG_DATA_HOME/vulkan/icd.d/"]
+    end
+    subgraph "Mesa Vulkan ICDs"
+        RADV["libvulkan_radeon.so\n(RADV — AMD)"]
+        ANV["libvulkan_intel.so\n(ANV — Intel)"]
+        NVK["libvulkan_nouveau.so\n(NVK — NVIDIA)"]
+        LVP["libvulkan_lvp.so\n(Lavapipe — CPU)"]
+    end
+    App --> Loader
+    Loader --> SysDir
+    Loader --> UserDir
+    SysDir -- "radeon_icd.x86_64.json" --> RADV
+    SysDir -- "intel_icd.x86_64.json" --> ANV
+    SysDir -- "nouveau_icd.x86_64.json" --> NVK
+    SysDir -- "lvp_icd.x86_64.json" --> LVP
+```
+
 Two environment variables give developers fine-grained control over ICD selection. `VK_ICD_FILENAMES` accepts a colon-separated list of manifest paths and completely replaces the default search; `VK_ADD_DRIVER_FILES` (preferred since Vulkan loader 1.3.234) adds paths without overriding the standard ones. Neither variable should appear in production builds, but both are indispensable during development when switching between a distro driver and a locally compiled Mesa.
 
 Instance extensions that matter most on Linux split into two categories. Display integration requires `VK_KHR_surface` plus at least one platform surface extension: `VK_KHR_wayland_surface` is the right choice for modern desktops, `VK_KHR_xcb_surface` covers legacy X11 applications. Debugging requires `VK_EXT_debug_utils`, which supersedes the older `VK_EXT_debug_report`. Applications should enable `VK_KHR_get_physical_device_properties2` (promoted to core in Vulkan 1.1) or target Vulkan 1.1+ directly to unlock the `pNext`-chained property query APIs described below.
@@ -104,6 +127,28 @@ Vulkan's memory model exposes heaps and types explicitly so applications can mak
 
 **NVIDIA discrete GPUs** (proprietary driver and NVK) maintain a strict two-heap separation. Heap 0 is VRAM flagged `DEVICE_LOCAL`, typically 8–16 GB on consumer RTX cards. Heap 1 is system RAM flagged `HOST_VISIBLE | HOST_COHERENT` (and a `HOST_CACHED` variant). Without ReBAR, NVIDIA exposes a small 256 MB heap combining `DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT` for upload traffic, analogous to AMD's BAR heap but traditionally smaller. With ReBAR-capable systems (RTX 30 series and later, BIOS support required), the 256 MB limit is lifted in the proprietary driver and full VRAM becomes CPU-visible, though the behaviour and heap enumeration differs across driver generations. When writing code that must perform well on all three vendors, the correct strategy is: check for a type with both `DEVICE_LOCAL` and `HOST_VISIBLE` flags for your upload heap, falling back to a plain `HOST_VISIBLE | HOST_COHERENT` system RAM type if no such combined type exists. This single probe covers integrated Intel (always has it), AMD with or without ReBAR, and NVIDIA with ReBAR.
 
+```mermaid
+graph LR
+    subgraph "AMD Discrete (RADV) — without ReBAR"
+        AMD0["Heap 0: VRAM\n(DEVICE_LOCAL)"]
+        AMD1["Heap 1: System RAM via PCI aperture\n(HOST_VISIBLE | HOST_COHERENT)"]
+        AMD2["Heap 2: 256 MB BAR window into VRAM\n(DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT)"]
+    end
+    subgraph "AMD Discrete (RADV) — with ReBAR / SAM"
+        AMDR0["Heap 0: Full VRAM\n(DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT)"]
+        AMDR1["Heap 1: System RAM\n(HOST_VISIBLE | HOST_COHERENT)"]
+    end
+    subgraph "Intel Integrated (ANV)"
+        INTEL0["Heap 0: Shared system RAM\n(DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT)"]
+        INTEL1["Heap 0 type variant\n(DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED)"]
+    end
+    subgraph "NVIDIA Discrete — without ReBAR"
+        NV0["Heap 0: VRAM\n(DEVICE_LOCAL)"]
+        NV1["Heap 1: System RAM\n(HOST_VISIBLE | HOST_COHERENT)"]
+        NV2["Heap 2: 256 MB upload window\n(DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT)"]
+    end
+```
+
 The `findMemoryType` helper is the most commonly re-implemented function in Vulkan codebases:
 
 ```c
@@ -150,6 +195,25 @@ Buffer-image granularity is a hardware constraint on certain older devices: a li
 ## 3. EGL: Display, Context, and Surface Creation
 
 EGL is the platform-neutral binding layer that connects a rendering API (OpenGL, OpenGL ES, or rarely Vulkan via `EGL_KHR_vulkan_image`) to a native windowing or display system. On Linux the EGL implementation lives in Mesa's `libEGL.so`, which dispatches to platform-specific backends under `src/egl/drivers/dri2/`. The entry point for modern EGL code is `eglGetPlatformDisplayEXT` (or `eglGetPlatformDisplay` from EGL 1.5), not the legacy `eglGetDisplay`. The platform token selects the backend, and the `native_display` argument is an opaque pointer whose type is determined by the platform.
+
+```mermaid
+graph TD
+    App["Application"]
+    LibEGL["libEGL.so\n(Mesa EGL)"]
+    DRI2["src/egl/drivers/dri2/"]
+    subgraph "Platform Backends"
+        Wayland["platform_wayland.c\n(EGL_PLATFORM_WAYLAND_KHR)\nnative: wl_display*"]
+        GBM["platform_drm.c\n(EGL_PLATFORM_GBM_KHR)\nnative: gbm_device*"]
+        Device["platform_device.c\n(EGL_PLATFORM_DEVICE_EXT)\nnative: EGLDeviceEXT"]
+        Surfaceless["EGL_PLATFORM_SURFACELESS_MESA\nnative: EGL_DEFAULT_DISPLAY"]
+    end
+    App -- "eglGetPlatformDisplayEXT(token, native_display, NULL)" --> LibEGL
+    LibEGL --> DRI2
+    DRI2 --> Wayland
+    DRI2 --> GBM
+    DRI2 --> Device
+    DRI2 --> Surfaceless
+```
 
 For Wayland applications, the call is:
 
@@ -251,6 +315,19 @@ EGLSurface egl_surf = eglCreateWindowSurface(
 ```
 
 The render-and-flip loop follows a strict sequence that must not be violated. After rendering to `egl_surf` with OpenGL ES commands, `eglSwapBuffers` completes the frame and places the rendered image in the GBM surface's front buffer slot. `gbm_surface_lock_front_buffer` then extracts a `gbm_bo *` handle to that front buffer, transferring ownership from EGL to the application. The application creates a KMS framebuffer from this BO using `drmModeAddFB2WithModifiers` (which accepts format modifiers), then schedules a page flip:
+
+```mermaid
+graph TD
+    Render["OpenGL ES render commands\n(draw to egl_surf)"]
+    Swap["eglSwapBuffers(egl_dpy, egl_surf)\n→ frame placed in GBM front buffer slot"]
+    Lock["gbm_surface_lock_front_buffer(gbm_surf)\n→ returns gbm_bo* (ownership to app)"]
+    AddFB["drmModeAddFB2WithModifiers(drm_fd, ...)\n→ KMS framebuffer fb_id"]
+    Commit["drmModeAtomicCommit(drm_fd, req,\nDRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT)"]
+    FlipEvent["DRM_EVENT_FLIP_COMPLETE\n(readable from drm_fd via drmHandleEvent)"]
+    Release["gbm_surface_release_buffer(gbm_surf, prev_bo)\n→ EGL backing buffer available for next frame"]
+    Render --> Swap --> Lock --> AddFB --> Commit --> FlipEvent --> Release
+    Release -. "next frame" .-> Render
+```
 
 ```c
 /* After eglSwapBuffers(egl_dpy, egl_surf): */
@@ -486,6 +563,29 @@ The **release point** is set by the application and tells the compositor the tim
 **Historical note — EGLStreams.** Before GBM became NVIDIA's Wayland path, NVIDIA shipped an alternative buffer-sharing mechanism called EGLStreams (`EGL_NV_stream_*`). Instead of allocating a GBM buffer object and exporting it as a `linux-dmabuf`, the NVIDIA driver and a supporting compositor (Mutter, KWin) would establish an `EGLStreamKHR` — a producer/consumer pair managed entirely within the EGL layer. Applications that targeted EGLStreams created surfaces via `eglCreateStreamProducerSurfaceKHR` rather than the standard `eglCreateWindowSurface` with a GBM window. GNOME 51 (2025) removed EGLStreams support from Mutter; KDE Plasma removed it earlier. No new application code should use EGLStreams. The standard path for all GPU vendors on Wayland is `EGLDisplay` from `EGL_KHR_platform_wayland` with a GBM-backed `wl_egl_window`, as described in this chapter.
 
 The complete synchronisation chain for a Vulkan Wayland frame is therefore: render to swapchain image → signal timeline semaphore at value N → export DRM syncobj fd → attach as release point to Wayland surface → `wl_surface_commit` → compositor waits on release point before KMS scanout → compositor signals acquire point when display hardware moves to next buffer → application imports acquire point as wait condition for next frame's render submission.
+
+```mermaid
+graph TD
+    RenderGPU["Render to swapchain image\n(GPU command buffer)"]
+    SignalSem["vkQueueSubmit2: signal timeline semaphore\nat value N"]
+    ExportFD["vkGetSemaphoreFdKHR\n→ DRM syncobj fd (OPAQUE_FD)"]
+    ImportTimeline["wp_linux_drm_syncobj_manager_v1_import_timeline\n→ wp_linux_drm_syncobj_timeline_v1"]
+    SetRelease["wp_linux_drm_syncobj_surface_v1_set_release_point\n(timeline value N: GPU done rendering)"]
+    SetAcquire["wp_linux_drm_syncobj_surface_v1_set_acquire_point\n(slot compositor will signal when buffer free)"]
+    Commit["wl_surface_attach + wl_surface_commit"]
+    CompositorWait["Compositor waits on release point\nbefore KMS scanout"]
+    KMSScanout["KMS scanout: display hardware\nscans buffer to display"]
+    CompositorSignal["Compositor signals acquire point\nwhen display hardware advances to next buffer"]
+    AppWait["Application: import acquire point\nas wait condition for next frame submit"]
+
+    RenderGPU --> SignalSem --> ExportFD --> ImportTimeline
+    ImportTimeline --> SetRelease
+    ImportTimeline --> SetAcquire
+    SetRelease --> Commit
+    SetAcquire --> Commit
+    Commit --> CompositorWait --> KMSScanout --> CompositorSignal --> AppWait
+    AppWait -. "next frame" .-> RenderGPU
+```
 
 ---
 

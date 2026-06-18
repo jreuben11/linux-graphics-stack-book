@@ -52,6 +52,25 @@ Gecko Layout (C++)                 SceneBuilder thread
                                     Display
 ```
 
+```mermaid
+graph LR
+    subgraph "Content Process"
+        GeckoLayout["Gecko Layout\n(C++)"]
+        BDL["BuiltDisplayList blob"]
+    end
+    subgraph "GPU Process"
+        SB["SceneBuilder thread\n(deserialise → Scene)"]
+        RB["RenderBackend thread\n(cull → Frame)"]
+        RT["Renderer thread\n(GL draw calls)"]
+        Display["Display\n(OpenGL / SWGL / EGL)"]
+    end
+    GeckoLayout --> BDL
+    BDL -- "IPC (Rust/C++ FFI)" --> SB
+    SB -- "BuiltTransaction" --> RB
+    RB -- "RendererFrame" --> RT
+    RT --> Display
+```
+
 The `BuiltDisplayList` blob crosses the content/GPU process boundary as raw bytes. On the GPU side, Rust code in `webrender` deserialisizes it into a `Scene`, which is then culled to a `Frame` for the current viewport, and finally submitted as GL draw calls by the `Renderer` thread.
 
 ---
@@ -212,6 +231,19 @@ Once the `BuiltDisplayList` arrives in the GPU process, it enters a pipeline dri
 
 The key invariant: **only the Renderer thread ever calls into the GL driver**. This avoids multi-threaded GL context issues and keeps the backend threads free of driver dependencies.
 
+```mermaid
+graph TD
+    BDL["BuiltDisplayList\n(raw bytes from IPC)"]
+    SB["SceneBuilder thread\ndeserialise display list\nbuild spatial/clip/picture trees"]
+    BT["BuiltTransaction"]
+    RB["RenderBackend thread\ncull to viewport\nbuild RenderTaskGraph\npopulate TextureCache / GpuCache"]
+    RF["RendererFrame"]
+    RT["Renderer thread\n(owns GL context)\nupload textures\nissue glDraw* calls"]
+    BDL --> SB
+    SB -- "BuiltTransaction" --> RB
+    RB -- "RendererFrame" --> RT
+```
+
 [Source: Searchfox webrender/src/renderer/mod.rs](https://searchfox.org/mozilla-central/source/gfx/wr/webrender/src/renderer/mod.rs)
 
 ---
@@ -337,6 +369,31 @@ SceneBuilder thread:                RenderBackend thread:
                                    Renderer thread:
                                        upload textures
                                        issue GL draw calls
+```
+
+```mermaid
+graph LR
+    subgraph "SceneBuilder thread (async)"
+        S1["parse BuiltDisplayList"]
+        S2["build spatial tree"]
+        S3["resolve interning deltas"]
+        S4["construct picture tree"]
+        S1 --> S2 --> S3 --> S4
+    end
+    subgraph "RenderBackend thread (per frame)"
+        R1["receive BuiltTransaction"]
+        R2["cull scene to viewport"]
+        R3["build RenderTaskGraph"]
+        R4["populate TextureCache / GpuCache"]
+        R1 --> R2 --> R3 --> R4
+    end
+    subgraph "Renderer thread (GL owner)"
+        G1["upload textures"]
+        G2["issue GL draw calls"]
+        G1 --> G2
+    end
+    S4 -- "BuiltTransaction" --> R1
+    R4 -- "RendererFrame" --> G1
 ```
 
 [Source: Searchfox webrender/src/scene_builder_thread.rs](https://searchfox.org/mozilla-central/source/gfx/wr/webrender/src/scene_builder_thread.rs)
@@ -503,6 +560,25 @@ The selection logic in `gfxPlatform.cpp` and `gfxPlatformGtk.cpp` on Linux follo
 3. If EGL is available and GPU has GL 3.1+: use `RenderCompositorEGL`.
 4. Otherwise fall back to `RenderCompositorSWGL`.
 
+```mermaid
+graph TD
+    Start["Linux backend selection\n(gfxPlatformGtk.cpp)"]
+    Q1{"gfx.webrender.software\npref set?"}
+    Q2{"Wayland + dmabuf\nsupport?"}
+    Q3{"EGL available +\nGL 3.1+?"}
+    NativeSWGL["RenderCompositorNativeSWGL\n(swgl via native layers)"]
+    Native["RenderCompositorNative\n(delegated Wayland compositing)"]
+    EGL["RenderCompositorEGL\n(GL via EGL, X11 + Wayland)"]
+    SWGL["RenderCompositorSWGL\n(swgl direct, VM fallback)"]
+    Start --> Q1
+    Q1 -- "yes" --> NativeSWGL
+    Q1 -- "no" --> Q2
+    Q2 -- "yes" --> Native
+    Q2 -- "no" --> Q3
+    Q3 -- "yes" --> EGL
+    Q3 -- "no" --> SWGL
+```
+
 [Source: Bugzilla — Investigate RenderCompositorNativeSWGL correctness](https://bugzilla.mozilla.org/show_bug.cgi?id=1647946)
 
 ---
@@ -532,6 +608,23 @@ The class has two concrete subclasses:
 **`NativeLayerWaylandRender`** — for picture cache tiles rendered by WebRender itself (GL or swgl). Provides `NextSurfaceAsDrawTarget()` to get a drawing surface from a pool, then `CommitFrontBufferToScreenLocked()` to attach the completed buffer to the `wl_subsurface` and commit.
 
 **`NativeLayerWaylandExternal`** — for external images (video, WebGL) backed by `DMABuf` surfaces. The texture host `wr::RenderDMABUFTextureHost` imports a DMABuf file descriptor, wraps it as a `wl_buffer` using `linux-dmabuf-unstable-v1`, and attaches it to the subsurface. The root layer caches a `WaylandBufferDMABUFHolder` array to reuse `wl_buffer` objects across frames without repeated protocol round-trips.
+
+```mermaid
+graph TD
+    Root["wl_surface\n(nsWindow root)"]
+    BG["wl_subsurface\n(background UI slice)\nNativeLayerWaylandRender"]
+    Content["wl_subsurface\n(content slice — main page)\nNativeLayerWaylandRender"]
+    DMABuf["DMABuf wl_buffer\n(GBM allocation)"]
+    UI["wl_subsurface\n(UI overlay slice — browser chrome)\nNativeLayerWaylandRender"]
+    Ext["wl_subsurface\n(external: video / WebGL canvas)\nNativeLayerWaylandExternal"]
+    RenderDMA["RenderDMABUFTextureHost\n(imports DMABuf fd via EGL)"]
+    Root --> BG
+    Root --> Content
+    Content --> DMABuf
+    Root --> UI
+    Root -. "promoted native surface" .-> Ext
+    Ext --> RenderDMA
+```
 
 [Source: Searchfox gfx/layers/NativeLayerWayland.h](https://searchfox.org/mozilla-central/source/gfx/layers/NativeLayerWayland.h)
 
@@ -605,6 +698,27 @@ dom/webgpu/ (C++)                  gfx/wgpu_bindings/src/ (Rust)
                                        ↓ Vulkan driver (Mesa ANV/RADV)
 ```
 
+```mermaid
+graph TD
+    subgraph "Content Process"
+        JS["JavaScript WebGPU API\n(SpiderMonkey)"]
+        DomWebGPU["dom/webgpu/ (C++)\nGPU.cpp / Adapter.cpp"]
+        ClientRS["gfx/wgpu_bindings/src/client.rs\n(serialises IPC commands)"]
+    end
+    subgraph "GPU Process"
+        ServerRS["gfx/wgpu_bindings/src/server.rs\nWgpuServer"]
+        WgpuCore["wgpu-core (pure Rust)\ndevice::Device"]
+        WgpuHAL["wgpu-hal\n(Vulkan / GLES backends)"]
+        VulkanDriver["Vulkan driver\n(Mesa ANV / RADV / NVK)"]
+    end
+    JS --> DomWebGPU
+    DomWebGPU --> ClientRS
+    ClientRS -- "IPC message passing" --> ServerRS
+    ServerRS --> WgpuCore
+    WgpuCore --> WgpuHAL
+    WgpuHAL --> VulkanDriver
+```
+
 [Source: Searchfox gfx/wgpu_bindings/](https://searchfox.org/mozilla-central/source/gfx/wgpu_bindings/)
 
 ### wgpu-core and the Rust/C++ Bridge
@@ -653,6 +767,22 @@ naga IR (typed SSA with resource bindings)
     ↓
 SPIR-V bytecode                          GLSL source
     ↓ vkCreateShaderModule()              ↓ glShaderSource() / glCompileShader()
+```
+
+```mermaid
+graph TD
+    WGSL["WGSL source"]
+    Parse["naga::front::wgsl::parse_str()"]
+    NagaIR["naga IR\n(typed SSA with resource bindings)"]
+    SPVWriter["naga::back::spv::Writer::write()\n(Vulkan backend)"]
+    GLSLWriter["naga::back::glsl::Writer::write()\n(GLES backend)"]
+    SPIRV["SPIR-V bytecode"]
+    GLSLSrc["GLSL source"]
+    VkShader["vkCreateShaderModule()"]
+    GLShader["glShaderSource() / glCompileShader()"]
+    WGSL --> Parse --> NagaIR
+    NagaIR --> SPVWriter --> SPIRV --> VkShader
+    NagaIR --> GLSLWriter --> GLSLSrc --> GLShader
 ```
 
 This contrasts with Chrome's Dawn/Tint path where WGSL is compiled by the Tint C++ library into SPIR-V or MSL. The naga and Tint implementations are independently developed but must both conform to the [WebGPU WGSL specification](https://www.w3.org/TR/WGSL/). They sometimes differ in validation stringency and error messages, which can cause content that works in one browser to fail in the other during edge cases — a known WebGPU interop concern.
@@ -754,6 +884,22 @@ nsDisplayList (C++ display items)
 webrender_api::DisplayListBuilder (Rust, called via FFI)
     ↓ builder.push_rect() / push_text() / push_border() etc.
 BuiltDisplayList (serialised bytes, ready for IPC)
+```
+
+```mermaid
+graph TD
+    DOMCSSOM["DOM + CSSOM"]
+    Stylo["Stylo parallel style computation\n(Rayon work-stealing traversal)"]
+    CS["ComputedStyle\n(per DOM node, Rust structs via GeckoBindings FFI)"]
+    GeckoLayout["Gecko layout\n(nsBlockFrame, nsFlexContainerFrame, etc.)"]
+    FrameTree["Frame tree\n(nsIFrame hierarchy)"]
+    NSDisplayList["nsDisplayListBuilder::\nBuildDisplayListForPainting()"]
+    NSDisplayItems["nsDisplayList (C++ display items)"]
+    CreateWR["nsDisplayItem::CreateWebRenderCommands()\n(per-item virtual method)"]
+    DLBuilder["webrender_api::DisplayListBuilder\n(Rust, called via FFI)"]
+    BDL["BuiltDisplayList\n(serialised bytes, ready for IPC)"]
+    DOMCSSOM --> Stylo --> CS --> GeckoLayout --> FrameTree
+    FrameTree --> NSDisplayList --> NSDisplayItems --> CreateWR --> DLBuilder --> BDL
 ```
 
 Each concrete `nsDisplayItem` subclass overrides `CreateWebRenderCommands()` to translate its CSS properties into one or more `DisplayItem` pushes. For example:

@@ -32,6 +32,46 @@ Source paths for these cap tables: `src/gallium/include/pipe/p_defines.h` for th
 
 The winsys abstraction (`radeon_winsys` for AMD, the iris-internal equivalent for Intel) insulates the driver from kernel-level BO allocation details, providing a clean interface for BO creation, mapping, and command stream attachment — the same boundary at which Chapter 5's kernel driver discussion ends.
 
+```mermaid
+graph TD
+    Loader["Mesa Driver Loader\n(Chapter 12)"]
+    StateTracker["Mesa State Tracker\n(st_glsl_to_nir, st_draw_vbo)"]
+
+    subgraph "Gallium Pipe Interface"
+        PipeScreen["pipe_screen\n(get_param, resource_create, context_create)"]
+        PipeContext["pipe_context\n(draw_vbo, set_blend_state, transfer_map)"]
+        PipeResource["pipe_resource\n(buffer / texture object)"]
+    end
+
+    subgraph "radeonsi (AMD)"
+        SiScreen["si_screen\n(si_pipe.c)"]
+        SiContext["si_context"]
+        SiResource["si_resource / si_texture\n(GEM BO + DCC/HTILE)"]
+        RadeonWinsys["radeon_winsys\n(src/gallium/winsys/amdgpu/)"]
+    end
+
+    subgraph "iris (Intel)"
+        IrisScreen["iris_screen\n(iris_screen.c)"]
+        IrisContext["iris_context"]
+        IrisResource["iris_resource\n(GEM BO + tiling metadata)"]
+        IrisWinsys["iris winsys\n(i915 / xe kernel interface)"]
+    end
+
+    Loader --> PipeScreen
+    StateTracker --> PipeContext
+    PipeContext --> PipeResource
+
+    PipeScreen -- "implemented by" --> SiScreen
+    PipeContext -- "implemented by" --> SiContext
+    PipeResource -- "implemented by" --> SiResource
+    SiScreen --> RadeonWinsys
+
+    PipeScreen -- "implemented by" --> IrisScreen
+    PipeContext -- "implemented by" --> IrisContext
+    PipeResource -- "implemented by" --> IrisResource
+    IrisScreen --> IrisWinsys
+```
+
 ---
 
 ## 2. radeonsi: AMD OpenGL/ES
@@ -62,6 +102,22 @@ Transform feedback (streamout) is handled by `si_emit_streamout_begin` for pre-G
 
 Source: `src/gallium/drivers/radeonsi/si_state_draw.cpp`, `src/gallium/winsys/amdgpu/drm/amdgpu_cs.c`.
 
+```mermaid
+graph TD
+    SiDrawVbo["si_draw_vbo\n(si_state_draw.cpp)"]
+    RadeonCmdbuf["radeon_cmdbuf\n(indirect buffer / IB)"]
+    AmdgpuCsSubmit["amdgpu_cs_submit_raw2\n(amdgpu_cs.c)"]
+    LibdrmAmdgpu["libdrm_amdgpu\nCS submit interface"]
+    KernelAmdgpu["amdgpu kernel driver\n(Chapter 5)"]
+    Fence["GPU Fence\n(glFinish waits here)"]
+
+    SiDrawVbo -- "writes PM4 packets" --> RadeonCmdbuf
+    RadeonCmdbuf -- "IB full / glFlush / SwapBuffers" --> AmdgpuCsSubmit
+    AmdgpuCsSubmit -- "multi-IB submission" --> LibdrmAmdgpu
+    LibdrmAmdgpu --> KernelAmdgpu
+    KernelAmdgpu -- "attaches" --> Fence
+```
+
 ### 2.3 State Management and CSO Caching
 
 Gallium's Constant State Object (CSO) pattern works as follows: the state tracker calls a `create_*_state` function once when a GL state object is created (e.g., on first call to `glBlendFuncSeparate` with a given combination), receiving an opaque CSO pointer. radeonsi pre-compiles the blend equations, rasteriser settings, and depth/stencil state into packed register words at CSO creation time — this defers the register-encoding work away from the draw call hot path.
@@ -71,6 +127,24 @@ Key CSO creation functions: `si_create_blend_state`, `si_create_rasterizer_state
 Dirty state tracking uses `si_context::dirty_states` — a bitmask of flags such as `SI_DIRTY_BLEND`, `SI_DIRTY_RASTERIZER`, `SI_DIRTY_VIEWPORT`. `si_draw_vbo` consults this bitmask and calls the corresponding emit function for each dirty bit before issuing the draw packet. This per-bit emission pattern keeps the critical draw path fast: only changed state is re-emitted.
 
 **Shader variant keys** are central to radeonsi's performance model. A shader's compiled binary is not unique to the GLSL source alone; it is keyed on the combination of source and pipeline state that is baked into the shader (primitive topology, vertex buffer formats, blend state, etc.). The `si_shader_key` struct encodes this information; when any key field changes, radeonsi compiles a new shader variant. This allows the compiler to emit optimised code for specific state combinations — for example, inlining blend constants when they are known at compile time — at the cost of potentially many variants per shader.
+
+```mermaid
+graph TD
+    GLState["GL State Change\n(glBlendFuncSeparate, glUseProgram, ...)"]
+    CSO["CSO Creation\ncreate_blend_state / create_rasterizer_state\n(pre-compute register words)"]
+    DirtyBitmask["si_context::dirty_states\n(SI_DIRTY_BLEND, SI_DIRTY_RASTERIZER, ...)"]
+    ShaderKey["si_shader_key\n(topology, vertex format, blend state)"]
+    ShaderVariant["Compiled Shader Variant\n(ELF binary per key)"]
+    SiDrawVbo2["si_draw_vbo\n(emit dirty state, bind variant, issue draw packet)"]
+
+    GLState --> CSO
+    GLState --> DirtyBitmask
+    GLState --> ShaderKey
+    ShaderKey -- "cache miss" --> ShaderVariant
+    DirtyBitmask --> SiDrawVbo2
+    CSO --> SiDrawVbo2
+    ShaderVariant --> SiDrawVbo2
+```
 
 ```c
 // src/gallium/drivers/radeonsi/si_shader.h (simplified)
@@ -111,6 +185,26 @@ Source: `src/gallium/drivers/radeonsi/si_shader_nir.c`, `src/amd/llvm/`, `src/am
 **HTILE** (Hierarchical Depth) provides lossless depth buffer compression and early depth rejection. The HTILE compatibility rules constrain which operations can be performed while HTILE is active; radeonsi disables HTILE when operations violate those rules (e.g., certain depth-stencil copies).
 
 Texture descriptors (`T#` SRDs in GCN terminology) are constructed by `si_make_texture_descriptor()`. Sampler descriptors are constructed by `si_make_sampler_state()`, which includes workarounds for border colour hardware limitations on some GFX generations (border colours are indexed from a hardware table on older GCN, not encoded directly in the sampler descriptor).
+
+```mermaid
+graph TD
+    PipeResource["pipe_resource\n(buffer / texture base)"]
+    SiTexture["si_texture\n(extends pipe_resource)"]
+    TexBO["GEM BO\n(texel data)"]
+    DCCBO["DCC metadata BO\n(per-block compression state, GFX9+)"]
+    HTILEMeta["HTILE metadata\n(hierarchical depth / early Z)"]
+    SiMakeTexDesc["si_make_texture_descriptor()\n(T# SRD construction)"]
+    SiMakeSampler["si_make_sampler_state()\n(S# SRD, border colour workarounds)"]
+    SiDecompressDCC["si_decompress_dcc()\n(decompression blit before CPU readback)"]
+
+    PipeResource -- "embedded as first member" --> SiTexture
+    SiTexture --> TexBO
+    SiTexture --> DCCBO
+    SiTexture --> HTILEMeta
+    SiTexture --> SiMakeTexDesc
+    SiTexture --> SiMakeSampler
+    DCCBO -- "required before non-compressed access" --> SiDecompressDCC
+```
 
 ### 2.6 Compute in radeonsi: rusticl Integration
 
@@ -164,6 +258,26 @@ Source: `src/gallium/drivers/iris/`.
 
 Separating the render and blitter rings allows the blitter to run concurrently with rendering on hardware that supports it, and simplifies synchronisation reasoning. The two rings synchronise via `MI_SEMAPHORE_WAIT` packets: the render ring waits on a semaphore value written by the blitter ring after a copy completes, and vice versa.
 
+```mermaid
+graph LR
+    IrisContext["iris_context"]
+    RenderBatch["IRIS_BATCH_RENDER\n(draw calls, state packets, resolves)"]
+    BlitterBatch["IRIS_BATCH_BLITTER\n(fast copies, format conversions, clears)"]
+    Semaphore["MI_SEMAPHORE_WAIT\n(cross-ring sync)"]
+    IrisBatchFlush["iris_batch_flush()"]
+    ExecI915["DRM_IOCTL_I915_GEM_EXECBUFFER2\n(Gen8–Gen12)"]
+    ExecXe["xe_exec\n(Meteor Lake+)"]
+
+    IrisContext --> RenderBatch
+    IrisContext --> BlitterBatch
+    RenderBatch -- "waits on" --> Semaphore
+    BlitterBatch -- "signals" --> Semaphore
+    RenderBatch --> IrisBatchFlush
+    BlitterBatch --> IrisBatchFlush
+    IrisBatchFlush --> ExecI915
+    IrisBatchFlush --> ExecXe
+```
+
 `iris_batch_flush()` is called to submit outstanding commands. It constructs the final batch buffer, attaches relocations (for Gen8–Gen11 which require relocation) or directly encodes GPU virtual addresses (for Gen12+, which has 48-bit PPGTT), and calls either `DRM_IOCTL_I915_GEM_EXECBUFFER2` (i915 driver) or `xe_exec` (Xe driver). The `xe_exec` path was added in Mesa 24.1 to support Meteor Lake and later hardware running the Xe DRM kernel driver.
 
 Source: `src/gallium/drivers/iris/iris_batch.c`, `src/gallium/drivers/iris/iris_fence.c`.
@@ -177,6 +291,23 @@ Intel's 3D hardware uses a fixed-function binding table: an array of indices int
 This approach contrasts with ANV's global bindless heap: ANV (using `VK_EXT_descriptor_indexing`) can maintain a persistent descriptor heap and avoid per-draw binding table construction. iris uses per-draw binding tables for OpenGL compatibility — OpenGL's implicit binding model requires re-examining bindings at each draw call, while Vulkan's explicit model allows pre-built persistent descriptor sets.
 
 The performance implication is that binding table construction is in the critical draw-call path for iris. At very high draw-call rates this becomes a measurable CPU overhead, which is one reason iris benefits significantly from `mesa_glthread` (Section 5).
+
+```mermaid
+graph TD
+    IrisDraw["iris draw call\n(iris_draw_vbo)"]
+    IrisBinder["iris_binder\n(surface state heap BO allocator)"]
+    BindingTable["Binding Table\n(array of indices into surface state heap)"]
+    RenderSurfaceState["RENDER_SURFACE_STATE\n(format, tiling, width, height, mip levels)"]
+    SurfaceStateHeapBO["Surface State Heap BO\n(GPU-visible buffer)"]
+    HW3D["Intel 3D Hardware\n(fixed-function binding table fetch)"]
+
+    IrisDraw -- "before each draw" --> IrisBinder
+    IrisBinder -- "allocates entry in" --> SurfaceStateHeapBO
+    IrisBinder -- "builds" --> BindingTable
+    BindingTable -- "indices into" --> SurfaceStateHeapBO
+    SurfaceStateHeapBO -- "contains" --> RenderSurfaceState
+    BindingTable --> HW3D
+```
 
 ### 3.4 Shader Compilation
 
@@ -245,6 +376,18 @@ The motivation is strategic: as new GPU families arrive, they often have Vulkan 
 
 Zink's position in the stack: it sits between the Mesa state tracker (which produces Gallium calls) and a Vulkan driver (which accepts Vulkan calls). It does not call into any hardware-specific code directly.
 
+```mermaid
+graph TD
+    StateTracker2["Mesa State Tracker\n(OpenGL API)"]
+    ZinkPipe["Zink\n(src/gallium/drivers/zink/)\nGallium pipe_context implementation"]
+    VulkanDriver["Vulkan Driver\n(RADV / ANV / Turnip / Panfrost)"]
+    GPU["GPU Hardware"]
+
+    StateTracker2 -- "Gallium pipe calls\n(draw_vbo, set_blend_state, ...)" --> ZinkPipe
+    ZinkPipe -- "Vulkan API calls\n(vkCmdDraw, vkCreatePipeline, ...)" --> VulkanDriver
+    VulkanDriver --> GPU
+```
+
 Source: `src/gallium/drivers/zink/`.
 
 ### 4.2 Translating Gallium to Vulkan
@@ -292,6 +435,22 @@ Source: `src/gallium/drivers/zink/zink_draw.cpp`, `src/gallium/drivers/zink/zink
 GLSL shaders arrive at Zink as NIR (already translated by the state tracker). Zink compiles NIR to SPIR-V using `nir_to_spirv()` in `src/compiler/spirv/nir_to_spirv.c`, then passes the SPIR-V to `vkCreateShaderModule` in the underlying Vulkan driver, which re-compiles it to machine code.
 
 The full round-trip is: GLSL → (Mesa state tracker) → NIR → (Zink) → SPIR-V → (Vulkan driver) → NIR → machine code. This is longer than radeonsi's or iris's path, but the NIR optimisation passes running before SPIR-V emission mean the SPIR-V Zink produces is typically cleaner than raw GLSL-to-SPIR-V translations.
+
+```mermaid
+graph LR
+    GLSL["GLSL source"]
+    NIR1["NIR\n(Mesa state tracker)"]
+    SPIRV["SPIR-V\n(nir_to_spirv)"]
+    ShaderModule["VkShaderModule\n(vkCreateShaderModule)"]
+    NIR2["NIR\n(Vulkan driver re-compile)"]
+    MachineCode["GPU machine code"]
+
+    GLSL -- "glsl_to_nir" --> NIR1
+    NIR1 -- "nir_to_spirv()\n(src/compiler/spirv/)" --> SPIRV
+    SPIRV --> ShaderModule
+    ShaderModule -- "Vulkan driver" --> NIR2
+    NIR2 --> MachineCode
+```
 
 `ZINK_DEBUG=spirv` dumps the emitted SPIR-V for each shader to stderr, useful for diagnosing incorrect shader output or inspecting what Vulkan extensions Zink requires the underlying driver to support.
 
@@ -465,6 +624,34 @@ iris and ANV use the purpose-built Intel compiler (`src/intel/compiler/brw_*.c`)
 
 This makes Intel shader compilation substantially faster than radeonsi's LLVM path — iris historically shows lower first-frame stutter than radeonsi on shader-heavy games. LLVM appears in Intel's Mesa code only in performance measurement infrastructure (`src/intel/perf/`) and offline tooling, not in the hot compilation path.
 
+```mermaid
+graph TD
+    subgraph "radeonsi AMD path"
+        NIR_AMD["NIR\n(from Mesa state tracker)"]
+        SiNirLower["radeonsi NIR lowering\n(si_nir_lower_vs_inputs, etc.)"]
+        NirToLLVM["nir_to_llvm()\n(ac_nir_to_llvm.c)"]
+        LLVMIR["LLVM IR\n(with amdgcn intrinsics)"]
+        LLVMOpt["LLVM optimise + codegen\n(O2, AMDGPU backend)"]
+        GCNELF["GCN/RDNA ELF\n(.text = shader binary)"]
+    end
+
+    subgraph "iris Intel path"
+        NIR_Intel["NIR\n(from Mesa state tracker)"]
+        BrwKey["brw_vs_prog_key / brw_fs_prog_key\n(pipeline state baked in)"]
+        BrwCompile["brw_compile_vs / brw_compile_fs\n(src/intel/compiler/)"]
+        EUISA["EU ISA binary\n(Intel Execution Unit instructions)"]
+    end
+
+    AsyncQueue["util_queue\n(async shader compilation)"]
+    DiskCache["Mesa disk shader cache\n(ELF keyed on source hash + GPU family)"]
+
+    NIR_AMD --> SiNirLower --> NirToLLVM --> LLVMIR --> LLVMOpt --> GCNELF
+    NIR_AMD -. "enqueued via" .-> AsyncQueue
+    GCNELF -. "stored in" .-> DiskCache
+
+    NIR_Intel --> BrwKey --> BrwCompile --> EUISA
+```
+
 ### 8.8 llvmpipe and Lavapipe LLVM Usage
 
 (Cross-reference Chapter 17 for full coverage.)
@@ -601,6 +788,42 @@ Notably, the Vulkan path on Adreno is handled by the separate **tu** (Turnip) dr
 ### Shared Infrastructure: CSO, NIR, and the Gallium Pipe Model
 
 All of these drivers share the Gallium `pipe_context` and `pipe_screen` interfaces, the CSO (Constant State Object) system for pre-compiled states, and NIR as the intermediate representation at the shader compiler entry point. The differences are entirely below NIR: each driver implements its own `nir_to_<isa>` lowering, its own command-stream packer, and its own memory allocator tailored to the SoC's IOMMU and CMA constraints. The shared infrastructure means that improvements to NIR optimisation passes (algebraic simplifications, loop unrolling, load/store vectorisation) benefit all of these drivers simultaneously.
+
+```mermaid
+graph TD
+    GalliumPipe["Gallium pipe_context / pipe_screen\n(shared interface)"]
+    NIR["NIR\n(shared intermediate representation)"]
+
+    subgraph "panfrost — Mali Midgard/Bifrost"
+        PanNIR["NIR lowering\n(src/panfrost/compiler/)"]
+        PanISA["Bifrost/Midgard ISA\n(VLIW / superscalar)"]
+        PanJobChain["Tiler + Fragment Job chain\n(TBDR, 16x16 tiles)"]
+    end
+
+    subgraph "panthor — Mali Valhall CSF"
+        PanthorNIR["NIR lowering\n(src/panfrost/compiler/valhall/)"]
+        ValhallISA["Valhall ISA\n(fixed-width RISC-V-inspired)"]
+        CSFQueue["CSF firmware queue\n(DRM_IOCTL_PANTHOR_GROUP_SUBMIT)"]
+    end
+
+    subgraph "freedreno — Adreno"
+        FDNir["NIR lowering\n(src/freedreno/ir3/)"]
+        IR3["IR3 / Adreno ISA\n(instruction bundles)"]
+        MSMSubmit["msm ring buffer\n(DRM_IOCTL_MSM_GEM_SUBMIT)"]
+    end
+
+    subgraph "etnaviv — Vivante GC"
+        EtnaCompiler["NIR lowering\n(etna_compiler_nir.c)"]
+        VivISA["Vivante GC ISA"]
+        EtnaSubmit["etnaviv_gem submit\n(DRM_IOCTL_ETNAVIV_GEM_SUBMIT)"]
+    end
+
+    GalliumPipe --> NIR
+    NIR --> PanNIR --> PanISA --> PanJobChain
+    NIR --> PanthorNIR --> ValhallISA --> CSFQueue
+    NIR --> FDNir --> IR3 --> MSMSubmit
+    NIR --> EtnaCompiler --> VivISA --> EtnaSubmit
+```
 
 The `MESA_LOADER_DRIVER_OVERRIDE` and the libGL/EGL Gallium driver selection mechanism (Chapter 12) also applies to these drivers, enabling them to be loaded by the Mesa loader on any platform where the DRM kernel driver is present.
 

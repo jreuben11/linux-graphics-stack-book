@@ -22,6 +22,24 @@ This chapter targets two audiences: **systems and driver developers** who need t
 
 GPU power management in Linux is built on two overlapping but distinct mechanisms: the generic **Runtime Power Management** framework (runtime PM) for controlling when hardware is powered, and the **DRM device-protection** helpers that guard against post-unplug use-after-free scenarios. A driver developer must understand both, and must not conflate them.
 
+```mermaid
+graph TD
+    subgraph "Runtime PM (power control)"
+        RPM["pm_runtime_get_sync\npm_runtime_put_autosuspend"]
+        AutoSuspend["autosuspend timer"]
+        SuspendCB["dev_pm_ops.runtime_suspend\ndev_pm_ops.runtime_resume"]
+        RPM --> AutoSuspend --> SuspendCB
+    end
+    subgraph "Unplug Protection (use-after-free guard)"
+        Enter["drm_dev_enter()\nsrcu_read_lock"]
+        Exit["drm_dev_exit()\nsrcu_read_unlock"]
+        Unplug["drm_dev_unplug()\ndev->unplugged = true"]
+        Enter --> Exit
+        Unplug -. "waits for readers" .-> Exit
+    end
+    SuspendCB -. "independent path" .-> Unplug
+```
+
 ### 1.1 Linux Runtime PM Core
 
 The Linux runtime PM framework ([Source: Documentation/power/runtime_pm.rst](https://dri.freedesktop.org/docs/drm/power/runtime_pm.html)) allows individual devices to be suspended and resumed independently of system-wide sleep states. The two central operations for DRM drivers are:
@@ -225,6 +243,24 @@ The SMU is responsible for:
 - Reporting temperature, fan speed, and power draw to the kernel
 - Executing fan curves stored in VBIOS or overridden via sysfs `fan_curve`
 
+```mermaid
+graph TD
+    subgraph "amdgpu Power Management"
+        DPM["power_dpm_force_performance_level\n(sysfs: auto/low/high/manual)"]
+        Profile["pp_power_profile_mode\n(sysfs: profile ID)"]
+        GFXOFF["GFXOFF\n(RLC firmware, sub-ms latency)\namdgpu_gfxoff debugfs"]
+        BACO["BACO\n(Bus Active Chip Off)\nPCIe link preserved"]
+        SMU["SMU firmware\n(drivers/gpu/drm/amd/pm/)"]
+        PSP["PSP\n(Platform Security Processor)"]
+    end
+    PSP -- "loads SMU firmware" --> SMU
+    DPM --> SMU
+    Profile --> SMU
+    SMU -- "controls" --> GFXOFF
+    SMU -- "controls" --> BACO
+    BACO -. "runtime suspend\n(runpm=-1)" .-> DPM
+```
+
 ### 2.6 APU vs. dGPU Power Differences
 
 On AMD APUs (e.g., Steam Deck, Ryzen 7040 series), the GPU shares the SoC power budget with the CPU. The `bapm` (Bidirectional Application Power Management) module parameter controls whether the CPU and GPU can borrow TDP headroom from each other:
@@ -320,6 +356,22 @@ DC6 provides the deepest display power savings but requires the display engine t
 
 Note: `enable_dc` is a *display* parameter and has no relationship to the render C-state bitmask. They control independent hardware subsystems.
 
+```mermaid
+graph TD
+    subgraph "Intel i915 Power Management"
+        RC6["RC6\n(intel_rc6.c)\nRender C-state"]
+        GuCRC["GuCRC\n(GuC PC, Gen12+)\nfirmware-managed RC6"]
+        GTPerf["GTPerf / SLPC\n(GuC PC, Gen12+)\ndynamic freq scaling"]
+        DC["DC States\n(i915.enable_dc)\nDisplay engine"]
+        RC6 -. "replaced by (Gen12+)" .-> GuCRC
+        GuCRC -- "part of GuC PC" --> GTPerf
+    end
+    GuCFW["GuC firmware\n(i915.enable_guc=3)"]
+    GuCFW --> GuCRC
+    GuCFW --> GTPerf
+    DC -. "independent subsystem" .-> RC6
+```
+
 ### 3.4 Xe Driver Power Management
 
 The Xe kernel driver (replacing i915 for Arc Alchemist and Battlemage) implements runtime PM via `xe_pm_runtime_suspend` and `xe_pm_runtime_resume`, which are called by the PCI subsystem as the device enters and exits PCIe D3:
@@ -333,6 +385,22 @@ int xe_pm_runtime_resume(struct xe_device *xe);
 The Xe PM component manages two layers of suspend:
 - **System sleep (S-states)**: OS-initiated suspend driven by ACPI, targeting S0ix (modern standby), S3 (suspend-to-RAM), or S4 (hibernation). Functions `xe_pm_suspend` and `xe_pm_resume` handle this path.
 - **PCI device sleep (D-states)**: Opportunistic PCIe D3, controlled by the PCI subsystem and Linux runtime PM. The `xe_pm_runtime_suspend` and `xe_pm_runtime_resume` functions are the hooks called by the PCI subsystem during these transitions.
+
+```mermaid
+graph LR
+    subgraph "xe_pm.c"
+        SysSuspend["xe_pm_suspend\nxe_pm_resume\n(S-states: S0ix/S3/S4)"]
+        RTSuspend["xe_pm_runtime_suspend\nxe_pm_runtime_resume\n(D-states: PCIe D3)"]
+    end
+    ACPI["ACPI\n(OS-initiated)"] --> SysSuspend
+    PCI["PCI subsystem\n(Linux runtime PM)"] --> RTSuspend
+    subgraph "GT-level components (separate)"
+        RC6GT["GT RC6"]
+        RPS["RPS / SLPC\n(freq management)"]
+    end
+    RTSuspend -. "delegates to" .-> RC6GT
+    RTSuspend -. "delegates to" .-> RPS
+```
 
 [Source: Runtime Power Management — The Linux Kernel documentation (Xe)](https://docs.kernel.org/gpu/xe/xe_pm.html)
 
@@ -484,6 +552,21 @@ Automatic reclocking (the GPU autonomously adjusting clocks based on load) remai
 
 ### 5.2 Turing and Newer: GSP-RM Reclocking
 
+```mermaid
+graph LR
+    subgraph "Pre-Turing (NV04–NV130)"
+        PState["pstate debugfs\n/sys/kernel/debug/dri/0/pstate"]
+        Manual["Manual reclock\n(user-initiated only)\nno automatic load-based scaling"]
+        PState --> Manual
+    end
+    subgraph "Turing+ (NV160+)"
+        GspRm["NvGspRm=1\n(nouveau.config)"]
+        GSP["GSP firmware\n(GPU System Processor)"]
+        AutoReclock["Automatic reclocking\n(same firmware as proprietary)"]
+        GspRm --> GSP --> AutoReclock
+    end
+```
+
 From Turing (NV160, RTX 2000 series) onwards, Nouveau can delegate power management to the NVIDIA GSP (GPU System Processor) firmware via `NvGspRm`:
 
 ```bash
@@ -517,6 +600,20 @@ The kernel's thermal subsystem (`drivers/thermal/`) provides a generic framework
 **Cooling devices** — hardware or software mechanisms that can reduce heat. For GPUs, cooling devices include the fan (controlled via hwmon `pwm1`), and frequency-reduction via the driver's own DPM table clamping.
 
 **Thermal governors** — policy engines that map zone temperature to cooling device state. The `step_wise` governor increases cooling by one step each time a passive trip is exceeded; `power_allocator` uses a PID controller to distribute power budget. The default governor for most GPU zones is `step_wise`.
+
+```mermaid
+graph TD
+    subgraph "Linux Thermal Subsystem (drivers/thermal/)"
+        TZ["Thermal Zone\n(temp sensor + trip points)\n/sys/class/thermal/thermal_zoneN/"]
+        Gov["Thermal Governor\nstep_wise / power_allocator"]
+        CD["Cooling Device\n(fan: pwm1, freq clamp: set_cur_state)"]
+        TZ -- "trip crossed →\nthermal_cdev_update()" --> Gov
+        Gov -- "selects state" --> CD
+    end
+    HW["GPU Temperature Sensor\n(edge / junction / VRAM)"] --> TZ
+    TripPassive["THERMAL_TRIP_PASSIVE\n(clock reduction)"] -. "type" .-> TZ
+    TripCritical["THERMAL_TRIP_CRITICAL\n(system shutdown)"] -. "type" .-> TZ
+```
 
 A minimal example of how a driver registers a thermal zone (simplified from kernel patterns):
 
@@ -655,6 +752,24 @@ Note: Some newer AMD laptops (post-2023) use an AMD-specific EC interface for fa
 ### 7.1 Architecture
 
 `power-profiles-daemon` is a D-Bus service (`org.freedesktop.UPower.PowerProfiles`) that exposes a unified `performance` / `balanced` / `power-saver` interface to desktop environments, compositors, and userspace tools, translating these into driver-specific settings. Version 0.20+ supports loading multiple backend drivers simultaneously.
+
+```mermaid
+graph TD
+    PPD["power-profiles-daemon\nD-Bus: org.freedesktop.UPower.PowerProfiles"]
+    Profiles["Profiles:\nperformance / balanced / power-saver"]
+    PPD --> Profiles
+    subgraph "Backend drivers (v0.20+)"
+        IntelEPP["Intel EPP backend\nenergy_performance_preference\n(HWP per-CPU)"]
+        AMDPState["AMD P-State backend\nenergy_performance_preference\n(CPPC amd-pstate)"]
+        AMDGPUPanel["AMDGPU panel power backend\n/sys/.../amdgpu/panel_power_savings"]
+        PlatformProfile["platform_profile backend\n(ACPI: Lenovo / HP / ASUS)"]
+    end
+    Profiles --> IntelEPP
+    Profiles --> AMDPState
+    Profiles --> AMDGPUPanel
+    Profiles --> PlatformProfile
+    Client["Desktop environment /\npowerprofilesctl /\nGameMode"] --> PPD
+```
 
 ```bash
 # List available profiles and active profile:

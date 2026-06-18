@@ -126,6 +126,19 @@ Staging protocols are in active use and receiving compositor adoption, but the X
 
 **`xdg-activation` (`xdg_activation_v1`).** Replaces ad hoc focus-stealing prevention mechanisms with a token-based activation system. A launching client requests an activation token from the compositor, passes it to the newly launched client via environment variable or IPC, and the launched client presents the token when it calls `xdg_activation_v1.activate`. The compositor decides whether to actually raise the window based on its own policy, preventing uncoordinated focus stealing. Support in GNOME 41+ and KWin 5.23+ makes this protocol safe for use by all new application launchers and portals; gamescope does not expose a standard desktop activation model. [Source: wayland.app/protocols/xdg-activation-v1](https://wayland.app/protocols/xdg-activation-v1)
 
+```mermaid
+graph LR
+    LaunchingClient["Launching Client"]
+    Compositor["Compositor\n(xdg_activation_v1)"]
+    LaunchedClient["Launched Client"]
+
+    LaunchingClient -- "request activation token" --> Compositor
+    Compositor -- "return token" --> LaunchingClient
+    LaunchingClient -- "pass token via env var / IPC" --> LaunchedClient
+    LaunchedClient -- "xdg_activation_v1.activate\n(present token)" --> Compositor
+    Compositor -- "policy decision:\nraise window or deny" --> LaunchedClient
+```
+
 **`fractional-scale-v1` (`wp_fractional_scale_manager_v1`).** Allows compositors to advertise a non-integer scale factor (for example 1.25×, 1.5×, 1.75×) for a surface rather than requiring clients to render at the next integer scale and then downsample. Before this protocol, applications on 150% or 175% HiDPI displays either received a rounded integer scale (leading to over-sized rendering) or had to use proprietary compositor-specific extensions. The compositor sends the preferred fractional scale via the `wp_fractional_scale_v1.preferred_scale` event in units of 1/120. Added to staging in wayland-protocols 1.32 (2022-Q2). [Source: wayland.app/protocols/fractional-scale-v1](https://wayland.app/protocols/fractional-scale-v1)
 
 **`color-management-v1` (`wp_color_manager_v1`).** Defines a rich model for surface colour space and HDR (High Dynamic Range) metadata. The compositor advertises its colour management capabilities (ICC profiles, parametric primaries, transfer functions, rendering intents) via `wp_color_manager_v1` feature and primaries enums. Clients attach image descriptions to their surfaces; the compositor maps them to the output's colour space. This protocol is critical for HDR video playback and wide-gamut photography applications on HDR-capable displays. The kernel-side requirement is the `HDR_OUTPUT_METADATA` KMS property introduced in Linux 5.17 for HDMI/DP HDR signalling, plus display hardware that reports HDR capabilities in EDID. Chromium added `color-management-v1` support in 2024 for HDR surface rendering on KDE Plasma 6.4+; SDL3 added official `wp_color_manager_v1` support in October 2024. A breaking change requiring a 64-bit image description ID (replacing the 32-bit ID that could wrap in approximately 1.4 years) was merged in wayland-protocols 1.47 via the `ready2` event. Readers implementing this protocol must check the wayland-protocols version before assuming stable interface semantics. [Source: wayland.app/protocols/color-management-v1](https://wayland.app/protocols/color-management-v1)
@@ -136,7 +149,36 @@ Staging protocols are in active use and receiving compositor adoption, but the X
 
 **`drm-lease-v1` (`wp_drm_lease_device_v1`).** Required for VR compositors such as Monado (OpenXR) to take exclusive ownership of a DRM output. The compositor exposes lease-capable DRM connectors as `wp_drm_lease_connector_v1` objects; the VR runtime binds a selection of connectors via `wp_drm_lease_request_v1.request_connector` and submits it with `wp_drm_lease_request_v1.submit`. On success the compositor returns a DRM lease FD; the VR runtime then uses the standard DRM API to drive that output directly, bypassing Wayland frame scheduling for sub-millisecond latency. Kernel-side support for DRM leasing was merged in Linux 4.15 via `DRM_IOCTL_MODE_CREATE_LEASE` and related ioctls. The protocol was standardised from wlr-protocols to the main wayland-protocols staging directory in wayland-protocols 1.32 (2022-Q1). Only wlroots-based compositors and KWin implement lease exposure; GNOME/Mutter does not. [Source: wayland.app/protocols/drm-lease-v1](https://wayland.app/protocols/drm-lease-v1)
 
+```mermaid
+graph TD
+    Compositor["Compositor\n(KWin / wlroots-based)"]
+    Connectors["wp_drm_lease_connector_v1\n(lease-capable DRM connectors)"]
+    VRRuntime["VR Runtime\n(Monado / OpenXR)"]
+    LeaseRequest["wp_drm_lease_request_v1"]
+    KernelDRM["Kernel DRM API\n(DRM_IOCTL_MODE_CREATE_LEASE)"]
+    VROutput["VR HMD Output\n(driven directly)"]
+
+    Compositor -- "exposes" --> Connectors
+    VRRuntime -- "request_connector" --> LeaseRequest
+    LeaseRequest -- "submit" --> Compositor
+    Compositor -- "return DRM lease FD" --> VRRuntime
+    Compositor -- "DRM_IOCTL_MODE_CREATE_LEASE" --> KernelDRM
+    VRRuntime -- "standard DRM API\n(bypasses Wayland scheduling)" --> KernelDRM
+    KernelDRM --> VROutput
+```
+
 **`linux-explicit-synchronization-v1` (`zwp_linux_explicit_synchronization_v1`) vs. `wp_linux_drm_syncobj_v1` (`wp_linux_drm_syncobj_manager_v1`).** These are two generations of explicit GPU synchronization over Wayland. The first-generation `zwp_linux_explicit_synchronization_v1` (v2) uses `drm_syncobj` one-shot fences attached to `wl_surface` commits; it is now largely superseded. The current preferred protocol is `wp_linux_drm_syncobj_v1` (v1), which uses `drm_syncobj` *timeline points* — a newer synchronisation primitive that supports `u64` monotonically increasing point values and enables multi-producer/multi-consumer synchronisation chains without needing to reset and re-signal syncobjs. `drm_syncobj` timeline support requires kernel 4.12+ for the base object and kernel 6.6+ for timeline points (with additional correctness fixes in kernel 6.8). NVIDIA GPUs on Wayland benefit significantly from explicit sync because the NVIDIA Vulkan driver manages its own GPU timeline independently of the DRM scheduler's implicit fence scheme; without explicit sync, tearing and display glitches occur when frame completion signals are not communicated through a shared fence mechanism. New code should target `wp_linux_drm_syncobj_v1`; maintain a fallback path to `zwp_linux_explicit_synchronization_v1` for compositors that have not yet adopted the timeline variant. Both protocols are covered in depth in Chapter 4. [Source: wayland.app/protocols/linux-drm-syncobj-v1](https://wayland.app/protocols/linux-drm-syncobj-v1)
+
+```mermaid
+graph TD
+    Gen1["zwp_linux_explicit_synchronization_v1\n(v2 — one-shot fences\nattached to wl_surface commits)"]
+    Gen2["wp_linux_drm_syncobj_v1\n(v1 — drm_syncobj timeline points\nu64 monotonically increasing)"]
+    KernelSyncobj["drm_syncobj\n(kernel 4.12+ base;\nkernel 6.6+ timeline points)"]
+
+    Gen1 -. "superseded by" .-> Gen2
+    Gen1 -- "uses" --> KernelSyncobj
+    Gen2 -- "uses" --> KernelSyncobj
+```
 
 **`security-context` (`wp_security_context_manager_v1`).** Allows a sandboxed application launcher such as Flatpak to associate a new Wayland client connection with a security context descriptor before the client sends any requests. The compositor can then enforce XDG portal permissions against that descriptor rather than relying solely on the process's user identity. Flatpak 1.15+ requires this protocol for its Wayland portal sandboxing model. Support is present across GNOME (44+), KDE (5.27+), and wlroots-based compositors.
 

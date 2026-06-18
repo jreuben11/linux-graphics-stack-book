@@ -38,6 +38,41 @@ The DRM subsystem lives in `drivers/gpu/drm/` within the kernel source tree. Ben
 
 Positioning DRM in the broader software stack: below DRM sits the PCIe bus (for discrete GPUs), the ARM platform bus (for SoC display engines), and the system memory allocator. DRM depends on several other kernel subsystems: `dma-buf` provides a shared buffer object that can be passed between devices and processes; `dma-fence` provides the synchronisation primitives that signal buffer readiness; TTM (Translation Table Manager) provides a GPU memory manager for discrete hardware with VRAM; and the standard kernel allocator, slab, underlies all of them. Above DRM, userspace sees a pair of character device nodes and a sysfs subtree. The libdrm library wraps those character device ioctls into a stable C API. Mesa sits above libdrm and translates OpenGL, Vulkan, and OpenCL workloads into driver-specific GPU commands. Wayland compositors such as wlroots, mutter, and kwin call libdrm directly for KMS operations, bypassing Mesa entirely for the display path.
 
+```mermaid
+graph TD
+    subgraph Userspace
+        Mesa["Mesa\n(OpenGL / Vulkan / OpenCL)"]
+        Compositor["Wayland Compositor\n(wlroots / mutter / kwin)"]
+        libdrm["libdrm"]
+    end
+    subgraph "DRM Subsystem (drivers/gpu/drm/)"
+        DRMCore["DRM Core\n(drm_drv.c · drm_ioctl.c)"]
+        KMS["KMS Half\n(drm_mode_*)"]
+        GEM["GEM / Render Half\n(drm_gem_* · drm_sched_*)"]
+    end
+    subgraph "Kernel Dependencies"
+        dmabuf["dma-buf"]
+        dmafence["dma-fence"]
+        TTM["TTM\n(VRAM manager)"]
+        slab["slab allocator"]
+    end
+    subgraph Hardware
+        PCIe["PCIe Bus\n(discrete GPU)"]
+        Platform["ARM Platform Bus\n(SoC)"]
+    end
+    Mesa --> libdrm
+    Compositor --> libdrm
+    libdrm --> DRMCore
+    DRMCore --> KMS
+    DRMCore --> GEM
+    GEM --> TTM
+    TTM --> slab
+    DRMCore --> dmabuf
+    DRMCore --> dmafence
+    DRMCore --> PCIe
+    DRMCore --> Platform
+```
+
 The evolution of the DRI (Direct Rendering Infrastructure) protocol family shows why the architecture evolved the way it did. DRI1 gave application processes direct access to GPU memory-mapped registers via `/dev/dri/card0`, but required `CAP_SYS_ADMIN` or root membership and offered no isolation between clients. DRI2 introduced authenticated buffer sharing: the X server would vouch for a client by exchanging a magic token, allowing the client to share SHM-backed pixmaps with the compositor. DRI2 worked but introduced unavoidable CPU copies and required the X server to be involved in every buffer handoff — a bottleneck that became increasingly painful as GPU output resolutions and frame rates climbed. DRI3, introduced in 2013, solved both problems at once by passing GPU buffer file descriptors directly over the X socket using the standard Unix `SCM_RIGHTS` mechanism. The X server receives a DMA-BUF file descriptor and imports it as a pixmap without ever reading or copying the pixel data. DRI2 is effectively dead on modern stacks; any kernel older than 3.14 that lacks render nodes can be safely treated as legacy.
 
 The two halves of DRM are worth naming precisely to avoid confusion throughout the book. The **KMS half** manages the display pipeline: it models the hardware as a tree of KMS objects (planes, CRTCs, encoders, connectors, and bridges), and provides ioctls to enumerate and reconfigure those objects. The **GEM/render half** manages GPU memory (via GEM objects) and GPU workload submission. In the kernel source this split is visible in the naming: `drm_mode_*` functions belong to KMS, while `drm_gem_*`, `drm_sched_*`, and the driver-private ioctls for command submission belong to the render path. Chapter 2 covers the KMS pipeline in full depth; Chapter 4 covers GEM and memory management.
@@ -136,6 +171,26 @@ static int rockchip_drm_probe(struct platform_device *pdev)
 
 Inside `rockchip_drm_bind`, the driver allocates the DRM device, initialises mode configuration, then calls `component_bind_all()` which triggers each sub-driver's `struct component_ops.bind`. Each sub-driver's bind function registers its planes, CRTCs, encoders, or connectors with the DRM device. Only after all components have bound successfully does the master call `drm_dev_register()`. This ordering guarantee is the whole point of the component framework: a DRM device with only some of its display pipes initialised would be unusable, and the framework prevents partial registration from reaching userspace.
 
+```mermaid
+graph TD
+    Master["Master Driver\n(rockchip_drm_drv)"]
+    Framework["component framework\n(drivers/base/component.c)"]
+    VOP["VOP Sub-driver"]
+    DSI["DSI Sub-driver"]
+    HDMI["HDMI PHY Sub-driver"]
+    DRMDev["struct drm_device\n(drm_dev_register)"]
+
+    Master -- "component_master_add_with_match()" --> Framework
+    VOP -- "component_add()" --> Framework
+    DSI -- "component_add()" --> Framework
+    HDMI -- "component_add()" --> Framework
+    Framework -- "all present → .bind callback" --> Master
+    Master -- "component_bind_all()" --> VOP
+    Master -- "component_bind_all()" --> DSI
+    Master -- "component_bind_all()" --> HDMI
+    Master -- "drm_dev_register()" --> DRMDev
+```
+
 **Hot-unplug and the unplug fence.** For PCIe devices that support hot-removal, `drm_dev_unplug()` marks the device as inaccessible to new userspace operations while ongoing ioctl calls finish safely. Driver code wraps hardware access in `drm_dev_enter()` / `drm_dev_exit()` pairs; `drm_dev_unplug()` waits for all entered regions to exit before returning, ensuring no access to unmapped hardware occurs after physical removal.
 
 ---
@@ -151,6 +206,26 @@ The **render node** (`/dev/dri/renderDN`) is created whenever the driver sets `D
 The numbering of primary and render nodes is independent. A single GPU might appear as `card0` and `renderD128`. The relationship between them is discoverable through sysfs: `/sys/class/drm/card0/device/drm/` contains a subdirectory named `renderD128` that symlinks back to the render node. The libdrm function `drmGetDevices2()` performs this discovery, returning an array of `drmDevicePtr` structures that enumerate all nodes associated with each physical device.
 
 For multi-GPU systems, the symlink forest `/dev/dri/by-path/` provides stable names that survive device renumbering across reboots. udev generates these symlinks from PCIe bus addresses, making them suitable for configuration files where `card0` versus `card1` would be ambiguous.
+
+```mermaid
+graph LR
+    subgraph "DRM Device"
+        Primary["/dev/dri/cardN\n(DRIVER_MODESET)"]
+        Render["/dev/dri/renderDN\n(DRIVER_RENDER)"]
+    end
+    subgraph "Accessible via Primary Node"
+        KMS["KMS ioctls\n(DRM_MASTER flag)"]
+        GEMnames["GEM global names\n(GEM_FLINK / GEM_OPEN)"]
+    end
+    subgraph "Accessible via Render Node"
+        GPU["GEM allocation\nPRIME import/export\nCommand submission\nSync objects\n(DRM_RENDER_ALLOW flag)"]
+    end
+    Primary --> KMS
+    Primary --> GEMnames
+    Render --> GPU
+    Primary -. "requires DRM mastership" .-> Compositor["Compositor\n(DRM master)"]
+    Render -. "render group membership only" .-> App["Application\n(Mesa DRI loader)"]
+```
 
 When a process calls `open(2)` on a DRM device node, the kernel allocates a `struct drm_file` and attaches it to the file descriptor. This structure is the per-connection context: it holds the GEM handle table (a private namespace of integer handles mapping to kernel GEM objects), the authenticated flag, the is-master flag, and the event queue for VBLANK and page-flip notifications. A critical subtlety: GEM handles are per-`drm_file`, not per-process. If a single process opens the render node twice, it has two independent handle namespaces; handles from the first fd are invalid on the second. When Mesa creates multiple DRI contexts within a single process, all contexts sharing the same underlying fd also share the same handle namespace. This handle isolation is intentional: it is the kernel's mechanism for preventing one client from accidentally (or maliciously) referencing another client's GPU buffers by guessing handle numbers.
 
@@ -242,6 +317,20 @@ At the kernel level, a GEM handle is an integer in a per-`drm_file` namespace th
 
 The three categories of DRI3 protocol messages map directly to kernel operations. `DRI3Open` causes the X server to open the GPU device and return its fd to the client — this is how the client learns which `/dev/dri/renderDN` to open. `DRI3PixmapFromBuffer` / `DRI3BufferFromPixmap` pass DMA-BUF fds to create or retrieve X pixmaps without copying pixels. `DRI3FenceFromFD` / `DRI3FDFromFence` pass Linux sync file fds for synchronisation: before the X server displays a buffer the application must signal the fence that marks it as fully rendered, and the kernel enforces this through the `dma-fence` mechanism.
 
+```mermaid
+graph LR
+    App["Application\n(OpenGL/Vulkan)"]
+    GEMBuf["GEM buffer\n(dma_buf / physical pages)"]
+    XServer["X Server"]
+    Display["Display\n(KMS framebuffer)"]
+
+    App -- "render into GPU buffer" --> GEMBuf
+    App -- "DRM_IOCTL_PRIME_HANDLE_TO_FD\nexport as dma-buf fd" --> GEMBuf
+    App -- "DRI3PixmapFromBuffer\n(SCM_RIGHTS over X socket)" --> XServer
+    XServer -- "DRM_IOCTL_PRIME_FD_TO_HANDLE\nimport same physical pages" --> GEMBuf
+    XServer -- "KMS page flip\n(drmModeAtomicCommit)" --> Display
+```
+
 The security model of PRIME/DRI3 is important: because DMA-BUF fds are passed via `SCM_RIGHTS`, the receiving process gains a kernel reference to the buffer but cannot forge a handle or escalate privileges. The fd is opaque; its integer value in one process is meaningless in another. An application cannot pass an arbitrary integer and cause the X server to access unrelated GPU memory, as was possible with the global name mechanism (`GEM_FLINK`) that DRI2 inherited from DRI1.
 
 On the Wayland side, the `linux-dmabuf` protocol serves exactly the same role as DRI3 but over the Wayland socket. A Wayland client exports a rendered buffer as a DMA-BUF fd and passes it to the compositor, which imports it. The mechanism is kernel-identical; only the wire protocol differs. DRI3 exists today primarily to support the X11 compatibility path through XWayland: XWayland acts as an X server that receives DRI3 buffer fds from X clients and forwards them to the Wayland compositor as `linux-dmabuf` buffers. The GEM/DMA-BUF layer in the kernel is the common language.
@@ -257,6 +346,23 @@ The DRI3 mechanism answers the question of how to share a rendered buffer with t
 **Core Present operations.** `PresentPixmap` is the central request: the application submits a DRI3 pixmap, a target MSC at which it should appear, and an MSC divisor/remainder pair for periodic frame scheduling. The X server queues the pixmap and, when the target MSC arrives (signalled by the DRM VBLANK event path), calls the page-flip ioctl to make the buffer active on the display controller. When the flip completes, the X server sends a `PresentCompleteNotify` event to the application with the actual MSC and UST of the scanout. `PresentIdleNotify` arrives when a previously presented buffer is no longer on screen and can be safely reused for the next frame's rendering.
 
 The path from Present request to display scanout passes through several layers. The X server subscribes to DRM VBLANK events by calling `DRM_IOCTL_WAIT_VBLANK` with the `DRM_VBLANK_EVENT` flag. When the target MSC arrives, the DRM driver's VBLANK interrupt handler fires, the kernel queues a `struct drm_event_vblank` onto the X server's DRM fd, and the X server's event loop reads it via `poll(2)` + `read(2)`. The X server then issues a page-flip ioctl (either `DRM_IOCTL_MODE_PAGE_FLIP` in legacy mode or an atomic commit in modern drivers), which schedules the new framebuffer to become active at the next VBLANK. The flip completion event arrives similarly via the DRM fd event queue.
+
+```mermaid
+graph TD
+    App["Application"]
+    XServer["X Server"]
+    DRMDriver["DRM Driver\n(VBLANK interrupt handler)"]
+    CRTC["CRTC\n(MSC counter)"]
+
+    App -- "PresentPixmap\n(target MSC)" --> XServer
+    XServer -- "DRM_IOCTL_WAIT_VBLANK\n(DRM_VBLANK_EVENT)" --> DRMDriver
+    DRMDriver -- "VBLANK fires\n(MSC / UST)" --> CRTC
+    DRMDriver -- "drm_event_vblank\non DRM fd" --> XServer
+    XServer -- "DRM_IOCTL_MODE_PAGE_FLIP\nor atomic commit" --> DRMDriver
+    DRMDriver -- "flip complete event\non DRM fd" --> XServer
+    XServer -- "PresentCompleteNotify\n(actual MSC / UST)" --> App
+    XServer -- "PresentIdleNotify\n(buffer reusable)" --> App
+```
 
 **Present vs. SwapBuffers.** The `SwapBuffers` call familiar from GLX and EGL hides all of this machinery. Under the covers, Mesa's EGL/GLX swap chain implementation on X11 uses the Present extension to submit the rendered back buffer. The present-swap path in Mesa constructs a `PresentPixmap` request with a target MSC computed from the application's swap interval, submits it, and waits for `PresentCompleteNotify` before returning `SwapBuffers` to the caller. The advantage of using Present directly (without going through Mesa's swap chain) is that an application can queue multiple frames ahead, specifying distinct target MSCs, without blocking — this is the basis of low-latency frame pipelining used in game engines.
 
@@ -530,6 +636,30 @@ int export_gem_buffer(int drm_fd, uint32_t gem_handle, int unix_sock)
 `drmModeAddFB2WithModifiers()` creates a KMS framebuffer object that specifies not only the pixel format (via `DRM_FORMAT_*` fourcc codes) but also the memory layout modifier (the `DRM_FORMAT_MOD_*` constants that encode tiling, compression, and vendor-specific layout variants). This is required whenever a GPU allocates buffers in a non-linear layout — which is the default for all performance-sensitive GPU workloads. Chapter 4 covers format modifiers in depth.
 
 **Consumers of libdrm.** Mesa's DRI loader opens the render node and calls `drmGetVersion()` to identify the driver before loading the matching Gallium or DRI driver `.so`. The wlroots compositor library calls `drmModeGetResources()` and `drmModeAtomicCommit()` directly to drive KMS for compositors built on it (sway, river, cage). GNOME's mutter abstracts libdrm in its `MetaKmsImpl` layer; KDE Plasma's kwin wraps it in its DRM backend under `backends/drm/`. VA-API (hardware video decode, Chapter 26) opens the render node and submits decode commands via driver-private ioctls wrapped in `libdrm_intel` or `libdrm_amdgpu`.
+
+```mermaid
+graph TD
+    subgraph "libdrm"
+        Core["xf86drm.h\n(core: open · auth · PRIME · version)"]
+        Mode["xf86drmMode.h\n(KMS: connectors · CRTCs · planes · atomic)"]
+        subgraph "Per-driver sub-libraries"
+            AMD["libdrm_amdgpu"]
+            Intel["libdrm_intel"]
+            Nouveau["libdrm_nouveau"]
+            Radeon["libdrm_radeon"]
+        end
+    end
+    MesaDRI["Mesa DRI Loader"] --> Core
+    MesaDRI --> AMD
+    MesaDRI --> Intel
+    MesaDRI --> Nouveau
+    wlroots --> Mode
+    mutter["mutter (MetaKmsImpl)"] --> Mode
+    kwin["kwin (DRM backend)"] --> Mode
+    VAAPI["VA-API"] --> Core
+    VAAPI --> AMD
+    VAAPI --> Intel
+```
 
 **Sub-libraries.** The libdrm repository contains per-driver sub-libraries: `libdrm_amdgpu`, `libdrm_intel`, `libdrm_nouveau`, and `libdrm_radeon`. These provide slightly higher-level wrappers around driver-private ioctls, reducing the amount of raw ioctl code that Mesa and other consumers must write. It is worth noting that `libdrm_intel` is in the process of being superseded: Intel's newer `xe` and `i915` drivers have Mesa consuming their UAPI headers directly rather than through libdrm abstractions. The trend toward direct UAPI consumption reflects the kernel's strong ABI stability guarantee making the libdrm indirection less valuable for cutting-edge features.
 

@@ -56,6 +56,32 @@ The Vulkan Video extension family evolved through a provisional phase before fin
 
 The architecture deliberately separates concerns into three layers: a shared infrastructure layer (`VK_KHR_video_queue`), an operation-type layer (decode or encode queue), and a codec layer (H.264, H.265, AV1). Applications only need to enable the layers relevant to their codec and operation.
 
+```mermaid
+graph TD
+    subgraph "Codec Layer"
+        C1["VK_KHR_video_decode_h264"]
+        C2["VK_KHR_video_decode_h265"]
+        C3["VK_KHR_video_decode_av1"]
+        C4["VK_KHR_video_encode_h264"]
+        C5["VK_KHR_video_encode_h265"]
+    end
+    subgraph "Operation Layer"
+        DQ["VK_KHR_video_decode_queue"]
+        EQ["VK_KHR_video_encode_queue"]
+    end
+    subgraph "Infrastructure Layer"
+        VQ["VK_KHR_video_queue\n(Sessions, Profiles, Format Queries)"]
+    end
+    C1 --> DQ
+    C2 --> DQ
+    C3 --> DQ
+    C4 --> EQ
+    C5 --> EQ
+    DQ --> VQ
+    EQ --> VQ
+    VQ --> VkDevice["VkDevice\n(Graphics + Compute + Video)"]
+```
+
 ### Browser and Web Platform Motivation
 
 For browser engineers the case for Vulkan Video is particularly compelling. Chromium's hardware video acceleration on Linux has historically been a source of instability: VA-API loaded through `dlopen` into the GPU process, with `LIBVA_DRIVER_NAME` environment variable lookup, driver-specific quirks around `VASurface` export formats, and a surface-sharing model that required careful inter-process DMA-BUF passing through the Mojo IPC layer. Bugs introduced by vendor VA-API driver updates have caused regressions that are difficult to bisect because the VA-API driver is not in the Chromium tree.
@@ -157,6 +183,22 @@ vkGetPhysicalDeviceVideoFormatPropertiesKHR(phys_dev, &fmt_info, &fmt_count, fmt
 ### VkVideoSessionKHR
 
 The video session is the central stateful object. It binds to a single queue family, a single video profile, and fixed image extents and format parameters. This separation of "session state" from "backing images" is deliberate: a single session can operate across many frames if the coded dimensions do not change, while the DPB image array is managed separately by the application.
+
+```mermaid
+graph TD
+    Profile["VkVideoProfileInfoKHR\n(codec op, chroma, bit depth)"]
+    Caps["VkVideoCapabilitiesKHR\n(maxDpbSlots, maxActiveReferencePictures,\nminBitstreamBufferOffsetAlignment)"]
+    FmtQuery["vkGetPhysicalDeviceVideoFormatPropertiesKHR\n(compatible VkFormat values)"]
+    Session["VkVideoSessionKHR\n(queue family, profile, extents, format)"]
+    SessionMem["VkDeviceMemory\n(opaque memory bindings)"]
+    SessionParams["VkVideoSessionParametersKHR\n(SPS/PPS/VPS/AV1 sequence header)"]
+
+    Profile --> Caps
+    Profile --> FmtQuery
+    Profile --> Session
+    Session -- "vkGetVideoSessionMemoryRequirementsKHR\n+ vkBindVideoSessionMemoryKHR" --> SessionMem
+    Session --> SessionParams
+```
 
 ```c
 VkVideoSessionCreateInfoKHR session_ci = {
@@ -289,6 +331,22 @@ The `VkVideoDecodeCapabilitiesKHR` structure — retrieved by extending `VkVideo
 
 A portable application queries both flags and prepares image pools for each mode:
 
+```mermaid
+graph LR
+    subgraph "DISTINCT mode\n(Intel, NVIDIA)"
+        DPB_D["DPB Array Image\nVK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR"]
+        OUT_D["Output Image\nVK_IMAGE_LAYOUT_VIDEO_DECODE_DST_KHR"]
+        DPB_D -. "pSetupReferenceSlot\n(future reference)" .-> DPB_D
+        OUT_D -- "dstPictureResource\n(decoded output)" --> OUT_D
+    end
+    subgraph "COINCIDE mode\n(AMD RADV)"
+        DPB_C["Single Image\nVK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR\n(both output and reference)"]
+    end
+    Decode["vkCmdDecodeVideoKHR"] --> DPB_D
+    Decode --> OUT_D
+    Decode --> DPB_C
+```
+
 ```c
 VkVideoDecodeCapabilitiesKHR decode_caps = {
     .sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_CAPABILITIES_KHR,
@@ -345,6 +403,22 @@ vkCmdPipelineBarrier2(cmd, &dep);
 If the decode and compute/graphics operations live on different queue families (which is common — the VCN engine on AMD is a separate hardware block from the graphics shader array), the barrier must perform a queue family ownership transfer. The release operation is recorded in the decode command buffer; the acquire operation is recorded in the graphics/compute command buffer. A `VkSemaphore` signal/wait pair ensures ordering between the two submissions.
 
 For multi-frame streaming pipelines, timeline semaphores are preferred over binary semaphores. The decode queue signals a timeline semaphore at value `N` after completing frame `N`; the graphics queue waits at value `N` before beginning to process frame `N` as a texture. This allows the decode queue to work `k` frames ahead of the display queue without requiring per-frame binary semaphore allocation.
+
+```mermaid
+graph TD
+    DecodeQueue["Decode Queue\n(VCN / MFX engine)"]
+    BeginCoding["vkCmdBeginVideoCodingKHR\n(bind session, DPB slots)"]
+    DecodeCmd["vkCmdDecodeVideoKHR\n(srcBuffer → dstPictureResource)"]
+    EndCoding["vkCmdEndVideoCodingKHR"]
+    Barrier["VkImageMemoryBarrier2\nVK_PIPELINE_STAGE_2_VIDEO_DECODE_BIT_KHR\n→ VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT\n(queue family ownership transfer)"]
+    Semaphore["VkSemaphore\n(timeline, value N)"]
+    GraphicsQueue["Graphics / Compute Queue"]
+    Shader["Fragment / Compute Shader\nsamples decoded VkImage"]
+
+    DecodeQueue --> BeginCoding --> DecodeCmd --> EndCoding --> Barrier
+    Barrier -- "signal value N" --> Semaphore
+    Semaphore -- "wait value N" --> GraphicsQueue --> Shader
+```
 
 ---
 
@@ -598,6 +672,22 @@ FFmpeg has first-class support for Vulkan Video through its hardware acceleratio
 
 FFmpeg's Vulkan hardware context is structured in three layers:
 
+```mermaid
+graph TD
+    HWDev["AVBufferRef *hw_device_ctx\n(AV_HWDEVICE_TYPE_VULKAN)"]
+    VkDevCtx["AVVulkanDeviceContext\n(VkInstance, VkPhysicalDevice, VkDevice,\nqueue_family_decode_index)"]
+    HWFrames["AVBufferRef *hw_frames_ctx\n(AV_PIX_FMT_VULKAN)"]
+    VkFramesCtx["AVVulkanFramesContext\n(VkImage pool, usage flags)"]
+    Frame["AVFrame\n(data[0] → AVVkFrame)"]
+    VkFrame["AVVkFrame\n(img[0]: VkImage,\nsem[0]: VkSemaphore timeline,\nlayout[0], queue_family[0])"]
+
+    HWDev --> VkDevCtx
+    HWDev --> HWFrames
+    HWFrames --> VkFramesCtx
+    HWFrames --> Frame
+    Frame --> VkFrame
+```
+
 **`AVBufferRef *hw_device_ctx`** with type `AV_HWDEVICE_TYPE_VULKAN` — owns the `VkInstance`, `VkPhysicalDevice`, and `VkDevice`. Applications can create this from an existing Vulkan instance:
 
 ```c
@@ -669,6 +759,17 @@ The zero-copy pipeline from decoded `VkImage` to Wayland compositor via linux-dm
 3. Submit the DMA-BUF to the Wayland compositor via the `zwp_linux_dmabuf_v1` protocol (Ch20).
 4. The compositor imports the DMA-BUF as a `wl_buffer` and may directly scanout the decoded frame via KMS atomic commit if the format and tiling are compatible with the display engine.
 
+```mermaid
+graph TD
+    DecodeVkImage["VkImage\n(VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR\n+ VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)"]
+    ExportFd["vkGetMemoryFdKHR\n(VK_KHR_external_memory_fd)\n→ DMA-BUF fd"]
+    WaylandDmabuf["zwp_linux_dmabuf_v1\n(DMA-BUF fd + format modifier)"]
+    WlBuffer["wl_buffer\n(Wayland compositor)"]
+    KMSScanout["KMS atomic commit\n(direct scanout if format+modifier match)"]
+
+    DecodeVkImage --> ExportFd --> WaylandDmabuf --> WlBuffer --> KMSScanout
+```
+
 The critical requirement is that the decoded `VkImage` uses a format and modifier supported by both the Vulkan implementation and the KMS display engine. The application queries DRM format modifiers via `vkGetPhysicalDeviceImageFormatProperties2` with `VkImageDrmFormatModifierListCreateInfoEXT` and cross-references against the modifiers advertised by the Wayland compositor via `zwp_linux_dmabuf_v1::modifier` events.
 
 For YCbCr content the pipeline typically involves one additional step: a Vulkan compute shader or graphics pass to convert from the native YCbCr `VkFormat` (e.g., `VK_FORMAT_G8_B8R8_2PLANE_420_UNORM`) to an RGB format suitable for display or compositing. FFmpeg provides the `scale_vulkan` and `overlay_vulkan` video filters for this purpose, keeping the entire conversion on the GPU.
@@ -724,6 +825,25 @@ VA-API surfaces are opaque. Exporting a decoded frame for use in a Vulkan render
 4. Layout transition barrier to the appropriate layout for sampling.
 
 With Vulkan Video the decoded frame is already a `VkImage`. A layout transition barrier from `VK_IMAGE_LAYOUT_VIDEO_DECODE_DST_KHR` to `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL` is all that separates the decoded frame from use in a graphics or compute shader. No file descriptor exchange, no DMA-BUF import, no external memory wrapping.
+
+```mermaid
+graph LR
+    subgraph "VA-API path (4 steps)"
+        VASurface["VASurface\n(opaque)"]
+        VAExport["vaExportSurfaceHandle\n→ VADRMPRIMESurfaceDescriptor\n(DMA-BUF fd)"]
+        VkImport["vkImportMemoryFdKHR\n→ VkDeviceMemory"]
+        VkWrapImage["vkCreateImage\n(VkExternalMemoryImageCreateInfo)\n→ VkImage"]
+        VkBarrier1["Layout transition barrier\n→ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL"]
+        VASurface --> VAExport --> VkImport --> VkWrapImage --> VkBarrier1
+    end
+    subgraph "Vulkan Video path (1 step)"
+        VkDecoded["VkImage\n(VK_IMAGE_LAYOUT_VIDEO_DECODE_DST_KHR)"]
+        VkBarrier2["Layout transition barrier\n→ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL"]
+        VkDecoded --> VkBarrier2
+    end
+    VkBarrier1 --> Shader["Graphics / Compute Shader"]
+    VkBarrier2 --> Shader
+```
 
 ### Hardware Support Matrix (June 2026)
 

@@ -29,6 +29,21 @@ This chapter covers the NVIDIA AI-rendering stack as it stood at mid-2026, treat
 
 The chapter assumes you are comfortable with the Vulkan memory model and synchronisation primitives (Chapter 24), with the open-source NVIDIA kernel driver and NVK Mesa driver (Chapters 9–10), and with CUDA compute concepts (Chapter 66). It does not duplicate the OptiX 9 Cooperative Vectors material found in Chapter 67. The NGX SDK ships as part of the binary NVIDIA driver; NVK users will find the landscape more restricted and are pointed to the relevant limitations in Section 10.
 
+```mermaid
+graph TD
+    NGX["NGX SDK\n(libnvidia-ngx.so)"]
+    SR["Super Resolution\n(DLSS SR)"]
+    MFG["Frame Generation\n(DLSS-G / MFG)"]
+    RR["AI Denoising\n(Ray Reconstruction)"]
+    Reflex["Low-Latency Pipelining\n(Reflex)"]
+    GSplat["Neural Scene Representations\n(3D Gaussian Splatting)"]
+    NGX --> SR
+    NGX --> MFG
+    NGX --> RR
+    NGX --> Reflex
+    NGX --> GSplat
+```
+
 Readers will come away understanding: how the DLSS transformer model differs architecturally from its CNN predecessors; the split-network design that makes Multi Frame Generation possible; how Ray Reconstruction's G-buffer requirements differ from a hand-tuned denoiser; how to initialise and evaluate NGX features under Vulkan on Linux; how Reflex's present-queue throttle interacts with LatencyFleX on open hardware; and how the gsplat library and OpenUSD 26.03 bring neural scene representations into production pipelines.
 
 ---
@@ -131,6 +146,20 @@ DLSS 4 Multi Frame Generation (MFG) generates up to three additional frames per 
 
 For four output frames per rendered pair, the cost is: one A pass + three B passes. The expensive A pass is amortised across all generated frames, reducing the per-frame cost compared to running a single full network three times. This design achieves approximately 1ms per generated 4K frame on RTX 5090, versus 3.25ms per generated frame for DLSS 3's single-network Frame Generation on RTX 4090. [Source: NVIDIA Research DLSS 4](https://research.nvidia.com/labs/adlr/DLSS4/)
 
+```mermaid
+graph TD
+    RP["Rendered Frame Pair"]
+    CompA["Component A\n(heavy network — runs once per rendered-frame pair)\nproduces motion and scene representation"]
+    RP --> CompA
+    CompA --> CompB1["Component B\n(light network — instance 1)\nGenerates Frame 1"]
+    CompA --> CompB2["Component B\n(light network — instance 2)\nGenerates Frame 2"]
+    CompA --> CompB3["Component B\n(light network — instance 3)\nGenerates Frame 3"]
+    CompB1 --> Composite["Compositing Pass\n(HUD reinjection + temporal blend)"]
+    CompB2 --> Composite
+    CompB3 --> Composite
+    Composite --> Display["4× Output Frames\n(1 rendered + 3 generated)"]
+```
+
 ### 4.2 AI Optical Flow
 
 DLSS 3 Frame Generation relied on the hardware Optical Flow Accelerator in Ada Lovelace. DLSS 4 MFG replaces this with an AI optical flow model that generates a dense per-pixel motion field from consecutive rendered frames. The network learns to identify when game-engine motion vectors are reliable (rigid geometry with correct depth continuity) versus when they must be supplemented by learned correspondence (specular highlights, mirrors, translucent surfaces, UI elements that carry no geometric motion vector).
@@ -176,6 +205,26 @@ The compositing pass runs entirely on the GPU display engine in Blackwell's Hard
 ### 5.1 Unified AI Denoiser Architecture
 
 DLSS Ray Reconstruction (DLSS-RR, introduced with Ada Lovelace) replaces the entire stack of hand-tuned spatiotemporal denoisers — REBLUR (ReBlur, for diffuse), RELAX (for specular), and SIGMA (for shadows) — with a single transformer-based AI network. Traditional denoisers operate on statistical assumptions about noise distributions and surface correlations; they require careful per-effect hand-tuning and degrade for effects outside their design assumptions (e.g., multi-bounce specular, participating media). [Source: NVIDIA AI Decoded — Ray Reconstruction](https://blogs.nvidia.com/blog/ai-decoded-ray-reconstruction/)
+
+```mermaid
+graph LR
+    subgraph "Traditional Denoiser Stack"
+        REBLUR["REBLUR\n(diffuse)"]
+        RELAX["RELAX\n(specular)"]
+        SIGMA["SIGMA\n(shadows)"]
+    end
+    subgraph "DLSS Ray Reconstruction"
+        RRNet["Single Transformer-Based\nAI Network\n(NVSDK_NGX_Feature_RayReconstruction)"]
+    end
+    PathTracer["Noisy Path-Tracer Output\n(RESOURCE_COLOR_IN)"] --> REBLUR
+    PathTracer --> RELAX
+    PathTracer --> SIGMA
+    PathTracer --> RRNet
+    REBLUR --> DenoisedOut["Denoised Output\nat render resolution"]
+    RELAX --> DenoisedOut
+    SIGMA --> DenoisedOut
+    RRNet --> UpscaledOut["Denoised + Upscaled Output\nat display resolution\n(RESOURCE_COLOR_OUT)"]
+```
 
 The RR network was trained on path-traced ground truth across a dataset five times more diverse than the dataset used for DLSS 3's denoiser integration, covering global illumination, caustics, volumetric scattering, and the full range of material types. Critically, the network also handles upscaling — its output is at display resolution — combining the previously separate denoising and SR steps into a single inference pass. When DLSS-RR is enabled, it overrides DLSS SR; the two are not combined.
 
@@ -247,6 +296,19 @@ On Linux, the NGX runtime follows a plugin model:
   - `libnvidia-ngx-dlssg.so.310.4.0` — Frame Generation (`NVSDK_NGX_Feature_FrameGeneration`)
 
 Each feature library carries a `.nvsig` ELF section that `libnvidia-ngx.so` verifies cryptographically before loading. This prevents replacement of NGX feature libraries with unauthorised builds — a significant constraint for open-source efforts (see Section 10). NGX is distributed as part of the binary NVIDIA display driver (since driver 450.51). [Source: NVIDIA driver README — NGX chapter](https://download.nvidia.com/XFree86/Linux-x86_64/455.38/README/ngx.html)
+
+```mermaid
+graph TD
+    App["Vulkan Application"]
+    MainLib["libnvidia-ngx.so\n(feature discovery, signature verification, plugin dispatch)"]
+    App --> MainLib
+    MainLib -- "verifies .nvsig\nthen loads" --> DLSS["libnvidia-ngx-dlss.so.310.4.0\n(NVSDK_NGX_Feature_SuperSampling)"]
+    MainLib -- "verifies .nvsig\nthen loads" --> DLSSD["libnvidia-ngx-dlssd.so.310.4.0\n(NVSDK_NGX_Feature_RayReconstruction)"]
+    MainLib -- "verifies .nvsig\nthen loads" --> DLSSG["libnvidia-ngx-dlssg.so.310.4.0\n(NVSDK_NGX_Feature_FrameGeneration)"]
+    DLSS --> Models["NGX Model Files\n(/usr/share/nvidia/ngx)"]
+    DLSSD --> Models
+    DLSSG --> Models
+```
 
 Model file search order on Linux:
 1. `__NGX_CONF_FILE` environment variable (path to a JSON config)
@@ -514,6 +576,21 @@ The `low_latency_layer` open Vulkan layer (2025) extends this approach, implemen
 
 Rendering follows tile-based alpha compositing:
 
+```mermaid
+graph TD
+    Gaussians["3D Gaussian Primitives\n(mean μ, covariance Σ, opacity α, SH coefficients)"]
+    Step1["Step 1: Project to 2D\nEWA splatting approximation → screen-space ellipse"]
+    Step2["Step 2: Tile Assignment\nbounding box → intersecting 16×16 pixel tiles"]
+    Step3["Step 3: Depth Sort\nper tile, by increasing camera depth"]
+    Step4["Step 4: Alpha Composite\nfront-to-back accumulation per tile\nC_pixel = Σ(cᵢ × αᵢ × Tᵢ)"]
+    Output["Rendered Pixel Colours"]
+    Gaussians --> Step1
+    Step1 --> Step2
+    Step2 --> Step3
+    Step3 --> Step4
+    Step4 --> Output
+```
+
 1. Project each 3D Gaussian through the camera model to a 2D screen-space ellipse using the EWA splatting approximation
 2. Compute a bounding box and assign the Gaussian to all intersecting 16×16 pixel tiles
 3. Sort Gaussians per tile by increasing camera depth
@@ -736,6 +813,21 @@ This section covers TensorRT 10.x, the current release as of mid-2026. TensorRT 
 ### 11.1 The Build-Then-Deploy Model
 
 TensorRT separates **engine building** (slow, GPU-specific, done offline) from **inference** (fast, microsecond latency, done at runtime):
+
+```mermaid
+graph TD
+    Model["Trained Model\n(PyTorch .pt / ONNX .onnx)"]
+    Builder["trtexec or IBuilder API\n(runs on target GPU — offline, 10s to minutes)"]
+    Opts["Build Optimisations\n(layer fusion, precision calibration,\nkernel selection, memory layout)"]
+    Plan["Serialised Engine Plan\n(.trt file — GPU-architecture-specific)"]
+    Runtime["IRuntime + IExecutionContext\n(microseconds per inference)"]
+    InfOut["Inference Output\n(radiance, upscaled image, denoised signal)"]
+    Model --> Builder
+    Builder --> Opts
+    Opts --> Plan
+    Plan --> Runtime
+    Runtime --> InfOut
+```
 
 ```
 Trained model (PyTorch .pt / ONNX .onnx)

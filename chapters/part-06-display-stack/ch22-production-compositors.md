@@ -44,6 +44,25 @@ Looking at protocol extension support, KWin leads the field: it was the first de
 
 The following sections examine each compositor in detail, beginning with the two most architecturally complex: Mutter and KWin.
 
+```mermaid
+graph TD
+    subgraph "Custom DRM/KMS Backend"
+        Mutter["Mutter\n(GNOME Shell)"]
+        KWin["KWin\n(KDE Plasma)"]
+        gamescope["gamescope\n(Valve)"]
+    end
+    subgraph "wlroots-based"
+        Sway["Sway\n(tiling, i3-compatible)"]
+        Hyprland["Hyprland\n(animated dynamic tiling)"]
+    end
+    wlroots["wlroots\n(shared compositor toolkit)"] --> Sway
+    wlroots --> Hyprland
+    DRM["DRM/KMS\n(kernel)"] --> Mutter
+    DRM --> KWin
+    DRM --> gamescope
+    DRM --> wlroots
+```
+
 ---
 
 ## 2. Mutter: GNOME Shell's Compositor
@@ -58,11 +77,44 @@ The central architectural divide in Mutter is the choice of backend. `MetaBacken
 
 Mutter wraps the KMS resource hierarchy described in Chapter 2 with a set of GObject classes. A `MetaGpu` represents a GPU (a `/dev/dri/cardN` device). Each GPU contains `MetaCrtc` objects (hardware display controllers) and `MetaOutput` objects (physical connectors). `MetaMonitor` represents the logical display as presented to the user — a monitor can be formed from multiple CRTCs in the case of hardware cloning, or from a single CRTC for the common case. `MetaMonitorManager` is the singleton that tracks all monitors, processes hotplug events from DRM, and exposes the display layout to GNOME Shell.
 
+```mermaid
+graph TD
+    MetaMonitorManager["MetaMonitorManager\n(singleton, hotplug events)"]
+    MetaMonitor["MetaMonitor\n(logical display)"]
+    MetaGpu["MetaGpu\n(/dev/dri/cardN)"]
+    MetaCrtc["MetaCrtc\n(hardware display controller)"]
+    MetaOutput["MetaOutput\n(physical connector)"]
+
+    MetaMonitorManager --> MetaMonitor
+    MetaMonitorManager --> MetaGpu
+    MetaGpu --> MetaCrtc
+    MetaGpu --> MetaOutput
+    MetaMonitor --> MetaCrtc
+```
+
 ### The KMS Thread
 
 The most sophisticated piece of engineering in Mutter is its KMS thread design. The problem it solves is straightforward to state but subtle to implement: `ioctl(DRM_IOCTL_ATOMIC_COMMIT)` can block for up to one full VBlank interval (16.7 ms at 60 Hz) when the kernel is waiting for the previous page flip to complete before accepting the next one. If this ioctl runs on the Clutter main thread — where all GJS execution, input event dispatch, and scene graph traversal also happen — then every frame causes the entire shell UI to stall for up to one VBlank. At 60 Hz this is acceptable in most cases, but under real-time scheduling constraints or on high-refresh-rate displays, it becomes a source of jitter and dropped frames.
 
 Mutter's solution is the `MetaKms` subsystem: all KMS ioctls run on a dedicated kernel mode-setting thread. The public-facing `MetaKms` API is safe to call from the main thread; it enqueues work items that the KMS thread processes asynchronously. A `MetaKmsUpdate` object represents a transactional batch of KMS operations — plane assignments, mode sets, property changes — that will be processed atomically when posted via `meta_kms_device_post_pending_update`. The KMS thread picks up these updates, submits the atomic commit, and notifies the main thread via a callback when the page flip event arrives.
+
+```mermaid
+graph LR
+    subgraph "Clutter Main Thread"
+        ClutterLoop["Clutter repaint loop\n(GJS, input, scene graph)"]
+        MetaKmsAPI["MetaKms API\n(main-thread-safe)"]
+        MetaKmsUpdate["MetaKmsUpdate\n(transactional batch)"]
+    end
+    subgraph "KMS Thread"
+        KMSThread["KMS Thread\n(DRM_IOCTL_ATOMIC_COMMIT)"]
+        PageFlipCB["page flip callback\n(notifies main thread)"]
+    end
+    ClutterLoop --> MetaKmsAPI
+    MetaKmsAPI --> MetaKmsUpdate
+    MetaKmsUpdate -- "meta_kms_device_post_update" --> KMSThread
+    KMSThread --> PageFlipCB
+    PageFlipCB -- "callback" --> ClutterLoop
+```
 
 ```c
 /* Source: mutter/src/backends/native/meta-kms-update.h and meta-kms-device.h
@@ -95,6 +147,22 @@ In 2024, Mutter switched the KMS thread from real-time (`SCHED_RR`) priority to 
 ### The Clutter Scene Graph and Repaint Loop
 
 Mutter uses the Clutter toolkit as its scene graph. Every visible element is a `ClutterActor`; the root is a `ClutterStage` mapped to one EGL surface per CRTC. Within the scene graph, `MetaSurfaceActor` wraps a `MetaWaylandSurface` (for Wayland clients) or an XWayland window (as `MetaSurfaceActorX11`). Each window is represented by a `MetaWindowActor` that contains a `MetaSurfaceActor` plus space for decorations, shadows, and effect rendering.
+
+```mermaid
+graph TD
+    ClutterStage["ClutterStage\n(one EGL surface per CRTC)"]
+    ClutterActor["ClutterActor\n(every visible element)"]
+    MetaWindowActor["MetaWindowActor\n(window + decorations + effects)"]
+    MetaSurfaceActor["MetaSurfaceActor\n(wraps Wayland or X11 surface)"]
+    MetaWaylandSurface["MetaWaylandSurface\n(Wayland client)"]
+    MetaSurfaceActorX11["MetaSurfaceActorX11\n(XWayland window)"]
+
+    ClutterStage --> ClutterActor
+    ClutterActor --> MetaWindowActor
+    MetaWindowActor --> MetaSurfaceActor
+    MetaSurfaceActor --> MetaWaylandSurface
+    MetaSurfaceActor --> MetaSurfaceActorX11
+```
 
 The repaint loop is damage-driven. When a client commits a new buffer to a `wl_surface`, Mutter marks the corresponding `MetaSurfaceActor` as damaged and calls `clutter_stage_schedule_update`. Clutter's frame clock — a `ClutterFrameClock` tracking VBlank intervals using `CLOCK_MONOTONIC` timestamps from DRM page flip events — schedules a repaint callback timed to arrive just before the predicted VBlank. The repaint traverses the scene graph, composites dirty actors into the EGL framebuffer, and then posts a `MetaKmsUpdate` with the result to the KMS thread for atomic commit.
 
@@ -158,6 +226,24 @@ Built-in effects include the Kawase blur (a dual-pass blur using progressive dow
 
 KWin's DRM backend is implemented in `kwin/src/backends/drm/`. The object hierarchy mirrors the kernel's: `DrmBackend` owns one or more `DrmGpu` objects, each of which contains `DrmOutput`, `DrmCrtc`, `DrmPlane`, and `DrmConnector` objects. All modesetting uses the atomic API; `DrmAtomicCommit` wraps the `drmModeAtomicCommit` call with TEST_ONLY support for validating configurations before committing them.
 
+```mermaid
+graph TD
+    DrmBackend["DrmBackend\n(kwin/src/backends/drm/)"]
+    DrmGpu["DrmGpu\n(per GPU)"]
+    DrmOutput["DrmOutput"]
+    DrmCrtc["DrmCrtc"]
+    DrmPlane["DrmPlane"]
+    DrmConnector["DrmConnector"]
+    DrmAtomicCommit["DrmAtomicCommit\n(wraps drmModeAtomicCommit\nwith TEST_ONLY support)"]
+
+    DrmBackend --> DrmGpu
+    DrmGpu --> DrmOutput
+    DrmGpu --> DrmCrtc
+    DrmGpu --> DrmPlane
+    DrmGpu --> DrmConnector
+    DrmOutput --> DrmAtomicCommit
+```
+
 Multi-GPU operation places the rendering GPU (typically the discrete GPU) as the primary and uses secondary GPUs for outputs. The `DrmGpu::renderingEnabled()` flag controls whether a GPU participates in rendering or only in scanout, enabling configurations like an NVIDIA discrete GPU driving an external display via KMS while an integrated Intel GPU handles the internal laptop panel.
 
 ### Direct Scanout
@@ -212,6 +298,22 @@ The top-level initialisation in `sway/server.c` creates a `wlr_backend` (which w
 ### The Container Tree
 
 Sway's layout is a rooted tree. At the top level, a workspace belongs to an output; within a workspace, containers can be arranged in horizontal or vertical split mode or in tabbed/stacked mode. Leaf nodes are `sway_container` objects that wrap a `wlr_xdg_surface` (for Wayland clients) or a `wlr_xwayland_surface`. Floating windows exist in a separate list attached to the workspace and are rendered above tiled containers.
+
+```mermaid
+graph TD
+    Output["output\n(wlr_output)"]
+    Workspace["workspace\n(horizontal / vertical / tabbed / stacked)"]
+    FloatingList["floating window list\n(rendered above tiled)"]
+    sway_container["sway_container\n(leaf node)"]
+    wlr_xdg_surface["wlr_xdg_surface\n(Wayland client)"]
+    wlr_xwayland_surface["wlr_xwayland_surface\n(XWayland client)"]
+
+    Output --> Workspace
+    Workspace --> sway_container
+    Workspace --> FloatingList
+    sway_container --> wlr_xdg_surface
+    sway_container --> wlr_xwayland_surface
+```
 
 Window criteria — the `[app_id="firefox"]` matchers familiar from i3 — are evaluated against the `app_id` and `title` properties of `wlr_xdg_toplevel` (for Wayland) or the WM_CLASS and WM_NAME X11 properties (for XWayland). Sway evaluates criteria at window creation and when window properties change, allowing `assign` rules to direct specific applications to pre-determined workspaces or layouts.
 
@@ -307,6 +409,24 @@ gamescope's compositing is Vulkan-first. Rather than using OpenGL/GLES2, all com
 
 The compositing pipeline for a typical game frame proceeds as follows. The game renders a frame via either `VK_KHR_wayland_surface` or `wl_egl_surface` and commits it to a Wayland surface. gamescope imports the committed buffer as a DMA-BUF, using `VK_EXT_image_drm_format_modifier` to import it into a Vulkan image with the exact DRM format modifier that the GPU allocated. The buffer is then passed through the configured colour transform (SDR-to-HDR tone mapping if the display is HDR-capable, or identity if already correct). If upscaling is requested, the image passes through the upscaling shader. Finally, overlays — MangoHud, the Steam overlay — are composited on top, and the result is presented to KMS via an atomic commit.
 
+```mermaid
+graph TD
+    GameRender["Game renders frame\n(VK_KHR_wayland_surface or wl_egl_surface)"]
+    WlSurface["wl_surface commit\n(Wayland surface)"]
+    DMABUFImport["DMA-BUF import\n(VK_EXT_image_drm_format_modifier)"]
+    ColourTransform["colour transform shader\n(SDR-to-HDR tone mapping or identity)"]
+    UpscalingShader["upscaling shader\n(FSR / NIS / integer scaling)"]
+    OverlayComposite["overlay composite\n(MangoHud, Steam overlay)"]
+    KMSCommit["KMS atomic commit\n(DRM page flip)"]
+
+    GameRender --> WlSurface
+    WlSurface --> DMABUFImport
+    DMABUFImport --> ColourTransform
+    ColourTransform --> UpscalingShader
+    UpscalingShader --> OverlayComposite
+    OverlayComposite --> KMSCommit
+```
+
 ### FSR Upscaling
 
 AMD's FidelityFX Super Resolution (FSR) algorithm is integrated directly into gamescope as a Vulkan compute shader. The `fsr_upscale.comp` compute shader implements the FSR 1.0 (EASU + RCAS) algorithm: a spatial edge-adaptive upsampling pass followed by a contrast-adaptive sharpening pass. The game renders at a lower-than-native resolution (for example, 720p on Steam Deck's 800p panel), and gamescope upscales to display resolution using FSR.
@@ -357,6 +477,27 @@ This optimisation is critical for latency: the Vulkan compositing pass takes mea
 gamescope uses libliftoff — the lightweight KMS plane allocation library from Simon Ser — to manage hardware plane assignment for multi-layer scenes. libliftoff's API is straightforward: you create a `liftoff_device` from a DRM file descriptor, register all available planes with `liftoff_device_register_all_planes`, create a `liftoff_output` for each CRTC, and create `liftoff_layer` objects for each compositor layer (game window, overlay, cursor).
 
 For each frame, you call `liftoff_layer_set_property` to set KMS properties on each layer — `FB_ID`, `CRTC_X`, `CRTC_Y`, `CRTC_W`, `CRTC_H`, `SRC_X`, `SRC_Y`, `SRC_W`, `SRC_H`, `ZPOS` — and then call `liftoff_output_apply` with a `drmModeAtomicReq`. libliftoff attempts to assign each layer to a hardware plane using a TEST_ONLY atomic commit; layers that cannot be assigned to hardware planes fall back to composition by the Vulkan renderer.
+
+```mermaid
+graph TD
+    liftoff_device["liftoff_device\n(from DRM file descriptor)"]
+    liftoff_device_register["liftoff_device_register_all_planes\n(registers available hardware planes)"]
+    liftoff_output["liftoff_output\n(per CRTC)"]
+    liftoff_layer_game["liftoff_layer\n(game window, ZPOS=0)"]
+    liftoff_layer_overlay["liftoff_layer\n(overlay, ZPOS=1)"]
+    TestCommit["liftoff_output_apply\n(TEST_ONLY atomic commit)"]
+    HWPlane["hardware plane\n(direct scanout)"]
+    VulkanFallback["Vulkan renderer\n(fallback compositing)"]
+
+    liftoff_device --> liftoff_device_register
+    liftoff_device --> liftoff_output
+    liftoff_output --> liftoff_layer_game
+    liftoff_output --> liftoff_layer_overlay
+    liftoff_layer_game --> TestCommit
+    liftoff_layer_overlay --> TestCommit
+    TestCommit -- "assigned" --> HWPlane
+    TestCommit -- "unassigned" --> VulkanFallback
+```
 
 ```c
 /* Source: gamescope/src/Backends/ (illustrative, based on libliftoff API) */
@@ -542,6 +683,26 @@ wl_display_roundtrip(display);
 
 For high-level application needs — screen capture, file chooser, clipboard, inhibiting screen blanking — the xdg-desktop-portal D-Bus service provides a compositor-agnostic interface. The portal backend (the component that translates portal D-Bus calls into compositor actions) is provided by each desktop environment: `xdg-desktop-portal-gnome` for GNOME, `xdg-desktop-portal-kde` for KDE, `xdg-desktop-portal-wlr` for wlroots-based compositors. Applications using portals for screen capture do not need to know which compositor is running; the portal handles the `zwlr_screencopy_manager_v1` or `org_kde_kwin_screencasting` details internally. This is the recommended approach for any application that does not require direct compositor feature access.
 
+```mermaid
+graph TD
+    Application["Application\n(screen capture, file chooser, clipboard)"]
+    Portal["xdg-desktop-portal\n(D-Bus service, compositor-agnostic)"]
+    PortalGNOME["xdg-desktop-portal-gnome\n(GNOME backend)"]
+    PortalKDE["xdg-desktop-portal-kde\n(KDE backend)"]
+    PortalWLR["xdg-desktop-portal-wlr\n(wlroots-based backend)"]
+    MutterAPI["Mutter compositor\n(GNOME)"]
+    KWinAPI["KWin compositor\n(KDE)\norg_kde_kwin_screencasting"]
+    WLRCompositor["wlroots compositor\n(Sway / Hyprland)\nzwlr_screencopy_manager_v1"]
+
+    Application --> Portal
+    Portal --> PortalGNOME
+    Portal --> PortalKDE
+    Portal --> PortalWLR
+    PortalGNOME --> MutterAPI
+    PortalKDE --> KWinAPI
+    PortalWLR --> WLRCompositor
+```
+
 ---
 
 ## 9. Common Compositor Debugging Techniques
@@ -586,6 +747,18 @@ Before reaching for tools, it is important to distinguish between two related bu
 The compositor contributes to both metrics. Its compositing pass adds GPU time between the client's `wl_surface.commit` and the KMS page flip. Its scheduling policy determines how much of the frame budget remains available to the application after the compositor's work is done. A compositor that schedules its repaint too early in the VBlank interval reduces application render time; one that schedules too late risks missing the VBlank and adding a full frame of latency.
 
 The latency budget decomposition for a Wayland game looks like: application render time + compositor compositing time + display propagation delay (panel response, backlight modulation). The compositor contributes the middle term and can inflate the first term through scheduling decisions.
+
+```mermaid
+graph LR
+    AppRender["application render time\n(wl_surface.commit)"]
+    CompTime["compositor compositing time\n(GPU compositing pass + scheduling)"]
+    DisplayDelay["display propagation delay\n(panel response, backlight modulation)"]
+    Photon["photon reaches viewer"]
+
+    AppRender --> CompTime
+    CompTime --> DisplayDelay
+    DisplayDelay --> Photon
+```
 
 ### The wp_presentation Protocol
 

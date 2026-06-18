@@ -44,6 +44,28 @@ Step 5 alone is a mini-algorithm written identically in every Vulkan application
 
 A `VmaAllocator` wraps a `VkDevice` and retains a shadow of the device's memory properties:
 
+```mermaid
+graph TD
+    App["Application"]
+    VmaAlloc["VmaAllocator\n(wraps VkDevice)"]
+    PoolType0["Default Pool\n(memory type 0)"]
+    PoolType1["Default Pool\n(memory type 1)"]
+    PoolTypeN["Default Pool\n(memory type N)"]
+    Block0["VkDeviceMemory block\n(256 MiB)"]
+    Block1["VkDeviceMemory block\n(256 MiB)"]
+    Sub0["Suballocations\n(TLSF free-list)"]
+    Sub1["Suballocations\n(TLSF free-list)"]
+
+    App -- "vmaCreateAllocator" --> VmaAlloc
+    VmaAlloc --> PoolType0
+    VmaAlloc --> PoolType1
+    VmaAlloc --> PoolTypeN
+    PoolType0 --> Block0
+    PoolType1 --> Block1
+    Block0 --> Sub0
+    Block1 --> Sub1
+```
+
 ```cpp
 // vk_mem_alloc.h — VmaAllocator is an opaque handle:
 // VK_DEFINE_HANDLE(VmaAllocator)
@@ -118,6 +140,16 @@ VkResult vmaCreateImage(
 Without VMA, buffer allocation requires: `vkCreateBuffer`, `vkGetBufferMemoryRequirements`, iterating `memoryTypes[]` to find a suitable type index, `vkAllocateMemory`, `vkBindBufferMemory` — five calls with substantial error-handling. VMA reduces this to one.
 
 ### 2.4 Staging Upload Example
+
+```mermaid
+graph LR
+    CPU["CPU\n(srcData)"]
+    StagingBuf["stagingBuf\n(HOST_VISIBLE | HOST_COHERENT)\nVK_BUFFER_USAGE_TRANSFER_SRC_BIT"]
+    GpuBuf["gpuBuf\n(DEVICE_LOCAL)\nVK_BUFFER_USAGE_VERTEX_BUFFER_BIT"]
+
+    CPU -- "memcpy via pMappedData" --> StagingBuf
+    StagingBuf -- "vkCmdCopyBuffer" --> GpuBuf
+```
 
 ```cpp
 // --- Stage 1: CPU-visible staging buffer ---
@@ -389,6 +421,19 @@ In multi-GPU or multi-driver configurations, each `VkDevice` has a different dis
 
 ### 4.2 API
 
+```mermaid
+graph TD
+    App["Application\nvkCmdDraw(...)"]
+    VolkPtr["volk function pointer\n(global or VolkDeviceTable)"]
+    Loader["Vulkan Loader\nlibvulkan.so.1\n(dispatch trampoline)"]
+    Driver["Driver DSO\nradv / anv / nvk"]
+
+    App -- "without volk\n(indirect via loader)" --> Loader
+    Loader -- "dispatch table lookup" --> Driver
+    App -- "with volkLoadDevice\n(direct call)" --> VolkPtr
+    VolkPtr -- "vkGetDeviceProcAddr result" --> Driver
+```
+
 ```c
 // volk.h — key function signatures:
 
@@ -472,6 +517,26 @@ This makes volk the recommended mechanism for checking extension availability at
 **vk-bootstrap** ([github.com/charles-lunarg/vk-bootstrap](https://github.com/charles-lunarg/vk-bootstrap)) reduces the 300-line instance/device/swapchain setup to ~40 lines of C++ using a fluent builder API. It is a MIT-licensed single-file library that wraps the raw Vulkan calls without hiding the resulting `VkInstance`, `VkDevice`, and `VkSwapchainKHR` handles.
 
 ### 5.1 Builder Chain
+
+```mermaid
+graph TD
+    IB["vkb::InstanceBuilder\nset_app_name / require_api_version\nenable_validation_layers"]
+    Inst["vkb::Instance\n→ VkInstance"]
+    PDS["vkb::PhysicalDeviceSelector\nset_minimum_version\nadd_required_extension\nprefer_gpu_device_type"]
+    Phys["vkb::PhysicalDevice\n→ VkPhysicalDevice"]
+    DB["vkb::DeviceBuilder\nbuild"]
+    Dev["vkb::Device\n→ VkDevice\nget_queue / get_queue_index"]
+    SB["vkb::SwapchainBuilder\nset_desired_format\nset_desired_present_mode\nset_desired_extent"]
+    Swap["vkb::Swapchain\n→ VkSwapchainKHR\nget_images / get_image_views"]
+
+    IB -- "build()" --> Inst
+    Inst -- "passed to" --> PDS
+    PDS -- "select()" --> Phys
+    Phys -- "passed to" --> DB
+    DB -- "build()" --> Dev
+    Dev -- "passed to" --> SB
+    SB -- "build()" --> Swap
+```
 
 ```cpp
 #include "VkBootstrap.h"
@@ -565,6 +630,22 @@ The `set_required_features_13` method rejects any physical device that does not 
 **SPIRV-Reflect** ([github.com/KhronosGroup/SPIRV-Reflect](https://github.com/KhronosGroup/SPIRV-Reflect)) is a Khronos-maintained C/C++ library for parsing SPIR-V binaries at runtime to extract descriptor set layouts, push constant ranges, and interface variable locations. It eliminates the need to maintain descriptor set layout specifications in both the shader and the C++ host code.
 
 ### 6.1 Core Structs
+
+```mermaid
+graph TD
+    SPIRV["SPIR-V binary\n(.spv file)"]
+    Module["SpvReflectShaderModule\nshader_stage\ndescriptor_binding_count\ndescriptor_set_count\npush_constant_block_count\ninput_variable_count"]
+    DescSet["SpvReflectDescriptorSet\nset number\nbinding_count\nbindings[]"]
+    DescBind["SpvReflectDescriptorBinding\nname / binding / set\ndescriptor_type / count"]
+    PushConst["SpvReflectBlockVariable\nname / offset / size"]
+    VkLayout["VkDescriptorSetLayout\n(created via vkCreateDescriptorSetLayout)"]
+
+    SPIRV -- "spvReflectCreateShaderModule" --> Module
+    Module --> DescSet
+    Module --> PushConst
+    DescSet --> DescBind
+    DescBind -- "cast to VkDescriptorSetLayoutBinding" --> VkLayout
+```
 
 ```c
 // spirv_reflect.h
@@ -981,6 +1062,37 @@ Tracy validates this internally and disables GPU profiling gracefully if the que
 ## 10. Putting It Together — A Minimal Vulkan Application Stack
 
 The following illustrates the complete initialization stack combining all the libraries covered in this chapter. Annotations mark where each library contributes.
+
+```mermaid
+graph TD
+    SDL3["SDL3\nwindow / surface / event handling"]
+    volk["volk\nbypass loader trampoline\nvolkInitialize / volkLoadInstance / volkLoadDevice"]
+    vkboot["vk-bootstrap\nInstanceBuilder / PhysicalDeviceSelector\nDeviceBuilder / SwapchainBuilder"]
+    VMA["VMA\nVmaAllocator\nvmaCreateBuffer / vmaCreateImage"]
+    SPIRVReflect["SPIRV-Reflect\nspvReflectCreateShaderModule\nauto-build VkDescriptorSetLayout"]
+    ImGui["Dear ImGui\nImGui_ImplVulkan_Init\nImGui_ImplVulkan_RenderDrawData"]
+    Tracy["Tracy\nTracyVkContext / TracyVkZone\nTracyVkCollect"]
+    VkInstance["VkInstance"]
+    VkDevice["VkDevice"]
+    VkSwapchain["VkSwapchainKHR"]
+    VkBuffer["VkBuffer + VmaAllocation"]
+    VkCmdBuf["VkCommandBuffer"]
+
+    SDL3 -- "SDL_Vulkan_CreateSurface" --> VkInstance
+    volk -- "volkLoadInstance" --> VkInstance
+    vkboot -- "InstanceBuilder.build()" --> VkInstance
+    VkInstance -- "PhysicalDeviceSelector / DeviceBuilder" --> VkDevice
+    volk -- "volkLoadDevice" --> VkDevice
+    VkDevice -- "SwapchainBuilder.build()" --> VkSwapchain
+    VkDevice -- "vmaCreateAllocator" --> VMA
+    VMA -- "vmaCreateBuffer" --> VkBuffer
+    SPIRVReflect -- "reflect then vkCreateDescriptorSetLayout" --> VkDevice
+    ImGui -- "ImGui_ImplVulkan_Init" --> VkDevice
+    Tracy -- "TracyVkContext" --> VkDevice
+    VkDevice -- "vkAllocateCommandBuffers" --> VkCmdBuf
+    ImGui -- "RenderDrawData" --> VkCmdBuf
+    Tracy -- "TracyVkZone / TracyVkCollect" --> VkCmdBuf
+```
 
 ```cpp
 // main.cpp — Minimal Vulkan application skeleton

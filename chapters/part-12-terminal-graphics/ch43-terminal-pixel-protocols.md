@@ -86,6 +86,33 @@ The original VT340 supported 16 colour registers simultaneously, though the firm
 
 Because Sixel requires palette-indexed colour, any encoder processing a 24-bit true-colour source image must run a colour quantisation algorithm to reduce the colour space to at most 256 representative colours. Three algorithms dominate in practice.
 
+```mermaid
+graph TD
+    SRC["24-bit true-colour\nsource image"]
+    QUANT["Quantisation Algorithm\n(≤256 palette colours)"]
+    WU["Wu's Algorithm\n(variance-minimisation,\nRGB cube partitioning)"]
+    MC["Median-cut\n(Heckbert 1982,\naxis-of-greatest-extent split)"]
+    NQ["NeuQuant\n(self-organising map,\nhighest perceptual quality)"]
+    PAL["≤256 colour palette"]
+    DITH["Dithering"]
+    FS["Floyd-Steinberg\nerror diffusion"]
+    BAYER["Bayer ordered\ndithering"]
+    OUT["Sixel output stream"]
+
+    SRC --> QUANT
+    QUANT -- "selects one of" --> WU
+    QUANT -- "selects one of" --> MC
+    QUANT -- "selects one of" --> NQ
+    WU --> PAL
+    MC --> PAL
+    NQ --> PAL
+    PAL --> DITH
+    DITH -- "selects one of" --> FS
+    DITH -- "selects one of" --> BAYER
+    FS --> OUT
+    BAYER --> OUT
+```
+
 Wu's algorithm (Xiaolin Wu, 1992) partitions the RGB colour cube using a variance-minimisation strategy. The cube is recursively split along the axis of highest variance until the desired number of regions is reached; each region's representative colour is its variance-weighted centroid. Wu's algorithm is fast and produces high-quality results because it minimises the mean squared error of the quantisation, which is perceptually well-correlated with human colour discrimination. It is the algorithm used by libsixel for its default quality level.
 
 Median-cut (Heckbert, 1982) partitions the colour space by finding the axis of greatest extent in a region and splitting at the median along that axis. It is simpler to implement than Wu's method and runs faster on small colour sets, but produces slightly lower quality results because it does not weight regions by population. Median-cut is suitable for simple graphics and diagrams where the colour distribution is already sparse.
@@ -99,6 +126,33 @@ After palette selection, dithering is applied to distribute quantisation error s
 The reference Sixel implementation in open source is libsixel [Source](https://github.com/libsixel/libsixel). Its encoding API operates in two modes: a batch API that takes a pixel buffer, quantises it, and writes the complete Sixel stream to an output function; and a streaming API that processes one input row at a time, suitable for progressive image loading or very large images. The core encode function, `sixel_encode`, accepts a pointer to raw pixel data, width, height, depth (bytes per pixel), and an output callback. Quantisation is handled through a separate `sixel_dither_t` object that encapsulates the algorithm choice, palette size, and dithering mode. The quantisation algorithm is selected at context-creation time via `sixel_dither_initialize(dither, pixels, width, height, quality_mode, method_for_largest, method_for_rep, method_for_diffuse, ...)`, where `method_for_largest` (e.g. `LARGE_NORM`, `LARGE_LUM`) and `method_for_rep` (e.g. `REP_CENTER_BOX`, `REP_AVERAGE_COLORS`) together determine how the colour palette is built from the image histogram. There is no setter function on an already-initialised dither object for the quantisation algorithm; it must be selected at initialisation time. The dithering/diffusion type applied after quantisation can be changed separately via `sixel_dither_set_diffusion_type(dither, diffusion_type)`, accepting constants such as `DIFFUSE_FS` (Floyd-Steinberg) or `DIFFUSE_ATKINSON`.
 
 The decode path in libsixel uses a `sixel_decoder_t` object together with a callback-driven parser. The caller creates a decoder context, registers output and error callbacks, and feeds data incrementally. The decoder calls the output callback once per decoded image with the resulting RGBA pixel buffer. This streaming design allows decoding while bytes are still arriving over a network connection, which is important for interactive rendering. The foot terminal emulator integrates this directly in `src/sixel.c` and `src/sixel.h` [Source](https://codeberg.org/dnkl/foot).
+
+```mermaid
+graph TD
+    subgraph "Encode path"
+        PIX["raw pixel data\n(width, height, depth)"]
+        DITHER["sixel_dither_t\n(algorithm, palette size,\ndiffusion mode)"]
+        INIT["sixel_dither_initialize()\n(method_for_largest,\nmethod_for_rep)"]
+        SETDIFF["sixel_dither_set_diffusion_type()\n(DIFFUSE_FS / DIFFUSE_ATKINSON)"]
+        ENCODE["sixel_encode()"]
+        OUTCB["output callback\n(Sixel byte stream)"]
+
+        INIT --> DITHER
+        SETDIFF --> DITHER
+        PIX --> ENCODE
+        DITHER --> ENCODE
+        ENCODE --> OUTCB
+    end
+
+    subgraph "Decode path"
+        SIXDATA["Sixel data stream\n(incremental bytes)"]
+        DECODER["sixel_decoder_t"]
+        OUTCB2["output callback\n(RGBA pixel buffer)"]
+
+        SIXDATA --> DECODER
+        DECODER --> OUTCB2
+    end
+```
 
 ### Modern Terminal Support and Limitations
 
@@ -158,6 +212,24 @@ The most architecturally significant feature of the Kitty protocol for multiplex
 
 The consequence of this design is that an image placement behaves identically to ordinary text from the perspective of any software that manipulates the terminal's character buffer without understanding the graphics protocol. When tmux inserts or deletes lines, scrolls the viewport, or reshuffles cell content between panes, the U+10EEEE characters move with the text flow. Because the row/column/image-ID information is encoded in the characters themselves, the terminal can reconstruct the correct image sub-region for each character cell wherever it ends up. Applications that receive terminal content as a character stream and re-emit it (pagers, log viewers, multiplexers) transparently proxy image content without implementing any part of the graphics protocol. The practical limitation of this mechanism is that not all multiplexers handle the diacritic encoding correctly, and some strip combining characters from private-use codepoints, breaking the row/column metadata. [Source](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
 
+```mermaid
+graph TD
+    APP["Application\n(U=1 transmission mode)"]
+    STORE["Terminal image store\n(image ID → pixel data)"]
+    CELLS["Cell grid\n(U+10EEEE characters\nwith diacritic encoding)"]
+    DIAC["Diacritic combining chars\n(row, column, image ID\nper cell)"]
+    MUX["Multiplexer / pager\n(tmux, log viewer)"]
+    RENDER["Terminal renderer\n(reconstructs sub-region\nper cell from image ID\nand row/column)"]
+
+    APP -- "U=1, stores image" --> STORE
+    APP -- "fills rectangle with" --> CELLS
+    CELLS -- "carries" --> DIAC
+    CELLS -- "moved transparently by" --> MUX
+    MUX -- "re-emits chars unchanged" --> RENDER
+    STORE -- "pixel data looked up by" --> RENDER
+    DIAC -- "provides coordinates to" --> RENDER
+```
+
 ### Relative Placements and Animation
 
 The `P` and `Q` keys introduce relative (parent-child) placement relationships. A child placement specifies its position relative to a parent placement ID. When the parent placement moves (because a redraw repositions it), child placements track accordingly. This is useful for annotation overlays, image legends, and compound image objects.
@@ -169,6 +241,20 @@ Animation support is provided through a dedicated action set. `a=f` (frame data 
 Feature detection uses `a=q` (query action) sent with any pixel format command. A terminal implementing the protocol responds with a status APC escape sequence. The recommended detection approach is to send the `a=q` query followed immediately by a primary Device Attributes (DA1) request (`ESC [ c`); if the graphics query response arrives before the DA1 response, the Kitty protocol is supported. If only the DA1 response arrives, it is not. This sentinel technique works because both sequences travel the same I/O path and the terminal processes them in order. The `q=1` key suppresses the terminal's normal status response (for bulk operations where per-chunk ACKs would create overhead), and `q=2` suppresses error responses as well.
 
 From the GPU rendering perspective, the Kitty protocol is essentially a scene graph serialisation format embedded in an escape sequence stream. Each image ID corresponds to a GPU texture handle managed by the terminal. Each placement corresponds to a draw-call rectangle: position, size, source crop, and alpha blend mode are all known at placement time and can be translated directly to a textured quad draw call with no further analysis. The z-index provides a sort key for render-layer ordering. When a terminal processes a Kitty protocol stream, it is building the same data structure that a game engine builds when loading a sprite set: a texture atlas keyed by ID, a list of draw commands each referencing a texture and specifying on-screen position and source crop, and a depth/layer ordering for overlapping elements. Chapter 44 describes how kitty's OpenGL renderer translates this data structure into GPU calls.
+
+```mermaid
+graph LR
+    IMGID["image ID\n(32-bit, i= key)"]
+    PLACE["placement\n(position, size,\nsource crop,\nalpha blend mode)"]
+    ZIDX["z-index\n(z= key)"]
+    TEX["GPU texture handle\n(terminal-managed)"]
+    DRAW["draw-call rectangle\n(textured quad)"]
+    SORT["render-layer sort key"]
+
+    IMGID -- "corresponds to" --> TEX
+    PLACE -- "translates to" --> DRAW
+    ZIDX -- "provides" --> SORT
+```
 
 ---
 
@@ -278,6 +364,38 @@ A detection algorithm for a production image display library should:
 3. Send a DA1 request (`ESC [ c`) and check whether the response includes parameter `4` (Sixel graphics capability). If present, use Sixel as a fallback.
 4. Fall back to iTerm2 for any terminal that reports `TERM_PROGRAM` as a known iTerm2/WezTerm/Hyper value.
 5. If no probe succeeds, emit ASCII art or a text placeholder.
+
+```mermaid
+graph TD
+    START["Start: detect pixel protocol"]
+    CHK_ENV["Check TERM / TERM_PROGRAM\nenvironment variables"]
+    IS_KITTY_ENV["TERM=xterm-kitty?"]
+    IS_ITERM_ENV["TERM_PROGRAM=iTerm.app?"]
+    KITTY_Q["Send a=q Kitty query\n+ DA1 sentinel\n(ESC [ c)"]
+    KITTY_RESP["Kitty response\narrives before DA1?"]
+    DA1["Send DA1 request\n(ESC [ c)"]
+    DA1_PARAM4["DA1 response\nincludes parameter 4\n(Sixel capability)?"]
+    ITERM2_ENV["TERM_PROGRAM is\niTerm2 / WezTerm / Hyper?"]
+    USE_KITTY["Use Kitty protocol"]
+    USE_SIXEL["Use Sixel"]
+    USE_ITERM2["Use iTerm2 protocol"]
+    FALLBACK["Emit ASCII art\nor text placeholder"]
+
+    START --> CHK_ENV
+    CHK_ENV --> IS_KITTY_ENV
+    IS_KITTY_ENV -- "yes" --> USE_KITTY
+    IS_KITTY_ENV -- "no" --> IS_ITERM_ENV
+    IS_ITERM_ENV -- "yes" --> USE_ITERM2
+    IS_ITERM_ENV -- "no" --> KITTY_Q
+    KITTY_Q --> KITTY_RESP
+    KITTY_RESP -- "yes" --> USE_KITTY
+    KITTY_RESP -- "no" --> DA1
+    DA1 --> DA1_PARAM4
+    DA1_PARAM4 -- "yes" --> USE_SIXEL
+    DA1_PARAM4 -- "no" --> ITERM2_ENV
+    ITERM2_ENV -- "yes" --> USE_ITERM2
+    ITERM2_ENV -- "no" --> FALLBACK
+```
 
 ### The Standardisation Landscape: Fragmentation by Pragmatism
 

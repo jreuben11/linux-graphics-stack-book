@@ -73,6 +73,33 @@ The nouveau source tree organises display code across several directories that r
 
 The `nvkm_disp_chan` structure represents a single EVO or NVDisplay pushbuffer channel. The display engine's address space is managed separately from the GPU's main BAR1 address space: EVO channels use a dedicated IOVA space managed by the display engine's own IOMMU-like translation unit.
 
+```mermaid
+graph TD
+    subgraph "NV50 Display Engine (PDISPLAY)"
+        Heads["Heads\n(scanout units, up to 4)"]
+        SORs["SORs\n(Serial Output Resources)\nHDMI / DisplayPort PHY"]
+        DACs["DACs\n(Digital-to-Analog Converters)\nVGA — NV50 through Fermi only"]
+        ORs["ORs\n(Output Resources)\ngeneral term: DAC or SOR"]
+        EVO["EVO\n(Evolved Display Object)\nDMA pushbuffer interface\nNV50 – Maxwell"]
+        NVDisplay["NVDisplay\nDMA pushbuffer interface\nPascal and later"]
+        CoreCh["Core Channel\n(NV917D class on Maxwell)\nCRTCs, output config, timing"]
+        OverlayCh["Overlay Channel\n(NV917C)\nvideo scaling / blending"]
+        CursorCh["Cursor Channel\n(NV917E)\nhardware cursor"]
+    end
+
+    CPU["CPU / nouveau driver"] -- "pushbuffer methods" --> EVO
+    CPU -- "pushbuffer methods" --> NVDisplay
+    EVO --> CoreCh
+    EVO --> OverlayCh
+    EVO --> CursorCh
+    CoreCh -- "head-to-OR routing" --> Heads
+    Heads -- "pixel data via DMA" --> ORs
+    ORs --> SORs
+    ORs --> DACs
+    SORs -- "TMDS / DP signal" --> Connector["Physical Connector\n(HDMI / DisplayPort / VGA)"]
+    DACs --> Connector
+```
+
 ### Code Example: EVO Core Channel Method Push
 
 The following fragment illustrates how EVO methods are pushed to the core channel to configure an output resource on Maxwell hardware:
@@ -114,6 +141,34 @@ A **KMS encoder** corresponds to a SOR or DAC. On a GPU with four SORs, nouveau 
 A **KMS connector** corresponds to a physical port on the GPU card combined with its OR (output resource). A connector represents what the user sees: HDMI-A-1, DP-1, and so on. `nv50_connector` extends `drm_connector` and tracks the physical port, the attached OR, and the detected EDID.
 
 A **KMS plane** corresponds to an EVO window channel. The overlay channel provides hardware-accelerated video scaling and format conversion; the cursor channel provides a hardware cursor. In the DRM model these appear as `drm_plane` objects of type `DRM_PLANE_TYPE_OVERLAY` and `DRM_PLANE_TYPE_CURSOR` respectively. The primary plane — the main scanout buffer — maps to the core channel's head configuration.
+
+```mermaid
+graph LR
+    subgraph "DRM/KMS Objects"
+        CRTC["drm_crtc\n(nv50_head)"]
+        Encoder["drm_encoder\n(nv50_sor / nv50_dac)"]
+        Connector["drm_connector\n(nv50_connector)"]
+        PlanePrimary["drm_plane\nDRM_PLANE_TYPE_PRIMARY"]
+        PlaneOverlay["drm_plane\nDRM_PLANE_TYPE_OVERLAY"]
+        PlaneCursor["drm_plane\nDRM_PLANE_TYPE_CURSOR"]
+    end
+
+    subgraph "NV50 Display Hardware"
+        Head["Head\n(scanout unit)"]
+        SOR_DAC["SOR or DAC\n(output resource)"]
+        Port["Physical Port\n+ OR"]
+        CoreCh["EVO Core Channel\n(head config)"]
+        OverlayCh["EVO Overlay Channel\n(NV917C)"]
+        CursorCh["EVO Cursor Channel\n(NV917E)"]
+    end
+
+    CRTC -- "maps to" --> Head
+    Encoder -- "maps to" --> SOR_DAC
+    Connector -- "maps to" --> Port
+    PlanePrimary -- "maps to" --> CoreCh
+    PlaneOverlay -- "maps to" --> OverlayCh
+    PlaneCursor -- "maps to" --> CursorCh
+```
 
 ### Atomic Modesetting
 
@@ -364,6 +419,27 @@ This is a fundamentally different arrangement from the traditional nouveau reclo
 
 GSP-RM support for Turing and Ampere was integrated into mainline Linux with kernel 6.7 (released December 2023), with the firmware packages landing in linux-firmware. The `nouveau.config=NvGspRm=1` kernel parameter enables GSP-RM; as of Linux 6.18, this is the default for Turing and later GPUs.
 
+```mermaid
+graph TD
+    subgraph "Pre-Turing: CPU-side reclocking"
+        CLK_OLD["nvkm_clk\n(clock subdevice)"]
+        VOLT_OLD["nvkm_volt\n(voltage subdevice)"]
+        PLL["PLL registers\n(GPC / MPLL / VPLL)"]
+        VBIOS_TBL["VBIOS tables\nnvbios_pll_parse()"]
+        CLK_OLD -- "reads divider ranges" --> VBIOS_TBL
+        CLK_OLD -- "programs directly" --> PLL
+        VOLT_OLD -- "GPIO / I2C PMIC" --> VReg["voltage regulator"]
+    end
+
+    subgraph "Turing+: GSP-RM reclocking"
+        CLK_NEW["nvkm_clk\n(thin RPC layer)"]
+        GSPRM["GSP-RM firmware\n(ARM co-processor)"]
+        HW_NEW["PLL / voltage / PHY\nhardware"]
+        CLK_NEW -- "nvkm_gsp_rm_ctrl()\nRPC message" --> GSPRM
+        GSPRM -- "programs" --> HW_NEW
+    end
+```
+
 ### The RPC Interface
 
 Communication between the CPU-side nouveau driver and GSP-RM uses a message queue protocol. Each message consists of a `r535_gsp_msg` header (named after the GSP firmware version), an `nvfw_gsp_rpc` RPC header that carries the function number and sequence ID, and a function-specific payload.
@@ -441,6 +517,26 @@ static const struct dev_pm_ops nouveau_pm_ops = {
 The `nouveau_pmops_runtime_suspend()` function puts the GPU into D3cold by disabling the GPU's PCIe function, which cuts power to the device. The `nouveau_pmops_runtime_resume()` function re-enables the PCIe function and runs the full GPU initialisation sequence: VBIOS execution, FIFO initialisation, display engine bring-up, and memory re-initialisation. This is not a trivial sequence; it takes 200–500 milliseconds on typical hardware.
 
 This resume latency makes aggressive runtime PM autosuspend impractical for desktop use. A desktop compositor that renders every 16ms (60 Hz) would spend more time in resume overhead than in actual rendering if the GPU were aggressively suspended. In practice, nouveau's default autosuspend delay is several seconds, limiting runtime PM to cases where the GPU is genuinely idle for an extended period — typical of secondary GPUs in multi-GPU laptop systems (PRIME configurations).
+
+```mermaid
+graph TD
+    DRM["nouveau DRM device\n(nouveau_drm.c)"] -- "dev_pm_ops" --> RPM["Runtime PM\nruntime_suspend / runtime_resume"]
+    RPM -- "D3cold: disable PCIe function" --> PCIe["PCIe function\n(GPU power cut)"]
+    RPM -- "resume: full GPU init" --> INIT["VBIOS + FIFO + disp\ninit sequence"]
+
+    DRM --> THERM["nvkm_therm\n(nvkm/subdev/therm/)"]
+    DRM --> CLK["nvkm_clk\n(clock management)"]
+    DRM --> VOLT["nvkm_volt\n(voltage subdevice)"]
+    DRM --> DISP["nvkm_disp\n(display engine)"]
+    DRM --> I2C["nvkm_i2c\n(DDC / AUX)"]
+
+    THERM --> HWMON["hwmon interface\n/sys/class/hwmon/hwmonN/\ntemp1_input, pwm1"]
+    THERM --> FAN["nvkm_therm_fan_set()\nPWM fan control"]
+    CLK -- "pre-Turing: direct PLL" --> PLL["PLL registers"]
+    CLK -- "Turing+: RPC" --> GSPRM["GSP-RM firmware"]
+    VOLT -- "NV50/NVC0: GPIO" --> GPIO["GPIO voltage regulator"]
+    VOLT -- "Kepler/Maxwell: I2C" --> PMIC["I2C PMIC\n(TPS51632 etc.)"]
+```
 
 ### Voltage Scaling
 

@@ -45,6 +45,53 @@ The wlroots source tree is organised into well-defined modules:
 - **`xwayland/`**: XWayland integration — launching the XWayland process, managing the X11 window list, and bridging X11 window state to the compositor.
 - **`interfaces/`**: C vtable definitions (pure-virtual interfaces in C terms) that back the backend and renderer abstractions. Every backend and renderer implements these structs of function pointers.
 
+```mermaid
+graph TD
+    subgraph "wlroots source tree"
+        Backend["backend/\nHardware abstraction"]
+        Render["render/\nRendering backends"]
+        Types["types/\nWayland protocol objects"]
+        XWayland["xwayland/\nXWayland integration"]
+        Interfaces["interfaces/\nC vtable definitions"]
+    end
+
+    subgraph "backend/ sub-modules"
+        DRMBack["drm/\n(KMS/DRM)"]
+        WLBack["wayland/\n(nested compositor)"]
+        X11Back["x11/\n(nested X11)"]
+        Headless["headless/\n(offscreen/CI)"]
+        Multi["multi/\n(compose backends)"]
+        LibinputBack["libinput/\n(physical input)"]
+    end
+
+    subgraph "render/ sub-modules"
+        GLES2["gles2/\n(OpenGL ES 2.0)"]
+        Vulkan["vulkan/\n(Vulkan)"]
+        Pixman["pixman/\n(CPU software)"]
+        Allocator["allocator/\n(GBM, shm, DMA-BUF)"]
+    end
+
+    subgraph "types/ sub-modules"
+        Scene["scene/\n(scene graph)"]
+        ProtoTypes["wlr_xdg_shell\nwlr_seat\nwlr_output\netc."]
+    end
+
+    Backend --> DRMBack
+    Backend --> WLBack
+    Backend --> X11Back
+    Backend --> Headless
+    Backend --> Multi
+    Backend --> LibinputBack
+    Render --> GLES2
+    Render --> Vulkan
+    Render --> Pixman
+    Render --> Allocator
+    Types --> Scene
+    Types --> ProtoTypes
+    Interfaces -- "vtables for" --> Backend
+    Interfaces -- "vtables for" --> Render
+```
+
 The **"bring your own event loop"** design is fundamental. wlroots uses `wl_event_loop` from libwayland-server; compositors add their own event sources via `wl_event_loop_add_fd`, `wl_event_loop_add_timer`, and `wl_event_loop_add_signal`. The compositor drives everything by calling `wl_display_run`, which internally calls `wl_event_loop_dispatch` in a loop. wlroots never spawns threads for its own purposes; all wlroots callbacks fire on the compositor's main event loop.
 
 A critical aspect of using wlroots is its **ABI instability policy**: wlroots explicitly does not guarantee a stable ABI or API between major versions. Compositors must be co-developed with the wlroots version they target — Sway pins to specific wlroots releases, and Hyprland maintains its own fork (`wlroots-hyprland`) to manage its own patch set. Major wlroots versions (0.16, 0.17, 0.18) have required non-trivial compositor updates; the book's code examples target wlroots 0.17+.
@@ -129,6 +176,35 @@ The **Wayland backend** (`backend/wayland/`) acts as a Wayland client: it connec
 The **headless backend** (`backend/headless/`) allocates offscreen buffers via the `wlr_allocator` interface without any hardware display. It is the backend used in automated testing (compositor CI, headless screenshot testing) and as the backing for virtual outputs in Wayland screencasting without a physical display.
 
 The **multi-backend** (`backend/multi/`) composes multiple backends under a single `wlr_backend` interface. The typical configuration on a physical machine is DRM + libinput, where the DRM backend provides outputs and the libinput backend provides input devices. `wlr_backend_autocreate` always returns a multi-backend even if only one sub-backend is active, giving compositors a uniform API regardless of the environment.
+
+```mermaid
+graph TD
+    Compositor["Compositor\n(e.g. Sway)"]
+    Autocreate["wlr_backend_autocreate"]
+    Multi["wlr_backend\n(multi-backend)"]
+
+    subgraph "Output backends"
+        DRM["DRM backend\nbackend/drm/"]
+        WL["Wayland backend\nbackend/wayland/"]
+        X11["X11 backend\nbackend/x11/"]
+        HL["headless backend\nbackend/headless/"]
+    end
+
+    subgraph "Input backend"
+        LIB["libinput backend\nbackend/libinput/"]
+    end
+
+    Compositor --> Autocreate
+    Autocreate --> Multi
+    Multi --> DRM
+    Multi --> WL
+    Multi --> X11
+    Multi --> HL
+    Multi --> LIB
+
+    DRM -- "events.new_output" --> Compositor
+    LIB -- "events.new_input" --> Compositor
+```
 
 ---
 
@@ -226,6 +302,38 @@ The pixman renderer (`render/pixman/`) is a fully CPU-based renderer using the p
 
 `wlr_allocator` (`include/wlr/render/allocator/wlr_allocator.h`) abstracts buffer allocation independently from rendering. `wlr_allocator_autocreate` selects the appropriate allocator: the GBM allocator for DRM-backed outputs, the shared-memory allocator for software paths. The allocator is responsible for picking formats and modifiers that are compatible with both the renderer's input requirements and the display engine's scanout requirements — it queries the intersection of renderer-supported and KMS-plane-supported modifier sets.
 
+```mermaid
+graph LR
+    Compositor["Compositor"]
+
+    subgraph "wlr_renderer abstraction\n(render/wlr_renderer.c)"
+        GLES2R["GLES2 renderer\nrender/gles2/"]
+        VulkanR["Vulkan renderer\nrender/vulkan/"]
+        PixmanR["pixman renderer\nrender/pixman/"]
+    end
+
+    subgraph "wlr_allocator abstraction"
+        GBMAlloc["GBM allocator\n(DRM-backed outputs)"]
+        ShmAlloc["shm allocator\n(software paths)"]
+    end
+
+    WlrBuf["wlr_buffer\n(GBM BO / DMA-BUF / wl_shm)"]
+    WlrTex["wlr_texture"]
+    KMS["KMS display engine\n(scanout)"]
+
+    Compositor --> GLES2R
+    Compositor --> VulkanR
+    Compositor --> PixmanR
+    Compositor --> GBMAlloc
+    Compositor --> ShmAlloc
+    GBMAlloc --> WlrBuf
+    ShmAlloc --> WlrBuf
+    WlrBuf --> WlrTex
+    GLES2R -- "render_texture_with_matrix" --> WlrTex
+    VulkanR -- "render_texture_with_matrix" --> WlrTex
+    GBMAlloc -- "modifier negotiation" --> KMS
+```
+
 ---
 
 ## 5. The Scene Graph API
@@ -245,6 +353,38 @@ Node types:
 - **`wlr_scene_tree`**: A container node for grouping. Compositors create multiple scene trees for layer ordering — typically one tree per layer-shell layer (background, bottom, normal, top, overlay). Z-order within a tree is determined by the linked-list order of child nodes; `wlr_scene_node_raise_to_top` and `wlr_scene_node_lower_to_bottom` manipulate this list.
 - **`wlr_scene_rect`**: A solid-colour rectangle for window borders, desktop backgrounds, or overlays. Created with `wlr_scene_rect_create(parent_tree, width, height, color)`.
 - **`wlr_scene_buffer`**: The primary content node, backed by a `wlr_buffer` or a `wlr_surface`. Created with `wlr_scene_buffer_create`. When backed by a `wlr_surface`, it automatically subscribes to the surface's `commit` event and marks itself dirty on each commit.
+
+```mermaid
+graph TD
+    Scene["wlr_scene\n(root)"]
+    RootTree["wlr_scene_tree\n(root tree)"]
+    Node["wlr_scene_node\n(base: position, enabled, dirty)"]
+
+    subgraph "Node types (embed wlr_scene_node)"
+        Tree["wlr_scene_tree\n(container / layer grouping)"]
+        Rect["wlr_scene_rect\n(solid-colour rectangle)"]
+        Buffer["wlr_scene_buffer\n(content: wlr_buffer or wlr_surface)"]
+    end
+
+    subgraph "Layer trees (typical compositor)"
+        BG["background tree"]
+        Bottom["bottom tree"]
+        Normal["normal/app tree"]
+        Top["top tree"]
+        Overlay["overlay tree"]
+    end
+
+    Scene --> RootTree
+    RootTree --> Node
+    Node --> Tree
+    Node --> Rect
+    Node --> Buffer
+    Tree --> BG
+    Tree --> Bottom
+    Tree --> Normal
+    Tree --> Top
+    Tree --> Overlay
+```
 
 ### Surface Integration
 
@@ -301,6 +441,36 @@ Hardware plane promotion is version-sensitive and has evolved significantly: it 
 ## 6. Input Handling
 
 Input in wlroots flows through three abstraction layers: libinput (physical device events), `wlr_seat` (Wayland protocol focus state), and `wlr_cursor` (the logical pointer position). Understanding how these layers interact is essential for implementing correct focus semantics.
+
+```mermaid
+graph TD
+    HW["Physical hardware\n(/dev/input/eventN)"]
+    LibinputCtx["libinput context\n(palm detect, accel, gestures)"]
+
+    subgraph "wlroots input layer"
+        WlrPointer["wlr_pointer\n(pointer events)"]
+        WlrKeyboard["wlr_keyboard\n(key events + XKB)"]
+        WlrTouch["wlr_touch\n(touch events)"]
+        WlrTablet["wlr_tablet_tool\n(stylus events)"]
+    end
+
+    WlrCursor["wlr_cursor\n(logical pointer position\n+ output_layout geometry)"]
+    WlrSeat["wlr_seat\n(wl_seat: focus hub\npointer / keyboard / touch focus)"]
+    SceneHitTest["wlr_scene_node_at\n(hit-testing)"]
+    WaylandClient["Wayland client\n(wl_pointer / wl_keyboard)"]
+
+    HW --> LibinputCtx
+    LibinputCtx --> WlrPointer
+    LibinputCtx --> WlrKeyboard
+    LibinputCtx --> WlrTouch
+    LibinputCtx --> WlrTablet
+    WlrPointer --> WlrCursor
+    WlrCursor --> SceneHitTest
+    SceneHitTest -- "surface under cursor" --> WlrSeat
+    WlrKeyboard -- "key events + modifiers" --> WlrSeat
+    WlrSeat -- "wl_pointer.motion\nwl_pointer.button" --> WaylandClient
+    WlrSeat -- "wl_keyboard.key\nwl_keyboard.modifiers" --> WaylandClient
+```
 
 ### wlr_seat: The Wayland Focus Hub
 
@@ -785,6 +955,31 @@ The limitation is that the consumer must handle whatever format/modifier the KMS
 2. It creates a PipeWire stream node of type `video/raw` with the output's resolution and format.
 3. It runs a frame capture loop: for each PipeWire buffer that becomes available, it calls `capture_output` on the frame protocol and fills the PipeWire buffer with the captured pixels.
 4. Applications receive video frames via the PipeWire stream, with the compositor's full scene (including cursors, overlays) captured correctly.
+
+```mermaid
+graph TD
+    SandboxedApp["Sandboxed app\n(Flatpak / OBS / Teams)"]
+    DBus["D-Bus\n(screen capture request)"]
+    Portal["xdg-desktop-portal-wlr"]
+    ScreencopyMgr["zwlr_screencopy_manager_v1\n(wlroots compositor)"]
+    Frame["zwlr_screencopy_frame_v1\ncapture_output call"]
+    ShmBuf["wl_shm buffer\n(client-allocated)"]
+    Compositor["Compositor\n(renders output into shm buffer)"]
+    PipeWire["PipeWire stream\nvideo/raw"]
+    Consumer["App / encoder\n(video frames)"]
+
+    SandboxedApp --> DBus
+    DBus --> Portal
+    Portal -- "binds" --> ScreencopyMgr
+    Portal -- "creates PipeWire stream" --> PipeWire
+    ScreencopyMgr --> Frame
+    Frame -- "buffer event (format/dimensions)" --> Portal
+    Portal -- "copy(buffer)" --> ShmBuf
+    ShmBuf --> Compositor
+    Compositor -- "ready event\n(presentation timestamp)" --> Portal
+    Portal -- "fills PipeWire buffer" --> PipeWire
+    PipeWire --> Consumer
+```
 
 OBS Studio, Microsoft Teams, and most video conferencing applications use this path via PipeWire's `screencast` portal. The screencopy approach works well for 30–60 fps capture but introduces one-frame latency (the capture happens after the compositor has already rendered and presented the frame) and requires pixel readback to CPU memory, making it unsuitable for low-latency game streaming. For game streaming, the `zwlr_export_dmabuf_v1` path is preferred.
 

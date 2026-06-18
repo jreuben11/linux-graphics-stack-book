@@ -39,6 +39,37 @@ On x86, a GPU driver's life begins at PCI enumeration. The kernel scans the PCI 
 
 ARM SoC GPUs have no PCI configuration space. Their existence, register addresses, interrupt lines, clocks, power domains, and IOMMU connections are all described in the platform's Device Tree (DT) source files or, on some Qualcomm laptop platforms, in ACPI tables. The kernel's platform driver infrastructure replaces PCI enumeration with DT or ACPI matching. A driver announces which hardware it supports via a `of_device_id` table of `compatible` strings. When the kernel boots and processes the flattened Device Tree, it finds GPU nodes and matches them against registered `of_device_id` tables, calling the driver's `platform_driver.probe` function with a `platform_device` that wraps the DT node.
 
+```mermaid
+graph TD
+    subgraph "Hardware Description"
+        DT["Device Tree / ACPI\n(compatible, reg, interrupts,\nclocks, power-domains, OPP table)"]
+    end
+    subgraph "Kernel Platform Infrastructure"
+        OF["of_device_id table\n(compatible string matching)"]
+        PD["platform_device\n(wraps DT/ACPI node)"]
+    end
+    subgraph "Driver Probe (e.g. panfrost_probe)"
+        MMIO["devm_ioremap_resource\n(reg → MMIO mapping)"]
+        IRQ["platform_get_irq_byname\n(interrupts → IRQ lines)"]
+        CLK["devm_clk_get\n(clocks → clock handle)"]
+        PWR["dev_pm_domain_attach\n(power-domains → PM domain)"]
+        REG["devm_regulator_get\n(voltage regulator)"]
+        DRM["drm_dev_register\n(DRM device online)"]
+    end
+    DT --> OF
+    OF --> PD
+    PD --> MMIO
+    PD --> IRQ
+    PD --> CLK
+    PD --> PWR
+    PD --> REG
+    MMIO --> DRM
+    IRQ --> DRM
+    CLK --> DRM
+    PWR --> DRM
+    REG --> DRM
+```
+
 A representative DT GPU node for a Rockchip RK3399 carrying a Mali-T860 looks like the following. Every field in this node translates directly into a driver operation:
 
 ```dts
@@ -145,6 +176,22 @@ Once the domain is attached, the driver calls `iommu_map(domain, iova, paddr, si
 
 The bridge between a GEM object's backing pages and IOMMU mappings is the scatter-gather table (`struct sg_table`). When a GEM object's pages are pinned (via `drm_gem_shmem_get_pages` or `dma_buf_map_attachment`), the driver calls `dma_map_sgtable` to obtain DMA-mapped addresses, then iterates `for_each_sgtable_dma_sg` to feed each segment into `iommu_map`:
 
+```mermaid
+graph LR
+    GEM["GEM Object\n(shmem pages)"]
+    SGT["struct sg_table\n(scatter-gather list)"]
+    DMA["dma_map_sgtable\n(CPU phys → DMA addrs)"]
+    IOMMU["iommu_map\n(IOVA → paddr per segment)"]
+    DOM["iommu_domain\n(SMMU page tables)"]
+    GPU["GPU\n(accesses via IOVA)"]
+
+    GEM -- "drm_gem_shmem_get_pages_sgt" --> SGT
+    SGT --> DMA
+    DMA -- "for_each_sgtable_dma_sg" --> IOMMU
+    IOMMU --> DOM
+    DOM -- "translates IOVA to paddr" --> GPU
+```
+
 ```c
 /* Source: drivers/gpu/drm/panfrost/panfrost_mmu.c — mmu_map_sg() */
 static int mmu_map_sg(struct panfrost_device *pfdev, struct panfrost_mmu *mmu,
@@ -184,6 +231,30 @@ The driver structures reflect the hardware's two-processor model. `lima_device` 
 The Mali-400's built-in MMU is distinct from the SoC SMMU. The Lima driver programs this internal MMU directly via MMIO, writing L1 and L2 page table entries into GPU-accessible memory and setting the Translation Table Base register to point at the L1 table. The `lima_mmu.c` module encapsulates this page table management.
 
 Scheduling in Lima uses two instances of the DRM GPU scheduler (`drm_gpu_scheduler`), one for the GP and one for the PP. A rendering workload produces two `lima_sched_task` objects — a vertex task for the GP and a fragment task for the PP — linked by an explicit dependency: the PP task cannot start until the GP task's fence has signalled. The `lima_sched_run_job` function activates the relevant pipe, flushes the L2 cache to ensure coherency between GP output and PP input, switches the MMU to the submitting context's address space, and then starts the task on the pipe.
+
+```mermaid
+graph TD
+    subgraph "lima_device"
+        GP["lima_pipe (GP)\nGeometry Processor\n(vertex transform)"]
+        PP["lima_pipe (PP)\nPixel Processor array\n(fragment shading)"]
+        MMU["lima_mmu\n(internal Mali-400 MMU\nL1/L2 page tables)"]
+        L2["L2 Cache\n(shared between GP and PP)"]
+    end
+    SCHED_GP["drm_gpu_scheduler\n(GP scheduler)"]
+    SCHED_PP["drm_gpu_scheduler\n(PP scheduler)"]
+    TASK_V["lima_sched_task\n(vertex / GP task)"]
+    TASK_F["lima_sched_task\n(fragment / PP task)"]
+
+    TASK_V --> SCHED_GP
+    TASK_F --> SCHED_PP
+    SCHED_GP --> GP
+    SCHED_PP --> PP
+    GP -- "completion fence\n(PP waits)" --> PP
+    GP --> L2
+    PP --> L2
+    MMU --> GP
+    MMU --> PP
+```
 
 ```c
 /* Source: drivers/gpu/drm/lima/lima_sched.c — lima_sched_run_job() (abbreviated) */
@@ -232,6 +303,34 @@ The Panfrost driver reached mainline Linux in 5.2 alongside Lima. Bifrost suppor
 Job submission in Panfrost follows the hardware's Job Slot (JS) model. The hardware exposes multiple job slots; slots 0 and 1 are used for the tiler (vertex + tiler) job chain and the fragment job chain respectively. A `panfrost_job` represents one submission of either a tiler or fragment job chain. The dependency between them is explicit: the fragment job's `dma_fence` is added as a fence waiter on the tiler job's completion fence, enforcing that fragment work does not start until the tiler has finished writing per-tile polygon lists.
 
 `drm_gpu_scheduler` mediates access to each job slot. Userspace submits via `DRM_IOCTL_PANFROST_SUBMIT` with a `drm_panfrost_submit` struct whose `jc` field carries a GPU-virtual-address pointer into a pre-assembled job chain in a mapped GEM object. The kernel does not parse or validate the job chain content; it trusts the Mali MMU to prevent the GPU from accessing memory outside the context's mapped range.
+
+```mermaid
+graph TD
+    subgraph "panfrost_device"
+        JS0["Job Slot 0\n(tiler chain)"]
+        JS1["Job Slot 1\n(fragment chain)"]
+        MMU["panfrost_mmu\n(up to 8 Address Spaces\nio_pgtable ARM-LPAE)"]
+        DVFS["panfrost_devfreq\n(DEVFREQ + OPP table)"]
+    end
+    US["Userspace\nDRM_IOCTL_PANFROST_SUBMIT\n(drm_panfrost_submit.jc)"]
+    SCHED["drm_gpu_scheduler\n(per job slot)"]
+    JOB_T["panfrost_job\n(tiler)"]
+    JOB_F["panfrost_job\n(fragment)"]
+    GEM["panfrost_gem_object\n(job chain in mapped GEM)"]
+
+    US --> SCHED
+    SCHED --> JOB_T
+    SCHED --> JOB_F
+    JOB_T --> JS0
+    JOB_F --> JS1
+    JOB_T -- "completion fence\n(fragment waits)" --> JOB_F
+    GEM --> JS0
+    GEM --> JS1
+    MMU --> JS0
+    MMU --> JS1
+    DVFS --> JS0
+    DVFS --> JS1
+```
 
 ### MMU
 
@@ -319,6 +418,33 @@ The decision to write Panthor as a completely separate driver rather than extend
 Valhall replaced the Job Manager with the Command Stream Frontend (CSF): a microcontroller running proprietary firmware inside the GPU. The firmware manages a hierarchy of command groups (`panthor_group`) and command queues (`panthor_queue`). The driver's role is to set up ring buffers in GPU-visible memory, write firmware command descriptors into those ring buffers, and ring a doorbell — a single MMIO write — to notify the CSF firmware that new work is available. The firmware scheduler decides when to run each queue on the available shader cores. For typical submissions, the kernel is not involved between the doorbell write and the fence signal on completion.
 
 This model is architecturally similar to how Intel's GuC firmware manages command submission on modern Intel GPUs (see Chapter 5, Section "GuC Submission"). The pattern of firmware-managed queues with kernel-side setup and doorbell signalling recurs in modern GPU designs because it allows hardware-level scheduling and preemption without kernel intervention on the submission hot path.
+
+```mermaid
+graph TD
+    subgraph "Panfrost (Midgard/Bifrost) — Job Manager model"
+        PM_DRV["Driver\n(in critical path)"]
+        PM_JS["Job Slot register\n(MMIO write per job)"]
+        PM_HW["GPU Hardware\n(executes job chain)"]
+        PM_IRQ["Interrupt\n(job done)"]
+        PM_DRV --> PM_JS --> PM_HW --> PM_IRQ --> PM_DRV
+    end
+
+    subgraph "Panthor (Valhall) — CSF model"
+        PT_DRV["Driver\n(setup + doorbell only)"]
+        PT_RB["Ring buffer\n(GPU-visible memory)"]
+        PT_DB["Doorbell\n(single MMIO write)"]
+        PT_FW["CSF Firmware\n(panthor_group / panthor_queue\nscheduler inside GPU)"]
+        PT_SC["Shader Cores\n(execute work)"]
+        PT_FENCE["Completion fence\n(signal to kernel)"]
+        PT_DRV -- "write descriptor" --> PT_RB
+        PT_DRV -- "ring" --> PT_DB
+        PT_DB --> PT_FW
+        PT_RB --> PT_FW
+        PT_FW --> PT_SC
+        PT_SC --> PT_FENCE
+        PT_FENCE --> PT_DRV
+    end
+```
 
 ```c
 /* Source: drivers/gpu/drm/panthor/panthor_fw.c — panthor_fw_load() (abbreviated) */
@@ -408,6 +534,33 @@ The MSM DRM driver is the largest and most complex ARM GPU driver in the Linux k
 The decision to manage both GPU and display in one DRM driver reflects the Snapdragon SoC architecture, where the Adreno GPU, the display controller (MDP/DPU), the camera engine, and the video encoder all share the same SMMU and memory interconnect fabric. The same IOMMU domain infrastructure, the same devfreq and interconnect frameworks, and the same DMA-BUF import/export paths serve both subsystems. Separating them would require artificial interfaces between what is physically a unified system.
 
 This contrasts with how Panfrost and Panthor are deployed: those drivers handle only the GPU, while a separate DRM driver (e.g., `rockchip_drm`, `sun4i_drm`, `mediatek_drm`) handles the display controller. Buffer sharing between the GPU and display then uses DRM PRIME/DMA-BUF. The MSM approach inlines this sharing by treating the GPU and display as co-equal DRM sub-drivers under a shared framework.
+
+```mermaid
+graph TD
+    subgraph "MSM DRM driver (drivers/gpu/drm/msm/)"
+        subgraph "GPU sub-driver (adreno/)"
+            ADRENO["adreno_gpu\n(a3xx / a4xx / a5xx / a6xx / a7xx)"]
+            RING["msm_ringbuffer\n(PM4 command packets)"]
+            SUBMIT["msm_gem_submit\n(DRM_IOCTL_MSM_GEM_SUBMIT)"]
+        end
+        subgraph "Display sub-driver (disp/)"
+            DISP["MDP5 / DPU1 / DPU3\n(planes, CRTCs, encoders)"]
+            DSI["msm_dsi\n(MIPI DSI encoder)"]
+            DP["msm_dp\n(DisplayPort encoder)"]
+        end
+        SMMU["Shared SMMU domain\n+ interconnect framework"]
+        DMABUF["DMA-BUF\n(internal buffer sharing)"]
+    end
+    ADRENO --> RING
+    SUBMIT --> RING
+    RING --> ADRENO
+    ADRENO --> DMABUF
+    DMABUF --> DISP
+    DISP --> DSI
+    DISP --> DP
+    ADRENO --> SMMU
+    DISP --> SMMU
+```
 
 ### GPU Architecture Evolution
 
@@ -564,6 +717,30 @@ Each GPU context owns an `asahi_vm` — a per-VM GPU virtual address space backe
 
 `asahi_gem` objects are backed by system RAM (UMA, no VRAM). The `asahi::alloc` module provides GPU-mapped allocators for internal driver use (firmware data structures, page tables, parameter buffers).
 
+```mermaid
+graph TD
+    subgraph "drm/asahi (Rust driver)"
+        DEV["asahi::device::Device\n(GPU handle, FW interface,\nVM manager, scheduler)"]
+        VM["asahi_vm\n(per-context GPU VA space\nRust-implemented AGX page tables)"]
+        QUEUE["asahi_queue\n(firmware ring buffer\nordered submission queue)"]
+        GEM["asahi_gem\n(system RAM backing\nUMA — no VRAM)"]
+        ALLOC["asahi::alloc\n(GPU-mapped allocator\nfor FW structs + param buffers)"]
+    end
+    subgraph "rust/kernel/drm/ bindings"
+        DRM_CORE["DRM Core"]
+    end
+    FW["AGX Firmware\n(proprietary blob\nextracted from macOS)"]
+
+    DEV --> VM
+    DEV --> QUEUE
+    DEV --> FW
+    VM --> GEM
+    QUEUE -- "write descriptor\n+ signal firmware" --> FW
+    FW -- "fault / completion" --> DEV
+    ALLOC --> VM
+    DEV --> DRM_CORE
+```
+
 ### 7d. Firmware-Based Submission Model
 
 The AGX firmware is a proprietary blob extracted from macOS IPSW archives. The Asahi project packages and distributes it separately; the driver loads it via `request_firmware`. Without the firmware blob, the GPU does not initialise. Unlike Panthor's CSF firmware (which is distributed by Arm and SoC vendors and has a published binary interface version), the AGX firmware protocol is entirely reverse-engineered and can change across macOS updates.
@@ -704,6 +881,24 @@ A common misconception is that the GPU MMU and the system SMMU are the same unit
 The two MMUs serve different roles: the GPU's internal MMU provides per-context isolation between GPU processes (each OpenGL context or Vulkan device gets its own GPU VA space); the SMMU provides system-bus-level isolation between the GPU as a whole and every other DMA-capable device. Compromising a GPU context breaks the GPU MMU's isolation but not the SMMU's — the GPU as a device is still limited to accessing only the DRAM regions for which it has SMMU mappings.
 
 On older hardware without a GPU-internal MMU (Mali-400/Lima), the SMMU is the only address translation layer; the driver programs SMMU page tables directly rather than the GPU's internal tables.
+
+```mermaid
+graph TD
+    CTX_A["GPU Context A\n(GPU VA space)"]
+    CTX_B["GPU Context B\n(GPU VA space)"]
+    GPU_MMU["GPU-internal MMU\n(Mali Bifrost/Valhall: 8 Address Spaces\nAdreno A5xx+: per-process PT\nAGX: per-VM page tables)\nPer-context isolation"]
+    SoC_BUS["SoC Interconnect\n(device-side physical addresses)"]
+    SMMU["ARM SMMU\n(v2 or v3)\nSystem-bus-level isolation\n(iommu_domain per driver)"]
+    DRAM["Physical DRAM"]
+    DISPLAY["Display Controller\n(separate SMMU domain)"]
+
+    CTX_A --> GPU_MMU
+    CTX_B --> GPU_MMU
+    GPU_MMU --> SoC_BUS
+    SoC_BUS --> SMMU
+    SMMU --> DRAM
+    DISPLAY --> SMMU
+```
 
 ### IOMMU Groups and DMA Isolation
 

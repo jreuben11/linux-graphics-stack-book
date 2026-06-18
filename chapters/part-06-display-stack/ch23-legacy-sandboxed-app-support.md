@@ -32,6 +32,30 @@ The solution to the second problem is `xdg-desktop-portal`: a D-Bus service that
 
 These two mechanisms interact: a Flatpak-sandboxed application may itself be an X11 application running through XWayland. In that case, the X11 Unix socket is proxied into the sandbox via the Flatpak `--socket=x11` permission, and the XWayland server itself runs outside the sandbox. The portal and XWayland layers stack orthogonally. A sandboxed X11 application that relies on basic 2D drawing goes through the proxy socket to XWayland, where Glamor accelerates rendering entirely within the XWayland process (which has full GPU access). A sandboxed X11 application that uses OpenGL or Vulkan additionally requires the `--device=dri` permission so that Mesa's DRI3 client code inside the sandbox can open the DRM render node directly.
 
+```mermaid
+graph TD
+    subgraph "Host System"
+        Compositor["Wayland Compositor\n(Mutter / KWin / Sway)"]
+        XWayland["XWayland\n(X11 server + Wayland client)"]
+        Portal["xdg-desktop-portal\n(D-Bus service)"]
+        GPU["/dev/dri/renderD*\n(DRM render node)"]
+    end
+    subgraph "Flatpak Sandbox"
+        SandboxedApp["Sandboxed Application"]
+        X11Proxy["X11 Unix socket proxy\n(--socket=x11)"]
+        WaylandSocket["Wayland socket\n(--socket=wayland)"]
+    end
+    SandboxedApp -- "X11 protocol" --> X11Proxy
+    X11Proxy -- "X11 protocol" --> XWayland
+    SandboxedApp -- "D-Bus portal calls" --> Portal
+    SandboxedApp -- "wl_surface / wl_shm" --> WaylandSocket
+    WaylandSocket -- "Wayland protocol" --> Compositor
+    XWayland -- "wl_surface (Wayland client)" --> Compositor
+    Portal -- "compositor-specific ops" --> Compositor
+    XWayland -- "Glamor / DRI3\n(host GPU access)" --> GPU
+    SandboxedApp -. "--device=dri\n(OpenGL/Vulkan only)" .-> GPU
+```
+
 ---
 
 ## 2. XWayland Architecture
@@ -46,6 +70,23 @@ The XWayland startup sequence involves a careful handshake between the composito
 2. XWayland registers the `_XWAYLAND_COMPOSITOR_CALLBACK` X11 property atom to signal readiness to the compositor's XWM (X Window Manager) component.
 3. The compositor spawns an internal XWM client (in wlroots, this is `wlr_xwayland`; in Mutter it is the built-in XWM) that connects to XWayland's X11 socket and monitors for `MapRequest`, `ConfigureRequest`, and `ClientMessage` events.
 4. XWayland writes the display number to `displayfd` to signal readiness; the compositor notifies X11 clients of the available display.
+
+```mermaid
+graph TD
+    Compositor["Wayland Compositor"]
+    XWayland["XWayland\n(xwl_screen_init)"]
+    XWM["Internal XWM Client\n(wlr_xwayland / Mutter XWM)"]
+    X11App["X11 Application"]
+
+    Compositor -- "1. creates X11 listen socket\npasses -displayfd fd" --> XWayland
+    XWayland -- "1. connects as Wayland client\nbinds xwayland_shell_v1 / xdg_wm_base" --> Compositor
+    XWayland -- "2. sets _XWAYLAND_COMPOSITOR_CALLBACK atom" --> XWM
+    Compositor -- "3. spawns XWM\nconnects to X11 socket" --> XWM
+    XWM -- "monitors MapRequest\nConfigureRequest\nClientMessage" --> XWayland
+    XWayland -- "4. writes display number to displayfd" --> Compositor
+    Compositor -- "notifies display available" --> X11App
+    X11App -- "connects to X11 socket" --> XWayland
+```
 
 From `xserver/hw/xwayland/xwayland.c`, the core initialisation sequence calls `xwl_screen_init()`, which sets up the EGL context via Glamor and binds the Wayland globals needed for buffer presentation:
 
@@ -151,6 +192,43 @@ Consider an X11 client calling `XFillRectangle()`. The call travels from the cli
 
 For XRender COMPOSITE operations — the primary rendering path used by Cairo, Pango, and GTK's drawing code — Glamor's `glamor_composite_rects()` in `xserver/glamor/glamor_render.c` constructs a textured quad, selects a fragment shader encoding the XRender compositing operator (Over, Add, Xor, etc.), and issues a `glDrawArrays()` call with the source and mask textures bound. The XRender operators map cleanly to GLES2 blending and arithmetic operations.
 
+The two distinct rendering paths for X11 clients under XWayland — 2D drawing through Glamor and hardware-accelerated 3D via GLX/DRI3 — are shown below:
+
+```mermaid
+graph TD
+    X11Client["X11 Client"]
+
+    subgraph "2D Path (Glamor)"
+        DIX["DIX layer\n(XWayland)"]
+        GlamorDDX["Glamor DDX\nglamor_poly_fill_rect()\nglamor_composite_rects()"]
+        GLES2["GLES2 draw call\nglDrawArrays()"]
+        GEMPixmap["GEM-backed Pixmap\n(EGLImage / GL texture)"]
+        DMABUF2D["DMA-BUF fd\n(gbm_bo_get_fd())"]
+    end
+
+    subgraph "3D / GLX Path (DRI3 + Present)"
+        MesaGLX["Mesa GLX driver\n(src/glx/)"]
+        DRI3["DRI3\nDRI3Open / DRI3PixmapFromBuffers"]
+        PresentExt["X11 Present extension\n(glXSwapBuffers)"]
+        DMABUF3D["DMA-BUF\n(zero-copy to compositor)"]
+    end
+
+    Compositor["Wayland Compositor\n(wl_buffer)"]
+
+    X11Client -- "XFillRectangle\nXRender COMPOSITE" --> DIX
+    DIX --> GlamorDDX
+    GlamorDDX --> GLES2
+    GLES2 --> GEMPixmap
+    GEMPixmap -- "zwp_linux_dmabuf_v1" --> DMABUF2D
+    DMABUF2D --> Compositor
+
+    X11Client -- "glXSwapBuffers\neglSwapBuffers" --> MesaGLX
+    MesaGLX --> DRI3
+    DRI3 --> PresentExt
+    PresentExt -- "GEM Pixmap → DMA-BUF" --> DMABUF3D
+    DMABUF3D --> Compositor
+```
+
 ### DRI3 and the Present Extension
 
 When an X11 client uses hardware-accelerated OpenGL via GLX (`glXSwapBuffers()`) or EGL (`eglSwapBuffers()`), it follows a different path that bypasses Glamor entirely. Mesa's GLX driver (`xserver/glamor/` and `src/glx/` in the Mesa repository) allocates GPU buffers via DRI3 (`DRI3Open`, `DRI3PixmapFromBuffers`), renders directly into them, and then uses the X11 Present extension to deliver the completed buffer to XWayland's window. XWayland receives this Present request and converts the GEM-backed Pixmap into a DMA-BUF for submission to the compositor as a `wl_buffer`. This path is zero-copy from Mesa's framebuffer to the compositor: no pixel data is ever read back to CPU.
@@ -176,6 +254,34 @@ XWayland must act as a bidirectional bridge between these two models. The clipbo
 When an X11 client takes ownership of the CLIPBOARD selection (via `XSetSelectionOwner()`), XWayland's `xwl_clipboard_x11_owner_notify()` handler fires. XWayland creates a `wl_data_source` offering the selection's available target formats (obtained via the `TARGETS` atom conversion) and calls `wl_data_device_set_selection()` to notify the compositor. When a Wayland client then requests a paste, the compositor signals `wl_data_source.send` with a MIME type and a pipe file descriptor. XWayland receives this event and satisfies it by calling `XConvertSelection()` on the X11 side, writing the resulting data into the pipe.
 
 The reverse direction: when a Wayland client places data on the clipboard, the compositor sends `wl_data_device.selection` to XWayland's `wl_data_device`. XWayland creates an internal X11 selection owner proxy, calls `XSetSelectionOwner()` to claim CLIPBOARD on behalf of the Wayland client, and when any X11 client subsequently requests a `SelectionNotify`, XWayland reads from the `wl_data_offer` pipe and delivers the data to the requesting X11 client.
+
+```mermaid
+graph LR
+    subgraph "X11 Side"
+        X11Owner["X11 Selection Owner\n(CLIPBOARD atom)"]
+        X11Receiver["X11 Client\n(XConvertSelection)"]
+        XWaylandBridge["XWayland\nxwl_clipboard_manager\n(xwayland-clipboard.c)"]
+    end
+
+    subgraph "Wayland Side"
+        WaylandSource["wl_data_source\n(offered by XWayland)"]
+        WaylandOffer["wl_data_offer\n(received by XWayland)"]
+        WaylandCompositor["Wayland Compositor\nwl_data_device_manager"]
+        WaylandClient["Wayland Client"]
+    end
+
+    X11Owner -- "XSetSelectionOwner\n→ xwl_clipboard_x11_owner_notify" --> XWaylandBridge
+    XWaylandBridge -- "wl_data_device_set_selection\n(MIME types from TARGETS atom)" --> WaylandSource
+    WaylandSource --> WaylandCompositor
+    WaylandCompositor -- "wl_data_source.send\n(pipe fd + MIME type)" --> XWaylandBridge
+    XWaylandBridge -- "XConvertSelection\n→ write to pipe" --> WaylandClient
+
+    WaylandClient -- "places data on clipboard" --> WaylandCompositor
+    WaylandCompositor -- "wl_data_device.selection\n→ wl_data_offer" --> WaylandOffer
+    WaylandOffer --> XWaylandBridge
+    XWaylandBridge -- "XSetSelectionOwner\n(proxy for Wayland client)" --> X11Receiver
+    X11Receiver -- "SelectionNotify request\n→ read from wl_data_offer pipe" --> XWaylandBridge
+```
 
 ### PRIMARY Selection
 
@@ -285,6 +391,35 @@ The portal is split into a frontend process and one or more backend processes:
 
 **Backend processes**: Each desktop environment ships its own backend: `xdg-desktop-portal-gnome` for GNOME/Mutter, `xdg-desktop-portal-kde` for KDE Plasma/KWin, `xdg-desktop-portal-wlr` for wlroots-based compositors (Sway, Hyprland via its own backend `xdg-desktop-portal-hyprland`). Backends implement the `org.freedesktop.impl.portal.*` D-Bus names — the internal backend interface. They perform the actual compositor-specific operations: showing a window selection dialog, capturing a screen, injecting input.
 
+```mermaid
+graph TD
+    SandboxedApp["Sandboxed Application\n(Flatpak / Snap)"]
+
+    subgraph "Portal Frontend"
+        Frontend["xdg-desktop-portal\norg.freedesktop.portal.*"]
+        PermDB["permissions.db\n(~/.local/share/xdg-desktop-portal/)"]
+        AppID["App-ID Verification\n(D-Bus credentials / Flatpak service)"]
+    end
+
+    subgraph "Portal Backends (compositor-specific)"
+        BackendGNOME["xdg-desktop-portal-gnome\norg.freedesktop.impl.portal.*\n(Mutter)"]
+        BackendKDE["xdg-desktop-portal-kde\norg.freedesktop.impl.portal.*\n(KWin)"]
+        BackendWLR["xdg-desktop-portal-wlr\norg.freedesktop.impl.portal.*\n(wlroots / Sway)"]
+    end
+
+    Compositor["Wayland Compositor"]
+
+    SandboxedApp -- "D-Bus call\norg.freedesktop.portal.ScreenCast" --> Frontend
+    Frontend --> AppID
+    Frontend --> PermDB
+    Frontend -- "XDG_CURRENT_DESKTOP\n→ routes to backend" --> BackendGNOME
+    Frontend -- "XDG_CURRENT_DESKTOP\n→ routes to backend" --> BackendKDE
+    Frontend -- "XDG_CURRENT_DESKTOP\n→ routes to backend" --> BackendWLR
+    BackendGNOME -- "Mutter screencasting D-Bus API\ncompositor-specific ops" --> Compositor
+    BackendKDE -- "KWin screencasting interface\ncompositor-specific ops" --> Compositor
+    BackendWLR -- "zwlr_screencopy_manager_v1\ncompositor-specific ops" --> Compositor
+```
+
 ### D-Bus Activation
 
 Portals are activated on demand via systemd socket activation. When a sandboxed application calls a portal method, systemd activates the portal service, which starts the frontend process, which in turn activates the appropriate backend. The `org.freedesktop.portal.Desktop` and the individual portal names (`org.freedesktop.portal.ScreenCast`, etc.) are all well-known names that a running process holds.
@@ -375,6 +510,22 @@ glBindTexture(GL_TEXTURE_2D, texture_id);
 glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
 ```
 
+```mermaid
+graph TD
+    Compositor["Wayland Compositor\n(compositor framebuffer)"]
+    PortalBackend["Portal Backend\n(xdg-desktop-portal-gnome /\nxdg-desktop-portal-wlr)"]
+    PipeWireStream["PipeWire Stream\nSPA_DATA_DmaBuf node"]
+    Consumer["Consumer\n(OBS / Chromium WebRTC /\ngstreamer dmabufmeta)"]
+    GPUTexture["Consumer GPU Texture\n(glEGLImageTargetTexture2DOES)"]
+    Fallback["SPA_DATA_MemFd\n(mmap fallback — CPU copy)"]
+
+    Compositor -- "1. DMA-BUF fd export\n(no CPU readback)" --> PortalBackend
+    PortalBackend -- "2. zwp_linux_dmabuf /\nzwlr_screencopy_manager_v1\n→ PipeWire buffer" --> PipeWireStream
+    PipeWireStream -- "3. spa_data.type=SPA_DATA_DmaBuf\nspa_data.fd" --> Consumer
+    Consumer -- "eglCreateImageKHR\n(EGL_LINUX_DMA_BUF_EXT)" --> GPUTexture
+    PipeWireStream -. "fallback: SPA_DATA_MemFd\n(consumer lacks DMA-BUF support)" .-> Fallback
+```
+
 If the consumer does not support DMA-BUF import, PipeWire falls back to a memory-mapped `mmap()` buffer (`SPA_DATA_MemFd`), which requires one CPU copy per frame from the compositor's buffer to the shared memory region. OBS Studio versions prior to 27.2 used the memory-mapped path; OBS 28+ supports DMA-BUF import.
 
 ### Window-Level vs. Output-Level Capture
@@ -439,6 +590,32 @@ The compositor can use this information to:
 - Deny access to privileged protocols such as `zwlr_screencopy_manager_v1`
 
 Critically, `wp_security_context_v1` operates entirely at the Wayland protocol layer. It does not interact with the DRM device node access granted by `--device=dri`. A sandboxed app granted `--device=dri` still has direct kernel-level GPU access through the device node, regardless of any security context restrictions at the Wayland layer. The two mechanisms address orthogonal attack surfaces.
+
+```mermaid
+graph TD
+    subgraph "Flatpak Sandbox"
+        SandboxedApp["Sandboxed Application"]
+    end
+
+    subgraph "Wayland Protocol Layer"
+        WaylandSocket["Wayland socket\n(wp_security_context_v1)"]
+        Compositor["Wayland Compositor\n(restricts globals:\nno zwlr_screencopy_manager_v1\nno wl_drm for sandboxed clients)"]
+    end
+
+    subgraph "Kernel / DRM Layer"
+        DevDRI["/dev/dri/renderD*\n(--device=dri permission)"]
+        GPUVM["GPU VM\n(per-process GPUVM address space)"]
+    end
+
+    SandboxedApp -- "Wayland protocol messages\n(sandbox_engine=flatpak\napp_id=com.example.App)" --> WaylandSocket
+    WaylandSocket -- "identity propagated" --> Compositor
+    Compositor -. "restricts Wayland globals\n(protocol-layer only)" .-> SandboxedApp
+
+    SandboxedApp -- "open() + DRM ioctls\n(direct kernel access)" --> DevDRI
+    DevDRI --> GPUVM
+
+    WaylandSocket -. "no interaction\nwith DRM layer" .-> DevDRI
+```
 
 ### EGL in Flatpak: Mesa Bundling
 

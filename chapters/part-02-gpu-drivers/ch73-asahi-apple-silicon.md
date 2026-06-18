@@ -68,6 +68,35 @@ AGX implements tile-based deferred rendering (TBDR), the same fundamental archit
 
 The UAPI exposes this two-program model directly. Every `drm_asahi_cmd_render` command carries explicit `bg` and `eot` fields of type `struct drm_asahi_bg_eot`, each containing a USC address and resource specifier. The kernel never touches these programs; it forwards them to firmware, which dispatches them as part of hardware tile scheduling. Similarly, `partial_bg` and `partial_eot` handle the **partial render** case, where the TVB fills up mid-frame and the GPU must flush completed tiles to memory before continuing with the remaining geometry. [Source: `include/uapi/drm/asahi_drm.h`](https://github.com/torvalds/linux/blob/master/include/uapi/drm/asahi_drm.h)
 
+```mermaid
+graph TD
+    subgraph "TA Pass (Vertex / Tile Accelerator)"
+        VDM["VDM\n(Vertex Data Master)"]
+        USC_V["USC\n(Unified Shader Cores)\nVertex Shaders"]
+        PPP["PPP\n(Primitive Processing Pipeline)\nClip / Cull / Bin"]
+        TVB["TVB / Parameter Buffer\n(System RAM)"]
+    end
+    subgraph "ISP Pass (Fragment)"
+        ISP["ISP\n(Image Synthesis Processor)"]
+        USC_F["USC\n(Unified Shader Cores)\nFragment Shaders"]
+        Tilebuffer["Tilebuffer\n(On-chip SRAM)"]
+        BG["Background Program\n(drm_asahi_bg_eot.bg)"]
+        EoT["End-of-Tile Program\n(drm_asahi_bg_eot.eot)"]
+    end
+    RenderTarget["Render Target\n(System RAM)"]
+
+    VDM --> USC_V
+    USC_V --> PPP
+    PPP --> TVB
+    TVB --> ISP
+    BG -- "load clear/prior contents" --> Tilebuffer
+    ISP --> USC_F
+    USC_F --> Tilebuffer
+    Tilebuffer --> EoT
+    EoT -- "store tile result" --> RenderTarget
+    RenderTarget -. "LOAD_OP_LOAD path" .-> BG
+```
+
 The tilebuffer dimensions are another detail the kernel must know: `drm_asahi_cmd_render` includes `width_px`, `height_px`, `utile_width_px`, `utile_height_px`, `samples`, and `sample_size_B`. The kernel uses these to compute internal tiling structures passed to firmware, making the render submit heavier than on immediate-mode architectures — a deliberate trade-off enabling backwards compatibility with future firmware versions. [Source: UAPI comments in `asahi_drm.h`](https://github.com/torvalds/linux/blob/master/include/uapi/drm/asahi_drm.h)
 
 ### Unified Shader Cores (USC)
@@ -153,6 +182,53 @@ The `drivers/gpu/drm/asahi/` directory (in the [AsahiLinux/linux repository](htt
 | `fw/` | Typed Rust structures matching firmware ABI layout |
 | `hw/` | Per-chip hardware constants (`t8103.rs`, `t8112.rs`, `t600x.rs`, `t602x.rs`) |
 
+### Module Structure Overview
+
+```mermaid
+graph TD
+    subgraph "drm/asahi/ — Top Level"
+        driver["driver.rs\nplatform driver, IOCTL dispatch"]
+        gpu["gpu.rs\nGpuManager trait + firmware versions"]
+        file["file.rs\nper-file IOCTL handlers"]
+    end
+    subgraph "drm/asahi/ — MMU & Memory"
+        mmu["mmu.rs\nUAT / GPU MMU, VM contexts"]
+        pgtable["pgtable.rs\nARM64 page table manipulation"]
+        gem["gem.rs\ngem::Object (GEM BO type)"]
+        alloc["alloc.rs\nGPU-side allocator"]
+        mem["mem.rs\ntyped firmware region wrappers"]
+    end
+    subgraph "drm/asahi/ — Firmware Interface"
+        channel["channel.rs\nRTKit ring buffer channels"]
+        workqueue["workqueue.rs\nfirmware work queue"]
+        microseq["microseq.rs\nfirmware microsequence builder"]
+        initdata["initdata.rs\nGPU init structures"]
+        event["event.rs\nGPU event / completion fence"]
+        crashdump["crashdump.rs\nfirmware crash log capture"]
+    end
+    subgraph "drm/asahi/ — HW & Submission"
+        hw["hw/ (t8103.rs, t8112.rs, t600x.rs …)\nper-chip hardware constants"]
+        fw["fw/\ntyped Rust firmware ABI structs"]
+        queue["queue/\ncommand queue state machine"]
+        buffer["buffer.rs\nTVB / parameter buffer mgmt"]
+    end
+
+    driver --> gpu
+    driver --> file
+    file --> gem
+    file --> mmu
+    gpu --> channel
+    gpu --> workqueue
+    gpu --> microseq
+    gpu --> initdata
+    gpu --> event
+    gpu --> hw
+    gpu --> fw
+    mmu --> pgtable
+    queue --> buffer
+    queue --> event
+```
+
 ### The DRM Device Initialisation Pattern
 
 The driver follows the Rust DRM pattern established by the RFC. `AsahiDriver` implements the `drm::drv::Driver` trait, associating three types: `Data` (reference-counted `AsahiData` containing the `GpuManager`), `File`, and `Object`. The `FEATURES` constant declares which DRM capabilities the driver supports:
@@ -236,6 +312,30 @@ fn probe(pdev: &mut platform::Device, info: Option<&Self::IdInfo>) -> Result<Pin
 }
 ```
 
+The probe sequence selects a firmware-version-specific `GpuManager` implementation based on the GPU generation and `apple,firmware-compat` device-tree property:
+
+```mermaid
+graph TD
+    probe["platform::Driver::probe"]
+    dma["pdev.set_dma_masks\n(uat_oas from hw config)"]
+    mmio["regs::Resources::new\ninit_mmio / start_cpu"]
+    dt["read apple,firmware-compat\nfrom Device Tree node"]
+    match["match gpu_gen + gpu_variant + firmware version"]
+    gmG13["GpuManagerG13V12_3::new\n(G13, firmware 12.3.0)"]
+    gmG14["GpuManagerG14V12_4::new\n(G14G, firmware 12.4.0)"]
+    gmG13b["GpuManagerG13V13_5::new\n(G13, firmware 13.5.0)"]
+    gmEtc["… additional firmware version matches"]
+    init["gpu.init()"]
+    reg["drm::drv::Registration::new_foreign_owned"]
+
+    probe --> dma --> mmio --> dt --> match
+    match --> gmG13 --> init
+    match --> gmG14 --> init
+    match --> gmG13b --> init
+    match --> gmEtc --> init
+    init --> reg
+```
+
 The Device Tree `compatible` strings for supported chips are:
 
 ```rust
@@ -285,6 +385,22 @@ Work submission to the GPU does not write to hardware registers. Instead, the CP
 
 If the firmware crashes, the only recovery path is a full GPU reset, because no other mechanism allows reinitialising the co-processor. The `crashdump.rs` module captures the firmware panic log to aid debugging. The driver ran in production (in Fedora Asahi Remix) without a single reported kernel oops for over a year before the mainline UAPI submission. [Source: PATCH RFC 00/18, lkml](https://lkml.iu.edu/hypermail/linux/kernel/2303.0/07151.html)
 
+```mermaid
+graph LR
+    CPU["CPU\n(Linux kernel driver)"]
+    SharedMem["Shared GPU-CPU Memory\nwork item descriptors\nmicrosequence command buffers\nevent stamp objects"]
+    RTKitCh["RTKit channel messages\n(ring buffers, channel.rs)"]
+    ASC["ASC\n(Apple Silicon Coprocessor)\nARM64 + RTKit firmware"]
+    GPU["AGX GPU Hardware\nshader clusters, ISP, VDM"]
+
+    CPU -- "populate typed structs\n(microseq.rs, fw/)" --> SharedMem
+    CPU -- "notify via 64-bit ring entries\n(channel.rs)" --> RTKitCh
+    RTKitCh --> ASC
+    ASC -- "reads work items" --> SharedMem
+    ASC -- "schedules / preempts\npower-gates clusters" --> GPU
+    ASC -. "crash log (crashdump.rs)" .-> CPU
+```
+
 ---
 
 ## 4. The UAPI: Explicit VM and Submission Model
@@ -292,6 +408,29 @@ If the firmware crashes, the only recovery path is a full GPU reset, because no 
 The Asahi UAPI was designed for Vulkan-first use and merged into mainline Linux as `include/uapi/drm/asahi_drm.h` — a historically unprecedented event: the UAPI was accepted into mainline without the driver itself, because the driver requires further cleanup before upstream review can complete. This was explicitly permitted by DRM maintainers. [Source: Asahi Linux Progress Report Linux 6.15](https://asahilinux.org/2025/05/progress-report-6-15/)
 
 The design borrows from the Intel Xe and ARM Panthor UAPIs: explicit GPU VM management, explicit synchronisation via DRM syncobjs only (no implicit sync), and a flat command buffer with no CPU pointers.
+
+The Asahi UAPI was designed for Vulkan-first use and borrows from the Intel Xe and ARM Panthor UAPIs: explicit GPU VM management, explicit synchronisation via DRM syncobjs only (no implicit sync), and a flat command buffer with no CPU pointers.
+
+```mermaid
+graph TD
+    GetParams["DRM_IOCTL_ASAHI_GET_PARAMS\nreturns drm_asahi_params_global\n(gpu_generation, num_clusters, core_masks …)"]
+    VMCreate["DRM_IOCTL_ASAHI_VM_CREATE\ndrm_asahi_vm_create → vm_id"]
+    GEMCreate["DRM_IOCTL_ASAHI_GEM_CREATE\ndrm_asahi_gem_create → handle\n(WRITEBACK | VM_PRIVATE flags)"]
+    VMBind["DRM_IOCTL_ASAHI_VM_BIND\ndrm_asahi_gem_bind_op\n(handle → GPU VA, BIND_SINGLE_PAGE for sparse)"]
+    QueueCreate["DRM_IOCTL_ASAHI_QUEUE_CREATE\nvm_id + priority + usc_exec_base"]
+    Submit["DRM_IOCTL_ASAHI_SUBMIT\ndrm_asahi_submit\n(flat cmdbuf + drm_asahi_sync in/out)"]
+    CmdRender["drm_asahi_cmd_render\n(vdm_ctrl_stream_base, bg/eot programs,\ntile dims, depth/stencil …)"]
+    CmdCompute["drm_asahi_cmd_compute\n(cdm_ctrl_stream_base, helper_program …)"]
+
+    GetParams --> VMCreate
+    VMCreate --> GEMCreate
+    GEMCreate --> VMBind
+    VMCreate --> QueueCreate
+    VMBind --> QueueCreate
+    QueueCreate --> Submit
+    Submit --> CmdRender
+    Submit --> CmdCompute
+```
 
 ### VM Management
 
@@ -419,6 +558,41 @@ The Mesa documentation names the hardware units the Gallium driver must orchestr
 
 The Gallium state tracker (`agx_context`, `agx_draw_vbo`) maps OpenGL state to AGX hardware state, compiles GLSL shaders through NIR (see Chapter 14), and builds the VDM control stream and CDM control stream that `drm_asahi_cmd_render` / `drm_asahi_cmd_compute` reference.
 
+```mermaid
+graph TD
+    subgraph "Mesa Asahi — Source Layout"
+        Gallium["src/gallium/drivers/asahi/\n(agx_context, agx_draw_vbo)\nOpenGL state tracker"]
+        Compiler["src/asahi/compiler/\nNIR → AGX ISA emitter"]
+        VulkanDrv["src/asahi/vulkan/\nHoneykrisp Vulkan driver"]
+        Lib["src/asahi/lib/\nshared runtime / layout utilities"]
+    end
+    subgraph "AGX Hardware Units"
+        VDM["VDM\nVertex Data Master"]
+        PPP2["PPP\nPrimitive Processing Pipeline"]
+        ISP2["ISP\nImage Synthesis Processor"]
+        USC2["USC\nUnified Shader Cores"]
+        UVS["UVS\nUnified Vertex Store"]
+        PDM["PDM\nPixel Data Master"]
+        PBE["PBE\nPixel BackEnd"]
+        CDM["CDM\nCompute Data Master"]
+    end
+
+    Gallium -- "VDM control stream" --> VDM
+    Gallium -- "CDM control stream" --> CDM
+    Gallium --> Compiler
+    VulkanDrv --> Compiler
+    Compiler --> USC2
+    VDM --> USC2
+    USC2 -- "varyings" --> UVS
+    PPP2 --> ISP2
+    ISP2 --> PDM
+    PDM --> USC2
+    USC2 -- "colour output" --> PBE
+    CDM --> USC2
+    Gallium --> Lib
+    VulkanDrv --> Lib
+```
+
 ### The NIR Compiler Backend
 
 The AGX compiler backend (`src/asahi/compiler/`) receives NIR IR from the common Mesa shader infrastructure and emits AGX binary instructions. Key passes include:
@@ -469,6 +643,30 @@ AGX implements attachments differently from immediate-mode GPUs. There is no "re
 
 Honeykrisp synthesises the BG and EoT programs at render pass begin time, encoding them as USC (Unified Shader Core) binaries with their USC resource words in the `struct drm_asahi_bg_eot` fields. The tilebuffer sample size (`sample_size_B`) and tile dimensions are computed from attachment formats, MSAA sample count, and framebuffer dimensions.
 
+```mermaid
+graph LR
+    subgraph "Vulkan Render Pass"
+        LoadLoad["VK_ATTACHMENT_LOAD_OP_LOAD"]
+        LoadClear["VK_ATTACHMENT_LOAD_OP_CLEAR"]
+        StoreStore["VK_ATTACHMENT_STORE_OP_STORE"]
+        StoreDont["VK_ATTACHMENT_STORE_OP_DONT_CARE"]
+    end
+    subgraph "AGX Tile Programs (drm_asahi_bg_eot)"
+        BGProg["Background Program\n(bg field)\nruns at tile start"]
+        EoTProg["End-of-Tile Program\n(eot field)\nruns at tile end"]
+    end
+    Tilebuf["Tilebuffer\n(On-chip SRAM)"]
+    RT["Render Target\n(System RAM)"]
+
+    LoadLoad -- "sample existing RT → tilebuffer" --> BGProg
+    LoadClear -- "write clear colour → tilebuffer\n(no memory read)" --> BGProg
+    BGProg --> Tilebuf
+    Tilebuf --> EoTProg
+    StoreStore -- "tilebuffer → RT" --> EoTProg
+    StoreDont -- "EoT program omitted" --> EoTProg
+    EoTProg -- "store result" --> RT
+```
+
 ### Dynamic State and Shader Objects
 
 Rather than pre-compiling pipeline state objects with baked-in vertex attribute formats, sample masks, and blend equations (which would require pipeline variants and cause shader stutter), Honeykrisp implements four strategies to handle state that AGX bakes into shaders:
@@ -479,6 +677,15 @@ Rather than pre-compiling pipeline state objects with baked-in vertex attribute 
 4. **Prologs and epilogs:** The shader binary is split into three parts — a prolog that handles vertex attribute fetching or fragment output format conversion, the main shader body, and an epilog that handles sample masking or blending. State changes only require recompiling the prolog/epilog, not the entire shader.
 
 This approach, borrowed from the AMD RDNA driver architecture, eliminates the worst-case pipeline stutter problem. Benchmarks confirmed the CPU overhead was acceptable: the driver achieves 100 million draw calls per second on M1 hardware in the `vkoverhead` benchmark. [Source: Alyssa Rosenzweig, Vulkan 1.3 on the M1 in 1 month](https://asahilinux.org/2024/06/vk13-on-the-m1-in-1-month/)
+
+```mermaid
+graph LR
+    Prolog["Prolog\n(vertex attr fetching /\nfragment output format conversion)\nrecompiled on format state change"]
+    MainBody["Main Shader Body\ncompiled once from SPIR-V/NIR"]
+    Epilog["Epilog\n(sample masking / blending)\nrecompiled on blend state change"]
+
+    Prolog --> MainBody --> Epilog
+```
 
 ### Descriptor Sets and UMA
 
@@ -519,6 +726,26 @@ The mailbox protocol is layered:
 
 [Source: Asahi Linux September 2021 progress report](https://asahilinux.org/2021/10/progress-report-september-2021/)
 
+```mermaid
+graph TD
+    KMSDriver["drm/apple/ KMS Driver\natomic modeset / page flip"]
+    subgraph "DCP Communication Stack"
+        EPIC["EPIC\n(Endpoint Interface Client)\nservice calls, callbacks, key-value params"]
+        RTKit["apple-rtkit kernel driver\nprotocol framing, endpoint setup\nshared memory management"]
+        ASCMailbox["apple-mailbox kernel driver\n96-bit messages tagged with endpoint number"]
+    end
+    DCP["DCP Firmware\n(ARM64 core running RTKit RTOS)\ncontrols all display hardware"]
+    DisplayHW["Display Hardware\npixel clocking, timing, DPLL\nDisplayPort link training, cursor"]
+
+    KMSDriver -- "EPIC service calls" --> EPIC
+    EPIC --> RTKit
+    RTKit --> ASCMailbox
+    ASCMailbox -- "mailbox messages" --> DCP
+    DCP -- "programs" --> DisplayHW
+    DCP -. "VSync / completion callbacks" .-> EPIC
+    EPIC -. "drm_crtc_send_vblank_event" .-> KMSDriver
+```
+
 ### The DRM KMS Driver
 
 The `drm/apple/` kernel driver implements a standard DRM/KMS interface on top of this firmware-mediated display stack. When a Wayland compositor performs an atomic KMS modeset (e.g., setting a new resolution or page-flipping a framebuffer), the KMS driver translates the atomic state into EPIC service calls to the DCP firmware. The DCP firmware then programs the actual display hardware.
@@ -550,6 +777,24 @@ The DCP driver has none of this. The DCP firmware is a black box: the Linux driv
 On a discrete AMD or NVIDIA GPU, the driver divides allocations between VRAM (fast, local to the GPU) and GTT (system RAM mapped via GART into the GPU address space). VRAM bandwidth is 10–50× higher than GTT bandwidth for GPU-side access, so the driver places frequently accessed render targets and textures in VRAM and uses GTT for staging buffers and rarely accessed resources.
 
 On Apple Silicon, there is no such distinction. Every allocation from `DRM_IOCTL_ASAHI_GEM_CREATE` resides in the same system LPDDR5/LPDDR5X pool that all SoC clients share. The `DRM_ASAHI_GEM_WRITEBACK` flag controls CPU-side cache policy (write-back vs write-combine), but there is no GPU-side placement decision. From the GPU's perspective, all memory is equally "local."
+
+```mermaid
+graph TD
+    Pool["Shared LPDDR5/LPDDR5X Pool\n(System RAM — no discrete VRAM)"]
+    CPU["CPU Cores\n(cache-coherent, no flush needed)"]
+    GPU["AGX GPU Clusters\n(GEM BOs via DRM_IOCTL_ASAHI_GEM_CREATE)"]
+    NE["Neural Engine"]
+    ISP["ISP\n(Image Signal Processor)"]
+    VE["Video Encode/Decode Engine"]
+    DCP2["DCP\n(Display Co-Processor)"]
+
+    Pool <-- "DMA-BUF share\n(zero-copy, drm_gem_prime_import)" --> GPU
+    Pool <-- "DMA-BUF share" --> ISP
+    Pool <--> CPU
+    Pool <--> NE
+    Pool <--> VE
+    Pool <--> DCP2
+```
 
 ### CPU–GPU Bandwidth Competition
 

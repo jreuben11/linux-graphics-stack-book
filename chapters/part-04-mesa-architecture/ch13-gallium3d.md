@@ -28,6 +28,35 @@ This chapter dissects Gallium3D from the interface contract outward. We begin wi
 
 After reading this chapter you will understand how a single `glDrawArrays` call decomposes into a sequence of Gallium pipe interface calls, what data structures cross the frontend/backend boundary, and what a new hardware backend must implement to support OpenGL, OpenGL ES, or OpenCL through the Gallium interface. The companion chapters on NIR (Chapter 14), radeonsi and iris (Chapter 19), llvmpipe (Chapter 17), and rusticl (Chapter 25) each pick up one thread that this chapter introduces.
 
+```mermaid
+graph TD
+    subgraph "Frontends (src/mesa/state_tracker/, src/gallium/frontends/)"
+        GL["OpenGL / OpenGL ES\n(GL state tracker)"]
+        rusticl["rusticl\n(OpenCL 3.0 frontend)"]
+    end
+    subgraph "Gallium3D Interface"
+        ps["pipe_screen\n(capability oracle, resource factory)"]
+        pc["pipe_context\n(command recorder, state machine)"]
+        cso["CSO Cache\n(cso_context)"]
+    end
+    subgraph "Backends (src/gallium/drivers/)"
+        radeonsi["radeonsi\n(AMD)"]
+        iris["iris\n(Intel)"]
+        llvmpipe["llvmpipe\n(software JIT)"]
+        zink["Zink\n(Gallium-to-Vulkan)"]
+        freedreno["freedreno\n(Qualcomm Adreno)"]
+    end
+    GL --> cso
+    rusticl --> pc
+    cso --> pc
+    ps -- "context_create()" --> pc
+    pc --> radeonsi
+    pc --> iris
+    pc --> llvmpipe
+    pc --> zink
+    pc --> freedreno
+```
+
 ---
 
 ## 1. Design Goals and History
@@ -51,6 +80,23 @@ The terminology around Gallium has shifted. The Mesa source tree uses `state_tra
 ## 2. The `pipe_screen` Interface
 
 The `pipe_screen` object represents the context-independent part of a Gallium device. There is one `pipe_screen` per physical GPU (or per GPU instance in a multi-GPU system). It is created when the Mesa driver is first loaded, and it persists until the last reference to it is dropped. Its source definition lives in `src/gallium/include/pipe/p_screen.h`.
+
+```mermaid
+graph LR
+    subgraph "pipe_screen (p_screen.h)"
+        name["get_name()\nget_vendor()"]
+        caps["get_param()\nget_paramf()\nget_shader_param()\nget_compute_param()"]
+        fmt["is_format_supported()"]
+        res["resource_create()\nresource_create_with_modifiers()\nresource_from_handle()\nresource_get_handle()"]
+        ctx["context_create()"]
+        fence["fence_reference()\nfence_finish()"]
+    end
+    DRI["DRI Frontend\n(pipe_driver_create())"] -- "creates" --> name
+    caps -- "gates GL extensions\nand feature levels" --> GL["GL state tracker"]
+    fmt -- "format/binding queries" --> GL
+    res -- "returns pipe_resource*" --> pc["pipe_context"]
+    ctx -- "returns pipe_context*" --> pc
+```
 
 ### Lifecycle and Entry Point
 
@@ -187,6 +233,18 @@ The `pipe_context` state machine is structured around the CSO model (see Section
 
 The split between `bind_sampler_states()` and `set_sampler_views()` reflects an important architectural point. A sampler encodes how to read from a texture (filtering, wrapping), while a sampler view encodes which texture to read from and how to interpret its format. This separation lets the driver precompile sampler state into hardware registers independently of texture binding, which matters when a single sampler is applied to many different textures.
 
+```mermaid
+graph TD
+    pc["pipe_context"]
+    pc --> shaders["Shaders\nbind_vs_state()\nbind_fs_state()\nbind_gs_state()\nbind_tcs_state()\nbind_tes_state()\nbind_cs_state()"]
+    pc --> rast["Rasteriser\nbind_rasterizer_state()"]
+    pc --> dsa["Depth/Stencil/Alpha\nbind_depth_stencil_alpha_state()"]
+    pc --> blend["Blend\nbind_blend_state()"]
+    pc --> velem["Vertex Elements\nbind_vertex_elements_state()"]
+    pc --> samp["Samplers\nbind_sampler_states()\nset_sampler_views()"]
+    samp --> sv["pipe_sampler_view\n(wraps pipe_resource\nwith swizzle + view format)"]
+```
+
 ### Draw Calls
 
 The primary draw entry point is `draw_vbo()`. It takes a `pipe_draw_info` struct and an optional `pipe_draw_indirect_info` struct:
@@ -292,6 +350,27 @@ Shader CSO creation is where Mesa's disk shader cache (see Chapter 12) integrate
 
 The interaction between the CSO cache (which avoids redundant pipe-level state creation within a session) and the disk cache (which persists compiled shaders across sessions) forms a two-level cache for shader compilation. A cold-start application that has never run before pays full NIR-to-ISA compilation cost and a disk-cache write. A warm-start on the same hardware pays only a disk-cache read and the driver-internal work of reconstructing the opaque handle from the binary. A warm-start where the same shader was already used in the same session pays only the `cso_context` hash lookup.
 
+```mermaid
+graph TD
+    glcall["GL state change\n(e.g. glBlendFunc)"] --> cso_set["cso_set_*()\nin cso_context"]
+    cso_set --> hash{"hash table\nlookup"}
+    hash -- "cache hit" --> bind["pipe_context::bind_*_state()\n(pointer store + dirty bit)"]
+    hash -- "cache miss" --> create["pipe_context::create_*_state()\n(driver encodes hardware state)"]
+    create --> insert["insert into\ncso_context hash map"]
+    insert --> bind
+
+    subgraph "Shader CSO two-level cache"
+        glshader["glCompileShader /\nglLinkProgram"] --> st_cache{"st_program.c\nshader variant cache"}
+        st_cache -- "session hit" --> opaque["opaque driver handle"]
+        st_cache -- "session miss" --> disk{"disk_cache\n(src/util/disk_cache.h)"}
+        disk -- "disk hit" --> load["load pre-compiled ISA binary"]
+        disk -- "disk miss" --> nir_compile["NIR-to-ISA compilation\n(LLVM / driver compiler)"]
+        nir_compile --> disk_write["write ISA to disk cache"]
+        disk_write --> opaque
+        load --> opaque
+    end
+```
+
 ---
 
 ## 5. The OpenGL and OpenGL ES Frontends
@@ -311,6 +390,19 @@ The canonical draw call path is one of the most-exercised code paths in any Open
 3. `st_draw_vbo()` constructs a `pipe_draw_info` struct from the GL draw parameters, resolving the GL primitive type to a `pipe_prim_type`, encoding the first vertex index and count.
 4. Before the draw, `st_validate_state()` is called to flush any dirty GL state to the `pipe_context`. This is where pending GL state changes — a newly bound texture, a changed blend mode — get translated into pipe state and pushed through the CSO cache.
 5. `pipe_context::draw_vbo()` is called with the `pipe_draw_info`.
+
+```mermaid
+graph TD
+    gl["glDrawArrays(mode, first, count)"]
+    gl --> mesa["_mesa_DrawArrays()\nsrc/mesa/main/draw.c\n(validate params, check framebuffer)"]
+    mesa --> st["st_draw_vbo()\nsrc/mesa/state_tracker/st_draw.c"]
+    st --> validate{"st->dirty?"}
+    validate -- "yes" --> sv["st_validate_state()\n(flush dirty GL state\nthrough CSO cache to pipe_context)"]
+    sv --> build["build pipe_draw_info\nfrom GL draw parameters"]
+    validate -- "no" --> build
+    build --> draw["pipe_context::draw_vbo()\nwith pipe_draw_info"]
+    draw --> backend["Backend driver\n(radeonsi / iris / llvmpipe / ...)"]
+```
 
 The state validation step (step 4) is where most of the per-draw-call work concentrates for state-heavy workloads. Each dirty flag in the `st_context` corresponds to a specific type of GL state that must be re-translated and re-bound via the `cso_context`. For a workload that changes only the transformation matrices (constant buffer update) with each draw, `st_validate_state()` will touch only the constant buffer path and return quickly. For a workload that changes shader, texture bindings, and blend state with every draw — as might occur in a 2D UI rendering loop — every dirty category triggers a `cso_set_*` call.
 
@@ -503,26 +595,42 @@ By 2024, rusticl had achieved OpenCL 3.0 conformance on Intel 12th-generation ha
 
 The use of Rust in rusticl is significant beyond the language choice itself. Rust's ownership model eliminates entire classes of use-after-free and double-free bugs that have historically appeared in both OpenCL implementations and GPU driver code. The Mesa project's decision to admit Rust as a first-class implementation language, starting with rusticl, signals an ongoing shift in how infrastructure software at this level is written.
 
+```mermaid
+graph TD
+    cl["OpenCL application\n(clEnqueueNDRangeKernel)"]
+    cl --> rusticl["rusticl frontend\nsrc/gallium/frontends/rusticl/\n(written in Rust)"]
+    rusticl --> clc["Mesa clc\n(OpenCL C / SPIR-V → NIR)"]
+    clc --> nir_passes["NIR compute\noptimisation passes"]
+    nir_passes --> cs_state["pipe_context::create_cs_state()\n(pipe_compute_state with NIR)"]
+    rusticl --> grid["pipe_context::launch_grid()\n(pipe_grid_info: block/grid dims)"]
+    rusticl --> mem["pipe_resource objects\n(OpenCL memory objects)"]
+    rusticl --> queue["pipe_context\n(per OpenCL command queue)"]
+    cs_state --> backend["Gallium Backend\n(iris / radeonsi / freedreno / ...)"]
+    grid --> backend
+```
+
 ### Zink: OpenGL over Vulkan
 
 Zink (`src/gallium/drivers/zink/`) is a Gallium backend — not a frontend — that translates Gallium pipe calls into Vulkan API calls. This makes it a backend from Gallium's perspective but a frontend from Vulkan's perspective: it sits between the OpenGL state tracker and a Vulkan driver.
 
 The motivation for Zink is threefold. First, it enables OpenGL on hardware or platforms where a Vulkan driver exists but a native OpenGL driver does not. Apple Silicon Macs, for example, do not have a native Mesa OpenGL driver; Zink over MoltenVK (which translates Vulkan to Metal) provides one. Second, it serves as a correctness reference: any Gallium state that causes correct rendering through Zink by definition maps correctly to Vulkan semantics, which can help isolate whether a rendering bug is in the frontend (the GL state tracker) or the backend. Third, it provides a way to get OpenGL support "for free" on any new hardware for which a Vulkan driver is written first.
 
-```
-Application (glDraw*)
-      |
-      v
- GL state tracker (src/mesa/state_tracker/)
-      |  pipe_context::draw_vbo()
-      v
- Zink (src/gallium/drivers/zink/)
-      |  vkCmdDraw()
-      v
- Vulkan driver (RADV, ANV, Turnip, etc.)
-      |  DRM ioctls
-      v
- Kernel DRM / hardware
+```mermaid
+graph TD
+    app["Application\n(glDraw*)"]
+    app --> glt["GL state tracker\nsrc/mesa/state_tracker/"]
+    glt -- "pipe_context::draw_vbo()" --> zink["Zink\nsrc/gallium/drivers/zink/\n(zink_context)"]
+    zink -- "vkCmdDraw()\nvkCmdDrawIndexed()" --> vkdrv["Vulkan driver\n(RADV, ANV, Turnip, etc.)"]
+    vkdrv -- "DRM ioctls" --> kdrm["Kernel DRM / hardware"]
+
+    subgraph "Zink translations"
+        zink_sh["create_vs_state()\ncreate_fs_state()\n→ NIR-to-SPIR-V\n(nir_to_spirv)"]
+        zink_fb["set_framebuffer_state()\n→ Vulkan render passes\nand framebuffers"]
+        zink_fl["flush()\n→ vkQueueSubmit"]
+    end
+    zink --> zink_sh
+    zink --> zink_fb
+    zink --> zink_fl
 ```
 
 The Zink `pipe_context` (`zink_context`, derived from `pipe_context`) translates each pipe call to the Vulkan equivalent. `create_vs_state()` and `create_fs_state()` receive NIR and compile it to SPIR-V using Mesa's `nir_to_spirv` pass (in `src/compiler/spirv/`). `draw_vbo()` records a `vkCmdDraw` or `vkCmdDrawIndexed` into a Vulkan command buffer. `set_framebuffer_state()` manages Vulkan render passes and framebuffers. `flush()` submits the Vulkan command buffer via `vkQueueSubmit`.

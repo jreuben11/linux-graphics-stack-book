@@ -64,6 +64,21 @@ OptiX exposes hardware ray tracing as a programmable pipeline that layers on top
 
 The comparison to Vulkan KHR ray tracing (Ch56) is instructive: both use the same five-stage pipeline model (ray generation → traversal → intersection/any-hit → closest-hit/miss), and both BVH types produce hardware-traversable data structures over the same Turing RT-core hardware. OptiX, however, skips the Vulkan driver layer entirely and communicates with the RT hardware through the CUDA driver, enabling lower latency pipeline changes and access to pre-standardisation features such as Cooperative Vectors and the Clusters API.
 
+```mermaid
+graph TD
+    App["Application\n(CUDA C++)"]
+    OptiX["OptiX Runtime\n(libnvoptix.so)"]
+    CUDA["CUDA Driver\n(libcuda.so)"]
+    RT["RT Cores\n(BVH traversal / triangle intersection)"]
+    SM["SM Cores\n(programmable shader stages)"]
+
+    App --> OptiX
+    OptiX --> CUDA
+    CUDA --> RT
+    CUDA --> SM
+    OptiX -. "skips" .-> VK["Vulkan Driver Layer"]
+```
+
 **Version timeline:**
 
 | Version | Date | Key additions | Min driver |
@@ -122,6 +137,22 @@ OPTIX_CHECK(optixDeviceContextGetProperty(context,
 ## 4. Shader Compilation Pipeline: NVRTC → PTX / OptiX-IR → Module
 
 OptiX shaders are written in CUDA C++ annotated with OptiX entry-point prefixes (`__raygen__`, `__closesthit__`, etc.). The compilation path described in Ch66 for NVRTC applies here in full; OptiX adds its own IR format and module creation layer on top.
+
+```mermaid
+graph LR
+    Src["CUDA C++ Source\n(.cu shader file)"]
+    NVRTC["NVRTC\n(nvrtcCompileProgram)"]
+    IR["OptiX-IR / PTX\n(binary or text)"]
+    Mod["OptixModule\n(optixModuleCreate)"]
+    PG["OptixProgramGroup\n(optixProgramGroupCreate)"]
+    Pipe["OptixPipeline\n(optixPipelineCreate)"]
+
+    Src --> NVRTC
+    NVRTC -- "--optix-ir" --> IR
+    IR --> Mod
+    Mod --> PG
+    PG --> Pipe
+```
 
 ### 4.1 NVRTC Compilation
 
@@ -226,7 +257,22 @@ OptiX 9 defines six shader types. Their roles map closely to the Vulkan KHR ray 
 | Direct callable | `__direct_callable__` | Subroutine callable from any shader; cannot call `optixTrace` | `VK_SHADER_STAGE_CALLABLE_BIT_KHR` |
 | Continuation callable | `__continuation_callable__` | Like direct callable but may call `optixTrace`/`optixTraverse` | `VK_SHADER_STAGE_CALLABLE_BIT_KHR` |
 
-Shaders are packaged into `OptixProgramGroup` objects before pipeline linking:
+Shaders are packaged into `OptixProgramGroup` objects before pipeline linking. The diagram below shows how shader types combine into the three program group kinds recognised by OptiX:
+
+```mermaid
+graph TD
+    subgraph "OptixProgramGroup kinds"
+        RG["OPTIX_PROGRAM_GROUP_KIND_RAYGEN\n(__raygen__)"]
+        MS["OPTIX_PROGRAM_GROUP_KIND_MISS\n(__miss__)"]
+        HG["OPTIX_PROGRAM_GROUP_KIND_HITGROUP\n(__closesthit__ + optional __anyhit__ + optional __intersection__)"]
+        DC["OPTIX_PROGRAM_GROUP_KIND_CALLABLES\n(__direct_callable__ / __continuation_callable__)"]
+    end
+    Pipe["OptixPipeline\n(optixPipelineCreate)"]
+    RG --> Pipe
+    MS --> Pipe
+    HG --> Pipe
+    DC --> Pipe
+```
 
 ```c
 /* host: program_groups.cpp — raygen and hitgroup PG creation */
@@ -319,6 +365,23 @@ Incorrect stack sizing is one of the most common sources of silent GPU faults in
 ## 7. Acceleration Structures: BVH, GAS, IAS, and CLAS
 
 OptiX acceleration structures are hardware BVHs stored in device memory as opaque blobs. The API distinguishes three tiers: the Geometry Acceleration Structure (GAS, analogous to Vulkan's BLAS), the Instance Acceleration Structure (IAS, analogous to the TLAS), and the Cluster Acceleration Structure (CLAS), a new tier in OptiX 9.0 for massive dynamic geometry.
+
+```mermaid
+graph TD
+    IAS["IAS\n(Instance Acceleration Structure / TLAS)\noptixAccelBuild with OPTIX_BUILD_INPUT_TYPE_INSTANCES"]
+    GAS["GAS\n(Geometry Acceleration Structure / BLAS)\noptixAccelBuild"]
+    CLAS["CLAS\n(Cluster Acceleration Structure)\noptixClusterAccelBuild — OptiX 9.0+"]
+
+    Inst["OptixInstance array\n(transform + sbtOffset + traversableHandle)"]
+    Prim["Primitive arrays\n(triangles / curves / spheres / custom)"]
+    Clust["Cluster templates\n(general triangles or M×N grids)"]
+
+    IAS --> Inst
+    Inst --> GAS
+    GAS --> Prim
+    GAS -. "CLAS embedded as custom primitive" .-> CLAS
+    CLAS --> Clust
+```
 
 ### 7.1 Geometry Acceleration Structure (GAS)
 
@@ -556,6 +619,23 @@ sbt.hitgroupRecordStrideInBytes = sizeof(HitgroupRecord);
 sbt.hitgroupRecordCount       = numGeometries * NUM_RAY_TYPES;
 ```
 
+**SBT record structure.** Each SBT record consists of a 32-byte opaque header written by `optixSbtRecordPackHeader` followed by user data. The `OptixShaderBindingTable` struct assembles raygen, miss, and hitgroup records into a single table indexed by traversal outcomes:
+
+```mermaid
+graph LR
+    SBT["OptixShaderBindingTable"]
+    RR["raygenRecord\n(1 record)"]
+    MR["missRecordBase\n(NUM_RAY_TYPES records)"]
+    HR["hitgroupRecordBase\n(numGeometries × NUM_RAY_TYPES records)"]
+
+    SBT --> RR
+    SBT --> MR
+    SBT --> HR
+
+    RR --> RRH["header\n(OPTIX_SBT_RECORD_HEADER_SIZE bytes)"]
+    HR --> HRH["header\n+ MaterialData\n(user data, 16-byte aligned)"]
+```
+
 **Hit group indexing formula.** The hardware computes the hit record index as:
 
 ```text
@@ -672,6 +752,19 @@ Shader Execution Reordering reduces warp divergence — the primary performance 
 
 The mechanism splits `optixTrace` into two phases: a traversal phase (`optixTraverse`) that records the "hit object" without immediately invoking the shader, and a shading phase (`optixInvoke`) that executes the shader. Between them, `optixReorder` acts as a software barrier that shuffles warp threads to maximise shader coherence — threads that will execute the same closest-hit shader end up in the same warp.
 
+```mermaid
+graph TD
+    OT["optixTraverse\n(Phase 1: BVH traversal, records hit object,\ndoes NOT invoke shaders)"]
+    OR["optixReorder\n(software barrier: shuffles warp threads\nby hit object type / coherence hint)"]
+    OI["optixInvoke\n(Phase 2: executes closest-hit or miss\non the now-coherent warp)"]
+
+    OT --> OR
+    OR --> OI
+
+    Note1["Minimise live registers\nacross optixReorder boundary"]
+    OR -. "register pressure" .-> Note1
+```
+
 ```c
 /* device: raygen_ser.cu — ray generation with SER */
 extern "C" __global__ void __raygen__ser() {
@@ -743,6 +836,25 @@ OptiX 9 supports six primitive categories:
 Cooperative Vectors is OptiX 9.0's mechanism for executing small neural networks inside any shader program using NVIDIA Tensor Cores. The core operation is a warp-level fused matrix-vector multiply: all 32 threads in a warp simultaneously evaluate the same linear layer on different input vectors, and the system maps this to a single tensor-core matrix-matrix multiply. Successive layers with adjacent weight storage allow the compiler to eliminate inter-layer data shuffle overhead.
 
 This enables **RTX Neural Shaders**: AI models embedded directly in the ray tracing pipeline — for example, neural texture decompression, NeRF-style material encoding, or neural SDF evaluation — without any CUDA kernel launch overhead or CPU/GPU synchronisation. [Source: neural rendering cooperative vectors blog](https://developer.nvidia.com/blog/neural-rendering-in-nvidia-optix-using-cooperative-vectors)
+
+```mermaid
+graph TD
+    Hit["Hit data\n(UV, position, view direction, barycentrics)"]
+    IV["OptixCoopVec input\n(48 × half)"]
+    L1["optixCoopVecMatMul\nLayer 1: 48 → 64 neurons\n(Tensor Core matrix-matrix multiply)"]
+    ReLU["optixCoopVecMax\n(ReLU activation)"]
+    L2["optixCoopVecMatMul\nLayer 2: 64 → 16 neurons"]
+    Out["Output\n(albedo, roughness, metallic, emission)"]
+    W["Device-side weight buffer\n(optixCoopVecMatrixConvert layout)"]
+
+    Hit --> IV
+    IV --> L1
+    W -- "layer1WeightOffset\n+ layer1BiasOffset" --> L1
+    L1 --> ReLU
+    ReLU --> L2
+    W -- "layer2WeightOffset\n+ layer2BiasOffset" --> L2
+    L2 --> Out
+```
 
 ### 12.1 Device-side API
 
@@ -826,6 +938,24 @@ The Dr.Jit Python framework exposes Cooperative Vectors through `.CoopVec` types
 ### 13.1 Architecture and Model Kinds
 
 The OptiX AI denoiser runs a convolutional neural network trained on tens of thousands of path-traced renders. It is bundled with the NVIDIA driver (since R435) and requires no separate download; the model weights are stored in the driver binary. The denoiser runs on CUDA and uses Tensor Cores where available. [Source: OptiX denoiser overview](https://developer.nvidia.com/optix-denoiser)
+
+```mermaid
+graph TD
+    DC["optixDenoiserCreate\n(select OptixDenoiserModelKind)"]
+    CM["optixDenoiserComputeMemoryResources\n(query state + scratch sizes)"]
+    DS["optixDenoiserSetup\n(upload weights, fix resolution)"]
+    CI["optixDenoiserComputeIntensity\n(HDR normalisation factor)"]
+    GL["OptixDenoiserGuideLayer\n(albedo + normal + flow motion vectors)"]
+    DL["OptixDenoiserLayer\n(input beauty + output + previousOutput)"]
+    DI["optixDenoiserInvoke\n(run CNN on CUDA stream)"]
+
+    DC --> CM
+    CM --> DS
+    DS --> CI
+    CI --> DI
+    GL --> DI
+    DL --> DI
+```
 
 The `OptixDenoiserModelKind` enum controls which network variant is used:
 
@@ -922,6 +1052,23 @@ The OptiX temporal denoiser also supports 2× spatial upscaling when `outputInte
 A common architecture for production renderers is: Vulkan rasterises the G-buffer and forward-shading passes, OptiX/CUDA path-traces reflections or global illumination, and Vulkan tone-maps and presents. Achieving this without CPU round-trips requires sharing GPU memory between the two APIs via CUDA external memory and timeline semaphore interop.
 
 The relevant Vulkan extensions are: `VK_KHR_external_memory`, `VK_KHR_external_memory_fd`, `VK_KHR_external_semaphore`, `VK_KHR_external_semaphore_fd`. See Ch25 for the Vulkan-side synchronisation fundamentals.
+
+```mermaid
+graph TD
+    VKR["Vulkan\nG-buffer / forward shading pass\n(rasterisation)"]
+    SHM["Shared linear buffer\n(VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT\n→ cudaImportExternalMemory)"]
+    OPT["OptiX / CUDA\npath tracing + denoising\n(optixLaunch + optixDenoiserInvoke)"]
+    VKC["Vulkan\ntone-map + composite + present"]
+    SEM["Timeline semaphore\n(VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT\n→ cudaImportExternalSemaphore)"]
+
+    VKR -- "signal(timeline, N)" --> SEM
+    SEM -- "cudaWaitExternalSemaphoresAsync" --> OPT
+    VKR -- "copy to linear buffer" --> SHM
+    SHM -- "CUdeviceptr passed to OptiX" --> OPT
+    OPT -- "signal(timeline, N+1)" --> SEM
+    SEM -- "Vulkan waits on N+1" --> VKC
+    OPT -- "denoised output in shared buffer" --> VKC
+```
 
 ### 14.1 Buffer Sharing: Vulkan → CUDA
 

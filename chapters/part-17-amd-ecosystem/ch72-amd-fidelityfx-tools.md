@@ -141,6 +141,38 @@ GLSL shader permutations can be compiled offline by the **FidelityFX Shader Comp
 (FFX-SC)**, packaged as blobs, and embedded in the SDK binary — eliminating all runtime
 shader compilation overhead that plagues naive integrations.
 
+```mermaid
+graph TD
+    subgraph "FidelityFX Effects (sdk/src/components/)"
+        FSR["FSR 3/4 Upscaler\n(fsr3upscaler/)"]
+        CAS["CAS Sharpening\n(cas/)"]
+        SPD["SPD Downsampler\n(spd/)"]
+        SSSR["SSSR Reflections\n(sssr/)"]
+        BRIX["Brixelizer GI\n(brixelizer/)"]
+    end
+
+    subgraph "FfxInterface (ffx_interface.h)"
+        FP["Function Pointer Table\nfpCreatePipeline\nfpScheduleGpuJob\nfpCreateResource\nfpDestroyResource"]
+    end
+
+    subgraph "Backends (sdk/src/backends/)"
+        VK["Vulkan Backend\n(vk/)"]
+        DX12["DX12 Backend\n(dx12/)"]
+    end
+
+    FFXSC["FidelityFX Shader Compiler\n(FFX-SC)\nOffline SPIR-V / DXIL blobs"]
+
+    FSR --> FP
+    CAS --> FP
+    SPD --> FP
+    SSSR --> FP
+    BRIX --> FP
+    FP --> VK
+    FP --> DX12
+    FFXSC -. "pre-compiled blobs" .-> VK
+    FFXSC -. "pre-compiled blobs" .-> DX12
+```
+
 ### 2.3 Vulkan Backend Initialisation
 
 The Vulkan backend ships in `sdk/src/backends/vk/`. Initialising it follows a
@@ -189,6 +221,20 @@ separate `ffx-api/` layer that wraps ML-based upscalers. Its key architectural p
   open SDK 1.1.x Vulkan backend remains the integration path for Linux Vulkan applications
   wishing to use FSR 3 temporal upscaling.
 - **Separate DLLs per effect category**: `amd_fidelityfx_upscaler`, `amd_fidelityfx_framegeneration`.
+
+```mermaid
+graph TD
+    App["Game / Application"]
+    Loader["amd_fidelityfx_loader\n(.dll / .so shim)"]
+    Upscaler["amd_fidelityfx_upscaler\n(FSR 4 neural weights)"]
+    FrameGen["amd_fidelityfx_framegeneration\n(Frame generation)"]
+    SDK1["SDK 1.1.x\nVulkan Backend\n(FSR 3.1 temporal)"]
+
+    App -- "ffxCreateContext\n(ffx-api)" --> Loader
+    Loader -- "runtime dlopen" --> Upscaler
+    Loader -- "runtime dlopen" --> FrameGen
+    App -. "Linux Vulkan\n(no SDK 2.x Vulkan yet)" .-> SDK1
+```
 
 [Source: AMD FidelityFX SDK 2.0 launch blog](https://gpuopen.com/learn/amd-fidelityfx-sdk-2-0/)
 
@@ -372,6 +418,20 @@ grain or noise added before FSR will be amplified during temporal accumulation o
 reconstruction. The output is in the same colorspace as the input (linear HDR unless
 `FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE` is set).
 
+```mermaid
+graph LR
+    Geo["Geometry Pass\n(render resolution)"]
+    SSAO["Screen-Space Effects\n(SSAO, SSR, motion blur\non opaque geometry)"]
+    FSR4["FSR 4 Dispatch\n(ffxDispatchDescUpscale)\nrender res → display res"]
+    Post["Post-Processing\n(tonemapping, film grain,\nchromatic aberration)"]
+    Out["Final Output\n(display resolution)"]
+
+    Geo --> SSAO
+    SSAO --> FSR4
+    FSR4 --> Post
+    Post --> Out
+```
+
 ---
 
 ## 4. Other FidelityFX Effects
@@ -503,6 +563,32 @@ The GI algorithm runs in two layers:
   this cache. Outputs are denoised indirect diffuse and specular at render resolution,
   ready to composite into the final lighting pass.
 
+```mermaid
+graph TD
+    Geo["Scene Geometry\n(vertex / index buffers)"]
+
+    subgraph "Brixelizer (lower layer)"
+        Cascade["SDF Cascades\n(64×64×64 voxel grids\ncentred on camera)"]
+        Brick["Brick SDF Patches\n(per-voxel 3D SDF)"]
+        Cascade --> Brick
+    end
+
+    Geo -- "GPU stream\n(add/remove geometry)" --> Cascade
+
+    subgraph "Brixelizer GI (upper layer)"
+        RayTrace["Ray Tracing\nagainst SDF Cascade"]
+        RadCache["Radiance Cache\n(spherical harmonics\nper valid brick)"]
+        ScreenProbes["Screen Probes\n(sample radiance cache)"]
+        Denoiser["Denoised Output\n(indirect diffuse + specular\nat render resolution)"]
+        RayTrace --> RadCache
+        RadCache --> ScreenProbes
+        ScreenProbes --> Denoiser
+    end
+
+    Brick -- "SDF intersection" --> RayTrace
+    Denoiser --> Lighting["Final Lighting Pass\n(composite GI)"]
+```
+
 On RDNA hardware, Brixelizer GI selects SM 6.6 wave operations when available, falling back
 to SM 6.0 wave ops for portability on older hardware and non-AMD GPUs:
 
@@ -553,6 +639,23 @@ AMF remains important on Windows and for streaming applications (OBS, HandBrake)
 multiple platforms.
 
 AMF is structured around a factory/component model implemented as a COM-like interface in C++:
+
+```mermaid
+graph TD
+    DSO["libamfrt64.so\n(AMF runtime, loaded via dlopen)"]
+    Factory["AMFFactory\n(AMFInit entry point)"]
+    Context["AMFContext\n(GPU device + allocator\nInitVulkan / InitDX12)"]
+    Encoder["AMFComponent\n(AMFVideoEncoderHW_HEVC\nor H264 / AV1)"]
+    Surface["AMFSurface\n(GPU memory surface\nAMF_MEMORY_VULKAN)"]
+    Buffer["AMFBuffer\n(encoded NAL output)"]
+
+    DSO -- "AMFInit_Fn" --> Factory
+    Factory -- "CreateContext" --> Context
+    Factory -- "CreateComponent" --> Encoder
+    Context -- "AllocSurface" --> Surface
+    Surface -- "SubmitInput" --> Encoder
+    Encoder -- "QueryOutput" --> Buffer
+```
 
 ```cpp
 // amf/public/include/core/Factory.h
@@ -644,20 +747,23 @@ timing granularity. It is open source, hosted at
 
 RGP consists of two separate tools that communicate via the **Radeon Developer Panel (RDP)**:
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Application (Vulkan / DX12 / OpenCL / HIP)                     │
-│    │                                                              │
-│    ▼                                                              │
-│  Driver (amdgpu UMD / AMDVLK / RADV)                            │
-│    │  ◄──── RDP capture trigger (SIGPIPE/socket) ────────────────┤
-│    │        writes SQTT token stream to GPU-resident buffer       │
-│    ▼                                                              │
-│  .rgp capture file (SQTT data + counter blocks + timing)         │
-└──────────────────────────────────────────────────────────────────┘
-                    │
-                    ▼
-        RGP GUI (Qt5, reads .rgp file, renders timeline)
+```mermaid
+graph TD
+    App["Application\n(Vulkan / DX12 / OpenCL / HIP)"]
+    Driver["Driver\n(amdgpu UMD / AMDVLK / RADV)"]
+    SQTT["SQTT Token Stream\n(GPU-resident buffer)"]
+    RGPFile[".rgp Capture File\n(SQTT data + counter blocks + timing)"]
+    RDS["Radeon Developer Service\n(RDS daemon, local socket)"]
+    RDP["Radeon Developer Panel\n(RDP — capture trigger)"]
+    RGPGUI["RGP GUI\n(Qt5 timeline viewer)"]
+
+    App --> Driver
+    Driver -- "writes" --> SQTT
+    SQTT --> RGPFile
+    RDP -- "capture trigger\n(SIGPIPE/socket)" --> RDS
+    RDS -- "capture trigger" --> Driver
+    RGPFile --> RGPGUI
+    RDP -.-> RGPGUI
 ```
 
 On Linux, RDP connects to the driver via the **Radeon Developer Service (RDS)** daemon which
@@ -866,6 +972,22 @@ RenderDoc uses an **in-process capture layer** model. On Linux with Vulkan:
    (texture data, buffer data) are stored as separate chunks in the "initial contents"
    section.
 
+```mermaid
+graph TD
+    App["Application\n(Vulkan calls)"]
+    Layer["VK_LAYER_RENDERDOC_Capture\n(in-process, via LD_PRELOAD)"]
+    RealVK["Real vkQueueSubmit\n(driver)"]
+    Trigger["Capture Trigger\n(F12 hotkey / GUI / in-app API)"]
+    RDC[".rdc File\n(chunk-based: API calls +\ninitial contents)"]
+    RDCGUI["RenderDoc GUI\n(replay + state inspection)"]
+
+    App -- "vkQueueSubmit\nvkQueuePresentKHR\nvkAllocateMemory" --> Layer
+    Layer -- "pass-through\n(background mode)" --> RealVK
+    Trigger -- "active capture mode" --> Layer
+    Layer -- "serialise frame" --> RDC
+    RDC --> RDCGUI
+```
+
 [Source: RenderDoc architecture documentation](https://renderdoc.org/docs/behind_scenes/how_works.html)
 
 ### 8.2 Vulkan Capture Path
@@ -986,13 +1108,20 @@ FidelityFX effects that target Vulkan run on RADV (the Mesa open-source AMD Vulk
 without any special configuration. The SDK's pre-compiled SPIR-V shader blobs are standard
 SPIR-V 1.6, processed by RADV's shader compiler pipeline:
 
-```
-FidelityFX SPIR-V blob
-    → RADV vkCreateShaderModule
-    → nir_from_spirv() (Mesa NIR frontend)
-    → ACO shader compiler (aco::select_program, Ch15)
-    → RDNA ISA binary
-    → amdgpu kernel driver (executes via PM4 packets)
+```mermaid
+graph TD
+    Blob["FidelityFX SPIR-V Blob\n(SPIR-V 1.6, pre-compiled by FFX-SC)"]
+    Module["RADV vkCreateShaderModule"]
+    NIR["nir_from_spirv()\n(Mesa NIR frontend)"]
+    ACO["ACO Shader Compiler\n(aco::select_program — Ch15)"]
+    ISA["RDNA ISA Binary"]
+    Kernel["amdgpu Kernel Driver\n(executes via PM4 packets)"]
+
+    Blob --> Module
+    Module --> NIR
+    NIR --> ACO
+    ACO --> ISA
+    ISA --> Kernel
 ```
 
 The ACO compiler's instruction scheduling and register allocation are generally well-tuned for
@@ -1028,11 +1157,18 @@ is in the per-ASIC GFX pipeline headers.
 RMV's capture mechanism hooks into the AMD UMD memory management callbacks. In the open-source
 stack (Mesa/RADV), allocations flow through:
 
-```
-vkAllocateMemory
-  → radv_alloc_memory() (src/amd/vulkan/radv_device_memory.c)
-  → amdgpu_bo_alloc() (libdrm_amdgpu)
-  → DRM_AMDGPU_GEM_CREATE ioctl (kernel)
+```mermaid
+graph TD
+    VkAlloc["vkAllocateMemory"]
+    RadVAlloc["radv_alloc_memory()\n(src/amd/vulkan/radv_device_memory.c)"]
+    LibDRM["amdgpu_bo_alloc()\n(libdrm_amdgpu)"]
+    Ioctl["DRM_AMDGPU_GEM_CREATE ioctl\n(kernel)"]
+    RDS["RDS Intercept\n(libdrm/UMD boundary)\n→ .rmv trace event"]
+
+    VkAlloc --> RadVAlloc
+    RadVAlloc --> LibDRM
+    LibDRM --> Ioctl
+    LibDRM -- "callback intercept" --> RDS
 ```
 
 RMV via RDS intercepts at the libdrm/UMD boundary, so it captures allocations from both

@@ -58,6 +58,35 @@ For the data-plane types that must be allocated and freed at extremely high freq
 
 [Source](https://gstreamer.freedesktop.org/documentation/gstreamer/gstminiobject.html)
 
+```mermaid
+graph TD
+    GObject["GObject\n(GLib type system)"]
+    GstObject["GstObject\n(name, parent ptr, lock)"]
+    GstElement["GstElement\n(pads, state machine, properties)"]
+    GstPad["GstPad\n(source or sink connection point)"]
+    GstClock["GstClock"]
+    GstBus["GstBus"]
+    GstBin["GstBin\n(container element)"]
+    GstPipeline["GstPipeline\n(shared clock, bus routing)"]
+
+    GstMiniObject["GstMiniObject\n(atomic refcount, COW)\nnot GObject-derived"]
+    GstBuffer["GstBuffer\n(pts, dts, duration, GstMemory list)"]
+    GstMemory["GstMemory\n(allocator, offset, size)"]
+    GstCaps["GstCaps\n(GstStructure set + GstCapsFeatures)"]
+
+    GObject --> GstObject
+    GstObject --> GstElement
+    GstObject --> GstPad
+    GstObject --> GstClock
+    GstObject --> GstBus
+    GstElement --> GstBin
+    GstBin --> GstPipeline
+
+    GstMiniObject --> GstBuffer
+    GstMiniObject --> GstMemory
+    GstMiniObject --> GstCaps
+```
+
 The consequence for element developers: before modifying a `GstBuffer` received from upstream, always call `gst_buffer_make_writable()`. If the refcount is already 1, it returns the same pointer; otherwise it performs a deep copy. Failing to do so corrupts shared data in tee'd pipelines.
 
 ### GstElement
@@ -342,6 +371,30 @@ DMABuf `GstMemory` objects carry `GST_MEMORY_FLAG_NOT_MAPPABLE` — they cannot 
 
 ### GstAllocator and GstDmaBufAllocator
 
+```mermaid
+graph TD
+    GstBuffer["GstBuffer\n(GstMiniObject, pts/dts/duration)"]
+    GstMem1["GstMemory\n(plane 0 fd)"]
+    GstMem2["GstMemory\n(plane 1 fd)"]
+    GstVideoMeta["GstVideoMeta\n(per-plane stride + offset)"]
+    GstBufferPool["GstBufferPool\n(recycles GstBuffer objects)"]
+    GstAllocator["GstAllocator\n(abstract factory)"]
+    SystemMem["SystemMemory allocator"]
+    DmaBufAlloc["GstDmaBufAllocator\n(wraps DMA-buf fds)"]
+    VaDmaBufAlloc["GstVaDmabufAllocator\n(exports VA surfaces as fds)"]
+
+    GstBuffer -- "holds list of" --> GstMem1
+    GstBuffer -- "holds list of" --> GstMem2
+    GstBuffer -- "carries" --> GstVideoMeta
+    GstBufferPool -- "recycles" --> GstBuffer
+    GstAllocator --> SystemMem
+    GstAllocator --> DmaBufAlloc
+    DmaBufAlloc --> VaDmaBufAlloc
+    VaDmaBufAlloc -- "backed by" --> GstBufferPool
+    GstMem1 -- "allocator back-ptr" --> DmaBufAlloc
+    GstMem2 -- "allocator back-ptr" --> DmaBufAlloc
+```
+
 ```c
 /* gstreamer/gstallocator.h */
 GstAllocator *gst_allocator_find (const gchar *name);
@@ -458,7 +511,30 @@ The shared library `libgstva-1.0` (moved from gst-plugins-bad internals to a pro
 - **`GstVaSurfaceAllocator`** — wraps `VASurfaceID`; one `GstMemory` per buffer, stays in GPU memory
 - **`GstVaDmabufAllocator`** — exports VA surfaces as DMA-buf fds for cross-element sharing
 
-Multiple elements on the same GPU share a single `GstVaDisplay` instance through **GstContext** negotiation. When pipeline enters `GST_STATE_READY`, elements broadcast a `need-context` bus message; another element (or the application) responds with `have-context` carrying the display object. Multi-GPU pipelines distinguish devices using the `device-path` property:
+Multiple elements on the same GPU share a single `GstVaDisplay` instance through **GstContext** negotiation.
+
+```mermaid
+graph TD
+    GstVaDisplay["GstVaDisplay\n(abstract base, libgstva-1.0)"]
+    GstVaDisplayDRM["GstVaDisplayDRM\n(VADisplay from /dev/dri/renderD*)"]
+    GstVaDisplayWrapped["GstVaDisplayWrapped\n(wraps application VADisplay)"]
+    GstContext["GstContext\n(shared across elements via need-context / have-context)"]
+    GstVaSurfaceAllocator["GstVaSurfaceAllocator\n(VASurfaceID, stays in GPU memory)"]
+    GstVaDmabufAllocator["GstVaDmabufAllocator\n(exports VA surfaces as DMA-buf fds)"]
+    vaDecoder["va decoder element\n(vah264dec, vaav1dec, ...)"]
+    vaPostproc["vapostproc\n(scaling, color conversion)"]
+
+    GstVaDisplay --> GstVaDisplayDRM
+    GstVaDisplay --> GstVaDisplayWrapped
+    GstVaDisplay -- "shared via" --> GstContext
+    GstContext -- "consumed by" --> vaDecoder
+    GstContext -- "consumed by" --> vaPostproc
+    GstVaDisplay --> GstVaSurfaceAllocator
+    GstVaDisplay --> GstVaDmabufAllocator
+    vaDecoder -- "uses" --> GstVaDmabufAllocator
+```
+
+When pipeline enters `GST_STATE_READY`, elements broadcast a `need-context` bus message; another element (or the application) responds with `have-context` carrying the display object. Multi-GPU pipelines distinguish devices using the `device-path` property:
 
 ```c
 /* Route a specific decode element to /dev/dri/renderD129 (second GPU): */
@@ -561,6 +637,20 @@ The `camera-name` property selects among multiple libcamera-enumerated devices.
 ### Adaptive Streaming: dashdemux2 and hlsdemux2
 
 GStreamer 1.22 introduced `AdaptiveDemux2`, a redesigned adaptive bitrate architecture using three threads: a download thread (HTTP fragment fetch via libsoup), a scheduling thread (bitrate estimation and segment selection), and an output thread (pad management and stream switching). [Source](https://gstreamer.freedesktop.org/documentation/additional/design/adaptive-demuxer.html)
+
+```mermaid
+graph LR
+    HTTP["HTTP source\n(libsoup)"]
+    Download["Download thread\n(HTTP fragment fetch)"]
+    Scheduling["Scheduling thread\n(bitrate estimation,\nsegment selection)"]
+    Output["Output thread\n(pad management,\nstream switching)"]
+    Downstream["Downstream elements\n(decoder, sink)"]
+
+    HTTP --> Download
+    Download -- "fragment data" --> Scheduling
+    Scheduling -- "selected segment" --> Output
+    Output -- "demuxed pads" --> Downstream
+```
 
 Current elements: `dashdemux2`, `hlsdemux2`, `mssdemux2`. These replace the older `dashdemux`, `hlsdemux`, `mssdemux` (which are still present but not recommended).
 
@@ -669,10 +759,20 @@ gst-launch-1.0 v4l2src ! 'video/x-raw,format=NV12' ! fdsink fd=1 | \
 
 `ipcpipelinesrc` and `ipcpipelinesink` (from gst-plugins-bad) implement a higher-level IPC mechanism that preserves GStreamer's bus message, query, and event protocol across processes. State changes, caps negotiation, and seek events are serialised and forwarded. This is appropriate when two cooperating GStreamer applications need to function as a single logical pipeline:
 
-```text
-Process A:  source → vah264dec → ipcpipelinesink (socket)
-                                        │
-Process B:          ipcpipelinesrc → waylandsink
+```mermaid
+graph LR
+    subgraph "Process A"
+        src["source element"]
+        dec["vah264dec"]
+        ipcSink["ipcpipelinesink"]
+        src --> dec --> ipcSink
+    end
+    subgraph "Process B"
+        ipcSrc["ipcpipelinesrc"]
+        wlsink["waylandsink"]
+        ipcSrc --> wlsink
+    end
+    ipcSink -- "socket\n(bus msgs, queries,\nevents, caps, seek)" --> ipcSrc
 ```
 
 ### PipeWire: pipewiresrc / pipewiresink
@@ -701,6 +801,26 @@ The base class library (`libgstreamer-base-1.0`) provides three scaffolding clas
 - **`GstBaseSrc`** — for source elements; handles state machine, clock query, live timing, and the pull/push mode split
 - **`GstBaseTransform`** — for filter elements transforming one buffer to one buffer
 - **`GstBaseParser`** — for bytestream parsers that frame raw data into timestamped access units
+
+```mermaid
+graph TD
+    GstElement["GstElement\n(base element class)"]
+    GstBaseSrc["GstBaseSrc\n(state machine, clock query,\nlive timing, push/pull mode)"]
+    GstBaseTransform["GstBaseTransform\n(caps negotiation, buffer allocation,\npassthrough / in-place / transform modes)"]
+    GstBaseParser["GstBaseParser\n(byte-stream framing,\ntimestamp access units)"]
+
+    ConcreteSrc["e.g. v4l2src, libcamerasrc,\nGstMyCamSrc (custom)"]
+    ConcreteTransform["e.g. vapostproc, videoconvert,\nGstMyFilter (custom)"]
+    ConcreteParser["e.g. h264parse, h265parse,\nav1parse, mpegaudioparse"]
+
+    GstElement --> GstBaseSrc
+    GstElement --> GstBaseTransform
+    GstElement --> GstBaseParser
+
+    GstBaseSrc --> ConcreteSrc
+    GstBaseTransform --> ConcreteTransform
+    GstBaseParser --> ConcreteParser
+```
 
 ### GstBaseSrc in Detail
 

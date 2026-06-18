@@ -34,6 +34,26 @@ Contributing to the Linux graphics stack means participating in at least four di
 
 What all four domains share is a set of community norms that underpin the freedesktop.org ecosystem: all design discussion is public, no NDA-gated features can be proposed or reviewed, and protocol extensions must have reference implementations before they can be stabilised. The freedesktop.org infrastructure team provides GitLab, CI runners, mailing list hosting, and the `lore.kernel.org` archiving service (via public-inbox) that makes all mailing list discussions permanently searchable.
 
+```mermaid
+graph LR
+    subgraph "Kernel DRM\n(kernel.org / dri-devel)"
+        KDR["drivers/gpu/drm/\nemail + git send-email / b4"]
+    end
+    subgraph "Mesa\n(gitlab.freedesktop.org/mesa/mesa)"
+        MESA["GitLab MR\n+ marge-bot"]
+    end
+    subgraph "Wayland Protocols\n(gitlab.freedesktop.org/wayland/wayland-protocols)"
+        WP["XML protocol lifecycle\nunstable → staging → stable"]
+    end
+    subgraph "libdrm / wlroots / Compositors"
+        LIB["libdrm · wlroots\nMutter · KWin"]
+    end
+    KDR -. "ioctl ABI" .-> LIB
+    LIB -. "compositor impl" .-> WP
+    MESA -. "WSI / Vulkan ext" .-> WP
+    WP -. "stable protocol" .-> LIB
+```
+
 The community gathers in person at three major annual events. The **X.Org Developer Conference (XDC)** is the primary venue for graphics stack design discussions; talks from 2022 onwards are archived at `indico.freedesktop.org`. The **Linux Plumbers Conference (LPC)** has a dedicated graphics microconference where kernel-level decisions are made. **FOSDEM** in Brussels features a graphics devroom and is particularly useful for cross-project conversations. Many features that appear as merge requests months later were first sketched on a whiteboard at one of these events.
 
 ---
@@ -159,6 +179,41 @@ Understanding the tree hierarchy prevents confusion about where your patch needs
 
 The **merge window** is the critical timing constraint that surprises new contributors. After a new kernel version is tagged (e.g., `v6.10`), Linus opens a two-week merge window during which `drm-next` is pulled. After `-rc1` is tagged, the merge window closes and **no new features** can enter `drm-next` until the next merge window. Bug fixes can still be applied throughout the `-rc` cycle via `drm-fixes`, which targets the current release. The implication: if your feature misses the `drm-next` pull, it must wait an entire kernel cycle (approximately 9–10 weeks) for the next merge window. Maintainers typically require feature patches to be in `drm-next` by `-rc6` of the previous cycle to have enough review time. Plan accordingly.
 
+```mermaid
+graph TD
+    PATCH["Contributor Patch\n(git send-email / b4)"]
+    DL["dri-devel@lists.freedesktop.org\n+ patchwork + lore.kernel.org"]
+    PATCH --> DL
+
+    subgraph "Vendor Driver Trees"
+        AMD["drm-amd-next\n(Alex Deucher)"]
+        INTEL["drm-intel-next\n(Rodrigo Vivi / Tvrtko Ursulin)"]
+        NOU["drm-nouveau-next"]
+    end
+    MISC["drm-misc-next\n(group committer — DRM core,\ndisplay, cross-driver)"]
+
+    DL --> AMD
+    DL --> INTEL
+    DL --> NOU
+    DL --> MISC
+
+    NEXT["drm-next\n(Dave Airlie)"]
+    AMD --> NEXT
+    INTEL --> NEXT
+    NOU --> NEXT
+    MISC --> NEXT
+
+    LN["linux-next\n(Stephen Rothwell)"]
+    NEXT --> LN
+
+    LINUS["Linus master\n(merge window only)"]
+    LN --> LINUS
+
+    FIXES["drm-fixes\n(bug fixes during -rc cycle)"]
+    DL -. "bug fix" .-> FIXES
+    FIXES --> LINUS
+```
+
 ### Commit Message Format
 
 A correct DRM kernel commit message is critical; maintainers reject patches for format errors before reviewing the code itself. Here is a complete example:
@@ -248,6 +303,25 @@ Mesa's contribution model is entirely GitLab-based. There is no email patch subm
 6. Once `Reviewed-by` tags appear in the MR and CI passes, assign the MR to `@marge-bot`.
 
 The `@marge-bot` pseudo-user is the sole merge mechanism for Mesa. Direct pushes to `main` are forbidden and will trigger a CI block. `marge-bot` rebases the MR on top of `main`, reruns CI, and merges if everything passes. It automatically adds `Part-of: <MR-URL>` trailers to all commits in the series when merging, which makes it easy to find all commits from the same MR later.
+
+```mermaid
+graph TD
+    FORK["Personal fork\n(gitlab.freedesktop.org/<you>/mesa)"]
+    BRANCH["Feature branch\npushed to fork"]
+    MR["Merge Request\ntargeting main"]
+    CI["Mesa CI\n(build + hardware-in-the-loop)"]
+    REVIEW["Reviewer approvals\n(Reviewed-by tags in MR)"]
+    MARGE["@marge-bot\n(rebase + re-run CI + merge)"]
+    MAIN["mesa/mesa main"]
+
+    FORK --> BRANCH
+    BRANCH --> MR
+    MR --> CI
+    CI -- "pass" --> REVIEW
+    REVIEW -- "assign to @marge-bot" --> MARGE
+    MARGE -- "adds Part-of: trailer" --> MAIN
+    CI -- "fail" --> MR
+```
 
 ### Commit Message Format
 
@@ -370,6 +444,19 @@ The `wayland-protocols` repository at `gitlab.freedesktop.org/wayland/wayland-pr
 **Staging** (`staging/<name>/<name>-v1.xml`): The protocol is under active development with the intent to stabilise. The `_vN` version suffix may be dropped. At least two independent implementations (typically a compositor and a client toolkit) are required before the protocol can advance. This two-implementation rule exists to prevent half-baked designs from being frozen — historical examples exist of protocols that seemed reasonable until a second implementation revealed fundamental ambiguities.
 
 **Stable** (`stable/<name>/<name>-vN.xml`): The protocol API is frozen. Breaking changes are forbidden. New versions may be added alongside the existing version, but the existing `vN` interface must remain valid forever. This is the stage at which application developers can safely depend on the protocol.
+
+```mermaid
+graph LR
+    ISSUE["GitLab Issue\n(use-case description)"]
+    UNSTABLE["Unstable\n(staging/<name>/<name>-unstable-vN.xml)\nexperimental — may change"]
+    STAGING["Staging\n(staging/<name>/<name>-v1.xml)\n≥2 independent implementations required"]
+    STABLE["Stable\n(stable/<name>/<name>-vN.xml)\nAPI frozen forever"]
+
+    ISSUE -- "MR with XML + README\n+ prototype impl" --> UNSTABLE
+    UNSTABLE -- "deprecated path\n(new work goes directly to staging)" --> STAGING
+    ISSUE -- "new work" --> STAGING
+    STAGING -- "two compositor impls\n+ community review" --> STABLE
+```
 
 ### Protocol XML Format
 
@@ -651,6 +738,29 @@ Key structural patterns in the Asahi driver:
 - **`Arc<Mutex<AsahiInner>>`**: shared device state follows Rust's standard interior-mutability pattern; the borrow checker enforces that the lock is held whenever mutable fields are accessed.
 - **Module decomposition**: `driver::` (platform_driver registration and probe/remove lifecycle), `device::` (per-device state), `gpu::` (firmware communication), `alloc::` (GPU memory management). Each module boundary corresponds to a well-defined ownership boundary.
 
+```mermaid
+graph TD
+    subgraph "drivers/gpu/drm/asahi/ (Rust)"
+        DRV["driver::\nplatform_driver registration\nprobe / remove lifecycle"]
+        DEV["device::\nper-device state\nArc<Mutex<AsahiInner>>"]
+        GPU["gpu::\nfirmware communication"]
+        ALLOC["alloc::\nGPU memory management\ntyped arenas wrapping drm_mm"]
+        GEM["gem::Object<AsahiGem>\ndrm::gem::BaseObject trait"]
+    end
+    subgraph "rust/kernel/drm/ (Rust bindings)"
+        DDEV["drm::device::Device<T>"]
+        DGEM["drm::gem::Object<T>"]
+        DDRV["drm::driver::Driver trait"]
+    end
+    DRV --> DEV
+    DEV --> GPU
+    DEV --> ALLOC
+    ALLOC --> GEM
+    DRV -. "impl" .-> DDRV
+    DEV -. "wraps" .-> DDEV
+    GEM -. "wraps" .-> DGEM
+```
+
 Beyond Asahi, two other Rust DRM drivers represent the current state of the art: **Nova** (`drivers/nova/` + `drivers/gpu/drm/nova/`), NVIDIA's clean-sheet Rust driver for Turing+ GPUs using GSP-RM firmware (Linux 6.10+, expanded in Linux 7.2 with Turing bring-up and GPUVM immediate-mode support — see Chapter 10), and **Tyr**, a Rust DRM driver for ARM Mali CSF GPUs receiving parallel improvements in the same Linux 7.2 DRM Rust cycle. Both share the same `rust/kernel/drm/` abstraction layer as Asahi. Nova in particular required upstream additions to the DRM Rust bindings — notably the Higher-Ranked Lifetime Types (HRT) constraint for GPUVM VA handles — that benefit all future Rust DRM driver work.
 
 The driver registration illustrates how Rust replaces the C `struct drm_driver` vtable with a trait:
@@ -861,6 +971,22 @@ Set expectations correctly: response times on mailing lists are measured in days
 ## 8. Cross-Cutting Feature Case Study: HDR Support End to End
 
 HDR support on Linux is the canonical example of a cross-cutting feature: it touches every layer from EDID parsing to application swapchain, requires coordinated API design across kernel, Mesa, and Wayland, and demonstrates the coordination overhead that distinguishes large stack-wide features from single-subsystem patches. The HDR effort began in earnest around 2021 and reached a major milestone in February 2025 when `wp_color_management_v1` was merged into `wayland-protocols`.
+
+```mermaid
+graph TD
+    APP["Application\n(vkSetHdrMetadataEXT\nVK_COLOR_SPACE_HDR10_ST2084_EXT)"]
+    RADV["RADV / Mesa WSI\n(src/vulkan/wsi/wsi_common_wayland.c)\nVK_EXT_hdr_metadata"]
+    WP["wp_color_management_v1\n(wayland-protocols staging)\nwp_color_manager_v1\nwp_color_management_surface_v1"]
+    COMP["Compositor\n(Mutter / KWin / wlroots)\ntone-mapping pipeline"]
+    KMS["DRM Kernel\n(drm_color_mgmt.c)\nhdr_output_metadata connector property"]
+    HW["Display Hardware\nHDMI InfoFrame / DP SDP"]
+
+    APP --> RADV
+    RADV -- "wp_color_management_surface_v1\n_set_color_description" --> WP
+    WP --> COMP
+    COMP -- "drmModeAtomicAddProperty\nhdr_output_metadata blob" --> KMS
+    KMS --> HW
+```
 
 ### Step 1: DRM Colour Management (Kernel)
 

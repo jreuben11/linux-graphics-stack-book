@@ -46,6 +46,44 @@ At the third level sit `nvkm_engine` instances: the GPU execution engines that u
 
 The `nvkm_object` base class is the leaf of the hierarchy — it represents a GPU-side object allocated on behalf of a userspace client, such as a channel, a memory mapping, or a class instance. It is defined in `drivers/gpu/drm/nouveau/include/nvkm/core/object.h`:
 
+```mermaid
+graph TD
+    DRMDriver["DRM Driver Layer\n(nouveau_drm.c)"]
+    Device["nvkm_device\n(one per physical GPU)"]
+    Chip["nvkm_device_chip\n(constructor table per chipset)"]
+
+    subgraph "nvkm_subdev instances (infrastructure)"
+        FB["fb\n(framebuffer controller)"]
+        Instmem["instmem\n(instance memory manager)"]
+        Bus["bus\n(system bus interface)"]
+        MC["mc\n(interrupt controller)"]
+        Top["top\n(hardware topology reader)"]
+    end
+
+    subgraph "nvkm_engine instances (execution engines)"
+        GR["gr\n(graphics/compute)"]
+        CE["ce\n(copy engines)"]
+        NVDEC["nvdec\n(video decode)"]
+        NVENC["nvenc\n(video encode)"]
+    end
+
+    Object["nvkm_object\n(per-client GPU-side object)"]
+
+    DRMDriver --> Device
+    Device --> Chip
+    Device --> FB
+    Device --> Instmem
+    Device --> Bus
+    Device --> MC
+    Device --> Top
+    Device --> GR
+    Device --> CE
+    Device --> NVDEC
+    Device --> NVENC
+    GR --> Object
+    CE --> Object
+```
+
 ### Code Example 1: nvkm_object and nvkm_object_func
 
 ```c
@@ -139,6 +177,40 @@ Falcon processors come in several ISA versions. The original Falcon v0 through v
 ### The nvkm_falcon Abstraction Layer
 
 The abstraction layer lives under `drivers/gpu/drm/nouveau/nvkm/falcon/`. The core is `base.c`, which provides `nvkm_falcon_dma_wr()` and `nvkm_falcon_pio_wr()` for loading firmware blobs into IMEM and DMEM, and the `nvkm_falcon_fw_boot()` function that orchestrates the full boot sequence.
+
+```mermaid
+graph LR
+    LinuxFirmware["linux-firmware\n(nvidia/*.bin blobs)"]
+    RequestFirmware["request_firmware()"]
+    FalconFW["nvkm_falcon_fw\n(firmware image + signatures)"]
+    FalconBase["nvkm_falcon\n(falcon/base.c)"]
+
+    subgraph "Falcon Processors (per-GPU)"
+        PMU["PMU\n(power/clock management)"]
+        GRCTX["GR CTX Falcon\n(context save/restore)"]
+        SEC2["SEC2\n(firmware authentication, Turing+)"]
+        GSP["GSP\n(full GPU firmware, Turing+)"]
+    end
+
+    subgraph "nvkm_falcon_fw_boot() sequence"
+        Reset["reset()"]
+        Setup["setup()\n(apply HS signatures)"]
+        Load["load()\n(DMA IMEM/DMEM)"]
+        Boot["boot()\n(set boot vector, poll mailbox)"]
+    end
+
+    LinuxFirmware --> RequestFirmware
+    RequestFirmware --> FalconFW
+    FalconFW --> FalconBase
+    FalconBase --> PMU
+    FalconBase --> GRCTX
+    FalconBase --> SEC2
+    FalconBase --> GSP
+    FalconBase --> Reset
+    Reset --> Setup
+    Setup --> Load
+    Load --> Boot
+```
 
 ### Code Example 4: Falcon Firmware Boot Sequence
 
@@ -313,6 +385,38 @@ The new NVK-targeted submission path, `DRM_NOUVEAU_EXEC` (merged in Linux 6.6), 
 
 On Kepler and later, channels are not submitted directly to the PBDMA — they are added to a runlist maintained by the FIFO engine, and the FIFO engine schedules channels from that runlist onto PBDMAs. Channels can be grouped into Time-Slice Groups (TSGs), which are the unit of hardware scheduling: the FIFO engine services one TSG at a time, giving it a configurable timeslice before preempting to the next. nvkm models this with `nvkm_runl` (the runlist) and `nvkm_cgrp` (channel group / TSG). Channel preemption on Volta+ (`nvkm_chan_preempt()`) signals the hardware to suspend the currently executing channel and waits for the PBDMA to confirm the channel is idle before proceeding.
 
+```mermaid
+graph TD
+    Userspace["Userspace\n(NVK / Gallium)"]
+
+    subgraph "Legacy path (DRM_NOUVEAU_GEM_PUSHBUF)"
+        PushBuf["drm_nouveau_gem_pushbuf\n(relocations + push entries)"]
+    end
+
+    subgraph "Modern path (DRM_NOUVEAU_EXEC, Linux 6.6+)"
+        ExecIoctl["DRM_NOUVEAU_EXEC\n(pre-mapped GPU virtual addresses)"]
+        SyncObjs["drm_syncobj\n(wait / signal)"]
+    end
+
+    Sched["drm_sched\n(nouveau_sched.c)"]
+    Chan["nvkm_chan\n(hardware channel)"]
+    TSG["nvkm_cgrp\n(TSG / channel group)"]
+    Runl["nvkm_runl\n(FIFO runlist)"]
+    PBDMA["PBDMA unit\n(per-engine, Fermi+)"]
+    Engine["GPU Execution Engine\n(gr / ce / nvdec)"]
+
+    Userspace --> PushBuf
+    Userspace --> ExecIoctl
+    ExecIoctl --> SyncObjs
+    PushBuf --> Sched
+    ExecIoctl --> Sched
+    Sched --> Chan
+    Chan --> TSG
+    TSG --> Runl
+    Runl --> PBDMA
+    PBDMA --> Engine
+```
+
 ---
 
 ## 4. The GPU Scheduler and Fence Handling
@@ -326,6 +430,24 @@ The scheduler infrastructure lives in `drivers/gpu/drm/scheduler/` and is built 
 ### Nouveau's Scheduler Integration
 
 Nouveau's integration point is `drivers/gpu/drm/nouveau/nouveau_sched.c`. The `nouveau_job` structure wraps `drm_sched_job` with nouveau-specific state:
+
+```mermaid
+graph TD
+    Entity["drm_sched_entity\n(one per userspace client)"]
+    Scheduler["drm_gpu_scheduler\n(one per hardware queue)"]
+    Job["drm_sched_job\n(one per GPU work unit)"]
+    NouveauJob["nouveau_job\n(wraps drm_sched_job)"]
+    RunJob["run_job callback\n(writes GPFIFO entries)"]
+    TimedOut["timedout_job callback\n(nouveau_sched_job_timedout)"]
+    Fence["nouveau_fence\n(wraps dma_fence)"]
+
+    Entity -- "queues jobs into" --> Scheduler
+    Scheduler -- "pulls and runs" --> Job
+    Job -- "extended by" --> NouveauJob
+    NouveauJob --> RunJob
+    NouveauJob --> TimedOut
+    RunJob -- "signals on completion" --> Fence
+```
 
 ### Code Example 5: nouveau_job Initialisation
 
@@ -419,6 +541,34 @@ nouveau's TTM integration lives in `drivers/gpu/drm/nouveau/nouveau_ttm.c`. The 
 ### The nouveau_bo Structure and Buffer Object Lifecycle
 
 Every GPU-visible buffer in nouveau is represented by a `nouveau_bo`, defined in `drivers/gpu/drm/nouveau/nouveau_bo.h`, which extends `ttm_buffer_object`. The key fields are `domain` (a bitmask of `NOUVEAU_GEM_DOMAIN_VRAM`, `NOUVEAU_GEM_DOMAIN_GART`, and `NOUVEAU_GEM_DOMAIN_CPU` indicating preferred and acceptable placements), `tile_mode` and `tile_flags` (NVIDIA-specific tiling parameters for render targets and depth buffers), and the `nvkm_mem` backing structure that the nvkm memory manager allocated.
+
+```mermaid
+graph TD
+    NouveauBO["nouveau_bo\n(nouveau_bo.h)"]
+    TTMbo["ttm_buffer_object\n(TTM base class)"]
+    GEMobj["drm_gem_object\n(GEM base)"]
+    NvkmMem["nvkm_mem\n(nvkm memory manager allocation)"]
+
+    subgraph "TTM placement domains"
+        VRAM["TTM_PL_VRAM\n(dedicated video RAM)"]
+        GTT["TTM_PL_TT / GTT\n(system RAM via GART/IOMMU)"]
+        System["TTM_PL_SYSTEM\n(CPU-only system memory)"]
+    end
+
+    VramMgr["nouveau_vram_manager\n(backed by nvkm_mm)"]
+    GTTMgr["GTT manager\n(GART / IOMMU mapping)"]
+    GPUVAList["drm_gem_gpuva list\n(drm_gpuvm tracking)"]
+
+    NouveauBO -- "extends" --> TTMbo
+    TTMbo -- "extends" --> GEMobj
+    NouveauBO --> NvkmMem
+    NouveauBO --> VRAM
+    NouveauBO --> GTT
+    NouveauBO --> System
+    VRAM --> VramMgr
+    GTT --> GTTMgr
+    GEMobj --> GPUVAList
+```
 
 ### Code Example 6: nouveau_bo_new and TTM Placement
 
@@ -595,6 +745,50 @@ nouveau uses the Linux kernel component framework to split the display subsystem
 ### The Nouveau IOCTL Surface
 
 The ioctl interface is the contract between the kernel driver and all userspace clients — both the legacy Gallium path and NVK. The full set of nouveau-specific ioctls is:
+
+```mermaid
+graph LR
+    GalliumOld["Legacy Gallium driver\n(src/gallium/drivers/nouveau/)"]
+    NVK["NVK Vulkan driver\n(src/nouveau/)"]
+
+    subgraph "Shared ioctls"
+        GetParam["DRM_NOUVEAU_GETPARAM\nDRM_NOUVEAU_SETPARAM"]
+        ChanAlloc["DRM_NOUVEAU_CHANNEL_ALLOC\nDRM_NOUVEAU_CHANNEL_FREE"]
+        GemNew["DRM_NOUVEAU_GEM_NEW"]
+    end
+
+    subgraph "Legacy ioctls"
+        PushBuf["DRM_NOUVEAU_GEM_PUSHBUF\n(relocations-based submission)"]
+    end
+
+    subgraph "Modern ioctls (Linux 6.6+)"
+        VMInit["DRM_NOUVEAU_VM_INIT"]
+        VMBind["DRM_NOUVEAU_VM_BIND\n(async map/unmap with syncobjs)"]
+        Exec["DRM_NOUVEAU_EXEC\n(pre-mapped VA submission)"]
+    end
+
+    NouveauDriver["nouveau_driver\n(nouveau_drm.c)"]
+    Display["nouveau_display\n(component framework)"]
+
+    GalliumOld --> GetParam
+    GalliumOld --> ChanAlloc
+    GalliumOld --> GemNew
+    GalliumOld --> PushBuf
+    NVK --> GetParam
+    NVK --> ChanAlloc
+    NVK --> GemNew
+    NVK --> VMInit
+    NVK --> VMBind
+    NVK --> Exec
+    GetParam --> NouveauDriver
+    ChanAlloc --> NouveauDriver
+    GemNew --> NouveauDriver
+    PushBuf --> NouveauDriver
+    VMInit --> NouveauDriver
+    VMBind --> NouveauDriver
+    Exec --> NouveauDriver
+    NouveauDriver --> Display
+```
 
 `DRM_NOUVEAU_GETPARAM` and `DRM_NOUVEAU_SETPARAM`: query and set driver-level parameters such as VRAM size, BAR size, the GPU's EXEC push buffer maximum count, and capability flags. New capabilities (like whether `DRM_NOUVEAU_EXEC` is supported) are communicated via GETPARAM values rather than requiring kernel version checks.
 

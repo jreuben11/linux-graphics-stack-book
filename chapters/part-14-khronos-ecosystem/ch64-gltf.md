@@ -104,11 +104,37 @@ Chunk types: [Source](https://github.com/KhronosGroup/glTF/blob/988b8c220a4ac11b
 
 Every chunk's start and end must be 4-byte aligned. Chunk data for JSON is padded with spaces, for BIN with zero bytes, to reach the required alignment.
 
+```mermaid
+graph TD
+    subgraph "GLB File"
+        FH["File Header\n(12 bytes: magic, version, length)"]
+        C0["Chunk 0\n(type=JSON, chunkLength + chunkData)"]
+        C1["Chunk 1\n(type=BIN, chunkLength + chunkData)"]
+    end
+    FH --> C0
+    C0 --> C1
+    C0 -- "UTF-8 JSON manifest\npadded with spaces" --> JsonContent["glTF JSON\n(scenes, meshes, materials, ...)"]
+    C1 -- "raw binary geometry\npadded with zeros" --> BinContent["BIN Blob\n(vertex data, index data, images)"]
+    JsonContent -- "buffer[0] omits uri\nreferences BIN chunk" --> BinContent
+```
+
 ---
 
 ## 3. The JSON→GPU Memory Hierarchy: Core Schema Objects
 
 A glTF file defines a hierarchy that maps cleanly to GPU memory: `Buffer` → `BufferView` → `Accessor` → `Mesh.Primitive`. Understanding the binary layout rules at each level is essential for writing correct, high-performance loaders.
+
+```mermaid
+graph TD
+    Buffer["Buffer\n(opaque byte blob, uri or GLB BIN chunk)"]
+    BufferView["BufferView\n(typed slice: byteOffset, byteLength, byteStride, target)"]
+    Accessor["Accessor\n(typed elements: componentType, type, count, normalized)"]
+    MeshPrimitive["Mesh.Primitive\n(attributes map: POSITION, NORMAL, TEXCOORD_0 ...)"]
+    Buffer --> BufferView
+    BufferView --> Accessor
+    Accessor --> MeshPrimitive
+    Accessor -. "sparse override" .-> SparseAccessor["Sparse Accessor\n(indices bufferView + values bufferView)"]
+```
 
 ### 3.0 The Top-Level `asset` Object
 
@@ -283,6 +309,24 @@ Node transform fields: [Source](https://github.com/KhronosGroup/glTF/blob/main/s
 
 TRS composition: `localMatrix = T × R × S` (scale first, then rotate, then translate). Nodes targeted by animation must use the TRS fields, not `matrix`, because animation channels drive individual TRS components. The world transform of a node is accumulated by traversing from the root to that node and multiplying local matrices along the path. glTF uses a right-handed, Y-up coordinate system.
 
+```mermaid
+graph TD
+    Scene["scene\n(array of root node indices)"]
+    RootNode["node (root)\n(children, mesh?, camera?, skin?, TRS/matrix)"]
+    ChildA["node (child)\n(translation, rotation, scale)"]
+    ChildB["node (child)\n(mesh reference)"]
+    Mesh["mesh\n(primitives[])"]
+    Camera["camera\n(perspective or orthographic)"]
+    Skin["skin\n(joints[], inverseBindMatrices)"]
+    Scene --> RootNode
+    RootNode --> ChildA
+    RootNode --> ChildB
+    RootNode -. "mesh" .-> Mesh
+    RootNode -. "camera" .-> Camera
+    RootNode -. "skin" .-> Skin
+    ChildB -. "mesh" .-> Mesh
+```
+
 ### 3.5 Camera Objects
 
 glTF 2.0 defines camera objects that can be attached to scene nodes via the `camera` field on a node. A camera node provides projection parameters; the view transform comes from the node's world matrix. [Source](https://github.com/KhronosGroup/glTF/blob/main/specification/2.0/schema/camera.schema.json)
@@ -362,6 +406,23 @@ The `material` object at the top level of the JSON describes a physically-based 
 | `doubleSided` | boolean | false | Disables backface culling; requires two normals in shading |
 
 For `"MASK"` alpha mode: fragments where `baseColor.a < alphaCutoff` are discarded. For `"BLEND"`: the fragment is composited with premultiplied-alpha blending; backface rendering order is undefined unless `doubleSided` is true.
+
+```mermaid
+graph TD
+    Material["material\n(alphaMode, alphaCutoff, doubleSided, emissiveFactor)"]
+    PBR["pbrMetallicRoughness\n(baseColorFactor, metallicFactor, roughnessFactor)"]
+    BaseColorTex["baseColorTexture\n(sRGB encoded)"]
+    MRTex["metallicRoughnessTexture\n(G=roughness, B=metalness, linear)"]
+    NormalTex["normalTexture\n(tangent-space XYZ, normalScale)"]
+    OcclusionTex["occlusionTexture\n(AO in R channel, strength)"]
+    EmissiveTex["emissiveTexture\n(sRGB encoded)"]
+    Material --> PBR
+    Material --> NormalTex
+    Material --> OcclusionTex
+    Material --> EmissiveTex
+    PBR --> BaseColorTex
+    PBR --> MRTex
+```
 
 ### 4.2 pbrMetallicRoughness Object
 
@@ -484,6 +545,24 @@ On Vulkan, these map directly to `VkSamplerCreateInfo` fields: `magFilter`, `min
     }]
   }]
 }
+```
+
+```mermaid
+graph LR
+    Animation["animation\n(name, channels[], samplers[])"]
+    Channel["channel\n(sampler index, target)"]
+    Target["channel.target\n(node index, path)"]
+    Sampler["animation.sampler\n(input accessor, interpolation, output accessor)"]
+    InputAcc["input accessor\n(SCALAR FLOAT timestamps)"]
+    OutputAcc["output accessor\n(VEC3/VEC4/SCALAR values)"]
+    Node["node\n(translation / rotation / scale / weights)"]
+    Animation --> Channel
+    Animation --> Sampler
+    Channel --> Target
+    Channel -- "sampler index" --> Sampler
+    Sampler --> InputAcc
+    Sampler --> OutputAcc
+    Target -- "drives path" --> Node
 ```
 
 `target.path` values: `"translation"`, `"rotation"`, `"scale"`, `"weights"` (morph target blend weights). [Source](https://github.com/KhronosGroup/glTF/blob/main/specification/2.0/schema/animation.channel.target.schema.json)
@@ -1003,6 +1082,26 @@ void cgltf_node_transform_world(const cgltf_node* node, cgltf_float* out_matrix)
 
 This section describes the standard pattern for translating loaded glTF data into Vulkan GPU resources. It assumes the reader is familiar with Vulkan buffer creation and command recording from Chapter 24.
 
+```mermaid
+graph TD
+    GltfData["glTF loaded data\n(Buffer, BufferView, Accessor)"]
+    VertexExtract["Extract vertex attributes\n(POSITION, NORMAL, TEXCOORD_0, TANGENT)"]
+    IndexExtract["Extract index accessor\n(UNSIGNED_SHORT or UNSIGNED_INT)"]
+    StagingVtx["Staging Buffer\n(HOST_VISIBLE | HOST_COHERENT)\nvertex data"]
+    StagingIdx["Staging Buffer\n(HOST_VISIBLE | HOST_COHERENT)\nindex data"]
+    DeviceVtx["Device Buffer\n(DEVICE_LOCAL)\nVK_BUFFER_USAGE_VERTEX_BUFFER_BIT"]
+    DeviceIdx["Device Buffer\n(DEVICE_LOCAL)\nVK_BUFFER_USAGE_INDEX_BUFFER_BIT"]
+    CmdCopy["vkCmdCopyBuffer\n+ pipeline barrier\n(TRANSFER_WRITE → VERTEX_ATTRIBUTE_READ)"]
+    GltfData --> VertexExtract
+    GltfData --> IndexExtract
+    VertexExtract -- "memcpy" --> StagingVtx
+    IndexExtract -- "memcpy" --> StagingIdx
+    StagingVtx --> CmdCopy
+    StagingIdx --> CmdCopy
+    CmdCopy --> DeviceVtx
+    CmdCopy --> DeviceIdx
+```
+
 ### Vertex and Index Buffer Creation
 
 ```cpp
@@ -1132,6 +1231,22 @@ This requires `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORA
 ---
 
 ## 10. glTF in Engines and the gltf-transform Pipeline
+
+```mermaid
+graph TD
+    Source["Source Asset\n(.gltf / .glb from DCC tool)"]
+    GltfTransform["gltf-transform CLI\n(draco, quantize, meshopt, tangents, dedup, join, webp, etc1s, uastc)"]
+    Optimized["Optimised GLB\n(compressed geometry + KTX2 textures)"]
+    Bevy["Bevy GltfAssetPlugin\n(bevy_gltf, gltf Rust crate)\nSpawns ECS entities"]
+    Godot["Godot GLTFDocument API\n(built-in importer + GLTFDocumentExtension)"]
+    Blender["Blender io_scene_gltf2 addon\n(Principled BSDF ↔ PBR metallic-roughness)"]
+    Source --> GltfTransform
+    GltfTransform --> Optimized
+    Optimized --> Bevy
+    Optimized --> Godot
+    Blender -- "export" --> Source
+    Blender -- "import" --> Optimized
+```
 
 ### 10.1 Bevy's GltfAssetPlugin
 

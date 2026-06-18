@@ -30,6 +30,24 @@ Bugs in GPU workloads cluster into four distinct layers, each requiring differen
 
 Mapping tools to layers helps avoid wasted effort. For API misuse, enable `VK_LAYER_KHRONOS_validation` immediately in every development build. For compiler bugs, `RADV_DEBUG=shaders` or `INTEL_DEBUG=vs,fs` dumps the compiled assembly so you can verify the shader is correct. For synchronisation errors, `RADV_DEBUG=fullsync` serialises all operations to narrow the window, then Sync Validation pinpoints the missing barrier. For performance, RGP (AMD), GPA/intel_gpu_top (Intel), or Nsight Compute (NVIDIA proprietary) are the right instruments.
 
+```mermaid
+graph TD
+    L1["API Misuse\n(wrong layouts, destroyed buffers,\nmissing render pass dependencies)"]
+    L2["Compiler / Driver Bugs\n(miscompiled shaders,\nbad command packets)"]
+    L3["Synchronisation Errors\n(incorrect operation ordering,\nnon-deterministic corruption)"]
+    L4["Hardware Performance Problems\n(GPU bottlenecks, bandwidth saturation,\ncache thrash)"]
+
+    T1["VK_LAYER_KHRONOS_validation"]
+    T2["RADV_DEBUG=shaders\nINTEL_DEBUG=vs,fs\nNIR dumps / Mesa bisect"]
+    T3["RADV_DEBUG=fullsync\nVulkan Sync Validation\nRenderDoc event browser"]
+    T4["RGP (AMD)\nintel_gpu_top (Intel)\nNsight Compute (NVIDIA)"]
+
+    L1 -- "caught by" --> T1
+    L2 -- "diagnosed with" --> T2
+    L3 -- "isolated with" --> T3
+    L4 -- "measured with" --> T4
+```
+
 Several system-level prerequisites affect tool availability. Intel's GPU counter infrastructure (`i915_perf` OA stream) and some AMD counter capture paths require `perf_event_paranoid <= 1` (`/proc/sys/kernel/perf_event_paranoid`). Since Linux 5.8, `CAP_PERFMON` is the preferred capability for unprivileged counter access. RenderDoc and most Mesa debug tools require only a valid render node (`/dev/dri/renderDN`) opened without elevated privilege. Some tools — notably `umr` for AMD ring decoding and `debugfs` inspection — require `CAP_SYS_ADMIN` or root, and on distributions with strict AppArmor or seccomp policies this may require profile adjustments.
 
 Build type matters substantially. Release Mesa builds (`-Dbuildtype=release`) compile out most validation code, ASSERTS, and the NIR validator. A debug Mesa build (`-Dbuildtype=debug`) or a `debugoptimized` build (`-Dbuildtype=debugoptimized`, the recommended middle ground for development) enables the NIR validator after each pass, the ACO IR validator, and additional error-checking paths throughout the driver. When chasing a Mesa regression, always reproduce against a debug or debugoptimized build first. The Vulkan loader has its own debug mode: setting `VK_LOADER_DEBUG=all` traces every layer and driver enumeration step.
@@ -41,6 +59,25 @@ AddressSanitizer and UBSan integrate naturally with Mesa. Building Mesa with `CC
 ## 2. RenderDoc: Frame Capture and Replay
 
 RenderDoc ([https://renderdoc.org/](https://renderdoc.org/)) is the premier open-source frame capture and replay tool for Vulkan, OpenGL, and OpenGL ES on Linux. Its architecture centres on two components: an in-process capture library (`librenderdoc.so`) injected into the target application that intercepts API calls and serialises GPU resources, and the replay tool (`qrenderdoc` for the GUI, `renderdoccmd` for headless operation) that reads `.rdc` capture files and re-issues the API calls against the local driver, making resources inspectable at any draw call boundary.
+
+```mermaid
+graph LR
+    App["Target Application\n(Vulkan / OpenGL)"]
+    Lib["librenderdoc.so\n(in-process capture library)"]
+    RDC[".rdc Capture File\n(API call stream + GPU resources)"]
+    GUI["qrenderdoc\n(GUI replay tool)"]
+    CLI["renderdoccmd\n(headless / CI replay)"]
+    PyAPI["renderdoc.so\n(Python API)"]
+    Driver["Local Mesa / Proprietary Driver"]
+
+    App -- "intercepts API calls via" --> Lib
+    Lib -- "serialises to" --> RDC
+    RDC -- "read by" --> GUI
+    RDC -- "read by" --> CLI
+    RDC -- "read by" --> PyAPI
+    GUI -- "re-issues API calls against" --> Driver
+    CLI -- "re-issues API calls against" --> Driver
+```
 
 ### Capture Workflow
 
@@ -138,6 +175,30 @@ RenderDoc operates purely at the API boundary. It cannot see inside the driver: 
 ## 3. Vulkan Validation Layers: API Correctness
 
 The Vulkan loader's layer system provides an extensibility mechanism where JSON manifests in `/usr/share/vulkan/explicit_layer.d/` (system-wide) or `~/.local/share/vulkan/explicit_layer.d/` (per-user) register shared libraries that intercept Vulkan calls. Each layer receives an entry in the `VkLayerDispatchTable` and can inspect, modify, or block API calls. The Khronos Validation Layer (`VK_LAYER_KHRONOS_validation`) bundles multiple validation subsystems into a single layer and is the primary correctness tool for Vulkan development.
+
+```mermaid
+graph TD
+    App["Application"]
+    Loader["Vulkan Loader"]
+    Manifests["JSON Manifests\n(/usr/share/vulkan/explicit_layer.d/\n~/.local/share/vulkan/explicit_layer.d/)"]
+    KV["VK_LAYER_KHRONOS_validation"]
+    CV["Core Validation\n(object lifetimes, descriptor validity,\nrender pass compatibility)"]
+    TS["Thread Safety\n(concurrent unsynchronised access)"]
+    BP["Best Practices\n(non-fatal suboptimal usage warnings)"]
+    SV["Sync Validation (syncval)\n(hazard graph: WAR, RAW, WAW)"]
+    GAV["GPU-Assisted Validation\n(shader bounds-checking,\ndescriptor indexing)"]
+    Driver["Mesa Driver\n(VkLayerDispatchTable)"]
+
+    Manifests -- "registers" --> Loader
+    App --> Loader
+    Loader -- "intercepts via" --> KV
+    KV --> CV
+    KV --> TS
+    KV --> BP
+    KV --> SV
+    KV --> GAV
+    KV -- "passes calls to" --> Driver
+```
 
 ### Enabling Layers
 
@@ -374,6 +435,22 @@ The motion-to-photon latency chain decomposes into discrete, measurable stages:
 8. KMS atomic commit (`DRM_IOCTL_MODE_ATOMIC` armed to hardware)
 9. Display scan-out begins (CRTC active scan line)
 10. Photon emission (panel pixel response time, 1–5 ms depending on setting)
+
+```mermaid
+graph TD
+    S1["1. Input Event Timestamp\n(evdev/libinput, CLOCK_MONOTONIC)"]
+    S2["2. Application Frame-Start\n(wl_callback or game loop tick)"]
+    S3["3. GPU Command Submission\n(vkQueueSubmit / wl_surface.commit)"]
+    S4["4. GPU Command Scheduling\n(kernel DRM scheduler → ring)"]
+    S5["5. GPU Execution Begin\n(fence creation)"]
+    S6["6. GPU Execution Complete\n(fence signals)"]
+    S7["7. Compositor Composite Pass\n(Wayland compositor combines surfaces)"]
+    S8["8. KMS Atomic Commit\n(DRM_IOCTL_MODE_ATOMIC armed to hardware)"]
+    S9["9. Display Scan-Out Begins\n(CRTC active scan line)"]
+    S10["10. Photon Emission\n(panel pixel response, 1–5 ms)"]
+
+    S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S9 --> S10
+```
 
 At 60 Hz the total budget is 16.67 ms. A typical breakdown: application GPU work 8–10 ms, compositor composite 2–3 ms, KMS and scan-out 1–2 ms, panel 1–5 ms. Any individual stage that overruns its budget pushes the entire chain past the vblank deadline.
 
@@ -951,6 +1028,30 @@ After pipeline creation, `feedback.flags` includes `VK_PIPELINE_CREATION_FEEDBAC
 ## 9. SPIR-V Shader Debugging Toolchain
 
 SPIR-V is the binary intermediate representation consumed by all Vulkan drivers (via `vk_spirv_to_nir()` in Mesa, or the proprietary driver's front end). When a shader misbehaves — producing wrong results, crashing the driver, or failing validation — the SPIR-V toolchain provides the diagnostic and transformation tools to isolate the problem. These tools operate on the binary module between the application's shader compiler and the driver's NIR/ISA compiler.
+
+```mermaid
+graph LR
+    SRC["Shader Source\n(GLSL / HLSL / WGSL)"]
+    SPV["SPIR-V Binary\n(.spv)"]
+    VAL["spirv-val\n(structural validation)"]
+    DIS["spirv-dis\n(human-readable assembly)"]
+    ASM["spirv-as\n(reassemble to binary)"]
+    OPT["spirv-opt\n(optimisation / reduction)"]
+    CROSS["spirv-cross\n(decompile to GLSL/HLSL)"]
+    NIR["vk_spirv_to_nir()\n(Mesa NIR translation)"]
+    ISA["Driver ISA\n(GCN/RDNA / EU assembly)"]
+
+    SRC -- "compiled by glslang/DXC/Tint" --> SPV
+    SPV --> VAL
+    SPV --> DIS
+    DIS -- "edit + reassemble" --> ASM
+    ASM --> SPV
+    SPV --> OPT
+    OPT -- "reduced module" --> SPV
+    SPV --> CROSS
+    SPV -- "driver ingestion" --> NIR
+    NIR --> ISA
+```
 
 ### spirv-val: Validation
 

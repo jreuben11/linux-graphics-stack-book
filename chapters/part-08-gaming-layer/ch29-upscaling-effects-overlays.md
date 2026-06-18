@@ -43,6 +43,20 @@ static inline void *get_dispatch_key(const void *object) {
 
 Because all `VkCommandBuffer` objects created from the same `VkDevice` share the same device dispatch table pointer, that pointer uniquely identifies the device. Layers use this pointer as the key into a `std::unordered_map<void *, LayerDeviceData>` to retrieve their per-device state when they intercept commands that carry only a `VkCommandBuffer` handle — handles from which the `VkDevice` is otherwise not recoverable. [Source: KhronosGroup/Vulkan-Loader, `docs/LoaderLayerInterface.md`][1]
 
+```mermaid
+graph TD
+    App["Application\n(Vulkan calls)"]
+    Loader["libvulkan.so.1\n(Vulkan Loader)"]
+    L1["Implicit Layer N\n(e.g. MangoHud)"]
+    L2["Implicit Layer N-1\n(e.g. vkBasalt)"]
+    ICD["ICD\n(Mesa RADV / ANV / NVK)"]
+
+    App --> Loader
+    Loader -- "dispatch chain" --> L1
+    L1 -- "pfnNextGetInstanceProcAddr" --> L2
+    L2 -- "pfnNextGetInstanceProcAddr" --> ICD
+```
+
 ### Layer Types: Explicit and Implicit
 
 Layers divide into two kinds:
@@ -167,6 +181,17 @@ The complete lifecycle of a layer activation, from application start to applicat
 
 The key invariant throughout is that the layer must forward every call it intercepts (calling the next pointer), even if it adds work before or after. Failing to forward destroys the application's rendering or creates resource leaks.
 
+```mermaid
+graph TD
+    CI["vkCreateInstance\n(init instance dispatch table,\nstore per-instance state)"]
+    CD["vkCreateDevice\n(init device dispatch table,\nalloc descriptor pools / render targets / shader modules)"]
+    PCI["Per-command interception\n(intercept target commands,\nforward all others transparently)"]
+    DD["vkDestroyDevice\n(destroy per-device resources)"]
+    DI["vkDestroyInstance\n(tear down per-instance state)"]
+
+    CI --> CD --> PCI --> DD --> DI
+```
+
 ---
 
 ## 2. FSR 1, 2, and 3: Algorithms and Architecture
@@ -182,6 +207,17 @@ FSR1, released June 2021, is a purely **spatial** upscaler: it examines only the
 **RCAS (Robust Contrast-Adaptive Sharpening)** is the second pass, applied after EASU to the upscaled image. RCAS is *not* a simple unsharp mask. It is a contrast-adaptive algorithm that amplifies local contrast differentially based on the surrounding gradient environment. In regions with low spatial frequency (flat colours), it applies stronger sharpening; near already-sharp edges, it applies weaker sharpening to avoid edge halos and ringing. The "robust" qualifier in the name refers to its resistance to amplifying noise: very small-amplitude high-frequency signals that fall below a noise threshold are suppressed rather than amplified. The sharpness strength is a single scalar constant passed via push constants.
 
 EASU and RCAS are both compute shaders. The canonical dispatch thread group size is 8×8 output pixels per group, with each invocation handling one output pixel. For a 1080p→4K upscale (2× linear), EASU dispatches `ceil(3840/8) × ceil(2160/8) = 480 × 270 = 129,600` thread groups.
+
+```mermaid
+graph LR
+    Input["Input Frame\n(low-resolution colour buffer)"]
+    EASU["EASU Pass\n(Edge-Adaptive Spatial Upsampling)\ncompute shader — 8×8 thread groups"]
+    Intermediate["Intermediate Image\n(upscaled, unsharpened)"]
+    RCAS["RCAS Pass\n(Robust Contrast-Adaptive Sharpening)\ncompute shader"]
+    Output["Output Frame\n(upscaled + sharpened)"]
+
+    Input --> EASU --> Intermediate --> RCAS --> Output
+```
 
 FSR1's quality modes are simply different input-to-output scaling ratios:
 
@@ -262,6 +298,18 @@ The frame pipeline inside gamescope, from game frame receipt to KMS scanout, con
 5. **KMS atomic commit**: the final composited image, backed by a GBM-allocated buffer, is committed to the KMS primary plane via an atomic commit. KMS VBLANK events drive the pacing of this loop (see Chapter 2 for the page-flip event mechanism).
 
 The key source files are `src/rendervulkan.cpp` (Vulkan renderer, FSR shader dispatch), `src/steamcompmgr.cpp` (compositor logic, frame pacing), and `src/reshade_effect_manager.cpp` (ReShade effect pipeline). [Source: ValveSoftware/gamescope][3]
+
+```mermaid
+graph TD
+    Game["Game Process\n(Wayland client)"]
+    DMABUF["DMA-BUF Import\n(linux-dmabuf-unstable-v1)\nVK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT"]
+    Upscale["Upscale Pass (optional)\nFSR1 EASU + RCAS\nor NIS"]
+    Composite["Composite Pass\n(game frame + overlays + cursor)\nVulkan render pass or compute"]
+    Tonemap["Tonemap / Colour-Space Pass (optional)\nHDR-to-HDR / SDR-to-HDR / HDR-to-SDR\nVkHdrMetadataEXT"]
+    KMS["KMS Atomic Commit\n(GBM-allocated framebuffer)\nprimary plane — VBLANK-driven"]
+
+    Game --> DMABUF --> Upscale --> Composite --> Tonemap --> KMS
+```
 
 ### FSR1 Dispatch in gamescope
 
@@ -408,6 +456,18 @@ When `vkQueuePresentKHR` is called by the application:
 
 The semaphore chain is critical: the application's render-complete semaphore drives the first copy, and a new semaphore signals present-ready after the final copy. vkBasalt replaces the application's present wait semaphore with its own. [Source: DadSchoorse/vkBasalt, `src/effect_manager.cpp`][2]
 
+```mermaid
+graph TD
+    SwapImg["Swapchain Image\n(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)"]
+    Copy1["Copy to Intermediate Image 0\n(TRANSFER_SRC → SHADER_READ_ONLY)"]
+    E1["Effect 1\n(e.g. CAS)\nread Intermediate 0 → write Intermediate 1"]
+    EN["Effect N\n(e.g. SMAA)\nread Intermediate N-1 → write Intermediate N"]
+    CopyBack["Copy back to Swapchain Image\n(restore VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)"]
+    Present["vkQueuePresentKHR\n(via dispatch chain)"]
+
+    SwapImg --> Copy1 --> E1 --> EN --> CopyBack --> Present
+```
+
 ### Effect Pipeline
 
 vkBasalt supports the following effects, individually or chained in user-defined order:
@@ -516,6 +576,20 @@ void MangoHud::on_present(VkQueue queue, uint32_t presentCount,
 ### GPU Metrics Collection
 
 GPU metrics collection is MangoHud's most complex subsystem, because the interfaces differ by GPU vendor and kernel version. MangoHud implements three primary paths:
+
+```mermaid
+graph TD
+    MangoHud["MangoHud\nGPU Metrics Collection"]
+    FDINFO["DRM FDINFO\n/proc/self/fdinfo/\ndrm-engine-* / drm-cycles-*\n(driver-agnostic, preferred)"]
+    AMDSysfs["AMD amdgpu sysfs\n/sys/class/drm/card*/device/\ngpu_busy_percent / mem_info_vram_*\n(global, not per-process)"]
+    NVML["NVIDIA NVML\nlibnvidia-ml.so (dlopen)\nnvmlDeviceGetUtilizationRates\nnvmlDeviceGetMemoryInfo"]
+    IntelPMU["Intel i915 PMU\nperf_event_open(2)\nI915_PMU_ENGINE_BUSY\n(per-process, no root required)"]
+
+    MangoHud --> FDINFO
+    MangoHud --> AMDSysfs
+    MangoHud --> NVML
+    MangoHud --> IntelPMU
+```
 
 #### DRM FDINFO (Driver-Agnostic, Preferred Path)
 
@@ -840,6 +914,16 @@ Application (DXVK Vulkan calls)
 ```
 
 MangoHud should be *above* vkBasalt in the chain (closer to the application) so that it measures and renders the frame *after* vkBasalt's effects have been applied — the user sees the same post-processed image that MangoHud is timing and rendering over. If the order were reversed, MangoHud would measure and render over the pre-vkBasalt frame, and vkBasalt would process the image including MangoHud's HUD overlay text.
+
+```mermaid
+graph TD
+    AppDXVK["Application\n(DXVK Vulkan calls)"]
+    MangoHud["MangoHud layer\n(intercepts vkQueuePresentKHR)\nmeasures + renders HUD over post-processed frame"]
+    vkBasalt["vkBasalt layer\n(intercepts vkQueuePresentKHR)\napplies CAS / SMAA / FXAA / LUT effects"]
+    ICD["Mesa Vulkan ICD\n(RADV / ANV / NVK)"]
+
+    AppDXVK --> MangoHud --> vkBasalt --> ICD
+```
 
 Debugging layer stacks: `VK_LOADER_DEBUG=all` causes the loader to print the full discovered and activated layer chain at application start, invaluable for diagnosing unexpected layer ordering or missing layer activation.
 

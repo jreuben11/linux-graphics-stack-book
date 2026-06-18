@@ -182,6 +182,27 @@ struct xe_gt {
 
 The iteration macros `for_each_tile(tile, xe, id)` and `for_each_gt(gt, xe, id)` defined in `xe_device.h` are used throughout the driver to walk all tiles and GTs without hard-coding counts.
 
+```mermaid
+graph TD
+    XeDevice["xe_device\n(xe_device_types.h)"]
+    XeTile["xe_tile\n(xe_tile_types.h)"]
+    XeGT_Primary["xe_gt\n(XE_GT_TYPE_MAIN)"]
+    XeGT_Media["xe_gt\n(XE_GT_TYPE_MEDIA)"]
+    XeUC["xe_uc\n(xe_guc + xe_huc)"]
+    GGTT["xe_ggtt\n(4 GB aperture)"]
+    VRAM["xe_mem_region\n(LMEM / VRAM)"]
+    Display["intel_display\n(shared with i915)"]
+
+    XeDevice --> Display
+    XeDevice --> XeTile
+    XeTile --> XeGT_Primary
+    XeTile --> XeGT_Media
+    XeTile --> GGTT
+    XeTile --> VRAM
+    XeGT_Primary --> XeUC
+    XeGT_Media --> XeUC
+```
+
 ### 2.5 uAPI: DRM Ioctls and Execution Model
 
 The xe uAPI is declared in `include/uapi/drm/xe_drm.h`. It defines 16 ioctls (as of Linux 6.13): [Source: torvalds/linux include/uapi/drm/xe_drm.h](https://github.com/torvalds/linux/blob/master/include/uapi/drm/xe_drm.h)
@@ -261,6 +282,23 @@ ioctl(fd, DRM_IOCTL_XE_WAIT_USER_FENCE, &wait);
 
 Contrast with i915: i915 used `drm_i915_gem_execbuffer2` which required the caller to enumerate all BOs accessed by the batch (the relocation list) so the kernel could pin them and patch GPU addresses. Xe's VM_BIND model eliminates this: the GPU VA is stable for the BO's mapping lifetime.
 
+```mermaid
+graph TD
+    A["DRM_XE_VM_CREATE\n(per-process GPU VA space)"]
+    B["DRM_XE_GEM_CREATE\n(allocate BO in SYSMEM or LMEM)"]
+    C["DRM_XE_VM_BIND\n(map BO into VM at chosen GPU VA)"]
+    D["DRM_XE_EXEC_QUEUE_CREATE\n(engine class + instance)"]
+    E["DRM_XE_EXEC\n(submit batch buffer at GPU VA)"]
+    F["DRM_XE_WAIT_USER_FENCE\n(wait for GPU-written fence value)"]
+
+    A --> B
+    B --> C
+    A --> D
+    C --> E
+    D --> E
+    E --> F
+```
+
 ---
 
 ## 3. GuC and HuC Firmware
@@ -295,6 +333,26 @@ int xe_guc_ct_send(struct xe_guc_ct *ct, const u32 *action,
 [Source: torvalds/linux drivers/gpu/drm/xe/xe_guc_ct.c](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/xe/xe_guc_ct.c)
 
 **GuC power conservation (SLPC)**: The driver's `xe_guc_pc.c` implements Single Loop Power Conservation, which handles render-C state management and GPU frequency requests via GuC rather than direct MMIO writes. This is required on platforms where direct freq MMIO is unavailable from the kernel driver.
+
+```mermaid
+graph LR
+    Host["xe driver\n(CPU / kernel)"]
+    H2G["H2G CTB\n(host-to-GuC circular buffer)"]
+    GuC["GuC\n(ARC processor + firmware)"]
+    G2H["G2H CTB\n(GuC-to-host circular buffer)"]
+    HuC["HuC\n(ARC processor + firmware)"]
+    GSC["GSC\n(Graphics Security Controller)"]
+    Engines["Hardware Engines\n(Render / Compute / Media)"]
+
+    Host -- "xe_guc_ct_send()\ndoorbell kick" --> H2G
+    H2G --> GuC
+    GuC -- "async response\n/ completion" --> G2H
+    G2H --> Host
+    GuC -- "schedules contexts\npre-emption / QoS" --> Engines
+    GuC -- "initiates HuC auth\n(DG2+)" --> GSC
+    GSC -- "authenticates" --> HuC
+    HuC -- "bitrate control\nRDO offload" --> Engines
+```
 
 ### 3.2 HuC: Media Decode Assistance
 
@@ -346,6 +404,24 @@ The Xe2-HPG compute hierarchy is: **Render Slice → Xe-Core → XVE / XMX**.
 - Shared L1 data cache
 
 With 20 Xe-cores × 8 XVEs × 16 FP32 lanes = 2,560 shader processors (FP32 ALUs) total.
+
+```mermaid
+graph TD
+    BMG["Arc B580\n(Xe2-HPG BMG-G21)"]
+    RS["Render Slice\n(5 total, 4 Xe2-cores each)"]
+    XeCore["Xe2-Core\n(20 total on B580)"]
+    XVE["XVE\n(8 per core, SIMD16 FP32)"]
+    XMX["XMX\n(8 per core, 2048-bit MMA)"]
+    RTU["RTU\n(1 per core, 2nd-gen)"]
+    L2["18 MB L2 Cache\n(shared all render slices)"]
+
+    BMG --> RS
+    RS --> XeCore
+    XeCore --> XVE
+    XeCore --> XMX
+    XeCore --> RTU
+    BMG --> L2
+```
 
 **L2 cache**: The BMG-G21 die has an 18 MB last-level L2 cache shared across all render slices. Additionally, pixel color cache increased by 1/3 vs Alchemist and the HiZ/Z/Stencil cache grew 50% larger.
 
@@ -430,6 +506,22 @@ There are two backend implementations:
 - `src/intel/vulkan/anv_kmd_xe.c` — uses `DRM_IOCTL_XE_*` ioctls: `DRM_XE_VM_BIND`, `DRM_XE_EXEC`, `DRM_XE_WAIT_USER_FENCE`
 
 At device open time ANV probes the kernel via `DRM_XE_DEVICE_QUERY` and selects the appropriate backend. Mesa 24.1 enabled the xe backend by default (the `intel-xe-kmd` Meson build option became the default). [Source: Phoronix Mesa 24.1 Intel Xe KMD default](https://www.phoronix.com/news/Intel-Xe-KMD-Mesa-24.1-Default)
+
+```mermaid
+graph TD
+    ANV["ANV Vulkan Driver\n(src/intel/vulkan/)"]
+    Backend["anv_kmd_backend\n(anv_private.h)"]
+    I915Back["anv_kmd_i915.c\n(DRM_IOCTL_I915_GEM_*)"]
+    XeBack["anv_kmd_xe.c\n(DRM_IOCTL_XE_*)"]
+    I915KMD["i915.ko\n(Gen 8–Gen 12 iGPU)"]
+    XeKMD["xe.ko\n(Lunar Lake, Battlemage+)"]
+
+    ANV --> Backend
+    Backend -- "probe DRM_XE_DEVICE_QUERY\nselects at runtime" --> I915Back
+    Backend -- "probe DRM_XE_DEVICE_QUERY\nselects at runtime" --> XeBack
+    I915Back --> I915KMD
+    XeBack --> XeKMD
+```
 
 With the xe backend, ANV switched to **truly asynchronous VM_BIND**: bind operations are submitted alongside GPU work rather than blocking the CPU to install mappings before submission. This improves pipelining on sparse-binding-heavy workloads.
 
@@ -567,6 +659,28 @@ NEO / Level Zero → xe KMD → GPU
 
 The `icpx` front-end splits host and device code at compile time. Device kernels are compiled to SPIR-V, wrapped in a fat binary, and linked into the host executable. At runtime, NEO's IGC JIT-compiles SPIR-V to the target GPU's native ISA.
 
+```mermaid
+graph TD
+    Src["DPC++ source\n(.cpp with SYCL includes)"]
+    ICPX["icpx\n(Clang front-end, SYCL device extraction)"]
+    LLVMIR["LLVM IR"]
+    SPIRV["SPIR-V\n(llvm-spirv translation)"]
+    IGC["IGC\n(Intel Graphics Compiler)"]
+    ISA["Intel GPU ISA\n(ELF kernel binary)"]
+    NEO["NEO / Level Zero\n(compute-runtime)"]
+    XeKMD["xe KMD\n(xe.ko)"]
+    GPU["GPU\n(Xe2 hardware)"]
+
+    Src --> ICPX
+    ICPX --> LLVMIR
+    LLVMIR --> SPIRV
+    SPIRV --> IGC
+    IGC --> ISA
+    ISA --> NEO
+    NEO --> XeKMD
+    XeKMD --> GPU
+```
+
 ---
 
 ## 7. Intel Media Driver (iHD)
@@ -585,6 +699,25 @@ The iHD driver maps VA-API entry points onto four categories of hardware engines
 | **VEBox + SFC** | Hardware video post-processing (deinterlace, colour-space conversion, scaling) | `VAEntrypointVideoProc` |
 
 On BMG, the two independent multimedia engines each contain a VDBox, a VDEnc, and a VEBox/SFC pair, allowing simultaneous encode and decode of independent streams.
+
+```mermaid
+graph LR
+    VAAPI["VA-API\n(libva)"]
+    iHD["iHD_drv_video.so\n(VADriverVTable)"]
+    VDBox["VDBox\n(stateless HW video decode)"]
+    VDEnc["VDEnc + HuC\n(low-power HW encode, CBR/VBR)"]
+    PAK["PAK + media kernels\n(full-quality HW encode)"]
+    VEBox["VEBox + SFC\n(video post-processing\ndeinterlace / CSC / scaling)"]
+
+    VAAPI -- "VAEntrypointVLD" --> iHD
+    VAAPI -- "VAEntrypointEncSliceLP" --> iHD
+    VAAPI -- "VAEntrypointEncSlice" --> iHD
+    VAAPI -- "VAEntrypointVideoProc" --> iHD
+    iHD --> VDBox
+    iHD --> VDEnc
+    iHD --> PAK
+    iHD --> VEBox
+```
 
 ### 7.2 MDF/CM Media Kernels
 

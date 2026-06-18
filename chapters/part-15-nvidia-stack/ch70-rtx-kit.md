@@ -87,6 +87,29 @@ Scene geometry + lights
 
 A renderer need not integrate all five. NRD is the most commonly adopted first step (replacing hand-written spatiotemporal filters with a proven, maintained denoiser). RTXDI is the second most common (enabling many-light scenes that were previously impractical). RTXGI adds multi-bounce indirect illumination. RTXNS and RTXNTC represent the neural rendering frontier.
 
+```mermaid
+graph TD
+    Scene["Scene geometry + lights"]
+    RTXGI["RTXGI\n(SHaRC / NRC)\nIndirect illumination estimate"]
+    RTXDI["RTXDI\n(ReSTIR DI / PT)\nDirect light sampling"]
+    RTXNS["RTXNS\nNeural material evaluation"]
+    RTXNTC["RTXNTC\nNeural texture decode\n(any-hit / closest-hit)"]
+    Noisy["Noisy radiance\n(1–4 spp)"]
+    NRD["NRD\n(REBLUR / RELAX / SIGMA)\nSpatiotemporal denoising"]
+    Clean["Clean radiance"]
+    DLSS["Tonemapper → DLSS SR / MFG\n(Ch68) → present"]
+
+    Scene --> RTXGI
+    Scene --> RTXDI
+    RTXGI --> Noisy
+    RTXDI --> Noisy
+    RTXNS --> Noisy
+    RTXNTC --> Noisy
+    Noisy --> NRD
+    NRD --> Clean
+    Clean --> DLSS
+```
+
 All five SDKs are **API-agnostic at the top level** — they accept generic resource descriptors and issue callbacks for GPU work. The application supplies Vulkan (`VkCommandBuffer`, `VkBuffer`, `VkImage`) or CUDA (`CUdeviceptr`, `cudaStream_t`) handles depending on the SDK's backend. This allows integration into any renderer architecture without requiring a specific render-graph framework.
 
 On Linux, all five SDKs build with CMake + GCC/Clang against CUDA 12.x and Vulkan SDK 1.3.x. The NVIDIA driver requirement is ≥ 535 for RTXDI/NRD/RTXGI/RTXNTC, and ≥ 572.16 for RTXNS (which requires `VK_NV_cooperative_vector`). [Source: RTX Kit 2026.2 release notes, github.com/NVIDIA-RTX/RTX-Kit]
@@ -132,6 +155,22 @@ The ReSTIR DI pipeline per frame:
 ```
 
 ReSTIR DI achieves quality equivalent to 100–1000 unbiased light samples per pixel while casting only 1 shadow ray per pixel per frame, enabling millions-of-lights scenes at real-time rates on RTX hardware.
+
+```mermaid
+graph TD
+    LightBVH["Light BVH\n(scene lights)"]
+    RIS["1. Initial Candidates (RIS)\nSample M=32 candidate lights\nBuild initial reservoir per pixel"]
+    Temporal["2. Temporal Reuse\nReproject previous frame reservoir\nvia motion vectors\nCombine via stream RIS (M-cap=20)"]
+    Spatial["3. Spatial Reuse\nCombine K=5 neighbour reservoirs\nMIS-weighted visibility reuse"]
+    Shading["4. Shading\nCast 1 shadow ray to selected light y\nEvaluate BSDF × radiance × G-term × W"]
+    Output["Direct radiance output\n(1 shadow ray / pixel)"]
+
+    LightBVH --> RIS
+    RIS --> Temporal
+    Temporal --> Spatial
+    Spatial --> Shading
+    Shading --> Output
+```
 
 ### 3.2 ReSTIR PT: Path Tracing Importance Sampling
 
@@ -255,6 +294,27 @@ Choosing between SHaRC and NRC depends on scene characteristics:
 
 Both are toggled at runtime via the same RTXGI API surface; the renderer can expose an ABR-style quality toggle that switches between the two.
 
+```mermaid
+graph LR
+    subgraph "RTXGI 2.0"
+        SHaRC["SHaRC\nSpatially Hashed Radiance Cache\nGPU hash map\n(uint64_t keys, float4 values)\nConverges in a few frames"]
+        NRC["NRC\nNeural Radiance Cache\nTiny MLP\n(position + direction → radiance)\nOnline training each frame"]
+    end
+    PathRay["Path tracing ray\n(hit position)"]
+    CacheHit["Cache hit\n→ return stored radiance\nskip further bounces"]
+    CacheMiss["Cache miss\n→ trace further bounce\n→ write back to cache"]
+    Radiance["Indirect radiance\noutput"]
+
+    PathRay -- "SHaRC lookup" --> SHaRC
+    PathRay -- "NRC lookup" --> NRC
+    SHaRC --> CacheHit
+    SHaRC --> CacheMiss
+    NRC --> CacheHit
+    NRC --> CacheMiss
+    CacheHit --> Radiance
+    CacheMiss --> Radiance
+```
+
 ---
 
 ## 5. NRD v4.17: NVIDIA Real-time Denoisers
@@ -276,6 +336,21 @@ NRD ships three primary denoising algorithms:
 Additional specialised denoisers:
 - **REFERENCE**: a debugging accumulator that just averages all samples; useful for verifying inputs
 - **SPECULAR_REFLECTION_MV**: generates per-pixel specular reflection motion vectors for DLSS SR integration
+
+```mermaid
+graph LR
+    subgraph "NRD Denoiser Selection"
+        REBLUR["REBLUR\nRecurrent Blur\nAdaptive-radius spatial blur\nBest for diffuse + specular\nwith long history accumulation"]
+        RELAX["RELAX\nRecurrent Least-squares\nSeparate diffuse + specular history\nReSTIR-correlated sample robust\nRecommended with RTXDI"]
+        SIGMA["SIGMA\nShadow denoiser\n5×5 cross-bilateral filter\n1–2 shadow rays per pixel"]
+    end
+    RTXDI["RTXDI output\n(correlated spatial samples)"] -- "use" --> RELAX
+    DiffuseSpecular["Diffuse + specular\nray tracing signal"] -- "general use" --> REBLUR
+    ShadowRays["Shadow ray signal\n(1-bit or penumbra)"] -- "use" --> SIGMA
+    RELAX --> DenoisedOut["Denoised diffuse +\nspecular radiance"]
+    REBLUR --> DenoisedOut
+    SIGMA --> DenoisedShadow["Denoised\nshadow map"]
+```
 
 ### 5.2 Required G-Buffer Inputs
 
@@ -346,6 +421,24 @@ NRD's Vulkan backend issues `vkCmdDispatch` calls for each filter pass. The inte
 5. **Split**: output diffuse and specular to separate render targets
 
 For the RELAX denoiser on a 1080p frame, the total denoiser dispatch takes approximately 1.5–3 ms on RTX 3080/4080. The NRD performance profiling sample (`NRD_Sample`) includes per-pass Vulkan timestamp queries.
+
+```mermaid
+graph TD
+    GBuf["G-buffer inputs\n(IN_MV, IN_NORMAL_ROUGHNESS,\nIN_VIEWZ, IN_DIFF/SPEC_RADIANCE_HITDIST)"]
+    PrePass["1. Pre-pass\nMotion vector dilation\nDisocclusion detection\nFirst-frame handling"]
+    HistFix["2. History fix\nReprojection confidence estimation\nMotion vector consistency"]
+    Blur["3. Blur\nSpatially adaptive cross-bilateral filter\n(5×5 to 21×21 kernel, per-pixel adapted)"]
+    PostBlur["4. Post-blur\nSecondary accumulation pass\nTemporal smoothing"]
+    Split["5. Split\nOutput diffuse and specular\nto separate render targets"]
+    Out["OUT_DIFF_RADIANCE_HITDIST\nOUT_SPEC_RADIANCE_HITDIST"]
+
+    GBuf --> PrePass
+    PrePass --> HistFix
+    HistFix --> Blur
+    Blur --> PostBlur
+    PostBlur --> Split
+    Split --> Out
+```
 
 ---
 
@@ -426,6 +519,22 @@ void ClosestHitShader(inout RayPayload payload, BuiltInTriangleIntersectionAttri
 
 The `NeuralNetwork<>` template expands to a sequence of `coopVecMatMulNV` + activation calls at the Slang IR level, then compiles to SPIR-V via `slangc`. This means the network topology is fixed at compile time, enabling the driver to optimise tensor core usage for the exact weight dimensions. [Source: RTXNS Slang integration guide](https://github.com/NVIDIA-RTX/RTX-Neural-Shaders/blob/main/docs/SlangIntegration.md)
 
+```mermaid
+graph TD
+    SlangSrc["Slang source\n(NeuralNetwork<32,64,3,3,ActivationReLU>)"]
+    SlangIR["Slang IR\ncoopVecMatMulNV + activation sequence\n(topology fixed at compile time)"]
+    SPIRV["SPIR-V\n(cooperative_vector capability)\nvia slangc"]
+    Driver["NVIDIA driver\n(≥ 572.16 on Linux)"]
+    TensorCores["Tensor cores\n(Ada Lovelace / Blackwell)\nMMA instructions"]
+    Weights["GPU weight buffer\n(rtxns::NetworkLayout)\nFP16 / E4M3 / INT8"]
+
+    SlangSrc --> SlangIR
+    SlangIR --> SPIRV
+    SPIRV --> Driver
+    Driver --> TensorCores
+    Weights -- "bound at dispatch" --> TensorCores
+```
+
 ### 6.4 Linux Requirements and Driver Support
 
 - NVIDIA driver ≥ 572.16 (Linux) for `VK_NV_cooperative_vector`
@@ -460,6 +569,30 @@ The MLP architecture:
 - Weight format: E4M3 FP8 (on Ada Lovelace+) or INT8 (on Turing+)
 
 At inference time, the MLP runs inside the fragment/closest-hit shader where a texture sample instruction would normally appear. On Ada Lovelace, a 32-neuron/3-layer MLP evaluates in approximately 0.8 ns per texel on the tensor cores — comparable to a filtered BC7 texture sample that hits the L2 cache.
+
+```mermaid
+graph LR
+    subgraph "Offline (encode)"
+        TexIn["Input texture\n(PNG / EXR / DDS)"]
+        Train["CUDA training\n(rtxntc-encode)\n5–15 s per 4K texture"]
+        NTCFile[".ntc file\nMLP weights + topology header\nUV hash encoding params\n~1 MB per 4K texture"]
+    end
+    subgraph "Runtime (decode)"
+        GPUBuf["GPU weight buffer\n(VkBuffer)"]
+        Shader["Fragment / closest-hit shader\nrtxntc::SampleTexture(weights, uv)"]
+        HashEnc["Multi-resolution UV\nhash encoding"]
+        CoopVec["coopVecMatMulNV\n(VK_NV_cooperative_vector)\nTensor cores"]
+        TexOut["RGBA texel output\n(float16 → 8-bit)"]
+    end
+
+    TexIn --> Train
+    Train --> NTCFile
+    NTCFile --> GPUBuf
+    GPUBuf --> Shader
+    Shader --> HashEnc
+    HashEnc --> CoopVec
+    CoopVec --> TexOut
+```
 
 ### 7.2 Offline Encoding Workflow
 
@@ -543,6 +676,23 @@ The following pseudo-pipeline shows how all five SDKs contribute to a single pat
 ──── COMPOSITION + UPSCALING ─────────────────────────────────────────────
   Composite diffuse + specular + emissive + shadow
   DLSS SR → DLSS MFG → tonemapping → present (Ch68)
+```
+
+```mermaid
+graph TD
+    GBufPass["G-BUFFER PASS (rasterisation)\nVertex / fragment shaders\nRTXNTC decoded materials\nOutputs: albedo, normal, roughness, depth, motion vectors"]
+    Indirect["INDIRECT ILLUMINATION\n(compute / ray tracing)\nSHaRC lookup: cache hit → SHaRC radiance\nCache miss: trace diffuse bounce → update SHaRC\nRTXGI NRC fallback for specular multi-bounce"]
+    Direct["DIRECT ILLUMINATION\n(ray tracing)\nRTXDI: initial candidate + temporal + spatial reuse\nCast 1 shadow ray → evaluate BSDF × radiance × W"]
+    Neural["NEURAL MATERIAL EVALUATION\n(optional)\nRTXNS NeuralMaterial at hit points"]
+    Denoise["DENOISING (compute)\nNRD RELAX: diffuse (RTXGI) + specular (RTXDI)\nNRD SIGMA: shadow (RTXDI visibility ray)"]
+    Composite["COMPOSITION + UPSCALING\nComposite diffuse + specular + emissive + shadow\nDLSS SR → DLSS MFG → tonemapping → present"]
+
+    GBufPass --> Indirect
+    GBufPass --> Direct
+    Indirect --> Denoise
+    Direct --> Denoise
+    Neural --> Denoise
+    Denoise --> Composite
 ```
 
 Total RTX Kit overhead on RTX 4080 at 1080p native (before DLSS upscale from 540p):

@@ -90,6 +90,28 @@ radv_physical_device_init(struct radv_physical_device *device,
 
 The full lifecycle from `vkCreateInstance` through to `vkGetDeviceQueue` is thus: the loader discovers the ICD manifest; the driver creates a `radv_instance` (or `anv_instance`, `tu_instance`) that embeds `vk_instance`; `vkEnumeratePhysicalDevices` scans DRM devices matching the driver's hardware IDs and populates an array of driver physical device structs; `vkCreateDevice` opens the render node, creates hardware contexts, and initialises per-queue command submission state; `vkGetDeviceQueue` simply returns a pointer to the already-created queue struct. At no point in this lifecycle does the Vulkan API deal directly with kernel objects — every kernel interaction is mediated through the winsys abstraction layer, enabling kernel version adaptation without touching the API layer.
 
+```mermaid
+graph TD
+    Manifest["ICD JSON Manifest\n(e.g. radeon_icd.x86_64.json)"]
+    Loader["Vulkan Loader\n(vkGetInstanceProcAddr)"]
+    Inst["Driver Instance\nradv_instance / anv_instance / tu_instance\n(embeds vk_instance)"]
+    PhysDev["Driver Physical Device\nradv_physical_device / anv_physical_device / tu_physical_device\n(embeds vk_physical_device)"]
+    Dev["Driver Device\nradv_device / anv_device / tu_device\n(embeds vk_device)"]
+    CmdBuf["Driver Command Buffer\nradv_cmd_buffer / anv_cmd_buffer / tu_cmd_buffer\n(embeds vk_command_buffer)"]
+    Queue["Driver Queue\n(per ring type: GFX, COMPUTE, DMA)"]
+    Winsys["Winsys Abstraction Layer\n(amdgpu / i915+xe / msm)"]
+    DRM["DRM Kernel Interface\n(/dev/dri/renderD128)"]
+
+    Manifest --> Loader
+    Loader --> Inst
+    Inst --> PhysDev
+    PhysDev --> Dev
+    Dev --> CmdBuf
+    Dev --> Queue
+    Dev --> Winsys
+    Winsys --> DRM
+```
+
 ---
 
 ## 2. RADV: AMD Vulkan in Mesa
@@ -108,6 +130,20 @@ RADV's memory type layout reflects the physical memory architecture of AMD discr
 
 Sparse binding support (`VK_FEATURE_sparseBinding`, `VK_FEATURE_sparseResidencyBuffer`) is implemented through the amdgpu virtual memory management path. Sparse buffer binds accumulate into a list of `amdgpu_va_op` operations that are submitted in a single `amdgpu_vm_update_pte` batch, keeping the number of kernel round-trips proportional to the number of unique sparse bind operations rather than the number of GPU virtual pages touched.
 
+```mermaid
+graph TD
+    subgraph "Memory Heaps (radv_physical_device_init_mem_types)"
+        VRAM["VRAM\n(Device-Local, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)\nFastest; CPU-inaccessible unless BAR window"]
+        BAR["Device-Local + Host-Visible\n(Resizable BAR / APU UMA)\namdgpu_bo_alloc → BAR region"]
+        GTT["GTT\n(Host-Visible, Host-Coherent)\nSystem RAM mapped via IOMMU"]
+    end
+    App["vkAllocateMemory"] --> AllocFn["radv_alloc_memory\n→ amdgpu_bo_alloc"]
+    AllocFn --> VRAM
+    AllocFn --> BAR
+    AllocFn --> GTT
+    BAR -. "resizable BAR detected:\nstaging uploads skip DMA copy" .-> VRAM
+```
+
 ### 2.3 Command Buffer Recording and Submission
 
 The `radv_cmd_buffer` structure contains, among other things, a `radv_cs_entry *cs` pointer to the current command stream and a large set of dirty flags — `RADV_CMD_DIRTY_*` bits for pipeline-level state (bound pipeline, vertex buffers, index buffer, descriptor sets) and `RADV_DYNAMIC_*` bits for Vulkan dynamic state (viewport, scissor, depth bias, blend constants). This two-tier dirty tracking implements lazy state emission: state changes record dirty bits but do not immediately emit hardware packets; packets are only emitted when the draw or dispatch command forces a flush. This pattern substantially reduces redundant state programming when applications call `vkCmdSetViewport` or `vkCmdBindDescriptorSets` between draw calls.
@@ -117,6 +153,31 @@ The `radv_cmd_buffer` structure contains, among other things, a `radv_cs_entry *
 For very long command buffers, RADV employs IB (indirect buffer) chaining: when the current CS ring fills, RADV emits a `PKT3_INDIRECT_BUFFER` packet pointing to a freshly allocated continuation ring and begins encoding into the new buffer. The kernel driver sees a chain of IBs and traverses them in order during execution. This avoids the need to pre-allocate a worst-case buffer size.
 
 Submission travels through `radv_QueueSubmit()` to `radv_queue_submit()` which calls `amdgpu_cs_submit()` in the winsys. Each submission carries a list of CS IBs, a set of wait semaphores expressed as `AMDGPU_CHUNK_ID_SYNCOBJ_TIMELINE_WAIT` chunks, and a set of signal semaphores expressed as `AMDGPU_CHUNK_ID_SYNCOBJ_TIMELINE_SIGNAL` chunks. Timeline semaphores map directly to DRM syncobj timeline points: the Vulkan semaphore handle wraps a `uint32_t syncobj` kernel object, and waiting/signalling a specific timeline value translates to the corresponding `drm_syncobj_timeline_wait` and `drm_syncobj_timeline_signal` ioctl calls (see Chapter 5).
+
+```mermaid
+graph TD
+    App["Application\nvkCmdDraw / vkQueueSubmit"]
+    CmdBuf["radv_cmd_buffer\n(dirty-flag lazy state emission)"]
+    EmitState["radv_emit_all_graphics_state\n(flush dirty PM4 state)"]
+    EmitDraw["PKT3_DRAW_INDEX_AUTO\n(PM4 draw packet into CS ring)"]
+    IBChain["IB Chaining\n(PKT3_INDIRECT_BUFFER on ring full)"]
+    QueueSubmit["radv_QueueSubmit\n→ radv_queue_submit"]
+    Winsys["amdgpu_cs_submit\n(winsys layer)"]
+    WaitChunk["AMDGPU_CHUNK_ID_SYNCOBJ_TIMELINE_WAIT\n(wait semaphores)"]
+    SignalChunk["AMDGPU_CHUNK_ID_SYNCOBJ_TIMELINE_SIGNAL\n(signal semaphores)"]
+    Kernel["amdgpu kernel driver\nDRM syncobj timeline ioctls"]
+
+    App --> CmdBuf
+    CmdBuf --> EmitState
+    EmitState --> EmitDraw
+    EmitDraw --> IBChain
+    IBChain --> QueueSubmit
+    QueueSubmit --> Winsys
+    Winsys --> WaitChunk
+    Winsys --> SignalChunk
+    WaitChunk --> Kernel
+    SignalChunk --> Kernel
+```
 
 ### 2.4 Descriptor Set Architecture
 
@@ -161,6 +222,27 @@ The pipeline cache (`radv_pipeline_cache`) serialises compiled shader binaries a
 
 `VK_EXT_graphics_pipeline_library` allows splitting a pipeline into independently-compiled fragments (vertex input, pre-rasterisation, fragment, fragment output) that are linked at draw time. RADV supports both monolithic compilation (compile once with full state known) and fast-link (combine pre-compiled fragments with a minimal linker pass), choosing monolithic for cache-warm paths and fast-link for the pipeline library scenario where compile latency matters more than code quality.
 
+```mermaid
+graph LR
+    SPIRV["SPIR-V Binary\n(VkPipelineShaderStageCreateInfo)"]
+    NIR["NIR\n(radv_shader_spirv_to_nir)"]
+    Lower["RADV NIR Lowering\n(descriptor, I/O, vertex attr)"]
+    Link["Cross-stage Linking\n(radv_link_shaders)"]
+    ACO["ACO Backend\n(radv_compile_nir_shader)"]
+    ELF["ELF Binary\n(radv_shader_binary)"]
+    ShaderObj["radv_shader\n(GPU-resident shader object)"]
+    Cache["radv_pipeline_cache\n(disk-backed ELF cache)"]
+
+    SPIRV --> NIR
+    NIR --> Lower
+    Lower --> Link
+    Link --> ACO
+    ACO --> ELF
+    ELF --> ShaderObj
+    ELF -. "cache hit" .-> Cache
+    Cache -. "cache miss" .-> ACO
+```
+
 ```c
 /* Source: src/amd/vulkan/radv_pipeline.c — shader compilation call chain (simplified) */
 static VkResult
@@ -193,6 +275,28 @@ radv_pipeline_compile_shaders(struct radv_device *device,
 `VK_EXT_mesh_shader` became available in RADV by default on Mesa 23.0 with RDNA2 (GFX10_3) hardware. (Mesa 23.1 subsequently added task/mesh shader support for RDNA3/GFX11.) The earlier Mesa 22.3 release contained the initial implementation but it was gated behind `RADV_PERFTEST=ext_ms` because the required gang-submit kernel support had not yet landed. The feature requires the AMD ACE (Asynchronous Compute Engine) queue in addition to the main GFX queue. Task shaders are compute shaders that run on ACE and produce a `taskPayload` structure for each mesh shader workgroup they dispatch; the mesh shaders run on the GFX queue and produce a fixed-size output mesh that feeds the rasteriser directly.
 
 The challenge is synchronising two independent hardware queues. RADV implements a gang-submit mechanism: the task and mesh workloads are submitted as a single gang to the kernel (using `AMDGPU_CHUNK_ID_IB` for both queues in a single `amdgpu_cs_submit` call) with an internal synchronisation point encoded as a `PKT3_REWIND` that stalls the GFX queue until the ACE queue has produced task outputs. The ring buffer between task and mesh stages is a BO allocated by RADV with size proportional to the maximum task payload size multiplied by the dispatch grid dimensions.
+
+```mermaid
+graph TD
+    GangSubmit["amdgpu_cs_submit\n(AMDGPU_CHUNK_ID_IB for both queues)"]
+    ACEQueue["ACE Queue\n(Asynchronous Compute Engine)"]
+    GFXQueue["GFX Queue"]
+    TaskShader["Task Shader Dispatch\n(radv_emit_task_shader_dispatch)"]
+    PayloadRing["taskPayload Ring Buffer BO\n(task payload size × dispatch grid)"]
+    GangBarrier["Gang Barrier\n(PKT3_REWIND stalls GFX until ACE done)"]
+    MeshShader["Mesh Shader Draw\n(radv_emit_mesh_shader_draw)"]
+    Rasteriser["Rasteriser\n(fixed-size output mesh)"]
+
+    GangSubmit --> ACEQueue
+    GangSubmit --> GFXQueue
+    ACEQueue --> TaskShader
+    TaskShader -- "writes taskPayload" --> PayloadRing
+    PayloadRing --> GangBarrier
+    GangBarrier --> GFXQueue
+    GFXQueue --> MeshShader
+    MeshShader -- "reads payload ring" --> MeshShader
+    MeshShader --> Rasteriser
+```
 
 ```c
 /* Source: src/amd/vulkan/radv_pipeline_graphics.c — gang-submit for mesh shaders (simplified) */
@@ -264,11 +368,41 @@ ANV (the name derives from "Anvil," an internal Intel codename) launched alongsi
 
 A key structural feature of ANV is the `anv_kmd_backend` abstraction layer. ANV must support two distinct kernel driver interfaces: the legacy `i915` driver (still in widespread use on pre-Arc hardware) and the modern `xe` driver (Linux 6.8+, required for Battlemage and future Intel GPUs). Rather than scattering `if (xe_driver)` conditionals throughout the code, ANV defines a vtable of kernel interface functions (`bo_alloc`, `queue_exec_locked`, `vm_bind`, etc.) that is populated with either `i915` or `xe` implementations at device initialisation time. This clean separation made the Xe bringup substantially simpler than if ANV had been written with i915 assumptions baked in.
 
+```mermaid
+graph TD
+    ANV["ANV Driver\n(src/intel/vulkan/)"]
+    Backend["anv_kmd_backend\n(vtable: bo_alloc, queue_exec_locked, vm_bind, ...)"]
+    i915["i915 Backend\n(legacy kernel driver)\npre-Arc hardware"]
+    xe["xe Backend\n(Linux 6.8+)\nBattlemage / future Intel GPUs"]
+    Compiler["Intel Compiler\n(src/intel/compiler/)\nbrw + elk backends"]
+    DevInfo["intel_device_info\n(EU counts, L3 config, GFX gen, feature flags)"]
+
+    ANV --> Backend
+    Backend -- "populated at device init" --> i915
+    Backend -- "populated at device init" --> xe
+    ANV --> Compiler
+    ANV --> DevInfo
+```
+
 ### 3.2 The Bindless Heap Design
 
 Intel GPU hardware supports what the programming reference manuals call "bindless" resource access: shaders can address surface states and samplers by index into a globally-mapped heap rather than going through a per-draw binding table populated by the command streamer. ANV exploits this by maintaining a large, permanently GPU-resident BO called the bindless heap (or surface state pool). When a descriptor set is allocated, ANV suballocates 64-byte surface state entries from this heap using `util_vma_heap_alloc()` on `pool->bo_heap`. The 64-byte surface state is written with the surface format, tiling, base address, and dimension information that the Intel EU (Execution Unit) needs to issue a load or store message.
 
 The bindless heap architecture is why ANV's descriptor design diverges so sharply from RADV's. RADV creates a new BO for each descriptor pool and suballocates within it; when that pool is destroyed, the BO is freed. ANV allocates into a single, long-lived heap. The trade-off is memory: the ANV bindless heap may hold surface states for descriptor sets that were freed (the pool bump allocator does not compact), but it enables the critical property that shaders can reference any descriptor by a 32-bit heap index without needing to rebind anything. Hot re-binding in scenes with many materials — a common pattern in DXVK translation of D3D12 games that rely on descriptor heaps — is essentially free in ANV because no command stream state changes.
+
+```mermaid
+graph LR
+    DescPool["anv_descriptor_pool\n(surface_state_stream\n+ surface_state_free_list)"]
+    BindlessHeap["Bindless Heap BO\n(permanently GPU-resident)\n64-byte surface state entries\n(util_vma_heap_alloc)"]
+    DescSet["anv_descriptor_set\n(suballocated from heap)"]
+    Shader["Intel EU Shader\n(addresses resource by 32-bit heap index)"]
+    DescBuf["VK_EXT_descriptor_buffer\n(app writes 64-byte surface states\ninto app-owned BO)"]
+
+    DescPool -- "anv_descriptor_pool_alloc_state\n(bump or free-list)" --> BindlessHeap
+    BindlessHeap --> DescSet
+    DescSet -- "32-bit heap index" --> Shader
+    DescBuf -. "mapped into bindless heap\nat pipeline bind" .-> BindlessHeap
+```
 
 ```c
 /* Source: src/intel/vulkan/anv_descriptor_set.c — bindless surface state allocation (simplified) */
@@ -349,6 +483,27 @@ Adreno GPUs are tile-based deferred renderers (TBDR). Rather than writing each p
 
 The command processor (CP) is a microcontroller that reads PM4 command streams from IBs (Indirect Buffers) linked together in memory. IB1 (primary indirect buffers) are submitted by the driver and contain the top-level command stream; IB2 (secondary IBs) are chained from IB1 and contain per-draw or per-pass state groups. This hierarchy maps naturally to Vulkan's primary and secondary command buffer model.
 
+```mermaid
+graph TD
+    subgraph "Adreno TBDR Pipeline"
+        BinPass["Binning Pass\n(geometry → VSC visibility stream:\nwhich primitives touch which tiles)"]
+        Tiles["Per-Tile Rendering\n(each tile rendered fully before next)"]
+        GMEM["On-chip GMEM\n(512 KB–1.5 MB on-die SRAM)\ncolour + depth attachments per tile"]
+        SysMem["System Memory\n(LPDDR)\ntile load (LOAD_OP_LOAD) /\ntile store (STORE_OP_STORE)"]
+    end
+    CP["Command Processor (CP)\n(PM4 command stream)"]
+    IB1["IB1\n(primary indirect buffer\nfrom driver)"]
+    IB2["IB2\n(secondary IB: per-draw /\nper-pass state groups)"]
+
+    CP --> IB1
+    IB1 -- "chains" --> IB2
+    IB1 --> BinPass
+    BinPass --> Tiles
+    Tiles <-- "read/write" --> GMEM
+    GMEM -. "tile store\n(STORE_OP_STORE)" .-> SysMem
+    SysMem -. "tile load\n(LOAD_OP_LOAD)" .-> GMEM
+```
+
 ### 4.2 Sysmem vs. GMEM Rendering
 
 The most important performance decision Turnip makes is whether a render pass uses GMEM (tile-based) or sysmem (immediate) rendering. GMEM rendering is preferred when the combined size of all colour and depth attachments for a single tile fits within the on-chip GMEM budget. If it does not fit, Turnip must fall back to sysmem, writing directly to main memory, which is much slower for bandwidth-intensive passes.
@@ -386,6 +541,25 @@ tu_render_pass_decide_layout(struct tu_render_pass *pass,
 ### 4.3 Command Buffer Recording
 
 A `tu_cmd_buffer` contains several `tu_cs` (command stream) objects: the main CS for top-level command flow, a draw CS for per-tile rendering commands, a tile-load IB for loading GMEM from system memory at render pass start, and a tile-store IB for flushing GMEM to system memory at render pass end. The `tu_cs` abstraction manages a list of BO-backed fixed-size blocks; when the current block fills, a new BO is allocated and chained with an `IB2_BASE_LO/HI` reference.
+
+```mermaid
+graph TD
+    CmdBuf["tu_cmd_buffer"]
+    MainCS["main CS\n(tu_cs: top-level command flow)"]
+    DrawCS["draw CS\n(tu_cs: per-tile draw calls)"]
+    TileLoadIB["tile-load IB\n(LOAD_OP_LOAD: sysmem → GMEM)"]
+    TileStoreIB["tile-store IB\n(STORE_OP_STORE: GMEM → sysmem)"]
+    TuCS["tu_cs abstraction\n(BO-backed fixed-size blocks;\nchained via IB2_BASE_LO/HI on overflow)"]
+
+    CmdBuf --> MainCS
+    CmdBuf --> DrawCS
+    CmdBuf --> TileLoadIB
+    CmdBuf --> TileStoreIB
+    MainCS --> TuCS
+    DrawCS --> TuCS
+    TileLoadIB --> TuCS
+    TileStoreIB --> TuCS
+```
 
 `vkBeginRenderPass` calls `tu_BeginRenderPass()` which determines the GMEM layout, emits the binning pass setup into the main CS (programming the VSC visibility stream buffers that the binning pass writes to indicate which tiles each primitive touches), and begins encoding the per-tile draw state preamble. `vkEndRenderPass` calls `tu_EndRenderPass()` which emits the tile store sequence: for each tile, Turnip sets the tile's GMEM base address via `CP_SET_MARKER`, dispatches the tile-load IB (if `LOAD_OP_LOAD`), chains in the draw IB (the accumulated per-tile draw calls), then chains the tile-store IB (if `STORE_OP_STORE`).
 
@@ -510,6 +684,26 @@ The `MESA_VK_WSI_PRESENT_MODE` environment variable overrides the swapchain pres
 Every Mesa Vulkan driver relies on the shared WSI (Window System Integration) layer in `src/vulkan/wsi/` for swapchain management, surface creation, and presentation to the display. Rather than each driver implementing its own `vkCreateSwapchainKHR`, all drivers call `wsi_device_init()` during `VkDevice` creation to attach the shared WSI implementation. This design ensures that improvements to the WSI layer — new present modes, explicit sync integration, format modifier negotiation — benefit all drivers simultaneously.
 
 The central WSI object is `wsi_swapchain`, initialised by `wsi_common_create_swapchain()`. This function inspects the `VkSurfaceKHR` handle, determines whether it represents an X11 window, a Wayland surface, or a direct-to-display surface, and dispatches to the appropriate platform backend. Each backend returns a `wsi_swapchain` subclass with a vtable (`acquire_next_image`, `queue_present`, `destroy`) that is called by the shared `vkAcquireNextImageKHR` and `vkQueuePresentKHR` implementations.
+
+```mermaid
+graph TD
+    Drivers["Mesa Vulkan Drivers\n(RADV / ANV / Turnip)\nwsi_device_init() at VkDevice creation"]
+    WSICommon["wsi_common_create_swapchain\n(src/vulkan/wsi/wsi_common.c)"]
+    Surface["VkSurfaceKHR\n(platform tag)"]
+    X11["X11 Backend\n(wsi_x11.c)\nDRI3 + Present extension\nxcb_present_pixmap"]
+    Wayland["Wayland Backend\n(wsi_wayland.c)\nzwp_linux_dmabuf_v1\nwp_linux_drm_syncobj_v1"]
+    Display["Direct-to-Display Backend\n(wsi_display.c)\nVK_KHR_display\ndrmModeAtomicCommit"]
+    Swapchain["wsi_swapchain\n(vtable: acquire_next_image,\nqueue_present, destroy)"]
+
+    Drivers --> WSICommon
+    WSICommon --> Surface
+    Surface -- "VK_ICD_WSI_PLATFORM_XCB/XLIB" --> X11
+    Surface -- "VK_ICD_WSI_PLATFORM_WAYLAND" --> Wayland
+    Surface -- "VK_ICD_WSI_PLATFORM_DISPLAY" --> Display
+    X11 --> Swapchain
+    Wayland --> Swapchain
+    Display --> Swapchain
+```
 
 ```c
 /* Source: src/vulkan/wsi/wsi_common.c — swapchain backend dispatch (simplified) */

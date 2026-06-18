@@ -48,6 +48,22 @@ On the CPU side, virtual memory gives every process its own address space backed
 
 The DRM subsystem exposes this through the `DRM_GPUVM` framework. A `drm_gem_object` carries a `gpuva` list of all GPU-virtual-address mappings pointing to that object, protected by either the GEM reservation lock or the driver's own mutex depending on whether the driver opts into `DRM_GPUVM_IMMEDIATE_MODE` [Source](https://www.kernel.org/doc/html/latest/gpu/drm-mm.html). The GPU MMU context is torn down in the `drm_file` release path when the last file descriptor referencing the GPU context is closed.
 
+```mermaid
+graph TD
+    GEM["drm_gem_object"]
+    GPUVA["gpuva list\n(GPU-virtual-address mappings)"]
+    LOCK["GEM reservation lock\nor driver mutex"]
+    MODE["DRM_GPUVM_IMMEDIATE_MODE"]
+    FILE["drm_file\n(GPU context)"]
+    TEARDOWN["GPU MMU context teardown\n(on last fd close)"]
+
+    GEM --> GPUVA
+    GPUVA -- "protected by" --> LOCK
+    MODE -- "determines lock type" --> LOCK
+    FILE --> TEARDOWN
+    TEARDOWN -- "unmaps" --> GPUVA
+```
+
 ### 2.2 What Happens When a Process Exits
 
 Context teardown is the most security-sensitive moment in GPU process lifecycle. The driver must:
@@ -92,6 +108,22 @@ The cleaner shader patches shipped via the `[PATCH v2 2/2] drm/amdgpu/gfx9: Enab
 Without an Input-Output Memory Management Unit (IOMMU), a GPU that can initiate DMA has unrestricted access to host physical memory — making it a potential tool for bypassing the CPU MMU entirely. The IOMMU interposes on DMA transactions and enforces a device-visible page table (an IOMMU domain) that restricts which host physical pages a device can access. A driver bug that lets a GPU or its attacker-controlled command stream issue DMA to an arbitrary physical address is blocked at the IOMMU boundary.
 
 On x86 the two IOMMU implementations are **Intel VT-d** (Virtualisation Technology for Directed I/O) and **AMD-Vi** (AMD I/O Virtualisation). On ARM systems the **ARM SMMU** (System Memory Management Unit) provides equivalent isolation. The kernel's unified IOMMU API lives in `include/linux/iommu.h`.
+
+```mermaid
+graph LR
+    GPU["GPU\n(DMA initiator)"]
+    IOMMU["IOMMU\n(Intel VT-d / AMD-Vi / ARM SMMU)"]
+    DOMAIN["IOMMU domain\n(device-visible page table)"]
+    HOST["Host physical memory"]
+    GROUP["IOMMU group\n(iommu_group_get)"]
+    ACS["ACS\n(Access Control Services)"]
+
+    GPU -- "DMA transactions" --> IOMMU
+    IOMMU -- "enforces" --> DOMAIN
+    DOMAIN -- "restricts access to" --> HOST
+    GPU --> GROUP
+    ACS -- "enables per-function\nisolation in" --> GROUP
+```
 
 The relevant current API includes:
 
@@ -165,6 +197,35 @@ The Linux kernel implements HDCP primarily in:
 - **SKE (Session Key Exchange):** Derives the session encryption key `ks` from `km` and `riv`.
 - **Repeater propagation:** For HDMI/DP repeaters, the receiver ID list is verified with `HDCP_2_2_REP_SEND_RECVID_LIST` and acknowledged.
 
+```mermaid
+graph TD
+    subgraph "AKE (Authentication and Key Exchange)"
+        AKE1["TX reads HDCP_2_2_AKE_SEND_CERT\n(receiver certificate, 1024-bit RSA pubkey)"]
+        AKE2["TX verifies DCP LLC signature\n(HDCP_2_2_DCP_LLC_SIG_LEN = 384 bytes)"]
+        AKE3["TX establishes shared master key km"]
+        AKE1 --> AKE2 --> AKE3
+    end
+
+    subgraph "LC (Locality Check)"
+        LC1["TX sends HDCP_2_2_LC_INIT\n(64-bit nonce rn)"]
+        LC2["RX responds with L'\n(within 20 ms)"]
+        LC3["Key derivation with LC128"]
+        LC1 --> LC2 --> LC3
+    end
+
+    subgraph "SKE (Session Key Exchange)"
+        SKE1["Derives session key ks\n(from km and riv)"]
+    end
+
+    subgraph "Repeater propagation"
+        REP1["Verify HDCP_2_2_REP_SEND_RECVID_LIST"]
+    end
+
+    AKE3 --> LC1
+    LC3 --> SKE1
+    SKE1 --> REP1
+```
+
 The kernel defines the complete message ID table in `include/drm/display/drm_hdcp.h` [Source](https://github.com/torvalds/linux/blob/master/include/drm/display/drm_hdcp.h):
 
 ```c
@@ -235,6 +296,22 @@ When HDCP 2.2 Type 1 authentication is active, the display pipeline from GPU fra
 
 The solution used on Intel platforms is **PXP (Protected Xe Path)**, a hardware feature on Gen12+ that creates a separate encrypted path from the GPU's render engine to the display engine for protected content. PXP-enabled framebuffers are marked at allocation time and the hardware ensures they cannot be accessed by unprivileged command streams. The Intel Xe driver exposes this through `xe_hdcp_gsc.c` [Source](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/xe/display/xe_hdcp_gsc.c).
 
+```mermaid
+graph LR
+    RENDER["GPU render engine\n(Gen12+)"]
+    PXP["PXP\n(Protected Xe Path)\nencrypted path"]
+    DISPLAY["Display engine"]
+    FB["PXP-enabled framebuffer\n(marked at allocation time)"]
+    UNPRIV["Unprivileged command streams"]
+    PANEL["Panel / HDCP 2.2 sink"]
+
+    FB --> RENDER
+    RENDER -- "encrypted path via" --> PXP
+    PXP --> DISPLAY
+    DISPLAY --> PANEL
+    UNPRIV -. "hardware blocks access" .-> FB
+```
+
 At the DRM level, "protected" framebuffers are not currently a generic kernel feature with a universal `FLAG_PROTECTED` flag — the protection is vendor-specific (Intel PXP, AMD Display Core's protected surface support). The compositor is expected to honour the protection by not compositing protected surfaces through unprotected paths.
 
 ### 5.2 Wayland Content Protection Protocol
@@ -276,6 +353,22 @@ nvkm_firmware_get(const struct nvkm_subdev *subdev, const char *fwname,
 
 The firmware itself is PKC (public-key cryptography) signed by NVIDIA; the GPU's Boot ROM validates the signature before granting the GSP execution privilege. (The exact padding scheme — PKCS#1 v1.5 vs PSS — has not been confirmed from public sources and needs verification.) The NVIDIA ACR (Access Control Region) subsystem in Nouveau (`nvkm/subdev/acr/`) manages the privilege levels for Light-Secured (LS) and Heavy-Secured (HS) Falcon microcontrollers. HS Falcons run code signed with NVIDIA's production key and execute at elevated Hardware-Secured privilege; LS Falcons run inside a WPR (Write-Protected Region) enforced by the HS ACR firmware at lower privilege. Drivers receive only LS-signed blobs; the GPU BootROM and SEC2 engine maintain the separation [Source: `include/nvkm/subdev/acr.h`](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/nouveau/include/nvkm/subdev/acr.h). The Nova (Rust NVIDIA driver) documentation describes the HS/LS privilege model from an architectural standpoint [Source: Ch10 — Nova].
 
+```mermaid
+graph TD
+    BOOTROM["GPU BootROM"]
+    SEC2["SEC2 engine"]
+    ACR["ACR\n(Access Control Region)\nnvkm/subdev/acr/"]
+    HS["HS Falcon\n(Heavy-Secured)\nNVIDIA production key\nHardware-Secured privilege"]
+    WPR["WPR\n(Write-Protected Region)"]
+    LS["LS Falcon\n(Light-Secured)\nLS-signed blobs only\nlower privilege"]
+
+    BOOTROM --> SEC2
+    SEC2 --> ACR
+    ACR -- "enforces" --> HS
+    ACR -- "enforces" --> WPR
+    WPR -- "contains" --> LS
+```
+
 ### 6.2 Intel GuC and HuC Firmware
 
 Intel's **GuC** (Graphics Microcontroller) handles GPU scheduling and power management; **HuC** (HEVC Microcontroller) accelerates video encode/decode. Both are loaded by `intel_uc_fw_fetch()` in the i915/Xe drivers [Source: `drivers/gpu/drm/i915/gt/uc/intel_uc_fw.c`](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/i915/gt/uc/intel_uc_fw.c):
@@ -301,6 +394,18 @@ The AMD **PSP** (Platform Security Processor, now "AMD Secure Processor") is an 
 - Providing HDCP authentication services on AMD display hardware via `drivers/gpu/drm/amd/display/modules/hdcp/hdcp_psp.c`.
 
 The firmware signing chain: ARK (2048-bit RSA) → ASK (AMD SEV Signing Key) → CEK (Chip Endorsement Key, per-device ECDSA) [Source](https://dayzerosec.com/blog/2023/04/17/reversing-the-amd-secure-processor-psp.html). GPU firmware files are compressed, signed, and for recent revisions also encrypted. The PSP 14.0 block added for RDNA4 continues this pattern [Source](https://www.phoronix.com/news/AMDGPU-Enabling-PSP-14.0).
+
+```mermaid
+graph TD
+    ARK["ARK\n(AMD Root Key)\n2048-bit RSA"]
+    ASK["ASK\n(AMD SEV Signing Key)"]
+    CEK["CEK\n(Chip Endorsement Key)\nper-device ECDSA"]
+    GPUFW["GPU firmware blobs\n(compressed, signed, encrypted)"]
+
+    ARK -- "signs" --> ASK
+    ASK -- "signs" --> CEK
+    CEK -- "signs attestation for" --> GPUFW
+```
 
 ### 6.4 UEFI Secure Boot and Kernel Module Signing
 
@@ -355,6 +460,18 @@ The H100 in CC-On mode **does not encrypt its on-card HBM memory at rest** — t
 - When the CPU's confidential VM writes data destined for the GPU (model inputs, activations), it encrypts the data using **AES-GCM** with a session key and places it in an **encrypted bounce buffer** in the shared memory region.
 - The GPU reads from the bounce buffer, decrypts into the CPR, and processes the data entirely within the protected region.
 - Results are encrypted with AES-GCM before leaving the CPR back through the shared bounce buffer.
+
+```mermaid
+graph LR
+    CVM["CPU confidential VM\n(CVM)"]
+    BB["encrypted bounce buffer\n(shared memory region)"]
+    CPR["CPR\n(Compute Protected Region)\nGPU-local HBM2e"]
+
+    CVM -- "AES-GCM encrypt\n(session key)" --> BB
+    BB -- "GPU reads,\ndecrypts into" --> CPR
+    CPR -- "AES-GCM encrypt\nresults" --> BB
+    BB -- "CVM reads\ndecrypted results" --> CVM
+```
 
 The AES-GCM implementation conforms to NIST SP800-38D. The session key is established via the SPDM (Security Protocol and Data Model) protocol exchange.
 
@@ -458,6 +575,20 @@ The separation of **render nodes** (`/dev/dri/renderD*`) from **primary nodes** 
 - Render nodes expose only rendering ioctl (those with `DRM_RENDER_ALLOW`). No modesetting, no master operations.
 - Applications that only need GPU compute or rendering — Vulkan apps, CUDA, ROCm — should open the render node and never need access to the primary node.
 - The primary node, which can change display state, should only be opened by the compositor.
+
+```mermaid
+graph TD
+    subgraph "Render node (/dev/dri/renderD*)"
+        RN["DRM_RENDER_ALLOW\nioctl only\nno modesetting"]
+    end
+    subgraph "Primary node (/dev/dri/card*)"
+        PN["DRM_MASTER\nDRM_ROOT_ONLY\nDRM_AUTH\nmodesetting + display state"]
+    end
+
+    APPS["Vulkan apps / CUDA / ROCm"] --> RN
+    COMPOSITOR["Compositor\n(trusted)"] --> PN
+    COMPOSITOR -. "also opens" .-> RN
+```
 
 This separation prevents a compromised application from issuing a `DRM_IOCTL_SET_MASTER` and interfering with the display pipeline.
 

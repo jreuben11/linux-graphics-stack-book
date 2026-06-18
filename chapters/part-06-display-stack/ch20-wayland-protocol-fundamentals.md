@@ -44,11 +44,38 @@ The timeline of Wayland's adoption in mainstream Linux distributions is instruct
 
 Every entity in the Wayland protocol is an **object** with a unique integer ID. From the client's perspective, objects are represented by `wl_proxy` structures; from the compositor's perspective by `wl_resource` structures. These are the two halves of the same logical entity, living on opposite sides of the Unix socket. When a client calls a request on a proxy, libwayland serialises it to the socket; when the compositor processes that serialised message, it looks up the corresponding `wl_resource` and dispatches the request handler.
 
+```mermaid
+graph LR
+    subgraph "Client Process"
+        wl_proxy["wl_proxy\n(client-side object)"]
+        libwayland_client["libwayland-client\n(marshalling)"]
+    end
+    subgraph "Unix Domain Socket"
+        socket["requests →\n← events"]
+    end
+    subgraph "Compositor Process"
+        libwayland_server["libwayland-server\n(unmarshalling)"]
+        wl_resource["wl_resource\n(server-side object)"]
+    end
+    wl_proxy --> libwayland_client
+    libwayland_client --> socket
+    socket --> libwayland_server
+    libwayland_server --> wl_resource
+```
+
 The type system that governs this correspondence is `wl_interface`. Each `wl_interface` struct (defined in generated protocol headers) carries the interface name as a C string, a version integer, and arrays of `wl_message` descriptors for its requests and events. A `wl_message` carries the method name and a signature string that encodes the argument types using single-character codes: `i` for int, `u` for uint, `f` for fixed-point, `s` for string, `o` for object, `n` for new_id, `a` for array, `h` for file descriptor. The signature is used by the marshalling machinery both to encode outgoing messages and to validate and decode incoming ones.
 
 Object IDs are 32-bit unsigned integers. The client allocates IDs in the range 1 through 0xFEFFFFFF; the compositor allocates server-side IDs in the range 0xFF000001 through 0xFFFFFFFF. ID 0 is the null object, used when an optional object argument is absent. ID 1 is always pre-allocated to the `wl_display` — it is the bootstrap object that exists before any protocol negotiation. This allocation split is important: it guarantees that no two parties can accidentally reuse an ID, even before any messages are exchanged.
 
 The global registry is the mechanism by which a client discovers what capabilities the compositor offers. Immediately after connecting, a client sends `wl_display.get_registry` (passing a freshly allocated ID for the `wl_registry` object), then calls `wl_display_roundtrip`. The compositor responds by emitting a `wl_registry.global` event for each available global, carrying three pieces of information: the **name** (a compositor-local integer identifying this global instance), the **interface** string (e.g. `"wl_compositor"`, `"zwp_linux_dmabuf_v1"`), and the **version** integer (the maximum protocol version the compositor implements for this interface). The client registers a `wl_registry_listener` to receive these events:
+
+```mermaid
+graph TD
+    wl_display["wl_display\n(ID 1, bootstrap object)"]
+    wl_display -- "get_registry" --> wl_registry["wl_registry"]
+    wl_registry -- "global event\n(name, interface, version)" --> wl_registry_listener["wl_registry_listener\n(client callback)"]
+    wl_registry_listener -- "wl_registry_bind\n(name, interface, version)" --> bound_globals["Bound globals\ne.g. wl_compositor,\nxdg_wm_base,\nzwp_linux_dmabuf_v1"]
+```
 
 ```c
 /* wayland/src/wayland-client.c — typical registry listener pattern */
@@ -131,6 +158,18 @@ The scanner generates a `xdg_surface_ack_configure(surface, serial)` inline func
 
 The `wl_compositor` global is the root factory for two fundamental objects. `wl_compositor_create_surface` creates a `wl_surface`, the central object representing a rectangular area on screen. `wl_compositor_create_region` creates a `wl_region` for describing complex clip or input areas through union and subtract operations.
 
+```mermaid
+graph TD
+    wl_compositor["wl_compositor\n(global factory)"]
+    wl_compositor -- "create_surface" --> wl_surface["wl_surface\n(2D area, double-buffered state)"]
+    wl_compositor -- "create_region" --> wl_region["wl_region\n(clip / input areas)"]
+    wl_subcompositor["wl_subcompositor\n(global)"]
+    wl_subcompositor -- "get_subsurface" --> wl_subsurface["wl_subsurface\n(parent/child relationship)"]
+    wl_surface -- "frame" --> wl_callback["wl_callback\n(frame pacing)"]
+    wl_surface -- "parent of" --> wl_subsurface
+    wl_output["wl_output\n(display properties:\nmode, transform, scale)"]
+```
+
 A `wl_surface` is a powerful but deliberately minimal object. It has no position on screen (that is determined by shell roles like `xdg_toplevel`), no title, and no window management semantics. It is just a 2D area that can hold a buffer, accept damage, and be committed. The state model is **double-buffered**: all modifications made via protocol requests accumulate in a *pending* state and have no effect until the client calls `wl_surface_commit`, at which point the pending state atomically becomes the current state and the compositor may schedule a repaint.
 
 The sequence for updating a surface is:
@@ -158,6 +197,16 @@ Core Wayland deliberately omits window management. A bare `wl_surface` has no ti
 `xdg_wm_base` is the global that provides the xdg-shell functionality. It serves as a factory for `xdg_surface` objects (via `xdg_wm_base_get_xdg_surface`) and `xdg_positioner` objects (for popup positioning). It also implements a simple liveness mechanism: the compositor periodically sends a `ping` event with a serial; if the client does not respond with a `pong` within a reasonable timeout, the compositor may mark the window as unresponsive and offer the user a "kill application" option.
 
 An `xdg_surface` wraps a `wl_surface` and is the base class for window roles. It adds the configure/ack mechanism and the `set_window_geometry` request. An `xdg_surface` must be assigned exactly one role: `xdg_toplevel` (a normal application window) or `xdg_popup` (a transient menu or tooltip).
+
+```mermaid
+graph TD
+    xdg_wm_base["xdg_wm_base\n(global, ping/pong liveness)"]
+    xdg_wm_base -- "get_xdg_surface\n(wraps wl_surface)" --> xdg_surface["xdg_surface\n(configure/ack/commit base)"]
+    xdg_wm_base -- "create_positioner" --> xdg_positioner["xdg_positioner\n(popup anchor + gravity)"]
+    xdg_surface -- "get_toplevel\n(exactly one role)" --> xdg_toplevel["xdg_toplevel\n(normal application window:\ntitle, app_id, max/min size,\nmaximized, fullscreen, states)"]
+    xdg_surface -- "get_popup\n(exactly one role)" --> xdg_popup["xdg_popup\n(transient menu / tooltip,\nuses xdg_positioner)"]
+    xdg_toplevel -. "decoration negotiation" .-> zxdg_decoration["zxdg_decoration_manager_v1\n(SSD vs CSD)"]
+```
 
 The configure/ack/commit three-step is the most commonly misunderstood aspect of xdg-shell and the source of most toolkit-level Wayland bugs. The compositor sends a `configure` event on the `xdg_surface` (and, if applicable, on the `xdg_toplevel` or `xdg_popup` first). Each configure event carries a **serial** — a monotonically increasing integer. The client must:
 
@@ -214,6 +263,24 @@ Version 4 of `zwp_linux_dmabuf_v1` introduced the **feedback** mechanism — `zw
 
 3. The compositor sends `done` to signal the end of the entire feedback object, after which the client can act on the information atomically.
 
+```mermaid
+graph TD
+    zwp_linux_dmabuf_feedback_v1["zwp_linux_dmabuf_feedback_v1\n(per-surface feedback object)"]
+    format_table["format_table event\n(mmap'd fd: array of\n{format, modifier} pairs)"]
+    tranche1["Tranche 0 (highest preference)\ntranche_target_device: dev_t\ntranche_flags: SCANOUT\ntranche_formats: indices[]"]
+    tranche2["Tranche 1 (fallback)\ntranche_target_device: dev_t\ntranche_flags: (render only)\ntranche_formats: indices[]"]
+    done["done event\n(act on feedback atomically)"]
+    gbm["gbm_bo_create_with_modifiers2\n(allocate with chosen format+modifier)"]
+    wl_buffer["zwp_linux_buffer_params_v1\n→ wl_buffer"]
+
+    zwp_linux_dmabuf_feedback_v1 --> format_table
+    zwp_linux_dmabuf_feedback_v1 --> tranche1
+    zwp_linux_dmabuf_feedback_v1 --> tranche2
+    zwp_linux_dmabuf_feedback_v1 --> done
+    tranche1 -- "match tranche_target_device\nto GBM device" --> gbm
+    gbm -- "gbm_bo_get_fd_for_plane\n+ offsets + strides" --> wl_buffer
+```
+
 The client iterates the tranches, looking for a tranche where `tranche_target_device` matches the DRM device it has a GBM context for, and uses the format/modifier pairs from that tranche to call `gbm_bo_create_with_modifiers2`. Mesa's `platform_wayland.c` implements this precisely:
 
 ```c
@@ -254,6 +321,22 @@ The `wp_presentation` global, found in `wayland-protocols/stable/presentation-ti
 
 - **`presented`**: The frame was displayed. The event carries `tv_sec_hi`, `tv_sec_lo`, `tv_nsec` (a split 64-bit seconds value plus nanoseconds, forming a `CLOCK_MONOTONIC` timestamp), `refresh` (the display's current refresh interval in nanoseconds), `seq_hi` and `seq_lo` (a 64-bit display-hardware frame counter), and a `flags` bitmask.
 - **`discarded`**: The frame was never displayed. This happens when a newer commit was applied before the compositor got a chance to present the older frame, or when the surface was invisible.
+
+```mermaid
+graph TD
+    client["Client"]
+    wp_presentation["wp_presentation\n(global)"]
+    wl_surface_commit["wl_surface_commit"]
+    feedback["wp_presentation_feedback\n(one per committed frame)"]
+    presented["presented event\n(tv_sec_hi/lo, tv_nsec: CLOCK_MONOTONIC\nrefresh: ns per frame\nseq_hi/lo: hw frame counter\nflags: VSYNC, HW_CLOCK,\nHW_COMPLETION, ZERO_COPY)"]
+    discarded["discarded event\n(newer commit superseded this frame,\nor surface was invisible)"]
+
+    client -- "wp_presentation_feedback\n(wp_presentation, surface)" --> feedback
+    client --> wl_surface_commit
+    feedback -- "compositor outcome" --> presented
+    feedback -- "compositor outcome" --> discarded
+    wp_presentation -.-> feedback
+```
 
 The `flags` bitmask is informative for diagnosis. `WP_PRESENTATION_FEEDBACK_KIND_VSYNC` (bit 0) indicates the presentation was synchronised to a vertical blanking interval. `WP_PRESENTATION_FEEDBACK_KIND_HW_CLOCK` (bit 1) means the timestamp came from hardware (DRM vblank event) rather than a software estimate. `WP_PRESENTATION_FEEDBACK_KIND_HW_COMPLETION` (bit 2) means the compositor received a hardware flip-complete event. `WP_PRESENTATION_FEEDBACK_KIND_ZERO_COPY` (bit 3) confirms that the buffer was scanned out directly without being resampled into a compositor framebuffer.
 
@@ -304,6 +387,27 @@ The problem with implicit sync is that it requires every participant to agree on
 The older `zwp_linux_explicit_synchronization_v1` (in `wayland-protocols/unstable/linux-explicit-synchronization/`) attempted to solve this with per-surface acquire and release fences attached to `wl_surface` commits as sync file descriptors. It was never widely adopted by compositors, largely because of API complexity and the fact that it predated timeline semaphore thinking.
 
 The modern solution is `wp_linux_drm_syncobj_v1`, which entered wayland-protocols staging in wayland-protocols 1.34 (2023) and received a KWin implementation merged into KDE Plasma 6. It uses **DRM sync objects** (`drm_syncobj`) as the kernel primitive. A DRM syncobj is a lightweight kernel object that can be signalled by the GPU through a command submission. Timeline sync objects extend this with a 64-bit counter: operations can signal or wait on specific point values in the timeline, matching the semantics of Vulkan timeline semaphores.
+
+```mermaid
+graph TD
+    drm_syncobj["drm_syncobj\n(kernel: DRM_IOCTL_SYNCOBJ_CREATE)"]
+    syncobj_fd["syncobj fd\n(DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD)"]
+    wp_timeline["wp_linux_drm_syncobj_timeline_v1\n(import_timeline)"]
+    wp_surface_sync["wp_linux_drm_syncobj_surface_v1\n(get_surface)"]
+    acquire_point["set_acquire_point\n(compositor waits until GPU\nsignals this timeline value)"]
+    release_point["set_release_point\n(compositor signals this value\nwhen done reading buffer)"]
+    wl_surface_commit["wl_surface_commit"]
+    vk_semaphore["Vulkan timeline semaphore\n(vkGetSemaphoreFdKHR /\nvkImportSemaphoreFdKHR)"]
+
+    drm_syncobj --> syncobj_fd
+    syncobj_fd -- "wp_linux_drm_syncobj_manager_v1\nimport_timeline" --> wp_timeline
+    wp_timeline --> acquire_point
+    wp_timeline --> release_point
+    acquire_point --> wp_surface_sync
+    release_point --> wp_surface_sync
+    wp_surface_sync --> wl_surface_commit
+    vk_semaphore -. "export/import\nsemaphore fd" .-> drm_syncobj
+```
 
 The protocol flow is as follows:
 
@@ -447,6 +551,18 @@ Compositor support as of 2025: KWin (KDE Plasma 5.25 and later) and Weston imple
 ## 12. Protocol Versioning and the Stability Ladder
 
 The wayland-protocols ecosystem organises protocols into four stability tiers, and the correct use of these tiers is architecturally important for both compositor authors and application developers.
+
+```mermaid
+graph TD
+    tier4["Tier 4: Unstable / deprecated\n(zwp_ / zxdg_ prefix:\nzwp_linux_dmabuf_v1, zwp_tablet_manager_v2\nno ABI guarantee)"]
+    tier3["Tier 3: wayland-protocols staging\n(_vN suffix: wp_drm_lease_v1,\nwp_linux_drm_syncobj_v1\nrequires 2 independent compositor impls)"]
+    tier2["Tier 2: wayland-protocols stable\n(no z/xx prefix: xdg_wm_base,\nwp_presentation, wp_color_management_v1\nversioned additions only via since=N)"]
+    tier1["Tier 1: Core wayland.xml\n(frozen: wl_display, wl_registry,\nwl_surface, wl_compositor,\nwl_output, wl_seat, wl_shm)"]
+
+    tier4 -- "promotion: 2-compositor rule" --> tier3
+    tier3 -- "promotion: stable review" --> tier2
+    tier2 -. "core only (already frozen)" .-> tier1
+```
 
 **Tier 1: Core wayland.xml**. The interfaces defined in the core Wayland protocol — `wl_display`, `wl_registry`, `wl_surface`, `wl_compositor`, `wl_output`, `wl_seat`, `wl_shm` — are frozen. No new requests or events will ever be added. Only errata-level clarifications to the specification text are permitted. Clients and compositors can depend on these interfaces being present in every conformant Wayland implementation.
 

@@ -62,6 +62,28 @@ When Wine code calls Windows NT system call stubs — `NtCreateFile`, `NtReadFil
 
 Not every NT call has a clean POSIX equivalent, and that is where the wineserver enters.
 
+```mermaid
+graph TD
+    subgraph "Wine Process (ELF + PE)"
+        PELoader["PE Loader\n(dlls/ntdll/loader.c)"]
+        NTDll["ntdll.dll\n(Wine implementation)"]
+        W32Code["Windows PE Code\n(.exe + DLLs)"]
+    end
+    subgraph "Linux Kernel"
+        Mmap["mmap(2) / pread(2)"]
+        POSIX["POSIX syscalls\n(open, read, write...)"]
+    end
+    Wineserver["wineserver\n(named objects broker)"]
+    UnixSocket["Unix socket\n(per-thread)"]
+
+    W32Code -- "NT syscall stubs" --> NTDll
+    NTDll -- "maps sections" --> PELoader
+    NTDll -- "NtCreateFile → open(2)\nNtReadFile → read(2)" --> POSIX
+    NTDll -- "no POSIX equivalent\n(events, mutexes, semaphores)" --> UnixSocket
+    UnixSocket --> Wineserver
+    PELoader --> Mmap
+```
+
 ### The Wineserver
 
 The wineserver (`server/` directory in the Wine tree) is a separate Unix process that acts as a broker for Win32 kernel objects that have no direct Linux equivalent: named mutexes, manual-reset events, semaphores, file change notifications, and the object namespace. Every Wine thread maintains a Unix socket connection to the wineserver; when a thread needs to create or wait on a kernel object, it sends a request message over that socket and blocks until the wineserver replies.
@@ -104,6 +126,25 @@ When a game calls `CreateWindowEx` or `wglCreateContext`, Wine's `user32.dll` an
 
 When a game links against `d3d9.dll`, `d3d10core.dll`, or `d3d11.dll`, Wine provides built-in implementations of those interfaces backed by **wined3d** — a software/OpenGL-based D3D translator that has been part of Wine since the early 2000s. Wined3d translates D3D draw calls into OpenGL calls, ultimately landing in Mesa's `radeonsi` or `iris` driver (see Chapter 19). For legacy D3D8 and below, wined3d is still the primary path. For D3D9 through D3D11 in performance-sensitive workloads, DXVK has completely supplanted it.
 
+```mermaid
+graph TD
+    Game["Windows Game\n(PE executable)"]
+    D3D9["d3d9.dll / d3d11.dll\n(in DLL search path)"]
+    DXVK["DXVK\n(native ELF, via WINEDLLOVERRIDES=n)"]
+    Wined3d["wined3d\n(Wine built-in, D3D8 / legacy)"]
+    Vulkan["Vulkan ICD\n(RADV / ANV / NVK)"]
+    OpenGL["OpenGL\n(Mesa radeonsi / iris)"]
+    Backend["winex11.drv / winewayland.drv\n(window + surface backend)"]
+
+    Game --> D3D9
+    D3D9 -- "DXVK override (n)" --> DXVK
+    D3D9 -- "built-in fallback" --> Wined3d
+    DXVK --> Vulkan
+    Wined3d --> OpenGL
+    DXVK --> Backend
+    Backend -- "VkSurfaceKHR" --> Vulkan
+```
+
 **DXVK** works by placing a native (Linux ELF) implementation of `d3d9.dll`, `d3d10core.dll`, and `d3d11.dll` earlier in the DLL search path than Wine's built-in. This is controlled by the `WINEDLLOVERRIDES` environment variable:
 
 ```bash
@@ -143,6 +184,22 @@ m_module.opStore(dstScalar, dot);
 
 The emitted SPIR-V is then handed to Mesa's SPIR-V→NIR front end (Chapter 14), which lowers it to NIR. On AMD hardware, RADV's ACO compiler (Chapter 15) takes the NIR and produces AMD GPU machine code. The full DXBC-to-ISA chain is therefore: **DXBC → SPIR-V (DXVK) → NIR (Mesa) → ACO ISA (RADV)**.
 
+```mermaid
+graph LR
+    DXBC["DXBC\n(D3D9/10/11 bytecode)"]
+    DXVKSpirv["DXVK spirv compiler\n(src/spirv/)"]
+    SPIRV["SPIR-V"]
+    NIR["NIR\n(Mesa SPIR-V→NIR front end)"]
+    ACO["ACO compiler\n(RADV, Chapter 15)"]
+    ISA["AMD GPU ISA\n(machine code)"]
+
+    DXBC --> DXVKSpirv
+    DXVKSpirv --> SPIRV
+    SPIRV --> NIR
+    NIR --> ACO
+    ACO --> ISA
+```
+
 ### D3D11 Pipeline State and the Stutter Problem
 
 D3D11's pipeline state model is deferred and implicit: an application calls individual `IASetVertexBuffers`, `VSSetShader`, `RSSetState`, `OMSetRenderTargets`, and similar calls at any time, and the driver assembles the full pipeline state internally at draw time. Vulkan's model is the opposite: a complete, immutable `VkPipeline` object must be created (and compiled) before it can be used, encapsulating vertex input layout, shader stages, rasterisation state, blend state, and render pass compatibility all at once.
@@ -178,6 +235,24 @@ vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeInfo, NULL, &fastPipel
 The fast-linked pipeline is syntactically and semantically correct — the GPU executes it without errors — but is not fully optimised (driver link-time optimisation across library boundaries is deferred). DXVK submits draws with the fast-linked pipeline immediately, then replaces it with a fully optimised version compiled in the background. From the player's perspective, there is no stutter and no visual corruption.
 
 GPL requires Vulkan 1.3 or specific driver support: on NVIDIA it became available from driver 520.56.06 on Linux; RADV enabled it by default in Mesa 23.1. DXVK 2.0 made GPL the default when the driver advertises support.
+
+```mermaid
+graph TD
+    subgraph "VK_EXT_graphics_pipeline_library stages"
+        VI["VERTEX_INPUT_INTERFACE\n(vertex + index buffer)"]
+        PreRaster["PRE_RASTERIZATION_SHADERS\n(vertex / geometry / hull / domain shaders)"]
+        FragShader["FRAGMENT_SHADER\n(fragment shader SPIR-V→ISA)"]
+        FragOut["FRAGMENT_OUTPUT_INTERFACE\n(render pass + blend state)"]
+    end
+    FastLink["Fast-linked VkPipeline\n(immediate, unoptimised)"]
+    FullOpt["Fully optimised VkPipeline\n(background thread)"]
+
+    VI --> FastLink
+    PreRaster --> FastLink
+    FragShader --> FastLink
+    FragOut --> FastLink
+    FastLink -. "replaced when ready" .-> FullOpt
+```
 
 ### The DXVK State Cache
 
@@ -266,6 +341,22 @@ dxil_spirv_binary_to_spirv(
 ```
 
 The resulting SPIR-V is handed to Mesa's SPIR-V→NIR front end, and from there to RADV's ACO compiler — the same final path as DXVK's DXBC shaders, just with a different pre-NIR translation step.
+
+```mermaid
+graph LR
+    DXIL["DXIL\n(LLVM 3.7 bitcode + dx.op)"]
+    DxilSpirv["dxil-spirv\n(HansKristian-Work/dxil-spirv)"]
+    SPIRV2["SPIR-V"]
+    NIR2["NIR\n(Mesa SPIR-V→NIR front end)"]
+    ACO2["ACO compiler\n(RADV)"]
+    ISA2["AMD GPU ISA"]
+
+    DXIL --> DxilSpirv
+    DxilSpirv --> SPIRV2
+    SPIRV2 --> NIR2
+    NIR2 --> ACO2
+    ACO2 --> ISA2
+```
 
 ### D3D12 Command Lists, Queues, and Barriers
 
@@ -389,6 +480,36 @@ struct ntsync_wait_args {
 
 Wine's ntsync client-side lives in `dlls/ntdll/unix/sync.c`. When `WaitForSingleObject` is called with an ntsync-backed handle, the ntdll implementation calls `ioctl(ntsync_fd, NTSYNC_IOC_WAIT_ANY, &args)`, passing the object file descriptor and timeout. The kernel blocks the thread using its wait queue mechanism, waking it exactly when the object is signaled — with correct semantics, no spin loops, and full atomic multi-object support for WAIT_ALL.
 
+```mermaid
+graph TD
+    WaitAPI["WaitForSingleObject /\nWaitForMultipleObjects"]
+
+    subgraph "esync (WINEESYNC=1)"
+        EsyncFd["eventfd per kernel object"]
+        Poll["poll(2) / epoll(2)"]
+        EsyncFd --> Poll
+    end
+
+    subgraph "fsync (WINEFSYNC=1, kernel >= 5.16)"
+        FsyncMem["uint32_t memory location\nper kernel object"]
+        FutexWaitv["futex_waitv(2)"]
+        FsyncMem --> FutexWaitv
+    end
+
+    subgraph "ntsync (/dev/ntsync, kernel >= 6.14)"
+        NtsyncObj["kernel-managed object fd\n(event / semaphore / mutex)"]
+        NtsyncIoctl["ioctl NTSYNC_IOC_WAIT_ANY\nor NTSYNC_IOC_WAIT_ALL"]
+        NtsyncObj --> NtsyncIoctl
+    end
+
+    Wineserver2["wineserver IPC\n(Unix socket round-trip)"]
+
+    WaitAPI -- "fallback / object metadata" --> Wineserver2
+    WaitAPI -- "WINEESYNC=1" --> EsyncFd
+    WaitAPI -- "WINEFSYNC=1" --> FsyncMem
+    WaitAPI -- "kernel >= 6.14\n+ /dev/ntsync" --> NtsyncObj
+```
+
 The ntsync design resolved the concerns that had kept esync and fsync out of the kernel for years. Earlier proposals put Win32 object state in user-space memory (futex keys), requiring the kernel to trust user-space state — a security and correctness risk. ntsync keeps all object state in kernel memory under the kernel's control; user-space only passes file descriptors. The `/dev/ntsync` device manages object lifetimes via file descriptor reference counting, making leak and use-after-free handling straightforward.
 
 Wine 9.x shipped ntsync client support; Proton 9.0 adopted ntsync as the default synchronisation backend when the host kernel is ≥ 6.14. The runtime selection logic checks: if `PROTON_NO_ESYNC=1`, skip esync; if kernel < 5.16, fall back to esync; if kernel ≥ 6.14 and `/dev/ntsync` exists, use ntsync; else use fsync if kernel ≥ 5.16; else use esync.
@@ -419,6 +540,22 @@ bwrap \
 
 Valve ships three Steam Runtime container generations: `scout` (Ubuntu 12.04-era ABI baseline, for maximum compatibility), `soldier` (Debian 10-era), and `sniper` (Debian 11-era, the default for current Proton). Most current Proton releases use the `sniper` runtime.
 
+```mermaid
+graph TD
+    subgraph "pressure-vessel container (bubblewrap)"
+        SteamRuntime["Steam Runtime rootfs\n(sniper / soldier / scout)\n/usr tree"]
+        WineProc["Wine process\n(wine64 + game.exe)"]
+        DXVK2["DXVK / VKD3D-Proton\n(ELF DLL overrides)"]
+    end
+    HostMesa["Host GPU driver\n(libvulkan / Mesa ICD)\nbind-mounted from host"]
+    HostDRI["Host Mesa DRI\n(/usr/lib/dri)"]
+
+    WineProc --> DXVK2
+    DXVK2 -- "VkInstance / VkDevice" --> HostMesa
+    SteamRuntime -- "non-graphics libs" --> WineProc
+    HostMesa --> HostDRI
+```
+
 ### The Compatibility Database
 
 Proton's per-game configuration lives in `steam_compat_data` alongside the game's own files and in Proton's internal override database. Each game can be configured with:
@@ -438,6 +575,20 @@ Many games query GPU information through NVIDIA's proprietary NVAPI interface �
 ### GameScope Integration on Steam Deck
 
 On the Steam Deck, Proton games run as nested Wayland clients inside gamescope (Chapter 22). The pressure-vessel container sets `WAYLAND_DISPLAY` to the gamescope-provided socket and `SDL_VIDEODRIVER=wayland` before exec-ing Wine, ensuring that Wine's `winewayland.drv` connects to gamescope rather than any system compositor. Gamescope then scales and post-processes the game's frames with FSR (FidelityFX Super Resolution) before presenting them to the physical display. This nesting — game frame → DXVK swapchain → winewayland.drv → gamescope compositor → display — is the complete graphics path for a Steam Deck game.
+
+```mermaid
+graph TD
+    GameFrame["Game frame\n(D3D draw calls)"]
+    DXVKSwap["DXVK swapchain\n(vkQueuePresentKHR)"]
+    WineWayland["winewayland.drv\n(wl_surface + VK_KHR_wayland_surface)"]
+    Gamescope["gamescope compositor\n(nested Wayland compositor + FSR)"]
+    Display["Physical display\n(Steam Deck screen)"]
+
+    GameFrame --> DXVKSwap
+    DXVKSwap --> WineWayland
+    WineWayland --> Gamescope
+    Gamescope --> Display
+```
 
 ### MangoHud Integration
 
@@ -470,6 +621,20 @@ VKD3D-Proton implements a **staging-buffer fallback path** for DirectStorage. Wh
 3. The decompressed data is uploaded to the GPU's device-local memory via `vkCmdCopyBuffer` using a standard DMA transfer.
 
 This means neither DirectStorage component is natively implemented: there is no NVMe IO bypass and no GPU-native GDeflate decompression. Games that require DirectStorage do not crash — they work — but they work significantly slower than on Windows during load screens because the CPU decompression becomes the bottleneck.
+
+```mermaid
+graph TD
+    DSQueue["IDStorageFactory::CreateQueue\n(D3D12 DirectStorage request)"]
+    CPURead["CPU thread\nPOSIX read() from filesystem\n(no NVMe bypass)"]
+    CPUDecomp["CPU-side GDeflate decompression\n(host-visible staging buffer)"]
+    VkCopy["vkCmdCopyBuffer\n(DMA to device-local memory)"]
+    DeviceLocal["GPU device-local memory\n(VkBuffer)"]
+
+    DSQueue --> CPURead
+    CPURead --> CPUDecomp
+    CPUDecomp --> VkCopy
+    VkCopy --> DeviceLocal
+```
 
 **Diagnostic approach.** The first step when a game loads slowly on Linux but not Windows is:
 ```bash

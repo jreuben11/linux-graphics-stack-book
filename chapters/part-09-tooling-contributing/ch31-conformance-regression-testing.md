@@ -59,6 +59,26 @@ The four testing pillars covered in this chapter are:
 - **piglit**: Mesa's long-standing GPU regression suite, covering thousands of OpenGL, GLSL, and extension-specific behaviours with a format optimised for quick per-patch runs.
 - **Fuzzing and sanitiser builds**: Stress-testing shader compilers and API surfaces with mutated inputs and memory-error-detecting instrumented builds.
 
+```mermaid
+graph TD
+    subgraph "Specification Layer"
+        KhronosSpec["Khronos API Specification\n(Vulkan / OpenGL ES / OpenGL)"]
+    end
+    subgraph "Userspace (Mesa)"
+        MesaDrivers["Mesa Vulkan and GL Drivers\n(RADV, ANV, Turnip, NVK, radeonsi, iris)"]
+    end
+    subgraph "Kernel (DRM)"
+        DRMKernel["Linux DRM Subsystem\n(KMS, GEM, DMA-BUF, syncobj)"]
+    end
+
+    dEQP["dEQP / VK-GL-CTS\n(Khronos conformance tests)"] -- "tests against spec" --> KhronosSpec
+    dEQP -- "exercises" --> MesaDrivers
+    piglit["piglit\n(Mesa regression suite)"] -- "exercises" --> MesaDrivers
+    Fuzzing["Fuzzing and Sanitiser Builds\n(spirv-fuzz, ASan, UBSan, TSan, libFuzzer)"] -- "stress-tests" --> MesaDrivers
+    IGT["IGT GPU Tools\n(kernel driver tests)"] -- "exercises via ioctl" --> DRMKernel
+    MesaDrivers -- "uses" --> DRMKernel
+```
+
 Understanding all four pillars is essential for anyone contributing to the Linux graphics stack. Mesa requires that new features pass the relevant dEQP modules before merge; kernel DRM patches must not introduce KMS or memory management regressions caught by IGT.
 
 ---
@@ -83,6 +103,24 @@ execserver/             — Remote execution server
 ```
 
 Each API module produces a standalone binary. The Vulkan binary is `deqp-vk`; the desktop OpenGL binary is `glcts`; GLES binaries are `deqp-gles2`, `deqp-gles3`, and `deqp-gles31`; the EGL binary is `deqp-egl`.
+
+```mermaid
+graph TD
+    subgraph "VK-GL-CTS Repository"
+        VkCTS["external/vulkancts/\n(Vulkan CTS)"] --> deqpvk["deqp-vk"]
+        GLCTS["external/openglcts/\n(OpenGL CTS)"] --> glcts["glcts"]
+        GLES2["modules/gles2/"] --> deqpgles2["deqp-gles2"]
+        GLES3["modules/gles3/"] --> deqpgles3["deqp-gles3"]
+        GLES31["modules/gles31/"] --> deqpgles31["deqp-gles31"]
+        EGL["modules/egl/"] --> deqpegl["deqp-egl"]
+        Framework["framework/\n(shared tcu:: framework)"] --> deqpvk
+        Framework --> glcts
+        Framework --> deqpgles2
+        Framework --> deqpgles3
+        Framework --> deqpgles31
+        Framework --> deqpegl
+    end
+```
 
 Before building, external dependency sources must be fetched:
 
@@ -311,6 +349,36 @@ A particularly important case is **Zink** — Mesa's OpenGL implementation built
 ### 3.1 Repository Layout and Runner Infrastructure
 
 IGT GPU Tools (`igt-gpu-tools`) is the primary test suite for Linux DRM kernel drivers. While dEQP and piglit test the userspace Mesa stack, IGT drops below the Mesa layer and directly exercises DRM kernel interfaces via `ioctl`. The repository lives at `https://gitlab.freedesktop.org/drm/igt-gpu-tools` [[4](#ref4)].
+
+```mermaid
+graph TD
+    subgraph "Userspace Testing (Mesa layer)"
+        dEQP2["dEQP / VK-GL-CTS"]
+        piglit2["piglit"]
+        Mesa["Mesa Drivers\n(RADV, ANV, radeonsi, iris, …)"]
+        dEQP2 --> Mesa
+        piglit2 --> Mesa
+    end
+    subgraph "Kernel Testing (DRM layer)"
+        IGTTests["IGT Test Programs\n(tests/kms_*, gem_*, syncobj_*)"]
+        libigt["libigt.a\n(shared test library)"]
+        runner["igt_runner\n(batch execution, JSON results)"]
+        IGTTests --> libigt
+        runner --> IGTTests
+    end
+    subgraph "Linux DRM Kernel"
+        KMS["KMS\n(atomic modesetting)"]
+        GEM["GEM\n(memory management)"]
+        SyncObj["DRM SyncObj\n(fence, timeline)"]
+        DMABUF["DMA-BUF\n(buffer sharing)"]
+    end
+    Mesa -- "DRM ioctls" --> KMS
+    Mesa -- "DRM ioctls" --> GEM
+    IGTTests -- "direct ioctl" --> KMS
+    IGTTests -- "direct ioctl" --> GEM
+    IGTTests -- "direct ioctl" --> SyncObj
+    IGTTests -- "direct ioctl" --> DMABUF
+```
 
 The directory structure:
 
@@ -645,6 +713,35 @@ The pipeline is split into stages that run sequentially:
 - **`sanity`**: Runs `meson test` (unit tests built into Mesa itself) and static analysis.
 - **`test`**: Runs dEQP, piglit, and trace replay against hardware or software renderers.
 
+```mermaid
+graph TD
+    subgraph "build stage"
+        BuildGCC["build-x86_64-linux-gcc\n(GCC release)"]
+        BuildClang["build-x86_64-linux-clang\n(Clang -Werror)"]
+        BuildARM["build-arm64-linux-gcc\n(AArch64 cross-compile)"]
+        Artifacts["Build Artifacts\n(Mesa .so, Vulkan ICD JSON)"]
+        BuildGCC --> Artifacts
+        BuildClang --> Artifacts
+        BuildARM --> Artifacts
+    end
+    subgraph "sanity stage"
+        MesonTest["meson test\n(unit tests + static analysis)"]
+    end
+    subgraph "test stage"
+        deqpvkRADV["deqp-vk-radv-raven\n(AMD Raven hardware)"]
+        deqpvkANV["deqp-vk-anv-kbl\n(Intel Kaby Lake hardware)"]
+        deqpvkLava["deqp-vk-lavapipe\n(software, always available)"]
+        piglitRadeon["piglit-radeonsi-raven"]
+        deqpGLES["deqp-gles2-tu-a630\n(Qualcomm Adreno 630 via LAVA)"]
+    end
+    Artifacts --> MesonTest
+    MesonTest --> deqpvkRADV
+    MesonTest --> deqpvkANV
+    MesonTest --> deqpvkLava
+    MesonTest --> piglitRadeon
+    MesonTest --> deqpGLES
+```
+
 ### 5.2 Test Stages and Hardware Runners
 
 Mesa's CI farm includes dedicated bare-metal machines with specific GPUs. Jobs like `deqp-vk-radv-raven` target AMD Raven Ridge (APU) hardware; `deqp-vk-anv-kbl` targets Intel Kaby Lake; `deqp-gles3-freedreno-a630` targets a Qualcomm Adreno 630 on an ARM development board managed via LAVA [[3](#ref3)].
@@ -682,6 +779,17 @@ Key capabilities:
 - Automatically re-runs failing tests to distinguish flakes from genuine regressions
 - Compares results against a per-driver baseline file; reports only unexpected changes
 - Supports partial test lists for CI job splitting
+
+```mermaid
+graph LR
+    Caselist["vk-default.txt\n(mustpass caselist)"] --> deqpRunner["deqp-runner\n(Rust, parallel executor)"]
+    Baseline["deqp-radv-fails.txt\n(known failures baseline)"] --> deqpRunner
+    Flakes["deqp-radv-flakes.txt\n(flaky test patterns)"] --> deqpRunner
+    deqpRunner -- "spawns N processes" --> deqpvk["deqp-vk\n(Vulkan CTS binary)"]
+    deqpvk -- "produces" --> QPALogs[".qpa result logs"]
+    deqpRunner -- "compares against baseline" --> FailuresCSV["failures.csv\n(unexpected results)"]
+    FailuresCSV -- "non-empty fails" --> MRCI["CI job\n(MR pass/fail gate)"]
+```
 
 Core invocation:
 
@@ -773,6 +881,17 @@ If `run.sh` reports regressions exceeding a threshold (typically any increase gr
 GPU shader compilers are complex, receive adversarial input in production (user-provided shaders, malicious web content in WebGPU contexts), and are written in C/C++ — a combination that historically produces exploitable memory-safety bugs. Fuzzing is the most effective way to find these bugs systematically.
 
 **spirv-fuzz**, part of SPIRV-Tools [[11](#ref11)], takes a valid SPIR-V binary and applies semantics-preserving transformations to produce a new, more complex binary that should produce identical results when executed by a conformant driver. The "semantics-preserving" property is the key insight: if the original and transformed shaders produce different output, the driver is wrong — the test is self-referential. This metamorphic testing approach was pioneered by the GraphicsFuzz project [[12](#ref12)].
+
+```mermaid
+graph TD
+    SeedSPIRV["Seed SPIR-V corpus\n(from dEQP or real apps)"] --> spirvFuzz["spirv-fuzz\n(semantics-preserving transforms)"]
+    spirvFuzz -- "produces fuzzed variants" --> FuzzedSPIRV["Fuzzed SPIR-V binaries"]
+    FuzzedSPIRV --> VulkanDriver["Vulkan Driver\n(Mesa RADV, ANV, etc.)"]
+    VulkanDriver -- "crash or wrong output" --> CrasherSPIRV["Crashing SPIR-V reproducer"]
+    CrasherSPIRV --> spirvReduce["spirv-reduce\n(interestingness-guided minimisation)"]
+    spirvReduce -- "produces" --> ReducedSPIRV["Minimised reproducer\n(10-50 instructions)"]
+    ReducedSPIRV -- "filed as" --> BugReport["Mesa bug report"]
+```
 
 ```bash
 # Fuzz a corpus of shaders in a loop

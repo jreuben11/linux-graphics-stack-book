@@ -69,6 +69,37 @@ By the end of this chapter you will understand:
 
 This chapter assumes you are already familiar with Vulkan memory management (Chapter 24), Mesa driver architecture (Chapters 18–19), and SPIR-V shader pipelines (Chapter 61). Chapter 64 extends the asset-pipeline story to glTF 2.0 as a whole.
 
+```mermaid
+graph TD
+    subgraph "Offline Asset Pipeline"
+        SRC["Source image\n(PNG / EXR / TIFF)"]
+        ENC["Basis Universal encoder\n(basisu / libbasisu.a)"]
+        KTX2["KTX2 container\n(.ktx2 file)"]
+    end
+    subgraph "Runtime"
+        LIBKTX["libktx C API\n(ktxTexture2)"]
+        TRANS["Basis Universal transcoder\n(basisu_transcoder.cpp)"]
+        VKUP["ktxTexture2_VkUploadEx\n(VkBuffer staging → VkImage)"]
+    end
+    subgraph "GPU Hardware"
+        BC["BC1–BC7\n(desktop NVIDIA/AMD/Intel)"]
+        ETC2["ETC2 / EAC\n(ARM Mali / Adreno)"]
+        ASTC["ASTC LDR / HDR\n(Mali / Adreno / Xe2+)"]
+        TMU["Texture Mapping Unit\n(fixed-function decode)"]
+    end
+    SRC --> ENC
+    ENC --> KTX2
+    KTX2 --> LIBKTX
+    LIBKTX --> TRANS
+    TRANS --> BC
+    TRANS --> ETC2
+    TRANS --> ASTC
+    BC --> VKUP
+    ETC2 --> VKUP
+    ASTC --> VKUP
+    VKUP --> TMU
+```
+
 ---
 
 ## Why GPU Texture Compression
@@ -201,6 +232,24 @@ The architecture separates concerns cleanly:
 - **Offline encoder** (`basisu`, `libbasisu.a`): applies the full VQ/RDO/Huffman compression pipeline; output is a `.basis` file or a KTX2 supercompressed with BasisLZ or UASTC.
 - **Runtime transcoder** (`transcoder/basisu_transcoder.cpp`): a single C++ translation unit with no third-party dependencies (beyond optionally `zstddeclib.c` for KTX2+Zstandard). Initialised once via `basisu_transcoder_init()`, then invoked per-texture per-frame-load. [Source](https://github.com/BinomialLLC/basis_universal)
 
+```mermaid
+graph LR
+    subgraph "Offline (build time)"
+        IMG["Source image"]
+        ENC["basisu / libbasisu.a\n(VQ + RDO + Huffman)"]
+        OUT[".basis file\nor KTX2 supercompressed\n(BasisLZ or UASTC)"]
+        IMG --> ENC --> OUT
+    end
+    subgraph "Runtime (load time)"
+        INIT["basisu_transcoder_init()\n(called once at startup)"]
+        TC["transcoder/basisu_transcoder.cpp\n(basisu_transcoder or ktx2_transcoder)"]
+        NAT["Native GPU block format\n(BC7 / ETC2 / ASTC 4x4 / ...)"]
+        INIT --> TC
+        OUT --> TC
+        TC --> NAT
+    end
+```
+
 ### ETC1S: Global Codebook Encoding Pipeline
 
 ETC1S is a strict subset of ETC1. The constraint is precise: differential mode is always set, the differential colour delta is always (0,0,0), and the flip bit is never set. This reduces the meaningful per-block state from 64 bits to 50 bits and — critically — means ETC1S blocks can be transcoded to BC1 using only a 1D lookup table with no pixel recomputation. [Source](http://richg42.blogspot.com/2018/06/etc1s-texture-format-encoding.html)
@@ -211,6 +260,24 @@ The **global codebook** is the key innovation distinguishing ETC1S from plain ET
 2. **Selector codebook**: clusters of 16×2-bit texel selection patterns, up to 16,128 entries
 
 Both codebooks are then DPCM-encoded and Huffman-compressed. The result is that a texture atlas containing many sub-textures with shared colour palettes achieves dramatically better compression than independent per-image BC1 compression — the codebook amortises across the entire asset.
+
+```mermaid
+graph TD
+    SRC["All mip levels / array layers / cubemap faces\n(source pixel data)"]
+    VQ["Vector Quantization\n(applied independently per codebook)"]
+    EP["Endpoint codebook\n(RGB555 + 3-bit intensity table pairs\nup to 16,128 entries)"]
+    SEL["Selector codebook\n(16×2-bit texel selection patterns\nup to 16,128 entries)"]
+    DPCM_EP["DPCM encoding\n(endpoint deltas)"]
+    DPCM_SEL["DPCM encoding\n(selector deltas)"]
+    HUFF["Huffman compression\n(both codebooks)"]
+    OUT[".basis / KTX2 BasisLZ output\n(0.3–3 bpp effective)"]
+    SRC --> VQ
+    VQ --> EP
+    VQ --> SEL
+    EP --> DPCM_EP --> HUFF
+    SEL --> DPCM_SEL --> HUFF
+    HUFF --> OUT
+```
 
 The `.basis` file header captures the complete layout:
 
@@ -449,6 +516,21 @@ struct KTX2LevelIndexEntry {
     uint64_t uncompressedByteLength;  // size after Zstd/BasisLZ decompression
                                       // equals byteLength when supercompressionScheme == 0
 };
+```
+
+```mermaid
+graph TD
+    HDR["KTX2 Header\n(bytes 0–79)\nvkFormat · typeSize · pixelWidth/Height/Depth\nlayerCount · faceCount · levelCount\nsupercompressionScheme"]
+    LI["Level Index Table\n(immediately after header)\nlevelCount × KTX2LevelIndexEntry\n(byteOffset · byteLength · uncompressedByteLength)"]
+    DFD["Data Format Descriptor\n(at dfdByteOffset)\ncolorModel · colorPrimaries\ntransferFunction · texelBlockDimension"]
+    KVD["Key-Value Data\n(at kvdByteOffset)\norientation · swizzle · writer metadata"]
+    SGD["Supercompression Global Data\n(at sgdByteOffset)\nBasisLZ endpoint + selector codebooks\nor UASTC global data"]
+    MIPS["Mip Level Data\n(per-level at byteOffset entries)\ncompressed or Zstd-wrapped blocks"]
+    HDR -- "dfdByteOffset/dfdByteLength" --> DFD
+    HDR -- "kvdByteOffset/kvdByteLength" --> KVD
+    HDR -- "sgdByteOffset/sgdByteLength" --> SGD
+    HDR --> LI
+    LI -- "byteOffset per level" --> MIPS
 ```
 
 ### Data Format Descriptor
@@ -792,6 +874,27 @@ KTX_API VkFormat KTX_APIENTRY ktxTexture2_GetVkFormat(ktxTexture2* This);
 
 The following complete example shows the load → feature query → transcode → upload sequence:
 
+```mermaid
+graph TD
+    Q1{"features.textureCompressionBC?"}
+    Q2{"VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT\nin BC7 optimalTilingFeatures?"}
+    Q3{"features.textureCompressionASTC_LDR?"}
+    Q4{"features.textureCompressionETC2?"}
+    BC7["KTX_TTF_BC7_RGBA\n(desktop: NVIDIA / AMD / Intel)"]
+    BC1["KTX_TTF_BC1_RGB\n(BC7 not available)"]
+    ASTC["KTX_TTF_ASTC_4x4_RGBA\n(ARM Mali / Adreno)"]
+    ETC2["KTX_TTF_ETC2_RGBA\n(embedded Linux fallback)"]
+    RGBA["KTX_TTF_RGBA32\n(safe uncompressed fallback)"]
+    Q1 -- "Yes" --> Q2
+    Q2 -- "Yes" --> BC7
+    Q2 -- "No" --> BC1
+    Q1 -- "No" --> Q3
+    Q3 -- "Yes" --> ASTC
+    Q3 -- "No" --> Q4
+    Q4 -- "Yes" --> ETC2
+    Q4 -- "No" --> RGBA
+```
+
 ```c
 // Full KTX2 Vulkan upload workflow
 // Pattern from: docs.vulkan.org/samples/latest/samples/performance/texture_compression_basisu/README.html
@@ -1050,6 +1153,24 @@ for (cgltf_size i = 0; i < data->textures_count; ++i) {
 The key distinction from tinygltf: **cgltf** exposes the KTX2 URI via `cgltf_texture.basisu_image->uri` (or `->buffer_view` for embedded GLB assets), while **tinygltf** requires JSON traversal through `texture.extensions.Get("KHR_texture_basisu").Get("source")` to obtain the image index. Both parsers deliver the raw `.ktx2` bytes; the subsequent `ktxTexture2_CreateFromMemory` → `ktxTexture2_TranscodeBasis` → `ktxTexture2_VkUploadEx` sequence is identical regardless of which glTF parser is used. [Source: jkuhlmann/cgltf](https://github.com/jkuhlmann/cgltf)
 
 ### Full Pipeline: .glb to VkImage
+
+```mermaid
+graph TD
+    GLB[".glb / .gltf\n(tinygltf or cgltf parse)"]
+    DISC["Discover KHR_texture_basisu\nextension on each texture object"]
+    LOAD["Load image bytes\n(embedded bufferView or external .ktx2 URI)"]
+    CREATE["ktxTexture2_CreateFromMemory\n(parse KTX2 header · DFD · level index\n· supercompression global data)"]
+    NEEDS["ktxTexture2_NeedsTranscoding?"]
+    TRANS["ktxTexture2_TranscodeBasis\n(ETC1S→BC7 via lookup table\nUASTC→BC7 via hint-guided block decompose\nUASTC→ASTC 4x4 via bit manipulation)"]
+    VDI["ktxVulkanDeviceInfo_Create /\nktxVulkanDeviceInfo_CreateEx"]
+    UPLOAD["ktxTexture2_VkUploadEx\n(staging VkBuffer → copy pData\n→ create VkImage → vkCmdCopyBufferToImage\nper mip → pipeline barrier\n→ SHADER_READ_ONLY layout)"]
+    VIEW["vkCreateImageView\n(kvt.viewType · kvt.imageFormat\nkvt.levelCount · kvt.layerCount)"]
+    DESC["bind VkDescriptorSet\n(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER\nfor PBR shader)"]
+    GLB --> DISC --> LOAD --> CREATE --> NEEDS
+    NEEDS -- "Yes" --> TRANS --> VDI
+    NEEDS -- "No" --> VDI
+    VDI --> UPLOAD --> VIEW --> DESC
+```
 
 ```text
 .glb/.gltf parse (tinygltf)

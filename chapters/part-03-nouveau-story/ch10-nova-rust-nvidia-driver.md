@@ -57,6 +57,39 @@ Nova is not a monolithic driver. It is two separate kernel modules with a precis
 
 This split serves a concrete architectural purpose. nova-core's abstraction over the GPU hardware and firmware interface can serve multiple second-level drivers. A VFIO-based vGPU manager, for example, could bind to the same nova-core auxiliary device without needing any DRM knowledge. The firmware interface code is deduplicated by design. The Linux Auxiliary Bus is the kernel's canonical mechanism for exactly this kind of intra-driver dependency. [Source](https://github.com/torvalds/linux/blob/master/drivers/gpu/nova-core/driver.rs)
 
+```mermaid
+graph TD
+    subgraph "nova-core (drivers/gpu/nova-core/)"
+        NovaCoreDriver["NovaCore\n(pci::Driver)"]
+        Gpu["Gpu\n(gpu.rs)"]
+        GSPBoot["GSP Boot\n(gsp/boot.rs)"]
+        Cmdq["Cmdq\n(gsp/cmdq.rs)"]
+        Falcon["Falcon<E: FalconEngine>\n(falcon.rs)"]
+        AuxReg["auxiliary::Registration\n('nova-drm' device)"]
+    end
+    subgraph "nova-drm (drivers/gpu/drm/nova/)"
+        NovaDrmDriver["NovaDriver\n(auxiliary::Driver)"]
+        DRMDev["drm::Device<NovaDriver>"]
+        GEMObj["gem::Object<NovaObject>"]
+        RenderNode["/dev/dri/renderDN"]
+    end
+    subgraph "Second-level drivers (future)"
+        VFIO["VFIO vGPU manager\n(future)"]
+    end
+    NVIDIA_GPU["NVIDIA GPU\n(PCI)"] --> NovaCoreDriver
+    NovaCoreDriver --> Gpu
+    Gpu --> GSPBoot
+    GSPBoot --> Falcon
+    GSPBoot --> Cmdq
+    Gpu --> AuxReg
+    AuxReg -- "Linux Auxiliary Bus" --> NovaDrmDriver
+    AuxReg -. "Linux Auxiliary Bus" .-> VFIO
+    NovaDrmDriver --> DRMDev
+    DRMDev --> GEMObj
+    DRMDev --> RenderNode
+    NovaDrmDriver -- "delegates hardware calls" --> Cmdq
+```
+
 ---
 
 ## 2. nova-core: The Hardware Abstraction Layer
@@ -219,6 +252,19 @@ if chipset.needs_fwsec_bootloader() {
 
 **Stage 8: Command queue establishment and hello.** `commands::wait_gsp_init_done()` polls the status queue until the GSP posts a `GspInitDone` message. At this point, the command queue is live and the `SetSystemInfo`/`SetRegistry` commands queued in Stage 5 have been processed. `commands::get_gsp_info()` then queries basic GPU information (including the GPU marketing name string) for display in `dmesg`. [Source](https://github.com/torvalds/linux/blob/master/drivers/gpu/nova-core/gsp/boot.rs)
 
+```mermaid
+graph TD
+    S1["Stage 1: VBIOS parsing\nVbios::new() — reads FRTS address from BAR0 PRAMIN"]
+    S2["Stage 2: Firmware loading\nGspFirmware::new() — requests blobs from linux-firmware"]
+    S3["Stage 3: Framebuffer layout\nFbLayout::new() — places WPR2, GSP heap, FRTS in VRAM"]
+    S4["Stage 4: FWSEC-FRTS execution\nFWsec on GSP falcon (HS mode) — creates WPR2 write-protect region"]
+    S5["Stage 5: GSP falcon LIBOS boot\nqueue SetSystemInfo + SetRegistry; write LIBOS DMA addr to mailbox"]
+    S6["Stage 6: Booter execution\nbooter_load on SEC2 falcon (HS mode) — verifies GSP image, releases RISC-V"]
+    S7["Stage 7: GSP sequencer\nGspSequencer::run() — sends additional init commands"]
+    S8["Stage 8: Command queue live\nwait_gsp_init_done() polls GspInitDone; get_gsp_info() queries GPU name"]
+    S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8
+```
+
 ### The Command Queue Architecture
 
 Once the GSP is running, all communication uses a pair of circular message queues in GPU-accessible DMA-coherent memory. nova-core's command queue implementation is in `gsp/cmdq.rs` and demonstrates several Rust kernel patterns simultaneously.
@@ -259,6 +305,22 @@ pub(crate) trait CommandToGsp {
 
 The `Cmdq::send_command()` method acquires the inner mutex, writes the command into the available write area, updates the CPU write pointer, and writes to the `NV_PGSP_QUEUE_HEAD` MMIO register to notify the GSP. It then waits for the reply by polling `receive_msg::<M::Reply>()`. The checksum verification uses a 64-bit XOR accumulated over the entire message including header, providing a basic integrity check on the shared memory. [Source](https://github.com/torvalds/linux/blob/master/drivers/gpu/nova-core/gsp/cmdq.rs)
 
+```mermaid
+graph LR
+    subgraph "GspMem (DMA-coherent)"
+        PTEs["Self-mapping PTEs\n(GSP MMU access)"]
+        cpuq["cpuq\n(CPU writes, GSP reads)\nMsgq — 63 GSP pages"]
+        gspq["gspq\n(GSP writes, CPU reads)\nMsgq — 63 GSP pages"]
+    end
+    CPU["CPU\n(Cmdq::send_command)"]
+    GSP["GSP-RM\n(RISC-V firmware)"]
+    CPU -- "driver_write_area() &mut" --> cpuq
+    cpuq -- "NV_PGSP_QUEUE_HEAD MMIO notify" --> GSP
+    GSP -- "writes reply" --> gspq
+    gspq -- "driver_read_area() &" --> CPU
+    PTEs -. "GSP maps region" .-> GSP
+```
+
 ### DebugFS and GSP Log Buffers
 
 nova-core exposes three GSP log buffers via DebugFS at `/sys/kernel/debug/nova_core/<device_name>/`:
@@ -280,6 +342,26 @@ Firmware loading supports two transfer modes:
 - **PIO (Programmed I/O)**: the CPU writes firmware bytes directly into the Falcon's IMEM/DMEM registers. Required on Turing and GA100, which do not support DMA-mode IMEM loading for the relevant firmware types.
 
 The `FalconHal` trait (the hardware abstraction layer for per-architecture Falcon behaviour) covers engine reset sequences, core selection (Falcon vs RISC-V), the BROM parameter setup, and fuse version reading. Chipset dispatch at runtime uses `hal::falcon_hal(chipset)` which returns a `KBox<dyn FalconHal<E>>` — a heap-allocated trait object selected by the chipset identifier read at probe time. This is Rust's idiomatic equivalent of the per-generation vtable chains in nvkm. [Source](https://github.com/torvalds/linux/blob/master/drivers/gpu/nova-core/falcon.rs)
+
+```mermaid
+graph TD
+    FalconGeneric["Falcon<E: FalconEngine>\n(falcon.rs)"]
+    FalconHalTrait["FalconHal<E> trait\n(reset, core select, BROM setup, fuse read)"]
+    FalconEngTrait["FalconEngine trait\n(RegisterBase<PFalconBase>, RegisterBase<PFalcon2Base>)"]
+    GspEng["gsp::Gsp\n(GSP falcon engine)"]
+    Sec2Eng["sec2::Sec2\n(SEC2 falcon engine)"]
+    DmaMode["DMA load\n(Ampere, Ada — FBDMA copies to IMEM/DMEM)"]
+    PioMode["PIO load\n(Turing, GA100 — CPU writes IMEM/DMEM registers)"]
+    HalDispatch["hal::falcon_hal(chipset)\nKBox<dyn FalconHal<E>>"]
+
+    FalconGeneric --> FalconEngTrait
+    FalconGeneric --> FalconHalTrait
+    FalconEngTrait --> GspEng
+    FalconEngTrait --> Sec2Eng
+    FalconGeneric --> DmaMode
+    FalconGeneric --> PioMode
+    FalconHalTrait --> HalDispatch
+```
 
 ---
 
@@ -476,6 +558,15 @@ The `driver_write_area()` and `driver_read_area()` methods return mutable and sh
 `firmware.rs` demonstrates compile-time state machines via phantom types. A loaded firmware image is represented as `FirmwareObject<F, S>` where `F` is the falcon type (GSP, SEC2) and `S` is the signed state (`Unsigned` or `Signed`). The `patch_signature()` method consumes a `FirmwareObject<F, Unsigned>` and returns a `FirmwareObject<F, Signed>`. The `run()` method (which actually loads the firmware onto the falcon) accepts only `FirmwareObject<F, Signed>`.
 
 This means it is a compile-time error to attempt to run a firmware image that has not been patched with a valid signature. In Nouveau's C equivalent, signature patching is performed by calling a function that modifies a buffer in place, and the absence of such a call goes undetected until the firmware loads and the signature verification fails at runtime. The Rust typestate pattern converts a potential runtime failure into a compile-time error. [Source](https://github.com/torvalds/linux/blob/master/drivers/gpu/nova-core/firmware.rs)
+
+```mermaid
+graph LR
+    Unsigned["FirmwareObject<F, Unsigned>\n(loaded, not yet signed)"]
+    Signed["FirmwareObject<F, Signed>\n(signature patched)"]
+    Run["Falcon::load() + boot()\n(accepts only Signed state)"]
+    Unsigned -- "patch_signature()\nconsumes Unsigned, produces Signed" --> Signed
+    Signed -- "run()" --> Run
+```
 
 ### Comparison with Nouveau's C Model
 

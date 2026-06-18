@@ -70,6 +70,27 @@ Mmiotrace implements this interception using the CPU's virtual memory hardware. 
 
 The result is a complete, ordered log of every read and write the CPU makes to the monitored MMIO region. The log entries record physical address, access direction, access width (8, 16, or 32 bits), the value written or read, the program counter at the time of access, and a timestamp. This is precisely the information needed to reconstruct what the driver is doing to hardware.
 
+```mermaid
+graph TD
+    A["ioremap() maps MMIO region\ninto kernel virtual address space"]
+    B["Pages marked NOT PRESENT\nin page table"]
+    C["Driver makes register access\n(read or write)"]
+    D["CPU raises page fault\n(monitored MMIO region)"]
+    E["Fault handler records access\n(direction, width, address, value, IP, timestamp)"]
+    F["Page marked PRESENT again\nTF (single-step) bit set"]
+    G["Register access instruction executes\n(single-step event logged)"]
+    H["Page marked NOT PRESENT again\n(ready for next access)"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+    H --> C
+```
+
 ### Code Example: The mmiotrace Log Format
 
 The mmiotrace infrastructure is implemented in `kernel/trace/trace_mmiotrace.c`. A raw trace log captures entries in a structured text format:
@@ -149,6 +170,29 @@ mmt_bin2dedma < trace-bin.log > trace-text.log
 
 The combination of mmiotrace (for register-level sequencing) and valgrind-mmt (for pushbuffer contents) provides a substantially complete picture of driver-hardware interaction. The tools in the Envytools repository — particularly `demmt` — are designed to consume traces from both sources and annotate them with symbolic names from the register database.
 
+```mermaid
+graph LR
+    ProprietaryDriver["Proprietary NVIDIA driver\n(kernel + userspace)"]
+    mmiotrace["mmiotrace\n(register-level sequencing)"]
+    vmmt["valgrind-mmt\n(pushbuffer contents)"]
+    TraceBin["trace-bin.log\n(binary trace file)"]
+    mmt2["mmt_bin2dedma\n(binary to text)"]
+    TraceText["trace-text.log"]
+    demmt["demmt\n(pushbuffer decoder)"]
+    rnndb["rnndb\n(register database)"]
+    Output["Annotated human-readable\npushbuffer analysis"]
+
+    ProprietaryDriver -- "MMIO reads/writes" --> mmiotrace
+    ProprietaryDriver -- "mmap'd command buffers" --> vmmt
+    vmmt --> TraceBin
+    TraceBin -- "alternate path" --> mmt2
+    mmt2 --> TraceText
+    TraceBin --> demmt
+    mmiotrace -- "register-level log" --> demmt
+    rnndb -- "symbolic names" --> demmt
+    demmt --> Output
+```
+
 ### Limitations and Evolution
 
 Mmiotrace's page-fault mechanism imposes inherent limitations that shaped the Nouveau methodology. The tracer captures only CPU-initiated MMIO accesses; DMA transfers from the GPU to system memory are not captured, nor are GPU-to-GPU transactions. The time ordering of entries reflects the CPU's instruction stream, not any causal relationship with GPU-side operations. On systems with an active IOMMU, the old `/dev/mem`-based approach to reading DMA buffers has been impossible since the IOMMU was enabled by default on most distributions, which is why valgrind-mmt's userspace instrumentation approach became the standard.
@@ -164,6 +208,20 @@ If mmiotrace is the instrument for capturing observations, Envytools is the libr
 The heart of Envytools is the `rnndb/` directory tree, which implements what the project calls the "rules-ng-ng" XML register database format. The database describes every GPU register that the Nouveau community has successfully characterised: its address within BAR0, the width and semantics of each bitfield within the register, the named values those bitfields can take, and which GPU families the register applies to.
 
 The XML schema is straightforward but expressive. A `<domain>` element defines a register address space (such as BAR0 or a FIFO method space). Within a domain, `<reg32>` elements describe individual 32-bit registers, and `<bitfield>` children within each register describe the sub-fields. Named values are given with `<enum>` elements:
+
+```mermaid
+graph TD
+    domain["domain\n(register address space, e.g. BAR0 or FIFO method space)"]
+    reg32["reg32\n(individual 32-bit register, with offset and variants)"]
+    bitfield["bitfield\n(sub-field: high/low bits, name)"]
+    enumEl["enum\n(set of named values for the bitfield)"]
+    value["value\n(name + numeric value)"]
+
+    domain --> reg32
+    reg32 --> bitfield
+    bitfield --> enumEl
+    enumEl --> value
+```
 
 ```xml
 <!-- Source: envytools/rnndb/nv50_pdisplay.xml — representative register entry -->
@@ -200,6 +258,27 @@ The rnndb covers the MMIO register space (BAR0), FIFO method spaces (the command
 ### headergen2: From XML to C Constants
 
 The rnndb XML database would be of limited use if it could not be consumed by C source code. The `headergen2` tool generates C header files from the XML, producing `#define` constants that driver code uses to access named fields symbolically rather than by numeric offset:
+
+```mermaid
+graph TD
+    rnndb["rnndb XML\n(envytools/rnndb/)"]
+    headergen2["headergen2\n(Envytools build tool)"]
+    headers_nvhw["Generated C headers\n(drivers/gpu/drm/nouveau/include/nvhw/)"]
+    headers_nvkm["Generated C headers\n(drivers/gpu/drm/nouveau/include/nvkm/engine/)"]
+    headers_mesa["Generated C headers\n(src/nouveau/headers/)\n(Mesa / NVK)"]
+    nvkm["nvkm kernel driver\n(C source)"]
+    access["nvkm_rd32 / nvkm_wr32\n(BAR0 register access)"]
+    bar0["BAR0\n(GPU hardware registers)"]
+
+    rnndb --> headergen2
+    headergen2 --> headers_nvhw
+    headergen2 --> headers_nvkm
+    headergen2 --> headers_mesa
+    headers_nvhw --> nvkm
+    headers_nvkm --> nvkm
+    nvkm --> access
+    access --> bar0
+```
 
 ```c
 /* Source: drivers/gpu/drm/nouveau/include/nvhw/class/cl502d.h

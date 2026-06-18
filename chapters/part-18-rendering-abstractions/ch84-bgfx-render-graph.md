@@ -132,6 +132,19 @@ Render thread: [submit frame N-1] ←      → [sort+submit frame N]
 
 This overlap allows CPU recording of frame N+1 while the GPU executes frame N, reducing total frame time.
 
+```mermaid
+graph LR
+    subgraph "API Thread"
+        A["Record frame N\n(draw calls)"] --> B["bgfx::frame()"]
+        B --> C["Record frame N+1\n(draw calls)"]
+    end
+    subgraph "Render Thread"
+        D["Submit frame N-1\n(Vulkan cmds)"] --> E["Sort + Submit frame N\n(radix sort → vkQueueSubmit)"]
+    end
+    B -- "renderSemWait\n(buffer swap)" --> E
+    E -- "apiSemPost\n(release API thread)" --> C
+```
+
 [Source: bgfx internals](https://bkaradzic.github.io/bgfx/internals.html)
 
 The frame call returns the current frame number, which applications can use for multi-buffered resource management (e.g., a per-frame uniform buffer):
@@ -399,7 +412,21 @@ void main() {
 
 ### 4.2 shaderc Compilation
 
-bgfx's `shaderc` tool (in `tools/shaderc/`) compiles `.sc` source to backend-specific bytecode. It shells out to `glslang` (the Khronos GLSL reference compiler) for the SPIR-V path, to the FXC/DXC for HLSL, and to the Apple `metal` compiler for MSL. The compilation command for Linux Vulkan is:
+bgfx's `shaderc` tool (in `tools/shaderc/`) compiles `.sc` source to backend-specific bytecode. It shells out to `glslang` (the Khronos GLSL reference compiler) for the SPIR-V path, to the FXC/DXC for HLSL, and to the Apple `metal` compiler for MSL.
+
+```mermaid
+graph TD
+    SC[".sc source\n(varying.def.sc)"] --> shaderc["shaderc\n(tools/shaderc/)"]
+    shaderc --> glslang["glslang\n(SPIR-V path)"]
+    shaderc --> fxc["FXC / DXC\n(HLSL path)"]
+    shaderc --> metal["Apple metal compiler\n(MSL path)"]
+    glslang --> bin["vs_mesh.bin\n(bgfx header + SPIR-V)"]
+    fxc --> binhl["vs_mesh.bin\n(bgfx header + HLSL bytecode)"]
+    metal --> binmsl["vs_mesh.bin\n(bgfx header + MSL)"]
+    bin --> vkmod["vkCreateShaderModule()"]
+```
+
+The compilation command for Linux Vulkan is:
 
 ```bash
 # Compile vertex shader for Linux Vulkan (SPIR-V 1.0)
@@ -480,6 +507,13 @@ bgfx::setViewClear(3, BGFX_CLEAR_NONE, 0, 1.0f, 0);
 
 Views are rendered in ascending ID order. Lower IDs execute first: shadow map (0) → G-buffer (1) → lighting (2) → post (3). This is the fundamental scheduling mechanism in bgfx.
 
+```mermaid
+graph LR
+    V0["View 0\nShadow Map\n(shadowMapFb, 2048×2048)"] --> V1["View 1\nG-Buffer\n(gbufferFb, 1280×720)"]
+    V1 --> V2["View 2\nDeferred Lighting\n(backbuffer)"]
+    V2 --> V3["View 3\nPost-Process\n(backbuffer)"]
+```
+
 ### 5.2 Sort Keys and View Modes
 
 Every draw call receives a 64-bit sort key. The top bits encode the view ID, ensuring all draw calls belonging to a view are grouped together. Within a view, the default sort order groups by shader program (to reduce pipeline state switches):
@@ -545,6 +579,15 @@ bgfx::end(encoderB);
 Each `bgfx::Encoder` writes into its own private uniform buffer (1 MB by default, growing on demand). There is no lock on the hot path — each thread is serialised only at `bgfx::begin()` to acquire a slot from the encoder pool (maximum 8 simultaneous encoders by default, configurable via `bgfx::Init::limits.maxEncoders`).
 
 At `bgfx::frame()`, the render thread merges all completed encoder submissions into a single sorted draw-call list and proceeds to submission. This is structurally similar to Vulkan secondary command buffers being recorded on worker threads and executed from a primary command buffer on the main thread — except bgfx performs the merge in CPU-space before touching Vulkan at all.
+
+```mermaid
+graph TD
+    EA["bgfx::Encoder (Thread A)\n(private uniform buffer)"] --> frame["bgfx::frame()\nMerge + sort all encoders"]
+    EB["bgfx::Encoder (Thread B)\n(private uniform buffer)"] --> frame
+    EC["bgfx::Encoder (Thread N)\n(private uniform buffer)"] --> frame
+    frame --> sorted["Single sorted draw-call list\n(by sort key)"]
+    sorted --> submit["Vulkan submission\n(vkQueueSubmit)"]
+```
 
 Key thread safety rules:
 
@@ -700,11 +743,31 @@ Lighting pass reads GBuffer.Albedo_v1 → produces Lighting.Out_v1
 PostProcess pass reads Lighting.Out_v1 → produces FinalColor_v1
 ```
 
+```mermaid
+graph TD
+    GB["GBuffer pass"] --> albedo["GBuffer.Albedo_v1"]
+    albedo --> LP["Lighting pass"]
+    LP --> lout["Lighting.Out_v1"]
+    lout --> PP["PostProcess pass"]
+    PP --> final["FinalColor_v1"]
+    final --> present["fg.present()\n(frame output — prevents culling)"]
+```
+
 The final frame output (`FinalColor_v1`) is marked as a *frame output* by calling `fg.present(data.output)`. This prevents the entire chain from being culled.
 
 ### 8.3 Compilation Phase
 
 After all passes are registered, `fg.compile()` runs five steps:
+
+```mermaid
+graph TD
+    S1["1. Topological Sort\n(Kahn's algorithm → execution order)"]
+    S2["2. Culling\n(mark reachable passes from frame outputs;\ndiscard unmarked passes and resources)"]
+    S3["3. Lifetime Scan\n(firstUse / lastUse per transient resource)"]
+    S4["4. Aliasing\n(vmaCreateAliasingImage() for non-overlapping lifetimes;\ninsert aliasing barriers)"]
+    S5["5. Barrier Insertion\n(VkImageMemoryBarrier per layout transition;\nbatched into vkCmdPipelineBarrier)"]
+    S1 --> S2 --> S3 --> S4 --> S5
+```
 
 1. **Topological sort.** Kahn's algorithm assigns each pass a position in the execution order, ensuring producers execute before consumers.
 

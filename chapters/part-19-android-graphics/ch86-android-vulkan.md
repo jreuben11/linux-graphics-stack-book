@@ -86,6 +86,22 @@ platform/frameworks/native/vulkan/
 
 The Android loader is lean compared to the Khronos desktop loader — it does not need to handle multiple ICDs (only one driver is ever active) and it integrates directly with the Android HAL discovery mechanism.
 
+```mermaid
+graph TD
+    App["Application\n(NDK / Java)"]
+    Loader["/system/lib64/libvulkan.so\n(Android Vulkan Loader)"]
+    HAL["Android HAL Discovery\n(ro.hardware.vulkan / ro.board.platform)"]
+    ICD["Vendor ICD\n(/vendor/lib64/hw/vulkan.*.so)"]
+    APEX["APEX ICD\n(ro.vulkan.apex, Android 15+)"]
+    Layers["Vulkan Layers\n(/data/local/debug/vulkan/ or app lib dir)"]
+
+    App --> Loader
+    Loader --> Layers
+    Layers --> HAL
+    HAL --> ICD
+    HAL -. "Android 15+" .-> APEX
+```
+
 ### ICD enumeration
 
 The loader searches for the driver `.so` using the Android HAL path convention, probing two system properties in order:
@@ -200,6 +216,24 @@ src/freedreno/
   ir3/       ← Adreno shader compiler (ISA 3, covers a5xx–a7xx)
 ```
 
+```mermaid
+graph TD
+    subgraph "src/freedreno/ (Mesa)"
+        Turnip["vulkan/\n(Turnip — Vulkan front-end)"]
+        freedrenoGL["OpenGL ES front-end\n(freedreno)"]
+        Common["common/\n(shared Adreno infrastructure)"]
+        IR3["ir3/\n(Adreno shader compiler)"]
+        DRM["drm/\n(kernel DRM interface)"]
+    end
+    KernelDRM["msm DRM kernel driver"]
+
+    Turnip --> Common
+    freedrenoGL --> Common
+    Common --> IR3
+    Common --> DRM
+    DRM --> KernelDRM
+```
+
 [Source: Mesa freedreno source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/freedreno)
 
 ### Identifying Turnip at runtime
@@ -284,6 +318,18 @@ ANGLE's Vulkan backend (`libANGLE/renderer/vulkan/`) is structured around two ce
 
 The backend maintains an explicit render-pass state machine (unstarted, active, inactive) and accumulates Vulkan image/buffer barriers before recording, enabling it to batch barrier transitions efficiently. [Source: ANGLE Vulkan backend README](https://github.com/google/angle/blob/main/src/libANGLE/renderer/vulkan/README.md)
 
+```mermaid
+graph TD
+    App["Application\n(OpenGL ES calls)"]
+    ContextVk["ContextVk\n(libANGLE/renderer/vulkan/)"]
+    Renderer["vk::Renderer\n(owns VkDevice, VkQueue,\nformat tables, pipeline cache)"]
+    VulkanICD["Vendor Vulkan ICD\n(Adreno / Mali / PowerVR)"]
+
+    App -- "glDraw* calls" --> ContextVk
+    ContextVk -- "command-buffer recording" --> Renderer
+    Renderer -- "Vulkan API calls" --> VulkanICD
+```
+
 ### ANGLE debug layers: EGL_ANDROID_GLES_layers
 
 The `EGL_ANDROID_GLES_layers` extension (Android 10+) allows inserting OpenGL ES debug layers between an app and ANGLE, mirroring Vulkan's layer mechanism. This is used by the Android GPU Inspector and vendor tools to intercept GLES calls for tracing and profiling without modifying the application.
@@ -302,6 +348,23 @@ The `EGL_ANDROID_GLES_layers` extension (Android 10+) allows inserting OpenGL ES
 - **Export**: allocate a `VkDeviceMemory` that backs an `AHardwareBuffer`, retrievable with `vkGetMemoryAndroidHardwareBufferANDROID`.
 
 All relevant types are defined in `<vulkan/vulkan_android.h>`. [Source: Khronos Vulkan-Headers](https://raw.githubusercontent.com/KhronosGroup/Vulkan-Headers/main/include/vulkan/vulkan_android.h)
+
+```mermaid
+graph LR
+    AHB["AHardwareBuffer\n(Camera / Codec / Compositor)"]
+    Props["vkGetAndroidHardwareBufferPropertiesANDROID\n(VkAndroidHardwareBufferPropertiesANDROID)"]
+    ImportInfo["VkImportAndroidHardwareBufferInfoANDROID"]
+    DevMem["VkDeviceMemory\n(dedicated allocation)"]
+    VkImg["VkImage"]
+    ExportInfo["VkMemoryGetAndroidHardwareBufferInfoANDROID"]
+
+    AHB -- "import path" --> Props
+    Props -- "memoryTypeBits,\nexternalFormat" --> ImportInfo
+    ImportInfo -- "vkAllocateMemory" --> DevMem
+    DevMem -- "vkBindImageMemory" --> VkImg
+    DevMem -- "export path" --> ExportInfo
+    ExportInfo -- "vkGetMemoryAndroidHardwareBufferANDROID" --> AHB
+```
 
 ### Key struct definitions
 
@@ -812,6 +875,22 @@ In TBDR, the GPU splits each frame into two phases:
 
 The critical insight: all intermediate data — depth, MSAA samples, G-buffer attachments, accumulation buffers — can live entirely in fast on-chip tile SRAM throughout the tile's rendering, with zero DRAM bandwidth for intermediate reads/writes. DRAM is accessed only to read the initial framebuffer state (if `loadOp = LOAD`) and to write the final resolved output (if `storeOp = STORE`).
 
+```mermaid
+graph TD
+    CmdBuf["CPU Command Buffer"]
+    Binning["Binning Pass\n(vertex transform + per-tile bin lists)"]
+    DRAM_in["LPDDR5 DRAM\n(initial framebuffer, loadOp=LOAD only)"]
+    TileSRAM["On-Chip Tile SRAM\n(Color | Depth | MSAA samples | G-buffer)"]
+    TileRender["Tile Rendering Pass\n(fragment shading, per tile)"]
+    DRAM_out["LPDDR5 DRAM\n(resolved framebuffer, storeOp=STORE only)"]
+
+    CmdBuf --> Binning
+    Binning -- "tile 0..N bin lists" --> TileRender
+    DRAM_in -. "loadOp=LOAD" .-> TileSRAM
+    TileSRAM --> TileRender
+    TileRender -- "VK_ATTACHMENT_STORE_OP_STORE" --> DRAM_out
+```
+
 This architecture is shown schematically:
 
 ```
@@ -953,6 +1032,28 @@ Chrome on Android has used ANGLE as its OpenGL ES backend since approximately An
 2. Calls cross the IPC boundary (Mojo) to the GPU process.
 3. The GPU process invokes Dawn's Vulkan backend, which issues `vkCmdDraw*` to the Android Vulkan ICD.
 4. Resulting images are shared with the Viz compositor via `AHardwareBuffer`.
+
+```mermaid
+graph TD
+    JS["JavaScript\n(WebGPU API calls)"]
+    Renderer["Chrome Renderer Process"]
+    Mojo["Mojo IPC boundary"]
+    GPUProc["Chrome GPU Process"]
+    Dawn["Dawn\n(Vulkan backend)"]
+    VulkanICD["Android Vulkan ICD\n(Adreno / Mali)"]
+    AHB["AHardwareBuffer\n(vkGetMemoryAndroidHardwareBufferANDROID)"]
+    Viz["Viz Compositor\n(Chrome GPU process)"]
+    SF["SurfaceFlinger\n(via ASurfaceControl)"]
+
+    JS --> Renderer
+    Renderer -- "Mojo" --> Mojo
+    Mojo --> GPUProc
+    GPUProc --> Dawn
+    Dawn -- "vkCmdDraw*" --> VulkanICD
+    VulkanICD -- "rendered frame" --> AHB
+    AHB --> Viz
+    Viz --> SF
+```
 
 [Source: WebGPU on Android, Khronos WebGPU Meetup 2024](https://www.khronos.org/assets/uploads/developers/presentations/WebGPU_Meetup_-_WebGPU_on_Android.pdf)
 

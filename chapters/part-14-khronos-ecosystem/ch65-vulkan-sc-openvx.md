@@ -270,9 +270,36 @@ Rather than producing undefined behaviour, Vulkan SC specifies a fault for every
 
 ## 3. The Offline Pipeline Compilation Toolchain
 
-### 3.1 Development Phase: JSON Generation Layer and SPIR-V Validation
+The offline toolchain has two phases: a **development phase** on a standard Linux workstation and a **runtime phase** on the target embedded system. The development phase produces a vendor-compiled binary pipeline cache; the runtime phase loads that cache with no further compilation.
 
-The offline toolchain has two phases: a **development phase** on a standard Linux workstation and a **runtime phase** on the target embedded system.
+```mermaid
+graph LR
+    subgraph "Development Phase (Linux workstation)"
+        App["Application\n(standard Vulkan 1.2)"]
+        JGL["VkLayer_json_gen\n(JSON Generation Layer)"]
+        JSON["Pipeline JSON files\n+ SPIR-V modules"]
+        SVAL["spirv-val / spirv-opt\n(SPIRV-Tools)"]
+        PCC["Vendor PCC\n(e.g. NVIDIA pcc, pcconvk)"]
+        BIN["Pipeline Cache Binary\n(VkPipelineCacheHeaderVersionSafetyCriticalOne)"]
+    end
+    subgraph "Runtime Phase (target embedded SoC)"
+        DOCI["VkDeviceObjectReservationCreateInfo\n(pPipelineCacheCreateInfos)"]
+        OCI["VkPipelineOfflineCreateInfo\n(pipelineIdentifier + poolEntrySize)"]
+        DRV["Vulkan SC Driver\n(no JIT compilation)"]
+        GPU["GPU / Pipeline Pool"]
+    end
+    App --> JGL
+    JGL --> JSON
+    JSON --> SVAL
+    SVAL --> PCC
+    PCC --> BIN
+    BIN --> DOCI
+    DOCI --> DRV
+    OCI -- "UUID match" --> DRV
+    DRV --> GPU
+```
+
+### 3.1 Development Phase: JSON Generation Layer and SPIR-V Validation
 
 Development begins with the **JSON Generation Layer** (`VkLayer_json_gen`), a Vulkan layer that intercepts standard Vulkan 1.2 pipeline creation calls and serialises each pipeline's state plus all referenced SPIR-V modules as JSON files:
 
@@ -587,6 +614,27 @@ The Vulkan SC 1.0.21 SDK (latest release: May 2026) is maintained by the Khronos
 
 The validation layers are critical for development: they verify that `VkDeviceObjectReservationCreateInfo` counts are not exceeded, that no removed features are used, and that pipeline identifiers match cache entries. They produce structured JSON diagnostic output for integration with CI/CD pipelines.
 
+```mermaid
+graph TD
+    APP["Vulkan SC Application"]
+    VAL["VulkanSC-ValidationLayers\n(Stateless, Core, Thread, Object, Sync)"]
+    LOADER["VulkanSC-Loader\n(variant=1 ICD selection)"]
+    EMU["VulkanSC-Emulation ICD\n(libvksconvk.so)\n— SC calls → standard Vulkan"]
+    TOOLS["VulkanSC-Tools\n(vulkanscinfo, JSON Generation Layer,\nDevice Simulation Layer, Mock ICD)"]
+    VK12["Vulkan 1.2 ICD\n(Mesa ANV / RADV, NVIDIA proprietary)"]
+    HW["GPU Hardware"]
+    PROD["Vendor Vulkan SC ICD\n(NVIDIA DRIVE OS, CoreAVI VkCore SC, etc.)"]
+
+    APP --> VAL
+    VAL --> LOADER
+    LOADER --> EMU
+    LOADER --> PROD
+    EMU --> VK12
+    VK12 --> HW
+    PROD --> HW
+    TOOLS -. "dev/test" .-> LOADER
+```
+
 ### 5.2 Emulation ICD Setup
 
 The emulation ICD allows Vulkan SC applications to run on any desktop Linux with a Vulkan 1.2 driver supporting the Vulkan Memory Model. It translates Vulkan SC calls to standard Vulkan calls with minimal overhead. [Source](https://www.rastergrid.com/blog/gpu-tech/2025/02/the-vulkan-sc-emulation-driver-stack/)
@@ -684,6 +732,30 @@ VX_API_ENTRY vx_status VX_API_CALL vxSetGraphAttribute(
 
 The graph lifecycle follows a strict sequence: Create → add nodes → `vxVerifyGraph` → repeated `vxProcessGraph` or `vxScheduleGraph/vxWaitGraph` → `vxReleaseGraph`. `vxProcessGraph` implicitly calls `vxVerifyGraph` on the first invocation if verification has not yet occurred.
 
+```mermaid
+graph TD
+    CTX["vxCreateContext()"]
+    GR["vxCreateGraph(context)"]
+    NODES["Add nodes\n(vxSobel3x3Node, vxConvolutionLayer, etc.)"]
+    VER["vxVerifyGraph(graph)\n— topology check, memory sizing,\noptimisation, DMA pre-configuration"]
+    PROC["vxProcessGraph(graph)\n(synchronous)"]
+    SCHED["vxScheduleGraph(graph)\n(async submit)"]
+    WAIT["vxWaitGraph(graph)\n(sync completion)"]
+    PARAM["vxSetGraphParameterByIndex\n(swap input/output buffers)"]
+    REL["vxReleaseGraph / vxReleaseContext"]
+
+    CTX --> GR
+    GR --> NODES
+    NODES --> VER
+    VER --> PROC
+    VER --> SCHED
+    SCHED --> WAIT
+    WAIT --> PARAM
+    PARAM --> SCHED
+    PROC --> REL
+    WAIT --> REL
+```
+
 `vxScheduleGraph` + `vxWaitGraph` decouple submission from completion, allowing the CPU to perform other work (frame decode, sensor processing) while the GPU/DSP executes the graph. The `vxSetGraphParameterByIndex` call can update input images between executions without rebuilding the graph — enabling ping-pong buffer patterns.
 
 ### 6.2 Data Objects: Images, Tensors, and Arrays
@@ -776,6 +848,23 @@ Nodes are instantiated via convenience functions such as `vxSobel3x3Node(graph, 
 ### 6.4 Example Graph: Edge-Magnitude Pipeline
 
 This graph computes gradient magnitude via Sobel filtering, using virtual intermediate images to allow the implementation to choose optimal memory layouts:
+
+```mermaid
+graph LR
+    SRC["src\nvxImage (U8, 640x480)\nconcrete — host-accessible"]
+    DX["dx\nvxVirtualImage (S16)\nimplementation-managed"]
+    DY["dy\nvxVirtualImage (S16)\nimplementation-managed"]
+    SOBEL["vxSobel3x3Node\n(graph, src, dx, dy)"]
+    MAGN["vxMagnitudeNode\n(graph, dx, dy, mag)"]
+    MAG["mag\nvxImage (U8, 640x480)\nconcrete — host-accessible"]
+
+    SRC --> SOBEL
+    SOBEL --> DX
+    SOBEL --> DY
+    DX --> MAGN
+    DY --> MAGN
+    MAGN --> MAG
+```
 
 ```c
 // Based on OpenVX CTS test_graph.c
@@ -1144,6 +1233,38 @@ ANARILibrary              ← dynamically loaded backend (.so)
         ├── ANARICamera   ← perspective, orthographic, panoramic
         ├── ANARIRenderer ← rendering algorithm (pathtracer, AO, etc.)
         └── ANARIFrame    ← rendered output (color, depth, normal AOVs)
+```
+
+```mermaid
+graph TD
+    LIB["ANARILibrary\n(dynamically loaded backend .so)"]
+    DEV["ANARIDevice\n(rendering engine instance + GPUs)"]
+    WORLD["ANARIWorld\n(scene root)"]
+    INST["ANARIInstance\n(transform)"]
+    GRP["ANARIGroup"]
+    SURF["ANARISurface"]
+    GEOM["ANARIGeometry\n(triangle, sphere, curve, ...)"]
+    MAT["ANARIMaterial\n(matte, physically_based, ...)"]
+    VOL["ANARIVolume\n(transferFunction1D)"]
+    FIELD["ANARISpatialField\n(structuredRegular, NanoVDB)"]
+    LIGHT["ANARILight\n(directional, point, quad, HDRI)"]
+    CAM["ANARICamera\n(perspective, orthographic, panoramic)"]
+    REND["ANARIRenderer\n(pathtracer, AO, default)"]
+    FRAME["ANARIFrame\n(color, depth, normal AOVs)"]
+
+    LIB --> DEV
+    DEV --> WORLD
+    DEV --> CAM
+    DEV --> REND
+    DEV --> FRAME
+    WORLD --> INST
+    WORLD --> VOL
+    WORLD --> LIGHT
+    INST --> GRP
+    GRP --> SURF
+    SURF --> GEOM
+    SURF --> MAT
+    VOL --> FIELD
 ```
 
 ### 9.2 Core API: Parameters, Commits, Frames

@@ -43,6 +43,25 @@ The CUDA userspace stack on Linux is split across two shared libraries with dist
 
 Both APIs are feature-equivalent for common use. The Driver API additionally exposes explicit context (`CUcontext`) and module management primitives used by NVRTC, nvJitLink, and plugin frameworks that need to load compiled kernels into a running process without a full Toolkit dependency.
 
+```mermaid
+graph TD
+    App["Application"]
+    RT["libcudart.so\n(Runtime API — cuda prefix)"]
+    DRV["libcuda.so\n(Driver API — cu prefix)"]
+    NVRTC["libnvrtc.so\n(NVRTC)"]
+    nvJitLink["libnvJitLink.so\n(nvJitLink)"]
+    KernelDrv["nvidia.ko / nvidia-uvm.ko\n(Kernel Driver)"]
+
+    App --> RT
+    App --> DRV
+    App --> NVRTC
+    App --> nvJitLink
+    RT -- "translates to Driver API calls" --> DRV
+    NVRTC --> DRV
+    nvJitLink --> DRV
+    DRV -- "ioctl" --> KernelDrv
+```
+
 ### 1.2 Version Compatibility and CUDA_ERROR_INVALID_PTX
 
 The driver API version installed on a system must be greater than or equal to the runtime API version the application was built against. This is enforced by CUDA's forward-compatibility layer (`libcuda.so` exposes a compatibility interface for toolkit versions newer than the driver, within limits documented per-major-version).
@@ -380,6 +399,26 @@ A device-default pool is available via `cudaMallocAsync`/`cudaFreeAsync` without
 
 NVRTC (NVIDIA Runtime Compilation) compiles device-side CUDA C++ source strings into PTX or CUBIN at application runtime. It ships as `libnvrtc.so` with header `nvrtc.h`. NVRTC accepts device code only — no `__host__` functions, no `#include <stdio.h>` in global scope — and is distinct from `nvcc`, which handles full translation units mixing host and device code.
 
+```mermaid
+graph TD
+    Src["CUDA C++ source string\n(device code only)"]
+    Create["nvrtcCreateProgram\n(nvrtcProgram handle)"]
+    Compile["nvrtcCompileProgram\n(--gpu-architecture, --std, options)"]
+    Log["nvrtcGetProgramLog\n(warnings / errors)"]
+    PTX["nvrtcGetPTX\n(PTX string)"]
+    ModLoad["cuModuleLoadData\n(JIT-compiles PTX to SASS)"]
+    GetFn["cuModuleGetFunction\n(CUfunction handle)"]
+    Launch["cuLaunchKernel"]
+
+    Src --> Create
+    Create --> Compile
+    Compile --> Log
+    Compile --> PTX
+    PTX --> ModLoad
+    ModLoad --> GetFn
+    GetFn --> Launch
+```
+
 ### 5.1 Core API
 
 ```c
@@ -529,6 +568,27 @@ OptiX 9 uses NVRTC as its kernel compilation path: shader programs are C++ sourc
 
 CUDA Graphs capture a sequence of GPU operations into a directed acyclic graph (DAG) that can be instantiated and relaunched with a single API call, eliminating the repeated CPU dispatch overhead of individual stream submissions. For iterative workloads — ML training loops, physics simulation, iterative solvers — graphs reduce per-iteration CPU cost from microseconds-per-launch to a single `cudaGraphLaunch` call. [Source: CUDA Programming Guide — CUDA Graphs][12]
 
+```mermaid
+graph TD
+    BeginCapture["cudaStreamBeginCapture\n(stream, mode)"]
+    Nodes["GPU operations captured as graph nodes\n(memcpy, kernel launches, events)"]
+    EndCapture["cudaStreamEndCapture\n(stream, &graph)"]
+    GraphT["cudaGraph_t\n(template — not yet executable)"]
+    Instantiate["cudaGraphInstantiate\n(graphExec, graph, 0)"]
+    GraphExec["cudaGraphExec_t\n(instantiated, executable)"]
+    Launch["cudaGraphLaunch\n(graphExec, stream)\n— one call per iteration"]
+    Destroy["cudaGraphExecDestroy"]
+
+    BeginCapture --> Nodes
+    Nodes --> EndCapture
+    EndCapture --> GraphT
+    GraphT --> Instantiate
+    Instantiate --> GraphExec
+    GraphExec --> Launch
+    Launch --> Launch
+    Launch --> Destroy
+```
+
 ### 6.1 Stream Capture
 
 ```c
@@ -661,6 +721,20 @@ The CUDA Multi-Process Service replaces per-process contexts with a shared serve
 3. **`libcuda.so` client runtime** — transparent to the application; CUDA API calls route to the server instead of the driver directly
 
 On Volta (sm_70) and later, MPS enables truly concurrent kernel execution from multiple client processes in the same GPU context. On pre-Volta, MPS still reduces context-switch overhead but does not enable hardware-level spatial sharing.
+
+```mermaid
+graph TD
+    Control["nvidia-cuda-mps-control\n(control daemon — server lifecycle\nand client routing)"]
+    Server["nvidia-cuda-mps-server\n(owns single GPU context;\ncreates worker threads per client)"]
+    ClientA["libcuda.so client runtime\n(Process A)"]
+    ClientB["libcuda.so client runtime\n(Process B)"]
+    GPU["GPU\n(single shared context)"]
+
+    Control -. "manages" .-> Server
+    ClientA -- "CUDA API calls routed to server" --> Server
+    ClientB -- "CUDA API calls routed to server" --> Server
+    Server --> GPU
+```
 
 ### 7.3 Linux MPS Configuration
 

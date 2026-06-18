@@ -46,6 +46,29 @@ The dispatch mechanism works per-context. When an application calls `glXMakeCurr
 
 For GLX specifically, the vendor association happens at the screen level: GLVND sends a `GLX_EXT_libglvnd` query to the X server to discover which vendor is responsible for a given `(Display, screen)` pair. The X server's GLX extension is augmented to respond with a vendor name string, and GLVND then loads the corresponding `libGLX_<vendor>.so` library. This query result is cached per display connection. For EGL, the vendor association happens at the display level: each call to `eglGetPlatformDisplayEXT` resolves to exactly one EGL vendor library, and all subsequent EGL operations on that display stay within that vendor's code.
 
+```mermaid
+graph TD
+    App["Application\n(glDrawArrays / eglMakeCurrent)"]
+    GLVND_GL["libGL.so\n(vendor-neutral stub)"]
+    GLVND_EGL["libEGL.so\n(vendor-neutral facade)"]
+    TLS["Thread-local dispatch table\n(set at MakeCurrent time)"]
+    MesaGLX["libGLX_mesa.so\n(Mesa GLX vendor)"]
+    NvGLX["libGLX_nvidia.so\n(NVIDIA GLX vendor)"]
+    MesaEGL["libEGL_mesa.so\n(Mesa EGL vendor)"]
+    NvEGL["libEGL_nvidia.so\n(NVIDIA EGL vendor)"]
+    XServer["X Server\nGLX_EXT_libglvnd query"]
+
+    App --> GLVND_GL
+    App --> GLVND_EGL
+    GLVND_GL --> TLS
+    TLS --> MesaGLX
+    TLS --> NvGLX
+    GLVND_GL -- "GLX: screen-level\nvendor query" --> XServer
+    XServer -- "vendor name string" --> GLVND_GL
+    GLVND_EGL -- "EGL: display-level\nvendor resolution" --> MesaEGL
+    GLVND_EGL -- "EGL: display-level\nvendor resolution" --> NvEGL
+```
+
 ### Mesa as a GLVND Vendor
 
 Mesa participates in GLVND by installing JSON vendor configuration files. On an EGL system, Mesa installs `/usr/share/glvnd/egl_vendor.d/50_mesa.json`, which tells the GLVND runtime that `libEGL_mesa.so.0` is available as an EGL vendor. The filename prefix `50_` is a load-order hint; lower-numbered files are tried first, and `50_` gives NVIDIA (`10_nvidia.json`) priority on hybrid systems while ensuring Mesa is found on AMD and Intel systems. The JSON file format mirrors the Vulkan ICD manifest pattern: it names the library and the highest EGL version it supports.
@@ -108,6 +131,28 @@ loader_get_driver_for_fd(int fd)
 
 The PCI ID tables are maintained per-driver. AMD hardware IDs live in `src/amd/common/amd_pci_ids.h`; Intel IDs are in `src/intel/dev/intel_device_info.c`; other drivers maintain similar tables within their source subtrees. The mapping is from PCI `(vendor_id, device_id)` to a driver name string such as `radeonsi`, `iris`, `nouveau`, `virtio_gpu`, or `etnaviv`. On ARM platforms lacking PCI, the loader uses a separate KMSRO (kernel modesetting render offload) table that maps display-only drivers — `vc4`, `lima`, `panfrost` — to separate render drivers.
 
+```mermaid
+graph TD
+    FD["DRM render node fd\n(e.g. /dev/dri/renderD128)"]
+    EnvCheck{"MESA_LOADER_DRIVER_OVERRIDE\nset?"}
+    Override["return override string\n(bypass all detection)"]
+    PCICheck{"loader_get_pci_id_for_fd()\nsucceeds?"}
+    PCITable["PCI ID table lookup\n(amd_pci_ids.h,\nintel_device_info.c, ...)"]
+    DRMVer["drmGetVersion()\nkernel module name"]
+    Swrast["return \"swrast\"\n(final fallback)"]
+    DriverName["driver name string\n(radeonsi / iris / nouveau / ...)"]
+
+    FD --> EnvCheck
+    EnvCheck -- "yes" --> Override
+    EnvCheck -- "no" --> PCICheck
+    PCICheck -- "yes" --> PCITable
+    PCITable -- "match found" --> DriverName
+    PCITable -- "no match" --> DRMVer
+    PCICheck -- "no" --> DRMVer
+    DRMVer -- "name returned" --> DriverName
+    DRMVer -- "fails" --> Swrast
+```
+
 ### The DRI Interface ABI
 
 The boundary between Mesa's frontends and its driver backends is defined by `include/GL/internal/dri_interface.h`. This header defines the three fundamental DRI objects: `__DRIscreen`, `__DRIcontext`, and `__DRIdrawable`. Each is a C struct whose first member is a pointer to a function dispatch table, and whose remaining members are driver-private. The driver allocates and populates these objects; the frontend holds opaque pointers to them and calls through the function table.
@@ -140,6 +185,27 @@ if (fence_ext && fence_ext->base.version >= 2)
 
 Major DRI extensions include `__DRI2_RENDERER_QUERY` for querying renderer capabilities, `__DRI2_FENCE` for GPU synchronisation fences, `__DRI2_ROBUSTNESS` for context reset notification, `__DRI2_THROTTLE` for scheduler-feedback swap interval implementation, and `__DRI_IMAGE` for the DRM image import/export path that underlies zero-copy buffer sharing.
 
+```mermaid
+graph TD
+    subgraph "DRI Interface ABI (dri_interface.h)"
+        DRIScreen["__DRIscreen\n(first member: extension table ptr;\nremains driver-private)"]
+        DRIContext["__DRIcontext\n(first member: extension table ptr;\nremains driver-private)"]
+        DRIDrawable["__DRIdrawable\n(first member: extension table ptr;\nremains driver-private)"]
+    end
+    subgraph "Extension negotiation"
+        ExtArray["__DRIextension **\n(null-terminated array)"]
+        ExtStruct["__DRIextension\n(name string + version int)"]
+        FuncPtrs["function pointers\n(extension-specific API)"]
+    end
+    ExampleExts["__DRI2_RENDERER_QUERY\n__DRI2_FENCE\n__DRI2_ROBUSTNESS\n__DRI2_THROTTLE\n__DRI_IMAGE"]
+
+    DRIScreen -- "exposes" --> ExtArray
+    DRIContext -- "exposes" --> ExtArray
+    ExtArray -- "each entry" --> ExtStruct
+    ExtStruct -- "followed by" --> FuncPtrs
+    ExtArray -- "loader_find_extension()\nwalks by name" --> ExampleExts
+```
+
 ### Classic DRI Removal
 
 Mesa 22.0, released March 2022, removed all classic (non-Gallium) DRI drivers. The removed drivers were the Intel `i965` (Classic) and `i915` (Classic), AMD `r100` and `r200` (Classic Radeon), and `nouveau` (Classic). This removal excised over 49,000 lines of code from the tree. The replacement drivers had been in place and production-quality for years: `iris` for Intel Broadwell and newer (Gen8+), `crocus` for Intel Gen4 through Haswell (Gen7), `radeonsi` for AMD GCN and newer, `r600` for pre-GCN AMD hardware, and the Gallium-based `nouveau` for NVIDIA. The removals were prepared over multiple release cycles to avoid disrupting users, and a separate `mesa-amber` maintenance fork was created to provide security fixes to systems that genuinely needed the classic drivers (typically very old hardware or embedded systems).
@@ -161,6 +227,36 @@ The Vulkan dispatch architecture differs fundamentally from OpenGL's GLVND model
 ### ICD Discovery
 
 The loader discovers available ICDs by scanning JSON manifest files in well-known directories. On Linux, the primary search path is `/usr/share/vulkan/icd.d/`. Each manifest file describes one ICD. Mesa installs separate manifests for each Vulkan driver: `radeon_icd.x86_64.json` for RADV, `intel_icd.x86_64.json` for ANV (Intel), and `intel_hasvk_icd.x86_64.json` for the Haswell-era Vulkan driver. The `x86_64` in the filename indicates architecture; matching 32-bit manifests coexist for multilib systems.
+
+```mermaid
+graph TD
+    App["Application\nvkCreateInstance / vkQueueSubmit"]
+    Loader["Khronos Vulkan Loader\n(libvulkan.so)"]
+    ImplicitLayers["Implicit Layers\n(/usr/share/vulkan/implicit_layer.d/)"]
+    ExplicitLayers["Explicit Layers\n(/usr/share/vulkan/explicit_layer.d/)"]
+    Validation["VK_LAYER_KHRONOS_validation\n(wraps every call)"]
+    ICDManifests["ICD JSON manifests\n(/usr/share/vulkan/icd.d/)"]
+    RADV["libvulkan_radeon.so\n(RADV ICD)"]
+    ANV["libvulkan_intel.so\n(ANV ICD)"]
+    NvICD["libGLX_nvidia.so\n(NVIDIA proprietary ICD)"]
+    InstanceTable["Instance dispatch table\n(vkGetInstanceProcAddr)"]
+    DeviceTable["Device dispatch table\n(vkGetDeviceProcAddr)"]
+
+    App --> Loader
+    Loader --> ImplicitLayers
+    Loader --> ExplicitLayers
+    ExplicitLayers --> Validation
+    Loader -- "scan" --> ICDManifests
+    ICDManifests -- "dlopen" --> RADV
+    ICDManifests -- "dlopen" --> ANV
+    ICDManifests -- "dlopen" --> NvICD
+    Loader --> InstanceTable
+    Loader --> DeviceTable
+    InstanceTable --> RADV
+    InstanceTable --> ANV
+    DeviceTable --> RADV
+    DeviceTable --> ANV
+```
 
 A typical RADV ICD manifest looks like this:
 
@@ -326,6 +422,34 @@ The DRI screen, context, and drawable are the three stateful objects through whi
 
 The `pipe_screen` is the central Gallium object. It is created exactly once per GPU per process (though multiple DRI screens can share a `pipe_screen` on systems that support it). It owns the per-GPU resource allocator, the shader compiler cache at the Gallium level, and the hardware configuration data.
 
+```mermaid
+graph TD
+    driCreateNewScreen2["driCreateNewScreen2()\nsrc/gallium/frontends/dri/dri_screen.c"]
+    dri_screen["struct dri_screen\n(allocated, non-opaque)"]
+    RenderFD["render node fd\n(/dev/dri/renderDN)"]
+    probe["pipe_loader_drm_probe_fd()\n-> pipe_loader_device handle"]
+    create_screen["pipe_loader_create_screen()\n-> pipe_screen instantiation"]
+    pipe_screen["pipe_screen\n(one per GPU per process)"]
+    ExtArray["DRI2 extension array\n(populated based on pipe_screen caps)"]
+    DRIScreen["__DRIscreen\n(opaque handle to frontend)"]
+    driCreateContext["driCreateNewContext()\n-> pipe_context (per-thread)"]
+    pipe_context["pipe_context\n(not thread-safe; one per MakeCurrent)"]
+    DRIDrawable["__DRIdrawable\n(renderable surface)"]
+    DRI3["DRI3 buffer exchange\n(dma_buf fd to X server)"]
+
+    driCreateNewScreen2 --> dri_screen
+    dri_screen --> RenderFD
+    dri_screen --> probe
+    probe --> create_screen
+    create_screen --> pipe_screen
+    pipe_screen --> ExtArray
+    dri_screen --> DRIScreen
+    DRIScreen --> driCreateContext
+    driCreateContext --> pipe_context
+    DRIScreen --> DRIDrawable
+    DRIDrawable --> DRI3
+```
+
 ### Context Creation and Threading Constraints
 
 `__DRIcontext` creation calls `driCreateNewContext()`, which calls the `pipe_screen`'s `context_create` function to produce a `pipe_context`. The crucial constraint is that a `pipe_context` is not thread-safe: it must only be used from a single thread at a time. The DRI layer enforces this implicitly through the GLX/EGL make-current mechanism — making a context current binds it to the calling thread, and attempting to make the same context current on two threads simultaneously is a client error. Mesa checks for this condition in debug builds and logs warnings.
@@ -398,6 +522,24 @@ The cache key is designed to encode everything that distinguishes one compiled s
 3. **Driver-specific key data**: a driver-specific blob encoding compiler flags, GPU generation, enabled hardware features, and the set of active extensions. This blob is constructed during `__DRIscreen` initialisation and placed in `cache->driver_keys_blob`. For radeonsi this includes the GPU family, shader model flags, and the set of performance debug flags; for ANV it includes the PCI device ID and the engine workaround bitfield.
 4. **Shader source hash**: a hash of the shader's source, including after any substitutions from the `driconf` layer.
 
+The cache key encodes four inputs that must all match for a cache hit to be valid:
+
+```mermaid
+graph LR
+    DriverID["Driver identifier string\n(e.g. \"radeonsi\", \"anv\")"]
+    BuildID[".note.gnu.build-id\n(Mesa binary build hash;\ninvalidated on any upgrade)"]
+    DriverKeys["driver_keys_blob\n(GPU family, compiler flags,\nextension bitfield, workarounds)"]
+    ShaderSrc["Shader source hash\n(after driconf substitutions)"]
+    SHA1["SHA-1\n_mesa_sha1_update / _mesa_sha1_final"]
+    CacheKey["cache_key\n(20-byte hash -> 2-char dir / 38-char filename)"]
+
+    DriverID --> SHA1
+    BuildID --> SHA1
+    DriverKeys --> SHA1
+    ShaderSrc --> SHA1
+    SHA1 --> CacheKey
+```
+
 The final key is computed using Mesa's `_mesa_sha1_update` / `_mesa_sha1_final` API:
 
 ```c
@@ -457,6 +599,28 @@ vkCreateGraphicsPipelines -> SPIR-V cache hit? ---> ISA cache hit? -> GPU binary
 
 This two-layer caching is why even with a warm Mesa cache, the first-ever launch after a game update may still hitch: the DXVK/VKD3D SPIR-V cache miss forces both layers to recompile.
 
+```mermaid
+graph LR
+    App["Application\nvkCreateGraphicsPipelines"]
+    DXVKCache{"DXVK / VKD3D\nSPIR-V cache\n(~/.cache/dxvk/)"}
+    SPIRVHit["SPIR-V binary\n(cache hit)"]
+    SPIRVMiss["HLSL -> SPIR-V\ncompilation\n(cache miss)"]
+    MesaCache{"Mesa disk cache\n(mesa_shader_cache)\nISA cache"}
+    ISAHit["GPU ISA binary\nloaded from disk"]
+    ISAMiss["SPIR-V -> ISA\ncompilation\n(ACO / brw / ...)"]
+    GPU["GPU binary\nready for submission"]
+
+    App --> DXVKCache
+    DXVKCache -- "hit" --> SPIRVHit
+    DXVKCache -- "miss" --> SPIRVMiss
+    SPIRVHit --> MesaCache
+    SPIRVMiss --> MesaCache
+    MesaCache -- "hit" --> ISAHit
+    MesaCache -- "miss" --> ISAMiss
+    ISAHit --> GPU
+    ISAMiss --> GPU
+```
+
 ### VK_EXT_graphics_pipeline_library and Async Compilation
 
 `VK_EXT_graphics_pipeline_library` (GPL) is a Vulkan extension that allows a pipeline to be compiled in stages. Instead of requiring a fully linked pipeline before any rendering can begin, GPL splits compilation into vertex input, pre-rasterisation shaders, fragment shaders, and fragment output interfaces. RADV and ANV both support GPL.
@@ -482,6 +646,24 @@ An EGL platform is the abstraction over the OS windowing system. The application
 **`EGL_PLATFORM_SURFACELESS_MESA`** is for surfaceless compute contexts. No windowing system is needed; the display handle is `EGL_DEFAULT_DISPLAY`. Unlike `EGL_PLATFORM_DEVICE_EXT`, which selects a GPU by explicit enumeration, `EGL_PLATFORM_SURFACELESS_MESA` relies on Mesa's internal device selection (which obeys `DRI_PRIME` and `MESA_LOADER_DRIVER_OVERRIDE`). Only `EGL_NO_SURFACE` contexts are permitted — there is no window to render to, only offscreen work via `EGL_KHR_pbuffer` or compute operations. The source file is `platform_surfaceless.c`.
 
 The distinction between `EGL_PLATFORM_DEVICE_EXT` and `EGL_PLATFORM_SURFACELESS_MESA` confuses many developers because both are used for headless rendering. The practical difference is control: `DEVICE` gives precise GPU selection via `EGLDeviceEXT` handles and the `EGL_DRM_DEVICE_FILE_EXT` attribute, while `SURFACELESS` uses Mesa's automatic selection and respects the same override environment variables as interactive OpenGL.
+
+```mermaid
+graph TD
+    WaylandPlatform["EGL_PLATFORM_WAYLAND_KHR\n(wl_display *)\nplatform_wayland.c"]
+    GBMPlatform["EGL_PLATFORM_GBM_KHR\n(gbm_device *)\nplatform_drm.c"]
+    DevicePlatform["EGL_PLATFORM_DEVICE_EXT\n(EGLDeviceEXT)\nplatform_device.c"]
+    SurfacelessPlatform["EGL_PLATFORM_SURFACELESS_MESA\n(EGL_DEFAULT_DISPLAY)\nplatform_surfaceless.c"]
+    Common["dri2_create_screen()\nsrc/egl/drivers/dri2/egl_dri2.c\n(receives render node fd)"]
+    DRIScreen["driCreateNewScreen2()\nsrc/gallium/frontends/dri/dri_screen.c"]
+    CapFlags["dri2_egl_display\ncapability flags\n(EGL_ANDROID_native_fence_sync,\nEGL_EXT_image_dma_buf_import_modifiers, ...)"]
+
+    WaylandPlatform --> Common
+    GBMPlatform --> Common
+    DevicePlatform --> Common
+    SurfacelessPlatform --> Common
+    Common --> DRIScreen
+    Common --> CapFlags
+```
 
 ### Automatic Platform Detection
 

@@ -36,6 +36,22 @@ The CC/Viz split also enables the **two-thread CC model**: Blink builds and modi
 
 This separation of concerns — repaint avoidance in CC, aggregation and display in Viz — is the architectural foundation upon which all of Chrome's graphics performance is built.
 
+```mermaid
+graph TD
+    subgraph "Renderer Process (per tab / browser UI)"
+        Blink["Blink\n(paint records)"]
+        CC["CC\n(content compositor)"]
+        Blink --> CC
+    end
+    subgraph "GPU Process"
+        Viz["Viz\n(display compositor)"]
+        Display["viz::Display\n(per-physical-display)"]
+        Viz --> Display
+    end
+    CC -- "viz::CompositorFrame\n(Mojo IPC)" --> Viz
+    Display -- "wl_surface commit /\nKMS SwapBuffers" --> Wayland["Wayland Compositor\n/ KMS"]
+```
+
 ---
 
 ## 2. Layer Trees and Property Trees in CC
@@ -49,6 +65,21 @@ CC maintains two parallel representations of the layer tree: the *main-thread tr
 - **Recycle tree**: a cached copy of the previous pending tree, reused to reduce allocation churn.
 
 `cc::LayerTreeHost` is the main-thread API; embedders (Blink's `WebLayerTreeView`, or the browser-UI compositor) call methods on it to add, remove, and modify layers. `cc::LayerTreeHostImpl` is the impl-side counterpart; it owns the active and pending trees and is the object that drives frame submission on the compositor thread.
+
+```mermaid
+graph TD
+    LTH["cc::LayerTreeHost\n(main thread)"]
+    LTHI["cc::LayerTreeHostImpl\n(compositor thread)"]
+    Active["Active tree\n(cc::LayerTreeImpl)\ncommitted + activated; used for draw"]
+    Pending["Pending tree\n(cc::LayerTreeImpl)\ncurrent commit; tiles rasterised here"]
+    Recycle["Recycle tree\n(cc::LayerTreeImpl)\ncached previous pending; reduces alloc"]
+    LTH -- "commit (ProxyMain/ProxyImpl)" --> LTHI
+    LTHI --> Active
+    LTHI --> Pending
+    LTHI --> Recycle
+    Pending -- "activate" --> Active
+    Active -- "recycle" --> Recycle
+```
 
 ### Layer Types
 
@@ -78,6 +109,19 @@ There are four property trees, each stored as a separate tree of nodes indexed b
 
 Each `cc::LayerImpl` stores integer indices into all four property trees rather than pointers to ancestor layers. This makes the dependency structure explicit and enables efficient dirty-tracking: when an animation updates a `TransformNode`, CC marks that node and its subtree dirty, and only those layers participate in the next composition pass.
 
+```mermaid
+graph LR
+    LayerImpl["cc::LayerImpl\n(integer indices)"]
+    TransformTree["cc::TransformTree\n(CSS transforms,\nscroll offsets,\nperspective)"]
+    ClipTree["cc::ClipTree\n(overflow:hidden,\nclip-path, iframe)"]
+    EffectTree["cc::EffectTree\n(opacity, filter,\nbackdrop-filter,\nblend mode)"]
+    ScrollTree["cc::ScrollTree\n(scroll bounds,\noffsets, smooth scroll)"]
+    LayerImpl -- "transform_tree_index" --> TransformTree
+    LayerImpl -- "clip_tree_index" --> ClipTree
+    LayerImpl -- "effect_tree_index" --> EffectTree
+    LayerImpl -- "scroll_tree_index" --> ScrollTree
+```
+
 ### The Commit: Copying State to the Impl Thread
 
 The commit is the atomic operation that transfers the current main-thread state to the compositor thread. The sequence is:
@@ -90,6 +134,25 @@ The commit is the atomic operation that transfers the current main-thread state 
 6. The mutex is released; the main thread resumes immediately, free to start the next frame's Blink pipeline while the compositor thread rasterises the pending tree.
 
 The key invariant is that the main thread never waits for rasterisation or GPU submission. It blocks only during the commit copy itself (typically a few milliseconds), then continues. This is the core mechanism that allows JavaScript on the main thread and GPU raster on the impl thread to pipeline in parallel.
+
+```mermaid
+graph TD
+    subgraph "Main Thread"
+        Embedder["Blink / browser-UI embedder\nSetNeedsCommit()"]
+        BlinkPipeline["Blink rendering pipeline\n(style, layout, paint)"]
+        ProxyMain["cc::ProxyMain\n(blocks on mutex)"]
+        Embedder --> BlinkPipeline --> ProxyMain
+    end
+    subgraph "Compositor Thread"
+        ProxyImpl["cc::ProxyImpl\n(executes commit copy)"]
+        PendingTree["Pending tree\n(cc::LayerTreeImpl)"]
+        Raster["Tile rasterisation\n(TileManager / OOP-R)"]
+        ProxyImpl --> PendingTree --> Raster
+    end
+    BeginMainFrame["BeginMainFrame\n(BeginFrameArgs from display)"] --> Embedder
+    ProxyMain -- "mutex signal" --> ProxyImpl
+    ProxyImpl -- "mutex release\n(main thread resumes)" --> ProxyMain
+```
 
 ---
 
@@ -125,6 +188,25 @@ The key class is `cc::GpuRasterBufferProvider`, which creates `cc::RasterBufferI
 
 The OOP-R path also supports **image decode acceleration**: large JPEG and WebP images are decoded off the critical path by a separate pool of image decode workers, with the decoded image stored as a SharedImage that raster tasks can reference.
 
+```mermaid
+graph TD
+    subgraph "Renderer Process"
+        PaintRecord["cc::PaintRecord\n(PaintOpBuffer)"]
+        GpuRasterBuffer["cc::GpuRasterBufferProvider\n/ RasterBufferImpl"]
+        RasterInterface["cc::RasterInterface\n(Mojo GPU channel)"]
+        PaintRecord --> GpuRasterBuffer --> RasterInterface
+    end
+    subgraph "GPU Process"
+        SkiaBackend["Skia GPU backend\n(SkiaGanesh / SkiaGraphite)"]
+        SharedImageTile["gpu::SharedImage\n(tile texture)"]
+        SyncToken["gpu::SyncToken\n(fence sync release)"]
+        RasterInterface -- "serialised SkPicture\n(PaintOpBuffer)" --> SkiaBackend
+        SkiaBackend --> SharedImageTile
+        SharedImageTile --> SyncToken
+    end
+    SyncToken -- "carried in\nviz::TransferableResource" --> VizConsumer["viz::SkiaRenderer\n(waits on SyncToken\nbefore reading tile)"]
+```
+
 ### Synchronisation Between Raster and Compositor
 
 When a raster task completes in the GPU process, it inserts a `gpu::SyncToken` into the command buffer. The compositor thread on the renderer side waits on this sync token before using the tile texture in a compositor frame, ensuring that the GPU has finished writing the pixel data before the texture is read by the display compositor. The sync token mechanism (described in detail in Section 6) is what allows the raster workers and the display compositor to work in parallel without data races.
@@ -143,6 +225,21 @@ A `CompositorFrame` contains two main lists:
 
 **`viz::TransferableResourceList`**: the list of GPU textures that the renderer is handing to Viz for use during this frame. Each `viz::TransferableResource` contains a `gpu::Mailbox` (the SharedImage identifier), a `gpu::SyncToken` (the fence the consumer must wait on), size and format metadata, and a flag indicating whether this is a software bitmap or a GPU texture.
 
+```mermaid
+graph TD
+    CF["viz::CompositorFrame"]
+    RPL["viz::RenderPassList\n(ordered list of RenderPass)"]
+    TRL["viz::TransferableResourceList\n(GPU textures handed to Viz)"]
+    RootPass["Root RenderPass\n(final output for the surface)"]
+    IntermediatePass["Intermediate RenderPass\n(CSS filter / backdrop-filter /\nblend-mode effects)"]
+    TR["viz::TransferableResource\n(gpu::Mailbox + gpu::SyncToken\n+ size/format metadata)"]
+    CF --> RPL
+    CF --> TRL
+    RPL --> RootPass
+    RPL --> IntermediatePass
+    TRL --> TR
+```
+
 ### DrawQuad Types
 
 The `viz::DrawQuad` type hierarchy is the heart of the compositor frame. Each quad represents one rectangular visual element with its position, transform, clip, and content reference:
@@ -156,6 +253,21 @@ The `viz::DrawQuad` type hierarchy is the heart of the compositor frame. Each qu
 **`viz::SurfaceDrawQuad`** embeds another renderer's `CompositorFrame` by `viz::SurfaceId`. When a `cc::SurfaceLayer` (representing a cross-origin iframe or another process's UI) is drawn, its quad is a `SurfaceDrawQuad`. Viz resolves these references recursively during aggregation (Section 5).
 
 **`viz::VideoHoleDrawQuad`** is a placeholder used in the hardware video overlay path. The quad marks the position and size of the video, but contains no texture data; the actual video buffer is submitted separately as an overlay candidate (Section 9).
+
+```mermaid
+graph TD
+    DQ["viz::DrawQuad"]
+    TDQ["viz::TextureDrawQuad\n(rasterised tile, WebGL/WebGPU canvas,\ndecoded video — references gpu::Mailbox)"]
+    SCDQ["viz::SolidColorDrawQuad\n(solid-colour rect;\nno texture required)"]
+    RPDQ["viz::RenderPassDrawQuad\n(output of another RenderPass;\nCSS filter, opacity layer,\nbackdrop-filter)"]
+    SurfDQ["viz::SurfaceDrawQuad\n(embeds another renderer's frame\nby viz::SurfaceId;\ncross-origin iframe / browser UI)"]
+    VHDQ["viz::VideoHoleDrawQuad\n(placeholder for hardware overlay;\nno pixel data)"]
+    DQ --> TDQ
+    DQ --> SCDQ
+    DQ --> RPDQ
+    DQ --> SurfDQ
+    DQ --> VHDQ
+```
 
 ### Frame Submission
 
@@ -182,6 +294,24 @@ The aggregator performs a depth-first traversal of the surface embedding tree. S
 Cycle detection is implemented: if a surface embedding loop is ever detected (which should not happen in practice but could result from bugs in the embedding protocol), the aggregator skips the problematic reference rather than looping indefinitely.
 
 The aggregator also handles the case where a referenced surface has not yet received its first frame — it substitutes a solid-colour quad of the expected size (typically white or the layer's background colour) to avoid visual holes.
+
+```mermaid
+graph TD
+    SurfaceManager["viz::SurfaceManager\n(registry of all live surfaces)"]
+    RootSurface["Root viz::Surface\n(browser window)"]
+    RendererSurface["viz::Surface\n(renderer / tab)"]
+    IframeSurface["viz::Surface\n(cross-origin iframe)"]
+    Aggregator["viz::SurfaceAggregator\nAggregate(root_surface_id)\n(depth-first traversal;\nresolves SurfaceDrawQuad references)"]
+    AggFrame["viz::AggregatedFrame\n(single flat RenderPassList;\nno SurfaceDrawQuad remaining)"]
+    SurfaceManager --> RootSurface
+    SurfaceManager --> RendererSurface
+    SurfaceManager --> IframeSurface
+    RootSurface -- "SurfaceDrawQuad ref" --> Aggregator
+    RendererSurface -- "SurfaceDrawQuad ref" --> Aggregator
+    IframeSurface --> Aggregator
+    Aggregator --> AggFrame
+    AggFrame --> SkiaRenderer["viz::SkiaRenderer\nDrawFrame()"]
+```
 
 ### Damage Tracking
 
@@ -228,6 +358,22 @@ The backing store type determines the physical memory layout and which APIs can 
 
 **`gpu::GLTextureImageBacking`**: a plain `GLuint` texture object. Used on older GL-only paths and in unit tests where DMA-BUF or Vulkan interop is unavailable.
 
+```mermaid
+graph TD
+    SIM["gpu::SharedImageManager\n(per-GPU-process singleton)"]
+    subgraph "Backing Store Types"
+        OzoneBacking["gpu::OzoneImageBacking\n(gfx::NativePixmapDmaBuf;\ngbm_bo + DMA-BUF fd)"]
+        AngleVkBacking["gpu::AngleVulkanImageBacking\n(VkImage accessible via\nboth Vulkan and ANGLE)"]
+        GLBacking["gpu::GLTextureImageBacking\n(plain GLuint texture;\nGL-only / fallback)"]
+    end
+    SIM --> OzoneBacking
+    SIM --> AngleVkBacking
+    SIM --> GLBacking
+    OzoneBacking --> GLRepr["GLTextureImageRepresentation\n(GL compositing via ANGLE)"]
+    OzoneBacking --> VkRepr["VulkanImageRepresentation\n(VK_EXT_external_memory_dma_buf)"]
+    OzoneBacking --> OverlayRepr["OverlayImageRepresentation\n(direct hardware scanout;\nno GPU copy)"]
+```
+
 ### Mailboxes and Representations
 
 Clients reference SharedImages through a **`gpu::Mailbox`** — a 16-byte random identifier. Mailboxes are allocated by `SharedImageManager::CreateSharedImage` and passed between processes via Mojo IPC as plain byte arrays. In the GPU process, a client holding a mailbox calls `SharedImageManager::ProduceSkia`, `ProduceGL`, or `ProduceVulkan` to obtain a `gpu::SharedImageRepresentation` — a typed, RAII wrapper that gives API-specific access (a `sk_sp<SkImage>`, a `GLuint`, or a `VkImage`) while holding a reference to the underlying backing.
@@ -249,6 +395,21 @@ For cross-API synchronisation — for example, when an `AngleVulkanImageBacking`
 ### GbmSurfacelessWayland
 
 On Linux with Wayland, the GPU-side surface implementation is `ui::GbmSurfacelessWayland` (`ui/ozone/platform/wayland/gpu/gbm_surfaceless_wayland.h`), which inherits from `gl::Presenter` and `WaylandSurfaceGpu`. It uses surfaceless drawing — drawing and display happen directly through `gfx::NativePixmapDmaBuf` buffers — and manages a pool of presentation buffers. Each buffer in the pool is a `gfx::NativePixmapDmaBuf` — a GBM buffer object whose DMA-BUF file descriptor has been wrapped in a `zwp_linux_dmabuf_v1_buffer` Wayland buffer handle. Viz reaches the platform via `viz::OutputSurface` → `SkiaOutputSurfaceImpl` → `SkiaOutputDeviceBufferQueue`, which delegates buffer presentation to `GbmSurfacelessWayland`.
+
+```mermaid
+graph TD
+    VizDisplay["viz::Display\nDrawAndSwap()"]
+    OutputSurface["viz::OutputSurface"]
+    SkiaOutputSurface["SkiaOutputSurfaceImpl"]
+    BufferQueue["SkiaOutputDeviceBufferQueue"]
+    GbmSurfaceless["ui::GbmSurfacelessWayland\n(gl::Presenter / WaylandSurfaceGpu)"]
+    NativePixmap["gfx::NativePixmapDmaBuf\n(GBM buffer object +\nzwp_linux_dmabuf_v1_buffer)"]
+    WaylandCompositor["Wayland Compositor\n(wl_surface::attach + damage_buffer + commit)"]
+    VizDisplay --> OutputSurface --> SkiaOutputSurface --> BufferQueue --> GbmSurfaceless
+    GbmSurfaceless --> NativePixmap --> WaylandCompositor
+    WaylandCompositor -- "wl_buffer::release\n(returns buffer to pool)" --> GbmSurfaceless
+    WaylandCompositor -- "wp_presentation_feedback\n(presented timestamp)" --> GbmSurfaceless
+```
 
 ### Double/Triple Buffering
 
@@ -336,6 +497,25 @@ The power savings are substantial: a GPU blend pass for a full-screen video at 4
 **`viz::OverlayStrategySingleOnTop`** (`components/viz/service/display/overlay_strategy_single_on_top.cc`): promotes one quad to an overlay plane on top of the composited framebuffer. Used for cursor compositing and for video that floats above all other content.
 
 **`viz::OverlayStrategyUnderlay`**: promotes one quad to a plane *underneath* the composited framebuffer, with a transparent hole punched in the framebuffer at that position. This is the typical path for `<video>` elements: the video occupies the underlay plane, and the framebuffer plane contains the rest of the page with a transparent rectangle cut out over the video position. The `VideoHoleDrawQuad` in the renderer's `CompositorFrame` communicates to Viz that this hole should be punched.
+
+```mermaid
+graph TD
+    AggFrame2["viz::AggregatedFrame\n(after SurfaceAggregator)"]
+    OverlayProcessor["viz::OverlayProcessor\n(evaluates overlay strategies\nin sequence)"]
+    FS["viz::OverlayStrategyFullscreen\n(entire display = single TextureDrawQuad;\nGPU-free pipeline)"]
+    SOT["viz::OverlayStrategySingleOnTop\n(one quad on top of composited fb;\ncursor, floating video)"]
+    UL["viz::OverlayStrategyUnderlay\n(one quad below composited fb;\ntransparent hole punched;\ntypical video path)"]
+    OCF["viz::OverlayCandidateFactory\n(validates pixel format +\nDRM modifier vs. hardware planes)"]
+    AggFrame2 --> OverlayProcessor
+    OverlayProcessor --> FS
+    OverlayProcessor --> SOT
+    OverlayProcessor --> UL
+    FS --> OCF
+    SOT --> OCF
+    UL --> OCF
+    OCF -- "promoted candidate" --> HWPlane["KMS hardware plane\n(via Wayland subsurface /\nzwp_linux_dmabuf_v1)"]
+    OCF -- "not promoted;\nfalls back to GPU blend" --> GPUBlend["GPU blend\n(viz::SkiaRenderer)"]
+```
 
 `viz::OverlayStrategyFullscreenSupported` and `viz::OverlayStrategyUnderlay::TryOverlay` perform the final validation step: they query `viz::OverlayCandidateFactory` to confirm that the candidate's pixel format and DRM format modifier are supported by the available hardware planes. The modifier negotiation was described in Section 7; the same DMA-BUF buffer allocated with scanout-compatible modifiers for Wayland presentation is also suitable for overlay promotion.
 

@@ -39,6 +39,28 @@ Window management for a terminal window follows the xdg-shell protocol. After cr
 
 The configure–resize cycle is the mechanism by which the compositor instructs the terminal to change its surface dimensions. The compositor emits `xdg_surface.configure` (containing `xdg_toplevel.configure` with the new width and height), to which the terminal must respond with `xdg_surface.ack_configure` and then commit a buffer at the new size before the next configure is sent. This is not merely advisory — committing a buffer whose dimensions do not match the acknowledged configuration is a protocol error. For GPU terminals this configure event triggers a full buffer reallocation: the existing GBM surface and EGL window must be destroyed and recreated at the new dimensions, because GBM surfaces are fixed-size objects. The sequence is `wl_egl_window_resize()` for EGL-managed windows or an explicit `gbm_surface_create_with_modifiers2()` call for terminals that manage their GBM device directly [Source](https://cgit.freedesktop.org/mesa/mesa/commit/?id=268e12c605341eedfda22bdbbf623aa123a290e8).
 
+```mermaid
+graph TD
+    subgraph "Compositor Globals (Wayland Registry)"
+        WC["wl_compositor"]
+        XWB["xdg_wm_base"]
+        DMA["zwp_linux_dmabuf_v1"]
+        PRES["wp_presentation"]
+        SYNC["wp_linux_drm_syncobj_manager_v1"]
+    end
+    subgraph "Terminal Surface Hierarchy"
+        WS["wl_surface"]
+        XS["xdg_surface"]
+        XT["xdg_toplevel"]
+    end
+    WC -- "create_surface" --> WS
+    WS -- "get_xdg_surface" --> XS
+    XS -- "get_toplevel" --> XT
+    XT -- "set_title / set_app_id" --> XT
+    XWB -- "get_xdg_surface(wl_surface)" --> XS
+    XS -- "ack_configure" --> XS
+```
+
 Terminals that support multiple windows — the kitty tabbed-window model and foot's server-daemon architecture — share a single Wayland connection and a single EGL display across all their windows. Each window gets its own `wl_surface` and its own `xdg_toplevel`, but the `EGLDisplay` obtained from `eglGetPlatformDisplayEXT(EGL_PLATFORM_WAYLAND_KHR, wl_display, ...)` is initialised once and reused. Per-window rendering state lives in individual `EGLContext` and `EGLSurface` objects, which are per-thread or multiplexed with `eglMakeCurrent`. This architecture reduces the overhead of DRM node enumeration and driver initialisation to a one-time cost at startup rather than paying it for every new tab.
 
 ---
@@ -52,6 +74,27 @@ EGL configuration selection follows the standard `eglChooseConfig` path with con
 For terminals that use the Mesa EGL path directly (kitty, Ghostty, most GPU-accelerated terminals), the Wayland-specific EGL window object bridges the `EGLSurface` API to the Wayland protocol. The terminal calls `wl_egl_window_create(wl_surface, width, height)` to obtain a `wl_egl_window` handle, and then `eglCreateWindowSurface(display, config, wl_egl_window, NULL)` to create the surface. Mesa's platform_wayland.c implementation allocates a GBM surface internally at this point: it calls `gbm_surface_create_with_modifiers2()` with the width, height, format (typically `GBM_FORMAT_ARGB8888` or `GBM_FORMAT_XRGB8888`), the modifier list negotiated from `zwp_linux_dmabuf_v1`, and usage flags including `GBM_BO_USE_RENDERING | GBM_BO_USE_SCANOUT`. The GBM device was opened from the DRM render node selected during display initialisation. The terminal does not see any of this — it is encapsulated inside Mesa [Source](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/egl/drivers/dri2/platform_wayland.c).
 
 Some terminals bypass the Mesa EGL surface management and drive the GBM device themselves. The foot terminal exemplifies the CPU-path approach (covered in Section 5), but GPU terminals wishing explicit control over modifier selection may also take a direct GBM path. In that case the terminal opens a DRM render node directly — typically by finding the device node advertised in the compositor's `zwp_linux_dmabuf_v1` feedback, which is the compositor's preferred render device — calls `gbm_create_device(drm_fd)`, and then `gbm_surface_create_with_modifiers2(gbm_dev, width, height, format, modifiers, count, GBM_BO_USE_RENDERING | GBM_BO_USE_SCANOUT)`. The modifier list comes from the compositor's dmabuf feedback, discussed in the next section. The resulting `gbm_surface` is backed by a pool of GBM buffer objects that Mesa or another OpenGL implementation can render into.
+
+```mermaid
+graph TD
+    WL["wl_display\n(Wayland connection)"]
+    EGLDisp["EGLDisplay\neglGetPlatformDisplayEXT\n(EGL_PLATFORM_WAYLAND_KHR)"]
+    DRMNode["/dev/dri/renderDN\n(DRM render node)"]
+    GBMDev["gbm_device\ngbm_create_device(drm_fd)"]
+    GBMSurf["gbm_surface\ngbm_surface_create_with_modifiers2()"]
+    WLEGLWin["wl_egl_window\nwl_egl_window_create(wl_surface, w, h)"]
+    EGLSurf["EGLSurface\neglCreateWindowSurface()"]
+    EGLCtx["EGLContext\neglCreateContext()"]
+
+    WL --> EGLDisp
+    EGLDisp --> DRMNode
+    DRMNode --> GBMDev
+    GBMDev --> GBMSurf
+    GBMSurf --> WLEGLWin
+    WLEGLWin --> EGLSurf
+    EGLDisp --> EGLCtx
+    EGLCtx -- "eglMakeCurrent" --> EGLSurf
+```
 
 Double-buffering — maintaining two GBM buffer objects in flight — is the standard configuration for terminal rendering. After `eglSwapBuffers`, Mesa dequeues a buffer from the GBM surface's pool and queues its content for submission to the compositor. The previously displayed buffer is held by the compositor until it emits a `wl_buffer.release` event, which signals that the compositor has finished reading and the terminal may reuse the buffer. The terminal's render loop must not attempt to render into a buffer that is still held by the compositor; failing to respect `wl_buffer.release` events leads to visible tearing or protocol errors. Some terminals opt for a three-buffer configuration — three GBM BOs and three `wl_buffer` handles — which allows rendering to begin on the third buffer while the compositor still holds the first two, reducing frame latency on compositors that hold buffers across multiple vertical blank intervals.
 
@@ -108,6 +151,28 @@ Mesa then builds a `zwp_linux_dmabuf_v1` buffer submission. It calls `zwp_linux_
 
 The surface commit sequence follows immediately. The terminal calls `wl_surface.attach(wl_buffer, 0, 0)` to associate the new buffer with the surface, then `wl_surface.damage_buffer(x, y, w, h)` for each dirty rectangle — the regions of the terminal cell grid that changed since the last frame. Accurate damage reporting is essential to compositor performance: without it, the compositor must treat the entire surface as damaged and re-composite it regardless of what actually changed. For a terminal displaying a stream of scrolling text, the damaged region is typically the bottom one or two lines; the rest of the glyph grid is unchanged. Sending precise damage allows compositors (and, on the zero-copy path, the display engine's plane update logic) to minimise memory traffic. The commit is finalised with `wl_surface.commit()`, which atomically makes the new buffer current, applies the damage, and advances the surface's pending state to active [Source](https://wayland-book.com/).
 
+```mermaid
+graph LR
+    GPU["GPU draw calls\n(OpenGL / Vulkan)"]
+    SWAP["eglSwapBuffers()"]
+    LOCK["gbm_surface_lock_front_buffer()"]
+    FDEXP["gbm_bo_get_fd()\n(DMA-BUF fd)"]
+    PARAMS["zwp_linux_buffer_params_v1\n.add(fd, plane, offset, stride, modifier)"]
+    WLBuf["wl_buffer\n.create_immed(w, h, format)"]
+    ATTACH["wl_surface.attach(wl_buffer)"]
+    DAMAGE["wl_surface.damage_buffer(x, y, w, h)"]
+    COMMIT["wl_surface.commit()"]
+
+    GPU --> SWAP
+    SWAP --> LOCK
+    LOCK --> FDEXP
+    FDEXP --> PARAMS
+    PARAMS --> WLBuf
+    WLBuf --> ATTACH
+    ATTACH --> DAMAGE
+    DAMAGE --> COMMIT
+```
+
 On the compositor side, the commit event triggers buffer import. The compositor receives the `zwp_linux_dmabuf_v1` parameters, extracts the DMA-BUF fd, and imports the buffer into its own GPU context. Under Mesa-based compositors (wlroots, Mutter using EGL), this import is done via `eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attribs)` where the attribute list encodes the fd, format, modifier, width, height, stride, and offset. Under Vulkan-based compositors (KWin with KWin-VK backend, Mutter on GNOME 47+), the import path uses `VkImportMemoryFdInfoKHR` with memory property flags set to allow external memory access, paired with a `VkImage` created with `VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT`. In both cases, the kernel's DMA-BUF framework manages the reference counting: the compositor's import increments the reference count on the underlying GEM object; the compositor releases it when it emits `wl_buffer.release`.
 
 ---
@@ -117,6 +182,26 @@ On the compositor side, the commit event triggers buffer import. The compositor 
 Not every terminal uses GPU rendering. foot, the Wayland-native terminal authored by Daniel Eklöf, uses CPU-side FreeType and pixman rendering, submitting its frames over the `wl_shm` shared memory protocol rather than DMA-BUF. This path is architecturally simpler and intentionally so: foot trades GPU performance for predictability, lower memory consumption, and freedom from Mesa dependencies, making it an ideal choice for embedded systems, SSH-forwarded sessions over UNIX sockets, and minimal container environments.
 
 The `wl_shm` path begins with `memfd_create("foot-render", MFD_CLOEXEC | MFD_ALLOW_SEALING)`, which creates an anonymous file in the kernel's memory filesystem. The file is sized to hold the pixel buffer: `ftruncate(fd, width * height * 4)`. The terminal then calls `mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)` to obtain a CPU-writable pointer into that memory, draws the frame with pixman (filling glyph bitmaps, background rectangles, and any decoded Sixel image data), and then submits the buffer to the compositor via the Wayland protocol. The protocol calls are `wl_shm.create_pool(fd, size)` to register the memfd as a shared memory pool, and `wl_shm_pool.create_buffer(offset, width, height, stride, format)` to create a `wl_buffer` pointing at the pixel data [Source](https://wayland-book.com/). The format is typically `WL_SHM_FORMAT_ARGB8888` or `WL_SHM_FORMAT_XRGB8888`; stride is `width * 4`.
+
+```mermaid
+graph TD
+    subgraph "GPU Path (kitty, Ghostty, wezterm)"
+        GPURender["GPU render\n(OpenGL / Vulkan)"]
+        GBMBuf["gbm_surface\n(tiled GBM BO)"]
+        DMABUF["DMA-BUF fd\ngbm_bo_get_fd()"]
+        ZwpBuf["zwp_linux_dmabuf_v1\nwl_buffer"]
+    end
+    subgraph "CPU Path (foot)"
+        Pixman["pixman / FreeType\nCPU render"]
+        MemFD["memfd_create()\nmmap'd pixel buffer"]
+        ShmPool["wl_shm_pool\nwl_shm.create_pool(fd, size)"]
+        ShmBuf["wl_buffer\nwl_shm_pool.create_buffer()"]
+    end
+    Compositor["Compositor\nwl_surface.commit()"]
+
+    GPURender --> GBMBuf --> DMABUF --> ZwpBuf --> Compositor
+    Pixman --> MemFD --> ShmPool --> ShmBuf --> Compositor
+```
 
 The compositor imports this buffer fundamentally differently from a DMA-BUF buffer. Since there is no GPU memory backing the `wl_shm` buffer, the compositor must perform a CPU-to-GPU texture upload before it can composite the terminal surface. Under an EGL-based compositor, this upload is `glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, GL_BGRA_EXT, GL_UNSIGNED_BYTE, pixels)` for the damaged regions; under Vulkan, `vkCmdCopyBufferToImage` with a staging buffer. This upload consumes CPU memory bandwidth and GPU command-stream time. The upload cost is proportional to the damaged area rather than the total surface size if the compositor tracks damage faithfully, but for full-screen terminal operations such as `cat` of a large file, the entire surface is dirty every frame and the upload touches the full pixel buffer. Empirical measurements suggest the upload adds approximately one to two milliseconds of compositor overhead per large-terminal frame compared to the DMA-BUF path, though the precise number depends heavily on compositor implementation, CPU architecture, and buffer size — this figure should be treated as a rough guide rather than a hard benchmark.
 
@@ -170,6 +255,29 @@ wl_surface_commit(surface);
 
 The acquire point tells the compositor at which timeline value the GPU will have finished writing the buffer; the compositor must wait for this point before reading the buffer in its own pipeline. The release point is the converse: the compositor signals this timeline value when it has finished reading the buffer, at which time the terminal may safely reuse the buffer for the next frame [Source](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml). The protocol covers both directions of ownership transfer, eliminating the TOCTOU race that plagued implicit fencing on NVIDIA. On AMD and Intel hardware the same protocol works with the kernel's DRM fence infrastructure, and implementations may choose to use it for consistency even where implicit fencing would suffice.
 
+```mermaid
+graph LR
+    SyncObj["drm_syncobj\nDRM_IOCTL_SYNCOBJ_CREATE"]
+    Timeline["wp_linux_drm_syncobj_timeline_v1\nImported into Wayland"]
+    AcqPt["Acquire point N\nGPU write complete\nset_acquire_point(timeline, N)"]
+    RelPt["Release point N+1\nCompositor read complete\nset_release_point(timeline, N+1)"]
+    Commit["wl_surface.commit()"]
+    CompWait["Compositor waits\nfor acquire point N"]
+    CompRead["Compositor reads buffer\n(composite / scan-out)"]
+    CompSignal["Compositor signals\nrelease point N+1"]
+    TermReuse["Terminal reuses buffer\nfor next frame"]
+
+    SyncObj --> Timeline
+    Timeline --> AcqPt
+    Timeline --> RelPt
+    AcqPt --> Commit
+    RelPt --> Commit
+    Commit --> CompWait
+    CompWait --> CompRead
+    CompRead --> CompSignal
+    CompSignal --> TermReuse
+```
+
 This mechanism is the same for all Wayland clients; the terminal is not architecturally special here. Chapter 20 described the protocol in full as part of the Wayland extension landscape. This section grounds that description in the concrete terminal context: the acquire and release points map directly onto the completion of `eglSwapBuffers` on the render side and the completion of the compositor's `eglSwapBuffers` or Vulkan submission on the compositor side.
 
 ---
@@ -187,6 +295,25 @@ Plane promotion — direct assignment of the terminal's buffer to a KMS plane wi
 When plane promotion succeeds, the terminal's GBM buffer object is assigned directly as the `FB_ID` of a KMS plane. The compositor constructs a DRM framebuffer object with `DRM_IOCTL_MODE_ADDFB2` (carrying the format, modifier, and per-plane pitches), assigns it to the plane's `FB_ID` property, and includes it in the atomic commit. From the display engine's perspective, the terminal is a first-class scan-out client. Compositor compositing overhead for that surface drops to zero.
 
 When plane promotion is not possible — due to a modifier mismatch, applied compositor effects, or a compositor that simply does not implement plane assignment — the fallback path is straightforward: the compositor samples the terminal's buffer as a GPU texture in its own render pass. The terminal's DMA-BUF-backed `EGLImage` is bound as a `GL_TEXTURE_2D` (or a `VkImage` in a Vulkan command buffer) and the compositor renders a textured quad covering the terminal's screen-space footprint. The pixel data still travels from the terminal's GPU memory to the display without a CPU copy, but it passes through an additional GPU render pass.
+
+```mermaid
+graph TD
+    Commit["wl_surface.commit()\n(DMA-BUF wl_buffer)"]
+    Import["Compositor imports DMA-BUF\neglCreateImageKHR or VkImportMemoryFdInfoKHR"]
+    Damage["Damage merge\n(surface coords → output coords)"]
+    Check{"Plane promotion\npossible?"}
+    CondA["Modifier in IN_FORMATS\nplane property?"]
+    CondB["No compositor effects\n(no blur, no transparency)"]
+    CondC["Single output,\ngeometry aligned"]
+    Promote["Plane promotion\nDRM_IOCTL_MODE_ADDFB2\nFB_ID assigned to KMS plane"]
+    Fallback["Compositor GPU render pass\nEGLImage as GL_TEXTURE_2D\nor VkImage textured quad"]
+    KMS["KMS atomic commit"]
+
+    Commit --> Import --> Damage --> Check
+    Check -- "yes" --> CondA
+    CondA --> CondB --> CondC --> Promote --> KMS
+    Check -- "no\n(modifier mismatch,\neffects, or unsupported)" --> Fallback --> KMS
+```
 
 ---
 

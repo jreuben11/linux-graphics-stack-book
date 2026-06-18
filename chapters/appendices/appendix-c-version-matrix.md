@@ -22,6 +22,19 @@ This appendix provides a consolidated at-a-glance reference for when major Linux
 
 The Linux graphics stack exposes its capabilities along three independent versioning axes: the **Linux kernel version** (which determines what DRM/KMS interfaces, synchronization primitives, and display properties are available to userspace), the **Mesa version** (which determines what userspace driver logic, shader compilers, and Vulkan/OpenGL extensions are implemented), and, for display-related features, the **display server or compositor version** (which determines whether the software that consumes those kernel and Mesa interfaces actually exercises them). Some features require all three axes to align simultaneously before they are useful.
 
+```mermaid
+graph TD
+    Kernel["Linux Kernel Version\n(DRM/KMS interfaces,\nsync primitives, display properties)"]
+    Mesa["Mesa Version\n(userspace driver logic,\nshader compilers,\nVulkan/OpenGL extensions)"]
+    Compositor["Display Server /\nCompositor Version\n(exercises kernel and\nMesa interfaces)"]
+    Feature["Feature Available\nto Applications"]
+
+    Kernel -- "exposes DRM interfaces" --> Feature
+    Mesa -- "implements extensions" --> Feature
+    Compositor -- "exercises kernel + Mesa" --> Feature
+    Kernel -. "kernel-gated:\nMesa falls back or\ndisables without this" .-> Mesa
+```
+
 ### Versioning Conventions
 
 Throughout these tables, kernel versions are expressed as `X.Y`, corresponding to the first stable release in which a feature became available for production use. When a feature merged during a `-rc` development cycle, the version attributed is the final stable release (for example, a patch merged in `v5.17-rc1` is listed as `5.17`). Mesa versions are expressed as `X.Y`, omitting the patch-level `.Z` suffix since patch releases contain bug fixes only, not new feature enablement. Where a feature was present but gated behind a runtime environment variable or debug flag before a later release, that later release — when the feature was enabled by default — is used as the "available" version.
@@ -81,6 +94,22 @@ The features below are grouped by functional area. Within each group, entries ar
 
 **Timeline points** (v5.2) extend `drm_syncobj` from a binary signal/reset model to a monotonically increasing 64-bit counter, directly matching the semantics of Vulkan timeline semaphores (`VkSemaphoreTypeTimeline`). This extension also provides the kernel mechanism required by the Wayland `wp_linux_drm_syncobj_v1` protocol, in which a Wayland client passes an acquire point (a timeline value the compositor must wait for before scanning a buffer) and a release point (a value the compositor signals when it finishes reading the buffer). The net effect is that the compositor never needs to insert a CPU-side fence wait between the client's GPU render completion and the scanout, eliminating the source of stuttering and tearing on multi-GPU or multi-queue setups.
 
+```mermaid
+graph TD
+    SyncObj["drm_syncobj\n(kernel 4.12)\nBinary signal/reset primitives\nDRM_IOCTL_SYNCOBJ_*"]
+    Timeline["drm_syncobj timeline points\n(kernel 5.2)\nMonotonically increasing 64-bit counter"]
+    VkTimeline["VkSemaphoreTypeTimeline\nVulkan timeline semaphores\n(Mesa Vulkan drivers: RADV, ANV, NVK)"]
+    WaylandSync["wp_linux_drm_syncobj_v1\nWayland explicit sync protocol\n(kernel 6.6 minimum; 6.8 stable)"]
+    InFence["In-fence / out-fence on\natomic KMS commits\n(kernel 4.13)\nDMA fences on commit"]
+    Compositor["Compositor\n(Mutter, KWin, sway, Weston)\nNo CPU-side fence wait\nbetween render and scanout"]
+
+    SyncObj -- "extended to timeline model" --> Timeline
+    Timeline -- "provides semantics for" --> VkTimeline
+    Timeline -- "kernel mechanism for" --> WaylandSync
+    InFence -- "compositor pipelines\nGPU render with scanout" --> Compositor
+    WaylandSync -- "client passes acquire/release\npoints to compositor" --> Compositor
+```
+
 **ntsync** provides a kernel-level emulation of Windows NT synchronization primitives (mutexes, semaphores, keyed events) that Wine and Proton use to synchronise Windows game threads. Before ntsync, Wine used `esync` (eventfd-based) or `fsync` (futex-based) userspace implementations that required busy-spinning or large numbers of eventfds for highly contended workloads. The ntsync device (`/dev/ntsync`) first appeared in v6.10 but was compiled with `BROKEN` so it would not build in default configurations. The complete, production-ready driver was merged for v6.14 and adopted as the default synchronization backend in Wine 11.0 and Proton 11.0. [Source: GamingOnLinux — NTSYNC lands in Linux 6.14](https://www.gamingonlinux.com/2025/01/ntsync-for-proton-wine-now-in-linux-kernel-6-14-that-should-make-many-steamos-users-happy/)
 
 ### 2.4 Infrastructure
@@ -108,6 +137,23 @@ The features below are grouped by functional area: compiler infrastructure, driv
 **NIR (New IR)** was conceived as a replacement for TGSI (Trivial Shader IR) to provide a more structured, SSA-based intermediate representation better suited to modern optimisation passes and backends. NIR development began around Mesa 13.0 with initial adoption in i965 and vc4. By Mesa 20.0, all major drivers had completed their migration: radeonsi, r600, iris (Intel), nouveau, and others. TGSI paths remain in the tree for historical compatibility but receive no active development. NIR is now the universal IR through which shaders pass on their way from GLSL/SPIR-V parsing to backend code generation. [Source: `src/compiler/nir/` in Mesa](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/compiler/nir)
 
 **ACO (AMD Compiler Open)** was initially proposed in a Mesa-dev RFC in July 2019 by Valve engineers who needed faster shader compilation for games. The backend compiles NIR directly to AMD ISA without going through LLVM IR, removing the overhead of LLVM's general-purpose optimisation pipeline. ACO became opt-in via `RADV_PERFTEST=aco` in Mesa 19.3 and was promoted to the default in Mesa 20.2. Compile times for typical game shaders improved by a factor of two to five compared to the LLVM path, and generated code quality was competitive with or superior to LLVM on most workloads. [Source: Mesa 20.2 release notes; Phoronix](https://www.phoronix.com/news/Mesa-20.2-Released)
+
+```mermaid
+graph LR
+    GLSL["GLSL / SPIR-V\n(shader source)"]
+    NIR["NIR\n(New IR, src/compiler/nir/)\nSSA-based IR\nMesa 20.0: universal default"]
+    ACO["ACO backend\n(AMD Compiler Open)\nMesa 20.2: default for RADV graphics\nMesa 22.1: compute shaders"]
+    LLVM["LLVM IR\n(legacy path for\nnon-RADV drivers)"]
+    AMDISA["AMD ISA\n(GPU machine code)"]
+    OtherISA["Other GPU ISA\n(Intel, ARM, etc.)"]
+
+    GLSL --> NIR
+    NIR -- "RADV driver" --> ACO
+    NIR -- "other drivers" --> LLVM
+    ACO -- "compiles directly to" --> AMDISA
+    LLVM --> AMDISA
+    LLVM --> OtherISA
+```
 
 ### 3.2 RADV Driver Extensions
 
@@ -147,6 +193,31 @@ The features below are grouped by functional area: compiler infrastructure, driv
 **Zink** translates the OpenGL API to Vulkan at the Gallium state tracker level. Each GL draw call, texture bind, or render target switch is translated to a corresponding sequence of Vulkan commands directed at whatever Vulkan driver is present on the system. This makes OpenGL available on devices that only expose a Vulkan driver (useful for NVK and, in the future, for new GPU drivers that only implement Vulkan). As of Mesa 25.1, Zink+NVK became the default OpenGL path for NVIDIA hardware on nouveau, replacing the older Nouveau Gallium GL driver. [Source: 9to5linux — Mesa 25.1 to replace Nouveau driver with Zink/NVK](https://9to5linux.com/mesa-25-1-to-replace-nouveau-driver-with-zink-nvk-by-default-for-nvidia-gpus)
 
 **rusticl** was introduced in Mesa 22.3 as a replacement for Clover, the long-stagnant OpenCL Gallium state tracker. rusticl is written in Rust and targets OpenCL 3.0 conformance, reusing the NIR compiler infrastructure for kernel compilation and the Gallium pipe interface for device abstraction. Clover had not seen active development for several years and lacked support for modern compute features. The Clover code was fully removed from the Mesa tree in Mesa 25.2. [Source: nullr0ute.com — Getting started with OpenCL using Mesa/rusticl](https://nullr0ute.com/2023/12/getting-started-with-opencl-using-mesa-rusticl/)
+
+```mermaid
+graph TD
+    OpenGL["OpenGL API\n(application)"]
+    Vulkan["Vulkan API\n(application)"]
+    OpenCL["OpenCL 3.0 API\n(application)"]
+
+    Zink["Zink\n(Gallium driver)\nTranslates OpenGL to Vulkan\nMesa 21.0+"]
+    rusticl["rusticl\n(OpenCL state tracker, Rust)\nMesa 22.3+"]
+    Lavapipe["Lavapipe\n(software CPU Vulkan)\nBuilt on LLVMpipe Gallium\nMesa 21.0+"]
+    NVK["NVK\n(NVIDIA open Vulkan)\nsrc/nouveau/vulkan/\nMesa 23.3 experimental\nMesa 24.1 conformant"]
+    VulkanDriver["Hardware Vulkan Driver\n(RADV, ANV, NVK, etc.)"]
+    LLVMpipe["LLVMpipe Gallium\n(CPU rasteriser)"]
+    NIR2["NIR compiler\n(shared infrastructure)"]
+
+    OpenGL --> Zink
+    Zink -- "translates calls to Vulkan" --> VulkanDriver
+    Vulkan --> VulkanDriver
+    Vulkan --> Lavapipe
+    OpenCL --> rusticl
+    rusticl -- "uses NIR for kernel compilation" --> NIR2
+    rusticl -- "Gallium pipe interface" --> LLVMpipe
+    Lavapipe -- "compiles shaders via NIR+LLVM" --> LLVMpipe
+    NVK -- "requires kernel 6.7\n(nouveau GSP firmware)" --> VulkanDriver
+```
 
 ### 3.5 Integration
 

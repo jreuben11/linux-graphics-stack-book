@@ -121,6 +121,18 @@ The fd exported from a timeline handle via `DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD` (wit
 
 `wp_linux_drm_syncobj_v1` (wayland-protocols 1.40, landed 2024) introduces three interfaces:
 
+```mermaid
+graph TD
+    Manager["wp_linux_drm_syncobj_manager_v1\n(global factory)"]
+    Timeline["wp_linux_drm_syncobj_timeline_v1\n(imported DRM syncobj fd)"]
+    Surface["wp_linux_drm_syncobj_surface_v1\n(per-surface sync)"]
+
+    Manager -- "import_timeline(fd)" --> Timeline
+    Manager -- "get_surface(wl_surface)" --> Surface
+    Surface -- "set_acquire_point(timeline, point)" --> Timeline
+    Surface -- "set_release_point(timeline, point)" --> Timeline
+```
+
 **`wp_linux_drm_syncobj_manager_v1`** — global factory:
 - `get_surface(id, surface)` — attaches an explicit-sync object to a `wl_surface`; error `surface_exists` if one already exists
 - `import_timeline(id, fd)` — imports a DRM syncobj fd, returning a `wp_linux_drm_syncobj_timeline_v1`
@@ -250,6 +262,25 @@ Key interfaces:
 - `create_icc_creator()` → `wp_image_description_creator_icc_v1`
 - `create_parametric_creator()` → `wp_image_description_creator_params_v1`
 
+```mermaid
+graph TD
+    Manager["wp_color_manager_v1\n(per-compositor singleton)"]
+    OutputCM["wp_color_management_output_v1\n(output colour info)"]
+    SurfaceCM["wp_color_management_surface_v1\n(set surface colour)"]
+    SurfaceFB["wp_color_management_surface_feedback_v1\n(preferred description)"]
+    IccCreator["wp_image_description_creator_icc_v1\n(ICC profile upload)"]
+    ParamCreator["wp_image_description_creator_params_v1\n(named colour space)"]
+    ImageDesc["wp_image_description_v1\n(ready / failed lifecycle)"]
+
+    Manager -- "get_output(output)" --> OutputCM
+    Manager -- "get_surface(surface)" --> SurfaceCM
+    Manager -- "get_surface_feedback(surface)" --> SurfaceFB
+    Manager -- "create_icc_creator()" --> IccCreator
+    Manager -- "create_parametric_creator()" --> ParamCreator
+    IccCreator -- "create()" --> ImageDesc
+    ParamCreator -- "create()" --> ImageDesc
+```
+
 **`wp_image_description_v1`** lifecycle: create → `ready(identity)` event or `failed(cause, msg)` event → use in surface requests → `destroy()`.
 
 The `identity` value in the `ready` event is a 64-bit image description ID (corrected from the original 32-bit design that could wrap in 1.4 years under high-throughput usage).
@@ -335,6 +366,18 @@ Both Mutter and KWin drive the KMS colour pipeline (Ch3 §6) in response to prot
 
 A typical HDR surface-to-SDR-display pipeline, when the surface image description is BT.2020/PQ and the display image description is sRGB/BT.709:
 
+```mermaid
+graph LR
+    SurfacePx["Surface pixels\n(BT.2020/PQ)"]
+    Degamma["DEGAMMA_LUT\n(inverse PQ / ST2084 curve\n→ linear BT.2020 scene-linear)"]
+    CTM["CTM\n(BT.2020 primaries\n→ BT.709 primaries\n3×3 matrix multiply)"]
+    ToneMap["Tone mapping\n(compositor pixel shader\nif no HW support)"]
+    Gamma["GAMMA_LUT\n(sRGB transfer function\n→ display-encoded sRGB)"]
+    Display["Display output\n(sRGB/BT.709)"]
+
+    SurfacePx --> Degamma --> CTM --> ToneMap --> Gamma --> Display
+```
+
 ```
 Surface pixels (BT.2020/PQ)
   → DEGAMMA_LUT: inverse PQ (ST2084) curve → linear BT.2020 scene-linear
@@ -374,6 +417,27 @@ OBS Studio, PipeWire's screencast portal backend, and tools like `grim` and `scr
 ### 4.2 Protocol Architecture
 
 The screen capture design splits into two companion protocols: **source selection** (`ext-image-capture-source-v1`) and **pixel copying** (`ext-image-copy-capture-v1`). Splitting them allows future source types (e.g., capture of a specific layer or a virtual camera) to reuse the copy machinery.
+
+```mermaid
+graph TD
+    ForeignList["ext_foreign_toplevel_list_v1\n(enumerate mapped windows)"]
+    ToplevelHandle["ext_foreign_toplevel_handle_v1\n(app_id, title, closed events)"]
+    SourceFactory["ext-image-capture-source-v1\n(source selection factory)"]
+    OutputSource["ext_image_capture_source_v1\n(whole output)"]
+    WindowSource["ext_image_capture_source_v1\n(specific application window)"]
+    CopyManager["ext_image_copy_capture_manager_v1\n(copy machinery)"]
+    Session["ext_image_copy_capture_session_v1\n(capture session)"]
+    CursorSession["ext_image_copy_capture_cursor_session_v1\n(cursor capture)"]
+
+    ForeignList -- "toplevel event" --> ToplevelHandle
+    ToplevelHandle -- "create_foreign_toplevel_source(toplevel_handle)" --> SourceFactory
+    SourceFactory -- "create_output_source(output)" --> OutputSource
+    SourceFactory -- "create_foreign_toplevel_source(toplevel_handle)" --> WindowSource
+    OutputSource -- "create_session(source, options)" --> CopyManager
+    WindowSource -- "create_session(source, options)" --> CopyManager
+    CopyManager -- "create_session()" --> Session
+    CopyManager -- "create_pointer_cursor_session()" --> CursorSession
+```
 
 **Source selection: `ext-image-capture-source-v1`**
 
@@ -462,6 +526,19 @@ GNOME's absence is structural: the GNOME Shell screencasting pipeline is tightly
 ### 4.6 PipeWire Integration Path
 
 The `xdg-desktop-portal` screencast backend (portal version 1.21+) uses `ext-image-copy-capture-v1` on compositors that support it, feeding captured DMA-BUF frames into a PipeWire `spa_node` (Ch38). The PipeWire node exposes the screen as a video stream that WebRTC implementations (Chrome, Firefox, PipeWire GStreamer plugins) can subscribe to:
+
+```mermaid
+graph LR
+    Screen["Screen\n(compositor output)"]
+    Frame["ext_image_copy_capture_frame\n(captured frame)"]
+    DMABUF["DMA-BUF\n(zero-copy buffer)"]
+    Portal["xdg-desktop-portal\nscreencast backend"]
+    PWStream["pw_stream_queue_buffer\n(PipeWire stream)"]
+    PWNode["PipeWire node\n(spa_node)"]
+    Consumer["Consumer\n(OBS, WebRTC, Chrome, Firefox)"]
+
+    Screen --> Frame --> DMABUF --> Portal --> PWStream --> PWNode --> Consumer
+```
 
 ```
 Screen → ext_image_copy_capture_frame → DMA-BUF → portal backend

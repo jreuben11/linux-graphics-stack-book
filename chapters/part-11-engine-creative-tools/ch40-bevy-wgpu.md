@@ -46,6 +46,20 @@ The separation exists to enable pipelined rendering: when `PipelinedRenderingPlu
 
 As of Bevy 0.15, the render world moved from an *immediate-mode* model (every render entity was destroyed and recreated each frame) to a *retained* model. Render-world entities now persist across frames. Synchronisation is tracked through complementary components: render-world entities carry a `MainEntity` component referencing their main-world counterpart, and main-world entities carry a `RenderEntity` pointing back. This eliminates the archetype-rebuild overhead that clearing the render world every frame imposed and substantially reduces per-frame CPU work for scenes with stable content. [Source](https://bevy.org/news/bevy-0-15/)
 
+```mermaid
+graph LR
+    subgraph "Main World\n(game logic, frame N+1)"
+        MW["Main World\n(transforms, physics,\nAI, audio)"]
+        RE["RenderEntity\n(points to render world)"]
+    end
+    subgraph "Render World\n(GPU work, frame N)"
+        RW["Render World\n(mesh data, camera matrices,\nbind groups, pipeline state)"]
+        ME["MainEntity\n(points to main world)"]
+    end
+    MW -->|"ExtractSchedule\n(reads main, writes render)"| RW
+    RE -. "retained link" .-> ME
+```
+
 ### The Extract Phase
 
 The `ExtractSchedule` is the synchronisation point between the two worlds. Systems that run in `ExtractSchedule` read from the main world and write extracted data into the render world. The canonical mechanism is the `ExtractComponent` trait:
@@ -100,6 +114,19 @@ The `RenderGraph` is Bevy's directed acyclic graph of GPU work. Each node in the
 
 Built-in nodes include `MainOpaquePass3dNode`, `MainTransparentPass3dNode`, `DepthPrepassNode`, `ShadowPassNode`, `TonemappingNode`, and `UpscalingNode`. Custom nodes can be registered and inserted at arbitrary positions in the graph to add pre-processing or post-processing passes without forking Bevy's core rendering code.
 
+```mermaid
+graph TD
+    subgraph "RenderGraph (DAG of GPU passes)"
+        DepthPrepassNode["DepthPrepassNode"]
+        MainOpaquePass3dNode["MainOpaquePass3dNode\n(main 3D pass)"]
+        MainTransparentPass3dNode["MainTransparentPass3dNode"]
+        ShadowPassNode["ShadowPassNode"]
+        TonemappingNode["TonemappingNode"]
+        UpscalingNode["UpscalingNode"]
+    end
+    DepthPrepassNode -- "depth texture\n(SlotInfo)" --> MainOpaquePass3dNode
+```
+
 Graph execution is driven by the `render_system` function, which runs the `RenderGraph` schedule. Node implementations record wgpu command encoders in `Render` system set systems and submit them through `RenderQueue::submit`:
 
 ```rust
@@ -144,6 +171,32 @@ wgpu is developed in the `gfx-rs/wgpu` monorepo on GitHub. [Source](https://gith
 - `wgpu-hal` — the hardware abstraction layer; one backend module per API
 - `wgpu-types` — shared type definitions used across all layers
 - `naga` — the shader translator (covered in section 3)
+
+```mermaid
+graph TD
+    App["Application\n(Bevy / user code)"]
+    wgpu["wgpu\n(public API surface)"]
+    wgpu_types["wgpu-types\n(shared type definitions)"]
+    wgpu_core["wgpu-core\n(front-end validation\nand state tracking)"]
+    wgpu_hal["wgpu-hal\n(hardware abstraction layer)"]
+    naga["naga\n(shader translator)"]
+    subgraph "wgpu-hal backends"
+        Vulkan["Vulkan backend\n(Linux default)"]
+        GLES["OpenGL ES backend\n(ANGLE fallback)"]
+        Metal["Metal backend"]
+        D3D12["D3D12 backend"]
+    end
+    App --> wgpu
+    wgpu --> wgpu_core
+    wgpu --> wgpu_types
+    wgpu_core --> wgpu_types
+    wgpu_core --> wgpu_hal
+    wgpu_core --> naga
+    wgpu_hal --> Vulkan
+    wgpu_hal --> GLES
+    wgpu_hal --> Metal
+    wgpu_hal --> D3D12
+```
 
 ### Backend Selection on Linux
 
@@ -317,6 +370,37 @@ From NIR, compilation proceeds through the standard Mesa pipeline covered in Cha
 - **NVK (NVIDIA Vulkan, nouveau)**: NIR → NVK's shader backend.
 - **Turnip (Qualcomm Adreno Vulkan)**: NIR → Qualcomm ISA via `ir3`.
 
+```mermaid
+graph TD
+    WGSL["WGSL source"]
+    ParseStr["naga::front::wgsl::parse_str()"]
+    NagaModule["naga::Module\n(naga IR)"]
+    Validator["naga::valid::Validator"]
+    SPVWriter["naga::back::spv::Writer"]
+    SPIRV["SPIR-V binary"]
+    vkCreateShaderModule["vkCreateShaderModule\n(Mesa Vulkan driver)"]
+    vk_spirv_to_nir["vk_spirv_to_nir()"]
+    NIR["NIR\n(Mesa IR)"]
+    subgraph "Mesa driver backends"
+        ACO["ACO\n(RADV / AMD)"]
+        ANV["Intel backend compiler\n(ANV / Intel)"]
+        NVK["NVK shader backend\n(NVIDIA / nouveau)"]
+        ir3["ir3\n(Turnip / Qualcomm Adreno)"]
+    end
+    WGSL --> ParseStr
+    ParseStr --> NagaModule
+    NagaModule --> Validator
+    Validator --> SPVWriter
+    SPVWriter --> SPIRV
+    SPIRV --> vkCreateShaderModule
+    vkCreateShaderModule --> vk_spirv_to_nir
+    vk_spirv_to_nir --> NIR
+    NIR --> ACO
+    NIR --> ANV
+    NIR --> NVK
+    NIR --> ir3
+```
+
 The naga→SPIR-V→NIR path makes wgpu a first-class NIR consumer. WGSL is not a "simpler" path into the GPU — it is an equally rigorous entry point into the same compilation pipeline that native Vulkan applications use.
 
 ### Comparison with Dawn/Tint
@@ -355,6 +439,27 @@ When the Wayland backend is selected, winit creates a native `wl_surface` throug
 2. `xdg_wm_base.get_xdg_surface()` + `xdg_surface.get_toplevel()` → XDG window
 
 winit then returns a platform-specific `RawWindowHandle` and `RawDisplayHandle` from the `raw-window-handle` crate:
+
+```mermaid
+graph TD
+    winit["winit\n(Bevy windowing backend)"]
+    wl_compositor["wl_compositor.create_surface()\n(wayland-client)"]
+    wl_surface["wl_surface"]
+    xdg_wm_base["xdg_wm_base.get_xdg_surface()\n+ xdg_surface.get_toplevel()"]
+    XDGWindow["XDG window\n(WaylandWindowHandle\n+ WaylandDisplayHandle)"]
+    create_surface["wgpu Instance::create_surface()"]
+    dispatch["wgpu-hal vulkan instance.rs\ndispatches on RawWindowHandle variant"]
+    create_wayland["create_surface_from_wayland()\nvkCreateWaylandSurfaceKHR\n(VK_KHR_wayland_surface)"]
+    VkSurface["VkSurfaceKHR"]
+    winit --> wl_compositor
+    wl_compositor --> wl_surface
+    wl_surface --> xdg_wm_base
+    xdg_wm_base --> XDGWindow
+    XDGWindow --> create_surface
+    create_surface --> dispatch
+    dispatch --> create_wayland
+    create_wayland --> VkSurface
+```
 
 ```rust
 // winit Wayland surface: raw handle extraction

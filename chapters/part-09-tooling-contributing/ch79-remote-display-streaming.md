@@ -30,6 +30,23 @@ Remote display on Linux spans three distinct use cases, each placing different d
 
 **Game streaming** (Sunshine/Moonlight, formerly NVIDIA GameStream) demands sub-20 ms end-to-end latency at 4K/120 Hz, which requires direct GPU framebuffer capture (KMS/DRM or NvFBC), hardware encode (NVENC, VA-API, or Vulkan Video), and a low-latency UDP transport (RTSP + RTP). Even a single CPU copy of a 4K frame adds ~4 ms on a memory-bandwidth-limited path.
 
+```mermaid
+graph TD
+    subgraph "Screen Casting"
+        SC_Comp["Compositor"] -- "DMA-BUF" --> SC_PW["PipeWire Producer"]
+        SC_PW -- "pw_stream" --> SC_App["Consumer App\n(OBS, video call)"]
+    end
+    subgraph "Remote Desktop"
+        RD_Comp["Compositor\n(Mutter / KWin)"] -- "PipeWire" --> RD_Enc["VA-API / NVENC\nH.264 Encode"]
+        RD_Enc -- "RDP / VNC" --> RD_Net["Network Transport\n(TCP/TLS)"]
+        RD_Net --> RD_Client["Remote Client\n(FreeRDP / xrdp)"]
+    end
+    subgraph "Game Streaming"
+        GS_GPU["GPU Framebuffer"] -- "KMS / NvFBC\nDMA-BUF" --> GS_Enc["NVENC / VA-API /\nVulkan Video Encode"]
+        GS_Enc -- "RTP / UDP" --> GS_Client["Moonlight Client\nNVDEC / VA-API Decode"]
+    end
+```
+
 GPU acceleration matters for all three categories:
 
 - **Encode quality and bitrate efficiency**: NVENC and VA-API support constant-QP and constant-bitrate modes with fine-grained rate control unavailable in software codecs at real-time speeds.
@@ -238,11 +255,29 @@ PipeWire's DMA-BUF sharing ([docs.pipewire.org/page_dma_buf.html](https://docs.p
 
 The modifier (`uint64_t`) is a DRM concept that encodes tiling geometry (linear, X-tiled, Y-tiled, AFBC, etc.). Both producer and consumer must support the same modifier for the GPU to read the buffer without a decompression blit.
 
+```mermaid
+graph LR
+    Comp["Compositor\n(Producer)"] -- "allocates GBM buffer,\nexports DMA-BUF fd + modifier" --> PW["PipeWire Graph\n(fd passed via shared memory)"]
+    PW -- "DMA-BUF fd" --> Consumer["Consumer\n(OBS / VA-API encoder)"]
+    Consumer -- "EGL_LINUX_DMA_BUF_EXT /\nVkImportMemoryFdInfoKHR /\nvaCreateSurfaces" --> GPUCtx["GPU Context\n(imported VA surface)"]
+    GPUCtx -- "zero-copy read" --> Encoder["Hardware Encoder\n(FFmpeg VA-API / NVENC)"]
+```
+
 ---
 
 ## 3. xdg-desktop-portal: Brokered Screen Capture for Sandboxed Apps
 
 Flatpak and Snap applications run in a sandbox that denies direct compositor protocol access. The **xdg-desktop-portal** ([github.com/flatpak/xdg-desktop-portal](https://github.com/flatpak/xdg-desktop-portal)) provides a D-Bus broker that lets sandboxed clients request screen capture with user consent. The compositor-specific work is delegated to a **portal backend** (xdg-desktop-portal-gnome, xdg-desktop-portal-wlr, xdg-desktop-portal-kde, etc.).
+
+```mermaid
+graph TD
+    SandboxedApp["Sandboxed App\n(Flatpak / Snap)"] -- "D-Bus call\norg.freedesktop.portal.ScreenCast" --> XDGPortal["xdg-desktop-portal\n(D-Bus broker)"]
+    XDGPortal -- "delegates to" --> PortalBackend["Portal Backend\n(xdg-desktop-portal-gnome /\nxdg-desktop-portal-wlr /\nxdg-desktop-portal-kde)"]
+    PortalBackend -- "compositor protocol" --> Compositor["Compositor\n(Mutter / KWin / Sway)"]
+    XDGPortal -- "OpenPipeWireRemote\n(restricted fd)" --> SandboxedApp
+    SandboxedApp -- "pw_context_connect_fd()\nto node_id from Start()" --> PipeWireNode["PipeWire Screen Cast Node"]
+    Compositor -- "DMA-BUF frames" --> PipeWireNode
+```
 
 ### 3.1 The org.freedesktop.portal.ScreenCast Interface
 
@@ -345,6 +380,16 @@ VA-API integration is enabled at compile time with `WITH_VAAPI_H264_ENCODING=ON`
 - **libei** for input event plumbing (emulated keyboard/pointer)
 - **Mutter remote desktop D-Bus API** for session management
 - **VA-API/Vulkan encode** for GPU-accelerated H.264/H.265 output
+
+```mermaid
+graph TD
+    MutterDB["Mutter Remote Desktop\nD-Bus API"] -- "session management" --> GRD["gnome-remote-desktop\n(system service)"]
+    PW["PipeWire\n(pixel stream from Mutter)"] -- "DMA-BUF frames" --> GRD
+    libei["libei\n(emulated input client)"] -- "pointer / keyboard / touch\nevents" --> GRD
+    GRD -- "H.264 / H.265 encode\n(VA-API / Vulkan)" --> Enc["Hardware Encoder"]
+    Enc -- "libfreerdp-server3\nRDPGFX AVC444/AVC420" --> RDP["RDP Transport\n(TCP/TLS)"]
+    RDP --> RDPClient["RDP Client\n(xfreerdp3 / Windows MSTSC)"]
+```
 
 A merge request ([gitlab.gnome.org/GNOME/gnome-remote-desktop/-/merge_requests/294](https://gitlab.gnome.org/GNOME/gnome-remote-desktop/-/merge_requests/294)) added zero-copy rendering via Vulkan+VAAPI. To enable the accelerated path (debug flag during development):
 
@@ -487,6 +532,15 @@ Sunshine selects a capture backend at startup based on what the system supports 
 | `portal` | xdg-desktop-portal ScreenCast | GNOME/KDE Wayland |
 | `nvfbc` | NVIDIA NvFBC API | NVIDIA GPUs, X11 only |
 | `x11` | XShm / XComposite | Legacy, high CPU cost |
+
+```mermaid
+graph TD
+    Sunshine["Sunshine Server\n(startup)"] -- "priority 1\nrequires cap_sys_admin" --> KMS["kms backend\nDRM_IOCTL_MODE_GETFB2"]
+    Sunshine -- "priority 2\nwlroots compositors" --> WLR["wlr backend\nwlr-screencopy-unstable-v1"]
+    Sunshine -- "priority 3\nGNOME / KDE Wayland" --> Portal["portal backend\nxdg-desktop-portal ScreenCast"]
+    Sunshine -- "priority 4\nNVIDIA + X11 only" --> NvFBC["nvfbc backend\nNVIDIA NvFBC API"]
+    Sunshine -- "priority 5\nlegacy fallback" --> X11["x11 backend\nXShm / XComposite"]
+```
 
 The KMS backend reads the framebuffer directly via the DRM kernel interface, avoiding the compositor entirely. This requires Sunshine to be granted `CAP_SYS_ADMIN`:
 
@@ -658,6 +712,17 @@ The `FFmpegVideoDecoder` class manages the decode pipeline using a pull model:
    - **Software**: `h264`/`hevc`/`libdav1d` fallback via libavcodec.
 
 [Source: moonlight-qt vaapi.cpp](https://github.com/moonlight-stream/moonlight-qt/blob/master/app/streaming/video/ffmpeg-renderers/vaapi.cpp)
+
+```mermaid
+graph TD
+    RTP["RTP Video Packets\n(UDP 47998)"] --> DecThread["Decoder Thread\navcodec_send_packet /\navcodec_receive_frame"]
+    DecThread -- "decoded frames" --> Pacer["Pacer Subsystem\n(display-synchronized)"]
+    Pacer --> Renderer["Renderer Layer"]
+    Renderer -- "Pass 0: preferred\nIntel / AMD" --> VAAPI["VA-API\nffmpeg-renderers/vaapi.cpp"]
+    Renderer -- "Pass 0: NVIDIA Wayland" --> NVDEC["NVDEC\n(CUDA explicit)"]
+    Renderer -- "Pass 0: NVIDIA X11" --> VDPAU["VDPAU\n(legacy NVIDIA)"]
+    Renderer -- "Pass 1 / software fallback" --> SW["Software\nh264 / hevc / libdav1d"]
+```
 
 The hardware backend selection follows a two-pass hierarchy: Pass 0 tries the preferred hardware accelerator; Pass 1 tries fallback hardware; then software. The decoder queries `getDecoderCapabilities()` which checks VA-API profiles, NVDEC capability bits, and Reference Frame Invalidation (RFI) support — RFI allows the server to invalidate specific reference frames to recover from packet loss without a full IDR. [Source: DeepWiki Moonlight-qt video system](https://deepwiki.com/moonlight-stream/moonlight-qt/4.2-video-decoding-system)
 

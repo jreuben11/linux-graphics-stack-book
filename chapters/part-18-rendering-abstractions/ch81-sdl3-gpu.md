@@ -38,6 +38,33 @@ SDL_GPU is a *thin wrapper* around the native GPU API on each platform:
 - **macOS/iOS** → Metal
 - **Console platforms** → proprietary backends via private SDL forks
 
+```mermaid
+graph TD
+    App["Application\n(C / C++ / Rust / ...)"]
+    SDLGPU["SDL_GPU\n(SDL_gpu.h)"]
+    subgraph "Platform Backends"
+        VK["Vulkan backend\n(Linux / Windows)"]
+        D3D12["Direct3D 12 backend\n(Windows)"]
+        MTL["Metal backend\n(macOS / iOS)"]
+        PRIV["Private backend\n(Console SDL forks)"]
+    end
+    subgraph "Linux GPU Drivers"
+        RADV["RADV\n(AMD Mesa Vulkan)"]
+        ANV["ANV\n(Intel Mesa Vulkan)"]
+        NVK["NVK\n(Nouveau Mesa Vulkan)"]
+        NVprop["NVIDIA proprietary\nVulkan driver"]
+    end
+    App --> SDLGPU
+    SDLGPU --> VK
+    SDLGPU --> D3D12
+    SDLGPU --> MTL
+    SDLGPU --> PRIV
+    VK --> RADV
+    VK --> ANV
+    VK --> NVK
+    VK --> NVprop
+```
+
 The API surface is inspired by Metal rather than Vulkan: resources are created once and referenced by opaque handles; command buffers are acquired, recorded, and submitted in one sequence; descriptor sets do not exist; the shader-resource binding layout is declared at pipeline-creation time via counts rather than layout objects. [Source: SDL3 GPU API header](https://github.com/libsdl-org/SDL/blob/release-3.2.14/include/SDL3/SDL_gpu.h)
 
 ### Comparison to WebGPU
@@ -132,6 +159,24 @@ if (!SDL_ClaimWindowForGPUDevice(device, window)) {
 ```
 
 `SDL_ClaimWindowForGPUDevice` creates the Vulkan `VkSurfaceKHR` and `VkSwapchainKHR` internally, selects a surface format compatible with the swapchain composition mode, and wires the window to the device. Multiple windows can be claimed from the same device. [Source: SDL_gpu.h, release-3.2.14](https://github.com/libsdl-org/SDL/blob/release-3.2.14/include/SDL3/SDL_gpu.h)
+
+```mermaid
+graph TD
+    Init["SDL_Init\n(SDL_INIT_VIDEO)"]
+    Win["SDL_CreateWindow"]
+    Probe["SDL_GPUSupportsShaderFormats\n(optional pre-check)"]
+    Create["SDL_CreateGPUDevice\n(format_flags, debug_mode, name)"]
+    Claim["SDL_ClaimWindowForGPUDevice\n(device, window)"]
+    Surface["VkSurfaceKHR\n(created internally)"]
+    Swapchain["VkSwapchainKHR\n(created internally)"]
+    Init --> Win
+    Init --> Probe
+    Probe --> Create
+    Win --> Create
+    Create --> Claim
+    Claim --> Surface
+    Claim --> Swapchain
+```
 
 **Checking backend support before creation.** Use `SDL_GPUSupportsShaderFormats` to verify that a specific backend and shader format are available before committing to device creation:
 
@@ -239,6 +284,25 @@ SDL_free(frag_spv);
 ### Building a Graphics Pipeline
 
 A graphics pipeline captures all fixed-function and programmable state. The equivalent Vulkan object (`VkGraphicsPipelineCreateInfo`) requires 15+ sub-structures and extensions for dynamic state; SDL_GPU's equivalent is still detailed but substantially shorter:
+
+```mermaid
+graph TD
+    VS["SDL_GPUShader\n(vertex stage)"]
+    FS["SDL_GPUShader\n(fragment stage)"]
+    VIS["SDL_GPUVertexInputState\n(buffer descriptions + attributes)"]
+    RS["SDL_GPURasterizerState\n(fill mode, cull mode, front face)"]
+    MS["SDL_GPUMultisampleState\n(sample count)"]
+    DS["SDL_GPUDepthStencilState\n(depth test + write)"]
+    TI["SDL_GPUGraphicsPipelineTargetInfo\n(color targets + depth/stencil format)"]
+    Pipeline["SDL_GPUGraphicsPipeline\n(SDL_CreateGPUGraphicsPipeline)"]
+    VS --> Pipeline
+    FS --> Pipeline
+    VIS --> Pipeline
+    RS --> Pipeline
+    MS --> Pipeline
+    DS --> Pipeline
+    TI --> Pipeline
+```
 
 ```c
 typedef struct SDL_GPUGraphicsPipelineCreateInfo {
@@ -481,6 +545,19 @@ SDL_GPUSampler *sampler = SDL_CreateGPUSampler(device, &sampler_info);
 
 All CPU→GPU data transfers go through `SDL_GPUTransferBuffer`. The upload pattern mirrors Vulkan's staging buffer workflow but with a simpler API:
 
+```mermaid
+graph LR
+    CPU["CPU pixel data\n(pixel_data)"]
+    TB["SDL_GPUTransferBuffer\n(UPLOAD usage)"]
+    CB["SDL_GPUCommandBuffer\n(SDL_AcquireGPUCommandBuffer)"]
+    CP["SDL_GPUCopyPass\n(SDL_BeginGPUCopyPass)"]
+    TEX["SDL_GPUTexture\n(device-local)"]
+    CPU -- "SDL_MapGPUTransferBuffer\n+ SDL_memcpy" --> TB
+    TB --> CB
+    CB --> CP
+    CP -- "SDL_UploadToGPUTexture" --> TEX
+```
+
 ```c
 // 1. Create a transfer buffer sized for the pixel data
 Uint32 image_byte_size = image_width * image_height * 4;  // RGBA8
@@ -643,6 +720,25 @@ For GPU-driven rendering where draw arguments are computed on the GPU (e.g., by 
 ### The Command Buffer Lifecycle
 
 SDL_GPU uses a single-acquisition, submit-once model. A command buffer is obtained from the device, recorded into, and submitted. It cannot be reused after submission.
+
+```mermaid
+graph LR
+    Acquire["SDL_AcquireGPUCommandBuffer\n(device)"]
+    RenderPass["SDL_GPURenderPass\n(SDL_BeginGPURenderPass)"]
+    CopyPass["SDL_GPUCopyPass\n(SDL_BeginGPUCopyPass)"]
+    ComputePass["SDL_GPUComputePass\n(SDL_BeginGPUComputePass)"]
+    EndPass["SDL_End*Pass\n(ends the active pass)"]
+    Submit["SDL_SubmitGPUCommandBuffer\nor SDL_SubmitGPUCommandBufferAndAcquireFence"]
+    Cancel["SDL_CancelGPUCommandBuffer\n(discard without submit)"]
+    Acquire --> RenderPass
+    Acquire --> CopyPass
+    Acquire --> ComputePass
+    RenderPass --> EndPass
+    CopyPass --> EndPass
+    ComputePass --> EndPass
+    EndPass --> Submit
+    Acquire --> Cancel
+```
 
 ```c
 SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(device);
@@ -869,6 +965,27 @@ SDL_SubmitGPUCommandBuffer(cmd);
 
 A common pattern is to run a compute pass to generate or process data (texture synthesis, particle update, GPU culling) and then consume the result in a subsequent graphics render pass. SDL_GPU handles the pipeline barrier between passes automatically when the two passes share a texture that is written by compute and read by the graphics stage:
 
+```mermaid
+graph TD
+    CMD["SDL_GPUCommandBuffer\n(SDL_AcquireGPUCommandBuffer)"]
+    CPASS["SDL_GPUComputePass\n(SDL_BeginGPUComputePass)"]
+    CPIPE["SDL_GPUComputePipeline"]
+    OUTTEX["output_tex\n(COMPUTE_STORAGE_WRITE)"]
+    BARRIER["Automatic pipeline barrier\n(compute write → fragment read)"]
+    RPASS["SDL_GPURenderPass\n(SDL_BeginGPURenderPass)"]
+    RPIPE["SDL_GPUGraphicsPipeline\n(fullscreen_pipeline)"]
+    SWAP["Swapchain texture\n(color target)"]
+    CMD --> CPASS
+    CPASS --> CPIPE
+    CPIPE -- "SDL_DispatchGPUCompute\nwrites" --> OUTTEX
+    OUTTEX --> BARRIER
+    CMD --> RPASS
+    BARRIER --> RPASS
+    RPASS --> RPIPE
+    RPIPE -- "SDL_BindGPUFragmentSamplers\nsamples" --> OUTTEX
+    RPIPE --> SWAP
+```
+
 ```c
 SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(device);
 
@@ -1090,6 +1207,22 @@ When `SDL_ClaimWindowForGPUDevice` is called, the Vulkan backend internally call
 The application sees none of this distinction: the same `SDL_ClaimWindowForGPUDevice` call works under both display servers. SDL's Vulkan surface abstraction layer (Chapter 24 covers Vulkan/EGL integration in depth) handles the platform switch.
 
 Under Wayland with `SDL_VIDEODRIVER=wayland`, SDL creates a `wl_surface` backed `VkSurfaceKHR` via `VK_KHR_wayland_surface`. Under X11 or XWayland with `SDL_VIDEODRIVER=x11`, it creates an `xcb_window_t` backed surface via `VK_KHR_xlib_surface` or `VK_KHR_xcb_surface`. The choice of display backend can affect present latency and synchronization behavior — Wayland's compositor-driven frame pacing may differ from X11's — but from SDL_GPU's perspective the swapchain API is identical in both cases.
+
+```mermaid
+graph TD
+    Claim["SDL_ClaimWindowForGPUDevice\n(device, window)"]
+    CreateSurf["SDL_Vulkan_CreateSurface\n(internal Vulkan backend call)"]
+    EnvCheck{"SDL_VIDEODRIVER\nor WAYLAND_DISPLAY?"}
+    WL["VK_KHR_wayland_surface\n→ wl_surface backed VkSurfaceKHR"]
+    X11["VK_KHR_xlib_surface\nor VK_KHR_xcb_surface\n→ xcb_window_t backed VkSurfaceKHR"]
+    SC["VkSwapchainKHR\n(created from VkSurfaceKHR)"]
+    Claim --> CreateSurf
+    CreateSurf --> EnvCheck
+    EnvCheck -- "wayland" --> WL
+    EnvCheck -- "x11 / XWayland" --> X11
+    WL --> SC
+    X11 --> SC
+```
 
 ### Mesa Vulkan Drivers
 

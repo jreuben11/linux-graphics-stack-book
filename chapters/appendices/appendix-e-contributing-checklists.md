@@ -34,6 +34,24 @@
 
 **Merge-window timing.** Feature work must reach `linux-next` by the `-rc6` release of the current cycle. Patches must land in `drm-next` by `-rc7` at the very latest. After `-rc1`, only bugfixes are accepted; new drivers, platform enabling, and new UAPI additions are prohibited until the next merge window.
 
+```mermaid
+graph TD
+    MiscNext["drm-misc-next\n(core, helpers, small drivers)"]
+    IntelNext["drm-intel-next\n(i915, xe)"]
+    AmdNext["drm-amd-next\n(amdgpu, amdkfd)"]
+    DrvNext["driver-specific tree\n(get_maintainer.pl)"]
+    DrmNext["drm-next"]
+    LinuxNext["linux-next\n(must land by -rc6)"]
+    Linus["Linus tree\n(merge window opens at -rc1)"]
+
+    MiscNext --> DrmNext
+    IntelNext --> DrmNext
+    AmdNext --> DrmNext
+    DrvNext --> DrmNext
+    DrmNext -- "must land by -rc7" --> LinuxNext
+    LinuxNext --> Linus
+```
+
 ### E.1.1 Required Gates
 
 Each item is a binary pass/fail gate. A patch that fails any required item will either be NAK'd explicitly or, more likely, silently ignored. Items marked *(stable)* are additionally required for patches targeting stable kernel branches.
@@ -288,6 +306,18 @@ python3 ./scripts/get_reviewer.py src/amd/vulkan/radv_device.c
 
 **Protocol lifecycle.** As of wayland-protocols 1.21 (2021), new protocols enter the `staging/` directory. The older `unstable/` path is deprecated; no new protocols should use it. A protocol may be promoted to `stable/` only after it has been proven adequate in production, the GOVERNANCE section 2.3 requirements have been met (including a 30-day minimum discussion period), and the implementation count thresholds have been satisfied. [Source: wayland-protocols GOVERNANCE.md](https://chromium.googlesource.com/external/anongit.freedesktop.org/git/wayland/wayland-protocols/+/HEAD/GOVERNANCE.md)
 
+```mermaid
+graph LR
+    Proposal["New Protocol\n(MR + wayland-devel RFC)"]
+    Unstable["unstable/\n(deprecated — do not use)"]
+    Staging["staging/\n(entry point for all new protocols)"]
+    Stable["stable/\n(promotion after 30-day period\n+ implementation count met)"]
+
+    Proposal --> Staging
+    Proposal -. "deprecated path" .-> Unstable
+    Staging -- "30-day discussion\n+ impl. count satisfied\n+ no objections" --> Stable
+```
+
 **Namespace and implementation requirements (from GOVERNANCE section 2.3):**
 - `xdg` and `wp` namespaces: at least 3 open-source implementations (either 1 client + 2 servers, or 2 clients + 1 server) before inclusion in `staging/`
 - `ext` namespace: at least 1 open-source client and 1 open-source server implementation
@@ -382,6 +412,23 @@ Many significant features — new display hardware capabilities, GPU memory mana
 **Submission target:** Each change is submitted independently to its respective project's review channel, but the cover letters and MR descriptions must cross-reference each other so reviewers can evaluate the full picture.
 
 - [ ] **Identify all stack layers affected.** Before writing a single line of patch, map out the full dependency chain: kernel uAPI change → libdrm wrapper → Mesa driver code → Wayland protocol → compositor implementation → application API. Any layer that is not updated degrades the feature to a partial or unusable state in production.
+
+```mermaid
+graph TD
+    KernelUAPI["Kernel uAPI change\n(dri-devel / drm-next)"]
+    Libdrm["libdrm wrapper\n(gitlab.freedesktop.org/mesa/drm)"]
+    Mesa["Mesa driver code\n(gitlab.freedesktop.org/mesa/mesa)"]
+    WaylandProto["Wayland protocol\n(wayland-protocols staging/)"]
+    Compositor["Compositor implementation\n(wlroots / KWin / Mutter)"]
+    AppAPI["Application API\n(EGL / Vulkan / GL)"]
+
+    KernelUAPI --> Libdrm
+    Libdrm --> Mesa
+    Mesa --> AppAPI
+    KernelUAPI --> WaylandProto
+    WaylandProto --> Compositor
+    Compositor --> AppAPI
+```
 
 - [ ] **Kernel uAPI merged (or at minimum in `drm-next`) before Mesa changes are submitted.** Mesa's CI must be able to build against a stable kernel header. Submitting a Mesa MR that `#include`s a uAPI header not yet present in the kernel tree will fail CI and will not be accepted. The standard practice is to carry the kernel header addition as a local copy in `include/drm/` within the Mesa tree until the kernel change is in a tagged release, then update to use the system header.
 

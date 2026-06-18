@@ -51,6 +51,32 @@ The **property system** is the extension mechanism that makes all of this config
 
 Userspace discovers all properties of an object using `drmModeObjectGetProperties()` (the libdrm wrapper around `DRM_IOCTL_MODE_OBJ_GETPROPERTIES`). For each property ID returned, `drmModeGetProperty()` yields the property name, type, and valid values. This discovery pattern is essential: compositors must query capabilities at runtime rather than assuming hardware support, because the set of properties and their valid values varies between GPU drivers and hardware generations.
 
+```mermaid
+graph TD
+    subgraph "KMS Object Hierarchy"
+        Connector["struct drm_connector\n(connector_type, status, modes)"]
+        Encoder["struct drm_encoder\n(possible_crtcs, possible_clones)"]
+        CRTC["struct drm_crtc\n(mode, active, gamma_lut, ctm)"]
+        Plane["struct drm_plane\n(type: PRIMARY / OVERLAY / CURSOR)"]
+        FB["struct drm_framebuffer\n(width, height, pixel_format, modifier)"]
+        GEM["GEM Buffer Object\n(GPU memory backing)"]
+    end
+    subgraph "Property System"
+        Props["drm_property\n(range / enum / bitmask / object / blob)"]
+        Blob["struct drm_property_blob\n(EDID, gamma LUT, CTM, MODE_ID)"]
+    end
+    Connector -- "CRTC_ID" --> CRTC
+    Connector -- "attached to" --> Encoder
+    Encoder -- "drives" --> CRTC
+    CRTC -- "composites" --> Plane
+    Plane -- "FB_ID" --> FB
+    FB -- "references" --> GEM
+    Connector -. "attach property" .-> Props
+    CRTC -. "attach property" .-> Props
+    Plane -. "attach property" .-> Props
+    Props -. "blob type" .-> Blob
+```
+
 ### Code example: KMS object enumeration
 
 ```c
@@ -167,6 +193,25 @@ Driver-provided validation lives in `struct drm_mode_config_funcs.atomic_check`.
 Hardware programming lives in `struct drm_crtc_helper_funcs` (`.atomic_begin`, `.atomic_flush`, `.atomic_enable`, `.atomic_disable`) and `struct drm_plane_helper_funcs` (`.atomic_check`, `.atomic_update`, `.atomic_disable`). The `atomic_begin` callback is called once before all plane updates on a given CRTC; `atomic_flush` is called once after all plane updates. This bracketing pattern allows drivers that use double-buffered register banks to arm the bank swap in `atomic_flush`, ensuring all plane register writes become active simultaneously at the next VBLANK.
 
 ### Rollback Semantics and Debugging
+
+```mermaid
+graph TD
+    Userspace["Userspace\n(compositor)"]
+    Ioctl["DRM_IOCTL_MODE_ATOMIC\n(struct drm_mode_atomic)"]
+    Phase1["Phase 1 — Check\ndrm_atomic_check_only()\ndriver atomic_check callback\n(bandwidth, PLL, format)"]
+    Phase2["Phase 2 — Prepare\ndrm_atomic_helper_prepare_planes()\npin GEM BOs, resolve IOVA\nset up DMA fences"]
+    Phase3["Phase 3 — Commit\ndrm_atomic_helper_commit_tail()\ndisable CRTCs → update planes\n→ re-enable CRTCs → VBLANK"]
+    Phase4["Phase 4 — Cleanup\ndrm_atomic_helper_cleanup_planes()\nunpin old framebuffers\nrelease old state objects"]
+    Abort["Abort — old state\nremains in force"]
+
+    Userspace --> Ioctl
+    Ioctl --> Phase1
+    Phase1 -- "check passes" --> Phase2
+    Phase1 -- "check fails\n(EINVAL returned)" --> Abort
+    Phase2 -- "pinning OK" --> Phase3
+    Phase2 -- "pinning fails\n(ENOMEM)" --> Abort
+    Phase3 --> Phase4
+```
 
 If `atomic_check` fails, no hardware registers have been written; the display continues on the previous configuration. This hard rollback guarantee is one of the most operationally important properties of the atomic API. A Wayland compositor that presents an invalid configuration (wrong pixel format for a plane, bandwidth-exceeding arrangement) receives an error ioctl return and can gracefully fall back to a simpler configuration.
 
@@ -384,6 +429,26 @@ For single-plane ARGB8888, only `handles[0]`, `pitches[0]`, `offsets[0]`, and `m
 **Step 6: Encoder converts timing signals.** The display controller outputs a parallel pixel stream with pixel clock, HSYNC, VSYNC, and data enable signals. The encoder logic — whether implemented in the GPU die, in a bridge chip, or in a separate display IC — converts this to the wire protocol. For HDMI, this means 8b/10b encoding and TMDS serialisation at GHz data rates. For DisplayPort, it means 128b/132b or 8b/10b encoding, scrambling, and differential signalling at up to 20 Gbps per lane in DP 2.1.
 
 **Step 7: Connector drives the cable.** The physical connector interfaces the differential signal pairs to the cable. HDMI and DP connectors have HPD (Hot Plug Detect) lines that the monitor asserts when it is attached; DDC (Display Data Channel) I2C lines for EDID communication; and the high-speed data lanes. The panel on the other end decodes the signal stream and drives its display matrix.
+
+```mermaid
+graph LR
+    GEM["GEM Buffer Object\n(GPU-rendered pixels)"]
+    GBM["gbm_bo\n(gbm_surface_lock_front_buffer)"]
+    ADDFB2["DRM_IOCTL_MODE_ADDFB2\n(struct drm_mode_fb_cmd2)\nreturns fb_id"]
+    FB["struct drm_framebuffer\n(format, modifier, stride)"]
+    AtomicCommit["Atomic Commit\nFB_ID property on plane"]
+    DC["Display Controller\nscanout engine"]
+    Encoder["Encoder\n(TMDS / 8b10b / D-PHY)"]
+    Connector["Connector\n(HDMI / DP / eDP / DSI)"]
+
+    GEM --> GBM
+    GBM --> ADDFB2
+    ADDFB2 --> FB
+    FB --> AtomicCommit
+    AtomicCommit -- "VBLANK latch\natomic_update callback" --> DC
+    DC --> Encoder
+    Encoder --> Connector
+```
 
 ### IOMMU Considerations
 
@@ -671,6 +736,25 @@ static int my_bridge_attach(struct drm_bridge *bridge,
 ```
 
 ### The `drm_bridge_connector` Helper
+
+```mermaid
+graph LR
+    CRTC["struct drm_crtc\n(SoC display controller)"]
+    Encoder["struct drm_encoder\n(SoC DSI / LVDS host)"]
+    Bridge1["struct drm_bridge\n(e.g. IT66121\nDSI-to-HDMI)"]
+    Bridge2["struct drm_bridge\n(e.g. SN65DSI86\nDSI-to-eDP)"]
+    Panel["struct drm_panel\n(fixed timing, backlight)"]
+    BridgeConn["drm_bridge_connector\n(drm_bridge_connector_init)\nsynthetic connector"]
+    Connector["struct drm_connector\n(detect, get_modes, edid_read)"]
+
+    CRTC --> Encoder
+    Encoder -- "drm_bridge_attach" --> Bridge1
+    Bridge1 -- "attach callback\ndrm_bridge_attach" --> Bridge2
+    Bridge2 -. "or drm_panel_bridge_add" .-> Panel
+    Bridge1 -- "drm_bridge_connector_init" --> BridgeConn
+    Bridge2 -- "drm_bridge_connector_init" --> BridgeConn
+    BridgeConn --> Connector
+```
 
 Before the `drm_bridge_connector` helper (added in kernel 5.8), SoC display drivers had to implement their own `struct drm_connector` with connector-specific callbacks that re-dispatched to the appropriate bridge in the chain. This was repetitive and error-prone. `drm_bridge_connector_init()` in `drivers/gpu/drm/drm_bridge_connector.c` automates this: given an encoder with a complete bridge chain attached, it creates a synthetic `drm_connector` that wires `.detect` to the last bridge in the chain that provides a `detect` callback, and `.get_modes` / `.edid_read` to the last bridge or panel that provides those callbacks. The encoder driver calls `drm_bridge_connector_init()` instead of `drm_connector_init()`, passing the encoder, and receives a ready-to-use connector backed by the bridge chain.
 

@@ -31,6 +31,24 @@ OpenCL on Linux is delivered through an *Installable Client Driver* (ICD) mechan
 
 **ICD discovery** follows a simple filesystem protocol. At startup the loader scans `/etc/OpenCL/vendors/` and reads every file whose name ends with `.icd`. Each such file contains a single line: the path to the shared library implementing the OpenCL platform. The loader calls `dlopen(3)` on that path and, if the library exports the `clIcdGetPlatformIDsKHR` symbol, registers it as an available platform. The environment variable `OCL_ICD_VENDORS` overrides the scan directory entirely: if it names a directory, that directory replaces `/etc/OpenCL/vendors/`; if it names a `.icd` file directly, only that implementation is loaded; if it names a bare library filename with no slashes, the loader first attempts `/etc/OpenCL/vendors/$OCL_ICD_VENDORS`. This override is the primary mechanism for testing a specific implementation without disturbing the system-wide configuration.
 
+```mermaid
+graph TD
+    App["Application\n(libOpenCL.so)"]
+    Loader["ICD Loader\n(ocl-icd / KhronosGroup)"]
+    Vendors["/etc/OpenCL/vendors/\n(*.icd files)"]
+    Rusticl["rusticl.icd\n(libRusticlOpenCL.so)"]
+    ROCm["ROCm OCL\n(libamdocl64.so)"]
+    NEO["Intel NEO\n(libigdrcl.so)"]
+    NV["NVIDIA OpenCL\n(libnvidia-opencl.so.1)"]
+
+    App --> Loader
+    Loader -- "scans" --> Vendors
+    Vendors --> Rusticl
+    Vendors --> ROCm
+    Vendors --> NEO
+    Vendors --> NV
+```
+
 **The four major implementations** on Linux differ substantially in architecture and hardware scope:
 
 *rusticl* (`/etc/OpenCL/vendors/rusticl.icd`, library `libRusticlOpenCL.so`) is Mesa's OpenCL implementation, written in Rust and sitting atop the Gallium pipe driver abstraction. It achieved official OpenCL 3.0 conformance on Intel Gen12 Xe graphics with the Iris Gallium3D driver as of Mesa 23.x, and radeonsi conformance followed shortly after. Because it reuses Gallium, any driver that implements `pipe_screen` and `pipe_context` can serve as a rusticl backend.
@@ -96,6 +114,32 @@ rusticl lives at `src/gallium/frontends/rusticl/` in the Mesa source tree ([Mesa
 3. **NIR optimisation passes** — the same constant folding, dead-code elimination, and memory access optimisation passes that graphics shaders run through. This is a key advantage of the Gallium architecture: rusticl gets all optimisation work done for graphics shaders for free.
 4. **NIR → driver backend** — radeonsi's ACO-based lowering, iris's GEN backend, or llvmpipe's LLVM JIT, each producing ISA binary for the target GPU.
 
+```mermaid
+graph TD
+    OCLC["OpenCL C source"]
+    Clang["Clang/LLVM\n+ libclc built-ins"]
+    SPIRV["SPIR-V\n(Kernel execution model)"]
+    Translator["spirv_to_nir\n(src/compiler/spirv/spirv_to_nir.c)"]
+    NIR["NIR\n(Mesa IR)"]
+    NIROpt["NIR optimisation passes\n(constant folding, DCE, mem opts)"]
+    radeonsi["radeonsi\n(ACO backend)"]
+    iris["iris\n(GEN backend)"]
+    llvmpipe["llvmpipe\n(LLVM JIT)"]
+    ISA["GPU ISA binary"]
+
+    OCLC --> Clang
+    Clang --> SPIRV
+    SPIRV --> Translator
+    Translator --> NIR
+    NIR --> NIROpt
+    NIROpt --> radeonsi
+    NIROpt --> iris
+    NIROpt --> llvmpipe
+    radeonsi --> ISA
+    iris --> ISA
+    llvmpipe --> ISA
+```
+
 **The memory model** maps cleanly onto Gallium. A `cl_mem` buffer object wraps a `pipe_resource` with `PIPE_BIND_SHADER_BUFFER`. Image objects use `PIPE_BIND_SAMPLER_VIEW` or `PIPE_BIND_IMAGE`. Sub-buffer objects (`clCreateSubBuffer`) are implemented as offsets into the parent `pipe_resource`, relying on the driver's ability to bind a sub-range as an SSBO.
 
 **Command queue execution** maps CL command queues to Gallium command streams. In-order queues map to a single `pipe_context` command stream; out-of-order queues are implemented with multiple contexts and Gallium fences for inter-queue synchronisation. CL event dependencies are translated to fence wait operations at flush time. The `CL_COMMAND_COPY_BUFFER`, `CL_COMMAND_NDRANGE_KERNEL`, and `CL_COMMAND_READ/WRITE_BUFFER` commands become `pipe_context::resource_copy_region`, `pipe_context::launch_grid`, and `pipe_context::buffer_subdata` / `pipe_context::transfer_map` calls respectively.
@@ -136,6 +180,34 @@ ROCm (Radeon Open Compute) is a full GPU compute ecosystem, not merely an OpenCL
 The KFD exposes compute queues directly to userspace through `ioctl` calls on `/dev/kfd`. This contrasts with the DRM path where userspace submits command buffers through `DRM_IOCTL_AMDGPU_CS`. The KFD path gives ROCm lower-latency queue submission and supports the HSA queue model where the GPU polls a doorbell register for new work without a kernel round-trip. An HSA agent is an abstraction for a compute processing element — either a CPU or GPU — identified by a `hsa_agent_t` handle. The `rocminfo` tool (ROCm's equivalent of `clinfo`) queries HSA agents and reports topology, memory regions, and compute unit counts.
 
 **ROCm and Mesa coexistence**: ROCm and RADV (Mesa's Vulkan driver) can and do share the same `amdgpu` kernel device simultaneously. RADV uses the DRM render node (`/dev/dri/renderD*`) for graphics; ROCm uses the KFD node (`/dev/kfd`) for compute. The underlying hardware queues are partitioned between these paths by the kernel driver. A process can hold both a RADV Vulkan device and an active CUDA/HIP context on the same physical GPU without conflict, which is the foundation for ROCm–Vulkan interoperability.
+
+```mermaid
+graph TD
+    subgraph "ROCm Userspace"
+        HIP["HIP / hipcc"]
+        ROCr["ROCr\n(HSA runtime)"]
+        ROCLOCL["ROCL\n(libamdocl64.so)"]
+    end
+    subgraph "Mesa Userspace"
+        RADV["RADV\n(Vulkan driver)"]
+    end
+    subgraph "Kernel: drivers/gpu/drm/amd/"
+        amdgpu["amdgpu\n(DRM graphics + display)"]
+        amdkfd["amdkfd\n(KFD compute path)"]
+    end
+    KFDNode["/dev/kfd"]
+    DRMNode["/dev/dri/renderD*"]
+    GPU["AMD GPU hardware"]
+
+    HIP --> ROCr
+    ROCLOCL --> ROCr
+    ROCr --> KFDNode
+    RADV --> DRMNode
+    KFDNode --> amdkfd
+    DRMNode --> amdgpu
+    amdkfd --> GPU
+    amdgpu --> GPU
+```
 
 **Architecture coverage**: GFX9 (Vega/Polaris), GFX10 (RDNA1/RDNA2), and GFX11 (RDNA3) are the primary targets for ROCm 5.x and 6.x. Consumer integrated GPUs (APUs) without dedicated VRAM historically required ROCm 5.5+ for basic support; full APU managed-memory support depends on `HSA_XNACK=1` and kernel HMM support (see Section 7).
 
@@ -220,6 +292,24 @@ Intel Gen GPU hardware
 ```
 
 The compute runtime uses the **Intel Graphics Compiler (IGC)** ([github.com/intel/intel-graphics-compiler](https://github.com/intel/intel-graphics-compiler)) as its kernel compiler backend. IGC accepts SPIR-V — from SYCL kernels, OpenCL C, or Vulkan GLSL compute shaders — and emits GEN ISA binary. IGC is also used by Intel's ANV Vulkan driver (Chapter 18) for the same SPIR-V→GEN ISA path.
+
+```mermaid
+graph TD
+    SYCL["SYCL/DPC++ application"]
+    SYCLrt["Intel SYCL runtime\n(libsycl)"]
+    ZELoader["Level Zero loader\n(libze_loader)"]
+    ICR["intel-compute-runtime\n(libze_intel_gpu)"]
+    IGC["Intel Graphics Compiler\n(IGC)\nSPIR-V → GEN ISA"]
+    KernelDrv["i915 / Xe kernel DRM driver"]
+    HW["Intel Gen GPU hardware"]
+
+    SYCL --> SYCLrt
+    SYCLrt --> ZELoader
+    ZELoader --> ICR
+    ICR --> IGC
+    ICR --> KernelDrv
+    KernelDrv --> HW
+```
 
 **OpenCL 3.0 conformance:** compute-runtime achieved OpenCL 3.0 conformance for Gen9 and later in 2021. Optional features supported on Intel include: unified shared memory (`cl_intel_unified_shared_memory`), subgroup operations (`cl_intel_subgroups`), and `cl_khr_fp64` double precision.
 
@@ -423,6 +513,32 @@ The canonical use case for CUDA–Vulkan interoperability is a pipeline where CU
 
 The two complementary mechanisms are **external memory** (sharing buffer or image allocations) and **external semaphores** (GPU-side ordering without CPU intervention). On Linux, both use POSIX file descriptors as opaque handles. Two handle types exist: `OPAQUE_FD` (an opaque DRM GEM object reference, suitable for same-GPU sharing) and `DMA_BUF_BIT` (a DMA-BUF file descriptor, suitable for cross-vendor sharing). For same-GPU CUDA–Vulkan interop, `OPAQUE_FD` handles are almost always the right choice; `DMA_BUF` is covered in Section 6.
 
+```mermaid
+graph LR
+    subgraph "Vulkan side"
+        VkMem["VkDeviceMemory\n(OPAQUE_FD export)"]
+        VkSem["VkSemaphore\n(timeline, OPAQUE_FD export)"]
+        VkImg["VkImage\n(OPTIMAL tiling)"]
+    end
+    subgraph "POSIX fd bridge"
+        MemFD["mem_fd\n(opaque GEM ref)"]
+        SemFD["sem_fd\n(opaque GEM ref)"]
+    end
+    subgraph "CUDA side"
+        CudaMem["cudaExternalMemory_t\n(cudaImportExternalMemory)"]
+        CudaSem["cudaExternalSemaphore_t\n(cudaImportExternalSemaphore)"]
+        CudaPtr["device pointer\n(cudaExternalMemoryGetMappedBuffer)"]
+    end
+
+    VkMem -- "vkGetMemoryFdKHR" --> MemFD
+    VkSem -- "vkGetSemaphoreFdKHR" --> SemFD
+    VkMem --> VkImg
+    MemFD --> CudaMem
+    SemFD --> CudaSem
+    CudaMem --> CudaPtr
+    CudaSem -- "cudaSignalExternalSemaphoresAsync" --> VkSem
+```
+
 **Device UUID matching** is a prerequisite that is often overlooked. Before attempting interop, verify that the CUDA device and the Vulkan physical device correspond to the same physical GPU:
 
 ```c
@@ -613,6 +729,26 @@ DMA-BUF is the Linux kernel's mechanism for sharing GPU memory between drivers a
 
 **VA-API → Vulkan** is the most common cross-API DMA-BUF use case. A VA-API video decoder (Chapter 26) allocates surfaces as DMA-BUF objects. After decoding, the application calls `vaExportSurfaceHandle` with `VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2` to obtain a DMA-BUF fd and a `VADRMPRIMESurfaceDescriptor` containing plane offsets, pitches, and the DRM format modifier. On the Vulkan side, the image is imported using `VkImageDrmFormatModifierListCreateInfoEXT` chained into the `VkImageCreateInfo`, specifying the exact modifier to use, and `VkImportMemoryFdInfoKHR` with `VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT` to import the DMA-BUF fd as device memory. The resulting Vulkan image can be used as a `VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER` for post-processing without any data copy.
 
+```mermaid
+graph TD
+    VAAPI["VA-API decoder\nvaExportSurfaceHandle\n(VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2)"]
+    V4L2["V4L2 camera\n(V4L2_MEMORY_DMABUF)"]
+    OCLMEM["cl_mem\n(cl_khr_external_memory_dma_buf)"]
+    DMABUF["DMA-BUF fd\n(kernel dma_buf object)"]
+    VkImport["VkImportMemoryFdInfoKHR\n(VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)"]
+    VkImage["VkImage\n(VkImageDrmFormatModifierListCreateInfoEXT)"]
+    VkCompute["Vulkan compute shader\ncolour-space conversion\npost-processing"]
+    Display["display / render"]
+
+    VAAPI -- "DMA-BUF fd\n+ VADRMPRIMESurfaceDescriptor" --> DMABUF
+    V4L2 -- "DMA-BUF fd" --> DMABUF
+    OCLMEM -- "DMA-BUF fd" --> DMABUF
+    DMABUF --> VkImport
+    VkImport --> VkImage
+    VkImage --> VkCompute
+    VkCompute --> Display
+```
+
 **OpenCL → Vulkan via DMA-BUF** uses the `cl_khr_external_memory_dma_buf` extension. On rusticl-based OpenCL, a `cl_mem` object backed by a DMA-BUF is created with `clCreateBufferWithProperties` passing `CL_MEM_DEVICE_HANDLE_LIST_KHR` and `CL_EXTERNAL_MEMORY_HANDLE_DMA_BUF_KHR`. As noted in Section 2, rusticl's implementation of this extension was partial as of Mesa 24.x.
 
 **ROCm → Vulkan** mirrors the CUDA path. HIP's external memory API (`hipExternalMemoryHandleDesc`, `hipImportExternalMemory`) uses the same `hipExternalMemoryHandleTypeOpaqueFd` mechanism as CUDA on the same AMD physical device. Cross-device scenarios require DMA-BUF handles.
@@ -631,6 +767,24 @@ The HSA (Heterogeneous System Architecture) memory model defines a *shared virtu
 
 Linux HMM (Heterogeneous Memory Management), documented at `Documentation/mm/hmm.rst` ([kernel.org](https://www.kernel.org/doc/html/latest/mm/hmm.html)), provides the kernel mechanisms that make this possible. The key API is `hmm_range_fault()`, which allows a GPU driver to demand-page CPU virtual memory onto the GPU. When a GPU kernel accesses a CPU virtual address that has not yet been mapped in the GPU page table, the GPU MMU raises a page fault interrupt. The amdkfd driver handles this fault by calling `hmm_range_fault()`, which resolves the CPU virtual address to physical pages, pins them, and returns the physical addresses. The GPU IOMMU mapping is updated, and the faulting access can proceed. The `hmm_range_fault()` API stabilised in Linux 5.13; ROCm 4.x targeted the older HMM API available in kernel 5.6+.
 
+```mermaid
+graph TD
+    GPUKernel["GPU kernel accesses CPU virtual address\n(not yet mapped in GPU page table)"]
+    GPUMMU["GPU MMU\npage fault interrupt"]
+    amdkfd["amdkfd driver\nfault handler"]
+    HMMFault["hmm_range_fault()\n(resolves CPU VA → physical pages)"]
+    PinPages["Pin physical pages\nreturn physical addresses"]
+    IOMMUUpdate["GPU IOMMU mapping updated"]
+    Resume["Faulting GPU access proceeds"]
+
+    GPUKernel --> GPUMMU
+    GPUMMU --> amdkfd
+    amdkfd --> HMMFault
+    HMMFault --> PinPages
+    PinPages --> IOMMUUpdate
+    IOMMUUpdate --> Resume
+```
+
 The `AMDKFD` (AMD Kernel Fusion Driver) kernel module at `drivers/gpu/drm/amd/amdkfd/` is the component that exposes ROCm's HSA queue model to userspace. Key files:
 
 - `amdgpu_amdkfd_gpuvm.c`: GPU VM allocation and management for compute — this file handles the allocation of GPU page tables, the mapping of userspace virtual memory into the GPU address space, and the interaction with HMM for demand migration.
@@ -644,6 +798,29 @@ The SVM (Shared Virtual Memory) allocator in ROCm's KFD builds on HMM. `svm_rang
 On AMD APUs (CPU and iGPU on the same die sharing a single DRAM pool), PCIe DMA copies between CPU and GPU memory are absent — there is no PCIe bus because both processor complexes access the same physical DRAM. The Steam Deck (VanGogh APU, RDNA2 iGPU, 16 GB LPDDR5) is the most widely deployed example. The Ryzen AI series (Phoenix, Hawk Point, Strix Point) follows the same architecture.
 
 The amdgpu driver detects APU topology via `adev->gmc.is_app_apu`. When this flag is set, the GPU Memory Controller (GMC) is configured for unified memory access rather than the discrete GPU model with separate VRAM and GTT (Graphics Translation Table) pools. VRAM is a carved-out region of system RAM (allocated by UEFI/firmware as a BIOS-reserved range), and GTT is the remainder of system RAM visible to the GPU via the IOMMU. On an APU, the VRAM/GTT distinction collapses: both reference the same physical DRAM.
+
+```mermaid
+graph LR
+    subgraph "Discrete GPU (e.g. RDNA2 dGPU)"
+        dCPU["CPU\n(system RAM)"]
+        PCIe["PCIe bus\n(DMA copies)"]
+        dVRAM["GPU VRAM\n(dedicated)"]
+        dGTT["GTT pool\n(system RAM, IOMMU-mapped)"]
+        dGMC["GPU Memory Controller\n(GMC)"]
+        dCPU -- "staging copy" --> PCIe
+        PCIe --> dVRAM
+        dCPU -- "IOMMU map" --> dGTT
+        dVRAM --> dGMC
+        dGTT --> dGMC
+    end
+    subgraph "APU (e.g. Steam Deck VanGogh)"
+        aCPU["CPU"]
+        DRAM["Shared LPDDR5 DRAM\n(VRAM carved-out + GTT = same pool)"]
+        aGMC["GPU Memory Controller\n(is_app_apu = true)"]
+        aCPU --> DRAM
+        DRAM --> aGMC
+    end
+```
 
 For `hipMallocManaged` on an APU, the migration step — physically moving pages from CPU DRAM to GPU VRAM — is a no-op because they are the same memory pool. The driver still maintains page table state and enforces cache coherency semantics, but the bandwidth cost of migration is eliminated. Memory bandwidth is the sole bottleneck; there is no copy overhead.
 

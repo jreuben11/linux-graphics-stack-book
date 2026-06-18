@@ -38,6 +38,25 @@ A typical hybrid-GPU laptop integrates two independent PCIe endpoint devices. Th
 
 Both GPUs are enumerated as distinct PCI devices. The kernel loads separate driver instances: `i915` or `xe` for the Intel iGPU, `amdgpu` for an AMD iGPU or dGPU, `nouveau` or `nvidia` for an NVIDIA dGPU. Each driver creates independent `/dev/dri/cardN` and `/dev/dri/renderDN` nodes. There is no shared memory by default: a buffer allocated in the dGPU's VRAM is not directly readable by the iGPU.
 
+```mermaid
+graph TD
+    subgraph "CPU Package"
+        iGPU["iGPU\n(i915/xe or amdgpu)"]
+    end
+    subgraph "PCIe x4/x8"
+        PCIeLink["PCIe Link\n(Gen 3 or Gen 4)"]
+    end
+    subgraph "Discrete GPU"
+        dGPU["dGPU\n(amdgpu or nouveau/nvidia)"]
+        VRAM["VRAM\n(separate memory space)"]
+    end
+    iGPU -- "DRM: /dev/dri/cardN\n/dev/dri/renderDN" --> iGPUNodes["iGPU DRM nodes"]
+    dGPU -- "DRM: /dev/dri/cardM\n/dev/dri/renderDM" --> dGPUNodes["dGPU DRM nodes"]
+    iGPU <-- "PCIe" --> PCIeLink
+    PCIeLink <-- "PCIe" --> dGPU
+    dGPU --> VRAM
+```
+
 ### 1.2 Muxed Designs
 
 Older and premium gaming laptops include a hardware display multiplexer (MUX) chip—a device such as the Parade PS8625 or an OEM-specific ASIC—that routes the display panel's eDP link to either the iGPU or the dGPU. In muxed designs, the dGPU can drive the panel directly without any buffer copy overhead. Switching which GPU owns the panel requires cutting and re-establishing the eDP link, which causes a brief blackout; on most implementations a full logout or reboot is needed to hand ownership safely.
@@ -69,6 +88,21 @@ On a muxless laptop, `vga_switcheroo` is still present but its switching handler
 
 The render-offload and buffer-copy mechanisms described in the rest of this chapter exist specifically to make muxless hybrids useful at the application level.
 
+```mermaid
+graph LR
+    subgraph "Muxed Design"
+        iGPU_m["iGPU"] -- "eDP (switched)" --> MUX["MUX Chip\n(e.g. Parade PS8625)"]
+        dGPU_m["dGPU"] -- "eDP (switched)" --> MUX
+        MUX -- "eDP" --> Panel_m["Display Panel"]
+        VGASw["vga_switcheroo\n(set_gpu_state)"] -. "controls" .-> MUX
+    end
+    subgraph "Muxless Design"
+        iGPU_ml["iGPU\n(sole eDP owner)"] -- "eDP (direct)" --> Panel_ml["Display Panel"]
+        dGPU_ml["dGPU\n(no display path)"] -. "buffer copy\nvia PRIME" .-> iGPU_ml
+        VGASw_ml["vga_switcheroo\n(power control only)"] -. "ACPI power rails" .-> dGPU_ml
+    end
+```
+
 ### 1.4 MUX Switch on Modern Gaming Laptops
 
 Premium gaming laptops from ASUS ROG, Razer, MSI, and others have reintroduced hardware MUX in a new form: a software-controllable switch that puts the dGPU directly on the display bus for maximum gaming performance, with a reboot required to change the setting. On Linux, `supergfxctl` (Section 8.1) exposes this via D-Bus. NVIDIA documented the XDC 2024 presentation *"MUX: Mux Switch for Hybrid Graphics"* covering the state of Linux MUX support. [Source: XDC 2024 presentation on MUX switches](https://indico.freedesktop.org/event/6/contributions/297/)
@@ -82,6 +116,16 @@ Premium gaming laptops from ASUS ROG, Razer, MSI, and others have reintroduced h
 PRIME is the DRM subsystem's mechanism for sharing GEM buffer objects across device boundaries using UNIX file descriptors. [Source: Linux GPU Driver Developer's Guide — PRIME](https://dri.freedesktop.org/docs/drm/gpu/drm-mm.html) A GEM object on the NVIDIA driver can be exported as a `dma_buf` file descriptor, passed to the Intel i915 driver, and imported as a new GEM handle there—without any CPU-visible copy of the pixel data. The `dma_buf` framework (introduced in Linux 3.3) provides the lifetime management: the underlying memory is not freed until all importers have released their references.
 
 PRIME superseded the earlier GEM name sharing mechanism. GEM names are globally guessable 32-bit integers visible to any process with the right DRM fd; `dma_buf` file descriptors must be explicitly sent over Unix domain sockets, giving PRIME inherent security advantages. Since kernel 6.6, `DRM_CAP_PRIME` is always set for both `DRM_IOCTL_PRIME_HANDLE_TO_FD` and `DRM_IOCTL_PRIME_FD_TO_HANDLE`, meaning all modern DRM drivers support the interface. [Source: Linux kernel 6.6 DRM capability update](https://github.com/torvalds/linux/commit/6b85aa68d9d5a27556b8b1015e7e515a371e77de)
+
+```mermaid
+graph TD
+    GEMObj["GEM Object\n(dGPU VRAM)"]
+    GEMObj -- "DRM_IOCTL_PRIME_HANDLE_TO_FD\n(drm_gem_prime_export)" --> DMABuf["dma_buf\n(file descriptor)"]
+    DMABuf -- "sendmsg over Unix socket" --> DMABufFD["dma_buf fd\n(compositor process)"]
+    DMABufFD -- "DRM_IOCTL_PRIME_FD_TO_HANDLE\n(drm_gem_prime_import)" --> ImportedGEM["Imported GEM Handle\n(iGPU)"]
+    ImportedGEM -- "DRM_IOCTL_MODE_ADDFB2" --> KMSFb["KMS Framebuffer\n(iGPU display engine)"]
+    DMABuf -. "dma_resv\n(GPU fences)" .-> ImportedGEM
+```
 
 ### 2.2 Userspace ioctls
 
@@ -302,6 +346,15 @@ Application (renders on NVIDIA dGPU)
  Display engine (iGPU) → panel
 ```
 
+```mermaid
+graph TD
+    App["Application\n(__NV_PRIME_RENDER_OFFLOAD=1)"]
+    App -- "GLX/EGL call\n(__GLX_VENDOR_LIBRARY_NAME=nvidia)" --> NVDrv["NVIDIA Driver\n(source / offload provider)"]
+    NVDrv -- "renders into dGPU VRAM buffer" --> dGPUVRAM["dGPU VRAM Buffer"]
+    dGPUVRAM -- "X11 Present extension / DRI3" --> ModeSetting["modesetting DDX\n(iGPU — KMS owner / sink)"]
+    ModeSetting -- "DRM_IOCTL_PRIME_FD_TO_HANDLE\n+ framebuffer blit" --> iGPUDisplay["Display Engine (iGPU)\n→ panel"]
+```
+
 For Wayland compositors, NVIDIA render offload works through the `__NV_PRIME_RENDER_OFFLOAD` path as well, but the exact copy mechanism depends on whether the compositor supports `EGL_EXT_device_query` and can import `EGLImage` objects from external devices.
 
 ---
@@ -337,6 +390,22 @@ When the NVIDIA GPU renders a frame destined for its HDMI output (served via rev
 **CPU blit (legacy)**: The NVIDIA driver exports the buffer via `DRM_IOCTL_PRIME_HANDLE_TO_FD`. The X server `modesetting` DDX imports it via `DRM_IOCTL_PRIME_FD_TO_HANDLE` on the iGPU fd. If the IOMMU topology does not allow direct DMA between the two devices, the kernel falls back to a CPU copy through `vmap`/`memcpy`, adding ~1 ms per frame for a 1080p buffer.
 
 **Direct DMA-BUF import**: When both GPUs are on the same PCIe root complex (common in AMD+AMD or Intel+AMD configurations), the iGPU's display engine can DMA-read the buffer from the dGPU's VRAM directly via the p2pdma mechanism. The `dma_buf_map_attachment()` call succeeds without a CPU copy because the IOMMU can create a mapping between the two devices' address spaces.
+
+```mermaid
+graph TD
+    dGPUBuf["dGPU Rendered Buffer\n(VRAM)"]
+    dGPUBuf -- "DRM_IOCTL_PRIME_HANDLE_TO_FD" --> DMABufFD["dma_buf fd"]
+    DMABufFD -- "DRM_IOCTL_PRIME_FD_TO_HANDLE\n(modesetting DDX / iGPU fd)" --> ImportedGEM["Imported GEM Handle\n(iGPU)"]
+
+    subgraph "CPU blit path (IOMMU topology mismatch)"
+        ImportedGEM -- "vmap + memcpy\n(~1 ms per frame at 1080p)" --> SysMem["System RAM\n(CPU bounce copy)"]
+        SysMem --> KMSPlane_cpu["KMS Plane (iGPU)"]
+    end
+
+    subgraph "Direct DMA-BUF import (same PCIe root complex)"
+        ImportedGEM -- "dma_buf_map_attachment\n(IOMMU mapping)" --> KMSPlane_dma["KMS Plane (iGPU)\n(no CPU copy)"]
+    end
+```
 
 For PRIME Synchronisation (preventing tearing), the modesetting DDX requires kernel 4.5+ and uses DRM KMS `drm_syncobj` or `dma_resv` fences attached to the shared dma-buf. [Source: PRIME Synchronization — X.Org modesetting DDX](https://gitlab.freedesktop.org/xorg/driver/xf86-video-modesetting)
 
@@ -603,6 +672,19 @@ The kernel `p2pdma` framework (merged in Linux 4.20) provides the infrastructure
 - **Provider**: exports PCIe BAR memory as a P2P resource via `pci_p2pdma_add_resource()`
 - **Client**: allocates and uses P2P memory through standard DMA mapping APIs
 - **Orchestrator**: coordinates data flow between clients and providers
+
+```mermaid
+graph LR
+    Orchestrator["Orchestrator\n(coordinates data flow)"]
+    Provider["Provider\n(pci_p2pdma_add_resource)\nexports PCIe BAR memory"]
+    Client["Client\n(allocates P2P memory\nvia standard DMA mapping APIs)"]
+
+    Orchestrator -- "pci_p2pmem_find_many\n(find compatible provider)" --> Provider
+    Orchestrator -- "directs allocation" --> Client
+    Provider -- "pci_alloc_p2pmem\n(ZONE_DEVICE pages)" --> Client
+    Client -- "DMA read/write\n(peer-to-peer via PCIe)" --> Provider
+    Orchestrator -. "pci_p2pdma_distance_many\n(topology check)" .-> Provider
+```
 
 Key kernel functions:
 

@@ -35,7 +35,57 @@
 
 ## How to Use This Appendix
 
-Each section covers one subsystem layer, ordered roughly from kernel to userspace to match the book's chapter flow. Tables use the following columns:
+Each section covers one subsystem layer, ordered roughly from kernel to userspace to match the book's chapter flow.
+
+```mermaid
+graph TD
+    subgraph "Kernel Space"
+        DRMCore["DRM Core\n(drm.debug, B.13a)"]
+        AMDGPU["amdgpu driver\n(amdgpu.* params, B.13b)"]
+        i915["i915 driver\n(i915.* params, B.13c)"]
+    end
+    subgraph "libdrm Userspace Library"
+        LibDRM["libdrm_amdgpu\n(AMDGPU_DEBUG, B.5d)"]
+    end
+    subgraph "Mesa / Vulkan Runtime"
+        MesaLoader["Mesa Loader\n(LIBGL_*, MESA_LOADER_*, B.1)"]
+        VKLoader["Vulkan Loader\n(VK_*, B.2)"]
+        ShaderCache["Shader Cache\n(MESA_SHADER_CACHE_*, B.3)"]
+        NIR["NIR / GLSL Compiler\n(NIR_DEBUG, B.4)"]
+        RADV["RADV Driver\n(RADV_DEBUG, RADV_PERFTEST, B.5)"]
+        ANV["ANV Driver\n(INTEL_DEBUG, ANV_*, B.6)"]
+        EGL["EGL\n(EGL_PLATFORM, B.12)"]
+    end
+    subgraph "Translation Layers"
+        DXVK["DXVK\n(DXVK_*, B.8)"]
+        VKD3D["VKD3D-Proton\n(VKD3D_*, B.9)"]
+        Wine["Wine / Proton\n(WINE*, PROTON_*, B.10)"]
+    end
+    subgraph "Validation and Media"
+        VVL["Vulkan Validation Layers\n(VK_LAYER_*, B.7)"]
+        VAAPI["VA-API / GStreamer\n(LIBVA_*, GST_*, B.11)"]
+    end
+    DRMCore --> LibDRM
+    AMDGPU --> LibDRM
+    i915 --> ANV
+    LibDRM --> RADV
+    MesaLoader --> RADV
+    MesaLoader --> ANV
+    VKLoader --> RADV
+    VKLoader --> ANV
+    VKLoader --> VVL
+    RADV --> ShaderCache
+    RADV --> NIR
+    ANV --> NIR
+    EGL --> MesaLoader
+    Wine --> DXVK
+    Wine --> VKD3D
+    DXVK --> VKLoader
+    VKD3D --> VKLoader
+    VAAPI --> LibDRM
+```
+
+Tables use the following columns:
 
 - **Variable / Parameter**: the exact string as used in a shell export or sysfs path.
 - **Default**: the value when unset; `(unset)` means the feature is off unless the variable is set.
@@ -437,6 +487,15 @@ RADV_DEBUG=hang AMDGPU_DEBUG=vm
 echo 0x02 | sudo tee /sys/module/drm/parameters/debug
 ```
 
+```mermaid
+graph TD
+    RADV["RADV Vulkan Driver\n(RADV_DEBUG=hang)"] -- "reports: hung command buffer\n+ pipeline state" --> Output["Diagnostic Output"]
+    LibDRM["libdrm_amdgpu\n(AMDGPU_DEBUG=vm)"] -- "reports: faulting\nvirtual address" --> Output
+    DRMCore["DRM Core / kernel scheduler\n(drm.debug=0x02)"] -- "reports: GPU scheduler state\n+ TTM eviction events (dmesg)" --> Output
+    RADV -- "submits via" --> LibDRM
+    LibDRM -- "ioctls into" --> DRMCore
+```
+
 `RADV_DEBUG=hang` enables RADV's internal GPU hang detection: it waits on submission fences with a 10-second timeout and, on timeout, prints which Vulkan command buffer was in flight and the pipeline state at the point of hang. `AMDGPU_DEBUG=vm` enables the libdrm layer's VM fault logging, recording the faulting virtual address. `drm.debug=0x02` (driver channel) prints kernel-side GPU scheduler state and TTM eviction events to dmesg. Together the three provide: the command buffer that hung (RADV), the faulting VA (libdrm amdgpu), and the kernel memory manager state at the time (DRM core).
 
 ### Shader Miscompile Bisection (RADV + ACO)
@@ -475,6 +534,22 @@ When both are set, Wine's synchronization initialization code in `dlls/ntdll/uni
 
 On Linux 6.14+ with Wine 11+, set `WINENETSYNC=1` instead — NTSYNC supersedes both and is unconditionally superior when available.
 
+```mermaid
+graph TD
+    WineSync["Wine sync.c\n(dlls/ntdll/unix/sync.c)"]
+    NTSYNC["NTSYNC kernel driver\n(WINENETSYNC=1, Linux 6.14+)"]
+    fsync["futex_waitv syscall\n(WINEFSYNC=1, Linux 5.16+)"]
+    esync["eventfd-based esync\n(WINEESYNC=1)"]
+    RPC["wineserver RPC\n(slow fallback)"]
+    WineSync -- "probe: kernel 6.14+ ntsync?" --> NTSYNC
+    WineSync -- "probe: futex_waitv available?" --> fsync
+    WineSync -- "fallback if fsync fails" --> esync
+    WineSync -- "last resort fallback" --> RPC
+    NTSYNC -. "supersedes" .-> fsync
+    fsync -. "supersedes" .-> esync
+    esync -. "supersedes" .-> RPC
+```
+
 ### Multi-GPU OpenGL and Vulkan Selection
 
 ```bash
@@ -486,6 +561,26 @@ VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.x86_64.json
 ```
 
 `DRI_PRIME=1` applies only to Mesa's DRI-based OpenGL. It uses the DRM render node device selection to pick the non-default GPU. Vulkan applications use the ICD loader mechanism and must be directed via `VK_DRIVER_FILES` or `VK_ICD_FILENAMES`. Both may be needed simultaneously when a single application uses OpenGL and Vulkan interop (e.g., an OpenXR runtime that composites via OpenGL but renders via Vulkan). Ensure both variables point to the same physical GPU.
+
+```mermaid
+graph LR
+    App["Application\n(OpenGL + Vulkan interop)"]
+    subgraph "OpenGL Path"
+        MesaDRI["Mesa DRI Loader\n(DRI_PRIME=1)"]
+        DRINode["DRM render node\n(/dev/dri/renderD128)"]
+    end
+    subgraph "Vulkan Path"
+        VKLoader["Vulkan ICD Loader\n(VK_DRIVER_FILES=radeon_icd.json)"]
+        ICDManifest["ICD JSON Manifest\n(radeon_icd.x86_64.json)"]
+    end
+    GPU["Physical GPU\n(discrete dGPU)"]
+    App -- "OpenGL calls" --> MesaDRI
+    App -- "Vulkan calls" --> VKLoader
+    MesaDRI --> DRINode
+    VKLoader --> ICDManifest
+    DRINode -- "must target same GPU" --> GPU
+    ICDManifest -- "must target same GPU" --> GPU
+```
 
 ### VA-API Device Selection on Multi-GPU Systems
 

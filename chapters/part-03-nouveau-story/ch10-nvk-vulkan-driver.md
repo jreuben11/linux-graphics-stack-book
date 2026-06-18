@@ -65,6 +65,25 @@ The hardware breadth — spanning a decade of NVIDIA microarchitectures — was 
 
 NVK's Mesa source lives in `src/nouveau/vulkan/`. The top-level objects follow the naming convention of every Mesa Vulkan driver: `nvk_instance`, `nvk_physical_device`, `nvk_device`. Each of these wraps the corresponding Mesa Vulkan common object (`vk_instance`, `vk_physical_device`, `vk_device`) as its first member, enabling the pervasive Mesa pattern of safe upcasting via `container_of()`. The common object carries the function table dispatch, the enabled extension set, and other cross-driver state; the `nvk_` wrapper adds NVIDIA-specific fields.
 
+```mermaid
+graph TD
+    subgraph "Mesa Vulkan Common\n(src/vulkan/runtime/)"
+        vk_instance["vk_instance"]
+        vk_physical_device["vk_physical_device"]
+        vk_device["vk_device"]
+    end
+    subgraph "NVK Driver\n(src/nouveau/vulkan/)"
+        nvk_instance["nvk_instance\n(first member: vk_instance)"]
+        nvk_physical_device["nvk_physical_device\n(first member: vk_physical_device)"]
+        nvk_device["nvk_device\n(first member: vk_device)"]
+    end
+    nvk_instance -- "container_of()" --> vk_instance
+    nvk_physical_device -- "container_of()" --> vk_physical_device
+    nvk_device -- "container_of()" --> vk_device
+    nvk_instance --> nvk_physical_device
+    nvk_physical_device -- "NVKMD handle" --> nvk_device
+```
+
 The `nvk_instance` object holds global driver state: the list of enumerated physical devices, debug flag parsing (from the `NVK_DEBUG` environment variable), and DRI option overrides. Debug flags include `push_dump` (dump push buffer contents to stderr), `push_sync` (insert synchronisation points after every push buffer submission for GPU fault isolation), `zero_memory` (zero all allocated BOs to catch uninitialised-memory bugs), and `trash_memory` (fill BOs with a pattern to surface use-after-free errors). These flags are indispensable during driver development and reflect lessons learned from the ANV and RADV development histories.
 
 The `nvk_physical_device` object represents one enumerable GPU. It holds the GPU's capability flags, the memory type and heap table, the queue family descriptions, and the NVKMD (Nouveau Kernel Mode Driver) handle used for all subsequent kernel interactions. NVKMD is NVK's abstraction layer over the kernel UAPI — it wraps GPU initialisation, buffer object allocation, virtual address space management, and queue submission behind a function-pointer interface, enabling the driver to run against both the in-tree DRM kernel driver and, in principle, alternative kernel back ends.
@@ -88,6 +107,20 @@ Every piece of GPU memory in NVK ultimately comes from a GEM buffer object. GEM 
 For CPU access, `nvk_bo_map()` uses `mmap()` on the DRM file descriptor, mapping the BO's BAR1 or GART backing into the process address space. The mapping is persistent — NVK does not unmap BOs between uses, trading virtual address space for the elimination of map/unmap overhead on the critical path of command buffer submission.
 
 Rather than allocating a fresh GEM BO for every small driver-internal allocation, NVK uses a suballocator: `nvk_heap`, implemented in `src/nouveau/vulkan/nvk_heap.c`. The heap maintains a list of large GEM BOs and satisfies driver-internal allocation requests (descriptor pool entries, pipeline code storage, push buffer segments) from these pools using a simple free-list allocator. This pattern — a large backing allocation suballocated for driver-internal use — is standard practice in Mesa Vulkan drivers and avoids the per-allocation overhead of GEM ioctl calls for the high-frequency internal allocations that occur during command buffer recording.
+
+```mermaid
+graph TD
+    nvk_heap["nvk_heap\n(src/nouveau/vulkan/nvk_heap.c)"]
+    GEM_BO["Large GEM BO\n(DRM_NOUVEAU_GEM_NEW ioctl)"]
+    nouveau_kernel["nouveau kernel driver"]
+    TTM["TTM\n(Translation Table Manager)"]
+    alloc["Driver-internal allocations\n(descriptor pool entries,\npipeline code, push buffer segments)"]
+
+    nvk_heap -- "suballocates from" --> GEM_BO
+    GEM_BO -- "allocated via" --> nouveau_kernel
+    nouveau_kernel -- "physical alloc +\nGPU page table mappings" --> TTM
+    nvk_heap -- "satisfies" --> alloc
+```
 
 ```c
 /* Source: src/nouveau/vulkan/nvk_heap.c — nvk_heap_alloc() */
@@ -127,6 +160,22 @@ For application-visible `VkDeviceMemory` allocations, NVK wraps the `vk_device_m
 Shader compilation in NVK spans two phases of the Vulkan API. At `vkCreateShaderModule` time, NVK simply stores the SPIR-V binary without processing it. The real compilation happens at `vkCreateGraphicsPipeline` or `vkCreateComputePipeline` time, when the driver has the full pipeline state available and can make informed decisions about register allocation, input/output layout, and hardware feature selection. This deferred-compilation approach is standard across Mesa Vulkan drivers and is fundamental to the correctness of the pipeline cache: the cache key includes not just the SPIR-V but the full pipeline state that influences code generation.
 
 The compilation path proceeds through four major stages: SPIR-V to NIR translation, NIR optimisation, NVK-specific NIR lowering, and NAK code generation. Each stage has clear inputs and outputs, and each can be exercised independently for debugging purposes.
+
+```mermaid
+graph TD
+    SPIRV["SPIR-V binary\n(stored at vkCreateShaderModule)"]
+    spirv_to_nir["spirv_to_nir()\n(src/compiler/spirv/ — shared by all Mesa drivers)"]
+    NIR_opt["NIR Optimisation Passes\n(nir_opt_algebraic, nir_opt_constant_folding,\nnir_opt_copy_propagate, nir_opt_dead_cf, ...)"]
+    nvk_lower["nvk_lower_nir()\n(NVK-specific lowering:\nnvk_nir_lower_image_addrs,\nnir_lower_compute_system_values, ...)"]
+    NAK["NAK Compiler Backend\n(nak_compile_shader — src/nouveau/compiler/nak/)"]
+    SASS["NVIDIA SASS binary\n(uploaded to VRAM via nvk_heap)"]
+
+    SPIRV --> spirv_to_nir
+    spirv_to_nir --> NIR_opt
+    NIR_opt --> nvk_lower
+    nvk_lower --> NAK
+    NAK --> SASS
+```
 
 ### SPIR-V to NIR
 
@@ -204,6 +253,25 @@ NVK maps Vulkan's descriptor set model onto this hardware reality. Each `VkDescr
 
 Push descriptors (`VK_KHR_push_descriptor`) are handled by writing descriptors into a dedicated region of the command buffer's push buffer, which the GPU reads directly. This is more efficient for small, frequently-changing descriptor sets because it avoids the indirection through the global descriptor buffer.
 
+```mermaid
+graph TD
+    subgraph "Descriptor Set Path\n(VkDescriptorPool / vkUpdateDescriptorSets)"
+        VkDescPool["VkDescriptorPool\n(allocates region in global descriptor buffer)"]
+        GlobalDescBuf["Global Descriptor Buffer\n(contiguous VRAM region)"]
+        TexHeader["32-byte texture header\n(per binding)"]
+        SamplerEntry["16-byte sampler entry\n(per binding)"]
+    end
+    subgraph "Push Descriptor Path\n(VK_KHR_push_descriptor)"
+        PushDesc["vkCmdPushDescriptorSetKHR"]
+        PushBuf["Push buffer\n(command buffer inline region)"]
+    end
+
+    VkDescPool -- "writes into" --> GlobalDescBuf
+    GlobalDescBuf --> TexHeader
+    GlobalDescBuf --> SamplerEntry
+    PushDesc -- "writes descriptors into" --> PushBuf
+```
+
 ### Graphics Pipeline State
 
 The `nvk_graphics_pipeline` object stores the compiled shader binaries for all active stages, the hardware state register values for fixed-function pipeline stages (rasteriser, depth/stencil test, blend state), and the set of dynamic state flags indicating which state will be set at draw time rather than pipeline bind time.
@@ -219,6 +287,20 @@ The `nvk_compute_pipeline` object is simpler than the graphics pipeline: it hold
 The `nvk_cmd_buffer` object wraps Mesa's `vk_command_buffer` base with NVIDIA-specific push buffer management. NVIDIA's channel model sends work to the GPU by writing sequences of method–data pairs into a ring buffer (the push buffer or indirect buffer, IB). Each method encodes a hardware register address and subchannel; the data is the value to write into that register. The GPU processes these method writes sequentially within a channel, executing the hardware operations they trigger.
 
 NVK's push buffer allocator is a simple linear allocator: each command buffer has a current BO from the `nvk_heap`, and writes methods at sequentially increasing offsets. When the current BO is exhausted, the allocator chains to a new BO by writing an indirect jump method. This design is simple, fast, and produces predictable memory usage patterns.
+
+```mermaid
+graph LR
+    nvk_cmd_buffer["nvk_cmd_buffer\n(wraps vk_command_buffer)"]
+    nvk_heap_pb["nvk_heap\n(push buffer allocator)"]
+    BO1["GEM BO #1\n[method|data method|data ...]"]
+    BO2["GEM BO #2\n[method|data ...]"]
+    GPU["GPU channel\n(DRM_NOUVEAU_EXEC)"]
+
+    nvk_cmd_buffer -- "linear alloc from" --> nvk_heap_pb
+    nvk_heap_pb -- "current slab" --> BO1
+    BO1 -- "indirect jump method\n(on exhaustion)" --> BO2
+    nvk_cmd_buffer -- "submitted via" --> GPU
+```
 
 The method-writing API uses a family of macros that encode the hardware class and method name at compile time, providing type-checked access to the hardware register namespace. The macro system originated in envytools and was adapted for Mesa:
 
@@ -286,9 +368,41 @@ struct drm_nouveau_exec {
 
 The kernel-side nouveau scheduler (`nouveau_sched`) processes this structure by first waiting for all `wait_ptr` sync objects to be signalled (blocking the job from executing until predecessor operations complete), then submitting the push buffer segments to the specified GPU channel for execution, then signalling all `sig_ptr` sync objects when the GPU completes the job. This maps exactly to Vulkan's `VkSubmitInfo2` structure, which NVK's `nvk_queue_submit()` translates into `DRM_NOUVEAU_EXEC` calls.
 
+```mermaid
+graph TD
+    VkSubmitInfo2["VkSubmitInfo2\n(nvk_queue_submit())"]
+    EXEC["DRM_NOUVEAU_EXEC ioctl\n(nouveau_drm.h)"]
+    nouveau_sched["nouveau_sched\n(kernel GPU scheduler)"]
+
+    wait_ptr["wait_ptr[]\n(drm_nouveau_sync array)"]
+    push_ptr["push_ptr[]\n(drm_nouveau_exec_push array)"]
+    sig_ptr["sig_ptr[]\n(drm_nouveau_sync array)"]
+
+    GPU_chan["GPU channel\n(push buffer execution)"]
+    DMA_fence["DMA fence\n(signalled on GPU completion)"]
+
+    VkSubmitInfo2 -- "translated to" --> EXEC
+    EXEC --> wait_ptr
+    EXEC --> push_ptr
+    EXEC --> sig_ptr
+    nouveau_sched -- "1. waits on" --> wait_ptr
+    nouveau_sched -- "2. submits to" --> GPU_chan
+    GPU_chan -- "3. completion signals" --> DMA_fence
+    DMA_fence -- "signals" --> sig_ptr
+```
+
 ### Vulkan Synchronisation Primitive Mapping
 
 NVK implements Vulkan's synchronisation primitives as follows. **Fences** (`VkFence`) are implemented as `drm_syncobj` handles; the GPU signals the syncobj by writing to it upon job completion, and `vkWaitForFences` blocks on the CPU until the signalled state is detected. **Binary semaphores** (`VkSemaphore` with type `VK_SEMAPHORE_TYPE_BINARY`) are also implemented as `drm_syncobj` handles; the signal and wait operations become `sig_ptr` and `wait_ptr` entries in `DRM_NOUVEAU_EXEC`. **Timeline semaphores** (`VkSemaphore` with type `VK_SEMAPHORE_TYPE_TIMELINE`) use `DRM_NOUVEAU_SYNC_TIMELINE_SYNCOBJ` with the `timeline_value` field encoding the specific timeline point being waited on or signalled.
+
+```mermaid
+graph LR
+    VkFence["VkFence"] -- "DRM_NOUVEAU_SYNC_SYNCOBJ" --> drm_syncobj["drm_syncobj\n(kernel object,\nholds DMA fence)"]
+    BinSem["VkSemaphore\n(VK_SEMAPHORE_TYPE_BINARY)"] -- "DRM_NOUVEAU_SYNC_SYNCOBJ" --> drm_syncobj
+    TimeSem["VkSemaphore\n(VK_SEMAPHORE_TYPE_TIMELINE)"] -- "DRM_NOUVEAU_SYNC_TIMELINE_SYNCOBJ\n(+ timeline_value)" --> drm_timeline["drm_syncobj\n(timeline variant,\nmonotonically increasing counter)"]
+    drm_syncobj -- "unsignalled → signalled\non GPU completion" --> DMA_fence2["DMA fence"]
+    drm_timeline -- "point N signalled\nwhen GPU reaches value N" --> DMA_fence2
+```
 
 **Events** (`VkEvent`) present a different challenge because they can be set and waited from both CPU and GPU sides. NVK implements GPU-set events by writing a sentinel value to a GPU-accessible memory location via a GPU method, and CPU-set events by writing the same sentinel from the CPU side. `vkCmdWaitEvents` polls this memory location from the GPU using a spin-wait method — a `while (mem_read(addr) != sentinel)` sequence encoded in the push buffer. This is correct but inefficient if events are waited for long periods; applications should prefer pipeline barriers for most synchronisation.
 

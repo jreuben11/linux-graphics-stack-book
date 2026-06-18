@@ -36,6 +36,25 @@ The GPU process runs with elevated permissions relative to the renderer but is s
 
 The top-level source directory for the command buffer protocol and GPU IPC is `gpu/command_buffer/`, divided into `client/` (the renderer-side implementation) and `service/` (the GPU-process-side implementation). The GPU process IPC service lives in `gpu/ipc/service/`, while the client stubs used by renderers are in `gpu/ipc/client/`. Understanding this `client/service` split is foundational to everything else in this chapter.
 
+```mermaid
+graph TD
+    subgraph "Chrome Process Model"
+        BP["Browser Process\n(singleton, privileged)"]
+        RP1["Renderer Process\n(Blink, sandboxed)"]
+        RP2["Renderer Process\n(Blink, sandboxed)"]
+        UP["Utility Process\n(network, audio, etc.)"]
+        GP["GPU Process\n(hardware contexts)"]
+    end
+
+    BP -- "spawns / coordinates" --> RP1
+    BP -- "spawns / coordinates" --> RP2
+    BP -- "spawns / coordinates" --> UP
+    BP -- "spawns / coordinates" --> GP
+    RP1 -- "command buffer IPC\n(Mojo)" --> GP
+    RP2 -- "command buffer IPC\n(Mojo)" --> GP
+    BP -- "EstablishGpuChannel\n(Mojo)" --> GP
+```
+
 ---
 
 ## 2. Mojo IPC: Chrome's Typed Pipe Framework
@@ -53,6 +72,35 @@ The **GPU channel** is the highest-level IPC abstraction between a renderer and 
 **Synchronisation tokens** (`gpu::SyncToken`) are the mechanism by which a renderer tells the display compositor (Viz) "do not composite my frame until my command stream has reached this point." A `SyncToken` is a triplet: a `CommandBufferNamespace` (e.g., `GPU_IO`), a `CommandBufferId` (64-bit value, packed as process ID in the high bits and IPC route ID in the low bits), and a **fence release count** (a monotonically increasing sequence number). When a renderer inserts a fence into its command stream using `GenSyncTokenCHROMIUM`, it appends an `InsertFenceSync` command and increments the sequence number. When Viz receives a `CompositorFrame` from the renderer, it checks the `SyncToken` embedded in the frame's resource list and calls `SyncPointManager::Wait()` — the GPU process will not begin compositing that frame's resources until the corresponding `SyncPointClientState::ReleaseFenceSync()` has been called in the GPU process's command stream decoder.
 
 Comparing Mojo to the Wayland wire protocol (Chapter 20) reveals both similarities and design differences. Both are binary, object-oriented IPC systems over Unix sockets, and both support handle passing. Wayland's protocol is tightly specialised for display-system operations: it uses a fixed 32-bit opcode header, object IDs managed by the wayland-client library, and event/request semantics that map directly to display lifecycle operations. Mojo is a general-purpose IPC framework — it has no knowledge of display concepts — and it supports significantly richer type semantics including associated interfaces, interface request pipes, and strongly typed enum-based dispatch. Chrome needs Mojo's generality because it is carrying not just display-related messages but command buffer payloads, GPU memory allocation requests, video decode commands, and WebGPU wire protocol messages over the same infrastructure.
+
+```mermaid
+graph LR
+    subgraph "Renderer Process"
+        GCH["GpuChannelHost\n(gpu/ipc/client/)"]
+        CBPI["CommandBufferProxyImpl\n(gpu/ipc/client/)"]
+        ST["gpu::SyncToken"]
+    end
+
+    subgraph "Shared Memory"
+        SMR["mojo::SharedMemoryRegion\n(ring buffer + state struct)"]
+    end
+
+    subgraph "GPU Process"
+        GCM["GpuChannelManager\n(gpu/ipc/service/)"]
+        GC["GpuChannel\n(gpu/ipc/service/)"]
+        CBS["CommandBufferStub\n(gpu/ipc/service/)"]
+        SPM["SyncPointManager\n(Wait / ReleaseFenceSync)"]
+    end
+
+    GCH -- "EstablishGpuChannel" --> GCM
+    GCM -- "creates" --> GC
+    GCH -- "CreateCommandBuffer" --> GC
+    GC -- "creates" --> CBS
+    CBPI -- "Flush(put_offset)\nMojo message" --> CBS
+    CBPI -- "writes commands" --> SMR
+    CBS -- "reads commands\n(get_offset)" --> SMR
+    ST -- "SyncPointManager::Wait()" --> SPM
+```
 
 ---
 
@@ -76,6 +124,35 @@ The pathway from a `canvas.getContext('webgl')` call in a web page to actual Mes
 
 WebGPU follows a fundamentally different path: it uses the **DawnWire** protocol (covered in Chapter 35) layered on top of Mojo pipes, not the legacy command buffer. DawnWire has its own serialisation format optimised for Dawn's object model. This separation is architecturally significant: the legacy command buffer carries GL-flavoured commands, while DawnWire carries WebGPU-flavoured commands. Both run over Mojo but are completely independent code paths through the GPU process.
 
+```mermaid
+graph TD
+    subgraph "Renderer Process (WebGL path)"
+        WRC["WebGLRenderingContext\n(Blink)"]
+        DB["DrawingBuffer"]
+        GI["gpu::gles2::GLES2Interface"]
+        GLES2Impl["GLES2Implementation\n(gpu/command_buffer/client/)"]
+        Stubs["gles2_cmd_helper_autogen.h\n(generated client stubs)"]
+        CBPI2["CommandBufferProxyImpl::Flush()"]
+    end
+
+    subgraph "Shared Ring Buffer"
+        RB["command buffer entries\n(mojo::SharedMemoryRegion)"]
+    end
+
+    subgraph "GPU Process"
+        CBS2["CommandBufferStub"]
+        PD["passthrough decoder\n(gles2_cmd_decoder_passthrough.cc)"]
+        ANGLE["ANGLE\n(GLSL -> SPIR-V)"]
+        Mesa["Mesa EGL/GL\n(radeonsi / iris / anv)"]
+        KernelIO["ioctl(DRM_IOCTL_AMDGPU_CS)\nor equivalent"]
+    end
+
+    WRC --> DB --> GI --> GLES2Impl --> Stubs --> CBPI2
+    CBPI2 -- "writes" --> RB
+    RB -- "DoCommands() decode loop" --> CBS2
+    CBS2 --> PD --> ANGLE --> Mesa --> KernelIO
+```
+
 ---
 
 ## 4. The Ozone Platform Abstraction Layer
@@ -95,6 +172,38 @@ The desktop Linux build of Chrome supports three primary Ozone backends:
 The central data type in Ozone is `gfx::NativePixmap`, an abstract handle for a GPU-accessible buffer. On Wayland and GBM, the concrete type is `NativePixmapDmaBuf` (`ui/gfx/native_pixmap_dmabuf.h`). It holds a `gfx::GpuMemoryBufferHandle` containing one or more plane entries, each with a file descriptor, stride, offset, and format modifier. This is exactly the structure needed to import the buffer into Vulkan (`VkImportMemoryFdInfoKHR` from `VK_KHR_external_memory_fd`), into EGL (`EGL_EXT_image_dma_buf_import`), or into the `zwp_linux_dmabuf_v1` Wayland protocol.
 
 The `GbmPixmapWayland` class (`ui/ozone/platform/wayland/gpu/gbm_pixmap_wayland.cc`) is the concrete implementation used in production. Its `InitializeBuffer()` method creates a GBM buffer object:
+
+```mermaid
+graph TD
+    subgraph "Ozone Abstraction"
+        OP["ui::OzonePlatform\n(singleton)"]
+        SF["SurfaceFactoryOzone"]
+        NDP["NativeDisplayDelegate"]
+        NP["gfx::NativePixmap\n(abstract)"]
+        NPDMABUF["NativePixmapDmaBuf\n(ui/gfx/native_pixmap_dmabuf.h)"]
+        GMBH["gfx::GpuMemoryBufferHandle\n(NativePixmapHandle + ScopedFDs)"]
+    end
+
+    subgraph "ozone-wayland backend\n(ui/ozone/platform/wayland/)"
+        GPW["GbmPixmapWayland\n(gpu/gbm_pixmap_wayland.cc)"]
+        OM["OverlayManager\n(host/wayland_overlay_manager.cc)"]
+        WW["WaylandWindow"]
+    end
+
+    subgraph "ozone-gbm backend\n(ui/ozone/platform/drm/)"
+        DT["DrmThread\n(browser process)"]
+    end
+
+    OP -- "CreateSurfaceFactory()" --> SF
+    OP -- "CreateNativeDisplayDelegate()" --> NDP
+    SF -- "creates" --> GPW
+    GPW -- "InitializeBuffer()\ngbm_device_->CreateBufferWithModifiers()" --> NP
+    NP -- "concrete type" --> NPDMABUF
+    NPDMABUF -- "ExportHandle()" --> GMBH
+    GMBH -- "Mojo SCM_RIGHTS\nto browser process" --> WW
+    WW -- "zwp_linux_dmabuf_v1\nCreateDmabufBasedBuffer()" --> WC["Wayland compositor"]
+    OM -- "DRM plane assignment" --> DT
+```
 
 ```cpp
 // ui/ozone/platform/wayland/gpu/gbm_pixmap_wayland.cc
@@ -191,6 +300,40 @@ When a renderer finishes painting a frame, it submits a `viz::CompositorFrame` t
 
 The **`BeginFrameSource`** drives the frame cadence. On Wayland, `wp_presentation` feedback events (Chapter 20) deliver `presentation-feedback` messages back to Chrome after each presented frame. These trigger `BeginFrame` signals to all active `FrameSink`s, telling renderers when to begin producing the next frame. This pull-based model is central to Chrome's power efficiency on Linux: renderers only produce frames when the compositor needs them, rather than at an unconstrained rate.
 
+```mermaid
+graph TD
+    subgraph "Renderer / Browser Processes"
+        RP3["Renderer Process\n(Blink / cc layer)"]
+        BUI["Browser UI\n(browser process)"]
+        CF["viz::CompositorFrame\n(RenderPass + DrawQuad + resources)"]
+        BFS["BeginFrameSource\n(wp_presentation feedback)"]
+    end
+
+    subgraph "GPU Process (Viz service)"
+        FSM["viz::FrameSinkManager\n(frame_sink_manager_impl.cc)"]
+        FS["CompositorFrameSink\n(FrameSinkId + LocalSurfaceId)"]
+        AGG["aggregator_->Aggregate()\nAggregatedFrame"]
+        DAS["viz::Display::DrawAndSwap()\n(display.cc)"]
+        RDR["renderer_->DrawFrame()\n(Skia / GL renderer)"]
+        OS["OutputSurface\n(SurfaceFactoryOzone)"]
+    end
+
+    subgraph "Wayland Compositor"
+        WC["Wayland compositor\n(zwp_linux_dmabuf_v1)"]
+    end
+
+    RP3 -- "submit CompositorFrame" --> FS
+    BUI -- "submit CompositorFrame" --> FS
+    FSM -- "tracks" --> FS
+    FS -- "feeds" --> AGG
+    AGG --> DAS
+    DAS --> RDR
+    DAS -- "SwapBuffers()" --> OS
+    OS -- "zwp_linux_dmabuf_v1" --> WC
+    WC -- "presentation-feedback" --> BFS
+    BFS -- "BeginFrame signal" --> RP3
+```
+
 **OOP-R (Out-of-Process Raster)** is a related but distinct concept worth distinguishing. In OOP-R (enabled by default since approximately Chrome 79), tile rasterisation — converting Blink's display lists into GPU textures — is performed in the GPU process rather than the renderer process. The renderer sends paint records over the command buffer using the raster decoder protocol; the GPU process executes them using Skia's GPU backend (either Ganesh GL or Ganesh Vulkan). This reduces peak renderer memory usage and allows the GPU scheduler to interleave tile rasterisation with compositing more efficiently. OOP-D is about *assembling and presenting* the final frame; OOP-R is about *rasterising tiles* that feed into that assembly.
 
 ---
@@ -261,6 +404,24 @@ GPU process crash detection is synchronous via Mojo. The browser process holds a
 3. Notifies all `GpuChannelHost` instances via their `OnGpuProcessLost()` callback.
 4. Each renderer's WebGL contexts receive a `webglcontextlost` DOM event; the page can listen to this event and attempt context restoration.
 5. WebGPU devices receive resolution of their `GPUDevice.lost` promise with a `GPUDeviceLostInfo` reason of `"destroyed"`.
+
+```mermaid
+graph TD
+    GPDeath["GPU Process dies\n(crash / SIGABRT / OOM)"]
+    PipeClosed["mojo::Remote pipe closure\n(connection_error callback)"]
+    MarkLost["Browser: mark GPU process lost"]
+    Relaunch["Browser: relaunch fresh GPU process"]
+    NotifyChannels["OnGpuProcessLost()\non all GpuChannelHost instances"]
+    WebGLLost["webglcontextlost DOM event\n(renderer WebGL contexts)"]
+    WebGPULost["GPUDevice.lost promise resolves\n(GPUDeviceLostInfo: destroyed)"]
+
+    GPDeath --> PipeClosed
+    PipeClosed --> MarkLost
+    MarkLost --> Relaunch
+    MarkLost --> NotifyChannels
+    NotifyChannels --> WebGLLost
+    NotifyChannels --> WebGPULost
+```
 
 The **`GpuWatchdogThread`** (in `gpu/ipc/service/gpu_watchdog_thread.cc`) is a separate thread in the GPU process that monitors the main GPU thread for liveness. It sends a periodic heartbeat and waits for a response. If no response arrives within a configurable timeout — historically around 8 seconds on Linux, though the exact value has varied across Chrome versions — the watchdog sends `SIGABRT` to the GPU process, forcing a crash dump and process termination. This turns a driver deadlock (an infinite loop inside an `ioctl` call, for example, caused by a buggy kernel DRM driver or firmware bug) into a recoverable GPU process crash rather than a browser hang.
 

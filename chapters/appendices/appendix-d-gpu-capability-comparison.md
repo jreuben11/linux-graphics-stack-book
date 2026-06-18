@@ -63,6 +63,42 @@ The ten driver stacks covered are listed below with their kernel driver, userspa
 
 **Notes on rows 8 and 9**: Panfrost and Panthor share the Panfrost Mesa Gallium3D userspace driver code but use different kernel drivers. Panfrost handles the older job-manager (JM) firmware model; Panthor handles the newer Command Stream Frontend (CSF) firmware model introduced with third-generation Valhall GPUs. They are separate rows because the capabilities differ, particularly for firmware offload and explicit sync.
 
+```mermaid
+graph LR
+    subgraph "Kernel Drivers"
+        amdgpu["amdgpu\n(AMD GCN/RDNA)"]
+        i915["i915\n(Intel Gen 12 / Xe_HPG)"]
+        xe["xe\n(Intel Xe2+)"]
+        nouveau["nouveau\n(NVIDIA Turing–Blackwell)"]
+        nvidia_open["nvidia-open\n(NVIDIA Turing–Hopper)"]
+        msm["msm\n(Qualcomm Adreno)"]
+        panfrost_kmd["panfrost\n(ARM Bifrost / older Valhall)"]
+        panthor["panthor\n(ARM Valhall CSF)"]
+        asahi["asahi\n(Apple AGX M1/M2)"]
+    end
+    subgraph "Userspace Drivers"
+        RADV["RADV\n(Mesa Vulkan)"]
+        radeonsi["radeonsi\n(Mesa Gallium3D OpenGL)"]
+        ANV_i915["ANV\n(Mesa Vulkan, i915)"]
+        ANV_xe["ANV\n(Mesa Vulkan, xe)"]
+        NVK["NVK\n(Mesa Vulkan)"]
+        nvidia_prop["NVIDIA proprietary ICD\n(libGL / Vulkan)"]
+        Turnip["Turnip\n(Mesa Vulkan)"]
+        panfrost_umd["Panfrost Mesa\n(Gallium3D GLES)"]
+        Honeykrisp["Honeykrisp\n(Mesa Vulkan / agx Gallium)"]
+    end
+    amdgpu --> RADV
+    amdgpu --> radeonsi
+    i915 --> ANV_i915
+    xe --> ANV_xe
+    nouveau --> NVK
+    nvidia_open --> nvidia_prop
+    msm --> Turnip
+    panfrost_kmd --> panfrost_umd
+    panthor -. "shared Gallium3D code" .-> panfrost_umd
+    asahi --> Honeykrisp
+```
+
 ---
 
 ## Table D.1 — Main Capability Matrix

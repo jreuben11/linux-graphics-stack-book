@@ -41,6 +41,49 @@ The Linux graphics synchronisation landscape is coherent if you hold two mental 
 
 Above the kernel, the `wp_linux_drm_syncobj_v1` Wayland protocol object is simply a Wayland protocol name for a `drm_syncobj` file descriptor that the compositor and client share for per-surface acquire and release points. On the Vulkan side, `VkSemaphore` and `VkFence` are API objects whose Linux implementations in Mesa (`src/vulkan/runtime/vk_drm_syncobj.c`) are directly backed by `drm_syncobj` binary and timeline points respectively. The `VK_KHR_external_semaphore_fd` extension is not a new object; it is the protocol — two API calls, `vkGetSemaphoreFdKHR()` and `vkImportSemaphoreFdKHR()` — for exporting and importing `VkSemaphore` payloads as POSIX file descriptors (either `drm_syncobj` fds or `sync_file` fds).
 
+```mermaid
+graph TD
+    subgraph "Kernel-only"
+        dF["dma_fence\n(include/linux/dma-fence.h)"]
+        dR["dma_resv\n(include/linux/dma-resv.h)"]
+    end
+    subgraph "Kernel + uAPI"
+        SF["sync_file\n(drivers/dma-buf/sync_file.c)"]
+        DSO["drm_syncobj\nbinary + timeline\n(drivers/gpu/drm/drm_syncobj.c)"]
+        IFF["IN_FENCE_FD\n(plane-level DRM atomic property)"]
+        OFP["OUT_FENCE_PTR\n(CRTC-level DRM atomic property)"]
+    end
+    subgraph "Wayland Protocol"
+        WDS["wp_linux_drm_syncobj_v1\n(wayland-protocols staging)"]
+    end
+    subgraph "Vulkan API"
+        VkF["VkFence\n(CPU-side wait)"]
+        VkSB["VkSemaphore binary\n(GPU-to-GPU)"]
+        VkST["VkSemaphore timeline\n(GPU-to-GPU and GPU-to-CPU)"]
+        EXT["VK_KHR_external_semaphore_fd\n(export/import mechanism)"]
+    end
+    subgraph "Win32-Compatibility Island"
+        NTS["ntsync / esync / fsync\n(no dma_fence bridge)"]
+    end
+
+    dF -- "embedded in" --> dR
+    dF -- "sync_file_create()" --> SF
+    dF -- "drm_syncobj_replace_fence()" --> DSO
+    SF -- "DRM_IOCTL_SYNCOBJ_IMPORT_SYNC_FILE" --> DSO
+    DSO -- "DRM_IOCTL_SYNCOBJ_EXPORT_SYNC_FILE" --> SF
+    SF -- "fd value as property" --> IFF
+    OFP -- "produces" --> SF
+    DSO -- "HANDLE_TO_FD → import_timeline()" --> WDS
+    DSO -- "vkImportFenceFdKHR" --> VkF
+    DSO -- "vkImportSemaphoreFdKHR" --> VkSB
+    DSO -- "vkImportSemaphoreFdKHR OPAQUE_FD" --> VkST
+    VkF -- "vkGetFenceFdKHR" --> DSO
+    VkSB -- "vkGetSemaphoreFdKHR" --> DSO
+    VkST -- "vkGetSemaphoreFdKHR OPAQUE_FD" --> DSO
+    EXT -. "acts on" .-> VkSB
+    EXT -. "acts on" .-> VkST
+```
+
 **The Win32 island model.** `ntsync` (Linux 6.10, `drivers/misc/ntsync.c`), `esync`, and `fsync` are a separate synchronisation universe. They implement Win32 event, mutex, and semaphore semantics for Wine/Proton compatibility. They use the Linux scheduler — ntsync through kernel objects obtained from `/dev/ntsync`, esync through `eventfd(2)`, fsync through `sys_futex_waitv` (Linux 5.16) — but carry no GPU fence semantics whatsoever. There is no `dma_fence` bridge from this island. You cannot use a ntsync fd as an `IN_FENCE_FD` property, import one into Vulkan, or attach one to a DMA-BUF reservation. Wine/Proton manages the boundary between Win32 synchronisation and GPU work entirely at the DXVK/VKD3D-Proton D3D-to-Vulkan translation layer using Vulkan completion callbacks; the kernel never sees a direct connection.
 
 **Primitive enumeration.** This appendix covers twelve named primitives: `dma_fence`, `dma_resv`, `sync_file`, `drm_syncobj` (binary and timeline treated as one entry with two variants), `IN_FENCE_FD`, `OUT_FENCE_PTR`, `wp_linux_drm_syncobj_v1`, `VkFence`, `VkSemaphore` binary, `VkSemaphore` timeline, `VK_KHR_external_semaphore_fd`, and the Win32-compatibility island (`ntsync`/`esync`/`fsync`, collapsed to one row in the conversion matrix since they share the same "no GPU bridge" characteristic). The master table in Section 2 carries thirteen rows (splitting `IN_FENCE_FD` and `OUT_FENCE_PTR`), the state machine section carries twelve diagrams (the extension `VK_KHR_external_semaphore_fd` has no state machine of its own — see the note at the start of Section 3), the conversion matrix is 12×12, and the cross-reference table in Section 6 carries fourteen rows (splitting binary/timeline semaphore and binary/timeline `drm_syncobj`). These counts are consistent and intentional; the splits are explained in each section.
@@ -285,6 +328,24 @@ These two DRM atomic properties work as a matched pair across the KMS commit bou
 
 The `wp_linux_drm_syncobj_v1` Wayland protocol (`wayland-protocols` staging, merged in wayland-protocols 1.34) maps `drm_syncobj` timeline sequence numbers to per-surface compositor acquire and release points.
 
+```mermaid
+graph LR
+    MGR["wp_linux_drm_syncobj_manager_v1\n(Wayland global factory)"]
+    TL["wp_linux_drm_syncobj_timeline_v1\n(wraps drm_syncobj fd)"]
+    SRF["wp_linux_drm_syncobj_surface_v1\n(per-surface acquire/release bindings)"]
+    DSO["drm_syncobj fd\n(from DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD)"]
+    ACQ["acquire point\n(seqno_A)"]
+    REL["release point\n(seqno_R, must be > seqno_A)"]
+
+    DSO -- "import_timeline(drm_syncobj_fd)" --> MGR
+    MGR -- "creates" --> TL
+    MGR -- "get_surface(wl_surface)" --> SRF
+    TL -- "set_acquire_point(timeline, seqno_A)" --> ACQ
+    TL -- "set_release_point(timeline, seqno_R)" --> REL
+    ACQ -- "bound to" --> SRF
+    REL -- "bound to" --> SRF
+```
+
 ```
 [Client exports VkSemaphore (timeline) as drm_syncobj fd]
   via vkGetSemaphoreFdKHR(OPAQUE_FD)
@@ -514,6 +575,41 @@ The table below is a 12×12 matrix of all documented conversion paths. Rows are 
 The diagonal is marked `—` (identity, no conversion needed). The entire Win32-compatibility island row and column are separated by the notation `[WIN32]` because all cells in that row and column that do not involve the island itself are **None**; no kernel or Vulkan API bridges the Win32 island to the GPU fence subsystem.
 
 Abbreviations used in cells: **SF** = `sync_file`, **DSO** = `drm_syncobj`, **dF** = `dma_fence`, **dR** = `dma_resv`, **IFF** = `IN_FENCE_FD`, **OFP** = `OUT_FENCE_PTR`, **WDS** = `wp_linux_drm_syncobj_v1`/`wp_linux_drm_syncobj_timeline_v1`, **VkF** = `VkFence`, **VkSB** = `VkSemaphore` binary, **VkST** = `VkSemaphore` timeline, **EXT** = `VK_KHR_external_semaphore_fd` (mechanism), **NTS** = `ntsync`/`esync`/`fsync`.
+
+The diagram below shows the key direct-conversion paths (single API call). `drm_syncobj` is the central conversion hub: every GPU-facing primitive can reach every other via at most one intermediate stop through `drm_syncobj` or `sync_file`. The Win32-compatibility island has no connections into this graph.
+
+```mermaid
+graph TD
+    dF["dma_fence"]
+    dR["dma_resv"]
+    SF["sync_file"]
+    DSO["drm_syncobj\n(central hub)"]
+    IFF["IN_FENCE_FD"]
+    OFP["OUT_FENCE_PTR"]
+    WDS["wp_linux_drm_syncobj_v1"]
+    VkF["VkFence"]
+    VkSB["VkSemaphore binary"]
+    VkST["VkSemaphore timeline"]
+    NTS["ntsync / esync / fsync\n(Win32 island — no connections)"]
+
+    dF -- "dma_resv_add_fence()" --> dR
+    dF -- "sync_file_create()" --> SF
+    dF -- "drm_syncobj_replace_fence()" --> DSO
+    SF -- "DRM_IOCTL_SYNCOBJ_IMPORT_SYNC_FILE" --> DSO
+    DSO -- "DRM_IOCTL_SYNCOBJ_EXPORT_SYNC_FILE" --> SF
+    SF -- "fd value as property" --> IFF
+    OFP -- "produces" --> SF
+    DSO -- "HANDLE_TO_FD + import_timeline()" --> WDS
+    DSO -- "vkImportFenceFdKHR(OPAQUE_FD)" --> VkF
+    DSO -- "vkImportSemaphoreFdKHR(OPAQUE_FD)" --> VkSB
+    DSO -- "vkImportSemaphoreFdKHR(OPAQUE_FD)" --> VkST
+    VkF -- "vkGetFenceFdKHR(OPAQUE_FD)" --> DSO
+    VkF -- "vkGetFenceFdKHR(SYNC_FD)" --> SF
+    VkSB -- "vkGetSemaphoreFdKHR(OPAQUE_FD)" --> DSO
+    VkSB -- "vkGetSemaphoreFdKHR(SYNC_FD)" --> SF
+    VkST -- "vkGetSemaphoreFdKHR(OPAQUE_FD)" --> DSO
+    SF -- "vkImportSemaphoreFdKHR(SYNC_FD)" --> VkSB
+```
 
 | From \ To | dma_fence | dma_resv | sync_file | drm_syncobj | IN_FENCE_FD | OUT_FENCE_PTR | wp_drm_syncobj | VkFence | VkSem binary | VkSem timeline | ext_sem_fd | [WIN32] ntsync |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|

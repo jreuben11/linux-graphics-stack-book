@@ -54,6 +54,24 @@ The path a shader takes from a Vulkan application to executing on AMD hardware p
 
 The ACO entry point is `aco_compile_shader()` defined in `src/amd/compiler/aco_interface.cpp`. This function accepts a `nir_shader` pointer, a set of `aco_compiler_options` describing the target hardware and compilation flags, and a set of `aco_shader_info` describing the shader's runtime properties. It initialises an ACO `Program` and runs the complete compilation pipeline, returning the final machine code in an `ac_shader_binary` structure that RADV uploads to the GPU.
 
+```mermaid
+graph TD
+    SPIRV["SPIR-V bytecode\n(from Vulkan application)"]
+    NIR["nir_shader\n(Mesa NIR IR)"]
+    NIR_OPT["radv_optimize_nir()\n(src/amd/vulkan/radv_shader.c)"]
+    ACO_ENTRY["aco_compile_shader()\n(src/amd/compiler/aco_interface.cpp)"]
+    ACO_PROG["ACO Program\n(ACO IR + passes)"]
+    BINARY["ac_shader_binary\n(machine code + ac_shader_config)"]
+    GPU["AMD GPU\n(amdgpu kernel driver)"]
+
+    SPIRV -- "spirv_to_nir()" --> NIR
+    NIR --> NIR_OPT
+    NIR_OPT -- "aco_compiler_options\naco_shader_info" --> ACO_ENTRY
+    ACO_ENTRY --> ACO_PROG
+    ACO_PROG --> BINARY
+    BINARY -- "RADV uploads via PM4" --> GPU
+```
+
 ```cpp
 /* Source: src/amd/compiler/aco_interface.cpp — aco_compile_shader() */
 void aco_compile_shader(const struct aco_compiler_options *options,
@@ -82,6 +100,22 @@ NGG culling is the most performance-sensitive NGG feature. Rather than submittin
 ACO implements a prolog/epilog split for fragment shaders that is architecturally distinct from how LLVM handles the same problem. A fragment shader's behaviour depends on per-pipeline state that is not known until pipeline creation: the MSAA sample count, whether per-sample shading is enabled, and the format of each render target. Under a monolithic compilation model, every combination of these parameters would require a separately compiled shader variant. The combinatorial explosion — considering all MSAA counts, all possible render target formats across all active MRT slots — makes this impractical.
 
 ACO's solution is to compile the shader body once in canonical form, and compile separate prolog and epilog objects that handle the state-dependent portions. The prolog handles input setup: under `VK_SAMPLE_SHADING_ENABLE`, it reads the sample mask and computes per-sample interpolation offsets. The epilog handles output: it converts the shader's float32 colour outputs to the target surface format (packed UNORM8, SNORM16, etc.) and organises them for MRT export. These prolog and epilog objects are small, fast to compile, and cover the format-specific logic that would otherwise require full shader recompilation. ACO compiles them using dedicated instruction selection paths in `src/amd/compiler/instruction_selection/aco_select_ps_prolog.cpp` and `aco_select_ps_epilog.cpp`. RADV calls the epilog compilation path in `radv_shader.c` via `radv_create_ps_epilog()`, which invokes `aco_compile_shader()` with a synthetic NIR representing only the export logic.
+
+```mermaid
+graph LR
+    PROLOG["Prolog\n(aco_select_ps_prolog.cpp)\nMSAA sample mask,\nper-sample interpolation"]
+    BODY["Canonical shader body\n(compiled once)"]
+    EPILOG["Epilog\n(aco_select_ps_epilog.cpp)\nfloat32 → surface format,\nMRT export"]
+
+    PROLOG -- "input setup" --> BODY
+    BODY -- "colour outputs" --> EPILOG
+
+    RADV_EPILOG["radv_create_ps_epilog()\n(radv_shader.c)"]
+    ACO_COMPILE["aco_compile_shader()\n(synthetic NIR)"]
+
+    RADV_EPILOG -- "invokes" --> ACO_COMPILE
+    ACO_COMPILE -- "produces" --> EPILOG
+```
 
 **When LLVM Is Used**
 
@@ -137,6 +171,26 @@ The most important type in the IR from a compilation-correctness standpoint is `
 
 ACO maintains two distinct control flow graphs throughout compilation, a design choice motivated by AMD's execution model. The logical CFG is a direct translation of the structured control flow from NIR and reflects the programmer's intent. The linear CFG, following the "whole-function vectorisation" model described by Karrenberg and Hack, models actual GPU execution with the additional control flow blocks needed to handle wave divergence. When a conditional branch diverges — different lanes taking different paths — the GPU does not actually branch; instead, both paths execute with the inactive lanes masked out by the `exec` register. The linear CFG makes this explicit, adding reconvergence blocks and tracking the `exec` mask modifications that ACO must generate.
 
+```mermaid
+graph TD
+    PROG["Program\n(amd_gfx_level, shader type, metadata)"]
+    BLOCK["Block\n(basic block: single entry, one or more exits)"]
+    INSTR["Instruction\n(aco_opcode, format)"]
+    OPERAND["Operand\n(Temp or PhysReg or constant)"]
+    DEFN["Definition\n(Temp pre-alloc / PhysReg post-alloc)"]
+    TEMP["Temp\n(virtual register: id + RegClass)"]
+    PHYSREG["PhysReg\n(physical hardware register number)"]
+
+    PROG --> BLOCK
+    BLOCK --> INSTR
+    INSTR --> OPERAND
+    INSTR --> DEFN
+    OPERAND -. "pre-allocation" .-> TEMP
+    OPERAND -. "post-allocation" .-> PHYSREG
+    DEFN -. "pre-allocation" .-> TEMP
+    DEFN -. "post-allocation" .-> PHYSREG
+```
+
 ---
 
 ## 4. Instruction Selection: NIR to ACO IR
@@ -144,6 +198,30 @@ ACO maintains two distinct control flow graphs throughout compilation, a design 
 Instruction selection is the largest single component of ACO, spanning files in `src/amd/compiler/instruction_selection/`. The principal entry point is `select_program()` in `aco_select_nir.cpp`, which iterates over the NIR shader's basic blocks and dispatches each NIR instruction to the appropriate visitor function. Visitor functions are named after the NIR instruction categories they handle: ALU operations in `aco_select_nir_alu.cpp`, memory intrinsics and system-value loads in `aco_select_nir_intrinsics.cpp`.
 
 Before any visitor runs, instruction selection performs divergence analysis (`src/amd/compiler/aco_divergence_analysis.cpp`). Divergence analysis determines, for each NIR SSA value, whether that value is uniform — identical across all active lanes in a wavefront — or divergent — potentially different per lane. This classification is what drives the fundamental VGPR/SGPR assignment: a uniform value will live in an SGPR-class `Temp`; a divergent value will live in a VGPR-class `Temp`. The classification propagates through data flow: an operation whose inputs are both uniform is itself uniform; an operation with any divergent input is divergent. System values like `gl_WorkgroupID` are uniform (the entire workgroup shares one ID); values derived from `gl_LocalInvocationID` or `gl_FragCoord` are divergent (each lane has a distinct value).
+
+```mermaid
+graph TD
+    NIR_SHADER["nir_shader\n(input to instruction selection)"]
+    DIV_ANALYSIS["Divergence Analysis\n(aco_divergence_analysis.cpp)"]
+    SELECT_PROG["select_program()\n(aco_select_nir.cpp)"]
+    ALU_VISITOR["ALU visitor\n(aco_select_nir_alu.cpp)"]
+    INTR_VISITOR["Intrinsic / memory visitor\n(aco_select_nir_intrinsics.cpp)"]
+    UNIFORM["Uniform value\n→ SGPR-class Temp\n(SALU instruction)"]
+    DIVERGENT["Divergent value\n→ VGPR-class Temp\n(VALU instruction)"]
+    ACO_IR["ACO IR\n(Program with Instructions)"]
+
+    NIR_SHADER --> DIV_ANALYSIS
+    NIR_SHADER --> SELECT_PROG
+    DIV_ANALYSIS -- "uniform / divergent classification" --> SELECT_PROG
+    SELECT_PROG --> ALU_VISITOR
+    SELECT_PROG --> INTR_VISITOR
+    ALU_VISITOR --> UNIFORM
+    ALU_VISITOR --> DIVERGENT
+    INTR_VISITOR --> UNIFORM
+    INTR_VISITOR --> DIVERGENT
+    UNIFORM --> ACO_IR
+    DIVERGENT --> ACO_IR
+```
 
 **ALU Instruction Selection**
 
@@ -194,6 +272,26 @@ The SGPR file is substantially smaller — 106 addressable SGPRs on GFX10 — bu
 ACO's register allocator, implemented in `src/amd/compiler/aco_register_allocation.cpp`, operates on SSA form — a departure from LLVM's approach, which operates on virtual registers after SSA destruction. SSA-based allocation allows the allocator to exploit the SSA property that each value is defined exactly once: register classes and live range boundaries are well-defined from the SSA structure without the phi-function complications that virtual-register allocators must handle separately. The ACO README notes that SSA allocation "works on SSA (as opposed to LLVM's which works on virtual registers)" and that the allocator inserts shuffle code (parallel copies) where needed at block joins, rather than sacrificing a wave to reduce register pressure.
 
 The linear-scan algorithm processes instructions in program order, maintaining a set of "active" live ranges. When a new value is defined, the allocator finds a free physical register of the correct class and assigns it. When a value's live range ends at the last use, its register is freed. The algorithm's linear time complexity — as opposed to the exponential worst case of graph colouring — is central to ACO's compile-time advantage.
+
+```mermaid
+graph TD
+    SSA_IR["ACO IR\n(SSA form with Temp + RegClass)"]
+    ALLOC["aco_register_allocation.cpp\n(linear-scan, SSA-based)"]
+    SGPR_FILE["SGPR file\n(106 addressable SGPRs,\nuniform / s1 s2 s4 Temps)"]
+    VGPR_FILE["VGPR file\n(256 VGPRs per lane,\ndivergent / v1 v2 Temps)"]
+    SPILL["aco_spill.cpp\n(spill + reload insertion,\nCSSA form, scratch offsets)"]
+    SCRATCH["Scratch memory\n(per-lane VGPR-addressed\nGPU memory region)"]
+    PHYS_IR["ACO IR\n(PhysReg-assigned,\nno Temp remaining)"]
+
+    SSA_IR --> ALLOC
+    ALLOC -- "uniform Temp\n→ SGPR" --> SGPR_FILE
+    ALLOC -- "divergent Temp\n→ VGPR" --> VGPR_FILE
+    ALLOC -. "pressure exceeds file" .-> SPILL
+    SPILL -- "spill store / reload" --> SCRATCH
+    SGPR_FILE --> PHYS_IR
+    VGPR_FILE --> PHYS_IR
+    SPILL --> PHYS_IR
+```
 
 **Spilling**
 
@@ -278,6 +376,31 @@ struct ac_shader_config {
 ```
 
 The SGPR and VGPR counts in this header flow directly from ACO's register allocator: the allocator tracks the highest physical register number assigned to each file and reports the maximum. The kernel driver uses these counts to set the `COMPUTE_PGM_RSRC1` and `COMPUTE_PGM_RSRC2` PM4 registers (for compute dispatches) or equivalent graphics pipeline registers, which control how much of the register file each wavefront occupies. Incorrect values here are fatal: reporting too few registers causes the shader to overwrite adjacent wavefronts' registers, producing corrupted rendering.
+
+```mermaid
+graph TD
+    INSTR_LIST["Scheduled, register-allocated\nInstruction list"]
+    ASSEMBLER["aco_assembler.cpp\n(format-specific encoding functions)"]
+    OPCODE_TABLE["aco_opcodes.py\n(opcode name, format,\nhardware generation, encoding)"]
+    GENERATED_TABLES["Generated C++ lookup tables\n(build-time)"]
+    BINARY_WORDS["Binary machine code\n(output buffer)"]
+    BRANCH_FIXUP["Two-pass branch fixup\n(placeholder → resolved offset)"]
+    SHADER_BINARY["ac_shader_binary\n(ac_shader_util.h)"]
+    SHADER_CONFIG["ac_shader_config\n(num_sgprs, num_vgprs,\nlds_size, scratch_bytes_per_wave)"]
+    RADV["RADV\n(radv_shader.c)"]
+    AMDGPU["amdgpu kernel driver\n(COMPUTE_PGM_RSRC1 /\nCOMPUTE_PGM_RSRC2 PM4 registers)"]
+
+    OPCODE_TABLE -- "generated at build time" --> GENERATED_TABLES
+    GENERATED_TABLES --> ASSEMBLER
+    INSTR_LIST --> ASSEMBLER
+    ASSEMBLER --> BINARY_WORDS
+    ASSEMBLER -. "forward branches" .-> BRANCH_FIXUP
+    BRANCH_FIXUP --> BINARY_WORDS
+    BINARY_WORDS --> SHADER_BINARY
+    SHADER_CONFIG --> SHADER_BINARY
+    SHADER_BINARY --> RADV
+    RADV --> AMDGPU
+```
 
 **Debugging and Disassembly**
 

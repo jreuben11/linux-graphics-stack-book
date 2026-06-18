@@ -50,6 +50,41 @@ The abstraction surface provided by `GPUBackend` covers:
 
 Factory methods on `VKBackend` construct the Vulkan-specific subclasses: `batch_alloc()` returns a `VKBatch`, `shader_alloc()` returns a `VKShader`, and so on. This means that code in EEVEE or the viewport calls `GPUShader::bind()` without knowing whether the current backend is Vulkan or OpenGL.
 
+```mermaid
+graph TD
+    subgraph "Abstract GPU Interface (source/blender/gpu/)"
+        GPUBackend["GPUBackend\n(abstract base)"]
+        GPUContext["GPUContext"]
+        GPUShader["GPUShader"]
+        GPUTexture["GPUTexture"]
+        GPUBatch["GPUBatch"]
+        GPUFrameBuffer["GPUFrameBuffer"]
+        GPUBufs["GPUStorageBuf /\nGPUUniformBuf"]
+    end
+    subgraph "Vulkan Backend"
+        VKBackend["VKBackend"]
+        VKBatch["VKBatch"]
+        VKShader["VKShader"]
+    end
+    subgraph "OpenGL Backend"
+        GLBackend["GLBackend"]
+    end
+    subgraph "Metal Backend"
+        MetalBackend["MetalBackend"]
+    end
+    GPUBackend --> VKBackend
+    GPUBackend --> GLBackend
+    GPUBackend --> MetalBackend
+    GPUBackend -- "abstracts" --> GPUContext
+    GPUBackend -- "abstracts" --> GPUShader
+    GPUBackend -- "abstracts" --> GPUTexture
+    GPUBackend -- "abstracts" --> GPUBatch
+    GPUBackend -- "abstracts" --> GPUFrameBuffer
+    GPUBackend -- "abstracts" --> GPUBufs
+    VKBackend -- "batch_alloc()" --> VKBatch
+    VKBackend -- "shader_alloc()" --> VKShader
+```
+
 ### 1.3 Vulkan Status in Blender 4.5 LTS
 
 In Blender 4.5 LTS, the Vulkan backend reached feature parity with OpenGL — GPU subdivision, OpenXR, USD/Hydra workflows, and all EEVEE effects are implemented on both paths. However, OpenGL remains the **default** backend. Vulkan is opt-in via *Preferences → System → Graphics API*. The reasons are practical: the Vulkan path requires all scene textures to fit simultaneously in GPU memory (whereas OpenGL can spill to streaming), imposes a performance regression on very large meshes (>100 million vertices), and exhibits higher memory usage under certain workloads. The Blender development team indicated that Blender 5.0 would likewise not default to Vulkan until these constraints are resolved. [Source](https://www.phoronix.com/news/Blender-5.0-Vulkan-OpenGL-RAM)
@@ -112,6 +147,27 @@ Note: these signatures are verified against the Blender main branch as of 2026; 
 
 **`VKDiscardPool`** implements deferred resource destruction. When a `VKTexture` or `VKBuffer` is freed, it is moved into the discard pool tagged with the current timeline semaphore value; the background runner physically destroys the resource once the GPU signals that timeline value, eliminating races between CPU-side free and in-flight GPU use.
 
+```mermaid
+graph TD
+    VKContext["VKContext\n(per-window)"]
+    VKDevice["VKDevice\n(singleton)"]
+    VKRenderGraph["VKRenderGraph"]
+    submission_runner["submission_runner\n(background task)"]
+    VKScheduler["VKScheduler\n(reorder + insert barriers)"]
+    VKCommandBuilder["VKCommandBuilder\n(records VkCommandBuffer)"]
+    vkQueueSubmit["vkQueueSubmit"]
+    VKDiscardPool["VKDiscardPool\n(deferred resource destruction)"]
+
+    VKContext -- "owns" --> VKRenderGraph
+    VKContext -- "render_graph_submit()" --> VKDevice
+    VKContext -- "render_graph_new()" --> VKDevice
+    VKDevice -- "dequeues" --> submission_runner
+    submission_runner --> VKScheduler
+    VKScheduler --> VKCommandBuilder
+    VKCommandBuilder --> vkQueueSubmit
+    submission_runner -- "destroys after GPU signals\ntimeline semaphore" --> VKDiscardPool
+```
+
 **VMA integration**: All `VkBuffer` and `VkImage` allocations go through VMA. The backend uses `VMA_MEMORY_USAGE_AUTO_PREFER_HOST` with `VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT` for staging buffers, and `VMA_MEMORY_USAGE_AUTO` (GPU-preferred) for scene geometry and textures. [Source](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)
 
 ### 2.2 EEVEE Render Pass Structure
@@ -164,6 +220,40 @@ The Cycles path-tracing kernel lives in `intern/cycles/kernel/`. It is written i
 - standard C++ (multi-arch SIMD via AVX2/AVX-512 intrinsics) for CPU
 
 The same kernel files compile to each target through backend-specific build steps invoked during Blender's CMake build. At render time each backend loads its pre-compiled binary and dispatches it to the GPU. [Source](https://developer.blender.org/docs/handbook/building_blender/cycles_gpu_binaries/)
+
+```mermaid
+graph TD
+    CyclesKernel["Cycles Kernel\n(intern/cycles/kernel/)\nPortable C++ with ccl_kernel/ccl_device macros"]
+
+    subgraph "GPU Backends"
+        HIP["HIP Backend\n(intern/cycles/device/hip/)"]
+        CUDA["CUDA Backend\n(NVIDIA)"]
+        OptiX["OptiX Backend\n(NVIDIA RTX)"]
+        oneAPI["oneAPI Backend\n(Intel Arc)"]
+        VKCompute["Vulkan Compute Backend\n(intern/cycles/device/vulkan/)\n[experimental]"]
+        CPU["CPU Backend\n(scalar + AVX2/AVX-512)"]
+    end
+
+    subgraph "Kernel Driver / Runtime"
+        KFD["amdgpu KFD\ncompute queue"]
+        libcuda["libcuda.so /\nnvidia-uvm.ko"]
+        XeDriver["i915 / xe\n(Intel Xe kernel driver)"]
+        MesaVK["RADV / ANV / NVK\n(Mesa Vulkan drivers)"]
+    end
+
+    CyclesKernel --> HIP
+    CyclesKernel --> CUDA
+    CyclesKernel --> OptiX
+    CyclesKernel --> oneAPI
+    CyclesKernel --> VKCompute
+    CyclesKernel --> CPU
+
+    HIP -- "hipModuleLaunchKernel" --> KFD
+    CUDA -- "cuLaunchKernel" --> libcuda
+    OptiX -- "optixLaunch" --> libcuda
+    oneAPI -- "sycl::queue" --> XeDriver
+    VKCompute -- "vkCmdDispatch" --> MesaVK
+```
 
 ### 3.2 HIP Backend (AMD/ROCm)
 
@@ -267,6 +357,37 @@ CPU rendering is always available regardless of GPU drivers and is useful for sm
 ## 4. GLSL/SPIR-V Shader Compilation in Blender
 
 EEVEE does not use hand-authored GLSL files for most of its shaders. Instead, Blender generates GLSL programmatically from the node graph, then compiles it to SPIR-V using shaderc, feeds the SPIR-V to Mesa via `vkCreateShaderModule`, and relies on Mesa's NIR pipeline for the final machine code.
+
+```mermaid
+graph TD
+    NodeGraph["Shader Node Graph\n(GPUNodeGraph)"]
+    GPUMaterial["GPUMaterial\n(gpu_material.cc)"]
+    GLSLCodegen["GLSL Codegen\n(ntreeGPUMaterialNodes +\nGPU_generate_pass)"]
+    GLSL["Vulkan GLSL\n(layout set/binding qualifiers)"]
+    shaderc["shaderc\n(wraps glslang)"]
+    SPIRV["SPIR-V blob"]
+    vkCreateShaderModule["vkCreateShaderModule\n(Mesa caches by SHA-256)"]
+    vk_spirv_to_nir["vk_spirv_to_nir\n(NIR parser)"]
+    NIR["NIR\n(Mesa IR + optimisation passes)"]
+
+    subgraph "Mesa Backend Compilers"
+        ACO["ACO → GFX ISA\n(RADV / AMD)"]
+        IntelBackend["Intel backend → EU assembly\n(ANV / Intel)"]
+        NAK["NAK\n(NVK / NVIDIA open-source)"]
+    end
+
+    NodeGraph --> GPUMaterial
+    GPUMaterial --> GLSLCodegen
+    GLSLCodegen --> GLSL
+    GLSL --> shaderc
+    shaderc --> SPIRV
+    SPIRV --> vkCreateShaderModule
+    vkCreateShaderModule --> vk_spirv_to_nir
+    vk_spirv_to_nir --> NIR
+    NIR --> ACO
+    NIR --> IntelBackend
+    NIR --> NAK
+```
 
 ### 4.1 GLSL Code Generation from the Node Graph
 
@@ -462,6 +583,24 @@ Blender's interactive viewport is a full Vulkan rendering surface — not a simp
 `GHOST_SystemWayland` manages the Wayland connection: `wl_display`, `wl_compositor`, `xdg_wm_base`, `wl_keyboard`, `wl_pointer`, and the input event loop. `GHOST_WindowWayland` creates the `wl_surface` and `xdg_toplevel` for each Blender window. Fractional display scaling is handled via `wp_fractional_scale_v1`; high-DPI rendering is negotiated through `wl_output` scale factors.
 
 For Vulkan rendering, the Wayland `wl_surface` is passed to `GHOST_ContextVK` (implemented in `intern/ghost/intern/GHOST_ContextVK.cc`), which calls `vkCreateWaylandSurfaceKHR()` to create the `VkSurfaceKHR`. The swapchain is subsequently created on this surface via `vkCreateSwapchainKHR`. [Source](https://developer.blender.org/T93031)
+
+```mermaid
+graph TD
+    GHOST_SystemWayland["GHOST_SystemWayland\n(wl_display, wl_compositor,\nxdg_wm_base, input event loop)"]
+    GHOST_WindowWayland["GHOST_WindowWayland\n(wl_surface, xdg_toplevel)"]
+    GHOST_ContextVK["GHOST_ContextVK\n(GHOST_ContextVK.cc)"]
+    vkCreateWaylandSurfaceKHR["vkCreateWaylandSurfaceKHR"]
+    VkSurfaceKHR["VkSurfaceKHR"]
+    vkCreateSwapchainKHR["vkCreateSwapchainKHR"]
+    VkSwapchainKHR["VkSwapchainKHR"]
+
+    GHOST_SystemWayland -- "creates" --> GHOST_WindowWayland
+    GHOST_WindowWayland -- "provides wl_surface to" --> GHOST_ContextVK
+    GHOST_ContextVK -- "calls" --> vkCreateWaylandSurfaceKHR
+    vkCreateWaylandSurfaceKHR --> VkSurfaceKHR
+    VkSurfaceKHR --> vkCreateSwapchainKHR
+    vkCreateSwapchainKHR --> VkSwapchainKHR
+```
 
 ```cpp
 /* Source: intern/ghost/intern/GHOST_ContextVK.cc (structural outline)

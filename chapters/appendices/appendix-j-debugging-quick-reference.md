@@ -48,6 +48,26 @@ The one-liner card in [Section J.8](#j8-most-useful-one-liners-80-coverage) is s
 
 > **Interpretation notes**: Steps 1 and 2 together cover the majority of no-display failures. A `Permission denied` on `/dev/dri/card0` is a configuration error that takes 30 seconds to resolve (add the user to the `video` group) and should be ruled out before any further investigation. If `drm_info` shows a connector as `connected` with a valid EDID but the CRTC is `active: false`, the compositor failed to commit a modeset without crashing — check step 3 and step 5 output simultaneously, because the compositor log will show why the modeset was not attempted, and the Wayland protocol trace will show where the initialisation sequence was interrupted. For DisplayPort outputs, monitor for `drm_dp_channel_eq` errors in `dmesg`; these indicate a link training failure that prevents the kernel from establishing a display clock, which is often resolved by reducing the link rate with the `drm.dp_link_rate` module parameter.
 
+```mermaid
+graph TD
+    Symptom["Black screen / no display after login"]
+    S1["Step 1: dmesg | grep -i drm\n(DRM driver probe, connector detection)"]
+    S2["Step 2: journalctl -t Xorg\n(X server fatal errors, permission denied)"]
+    S3["Step 3: journalctl -t gnome-shell / kwin_wayland\n(compositor crash, gbm_device_create, EGL errors)"]
+    S4["Step 4: drm_info\n(connector status, CRTC active flag, EDID)"]
+    S5["Step 5: WAYLAND_DEBUG=1 compositor\n(Wayland protocol trace, global registration)"]
+    S6["Step 6: /sys/class/drm/card0-*/status\n(kernel connector hotplug state)"]
+    S7["Step 7: ls -la /dev/dri/\n(device node permissions)"]
+
+    Symptom --> S1
+    S1 -- "DRM probe OK" --> S2
+    S2 -- "Permission denied" --> S7
+    S2 -- "X OK / using Wayland" --> S3
+    S3 -- "compositor crash" --> S4
+    S4 -- "CRTC active: false" --> S5
+    S4 -- "all connectors disconnected" --> S6
+```
+
 ---
 
 ## J.2 GPU Hang / TDR / VK\_ERROR\_DEVICE\_LOST
@@ -64,6 +84,34 @@ The one-liner card in [Section J.8](#j8-most-useful-one-liners-80-coverage) is s
 | 6 | `sudo umr -go` (AMDGPU) or `sudo intel_gpu_top -J` followed by Ctrl-C at hang | `umr -go` ("GPU Overview") polls AMDGPU ring and wave state continuously. At the moment of a hang, the ring head will stop advancing while new jobs continue to be enqueued. `intel_gpu_top -J` streams JSON engine utilisation; a hang appears as 100% GFX engine utilisation that persists past the expected frame time. | §30.5 |
 
 > **Interpretation notes**: Step 1 is always the starting point — the kernel log records the engine name (GFX, COMPUTE, SDMA, VCNENC) and the last known instruction pointer, which tells you immediately whether this is a graphics shader hang, a compute shader loop, or a video encode firmware issue. For `VK_ERROR_DEVICE_LOST` without a visible kernel reset message, the hang may be a GPU soft-lock — an infinite loop in a shader that the GPU scheduler's watchdog timer has not yet detected. In this case, `RADV_DEBUG=hang,nocache` is the most direct diagnostic: RADV inserts synchronisation fences and trace markers that let it detect the exact draw call or dispatch before the kernel fires TDR. The `nocache` flag is critical because without it, cached shader binaries may not be written to the dump directory. If `~/radv_dumps_*/trace.log` shows the last trace point at a specific draw call number, open the `pipeline.log` in that dump to read the shader IR for that draw.
+
+```mermaid
+graph TD
+    HangEvent["VK_ERROR_DEVICE_LOST / GPU hang"]
+    KernelLog["Step 1: dmesg grep gpu hang / ring timeout\n(engine name + instruction pointer)"]
+    IntelError["Step 2: /sys/class/drm/card0/error\n(Intel i915/xe GPU error state dump)"]
+    RADVDump["Step 3: RADV_DEBUG=hang,nocache\n(~/radv_dumps_pid_time/ directory)"]
+
+    subgraph "RADV dump directory contents"
+        TraceLog["trace.log\n(annotated command stream,\nlast trace point)"]
+        PipelineLog["pipeline.log\n(shader IR, program counters)"]
+        RegistersLog["registers.log\n(GPU state at hang)"]
+        WavesLog["umr_waves.log\n(active GPU waves)"]
+        SPIRVFiles["*.spv\n(bound pipeline SPIR-V)"]
+        VMFaultLog["vm_fault.log\n(page fault address)"]
+    end
+
+    HangEvent --> KernelLog
+    KernelLog -- "Intel GPU" --> IntelError
+    KernelLog -- "AMDGPU (RADV)" --> RADVDump
+    RADVDump --> TraceLog
+    RADVDump --> PipelineLog
+    RADVDump --> RegistersLog
+    RADVDump --> WavesLog
+    RADVDump --> SPIRVFiles
+    RADVDump --> VMFaultLog
+    TraceLog -- "last draw call number" --> PipelineLog
+```
 
 ---
 
@@ -82,6 +130,28 @@ The one-liner card in [Section J.8](#j8-most-useful-one-liners-80-coverage) is s
 
 > **Interpretation notes**: `MESA_DEBUG=flush` is the single most valuable first step — if flushing resolves the corruption, the diagnosis is complete (missing barrier) and the fix path is clear. If flushing does not resolve the corruption, the problem is in shader compilation or resource binding, not synchronisation. Sync validation in step 2 is the most precise diagnostic for the largest class of visual corruption bugs — missing barriers — and reports the exact offending API call and the missing barrier type, making the fix straightforward. `NIR_DEBUG=print` output can exceed several gigabytes for complex scenes; always redirect to a file and grep rather than reading interactively. For compiler regressions between Mesa versions, `shader-db` (see [Section J.5](#j5-performance-regression), step 4) provides a faster comparison method than `NIR_DEBUG=print` over a full application run.
 
+```mermaid
+graph TD
+    Corruption["Visual glitches / shader corruption"]
+    FlushTest["Step 1: MESA_DEBUG=flush\n(serialise all draw calls)"]
+    Resolved["Corruption gone:\nmissing pipeline barrier\n(synchronisation hazard)"]
+    SyncVal["Step 2: VK_LAYER_KHRONOS_validation\nwith validate_sync=true\n(SYNC-HAZARD-READ-AFTER-WRITE etc.)"]
+    CompilerPath["Corruption persists:\nproblem in shader compilation\nor resource binding"]
+    ShaderDump["Step 3: RADV_DEBUG=shaders\n(ISA disassembly, VGPR/SGPR pressure)"]
+    NIRDebug["Step 4: NIR_DEBUG=print\n(NIR IR after each optimisation pass)"]
+    NoAccel["Step 5: RADV_DEBUG=noaccel / nocache\n(disable optimisation paths / pipeline cache)"]
+    RenderDoc["Step 6: RenderDoc frame capture\n(per-draw render target, shader debugger)"]
+
+    Corruption --> FlushTest
+    FlushTest -- "corruption disappears" --> Resolved
+    Resolved --> SyncVal
+    FlushTest -- "corruption persists" --> CompilerPath
+    CompilerPath --> ShaderDump
+    CompilerPath --> NIRDebug
+    CompilerPath --> NoAccel
+    CompilerPath --> RenderDoc
+```
+
 ---
 
 ## J.4 Synchronisation / Tearing / Flickering
@@ -98,6 +168,24 @@ The one-liner card in [Section J.8](#j8-most-useful-one-liners-80-coverage) is s
 | 6 | `cat /sys/class/drm/card0/vrr_capable` and inspect `VRR_ENABLED` property in `drm_info` | Confirm whether Variable Refresh Rate is advertised and enabled. On AMD with FreeSync or Nvidia with G-Sync Compatible displays, `vrr_capable` reads `1` when the monitor supports VRR. If `VRR_ENABLED` in `drm_info` is `0` despite `vrr_capable` being `1`, the compositor has not enabled it — check compositor VRR settings. Unexpected tearing at variable frame rates on a VRR display may indicate the display is dropping out of VRR range. | §30.11 |
 
 > **Interpretation notes**: Tearing on a Wayland desktop should be impossible if the compositor correctly implements vblank-synchronised atomic commits, because Wayland compositors serialise all frame updates through the KMS atomic commit path. If tearing occurs on Wayland, it most commonly indicates that the compositor is bypassing its normal page-flip path — for example, using direct scanout (where the application's buffer is scanned out without compositing). Step 4 (DRM ftrace) provides nanosecond-resolution commit and vblank timestamps, making it the most precise tool for diagnosing missed-deadline tearing. Steps 1 and 2 address Vulkan-side synchronisation errors that can cause the compositor to receive incompletely rendered frames. Step 6 should be checked early when the symptom only occurs at variable frame rates, as VRR misconfiguration is a common and easily resolved cause.
+
+```mermaid
+graph LR
+    App["Application"]
+    Swapchain["Vulkan Swapchain\n(vkAcquireNextImageKHR /\nvkQueuePresentKHR)"]
+    Semaphore["acquire / present\nsemaphores"]
+    Compositor["Wayland Compositor\n(wl_surface.commit /\nframe_callback)"]
+    KMS["KMS Atomic Commit\n(drm_atomic_commit_tail)"]
+    Vblank["DRM vblank event\n(drm_vblank_event)"]
+    Display["Display output"]
+
+    App --> Swapchain
+    Swapchain -- "signal semaphore" --> Semaphore
+    Semaphore -- "wait semaphore" --> Compositor
+    Compositor -- "wl_surface.commit" --> KMS
+    KMS -- "page-flip before deadline" --> Vblank
+    Vblank --> Display
+```
 
 ---
 
@@ -138,6 +226,41 @@ The one-liner card in [Section J.8](#j8-most-useful-one-liners-80-coverage) is s
 ## J.7 Vulkan Layer / Driver Discovery Issues
 
 **Observable symptom**: A Vulkan application fails to create an instance, reports no physical devices, or loads the wrong ICD (e.g., the software renderer instead of the GPU driver); `VK_ERROR_INCOMPATIBLE_DRIVER` or `VK_ERROR_INITIALIZATION_FAILED` at `vkCreateInstance`; layers expected to be enabled (e.g., validation, capture layers) are silently absent.
+
+```mermaid
+graph TD
+    Loader["Vulkan Loader\n(libvulkan.so)"]
+
+    subgraph "ICD manifest search order"
+        UserDir["~/.local/share/vulkan/icd.d/\n(user overrides)"]
+        EtcDir["/etc/vulkan/icd.d/\n(system admin)"]
+        UsrDir["/usr/share/vulkan/icd.d/\n(distribution packages)"]
+    end
+
+    subgraph "Example ICD manifests"
+        RadeonJSON["radeon_icd.x86_64.json\n(RADV)"]
+        IntelJSON["intel_icd.x86_64.json\n(ANV)"]
+        NouveauJSON["nouveau_icd.x86_64.json\n(NVK)"]
+        NvidiaJSON["nvidia_icd.json\n(proprietary NVIDIA)"]
+        LvpJSON["lvp_icd.x86_64.json\n(LLVMpipe software)"]
+    end
+
+    subgraph "ICD library"
+        RadeonSO["libvulkan_radeon.so"]
+        IntelSO["libvulkan_intel.so"]
+    end
+
+    Loader --> UserDir
+    Loader --> EtcDir
+    Loader --> UsrDir
+    UsrDir --> RadeonJSON
+    UsrDir --> IntelJSON
+    UsrDir --> NouveauJSON
+    UsrDir --> NvidiaJSON
+    UsrDir --> LvpJSON
+    RadeonJSON -- "ICD.library_path" --> RadeonSO
+    IntelJSON -- "ICD.library_path" --> IntelSO
+```
 
 | Step | Command / Action | What to look for | Ch30 ref |
 |------|-----------------|------------------|----------|

@@ -35,6 +35,22 @@ Dawn is Google's open-source C++ implementation of the WebGPU API. It is the imp
 
 A fourth thin library, `dawn_proc`, provides runtime flexibility by exposing a `dawnProcTable` function pointer table. Applications and Chrome's GPU process use this table rather than directly calling `dawn_native` or `dawn_wire` symbols, which allows the implementation to be switched at runtime — important for Chrome's ability to run Dawn natively in the GPU process or wired across a Mojo pipe from the renderer.
 
+```mermaid
+graph TD
+    subgraph "Dawn Source Tree"
+        WebGPUH["webgpu.h\n(include/webgpu/webgpu.h)"]
+        DawnProc["dawn_proc\n(dawnProcTable)"]
+        DawnNative["dawn_native\n(src/dawn/native/)"]
+        DawnWireLib["dawn_wire\n(src/dawn/wire/)"]
+        Tint["Tint compiler\n(src/tint/)"]
+    end
+    WebGPUH --> DawnProc
+    DawnProc -- "routes to" --> DawnNative
+    DawnProc -- "routes to" --> DawnWireLib
+    DawnWireLib -- "deserialises into" --> DawnNative
+    DawnNative -- "calls" --> Tint
+```
+
 Dawn's relationship to `wgpu-native` (used by Firefox) is worth understanding. Both implement the same WebGPU specification and both expose the same `webgpu.h` C header, which reached a stable 1.0 definition in 2024. The two codebases are entirely separate: Dawn is C++, `wgpu-native` is Rust (built on the `wgpu` library from the gfx-rs project). They share the specification and the conformance test suite (the WebGPU CTS) but have divergent internal architectures and pass rate histories. This chapter focuses exclusively on Dawn and Chrome's usage of it. As of 2025–2026, Firefox ships WebGPU by default on Windows (Firefox 141) and macOS (Firefox 145 on Apple Silicon), with Linux shipping in Nightly. Chrome has been shipping WebGPU on Linux with a driver-specific allow-list rollout since 2024, gating on known-good Mesa driver versions to avoid triggering bugs in older Vulkan implementations.
 
 The WebGPU specification is maintained by the W3C GPU for the Web Working Group at `https://www.w3.org/TR/webgpu/`. The companion WGSL shader language specification is at `https://www.w3.org/TR/WGSL/`. Dawn tracks the specification closely, with divergences tracked as `dawn:` Crbug issues. WebGPU is not a low-level API like raw Vulkan; it deliberately omits features with unclear safety or portability (sparse resources, sub-allocator hints, most vendor extensions) but exposes enough of the modern GPU programming model to make high-performance applications, ML inference workloads, and AAA-quality rendering viable in a web context.
@@ -63,6 +79,42 @@ The code generation infrastructure is central to Dawn's maintainability. The fil
 Each object uses an internal `ResultOrError<T>` type (analogous to `std::expected`) for error propagation. Methods that can fail return `ResultOrError<OwnedRef<T>>`. The frontend's validation functions check preconditions against the WebGPU spec (alignment constraints, valid enum values, usage flag compatibility) and return validation errors, which are then asynchronously delivered to the application via the device error callback registered with `wgpuDeviceSetUncapturedErrorCallback`. The explicit separation of validation from execution means that a application receiving a validation error knows exactly which API call was incorrect, without the ambiguity of an OpenGL `glGetError` accumulated across multiple calls.
 
 Backend-specific subclasses in `src/dawn/native/vulkan/` override the virtual methods with Vulkan implementations: `DeviceVk`, `BufferVk`, `TextureVk`, `RenderPipelineVk`, `BindGroupVk`, `CommandBufferVk`, and `QueueVk`. The `BackendConnection` abstract class is the factory through which `InstanceBase` registers and instantiates backends; on Linux only the Vulkan backend is enabled in production builds (the OpenGL backend exists for testing and for platforms without Vulkan).
+
+```mermaid
+graph TD
+    InstanceBase["InstanceBase\n(owns VkInstance, adapter list)"]
+    AdapterBase["AdapterBase\n(VkPhysicalDevice + properties)"]
+    DeviceBase["DeviceBase\n(command queue, resource factories)"]
+    BackendConnection["BackendConnection\n(factory for backends)"]
+
+    subgraph "Per-object types (frontend)"
+        BufferBase["BufferBase"]
+        TextureBase["TextureBase"]
+        BindGroupBase["BindGroupBase"]
+        RenderPipelineBase["RenderPipelineBase"]
+    end
+
+    subgraph "Vulkan subclasses (src/dawn/native/vulkan/)"
+        DeviceVk["DeviceVk"]
+        BufferVk["BufferVk"]
+        TextureVk["TextureVk"]
+        RenderPipelineVk["RenderPipelineVk"]
+        CommandBufferVk["CommandBufferVk"]
+        QueueVk["QueueVk"]
+    end
+
+    InstanceBase --> BackendConnection
+    BackendConnection --> AdapterBase
+    AdapterBase --> DeviceBase
+    DeviceBase --> BufferBase
+    DeviceBase --> TextureBase
+    DeviceBase --> BindGroupBase
+    DeviceBase --> RenderPipelineBase
+    DeviceBase --> DeviceVk
+    BufferBase --> BufferVk
+    TextureBase --> TextureVk
+    RenderPipelineBase --> RenderPipelineVk
+```
 
 ### The Wire Layer and Proc Dispatch
 
@@ -169,6 +221,22 @@ As of Chrome 141 (2025), the transition to the IR is complete for all backends:
 
 The performance impact is significant. On some platforms the transition delivered up to a seven times speedup in shader compilation, primarily because IR transformations do a single linear pass over SSA values rather than recursive tree traversal with node reconstruction.
 
+```mermaid
+graph LR
+    WGSL["WGSL source\n(@vertex / @fragment / @compute)"]
+    Parser["Tint parser\n(src/tint/lang/wgsl/reader/)"]
+    IR["Tint IR\n(src/tint/lang/core/ir/)\nSSA, structured CFG"]
+    Transforms["IR Transform Passes\n(Robustness, ZeroInitWorkgroupMemory,\nBindingRemapper, VertexPulling)"]
+    SPIRVWriter["SPIR-V emitter\n(src/tint/lang/spirv/writer/)"]
+    SPIRVBin["SPIR-V binary\n(→ vkCreateShaderModule)"]
+
+    WGSL --> Parser
+    Parser --> IR
+    IR --> Transforms
+    Transforms --> SPIRVWriter
+    SPIRVWriter --> SPIRVBin
+```
+
 ### Transform Passes
 
 Between WGSL parsing and SPIR-V emission, Tint applies a sequence of IR transform passes. The most significant for the Vulkan backend are:
@@ -212,6 +280,34 @@ Chrome's renderer processes run in a sandbox that denies direct GPU access. GPU 
 `dawn::wire::WireClient` is instantiated in the renderer process. It receives the same `webgpu.h` function calls that a native Dawn application would make, because `dawn_proc` routes calls to it. For each call, `WireClient` serialises the arguments into a command structure and appends it to a `DataPipe` — a Mojo shared-memory ring buffer. `dawn::wire::WireServer` runs in the GPU process, reading from the same `DataPipe`, deserialising each command, and calling the corresponding `dawn::native` function. Return values and asynchronous callbacks travel in the reverse direction via a separate Mojo message pipe.
 
 The source files are structured to mirror the `webgpu.h` API. `src/dawn/wire/client/` contains per-object client-side handlers (e.g., `Device.cpp`, `Buffer.cpp`, `RenderPipeline.cpp`). `src/dawn/wire/server/` contains the corresponding server-side dispatch functions. Both client and server source files are largely generated from `dawn_wire.json` by the code generator, with hand-written additions for complex cases like buffer mapping.
+
+```mermaid
+graph LR
+    subgraph "Renderer Process (sandboxed)"
+        JS["JavaScript\nWebGPU API calls"]
+        TintRenderer["Tint\n(WGSL validation)"]
+        WireClient["WireClient\n(src/dawn/wire/client/)"]
+        DataPipeOut["DataPipe\n(Mojo shared-memory ring buffer)"]
+    end
+
+    subgraph "GPU Process"
+        DataPipeIn["DataPipe\n(read end)"]
+        WireServer["WireServer\n(src/dawn/wire/server/)"]
+        DawnNativeGPU["dawn_native\n(DeviceVk, QueueVk, etc.)"]
+        MesaVulkan["Mesa Vulkan driver\n(RADV / ANV / NVK)"]
+        ReturnPipe["Return Mojo pipe\n(callbacks, errors)"]
+    end
+
+    JS --> TintRenderer
+    TintRenderer -- "valid WGSL" --> WireClient
+    WireClient -- "serialised commands" --> DataPipeOut
+    DataPipeOut --> DataPipeIn
+    DataPipeIn --> WireServer
+    WireServer -- "calls" --> DawnNativeGPU
+    DawnNativeGPU --> MesaVulkan
+    WireServer -- "callbacks / errors" --> ReturnPipe
+    ReturnPipe --> WireClient
+```
 
 ### Command Serialisation
 
@@ -286,6 +382,28 @@ Viz's `SharedImage` for a WebGPU canvas is backed by a `VkImage` created with `V
 The release is accompanied by a `VkSemaphore` signal. Dawn exports this semaphore as a sync FD via `vkGetSemaphoreFdKHR` with `VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT`. The sync FD is sent to Viz as a `gfx::GpuFence`. Viz imports it and waits on the fence before compositing the canvas quad onto the display, ensuring that the compositor never reads pixels that Dawn has not yet finished writing. This use of `VK_KHR_external_semaphore_fd` is what makes zero-copy WebGPU canvas presentation possible on Linux: the GPU does the rendering, signals a fence, and the compositor waits on that fence — without any CPU involvement and without copying the image.
 
 The canvas texture is delivered to the display via the same Wayland `linux-dmabuf` path described in Ch20 and Ch36. Viz presents the DMA-BUF to the Wayland compositor as a buffer attachment on a `wl_surface`, allowing the hardware display controller to scan out directly from the GPU allocation if the DMA-BUF format and modifier are supported by the display pipeline.
+
+```mermaid
+graph TD
+    Configure["GPUCanvasContext.configure()\n(format, usage, colorSpace)"]
+    SharedImage["Viz SharedImage\n(VkImage with VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)"]
+    DawnImport["Dawn DeviceVk\nimports DMA-BUF via VkImportMemoryFdInfoKHR"]
+    TextureVkCanvas["TextureVk\n(getCurrentTexture() handle)"]
+    RenderWork["Dawn render commands\n(render pass, draw calls)"]
+    SyncFD["sync FD export\nvkGetSemaphoreFdKHR\n(VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT)"]
+    GpuFence["gfx::GpuFence\n(sent to Viz)"]
+    VizCompositor["Viz compositor\nwaits on fence, composites canvas quad"]
+    WaylandDmabuf["Wayland linux-dmabuf\n(DMA-BUF presented on wl_surface)"]
+
+    Configure --> SharedImage
+    SharedImage --> DawnImport
+    DawnImport --> TextureVkCanvas
+    TextureVkCanvas --> RenderWork
+    RenderWork --> SyncFD
+    SyncFD --> GpuFence
+    GpuFence --> VizCompositor
+    VizCompositor --> WaylandDmabuf
+```
 
 ### Colour Space Handling
 

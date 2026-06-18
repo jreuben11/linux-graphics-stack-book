@@ -51,6 +51,26 @@ Bits 63–56 (8 bits):  DRM_FORMAT_MOD_VENDOR_* code
 Bits 55–0  (56 bits): vendor-defined payload
 ```
 
+```mermaid
+graph LR
+    subgraph "64-bit DRM Format Modifier (uint64_t)"
+        V["Bits 63–56\n(8 bits)\nDRM_FORMAT_MOD_VENDOR_*\nvendor code"]
+        P["Bits 55–0\n(56 bits)\nvendor-defined payload\n(tiling mode, compression flags, topology)"]
+    end
+    V -- "fourcc_mod_code(vendor, val)" --> P
+
+    subgraph "Fixed constants"
+        L["DRM_FORMAT_MOD_LINEAR\n= fourcc_mod_code(NONE, 0)\n= 0x0000000000000000"]
+        I["I915_FORMAT_MOD_*\n= fourcc_mod_code(INTEL, N)\nhigh byte 0x01"]
+    end
+
+    subgraph "Bitfield-packed (computed per GPU instance)"
+        A["AMD_FMT_MOD\nTILE_VERSION, TILE, DCC,\nPIPE, RB, PIPE_XOR_BITS, ..."]
+        N["DRM_FORMAT_MOD_NVIDIA_BLOCK_LINEAR_2D\n(c, s, g, k, h)\nh = log2(GOB height / 8)"]
+        ARM["DRM_FORMAT_MOD_ARM_AFBC\n(block_size | feature_bits)\nAFBC_FORMAT_MOD_BLOCK_SIZE_* | YTR | TILED | ..."]
+    end
+```
+
 The complete set of registered vendor codes from `drm_fourcc.h` (Linux 6.12):
 
 | Constant | Value | Used by |
@@ -500,6 +520,33 @@ MODIFIER NEGOTIATION FLOW
      │  ┌─ KMS ADDFB2 with modifier succeeds? ───────────────┐
      │  │ YES                                       NO       │
      │  ▼ direct scanout                     GPU composite → scanout BO
+```
+
+```mermaid
+graph TD
+    KMS["[1] KMS / DRM\nDRM_IOCTL_MODE_GET_PLANE_RES\nIN_FORMATS blob → supported_modifiers[]"]
+    COMP["[2] Wayland Compositor\nzwp_linux_dmabuf_feedback_v1\nformat_table + tranche_formats events"]
+    GBM["[3] Client / GBM path\ngbm_surface_create_with_modifiers2\n(dev, w, h, fmt, modifiers[], count)"]
+    DRI["[4] GBM ↔ Mesa DRI\n__DRI_IMAGE.createImageWithModifiers\ngbm_bo carries selected modifier"]
+    EGL["[5] EGL\neglCreateWindowSurface\nrecords modifier from gbm_bo_get_modifier()"]
+    EXPORT["[6] Render + Export\neglSwapBuffers → wl_surface.commit\nzwp_linux_dmabuf_v1.create_immed\n(fd, width, height, format, modifier)"]
+    VK["[7] Vulkan WSI path (alternative)\nvkGetPhysicalDeviceFormatProperties2\n+ VkDrmFormatModifierPropertiesListEXT\nvkCreateImage with VkImageDrmFormatModifierListCreateInfoEXT"]
+    IMPORT["[8] KMS Import\ndrmPrimeFDToHandle → gem_handle\nDRM_IOCTL_MODE_ADDFB2 (format + modifier)"]
+    SCANOUT["Direct scanout\n(modifier in KMS plane supported list)"]
+    FALLBACK["GPU composite → scanout BO\n(ADDFB2 failed or modifier unsupported)"]
+    LINEAR["DRM_FORMAT_MOD_LINEAR fallback\n(no tiled modifier mutually supported)"]
+
+    KMS -- "advertises (format, modifier) pairs" --> COMP
+    COMP -- "sends feedback to clients" --> GBM
+    GBM -- "driver supports modifier?" --> DRI
+    GBM -. "NO: fall back" .-> LINEAR
+    DRI --> EGL
+    EGL --> EXPORT
+    EXPORT --> IMPORT
+    EXPORT -. "Vulkan WSI alternative" .-> VK
+    VK --> IMPORT
+    IMPORT -- "ADDFB2 succeeds" --> SCANOUT
+    IMPORT -. "ADDFB2 fails" .-> FALLBACK
 ```
 
 **Step-by-step narrative:**

@@ -26,6 +26,40 @@
 
 NIR — the New Intermediate Representation — is the pivot point of Mesa's entire compiler stack. Every shader that enters Mesa, whether written in GLSL for an OpenGL application, SPIR-V for a Vulkan game, or embedded GLSL inside a driver for internal meta-operations, is translated into NIR before any hardware-specific compilation begins. Every Mesa driver — RADV for AMD Vulkan, ANV for Intel Vulkan, NVK for NVIDIA Vulkan, radeonsi for AMD OpenGL, iris for Intel OpenGL, llvmpipe for software rendering — consumes NIR and compiles it onward to its target machine code. NIR is where the common compiler infrastructure lives, and understanding it is a prerequisite for understanding nearly everything else in the Mesa compiler ecosystem.
 
+```mermaid
+graph LR
+    subgraph "Producers"
+        SPIRV["SPIR-V binary\n(Vulkan / DXVK / VKD3D-Proton)"]
+        GLSL["GLSL source\n(OpenGL)"]
+        ARB["ARB assembly program\n(legacy OpenGL)"]
+        META["nir_builder\n(driver meta-shaders)"]
+    end
+
+    NIR["nir_shader\n(NIR — universal IR)"]
+
+    subgraph "Consumers"
+        RADV["RADV → ACO\n(AMD Vulkan)"]
+        ANV["ANV\n(Intel Vulkan)"]
+        NVK["NVK\n(NVIDIA Vulkan)"]
+        RADEONSI["radeonsi → LLVM\n(AMD OpenGL)"]
+        IRIS["iris\n(Intel OpenGL)"]
+        LLVMPIPE["llvmpipe / Lavapipe\n(software rendering)"]
+        OTHER["Panfrost / Turnip /\nLima / Etnaviv / …"]
+    end
+
+    SPIRV --> NIR
+    GLSL --> NIR
+    ARB --> NIR
+    META --> NIR
+    NIR --> RADV
+    NIR --> ANV
+    NIR --> NVK
+    NIR --> RADEONSI
+    NIR --> IRIS
+    NIR --> LLVMPIPE
+    NIR --> OTHER
+```
+
 This chapter explains NIR from first principles. It covers why TGSI, the earlier Gallium shader IR, became inadequate as GPU hardware evolved; the complete in-memory data structure layout from `nir_shader` down to individual SSA definitions; the two primary front ends that produce NIR (SPIR-V and GLSL); the library of optimisation passes that transform NIR toward more efficient code; the lowering passes that encode hardware constraints; and the debugging and validation infrastructure that makes NIR development tractable. The chapter also covers important recent history: the `nir_ssa_def` type was renamed to `nir_def` in Mesa 23.1, and legacy documentation, blog posts, and older driver code universally use the former name. Readers following any pre-2023 tutorial will need to mentally translate between the two.
 
 After reading this chapter, you will be able to read a raw NIR dump and understand what each line means; trace the path a Vulkan shader takes from `vkCreateShaderModule` through `spirv_to_nir()` to driver-specific machine code emission; understand what each category of NIR pass does and in what order passes typically run; and write a simple NIR pass using the `nir_builder` API. With these foundations in place, Chapter 15 (ACO) and Chapter 19 (OpenGL drivers) will be substantially easier to follow.
@@ -47,6 +81,50 @@ The transition from TGSI to NIR was gradual and took nearly a decade to complete
 ## 2. NIR Data Structures: The In-Memory Representation
 
 NIR is defined almost entirely in a single header: `src/compiler/nir/nir.h`. This file runs to several thousand lines and contains every struct, enum, and inline function that makes up the IR. The organisation is hierarchical: a shader contains functions, functions contain control flow nodes, control flow nodes contain instructions, and instructions produce and consume SSA definitions.
+
+```mermaid
+graph TD
+    NS["nir_shader\n(root object)"]
+    NF["nir_function\n(name + signature)"]
+    NFI["nir_function_impl\n(body: CF nodes + register list)"]
+    NCFN["nir_cf_node\n(discriminated union)"]
+    NB["nir_block\n(basic block:\ndoubly-linked nir_instr list)"]
+    NIF["nir_if\n(condition nir_src +\nthen-list + else-list)"]
+    NL["nir_loop\n(body-list +\noptional continue)"]
+    NI["nir_instr\n(base instruction type)"]
+    ALU["nir_alu_instr\n(nir_op + nir_alu_dest + nir_alu_src[])"]
+    INTR["nir_intrinsic_instr\n(nir_intrinsic_op + nir_def + nir_src[])"]
+    TEX["nir_tex_instr\n(nir_texop + typed source array)"]
+    LC["nir_load_const_instr\n(constant value)"]
+    DEREF["nir_deref_instr\n(pointer arithmetic chain)"]
+    PHI["nir_phi_instr\n(SSA join point)"]
+    JUMP["nir_jump_instr\n(break / continue / return)"]
+    CALL["nir_call_instr\n(pre-inline function call)"]
+    ND["nir_def\n(SSA result:\nnum_components + bit_size + use list)"]
+    NSRC["nir_src\n(pointer to nir_def + use-chain links)"]
+
+    NS --> NF
+    NF --> NFI
+    NFI --> NCFN
+    NCFN --> NB
+    NCFN --> NIF
+    NCFN --> NL
+    NB --> NI
+    NI --> ALU
+    NI --> INTR
+    NI --> TEX
+    NI --> LC
+    NI --> DEREF
+    NI --> PHI
+    NI --> JUMP
+    NI --> CALL
+    ALU -- "produces" --> ND
+    INTR -- "produces" --> ND
+    TEX -- "produces" --> ND
+    LC -- "produces" --> ND
+    PHI -- "produces" --> ND
+    ND -- "referenced by" --> NSRC
+```
 
 ### The Top-Level Shader
 
@@ -163,6 +241,35 @@ The `spirv_to_nir_options` struct communicates which SPIR-V capabilities and ext
 
 The parser builds a `vtn_builder` that holds the parse state throughout the single-pass traversal of the SPIR-V word stream. SPIR-V is a binary format of 32-bit words; the first five words are the magic number, version, generator ID, bound (the maximum result ID + 1), and a reserved zero. Every subsequent instruction begins with a word encoding the opcode and word count. The parser builds a flat `vtn_value` table indexed by SPIR-V result IDs; when an instruction produces a result, its entry in this table is filled.
 
+```mermaid
+graph TD
+    BIN["SPIR-V binary\n(uint32_t words[])"]
+    VTN["vtn_builder\n(parse state + vtn_value table)"]
+    TYPES["OpType* → glsl_type\n(type translation)"]
+    VARS["OpVariable → nir_variable\n(storage class → nir_variable_mode)"]
+    DECO["Decoration handling\n(vtn_handle_decoration:\nLocation / Binding / BuiltIn)"]
+    CF["Control flow translation\n(OpLabel / OpBranch / OpLoopMerge\n→ nir_block / nir_if / nir_loop)"]
+    FUNC["Function translation\n(OpFunction → nir_function)"]
+    SPEC["OpSpecConstant\n→ nir_load_const_instr\nor nir_intrinsic_load_constant"]
+    NIR2["nir_shader\n(output)"]
+    INLINE["nir_inline_functions()\n(first pass after spirv_to_nir)"]
+
+    BIN --> VTN
+    VTN --> TYPES
+    VTN --> VARS
+    VTN --> DECO
+    VTN --> CF
+    VTN --> FUNC
+    VTN --> SPEC
+    TYPES --> NIR2
+    VARS --> NIR2
+    DECO --> NIR2
+    CF --> NIR2
+    FUNC --> NIR2
+    SPEC --> NIR2
+    NIR2 --> INLINE
+```
+
 Type translation converts SPIR-V `OpType*` instructions to `glsl_type` objects: `OpTypeFloat` with a width of 32 becomes `glsl_type::float_type`, `OpTypeVector` of two floats becomes `glsl_type::vec2_type`, `OpTypeStruct` becomes a named struct type with member types, and `OpTypePointer` encodes both the storage class (which becomes the `nir_variable_mode`) and the pointee type. This type translation is the foundation on which all subsequent translation rests.
 
 Variable declaration (`OpVariable`) produces an `nir_variable`. The storage class determines the `nir_variable_mode`: `StorageBuffer` maps to `nir_var_mem_ssbo`, `Uniform` to `nir_var_mem_ubo`, `UniformConstant` to `nir_var_uniform`, `Input` to `nir_var_shader_in`, `Output` to `nir_var_shader_out`, `Workgroup` to `nir_var_mem_shared`, `Private` to `nir_var_function_temp`, `TaskPayloadWorkgroupEXT` to `nir_var_mem_task_payload`.
@@ -192,6 +299,31 @@ GLSL ES (the version of GLSL used on mobile OpenGL ES hardware) uses the same fr
 The GLSL front end also handles ARB assembly programs (the `GL_ARB_vertex_program` and related extensions) via a separate `prog_to_nir.c` translation path. This path is primarily for compatibility with very old OpenGL applications that never moved to GLSL; it translates fixed-function assembly-like program objects into the same NIR representation.
 
 The long-term trajectory of the GLSL front end is to converge on the SPIR-V path: modern builds of Mesa can optionally route GLSL shaders through an internal Khronos reference GLSL compiler (glslang) that produces SPIR-V, which then goes through the same `spirv_to_nir()` path. This eliminates the GLSL IR intermediate representation entirely. As of Mesa 24.x this remains an opt-in experimental path rather than the default.
+
+```mermaid
+graph TD
+    GLSLS["GLSL source strings\n(OpenGL application)"]
+    ARBA["ARB assembly program\n(legacy GL_ARB_vertex_program)"]
+    PARSE["Mesa GLSL compiler\n(src/compiler/glsl/)\nParse + semantic analysis\n+ implicit conversions"]
+    GLSLIR["GLSL IR\n(ir_instruction exec_list tree)"]
+    LINK["_mesa_glsl_link_shader()\nInter-stage linking:\nmatch varyings, assign\nuniform locations, layout\ninterface blocks"]
+    VISITOR["ir_to_nir_visitor\n(glsl_to_nir.cpp)\nVisitor pattern over GLSL IR"]
+    PROG["prog_to_nir.c\n(ARB program → NIR)"]
+    NIR3["nir_shader\n(output)"]
+    GLSLANG["glslang (experimental)\nKhronos GLSL → SPIR-V\n(opt-in, Mesa 24.x)"]
+    SPIRVNIR["spirv_to_nir()\n(standard SPIR-V path)"]
+
+    GLSLS --> PARSE
+    PARSE --> GLSLIR
+    GLSLIR --> LINK
+    LINK --> VISITOR
+    VISITOR --> NIR3
+    ARBA --> PROG
+    PROG --> NIR3
+    GLSLS -. "experimental path" .-> GLSLANG
+    GLSLANG -. "SPIR-V" .-> SPIRVNIR
+    SPIRVNIR -. "nir_shader" .-> NIR3
+```
 
 ---
 
@@ -658,6 +790,29 @@ NIR provides `nir_lower_mesh_shader_intrinsics()` (and related passes in `src/co
 ### RADV Mesh Shader Lowering: GFX10.3 and RDNA2+
 
 AMD RDNA2 (GFX10.3) hardware natively supports mesh shaders through a redefined geometry pipeline. RADV's compilation path for mesh shaders illustrates how the generic NIR mesh representation becomes AMD-specific machine code:
+
+```mermaid
+graph TD
+    SN["spirv_to_nir()\nSPIR-V binary → nir_shader"]
+    IF["nir_inline_functions()\nInline all function calls"]
+    OPT["NIR optimisation loop\nnir_opt_algebraic / nir_opt_dce\nnir_opt_copy_prop / ..."]
+    LIO["nir_lower_io()\nderef chains → explicit slots"]
+    RMESH["radv_nir_lower_mesh_shader()\n(src/amd/vulkan/)\nNormalise EXT/NV differences\nPack per-primitive outputs into\nAMD GS parameter space"]
+    ACO["aco_compile_shader()\nNIR → RDNA2 ISA"]
+
+    subgraph "AMD hardware mapping"
+        CS["MESA_SHADER_TASK\n→ compute stage (CS)"]
+        GS["MESA_SHADER_MESH\n→ geometry stage (GS)\non GFX10.3 / RDNA2"]
+    end
+
+    SN --> IF
+    IF --> OPT
+    OPT --> LIO
+    LIO --> RMESH
+    RMESH --> ACO
+    ACO --> CS
+    ACO --> GS
+```
 
 ```c
 /* Source: conceptual RADV mesh shader compilation pipeline

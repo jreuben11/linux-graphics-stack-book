@@ -55,6 +55,40 @@ The chapter targets engineers who need to design or debug a streaming delivery s
 
 **Scope boundaries**: codec internals (Ch60), hardware decode (Ch26, Ch50), GStreamer plugin architecture (Ch58), FFmpeg library API (Ch57), and PipeWire screen capture (Ch38) are out of scope here. This chapter treats encoded bitstreams as opaque input.
 
+```mermaid
+graph TD
+    subgraph "Application / Player Layer"
+        Player["Video Player\n(ABR engine, manifest parser)"]
+    end
+    subgraph "Protocol Layer (this chapter)"
+        HLS["HLS\n(RFC 8216 / LL-HLS)"]
+        DASH["MPEG-DASH\n(ISO/IEC 23009-1)"]
+        WebRTC["WebRTC\n(ICE + DTLS-SRTP + RTP)"]
+        SRT["SRT\n(Haivision / ARQ over UDP)"]
+        MOQT["MOQT / WebTransport\n(QUIC-based)"]
+        RTMP["RTMP / RTSP\n(ingest / camera)"]
+    end
+    subgraph "Codec / Bitstream Layer (Ch60)"
+        Codec["Encoded Bitstream\n(H.264, H.265, AV1, VP9)"]
+    end
+    subgraph "Hardware Acceleration (Ch26, Ch50)"
+        HW["VA-API / Vulkan Video\n(GPU decode/encode)"]
+    end
+    Player --> HLS
+    Player --> DASH
+    Player --> WebRTC
+    Player --> SRT
+    Player --> MOQT
+    RTMP -- "ingest" --> HLS
+    RTMP -- "ingest" --> DASH
+    HLS --> Codec
+    DASH --> Codec
+    WebRTC --> Codec
+    SRT --> Codec
+    MOQT --> Codec
+    Codec --> HW
+```
+
 ---
 
 ## 2. HLS: HTTP Live Streaming
@@ -64,6 +98,25 @@ HLS was developed by Apple and standardised as RFC 8216 (August 2017) for HTTP-b
 ### 2.1 Playlist Grammar: Master and Media Manifests
 
 An HLS deployment exposes two playlist types:
+
+```mermaid
+graph TD
+    Master["master.m3u8\n(Master Playlist)"]
+    V1["1080p60/index.m3u8\n(Media Playlist — 6 Mbit/s)"]
+    V2["720p30/index.m3u8\n(Media Playlist — 3 Mbit/s)"]
+    V3["360p30/index.m3u8\n(Media Playlist — 800 kbit/s)"]
+    Audio["audio/en.m3u8\n(Audio Playlist)"]
+    Subs["subs/en.m3u8\n(Subtitles Playlist)"]
+    Seg1["seg248.m4s … seg250.m4s\n(fMP4 segments)"]
+    Init["init.mp4\n(EXT-X-MAP initialisation)"]
+    Master -- "EXT-X-STREAM-INF" --> V1
+    Master -- "EXT-X-STREAM-INF" --> V2
+    Master -- "EXT-X-STREAM-INF" --> V3
+    Master -- "EXT-X-MEDIA AUDIO" --> Audio
+    Master -- "EXT-X-MEDIA SUBTITLES" --> Subs
+    V1 -- "EXTINF" --> Seg1
+    V1 -- "EXT-X-MAP" --> Init
+```
 
 **Master playlist** (`master.m3u8`): lists all available renditions (video bitrate variants, audio tracks, subtitle tracks) without itself containing segment URLs.
 
@@ -193,6 +246,29 @@ MPEG-DASH (Dynamic Adaptive Streaming over HTTP) is standardised as ISO/IEC 2300
 
 The MPD hierarchy is: `MPD` → `Period` → `AdaptationSet` → `Representation` → segments.
 
+```mermaid
+graph TD
+    MPD["MPD\n(type=dynamic / static)"]
+    Period["Period\n(id, start)"]
+    VideoAS["AdaptationSet\n(mimeType=video/mp4)"]
+    AudioAS["AdaptationSet\n(mimeType=audio/mp4)"]
+    SegTmpl["SegmentTemplate\n(timescale, initialization, media)"]
+    Timeline["SegmentTimeline\n(S elements: t, d, r)"]
+    R1080["Representation\n(id=1080p, bandwidth=6000000)"]
+    R720["Representation\n(id=720p, bandwidth=3000000)"]
+    R360["Representation\n(id=360p, bandwidth=800000)"]
+    RAudio["Representation\n(id=aac128, bandwidth=128000)"]
+    MPD --> Period
+    Period --> VideoAS
+    Period --> AudioAS
+    VideoAS --> SegTmpl
+    SegTmpl --> Timeline
+    VideoAS --> R1080
+    VideoAS --> R720
+    VideoAS --> R360
+    AudioAS --> RAudio
+```
+
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
@@ -280,6 +356,19 @@ The DASH Industry Forum publishes interoperability guidelines (IOP) that constra
 
 WebRTC (Web Real-Time Communications) targets sub-second latency by sending encoded media directly between peers (or through a media server) using UDP-based RTP rather than HTTP. [Source: RFC 8825 — Overview of the Web Real-Time Communications (WebRTC)](https://datatracker.ietf.org/doc/html/rfc8825)
 
+```mermaid
+graph TD
+    Sig["Signaling Channel\n(WebSocket / HTTP — SDP offer/answer)"]
+    ICE["ICE\n(RFC 8445 — candidate gathering\nSTUN / TURN)"]
+    DTLS["DTLS Handshake\n(RFC 9147 — certificate exchange)"]
+    SRTP["SRTP Key Derivation\n(RFC 5764 — key_material_export)"]
+    RTP["RTP / RTCP\n(RFC 3550 — media packets\n+ PLI / NACK / Transport-CC)"]
+    Sig -- "credentials + fingerprint" --> ICE
+    ICE -- "nominated UDP path" --> DTLS
+    DTLS -- "master_secret export" --> SRTP
+    SRTP -- "encrypted media plane" --> RTP
+```
+
 ### 4.1 Signaling and Session Description Protocol
 
 WebRTC is transport-agnostic for signaling: the application exchanges **Session Description Protocol** (SDP, RFC 8866) offers and answers out-of-band (via WebSocket, HTTP, or any channel). SDP describes the media capabilities and transport parameters each peer will use:
@@ -316,6 +405,20 @@ ICE (Interactive Connectivity Establishment, RFC 8445) discovers network paths b
 - **Host candidates**: local interface addresses (typically multiple, one per NIC)
 - **Server Reflexive (srflx) candidates**: the public IP:port as seen by a STUN server (RFC 8489) outside the NAT; obtained by sending a `Binding Request` to a STUN server and reading the `XOR-MAPPED-ADDRESS` in the response
 - **Relayed (relay) candidates**: a TURN server (RFC 8656) allocates a UDP relay address for peers that cannot communicate directly
+
+```mermaid
+graph LR
+    PeerA["Peer A\n(ICE agent)"]
+    PeerB["Peer B\n(ICE agent)"]
+    STUN["STUN Server\n(RFC 8489)"]
+    TURN["TURN Server\n(RFC 8656)"]
+    PeerA -- "Binding Request" --> STUN
+    STUN -- "XOR-MAPPED-ADDRESS\n(srflx candidate)" --> PeerA
+    PeerA -- "Allocate Request" --> TURN
+    TURN -- "relay candidate" --> PeerA
+    PeerA -- "connectivity checks\n(STUN Binding Requests)" --> PeerB
+    PeerB -- "connectivity checks" --> PeerA
+```
 
 ```text
 STUN binding check (to stun.example.com:3478):
@@ -482,6 +585,26 @@ Track      — a named, ordered sequence of objects (e.g., "video/1080p")
     Object — the smallest unit of delivery (≈ CMAF chunk or RTP packet)
 ```
 
+```mermaid
+graph TD
+    Publisher["Publisher\n(encoder / origin)"]
+    Control["MOQT Control Channel\n(SUBSCRIBE / ANNOUNCE)"]
+    Relay["CDN Relay Node\n(cache and forward)"]
+    Subscriber["Subscriber\n(player)"]
+    Track["Track\n(named ordered sequence, e.g. video/1080p)"]
+    Group["Group\n(independently decodable set ≈ GOP)"]
+    ObjR["Object\n(QUIC stream — reliable)"]
+    ObjU["Object\n(QUIC datagram — unreliable)"]
+    Publisher -- "ANNOUNCE" --> Control
+    Subscriber -- "SUBSCRIBE" --> Control
+    Control --> Relay
+    Publisher -- "Track objects" --> Relay
+    Relay -- "cached objects" --> Subscriber
+    Track --> Group
+    Group --> ObjR
+    Group --> ObjU
+```
+
 A publisher announces tracks via a SUBSCRIBE-style control channel. Subscribers express interest; relay nodes cache objects and forward them. Object delivery uses QUIC streams (reliable) or QUIC datagrams (unreliable, for real-time audio where retransmission is useless past the playout deadline).
 
 As of mid-2026, MOQT is in IETF Last Call (`draft-ietf-moq-transport-12`). Cloudflare, Meta, and Apple have published prototype implementations. FFmpeg and GStreamer MOQT support is still experimental. [Source: IETF MOQ Charter](https://datatracker.ietf.org/wg/moq/about/)
@@ -499,6 +622,40 @@ As of mid-2026, MOQT is in IETF Last Call (`draft-ietf-moq-transport-12`). Cloud
 ## 8. Adaptive Bitrate Algorithms
 
 Adaptive bitrate (ABR) streaming selects among available quality levels (representations/variants) based on current network conditions to maximise quality while preventing rebuffering. The ABR algorithm runs in the video player on the client. This section surveys the major algorithm families.
+
+```mermaid
+graph LR
+    subgraph "Inputs"
+        BW["Segment download\nthroughputs"]
+        Buf["Playback buffer\nlevel"]
+        SegSz["Next segment sizes\nper quality level"]
+    end
+    subgraph "ABR Algorithm Families"
+        EWMA["Throughput-Based\n(EWMA)"]
+        BBA["Buffer-Based\n(BBA)"]
+        BOLA["Lyapunov Optimisation\n(BOLA)"]
+        MPC["Model Predictive Control\n(MPC)"]
+        Pensieve["Reinforcement Learning\n(Pensieve)"]
+    end
+    subgraph "Output"
+        QL["Selected quality level\n(Representation / Variant)"]
+    end
+    BW --> EWMA
+    BW --> MPC
+    BW --> Pensieve
+    Buf --> BBA
+    Buf --> BOLA
+    Buf --> MPC
+    Buf --> Pensieve
+    SegSz --> BOLA
+    SegSz --> MPC
+    SegSz --> Pensieve
+    EWMA --> QL
+    BBA --> QL
+    BOLA --> QL
+    MPC --> QL
+    Pensieve --> QL
+```
 
 ### 8.1 Throughput-Based Estimation (EWMA)
 
@@ -571,6 +728,32 @@ On Linux, the Pensieve inference model can run as a sidecar process alongside a 
 ## 9. Segment Packaging and CMAF Chunking
 
 A CMAF segment file contains an initialisation segment (`ftyp` + `moov`) and one or more media segments (`moof` + `mdat` pairs). The `styp` box inside each chunk identifies the CMAF profile: `cmfc` for CMAF chunked segments, `cmf2` for image sequences.
+
+```mermaid
+graph TD
+    InitSeg["Initialisation Segment\n(init.mp4)"]
+    ftyp["ftyp\n(file type box)"]
+    moov["moov\n(movie header + codec config)"]
+    MediaSeg["Media Segment\n(seg001.m4s … chunk N)"]
+    styp["styp\n(cmfc / cmf2 profile)"]
+    moof["moof\n(Movie Fragment)"]
+    mdat["mdat\n(Media Data)"]
+    mfhd["mfhd\n(sequence number)"]
+    traf["traf\n(per-track fragment)"]
+    tfhd["tfhd\n(default sample flags, base data offset)"]
+    tfdt["tfdt\n(absolute decode time)"]
+    trun["trun\n(per-sample: duration, size, flags, CTO)"]
+    InitSeg --> ftyp
+    InitSeg --> moov
+    MediaSeg --> styp
+    MediaSeg --> moof
+    MediaSeg --> mdat
+    moof --> mfhd
+    moof --> traf
+    traf --> tfhd
+    traf --> tfdt
+    traf --> trun
+```
 
 The `moof` box contains per-track fragment headers:
 ```

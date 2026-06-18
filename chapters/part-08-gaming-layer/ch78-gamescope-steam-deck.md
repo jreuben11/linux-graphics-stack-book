@@ -128,6 +128,26 @@ systemd (PID 1)
        └─ mangoapp (optional MangoHUD overlay process)
 ```
 
+```mermaid
+graph TD
+    systemd["systemd\n(PID 1)"]
+    gamescope["gamescope\n(compositor + Wayland server)"]
+    xwayland["Xwayland\n(X11 compatibility server)"]
+    steam["Steam\n(Big Picture UI, via X11)"]
+    game["game process\n(Proton/Wine or native)"]
+    mangoapp["mangoapp\n(MangoHUD overlay process)"]
+    wl_surface["wl_surface\n(Wayland surface forwarded to gamescope)"]
+
+    systemd --> gamescope
+    gamescope --> xwayland
+    gamescope --> mangoapp
+    xwayland --> steam
+    xwayland --> game
+    steam -- "X11 window → wl_surface" --> wl_surface
+    game -- "X11 window → wl_surface" --> wl_surface
+    wl_surface --> gamescope
+```
+
 Games launched from Steam run as children of the Steam process. Whether the game is a native Linux build or a Windows game running under Proton, it ultimately renders to an X11 window served by the embedded Xwayland instance. Xwayland forwards these surfaces to Gamescope via the Wayland protocol, so Gamescope sees the game's output as a Wayland `wl_surface`.
 
 Because the game lives inside a private Xwayland sandbox, it "sees" a virtual display of Gamescope's choosing. The game believes it is rendering at (for example) 800p; Gamescope then upscales to the panel's native resolution. The game cannot detect or interfere with the host display environment. [Source: Gamescope README](https://github.com/ValveSoftware/gamescope/blob/master/README.md)
@@ -175,6 +195,28 @@ The Van Gogh APU's display engine implements **DCN 3.0** (Display Core Next gene
 
 DCN's **DPP (Display Pipe and Plane)** block performs per-plane processing: colour space conversion, linearisation, and tone mapping. The **MPC (Multiple Pipe/Plane Combined)** block blends multiple planes using per-pixel alpha. Atomic register updates in DCN are driven by `VSTARTUP`, `VUPDATE`, and `VREADY` global sync signals, ensuring race-free plane swaps during vblank. [Source: Linux kernel DCN documentation](https://docs.kernel.org/gpu/amdgpu/display/dcn-overview.html)
 
+```mermaid
+graph TD
+    DCN["DCN 3.0\n(Display Core Next, Van Gogh APU)"]
+    AMDGPU["AMDGPU kernel driver"]
+    DRM_planes["DRM plane objects"]
+    primary["Primary plane\n(base scanout)"]
+    overlay["Overlay planes\n(video / UI layers)"]
+    cursor["Cursor plane\n(hardware cursor)"]
+    DPP["DPP\n(Display Pipe and Plane)\nper-plane: CSC, linearisation, tone mapping"]
+    MPC["MPC\n(Multiple Pipe/Plane Combined)\nper-pixel alpha blending"]
+
+    DCN --> AMDGPU
+    AMDGPU --> DRM_planes
+    DRM_planes --> primary
+    DRM_planes --> overlay
+    DRM_planes --> cursor
+    primary --> DPP
+    overlay --> DPP
+    cursor --> DPP
+    DPP --> MPC
+```
+
 Gamescope's libliftoff integration maps each active Wayland surface to a DCN overlay plane via DRM atomic requests. When all surfaces fit within available hardware planes, the GPU idle time is near zero — the display engine reads directly from the game's framebuffer pages.
 
 ### 3.5 The Compositor Manager: steamcompmgr
@@ -187,6 +229,23 @@ The heart of Gamescope is `steamcompmgr` (`src/steamcompmgr.cpp`). This componen
 - Handles window lifecycle events from both Xwayland and native Wayland clients
 
 [Source: Gamescope steamcompmgr.cpp](https://github.com/ValveSoftware/gamescope/blob/master/src/steamcompmgr.cpp)
+
+```mermaid
+graph TD
+    steamcompmgr["steamcompmgr\n(src/steamcompmgr.cpp)\ntracks wl_surface layers, focus_t"]
+    libliftoff["libliftoff\ntest commit per layer\n(DRM_MODE_ATOMIC_TEST_ONLY)"]
+    needs_comp["liftoff_layer_needs_composition()\nlayer cannot be scanned out in hardware"]
+    vulkan["Vulkan compute pass\n(rendervulkan.cpp)\nFSR / NIS / HDR tone mapping / mura correction"]
+    kms_direct["KMS direct scanout\ndrmModeAtomicCommit()"]
+    display["Display Engine\n(DCN 3.0)"]
+
+    steamcompmgr -- "per-vblank: assign layers" --> libliftoff
+    libliftoff -- "hardware test passes" --> kms_direct
+    libliftoff -- "hardware test fails" --> needs_comp
+    needs_comp --> vulkan
+    vulkan -- "composite DMA-BUF output" --> kms_direct
+    kms_direct --> display
+```
 
 ### 3.6 Plane Assignment with libliftoff
 
@@ -265,6 +324,24 @@ For retro games and pixel art titles, Gamescope supports integer scaling (`-S in
 ### 4.5 The Scaling Pipeline in Practice
 
 The scaling compute dispatch in Gamescope runs after the game's last frame has been acquired from Xwayland/Wayland but before the KMS page flip. The pipeline within a single frame looks like:
+
+```mermaid
+graph TD
+    game_render["Game renders frame\nat internal resolution\n(e.g. 960×600)"]
+    xwayland_buf["Xwayland buffers → wl_surface"]
+    dma_buf["Gamescope acquires DMA-BUF\n(zero-copy)"]
+    easu["Vulkan compute: FSR EASU pass\n(960×600 → 1280×800)"]
+    rcas["Vulkan compute: FSR RCAS\nsharpening pass"]
+    mura_lut["Optional: Mura correction\nLUT pass"]
+    kms_flip["KMS atomic commit\npresent 1280×800 to display engine"]
+
+    game_render --> xwayland_buf
+    xwayland_buf --> dma_buf
+    dma_buf --> easu
+    easu --> rcas
+    rcas --> mura_lut
+    mura_lut --> kms_flip
+```
 
 ```
 Game renders frame at (960×600) → Xwayland buffers → wl_surface
@@ -514,6 +591,25 @@ gamescope --mangoapp -- %command%
 
 `mangoapp` is a dedicated Wayland client that renders the performance overlay at the panel's native resolution as a separate `wl_surface`. Gamescope composites it as an overlay plane on top of the (possibly upscaled) game surface. The information displayed by `mangoapp` is communicated from MangoHUD (inside the game process) to `mangoapp` via shared memory or a socket. This architecture ensures the overlay is always crisp regardless of the internal render resolution. [Source: MangoHUD README](https://github.com/flightlessmango/MangoHud/blob/master/README.md)
 
+```mermaid
+graph TD
+    game_proc["Game process\n(Vulkan / OpenGL)"]
+    mangohud["MangoHUD\n(VK_LAYER_MANGOHUD_overlay)\ninside game process"]
+    ipc["Shared memory / socket\n(metrics: FPS, GPU load, temp)"]
+    mangoapp["mangoapp\n(separate Wayland client)\nrenders overlay at panel native resolution"]
+    overlay_surface["wl_surface\n(overlay, native resolution)"]
+    game_surface["wl_surface\n(game, possibly upscaled)"]
+    gamescope_comp["gamescope\ncomposites overlay plane\non top of game surface"]
+
+    game_proc --> mangohud
+    mangohud -- "metrics" --> ipc
+    ipc --> mangoapp
+    mangoapp --> overlay_surface
+    game_proc --> game_surface
+    overlay_surface --> gamescope_comp
+    game_surface --> gamescope_comp
+```
+
 ---
 
 ## 9. Input Latency Pipeline
@@ -531,6 +627,28 @@ On the Steam Deck, the full latency chain from physical input to photon emission
 7. **KMS atomic page flip** — submitted to the display controller
 8. **Display scanout** — the display engine starts scanning out the new frame
 9. **Photon emission** — the OLED panel emits light within microseconds of the scan line reaching the pixel
+
+```mermaid
+graph TD
+    controller["Controller input\n(built-in controls or Bluetooth HID)"]
+    evdev["evdev event\n(/dev/input/eventN via libinput)"]
+    sdl2["SDL2\ngame input polling"]
+    game_frame["Game simulation frame\n(physics/logic/render)"]
+    xwayland_fwd["Xwayland\nforwards DRM buffer to Gamescope"]
+    gamescope_compose["Gamescope composition\n(optional: upscaling / overlay compute pass)"]
+    kms_flip["KMS atomic page flip\n(submitted to display controller)"]
+    scanout["Display scanout\n(display engine scans out new frame)"]
+    photon["Photon emission\n(OLED panel emits light)"]
+
+    controller --> evdev
+    evdev --> sdl2
+    sdl2 --> game_frame
+    game_frame --> xwayland_fwd
+    xwayland_fwd --> gamescope_compose
+    gamescope_compose --> kms_flip
+    kms_flip --> scanout
+    scanout --> photon
+```
 
 The dominant latency contributors are steps 4 (game frame latency, proportional to 1/FPS) and 5–8 (compositor processing and display pipeline). [Source: Gamescope input latency issue #474](https://github.com/ValveSoftware/gamescope/issues/474)
 

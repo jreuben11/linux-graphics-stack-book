@@ -121,6 +121,24 @@ The Linux kernel exposes HDR metadata to userspace via the `HDR_OUTPUT_METADATA`
 
 Drivers attach the property at initialisation time with `drm_connector_attach_hdr_output_metadata_property()`. At atomic commit, the connector helper function `drm_hdmi_infoframe_set_hdr_metadata()` reads `conn_state->hdr_output_metadata` and fills the HDMI DRM infoframe:
 
+```mermaid
+graph LR
+    COMP["Compositor\n(Mutter / KWin / Gamescope)"]
+    PROP["HDR_OUTPUT_METADATA\nconnector property blob"]
+    KERNEL["DRM Kernel\n(drm_hdmi_state_helper.c)"]
+    HELPER["drm_hdmi_infoframe_set_hdr_metadata()"]
+    DRIVER["Display Driver\n(connector helper)"]
+    INFOFRAME["HDMI DRM InfoFrame\n(CTA-861-H)"]
+    DISPLAY["Display\n(via AUX / DDC channel)"]
+
+    COMP -- "populates" --> PROP
+    PROP -- "read at atomic commit" --> KERNEL
+    KERNEL -- "calls" --> HELPER
+    HELPER -- "fills" --> INFOFRAME
+    INFOFRAME -- "transmitted by" --> DRIVER
+    DRIVER -- "sends" --> DISPLAY
+```
+
 ```c
 /* drivers/gpu/drm/drm_hdmi_state_helper.c (simplified) */
 int drm_hdmi_infoframe_set_hdr_metadata(struct hdmi_drm_infoframe *frame,
@@ -163,6 +181,17 @@ Framebuffer pixel data
         │
         ▼
    Display hardware
+```
+
+```mermaid
+graph TD
+    FB["Framebuffer pixel data"]
+    DEGAMMA["DEGAMMA_LUT\n(linearise non-linear encoded input)"]
+    CTM["CTM matrix\n(3×3 colour transform in linear light)"]
+    GAMMA["GAMMA_LUT\n(apply output EOTF / gamma ramp)"]
+    DISPLAY["Display hardware"]
+
+    FB --> DEGAMMA --> CTM --> GAMMA --> DISPLAY
 ```
 
 A driver advertises support by calling `drm_crtc_enable_color_mgmt()` during driver initialisation:
@@ -290,6 +319,20 @@ struct drm_colorop {
 
 Compositors discover available pipelines by reading the **`COLOR_PIPELINE`** enumeration property on each `drm_plane`. The enum always includes ID 0 (disabled, meaning fall back to shader-side processing) plus the IDs of the first-stage colorop in each hardware pipeline the driver exposes. Userspace walks the chain via `NEXT` pointers to assess whether the offered pipeline matches its needs.
 
+```mermaid
+graph LR
+    PLANE["drm_plane\n(COLOR_PIPELINE property)"]
+    ID0["ID 0\n(disabled / shader fallback)"]
+    FIRST["First drm_colorop\n(stage 1)"]
+    NEXT1["drm_colorop\n(stage 2, via NEXT)"]
+    NEXTN["drm_colorop\n(stage N, NEXT=0)"]
+
+    PLANE -- "enum: 0" --> ID0
+    PLANE -- "enum: pipeline ID" --> FIRST
+    FIRST -- "NEXT pointer" --> NEXT1
+    NEXT1 -. "NEXT chain" .-> NEXTN
+```
+
 AMD's DCN 3.x display engine exposes an **eight-stage pipeline** per plane:
 
 1. Degamma 1D LUT (EOTF linearisation)
@@ -300,6 +343,20 @@ AMD's DCN 3.x display engine exposes an **eight-stage pipeline** per plane:
 6. Shaper 1D LUT
 7. Inverse gamma 1D LUT (OETF)
 8. Post-blending GAMMA_LUT
+
+```mermaid
+graph TD
+    S1["Stage 1: Degamma 1D LUT\n(EOTF linearisation)"]
+    S2["Stage 2: Multiplier\n(luminance scaling)"]
+    S3["Stage 3: 3×4 matrix\n(colour space conversion)"]
+    S4["Stage 4: Blend gamma"]
+    S5["Stage 5: 3D LUT\n(17³ tetrahedral interpolation)"]
+    S6["Stage 6: Shaper 1D LUT"]
+    S7["Stage 7: Inverse gamma 1D LUT\n(OETF)"]
+    S8["Stage 8: Post-blending GAMMA_LUT"]
+
+    S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8
+```
 
 [Source](https://www.mail-archive.com/amd-gfx@lists.freedesktop.org/msg127290.html)
 
@@ -378,6 +435,18 @@ When HDR mode is active for an output, Mutter's pipeline operates as follows:
 4. **Blending**: Linearised, gamut-adapted pixels from all surfaces are blended in the linear BT.2020 domain.
 5. **Output encoding**: The compositor applies the inverse PQ OETF to produce encoded code values, sets `HDR_OUTPUT_METADATA` on the KMS connector property, and queues the KMS atomic commit with the appropriate colour state.
 
+```mermaid
+graph TD
+    SURF["Surface ingestion\n(wp_image_description_v1 or default sRGB)"]
+    LIN["Linearisation\n(surface colour space → linear BT.2020)"]
+    TONE["Tone mapping\n(SDR → HDR luminance scaling)"]
+    BLEND["Blending\n(linear BT.2020 domain)"]
+    ENC["Output encoding\n(inverse PQ OETF → encoded code values)"]
+    KMS["KMS atomic commit\n(HDR_OUTPUT_METADATA + colour state)"]
+
+    SURF --> LIN --> TONE --> BLEND --> ENC --> KMS
+```
+
 ---
 
 ## KWin HDR Support
@@ -430,6 +499,27 @@ The protocol is discoverable via the Wayland registry as `wp_color_manager_v1` (
 | `wp_image_description_creator_icc_v1` | Factory: create a description from an ICC profile file descriptor |
 | `wp_image_description_creator_params_v1` | Factory: create a description from parametric primaries + transfer function |
 | `wp_image_description_info_v1` | Event delivery for image description parameters |
+
+```mermaid
+graph TD
+    MGR["wp_color_manager_v1\n(global singleton factory)"]
+    CREATOR_ICC["wp_image_description_creator_icc_v1\n(create from ICC profile fd)"]
+    CREATOR_PARAMS["wp_image_description_creator_params_v1\n(create from primaries + transfer function)"]
+    IMG_DESC["wp_image_description_v1\n(immutable colour description)"]
+    IMG_INFO["wp_image_description_info_v1\n(event delivery for parameters)"]
+    OUTPUT["wp_color_management_output_v1\n(per-output colour properties)"]
+    SURFACE["wp_color_management_surface_v1\n(per-surface colour space declaration)"]
+    FEEDBACK["wp_color_management_surface_feedback_v1\n(per-surface preferred colour feedback)"]
+
+    MGR -- "create_icc_creator" --> CREATOR_ICC
+    MGR -- "create_parametric_creator" --> CREATOR_PARAMS
+    CREATOR_ICC -- "create" --> IMG_DESC
+    CREATOR_PARAMS -- "create" --> IMG_DESC
+    IMG_DESC -- "get_information" --> IMG_INFO
+    MGR -- "get_output" --> OUTPUT
+    MGR -- "get_surface" --> SURFACE
+    MGR -- "get_surface_feedback" --> FEEDBACK
+```
 
 ### Key Request Flows
 
@@ -710,6 +800,24 @@ KMS connector: HDR_OUTPUT_METADATA blob
         │
         ▼
 HDMI/DP DRM InfoFrame → Display
+```
+
+```mermaid
+graph TD
+    DECODE["VA-API decode\n(VAProfileHEVCMain10)"]
+    P010["P010 buffer\n(BT.2020 YCbCr, limited range)"]
+    DRM_IMPORT["DRM import via dma-buf\nvideo overlay plane\n(DRM_FORMAT_P010)"]
+    COLOROP["Per-plane color pipeline\n(DRM colorop chain)\ndegamma(PQ) → matrix(BT.2020) → no OETF"]
+    KMS_CONN["KMS connector\nHDR_OUTPUT_METADATA blob\n(primaries, MaxCLL, MaxFALL, EOTF=PQ)"]
+    INFOFRAME["HDMI/DP DRM InfoFrame"]
+    DISPLAY["Display"]
+
+    DECODE -- "outputs" --> P010
+    P010 -- "imported" --> DRM_IMPORT
+    DRM_IMPORT --> COLOROP
+    COLOROP --> KMS_CONN
+    KMS_CONN --> INFOFRAME
+    INFOFRAME --> DISPLAY
 ```
 
 When the compositor (KWin, Mutter, or Gamescope) orchestrates this, it handles the HDR↔SDR and HDR10↔HLG mode transitions as atomic KMS commits, switching `HDR_OUTPUT_METADATA` and the output EOTF atomically with the new framebuffer.

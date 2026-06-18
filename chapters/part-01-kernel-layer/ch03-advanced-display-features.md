@@ -95,6 +95,28 @@ High Dynamic Range display operates on three interrelated axes that are worth ho
 
 KMS exposes HDR capabilities through a cluster of properties introduced primarily in kernel 5.2. The `hdr_output_metadata` connector property carries a blob whose content is `struct hdr_output_metadata`, defined in `include/uapi/drm/drm_mode.h`. The outer struct holds a `metadata_type` field (set to 1 for HDMI HDR Static Metadata Type 1, defined in CTA-861.3) and a union whose first and currently only member is `struct hdr_metadata_infoframe`. The infoframe struct contains the display's colour primaries as three `{x, y}` pairs of `__u16` values encoded in units of 0.00002 (so the value 0xC350 = 50,000 represents 1.0000 in CIE chromaticity), the white point in the same encoding, `max_display_mastering_luminance` in cd/m² as a 16-bit integer, `min_display_mastering_luminance` in units of 0.0001 cd/m², `max_cll` (maximum content light level, cd/m²), and `max_fall` (maximum frame-average light level, cd/m²). The driver receives this blob, validates it during `atomic_check`, and during `atomic_commit` packages it into an HDMI InfoFrame of type 0x87 or a DP Secondary Data Packet, which the display uses to switch its internal EOTF processing and adapt its tone mapping.
 
+```mermaid
+graph TD
+    A["hdr_output_metadata\n(include/uapi/drm/drm_mode.h)"]
+    B["metadata_type\n(1 = HDMI HDR Static Type 1)"]
+    C["hdr_metadata_infoframe\n(union member hdmi_metadata_type1)"]
+    D["display_primaries[3]\n({x, y} pairs, units of 0.00002)"]
+    E["white_point\n({x, y})"]
+    F["max_display_mastering_luminance\n(cd/m²)"]
+    G["min_display_mastering_luminance\n(units of 0.0001 cd/m²)"]
+    H["max_cll\n(maximum content light level)"]
+    I["max_fall\n(maximum frame-average light level)"]
+
+    A --> B
+    A --> C
+    C --> D
+    C --> E
+    C --> F
+    C --> G
+    C --> H
+    C --> I
+```
+
 The `max bpc` connector property requests a minimum output bit depth. Drivers negotiate the actual bit depth against the link bandwidth available from the encoder and the cable. At DP HBR3 with DSC (Display Stream Compression) disabled, a 4K@60Hz HDR stream requires roughly 18 Gbps of raw bandwidth, which exceeds DP 1.4's 32.4 Gbps HBR3 link at 10 bits per component only with colour subsampling or DSC. The `colorspace` connector property selects the output colour space interpretation — values include `BT2020_RGB`, `BT2020_YCC`, `DCI-P3_RGB_D65`, and the traditional `Default` (sRGB). The compositor must set this to match the content it is presenting.
 
 ### Code example: HDR metadata blob construction
@@ -161,6 +183,20 @@ Hardware driver support for HDR is uneven. The amdgpu driver exposes the most co
 Accurate colour reproduction on a real display requires accounting for two classes of imperfection: the display's physical colour gamut (which primaries it can actually reproduce and how they relate to the standardised reference gamut) and its tone reproduction curve (how input code values map to emitted luminance). The KMS colour management pipeline expresses the correction for both through three hardware stages that are present in most modern display controllers.
 
 The first stage is the *degamma* LUT: a one-dimensional lookup table, set via the `DEGAMMA_LUT` CRTC property, that converts encoded pixel values from the framebuffer into a linear-light representation. Framebuffers are almost always gamma-encoded (sRGB's approximate gamma 2.2 or the exact sRGB piecewise curve), and the mathematical operations in the subsequent stages must be performed in linear light to give correct results. The second stage is the Colour Transform Matrix (CTM): a 3×3 matrix, set via the `CTM` CRTC property, applied in linear light to each pixel's RGB triple. It is stored as `struct drm_color_ctm`, an array of nine `__u64` values in S31.32 signed fixed-point format (bit 63 is the sign, bits 62:32 are the integer part, bits 31:0 are the fractional part). The CTM is the mechanism for gamut mapping: a BT.709-to-BT.2020 conversion is a well-known 3×3 matrix that can be programmed here. The third stage is the *gamma* LUT: a one-dimensional lookup table, set via the `GAMMA_LUT` CRTC property, that converts linear light back to the encoded signal expected by the display's own EOTF. Together, these three stages implement the ICC matrix/TRC profile model in hardware.
+
+```mermaid
+graph LR
+    A["Framebuffer\n(gamma-encoded pixels)"]
+    B["DEGAMMA_LUT\n(CRTC property)\nlinearise to linear light"]
+    C["CTM\n(CRTC property)\n3×3 gamut mapping\nin linear light"]
+    D["GAMMA_LUT\n(CRTC property)\nre-encode to display EOTF"]
+    E["Display\n(hardware output)"]
+
+    A -- "sRGB / PQ encoded" --> B
+    B -- "linear light" --> C
+    C -- "linear light, remapped gamut" --> D
+    D -- "display-encoded signal" --> E
+```
 
 The LUT data type for both `DEGAMMA_LUT` and `GAMMA_LUT` is an array of `struct drm_color_lut` entries, also defined in `include/uapi/drm/drm_mode.h`. Each entry contains `red`, `green`, `blue`, and `reserved` fields, all `__u16`. The hardware-specific LUT sizes are exposed as read-only CRTC properties: `GAMMA_LUT_SIZE` and `DEGAMMA_LUT_SIZE`. Typical values are 256 entries for older hardware and 4,096 entries for modern display engines. The driver registers these properties by calling `drm_crtc_enable_color_mgmt()` in `drivers/gpu/drm/drm_color_mgmt.c`, which attaches all five properties (`DEGAMMA_LUT`, `CTM`, `GAMMA_LUT`, `GAMMA_LUT_SIZE`, `DEGAMMA_LUT_SIZE`) to the CRTC.
 
@@ -358,6 +394,22 @@ static int commit_frame_with_fences(int drm_fd, uint32_t plane_id,
 
 The Wayland protocol that carries this machinery from compositor to application is `wp_linux_drm_syncobj_v1`, merged into wayland-protocols 1.32 in 2023. The protocol factory interface `zwp_linux_drm_syncobj_manager_v1` is advertised by the compositor. Clients wrap a DRM timeline syncobj file descriptor in a `zwp_linux_drm_syncobj_timeline_v1` object, and attach per-surface acquire and release points via `zwp_linux_drm_syncobj_surface_v1`. The acquire point carries the sequence number the compositor should wait on before compositing the client's buffer; the release point carries the sequence number the compositor signals when it is finished with the buffer. The compositor translates these points into `IN_FENCE_FD` and `OUT_FENCE_PTR` values on the KMS atomic commit.
 
+```mermaid
+graph TD
+    A["zwp_linux_drm_syncobj_manager_v1\n(compositor factory, wp_linux_drm_syncobj_v1)"]
+    B["zwp_linux_drm_syncobj_timeline_v1\n(wraps DRM timeline syncobj fd)"]
+    C["zwp_linux_drm_syncobj_surface_v1\n(per-surface acquire + release points)"]
+    D["IN_FENCE_FD\n(plane KMS property)\nacquire: wait at sequence point N"]
+    E["OUT_FENCE_PTR\n(CRTC KMS property)\nrelease: signals at VBLANK"]
+
+    A -- "create_timeline(fd)" --> B
+    A -- "get_surface(wl_surface)" --> C
+    C -- "set_acquire_point(timeline, N)" --> B
+    C -- "set_release_point(timeline, M)" --> B
+    C -- "compositor translates to" --> D
+    C -- "compositor translates to" --> E
+```
+
 This protocol closed the NVIDIA Wayland problem. NVIDIA's driver can export a timeline syncobj fence representing GPU work completion via `VK_EXT_external_semaphore_fd`, satisfying the acquire fence the compositor waits on — without any implicit `dma_fence` participation. NVIDIA's proprietary driver added this support in driver version 555.58, released as stable in June 2024. Mutter (GNOME) and KWin (Plasma) both added `wp_linux_drm_syncobj_v1` compositor support through 2024, in time to coincide with the NVIDIA 555 driver family. Mesa's RADV and ANV Vulkan drivers produce explicit fences via Vulkan external semaphores in a parallel path; the chapter's coverage of those drivers is in Chapter 18.
 
 It is worth being explicit about a common misconception: explicit sync does not eliminate implicit sync for drivers that already support it. Mesa-based drivers continue to use implicit `dma_fence` internally for their own queue management. Explicit sync is a bridge to the one significant production driver — NVIDIA's — that cannot participate in implicit fence sharing. The two mechanisms coexist in the kernel: compositors that support both will use implicit fences with Mesa-based clients and explicit fences with NVIDIA clients, depending on what the client exposes.
@@ -413,6 +465,24 @@ From an architecture standpoint, HDCP is a well-defined KMS feature — implemen
 DisplayPort Multi-Stream Transport (MST) solves the problem of driving multiple independent monitors from a single physical DP output port. Single-Stream Transport (SST), the baseline DP mode, dedicates the full link bandwidth to one video stream. MST divides that bandwidth into time-division multiplexed *virtual channels*, each carrying an independent video stream to a separate display. The displays are arranged in a daisy-chain or hub topology that forms a binary tree. USB-C docking stations, Thunderbolt docks, and DisplayPort MST hubs all use this mechanism to present multiple independent display outputs to the host GPU from a single physical connector.
 
 The MST topology model maps directly to data structures in the kernel. Branch devices — hubs and daisy-chain-capable monitors — are modelled as `drm_dp_mst_branch` nodes; each branch has an arbitrary number of downstream ports. Leaf nodes — the final displays — are `drm_dp_mst_port` structures. Both types are reference-counted and live in a tree rooted at the GPU's connector. The kernel discovers the topology by walking the tree via DP AUX transactions: `LINK_ADDRESS` messages enumerate a branch's ports, `ENUM_PATH_RESOURCES` queries available bandwidth on each path, and `CONNECT_CHG` IRQs trigger topology re-discovery on hotplug events. The in-memory tree is maintained by `drm_dp_mst_topology_mgr`, the per-connector manager object that lives in `drivers/gpu/drm/display/drm_dp_mst_topology.c`. Drivers initialise it via `drm_dp_mst_topology_mgr_init()` and destroy it via `drm_dp_mst_topology_mgr_destroy()`. Each discovered end-sink port is registered with the DRM core as a virtual connector, appearing to userspace as a distinct output with its own EDID and mode list.
+
+```mermaid
+graph TD
+    A["GPU Connector\n(root, single physical DP port)"]
+    B["drm_dp_mst_topology_mgr\n(drm_dp_mst_topology.c)\nper-connector manager"]
+    C["drm_dp_mst_branch\n(hub / daisy-chain branch device)"]
+    D1["drm_dp_mst_port\n(downstream port 1)"]
+    D2["drm_dp_mst_port\n(downstream port 2)"]
+    E1["Virtual Connector\n(DRM core, end-sink display 1)"]
+    E2["Virtual Connector\n(DRM core, end-sink display 2)"]
+
+    A -- "manages" --> B
+    B -- "root branch" --> C
+    C -- "LINK_ADDRESS AUX" --> D1
+    C -- "LINK_ADDRESS AUX" --> D2
+    D1 -- "registered as" --> E1
+    D2 -- "registered as" --> E2
+```
 
 Bandwidth allocation is the central constraint in any MST deployment. Each DisplayPort link (in the 8b/10b encoding used by DP 1.2/1.4) has a pool of 63 time-division payload slots, with one slot reserved for the MTP (Main-stream Transport Packet) header, leaving 63 slots for video payloads. Each video stream requires a contiguous allocation of slots proportional to its bandwidth demand — the slot count for a stream is computed from its pixel rate, bit depth, and lane count, and expressed as a PBN (Payload Bandwidth Number). The function that performs this allocation in the atomic commit path is `drm_dp_atomic_find_time_slots()`, declared in `include/drm/display/drm_dp_mst_helper.h`. Note that this function was renamed from the older `drm_dp_mst_atomic_get_vcpi_slots()` (which used VCPI — Virtual Channel Payload ID — terminology) during the atomic MST rework; code references that use the old name are targeting pre-5.5 kernels. The `drm_dp_mst_atomic_check()` function validates that the sum of all stream slot allocations fits within the link's 63-slot budget; if the budget is exhausted, `atomic_check` returns `-ENOSPC` and the compositor must either reduce resolution, enable DSC (Display Stream Compression), or present fewer outputs.
 

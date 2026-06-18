@@ -27,6 +27,33 @@ GPU memory management in Linux is a collaborative system built from several inte
 
 This chapter is perhaps the most cross-cutting in the entire book. Every other chapter depends on understanding how GPU buffers are allocated, shared, and synchronised. A Vulkan application allocating device-local memory, a VA-API decoder producing a hardware surface, a Wayland compositor presenting a client buffer to the display, and a CUDA kernel importing an OpenGL texture — all of these paths converge on the mechanisms described here. The GEM handle model (introduced in Linux 2.6.28) provides the security and reference-counting foundation; DMA-BUF (merged in 3.3) generalises it across subsystem boundaries; PRIME (3.5) extends it to multi-GPU systems; and DRM format modifiers (4.1) complete the picture by making hardware-specific memory layouts portable.
 
+```mermaid
+graph TD
+    subgraph "Userspace"
+        App["Application\n(Vulkan / EGL / VA-API)"]
+        GBM["GBM\n(libgbm)"]
+    end
+    subgraph "Kernel GPU Memory Subsystems"
+        GEM["GEM\n(struct drm_gem_object)"]
+        TTM["TTM\n(struct ttm_buffer_object)"]
+        DMABUF["DMA-BUF\n(struct dma_buf)"]
+        RESV["dma_resv\n(fencing)"]
+        PRIME["PRIME\n(cross-driver fd)"]
+    end
+    subgraph "Display / Compositor"
+        KMS["KMS Framebuffer\n(DRM_IOCTL_MODE_ADDFB2)"]
+        MOD["DRM Format Modifiers\n(drm_fourcc.h)"]
+    end
+    App --> GBM
+    GBM --> GEM
+    GEM --> TTM
+    GEM --> DMABUF
+    DMABUF --> RESV
+    DMABUF --> PRIME
+    PRIME --> KMS
+    KMS --> MOD
+```
+
 After reading this chapter, a systems developer can implement GEM objects in a new DRM driver, correctly handle DMA-BUF import and export across drivers, and understand the memory coherency and synchronisation obligations that come with shared buffers. An application developer will understand what GBM actually does, why format modifiers exist and how to negotiate them, and how zero-copy buffer sharing works from GPU memory through a Wayland compositor to display scanout.
 
 ---
@@ -112,6 +139,23 @@ For hardware that requires physically contiguous memory — common in display co
 ### Per-Driver BO Types
 
 Each major DRM driver defines its own buffer object type that embeds `drm_gem_object` and adds driver-specific state. `amdgpu_bo` (see Chapter 5) embeds `drm_gem_object` and adds placement flags (`AMDGPU_GEM_DOMAIN_VRAM`, `AMDGPU_GEM_DOMAIN_GTT`), GPU virtual address bindings, and TTM node information. `i915_gem_object` (Chapter 6) adds placement and cache-coherency tracking for Intel's tiling modes. `nouveau_bo` (Chapter 8) adds the TTM resource and nouveau-specific VRAM partition information. In all cases, the pattern is the same: the driver's BO type embeds `drm_gem_object` as the first member (or as a named member named `base`), and the kernel's generic GEM infrastructure operates on the base struct via `container_of` back-casting.
+
+```mermaid
+graph TD
+    GemObj["struct drm_gem_object\n(include/drm/drm_gem.h)"]
+    Funcs["struct drm_gem_object_funcs\n(vtable: free, open, close, export, pin, mmap ...)"]
+    GemObj -- "->funcs" --> Funcs
+
+    AmdgpuBO["struct amdgpu_bo\n(amdgpu — VRAM/GTT domain flags)"]
+    I915Obj["struct i915_gem_object\n(i915 — tiling, cache-coherency)"]
+    NouveauBO["struct nouveau_bo\n(nouveau — VRAM partition, TTM resource)"]
+    ShmemObj["struct drm_gem_shmem_object\n(shmem helper — page tracking, sg cache)"]
+
+    AmdgpuBO -- "embeds (base)" --> GemObj
+    I915Obj -- "embeds (base)" --> GemObj
+    NouveauBO -- "embeds (base)" --> GemObj
+    ShmemObj -- "embeds (base)" --> GemObj
+```
 
 ---
 
@@ -210,6 +254,30 @@ In `amdgpu`, the `struct amdgpu_bo` embeds both `drm_gem_object` and `ttm_buffer
 
 The `struct ttm_device` (one per DRM device) owns all `ttm_resource_manager` instances and the LRU lists used for eviction ordering. Drivers register their memory types during `drm_dev_register` via `ttm_range_man_init` (for simple contiguous ranges) or a custom `ttm_resource_manager_func` for more complex arrangements.
 
+```mermaid
+graph TD
+    TTMDev["struct ttm_device\n(one per DRM device)"]
+    ManSys["ttm_resource_manager\nTTM_PL_SYSTEM\n(CPU system RAM)"]
+    ManTT["ttm_resource_manager\nTTM_PL_TT / GTT\n(GART-mapped system RAM)"]
+    ManVRAM["ttm_resource_manager\nTTM_PL_VRAM\n(GPU-private video RAM)"]
+    ManPriv["ttm_resource_manager\nTTM_PL_PRIV\n(driver-specific)"]
+
+    TTMDev --> ManSys
+    TTMDev --> ManTT
+    TTMDev --> ManVRAM
+    TTMDev --> ManPriv
+
+    TTMBO["struct ttm_buffer_object\n(embeds drm_gem_object)"]
+    Placement["struct ttm_placement\n(ordered ttm_place array)"]
+    Resource["struct ttm_resource\n(current placement descriptor)"]
+
+    TTMBO -- "->resource" --> Resource
+    TTMBO -- "placement preference" --> Placement
+    Placement -- "tries in order" --> ManVRAM
+    Placement -. "fallback" .-> ManTT
+    Resource -- "managed by" --> TTMDev
+```
+
 ---
 
 ## 3. DMA-BUF: The Cross-Driver Buffer Sharing Framework
@@ -289,6 +357,24 @@ Importing is the reverse: `dma_buf_get(fd)` converts a userspace fd back to a ke
 
 The `DRM_IOCTL_PRIME_FD_TO_HANDLE` ioctl wraps this import path for GEM drivers: it calls `drm_gem_prime_fd_to_handle`, which checks whether the same DMA-BUF has already been imported (caching it by dma_buf pointer to avoid duplicate imports) and returns a GEM handle pointing to the imported object. The resulting GEM handle is indistinguishable to userspace from a locally allocated buffer — its address space, refcounting, and fencing infrastructure are all handled by the kernel.
 
+```mermaid
+graph LR
+    ExporterGEM["Exporter GEM object\n(drm_gem_object)"]
+    ExportFn["drm_gem_prime_export\n(drm_prime.c)"]
+    DmaBuf["struct dma_buf\n(anonymous file)"]
+    Fd["userspace fd\n(dma_buf_fd)"]
+    Attach["struct dma_buf_attachment\n(importer device)"]
+    SgTable["struct sg_table\n(scatter-gather list)"]
+    ImporterGEM["Importer GEM handle\n(drm_gem_prime_fd_to_handle)"]
+
+    ExporterGEM --> ExportFn
+    ExportFn --> DmaBuf
+    DmaBuf --> Fd
+    Fd -- "dma_buf_get + dma_buf_attach" --> Attach
+    Attach -- "map_dma_buf" --> SgTable
+    SgTable -- "IOMMU mapping" --> ImporterGEM
+```
+
 ### DMA-BUF Heaps
 
 A newer facility, DMA-BUF heaps (`/dev/dma_heap/`), merged in Linux 5.6, allows allocating DMA-BUF objects outside any GPU driver context. A userspace process opens `/dev/dma_heap/system` and issues `DMA_HEAP_IOCTL_ALLOC` to obtain a DMA-BUF fd backed by anonymous system memory. This is widely used in Android's camera pipeline and V4L2 video decoder paths, where a buffer must be allocated before either the producer (camera ISP) or consumer (GPU) has been selected. The `system` heap allocates from page allocator; the `system-contig` heap uses CMA for physically contiguous allocations.
@@ -341,6 +427,35 @@ Fences are added via `dma_resv_add_fence(obj, fence, usage)`, where `usage` is o
 ### Implicit Synchronisation
 
 Implicit synchronisation means the kernel tracks buffer state automatically: when a buffer is handed to KMS for display, KMS inspects the buffer's reservation object and waits for any outstanding write fences before programming the display controller's base address register. Neither the application nor the compositor needs to explicitly communicate "the GPU is done with this buffer." The `dma_buf_poll` call implements `POLLIN`/`POLLOUT` on DMA-BUF file descriptors so userspace can wait without busy-looping.
+
+```mermaid
+graph TD
+    subgraph "Implicit Sync"
+        GPUSub["GPU submit\n(render ring)"]
+        Fence["struct dma_fence\n(dma_fence_create)"]
+        Resv["struct dma_resv\n(dma_resv_add_fence)"]
+        KMSWait["KMS atomic commit\n(dma_resv_wait_timeout)"]
+        Scanout["Display controller\nscanout"]
+
+        GPUSub -- "creates" --> Fence
+        Fence -- "attached to" --> Resv
+        Resv -- "KMS inspects" --> KMSWait
+        KMSWait -- "after fence signals" --> Scanout
+    end
+
+    subgraph "Explicit Sync"
+        GPUSub2["GPU submit\n(render ring)"]
+        SyncObj["DRM syncobj\n(drm_syncobj_export_sync_file)"]
+        SyncFd["sync_file fd\n(IN_FENCE_FD)"]
+        KMSCommit["drmModeAtomicCommit\n(DRM_MODE_ATOMIC_NONBLOCK)"]
+        Scanout2["Display controller\nscanout"]
+
+        GPUSub2 -- "creates" --> SyncObj
+        SyncObj -- "exported as" --> SyncFd
+        SyncFd -- "passed to KMS plane" --> KMSCommit
+        KMSCommit -- "waits then programs" --> Scanout2
+    end
+```
 
 Implicit sync works well when every GPU driver participating in the pipeline correctly adds fences to the `dma_resv`. The well-known NVIDIA implicit sync problem (discussed in Chapter 3) arises precisely because NVIDIA's GPU driver historically did not populate the reservation object. From KMS's perspective, an empty reservation object means "no outstanding work" — scanout proceeds immediately, producing tearing or corruption if the GPU hasn't actually finished rendering.
 
@@ -410,6 +525,22 @@ The scatter-gather helper functions `drm_prime_pages_to_sg` and `drm_prime_sg_to
 Mesa implements render offload through the `DRI_PRIME` environment variable. When set (e.g., `DRI_PRIME=1`), Mesa's EGL implementation opens a `gbm_device` on the discrete GPU's render node (`/dev/dri/renderD128`) for rendering, while display output remains on the integrated GPU's card node. The rendered buffer is exported from the discrete GPU via `gbm_bo_get_fd` (which calls `DRM_IOCTL_PRIME_HANDLE_TO_FD` internally) and imported on the integrated GPU via `DRM_IOCTL_PRIME_FD_TO_HANDLE`. This is a copy-based path on most consumer hardware because the integrated and discrete GPUs do not share an IOMMU domain; the kernel's PRIME import creates a new scatter-gather mapping through system RAM.
 
 True zero-copy PRIME requires that both GPUs can access the same physical memory range directly, which in practice means either a unified IOMMU domain (AMD APU-style SoCs) or the peer-to-peer memory paths described in Section 9.
+
+```mermaid
+graph LR
+    RenderGPU["Render GPU\n(/dev/dri/renderD128)"]
+    GemHandle["GEM handle\n(render GPU)"]
+    PrimeFd["DMA-BUF fd\n(DRM_IOCTL_PRIME_HANDLE_TO_FD)"]
+    DisplayGPU["Display GPU\n(/dev/dri/card0)"]
+    DisplayHandle["GEM handle\n(display GPU)"]
+    KMSFB["KMS framebuffer\n(DRM_IOCTL_MODE_ADDFB2)"]
+
+    RenderGPU -- "renders into" --> GemHandle
+    GemHandle -- "exported via PRIME" --> PrimeFd
+    PrimeFd -- "imported by" --> DisplayGPU
+    DisplayGPU -- "DRM_IOCTL_PRIME_FD_TO_HANDLE" --> DisplayHandle
+    DisplayHandle --> KMSFB
+```
 
 ---
 
@@ -582,6 +713,28 @@ The full negotiation flow for a typical AMD rendering + KMS display path:
 
 This end-to-end path is what makes zero-copy, hardware-compressed rendering on modern Linux possible. Breaking any link in the chain — using `DRM_FORMAT_MOD_LINEAR` instead of the optimal modifier, skipping the `DRM_MODE_FB_MODIFIERS` flag in ADDFB2, or failing to negotiate via the Wayland protocol — produces a functional but suboptimal path, often with a performance penalty of 20–50% in memory bandwidth.
 
+```mermaid
+graph TD
+    KMSPlane["KMS plane\nIN_FORMATS blob\n(display-supported modifiers)"]
+    GBMQuery["dri_query_dma_buf_modifiers\n(GPU-produceable modifiers)"]
+    Intersect["Intersection\n(compositor computes)"]
+    WaylandFB["zwp_linux_dmabuf_feedback_v1\n(advertised to Wayland client)"]
+    GBMAlloc["gbm_bo_create_with_modifiers\n(client allocates with best modifier)"]
+    GBMExport["gbm_bo_get_fd\n(DMA-BUF fd export)"]
+    CompositorImport["zwp_linux_dmabuf_v1\n(compositor receives fd + modifier)"]
+    ADDFB2["DRM_IOCTL_MODE_ADDFB2\n(DRM_MODE_FB_MODIFIERS set)"]
+    Scanout["Display controller\nhardware decompression + scanout"]
+
+    KMSPlane --> Intersect
+    GBMQuery --> Intersect
+    Intersect --> WaylandFB
+    WaylandFB --> GBMAlloc
+    GBMAlloc --> GBMExport
+    GBMExport --> CompositorImport
+    CompositorImport --> ADDFB2
+    ADDFB2 --> Scanout
+```
+
 ---
 
 ## 8. The Integrated View: A Buffer's Journey
@@ -607,6 +760,26 @@ The scenario: a Wayland client using Vulkan on an AMD GPU, rendering to a tiled+
 **Step 8 — Release.** The `OUT_FENCE_PTR` provided by the compositor signals at VBLANK, indicating the new framebuffer is active and the previous one is safe to release. The compositor releases the old framebuffer, dropping the `dma_buf_attachment`, which decrements the DMA-BUF reference count. When the GEM `handle_count` also reaches zero (the client has closed the GBM BO), TTM may evict the VRAM allocation to GTT if memory pressure warrants it.
 
 This walkthrough shows that GEM, TTM, DMA-BUF, `dma_fence`/`dma_resv`, PRIME, GBM, format modifiers, and KMS are not independent layers — they are tightly coupled stages in a single buffer lifecycle. Understanding any one in isolation leaves critical questions unanswered.
+
+```mermaid
+graph TD
+    Step1["Step 1 — Allocation\ngbm_bo_create_with_modifiers\nDRM_IOCTL_AMDGPU_GEM_CREATE\namdgpu_bo in VRAM via TTM"]
+    Step2["Step 2 — VkImage creation\nEGL_EXT_image_dma_buf_import\nVK_EXT_image_drm_format_modifier\n(same VRAM pages — no copy)"]
+    Step3["Step 3 — Rendering\nVulkan draw commands\ndma_resv_add_fence\n(DMA_RESV_USAGE_WRITE)"]
+    Step4["Step 4 — Buffer passing\ngbm_bo_get_fd\nDRM_IOCTL_PRIME_HANDLE_TO_FD\nfd sent via zwp_linux_dmabuf_v1"]
+    Step5["Step 5 — Compositor import\ndma_buf_get\nDRM_IOCTL_PRIME_FD_TO_HANDLE\nDRM_IOCTL_MODE_ADDFB2"]
+    Step6["Step 6 — KMS atomic commit\nFB_ID + IN_FENCE_FD\ndrmModeAtomicCommit NONBLOCK"]
+    Step7["Step 7 — VBLANK and scanout\ndma_fence signals\ndisplay controller programs base address\nhardware DCC decompression"]
+    Step8["Step 8 — Release\nOUT_FENCE_PTR signals\ndma_buf_attachment dropped\nTTM may evict VRAM to GTT"]
+
+    Step1 --> Step2
+    Step2 --> Step3
+    Step3 --> Step4
+    Step4 --> Step5
+    Step5 --> Step6
+    Step6 --> Step7
+    Step7 --> Step8
+```
 
 ---
 
@@ -726,7 +899,22 @@ struct drm_gpuvm_bo {
 };
 ```
 
-The `drm_gpuvm_ops` interface defines a state machine that drivers implement to translate generic VA operations into hardware page table updates:
+The `drm_gpuvm_ops` interface defines a state machine that drivers implement to translate generic VA operations into hardware page table updates.
+
+```mermaid
+graph TD
+    GPUVM["struct drm_gpuvm\n(VA space — rb interval tree)"]
+    GPUVMBO["struct drm_gpuvm_bo\n(vm + gem_object binding)"]
+    GPUVA["struct drm_gpuva\n(virtual range: addr + range)"]
+    GemObj["struct drm_gem_object\n(backing GEM object)"]
+    Ops["struct drm_gpuvm_ops\n(sm_step_map / sm_step_remap / sm_step_unmap)"]
+
+    GPUVM -- "owns list of" --> GPUVMBO
+    GPUVMBO -- "owns list of" --> GPUVA
+    GPUVMBO -- "->obj" --> GemObj
+    GPUVA -- "gem.obj" --> GemObj
+    GPUVM -- "->ops" --> Ops
+```
 
 ```c
 /* Source: include/drm/drm_gpuvm.h */

@@ -79,6 +79,23 @@ Work submitted to one engine has no implicit ordering relationship with work sub
 
 This creates a non-trivial bookkeeping problem at the driver level: when a buffer is handed off from one subsystem to another — say, from a Vulkan renderer to a KMS atomic commit — the receiving component must know which GPU engines wrote the buffer and which fences those engines inserted at completion. With implicit synchronization, the kernel attempts to track this automatically via `dma_resv`; with explicit synchronization, the application or middleware is responsible for threading the right fence through the handoff.
 
+```mermaid
+graph LR
+    subgraph "GPU Hardware Engines (operate independently)"
+        GFX["3D/Graphics Engine\n(rasterisation, shading,\ndepth, blending)"]
+        Compute["Compute Engine(s)\n(GPGPU, image processing,\nray tracing)"]
+        Copy["Copy/DMA Engine\n(memory copies,\ntexture uploads)"]
+        Video["Video Decode/Encode Engine\n(H.264, H.265, AV1\nfixed-function)"]
+    end
+    SyncProblem["Synchronization Problem:\nno implicit ordering\nbetween engines"]
+    GFX -. "no implicit order" .-> SyncProblem
+    Compute -. "no implicit order" .-> SyncProblem
+    Copy -. "no implicit order" .-> SyncProblem
+    Video -. "no implicit order" .-> SyncProblem
+    SyncProblem --> dma_resv["dma_resv\n(implicit sync)"]
+    SyncProblem --> drm_syncobj["drm_syncobj\n(explicit sync)"]
+```
+
 ### 1.2 DMA-BUF as the Universal Buffer Abstraction
 
 The `dma_buf` kernel subsystem (`drivers/dma-buf/`) was designed precisely to allow a buffer allocated by one driver to be shared with another driver without a copy. A typical cross-subsystem flow looks like:
@@ -96,6 +113,27 @@ The `dma_buf` kernel subsystem (`drivers/dma-buf/`) was designed precisely to al
 
 At each handoff, a synchronization decision must be made: is the buffer ready to read? With implicit sync the `dma_resv` inside the `dma_buf` holds pending write fences that the consumer should wait on; with explicit sync the consumer knows the fence from an out-of-band channel (the Wayland `set_acquire_point` request, or a sync_file passed as `IN_FENCE_FD` to KMS). The same physical memory is accessed by at least three processes (the client, the compositor, and the kernel-side KMS/display driver) without any copies; ensuring correctness across all three accesses is the fundamental problem this chapter addresses.
 
+```mermaid
+graph TD
+    VkClient["Vulkan Client\n(allocates VkImage → GEM buffer)"]
+    PRIME["prime_handle_to_fd\n(GEM → dma_buf fd)"]
+    DMABUF["dma_buf\n(drivers/dma-buf/)"]
+    wl_buffer["wl_buffer\n(via linux-dmabuf-v1)"]
+    Compositor["Wayland Compositor"]
+    KMSPlane["KMS Plane\n(direct scanout)"]
+    ComposePass["Compositor GPU pass\n(GL/Vulkan composite)"]
+    ScanoutBuf["scanout dma_buf"]
+
+    VkClient --> PRIME
+    PRIME --> DMABUF
+    DMABUF --> wl_buffer
+    wl_buffer --> Compositor
+    Compositor --> KMSPlane
+    Compositor --> ComposePass
+    ComposePass --> ScanoutBuf
+    ScanoutBuf --> KMSPlane
+```
+
 ### 1.3 The Cross-Process Boundary
 
 In a Wayland compositor pipeline, the rendering process and the compositing process are different Linux processes. They share no address space, no GEM handle namespace, and no GPU command queue. Their relationship is:
@@ -112,6 +150,22 @@ The Linux graphics stack has evolved two distinct models for solving this: **imp
 ## Section 2: DMA-BUF Implicit Fences — The Legacy Model
 
 The implicit synchronization model is built on two kernel structures: `dma_fence` and `dma_resv`.
+
+```mermaid
+graph TD
+    dma_buf["dma_buf\n(shared buffer object)"]
+    dma_resv["struct dma_resv\n(embedded in dma_buf)"]
+    ww_mutex["ww_mutex\n(wound-wait lock)"]
+    dma_resv_list["dma_resv_list\n(fence, usage pairs)"]
+    dma_fence_write["dma_fence\n(DMA_RESV_USAGE_WRITE)"]
+    dma_fence_read["dma_fence\n(DMA_RESV_USAGE_READ)"]
+
+    dma_buf --> dma_resv
+    dma_resv --> ww_mutex
+    dma_resv --> dma_resv_list
+    dma_resv_list --> dma_fence_write
+    dma_resv_list --> dma_fence_read
+```
 
 ### 2.1 struct dma_fence
 
@@ -306,6 +360,30 @@ Inside the kernel, a `drm_syncobj` is a reference-counted structure (`struct drm
 
 When `DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT` is called with `WAIT_AVAILABLE` semantics, the kernel registers a wait-queue entry that fires when a fence is *assigned* to the timeline at the requested point — not just when that fence signals. This mechanism relies on `drm_syncobj_add_point()` sending a wakeup to all `WAIT_AVAILABLE` waiters whenever a new fence is attached at any point. The fence assignment itself (the "signal" from the GPU submission driver) is done by the driver calling `drm_syncobj_replace_fence()` after the command buffer is submitted to hardware. [Source: `drivers/gpu/drm/drm_syncobj.c`, https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_syncobj.c]
 
+```mermaid
+graph TD
+    drm_syncobj["struct drm_syncobj\n(drivers/gpu/drm/drm_syncobj.c)"]
+    wait_queue["wait_queue_head_t\n(woken on state transition)"]
+
+    subgraph "Binary drm_syncobj"
+        bin_fence["dma_fence ptr\n(single fence, resettable)"]
+    end
+
+    subgraph "Timeline drm_syncobj"
+        seq_counter["sequence counter\n(current signalled point)"]
+        sparse_array["sparse array\n(timeline_point → dma_fence)"]
+        add_point["drm_syncobj_add_point()\n(wakes WAIT_AVAILABLE waiters)"]
+        replace_fence["drm_syncobj_replace_fence()\n(called by GPU driver after submit)"]
+    end
+
+    drm_syncobj --> wait_queue
+    drm_syncobj --> bin_fence
+    drm_syncobj --> seq_counter
+    drm_syncobj --> sparse_array
+    sparse_array --> add_point
+    add_point --> replace_fence
+```
+
 ---
 
 ## Section 4: Vulkan Timeline Semaphores
@@ -390,6 +468,26 @@ vkSignalSemaphore(device, &signal_info);
 
 In all Mesa Vulkan drivers, timeline semaphores are implemented as kernel `drm_syncobj` timelines. The common Vulkan runtime in Mesa provides `vk_drm_syncobj.c` (`src/vulkan/runtime/vk_drm_syncobj.c`), which implements the abstract `vk_sync` interface using `DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT`, `DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL`, and `DRM_IOCTL_SYNCOBJ_TRANSFER` under the hood. Each driver (RADV for AMD, ANV for Intel, NVK for NVIDIA) registers this backend as its primary sync type and delegates all timeline semaphore operations to it. [Source: Mesa `src/vulkan/runtime/vk_drm_syncobj.c`, https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/vulkan/runtime/vk_drm_syncobj.c]
 
+```mermaid
+graph TD
+    VkSemaphore["VkSemaphore\n(VK_SEMAPHORE_TYPE_TIMELINE)"]
+    vk_sync["vk_sync interface\n(Mesa Vulkan runtime)"]
+    vk_drm_syncobj["vk_drm_syncobj.c\n(src/vulkan/runtime/)"]
+    RADV["RADV\n(AMD)"]
+    ANV["ANV\n(Intel)"]
+    NVK["NVK\n(NVIDIA/Mesa)"]
+    drm_syncobj_kernel["drm_syncobj\n(kernel timeline)"]
+    ioctls["DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT\nDRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL\nDRM_IOCTL_SYNCOBJ_TRANSFER"]
+
+    VkSemaphore --> vk_sync
+    vk_sync --> vk_drm_syncobj
+    RADV -- "registers backend" --> vk_drm_syncobj
+    ANV -- "registers backend" --> vk_drm_syncobj
+    NVK -- "registers backend" --> vk_drm_syncobj
+    vk_drm_syncobj --> ioctls
+    ioctls --> drm_syncobj_kernel
+```
+
 This tight coupling means that exporting a `VkSemaphore` as an `OPAQUE_FD` handle via `vkGetSemaphoreFdKHR()` produces a `drm_syncobj` fd that the kernel, Wayland compositor, and other processes understand natively:
 
 ```c
@@ -427,6 +525,26 @@ The protocol defines three interface objects:
 - `set_release_point(timeline, point_hi, point_lo)` — specifies a 64-bit timeline point that the compositor will signal when it has finished reading the buffer. After this point signals, the client may safely reuse or modify the buffer.
 
 The 64-bit point values are passed as two 32-bit unsigned integers (`point_hi` and `point_lo`) because the Wayland wire protocol's `uint` type is 32-bit. The release point must be strictly greater than the acquire point on the same timeline to prevent ordering inversions. [Source: `linux-drm-syncobj-v1` protocol, https://wayland.app/protocols/linux-drm-syncobj-v1]
+
+```mermaid
+graph TD
+    wl_registry["wl_registry\n(Wayland global registry)"]
+    manager["wp_linux_drm_syncobj_manager_v1\n(singleton global factory)"]
+    timeline["wp_linux_drm_syncobj_timeline_v1\n(wraps drm_syncobj fd)"]
+    surface_obj["wp_linux_drm_syncobj_surface_v1\n(per-surface sync attachment)"]
+    acquire["set_acquire_point(timeline, hi, lo)\n(client signals; compositor waits)"]
+    release["set_release_point(timeline, hi, lo)\n(compositor signals; client waits)"]
+    wl_surface["wl_surface\n(Wayland surface)"]
+
+    wl_registry --> manager
+    manager -- "import_timeline(fd)" --> timeline
+    manager -- "get_surface(surface)" --> surface_obj
+    wl_surface --> surface_obj
+    surface_obj --> acquire
+    surface_obj --> release
+    timeline -- "referenced by" --> acquire
+    timeline -- "referenced by" --> release
+```
 
 ### 5.2 Acquire vs. Release: Direction Matters
 
@@ -538,6 +656,33 @@ On a Wayland EGL surface, Mesa's EGL WSI backend (`src/egl/drivers/dri2/platform
 
 **Explicit path (current)**: When explicit sync is available, Mesa exports the rendering fence as a `drm_syncobj` timeline point and passes it to the compositor via `set_acquire_point()`. The compositor's release point is imported back as a `VkSemaphore` or `EGLSyncKHR` that the client waits on before reusing the buffer. [Source: Mesa `src/egl/drivers/dri2/platform_wayland.c`, https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/egl/drivers/dri2/platform_wayland.c]
 
+```mermaid
+graph TD
+    EGLNativeFence["EGLSyncKHR\n(EGL_SYNC_NATIVE_FENCE_ANDROID)"]
+    eglDup["eglDupNativeFenceFDANDROID()\n(export as sync_file fd)"]
+    sync_file["sync_file fd"]
+
+    subgraph "Implicit Path (legacy)"
+        IMPORT_SYNC["DMA_BUF_IOCTL_IMPORT_SYNC_FILE\n(inject fence into dma_buf dma_resv)"]
+        dma_resv_implicit["dma_resv\n(compositor's implicit-sync wait path)"]
+    end
+
+    subgraph "Explicit Path (current)"
+        drm_syncobj_tl["drm_syncobj timeline point\n(Mesa exports rendering fence)"]
+        set_acquire["set_acquire_point()\n(passed to compositor via Wayland)"]
+        release_back["Compositor release point\n(imported as VkSemaphore or EGLSyncKHR)"]
+    end
+
+    EGLNativeFence --> eglDup
+    eglDup --> sync_file
+    sync_file --> IMPORT_SYNC
+    IMPORT_SYNC --> dma_resv_implicit
+
+    EGLNativeFence --> drm_syncobj_tl
+    drm_syncobj_tl --> set_acquire
+    set_acquire --> release_back
+```
+
 ---
 
 ## Section 7: The Implicit-to-Explicit Migration
@@ -569,6 +714,31 @@ struct dma_buf_import_sync_file {
 [Source: `include/uapi/linux/dma-buf.h`, https://github.com/torvalds/linux/blob/master/include/uapi/linux/dma-buf.h; kernel docs: https://docs.kernel.org/driver-api/dma-buf.html]
 
 These ioctls are the linchpin of the transition period: a Vulkan driver that manages its own explicit fences can call `DMA_BUF_IOCTL_IMPORT_SYNC_FILE` to inject a `sync_file` (derived from the Vulkan submission's timeline semaphore point) into the buffer's implicit fence slot, making it visible to compositors that still use implicit sync. Conversely, a compositor or media driver that still expects implicit sync can call `DMA_BUF_IOCTL_EXPORT_SYNC_FILE` to extract whatever fences are present as a `sync_file` and wait on them before processing the buffer. [Source: Collabora blog, https://www.collabora.com/news-and-blog/blog/2022/06/09/bridging-the-synchronization-gap-on-linux/]
+
+```mermaid
+graph LR
+    VulkanDriver["Vulkan Driver\n(explicit fence owner)"]
+    timeline_sem["timeline semaphore point\n(VkSemaphore)"]
+    sync_file_exp["sync_file fd\n(derived from timeline point)"]
+    IMPORT["DMA_BUF_IOCTL_IMPORT_SYNC_FILE\n(Linux 5.19)"]
+    dma_resv_slot["dma_buf dma_resv\n(implicit fence slot)"]
+    ImplicitCompositor["Compositor\n(implicit sync)"]
+
+    LegacyDMABUF["dma_buf\n(with implicit fences)"]
+    EXPORT["DMA_BUF_IOCTL_EXPORT_SYNC_FILE\n(Linux 5.19)"]
+    sync_file_imp["sync_file fd\n(extracted fences)"]
+    ExplicitConsumer["Media driver /\nExplicit consumer"]
+
+    VulkanDriver --> timeline_sem
+    timeline_sem --> sync_file_exp
+    sync_file_exp --> IMPORT
+    IMPORT --> dma_resv_slot
+    dma_resv_slot --> ImplicitCompositor
+
+    LegacyDMABUF --> EXPORT
+    EXPORT --> sync_file_imp
+    sync_file_imp --> ExplicitConsumer
+```
 
 ### 7.3 Timeline of the Migration
 

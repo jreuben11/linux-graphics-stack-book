@@ -59,6 +59,31 @@ SPIR-V is the intermediate shader language that connects every high-level shadin
 
 Readers who have worked through earlier chapters on Mesa NIR (Chapter 14) and ACO (Chapter 15) will recognise many of the data structures described here from the inside; this chapter provides the complementary view from the producer side. Graphics application developers who use Vulkan will learn enough about SPIR-V internals to interpret validator errors, apply the right optimizer passes, and make informed decisions about offline vs. online compilation. Browser and compute platform engineers who consume SPIR-V from Tint (Chapter 35) or naga (Chapter 40) will understand how those producers' output interacts with downstream tooling.
 
+```mermaid
+graph LR
+    subgraph "Front Ends (Producers)"
+        GLSL["GLSL / HLSL / WGSL\nOpenCL C / Slang"]
+    end
+    subgraph "Processing (SPIRV-Tools)"
+        Val["spirv-val\n(validation)"]
+        Opt["spirv-opt\n(optimization)"]
+        Link["spirv-link\n(linking)"]
+    end
+    subgraph "Cross-Compilation (SPIRV-Cross)"
+        Cross["SPIRV-Cross\n(GLSL / HLSL / MSL / Reflect)"]
+    end
+    subgraph "Mesa Consumer"
+        S2N["spirv_to_nir()\n(src/compiler/spirv/)"]
+        NIR["NIR → ISA\n(ACO / LLVM)"]
+    end
+    GLSL -- "SPIR-V binary" --> Val
+    Val -- "validated .spv" --> Opt
+    Opt -- "optimized .spv" --> S2N
+    Opt -- "optimized .spv" --> Cross
+    Link -- "linked .spv" --> S2N
+    S2N --> NIR
+```
+
 After reading this chapter you will be able to: walk a SPIR-V binary by hand; interpret every error class that `spirv-val` can emit; use the SPIRV-Tools C++ API to run the optimizer programmatically; use SPIRV-Cross to extract descriptor reflection data; understand which `spirv-opt` passes overlap with Mesa NIR work and should be skipped; and reason about the performance trade-offs between offline compilation, specialization constants, and pipeline caching.
 
 ---
@@ -287,6 +312,15 @@ OpExtInst %void %printf DebugPrintf %fmt %threadId %val
 
 ## 3. SPIR-V Front Ends
 
+```mermaid
+graph TD
+    GLSL["GLSL"] -- "glslangValidator / glslc\n(shaderc wrapper)" --> SPIRV["SPIR-V Binary\n(.spv)"]
+    HLSL["HLSL"] -- "DXC\n(-spirv flag)" --> SPIRV
+    WGSL["WGSL"] -- "Tint (Dawn)\nor naga (wgpu)" --> SPIRV
+    OCLC["OpenCL C"] -- "Clang --target=spirv64\nor llvm-spirv (SPIRV-LLVM-Translator)" --> SPIRV
+    SPIRV -- "spirv_to_nir()" --> NIR["Mesa NIR"]
+```
+
 ### 3.1 GLSL to SPIR-V via glslang
 
 `glslangValidator` (from the Khronos `glslang` repository) is the reference GLSL front end and most widely used SPIR-V producer. It performs GLSL lexing, parsing, AST construction, semantic analysis, and direct AST-to-SPIR-V emission without an intermediate IR.
@@ -409,6 +443,24 @@ spirv_to_nir(const uint32_t *words, size_t word_count,
 ```
 
 The `spirv_to_nir_options` struct communicates which SPIR-V capabilities and extensions the driver supports, robustness requirements (whether to emit bounds-check code around buffer accesses when `VK_EXT_robustness2` is enabled), and physical-address handling flags. The parser builds a `vtn_builder` that holds parse state through a single pass over the SPIR-V word stream.
+
+```mermaid
+graph TD
+    SPIRV["SPIR-V word stream\n(uint32_t words[])"]
+    VTN["vtn_builder\n(parse state)"]
+    Cap["OpCapability check\nvs. spirv_to_nir_options"]
+    TypeXlat["Type translation\nOpType* → glsl_type"]
+    CFXlat["Control flow translation\nOpSelectionMerge → nir_if\nOpLoopMerge → nir_loop"]
+    SpecFold["Specialization constant folding\nOpSpecConstant → nir_load_const_instr"]
+    NIR["nir_shader\n(output)"]
+
+    SPIRV --> VTN
+    VTN --> Cap
+    Cap -- "supported" --> TypeXlat
+    TypeXlat --> CFXlat
+    CFXlat --> SpecFold
+    SpecFold --> NIR
+```
 
 **Capability mapping**: Each `OpCapability` declaration is checked against the driver's declared support set in `spirv_to_nir_options`. Unsupported capabilities cause `spirv_to_nir()` to fail before translation begins. Capabilities map to NIR features: `Shader` enables the graphics execution model; `PhysicalStorageBufferAddresses` enables `nir_var_mem_global` storage class; `VulkanMemoryModel` enables NIR memory barrier semantic lowering that maps to Vulkan's explicit acquire/release model. [Source: Mesa spirv_to_nir.c](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/compiler/spirv/spirv_to_nir.c)
 
@@ -631,6 +683,22 @@ The relevant trade-off is: running spirv-opt at build time to reduce NIR parse c
 SPIRV-Cross parses SPIR-V and translates it to other shading languages. Supported output targets: GLSL (desktop and ES), HLSL (DirectX SM 5.0–6.6), MSL (Metal Shading Language), and JSON reflection. The C++ backend has been deprecated. [Source: SPIRV-Cross GitHub](https://github.com/KhronosGroup/SPIRV-Cross)
 
 The class hierarchy: `spirv_cross::Parser` (binary → IR); `spirv_cross::Compiler` (base, provides reflection); `CompilerGLSL`, `CompilerHLSL`, `CompilerMSL`, `CompilerReflect`.
+
+```mermaid
+graph TD
+    Parser["spirv_cross::Parser\n(binary → IR)"]
+    Compiler["spirv_cross::Compiler\n(base: reflection API)"]
+    GLSL["CompilerGLSL\n(→ GLSL desktop / ES)"]
+    HLSL["CompilerHLSL\n(→ HLSL SM 5.0–6.6)"]
+    MSL["CompilerMSL\n(→ Metal Shading Language)"]
+    Reflect["CompilerReflect\n(→ JSON reflection)"]
+
+    Parser -- "produces IR" --> Compiler
+    Compiler --> GLSL
+    Compiler --> HLSL
+    Compiler --> MSL
+    Compiler --> Reflect
+```
 
 ```cpp
 // Source: SPIRV-Cross, spirv_cross/spirv_glsl.hpp (usage pattern)
@@ -915,6 +983,22 @@ The Mesa disk cache (`src/util/disk_cache.c`) backs the pipeline cache to persis
 2. Pre-rasterization library (vertex, tessellation, geometry shaders)
 3. Fragment shader library (fragment shader itself)
 4. Fragment output library (blending, render pass attachment)
+
+```mermaid
+graph TD
+    VI["Vertex Input Library\n(input assembly, vertex attribute format)\nVK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT"]
+    PreRast["Pre-Rasterization Library\n(vertex / tessellation / geometry shaders)\nSPIR-V → NIR → ACO"]
+    FragShad["Fragment Shader Library\n(fragment shader)\nSPIR-V → NIR → ACO"]
+    FragOut["Fragment Output Library\n(blending, render pass attachment)\nVK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT"]
+    Link["vkCreateGraphicsPipelines\n(link step: fast path at draw time)"]
+    Pipeline["VkPipeline\n(final executable)"]
+
+    VI --> Link
+    PreRast --> Link
+    FragShad --> Link
+    FragOut --> Link
+    Link --> Pipeline
+```
 
 Libraries 2 and 3 contain the SPIR-V compilation steps. By compiling them independently and early (before the full pipeline state is known), applications reduce the critical-path compilation latency at draw time:
 

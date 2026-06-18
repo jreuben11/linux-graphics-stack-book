@@ -40,6 +40,14 @@ framebuffer → DEGAMMA_LUT → CTM (3×3 matrix) → GAMMA_LUT → display
 
 The `DEGAMMA_LUT` converts framebuffer values from the display's native gamma to linear light. The `CTM` (Colour Transformation Matrix) maps between colour primaries — e.g., from the display's native gamut to sRGB or BT.2020. The `GAMMA_LUT` converts from linear back to the display's native tone curve, applying any calibration corrections.
 
+```mermaid
+graph LR
+    FB["framebuffer"] --> DG["DEGAMMA_LUT"]
+    DG --> CTM["CTM\n(3×3 matrix)"]
+    CTM --> GL["GAMMA_LUT"]
+    GL --> D["display"]
+```
+
 Calibration tools load the VCGT tag from the active ICC profile into `GAMMA_LUT`. Profile-aware applications apply the ICC characterisation matrix in software before handing pixels to the compositor. The compositor may additionally apply `CTM` for wide-gamut or HDR outputs. These interactions are managed by the `colord` daemon and the compositor.
 
 ---
@@ -126,6 +134,25 @@ ICC profiles are stored under `/var/lib/colord/icc/` for system-wide profiles, w
 
 [Source: colord architecture overview](https://github.com/hughsie/colord)
 
+```mermaid
+graph TD
+    subgraph "System (root)"
+        colord["colord daemon\n(org.freedesktop.ColorManager)"]
+        mappingdb["/var/lib/colord/mapping.db\n(device-to-profile)"]
+        storagedb["/var/lib/colord/storage.db\n(metadata)"]
+        sysicc["/var/lib/colord/icc/\n(system-wide profiles)"]
+        colord --> mappingdb
+        colord --> storagedb
+        colord --> sysicc
+    end
+    subgraph "Session (user)"
+        sessionagent["colord session agent\n(gsd-color / colord-kded)"]
+        usericc["~/.local/share/icc/\n(user profiles)"]
+        sessionagent --> usericc
+    end
+    sessionagent -- "D-Bus system bus\norg.freedesktop.ColorManager" --> colord
+```
+
 ### D-Bus Object Model
 
 Three principal object types are exposed on the bus:
@@ -135,6 +162,21 @@ Three principal object types are exposed on the bus:
 | Manager | `org.freedesktop.ColorManager` | `/org/freedesktop/ColorManager` |
 | Device | `org.freedesktop.ColorManager.Device` | `/org/freedesktop/ColorManager/device/...` |
 | Profile | `org.freedesktop.ColorManager.Profile` | `/org/freedesktop/ColorManager/profile/...` |
+
+The three object types form a containment hierarchy: the Manager owns Device objects, and each Device owns one or more Profile objects.
+
+```mermaid
+graph TD
+    M["Manager\n(/org/freedesktop/ColorManager)\norg.freedesktop.ColorManager"]
+    D1["Device\n(/org/freedesktop/ColorManager/device/...)\norg.freedesktop.ColorManager.Device"]
+    D2["Device\n(another output)"]
+    P1["Profile\n(/org/freedesktop/ColorManager/profile/...)\norg.freedesktop.ColorManager.Profile"]
+    P2["Profile\n(fallback profile)"]
+    M -- "GetDevices / CreateDevice" --> D1
+    M -- "GetDevices / CreateDevice" --> D2
+    D1 -- "AddProfile / GetProfileForQualifiers" --> P1
+    D1 -. "AddProfile" .-> P2
+```
 
 **Manager interface** — key methods:
 
@@ -415,7 +457,21 @@ spotread -v
 
 ### Full profiling workflow
 
-The complete ArgyllCMS workflow for a display profile with VCGT:
+The complete ArgyllCMS workflow for a display profile with VCGT is a five-step pipeline: calibration, patch generation, measurement, profile building, and installation.
+
+```mermaid
+graph TD
+    A["dispcal\n(calibrate: D65 / gamma / luminance)"]
+    B["targen\n(generate test patches → MyDisplay.ti1)"]
+    C["dispread\n(measure patches with colorimeter → MyDisplay.ti3)"]
+    D["colprof\n(build ICC profile → MyDisplay.icc with VCGT)"]
+    E["colormgr import-profile\n(register with colord)"]
+    A -- "MyDisplay.cal\n(VCGT correction curves)" --> B
+    B -- "MyDisplay.ti1\n(RGB test patches)" --> C
+    A -- "-k MyDisplay.cal\n(apply calibration during measure)" --> C
+    C -- "MyDisplay.ti3\n(measured XYZ data)" --> D
+    D -- "MyDisplay.icc" --> E
+```
 
 **Step 1: Calibrate the display (dispcal)**
 
@@ -535,6 +591,27 @@ ArgyllCMS/DisplayCAL
                  │
                  ▼ per-output color management
              KMS CTM / plane shaper LUTs
+```
+
+The pipeline has two parallel downstream paths from `gsd-color`: one programs hardware gamma directly via KMS, the other delivers the ICC profile to the compositor via the Wayland colour management protocol.
+
+```mermaid
+graph TD
+    A["ArgyllCMS / DisplayCAL\n(measurement + colprof)"]
+    C["colord daemon\n(mapping.db, /var/lib/colord/icc/)"]
+    G["gsd-color / colord-session\n(session daemon)"]
+    KMS["KMS GAMMA_LUT\n(CRTC property — DRM atomic commit)"]
+    COMP["Mutter / KWin / wlroots\n(compositor)"]
+    WP["wp_image_description_creator_icc_v1\n→ wp_image_description_v1"]
+    HW["Display hardware"]
+
+    A -- "import .icc" --> C
+    C -- "D-Bus ProfileAdded signal" --> G
+    G -- "VCGT → GAMMA_LUT" --> KMS
+    G -- "ICC profile path" --> COMP
+    COMP -- "wp_color_management_v1" --> WP
+    WP -- "per-output colour management\n(KMS CTM / plane shaper LUTs)" --> HW
+    KMS --> HW
 ```
 
 ### colord → wp_color_management_v1 bridging
@@ -693,6 +770,32 @@ On GNOME (Mutter), night light is integrated into `gsd-color` as a built-in feat
 ### Interaction between calibration VCGT and night-light ramp
 
 Night light and ICC VCGT calibration both modify the hardware gamma LUT — a resource with only a single hardware-level entry point per CRTC. There is therefore a compositing problem: how to apply both simultaneously.
+
+The two desktop environments resolve the conflict differently: GNOME centralises all gamma writes in one component, while wlroots compositors allow multiple independent clients to overwrite the same LUT.
+
+```mermaid
+graph TD
+    subgraph "GNOME (single-authority)"
+        GSD["gsd-color\n(gnome-settings-daemon)"]
+        VCGT_G["ICC VCGT\n(tone curves)"]
+        NL_G["Night light\n(blackbody temperature ramp)"]
+        COMBINE["compose: VCGT × temperature ramp"]
+        KMS_G["KMS GAMMA_LUT\n(single DRM atomic commit)"]
+        VCGT_G --> COMBINE
+        NL_G --> COMBINE
+        GSD --> COMBINE
+        COMBINE --> KMS_G
+    end
+    subgraph "wlroots compositors (last-writer-wins)"
+        COLORD_W["colord / session agent\n(writes VCGT)"]
+        GAMMASTEP["gammastep / wlsunset\n(writes night light ramp)"]
+        ZWL["zwlr_gamma_control_v1.set_gamma()"]
+        KMS_W["KMS GAMMA_LUT\n(overwritten by last caller)"]
+        COLORD_W --> ZWL
+        GAMMASTEP --> ZWL
+        ZWL --> KMS_W
+    end
+```
 
 **GNOME's approach.** `gsd-color` manages both in a single compositing step. When applying gamma, it combines the VCGT tone curves with a blackbody-coloured temperature ramp:
 

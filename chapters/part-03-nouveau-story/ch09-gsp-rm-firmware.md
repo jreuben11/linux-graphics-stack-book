@@ -40,6 +40,12 @@ In NVIDIA's internal architecture, the Resource Manager (RM) is the software lay
 
 With the introduction of GSP-RM, NVIDIA moved the RM off the CPU and onto the GSP processor itself. The CPU-side driver becomes a thin client: it sends structured RPC calls to the GSP over a shared-memory message queue, and the GSP's RM firmware carries out the actual hardware operations. This is the architectural transformation that both the nvidia-open release and Nouveau's GSP-RM support are built on.
 
+```mermaid
+graph LR
+    A["CPU-side driver\n(thin client)"] -- "RPC calls\n(shared-memory message queue)" --> B["GSP-RM firmware\n(GPU System Processor)"]
+    B -- "hardware operations" --> C["GPU Hardware\n(engines, clocks, voltage, thermal)"]
+```
+
 ### Why NVIDIA Made This Move
 
 NVIDIA has publicly cited several motivations for the GSP-RM architecture. The virtualisation use case is the most immediately compelling: in a vGPU deployment, multiple virtual machines need isolated access to GPU resources. With the RM running on the GSP, the GSP can manage resource partitions independently of hypervisor trust boundaries. Each virtual function (VF) in an SR-IOV configuration gets a separate channel to GSP-RM; the hypervisor's CPU-side driver does not need direct access to the hardware RM internals. This is substantially cleaner than the previous vGPU licensing architecture, which required a privileged host driver with deep hardware access running alongside each VM.
@@ -77,6 +83,25 @@ It is essential to be precise about what the open module does not provide. The G
 Additionally, `nvidia.ko` still includes pre-compiled binary objects for certain architectural components — `nv-kernel.o_binary` for the nvidia.ko module and `nv-modeset-kernel.o_binary` for the modeset module. These are OS-agnostic internal components that NVIDIA compiles separately and links into the final module. Their presence means that even building the "open" module from source produces a binary that contains code you cannot inspect as source.
 
 The entire userspace stack — `libGL`, `libVulkan` (both Vulkan ICD and WSI layers), `libnvoptix` (RTX/ray tracing), `libcuda`, `libcudnn`, and the NVENC/NVDEC codec libraries — remains wholly proprietary. This boundary is firm: CUDA and proprietary Vulkan on Linux require NVIDIA's closed userspace regardless of whether the kernel module is open. The NVK Vulkan driver discussed in Chapter 10 is a separate, fully open Mesa implementation that can operate without any proprietary component.
+
+```mermaid
+graph TD
+    subgraph "Open (MIT/GPLv2 source)"
+        A["nvidia.ko\n(core GPU driver)"]
+        A2["nv-kernel.o_binary\n(pre-compiled, linked into nvidia.ko)"]
+        B["nvidia-modeset.ko\n(KMS and display)"]
+        C["nvidia-drm.ko\n(DRM interface layer)"]
+        D["nvidia-uvm.ko\n(unified virtual memory)"]
+        A2 -. "linked into" .-> A
+    end
+    subgraph "Closed (binary blobs / proprietary)"
+        E["GSP-RM firmware\n(signed binary in linux-firmware)"]
+        F["libGL / libVulkan\n(Vulkan ICD and WSI layers)"]
+        G["libnvoptix\n(RTX/ray tracing)"]
+        H["libcuda / libcudnn\n(CUDA runtime)"]
+        I["NVENC / NVDEC\n(codec libraries)"]
+    end
+```
 
 ### The nv-kernel.o_binary Transition Problem
 
@@ -150,6 +175,17 @@ The `GspFwWprMeta` structure contains, among other fields, `partitionRpcAddr`, `
 
 Fourth, `tu102_gsp_booter_load()` executes the booter firmware — a small Falcon-based stage-one loader that sets up the WPR2 (Write-Protected Region 2) memory protection, verifies the signature on the RM image, and launches the RM. Fifth, after the RM firmware starts executing, it discovers the hardware, initializes GPU engines, and sends a "boot complete" notification via the status queue. Sixth, `r535_gsp_oneinit()` runs on the CPU side: it reads the boot complete message, queries the GSP for its capability advertisement, and establishes the RPC session that subsequent driver operations will use.
 
+```mermaid
+graph TD
+    S1["nvkm_gsp_new_()\nInstantiate nvkm_gsp object\npopulate nvkm_gsp_fwif"]
+    S2["nvkm_gsp_load_fw()\nRequest firmware blobs via request_firmware()\nCopy into DMA-coherent GPU memory"]
+    S3["tu102_gsp_wpr_meta_init()\nPrepare GspFwWprMeta structure\n(RPC queue addresses, ELF offsets, heap config)"]
+    S4["tu102_gsp_booter_load()\nExecute Falcon-based booter\nSetup WPR2, verify RM signature, launch RM"]
+    S5["GSP-RM firmware\nDiscovers hardware, initializes GPU engines\nPosts boot-complete via status queue"]
+    S6["r535_gsp_oneinit()\nReads boot-complete message\nQueries capability advertisement\nEstablishes RPC session"]
+    S1 --> S2 --> S3 --> S4 --> S5 --> S6
+```
+
 ### Code Example: GspFwWprMeta Structure
 
 ```c
@@ -181,6 +217,14 @@ struct GspFwWprMeta {
 Once the GSP-RM firmware has booted, all communication between the CPU-side Nouveau code and the GSP uses a pair of circular message queues in GPU memory: the command queue (CPU writes, GSP reads) and the status queue (GSP writes events and replies, CPU reads). Queue initialization uses `msgqInit` and `msgqTxCreate`; the queues are sized at 256 KB on real hardware.
 
 The core RPC message structure is `rpc_message_header_v`, which contains a function ID identifying the operation requested, a sequence number for matching replies to requests, and a union of payload types — one per RPC function. The `RPC_HDR` and `RPC_PARAMS` macros provide type-safe access to the header and payload fields respectively.
+
+```mermaid
+graph LR
+    CPU["CPU-side Nouveau"] -- "writes commands" --> CQ["Command Queue\n(256 KB, GPU memory)"]
+    CQ -- "GSP reads" --> GSP["GSP-RM firmware"]
+    GSP -- "writes events and replies" --> SQ["Status Queue\n(256 KB, GPU memory)"]
+    SQ -- "CPU reads" --> CPU
+```
 
 ### Code Example: RPC Message Header and Reply Modes
 
@@ -217,6 +261,25 @@ The handle encoding scheme deserves mention for the insight it gives into the ov
 The architectural split is the most important thing to internalize about Nouveau's GSP-RM path. GSP-RM owns everything that the resource manager historically controlled: GPU hardware initialization (the per-engine `oneinit` sequences that nvkm would otherwise run in software), clock and voltage management including the P-state transitions that enable reclocking, thermal management and fan control, and context management for graphics and compute engines. This means that when GSP-RM is active, `nvkm_engine` initialization paths for `PGRAPH`, `PMU`, and similar engines are skipped — the GSP has already initialized them.
 
 Nouveau's CPU-side code retains ownership of everything that touches the DRM subsystem and system memory: TTM/GEM buffer allocation and lifecycle, KMS modesetting and display presentation, the DRM scheduler and `drm_sched` job queues, `drm_syncobj` and timeline semaphore handling, and userspace ioctl dispatch (`DRM_NOUVEAU_EXEC`, `DRM_NOUVEAU_VM_BIND`). This is the boundary that defines Nouveau's role: it is the kernel's legitimate DRM front-end, and GSP-RM is its hardware back-end.
+
+```mermaid
+graph TD
+    subgraph "GSP-RM firmware (GPU-side)"
+        G1["GPU hardware initialization\n(PGRAPH, PMU oneinit sequences)"]
+        G2["Clock and voltage management\n(P-state transitions, reclocking)"]
+        G3["Thermal management and fan control"]
+        G4["Engine context management\n(graphics and compute)"]
+    end
+    subgraph "Nouveau CPU-side (DRM front-end)"
+        N1["TTM/GEM buffer allocation and lifecycle"]
+        N2["KMS modesetting and display presentation"]
+        N3["DRM scheduler\n(drm_sched job queues)"]
+        N4["drm_syncobj and timeline semaphore handling"]
+        N5["Userspace ioctl dispatch\n(DRM_NOUVEAU_EXEC, DRM_NOUVEAU_VM_BIND)"]
+    end
+    N3 -- "RPC calls" --> G1
+    N3 -- "RPC calls" --> G2
+```
 
 ### The open-gpu-doc Connection
 

@@ -110,6 +110,22 @@ This dual-thread overlap allows the CPU to prepare frame N+1 while the GPU execu
 
 This is a lightweight entity-component system (ECS) implemented via `utils::Entity` handles and `utils::EntityManager`. Entities are opaque 32-bit identifiers; component data lives in contiguous arrays inside each manager. [Source](https://deepwiki.com/google/filament/2-engine-architecture)
 
+```mermaid
+graph TD
+    EM["utils::EntityManager"]
+    E["utils::Entity\n(opaque 32-bit handle)"]
+    Scene["filament::Scene"]
+    RM["RenderableManager\n(geometry, materials, bounding box)"]
+    LM["LightManager\n(directional / point / spot)"]
+    TM["TransformManager\n(position / rotation / scale)"]
+
+    EM -- "create()" --> E
+    E -- "addEntity()" --> Scene
+    E -. "component" .-> RM
+    E -. "component" .-> LM
+    E -. "component" .-> TM
+```
+
 ### 2.3 Renderer (frame submission)
 
 `filament::Renderer` drives the render loop. Each call to `Renderer::render(View*)` executes:
@@ -124,6 +140,24 @@ This is a lightweight entity-component system (ECS) implemented via `utils::Enti
 Each render command is a 64-bit sort key encoding pass type (bits 59–58: DEPTH/COLOR/REFRACT/BLENDED), priority, depth bucket, and material ID, stored in a cache-friendly contiguous array. The `sortCommands()` step uses integer comparison on these keys (O(N log N)), then `instanceify()` merges consecutive identical draws into GPU-instanced calls (up to 128 instances per merged call), reducing draw call overhead for repeated geometry. [Source](https://deepwiki.com/google/filament/3.1-rendering-pipeline)
 
 `filament::View` binds a `Scene` to a `Camera` and a viewport, and carries per-view settings for post-processing, shadow type, ambient occlusion, and anti-aliasing. Multiple Views can reference the same Scene (e.g., a shadow pre-pass view and the main view).
+
+```mermaid
+graph TD
+    RenderView["Renderer::render(View*)"]
+    Prepare["FView::prepare()\n(frustum culling, LOD, froxelisation,\nshadow preparation)"]
+    Shadow["Shadow passes\n(depth RenderPass per shadow-casting light,\nfront-to-back)"]
+    Depth["Depth pre-pass\n(DEPTH pass type, front-to-back,\nearly-Z rejection)"]
+    Color["Clustered forward colour pass\n(COLOR pass type, opaque geometry\nsorted by material ID; refraction follows)"]
+    Blend["Blended pass\n(transparent geometry, back-to-front)"]
+    Post["Post-processing FrameGraph chain\n(SSAO, TAA, DoF, bloom,\ntone mapping, FXAA)"]
+
+    RenderView --> Prepare
+    Prepare --> Shadow
+    Shadow --> Depth
+    Depth --> Color
+    Color --> Blend
+    Blend --> Post
+```
 
 ### 2.4 Clustered forward light culling (froxelisation)
 
@@ -482,6 +516,24 @@ matc -o plastic.filamat -a spirv plastic.mat
 
 Inside `matc`, the pipeline is: `.mat` parse → semantic analysis → GLSL code generation via `ShaderGenerator` → `glslang` → SPIR-V optimisation via `spirv-opt` → `spirv-cross` for MSL/GLSL cross-compilation → chunked FILAMAT container. Shader variants (skinned vs. unskinned, depth-only vs. colour, shadow-receiver vs. not) are compiled in parallel via Filament's job system. [Source](https://deepwiki.com/google/filament/4-material-system)
 
+```mermaid
+graph LR
+    MatFile[".mat file"]
+    Parse["parse\n(semantic analysis)"]
+    SG["ShaderGenerator\n(GLSL code generation)"]
+    Glslang["glslang\n(GLSL → SPIR-V)"]
+    SpirvOpt["spirv-opt\n(SPIR-V optimisation)"]
+    SpirvCross["spirv-cross\n(cross-compilation)"]
+    FILAMAT["FILAMAT container\n(chunked binary package)"]
+
+    MatFile --> Parse
+    Parse --> SG
+    SG --> Glslang
+    Glslang --> SpirvOpt
+    SpirvOpt --> SpirvCross
+    SpirvCross --> FILAMAT
+```
+
 ---
 
 ## 7. Physically Based Rendering
@@ -719,6 +771,22 @@ After all passes are declared, the graph is compiled:
 2. **Aliasing**: resources whose lifetimes do not overlap share the same physical memory allocation, dramatically reducing peak VRAM usage (analogous to "render target aliasing" in D3D12/Vulkan).
 3. **Merging**: compatible passes (same framebuffer attachments) are merged into a single Vulkan render pass, avoiding costly resolves on tile-based GPU architectures (Adreno, Mali).
 4. **Barrier insertion**: layout transitions (`VkImageMemoryBarrier`) and pipeline barriers are inserted automatically between passes based on read/write edges.
+
+```mermaid
+graph TD
+    Declare["Pass + Resource Declaration\n(FrameGraph::addPass, builder.read / builder.write)"]
+    Cull["Culling\n(eliminate unreferenced passes\nand their resources)"]
+    Alias["Aliasing\n(share physical memory for resources\nwith non-overlapping lifetimes)"]
+    Merge["Merging\n(combine compatible passes into\na single Vulkan render pass)"]
+    Barrier["Barrier insertion\n(VkImageMemoryBarrier and pipeline barriers\nbetween passes from read/write edges)"]
+    Execute["Execute passes\n(GPU command recording)"]
+
+    Declare --> Cull
+    Cull --> Alias
+    Alias --> Merge
+    Merge --> Barrier
+    Barrier --> Execute
+```
 
 ### 10.2 Pass declaration pattern
 
@@ -1013,6 +1081,19 @@ The matdbg architecture:
 - **C++ server**: wraps civetweb; exposes REST endpoints (`/api/matids`, `/api/materials`, `/api/shader?matid=...&type=glsl`) and a WebSocket channel for push notifications.
 - **JavaScript client**: single-page app with an in-browser material database. When a WebSocket connection is established, the client pulls all material IDs and metadata. The user selects a material, edits its GLSL in Monaco, and presses Ctrl+S.
 - **Edit path**: the server calls the registered `EditCallback` in the C++ engine, which recompiles the GLSL on the fly, updates the affected shader variants, and hot-swaps them without restarting the application.
+
+```mermaid
+graph LR
+    Monaco["JavaScript client\n(Monaco editor,\nbrowser SPA)"]
+    Server["C++ server\n(civetweb,\nHTTP / WebSocket)"]
+    CB["EditCallback\n(registered in C++ engine)"]
+    Recompile["GLSL recompile\n(shader variant hot-swap)"]
+
+    Monaco -- "WebSocket / REST\n(GET /api/matids,\nGET /api/shader)" --> Server
+    Monaco -- "Ctrl+S edit push" --> Server
+    Server -- "calls" --> CB
+    CB --> Recompile
+```
 
 Key HTTP endpoints:
 

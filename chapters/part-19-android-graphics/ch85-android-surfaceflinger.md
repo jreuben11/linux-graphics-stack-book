@@ -78,6 +78,25 @@ Frames flow through three major choke points:
 2. **SurfaceFlinger → HWComposer**: SurfaceFlinger acquires the buffer, asks HWComposer whether the display hardware can composite the layer directly (hardware overlay) or whether GPU composition is needed.
 3. **HWComposer → DRM/KMS**: HWComposer calls into the vendor DRM driver via `drmModeAtomicCommit()` to program the display controller's planes and scanout the final image.
 
+```mermaid
+graph TD
+    Producer["Producer\n(App / HWUI RenderThread)"]
+    BQ["BufferQueue\n(IGraphicBufferProducer /\nIGraphicBufferConsumer)"]
+    SF["SurfaceFlinger\n(compositor)"]
+    HWC["HWComposer HAL\n(HWC2 / HWC3)"]
+    DRM["DRM/KMS Driver\n(drmModeAtomicCommit)"]
+    Display["Display Controller\n(planes, CRTC, scanout)"]
+
+    Producer -- "queueBuffer()" --> BQ
+    BQ -- "acquireBuffer()" --> SF
+    SF -- "validateDisplay() / presentDisplay()" --> HWC
+    HWC -- "drmModeAtomicCommit()" --> DRM
+    DRM --> Display
+    Display -. "present_fence / release_fence" .-> SF
+    SF -. "releaseBuffer() + release_fence" .-> BQ
+    BQ -. "dequeueBuffer() returns fence" .-> Producer
+```
+
 ---
 
 ## 2. Gralloc: Android's GPU Memory Allocator
@@ -90,6 +109,26 @@ Gralloc is divided into two HAL services:
 
 - **IAllocator**: A Binderized HAL service running in its own process that allocates new buffers. Callers connect via Binder/AIDL. The allocator returns opaque `native_handle_t` file descriptors that refer to the underlying DMA-BUF objects.
 - **IMapper**: A passthrough HAL service (runs in-process, loaded as a `.so`) that maps, locks, and unlocks buffers for CPU access, and queries metadata (stride, plane offsets, format details).
+
+```mermaid
+graph LR
+    subgraph "Client Process (App / SurfaceFlinger)"
+        Caller["Caller"]
+        IMapper["IMapper\n(passthrough .so\nin-process)"]
+    end
+    subgraph "Allocator Process"
+        IAllocator["IAllocator\n(Binderized HAL\nown process)"]
+    end
+    subgraph "Kernel"
+        DMAHeap["DMA-BUF Heap\n(/dev/dma_heap/)"]
+    end
+
+    Caller -- "Binder/AIDL\nallocate2()" --> IAllocator
+    IAllocator -- "allocates from" --> DMAHeap
+    IAllocator -- "returns native_handle_t\n(DMA-BUF fds)" --> Caller
+    Caller -- "lock() / unlock()\ngetMetadata()" --> IMapper
+    IMapper -- "mmap DMA-BUF fd" --> DMAHeap
+```
 
 ### 2.2 Gralloc HIDL → AIDL Evolution
 
@@ -394,6 +433,24 @@ This is how Chromium/ANGLE imports a SurfaceFlinger-provided `AHardwareBuffer` i
 
 The consumer creates and owns the `BufferQueue`. When an application Surface is created via `WindowManager`, the system calls `SurfaceFlinger::createLayer()`, which internally calls `BufferQueue::createBufferQueue()` to instantiate the paired producer/consumer interfaces. WindowManager sends the `IGraphicBufferProducer` Binder handle to the app; SurfaceFlinger retains the `IGraphicBufferConsumer`.
 
+```mermaid
+graph TD
+    WM["WindowManager\n(Java system service)"]
+    SF["SurfaceFlinger"]
+    BQCreate["BufferQueue::createBufferQueue()"]
+    IGBP["IGraphicBufferProducer\n(Binder handle sent to app)"]
+    IGBC["IGraphicBufferConsumer\n(retained by SurfaceFlinger)"]
+    App["Application Process\nandroid::Surface / ANativeWindow"]
+
+    WM -- "ISurfaceComposerClient::\ncreateLayer()" --> SF
+    SF --> BQCreate
+    BQCreate --> IGBP
+    BQCreate --> IGBC
+    WM -- "sends IGraphicBufferProducer\nBinder handle" --> App
+    SF -- "retains" --> IGBC
+    App -- "wraps as ANativeWindow" --> IGBP
+```
+
 [Source: frameworks/native/libs/gui — android.googlesource.com](https://android.googlesource.com/platform/frameworks/native/+/refs/heads/main/libs/gui/)
 
 ### 4.2 The Slot Model
@@ -456,6 +513,22 @@ SurfaceFlinger manages a hierarchy of layers, each corresponding to a visual sur
 - **`ColorLayer`**: A solid-color rectangle with no BufferQueue; used for dimming overlays, scrims, and splash screens.
 - **`ContainerLayer`**: A non-rendering grouping node used by WindowManager to organise z-order hierarchies.
 - **`EffectLayer`**: Applies visual effects (blur, colour transform) to its subtree.
+
+```mermaid
+graph TD
+    Layer["Layer\n(base class)"]
+    BufferLayer["BufferLayer\n(GPU-rendered surface)"]
+    ColorLayer["ColorLayer\n(solid colour, no GPU buffer)"]
+    ContainerLayer["ContainerLayer\n(grouping / z-order only)"]
+    EffectLayer["EffectLayer\n(blur / colour transform)"]
+    BQConsumer["IGraphicBufferConsumer\n(BufferQueue consumer)"]
+
+    Layer --> BufferLayer
+    Layer --> ColorLayer
+    Layer --> ContainerLayer
+    Layer --> EffectLayer
+    BufferLayer -- "has" --> BQConsumer
+```
 
 Each layer carries metadata: position, transform (rotation/scale), z-order, crop region, blend mode (opaque, premultiplied, coverage), dataspace (for colour management), and HDR metadata.
 
@@ -702,6 +775,23 @@ HWUI selects between two Skia backends at initialisation time:
 
 - **`SkiaOpenGLPipeline`**: Uses Skia's OpenGL ES backend. Default on devices that don't fully support Vulkan or have opted out.
 - **`SkiaVulkanPipeline`**: Uses Skia's Vulkan backend (Skia's `GrVkBackend`). Default on Android 10+ devices with Vulkan 1.1 support. Benefits: reduced driver overhead, explicit memory management, lower power consumption.
+
+```mermaid
+graph TD
+    RT["RenderThread"]
+    CreatePipeline["RenderThread::createPipeline()"]
+    TypeCheck{"RenderPipelineType"}
+    SkiaVulkan["SkiaVulkanPipeline\n(Skia GrVkBackend)"]
+    SkiaOpenGL["SkiaOpenGLPipeline\n(Skia GrGLBackend)"]
+    BQ["GraphicBuffer slot\n(BufferQueue)"]
+
+    RT --> CreatePipeline
+    CreatePipeline --> TypeCheck
+    TypeCheck -- "SkiaVulkan\n(Android 10+, Vulkan 1.1)" --> SkiaVulkan
+    TypeCheck -- "SkiaGL\n(fallback / opt-out)" --> SkiaOpenGL
+    SkiaVulkan -- "vkQueueSubmit +\nqueueBuffer()" --> BQ
+    SkiaOpenGL -- "eglSwapBuffers /\nqueueBuffer()" --> BQ
+```
 
 ```cpp
 // frameworks/base/libs/hwui/renderthread/RenderThread.cpp (simplified)

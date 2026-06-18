@@ -33,6 +33,37 @@ There are three distinct software renderers to understand:
 - **Lavapipe**: A Vulkan ICD that uses llvmpipe as its rasterisation backend. Lavapipe presents a full Vulkan API to applications and translates Vulkan commands into Gallium pipe calls executed synchronously on the calling CPU thread.
 - **Zink**: A Gallium pipe driver that translates Gallium calls into Vulkan API calls. Zink is not a rasteriser at all — it is a translation layer. It can run on top of any Vulkan driver, whether that is hardware (RADV, ANV, NVK) or software (Lavapipe).
 
+```mermaid
+graph TD
+    App["Application\n(OpenGL or Vulkan)"]
+
+    subgraph "OpenGL Path"
+        GLST["OpenGL State Tracker\n(Mesa GL frontend)"]
+        Gallium["Gallium pipe_context\ninterface"]
+        llvmpipe["llvmpipe\n(src/gallium/drivers/llvmpipe/)"]
+        Zink["Zink\n(src/gallium/drivers/zink/)"]
+    end
+
+    subgraph "Vulkan Path"
+        Lavapipe["Lavapipe ICD\n(src/gallium/frontends/lavapipe/)"]
+        HWVulkan["Hardware Vulkan driver\n(RADV / ANV / NVK)"]
+    end
+
+    LLVMJIT["LLVM JIT\n(gallivm / lp_bld_nir.c)"]
+    CPU["CPU execution\n(native SIMD)"]
+
+    App --> GLST
+    App --> Lavapipe
+    GLST --> Gallium
+    Gallium --> llvmpipe
+    Gallium --> Zink
+    llvmpipe --> LLVMJIT
+    Lavapipe --> Gallium
+    Zink -- "Vulkan API calls" --> Lavapipe
+    Zink -- "Vulkan API calls" --> HWVulkan
+    LLVMJIT --> CPU
+```
+
 A fourth renderer, **softpipe** (`src/gallium/drivers/softpipe/`), predates llvmpipe. It is a pure software Gallium driver written without LLVM, used historically as a reference implementation. It still exists in the tree but is unmaintained and not used by default anywhere. New code should not target softpipe; it exists primarily for archaeology.
 
 Historically, Lavapipe was briefly known as "vallium" during its earliest development in 2020. Readers encountering early blog posts or commit messages from that period will see this name; it was renamed to Lavapipe before the first Mesa release containing it.
@@ -94,6 +125,27 @@ lp_setup_rasterize_scene(struct lp_setup_context *setup)
 
 The rationale for tiles is cache coherency. At 64×64 pixels with 4 bytes per pixel, one color tile is 16 KiB; with depth this approximately doubles. All memory accesses for a tile fit in L2 cache on most modern CPUs. Processing tiles sequentially avoids the framebuffer thrashing that would result from full-scanline traversal of large buffers.
 
+```mermaid
+graph TD
+    Primitives["Incoming primitives\n(triangles / lines / points)"]
+    Binning["Tiling / Binning\n(lp_setup_context)"]
+    Bins["Per-tile command bins\n(64×64 pixel tiles)"]
+    SceneFlush["Scene flush\nlp_setup_rasterize_scene()"]
+    WorkQueue["Rasteriser work queue\n(lp_rast_queue_scene)"]
+    Workers["Worker threads\n(num_threads, max 32)"]
+    Fence["lp_fence\n(completion barrier)"]
+    Framebuffer["Framebuffer\n(CPU memory)"]
+
+    Primitives --> Binning
+    Binning --> Bins
+    Bins --> SceneFlush
+    SceneFlush --> WorkQueue
+    WorkQueue --> Workers
+    Workers --> Framebuffer
+    Workers --> Fence
+    Fence -- "signal when tile complete" --> Framebuffer
+```
+
 ### The LLVM JIT Compilation Path
 
 Fragment shaders in llvmpipe are compiled to native code on demand via LLVM. The `lp_state_fs.c` file manages shader variant creation. Each unique combination of fragment shader and pipeline state produces a new `lp_fs_variant`; the JIT engine is set up via `gallivm_create()`:
@@ -114,6 +166,26 @@ The shader compilation pipeline for fragment shaders is:
 2. llvmpipe calls into `lp_bld_nir.c` — specifically `lp_build_nir_soa()` — which walks the NIR instruction stream and emits LLVM IR using the `gallivm_state` builder.
 3. The LLVM IR is handed to the LLVM JIT, which applies its own optimisation passes and emits native machine code.
 4. The resulting function pointer is stored in the fragment shader variant (`lp_fs_variant`) and called directly during rasterisation.
+
+```mermaid
+graph LR
+    NIR["NIR shader\n(from OpenGL state tracker)"]
+    CreateFS["pipe_context::\ncreate_fs_state()"]
+    BldNIR["lp_build_nir_soa()\n(lp_bld_nir.c)"]
+    LLVMIR["LLVM IR\n(gallivm_state builder)"]
+    LLVMJIT["LLVM JIT\n(optimisation passes)"]
+    NativeCode["Native machine code\n(SSE4 / AVX2 / AVX-512)"]
+    FSVariant["lp_fs_variant\n(function pointer)"]
+    Rast["Rasterisation\n(tile worker threads)"]
+
+    NIR --> CreateFS
+    CreateFS --> BldNIR
+    BldNIR --> LLVMIR
+    LLVMIR --> LLVMJIT
+    LLVMJIT --> NativeCode
+    NativeCode --> FSVariant
+    FSVariant --> Rast
+```
 
 The shader operates in a Structure-of-Arrays (SoA) layout. Rather than processing one pixel at a time, llvmpipe builds LLVM vector types whose width matches the host SIMD register width. On an AVX2 system, a `float` vector has 8 lanes; on AVX-512, 16 lanes. All 8 or 16 pixels in a SIMD group are processed simultaneously in each vector operation. This is the primary source of llvmpipe's performance advantage over scalar software renderers like softpipe.
 
@@ -169,6 +241,36 @@ Lavapipe is Mesa's CPU-based Vulkan driver. It presents a conformant Vulkan impl
 Lavapipe is a full Mesa Vulkan driver in the sense defined in Chapter 16 (Mesa Vulkan common infrastructure). It uses `vk_device`, `vk_render_pass`, `vk_pipeline_cache`, `vk_command_buffer`, and all the other common-layer objects. Lavapipe was historically the first Mesa Vulkan driver to systematically adopt the Vulkan common layer — the common infrastructure was, in many cases, developed alongside Lavapipe to support its needs. This means that Lavapipe conformance catches bugs not just in Lavapipe itself but in the common infrastructure shared by RADV, ANV, NVK, and every other Mesa Vulkan driver.
 
 Lavapipe is conformant to **Vulkan 1.3** (in the Khronos sense, submitted and listed in the conformance database). As of Mesa 25, Lavapipe exposes all extensions promoted to Vulkan 1.4 core but has not been formally submitted for 1.4 conformance. Practically, an application requesting Vulkan 1.4 promoted features will find them available, though the official conformance certificate references 1.3.
+
+```mermaid
+graph TD
+    VkApp["Vulkan Application"]
+    LvpICD["Lavapipe ICD\n(lvp_icd.x86_64.json)"]
+
+    subgraph "Mesa Vulkan common layer (Chapter 16)"
+        VkDevice["vk_device"]
+        VkCmdBuf["vk_command_buffer"]
+        VkPipeCache["vk_pipeline_cache"]
+        VkRenderPass["vk_render_pass"]
+    end
+
+    LvpExecute["lvp_execute_cmds()\n(lvp_execute.c)"]
+    RenderState["rendering_state\n(dirty flags + state)"]
+    EmitState["emit_state()\n(lazy Gallium state flush)"]
+    PipeCtx["pipe_context\n(llvmpipe Gallium context)"]
+    LLVMJIT["LLVM JIT\n(gallivm)"]
+
+    VkApp --> LvpICD
+    LvpICD --> VkDevice
+    VkDevice --> VkCmdBuf
+    VkDevice --> VkPipeCache
+    VkDevice --> VkRenderPass
+    VkCmdBuf --> LvpExecute
+    LvpExecute --> RenderState
+    RenderState --> EmitState
+    EmitState --> PipeCtx
+    PipeCtx --> LLVMJIT
+```
 
 ### The Synchronous Execution Model
 
@@ -291,6 +393,31 @@ Zink occupies a different conceptual position from llvmpipe and Lavapipe. It is 
 
 `zink_resource` wraps Vulkan buffers and images with metadata for surface creation and memory tracking. Memory allocation includes debugging instrumentation tracking allocation sizes and sites through `zink_debug_mem_add` and `zink_debug_mem_print_stats`, useful for diagnosing memory leaks and over-allocation.
 
+```mermaid
+graph TD
+    GLST["OpenGL State Tracker\n(Mesa GL frontend)"]
+
+    subgraph "Zink Gallium pipe driver\n(src/gallium/drivers/zink/)"
+        ZinkScreen["zink_screen\n(pipe_screen → VkInstance / VkPhysicalDevice)"]
+        ZinkCtx["zink_context\n(pipe_context → VkDevice / VkQueue)"]
+        ZinkRes["zink_resource\n(pipe_resource → VkBuffer / VkImage)"]
+        ZinkBO["zink_bo\n(VkDeviceMemory)"]
+    end
+
+    VkCmdBuf["VkCommandBuffer\n(per-frame pool)"]
+    VkQueue["VkQueue submit\n(on pipe_context::flush())"]
+    VkDriver["Vulkan driver\n(RADV / ANV / NVK / Lavapipe)"]
+
+    GLST --> ZinkScreen
+    GLST --> ZinkCtx
+    ZinkScreen -- "capability mapping" --> ZinkCtx
+    ZinkCtx --> ZinkRes
+    ZinkRes --> ZinkBO
+    ZinkCtx --> VkCmdBuf
+    VkCmdBuf --> VkQueue
+    VkQueue --> VkDriver
+```
+
 ### When Zink Is Used
 
 Zink appears in production in several distinct configurations:
@@ -393,6 +520,24 @@ struct ntv_context {
 ```
 
 The `defs` array maps each NIR SSA definition index to its corresponding SPIR-V `SpvId`. The `vars` hash table maps `nir_variable` pointers to SPIR-V variable IDs for global (interface) variables. `entry_ifaces` accumulates the list of interface variables that SPIR-V 1.4 and later requires to be listed in the `OpEntryPoint` instruction.
+
+```mermaid
+graph LR
+    GLSL["GLSL shader\n(application source)"]
+    NIR["NIR\n(Mesa internal SSA)"]
+    NtvCtx["ntv_context\n(translation state)"]
+    SpvBuilder["spirv_builder\n(src/compiler/spirv/)"]
+    SPIRV["SPIR-V binary\n(spirv_shader)"]
+    VkDriver["Vulkan driver\n(RADV / ANV / Lavapipe)"]
+    NIR2["NIR\n(re-lowered in Vulkan driver)"]
+
+    GLSL -- "GLSL → NIR\n(Mesa GL frontend)" --> NIR
+    NIR -- "nir_to_spirv()" --> NtvCtx
+    NtvCtx -- "defs[] / vars\nhash_table" --> SpvBuilder
+    SpvBuilder --> SPIRV
+    SPIRV -- "spirv_to_nir()" --> NIR2
+    NIR2 --> VkDriver
+```
 
 ### The Entry Point
 

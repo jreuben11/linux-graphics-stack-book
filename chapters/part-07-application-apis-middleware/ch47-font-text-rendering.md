@@ -24,6 +24,16 @@
 
 Text is the most performance-critical rendering workload on a typical desktop or web page: every visible character on screen has passed through a multi-library pipeline that spans Unicode normalisation, OpenType shaping, glyph rasterisation, atlas packing, GPU upload, and compositing. This chapter traces that pipeline end-to-end, from the FreeType rasteriser that converts vector outlines to bitmaps, through the HarfBuzz shaping engine that selects and positions the correct glyphs for a given script and language, up to the Pango layout engine that breaks paragraphs into lines and the glyph atlas systems inside Qt, GTK, and Skia that amortise GPU upload cost across many draw calls.
 
+```mermaid
+graph LR
+    UC["Unicode string\n(codepoints)"] --> NRM["Unicode normalisation\n+ BiDi analysis"]
+    NRM --> SHP["OpenType shaping\n(HarfBuzz)"]
+    SHP --> RST["Glyph rasterisation\n(FreeType)"]
+    RST --> PKG["Atlas packing\n(Qt / GTK / Skia)"]
+    PKG --> GPU["GPU texture upload\n(glyph atlas)"]
+    GPU --> CMP["Compositing\n(Wayland compositor)"]
+```
+
 The chapter also covers two important cross-cutting concerns: why the transition from X11 to Wayland broke the LCD subpixel rendering that made fonts look sharp on RGB stripe panels, and how OpenType variable fonts are handled at both the FreeType and HarfBuzz layers. Readers from the terminal and TUI world will find the atlas management and Wayland subpixel sections directly applicable to how GPU-accelerated terminal emulators like Ghostty, WezTerm, and foot manage their glyph caches.
 
 ---
@@ -156,6 +166,16 @@ Text shaping is the process of converting a Unicode string into an ordered seque
 **`hb_buffer_t`** serves a dual role. Before shaping it holds the input: a sequence of Unicode codepoints tagged with direction (`HB_DIRECTION_LTR`, `HB_DIRECTION_RTL`), script (`HB_SCRIPT_ARABIC`, `HB_SCRIPT_DEVANAGARI`, ...), and language (`hb_language_from_string("ar", -1)`). After `hb_shape()` returns, the same buffer holds the shaped output: glyph IDs, positions (x/y advance, x/y offset), and cluster indices mapping output glyphs back to input codepoints. [Source: HarfBuzz hb-buffer manual](https://harfbuzz.github.io/harfbuzz-hb-buffer.html)
 
 **`hb_font_t`** wraps a font face at a particular scale. It is created from an `hb_face_t` — typically loaded from a FreeType `FT_Face` via `hb_ft_font_create(ft_face, NULL)`. Font objects are lightweight; they reference the face but can carry per-instance variation coordinates. [Source: HarfBuzz fonts and faces](https://harfbuzz.github.io/fonts-and-faces.html)
+
+```mermaid
+graph TD
+    FTF["FT_Face\n(FreeType)"] --> HBF["hb_font_t\n(via hb_ft_font_create)"]
+    HBF --> SHP["hb_shape()"]
+    BUF_IN["hb_buffer_t\n(input: codepoints,\ndirection, script, language)"] --> SHP
+    SHP --> BUF_OUT["hb_buffer_t\n(output: glyph IDs,\nx/y advances, cluster indices)"]
+    BUF_OUT --> GID["hb_glyph_info_t\n(codepoint = glyph ID,\ncluster)"]
+    BUF_OUT --> GPOS["hb_glyph_position_t\n(x_advance, x_offset,\ny_offset)"]
+```
 
 ### 2.2 The Shaping Call
 
@@ -399,6 +419,16 @@ In practice, applications that need correct Unicode rendering always use the Pan
 
 Pango is the text layout library for the GNOME/GTK ecosystem. It integrates fontconfig for font discovery, FreeType for rasterisation, HarfBuzz for OpenType shaping, and Cairo or a direct GL path for rendering. Unlike raw HarfBuzz (which operates on single shaping runs), Pango handles multi-paragraph, multi-script, bidirectional text with line breaking, justification, and ellipsisation. [Source: Pango Layout documentation](https://docs.gtk.org/Pango/class.Layout.html)
 
+```mermaid
+graph TD
+    FC["fontconfig\n(font discovery)"] --> Pango["Pango"]
+    FT["FreeType\n(rasterisation)"] --> Pango
+    HB["HarfBuzz\n(OpenType shaping)"] --> Pango
+    Pango --> Cairo["Cairo\n(compositing backend)"]
+    Pango --> GL["direct GL path"]
+    Cairo --> Surface["cairo_surface_t"]
+```
+
 ### 5.1 PangoContext and PangoFontDescription
 
 Every Pango operation requires a `PangoContext`, which captures the rendering backend (Cairo surface, XFT, etc.), font map, default language, and base direction. When using the Cairo backend:
@@ -443,6 +473,17 @@ Internally, `pango_layout_set_text` triggers:
 4. **Font matching** — for each run, query fontconfig to find a font covering the required Unicode range.
 5. **HarfBuzz shaping** — shape each run with the matched font.
 6. **Line breaking** — break the shaped glyph stream into lines that fit `pango_layout_width`, respecting word boundaries and UAX #14 line-break rules.
+
+```mermaid
+graph TD
+    TXT["pango_layout_set_text\n(input string)"] --> SEG["1. Unicode segmentation\n(grapheme clusters)"]
+    SEG --> BIDI["2. BiDi analysis\n(Unicode Bidirectional Algorithm)"]
+    BIDI --> ITEM["3. Script itemisation\n(per-script/language runs)"]
+    ITEM --> FM["4. Font matching\n(fontconfig)"]
+    FM --> SHAPE["5. HarfBuzz shaping\n(per run)"]
+    SHAPE --> LB["6. Line breaking\n(UAX #14, pango_layout_width)"]
+    LB --> LINES["PangoLayoutLine list"]
+```
 
 ### 5.3 PangoLayoutLine: Line Iteration
 
@@ -490,6 +531,16 @@ Skia supports three glyph rendering strategies depending on size and scale:
 1. **Bitmap glyphs**: rasterised at pixel-exact size; suitable for small sizes where the atlas hit rate is high.
 2. **Path glyphs**: rendered as vector paths via GPU tessellation; suitable for very large sizes where a bitmap would be wasteful.
 3. **SDF (Signed Distance Field) glyphs**: a single distance-field texture encodes the glyph at a reference size; a shader reconstructs sharp edges at arbitrary scales. Skia uses SDF glyphs when the display scale factor is not an integer, or when the same glyph is expected to appear at multiple sizes (as in animations). [Source: Skia text rendering internals](https://skia.googlesource.com/skia/+/refs/heads/main/src/text/gpu/)
+
+```mermaid
+graph TD
+    GrAM["GrAtlasManager\n(atlas textures)"] --> STRAT{"Glyph rendering\nstrategy"}
+    STRAT -- "small sizes\n(high atlas hit rate)" --> BMP["Bitmap glyphs\n(rasterised at pixel-exact size)"]
+    STRAT -- "very large sizes\n(bitmap wasteful)" --> PATH["Path glyphs\n(GPU tessellation)"]
+    STRAT -- "non-integer scale\nor multi-size animations" --> SDF["SDF glyphs\n(Signed Distance Field;\nshader reconstructs edges)"]
+    BMP --> GrAM
+    SDF --> GrAM
+```
 
 The SDF approach trades texture resolution for scale-invariance. A 64×64 SDF texture for a glyph occupies much less memory than the bitmaps required for all the discrete sizes the glyph might be rendered at. The SDF shader in the fragment stage reconstructs the glyph boundary via `smoothstep` on the distance value, with the threshold adjusted for the current scale factor.
 
@@ -539,6 +590,16 @@ In practice, most toolkits do not use the `wl_output.subpixel` hint for enabling
 - **Qt6**: similarly defaults to grayscale on Wayland.
 - **foot**: uses grayscale AA under Wayland; no LCD path.
 - **FreeType configuration**: when a toolkit calls `FT_Load_Glyph` under Wayland, it uses `FT_RENDER_MODE_NORMAL` (grayscale) rather than `FT_RENDER_MODE_LCD`.
+
+```mermaid
+graph TD
+    COMP["Wayland compositor"] -- "wl_output.geometry event" --> CLIENT["Wayland client"]
+    CLIENT --> SP{"wl_output.subpixel\nvalue"}
+    SP -- "horizontal_rgb\nor horizontal_bgr" --> LCD["FT_RENDER_MODE_LCD\n(subpixel horizontal)"]
+    SP -- "vertical_rgb\nor vertical_bgr" --> LCDV["FT_RENDER_MODE_LCD_V\n(subpixel vertical)"]
+    SP -- "unknown or none" --> GRAY["FT_RENDER_MODE_NORMAL\n(grayscale)"]
+    CLIENT -- "GTK4 / Qt6 / foot\n(unknown pixel offset)" --> GRAY
+```
 
 ### 7.4 Configuring FreeType per Display
 

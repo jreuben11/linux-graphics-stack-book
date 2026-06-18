@@ -34,6 +34,29 @@ The DRM subsystem exposes three classes of node for each GPU:
 
 The render node number N in `renderDN` is assigned per-physical-device and does not change across reboots unless the PCI enumeration order changes. On a single-GPU system `renderD128` is typical; on multi-GPU systems `renderD128`, `renderD129`, etc. appear.
 
+```mermaid
+graph LR
+    subgraph "Container Mount Namespace"
+        App["Container Process"]
+    end
+    subgraph "Host /dev/dri/"
+        Card["/dev/dri/cardN\n(primary node)\ngroup: video"]
+        Render["/dev/dri/renderDN\n(render node)\ngroup: render"]
+        KFD["/dev/kfd\n(AMD KFD)\ngroup: render"]
+    end
+    subgraph "DRM Subsystem"
+        KMS["KMS\n(modesetting)"]
+        GEM["GEM / Render\n(compute + 3D)"]
+        AMDKFD["amdkfd driver"]
+    end
+    App -- "bind-mount (--device)" --> Render
+    App -- "bind-mount (--device)" --> KFD
+    Card --> KMS
+    Card --> GEM
+    Render --> GEM
+    KFD --> AMDKFD
+```
+
 ### udev Groups
 
 The `udev` rules shipped by most distributions assign render nodes to the `render` group and primary nodes to the `video` group. The default udev rules from `libdrm` (at `rules.d/91-drm-modeset.rules` in the source tree, installed to `/usr/lib/udev/rules.d/`) are:
@@ -86,6 +109,26 @@ The toolkit is structured as four cooperating layers:
 2. **nvidia-container-toolkit** — the OCI `prestart` hook binary. After the container runtime creates the container namespaces but before the init process starts, `runc` invokes this hook with the path to the container's `config.json`. The hook reads `NVIDIA_VISIBLE_DEVICES` from the OCI environment, then calls `nvidia-container-cli` to inject the devices.
 3. **nvidia-container-runtime** — a thin shim around the system's native `runc` that injects the prestart hook into the OCI spec before passing it to `runc`. This is what Docker, containerd, and CRI-O register as their OCI runtime.
 4. **nvidia-ctk** — the CLI for managing CDI specifications and runtime configuration.
+
+```mermaid
+graph TD
+    Docker["Docker / containerd / CRI-O"]
+    NCR["nvidia-container-runtime\n(OCI runtime shim)"]
+    runc["runc\n(native OCI runtime)"]
+    Hook["nvidia-container-toolkit\n(OCI prestart hook)"]
+    CLI["nvidia-container-cli\n(libnvidia-container)"]
+    nctk["nvidia-ctk\n(CDI management CLI)"]
+    Kernel["Linux Kernel\n(mknod, bind mount, /proc/<pid>/ns/mnt)"]
+    Container["Container Namespaces\n(/dev/nvidiaN, /dev/dri/renderDN, libcuda.so)"]
+
+    Docker --> NCR
+    NCR -- "injects prestart hook into OCI spec" --> runc
+    runc -- "invokes after namespace creation" --> Hook
+    Hook -- "calls configure" --> CLI
+    CLI --> Kernel
+    Kernel --> Container
+    nctk -- "generates CDI spec" --> NCR
+```
 
 ### OCI Hook Mechanism
 
@@ -376,6 +419,27 @@ When multiple containers on the same host each receive a separate render node, t
 
 Kubernetes does not natively understand GPUs. GPU resources are exposed through the *Device Plugin* API, a gRPC interface between a per-node daemonset (the device plugin) and the kubelet. The device plugin API (`k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1`) defines three RPC calls: `ListAndWatch` (stream available devices), `Allocate` (inject devices into a container), and `GetDevicePluginOptions`. [Source: Kubernetes device plugin documentation](https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/device-plugins/)
 
+```mermaid
+graph TD
+    Scheduler["kube-scheduler\n(assigns pod to node)"]
+    Kubelet["kubelet\n(node agent)"]
+    subgraph "Device Plugin DaemonSet (per vendor)"
+        NvidiaDP["nvidia k8s-device-plugin\nresource: nvidia.com/gpu"]
+        AMDDP["ROCm k8s-device-plugin\nresource: amd.com/gpu"]
+        IntelDP["intel-device-plugins\nresource: gpu.intel.com/i915"]
+    end
+    NCT["NVIDIA Container Toolkit\n(device injection)"]
+    Container["Container\n(/dev/nvidiaN injected)"]
+
+    Scheduler -- "pod assignment" --> Kubelet
+    Kubelet -- "ListAndWatch" --> NvidiaDP
+    Kubelet -- "ListAndWatch" --> AMDDP
+    Kubelet -- "ListAndWatch" --> IntelDP
+    NvidiaDP -- "Allocate response\n(NVIDIA_VISIBLE_DEVICES)" --> Kubelet
+    Kubelet -- "container spec + CDI device" --> NCT
+    NCT --> Container
+```
+
 ### NVIDIA GPU Device Plugin
 
 The NVIDIA k8s device plugin ([github.com/NVIDIA/k8s-device-plugin](https://github.com/nvidia/k8s-device-plugin)) runs as a DaemonSet and registers each physical GPU as a `nvidia.com/gpu` allocatable resource with the kubelet. A pod requests a GPU via:
@@ -555,6 +619,28 @@ libdxcore.so  (D3DKMT adapter enumeration + submission)
 /dev/dxg  ←→  VMBus  ←→  Windows WDDM driver
 ```
 
+```mermaid
+graph TD
+    App["Application\n(OpenGL / OpenCL)"]
+    ST["Mesa state tracker\n(src/mesa/state_tracker/)"]
+    D3D12DRV["d3d12 Gallium driver\n(src/gallium/drivers/d3d12/)"]
+    NIR["NIR to DXIL translation\n(src/microsoft/compiler/)"]
+    LibD3D12["libd3d12.so\n(D3D12 runtime, userspace)"]
+    LibDXCore["libdxcore.so\n(D3DKMT adapter enumeration + submission)"]
+    DevDXG["/dev/dxg\n(dxgkrnl kernel driver)"]
+    VMBus["VMBus\n(Hyper-V paravirtual bus)"]
+    WDDM["Windows WDDM driver\n(host GPU driver)"]
+
+    App --> ST
+    ST --> D3D12DRV
+    D3D12DRV --> NIR
+    NIR --> LibD3D12
+    LibD3D12 --> LibDXCore
+    LibDXCore --> DevDXG
+    DevDXG -- "IOCTLs forwarded" --> VMBus
+    VMBus --> WDDM
+```
+
 The DXIL (DirectX Intermediate Language) translator in Mesa converts NIR (Mesa's internal shader IR, see Ch14) to DXIL bytecode. This means GLSL and SPIR-V shaders (after Vulkan → OpenGL API translation if needed) go through NIR → DXIL, not through the vendor's native ISA compiler.
 
 ### GPU Selection
@@ -599,6 +685,33 @@ No `DMA-BUF` means zero-copy buffer sharing between GPU and network/storage (as 
 ## 7. GPU Virtualisation
 
 GPU virtualisation addresses the need to share a single physical GPU among multiple virtual machines, with stronger isolation than container-level sharing.
+
+```mermaid
+graph TD
+    PhysGPU["Physical GPU\n(PCI device)"]
+    subgraph "Full Passthrough (VFIO)"
+        VFIO["vfio-pci driver\n(drivers/vfio/)"]
+        VM1["Guest VM\n(exclusive GPU ownership)"]
+    end
+    subgraph "Software Partitioning (mdev)"
+        MdevParent["mdev_register_parent()\n(driver sysfs interface)"]
+        MdevInst1["mdev instance 1\n(VFIO device)"]
+        MdevInst2["mdev instance 2\n(VFIO device)"]
+    end
+    subgraph "Hardware SR-IOV"
+        PF["Physical Function (PF)\n(xe / i915 / gim driver)"]
+        VF1["Virtual Function VF1\n(vfio-pci)"]
+        VF2["Virtual Function VF2\n(vfio-pci)"]
+    end
+    PhysGPU --> VFIO
+    VFIO --> VM1
+    PhysGPU --> MdevParent
+    MdevParent --> MdevInst1
+    MdevParent --> MdevInst2
+    PhysGPU --> PF
+    PF --> VF1
+    PF --> VF2
+```
 
 ### VFIO GPU Passthrough
 

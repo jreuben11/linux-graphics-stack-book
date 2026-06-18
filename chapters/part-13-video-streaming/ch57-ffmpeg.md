@@ -86,6 +86,29 @@ libswscale ───────────────────────
                                     libavutil (foundation)
 ```
 
+```mermaid
+graph TD
+    libavutil["libavutil\n(AVFrame, AVPacket, AVBufferRef,\nAVHWDeviceContext, AVOption)"]
+    libswscale["libswscale\n(pixel format conversion, scaling)"]
+    libswresample["libswresample\n(audio resampling, remixing)"]
+    libavcodec["libavcodec\n(encode / decode, AVCodecContext)"]
+    libavdevice["libavdevice\n(V4L2, ALSA, KMSGrab, PipeWire)"]
+    libavformat["libavformat\n(mux / demux, AVFormatContext)"]
+    libavfilter["libavfilter\n(filter graph, AVFilterGraph)"]
+
+    libavutil --> libswscale
+    libavutil --> libswresample
+    libavutil --> libavcodec
+    libswscale --> libavcodec
+    libswresample --> libavcodec
+    libavcodec --> libavformat
+    libavformat --> libavdevice
+    libavcodec --> libavfilter
+    libavformat --> libavfilter
+    libswscale --> libavfilter
+    libswresample --> libavfilter
+```
+
 **libavutil** provides the foundation that no other library may bypass: `AVFrame`, `AVPacket`, the buffer reference-counting model (`AVBufferRef`), `AVRational`, `AVDictionary`, `AVChannelLayout`, the logging subsystem (`av_log`, `AVClass`), the `AVOption` generic configuration system, hardware context types (`AVHWDeviceContext`, `AVHWFramesContext`), and all pixel-format enumerations. Every other library depends on libavutil but never on each other except through the defined ordering above. [Source: FFmpeg core libraries overview](https://deepwiki.com/FFmpeg/FFmpeg/3-core-libraries)
 
 **libavcodec** implements encoding and decoding. It contains the `AVCodecContext` (the active codec instance), bitstream filter infrastructure (`AVBSFContext`), and hundreds of codec implementations — software decoders for H.264, HEVC, AV1, VP9, and FFv1, plus hardware codec wrappers for VAAPI, Vulkan Video, CUDA/NVDEC, and NVENC.
@@ -111,6 +134,27 @@ FFmpeg 7.0 removed all APIs deprecated before 6.0 and mandates a C11-compliant c
 ## 3. Core Data Structures and Lifecycles
 
 ### 3.1 AVFormatContext and AVStream
+
+```mermaid
+graph TD
+    AVFormatContext["AVFormatContext\n(top-level container context;\niformat/oformat, pb, streams[])"]
+    AVStream["AVStream\n(elementary stream descriptor;\ntime_base, avg_frame_rate)"]
+    AVCodecParameters["AVCodecParameters\n(AVStream.codecpar;\ncodec identity and parameters)"]
+    AVCodecContext["AVCodecContext\n(active codec instance;\nthread_count, hw_device_ctx)"]
+    AVCodec["AVCodec\n(read-only descriptor;\ncapabilities bitmask)"]
+    AVIOContext["AVIOContext\n(buffered I/O layer;\ncustom read/write/seek callbacks)"]
+    AVFrame["AVFrame\n(decoded uncompressed data;\nhw_frames_ctx for GPU surfaces)"]
+    AVPacket["AVPacket\n(compressed data;\npts, dts, stream_index)"]
+
+    AVFormatContext -- "pb" --> AVIOContext
+    AVFormatContext -- "streams[]" --> AVStream
+    AVStream -- "codecpar" --> AVCodecParameters
+    AVCodecParameters -. "avcodec_parameters_to_context()" .-> AVCodecContext
+    AVCodecContext -- "backed by" --> AVCodec
+    AVCodecContext -- "avcodec_receive_frame()" --> AVFrame
+    AVFormatContext -- "av_read_frame()" --> AVPacket
+    AVPacket -- "avcodec_send_packet()" --> AVCodecContext
+```
 
 `AVFormatContext` is the top-level context for a media file or stream, used both for reading (demuxing) and writing (muxing). [Source: avformat.h](https://github.com/FFmpeg/FFmpeg/blob/master/libavformat/avformat.h)
 
@@ -288,6 +332,33 @@ Both pairs use EAGAIN/EOF semantics identically: EAGAIN means the other side mus
 ## 5. Hardware Acceleration
 
 ### 5.1 AVHWDeviceContext and AVHWFramesContext
+
+```mermaid
+graph TD
+    AVBufferRef_dev["AVBufferRef\n(ref-counted wrapper)"]
+    AVHWDeviceContext["AVHWDeviceContext\n(GPU or accelerator instance;\ntype, hwctx)"]
+    AVVAAPIDeviceContext["AVVAAPIDeviceContext\n(hwctx when type=VAAPI;\ndisplay: VADisplay)"]
+    AVVulkanDeviceContext["AVVulkanDeviceContext\n(hwctx when type=VULKAN;\nVkInstance, VkDevice, queue families)"]
+
+    AVBufferRef_frames["AVBufferRef\n(ref-counted wrapper)"]
+    AVHWFramesContext["AVHWFramesContext\n(GPU surface pool;\nformat, sw_format, width, height)"]
+    AVVulkanFramesContext["AVVulkanFramesContext\n(hwctx when format=VULKAN;\nusage, create_flags, nb_layers)"]
+
+    AVCodecContext["AVCodecContext\n(hw_device_ctx or hw_frames_ctx)"]
+    AVFilterGraph["AVFilterGraph\n(filter graph hardware context)"]
+    AVVkFrame["AVVkFrame\n(per-frame Vulkan surface;\nVkImage[], VkSemaphore[], layout[])"]
+
+    AVBufferRef_dev --> AVHWDeviceContext
+    AVHWDeviceContext -- "hwctx (VAAPI)" --> AVVAAPIDeviceContext
+    AVHWDeviceContext -- "hwctx (Vulkan)" --> AVVulkanDeviceContext
+    AVHWDeviceContext -- "av_hwframe_ctx_alloc()" --> AVHWFramesContext
+    AVBufferRef_frames --> AVHWFramesContext
+    AVHWFramesContext -- "hwctx (Vulkan)" --> AVVulkanFramesContext
+    AVHWDeviceContext -. "dec_ctx->hw_device_ctx" .-> AVCodecContext
+    AVHWFramesContext -. "enc_ctx->hw_frames_ctx" .-> AVCodecContext
+    AVHWDeviceContext -. "filter graph hw context" .-> AVFilterGraph
+    AVHWFramesContext -- "frame->data[0]" --> AVVkFrame
+```
 
 FFmpeg models hardware accelerators through two reference-counted context types: `AVHWDeviceContext` (represents a GPU or accelerator instance) and `AVHWFramesContext` (manages a pool of GPU surfaces). Both are heap-allocated with `av_buffer_ref`-counted wrappers for safe sharing across codec and filter graph components. [Source: hardware context system](https://deepwiki.com/FFmpeg/FFmpeg/7.1-hardware-context-system) | [Source: AVHWDeviceContext doxygen](https://ffmpeg.org/doxygen/trunk/structAVHWDeviceContext.html)
 
@@ -507,6 +578,26 @@ VDPAU (Video Decode and Presentation API for Unix) is NVIDIA's legacy Linux hard
 ## 6. The lavfi Filter Graph
 
 ### 6.1 Core Filter Structures
+
+```mermaid
+graph TD
+    AVFilterGraph["AVFilterGraph\n(container; filters[], nb_threads)"]
+    AVFilterContext_src["AVFilterContext\n(buffersrc / source filter)"]
+    AVFilterContext_tx["AVFilterContext\n(transform filter:\nscale, overlay, format, hwfilter)"]
+    AVFilterContext_sink["AVFilterContext\n(buffersink / sink filter)"]
+    AVFilter_desc["AVFilter\n(read-only descriptor;\nname, init/uninit/activate callbacks,\nquery_formats, flags)"]
+    AVFilterLink["AVFilterLink\n(edge between two AVFilterContext nodes;\nformat, w, h)"]
+
+    AVFilterGraph --> AVFilterContext_src
+    AVFilterGraph --> AVFilterContext_tx
+    AVFilterGraph --> AVFilterContext_sink
+    AVFilterContext_src -- "backed by" --> AVFilter_desc
+    AVFilterContext_tx -- "backed by" --> AVFilter_desc
+    AVFilterContext_sink -- "backed by" --> AVFilter_desc
+    AVFilterContext_src -- "AVFilterLink" --> AVFilterContext_tx
+    AVFilterContext_tx -- "AVFilterLink" --> AVFilterContext_sink
+    AVFilterLink -. "format negotiation\n(query_formats callbacks)" .-> AVFilterLink
+```
 
 `libavfilter` implements a directed graph where `AVFilterContext` nodes are connected by `AVFilterLink` edges. Each filter type is described by a read-only `AVFilter` descriptor that declares its input/output pads and callback functions. [Source: avfilter.h](https://github.com/FFmpeg/FFmpeg/blob/master/libavfilter/avfilter.h)
 
@@ -796,6 +887,26 @@ Demux thread → Decode thread → Filter thread → Encode thread → Mux threa
                         Scheduler (node graph, queues, synchronisation)
 ```
 
+```mermaid
+graph LR
+    Demux["Demux thread\n(ffmpeg_mux.c / av_read_frame)"]
+    Decode["Decode thread\n(ffmpeg_dec.c / avcodec_receive_frame)"]
+    Filter["Filter thread\n(ffmpeg_filter.c / lavfi graph)"]
+    Encode["Encode thread\n(ffmpeg_enc.c / avcodec_receive_packet)"]
+    Mux["Mux thread\n(ffmpeg_mux.c / av_write_frame)"]
+    Scheduler["Scheduler\n(ffmpeg_sched.c;\nnode graph, thread-safe queues,\nsynchronisation)"]
+
+    Demux -- "AVPacket queue" --> Decode
+    Decode -- "AVFrame queue" --> Filter
+    Filter -- "AVFrame queue" --> Encode
+    Encode -- "AVPacket queue" --> Mux
+    Scheduler -. "coordinates" .-> Demux
+    Scheduler -. "coordinates" .-> Decode
+    Scheduler -. "coordinates" .-> Filter
+    Scheduler -. "coordinates" .-> Encode
+    Scheduler -. "coordinates" .-> Mux
+```
+
 All five stages overlap in time: while the muxer is writing packet N, the encoder is encoding frame N+1, the filter is processing frame N+2, the decoder is decoding packet N+3, and the demuxer is reading packet N+4. This pipelined parallelism was previously only available at the library API level; the CLI now exposes the same throughput.
 
 ### 8.2 Stream Mapping and Option Parsing
@@ -1018,6 +1129,22 @@ Two open-source streaming servers are commonly deployed alongside FFmpeg on Linu
 **mediamtx** (formerly rtsp-simple-server) is a Go single-binary server supporting SRT, WebRTC, RTSP, RTMP, LL-HLS, and MPEG-TS. Its zero-dependency deployment model (no interpreter, single executable) makes it practical for embedded Linux and container deployments. [Source: mediamtx GitHub](https://github.com/bluenviron/mediamtx)
 
 A common architecture pairs FFmpeg as the transcoder with mediamtx as the protocol hub:
+
+```mermaid
+graph LR
+    Source["Live Source\n(camera, encoder)"]
+    mediamtx["mediamtx\n(protocol hub;\nSRT, RTSP, RTMP, WebRTC, LL-HLS)"]
+    FFmpeg["FFmpeg\n(transcoder;\nlibavcodec + libavformat)"]
+    HLS["HLS output\n(.m3u8 + .ts segments)"]
+    RTMP_out["RTMP re-stream"]
+    WebRTC_out["WebRTC output"]
+
+    Source -- "SRT ingest" --> mediamtx
+    mediamtx -- "RTMP pull" --> FFmpeg
+    FFmpeg -- "HLS segments" --> HLS
+    mediamtx -- "re-publish" --> RTMP_out
+    mediamtx -- "re-publish" --> WebRTC_out
+```
 
 ```bash
 # mediamtx receiving SRT, re-publishing as RTMP and HLS

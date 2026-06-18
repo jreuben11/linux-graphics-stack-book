@@ -39,6 +39,26 @@ The basic model underlying every GPU terminal renderer covered in this chapter i
 
 Pixel graphics complicate but do not fundamentally alter this model. Images uploaded via the Kitty Graphics Protocol or decoded from a Sixel stream are stored as separate GPU textures and composited into the same render pass at appropriate z-indices, either behind or in front of text cells depending on the application's intent.
 
+```mermaid
+graph TD
+    Grid["Terminal Cell Grid\n(codepoint + fg/bg colour + attrs)"]
+    Quads["GPU Quad List\n(one rect per visible cell)"]
+    Atlas["Glyph Atlas Texture\n(GL_TEXTURE_2D_ARRAY)"]
+    VS["Vertex Shader\n(grid coords → clip space)"]
+    FS["Fragment Shader\n(atlas sample + colour tint)"]
+    FB["Framebuffer"]
+    WL["Wayland Compositor\n(wl_surface buffer)"]
+    Images["Pixel Image Textures\n(Kitty / Sixel)"]
+
+    Grid --> Quads
+    Atlas --> FS
+    Images --> FS
+    Quads --> VS
+    VS --> FS
+    FS --> FB
+    FB --> WL
+```
+
 ---
 
 ## 2. Glyph Atlas Fundamentals
@@ -48,6 +68,24 @@ Every GPU terminal renderer must solve the same core problem: the Unicode repert
 ### From Codepoint to Glyph Bitmap
 
 The path from a Unicode codepoint to a rasterised bitmap passes through two libraries that are now standard infrastructure across all terminal renderers. HarfBuzz performs text shaping: it groups a run of codepoints in the same font and script into a sequence of glyph IDs, resolving ligatures (so that `fi` in a ligature font maps to a single glyph rather than two), handling directional runs in bidirectional text via the Unicode Bidirectional Algorithm, and clustering emoji sequences and combining characters into single rendering units. [Source](https://harfbuzz.github.io/) FreeType then rasterises the individual glyph IDs produced by HarfBuzz, applying hinting and antialiasing as configured by fontconfig. The fontconfig `hintstyle` and `antialias` settings propagate into FreeType's load flags: `FT_LOAD_TARGET_LCD` for horizontal subpixel rendering on RGB-stripe LCD panels, `FT_LOAD_TARGET_LCD_V` for vertical stripes, and `FT_LOAD_TARGET_NORMAL` for grayscale antialiasing. These are not just quality parameters — they affect the pixel footprint of the rasterised bitmap and therefore the atlas slot allocation logic.
+
+```mermaid
+graph LR
+    CP["Unicode Codepoint(s)"]
+    HB["HarfBuzz\n(text shaping: ligatures,\nbidi, emoji clusters)"]
+    GID["Glyph ID Sequence"]
+    FT["FreeType\n(rasterise with hinting\n+ antialiasing)"]
+    BMP["Glyph Bitmap\n(grayscale or RGB subpixel)"]
+    Atlas["Glyph Atlas\n(GL_TEXTURE_2D_ARRAY)"]
+    FC["fontconfig\n(hintstyle / antialias\nload flags)"]
+
+    CP --> HB
+    HB --> GID
+    FC -. "load flags" .-> FT
+    GID --> FT
+    FT --> BMP
+    BMP --> Atlas
+```
 
 Subpixel rendering via `FT_LOAD_TARGET_LCD` produces a bitmap three times as wide as a grayscale bitmap for the same glyph, because each colour channel is rendered independently against the subpixel geometry of the LCD panel. The terminal must upload this as an RGB texture (or a three-channel region of a larger atlas) and use a fragment shader that applies per-channel alpha blending rather than a single coverage value. Gamma-correct blending matters here: compositing should occur in linear-light space, not in sRGB space, because sRGB values are not additive. The terminal computes the blend in linear space — either by treating the atlas texture as `GL_SRGB8_ALPHA8` and enabling automatic sRGB decode, or by performing the `pow(v, 2.2)` linearisation manually in the shader — and then encodes the result back to sRGB for the framebuffer. Terminals that skip this step exhibit fringe artefacts, visible as colour fringing or uneven stroke weight at small font sizes.
 
@@ -144,7 +182,36 @@ WezTerm takes the opposite design stance from Alacritty: maximum feature breadth
 
 ### wgpu on Linux and the Mesa Pipeline
 
-On Linux, wgpu selects its Vulkan backend through ash (the raw Vulkan bindings crate), targeting whatever Mesa Vulkan driver the system provides — RADV for AMD, ANV for Intel, NVK for NVIDIA on open-kernel systems. WezTerm's shaders are authored in WGSL and compiled via naga, wgpu's shader intermediate representation; naga translates WGSL to SPIR-V, which is then handed to the Mesa driver as a `VkShaderModule`. From that point, the Mesa NIR pipeline (Chapter 14) and the driver's backend compiler — ACO for RADV (Chapter 15), Intel's `brw` EU assembler backend for ANV — take over, compiling the SPIR-V to native GPU ISA. This is structurally identical to the path that Bevy's WGSL shaders take. The shader sources live in `wezterm-gui/src/shader.wgsl` along with per-draw-call GLSL shaders `glyph-vertex.glsl` and `glyph-frag.glsl` that are used via the OpenGL fallback path. [Source](https://github.com/wez/wezterm/tree/main/wezterm-gui/src)
+On Linux, wgpu selects its Vulkan backend through ash (the raw Vulkan bindings crate), targeting whatever Mesa Vulkan driver the system provides — RADV for AMD, ANV for Intel, NVK for NVIDIA on open-kernel systems. WezTerm's shaders are authored in WGSL and compiled via naga, wgpu's shader intermediate representation; naga translates WGSL to SPIR-V, which is then handed to the Mesa driver as a `VkShaderModule`. From that point, the Mesa NIR pipeline (Chapter 14) and the driver's backend compiler — ACO for RADV (Chapter 15), Intel's `brw` EU assembler backend for ANV — take over, compiling the SPIR-V to native GPU ISA.
+
+```mermaid
+graph TD
+    WGSL["shader.wgsl\n(WGSL source)"]
+    naga["naga\n(shader IR translation)"]
+    SPIRV["SPIR-V module\n(VkShaderModule)"]
+    wgpu["wgpu\n(Rust GPU abstraction)"]
+    ash["ash\n(raw Vulkan bindings)"]
+
+    subgraph "Mesa Vulkan Driver"
+        spirv2nir["spirv_to_nir"]
+        NIR["Mesa NIR"]
+        ACO["ACO backend\n(RADV / AMD)"]
+        ANV["brw EU assembler\n(ANV / Intel)"]
+        NVK["NVK backend\n(NVIDIA)"]
+    end
+
+    WGSL --> naga
+    naga --> SPIRV
+    SPIRV --> wgpu
+    wgpu --> ash
+    ash --> spirv2nir
+    spirv2nir --> NIR
+    NIR --> ACO
+    NIR --> ANV
+    NIR --> NVK
+```
+
+This is structurally identical to the path that Bevy's WGSL shaders take. The shader sources live in `wezterm-gui/src/shader.wgsl` along with per-draw-call GLSL shaders `glyph-vertex.glsl` and `glyph-frag.glsl` that are used via the OpenGL fallback path. [Source](https://github.com/wez/wezterm/tree/main/wezterm-gui/src)
 
 The rendering state machine is implemented in `wezterm-gui/src/renderstate.rs`, which owns the wgpu `Device`, the glyph atlas pipeline, and the per-frame vertex buffer population logic. The atlas itself is a 2D texture array managed via wgpu's `Texture` abstraction; on the Vulkan backend this compiles to a `VkImage` with `VK_IMAGE_TYPE_2D` and an array layer count that grows as needed.
 
@@ -170,6 +237,26 @@ Ghostty's most distinctive systems property relative to other GPU terminals is i
 
 The thread architecture separates three concerns: a read thread that drains the pty file descriptor into a ring buffer, a parse/write thread that runs the VT state machine over the ring buffer contents and updates the terminal grid, and a render thread that snapshots the grid and submits GPU frames. This is similar to Alacritty's model but with an explicit ring buffer between the read and parse stages, allowing the pty reader to work at full I/O speed without being gated by the VT parser. The render thread is woken by a Wayland frame callback (on Linux) or a platform-equivalent vsync signal and reads only the cells that the parse thread has marked as dirty since the previous render.
 
+```mermaid
+graph LR
+    PTY["pty fd"]
+    ReadThread["Read Thread\n(drain pty fd)"]
+    RingBuf["Ring Buffer"]
+    ParseThread["Parse/Write Thread\n(VT state machine)"]
+    Grid["Terminal Grid\n(dirty-cell tracking)"]
+    RenderThread["Render Thread\n(GPU frame submission)"]
+    VSync["Wayland Frame Callback\n(vsync)"]
+    GPU["GPU Frame"]
+
+    PTY --> ReadThread
+    ReadThread --> RingBuf
+    RingBuf --> ParseThread
+    ParseThread --> Grid
+    VSync --> RenderThread
+    Grid --> RenderThread
+    RenderThread --> GPU
+```
+
 ### Platform Rendering Backends
 
 On macOS, Ghostty uses Metal via a Swift interoperability layer. The Metal backend achieves approximately 120 FPS on Apple Silicon at approximately 45 MB RSS for a typical session, according to the project's own benchmarks. The glyph atlas is a 3D texture array (a `MTLTextureDescriptor` with `textureType = MTLTextureType2DArray`) and the shaders in `src/renderer/shaders/shaders.metal` handle glyph sampling and image compositing in a single render pass.
@@ -178,7 +265,31 @@ On Linux, Ghostty uses OpenGL via the GTK4 application runtime (`src/apprt/gtk/`
 
 ### libghostty: The Headless Emulation Core
 
-Ghostty is architected so that the VT parser and terminal state machine are cleanly separated from the rendering layer. This separation is exposed publicly as libghostty, a C/Zig shared library that provides the emulation core — the VT parser, the terminal grid, the escape sequence state machine, and the Unicode text model — as an embeddable component. The rendering backends are explicitly not part of libghostty; the library is headless and platform-agnostic. The public API is documented at [libghostty.tip.ghostty.org](https://libghostty.tip.ghostty.org) and exposes C-compatible types and function signatures, allowing embedding in applications that are not written in Zig. The primary intended use cases are editors and IDEs that want to embed a terminal pane, browser extensions, and compositors that want a built-in terminal without depending on a full terminal emulator binary. As of mid-2026, the libghostty API is not yet considered stable or versioned; the project documentation notes that the API may change without notice until a 1.0 release is declared. The library builds for macOS, Linux, Windows, and WASM targets via Zig's cross-compilation infrastructure.
+Ghostty is architected so that the VT parser and terminal state machine are cleanly separated from the rendering layer. This separation is exposed publicly as libghostty, a C/Zig shared library that provides the emulation core — the VT parser, the terminal grid, the escape sequence state machine, and the Unicode text model — as an embeddable component. The rendering backends are explicitly not part of libghostty; the library is headless and platform-agnostic.
+
+```mermaid
+graph TD
+    subgraph "libghostty (headless, platform-agnostic)"
+        VTParser["VT Parser\n(SIMD-optimised)"]
+        StateMachine["Escape Sequence\nState Machine"]
+        TermGrid["Terminal Grid\n(Unicode text model)"]
+    end
+
+    subgraph "Rendering Backends (not part of libghostty)"
+        Metal["Metal Backend\n(macOS)"]
+        OGL["OpenGL Backend\n(Linux / GTK4)"]
+        Vulkan["Vulkan Backend\n(Linux, in development)"]
+        DX12["DirectX 12 Backend\n(Windows)"]
+    end
+
+    libghostty --> Metal
+    libghostty --> OGL
+    libghostty --> Vulkan
+    libghostty --> DX12
+
+    VTParser --> StateMachine
+    StateMachine --> TermGrid
+``` The public API is documented at [libghostty.tip.ghostty.org](https://libghostty.tip.ghostty.org) and exposes C-compatible types and function signatures, allowing embedding in applications that are not written in Zig. The primary intended use cases are editors and IDEs that want to embed a terminal pane, browser extensions, and compositors that want a built-in terminal without depending on a full terminal emulator binary. As of mid-2026, the libghostty API is not yet considered stable or versioned; the project documentation notes that the API may change without notice until a 1.0 release is declared. The library builds for macOS, Linux, Windows, and WASM targets via Zig's cross-compilation infrastructure.
 
 ---
 
@@ -220,6 +331,39 @@ VTE 0.76 also replaced the scrollback buffer's compression algorithm, switching 
 
 The drawing-context abstraction that mediates between VTE's terminal logic and its rendering backend is defined in `src/drawing-context.hh` and `src/drawing-context.cc`, with the GSK-specific implementation in `src/drawing-gsk.cc` and `src/drawing-gsk.hh`. The GSK implementation maps VTE's internal draw commands to GSK render node construction, which GTK then submits to the active backend (Vulkan or OpenGL) for GPU execution.
 
+```mermaid
+graph TD
+    VTELogic["VTE Terminal Logic\n(VT parser + cell grid)"]
+    DrawCtx["drawing-context\n(src/drawing-context.hh)"]
+    DrawGSK["GSK drawing impl\n(src/drawing-gsk.cc)"]
+
+    subgraph "GSK Render Node Tree"
+        TextNode["GskTextNode\n(glyph runs via Pango)"]
+        TexNode["GskTextureNode\n(Sixel / image regions)"]
+        ColorNode["GskColorNode\n(background fill)"]
+    end
+
+    subgraph "GSK Backend (GTK 4.16+)"
+        VKBackend["GSK Vulkan Renderer\n(default on Wayland)"]
+        OGLBackend["GSK OpenGL Renderer\n(fallback)"]
+    end
+
+    MesaVK["Mesa Vulkan Driver\n(RADV / ANV / NVK)"]
+
+    VTELogic --> DrawCtx
+    DrawCtx --> DrawGSK
+    DrawGSK --> TextNode
+    DrawGSK --> TexNode
+    DrawGSK --> ColorNode
+    TextNode --> VKBackend
+    TexNode --> VKBackend
+    ColorNode --> VKBackend
+    TextNode --> OGLBackend
+    TexNode --> OGLBackend
+    ColorNode --> OGLBackend
+    VKBackend --> MesaVK
+```
+
 ### Sixel Support
 
 VTE added Sixel support through the addition of a dedicated Sixel context (`src/sixel-context.cc` / `src/sixel-context.hh`), which implements the DCS Sixel data stream decoder. The decoded pixel data is wrapped in a GSK texture node (`GskTextureNode`) with a `GdkTexture` holding the RGBA pixel data; GSK is then responsible for uploading this to the GPU and compositing it at the correct position in the terminal surface.
@@ -249,6 +393,17 @@ glEnable(GL_BLEND);
 This contrasts with the incorrect (but common) choice of `GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA`, which double-multiplies the alpha for non-premultiplied sources but is wrong for premultiplied ones and introduces the dark-fringe artefact at glyph edges.
 
 Practical z-index assignments vary by terminal. In kitty, the ordering from back to front is: background colour fill, background images (uploaded via the Kitty Graphics Protocol with a z-index below the text grid), text cell quads, foreground images (z-index above text), and the cursor. This allows applications like `btop++` to render a background graph or image beneath its text interface, a use case the Kitty Graphics Protocol explicitly targets. The cursor is always in front, ensuring it is visible regardless of what is displayed in the cell below it.
+
+```mermaid
+graph TD
+    Cursor["Cursor Overlay\n(z = front)"]
+    FGImages["Foreground Images\n(Kitty Protocol, z above text)"]
+    TextQuads["Text Cell Quads\n(glyph atlas quads)"]
+    BGImages["Background Images\n(Kitty Protocol, z below text)"]
+    BGFill["Background Colour Fill\n(z = back)"]
+
+    BGFill --> BGImages --> TextQuads --> FGImages --> Cursor
+```
 
 ### Single-Pass vs. Multi-Pass Rendering
 

@@ -46,6 +46,30 @@ The virtio-gpu device is a paravirtualised graphics device specified in the Virt
 
 The Linux guest driver lives in `drivers/gpu/drm/virtio/` and presents a fully compliant DRM device to userspace. Applications see a standard DRM file descriptor, can perform GEM allocations, submit command buffers via `DRM_IOCTL_VIRTGPU_EXECBUFFER`, and use the DRM fence/syncobj infrastructure for synchronisation. Mesa autodetects the virtio-gpu DRM device and selects the appropriate guest driver (virgl, Venus, or d3d12 on WSL2) based on the capability sets advertised by the host.
 
+```mermaid
+graph TD
+    subgraph "Guest VM"
+        App["Guest Application\n(OpenGL / Vulkan / 2D)"]
+        Mesa["Mesa\n(virgl / Venus / d3d12 guest driver)"]
+        KernelDrv["virtio-gpu DRM driver\n(drivers/gpu/drm/virtio/)"]
+        subgraph "Virtqueues"
+            CtrlQ["Control Queue\n(VIRTIO_GPU_CMD_* commands)"]
+            CursorQ["Cursor Queue\n(cursor position and image)"]
+        end
+    end
+    subgraph "Host VMM (QEMU / crosvm)"
+        HostDev["virtio-gpu host device\n(hw/display/virtio-gpu-gl.c)"]
+        CapSet["Capset negotiation\n(VirGL / Venus / gfxstream IDs)"]
+    end
+    App --> Mesa
+    Mesa --> KernelDrv
+    KernelDrv --> CtrlQ
+    KernelDrv --> CursorQ
+    CtrlQ --> HostDev
+    CursorQ --> HostDev
+    HostDev --> CapSet
+```
+
 ### F.1.1 The virtio-gpu Command Protocol
 
 virtio-gpu communicates over two virtqueues: a **control queue** for synchronous command submission and resource management, and a **cursor queue** for fast, low-latency cursor position and image updates. Every command is a fixed-size C struct prefixed by `struct virtio_gpu_ctrl_hdr`, defined in `include/uapi/linux/virtio_gpu.h`:
@@ -81,6 +105,16 @@ The type field encodes the command opcode. The complete set of resource manageme
 The **fence mechanism** is fundamental to guest–host synchronisation. When the `VIRTIO_GPU_FLAG_FENCE` flag is set in a command header and a non-zero `fence_id` is provided, the host does not issue the response until the submitted work has completed on the physical GPU. The guest driver in `drivers/gpu/drm/virtio/virtgpu_fence.c` wraps these fence IDs in DRM fence objects (`struct dma_fence`), allowing Mesa's Vulkan and OpenGL synchronisation primitives to wait correctly across the VM boundary without polling.
 
 **Capability negotiation** occurs at device initialisation. The guest driver calls `VIRTIO_GPU_CMD_GET_CAPSET_INFO` to enumerate available capsets (each identified by a numeric ID and a maximum version), then calls `VIRTIO_GPU_CMD_GET_CAPSET` with the chosen ID and version to download the binary capability blob. The kernel caches this blob and exposes it to userspace via the `DRM_IOCTL_VIRTGPU_GET_CAPS` ioctl. Mesa reads the capset during driver initialisation to discover which texture formats, GLSL versions, Vulkan extensions, and protocol features the host supports.
+
+```mermaid
+graph LR
+    subgraph "Capability Negotiation (device init)"
+        A["Guest: VIRTIO_GPU_CMD_GET_CAPSET_INFO"] -- "enumerate capset IDs/versions" --> B["Host: capset list response"]
+        B -- "select ID + version" --> C["Guest: VIRTIO_GPU_CMD_GET_CAPSET"]
+        C -- "binary capability blob" --> D["Kernel cache\n(DRM_IOCTL_VIRTGPU_GET_CAPS)"]
+        D -- "read at init" --> E["Mesa guest driver\n(virgl / Venus capability flags)"]
+    end
+```
 
 The kernel-side parameters that userspace can query are enumerated by the `virtgpu_param` enum in `drivers/gpu/drm/virtio/virtgpu_ioctl.c`. Key parameter IDs include:
 
@@ -135,6 +169,16 @@ The display pipeline works as follows:
 4. After rendering (via CPU or llvmpipe), `VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D` pushes the dirty rectangle from guest memory to the host resource.
 5. `VIRTIO_GPU_CMD_RESOURCE_FLUSH` instructs the host to display the updated region on the physical screen (or, for headless operation, deliver it to the display backend such as SDL2, GTK, or VNC).
 
+```mermaid
+graph TD
+    A["GET_DISPLAY_INFO\n(query modes from host)"] --> B["RESOURCE_CREATE_2D\n(allocate 2D resource, pixel format)"]
+    B --> C["RESOURCE_ATTACH_BACKING\n(scatter-gather: guest RAM pages → resource)"]
+    C --> D["CPU / llvmpipe rendering\n(writes into guest RAM pages)"]
+    D --> E["TRANSFER_TO_HOST_2D\n(push dirty rectangle to host resource)"]
+    E --> F["SET_SCANOUT\n(bind resource to display output)"]
+    F --> G["RESOURCE_FLUSH\n(host displays region: SDL2 / GTK / VNC / egl-headless)"]
+```
+
 The `SET_SCANOUT` command connects a resource ID to a specific display output; it is issued once at mode-set time and again whenever the framebuffer binding changes (e.g., on a page flip).
 
 On the QEMU host side, this path is implemented in `hw/display/virtio-gpu.c`. The `virtio-gpu-gl` QEMU device variant with `-display egl-headless` is particularly useful for CI pipelines: the guest renders into the framebuffer, the display is exported to an EGL surfaceless context on the host, and screenshots can be taken via QEMU's `screendump` monitor command without any physical display hardware.
@@ -175,6 +219,35 @@ Host OpenGL / EGL context  (NVIDIA, AMD, Intel GPU driver on host OS)
         │
         ▼
 Physical GPU
+```
+
+```mermaid
+graph TD
+    subgraph "Guest VM"
+        GuestGL["Guest Application\n(OpenGL 4.x / OpenGL ES 3.x)"]
+        VirglGallium["Mesa virgl Gallium driver\n(src/gallium/drivers/virgl/)"]
+        VirglEncode["virgl_encode.c\n(Gallium3D state → VirGL binary protocol)"]
+        VirtGPUCtl["DRM_IOCTL_VIRTGPU_EXECBUFFER\n(control virtqueue)"]
+    end
+    subgraph "Host VMM"
+        QEMUDev["virtio-gpu host device\n(hw/display/virtio-gpu-gl.c)"]
+        subgraph "virglrenderer library"
+            Decode["virgl_decode.c\n(decoder / dispatcher)"]
+            Context["virgl_context.c\n(GL state tracking)"]
+            Renderer["vrend_renderer.c\n(OpenGL call emission)"]
+        end
+        HostGL["Host OpenGL / EGL context\n(NVIDIA / AMD / Intel driver)"]
+        GPU["Physical GPU"]
+    end
+    GuestGL --> VirglGallium
+    VirglGallium --> VirglEncode
+    VirglEncode -- "VIRTIO_GPU_CMD_SUBMIT_3D" --> VirtGPUCtl
+    VirtGPUCtl -- "virgl_renderer_submit_cmd()" --> QEMUDev
+    QEMUDev --> Decode
+    Decode --> Context
+    Context --> Renderer
+    Renderer --> HostGL
+    HostGL --> GPU
 ```
 
 The VirGL command stream is a compact binary protocol defined in `virgl_protocol.h`, which is shared between the guest Mesa driver and the host virglrenderer library. Rather than encoding OpenGL API calls verbatim, the protocol encodes **Gallium3D state** — the intermediate representation used by Mesa's state tracker. Commands therefore map approximately one-to-one onto Gallium pipe state changes (bind texture, set blend state, draw call) rather than specific GL version-dependent API calls. This design makes the protocol independent of quirks in any particular OpenGL version and allows both the guest and host to operate at a level of abstraction above the raw OpenGL API.
@@ -263,6 +336,30 @@ Host rutabaga_gfx (crosvm) / virglrenderer Venus backend (QEMU)
 Host Vulkan ICD  (RADV, ANV, NVK, proprietary NVIDIA 570.86+, etc.)
     ▼
 Physical GPU
+```
+
+```mermaid
+graph TD
+    subgraph "Guest VM"
+        GuestApp["Guest Application\n(vkCmdDraw, ...)"]
+        VenusICD["Mesa Venus ICD\n(src/virtio/vulkan/)"]
+        RingBuf["Venus ring buffer\n(VIRTIO_GPU_BLOB_MEM_HOST3D_GUEST\nno copy — shared PCI BAR memory)"]
+        Submit["VIRTIO_GPU_CMD_SUBMIT_3D\n(ring buffer pointer + byte count)"]
+    end
+    subgraph "Host VMM"
+        Backend["rutabaga_gfx (crosvm)\nor virglrenderer Venus (QEMU)"]
+        HandleMap["Object handle translation\n(guest VkDevice ID → host VkDevice handle)"]
+        HostICD["Host Vulkan ICD\n(RADV / ANV / NVK / NVIDIA 570.86+)"]
+        GPU["Physical GPU"]
+    end
+    GuestApp -- "vkCmdDraw()" --> VenusICD
+    VenusICD -- "serialise into" --> RingBuf
+    RingBuf -- "pointer via" --> Submit
+    Submit --> Backend
+    Backend -- "read shared memory directly" --> RingBuf
+    Backend --> HandleMap
+    HandleMap -- "native vkCmdDraw()" --> HostICD
+    HostICD --> GPU
 ```
 
 **Object handle translation** is managed by the Venus protocol itself. Guest `VkDevice` handles are 64-bit opaque IDs assigned by the guest Venus driver; the host maintains a hash table mapping these IDs to its own host-side Vulkan handles. This indirection prevents pointer value leaks across the VM boundary (a security requirement) while keeping per-object lookup cost O(1). The guest-side handle space is managed by `vn_instance.c` and `vn_device.c`.
@@ -355,6 +452,31 @@ Windows host: WDDM GPU driver  (NVIDIA, AMD, Intel)
     │
     ▼
 Physical GPU
+```
+
+```mermaid
+graph TD
+    subgraph "WSL2 Linux Guest"
+        GL["OpenGL application\n(Mesa d3d12 Gallium driver)"]
+        VK["Vulkan application\n(Mesa dozen ICD)"]
+        CUDA["CUDA application\n(NVIDIA CUDA-WSL driver)"]
+        D3D12GL["d3d12 Gallium driver\n(src/gallium/drivers/d3d12/)"]
+        D3D12VK["dozen Vulkan ICD\n(Vulkan over D3D12)"]
+        dxgkrnl["dxgkrnl.ko\n(drivers/hv/dxgkrnl/)\ncustom IOCTL interface"]
+        VMBus["Hyper-V VMBus transport\n(not VirtIO)"]
+    end
+    subgraph "Windows Host"
+        WDDM["WDDM GPU driver\n(NVIDIA / AMD / Intel)"]
+        GPU["Physical GPU"]
+    end
+    GL --> D3D12GL
+    VK --> D3D12VK
+    D3D12GL -- "D3D12 command list" --> dxgkrnl
+    D3D12VK -- "D3D12 command list" --> dxgkrnl
+    CUDA -- "dedicated VMBus compute channel" --> VMBus
+    dxgkrnl --> VMBus
+    VMBus --> WDDM
+    WDDM --> GPU
 ```
 
 `dxgkrnl` exposes a custom IOCTL interface (not standard DRM IOCTLs) that Mesa's `d3d12` Gallium driver (`src/gallium/drivers/d3d12/`) and `dozen` Vulkan driver use to submit D3D12 command lists. The path is:
@@ -452,6 +574,30 @@ The architectural distinction between primary and render nodes is covered in dep
 SR-IOV (Single Root I/O Virtualisation) is a PCI Express standard (PCIe SR-IOV specification, revision 1.1) that allows a single physical GPU to present multiple independent **virtual functions (VFs)** on the PCIe bus, each of which can be assigned to a different VM as if it were a dedicated GPU. Unlike virtio-gpu (paravirtualised, requiring cooperative guest driver participation), SR-IOV VFs appear as near-native PCI devices to the guest — the guest runs its standard GPU driver against the VF with no knowledge of virtualisation.
 
 The trade-off relative to virtio-gpu is complexity: SR-IOV requires hardware support in the GPU itself, BIOS/UEFI SR-IOV enablement, IOMMU activation, and careful VFIO configuration on the host. In return, it offers performance figures within a few percent of bare-metal native GPU operation.
+
+```mermaid
+graph TD
+    subgraph "Physical GPU (PCIe device)"
+        PF["Physical Function (PF)\n(host OS: amdgpu / xe / nvidia PF driver)"]
+        VF1["Virtual Function VF0"]
+        VF2["Virtual Function VF1"]
+        VFN["Virtual Function VF(n-1)"]
+    end
+    subgraph "IOMMU + VFIO"
+        VFIO["vfio-pci\n(VF bound to vfio-pci on host)"]
+    end
+    subgraph "Guest VMs"
+        VM1["VM 0\n(standard GPU driver against VF)"]
+        VM2["VM 1\n(standard GPU driver against VF)"]
+    end
+    PF -- "sriov_numvfs" --> VF1
+    PF -- "sriov_numvfs" --> VF2
+    PF -- "sriov_numvfs" --> VFN
+    VF1 --> VFIO
+    VF2 --> VFIO
+    VFIO --> VM1
+    VFIO --> VM2
+```
 
 ### F.6.1 NVIDIA vGPU: MIG on A100/H100; Mediated Device Pass-Through
 

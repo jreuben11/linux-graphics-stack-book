@@ -42,6 +42,22 @@ The `drm_driver` capability flags are the first thing the DRM core inspects when
 
 The driver lifecycle follows a well-defined sequence. A GPU driver registers a `pci_driver` struct whose `.probe` function is called by the PCI subsystem when a matching PCI device is discovered at boot or hotplug. That probe function calls `devm_drm_dev_alloc()` to allocate and zero a device-sized struct that embeds a `struct drm_device`, taking advantage of devres to tie the lifetime of all managed allocations to the PCI device's lifetime. With the device allocated, the driver maps MMIO regions using `pcim_iomap_regions()`, which claims the PCI BARs listed in the `pci_device_id` table and maps them into kernel virtual address space. Integrated GPUs typically expose a single small MMIO BAR; discrete GPUs expose a large VRAM BAR (BAR 1 or BAR 2, potentially resized via PCIe Resizable BAR negotiation) alongside a smaller register BAR. After MMIO mapping, the driver loads firmware, initialises the hardware engine, and finally calls `drm_dev_register()`, which publishes the device nodes under `/dev/dri/` and makes them accessible to userspace.
 
+```mermaid
+graph TD
+    PCI["PCI Subsystem\n(.probe callback)"]
+    Alloc["devm_drm_dev_alloc()\n(drm_device embedded)"]
+    MMIO["pcim_iomap_regions()\n(BAR mapping)"]
+    FW["request_firmware()\n(firmware loading)"]
+    HWInit["Hardware engine init\n(IP block hw_init)"]
+    Register["drm_dev_register()\n(/dev/dri/ nodes published)"]
+
+    PCI --> Alloc
+    Alloc --> MMIO
+    MMIO --> FW
+    FW --> HWInit
+    HWInit --> Register
+```
+
 Interrupt handling differs between drivers but the pattern is consistent. The DRM core provides IRQ helpers — `drm_irq_install()` / `drm_irq_uninstall()` — for drivers that use a single IRQ. Production GPU drivers typically bypass these and manage MSI-X vectors directly, allocating per-engine interrupt vectors to avoid contention on high-throughput workloads. The interrupt handler's primary job is to signal completion fences, allowing waiting tasks or the GPU scheduler's wakeup path to proceed.
 
 Runtime power management is woven into every driver operation. The `pm_runtime_get_sync()` / `pm_runtime_put_autosuspend()` pair brackets any operation that requires the GPU to be powered. Inside the DRM core, `drm_dev_enter()` and `drm_dev_exit()` serve as PM-aware critical section guards: `drm_dev_enter()` increments an in-use reference count and returns false if the device is being torn down, while `drm_dev_exit()` decrements it and may trigger an autosuspend timer. The cost of a D3cold transition on a discrete GPU — resetting all hardware state, re-authenticating firmware — can be tens to hundreds of milliseconds, which is why autosuspend delays are tunable rather than zero.
@@ -97,6 +113,25 @@ The amdgpu driver supports AMD Radeon GPUs from the Sea Islands (CIK, GCN 2nd ge
 The most distinctive architectural feature of amdgpu is its decomposition of the physical GPU into independent **IP blocks** (Intellectual Property blocks). AMD's GPU SoC is literally assembled from separately-designed blocks: a GFX engine (shader processors), SDMA (System DMA), VCN (Video Core Next for encode/decode), DCN (Display Core Next), PSP (Platform Security Processor), SMU (System Management Unit), and on older parts UVD (Unified Video Decoder) and VCE (Video Codec Engine). Each IP block has its own register space, its own firmware, and its own power domain.
 
 amdgpu models this directly. Every IP block registers an `amdgpu_ip_block_version` struct which embeds a pointer to an `amd_ip_funcs` vtable. That vtable provides `sw_init`, `hw_init`, `hw_fini`, `sw_fini`, `suspend`, and `resume` hooks. Initialisation proceeds by iterating `adev->ip_blocks[]` in order — first calling `sw_init` on all blocks, then `hw_init` — because some blocks depend on others' software state being established before hardware can be programmed.
+
+```mermaid
+graph TD
+    subgraph "amdgpu IP Block Decomposition (adev->ip_blocks[])"
+        PSP["PSP\n(Platform Security Processor)\nfirmware authentication"]
+        SMU["SMU\n(System Management Unit)\nvoltage/frequency/thermal"]
+        GFX["GFX Engine\n(shader processors, CP, rings)"]
+        SDMA["SDMA\n(System DMA)\nbuffer copy"]
+        VCN["VCN\n(Video Core Next)\nencode/decode"]
+        DCN["DCN\n(Display Core Next)\ndisplay pipeline"]
+    end
+
+    PSP -- "authenticates firmware for" --> GFX
+    PSP -- "authenticates firmware for" --> SDMA
+    PSP -- "authenticates firmware for" --> VCN
+    PSP -- "authenticates firmware for" --> DCN
+    SMU -- "power domain control" --> GFX
+    SMU -- "power domain control" --> VCN
+```
 
 ```c
 /* Source: drivers/gpu/drm/amd/amdgpu/amdgpu_device.c — amdgpu_device_ip_init() */
@@ -223,6 +258,23 @@ AMD's display engine is a particularly complex subsystem within amdgpu. The Disp
 
 The integration layer, called **DM** (Display Manager), lives in `drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c`. DM's job is to translate DRM KMS atomic state — `drm_crtc_state`, `drm_plane_state`, `drm_connector_state` — into DC objects, then call `dc_commit_streams()` (or its atomic equivalent) to apply the new display configuration. The dc/dm split is what allows AMD to keep DC as a portable library while still complying with the DRM KMS driver contract.
 
+```mermaid
+graph LR
+    subgraph "DRM KMS"
+        KMS["drm_crtc_state\ndrm_plane_state\ndrm_connector_state"]
+    end
+    subgraph "DM — Display Manager\n(amdgpu_dm.c)"
+        DM["DM\n(Linux/Windows translation layer)"]
+    end
+    subgraph "DC — Display Core\n(drivers/gpu/drm/amd/display/dc/)"
+        DC["dc_stream_state\ndc_plane_state\ndc_surface"]
+        DMCUB["DMCUB\n(Display Micro-Controller Unit B)\nAUX / HDCP / idle"]
+    end
+    KMS -- "atomic commit" --> DM
+    DM -- "dc_commit_streams()" --> DC
+    DC -- "firmware commands" --> DMCUB
+```
+
 Within DCN, AMD embeds a microcontroller called the **DMCUB** (Display Micro-Controller Unit B). DMCUB is AMD's own embedded core and handles tasks that benefit from low-latency autonomous execution: DisplayPort AUX channel transactions (needed for monitor capability negotiation and HDCP), HDCP state machine management, and low-power display idle optimisations. DMCUB firmware is a separate blob loaded at startup via `request_firmware()`. It is important to note that DMCUB is AMD's proprietary microcontroller design, distinct from NVIDIA's Falcon family used in their display and video engines.
 
 ### RDNA 4 and GFX 12.1
@@ -309,6 +361,26 @@ The transition from i915 to Xe as the default driver has been incremental. Alche
 Xe's object hierarchy starts at `xe_device`, which corresponds to a PCI device. Within a device, one or more `xe_gt` (Graphics Technology) objects represent hardware tiles; a single-tile Arc GPU has one GT, a multi-tile server part would have several. Within each GT, `xe_hw_engine` objects represent individual hardware engines (render, compute, copy, media). Execution queues — the userspace-visible abstraction for submitting work — are represented by `xe_exec_queue`, which encapsulates the GuC context and the associated scheduling properties.
 
 This four-level hierarchy (device → GT → engine → exec queue) is more explicit than i915's model, which conflated some of these levels. It pays dividends when handling multi-tile submissions, where a single userspace queue may span multiple GTs and require cross-GT synchronisation.
+
+```mermaid
+graph TD
+    XeDev["xe_device\n(PCI device)"]
+    GT0["xe_gt\n(tile 0)"]
+    GT1["xe_gt\n(tile 1, multi-tile)"]
+    Eng0["xe_hw_engine\n(render)"]
+    Eng1["xe_hw_engine\n(compute)"]
+    Eng2["xe_hw_engine\n(copy)"]
+    EQ0["xe_exec_queue\n(GuC context\nscheduling properties)"]
+    EQ1["xe_exec_queue\n(GuC context\nscheduling properties)"]
+
+    XeDev --> GT0
+    XeDev -. "multi-tile only" .-> GT1
+    GT0 --> Eng0
+    GT0 --> Eng1
+    GT0 --> Eng2
+    Eng0 --> EQ0
+    Eng1 --> EQ1
+```
 
 ### Xe VM and VM_BIND
 
@@ -401,6 +473,19 @@ All three driver families — amdgpu, i915/Xe, and nouveau — use the DRM GPU s
 The two central abstractions are `struct drm_gpu_scheduler` and `struct drm_sched_entity`. A `drm_gpu_scheduler` corresponds to a hardware run-queue — in amdgpu terms, a single ring buffer; in i915/Xe terms, a GuC context submission channel. A `drm_sched_entity` represents a userspace submission queue, such as a Vulkan queue or an OpenCL command queue. Multiple entities multiplex onto a single scheduler; the scheduler selects the next job to run using a fair-queue algorithm that honours entity priorities.
 
 Job submission follows a defined lifecycle. The driver creates a `drm_sched_job` via `drm_sched_job_init()`, populates it with hardware-specific payload, then publishes it to the scheduler via `drm_sched_entity_push_job()`. This call adds the job to the entity's SPSC queue and wakes the scheduler's kthread if the entity is the current entity of a hardware scheduler. The kthread (named `drm_sched_<name>`) calls the driver's `run_job` backend operation, which emits the actual hardware commands. When the hardware signals completion via an interrupt and fence, the fence's signal propagation wakes any waiters and triggers `free_job` cleanup.
+
+```mermaid
+graph TD
+    Entity0["drm_sched_entity\n(Vulkan queue / OpenCL queue)"]
+    Entity1["drm_sched_entity\n(another userspace queue)"]
+    Sched["drm_gpu_scheduler\n(one per hardware run-queue)\nkthread: drm_sched_<name>"]
+    HWRing["Hardware run-queue\n(amdgpu ring / GuC context)"]
+
+    Entity0 -- "drm_sched_entity_push_job()" --> Sched
+    Entity1 -- "drm_sched_entity_push_job()" --> Sched
+    Sched -- "run_job()\n(emit CP / GuC packets)" --> HWRing
+    HWRing -- "interrupt + fence signal\nfree_job()" --> Sched
+```
 
 ```c
 /* Source: drivers/gpu/drm/scheduler/sched_main.c — job lifecycle */
@@ -605,6 +690,32 @@ The protocol divides commands between a control queue (synchronous commands that
 
 The 3D command submission extension uses `VIRTIO_GPU_CMD_SUBMIT_3D`, which carries an opaque command stream in its payload. The content of this stream depends on the rendering protocol in use — VirGL or Venus — described below. The blob resource extension (`VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB`) adds the ability to create resources backed by host-visible memory, enabling DMA-BUF export from guest to host for zero-copy scanout paths.
 
+```mermaid
+graph TD
+    subgraph "Guest Kernel (drivers/gpu/drm/virtio/)"
+        VirtGPUDrv["virtio-gpu DRM driver\n(render node + KMS)"]
+        CtrlQ["control virtqueue\n(synchronous commands)"]
+        CursorQ["cursor virtqueue\n(async cursor updates)"]
+    end
+    subgraph "Guest Mesa"
+        VirGL["VirGL Gallium driver\n(OpenGL serialisation)"]
+        Venus["Venus Vulkan driver\n(src/virtio/vulkan/)"]
+    end
+    subgraph "Host"
+        Hypervisor["Hypervisor\n(QEMU / crosvm)"]
+        VirGLR["virglrenderer\n(replays OpenGL/Vulkan on host)"]
+        HostGPU["Host GPU"]
+    end
+
+    VirGL -- "VIRTIO_GPU_CMD_SUBMIT_3D" --> CtrlQ
+    Venus -- "VIRTIO_GPU_CMD_SUBMIT_3D" --> CtrlQ
+    VirtGPUDrv --> CtrlQ
+    VirtGPUDrv --> CursorQ
+    CtrlQ -- "virtqueue kick" --> Hypervisor
+    Hypervisor --> VirGLR
+    VirGLR --> HostGPU
+```
+
 ### VirGL: OpenGL Virtualisation
 
 VirGL is the OpenGL-over-virtio protocol. In the guest, Mesa's VirGL Gallium driver serialises OpenGL API calls into a compact binary stream. That stream is submitted via `VIRTIO_GPU_CMD_SUBMIT_3D` to the host. The host-side `virglrenderer` library receives the stream and replays it as host OpenGL (or host Vulkan, in newer virglrenderer versions) calls. This double-serialisation — guest API calls → protocol stream → host API calls — adds latency on every frame but is suitable for general desktop virtualisation.
@@ -662,6 +773,28 @@ The Heterogeneous Memory Management subsystem enables the GPU to access CPU-mana
 ### HMM Infrastructure in the Kernel
 
 HMM's core function is `hmm_range_fault()`, which takes a virtual address range from a CPU process's page table and pins the physical pages, producing a DMA-mapped scatter-gather list that a GPU page table walker can install. When the CPU subsequently moves one of those pages — due to reclaim, migration, NUMA balancing, or explicit `madvise` — the kernel's MMU notifier chain fires. amdgpu registers an MMU notifier via `amdgpu_mn` (the amdgpu MMU notifier, `drivers/gpu/drm/amd/amdgpu/amdgpu_mn.c`). The notifier callback — `amdgpu_mn_invalidate_range_start()` — issues a GPU TLB shootdown for the affected address range and blocks until all GPU memory accesses to those addresses have completed. Only then does the CPU page move proceed. The GPU can subsequently re-fault the mapping via `hmm_range_fault()`, obtaining new physical addresses.
+
+```mermaid
+graph TD
+    App["CPU process\n(shared VA range)"]
+    HMM["hmm_range_fault()\n(pin pages, produce DMA sg-list)"]
+    GPUPageTable["GPU page table\n(installed by amdgpu)"]
+    CPUMove["CPU page move\n(reclaim / NUMA / madvise)"]
+    MMUNotifier["MMU notifier chain\n(kernel)"]
+    AMDMN["amdgpu_mn\n(amdgpu_mn_invalidate_range_start())"]
+    TLBShoot["GPU TLB shootdown\n(block until GPU accesses retire)"]
+    Refault["hmm_range_fault()\n(re-fault, new physical addresses)"]
+
+    App --> HMM
+    HMM --> GPUPageTable
+    App --> CPUMove
+    CPUMove --> MMUNotifier
+    MMUNotifier --> AMDMN
+    AMDMN --> TLBShoot
+    TLBShoot -- "page move proceeds" --> CPUMove
+    TLBShoot --> Refault
+    Refault --> GPUPageTable
+```
 
 ```c
 /* Source: drivers/gpu/drm/amd/amdgpu/amdgpu_mn.c — MMU notifier callback (simplified) */

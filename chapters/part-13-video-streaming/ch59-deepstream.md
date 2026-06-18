@@ -49,6 +49,34 @@ NVIDIA DeepStream SDK is a GPU-accelerated video analytics framework built on to
 
 All four elements exchange `NvBufSurface` objects as the shared buffer type across the pipeline, eliminating format-conversion copies at element boundaries.
 
+```mermaid
+graph TD
+    subgraph "Input Sources"
+        RTSP["RTSP / File\n(nvurisrcbin)"]
+    end
+    subgraph "DeepStream Core Plugin Set"
+        MUX["Gst-NvStreammux\n(nvstreammux)"]
+        INFER["Gst-NvInfer\n(nvinfer)"]
+        POST["Gst-NvDsPostProcess\n(nvdspostprocess)"]
+        CONV["Gst-NvVideoConvert\n(nvvideoconvert)"]
+    end
+    subgraph "Shared Buffer"
+        NBS["NvBufSurface\n(CUDA device memory)"]
+    end
+    subgraph "Downstream"
+        SINK["Sink / Display\n(nvdsosd, nvmsgbroker)"]
+    end
+    RTSP --> MUX
+    MUX -- "batched NvBufSurface" --> INFER
+    INFER -- "raw tensor output" --> POST
+    POST --> CONV
+    CONV --> SINK
+    NBS -. "shared by all elements" .-> MUX
+    NBS -. "shared by all elements" .-> INFER
+    NBS -. "shared by all elements" .-> POST
+    NBS -. "shared by all elements" .-> CONV
+```
+
 **Version history** (relevant recent releases):
 
 | Version | Highlights | CUDA | TensorRT | Ubuntu |
@@ -185,6 +213,21 @@ NvDsBatchMeta
         │     └── NvDsClassifierMeta  (one per secondary classifier applied)
         │           └── NvDsLabelInfo  (one per class label)
         └── NvDsDisplayMeta  (rendering overlays: lines, text, bboxes)
+```
+
+```mermaid
+graph TD
+    BM["NvDsBatchMeta\n(one per GstBuffer)"]
+    FM["NvDsFrameMeta\n(one per frame in batch)"]
+    OM["NvDsObjectMeta\n(one per detected object)"]
+    CM["NvDsClassifierMeta\n(one per secondary classifier applied)"]
+    LI["NvDsLabelInfo\n(one per class label)"]
+    DM["NvDsDisplayMeta\n(rendering overlays: lines, text, bboxes)"]
+    BM -- "frame_meta_list" --> FM
+    FM -- "obj_meta_list" --> OM
+    FM -- "display_meta_list" --> DM
+    OM -- "classifier_meta_list" --> CM
+    CM --> LI
 ```
 
 ### 3.1 NvDsFrameMeta Fields
@@ -415,6 +458,25 @@ max-fps-control=0         # 0=no throttle, 1=throttle sources to max FPS
 
 `nvstreamdemux` (element factory name `nvstreamdemux`) is the complementary element to `nvstreammux`. After the inference and tracker stages have annotated the batch with per-object metadata, `nvstreamdemux` splits the batched `NvBufSurface` back into individual per-source streams and routes the corresponding `NvDsFrameMeta` (now carrying `NvDsObjectMeta` entries set by `nvinfer` and `nvtracker`) downstream on separate source pads. This enables per-stream encoding, display, or file sinking:
 
+```mermaid
+graph LR
+    S0["nvurisrcbin\n(source 0)"]
+    S1["nvurisrcbin\n(source 1)"]
+    MUX["nvstreammux\n(sink_0, sink_1)"]
+    INFER["nvinfer\n(primary detector)"]
+    TRACK["nvtracker"]
+    DEMUX["nvstreamdemux\n(src_0, src_1)"]
+    ENC0["nvvideoconvert\nnvv4l2h264enc\n(stream 0)"]
+    ENC1["nvvideoconvert\nnvv4l2h264enc\n(stream 1)"]
+    S0 -- "sink_0" --> MUX
+    S1 -- "sink_1" --> MUX
+    MUX -- "batched NvBufSurface\n+ NvDsBatchMeta" --> INFER
+    INFER --> TRACK
+    TRACK -- "annotated batch\n(NvDsObjectMeta)" --> DEMUX
+    DEMUX -- "src_0" --> ENC0
+    DEMUX -- "src_1" --> ENC1
+```
+
 ```bash
 # gst-launch-1.0 example: demux → per-stream encoder
 gst-launch-1.0 \
@@ -435,6 +497,30 @@ Source pads on `nvstreamdemux` are named `src_%u` (matching the `sink_%u` input 
 DeepStream's tracker GStreamer element (`nvtracker`) is a thin shell: it loads a **low-level tracker library** at runtime via `ll-lib-file`, calls six standardised API functions, and translates the results back into `NvDsObjectMeta.object_id` assignments. The reference library `libnvds_nvmultiobjecttracker.so` implements five tracker algorithms selectable via YAML config. Custom third-party trackers can be plugged in by implementing the same six-function API.
 
 [Source: Gst-nvtracker documentation](https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_plugin_gst-nvtracker.html)
+
+```mermaid
+graph TD
+    SHELL["nvtracker\n(GStreamer element shell)"]
+    LIB["libnvds_nvmultiobjecttracker.so\n(ll-lib-file)"]
+    API["NvMOT API\n(6-function C interface)"]
+    IOU["IOU"]
+    SORT["NvSORT"]
+    DSORT["NvDeepSORT"]
+    DCF["NvDCF"]
+    MASK["MaskTracker"]
+    CUSTOM["Custom tracker library\n(user-supplied .so)"]
+    OUT["NvDsObjectMeta.object_id\nassignments"]
+    SHELL -- "loads at runtime" --> LIB
+    SHELL -- "calls" --> API
+    LIB -- "implements" --> API
+    LIB --> IOU
+    LIB --> SORT
+    LIB --> DSORT
+    LIB --> DCF
+    LIB --> MASK
+    CUSTOM -- "implements" --> API
+    API -- "track ID assignments" --> OUT
+```
 
 ### 6.1 Built-in Tracker Algorithms
 
@@ -606,6 +692,25 @@ The optional `NvMOT_UpdateParams` function (not required) supports live YAML con
 The `nvmsgconv` → `nvmsgbroker` element pair converts DeepStream analytics metadata into cloud-ready messages. `nvmsgconv` serialises `NvDsEventMsgMeta` structures into JSON (or Protobuf) payloads conforming to a configurable schema; `nvmsgbroker` dispatches them to a message bus via a **protocol adapter** shared library.
 
 [Source: NvMsgBroker documentation](https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_plugin_gst-nvmsgbroker.html)
+
+```mermaid
+graph LR
+    META["NvDsEventMsgMeta\n(analytics metadata)"]
+    CONV["nvmsgconv\n(serialise to JSON / Protobuf)"]
+    BROKER["nvmsgbroker\n(dispatch via proto-lib)"]
+    KAFKA["libnvds_kafka_proto.so\n(Apache Kafka / librdkafka)"]
+    MQTT["libnvds_mqtt_proto.so\n(MQTT / libmosquitto)"]
+    AMQP["libnvds_amqp_proto.so\n(AMQP / rabbitmq-c)"]
+    AZURE["libnvds_azure_proto.so\n(Azure IoT Hub)"]
+    REDIS["libnvds_redis_proto.so\n(Redis / hiredis)"]
+    META --> CONV
+    CONV -- "payload-type JSON/Protobuf" --> BROKER
+    BROKER -- "proto-lib" --> KAFKA
+    BROKER -- "proto-lib" --> MQTT
+    BROKER -- "proto-lib" --> AMQP
+    BROKER -- "proto-lib" --> AZURE
+    BROKER -- "proto-lib" --> REDIS
+```
 
 ### 7.1 Supported Protocol Adapters
 

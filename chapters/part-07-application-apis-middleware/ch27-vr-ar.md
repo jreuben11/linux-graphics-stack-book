@@ -101,6 +101,18 @@ An `XrSession` ties the graphics binding to a system and moves through a well-de
 
 `IDLE → READY → SYNCHRONIZED → VISIBLE → FOCUSED → STOPPING → LOSS_PENDING → EXITING`
 
+```mermaid
+graph LR
+    IDLE --> READY
+    READY --> SYNCHRONIZED
+    SYNCHRONIZED --> VISIBLE
+    VISIBLE --> FOCUSED
+    FOCUSED --> STOPPING
+    STOPPING --> LOSS_PENDING
+    LOSS_PENDING --> EXITING
+    STOPPING --> IDLE
+```
+
 The application polls for state transitions via `xrPollEvent`, which drains the event queue into an `XrEventDataBuffer`. A state change arrives as `XrEventDataSessionStateChanged`:
 
 ```c
@@ -369,6 +381,28 @@ The repository is organised around a central abstraction layer called XRT (XR Fr
 - `src/xrt/state_trackers/oxr/` — The OpenXR API layer mapping XR API calls onto XRT interfaces
 - `src/targets/` — Build targets that wire components together (`service/`, `openxr/`, `cli/`)
 
+```mermaid
+graph TD
+    App["OpenXR Application"]
+    Loader["libopenxr_loader.so\n(OpenXR Loader)"]
+    OXR["src/xrt/state_trackers/oxr/\n(OpenXR API Layer)"]
+    XRTIface["src/xrt/include/xrt/\n(XRT Interface Headers)"]
+    IPC["src/xrt/ipc/\n(Unix socket + shared memory)"]
+    Comp["src/xrt/compositor/\n(Vulkan Compositor)"]
+    Drivers["src/xrt/drivers/\n(survive/, wmr/, v4l2/, simulated/, ...)"]
+    Targets["src/targets/\n(service/, openxr/, cli/)"]
+
+    App --> Loader
+    Loader --> OXR
+    OXR --> XRTIface
+    XRTIface --> IPC
+    XRTIface --> Comp
+    XRTIface --> Drivers
+    Targets --> IPC
+    Targets --> Comp
+    Targets --> Drivers
+```
+
 ### The xrt_device Interface
 
 Every hardware device in Monado implements `struct xrt_device`, defined in `src/xrt/include/xrt/xrt_device.h`. This is a virtual function table in C: a struct of function pointers. [Source: Monado xrt_device Reference](https://monado.pages.freedesktop.org/monado/structxrt__device.html)
@@ -434,6 +468,28 @@ The compositor is organised around `struct xrt_compositor` (the abstract interfa
 - `comp_renderer *r` — the renderer helper that issues draw calls
 - `int64_t frame_interval_ns` — current display refresh period
 - `xrt_view_config view_configs[]` — per-eye geometry
+
+```mermaid
+graph TD
+    XCN["xrt_compositor_native"]
+    CB["comp_base"]
+    CC["comp_compositor\n(comp_compositor.c)"]
+    CT["comp_target *target\n(DRM / Wayland / Nvidia)"]
+    RS["render_shaders shaders\n(distortion, ATW, clear)"]
+    RR["render_resources nr\n(pipelines, descriptor sets)"]
+    CR["comp_renderer *r"]
+    FI["int64_t frame_interval_ns"]
+    VC["xrt_view_config view_configs[]"]
+
+    XCN --> CB
+    CB --> CC
+    CC --> CT
+    CC --> RS
+    CC --> RR
+    CC --> CR
+    CC --> FI
+    CC --> VC
+```
 
 The compositor's Vulkan rendering pipeline composites all `xrEndFrame` layers into a final scan-out image per eye, applies the lens distortion mesh in a fragment shader (or compute shader path), and schedules the resulting image for DRM page flip. ATW is implemented as a separate compute shader that runs immediately before the page flip if an application frame is late (see Section 5).
 
@@ -502,6 +558,26 @@ int lease_fd = drmModeCreateLease(
 ```
 
 The Wayland compositor exposes this mechanism to clients via the `wp_drm_lease_v1` protocol, merged into wayland-protocols as a staging protocol in August 2021 and implemented in wlroots by September 2021. Compositors implementing this protocol (wlroots 0.15+, KWin 5.25+, and later KDE Plasma/Wayland-based desktops) allow Monado's "wayland direct" target to request a lease without needing a privileged process. [Source: GamingOnLinux — DRM Lease](https://www.gamingonlinux.com/2021/08/wayland-gets-drm-lease-protocol-support-to-help-vr-on-linux/)
+
+```mermaid
+graph TD
+    WC["Wayland Compositor\n(wlroots / KWin)\nholds DRM master fd"]
+    DL["drmModeCreateLease\n(DRM_IOCTL_MODE_CREATE_LEASE)"]
+    LFD["lease_fd\n(restricted DRM master fd)"]
+    VK1["vkGetDrmDisplayEXT\n(map connector_id → VkDisplayKHR)"]
+    VK2["vkAcquireDrmDisplayEXT\n(exclusive Vulkan control)"]
+    SC["VkSwapchainKHR\n(VK_KHR_display_swapchain)"]
+    PF["vkQueuePresentKHR\n(page flip → DRM_EVENT_FLIP_COMPLETE)"]
+    HMD["HMD Display"]
+
+    WC --> DL
+    DL --> LFD
+    LFD --> VK1
+    VK1 --> VK2
+    VK2 --> SC
+    SC --> PF
+    PF --> HMD
+```
 
 ### Vulkan Direct Display
 
@@ -676,20 +752,22 @@ Monado's primary visual tracking backend is Basalt (Visual-Inertial Odometry), a
 
 Monado abstracts the SLAM backend behind a `slam_tracker.hpp` interface (`src/xrt/auxiliary/tracking/t_slam_tracker.h`), enabling different backends (ORB-SLAM3, Kimera-VIO, or Basalt) to be swapped. The current primary backend is a Monado-specific fork of Basalt (`basalt-monado`). The integration architecture:
 
-```
-V4L2 camera capture
-  │ (DMA-BUF or mapped buffer)
-  ▼
-t_slam (Monado tracking module)
-  │ frames + IMU timestamps
-  ▼
-basalt_interface (slam_tracker.hpp)
-  │ non-linear VIO optimisation
-  ▼
-xrt_space_relation (6DoF pose at requested timestamp)
-  │
-  ▼
-xrt_device::get_tracked_pose()
+```mermaid
+graph TD
+    V4L2["V4L2 camera capture\n(/dev/video0)"]
+    DMABUF["DMA-BUF\n(zero-copy frame export)"]
+    TSLAM["t_slam\n(Monado tracking module)"]
+    BI["basalt_interface\n(slam_tracker.hpp)"]
+    BVIO["Basalt VIO\n(non-linear optimisation)"]
+    XSR["xrt_space_relation\n(6DoF pose at timestamp)"]
+    GTP["xrt_device::get_tracked_pose()"]
+
+    V4L2 --> DMABUF
+    DMABUF --> TSLAM
+    TSLAM -- "frames + IMU timestamps" --> BI
+    BI --> BVIO
+    BVIO --> XSR
+    XSR --> GTP
 ```
 
 The `slam_tracker.hpp` interface exposes `push_imu_sample`, `push_frame`, and `get_last_pose`. Monado's tracking module feeds camera frames and IMU samples into the pipeline continuously; pose queries from `get_tracked_pose` call `get_last_pose` and then apply IMU integration forward to the requested future timestamp.
@@ -729,6 +807,25 @@ The `wp_drm_lease_v1` Wayland protocol, merged into wayland-protocols as a stagi
 3. The client requests a lease: `zwp_drm_lease_device_v1.create_lease_request` → `zwp_drm_lease_request_v1.request_connector` → `zwp_drm_lease_request_v1.submit`
 4. The compositor creates the kernel DRM lease and sends the lease fd to the client via the event `zwp_drm_lease_v1.lease_fd`
 5. The client receives the fd, acquires the display via Vulkan, and begins direct rendering
+
+```mermaid
+graph TD
+    Comp["Wayland Compositor\n(wlroots ≥0.15 / KWin ≥5.25)"]
+    LD["zwp_drm_lease_device_v1\n(advertise lease devices)"]
+    LC["zwp_drm_lease_connector_v1\n(list connectors)"]
+    LR["zwp_drm_lease_request_v1\n(request_connector → submit)"]
+    LFD["zwp_drm_lease_v1.lease_fd\n(kernel DRM lease fd)"]
+    Monado["Monado (Wayland client)"]
+    VKAcq["vkAcquireDrmDisplayEXT\n(direct Vulkan rendering)"]
+
+    Comp --> LD
+    LD --> LC
+    Monado --> LR
+    LR -- "submit" --> Comp
+    Comp --> LFD
+    LFD --> Monado
+    Monado --> VKAcq
+```
 
 This protocol is implemented server-side in wlroots (≥0.15) and KWin (≥5.25, KDE Plasma Wayland). The important implication is that **DRM leasing via Wayland does not require root privileges**. The Wayland compositor holds the DRM master credential and grants a restricted sub-lease to the client application running as a regular user.
 

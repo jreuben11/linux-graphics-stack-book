@@ -56,6 +56,26 @@ This chapter targets **systems and driver developers** who need to understand th
 
 The Linux input subsystem, resident in `drivers/input/`, forms the lowest layer of the input stack visible to userspace. Hardware drivers translate interrupts or USB HID reports into a unified event model; the kernel then fans those events out to registered handlers, of which `evdev` is the most important. [Source: Linux kernel input documentation](https://docs.kernel.org/input/input.html)
 
+```mermaid
+graph TD
+    HW["Hardware\n(USB HID / I2C / PS/2 / Bluetooth)"]
+    DRV["Kernel Driver\n(drivers/input/, drivers/hid/)"]
+    IC["Input Core\n(drivers/input/input.c)"]
+    EVDEV["evdev Handler\n(drivers/input/evdev.c)"]
+    UDEV["udev\n(/dev/input/eventN)"]
+    LI["libinput"]
+    COMP["Wayland Compositor\n(wlroots / Mutter)"]
+    CLIENT["Wayland Client\n(wl_pointer / wl_touch)"]
+
+    HW -- "interrupt / HID report" --> DRV
+    DRV -- "input_report_*() / input_sync()" --> IC
+    IC -- "input_handler.events()" --> EVDEV
+    EVDEV -- "evdev_client ring buffer" --> UDEV
+    UDEV -- "read() syscall" --> LI
+    LI -- "libinput_dispatch()" --> COMP
+    COMP -- "Wayland protocol events" --> CLIENT
+```
+
 ### 1.1 struct input_event
 
 All communication between the kernel and userspace passes through `struct input_event`, defined in `include/uapi/linux/input.h`:
@@ -313,6 +333,29 @@ Event types dispatched per capability:
 | `_CAP_GESTURE` | `LIBINPUT_EVENT_GESTURE_SWIPE_*`, `_PINCH_*`, `_HOLD_*` |
 | `_CAP_SWITCH` | `LIBINPUT_EVENT_SWITCH_TOGGLE` |
 
+```mermaid
+graph LR
+    subgraph "libinput device classification"
+        DEV["libinput_device"]
+        KBD["LIBINPUT_DEVICE_CAP_KEYBOARD"]
+        PTR["LIBINPUT_DEVICE_CAP_POINTER"]
+        TCH["LIBINPUT_DEVICE_CAP_TOUCH"]
+        TAB["LIBINPUT_DEVICE_CAP_TABLET_TOOL"]
+        PAD["LIBINPUT_DEVICE_CAP_TABLET_PAD"]
+        GES["LIBINPUT_DEVICE_CAP_GESTURE"]
+        SW["LIBINPUT_DEVICE_CAP_SWITCH"]
+    end
+    DEV -- "has_capability?" --> KBD
+    DEV -- "has_capability?" --> PTR
+    DEV -- "has_capability?" --> TCH
+    DEV -- "has_capability?" --> TAB
+    DEV -- "has_capability?" --> PAD
+    DEV -- "has_capability?" --> GES
+    DEV -- "has_capability?" --> SW
+    PTR -. "INPUT_PROP_DIRECT absent" .-> TP["touchpad\n(acceleration applied)"]
+    PTR -. "INPUT_PROP_DIRECT set" .-> TS["touchscreen\n(calibrated coordinates)"]
+```
+
 ### 2.3 The Quirks Database
 
 The quirks system addresses the long tail of firmware bugs, incorrect capability reports, and vendor-specific behaviours. Files shipped at `/usr/share/libinput/*.quirks` are standard `.ini` files; local overrides belong in `/etc/libinput/local-overrides.quirks`. [Source: libinput device quirks](https://wayland.freedesktop.org/libinput/doc/latest/device-quirks.html)
@@ -460,6 +503,18 @@ libinput also queries libwacom to associate `LIBINPUT_EVENT_TABLET_PAD_RING` and
 
 Pressure normalisation to the [0.0, 1.0] range is done by libinput itself using the `ABS_PRESSURE` axis range from evdev; libwacom contributes the tip-threshold pressure offset. libinput 1.20+ added `libinput_tablet_tool_config_pressure_range_set()` to let compositors or toolkits adjust the effective pressure range at runtime.
 
+```mermaid
+graph TD
+    EVDEV["evdev\n(ABS_PRESSURE axis range,\nHID capabilities)"]
+    LW["libwacom\n(/usr/share/libwacom/*.tablet)"]
+    LI["libinput\n(device setup)"]
+    OUT["LIBINPUT_EVENT_TABLET_*\nevents"]
+
+    EVDEV -- "axis ranges, INPUT_PROP_*" --> LI
+    LW -- "left-handed capability,\nring/strip locations,\nbutton mode-switch roles,\ntip-threshold pressure offset" --> LI
+    LI -- "normalised [0.0, 1.0] pressure,\nphysical pad layout" --> OUT
+```
+
 ---
 
 ## 4. Gaming Controllers
@@ -482,6 +537,17 @@ Linux exposes controllers through two parallel interfaces:
 
 - `/dev/input/jsN` — the legacy joystick API (`drivers/input/joydev.c`), providing 8-bit axis values and a 32-button bitmask. Button numbers differ from evdev codes. This API is frozen; no new features will be added.
 - `/dev/input/eventN` (evdev) — the modern interface with full resolution, force feedback, LED access, and synchronisation frames. SDL2, Steam, and all modern games prefer this path.
+
+```mermaid
+graph TD
+    DRV["Kernel HID Driver\n(hid-sony, hid-nintendo, xpad)"]
+    IC["Input Core"]
+    DRV --> IC
+    IC -- "joydev handler\n(drivers/input/joydev.c)" --> JS["/dev/input/jsN\n(8-bit axes, 32 buttons)\nlegacy / frozen API"]
+    IC -- "evdev handler\n(drivers/input/evdev.c)" --> EV["/dev/input/eventN\n(full resolution, EV_FF,\nLED, sync frames)\nmodern API"]
+    JS -. "older apps / emulators" .-> OLD["Legacy Applications"]
+    EV -- "preferred by" --> SDL["SDL2 / Steam /\nmodern games"]
+```
 
 The jsdev interface survives for backwards compatibility with older applications and emulators that hard-code `/dev/input/js0`. To query which evdev node corresponds to a controller:
 
@@ -541,6 +607,15 @@ Steam Input is Valve's controller abstraction layer, implemented inside the Stea
 1. Reads raw controller input directly from evdev or hidraw.
 2. Applies per-game binding profiles (button remapping, action sets, gyro aiming).
 3. Synthesises a *virtual* controller via the `uinput` kernel module and injects the mapped events, creating a new `/dev/input/eventN` that games see as a standard Xbox 360 controller.
+
+```mermaid
+graph LR
+    A["evdev\n(/dev/input/eventN)"] -- "raw input" --> SI
+    B["hidraw\n(/dev/hidrawN)"] -- "raw input" --> SI
+    SI["Steam Input\n(binding profiles,\naction sets, gyro)"] -- "mapped events" --> UI
+    UI["uinput\n(drivers/input/misc/uinput.c)"] -- "creates" --> VD
+    VD["virtual /dev/input/eventN\n(Xbox 360 controller)"] -- "reads" --> G["Game"]
+```
 
 `uinput` (`drivers/input/misc/uinput.c`) allows userspace processes to create arbitrary input devices:
 
@@ -813,6 +888,30 @@ Understanding end-to-end latency requires tracing every handoff:
 
 [Source: wlroots input handling](https://drewdevault.com/2018/07/17/Input-handling-in-wlroots.html)
 
+```mermaid
+graph TD
+    HW["Hardware interrupt / USB poll"]
+    KDR["Kernel driver\ninput_report_*() — timestamp set"]
+    IC["Input core\ninput_handler.events() fan-out"]
+    EVRING["evdev.c\nevdev_client ring buffer"]
+    LID["libinput_dispatch()\npointer acceleration,\ngesture recognition,\ntap detection"]
+    WLR["wlr_backend_libinput\nwlr_input_device event"]
+    SEAT["wlr_cursor / wlr_seat\nseat state update"]
+    PROTO["Wayland protocol serialisation\nwl_pointer.motion / wl_touch.down /\ngesture events"]
+    CLI["Client\nWayland socket read → event queue dispatch"]
+    APP["Application event handler"]
+
+    HW --> KDR
+    KDR --> IC
+    IC --> EVRING
+    EVRING -- "read() syscall" --> LID
+    LID -- "wl_event_loop callback" --> WLR
+    WLR --> SEAT
+    SEAT --> PROTO
+    PROTO --> CLI
+    CLI --> APP
+```
+
 In wlroots-based compositors, `wlr_libinput_backend` is the concrete `wlr_backend` implementation that creates `wlr_input_device` structures from libinput events. Mutter uses an analogous `MetaSeatNative` path via `clutter-seat-evdev`. Both ultimately wrap the libinput context, poll its fd alongside the Wayland display fd, and dispatch events on each frame.
 
 ---
@@ -828,6 +927,21 @@ The architecture has three components:
 1. **at-spi2-core**: The `registryd` daemon on the accessibility bus (`org.a11y.Bus`). It maintains a registry of accessible applications.
 2. **ATK/AT-SPI bridge**: GTK, Qt, and WebKit expose accessibility trees through this bridge, which implements the AT-SPI2 D-Bus interfaces.
 3. **Assistive Technology clients**: Applications like Orca query the accessibility bus to enumerate widgets, receive focus events, and trigger actions.
+
+```mermaid
+graph TD
+    APPS["GTK / Qt / WebKit\napplications"]
+    BRIDGE["ATK / AT-SPI bridge\n(AT-SPI2 D-Bus interfaces)"]
+    REG["at-spi2-core\nregistryd daemon\n(org.a11y.Bus)"]
+    AT["Assistive Technology clients\n(Orca, Onboard, Caribou)"]
+    DEC["DeviceEventController\n(raw keyboard event hook)"]
+
+    APPS -- "exposes UI tree" --> BRIDGE
+    BRIDGE -- "registers accessible app" --> REG
+    AT -- "enumerate widgets,\nfocus events, actions" --> REG
+    REG -- "routes key events\nbefore focused app" --> DEC
+    DEC -- "intercept / inject\nkeyboard events" --> AT
+```
 
 AT-SPI2 also exposes a `DeviceEventController` interface that allows ATs to register for raw keyboard events *before* they reach the focused application. This is how Orca intercepts the numpad keys used to navigate the screen reader, and how Onboard injects synthetic key events.
 

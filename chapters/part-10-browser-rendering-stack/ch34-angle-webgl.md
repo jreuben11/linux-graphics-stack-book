@@ -29,6 +29,25 @@ ANGLE's backend matrix is broad. On Linux the production backend is Vulkan, tran
 
 On Linux, the call stack flows as follows. A JavaScript WebGL call in a web page reaches Blink's WebGL implementation, which calls through the GPU command channel (described in Chapter 33) into the GPU process. The passthrough command decoder in the GPU process forwards each GL call directly to ANGLE's `libGLESv2` entry points in `src/libGLESv2/`. Those entry points dispatch into `ContextVk`, which records Vulkan commands. `ContextVk` submits those commands to `vk::Renderer`, which owns the `VkDevice` and submits to the hardware via a Mesa Vulkan driver. The entire translation is synchronous from the perspective of the calling thread: there is no extra process boundary between ANGLE and the Mesa driver.
 
+```mermaid
+graph TD
+    JS["JavaScript WebGL call\n(web page)"]
+    Blink["Blink WebGL implementation\n(renderer process)"]
+    GPUChannel["GPU command channel\n(Chapter 33)"]
+    Decoder["Passthrough command decoder\n(GPU process)"]
+    ANGLE["ANGLE libGLESv2\n(src/libGLESv2/)"]
+    ContextVk["ContextVk\n(Vulkan command recording)"]
+    Renderer["vk::Renderer\n(VkDevice owner)"]
+    Mesa["Mesa Vulkan driver\n(RADV / ANV / NVK)"]
+    JS --> Blink
+    Blink --> GPUChannel
+    GPUChannel --> Decoder
+    Decoder --> ANGLE
+    ANGLE --> ContextVk
+    ContextVk --> Renderer
+    Renderer --> Mesa
+```
+
 ANGLE is used beyond Chrome. Firefox uses ANGLE on Windows (D3D11 backend) and is evaluating the Vulkan backend on Linux. Flutter uses ANGLE on Android to provide its OpenGL ES context. Qt WebEngine embeds ANGLE. WebKit on non-Apple platforms also uses ANGLE. The project is, in practice, the reference OpenGL ES implementation for browser-hosted GPU workloads.
 
 ---
@@ -40,6 +59,22 @@ Understanding ANGLE's internal object hierarchy is essential for reading crash s
 ### The EGL layer
 
 At the top of the object graph sits `egl::Display`, which represents an EGL display connection — conceptually, a connection to a GPU. `egl::Display` owns an `rx::DisplayImpl` implementation pointer; on the Vulkan backend this is `rx::DisplayVk`. The `egl::Context` object (one per `eglCreateContext` call) similarly delegates to `rx::ContextVk`. This two-level structure — a frontend GL/EGL object and a backend `rx::` implementation — runs throughout ANGLE; the frontend handles conformance validation and object tracking while the backend handles the actual API translation.
+
+```mermaid
+graph TD
+    Display["egl::Display\n(EGL display connection)"]
+    DisplayImpl["rx::DisplayImpl\n(backend interface)"]
+    DisplayVk["rx::DisplayVk\n(Vulkan backend)"]
+    Renderer["vk::Renderer\n(VkDevice, VkQueue, VMA, pipeline caches)"]
+    Context["egl::Context\n(per eglCreateContext)"]
+    ContextVk["rx::ContextVk\n(GL state + Vulkan command recording)"]
+    Display --> DisplayImpl
+    DisplayImpl --> DisplayVk
+    DisplayVk --> Renderer
+    Display --> Context
+    Context --> ContextVk
+    ContextVk --> Renderer
+```
 
 ### DisplayVk and vk::Renderer
 
@@ -81,6 +116,23 @@ angle::Result ContextVk::setupDraw(const gl::Context *context,
 
 ANGLE's Vulkan backend maintains two parallel command streams. The "outside render pass" command buffer records operations that Vulkan requires to happen outside a `VkRenderPass` — image layout transitions, buffer-to-image copies, compute dispatches for prefiltering, and mipmap generation. The "inside render pass" command buffer records draw calls within an active `VkRenderPass` instance. ANGLE's `beginNewRenderPass` method flushes all pending outside-render-pass commands, inserts any required pipeline barriers, starts a new render pass, and returns a secondary command buffer scoped to that pass.
 
+```mermaid
+graph LR
+    subgraph "Outside Render Pass"
+        ORP["Outside-render-pass\ncommand buffer"]
+        ORP_OPS["image layout transitions\nbuffer-to-image copies\ncompute dispatches\nmipmap generation"]
+    end
+    subgraph "Inside Render Pass"
+        IRP["Inside-render-pass\ncommand buffer\n(RenderPassCommandBuffer)"]
+        IRP_OPS["draw calls\n(vkCmdDraw / vkCmdDrawIndexed)"]
+    end
+    beginNewRenderPass["beginNewRenderPass\n(flush ORP, insert barriers,\nstart VkRenderPass)"]
+    ORP --> ORP_OPS
+    IRP --> IRP_OPS
+    ORP -- "flush + barriers" --> beginNewRenderPass
+    beginNewRenderPass --> IRP
+```
+
 The key APIs on `ContextVk` for navigating between these states are:
 
 - `beginNewRenderPass`: ends any existing render pass, flushes queued barrier work, starts a new render pass, returns a `RenderPassCommandBuffer`
@@ -105,6 +157,22 @@ The central engineering challenge in ANGLE's Vulkan backend is the impedance mis
 ANGLE's solution is the `GraphicsPipelineDesc` structure, a bitpacked aggregate that describes the complete state vector required to uniquely identify a `VkPipeline`. Every dimension of pipeline state that Vulkan bakes into the object is represented as a field or bitfield within `GraphicsPipelineDesc`: the primitive topology, the rasteriser's cull mode and polygon mode, the depth test and write configuration, the per-attachment blend factors and operations, the vertex input binding strides and attribute formats, and the shader module identifiers. The struct is designed for fast hashing and equality comparison — all fields are packed to minimise padding, and equality is implemented as a `memcmp` over the packed representation.
 
 When `handleDirtyGraphicsPipelineDesc` fires during `setupDraw`, ANGLE hashes the current `GraphicsPipelineDesc` and looks it up in the `GraphicsPipelineCache`. A cache hit binds the existing `VkPipeline` with `vkCmdBindPipeline` at essentially zero cost. A cache miss triggers `ContextVk::createGraphicsPipeline`, which calls `executableVk->getGraphicsPipeline()` and ultimately issues `vkCreateGraphicsPipelines`. This synchronous creation step is the primary source of "first-draw" stutter in WebGL applications.
+
+```mermaid
+graph TD
+    Desc["GraphicsPipelineDesc\n(bitpacked state hash)"]
+    Cache["GraphicsPipelineCache"]
+    Hit["Cache hit\nvkCmdBindPipeline"]
+    Miss["Cache miss\nContextVk::createGraphicsPipeline"]
+    Exec["executableVk->getGraphicsPipeline()"]
+    VkCreate["vkCreateGraphicsPipelines\n(synchronous, may stall)"]
+    Desc -- "hash + lookup" --> Cache
+    Cache -- "hit" --> Hit
+    Cache -- "miss" --> Miss
+    Miss --> Exec
+    Exec --> VkCreate
+    VkCreate --> Hit
+```
 
 ANGLE tracks which bits of `GraphicsPipelineDesc` changed since the last draw through a parallel `mGraphicsPipelineTransition` bitmask. Rather than rehashing the full descriptor on every draw, ANGLE walks only the transition bits to determine whether the pipeline has genuinely changed, enabling a fast path when consecutive draw calls differ only in viewport or scissor (which are dynamic state).
 
@@ -143,6 +211,23 @@ ANGLE tracks GL clear calls issued before the first draw into an FBO. If a `glCl
 WebGL shaders are written in GLSL ES — a dialect of GLSL that supports only features available in OpenGL ES. ANGLE must translate this shader source into SPIR-V modules that the Mesa Vulkan driver can accept via `vkCreateShaderModule`. This translation is performed entirely within ANGLE; the project has its own SPIR-V emitter and does not depend on glslang for the Vulkan path. This independence gives ANGLE finer control over the generated SPIR-V and allows the team to work around specific Mesa driver assumptions about SPIR-V structure that glslang-generated modules might not exercise.
 
 The translation is broken into three stages that proceed across the GL pipeline's lifetime.
+
+```mermaid
+graph TD
+    GLSLES["GLSL ES source\n(WebGL shader)"]
+    Stage1["Stage 1: glCompileShader\nAST parse + transformations\n(src/compiler/translator/)"]
+    Stage2["Stage 2: glLinkProgram\nResource binding resolution\nProgramExecutableVk"]
+    Stage3["Stage 3: Draw time\nFinal SPIR-V transformation\nVkShaderModule creation"]
+    SPIRV["SPIR-V module\n(provisional bindings)"]
+    FinalSPIRV["Finalised SPIR-V\n+ VkPipeline"]
+    Mesa["Mesa Vulkan driver\n(vkCreateShaderModule)"]
+    GLSLES --> Stage1
+    Stage1 --> SPIRV
+    SPIRV --> Stage2
+    Stage2 --> Stage3
+    Stage3 --> FinalSPIRV
+    FinalSPIRV --> Mesa
+```
 
 ### Stage 1: Shader Compilation (glCompileShader)
 
@@ -201,6 +286,17 @@ Three surface types are relevant on Linux:
 ANGLE implements `EGL_KHR_image_base` and `EGL_EXT_image_dma_buf_import` (with modifier support via `EGL_EXT_image_dma_buf_import_modifiers`). The DMA-BUF import path is enabled when both `supportsExternalMemoryDmaBuf` and `supportsImageDrmFormatModifier` feature flags are set on `vk::Renderer`. This allows an externally-produced DMA-BUF file descriptor — such as a buffer allocated by Viz or the Wayland compositor — to be imported as a `VkImage` backed by `VK_EXT_external_memory_dma_buf`. The import uses `vkBindImageMemory2` with a `VkImportMemoryFdInfoKHR` structure in the `pNext` chain, naming the DMA-BUF fd and its memory type index.
 
 The inverse operation — exporting an ANGLE-rendered `VkImage` as a DMA-BUF fd for consumption by Viz — uses `VK_EXT_external_memory_dma_buf` in export mode. The GPU process renders the WebGL canvas into an off-screen `VkImage` allocated with `VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT`, exports the backing memory as a DMA-BUF fd, and passes that fd to Viz. Viz imports it as a `NativePixmapDmaBuf` and submits it to the Wayland compositor via the `linux-dmabuf-unstable-v1` protocol (covered in Chapter 20). The DMA-BUF fd crosses the GPU process boundary without any pixel data copy, making this path zero-copy from ANGLE's `VkImage` to the Wayland compositor's scanout buffer.
+
+```mermaid
+graph LR
+    VkImage["VkImage\n(off-screen, OffscreenSurfaceVk)\nVK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT"]
+    DMABUF["DMA-BUF fd\n(zero-copy across process boundary)"]
+    Viz["Viz compositor\nNativePixmapDmaBuf"]
+    Wayland["Wayland compositor\nlinux-dmabuf-unstable-v1"]
+    VkImage -- "VK_EXT_external_memory_dma_buf\n(export)" --> DMABUF
+    DMABUF -- "import" --> Viz
+    Viz --> Wayland
+```
 
 ### Multi-Context and Thread Safety
 

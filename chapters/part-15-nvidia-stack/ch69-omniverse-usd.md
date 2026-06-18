@@ -247,6 +247,33 @@ attr.GetTimeSamples(&times);
 
 Sublayer composition via `root.subLayerPaths` implements a classic "stronger override" model: the first entry in `subLayerPaths` is strongest. This is why VFX workflows separate `shot.usd` (shot overrides) from `asset.usd` (base model) and layer them at shot level.
 
+```mermaid
+graph TD
+    subgraph "UsdStage (TfRefBase / TfWeakBase)"
+        Stage["UsdStage\n(outermost container)"]
+        RootLayer["SdfLayer\n(root layer)"]
+        SessionLayer["SdfLayer\n(session layer)"]
+        EditTarget["UsdEditTarget\n(active authoring target)"]
+    end
+    subgraph "Prim Tree"
+        Prim["UsdPrim\n(namespace location)"]
+        Attr["UsdAttribute\n(typed, time-sampled)"]
+        Rel["UsdRelationship\n(directed, typed connection)"]
+    end
+    subgraph "SdfLayer (per file/memory)"
+        SdfSpec["SdfSpec\n(raw, unresolved opinion)"]
+    end
+    Stage --> RootLayer
+    Stage --> SessionLayer
+    Stage --> EditTarget
+    EditTarget -. "redirects authoring to" .-> RootLayer
+    Stage -- "owns/presents" --> Prim
+    Prim --> Attr
+    Prim --> Rel
+    Attr -- "stores raw opinion in" --> SdfSpec
+    RootLayer -- "contains" --> SdfSpec
+```
+
 ### 2.4 UsdGeomMesh: Polygonal and Subdivision Surfaces
 
 `UsdGeomMesh` encodes polygon meshes with optional subdivision properties, inheriting from `UsdGeomPointBased`. [Source: raw header](https://raw.githubusercontent.com/PixarAnimationStudios/OpenUSD/release/pxr/usd/usdGeom/mesh.h)
@@ -356,6 +383,18 @@ USD's power derives from its composition algebra: multiple layers of scene descr
 A critical encapsulation rule applies to References and Payloads: once a file is referenced, its internal composition arcs are encapsulated. You cannot inject arcs across that encapsulation boundary — they must be authored inside the referenced file's layer stack.
 
 Variants deserve particular attention for Omniverse workflows: the RTX Renderer can switch between `proxy` (low-polygon stand-in), `render` (full-fidelity), and custom variants at interactive rates, deferring geometry via payload arcs inside each variant.
+
+```mermaid
+graph TD
+    L["Local (sublayers)\nStrength 1 — strongest"]
+    I["Inherits\nStrength 2 — broadcast class edits"]
+    V["Variants\nStrength 3 — named variation sets"]
+    E["Relocates\nStrength 4 — namespace reparenting"]
+    R["References\nStrength 5 — aggregate external assets"]
+    P["Payloads\nStrength 6 — deferred-load references"]
+    S["Specializes\nStrength 7 — weakest (fallback templates)"]
+    L --> I --> V --> E --> R --> P --> S
+```
 
 ### 3.2 Python API for Composition Authoring
 
@@ -530,6 +569,29 @@ public:
 
 `HdRenderParam` is an opaque, per-delegate handle passed to every prim during sync — used to share GPU context, device handles, or any render-backend-specific state without hardcoding it into the Hydra framework.
 
+```mermaid
+graph LR
+    USD["USD / UsdStage"]
+    HdIndex["HdRenderIndex"]
+    HdDelegate["HdRenderDelegate\n(abstract interface)"]
+    HdStorm["HdStorm\n(OpenGL delegate)"]
+    HdPrman["HdPrman\n(RenderMan delegate)"]
+    RTX["omni.hydra.rtx\n(RTX Renderer delegate)"]
+    CustomVk["Custom Vulkan\nHdRenderDelegate"]
+    Rprim["HdRprim\n(Mesh / BasisCurves / Points / Volume)"]
+    Sprim["HdSprim\n(Camera / Light / Material / CoordSys)"]
+    Bprim["HdBprim\n(RenderBuffer — AOV output)"]
+    USD -- "scene description" --> HdIndex
+    HdIndex -- "queries via" --> HdDelegate
+    HdDelegate --> HdStorm
+    HdDelegate --> HdPrman
+    HdDelegate --> RTX
+    HdDelegate --> CustomVk
+    HdDelegate -- "creates/destroys" --> Rprim
+    HdDelegate -- "creates/destroys" --> Sprim
+    HdDelegate -- "creates/destroys" --> Bprim
+```
+
 ### 5.2 Hydra 2.0: Scene Index Architecture
 
 Hydra 1.0 used a pull-based `HdSceneDelegate` where the render index queried scene state on demand. Hydra 2.0 (shipping as default in USD 25.05) replaces this with a push-based **scene index** system, where changes propagate through a composable chain of `HdSceneIndexBase` objects. [Source](https://openusd.org/dev/api/_page__hydra__getting__started__guide.html)
@@ -596,6 +658,25 @@ UsdStage
 - `HdRenderIndexAdapterSceneIndex` — wraps a legacy `HdSceneDelegate` as a scene index source
 - `HdDirtyBitsTranslator` — maps legacy `HdChangeTracker` dirty bits to `HdDataSourceLocator` paths
 
+```mermaid
+graph TD
+    UsdStage["UsdStage"]
+    UISSI["UsdImagingStageSceneIndex\n(replaces UsdImagingDelegate)"]
+    Flatten["HdFlatteningSceneIndex\n(resolve inherited xforms)"]
+    Instancing["HdSi_NativeInstancingSceneIndex"]
+    Merging["HdMergingSceneIndex"]
+    RenderIndex["HdRenderIndex\n(feeds render delegate)"]
+    UsdStage --> UISSI --> Flatten --> Instancing --> Merging --> RenderIndex
+    subgraph "Backward Compatibility"
+        LegacyDelegate["HdSceneDelegate (legacy)"]
+        Adapter["HdRenderIndexAdapterSceneIndex"]
+        Translator["HdDirtyBitsTranslator"]
+        LegacyDelegate --> Adapter
+        Adapter -. "wraps as scene index source" .-> Merging
+        Translator -. "maps HdChangeTracker dirty bits\nto HdDataSourceLocator paths" .-> Merging
+    end
+```
+
 ### 5.3 HdEngine::Execute and GPU Command Submission
 
 The render loop from USD stage to GPU commands:
@@ -610,6 +691,19 @@ HdEngine::Execute(renderIndex, taskList)
 ```
 
 For the RTX delegate, `Execute()` dispatches an OptiX ray-tracing launch via `optixLaunch()` (see Ch67 for OptiX internals). For HdStorm (OpenGL), it issues `glDrawElementsIndirect` calls batched by shader state.
+
+```mermaid
+graph TD
+    Engine["HdEngine::Execute\n(renderIndex, taskList)"]
+    Sync["HdTask::Sync()\npull dirty state from scene delegate or scene index"]
+    Prepare["HdTask::Prepare()\nallocate GPU resources"]
+    Execute["HdTask::Execute()\nsubmit GPU commands"]
+    CommitRes["HdRenderDelegate::CommitResources()\nflush upload queue"]
+    RenderPass["HdRenderPass::Execute()\nissue geometry commands"]
+    Engine --> Sync --> Prepare --> Execute
+    Execute --> CommitRes
+    Execute --> RenderPass
+```
 
 ### 5.4 Implementing a Custom Vulkan HdRenderDelegate
 
@@ -952,6 +1046,26 @@ The omni.gpu_foundation extension manages multi-device context creation, device 
 
 "Everything in Kit is an extension." The Kit SDK kernel provides three subsystems: an Extension System for dependency resolution and lifecycle management, an Event System for asynchronous inter-component messaging, and an Update Loop that synchronises all active extensions per frame. [Source](https://docs.omniverse.nvidia.com/kit/docs/kit-app-template/106.5/docs/kit_sdk_overview.html)
 
+```mermaid
+graph TD
+    subgraph "Kit SDK Kernel"
+        ExtSystem["Extension System\n(dependency resolution, lifecycle)"]
+        EventSystem["Event System\n(asynchronous inter-component messaging)"]
+        UpdateLoop["Update Loop\n(synchronises all active extensions per frame)"]
+    end
+    AppManifest["Application Manifest (.kit file)\ncomposes extensions into runnable app"]
+    ExtManifest["Extension Manifest (extension.toml)\nversion, dependencies, settings"]
+    PyExt["Python Extension\n(omni.ext.IExt — on_startup / on_shutdown)"]
+    NativePlugin["C++ Carbonite Plugin\n(omni::ext::IExt — onStartup / onShutdown)"]
+    AppManifest -- "loads" --> ExtSystem
+    ExtManifest -- "declares metadata for" --> ExtSystem
+    ExtSystem -- "manages lifecycle of" --> PyExt
+    ExtSystem -- "manages lifecycle of" --> NativePlugin
+    PyExt -- "publishes/subscribes" --> EventSystem
+    NativePlugin -- "publishes/subscribes" --> EventSystem
+    EventSystem -- "delivers per-frame notifications via" --> UpdateLoop
+```
+
 **Extension structure** (`config/extension.toml`):
 
 ```toml
@@ -1135,6 +1249,21 @@ for path in mesh_paths:
 
 **Fabric Scene Delegate (FSD):** The production Hydra delegate in Kit 109.0+ reads from Fabric rather than USD directly, enabling the Hydra render loop to consume physics-updated positions without waiting for USD composition. As of Kit 109.0, FSD correctly handles variant switching, animation playback, mesh rendering, and prim remove+recreate in a single update cycle.
 
+```mermaid
+graph LR
+    UsdStage["UsdStage\n(CPU-side layer stack + composition)"]
+    Fabric["Fabric\n(GPU-accessible columnar store\nO(1) prim lookup by type)"]
+    USDRT["USDRT API\n(USD-compatible Python/C++ over Fabric)"]
+    FSD["Fabric Scene Delegate\n(Hydra delegate, Kit 109.0+)"]
+    RTX["RTX Renderer\n(Hydra render pass)"]
+    Physics["Physics / Animation / Procedural\n(simulation writes at 60–120 Hz)"]
+    UsdStage -- "initial composition" --> Fabric
+    Physics -- "writes deformed positions\n(zero CPU composition cost)" --> Fabric
+    USDRT -- "O(1) queries / writes" --> Fabric
+    Fabric -- "feeds" --> FSD
+    FSD -- "scene data" --> RTX
+```
+
 ### 9.4 MDL Material Integration
 
 MDL (Material Definition Language) materials embed in USD via `UsdShadeShader` prims with `info:implementationSource = "sourceAsset"`:
@@ -1178,6 +1307,16 @@ MaterialX 1.39 document (.mtlx or embedded USD string)
         └── HdMtlxConvertMaterialDocument()    (Hydra 2.0 filter)
               └── RTX Renderer MDL bridge
                     └── OptiX callable program (GPU)
+```
+
+```mermaid
+graph TD
+    MtlxDoc["MaterialX 1.39 document\n(.mtlx or embedded USD string)"]
+    UsdMtlx["UsdMtlx resolver\n(pxr/usd/plugin/usdMtlx)"]
+    HdMtlx["HdMtlxConvertMaterialDocument()\n(Hydra 2.0 filter)"]
+    MDLBridge["RTX Renderer MDL bridge"]
+    OptiX["OptiX callable program\n(GPU)"]
+    MtlxDoc --> UsdMtlx --> HdMtlx --> MDLBridge --> OptiX
 ```
 
 A minimal MaterialX surface embedded in USD:
@@ -1295,6 +1434,30 @@ Network topology:
 - **Port 3333**: Discovery service (multicast-based device discovery on LAN)
 
 Nucleus services: Core, Discovery, Auth/User Management, Navigator (browser UI), Bridge (external connector API), Search, Thumbnail generation, Tagging.
+
+```mermaid
+graph TD
+    subgraph "Nucleus Server (Docker containers)"
+        Core["Nucleus Core\n(Port 3009 — HTTP/WebSocket\nUSD asset operations)"]
+        Discovery["Discovery Service\n(Port 3333 — multicast LAN)"]
+        Auth["Auth / User Management"]
+        Navigator["Navigator\n(browser UI)"]
+        Bridge["Bridge\n(external connector API)"]
+        Search["Search"]
+        Thumbnail["Thumbnail generation\n(GPU access required)"]
+        Tagging["Tagging"]
+    end
+    ClientA["Client A\n(Kit / USD SDK)"]
+    ClientB["Client B\n(Kit / USD SDK)"]
+    LiveLayer[".live layer\n(transient USD layer on server)"]
+    Core --> LiveLayer
+    ClientA -- "edits to edit-target sublayer" --> Core
+    ClientB -- "edits to edit-target sublayer" --> Core
+    Core -- "change notifications" --> ClientA
+    Core -- "change notifications" --> ClientB
+    Discovery -- "device discovery" --> ClientA
+    Discovery -- "device discovery" --> ClientB
+```
 
 Live collaboration mechanism: Changes are authored into a `.live` layer (a transient USD layer on the Nucleus server). All clients subscribe to change notifications from the server. This is analogous to collaborative document editing — each user's edits land in their own edit-target layer, and the Nucleus server mediates merge order. The LIVERPS composition stack ensures that per-user overrides are stronger than the base asset by placing them in stronger sublayers.
 
@@ -1424,6 +1587,28 @@ PhysxSchema.PhysxDeformableBodyAPI.Apply(prim)
 ```
 
 The **USDRT Fabric Scene Delegate** (Ch69 §9.3) is the performance-critical path: PhysX writes deformed vertex positions directly into the Fabric cache (a GPU-resident flat attribute store) without going through the full USD composition stack, avoiding serialisation overhead for per-frame geometry updates.
+
+```mermaid
+graph LR
+    subgraph "PhysX 5 (CUDA GPU)"
+        RigidBody["PxRigidDynamic\n(rigid body)"]
+        SoftBody["PxSoftBody\n(FEM deformable)"]
+        Cloth["PxPBDParticleSystem\n(PBD cloth / fluid)"]
+        Articulation["PxArticulationReducedCoordinate\n(robot kinematics)"]
+    end
+    Fabric["Fabric\n(GPU-resident flat attribute store)"]
+    FSD["Fabric Scene Delegate\n(Hydra)"]
+    RTXRenderer["RTX Renderer"]
+    UsdPhysics["UsdPhysics schemas\n(UsdPhysicsRigidBodyAPI etc.)"]
+    UsdStage["UsdStage\n(initial / authored values)"]
+    UsdStage -- "initial opinions" --> Fabric
+    UsdPhysics -- "authored constraints" --> RigidBody
+    RigidBody -- "deformed positions" --> Fabric
+    SoftBody -- "deformed positions" --> Fabric
+    Cloth -- "deformed positions" --> Fabric
+    Articulation -- "joint poses" --> Fabric
+    Fabric --> FSD --> RTXRenderer
+```
 
 ### 12.2 NVIDIA Warp: Python GPU Computing
 

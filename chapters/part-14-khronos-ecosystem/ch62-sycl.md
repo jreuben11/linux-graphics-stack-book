@@ -74,6 +74,25 @@ What you will learn:
 
 SYCL 2020 defines a host–device execution model built around three axes: where work executes (`sycl::queue` targeting a `sycl::device`), how data is owned and transferred (`sycl::buffer` + `sycl::accessor` or USM), and how operations are ordered (`sycl::event` and implicit DAG edges from accessor modes).
 
+```mermaid
+graph TD
+    subgraph "SYCL 2020 Core Execution Model"
+        Queue["sycl::queue\n(targets a sycl::device)"]
+        Handler["sycl::handler\n(command group handler)"]
+        Buffer["sycl::buffer\n(data ownership + coherence)"]
+        Accessor["sycl::accessor\n(read/write mode → DAG edges)"]
+        USM["USM pointer\n(malloc_device / malloc_shared)"]
+        Event["sycl::event\n(dependency + profiling)"]
+    end
+    Queue -- "submit(cgf) →" --> Handler
+    Handler -- "parallel_for / single_task" --> Event
+    Handler -- "requires" --> Accessor
+    Accessor -- "borrows from" --> Buffer
+    Handler -- "memcpy / fill (USM)" --> USM
+    Accessor -- "generates DAG edge" --> Event
+    USM -- "explicit dep via depEvent" --> Event
+```
+
 The specification is available at [registry.khronos.org/SYCL/specs/sycl-2020/html/sycl-2020.html](https://registry.khronos.org/SYCL/specs/sycl-2020/html/sycl-2020.html). The normative source in AsciiDoc is maintained at [github.com/KhronosGroup/SYCL-Docs](https://github.com/KhronosGroup/SYCL-Docs/blob/SYCL-2020/master/adoc/chapters/programming_interface.adoc). The Khronos reference guide PDF is at [khronos.org/files/sycl/sycl-2020-reference-guide.pdf](https://www.khronos.org/files/sycl/sycl-2020-reference-guide.pdf).
 
 Major advances in SYCL 2020 over the predecessor SYCL 1.2.1 include: Unified Shared Memory (USM) as a first-class feature, built-in parallel reductions via `sycl::reduction()`, the group algorithms library (`reduce_over_group`, `inclusive_scan_over_group`, etc.), sub-group support promoted to core, specialisation constants (`sycl::specialization_id`), `sycl::local_accessor` and `sycl::host_accessor` as distinct types, class template argument deduction (CTAD) for all major types, and queue shortcut methods returning `sycl::event` directly. [Source: Khronos SYCL 2020 announcement](https://www.khronos.org/news/press/khronos-releases-sycl-2020-final-specification)
@@ -653,6 +672,33 @@ inline float fast_rsqrt(float x) {
 
 SYCL 2020 exposes a two-level hierarchy: `sycl::platform` (bound to a backend — Level Zero, OpenCL, CUDA, or HIP) and `sycl::device` (a physical GPU, CPU, or accelerator within that platform). [Source: SYCL Reference — device selectors](https://github.khronos.org/SYCL_Reference/iface/device-selector.html)
 
+```mermaid
+graph TD
+    Platforms["sycl::platform::get_platforms()"]
+    PlatLZ["sycl::platform\n(Level Zero — Intel GPU)"]
+    PlatOCL["sycl::platform\n(OpenCL — CPU / Mali)"]
+    PlatCUDA["sycl::platform\n(CUDA — NVIDIA GPU)"]
+    PlatHIP["sycl::platform\n(HIP — AMD GPU)"]
+    DevLZ["sycl::device\n(Intel Arc / Xe GPU)"]
+    DevCPU["sycl::device\n(CPU)"]
+    DevNV["sycl::device\n(NVIDIA GPU)"]
+    DevAMD["sycl::device\n(AMD GPU)"]
+    Queue["sycl::queue\n(targets one device)"]
+
+    Platforms --> PlatLZ
+    Platforms --> PlatOCL
+    Platforms --> PlatCUDA
+    Platforms --> PlatHIP
+    PlatLZ --> DevLZ
+    PlatOCL --> DevCPU
+    PlatCUDA --> DevNV
+    PlatHIP --> DevAMD
+    DevLZ --> Queue
+    DevNV --> Queue
+    DevAMD --> Queue
+    DevCPU --> Queue
+```
+
 ```cpp
 // Built-in selectors — function objects in SYCL 2020 (no longer virtual base classes)
 sycl::queue Q_default{sycl::default_selector_v};
@@ -758,6 +804,29 @@ source.cpp
 Host binary (with embedded device images)
 ```
 
+```mermaid
+graph TD
+    Src["source.cpp\n(single-source host + device)"]
+    Frontend["Clang Frontend\n(SMCP pass 1)\nparses host + device\ntags sycl_kernel lambdas"]
+    HostIR["Host LLVM IR"]
+    DevIR["Device LLVM IR\n(per target)"]
+    HostCompile["Host Compile\n(clang → host object)"]
+    DevCompile["Device Compilation\nllvm-link → llvm-spirv\nOR NVPTX backend\nOR AMDGCN backend"]
+    PostLink["sycl-post-link\ndevice code splitting\nspec-constant lowering\nsymbol table generation"]
+    OffloadWrap["clang-offload-wrapper\nembeds SPIR-V/PTX as fat binary\nlinked into host object"]
+    HostBin["Host binary\n(with embedded device images)"]
+
+    Src --> Frontend
+    Frontend --> HostIR
+    Frontend --> DevIR
+    HostIR --> HostCompile
+    DevIR --> DevCompile
+    HostCompile --> PostLink
+    DevCompile --> PostLink
+    PostLink --> OffloadWrap
+    OffloadWrap --> HostBin
+```
+
 Key compilation flags:
 
 ```bash
@@ -798,6 +867,22 @@ level_zero.so    opencl.so       cuda.so / hip.so
 (Intel GPU)      (OpenCL devs)   (Codeplay plugin)
 ```
 
+```mermaid
+graph TD
+    SYCLRuntime["libsycl.so\n(DPC++ SYCL Runtime)"]
+    URLoader["UR Loader\n(dynamic adapter discovery)\nur_* C API"]
+    AdapLZ["libur_adapter_level_zero.so\n(Intel GPU — ze* calls)"]
+    AdapOCL["libur_adapter_opencl.so\n(OpenCL devices — cl* calls)"]
+    AdapCUDA["libur_adapter_cuda.so\n(NVIDIA — cu* calls)\nCodeplay plugin"]
+    AdapHIP["libur_adapter_hip.so\n(AMD — hip* calls)\nCodeplay plugin"]
+
+    SYCLRuntime -- "ur_* C API calls" --> URLoader
+    URLoader --> AdapLZ
+    URLoader --> AdapOCL
+    URLoader --> AdapCUDA
+    URLoader --> AdapHIP
+```
+
 The UR API uses a `ur_*` function prefix (e.g., `urDeviceGet`, `urQueueCreate`, `urKernelCreate`, `urEnqueueKernelLaunch`). Each adapter translates these to the backend-specific calls: Level Zero `ze*`, OpenCL `cl*`, CUDA `cu*`, or HIP `hip*`. The DPC++ 2026.0 release ships with a refactored L0 v2 adapter enabling Xe2/Arc B-series by default.
 
 ### 7.3 Intel Graphics Compiler (IGC) and the Xe/Arc Path
@@ -811,6 +896,28 @@ The SYCL-to-native-ISA path for an Intel Arc GPU is therefore:
 ```text
 SYCL kernel (C++) → clang → LLVM IR → llvm-spirv → SPIR-V
     → Level Zero zeModuleCreate → IGC JIT → Xe2 native ISA → GPU EUs
+```
+
+```mermaid
+graph LR
+    SYCLKernel["SYCL kernel\n(C++)"]
+    Clang["clang\n(DPC++ frontend)"]
+    LLVMIR["LLVM IR"]
+    llvmspirv["llvm-spirv"]
+    SPIRV["SPIR-V\ndevice image"]
+    LevelZero["Level Zero\nzeModuleCreate"]
+    IGC["Intel Graphics Compiler\n(IGC JIT)\ngithub.com/intel/intel-graphics-compiler"]
+    NativeISA["Xe2 native ISA"]
+    GPUEUs["GPU Execution Units\n(Arc / Xe2)"]
+
+    SYCLKernel --> Clang
+    Clang --> LLVMIR
+    LLVMIR --> llvmspirv
+    llvmspirv --> SPIRV
+    SPIRV --> LevelZero
+    LevelZero --> IGC
+    IGC --> NativeISA
+    NativeISA --> GPUEUs
 ```
 
 ### 7.4 Cross-Device Targets: CUDA and ROCm via DPC++
@@ -846,6 +953,34 @@ The Clang plugin intercepts device-annotated code during the single frontend pas
 **Stage 2 — runtime JIT** (at first kernel launch):
 
 AdaptiveCpp's `llvm-to-backend` infrastructure JIT-lowers the embedded LLVM IR to the target format for the detected device:
+
+```mermaid
+graph TD
+    Src["source.cpp\n(single-source host + device)"]
+    subgraph "Stage 1 — Compile Time (acpp / clang + AdaptiveCpp plugin)"
+        Plugin["Clang Plugin\n(single frontend pass)\nextracts device kernels + host simultaneously"]
+        HostObj["Host object"]
+        DevIR["backend-agnostic LLVM IR\n(embedded in host binary\nas __acpp_device_ir section)"]
+    end
+    subgraph "Stage 2 — Runtime JIT (first kernel launch)"
+        JIT["llvm-to-backend\n(AdaptiveCpp JIT infrastructure)"]
+        PTX["PTX\n(NVPTX backend → NVIDIA GPU)"]
+        AMDGCN["AMDGCN\n(AMDGPU backend → AMD GPU)"]
+        SPIRV["SPIR-V\n(llvm-spirv → Level Zero → Intel GPU)"]
+        NativeJIT["Native code\n(LLVM JIT → CPU)"]
+        Cache["JIT cache\n(~/.acpp/ keyed by IR hash + device ID)"]
+    end
+
+    Src --> Plugin
+    Plugin --> HostObj
+    Plugin --> DevIR
+    DevIR --> JIT
+    JIT --> PTX
+    JIT --> AMDGCN
+    JIT --> SPIRV
+    JIT --> NativeJIT
+    JIT --> Cache
+```
 
 | Target | JIT output | Mechanism |
 |--------|-----------|-----------|
@@ -928,6 +1063,25 @@ On Linux, Vulkan exportable memory is shared with SYCL via POSIX file descriptor
 
 - `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT` → `external_mem_handle_type::opaque_fd` + `resource_fd`
 - `VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT` → `external_mem_handle_type::dma_buf` + `resource_fd`
+
+```mermaid
+graph LR
+    VkMem["Vulkan device memory\n(VkDeviceMemory)"]
+    FD["POSIX fd\n(vkGetMemoryFdKHR\nopaque_fd or dma_buf)"]
+    ExtMemDesc["external_mem_descriptor\n(resource_fd + handle_type\n+ allocation_size_bytes)"]
+    ImportExtMem["import_external_memory\n(ext_mem)"]
+    ImgMem["image_mem_handle\n(map_external_image_memory\nfor texture sampling)"]
+    LinearPtr["linear pointer\n(map_external_linear_memory\nfor raw pointer access)"]
+    SYCLKernel["SYCL kernel\n(reads imported memory)"]
+
+    VkMem --> FD
+    FD --> ExtMemDesc
+    ExtMemDesc --> ImportExtMem
+    ImportExtMem --> ImgMem
+    ImportExtMem --> LinearPtr
+    ImgMem --> SYCLKernel
+    LinearPtr --> SYCLKernel
+```
 
 The DMA-BUF path is especially important for Wayland compositing scenarios: a buffer exported as a DMA-BUF from a Vulkan device can be imported into SYCL for compute post-processing without copying across PCIe. The kernel mechanism is the same one used for CUDA–Vulkan interop (Chapter 25) and for Wayland DMA-BUF sharing between compositor and clients (Chapter 20).
 
