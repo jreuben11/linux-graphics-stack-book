@@ -122,7 +122,17 @@ Chapters signal which perspective is emphasised where they diverge.
 - **Part XIX — Android Graphics**
   - [Chapter 85: Android Compositor: SurfaceFlinger, HardwareBuffer, and the Buffer Pipeline](#chapter-85-android-compositor-surfaceflinger-hardwarebuffer-and-the-buffer-pipeline)
   - [Chapter 86: Vulkan on Android: Drivers, ANGLE, and Mobile GPU Performance](#chapter-86-vulkan-on-android-drivers-angle-and-mobile-gpu-performance)
-  - [Chapter 87: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform](#chapter-87-android-ar-arcore-architecture-camera-hal-integration-and-the-android-xr-platform)
+  - [Chapter 94: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform](#chapter-94-android-ar-arcore-architecture-camera-hal-integration-and-the-android-xr-platform)
+- **Part XX — AI/ML Inference on Linux**
+  - [Chapter 87: Local LLM Inference on Linux GPUs](#chapter-87-local-llm-inference-on-linux-gpus)
+  - [Chapter 88: NPU and AI Accelerator Integration on Linux](#chapter-88-npu-and-ai-accelerator-integration-on-linux)
+  - [Chapter 94: ComfyUI and ComfyScript: Node-Graph AI Image Generation on Linux GPUs](#chapter-94-comfyui-and-comfyscript-node-graph-ai-image-generation-on-linux-gpus)
+- **Part XX additions to existing parts**
+  - [Chapter 89: GPU Virtualization in Depth](#chapter-89-gpu-virtualization-in-depth) *(Part IX)*
+  - [Chapter 90: Open ARM GPU Drivers — Lima, Panfrost, and Panthor](#chapter-90-open-arm-gpu-drivers--lima-panfrost-and-panthor) *(Part II)*
+  - [Chapter 91: MLIR and the Emerging GPU Compiler Infrastructure](#chapter-91-mlir-and-the-emerging-gpu-compiler-infrastructure) *(Part IV)*
+  - [Chapter 92: The Raspberry Pi GPU Stack — VideoCore and V3D](#chapter-92-the-raspberry-pi-gpu-stack--videocore-and-v3d) *(Part II)*
+  - [Chapter 93: GPU Performance Analysis Methodology](#chapter-93-gpu-performance-analysis-methodology) *(Part IX)*
 
 ---
 
@@ -1257,7 +1267,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Chrome on Android: ANGLE as Chrome GLES backend since Android 8; Dawn Vulkan backend for WebGPU; GPU process with AHardwareBuffer for cross-process textures; Viz compositor with ASurfaceControl
 - **Integrations**: Ch4, Ch6, Ch16, Ch18, Ch24, Ch33, Ch34, Ch35, Ch50, Ch61, Ch76, Ch82, Ch85
 
-### Chapter 87: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform
+### Chapter 94: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform
 
 - ARCore architecture: application-layer SDK (Play Services `com.google.ar.core`) above Camera HAL; three pillars: motion tracking (VIO), environment understanding (planes/depth), light estimation; minimum API 24 (Android 7.0); AR Required vs AR Optional manifest flags; ARCore vs ARKit comparison
 - Android Camera Pipeline and ARCore: Camera HAL3 (`camera_device3_ops_t`, `camera3_stream_t`, `process_capture_request`); Camera2 `CameraDevice.createCaptureSession()`, `CaptureRequest.Builder`, `TEMPLATE_RECORD`; IMU via `SensorEventListener` (`TYPE_ACCELEROMETER`, `TYPE_GYROSCOPE`); Visual-Inertial Odometry (VIO) factor graph / EKF; `ArCamera_getPose()` vs `ArCamera_getDisplayOrientedPose()`
@@ -1271,6 +1281,129 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Recording and Playback: `ArRecordingConfig`, `ArSession_startRecording()` to MP4 with custom tracks; `ArSession_startPlayback()`; `ArDataset` for offline pipelines; deterministic CI/test replay
 - Performance and power: VIO tracking one dedicated CPU core; camera preview 30 fps 640×480 or 1280×720; thermal throttling effect on `ArSession_update()` latency; `Choreographer`/`FrameRateCompatibility` for VSYNC alignment; AR tracking thread decoupled from render thread; AHardwareBuffer zero-copy from HAL → gralloc → ARCore → app
 - **Integrations**: Ch85 (SurfaceFlinger buffer pipeline for AR overlays), Ch86 (Vulkan AHardwareBuffer import, YCbCr conversion), Ch27 (OpenXR on Linux/Monado — compare to ARCore OpenXR), Ch26 (Camera HAL / V4L2 — Linux-side equivalent), Ch6 (ARM Mali/Adreno driver powering ARCore rendering), Ch24 (Vulkan EGL interop analogous to AHardwareBuffer Vulkan path)
+
+---
+
+## Part XX — AI/ML Inference on Linux
+
+### Chapter 87: Local LLM Inference on Linux GPUs
+
+- GGML architecture: tensor type system, block-quantised formats (Q4_K_M, Q8_0, F16), runtime backend selection; reference https://github.com/ggerganov/llama.cpp
+- `ggml-vulkan.cpp`: `ggml_vk_context`, `vk_pipeline`; compute shaders for matrix-vector multiply; SPIR-V compiled via glslang at init
+- llama.cpp Vulkan path: `llama_backend_init`, `ggml_backend_vk_init`; device enumeration; KV cache via `ggml_backend_vk_buffer_type`; compute graph (Q/K/V split → RoPE → GQA → FFN); `--n-gpu-layers` tensor parallelism
+- GGUF file format: magic, header, tensor metadata, data blocks; `mmap` of weights; page-fault behaviour on first pass; BAR-resizable DMA-BUF zero-copy path
+- Ollama: Go server + llama.cpp library; `gpu.go` NVML/ROCm/sysfs detection; REST API (`/api/generate`, `/api/chat`); parallel request handling; reference https://github.com/ollama/ollama
+- ONNX Runtime GPU EPs: CUDA EP → ROCm EP → OpenVINO EP → CPU fallback; `OrtCUDAProviderOptions`; cuBLAS GEMM dispatch; model quantisation
+- OpenVINO EP on Intel Arc: `OrtOpenVINOProviderOptions`; IE plugin → Level Zero; HETERO:NPU,GPU,CPU heterogeneous execution
+- ROCm MIOpen for inference: `rocblas_gemm_ex`; HIP unified memory on APUs; `vllm` on ROCm; `ROCR_VISIBLE_DEVICES`
+- PagedAttention / vLLM KV cache: page table, block manager, prefix caching; llama.cpp sliding-window context; CPU eviction under pressure
+- Performance benchmarking: `llama-bench` (prompt tokens/s, generation tokens/s); quantisation impact table; bandwidth-bound vs compute-bound analysis; `nvtop`/`radeontop`/`intel_gpu_top` during inference
+- **Integrations**: Ch3, Ch6 (Panfrost for edge inference), Ch14, Ch18 (RADV for ROCm), Ch24, Ch25, Ch48, Ch55, Ch61, Ch71, Ch88
+
+### Chapter 88: NPU and AI Accelerator Integration on Linux
+
+- AI PC landscape 2026: Intel MTL/LNL/ARL NPU, AMD XDNA (Ryzen AI 300), Qualcomm Snapdragon X Elite NPU; power/latency case for NPU vs GPU
+- Intel NPU kernel driver (`drivers/accel/ivpu/`): `DRM_IOCTL_IVPU_*`; accel DRM subsystem (`/dev/accel/accel0`); firmware loading `ivpu_fw_load`; `ivpu_bo` GEM objects; job submission ioctl
+- OpenVINO for Intel NPU: `ov::Core` enumeration (NPU/GPU/CPU); `ov::CompiledModel` NPU compilation; HETERO plugin; tensor layout requirements; power modes
+- AMD XDNA (`amdxdna` driver, Linux 6.11): AIE2 array (RISC-V scalar + SIMD vector cores); `AMDXDNA_BO_*` buffer types; Vitis AI and ONNX Runtime XDNA EP; reference https://github.com/amd/xdna-driver
+- Qualcomm Hexagon DSP/NPU: FastRPC IPC; SNPE/QNN SDK; ONNX Runtime QNN EP; Linux mainline status
+- DRM `accel` subsystem (Linux 6.2): `drm_accel_device`; `/dev/accel/accel*` nodes; Gaudi2, ivpu, AMDXDNA as current users; char-device vs accel comparison
+- Heterogeneous dispatch: OpenVINO HETERO plugin; ORT EP priority chain; DMA-BUF between render node and accel node for zero-copy; `dma_buf_map` across devices
+- Framework integration: PyTorch `torch.compile` → Inductor → NPU; HuggingFace `device="npu"`; GGML backend registration API (`ggml_backend_reg`)
+- Power and thermal: ACPI D0/D3 transitions in `ivpu_pm.c`; approximately 10W NPU vs 200W GPU for sustained 7B inference
+- Debugging: OpenVINO `benchmark_app`; `xdna-smi`; `trace_ivpu_*` tracepoints; `/sys/kernel/debug/dri/accel0/`
+- **Integrations**: Ch1, Ch3, Ch6, Ch24, Ch25, Ch55, Ch71, Ch87
+
+---
+
+### Chapter 94: ComfyUI and ComfyScript: Node-Graph AI Image Generation on Linux GPUs
+
+- ComfyUI architecture: aiohttp web server + DAG execution engine + React frontend; not a GUI toolkit; GPU backends: CUDA (NVIDIA), ROCm (AMD HIP), MPS (Apple), CPU fallback; supported model families: SD 1.5, SDXL, SD3, FLUX.1, PixArt-Sigma, AuraFlow
+- Node graph execution model: node class anatomy (`INPUT_TYPES`, `RETURN_TYPES`, `FUNCTION`, `CATEGORY`, `OUTPUT_NODE`); prompt JSON format with link refs `["node_id", output_index]`; `PromptExecutor.execute()` topological sort; output caching keyed by (node_id, inputs_hash); `comfy.model_management` GPU memory coordinator
+- Core built-in nodes (`nodes.py`): `CheckpointLoaderSimple` (MODEL+CLIP+VAE); `CLIPTextEncode` / `CLIPTextEncodeSDXL` (dual CLIP); `EmptyLatentImage` (4-ch or 16-ch latent); `KSampler` / `KSamplerAdvanced`; `VAEDecode` / `VAEEncode` / tiled variants; `SaveImage` / `PreviewImage`; `LoraLoader`; `ControlNetLoader` + `ControlNetApplyAdvanced`; `ImageScale`; `ConditioningCombine`
+- Sampler and scheduler system: k-diffusion wrappers in `comfy/samplers.py`; KSAMPLER_NAMES including euler, euler_ancestral, dpmpp_2m, dpmpp_sde, dpmpp_3m_sde, ddim, uni_pc, lcm, etc.; scheduler names: normal, karras, exponential, sgm_uniform, beta, kl_optimal; CFG formula `eps = uncond + cfg * (cond - uncond)`; `ModelPatcher.patch_model()` / `unpatch_model()`; FlowMatch for FLUX/SD3 (rectified flow); DDIM inversion for img2img
+- Memory management and GPU selection: `model_management.py` `current_loaded_models` list; `LoadedModel` wrapper; CLI flags: `--gpu-only`, `--highvram`, `--normalvram`, `--lowvram`, `--novram`, `--cpu`; `get_torch_device()` CUDA/ROCm/MPS detection; `CUDA_VISIBLE_DEVICES` / `--cuda-device N`; `soft_empty_cache()` = `torch.cuda.empty_cache()` + gc; `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`; precision flags `--fp8_e4m3fn-unet`, `--force-fp16`, `--bf16-unet`
+- REST API and WebSocket: `POST /prompt` → `{"prompt_id": ...}`; `GET /queue`, `/history`, `/view`, `/object_info`, `/system_stats`; `POST /upload/image`; WebSocket at `/ws?client_id=<uuid>` — message types: `status`, `progress`, `executing`, `executed`, `execution_error`; Python aiohttp client example
+- ComfyScript (https://github.com/Chaoses-Ib/ComfyScript): `pip install comfy-script[default]`; stub generation from `/object_info`; `Workflow(wait=True)` context manager; typed node return wrappers; real-time mode; mypy/pyright compatible; SDXL two-pass + LoRA workflow example
+- Custom node development: `NODE_CLASS_MAPPINGS` / `NODE_DISPLAY_NAME_MAPPINGS`; tensor conventions (IMAGE `[B,H,W,C]` float32, MASK `[B,H,W]`, LATENT dict with `"samples"` key, MODEL/CLIP/VAE as opaque objects); `IS_CHANGED()` classmethod for cache invalidation; web UI JS extensions; ComfyUI-Manager; community packs: Impact-Pack, Advanced-ControlNet, WAS-Node-Suite, GGUF
+- FLUX.1 and DiT support: `UNETLoader`, `DualCLIPLoader`, `VAELoader`, `CLIPTextEncodeFlux`, `FluxGuidance` nodes; 16-channel VAE latent; dual-stream + single-stream transformer; FLUX-dev vs schnell; fp8 quantisation (`--fp8_e4m3fn-unet`); GGUF loading via ComfyUI-GGUF; memory requirements by precision
+- Performance and Linux optimisations: xFormers / PyTorch SDPA for Flash Attention; `torch.compile` warm-up and throughput gains; preview methods (TAESD, latent2rgb); batch_size > 1 efficiency; nsys profiling; ROCm-specific: `HSA_OVERRIDE_GFX_VERSION`, `rocm-smi`, Triton attention; `nvidia-smi dmon` monitoring
+- Production deployment: Docker with NVIDIA Container Toolkit (`--gpus all`); model volume mounts; Kubernetes `nvidia.com/gpu: 1` resource; nginx reverse proxy; WebSocket automation; n8n / Airflow integration via REST API; queue management
+- **Integrations**: Ch25 (CUDA kernel dispatch), Ch48 (ROCm backend), Ch55 (GPU containers), Ch66 (CUDA graphs, NVRTC for torch.compile), Ch42 (iterative GPU algorithm scheduling), Ch69 (Omniverse AI pipeline comparison)
+
+---
+
+### Chapter 89: GPU Virtualization in Depth *(Part IX)*
+
+- Virtualisation approaches: emulation (virtio-gpu), paravirtualization (VirGL/Venus), passthrough (VFIO); trade-offs and use cases
+- IOMMU and VFIO foundations: Intel VT-d / AMD-Vi DMA mapping; IOMMU groups; `vfio-pci` ops; BAR mmap via `/dev/vfio/group_N`; PCIe FLR requirements
+- VFIO GPU passthrough: QEMU `-device vfio-pci`; OVMF; ACS override quirks; Looking Glass for framebuffer capture; reference https://looking-glass.io/
+- Intel SR-IOV: GVT-g (`kvmgt`, mdev, shadow GTT) → Xe SR-IOV (`xe_gt_sriov_pf_*`, `sriov_numvfs`); performance tiers
+- AMD MxGPU SR-IOV: spatial partitioning; `amdgpu_virt_*`; `amdgpu_sriov_vf()` guard; world switch overhead
+- NVIDIA vGPU and MIG: time-sliced vGPU types; `nvidia-smi mig --create-gpu-instance`; cgroups for container MIG; `NVIDIA_VISIBLE_DEVICES=MIG-GPU-...`
+- virtio-gpu protocol: `virtio_gpu_cmd_*`; CAPSET_VENUS; blob resources (`VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB`) for zero-copy host↔guest
+- Venus (Vulkan-over-virtio): `vn_ring` command stream; `virtio_gpu_blob` for `VkDeviceMemory`; vkrenderer daemon; reference Mesa `src/virtio/`
+- WSL2: `dxgkrnl` DRM driver; Mesa `d3d12` Gallium via `libdxcore.so`; DirectML for ONNX Runtime; WSLg (Weston + RDP); limitations vs native Linux
+- GPU containers: NVIDIA Container Toolkit; CDI spec; AMD ROCm Docker; Kubernetes device plugins; device cgroup v2 (eBPF)
+- Performance comparison table: VFIO passthrough / SR-IOV / MIG / Venus / VirGL / virtio-gpu (emulated)
+- **Integrations**: Ch1, Ch3, Ch4, Ch18, Ch19, Ch24, Ch55, Ch80, Ch87, Ch88
+
+### Chapter 90: Open ARM GPU Drivers — Lima, Panfrost, and Panthor *(Part II)*
+
+- Mali GPU family history: Utgard / Midgard / Bifrost / Valhall; the closed-driver problem; open driver projects; deployment: PinePhone, Orange Pi 5 (RK3588), i.MX8
+- Lima kernel driver (`drivers/gpu/drm/lima/`): `lima_bo`, PP/GP register-level programming; `lima_sched` (drm_gpu_scheduler); Mesa Lima Gallium (`src/gallium/drivers/lima/`)
+- Panfrost kernel driver (`drivers/gpu/drm/panfrost/`): `panfrost_bo`; AS (Address Space) MMU model; `panfrost_mmu_*`; Midgard VLIW ISA; Bifrost clause-based ISA
+- Mesa Panfrost Gallium (`src/gallium/drivers/panfrost/`): `pan_context`; Bifrost compiler (`src/panfrost/compiler/`): `bi_*` IR; NIR → Bifrost lowering; clause scheduling; register allocation
+- Panthor kernel driver (mainlined Linux 6.8): Valhall CSF (Command Stream Frontend) firmware-based submission; `panthor_fw_*`; `panthor_heap_*`; `DRM_IOCTL_PANTHOR_*`
+- Mesa Panfrost Vulkan for Valhall (`src/panfrost/vulkan/`): `pvk_*` structs; Valhall descriptor model (buffer descriptors in memory); tiler heap allocator
+- Real-world platforms: PinePhone Pro (RK3399/Mali-T860), Librem 5 (i.MX8MQ/etnaviv), Orange Pi 5 (RK3588/Mali-G610), Pinebook Pro
+- Mesa CI with Lava: `panfrost-lava-*` CI jobs; `deqp-runner` on ARM boards; `panfrost-fails.txt`
+- Comparison with Asahi AGX: reverse-engineering methodology; firmware dependency; Bifrost ISA attribution (Lyude Paul, Alyssa Rosenzweig); cross-pollination
+- Contributing: dri-devel mailing list; LAVA test lab; `PANFROST_DEBUG=msgs,dump,perf`
+- **Integrations**: Ch1, Ch2, Ch5, Ch14, Ch16, Ch21, Ch73, Ch92
+
+### Chapter 91: MLIR and the Emerging GPU Compiler Infrastructure *(Part IV)*
+
+- GPU compiler stack layers: application → ML framework → MLIR dialects → LLVM → PTX/AMDGCN/SPIR-V → Mesa → ISA; MLIR's role at the middle tier
+- MLIR dialects for GPU: `gpu`, `vector`, `linalg`, `arith`, `memref`, `spirv`, `nvgpu`, `rocdl`; progressive lowering (linalg → vector → llvm); `mlir-translate --mlir-to-spirv`; reference https://mlir.llvm.org/docs/Dialects/GPU/
+- GPU dialect: `gpu.func`, `gpu.launch`, `gpu.thread_id`, `gpu.barrier`; lowering to NVVM / ROCDL / SPIR-V; `GpuToSpirvPass`
+- OpenAI Triton: `@triton.jit`; Triton IR → TritonGPU IR → LLVM → PTX/AMDGCN; `tt-opt` pipeline; `@triton.autotune`; Triton-ROCm; Triton Vulkan (experimental); reference https://github.com/openai/triton
+- FlashAttention-2 in Triton: tile loop, on-chip KV accumulation, `tl.dot` for QK^T, online numerically-stable softmax; usage in llama.cpp and vLLM
+- IREE: StableHLO → Stream → HAL → SPIR-V; `iree-compile --iree-hal-target-backends=vulkan-spirv`; `iree_hal_device_t`; Vulkan HAL submits offline SPIR-V; reference https://iree.dev/
+- XLA: HLO → LLVM/PTX; `jax.jit`; producer-consumer fusion; XLA on ROCm (`jax[rocm]`); XLA Vulkan (via IREE, experimental)
+- SPIR-V as lingua franca: binary format; `OpTypeCooperativeMatrixKHR`; `spirv-opt` passes; `spirv-cross` back-translation; `mlir-translate` → `vkCreateShaderModule` → Mesa NIR
+- Cooperative matrix: `VK_KHR_cooperative_matrix`; `OpCooperativeMatrixMulAddKHR`; RADV → RDNA WMMA; ANV → Intel XMX; Triton `tl.dot` lowering
+- Mesa connection: MLIR SPIRV → SPIR-V binary → `spirv_to_nir` → NIR → ACO/LLVM; `RADV_DEBUG=spirv,nir,aco`
+- **Integrations**: Ch14, Ch15, Ch16, Ch24, Ch25, Ch61, Ch77, Ch87, Ch88
+
+### Chapter 92: The Raspberry Pi GPU Stack — VideoCore and V3D *(Part II)*
+
+- RPi hardware generations: BCM2835 (Pi 1, VC4), BCM2711 (Pi 4, V3D), BCM2712 (Pi 5, V3D v7.1); GPU openness history (Herman Hermitage ISA reverse engineering, Eric Anholt vc4/v3d drivers)
+- VideoCore IV / vc4: QPU (4-way SIMD, 64-bit ISA); tile binning + tile rendering; `vc4` kernel driver (`drivers/gpu/drm/vc4/`): `vc4_bo`, `vc4_cl`, `vc4_job`; Mesa vc4 Gallium; `DRM_IOCTL_VC4_SUBMIT_CL`
+- V3D (BCM2711): 4 QPUs per slice; `v3d` kernel driver (`drivers/gpu/drm/v3d/`): `v3d_bo`, render/TFU/CSD job types; `drm_gpu_scheduler`; Mesa v3d Gallium: `v3d_nir_to_vir`; VIR (V3D IR): SSA, scheduling, register allocation
+- V3D shader compiler: `v3d_compile_vs/fs/cs`; `v3d_nir_lower_*`; VIR instruction set (FADD, FMUL, LDTMU); QPU binary format; 2-/4-thread fragment shaders
+- KMS and display: `vc4_hdmi`, `vc4_crtc`; HVS (Hardware Video Scaler); atomic modeset; BCM2712 RP1 south bridge; 4K@60 on Pi 5
+- Multimedia and camera: MMAL over VCHI firmware IPC; libcamera `PipelineHandlerRPi`; Pi ISP pipeline (Unicam CSI-2 → debayer → AWB → DMA)
+- Hardware video decode: V4L2 M2M (`/dev/video10`-12, `bcm2835-codec`); FFmpeg `v4l2m2m`; MPV `--hwdec=v4l2m2m`; zero-copy NV12→DMA-BUF→texture
+- Raspberry Pi OS stack: Wayfire (Pi 5/Bookworm); wlroots + vc4 DRM; GLES 3.1 on Pi 4; `vulkan-broadcom` (Mesa V3DV); V3DV Vulkan 1.0 conformance
+- V3DV Vulkan driver (`src/broadcom/vulkan/`): `v3dv_device`, `v3dv_cmd_buffer`, `v3dv_pipeline`; CL generation; VC QOS registers
+- Production use: `cage` single-app compositor; kiosk signage; ROS 2 + GPU perception; Pi CM4/CM5 embedded; thermal management
+- **Integrations**: Ch1, Ch2, Ch5, Ch13, Ch14, Ch21, Ch42, Ch57, Ch90
+
+### Chapter 93: GPU Performance Analysis Methodology *(Part IX)*
+
+- Performance analysis vs debugging; measurement hierarchy: system → API → hardware counter; common fallacies (VRAM size vs bandwidth, GPU-bound as the goal)
+- Frame time decomposition: `vkCmdWriteTimestamp2` with TOP/BOTTOM_OF_PIPE; `vkGetQueryPoolResults`; `timestampPeriod`; GPU-bound vs CPU-bound determination
+- `VK_KHR_performance_query`: counter enumeration; types (UINT64, FLOAT32, percentage); `VkQueryPoolPerformanceCreateInfoKHR`; multi-pass collection; `vkAcquireProfilingLockKHR`
+- GPU-bound vs CPU-bound: `vkWaitForFences` blocking; `vkQueueSubmit` cost; descriptor set allocation rate; MangoHUD CPU/GPU bars explained
+- Occupancy and wave analysis: active warps / max warps per SM; VGPR pressure on RDNA; RDNA wave64 vs wave32; Nsight `sm__warps_active`; RGP occupancy lane view; `RADV_DEBUG=shader`
+- Memory bandwidth profiling: DRAM bandwidth measurement via perf query (l2_cache_miss_rate, DRAM r/w bytes); NVIDIA L2 counters; AMD TCC hit rate; bandwidth-bound identification; BC7/ASTC mitigation
+- Pipeline stall taxonomy: TMU latency, FP32 latency, LDS bank conflict, export stall (RDNA); RGP stall breakdown; Nsight `sm__pipe_fma_cycles_active`; Intel EU stalls
+- AMD: RGP (`RADV_THREAD_TRACE=1`); `radeon_gpu_analyzer` for ISA; `umr` for raw PERF_SEL; reference https://gpuopen.com/rgp/
+- NVIDIA: `ncu --set full`; key metrics (`sm__throughput`, `dram__throughput`); roofline model; `nsys profile --trace=vulkan,nvtx`; `VK_NV_device_diagnostic_checkpoints`
+- Intel: `intel_gpu_top`; EU active/stall/idle; VTune GPU analysis; `VK_INTEL_performance_query`; Xe Slice/Subslice utilisation
+- Worked case study: path-traced scene optimisation — frame time decomposition → bandwidth-bound diagnosis → BVH ray sort → L2 hit rate improvement → async BVH refit
+- **Integrations**: Ch15, Ch24, Ch28, Ch29, Ch30, Ch56, Ch61, Ch67, Ch87
 
 ---
 
