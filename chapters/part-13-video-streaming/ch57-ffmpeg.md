@@ -52,8 +52,25 @@
     - [Out-of-Tree Extensions: The Practical Reality](#104-out-of-tree-extensions-the-practical-reality)
 11. [Threading Model](#11-threading-model)
 12. [libavdevice: Linux Device I/O](#12-libavdevice-linux-device-io)
-13. [Integrations](#13-integrations)
-14. [References](#14-references)
+13. [FFmpeg CLI Usage Reference](#13-ffmpeg-cli-usage-reference)
+    - [ffprobe: Inspection and Analysis](#131-ffprobe-inspection-and-analysis)
+    - [Container Remuxing (No Re-encode)](#132-container-remuxing-no-re-encode)
+    - [Video Transcoding Recipes](#133-video-transcoding-recipes)
+    - [Two-Pass Encoding](#134-two-pass-encoding)
+    - [Hardware-Accelerated Encoding on Linux](#135-hardware-accelerated-encoding-on-linux)
+    - [Audio Handling](#136-audio-handling)
+    - [Video Filter Recipes](#137-video-filter-recipes)
+    - [Complex Filter Graphs](#138-complex-filter-graphs)
+    - [Frame Extraction and Thumbnails](#139-frame-extraction-and-thumbnails)
+    - [Concatenation and Splitting](#1310-concatenation-and-splitting)
+    - [Linux Screen and Desktop Recording](#1311-linux-screen-and-desktop-recording)
+    - [Subtitle Handling](#1312-subtitle-handling)
+    - [Metadata and Cover Art](#1313-metadata-and-cover-art)
+    - [Adaptive Bitrate Streaming Output](#1314-adaptive-bitrate-streaming-output)
+    - [Batch Processing Patterns](#1315-batch-processing-patterns)
+    - [Common Pitfalls and Diagnostics](#1316-common-pitfalls-and-diagnostics)
+14. [Integrations](#14-integrations)
+15. [References](#15-references)
 
 ---
 
@@ -1440,7 +1457,935 @@ avformat_open_input(&fmt, NULL, NULL, NULL); // URL=NULL uses fmt->pb
 
 ---
 
-## 13. Integrations
+## 13. FFmpeg CLI Usage Reference
+
+The preceding sections cover FFmpeg's internal architecture. This section is a practical cookbook of verified CLI recipes for the most common real-world tasks. All commands target FFmpeg 7.x/8.x on Linux. [Source: FFmpeg documentation](https://ffmpeg.org/ffmpeg.html)
+
+---
+
+### 13.1 ffprobe: Inspection and Analysis
+
+`ffprobe` is the diagnostic front-end for `libavformat` and `libavcodec`. It reads container metadata and optionally decodes streams to report per-frame data.
+
+```bash
+# Human-readable summary of streams and format
+ffprobe -v error -show_streams -show_format -pretty input.mkv
+
+# JSON output — machine-parseable, useful in scripts
+ffprobe -v error -print_format json -show_streams -show_format input.mp4 | jq .
+
+# Show only video stream properties
+ffprobe -v error -select_streams v:0 \
+        -show_entries stream=codec_name,width,height,r_frame_rate,bit_rate \
+        -print_format json input.mp4
+
+# Show packet timestamps (PTS/DTS/size) — useful for sync debugging
+ffprobe -v error -show_packets -select_streams v:0 input.mp4 | head -80
+
+# Show per-frame metadata including pict_type (I/P/B) and pkt_size
+ffprobe -v error -show_frames -select_streams v:0 \
+        -show_entries frame=pict_type,pkt_pts_time,pkt_size \
+        -print_format csv input.mp4 > frame_types.csv
+
+# Detect scene changes (outputs timestamps where score > 0.4)
+ffprobe -v error -show_frames -select_streams v:0 \
+        -show_entries frame=pkt_pts_time,tags:lavfi.scene_score \
+        -f lavfi "movie=input.mp4,select=gt(scene\,0.4)" 2>/dev/null
+
+# Duration in seconds (no extra output)
+ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 input.mp4
+
+# Pixel format and color space
+ffprobe -v error -select_streams v:0 \
+        -show_entries stream=pix_fmt,color_space,color_transfer,color_primaries \
+        -print_format json input.mp4
+
+# Count audio streams and list codecs
+ffprobe -v error -select_streams a \
+        -show_entries stream=index,codec_name,channel_layout,sample_rate \
+        -print_format json input.mkv
+
+# List subtitle tracks
+ffprobe -v error -select_streams s \
+        -show_entries stream=index,codec_name,tags:language \
+        -print_format json input.mkv
+
+# Check for B-frames (useful before stream copying to MPEG-TS)
+ffprobe -v error -select_streams v:0 \
+        -show_entries stream=has_b_frames -of default=nokey=1:noprint_wrappers=1 input.mp4
+```
+
+`ffprobe -formats` lists all muxers/demuxers; `ffprobe -codecs` lists all codecs with flags (D=decodable, E=encodable, V/A/S=video/audio/subtitle). `ffprobe -filters` lists all lavfi filters with their I/O pad types. [Source: ffprobe documentation](https://ffmpeg.org/ffprobe.html)
+
+---
+
+### 13.2 Container Remuxing (No Re-encode)
+
+Remuxing changes the container without touching compressed data. Use `-c copy` to bypass all decode/encode stages. [Source: FFmpeg wiki — Seeking](https://trac.ffmpeg.org/wiki/Seeking)
+
+```bash
+# MP4 → MKV (common: MKV supports more codecs and subtitle formats)
+ffmpeg -i input.mp4 -c copy output.mkv
+
+# MKV → MP4 (important: ensure H.264 is in AVCC framing, not Annex B)
+ffmpeg -i input.mkv -c copy -movflags +faststart output.mp4
+
+# MKV → MPEG-TS (transport stream for broadcast/IPTV delivery)
+# Note: B-frames require -bsf:v h264_mp4toannexb when the source is MP4-framed H.264
+ffmpeg -i input.mkv -c copy -bsf:v h264_mp4toannexb output.ts
+
+# MP4 → TS with bitstream filter for H.264
+ffmpeg -i input.mp4 -c copy -bsf:v h264_mp4toannexb -f mpegts output.ts
+
+# HEVC MP4 → TS
+ffmpeg -i input.mp4 -c copy -bsf:v hevc_mp4toannexb -f mpegts output.ts
+
+# Extract a time range without re-encoding (fast; may not be frame-accurate)
+ffmpeg -ss 00:01:30 -i input.mp4 -to 00:03:00 -c copy segment.mp4
+
+# Frame-accurate cut (re-encodes a GOP at the in-point; accurate at out-point)
+ffmpeg -i input.mp4 -ss 00:01:30 -to 00:03:00 -c:v libx264 -c:a copy -crf 18 segment.mp4
+
+# Trim and add -avoid_negative_ts to fix timestamp issues in cuts
+ffmpeg -ss 00:01:30 -i input.mp4 -t 90 -c copy -avoid_negative_ts make_zero output.mp4
+
+# Add -movflags +faststart to move the moov atom to the front (required for web streaming)
+ffmpeg -i input.mp4 -c copy -movflags +faststart output_web.mp4
+
+# Extract audio track only
+ffmpeg -i input.mkv -vn -c:a copy audio.aac
+
+# Extract video track only (no audio)
+ffmpeg -i input.mkv -an -c:v copy video.h264
+
+# Strip all subtitles
+ffmpeg -i input.mkv -c copy -sn nosubs.mkv
+
+# Strip metadata
+ffmpeg -i input.mp4 -c copy -map_metadata -1 no_metadata.mp4
+```
+
+---
+
+### 13.3 Video Transcoding Recipes
+
+#### H.264 (x264) — Constant Rate Factor (CRF)
+
+CRF is the recommended mode for archiving/mastering: a single quality value, no bitrate target, variable file size. CRF 18 is near-visually lossless for most content; CRF 23 is the default (acceptable quality); CRF 28 is aggressive compression. [Source: FFmpeg H.264 encoding guide](https://trac.ffmpeg.org/wiki/Encode/H.264)
+
+```bash
+# Standard CRF encode — good quality, reasonable file size
+ffmpeg -i input.mp4 -c:v libx264 -crf 23 -preset medium -c:a copy output.mp4
+
+# High quality archival (slower encode, smaller file than -preset fast at same CRF)
+ffmpeg -i input.mp4 -c:v libx264 -crf 18 -preset slow \
+       -profile:v high -level:v 4.2 \
+       -pix_fmt yuv420p \
+       -c:a aac -b:a 192k output.mp4
+
+# Web-optimised: fast decode, broad device compatibility
+ffmpeg -i input.mp4 -c:v libx264 -crf 23 -preset fast \
+       -profile:v high -level:v 4.0 \
+       -movflags +faststart \
+       -pix_fmt yuv420p \
+       -c:a aac -b:a 128k output_web.mp4
+
+# Force 30 fps output (useful when source is variable-framerate screen capture)
+ffmpeg -i input.mp4 -c:v libx264 -crf 23 -preset medium \
+       -r 30 -vsync cfr output.mp4
+
+# Tune for animation (disables film-grain noise; better PSNR for flat regions)
+ffmpeg -i input.mp4 -c:v libx264 -crf 20 -preset slow -tune animation output.mp4
+
+# Tune for screen content (reduces ringing on text/UI)
+ffmpeg -i input.mkv -c:v libx264 -crf 20 -tune stillimage output.mkv
+```
+
+#### H.265 / HEVC (x265)
+
+HEVC typically achieves the same perceptual quality as H.264 at roughly half the bitrate, at the cost of 3–5× higher encode CPU time. CRF scale: 28 is roughly equivalent to x264 CRF 23. [Source: FFmpeg H.265 encoding guide](https://trac.ffmpeg.org/wiki/Encode/H.265)
+
+```bash
+# HEVC CRF encode
+ffmpeg -i input.mp4 -c:v libx265 -crf 28 -preset medium \
+       -tag:v hvc1 \
+       -c:a aac -b:a 192k output_hevc.mp4
+
+# HEVC with HDR passthrough (preserving BT.2020/PQ colour metadata)
+ffmpeg -i input_hdr.mkv \
+       -c:v libx265 -crf 22 -preset slow \
+       -x265-params "hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc" \
+       -pix_fmt yuv420p10le \
+       -c:a copy output_hdr.mkv
+
+# 10-bit HEVC (better quality for HDR content; supported on modern devices)
+ffmpeg -i input.mp4 -c:v libx265 -crf 24 -preset medium \
+       -pix_fmt yuv420p10le output_10bit.mkv
+```
+
+#### AV1 (libaom-av1, SVT-AV1, rav1e)
+
+AV1 offers ~30–40% bitrate saving over HEVC at the same quality. Encode speed varies dramatically by encoder. SVT-AV1 is the fastest software AV1 encoder. [Source: FFmpeg AV1 guide](https://trac.ffmpeg.org/wiki/Encode/AV1)
+
+```bash
+# libaom-av1 — slow but highest quality (good for archival, painful for daily use)
+ffmpeg -i input.mp4 -c:v libaom-av1 -crf 30 -b:v 0 \
+       -cpu-used 4 \
+       -row-mt 1 \
+       -tiles 2x2 \
+       -c:a libopus -b:a 128k output_av1.mkv
+
+# SVT-AV1 — fast, production-ready, recommended for AV1 transcoding
+ffmpeg -i input.mp4 -c:v libsvtav1 -crf 30 -preset 7 \
+       -svtav1-params "tune=0:film-grain=8" \
+       -c:a libopus -b:a 128k output_svtav1.mkv
+
+# rav1e — alternative encoder (often slower than SVT-AV1, use if SVT-AV1 unavailable)
+ffmpeg -i input.mp4 -c:v librav1e -crf 80 -speed 6 \
+       -c:a copy output_rav1e.mkv
+
+# AV1 with WebM container (for web delivery without browser HEVC issues)
+ffmpeg -i input.mp4 -c:v libsvtav1 -crf 32 -preset 6 \
+       -c:a libopus -b:a 96k output.webm
+```
+
+#### VP9
+
+VP9 is widely supported in browsers, produces smaller files than H.264, and is faster to encode than AV1. [Source: FFmpeg VP9 guide](https://trac.ffmpeg.org/wiki/Encode/VP9)
+
+```bash
+# VP9 two-pass (recommended; single-pass quality is inconsistent)
+ffmpeg -i input.mp4 -c:v libvpx-vp9 -b:v 2M -pass 1 -an -f null /dev/null && \
+ffmpeg -i input.mp4 -c:v libvpx-vp9 -b:v 2M -pass 2 \
+       -c:a libopus -b:a 128k output.webm
+
+# VP9 CRF/constrained quality (faster than two-pass)
+ffmpeg -i input.mp4 -c:v libvpx-vp9 -crf 33 -b:v 0 \
+       -deadline good -cpu-used 2 \
+       -c:a libopus -b:a 128k output_cq.webm
+
+# VP9 with row-based multithreading (major speedup on multi-core)
+ffmpeg -i input.mp4 -c:v libvpx-vp9 -crf 33 -b:v 0 \
+       -row-mt 1 -threads 8 \
+       -c:a libopus output.webm
+```
+
+---
+
+### 13.4 Two-Pass Encoding
+
+Two-pass encoding runs the encode twice: pass 1 analyses the content and writes a `ffmpeg2pass-0.log` stats file; pass 2 reads that file to distribute bits optimally. Use this when you need a precise target file size or CBR/VBR bitrate, not just quality.
+
+```bash
+# H.264 two-pass at 4 Mbps average
+ffmpeg -i input.mp4 -c:v libx264 -b:v 4M -pass 1 -an -f null /dev/null
+ffmpeg -i input.mp4 -c:v libx264 -b:v 4M -pass 2 -c:a aac -b:a 192k output_2pass.mp4
+
+# HEVC two-pass
+ffmpeg -i input.mp4 -c:v libx265 -b:v 3M -x265-params pass=1 -an -f null /dev/null
+ffmpeg -i input.mp4 -c:v libx265 -b:v 3M -x265-params pass=2 -c:a copy output_2pass_hevc.mp4
+
+# Constrained bitrate with VBV buffer (essential for streaming; prevents buffer underrun)
+# VBV maxrate = peak allowed bitrate; bufsize = VBV buffer size (1–2× maxrate is typical)
+ffmpeg -i input.mp4 -c:v libx264 -b:v 3M -maxrate 3.5M -bufsize 6M \
+       -pass 1 -an -f null /dev/null
+ffmpeg -i input.mp4 -c:v libx264 -b:v 3M -maxrate 3.5M -bufsize 6M \
+       -pass 2 -c:a aac -b:a 128k output_streaming.mp4
+```
+
+---
+
+### 13.5 Hardware-Accelerated Encoding on Linux
+
+See §5 for the library-level API. The CLI flags translate directly from those concepts. [Source: FFmpeg HWAccelIntro](https://trac.ffmpeg.org/wiki/HWAccelIntro)
+
+#### VAAPI (Intel/AMD — open-source driver stack)
+
+```bash
+# Full VAAPI transcode: software decode → VAAPI encode
+ffmpeg -vaapi_device /dev/dri/renderD128 \
+       -i input.mp4 \
+       -vf "format=nv12,hwupload" \
+       -c:v h264_vaapi -qp 22 \
+       -c:a copy output_vaapi.mp4
+
+# VAAPI zero-copy: VAAPI decode + VAAPI encode (stays on GPU the whole time)
+ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi \
+       -vaapi_device /dev/dri/renderD128 \
+       -i input.h264 \
+       -c:v h264_vaapi -qp 22 \
+       -c:a copy output_vaapi_zerocopy.mp4
+
+# HEVC VAAPI encode
+ffmpeg -vaapi_device /dev/dri/renderD128 \
+       -i input.mp4 \
+       -vf "format=nv12,hwupload" \
+       -c:v hevc_vaapi -qp 24 \
+       -c:a copy output_hevc_vaapi.mp4
+
+# VAAPI encode with CBR and VBV (for live streaming)
+ffmpeg -vaapi_device /dev/dri/renderD128 \
+       -i input.mp4 \
+       -vf "format=nv12,hwupload" \
+       -c:v h264_vaapi -rc_mode CBR -b:v 4M -maxrate 4M -bufsize 8M \
+       -c:a aac -b:a 128k output_cbr_vaapi.mp4
+
+# AV1 VAAPI encode (requires Mesa/Intel driver with AV1 encode support)
+ffmpeg -vaapi_device /dev/dri/renderD128 \
+       -i input.mp4 \
+       -vf "format=nv12,hwupload" \
+       -c:v av1_vaapi -qp 28 \
+       -c:a libopus -b:a 96k output_av1_vaapi.mkv
+```
+
+#### NVENC (NVIDIA proprietary driver)
+
+```bash
+# H.264 NVENC — CQ (constant quality, closest NVENC equivalent to CRF)
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda \
+       -i input.mp4 \
+       -c:v h264_nvenc -rc vbr -cq 23 -preset p5 \
+       -b:v 0 -maxrate 8M -bufsize 16M \
+       -c:a copy output_nvenc.mp4
+
+# HEVC NVENC
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda \
+       -i input.mp4 \
+       -c:v hevc_nvenc -rc vbr -cq 28 -preset p5 \
+       -tag:v hvc1 \
+       -c:a copy output_nvenc_hevc.mp4
+
+# AV1 NVENC (Ada Lovelace / RTX 40-series and newer)
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda \
+       -i input.mp4 \
+       -c:v av1_nvenc -cq 35 -preset p5 \
+       -c:a libopus -b:a 128k output_nvenc_av1.mkv
+
+# NVENC with CUDA scale (stay on GPU for decode + scale + encode)
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda \
+       -i input_4k.mp4 \
+       -vf "scale_cuda=1920:1080" \
+       -c:v h264_nvenc -rc vbr -cq 23 -preset p4 \
+       -c:a copy output_1080p_nvenc.mp4
+
+# NVENC CBR for streaming (low-latency preset)
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda \
+       -i input.mp4 \
+       -c:v h264_nvenc -rc cbr -b:v 6M -maxrate 6M -bufsize 6M \
+       -preset llhq -tune ll \
+       -c:a aac -b:a 192k output_ll_nvenc.mp4
+```
+
+#### QSV (Intel Quick Sync Video)
+
+```bash
+# H.264 QSV
+ffmpeg -hwaccel qsv -hwaccel_output_format qsv \
+       -c:v h264_qsv -i input.h264 \
+       -c:v h264_qsv -global_quality 23 \
+       -c:a copy output_qsv.mp4
+
+# HEVC QSV
+ffmpeg -init_hw_device qsv=hw \
+       -filter_hw_device hw \
+       -i input.mp4 \
+       -vf "hwupload=extra_hw_frames=64,format=qsv" \
+       -c:v hevc_qsv -global_quality 24 \
+       -c:a copy output_qsv_hevc.mp4
+```
+
+#### AMF (AMD proprietary — discrete GPU)
+
+```bash
+# H.264 AMF (requires AMD proprietary driver or ROCm on supported hardware)
+ffmpeg -hwaccel d3d11va \
+       -i input.mp4 \
+       -c:v h264_amf -quality speed -rc cqp -qp_i 22 -qp_p 24 -qp_b 28 \
+       -c:a copy output_amf.mp4
+```
+
+---
+
+### 13.6 Audio Handling
+
+```bash
+# Transcode audio codec: AC-3 → AAC
+ffmpeg -i input.mkv -c:v copy -c:a aac -b:a 192k output.mkv
+
+# Transcode to Opus (best quality-per-bit at low bitrates)
+ffmpeg -i input.mp4 -c:v copy -c:a libopus -b:a 96k output.mkv
+
+# Transcode to FLAC (lossless)
+ffmpeg -i input.wav -c:a flac output.flac
+
+# Downmix 5.1 surround to stereo
+ffmpeg -i input.mkv -c:v copy \
+       -c:a aac -ac 2 -b:a 192k output_stereo.mkv
+
+# Extract audio to WAV (for offline processing)
+ffmpeg -i input.mp4 -vn -c:a pcm_s16le output.wav
+
+# Normalise audio loudness to EBU R128 (-23 LUFS target, standard for broadcast)
+# (requires ffmpeg built with loudnorm filter)
+ffmpeg -i input.mp4 \
+       -af "loudnorm=I=-23:TP=-1.5:LRA=11:print_format=summary" \
+       -c:v copy output_normalised.mp4
+
+# Two-pass loudnorm: first pass measures actual loudness
+ffmpeg -i input.mp4 -af loudnorm=print_format=json -f null /dev/null 2>&1 | tail -12
+# Then insert measured values into second pass:
+ffmpeg -i input.mp4 \
+       -af "loudnorm=I=-23:TP=-1.5:LRA=11:measured_I=-18.5:measured_TP=-0.3:measured_LRA=9.2:measured_thresh=-29.0:offset=0.5:linear=true" \
+       -c:v copy output_normalised_2pass.mp4
+
+# Mix two audio streams (e.g., commentary + original)
+ffmpeg -i main.mp4 -i commentary.mp3 \
+       -filter_complex "[0:a][1:a]amerge=inputs=2,pan=stereo|FL<FL0+FL1|FR<FR0+FR1[a]" \
+       -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k output_mixed.mp4
+
+# Delay audio by 200 ms (fix A/V sync)
+ffmpeg -i input.mp4 -af "adelay=200|200" -c:v copy output_delayed.mp4
+
+# Speed up audio (no pitch change) using atempo
+# atempo range is 0.5–2.0; chain filters for values outside range
+ffmpeg -i input.mp4 -filter_complex "[0:a]atempo=1.5[a]" \
+       -map 0:v -map "[a]" -c:v copy output_fast.mp4
+
+# Change sample rate
+ffmpeg -i input.wav -ar 44100 output_44k.wav
+
+# Set channel layout explicitly
+ffmpeg -i input.wav -ac 2 -channel_layout stereo output.wav
+```
+
+---
+
+### 13.7 Video Filter Recipes
+
+Filters are applied via `-vf` (simple filter chain) or `-filter_complex` (graph with multiple inputs/outputs). [Source: FFmpeg Filtering Guide](https://trac.ffmpeg.org/wiki/FilteringGuide)
+
+```bash
+# Scale to 1280×720, preserving aspect ratio with black bars (pad)
+ffmpeg -i input.mp4 -vf "scale=1280:720:force_original_aspect_ratio=decrease,\
+pad=1280:720:(ow-iw)/2:(oh-ih)/2" -c:a copy output_720p.mp4
+
+# Scale to 1920×1080 using lanczos (highest quality downscale)
+ffmpeg -i input.mp4 -vf "scale=1920:1080:flags=lanczos" -c:a copy output_1080p.mp4
+
+# Crop to 16:9 from a 4:3 source (centre crop)
+ffmpeg -i input.mp4 -vf "crop=iw:iw*9/16:(ow-iw)/2:(oh-iw*9/16)/2" output.mp4
+
+# Crop a specific region: 400×300 at offset (100, 50)
+ffmpeg -i input.mp4 -vf "crop=400:300:100:50" output.mp4
+
+# Rotate 90° clockwise (e.g., correct portrait phone video)
+ffmpeg -i input.mp4 -vf "transpose=1" -c:a copy output.mp4
+# 0=90° CCW+vflip  1=90° CW  2=90° CCW  3=90° CW+vflip
+
+# Flip horizontally
+ffmpeg -i input.mp4 -vf "hflip" output.mp4
+
+# Deinterlace with yadif (motion-adaptive, best quality, slow)
+ffmpeg -i input_interlaced.mp4 -vf "yadif=mode=1" -c:a copy output.mp4
+# mode=0: output one frame per frame; mode=1: output one frame per field (doubles fps)
+
+# Deinterlace with bwdif (better than yadif for broadcast content)
+ffmpeg -i input.mp4 -vf "bwdif" output.mp4
+
+# Convert 60fps to 24fps (cinema framerate) with frame blending
+ffmpeg -i input_60fps.mp4 -vf "minterpolate=fps=24:mi_mode=blend" output_24fps.mp4
+
+# Add logo watermark (overlay PNG at top-right, 10px from edge)
+ffmpeg -i input.mp4 -i logo.png \
+       -filter_complex "overlay=W-w-10:10" \
+       -c:a copy output_watermark.mp4
+
+# Fade in (first 30 frames) and fade out (last 30 frames)
+# First determine total frame count, then:
+ffmpeg -i input.mp4 \
+       -vf "fade=type=in:start_frame=0:nb_frames=30,\
+            fade=type=out:start_frame=<LAST_FRAME-30>:nb_frames=30" \
+       output.mp4
+
+# Draw text timestamp overlay
+ffmpeg -i input.mp4 \
+       -vf "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:\
+            text='%{pts\\:hms}':fontcolor=white:fontsize=24:box=1:\
+            boxcolor=black@0.5:x=10:y=10" \
+       output_timestamp.mp4
+
+# Denoise with hqdn3d (spatial+temporal; good for noisy camera footage)
+ffmpeg -i input.mp4 -vf "hqdn3d=4:3:6:4.5" -c:a copy output_denoised.mp4
+
+# Sharpen
+ffmpeg -i input.mp4 -vf "unsharp=5:5:1.5:5:5:0" output_sharp.mp4
+
+# Convert SDR (bt.709) to a neutral colour matrix
+ffmpeg -i input.mp4 \
+       -vf "colormatrix=bt709:bt601" \
+       -c:a copy output.mp4
+
+# Reduce video speed to 50% (half speed)
+ffmpeg -i input.mp4 -vf "setpts=2.0*PTS" -af "atempo=0.5" output_slow.mp4
+
+# Speed up video to 200% (double speed)
+ffmpeg -i input.mp4 -vf "setpts=0.5*PTS" -af "atempo=2.0" output_fast.mp4
+
+# Stack two videos side by side (same height required)
+ffmpeg -i left.mp4 -i right.mp4 \
+       -filter_complex "hstack=inputs=2" \
+       output_sbs.mp4
+
+# Stack two videos vertically
+ffmpeg -i top.mp4 -i bottom.mp4 \
+       -filter_complex "vstack=inputs=2" \
+       output_stacked.mp4
+
+# Picture-in-picture: overlay small video in corner
+ffmpeg -i main.mp4 -i pip.mp4 \
+       -filter_complex "[1:v]scale=320:180[pip];[0:v][pip]overlay=W-w-10:H-h-10" \
+       -c:a copy output_pip.mp4
+```
+
+---
+
+### 13.8 Complex Filter Graphs
+
+`-filter_complex` enables multiple inputs and multiple outputs — the full lavfi graph DSL. [Source: FFmpeg filtergraph syntax](https://ffmpeg.org/ffmpeg-filters.html#Filtering-Guide)
+
+```bash
+# Blend two video streams (50/50 mix)
+ffmpeg -i video1.mp4 -i video2.mp4 \
+       -filter_complex "[0:v][1:v]blend=all_mode=average[v]" \
+       -map "[v]" -c:v libx264 -crf 23 output_blend.mp4
+
+# Crossfade between two clips (2-second crossfade, clips must be same resolution)
+# Clip1 total duration: 10s. Crossfade starts at t=8s.
+ffmpeg -i clip1.mp4 -i clip2.mp4 \
+       -filter_complex \
+       "[0:v]trim=0:10,setpts=PTS-STARTPTS[v0]; \
+        [1:v]trim=0:10,setpts=PTS-STARTPTS[v1]; \
+        [v0][v1]xfade=transition=fade:duration=2:offset=8[v]; \
+        [0:a][1:a]acrossfade=d=2[a]" \
+       -map "[v]" -map "[a]" \
+       -c:v libx264 -crf 23 -c:a aac output_xfade.mp4
+
+# Split video: produce two outputs simultaneously (saves a decode pass)
+ffmpeg -i input.mp4 \
+       -filter_complex "[0:v]split=2[v1][v2]" \
+       -map "[v1]" -c:v libx264 -crf 23 output_high.mp4 \
+       -map "[v2]" -c:v libx264 -crf 30 output_low.mp4
+
+# Generate per-frame PSNR/SSIM quality metrics (compare encode to source)
+ffmpeg -i original.mp4 -i encoded.mp4 \
+       -filter_complex "psnr;[0:v][1:v]ssim" \
+       -f null /dev/null 2>&1 | grep -E "PSNR|SSIM"
+
+# Subtitle burn-in + scale in one graph pass (single decode)
+ffmpeg -i input.mkv -i subs.srt \
+       -filter_complex "[0:v][1:s]overlay,scale=1280:720[v]" \
+       -map "[v]" -map 0:a \
+       -c:v libx264 -crf 23 -c:a copy output.mp4
+
+# Multi-source mosaic (2×2 grid from 4 inputs)
+ffmpeg -i in0.mp4 -i in1.mp4 -i in2.mp4 -i in3.mp4 \
+       -filter_complex \
+       "[0:v]scale=640:360[v0]; \
+        [1:v]scale=640:360[v1]; \
+        [2:v]scale=640:360[v2]; \
+        [3:v]scale=640:360[v3]; \
+        [v0][v1]hstack[top]; \
+        [v2][v3]hstack[bot]; \
+        [top][bot]vstack[v]" \
+       -map "[v]" -c:v libx264 -crf 23 mosaic.mp4
+```
+
+---
+
+### 13.9 Frame Extraction and Thumbnails
+
+```bash
+# Extract a single frame at a specific time
+ffmpeg -ss 00:01:23 -i input.mp4 -vframes 1 -q:v 2 thumbnail.jpg
+
+# Extract one frame every second
+ffmpeg -i input.mp4 -vf "fps=1" frames/frame_%04d.jpg
+
+# Extract one frame every 10 seconds
+ffmpeg -i input.mp4 -vf "fps=1/10" thumbs/thumb_%04d.jpg
+
+# Extract keyframes only (I-frames) — fast, no inter-frame decode needed
+ffmpeg -i input.mp4 \
+       -vf "select='eq(pict_type,I)'" \
+       -vsync vfr keyframes/kf_%04d.png
+
+# Extract the best frame near scene changes (scene detection)
+ffmpeg -i input.mp4 \
+       -vf "select='gt(scene,0.4)',showinfo" \
+       -vsync vfr scene_frames/scene_%04d.jpg 2>&1 | grep pts_time
+
+# Create an animated GIF (optimised palette)
+ffmpeg -i input.mp4 -ss 00:00:05 -t 3 \
+       -vf "fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
+       output.gif
+
+# Create WebP animation (better compression than GIF)
+ffmpeg -i input.mp4 -ss 00:00:05 -t 3 \
+       -vf "fps=15,scale=480:-1" \
+       -c:v libwebp -lossless 0 -quality 80 -loop 0 \
+       output.webp
+
+# Create a video thumbnail sprite sheet (tile 5×5 frames, 160×90 each)
+ffmpeg -i input.mp4 \
+       -vf "fps=1/30,scale=160:90,tile=5x5" \
+       -frames:v 1 -q:v 2 sprite.jpg
+```
+
+---
+
+### 13.10 Concatenation and Splitting
+
+#### Concatenation with the concat demuxer (no re-encode)
+
+```bash
+# Create a file list
+cat > filelist.txt <<'EOF'
+file '/path/to/clip1.mp4'
+file '/path/to/clip2.mp4'
+file '/path/to/clip3.mp4'
+EOF
+
+# Concatenate (stream copy — requires identical codec/resolution/framerate in all clips)
+ffmpeg -f concat -safe 0 -i filelist.txt -c copy output.mp4
+```
+
+#### Concatenation with re-encode (handles mismatched parameters)
+
+```bash
+ffmpeg -i clip1.mp4 -i clip2.mp4 -i clip3.mp4 \
+       -filter_complex \
+       "[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1[v][a]" \
+       -map "[v]" -map "[a]" \
+       -c:v libx264 -crf 23 -c:a aac output.mp4
+```
+
+#### Segment muxer (split output into fixed-size segments)
+
+```bash
+# Split into 10-second HLS-like segments
+ffmpeg -i input.mp4 \
+       -c copy \
+       -f segment -segment_time 10 \
+       -reset_timestamps 1 \
+       output_%03d.mp4
+
+# Split on keyframes only (segment_time is a minimum, not exact)
+ffmpeg -i input.mp4 \
+       -c copy \
+       -f segment -segment_time 10 \
+       -segment_format_options "movflags=+faststart" \
+       -reset_timestamps 1 -break_non_keyframes 0 \
+       output_%03d.mp4
+```
+
+#### Split by chapter markers
+
+```bash
+# Extract chapter list from mkv
+ffprobe -v error -show_chapters -print_format json input.mkv | \
+  jq -r '.chapters[] | "ffmpeg -i input.mkv -ss \(.start_time) -to \(.end_time) -c copy chapter_\(.id).mkv"' | bash
+```
+
+---
+
+### 13.11 Linux Screen and Desktop Recording
+
+#### X11 (Xorg session)
+
+```bash
+# Record full screen at 30fps using x11grab
+ffmpeg -f x11grab -r 30 -s 1920x1080 -i :0.0 \
+       -c:v libx264 -crf 23 -preset ultrafast \
+       screen_record.mkv
+
+# Record a specific region: 800×600 starting at offset 100,100
+ffmpeg -f x11grab -r 30 -s 800x600 -i :0.0+100,100 \
+       -c:v libx264 -crf 20 region_record.mkv
+
+# Include cursor in X11 recording
+ffmpeg -f x11grab -r 30 -s 1920x1080 -draw_mouse 1 -i :0.0 \
+       -c:v libx264 -crf 23 screen_with_cursor.mkv
+
+# Record X11 + PulseAudio microphone simultaneously
+ffmpeg -f x11grab -r 30 -s 1920x1080 -i :0.0 \
+       -f pulse -i default \
+       -c:v libx264 -crf 23 -preset veryfast \
+       -c:a aac -b:a 128k \
+       screen_audio.mkv
+```
+
+#### KMS/DRM framebuffer (Wayland or no compositor — requires CAP_SYS_RAWIO or `video` group)
+
+```bash
+# kmsgrab captures the KMS scanout buffer — works on Wayland and bare DRM
+ffmpeg -device /dev/dri/card0 -f kmsgrab -i - \
+       -vf "hwmap=derive_device=vaapi,scale_vaapi=1920:1080,hwdownload,format=bgr0" \
+       -c:v libx264 -crf 23 kms_record.mkv
+
+# VAAPI-accelerated KMS capture and encode (fully zero-copy on Intel/AMD)
+ffmpeg -device /dev/dri/card0 -f kmsgrab -i - \
+       -vf "hwmap=derive_device=vaapi,scale_vaapi=w=1920:h=1080" \
+       -c:v h264_vaapi -qp 22 kms_vaapi.mp4
+```
+
+#### Wayland via PipeWire (compositor-independent, works on GNOME/KDE)
+
+```bash
+# Use the xdg-desktop-portal ScreenCast path via PipeWire
+# (The portal gives you a PipeWire node ID; substitute it for <node_id>)
+ffmpeg -f lavfi -i "pipewire=fd=<pipewire_fd>:stream_node_id=<node_id>" \
+       -c:v libx264 -crf 23 wayland_record.mkv
+
+# With wf-recorder (wraps pipewire portal automatically — simpler for scripting)
+# wf-recorder is a separate tool: https://github.com/ammen99/wf-recorder
+wf-recorder -f output.mp4 --codec h264_vaapi
+
+# With PulseAudio/PipeWire audio capture alongside screen
+ffmpeg -f pulse -i alsa_output.pci.analog-stereo.monitor \
+       -f lavfi -i "pipewire=fd=<fd>:stream_node_id=<node_id>" \
+       -c:v libx264 -crf 23 -c:a aac -b:a 128k wayland_audio.mkv
+```
+
+---
+
+### 13.12 Subtitle Handling
+
+```bash
+# Extract subtitle track to SRT (text subtitles)
+ffmpeg -i input.mkv -map 0:s:0 -c:s srt output.srt
+
+# Extract PGS (Blu-ray bitmap subtitles) — no conversion, raw stream
+ffmpeg -i input.mkv -map 0:s:0 -c:s copy output.sup
+
+# Soft-mux (embed) SRT subtitles into MKV
+ffmpeg -i input.mp4 -i subs.srt \
+       -c copy -c:s srt \
+       output_with_subs.mkv
+
+# Hard-burn subtitles into video (no separate track; always visible)
+# Requires libass and a fonts directory
+ffmpeg -i input.mkv \
+       -vf "subtitles=input.mkv:stream_index=0:force_style='FontName=DejaVu Sans,FontSize=24'" \
+       -c:v libx264 -crf 23 -c:a copy output_burned.mp4
+
+# Burn external SRT file (offset by 1 second for sync correction)
+ffmpeg -i input.mp4 -i subs.srt \
+       -filter_complex "[0:v]subtitles=subs.srt:charenc=UTF-8[v]" \
+       -map "[v]" -map 0:a \
+       -c:v libx264 -crf 23 -c:a copy output_srt_burned.mp4
+
+# Convert SRT to ASS (Advanced SubStation Alpha — richer formatting)
+ffmpeg -i input.srt output.ass
+
+# Add subtitle delay (shift all cues by 2.5 seconds)
+ffmpeg -itsoffset 2.5 -i subs.srt -c:s copy shifted_subs.srt
+
+# Force subtitle stream as default
+ffmpeg -i input.mkv -c copy -disposition:s:0 default output.mkv
+```
+
+---
+
+### 13.13 Metadata and Cover Art
+
+```bash
+# Set common metadata tags
+ffmpeg -i input.mp4 \
+       -metadata title="My Video" \
+       -metadata artist="Author Name" \
+       -metadata year="2026" \
+       -metadata comment="Produced with FFmpeg" \
+       -c copy output.mp4
+
+# Copy metadata from one file to another
+ffmpeg -i source_with_meta.mp4 -i bare_video.mp4 \
+       -map 1 -map_metadata 0 -c copy output.mp4
+
+# Strip all metadata
+ffmpeg -i input.mp4 -map_metadata -1 -c copy no_meta.mp4
+
+# Add cover art to MP4 (MJPEG stream attached as video track)
+ffmpeg -i input.mp4 -i cover.jpg \
+       -map 0 -map 1 \
+       -c copy \
+       -disposition:v:1 attached_pic \
+       output_with_cover.mp4
+
+# Add cover art to MP3/AAC audio
+ffmpeg -i input.mp3 -i cover.jpg \
+       -map 0:a -map 1:v \
+       -c:a copy -c:v mjpeg \
+       -disposition:v attached_pic \
+       output.mp3
+
+# Read embedded cover art
+ffmpeg -i input.mp3 -an -vcodec copy cover_out.jpg
+
+# Set chapter markers (from a chapter file)
+# chapters.txt format:
+# ;FFMETADATA1
+# [CHAPTER]
+# TIMEBASE=1/1000
+# START=0
+# END=60000
+# title=Introduction
+ffmpeg -i input.mp4 -i chapters.txt \
+       -map_metadata 1 -codec copy output_chapters.mp4
+```
+
+---
+
+### 13.14 Adaptive Bitrate Streaming Output
+
+See §9 for protocol internals. These are the most common packaging patterns. [Source: FFmpeg HLS packaging](https://trac.ffmpeg.org/wiki/Creating%20multiple%20outputs%20with%20FFmpeg)
+
+```bash
+# HLS: single rendition
+ffmpeg -i input.mp4 \
+       -c:v libx264 -crf 23 -preset fast -g 48 -keyint_min 48 -sc_threshold 0 \
+       -c:a aac -b:a 128k \
+       -f hls -hls_time 6 -hls_playlist_type vod \
+       -hls_segment_filename "hls/seg_%03d.ts" \
+       hls/index.m3u8
+
+# HLS: multi-bitrate ladder (1080p + 720p + 480p in one ffmpeg call)
+ffmpeg -i input.mp4 \
+       -filter_complex \
+       "[0:v]split=3[v1][v2][v3]; \
+        [v1]scale=1920:1080[1080p]; \
+        [v2]scale=1280:720[720p]; \
+        [v3]scale=854:480[480p]" \
+       -map "[1080p]" -c:v:0 libx264 -b:v:0 5M -preset fast \
+       -map "[720p]"  -c:v:1 libx264 -b:v:1 2.5M -preset fast \
+       -map "[480p]"  -c:v:2 libx264 -b:v:2 1M -preset fast \
+       -map 0:a -c:a aac -b:a 128k \
+       -f hls -hls_time 6 -hls_playlist_type vod \
+       -master_pl_name master.m3u8 \
+       -hls_segment_filename "hls/%v/seg_%03d.ts" \
+       -var_stream_map "v:0,a:0 v:1,a:0 v:2,a:0" \
+       "hls/%v/index.m3u8"
+
+# DASH packaging
+ffmpeg -i input.mp4 \
+       -c:v libx264 -b:v 3M -g 48 -keyint_min 48 -sc_threshold 0 \
+       -c:a aac -b:a 128k \
+       -f dash -seg_duration 6 -use_timeline 1 -use_template 1 \
+       output.mpd
+
+# RTMP push to streaming server
+ffmpeg -re -i input.mp4 \
+       -c:v libx264 -b:v 4M -maxrate 4M -bufsize 8M \
+       -preset veryfast -g 60 \
+       -c:a aac -b:a 160k \
+       -f flv rtmp://stream.example.com/live/streamkey
+
+# SRT output
+ffmpeg -re -i input.mp4 \
+       -c:v libx264 -b:v 4M -maxrate 4M -bufsize 8M \
+       -preset veryfast -g 60 \
+       -c:a aac -b:a 128k \
+       -f mpegts "srt://0.0.0.0:9000?mode=listener&latency=200000"
+```
+
+---
+
+### 13.15 Batch Processing Patterns
+
+```bash
+# Transcode all MKV files in a directory to MP4 (serial)
+for f in *.mkv; do
+  ffmpeg -i "$f" -c:v libx264 -crf 23 -preset fast -c:a aac "${f%.mkv}.mp4"
+done
+
+# Parallel transcode using GNU parallel (4 jobs at a time)
+ls *.mkv | parallel -j4 'ffmpeg -i {} -c:v libx264 -crf 23 -c:a aac {.}.mp4'
+
+# Batch thumbnail extraction (one frame per file)
+for f in *.mp4; do
+  ffmpeg -ss 00:00:05 -i "$f" -vframes 1 -q:v 2 "thumbs/${f%.mp4}.jpg"
+done
+
+# Losslessly rotate all portrait videos (set rotate metadata; no re-encode)
+for f in *.mp4; do
+  rot=$(ffprobe -v error -select_streams v:0 \
+        -show_entries stream_tags=rotate \
+        -of default=noprint_wrappers=1:nokey=1 "$f")
+  if [ "$rot" = "90" ]; then
+    ffmpeg -i "$f" -c copy -metadata:s:v rotate=0 "fixed_$f"
+  fi
+done
+
+# Check all files for streams that will need re-encoding before MPEG-TS copy
+for f in *.mp4; do
+  codec=$(ffprobe -v error -select_streams v:0 \
+          -show_entries stream=codec_name -of default=nokey=1:noprint_wrappers=1 "$f")
+  echo "$f: $codec"
+done
+
+# Generate side-by-side quality comparison (source vs encode) for all files
+for f in *.mp4; do
+  ffmpeg -i "$f" -c:v libx264 -crf 28 "enc_$f"
+  ffmpeg -i "$f" -i "enc_$f" \
+         -filter_complex "psnr=stats_file=${f%.mp4}_psnr.log" \
+         -f null /dev/null
+done
+
+# Watch a directory and transcode new files as they arrive (inotifywait)
+inotifywait -m -e close_write --format '%f' . | while read FILE; do
+  [[ "$FILE" == *.mkv ]] && \
+  ffmpeg -i "$FILE" -c:v libx264 -crf 23 -c:a aac "${FILE%.mkv}.mp4"
+done
+```
+
+---
+
+### 13.16 Common Pitfalls and Diagnostics
+
+| Problem | Diagnosis | Fix |
+|---|---|---|
+| A/V out of sync after cut | PTS are not reset at the cut point | Add `-avoid_negative_ts make_zero` or `-reset_timestamps 1` |
+| `moov atom not found` error | moov atom is at end of file (streaming-unfriendly) | Add `-movflags +faststart` to the encode command |
+| Green frame at start of video | Decoder received B-frame before its reference I/P-frame | Use `-bsf:v h264_mp4toannexb` when converting MP4→TS |
+| Audio/video length mismatch | Audio and video finish at different times | Add `-shortest` to stop at the shorter stream's end |
+| CRF encode produces huge file | Source has very high motion / noise that CRF must preserve | Add `-tune film` or lower CRF; pre-denoise with `hqdn3d` |
+| `codec not currently supported in container` | Codec is incompatible with the output format | Change output format or transcode to a compatible codec |
+| VAAPI device not found | `/dev/dri/renderD128` doesn't exist or lacks permissions | `ls -la /dev/dri/`; add user to `render` group (`sudo usermod -aG render $USER`) |
+| NVENC `out of sessions` error | NVIDIA consumer drivers limit to 3 concurrent NVENC sessions | Use `nvidia-smi -pm 1` to enable persistence mode; driver may cap sessions |
+| `DTS out of order` warnings | Source file has disordered DTS (common in screen captures) | Add `-copytb 0` or use `setpts=PTS` filter to fix timestamps |
+| Filter `scale` produces uneven dimensions | Output dimensions must be divisible by 2 for yuv420p | Use `scale=1280:trunc(ih*dar/2)*2` or `scale=1280:-2` |
+
+```bash
+# Diagnose A/V sync issues: compare audio and video timestamps
+ffprobe -v error -show_packets -select_streams v:0 input.mp4 | grep pts_time | head
+ffprobe -v error -show_packets -select_streams a:0 input.mp4 | grep pts_time | head
+
+# Check if a file is truly playable end-to-end (decode all frames, report errors)
+ffmpeg -v error -i input.mp4 -f null /dev/null
+
+# Show real-time encode stats while running (default behaviour)
+# Suppress progress (useful in scripts)
+ffmpeg -nostats -loglevel error -i input.mp4 -c:v libx264 output.mp4
+
+# Benchmark: measure CPU time and real time of an encode
+time ffmpeg -benchmark -i input.mp4 -c:v libx264 -crf 23 /dev/null
+
+# Enable verbose logging for hardware decode
+ffmpeg -loglevel debug -hwaccel vaapi -i input.mp4 -f null /dev/null 2>&1 | grep vaapi
+```
+
+---
+
+## 14. Integrations
 
 **Chapter 50 — Vulkan Video**: The `AVVkFrame` objects that FFmpeg's Vulkan hwaccel decoder produces are exactly the Vulkan Video output surfaces described in Chapter 50. The Vulkan Video decode path (`VkVideoDecodeH264PictureInfoKHR`, the DPB management, timeline semaphore synchronisation) is the same in both chapters — FFmpeg's `libavcodec/vulkan_video.c` is the consumer of the Vulkan Video KHR extension stack.
 
@@ -1456,7 +2401,7 @@ avformat_open_input(&fmt, NULL, NULL, NULL); // URL=NULL uses fmt->pb
 
 ---
 
-## 14. References
+## 15. References
 
 1. [FFmpeg GitHub repository](https://github.com/FFmpeg/FFmpeg)
 2. [FFmpeg doxygen trunk](https://ffmpeg.org/doxygen/trunk/)
