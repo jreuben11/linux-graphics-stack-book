@@ -1,0 +1,61 @@
+# Part X — The Browser Rendering Stack
+
+The layers examined in Parts I–IX — **DRM**, **KMS**, **GEM**, **Mesa**, **Vulkan**, **Wayland**, and the display compositor — form the foundation on which web browsers must build. A browser tab is not a native application; it executes untrusted, sandboxed code that cannot directly open **`/dev/dri/renderD128`**, call **`vkCreateDevice`**, or issue **Wayland** protocol messages. This part explains how Chromium and Firefox solve that problem: how they isolate GPU access behind process boundaries, translate legacy **OpenGL ES** and modern **WebGPU** APIs across those boundaries, rasterise and composite every pixel of web content, and ultimately deliver frames to the **Wayland** compositor through the same **DMA-BUF** and **linux-dmabuf-unstable-v1** mechanisms the rest of the graphics stack uses. This layer exists because the web's security model and cross-platform portability requirements impose constraints that make direct driver access impossible, and because the scale of a full browser — millions of concurrent DOM nodes, CSS animations, video frames, canvas workloads, and WebGPU compute shaders — demands a rendering architecture qualitatively different from any native application.
+
+## Chapters in This Part
+
+**Chapter 33 — Chromium's Multi-Process GPU Architecture** establishes the architectural foundation for all subsequent Chromium chapters. It explains how Chrome separates rendering into a sandboxed **renderer process** (running **Blink**), a privileged **GPU process** (holding all hardware contexts), and a **browser process** (owning **DRM** device nodes and the **Wayland** connection). Readers learn how the **Mojo** IPC framework and the **GPU command buffer** ring-buffer protocol ferry serialised GPU commands across process boundaries, how the **Ozone** platform abstraction decouples Chrome from specific display backends, and how the **`seccomp-BPF`** sandbox enforces the renderer's isolation. The chapter also introduces **Viz** — the **`viz::DisplayCompositor`** running inside the GPU process — and the **OOP-D** (Out-of-Process Display Compositor) architecture that underpins the rest of the part.
+
+**Chapter 34 — ANGLE and WebGL** traces the path from a JavaScript **WebGL** call to a **Mesa** Vulkan driver. **ANGLE** (Almost Native Graphics Layer Engine) is Chrome's own **OpenGL ES** implementation, used instead of the system **Mesa** GL driver to guarantee conformance and insulate the browser from distribution-level driver variation. The chapter examines ANGLE's two-level object model (**`egl::Display`**/**`rx::DisplayVk`**, **`egl::Context`**/**`rx::ContextVk`**), the translation of **OpenGL ES** stateful rendering into **Vulkan** pipeline objects via **`GraphicsPipelineDesc`**, the three-stage **GLSL ES** to **SPIR-V** shader translation pipeline, zero-copy **DMA-BUF** surface sharing, and the synchronisation machinery that preserves OpenGL's implicit ordering in an explicit **Vulkan** model.
+
+**Chapter 35 — Dawn and WebGPU** covers Chrome's implementation of the **WebGPU** API. Unlike **WebGL**, **WebGPU** was designed to mirror explicit GPU APIs from the start; **Dawn** exposes that model through the **`webgpu.h`** C surface, a layered architecture of **`dawn_native`** (validation and backends), **`dawn_wire`** (IPC serialisation), and the **Tint** **WGSL**-to-**SPIR-V** compiler. Readers learn how **`DawnWire`** serialises **WebGPU** commands over a **Mojo** **`DataPipe`**, how **`DeviceVk`** manages **`VkDevice`** creation, timeline semaphore synchronisation, and **VMA** memory allocation, and how **WebGPU** canvas frames are shared with **Viz** as **`gpu::SharedImage`** objects backed by **`VkImage`** with **`VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT`**.
+
+**Chapter 36 — The Chromium Compositor: CC and Viz** explains the two-stage compositing architecture that separates *what to draw* (managed by **CC** in each renderer process) from *how to display it* (managed by **Viz** in the GPU process). The chapter covers the **`cc::Layer`** tree and **property trees** (**`cc::TransformTree`**, **`cc::EffectTree`**), tile rasterisation via **OOP-R** using **Skia Ganesh** or **Skia Graphite**, cross-process GPU texture sharing via **`gpu::SharedImage`** and **`gpu::Mailbox`**, **`viz::SurfaceAggregator`** frame aggregation, and final presentation to **Wayland** via **`zwp_linux_dmabuf_v1`**, **`wl_surface::commit`**, and hardware overlay promotion through **`viz::OverlayProcessor`**.
+
+**Chapter 37 — Skia: 2D Rendering at Browser Scale** covers the 2D rasterisation library that underpins Chrome's tile rasterisation, compositor drawing, HTML **`<canvas>`**, CSS filters, and text rendering. It examines the mature **Ganesh** backend (**`GrDirectContext`**, **`GrResourceCache`**, **`GrOpsTask`**) and the next-generation **Graphite** backend (**`skgpu::graphite::Recorder`**, **`TaskGraph`**, **`DrawPass`**), the six-stage text pipeline from **Fontconfig** through **HarfBuzz**, **FreeType**, and **`GrAtlasManager`**, the **SkImageFilter** DAG for CSS effects, and **SkSL** — Skia's own shading language — which is compiled at runtime to **GLSL ES**, **SPIR-V**, or **WGSL** depending on the active backend.
+
+**Chapter 52 — Firefox and WebRender** provides an architecturally contrasting view. Where Chrome tile-rasterises with **Skia** and composites separately, Firefox's **WebRender** collapses the paint/composite boundary entirely: the page is submitted as a high-level **display list** that is compiled each frame into batched **`glDrawArraysInstanced`** calls, much like a game scene. Readers see the **`gfx/wr/`** Cargo workspace, the **`BuiltDisplayList`** **IPC** wire format, **`RenderTaskGraph`** construction, **PictureCache** tile invalidation, **Wayland** native-layer compositing via **`NativeLayerWayland`** and **`zwp_linux_dmabuf_v1`**, and Gecko's **WebGPU** implementation built on **`wgpu-core`** and the **naga** shader compiler rather than Chrome's **Dawn**.
+
+**Chapter 98 — WebAssembly and WebGPU as a Deployment Target** closes the part by stepping outside the browser's internal implementation and examining the stack from an application developer's perspective. It covers how Rust code using **wgpu** or C++ code using **Emscripten** and **emdawnwebgpu** can compile to a **WebAssembly** module that dispatches to the browser's **WebGPU** implementation, which itself maps to **Mesa** Vulkan drivers on Linux. The chapter addresses **`wasm-bindgen`** JavaScript interop, **WGSL** shader portability, **WASM SIMD** for CPU-side computation, and real-world use cases ranging from ML inference to portable game engines like **Bevy** and **Godot 4**.
+
+## How the Chapters Interrelate
+
+Chapter 33 is the mandatory entry point for the Chromium chapters. It defines the vocabulary — **GPU process**, **Mojo**, **GPU command buffer**, **Ozone**, **Viz**, **`seccomp-BPF`** sandbox — that every subsequent chapter assumes. Readers who skip it will find Chapters 34–37 opaque.
+
+Chapters 34 and 35 build directly on Chapter 33's IPC architecture but are largely independent of each other: **ANGLE** (Ch34) handles **WebGL** and sits on the **passthrough command decoder** path, while **Dawn** (Ch35) handles **WebGPU** and uses the **DawnWire** serialisation path. Both ultimately submit **Vulkan** commands to **Mesa** Vulkan drivers. Readers interested primarily in **WebGL** can read 33 → 34; readers focused on **WebGPU** can read 33 → 35.
+
+Chapter 36 draws on all three preceding chapters. **CC** uses **`gpu::SharedImage`** textures that are backed by **ANGLE** (Ch34) or **Dawn** (Ch35) contexts; **Viz** aggregates frames and presents them via the **Ozone/Wayland** backend described in the same chapter. **Skia** (Ch37) is the rasterisation engine invoked by **OOP-R** (introduced in Ch36), so Chapter 37 is best read after Chapter 36 to understand which **Skia** callers exist and why. The **`viz::SkiaRenderer`**, **`cc::RasterSource`**, and **`CanvasRenderingContext2D`** callers each make sense only in the context established by Chapter 36.
+
+Chapter 52 (Firefox/WebRender) is deliberately placed after the Chromium arc (Ch33–37) so that readers can appreciate the architectural contrast. It references the Chromium design explicitly in its opening section, and readers who have worked through Chapters 33–37 will recognise the tradeoffs being made in WebRender's design. Chapter 52 also introduces **`wgpu-core`** and **naga**, which are the Rust counterparts to **Dawn** and **Tint**; reading Chapter 35 first sharpens the comparison.
+
+Chapter 98 is the part's capstone. It presupposes understanding of **WebGPU** (Ch35), the concept of the browser GPU sandbox (Ch33), and the **Mesa** Vulkan backend (covered in Parts III–V). It ties the browser stack back to native Linux development, showing how the same GPU hardware and the same **Mesa** drivers underlie both a native **wgpu** binary and an in-browser **WebAssembly** deployment. The chapter also connects forward to the portability themes revisited in Parts XVI–XVIII.
+
+Across all seven chapters, three technical threads recur. First, **DMA-BUF** and **`zwp_linux_dmabuf_v1`** appear in every chapter as the mechanism for zero-copy buffer sharing across process boundaries and API contexts. Second, **explicit synchronisation** — **`VkSemaphore`**, timeline semaphores, sync FDs, **`VK_KHR_external_semaphore_fd`** — is the solution every chapter reaches for when crossing process or API boundaries. Third, the **Mesa** Vulkan driver stack (**RADV**, **ANV**, **NVK**) is the common destination that all of Chrome's and Firefox's API translation layers ultimately target.
+
+```mermaid
+graph LR
+    Ch33["Ch33: Chromium GPU Architecture\n(Mojo, command buffer, Ozone, Viz)"]
+    Ch34["Ch34: ANGLE and WebGL\n(GL ES → Vulkan translation)"]
+    Ch35["Ch35: Dawn and WebGPU\n(DawnWire, Tint, WGSL → SPIR-V)"]
+    Ch36["Ch36: CC and Viz\n(layer trees, SharedImage, Wayland output)"]
+    Ch37["Ch37: Skia\n(Ganesh, Graphite, SkSL, text)"]
+    Ch52["Ch52: Firefox and WebRender\n(display list, wgpu-core, naga)"]
+    Ch98["Ch98: WASM + WebGPU\n(wgpu, Emscripten, portability)"]
+
+    Ch33 --> Ch34
+    Ch33 --> Ch35
+    Ch33 --> Ch36
+    Ch34 --> Ch36
+    Ch35 --> Ch36
+    Ch36 --> Ch37
+    Ch33 -.->|"contrast"| Ch52
+    Ch35 -.->|"Dawn vs wgpu-core"| Ch52
+    Ch35 --> Ch98
+    Ch52 -.->|"wgpu runtime"| Ch98
+```
+
+## Prerequisites and What Comes Next
+
+Readers should be comfortable with the **DRM**/**KMS** subsystem (Part I), **GEM** buffer management and **DMA-BUF** (Parts I–II), the **Mesa** Vulkan driver architecture (Parts III–V), and **Wayland** compositor protocols including **`zwp_linux_dmabuf_v1`** and **`wp_presentation`** (Part VII). Familiarity with **Vulkan** fundamentals — **`VkDevice`**, **`VkCommandBuffer`**, pipeline objects, descriptor sets, and synchronisation primitives — is assumed throughout. Part X builds directly on Part IX (the Wayland compositor stack), and its output layer — frames submitted to the Wayland compositor — is the same surface Part IX describes from the compositor side. Parts XVI–XVIII (Intel stack, AMD ecosystem, and rendering abstractions) revisit the **Mesa** driver paths that **ANGLE**, **Dawn**, and **wgpu** traverse on their way to the hardware, and Part IX's coverage of explicit GPU synchronisation protocols underlies the fence-passing machinery examined in Chapters 34–36.
+
+---
