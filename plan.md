@@ -144,6 +144,12 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 100: etnaviv: The Vivante GPU Open Driver](#chapter-100-etnaviv-the-vivante-gpu-open-driver) *(Part II)*
   - [Chapter 101: Color Science and the ICC Profile Pipeline](#chapter-101-color-science-and-the-icc-profile-pipeline) *(Part VI)*
   - [Chapter 102: The DRM GPU Scheduler and Multi-Process Fairness](#chapter-102-the-drm-gpu-scheduler-and-multi-process-fairness) *(Part I)*
+- **Part XXII — Coverage Gap Chapters**
+  - [Chapter 113: Screen Capture and Remote Desktop on Linux](#chapter-113-screen-capture-and-remote-desktop-on-linux) *(Part VI)*
+  - [Chapter 114: Zink — OpenGL on Vulkan](#chapter-114-zink--opengl-on-vulkan) *(Part IV)*
+  - [Chapter 115: GPU Memory Management Internals — TTM, GEM, and BAR](#chapter-115-gpu-memory-management-internals--ttm-gem-and-bar) *(Part I)*
+  - [Chapter 116: DRM Lease and VR Direct Display](#chapter-116-drm-lease-and-vr-direct-display) *(Part I)*
+  - [Chapter 117: DKMS and Out-of-Tree GPU Kernel Modules](#chapter-117-dkms-and-out-of-tree-gpu-kernel-modules) *(Part IX)*
 
 ---
 
@@ -1556,6 +1562,74 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Connection to Wayland: the compositor's `wl_surface.commit` triggers a Wayland render job; that job's GPU fence controls when the KMS atomic commit can fire; `linux-drm-syncobj-v1` exposes the timeline fence to Wayland clients so client rendering and compositor rendering are properly sequenced
 - Real-world priority inversion: example of an application holding a fence the compositor waits on, blocking scanout; how explicit sync (Ch75) and the scheduler's priority system together prevent this
 - **Integrations**: Ch1 (DRM architecture — scheduler is a core DRM component), Ch3 (DRM syncobj — the fence mechanism the scheduler uses), Ch4 (GPU memory — scheduler manages job lifetimes tied to BO lifetimes), Ch21 (wlroots — compositor queue priority), Ch75 (explicit GPU sync — scheduler timeline fences underpin syncobj)
+
+---
+
+## Part XXII — Coverage Gap Chapters
+
+### Chapter 113: Screen Capture and Remote Desktop on Linux *(Part VI)*
+
+- X11 screen capture: `XGetImage`, `XShmGetImage`, XComposite `NameWindowPixmap`, the security problem (any client can capture any window)
+- KMS writeback connectors: `DRM_MODE_CONNECTOR_WRITEBACK`, `drm_writeback_job`; supported by Mali-DP, Arm Komeda, VC4 TXP, AMDGPU, R-Car DU, Qualcomm DPU, VKMS
+- wlr-screencopy protocol: `zwlr_screencopy_manager_v1`, `zwlr_screencopy_frame_v1`; wl_shm and DMA-BUF buffer types; grim, slurp, wf-recorder
+- ext-image-copy-capture: standardised wayland-protocols successor; session-based API; cursor capture; GNOME/KDE support
+- PipeWire screencast: `pw_stream` with `SPA_MEDIA_TYPE_VIDEO`; DMA-BUF zero-copy path; monitor/window/region source types
+- xdg-desktop-portal ScreenCast: `org.freedesktop.portal.ScreenCast` D-Bus interface; portal implementations (gnome, kde, wlr)
+- OBS Studio on Wayland: pipewire-capture source; DMA-BUF EGL image import; VA-API/NVENC output; V4L2 loopback virtual camera
+- WebRTC screen sharing: `getDisplayMedia()` → xdg-portal → PipeWire; Chromium PipeWire-based capturer; Firefox via GtkScreenCast
+- Remote desktop: gnome-remote-desktop (FreeRDP, H.264 via VA-API); xrdp; Sunshine/Moonlight (GameStream, NVENC/VAAPI)
+- **Integrations**: Ch2 (KMS writeback), Ch20 (Wayland ext-image-copy-capture), Ch21 (wlr-screencopy), Ch38 (PipeWire), Ch50 (Firefox), Ch57 (remote desktop encoding), Ch111 (Flatpak portal), Ch112 (VRR)
+
+### Chapter 114: Zink — OpenGL on Vulkan *(Part IV)*
+
+- Purpose and history: Mesa Gallium driver implementing OpenGL via Vulkan; enables GL on Vulkan-only drivers (NVK, v3dv, Turnip, PowerVR)
+- Architecture: `zink_screen` (VkDevice), `zink_context`, `zink_batch_state`, `zink_resource`; position alongside radeonsi/iris/etnaviv
+- State translation: FBOs → VkRenderPass, textures → VkImage, UBOs → VkBuffer, transform feedback via `VK_EXT_transform_feedback`
+- Shader translation: GLSL → NIR → `nir_to_spirv()`; Zink NIR lowering passes; shader variant keys; `VK_EXT_shader_object` path
+- Descriptor management: lazy / db (`VK_EXT_descriptor_buffer`) / auto modes; `zink_descriptors_update()` hot path
+- Pipeline caching: dynamic state extensions (EDS1/2/3); GPL; async compilation; on-disk `VkPipelineCache`
+- Compatibility profile: `GL_QUADS` emulation GS, display lists, accumulation buffer, fixed-function lighting; GL 4.6 core CTS conformance
+- Kopper WSI: platform-agnostic display for Zink; NVK default (Mesa 25.1), v3dv (RPi5), Turnip (Adreno), PowerVR (Mesa 26.1)
+- Debugging: `ZINK_DEBUG` flags, `ZINK_DESCRIPTORS` mode, render pass fragmentation analysis
+- **Integrations**: Ch13 (Gallium3D), Ch14 (NIR), Ch16 (Mesa Vulkan common), Ch18 (RADV), Ch20 (NVK), Ch24 (Vulkan), Ch110 (SPIR-V), Ch115 (GPU memory)
+
+### Chapter 115: GPU Memory Management Internals — TTM, GEM, and BAR *(Part I)*
+
+- GPU memory topology: VRAM (GDDR6X/HBM3), GTT (system RAM via IOMMU/GART), PCIe BAR, GPU MMU
+- GEM internals: `drm_gem_shmem_object`, `drm_gem_dma_object`; driver-specific embedding (`amdgpu_bo`, `nouveau_bo`, `i915_gem_object`)
+- TTM in depth: `ttm_device`, `ttm_resource_manager`, `ttm_buffer_object`, `ttm_resource`; memory types; `ttm_bo_validate`; ww_mutex reservation
+- drm_buddy: buddy allocator for VRAM; `gpu_buddy_alloc_blocks`; AMDGPU `amdgpu_vram_mgr`
+- drm_gpuvm + drm_exec: `drm_gpuvm_bo`, `drm_gpuva`; VM_BIND state machine; `drm_exec_until_all_locked`; Xe usage
+- Resizable BAR / SAM: `pci_resize_resource()`; `amdgpu_device_resize_fb_bar()`; write-combining; 5–15% gain in bandwidth-limited workloads
+- VRAM eviction: `ttm_lru_walk_for_evict`, `ttm_bo_swapout`; fence-wait gate; GPU TLB invalidation; OOM cascade
+- DMA-BUF internals: `dma_buf_ops` vtable; `dma_resv`; VA-API → Vulkan → KMS scanout cross-driver example
+- Debugging: fdinfo `drm-total-*/drm-shared-*/drm-active-*`; per-driver debugfs; `drm_info`
+- **Integrations**: Ch1 (DRM), Ch2 (KMS), Ch4 (GEM/DMA-BUF overview — differentiated scope), Ch5 (amdgpu/i915/Xe), Ch8 (Nouveau), Ch89 (GPU virtualisation), Ch102 (DRM GPU scheduler)
+
+### Chapter 116: DRM Lease and VR Direct Display *(Part I)*
+
+- VR latency problem: motion-to-photon <20 ms; direct display eliminates compositor overhead; ATW (Asynchronous Time Warp)
+- DRM lease API (kernel 4.15): `DRM_IOCTL_MODE_CREATE_LEASE`, `DRM_IOCTL_MODE_LIST_LESSEES`, `DRM_IOCTL_MODE_GET_LEASE`, `DRM_IOCTL_MODE_REVOKE_LEASE`
+- HMD connector discovery: EDID vendor ID (VLV, HVR, OVR); `non-desktop` quirk in `drm_edid.c`; `VK_EXT_acquire_drm_display`; `vkGetDrmDisplayEXT`
+- Monado OpenXR: `comp_window_direct_drm.c`; DRM lease + `VK_EXT_acquire_drm_display`; `u_timing_frame` predictor
+- wp_drm_lease_device_v1: compositor-mediated lease; `create_lease_request`, `request_connector`, `submit`, `lease_fd`; wlroots/KWin/Mutter support
+- Direct-to-display Vulkan: `VK_KHR_display`, `VK_EXT_acquire_drm_display`; `vkCreateDisplayPlaneSurfaceKHR`; wsi_drm.c
+- VR timing: `DRM_EVENT_FLIP_COMPLETE`; `drmWaitVBlank`; `VK_EXT_present_timing` (Vulkan 1.4.335, November 2025)
+- Practical setup: Valve Index, Meta Quest (ALVR), HTC Vive; libsurvive; Monado-gui
+- **Integrations**: Ch2 (KMS atomic), Ch20 (Wayland wp_drm_lease_device_v1), Ch21 (wlroots), Ch24 (Vulkan), Ch25 (OpenXR), Ch75 (explicit sync), Ch112 (VRR)
+
+### Chapter 117: DKMS and Out-of-Tree GPU Kernel Modules *(Part IX)*
+
+- Kernel module ABI problem: no stable ABI; vermagic; `CONFIG_MODVERSIONS` CRC; `EXPORT_SYMBOL_GPL` restrictions
+- DKMS mechanics: `dkms.conf` directives; `dkms add/build/install/status/autoinstall`; `/var/lib/dkms/`; systemd hook
+- NVIDIA proprietary modules: `nvidia.ko`, `nvidia-drm.ko`, `nvidia-modeset.ko`, `nvidia-uvm.ko`; binary stub + glue; `MODULE_LICENSE("NVIDIA")`
+- NVIDIA open modules (2022, MIT/GPL): Turing+ requirement; GSP-RM firmware; Blackwell open-only; Fedora default
+- AMD upstream-first: all of `drivers/gpu/drm/amd/` in mainline; no DKMS needed; zero version matrix overhead
+- Intel firmwares: GuC/HuC/DMC in `linux-firmware`; version matching; initrd inclusion
+- Out-of-tree lifecycle: development → RFC → staging → mainline; `MODULE_DEVICE_TABLE`; out-of-tree Makefile pattern
+- Secure Boot + MOK: `sign-file`; `mokutil --import`; DKMS auto-signing with enrolled key
+- Distribution packaging: Ubuntu (`nvidia-dkms-*`), Fedora (RPMFusion `akmod-nvidia`), Arch, NixOS (`hardware.nvidia.open`), Gentoo
+- **Integrations**: Ch1 (DRM), Ch5 (amdgpu upstream), Ch8 (Nouveau), Ch10 (Nova Rust driver), Ch76 (contributing), Ch102 (DRM GPU scheduler)
 
 ---
 
