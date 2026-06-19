@@ -1,4 +1,4 @@
-# Chapter 124: OpenCL on Linux
+# Chapter 134: OpenCL on Linux
 
 ## Scope
 
