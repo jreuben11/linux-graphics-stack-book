@@ -18,40 +18,69 @@
    - 4.1 [spirv_to_nir: The Universal Entry Point](#41-spirv_to_nir-the-universal-entry-point)
    - 4.2 [NIR Optimisation Passes](#42-nir-optimisation-passes)
    - 4.3 [Driver-Specific Backends](#43-driver-specific-backends)
-5. [DRM: The Kernel Rendezvous](#5-drm-the-kernel-rendezvous)
-   - 5.1 [Render Nodes vs Primary Nodes](#51-render-nodes-vs-primary-nodes)
-   - 5.2 [GEM: Buffer Lifecycle in the Kernel](#52-gem-buffer-lifecycle-in-the-kernel)
-   - 5.3 [Command Submission Ioctls](#53-command-submission-ioctls)
-   - 5.4 [drm_gpu_scheduler](#54-drm_gpu_scheduler)
-6. [GBM and DMA-BUF: Allocation and Sharing](#6-gbm-and-dma-buf-allocation-and-sharing)
-   - 6.1 [GBM API and Format Modifiers Negotiation](#61-gbm-api-and-format-modifier-negotiation)
-   - 6.2 [PRIME: Cross-Device Buffer Sharing](#62-prime-cross-device-buffer-sharing)
-7. [Explicit GPU Synchronisation: drm_syncobj](#7-explicit-gpu-synchronisation-drm_syncobj)
-   - 7.1 [The Death of Implicit Fences](#71-the-death-of-implicit-fences)
-   - 7.2 [Timeline Syncobjs and Vulkan Semaphores](#72-timeline-syncobjs-and-vulkan-semaphores)
-   - 7.3 [linux-drm-syncobj-v1 Wayland Protocol](#73-linux-drm-syncobj-v1-wayland-protocol)
-8. [NVIDIA: Three Driver Stacks in Coexistence](#8-nvidia-three-driver-stacks-in-coexistence)
-   - 8.1 [Proprietary Closed Stack](#81-proprietary-closed-stack)
-   - 8.2 [nvidia-open: Open Kernel, Closed Userspace](#82-nvidia-open-open-kernel-closed-userspace)
-   - 8.3 [nouveau + NVK: The Fully Open Path](#83-nouveau--nvk-the-fully-open-path)
-   - 8.4 [GSP Firmware: The Hidden Third Actor](#84-gsp-firmware-the-hidden-third-actor)
-9. [The Present Path: vkQueuePresentKHR to Photons](#9-the-present-path-vkqueuepresentkhr-to-photons)
-   - 9.1 [Mesa WSI and Swapchain Allocation](#91-mesa-wsi-and-swapchain-allocation)
-   - 9.2 [Wayland: linux-dmabuf-v1 and Compositor Import](#92-wayland-linux-dmabuf-v1-and-compositor-import)
-   - 9.3 [KMS Atomic Commit and Display Engine Scanout](#93-kms-atomic-commit-and-display-engine-scanout)
-10. [Supporting Subsystems](#10-supporting-subsystems)
-    - 10.1 [Resizable BAR and Smart Access Memory](#101-resizable-bar-and-smart-access-memory)
-    - 10.2 [IOMMU: DMA Safety](#102-iommu-dma-safety)
-    - 10.3 [GPU Firmware Microcode](#103-gpu-firmware-microcode)
-11. [Memory Types, Heaps, and the VkMemoryAllocateInfo Path](#11-memory-types-heaps-and-the-vkmemoryallocateinfo-path)
-    - 11.1 [VkPhysicalDeviceMemoryProperties and Heap Topology](#111-vkphysicaldevicememoryproperties-and-heap-topology)
-    - 11.2 [Allocation Strategy in Practice](#112-allocation-strategy-in-practice)
-12. [Debugging the Full Stack](#12-debugging-the-full-stack)
-    - 12.1 [Tracing the Ioctl Surface](#121-tracing-the-ioctl-surface)
-    - 12.2 [GPU Hang Debugging](#122-gpu-hang-debugging)
-    - 12.3 [Shader Disassembly and NIR Dumps](#123-shader-disassembly-and-nir-dumps)
-13. [Full Stack Diagram](#13-full-stack-diagram)
-14. [Integrations](#14-integrations)
+   - 4.4 [Pipeline State Objects: When Compilation Fires](#44-pipeline-state-objects-when-compilation-fires)
+5. [Command Buffer Recording: From vkCmdDraw to GPU Packets](#5-command-buffer-recording-from-vkcmddraw-to-gpu-packets)
+   - 5.1 [The Recording Lifecycle](#51-the-recording-lifecycle)
+   - 5.2 [VK_KHR_dynamic_rendering vs Render Passes](#52-vk_khr_dynamic_rendering-vs-render-passes)
+   - 5.3 [Command Buffer Pools and Secondary Buffers](#53-command-buffer-pools-and-secondary-buffers)
+6. [Descriptor Sets and Resource Binding](#6-descriptor-sets-and-resource-binding)
+   - 6.1 [Descriptor Layout, Pool, and Set](#61-descriptor-layout-pool-and-set)
+   - 6.2 [How Drivers Implement Descriptors in GPU Memory](#62-how-drivers-implement-descriptors-in-gpu-memory)
+   - 6.3 [Push Constants and Push Descriptors](#63-push-constants-and-push-descriptors)
+7. [Pipeline Barriers, Image Layouts, and Hazard Tracking](#7-pipeline-barriers-image-layouts-and-hazard-tracking)
+   - 7.1 [Execution and Memory Dependencies](#71-execution-and-memory-dependencies)
+   - 7.2 [Image Layouts and Their Hardware Meaning](#72-image-layouts-and-their-hardware-meaning)
+   - 7.3 [How Drivers Implement Barriers in Hardware](#73-how-drivers-implement-barriers-in-hardware)
+8. [GPU Rasterisation Pipeline and Cache Hierarchy](#8-gpu-rasterisation-pipeline-and-cache-hierarchy)
+   - 8.1 [Fixed-Function Stages](#81-fixed-function-stages)
+   - 8.2 [Fragment Shader Invocation and Quads](#82-fragment-shader-invocation-and-quads)
+   - 8.3 [Render Output and Framebuffer Compression](#83-render-output-and-framebuffer-compression)
+   - 8.4 [GPU Cache Hierarchy](#84-gpu-cache-hierarchy)
+9. [DRM: The Kernel Rendezvous](#9-drm-the-kernel-rendezvous)
+   - 9.1 [Render Nodes vs Primary Nodes](#91-render-nodes-vs-primary-nodes)
+   - 9.2 [GEM: Buffer Lifecycle in the Kernel](#92-gem-buffer-lifecycle-in-the-kernel)
+   - 9.3 [Command Submission Ioctls](#93-command-submission-ioctls)
+   - 9.4 [drm_gpu_scheduler](#94-drm_gpu_scheduler)
+10. [GBM and DMA-BUF: Allocation and Sharing](#10-gbm-and-dma-buf-allocation-and-sharing)
+    - 10.1 [GBM API and Format Modifiers Negotiation](#101-gbm-api-and-format-modifier-negotiation)
+    - 10.2 [PRIME: Cross-Device Buffer Sharing](#102-prime-cross-device-buffer-sharing)
+11. [Explicit GPU Synchronisation: drm_syncobj](#11-explicit-gpu-synchronisation-drm_syncobj)
+    - 11.1 [The Death of Implicit Fences](#111-the-death-of-implicit-fences)
+    - 11.2 [Timeline Syncobjs and Vulkan Semaphores](#112-timeline-syncobjs-and-vulkan-semaphores)
+    - 11.3 [linux-drm-syncobj-v1 Wayland Protocol](#113-linux-drm-syncobj-v1-wayland-protocol)
+12. [NVIDIA: Three Driver Stacks in Coexistence](#12-nvidia-three-driver-stacks-in-coexistence)
+    - 12.1 [Proprietary Closed Stack](#121-proprietary-closed-stack)
+    - 12.2 [nvidia-open: Open Kernel, Closed Userspace](#122-nvidia-open-open-kernel-closed-userspace)
+    - 12.3 [nouveau + NVK: The Fully Open Path](#123-nouveau--nvk-the-fully-open-path)
+    - 12.4 [GSP Firmware: The Hidden Third Actor](#124-gsp-firmware-the-hidden-third-actor)
+13. [The Present Path: vkQueuePresentKHR to Photons](#13-the-present-path-vkqueuepresentkhr-to-photons)
+    - 13.1 [vkAcquireNextImageKHR: Opening the Frame](#131-vkacquirenextimagekhr-opening-the-frame)
+    - 13.2 [Mesa WSI and Swapchain Allocation](#132-mesa-wsi-and-swapchain-allocation)
+    - 13.3 [Wayland: linux-dmabuf-v1 and Compositor Import](#133-wayland-linux-dmabuf-v1-and-compositor-import)
+    - 13.4 [KMS Atomic Commit and Display Engine Scanout](#134-kms-atomic-commit-and-display-engine-scanout)
+    - 13.5 [Frame Timing and the Triple-Buffer Pipeline](#135-frame-timing-and-the-triple-buffer-pipeline)
+14. [Supporting Subsystems](#14-supporting-subsystems)
+    - 14.1 [Resizable BAR and Smart Access Memory](#141-resizable-bar-and-smart-access-memory)
+    - 14.2 [IOMMU: DMA Safety](#142-iommu-dma-safety)
+    - 14.3 [GPU Firmware Microcode](#143-gpu-firmware-microcode)
+15. [Memory Types, Heaps, and the VkMemoryAllocateInfo Path](#15-memory-types-heaps-and-the-vkmemoryallocateinfo-path)
+    - 15.1 [VkPhysicalDeviceMemoryProperties and Heap Topology](#151-vkphysicaldevicememoryproperties-and-heap-topology)
+    - 15.2 [Allocation Strategy in Practice](#152-allocation-strategy-in-practice)
+    - 15.3 [Staging Buffer Uploads: Getting Data to VRAM](#153-staging-buffer-uploads-getting-data-to-vram)
+16. [Debugging the Full Stack](#16-debugging-the-full-stack)
+    - 16.1 [Tracing the Ioctl Surface](#161-tracing-the-ioctl-surface)
+    - 16.2 [GPU Hang Debugging](#162-gpu-hang-debugging)
+    - 16.3 [Shader Disassembly and NIR Dumps](#163-shader-disassembly-and-nir-dumps)
+17. [Mesa and Wayland: The Bidirectional Relationship](#17-mesa-and-wayland-the-bidirectional-relationship)
+    - 17.1 [Apps Presenting Frames: Mesa WSI as a Wayland Client](#171-apps-presenting-frames-mesa-wsi-as-a-wayland-client)
+    - 17.2 [The Compositor as a Mesa Consumer](#172-the-compositor-as-a-mesa-consumer)
+    - 17.3 [What Wayland Core Does Not Know About Mesa](#173-what-wayland-core-does-not-know-about-mesa)
+18. [Common Patterns: Feeding the Critical Path at Scale](#18-common-patterns-feeding-the-critical-path-at-scale)
+    - 18.1 [Persistent Mapped Uniform Buffers](#181-persistent-mapped-uniform-buffers)
+    - 18.2 [Indirect Draw: GPU-Driven Rendering](#182-indirect-draw-gpu-driven-rendering)
+    - 18.3 [Multi-Threaded Command Recording](#183-multi-threaded-command-recording)
+19. [Full Stack Diagram](#19-full-stack-diagram)
+20. [Integrations](#20-integrations)
 
 ---
 
@@ -236,7 +265,259 @@ After NIR optimisation, each driver lowers NIR to its own GPU instruction set:
 
 ---
 
-## 5. DRM: The Kernel Rendezvous
+### 4.4 Pipeline State Objects: When Compilation Fires
+
+Shader compilation does not happen when `vkCreateShaderModule` is called — it happens when `vkCreateGraphicsPipelines` or `vkCreateComputePipelines` is called. These functions receive a `VkGraphicsPipelineCreateInfo` that specifies not just the shaders but the entire fixed-function state of the pipeline: vertex input bindings and attributes, primitive topology, viewport and scissor counts, rasterisation state (polygon mode, cull mode, front face), depth and stencil operations, and colour blend attachments. All of this state is compiled together with the shaders into a single GPU state record — the **Pipeline State Object (PSO)**.
+
+```c
+/* VkGraphicsPipelineCreateInfo: the complete PSO specification */
+VkGraphicsPipelineCreateInfo pipeline_info = {
+    .sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+    .stageCount          = 2,
+    .pStages             = shader_stages,     /* vertex + fragment VkShaderModule */
+    .pVertexInputState   = &vertex_input,     /* VkVertexInputBindingDescription[] */
+    .pInputAssemblyState = &input_assembly,   /* topology: TRIANGLE_LIST */
+    .pViewportState      = &viewport_state,
+    .pRasterizationState = &rasterization,    /* cullMode, frontFace, polygonMode */
+    .pDepthStencilState  = &depth_stencil,    /* depthTestEnable, depthWriteEnable */
+    .pColorBlendState    = &color_blend,      /* blendEnable, srcColorBlendFactor */
+    .layout              = pipeline_layout,   /* descriptor set layouts + push constants */
+    .renderPass          = VK_NULL_HANDLE,    /* NULL for dynamic rendering */
+};
+vkCreateGraphicsPipelines(device, pipeline_cache, 1, &pipeline_info, NULL, &pipeline);
+```
+
+Inside RADV, `vkCreateGraphicsPipelines` calls `radv_graphics_pipeline_compile`, which invokes `spirv_to_nir` for each shader stage, runs the NIR optimisation pipeline, and calls ACO to produce the final RDNA ISA binary. The pipeline's fixed-function state is translated into a set of `SET_CONTEXT_REG` PM4 packets that RADV pre-bakes into the command buffer at `vkCmdBindPipeline` time. By doing this work at PSO creation, the per-draw cost of `vkCmdBindPipeline` is reduced to a DMA copy of pre-assembled register packets.
+
+[Source: `src/amd/vulkan/radv_pipeline_graphics.c`](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/amd/vulkan/radv_pipeline_graphics.c)
+
+**Pipeline caches** (`VkPipelineCache`) serialise the compiled ISA binaries to an opaque byte blob that can be saved to disk and reloaded on the next run, avoiding recompilation of the same shader permutations. RADV stores the ACO ISA binary alongside a hash of the NIR and pipeline state as the cache key. The cache is driver-specific — a cache produced by RADV cannot be consumed by ANV.
+
+**Shader stutter** is the perceptible frame hitch that occurs when a PSO is compiled on the first draw that needs it. The compilation can take 10–500 ms for complex shaders. Solutions are: pre-warm the pipeline cache at load time, use `VK_EXT_pipeline_creation_cache_control` to compile asynchronously, or use Mesa's background compilation thread (`radv_async_shader_compilation`). Bevy and Godot 4 both implement pipeline pre-warming using Vulkan pipeline cache serialisation between runs.
+
+---
+
+## 5. Command Buffer Recording: From vkCmdDraw to GPU Packets
+
+Command buffers are the primary unit of work in Vulkan. All GPU commands — draw calls, compute dispatches, resource transitions, and copies — are recorded into a `VkCommandBuffer` on the CPU, then submitted in batch to a queue. This separation of record-time and submit-time is fundamental: multiple threads can record command buffers in parallel, and recorded buffers can be reused across frames.
+
+### 5.1 The Recording Lifecycle
+
+```c
+/* Typical per-frame command buffer recording */
+VkCommandBufferBeginInfo begin_info = {
+    .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+};
+vkBeginCommandBuffer(cmd, &begin_info);
+
+/* Transition swapchain image to colour attachment */
+VkImageMemoryBarrier2 barrier = {
+    .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+    .srcStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+    .dstStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+    .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+    .oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED,
+    .newLayout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    .image         = swapchain_image,
+};
+VkDependencyInfo dep = { .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier };
+vkCmdPipelineBarrier2(cmd, &dep);
+
+/* Begin render pass (or VK_KHR_dynamic_rendering equivalent) */
+vkCmdBeginRendering(cmd, &rendering_info);   /* Vulkan 1.3 dynamic rendering */
+
+vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                         pipeline_layout, 0, 1, &descriptor_set, 0, NULL);
+vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buf, &offset);
+vkCmdBindIndexBuffer(cmd, index_buf, 0, VK_INDEX_TYPE_UINT32);
+vkCmdDrawIndexed(cmd, index_count, 1, 0, 0, 0);
+
+vkCmdEndRendering(cmd);
+vkEndCommandBuffer(cmd);
+```
+
+Inside a Mesa driver, each `vkCmd*` call does not touch the GPU at all. It writes into a CPU-side **command buffer stream** — a driver-managed allocation in host memory. The stream format is GPU-specific:
+
+- **RADV (AMD)**: the stream contains **PM4 packets** — AMD's Packet Manager 4 protocol. `vkCmdDraw` emits a `DRAW_INDEX_AUTO` or `DRAW_INDEX_2` packet. `vkCmdBindPipeline` emits `SET_CONTEXT_REG` packets for all pipeline state registers (SPI_SHADER_COL_FORMAT, PA_SC_LINE_CNTL, etc.). The entire stream is assembled in a GEM buffer (`drm_amdgpu_gem_create`) that later becomes an **IB** (Indirect Buffer) submitted to the kernel.
+- **ANV (Intel)**: uses **MI commands** and **3DSTATE_*** packets from Intel's Graphics Core documentation. `vkCmdDraw` emits `3DPRIMITIVE`. State is emitted lazily: RADV and ANV both use a "dirty bit" system where pipeline bind marks state as dirty and the next draw call flushes accumulated state packets.
+- **NVK (NVIDIA)**: uses **NVC0 method buffers** — Fermi/Maxwell/Turing FIFO command encoding. Methods are (class, offset, data) tuples. `vkCmdDraw` emits `NVC0_3D_VERTEX_BEGIN_GL` + `NVC0_3D_VERTEX_BUFFER_FIRST` + `NVC0_3D_VERTEX_END_GL`.
+
+### 5.2 VK_KHR_dynamic_rendering vs Render Passes
+
+The original Vulkan render pass model (`vkCmdBeginRenderPass` / `vkCmdEndRenderPass`) was designed for tile-based GPUs that benefit from knowing all attachments and subpass dependencies up front. For immediate-mode desktop GPUs (AMD, Intel, NVIDIA), subpass dependencies translate to pipeline barriers with little hardware benefit.
+
+`VK_KHR_dynamic_rendering` (Vulkan 1.3 core) eliminates render pass objects and framebuffers entirely. `vkCmdBeginRendering` takes a `VkRenderingInfo` with attachment formats and load/store ops inline. Mesa drivers (RADV, ANV, NVK) implement this natively — RADV even prefers it internally, internally converting legacy render passes to dynamic rendering where the hardware differences are negligible.
+
+### 5.3 Command Buffer Pools and Secondary Buffers
+
+Command buffers are allocated from `VkCommandPool` objects, which are not thread-safe — each thread needs its own pool. Secondary command buffers (`VK_COMMAND_BUFFER_LEVEL_SECONDARY`) can be pre-recorded once and executed via `vkCmdExecuteCommands` from a primary buffer, enabling parallel recording patterns where each thread records a secondary buffer for its object list, and a final thread assembles them.
+
+[Source: RADV command buffer implementation `src/amd/vulkan/radv_cmd_buffer.c`](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/amd/vulkan/radv_cmd_buffer.c)
+
+---
+
+## 6. Descriptor Sets and Resource Binding
+
+Descriptor sets are the mechanism by which shaders access resources — textures, buffers, samplers, and images. They are the Vulkan replacement for OpenGL's global bind points (`glBindTexture`, `glUniformBlockBinding`), and their hardware implementation reveals a great deal about how modern GPU driver design differs across vendors.
+
+### 6.1 Descriptor Layout, Pool, and Set
+
+The application declares the shape of its resource bindings in a `VkDescriptorSetLayout`, allocates sets from a `VkDescriptorPool`, and fills them via `vkUpdateDescriptorSets`:
+
+```c
+/* Layout: binding 0 = uniform buffer, binding 1 = combined image sampler */
+VkDescriptorSetLayoutBinding bindings[] = {
+    { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_VERTEX_BIT,   NULL },
+    { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+};
+VkDescriptorSetLayoutCreateInfo layout_info = {
+    .bindingCount = 2, .pBindings = bindings,
+};
+vkCreateDescriptorSetLayout(device, &layout_info, NULL, &set_layout);
+
+/* Allocate and write */
+vkAllocateDescriptorSets(device, &alloc_info, &descriptor_set);
+
+VkWriteDescriptorSet writes[] = {
+    { .dstBinding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+      .pBufferInfo = &(VkDescriptorBufferInfo){ .buffer = ubo, .range = VK_WHOLE_SIZE } },
+    { .dstBinding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+      .pImageInfo  = &(VkDescriptorImageInfo){ .imageView = tex_view, .sampler = sampler,
+                                               .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } },
+};
+vkUpdateDescriptorSets(device, 2, writes, 0, NULL);
+```
+
+### 6.2 How Drivers Implement Descriptors in GPU Memory
+
+The hardware reality behind `VkDescriptorSet` differs significantly between GPU families:
+
+**AMD (RADV)**: Each descriptor is a contiguous block of DWORD-sized words in a GPU-visible buffer (GTT or VRAM). A sampled image descriptor is 8 DWORDs (32 bytes) containing the surface base address, tiling info, format, dimensions, and sampler state. `vkUpdateDescriptorSets` writes these 8 DWORDs into the descriptor set's backing buffer. At draw time, `vkCmdBindDescriptorSets` emits a `SET_SH_REG` PM4 packet pointing the shader USER_DATA registers at the descriptor set buffer's GPU address. The shader then loads descriptors via `s_load_dwordx8` instructions.
+
+**Intel (ANV)**: Uses a descriptor heap model where descriptors live in a large pre-allocated GPU buffer (the "surface state heap" and "sampler state heap"). On Xe2 (Battlemage and later), ANV implements `VK_EXT_descriptor_buffer`, which exposes the raw descriptor layout to the application, enabling zero-copy descriptor updates.
+
+**NVIDIA (NVK/proprietary)**: Descriptors are represented as GPU virtual addresses embedded in the shader's constant buffer. A `VkImageView` is a 64-bit VA pointing to the surface descriptor block in VRAM. The NVIDIA shader hardware accesses resources via `TEX` instructions that take these VAs.
+
+### 6.3 Push Constants and Push Descriptors
+
+**Push constants** (`vkCmdPushConstants`) provide a small, frequently-updated constant block (up to 128–256 bytes depending on driver) that is embedded directly in the command stream rather than requiring a buffer allocation. RADV implements them as `SET_SH_REG` packets writing to USER_DATA registers; ANV as inline data in the 3DSTATE command stream.
+
+**Push descriptors** (`VK_KHR_push_descriptor`) allow descriptor updates inline in the command buffer without a `VkDescriptorPool`. They are ideal for per-draw resources that change every call (e.g., the per-object transform matrix buffer address).
+
+[Source: RADV descriptor implementation `src/amd/vulkan/radv_descriptor_set.c`](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/amd/vulkan/radv_descriptor_set.c)
+
+---
+
+## 7. Pipeline Barriers, Image Layouts, and Hazard Tracking
+
+Pipeline barriers are Vulkan's explicit mechanism for ordering GPU operations and managing cache coherency. Understanding them is essential for both correctness (barriers prevent read-after-write and write-after-read hazards) and performance (incorrect or over-broad barriers are a leading cause of GPU pipeline stalls).
+
+### 7.1 Execution and Memory Dependencies
+
+`vkCmdPipelineBarrier2` (Vulkan 1.3, `VK_KHR_synchronization2`) takes a `VkDependencyInfo` with three types of dependency:
+
+- **Memory barriers** (`VkMemoryBarrier2`): flush and invalidate caches for all resources.
+- **Buffer memory barriers** (`VkBufferMemoryBarrier2`): scoped to a buffer range.
+- **Image memory barriers** (`VkImageMemoryBarrier2`): scoped to an image subresource, and additionally specify an `oldLayout` → `newLayout` transition.
+
+Each barrier specifies:
+- `srcStageMask`: which pipeline stages must complete before the barrier
+- `srcAccessMask`: which memory writes those stages produced (triggers cache flush)
+- `dstStageMask`: which pipeline stages must wait after the barrier
+- `dstAccessMask`: which memory reads those stages will perform (triggers cache invalidation)
+
+```c
+/* Barrier: transition from color attachment write to shader read */
+VkImageMemoryBarrier2 barrier = {
+    .srcStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+    .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+    .dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+    .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
+    .oldLayout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    .newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    .image         = render_target,
+    .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+};
+```
+
+### 7.2 Image Layouts and Their Hardware Meaning
+
+Vulkan image layouts are not purely abstract — they map to real hardware compression and tiling states:
+
+| Vulkan layout | AMD hardware state | Intel hardware state |
+|---------------|-------------------|---------------------|
+| `UNDEFINED` | Any (contents discarded) | Any (contents discarded) |
+| `COLOR_ATTACHMENT_OPTIMAL` | DCC-compressed, CB metadata valid | CCS-compressed, renderable |
+| `SHADER_READ_ONLY_OPTIMAL` | DCC-compressed or decompressed, TC-compatible | CCS or uncompressed, sampler-readable |
+| `TRANSFER_SRC_OPTIMAL` | Decompressed for blit engine | Uncompressed or resolved |
+| `PRESENT_SRC_KHR` | DCC or linear, KMS-scannable modifier | CCS or X-tiled, KMS-scannable |
+
+A layout transition is often a GPU-side decompression or recompression pass. RADV inserts `DECOMPRESS_DCC` draw calls when transitioning out of `COLOR_ATTACHMENT_OPTIMAL` to an incompatible layout. ANV similarly manages CCS (Color Control Surface) state. Getting transitions wrong — missing a barrier or using the wrong layout — typically manifests as visual corruption, black textures, or intermittent GPU hangs.
+
+### 7.3 How Drivers Implement Barriers in Hardware
+
+Barriers translate to hardware synchronisation primitives specific to each GPU:
+
+- **AMD**: `EVENT_WRITE_EOP` (End-Of-Pipe event) combined with cache flush bits in the CS_PARTIAL_FLUSH and CB_DB_CACHE_FLUSH packets. The event writes a 64-bit value to a GPU memory address when the specified pipeline stage completes; the next submission can `WAIT_REG_MEM` on that address.
+- **Intel**: `PIPE_CONTROL` packet with bitmask flags for Post-Sync Operation, Render Target Cache Flush, Texture Cache Invalidation, and CS Stall. Intel's GPU architecture is deeply pipelined and PIPE_CONTROL can flush/stall any subset of stages.
+- **NVIDIA**: `NVC0_3D_WAIT_FOR_IDLE` combined with method-based cache flush sequences. NVK uses Fermi/Maxwell's memory barrier model adapted for Vulkan's synchronisation2 semantics.
+
+[Source: RADV barrier implementation `src/amd/vulkan/radv_cmd_buffer.c` — `radv_emit_cache_flush()`](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/amd/vulkan/radv_cmd_buffer.c)
+
+---
+
+## 8. GPU Rasterisation Pipeline and Cache Hierarchy
+
+After command buffer submission (§9 below), the GPU hardware executes the recorded commands through a fixed-function rasterisation pipeline followed by programmable shader stages. This section covers what happens inside the GPU from draw-call execution through framebuffer write.
+
+### 8.1 Fixed-Function Stages
+
+The geometry emitted by the vertex shader passes through several fixed-function stages before fragment shading:
+
+1. **Primitive Assembly**: vertices are grouped into triangles (or lines/points), handling triangle strips and fans.
+2. **Viewport Transform and Clipping**: clip-space coordinates are divided by W (perspective divide), transformed to viewport NDC space, and clipped against the view frustum. The guard band allows extended clipping to avoid over-clipping for very large primitives.
+3. **Rasterisation**: the rasteriser walks each triangle's pixel coverage using Bresenham-style edge equations. On AMD RDNA, this is the **Primitive Shader** (NGG — Next-Gen Geometry) path when mesh shaders or NGG are active. The output is a set of *fragments* — (x, y, sample mask) tuples.
+4. **Early-Z / Hi-Z**: before fragment shader invocation, the GPU checks the depth buffer. If all samples in a fragment are occluded by previously-written closer geometry, the fragment is killed early. AMD calls this the **Depth Block** or **Hi-Z pyramid**; Intel calls it the **Hierarchical Depth Buffer (HiZ)**. Early-Z requires no `discard` in the fragment shader and no depth writes in the shader.
+
+### 8.2 Fragment Shader Invocation and Quads
+
+Fragment shaders execute in **quads** — groups of 2×2 adjacent fragments — regardless of whether all four fragments are actually covered. This is required to correctly compute screen-space derivatives (`dFdx`, `dFdy`, `texture()` implicit LOD). Covered fragments execute normally; uncovered "helper invocations" execute the shader but their writes are discarded. Helper invocations can be queried via `gl_HelperInvocation` (GLSL) or `IsHelper` (HLSL/SPIR-V).
+
+On AMD RDNA, fragment shaders execute in **waves** of 32 or 64 threads (quads). Each wave is scheduled on a **Compute Unit (CU)**, which has 4 SIMD-16 units (RDNA2) or 2 SIMD-32 units (RDNA3). Wave occupancy — how many waves can simultaneously reside on a CU — depends on register file usage. ACO's register allocator (§4) optimises specifically to maximise occupancy.
+
+### 8.3 Render Output and Framebuffer Compression
+
+After the fragment shader writes colour and depth, the **ROP** (Render Output Unit / Color Backend on AMD, Raster Operations Pipeline on Intel) performs:
+- **Depth and stencil test**: compare against the depth buffer; discard if failing.
+- **Blending**: if `VkPipelineColorBlendAttachmentState` is enabled, blend the fragment output with the existing framebuffer value using the configured blend equation.
+- **Framebuffer write**: write the blended colour to the render target.
+
+Modern GPUs apply lossy or lossless framebuffer compression transparently:
+- **AMD DCC (Delta Colour Compression)**: lossless; stores deltas between adjacent tiles. The DCC metadata buffer tracks per-tile compression state. Enabled automatically when the render target uses a DCC-capable GBM modifier.
+- **Intel CCS (Color Control Surface)**: a parallel metadata surface tracking which 4×4 pixel tiles contain uniform colour (for fast clears) or are compressed. Xe2 introduces hierarchical CCS.
+- **NVIDIA**: per-tile ZCULL for depth, ROP-level lossless compression for colour. NVK exposes this via the standard DRM modifier negotiation path.
+
+### 8.4 GPU Cache Hierarchy
+
+The GPU memory system has multiple levels of cache between the shader units and VRAM/DRAM:
+
+| Level | AMD RDNA3 | Intel Xe2 | NVIDIA Ada |
+|-------|-----------|-----------|------------|
+| L1 (per-CU/Xe-core) | 32 KB vector + scalar | 64 KB shared L1 | 128 KB L1/shared |
+| L2 (per-shader-array) | 4 MB (GCD) | 512 KB per L2 bank | 6 MB |
+| L3 / LLC | 64–96 MB Infinity Cache | 32–48 MB LLC | 96 MB L2 (Ada) |
+| VRAM | GDDR6/HBM3 | GDDR6 / LPDDR5 | GDDR6X |
+
+Pipeline barriers that specify `srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT` and `dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT` translate to cache flush/invalidate sequences that ensure the L1 texture cache sees the updated framebuffer data written by the ROP. Without this, a shader sampling from a render target that was just written would read stale cached data.
+
+---
+
+
+<br>
+
+## 9. DRM: The Kernel Rendezvous
 
 ### 5.1 Render Nodes vs Primary Nodes
 
@@ -326,7 +607,7 @@ Hardware execution: C first, then A and B interleaved per time-slice
 
 ---
 
-## 6. GBM and DMA-BUF: Allocation and Sharing
+## 10. GBM and DMA-BUF: Allocation and Sharing
 
 ### 6.1 GBM API and Format Modifier Negotiation
 
@@ -388,7 +669,7 @@ The kernel `dma_buf` infrastructure (in `drivers/dma-buf/`) maintains a referenc
 
 ---
 
-## 7. Explicit GPU Synchronisation: drm_syncobj
+## 11. Explicit GPU Synchronisation: drm_syncobj
 
 ### 7.1 The Death of Implicit Fences
 
@@ -444,7 +725,7 @@ This gives compositors safe, race-free knowledge of when a buffer is GPU-ready, 
 
 ---
 
-## 8. NVIDIA: Three Driver Stacks in Coexistence
+## 12. NVIDIA: Three Driver Stacks in Coexistence
 
 NVIDIA hardware can be driven by three entirely separate software stacks. On a single machine with a single NVIDIA GPU, only one stack is active at boot, but understanding all three is essential for driver developers, CI system operators, and users navigating the NVIDIA ecosystem on Linux.
 
@@ -534,9 +815,30 @@ nouveau.ko (kernel init sequence):
 
 ---
 
-## 9. The Present Path: vkQueuePresentKHR to Photons
+## 13. The Present Path: vkQueuePresentKHR to Photons
 
-### 9.1 Mesa WSI and Swapchain Allocation
+### 9.1 vkAcquireNextImageKHR: Opening the Frame
+
+Every frame begins with `vkAcquireNextImageKHR`, which returns the index of the next swapchain image available for rendering. "Available" means the compositor has finished reading from that image — it is no longer being scanned out or GPU-composited. This is the back-pressure mechanism that couples the application's render rate to the display's vblank cadence.
+
+```c
+uint32_t image_index;
+vkAcquireNextImageKHR(device, swapchain, UINT64_MAX,
+                       image_available_semaphore,   /* signaled when image is ready */
+                       VK_NULL_HANDLE,
+                       &image_index);
+/* Now safe to render into swapchain_images[image_index] */
+```
+
+Inside Mesa WSI, `vkAcquireNextImageKHR` blocks (or polls with a timeout) on the `wl_buffer.release` event from the Wayland compositor for the returned image. The compositor sends `release` when it has latched the next frame and no longer needs the previous buffer. Mesa's WSI implementation maintains a per-image state machine:
+
+```
+ACQUIRED → (render) → PRESENTED → (compositor latches next) → RELEASED → ACQUIRED
+```
+
+With `VK_PRESENT_MODE_FIFO_KHR` (the only mode guaranteed by spec), at most `swapchainImageCount - 1` images can be in flight simultaneously, providing natural flow control: if the GPU or compositor falls behind, `vkAcquireNextImageKHR` blocks until one image completes the full cycle.
+
+### 9.2 Mesa WSI and Swapchain Allocation
 
 When a Vulkan application calls `vkCreateSwapchainKHR` on a Wayland surface (`VkSurfaceKHR` created via `vkCreateWaylandSurfaceKHR`), the call enters Mesa's **shared WSI layer** in `src/vulkan/wsi/`. Mesa WSI:
 
@@ -548,7 +850,7 @@ The swapchain image count (typically 2–3) determines pipeline depth. With 2 im
 
 [Source: `src/vulkan/wsi/wsi_common_wayland.c`](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/vulkan/wsi/wsi_common_wayland.c)
 
-### 9.2 Wayland: linux-dmabuf-v1 and Compositor Import
+### 9.3 Wayland: linux-dmabuf-v1 and Compositor Import
 
 `vkQueuePresentKHR` (with a Mesa driver on Wayland) executes roughly:
 
@@ -570,7 +872,7 @@ The compositor (e.g., Mutter/GNOME Shell) receives the `wl_surface.commit` and:
 2. Waits on the acquire fence before reading from the buffer
 3. On the next vblank opportunity, either assigns it as a KMS overlay plane or GPU-composites it with other surfaces
 
-### 9.3 KMS Atomic Commit and Display Engine Scanout
+### 9.4 KMS Atomic Commit and Display Engine Scanout
 
 The compositor assembles the final frame by building a KMS **atomic commit** — a description of the complete display state: which framebuffer on which plane on which CRTC, at which position, with which colour space, colour range, and rotation.
 
@@ -597,9 +899,45 @@ Inside the kernel, `DRM_IOCTL_MODE_ATOMIC` validates the request, checks for har
 
 The physical scanout loop runs entirely in hardware: the display engine reads pixel data line by line from the framebuffer's IOVA (IOMMU-mapped physical addresses), optionally running through a hardware scaler and colour transformation matrix (CTM), and serialises it onto DisplayPort or HDMI as differential pairs. This loop continues autonomously at the panel's refresh rate until a new page-flip commit arrives.
 
+### 13.5 Frame Timing and the Triple-Buffer Pipeline
+
+The critical path is not a sequential pipeline — it is a **temporal overlap** of three concurrent activities across consecutive frames. Understanding this overlap is essential for reasoning about latency, throughput, and where CPU-GPU synchronisation bottlenecks occur.
+
+```
+Timeline (60 Hz display, ~16.6 ms per frame):
+
+         0ms        16ms       33ms       50ms
+CPU:  [record N+1][record N+2][record N+3]...
+GPU:     [render N]  [render N+1][render N+2]...
+Display:   [scan N-1]  [scan N]    [scan N+1]...
+            ↑ vblank    ↑ vblank    ↑ vblank
+```
+
+With three swapchain images (triple buffering), the CPU can record frame N+1 while the GPU executes frame N while the display scans out frame N-1. The GPU never idles waiting for CPU work, and the CPU never stalls waiting for the GPU — as long as each stage completes within one frame period.
+
+**Present modes** control how `vkQueuePresentKHR` interacts with vblank:
+
+| Mode | Behaviour | Tearing | Latency | Typical use |
+|------|-----------|---------|---------|-------------|
+| `VK_PRESENT_MODE_FIFO_KHR` | Queue frames; present at next vblank; blocks if queue full | None | 1–2 frames | Default; VSync-locked |
+| `VK_PRESENT_MODE_MAILBOX_KHR` | Replace queued frame if new one arrives before vblank; non-blocking | None | <1 frame | Low-latency gaming with headroom |
+| `VK_PRESENT_MODE_IMMEDIATE_KHR` | Present immediately, no vblank wait | Possible | Minimal | Benchmarking; uncapped frame rate |
+| `VK_PRESENT_MODE_FIFO_RELAXED_KHR` | FIFO, but tears if frame arrives late | On late | 1–2 frames | Prefer smooth over tear-free when slow |
+
+**In-flight frame limiting**: to bound GPU memory usage and limit input latency, applications cap the number of frames simultaneously "in flight" (submitted but not yet presented). Two frames in flight is the common choice: one being rendered on GPU, one waiting in the present queue. Implemented via a pool of `N` semaphore pairs and a `vkWaitForFences` before reusing resources:
+
+```c
+/* Wait for the oldest in-flight frame before recording a new one */
+vkWaitForFences(device, 1, &in_flight_fences[current_frame], VK_TRUE, UINT64_MAX);
+vkResetFences(device, 1, &in_flight_fences[current_frame]);
+/* Now safe to reuse command buffer, uniform buffer, etc. for current_frame slot */
+```
+
+**Variable Refresh Rate (VRR / Adaptive Sync)**: when the compositor enables FreeSync or G-Sync Compatible via the KMS `VRR_ENABLED` connector property, the display's scanout period stretches or compresses to match the compositor's commit cadence — within the panel's supported range (e.g., 48–144 Hz). This eliminates stutter for frames that arrive slightly early or late relative to a fixed vblank, at the cost of the display no longer having a fixed refresh period. See Chapter 112 for the full VRR pipeline.
+
 ---
 
-## 10. Supporting Subsystems
+## 14. Supporting Subsystems
 
 ### 10.1 Resizable BAR and Smart Access Memory
 
@@ -645,7 +983,7 @@ Firmware loading failures are a common cause of GPU init failures on new kernels
 
 ---
 
-## 11. Memory Types, Heaps, and the VkMemoryAllocateInfo Path
+## 15. Memory Types, Heaps, and the VkMemoryAllocateInfo Path
 
 ### 11.1 VkPhysicalDeviceMemoryProperties and Heap Topology
 
@@ -706,9 +1044,50 @@ Memory allocators built on top of Vulkan — notably **VMA** (Vulkan Memory Allo
 
 The `VkMemoryRequirements.memoryTypeBits` bitmask returned by `vkGetBufferMemoryRequirements` or `vkGetImageMemoryRequirements` indicates which memory types are *compatible* with the resource. The driver sets bits corresponding to types it can back the resource from — e.g., a `VK_IMAGE_TILING_OPTIMAL` image on AMD cannot be in host-visible GTT (the GPU's fixed-function texture sampler cannot sample from GTT), so the HOST_VISIBLE type bits are cleared.
 
+### 15.3 Staging Buffer Uploads: Getting Data to VRAM
+
+Device-local (`DEVICE_LOCAL`) memory is fast for the GPU but not directly CPU-writable on discrete GPUs without Resizable BAR. The standard pattern for uploading vertex data, index data, and textures is a **staging buffer**: a temporary `HOST_VISIBLE | HOST_COHERENT` allocation that the CPU writes into, followed by a GPU copy into a `DEVICE_LOCAL` destination.
+
+```c
+/* 1. Allocate staging buffer in CPU-visible memory */
+VkBufferCreateInfo staging_info = {
+    .size  = data_size,
+    .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+};
+vkCreateBuffer(device, &staging_info, NULL, &staging_buf);
+vkAllocateMemory(device, &(VkMemoryAllocateInfo){
+    .allocationSize  = mem_reqs.size,
+    .memoryTypeIndex = find_memory_type(HOST_VISIBLE | HOST_COHERENT),
+}, NULL, &staging_mem);
+vkBindBufferMemory(device, staging_buf, staging_mem, 0);
+
+/* 2. Map, write, unmap */
+void *mapped;
+vkMapMemory(device, staging_mem, 0, data_size, 0, &mapped);
+memcpy(mapped, cpu_data, data_size);
+vkUnmapMemory(device, staging_mem);
+/* HOST_COHERENT: no explicit flush needed; CPU writes are visible to GPU */
+
+/* 3. Record GPU copy on the transfer queue (or graphics queue) */
+vkCmdCopyBuffer(cmd, staging_buf, device_buf,
+    1, &(VkBufferCopy){ .size = data_size });
+
+/* 4. For textures: CopyBufferToImage with layout transition */
+vkCmdCopyBufferToImage(cmd, staging_buf, texture_image,
+    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+```
+
+The GPU copy (`vkCmdCopyBuffer`, `vkCmdCopyBufferToImage`) executes on a **DMA engine**, not the shader engines. On AMD this is the **SDMA** (System DMA) unit — a dedicated copy engine that can move data between GTT (staging buffer) and VRAM (device-local buffer) at full memory bandwidth without occupying compute units. Intel calls this the **Blitter engine** (BCS ring). NVIDIA uses a dedicated **Copy Engine** (CE).
+
+Dedicated transfer queues (`VK_QUEUE_TRANSFER_BIT`) without `VK_QUEUE_GRAPHICS_BIT` map to the SDMA/Blitter engine exclusively, freeing the graphics queue for concurrent rendering. The transfer completes asynchronously; a `vkCmdPipelineBarrier` with `srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT` and `dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT` ensures the graphics queue's fragment shaders do not sample the texture until the copy finishes.
+
+**`HOST_COHERENT` vs `HOST_CACHED`**: memory types marked `HOST_COHERENT` require no explicit flush — CPU writes are immediately visible to the GPU via PCIe write-combining. Memory marked `HOST_CACHED` (but not `HOST_COHERENT`) allows the CPU to cache reads for speed but requires `vkFlushMappedMemoryRanges` before the GPU reads, and `vkInvalidateMappedMemoryRanges` before the CPU reads GPU-written data. For pure upload buffers `HOST_COHERENT` is preferred. For readback buffers (GPU → CPU), `HOST_CACHED` is preferred because the CPU reads cached data rather than uncached PCIe MMIO.
+
+[Source: Vulkan spec §Synchronization of Host and Device Memory](https://registry.khronos.org/vulkan/specs/1.3/html/vkspec.html#memory-device-hostaccess)
+
 ---
 
-## 12. Debugging the Full Stack
+## 16. Debugging the Full Stack
 
 ### 12.1 Tracing the Ioctl Surface
 
@@ -800,7 +1179,261 @@ For driver developers, `NIR_PASS` runs can be individually enabled/disabled at c
 
 ---
 
-## 13. Full Stack Diagram
+## 17. Mesa and Wayland: The Bidirectional Relationship
+
+Mesa and Wayland are often described as adjacent layers in the graphics stack, but the relationship is more precisely bidirectional and operates at multiple specific protocol and library seams. Neither subsystem contains the other: `libwayland-server` and `libwayland-client` have zero dependency on Mesa, while Mesa's WSI and EGL backends depend on `libwayland-client` and the `wayland-protocols` XML files. Understanding the exact touch-points prevents common misconceptions — for example, that Wayland "provides GPU access" (it does not; DRM does) or that Mesa "implements the Wayland protocol" (it implements a Wayland client and uses compositor-facing protocol extensions, but does not implement the compositor server side).
+
+### 13.1 Apps Presenting Frames: Mesa WSI as a Wayland Client
+
+When an application calls `eglCreateWindowSurface` on a `wl_surface`, or creates a `VkSwapchainKHR` via `VK_KHR_wayland_surface`, Mesa becomes a **Wayland client** on the application's behalf. It opens a connection to the compositor's Unix socket, binds to the relevant global objects, and exchanges Wayland protocol messages to negotiate buffer formats and submit rendered frames. Three protocol extensions drive this:
+
+**`zwp_linux_dmabuf_v1`** (linux-dmabuf protocol): Mesa queries the compositor for its supported `{format, modifier}` pairs via the feedback mechanism introduced in `zwp_linux_dmabuf_v1` version 4. The compositor reports which DMA-BUF format modifier combinations it can import and scan out. Mesa then allocates swapchain images as GBM buffer objects using a mutually agreeable modifier — ensuring the compositor can consume the buffer without a detiling blit.
+
+```c
+/* Mesa Vulkan WSI: bind to linux-dmabuf-v1 globals
+   src/vulkan/wsi/wsi_common_wayland.c  (Mesa mainline) */
+wsi_display = wl_registry_bind(registry, name,
+    &zwp_linux_dmabuf_v1_interface, version);
+
+/* Request per-surface modifier feedback (v4+) */
+wsi->dmabuf_feedback = zwp_linux_dmabuf_v1_get_default_feedback(wsi_display);
+zwp_linux_dmabuf_feedback_v1_add_listener(wsi->dmabuf_feedback,
+    &dmabuf_feedback_listener, wsi);
+```
+
+[Source: `src/vulkan/wsi/wsi_common_wayland.c`](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/vulkan/wsi/wsi_common_wayland.c)
+
+**`wl_egl_window`** / **`libwayland-egl`**: The `eglCreateWindowSurface(display, config, native_window, NULL)` path receives a `wl_egl_window *` as `native_window`. `wl_egl_window` (provided by `libwayland-egl`, a small shim) wraps a `wl_surface` and a width/height, and Mesa's EGL Wayland platform (`src/egl/drivers/dri2/platform_wayland.c`) uses it to attach swapchain buffers to the surface. Resizing is handled by `wl_egl_window_resize`.
+
+**`wp_linux_drm_syncobj_manager_v1`** (drm-syncobj-v1 protocol, 2024): Mesa's WSI attaches DRM timeline syncobj acquire and release points to each buffer commit, replacing the older `EGL_ANDROID_native_fence_sync` hack that exported `sync_file` fds as implicit fences. The compositor waits on the acquire point (GPU render-complete) before reading the buffer, and signals the release point when the buffer is no longer needed for display, allowing Mesa to recycle it into the swapchain:
+
+```
+Mesa WSI:
+  1. GPU render finishes → syncobj timeline point N signaled
+  2. wl_surface.attach(buffer)
+  3. zwp_linux_surface_synchronization_v1.set_acquire_fence(syncobj_fd, point=N)
+  4. wl_surface.commit()
+  Compositor:
+  5. Waits on acquire point N
+  6. KMS atomic commit → scanout
+  7. Next vblank: signals release point → Mesa recycles buffer
+```
+
+[Source: `staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml` in wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml)
+
+At build time, Mesa's Meson build system generates C binding code from these Wayland protocol XML files using `wayland-scanner`, making `wayland-protocols` a **build-time dependency** of Mesa. The generated headers and glue functions live in Mesa's build directory and are not installed to the system.
+
+### 13.2 The Compositor as a Mesa Consumer
+
+The Wayland compositor is simultaneously a Mesa **client** for its own rendering. It is not privileged in any Mesa sense — it uses the same EGL, Vulkan, and GBM APIs as any other application. Three roles:
+
+**Buffer allocation via `libgbm`**: The compositor calls `gbm_create_device(drm_fd)` on its DRM primary node and allocates framebuffers, cursor buffers, and test surfaces via GBM. It also calls `gbm_bo_import(GBM_BO_IMPORT_FD_MODIFIER, …)` to import DMA-BUF fds received from clients as GBM buffer objects, from which it derives EGLImages for GPU compositing or KMS framebuffers for direct scanout.
+
+```c
+/* Compositor: import client DMA-BUF for GPU compositing (wlroots pattern) */
+struct gbm_import_fd_modifier_data import_data = {
+    .width    = width,
+    .height   = height,
+    .format   = DRM_FORMAT_ARGB8888,
+    .num_fds  = 1,
+    .fds      = { client_dmabuf_fd },
+    .strides  = { stride },
+    .offsets  = { 0 },
+    .modifier = modifier,
+};
+struct gbm_bo *bo = gbm_bo_import(gbm, GBM_BO_IMPORT_FD_MODIFIER,
+                                  &import_data, GBM_BO_USE_RENDERING);
+EGLImageKHR img = eglCreateImageKHR(egl_display, EGL_NO_CONTEXT,
+    EGL_NATIVE_PIXMAP_KHR, bo, NULL);
+/* Bind img to a GL texture for compositing */
+```
+
+**Rendering the desktop via Mesa EGL/Vulkan**: The compositor draws window decorations, shadows, blur effects, and the desktop background using Mesa as its rendering library:
+- **Mutter (GNOME Shell)**: uses Cogl (an OpenGL abstraction layer) → Mesa GLES2/3 via EGL. Since GNOME 46 (2024), Mutter also has a native Vulkan renderer path using Mesa Vulkan drivers.
+- **KWin (KDE Plasma)**: has had an OpenGL backend (Mesa EGL) since KDE 4, and a Vulkan backend (via Mesa) since Plasma 6.
+- **wlroots-based compositors (Sway, Hyprland, labwc)**: use `wlr_renderer`, which is an EGL/GLES2 or Vulkan renderer backed entirely by Mesa.
+
+The compositor's rendering submits to the GPU via Mesa/DRM exactly as any other application would, using the same render-node ioctl path described in §5. The compositor is not distinguished at the DRM level from any other GPU client — except that it additionally holds `DRM_MASTER` on the primary node for KMS access.
+
+**Direct KMS scanout without Mesa**: The compositor's final step — `drmModeAtomicCommit` — does **not** go through Mesa. The compositor calls libdrm directly. Mesa is not involved in modesetting or display engine programming. This is the sharp boundary: Mesa's job ends when the compositor has a renderable or scanout-capable GBM buffer object; from there, KMS takes over.
+
+### 13.3 What Wayland Core Does Not Know About Mesa
+
+The Wayland core libraries (`libwayland-server`, `libwayland-client`) are intentionally GPU-agnostic. They implement a generic object-capability protocol over Unix sockets, with no notion of DMA-BUF, DRM, or GPU commands. Key implications:
+
+- A Wayland compositor can use **any GPU driver** as its rendering backend — Mesa, NVIDIA's proprietary Vulkan ICD, a software rasteriser like LLVMpipe, or even no GPU at all (a CPU-only compositor running `wl_shm` buffers). The Wayland protocol imposes no constraint.
+- Similarly, a Wayland client application can use **any Mesa driver** — RADV, ANV, NVK, Turnip, Zink, LLVMpipe — without the compositor being aware of which driver is active. What the compositor receives is always a DMA-BUF fd and a modifier; the driver that produced it is invisible.
+- **`wl_shm`** (the shared-memory buffer protocol) predates DMA-BUF and requires zero GPU involvement: both the client and compositor interact via an `mmap`'d file, and the compositor uploads the pixels to GPU using a plain `glTexImage2D` or Vulkan buffer copy if it wants to GPU-composite. This is why Mesa is not a hard runtime requirement for Wayland — a Wayland session can run with purely software-rendered clients on `wl_shm`.
+
+The architecture thus achieves a clean separation: Wayland defines *how* clients and compositors communicate buffer ownership and frame timing; Mesa and DRM define *how* those buffers are allocated and rendered. The DMA-BUF fd is the handoff artifact — a kernel-mediated, driver-agnostic handle to GPU-resident memory.
+
+| Interaction | Mesa component | Wayland side | Direction |
+|-------------|---------------|--------------|-----------|
+| App frame submission | `wsi_common_wayland.c`, EGL Wayland platform | `zwp_linux_dmabuf_v1`, `wl_surface.commit` | Mesa → compositor |
+| GPU fence handoff | syncobj fd export (`drm_syncobj`) | `wp_linux_drm_syncobj_manager_v1` | Mesa → compositor |
+| Compositor buffer alloc | `libgbm` | Internal compositor logic | Compositor → Mesa |
+| Compositor rendering | Mesa EGL/Vulkan ICD | Internal compositor draw calls | Compositor → Mesa |
+| Client buffer import | `gbm_bo_import` | `zwp_linux_dmabuf_v1` receive | Compositor → Mesa |
+| Protocol glue (build) | Wayland-generated C bindings | `wayland-protocols` XML | Build dependency |
+| KMS atomic commit | **Not Mesa** — libdrm directly | DRM primary node | Compositor → kernel |
+
+## 18. Common Patterns: Feeding the Critical Path at Scale
+
+The critical path described in §§4–13 handles one draw call from one thread updating one uniform buffer. Real applications manage hundreds of draw calls, many threads, and data that changes every frame. Three patterns solve the most common scaling problems.
+
+### 18.1 Persistent Mapped Uniform Buffers
+
+Uniform buffer objects (UBOs) carry per-frame CPU-side data — camera view/projection matrices, elapsed time, light positions. Uploading them via a staging buffer each frame wastes CPU cycles on allocation and a DMA submit for a few hundred bytes. The **persistent mapped buffer** pattern avoids this entirely.
+
+Allocate a `HOST_VISIBLE | HOST_COHERENT` buffer large enough for N frames' worth of UBO data (where N equals the number of frames in flight), map it once at startup, and never unmap:
+
+```c
+/* Allocate a persistent UBO for 2 frames in flight */
+const VkDeviceSize aligned_ubo = align_up(sizeof(FrameUBO),
+    device_props.limits.minUniformBufferOffsetAlignment);
+const VkDeviceSize total = aligned_ubo * FRAMES_IN_FLIGHT;
+
+VkBufferCreateInfo ubo_info = {
+    .size  = total,
+    .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+};
+vkCreateBuffer(device, &ubo_info, NULL, &ubo_buf);
+/* bind to HOST_VISIBLE | HOST_COHERENT memory type */
+
+void *ubo_mapped;
+vkMapMemory(device, ubo_mem, 0, total, 0, &ubo_mapped);
+/* Never call vkUnmapMemory — keep mapped for the application lifetime */
+```
+
+Each frame writes directly into its slot:
+
+```c
+uint32_t slot = current_frame % FRAMES_IN_FLIGHT;
+FrameUBO *dst = (FrameUBO *)((char *)ubo_mapped + slot * aligned_ubo);
+dst->view       = camera.view_matrix;
+dst->projection = camera.proj_matrix;
+dst->time       = elapsed_seconds;
+/* HOST_COHERENT: write is immediately visible to GPU; no flush needed */
+```
+
+The descriptor set for each frame slot points to the matching offset:
+
+```c
+VkDescriptorBufferInfo buf_info = {
+    .buffer = ubo_buf,
+    .offset = slot * aligned_ubo,
+    .range  = sizeof(FrameUBO),
+};
+```
+
+`HOST_COHERENT` memory guarantees the GPU sees the CPU write without an explicit `vkFlushMappedMemoryRanges` call. The alignment requirement (`minUniformBufferOffsetAlignment`, typically 64 or 256 bytes depending on GPU) must be satisfied for the per-slot offset used in `VkDescriptorBufferInfo.offset`.
+
+For data smaller than the driver's push-constant limit (query `maxPushConstantsSize`, minimum 128 bytes guaranteed by spec), **push constants** are preferable — zero allocation, zero buffer binding, just a `vkCmdPushConstants` that embeds the data directly in the command stream. Per-object transform matrices (16 floats = 64 bytes) are the canonical push-constant use case.
+
+### 18.2 Indirect Draw: GPU-Driven Rendering
+
+In a naïve renderer the CPU iterates all visible objects, calls `vkCmdDrawIndexed` once per object, and submits. At 10,000 objects this generates 10,000 individual draw calls, each adding CPU overhead (driver state tracking, packet emission) and a GPU context switch. **Indirect draw** inverts the model: the GPU determines what to draw.
+
+`vkCmdDrawIndexedIndirect` reads its draw parameters from a `VkBuffer` rather than inline arguments:
+
+```c
+/* One VkDrawIndexedIndirectCommand per object in a GPU-resident buffer */
+typedef struct {
+    uint32_t indexCount;
+    uint32_t instanceCount;  /* 0 to cull this object on GPU */
+    uint32_t firstIndex;
+    int32_t  vertexOffset;
+    uint32_t firstInstance;
+} VkDrawIndexedIndirectCommand;
+
+/* Issue up to max_draws draws; GPU reads parameters from indirect_buf */
+vkCmdDrawIndexedIndirect(cmd, indirect_buf, 0,
+                          max_draws,
+                          sizeof(VkDrawIndexedIndirectCommand));
+```
+
+A compute shader running earlier in the frame populates `indirect_buf`, performing per-object frustum culling and occlusion culling entirely on the GPU:
+
+```glsl
+/* compute shader: cull.comp */
+layout(set=0, binding=0) buffer DrawCmds { VkDrawIndexedIndirectCommand cmds[]; };
+layout(set=0, binding=1) readonly buffer Objects { ObjectData objects[]; };
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    cmds[id].instanceCount = frustum_cull(objects[id].bounds) ? 1 : 0;
+}
+```
+
+`vkCmdDrawIndexedIndirectCount` (Vulkan 1.2 core) additionally reads the draw count from a second buffer, allowing the compute shader to compactly pack surviving draws and set the count, eliminating even the fixed `max_draws` overhead.
+
+A pipeline barrier with `srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT` and `dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT` separates the culling compute dispatch from the indirect draw, ensuring the GPU has finished writing draw parameters before the draw-indirect hardware reads them.
+
+[Source: GPU-driven rendering techniques in Mesa context — Chapter 154]
+
+### 18.3 Multi-Threaded Command Recording
+
+`VkCommandPool` is not thread-safe — concurrent recording requires one pool per thread. The standard pattern assigns a pool-per-thread-per-frame-slot:
+
+```c
+/* At startup: one command pool per thread, per frame in flight */
+for (int frame = 0; frame < FRAMES_IN_FLIGHT; frame++) {
+    for (int thread = 0; thread < NUM_THREADS; thread++) {
+        VkCommandPoolCreateInfo pool_info = {
+            .queueFamilyIndex = graphics_family,
+            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        };
+        vkCreateCommandPool(device, &pool_info, NULL,
+                            &thread_pools[frame][thread]);
+        vkAllocateCommandBuffers(device, &(VkCommandBufferAllocateInfo){
+            .commandPool = thread_pools[frame][thread],
+            .level       = VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+            .commandBufferCount = 1,
+        }, &thread_cmds[frame][thread]);
+    }
+}
+```
+
+Each worker thread records its portion of the scene into its secondary command buffer:
+
+```c
+/* Worker thread N: record objects [start, end) */
+VkCommandBufferInheritanceInfo inherit = {
+    .renderPass  = VK_NULL_HANDLE,   /* dynamic rendering — no renderpass object */
+    .framebuffer = VK_NULL_HANDLE,
+};
+VkCommandBufferBeginInfo begin = {
+    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT |
+             VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT,
+    .pInheritanceInfo = &inherit,
+};
+vkBeginCommandBuffer(thread_cmds[frame][thread_id], &begin);
+for (int i = start; i < end; i++) {
+    vkCmdBindDescriptorSets(..., &per_object_sets[i], ...);
+    vkCmdPushConstants(..., &objects[i].transform, ...);
+    vkCmdDrawIndexed(...);
+}
+vkEndCommandBuffer(thread_cmds[frame][thread_id]);
+```
+
+The main thread waits for all workers (via a barrier or semaphore), then assembles the primary command buffer:
+
+```c
+/* Main thread: after all workers finish */
+vkCmdBeginRendering(primary_cmd, &rendering_info);
+vkCmdExecuteCommands(primary_cmd, NUM_THREADS, thread_cmds[frame]);
+vkCmdEndRendering(primary_cmd);
+vkEndCommandBuffer(primary_cmd);
+/* Submit primary_cmd as usual */
+```
+
+`vkCmdExecuteCommands` replays the secondary buffers in-order on the GPU — the GPU sees them as a single contiguous stream of commands. At the Mesa driver level (RADV, ANV, NVK), `vkCmdExecuteCommands` emits an `INDIRECT_BUFFER` call pointing to the secondary buffer's GEM object, so the GPU directly DMA-reads the pre-assembled PM4/MI/NVC0 stream with no additional CPU translation.
+
+The practical speedup scales with thread count up to roughly the point where command recording time equals submit overhead. For scenes with 5,000–50,000 draw calls per frame, 4–8 recording threads typically reduces CPU frame time by 3–6×.
+
+---
+
+## 19. Full Stack Diagram
 
 The complete data-flow from application to photons on a Mesa + Wayland system:
 
@@ -839,7 +1472,7 @@ flowchart TD
 
 ---
 
-## 14. Integrations
+## 20. Integrations
 
 This chapter is a cross-cutting integration reference. It synthesises content from, and should be read alongside:
 
