@@ -674,6 +674,19 @@ The TODO list maintained on the Rust for Linux project page [Source](https://rus
 
 ## 7. Co-existence with Nouveau and the Transition Path
 
+The Linux kernel currently ships three distinct open NVIDIA kernel driver paths, each with a different design philosophy, hardware scope, and upstream status. Understanding the differences is essential for systems administrators choosing a driver configuration and for developers targeting the open NVIDIA stack. The table below summarises the key dimensions of each path as of Linux 7.x.
+
+| Dimension | **Nouveau** | **Nova** | **nvidia-open (R555+)** |
+|---|---|---|---|
+| Implementation language | C (legacy codebase) | Rust (safe abstractions) | C (NVIDIA's own code, open-sourced 2022) |
+| GSP-RM firmware dependency | Optional (used on Turing+ when available) | Required (Nova is GSP-only by design) | Required |
+| GPU generation coverage | Tesla through Ada Lovelace (degraded on newer) | Turing and later (GSP era) | Turing and later |
+| Reclocking / performance states | Problematic (historically broken; fixed on Turing+ via GSP) | Delegated to GSP-RM firmware | Full via GSP-RM |
+| Display engine support | Full (nv50 display, tested broadly) | Planned (not yet complete) | Full |
+| Wayland/explicit sync | Supported (linux-drm-syncobj) | Planned | Supported (driver also ships closed userspace) |
+| Kernel upstream status | Fully upstream (`drivers/gpu/drm/nouveau/`) | In-progress (`drivers/gpu/drm/nova/` staging) | Out-of-tree (nvidia-open GitHub releases) |
+| Long-term trajectory | Maintenance mode; users migrate to Nova as it matures | The future open NVIDIA kernel driver | Continues as NVIDIA's official open release; feeds GSP-RM interface knowledge to Nova/Nouveau |
+
 ### Current Co-existence
 
 Both `nouveau` and nova (`nova_core` / `Nova` modules) are compiled into the kernel when their respective Kconfig options are enabled. At runtime on a Turing+ GPU, the two modules are mutually exclusive for a given device: the PCI subsystem will bind the first registered matching PCI driver. Distribution kernel configurations and module-loading policy determine which driver takes precedence; typically, if both are built, modprobe ordering or a module blacklist file is used to select one.

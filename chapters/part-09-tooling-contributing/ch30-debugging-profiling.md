@@ -4,6 +4,8 @@
 
 **Audiences**: This chapter serves both systems/driver developers and graphics application developers. Sections 4 (Mesa Environment Variables) and 7 (Kernel-Level GPU Debugging) are weighted toward driver and kernel developers; Sections 2 (RenderDoc), 3 (Validation Layers), 5 (Frame Latency), 6 (Hardware Counters), and 8 (CPU Profiling) serve both audiences. Section markers indicate where the split is significant.
 
+> **Scope:** Ch30 covers **development-time debugging tools** — RenderDoc, Vulkan validation layers, Mesa debug environment variables, gdb integration, and kernel GPU debugging via `dyndbg`. **Ch93** covers GPU performance analysis *methodology* (how to structure a bottleneck investigation, interpret counter data, move from symptom to root cause). **Ch137** surveys the Linux GPU profiling tool ecosystem (MangoHud, RenderDoc frame analysis, vendor profilers, Perfetto GPU timeline).
+
 ---
 
 ## Table of Contents

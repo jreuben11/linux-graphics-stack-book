@@ -40,6 +40,21 @@ Gecko's **WebGPU** implementation uses **wgpu-core** (pure Rust) and **wgpu-hal*
 
 [Source: Mozilla Hacks — The whole web at maximum FPS](https://hacks.mozilla.org/2017/10/the-whole-web-at-maximum-fps-how-webrender-gets-rid-of-jank/)
 
+The table below distils the key architectural differences between the two pipelines across GPU API, compositing strategy, process model, and platform integration. These differences have concrete consequences for performance characteristics, driver interaction, and the ease of adopting new GPU features on Linux.
+
+| Attribute | Firefox WebRender | Chromium (Skia/Ganesh + CC + Viz) |
+|---|---|---|
+| Retained-mode vs immediate | Retained (display list diffing, picture caching) | Retained (layer tree) + immediate GPU submission (Viz) |
+| 2D rasterisation | WebRender GPU path (rectangle primitives; no CPU raster) | Skia Ganesh (OpenGL/Vulkan) + optional SkiaRenderer |
+| Compositing architecture | WebRender handles both 2D and compositing in one pass | Split: CC (layer tree) → Viz (display compositor, separate process) |
+| GPU API on Linux | Vulkan (primary 2026); OpenGL fallback | Vulkan (SkiaGraphite 2025+); OpenGL (legacy Ganesh); ANGLE |
+| Shader language | GLSL (WebRender rect shaders) | GLSL/SkSL (Skia shaders) |
+| CSS/animation GPU offload | Compositor thread + APZ (async pan-zoom) | Compositor thread + impl-side painting |
+| WebGPU implementation | wgpu-core (Rust, naga shader compiler) | Dawn (C++, Tint shader compiler) |
+| Process model | Parent process (main) + GPU process | Browser + Renderer + GPU process (tri-process) |
+| Tile management | Picture caching (sub-tree invalidation) | Tile-based rasterisation (CC tiling) |
+| Linux Wayland status | Native Wayland (firefox-wayland, 2020+) | Native Wayland (--ozone-platform=wayland, stable 2022+) |
+
 ### Why GPU Compositing Moved Into WebRender
 
 Earlier versions of Firefox used a system very similar to Chromium's: layers were painted by the CPU and composited by a GPU process. The distinction between painting layers (the content process) and compositing them (the GPU process) created a sharp performance cliff. Compositing was fast and jank-free at 60 fps; painting was expensive and would drop frames.

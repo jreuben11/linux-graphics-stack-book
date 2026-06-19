@@ -5,6 +5,8 @@
 
 **Target audiences:** Photographers, video editors, UI designers, display calibration engineers, and developers building color-correct applications on Linux. This chapter is the color science companion to Chapter 53 (Display Calibration and colord), which covers the calibration *workflow*; here the focus is on the underlying science and the software pipeline that implements it — from the CIE color model through ICC profile binary format, the LittleCMS engine, display calibration tools, and into the Wayland and Vulkan APIs that carry color metadata to the display hardware. Readers of Chapter 74 (HDR and Wide Color Gamut) will find this chapter provides the SDR foundation that HDR extends.
 
+> **Scope:** This chapter covers color science theory and ICC profile internals (CIE XYZ/Lab/xyY, Bradford chromatic adaptation, ICC v4 binary format, LittleCMS `cmsTransform`, VCGT curves). **Ch74** owns the KMS hardware pipeline (`DEGAMMA_LUT`, `CTM`, `GAMMA_LUT` properties) and the `wp_color_management_v1` Wayland protocol end-to-end. **Ch158** covers HDR display signaling (HDMI Dynamic Range InfoFrame, DP HDR metadata descriptor, SMPTE ST 2086). Cross-references to KMS LUT configuration should resolve to Ch74.
+
 ---
 
 ## Table of Contents

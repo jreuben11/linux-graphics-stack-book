@@ -67,6 +67,17 @@ Vulkan exposes the application-level analog of these strategies through present 
 
 ## 3. VRR Technologies: FreeSync and G-Sync
 
+The consumer VRR ecosystem is fragmented across multiple branding tiers from AMD and NVIDIA, each built on top of — or replacing — the open VESA Adaptive-Sync standard. Understanding the hierarchy matters for Linux compatibility: the kernel KMS driver interacts with the underlying hardware standard, not the marketing tier, so a FreeSync Premium Pro monitor and a plain VESA Adaptive-Sync monitor are handled by the same `VRR_ENABLED` property and differ only in their EDID-advertised capabilities. The table below summarises how each tier maps to the open standard, its hardware requirements, and its Linux support status.
+
+| Brand / Tier | Underlying standard | Hardware requirement | HDR support | LFC (Low Framerate Compensation) | Linux/KMS support | Monitor cost premium |
+|---|---|---|---|---|---|---|
+| VESA Adaptive-Sync | DisplayPort 1.2a / HDMI 2.1 VRR | Panel scaler must support variable Htotal | Not specified by standard | Optional | Yes (`drm_property` `VRR_ENABLED`; atomic commit) | None (base standard) |
+| AMD FreeSync | VESA Adaptive-Sync (AMD-certified) | Same as Adaptive-Sync | Not required | Yes (FreeSync requirement) | Yes (amdgpu + KMS) | Low (~$0–10 premium) |
+| AMD FreeSync Premium | FreeSync + ≥120 Hz at native res + LFC | Same | Required (HDR10) | Yes | Yes | Moderate |
+| AMD FreeSync Premium Pro | FreeSync Premium + validated HDR tone mapping | Same | Required (HDR10 + local dimming validated) | Yes | Yes | Higher |
+| NVIDIA G-Sync Compatible | VESA Adaptive-Sync (NVIDIA-validated) | No proprietary module | Not required | Yes | Yes (nouveau/NVK, requires kernel 5.12+) | None |
+| NVIDIA G-Sync (module) | Proprietary NVIDIA scaler module in monitor | Dedicated NVIDIA G-Sync ASIC in monitor | Required (some modules) | Yes | Limited (requires nvidia-open or proprietary) | High ($100–200 premium) |
+
 ### VESA Adaptive-Sync
 
 The technical foundation of consumer VRR is **VESA Adaptive-Sync**, introduced in the DisplayPort 1.2a specification in 2014. [Source: VESA DisplayPort Standard](https://vesa.org/vesa-standards/standards-for-display/) Adaptive-Sync extends the VBLANK period dynamically: instead of a fixed vertical front porch duration, the display's timing controller waits for a GPU frame-ready signal before closing the VBLANK and beginning the next active video period. The GPU drives the timing, and the display follows.

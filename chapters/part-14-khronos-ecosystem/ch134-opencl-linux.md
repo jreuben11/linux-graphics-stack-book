@@ -9,8 +9,10 @@ This chapter targets GPU compute developers, image processing engineers, ML prac
 1. [Introduction](#1-introduction)
 2. [OpenCL Architecture and the ICD Loader](#2-opencl-architecture-and-the-icd-loader)
 3. [Mesa rusticl — OpenCL 3.0 via Gallium](#3-mesa-rusticl--opencl-30-via-gallium)
+   - [3.1 Legacy: Clover](#31-legacy-clover--mesas-pre-rusticl-opencl)
 4. [Intel OpenCL: NEO / Compute Runtime](#4-intel-opencl-neo--compute-runtime)
 5. [AMD ROCm OpenCL (CLR)](#5-amd-rocm-opencl-clr)
+5.1. [NVIDIA OpenCL on Linux](#51-nvidia-opencl-on-linux)
 6. [CPU/Software OpenCL: pocl](#6-cpusoftware-opencl-pocl)
 7. [OpenCL Programming Model](#7-opencl-programming-model)
 8. [OpenCL–OpenGL Interop and DMA-BUF](#8-openclopengl-interop-and-dma-buf)
@@ -236,6 +238,43 @@ cl_khr_extended_async_copies
 
 **Debugging**: `RUSTICL_DEBUG=1` (or `RUSTICL_DEBUG=program` / `RUSTICL_DEBUG=nir`) enables verbose logging of compilation events, NIR dumps, and kernel dispatch.
 
+## 3.1 Legacy: Clover — Mesa's Pre-rusticl OpenCL
+
+Clover is Mesa's original OpenCL state tracker, targeting Gallium3D drivers (radeonsi, iris, softpipe). It was the primary Mesa OpenCL implementation until rusticl superseded it in Mesa 22.x. Most distributions still ship `libMesaOpenCL.so` pointing to rusticl on recent Mesa builds; on older systems this file was Clover.
+
+```bash
+# Clover (if still present on an older system):
+ls /usr/lib/x86_64-linux-gnu/libMesaOpenCL.so*
+# Clover targets OpenCL 1.2 with limited 2.0 features
+```
+
+**Architecture**:
+
+```
+OpenCL host code (clCreateBuffer, clEnqueueNDRange, ...)
+    │
+    ▼
+Clover (src/gallium/frontends/clover/)
+    │ calls pipe_context directly
+    ▼
+Gallium pipe driver (radeonsi / iris / softpipe)
+    │
+    ▼
+GPU ISA
+```
+
+Clover compiles OpenCL C via LLVM's OpenCL front-end → LLVM IR → SPIR-V (via `llvm-spirv`) → NIR → GPU ISA. The compilation path is functionally equivalent to rusticl's but implemented in C++ rather than Rust and limited to OpenCL 1.2 feature level.
+
+**Limitations that drove rusticl adoption**:
+- OpenCL 1.2 only — no 3.0 feature level
+- No Shared Virtual Memory (SVM/USM)
+- Incomplete `cl_khr_gl_sharing` on all targets
+- `cl_khr_fp64` unavailable on softpipe
+
+rusticl is the recommended Mesa OpenCL implementation for all new deployments. Clover receives maintenance fixes only and is expected to be removed from Mesa once rusticl reaches full CTS conformance on all supported drivers.
+
+[Source: Mesa clover directory](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/gallium/frontends/clover)
+
 ---
 
 ## 4. Intel OpenCL: NEO / Compute Runtime
@@ -424,6 +463,28 @@ clinfo --list
 ```
 
 The proprietary `amdgpu-pro-opencl` package remains available as a legacy alternative but is not recommended for new deployments on kernels with `amdgpu.ko` >= 6.x.
+
+---
+
+## 5.1 NVIDIA OpenCL on Linux
+
+NVIDIA provides a proprietary OpenCL 3.0 implementation bundled with the standard NVIDIA driver package. No separate installation is required on systems with an NVIDIA driver installed.
+
+```bash
+# NVIDIA OpenCL ships with the NVIDIA driver:
+ls /usr/lib/x86_64-linux-gnu/libnvidia-opencl.so*
+# ICD registration:
+cat /etc/OpenCL/vendors/nvidia.icd
+# → libnvidia-opencl.so.1
+
+# Verify platform detection:
+clinfo --list | grep NVIDIA
+# Platform: NVIDIA CUDA → CL_DEVICE_TYPE_GPU → Tesla/RTX ...
+```
+
+NVIDIA compiles OpenCL kernels via NVRTC (NVIDIA Runtime Compilation) → PTX assembly → GPU ISA. The OpenCL ICD is fully conformant to OpenCL 3.0 on all NVIDIA GPUs from Kepler onwards. On Volta+ hardware, Tensor Core operations are not exposed through OpenCL; use CUDA for those workloads.
+
+[Source: NVIDIA OpenCL SDK](https://developer.nvidia.com/opencl)
 
 ---
 
@@ -960,6 +1021,27 @@ Running a specific test against a specific platform:
 ```
 
 Implementations seeking Khronos conformance must pass all mandatory tests and report the optional-feature test results for extensions they claim to support.
+
+---
+
+## 10.1 Choosing Between OpenCL, CUDA, Vulkan Compute, and HIP
+
+| Criteria | OpenCL | CUDA | Vulkan Compute | HIP |
+|---|---|---|---|---|
+| Vendor support | Intel, AMD, NVIDIA, ARM | NVIDIA only | All Vulkan GPUs | AMD (+ limited NVIDIA via HIPIFY) |
+| Performance | Good | Best on NVIDIA | Very good | Good on AMD |
+| Portability | Excellent | None | Excellent | Limited |
+| Tooling | clinfo, oclgrind, clpeak | Nsight, nvvp | RenderDoc, spirv-val | rocprof, roc-gdb |
+| Ecosystem | Libraries (OpenCV, FFmpeg, Darktable) | Largest (cuBLAS, cuDNN) | Growing (WGSL compute) | ROCm libs (MIOpen, rocBLAS) |
+| Ease of use | Verbose C | Clean CUDA C++ | Very verbose GLSL/SPIR-V | CUDA-like C++ |
+| Kernel persistence | Runtime-compiled (`.cl` → JIT) | Pre-compiled + JIT (PTX) | Pre-compiled SPIR-V | Pre-compiled + JIT |
+
+**Decision guide**:
+- **Cross-hardware portability is the priority**: OpenCL via rusticl (Mesa) or Vulkan compute + SPIR-V (best long-term)
+- **NVIDIA-only ML/HPC workloads**: CUDA
+- **AMD GPU compute and ML**: ROCm/HIP + MIOpen
+- **Embedded/automotive Linux, non-CUDA GPU**: OpenCL (widest ICD availability)
+- **New cross-platform project, Vulkan already in use**: Vulkan compute shares the same command queue and memory as graphics — zero extra driver overhead
 
 ---
 

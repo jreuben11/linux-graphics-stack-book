@@ -97,6 +97,16 @@ graph TD
     SPIRVT -. "reflection / portability" .-> spirvcross
 ```
 
+The front-end compiler landscape has grown substantially beyond the original Khronos reference tools. Each compiler occupies a distinct niche defined by its source language(s), optimization depth, and licensing constraints. The table below summarises the five compilers that application and engine developers encounter most frequently when targeting Vulkan or other GPU APIs on Linux.
+
+| **Tool** | **Source language(s)** | **Primary output** | **Optimisation tier** | **Differentiable shading** | **Licence** | **Primary use case** |
+|---|---|---|---|---|---|---|
+| glslang | GLSL, GLSL ES | SPIR-V | Minimal (reference) | No | BSD | Reference compiler; Vulkan validation layer |
+| DXC (DirectX Shader Compiler) | HLSL | SPIR-V, DXBC, DXIL | Full (LLVM-based) | No | MIT/LLVM | Porting HLSL shaders to Vulkan; used by VKD3D-Proton |
+| shaderc | GLSL, HLSL (via glslang/DXC) | SPIR-V | Passes through glslang/DXC | No | Apache 2.0 | Build-system integration; Vulkan SDK |
+| Slang | Slang (HLSL superset) | SPIR-V, HLSL, GLSL, WGSL, CUDA, Metal | Full (Slang IR) | Yes (automatic differentiation) | Apache 2.0 | ML shaders, research, multi-backend deployment |
+| naga (wgpu/Firefox) | WGSL, GLSL, SPIR-V (import) | SPIR-V, WGSL, GLSL, MSL, HLSL | Moderate (Rust-native) | No | MIT/Apache 2.0 | Firefox WebGPU (wgpu-core); Bevy engine |
+
 ### 1.2 The Full Pipeline
 
 ```

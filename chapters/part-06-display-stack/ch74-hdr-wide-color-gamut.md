@@ -2,6 +2,8 @@
 
 **Target audiences:** Systems and driver developers working on display pipelines and kernel color management; graphics application developers integrating HDR rendering via Vulkan or VA-API; browser and web platform engineers mapping wide-color-gamut content to Linux display infrastructure; compositor authors implementing the Wayland color-management protocol.
 
+> **Scope:** This chapter owns the end-to-end Linux color pipeline — KMS `DEGAMMA_LUT`/`CTM`/`GAMMA_LUT` hardware properties, `wp_color_management_v1` Wayland protocol, per-plane HDR metadata, and tone-mapping integration. **Ch101** covers color science theory (CIE models, ICC profile internals, LittleCMS). **Ch158** covers HDR-specific signaling metadata (HDMI InfoFrames, DP HDR descriptor) and display-side tone-mapping options. Cross-references in those chapters that mention KMS LUT configuration should be resolved here.
+
 ---
 
 ## Table of Contents

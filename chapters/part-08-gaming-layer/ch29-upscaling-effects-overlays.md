@@ -738,6 +738,16 @@ The solution is **mangoapp**: a separate companion process launched alongside ga
 
 ## 6. Upscaling and Framepacing: XeSS, DLSS, and LatencyFleX
 
+The Linux gaming ecosystem in 2026 encompasses a broad range of upscaling technologies that differ significantly in their algorithmic foundations, hardware requirements, and degree of open-source availability. Understanding these differences is essential for developers choosing an upscaling path and for system integrators evaluating Proton compatibility — an upscaler that delivers excellent quality on Windows may behave quite differently on Linux depending on driver support, proprietary SDK requirements, and whether frame generation is available via open paths. The table below summarises the current landscape across the five major upscaling technologies relevant to Linux gaming.
+
+| Technology | Vendor | Algorithm | Hardware requirement | Open source | Proton/Linux support | Quality tiers | Frame generation |
+|---|---|---|---|---|---|---|---|
+| FSR 4 (FidelityFX Super Resolution 4) | AMD | ML-based (transformer, replaces spatial FSR 3) | RDNA 3+ (RX 7000 series) for ML mode; FSR 3 spatial for older | Yes (MIT, GPUOpen) | Yes (via Proton + vkd3d-proton; also native Vulkan) | Native AA, Quality, Balanced, Performance | Yes (Fluid Motion Frames 2, RDNA 3+) |
+| FSR 3 / FSR 2 | AMD | Spatial (TAAU-based) | Any GPU with Vulkan/DX12 | Yes (MIT, GPUOpen) | Yes (excellent; works on NVIDIA/Intel too) | Quality, Balanced, Performance, Ultra Performance | FSR 3: Frame Generation (AFMF, any GPU) |
+| DLSS 4 (Deep Learning Super Sampling) | NVIDIA | Transformer-based neural (replaces CNN in DLSS 3) | NVIDIA RTX (Tensor Cores required; Blackwell/Ada for transformer) | No (proprietary SDK) | Yes (via Proton NVNGX; requires NVIDIA GPU) | Quality, Balanced, Performance, Ultra Performance | Yes (DLSS 4 Frame Generation, multi-frame on Blackwell) |
+| XeSS 2 (Xe Super Sampling) | Intel | ML-based (DP4a path for non-Intel; XMX path for Arc) | Any GPU (DP4a path); Intel Arc (XMX path for best quality) | Partially (DP4a path open; XMX proprietary) | Yes (via Proton) | Quality, Balanced, Performance, Ultra Performance | Yes (Xe Frame Generation, Arc Battlemage+) |
+| NIS (NVIDIA Image Scaling) | NVIDIA | Spatial (sharpening + upscale, no ML) | Any GPU | Yes (MIT) | Yes | Single quality mode | No |
+
 ### Intel XeSS (Xe Super Sampling)
 
 **Intel XeSS** ([github.com/intel/xess](https://github.com/intel/xess)) is Intel's temporal upscaling algorithm. Unlike DLSS — which uses tensor cores specific to NVIDIA hardware — XeSS has two code paths:

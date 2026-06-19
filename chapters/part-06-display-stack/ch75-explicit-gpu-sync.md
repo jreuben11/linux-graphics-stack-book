@@ -699,6 +699,16 @@ graph TD
 
 ## Section 7: The Implicit-to-Explicit Migration
 
+The Linux graphics stack offers several synchronisation primitives, each with different kernel representations, Wayland protocol bindings, cross-process capabilities, and ordering guarantees. Choosing the right primitive depends on where in the stack you are working and what compatibility constraints you face. The table below maps each primitive to its key properties and primary use cases; subsequent subsections explain the migration path that moved the ecosystem from implicit DMA-BUF fences toward explicit `drm_syncobj` timelines.
+
+| **Mechanism** | **Kernel object** | **Wayland protocol** | **NVIDIA compatible** | **Cross-process** | **Ordering guarantees** | **When to use** |
+|---|---|---|---|---|---|---|
+| Implicit DMA-BUF fence | `dma_fence` attached to `dma_buf` | `linux-dmabuf-v1` (implicit, older) | Only with proprietary driver (not open stack) | Yes (fences travel with buffer FD) | Acquire/release on buffer access | Legacy pipelines; X11/GLX; VA-API video surfaces that predate explicit sync |
+| `drm_syncobj` (binary) | `drm_syncobj` (point-in-time signal) | `linux-drm-syncobj-v1` (acquire/release points) | Yes (nouveau/NVK + explicit sync kernel patch) | Yes (exportable as `sync_file` FD) | Signal once, wait once; no reuse without reset | Wayland compositor↔client explicit sync; one-shot GPU→CPU waits |
+| `drm_syncobj` (timeline) | `drm_syncobj` with u64 seqno | `linux-drm-syncobj-v1` (point payloads) | Yes | Yes | Monotonically increasing seqno; multi-point ordering | Complex multi-queue work graphs; mirrors Vulkan timeline semaphores at kernel level |
+| Vulkan binary semaphore | `VkSemaphore` (binary) | — (Vulkan-internal) | Yes (all Vulkan drivers) | No (within device) | Submit→submit ordering within `VkQueue` | Cross-queue sync within a single Vulkan device |
+| Vulkan timeline semaphore | `VkSemaphore` (`VK_SEMAPHORE_TYPE_TIMELINE`) | — (Vulkan-internal; can be exported as `sync_file`) | Yes | Exportable via `VK_EXT_external_semaphore_fd` | Arbitrary u64 wait/signal points | Multi-frame overlap, CPU–GPU sync, replacing fence arrays |
+
 ### 7.1 Why the Migration Is Necessary
 
 The implicit synchronization model was designed for a world where a single GPU driver managed all accesses to a buffer. In that world, the kernel could track which operations were in flight by attaching fences to the buffer's reservation object, and any component reading or writing the buffer could discover those fences by inspecting the `dma_resv`. This worked acceptably for the X11 DRI model, where the X server and the GL driver ran in the same process context and shared the same DRM fd.

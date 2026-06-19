@@ -56,6 +56,21 @@ ACO's stated goals at its 2019 introduction were concrete: achieve two to ten ti
 
 It is important to be precise about ACO's scope. ACO is a RADV compiler backend — it compiles shaders for the Vulkan driver only. It does not replace LLVM for radeonsi, Mesa's OpenGL driver for AMD hardware. Radeonsi continues to use LLVM for every shader it compiles, including graphics and compute workloads. Similarly, ROCm's HIP compiler and the OpenCL stack on AMD hardware use LLVM or their own compiler infrastructure entirely distinct from ACO. Developers profiling compilation latency in an OpenCL workload will not see ACO at all; the cost they observe is LLVM's. The boundary matters because readers who work on compute-heavy AMD workloads may encounter LLVM-specific issues that ACO cannot address.
 
+The table below makes the architectural differences between ACO and the LLVM AMDGPU backend concrete. ACO trades LLVM's deep general-purpose optimisation pipeline for a narrow, AMD-ISA-aware design: the IR sits closer to the hardware, the register allocator understands the VGPR/SGPR split natively, and every pass can be iterated on inside Mesa without upstream negotiation. LLVM retains advantages where its broader optimisation depth matters — long-running compute kernels, loop vectorisation, and the radeonsi/ROCm stacks that are outside ACO's scope.
+
+| Attribute | ACO (RADV) | LLVM amdgpu backend (RadeonSI) |
+|---|---|---|
+| IR design | Custom ACO IR (close to GCN/RDNA ISA) | LLVM IR → SelectionDAG → MachineIR |
+| Compile latency (typical draw-time) | ~2–5× faster than LLVM | Baseline (seconds on complex shaders) |
+| Optimisation depth | Focused: RA, scheduling, hazard avoidance | Deep: full LLVM optimisation pipeline |
+| Register allocator | Custom VGPR/SGPR-aware linear-scan | LLVM greedy RA (not VGPR/SGPR aware by default) |
+| VGPR occupancy tuning | Explicit; controls wave occupancy directly | Indirect via LLVM hints |
+| Instruction scheduling | Clause-aware, export-hazard-aware | LLVM MachineScheduler (generic) |
+| Debug / disassembly | ACO dump (`NIR_DEBUG=aco`) | `llvm-objdump` / `radeontop` |
+| Use in Mesa | RADV Vulkan driver | RadeonSI OpenGL driver; historical RADV path |
+| Wave32 / Wave64 | Fully supported (RDNA) | Supported |
+| Code quality (shipping games) | Matches or exceeds LLVM in practice | Production-proven; reference baseline |
+
 ---
 
 ## 2. ACO's Place in the RADV Pipeline

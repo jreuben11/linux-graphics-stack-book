@@ -69,6 +69,17 @@ graph TD
     DRM --> wlroots
 ```
 
+The six compositors covered in this chapter span a wide range of architectural choices, target audiences, and protocol ambitions. The table below provides a bird's-eye comparison across the dimensions that matter most to graphics developers: the underlying toolkit, implementation language, primary use case, session model, Wayland protocol coverage, GPU API, and the single most distinctive technical characteristic of each compositor. These dimensions are unpacked in detail in the sections that follow.
+
+| Compositor | Foundation | Language | Primary DE / use case | Session type | Protocol tier | GPU API | Notable differentiator |
+|---|---|---|---|---|---|---|---|
+| Mutter | Clutter/Cogl → native Wayland | C | GNOME Shell | Wayland + X11 (XWayland) | Extensive (xdg-shell, KMS overlay, HDR) | OpenGL/Vulkan (cogl) | GTK/GNOME integration; WebRender-style damage tracking in 2025+ |
+| KWin | KWayland (custom) | C++/QML | KDE Plasma | Wayland + X11 (XWayland) | Extensive (xdg-shell, KMS overlay, HDR) | OpenGL/Vulkan (KWin scene) | Qt/QML scene graph; most protocol coverage of any desktop compositor |
+| Sway | wlroots | C | tiling WM (i3 replacement) | Wayland-only | Core (xdg-shell, layer-shell) | OpenGL (wlr_renderer) | i3-compatible config; minimal, scriptable |
+| Hyprland | wlroots / own scene-graph | C++ | Tiling + animation enthusiasts | Wayland-only | Core + extensions | OpenGL (custom renderer) | Bezier animations; plugin API; highly extensible |
+| gamescope | wlroots / KMS direct | C++ | Gaming / Steam Deck | Nested Wayland or KMS-direct | Gaming-focused (VRR, HDR, latency) | Vulkan (direct KMS overlay) | Steam Deck display stack; FSR/NIS integration; direct scanout |
+| COSMIC Compositor | Smithay (Rust) | Rust | COSMIC DE (System76) | Wayland-only | Growing | Vulkan (smithay/wgpu) | First major Rust-native compositor; safe concurrency model |
+
 ---
 
 ## 2. Mutter: GNOME Shell's Compositor

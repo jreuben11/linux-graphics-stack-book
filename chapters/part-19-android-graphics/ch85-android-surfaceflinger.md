@@ -59,6 +59,22 @@ At the kernel layer, **DRM/KMS** provides display control, **DMA-BUF** heaps (re
 
 ### 1.2 Key Differences from Wayland
 
+Android and Wayland compositors share the same Linux kernel primitives — DRM/KMS for display control, DMA-BUF for buffer sharing, and sync_file for GPU fences — but their userspace architectures diverge substantially. The table below captures these differences across eleven key attributes, giving a quick orientation before the detailed sections that follow. Cross-references to the Wayland-side counterparts appear throughout this chapter.
+
+| Attribute | Android (SurfaceFlinger / HWUI) | Linux/Wayland (wlroots/Mutter + KMS) |
+|---|---|---|
+| Buffer protocol | BufferQueue / ANativeWindow (Binder IPC) | linux-dmabuf-v1 (Wayland protocol over Unix socket) |
+| IPC mechanism | Android Binder (kernel driver, parcels) | Wayland wire protocol (Unix domain socket, event objects) |
+| Compositor model | SurfaceFlinger (C++, always-on system service) | Per-session: Mutter/KWin/Sway/etc. (user-space daemon) |
+| GPU fence model | Android sync timeline (sw_sync; sync_file) | drm_syncobj (binary and timeline) + DMA-BUF implicit fences |
+| Hardware compositing | HWComposer HAL (abstraction over gralloc + DRM) | KMS atomic commit (direct DRM plane assignment) |
+| Colour management (HDR) | Display HAL + SurfaceControl HDR metadata | wp_color_management_v1 + wp_color_representation_v1 (Wayland) |
+| Multi-display | DisplayManager → SurfaceFlinger displays | KMS CRTC/connector per output; wl_output |
+| Screenshot/capture | MediaProjection API (privileged) | xdg-desktop-portal screencopy (PipeWire) |
+| Application sandbox | Android permission model (uid isolation) | Wayland isolation (no global screen capture; no input injection) |
+| Gralloc / buffer allocation | Gralloc HAL (vendor-specific) | GBM (Generic Buffer Manager) + libdrm |
+| Vulkan WSI | VK_KHR_android_surface (ANativeWindow) | VK_KHR_wayland_surface + VK_EXT_acquire_drm_display |
+
 While Android runs on the same Linux kernel DRM/KMS stack described in Ch1 and Ch2, the userspace above it differs fundamentally from the Wayland ecosystem:
 
 | Dimension | Wayland (Linux desktop) | Android |

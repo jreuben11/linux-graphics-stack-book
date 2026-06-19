@@ -2,6 +2,8 @@
 
 **Target audiences**: Compositor developers adding HDR output support; application developers using HDR colour spaces in Vulkan or EGL; and display engineers integrating HDR metadata signalling via HDMI/DisplayPort.
 
+> **Scope:** This chapter focuses on HDR-specific display signaling (HDMI Dynamic Range InfoFrame, `drm_hdr_output_metadata`, DP HDR descriptor, SMPTE ST 2086 static metadata) and display-side tone-mapping options. **Ch74** is the authoritative chapter for the end-to-end KMS color pipeline (`DEGAMMA_LUT`, `CTM`, `GAMMA_LUT`, per-plane HDR properties) and the `wp_color_management_v1` Wayland protocol. **Ch101** covers ICC profile internals and color science theory. KMS LUT code examples belong in Ch74 — reference it rather than duplicating here.
+
 ---
 
 ## Table of Contents

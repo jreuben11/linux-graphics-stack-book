@@ -384,6 +384,21 @@ The Sixel API is controlled at the widget level by `vte_terminal_set_enable_sixe
 
 ---
 
+## Terminal Renderer Comparison
+
+The six terminals covered in this chapter represent a wide spectrum of design choices: GPU API selection, implementation language, pixel-protocol support, and latency strategy all vary significantly. The table below summarises the key dimensions for quick cross-reference; subsequent sections describe the compositing implications of each approach in detail.
+
+| Terminal | GPU API | Implementation language | Pixel protocols | Wayland-native | Sixel | Kitty protocol | Latency optimisation | Primary strength |
+|---|---|---|---|---|---|---|---|---|
+| kitty | OpenGL 3.3 (custom renderer) | Python (config/plugins) + C (core) | Kitty Graphics Protocol (inventor) | Yes | Yes | Yes (inventor) | Repaint batching, sync output protocol | Feature richness; pixel protocol innovation |
+| Alacritty | OpenGL (via glutin/winit) | Rust | None | Yes | No | No | Minimal pipeline; V-sync accurate | Raw latency; simplicity; correctness |
+| WezTerm | wgpu (Vulkan/Metal/DX12/GL) | Rust | Kitty, iTerm2 (partial), Sixel | Yes | Yes | Yes | Frame-paced; GPU compute for shaping | Cross-platform; multiplexer built-in; wgpu portability |
+| Ghostty | OpenGL (Metal on macOS) via libghostty | Zig | Kitty Graphics Protocol | Yes | No (planned) | Yes | Low-latency VBO streaming; platform-native | Zig-native; libghostty embeddable library design |
+| foot | CPU software rendering (pixman) | C | Sixel | Yes (Wayland-only) | Yes | No | Damage-aware partial redraws | Zero GPU dependency; pure Wayland; lightweight |
+| VTE (GNOME Terminal, Tilix, etc.) | OpenGL via GTK4/GSK | C (GObject) | Sixel (VTE 0.70+) | Yes (GTK4 Wayland) | Yes | No | GTK4 frame clock integration | GNOME ecosystem; accessibility; GTK widget embedding |
+
+---
+
 ## 9. Compositing Pipeline: Text and Pixel Graphics Together
 
 The most architecturally interesting problem in GPU terminal rendering is not the glyph atlas itself but the compositing of glyph quads and pixel image rectangles into a coherent framebuffer, in the correct paint order, without visible artefacts at the boundaries between text and image regions.

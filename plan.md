@@ -131,7 +131,7 @@ Chapters signal which perspective is emphasised where they diverge.
 - **Part XIX — Android Graphics**
   - [Chapter 85: Android Compositor: SurfaceFlinger, HardwareBuffer, and the Buffer Pipeline](#chapter-85-android-compositor-surfaceflinger-hardwarebuffer-and-the-buffer-pipeline)
   - [Chapter 86: Vulkan on Android: Drivers, ANGLE, and Mobile GPU Performance](#chapter-86-vulkan-on-android-drivers-angle-and-mobile-gpu-performance)
-  - [Chapter 94: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform](#chapter-94-android-ar-arcore-architecture-camera-hal-integration-and-the-android-xr-platform)
+  - [Chapter 87: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform](#chapter-87-android-ar-arcore-architecture-camera-hal-integration-and-the-android-xr-platform)
 - **Part XX — AI/ML Inference on Linux**
   - [Chapter 88: NPU and AI Accelerator Integration on Linux](#chapter-88-npu-and-ai-accelerator-integration-on-linux)
   - [Chapter 94: ComfyUI and ComfyScript: Node-Graph AI Image Generation on Linux GPUs](#chapter-94-comfyui-and-comfyscript-node-graph-ai-image-generation-on-linux-gpus)
@@ -190,6 +190,24 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 146: WebCodecs and Browser Hardware Acceleration](#chapter-146-webcodecs-and-browser-hardware-acceleration) *(Part X)*
   - [Chapter 147: Chrome and Firefox Hardware Video Decode via VA-API](#chapter-147-chrome-and-firefox-hardware-video-decode-via-va-api) *(Part X)*
   - [Chapter 148: Vulkan Synchronisation: A Complete Developer Reference](#chapter-148-vulkan-synchronisation-a-complete-developer-reference) *(Part VII)*
+- **Part XXV — Advanced Topics and Gap-Fill**
+  - [Chapter 106: The Vulkan Memory Model — Formal Execution and Memory Ordering](#chapter-106-the-vulkan-memory-model--formal-execution-and-memory-ordering) *(Part VII)*
+  - [Chapter 149: GPU Hang Detection and Recovery — TDR, Scheduling Timeouts, and Reset Sequences](#chapter-149-gpu-hang-detection-and-recovery--tdr-scheduling-timeouts-and-reset-sequences) *(Part I)*
+  - [Chapter 150: EGL Architecture and DMA-BUF Integration](#chapter-150-egl-architecture-and-dmabuf-integration) *(Part VII)*
+  - [Chapter 151: Wayland Text Input and Input Method Editors](#chapter-151-wayland-text-input-and-input-method-editors) *(Part VI)*
+  - [Chapter 152: The Rust GPU Ecosystem: ash, wgpu, naga, and Bevy](#chapter-152-the-rust-gpu-ecosystem-ash-wgpu-naga-and-bevy) *(Part VII)*
+  - [Chapter 153: OBS Studio GPU Pipeline: Capture, Encode, and Stream](#chapter-153-obs-studio-gpu-pipeline-capture-encode-and-stream) *(Part IX)*
+  - [Chapter 154: GPU-Driven Rendering: Indirect Draw, Culling, and Mesh Shaders](#chapter-154-gpu-driven-rendering-indirect-draw-culling-and-mesh-shaders) *(Part VII)*
+  - [Chapter 155: USB DisplayLink and the evdi Virtual DRM Driver](#chapter-155-usb-displaylink-and-the-evdi-virtual-drm-driver) *(Part II)*
+  - [Chapter 156: Mesa Nine: The Direct3D 9 State Tracker for Gallium](#chapter-156-mesa-nine-the-direct3d-9-state-tracker-for-gallium) *(Part IV)*
+  - [Chapter 157: Vulkan Descriptor Binding: Sets, Push Descriptors, and Descriptor Buffers](#chapter-157-vulkan-descriptor-binding-sets-push-descriptors-and-descriptor-buffers) *(Part VII)*
+  - [Chapter 158: HDR and Display Color Management on Linux](#chapter-158-hdr-and-display-color-management-on-linux) *(Part VI)*
+  - [Chapter 159: Panfrost and the Mali GPU Driver](#chapter-159-panfrost-and-the-mali-gpu-driver) *(Part II)*
+  - [Chapter 160: Freedreno, Turnip, and the Qualcomm Adreno Driver](#chapter-160-freedreno-turnip-and-the-qualcomm-adreno-driver) *(Part II)*
+  - [Chapter 162: Framebuffer Compression: AFBC, DCC, CCS, and UBWC](#chapter-162-framebuffer-compression-afbc-dcc-ccs-and-ubwc) *(Part I)*
+  - [Chapter 163: VKMS and Virtual Display Drivers for Testing](#chapter-163-vkms-and-virtual-display-drivers-for-testing) *(Part I)*
+  - [Chapter 164: GPU Power Management: Runtime PM, DVFS, and Power Caps](#chapter-164-gpu-power-management-runtime-pm-dvfs-and-power-caps) *(Part I)*
+  - [Chapter 165: Vulkan Video: Hardware Decode and Encode via the Vulkan API](#chapter-165-vulkan-video-hardware-decode-and-encode-via-the-vulkan-api) *(Part VII)*
 
 ---
 
@@ -1413,7 +1431,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Chrome on Android: ANGLE as Chrome GLES backend since Android 8; Dawn Vulkan backend for WebGPU; GPU process with AHardwareBuffer for cross-process textures; Viz compositor with ASurfaceControl
 - **Integrations**: Ch4, Ch6, Ch16, Ch18, Ch24, Ch33, Ch34, Ch35, Ch50, Ch61, Ch76, Ch82, Ch85
 
-### Chapter 94: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform
+### Chapter 87: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform
 
 - ARCore architecture: application-layer SDK (Play Services `com.google.ar.core`) above Camera HAL; three pillars: motion tracking (VIO), environment understanding (planes/depth), light estimation; minimum API 24 (Android 7.0); AR Required vs AR Optional manifest flags; ARCore vs ARKit comparison
 - Android Camera Pipeline and ARCore: Camera HAL3 (`camera_device3_ops_t`, `camera3_stream_t`, `process_capture_request`); Camera2 `CameraDevice.createCaptureSession()`, `CaptureRequest.Builder`, `TEMPLATE_RECORD`; IMU via `SensorEventListener` (`TYPE_ACCELEROMETER`, `TYPE_GYROSCOPE`); Visual-Inertial Odometry (VIO) factor graph / EKF; `ArCamera_getPose()` vs `ArCamera_getDisplayOrientedPose()`
@@ -2124,6 +2142,42 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Sync validation: VK_LAYER_KHRONOS_validation; `--synchronization-validation`; RenderDoc; common errors
 - Real-world patterns: shadow map barrier; async texture upload; multi-GPU timeline semaphores
 - **Integrations**: Ch16 (Vulkan core), Ch24 (EGL present path), Ch20 (linux_drm_syncobj), Ch133 (async compute queues)
+
+---
+
+## Part XXV — Advanced Topics and Gap-Fill
+
+### Chapter 106: The Vulkan Memory Model — Formal Execution and Memory Ordering *(Part VII)*
+- The problem: GPU parallelism with no global sequential consistency; why undefined behaviour is real
+- Vulkan Memory Model spec (`VK_KHR_vulkan_memory_model`, core in 1.2): execution scope, storage class, memory domain
+- Execution scopes: `Invocation`, `Subgroup`, `Workgroup`, `QueueFamily`, `Device`; which barrier stages correspond to which scope
+- Storage class semantics: `StorageBuffer`, `Uniform`, `Image`, `PhysicalStorageBuffer`; visibility rules per class
+- Memory operations: `Load`, `Store`, `Atomic`; `MakeAvailable`, `MakeVisible`, `NonPrivate` decorations in SPIR-V
+- Acquire/release semantics: `Acquire`, `Release`, `AcquireRelease`; happens-before graph construction
+- Availability and visibility chains: why a `Release` in one invocation isn't automatically visible to another without explicit `Acquire`
+- Subgroup operations: `subgroupBarrier`, `subgroupMemoryBarrier`; scope-limited vs. full barriers; divergence and non-uniform control flow
+- Atomic operations: `AtomicAdd`, `AtomicExchange`, `AtomicCompareExchange`; sequentially consistent vs. relaxed atomics
+- SPIR-V decorations in practice: `NonWritable`, `NonReadable`, `Coherent`; `MemorySemanticsMask`
+- Shader compiler treatment: ACO/NIR memory model lowering; how barriers become hardware wait states
+- Common bugs: missing `NonPrivate` on cross-invocation loads; release without corresponding acquire; wrong scope for subgroup reductions
+- Validation: `VK_KHR_vulkan_memory_model` in `VkPhysicalDeviceVulkanMemoryModelFeatures`; synchronisation validation layer; spirv-val
+- **Integrations**: Ch14 (NIR barriers), Ch15 (ACO hardware wait-state emission), Ch133 (compute queues and task graphs), Ch148 (sync primitives provide the execution ordering that the memory model operates within), Ch154 (GPU culling shaders rely on correct memory ordering for atomic draw counts)
+
+### Chapter 149: GPU Hang Detection and Recovery — TDR, Scheduling Timeouts, and Reset Sequences *(Part I)*
+- Why GPU hangs happen: infinite shader loops, command buffer errors, firmware faults, bus errors, power events
+- Linux GPU hang taxonomy: soft hang (scheduler timeout), hard hang (GPU unresponsive), firmware crash, IOMMU fault
+- `drm_gpu_scheduler`: heartbeat mechanism (`drm_sched_heartbeat_timer`); `timeout_ms`; `drm_sched_job_timedout`; per-engine vs. per-VM hangs
+- amdgpu hang detection: `amdgpu_job_timedout`; `amdgpu_device_gpu_recover`; ring reset vs. full GPU reset; RAS (Reliability, Availability, Serviceability) for ECC errors
+- amdgpu reset sequence: `amdgpu_device_pre_asic_reset` → `amdgpu_asic_reset` → IP block re-init → fence signalling for orphaned jobs; BACO vs. mode1 reset
+- Intel i915/xe: `intel_gt_reset`; engine reset (`i915_gem_reset_engine`); GuC engine reset communication; hangcheck timer
+- NVIDIA open kernel module: `nv_gpu_reset`; GSP-RM reset protocol; watchdog firmware timeout
+- Nouveau: limited reset capability; context kill on hang; `nouveau_channel_kill`
+- Kernel error reporting: `/sys/kernel/debug/dri/0/amdgpu_gpu_recover`; `/sys/kernel/debug/dri/0/i915_error_state`; GPU crash dump format
+- Userspace recovery: `VK_ERROR_DEVICE_LOST` handling; `VkDeviceFaultInfoEXT` (`VK_EXT_device_fault`); graceful teardown vs. restart
+- IOMMU faults: page fault on GPU IOVA access; `amdgpu_iommu_fault_handler`; ARM SMMU fault on Adreno/Mali
+- Tools: `dmesg | grep -i "gpu\|hang\|reset"`; `amdgpu_top`; `intel_gpu_top`; RenderDoc GPU crash capture
+- CI and testing: VKMS hang-free guarantee; IGT `gem_exec_hang_*` test suite; reproducing hangs deterministically
+- **Integrations**: Ch01 (DRM driver lifecycle), Ch04 (drm_gpu_scheduler), Ch164 (power management — power loss triggers hang), Ch163 (VKMS hang-free by design), Ch159/Ch160 (Panfrost/Turnip hang detection)
 
 ---
 

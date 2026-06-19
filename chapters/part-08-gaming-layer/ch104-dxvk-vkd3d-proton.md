@@ -44,6 +44,15 @@ The alternative to translation layers would be native Vulkan ports or OpenGL por
 
 Both projects ship as part of Valve's **Proton** compatibility tool for Steam. Outside of Proton, DXVK is also widely used standalone in Lutris, Bottles, and Heroic Games Launcher for running non-Steam Windows games.
 
+Multiple translation layers coexist because no single layer covers the entire D3D API surface with equal fidelity: DXVK targets D3D9–11 via Vulkan with full state-cache support, while VKD3D-Proton exclusively targets D3D12 and exploits bleeding-edge Vulkan extensions that the older API generations cannot benefit from. WineD3D and Mesa Nine fill complementary niches — WineD3D as the universal fallback that works even without Vulkan support, and Mesa Nine as a zero-overhead native Gallium path for D3D9 workloads on Mesa drivers that bypasses translation entirely.
+
+| Layer | D3D target | Output API | Shader translator | State cache | Ray tracing | Integration | Maintained by |
+|---|---|---|---|---|---|---|---|
+| **DXVK** | D3D9, D3D10, D3D11 | Vulkan 1.3 | DXBC→SPIR-V (dxbc2spirv) | Yes (DXVK state cache, `.dxvk-cache`) | No (D3D11 has no RT) | Proton, Wine (WineD3D replacement) | Philip Rebohle (doitsujin); community |
+| **VKD3D-Proton** | D3D12 | Vulkan 1.3 | DXIL→SPIR-V (vkd3d-shader) | Yes (pipeline library via `VK_EXT_pipeline_library`) | Yes (`VK_KHR_ray_tracing_pipeline` on RDNA2+/RTX) | Proton only (Valve fork of vkd3d) | Valve / Hans-Kristian Arntzen |
+| **Mesa Nine (D3D9)** | D3D9 only | Gallium3D (native pipe driver interface) | No translation (native Gallium state) | Inherits Mesa disk cache | No | Wine (`--with-nine`; native path, not DXVK) | Mesa community; Axel Davy |
+| **WineD3D** | D3D8, D3D9, D3D10, D3D11 | OpenGL 4.x / Vulkan (partial) | Vertex/pixel shader→GLSL | No | No | Wine upstream (default fallback) | Wine project |
+
 ---
 
 ## 2. Direct3D Architecture Primer

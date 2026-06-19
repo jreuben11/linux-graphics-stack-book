@@ -284,7 +284,7 @@ simpledrm provides:
 
 - One `drm_connector` with a single fixed mode derived from the firmware framebuffer geometry.
 - `drm_gem_shmem_*` buffer objects for scanout; pixel data is software-blitted from GEM to the firmware framebuffer.
-- `drm_fbdev_generic_setup()` for fbcon console emulation.
+- fbdev emulation for fbcon console output (the exact helper — `drm_fbdev_generic_setup()` in earlier kernels, `drm_fbdev_shmem_setup()` in ≥6.11 — varies by kernel version; see the simpledrm source for the current call).
 - Support for `DRM_FORMAT_*` pixel format negotiation based on the firmware framebuffer's pixel layout.
 
 ### simpledrm Pixel Format and Conversion
@@ -318,6 +318,8 @@ fs_initcall(simpledrm_chosen_init);
 ```
 
 This ensures that Apple Silicon machines get a DRM console device early in boot, before the AGX GPU driver (covered in Chapter 73) completes its substantially more complex probe.
+
+Note: the above snippet is illustrative pseudocode showing the structural pattern; the actual function and variable names in the upstream source may differ. See the source file for the canonical implementation.
 
 [Source: linux/drivers/gpu/drm/tiny/simpledrm.c](https://elixir.bootlin.com/linux/latest/source/drivers/gpu/drm/tiny/simpledrm.c)
 
@@ -388,7 +390,7 @@ drm_mode_config_reset(drm_dev);   /* call ->reset callbacks; set default HW/SW s
 drm_mode_config_validate(drm_dev);
 
 /* Trigger first modeset */
-drm_fbdev_generic_setup(drm_dev, 0);   /* fbdev emulation path */
+drm_fbdev_shmem_setup(drm_dev, 0);     /* fbdev emulation path (kernel ≥6.11; earlier: drm_fbdev_generic_setup) */
 /* OR: compositor will call DRM_IOCTL_MODE_ATOMIC directly */
 ```
 
@@ -784,8 +786,8 @@ plymouth --debug
 # View Plymouth debug log
 cat /var/log/plymouth/debug.log
 
-# Force Plymouth to use the framebuffer renderer
-plymouth --set-splash-plugin=details
+# Switch Plymouth theme to the text-only details theme (shows systemd output)
+plymouth-set-default-theme details && plymouth --reload-daemon
 
 # Check which renderer Plymouth selected
 grep -i renderer /var/log/plymouth/debug.log
@@ -832,25 +834,24 @@ Alternatively, set `trace_buf_size=64M` and `ftrace=function` on the kernel comm
 
 ### Interpreting dmesg for Boot Display
 
-A healthy x86 UEFI boot sequence produces dmesg entries in this approximate order:
+A healthy x86 UEFI boot with `CONFIG_SYSFB_SIMPLEFB=y` and `CONFIG_DRM_SIMPLEDRM=y` produces dmesg entries in this approximate order (timestamps illustrative):
 
 ```
 [    0.000000] EFI v2.80 by AMI
-[    0.453021] efifb: probing for EFI framebuffer
-[    0.453025] efifb: framebuffer at 0x...
-[    0.453030] efifb: mode is 1920x1080x32, linelength=7680
 [    ...      ] ...
 [    1.234567] simple-framebuffer simple-framebuffer.0: 1920x1080@32 framebuffer
 [    1.234580] Console: switching to colour frame buffer device 240x67
-[    1.234600] simpledrm simpledrm: [drm] Initialized simpledrm 1.0.0 20200625 ...
+[    1.234600] simpledrm simpledrm: [drm] Initialized simpledrm 1.0.0 20200625 for simple-framebuffer.0
 [    1.234605] simpledrm simpledrm: [drm] 1 display pipe(s)
-[    ...      ] (native driver probe begins)
+[    ...      ] (native driver probe begins; GPU firmware loads)
 [    3.456789] i915 0000:00:02.0: [drm] aperture: removed conflicting framebuffer(s)
 [    3.456800] fb0: switching to i915drmfb from simpledrmdrmfb
 [    3.456900] i915 0000:00:02.0: [drm] Initialized i915 1.6.0 20201103 for 0000:00:02.0
 ```
 
-The timestamp gap between the `simpledrm` initialization line and the `i915` aperture removal line is the window during which Plymouth and early console are served by simpledrm. On fast systems this is under 2 seconds; on systems that require firmware loading for the GPU, it can be 10–20 seconds.
+Note: on systems without `CONFIG_SYSFB_SIMPLEFB` (or with legacy `CONFIG_FB_EFI`), sysfb registers `"efi-framebuffer"` instead of `"simple-framebuffer"`, and the efifb driver probes in place of simpledrm. These paths are mutually exclusive: the same boot cannot show both efifb and simpledrm active simultaneously.
+
+The timestamp gap between the `simpledrm` initialization line and the `i915` aperture removal line is the window during which Plymouth and the early console are served by simpledrm. On fast systems this is under 2 seconds; on systems that require firmware loading for the GPU (covered in Chapter 129), it can be 10–20 seconds.
 
 ---
 

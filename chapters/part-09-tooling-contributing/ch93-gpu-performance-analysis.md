@@ -2,6 +2,8 @@
 
 This chapter targets **graphics application developers**, **game developers**, **ML engineers**, and **systems performance engineers** who need to systematically diagnose and improve GPU performance on Linux. Unlike Chapter 30 (which surveys debugging and profiling tools), this chapter focuses on *methodology*: how to structure an investigation, how to interpret hardware counter data, and how to move from a symptom to a root cause to a fix.
 
+> **Scope:** Ch93 covers GPU performance analysis **methodology** — the investigation framework, Vulkan timestamp queries for frame time decomposition, hardware counter interpretation, occupancy analysis, and moving from symptom to root cause to fix. **Ch30** covers development-time debugging tools (RenderDoc, validation layers, Mesa debug vars). **Ch137** surveys the GPU profiling ecosystem (vendor profilers, MangoHud, Perfetto, shader-db). This chapter is deliberately tool-agnostic; see Ch137 for tool-specific instructions.
+
 ---
 
 ## Table of Contents

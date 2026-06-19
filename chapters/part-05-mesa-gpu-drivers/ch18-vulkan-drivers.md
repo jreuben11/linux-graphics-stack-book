@@ -120,6 +120,17 @@ graph TD
     Winsys --> DRM
 ```
 
+Mesa's Vulkan ecosystem has grown well beyond the three drivers that dominate Linux desktop usage. As of mid-2025, six production or near-production drivers exist in the Mesa tree, each targeting a distinct hardware family with its own shader backend, feature set, and conformance level. Understanding the landscape as a whole — before diving into individual implementations — helps a reader see which architectural decisions are universal and which are specific to one vendor's hardware constraints. The table below summarises the current state of every Mesa Vulkan driver across the dimensions most relevant to systems and application developers.
+
+| Driver | Hardware target | Shader backend | Ray tracing | Video decode | Mesh shaders | Conformance (Vulkan 1.x) | Status |
+|--------|----------------|----------------|-------------|--------------|--------------|--------------------------|--------|
+| RADV | AMD GCN 1.0+ (RDNA 1–4) | ACO (default); LLVM optional | Yes (RDNA 2+, VK_KHR_ray_tracing_pipeline) | Yes (VK_KHR_video_decode_queue, H.264/H.265/AV1 on RDNA 2+) | Yes (VK_EXT_mesh_shader, RDNA 2+) | Vulkan 1.4 (CTS passing) | Production; primary AMD open driver |
+| ANV | Intel Gen 7+ (Ivy Bridge) through Xe2 (Battlemage) | NIR → Intel ISA (brw_eu) | Yes (DG2/Arc, VK_KHR_ray_tracing_pipeline) | Yes (VK_KHR_video_decode_queue) | Yes (Xe+) | Vulkan 1.4 | Production; primary Intel open driver |
+| NVK | NVIDIA Maxwell (GM107) through Ada Lovelace | NAK (Rust) | In progress (Turing+ RT cores) | In progress | In progress | Vulkan 1.4 (CTS passing on Turing+) | Production on supported GPUs; GSP-RM required |
+| Turnip | Qualcomm Adreno A6xx/A7xx | NIR → Adreno ISA (ir3/ir3 for A6xx, fd6) | No (hardware lacks BVH) | Limited | Yes (A7xx) | Vulkan 1.4 | Production on supported Adreno SoCs |
+| Honeykrisp | Apple AGX (M1, M2, M3, M4 series) | NIR → AGX ISA (Rust backend) | No | No | No | Vulkan 1.4 (conformant as of 2025) | Production on Apple Silicon (Asahi Linux) |
+| v3dv | Broadcom VideoCore VI/VII (Raspberry Pi 4/5) | NIR → QPU binary | No | No | No | Vulkan 1.3 | Production on RPi 4/5 |
+
 ---
 
 ## 2. RADV: AMD Vulkan in Mesa

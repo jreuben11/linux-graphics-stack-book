@@ -413,6 +413,22 @@ A parallel track that avoids the escape-sequence framing problem entirely is tex
 
 The practical conclusion for application authors is that the three-protocol landscape described in this chapter is stable and unlikely to be displaced by a new standard in the near term. The Good Image Protocol remains a candidate for future convergence but has not achieved the adoption threshold that would make it a safe primary target. Building against Kitty for capable GPU terminals and Sixel for compatibility, with Unicode block fallback for the remainder, is the strategy that current tooling (wezterm-imgcat, timg, chafa) has converged on independently.
 
+The three protocols differ not only in feature set but also in the fundamental assumptions they make about the terminal's role in the rendering pipeline: Sixel treats the terminal as a palette-indexed framebuffer inherited from 1987 hardware, Kitty treats the terminal as a GPU scene-graph consumer that persists texture objects and issues draw calls, and iTerm2 treats the terminal as a stateless image decoder whose only job is to position a decoded file at the cursor. These architectural differences are not superficial — they determine which applications are natural fits for each protocol and explain why no single protocol has displaced the others. The table below provides a concise side-by-side comparison of the key attributes across all three protocols to guide protocol selection and inform terminal implementors.
+
+| Attribute | Sixel | Kitty Graphics Protocol | iTerm2 Inline Images |
+|-----------|-------|------------------------|---------------------|
+| Origin | DEC VT340 (1987) | Kovid Goyal / kitty (2018) | iTerm2 macOS team (2014) |
+| Encoding | Base64 of palette-indexed 6-pixel-tall bands | Base64 of raw pixels (or file path / shared memory) | Base64 of PNG/JPEG/GIF/etc. |
+| Colour depth | Up to 256 colours (palette) | Full 24-bit + alpha (RGBA) | Full 24-bit (limited by image format) |
+| Animation | Via multiple frames (DCS sequences) | Yes (animation frames in protocol) | GIF passthrough only |
+| Transparency / alpha | No | Yes (RGBA) | Format-dependent (PNG alpha) |
+| Placement model | Inline (character cell stream) | Inline + virtual image placements (id-based, z-order) | Inline only |
+| Shared memory / zero-copy | No | Yes (SHM path on Unix; avoids Base64 overhead) | No |
+| Delete / update | No | Yes (delete by ID; in-place update) | No |
+| Terminal support breadth | Widest (xterm, foot, VTE, WezTerm, many libsixel clients) | Growing (kitty, WezTerm, Ghostty, foot planned) | Limited (iTerm2, WezTerm, some others) |
+| Cursor movement after image | Moves to end of sixel region | Configurable (leave cursor position flexible) | Moves below image |
+| GPU path potential | None (CPU decode to sixel bands) | High (raw pixel data; GPU upload direct) | Low (must decode image format first) |
+
 ---
 
 ## 6. Integrations

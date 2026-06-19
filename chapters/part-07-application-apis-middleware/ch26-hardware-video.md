@@ -189,6 +189,19 @@ typedef struct {
 
 A typical NV12 surface on Intel or AMD exports as one DMA-BUF fd (one object), one layer with two planes (Y at offset 0, UV at `width*height`), and a `drm_format_modifier` that encodes the tiling mode. A multi-planar surface on some hardware may export with separate fds per plane. The caller must close each `fd` after importing it downstream. The `drm_format_modifier` value must be communicated to the importing API — it is the key that allows a Vulkan driver or EGL implementation to map the pixels correctly without detiling.
 
+### Comparison of Hardware Video Decode APIs on Linux
+
+Linux provides several hardware video decode APIs, each with distinct design philosophies, vendor support matrices, and Wayland compatibility stories. VA-API is the primary cross-vendor API for general-purpose decode, but NVDEC, V4L2 (both stateful and stateless variants), Vulkan Video, and the legacy VDPAU each occupy different positions in the ecosystem. The table below summarises the key characteristics of each API as of 2026, focusing on zero-copy DMA-BUF capability, HDR/10-bit support, codec coverage, and integration path into a Wayland desktop compositor pipeline.
+
+| **API** | **Vendor support** | **Zero-copy DMA-BUF** | **HDR / 10-bit** | **Codec coverage** | **Wayland integration** | **2026 status** |
+|---|---|---|---|---|---|---|
+| VA-API (libva) | AMD (radeonsi/RADV), Intel (iHD/i965), NVIDIA (nvidia-vaapi-driver wrapper) | Yes (`VASurfaceAttribExternalBufferDescriptor`) | Yes (`VA_RT_FORMAT_YUV420_10`) | H.264, H.265, VP8, VP9, AV1 (driver-dependent) | Yes (via EGL/dmabuf; used by mpv, browsers) | Primary cross-vendor API; actively developed |
+| NVDEC (NVIDIA) | NVIDIA proprietary + nvidia-open only | Yes (CUDA external memory / EGLImage) | Yes | H.264, H.265, VP9, AV1, JPEG | Via nvidia-vaapi-driver shim for Wayland | Proprietary; high performance; exposed via Video Codec SDK |
+| V4L2 M2M (stateful) | Primarily embedded/ARM (Raspberry Pi, i.MX, Tegra, Rockchip) | Yes (DMABUF plane export) | Driver-dependent | H.264, H.265, VP9 (SoC-specific) | Yes (DMA-BUF) | Standard Linux kernel API; SoC video engines |
+| V4L2 stateless | Newer ARM SoCs; Hantro, RKVDEC, Cedrus | Yes | Limited (10-bit on newer cores) | H.264, H.265, VP9, AV1 (growing) | Yes (DMA-BUF) | Future direction for kernel video decode |
+| Vulkan Video (KHR) | AMD (RADV), NVIDIA (NVK), Intel (ANV) on supported HW | Yes (`VkImage`/DMA-BUF interop) | Yes | H.264 decode/encode, H.265 decode/encode, AV1 decode | Via `VkImage`→DMA-BUF export | Stable spec (2023+); growing driver support; unified decode + encode |
+| VDPAU | NVIDIA (legacy), Mesa (partial via OpenGL) | Limited (surface sharing) | Limited | H.264, VC-1, MPEG-2, H.265 (partial) | X11 only | Deprecated; NVIDIA discourages; no Wayland path |
+
 ---
 
 ## 2. VA-API Drivers: Mesa and Vendor Implementations

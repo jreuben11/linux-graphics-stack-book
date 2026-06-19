@@ -88,6 +88,14 @@ The chapter closes with a comprehensive **FFmpeg** CLI usage reference covering 
 
 Versions covered: **FFmpeg** 7.0 "Dijkstra" (April 2024), 7.1 **LTS** (September 2024), and 8.0 "Huffman" (August 2025). The 8.0 release is the largest in project history and introduces **Vulkan** compute codecs (**FFv1**, **ProRes RAW**, **VP9**, **AV1**) that run on any **Vulkan** 1.3 implementation without hardware-specific video decode queues.
 
+Part XIII covers three multimedia frameworks that together span virtually every Linux video pipeline use case. While all three can drive **VA-API**, **NVDEC/NVENC**, and **V4L2** hardware acceleration, they differ fundamentally in architecture, language ecosystem, and the domains they optimise for. Choosing the right framework avoids costly rewrites: **FFmpeg** excels at single-file transcoding and CI/CD scripting, **GStreamer** at long-running daemon pipelines and **WebRTC**, and **NVIDIA DeepStream** at GPU-only video analytics backed by **TensorRT**. The table below summarises the key axes of comparison.
+
+| **Framework** | **Architecture** | **Hardware accel path** | **Language / bindings** | **Streaming protocols** | **ML/inference integration** | **Licence** | **Best for** |
+|---|---|---|---|---|---|---|---|
+| **FFmpeg** | Library + CLI (procedural; lavf/lavc/lavfi pipeline) | VA-API, VDPAU, NVDEC/NVENC, V4L2, VideoToolbox, QSV | C (libav\*); bindings in Python (ffmpeg-python), Go, Rust | HLS, DASH, RTMP, RTP/RTSP, SRT, RIST | Limited (scale\_cuda filter; ONNX via DNN module) | LGPL 2.1 / GPL 2 (some parts) | Swiss-army tool; transcoding; single-file scripts; CI/CD |
+| **GStreamer** | Element pipeline graph; caps negotiation; GLib/GObject | gst-vaapi, nvcodec (NVDEC/NVENC), v4l2codecs, qsvh264enc | C (GLib/GObject); Python (gi), Rust (gstreamer-rs), Java | HLS, DASH, RTP/RTSP, WebRTC (webrtcbin), SRT | gst-inference (OpenVINO/TF); onnxruntime plugin | LGPL 2.1 | Daemon/service pipelines; WebRTC; complex multi-source graphs |
+| **NVIDIA DeepStream 7.x** | GStreamer-based analytics pipeline; NvDsBuffer metadata | NVDEC (primary), CUDA, TensorRT | C/C++ (plugin API); Python (pyds); GStreamer native | RTSP, Kafka, MQTT, HTTP | First-class TensorRT integration; Triton inference server | Proprietary (free download) | NVIDIA-only video analytics; smart cities; industrial AI |
+
 ---
 
 ## 2. Library Architecture

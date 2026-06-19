@@ -645,6 +645,17 @@ Passes declare which metadata analyses they require (via `nir_metadata_require()
 
 ## 8. NIR as Universal Interchange
 
+Mesa's compiler stack has accumulated several shader intermediate representations over its lifetime, each designed to solve a different problem at a different level of abstraction. Understanding where NIR sits relative to TGSI, SPIR-V, LLVM IR, ACO IR, and NAK IR is essential for reading driver code, interpreting debug dumps, and grasping why NIR occupies a uniquely privileged position in the compilation pipeline. The table below summarises the key properties of each IR currently relevant to Mesa.
+
+| **IR** | **SSA form** | **Type system** | **Where produced** | **Where consumed** | **Hardware-agnostic?** | **Status in Mesa** |
+|---|---|---|---|---|---|---|
+| TGSI (Tungsten Graphics Shader Infrastructure) | No | Loosely typed (TGSI registers) | Legacy GLSL compiler, state tracker | Gallium pipe drivers (still used by r300, older paths) | Yes | Deprecated; being replaced by NIR |
+| NIR (New IR) | Yes (phi nodes) | Typed (int/float/bool, explicit bit-width) | GLSL→NIR, SPIR-V→NIR front ends | All Mesa Vulkan and Gallium backends | Yes | Primary Mesa IR; universal interchange |
+| SPIR-V | Yes | Strongly typed (decorations, storage classes) | Vulkan/OpenCL applications, glslang, DXC | SPIR-V→NIR translation (spir-v.c) | Yes | Input to Mesa; not used internally after ingestion |
+| LLVM IR | Yes | Typed (LLVM type system) | clang, mesa's LLVM path | LLVM amdgpu/radeonsi backends | No (target-specific passes needed) | Used by RadeonSI/llvmpipe; not the primary Mesa path for Vulkan |
+| ACO IR | Partial (uses SSA for values) | Close to GCN/RDNA ISA types | NIR→ACO lowering in RADV | ACO instruction emitter | No (AMD-specific) | RADV Vulkan driver only |
+| NAK IR | Yes (SSA throughout) | Typed (NVIDIA reg classes: UGPR, SGPR, UReg) | NIR→NAK lowering in NVK | NAK ISA encoder | No (NVIDIA-specific) | NVK Vulkan driver; Rust implementation |
+
 NIR occupies a unique architectural position: it is the only representation that every Mesa compiler producer and every Mesa compiler consumer interacts with. This universality is what makes NIR so central to the Mesa ecosystem.
 
 On the producer side: GLSL source compiles to NIR via the GLSL IR intermediate. SPIR-V compiles to NIR via `spirv_to_nir()`. ARB programs compile to NIR via `prog_to_nir()`. Mesa Vulkan drivers generate NIR directly via `nir_builder` for internal meta-shaders — the shaders used to implement clears, blits, buffer copies, and other driver-internal operations. This last use case is significant: drivers routinely build tens or hundreds of small NIR shaders at initialisation time to have compiled and cached for frequent use.

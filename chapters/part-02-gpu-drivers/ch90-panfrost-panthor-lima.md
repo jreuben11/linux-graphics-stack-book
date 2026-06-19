@@ -34,6 +34,16 @@ ARM's Mali GPU product line spans roughly two decades and five distinct microarc
 
 **Fifth Generation (v12–v14, Immortalis-G715, Mali-G725, etc.)** — the current generation as of 2026. **Panthor** and **Mesa**'s **Panfrost** userspace now support these too, extending the same **CSF** model with additional performance features.
 
+**Architecture quick-reference**:
+
+| Family | Examples | Shader ISA | Open driver |
+|---|---|---|---|
+| Utgard | Mali-400, Mali-450 | Pre-unified (GP+PP) | Lima |
+| Midgard | T604–T880 | Unified vector VLIW | Panfrost |
+| Bifrost | G31–G92 | Scalar clause-based | Panfrost |
+| Valhall | G57, G68, G510, G610 | Superscalar + CSF | Panthor |
+| 5th Gen | G720, G925, Immortalis-G715 | CSF v12–v14 | Panthor (in progress) |
+
 ### The Closed-Driver Problem
 
 ARM ships a proprietary GPU driver kit (**Mali DDK**, also called the **Binary Driver**). These blobs are deeply tied to specific Android or vendor kernel versions, carry no source code, and have historically been incompatible with upstream kernels. As of DDK r52 (2024), ARM dropped **Bifrost** and older support from the proprietary stack, leaving embedded Linux users of those GPUs entirely dependent on the open-source drivers. The reverse-engineering methodology used to build these open drivers spans **ioctl** and **mmap** interception (the **Panwrap** tool and its **Pandecode** offline decoder at `src/panfrost/decode/`), ISA disassembly, and — for comparison — macOS IOKit interception (**agxdecode**) used by the **Asahi AGX** team. The **Midgard** and **Bifrost** ISAs were reverse-engineered primarily by **Alyssa Rosenzweig** and contributors at **Collabora**; the **Valhall** ISA was extended from the same work.
@@ -122,7 +132,34 @@ Because the Utgard hardware lacks integer ALUs, integer operations in shaders ar
 
 ### Kernel Driver (`drivers/gpu/drm/panfrost/`)
 
-Panfrost was developed in parallel with Lima and also reached mainline Linux in kernel 5.2. It handles the substantially more complex Midgard and Bifrost generations. Key objects:
+Panfrost was developed in parallel with Lima and also reached mainline Linux in kernel 5.2. It handles the substantially more complex Midgard and Bifrost generations.
+
+**Device Tree registration** — Panfrost binds to GPU nodes via `of_device_id` compatible strings:
+
+```c
+/* drivers/gpu/drm/panfrost/panfrost_drv.c */
+static const struct of_device_id dt_match[] = {
+    { .compatible = "arm,mali-t604",    .data = &panfrost_model_list[0] },
+    { .compatible = "arm,mali-t860",    .data = &panfrost_model_list[4] },
+    { .compatible = "arm,mali-bifrost", .data = &panfrost_model_list[6] },
+    { .compatible = "arm,mali-g52",     .data = &panfrost_model_list[8] },
+    {}
+};
+
+static struct drm_driver panfrost_drm_driver = {
+    .driver_features    = DRIVER_RENDER | DRIVER_GEM | DRIVER_SYNCOBJ,
+    .open               = panfrost_open,
+    .postclose          = panfrost_postclose,
+    .ioctls             = panfrost_drm_driver_ioctls,
+    .num_ioctls         = ARRAY_SIZE(panfrost_drm_driver_ioctls),
+    .fops               = &panfrost_drm_driver_fops,
+    .gem_create_object  = panfrost_gem_create_object,
+    .prime_handle_to_fd = drm_gem_prime_handle_to_fd,
+    .prime_fd_to_handle = drm_gem_prime_fd_to_handle,
+};
+```
+
+Key objects:
 
 **`struct panfrost_device`** (`panfrost_device.h`):
 
@@ -224,6 +261,42 @@ The Gallium driver lives in `src/gallium/drivers/panfrost/`. Key structures:
 
 - `panfrost_screen` — per-screen (per-device) state, hardware feature queries, format support tables.
 - `pan_context` — per-context draw state, dirty-state bitmask, bound resources.
+
+**`panfrost_draw_vbo`** is the Gallium entry point — it emits vertex and tiler job descriptors:
+
+```c
+/* src/gallium/drivers/panfrost/pan_context.c */
+static void panfrost_draw_vbo(struct pipe_context *pipe,
+    const struct pipe_draw_info *info,
+    unsigned drawid_offset,
+    const struct pipe_draw_indirect_info *indirect,
+    const struct pipe_draw_start_count_bias *draws,
+    unsigned num_draws)
+{
+    struct panfrost_context *ctx = pan_context(pipe);
+    struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
+
+    panfrost_emit_vertex_data(batch, ctx);
+    panfrost_emit_vertex_job(batch, ctx, info, draws);
+    panfrost_emit_tiler_job(batch, ctx, info, draws);
+
+    if (batch->scoreboard.job_index > MAX_JOBS)
+        panfrost_flush_all_batches(ctx, "Batch overflow");
+}
+```
+
+**`panfrost_batch`** accumulates draw calls for a single render target (FBO). When the FBO changes or a flush is triggered, the batch is submitted as a job chain:
+
+```c
+struct panfrost_batch {
+    struct panfrost_context *ctx;
+    struct pan_fb_info key;      /* render target config */
+    struct panfrost_pool pool;   /* GPU-side memory pool */
+    struct panfrost_scoreboard scoreboard;
+    struct set *bos;             /* referenced BOs */
+    uint64_t jc;                 /* job chain: first vertex job GPU VA */
+};
+```
 
 A key performance optimization is **dirty-state tracking**: Mali GPUs use a *stateless programming model* in which each draw call requires a complete set of descriptor bundles describing all graphics state (vertex format, rasterizer, blend, depth/stencil, textures). The driver tracks which state has changed since the last descriptor upload and reuses unchanged descriptors, reducing CPU overhead. This optimization improved synthetic benchmark scores by approximately 400% when first introduced. [Source: Collabora blog, Open Source OpenGL ES 3.1 on Mali GPUs with Panfrost](https://www.collabora.com/news-and-blog/blog/2021/06/11/open-source-opengl-es-3.1-on-mali-gpus-with-panfrost/)
 

@@ -779,6 +779,18 @@ The compilation path for a WGSL compute shader is identical to a graphics shader
 
 ## 7. Unreal Engine 5 and Unity: The Closed-Source Counterpoints
 
+Part XI covers a wide spectrum of engines and creative tools, from fully open-source Rust-native projects to proprietary cross-platform engines ported to Linux. The table below provides a consolidated comparison of each engine or tool covered in Part XI across the dimensions most relevant to Linux graphics stack integration: rendering API, shader language, Wayland support, open-source status, implementation language, Linux-nativeness, and primary use case. All engines listed below ultimately reach Mesa Vulkan drivers as SPIR-V via `vk_spirv_to_nir()`, regardless of their source language or abstraction layer.
+
+| Engine / Tool | Rendering API (Linux) | Shader language | Wayland (2026) | Open source | Language | Linux-native? | Primary use case |
+|---|---|---|---|---|---|---|---|
+| Bevy 0.15+ | wgpu → Vulkan (primary) | WGSL + naga | Yes (winit Wayland backend) | Yes (MIT/Apache 2.0) | Rust | Yes (designed for Linux) | Game dev; Rust ecosystem |
+| Godot 4.x | Vulkan (RenderingDevice) + OpenGL fallback | GDShader (GLSL-like) → SPIR-V | Yes (DisplayServer Wayland) | Yes (MIT) | C++ / GDScript | Yes | 2D/3D games; indie; education |
+| Blender (EEVEE Next / Cycles) | Vulkan (EEVEE Next); OpenGL (legacy EEVEE); CUDA/HIP/Metal (Cycles) | GLSL / MSL / CUDA / HIP | Yes (GHOST Wayland) | Yes (GPL) | C/C++ | Yes | 3D DCC; rendering; VFX |
+| Unreal Engine 5 | Vulkan RHI (primary on Linux) | HLSL (compiled to SPIR-V via DXC) | Partial (experimental) | No (Source Available) | C++ | Ported (macOS/Windows primary) | AAA games; arch viz; simulation |
+| Unity 6 | Vulkan (primary) | HLSL (ShaderLab) | Partial | No (proprietary) | C# / C++ | Ported | Cross-platform games; XR |
+| Filament (Google) | Vulkan + OpenGL ES | GLSL (Filament material language) | Yes (via EGL) | Yes (Apache 2.0) | C++ | Yes (designed cross-platform) | Mobile/desktop PBR rendering; Android primary |
+| bgfx | Vulkan + OpenGL + Metal + DX | GLSL/HLSL → shaderc | Yes (via SDL/GLFW) | Yes (BSD) | C++ | Yes | Cross-platform abstraction; retro/indie |
+
 ### Why These Are Addressed Briefly
 
 Unreal Engine 5 and Unity are the two most widely deployed game engines on Linux, and they are significant Mesa Vulkan clients — their workloads are visible in Mesa CI test suites and their RADV-specific bug reports appear regularly in Mesa's GitLab tracker. The reason they receive a section rather than a full chapter is that their rendering internals on Linux are not auditable at the source level. Claims about their architecture must be anchored to public documentation, conference talks, and in UE5's case the EULA-restricted source release. Neither engine permits the level of code-path tracing that Bevy, Godot, or Blender enable.
