@@ -23,22 +23,22 @@ This chapter covers display colour calibration on Linux: why uncalibrated panels
 
 ## 1. The Calibration Problem
 
-Every display panel leaves the factory with measurable deviations from any colour standard. White-point drift, gamma curve non-linearity, and primary chromaticity errors compound: two panels of the same model can produce visibly different colours for identical RGB values. For photography post-processing, print production, medical imaging, and any workflow where colour accuracy matters, this is unacceptable.
+Every display panel leaves the factory with measurable deviations from any colour standard. White-point drift, gamma curve non-linearity, and primary chromaticity errors compound: two panels of the same model can produce visibly different colours for identical **RGB** values. For photography post-processing, print production, medical imaging, and any workflow where colour accuracy matters, this is unacceptable.
 
 **Calibration vs. profiling.** These terms are related but distinct:
 
-- *Calibration* adjusts the display's hardware or software response to reach a target state — typically D65 white point, 2.2 gamma, and 80–120 cd/m² luminance. Calibration is done once and encodes the corrections in a 1D LUT loaded into the GPU's gamma hardware.
-- *Profiling* (characterisation) measures the calibrated display's remaining deviations from a standard colour space and records them in an ICC profile. Software then uses the profile to transform colours before they reach the display.
+- *Calibration* adjusts the display's hardware or software response to reach a target state — typically **D65** white point, 2.2 gamma, and 80–120 cd/m² luminance. Calibration is done once and encodes the corrections in a 1D **LUT** loaded into the GPU's gamma hardware.
+- *Profiling* (characterisation) measures the calibrated display's remaining deviations from a standard colour space and records them in an **ICC** profile. Software then uses the profile to transform colours before they reach the display.
 
-The two operations are complementary and are usually performed together by tools like ArgyllCMS/DisplayCAL.
+The two operations are complementary and are usually performed together by tools like **ArgyllCMS**/**DisplayCAL**.
 
-**Colorimetry and the ICC profile connection to KMS.** All modern GPUs expose a per-CRTC gamma LUT through the KMS (Kernel Mode Setting) API as the `GAMMA_LUT` CRTC property [Source: KMS CRTC colour properties](https://www.kernel.org/doc/html/latest/gpu/drm-kms.html). The colour pipeline in the kernel (Ch3) exposes three post-blending stages in order:
+**Colorimetry and the ICC profile connection to KMS.** All modern GPUs expose a per-**CRTC** gamma **LUT** through the **KMS** (Kernel Mode Setting) **API** as the **GAMMA_LUT** **CRTC** property [Source: KMS CRTC colour properties](https://www.kernel.org/doc/html/latest/gpu/drm-kms.html). The colour pipeline in the kernel (Ch3) exposes three post-blending stages in order:
 
 ```
 framebuffer → DEGAMMA_LUT → CTM (3×3 matrix) → GAMMA_LUT → display
 ```
 
-The `DEGAMMA_LUT` converts framebuffer values from the display's native gamma to linear light. The `CTM` (Colour Transformation Matrix) maps between colour primaries — e.g., from the display's native gamut to sRGB or BT.2020. The `GAMMA_LUT` converts from linear back to the display's native tone curve, applying any calibration corrections.
+The **DEGAMMA_LUT** converts framebuffer values from the display's native gamma to linear light. The **CTM** (Colour Transformation Matrix) maps between colour primaries — e.g., from the display's native gamut to **sRGB** or **BT.2020**. The **GAMMA_LUT** converts from linear back to the display's native tone curve, applying any calibration corrections.
 
 ```mermaid
 graph LR
@@ -48,7 +48,23 @@ graph LR
     GL --> D["display"]
 ```
 
-Calibration tools load the VCGT tag from the active ICC profile into `GAMMA_LUT`. Profile-aware applications apply the ICC characterisation matrix in software before handing pixels to the compositor. The compositor may additionally apply `CTM` for wide-gamut or HDR outputs. These interactions are managed by the `colord` daemon and the compositor.
+Calibration tools load the **VCGT** tag from the active **ICC** profile into **GAMMA_LUT**. Profile-aware applications apply the **ICC** characterisation matrix in software before handing pixels to the compositor. The compositor may additionally apply **CTM** for wide-gamut or **HDR** outputs. These interactions are managed by the **colord** daemon and the compositor.
+
+**ICC profile format.** Chapter 2 covers the binary structure of **ICC** profiles as defined in **ICC.1:2022**: the 128-byte header, tag table, and tagged data elements. The two principal display profile types are matrix + **TRC** (Tone Reproduction Curve) profiles — which encode per-channel tone curves plus a 3×3 colourimetry matrix mapping linearised **RGB** to the **PCS** (**CIE XYZ** at **D50**) — and multidimensional **LUT** profiles using **A2B0**/**B2A0** tags for more complex gamut mapping. Chromatic adaptation between **D65** and **D50** illuminants uses the **Bradford CAT** (Chromatic Adaptation Transform) mandated by **ICC v4**. The **VCGT** private tag (signature `0x76636774`) stores the per-channel 1D gamma correction curves that must be loaded into the GPU's hardware gamma ramp.
+
+**The colord daemon.** The **colord** daemon is a **D-Bus** system service (well-known name **org.freedesktop.ColorManager**) that maintains a persistent, system-wide registry of colour devices and their associated **ICC** profiles in two **SQLite** databases (**mapping.db** and **storage.db** under **/var/lib/colord/**). Its **D-Bus** object model exposes **Manager**, **Device**, and **Profile** interfaces. Device-to-profile associations are matched via **EDID**-derived device IDs and managed at the command line with the **colormgr** tool. The **libcolord** **GObject**-based C library provides a high-level **API** (**CdClient**, **CdDevice**, **CdProfile**) for compositor and desktop code. Automatic profile assignment via **udev** includes generating fallback profiles from **EDID** chromaticity data.
+
+**VCGT loading.** Chapter 4 details how the **gsd-color** plugin within **gnome-settings-daemon** reads the **VCGT** tag from the active **ICC** file using **lcms2** (**cmsReadTag()**, **cmsSigVcgtTag**) and programs the hardware gamma ramp via **GAMMA_LUT** using **DRM** atomic commit (**drmModeAtomicAddProperty()**, **drmModeAtomicCommit()**). It covers **logind** interaction for seat-switch VCGT reload, **GAMMA_LUT_SIZE** depth resolution differences across hardware (256 for legacy, 1024 for **Intel i915**, 4096 for **AMD**/**NVIDIA**), and the inherent limitations of 1D **VCGT** correction versus full 3D **LUT** profiles.
+
+**Measurement workflow.** Chapter 5 describes the full **ArgyllCMS** five-step calibration and profiling pipeline — **dispcal** (calibration), **targen** (patch generation), **dispread** (measurement), **colprof** (profile building), and **colormgr** (installation) — along with supported colorimeters (**X-Rite i1Display Pro**, **Datacolor Spyder X**, **X-Rite i1Pro 2**) and the **CGATS**-format **.ti3** measurement file. **DisplayCAL** wraps these steps in a **GUI** and provides a `displaycal-profile-loader` background process for VCGT reloading.
+
+**Calibration-to-compositor pipeline.** Chapter 6 traces the full pipeline from **ICC** profile in **colord** through the **D-Bus** **ProfileAdded** signal to **gsd-color**, which simultaneously programs **GAMMA_LUT** via **DRM** atomic commit and delivers the **ICC** profile to the compositor via the **wp_color_management_v1** **Wayland** protocol. The **wp_image_description_creator_icc_v1** interface accepts an **ICC** file descriptor and creates a **wp_image_description_v1** object; compositors such as **Mutter** and **KWin** then apply per-output colour transforms using **KMS** **CTM** and plane shaper **LUT**s.
+
+**Desktop environment integration.** Chapter 7 covers the **GNOME Color Manager** (**gnome-color-manager**), the **Colour** panel in **GNOME Settings**, and per-**CRTC** gamma programming by **gsd-color**. Multi-monitor configurations use per-output **colord** device records; **X11** applications retrieve display profiles via the **_ICC_PROFILE** **X11** atom. **KDE Plasma**'s colour management is provided by **colord-kde** (**colord-kded**), which bridges **KScreen** with **colord** and provides the **Colour Correction** panel in **KDE System Settings**.
+
+**Night light and blue-light reduction.** Chapter 8 examines how tools such as **gammastep**, **wlsunset**, and **redshift** shift colour temperature after sunset by writing a warm gamma **LUT** via the **wlr-gamma-control-unstable-v1** protocol (**zwlr_gamma_control_v1.set_gamma()**) on **wlroots**-based compositors (**Sway**, **Hyprland**). On **GNOME**, night light is handled inside **gsd-color**, which composes the **VCGT** tone curves with a blackbody temperature ramp (**cd_color_get_blackbody_rgb_full()**) in a single **DRM** atomic write, avoiding the last-writer-wins conflict that affects wlroots compositors.
+
+**HDR calibration.** Chapter 9 addresses the distinct challenges of **HDR** display characterisation: **MaxCLL** and **MaxFALL** metadata (**CTA-861.3** / **SMPTE ST.2086**), **BT.2020** and **Display P3** colour primaries, the **ST.2084 PQ** (Perceptual Quantizer) **EOTF**, and **HLG**. It covers the current gaps in **ICC v4** and **colord** for **HDR** (no **PQ EOTF** support; no built-in **HDR** profiling workflow), the **iccMAX** (version 5) format additions, and how **KWin Plasma 6** reads **HDR** capabilities from the **EDID** HDR Static Metadata Data Block via the **HDR_OUTPUT_METADATA** **DRM** connector property and the **hdr_output_metadata** struct (defined in **include/uapi/linux/hdmi.h**), using **wp_color_management_v1** named transfer functions (**WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ**, **WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_HLG**) as the more mature **HDR** integration path on **Wayland**.
 
 ---
 

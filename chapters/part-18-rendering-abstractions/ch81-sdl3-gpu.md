@@ -23,20 +23,20 @@
 
 ## 1. SDL3 and the GPU API: Filling the Gap
 
-The modern GPU API landscape offers developers two unpleasant extremes. At one end sit raw Vulkan, Direct3D 12, and Metal: maximally expressive, maximally verbose. A minimal Vulkan triangle demonstration requires roughly 800 lines of boilerplate covering instance creation, physical device enumeration, logical device setup, queue families, command pool allocation, render passes, framebuffers, descriptor set layouts, pipeline layout, the pipeline itself, and synchronization primitives. At the other end sit full game engines such as Unity and Unreal: they absorb all GPU detail but impose their own scene graph, scripting system, and asset pipeline, making them unsuitable for tools, research prototypes, or games with unusual architectures.
+The modern GPU API landscape offers developers two unpleasant extremes. At one end sit raw **Vulkan**, **Direct3D 12**, and **Metal**: maximally expressive, maximally verbose. A minimal **Vulkan** triangle demonstration requires roughly 800 lines of boilerplate covering instance creation, physical device enumeration, logical device setup, queue families, command pool allocation, render passes, framebuffers, descriptor set layouts, pipeline layout, the pipeline itself, and synchronization primitives. At the other end sit full game engines such as Unity and Unreal: they absorb all GPU detail but impose their own scene graph, scripting system, and asset pipeline, making them unsuitable for tools, research prototypes, or games with unusual architectures.
 
-Between these poles there is a genuine gap: developers who want explicit command buffers—the ability to record GPU work in advance, overlap CPU and GPU, control upload timing, and drive compute workloads—but who do not want to write 200 lines of Vulkan to draw a texture. Existing third-party abstractions such as bgfx (see Chapter 84) and sokol_gfx fill part of this space, but none is integrated into a cross-platform windowing and input library that also handles audio, file I/O, and console ports.
+Between these poles there is a genuine gap: developers who want explicit command buffers—the ability to record GPU work in advance, overlap CPU and GPU, control upload timing, and drive compute workloads—but who do not want to write 200 lines of **Vulkan** to draw a texture. Existing third-party abstractions such as **bgfx** (see Chapter 84) and sokol_gfx fill part of this space, but none is integrated into a cross-platform windowing and input library that also handles audio, file I/O, and console ports.
 
-SDL3, with its new GPU API (`SDL_gpu.h`), fills this gap by adding a first-party, metal-inspired GPU layer directly to SDL. The history of the API traces to Ryan Gordon (icculus) and the FNA runtime team, who had already built a similar abstraction for the FNA/MoonWorks ecosystem. Their implementation was donated and extended, entering the SDL3 main branch in September 2024. SDL 3.2.0, the first stable release including SDL_GPU, shipped in January 2025. [Source: Hacker News discussion on SDL3 GPU merge](https://news.ycombinator.com/item?id=41396260)
+**SDL3**, with its new GPU API (**`SDL_gpu.h`**), fills this gap by adding a first-party, **Metal**-inspired GPU layer directly to **SDL**. The history of the API traces to Ryan Gordon (icculus) and the **FNA** runtime team, who had already built a similar abstraction for the **FNA**/**MoonWorks** ecosystem. Their implementation was donated and extended, entering the **SDL3** main branch in September 2024. **SDL** 3.2.0, the first stable release including **SDL_GPU**, shipped in January 2025. [Source: Hacker News discussion on SDL3 GPU merge](https://news.ycombinator.com/item?id=41396260)
 
 ### Conceptual Position
 
-SDL_GPU is a *thin wrapper* around the native GPU API on each platform:
+**SDL_GPU** is a *thin wrapper* around the native GPU API on each platform:
 
-- **Linux/BSD** → Vulkan (the only backend available on Linux)
-- **Windows** → Vulkan or Direct3D 12
-- **macOS/iOS** → Metal
-- **Console platforms** → proprietary backends via private SDL forks
+- **Linux/BSD** → **Vulkan** (the only backend available on Linux)
+- **Windows** → **Vulkan** or **Direct3D 12**
+- **macOS/iOS** → **Metal**
+- **Console platforms** → proprietary backends via private **SDL** forks
 
 ```mermaid
 graph TD
@@ -65,32 +65,34 @@ graph TD
     VK --> NVprop
 ```
 
-The API surface is inspired by Metal rather than Vulkan: resources are created once and referenced by opaque handles; command buffers are acquired, recorded, and submitted in one sequence; descriptor sets do not exist; the shader-resource binding layout is declared at pipeline-creation time via counts rather than layout objects. [Source: SDL3 GPU API header](https://github.com/libsdl-org/SDL/blob/release-3.2.14/include/SDL3/SDL_gpu.h)
+The API surface is inspired by **Metal** rather than **Vulkan**: resources are created once and referenced by opaque handles; command buffers are acquired, recorded, and submitted in one sequence; descriptor sets do not exist; the shader-resource binding layout is declared at pipeline-creation time via counts rather than layout objects. [Source: SDL3 GPU API header](https://github.com/libsdl-org/SDL/blob/release-3.2.14/include/SDL3/SDL_gpu.h)
 
 ### Comparison to WebGPU
 
-WebGPU (Chapter 40 discusses wgpu, which implements the same specification) pursues similar goals from a different direction. Both APIs hide Vulkan's descriptor pool and render-pass machinery. The key differences:
+**WebGPU** (Chapter 40 discusses **wgpu**, which implements the same specification) pursues similar goals from a different direction. Both APIs hide **Vulkan**'s descriptor pool and render-pass machinery. The key differences:
 
-- WebGPU is specified by a W3C working group targeting browsers and Wasm; SDL_GPU is specified by SDL maintainers targeting native applications and consoles.
-- WebGPU requires WGSL shaders; SDL_GPU accepts SPIR-V, DXBC/DXIL, MSL, and pre-compiled Metallib, letting developers re-use existing shader pipelines.
-- WebGPU supports the full binding-group model; SDL_GPU uses a push-style uniform mechanism that avoids uniform buffer objects entirely for small constant data.
-- SDL_GPU reaches console platforms that WebGPU will never target.
+- **WebGPU** is specified by a W3C working group targeting browsers and **Wasm**; **SDL_GPU** is specified by **SDL** maintainers targeting native applications and consoles.
+- **WebGPU** requires **WGSL** shaders; **SDL_GPU** accepts **SPIR-V**, **DXBC**/**DXIL**, **MSL**, and pre-compiled **Metallib**, letting developers re-use existing shader pipelines.
+- **WebGPU** supports the full binding-group model; **SDL_GPU** uses a push-style uniform mechanism that avoids **UBO** bindings entirely for small constant data.
+- **SDL_GPU** reaches console platforms that **WebGPU** will never target.
 
-For Linux desktop application developers, SDL_GPU is the easiest path from "SDL2 + OpenGL" to an explicit command-buffer GPU workflow.
+For Linux desktop application developers, **SDL_GPU** is the easiest path from "**SDL2** + **OpenGL**" to an explicit command-buffer GPU workflow.
 
 ### What SDL_GPU Does Not Provide
 
-Being explicit about the API's scope is as important as listing its capabilities. SDL_GPU deliberately omits:
+Being explicit about the API's scope is as important as listing its capabilities. **SDL_GPU** deliberately omits:
 
-- **Bindless resources:** No support for `VK_EXT_descriptor_indexing` or descriptor arrays. Every texture and buffer must be bound at a specific slot.
-- **Ray tracing:** No support for `VK_KHR_ray_tracing_pipeline`. This is a first-class Vulkan feature unavailable through any current SDL_GPU backend.
-- **Mesh shaders:** No support for `VK_EXT_mesh_shader` or amplification shaders.
-- **Multi-queue workloads:** SDL_GPU presents a single implicit queue. Applications requiring asynchronous compute queues or transfer queues must use raw Vulkan.
-- **Explicit barriers:** SDL_GPU inserts barriers automatically based on the pass model (copy → compute → render). Developers who need precise barrier placement for performance optimization must step outside SDL_GPU.
-- **Subpass and input attachments:** SDL_GPU render passes have no equivalent to Vulkan subpasses, which are required for some tile-based deferred rendering techniques.
+- **Bindless resources:** No support for **`VK_EXT_descriptor_indexing`** or descriptor arrays. Every texture and buffer must be bound at a specific slot.
+- **Ray tracing:** No support for **`VK_KHR_ray_tracing_pipeline`**. This is a first-class **Vulkan** feature unavailable through any current **SDL_GPU** backend.
+- **Mesh shaders:** No support for **`VK_EXT_mesh_shader`** or amplification shaders.
+- **Multi-queue workloads:** **SDL_GPU** presents a single implicit queue. Applications requiring asynchronous compute queues or transfer queues must use raw **Vulkan**.
+- **Explicit barriers:** **SDL_GPU** inserts barriers automatically based on the pass model (copy → compute → render). Developers who need precise barrier placement for performance optimization must step outside **SDL_GPU**.
+- **Subpass and input attachments:** **SDL_GPU** render passes have no equivalent to **Vulkan** subpasses, which are required for some **TBDR** tile-based deferred rendering techniques.
 - **Query objects:** Occlusion queries, timestamp queries, and pipeline statistics queries are not exposed.
 
-This conservative scope is a deliberate design choice: the API targets the 80% of GPU usage that can be expressed portably, and does so with dramatically reduced verbosity. Developers who exhaust SDL_GPU's feature set have usually gained enough understanding of the GPU model to move to raw Vulkan productively.
+This conservative scope is a deliberate design choice: the API targets the 80% of GPU usage that can be expressed portably, and does so with dramatically reduced verbosity. Developers who exhaust **SDL_GPU**'s feature set have usually gained enough understanding of the GPU model to move to raw **Vulkan** productively.
+
+The remaining sections of this chapter walk through the full **SDL_GPU** workflow in depth. Device creation and backend selection via **`SDL_CreateGPUDevice`** and **`SDL_ClaimWindowForGPUDevice`** are covered in Section 2, including the **`SDL_GPUSupportsShaderFormats`** pre-check and the extended **`SDL_CreateGPUDeviceWithProperties`** path. Section 3 covers shaders and pipeline state: compiling **SPIR-V** bytecode into **`SDL_GPUShader`** objects via **`SDL_GPUShaderCreateInfo`**, assembling a **`SDL_GPUGraphicsPipeline`** from **`SDL_GPUVertexInputState`**, **`SDL_GPURasterizerState`**, **`SDL_GPUMultisampleState`**, **`SDL_GPUDepthStencilState`**, and **`SDL_GPUGraphicsPipelineTargetInfo`**; configuring alpha blending via **`SDL_GPUColorTargetBlendState`**; depth testing with **`SDL_GPU_TEXTUREFORMAT_D32_FLOAT`**; and pushing per-draw constants with **`SDL_PushGPUVertexUniformData`** and **`SDL_PushGPUFragmentUniformData`** instead of descriptor-set-bound **UBO**s. Section 4 addresses **`SDL_GPUTexture`** and **`SDL_GPUSampler`** creation and the staging-buffer upload workflow via **`SDL_GPUTransferBuffer`** and **`SDL_GPUCopyPass`**. Section 5 extends the same patterns to **`SDL_GPUBuffer`** objects for vertex data, index data (**`SDL_GPU_BUFFERUSAGE_INDEX`**), and **GPU**-driven indirect draw (**`SDL_GPU_BUFFERUSAGE_INDIRECT`**, **`SDL_GPUIndirectDrawCommand`**). Section 6 details the command buffer lifecycle (**`SDL_AcquireGPUCommandBuffer`**, **`SDL_SubmitGPUCommandBuffer`**, **`SDL_CancelGPUCommandBuffer`**), render pass recording with **`SDL_BeginGPURenderPass`** and **`SDL_GPUColorTargetInfo`**, viewport and scissor control via **`SDL_SetGPUViewport`** and **`SDL_SetGPUScissor`**, and GPU debug markers (**`SDL_PushGPUDebugGroup`**, **`SDL_InsertGPUDebugLabel`**) that integrate with tools such as **RenderDoc** and **Nsight** via **`VK_EXT_debug_utils`**. Section 7 covers compute passes: creating a **`SDL_GPUComputePipeline`** from a compute **SPIR-V** shader, dispatching work with **`SDL_DispatchGPUCompute`**, and mixing compute and graphics passes within a single command buffer with automatic pipeline barriers. Section 8 discusses swapchain management via **`SDL_WaitAndAcquireGPUSwapchainTexture`** and presentation modes (**`SDL_GPU_PRESENTMODE_VSYNC`**, **`SDL_GPU_PRESENTMODE_MAILBOX`**, **`SDL_GPU_PRESENTMODE_IMMEDIATE`**), including **HDR** output via **`SDL_GPUSwapchainComposition`** (**`SDL_GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084`**, **`SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR`**). Section 9 explains resource lifetime and cleanup: the **`SDL_ReleaseGPU*`** functions, deferred destruction semantics, the `cycle` boolean for hazard-free frequent updates, and explicit **CPU**–**GPU** synchronization via **`SDL_GPUFence`** and **`SDL_WaitForGPUFences`**. Section 10 provides a structured comparison of **SDL_GPU** against raw **Vulkan** and **WebGPU**/**wgpu** across boilerplate, portability, shader formats, descriptor models, memory management, and advanced feature support. Finally, Section 11 covers Linux-specific behavior: **Vulkan** as the sole backend, surface creation choosing between **`VK_KHR_wayland_surface`** and **`VK_KHR_xlib_surface`** based on the display server, the underlying **Mesa** drivers (**RADV**, **ANV**, **NVK**) and NVIDIA proprietary, enabling **`VK_LAYER_KHRONOS_validation`** validation layers via the `debug_mode` flag, the fact that **GBM** and **EGL** are not used by the **Vulkan** backend, relevant environment variables (**`SDL_VIDEODRIVER`**, **`SDL_GPU_DRIVER`**, **`VK_INSTANCE_LAYERS`**, **`VK_ICD_FILENAMES`**), and the status of the in-progress **WebGPU**/**Emscripten** community backend.
 
 ---
 

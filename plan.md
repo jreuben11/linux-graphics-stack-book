@@ -133,6 +133,17 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 91: MLIR and the Emerging GPU Compiler Infrastructure](#chapter-91-mlir-and-the-emerging-gpu-compiler-infrastructure) *(Part IV)*
   - [Chapter 92: The Raspberry Pi GPU Stack — VideoCore and V3D](#chapter-92-the-raspberry-pi-gpu-stack--videocore-and-v3d) *(Part II)*
   - [Chapter 93: GPU Performance Analysis Methodology](#chapter-93-gpu-performance-analysis-methodology) *(Part IX)*
+- **Part XXI — Platform, Legacy, and History**
+  - [Chapter 95: X11/Xorg Architecture and the DRI Legacy Stack](#chapter-95-x11xorg-architecture-and-the-dri-legacy-stack)
+  - [Chapter 99: Automotive and Embedded Linux Graphics](#chapter-99-automotive-and-embedded-linux-graphics)
+  - [Chapter 103: The Linux Graphics Stack: History and Design Philosophy](#chapter-103-the-linux-graphics-stack-history-and-design-philosophy)
+- **Part XXI additions to existing parts**
+  - [Chapter 96: libcamera and the Linux Camera Stack](#chapter-96-libcamera-and-the-linux-camera-stack) *(Part VII)*
+  - [Chapter 97: Unreal Engine 5 on Linux](#chapter-97-unreal-engine-5-on-linux) *(Part XI)*
+  - [Chapter 98: WebAssembly and WebGPU as a Deployment Target](#chapter-98-webassembly-and-webgpu-as-a-deployment-target) *(Part X)*
+  - [Chapter 100: etnaviv: The Vivante GPU Open Driver](#chapter-100-etnaviv-the-vivante-gpu-open-driver) *(Part II)*
+  - [Chapter 101: Color Science and the ICC Profile Pipeline](#chapter-101-color-science-and-the-icc-profile-pipeline) *(Part VI)*
+  - [Chapter 102: The DRM GPU Scheduler and Multi-Process Fairness](#chapter-102-the-drm-gpu-scheduler-and-multi-process-fairness) *(Part I)*
 
 ---
 
@@ -1421,4 +1432,131 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 
 ---
 
-*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
+## Part XXI — Platform, Legacy, and History
+
+### Chapter 95: X11/Xorg Architecture and the DRI Legacy Stack
+
+- Why X11 matters: still the default on many enterprise Linux systems; XWayland bridges Wayland compositors to X11 clients; understanding the legacy explains Wayland's design choices
+- X11 architecture: client-server model; display string (`DISPLAY=:0`); X protocol over Unix socket; request/reply/event model; atoms and properties; window hierarchy; XCB vs Xlib
+- XServer extension model: core protocol + GLX + Composite + Damage + Fixes + Present + RANDR + RENDER; how extensions are negotiated and loaded
+- GLX: binding OpenGL to X11 windows; `glXChooseVisual`, `glXCreateContext`, `glXMakeCurrent`, `glXSwapBuffers`; GLX 1.3 FBConfigs; GLX extensions (GLX_ARB_create_context, GLX_EXT_swap_control)
+- AIGLX (Accelerated Indirect GLX): how DRI-based hardware acceleration was brought to compositing managers; `__DRI_DRIVER` env var; `glXGetProcAddressARB`; Compiz as the canonical AIGLX consumer
+- DRI1 → DRI2 → DRI3 evolution: DRI1 (shared memory kernel buffer, `drmMap`); DRI2 (buffer passing by name, races with Compiz); DRI3 (buffer passing by fd, `DRI3Open`, `DRI3PixmapFromBuffer`); why each transition was necessary
+- The Composite extension: `CompositeRedirectSubwindows`; off-screen backing store per window; how compositors (Compiz, Mutter-X11, KWin-X11) redirect and composite windows with OpenGL
+- XRANDR: display configuration; `RRSetCrtcConfig`, `RRCreateMode`; multi-monitor without restart; connection to KMS via `xf86-video-modesetting` driver
+- The Present extension: `XPresentPixmap`; synchronised buffer swap with VBLANK; MSC (media stream counter); how XWayland uses Present to deliver frames to the Wayland compositor
+- XWayland bridge: rootless mode; `_XWAYLAND_MAY_GRAB_KEYBOARD`; X11 clipboard ↔ Wayland clipboard; HiDPI scaling; how DRI3 buffers flow from Mesa through XWayland to a `wl_buffer` and into the compositor; explicit sync handshake (`linux-drm-syncobj-v1`)
+- Security comparison: X11 (any client can read any window's contents, keylog globally); Wayland (per-surface isolation, no global input capture without portal)
+- **Integrations**: Ch1 (DRM — DRI3 uses DRM render nodes), Ch4 (GBM — DRI3 buffers are GBM BOs), Ch20 (Wayland protocol — XWayland is a Wayland client), Ch23 (Ch23 covers XWayland at the application level; this chapter covers the X11 side), Ch30 (debugging — `LIBGL_DEBUG`, `LIBGLX_DEBUG`, `xlsatoms`, `xdpyinfo`)
+
+### Chapter 99: Automotive and Embedded Linux Graphics
+
+- Automotive Linux landscape: AGL (Automotive Grade Linux), GENIVI Alliance history, Android Automotive vs Linux IVI; regulatory requirements (functional safety ISO 26262, ASPICE)
+- SoC platforms: NXP i.MX8 (etnaviv/Vivante GPU), Renesas R-Car H3/V3H (SGX544), Qualcomm SA8155P (Adreno 640), TI TDA4VM (PowerVR), Texas Instruments J721E; the DRM/KMS driver landscape per SoC
+- AGL UCB (Unified Code Base): Yocto-based; `meta-agl`, `meta-agl-demo`; AFB (Application Framework Binder); WindowManager based on wlroots; `agl-compositor` (wlroots-based); IVI shell protocol (`ivi-application`, `ivi-layout`)
+- Weston on embedded: minimal Wayland compositor; `weston.ini`; DRM backend with single-CRTC output; `weston-terminal`; Panel plugin; headless backend for CI; EGL/GLES2 rendering
+- cage: single-application Wayland compositor (`cage -s -- my_app`); use case for digital instrument clusters and HMI; source at https://github.com/cage-kiosk/cage
+- Qt for Automotive: Qt IVI (In-Vehicle Infotainment) module; `QtApplicationManager`; multi-process (Wayland) vs single-process model; `QML` cluster rendering at 60 FPS; Qt Safe Renderer for ASIL-B functional safety displays; integration with `agl-compositor`
+- Yocto/Buildroot for embedded graphics: `meta-openembedded/meta-oe` OpenGL/Wayland layers; `IMAGE_INSTALL += weston mesa wayland`; GPU firmware packaging; sysroot cross-compilation; `devtool` for driver iteration
+- GPU driver bring-up on new SoCs: device tree nodes (`drm` compatible string, `reg`, `interrupts`, `clocks`, `power-domains`); `simple-framebuffer` as fallback; DRM driver registration (`drm_dev_register`); IOMMU integration for secure GPU memory; bring-up debug via `drm_info`
+- Display bring-up: LVDS, MIPI DSI, HDMI; `drm_panel` for display panels; `panel-simple` driver; EDID via DDC I²C; DSI bridge chips (TC358764, SN65DSI86)
+- Remote rendering: cluster GPU rendering frame forwarded over SOME/IP or DoIP to instrument cluster SoC; `GStreamer` pipeline for H.264 over Ethernet in automotive cabin networks
+- **Integrations**: Ch1 (DRM — platform drivers), Ch2 (KMS atomic — display bring-up), Ch21 (wlroots — agl-compositor), Ch39 (Qt/GTK — Qt IVI), Ch57 (FFmpeg — camera + rear-view video), Ch90 (Panfrost/Lima — ARM Mali in i.MX8), Ch100 (etnaviv — Vivante in i.MX6/8), Ch92 (Raspberry Pi — comparable embedded bring-up)
+
+### Chapter 103: The Linux Graphics Stack: History and Design Philosophy
+
+- Origins: XFree86 in the early 1990s; the DRI project (1998) — Precision Insight, VA Linux, SGI; Jens Owen and the original `dri.h`; Brian Paul's Mesa (1993, public domain from day one)
+- The DRI architecture debate: why client-side rendering won over server-side (latency, complexity, OpenGL state machine mismatch with X11 protocol)
+- Mesa milestones: OpenGL 1.0 software renderer (1993) → Glide (3dfx Voodoo, 1997) → DRI hardware acceleration (1998) → Gallium3D (Keith Whitwell, Zack Rusin, 2008) → NIR (Connor Abbott, 2014) → ACO (valve-funded, 2019)
+- The kernel DRM story: agpgart (1999) → early `drm.h` (2000) → KMS (Jesse Barnes, Keith Packard, 2008) → GEM (Intel, 2008) → TTM (Tungsten Graphics, 2007) → DMA-BUF (Sumit Semwal, 2012) → atomic modesetting (2015)
+- Nouveau: Ian Romanick's initial attempt (2005), Martin Peres, Ben Skeggs; the GSP-RM transition (2022); NVK (Faith Ekstrand, 2022) as the vindication of a 17-year reverse engineering effort
+- The Wayland story: Kristian Høgsberg's frustration with X11 compositor bugs; `wayland-0.1` (2008); Weston reference compositor; the long adoption: Ubuntu (2017), Fedora (2017), GNOME (2017), KDE (2021); Mir's death; why Wayland's security model won
+- AMD's open source pivot: catalyst → fglrx → AMDGPU open (2016); RADV (Bas Nieuwenhuizen, Dave Airlie, 2016); ACO (Valve, 2019); RADV beating AMD's own driver in benchmarks by 2020
+- NVIDIA's open source journey: decades of "never", nvidia-open (2022) — GSP-only, not truly open; NVK (truly open, Mesa, 2022); the ongoing tension between open and proprietary
+- ARM GPU openness: reverse engineering Mali (Panfrost team); Apple Silicon (Asahi team); the constraint of no public ISA documentation; how reverse engineering produced production-quality drivers
+- Design philosophy recurring themes: separation of display and render (DRM primary vs render nodes); explicit synchronisation (from implicit fences to DRM syncobj); buffer sharing (from shared memory to DMA-BUF); layering (kernel → libDRM → Mesa → app, with no layer skipping)
+- The road ahead: Rust in the kernel (`rust-gpu`, `nova`); AI/ML workloads and the accel subsystem; display colour pipelines; the next 10 years
+- **Integrations**: all chapters — this is the narrative thread connecting the entire book
+
+---
+
+### Chapter 96: libcamera and the Linux Camera Stack *(Part VII)*
+
+- libcamera's place: the unified camera abstraction above V4L2 and platform-specific ISPs; https://libcamera.org/; replaces the fragmented vendor HAL approach
+- V4L2 media controller framework: `media_device`, media graph (entities, pads, links); `media-ctl --print-topology`; `MEDIA_IOC_SETUP_LINK`; pipeline configuration; sensor → CSI-2 receiver → ISP → memory entities
+- libcamera architecture: `CameraManager` → `Camera` → `CameraConfiguration` → `Request` → `FrameBuffer` → `FrameBufferAllocator`; the event-driven `Request::completed` signal
+- PipelineHandler: per-platform subclass (`RkISP1`, `IPU3`, `RPi`, `Simple`, `VIMC`); pipeline configuration, buffer allocation, request queuing; https://libcamera.org/api-html/classlibcamera_1_1PipelineHandler.html
+- ISP algorithms: `IPAModule` (Image Processing Algorithms); AEC/AGC (auto exposure/gain), AWB (auto white balance), LSC (lens shading correction), CCM (colour correction matrix), gamma; IPA runs as a separate process for security
+- DMA-BUF integration: `FrameBuffer` backed by DMA-BUF fds; zero-copy camera→display via `linux-dmabuf-unstable-v1`; `EGLImage` from DMA-BUF for GL texture import; V4L2 M2M encode via DMA-BUF
+- PipeWire camera integration: `libcamera-apps` via PipeWire; `pw_stream` for camera frames; Wayland `xdg-desktop-portal` camera access; `OBS-Studio` via PipeWire camera source
+- GStreamer integration: `libcamerasrc` element; YUV format handling; `videorate`, `videoconvert`; full pipeline: `libcamerasrc ! video/x-raw,format=NV12 ! videoconvert ! autovideosink`
+- Platform coverage: Raspberry Pi (RkISP1 + Unicam), Intel IPU3/IPU6, RockChip RKISP1, simple pipeline for USB cameras (UVC), Qualcomm Camss; hardware-specific quirks
+- **Integrations**: Ch26 (VA-API — hardware encode of camera output), Ch38 (PipeWire), Ch57 (FFmpeg — libcamerasrc feeds FFmpeg), Ch85 (Android Camera HAL comparison), Ch92 (Raspberry Pi — PipelineHandlerRPi)
+
+### Chapter 97: Unreal Engine 5 on Linux *(Part XI)*
+
+- UE5 Linux support: EpicGames' commitment to Linux as a first-class target; Steam Deck as the key platform; Proton vs native builds; supported GPU tiers
+- RHI (Rendering Hardware Interface): `FRHICommandList`, `FRHICommandListImmediate`; the abstraction over Vulkan, D3D12, Metal; `FVulkanCommandListContext`; `IRHICommandContext` virtual interface; render thread vs RHI thread vs GPU thread
+- Vulkan RHI backend: `FVulkanDevice`, `FVulkanQueue`; descriptor set layout caching (`FVulkanDescriptorSetLayout`); VMA integration for GPU memory; pipeline state object cache; shader compilation (`FVulkanShader`, SPIR-V via DXC); `RHICreateVertexBuffer`, `RHILockBuffer`
+- Nanite virtualized geometry: streaming triangle clusters (128 triangles/cluster); BVH over clusters; software rasterizer for small triangles (Visibility Buffer pass); mesh shader path for large triangles; persistent cull + draw on GPU; `Nanite::FRenderer`; cluster LOD selection; streaming from disk
+- Lumen global illumination: screen-space probe capture; radiance cache (world-space probes); surface cache (albedo + normal per mesh); ray tracing fallback for Lumen reflections; Lumen on Linux: hardware RT on Vulkan (RTX/RDNA2+), software Lumen on all hardware
+- Niagara particle system: GPU simulation via compute shaders; `FNiagaraGPUSystemTick`; particle data as structured buffers; interface to Physics, Audio; Vulkan async compute for particle simulation
+- Shader compilation on Linux: UE5 shader compiler (`ShaderCompileWorker`); HLSL → SPIR-V via DXC (`DxcCreateInstance`); offline shader DDC (Derived Data Cache); Shader Model 6 features on Vulkan via SPIRV-Cross; `r.Vulkan.EnableShaderDebugInfo`
+- Linux packaging: `UnrealPak`, `BuildCookRun`; Steam depot upload; flatpak wrapping for distribution; missing Steam Deck gotchas (Proton vs native, controller input, screen resolution)
+- **Integrations**: Ch16 (Mesa Vulkan common — UE5 submits to RADV/ANV/NVK), Ch18 (RADV — primary GPU driver), Ch24 (Vulkan — RHI submits to VkQueue), Ch56 (ray tracing — Lumen RT), Ch61 (modern Vulkan extensions — mesh shaders, dynamic rendering), Ch77 (shader toolchain — DXC for HLSL→SPIR-V)
+
+### Chapter 98: WebAssembly and WebGPU as a Deployment Target *(Part X)*
+
+- The portability promise: a single codebase targeting Vulkan (native Linux), WebGPU (browser), and Metal (macOS) via `wgpu` (Rust) or Emscripten (C++)
+- WebAssembly fundamentals: linear memory model; WASM binary format (sections, types, functions, exports, imports); WASI for filesystem/networking; SIMD extensions (`v128`); threading via SharedArrayBuffer + Atomics
+- Emscripten → WebGPU: `emcc -sUSE_WEBGPU=1`; `webgpu.h` C API in Emscripten; `emscripten_webgpu_get_device()`; calling sequence: JS `navigator.gpu.requestAdapter()` → C `wgpuAdapterRequestDevice()`; framebuffer via `wgpuSwapChainGetCurrentTextureView()`; shared vertex/fragment WGSL shaders between native and WASM targets
+- wgpu (Rust): `wgpu::Instance`, `wgpu::Adapter`, `wgpu::Device`, `wgpu::RenderPipeline`; backend selection (`Backends::VULKAN` native, `Backends::BROWSER_WEBGPU` in WASM); `wasm-bindgen` + `web-sys` for JS interop; `winit` integration; `cargo build --target wasm32-unknown-unknown --features webgpu`
+- WGSL shaders: syntax; built-in functions; binding model (`@binding`, `@group`); compute shaders in WGSL; how Tint (the WGSL compiler in Dawn) validates and translates to SPIR-V for Vulkan, MSL for Metal, HLSL for D3D12
+- How browser WebGPU maps to Linux Vulkan: Dawn's Vulkan backend (`src/dawn/native/vulkan/`); `VulkanBackend::CreateAdapterFromDevice`; command buffer translation; swapchain via `VkSwapchainKHR`; the performance gap: native Vulkan vs browser WebGPU (typically 5–15% overhead from Dawn + V8 JIT overhead)
+- WASM SIMD for CPU-side work: `wasm_f32x4_add`, `wasm_i32x4_mul`; use alongside WebGPU for mixed CPU/GPU workloads (physics on WASM SIMD, rendering on WebGPU)
+- Use cases: portable GPU tools (shader toy-style live coding, GPU-accelerated image editors), game engines targeting web + desktop (Bevy's WASM backend, Godot Web export), ML inference (ONNX Runtime Web with WebGPU EP)
+- **Integrations**: Ch35 (Dawn/WebGPU — WASM uses the same Dawn backend), Ch40 (Bevy/wgpu — wgpu targets both native Vulkan and WASM WebGPU), Ch41 (Godot — Web export uses WebGPU), Ch61 (SPIR-V/WGSL relation), Ch77 (shader toolchain — Tint is part of the toolchain), Ch91 (MLIR — IREE targets WebAssembly as well as Vulkan)
+
+### Chapter 100: etnaviv: The Vivante GPU Open Driver *(Part II)*
+
+- Vivante GC-series GPU family: GC400 (2D only), GC2000 (OpenGL ES 2.0, shaders), GC7000 (OpenGL ES 3.x, Vulkan-capable); deployment in NXP i.MX6, i.MX8, Marvel ARMADA, Amlogic S905; https://github.com/etnaviv
+- Reverse engineering history: Christian Gmeiner, Lucas Stach (Pengutronix); the `envytools`-inspired approach; early FOSS drivers (2013); mainline kernel merge (2015); https://github.com/etnaviv/etna_viv
+- etnaviv kernel driver (`drivers/gpu/drm/etnaviv/`): `etnaviv_gem` GEM objects (shmem-backed); `etnaviv_cmdbuf` command buffer; `etnaviv_gpu` per-core struct; `etnaviv_sched` (drm_gpu_scheduler); `ETNAVIV_PARAM_*` capabilities query; `DRM_IOCTL_ETNAVIV_GEM_SUBMIT`
+- Vivante ISA: unified shader architecture; vec4 operations; texture sampling; branch/loop; the `ISA_*` instruction encoding; etnaviv compiler translates NIR → Vivante ISA (`etnaviv_compiler.c`)
+- Mesa etnaviv Gallium driver (`src/gallium/drivers/etnaviv/`): `etna_screen`, `etna_context`; TGSI/NIR compiler pipeline; `etna_resource` (tiled vs linear, supertiled); `etna_draw_vbo` → command buffer emit; state tracker state objects (blend, rasterizer, depth-stencil)
+- GC7000 and Vulkan: the `etnaviv` Vulkan driver effort (`src/etnaviv/vulkan/`); GC7000UL in i.MX8MP; conformance status; comparison to Panfrost Vulkan; https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/?label_name=etnaviv
+- i.MX8 deployment: Librem 5 (GC7000Lite, OpenGL ES 3.0 via etnaviv); NXP i.MX8M Plus EVK; Variscite DART-MX8M-PLUS; device tree: `gpu: gpu@38000000 { compatible = "vivante,gc" }`
+- Performance and limitations: no geometry shader support on GC2000; limited MSAA; single-sample shading only; GC7000 performance competitive with Mali-G52 on ES3 workloads
+- Contributing: `dri-devel@lists.freedesktop.org`; Lucas Stach at Pengutronix as main maintainer; CI via Lava with i.MX6Q board; `ETNA_MESA_DEBUG=msgs,dump,compiler`
+- **Integrations**: Ch1 (DRM), Ch5 (Mesa Gallium3D), Ch14 (NIR — etnaviv compiles via NIR), Ch90 (Panfrost/Lima — similar open embedded driver story), Ch99 (Automotive/Embedded — i.MX8 is the reference automotive SoC)
+
+### Chapter 101: Color Science and the ICC Profile Pipeline *(Part VI)*
+
+- Why color science matters: the journey from `(r,g,b)` values in a shader to photons of a specific spectral power distribution leaving a display; each device encodes color differently
+- CIE color spaces: XYZ (device-independent); Lab (perceptually uniform); xy chromaticity diagram; the sRGB primaries and D65 white point; the difference between sRGB and linear sRGB (gamma 2.2 encoding)
+- ICC profiles: structure (128-byte header + tag table + tag data); v2 vs v4 profiles; input/display/output profiles; LUT-based vs matrix-based; `A2B0`/`B2A0` tags; `rXYZ`/`gXYZ`/`bXYZ` + `rTRC`/`gTRC`/`bTRC` for matrix profiles; ICC profile inspection with `iccDump`
+- LittleCMS (`lcms2`): `cmsOpenProfileFromFile`, `cmsCreateTransform`; the colour transform pipeline (input profile → PCS → output profile); rendering intents (perceptual, relative colorimetric, absolute colorimetric, saturation); thread safety; used by GIMP, Krita, Darktable, Inkscape, libvips
+- colord: D-Bus color management daemon; `CdClient`, `CdDevice`, `CdProfile`; device→profile mapping persistence; `cd-sensor` for colorimeter access; automatic ICC profile installation; `colormgr` CLI; https://github.com/hughsie/colord
+- ArgyllCMS and DisplayCAL calibration workflow: `dispcal` for display characterisation; `targen` + `dispread` for measurement target; `colprof` for ICC profile generation; colorimeter vs spectrophotometer (i1Display Pro, ColorMunki, X-Rite i1Pro); `DisplayCAL` GUI wrapping ArgyllCMS; output: `vcgt` tag (Video Card Gamma Table) loaded via `xcalib` or `dispwin`; https://www.argyllcms.com/
+- vcgt and KMS CTM: two mechanisms for applying color correction at the display level; `vcgt` (gamma table, CLUT loaded into GPU RAMDAC); KMS CTM (3×3 matrix applied by the display controller, Ch74); colord's `cd-sensor` can write vcgt via `xcalib` on X11 or via KMS `CTM` property on Wayland
+- Application-level color management: GIMP's color proof pipeline; Krita's `KoColorSpace`; Darktable's `dt_iop_colorout` module; Firefox (Ch52) color managing images via LittleCMS; Chrome's `--force-color-profile`
+- Soft-proofing: simulating how a print will look on screen; CMYK→RGB gamut mapping; out-of-gamut warning; rendering intent comparison; used in prepress workflows
+- HDR color management (connection to Ch74): the BT.2020 primaries and PQ/HLG transfer functions as "ICC-like" profile data; `VK_EXT_swapchain_colorspace`; the Wayland `color-management-v1` protocol's profile concept as ICC-adjacent
+- **Integrations**: Ch2 (KMS CTM property), Ch22 (Mutter/KWin applying ICC via KMS), Ch37 (Skia color management), Ch52 (Firefox LittleCMS), Ch53 (Ch53: Display Calibration and colord — this chapter provides the underlying science), Ch74 (HDR/WCG — spectral extension of ICC concepts)
+
+### Chapter 102: The DRM GPU Scheduler and Multi-Process Fairness *(Part I)*
+
+- Why a GPU scheduler: multiple processes (compositor + apps + hardware video decode) submit GPU work simultaneously; without scheduling, one process can starve others or cause hangs
+- `drm_gpu_scheduler` (`drivers/gpu/drm/scheduler/`): `drm_sched_job`, `drm_sched_entity`, `drm_gpu_scheduler`; FIFO queue per entity; entity → scheduler mapping; `drm_sched_job_init`, `drm_sched_entity_push_job`, `drm_sched_main` kthread
+- Priority classes: `DRM_SCHED_PRIORITY_MIN`, `NORMAL`, `HIGH`, `KERNEL`; how compositors request `HIGH` priority for their render queue; per-entity preemption (where hardware supports it); priority inheritance for fence dependencies
+- The timeline fence model: `drm_syncobj` as GPU-visible fence containers; `drm_syncobj_timeline` for multi-point timelines; how the scheduler waits on input fences and signals output fences; the `drm_sched_fence` → `dma_fence` → `drm_syncobj` chain
+- Multi-queue scheduling: render + async compute + DMA (blit) queues per GPU; `drm_sched_entity` per queue; how AMDGPU exposes compute queues (`amdgpu_ctx_add_fence`); Intel Xe's parallel submission model
+- Timeout and hang detection: `drm_sched_job` timeout (`DRM_SCHED_STOP_TIMEOUT`); `drm_sched_backend_ops::timedout_job` callback; GPU reset flow; `amdgpu_device_gpu_recover`; how the scheduler fences are signalled after reset to unblock waiting userspace
+- Per-process GPU time accounting: `drm_file` statistics; `/proc/pid/fd/` → DRM file; `amdgpu_read_mm_stats` sysfs; GPU time slicing across processes; the compositor's GPU budget vs application GPU budget
+- Connection to Wayland: the compositor's `wl_surface.commit` triggers a Wayland render job; that job's GPU fence controls when the KMS atomic commit can fire; `linux-drm-syncobj-v1` exposes the timeline fence to Wayland clients so client rendering and compositor rendering are properly sequenced
+- Real-world priority inversion: example of an application holding a fence the compositor waits on, blocking scanout; how explicit sync (Ch75) and the scheduler's priority system together prevent this
+- **Integrations**: Ch1 (DRM architecture — scheduler is a core DRM component), Ch3 (DRM syncobj — the fence mechanism the scheduler uses), Ch4 (GPU memory — scheduler manages job lifetimes tied to BO lifetimes), Ch21 (wlroots — compositor queue priority), Ch75 (explicit GPU sync — scheduler timeline fences underpin syncobj)
+
+---
+
+### Section additions to existing chapters (cross-chapter content)

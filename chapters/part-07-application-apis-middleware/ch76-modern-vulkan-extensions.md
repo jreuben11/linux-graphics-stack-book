@@ -21,11 +21,11 @@
 
 ## 1. The Extension Model
 
-Vulkan was deliberately launched in 2016 with a lean core and a principled extension mechanism to allow the API to evolve without breaking backwards compatibility. Understanding how extensions work is essential before examining the individual features that define post-1.2 "modern Vulkan" usage.
+**Vulkan** was deliberately launched in 2016 with a lean core and a principled extension mechanism to allow the API to evolve without breaking backwards compatibility. Understanding how extensions work is essential before examining the individual features that define post-1.2 "modern **Vulkan**" usage.
 
 ### Prefix Taxonomy
 
-Vulkan extensions carry one of three prefixes that encode their provenance and degree of standardisation:
+**Vulkan** extensions carry one of three prefixes that encode their provenance and degree of standardisation:
 
 ```mermaid
 graph LR
@@ -40,13 +40,13 @@ graph LR
     KHR -- "promoted" --> Core
 ```
 
-- **`VK_KHR_`** — Khronos-ratified extensions. These undergo an IP rights review by the Khronos Board of Promoters and must be approved by vote. KHR extensions are the canonical candidates for eventual promotion to a core Vulkan version.
-- **`VK_EXT_`** — Multi-vendor extensions agreed upon by two or more IHVs but not necessarily ratified (though Khronos has begun retroactively ratifying selected EXT extensions). EXT extensions often reach a broader implementation base than vendor-specific work.
-- **`VK_NV_`, `VK_AMD_`, `VK_QCOM_`, etc.** — Single-vendor extensions that expose proprietary hardware features. They may later inspire a multi-vendor EXT or be superseded by KHR standardisation. `VK_NV_cooperative_matrix` is a canonical example: the NV extension shipped first on Turing GPUs, then drove the KHR standardisation effort that produced `VK_KHR_cooperative_matrix`.
+- **`VK_KHR_`** — **Khronos**-ratified extensions. These undergo an IP rights review by the **Khronos** Board of Promoters and must be approved by vote. **KHR** extensions are the canonical candidates for eventual promotion to a core **Vulkan** version.
+- **`VK_EXT_`** — Multi-vendor extensions agreed upon by two or more IHVs but not necessarily ratified (though **Khronos** has begun retroactively ratifying selected **EXT** extensions). **EXT** extensions often reach a broader implementation base than vendor-specific work.
+- **`VK_NV_`**, **`VK_AMD_`**, **`VK_QCOM_`**, etc. — Single-vendor extensions that expose proprietary hardware features. They may later inspire a multi-vendor **EXT** or be superseded by **KHR** standardisation. **`VK_NV_cooperative_matrix`** is a canonical example: the **NV** extension shipped first on Turing GPUs, then drove the **KHR** standardisation effort that produced **`VK_KHR_cooperative_matrix`**.
 
 ### Promotion Path
 
-When a feature has proven its design, Khronos promotes it into a core minor version. The chain for several features covered in this chapter is:
+When a feature has proven its design, **Khronos** promotes it into a core minor version. The chain for several features covered in this chapter is:
 
 ```
 VK_KHR_dynamic_rendering  →  promoted to Vulkan 1.3 core
@@ -61,7 +61,7 @@ VK_KHR_cooperative_matrix   →  KHR ratified (not yet core as of 2026)
 VK_EXT_extended_dynamic_state3 → multi-vendor EXT (not yet core)
 ```
 
-After promotion, application code should prefer the unprefixed core entry points (e.g. `vkCmdBeginRendering` rather than `vkCmdBeginRenderingKHR`) when targeting the promoted version.
+After promotion, application code should prefer the unprefixed core entry points (e.g. **`vkCmdBeginRendering`** rather than **`vkCmdBeginRenderingKHR`**) when targeting the promoted version.
 
 ### Querying and Enabling Extensions
 
@@ -83,7 +83,7 @@ for (uint32_t i = 0; i < extCount; i++) {
 }
 ```
 
-Extensions often expose granular feature bits that must each be opted-in separately. Vulkan 1.1 introduced the `pNext`-chaining mechanism on `VkPhysicalDeviceFeatures2`, allowing any number of feature structs to be queried and later enabled during device creation:
+Extensions often expose granular feature bits that must each be opted-in separately. **Vulkan** 1.1 introduced the **`pNext`**-chaining mechanism on **`VkPhysicalDeviceFeatures2`**, allowing any number of feature structs to be queried and later enabled during device creation:
 
 ```c
 // Query features via pNext chain
@@ -114,7 +114,23 @@ vkCreateDevice(physDevice, &devCI, NULL, &device);
 
 ### The "Modern Vulkan" Extension Set
 
-The extensions that together define post-1.2 usage patterns — the ones that Valve's Proton stack, game engines, and the Mesa drivers collectively depend on — are covered in the remainder of this chapter. Mastering them means understanding a fundamentally different programming model: render passes disappear, pipelines can be assembled lazily or bypassed entirely, descriptors become a flat global namespace, and new shader stages take over geometry amplification and matrix arithmetic.
+The extensions that together define post-1.2 usage patterns — the ones that Valve's **Proton** stack, game engines, and the **Mesa** drivers collectively depend on — are covered in the remainder of this chapter. Mastering them means understanding a fundamentally different programming model: render passes disappear, pipelines can be assembled lazily or bypassed entirely, descriptors become a flat global namespace, and new shader stages take over geometry amplification and matrix arithmetic.
+
+**`VK_KHR_dynamic_rendering`**, promoted to **Vulkan** 1.3 core, abolishes **`VkRenderPass`** and **`VkFramebuffer`** objects for the common single-subpass case. Applications instead record rendering instances using **`vkCmdBeginRendering`** with a **`VkRenderingInfo`** structure that attaches **`VkRenderingAttachmentInfo`** descriptors directly. Explicit **`vkCmdPipelineBarrier2`** calls replace the implicit image layout transitions that render pass objects previously managed. The chapter covers the complete render loop, tile memory implications for **TBDR** architectures such as **ARM Mali**, **Qualcomm Adreno**, and **Imagination PowerVR**, and the **`VK_KHR_dynamic_rendering_local_read`** extension (promoted to **Vulkan** 1.4) that restores intra-pass read-back via **`vkCmdSetRenderingAttachmentLocationsKHR`** and **`vkCmdSetRenderingInputAttachmentIndicesKHR`**.
+
+**`VK_EXT_descriptor_indexing`**, promoted to **Vulkan** 1.2 core and exposed via **`VkPhysicalDeviceDescriptorIndexingFeatures`**, enables bindless resource access. Applications populate a single large descriptor array once and shaders select resources at runtime using integer indices. The key feature bits — **`runtimeDescriptorArray`**, **`descriptorBindingPartiallyBound`**, and **`descriptorBindingUpdateAfterBind`** — are examined alongside the **`UPDATE_AFTER_BIND`** pool pattern and a complete bindless material system using **`VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT`**, **`GL_EXT_nonuniform_qualifier`**, and the **`nonuniformEXT`** qualifier in **GLSL**. Real-world adoption by **Doom Eternal**, **Unreal Engine 5** (Nanite, Lumen), and **Godot 4** is discussed.
+
+**`VK_EXT_mesh_shader`** replaces the traditional vertex → tessellation → geometry pipeline with two compute-like stages: **task shaders** (dispatched via **`vkCmdDrawMeshTasksEXT`**, terminating in **`EmitMeshTasksEXT`**) and **mesh shaders** (emitting vertices and primitives via **`SetMeshOutputsEXT`**). The chapter covers the **`taskPayloadSharedEXT`** broadcast channel between stages, two-phase **Hi-Z** occlusion culling using **`imageAtomicMin`** depth pyramids, indirect dispatch via **`vkCmdDrawMeshTasksIndirectEXT`** and **`VkDrawMeshTasksIndirectCommandEXT`**, and hardware mapping to **RDNA 2/3** wave32 compute and **NVIDIA** Turing/Ada **SM** tensor and primitive-export hardware.
+
+**`VK_KHR_cooperative_matrix`**, ratified in 2023, provides **SPIR-V** operations that map to hardware **tensor cores** (**NVIDIA**) and **matrix engines** (**Intel Xe**, **AMD RDNA4**). The chapter explains how to query supported configurations via **`vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR`** and **`VkCooperativeMatrixPropertiesKHR`**, write **GLSL** compute shaders using **`coopMatMulAdd`** (lowered to **`OpCooperativeMatrixMulAddKHR`** in **SPIR-V**), and target real use cases including **FSR4** neural upscaling in **VKD3D-Proton 3.0** and **RTX Neural Shading**. The vendor extension **`VK_NV_cooperative_matrix2`** extending this with per-element and reduce-redistribute operations is also described, along with driver support in **RADV** (**GFX11/RDNA3+**, **Mesa 23.3+**, using `v_wmma_*` instructions) and **NVK** (via the **NAK** shader backend).
+
+**`VK_EXT_shader_object`** abolishes **`VkPipeline`** for graphics rendering entirely. Shaders are compiled individually as **`VkShaderEXT`** objects via **`vkCreateShadersEXT`** using **`VkShaderCreateInfoEXT`**, bound at draw time with **`vkCmdBindShadersEXT`**, and all formerly pipeline-baked state is set dynamically. Both binary blobs (**`VK_SHADER_CODE_TYPE_BINARY_EXT`**) and **SPIR-V** sources (**`VK_SHADER_CODE_TYPE_SPIRV_EXT`**) are accepted. Driver strategies in **RADV** (fast-link ISA caching, default since **Mesa 24.1**) and **ANV** (deferred linking for Intel EU ISA) are compared against the pipeline cache trade-offs relevant to **DXVK** and mobile targets.
+
+**`VK_EXT_graphics_pipeline_library`** (**GPL**) decomposes the monolithic **`VkPipeline`** into four independently compilable segments — Vertex Input Interface, Pre-rasterisation Shaders, Fragment Shader, and Fragment Output Interface — linked via **`VkPipelineLibraryCreateInfoKHR`**. The `graphicsPipelineLibraryFastLinking` property controls whether final linking can happen at draw time. **`VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT`** triggers a background **LTO** recompile for peak throughput. Adoption by **DXVK 2.0** and **VKD3D-Proton** for shader-stutter elimination is examined in detail.
+
+**`VK_EXT_extended_dynamic_state3`** (**EDS3**) adds approximately 33 additional dynamic states beyond those promoted to **Vulkan** 1.3 core by **`VK_EXT_extended_dynamic_state`** and **`VK_EXT_extended_dynamic_state2`**. Coverage includes rasterisation mode (**`vkCmdSetPolygonModeEXT`**), sample count (**`vkCmdSetRasterizationSamplesEXT`**), per-attachment colour blend (**`vkCmdSetColorBlendEnableEXT`**, **`vkCmdSetColorBlendEquationEXT`**, **`vkCmdSetColorWriteMaskEXT`**), conservative rasterisation, and **NVIDIA**-specific states. Driver state tracking impact on **RADV** (via `radv_dynamic_state`) and **ANV** (Xe-HPG 3D-state packets) is analysed. EDS3 is implicitly required by **`VK_EXT_shader_object`**.
+
+The chapter concludes with a driver adoption matrix spanning **RADV**, **ANV**, **NVK**, the **NVIDIA** proprietary driver, and **AMDVLK** as of **Mesa 25.x–26.x**, **Vulkan CTS** conformance notes (including the **AMDGPU** gang-submit kernel requirement for mesh-shader task-payload correctness), and real-world adoption profiles for **DXVK**, **VKD3D-Proton 3.0**, **Bevy 0.14**, **Godot 4**, and **Unreal Engine 5**.
 
 ---
 

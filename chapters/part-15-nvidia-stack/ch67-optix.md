@@ -39,22 +39,27 @@
 
 ## 1. Overview
 
-This chapter targets graphics application developers who want to use NVIDIA's OptiX ray tracing framework on Linux — particularly those building path tracers, offline renderers, scientific visualisation tools, or hybrid rasterisation/ray tracing pipelines. Readers are assumed to be familiar with CUDA (Ch66), Vulkan fundamentals (Ch24–Ch25), and hardware ray tracing concepts as introduced through `VK_KHR_ray_tracing_pipeline` (Ch56).
+This chapter targets graphics application developers who want to use **NVIDIA**'s **OptiX** ray tracing framework on **Linux** — particularly those building path tracers, offline renderers, scientific visualisation tools, or hybrid rasterisation/ray tracing pipelines. Readers are assumed to be familiar with **CUDA** (Ch66), **Vulkan** fundamentals (Ch24–Ch25), and hardware ray tracing concepts as introduced through **VK_KHR_ray_tracing_pipeline** (Ch56).
 
-OptiX occupies the tier above CUDA: it provides an application-level framework that manages BVH construction and traversal, maps programmable shader types onto the RT cores, drives the AI denoiser, and (since version 9.0) exposes tensor-core neural shaders through the Cooperative Vectors API. Unlike Vulkan KHR ray tracing, OptiX is NVIDIA-only and ships as a runtime SDK linked against the proprietary driver's ray tracing runtime, giving it direct access to hardware features before they are standardised.
+**OptiX** occupies the tier above **CUDA**: it provides an application-level framework that manages **BVH** construction and traversal, maps programmable shader types onto the **RT** cores, drives the **AI** denoiser, and (since version 9.0) exposes tensor-core neural shaders through the **Cooperative Vectors** API. Unlike **Vulkan** **KHR** ray tracing, **OptiX** is **NVIDIA**-only and ships as a runtime **SDK** linked against the proprietary driver's ray tracing runtime (**libnvoptix.so**), giving it direct access to hardware features before they are standardised.
 
 By the end of this chapter, the reader will understand:
 
-- How to initialise OptiX on a CUDA context and query device capabilities
-- How the NVRTC → PTX/OptiX-IR → `OptixModule` → `OptixPipeline` compilation chain works
-- The role of each shader type and how program groups compose into a pipeline
-- How to build geometry and instance acceleration structures, including the OptiX 9.0 Clusters (MegaGeometry) API for massive dynamic meshes
-- How the Shader Binding Table maps traversal outcomes to shader invocations
-- How Shader Execution Reordering (SER) reduces warp divergence
-- How Cooperative Vectors run neural networks inside shader programs
-- How to use the OptiX AI denoiser with AOV guide layers and temporal stability
-- How to share GPU buffers between Vulkan and OptiX via CUDA external memory APIs
-- How Blender Cycles integrates OptiX on Linux
+- How to initialise **OptiX** on a **CUDA** context via **optixInit()** and **optixDeviceContextCreate()**, and query device capabilities including **Shader Execution Reordering** and **Cooperative Vectors** support through **optixDeviceContextGetProperty()**
+- How the **NVRTC** → **PTX**/**OptiX-IR** → **OptixModule** → **OptixPipeline** compilation chain works, including the **optixModuleCreate()** and **optixModuleCreateWithTasks()** APIs and the **OptiX 9.1** compilation caching system configured via **OptixDeviceContextOptions**
+- How **OptixPipelineCreate()** links **OptixProgramGroup** objects, and how **optixUtilAccumulateStackSizes()** and **optixPipelineSetStackSize()** ensure correct stack sizing to avoid silent **GPU** faults
+- The role of each shader type (**__raygen__**, **__closesthit__**, **__anyhit__**, **__intersection__**, **__miss__**, **__direct_callable__**, **__continuation_callable__**) and how **OptixProgramGroup** objects compose into a pipeline
+- How to build geometry and instance acceleration structures — **GAS** (Geometry Acceleration Structure), **IAS** (Instance Acceleration Structure / **TLAS**) — using **optixAccelBuild()** with compaction, and how to refit animated meshes via **OPTIX_BUILD_OPERATION_UPDATE**; including the **OptiX 9.0** **Clusters** (**CLAS**, **RTX MegaGeometry**) API via **optixClusterAccelBuild()** for massive dynamic meshes
+- The six primitive types supported by **OptiX 9**: triangle meshes (**OPTIX_BUILD_INPUT_TYPE_TRIANGLES**), custom primitives (**OPTIX_BUILD_INPUT_TYPE_CUSTOM_PRIMITIVES**), curves (**OPTIX_BUILD_INPUT_TYPE_CURVES**) including the **Rocaps** intersector and hardware **LSS** on **Blackwell**, spheres (**OPTIX_BUILD_INPUT_TYPE_SPHERES**), **CLAS** clusters, and instanced geometry
+- How the **Shader Binding Table** (**SBT**) — assembled via **optixSbtRecordPackHeader()** and **OptixShaderBindingTable** — maps traversal outcomes to shader invocations, and how **optixGetSBTDataPointer()**, **optixGetInstanceId()**, and related intrinsics enable efficient per-material data access
+- How **optixLaunch()** submits a 3D ray generation grid to the **GPU** via a **CUDA** stream, using **__constant__** launch parameters matched by **pipelineLaunchParamsVariableName**
+- How **Shader Execution Reordering** (**SER**) reduces warp divergence by splitting **optixTrace()** into **optixTraverse()**, **optixReorder()**, and **optixInvoke()** phases
+- How **Cooperative Vectors** run neural networks inside shader programs using **optixCoopVecMatMul()** and **Tensor Cores**, enabling **RTX Neural Shaders**, **NeRF** inference, and neural material evaluation; with host-side weight preparation via **optixCoopVecMatrixConvert()** and framework-level access through **Dr.Jit**
+- How to use the **OptiX AI** denoiser (**optixDenoiserCreate()**, **optixDenoiserInvoke()**) with **AOV** guide layers (**albedo**, **normal**, **motion vectors**), temporal stability via **OPTIX_DENOISER_MODEL_KIND_TEMPORAL**, and optional 2× spatial upscaling
+- How to share **GPU** buffers between **Vulkan** and **OptiX** via **CUDA** external memory APIs (**cudaImportExternalMemory()**, **VK_KHR_external_memory_fd**) and synchronise using timeline semaphores (**cudaImportExternalSemaphore()**, **VK_KHR_external_semaphore_fd**)
+- How **Blender Cycles** integrates **OptiX** on **Linux**, compiling shaders via **NVRTC** at render startup and caching results in **~/.cache/cycles/**, with the **OptiX** denoiser accessible through the compositor node tree
+- The **Linux** build and development workflow: **SDK** setup from **optix-dev** or the **NVIDIA** Developer portal, **CMake** configuration using **OptiX_Apps** patterns and the **optix-toolkit** **FetchContent** integration, and driver version verification with **nvidia-smi**
+- **OptiX 9.x** deprecations and migration notes, including removal of the **DMM** (**Displaced Micro-Mesh**) API, **optixTrace()** removal from **__direct_callable__** shaders, and the **optixModuleCreate()** rename from **optixModuleCreateFromPTX()**
 
 ---
 

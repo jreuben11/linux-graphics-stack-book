@@ -23,11 +23,29 @@
 
 ## HDR Fundamentals
 
-Standard dynamic range (SDR) television and desktop displays target a peak luminance of around 80–100 cd/m² (nits) with a black level of roughly 0.1 cd/m², giving a dynamic range of about 1,000:1. High dynamic range (HDR) upends this constraint: HDR consumer displays routinely reach 600–2,000 nits peak, while professional mastering monitors and specialised direct-view LED walls can sustain 4,000–10,000 nits. More important than the absolute ceiling is the simultaneous black level: local-dimming OLED and mini-LED panels achieve <0.001 cd/m² while showing peak highlights in the same frame, producing a simultaneous contrast ratio of 1,000,000:1 or better.
+Standard dynamic range (**SDR**) television and desktop displays target a peak luminance of around 80–100 cd/m² (nits) with a black level of roughly 0.1 cd/m², giving a dynamic range of about 1,000:1. High dynamic range (**HDR**) upends this constraint: HDR consumer displays routinely reach 600–2,000 nits peak, while professional mastering monitors and specialised direct-view **LED** walls can sustain 4,000–10,000 nits. More important than the absolute ceiling is the simultaneous black level: local-dimming **OLED** and mini-**LED** panels achieve <0.001 cd/m² while showing peak highlights in the same frame, producing a simultaneous contrast ratio of 1,000,000:1 or better.
+
+This chapter covers the full Linux HDR and wide-color-gamut stack from signal fundamentals to compositor integration. It begins with why luminance range matters for human vision, then defines the transfer functions — **OETF**, **EOTF**, and **OOTF** — that govern how linear scene light is encoded and decoded, with detailed treatment of the **Perceptual Quantizer** (**PQ** / **SMPTE ST 2084**) and **Hybrid Log-Gamma** (**HLG** / **ITU-R BT.2100**). Wide-color-gamut primaries — **sRGB** / **Rec.709**, **DCI-P3**, and **BT.2020** / **Rec.2020** — are explained together with the concept of colour volume.
+
+The **HDR metadata standards** section covers **SMPTE ST 2086** and **CTA-861-H** static metadata (**MaxCLL**, **MaxFALL**, mastering display primaries), **HDR10+** scene-by-scene dynamic metadata (**SMPTE ST 2094-40**), and how the Linux kernel exposes metadata to userspace through the **`HDR_OUTPUT_METADATA`** **DRM** connector property and the **`drm_hdmi_infoframe_set_hdr_metadata()`** helper in **`drm_hdmi_state_helper.c`**.
+
+The **KMS color pipeline** section describes the classic three-stage model — **`DEGAMMA_LUT`**, **`CTM`** matrix, and **`GAMMA_LUT`** — enabled via **`drm_crtc_enable_color_mgmt()`**, the **`drm_color_lut`** structure for LUT entries, the **`drm_color_ctm`** and **`drm_color_ctm_3x4`** structures for **S31.32** sign-magnitude fixed-point matrices, and a worked example of **BT.2020**-to-**BT.709** gamut conversion via **`drmModeAtomicCommit()`**.
+
+The limitations of the per-**CRTC** model lead into the **DRM Color Pipeline API** (merged in **Linux 6.19**), which introduces the **`drm_colorop`** object model for per-plane hardware-accelerated colour transforms. Compositors discover available pipelines via the **`COLOR_PIPELINE`** enumeration property on each **`drm_plane`**; the API is illustrated with **AMD**'s **DCN 3.x** eight-stage pipeline and **NVIDIA**'s preview support.
+
+Compositor implementations are examined for both **GNOME**'s **Mutter** — covering its incremental HDR delivery across **GNOME 46–48**, the **`hdr_output_metadata`** **UAPI** structure, display capability discovery via **libdisplay-info** and **`di_info_get_hdr_static_metadata()`**, and the full Mutter output HDR pipeline — and **KDE**'s **KWin**, covering the **Plasma 6** series, **KWin**'s fully colour-managed compositor architecture, **`ICtCp`**-domain tone mapping, and per-**DRM**-plane colour pipeline support added in **Plasma 6.6**.
+
+The **`color-management-v1`** **Wayland** protocol — merged in **wayland-protocols 1.41** — is described in depth: the **`wp_color_manager_v1`** singleton factory, **`wp_image_description_v1`**, **`wp_image_description_creator_icc_v1`** and **`wp_image_description_creator_params_v1`** factories, named transfer functions and primaries, application-side usage via **GTK 4** and **`GdkColorState`**, and compositor adoption across **Mutter**, **KWin**, **SDL 3**, **Qt 6**, and **Weston**. The companion **`color-representation-v1`** protocol (merged in **wayland-protocols 1.44**) addresses **YCbCr**-to-**RGB** conversion parameters for hardware-decoded video buffers via **`wp_color_representation_surface_v1`**.
+
+The **Vulkan** and HDR section explains **`VK_EXT_swapchain_colorspace`** and its **`VkColorSpaceKHR`** enumerants (**`VK_COLOR_SPACE_HDR10_ST2084_EXT`**, **`VK_COLOR_SPACE_HDR10_HLG_EXT`**, **`VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT`**), **`VK_EXT_hdr_metadata`** and the **`VkHdrMetadataEXT`** structure, swapchain format selection (**`VK_FORMAT_A2B10G10R10_UNORM_PACK32`**, **`VK_FORMAT_R16G16B16A16_SFLOAT`** / **scRGB**), and **`VK_EXT_surface_maintenance1`** present-mode compatibility.
+
+Tone mapping in the compositor is covered through the Reinhard, Hable filmic, and **ACES** operators; **KWin**'s **ICtCp**-domain brightness-remapping pipeline; **Mutter**'s linear **BT.2020** luminance adaptation to the 203-nit **SDR** reference white (**ITU-R BT.2408**); **Gamescope**'s gaming-oriented inverse tone mapping (**`--hdr-itm-enable`**), 3D LUT looks, and mura compensation on **Steam Deck OLED**; and **scRGB** / **`EGL_EXT_gl_colorspace_scrgb_linear`** as an emerging intermediate representation.
+
+Finally, **HDR** video passthrough covers **VA-API** hardware decode with **`VAProfileHEVCMain10`** and **`VA_FOURCC_P010`** surfaces, the **`VAHdrMetaDataHDR10`** structure, end-to-end pipeline from **VA-API** decode through **dma-buf** import to per-plane **DRM** colorop chains and **`HDR_OUTPUT_METADATA`**, **DisplayPort 1.4** and **HDMI 2.1** HDR transport including **DSC** and **VRR**, **Vulkan Video** (**`VK_KHR_video_decode_h265`** / **`VK_KHR_video_decode_av1`**) for shader-integrated HDR decode, and colour space signalling via **HDMI AVI InfoFrame** and **DisplayPort** **MSA** / **HDRIF**.
 
 ### Why Luminance Range Matters
 
-Human vision is contrast-driven, not absolute-luminance-driven. The visual system adapts over several orders of magnitude, but in any single scene it resolves fine detail across roughly a 10,000:1 local dynamic range. SDR content that clips bright highlights or lifts black levels loses perceptually significant detail. HDR allows source content to carry the full scene luminance, deferring the clipping decision to the display (or, on limited displays, to a tone-mapping operator chosen by the compositor or application).
+Human vision is contrast-driven, not absolute-luminance-driven. The visual system adapts over several orders of magnitude, but in any single scene it resolves fine detail across roughly a 10,000:1 local dynamic range. **SDR** content that clips bright highlights or lifts black levels loses perceptually significant detail. **HDR** allows source content to carry the full scene luminance, deferring the clipping decision to the display (or, on limited displays, to a tone-mapping operator chosen by the compositor or application).
 
 ### Transfer Functions: OETF, EOTF, and OOTF
 
@@ -35,15 +53,15 @@ Two transfer functions govern how linear scene light is encoded into a video sig
 
 **OETF (Opto-Electronic Transfer Function)** converts scene-referred linear light into the non-linear code values stored in a video file or sent over a display link. It is applied in the camera or rendering pipeline.
 
-**EOTF (Electro-Optical Transfer Function)** is the inverse, applied by the display itself: it converts the non-linear code values back into display luminance. The traditional sRGB/Rec.709 EOTF is a piecewise gamma-2.2-like curve that spans 0–100 cd/m².
+**EOTF (Electro-Optical Transfer Function)** is the inverse, applied by the display itself: it converts the non-linear code values back into display luminance. The traditional **sRGB** / **Rec.709** **EOTF** is a piecewise gamma-2.2-like curve that spans 0–100 cd/m².
 
-**OOTF (Opto-Optical Transfer Function)** covers any residual scene-to-display mapping and accounts for the different viewing environment assumed at capture vs. at playback. For HDR, OOTF is often explicitly defined in the standard rather than being implicit.
+**OOTF (Opto-Optical Transfer Function)** covers any residual scene-to-display mapping and accounts for the different viewing environment assumed at capture vs. at playback. For **HDR**, **OOTF** is often explicitly defined in the standard rather than being implicit.
 
 ### Perceptual Quantizer (PQ / SMPTE ST 2084)
 
-The Perceptual Quantizer was developed by Dolby Laboratories and standardised by SMPTE as ST 2084 and incorporated into ITU-R BT.2100. It maps code values to absolute luminance from 0 to 10,000 cd/m² using a curve tuned to the threshold of human visual sensitivity at each luminance level, so that perceptual steps are roughly uniform across the entire range — a property SDR gamma cannot achieve above ~100 nits. [Source](https://en.wikipedia.org/wiki/Perceptual_quantizer)
+The **Perceptual Quantizer** was developed by **Dolby Laboratories** and standardised by **SMPTE** as **ST 2084** and incorporated into **ITU-R BT.2100**. It maps code values to absolute luminance from 0 to 10,000 cd/m² using a curve tuned to the threshold of human visual sensitivity at each luminance level, so that perceptual steps are roughly uniform across the entire range — a property **SDR** gamma cannot achieve above ~100 nits. [Source](https://en.wikipedia.org/wiki/Perceptual_quantizer)
 
-The PQ EOTF (display decoding) is:
+The **PQ** **EOTF** (display decoding) is:
 
 ```
 F_D = 10000 × [max((E'^(1/m₂) − c₁), 0) / (c₂ − c₃·E'^(1/m₂))]^(1/m₁)
@@ -59,38 +77,38 @@ where `E'` is the normalised code value in [0, 1] and `F_D` is display luminance
 | c₂     | 2413/128       | 18.851… |
 | c₃     | 2392/128       | 18.687… |
 
-The inverse (OETF, signal encoding) is:
+The inverse (**OETF**, signal encoding) is:
 
 ```
 E' = [(c₁ + c₂·Y^m₁) / (1 + c₃·Y^m₁)]^m₂,   Y = F_D / 10000
 ```
 
-PQ is not backward-compatible with SDR: an SDR display receiving an unprocessed PQ signal will render it far too dark.
+**PQ** is not backward-compatible with **SDR**: an **SDR** display receiving an unprocessed **PQ** signal will render it far too dark.
 
 ### Hybrid Log-Gamma (HLG / ITU-R BT.2100)
 
-HLG was jointly developed by the BBC and NHK for broadcast use. It is scene-referred rather than display-referred: a normalised scene luminance of 1 corresponds to a reference white, with luminances up to 12× reference encoded in the upper logarithmic segment. This makes HLG backward-compatible with SDR receivers, which see the lower segment (a √E curve) as a plausible gamma-2.0 signal. [Source](https://en.wikipedia.org/wiki/Hybrid_log%E2%80%93gamma)
+**HLG** was jointly developed by the **BBC** and **NHK** for broadcast use. It is scene-referred rather than display-referred: a normalised scene luminance of 1 corresponds to a reference white, with luminances up to 12× reference encoded in the upper logarithmic segment. This makes **HLG** backward-compatible with **SDR** receivers, which see the lower segment (a √E curve) as a plausible gamma-2.0 signal. [Source](https://en.wikipedia.org/wiki/Hybrid_log%E2%80%93gamma)
 
-The HLG OETF (Rec. 2100 form):
+The **HLG** **OETF** (**Rec. 2100** form):
 
 ```
 E' = √(3E)               for 0 ≤ E ≤ 1/12
 E' = a·ln(12E − b) + c  for 1/12 < E ≤ 1
 ```
 
-with a = 0.17883277, b = 0.28466892, c = 0.55991073. The HLG system gamma (1.2 at reference viewing conditions) allows a single stream to display acceptably on both SDR monitors and HDR screens.
+with a = 0.17883277, b = 0.28466892, c = 0.55991073. The **HLG** system gamma (1.2 at reference viewing conditions) allows a single stream to display acceptably on both **SDR** monitors and **HDR** screens.
 
 ### Wide Color Gamut: BT.2020, DCI-P3, and sRGB
 
 Color gamut describes the range of reproducible chromaticities. The three dominant standards on desktop Linux are:
 
-**sRGB / Rec.709** (broadcast HD television): Red primary at CIE xy (0.640, 0.330), green at (0.300, 0.600), blue at (0.150, 0.060). D65 white point. Covers about 35.9% of the CIE 1931 chromaticity diagram.
+**sRGB / Rec.709** (broadcast HD television): Red primary at **CIE** xy (0.640, 0.330), green at (0.300, 0.600), blue at (0.150, 0.060). **D65** white point. Covers about 35.9% of the **CIE 1931** chromaticity diagram.
 
-**DCI-P3** (digital cinema): Red at (0.680, 0.320), green at (0.265, 0.690), blue at (0.150, 0.060). DCI-P3 with a D65 white point (Display P3) is the native gamut of Apple displays and many consumer wide-gamut panels. Covers about 45.5% of CIE 1931 — roughly 25% larger than sRGB.
+**DCI-P3** (digital cinema): Red at (0.680, 0.320), green at (0.265, 0.690), blue at (0.150, 0.060). **DCI-P3** with a **D65** white point (**Display P3**) is the native gamut of Apple displays and many consumer wide-gamut panels. Covers about 45.5% of **CIE 1931** — roughly 25% larger than **sRGB**.
 
-**BT.2020 / Rec.2020** (UHDTV): Red at (0.708, 0.292), green at (0.170, 0.797), blue at (0.131, 0.046). D65 white point. Covers about 75.8% of CIE 1931. BT.2020 is the mandatory colour container for HDR10, HDR10+, and HLG content. Current consumer displays cover roughly 70–80% of BT.2020 by area metric. [Source](https://en.wikipedia.org/wiki/Rec._2020)
+**BT.2020 / Rec.2020** (**UHDTV**): Red at (0.708, 0.292), green at (0.170, 0.797), blue at (0.131, 0.046). **D65** white point. Covers about 75.8% of **CIE 1931**. **BT.2020** is the mandatory colour container for **HDR10**, **HDR10+**, and **HLG** content. Current consumer displays cover roughly 70–80% of **BT.2020** by area metric. [Source](https://en.wikipedia.org/wiki/Rec._2020)
 
-The combination of a large gamut (BT.2020) with an absolute-luminance transfer function (PQ) defines the **colour volume** — the set of colours representable at each luminance level. HDR10 content is described in this colour volume; compositors must map it into whatever sub-volume the output display can actually reproduce.
+The combination of a large gamut (**BT.2020**) with an absolute-luminance transfer function (**PQ**) defines the **colour volume** — the set of colours representable at each luminance level. **HDR10** content is described in this colour volume; compositors must map it into whatever sub-volume the output display can actually reproduce.
 
 ---
 

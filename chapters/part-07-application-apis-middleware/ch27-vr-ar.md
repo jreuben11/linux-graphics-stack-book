@@ -23,13 +23,15 @@
 
 ### Why a Standard Was Needed
 
-Before OpenXR, every VR/AR platform shipped its own runtime SDK: OpenVR for SteamVR and HTC Vive, OculusVR for the Rift, Windows Mixed Reality for Microsoft headsets, and proprietary mobile SDKs for Samsung and others. An application targeting multiple headsets had to link multiple incompatible libraries, implement duplicate code paths, and ship separate binaries. The Khronos Group standardised this fragmentation with the OpenXR specification, whose 1.0 release landed in July 2019 and whose 1.1 specification (as of 2024) is the current stable baseline. [Source: OpenXR 1.1 Specification](https://registry.khronos.org/OpenXR/specs/1.1/html/xrspec.html)
+Before **OpenXR**, every VR/AR platform shipped its own runtime SDK: **OpenVR** for **SteamVR** and **HTC Vive**, **OculusVR** for the Rift, **Windows Mixed Reality** for Microsoft headsets, and proprietary mobile SDKs for Samsung and others. An application targeting multiple headsets had to link multiple incompatible libraries, implement duplicate code paths, and ship separate binaries. The Khronos Group standardised this fragmentation with the **OpenXR** specification, whose 1.0 release landed in July 2019 and whose 1.1 specification (as of 2024) is the current stable baseline. [Source: OpenXR 1.1 Specification](https://registry.khronos.org/OpenXR/specs/1.1/html/xrspec.html)
 
-OpenXR's design philosophy mirrors OpenGL and Vulkan: an application links against a loader library (`libopenxr_loader.so`), which at runtime discovers the active runtime via JSON manifest files. On Linux the loader searches `XDG_CONFIG_HOME/openxr/1/active_runtime.json` and `/etc/xdg/openxr/1/active_runtime.json`, with the environment variable `XR_RUNTIME_JSON` providing an override path. The JSON manifest points to the runtime's shared library (`libopenxr_monado.so` for Monado, `libvrserver.so` for SteamVR). This ICD-style dispatch means an application binary is portable across runtimes without recompilation.
+**OpenXR**'s design philosophy mirrors **OpenGL** and **Vulkan**: an application links against a loader library (**`libopenxr_loader.so`**), which at runtime discovers the active runtime via JSON manifest files. On Linux the loader searches **`XDG_CONFIG_HOME`**`/openxr/1/active_runtime.json` and `/etc/xdg/openxr/1/active_runtime.json`, with the environment variable **`XR_RUNTIME_JSON`** providing an override path. The JSON manifest points to the runtime's shared library (**`libopenxr_monado.so`** for **Monado**, **`libvrserver.so`** for **SteamVR**). This **ICD**-style dispatch means an application binary is portable across runtimes without recompilation.
+
+This chapter covers the full breadth of **OpenXR** on Linux. Section 1 establishes the programming model: **`XrInstance`** and **`XrSystemId`** creation, graphics API binding via **`XR_KHR_vulkan_enable2`**, the **`XrSession`** lifecycle state machine, spatial reasoning with **`XrSpace`** reference spaces (**`XR_REFERENCE_SPACE_TYPE_STAGE`**, **`XR_REFERENCE_SPACE_TYPE_LOCAL`**, **`XR_REFERENCE_SPACE_TYPE_VIEW`**), and the action system for abstracting controller input. Section 2 goes deeper on **`XrSwapchain`** management — the acquire/wait/release cycle (**`xrAcquireSwapchainImage`**, **`xrWaitSwapchainImage`**, **`xrReleaseSwapchainImage`**), compositor layer types (**`XrCompositionLayerProjection`**, **`XrCompositionLayerQuad`**, **`XrCompositionLayerCylinder`**, **`XrCompositionLayerEquirect2KHR`**, **`XrCompositionLayerPassthrough`**), and the **`xrEndFrame`** frame loop. Section 3 covers **Monado**, the reference open-source **OpenXR** runtime for Linux: the **XRT** (XR Framework) architecture, the **`xrt_device`** virtual interface, the **Vulkan** compositor built on **`comp_compositor`**, the hardware driver survey (including the **survive** driver wrapping **libsurvive** for **Lighthouse** tracking, the **wmr** driver for **Windows Mixed Reality**, the **RealSense** driver, and the **simulated** driver), and the choice between service mode (**`monado-service`** daemon with **Unix socket** **IPC** and **`SCM_RIGHTS`**-based **DMA-BUF** sharing) and in-process mode. Section 4 examines the display backend: how **Monado** achieves low-latency direct-mode output by taking exclusive ownership of the HMD's **DRM** connector, using the `non-desktop` **DRM** connector property, **`drmModeCreateLease`** / **`DRM_IOCTL_MODE_CREATE_LEASE`** for **DRM leasing** (exposed to Wayland clients via **`wp_drm_lease_v1`**), **`VK_EXT_acquire_drm_display`** (**`vkAcquireDrmDisplayEXT`**, **`vkGetDrmDisplayEXT`**), **GBM** scan-out buffer allocation, atomic modesetting, and the **Nvidia** direct-mode path via **`vkAcquireXlibDisplayEXT`**. Section 5 analyses the latency budget and the reprojection techniques that protect frame delivery: pose prediction via **IMU** integration, **Asynchronous Timewarp** (**ATW**) as a **Vulkan** compute shader warp, **Asynchronous SpaceWarp** (**ASW**) using optical flow between frames (optionally using depth from **`XR_KHR_composition_layer_depth`**), and **`xrWaitFrame`**-based frame pacing. Section 6 covers tracking: **3DoF** vs **6DoF**, **MEMS IMU** orientation fusion with complementary and Mahony/Madgwick filters in **`m_imu_3dof.c`**, inside-out camera tracking via **V4L2** with **DMA-BUF** zero-copy export, **Basalt VIO** integration through the **`slam_tracker.hpp`** abstraction, **Lighthouse** tracking via **libsurvive**, and camera-based hand tracking via ML inference. Section 7 addresses **Wayland** integration: full-immersion mode versus mixed-reality overlay mode, the **`wp_drm_lease_v1`** protocol sequence, nested **Wayland** development mode using **`VK_KHR_wayland_surface`**, **SteamVR** runtime arbitration via **`XR_RUNTIME_JSON`**, vendor **`MNDX`** extensions (**`XR_MNDX_system_buttons`**, **`XR_EXTX_overlay`**), **`XR_EXT_hand_tracking`** (26-joint skeleton via **`xrLocateHandJointsEXT`**), and **`XR_EXT_eye_gaze_interaction`** for foveated rendering. Section 8 provides a practical walkthrough for writing a minimal **OpenXR** **Vulkan** application on Linux — dependencies, CMake build setup, the complete initialisation sequence, and common mistakes to avoid.
 
 ### Instance and System Creation
 
-The root object in OpenXR is the `XrInstance`. An application creates one by filling an `XrInstanceCreateInfo` struct that names the application, requests API layers (analogous to Vulkan validation layers), and enumerates required extensions:
+The root object in **OpenXR** is the **`XrInstance`**. An application creates one by filling an **`XrInstanceCreateInfo`** struct that names the application, requests API layers (analogous to **Vulkan** validation layers), and enumerates required extensions:
 
 ```c
 // Pedagogical example — OpenXR instance creation with Vulkan extension
@@ -54,7 +56,7 @@ if (XR_FAILED(result)) {
 }
 ```
 
-With the instance in hand, the application queries for an `XrSystemId` — the identifier of the physical XR hardware present in the system. The system is obtained via `xrGetSystem`, passing an `XrSystemGetInfo` that specifies the form factor:
+With the instance in hand, the application queries for an **`XrSystemId`** — the identifier of the physical XR hardware present in the system. The system is obtained via **`xrGetSystem`**, passing an **`XrSystemGetInfo`** that specifies the form factor:
 
 ```c
 XrSystemGetInfo system_info = {
@@ -65,13 +67,13 @@ XrSystemId system_id;
 xrGetSystem(instance, &system_info, &system_id);
 ```
 
-The `XrSystemId` is not a handle to an object but an integer identifier. `xrGetSystemProperties` returns a rich descriptor including the vendor ID, system name, graphics properties (maximum swapchain image resolution and layer count), and tracking properties (whether orientation and position tracking are supported, and whether hand tracking is available).
+The **`XrSystemId`** is not a handle to an object but an integer identifier. **`xrGetSystemProperties`** returns a rich descriptor including the vendor ID, system name, graphics properties (maximum swapchain image resolution and layer count), and tracking properties (whether orientation and position tracking are supported, and whether hand tracking is available).
 
 ### Graphics API Binding
 
-OpenXR is graphics-API-agnostic at the session layer, but an application must bind a concrete graphics API before creating a session. The preferred path for modern applications is `XR_KHR_vulkan_enable2`. This extension introduces a critical constraint: **the application must use the specific `VkPhysicalDevice` that Monado (or whichever runtime is active) selects**. The reason is physical topology: the HMD is connected to a specific GPU via PCIe or USB, and presenting frames rendered on a different GPU would require expensive cross-GPU buffer copies.
+**OpenXR** is graphics-API-agnostic at the session layer, but an application must bind a concrete graphics API before creating a session. The preferred path for modern applications is **`XR_KHR_vulkan_enable2`**. This extension introduces a critical constraint: **the application must use the specific `VkPhysicalDevice` that Monado (or whichever runtime is active) selects**. The reason is physical topology: the HMD is connected to a specific GPU via PCIe or USB, and presenting frames rendered on a different GPU would require expensive cross-GPU buffer copies.
 
-The two-step Vulkan device creation sequence is:
+The two-step **Vulkan** device creation sequence is:
 
 ```c
 // Step 1: Ask the OpenXR runtime which physical device to use
@@ -91,13 +93,13 @@ pfn_get_device(instance, &dev_info, &physical_device);
 // ... standard vkCreateDevice call with physical_device ...
 ```
 
-Using a different `VkPhysicalDevice` than the one returned here is a common mistake; it silently succeeds but results in Monado having to perform CPU-side buffer copies, destroying latency.
+Using a different **`VkPhysicalDevice`** than the one returned here is a common mistake; it silently succeeds but results in **Monado** having to perform CPU-side buffer copies, destroying latency.
 
-The `XR_KHR_opengl_enable` extension provides a comparable path for OpenGL applications, but new code should prefer the Vulkan path for explicit control over synchronisation.
+The **`XR_KHR_opengl_enable`** extension provides a comparable path for **OpenGL** applications, but new code should prefer the **Vulkan** path for explicit control over synchronisation.
 
 ### Session Lifecycle State Machine
 
-An `XrSession` ties the graphics binding to a system and moves through a well-defined state machine. The states are:
+An **`XrSession`** ties the graphics binding to a system and moves through a well-defined state machine. The states are:
 
 `IDLE → READY → SYNCHRONIZED → VISIBLE → FOCUSED → STOPPING → LOSS_PENDING → EXITING`
 
@@ -113,7 +115,7 @@ graph LR
     STOPPING --> IDLE
 ```
 
-The application polls for state transitions via `xrPollEvent`, which drains the event queue into an `XrEventDataBuffer`. A state change arrives as `XrEventDataSessionStateChanged`:
+The application polls for state transitions via **`xrPollEvent`**, which drains the event queue into an **`XrEventDataBuffer`**. A state change arrives as **`XrEventDataSessionStateChanged`**:
 
 ```c
 // Session state machine handler — pedagogical
@@ -148,17 +150,17 @@ while (xrPollEvent(instance, &event) == XR_SUCCESS) {
 }
 ```
 
-`READY` means the runtime is ready for the application to begin rendering. `FOCUSED` means the session has input focus — the application receives action state. `STOPPING` is the signal to call `xrEndSession`. Failing to handle `STOPPING` gracefully causes the runtime to forcibly terminate the session, which manifests as a frozen HMD display.
+`READY` means the runtime is ready for the application to begin rendering. `FOCUSED` means the session has input focus — the application receives action state. `STOPPING` is the signal to call **`xrEndSession`**. Failing to handle `STOPPING` gracefully causes the runtime to forcibly terminate the session, which manifests as a frozen HMD display.
 
 ### Reference Spaces
 
-Spatial reasoning in OpenXR is performed in *reference spaces*. Three standard types cover most use cases:
+Spatial reasoning in **OpenXR** is performed in *reference spaces*. Three standard types cover most use cases:
 
-- `XR_REFERENCE_SPACE_TYPE_STAGE`: origin at the centre of the physical play area, Y-up, floor level. Room-scale applications anchor their world here.
-- `XR_REFERENCE_SPACE_TYPE_LOCAL`: origin at the head position at session start, floor-level Y. Suitable for seated experiences.
-- `XR_REFERENCE_SPACE_TYPE_VIEW`: origin tracks the view (head), used for HUD elements that must remain head-locked.
+- **`XR_REFERENCE_SPACE_TYPE_STAGE`**: origin at the centre of the physical play area, Y-up, floor level. Room-scale applications anchor their world here.
+- **`XR_REFERENCE_SPACE_TYPE_LOCAL`**: origin at the head position at session start, floor-level Y. Suitable for seated experiences.
+- **`XR_REFERENCE_SPACE_TYPE_VIEW`**: origin tracks the view (head), used for HUD elements that must remain head-locked.
 
-`xrCreateReferenceSpace` allocates an `XrSpace` handle, and `xrLocateSpace` queries the relationship between two spaces at a specific time:
+**`xrCreateReferenceSpace`** allocates an **`XrSpace`** handle, and **`xrLocateSpace`** queries the relationship between two spaces at a specific time:
 
 ```c
 XrSpaceLocation head_location = { .type = XR_TYPE_SPACE_LOCATION };
@@ -166,11 +168,11 @@ xrLocateSpace(head_space, stage_space, predicted_display_time, &head_location);
 // head_location.pose contains position + orientation if XR_SPACE_LOCATION_POSE_VALID_BIT is set
 ```
 
-The `predicted_display_time` parameter is the timestamp returned by `xrWaitFrame`; using this predicted future time for space queries is how the runtime compensates for render latency.
+The `predicted_display_time` parameter is the timestamp returned by **`xrWaitFrame`**; using this predicted future time for space queries is how the runtime compensates for render latency.
 
 ### The Action System
 
-OpenXR's action system abstracts input hardware. Rather than querying button X on controller Y, an application declares semantic actions ("trigger pressed", "grip pose") and *suggests* bindings for specific interaction profiles (`/interaction_profiles/valve/index_controller`, `/interaction_profiles/oculus/touch_controller`, etc.). The runtime remaps these onto the actual hardware connected at run time.
+**OpenXR**'s action system abstracts input hardware. Rather than querying button X on controller Y, an application declares semantic actions ("trigger pressed", "grip pose") and *suggests* bindings for specific interaction profiles (`/interaction_profiles/valve/index_controller`, `/interaction_profiles/oculus/touch_controller`, etc.). The runtime remaps these onto the actual hardware connected at run time.
 
 ```c
 // Create an action set
@@ -196,7 +198,7 @@ XrAction trigger_action;
 xrCreateAction(action_set, &trigger_info, &trigger_action);
 ```
 
-After attaching the action set to the session with `xrAttachSessionActionSets`, the per-frame loop calls `xrSyncActions` to update all action states, then `xrGetActionStateBoolean` to read the trigger. Haptic output uses `xrApplyHapticFeedback` with an `XrHapticVibration` specifying amplitude, frequency (Hz), and duration (nanoseconds).
+After attaching the action set to the session with **`xrAttachSessionActionSets`**, the per-frame loop calls **`xrSyncActions`** to update all action states, then **`xrGetActionStateBoolean`** to read the trigger. Haptic output uses **`xrApplyHapticFeedback`** with an **`XrHapticVibration`** specifying amplitude, frequency (Hz), and duration (nanoseconds).
 
 ---
 

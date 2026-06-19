@@ -25,36 +25,56 @@
 
 ## 1. Filament's Place in the Ecosystem
 
-Filament is Google's open-source, real-time, physically based rendering library. Released in 2018 and continuously developed since, it is used in production on Android (Google Maps 3D, ARCore), Chrome OS, and the Flutter engine. It runs on Android, iOS, Linux, macOS, Windows, and WASM via WebGL2 and WebGPU. [Source](https://github.com/google/filament)
+**Filament** is Google's open-source, real-time, physically based rendering library. Released in 2018 and continuously developed since, it is used in production on Android (**Google Maps 3D**, **ARCore**), **Chrome OS**, and the **Flutter** engine. It runs on Android, iOS, Linux, macOS, Windows, and **WASM** via **WebGL2** and **WebGPU**. [Source](https://github.com/google/filament)
 
-Filament is emphatically not a game engine. It is a rendering library meant to be embedded in an application that supplies its own event loop, asset pipeline, and UI toolkit. The library exposes a C++ API (current standard: C++20, version 1.71.4 at time of writing) with Java/Kotlin and Swift bindings generated from the same source. [Source](https://deepwiki.com/google/filament/1-filament-overview)
+Filament is emphatically not a game engine. It is a rendering library meant to be embedded in an application that supplies its own event loop, asset pipeline, and UI toolkit. The library exposes a **C++** API (current standard: **C++20**, version 1.71.4 at time of writing) with Java/Kotlin and Swift bindings generated from the same source. [Source](https://deepwiki.com/google/filament/1-filament-overview)
 
-The design philosophy is **minimal footprint, maximum physical accuracy**. The engine targets mobile hardware first, which forces disciplined trade-offs: every shader variant is pre-compiled offline, the runtime never runs a GLSL compiler, and the GPU upload path is explicitly managed through callbacks that transfer buffer ownership. On Linux, the preferred backend is Vulkan, though OpenGL 4.1+ remains supported.
+The design philosophy is **minimal footprint, maximum physical accuracy**. The engine targets mobile hardware first, which forces disciplined trade-offs: every shader variant is pre-compiled offline by the **matc** tool into self-contained **FILAMAT** binary packages containing **SPIR-V** (for **Vulkan**), **MSL** (for Metal), **GLSL** (for OpenGL), and **WGSL** (for WebGPU) — the runtime never runs a **GLSL** compiler. The GPU upload path is explicitly managed through **BufferDescriptor** callbacks that transfer buffer ownership. On Linux, the preferred backend is **Vulkan**, though **OpenGL 4.1+** remains supported via the **bluegl** dynamic loader.
+
+The chapter covers Filament's layered architecture — the **filament::Engine** resource factory, **filament::Scene** entity container, and **filament::Renderer** frame submission loop — together with the **clustered forward renderer** and **froxelisation**-based light culling, and the **filament::backend::Driver** abstraction layer that routes GPU calls to **Vulkan**, **OpenGL/ES**, Metal, or **WebGPU** backends. Engine initialisation on Linux involves creating a **VkInstance** and **VkDevice** via **bluevk** (Filament's own Vulkan function loader), and constructing a **SwapChain** from a native window handle obtained via **SDL2**, **X11** (**VK_KHR_xlib_surface** / **VK_KHR_xcb_surface**), or **Wayland** (**VK_KHR_wayland_surface**).
+
+Scene population uses a lightweight **entity-component system** (**ECS**) built on opaque **utils::Entity** handles and three managers: **RenderableManager** (geometry, materials, bounding boxes), **LightManager** (directional, point, and spot lights with physically based intensity in lux or lumens), and **TransformManager** (hierarchical position/rotation/scale). Geometry is submitted via **VertexBuffer** and **IndexBuffer** objects, with data transferred asynchronously using **BufferDescriptor** ownership-transfer callbacks.
+
+The **FILAMAT** material system is fully offline: surface shaders are written in a domain-specific **.mat** format with a **shadingModel** directive selecting the shading model (**lit** Cook-Torrance **PBR**, **specularGlossiness**, **subsurface**, **cloth**, or **unlit**), then compiled by **matc** through a **glslang** → **spirv-opt** → **spirv-cross** pipeline into a chunked binary container. At runtime, a **Material** object parsed from the **.filamat** package spawns lightweight **MaterialInstance** objects per scene object.
+
+The **PBR** implementation follows the rendering equation with a **Cook-Torrance** specular **BRDF** using the **GGX** (Trowbridge-Reitz) **NDF**, height-correlated Smith **geometric shadowing**, and **Schlick Fresnel** approximation, combined with a Lambertian diffuse **BRDF**. Energy compensation for multiscattering at high roughness uses the split-sum **DFG** lookup texture. Material model extensions include **clear coat**, **anisotropy**, and the **cloth** shading model.
+
+**Image-based lighting** (**IBL**) relies on pre-filtered environment maps produced offline by **cmgen** (outputting **KTX1** specular cubemaps and **spherical harmonics** (**SH**) coefficients for diffuse irradiance), loaded at runtime via **IndirectLight**. The specular IBL integral is evaluated using the split-sum approximation with a pre-filtered cubemap and a baked **BRDF** integration map (**DFG** texture).
+
+Shadow rendering is managed by **ShadowMapManager** and supports **Cascaded Shadow Maps** (**CSM**) for directional/sun lights, single perspective maps for spot lights, and cubemap faces for point lights. Shadow filtering options configurable per **View** include **PCF**, **DPCF** (contact-hardening simulation), **VSM** (Variance Shadow Maps), and **PCSS** (Percentage Closer Soft Shadows). Screen-space contact shadows are available as an additional layer.
+
+The internal **FrameGraph** (**fg/**) is a directed acyclic graph of render passes and virtual resources, compiled each frame to perform pass culling, physical memory aliasing, compatible-pass merging (critical for **TBDR** GPUs such as **Adreno** and **Mali**), and automatic **VkImageMemoryBarrier** insertion. Applications do not write FrameGraph passes directly; they are authored internally by **PostProcessManager** and **ShadowMapManager**.
+
+The post-processing pipeline exposes **tone mapping** and colour grading via **ColorGrading** (with **ACESToneMapper**, **FilmicToneMapper**, and **LinearToneMapper**), physically accurate **bloom** using a dual-Kawase pyramid, **depth of field** (**DoF**) with a scatter-as-gather circle-of-confusion approach, spatial anti-aliasing via **FXAA**, temporal anti-aliasing via **TAA** with Halton-jittered reprojection, and **Screen-Space Ambient Occlusion** (**SSAO**) via **SAO** (Scalable Ambient Obscurance) or **GTAO** (Ground Truth AO).
+
+Filament supports fully headless rendering via a dimension-based **SwapChain** overload (no native window) with **CONFIG_READABLE** for CPU pixel readback using **PixelBufferDescriptor**, and off-screen multi-pass compositing via **RenderTarget**. This mode powers Linux **CI** screenshot regression testing, using **Swiftshader** when no GPU is available.
+
+Debugging facilities include **matdbg** — a live material editor embedding a **civetweb** HTTP/WebSocket server with a browser-based **Monaco** editor for hot-swapping **GLSL** shader variants at runtime — and **RenderDoc** integration via **librenderdoc.so** and **vkCmdBeginDebugUtilsLabelEXT** debug markers. The **matinfo** CLI tool can dump all shader variants from a **.filamat** package in **GLSL** or **SPIR-V** form.
 
 Key differentiation from alternatives:
 
-- vs. **Bevy/wgpu** (Ch 40): Filament is a mature C++ library with production deployments; Bevy is a Rust game engine. Both use a declarative FrameGraph internally (see §10).
-- vs. **Godot 4** (Ch 41): Godot exposes a `RenderingDevice` API for custom render passes; Filament's PBR pipeline is deeper and less configurable but more correct out of the box.
-- vs. **Skia** (Ch 37): Skia is a 2D raster/vector library; Filament handles 3D scenes with lights, PBR materials, and a full shadow pipeline.
-- vs. **bgfx** (Ch 84): bgfx is a thin cross-platform rendering HAL; Filament provides a complete high-level PBR pipeline on top of the HAL concept.
+- vs. **Bevy/wgpu** (Ch 40): Filament is a mature **C++** library with production deployments; Bevy is a Rust game engine. Both use a declarative **FrameGraph** internally (see §10).
+- vs. **Godot 4** (Ch 41): Godot exposes a **RenderingDevice** API for custom render passes; Filament's **PBR** pipeline is deeper and less configurable but more correct out of the box.
+- vs. **Skia** (Ch 37): **Skia** is a 2D raster/vector library; Filament handles 3D scenes with lights, **PBR** materials, and a full shadow pipeline.
+- vs. **bgfx** (Ch 84): **bgfx** is a thin cross-platform rendering **HAL**; Filament provides a complete high-level **PBR** pipeline on top of the **HAL** concept.
 
 The repository lives at `https://github.com/google/filament`. Documentation is at `https://google.github.io/filament/`.
 
 ### 1.1 Production deployments and Linux relevance
 
-Filament was designed for mobile but its Vulkan backend makes it a first-class citizen on Linux:
+Filament was designed for mobile but its **Vulkan** backend makes it a first-class citizen on Linux:
 
-- **Google Maps 3D** (Android and desktop web): uses Filament to render photorealistic building geometry with PBR materials and IBL.
-- **ARCore**: uses Filament to composite augmented-reality 3D objects into camera feeds with consistent PBR lighting.
-- **Chrome OS**: Flutter applications on Chrome OS use Filament's Impeller-adjacent rendering path.
-- **Open3D**: the open-source 3D data processing library uses Filament as its visualisation renderer, with a well-documented integration in `cpp/open3d/visualization/rendering/filament/`. [Source](https://www.open3d.org/docs/latest/cpp_api/_filament_scene_8h_source.html)
+- **Google Maps 3D** (Android and desktop web): uses Filament to render photorealistic building geometry with **PBR** materials and **IBL**.
+- **ARCore**: uses Filament to composite augmented-reality 3D objects into camera feeds with consistent **PBR** lighting.
+- **Chrome OS**: **Flutter** applications on Chrome OS use Filament's **Impeller**-adjacent rendering path.
+- **Open3D**: the open-source 3D data processing library uses Filament as its visualisation renderer, with a well-documented integration in **cpp/open3d/visualization/rendering/filament/**. [Source](https://www.open3d.org/docs/latest/cpp_api/_filament_scene_8h_source.html)
 
 For Linux desktop developers, the primary entry points are:
-- `libfilament.so` — the core rendering engine.
-- `libbackend.so` — the backend abstraction layer and drivers.
-- `libbluevk.so` — the Vulkan function loader (analogous to `libvulkan.so` but dynamically-loaded at runtime, avoiding a link-time Vulkan SDK dependency).
-- `libfilamat.so` — material package parsing (separate from `matc` which is an offline tool).
-- `libibl.so` — IBL prefiltering library for runtime use.
+- **libfilament.so** — the core rendering engine.
+- **libbackend.so** — the backend abstraction layer and drivers.
+- **libbluevk.so** — the **Vulkan** function loader (analogous to **libvulkan.so** but dynamically-loaded at runtime, avoiding a link-time **Vulkan SDK** dependency).
+- **libfilamat.so** — material package parsing (separate from **matc** which is an offline tool).
+- **libibl.so** — **IBL** prefiltering library for runtime use.
 
 ### 1.2 Building Filament for Linux
 
@@ -81,7 +101,7 @@ find_package(filament REQUIRED HINTS ${FILAMENT_INSTALL_DIR}/lib/cmake)
 target_link_libraries(myapp PRIVATE filament backend bluevk utils math filabridge)
 ```
 
-Vulkan must be present on the system; on Ubuntu: `apt install vulkan-tools libvulkan-dev`. AMD users need `radv` (Mesa), NVIDIA users need the proprietary driver or `nvk` (Ch 5), Intel users need `anv` (Ch 18).
+**Vulkan** must be present on the system; on Ubuntu: `apt install vulkan-tools libvulkan-dev`. AMD users need **radv** (**Mesa**), NVIDIA users need the proprietary driver or **nvk** (Ch 5), Intel users need **anv** (Ch 18).
 
 ---
 

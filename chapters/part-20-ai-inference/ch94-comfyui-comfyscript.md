@@ -27,25 +27,101 @@ backends via PyTorch.
 
 ## 1. What ComfyUI Is (and What It Is Not)
 
-ComfyUI is a modular, node-based graphical interface and execution engine for diffusion model
-inference, primarily Stable Diffusion and its successors (SDXL, SD3, FLUX.1). It is **not** a
+**ComfyUI** is a modular, node-based graphical interface and execution engine for diffusion model
+inference, primarily **Stable Diffusion** and its successors (**SDXL**, **SD3**, **FLUX.1**). It is **not** a
 training framework, **not** a GUI toolkit in the traditional sense (it runs an
 [aiohttp](https://docs.aiohttp.org/) web server and opens a browser tab), and **not** a diffusion
-model itself — it is a pipeline orchestrator that schedules GPU kernel calls through PyTorch.
+model itself — it is a pipeline orchestrator that schedules **GPU** kernel calls through **PyTorch**.
 [Source: ComfyUI repository](https://github.com/comfyanonymous/ComfyUI)
+
+The pipeline is structured as a **directed acyclic graph** (**DAG**) of nodes. Each node is a Python
+class registered in the global **`NODE_CLASS_MAPPINGS`** dictionary. The browser serialises the graph
+to a **prompt JSON** and submits it via `HTTP POST /prompt` to the **`aiohttp`** server
+(**`server.py`**). The **`PromptExecutor`** in **`execution.py`** performs a topological sort of the
+graph, executes each node's `FUNCTION` method in dependency order, and caches intermediate outputs
+keyed by input hash so that unchanged upstream nodes are skipped on re-runs. The GPU memory
+coordinator **`comfy/model_management.py`** handles VRAM allocation, model eviction under an LRU
+policy, and device placement via **`load_models_gpu()`** and **`soft_empty_cache()`**.
+
+Core built-in nodes — defined in **`nodes.py`** — include **`CheckpointLoaderSimple`**,
+**`LoraLoader`**, **`CLIPTextEncode`**, **`CLIPTextEncodeSDXL`**, **`EmptyLatentImage`**,
+**`VAEDecode`**, **`VAEEncode`**, **`VAEDecodeTiled`**, **`KSampler`**, **`KSamplerAdvanced`**,
+**`SaveImage`**, **`PreviewImage`**, **`LoadImage`**, **`ControlNetLoader`**,
+**`ControlNetApplyAdvanced`**, and **`ImageScale`**. The sampler and scheduler system wraps
+**k-diffusion** algorithms (including **`euler`**, **`dpmpp_2m`**, **`dpmpp_3m_sde`**, **`lcm`**,
+**`ddim`**, and others) paired with noise schedules such as **`karras`**, **`exponential`**, and
+**`simple`**. **Classifier-Free Guidance** (**CFG**) doubles each denoising step's UNet cost by
+running both conditioned and unconditioned forward passes; **`ModelPatcher`** manages LoRA weight
+patching and device movement. **SD3** and **FLUX.1** use **rectified flow** (flow matching) rather
+than **DDPM** noise schedules, enabling 4–8-step generation with the **`simple`** scheduler.
+**DDIM** inversion is supported for img2img and style-transfer pipelines via
+**`KSamplerAdvanced`** with `denoise < 1.0`.
+
+Memory management on Linux is controlled by **`model_management.py`**'s **`LoadedModel`**
+abstraction and a set of CLI flags (`--gpu-only`, `--highvram`, `--normalvram`, `--lowvram`,
+`--novram`, `--cpu`) that determine when models are evicted from **VRAM** to CPU RAM between
+generations. GPU selection uses **`CUDA_VISIBLE_DEVICES`** or **`HIP_VISIBLE_DEVICES`** environment
+variables and the `--cuda-device` flag. Precision is configurable via `--force-fp16`,
+`--bf16-unet`, `--fp8_e4m3fn-unet`, and `--fp8_e5m2-unet` flags; **fp8** quantisation
+(requiring **PyTorch** 2.1+ and **NVIDIA Ada Lovelace** or **Hopper** hardware) halves VRAM
+compared to **fp16** for large models like **FLUX.1**.
+
+The **REST API** served by **`server.py`** provides `POST /prompt`, `GET /queue`, `GET /history`,
+`GET /object_info`, `POST /upload/image`, and `GET /system_stats` endpoints. A **WebSocket**
+at `ws://127.0.0.1:8188/ws` pushes `"progress"`, `"executing"`, `"executed"`,
+`"execution_cached"`, and `"execution_error"` events for live monitoring. An async Python
+client using **`aiohttp`** can queue workflows and await results without the browser frontend.
+
+**ComfyScript** is a typed **Python** frontend that queries `GET /object_info` to generate
+**`nodes.pyi`** stubs, enabling **IDE** autocompletion and type checking. The **`Workflow`**
+context manager accumulates lazy **`NodeOutput`** references and serialises them to prompt JSON
+on exit. Patterns covered include txt2img, img2img, **SDXL** base+refiner two-pass with
+**`KSamplerAdvanced`**, **`LoraLoader`** stacking, and image retrieval via
+**`util.get_images()`** returning **`PIL.Image`** objects.
+
+Custom nodes are discovered at startup by scanning **`custom_nodes/*/`** directories for
+**`NODE_CLASS_MAPPINGS`** exports. Nodes use **`IS_CHANGED()`** for memoization control and
+may ship **`web/js/`** files served via `GET /extensions` that extend the **LiteGraph.js**
+frontend with custom widgets and context menus. The community ecosystem is managed via
+**ComfyUI-Manager**; notable packs include **ComfyUI-Impact-Pack**, **ComfyUI-Advanced-ControlNet**,
+**ComfyUI-VideoHelperSuite**, and **ComfyUI-GGUF** (which provides **GGUF**-quantised model
+loading via a **llama.cpp** backend).
+
+**FLUX.1**, developed by Black Forest Labs, uses a 12 B-parameter dual-stream **DiT**
+architecture with a 16-channel **VAE** and **T5-XXL** + **CLIP-L** dual text encoders. Its
+**ComfyUI** workflow uses **`UNETLoader`**, **`DualCLIPLoader`**, **`CLIPTextEncodeFlux`**, and
+**`FluxGuidance`** rather than the all-in-one **`CheckpointLoaderSimple`**. Supported model
+families also include **SD 1.5** (**UNet 2D**), **SDXL** (dual **CLIP** encoders), **SD3**
+(**MMDiT**), **PixArt-Σ**, **Cascade** (Würstchen), and **AuraFlow**.
+
+Performance optimisations covered include attention kernel selection (**xFormers**,
+**PyTorch SDPA** / **Flash Attention 2**, and **ROCm Flash Attention** via
+**`pytorch-triton-rocm`**), **`torch.compile`** with `mode="reduce-overhead"` or
+`"max-autotune"`, live latent preview via **TAESD** (Tiny AutoEncoder for Stable Diffusion)
+or **`latent2rgb`**, batch generation with **`EmptyLatentImage`** `batch_size > 1`, AMD
+**ROCm**-specific flags (**`HSA_OVERRIDE_GFX_VERSION`** for Navi 2x cards,
+**`HIP_VISIBLE_DEVICES`**), and profiling with **Nsight Systems** (`nsys profile`) and
+**`nvidia-smi dmon`**. The **`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`** environment
+variable reduces VRAM fragmentation.
+
+Production deployment patterns include **Docker** with an **NVIDIA CUDA** base image and the
+**NVIDIA Container Toolkit**, **Kubernetes** pods with `nvidia.com/gpu` resource limits and
+a **`/system_stats`** readiness probe, polling- and **WebSocket**-based workflow automation,
+and multi-tenant queue management via per-client `client_id` assignment and API gateway
+rate-limiting in front of the **`POST /prompt`** endpoint.
 
 ### 1.1 ComfyUI vs Other Frontends
 
-**ComfyUI vs Automatic1111 (A1111):** A1111 presents a linear pipeline — enter prompts, click
-Generate, done. ComfyUI exposes the full pipeline as a directed acyclic graph (DAG) of nodes,
+**ComfyUI vs Automatic1111 (A1111):** **A1111** presents a linear pipeline — enter prompts, click
+Generate, done. **ComfyUI** exposes the full pipeline as a directed acyclic graph (**DAG**) of nodes,
 making every step visible and reconfigurable. This means greater flexibility (multi-pass pipelines,
-custom conditioning, arbitrary node ordering) at the cost of a steeper learning curve. A1111 is
-faster to use for simple tasks; ComfyUI is the tool of choice when the pipeline itself is the
+custom conditioning, arbitrary node ordering) at the cost of a steeper learning curve. **A1111** is
+faster to use for simple tasks; **ComfyUI** is the tool of choice when the pipeline itself is the
 engineering artifact.
 
-**ComfyUI vs InvokeAI:** InvokeAI provides a canvas-based inpainting and composition UI that
-ComfyUI deliberately lacks. ComfyUI's advantage is programmability and extensibility — the node
-graph maps directly to code (see §7 on ComfyScript), making it far easier to version-control,
+**ComfyUI vs InvokeAI:** **InvokeAI** provides a canvas-based inpainting and composition UI that
+**ComfyUI** deliberately lacks. **ComfyUI**'s advantage is programmability and extensibility — the node
+graph maps directly to code (see §7 on **ComfyScript**), making it far easier to version-control,
 template, and automate workflows programmatically.
 
 ### 1.2 Architecture Overview
@@ -76,23 +152,23 @@ template, and automate workflows programmatically.
 ```
 
 The web interface is served at `http://127.0.0.1:8188` by default. The frontend is a
-[LiteGraph.js](https://github.com/jagenjo/litegraph.js)-based canvas wrapped in a React shell.
+[LiteGraph.js](https://github.com/jagenjo/litegraph.js)-based canvas wrapped in a **React** shell.
 [Source: ComfyUI server.py](https://github.com/comfyanonymous/ComfyUI/blob/master/server.py)
 
 ### 1.3 GPU Backends
 
-ComfyUI delegates all tensor computation to PyTorch, which means the backend is determined by
-which PyTorch wheel is installed:
+**ComfyUI** delegates all tensor computation to **PyTorch**, which means the backend is determined by
+which **PyTorch** wheel is installed:
 
 | Backend | Hardware | PyTorch wheel |
 |---------|----------|---------------|
-| CUDA | NVIDIA (Ampere, Ada, Hopper, Blackwell) | `pip install torch --index-url https://download.pytorch.org/whl/cu121` |
-| ROCm/HIP | AMD Radeon RX 6000/7000, Instinct MI | `pip install torch --index-url https://download.pytorch.org/whl/rocm6.0` |
-| MPS | Apple Silicon (M1/M2/M3/M4) | Default macOS PyTorch wheel |
+| **CUDA** | NVIDIA (Ampere, Ada, Hopper, Blackwell) | `pip install torch --index-url https://download.pytorch.org/whl/cu121` |
+| **ROCm/HIP** | AMD Radeon RX 6000/7000, Instinct MI | `pip install torch --index-url https://download.pytorch.org/whl/rocm6.0` |
+| **MPS** | Apple Silicon (M1/M2/M3/M4) | Default macOS PyTorch wheel |
 | CPU | Any | Default wheel; very slow |
 
-PyTorch's ROCm wheel exposes the standard `torch.cuda.*` API on top of HIP, so ComfyUI's
-`model_management.py` code path is identical for CUDA and ROCm — `torch.cuda.is_available()`
+**PyTorch**'s **ROCm** wheel exposes the standard `torch.cuda.*` **API** on top of **HIP**, so **ComfyUI**'s
+**`model_management.py`** code path is identical for **CUDA** and **ROCm** — **`torch.cuda.is_available()`**
 returns `True` on both.
 [Source: PyTorch ROCm wheels](https://pytorch.org/get-started/locally/)
 
@@ -100,13 +176,13 @@ returns `True` on both.
 
 | Model family | Architecture | VAE latent channels | Notes |
 |---|---|---|---|
-| SD 1.5 | UNet 2D | 4 | Original; best LoRA/ControlNet ecosystem |
-| SDXL | UNet 2D (larger) | 4 | Dual CLIP encoders; 1024px native |
-| SD3 | DiT (MMDiT) | 16 | Multimodal diffusion transformer |
-| FLUX.1 | DiT (dual-stream) | 16 | 12B params; see §9 |
-| PixArt-Σ | DiT | 4 | High-res efficient transformer |
-| Cascade | Multi-stage UNet | 4 (stage C) | Würstchen architecture |
-| AuraFlow | DiT | 4 | Community open model |
+| **SD 1.5** | **UNet 2D** | 4 | Original; best **LoRA**/**ControlNet** ecosystem |
+| **SDXL** | **UNet 2D** (larger) | 4 | Dual **CLIP** encoders; 1024px native |
+| **SD3** | **DiT** (**MMDiT**) | 16 | Multimodal diffusion transformer |
+| **FLUX.1** | **DiT** (dual-stream) | 16 | 12B params; see §9 |
+| **PixArt-Σ** | **DiT** | 4 | High-res efficient transformer |
+| **Cascade** | Multi-stage **UNet** | 4 (stage C) | Würstchen architecture |
+| **AuraFlow** | **DiT** | 4 | Community open model |
 
 ### 1.5 Linux Installation
 
@@ -132,8 +208,8 @@ pip install torch torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/rocm6.0
 ```
 
-Place checkpoint files (`.safetensors` or `.ckpt`) in `models/checkpoints/`, LoRA files in
-`models/loras/`, VAE files in `models/vae/`.
+Place checkpoint files (`.safetensors` or `.ckpt`) in `models/checkpoints/`, **LoRA** files in
+`models/loras/`, **VAE** files in `models/vae/`.
 
 ---
 

@@ -25,31 +25,105 @@ hardware; browser and game engine engineers working with the open AMD GPUOpen to
 
 AMD publishes the bulk of its developer-facing SDK work under the
 [GPUOpen](https://gpuopen.com) initiative, a programme launched in 2016 to deliver
-open-source GPU libraries, effects, and tools under permissive licences (predominantly MIT).
-This stands in deliberate contrast to NVIDIA's NGX/DLSS and CUDA ecosystems, which mix
-proprietary binaries with open headers. GPUOpen's three main pillars are:
+open-source GPU libraries, effects, and tools under permissive licences (predominantly **MIT**).
+This stands in deliberate contrast to NVIDIA's **NGX**/**DLSS** and **CUDA** ecosystems, which mix
+proprietary binaries with open headers. **GPUOpen**'s three main pillars are:
 
 - **FidelityFX SDK** — a library of image-quality and rendering-technique effects (upscaling,
   sharpening, global illumination, screen-space reflections, and more) that run on any
-  DirectX 12 or Vulkan GPU, with RDNA-optimised shader paths for AMD hardware.
+  **DirectX 12** or **Vulkan** GPU, with **RDNA**-optimised shader paths for AMD hardware.
   [Source](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK)
 
 - **Advanced Media Framework (AMF)** — AMD's hardware video encode/decode API, historically
-  backed by the proprietary `amf-amdgpu-pro` component on Linux, and since driver 25.20
-  transitioning to an open stack that delegates to VA-API and Mesa Multimedia.
+  backed by the proprietary **amf-amdgpu-pro** component on Linux, and since driver 25.20
+  transitioning to an open stack that delegates to **VA-API** and **Mesa** Multimedia.
   [Source](https://github.com/GPUOpen-LibrariesAndSDKs/AMF)
 
 - **Radeon Developer Tools** — a suite of profiling, memory-visualisation, and debugging tools:
-  Radeon GPU Profiler (RGP), Radeon Memory Visualizer (RMV), and Radeon Developer Panel
-  (RDP), all available for Linux (Ubuntu 24.04+, Vulkan-only, Vulkan and OpenCL/HIP).
+  **Radeon GPU Profiler (RGP)**, **Radeon Memory Visualizer (RMV)**, and **Radeon Developer Panel
+  (RDP)**, all available for Linux (Ubuntu 24.04+, Vulkan-only, Vulkan and **OpenCL**/**HIP**).
   [Source](https://gpuopen.com/tools/)
 
 Additionally, **RenderDoc** — while technically cross-vendor and independent — was created by
 Baldur Karlsson with significant AMD engagement and is the de-facto open-source frame debugger
-for Vulkan, Direct3D, and OpenGL on Linux. [Source](https://renderdoc.org)
+for **Vulkan**, **Direct3D**, and **OpenGL** on Linux. [Source](https://renderdoc.org)
+
+The chapter opens with the **FidelityFX SDK** architecture: the `sdk/`, `ffx-api/`, and
+`sdk/src/backends/` repository layout, the **`FfxInterface`** abstraction that decouples
+effects from graphics APIs via a function-pointer table (**`fpCreatePipeline`**,
+**`fpScheduleGpuJob`**, etc.), the **Vulkan** backend initialisation sequence
+(**`ffxGetInterfaceVK`**, **`ffxGetScratchMemorySizeVK`**), and the **SDK 2.x Upgradable API**
+(`ffx-api/`) with its **`amd_fidelityfx_loader`** shim for driver-level model-weight upgrades.
+The **FidelityFX Shader Compiler (FFX-SC)** compiles all **HLSL** and **GLSL** shader
+permutations offline into **SPIR-V** / **DXIL** blobs, eliminating runtime shader compilation
+overhead.
+
+Section 3 covers **FSR 4** — AMD's neural upscaling technology for **RDNA 4** hardware. It
+traces the evolution from **FSR 1**'s spatial **EASU**/**RCAS** algorithm, through **FSR 2/3**
+temporal reprojection with motion vectors and reactive masks, to **FSR 4**'s inference on
+**RDNA 4**'s 3rd-generation **Matrix Cores** via **WMMA**
+(`__builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12`) ISA instructions. Input requirements
+(color buffer, depth, **RG16_FLOAT** motion vectors, jitter from a **Halton(2,3)** sequence via
+**`ffxQueryDescUpscaleGetJitterOffset`**), the **`ffxCreateContextDescUpscale`** /
+**`ffxDispatchDescUpscale`** API, measured performance characteristics (≈352 µs at 1080p on
+**RX 9070 XT**), and correct placement in the frame pipeline (after screen-space effects,
+before tonemapping) are all detailed.
+
+Section 4 surveys four additional **FidelityFX SDK** 1.1.x effects: **CAS** (Contrast
+Adaptive Sharpening — per-pixel sharpening weight from local contrast, single compute dispatch,
+with optional lightweight 1.5× upscale via **`ffxCasContextDispatch`**); **SPD** (Single Pass
+Downsampler — generates up to 12 mip levels in one dispatch using **LDS** intra-tile reduction
+and a GPU-wide atomic counter, with **`FFX_SPD_MATH_PACKED`** wave-op acceleration); **SSSR**
+(Stochastic Screen Space Reflections — hierarchical depth-buffer ray traversal, blue-noise
+sampling, and temporal denoising without hardware ray tracing); and **Brixelizer GI** (sparse
+voxel **SDF** cascade global illumination via a two-layer architecture of **Brixelizer** and
+**Brixelizer GI**, outputting denoised indirect diffuse and specular at render resolution).
+
+Section 5 examines **AMF** (**Advanced Media Framework**). It covers the Linux history: the
+legacy proprietary **amf-amdgpu-pro** path, the transition in driver 25.20 to recommending
+**VA-API** via **Mesa**'s **radeonsi_drv_video.so** and **VCN** hardware. The **AMF** core
+architecture uses a **COM**-like factory/component model — **`AMFFactory`**, **`AMFContext`**,
+**`AMFComponent`** (e.g., **`AMFVideoEncoderHW_HEVC`**), **`AMFSurface`** (**`AMF_MEMORY_VULKAN`**),
+**`AMFBuffer`** — loaded via **`dlopen`** of **libamfrt64.so**. A comparison table contrasts
+**AMF** (Windows), **VA-API**/**Mesa** (Linux), and **NVENC**.
+
+Section 6 covers the **Radeon GPU Profiler (RGP)**: its two-component architecture (**Radeon
+Developer Service (RDS)** daemon plus **RGP** GUI), **SQTT** (Shader Queue Thread Trace)
+token streams captured via the **`VK_AMD_gpa_interface`** Vulkan extension and
+**`VkGpaSqThreadTraceCreateInfoAMD`**, the proprietary **`.rgp`** file format (SQTT data
+chunks, performance counter blocks for **CPF**, **SPI**, **SQ**, **CB**, **DB**, event
+timing, barrier information), barrier and pipeline stall analysis (**VALU**/**VMEM** stall
+tokens, **Wavefront Occupancy** pane), and the Linux capture workflow using
+**`AMDGPU_ENABLE_RGP`** and **Radeon Developer Panel**.
+
+Section 7 covers the **Radeon Memory Visualizer (RMV)**: its **RDS**-based capture of
+**`ALLOCATION_CREATE`** / **`RESOURCE_BIND`** / **`RESOURCE_EVICT`** events into **`.rmv`**
+trace files; analysis views including the Virtual Memory Heap Timeline, Resource Usage
+Timeline, Snapshots (for locating memory leaks), and VRAM Fragmentation Analysis
+(**VulkanMemoryAllocator** recommendations); and profiling **SAM** (Smart Access Memory /
+**Resizable BAR** / **`VK_AMD_device_coherent_memory`**) to verify direct CPU→VRAM placement.
+
+Section 8 covers **RenderDoc**: its **`VK_LAYER_RENDERDOC_Capture`** in-process capture layer
+(injected via **`LD_PRELOAD`**), which intercepts **`vkQueueSubmit`**, **`vkQueuePresentKHR`**,
+and **`vkAllocateMemory`** calls to serialise frames into **`.rdc`** chunk-based files; the
+programmatic **`RENDERDOC_API_1_1_2`** C API (loaded via **`dlopen`** of **librenderdoc.so**,
+with **`StartFrameCapture`** / **`EndFrameCapture`** / **`TriggerMultiFrameCapture`**); and
+the **Python** replay API (**`renderdoc`** module, **`ReplayController`**,
+**`GetRootActions`**, **`GetPipelineState`**, **`GetTextureData`**) for headless automated
+analysis of **`.rdc`** captures.
+
+Section 9 covers integration with the open-source stack: **FidelityFX** **SPIR-V** blobs
+processed by **RADV**'s **`nir_from_spirv()`** and **ACO** shader compiler; **RGP**'s **SQTT**
+dependency on the **amdgpu** kernel driver's performance counter interface in
+**`amdgpu_pm.c`** and the **`perf_event_paranoid`** sysctl; **RMV**'s interception at the
+**libdrm** / **UMD** boundary (**`amdgpu_bo_alloc()`**, **`DRM_AMDGPU_GEM_CREATE`** ioctl)
+covering **RADV**, **radeonsi**, and **ROCm**/**HIP** workloads; and **RenderDoc**'s deep
+integration with **RADV** via **`VK_EXT_debug_utils`**, **`VK_AMD_buffer_marker`**, and
+**`RADV_DEBUG=nocache`** for deterministic replay.
 
 This chapter covers the public APIs and internal architecture of each of these tools, placing
-them in the context of the Mesa/RADV driver stack described in Ch15 (ACO) and Ch18 (RADV).
+them in the context of the **Mesa**/**RADV** driver stack described in Ch15 (**ACO**) and
+Ch18 (**RADV**).
 
 ---
 

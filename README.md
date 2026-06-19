@@ -195,6 +195,43 @@ The master outline (with full per-chapter bullet points) is in [plan.md](plan.md
 |---|---|
 | Ch 85: Android Compositor: SurfaceFlinger, HardwareBuffer, and the Buffer Pipeline | [ch85-android-surfaceflinger.md](chapters/part-19-android-graphics/ch85-android-surfaceflinger.md) |
 | Ch 86: Vulkan on Android: Drivers, ANGLE, and Mobile GPU Performance | [ch86-android-vulkan.md](chapters/part-19-android-graphics/ch86-android-vulkan.md) |
+| Ch 94: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform | *(planned)* |
+
+## Part XX — AI/ML Inference on Linux
+
+| Chapter | File |
+|---|---|
+| Ch 87: Local LLM Inference on Linux GPUs | [ch87-llm-inference-linux.md](chapters/part-20-ai-inference/ch87-llm-inference-linux.md) |
+| Ch 88: NPU and AI Accelerator Integration on Linux | [ch88-npu-ai-accelerators.md](chapters/part-20-ai-inference/ch88-npu-ai-accelerators.md) |
+
+## Additional Chapters in Existing Parts (Part XX batch)
+
+| Chapter | Part | File |
+|---|---|---|
+| Ch 89: GPU Virtualization in Depth | Part IX | [ch89-gpu-virtualization.md](chapters/part-09-tooling-contributing/ch89-gpu-virtualization.md) |
+| Ch 90: Open ARM GPU Drivers — Lima, Panfrost, and Panthor | Part II | [ch90-panfrost-panthor-lima.md](chapters/part-02-gpu-drivers/ch90-panfrost-panthor-lima.md) |
+| Ch 91: MLIR and the Emerging GPU Compiler Infrastructure | Part IV | [ch91-mlir-gpu-compilation.md](chapters/part-04-mesa-architecture/ch91-mlir-gpu-compilation.md) |
+| Ch 92: The Raspberry Pi GPU Stack — VideoCore and V3D | Part II | [ch92-raspberry-pi-videocore.md](chapters/part-02-gpu-drivers/ch92-raspberry-pi-videocore.md) |
+| Ch 93: GPU Performance Analysis Methodology | Part IX | [ch93-gpu-performance-analysis.md](chapters/part-09-tooling-contributing/ch93-gpu-performance-analysis.md) |
+
+## Part XXI — Platform, Legacy, and History
+
+| Chapter | File |
+|---|---|
+| Ch 95: X11/Xorg Architecture and the DRI Legacy Stack | [ch95-x11-xorg-dri-legacy.md](chapters/part-21-platform-legacy/ch95-x11-xorg-dri-legacy.md) |
+| Ch 99: Automotive and Embedded Linux Graphics | [ch99-automotive-embedded-graphics.md](chapters/part-21-platform-legacy/ch99-automotive-embedded-graphics.md) |
+| Ch 103: The Linux Graphics Stack: History and Design Philosophy | [ch103-history-design-philosophy.md](chapters/part-21-platform-legacy/ch103-history-design-philosophy.md) |
+
+## Additional Chapters in Existing Parts (Part XXI batch)
+
+| Chapter | Part | File |
+|---|---|---|
+| Ch 96: libcamera and the Linux Camera Stack | Part VII | [ch96-libcamera.md](chapters/part-07-application-apis-middleware/ch96-libcamera.md) |
+| Ch 97: Unreal Engine 5 on Linux | Part XI | [ch97-unreal-engine-5.md](chapters/part-11-engine-creative-tools/ch97-unreal-engine-5.md) |
+| Ch 98: WebAssembly and WebGPU as a Deployment Target | Part X | [ch98-webassembly-webgpu.md](chapters/part-10-browser-rendering-stack/ch98-webassembly-webgpu.md) |
+| Ch 100: etnaviv: The Vivante GPU Open Driver | Part II | [ch100-etnaviv-vivante.md](chapters/part-02-gpu-drivers/ch100-etnaviv-vivante.md) |
+| Ch 101: Color Science and the ICC Profile Pipeline | Part VI | [ch101-color-science-icc.md](chapters/part-06-display-stack/ch101-color-science-icc.md) |
+| Ch 102: The DRM GPU Scheduler and Multi-Process Fairness | Part I | [ch102-drm-gpu-scheduler.md](chapters/part-01-kernel-layer/ch102-drm-gpu-scheduler.md) |
 
 ---
 
@@ -269,6 +306,26 @@ The master outline (with full per-chapter bullet points) is in [plan.md](plan.md
 | Gamescope | https://github.com/ValveSoftware/gamescope |
 | Sunshine game streaming | https://github.com/LizardByte/Sunshine |
 | Moonlight client | https://github.com/moonlight-stream/moonlight-qt |
+| llama.cpp (GGML + Vulkan backend) | https://github.com/ggerganov/llama.cpp |
+| Ollama | https://github.com/ollama/ollama |
+| ONNX Runtime | https://github.com/microsoft/onnxruntime |
+| IREE (MLIR inference runtime) | https://github.com/iree-org/iree |
+| OpenAI Triton | https://github.com/openai/triton |
+| AMD XDNA driver | https://github.com/amd/xdna-driver |
+| Intel VPU (accel) driver | https://github.com/torvalds/linux (drivers/accel/ivpu/) |
+| OpenVINO | https://github.com/openvinotoolkit/openvino |
+| Panfrost / Lima (Mesa) | https://gitlab.freedesktop.org/mesa/mesa (src/panfrost/, src/gallium/drivers/lima/) |
+| VC4 / V3D (Raspberry Pi Mesa) | https://gitlab.freedesktop.org/mesa/mesa (src/broadcom/) |
+| Looking Glass (VM framebuffer) | https://github.com/gnif/LookingGlass |
+| libcamera | https://libcamera.org/ |
+| etnaviv (Mesa Vivante driver) | https://gitlab.freedesktop.org/mesa/mesa (src/gallium/drivers/etnaviv/) |
+| etna_viv (reverse engineering) | https://github.com/etnaviv/etna_viv |
+| colord | https://github.com/hughsie/colord |
+| ArgyllCMS | https://www.argyllcms.com/ |
+| LittleCMS | https://www.littlecms.com/ |
+| wgpu (Rust WebGPU) | https://github.com/gfx-rs/wgpu |
+| cage (kiosk compositor) | https://github.com/cage-kiosk/cage |
+| AGL (Automotive Grade Linux) | https://wiki.automotivelinux.org/ |
 
 ---
 

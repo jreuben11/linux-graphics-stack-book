@@ -50,19 +50,29 @@
 
 ## Overview
 
-glTF 2.0 (GL Transmission Format, version 2) is the Khronos Group's open standard for runtime-efficient delivery and interchange of 3D assets. Where formats like FBX or OBJ were designed primarily for DCC tool interchange, glTF is explicitly designed for the GPU upload path: its binary layout maps directly to WebGL, OpenGL ES, and Vulkan buffer objects, its material model corresponds to physically-based rendering as implemented in real-time engines, and its extension mechanism allows layering of lossless and lossy compression without breaking older renderers.
+**glTF 2.0** (**GL Transmission Format**, version 2) is the **Khronos Group**'s open standard for runtime-efficient delivery and interchange of 3D assets. Where formats like **FBX** or **OBJ** were designed primarily for **DCC** tool interchange, **glTF** is explicitly designed for the **GPU** upload path: its binary layout maps directly to **WebGL**, **OpenGL ES**, and **Vulkan** buffer objects, its material model corresponds to physically-based rendering as implemented in real-time engines, and its extension mechanism allows layering of lossless and lossy compression without breaking older renderers.
 
-This chapter is aimed at developers who need to build or maintain production 3D asset pipelines on Linux — integrating asset loading into Vulkan-based renderers, shipping compressed assets to web and embedded targets, and connecting to the Bevy, Godot, and Blender ecosystems. The chapter assumes familiarity with Vulkan buffers and pipelines (Chapters 24–25) and with shader compilation (Chapter 61).
+This chapter is aimed at developers who need to build or maintain production 3D asset pipelines on Linux — integrating asset loading into **Vulkan**-based renderers, shipping compressed assets to web and embedded targets, and connecting to the **Bevy**, **Godot**, and **Blender** ecosystems. The chapter assumes familiarity with **Vulkan** buffers and pipelines (Chapters 24–25) and with shader compilation (Chapter 61).
 
 Readers of this chapter will learn:
 
-- The complete glTF 2.0 schema from buffers to materials, including the precise binary alignment rules that govern the JSON→GPU memory path.
-- How the PBR metallic-roughness BRDF is specified, what each texture channel carries, and how it maps to fragment shader uniforms and descriptor sets.
-- The major Khronos extensions: Draco mesh compression, mesh quantization, texture transforms, and the PBR extension family (transmission, volume, unlit, emissive strength).
-- How to use the two dominant C/C++ loaders — tinygltf (header-only C++) and cgltf (C99 zero-copy) — with enough API detail to write a production loader without referencing additional documentation.
-- The Vulkan upload path: staging buffers, vertex and index `VkBuffer` creation, and descriptor set binding for PBR maps.
-- How Bevy, Godot, and Blender consume glTF natively, and how `gltf-transform` pre-processes assets in a CI pipeline.
-- The glTF 3.0 roadmap as of mid-2026.
+- The two concrete file forms — the **`.gltf`** **JSON** manifest with external **`.bin`** buffers and the self-contained **`.glb`** binary container — and the precise **GLB** chunk layout (magic header, **JSON** chunk, **BIN** chunk) that governs binary-level parsing.
+- The mandatory top-level **`asset`** object and version negotiation rules that every conformant loader must enforce.
+- The complete **glTF 2.0** schema from **Buffer** → **BufferView** → **Accessor** → **Mesh.Primitive**, including the binary alignment rules, sparse accessor format, interleaved vertex layout, and **JOINTS_0**/**WEIGHTS_0** attribute semantics for skeletal meshes.
+- The **Scene**, **Node**, and transform hierarchy — **TRS** decomposition, the **Y-up** right-handed coordinate system, and how camera objects (perspective and orthographic) attach to scene nodes.
+- How the **PBR** metallic-roughness **BRDF** is specified, what each texture channel carries (base colour, **metallicRoughnessTexture** G/B channels, normal, occlusion, emissive), and how it maps to **GLSL** fragment shader uniforms and **Vulkan** descriptor sets.
+- The **MikkTSpace** tangent generation algorithm mandated by the spec and the bitangent reconstruction formula used in shaders.
+- The **`pbrMetallicRoughness`** object fields, the **Cook-Torrance**/**GGX** specular lobe, and the **Schlick** Fresnel approximation driving the metallic/dielectric blend.
+- **Texture** and **Sampler** objects, their **OpenGL ES 2.0**-derived filter/wrap constants, and their mapping to **`VkSamplerCreateInfo`**.
+- Animation channels and samplers — **LINEAR**, **STEP**, and **CUBICSPLINE** interpolation, **slerp** for rotation channels, and the `"weights"` path for driving morph target blend factors.
+- **Linear blend skinning** (**LBS**) — the `inverseBindMatrices` accessor, per-frame joint matrix computation, and the vertex shader accumulation loop over **JOINTS_0**/**WEIGHTS_0**.
+- **Morph targets** as sparse accessor delta arrays and their runtime blending formula.
+- The major **Khronos** extensions: **KHR_draco_mesh_compression** (geometry entropy coding via **Google Draco**), **KHR_mesh_quantization** (reduced-precision vertex attributes), **KHR_texture_transform** (UV scale/rotate/offset for atlas animation), and the **PBR** extension family (**KHR_materials_transmission**, **KHR_materials_volume**, **KHR_materials_ior**, **KHR_materials_unlit**, **KHR_materials_emissive_strength**).
+- **EXT_meshopt_compression** — lossless **meshoptimizer** buffer compression applicable to any **bufferView**, decoded via **`meshopt_decodeVertexBuffer`** / **`meshopt_decodeIndexBuffer`** before **GPU** upload.
+- How to use the two dominant C/C++ loaders — **tinygltf** (header-only C++ with **nlohmann/json** and **stb_image**) and **cgltf** (**C99** zero-copy, direct pointer arithmetic into mapped buffers) — with enough **API** detail to write a production loader without referencing additional documentation; and when to consider **fastgltf** (**C++17**, **simdjson**-accelerated) for throughput-critical workloads.
+- The **Vulkan** upload path: staging buffers, vertex and index **`VkBuffer`** creation with **`vkCmdCopyBuffer`**, **`VkVertexInputAttributeDescription`** / **`VkVertexInputBindingDescription`** mapping, pipeline specialisation for **OPAQUE**/**MASK**/**BLEND** alpha modes, and the modern bindless approach using **buffer device addresses** and **`VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`**.
+- How **Bevy**'s **`GltfAssetPlugin`** (**bevy_gltf** crate), **Godot**'s **`GLTFDocument`** API, and **Blender**'s **`io_scene_gltf2`** addon (**Principled BSDF** ↔ **PBR** metallic-roughness) consume **glTF** natively, and how **`gltf-transform`** pre-processes assets in a **CI** pipeline.
+- The **glTF 3.0** roadmap as of mid-2026, including planned **MaterialX** integration, **KHR_audio_emitter**, **EXT_mesh_gpu_instancing**, and promotion of **EXT_meshopt_compression** to a **KHR** extension.
 
 ---
 

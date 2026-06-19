@@ -21,22 +21,22 @@ This chapter covers the wave of staging protocols that reached compositor implem
 
 ## 1. Background: The Staging Tier
 
-`wayland-protocols` uses three tiers: **stable** (frozen ABI), **staging** (actively maintained, backward-compatible changes allowed within a version), and **unstable** (prefixed `zwp_`, effectively draft). A staging protocol may accumulate breaking interface redesigns as major version bumps; once two independent compositors ship it and the protocol committee is satisfied with the design, it graduates to stable.
+**`wayland-protocols`** uses three tiers: **stable** (frozen ABI), **staging** (actively maintained, backward-compatible changes allowed within a version), and **unstable** (prefixed **`zwp_`**, effectively draft). A staging protocol may accumulate breaking interface redesigns as major version bumps; once two independent compositors ship it and the protocol committee is satisfied with the design, it graduates to stable.
 
-The criteria for stable graduation, as documented in the `wayland-protocols` contribution guide:
+The criteria for stable graduation, as documented in the **`wayland-protocols`** contribution guide:
 
 1. At least two independent compositor implementations exist.
 2. At least two independent client-side implementations (toolkits or applications) exist.
 3. The protocol committee has reviewed the design for protocol-level correctness (no resource leaks, clear error conditions, correct event ordering guarantees).
 4. No known design issues remain open that would require a breaking interface change.
 
-All protocols discussed in this chapter live under `wayland-protocols/staging/`. Their XML sources are at:
+All protocols discussed in this chapter live under **`wayland-protocols/staging/`**. Their **XML** sources are at:
 
 ```
 https://gitlab.freedesktop.org/wayland/wayland-protocols/-/tree/main/staging
 ```
 
-**Discovering protocol support at runtime.** Wayland clients discover compositor capabilities by listening to `wl_registry.global` events. Each protocol that a compositor supports is advertised as a named global with a version number. A client should bind to the interface at the version it requires and check for `NULL` return — if the compositor doesn't advertise the interface, the bind returns `NULL` and the client must fall back:
+**Discovering protocol support at runtime.** **Wayland** clients discover compositor capabilities by listening to **`wl_registry.global`** events. Each protocol that a compositor supports is advertised as a named global with a version number. A client should bind to the interface at the version it requires and check for `NULL` return — if the compositor doesn't advertise the interface, the bind returns `NULL` and the client must fall back:
 
 ```c
 static void registry_global(void *data, struct wl_registry *registry,
@@ -55,7 +55,7 @@ static void registry_global(void *data, struct wl_registry *registry,
 }
 ```
 
-Because `wl_registry` is the only capability discovery mechanism, application developers must handle `NULL` for each optional interface and degrade gracefully — for example, skipping explicit sync setup if `syncobj_manager == NULL`, and falling back to `glFinish()` before commit.
+Because **`wl_registry`** is the only capability discovery mechanism, application developers must handle `NULL` for each optional interface and degrade gracefully — for example, skipping explicit sync setup if `syncobj_manager == NULL`, and falling back to **`glFinish()`** before commit. The absence of a dedicated capability-query protocol (§7.5) is itself an unresolved design gap in the ecosystem.
 
 Protocol namespaces used in this chapter:
 
@@ -65,6 +65,8 @@ Protocol namespaces used in this chapter:
 | `ext_` | Extension (cross-desktop stable) | wayland-protocols/stable or staging |
 | `zwlr_` | wlroots-specific unstable | wlr-protocols (separate repo) |
 | `xdp_` | xdg-desktop-portal D-Bus API | flatpak/xdg-desktop-portal |
+
+This chapter covers five major protocol areas. Section 2 examines **`wp_linux_drm_syncobj_v1`**, the explicit synchronisation protocol that resolves the longstanding GPU-fence corruption problem for **NVIDIA** users, building on **DRM** timeline sync objects (**`DRM_IOCTL_SYNCOBJ_CREATE`**, **`DRM_IOCTL_SYNCOBJ_TRANSFER`**), **Mesa**'s **EGL** and **Vulkan WSI** client integration, and implementations in **Mutter**, **KWin**, and **wlroots**. Section 3 covers **`wp_color_management_v1`** and its companion **`wp_color_representation_v1`**: the image-description model (**`wp_image_description_v1`**), **ICC** profile upload, parametric colour spaces (**sRGB**, **Display P3**, **BT.2020**, **PQ/ST2084**, **HLG/BT2100**), surface colour management, output colour feedback, and the **KMS** colour pipeline (**`DEGAMMA_LUT`**, **`CTM`**, **`GAMMA_LUT`**) driven by both **Mutter** and **KWin**. Section 4 addresses cross-compositor screen capture via **`ext-image-copy-capture-v1`** paired with the source-selection companion **`ext-image-capture-source-v1`** and the window-enumeration protocol **`ext-foreign-toplevel-list-v1`**; it traces the full lifecycle from capture session through **DMA-BUF** frame delivery to **PipeWire** integration for **OBS**, **WebRTC**, and browser screencast use-cases. Section 5 covers frame scheduling with **`wp_fifo_v1`** — the barrier/wait-barrier mechanism designed for gaming workloads on **Steam Deck** (**AMD RDNA2**) — plus its companion **`wp_commit_timing_v1`** for timestamp-driven presentation scheduling used by media players and **VRR** displays; both are authored by **Valve Corporation**. Section 6 surveys the evolution of **`xdg-desktop-portal`**, including the **`org.freedesktop.portal.GlobalShortcuts`** portal that closes the **`XGrabKey`** gap for sandboxed **Flatpak** applications, **`org.freedesktop.portal.RemoteDesktop`** improvements (clipboard support, session persistence, and the underlying **`zwp_virtual_keyboard_v1`** / **`zwp_virtual_pointer_v1`** stack), the **`org.freedesktop.portal.InputCapture`** portal for accessibility and remote-desktop input injection, and **`wp_security_context_v1`** which allows the portal daemon to tag **Wayland** socket connections with per-application policy metadata. Section 7 catalogs protocols that remain unresolved as of mid-2026: system tray / **`org.freedesktop.StatusNotifierItem`** (**SNI**), the **`ext-workspace-v1`** virtual desktop protocol, **`ext-session-lock-v1`**, network transparency via **Waypipe** (and its **H.264**/**zstd** re-compression architecture over **SSH**), and the absence of a **`wl_registry`**-level capability discovery mechanism.
 
 **Chapter protocol summary** (mid-2026 snapshot):
 

@@ -23,15 +23,15 @@
 
 ## 1. ARCore Architecture Overview
 
-ARCore is Google's augmented reality SDK for Android. It is not a kernel subsystem, a HAL module, or a Vulkan layer — it is an application-layer SDK that sits above the Android operating system, consuming data from the Camera HAL and IMU sensors via standard Android APIs, and producing world-understanding primitives (poses, planes, anchors, depth maps, light estimates) that app-layer renderers consume. ARCore ships as a Play Services component (`com.google.ar.core`) that is updated independently of the Android OS version, letting Google iterate on tracking algorithms without waiting for OEM firmware updates. [Source: ARCore quickstart](https://developers.google.com/ar/develop/android/quickstart)
+**ARCore** is Google's augmented reality SDK for Android. It is not a kernel subsystem, a **HAL** module, or a **Vulkan** layer — it is an application-layer SDK that sits above the Android operating system, consuming data from the **Camera HAL** and **IMU** sensors via standard Android APIs, and producing world-understanding primitives (poses, planes, anchors, depth maps, light estimates) that app-layer renderers consume. **ARCore** ships as a Play Services component (**`com.google.ar.core`**) that is updated independently of the Android OS version, letting Google iterate on tracking algorithms without waiting for OEM firmware updates. [Source: ARCore quickstart](https://developers.google.com/ar/develop/android/quickstart)
 
 ### Three core capabilities
 
-ARCore rests on three pillars:
+**ARCore** rests on three pillars:
 
-1. **Motion tracking** — Continuous 6DoF (six degrees of freedom) estimation of the device's position and orientation relative to its starting pose, achieved via Visual-Inertial Odometry (VIO) that fuses camera frames with accelerometer and gyroscope readings.
-2. **Environmental understanding** — Detection of real-world geometry: horizontal and vertical planes, point clouds, depth maps, and (on Android 12+) per-pixel semantic labels. Planes are grown incrementally as the user moves through the space.
-3. **Light estimation** — Analysis of the camera image to estimate scene illumination, ranging from a simple scalar ambient intensity to a full spherical HDR environment map suitable for image-based lighting (IBL) in PBR renderers.
+1. **Motion tracking** — Continuous **6DoF** (six degrees of freedom) estimation of the device's position and orientation relative to its starting pose, achieved via **Visual-Inertial Odometry** (**VIO**) that fuses camera frames with accelerometer and gyroscope readings.
+2. **Environmental understanding** — Detection of real-world geometry: horizontal and vertical planes, point clouds, depth maps, and (on Android 12+) per-pixel semantic labels via the **Scene Semantics** API. Planes are grown incrementally as the user moves through the space.
+3. **Light estimation** — Analysis of the camera image to estimate scene illumination, ranging from a simple scalar ambient intensity (**Ambient Intensity** mode) to a full spherical **HDR** environment map suitable for image-based lighting (**IBL**) in **PBR** renderers (**Environmental HDR** mode).
 
 ### Position in the Android software stack
 
@@ -48,29 +48,31 @@ graph TD
     I --> J[Display\nvia SurfaceFlinger]
 ```
 
-ARCore opens a camera session using the public `android.hardware.camera2` API (not a private HAL path), registers sensor listeners via `android.hardware.SensorManager`, fuses the data internally, and exposes results through the ARCore C API (`libarcore_sdk_c.so`) or the Java/Kotlin SDK (`com.google.ar.core`). [Source: ARCore C API reference](https://developers.google.com/ar/reference/c)
+**ARCore** opens a camera session using the public **`android.hardware.camera2`** API (not a private **HAL** path), registers sensor listeners via **`android.hardware.SensorManager`**, fuses the data internally, and exposes results through the **ARCore C API** (**`libarcore_sdk_c.so`**) or the Java/Kotlin SDK (**`com.google.ar.core`**). [Source: ARCore C API reference](https://developers.google.com/ar/reference/c)
+
+The chapter traces this architecture across the full stack. Section 2 examines the **Camera HAL3** request/result pipeline — **`camera3_device_ops_t`**, **`process_capture_request()`**, **gralloc**-backed **`AHardwareBuffer`** output buffers — and how **ARCore** opens a **Camera2** repeating capture session using **`TEMPLATE_RECORD`** and integrates high-rate **IMU** data from the **`SensorManager`** for **VIO** via IMU preintegration and a factor graph/EKF optimizer. Section 3 covers the **`ArSession`** lifecycle API (**`ArSession_create()`**, **`ArSession_resume()`**, **`ArSession_pause()`**, **`ArSession_update()`**), the **`ArFrame`** update loop, the **`ArPose`** 7-element quaternion-translation representation, and the **`AR_UPDATE_MODE_BLOCKING`** vs **`AR_UPDATE_MODE_LATEST_CAMERA_IMAGE`** update modes and **`AR_FOCUS_MODE_AUTO`** focus control. Section 4 details the AR rendering pipeline: the **OpenGL ES** zero-copy camera background path via **`GL_TEXTURE_EXTERNAL_OES`**, **`EGLImageKHR`** (**`EGL_KHR_image_base`**), and **`samplerExternalOES`**; virtual content rendering using **`ArCamera_getViewMatrix()`** and **`ArCamera_getProjectionMatrix()`**; depth occlusion in **GLSL**; and the **Vulkan** import path via **`VK_ANDROID_external_memory_android_hardware_buffer`**, **`vkGetAndroidHardwareBufferPropertiesANDROID()`**, and **`VkSamplerYcbcrConversion`**. Section 5 covers environment understanding: **`ArPlane`** objects (**`ArSession_getAllTrackables()`**, polygon boundaries, subsume relationships), **`ArPointCloud`** feature point access, the **Scene Semantics** API (**`ArConfig_setSemanticMode()`**, **`ArFrame_acquireSemanticImage()`**), and **Instant Placement** via **`ArFrame_hitTestInstantPlacement()`**. Section 6 covers the **Depth API**: depth sources (structured light/**dToF** sensors, **MotionStereo**, smooth depth), configuration via **`AR_DEPTH_MODE_AUTOMATIC`**, frame acquisition via **`ArFrame_acquireDepthImage16Bits()`** and **`ArFrame_acquireRawDepthImage16Bits()`**, depth image properties (16-bit unsigned integer, millimeter encoding), and upload to **OpenGL ES** using **`GL_EXT_texture_norm16`** or an **`GL_RG8`** fallback. Section 7 treats anchors: local anchors via **`ArFrame_hitTest()`** and **`ArHitResult_acquireNewAnchor()`**; the **Geospatial API** using Google's **Visual Positioning System** (**VPS**), **`ArEarth`**, **`ArGeospatialPose`**, and **`ArEarth_acquireNewAnchor()`** for **WGS84**-coordinate anchors; and **Cloud Anchors** for shared AR experiences via **`ArSession_hostCloudAnchorAsync()`** and **`ArSession_resolveCloudAnchorAsync()`**. Section 8 details light estimation: the **Ambient Intensity** mode (**`ArLightEstimate_getPixelIntensity()`**, **`ArLightEstimate_getColorCorrection()`**) and the **Environmental HDR** mode (**`ArImageCubemap`** in **`AIMAGE_FORMAT_RGBA_FP16`**, **`ArLightEstimate_getEnvironmentalHdrAmbientSphericalHarmonics()`** for L2 **spherical harmonics**, and the **IBL** split-sum approximation with a prefiltered environment map and **BRDF LUT**). Section 9 covers the **OpenXR** loader shipped with **ARCore** services and the extensions it supports (**`XR_EXT_hand_tracking`**, **`XR_ANDROID_trackables`**, **`XR_KHR_composition_layer_depth`**), the **Android XR** spatial computing platform targeting headsets such as **Project Moohan**, the **Jetpack XR** SDK (**`androidx.xr`** modules: **`androidx.xr.runtime`**, **`androidx.xr.scenecore`**, **`androidx.xr.compose`**), and passthrough compositing on **Android XR** headsets. Section 10 explains the **ARCore** recording and playback (Dataset API): storing camera frames and **IMU** data in an **MP4** container via **`ArSession_startRecording()`** / **`ArSession_stopRecording()`**, deterministic replay via **`ArSession_startPlayback()`**, and custom tracks for CI/CD automated testing. Section 11 examines performance and power: the CPU cost of the **VIO** tracking thread (feature extraction, **IMU** preintegration, factor graph), GPU offload of **MotionStereo** depth, **Scene Semantics**, and **HDR** light estimation via **NNAPI** and **NPU** (e.g., **Hexagon DSP** on **Snapdragon**), camera stream power budget, frame pacing via **`android.view.Choreographer`** and **VSYNC** decoupled from **`ArSession_update()`**, and the **`AHardwareBuffer`** zero-copy pipeline from **Camera ISP** to GPU shader.
 
 ### Supported devices and API levels
 
-ARCore requires Android 7.0 (API 24) as the minimum OS version. However, Google differentiates between:
+**ARCore** requires Android 7.0 (API 24) as the minimum OS version. However, Google differentiates between:
 
 - **AR Optional** apps — declare `<uses-library android:name="com.google.ar.core" android:required="false"/>` and degrade gracefully on unsupported devices. Minimum API 24.
-- **AR Required** apps — declare `<uses-library android:name="com.google.ar.core" android:required="true"/>` and require Android 9.0 (API 28). This is the minimum at which ARCore's device compatibility list includes broad handset coverage.
+- **AR Required** apps — declare `<uses-library android:name="com.google.ar.core" android:required="true"/>` and require Android 9.0 (API 28). This is the minimum at which **ARCore**'s device compatibility list includes broad handset coverage.
 
-As of 2025, over 1 billion Android devices support ARCore. The [ARCore supported devices list](https://developers.google.com/ar/devices) specifies which handsets have been validated; not every Android 9+ device is supported, as ARCore requires hardware validation by the OEM.
+As of 2025, over 1 billion Android devices support **ARCore**. The [ARCore supported devices list](https://developers.google.com/ar/devices) specifies which handsets have been validated; not every Android 9+ device is supported, as **ARCore** requires hardware validation by the OEM.
 
 ### ARCore vs ARKit (conceptual comparison)
 
-Apple's ARKit occupies the analogous position in the iOS stack. Both SDKs are closed-source runtimes that consume camera and IMU data to produce VIO-based world tracking. Key architectural differences:
+Apple's **ARKit** occupies the analogous position in the iOS stack. Both SDKs are closed-source runtimes that consume camera and **IMU** data to produce **VIO**-based world tracking. Key architectural differences:
 
 | Dimension | ARCore | ARKit |
 |---|---|---|
 | OS integration | Play Services (updatable) | OS framework (iOS update) |
-| Camera API | Camera2 (public) | AVFoundation (private, tighter integration) |
-| Depth | MotionStereo + dToF sensor | LiDAR on Pro devices |
-| Geospatial | VPS via Street View tiles | —  |
+| Camera API | **Camera2** (public) | **AVFoundation** (private, tighter integration) |
+| Depth | **MotionStereo** + **dToF** sensor | **LiDAR** on Pro devices |
+| Geospatial | **VPS** via Street View tiles | —  |
 | OpenXR | Supported via loader | Partial via visionOS |
-| Headset support | Android XR / Project Moohan | Apple Vision Pro |
+| Headset support | **Android XR** / **Project Moohan** | Apple Vision Pro |
 
 ---
 
