@@ -1,4 +1,4 @@
-# Chapter 117: DKMS and Out-of-Tree GPU Kernel Modules
+# Chapter 122: DKMS and Out-of-Tree GPU Kernel Modules
 
 **Target audiences**: System administrators deploying GPU drivers; kernel and driver developers maintaining out-of-tree or downstream kernel trees; Linux distribution packagers managing GPU driver packages.
 

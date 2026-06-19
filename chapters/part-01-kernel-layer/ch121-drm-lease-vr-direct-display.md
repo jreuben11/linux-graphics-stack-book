@@ -1,4 +1,4 @@
-# Chapter 116: DRM Lease and VR Direct Display
+# Chapter 121: DRM Lease and VR Direct Display
 
 > **Part**: Part I — The Kernel Layer
 > **Audience**: VR compositor developers, OpenXR runtime implementers, Wayland compositor authors, and display engineers working with head-mounted displays (HMDs)

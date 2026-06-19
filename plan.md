@@ -144,12 +144,15 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 100: etnaviv: The Vivante GPU Open Driver](#chapter-100-etnaviv-the-vivante-gpu-open-driver) *(Part II)*
   - [Chapter 101: Color Science and the ICC Profile Pipeline](#chapter-101-color-science-and-the-icc-profile-pipeline) *(Part VI)*
   - [Chapter 102: The DRM GPU Scheduler and Multi-Process Fairness](#chapter-102-the-drm-gpu-scheduler-and-multi-process-fairness) *(Part I)*
-- **Part XXII — Coverage Gap Chapters**
-  - [Chapter 116: DRM Lease and VR Direct Display](#chapter-116-drm-lease-and-vr-direct-display) *(Part I)*
-  - [Chapter 117: DKMS and Out-of-Tree GPU Kernel Modules](#chapter-117-dkms-and-out-of-tree-gpu-kernel-modules) *(Part IX)*
-  - [Chapter 118: Screen Capture and Remote Desktop on Linux](#chapter-118-screen-capture-and-remote-desktop-on-linux) *(Part VI)*
+- **Part XXII — Additional Chapters**
+  - [Chapter 116: RISC-V GPU Drivers](#chapter-116-risc-v-gpu-drivers) *(Part II)*
+  - [Chapter 117: Slang — Differentiable and Modular Shading Language](#chapter-117-slang--differentiable-and-modular-shading-language) *(Part XV)*
+  - [Chapter 118: NAK — The Nouveau/NVK Rust Shader Compiler](#chapter-118-nak--the-nouveaunk-rust-shader-compiler) *(Part III)*
   - [Chapter 119: Zink — OpenGL on Vulkan](#chapter-119-zink--opengl-on-vulkan) *(Part IV)*
   - [Chapter 120: GPU Memory Management Internals — TTM, GEM, and BAR](#chapter-120-gpu-memory-management-internals--ttm-gem-and-bar) *(Part I)*
+  - [Chapter 121: DRM Lease and VR Direct Display](#chapter-121-drm-lease-and-vr-direct-display) *(Part I)*
+  - [Chapter 122: DKMS and Out-of-Tree GPU Kernel Modules](#chapter-122-dkms-and-out-of-tree-gpu-kernel-modules) *(Part IX)*
+  - [Chapter 123: Screen Capture and Remote Desktop on Linux](#chapter-123-screen-capture-and-remote-desktop-on-linux) *(Part VI)*
 
 ---
 
@@ -1565,9 +1568,9 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 
 ---
 
-## Part XXII — Coverage Gap Chapters
+## Part XXII — Additional Chapters
 
-### Chapter 118: Screen Capture and Remote Desktop on Linux *(Part VI)*
+### Chapter 123: Screen Capture and Remote Desktop on Linux *(Part VI)*
 
 - X11 screen capture: `XGetImage`, `XShmGetImage`, XComposite `NameWindowPixmap`, the security problem (any client can capture any window)
 - KMS writeback connectors: `DRM_MODE_CONNECTOR_WRITEBACK`, `drm_writeback_job`; supported by Mali-DP, Arm Komeda, VC4 TXP, AMDGPU, R-Car DU, Qualcomm DPU, VKMS
@@ -1579,6 +1582,34 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - WebRTC screen sharing: `getDisplayMedia()` → xdg-portal → PipeWire; Chromium PipeWire-based capturer; Firefox via GtkScreenCast
 - Remote desktop: gnome-remote-desktop (FreeRDP, H.264 via VA-API); xrdp; Sunshine/Moonlight (GameStream, NVENC/VAAPI)
 - **Integrations**: Ch2 (KMS writeback), Ch20 (Wayland ext-image-copy-capture), Ch21 (wlr-screencopy), Ch38 (PipeWire), Ch50 (Firefox), Ch57 (remote desktop encoding), Ch111 (Flatpak portal), Ch112 (VRR)
+
+### Chapter 116: RISC-V GPU Drivers *(Part II)*
+
+- RISC-V GPU ecosystem: open-source GPU IP, commercial SoCs (StarFive JH7110 / Imagination BXT M-21), RVV extensions relevant to GPU offload
+- Imagination PowerVR BXT M-21 on JH7110: `pvr` Mesa Vulkan driver; kernel DRM `drivers/gpu/drm/imagination/`; Mesa 24.x and Linux 6.8+ status
+- Open-source GPU IP: LlamaGPU, RVGPU (remote OpenGL/Vulkan via Wayland); virtio-gpu as pragmatic fallback on QEMU/Spike
+- Mesa software renderers on RISC-V: llvmpipe with RVV vectorisation; lavapipe; LLVM RISC-V target
+- RISC-V display stack: KMS/DRM on JH7110 (`drivers/gpu/drm/verisilicon/`); Wayland on RISC-V (wlroots, sway)
+- **Integrations**: Ch1 (DRM driver model), Ch4 (GEM, virtio-gpu), Ch17 (software renderers), Ch89 (GPU virtualisation), Ch122 (DKMS for BSP GPU drivers)
+
+### Chapter 117: Slang — Differentiable and Modular Shading Language *(Part XV)*
+
+- Overview: open-source shading language (NVIDIA Research → https://github.com/shader-slang/slang); generics, interfaces, automatic differentiation, modules
+- Automatic differentiation: `[Differentiable]` attribute; `fwd_diff`/`bwd_diff` operators; neural rendering and differentiable rendering use cases
+- Language features: generics and interfaces; `import` modules; `extension` blocks; `[Require]` capability constraints
+- Compilation targets: SPIR-V (Vulkan), DXIL (D3D12), CUDA PTX, CPU fallback; `slangc` compiler; C API via `SlangCompileRequest`
+- Integration: Falcor renderer; Vulkan SPIR-V output to RADV/ANV/NVK; PySlang Python bindings; ROCm/HIP via SPIR-V
+- **Integrations**: Ch14 (NIR — Slang SPIR-V → spirv_to_nir), Ch24 (Vulkan), Ch66 (CUDA PTX target), Ch110 (SPIR-V toolchain), Ch115 (NeRFStudio neural rendering workloads)
+
+### Chapter 118: NAK — The Nouveau/NVK Rust Shader Compiler *(Part III)*
+
+- NAK: Rust-language shader compiler backend for Nouveau/NVK replacing C-based nvir/nvc0; lives in Mesa `src/nouveau/compiler/`
+- Architecture: NIR → NAK IR → register allocation → SASS binary; `nak_compile_shader()` entry; `nak::ir` crate; `nak::opt` passes
+- NAK IR: SSA form, `Instr`/`Op`/`Src`/`Dst` types; `RegFile` (GPR, predicate, uniform); SASS instruction modelling
+- Register allocation: `nak_ra` crate; live range analysis; spilling to local memory; predicated execution model
+- SASS ISA coverage: Ampere (sm_86), Ada Lovelace (sm_89), Hopper (sm_90); `nak_encode`; inline assembly via `nak_asm`
+- Optimisation passes: copy propagation, DCE, constant folding, memory coalescing, barrier optimisation
+- **Integrations**: Ch8 (Nouveau kernel driver), Ch10 (NVK Vulkan driver), Ch14 (NIR input IR), Ch20 (Nova Rust driver), Ch110 (SPIR-V → NIR → NAK path)
 
 ### Chapter 119: Zink — OpenGL on Vulkan *(Part IV)*
 
@@ -1606,7 +1637,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Debugging: fdinfo `drm-total-*/drm-shared-*/drm-active-*`; per-driver debugfs; `drm_info`
 - **Integrations**: Ch1 (DRM), Ch2 (KMS), Ch4 (GEM/DMA-BUF overview — differentiated scope), Ch5 (amdgpu/i915/Xe), Ch8 (Nouveau), Ch89 (GPU virtualisation), Ch102 (DRM GPU scheduler)
 
-### Chapter 116: DRM Lease and VR Direct Display *(Part I)*
+### Chapter 121: DRM Lease and VR Direct Display *(Part I)*
 
 - VR latency problem: motion-to-photon <20 ms; direct display eliminates compositor overhead; ATW (Asynchronous Time Warp)
 - DRM lease API (kernel 4.15): `DRM_IOCTL_MODE_CREATE_LEASE`, `DRM_IOCTL_MODE_LIST_LESSEES`, `DRM_IOCTL_MODE_GET_LEASE`, `DRM_IOCTL_MODE_REVOKE_LEASE`
@@ -1618,7 +1649,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Practical setup: Valve Index, Meta Quest (ALVR), HTC Vive; libsurvive; Monado-gui
 - **Integrations**: Ch2 (KMS atomic), Ch20 (Wayland wp_drm_lease_device_v1), Ch21 (wlroots), Ch24 (Vulkan), Ch25 (OpenXR), Ch75 (explicit sync), Ch112 (VRR)
 
-### Chapter 117: DKMS and Out-of-Tree GPU Kernel Modules *(Part IX)*
+### Chapter 122: DKMS and Out-of-Tree GPU Kernel Modules *(Part IX)*
 
 - Kernel module ABI problem: no stable ABI; vermagic; `CONFIG_MODVERSIONS` CRC; `EXPORT_SYMBOL_GPL` restrictions
 - DKMS mechanics: `dkms.conf` directives; `dkms add/build/install/status/autoinstall`; `/var/lib/dkms/`; systemd hook
