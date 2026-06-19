@@ -182,6 +182,14 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 139: DRM Hardware Overlay Planes and Composition Bypass](#chapter-139-drm-hardware-overlay-planes-and-composition-bypass) *(Part I)*
   - [Chapter 140: HDMI and DisplayPort Audio on Linux](#chapter-140-hdmi-and-displayport-audio-on-linux) *(Part VI)*
   - [Chapter 141: Vulkan Cooperative Matrices and GPU ML Acceleration](#chapter-141-vulkan-cooperative-matrices-and-gpu-ml-acceleration) *(Part VII)*
+- **Part XXIV — Critical Gap Chapters**
+  - [Chapter 142: V4L2 and the Linux Media Subsystem](#chapter-142-v4l2-and-the-linux-media-subsystem) *(Part XIII)*
+  - [Chapter 143: RADV Internals: The Mesa AMD Vulkan Driver](#chapter-143-radv-internals-the-mesa-amd-vulkan-driver) *(Part XVII)*
+  - [Chapter 144: Boot Graphics Pipeline: From Firmware to KMS Handoff](#chapter-144-boot-graphics-pipeline-from-firmware-to-kms-handoff) *(Part I)*
+  - [Chapter 145: XWayland: Architecture and the X11-to-Wayland Bridge](#chapter-145-xwayland-architecture-and-the-x11-to-wayland-bridge) *(Part VI)*
+  - [Chapter 146: WebCodecs and Browser Hardware Acceleration](#chapter-146-webcodecs-and-browser-hardware-acceleration) *(Part X)*
+  - [Chapter 147: Chrome and Firefox Hardware Video Decode via VA-API](#chapter-147-chrome-and-firefox-hardware-video-decode-via-va-api) *(Part X)*
+  - [Chapter 148: Vulkan Synchronisation: A Complete Developer Reference](#chapter-148-vulkan-synchronisation-a-complete-developer-reference) *(Part VII)*
 
 ---
 
@@ -2012,6 +2020,110 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Practical multi-queue frame: complete timeline table (Z-prepass/particles/lighting/culling/shading/TAA/present); `vkQueueSubmit2` per stage; GPU timestamp profiling; binary semaphore bridge for WSI
 - Vulkan video queues: `VK_QUEUE_VIDEO_DECODE_BIT_KHR`; `VkVideoSessionKHR`; `vkCmdDecodeVideoKHR`; H.264/H.265/AV1 profiles; RADV AV1 encode (mid-2025); video→graphics sync
 - **Integrations**: Ch24 (Vulkan API), Ch25 (GPU Compute), Ch26 (Hardware Video — video queues), Ch50 (timeline semaphores detail), Ch75 (explicit GPU sync), Ch84 (bgfx frame graph), Ch97 (UE5 RDG), Ch102 (DRM GPU scheduler), Ch127 (mesh shaders on compute queues)
+
+---
+
+## Part XXIV — Critical Gap Chapters
+
+### Chapter 142: V4L2 and the Linux Media Subsystem *(Part XIII)*
+
+- V4L2 architecture: device nodes (/dev/videoN, /dev/mediaM, /dev/subdevX); media controller framework; entity/pad/link graph; `MEDIA_IOC_DEVICE_INFO`, `MEDIA_IOC_ENUM_ENTITIES`
+- Device types: capture, output, mem-to-mem (M2M transcoding), overlay; `VIDIOC_QUERYCAP`; `V4L2_CAP_VIDEO_CAPTURE`, `V4L2_CAP_STREAMING`
+- Pixel format taxonomy: FourCC table (NV12, YUV420M, MJPEG, H264, VP9, AV1); `VIDIOC_ENUM_FMT`, `VIDIOC_S_FMT`, `v4l2_pix_format_mplane`
+- Memory models: MMAP, USERPTR, DMABUF; buffer lifecycle state machine; `select()`/`poll()` streaming loop
+- V4L2 subdev API: `MEDIA_IOC_SETUP_LINK`; pad-level format negotiation; sensor driver (imx219); V4L2 controls
+- libcamera: pipeline handlers; IPA modules; `libcamera::Stream`, `libcamera::Request`; V4L2Compat; `cam` tool
+- DMA-BUF bridge to GPU: EGL, Vulkan, OpenCL import paths; zero-copy camera→inference→compositor
+- Stateful vs stateless codecs: request API (`media_request_fd`); `MEDIA_REQUEST_IOC_QUEUE`; H.264 stateful decode
+- GStreamer V4L2: `v4l2src`, `v4l2video0convert`, `v4l2h264enc`; DMA-BUF zero-copy pipeline
+- Raspberry Pi CSI: RP1 ISP, unicam, pisp; cam/libcamera-still; DMA-BUF sensor→ISP→display
+- **Integrations**: Ch26 (VA-API DMABUF interop), Ch37 (PipeWire pw-v4l2 compat), Ch38 (ffmpeg V4L2 M2M), Ch99 (automotive camera)
+
+### Chapter 143: RADV Internals: The Mesa AMD Vulkan Driver *(Part XVII)*
+
+- RADV overview: open-source Vulkan 1.4 in Mesa `src/amd/vulkan/`; history from 2016; conformance; gaming workloads
+- AMD hardware: GCN→RDNA1/2/3/4; Shader Engines, CUs, SIMDs, LDS; VGPR/SGPR; wave32/wave64; NGG
+- radv_physical_device, radv_device: WSI; feature caps; `amdgpu_gpu_info`; memory management (VRAM/GTT, suballoc, DMA-BUF)
+- Command buffer: `radv_cmd_buffer`; PM4 emission; dynamic rendering migration; pipeline barriers
+- Shader pipeline: SPIR-V→NIR→RADV NIR passes→ACO (Ch15); ACO vs LLVM; RADV-specific lowering
+- Descriptors: inline UBOs; push descriptors; buffer device address; `VK_EXT_descriptor_buffer`
+- Ray tracing: `radv_bvh.c`; CPU/GPU hybrid BVH build (RDNA2+); `VK_KHR_ray_tracing_pipeline`
+- Mesh shaders (RDNA3), VRS, conditional rendering, transform feedback, pipeline statistics
+- Pipeline cache: `~/.cache/mesa_shader_cache_db/`; Steam Shader Pre-Caching
+- Debugging: `RADV_DEBUG`, `RADV_PERFTEST`; `umr`; RGP/SQTT capture; GPU hang analysis
+- **Integrations**: Ch12 (amdgpu kernel), Ch15 (ACO), Ch18 (Vulkan driver interface), Ch48 (ROCm), Ch104 (DXVK runs on RADV), Ch135 (ray tracing)
+
+### Chapter 144: Boot Graphics Pipeline: From Firmware to KMS Handoff *(Part I)*
+
+- Boot timeline: UEFI GOP → efifb/simplefb → simpledrm → Plymouth → KMS native driver probe
+- UEFI GOP: GOP framebuffer; EFI memory map; GOP mode passed via EFI stub; efifb `/proc/fb`
+- simplefb/simpledrm: `compatible = "simple-framebuffer"`; `CONFIG_DRM_SIMPLEDRM`; handoff mechanism
+- DRM driver probe race: `pci_register_driver` ordering; deferred probe; native driver claims PCI; simpledrm unbind
+- KMS at first bind: `drm_atomic_helper_resume`; initial mode; EDID timing; display subsystem restore
+- Plymouth: renderer plugins (DRM, GLES, FB); `drmModeSetCrtc`; VT switch to compositor (`DRM_IOCTL_SET_MASTER`)
+- Boot→compositor handoff: `DRM_IOCTL_SET_MASTER`; atomic plane restore; LVDS/eDP power sequencing
+- Secure Boot: SBAT; shim+GRUB; nvidia-open signing; efistub
+- Embedded: U-Boot video; panel-simple; pwm-backlight; Raspberry Pi config.txt
+- Debugging: `drm.debug=0x4`; `plymouth --debug`; `/sys/kernel/debug/dri/0/state`
+- **Integrations**: Ch1 (DRM driver model), Ch2 (KMS), Ch5 (x86 GPU drivers), Ch92 (Raspberry Pi VC4/simpledrm)
+
+### Chapter 145: XWayland: Architecture and the X11-to-Wayland Bridge *(Part VI)*
+
+- XWayland role: X server as Wayland client; rootless (default) vs full-screen; compositor-launched
+- Wayland client side: `wl_surface`/`xdg_toplevel` per X11 window; `xwayland-shell-v1`
+- DRI3 buffer sharing: DMA-BUF between X11 clients and compositor; PRESENT for vsync
+- Input: Wayland→X11 event translation; XKB sync; pointer grab conflicts
+- Clipboard/selections: X11 PRIMARY/CLIPBOARD ↔ `wl_data_device`; XDND ↔ `wl_data_offer`
+- GLX on XWayland: DRI3 path; GBM buffer allocation; `glXSwapBuffers` → DMA-BUF → compositor
+- Explicit sync: `linux-drm-syncobj-v1`; XWayland 23.1+; eliminating tearing
+- Rootless internals: WM_CLASS, `_NET_WM_PID`; `_XWAYLAND_MAY_GRAB_KEYBOARD`; decoration/tiling
+- Common issues: HiDPI (`_XWAYLAND_GLOBAL_OUTPUT_SCALE`); anti-cheat (EAC/BattleEye); cursor scaling
+- Debugging: `WAYLAND_DEBUG=1`; `LIBGL_DEBUG=verbose`; `xwininfo`/`xprop`
+- **Integrations**: Ch4 (compositor DMA-BUF import), Ch20 (linux-dmabuf), Ch22 (Wayland input), Ch95 (X11/Xorg legacy)
+
+### Chapter 146: WebCodecs and Browser Hardware Acceleration *(Part X)*
+
+- WebCodecs: W3C API (Chrome 94+); `VideoDecoder`/`VideoEncoder`/`AudioDecoder`/`AudioEncoder`; low-latency vs MSE/WebRTC
+- `VideoDecoder`: `isConfigSupported`; `EncodedVideoChunk`; `VideoFrame`; flush/reset; key vs delta
+- `VideoEncoder`: bitrate, framerate, `latencyMode`; forced keyframes; bitrate modes
+- Linux hardware path: Chrome GPU process; `VaapiVideoDecoderPipeline`; `V4L2VideoDecodeAccelerator`; WebCodecs→Blink→GPU→VA-API→libva→kernel
+- `VideoFrame` and DMA-BUF: `importExternalTexture()`; SharedImage backed by VASurface; zero-copy
+- WebCodecs + WebGL/WebGPU: `texImage2D(video)`; `device.importExternalTexture(videoFrame)`; `GPUExternalTexture`
+- Codec support matrix: H.264/VP8/VP9/AV1/HEVC on Intel/AMD/NVIDIA; AV1 encode (iHD, RDNA3)
+- `MediaCapabilities`: `decodingInfo()`/`encodingInfo()`; `smooth + powerEfficient`; VA-API probe
+- WebRTC encoded transform: `RTCEncodedVideoFrame`; custom codec insertion
+- Debugging: `chrome://media-internals`; `LIBVA_MESSAGING_LEVEL=1`; `chrome://gpu`
+- **Integrations**: Ch26 (VA-API), Ch33 (Chrome GPU process), Ch35 (WebGPU importExternalTexture), Ch147 (same VA-API backend)
+
+### Chapter 147: Chrome and Firefox Hardware Video Decode via VA-API *(Part X)*
+
+- Why hardware decode matters: CPU/battery/thermal; 2020–2024 VA-API timeline in Chrome and Firefox
+- Chrome VA-API: `--enable-features=VaapiVideoDecoder`; OOP-VD (Chrome 113+); `VaapiWrapper`; `VADisplay` from DRM render node
+- Chrome zero-copy: `VASurface`→DMA-BUF→GBM→`EGLImage`→GL texture; NV12 via `EGL_EXT_image_dma_buf_import`; SharedImage
+- OOP-VD sandbox: dedicated video decode process; `/dev/dri/renderD128` policy; mojo IPC
+- Wayland: `--ozone-platform=wayland`; `zwp_linux_dmabuf_v1` NV12 import into compositor
+- Firefox: enabled FF97+; GMP; FFmpegDataDecoder; `media.hardware-video-decoding.enabled`; `SurfaceDescriptorDMABuf`; WebRender DMA-BUF TextureHost
+- AV1/VP9: Intel `VAProfileAV1Profile0` (Gen12+); AMD RADV; HEVC patent issues; `chrome://gpu` per-codec
+- NVIDIA: NVDEC + proprietary; no open VA-API; Vulkan Video path; fallback
+- Practical: `LIBVA_DRIVER_NAME`; Flatpak `--device=dri`; `vainfo`; `LIBVA_TRACE`
+- **Integrations**: Ch26 (VA-API), Ch33 (Chrome GPU process), Ch36 (WebRTC), Ch37 (PipeWire DMA-BUF), Ch146 (WebCodecs same backend)
+
+### Chapter 148: Vulkan Synchronisation: A Complete Developer Reference *(Part VII)*
+
+- Why hard: no implicit hazard tracking; explicit CPU-GPU and GPU-GPU ordering required; wrong sync = UB
+- Three primitives: Fence (CPU waits GPU), Semaphore (GPU→GPU across queues), Event (within queue / CPU→GPU)
+- Fences: `VkFence`; `VK_FENCE_CREATE_SIGNALED_BIT`; `vkQueueSubmit2`; `vkWaitForFences`; N-buffering
+- Binary semaphores: acquire→render→present; swapchain semaphore pattern; ordering guarantees
+- Timeline semaphores (`VkSemaphoreTypeTimeline`): counter; CPU-side `vkSignalSemaphore`/`vkWaitSemaphores`; Vulkan 1.2 core
+- Pipeline barriers (`vkCmdPipelineBarrier2`): `VkDependencyInfo`; stage/access masks; `VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT`
+- Image layout transitions: state machine (UNDEFINED→COLOR_ATTACHMENT→SHADER_READ_ONLY→PRESENT); ownership transfer
+- Render pass implicit sync: `VkSubpassDependency2`; `VK_SUBPASS_EXTERNAL`; when deps replace explicit barriers
+- Events: `vkCmdSetEvent2`/`vkCmdWaitEvents2`; split-barrier; fine-grained GPU pipelining
+- Queue ownership transfer: EXCLUSIVE vs CONCURRENT; release/acquire pair; async compute
+- External sync: `VK_KHR_external_semaphore_fd`; DRM syncobj; `wp_linux_drm_syncobj_v1`
+- Sync validation: VK_LAYER_KHRONOS_validation; `--synchronization-validation`; RenderDoc; common errors
+- Real-world patterns: shadow map barrier; async texture upload; multi-GPU timeline semaphores
+- **Integrations**: Ch16 (Vulkan core), Ch24 (EGL present path), Ch20 (linux_drm_syncobj), Ch133 (async compute queues)
 
 ---
 
