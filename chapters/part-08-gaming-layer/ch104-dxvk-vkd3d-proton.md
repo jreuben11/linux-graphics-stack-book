@@ -1,6 +1,6 @@
 # Chapter 104: DXVK and VKD3D-Proton — D3D-to-Vulkan Translation
 
-> **Part**: Part XI — Engine and Creative Tool Internals
+> **Part**: Part VIII — The Gaming Layer
 > **Audience**: Linux gaming developers, Proton contributors, and graphics engineers who need to understand how the Direct3D API surface maps onto Vulkan, how shader bytecode is translated at runtime, and how the translation layer ecosystem has become the dominant Vulkan consumer on the Linux desktop
 > **Status**: First draft — 2026-06-19
 
