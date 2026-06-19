@@ -1,0 +1,615 @@
+# Chapter 135: Vulkan Ray Tracing on Linux
+
+**Target audiences**: Vulkan application developers building ray-traced rendering, game engine and rendering research engineers, Mesa driver developers (RADV/ANV), and advanced users wanting to understand how hardware ray traversal maps to the Vulkan API on Linux.
+
+---
+
+## Table of Contents
+
+1. [Introduction](#introduction)
+2. [Ray Tracing Pipeline and Shader Stages](#ray-tracing-pipeline-and-shader-stages)
+3. [Acceleration Structures: BLAS and TLAS](#acceleration-structures-blas-and-tlas)
+4. [BVH Construction Algorithms](#bvh-construction-algorithms)
+5. [Shader Binding Table](#shader-binding-table)
+6. [RADV: RDNA2+ Ray Tracing](#radv-rdna2-ray-tracing)
+7. [ANV: Intel Xe-HPG Ray Tracing](#anv-intel-xe-hpg-ray-tracing)
+8. [VK_KHR_ray_query and Inline Ray Tracing](#vk_khr_ray_query-and-inline-ray-tracing)
+9. [Practical Usage on Linux](#practical-usage-on-linux)
+10. [Integrations](#integrations)
+
+---
+
+## Introduction
+
+Vulkan ray tracing, finalised as a set of KHR extensions in 2020, provides portable API-level access to hardware ray traversal units that are now standard on discrete GPUs released since 2020–2021. On Linux, two open-source Mesa drivers fully implement the Vulkan KHR ray tracing stack: **RADV** (for AMD RDNA2 and later, i.e. RX 6000 series and above) and **ANV** (for Intel DG2/Arc Alchemist and later Xe-HPG hardware). NVIDIA's proprietary driver also supports these extensions on Linux via `vulkan-nvidia`.
+
+The key extension set consists of:
+
+- `VK_KHR_ray_tracing_pipeline` — the full ray tracing pipeline with dedicated shader stages
+- `VK_KHR_acceleration_structure` — two-level BVH acceleration structures
+- `VK_KHR_ray_query` — inline ray intersection queries from any shader stage
+- `VK_KHR_deferred_host_operations` — parallelised CPU-side BVH construction
+
+Unlike CUDA/OptiX, which are NVIDIA-only, Vulkan ray tracing runs on all three GPU vendors on Linux. This chapter covers the hardware architecture of ray traversal units, the complete Vulkan API for building acceleration structures and ray tracing pipelines, the GLSL/SPIR-V shader model, and the RADV and ANV driver implementations.
+
+[Vulkan Ray Tracing specification](https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#ray-tracing)
+
+---
+
+## Ray Tracing Pipeline and Shader Stages
+
+### Motivation: Hybrid Rendering
+
+Modern games and renderers use hybrid rendering: rasterisation for primary visibility (G-buffer) and ray tracing for high-quality shadows, ambient occlusion, reflections, and global illumination. Ray tracing excels at effects that are global in nature (effects that require knowledge of scene geometry beyond the current fragment), which are expensive or impossible with rasterisation alone.
+
+### Five New Shader Stages
+
+`VK_KHR_ray_tracing_pipeline` introduces five specialised shader stages:
+
+| Stage | Abbreviation | Purpose |
+|---|---|---|
+| Ray Generation | `rgen` | Entry point; calls `traceRayEXT()` |
+| Intersection | `rint` | Custom primitive intersection test |
+| Any-Hit | `rahit` | Called for each potential hit (alpha-testing, semi-transparency) |
+| Closest Hit | `rchit` | Called for the confirmed closest hit |
+| Miss | `rmiss` | Called when no geometry is hit |
+
+These stages are compiled into a ray tracing pipeline with `vkCreateRayTracingPipelinesKHR`.
+
+### A Minimal Ray Generation Shader (GLSL)
+
+```glsl
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
+layout(set = 0, binding = 1, rgba8) uniform image2D outputImage;
+
+layout(location = 0) rayPayloadEXT vec3 hitColor;
+
+void main() {
+    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(gl_LaunchSizeEXT.xy);
+
+    vec3 origin = vec3(uv * 2.0 - 1.0, -1.0);
+    vec3 direction = vec3(0.0, 0.0, 1.0);
+
+    traceRayEXT(
+        topLevelAS,           // acceleration structure
+        gl_RayFlagsOpaqueEXT, // ray flags
+        0xFF,                 // cull mask
+        0,                    // sbt record offset
+        0,                    // sbt record stride
+        0,                    // miss index
+        origin,               // ray origin
+        0.001,                // t_min
+        direction,            // ray direction
+        10000.0,              // t_max
+        0                     // payload location
+    );
+
+    imageStore(outputImage, pixel, vec4(hitColor, 1.0));
+}
+```
+
+### Closest Hit Shader (GLSL)
+
+```glsl
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+layout(location = 0) rayPayloadInEXT vec3 hitColor;
+
+hitAttributeEXT vec2 baryCoord;
+
+void main() {
+    // gl_HitTEXT is the distance, gl_PrimitiveID the triangle index
+    vec3 bary = vec3(1.0 - baryCoord.x - baryCoord.y, baryCoord.x, baryCoord.y);
+    hitColor = bary; // visualise barycentric coordinates
+}
+```
+
+### Miss Shader
+
+```glsl
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+layout(location = 0) rayPayloadInEXT vec3 hitColor;
+
+void main() {
+    hitColor = vec3(0.1, 0.2, 0.4); // sky colour
+}
+```
+
+### Dispatching Rays
+
+```c
+vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rtPipeline);
+vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, ...);
+
+vkCmdTraceRaysKHR(
+    cmd,
+    &rgenSBTRegion,   // shader binding table: ray gen
+    &missSBTRegion,   // miss
+    &hitSBTRegion,    // hit group
+    &callableSBTRegion,
+    width, height, 1  // dispatch dimensions
+);
+```
+
+[GL_EXT_ray_tracing GLSL extension specification](https://github.com/KhronosGroup/GLSL/blob/main/extensions/ext/GLSL_EXT_ray_tracing.txt)
+
+---
+
+## Acceleration Structures: BLAS and TLAS
+
+### Two-Level BVH Hierarchy
+
+Vulkan ray tracing uses a two-level acceleration structure:
+
+- **Bottom-Level Acceleration Structure (BLAS)**: contains the actual geometry (triangles or AABBs for custom primitives). One BLAS per mesh or object.
+- **Top-Level Acceleration Structure (TLAS)**: contains instances of BLASes with 3×4 transformation matrices, instance IDs, and SBT offsets.
+
+This two-level design enables efficient instancing (one BLAS, many TLAS instances) and dynamic updates to transformations without rebuilding BLASes.
+
+### Building a BLAS
+
+```c
+VkAccelerationStructureGeometryKHR geometry = {
+    .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+    .geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR,
+    .geometry.triangles = {
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
+        .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
+        .vertexData.deviceAddress = vertexBufferAddress,
+        .vertexStride = sizeof(Vertex),
+        .maxVertex = vertexCount - 1,
+        .indexType = VK_INDEX_TYPE_UINT32,
+        .indexData.deviceAddress = indexBufferAddress,
+    },
+    .flags = VK_GEOMETRY_OPAQUE_BIT_KHR,
+};
+
+VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {
+    .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+    .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+    .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+    .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+    .geometryCount = 1,
+    .pGeometries = &geometry,
+};
+
+uint32_t primitiveCount = indexCount / 3;
+VkAccelerationStructureBuildSizesInfoKHR sizeInfo = {
+    .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
+};
+vkGetAccelerationStructureBuildSizesKHR(
+    device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+    &buildInfo, &primitiveCount, &sizeInfo);
+
+// Allocate scratch + result buffers, create VkAccelerationStructureKHR...
+
+VkAccelerationStructureBuildRangeInfoKHR range = {
+    .primitiveCount = primitiveCount,
+    .primitiveOffset = 0,
+    .firstVertex = 0,
+    .transformOffset = 0,
+};
+const VkAccelerationStructureBuildRangeInfoKHR *pRange = &range;
+
+vkCmdBuildAccelerationStructuresKHR(cmd, 1, &buildInfo, &pRange);
+```
+
+### Building a TLAS
+
+Each TLAS instance is a 64-byte `VkAccelerationStructureInstanceKHR`:
+
+```c
+VkAccelerationStructureInstanceKHR instance = {
+    // 3×4 row-major transform matrix (identity)
+    .transform = {
+        .matrix = {
+            {1.0f, 0.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f, 0.0f},
+            {0.0f, 0.0f, 1.0f, 0.0f},
+        }
+    },
+    .instanceCustomIndex = 0,         // gl_InstanceCustomIndexEXT
+    .mask = 0xFF,                     // cull mask
+    .instanceShaderBindingTableRecordOffset = 0,
+    .flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR,
+    .accelerationStructureReference = blasDeviceAddress,
+};
+```
+
+### Build Flags
+
+| Flag | Effect |
+|---|---|
+| `PREFER_FAST_TRACE` | Optimise BVH quality at build-time cost; best for static geometry |
+| `PREFER_FAST_BUILD` | Faster build, lower traversal quality; good for deformable geometry |
+| `ALLOW_UPDATE` | Enable incremental `UPDATE` mode re-fit |
+| `ALLOW_COMPACTION` | Enable post-build compaction query |
+
+### BVH Compaction
+
+After building, compact to reduce VRAM usage (typically 30–60% size reduction):
+
+```c
+// Query compacted size
+VkQueryPool compactPool;
+vkCmdWriteAccelerationStructuresPropertiesKHR(
+    cmd, 1, &blas,
+    VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+    compactPool, 0);
+
+// After pipeline barrier + readback:
+VkDeviceSize compactedSize;
+vkGetQueryPoolResults(device, compactPool, 0, 1,
+    sizeof(VkDeviceSize), &compactedSize, sizeof(VkDeviceSize),
+    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+
+// Allocate smaller buffer, copy-compact
+vkCmdCopyAccelerationStructureKHR(cmd, &(VkCopyAccelerationStructureInfoKHR){
+    .sType = VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR,
+    .src = blas,
+    .dst = compactedBlas,
+    .mode = VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR,
+});
+```
+
+[VK_KHR_acceleration_structure extension spec](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_KHR_acceleration_structure.html)
+
+---
+
+## BVH Construction Algorithms
+
+### Surface Area Heuristic (SAH)
+
+The gold standard BVH construction strategy. For each split candidate, compute:
+
+```
+cost(split) = C_trav + (SA_left/SA_parent) * N_left * C_isect
+                     + (SA_right/SA_parent) * N_right * C_isect
+```
+
+where `SA` is surface area and `C_trav`, `C_isect` are traversal and intersection costs. GPU-side SAH requires O(N log N) sorting and binned approximations for real-time construction. Used by AMD's offline BVH builder and Embree.
+
+### LBVH (Linear BVH)
+
+Assigns Morton codes to primitive centroids, radix-sorts them, and constructs a hierarchical binary tree from the sorted order. GPU-parallel; O(N) after sort. Used as the fast-build path in RADV.
+
+### PLOC (Parallel Locally-Ordered Clustering)
+
+Iterative bottom-up approach that clusters nearby leaves. Better quality than LBVH, nearly as fast. Used in RADV's high-quality build path.
+
+### RADV GPU BVH Builder
+
+RADV implements BVH construction as GPU compute shaders in `src/amd/vulkan/bvh/` [Source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/amd/vulkan/bvh). The pipeline consists of:
+
+1. **Morton code generation** (`lbvh_generate_ir.comp.glsl`): compute Morton codes for centroids
+2. **Radix sort** (`radix_sort.comp.glsl`): 4-pass 8-bit radix sort
+3. **Hierarchy generation** (`lbvh_main.comp.glsl`): Karras 2012 binary radix tree
+4. **Collapse** (`ploc.comp.glsl` or SAH refinement): improve quality
+5. **Encode** (`encode.comp.glsl`): convert to AMD hardware BVH format
+
+The hardware BVH node format for RDNA is not publicly documented; RADV reverse-engineered it via `src/amd/vulkan/bvh/bvh.h`.
+
+### ANV GRL (Generic Ray Tracing Library)
+
+Intel's ANV driver uses the **GRL** (Generic Ray Tracing Library), open-sourced as part of Mesa at `src/intel/vulkan/grl/` [Source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/intel/vulkan/grl). GRL kernels are written in an OpenCL-like C dialect and compiled to Intel GPU compute shaders. Intel's Synchro BVH builder (a state-of-the-art PLOC variant) has been open-sourced since Xe2.
+
+### Deferred Host Operations
+
+`VK_KHR_deferred_host_operations` allows CPU-side BVH construction to be split across threads:
+
+```c
+VkDeferredOperationKHR deferredOp;
+vkCreateDeferredOperationKHR(device, NULL, &deferredOp);
+
+VkResult result = vkBuildAccelerationStructuresKHR(
+    device, deferredOp, 1, &buildInfo, &pRange);
+// result == VK_OPERATION_DEFERRED_KHR
+
+// Join from worker threads:
+while (vkDeferredOperationJoinKHR(device, deferredOp) == VK_THREAD_IDLE_KHR) {
+    // more work available — other threads may call join too
+}
+```
+
+---
+
+## Shader Binding Table
+
+### Layout
+
+The Shader Binding Table (SBT) is a `VkBuffer` divided into four regions, each containing fixed-size records aligned to `shaderGroupHandleAlignment` (typically 32 or 64 bytes):
+
+```
+[ rgen region   ]  — exactly 1 record
+[ miss region   ]  — N_miss records (indexed by traceRayEXT miss index)
+[ hit group region ] — N_hit records (indexed by instance SBT offset + geometry index)
+[ callable region]  — N_callable records
+```
+
+Each record = 32-byte shader group handle + user-defined data (materials, textures, etc.).
+
+### Building the SBT
+
+```c
+// Query handle size
+VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps = {
+    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR,
+};
+VkPhysicalDeviceProperties2 props2 = { .pNext = &rtProps, ... };
+vkGetPhysicalDeviceProperties2(physicalDevice, &props2);
+
+uint32_t handleSize = rtProps.shaderGroupHandleSize; // 32 bytes
+
+// Get all handles
+std::vector<uint8_t> handles(shaderGroupCount * handleSize);
+vkGetRayTracingShaderGroupHandlesKHR(
+    device, rtPipeline, 0, shaderGroupCount,
+    handles.size(), handles.data());
+
+// Copy rgen handle to SBT buffer at rgen offset
+// Copy miss handles at aligned miss offset
+// Copy hit group handles at aligned hit offset
+```
+
+### Hit Group Indexing Formula
+
+When a ray hits instance `I` at geometry index `G`:
+
+```
+hitGroupIndex = instance.instanceShaderBindingTableRecordOffset
+              + geometryIndex * sbtStride  (passed to vkCmdTraceRaysKHR)
+              + traceRayEXT sbtRecordOffset parameter
+```
+
+This allows per-material shaders: each geometry within a BLAS can have a different hit group, and each TLAS instance can offset into a different set of hit groups.
+
+---
+
+## RADV: RDNA2+ Ray Tracing
+
+### Hardware Support
+
+RADV supports ray tracing on RDNA2 (RX 6000 series, `gfx1030`) and later. RDNA2 adds dedicated BVH traversal instructions in the shader ISA:
+
+- `image_bvh_intersect_ray` — tests a ray against a BVH node
+- `image_bvh64_intersect_ray` — 64-bit address variant
+
+These instructions are emitted by the LLVM AMD backend and used by RADV's traversal shaders.
+
+### Key Source Files
+
+| File | Role |
+|---|---|
+| `src/amd/vulkan/radv_acceleration_structure.c` | BLAS/TLAS build, compaction, copy |
+| `src/amd/vulkan/radv_rt_pipeline.c` | RT pipeline creation, SBT layout |
+| `src/amd/vulkan/radv_nir_lower_ray_queries.c` | Inline ray query lowering |
+| `src/amd/vulkan/bvh/` | GPU BVH construction compute shaders |
+| `src/amd/vulkan/radv_nir_lower_rt_io.c` | Lower SPIR-V RT built-ins to SSA |
+
+[RADV RT source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/amd/vulkan)
+
+### RT Pipeline as Compute
+
+RADV compiles the entire ray tracing pipeline into a **single compute shader** that emulates the RT state machine in software, using `image_bvh_intersect_ray` for hardware-accelerated BVH traversal. The traversal loop, any-hit, and intersection shaders are all inlined into one kernel.
+
+`radv_build_rt_shader()` in `radv_rt_pipeline.c` generates this mega-kernel by:
+
+1. Emitting a traversal loop that calls `image_bvh_intersect_ray`
+2. Calling NIR functions corresponding to each RCHIT/RAHIT/RMISS shader group
+3. Lowering RT payload access to SSA via `radv_nir_lower_rt_io`
+
+### Debugging RADV RT
+
+```bash
+# Force software emulation of ray tracing (any RDNA GPU):
+RADV_PERFTEST=emulate_rt vulkaninfo
+
+# Dump RT shader IR:
+RADV_DEBUG=spirv,shaders RADV_RT_DEBUG=1 ./rt_app
+
+# Disable mesh shader path (unrelated but useful for isolation):
+RADV_DEBUG=nort
+```
+
+[RADV debugging options](https://docs.mesa3d.org/drivers/radv.html#environment-variables)
+
+---
+
+## ANV: Intel Xe-HPG Ray Tracing
+
+### Hardware Support
+
+ANV supports ray tracing on Intel DG2 (Arc Alchemist, `gfx1255`) and later Xe-HPG and Xe2 hardware. Intel's ray tracing hardware is a dedicated BVH traversal unit on each render slice, exposed through EU (Execution Unit) messages.
+
+### Key Source Files
+
+| File | Role |
+|---|---|
+| `src/intel/vulkan/anv_acceleration_structure.c` | BLAS/TLAS build |
+| `src/intel/vulkan/grl/` | GRL BVH construction kernels |
+| `src/intel/vulkan/anv_nir_lower_ray_queries.c` | Inline ray query lowering |
+| `src/intel/vulkan/genX_cmd_buffer.c` | `genX(cmd_buffer_trace_rays)` |
+
+[ANV source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/intel/vulkan)
+
+### GRL Kernels
+
+The Generic Ray Tracing Library at `src/intel/vulkan/grl/` contains BVH construction kernels written in Intel's OpenCL-C variant. These are compiled via Intel's offline compiler to Intel GPU binary at Mesa build time. The Synchro builder implements a parallel PLOC+SAH pipeline:
+
+1. Centroid computation
+2. Morton code assignment
+3. Radix sort
+4. PLOC clustering
+5. SAH quality refinement
+6. Encode to Intel hardware BVH format
+
+Intel's 64-byte BVH node format is defined in the [Intel Xe-HPG BVH documentation](https://www.intel.com/content/www/us/en/developer/articles/technical/introduction-to-ray-tracing-in-vulkan.html).
+
+### Debugging ANV RT
+
+```bash
+INTEL_DEBUG=rt,spirv ./rt_app
+# Or per-stage debug:
+ANV_ENABLE_PIPELINE_CACHE=0 INTEL_DEBUG=vs,cs ./rt_app
+```
+
+---
+
+## VK_KHR_ray_query and Inline Ray Tracing
+
+### Inline Ray Intersection from Any Stage
+
+`VK_KHR_ray_query` allows firing rays from **any** shader stage (vertex, fragment, compute, mesh) without a full RT pipeline:
+
+```glsl
+#version 460
+#extension GL_EXT_ray_query : require
+
+layout(set=0, binding=0) uniform accelerationStructureEXT topLevelAS;
+
+// In a fragment shader — ambient occlusion:
+float traceAO(vec3 pos, vec3 normal) {
+    rayQueryEXT query;
+    rayQueryInitializeEXT(
+        query, topLevelAS,
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+        0xFF,
+        pos + normal * 0.001,  // offset to avoid self-intersection
+        0.001,                 // t_min
+        normal,                // fire along normal (hemisphere AO)
+        1.0                    // t_max
+    );
+
+    while (rayQueryProceedEXT(query)) {
+        if (rayQueryGetIntersectionTypeEXT(query, false)
+                == gl_RayQueryCandidateIntersectionTriangleEXT) {
+            rayQueryConfirmIntersectionEXT(query);
+        }
+    }
+
+    return (rayQueryGetIntersectionTypeEXT(query, true)
+            == gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
+}
+```
+
+### VK_KHR_ray_tracing_maintenance1
+
+Added utility features:
+
+- `VK_RAY_TRACING_INVOCATION_REORDER_MODE_REORDER_NV` (NVIDIA-specific): shader execution reordering (SER) for better RT throughput
+- `vkCmdTraceRaysIndirectKHR` — dispatch count from GPU buffer
+- `VkTraceRaysIndirectCommand2KHR` — full indirect with SBT addresses
+
+### Software Fallback via SSBO BVH
+
+For hardware that lacks RT support (older RDNA1, Intel Gen11), a software BVH traversal in compute using SSBOs is feasible but 5–20× slower than hardware. Useful for development:
+
+```glsl
+// Software BVH node traversal (conceptual)
+layout(std430, binding=1) readonly buffer BVHNodes { BVHNode nodes[]; };
+
+bool intersectBVH(Ray ray) {
+    uint stack[64]; int top = 0;
+    stack[top++] = 0; // root node
+    while (top > 0) {
+        BVHNode n = nodes[stack[--top]];
+        if (!intersectAABB(ray, n.aabb)) continue;
+        if (n.isLeaf) return intersectTriangles(ray, n);
+        stack[top++] = n.leftChild;
+        stack[top++] = n.rightChild;
+    }
+    return false;
+}
+```
+
+### Intel Open Image Denoise
+
+Post-ray tracing denoising for noisy 1 spp or 4 spp images. [Intel OIDN](https://www.openimagedenoise.org/) runs on CPU (AVX-512) or GPU (Xe compute). Vulkan interop via `oidnNewExternalBuffer` (DMA-BUF / Vulkan external memory).
+
+---
+
+## Practical Usage on Linux
+
+### Checking RT Support
+
+```bash
+vulkaninfo 2>/dev/null | grep -i -A2 "ray"
+# Look for rayTracingPipeline: VK_TRUE, accelerationStructure: VK_TRUE
+
+# Or with jq:
+vulkaninfo --json | jq '.[] | .features | .rayTracingPipeline // .VkPhysicalDeviceRayTracingPipelineFeaturesKHR'
+```
+
+### Feature and Property Queries
+
+```c
+VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtFeatures = {
+    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
+};
+VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeatures = {
+    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
+    .pNext = &rtFeatures,
+};
+
+VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps = {
+    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR,
+};
+// After vkGetPhysicalDeviceProperties2:
+// rtProps.maxRayRecursionDepth — minimum 1, typically 31
+// rtProps.shaderGroupHandleSize — 32 bytes
+// rtProps.shaderGroupHandleAlignment — 32 or 64 bytes
+// rtProps.maxRayHitAttributeSize — 32 bytes
+// rtProps.maxRayDispatchInvocationCount — typically 2^30
+```
+
+### Compiling RT Shaders
+
+```bash
+# glslc (from Shaderc) with Vulkan 1.2 target:
+glslc --target-env=vulkan1.2 -fshader-stage=rgen raygen.rgen.glsl -o raygen.spv
+glslc --target-env=vulkan1.2 -fshader-stage=rchit closesthit.rchit.glsl -o closesthit.spv
+glslc --target-env=vulkan1.2 -fshader-stage=rmiss miss.rmiss.glsl -o miss.spv
+
+# Validate with spirv-val:
+spirv-val --target-env vulkan1.2 raygen.spv
+
+# Disassemble:
+spirv-dis raygen.spv | grep -i "traceray\|optype"
+```
+
+### Real-World Usage on Linux
+
+- **Blender Cycles** (2025): Vulkan RT backend using `VK_KHR_ray_tracing_pipeline` for GPU path tracing on RADV and ANV
+- **Godot 4.x**: Global Illumination via `VK_KHR_ray_query` in screen-space GI shaders
+- **Q2RTX** (Quake II RT): NVIDIA-specific but ported to run on RADV RDNA2 via Mesa; `VK_KHR_ray_tracing_pipeline`
+- **Vulkan-Samples** (Khronos): reference implementations at [https://github.com/KhronosGroup/Vulkan-Samples](https://github.com/KhronosGroup/Vulkan-Samples)
+- **vkdt** (darktable Vulkan): uses ray query for lens simulation
+
+### Performance Notes
+
+On RDNA2 (RX 6700 XT):
+- BVH build: ~500 ms for 1M triangle scene (GPU LBVH), ~1.5 s (GPU SAH)
+- RT throughput: ~5–8 Grays/s for primary ray + shadow ray scene
+- Compare NVIDIA RTX 3070: ~12–15 Grays/s
+
+Compaction reduces BLAS memory 40–50%; critical for complex scenes. Use `PREFER_FAST_TRACE` for static geometry, `PREFER_FAST_BUILD` + `ALLOW_UPDATE` for skinned meshes.
+
+---
+
+## Integrations
+
+- **Ch18 (RADV driver)** — RADV architecture; RT is implemented as a compute mega-kernel using RDNA2 `image_bvh_intersect_ray` instructions
+- **Ch19 (ANV driver)** — ANV GRL BVH construction and Xe-HPG hardware ray traversal unit
+- **Ch24 (Vulkan API)** — Vulkan pipeline model; RT pipeline is a parallel pipeline type alongside graphics and compute
+- **Ch77 (SPIR-V)** — `OpTraceRayKHR`, `OpExecuteCallableKHR`, `OpHitObjectNV` SPIR-V opcodes produced by glslc
+- **Ch110 (SPIR-V tooling)** — spirv-opt for RT shader optimisation, spirv-val for validation
+- **Ch127 (Mesh Shaders)** — hybrid rendering: mesh shaders for primary G-buffer, RT for shadows/reflections
+- **Ch133 (Async Compute)** — RT pipelines dispatch on compute queue alongside graphics; timeline semaphore synchronisation
+- **Ch141 (Cooperative Matrices)** — denoising via cooperative matrix GEMM in the post-RT denoising compute shader

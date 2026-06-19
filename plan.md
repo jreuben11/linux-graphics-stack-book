@@ -174,6 +174,15 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 131: Touch, Stylus, and Tablet Input on Wayland](#chapter-131-touch-stylus-and-tablet-input-on-wayland) *(Part VI)*
   - [Chapter 132: Wayland Security](#chapter-132-wayland-security) *(Part VI)*
   - [Chapter 133: Vulkan Compute Queues and Task Graphs](#chapter-133-vulkan-compute-queues-and-task-graphs) *(Part VII)*
+- **Part XXIII — Additional Chapters (set 2)**
+  - [Chapter 134: Asahi AGX — Apple Silicon GPU Driver on Linux](#chapter-134-asahi-agx--apple-silicon-gpu-driver-on-linux) *(Part II)*
+  - [Chapter 135: Vulkan Ray Tracing on Linux](#chapter-135-vulkan-ray-tracing-on-linux) *(Part VII)*
+  - [Chapter 136: WSL2 Linux Graphics — dxgkrnl and Mesa D3D12](#chapter-136-wsl2-linux-graphics--dxgkrnl-and-mesa-d3d12) *(Part IX)*
+  - [Chapter 137: GPU Performance Profiling — RGP, GPA, and VK_EXT_performance_query](#chapter-137-gpu-performance-profiling--rgp-gpa-and-vk_ext_performance_query) *(Part IX)*
+  - [Chapter 138: Wayland Fractional Scaling and HiDPI](#chapter-138-wayland-fractional-scaling-and-hidpi) *(Part VI)*
+  - [Chapter 139: DRM Hardware Overlay Planes and Composition Bypass](#chapter-139-drm-hardware-overlay-planes-and-composition-bypass) *(Part I)*
+  - [Chapter 140: HDMI and DisplayPort Audio on Linux](#chapter-140-hdmi-and-displayport-audio-on-linux) *(Part VI)*
+  - [Chapter 141: Vulkan Cooperative Matrices and GPU ML Acceleration](#chapter-141-vulkan-cooperative-matrices-and-gpu-ml-acceleration) *(Part VII)*
 
 ---
 
@@ -1554,6 +1563,106 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Intel: `intel_gpu_top`; EU active/stall/idle; VTune GPU analysis; `VK_INTEL_performance_query`; Xe Slice/Subslice utilisation
 - Worked case study: path-traced scene optimisation — frame time decomposition → bandwidth-bound diagnosis → BVH ray sort → L2 hit rate improvement → async BVH refit
 - **Integrations**: Ch15, Ch24, Ch28, Ch29, Ch30, Ch56, Ch61, Ch67, Ch124
+
+### Chapter 134: Asahi AGX — Apple Silicon GPU Driver on Linux *(Part II)*
+
+- Apple Silicon architecture: TBDR; tile-based deferred rendering; M1/M2/M3/M4 GPU families; macOS metal vs Linux reverse-engineering effort; `drivers/gpu/drm/asahi/`
+- Hardware bring-up: m1n1 hypervisor + Python introspection; GPU MMIO register dumps; `agxdecode` render command stream decoder; Metal shader disassembly via `metal-shaderconverter`
+- Kernel driver: `asahi_drm.ko`; RTKit IPC firmware messaging; `drivers/gpu/drm/asahi/gem.c` GEM objects; UABI (`DRM_ASAHI_SUBMIT`); GPU reset; power management; `io-pgtable-dart` IOMMU
+- `libagx` shader compiler: NIR → AGX ISA; GLSL/SPIR-V compilation pipeline; `nir_to_agx`; AGX ISA (scalar + SIMD); register file; sample mask; fragment depth; bindless resources
+- Honeykrisp Vulkan driver: Mesa Vulkan driver for Apple Silicon; `src/asahi/vulkan/`; Conformance: Vulkan 1.3 CTS pass (2024); `VK_EXT_robustness2`, `VK_KHR_ray_tracing_pipeline` status
+- OpenGL / Zink path: Asahi OpenGL ES 3.1 driver; transition to Honeykrisp + Zink; conformance timeline; `MESA_LOADER_DRIVER_OVERRIDE=asahi`
+- Video decode: no VPU driver; software decode only; roadmap for Asahi VPU support; `ffmpeg -hwaccel videotoolbox` (macOS) vs Linux fallback
+- Community: Asahi Linux project; `asahi-installer`; mailing list `asahi@lists.fedoraproject.org`; Mesa MR cadence; Alyssa Rosenzweig blog posts
+- **Integrations**: Ch1 (DRM kernel driver model), Ch2 (KMS on Apple display), Ch14 (Mesa driver architecture), Ch24 (Vulkan via Honeykrisp), Ch77 (SPIR-V → NIR → AGX ISA), Ch119 (Zink path for OpenGL)
+
+### Chapter 135: Vulkan Ray Tracing on Linux *(Part VII)*
+
+- Ray tracing hardware: RDNA2+ BVH traversal (`image_bvh_intersect_ray`); Intel Xe-HPG RT unit; NVIDIA RTX Tensor/RT Cores; architectural comparison
+- Extensions: `VK_KHR_ray_tracing_pipeline`, `VK_KHR_acceleration_structure`, `VK_KHR_ray_query`, `VK_KHR_deferred_host_operations`; feature query pattern
+- Five shader stages: rgen, rint, rahit, rchit, rmiss; GLSL `traceRayEXT()`; payload `rayPayloadEXT`; built-ins: `gl_HitTEXT`, `gl_PrimitiveID`, `gl_WorldRayOriginEXT`
+- BLAS construction: `VkAccelerationStructureGeometryKHR`; `vkGetAccelerationStructureBuildSizesKHR`; `vkCmdBuildAccelerationStructuresKHR`; 64-byte `VkAccelerationStructureInstanceKHR` layout
+- TLAS: instance transform, SBT offset, cull mask; build flags: `PREFER_FAST_TRACE`, `ALLOW_UPDATE`, `ALLOW_COMPACTION`; compaction query + copy (30–60% size reduction)
+- BVH algorithms: SAH, LBVH Morton code, PLOC; RADV GPU builder (`src/amd/vulkan/bvh/`): radix sort → LBVH → encode; ANV GRL (`src/intel/vulkan/grl/`): PLOC+SAH pipeline
+- Shader Binding Table: record layout, `vkGetRayTracingShaderGroupHandlesKHR`; hit group indexing formula: `instanceSBTOffset + geometryIndex × stride + traceRayOffset`
+- RADV RT pipeline: single compute mega-kernel; `radv_nir_lower_rt_io`; ACO emit `image_bvh_intersect_ray`; `RADV_PERFTEST=emulate_rt`
+- ANV RT pipeline: GRL BVH build; Xe-HPG dedicated traversal unit; `genX(cmd_buffer_trace_rays)`; `INTEL_DEBUG=rt`
+- `VK_KHR_ray_query`: inline queries from any stage; `rayQueryEXT`; AO example; `VK_KHR_ray_tracing_maintenance1`; software BVH fallback; Intel OIDN denoising
+- **Integrations**: Ch18 (RADV), Ch19 (ANV), Ch24 (Vulkan API), Ch77 (SPIR-V RT opcodes), Ch110 (spirv-opt RT), Ch127 (hybrid mesh+RT), Ch133 (RT on async compute), Ch141 (coop matrix denoising)
+
+### Chapter 136: WSL2 Linux Graphics — dxgkrnl and Mesa D3D12 *(Part IX)*
+
+- WSL2 architecture: lightweight VM (Hyper-V); `dxgkrnl.sys` host kernel driver; `dxg` Linux kernel module (`/dev/dxg`); GPU-P (GPU Paravirtualization); PCIe-less GPU access
+- GPU-P: virtual GPU via VMBUS; `VkDeviceMemory` → host DX12 heap; indirect rendering; `dxgkrnl` ioctls: `LX_DXOPENADAPTERFROMLUID`, `LX_DXSUBMITCOMMAND`, `LX_DXSIGNALSYNCOBJECT`
+- Mesa D3D12 Gallium (`dzn`): `nir_to_dxil` compiler translating Mesa NIR to DXIL (DX12 shader IR); `mesa-vulkan-drivers` `dzn` Vulkan driver; OpenGL via Zink over `dzn`
+- WSLg: Wayland + RDP compositing; `weston` as XWayland host + RDP server; `FreeRDP` client on Windows; `mstsc.exe` rendering; `DISPLAY` and `WAYLAND_DISPLAY` auto-set
+- GPU selection: `MESA_D3D12_DEFAULT_ADAPTER_NAME`; GPU-P across NVIDIA/AMD/Intel/Apple M-series; performance headroom vs native Linux (15–30% overhead)
+- Troubleshooting: `dxdiag`; WDDM 2.9+ driver requirement; `wsl --update`; `vulkaninfo --json`; GPU driver update via Windows Update
+- Limitations: no CUDA in WSL1/WSL2 Mesa path; `nvidia-smi` in WSL2 CUDA path; no display hotplug; Wayland limitations vs native
+- **Integrations**: Ch14 (Mesa Gallium — D3D12 is a Gallium driver), Ch24 (Vulkan dzn), Ch20 (WSLg Wayland), Ch28 (DXVK in WSL2), Ch77 (SPIR-V → DXIL — `nir_to_dxil` is a cross-IR compiler)
+
+### Chapter 137: GPU Performance Profiling — RGP, GPA, and VK_EXT_performance_query *(Part IX)*
+
+- Vulkan timestamps: `vkCmdWriteTimestamp2`; `VkQueryPool (TIMESTAMP)`; `calibratedTimestamp` (`VK_EXT_calibrated_timestamps`); converting ticks to nanoseconds
+- `VK_EXT_performance_query`: `VkPerformanceCounterKHR`; `vkEnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR`; AMD GPU clocks/occupancy; Intel EU utilisation; NVIDIA (via NVK or proprietary)
+- AMD RGP (Radeon GPU Profiler): `VK_AMD_gpa_interface` + `VK_AMD_shader_core_properties`; SQTT (Shader Queue Thread Trace); `.rdc` frame capture; barrier bottleneck identification; wave occupancy heatmap; RGP download at GPUOpen
+- AMD Radeon Developer Panel (RDP): live profiling; frame time graph; radeon_top; `RADV_THREAD_TRACE=1`
+- Intel GPA (Graphics Performance Analyzers): `VK_INTEL_performance_query`; EU active/stall/idle; VTune GPU Hotspots; `intel_gpu_top`; Xe metrics via Linux perf (`i915 PMU`)
+- GALLIUM_HUD: built-in Mesa overlay; `GALLIUM_HUD=fps,GPU-load,cpu`; available counters; SVG output; CPU/GPU correlation
+- NVIDIA NSight (proprietary): `VK_NV_device_diagnostic_checkpoints`; shader occupancy; L2 cache hit; Nsight Systems timeline; Linux CLI: `nsys profile --capture-range=cudaProfilerApi`
+- Frame time budget: 16.7 ms at 60 Hz; GPU hang vs CPU stall; `vkWaitForFences` CPU-wait debugging; back-pressure analysis
+- **Integrations**: Ch24 (Vulkan timestamps), Ch93 (GPU performance methodology), Ch133 (async compute queue profiling), Ch137 self-referential: profiling the entire stack
+
+### Chapter 138: Wayland Fractional Scaling and HiDPI *(Part VI)*
+
+- HiDPI problem: PPI formula; 4K/15" ≈ 282 PPI; device pixel ratio (DPR); integer 2× wastes logical space; need for 1.25–1.75× fractional scales
+- `wl_output.scale`: integer-only (Wayland 1.9); `wl_surface.set_buffer_scale(2)`; `GDK_SCALE=2`; limitations — too coarse for 14-inch QHD panels
+- `wp_fractional_scale_v1` (wayland-protocols staging, 2023): `wp_fractional_scale_manager_v1`; `get_fractional_scale(surface)`; `preferred_scale(scale)` event; `scale = desired_scale × 120` fixed-point encoding
+- Client protocol: `set_buffer_scale` stays 1; `wp_viewport.set_destination(logical_w, logical_h)`; render at `ceil(logical × scale)` buffer; full commit sequence; why `ceil` not `round`
+- Compositor support: GNOME Mutter (GNOME 47, 2024 stable; GNOME 43 experimental); `gsettings scale-monitor-framebuffer`; KWin Plasma 6; wlroots 0.17 (`wlr_fractional_scale_v1_notify_scale`); Hyprland `monitor = eDP-1,scale,1.5`
+- Toolkit integration: GTK4 `GdkWaylandSurface` auto-binds `wp_fractional_scale_v1`; `cairo_surface_set_device_scale`; Qt6 `QWaylandWindow::setPreferredScale`; Electron/Chromium `--ozone-platform=wayland`; SDL3 `SDL_GetWindowPixelDensity`; Firefox `MOZ_ENABLE_WAYLAND=1`
+- Mixed-DPI multi-monitor: `wl_surface.enter/leave`; compositor re-sends `preferred_scale`; `wlr-randr --scale`; `kscreen-doctor`; cursor scaling; `hyprcursor`; "blurry on move" transient artefact
+- XWayland: integer-scale only; `Xwayland -dpi 144` for 1.5× equivalent; X11 apps blur at fractional scale; `MOZ_ENABLE_WAYLAND=1` escapes XWayland
+- Subpixel rendering: `FT_LOAD_TARGET_LCD`; Pango fractional device units; `hintstyle=hintslight`; fontconfig LCD filter; `gsettings antialiasing rgba`
+- **Integrations**: Ch20 (wl_output.scale), Ch21 (wlroots fractional scale), Ch22 (Mutter/KWin scale implementation), Ch39 (GTK/Qt toolkit DPR), Ch105 (font rendering HiDPI), Ch130 (staging protocol lifecycle)
+
+### Chapter 139: DRM Hardware Overlay Planes and Composition Bypass *(Part I)*
+
+- Display engine architecture: plane → CRTC → Encoder → Connector; Intel ICL+ up to 7 planes/pipe; AMD DCN 3.x 4 planes/display; Qualcomm DSS 6 planes; `DRM_PLANE_TYPE_PRIMARY/OVERLAY/CURSOR`
+- KMS plane objects: `drm_plane` struct; `drmSetClientCap(DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1)`; `drmModeGetPlaneResources`; plane properties: `FB_ID`, `CRTC_ID`, `SRC_X/Y/W/H` (16.16 fixed-point), `CRTC_X/Y/W/H`, `ZPOS`, `ALPHA` (0–0xFFFF), `PIXEL_BLEND_MODE`, `ROTATION`
+- Atomic commit: `drmModeAtomicAddProperty`; `DRM_MODE_ATOMIC_TEST_ONLY` for hardware capability test; `DRM_MODE_ATOMIC_NONBLOCK + DRM_MODE_PAGE_FLIP_EVENT`; disable: `CRTC_ID = 0`
+- DRM fourcc formats: `DRM_FORMAT_ARGB8888`, `DRM_FORMAT_NV12`, `DRM_FORMAT_P010`, `DRM_FORMAT_ABGR2101010`; modifiers: `DRM_FORMAT_MOD_LINEAR`, `I915_FORMAT_MOD_Y_TILED`, `AMD_FMT_MOD_DCC`; `IN_FORMATS` blob; `drmModeAddFB2WithModifiers`
+- Composition bypass / direct scanout: prerequisites (format+modifier match, no scaling, full coverage, fence); `DRM_MODE_ATOMIC_TEST_ONLY` scan-out test; wlroots `wlr_drm_connector_test_primary_fb`; power savings: ~2.5 W GPU (direct) vs ~4.5 W (composited) for full-screen video
+- Z-order and alpha: `ZPOS` layering; `ALPHA` plane-wide multiplier; `PIXEL_BLEND_MODE`: `None/Pre-multiplied/Coverage`; cursor: `drmModeMoveCursor` without atomic commit
+- Video overlay: `COLOR_ENCODING` (BT.601/BT.709/BT.2020); `COLOR_RANGE` (limited/full); zero-copy VA-API NV12 DMA-BUF → KMS plane; hardware scaling (`CRTC_W/H ≠ SRC_W/H`); `mpv --vo=drm`
+- Compositor allocation: greedy Z-order algorithm; `ATOMIC_TEST_ONLY` per surface; wlroots `wlr_drm_plane_alloc`; Mutter `MetaKmsUpdate` integration; `-EINVAL` fallback to GPU composition
+- Debugging: `cat /sys/kernel/debug/dri/0/state`; Intel `i915_display_info`; AMD `amdgpu_dm_visual_confirm`; `modetest -P plane_id@crtc_id:WxH+X+Y:format`; `WLR_DRM_DEBUG=1`
+- **Integrations**: Ch2 (KMS — planes are first-class KMS objects), Ch3 (HDR planes, P010 format), Ch4 (DMA-BUF — plane surfaces), Ch20 (compositor direct scanout), Ch21 (wlroots plane allocation), Ch22 (Mutter/KWin plane allocation), Ch38 (VA-API NV12 to plane), Ch74 (HDR10 video overlay), Ch123 (writeback connector captures all planes)
+
+### Chapter 140: HDMI and DisplayPort Audio on Linux *(Part VI)*
+
+- HDMI audio protocol: Audio Sample Packets in TMDS blanking; LPCM (8ch/192kHz/24-bit), AC-3, DTS, DTS-HD, Dolby TrueHD/Atmos, DTS:X; ACR: `f_audio = 128 × f_TMDS × (N/CTS)`; HDMI 2.1 eARC (full TrueHD/DTS-HD pass-through, 37 Mbps)
+- EDID CEA-861: Short Audio Descriptors (SAD, 3 bytes each): format code, max channels, sample rates, bit depths/bitrate; ELD (84 bytes): `monitor_name_length`, `sad_count`, `conn_type`, SAD array; `drm_edid_to_eld(connector, drm_edid)`; `cat /proc/asound/card*/eld*`
+- `drm_audio_component`: `drm_audio_component_ops` vtable: `get_power`, `put_power`, `codec_wake_override`, `get_cdclk_freq`, `sync_audio_rate`, `get_eld`; Linux component framework `component_add/bind`; Intel `i915_audio_component` in `intel_audio.c`; AMD `amdgpu_dm_audio.c`; `intel_audio_codec_enable` → `pin_eld_notify`
+- ALSA HDA Intel driver: `snd_hda_intel` + `snd_hda_codec_hdmi` (`patch_hdmi.c`); one PCM stream per port; HDA verbs: `AC_VERB_SET_STREAM_FORMAT`, `AC_VERB_SET_CHANNEL_STREAMID`; `aplay -l`; AMD `snd_hda_codec_atihdmi`; NVIDIA `patch_nvhdmi.c`
+- PipeWire/WirePlumber: ALSA monitor discovers HDMI PCM devices; `wpctl status`; WirePlumber udev watch → ELD re-read; IEC 61937 passthrough; `mpv --audio-spdif=ac3,dts,truehd`
+- Hotplug lifecycle: HPD interrupt → DRM hotplug → `drm_edid_to_eld` → `pin_eld_notify` → ALSA PCM create/destroy → udev → WirePlumber; suspend/resume audio loss; `hda-verb GET_PIN_SENSE`; `hdajacksensetest`
+- DisplayPort audio: Main Link idle Audio Stream Packets; synchronous clock (no ACR); DPCD `DP_AUDIO_SINK_CAPS`; 8ch/192kHz LPCM; MST per-port ELD; ARC vs eARC bandwidth table; `DRM_ELD_CONN_TYPE_DP`
+- CEC: single-wire bidirectional on HDMI pin 13; `drivers/media/cec/`; `/dev/cec0`; `cec-ctl`; `CEC_MSG_ACTIVE_SOURCE`, `STANDBY`, `SET_STREAM_PATH`; `drm_dp_cec.c` for DP CEC-over-AUX; `libcec`; Kodi CEC integration
+- **Integrations**: Ch2 (KMS connector/EDID), Ch3 (ARC/eARC for HDR audio), Ch38 (PipeWire HDMI routing), Ch128 (DP MST per-port audio), Ch139 (plane mode change triggers audio ACR recalc)
+
+### Chapter 141: Vulkan Cooperative Matrices and GPU ML Acceleration *(Part VII)*
+
+- MMA hardware: NVIDIA Tensor Cores (Volta+); AMD Matrix Cores (CDNA MFMA, RDNA3 WMMA); Intel XMX/DPAS (Xe-HPG+); peak ML TFLOPS; `C[M×N] += A[M×K] × B[K×N]` tile decomposition
+- `VK_KHR_cooperative_matrix`: `VkCooperativeMatrixPropertiesKHR` (M/N/K/AType/BType/CType/ResultType/scope); `vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR`; `VK_SCOPE_SUBGROUP_KHR`; subgroup-cooperative tile fragments
+- GLSL: `#extension GL_KHR_cooperative_matrix`; `coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA>`; `coopMatLoad/Store/MulAdd/Construct`; `gl_CooperativeMatrixLayoutRowMajor`; SPIR-V: `OpCooperativeMatrixMulAddKHR`
+- Hardware ISA: NVIDIA PTX `mma.sync.aligned.m16n8k16`; AMD `v_wmma_f32_16x16x16_f16` / `v_wmma_i32_16x16x16_iu8` (RDNA3 wave32); Intel `dpas.8x8.f32.hf.hf` systolic array (Xe-HPG)
+- RADV (RDNA3+ gfx11+): `radv_physical_device_get_cooperative_matrix_properties`; `nir_lower_cooperative_matrix` → ACO `v_wmma_*` emission; `RADV_DEBUG=shaderinfo` VGPR count
+- ANV (DG2/Arc+): `anv_get_cooperative_matrix_props`; `nir_lower_cooperative_matrix` → `intel_nir_lower_dpas.c`; Xe-HPG INT8 274 TOPS / FP16 137 TFLOPS peak
+- Quantisation: INT8 GEMM accumulate INT32; `saturatingAccumulation`; FP8 E4M3/E5M2 (RDNA3 RADV mid-2026 target); BF16 `v_wmma_f32_16x16x16_bf16`; GGUF block quantisation dequant shader
+- Practical usage: `llama.cpp` Vulkan backend (`GGML_VULKAN=1`): 45–70 tok/s Llama 3.1 8B Q4_K_M on RX 7900 XTX; `stable-diffusion.cpp`; VkFFT; tinygrad Vulkan
+- Tuning: VGPR pressure vs occupancy; L1 cache tiling (2 KB tile fits 32 KB L1); `subgroup_size_control = FULL` for wave32; peak TFLOPS formula: `CUs × (8192/4) × clk_GHz`
+- **Integrations**: Ch24 (Vulkan API), Ch25 (GPU compute), Ch108 (ROCm rocBLAS — same WMMA/MFMA HW), Ch124 (OpenCL cl_khr_cooperative_matrix), Ch127 (mesh+ML hybrid), Ch133 (async compute queue for GEMM), Ch135 (coop matrix denoising after RT)
 
 ---
 
