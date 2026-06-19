@@ -183,6 +183,22 @@ descriptor set implementation.
 
 ---
 
+## Chapters in This Part
+
+**Chapter 7 — Reverse Engineering NVIDIA: History and Methodology** explains how `mmiotrace` captures MMIO traffic, how Envytools turns captured traces into a symbolic register database, and why 17 years of reverse engineering was insufficient to fully close the reclocking gap.
+
+**Chapter 8 — The Nouveau Kernel Driver: nvkm Architecture** covers the `nvkm_device` / `nvkm_subdev` / `nvkm_engine` object hierarchy, Falcon microcontroller abstractions, channel and pushbuffer management, `drm_sched` integration, and the full DRM UAPI surface.
+
+**Chapter 9 — GSP-RM, Firmware, and the nvidia-open Connection** explains what changed in 2022: NVIDIA's GPU System Processor runs a complete resource manager (GSP-RM) exposing an RPC interface over dual 256 KB ring queues, and how Nouveau acquired GSP-RM support shortly after.
+
+**Chapter 10a — Nova: The Rust NVIDIA Kernel Driver** examines the clean-sheet Rust reimplementation introduced in Linux 6.15, whose nova-core / nova-drm split across the Linux Auxiliary Bus encodes the GSP-RM trust boundary in Rust's type system.
+
+**Chapter 10b — NVK: Building a Vulkan Driver from Scratch** covers the Mesa Vulkan driver for NVIDIA hardware: the SPIR-V → NIR → NAK shader compilation pipeline, the bindless descriptor heap, and VM_BIND command submission.
+
+**Chapter 118 — NAK: The Rust Shader Compiler for NVIDIA GPUs** documents the Nvidia Awesome Kompiler — Mesa's first GPU compiler backend written in Rust — covering its NIR-to-SASS lowering pipeline, register allocation, and ISA encoding for Maxwell through Hopper.
+
+**Chapter 11 — Display, Reclocking, and Power Management** closes the part by covering NVIDIA display engine reclocking, P-state tables, PLL clock trees, and the power management picture that varies significantly by GPU generation.
+
 ## The Narrative Arc of Part III
 
 The seven chapters form a progression from epistemology to architecture to application:

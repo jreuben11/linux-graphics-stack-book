@@ -10,9 +10,11 @@ Android is a Linux-based operating system, and its graphics stack is built direc
 
 **Chapter 87 — Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform** brings the Android graphics stack into spatial computing. It traces how **ARCore** (a Play Services component, not a HAL module) layers above **Camera HAL3** and **android.hardware.camera2** to fuse camera frames with **IMU** data via **Visual-Inertial Odometry** (**VIO**), producing world-understanding primitives — **ArPose**, **ArPlane**, depth maps, light estimates — that renderers consume. The chapter covers the zero-copy camera background rendering path via **GL_TEXTURE_EXTERNAL_OES** and **EGLImageKHR**, Vulkan import of camera frames via **VkSamplerYcbcrConversion**, the **Depth API** (structured light, **MotionStereo**), the **Geospatial API** using Google's **Visual Positioning System** (**VPS**), **Cloud Anchors**, the **Environmental HDR** light estimation mode with spherical harmonics, and the **OpenXR** loader shipped inside ARCore services. It closes with the **Android XR** spatial computing platform, the **Jetpack XR SDK** (**androidx.xr**), and headsets such as **Project Moohan**. This chapter is the Android counterpart to the OpenXR chapters in Part VIII, but it begins from camera sensor hardware rather than from a Vulkan swapchain.
 
+**Chapter 166 — Android AR: ARCore Architecture, Camera HAL Integration, and Android XR** is an expanded and updated companion to Chapter 87, written for the **Android XR** era. While Chapter 87 provides the foundational treatment of **ARCore**'s architecture and the Camera HAL3 integration model, Chapter 166 extends coverage to the **Android XR platform** (Samsung Galaxy XR / Project Moohan), the **Jetpack XR SDK** (`androidx.xr`), **OpenXR on Android** (`XR_KHR_android_create_instance`, `XrSwapchainImageAndroidKHR`), Qualcomm **Snapdragon Spaces** XDK, and the open-source **Monado** OpenXR runtime as a forward reference for Linux AR development. The chapter also provides deeper treatment of the **Vulkan** camera import path (`VK_ANDROID_external_memory_android_hardware_buffer`, `VkSamplerYcbcrConversion`), `VK_EXT_plane_detection` for spatial plane query, and the **Environmental HDR** spherical harmonic light estimation API. Readers working on headset or glasses integration under Android XR should read this chapter after Chapter 87.
+
 ## How the Chapters Interrelate
 
-The three chapters form a strict bottom-up dependency chain, and they also share a set of data structures and interfaces that weave through all three.
+The four chapters in this part form a bottom-up dependency chain, sharing a set of data structures and interfaces that weave through all of them.
 
 **AHardwareBuffer** is the central shared artifact. It is allocated by **Gralloc** (Chapter 85), imported into **Vulkan** via **VK_ANDROID_external_memory_android_hardware_buffer** (Chapter 86), and consumed as a zero-copy camera output buffer by **ARCore**'s **Camera HAL3** integration (Chapter 87). A reader who does not understand what an **AHardwareBuffer** is — how it wraps a **DMA-BUF** file descriptor inside a `native_handle_t`, how it is shared cross-process over **Binder**, and how it carries format and usage flags that constrain GPU access — will not be able to follow the Vulkan interop discussion in Chapter 86 or the camera frame rendering path in Chapter 87. Chapter 85 must therefore be read first.
 
@@ -29,14 +31,16 @@ graph LR
     CH85["Ch 85\nSurfaceFlinger &\nHardwareBuffer"]
     CH86["Ch 86\nVulkan on Android\n& ANGLE"]
     CH87["Ch 87\nARCore &\nAndroid XR"]
+    CH166["Ch 166\nAndroid XR Deep Dive\n(expanded ARCore/XR)"]
 
     CH85 -->|"AHardwareBuffer,\nBufferQueue,\nsync fences"| CH86
     CH85 -->|"SurfaceFlinger,\nASurfaceControl,\nHWComposer"| CH87
     CH86 -->|"VK ext. memory interop,\nANGLE GLES backend,\nmobile GPU perf"| CH87
+    CH87 -->|"Android XR platform,\nOpenXR, Snapdragon Spaces"| CH166
 ```
 
 ## Prerequisites and What Comes Next
 
-Readers should be comfortable with the Linux **DRM/KMS** and **DMA-BUF** subsystems from Part I, with the Wayland compositor model from Part VI (especially the buffer-passing and fence-signalling protocols that Chapter 85 maps onto Android equivalents), and with the core Vulkan swapchain and memory-allocation concepts from Part II. Chapter 87 additionally assumes familiarity with the **OpenXR** session model introduced in Part VIII. These three chapters together form the Android-specific lens through which many of the generic graphics stack concepts in Parts I–VIII can be re-examined in a production mobile context; Part XX continues the mobile thread by examining the Apple Silicon and iOS graphics stack, where many parallel design choices were made under different architectural constraints.
+Readers should be comfortable with the Linux **DRM/KMS** and **DMA-BUF** subsystems from Part I, with the Wayland compositor model from Part VI (especially the buffer-passing and fence-signalling protocols that Chapter 85 maps onto Android equivalents), and with the core Vulkan swapchain and memory-allocation concepts from Part II. Chapters 87 and 166 additionally assume familiarity with the **OpenXR** session model introduced in Part VIII. These four chapters together form the Android-specific lens through which many of the generic graphics stack concepts in Parts I–VIII can be re-examined in a production mobile context; Part XX continues the mobile thread by examining the Apple Silicon and iOS graphics stack, where many parallel design choices were made under different architectural constraints.
 
 ---

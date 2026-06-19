@@ -82,9 +82,13 @@ ARM SoC display pipelines connect to panels via **MIPI DSI** (Display Serial Int
 
 **Chapter 99 — Automotive and Embedded Linux Graphics** examines the Linux graphics stack under automotive and industrial constraints: **ISO 26262** functional-safety requirements, **ASIL-B** display controllers, **AGL** (Automotive Grade Linux), the **Qt Automotive Suite**, cabin-network protocols (**SOME/IP**, **DoIP**), and the Yocto/Buildroot build environments that tie SoC driver bring-up to production HMI deployments.
 
-**Chapter 106 — Multi-GPU Systems: PRIME Offloading and Vulkan Device Groups** extends the PRIME story to explicit Vulkan multi-GPU: `VkPhysicalDeviceGroupProperties`, `VK_KHR_device_group`, `VkDeviceGroupSubmitInfo`, and the drm_gpuvm-based **VM_BIND** mechanism that makes persistent cross-GPU buffer sharing efficient.
-
 **Chapter 116 — RISC-V GPU Drivers and the Emerging RISC-V Graphics Stack** documents the nascent state of GPU driver support on RISC-V SoCs as of Linux 6.18. The chapter centres on the **`drm/imagination`** driver for Imagination Technologies B-Series GPUs, whose RISC-V enablement landed via T-HEAD TH1520 (Imagination BXM-4-64) — the first RISC-V SoC to reach upstream mainline with a 3D-capable GPU driver. It covers the GPU IP block architecture (TBDR tile engine, Unified Shader Cluster, META/RISC-V firmware processor), the TH1520 power-sequencing bring-up chain (`pwrseq-thead-gpu`, Cortex-E902 always-on coprocessor), and the Mesa **PowerVR Vulkan** driver (`src/imagination`). Additional topics include PCIe discrete GPU use on platforms such as Milk-V Pioneer (AMD Radeon amdgpu verified; amdkfd buildable since Linux 6.16), the RISC-V Vector Extension (RVV 1.0) and its impact on llvmpipe/lavapipe software rendering, and open hardware GPU research projects (Vortex GPGPU, RV64X ISA extension proposals) that point toward future native RISC-V GPU IP.
+
+**Chapter 126 — Hybrid Graphics and Laptop Power Management** covers the software machinery that manages dual-GPU laptops — integrated + discrete configurations — including the **PRIME** render-offload path, **DRM_IOCTL_PRIME_HANDLE_TO_FD** cross-driver buffer sharing, **VK_LAYER_MESA_device_select** for Vulkan, `DRI_PRIME` environment variable selection, ACPI _DSM power rail control, and the **power-profiles-daemon** policies that gate discrete GPU wakeup on battery.
+
+**Chapter 155 — USB Display Adapters: DisplayLink and EVDI** documents the kernel driver stack for USB-attached external displays, covering the **EVDI** (Extensible Virtual Display Interface) kernel module, the DisplayLink `udl` driver, how the DRM atomic commit path serialises pixel data over USB, CPU-side rendering fallbacks, and bandwidth constraints for 4K USB-C docking stations.
+
+**Chapter 160 — freedreno and Turnip: Qualcomm Adreno Open Drivers** provides a dedicated deep dive into the open-source Qualcomm Adreno driver stack: the **freedreno** DRM kernel driver, the **Turnip** Mesa Vulkan driver (`src/freedreno/vulkan/`), the **ir3** compiler pipeline, the TBDR sysmem-vs-GMEM rendering path, CCU flush ordering, and the upstream Adreno GPU register and microcode documentation efforts.
 
 ## How the Chapters Interrelate
 
@@ -98,11 +102,9 @@ graph LR
     CH92["Ch 92\nRaspberry Pi\nVideoCore & V3D"]
     CH100["Ch 100\netnaviv\nVivante GC"]
     CH99["Ch 99\nAutomotive &\nEmbedded Graphics"]
-    CH106["Ch 106\nMulti-GPU Systems\nPRIME + Device Groups"]
     CH116["Ch 116\nRISC-V GPU Drivers\ndrm/imagination · PowerVR"]
 
     CH05 --> CH49
-    CH05 --> CH106
     CH05 --> CH06
     CH06 --> CH90
     CH06 --> CH73
@@ -112,7 +114,6 @@ graph LR
     CH06 --> CH116
     CH90 --> CH99
     CH100 --> CH99
-    CH49 --> CH106
     CH92 -. "comparable\nembedded bring-up" .-> CH99
     CH116 -. "PCIe GPU\non RISC-V" .-> CH05
 ```
@@ -121,7 +122,7 @@ graph LR
 
 **Chapter 6** generalises Chapter 5 concepts to the ARM and embedded world. The **platform driver** probe model, **DEVFREQ** DVFS, **ARM SMMU** integration, and **MIPI DSI** display pipelines introduced in Chapter 6 are prerequisites for Chapters 90, 92, 100, and 116. Chapter 116 additionally draws on Chapter 5's treatment of PCIe discrete GPU bring-up (amdgpu on RISC-V servers) for the Milk-V Pioneer use case.
 
-**Chapter 49** depends on Chapter 5 for its treatment of **DMA-BUF**, `dma_resv`, and format modifiers; it ties together the x86 driver families in the context of multi-GPU cooperation. **Chapter 106** extends this into the Vulkan device-group API.
+**Chapter 49** depends on Chapter 5 for its treatment of **DMA-BUF**, `dma_resv`, and format modifiers; it ties together the x86 driver families in the context of multi-GPU cooperation.
 
 **Chapters 73, 90, 92, and 100** are largely parallel and can be read in any order after Chapters 5 and 6. They share a common theme: every one of these drivers was written without access to a vendor hardware specification.
 
@@ -131,6 +132,6 @@ The structural distinction that runs through all chapters is the **submission mo
 
 Readers should arrive at this part with a working understanding of the **DRM** subsystem contracts introduced in Part I: the **KMS** object model, the **GEM** lifecycle, and the **DRM file descriptor** permission model. No GPU-specific hardware knowledge is assumed.
 
-The kernel driver implementations here form the hardware substrate on which every subsequent part depends: Part IV (Mesa architecture) and Part V (Mesa GPU drivers) translate the **GEM** and **render node** ioctls established here into **OpenGL**, **Vulkan**, and **OpenCL** APIs via the **NIR** intermediate representation that connects all Mesa shader compilers to their respective hardware backends. **NVK** (NVIDIA's open Vulkan driver, Part III) and **NVK**'s kernel backend in **Nova** represent the NVIDIA-specific view of the same kernel contracts Part II establishes for AMD, Intel, and ARM. Part VI (display and compositing) builds directly on the **KMS** pipelines and **DMA-BUF** sharing described in Chapters 5, 6, and 92; and Part VIII (gaming and compatibility layers) relies on the multi-GPU **PRIME** offload and **VM_BIND** capabilities covered in Chapters 5, 49, and 106.
+The kernel driver implementations here form the hardware substrate on which every subsequent part depends: Part IV (Mesa architecture) and Part V (Mesa GPU drivers) translate the **GEM** and **render node** ioctls established here into **OpenGL**, **Vulkan**, and **OpenCL** APIs via the **NIR** intermediate representation that connects all Mesa shader compilers to their respective hardware backends. **NVK** (NVIDIA's open Vulkan driver, Part III) and **NVK**'s kernel backend in **Nova** represent the NVIDIA-specific view of the same kernel contracts Part II establishes for AMD, Intel, and ARM. Part VI (display and compositing) builds directly on the **KMS** pipelines and **DMA-BUF** sharing described in Chapters 5, 6, and 92; and Part VIII (gaming and compatibility layers) relies on the multi-GPU **PRIME** offload and **VM_BIND** capabilities covered in Chapters 5 and 49.
 
 ---

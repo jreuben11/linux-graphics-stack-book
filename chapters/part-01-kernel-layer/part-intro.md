@@ -72,6 +72,20 @@ The original KMS API (`DRM_IOCTL_MODE_SETCRTC`) set display state one object at 
 
 **Chapter 121 — DRM Lease and VR Direct Display** covers the kernel mechanism that allows a VR runtime to bypass the desktop compositor and drive a head-mounted display's CRTCs, connectors, and planes directly. Introduced in Linux 4.15, **DRM lease** (**DRM_IOCTL_MODE_CREATE_LEASE**, **DRM_IOCTL_MODE_REVOKE_LEASE**) delegates exclusive KMS mastership over a named set of display objects to a lessee process via a new file descriptor, enabling the sub-20 ms motion-to-photon latency that VR requires. The chapter explains how OpenXR runtimes such as **Monado** discover HMD connectors, request a lease via the **wp_drm_lease_device_v1** Wayland protocol, drive the display through the lease fd, and implement **Asynchronous TimeWarp** (**ATW**) on a high-priority Vulkan queue to meet VBLANK deadlines. It also covers the **VK_EXT_acquire_drm_display** Vulkan extension for direct-to-display swapchains and the frame-timing machinery that VR runtimes use to synchronise GPU submission with display refresh. VR compositor and OpenXR runtime developers are the primary audience; Wayland compositor authors will find the lease grant and revocation flow directly applicable to their KMS master implementation.
 
+**Chapter 129 — GPU Firmware: Loading, Authentication, and Trust** covers how GPU drivers load signed firmware blobs from disk (via `request_firmware()`), authenticate them through PSP/GSP-RM security processors, and manage the firmware lifecycle across suspend/resume and GPU reset cycles, with per-vendor treatment of AMD PSP, Intel GuC/HuC/GSC, and NVIDIA GSP-RM.
+
+**Chapter 139 — DRM Hardware Planes: Overlay, Cursor, and Direct Scanout** explains the hardware-plane abstraction in the KMS atomic property system — plane types (primary, overlay, cursor), format and modifier caps, z-order and blend-mode properties — and shows how compositors promote surfaces to overlay planes to eliminate per-frame GPU compositing and achieve direct scanout.
+
+**Chapter 144 — Boot Graphics Pipeline: EFI Framebuffer to DRM Handoff** traces the path from UEFI GOP framebuffer through the `efifb` and `simplefb` boot drivers to the native DRM driver's `drm_dev_register()`, covering the `sysfb_init()` handoff, firmware framebuffer conflicts, and the `DRIVER_ATOMIC`-guarded first modeset sequence that transitions the display from the bootloader image to the compositor.
+
+**Chapter 149 — GPU Hang Detection and Recovery** documents the TDR (Timeout Detection and Recovery) watchdog mechanism in the DRM GPU scheduler: how per-engine software timers detect hung command submissions, how drivers invoke `drm_sched_fault()` to initiate a GPU reset, and how per-vendor reset sequences (`amdgpu_device_gpu_recover`, `i915_reset`, `xe_gt_reset`) restore hardware state without rebooting.
+
+**Chapter 162 — Framebuffer Compression: DCC, AFBC, and CCS** covers vendor-specific lossless framebuffer compression schemes — AMD Delta Color Compression (DCC), ARM Adaptive Framebuffer Compression (AFBC), and Intel Color Control Surface (CCS) — explaining how DRM format modifiers encode compression parameters, how display engines decompress on scanout, and the bandwidth and power savings each scheme provides.
+
+**Chapter 163 — VKMS: Virtual Kernel Mode Setting** examines the `vkms` software-only DRM driver that provides a fully functional KMS device with no physical hardware, enabling headless rendering, CI test environments, and compositing research; it covers the frame-generation timer loop, writeback connector implementation, and how VKMS integrates with the DRM atomic commit path.
+
+**Chapter 164 — GPU Power Management: Runtime PM and Power Domains** provides a second, deeper treatment of runtime power management from the kernel perspective, covering `pm_runtime_*` lifecycle hooks, GENPD power-domain controllers, DVFS via the OPP framework, and the interaction between display engine DC states and GPU engine power gating across vendors.
+
 ## How the Chapters Interrelate
 
 ```mermaid

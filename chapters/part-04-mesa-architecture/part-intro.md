@@ -86,6 +86,10 @@ Zink translates the Gallium CSO state model into Vulkan's `VkPipelineState` obje
 
 **Chapter 119** examines the full Zink architecture: the NIR-to-SPIR-V translation path, the Gallium-to-Vulkan state mapping tables, the memory management strategy, and the performance characteristics of compositing two abstraction layers. It also covers the engineering history — why Zink was initially slow, the optimisations (descriptor caching, pipeline libraries, batch submission) that brought it to competitive performance, and what Zink's existence reveals about the design quality of both the Gallium and Vulkan abstractions.
 
+**Chapter 156 — Mesa Nine: Direct3D 9 State Tracker** covers the `nine` Gallium state tracker (`src/gallium/frontends/nine/`) that implements the Direct3D 9 API directly on top of a Mesa Gallium driver, bypassing Wine's D3D-to-OpenGL translation and delivering near-native D3D9 performance for Wine users on AMD and Intel hardware.
+
+**Chapter 159 — Vulkan, Mesa, DRM, and NVIDIA: The Full Stack Traced** is a synthesis chapter that traces a single Vulkan draw call from `vkCmdDraw()` through the Mesa Vulkan common layer, the RADV/ANV/NVK driver command encoder, the DRM kernel ioctl submission path, the GPU scheduler, and finally scanout via KMS, providing a unified end-to-end reference for the entire Mesa+kernel graphics stack.
+
 ## How the Chapters Interrelate
 
 The chapters in this part form a layered dependency graph that matches the actual Mesa call stack from dispatch down to machine code.

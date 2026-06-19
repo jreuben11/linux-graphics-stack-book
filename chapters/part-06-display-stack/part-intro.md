@@ -113,6 +113,32 @@ The chapters in this part form a deliberate progression from protocol foundation
 
 Readers should arrive here having read Parts I–IV: familiarity with `drmModeAtomicCommit()`, `gbm_bo_create_with_modifiers2()`, DMA-BUF file descriptors, EGLImage, and `VkSemaphore` is assumed throughout. Parts VII and VIII (Application APIs and the Gaming Layer) depend heavily on this part's coverage of compositor protocol extensions, explicit sync, and the HDR pipeline.
 
+## Additional Chapters in This Part
+
+**Chapter 74 — HDR and Wide Color Gamut on Linux** examines how the display stack delivers high dynamic range and wide-gamut colour end to end: from `wp_color_management_v1` surface metadata through KMS `HDR_OUTPUT_METADATA` and `COLORSPACE` connector properties, `drm_color_lut` LUT programming, Mutter and KWin tone-mapping implementations, and application-level colour space declaration in Vulkan (`VkSwapchainCreateInfoKHR` colour space fields) and EGL (`EGL_EXT_gl_colorspace`). The chapter covers BT.2100 PQ and HLG transfer functions, scRGB extended-range framebuffers for HDR10 and Dolby Vision content on supported panels, and practical measurement with `colorimeter` and `colord` to verify pipeline accuracy.
+
+**Chapter 75 — Explicit GPU Synchronisation: Timeline Semaphores and sync_file** covers the evolution from implicit `dma_resv` fences to explicit synchronisation across API and process boundaries. It explains the kernel `sync_file` / `sw_sync` model, `drm_syncobj` timeline semaphores, `VK_KHR_timeline_semaphore`, the `wp_linux_drm_syncobj_v1` Wayland protocol, and how compositors use explicit sync to eliminate GPU flicker when a client frame is not yet ready. Readers learn how to import and export `VkSemaphore` objects as `sync_file` FDs, how `dma_resv` wait/signal points map to Vulkan timeline values, and the NVIDIA explicit-sync path that resolved frame-tearing on XWayland.
+
+**Chapter 101 — Colour Science and ICC Profiles on Linux** provides the theoretical and practical foundation for the colour chapters in this part. It covers the CIE XYZ and Lab colour models, the ICC Profile Specification (v4), `lcms2` as the Linux reference colour-management engine, the colord D-Bus interface for device calibration, and how compositors apply per-output ICC profiles via `drm_color_lut` and the KMS `DEGAMMA_LUT` / `CTM` / `GAMMA_LUT` pipeline. The chapter also addresses colour-managed rendering in GTK4 (`GdkColorSpace`), the relationship between ICC gamut mapping and `wp_color_management_v1` primaries, and profiling hardware with ArgyllCMS and DisplayCAL.
+
+**Chapter 128 — DisplayPort MST: Multi-Stream Transport and Daisy-Chain Displays** covers the `drm_dp_mst_topology_*` API for managing multi-monitor DP daisy chains: topology discovery, virtual channel allocation, DSC bandwidth negotiation, and the compositor changes needed to drive MST hubs from a single connector.
+
+**Chapter 130 — Wayland Protocol Development: Writing Custom Extensions** explains the wayland-scanner toolchain, the unstable→staging→stable lifecycle, xml schema conventions, and a worked example of implementing a private compositor protocol extension from spec through kernel KMS property to client library.
+
+**Chapter 131 — Touch and Tablet Input on Wayland** covers `wp_tablet_v2`, `wl_touch`, libinput's pressure and tilt axis normalisation, Wacom device detection via libwacom, and how drawing applications such as Krita and Inkscape consume high-resolution tablet events delivered through the Wayland seat model.
+
+**Chapter 132 — Wayland Security Model and Protocol Sandboxing** examines how Wayland's client-isolation design prevents cross-client surface access, how xdg-desktop-portal gates privileged operations (screen capture, input injection), and how compositor authors implement capability-based access control for sensitive protocol extensions.
+
+**Chapter 138 — Wayland Fractional Scaling** documents the `wp_fractional_scale_v1` protocol, compositor-side downscaling implementation, per-output scale factors, subpixel positioning challenges under fractional scale, and font rendering quality considerations compared to integer-scale HiDPI.
+
+**Chapter 140 — HDMI and DisplayPort Audio: DRM Audio Integration** covers how the kernel's ALSA HDA driver and the DRM connector audio infrastructure co-operate to deliver audio over HDMI and DisplayPort, including ELD (EDID-Like Data) for audio capability negotiation, the `drm_audio_component` ops, and audio-video synchronisation at the compositor level.
+
+**Chapter 145 — XWayland Architecture and Compatibility** provides a dedicated treatment of the rootless XWayland server: how it runs as a Wayland client, how it implements DRI3 and Present over the Wayland connection, how Glamor accelerates X11 rendering via OpenGL ES, HiDPI and fractional scale support, and the explicit sync (`xwayland-explicit-synchronization`) patch that resolved NVIDIA compatibility issues.
+
+**Chapter 151 — Wayland Text Input and IME** covers the `zwp_text_input_v3` and `zwp_input_method_v2` protocols, input method editor (IME) integration for CJK and complex scripts, on-screen keyboard compositor support, and how toolkits (GTK4, Qt6) bridge the Wayland text-input protocol to their internal input method APIs.
+
+**Chapter 158 — HDR on the Linux Desktop: End-to-End Pipeline** is an integration chapter tracing the complete HDR pipeline from application color space declaration through `wp_color_management_v1`, compositor tone mapping, KMS `HDR_OUTPUT_METADATA` connector property, and display EOTF selection, with per-compositor implementation status for Mutter, KWin, and gamescope.
+
 ---
 
-*Part VI spans Chapters 20–23, 46, 53, 54, 74, 75, 101, 105, 112, and 123. Chapter 20 is the entry point; begin there.*
+*Part VI spans Chapters 20–23, 46, 53, 54, 74, 75, 101, 105, 112, 123, 128, 130, 131, 132, 138, 140, 145, 151, and 158. Chapter 20 is the entry point; begin there.*
