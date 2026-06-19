@@ -192,26 +192,26 @@ NAK remains fully in SSA form — with phi nodes, SSA values, and no physical re
 
 ```mermaid
 graph TD
-    A["SPIR-V<br/>(via spirv_to_nir)"] --> B["NIR Optimization Loop<br/>(C: nir_opt_*, nir_lower_*)"]
-    B --> C["from_nir.rs<br/>NIR → NAK IR (SSA)"]
-    C --> D["NAK Optimization Passes<br/>(copy-prop, DCE, algebraic)"]
-    D --> E["opt_uniform_instrs.rs<br/>(sm75+: UGPR promotion)"]
-    E --> F["assign_regs.rs<br/>Register Allocation<br/>(SSA → Physical RegRef)"]
-    F --> G["Instruction Scheduler<br/>(latency hiding, dual-issue)"]
+    A["SPIR-V\n(via spirv_to_nir)"] --> B["NIR Optimization Loop\n(C: nir_opt_*, nir_lower_*)"]
+    B --> C["from_nir.rs\nNIR → NAK IR (SSA)"]
+    C --> D["NAK Optimization Passes\n(copy-prop, DCE, algebraic)"]
+    D --> E["opt_uniform_instrs.rs\n(sm75+: UGPR promotion)"]
+    E --> F["assign_regs.rs\nRegister Allocation\n(SSA → Physical RegRef)"]
+    F --> G["Instruction Scheduler\n(latency hiding, dual-issue)"]
     G --> H{"Target SM"}
-    H -->|"sm50/60"| I["sm50_encode.rs<br/>Maxwell 64-bit format"]
-    H -->|"sm70"| J["sm70_encode.rs<br/>Volta 128-bit format"]
-    H -->|"sm75"| K["sm75_encode.rs<br/>Turing + UGPR extensions"]
-    H -->|"sm80/86"| L["sm80_encode.rs<br/>Ampere extensions"]
-    H -->|"sm89"| M["sm89_encode.rs<br/>Ada Lovelace"]
-    H -->|"sm90"| N["sm90_encode.rs<br/>Hopper (limited)"]
-    I --> O["SPH Header (80 bytes)<br/>+ SASS Binary Blob"]
+    H -->|"sm50/60"| I["sm50_encode.rs\nMaxwell 64-bit format"]
+    H -->|"sm70"| J["sm70_encode.rs\nVolta 128-bit format"]
+    H -->|"sm75"| K["sm75_encode.rs\nTuring + UGPR extensions"]
+    H -->|"sm80/86"| L["sm80_encode.rs\nAmpere extensions"]
+    H -->|"sm89"| M["sm89_encode.rs\nAda Lovelace"]
+    H -->|"sm90"| N["sm90_encode.rs\nHopper (limited)"]
+    I --> O["SPH Header (80 bytes)\n+ SASS Binary Blob"]
     J --> O
     K --> O
     L --> O
     M --> O
     N --> O
-    O --> P["nvk_pipeline upload<br/>via DRM_NOUVEAU_EXEC"]
+    O --> P["nvk_pipeline upload\nvia DRM_NOUVEAU_EXEC"]
 ```
 
 ---
@@ -329,7 +329,7 @@ NAK's optimization passes operate on the NAK IR in SSA form. The passes follow a
 
 `opt_uniform_instrs` is NAK's most NVIDIA-specific optimization pass. [Source](https://docs.mesa3d.org/relnotes/24.0.0.html) It inspects the divergence classification attached to each SSA value by NIR's `nir_divergence_analysis` and identifies values that are provably uniform across all threads in a warp (i.e., all threads in the warp compute the same value). Such values are candidates for promotion to UGPR (uniform GPR) form.
 
-Uniform values in UGPRs have two benefits: (1) they do not consume entries from the per-thread register file, increasing occupancy; (2) they can be used as the base pointer for bindless constant buffer accesses via the `LDTRAM` and `LDC.U` instruction forms, enabling the hardware's fast constant buffer path.
+Uniform values in UGPRs have two benefits: (1) they do not consume entries from the per-thread register file, increasing occupancy; (2) they can be used as the base pointer for bindless constant buffer accesses via the `LDC.U` instruction form (and related addressing modes on sm70+), enabling the hardware's fast constant buffer path.
 
 The pass inserts `OpPin` and `OpUnpin` instructions around UGPR-resident values to communicate register file membership to the register allocator, which then assigns them to the `RegFile::UGPR` class.
 
@@ -414,12 +414,12 @@ graph LR
     B --> C["Kepler B (sm32)\nOwn encoding\n40-bit addresses"]
     C --> D["Maxwell (sm50)\n64-bit instructions\nNew instruction format"]
     D --> E["Pascal (sm60/61)\nMaxwell + ext.\nNVLINK, FP16"]
-    E --> F["Volta (sm70)\n128-bit instr\nBSSY/BSYNC ctrl flow\nHMMA tensor cores"]
+    E --> F["Volta (sm70)\n128-bit instr words\nBSSY/BSYNC ctrl flow\nHMMA tensor cores"]
     F --> G["Turing (sm75)\nVolta encoding\n+UGPR/UPred\nBMMA, RT cores"]
     G --> H["Ampere (sm80/86)\n8 new instr\nInline cbuf fetch\nAsyncCopy LDGSTS"]
     H --> I["Ada (sm89)\nAda additions\nADA_NOFL, etc."]
     I --> J["Hopper (sm90)\n36 new instr\nCollective ops\nGlobal tensor mem"]
-    J --> K["Blackwell (sm100+)\nBiggest ISA change\nNo inline cbuf\nMore UGPR sources\nOMMА/QMMA"]
+    J --> K["Blackwell (sm100+)\nBiggest ISA change\nNo inline cbuf\nMore UGPR sources\nOMMA/QMMA"]
 ```
 
 | SM | Generation | Instruction Width | Control Flow | Uniform Regs |
@@ -440,15 +440,19 @@ The Maxwell encoder handles the 64-bit instruction format. Maxwell was the last 
 ```rust
 // Conceptual structure of a Maxwell FADD encoding
 // From src/nouveau/compiler/nak/sm50_encode.rs
+// NOTE: the opcode value, bit positions, and field widths below are
+// illustrative only — the actual values differ per instruction variant
+// and are derived from Envytools reverse-engineering. Verify against
+// nvdisasm output before relying on any specific constant.
 fn encode_fadd(instr: &FAdd, alloc: &RegAlloc) -> u64 {
     let mut word: u64 = 0;
-    // Opcode field [63:56]
-    word |= 0x5C << 56;   // FADD opcode prefix
-    // Destination register [39:32]
-    word |= (alloc.reg(instr.dst) as u64) << 32;
-    // Source A register [31:24]
-    word |= (alloc.reg(instr.src_a) as u64) << 24;
-    // Source B: register, immediate, or cbuf [23:0]
+    // Opcode field (high bits — exact position is variant-dependent)
+    word |= FADD_OPCODE << OPCODE_SHIFT;
+    // Destination register
+    word |= (alloc.reg(instr.dst) as u64) << DST_SHIFT;
+    // Source A register
+    word |= (alloc.reg(instr.src_a) as u64) << SRC_A_SHIFT;
+    // Source B: register, immediate, or cbuf
     // ... encode according to the source type
     word
 }
@@ -460,6 +464,9 @@ The Volta encoder emits 128-bit instruction words. The upper 64 bits encode the 
 
 ```rust
 // From src/nouveau/compiler/nak/sm70_encode.rs (conceptual)
+// NOTE: opcode values and bit positions are illustrative — exact constants
+// are validated against nvdisasm in NAK's test suite. Do not copy opcode
+// hex values from this listing without verifying against the actual source.
 struct VoltaInstrWord {
     encoding: u64,  // Instruction encoding, bits [127:64]
     sched: u64,     // Scheduling control word, bits [63:0]
@@ -467,13 +474,13 @@ struct VoltaInstrWord {
 
 fn encode_ffma(instr: &FFma, sched: SchedWord, alloc: &RegAlloc) -> VoltaInstrWord {
     let mut enc: u64 = 0;
-    enc |= 0x223 << 52; // FFMA opcode
-    enc |= (alloc.reg(instr.dst)   as u64) << 16;
-    enc |= (alloc.reg(instr.src_a) as u64) << 24;
-    enc |= (alloc.reg(instr.src_b) as u64) << 32;
-    enc |= (alloc.reg(instr.src_c) as u64) << 40;
-    // FTZ, rounding mode, saturation bits
-    if instr.ftz     { enc |= 1 << 50; }
+    enc |= FFMA_OPCODE << OPCODE_SHIFT; // Opcode in high bits of encoding word
+    enc |= (alloc.reg(instr.dst)   as u64) << DST_SHIFT;
+    enc |= (alloc.reg(instr.src_a) as u64) << SRC_A_SHIFT;
+    enc |= (alloc.reg(instr.src_b) as u64) << SRC_B_SHIFT;
+    enc |= (alloc.reg(instr.src_c) as u64) << SRC_C_SHIFT;
+    // FTZ, rounding mode, saturation bits occupy instruction-specific positions
+    if instr.ftz { enc |= FTZ_BIT; }
     // ... etc.
     VoltaInstrWord { encoding: enc, sched: sched.encode() }
 }
@@ -535,6 +542,8 @@ The `.E` modifier enables the extended 64-bit address form. Cache hints (`.CA` =
 **LDC** (Load Constant buffer): Loads from a bound constant buffer. `LDC R0, c[0x4][0x10]` loads 4 bytes from constant buffer 4 at byte offset 16. The fast constant buffer path for uniform values uses `LDC.U` on sm75+ with a UGPR holding the base.
 
 **LDGSTS** (LoaD Global, Store Shared): Ampere's async copy instruction. Initiates a DMA transfer from global memory to shared memory without occupying a register for the loaded value, enabling software pipelining of memory latency.
+
+**LDTRAM** (Load TRiAngle Memory): Fragment-stage instruction for loading per-primitive interpolation data (varying attributes, barycentric coordinates, and flat-shaded values) from the triangle RAM — the on-chip storage holding rasterizer outputs for the current fragment's triangle. LDTRAM is the mechanism by which fragment shaders access values that the hardware interpolates between vertices rather than loading from memory. It is distinct from constant buffer and global memory loads, and is not part of the general-purpose memory hierarchy. > **Note: needs verification** — the precise LDTRAM encoding details and exact NAK handling path for LDTRAM vs. standard `nir_intrinsic_load_barycentric_*` intrinsics were not confirmed against current upstream source. Readers implementing fragment-shader interpolation in NAK should consult `from_nir.rs` directly and the Envytools documentation at [Source](https://envytools.readthedocs.io/en/latest/hw/graph/maxwell/cuda/isa.html) for Maxwell-era reference.
 
 ### The MUFU: Multi-Function Unit
 
@@ -777,6 +786,8 @@ Initial NAK targeting compute-only workloads (before NVK production readiness) s
 ---
 
 ## Integrations
+
+**Chapter 7 (Reverse-Engineering NVIDIA Hardware)**: Section 7 of this chapter describes NAK's ISA encoders for the NVIDIA SASS ISA — an ISA that was historically undocumented and required reverse engineering for Kepler through Pascal, with Volta+ later supplemented by NVIDIA-provided latency tables. Chapter 7 covers the reverse-engineering methodology (Envytools, nv_isa_solver, decuda, microbenchmarking) that produced the ISA knowledge NAK's encoders are built on. Readers who want to understand the provenance of the instruction encoding tables in `sm50_encode.rs` and `sm70_encode.rs` — why certain bit positions are known, which fields remain uncertain for less-common instruction forms — should read Chapter 7 first.
 
 **Chapter 10 (NVK: Building a Vulkan Driver from Scratch)**: NAK is the shader compiler backend that NVK calls. The compilation path described in Chapter 10, Section 3 — SPIR-V → `spirv_to_nir()` → NIR optimization loop → `nvk_lower_nir()` → `nak_compile_shader()` — is the integration point between the two chapters. Chapter 10 covers NVK's descriptor model, object hierarchy, and synchronization primitives; this chapter covers what happens inside `nak_compile_shader()`. Readers should understand both chapters to follow the full path from a Vulkan application's draw call to hardware-executed SASS.
 
