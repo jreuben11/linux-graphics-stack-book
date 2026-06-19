@@ -1,4 +1,4 @@
-# Chapter 113: Screen Capture and Remote Desktop on Linux
+# Chapter 118: Screen Capture and Remote Desktop on Linux
 
 **Target audiences**: Application developers who need to capture or share display output; Wayland compositor authors implementing capture protocols; OBS and streaming engineers; remote desktop and WebRTC infrastructure engineers.
 

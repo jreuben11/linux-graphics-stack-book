@@ -145,11 +145,11 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 101: Color Science and the ICC Profile Pipeline](#chapter-101-color-science-and-the-icc-profile-pipeline) *(Part VI)*
   - [Chapter 102: The DRM GPU Scheduler and Multi-Process Fairness](#chapter-102-the-drm-gpu-scheduler-and-multi-process-fairness) *(Part I)*
 - **Part XXII — Coverage Gap Chapters**
-  - [Chapter 113: Screen Capture and Remote Desktop on Linux](#chapter-113-screen-capture-and-remote-desktop-on-linux) *(Part VI)*
-  - [Chapter 114: Zink — OpenGL on Vulkan](#chapter-114-zink--opengl-on-vulkan) *(Part IV)*
-  - [Chapter 115: GPU Memory Management Internals — TTM, GEM, and BAR](#chapter-115-gpu-memory-management-internals--ttm-gem-and-bar) *(Part I)*
   - [Chapter 116: DRM Lease and VR Direct Display](#chapter-116-drm-lease-and-vr-direct-display) *(Part I)*
   - [Chapter 117: DKMS and Out-of-Tree GPU Kernel Modules](#chapter-117-dkms-and-out-of-tree-gpu-kernel-modules) *(Part IX)*
+  - [Chapter 118: Screen Capture and Remote Desktop on Linux](#chapter-118-screen-capture-and-remote-desktop-on-linux) *(Part VI)*
+  - [Chapter 119: Zink — OpenGL on Vulkan](#chapter-119-zink--opengl-on-vulkan) *(Part IV)*
+  - [Chapter 120: GPU Memory Management Internals — TTM, GEM, and BAR](#chapter-120-gpu-memory-management-internals--ttm-gem-and-bar) *(Part I)*
 
 ---
 
@@ -1567,7 +1567,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 
 ## Part XXII — Coverage Gap Chapters
 
-### Chapter 113: Screen Capture and Remote Desktop on Linux *(Part VI)*
+### Chapter 118: Screen Capture and Remote Desktop on Linux *(Part VI)*
 
 - X11 screen capture: `XGetImage`, `XShmGetImage`, XComposite `NameWindowPixmap`, the security problem (any client can capture any window)
 - KMS writeback connectors: `DRM_MODE_CONNECTOR_WRITEBACK`, `drm_writeback_job`; supported by Mali-DP, Arm Komeda, VC4 TXP, AMDGPU, R-Car DU, Qualcomm DPU, VKMS
@@ -1580,7 +1580,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Remote desktop: gnome-remote-desktop (FreeRDP, H.264 via VA-API); xrdp; Sunshine/Moonlight (GameStream, NVENC/VAAPI)
 - **Integrations**: Ch2 (KMS writeback), Ch20 (Wayland ext-image-copy-capture), Ch21 (wlr-screencopy), Ch38 (PipeWire), Ch50 (Firefox), Ch57 (remote desktop encoding), Ch111 (Flatpak portal), Ch112 (VRR)
 
-### Chapter 114: Zink — OpenGL on Vulkan *(Part IV)*
+### Chapter 119: Zink — OpenGL on Vulkan *(Part IV)*
 
 - Purpose and history: Mesa Gallium driver implementing OpenGL via Vulkan; enables GL on Vulkan-only drivers (NVK, v3dv, Turnip, PowerVR)
 - Architecture: `zink_screen` (VkDevice), `zink_context`, `zink_batch_state`, `zink_resource`; position alongside radeonsi/iris/etnaviv
@@ -1591,9 +1591,9 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Compatibility profile: `GL_QUADS` emulation GS, display lists, accumulation buffer, fixed-function lighting; GL 4.6 core CTS conformance
 - Kopper WSI: platform-agnostic display for Zink; NVK default (Mesa 25.1), v3dv (RPi5), Turnip (Adreno), PowerVR (Mesa 26.1)
 - Debugging: `ZINK_DEBUG` flags, `ZINK_DESCRIPTORS` mode, render pass fragmentation analysis
-- **Integrations**: Ch13 (Gallium3D), Ch14 (NIR), Ch16 (Mesa Vulkan common), Ch18 (RADV), Ch20 (NVK), Ch24 (Vulkan), Ch110 (SPIR-V), Ch115 (GPU memory)
+- **Integrations**: Ch13 (Gallium3D), Ch14 (NIR), Ch16 (Mesa Vulkan common), Ch18 (RADV), Ch20 (NVK), Ch24 (Vulkan), Ch110 (SPIR-V), Ch120 (GPU memory)
 
-### Chapter 115: GPU Memory Management Internals — TTM, GEM, and BAR *(Part I)*
+### Chapter 120: GPU Memory Management Internals — TTM, GEM, and BAR *(Part I)*
 
 - GPU memory topology: VRAM (GDDR6X/HBM3), GTT (system RAM via IOMMU/GART), PCIe BAR, GPU MMU
 - GEM internals: `drm_gem_shmem_object`, `drm_gem_dma_object`; driver-specific embedding (`amdgpu_bo`, `nouveau_bo`, `i915_gem_object`)

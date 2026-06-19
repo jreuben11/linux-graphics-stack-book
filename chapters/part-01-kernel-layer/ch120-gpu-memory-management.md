@@ -1,4 +1,4 @@
-# Chapter 115: GPU Memory Management Internals — TTM, GEM, and BAR
+# Chapter 120: GPU Memory Management Internals — TTM, GEM, and BAR
 
 > **Part**: Part I — The Kernel Layer
 > **Audience**: Kernel GPU driver developers and systems engineers who need to understand how GPU memory is allocated, moved between domains, evicted under pressure, and shared across drivers. Assumes familiarity with Ch4's introduction to GEM object lifecycle, DMA-BUF, and dma_resv fencing; this chapter goes deeper into the internals.
