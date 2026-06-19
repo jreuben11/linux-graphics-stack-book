@@ -10,11 +10,13 @@ Linux gaming has been transformed over the past decade from a niche curiosity in
 
 **Chapter 56 — Ray Tracing on Linux** steps back from the Proton-specific context to document the full path from silicon to **Vulkan** API for hardware-accelerated ray tracing across **NVIDIA RT Cores**, **AMD Ray Accelerators**, and **Intel Ray Tracing Units**. It details the four **VK_KHR** ray tracing extensions, the acceleration structure lifecycle, and driver-level implementations in **RADV**, **ANV**, and the in-progress **NVK**. The chapter then closes the loop to the gaming context by covering **DXR** translation via **VKD3D-Proton** and the **Blender Cycles** production path-tracing workload.
 
+**Chapter 104 — DXVK and VKD3D-Proton: Direct3D on Vulkan in Depth** is the most technically detailed treatment of D3D-to-Vulkan translation in the book, complementing Chapter 28's survey with a rigorous architectural dissection. It examines D3D9/10/11 and D3D12 API models side by side with the DXVK and VKD3D-Proton implementations: the DXBC/DXIL → SPIR-V shader translation pipeline, the DXVK state cache for eliminating pipeline-compilation stutter, VKD3D-Proton's use of VK_EXT_descriptor_buffer and VK_KHR_ray_tracing_pipeline to translate D3D12 ray tracing, and the Proton packaging that serves the 7 million Linux Steam users who are the dominant source of Vulkan commands reaching Mesa on the desktop.
+
 **Chapter 78 — Gamescope and the Steam Deck: A Complete Gaming Graphics Stack** synthesises the part by examining a single real shipping product that integrates every layer. It covers the **Van Gogh APU** unified memory architecture, the **SteamOS 3** immutable OS design, and **gamescope**'s role as a micro-compositor implementing its own **Wayland** server, embedding **XWayland**, delegating plane assignment to **libliftoff**, and optionally applying **FSR**, **NIS**, or **VRR** before the **KMS** atomic commit. The chapter also addresses the **OLED**-specific **HDR** and mura-correction pipelines, input latency minimisation, and docking via **DisplayPort Alternate Mode**.
 
 ## How the Chapters Interrelate
 
-The four chapters form a layered dependency graph that mirrors the software stack itself.
+The five chapters form a layered dependency graph that mirrors the software stack itself.
 
 Chapter 28 is the foundation. Before any upscaling, overlay, or ray tracing discussion can be grounded, the reader must understand how a Windows game's **D3D11** or **D3D12** API calls are translated into **Vulkan** commands by **DXVK** or **VKD3D-Proton**, how **DXBC** and **DXIL** shaders are lowered through **SPIR-V** into **Mesa** driver pipelines, and how **Proton**'s **pressure-vessel** container establishes the library environment. The **ntsync** synchronisation story also connects directly to the Linux kernel; readers who have not yet read Part I (DRM/KMS) and Part IV (Mesa architecture) should do so before this chapter.
 
@@ -22,22 +24,28 @@ Chapter 29 depends on Chapter 28 in two specific ways: **MangoHud** inserts itse
 
 Chapter 56 is the most self-contained of the four — it can be read after Chapter 28 because the **DXR**→**VKD3D-Proton** section presupposes the translation-layer model, but it does not depend on Chapter 29. Its primary dependency chain runs upward into the Mesa driver chapters (Part IV) for **RADV** and **ANV** internals, and downward into the gaming context only in the **DXR** and **Blender** sections. Readers who arrive from a driver or API background rather than a gaming background may find it the most natural entry point for the part.
 
-Chapter 78 is the integrating capstone and should be read last. It calls back to every prior chapter: **DXVK**/**VKD3D-Proton** frame submission from Chapter 28, **FSR**/**NIS** compute passes and **MangoHud mangoapp** from Chapter 29, and hardware ray tracing capability on **RDNA 2** from Chapter 56. It also connects forward to Part VI (display stack) for **KMS** atomic modesetting, **VRR**, and **HDR** metadata, and to Part IX (tooling) for debugging the composite stack.
+Chapter 104 depends on Chapter 28 (survey-level) and Chapter 56 (ray tracing): it opens the DXVK/VKD3D-Proton implementations at source-code level and shows the Vulkan engineering that makes Windows-game compatibility possible at scale. Readers who have read Chapter 28 will recognise the same concepts; Chapter 104 supplies the implementation depth.
 
-The shared technical threads across all four chapters are: the **Vulkan** API as the common GPU command interface; **SPIR-V** as the shared shader intermediate representation that all translation paths produce and all **Mesa** drivers consume; **DMA-BUF** as the zero-copy buffer handoff mechanism between game, compositor, and display engine; and the **Vulkan** layer mechanism as the non-invasive interposition point for overlays, upscalers, and debugging tools.
+Chapter 78 is the integrating capstone and should be read last. It calls back to every prior chapter: **DXVK**/**VKD3D-Proton** frame submission from Chapters 28 and 104, **FSR**/**NIS** compute passes and **MangoHud mangoapp** from Chapter 29, and hardware ray tracing capability on **RDNA 2** from Chapter 56. It also connects forward to Part VI (display stack) for **KMS** atomic modesetting, **VRR**, and **HDR** metadata, and to Part IX (tooling) for debugging the composite stack.
+
+The shared technical threads across all five chapters are: the **Vulkan** API as the common GPU command interface; **SPIR-V** as the shared shader intermediate representation that all translation paths produce and all **Mesa** drivers consume; **DMA-BUF** as the zero-copy buffer handoff mechanism between game, compositor, and display engine; and the **Vulkan** layer mechanism as the non-invasive interposition point for overlays, upscalers, and debugging tools.
 
 ```mermaid
 graph LR
     CH28["Ch 28\nWindows Compatibility\n(Wine / DXVK / Proton)"]
     CH29["Ch 29\nUpscaling, Effects & Overlays\n(FSR / MangoHud / vkBasalt)"]
     CH56["Ch 56\nRay Tracing on Linux\n(RADV / ANV / DXR)"]
+    CH104["Ch 104\nDXVK & VKD3D-Proton\n(D3D-to-Vulkan in depth)"]
     CH78["Ch 78\nGamescope & Steam Deck\n(end-to-end integration)"]
 
     CH28 --> CH29
     CH28 --> CH56
+    CH28 --> CH104
+    CH56 --> CH104
     CH28 --> CH78
     CH29 --> CH78
     CH56 --> CH78
+    CH104 --> CH78
 ```
 
 ## Prerequisites and What Comes Next

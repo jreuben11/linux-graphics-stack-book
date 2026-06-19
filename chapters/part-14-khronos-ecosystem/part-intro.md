@@ -14,6 +14,8 @@ The **Khronos Group** is the standards body that defines most of the open APIs s
 
 **Chapter 65 — Vulkan SC, OpenVX, and Safety-Critical Graphics** covers three Khronos standards oriented toward non-consumer workloads. **Vulkan SC 1.0** is a safety-deterministic variant of Vulkan targeting **ISO 26262**, **DO-178C**, and **IEC 61508** certification: this chapter explains its static resource reservation model, offline pipeline compilation toolchain, fault callback and robustness infrastructure, and the Linux driver/emulation-ICD landscape. **OpenVX 1.3** is the declarative graph API for embedded computer-vision workloads, with coverage of its kernel library, tensor model, neural-network extension (**vx_khr_nn**), and **NNEF** integration. **ANARI 1.0**, the scientific ray-tracing rendering API, closes the chapter. This chapter is the most specialised in the part and assumes deep familiarity with standard Vulkan from Parts IV–V.
 
+**Chapter 134 — OpenCL on Linux** is the definitive reference for the OpenCL implementation landscape on Linux: the ICD loader (**libOpenCL.so**, **ocl-icd**, `/etc/OpenCL/vendors/*.icd`), **Mesa rusticl** (Gallium-based OpenCL 3.0 backend, `src/gallium/frontends/rusticl/`), **Intel NEO/compute-runtime** (IGC path to Xe/Arc), **AMD ROCm OpenCL** (`ROCm/clr`), and **pocl** (portable LLVM CPU/RISC-V backend). The chapter covers the OpenCL programming model (`cl_mem`, USM, `clEnqueueNDRangeKernel`), SPIR-V ingestion via `clCreateProgramWithIL`, and the zero-copy interop path from VA-API decode through OpenCL compute to an EGL-presented Vulkan surface via DMA-BUF file descriptors. Real-world applications — **Darktable**, **hashcat**, **vkFFT**, **ffmpeg** OpenCL filters — and debugging tools (**oclgrind**, **clpeak**) are covered.
+
 **Chapter 110 — SPIR-V Tooling** is the practical companion to Chapter 61's format-level reference. Where Chapter 61 explains *what* **SPIR-V** is and how it fits into the Mesa driver pipeline, this chapter explains *how to work with it at the tool level*. It covers the full **SPIRV-Tools** suite (**spirv-as**, **spirv-dis**, **spirv-val**, **spirv-opt**, **spirv-link**, **spirv-reduce**) with worked CLI examples; **SPIRV-Cross** for transpiling **SPIR-V** modules back to **GLSL**, **HLSL**, or **MSL** and for programmatic resource reflection; **spirv-reflect** for lightweight pipeline-layout introspection at engine runtime; and the front-end compiler paths (**glslang**, **DXC**, **Tint**, **clang/LLVM-SPIRV**) that feed into the toolchain. The chapter also covers **Mesa**'s `spirv_to_nir` ingestion layer, extended instruction sets for ray tracing and mesh shading, and shader debugging workflows that depend on **SPIR-V**'s debug information extensions. Engine authors, driver developers, and anyone who needs to audit, transform, or cross-compile **SPIR-V** binaries will find this chapter the most directly actionable in the part.
 
 ## How the Chapters Interrelate
@@ -23,11 +25,13 @@ graph LR
     CH61[Ch61 SPIR-V Ecosystem] --> CH62[Ch62 SYCL]
     CH61 --> CH65[Ch65 Vulkan SC / OpenVX]
     CH61 --> CH110[Ch110 SPIR-V Tooling]
+    CH61 -.->|SPIR-V for OpenCL| CH134[Ch134 OpenCL on Linux]
     CH63[Ch63 KTX2 & Texture Compression] --> CH64[Ch64 glTF 2.0]
     CH61 -.->|shader modules| CH64
     CH62 -.->|compute kernels| CH63
     CH110 -.->|spirv-val / spirv-opt| CH65
     CH110 -.->|spirv_to_nir / reflection| CH64
+    CH134 -.->|DMA-BUF interop| CH62
 ```
 
 **Chapter 61** is the keystone of the part. **SPIR-V** is the shared intermediate format consumed by the Vulkan driver in every subsequent chapter: **Vulkan SC** pipelines (Chapter 65) are compiled offline from **SPIR-V** modules validated by **spirv-val**; **SYCL** kernels (Chapter 62) are lowered to **SPIR-V** by the **DPC++** compiler before being ingested by **Level Zero** or the **Vulkan** backend; **glTF** renderers (Chapter 64) load **SPIR-V** shader modules for their **PBR** material pass. Chapter 61 should be read before Chapters 62 and 65 in particular.
@@ -38,7 +42,7 @@ Chapters 63 and 64 form a self-contained asset-pipeline pair. **KTX2** textures 
 
 Chapter 62 stands largely independently of Chapters 63–64 but depends on Chapter 61 for the **SPIR-V** compilation pipeline underlying **DPC++** and **AdaptiveCpp**. Chapter 65 likewise depends on Chapter 61 for the **SPIR-V** validation and offline compilation concepts central to **Vulkan SC**'s certification story; Chapter 110 deepens both by providing the concrete tool invocations.
 
-A thematic thread running through all six chapters is the **offline vs. online compilation** axis. **SPIR-V** (Ch61) formalises the IR boundary; **SPIR-V Tooling** (Ch110) provides the workbench for operating on that IR; **SYCL** (Ch62) performs just-in-time kernel compilation against that IR; **KTX2** (Ch63) performs offline transcoding so that runtime paths are trivial; **glTF** (Ch64) defers pipeline creation to asset load time; **Vulkan SC** (Ch65) pushes all compilation entirely offline and forbids runtime shader compilation altogether. Reading across the chapters in order exposes a consistent progression from flexible online compilation toward fully static, certifiable deployment.
+A thematic thread running through all seven chapters is the **offline vs. online compilation** axis. Chapter 134 (**OpenCL**) occupies a middle position: the ICD loader selects the backend at runtime (online), but **rusticl** compiles OpenCL C through Clang → NIR → Gallium offline relative to each kernel invocation. **SPIR-V** (Ch61) formalises the IR boundary; **SPIR-V Tooling** (Ch110) provides the workbench for operating on that IR; **SYCL** (Ch62) performs just-in-time kernel compilation against that IR; **KTX2** (Ch63) performs offline transcoding so that runtime paths are trivial; **glTF** (Ch64) defers pipeline creation to asset load time; **Vulkan SC** (Ch65) pushes all compilation entirely offline and forbids runtime shader compilation altogether. Reading across the chapters in order exposes a consistent progression from flexible online compilation toward fully static, certifiable deployment.
 
 ## Prerequisites and What Comes Next
 
