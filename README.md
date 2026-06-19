@@ -1,331 +1,98 @@
 # The Linux Graphics Stack: From Kernel to Compositor, Browser, and Terminal
 
-This is an expert-level technical reference (~800 pages) tracing every layer of the Linux graphics stack — from the DRM kernel subsystem and GPU memory management through Mesa's shader compilers, Wayland compositors, application APIs, the browser rendering pipeline, game compatibility layers, terminal pixel protocols, GPU-accelerated video streaming, and NVIDIA's proprietary SDK ecosystem. Each chapter is written for practitioners: code snippets reference real upstream source at specific commits or releases, API signatures are verified against current kernel and Mesa trees, and architectural claims cite primary sources. The book targets four overlapping audiences — systems and driver developers who live in kernel space and Mesa internals; graphics application developers working with Vulkan, EGL, VA-API, or OpenXR; browser and web platform engineers mapping WebGPU and WebGL onto Linux hardware; and terminal and TUI developers building GPU-rendered terminal emulators. By the final chapter the reader holds a continuous mental model from a `DRM_IOCTL_MODE_ATOMIC` kernel call all the way to a photon leaving a display panel, and from a WebGPU `drawIndexed` call in JavaScript all the way to the same panel.
+An expert-level technical reference (~900 pages, 135 chapters) tracing every layer of the Linux graphics stack — from the DRM kernel subsystem and GPU memory management through Mesa's shader compilers, Wayland compositors, application APIs, the browser rendering pipeline, game compatibility layers, terminal pixel protocols, GPU-accelerated video streaming, AI inference, and both open and proprietary GPU ecosystems. Each chapter is written for practitioners: code snippets reference real upstream source at specific commits or releases, API signatures are verified against current kernel and Mesa trees, and architectural claims cite primary sources.
 
-**Audiences:** Systems and driver developers · Graphics application developers · Browser and web platform engineers · Terminal and TUI developers
+By the final chapter the reader holds a continuous mental model from a `DRM_IOCTL_MODE_ATOMIC` kernel call all the way to a photon leaving a display panel, and from a WebGPU `drawIndexed` call in JavaScript all the way to the same panel.
 
-The master outline (with full per-chapter bullet points) is in [plan.md](plan.md).
+## Audiences
 
----
+- **Systems and driver developers** — kernel internals, DRM/Mesa architecture, driver implementation
+- **Graphics application developers** — the stack beneath Vulkan, EGL, VA-API, and OpenXR
+- **Browser and web platform engineers** — how Chromium/Chrome maps WebGPU, WebGL, and compositing onto Linux hardware
+- **Terminal and TUI developers** — GPU-rendered terminal emulators, Sixel, Kitty Graphics Protocol, Ghostty
 
-## Part I — The Kernel Layer
+## Parts and Chapters
 
-| Chapter | File |
-|---|---|
-| Ch 1: DRM Architecture & the Driver Model | [ch01-drm-architecture.md](chapters/part-01-kernel-layer/ch01-drm-architecture.md) |
-| Ch 2: KMS: The Display Pipeline | [ch02-kms-display-pipeline.md](chapters/part-01-kernel-layer/ch02-kms-display-pipeline.md) |
-| Ch 3: Advanced Display Features | [ch03-advanced-display-features.md](chapters/part-01-kernel-layer/ch03-advanced-display-features.md) |
-| Ch 4: GPU Memory Management | [ch04-gpu-memory-management.md](chapters/part-01-kernel-layer/ch04-gpu-memory-management.md) |
-| Ch 51: GPU Power Management and Thermal | [ch51-gpu-power-management.md](chapters/part-01-kernel-layer/ch51-gpu-power-management.md) |
+| # | Part | Chapters | Count |
+|---|------|----------|-------|
+| I | The Kernel Layer | Ch 1–4, 51, 102, 120–121, 129 | 9 |
+| II | GPU Drivers | Ch 5–6, 49, 73, 90, 92, 99–100, 116, 126 | 10 |
+| III | The Open NVIDIA Stack | Ch 7–11, 10a–10b, 118 | 7 |
+| IV | Mesa Architecture | Ch 12–17, 77, 91, 119 | 9 |
+| V | Mesa GPU Drivers | Ch 18–19 | 2 |
+| VI | The Display Stack | Ch 20–23, 46, 53–54, 74–75, 101, 105, 112, 123, 128, 130–132 | 17 |
+| VII | Application APIs & Middleware | Ch 24–27, 38–39, 47–48, 50, 76, 96, 111, 114, 124, 127, 133 | 16 |
+| VIII | Gaming Layer | Ch 28–29, 56, 78 | 4 |
+| IX | Tooling & Contributing | Ch 30–32, 55, 79–80, 89, 93, 107, 109, 122, 125 | 12 |
+| X | Browser Rendering Stack | Ch 33–37, 52, 98 | 7 |
+| XI | Engines & Creative Tools | Ch 40–42, 97, 104 | 5 |
+| XII | Terminal Graphics | Ch 43–45 | 3 |
+| XIII | Video Streaming | Ch 57–60, 60b | 5 |
+| XIV | Khronos Extended Ecosystem | Ch 61–65, 110 | 6 |
+| XV | NVIDIA Proprietary Stack | Ch 66–70, 117 | 6 |
+| XVI | Intel Open Graphics Stack | Ch 71 | 1 |
+| XVII | AMD Developer Ecosystem | Ch 72 | 1 |
+| XVIII | Rendering Abstraction Libraries | Ch 81–84, 113 | 5 |
+| XIX | Android Graphics | Ch 85–87 | 3 |
+| XX | AI/ML Inference on Linux | Ch 88, 94, 108, 115, 124 | 5 |
+| XXI | Platform, Legacy & History | Ch 95, 103 | 2 |
+| — | Appendices | A–M (13 appendices) | 13 |
 
-## Part II — GPU Drivers
+**Total: 135 chapters + 13 appendices**
 
-| Chapter | File |
-|---|---|
-| Ch 5: x86 GPU Drivers | [ch05-x86-gpu-drivers.md](chapters/part-02-gpu-drivers/ch05-x86-gpu-drivers.md) |
-| Ch 6: ARM & Embedded GPU Drivers | [ch06-arm-embedded-gpu-drivers.md](chapters/part-02-gpu-drivers/ch06-arm-embedded-gpu-drivers.md) |
-| Ch 49: Multi-GPU and PRIME Render Offload | [ch49-multi-gpu-prime.md](chapters/part-02-gpu-drivers/ch49-multi-gpu-prime.md) |
+## Repository Structure
 
-## Part III — The Nouveau / Open NVIDIA Story
+```
+plan.md                          # Master outline with full per-chapter bullet points
+intro.md                         # Holistic introduction and reading paths
+chapters/
+  intro.md                       # Book introduction (duplicate entry point)
+  part-01-kernel-layer/
+    part-intro.md                # Part overview (present in every part directory)
+    ch01-drm-architecture.md
+    ...
+  part-02-gpu-drivers/
+  ...
+  part-21-platform-legacy/
+  appendices/
+    appendix-a-glossary.md
+    appendix-b-environment-variables.md
+    appendix-c-version-matrix.md
+    appendix-d-gpu-capability-comparison.md
+    appendix-e-contributing-checklists.md
+    appendix-f-virtio-gpu-virtualisation.md
+    appendix-g-sync-reference.md
+    appendix-h-drm-format-modifiers.md
+    appendix-i-wayland-protocols-matrix.md
+    appendix-j-debugging-quick-reference.md
+    appendix-k-remote-display.md
+    appendix-l-shader-toolchain-matrix.md
+    appendix-m-kernel-config-reference.md
+```
 
-| Chapter | File |
-|---|---|
-| Ch 7: Reverse Engineering NVIDIA: History and Methodology | [ch07-reverse-engineering-nvidia.md](chapters/part-03-nouveau-story/ch07-reverse-engineering-nvidia.md) |
-| Ch 8: The Nouveau Kernel Driver: nvkm Architecture | [ch08-nouveau-kernel-driver.md](chapters/part-03-nouveau-story/ch08-nouveau-kernel-driver.md) |
-| Ch 9: GSP-RM, Firmware, and the nvidia-open Connection | [ch09-gsp-rm-firmware.md](chapters/part-03-nouveau-story/ch09-gsp-rm-firmware.md) |
-| Ch 10: NVK: Building a Vulkan Driver from Scratch | [ch10-nvk-vulkan-driver.md](chapters/part-03-nouveau-story/ch10-nvk-vulkan-driver.md) |
-| Ch 10a: Nova — The Rust NVIDIA Kernel Driver | [ch10-nova-rust-nvidia-driver.md](chapters/part-03-nouveau-story/ch10-nova-rust-nvidia-driver.md) |
-| Ch 11: Display, Reclocking, and Power Management | [ch11-display-reclocking-power.md](chapters/part-03-nouveau-story/ch11-display-reclocking-power.md) |
+## How to Read
 
-## Part IV — Mesa Architecture
+Start with [intro.md](intro.md) for curated reading paths by audience. Each part directory contains a `part-intro.md` that summarises the part's scope and links to its chapters. The master chapter outline with per-chapter bullet points is in [plan.md](plan.md).
 
-| Chapter | File |
-|---|---|
-| Ch 12: The Mesa Loader and Driver Dispatch | [ch12-mesa-loader-dispatch.md](chapters/part-04-mesa-architecture/ch12-mesa-loader-dispatch.md) |
-| Ch 13: Gallium3D: The OpenGL State Tracker | [ch13-gallium3d.md](chapters/part-04-mesa-architecture/ch13-gallium3d.md) |
-| Ch 14: NIR: Mesa's Shader Intermediate Representation | [ch14-nir-shader-ir.md](chapters/part-04-mesa-architecture/ch14-nir-shader-ir.md) |
-| Ch 15: ACO: AMD's Optimising Compiler | [ch15-aco-compiler.md](chapters/part-04-mesa-architecture/ch15-aco-compiler.md) |
-| Ch 16: Mesa's Vulkan Common Infrastructure | [ch16-mesa-vulkan-common.md](chapters/part-04-mesa-architecture/ch16-mesa-vulkan-common.md) |
-| Ch 17: Software Renderers | [ch17-software-renderers.md](chapters/part-04-mesa-architecture/ch17-software-renderers.md) |
+Suggested paths:
+- **Kernel/driver developer:** Parts I → II → III → IV → V
+- **Vulkan/compute developer:** Parts IV → V → VII → XIV → XVIII
+- **Browser engineer:** Parts IV → VI → X
+- **Gaming/compatibility:** Parts VII → VIII → XI → XV
+- **Terminal developer:** Parts VI → XII
+- **AI/ML practitioner:** Parts VII → XV → XX
 
-## Part V — Mesa GPU Drivers
+## Writing Standards
 
-| Chapter | File |
-|---|---|
-| Ch 18: Vulkan Drivers | [ch18-vulkan-drivers.md](chapters/part-05-mesa-gpu-drivers/ch18-vulkan-drivers.md) |
-| Ch 19: OpenGL and Compatibility Drivers | [ch19-opengl-compatibility-drivers.md](chapters/part-05-mesa-gpu-drivers/ch19-opengl-compatibility-drivers.md) |
+- **Accuracy first.** Code snippets reference real upstream source pinned to a commit or release tag. API signatures are verified against current kernel and Mesa trees.
+- **References.** Every non-trivial claim and code excerpt carries an inline `[Source](url)` link to kernel.org, gitlab.freedesktop.org, or the relevant upstream repository.
+- **Chapter structure.** Each chapter opens with a scope paragraph, a local table of contents, main sections, and a closing **Integrations** section cross-linking related chapters.
+- **Code blocks.** Every block is labelled with the language (`c`, `rust`, `bash`, `glsl`, `spirv`, etc.) and includes enough context (file path, function name, struct) for a reader to locate the source.
+- **Depth target.** ~6,000–8,000 words (15–20 pages) per chapter; 1–2 pages per part introduction.
 
-## Part VI — The Display Stack
+## Contributing
 
-| Chapter | File |
-|---|---|
-| Ch 20: Wayland Protocol Fundamentals | [ch20-wayland-protocol-fundamentals.md](chapters/part-06-display-stack/ch20-wayland-protocol-fundamentals.md) |
-| Ch 21: Building Compositors with wlroots | [ch21-building-compositors-wlroots.md](chapters/part-06-display-stack/ch21-building-compositors-wlroots.md) |
-| Ch 22: Production Compositors | [ch22-production-compositors.md](chapters/part-06-display-stack/ch22-production-compositors.md) |
-| Ch 23: Legacy and Sandboxed App Support | [ch23-legacy-sandboxed-app-support.md](chapters/part-06-display-stack/ch23-legacy-sandboxed-app-support.md) |
-| Ch 46: The Evolving Wayland Protocol Ecosystem | [ch46-wayland-protocol-ecosystem.md](chapters/part-06-display-stack/ch46-wayland-protocol-ecosystem.md) |
-| Ch 53: Display Calibration and colord | [ch53-display-calibration-colord.md](chapters/part-06-display-stack/ch53-display-calibration-colord.md) |
-| Ch 54: The Linux Input Stack | [ch54-linux-input-stack.md](chapters/part-06-display-stack/ch54-linux-input-stack.md) |
-
-## Part VII — Application APIs & Middleware
-
-| Chapter | File |
-|---|---|
-| Ch 24: Vulkan and EGL for Application Developers | [ch24-vulkan-egl-application-developers.md](chapters/part-07-application-apis-middleware/ch24-vulkan-egl-application-developers.md) |
-| Ch 25: GPU Compute | [ch25-gpu-compute.md](chapters/part-07-application-apis-middleware/ch25-gpu-compute.md) |
-| Ch 26: Hardware Video | [ch26-hardware-video.md](chapters/part-07-application-apis-middleware/ch26-hardware-video.md) |
-| Ch 27: VR & AR | [ch27-vr-ar.md](chapters/part-07-application-apis-middleware/ch27-vr-ar.md) |
-| Ch 38: PipeWire and the Video Session Layer | [ch38-pipewire.md](chapters/part-07-application-apis-middleware/ch38-pipewire.md) |
-| Ch 39: Qt and GTK GPU Rendering | [ch39-qt-gtk-rendering.md](chapters/part-07-application-apis-middleware/ch39-qt-gtk-rendering.md) |
-| Ch 47: Font and Text Rendering Pipeline | [ch47-font-text-rendering.md](chapters/part-07-application-apis-middleware/ch47-font-text-rendering.md) |
-| Ch 48: ROCm and Machine Learning on Linux GPUs | [ch48-rocm-ml-linux.md](chapters/part-07-application-apis-middleware/ch48-rocm-ml-linux.md) |
-| Ch 50: Vulkan Video Extensions | [ch50-vulkan-video.md](chapters/part-07-application-apis-middleware/ch50-vulkan-video.md) |
-
-## Part VIII — Gaming Layer
-
-| Chapter | File |
-|---|---|
-| Ch 28: Windows Compatibility (Wine, DXVK, VKD3D-Proton, RTX Remix) | [ch28-windows-compatibility.md](chapters/part-08-gaming-layer/ch28-windows-compatibility.md) |
-| Ch 29: Upscaling, Effects & Overlays | [ch29-upscaling-effects-overlays.md](chapters/part-08-gaming-layer/ch29-upscaling-effects-overlays.md) |
-| Ch 56: Ray Tracing on Linux | [ch56-ray-tracing-linux.md](chapters/part-08-gaming-layer/ch56-ray-tracing-linux.md) |
-
-## Part IX — Tooling & Contributing
-
-| Chapter | File |
-|---|---|
-| Ch 30: Debugging & Profiling (incl. NvPerf SDK) | [ch30-debugging-profiling.md](chapters/part-09-tooling-contributing/ch30-debugging-profiling.md) |
-| Ch 31: Conformance & Regression Testing | [ch31-conformance-regression-testing.md](chapters/part-09-tooling-contributing/ch31-conformance-regression-testing.md) |
-| Ch 32: Contributing to the Linux Graphics Stack | [ch32-contributing.md](chapters/part-09-tooling-contributing/ch32-contributing.md) |
-| Ch 55: GPU Containers and Cloud Compute | [ch55-gpu-containers-cloud.md](chapters/part-09-tooling-contributing/ch55-gpu-containers-cloud.md) |
-
-## Part X — The Browser Rendering Stack
-
-| Chapter | File |
-|---|---|
-| Ch 33: Chromium's Multi-Process GPU Architecture | [ch33-chromium-gpu-architecture.md](chapters/part-10-browser-rendering-stack/ch33-chromium-gpu-architecture.md) |
-| Ch 34: ANGLE — WebGL on Linux | [ch34-angle-webgl.md](chapters/part-10-browser-rendering-stack/ch34-angle-webgl.md) |
-| Ch 35: Dawn and WebGPU | [ch35-dawn-webgpu.md](chapters/part-10-browser-rendering-stack/ch35-dawn-webgpu.md) |
-| Ch 36: The Chromium Compositor — CC and Viz | [ch36-chromium-compositor.md](chapters/part-10-browser-rendering-stack/ch36-chromium-compositor.md) |
-| Ch 37: Skia and 2D Rendering | [ch37-skia-2d-rendering.md](chapters/part-10-browser-rendering-stack/ch37-skia-2d-rendering.md) |
-| Ch 52: Firefox and WebRender | [ch52-firefox-webrender.md](chapters/part-10-browser-rendering-stack/ch52-firefox-webrender.md) |
-
-## Part XI — Engines & Creative Tools
-
-| Chapter | File |
-|---|---|
-| Ch 40: Bevy and wgpu — A Rust-Native Vulkan Client | [ch40-bevy-wgpu.md](chapters/part-11-engine-creative-tools/ch40-bevy-wgpu.md) |
-| Ch 41: Godot 4 — RenderingDevice and the Explicit Vulkan Path | [ch41-godot4-rendering-device.md](chapters/part-11-engine-creative-tools/ch41-godot4-rendering-device.md) |
-| Ch 42: Blender — Cycles, EEVEE Next, and GPU Compute on Linux | [ch42-blender-gpu.md](chapters/part-11-engine-creative-tools/ch42-blender-gpu.md) |
-
-## Part XII — Terminal Graphics
-
-| Chapter | File |
-|---|---|
-| Ch 43: Terminal Pixel Protocols — Sixel, Kitty, and iTerm2 | [ch43-terminal-pixel-protocols.md](chapters/part-12-terminal-graphics/ch43-terminal-pixel-protocols.md) |
-| Ch 44: Terminal GPU Rendering Architectures | [ch44-terminal-gpu-rendering.md](chapters/part-12-terminal-graphics/ch44-terminal-gpu-rendering.md) |
-| Ch 45: Terminal Integration with the Compositor Stack | [ch45-terminal-compositor-integration.md](chapters/part-12-terminal-graphics/ch45-terminal-compositor-integration.md) |
-
-## Part XIII — Video Streaming on Linux
-
-| Chapter | File |
-|---|---|
-| Ch 57: FFmpeg Architecture and Programming | [ch57-ffmpeg.md](chapters/part-13-video-streaming/ch57-ffmpeg.md) |
-| Ch 58: GStreamer: Pipeline-Based Multimedia | [ch58-gstreamer.md](chapters/part-13-video-streaming/ch58-gstreamer.md) |
-| Ch 59: NVIDIA DeepStream SDK | [ch59-deepstream.md](chapters/part-13-video-streaming/ch59-deepstream.md) |
-| Ch 60: Video Compression Algorithms: DCT, Motion Estimation, and Modern Codecs | [ch60-video-codecs.md](chapters/part-13-video-streaming/ch60-video-codecs.md) |
-| Ch 60b: Video Streaming Protocols and Adaptive Bitrate Delivery | [ch60b-video-streaming-protocols.md](chapters/part-13-video-streaming/ch60b-video-streaming-protocols.md) |
-
-## Part XIV — Khronos Extended Ecosystem
-
-| Chapter | File |
-|---|---|
-| Ch 61: SPIR-V Ecosystem in Depth | [ch61-spirv-ecosystem.md](chapters/part-14-khronos-ecosystem/ch61-spirv-ecosystem.md) |
-| Ch 62: SYCL 2020 and Portable Heterogeneous Compute | [ch62-sycl.md](chapters/part-14-khronos-ecosystem/ch62-sycl.md) |
-| Ch 63: KTX2, Basis Universal, and GPU Texture Compression | [ch63-ktx2-texture-compression.md](chapters/part-14-khronos-ecosystem/ch63-ktx2-texture-compression.md) |
-| Ch 64: glTF 2.0 — The 3D Asset Pipeline Standard | [ch64-gltf.md](chapters/part-14-khronos-ecosystem/ch64-gltf.md) |
-| Ch 65: Vulkan Safety Critical and OpenVX | [ch65-vulkan-sc-openvx.md](chapters/part-14-khronos-ecosystem/ch65-vulkan-sc-openvx.md) |
-
-## Part XV — NVIDIA Proprietary Graphics Stack
-
-| Chapter | File |
-|---|---|
-| Ch 66: CUDA Runtime, Streams, and NVRTC | [ch66-cuda-runtime.md](chapters/part-15-nvidia-stack/ch66-cuda-runtime.md) |
-| Ch 67: OptiX 9 — NVIDIA's Ray Tracing Framework | [ch67-optix.md](chapters/part-15-nvidia-stack/ch67-optix.md) |
-| Ch 68: DLSS 4, Neural Rendering, and Frame Generation (incl. TensorRT) | [ch68-dlss-neural-rendering.md](chapters/part-15-nvidia-stack/ch68-dlss-neural-rendering.md) |
-| Ch 69: NVIDIA Omniverse, OpenUSD, and the RTX Renderer (incl. PhysX 5, Warp, Project Zorah) | [ch69-omniverse-usd.md](chapters/part-15-nvidia-stack/ch69-omniverse-usd.md) |
-| Ch 70: RTX Kit — RTXDI, RTXGI, NRD, RTXNS, and RTXNTC | [ch70-rtx-kit.md](chapters/part-15-nvidia-stack/ch70-rtx-kit.md) |
-
-## Part XVI — Intel Open Graphics Stack
-
-| Chapter | File |
-|---|---|
-| Ch 71: Intel Xe Kernel Driver, Arc GPU Architecture, and the Intel Open Stack | [ch71-intel-xe-arc.md](chapters/part-16-intel-stack/ch71-intel-xe-arc.md) |
-
-## Part XVII — AMD Developer Ecosystem
-
-| Chapter | File |
-|---|---|
-| Ch 72: AMD FidelityFX SDK and Radeon Developer Tools | [ch72-amd-fidelityfx-tools.md](chapters/part-17-amd-ecosystem/ch72-amd-fidelityfx-tools.md) |
-
-## Additional Chapters in Existing Parts
-
-| Chapter | Part | File |
-|---|---|---|
-| Ch 73: Asahi Linux and the Apple Silicon AGX Driver | Part II | [ch73-asahi-apple-silicon.md](chapters/part-02-gpu-drivers/ch73-asahi-apple-silicon.md) |
-| Ch 74: HDR and Wide Color Gamut on Linux | Part VI | [ch74-hdr-wide-color-gamut.md](chapters/part-06-display-stack/ch74-hdr-wide-color-gamut.md) |
-| Ch 75: Explicit GPU Synchronisation | Part VI | [ch75-explicit-gpu-sync.md](chapters/part-06-display-stack/ch75-explicit-gpu-sync.md) |
-| Ch 76: Modern Vulkan Extensions | Part VII | [ch76-modern-vulkan-extensions.md](chapters/part-07-application-apis-middleware/ch76-modern-vulkan-extensions.md) |
-| Ch 77: Shader Source-to-ISA: The Complete Compilation Toolchain | Part IV | [ch77-shader-toolchain.md](chapters/part-04-mesa-architecture/ch77-shader-toolchain.md) |
-| Ch 78: Gamescope and the Steam Deck | Part VIII | [ch78-gamescope-steam-deck.md](chapters/part-08-gaming-layer/ch78-gamescope-steam-deck.md) |
-| Ch 79: Remote Display, Screen Casting, and GPU-Accelerated Game Streaming | Part IX | [ch79-remote-display-streaming.md](chapters/part-09-tooling-contributing/ch79-remote-display-streaming.md) |
-| Ch 80: GPU Security: Isolation, Content Protection, and Confidential Computing | Part IX | [ch80-gpu-security.md](chapters/part-09-tooling-contributing/ch80-gpu-security.md) |
-
-## Part XVIII — Rendering Abstraction Libraries
-
-| Chapter | File |
-|---|---|
-| Ch 81: SDL3 GPU API: A Portable High-Level GPU Abstraction | [ch81-sdl3-gpu.md](chapters/part-18-rendering-abstractions/ch81-sdl3-gpu.md) |
-| Ch 82: Vulkan Ecosystem Toolkit: VMA, volk, vk-bootstrap, and Friends | [ch82-vma-vulkan-helpers.md](chapters/part-18-rendering-abstractions/ch82-vma-vulkan-helpers.md) |
-| Ch 83: Filament: Google's Physically Based Rendering Engine on Linux | [ch83-filament.md](chapters/part-18-rendering-abstractions/ch83-filament.md) |
-| Ch 84: bgfx, Cross-Platform Rendering Abstractions, and the Frame Graph Pattern | [ch84-bgfx-render-graph.md](chapters/part-18-rendering-abstractions/ch84-bgfx-render-graph.md) |
-
-## Part XIX — Android Graphics
-
-| Chapter | File |
-|---|---|
-| Ch 85: Android Compositor: SurfaceFlinger, HardwareBuffer, and the Buffer Pipeline | [ch85-android-surfaceflinger.md](chapters/part-19-android-graphics/ch85-android-surfaceflinger.md) |
-| Ch 86: Vulkan on Android: Drivers, ANGLE, and Mobile GPU Performance | [ch86-android-vulkan.md](chapters/part-19-android-graphics/ch86-android-vulkan.md) |
-| Ch 94: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform | *(planned)* |
-
-## Part XX — AI/ML Inference on Linux
-
-| Chapter | File |
-|---|---|
-| Ch 87: Local LLM Inference on Linux GPUs | [ch87-llm-inference-linux.md](chapters/part-20-ai-inference/ch87-llm-inference-linux.md) |
-| Ch 88: NPU and AI Accelerator Integration on Linux | [ch88-npu-ai-accelerators.md](chapters/part-20-ai-inference/ch88-npu-ai-accelerators.md) |
-
-## Additional Chapters in Existing Parts (Part XX batch)
-
-| Chapter | Part | File |
-|---|---|---|
-| Ch 89: GPU Virtualization in Depth | Part IX | [ch89-gpu-virtualization.md](chapters/part-09-tooling-contributing/ch89-gpu-virtualization.md) |
-| Ch 90: Open ARM GPU Drivers — Lima, Panfrost, and Panthor | Part II | [ch90-panfrost-panthor-lima.md](chapters/part-02-gpu-drivers/ch90-panfrost-panthor-lima.md) |
-| Ch 91: MLIR and the Emerging GPU Compiler Infrastructure | Part IV | [ch91-mlir-gpu-compilation.md](chapters/part-04-mesa-architecture/ch91-mlir-gpu-compilation.md) |
-| Ch 92: The Raspberry Pi GPU Stack — VideoCore and V3D | Part II | [ch92-raspberry-pi-videocore.md](chapters/part-02-gpu-drivers/ch92-raspberry-pi-videocore.md) |
-| Ch 93: GPU Performance Analysis Methodology | Part IX | [ch93-gpu-performance-analysis.md](chapters/part-09-tooling-contributing/ch93-gpu-performance-analysis.md) |
-
-## Part XXI — Platform, Legacy, and History
-
-| Chapter | File |
-|---|---|
-| Ch 95: X11/Xorg Architecture and the DRI Legacy Stack | [ch95-x11-xorg-dri-legacy.md](chapters/part-21-platform-legacy/ch95-x11-xorg-dri-legacy.md) |
-| Ch 99: Automotive and Embedded Linux Graphics | [ch99-automotive-embedded-graphics.md](chapters/part-21-platform-legacy/ch99-automotive-embedded-graphics.md) |
-| Ch 103: The Linux Graphics Stack: History and Design Philosophy | [ch103-history-design-philosophy.md](chapters/part-21-platform-legacy/ch103-history-design-philosophy.md) |
-
-## Additional Chapters in Existing Parts (Part XXI batch)
-
-| Chapter | Part | File |
-|---|---|---|
-| Ch 96: libcamera and the Linux Camera Stack | Part VII | [ch96-libcamera.md](chapters/part-07-application-apis-middleware/ch96-libcamera.md) |
-| Ch 97: Unreal Engine 5 on Linux | Part XI | [ch97-unreal-engine-5.md](chapters/part-11-engine-creative-tools/ch97-unreal-engine-5.md) |
-| Ch 98: WebAssembly and WebGPU as a Deployment Target | Part X | [ch98-webassembly-webgpu.md](chapters/part-10-browser-rendering-stack/ch98-webassembly-webgpu.md) |
-| Ch 100: etnaviv: The Vivante GPU Open Driver | Part II | [ch100-etnaviv-vivante.md](chapters/part-02-gpu-drivers/ch100-etnaviv-vivante.md) |
-| Ch 101: Color Science and the ICC Profile Pipeline | Part VI | [ch101-color-science-icc.md](chapters/part-06-display-stack/ch101-color-science-icc.md) |
-| Ch 102: The DRM GPU Scheduler and Multi-Process Fairness | Part I | [ch102-drm-gpu-scheduler.md](chapters/part-01-kernel-layer/ch102-drm-gpu-scheduler.md) |
-
----
-
-## Appendices
-
-| Appendix | File |
-|---|---|
-| A: Glossary | [appendix-a-glossary.md](chapters/appendices/appendix-a-glossary.md) |
-| B: Environment Variables Reference | [appendix-b-environment-variables.md](chapters/appendices/appendix-b-environment-variables.md) |
-| C: Version Matrix | [appendix-c-version-matrix.md](chapters/appendices/appendix-c-version-matrix.md) |
-| D: GPU Capability Comparison | [appendix-d-gpu-capability-comparison.md](chapters/appendices/appendix-d-gpu-capability-comparison.md) |
-| E: Contributing Checklists | [appendix-e-contributing-checklists.md](chapters/appendices/appendix-e-contributing-checklists.md) |
-| F: Virtio-GPU and Virtualisation | [appendix-f-virtio-gpu-virtualisation.md](chapters/appendices/appendix-f-virtio-gpu-virtualisation.md) |
-| G: Sync Object Reference | [appendix-g-sync-reference.md](chapters/appendices/appendix-g-sync-reference.md) |
-| H: DRM Format Modifiers | [appendix-h-drm-format-modifiers.md](chapters/appendices/appendix-h-drm-format-modifiers.md) |
-| I: Wayland Protocols Matrix | [appendix-i-wayland-protocols-matrix.md](chapters/appendices/appendix-i-wayland-protocols-matrix.md) |
-| J: Debugging Quick Reference | [appendix-j-debugging-quick-reference.md](chapters/appendices/appendix-j-debugging-quick-reference.md) |
-| K: Remote Display and GPU Virtualisation | [appendix-k-remote-display.md](chapters/appendices/appendix-k-remote-display.md) |
-| L: Shader Toolchain Matrix | [appendix-l-shader-toolchain-matrix.md](chapters/appendices/appendix-l-shader-toolchain-matrix.md) |
-| M: Kernel Configuration Reference | [appendix-m-kernel-config-reference.md](chapters/appendices/appendix-m-kernel-config-reference.md) |
-
----
-
-## Key Upstream Repositories
-
-| Project | URL |
-|---|---|
-| Linux kernel DRM | https://github.com/torvalds/linux |
-| Mesa | https://gitlab.freedesktop.org/mesa/mesa |
-| libdrm | https://gitlab.freedesktop.org/mesa/drm |
-| Wayland | https://gitlab.freedesktop.org/wayland/wayland |
-| wlroots | https://gitlab.freedesktop.org/wlroots/wlroots |
-| Nouveau / NVK | https://gitlab.freedesktop.org/nouveau/mesa |
-| Nova (Rust NVIDIA driver) | https://gitlab.freedesktop.org/drm/nova |
-| Monado (OpenXR) | https://gitlab.freedesktop.org/monado/monado |
-| Chromium | https://source.chromium.org/chromium |
-| Dawn (WebGPU) | https://dawn.googlesource.com/dawn |
-| ANGLE | https://chromium.googlesource.com/angle/angle |
-| Skia | https://skia.googlesource.com/skia |
-| Kernel GPU docs | https://www.kernel.org/doc/html/latest/gpu/ |
-| Kitty terminal | https://github.com/kovidgoyal/kitty |
-| Ghostty | https://github.com/ghostty-org/ghostty |
-| foot | https://codeberg.org/dnkl/foot |
-| libsixel | https://github.com/libsixel/libsixel |
-| FFmpeg | https://github.com/FFmpeg/FFmpeg |
-| GStreamer | https://gitlab.freedesktop.org/gstreamer/gstreamer |
-| NVIDIA Video Codec SDK | https://github.com/NVIDIA/video-codec-sdk |
-| SRT (Haivision) | https://github.com/Haivision/srt |
-| OpenUSD | https://github.com/PixarAnimationStudios/OpenUSD |
-| PhysX 5 | https://github.com/NVIDIA-Omniverse/PhysX |
-| NVIDIA Warp | https://github.com/NVIDIA/warp |
-| RTX Kit (RTXDI/RTXGI/NRD/RTXNS/RTXNTC) | https://github.com/NVIDIA-RTX |
-| RTX Remix | https://github.com/NVIDIAGameWorks/rtx-remix |
-| OptiX samples | https://github.com/NVIDIA/OptiX_Apps |
-| Intel Xe kernel driver | https://github.com/torvalds/linux (drivers/gpu/drm/xe/) |
-| Intel Media Driver (iHD) | https://github.com/intel/media-driver |
-| Level Zero | https://github.com/oneapi-src/level-zero |
-| XeSS SDK | https://github.com/intel/xess |
-| FidelityFX SDK | https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK |
-| AMF (Advanced Media Framework) | https://github.com/GPUOpen-LibrariesAndSDKs/AMF |
-| RenderDoc | https://github.com/baldurk/renderdoc |
-| Asahi Linux kernel | https://github.com/AsahiLinux/linux |
-| SDL3 | https://github.com/libsdl-org/SDL |
-| Vulkan Memory Allocator | https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator |
-| volk | https://github.com/zeux/volk |
-| vk-bootstrap | https://github.com/charles-lunarg/vk-bootstrap |
-| SPIRV-Reflect | https://github.com/KhronosGroup/SPIRV-Reflect |
-| shaderc | https://github.com/google/shaderc |
-| Tracy profiler | https://github.com/wolfpld/tracy |
-| Filament | https://github.com/google/filament |
-| bgfx | https://github.com/bkaradzic/bgfx |
-| Gamescope | https://github.com/ValveSoftware/gamescope |
-| Sunshine game streaming | https://github.com/LizardByte/Sunshine |
-| Moonlight client | https://github.com/moonlight-stream/moonlight-qt |
-| llama.cpp (GGML + Vulkan backend) | https://github.com/ggerganov/llama.cpp |
-| Ollama | https://github.com/ollama/ollama |
-| ONNX Runtime | https://github.com/microsoft/onnxruntime |
-| IREE (MLIR inference runtime) | https://github.com/iree-org/iree |
-| OpenAI Triton | https://github.com/openai/triton |
-| AMD XDNA driver | https://github.com/amd/xdna-driver |
-| Intel VPU (accel) driver | https://github.com/torvalds/linux (drivers/accel/ivpu/) |
-| OpenVINO | https://github.com/openvinotoolkit/openvino |
-| Panfrost / Lima (Mesa) | https://gitlab.freedesktop.org/mesa/mesa (src/panfrost/, src/gallium/drivers/lima/) |
-| VC4 / V3D (Raspberry Pi Mesa) | https://gitlab.freedesktop.org/mesa/mesa (src/broadcom/) |
-| Looking Glass (VM framebuffer) | https://github.com/gnif/LookingGlass |
-| libcamera | https://libcamera.org/ |
-| etnaviv (Mesa Vivante driver) | https://gitlab.freedesktop.org/mesa/mesa (src/gallium/drivers/etnaviv/) |
-| etna_viv (reverse engineering) | https://github.com/etnaviv/etna_viv |
-| colord | https://github.com/hughsie/colord |
-| ArgyllCMS | https://www.argyllcms.com/ |
-| LittleCMS | https://www.littlecms.com/ |
-| wgpu (Rust WebGPU) | https://github.com/gfx-rs/wgpu |
-| cage (kiosk compositor) | https://github.com/cage-kiosk/cage |
-| AGL (Automotive Grade Linux) | https://wiki.automotivelinux.org/ |
+Corrections, additions, and new chapter proposals are welcome. Before opening a pull request, read [Ch 32: Contributing to the Linux Graphics Stack](chapters/part-09-tooling-contributing/ch32-contributing.md) and [Appendix E: Contributing Checklists](chapters/appendices/appendix-e-contributing-checklists.md). All contributions must meet the accuracy and reference standards above.
 
 ---
 

@@ -76,6 +76,16 @@ The five Mesa Vulkan drivers — **RADV** (AMD), **ANV** (Intel), **NVK** (NVIDI
 
 **Chapter 16** documents the common layer's API surface and extension coverage in detail.
 
+## Cluster 5 — Zink: OpenGL on Vulkan
+
+The final piece of the Part IV architecture is an architectural inversion: **Zink** is a Gallium state-tracker that emits Vulkan calls rather than hardware GPU commands. It lives in [`src/gallium/drivers/zink/`](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/gallium/drivers/zink) and presents a complete `pipe_screen` / `pipe_context` pair to the Mesa OpenGL frontend while generating `VkBuffer`, `VkImage`, `VkPipeline`, and `VkCommandBuffer` objects and submitting them through the standard Vulkan queue of whatever Mesa Vulkan driver is present on the system.
+
+The practical consequence is that **any GPU that has a conformant Mesa Vulkan driver automatically acquires a full OpenGL 4.6 driver with no additional hardware-specific code**. RADV, ANV, NVK, Turnip, v3dv, and even the software Lavapipe ICD can all serve as Zink's Vulkan backend. This is how OpenGL support was brought to the NVIDIA Nouveau stack (via NVK) and to ARM Mali hardware (via Panvk) without writing dedicated Gallium backends for those GPUs.
+
+Zink translates the Gallium CSO state model into Vulkan's `VkPipelineState` objects: `pipe_rasterizer_state` maps to `VkPipelineRasterizationStateCreateInfo`, `pipe_blend_state` maps to `VkPipelineColorBlendStateCreateInfo`, and Gallium's `pipe_shader_state` (carrying NIR) is compiled to SPIR-V via `nir_to_spirv()` before being submitted to the Vulkan driver's `vkCreateShaderModule()`. Buffer resources are represented as `VkBuffer` objects backed by Vulkan device memory; texture resources as `VkImage` objects. The Gallium `draw_vbo()` call maps to a `vkCmdDrawIndexed()` or `vkCmdDraw()` within a `VkCommandBuffer` that Zink records and submits via `vkQueueSubmit()`.
+
+**Chapter 119** examines the full Zink architecture: the NIR-to-SPIR-V translation path, the Gallium-to-Vulkan state mapping tables, the memory management strategy, and the performance characteristics of compositing two abstraction layers. It also covers the engineering history — why Zink was initially slow, the optimisations (descriptor caching, pipeline libraries, batch submission) that brought it to competitive performance, and what Zink's existence reveals about the design quality of both the Gallium and Vulkan abstractions.
+
 ## How the Chapters Interrelate
 
 The chapters in this part form a layered dependency graph that matches the actual Mesa call stack from dispatch down to machine code.
@@ -88,7 +98,9 @@ The chapters in this part form a layered dependency graph that matches the actua
 
 **Chapters 15 and 16** are parallel specialisations. Chapter 15 dives into ACO as the AMD Vulkan compiler backend; Chapter 16 examines the shared Vulkan runtime infrastructure that hosts ACO output alongside Intel's BRW and NVIDIA's NAK. Neither depends on the other, but both depend on Chapters 13 and 14.
 
-**Chapter 17** sits at the intersection of Chapters 13 and 14: **llvmpipe** is a Gallium backend that JIT-compiles NIR to CPU SIMD code. **Lavapipe** adds the Vulkan common layer on top. **Zink** inverts the relationship, using Gallium as an OpenGL frontend that emits Vulkan calls — understandable only after Chapters 13 and 16 are both clear.
+**Chapter 17** sits at the intersection of Chapters 13 and 14: **llvmpipe** is a Gallium backend that JIT-compiles NIR to CPU SIMD code. **Lavapipe** adds the Vulkan common layer on top. Read this chapter after Chapters 13 and 16.
+
+**Chapter 119** is the architectural inversion that completes the picture. **Zink** is a Gallium state-tracker that emits Vulkan calls instead of hardware commands — it is the translation layer that makes the full OpenGL 4.6 API available on top of any conformant Vulkan driver, including RADV, ANV, NVK, Turnip, v3dv, and even Lavapipe. An OpenGL application calls `glDrawArrays()`; Zink's state tracker receives the Gallium `draw_vbo()` call, converts Gallium CSO state into Vulkan pipeline objects, converts `pipe_resource` buffer handles into `VkBuffer`/`VkImage` objects, and records the draw into a `VkCommandBuffer` submitted through the standard Vulkan queue. Zink is understandable only after Chapters 13 and 16 are both clear — it is precisely the composition of the Gallium frontend interface (Chapter 13) and the Mesa Vulkan common infrastructure (Chapter 16). It is also the mechanism by which hardware that only has a Vulkan driver can present an OpenGL surface to applications and tools that predate Vulkan.
 
 **Chapter 77** spans the whole part: it begins above Mesa (glslang, DXC, SPIRV-Tools) and traces through `spirv_to_nir()` and all three ISA backends. It is best read after Chapters 14 and 15 and serves as a synthesis chapter for the whole shader compilation arc.
 
@@ -101,9 +113,10 @@ graph TD
     CH14["Ch 14 — NIR\n(SSA IR, optimisation passes, spirv_to_nir)"]
     CH15["Ch 15 — ACO\n(VGPR/SGPR, SALU/VALU, GCN/RDNA ISA)"]
     CH16["Ch 16 — Vulkan Common\n(vk_object_base, vk_pipeline_cache, RADV/ANV/NVK)"]
-    CH17["Ch 17 — Software Renderers\n(llvmpipe, Lavapipe, Zink)"]
+    CH17["Ch 17 — Software Renderers\n(llvmpipe, Lavapipe)"]
     CH77["Ch 77 — Shader Toolchain\n(glslang, DXC, SPIR-V, NAK, BRW)"]
     CH91["Ch 91 — MLIR\n(Triton, IREE, XLA → SPIR-V → Mesa)"]
+    CH119["Ch 119 — Zink: OpenGL on Vulkan\n(Gallium → VkCommandBuffer, OpenGL 4.6 atop any Vulkan driver)"]
 
     CH12 --> CH13
     CH13 --> CH14
@@ -113,6 +126,8 @@ graph TD
     CH13 --> CH17
     CH14 --> CH17
     CH16 --> CH17
+    CH13 --> CH119
+    CH16 --> CH119
     CH14 --> CH77
     CH15 --> CH77
     CH16 --> CH77
@@ -122,6 +137,6 @@ graph TD
 
 ## Prerequisites and What Comes Next
 
-Readers should arrive at this part with a working understanding of the **DRM** subsystem (Part I), **GEM** buffer objects and **dma-buf** sharing (Parts I–II), and the **KMS** display pipeline (Part II) — Chapter 12 assumes that DRM render nodes and DRM format modifiers are already familiar concepts. Part V (Hardware Drivers) builds directly on the Gallium3D and NIR foundations laid here, examining how **radeonsi**, **iris**, **NVK**, and other drivers implement the `pipe_screen` and `pipe_context` interfaces for specific GPU families. Parts VI and VII (Display Stack, Application APIs) consume the EGL and Vulkan infrastructure introduced here, and Part VIII (Gaming Layer) relies on the complete shader compilation toolchain traced in Chapter 77.
+Readers should arrive at this part with a working understanding of the **DRM** subsystem (Part I), **GEM** buffer objects and **dma-buf** sharing (Parts I–II), and the **KMS** display pipeline (Part II) — Chapter 12 assumes that DRM render nodes and DRM format modifiers are already familiar concepts. Part V (Hardware Drivers) builds directly on the Gallium3D and NIR foundations laid here, examining how **radeonsi**, **iris**, **NVK**, and other drivers implement the `pipe_screen` and `pipe_context` interfaces for specific GPU families. Chapter 119's Zink architecture is directly relevant to Part V chapters covering GPUs that lack dedicated Gallium backends: for those hardware families, Zink over a Mesa Vulkan driver is the production OpenGL path. Parts VI and VII (Display Stack, Application APIs) consume the EGL and Vulkan infrastructure introduced here, and Part VIII (Gaming Layer) relies on the complete shader compilation toolchain traced in Chapter 77.
 
 ---

@@ -17,7 +17,8 @@ what makes NVIDIA hardware behave differently from AMD or Intel under open-sourc
    - [Linux Auxiliary Bus](#linux-auxiliary-bus)
    - [Bindless Global Descriptor Buffer](#bindless-global-descriptor-buffer)
 3. [The Narrative Arc of Part III](#the-narrative-arc-of-part-iii)
-4. [Where Part III Fits in the Book](#where-part-iii-fits-in-the-book)
+4. [Chapter Dependency Diagram](#chapter-dependency-diagram)
+5. [Where Part III Fits in the Book](#where-part-iii-fits-in-the-book)
 
 ---
 
@@ -54,9 +55,10 @@ AMD engineering support, reaching conformance in roughly two years) illustrates 
 documentation: NVK required roughly the same calendar time as RADV, but only became possible
 *after* the firmware documentation gap was partially closed by GSP-RM.
 
-Part III tells this story in six chapters: from the methodology of reverse engineering (Ch. 7),
+Part III tells this story in seven chapters: from the methodology of reverse engineering (Ch. 7),
 through the nvkm kernel driver architecture (Ch. 8), the GSP-RM firmware turning point (Ch. 9),
-the Nova clean-sheet Rust driver (Ch. 10a), the NVK Vulkan driver (Ch. 10b), and finally the
+the Nova clean-sheet Rust driver (Ch. 10a), the NVK Vulkan driver (Ch. 10b), the NAK Rust shader
+compiler that forms the shader-compilation half of the NVK stack (Ch. 118), and finally the
 display, reclocking, and power management picture that ties the hardware to the Linux power
 management framework (Ch. 11). It is not merely a "how does the driver work" account — it is a
 record of how an open driver was built despite systematic obstacles, and what the architecture
@@ -183,7 +185,7 @@ descriptor set implementation.
 
 ## The Narrative Arc of Part III
 
-The six chapters form a progression from epistemology to architecture to application:
+The seven chapters form a progression from epistemology to architecture to application:
 
 **Chapter 7 — Reverse Engineering NVIDIA: History and Methodology** establishes where the
 knowledge in everything that follows comes from. It is a chapter about method: how `mmiotrace`
@@ -221,12 +223,58 @@ command submission are designed together rather than retrofitted. NVK also provi
 example of how to use Mesa's Vulkan common infrastructure, valuable to anyone writing a new Mesa
 Vulkan driver.
 
+**Chapter 118 — NAK: The Rust Shader Compiler for NVIDIA GPUs** is the shader-compilation half
+of the NVK story. NVK hands compiled shaders off to NAK — the Nvidia Awesome Kompiler — which
+ingests NIR, applies NVIDIA-specific optimization and lowering passes, allocates registers across
+NVIDIA's banked GPR file and (on Turing+) the uniform register file, schedules instructions for
+latency hiding, and emits binary SASS for Maxwell through Hopper ISAs. NAK is Mesa's first GPU
+compiler backend written in Rust, merged in Mesa 24.0 (February 2024), and its clean
+SSA-throughout design replaced the legacy nv50_ir C++ backend that could not correctly target
+Turing or later GPU generations. The chapter covers NAK's IR design, its NIR-to-SASS lowering
+pipeline (including `nak_compile_shader()` at the NVK call boundary), register allocation
+correctness improvements over nv50_ir, Rust-in-Mesa FFI mechanics, and NAK's influence on
+subsequent Mesa Rust compiler efforts such as KRAID (ARM Mali Valhall).
+
 **Chapter 11 — Display, Reclocking, and Power Management** closes the part by anchoring the
 hardware concerns that affect every NVIDIA user on Linux: can the display engine drive the
 connected monitor correctly, can the GPU clock up to its rated performance, and does it idle
 efficiently when not under load? The answer varies significantly by GPU generation — fully yes on
 Turing+ with GSP-RM, partially on Maxwell/Pascal, and fully reverse-engineered only on NV50/Fermi.
 Chapter 11 explains why the boundary falls where it does.
+
+---
+
+## Chapter Dependency Diagram
+
+The diagram below shows the reading dependencies among Part III chapters. An arrow from A to B
+means B builds on concepts or interfaces introduced in A.
+
+```mermaid
+graph TD
+    Ch7["Ch. 7 — Reverse Engineering Methodology<br/>(mmiotrace, Envytools, rnndb)"]
+    Ch8["Ch. 8 — Nouveau Kernel Driver: nvkm<br/>(nvkm_device, channels, UAPI)"]
+    Ch9["Ch. 9 — GSP-RM Firmware<br/>(RPC interface, nvidia-open)"]
+    Ch10a["Ch. 10a — Nova: Rust Kernel Driver<br/>(nova-core / nova-drm, Auxiliary Bus)"]
+    Ch10b["Ch. 10b — NVK: Vulkan Driver<br/>(SPIR-V → NIR → NAK, VM_BIND)"]
+    Ch118["Ch. 118 — NAK: Rust Shader Compiler<br/>(NIR → SASS, register allocation, ISA encoding)"]
+    Ch11["Ch. 11 — Display, Reclocking, Power<br/>(P-states, PLL, DRM KMS)"]
+
+    Ch7 --> Ch8
+    Ch8 --> Ch9
+    Ch9 --> Ch10a
+    Ch9 --> Ch10b
+    Ch8 --> Ch10b
+    Ch10b --> Ch118
+    Ch8 --> Ch11
+    Ch9 --> Ch11
+```
+
+Ch. 118 (NAK) depends on Ch. 10b (NVK) because NAK is the shader-compilation backend that NVK
+invokes via `nak_compile_shader()`; understanding NVK's pipeline layout and descriptor model
+provides the necessary context for why NAK's NIR ingestion interface is designed the way it is.
+Readers focused specifically on compiler internals may read Ch. 118 after Ch. 7 (for ISA
+background from Envytools) and before Ch. 10b, treating NVK as the consumer rather than the
+prerequisite.
 
 ---
 
@@ -242,10 +290,14 @@ RADV driver was written with hardware specifications and reached conformance qui
 
 Parts IV and V (Mesa Architecture, Mesa GPU Drivers) consume the kernel and Mesa interfaces this
 part defines: NVK sits within the Part V Vulkan driver layer, and the GPU UAPI surface from
-Chapter 8 is the kernel interface those Mesa chapters assume exists. Part VI (Display Stack)
-relies on the `drm_syncobj` explicit-sync infrastructure explained in Chapters 9–10, which is
-what finally enabled first-class NVIDIA Wayland support. The power management picture in Chapter
-11 provides context for the profiling and tuning chapters in Part IX.
+Chapter 8 is the kernel interface those Mesa chapters assume exists. NAK (Ch. 118) is also the
+shader-compiler half of that driver layer — the NIR-to-SASS pipeline it defines is the NVIDIA
+analogue of the NIR-to-ISA backends covered for AMD (ACO) and Intel (brw/elk) in Part V. Part VI
+(Display Stack) relies on the `drm_syncobj` explicit-sync infrastructure explained in Chapters
+9–10, which is what finally enabled first-class NVIDIA Wayland support. The power management
+picture in Chapter 11 provides context for the profiling and tuning chapters in Part IX. NAK's
+Rust-in-Mesa integration pattern (Chapter 118) is also a cross-cutting reference for Part IV
+(Mesa Architecture) chapters that address the Mesa build system and compiler infrastructure.
 
 Readers arriving directly at Part III should have read Parts I and II, particularly the DRM/KMS
 architecture (Ch. 1–2), GPU memory management (Ch. 4), and the structural GPU driver survey
@@ -254,4 +306,4 @@ architecture (Ch. 1–2), GPU memory management (Ch. 4), and the structural GPU 
 
 ---
 
-*Part III spans Chapters 7–11 and approximately 75–100 pages.*
+*Part III spans Chapters 7–11 and Chapter 118, totalling seven chapters and approximately 90–120 pages.*

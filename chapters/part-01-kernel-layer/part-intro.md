@@ -68,6 +68,10 @@ The original KMS API (`DRM_IOCTL_MODE_SETCRTC`) set display state one object at 
 
 **Chapter 102 — The DRM GPU Scheduler and Multi-Process Fairness** examines **drivers/gpu/drm/scheduler/**, the shared arbitration library used by **amdgpu**, **i915**, **Xe**, **Nouveau**, **Panfrost**, **Panthor**, and other drivers. It explains the **CFS**-inspired virtual-runtime fair scheduling algorithm, the four priority classes from **KERNEL** to **LOW**, the **drm_sched_job** lifecycle from submission through dependency resolution to hardware dispatch, timeline fence integration with **dma_fence** and **drm_syncobj**, the timeout-detection-reset (**TDR**) watchdog, and per-process GPU time accounting. Wayland compositor developers will find the section on priority inversion and compositor scheduling particularly relevant to reducing frame latency under load.
 
+**Chapter 120 — GPU Memory Management Internals: TTM, GEM, and BAR** goes deeper than Chapter 4 into the kernel-side mechanisms that implement GPU memory placement and movement. It dissects the **TTM** eviction machinery — **LRU** list management, the fence-tracked **ttm_bo_evict** path, and **drm_buddy** VRAM allocator internals — and explains how **drm_gpuvm** and **drm_exec** provide a generic GPU virtual address space framework that replaces per-driver implementations (Linux 6.7+). The chapter covers **Resizable BAR** (**ReBAR**) and AMD's **Smart Access Memory** (**SAM**), showing how the CPU-visible PCIe aperture expands from 256 MB to the full VRAM size and what that means for buffer placement decisions. It also documents the **debugfs** interfaces under **/sys/kernel/debug/dri/** that expose TTM domain occupancy and eviction statistics at runtime. This chapter targets kernel GPU driver developers and systems engineers who need to reason about memory pressure, eviction policy, and cross-driver buffer sharing at the implementation level.
+
+**Chapter 121 — DRM Lease and VR Direct Display** covers the kernel mechanism that allows a VR runtime to bypass the desktop compositor and drive a head-mounted display's CRTCs, connectors, and planes directly. Introduced in Linux 4.15, **DRM lease** (**DRM_IOCTL_MODE_CREATE_LEASE**, **DRM_IOCTL_MODE_REVOKE_LEASE**) delegates exclusive KMS mastership over a named set of display objects to a lessee process via a new file descriptor, enabling the sub-20 ms motion-to-photon latency that VR requires. The chapter explains how OpenXR runtimes such as **Monado** discover HMD connectors, request a lease via the **wp_drm_lease_device_v1** Wayland protocol, drive the display through the lease fd, and implement **Asynchronous TimeWarp** (**ATW**) on a high-priority Vulkan queue to meet VBLANK deadlines. It also covers the **VK_EXT_acquire_drm_display** Vulkan extension for direct-to-display swapchains and the frame-timing machinery that VR runtimes use to synchronise GPU submission with display refresh. VR compositor and OpenXR runtime developers are the primary audience; Wayland compositor authors will find the lease grant and revocation flow directly applicable to their KMS master implementation.
+
 ## How the Chapters Interrelate
 
 ```mermaid
@@ -80,6 +84,10 @@ graph LR
     CH4 --> CH102
     CH1 --> CH51["Ch 51\nPower Management"]
     CH102 --> CH51
+    CH4 --> CH120["Ch 120\nMemory Internals"]
+    CH2 --> CH121["Ch 121\nDRM Lease / VR"]
+    CH3 --> CH121
+    CH120 --> CH121
 ```
 
 Chapter 1 is the mandatory starting point. Every other chapter in this part presupposes the **DRM** driver model, the **/dev/dri/** node hierarchy, the ioctl dispatch mechanism, and the separation between the display half and the execution half of **DRM** that Chapter 1 establishes.
@@ -88,11 +96,15 @@ Chapters 2 and 4 are the two principal branches that grow from that root. Chapte
 
 Chapter 3 builds directly on both predecessors. The **VRR** feature operates on the **CRTC** objects from Chapter 2. The explicit synchronisation story — **drm_syncobj** timeline fences, **IN_FENCE_FD**, **OUT_FENCE_PTR** — relies on the **dma_fence** and **dma_resv** infrastructure from Chapter 4. The **HDR** colour pipeline and **MST** topology management extend the atomic commit infrastructure detailed in Chapter 2. Chapter 3 should be read after Chapters 2 and 4, or with them open for reference.
 
+Chapter 120 is a deep-dive companion to Chapter 4: it assumes everything Chapter 4 introduces about GEM, TTM placement domains, DMA-BUF, and dma_resv, then goes further into the TTM eviction engine, the **drm_buddy** VRAM allocator, the **drm_gpuvm**/**drm_exec** locking protocol, and the Resizable BAR upgrade path. Readers who need to implement or debug TTM eviction, tune buffer placement heuristics, or understand why a driver moves a buffer between VRAM and GTT should read Chapter 4 first and then proceed to Chapter 120.
+
 Chapter 102 on the GPU scheduler branches from the execution half rather than the display half: it requires the **drm_gem_object** and **dma_fence** concepts from Chapter 4 and the driver registration concepts from Chapter 1, but has no dependency on Chapter 2 or 3. Readers who care only about rendering throughput and multi-process fairness can read Chapters 1, 4, and 102 as a self-contained path.
+
+Chapter 121 on DRM lease and VR direct display sits at the convergence of the display and memory branches. It requires a solid understanding of the KMS object model from Chapter 2 — because the lease mechanism delegates ownership of specific CRTCs, connectors, and planes — and benefits from familiarity with the explicit synchronisation and VRR infrastructure from Chapter 3, which VR runtimes rely on for frame-timing precision. The buffer allocation and TTM domain concepts from Chapters 4 and 120 are relevant to the zero-copy rendering pipelines VR runtimes construct. Chapter 121 should therefore be read after Chapters 2 and 3, with Chapter 120 as a recommended supplement for readers who want to understand the memory-side implications of driving an HMD at 90+ Hz.
 
 Chapter 51 on power management is the terminal node in the dependency graph. It relies on the **DRM** runtime PM integration described in Chapter 1, the display-engine **DC states** and **DPMS** interaction described in Chapter 2, and the scheduler idle callbacks described in Chapter 102. It should be read last within this part, or consulted as a reference when investigating platform-specific power behaviour.
 
-The shared technical threads that tie all six chapters together are: the **struct drm_device** and **struct drm_file** ownership model, the **dma_fence** synchronisation primitive (which appears in **KMS** page flip timing, **GEM** eviction, **GPU** scheduler job completion, and power state transitions), and the **debugfs** instrumentation under **/sys/kernel/debug/dri/** that surfaces internals from every subsystem.
+The shared technical threads that tie all eight chapters together are: the **struct drm_device** and **struct drm_file** ownership model, the **dma_fence** synchronisation primitive (which appears in **KMS** page flip timing, **GEM** eviction, **GPU** scheduler job completion, and power state transitions), and the **debugfs** instrumentation under **/sys/kernel/debug/dri/** that surfaces internals from every subsystem.
 
 ## Prerequisites and What Comes Next
 

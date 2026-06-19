@@ -1,6 +1,6 @@
 # Part VI — The Display Stack
 
-Parts I–V establish the substrate: kernel memory management, DRM/KMS atomic modesetting, Mesa, and the Vulkan driver stack. Part VI is where that substrate becomes visible. It covers every layer between a rendered DMA-BUF and the photons leaving the display panel: the Wayland compositor protocol, compositor toolkits and production compositor implementations, backward compatibility for X11 applications, the input pathway from kernel interrupt to Wayland event, colour science and calibration, and the advanced synchronisation and colour-management protocols that define the state of the art in 2026. The compositor is the conductor of this stack — it orchestrates KMS, GPU buffers, input, and colour management into a coherent user experience. Nothing that reaches a screen passes outside this part's scope.
+Parts I–V establish the substrate: kernel memory management, DRM/KMS atomic modesetting, Mesa, and the Vulkan driver stack. Part VI is where that substrate becomes visible. It covers every layer between a rendered DMA-BUF and the photons leaving the display panel: the Wayland compositor protocol, compositor toolkits and production compositor implementations, backward compatibility for X11 applications, the input pathway from kernel interrupt to Wayland event, colour science and calibration, the advanced synchronisation and colour-management protocols that define the state of the art in 2026, font rendering and text layout, variable-refresh-rate display technology, and privacy-respecting screen capture and remote desktop. The compositor is the conductor of this stack — it orchestrates KMS, GPU buffers, input, colour management, and adaptive timing into a coherent user experience. Nothing that reaches a screen passes outside this part's scope.
 
 ## The IPC Foundation: Unix Sockets and File Descriptor Passing
 
@@ -40,6 +40,61 @@ Display calibration begins with measuring the physical display and producing an 
 
 **Screen-cast** on Wayland is architecturally more constrained than on X11, where any application could screenshot any window. The compositor is the only party with access to all surfaces. `wlr-screencopy` (wlroots-specific) and the cross-compositor `ext-image-copy-capture-v1` (wayland-protocols staging) allow authorised capture; the `org.freedesktop.portal.ScreenCast` D-Bus interface in **xdg-desktop-portal** routes these requests through PipeWire, delivering DMA-BUF frames to consumers such as OBS and WebRTC stacks without granting broad window access.
 
+## Font Rendering and the Text Pipeline
+
+Every visible string on a Linux desktop passes through a stack of libraries that collectively transform Unicode codepoints into antialiased glyph bitmaps blended onto a GPU surface. **fontconfig** discovers and matches fonts by family, weight, and style attributes using a rules engine that consults `/etc/fonts/fonts.conf` and per-user overrides. **FreeType2** loads the matched font file, interprets its outline geometry (TrueType quadratic splines or OpenType cubic Béziers), and rasterizes each glyph at the requested pixel size with hinting adjustments that align strokes to the pixel grid — trading mathematical fidelity for on-screen sharpness. **HarfBuzz** handles the difficult problem that precedes rasterization: given a run of Unicode text in a given script, which glyph sequence does the font's OpenType GSUB and GPOS tables specify, and at what advance widths and kerning offsets? HarfBuzz turns a codepoint sequence into a positioned glyph sequence. **Pango** orchestrates paragraph layout above HarfBuzz: it performs Unicode bidirectional analysis (UAX #9), segments a paragraph into script-homogeneous runs, shapes each run via HarfBuzz, and wraps lines. **Cairo** composites the resulting glyph bitmaps onto a surface, blending the antialiased coverage values against the background. GPU-accelerated text pipelines (used in Chromium, Firefox, Alacritty, and GNOME's GTK4) bypass the CPU compositing path and render glyph bitmaps directly into texture atlases on the GPU. Subpixel rendering — exploiting the RGB stripe geometry of LCD panels — provides additional horizontal resolution at the cost of colour fringing on non-matching backgrounds, a trade-off that fractional-scale HiDPI displays handle differently than integer-scale ones.
+
+## Variable Refresh Rate and Frame Pacing
+
+Fixed-rate display refreshes and variable-rate GPU rendering are fundamentally in tension: the display expects a new frame every 16.67 ms at 60 Hz, but GPU frame time varies with scene complexity and thermal state. **Variable Refresh Rate (VRR)** — implemented as AMD FreeSync (an open VESA Adaptive Sync standard) and NVIDIA G-Sync on Linux — resolves this by letting the compositor instruct the display to hold the current frame until the next rendered frame is ready, within a supported refresh-rate window (typically 48–144 Hz). At the kernel level, VRR is controlled via the KMS `VRR_ENABLED` connector property; at the Wayland level, `wp_presentation` feedback timestamps allow compositors and games to measure per-frame presentation latency and adjust pacing dynamically. Gamescope implements a VRR-aware frame scheduler that uses `WP_PRESENTATION_FEEDBACK_KIND_HW_CLOCK` timestamps to decide when to submit frames. Both Mutter and KWin expose per-output VRR toggles in their compositor settings and honour per-application VRR opt-in via the `VK_EXT_present_mode_fifo_latest_ready` and tearing swap chain extensions. Frame pacing strategies — pacing to a fixed target, pacing to predicted VBLANK, pacing with the FIFO barrier protocol — are deeply intertwined with the VRR window: a frame submitted too late falls below the minimum refresh, causing a visible stutter even with VRR enabled.
+
+## Screen Capture and Remote Desktop
+
+Wayland's strict client isolation — no client may read another client's surfaces — demands a new architecture for screen capture. The compositor is the only process with access to all surfaces and the KMS scanout buffer. Two capture protocols address this: **`wlr-screencopy`** (wlroots-ecosystem, implemented by Sway and Hyprland) and the cross-compositor **`ext-image-copy-capture-v1`** (wayland-protocols staging), which supersedes the older protocol and adds damage-region reporting so a capturer only copies changed pixels. Above these protocols, **PipeWire** acts as the media bus: the compositor connects to PipeWire as a stream producer, advertising screen-cast sessions as video sources. The **`org.freedesktop.portal.ScreenCast`** xdg-desktop-portal interface gates access behind a user consent dialog and routes the DMA-BUF frames to consumers such as OBS Studio (via the PipeWire camera input), WebRTC stacks in Chromium and Firefox (via the `GetDisplayMedia` portal path), and remote desktop clients. For **remote desktop**, the same capture path provides the pixel stream; input injection uses the **`org.freedesktop.portal.RemoteDesktop`** portal, which creates a `uinput` virtual device the portal daemon controls on the client's behalf. RDP and VNC servers (FreeRDP, KasmVNC) integrate with these portals and with KMS writeback connectors that allow directly capturing the scanout buffer to a CPU-accessible buffer without a compositor round-trip, enabling lower-latency streaming for thin-client scenarios.
+
+## Dependency Map
+
+The diagram below shows the structural dependencies among the chapters in this part. Arrows point from prerequisite to dependent chapter.
+
+```mermaid
+graph TD
+    CH20[Ch 20 — Wayland Protocol Fundamentals]
+    CH21[Ch 21 — Building Compositors / wlroots]
+    CH22[Ch 22 — Production Compositors]
+    CH23[Ch 23 — Legacy & Sandboxed App Support]
+    CH46[Ch 46 — Wayland Protocol Ecosystem]
+    CH53[Ch 53 — Display Calibration / colord]
+    CH54[Ch 54 — Linux Input Stack]
+    CH74[Ch 74 — HDR & Wide Color Gamut]
+    CH75[Ch 75 — Explicit GPU Sync]
+    CH101[Ch 101 — Color Science & ICC]
+    CH105[Ch 105 — Font Rendering & Text Layout]
+    CH112[Ch 112 — VRR, FreeSync & Frame Pacing]
+    CH123[Ch 123 — Screen Capture & Remote Desktop]
+
+    CH20 --> CH21
+    CH20 --> CH23
+    CH20 --> CH46
+    CH20 --> CH54
+    CH20 --> CH105
+    CH20 --> CH123
+    CH21 --> CH22
+    CH21 --> CH75
+    CH21 --> CH112
+    CH21 --> CH123
+    CH46 --> CH74
+    CH46 --> CH75
+    CH46 --> CH123
+    CH53 --> CH74
+    CH101 --> CH74
+    CH74 --> CH105
+    CH75 --> CH112
+    CH22 --> CH112
+    CH22 --> CH123
+```
+
+The diagram reveals two independent tributaries that merge at the advanced chapters. The **protocol tributary** runs CH20 → CH21 → CH22 → CH46, then fans out to CH74, CH75, CH112, and CH123. The **colour tributary** runs CH53 → CH101 → CH74, converging with the protocol work at the HDR chapter. Font rendering (CH105) sits downstream of both the protocol layer (CH20) and the HDR colour pipeline (CH74), since colour-managed text requires both correct Wayland surface semantics and an understanding of output colour spaces. VRR (CH112) depends on compositor internals (CH21, CH22), presentation timing (CH46 via `wp_presentation`), and explicit sync (CH75), because VRR flips must be gated behind the same GPU fence mechanism as ordinary atomic commits. Screen capture (CH123) is the most protocol-interconnected chapter: it draws on the Wayland isolation model (CH20), compositor implementation details (CH21, CH22), the staging capture protocols (CH46), and explicit sync (CH75), since captured frames must be GPU-fence-complete before they are valid for encoding or transmission.
+
 ## Chapter Progression
 
 The chapters in this part form a deliberate progression from protocol foundations to high-level compositor features:
@@ -52,9 +107,12 @@ The chapters in this part form a deliberate progression from protocol foundation
 - **Chapter 53 — Display Calibration and colord** covers the full ICC profiling and VCGT→GAMMA_LUT pipeline.
 - **Chapter 54 — The Linux Input Stack** traces the vertical path from evdev interrupt to Wayland client event in depth.
 - **Chapters 74, 75, and 101** go deeper on HDR/WCG, explicit GPU synchronisation, and colour science respectively, building on the foundations laid in Chapters 20 and 46.
+- **Chapter 105 — Font Rendering and Text Layout** covers the complete fontconfig → FreeType2 → HarfBuzz → Pango → Cairo → GPU atlas pipeline. It connects to the HDR and colour chapters because correct text rendering on wide-gamut and HDR displays requires understanding the output colour space that the compositor programs into KMS. Application developers and browser engineers should read it after Chapter 20 and the colour chapters.
+- **Chapter 112 — VRR, FreeSync, and Frame Pacing** covers the KMS `VRR_ENABLED` property, FreeSync/G-Sync hardware requirements, `wp_presentation` feedback-driven frame scheduling, and the interaction between VRR and explicit sync fences. Game developers targeting Steam Deck and desktop Linux should read it after Chapters 21, 22, and 75.
+- **Chapter 123 — Screen Capture and Remote Desktop on Wayland** covers the `wlr-screencopy` and `ext-image-copy-capture-v1` protocols, PipeWire screen-cast session management, the xdg-desktop-portal ScreenCast and RemoteDesktop D-Bus interfaces, OBS Studio and WebRTC integration, and KMS writeback connectors for low-latency streaming. Streaming engineers and compositor authors should read it after Chapters 20–23 and 46.
 
 Readers should arrive here having read Parts I–IV: familiarity with `drmModeAtomicCommit()`, `gbm_bo_create_with_modifiers2()`, DMA-BUF file descriptors, EGLImage, and `VkSemaphore` is assumed throughout. Parts VII and VIII (Application APIs and the Gaming Layer) depend heavily on this part's coverage of compositor protocol extensions, explicit sync, and the HDR pipeline.
 
 ---
 
-*Part VI spans Chapters 20–23, 46, 53, 54, 74, 75, and 101. Chapter 20 is the entry point; begin there.*
+*Part VI spans Chapters 20–23, 46, 53, 54, 74, 75, 101, 105, 112, and 123. Chapter 20 is the entry point; begin there.*

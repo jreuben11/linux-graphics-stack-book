@@ -84,6 +84,8 @@ ARM SoC display pipelines connect to panels via **MIPI DSI** (Display Serial Int
 
 **Chapter 106 — Multi-GPU Systems: PRIME Offloading and Vulkan Device Groups** extends the PRIME story to explicit Vulkan multi-GPU: `VkPhysicalDeviceGroupProperties`, `VK_KHR_device_group`, `VkDeviceGroupSubmitInfo`, and the drm_gpuvm-based **VM_BIND** mechanism that makes persistent cross-GPU buffer sharing efficient.
 
+**Chapter 116 — RISC-V GPU Drivers and the Emerging RISC-V Graphics Stack** documents the nascent state of GPU driver support on RISC-V SoCs as of Linux 6.18. The chapter centres on the **`drm/imagination`** driver for Imagination Technologies B-Series GPUs, whose RISC-V enablement landed via T-HEAD TH1520 (Imagination BXM-4-64) — the first RISC-V SoC to reach upstream mainline with a 3D-capable GPU driver. It covers the GPU IP block architecture (TBDR tile engine, Unified Shader Cluster, META/RISC-V firmware processor), the TH1520 power-sequencing bring-up chain (`pwrseq-thead-gpu`, Cortex-E902 always-on coprocessor), and the Mesa **PowerVR Vulkan** driver (`src/imagination`). Additional topics include PCIe discrete GPU use on platforms such as Milk-V Pioneer (AMD Radeon amdgpu verified; amdkfd buildable since Linux 6.16), the RISC-V Vector Extension (RVV 1.0) and its impact on llvmpipe/lavapipe software rendering, and open hardware GPU research projects (Vortex GPGPU, RV64X ISA extension proposals) that point toward future native RISC-V GPU IP.
+
 ## How the Chapters Interrelate
 
 ```mermaid
@@ -97,6 +99,7 @@ graph LR
     CH100["Ch 100\netnaviv\nVivante GC"]
     CH99["Ch 99\nAutomotive &\nEmbedded Graphics"]
     CH106["Ch 106\nMulti-GPU Systems\nPRIME + Device Groups"]
+    CH116["Ch 116\nRISC-V GPU Drivers\ndrm/imagination · PowerVR"]
 
     CH05 --> CH49
     CH05 --> CH106
@@ -106,15 +109,17 @@ graph LR
     CH06 --> CH92
     CH06 --> CH100
     CH06 --> CH99
+    CH06 --> CH116
     CH90 --> CH99
     CH100 --> CH99
     CH49 --> CH106
     CH92 -. "comparable\nembedded bring-up" .-> CH99
+    CH116 -. "PCIe GPU\non RISC-V" .-> CH05
 ```
 
 **Chapter 5** is the recommended entry point for all readers. It establishes the universal kernel-side contract — `struct drm_driver`, **GEM**, `drm_gpu_scheduler`, **KMS** atomic modeset, `dma_resv` fences, `request_firmware`, and runtime PM — using the three driver families that are most fully documented by their vendors.
 
-**Chapter 6** generalises Chapter 5 concepts to the ARM and embedded world. The **platform driver** probe model, **DEVFREQ** DVFS, **ARM SMMU** integration, and **MIPI DSI** display pipelines introduced in Chapter 6 are prerequisites for Chapters 90, 92, and 100.
+**Chapter 6** generalises Chapter 5 concepts to the ARM and embedded world. The **platform driver** probe model, **DEVFREQ** DVFS, **ARM SMMU** integration, and **MIPI DSI** display pipelines introduced in Chapter 6 are prerequisites for Chapters 90, 92, 100, and 116. Chapter 116 additionally draws on Chapter 5's treatment of PCIe discrete GPU bring-up (amdgpu on RISC-V servers) for the Milk-V Pioneer use case.
 
 **Chapter 49** depends on Chapter 5 for its treatment of **DMA-BUF**, `dma_resv`, and format modifiers; it ties together the x86 driver families in the context of multi-GPU cooperation. **Chapter 106** extends this into the Vulkan device-group API.
 
