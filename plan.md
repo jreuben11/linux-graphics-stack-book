@@ -164,7 +164,7 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 121: DRM Lease and VR Direct Display](#chapter-121-drm-lease-and-vr-direct-display) *(Part I)*
   - [Chapter 122: DKMS and Out-of-Tree GPU Kernel Modules](#chapter-122-dkms-and-out-of-tree-gpu-kernel-modules) *(Part IX)*
   - [Chapter 123: Screen Capture and Remote Desktop on Linux](#chapter-123-screen-capture-and-remote-desktop-on-linux) *(Part VI)*
-  - [Chapter 124: OpenCL on Linux](#chapter-124-opencl-on-linux) *(Part VII)*
+  - [Chapter 134: OpenCL on Linux](#chapter-134-opencl-on-linux) *(Part XIV)*
   - [Chapter 125: RenderDoc on Linux](#chapter-125-renderdoc-on-linux) *(Part IX)*
   - [Chapter 126: Hybrid Graphics and Laptop Power Management](#chapter-126-hybrid-graphics-and-laptop-power-management) *(Part II)*
   - [Chapter 127: Mesh Shaders and Variable Rate Shading](#chapter-127-mesh-shaders-and-variable-rate-shading) *(Part VII)*
@@ -175,7 +175,6 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 132: Wayland Security](#chapter-132-wayland-security) *(Part VI)*
   - [Chapter 133: Vulkan Compute Queues and Task Graphs](#chapter-133-vulkan-compute-queues-and-task-graphs) *(Part VII)*
 - **Part XXIII — Additional Chapters (set 2)**
-  - [Chapter 134: Asahi AGX — Apple Silicon GPU Driver on Linux](#chapter-134-asahi-agx--apple-silicon-gpu-driver-on-linux) *(Part II)*
   - [Chapter 135: Vulkan Ray Tracing on Linux](#chapter-135-vulkan-ray-tracing-on-linux) *(Part VII)*
   - [Chapter 136: WSL2 Linux Graphics — dxgkrnl and Mesa D3D12](#chapter-136-wsl2-linux-graphics--dxgkrnl-and-mesa-d3d12) *(Part IX)*
   - [Chapter 137: GPU Performance Profiling — RGP, GPA, and VK_EXT_performance_query](#chapter-137-gpu-performance-profiling--rgp-gpa-and-vk_ext_performance_query) *(Part IX)*
@@ -1564,16 +1563,6 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Worked case study: path-traced scene optimisation — frame time decomposition → bandwidth-bound diagnosis → BVH ray sort → L2 hit rate improvement → async BVH refit
 - **Integrations**: Ch15, Ch24, Ch28, Ch29, Ch30, Ch56, Ch61, Ch67, Ch124
 
-### Chapter 134: Asahi AGX — Apple Silicon GPU Driver on Linux *(Part II)*
-
-- Apple Silicon architecture: TBDR; tile-based deferred rendering; M1/M2/M3/M4 GPU families; macOS metal vs Linux reverse-engineering effort; `drivers/gpu/drm/asahi/`
-- Hardware bring-up: m1n1 hypervisor + Python introspection; GPU MMIO register dumps; `agxdecode` render command stream decoder; Metal shader disassembly via `metal-shaderconverter`
-- Kernel driver: `asahi_drm.ko`; RTKit IPC firmware messaging; `drivers/gpu/drm/asahi/gem.c` GEM objects; UABI (`DRM_ASAHI_SUBMIT`); GPU reset; power management; `io-pgtable-dart` IOMMU
-- `libagx` shader compiler: NIR → AGX ISA; GLSL/SPIR-V compilation pipeline; `nir_to_agx`; AGX ISA (scalar + SIMD); register file; sample mask; fragment depth; bindless resources
-- Honeykrisp Vulkan driver: Mesa Vulkan driver for Apple Silicon; `src/asahi/vulkan/`; Conformance: Vulkan 1.3 CTS pass (2024); `VK_EXT_robustness2`, `VK_KHR_ray_tracing_pipeline` status
-- OpenGL / Zink path: Asahi OpenGL ES 3.1 driver; transition to Honeykrisp + Zink; conformance timeline; `MESA_LOADER_DRIVER_OVERRIDE=asahi`
-- Video decode: no VPU driver; software decode only; roadmap for Asahi VPU support; `ffmpeg -hwaccel videotoolbox` (macOS) vs Linux fallback
-- Community: Asahi Linux project; `asahi-installer`; mailing list `asahi@lists.fedoraproject.org`; Mesa MR cadence; Alyssa Rosenzweig blog posts
 - **Integrations**: Ch1 (DRM kernel driver model), Ch2 (KMS on Apple display), Ch14 (Mesa driver architecture), Ch24 (Vulkan via Honeykrisp), Ch77 (SPIR-V → NIR → AGX ISA), Ch119 (Zink path for OpenGL)
 
 ### Chapter 135: Vulkan Ray Tracing on Linux *(Part VII)*
@@ -1901,7 +1890,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Distribution packaging: Ubuntu (`nvidia-dkms-*`), Fedora (RPMFusion `akmod-nvidia`), Arch, NixOS (`hardware.nvidia.open`), Gentoo
 - **Integrations**: Ch1 (DRM), Ch5 (amdgpu upstream), Ch8 (Nouveau), Ch10a (Nova Rust driver), Ch76 (contributing), Ch102 (DRM GPU scheduler)
 
-### Chapter 124: OpenCL on Linux *(Part VII)*
+### Chapter 134: OpenCL on Linux *(Part XIV)*
 
 - ICD loader (`libOpenCL.so`); `ocl-icd`; `/etc/OpenCL/vendors/*.icd`; `clinfo`; `cl_platform_id` / `cl_device_id` / `cl_context` / `cl_command_queue` / `cl_program` / `cl_kernel`
 - Mesa rusticl: OpenCL 3.0 via Gallium; `src/gallium/frontends/rusticl/`; OpenCL C → Clang/LLVM → NIR → Gallium backend; `RUSTICL_ENABLE`; conformance on Intel iris
