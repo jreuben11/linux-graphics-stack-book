@@ -31,7 +31,7 @@ The GC-series spans a wide capability range:
 - **GC1000 / GC1000+** — mid-range OpenGL ES 2.0 core. Deployed on Amlogic S905 (AML S905X/X3 series), Ingenic JZ4780, and Rockchip RK3168.
 - **GC2000** — full OpenGL ES 2.0 with a more capable shader engine, found on the **NXP i.MX6 Quad** (the dominant embedded Linux platform of the early 2010s) alongside a GC320 2D engine and GC355 vector graphics engine. The i.MX6Q SabreLite reference board uses this configuration.
 - **GC7000 / GC7000L / GC7000Lite** — the current-generation 3D core, supporting **HALTI5** (Hardware Architecture Level Tiers) feature flags corresponding to OpenGL ES 3.x capabilities including geometry shaders, multiple render targets, and compute shaders. The GC7000Lite appears in the **NXP i.MX8MQ** (used in the **Librem 5** smartphone). The GC7000L appears in the **NXP i.MX8M Mini** (GC600 for 3D).
-- **GC7000UL** — the most capable production variant as of 2026, found in the **NXP i.MX8M Plus**. Supports OpenGL ES 3.1/3.0, compute shaders, and OpenCL 1.2 via etnaviv. Hardware revision GC7000 r6204 (also called r6214 in later stepping).
+- **GC7000UL** — a newer GC7000 variant found in the **NXP i.MX8M Plus**, notable for its compute shader engine (enabling OpenCL 1.2 via etnaviv). Supports OpenGL ES 3.1/3.0. Hardware revision GC7000 r6204 (also called r6214 in later stepping). The UL variant has a single pixel pipe; the i.MX8MQ's GC7000L/Lite part has different rendering characteristics. Variant capability differences should be confirmed against hardware feature bitfields.
 
 The driver stack lives across three upstream repositories:
 
@@ -316,7 +316,7 @@ The key fields in a 128-bit instruction are:
 | Source 1 | ~14 bits | Register index + swizzle + negate/absolute |
 | Source 2 | ~14 bits | Register index + swizzle + negate/absolute |
 | Saturate | 1 bit | Clamp output to [0, 1] |
-| Type | bits | Float/integer mode |
+| Type | ~2 bits | Float/integer mode selector |
 
 Source operands can address: temporary registers (t0–tN), uniform registers (u0–uN), input/varying registers, and constant registers. Component swizzle allows any permutation of `.xyzw` from the 4-component source vector to be applied before use.
 
@@ -444,7 +444,7 @@ struct etnaviv_specs {
 };
 ```
 
-The `halti` field (Hardware Architecture Level Tier Index) is the primary discriminator for GLES version support. HALTI 0–1 corresponds to OpenGL ES 2.0; HALTI 2 adds OpenGL ES 3.0 mandatory extensions; HALTI 5 (GC7000 r6204) corresponds to the feature set needed for OpenGL ES 3.1.
+The `halti` field (Hardware Architecture Level Tier Index) is the primary discriminator for GLES version support. HALTI 0–1 corresponds to OpenGL ES 2.0; HALTI 2 adds OpenGL ES 3.0 mandatory extensions; HALTI 5 (GC7000 r6204) corresponds to the feature set needed for OpenGL ES 3.1. **Note: the exact HALTI level to GLES version mapping should be verified against `etnaviv_screen.c` in the current Mesa source.**
 
 ### Resource Allocation
 
@@ -548,7 +548,7 @@ NIR ALU operations are mapped to Vivante opcodes in the instruction selection pa
 | `nir_op_frsq` | `RSQ` |
 | `nir_op_fmin` | `MIN` |
 | `nir_op_fmax` | `MAX` |
-| `nir_op_fmov` | `MOV` |
+| `nir_op_mov` | `MOV` |
 | `nir_texop_tex` | `TEXLD` |
 
 Each selected instruction becomes an `etna_inst` struct (the driver's internal IR):
@@ -645,7 +645,7 @@ Wayland (wl_surface, xdg_shell)
     ↓
 Phosh/Mutter compositor
     ↓
-Mesa etnaviv (OpenGL ES 3.0, EGL + GBM)
+Mesa etnaviv (OpenGL ES 2.0+, EGL + GBM)
     ↓
 libdrm-etnaviv
     ↓
@@ -660,9 +660,9 @@ Power management is handled via devfreq and the standard Linux clock framework, 
 
 ### NXP i.MX8M Plus — Developer Boards
 
-The **NXP i.MX8M Plus EVK** (Evaluation Kit) and commercial modules such as the **Variscite DART-MX8M-PLUS** and **SolidRun i.MX8M Plus HummingBoard** use the GC7000UL (r6204), the most capable etnaviv target. This board is used by etnaviv developers as the primary GC7000 test platform alongside CI.
+The **NXP i.MX8M Plus EVK** (Evaluation Kit) and commercial modules such as the **Variscite DART-MX8M-PLUS** and **SolidRun i.MX8M Plus HummingBoard** use the GC7000UL (r6204), the primary GC7000 test platform for etnaviv developers alongside CI. This is the hardware that enabled OpenCL/compute work.
 
-The GC7000UL adds over GC7000Lite: a second pixel pipe (doubling fill rate), the compute shader engine, and compression capabilities on some revisions.
+The GC7000UL (i.MX8MP) is actually reported as having a single pixel pipe and lacking the compression capabilities found in the i.MX8MQ's GC7000L/Lite variant. The key addition over GC2000 is the compute shader engine (HALTI5) and the OpenCL-capable compute pipeline. [Source: Phoronix, Etnaviv iMX8MP Support](https://www.phoronix.com/news/Etnaviv-iMX8MP-Support)
 
 ### NXP i.MX6Q SabreLite — Classic Reference Board
 

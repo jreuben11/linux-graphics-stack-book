@@ -9,7 +9,7 @@
 - [Overview](#overview)
 - [1. The Automotive and Embedded Graphics Landscape](#1-the-automotive-and-embedded-graphics-landscape)
 - [2. Automotive Grade Linux (AGL)](#2-automotive-grade-linux-agl)
-- [3. GENIVI/COVESA and the Wayland Transition](#3-geniviCOVESA-and-the-wayland-transition)
+- [3. GENIVI/COVESA and the Wayland Transition](#3-genivicovesa-and-the-wayland-transition)
 - [4. Weston in Embedded Mode](#4-weston-in-embedded-mode)
 - [5. cage: Single-Application Kiosk Compositor](#5-cage-single-application-kiosk-compositor)
 - [6. Qt for Automotive](#6-qt-for-automotive)
@@ -554,8 +554,8 @@ Every SoC GPU in Linux is described in the device tree. The GPU node declares it
 
 ```dts
 gpu: gpu@38000000 {
-    compatible = "vivante,gc", "fsl,imx8mq-gpu";
-    reg = <0x0 0x38000000 0x0 0x10000>;   /* GPU MMIO window */
+    compatible = "vivante,gc";        /* matches etnaviv of_device_id */
+    reg = <0x0 0x38000000 0x0 0x40000>;   /* GPU MMIO window (256 KB) */
     interrupts = <GIC_SPI 3 IRQ_TYPE_LEVEL_HIGH>;
     clocks = <&clks IMX8MQ_CLK_GPU_CORE_ROOT>,
              <&clks IMX8MQ_CLK_GPU_SHADER_ROOT>,
@@ -563,7 +563,7 @@ gpu: gpu@38000000 {
     clock-names = "core", "shader", "bus";
     assigned-clocks = <&clks IMX8MQ_CLK_GPU_CORE_SRC>,
                       <&clks IMX8MQ_CLK_GPU_SHADER_SRC>;
-    assigned-clock-rates = <800000000>, <1000000000>;
+    assigned-clock-rates = <800000000>, <800000000>;
     power-domains = <&pgc_gpu>;
     iommus = <&smmu 0x7 0x0>;   /* SMMU stream ID */
     operating-points-v2 = <&gpu_opp_table>;
@@ -571,7 +571,7 @@ gpu: gpu@38000000 {
 };
 ```
 
-The `compatible` string array is matched against the kernel driver's `of_device_id` table. `vivante,gc` catches the generic etnaviv driver; `fsl,imx8mq-gpu` enables NXP-specific clock/power quirks.
+The `compatible` string `"vivante,gc"` is the only compatible used in the mainline i.MX8MQ device tree (`arch/arm64/boot/dts/freescale/imx8mq.dtsi`) — this is the single generic binding that the etnaviv driver matches against all Vivante GCxxx series GPU cores [Source](https://github.com/torvalds/linux/blob/master/arch/arm64/boot/dts/freescale/imx8mq.dtsi).
 
 ### DRM Driver Registration
 
@@ -656,7 +656,7 @@ framebuffer0: framebuffer@c0000000 {
 };
 ```
 
-`simplefb` provides `/dev/fb0` to the kernel console and to fbdev applications, allowing early display output (kernel log, splash screen) before `etnaviv` or `panfrost` initialises. Once the DRM driver loads, it takes ownership of the display hardware and the `simplefb` is disabled via `simple-framebuffer-disable-on-drm`.
+`simplefb` provides `/dev/fb0` to the kernel console and to fbdev applications, allowing early display output (kernel log, splash screen) before `etnaviv` or `panfrost` initialises. Once the DRM driver loads, it evicts the simplefb driver by calling `drm_aperture_remove_framebuffers()` (the current mainline API in `drivers/gpu/drm/drm_aperture.c`; older kernels used `aperture_remove_conflicting_devices()`) [Source](https://docs.kernel.org/6.16/driver-api/aperture.html). This removes all framebuffer drivers occupying the same MMIO aperture, freeing the display hardware for the DRM driver's KMS pipeline.
 
 ### Debug Tools
 
@@ -819,14 +819,18 @@ bridge@0e {
 
 ### eDP for Internal Displays
 
-Laptop-style embedded displays and some automotive rear-seat units use eDP (embedded DisplayPort). The kernel's `drm_dp_aux` AUX channel API handles DPCD (DisplayPort Configuration Data) reads and EDID fetching:
+Laptop-style embedded displays and some automotive rear-seat units use eDP (embedded DisplayPort). The kernel's `drm_dp_aux` AUX channel exposes an I²C adapter (`aux->ddc`) over which EDID is fetched using the same `drm_get_edid()` call used for HDMI/VGA:
 
 ```c
-/* Read EDID via DP AUX channel */
-edid = drm_dp_downstream_get_edid(aux, i2c_adapter);
-drm_connector_update_edid_property(connector, edid);
-drm_add_edid_modes(connector, edid);
+/* Read EDID from an eDP panel via the DP AUX DDC adapter */
+edid = drm_get_edid(connector, &aux->ddc);
+if (edid) {
+    drm_connector_update_edid_property(connector, edid);
+    drm_add_edid_modes(connector, edid);
+}
 ```
+
+The `drm_dp_aux` structure registers its embedded I²C adapter (`aux->ddc`) with the kernel I²C bus; `drm_get_edid()` issues the I²C EDID segment reads over it. DPCD (DisplayPort Configuration Data) reads — link training status, sink capability — are performed separately via `drm_dp_dpcd_read()`.
 
 For displays without EDID (common in embedded fixed panels), the driver provides a hardcoded mode via `drm_add_modes_noedid()` or a device-tree `display-timings` node.
 
@@ -842,7 +846,7 @@ if (edid) {
 }
 ```
 
-On industrial panels with non-standard EDID blobs, `drm_edid_override_connector_update()` (added in kernel 6.2) allows a device-tree-supplied EDID binary to be injected, bypassing the DDC read entirely.
+On industrial panels with non-standard or missing EDID, `drm_edid_override_connector_update()` allows a firmware/device-tree-supplied EDID binary to be injected, bypassing the DDC read. The function exists in upstream kernels (a bug in its return value was fixed in 6.7-rc4); the precise kernel version in which the current API stabilised is not definitively documented — use a "needs verification" callout if targeting a specific kernel in production: **Note: verify `drm_edid_override_connector_update()` availability against your target kernel version.**
 
 ---
 

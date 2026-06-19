@@ -62,10 +62,12 @@ The resulting xy diagram is horseshoe-shaped, with the spectral locus (pure mono
 | Color Space | Red (x, y)   | Green (x, y)  | Blue (x, y)   | White (x, y)     |
 |-------------|--------------|---------------|---------------|------------------|
 | sRGB / Rec.709 | (0.640, 0.330) | (0.300, 0.600) | (0.150, 0.060) | D65: (0.3127, 0.3290) |
-| DCI-P3       | (0.680, 0.320) | (0.265, 0.690) | (0.150, 0.060) | D65: (0.3127, 0.3290) |
+| Display-P3  | (0.680, 0.320) | (0.265, 0.690) | (0.150, 0.060) | D65: (0.3127, 0.3290) |
 | BT.2020      | (0.708, 0.292) | (0.170, 0.797) | (0.131, 0.046) | D65: (0.3127, 0.3290) |
 
-BT.2020's primaries lie very close to the spectral locus; no current display technology can produce all of them, but the space defines the outer envelope for HDR and wide-gamut standards. DCI-P3 is the cinema mastering space and covers roughly 45% of the CIE diagram; most modern smartphone and laptop displays cover 90–100% P3. sRGB covers about 35% and has been the web/desktop standard since 1996. [Source: sRGB specification](https://www.color.org/srgb.pdf)
+Note: **Display-P3** (used by Apple and most consumer wide-gamut displays) shares the DCI-P3 primaries but uses the D65 white point. True **DCI-P3** (digital cinema projectors) uses the same primaries but with a greenish DCI white point near (0.314, 0.351, ≈6300K) — a critical distinction for calibration engineers. The table above gives Display-P3 (D65 white), which is the form referenced in Vulkan's `VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT` and Apple's color management stack.
+
+BT.2020's primaries lie very close to the spectral locus; no current display technology can produce all of them, but the space defines the outer envelope for HDR and wide-gamut standards. Display-P3 covers roughly 45% of the CIE diagram; most modern smartphone and laptop displays cover 90–100% Display-P3. sRGB covers about 35% and has been the web/desktop standard since 1996. [Source: sRGB specification](https://www.color.org/srgb.pdf)
 
 ### 2.3 The D65 White Point
 
@@ -131,6 +133,8 @@ The threshold 0.04045 in the decoder corresponds to the encoding threshold 0.003
 ### 3.3 Linear vs. sRGB in Shaders
 
 Lighting calculations (Phong, PBR, shadows) must be performed in linear light. Blending two half-intensity sRGB values incorrectly: 50% gray in sRGB is approximately 21.4% linear intensity, so blending two 50% grays gives 50% sRGB, but their actual intensities summed are 42.8% — not 50%. The result is noticeably too dark along alpha-blended edges and incorrectly bright in specular highlights.
+
+The correct example of gamma-blending error: if you blend black (0.0 sRGB, 0.0 linear) and white (1.0 sRGB, 1.0 linear) as a 50/50 alpha composite naively in sRGB, you get 0.5 sRGB ≈ 0.214 linear. The physically correct midpoint is 0.5 linear ≈ 0.735 sRGB — noticeably brighter. Doing lighting, shadows, and compositing in gamma-encoded space produces edges that look too dark and specular highlights that are incorrectly clipped.
 
 OpenGL: `GL_FRAMEBUFFER_SRGB` enables automatic linearization on read and gamma-encoding on write for sRGB framebuffer attachments (`GL_SRGB8_ALPHA8` format). Shaders operate in linear light; the fixed function converts on the way in/out. Without this enable, the GPU performs no conversion and blending operates on gamma-compressed values.
 
@@ -227,11 +231,11 @@ For sRGB, the `rXYZ`/`gXYZ`/`bXYZ` tags contain the Bradford-adapted D65 primari
 To inspect a profile:
 
 ```bash
-# iccdump from ArgyllCMS (most complete, understands all tag types)
+# iccdump from ArgyllCMS (most complete, understands all tag types including vcgt)
 iccDump -v 3 /usr/share/color/icc/colord/sRGB.icc
 
-# or using lcms2's command-line tools
-icclink -v /usr/share/color/icc/colord/sRGB.icc
+# colprof from ArgyllCMS can dump profile information
+# Some distros also ship `iccexamin` (GUI) or `icc2ps` for profile visualization
 ```
 
 ### 4.4 LUT-Based Profiles
@@ -260,7 +264,7 @@ The current specification is [ICC.1:2022 (v4.4)](https://www.color.org/specifica
 
 ### 5.1 Overview
 
-LittleCMS 2 (lcms2) is the dominant open-source ICC color management engine on Linux, used by GIMP, Krita, Darktable, Inkscape, libvips, Firefox, and numerous others. As of April 2026, the current release is version 2.19. It is written in C, has a small footprint, and runs on all major platforms. [Source: LittleCMS](https://www.littlecms.com/)
+LittleCMS 2 (lcms2) is the dominant open-source ICC color management engine on Linux, used by GIMP, Krita, Darktable, Inkscape, libvips, and numerous others. As of April 2026, the current release is version 2.19. It is written in C, has a small footprint, and runs on all major platforms. (Firefox uses its own **qcms** library; Chrome/Skia use **skcms** — both purpose-built replacements that avoid lcms2's dependency.) [Source: LittleCMS](https://www.littlecms.com/)
 
 ### 5.2 Basic Transform Creation
 
@@ -395,7 +399,7 @@ The **vcgt** (Video Card Gamma Tag) is not part of the ICC specification core; i
 - **Darktable:** `src/iop/colorout.c` — the *output color profile* module selects the display rendering intent and passes pixels through lcms2 before display. Input profile comes from libraw's camera metadata.
 - **Inkscape:** uses lcms2 for color proof display and SVG color management.
 - **libvips:** `libvips/colour/icc_*.c` — uses lcms2 for efficient pipeline-based color conversion on large images.
-- **Firefox:** uses LittleCMS (built in or system) to convert embedded ICC profiles in JPEG, PNG, and WebP images to the display color space.
+- **Firefox:** uses **qcms** (Firefox's own Rust color management library, `gfx/qcms/`) to transform embedded ICC profiles in images to the display color space. Firefox switched from LittleCMS to qcms in Firefox 3.5 for security and maintenance reasons. [Source: qcms on GitHub](https://github.com/FirefoxGraphics/qcms)
 
 Note: The exact source paths above are correct as of early 2026 but should be verified against each project's current upstream for minor path changes.
 
@@ -668,7 +672,9 @@ The `dt_iop_colorout` module supports soft-proofing and gamut-check visualizatio
 
 ### 9.4 Firefox
 
-Firefox color-manages images: JPEG, PNG, and WebP images with embedded ICC profiles are transformed to the display color space using LittleCMS (or Skia's internal color management for some paths). The relevant preference is `gfx.color_management.mode`:
+Firefox color-manages images using **qcms** — its own Rust-based color management library living in `gfx/qcms/`. JPEG, PNG, and WebP images with embedded ICC profiles are transformed to the display color space by qcms. Firefox switched from LittleCMS to qcms at Firefox 3.5 for security and maintenance reasons; qcms currently supports ICC v2 profiles, with v4 support being an ongoing effort. [Source: qcms Bugzilla — ICC v4 support](https://bugzilla.mozilla.org/show_bug.cgi?id=488800)
+
+The relevant preference in `about:config` is `gfx.color_management.mode`:
 
 ```
 0 = disabled (treat everything as sRGB)
@@ -676,18 +682,18 @@ Firefox color-manages images: JPEG, PNG, and WebP images with embedded ICC profi
 2 = images only (default in most builds)
 ```
 
-Firefox on Linux reads the display color profile from the compositor (via the Wayland `wp_color_management_v1` protocol or the X11 `_ICC_PROFILE` root window property) and uses it as the destination for all color transforms. [Source: Firefox MDN Color Management documentation](https://developer.mozilla.org/en-US/docs/Web/API/CSS_Color_Adjustment)
+Firefox on Linux reads the display color profile from the compositor (via the Wayland `wp_color_management_v1` protocol or the X11 `_ICC_PROFILE` root window property) and uses it as the destination for all color transforms. [Source: ICC color correction in Firefox — MDN](https://developer.mozilla.org/en-US/docs/Mozilla/Firefox/Releases/3.5/ICC_color_correction_in_Firefox)
 
 The command-line flag `--force-color-profile=srgb` forces Firefox to treat the display as sRGB regardless of the actual profile, useful for regression testing and screenshot comparison.
 
 ### 9.5 Chrome/Chromium
 
-Chrome's color management is handled in the Skia layer:
+Chrome's color management is handled in the Skia layer using **skcms** — a purpose-built, minimal color management library (`//modules/skcms` in the Skia tree). skcms was developed specifically to replace LittleCMS for Chrome/Skia use cases, providing a smaller attack surface and better optimization for the common display-P3/sRGB case. [Source: skcms in Skia](https://skia.googlesource.com/skcms/)
 
-- Skia maintains an `SkColorSpace` object derived from the display's ICC profile
+- Skia maintains an `SkColorSpace` object derived from the display's ICC profile, constructed via `skcms_ICCProfile` parsing
+- `SkColorSpace::MakeICC()` accepts a raw ICC profile blob and returns an `SkColorSpace` that Skia uses for canvas operations
 - The `--force-color-profile=srgb` flag clamps to sRGB for consistent cross-platform rendering
-- Chrome's `--enable-hdr` flag enables the wide-gamut path on capable displays
-- Skia's own ICC profile parser (`src/core/SkICCProfile.cpp`) handles common profiles; LittleCMS is used as a fallback for unusual profiles
+- Chrome's `--enable-hdr` flag enables the wide-gamut path on capable displays, selecting a P3 or BT.2020 `SkColorSpace` for the canvas
 
 ---
 
@@ -795,7 +801,7 @@ The `VK_EXT_swapchain_colorspace` extension defines color space enumerations bey
 
 | Enum | Meaning |
 |------|---------|
-| `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR` | sRGB (gamma-encoded, P3 subgamut) |
+| `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR` | sRGB primaries, sRGB gamma-encoded |
 | `VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT` | DCI-P3 with sRGB-like TF |
 | `VK_COLOR_SPACE_HDR10_ST2084_EXT` | BT.2020 + PQ (HDR10) |
 | `VK_COLOR_SPACE_DOLBYVISION_EXT` | Dolby Vision metadata-driven |
@@ -870,11 +876,11 @@ This chapter is the color science foundation for several other chapters. The key
 
 **Chapter 22 (Production Compositors — Mutter, KWin, gamescope):** Both Mutter and KWin implement the ICC-to-KMS pipeline described in §8.5. KWin's HDR and color management implementation is more advanced, supporting the full `wp_color_management_v1` protocol. gamescope implements its own Vulkan-based color pipeline for gaming, using the same primaries and transfer function concepts covered here.
 
-**Chapter 37 (Skia):** Skia maintains its own color management layer with `SkColorSpace` and an internal ICC profile parser. For images with unusual profiles, Chrome falls back to LittleCMS. Skia's wide-gamut canvas path (P3 `SkColorSpace`) connects to §9.4 and §11.
+**Chapter 37 (Skia):** Skia maintains its own color management layer with `SkColorSpace` and the **skcms** library for ICC profile parsing and color space transforms. skcms was built to replace LittleCMS within the Chrome/Skia ecosystem. Skia's wide-gamut canvas path (Display-P3 `SkColorSpace`) connects to §9.5 and §11.
 
 **Chapter 46 (Wayland Protocol Ecosystem):** The `wp_color_management_v1` and `wp_color_representation_v1` protocols connect the application color space declarations (§11.4) to the compositor's KMS backend. Ch46 covers the full protocol design and negotiation flow; this chapter covers the ICC profile concept those protocols reference.
 
-**Chapter 52 (Firefox on Linux):** Firefox's color management (`gfx.color_management.mode`, LittleCMS integration) described in §9.4 relies on the infrastructure of this chapter — the display ICC profile from colord, the lcms2 transform pipeline.
+**Chapter 52 (Firefox on Linux):** Firefox's color management (`gfx.color_management.mode`, qcms integration) described in §9.4 relies on the infrastructure of this chapter — the display ICC profile from colord, the qcms transform pipeline. Note that Firefox uses qcms (its own Rust library), not LittleCMS.
 
 **Chapter 53 (Display Calibration and colord):** Chapter 53 is the workflow companion to this chapter. Ch53 covers the calibration measurement process, colord's profile database, VCGT loading, and GNOME/KDE GUI integration in more depth. This chapter provides the underlying color science (CIE XYZ, ICC format, rendering intents) that calibration workflow rests upon.
 

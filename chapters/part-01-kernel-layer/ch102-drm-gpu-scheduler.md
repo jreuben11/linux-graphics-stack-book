@@ -33,7 +33,7 @@ The **DRM GPU scheduler** (`drivers/gpu/drm/scheduler/`) is that arbiter. It sit
 
 The scheduler is a shared library used by virtually every modern DRM driver: AMDGPU, Intel i915 and Xe, Nouveau, the ARM Mali Panfrost/Panthor drivers, and others all depend on it. Understanding it is prerequisite knowledge for any work touching GPU command submission in the Linux kernel.
 
-All source paths in this chapter are relative to the kernel tree at commit [`8c13415c8a43`](https://github.com/torvalds/linux/tree/8c13415c8a4383447c21ec832b20b3b283f0e01a) (Linux 6.19-rc8, June 2026). [Source: `drivers/gpu/drm/scheduler/`](https://github.com/torvalds/linux/tree/8c13415c8a4383447c21ec832b20b3b283f0e01a/drivers/gpu/drm/scheduler)
+All source paths in this chapter are relative to the kernel tree at commit [`8c13415c8a43`](https://github.com/torvalds/linux/tree/8c13415c8a4383447c21ec832b20b3b283f0e01a) (Linux `master`, post-v6.19, targeting v6.20, June 2026). Where behaviour differs between v6.19 and v6.20-development is noted explicitly. [Source: `drivers/gpu/drm/scheduler/`](https://github.com/torvalds/linux/tree/8c13415c8a4383447c21ec832b20b3b283f0e01a/drivers/gpu/drm/scheduler)
 
 ---
 
@@ -255,7 +255,7 @@ Called from `ops->free_job()` to release `job->dependencies` (xa_destroy), drop 
 
 ## 4. The CFS-Inspired Fair Scheduling Algorithm
 
-The current DRM scheduler (introduced in Linux 6.19, authored by Tvrtko Ursulin of Igalia) replaces the previous FIFO/round-robin/priority-array design with a CFS-inspired algorithm using **virtual runtime (vruntime)**. [Source: `sched_rq.c`](https://github.com/torvalds/linux/blob/8c13415c8a4383447c21ec832b20b3b283f0e01a/drivers/gpu/drm/scheduler/sched_rq.c) [Fair DRM scheduler blog](https://blogs.igalia.com/tursulin/fair-er-drm-gpu-scheduler/)
+The DRM scheduler in the v6.20 development tree (commit `8c13415c8a43`, post-v6.19), authored by Tvrtko Ursulin of Igalia, replaces the previous FIFO/round-robin/priority-array design with a CFS-inspired algorithm using **virtual runtime (vruntime)**. Kernels through v6.19 used multiple per-priority run queues with `drm_sched_rq_select_entity_rr()` or `drm_sched_rq_select_entity_fifo()` selection; this section describes the new algorithm present in the v6.20 development tree. [Source: `sched_rq.c`](https://github.com/torvalds/linux/blob/8c13415c8a4383447c21ec832b20b3b283f0e01a/drivers/gpu/drm/scheduler/sched_rq.c) [Fair DRM scheduler blog](https://blogs.igalia.com/tursulin/fair-er-drm-gpu-scheduler/)
 
 ### Priority Enum
 
@@ -290,12 +290,12 @@ When a job finishes, the entity's vruntime is updated:
 vruntime += real_gpu_ns << vruntime_shift[priority]
 ```
 
-A `LOW` entity's vruntime grows 128× faster (2^7) than a `KERNEL` entity's (2^1), so a kernel job consumes 64× less virtual time per real nanosecond than a low-priority job. This produces the following approximate GPU time ratios under sustained load:
+Because vruntime grows as `real_gpu_ns << shift`, an entity with a larger shift accumulates virtual time faster for the same real GPU time, and therefore the scheduler will deprioritise it relative to lower-shift entities. The ratio of real GPU time between two priority levels A (higher) and B (lower) is `2^(shift_B − shift_A)`. This produces the following approximate GPU time ratios under sustained competing load:
 
-| Priority | Shift | Relative GPU share |
+| Priority | Shift | Real GPU time relative to baseline |
 |---|---|---|
-| KERNEL | 1 | ~64× LOW, ~32× NORMAL |
-| HIGH | 2 | ~32× LOW, ~16× NORMAL, ~2× KERNEL |
+| KERNEL | 1 | ~64× LOW, ~8× NORMAL, ~2× HIGH |
+| HIGH | 2 | ~32× LOW, ~4× NORMAL |
 | NORMAL | 4 | ~8× LOW |
 | LOW | 7 | baseline |
 
@@ -425,21 +425,39 @@ Modern GPUs have multiple independent engine classes, each with its own `drm_gpu
 
 ### AMDGPU Engine Topology
 
-On an RDNA3 GPU, AMDGPU creates schedulers for:
+On an RDNA3+ GPU, AMDGPU creates schedulers for (exact counts are hardware and firmware dependent):
 
-| Engine | Ring prefix | Typical count |
+| Engine | Ring prefix | Representative count |
 |---|---|---|
-| Graphics (GFX) | `gfx` | 1 (or 2 with async GFX) |
-| Async compute (COMP) | `comp` | 4–8 |
+| Graphics (GFX) | `gfx` | 1 (or 2 with async GFX on RDNA3+) |
+| Async compute | `comp` | varies (2–8 depending on SKU) |
 | DMA / blit | `sdma` | 2–4 |
 | Video decode (VCN) | `vcn_dec` | 1–2 |
 | Video encode | `vcn_enc` | 1–2 |
 
-Each ring maps to one `drm_gpu_scheduler`. AMDGPU initialises each ring's scheduler in `amdgpu_ring_init()` via `drm_sched_init()`. [Source: `drivers/gpu/drm/amdgpu/amdgpu_ring.c`]
+Each ring maps to one `drm_gpu_scheduler`, embedded as `ring->sched`. The ring registers itself in `adev->gpu_sched[hw_ip][hw_prio]` during `amdgpu_ring_init()`, which lets the context layer (`amdgpu_ctx.c`) find the right scheduler for each IP block and priority. [Source: `drivers/gpu/drm/amd/amdgpu/amdgpu_ring.c`](https://github.com/torvalds/linux/blob/8c13415c8a4383447c21ec832b20b3b283f0e01a/drivers/gpu/drm/amd/amdgpu/amdgpu_ring.c)
 
 ### Context Entities and Priority
 
-An `amdgpu_ctx` (created by `DRM_IOCTL_AMDGPU_CTX`) holds a matrix of entities: one per (engine class × priority). When userspace submits via `DRM_IOCTL_AMDGPU_CS`, it selects an IP block and the context's entity for that block is used. Priority is set at context creation time, mapping userspace priorities through `amdgpu_to_sched_priority()` to `DRM_SCHED_PRIORITY_*`.
+An `amdgpu_ctx` (created by `DRM_IOCTL_AMDGPU_CTX`) holds a matrix of entities: one per (engine class × priority). When userspace submits via `DRM_IOCTL_AMDGPU_CS`, it selects an IP block and the context's entity for that block is used. Priority is set at context creation time, mapping userspace priorities through `amdgpu_ctx_to_drm_sched_prio()` to `DRM_SCHED_PRIORITY_*`:
+
+```c
+/* From drivers/gpu/drm/amd/amdgpu/amdgpu_ctx.c */
+static enum drm_sched_priority
+amdgpu_ctx_to_drm_sched_prio(int32_t ctx_prio)
+{
+    switch (ctx_prio) {
+    case AMDGPU_CTX_PRIORITY_VERY_LOW:
+    case AMDGPU_CTX_PRIORITY_LOW:       return DRM_SCHED_PRIORITY_LOW;
+    case AMDGPU_CTX_PRIORITY_NORMAL:    return DRM_SCHED_PRIORITY_NORMAL;
+    case AMDGPU_CTX_PRIORITY_HIGH:
+    case AMDGPU_CTX_PRIORITY_VERY_HIGH: return DRM_SCHED_PRIORITY_HIGH;
+    default: return DRM_SCHED_PRIORITY_NORMAL;
+    }
+}
+```
+
+Raising a context above `AMDGPU_CTX_PRIORITY_NORMAL` requires `CAP_SYS_NICE`, enforced in `amdgpu_ctx_priority_permit()`.
 
 A Wayland compositor requests `DRM_SCHED_PRIORITY_HIGH` for its rendering context. Under the CFS algorithm, this means its entities' vruntime grows at shift-2 rate versus normal applications' shift-4 rate, giving it roughly 4× more GPU time per real second when competing with a `NORMAL`-priority client.
 
@@ -485,28 +503,58 @@ When `work_tdr` fires (job took longer than `sched->timeout`):
 
 ### AMDGPU Timeout Recovery
 
-In AMDGPU's `timedout_job` callback, the driver:
+In AMDGPU's `timedout_job` callback ([Source: `drivers/gpu/drm/amd/amdgpu/amdgpu_job.c`](https://github.com/torvalds/linux/blob/8c13415c8a4383447c21ec832b20b3b283f0e01a/drivers/gpu/drm/amd/amdgpu/amdgpu_job.c)), the recovery sequence is:
 
-1. Calls `amdgpu_ring_is_idle()` to check if the ring is truly stuck.
-2. Attempts a per-ring soft reset first.
-3. Falls back to `amdgpu_device_gpu_recover()` for a full GPU reset if the ring reset fails.
-4. After recovery, `drm_sched_stop()` has already frozen the scheduler; `drm_sched_start()` requeues surviving pending jobs and rearms the timeout.
+1. If the device has been unplugged, return `DRM_GPU_SCHED_STAT_ENODEV` immediately.
+2. Dump IP state for debugging (`amdgpu_job_core_dump`), unless running under SR-IOV (where the host driver handles recovery).
+3. Attempt `amdgpu_ring_soft_recovery()` — a lightweight per-ring reset via `ring->funcs->reset`.
+4. If soft recovery fails, escalate to `amdgpu_device_gpu_recover()` for a full GPU reset.
+5. Return `DRM_GPU_SCHED_STAT_NO_HANG`, which tells the scheduler infrastructure to reinsert the job into the pending list.
+
+The key AMDGPU observation: when soft recovery succeeds (the ring is back), the function calls `drm_sched_wqueue_stop()` before the reset and `drm_sched_wqueue_start()` after, which stops and restarts the submit workqueue around the ring reset window.
 
 ```c
-/* Simplified AMDGPU timedout_job flow */
-static enum drm_gpu_sched_stat
-amdgpu_job_timedout(struct drm_sched_job *s_job)
+/* From drivers/gpu/drm/amd/amdgpu/amdgpu_job.c (condensed) */
+static enum drm_gpu_sched_stat amdgpu_job_timedout(struct drm_sched_job *s_job)
 {
-    struct amdgpu_job *job = to_amdgpu_job(s_job);
     struct amdgpu_ring *ring = to_amdgpu_ring(s_job->sched);
+    struct amdgpu_job  *job  = to_amdgpu_job(s_job);
+    struct amdgpu_device *adev = ring->adev;
 
-    if (amdgpu_ring_soft_recovery(ring, ...))
-        return DRM_GPU_SCHED_STAT_RESET;
+    if (!drm_dev_enter(adev_to_drm(adev), &idx))
+        return DRM_GPU_SCHED_STAT_ENODEV;
 
-    amdgpu_device_gpu_recover(ring->adev, job);
-    return DRM_GPU_SCHED_STAT_RESET;
+    if (!amdgpu_sriov_vf(adev))
+        amdgpu_job_core_dump(adev, job);
+
+    /* Attempt soft per-ring recovery first */
+    if (amdgpu_gpu_recovery &&
+        amdgpu_ring_is_reset_type_supported(ring, AMDGPU_RESET_TYPE_SOFT_RESET) &&
+        amdgpu_ring_soft_recovery(ring, job->vmid, s_job->s_fence->parent))
+        goto exit;  /* recovered */
+
+    /* Per-ring hard reset */
+    if (amdgpu_gpu_recovery &&
+        amdgpu_ring_is_reset_type_supported(ring, AMDGPU_RESET_TYPE_PER_QUEUE) &&
+        ring->funcs->reset) {
+        drm_sched_wqueue_stop(&ring->sched);
+        if (!amdgpu_ring_reset(ring, job->vmid, job->hw_fence)) {
+            drm_sched_wqueue_start(&ring->sched);
+            goto exit;
+        }
+    }
+
+    /* Full GPU reset */
+    if (amdgpu_device_should_recover_gpu(adev))
+        amdgpu_device_gpu_recover(adev, job, &reset_context);
+
+exit:
+    drm_dev_exit(idx);
+    return DRM_GPU_SCHED_STAT_NO_HANG;
 }
 ```
+
+AMDGPU timeout defaults, configured via the `amdgpu_lockup_timeout` module parameter: 10,000 ms for GFX, SDMA, and video rings; 60,000 ms for compute rings.
 
 From userspace, a GPU reset surfaces as a Vulkan `VK_ERROR_DEVICE_LOST` on the next `vkQueueSubmit` or `vkWaitForFences` call.
 
@@ -566,9 +614,9 @@ Field semantics ([Source: kernel.org DRM usage stats](https://www.kernel.org/doc
 - `drm-engine-<name>: <uint> ns` — time the named engine spent executing workloads for this file descriptor, in nanoseconds.
 - `drm-cycles-<name>: <uint>` — raw GPU cycle count for the same engine.
 - `drm-client-id` — unique ID distinguishing file descriptor instances; use this to avoid double-counting when the same fd is duplicated.
-- `drm-memory-*` — buffer residency in each memory region.
+- `drm-memory-*` — buffer residency in each memory region. **Note:** this key is deprecated (an alias for `drm-resident-*`) and is only printed by AMDGPU; new code should use `drm-resident-*`.
 
-The data is populated by `dev->driver->show_fdinfo()`, which in AMDGPU reads from `drm_sched_entity_stats::runtime` per engine. [Source: `drivers/gpu/drm/drm_file.c`](https://github.com/torvalds/linux/blob/8c13415c8a4383447c21ec832b20b3b283f0e01a/drivers/gpu/drm/drm_file.c)
+The data is populated by `dev->driver->show_fdinfo()`, a driver-specific callback invoked by the core DRM infrastructure in `drm_show_fdinfo()`. AMDGPU implements this in `drivers/gpu/drm/amd/amdgpu/amdgpu_fdinfo.c`. The per-engine `drm-engine-*` values are sourced from the scheduler entity's GPU time tracking (`drm_sched_entity_stats::runtime`), accumulated in `drm_sched_free_job_work()` and exposed per engine. [Source: `drivers/gpu/drm/drm_file.c`](https://github.com/torvalds/linux/blob/8c13415c8a4383447c21ec832b20b3b283f0e01a/drivers/gpu/drm/drm_file.c)
 
 ### Consumer: MangoHUD
 
@@ -711,7 +759,7 @@ The kernel scheduler has a KUnit test suite in `drivers/gpu/drm/scheduler/tests/
 
 - **Ch4 — GPU Memory Management**: `drm_sched_job_add_implicit_dependencies()` reads `dma_resv` fences from GEM BOs, coupling the scheduler to the memory reservation system. Jobs cannot start executing until all memory hazards for their BOs are resolved.
 
-- **Ch5 — AMDGPU**: AMDGPU creates one `drm_gpu_scheduler` per ring in `amdgpu_ring_init()`. `amdgpu_ctx` manages per-context entities across all ring types. The `timedout_job` callback drives AMDGPU's TDR recovery. `amdgpu_fdinfo` exports per-entity `runtime` to `/proc/pid/fdinfo`.
+- **Ch5 — AMDGPU**: AMDGPU embeds one `drm_gpu_scheduler` per ring (`ring->sched`) under `drivers/gpu/drm/amd/amdgpu/`. `amdgpu_ctx` manages per-context entities across all ring types via `amdgpu_ctx_to_drm_sched_prio()`. The `amdgpu_job_timedout` callback drives TDR recovery with soft → per-ring → full-GPU escalation. `amdgpu_fdinfo.c` exports per-entity GPU time to `/proc/pid/fdinfo`.
 
 - **Ch5 — Intel Xe**: Xe uses `xe_exec_queue` wrapping a `drm_sched_entity` per VM-per-engine. GuC submission provides hardware-level scheduling; the DRM scheduler handles dependency tracking, TDR, and accounting above it.
 
