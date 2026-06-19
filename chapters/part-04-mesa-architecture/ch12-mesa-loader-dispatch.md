@@ -414,6 +414,65 @@ The XML schema uses a `<driconf>` root element containing `<device>` elements (s
 
 The driconf system is processed at `__DRIscreen` creation time by `driParseConfigFiles()` in `src/util/xmlconfig.c`. The matched options are stored in the screen's `driOptionCache` and consulted by driver code throughout the driver's lifetime. The `MESA_DRICONF_EXECUTABLE_OVERRIDE` environment variable overrides the executable string used for matching, allowing users to force workarounds for applications that use unusual binary names or launch through wrapper scripts.
 
+### OpenGL Dispatch Paths
+
+When an application calls an OpenGL function, GLVND dispatches to one of four possible paths through Mesa (or past it to a proprietary driver). Each path has different performance characteristics and hardware requirements.
+
+```mermaid
+flowchart LR
+    App["OpenGL application\nlibGL.so via GLVND"]
+
+    App --> PathA
+    App --> PathB
+    App --> PathC
+    App --> PathD
+
+    subgraph PathA ["Path A — Mesa Gallium3D (native OpenGL)"]
+        A1["libGL.so GLVND\ndispatch table"]
+        A2["Mesa Gallium3D\nstate tracker ST/mesa"]
+        A3["Gallium pipe_driver\nradeonsi / iris / r600"]
+        A4["GPU ISA via\nLLVM backend"]
+        A1 --> A2 --> A3 --> A4
+    end
+
+    subgraph PathB ["Path B — Zink (OpenGL on Vulkan)"]
+        B1["GLVND dispatch"]
+        B2["Zink state tracker\nsrc/gallium/drivers/zink"]
+        B3["Vulkan driver\nRADV / ANV / NVK / Turnip"]
+        B4["GPU ISA via\nACO / NAK / brw"]
+        B1 --> B2 --> B3 --> B4
+    end
+
+    subgraph PathC ["Path C — Mesa Nine (D3D9, Wine only)"]
+        C1["Wine --with-nine\nnine_get_lib"]
+        C2["Mesa Nine state tracker\nsrc/gallium/frontends/nine"]
+        C3["Gallium pipe_driver\nnative — no GLSL translation"]
+        C4["GPU ISA\ndirect pipe submit"]
+        C1 --> C2 --> C3 --> C4
+    end
+
+    subgraph PathD ["Path D — Proprietary driver"]
+        D1["GLVND dispatch\nvendor ICD JSON"]
+        D2["libGLX_nvidia.so or\namdgpu-pro libGL"]
+        D3["Proprietary\nuserspace driver"]
+        D4["GPU via\nproprietary KMD"]
+        D1 --> D2 --> D3 --> D4
+    end
+```
+
+The four paths differ substantially in entry point, shader compilation strategy, hardware support, and when they are the appropriate choice:
+
+| Path | Entry point | Shader path | Hardware support | When used |
+|---|---|---|---|---|
+| A — Gallium3D native | `libGL.so` → GLVND dispatch table → `libGLX_mesa.so` | GLSL → NIR → LLVM/ACO/brw ISA | AMD GCN+, Intel Gen8+, NVIDIA (nouveau), ARM (panfrost, etnaviv, lima) | Default OpenGL on Mesa-supported hardware |
+| B — Zink | GLVND dispatch → Zink Gallium state tracker | GLSL → NIR → SPIR-V → Vulkan driver (ACO/NAK/brw) | Any hardware with a Mesa Vulkan ICD: RADV, ANV, NVK, Turnip | Portability/testing layer; hardware with Vulkan but no dedicated Gallium OpenGL driver (e.g. Apple AGX via Honeykrisp) |
+| C — Mesa Nine | Wine D3D9 → `nine_get_lib` → Mesa Nine frontend | D3D9 bytecode → NIR → pipe_driver ISA (no GLSL translation) | AMD GCN+ and Intel GPU with Gallium pipe_driver (Wine only) | Wine D3D9 games using the native D3D9 state tracker for lower CPU overhead |
+| D — Proprietary | GLVND dispatch → vendor ICD JSON → `libGLX_nvidia.so` / amdgpu-pro | Vendor-specific compiler (NVVM, AMDIL) | NVIDIA (proprietary), AMD (amdgpu-pro), others | Systems with proprietary drivers installed; coexists with Mesa via GLVND |
+
+**Path B (Zink)** is used as a portability and testing layer — it is especially useful on hardware such as Apple AGX (exposed through the Honeykrisp driver) that ships a Vulkan ICD but has no dedicated Gallium OpenGL state tracker. By running OpenGL through Zink → Vulkan, Apple Silicon Macs running Asahi Linux obtain full OpenGL 4.6 support without a hand-written Gallium OpenGL driver. Zink also serves as a conformance testing aid: any OpenGL CTS failure on Zink that does not reproduce on Path A indicates a Vulkan driver bug, while a failure that reproduces on both paths points to a Mesa frontend issue.
+
+**Path C (Mesa Nine)** is Wine-specific and bypasses GLSL translation entirely. D3D9 bytecode is converted directly to NIR without going through any GLSL parsing step, reducing CPU overhead for shader compilation and avoiding the GLSL front-end as a source of bugs. Path C requires Wine to be built with `--with-nine` and the application to select the Nine D3D9 backend; it is not accessible to native Linux OpenGL applications.
+
 ---
 
 ## 5. The DRI Screen, Context, and Drawable Lifecycle

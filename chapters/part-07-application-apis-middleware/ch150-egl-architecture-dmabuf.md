@@ -565,6 +565,80 @@ int explicit_fence_fd = eglDupNativeFenceFDANDROID(display, sync);
 
 ---
 
+## Render-to-Screen: Five WSI Pipeline Paths
+
+An application that has finished rendering must get pixels to the display. The WSI (Window System Integration) path choice determines compositor involvement, supported display targets, and headless support. Five distinct paths cover the full range of Linux deployment scenarios.
+
+```mermaid
+flowchart LR
+    GPU["GPU rendered frame"]
+
+    subgraph P1["Path 1: Vulkan + Wayland WSI"]
+        direction TB
+        P1A["VK_KHR_wayland_surface"] --> P1B["vkCreateSwapchainKHR"]
+        P1B --> P1C["Mesa WSI allocs GBM/DMA-BUF"]
+        P1C --> P1D["linux-dmabuf-v1"]
+        P1D --> P1E["Compositor KMS"]
+    end
+
+    subgraph P2["Path 2: OpenGL + EGL/GBM"]
+        direction TB
+        P2A["EGL_KHR_platform_wayland"] --> P2B["eglCreateWindowSurface"]
+        P2B --> P2C["Mesa EGL GBM buffer"]
+        P2C --> P2D["linux-dmabuf-v1"]
+        P2D --> P2E["Compositor KMS"]
+    end
+
+    subgraph P3["Path 3: OpenGL + GLX → XWayland"]
+        direction TB
+        P3A["GLX / glXSwapBuffers"] --> P3B["DRI3 buffer DMA-BUF"]
+        P3B --> P3C["XWayland Wayland surface"]
+        P3C --> P3D["Compositor KMS"]
+    end
+
+    subgraph P4["Path 4: EGL headless/offscreen"]
+        direction TB
+        P4A["EGL_EXT_platform_device EGLDevice"] --> P4B["EGL pbuffer or EGLImage FBO"]
+        P4B --> P4C["readPixels/DMA-BUF export"]
+        P4C --> P4D["File/network — no display"]
+    end
+
+    subgraph P5["Path 5: Vulkan direct KMS"]
+        direction TB
+        P5A["VK_EXT_acquire_drm_display"] --> P5B["VK_KHR_display swapchain"]
+        P5B --> P5C["KMS atomic — no compositor"]
+        P5C --> P5D["Display direct"]
+    end
+
+    GPU --> P1A
+    GPU --> P2A
+    GPU --> P3A
+    GPU --> P4A
+    GPU --> P5A
+```
+
+### Path Comparison
+
+| Path | API | Requires compositor | X11/Wayland | Headless | Typical use |
+|---|---|---|---|---|---|
+| 1 — Vulkan + Wayland WSI | Vulkan (`VK_KHR_wayland_surface`) | Yes (Wayland) | Wayland | No | Native Vulkan apps, games, wlroots-based compositors |
+| 2 — OpenGL + EGL/GBM | OpenGL ES / GL (`EGL_KHR_platform_wayland`) | Yes (Wayland) | Wayland | No | GTK4, Qt6, Electron, mpv on Wayland |
+| 3 — OpenGL + GLX → XWayland | OpenGL (`GLX`) | Yes (XWayland + Wayland compositor) | X11 (via XWayland) | No | Legacy X11 apps running unmodified under Wayland |
+| 4 — EGL headless/offscreen | OpenGL ES / GL (`EGL_EXT_platform_device`) | No | Neither | Yes | Server-side rendering, CI, video encoding, compute |
+| 5 — Vulkan direct KMS | Vulkan (`VK_EXT_acquire_drm_display`) | No | Neither | No | Kiosks, VR runtimes, low-latency display pipelines |
+
+### Analysis
+
+**Paths 1 and 2** are the default paths for Wayland desktop applications. Both funnel through `zwp_linux_dmabuf_v1` and rely on the Wayland compositor to schedule KMS page flips; the GPU driver (Mesa WSI for Vulkan, Mesa EGL for OpenGL) handles GBM buffer allocation and DMA-BUF handoff transparently. Path 1 is preferred for new Vulkan applications; Path 2 is the dominant path for OpenGL/GLES toolkits such as GTK4 and Qt6.
+
+**Path 3** carries the overhead of an extra protocol translation: GLX speaks DRI3 to XWayland, which re-wraps the DMA-BUF as a Wayland `wl_buffer` and forwards it to the real compositor. The extra hop adds latency and prevents tearing-control or presentation-time negotiation. It exists solely for compatibility with unmodified X11 applications.
+
+**Path 4** omits the display entirely. `EGL_EXT_platform_device` (or `EGL_MESA_platform_surfaceless`) creates a context backed by a render node without any display output. The rendered result is consumed via `glReadPixels` or exported as a DMA-BUF for a downstream consumer (V4L2 encoder, file, network stream). This is the correct path for headless CI, server-side rendering, and GPU-accelerated video transcoding.
+
+**Path 5** bypasses the compositor entirely. `VK_EXT_acquire_drm_display` lets a Vulkan application take exclusive ownership of a DRM display connector, then presents frames directly via `VK_KHR_display` swapchain and KMS atomic commits. This eliminates compositor latency and is used by VR runtimes (Monado, SteamVR), kiosk displays, and other latency-critical single-application deployments.
+
+---
+
 ## Integrations
 
 - **Ch4 (GPU Memory Management)** — DMA-BUF is the kernel-level buffer sharing mechanism; EGL is the userspace API for importing DMA-BUFs into OpenGL

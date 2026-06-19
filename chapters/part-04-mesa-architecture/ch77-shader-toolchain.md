@@ -107,7 +107,66 @@ The front-end compiler landscape has grown substantially beyond the original Khr
 | Slang | Slang (HLSL superset) | SPIR-V, HLSL, GLSL, WGSL, CUDA, Metal | Full (Slang IR) | Yes (automatic differentiation) | Apache 2.0 | ML shaders, research, multi-backend deployment |
 | naga (wgpu/Firefox) | WGSL, GLSL, SPIR-V (import) | SPIR-V, WGSL, GLSL, MSL, HLSL | Moderate (Rust-native) | No | MIT/Apache 2.0 | Firefox WebGPU (wgpu-core); Bevy engine |
 
-### 1.2 The Full Pipeline
+### 1.2 End-to-End Compilation Paths
+
+Despite the variety of front-end tools, all practical compilation paths converge on two landmarks before reaching a GPU: **SPIR-V** as the portable binary IR that crosses the application/driver boundary, and **Mesa NIR** as the typed SSA IR that every Mesa driver backend consumes. The TGSI path (used by older Gallium-based drivers) is a historical exception that is being removed driver-by-driver and is treated here for completeness only.
+
+```mermaid
+flowchart LR
+    subgraph FE["Front Ends"]
+        GLSL["GLSL / GLSL ES"]
+        HLSL["HLSL"]
+        WGSL["WGSL"]
+        SlangSrc["Slang"]
+        TGSISrc["TGSI (legacy)"]
+    end
+
+    subgraph IR["SPIR-V / IR Layer"]
+        SPIRV["SPIR-V binary"]
+        TGSIStream["TGSI stream (deprecated)"]
+        SlangIR["Slang IR"]
+    end
+
+    subgraph NIRLayer["Mesa NIR"]
+        NIR["NIR typed SSA IR"]
+    end
+
+    subgraph Backends["GPU Backends"]
+        ACO["ACO (AMD RDNA/GCN)"]
+        NAK["NAK (NVIDIA Maxwell+)"]
+        BRW["brw_eu (Intel Gen7-Xe2)"]
+        QPU["QPU compiler (Raspberry Pi)"]
+        AGX["AGX ISA (Apple Silicon)"]
+    end
+
+    GLSL -->|"glslang / shaderc"| SPIRV
+    HLSL -->|"DXC --spirv"| SPIRV
+    WGSL -->|"naga or Tint"| SPIRV
+    SlangSrc -->|"slangc"| SlangIR
+    SlangIR --> SPIRV
+    TGSISrc --> TGSIStream
+    TGSIStream -->|"tgsi_to_nir"| NIR
+    SPIRV -->|"spirv_to_nir"| NIR
+    NIR --> ACO
+    NIR --> NAK
+    NIR --> BRW
+    NIR --> QPU
+    NIR --> AGX
+```
+
+The table below maps each source language to its front-end tool, whether it transits SPIR-V, its NIR entry point, the primary backend it targets, and its typical use case:
+
+| **Source** | **Front-end tool** | **SPIR-V?** | **NIR entry point** | **Backend** | **Primary use case** |
+|---|---|---|---|---|---|
+| GLSL / GLSL ES | glslang, shaderc | Yes | `spirv_to_nir()` | ACO, BRW, NAK, QPU | OpenGL/Vulkan application shaders |
+| HLSL | DXC (`--spirv`) | Yes | `spirv_to_nir()` | ACO, BRW, NAK | DXVK, vkd3d-Proton, game porting |
+| WGSL | naga (wgpu/Firefox) or Tint (Chrome/Dawn) | Yes | `spirv_to_nir()` | ACO, BRW, NAK | WebGPU in Firefox and Chrome |
+| Slang | slangc → Slang IR → SPIR-V | Yes (via Slang IR) | `spirv_to_nir()` | ACO, BRW, NAK | ML/research shaders, Falcor, RTX Kit |
+| TGSI | Mesa Gallium state tracker | No (TGSI stream) | `tgsi_to_nir()` | ACO, BRW (legacy), QPU | Legacy OpenGL on older Gallium drivers |
+
+> **Note on TGSI deprecation.** The TGSI (Tungsten Graphics Shader Infrastructure) path is actively being removed from Mesa. Most drivers have already migrated: `radeonsi` completed the transition in Mesa 23.x, `iris` never used TGSI, and `v3d` (Raspberry Pi) transitioned in Mesa 24.x. New drivers (NVK, Asahi AGX) were written exclusively against NIR. The `tgsi_to_nir()` bridge in `src/gallium/auxiliary/tgsi/tgsi_to_nir.c` exists solely for the remaining in-flight transitions. All modern workloads — Vulkan, WebGPU, and post-transition OpenGL — converge on NIR before reaching any GPU backend.
+
+### 1.3 The Full Pipeline
 
 ```
 GLSL ──► glslang ──────────────────────►┐

@@ -371,6 +371,62 @@ For Wayland compositors, NVIDIA render offload works through the `__NV_PRIME_REN
 
 ## 5. Reverse PRIME: Rendering on dGPU, Scanning Out via iGPU KMS
 
+Four paths exist for getting rendered frames from a dual-GPU laptop to the display. They differ in which GPU renders, how many CPU copies occur, and whether the primary display output is on the iGPU or dGPU.
+
+```mermaid
+flowchart LR
+    App["Application"]
+
+    subgraph PathA ["Path A — iGPU render (power save)"]
+        A1["Mesa selects iGPU\nDRI_PRIME unset"]
+        A2["iGPU renders\nIntel/AMD integrated"]
+        A3["iGPU KMS\ndirect scanout"]
+        A4["Display\n0 copies; dGPU off"]
+        A1 --> A2 --> A3 --> A4
+    end
+
+    subgraph PathB ["Path B — PRIME offload: dGPU render + CPU blit"]
+        B1["DRI_PRIME=1\nor prime-run"]
+        B2["dGPU renders"]
+        B3["CPU blit\ndGPU to iGPU memory"]
+        B4["iGPU KMS\nfinal framebuffer"]
+        B5["Display\n1 CPU copy"]
+        B1 --> B2 --> B3 --> B4 --> B5
+    end
+
+    subgraph PathC ["Path C — Reverse PRIME: dGPU render + DMA-BUF"]
+        C1["DRI_PRIME=1"]
+        C2["dGPU renders"]
+        C3["DMA-BUF export\nfrom dGPU"]
+        C4["iGPU imports\nDMA-BUF"]
+        C5["iGPU KMS\noverlap plane"]
+        C6["Display\n0 copies"]
+        C1 --> C2 --> C3 --> C4 --> C5 --> C6
+    end
+
+    subgraph PathD ["Path D — dGPU direct KMS (muxed hardware)"]
+        D1["MUX switch to dGPU\nvga_switcheroo/ACPI"]
+        D2["dGPU renders"]
+        D3["dGPU KMS\ndirect scanout"]
+        D4["Display\n0 copies; iGPU off"]
+        D1 --> D2 --> D3 --> D4
+    end
+
+    App --> A1
+    App --> B1
+    App --> C1
+    App --> D1
+```
+
+| Path | Rendering GPU | CPU copies | dGPU power state | Kernel support | Performance |
+|------|--------------|------------|-----------------|---------------|-------------|
+| A — iGPU render | iGPU (integrated) | 0 | Off / D3cold | Always available | Low (iGPU limited) |
+| B — PRIME offload + CPU blit | dGPU | 1 per frame (~1 ms at 1080p) | On (active render) | Linux 3.12+ DRI_PRIME | Medium (blit overhead) |
+| C — Reverse PRIME + DMA-BUF | dGPU | 0 | On (active render) | Linux 4.10+ p2pdma/IOMMU | High (preferred muxless path) |
+| D — dGPU direct KMS | dGPU | 0 | On (exclusive) | MUX hardware + vga_switcheroo | Maximum (muxed laptops only) |
+
+Path C (Reverse PRIME with DMA-BUF) is the preferred modern path for muxless laptops. The dGPU renders into a GBM buffer, exports as DMA-BUF via `DRM_PRIME_HANDLE_TO_FD`, and the iGPU imports via `DRM_PRIME_FD_TO_HANDLE`. No CPU is involved in the memory transfer.
+
 ### 5.1 The Reverse PRIME Problem
 
 Standard PRIME offload (Section 3) runs the application on the dGPU and copies the result back for display. *Reverse PRIME* addresses a different scenario: the dGPU has its own display outputs (HDMI, DisplayPort) that the user wants to use, but the dGPU is not the KMS master. This occurs when a laptop's HDMI port is wired to the NVIDIA GPU's display engine, while the iGPU owns the eDP panel and is the X server's primary screen.

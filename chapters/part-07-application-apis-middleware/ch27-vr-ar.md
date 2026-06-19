@@ -521,6 +521,37 @@ The IPC protocol (`src/xrt/ipc/`) uses three mechanisms: the Unix socket for con
 
 ## 4. Display Backend: Direct Mode and the DRM Path
 
+Three display pipeline architectures are available to an OpenXR runtime on Linux. They differ by over an order of magnitude in motion-to-photon latency.
+
+```mermaid
+flowchart LR
+    App["OpenXR app\nxrEndFrame"]
+
+    App --> A_Comp["Monado compositor\ncomp_compositor"]
+    App --> B_Comp["Monado compositor\ncomp_compositor"]
+    App --> C_Layer["VK_LAYER_openvr intercept\nvkQueuePresentKHR"]
+
+    A_Comp --> A_Lease["drmModeCreateLease\nexclusive CRTC+connector"]
+    A_Lease --> A_KMS["KMS atomic commit\ndirect to HMD"]
+    A_KMS --> A_HMD["HMD display\n~15 ms MTP"]
+
+    B_Comp --> B_WL["wl_surface\nVK_KHR_wayland_surface"]
+    B_WL --> B_DComp["Desktop compositor\nKMS pipeline"]
+    B_DComp --> B_HMD["HMD via compositor\n~25–35 ms MTP"]
+
+    C_Layer --> C_VRC["vrcompositor\nATW+reprojection"]
+    C_VRC --> C_KMS["Direct KMS or\nWayland present"]
+    C_KMS --> C_HMD["HMD display\n~18 ms MTP"]
+```
+
+| Path | Runtime | Latency (MTP) | DRM Lease | Compositor bypass | GPU requirement |
+|---|---|---|---|---|---|
+| A — DRM Lease direct | Monado | ~15 ms | Yes (`drmModeCreateLease`) | Full — bypasses desktop compositor | AMD/Intel open-source drivers; Nvidia via `vkAcquireXlibDisplayEXT` |
+| B — Wayland nested | Monado | ~25–35 ms | No | None — desktop compositor in critical path | Any Vulkan-capable GPU |
+| C — SteamVR compositor | SteamVR (`vrcompositor`) | ~18 ms | Via SteamVR | Partial — SteamVR compositor replaces desktop compositor | Requires `VK_KHR_external_memory_fd` + `VK_KHR_external_semaphore_fd` |
+
+Path A is the production path for any VR runtime serious about latency: it eliminates the desktop compositor from the frame delivery chain entirely, driving KMS atomic commits directly from Monado's compositor clock. Path B trades that latency advantage for development convenience — no special hardware permissions, no `non-desktop` EDID quirk required, and the HMD appears as an ordinary Wayland window; the tradeoff is the additional frame of latency introduced by the desktop compositor's own KMS pipeline. Path C delegates the display backend to SteamVR's own `vrcompositor`, which performs Asynchronous Timewarp before submitting to either a direct KMS path or the Wayland compositor; SteamVR's ATW pipeline recovers some of the latency lost to the compositor indirection, landing between Paths A and B in practice.
+
 ### The Problem with Desktop Compositor Passthrough
 
 A naive approach would have Monado present frames to a Wayland compositor as a regular client, letting the compositor scanout to the HMD via its normal KMS pipeline. This works functionally but introduces unacceptable latency. The Wayland compositor typically renders at its own refresh rate, blends the Monado client surface with other surfaces, and submits to the DRM KMS pipeline. This adds at minimum one full frame of latency (11ms at 90Hz) beyond the application's own frame time. For comfortable VR, the total motion-to-photon latency budget is approximately 20ms, and compositor overhead consumes 20–50% of it. Moreover, screen tears and compositor scheduling jitter cause visible artefacts in the HMD. [Source: Monado Direct Mode](https://monado.freedesktop.org/direct-mode.html)

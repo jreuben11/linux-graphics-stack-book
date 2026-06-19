@@ -732,6 +732,68 @@ graph TD
 
 ---
 
+## Video Decode to Display: Five Pipeline Paths
+
+Getting a decoded video frame from the hardware decode engine to a pixel on screen is not a single operation — the Linux graphics stack offers five distinct paths with different trade-offs in copy count, GPU dependency, HDR support, and Wayland compatibility. Understanding which path a given player or framework takes is essential for diagnosing latency, tearing, or copy-induced quality loss.
+
+The five paths share a common source — a compressed H.264, H.265, or AV1 bitstream — and diverge at the choice of decode API, the mechanism used to share the decoded buffer across subsystem boundaries, and the final presentation method.
+
+```mermaid
+flowchart LR
+    src["Compressed stream\nH.264 / H.265 / AV1"]
+
+    subgraph pathA ["Path A — VA-API → KMS direct overlay (0 copies)"]
+        direction LR
+        A1["VA-API decode"] --> A2["VASurface\nDMA-BUF export"] --> A3["linux-dmabuf-v1\n(Wayland protocol)"] --> A4["KMS overlay plane"] --> A5["Display"]
+    end
+
+    subgraph pathB ["Path B — VA-API → EGL → Compositor blend (0 copies)"]
+        direction LR
+        B1["VA-API decode"] --> B2["vaExportSurfaceHandle\n→ DMA-BUF fd"] --> B3["EGLImage import\n(EGL_LINUX_DMA_BUF_EXT)"] --> B4["Compositor GPU blend"] --> B5["KMS flip"]
+    end
+
+    subgraph pathC ["Path C — Vulkan Video → linux-dmabuf-v1 (0 copies)"]
+        direction LR
+        C1["VK_KHR_video_decode\n→ VkImage"] --> C2["DMA-BUF export\n(VK_EXT_external_memory_fd)"] --> C3["linux-dmabuf-v1\n(Wayland protocol)"] --> C4["Compositor import"] --> C5["Display"]
+    end
+
+    subgraph pathD ["Path D — V4L2 M2M → EGLImage → GPU draw (0 copies)"]
+        direction LR
+        D1["V4L2 M2M decode"] --> D2["CAPTURE buffer\nDMA-BUF (VIDIOC_EXPBUF)"] --> D3["EGLImage import"] --> D4["GPU draw"] --> D5["Display"]
+    end
+
+    subgraph pathE ["Path E — FFmpeg CPU decode → GPU texture (1–2 copies)"]
+        direction LR
+        E1["FFmpeg CPU decode"] --> E2["AVFrame\nCPU memory"] --> E3["glTexImage2D\nor VkBuffer upload"] --> E4["GPU texture"] --> E5["Display"]
+    end
+
+    src --> A1
+    src --> B1
+    src --> C1
+    src --> D1
+    src --> E1
+```
+
+The following table summarises the key characteristics of each path:
+
+| Path | Decode API | CPU copies | GPU required | HDR | Wayland zero-copy | Typical use |
+|------|-----------|-----------|--------------|-----|-------------------|-------------|
+| A | VA-API | 0 | No (KMS overlay handles YUV) | Yes (P010 modifier) | Yes (linux-dmabuf-v1 + KMS plane) | mpv `--vo=drm`, direct video overlay |
+| B | VA-API | 0 | Yes (compositor GPU blend) | Yes | Yes (EGLImage → compositor) | mpv `--hwdec=vaapi --vo=gpu`, browser video |
+| C | Vulkan Video | 0 | Yes (Vulkan compositor) | Yes | Yes (VkImage DMA-BUF export) | Future: GStreamer `vkh264dec`, native Wayland |
+| D | V4L2 M2M | 0 | Yes | Driver-dependent | Yes (DMA-BUF + EGL) | SoC playback (RPi, Rockchip, i.MX) |
+| E | FFmpeg/CPU | 1–2 | Yes | Limited by format | No (CPU → GPU upload) | Fallback / unsupported HW / debugging |
+
+**Path A** is the most efficient and preferred on hardware where the KMS display controller supports direct YUV overlay planes with DRM format modifier awareness. The decoded frame never leaves GPU memory between the VCN/HCP decode engine and the display CRTC. Verify with:
+
+```bash
+mpv --hwdec=vaapi --vo=gpu input.mp4
+```
+
+Check that `vo=gpu` negotiates DMA-BUF by looking for `Using hardware decoding (vaapi)` and no `Uploading` messages in the mpv log (`--msg-level=vo=debug`). Path B is the most common Wayland path for composited desktops; the compositor blends the video plane with UI using a GPU shader, which is required when the video does not fill the entire screen. Paths C and D reflect the emerging Vulkan Video and SoC codec ecosystems respectively. Path E is the correct fallback when hardware decode is unavailable or when the codec is not supported by any hardware path on the target machine.
+
+---
+
 ## 8. Practical: Hardware-Accelerated Transcoding Pipeline
 
 ### Use Case: H.264 4K to AV1 on AMD or Intel GPU

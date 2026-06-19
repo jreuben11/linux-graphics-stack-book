@@ -36,6 +36,68 @@ This architectural change forced a complete reimagining of how screen capture wo
 
 This chapter traces the complete path from kernel write-back all the way to network-transmitted H.264, covering each layer's API, implementation status, and performance characteristics.
 
+### Screen Capture Pipeline Paths
+
+Four fundamentally different architectures exist for capturing compositor or display output on Linux. Each makes different trade-offs across security, copy overhead, hardware-encoder compatibility, and compositor dependency. Understanding which path a tool uses determines what permission model it requires and what performance it can achieve.
+
+```mermaid
+flowchart TD
+    CompGPU["Compositor GPU framebuffer"]
+    KMS["KMS / DRM render node"]
+
+    CompGPU --> PathA
+    CompGPU --> PathB
+    CompGPU --> PathC
+    KMS --> PathD
+
+    subgraph PathA ["Path A: PipeWire Portal (sandboxed)"]
+        A1["xdg-desktop-portal ScreenCast\n(D-Bus: CreateSession → SelectSources → Start)"]
+        A2["Compositor screencopy\n(ext-image-copy-capture-v1 or wlr-screencopy-v1)"]
+        A3["PipeWire pw_stream\n(SPA_DATA_DmaBuf or SPA_DATA_MemPtr)"]
+        A4["App: DMA-BUF fd (zero-copy)\nor CPU fallback (mapped memory)"]
+        A1 --> A2 --> A3 --> A4
+    end
+
+    subgraph PathB ["Path B: wlr-screencopy (privileged)"]
+        B1["zwlr_screencopy_manager_v1\n(direct Wayland protocol, no portal)"]
+        B2["DMA-BUF (linux-dmabuf v3+)\nor wl_shm CPU copy"]
+        B3["App receives buffer direct\n(no PipeWire brokering)"]
+        B1 --> B2 --> B3
+    end
+
+    subgraph PathC ["Path C: X11 XComposite (legacy)"]
+        C1["XCompositeRedirectWindow\nor XGetImage / XShmGetImage"]
+        C2["CPU pixel copy\n(socket copy or POSIX shm segment)"]
+        C3["App XImage CPU buffer\n(BGRA pixels in system RAM)"]
+        C1 --> C2 --> C3
+    end
+
+    subgraph PathD ["Path D: DRM render node (headless/CI)"]
+        D1["open /dev/dri/renderD128\n(no compositor required)"]
+        D2["EGL / Vulkan offscreen render\n(pbuffer or image surface)"]
+        D3["DMA-BUF export or readPixels\n(glReadPixels CPU fallback)"]
+        D4["App / file — no compositor\n(CI pipelines, headless servers)"]
+        D1 --> D2 --> D3 --> D4
+    end
+```
+
+The four paths compared across the properties that most affect design decisions:
+
+| Path | Sandbox-safe | DMA-BUF | HW encoder compatible | Requires compositor | Wayland-native |
+|---|---|---|---|---|---|
+| A: PipeWire Portal | Yes | Yes (negotiated) | Yes | Yes | Yes |
+| B: wlr-screencopy | No | Yes (v3+) | Yes | Yes (wlroots family) | Yes |
+| C: X11 XComposite | No | No | No | Yes (X11 compositing WM) | No |
+| D: DRM render node | No | Yes | Yes | No | N/A |
+
+**Path A** (PipeWire Portal) is the only sandbox-safe path: the xdg-desktop-portal gate enforces user consent and the Flatpak/Snap permission model. It is the mandatory path for OBS Studio running as a Flatpak, Firefox `getDisplayMedia()`, and any sandboxed recorder. The DMA-BUF sub-path within it enables a full zero-copy pipeline from compositor GPU memory to the hardware video encoder.
+
+**Path B** (wlr-screencopy) is simpler — one Wayland protocol call, no D-Bus round-trip — but requires a privileged (unsandboxed) client and a wlroots-family compositor. It is the workhorse for command-line tools like `grim`, `wf-recorder`, and `wl-screenrec` running outside a sandbox.
+
+**Path C** (X11 XComposite / XShmGetImage) is the legacy X11 approach: zero-copy relative to the X11 socket via MIT-SHM, but inherently CPU-land and carrying no access control. It persists under XWayland for legacy tool compatibility, but cannot capture the full Wayland desktop.
+
+**Path D** (DRM render node) bypasses the compositor entirely, making it the only option for headless rendering in CI pipelines, cloud rendering servers, and GPU benchmark tools. Because no compositor is involved, there is no window system overhead and no display output — only GPU memory that can be read back or exported as a DMA-BUF for file output or hardware encoding.
+
 ---
 
 ## 2. X11 Screen Capture (Legacy)

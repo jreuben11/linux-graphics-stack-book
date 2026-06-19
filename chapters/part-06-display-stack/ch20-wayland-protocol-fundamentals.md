@@ -317,6 +317,53 @@ The full buffer lifecycle for a Wayland application using GBM + EGL with feedbac
 
 The same buffer allocation path is used internally by the Vulkan swapchain when using `VK_KHR_wayland_surface`. The application calls `vkCreateSwapchainKHR` with a `VkWaylandSurfaceCreateInfoKHR`, and the swapchain implementation in the Mesa Vulkan driver performs the feedback query, allocates DMA-BUFs, and manages the attach/commit/release cycle internally. From the application's perspective, it simply calls `vkQueuePresentKHR`.
 
+### Client Buffer Paths: From Allocation to Compositor Import
+
+A Wayland client must allocate a buffer and present it via `wl_buffer`. Four distinct allocation paths exist, each with different zero-copy characteristics, modifier negotiation requirements, and API surface exposure. Understanding these paths is essential for graphics application developers choosing between explicit GBM control and the Mesa WSI abstractions.
+
+```mermaid
+flowchart LR
+    client["Client application"]
+
+    client --> pathA["Path A: GBM + linux-dmabuf\n(GPU zero-copy)"]
+    pathA --> a1["gbm_bo_create with DRM modifier"]
+    a1 --> a2["zwp_linux_dmabuf_v1 params\n+ modifier negotiate"]
+    a2 --> a3["wl_buffer backed by DMA-BUF"]
+    a3 --> a4["Compositor GPU-resident import\n0 CPU copies"]
+
+    client --> pathB["Path B: wl_shm\n(CPU fallback)"]
+    pathB --> b1["mmap shared memory wl_shm_pool"]
+    b1 --> b2["wl_buffer backed by shm"]
+    b2 --> b3["Compositor CPU reads + GPU upload\n1+ CPU copies"]
+
+    client --> pathC["Path C: Mesa EGL WSI\n(transparent)"]
+    pathC --> c1["eglCreateWindowSurface wl_egl_window"]
+    c1 --> c2["Mesa EGL internally allocs GBM bo"]
+    c2 --> c3["zwp_linux_dmabuf_v1 automatic"]
+    c3 --> c4["Compositor import\n0 CPU copies"]
+
+    client --> pathD["Path D: Mesa Vulkan WSI\n(transparent)"]
+    pathD --> d1["vkCreateSwapchainKHR VkSurface wayland"]
+    d1 --> d2["Mesa WSI internally allocs GBM bo"]
+    d2 --> d3["zwp_linux_dmabuf_v1 automatic"]
+    d3 --> d4["Compositor import\n0 CPU copies"]
+```
+
+The four paths differ substantially in how much buffer management is exposed to the application:
+
+| Path | Allocation API | Protocol | CPU copies | DRM modifier negotiation | Used by |
+|------|---------------|----------|-----------|--------------------------|---------|
+| A: GBM + linux-dmabuf | `gbm_bo_create_with_modifiers2` | `zwp_linux_dmabuf_v1` (manual params) | 0 | Explicit — app reads `zwp_linux_dmabuf_feedback_v1` tranches | Media players, VA-API video renderers, custom GPU engines |
+| B: wl_shm | `wl_shm_pool_create_buffer` (mmap'd `memfd`) | `wl_shm` | 1+ (compositor textures from CPU memory) | None — linear layout only | Universal fallback; software renderers; accessibility tools |
+| C: Mesa EGL WSI | `eglCreateWindowSurface` + `wl_egl_window_create` | `zwp_linux_dmabuf_v1` (Mesa-managed) | 0 | Transparent — Mesa handles feedback internally | GTK, Qt, SDL, game engines using OpenGL/GLES |
+| D: Mesa Vulkan WSI | `vkCreateSwapchainKHR` with `VkWaylandSurfaceCreateInfoKHR` | `zwp_linux_dmabuf_v1` (Mesa WSI-managed) | 0 | Transparent — Mesa WSI handles feedback internally | Vulkan applications, game engines using Vulkan |
+
+**Paths C and D are the most common** in production. Applications using OpenGL via Mesa EGL or Vulkan via the Mesa Vulkan driver never call `zwp_linux_dmabuf_v1` directly — Mesa's `platform_wayland.c` (EGL) and the Vulkan WSI layer handle the full feedback query, GBM allocation, and `zwp_linux_buffer_params_v1_create_immed` cycle internally. The application sees only `eglSwapBuffers` or `vkQueuePresentKHR`.
+
+**Path B** (`wl_shm`) is the universal fallback. Every conformant Wayland compositor must support `wl_shm`; it requires no GBM or DMA-BUF kernel support. The cost is a CPU copy each frame: the compositor must upload the shared-memory pixel data to GPU memory before compositing. For small UI surfaces or software-rendered content this is acceptable; for full-screen video or game rendering at high resolution it is a significant bottleneck. `wl_shm` also cannot carry DRM format modifiers, so tiled GPU memory layouts cannot be expressed — only `WL_SHM_FORMAT_*` pixel formats (a limited subset of DRM formats) are defined.
+
+**Path A** is used by applications that manage their own GBM context — primarily media players (MPV, GStreamer, FFmpeg-based pipelines) that decode video via VA-API, export the decoded DMA-BUF, and present it directly without going through an EGL or Vulkan swapchain. These applications must read the `zwp_linux_dmabuf_feedback_v1` tranches themselves, match the tranche target device to their VA-API device, and call `zwp_linux_buffer_params_v1_add` for each plane of the decoded frame. The payoff is zero-copy video display: the decoded frame in GPU memory is handed directly to the compositor without any intermediate copy.
+
 ---
 
 ## 7. Presentation Timing: wp_presentation and wp_fifo_v1

@@ -46,6 +46,63 @@ Linux offers multiple GPU compute backends for LLM inference, each with differen
 | OpenCL | AMD (ROCm OpenCL), Intel (NEO), NVIDIA (legacy) | ICD loader + vendor runtime | GGUF via clblast (limited) | Very limited | Moderate | llama.cpp (clblast; deprecated in favour of Vulkan) | Legacy; older AMD GPUs before ROCm support |
 | CPU (SIMD / AVX-512) | Any x86-64 with AVX2/AVX-512; ARM NEON/SVE | No GPU driver needed | GGUF Q4/Q8 (excellent; GGML designed for CPU Q) | Supported | Limited by RAM bandwidth | llama.cpp (CPU), Ollama CPU | No GPU available; quantised 7B–13B models on capable CPUs; power-constrained |
 
+### LLM Inference Pipeline Paths
+
+The backend choice determines the entire data-flow path from model weights to output tokens. Each path has different memory bandwidth characteristics and GPU driver requirements — choices made at backend selection time ripple through every layer from kernel driver to token throughput.
+
+```mermaid
+flowchart LR
+    weights["GGUF model weights on disk"]
+
+    subgraph pathA ["Path A: CUDA (NVIDIA)"]
+        A1["llama.cpp/vLLM CUDA backend"]
+        A2["cuBLAS/cuDNN Tensor Core GEMM"]
+        A3["NVIDIA GPU SM compute"]
+        A4["Output tokens\nKV cache in VRAM"]
+        A1 --> A2 --> A3 --> A4
+    end
+
+    subgraph pathB ["Path B: ROCm / HIP (AMD)"]
+        B1["llama.cpp hipBLAS or vLLM-ROCm"]
+        B2["rocBLAS/hipBLAS Matrix Core GEMM"]
+        B3["AMD GPU /dev/kfd + XNACK"]
+        B4["Output tokens\nKV cache in HBM"]
+        B1 --> B2 --> B3 --> B4
+    end
+
+    subgraph pathC ["Path C: Vulkan Compute (cross-vendor)"]
+        C1["llama.cpp ggml-vulkan backend"]
+        C2["SPIR-V compute shaders\nVK_KHR_storage_buffer"]
+        C3["Any Vulkan GPU\n(RADV/ANV/NVK/Turnip)"]
+        C4["Output tokens\nKV cache in VRAM"]
+        C1 --> C2 --> C3 --> C4
+    end
+
+    subgraph pathD ["Path D: CPU SIMD (no GPU)"]
+        D1["llama.cpp CPU backend"]
+        D2["AVX2/AVX-512 or ARM NEON"]
+        D3["CPU DRAM\nbandwidth limited"]
+        D4["Output tokens\nKV cache in RAM"]
+        D1 --> D2 --> D3 --> D4
+    end
+
+    subgraph pathE ["Path E: IREE / MLIR (research/edge)"]
+        E1["Python model\nMLIR frontend"]
+        E2["IREE compiler\nSPIR-V emit"]
+        E3["Vulkan dispatch\nor CPU fallback"]
+        E4["Output\nportable runtime"]
+        E1 --> E2 --> E3 --> E4
+    end
+
+    weights --> A1
+    weights --> B1
+    weights --> C1
+    weights --> D1
+    weights --> E1
+```
+
+The critical bottleneck in all paths is memory bandwidth, not compute. A 70B model at Q4_0 quantisation requires approximately 35 GB of weight reads per output token, making memory bandwidth the dominant performance constraint at batch=1. This explains why Paths A and B are dramatically faster than Path D: HBM3 on an AMD MI300X delivers over 5 TB/s of bandwidth, GDDR7 on an NVIDIA RTX 5090 provides over 3 TB/s, while CPU DDR5 is limited to 50–100 GB/s — a 30–100× deficit that translates directly into token throughput. Path C (Vulkan compute) achieves approximately 60–80% of the throughput of Paths A and B on equivalent hardware, due to Vulkan dispatch overhead and the absence of hand-tuned vendor kernels like cuBLAS's Tensor Core GEMM implementations. However, Path C's cross-vendor compatibility makes it the only GPU-accelerated option on hardware excluded from CUDA or ROCm support, including Intel Arc GPUs, older AMD GPUs predating ROCm compatibility, and any device with a conformant Vulkan 1.2 driver. Path E (IREE/MLIR) is primarily a research and edge-deployment path; its portable SPIR-V emission trades peak throughput for compiler portability and reproducible deployment artifacts.
+
 ### 2.1 The GGML Tensor Engine
 
 GGML is a C library that provides a tensor type system and a DAG-based compute graph executor. Every inference operation — matrix–vector multiply, RoPE, softmax, layer normalisation — is expressed as a node in a `ggml_cgraph`. Nodes hold `ggml_tensor` structs that record shape (up to four dimensions), data type, a pointer to backing storage, and a `backend_buffer` reference that describes where the data lives. [Source](https://github.com/ggml-org/llama.cpp)

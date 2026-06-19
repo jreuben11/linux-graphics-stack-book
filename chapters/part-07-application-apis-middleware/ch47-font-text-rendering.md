@@ -50,6 +50,73 @@ The chapter also covers two important cross-cutting concerns: why the transition
 
 ---
 
+## Text Rendering Pipeline Paths
+
+Text rendering on Linux is not a single pipeline — five distinct paths exist across the ecosystem. All share FreeType 2 as the glyph rasteriser but diverge sharply on CPU vs. GPU rasterisation strategy, atlas management architecture, and where in the compositing chain the rasterised bitmaps are handed off to the compositor. Understanding which path a given application or toolkit takes is essential for diagnosing rendering quality issues, debugging atlas pressure, and reasoning about Wayland subpixel constraints.
+
+```mermaid
+flowchart LR
+    UC["Unicode codepoints"]
+
+    subgraph PathA ["Path A — Cairo + Pango (GTK3 legacy)"]
+        direction LR
+        A1["Pango layout\nHarfBuzz shape"] --> A2["FreeType 2\nCPU raster → bitmap"]
+        A2 --> A3["Cairo CPU\ncompositing"]
+        A3 --> A4["GPU upload\n(EGLImage / wl_shm)"]
+        A4 --> A5["Compositor"]
+    end
+
+    subgraph PathB ["Path B — Skia GPU (Chrome/Chromium)"]
+        direction LR
+        B1["HarfBuzz shape"] --> B2["FreeType 2\nCPU raster → atlas"]
+        B2 --> B3["Skia Ganesh\nGPU glyph atlas"]
+        B3 --> B4["Skia GPU draw\ninstanced quads"]
+        B4 --> B5["Compositor"]
+    end
+
+    subgraph PathC ["Path C — WebRender (Firefox)"]
+        direction LR
+        C1["HarfBuzz shape"] --> C2["FreeType 2\nraster → atlas"]
+        C2 --> C3["WebRender\nGPU atlas texture"]
+        C3 --> C4["WebRender\nrect shader pass"]
+        C4 --> C5["Compositor"]
+    end
+
+    subgraph PathD ["Path D — Terminal GPU atlas (kitty/WezTerm)"]
+        direction LR
+        D1["HarfBuzz shape"] --> D2["FreeType 2\nraster → bitmap"]
+        D2 --> D3["GPU glyph\natlas texture"]
+        D3 --> D4["Instanced draw\nper-cell quads"]
+        D4 --> D5["Compositor"]
+    end
+
+    subgraph PathE ["Path E — Qt6 QSG text (QML)"]
+        direction LR
+        E1["QTextLayout\nHarfBuzz shape"] --> E2["FreeType 2\nCPU raster"]
+        E2 --> E3["QSGGlyphNode\nGPU atlas"]
+        E3 --> E4["Qt Scene Graph\nVulkan/OpenGL draw"]
+        E4 --> E5["Compositor"]
+    end
+
+    UC --> A1
+    UC --> B1
+    UC --> C1
+    UC --> D1
+    UC --> E1
+```
+
+| Path | CPU raster | GPU atlas | Subpixel (Wayland) | Colour emoji | Used by |
+|---|---|---|---|---|---|
+| A: Cairo + Pango | Yes (FreeType) | No — CPU surface uploaded via EGLImage or wl_shm | No (grayscale) | Via separate Cairo surface | GTK3 applications, legacy GTK2 |
+| B: Skia GPU | Yes (FreeType) | Yes — GrAtlasManager; bitmap/path/SDF strategies | No (grayscale) | Separate colour atlas | Chrome, Chromium, Electron apps |
+| C: WebRender | Yes (FreeType) | Yes — GpuCacheTexture; separate grayscale + colour sub-atlases | No (grayscale) | Colour emoji sub-atlas | Firefox 57+ |
+| D: Terminal GPU atlas | Yes (FreeType) | Yes — per-font-size texture atlas | No (grayscale) | Colour glyph slot in atlas | kitty, WezTerm, Ghostty |
+| E: Qt6 QSG | Yes (FreeType) | Yes — QSGRhiAtlasTexture; shelf-packing | No (grayscale) | Colour glyph slot in atlas | Qt6 QML applications |
+
+**Subpixel rendering is absent from all Wayland paths.** Wayland compositors composite client surfaces without knowing the physical subpixel order at render time: a client buffer may be placed at any pixel offset, scaled by a fractional scale factor, or rotated, all of which invalidate the assumption that a given logical pixel maps to a specific physical R/G/B subpixel column. While the `wl_output.subpixel` hint (see §7.3) can advertise the panel's physical layout, it is necessary but not sufficient — the client cannot know its position in output coordinates. Consequently GTK4, Qt6, foot, kitty, WezTerm, and Ghostty all default to `FT_RENDER_MODE_NORMAL` (grayscale AA) under Wayland, discarding the LCD rendering available under X11.
+
+---
+
 ## 1. FreeType 2: Glyph Rasterisation Pipeline
 
 FreeType 2 is the de-facto glyph rasteriser on Linux. It converts the outline data in a font file — TrueType cubic or quadratic Bézier splines, Type 1 curves, or CFF/OpenType outlines — into an anti-aliased pixel bitmap that can be blended into a glyph atlas or composited directly onto a surface. [Source: FreeType project overview](https://freetype.org/)

@@ -57,6 +57,74 @@ graph TD
 - **Latency**: Hardware encode pipelines typically complete in 1–3 ms vs. 8–15 ms for software **x264** at comparable quality.
 - **Host CPU savings**: A software encoder for 4K/60 **H.264** consumes 4–8 CPU cores; the same operation on an **NVENC** block is effectively free in CPU terms, leaving the host CPU for the game or application.
 
+### Remote Display Pipeline Paths
+
+Five distinct architectures exist for getting a Linux desktop or GPU frame to a remote client. They differ in hardware encode support, protocol, latency, and Wayland-native support.
+
+```mermaid
+flowchart LR
+    GPU["Linux GPU\ncomposited frame"]
+    X11["X11 display\nserver"]
+
+    subgraph PathA ["Path A — PipeWire + WebRTC (modern)"]
+        A1["PipeWire screencopy\npw_stream DMA-BUF"]
+        A2["VA-API or NVENC\nhardware encode"]
+        A3["WebRTC ICE+DTLS-SRTP"]
+        A4["Browser or\nnative client"]
+        A1 --> A2 --> A3 --> A4
+    end
+
+    subgraph PathB ["Path B — NvFBC + NVENC (NVIDIA)"]
+        B1["NvFBC\nNVIDIA frame capture"]
+        B2["NVENC hardware\nH.264/HEVC"]
+        B3["RTP/RTSP or\ncustom stream"]
+        B4["Client\nnvidia-only"]
+        B1 --> B2 --> B3 --> B4
+    end
+
+    subgraph PathC ["Path C — GStreamer KMS capture"]
+        C1["kmssrc element or\nDRM render node"]
+        C2["GStreamer\nVA-API encode"]
+        C3["RTSP/HLS or\nfile sink"]
+        C4["Remote client"]
+        C1 --> C2 --> C3 --> C4
+    end
+
+    subgraph PathD ["Path D — VNC (X11, legacy)"]
+        D1["XGetImage or\nXShmGetImage"]
+        D2["CPU pixel copy\nno HW encode"]
+        D3["RFB protocol\nVNC server"]
+        D4["VNC viewer\nany platform"]
+        D1 --> D2 --> D3 --> D4
+    end
+
+    subgraph PathE ["Path E — RDP via xrdp (X11)"]
+        E1["X11 display\nXComposite"]
+        E2["xrdp\nCPU encode"]
+        E3["RDP protocol\nmstsc compatible"]
+        E4["Windows client\nmstsc/FreeRDP"]
+        E1 --> E2 --> E3 --> E4
+    end
+
+    GPU --> A1
+    GPU --> B1
+    GPU --> C1
+    X11 --> D1
+    X11 --> E1
+```
+
+**Path comparison**:
+
+| Path | HW encode | Protocol | Wayland-native | Sandbox-safe | Latency | GPU dependency |
+|---|---|---|---|---|---|---|
+| A — PipeWire + WebRTC | Yes (VA-API/NVENC) | WebRTC ICE+DTLS-SRTP | Yes | Yes (portal) | Low (2–8 ms encode) | Any GPU with VA-API or NVENC |
+| B — NvFBC + NVENC | Yes (NVENC) | RTP/RTSP or custom | No (X11 only) | No | Very low (~0.05 ms capture) | NVIDIA only |
+| C — GStreamer KMS | Yes (VA-API) | RTSP/HLS | Partial (KMS) | No (requires cap) | Low–medium | Any VA-API GPU |
+| D — VNC | No (CPU copy) | RFB | No (X11 only) | No | High (CPU limited) | None |
+| E — RDP via xrdp | No (CPU encode) | RDP (RDPGFX) | No (X11 only) | No | Medium (CPU encode) | None |
+
+**Architecture analysis**: Path A (PipeWire + WebRTC) is the modern recommended architecture for Wayland screen sharing — it is the basis for GNOME Remote Desktop's WebRTC mode and OBS browser streaming, and is the only path that is both Wayland-native and sandbox-safe via the xdg-desktop-portal ScreenCast interface. Path B (NvFBC + NVENC) is NVIDIA-specific and delivers the lowest capture latency (~50 µs in CUDA mode) because NvFBC captures frames in GPU memory before they are blitted to the display pipeline, but it requires X11 and an NVIDIA GPU, making it unsuitable for Wayland or multi-vendor environments. Path C (GStreamer KMS) covers the GStreamer ecosystem — `kmssrc` or a DRM render node feeds directly into `vaapih264enc` or `vaapih265enc` elements for RTSP/HLS delivery without a Wayland compositor intermediary, but the KMS backend requires elevated privileges. Paths D (VNC) and E (xrdp/RDP) are X11-only legacy paths that rely on CPU pixel copies with no hardware encode; they remain relevant for enterprise remote desktop scenarios where GPU hardware is unavailable or where compatibility with VNC viewers and Windows MSTSC clients is required.
+
 ---
 
 ## 2. PipeWire Screen Capture: The pw_stream API

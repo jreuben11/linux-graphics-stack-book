@@ -33,6 +33,49 @@ The Linux Kernel Mode Setting (KMS) API exposes hardware planes as `drm_plane` o
 
 [Linux kernel DRM plane documentation](https://www.kernel.org/doc/html/latest/gpu/drm-kms.html#plane-abstraction)
 
+## Alternative Paths: GPU Frame to Compositor
+
+A rendered GPU frame can reach the display via four distinct pipeline paths, each with different CPU copy counts, latency characteristics, and driver requirements.
+
+```mermaid
+flowchart LR
+    APP([Application / GPU render])
+
+    subgraph PA["Path A — Direct KMS Overlay"]
+        direction LR
+        a1["linux-dmabuf-v1\nmodifier negotiation"] --> a2["Compositor imports\nDMA-BUF"] --> a3["KMS atomic commit\nhardware overlay plane"] --> a4["Scanout\n0 CPU copies"]
+    end
+
+    subgraph PB["Path B — Compositor GPU Composite"]
+        direction LR
+        b1["linux-dmabuf-v1"] --> b2["Compositor GPU\nblend pass"] --> b3["KMS flip\nfinal framebuffer"] --> b4["Scanout\n0 CPU copies"]
+    end
+
+    subgraph PC["Path C — wl_shm Shared Memory"]
+        direction LR
+        c1["wl_shm buffer\nshared memory"] --> c2["Compositor\nCPU read"] --> c3["GPU upload\ntexture"] --> c4["KMS flip"] --> c5["Scanout\n1+ CPU copies"]
+    end
+
+    subgraph PD["Path D — Direct KMS Bypass"]
+        direction LR
+        d1["GBM alloc +\nDRM buffer"] --> d2["KMS atomic\nno compositor"] --> d3["Scanout\n0 CPU copies"]
+    end
+
+    APP --> PA
+    APP --> PB
+    APP --> PC
+    APP --> PD
+```
+
+| Path | Compositor | CPU copies | Requires | Typical use |
+|------|-----------|------------|----------|------------|
+| A — DMA-BUF → KMS overlay | Yes (assigns plane) | 0 | DRM format modifier agreement; hardware overlay plane | mpv video, hardware video decode surfaces |
+| B — DMA-BUF → GPU composite | Yes (composites) | 0 | linux-dmabuf-v1 | Normal Wayland GPU-rendered windows |
+| C — wl_shm → GPU upload | Yes | ≥1 | Nothing (universal fallback) | Software-rendered clients, Xwayland shm fallback |
+| D — Direct KMS (no compositor) | No | 0 | KMS master / DRM lease | gamescope, VR runtimes (Monado), kiosk displays |
+
+Path A is the most efficient for video surfaces: the VA-API decoder exports a DMA-BUF, the compositor negotiates a matching modifier via `zwp_linux_dmabuf_v1`, and the KMS plane scans the buffer directly without GPU compositing. Path D goes further — the compositor is not involved at all, which is the approach used by Monado and gamescope for sub-millisecond latency.
+
 ---
 
 ## Display Engine Architecture
