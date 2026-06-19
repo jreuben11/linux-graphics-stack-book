@@ -135,12 +135,12 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 93: GPU Performance Analysis Methodology](#chapter-93-gpu-performance-analysis-methodology) *(Part IX)*
 - **Part XXI — Platform, Legacy, and History**
   - [Chapter 95: X11/Xorg Architecture and the DRI Legacy Stack](#chapter-95-x11xorg-architecture-and-the-dri-legacy-stack)
-  - [Chapter 99: Automotive and Embedded Linux Graphics](#chapter-99-automotive-and-embedded-linux-graphics)
   - [Chapter 103: The Linux Graphics Stack: History and Design Philosophy](#chapter-103-the-linux-graphics-stack-history-and-design-philosophy)
 - **Part XXI additions to existing parts**
   - [Chapter 96: libcamera and the Linux Camera Stack](#chapter-96-libcamera-and-the-linux-camera-stack) *(Part VII)*
   - [Chapter 97: Unreal Engine 5 on Linux](#chapter-97-unreal-engine-5-on-linux) *(Part XI)*
   - [Chapter 98: WebAssembly and WebGPU as a Deployment Target](#chapter-98-webassembly-and-webgpu-as-a-deployment-target) *(Part X)*
+  - [Chapter 99: Automotive and Embedded Linux Graphics](#chapter-99-automotive-and-embedded-linux-graphics) *(Part II)*
   - [Chapter 100: etnaviv: The Vivante GPU Open Driver](#chapter-100-etnaviv-the-vivante-gpu-open-driver) *(Part II)*
   - [Chapter 101: Color Science and the ICC Profile Pipeline](#chapter-101-color-science-and-the-icc-profile-pipeline) *(Part VI)*
   - [Chapter 102: The DRM GPU Scheduler and Multi-Process Fairness](#chapter-102-the-drm-gpu-scheduler-and-multi-process-fairness) *(Part I)*
@@ -1449,7 +1449,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Security comparison: X11 (any client can read any window's contents, keylog globally); Wayland (per-surface isolation, no global input capture without portal)
 - **Integrations**: Ch1 (DRM — DRI3 uses DRM render nodes), Ch4 (GBM — DRI3 buffers are GBM BOs), Ch20 (Wayland protocol — XWayland is a Wayland client), Ch23 (Ch23 covers XWayland at the application level; this chapter covers the X11 side), Ch30 (debugging — `LIBGL_DEBUG`, `LIBGLX_DEBUG`, `xlsatoms`, `xdpyinfo`)
 
-### Chapter 99: Automotive and Embedded Linux Graphics
+### Chapter 99: Automotive and Embedded Linux Graphics *(Part II)*
 
 - Automotive Linux landscape: AGL (Automotive Grade Linux), GENIVI Alliance history, Android Automotive vs Linux IVI; regulatory requirements (functional safety ISO 26262, ASPICE)
 - SoC platforms: NXP i.MX8 (etnaviv/Vivante GPU), Renesas R-Car H3/V3H (SGX544), Qualcomm SA8155P (Adreno 640), TI TDA4VM (PowerVR), Texas Instruments J721E; the DRM/KMS driver landscape per SoC

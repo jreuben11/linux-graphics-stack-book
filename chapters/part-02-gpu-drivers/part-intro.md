@@ -18,6 +18,8 @@ Between the abstract contracts of the **DRM** subsystem (Part I) and the userspa
 
 **Chapter 100 — etnaviv: The Vivante GPU Open Driver** covers the reverse-engineered driver for Vivante GC-series GPU IP cores embedded in **NXP i.MX6** and **i.MX8** SoCs, including the **Librem 5** smartphone (**GC7000Lite**). Starting from **Wladimir J. van der Laan**'s original **etna_viv** intercept-and-decode methodology and **rnndb rules-ng-ng** register documentation, the chapter explains the **HALTI** feature flag system, the **etnaviv DRM** kernel driver's command-stream ring management, the **Mesa Gallium** driver's **NIR**-to-Vivante-ISA shader compiler, compute shader support on **GC7000UL**, and debugging with **etnaviv**'s own register-level tooling.
 
+**Chapter 99 — Automotive and Embedded Linux Graphics** examines the Linux graphics stack under the constraints of automotive and industrial embedded deployment: single fixed-resolution displays, hard real-time rendering budgets, **ISO 26262** functional-safety requirements, and build environments managed by **Yocto** and **Buildroot**. It traces the complete embedded path from **DRM** kernel driver and GPU bring-up on new **SoC** silicon through the **Weston** and **cage** compositors, **Automotive Grade Linux (AGL)**, **Qt Automotive Suite**, and the cabin-network protocols (**SOME/IP**, **DoIP**, **GStreamer** over automotive Ethernet) that ship rendered frames to secondary instrument cluster displays. Readers will learn how mixed-criticality partitioning separates safety-critical rendering (**Qt Safe Renderer**, dedicated ASIL-B display controllers) from rich infotainment **HMI** running at the QM level, and how the SoC GPU bring-up methodology — **Device Tree** bindings, **drm_driver** registration, **DMA-BUF** fence propagation — extends the same patterns introduced for Lima, Panfrost, etnaviv, and Raspberry Pi earlier in this part.
+
 ## How the Chapters Interrelate
 
 ```mermaid
@@ -29,6 +31,7 @@ graph LR
     CH90["Ch 90\nLima · Panfrost\nPanthor"]
     CH92["Ch 92\nRaspberry Pi\nVideoCore & V3D"]
     CH100["Ch 100\netnaviv\nVivante GC"]
+    CH99["Ch 99\nAutomotive &\nEmbedded Graphics"]
 
     CH05 --> CH49
     CH05 --> CH06
@@ -36,6 +39,10 @@ graph LR
     CH06 --> CH73
     CH06 --> CH92
     CH06 --> CH100
+    CH06 --> CH99
+    CH90 --> CH99
+    CH100 --> CH99
+    CH92 -. "comparable\nembedded bring-up" .-> CH99
 ```
 
 **Chapter 5** is the recommended entry point for all readers. It establishes the universal kernel-side contract — `struct drm_driver`, **GEM**, `drm_gpu_scheduler`, **KMS** atomic modeset, `dma_resv` fences, `request_firmware`, and runtime PM — using the three driver families (amdgpu, i915, Xe) that are most fully documented by their vendors. Readers who skip Chapter 5 will encounter unexplained references to these primitives throughout every other chapter in the part.
@@ -46,7 +53,9 @@ graph LR
 
 **Chapters 73, 90, 92, and 100** are largely parallel and can be read in any order after Chapters 5 and 6. They share a common theme: every one of these drivers was written without access to a vendor hardware specification. **Lima**, **Panfrost**, **etnaviv**, **vc4**, and **Asahi** all reached the kernel through community reverse engineering. The shared data structures — `drm_gem_shmem_object` for **CMA**-backed allocations, `drm_gpuvm` for GPU VA management, the **io_pgtable** library for **LPAE**-format page tables, `drm_gpu_scheduler` for job dispatch — appear repeatedly across these drivers, making the part read as a coherent family rather than a collection of independent topics.
 
-The structural distinction that runs through all seven chapters is the **submission model**: job-slot register writes (**Lima**, **Panfrost**, **etnaviv**, **vc4**) versus firmware ring buffers and doorbells (**Panthor**, **Asahi**, **v3d** with its **CSD** and **TFU** queues) versus the **GuC CT** path (**Xe**, **i915**). Recognising where each driver falls on this spectrum explains the capability and safety properties that flow upward into **Mesa** and **Vulkan**.
+**Chapter 99** is the deployment-and-integration capstone for the embedded driver family. It assumes the kernel-driver substrate described in Chapters 6, 90, 92, and 100, and layers on the automotive-specific stack: **AGL**, **Weston** IVI shell, **cage** kiosk compositor, **Qt Automotive Suite**, **Yocto**/**Buildroot** integration, and cabin-network frame transport. Readers who work through the embedded driver chapters first will find Chapter 99 ties the hardware bring-up story to the production deployment contexts where those drivers actually run.
+
+The structural distinction that runs through all eight chapters is the **submission model**: job-slot register writes (**Lima**, **Panfrost**, **etnaviv**, **vc4**) versus firmware ring buffers and doorbells (**Panthor**, **Asahi**, **v3d** with its **CSD** and **TFU** queues) versus the **GuC CT** path (**Xe**, **i915**). Recognising where each driver falls on this spectrum explains the capability and safety properties that flow upward into **Mesa** and **Vulkan**.
 
 ## Prerequisites and What Comes Next
 
