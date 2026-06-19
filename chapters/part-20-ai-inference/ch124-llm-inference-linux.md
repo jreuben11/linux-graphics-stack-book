@@ -1,4 +1,4 @@
-# Chapter 87: Local LLM Inference on Linux GPUs
+# Chapter 124: Local LLM Inference on Linux GPUs
 
 **Target audiences**: Systems developers and GPU driver engineers who need to understand how inference runtimes talk to the kernel and hardware; ML engineers deploying large language models locally on Linux without cloud dependencies.
 
