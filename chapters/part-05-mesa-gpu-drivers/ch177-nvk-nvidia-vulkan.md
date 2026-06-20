@@ -323,7 +323,9 @@ nak_compile_shader(const nir_shader *nir,
                    const struct nak_fs_key *fs_key);
 ```
 
-The `nak_compiler` object (allocated once per device at `nvk_physical_device` init time) holds the target SM (streaming multiprocessor) version for the current hardware. This single value drives all architectural differences within NAK: SM 75 selects Turing instruction encoding with 128-bit instruction words and uniform register support; SM 80 adds Ampere-specific instructions; SM 86/89/90 cover Ada and Hopper; SM 100 targets Blackwell.
+> **Note: needs verification** — The exact parameter list of `nak_compile_shader` evolves across Mesa releases (the `robust2_modes` parameter was renamed in Mesa 26.1 for panvk and may have changed for NAK concurrently). Verify the current signature against `src/nouveau/compiler/nak/lib.rs` in the active Mesa tree before relying on this listing.
+
+The `nak_compiler` object (allocated once per device at `nvk_physical_device` init time) holds the target SM (streaming multiprocessor) version for the current hardware. This single value drives all architectural differences within NAK: SM 75 selects Turing instruction encoding with 128-bit instruction words and uniform register support; SM 80 adds Ampere-specific instructions; SM 86/89 cover Ada Lovelace; SM 90 covers Hopper; SM 120 targets consumer Blackwell (RTX 5000 series, GB202 and later), while SM 100 is the datacenter Blackwell (B100/B200) variant. [Source](https://github.com/NVIDIA/cutlass/issues/2800)
 
 NAK returns a `nak_shader_bin` object containing:
 - The compiled SASS binary (byte array)
@@ -499,7 +501,7 @@ NVK's conformance status as of mid-2026 is generation-stratified, reflecting bot
 | Turing (SM 75, RTX 2000/GTX 1600) | Mesa 23.3 (Aug 2023) | Vulkan 1.4 | Primary target; GSP-RM reclocking |
 | Ampere (SM 80/86, RTX 3000) | Mesa 24.x | Vulkan 1.4 | Full performance with GSP-RM |
 | Ada Lovelace (SM 89, RTX 4000) | Mesa 24.x | Vulkan 1.4 | Full performance with GSP-RM |
-| Blackwell (SM 100, RTX 5000) | Mesa 25.2 (Aug 2025) | Vulkan 1.4 | Consumer Blackwell; GSP-RM required |
+| Blackwell (SM 120, RTX 5000) | Mesa 25.2 (Aug 2025) | Vulkan 1.4 | Consumer Blackwell (GB202+); GSP-RM required |
 | Volta (SM 70, TITAN V) | Mesa 25.1 (May 2025) | Vulkan 1.4 | No reclocking (no GSP-RM) |
 | Pascal (SM 61/62, GTX 1000) | Mesa 25.1 (May 2025) | Vulkan 1.4 | No reclocking (no GSP-RM) |
 | Maxwell (SM 52/53, GTX 900/750) | Mesa 25.1 (May 2025) | Vulkan 1.4 | No reclocking (no GSP-RM) |

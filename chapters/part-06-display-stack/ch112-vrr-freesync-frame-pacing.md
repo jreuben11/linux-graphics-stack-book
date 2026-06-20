@@ -16,7 +16,12 @@
 8. [Mutter and KWin VRR](#8-mutter-and-kwin-vrr)
 9. [Vulkan Swapchain and VRR](#9-vulkan-swapchain-and-vrr)
 10. [Measuring and Debugging Frame Timing](#10-measuring-and-debugging-frame-timing)
-11. [Integrations](#11-integrations)
+11. [wp_tearing_control_v1 — Client-Side Tearing Opt-In](#11-wp_tearing_control_v1--client-side-tearing-opt-in)
+12. [wp_fifo_v1 — Explicit FIFO Presentation Semantics](#12-wp_fifo_v1--explicit-fifo-presentation-semantics)
+13. [Frame Pacing on RDNA3+ — AMD Hardware Frame Pacing](#13-frame-pacing-on-rdna3--amd-hardware-frame-pacing)
+14. [VRR on OLED Displays — Burn-In Mitigation and Refresh Rate Floors](#14-vrr-on-oled-displays--burn-in-mitigation-and-refresh-rate-floors)
+15. [Explicit Sync Interaction with VRR](#15-explicit-sync-interaction-with-vrr)
+16. [Integrations](#16-integrations)
 
 ---
 
@@ -651,7 +656,617 @@ dmesg | grep -i "vrr\|freesync\|adaptive"
 
 ---
 
-## 11. Integrations
+## 11. wp_tearing_control_v1 — Client-Side Tearing Opt-In
+
+### Protocol Overview
+
+The **`wp_tearing_control_v1`** Wayland protocol, introduced in **Wayland Protocols 1.30** (released August 2023), gives clients a formal mechanism to declare that their surface can tolerate tearing in exchange for lower latency. [Source: Phoronix — Wayland Protocols 1.30 Tearing Control](https://www.phoronix.com/news/Wayland-Tearing-Control-Proto) Before this protocol existed, compositors had no way to know which surfaces could be scanned out with an async (immediate) page flip, so they defaulted to tearing-free VSync for everything. Games and drawing-tablet applications were the primary motivation: a stylus-input canvas that runs at 120 FPS has more to gain from immediate scanout than from the 8 ms additional latency imposed by waiting for VBLANK.
+
+The protocol copyright is held by Xaver Hugl (KDE), and it is currently in the **staging** tier of wayland-protocols (`staging/tearing-control/tearing-control-v1.xml`). [Source: wayland-protocols staging — tearing-control](https://wayland.app/protocols/tearing-control-v1)
+
+### Protocol Interfaces
+
+The protocol defines two interfaces:
+
+**`wp_tearing_control_manager_v1`** — a global factory object bound by the client:
+
+```xml
+<!-- staging/tearing-control/tearing-control-v1.xml (abridged) -->
+<interface name="wp_tearing_control_manager_v1" version="1">
+  <description summary="protocol for tearing control">
+    For some use cases like games or drawing tablets it can make sense to
+    reduce latency by accepting tearing with the use of asynchronous page
+    flips. This global is a factory interface, allowing clients to inform
+    which type of presentation the content of their surfaces is suitable for.
+  </description>
+
+  <request name="destroy" type="destructor"/>
+
+  <request name="get_tearing_control">
+    <description summary="extend surface interface for tearing control">
+      Instantiate an interface extension for the given wl_surface to
+      implement tearing control. If the given wl_surface already has a
+      wp_tearing_control_v1 object associated, the tearing_control_exists
+      protocol error is raised.
+    </description>
+    <arg name="id"      type="new_id" interface="wp_tearing_control_v1"/>
+    <arg name="surface" type="object" interface="wl_surface"/>
+  </request>
+
+  <enum name="error">
+    <entry name="tearing_control_exists" value="0"
+      summary="This surface already has a tearing_control object associated"/>
+  </enum>
+</interface>
+```
+
+**`wp_tearing_control_v1`** — the per-surface object that carries the presentation hint:
+
+```xml
+<interface name="wp_tearing_control_v1" version="1">
+  <description summary="per-surface tearing control interface"/>
+
+  <enum name="presentation_hint">
+    <entry name="vsync" value="0"
+      summary="the content should be synchronized to the vertical blanking
+               period — no tearing"/>
+    <entry name="async" value="1"
+      summary="the content is suitable for presentation with minimal
+               latency — tearing is acceptable"/>
+  </enum>
+
+  <request name="set_presentation_hint">
+    <description summary="set presentation hint">
+      Set the presentation hint for the associated wl_surface. This state
+      is double-buffered and is applied on the next wl_surface.commit.
+      The compositor is free to dynamically respect or ignore this hint
+      based on hardware capabilities, surface state and user preferences.
+    </description>
+    <arg name="hint" type="uint" enum="presentation_hint"/>
+  </request>
+
+  <request name="destroy" type="destructor">
+    <description summary="destroy the tearing control interface">
+      Destroy the tearing control object. The hint will be reverted to
+      vsync on the next wl_surface.commit.
+    </description>
+  </request>
+</interface>
+```
+
+[Source: Wayland Explorer — tearing-control-v1 protocol](https://wayland.app/protocols/tearing-control-v1)
+
+### Protocol Message Sequence
+
+A typical client interaction looks like this:
+
+```c
+/* 1. Bind the manager from the registry */
+struct wp_tearing_control_manager_v1 *tearing_mgr =
+    wl_registry_bind(registry, name,
+                     &wp_tearing_control_manager_v1_interface, 1);
+
+/* 2. Create a per-surface tearing control object */
+struct wp_tearing_control_v1 *tearing_ctrl =
+    wp_tearing_control_manager_v1_get_tearing_control(tearing_mgr, surface);
+
+/* 3. Set the hint to async (tearing allowed) — double-buffered */
+wp_tearing_control_v1_set_presentation_hint(tearing_ctrl,
+    WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC);
+
+/* 4. Commit the surface — the hint takes effect after this commit */
+wl_surface_commit(surface);
+
+/* 5. To revert to vsync, set the hint back and commit again */
+wp_tearing_control_v1_set_presentation_hint(tearing_ctrl,
+    WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC);
+wl_surface_commit(surface);
+```
+
+The double-buffered nature is essential: setting the hint before `wl_surface.commit` means the compositor can atomically switch between tearing and non-tearing presentation on the same commit that updates the buffer. Note that the spec explicitly states that graphics APIs such as EGL and Vulkan manage this hint internally — clients using a Vulkan WSI should not call `set_presentation_hint` directly, as doing so alongside `VK_PRESENT_MODE_IMMEDIATE_KHR` can trigger a protocol error.
+
+### Compositor Implementation Considerations
+
+The hint is advisory. A compositor may silently ignore `ASYNC` and fall back to `VSYNC` if:
+- The underlying KMS driver does not support atomic async page flips (`DRM_MODE_PAGE_FLIP_ASYNC` on the atomic interface). Support for async atomic flips was proposed in 2023 and landed in the AMDGPU driver; see the patch series at [lwn.net/Articles/948826/](https://lwn.net/Articles/948826/).
+- The surface is not full-screen / direct-scanned out.
+- The user has globally disabled tearing in compositor settings.
+
+**wlroots** merged tearing control support in September 2023 (wlroots 0.17). When a surface requests `ASYNC` and direct scanout is active, wlroots will issue an async page flip: `DRM_MODE_PAGE_FLIP_ASYNC` or the atomic equivalent. [Source: Phoronix — wlroots merges tearing control](https://www.phoronix.com/news/wlroots-Tearing-Control-Merged)
+
+**KWin** (Plasma 6+) supports the tearing protocol for fullscreen applications. When the `async` hint is active, KWin enables its "immediate presentation" path, which coexists with VRR: an `async`-hinted surface on a VRR display gets immediate KMS page flips; the display adapts its refresh period to the flip timing, providing both low latency *and* tear-free output — because VRR's wait-for-signal mechanism means the display begins scanning the new frame exactly when it arrives rather than tearing mid-scan.
+
+### Interaction with VRR
+
+The key insight is that on a **VRR-capable display**, `ASYNC` presentation with tearing control is often unnecessary. VRR already delivers immediate frames (the display waits for the GPU) without tearing. The `async` hint is most valuable on **fixed-refresh displays** where an application wants to trade tearing for the reduction in submit-to-scan latency. On VRR displays, `VSYNC` with VRR active achieves the same latency profile without tearing.
+
+The recommended matrix is:
+
+| Display | Hint | Result |
+|---|---|---|
+| Fixed refresh (60 Hz) | `VSYNC` | Tearing-free, up to 16.67 ms latency |
+| Fixed refresh (60 Hz) | `ASYNC` | Potential tearing, minimal submit-to-scan latency |
+| VRR (48–144 Hz) | `VSYNC` | Tearing-free, display adapts to GPU — best option |
+| VRR (48–144 Hz) | `ASYNC` | Compositor may allow async flip; gain is marginal |
+
+---
+
+## 12. wp_fifo_v1 — Explicit FIFO Presentation Semantics
+
+### Motivation: The Mailbox Problem on Wayland
+
+Wayland's buffer contract has always required that every committed buffer eventually be presented at least once — a semantic known informally as "present all buffers." This rule makes `VK_PRESENT_MODE_MAILBOX_KHR` semantically incompatible with Wayland: mailbox discards frames if a newer one is ready, but Wayland must show every frame. Compositors that expose mailbox typically simulate it with FIFO, giving the same average frame rate but without the low-latency property of true mailbox. Applications that wanted minimum latency had no clean protocol solution; they used heuristics or relied on compositor-specific behavior.
+
+The **`wp_fifo_v1`** protocol (merged into Wayland Protocols as a staging extension in 2024) replaces the old mailbox hack with an explicit surface-level barrier mechanism. [Source: Fifo protocol — Wayland Explorer](https://wayland.app/protocols/fifo-v1) Rather than suppressing frame delivery, it gives the client a way to tell the compositor "do not apply my next commit until the current frame has completed at least one display refresh cycle." This is genuine FIFO ordering at the Wayland level.
+
+The protocol was developed with contributions from Valve (whose SDL and game pipeline needs drove much of the requirements), and KWin landed its implementation in Plasma 6.4. [Source: Phoronix forums — KWin FIFO v1 Wayland](https://www.phoronix.com/forums/forum/software/desktop-linux/1536119-kde-kwin-lands-fifo-v1-wayland-support-gnome-48-squeezed-in-xdg-toplevel-drag-v1)
+
+### Protocol Interfaces
+
+**`wp_fifo_manager_v1`** — a global factory bound once per client:
+
+```xml
+<!-- staging/fifo/fifo-v1.xml (abridged) -->
+<interface name="wp_fifo_manager_v1" version="1">
+  <description summary="protocol for fifo constraints">
+    This protocol provides a way to use the completion of a display refresh
+    cycle as an additional readiness constraint when a Wayland compositor
+    considers applying a content update.
+  </description>
+
+  <request name="destroy" type="destructor"/>
+
+  <request name="get_fifo">
+    <description summary="bind a fifo object to a surface"/>
+    <arg name="id"      type="new_id" interface="wp_fifo_v1"/>
+    <arg name="surface" type="object" interface="wl_surface"/>
+  </request>
+
+  <enum name="error">
+    <entry name="already_exists" value="0"
+      summary="a fifo object already exists for this surface"/>
+  </enum>
+</interface>
+```
+
+**`wp_fifo_v1`** — per-surface interface with barrier semantics:
+
+```xml
+<interface name="wp_fifo_v1" version="1">
+  <description summary="fifo interface for a surface"/>
+
+  <request name="set_barrier">
+    <description summary="set a presentation barrier">
+      When the content update containing this request is applied, it sets a
+      fifo_barrier condition on the surface associated with the fifo object.
+      The condition is cleared immediately after the following latching
+      deadline for non-tearing presentation.
+      This is double-buffered state, see wl_surface.commit.
+    </description>
+  </request>
+
+  <request name="wait_barrier">
+    <description summary="wait for the current fifo barrier">
+      Indicates that a content update is not ready to be presented, while a
+      fifo_barrier condition is present on the surface. When the content
+      update containing set_barrier was made active at a latching deadline,
+      it will be active for at least one refresh cycle.
+      This is double-buffered state, see wl_surface.commit.
+    </description>
+  </request>
+
+  <request name="destroy" type="destructor"/>
+
+  <enum name="error">
+    <entry name="surface_destroyed" value="0"
+      summary="the associated wl_surface was destroyed"/>
+  </enum>
+</interface>
+```
+
+[Source: Wayland Explorer — fifo-v1 protocol](https://wayland.app/protocols/fifo-v1)
+
+### The FIFO Barrier Mechanism in Practice
+
+The barrier pair (`set_barrier` + `wait_barrier`) forms a two-commit handshake:
+
+**Commit N** — establishes the barrier:
+```c
+/* Commit N: render frame N, set the barrier so we know when it is scanned */
+wl_surface_attach(surface, buffer_N, 0, 0);
+wp_fifo_v1_set_barrier(fifo);          /* mark this commit as the barrier */
+wl_surface_commit(surface);
+/* Buffer N will now be presented at the next latching deadline */
+```
+
+**Commit N+1** — waits for the barrier before the compositor latches it:
+```c
+/* Start rendering frame N+1 in parallel ... */
+render_frame_N_plus_1();
+
+/* Commit N+1: don't apply until frame N has completed ≥ 1 refresh cycle */
+wl_surface_attach(surface, buffer_N_plus_1, 0, 0);
+wp_fifo_v1_wait_barrier(fifo);         /* block latching until barrier cleared */
+wl_surface_commit(surface);
+```
+
+The `wait_barrier` in Commit N+1 instructs the compositor: "do not make this commit active until the fifo_barrier from Commit N has been cleared — i.e., until at least one refresh cycle has elapsed after Commit N was scanned." This is precisely the FIFO semantic: frame N+1 can only replace frame N after frame N has been shown for a full refresh.
+
+From the client's perspective, the `wl_surface.commit` call for N+1 returns immediately. The compositor queues the commit and delays its latching. The client can submit as many commits ahead as it likes, each with `wait_barrier`, and the compositor serializes them in submission order.
+
+### Interaction with VRR Compositors
+
+On a VRR display, the compositor's "latching deadline" is not a fixed VBLANK — it is the moment when the KMS hardware captures the next flip request. When `wait_barrier` is set, the compositor must not latch Commit N+1 until after Commit N's fifo_barrier clears, which happens after at least one VRR refresh cycle following Commit N's scan-out. The practical consequence is:
+
+- Frame ordering is guaranteed regardless of VRR timing.
+- The compositor cannot coalesce frames N and N+1 into a single scanout (which would violate the FIFO contract).
+- The VRR display's refresh period for each frame is driven by the GPU's actual completion of that frame, not by the client's submission rate.
+
+This means `wp_fifo_v1` on a VRR display produces the ideal combination: frames are delivered in order (no `discarded` feedback events), the display runs at the GPU's natural cadence, and there is no tearing. The protocol effectively makes `VK_PRESENT_MODE_FIFO_KHR` on Wayland semantically correct for VRR.
+
+**SDL3** (starting from late 2024) adopted `wp_fifo_v1` as the default Wayland presentation protocol for VSync-enabled windows, replacing the earlier workaround of using `wl_surface.frame` callbacks as a proxy barrier. [Source: SDL discourse — fifo-v1 as default](https://discourse.libsdl.org/t/sdl-wayland-only-require-fifo-v1-for-wayland-by-default/55974)
+
+**Smithay** (Rust compositor toolkit) implemented the server side of `wp_fifo_v1` in its `smithay::wayland::fifo` module. [Source: Smithay fifo module](https://smithay.github.io/smithay/smithay/wayland/fifo/index.html)
+
+---
+
+## 13. Frame Pacing on RDNA3+ — AMD Hardware Frame Pacing
+
+### Vulkan Extensions for Precise Frame Timing on RADV
+
+On AMD RDNA3+ hardware using the RADV open-source Vulkan driver, frame pacing is best implemented using two Vulkan extensions that expose hardware-level presentation timing:
+
+**`VK_KHR_present_id`** — attaches an application-managed monotonic integer to each `vkQueuePresentKHR` call:
+
+```c
+uint64_t present_id = frame_number++;  /* monotonically increasing */
+
+VkPresentIdKHR present_id_info = {
+    .sType          = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+    .swapchainCount = 1,
+    .pPresentIds    = &present_id,
+};
+
+VkPresentInfoKHR present_info = {
+    .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+    .pNext = &present_id_info,
+    /* ... swapchain, image index, wait semaphores ... */
+};
+
+vkQueuePresentKHR(graphics_queue, &present_info);
+```
+
+**`VK_KHR_present_wait`** — blocks the CPU thread until a specific `present_id` has been displayed:
+
+```c
+/* Block until frame (present_id - 2) has been shown on screen,
+   implementing a frame pacer with 2-frame lookahead */
+uint64_t wait_id = present_id - 2;
+VkResult res = vkWaitForPresentKHR(device, swapchain, wait_id,
+                                    deadline_ns);
+/* Now safe to begin rendering the next frame knowing the pipeline
+   has cleared at least 2 frames' worth of backpressure */
+```
+
+Valve implemented `VK_KHR_present_wait` for RADV (and also for Intel ANV and Qualcomm TURNIP) and described it as "very useful" for frame pacing on Steam Deck workloads. Because the current Vulkan spec has limitations on when `present_wait` can safely be used, RADV exposes it as an opt-in feature through a DriConf variable:
+
+```bash
+# Enable VK_KHR_present_wait for a specific application
+DRIRC_USERSPACE=1 MESA_VK_WSI_PRESENT_WAIT=true %command%
+
+# Or via a DriConf XML entry per-application:
+# <option name="vk_khr_present_wait" value="true"/>
+```
+
+[Source: Phoronix — Valve implements VK_KHR_present_wait for Mesa](https://www.phoronix.com/news/Mesa-VK_KHR_present_wait) Together, `present_id` and `present_wait` allow a Vulkan application to measure the actual GPU-to-display latency for each frame and throttle submission to stay within a target latency budget — much like the `wp_presentation` feedback mechanism at the Wayland level, but accessible from within a Vulkan application without compositor cooperation.
+
+### AMDGPU Userspace Fence Waiting
+
+Below the Vulkan layer, RADV ultimately synchronizes on DRM fence objects exposed by the AMDGPU kernel driver. The direct userspace interface for waiting on AMDGPU fences is the `DRM_IOCTL_AMDGPU_WAIT_FENCES` ioctl (ioctl number `DRM_COMMAND_BASE + 0x12`), defined in `include/uapi/drm/amdgpu_drm.h`:
+
+```c
+/* From include/uapi/drm/amdgpu_drm.h */
+struct drm_amdgpu_wait_fences_in {
+    __u64 fences;       /* pointer to array of struct drm_amdgpu_fence */
+    __u32 fence_count;
+    __u32 wait_all;     /* 0 = wait for any; 1 = wait for all */
+    __u64 timeout_ns;   /* timeout in nanoseconds */
+};
+
+struct drm_amdgpu_wait_fences_out {
+    __u32 status;           /* 0 = timeout, 1 = signalled */
+    __u32 first_signaled;   /* index of the first fence that signalled */
+};
+
+union drm_amdgpu_wait_fences {
+    struct drm_amdgpu_wait_fences_in  in;
+    struct drm_amdgpu_wait_fences_out out;
+};
+
+#define DRM_IOCTL_AMDGPU_WAIT_FENCES \
+    DRM_IOWR(DRM_COMMAND_BASE + DRM_AMDGPU_WAIT_FENCES, \
+             union drm_amdgpu_wait_fences)
+```
+
+[Source: libdrm — include/drm/amdgpu_drm.h](https://github.com/grate-driver/libdrm/blob/master/include/drm/amdgpu_drm.h)
+
+The RADV driver wraps this ioctl (accessed indirectly through the DRM syncobj infrastructure) when implementing fence-based GPU-CPU synchronization. A frame pacer built on top of this can set `timeout_ns` to a deadline before the next predicted VBLANK, implementing a bounded wait that allows the CPU to skip ahead if the GPU is late:
+
+```c
+struct drm_amdgpu_wait_fences_in args = {
+    .fences     = (uint64_t)(uintptr_t)fence_array,
+    .fence_count = 1,
+    .wait_all   = 1,
+    .timeout_ns  = predicted_vblank_ns - SAFETY_MARGIN_NS,
+};
+/* If the ioctl returns status=0 (timeout), the frame is late;
+   submit anyway and let VRR absorb the longer refresh period */
+int ret = drmIoctl(drm_fd, DRM_IOCTL_AMDGPU_WAIT_FENCES, &args);
+```
+
+### Timeline Syncobjs and Kernel-Level Fence Management
+
+RDNA3+ supports **timeline DRM synchronization objects** (`drm_syncobj` with `DRM_SYNCOBJ_TYPE_TIMELINE`), which were added to the AMDGPU kernel driver to support `VK_KHR_timeline_semaphore`. Timeline syncobjs carry a monotonically increasing 64-bit counter rather than a binary signalled/unsignalled state. A patch series adding timeline syncobj support to the AMDGPU wait IOCTL was submitted to the amd-gfx mailing list in 2024. [Source: amd-gfx mailing list — Add wait IOCTL timeline syncobj support](https://www.mail-archive.com/amd-gfx@lists.freedesktop.org/msg113082.html)
+
+For frame pacing, timeline semaphores allow the driver to express "GPU work for frame N is complete at timeline point N" without needing a separate binary fence per frame. The composer can wait for point N-1 before submitting frame N to maintain exactly one frame of pipelining:
+
+```c
+/* Vulkan timeline semaphore usage for frame pacing */
+VkSemaphoreTypeCreateInfo timeline_type = {
+    .sType         = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+    .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+    .initialValue  = 0,
+};
+/* ... create semaphore ... */
+
+/* Submit frame N: signal timeline point N when GPU work is done */
+uint64_t signal_value = frame_number;
+VkTimelineSemaphoreSubmitInfo timeline_submit = {
+    .signalSemaphoreValueCount = 1,
+    .pSignalSemaphoreValues    = &signal_value,
+};
+
+/* Before submitting frame N+1, wait for frame N-1 to be presented */
+uint64_t wait_value = frame_number - 1;
+VkSemaphoreWaitInfo wait_info = {
+    .sType          = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+    .semaphoreCount = 1,
+    .pSemaphores    = &timeline_semaphore,
+    .pValues        = &wait_value,
+};
+vkWaitSemaphores(device, &wait_info, deadline_ns);
+```
+
+### Radeon GPU Profiler (RGP) Frame Analysis
+
+The **Radeon GPU Profiler (RGP)** is AMD's low-level GPU profiling tool, available through AMD GPUOpen and supporting RDNA3 hardware since RGP 1.14. [Source: AMD GPUOpen — RGP 1.14 introduces RDNA3 support](https://gpuopen.com/learn/rgp_1_14/) RGP captures detailed frame traces showing command-buffer execution, pipeline barriers, memory accesses, and queue submission timing.
+
+To analyze frame pacing behavior on RDNA3+:
+
+1. **Capture with RGP**: Set `AMDGPU_DEBUG=rgp` (or use the Radeon Developer Panel) to enable RGP capture mode. Submit a frame trace via the `VK_AMD_rasterization_order` or RGP capture markers.
+2. **Examine the Frame Summary**: The Frame Summary panel shows the distribution of GPU frame times and identifies frames that exceed the VRR maximum period.
+3. **Barrier and Queue Timeline views**: Identify pipeline barriers and semaphore wait points that add latency between geometry submission and scanout readiness.
+4. **Event Timing**: Per-draw-call GPU timestamps (written via `vkCmdWriteTimestamp2`) are visualized in the Event Timeline view, making it straightforward to identify which render pass is the pacing bottleneck.
+
+> **Note: needs verification** — RGP's documentation refers to a "Frame Pacing" section in its manual (`/manuals/rgp_manual/rgp_manual-index/`), but at the time of writing the specific view name for frame-over-frame latency breakdown is not confirmed in public-facing documentation. Consult the [AMD RGP manual](https://gpuopen.com/manuals/rgp_manual/rgp_manual-index/) for the current view name and feature availability on your GPU generation.
+
+---
+
+## 14. VRR on OLED Displays — Burn-In Mitigation and Refresh Rate Floors
+
+### Why OLED Requires Special VRR Treatment
+
+Liquid Crystal Display (LCD) panels use a persistent backlight: pixel state changes cause the liquid crystals to modulate the backlight, but the backlight itself runs at a constant intensity. The display controller's refresh rate change under VRR therefore has minimal impact on apparent brightness.
+
+**OLED (Organic Light-Emitting Diode)** panels are self-emissive: each pixel directly emits light proportional to the drive current applied during its refresh cycle. The OLED timing controller optimizes its gamma correction curves and drive current profiles for a specific reference refresh rate (commonly 120 Hz or 144 Hz). When VRR causes the refresh period to deviate from this optimized rate, the drive current profile no longer matches the panel's gamma response:
+
+- At higher-than-reference refresh rates, the drive period is shorter; sub-pixels receive less charge and appear dimmer.
+- At lower-than-reference refresh rates, the extended drive period can cause sub-pixels to reach saturation differently, shifting the displayed gamma.
+
+The result is visible **brightness fluctuation** correlated with frame rate changes — most pronounced in dark and near-black content where human vision is most sensitive to brightness differences. Testing on WOLED panels shows gamma shifts of 11 or more RGB steps between the reference rate and 10 FPS, producing a clearly visible flicker each time the frame rate crosses a major threshold. [Source: TFTCentral — Exploring and testing OLED VRR flicker](https://tftcentral.co.uk/articles/exploring-and-testing-oled-vrr-flicker)
+
+### The 48 Hz Minimum Refresh Rate Floor
+
+Most OLED gaming monitors and panels (including the Steam Deck OLED's BOE display) enforce a **minimum VRR refresh rate of 48 Hz** rather than allowing the VRR range to extend arbitrarily low. Below 48 Hz, the extended blanking period required to hold the display in VRR mode becomes long enough that the OLED panel's self-refresh characteristics begin to cause visible flicker or gamma drift that manufacturers consider unacceptable for consumer products.
+
+The choice of 48 Hz is not arbitrary: it is the lowest standard cinema frame rate (cinema is often 24 fps with 3:2 pulldown to 48 Hz), ensuring compatibility with video content while staying above the threshold where OLED gamma drift becomes visually objectionable in controlled testing. Below the VRR minimum, the display triggers **Low Framerate Compensation (LFC)**: the panel's timing controller inserts duplicate frames at a multiple of the base frame rate to stay within the VRR operating range. For a 48–144 Hz OLED panel:
+
+| GPU frame time | Effective display refresh | Mechanism |
+|---|---|---|
+| 7 ms (143 FPS) | 143 Hz | VRR — normal |
+| 12 ms (83 FPS) | 83 Hz | VRR — normal |
+| 20 ms (50 FPS) | 50 Hz | VRR — near minimum |
+| 22 ms (45 FPS) | ~90 Hz | LFC — frame doubled to stay above 48 Hz minimum |
+| 30 ms (33 FPS) | ~96 Hz | LFC — frame tripled |
+
+The LFC transition can itself cause a visible brightness jump as the display crosses from VRR mode into the LFC repetition pattern, because the effective refresh rate jumps from just below 48 Hz to 96 Hz or higher in a single step. [Source: TFTCentral — OLED VRR flicker](https://tftcentral.co.uk/articles/exploring-and-testing-oled-vrr-flicker)
+
+### Burn-In Mitigation
+
+OLED panels are susceptible to **permanent burn-in** when the same bright pixels are illuminated at high intensity for long periods. Gaming monitors display static HUD elements (health bars, minimaps, crosshairs) for thousands of hours, making burn-in a real concern. Panel manufacturers have developed several mitigation mechanisms that operate within and alongside VRR:
+
+**Pixel Shift (Screen Move):** The entire displayed image is shifted by a small number of pixels (typically 1–4 px) at regular intervals, spreading the pixel wear pattern across a slightly larger area rather than concentrating it on exactly the same subpixels. Samsung OLED monitors enable pixel shift by default. The shift is small enough to be imperceptible during normal use but is visible if you watch a static edge carefully over time.
+
+```
+/* Conceptual firmware behavior — not a Linux API */
+every 30 minutes:
+    shift_display_origin(x += 1 px, y += 1 px)  /* wraps at ±4 px range */
+```
+
+**Static Content Dimming (Automatic Brightness Management):** When the display controller or GPU driver detects that a large portion of the screen is showing static (unchanging) content, it reduces the peak luminance of that region. ASUS implements this as "Global Dimming Control" on their ROG OLED monitors. On Linux, this typically operates in monitor firmware without OS involvement.
+
+**Pixel Refresh Cycles:** At predetermined intervals (or when the user powers off the display), the OLED panel runs an internal maintenance cycle: each pixel is driven briefly at full brightness to discharge any residual charge buildup. Manufacturers recommend allowing these cycles to complete rather than interrupting them.
+
+**Anti-Flicker VRR Range Restrictions:** To reduce gamma-shift flicker, ASUS introduced "OLED Anti-Flicker" technology (2024) with selectable VRR floor modes:
+
+| ASUS Anti-Flicker mode | VRR floor | LFC available |
+|---|---|---|
+| Off | 48 Hz | Yes |
+| Middle | 80 Hz | Yes |
+| High | 140 Hz | No (static 140 Hz) |
+
+Raising the VRR floor reduces gamma variance because the refresh period stays in a narrower range. The trade-off is that LFC is required more frequently and the display cannot exploit the full VRR range for very low FPS content. [Source: TFTCentral — Helping avoid OLED burn-in and flicker](https://tftcentral.co.uk/articles/helping-avoid-oled-burn-in-and-flicker-exploring-the-latest-asus-oled-technologies-for-2025) Similar configurable floors are offered by MSI (OLED Anti-Flicker PRO with three levels) and LG (Flicker Safe setting).
+
+### Linux Compositor Implications
+
+From the compositor's perspective, OLED VRR introduces one important behavioral difference from LCD VRR: **VRR should be paired with a software frame rate floor** to avoid forcing the display below its VRR minimum and triggering LFC-induced flicker. Gamescope handles this through its `-r` flag, which sets a minimum presentation rate:
+
+```bash
+# Keep the display in the 48–144 Hz VRR range;
+# Gamescope will pace frames at ≥48 FPS to avoid LFC transitions
+gamescope --adaptive-sync -r 48 -- %command%
+```
+
+KWin accounts for the VRR minimum refresh rate when scheduling cursor compositing (improved in Plasma 6.4) so that mouse movement does not artificially hold the display at the minimum VRR rate when the application itself is running faster.
+
+> **Note: needs verification** — Some OLED displays with HDMI 2.1 VRR have a higher effective VRR floor than their DisplayPort counterpart (e.g., 60 Hz minimum over HDMI vs. 48 Hz over DP) due to HDMI VRR timing constraints. Consult the specific monitor's specification for interface-dependent minimums.
+
+---
+
+## 15. Explicit Sync Interaction with VRR
+
+### The Problem: Unsynchronized Buffer Submission Under VRR
+
+Under a traditional implicit-sync Wayland compositor, the compositor knows a buffer is ready for scanout only when the kernel's implicit fence on the DMA-BUF signals. Under VRR, the display starts scanning each new frame the moment the KMS page flip occurs. If the compositor submits a flip for a buffer whose GPU rendering fence has not yet signalled, the display could begin scanning a partially-rendered buffer — producing corruption or requiring the compositor to delay the flip until the fence signals, adding latency.
+
+**`linux-drm-syncobj-v1`** (part of Wayland Protocols 1.34, landed 2024) solves this by making synchronization explicit at the protocol level. Each `wl_surface.commit` now carries an **acquire point** — a DRM syncobj timeline point that the compositor must wait for before using the buffer — and a **release point** that the compositor signals when it is done with the buffer. [Source: GNOME — Mutter lands DRM Sync Obj v1 support](https://www.phoronix.com/news/GNOME-Linux-DRM-Sync-Obj-v1)
+
+This is particularly important for NVIDIA hardware, where implicit fence propagation across driver boundaries was a long-standing source of rendering corruption on Wayland.
+
+### Protocol Structure
+
+The protocol defines three interfaces:
+
+```xml
+<!-- staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml (abridged) -->
+
+<interface name="wp_linux_drm_syncobj_manager_v1" version="1">
+  <request name="destroy" type="destructor"/>
+  <request name="get_surface">
+    <!-- Returns a wp_linux_drm_syncobj_surface_v1 for the given wl_surface -->
+    <arg name="id"      type="new_id"
+         interface="wp_linux_drm_syncobj_surface_v1"/>
+    <arg name="surface" type="object" interface="wl_surface"/>
+  </request>
+  <request name="import_timeline">
+    <!-- Import a DRM syncobj fd as a timeline object -->
+    <arg name="id" type="new_id"
+         interface="wp_linux_drm_syncobj_timeline_v1"/>
+    <arg name="fd" type="fd"/>
+  </request>
+</interface>
+
+<interface name="wp_linux_drm_syncobj_surface_v1" version="1">
+  <request name="set_acquire_point">
+    <!-- Compositor waits for this timeline point before scanning the buffer -->
+    <arg name="timeline" type="object"
+         interface="wp_linux_drm_syncobj_timeline_v1"/>
+    <arg name="point_hi" type="uint"/>  <!-- high 32 bits of 64-bit point -->
+    <arg name="point_lo" type="uint"/>  <!-- low  32 bits of 64-bit point -->
+  </request>
+  <request name="set_release_point">
+    <!-- Compositor signals this timeline point when done with the buffer -->
+    <arg name="timeline" type="object"
+         interface="wp_linux_drm_syncobj_timeline_v1"/>
+    <arg name="point_hi" type="uint"/>
+    <arg name="point_lo" type="uint"/>
+  </request>
+  <request name="destroy" type="destructor"/>
+</interface>
+```
+
+[Source: Wayland Explorer — linux-drm-syncobj-v1](https://wayland.app/protocols/linux-drm-syncobj-v1)
+
+### Client Usage with Vulkan
+
+In a Vulkan application using explicit sync, the acquire timeline point corresponds to a `VkSemaphore` (backed by a DRM syncobj) that is signalled when the GPU finishes rendering a frame:
+
+```c
+/* 1. Export the render-complete semaphore as a DRM syncobj fd */
+VkSemaphoreGetFdInfoKHR get_fd_info = {
+    .sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
+    .semaphore  = render_semaphore,
+    .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
+};
+int syncobj_fd;
+vkGetSemaphoreFdKHR(device, &get_fd_info, &syncobj_fd);
+
+/* 2. Import the fd as a Wayland timeline object */
+struct wp_linux_drm_syncobj_timeline_v1 *timeline =
+    wp_linux_drm_syncobj_manager_v1_import_timeline(syncobj_mgr, syncobj_fd);
+close(syncobj_fd);
+
+/* 3. Set the acquire point for the next commit — point 1 on the timeline */
+wp_linux_drm_syncobj_surface_v1_set_acquire_point(syncobj_surface,
+    timeline, 0, 1);   /* high=0, low=1 → point value 1 */
+
+/* 4. Set the release point — compositor signals point 2 when done */
+wp_linux_drm_syncobj_surface_v1_set_release_point(syncobj_surface,
+    timeline, 0, 2);
+
+/* 5. Commit — the compositor will not scan this buffer until point 1 signals */
+wl_surface_attach(surface, dmabuf_buffer, 0, 0);
+wl_surface_commit(surface);
+```
+
+Both acquire and release points must be set (or both unset) for every commit that attaches a buffer, as required by the protocol. [Source: Wayland Explorer — linux-drm-syncobj-v1](https://wayland.app/protocols/linux-drm-syncobj-v1)
+
+### VRR VBLANK Timing and Explicit Sync
+
+Under VRR, the display adapts its refresh period to the GPU's output cadence. The key constraint is that the KMS page flip — which tells the display to begin scanning the new frame — must not be issued until the acquire point has signalled (i.e., the GPU has finished rendering the frame). The compositor must:
+
+1. Receive the `wl_surface.commit` with the acquire point set.
+2. Queue the KMS atomic commit with the `IN_FENCE_FD` plane property pointing to the DRM syncobj fence.
+3. The kernel DRM driver (e.g., AMDGPU) waits for the fence before issuing the actual VBLANK flip.
+
+The DRM plane property used to pass the acquire fence to the kernel is `IN_FENCE_FD` (a per-plane atomic property carrying a `sync_file` fd that wraps the DRM syncobj fence). The CRTC property `OUT_FENCE_PTR` receives the release fence (a userspace pointer written by the kernel with a new `sync_file` fd that signals when the flip's scan-out completes). [Source: Linux kernel DRM — drm_syncobj.c](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_syncobj.c)
+
+```
+/* Compositor explicit sync path under VRR (pseudocode) */
+
+/* Receive wp_linux_drm_syncobj_surface_v1 acquire point from client */
+int acquire_fence_fd = drm_syncobj_to_sync_file(acquire_syncobj, acquire_point);
+
+/* Build atomic commit with IN_FENCE_FD on the plane */
+drmModeAtomicAddProperty(req, plane_id, in_fence_fd_prop, acquire_fence_fd);
+
+/* OUT_FENCE_PTR — kernel fills this with the release fence fd */
+uint64_t out_fence_ptr = (uint64_t)(uintptr_t)&release_fence_fd;
+drmModeAtomicAddProperty(req, crtc_id, out_fence_ptr_prop, out_fence_ptr);
+
+/* VRR_ENABLED is already set; the KMS driver will hold the VBLANK
+   until the acquire fence signals, then flip and adapt the refresh period */
+drmModeAtomicCommit(drm_fd, req,
+    DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT, NULL);
+```
+
+[Source: Linux kernel — DRM atomic properties](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_atomic_uapi.c)
+
+### The VRR + Explicit Sync Contract
+
+The interaction between explicit sync and VRR imposes a concrete timing discipline: **frames cannot be submitted to the display at arbitrary times under VRR; they must arrive before the KMS VBLANK window**. The display's VRR timing controller holds the blanking period open waiting for a flip request. Once the flip request arrives (backed by a signalled acquire fence), the controller closes the blanking window and starts scanning. The frame's arrival time — determined by when the GPU signals the acquire fence — directly sets the display's refresh period for that frame.
+
+This creates a clean causal chain:
+
+```
+GPU renders frame N
+    ↓ (GPU signals acquire fence at timeline point N)
+Kernel DRM receives page-flip (IN_FENCE_FD waits for acquire fence)
+    ↓ (AMDGPU DC holds VRR blanking; flip lands)
+Display controller begins scanning frame N
+    ↓ (CRTC signals OUT_FENCE_PTR / release fence)
+Compositor releases buffer N to client (via release timeline point)
+    ↓
+Client renders frame N+1 into the released buffer
+```
+
+Because the explicit sync protocol makes each step in this chain deterministic, there are no implicit fence races that could cause the display to scan a partially-rendered buffer. The VRR range constraints still apply: if the GPU takes longer than the display's maximum VRR period, LFC activates. If the GPU is faster than the minimum period, the compositor should hold the flip to avoid dropping below the minimum (which would cause LFC even when unnecessary).
+
+**Atomic async page flips with explicit sync**: a patch series (v7, submitted June 2024) to add `DRM_MODE_PAGE_FLIP_ASYNC` support to the atomic interface also allows the `IN_FENCE_FD` property to be combined with async flips. This enables tearing presentation (via `wp_tearing_control_v1` with `ASYNC` hint) to also benefit from explicit sync — the async flip fires immediately when the fence signals, with tearing still bounded to a single frame boundary. [Source: LKML — atomic async page flip with explicit sync](https://lkml.iu.edu/hypermail/linux/kernel/2406.2/02446.html)
+
+---
+
+## 16. Integrations
 
 - **Ch2 — KMS Atomic Modesetting**: `VRR_ENABLED` is a KMS CRTC atomic property set via `drmModeAtomicAddProperty()`. VRR state is carried in `drm_crtc_state` during atomic check and commit. The atomic modesetting path (nonblocking commits, page-flip events) is the mechanism by which compositors update VRR state alongside buffer flips.
 

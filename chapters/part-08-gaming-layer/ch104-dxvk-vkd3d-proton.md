@@ -17,6 +17,7 @@
 - [8. Performance Considerations](#8-performance-considerations)
 - [9. Ray Tracing Translation](#9-ray-tracing-translation)
 - [10. Debugging and Development](#10-debugging-and-development)
+- [11. Fossilize and the Steam Shader Pre-Caching Pipeline](#11-fossilize-and-the-steam-shader-pre-caching-pipeline)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -608,6 +609,170 @@ When reporting bugs to either project, the key inputs are:
 
 ---
 
+## 11. Fossilize and the Steam Shader Pre-Caching Pipeline
+
+Section 4 of this chapter describes the per-game `.dxvk-cache` file and how `VK_EXT_graphics_pipeline_library` (GPL) eliminates most shader stutter by compiling shader stages at `Create*Shader` time rather than at draw time. Those mechanisms operate entirely within a single game session on a single machine. Fossilize and Steam's pre-caching pipeline solve an orthogonal problem: making the Vulkan-level pipeline compilation happen **before** the game is launched for the first time, across the entire Linux Steam user population. This section describes that system from capture layer to driver replay.
+
+### The Residual Stutter Problem
+
+Even with GPL, a game's first launch on a new machine incurs Vulkan pipeline link and backend-compile costs for every unique pipeline state. On the D3D12 path (VKD3D-Proton), a single complex title can require thousands of `vkCreateGraphicsPipelines` calls during loading screens; even with GPL's fast linking, the aggregate compile time can reach seconds to minutes of CPU saturation. The DXVK state cache and VKD3D-Proton's pipeline library state (described in Sections 4 and 5) accumulate as a user plays, but they do nothing on a pristine install. The problem is therefore fundamentally a "cold start" problem: a player's first session is always worst-case.
+
+The DXVK `.dxvk-cache` stores D3D-to-SPIR-V state: it records which shader bytecode identifiers were combined with which render-state vectors, so that `DxvkPipelineManager` can start background `VkPipeline` creation before the GPU needs them on the next run. It does **not** store driver-compiled GPU binaries; those live in the driver's own disk cache (Mesa's shader disk cache, or NVIDIA's pipeline cache). The DXVK cache is therefore driver-version-agnostic — it is equally useful whether Mesa 22 or Mesa 25 is installed — but it requires at least one full play session to populate. A new player who installs a game and expects smooth first-run performance gets no benefit from another player's DXVK cache.
+
+Fossilize is the answer to this gap. It captures Vulkan-level pipeline state (not D3D-level state) and allows Steam to distribute that state and pre-compile it for every player's specific GPU driver before the game starts. The two systems are complementary: the DXVK cache handles the D3D→SPIR-V translation layer; Fossilize handles the SPIR-V→driver-binary layer.
+
+### The Fossilize Library and Capture Layer
+
+Fossilize is an open-source Valve project hosted at [github.com/ValveSoftware/Fossilize](https://github.com/ValveSoftware/Fossilize). It provides two things: a **serialization library** and a **Vulkan implicit layer** named `VK_LAYER_fossilize`.
+
+The layer intercepts six categories of Vulkan creation calls by hooking into the Vulkan dispatch table:
+
+- `vkCreateSampler` → serializes `VkSamplerCreateInfo`
+- `vkCreateDescriptorSetLayout` → serializes `VkDescriptorSetLayoutCreateInfo`
+- `vkCreatePipelineLayout` → serializes `VkPipelineLayoutCreateInfo`
+- `vkCreateRenderPass` / `vkCreateRenderPass2` → serializes `VkRenderPassCreateInfo`
+- `vkCreateShaderModule` → serializes the SPIR-V bytecode blob
+- `vkCreateGraphicsPipelines` / `vkCreateComputePipelines` / `vkCreateRayTracingPipelinesKHR` → serializes the full `Vk*PipelineCreateInfo` with all handle references replaced by their Fossilize hashes
+
+The critical design point is that a `VkPipeline` references many other Vulkan objects — a `VkPipelineLayout` that itself references `VkDescriptorSetLayout` objects, `VkRenderPass`, and `VkShaderModule` objects. In the serialized database, each of these objects is identified by a **Fossilize hash**: a 64-bit content-addressed hash computed from the complete `CreateInfo` chain of that object and all objects it transitively depends on. A `VkGraphicsPipelineCreateInfo` is therefore stored as a single record whose dependencies are referenced only by their hashes; replaying that record on a different machine requires first replaying all depended-upon records, which the Fossilize replayer resolves automatically. [Source](https://github.com/ValveSoftware/Fossilize/blob/master/README.md)
+
+The layer is enabled either by the standard Vulkan implicit layer mechanism (the layer JSON registers it globally) or, within Proton, by Valve's Steam integration code which arranges the layer's presence before the Wine process starts.
+
+### The .foz Database Format
+
+Fossilize records are stored in a bespoke binary container with the `.foz` extension. The format is designed for robustness in the face of abrupt process termination (which is common when capturing production games through a background layer):
+
+- A database file consists of a stream of fixed-size **header blocks** interleaved with variable-length **data blobs**.
+- Each entry in the database is identified by a resource tag (the Vulkan object type, encoded as an enum: sampler, descriptor set layout, pipeline layout, render pass, shader module, or pipeline) and its Fossilize hash.
+- The payload for `VkShaderModule` entries is varint-encoded and deflate-compressed SPIR-V. The payload for pipeline and other `CreateInfo` entries is deflate-compressed JSON representing the complete `Vk*CreateInfo` structure with handle references replaced by their hashes.
+- An accompanying **index file** (`filename_idx.foz`) records the byte offset and size of each entry within the data file, enabling O(1) lookup by (tag, hash) without scanning the entire blob. The pair `(filename.foz, filename_idx.foz)` constitutes a complete Fossilize database.
+
+The database format supports concurrent writers (multiple game sessions appending to the same database) through a locking protocol and is designed to never lose previously-written entries even if a write is cut short. [Source](https://github.com/ValveSoftware/Fossilize/blob/master/README.md)
+
+A Fossilize database captured from a running game via `VK_LAYER_fossilize` grows without bound during a session; Valve's distribution databases are curated extracts of a representative set of pipeline states that cover the title's typical rendering paths.
+
+### The Steam Pre-Compilation Workflow
+
+Steam's use of Fossilize follows a four-stage pipeline:
+
+**1. Developer capture.** The game developer (or Valve, using internal test runs) runs the game with `VK_LAYER_fossilize` active and captures a representative Fossilize database — one that covers the shader states exercised by the game's levels, cutscenes, and common gameplay scenarios. The result is a `.foz` file containing the `VkShaderModule` SPIR-V blobs and `VkGraphicsPipelineCreateInfo` records for all captured pipelines.
+
+**2. Valve distribution upload.** The developer submits the Fossilize database to Valve via the Steam partner portal. Valve hosts these databases on its CDN. The database is game-specific and keyed to a particular Proton/DXVK/VKD3D-Proton version (since a change in the translation layer changes the SPIR-V emitted for a given D3D shader, invalidating old databases).
+
+**3. Steam pre-compilation on the user's machine.** When a user installs or updates a game that has a Fossilize database available, the Steam client downloads it into:
+
+```
+~/.steam/steam/steamapps/shadercache/<APPID>/fozpipelinesv6/
+```
+
+This directory contains the downloaded database pairs (`.foz` + `_idx.foz`). Steam then invokes `fossilize-replay` — its bundled Fossilize replay binary — to drive the local GPU driver to compile every pipeline in the database. This is the "Preparing Shader Pre-Caches" step visible in the Steam game download queue. The replay runs `fossilize-replay` with the local Vulkan device, which calls `vkCreateGraphicsPipelines` for each record. The driver's response to those calls is to compile the SPIR-V into GPU-specific machine code and store it in the Mesa disk cache (or the NVIDIA/Intel proprietary cache).
+
+**4. Driver cache population and per-driver invalidation.** The driver identifies compiled pipeline binaries via the cache key defined by `vkCreatePipelineCache`: a header containing `vendorID`, `deviceID`, `driverVersion`, and `pipelineCacheUUID` from `VkPhysicalDeviceProperties`. When the user installs a new Mesa release (changing `driverVersion` and `pipelineCacheUUID`), the compiled binaries are no longer valid — they will not be found in the driver cache on lookup — so the pre-compilation step must be re-run against the new driver. Steam detects driver version changes and triggers a re-run of `fossilize-replay` automatically. [Source](https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/11485)
+
+The Mesa side of the driver cache uses `MESA_DISK_CACHE_SINGLE_FILE=1` to consolidate compiled shader binaries into a single-file Fossilize DB format internally (Mesa's own `.foz`-format disk cache), and `MESA_DISK_CACHE_READ_ONLY_FOZ_DBS` to mount additional pre-compiled databases as read-only overlays. Steam sets these variables in the Proton environment so that the pre-compiled cache from `shadercache/fozpipelinesv6/` is visible to the driver when the game actually launches. [Source](https://www.phoronix.com/news/Mesa-Single-File-Cache)
+
+### RADV Integration with Fossilize
+
+On AMD hardware with the RADV driver, Fossilize replay exercises RADV's full pipeline compilation path. When `fossilize-replay` calls `vkCreateGraphicsPipelines`, RADV:
+
+1. Deserializes the `VkGraphicsPipelineCreateInfo` and resolves shader modules to their SPIR-V.
+2. Runs the SPIR-V through the Mesa NIR translation frontend (`spirv_to_nir`).
+3. Compiles the NIR through the ACO backend (RADV's default shader compiler since Mesa 20.2) to produce RDNA or GCN machine code. The legacy LLVM backend remains available but is not the default path.
+4. Stores the compiled binary in the Mesa disk cache, keyed by the pipeline hash.
+
+When the game subsequently calls `vkCreateGraphicsPipelines` for the same pipeline during a real game session, the driver finds the pre-compiled binary in the disk cache, avoiding a full compile. The end result is that the first-launch compile cost is paid during the "Preparing Shader Pre-Caches" step before the game loads, rather than during gameplay.
+
+RADV's `VK_EXT_graphics_pipeline_library` support (enabled by default since Mesa 23.1 [Source](https://www.gamingonlinux.com/2023/05/mesa-graphics-drivers-23-1-0-out-now-with-radv-gpl-enabled/)) interacts with Fossilize replay in an important way: Fossilize can capture and replay GPL pipeline libraries (pre-rasterization shader stages, fragment shader stages) as independent entries, not only monolithic pipelines. This means the replay can pre-compile the shader-compilation-expensive GPL stages independently of the final fast link step, yielding a large reduction in the number of distinct GPU binary compilations required for a given game. The final pipeline-link step at game runtime is then a cheap sub-millisecond operation regardless of whether the pipelines were pre-cached.
+
+One concrete performance example: for a Ghostwire Tokyo Fossilize capture containing ray-tracing pipelines from an Unreal Engine 4 title, RADV optimizations that allowed any-hit and intersection shaders to be compiled separately (eliminating forced inlining into one large megashader) reduced the Fossilize replay time from four minutes and twenty seconds to twenty seconds on the same hardware. [Source](https://www.phoronix.com/news/RADV-10x-Fast-RT-Pipeline-Comp) The user-visible benefit is that the "Preparing Shader Pre-Caches" wait on Steam is dramatically shorter for ray-tracing titles on RDNA hardware.
+
+### DXVK State Cache vs. Fossilize: Complementary Layers
+
+The two caching systems operate at different levels of the translation stack and serve different purposes. Understanding their relationship prevents confusion about which file to share or delete when diagnosing stutter issues.
+
+**DXVK state cache (`.dxvk-cache`)**:
+- Records which D3D11/D3D9 shader hash + render-state vector combinations have been encountered during gameplay.
+- The cache content is SPIR-V, produced by DXVK's DXBC→SPIR-V compiler (`DxbcCompiler` / `SpirvModule`).
+- DXVK's `dxvk_pipelineWorker` thread reads the cache on startup and submits `vkCreateGraphicsPipelines` calls in the background before those pipelines are needed at draw time.
+- The cache is **driver-version-agnostic**: it caches the D3D→SPIR-V translation output, not driver-compiled GPU code.
+- Since DXVK 2.0 and GPL support, the state cache is far less critical for anti-stutter on modern drivers; its primary value is on older hardware or drivers without GPL support.
+- Location: `~/.steam/steam/steamapps/shadercache/<APPID>/DXVK_state_cache/` (Steam) or next to the game `.exe` in the Wine prefix.
+
+**Fossilize database (`.foz` in `fozpipelinesv6/`)**:
+- Records complete Vulkan-level `VkGraphicsPipelineCreateInfo` objects with all SPIR-V already embedded as `VkShaderModule` payloads.
+- The pre-compilation step drives the GPU driver to compile these pipelines and stores the resulting GPU binaries in the Mesa disk cache.
+- The database is **driver-version-sensitive**: the Mesa disk cache entries it populates are keyed by `pipelineCacheUUID` and become stale when the driver is updated.
+- Populated and maintained by Valve/developers via Steam distribution, not by per-user gameplay sessions.
+- Covers the Vulkan-level pipeline state produced by DXVK (D3D11→Vulkan) and VKD3D-Proton (D3D12→Vulkan) for games that have developer-submitted Fossilize databases.
+
+The two caches can coexist and do not interfere. A title with both systems active benefits from: (a) DXVK state cache reducing the D3D→SPIR-V translation overhead on background threads, and (b) Fossilize pre-cache ensuring the SPIR-V→GPU-binary compilation has already occurred in the driver cache before the game launches.
+
+### Verifying and Debugging Fossilize Pre-Caching
+
+**The `fossilize-replay` CLI tool** (built from `cli/fossilize_replay.cpp` in the Fossilize source tree) is the primary utility for both Steam's pre-compilation automation and manual debugging:
+
+```bash
+# Replay all pipelines in a .foz database against the first Vulkan device (index 0)
+fossilize-replay --device-index 0 game_pipelines.foz
+
+# Replay with multi-threaded compilation (8 worker threads)
+fossilize-replay --device-index 0 --num-threads 8 game_pipelines.foz
+
+# Validate all SPIR-V modules before replay (useful for catching translation bugs)
+fossilize-replay --device-index 0 --spirv-val game_pipelines.foz
+
+# Replay only a specific range of graphics pipelines (for debugging individual pipelines)
+fossilize-replay --device-index 0 \
+    --start-graphics-index 100 \
+    --end-graphics-index 110 \
+    game_pipelines.foz
+
+# Replay a single pipeline by its Fossilize hash
+fossilize-replay --device-index 0 --pipeline-hash 0xdeadbeefcafebabe game_pipelines.foz
+```
+
+The `--spirv-val` flag invokes the SPIR-V validator (`spirv-val`) against every `VkShaderModule` payload before submitting it to the driver; modules that fail validation are skipped. This is essential when debugging DXVK or VKD3D-Proton translation bugs that produce invalid SPIR-V — the Fossilize database provides a reproducible input without requiring the full game. [Source](https://github.com/ValveSoftware/Fossilize/blob/master/cli/fossilize_replay.cpp)
+
+**Counting pipelines in a database.** The Fossilize project ships `fossilize-opt` (in `cli/fossilize_opt.cpp`) as a database manipulation utility. To inspect database contents:
+
+```bash
+# Merge and count entries in a Fossilize database
+fossilize-opt --input-db game_pipelines.foz --output-db /dev/null 2>&1 | grep -i pipeline
+```
+
+For a quick count of pipelines in the `fozpipelinesv6` directory for a given Steam game (Steam App ID 1234560):
+
+```bash
+ls -la ~/.steam/steam/steamapps/shadercache/1234560/fozpipelinesv6/*.foz 2>/dev/null
+```
+
+**RADV debugging flags for cache verification.** Two RADV options are particularly useful when verifying that Fossilize pre-compilation is working:
+
+```bash
+# Show PSO cache hit/miss statistics: confirms whether pre-compiled pipelines
+# are being found in the Mesa disk cache at game runtime
+RADV_DEBUG=psocachestats %command%
+
+# Disable the shader cache entirely, forcing full recompilation on every vkCreatePipeline call
+# Use this to measure baseline compile time vs. pre-cached runtime
+RADV_DEBUG=nocache %command%
+```
+
+`RADV_DEBUG=psocachestats` is the recommended diagnostic tool: if the hit rate is high at game startup, Fossilize pre-caching succeeded and the driver found the pre-compiled binaries. A low hit rate despite pre-caching usually indicates a driver version mismatch (the cache was compiled against a different Mesa version) or a `pipelineCacheUUID` change. [Source](https://docs.mesa3d.org/envvars.html)
+
+For cases where a shader compiler fix needs to be back-ported to a game that is already pre-cached against an old version, RADV exposes per-game drirc overrides:
+
+```ini
+# In ~/.drirc or /etc/drirc: force a shader version bump for a specific game,
+# causing RADV to recompile all pipelines for that game once with the new compiler
+[application name="mygame.exe"]
+  radv_override_graphics_shader_version = 1
+```
+
+This mechanism is how SteamOS manages shader compiler bug fixes on the Steam Deck without requiring a user-visible "Preparing Shader Pre-Caches" re-run of the entire database. [Source](https://www.phoronix.com/news/RADV-Force-Shader-Re-Comp)
+
+---
+
 ## Integrations
 
 - **Chapter 28 (Windows Compatibility — Wine, DXVK, VKD3D)**: Chapter 28 provides an overview of the full Windows compatibility stack including Wine's architecture, DXVK's role within it, and practical usage. This chapter (104) is the deep-dive technical complement — covering DXVK and VKD3D-Proton architecture, shader translation internals, and Vulkan extension mechanics at a level of detail beyond what Chapter 28's overview can address. Readers encountering DXVK for the first time should start with Chapter 28; readers building on the translation layers should read both.
@@ -638,3 +803,13 @@ When reporting bugs to either project, the key inputs are:
 - DeepWiki VKD3D-Proton resources and heaps: [deepwiki.com/HansKristian-Work/vkd3d-proton/3.3-resources-and-heaps](https://deepwiki.com/HansKristian-Work/vkd3d-proton/3.3-resources-and-heaps)
 - Steam Linux usage statistics 2026: [commandlinux.com/statistics/steam-linux-runtime](https://commandlinux.com/statistics/steam-linux-runtime/)
 - NVIDIA blog, "Bringing HLSL Ray Tracing to Vulkan": [developer.nvidia.com/blog/bringing-hlsl-ray-tracing-to-vulkan](https://developer.nvidia.com/blog/bringing-hlsl-ray-tracing-to-vulkan/)
+- Fossilize project: [github.com/ValveSoftware/Fossilize](https://github.com/ValveSoftware/Fossilize)
+- Fossilize README (format, layer, CLI tools): [github.com/ValveSoftware/Fossilize/blob/master/README.md](https://github.com/ValveSoftware/Fossilize/blob/master/README.md)
+- fossilize-replay source (CLI options): [github.com/ValveSoftware/Fossilize/blob/master/cli/fossilize_replay.cpp](https://github.com/ValveSoftware/Fossilize/blob/master/cli/fossilize_replay.cpp)
+- Mesa single-file Fossilize disk cache: [phoronix.com/news/Mesa-Single-File-Cache](https://www.phoronix.com/news/Mesa-Single-File-Cache)
+- Mesa util/disk_cache combined foz MR 11485: [gitlab.freedesktop.org/mesa/mesa/-/merge_requests/11485](https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/11485)
+- RADV GPL enabled by default in Mesa 23.1: [gamingonlinux.com/2023/05/mesa-graphics-drivers-23-1-0-out-now-with-radv-gpl-enabled](https://www.gamingonlinux.com/2023/05/mesa-graphics-drivers-23-1-0-out-now-with-radv-gpl-enabled/)
+- RADV 10x faster RT pipeline compilation (Fossilize capture): [phoronix.com/news/RADV-10x-Fast-RT-Pipeline-Comp](https://www.phoronix.com/news/RADV-10x-Fast-RT-Pipeline-Comp)
+- RADV forced shader re-compilation (drirc knobs): [phoronix.com/news/RADV-Force-Shader-Re-Comp](https://www.phoronix.com/news/RADV-Force-Shader-Re-Comp)
+- Mesa environment variables (RADV_DEBUG): [docs.mesa3d.org/envvars.html](https://docs.mesa3d.org/envvars.html)
+- DeepWiki Fossilize overview: [deepwiki.com/ValveSoftware/Fossilize/1-overview](https://deepwiki.com/ValveSoftware/Fossilize/1-overview)

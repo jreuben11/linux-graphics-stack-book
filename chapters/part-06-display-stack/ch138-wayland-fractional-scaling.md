@@ -10,12 +10,18 @@
 2. [The HiDPI Problem](#the-hidpi-problem)
 3. [wl_output.scale: Integer Scaling Baseline](#wl_outputscale-integer-scaling-baseline)
 4. [wp_fractional_scale_v1: The Protocol](#wp_fractional_scale_v1-the-protocol)
-5. [Compositor Implementation](#compositor-implementation)
-6. [Toolkit Integration](#toolkit-integration)
-7. [Mixed-DPI Multi-Monitor Setups](#mixed-dpi-multi-monitor-setups)
-8. [XWayland and X11 Comparison](#xwayland-and-x11-comparison)
-9. [Cursor, Icons, and Subpixel Rendering](#cursor-icons-and-subpixel-rendering)
-10. [Integrations](#integrations)
+5. [wp_fractional_scale_v1 Deep Dive](#wp_fractional_scale_v1-deep-dive)
+6. [Buffer Scaling Math and Viewport Protocol Sequence](#buffer-scaling-math-and-viewport-protocol-sequence)
+7. [Compositor Implementation](#compositor-implementation)
+8. [Compositor Implementation Internals](#compositor-implementation-internals)
+9. [Font and Text Rendering Under Fractional Scale](#font-and-text-rendering-under-fractional-scale)
+10. [Toolkit Integration](#toolkit-integration)
+11. [Mixed-DPI Multi-Monitor Setups](#mixed-dpi-multi-monitor-setups)
+12. [XWayland Fractional Scaling — Deep Dive](#xwayland-fractional-scaling--deep-dive)
+13. [XWayland and X11 Comparison](#xwayland-and-x11-comparison)
+14. [GPU Implications of Fractional Scaling](#gpu-implications-of-fractional-scaling)
+15. [Cursor, Icons, and Subpixel Rendering](#cursor-icons-and-subpixel-rendering)
+16. [Integrations](#integrations)
 
 ---
 
@@ -509,6 +515,632 @@ EOF
 gsettings set org.gnome.settings-daemon.plugins.xsettings antialiasing rgba
 gsettings set org.gnome.settings-daemon.plugins.xsettings hinting slight
 ```
+
+---
+
+## wp_fractional_scale_v1 Deep Dive
+
+### Full Protocol XML
+
+The canonical protocol XML lives at
+[`staging/fractional-scale/fractional-scale-v1.xml`](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/staging/fractional-scale/fractional-scale-v1.xml)
+in the `wayland-protocols` repository. The full text of both interfaces is reproduced below with all description elements retained:
+
+```xml
+<!-- staging/fractional-scale/fractional-scale-v1.xml (MIT, © 2022 Kenny Levinsen) -->
+<protocol name="fractional_scale_v1">
+
+  <interface name="wp_fractional_scale_manager_v1" version="1">
+    <description summary="fractional surface scale information">
+      A global interface for requesting surfaces to be presented at a
+      fractional scale factor.
+      A client can use this interface to request that the compositor
+      present its surface at a particular scale factor. The compositor
+      will attempt to present the surface at the requested scale, but
+      it may present the surface at a different scale if the request
+      cannot be satisfied.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="unbind the manager">
+        Informs the server that the client will not be using this
+        protocol object anymore. This does not affect any other objects,
+        wp_fractional_scale_v1 objects included.
+      </description>
+    </request>
+
+    <enum name="error">
+      <entry name="fractional_scale_exists" value="0"
+        summary="the surface already has a fractional_scale object associated"/>
+    </enum>
+
+    <request name="get_fractional_scale">
+      <description summary="bind fractional surface scale to a surface">
+        Create an add-on object for the the wl_surface to let the compositor
+        request fractional scales. If the given wl_surface already has a
+        wp_fractional_scale_v1 object associated, the fractional_scale_exists
+        protocol error is raised.
+      </description>
+      <arg name="id" type="new_id" interface="wp_fractional_scale_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+  </interface>
+
+  <interface name="wp_fractional_scale_v1" version="1">
+    <description summary="fractional scale interface to a wl_surface">
+      An additional interface to a wl_surface object which allows the
+      compositor to inform the client of the preferred scale.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="remove scale information for surface">
+        Removes the fractional scale object and the preferred_scale events
+        from the surface. The preferred scale of the surface will no longer
+        be changed by the compositor.
+      </description>
+    </request>
+
+    <event name="preferred_scale">
+      <description summary="preferred scale for the surface">
+        Notification of a new preferred scale for this surface that the
+        compositor suggests that the client should use.
+
+        The sent scale is the numerator of a fraction with a denominator of
+        120.
+      </description>
+      <!-- numerator of a fraction with denominator 120 -->
+      <arg name="scale" type="uint"/>
+    </event>
+  </interface>
+
+</protocol>
+```
+
+[Source: wayland-protocols `fractional-scale-v1.xml`](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/staging/fractional-scale/fractional-scale-v1.xml)
+
+### The preferred_scale Event in Detail
+
+The `preferred_scale` event carries a single `uint` argument named `scale`. There is no separate numerator/denominator pair on the wire; the denominator is **always 120**, fixed by the protocol specification. The client divides the received integer by 120 to obtain the real-valued scale factor:
+
+| Received `scale` | Computed factor | Common name |
+|---|---|---|
+| 96 | 0.8× | (unusual sub-unity) |
+| 120 | 1.0× | 1× |
+| 150 | 1.25× | 125% |
+| 180 | 1.5× | 150% |
+| 210 | 1.75× | 175% |
+| 240 | 2.0× | 200% |
+| 360 | 3.0× | 300% (phone/tablet) |
+
+The choice of 120 as denominator is deliberate: 120 = 2³ × 3 × 5, so it is evenly divisible by 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 24, 30, 40, 60, and 120. This covers all common scale fractions (1.25 = 150/120, 1.333… ≈ 160/120 ≈ 4/3, 1.5 = 180/120, 1.75 = 210/120, 2.5 = 300/120) with integers, and avoids floating-point representation errors on the wire. [Source: protocol description](https://wayland.app/protocols/fractional-scale-v1)
+
+### Comparison with wl_output.scale
+
+`wl_output.scale` (Wayland 1.9, 2015) communicates a **global integer** scale for an output to all clients. `wp_fractional_scale_v1.preferred_scale` (wayland-protocols 1.31, 2022) communicates a **per-surface fractional** scale to exactly one surface object.
+
+| Property | `wl_output.scale` | `wp_fractional_scale_v1` |
+|---|---|---|
+| Granularity | Integer only (1, 2, 3…) | Any fraction with /120 denominator |
+| Scope | Per-output, broadcast to all clients | Per-surface, unicast |
+| Client cooperation | `wl_surface.set_buffer_scale(N)` | `wp_viewport.set_destination()` + buffer at fractional size |
+| Stability | Core protocol, stable | Staging protocol (wayland-protocols) |
+| Year stabilised | 2015 | 2023 |
+| Blur at 1.5×? | Yes — compositor must rescale 2× buffer | No — client renders at exact physical size |
+
+The old integer path can approximate 1.5× by having the client render at 2× and relying on the compositor to downsample. This introduces one extra blit/downscale in the GPU render loop and produces slightly soft edges at subpixel boundaries. The `wp_fractional_scale_v1` path eliminates both the wasted pixels and the blitting overhead.
+
+A surface that supports `wp_fractional_scale_v1` must **not** also set `wl_surface.set_buffer_scale` to anything other than 1. Mixing the two signals is undefined behaviour and compositors are not required to handle it gracefully.
+
+---
+
+## Buffer Scaling Math and Viewport Protocol Sequence
+
+### The Three Coordinate Spaces
+
+When `wp_fractional_scale_v1` is in use, a surface operates in three distinct coordinate spaces:
+
+1. **Logical (surface) coordinates** — the coordinate space used for Wayland input events (`wl_pointer`, `wl_touch`), window geometry, and `xdg_surface.set_window_geometry`. Unit: logical pixels.
+2. **Physical (buffer) coordinates** — the size of the `wl_buffer` attached to the surface. Unit: physical device pixels.
+3. **Compositor coordinates** — the output's physical pixel grid onto which the compositor maps the surface. Unit: physical device pixels.
+
+The relationship is:
+
+```
+physical_size = ceil(logical_size × fractional_scale / 120)
+```
+
+More precisely (using the received `scale_uint` value):
+
+```c
+/* scale_uint is the raw value from preferred_scale, e.g. 180 for 1.5× */
+int buf_w = (int)ceil((double)logical_w * scale_uint / 120.0);
+int buf_h = (int)ceil((double)logical_h * scale_uint / 120.0);
+```
+
+`ceil()` is mandatory. Using `floor()` can produce a buffer one pixel too small at certain sizes, causing the compositor to see a mismatch between the viewport destination and buffer size. Using `round()` has a 50% chance of being one pixel short at half-integer boundary sizes. The protocol authors specify ceil-based rounding in the reference implementation.
+
+### wp_viewport Request Signatures
+
+`wp_viewport` is defined in
+[`stable/viewporter/viewporter.xml`](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/stable/viewporter/viewporter.xml).
+The two requests used with fractional scaling are:
+
+```c
+/* From stable/viewporter/viewporter.xml */
+
+/* set_source(x, y, width, height: wl_fixed_t)
+ *
+ * Defines which portion of the buffer to display.
+ * Coordinates are in post-transform, post-(wl_buffer_scale) buffer space.
+ * Pass -1.0 for all four values to unset (display entire buffer).
+ * Raises bad_value if negative x/y or zero/negative dimensions.
+ * Raises out_of_buffer if area exceeds buffer boundaries.
+ */
+wp_viewport_set_source(viewport,
+    wl_fixed_from_double(0.0),          /* x = 0 */
+    wl_fixed_from_double(0.0),          /* y = 0 */
+    wl_fixed_from_double(buf_w),        /* width  = physical buffer width  */
+    wl_fixed_from_double(buf_h));       /* height = physical buffer height */
+
+/* set_destination(width, height: int)
+ *
+ * Sets the displayed surface dimensions in surface-local (logical) coordinates.
+ * The source rectangle is scaled to fill these dimensions exactly.
+ * Pass -1, -1 to unset.
+ * Raises bad_value if zero or negative (except the -1,-1 unset case).
+ */
+wp_viewport_set_destination(viewport, logical_w, logical_h);
+```
+
+`set_source` takes `wl_fixed_t` (24.8 fixed-point) arguments, allowing sub-pixel source crops. `set_destination` takes plain `int` arguments, enforcing integer logical dimensions. [Source: viewporter.xml](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/stable/viewporter/viewporter.xml)
+
+### Complete Protocol Sequence
+
+The exact order of Wayland requests matters because `wl_surface.commit` atomically applies the pending state. The canonical sequence for a resize or scale-change event is:
+
+```c
+/* ---- Step 1: Bind globals (done once at startup) ---- */
+struct wp_fractional_scale_manager_v1 *frac_mgr = /* bind from wl_registry */;
+struct wp_viewporter *viewporter = /* bind from wl_registry */;
+
+/* ---- Step 2: Create per-surface objects (done once per surface) ---- */
+struct wp_fractional_scale_v1 *frac_scale =
+    wp_fractional_scale_manager_v1_get_fractional_scale(frac_mgr, surface);
+wp_fractional_scale_v1_add_listener(frac_scale, &frac_scale_listener, window);
+
+struct wp_viewport *viewport =
+    wp_viewporter_get_viewport(viewporter, surface);
+
+/* Keep wl_buffer_scale at 1 — never call wl_surface_set_buffer_scale(surface, N>1) */
+wl_surface_set_buffer_scale(surface, 1);
+
+/* ---- Step 3: In preferred_scale handler ---- */
+static void handle_preferred_scale(void *data,
+    struct wp_fractional_scale_v1 *fs, uint32_t scale_uint)
+{
+    Window *w = data;
+    w->scale_uint = scale_uint;                      /* e.g. 180 */
+    double scale = scale_uint / 120.0;               /* e.g. 1.5 */
+
+    /* Compute buffer dimensions */
+    w->buf_w = (int)ceil(w->logical_w * scale);
+    w->buf_h = (int)ceil(w->logical_h * scale);
+
+    /* Allocate or resize the backing buffer (e.g. via wl_shm or EGL) */
+    resize_buffer(w, w->buf_w, w->buf_h);
+
+    /* --- The following three requests form an atomic unit committed together --- */
+
+    /* a) Set viewport source = entire buffer */
+    wp_viewport_set_source(viewport,
+        wl_fixed_from_double(0.0), wl_fixed_from_double(0.0),
+        wl_fixed_from_double(w->buf_w), wl_fixed_from_double(w->buf_h));
+
+    /* b) Set viewport destination = logical size */
+    wp_viewport_set_destination(viewport, w->logical_w, w->logical_h);
+
+    /* c) Attach and damage the buffer */
+    wl_surface_attach(surface, w->buffer, 0, 0);
+    wl_surface_damage_buffer(surface, 0, 0, w->buf_w, w->buf_h);
+
+    /* d) Commit: compositor now sees buffer + viewport atomically */
+    wl_surface_commit(surface);
+}
+```
+
+Key ordering rules:
+- `wp_viewport_set_destination` must be committed **before or together with** the `wl_surface_attach` that delivers the correctly-sized buffer — both changes are applied at the same `wl_surface.commit`.
+- `wl_surface_damage_buffer` (not `wl_surface_damage`) must be used when the buffer size changes, because `damage_buffer` coordinates are in buffer-pixel space, avoiding a logical→physical confusion.
+- Do not call `wl_surface_set_buffer_scale` with values other than 1 when using `wp_viewport`.
+
+### The set_source Optimisation
+
+For a surface that fills its entire buffer with content (the common case), calling `wp_viewport_set_source` with the full buffer extents is technically redundant — an unset source rectangle implies the entire buffer. However, explicitly setting it makes the intent clear and avoids ambiguity if the buffer is later resized without changing the viewport object. Many toolkit implementations skip `set_source` and only call `set_destination`, which is correct.
+
+---
+
+## Compositor Implementation Internals
+
+This section expands on the overview in [Compositor Implementation](#compositor-implementation) with source-level details and damage tracking specifics.
+
+### wlroots: wlr_fractional_scale_v1 API
+
+wlroots 0.17 (released 2023-08) added `wp_fractional_scale_v1` support. The public API is declared in
+`include/wlr/types/wlr_fractional_scale_v1.h`:
+
+```c
+/* include/wlr/types/wlr_fractional_scale_v1.h (wlroots 0.17+) */
+
+struct wlr_fractional_scale_manager_v1 {
+    struct wl_global *global;
+    struct wl_list resources; /* list of wl_resource */
+    /* private: */
+    struct wl_listener display_destroy;
+};
+
+/**
+ * Create the wp_fractional_scale_manager_v1 global.
+ * Call once during compositor initialisation.
+ */
+struct wlr_fractional_scale_manager_v1 *
+wlr_fractional_scale_manager_v1_create(struct wl_display *display,
+    uint32_t version);
+
+/**
+ * Notify a wlr_surface's fractional scale object of a new preferred scale.
+ * scale is expressed as a double (e.g. 1.5); wlroots multiplies by 120
+ * internally before sending preferred_scale to the client.
+ */
+void wlr_fractional_scale_v1_notify_scale(struct wlr_surface *surface,
+    double scale);
+```
+
+A wlroots-based compositor calls `wlr_fractional_scale_v1_notify_scale` whenever a surface enters a new output, an output changes scale, or a surface moves such that a different output's scale is now dominant:
+
+```c
+/* Compositor code: handle output scale change or surface enter/leave */
+static void output_scale_changed(struct wlr_output *output, void *data) {
+    Server *server = data;
+    struct wlr_scene_output *scene_output =
+        wlr_scene_get_scene_output(server->scene, output);
+
+    /* Iterate surfaces visible on this output */
+    struct wlr_scene_node *node;
+    wl_list_for_each(node, &server->scene->tree.children, link) {
+        struct wlr_surface *surface = /* extract from scene node */;
+        if (surface) {
+            /* wlroots picks the dominant output's scale automatically
+               when you call notify_scale; for surfaces spanning two
+               outputs the compositor chooses by coverage area */
+            wlr_fractional_scale_v1_notify_scale(surface, output->scale);
+        }
+    }
+}
+```
+
+[Source: wlroots fractional scale MR, swaywm/wlroots](https://github.com/swaywm/wlroots/pull/2064)
+
+### wlroots Scene Graph: Filter Mode Selection
+
+When the wlroots scene graph rasterises a `wlr_scene_buffer` at a fractional scale, it must choose a texture filter. The render-pass API in `include/wlr/render/pass.h` defines:
+
+```c
+/* include/wlr/render/pass.h */
+enum wlr_scale_filter_mode {
+    WLR_SCALE_FILTER_BILINEAR, /* bilinear texture filtering (default) */
+    WLR_SCALE_FILTER_NEAREST,  /* nearest texture filtering             */
+};
+
+struct wlr_render_texture_options {
+    struct wlr_texture *texture;
+    struct wlr_fbox src_box;         /* source rectangle in texture coordinates */
+    struct wlr_box dst_box;          /* destination rectangle in buffer pixels   */
+    float alpha;
+    const pixman_region32_t *clip;
+    enum wl_output_transform transform;
+    enum wlr_scale_filter_mode filter_mode;  /* <-- the relevant field */
+    enum wlr_render_blend_mode blend_mode;
+    /* ... */
+};
+```
+
+[Source: wlroots documentation for `wlr/render/pass.h`](https://kennylevinsen.pages.freedesktop.org/wlroots/wlr/render/pass.h.html)
+
+The default is `WLR_SCALE_FILTER_BILINEAR`, producing smooth (but potentially slightly soft) edges. Per-buffer filter overrides let compositors choose nearest-neighbour for pixel-art content or integer-scaled games. Sway 1.10 ported opacity and filter-mode support to the scene graph, enabling the `interpolation_mode` sway config option to propagate per-buffer filter hints. [Source: Sway 1.10 release](https://github.com/swaywm/sway/releases/tag/1.10)
+
+### wlroots Damage Tracking Under Fractional Scale
+
+Damage tracking is the mechanism by which a compositor avoids repainting unchanged parts of the screen. Under integer scaling, damage rectangles in logical pixels expand to physical pixels by simple multiplication. Under fractional scaling, this expansion is not exact, and rounding errors can leave undamaged strips at surface edges. wlroots addresses this with `wlr_region_scale()` and `wlr_region_expand()`:
+
+```c
+/* Conceptual: convert surface-space damage to output-space damage */
+pixman_region32_t output_damage;
+pixman_region32_init(&output_damage);
+
+/* 1. Scale the damage region by the output scale */
+wlr_region_scale(&output_damage, &surface_damage, output->scale);
+
+/* 2. Expand by the fractional overshoot: ceil(scale) - scale
+      e.g. for 1.5×: ceil(1.5) - 1.5 = 0.5, expand by 1 pixel */
+int expand = (int)ceil(output->scale) - (int)floor(output->scale);
+if (expand > 0) {
+    wlr_region_expand(&output_damage, &output_damage, expand);
+}
+```
+
+The `wlr_region_scale` function rounds all region coordinates so the scaled region is at least as large as the original — ensuring no unrepainted pixels. [Source: wlroots damage tracking PR](https://github.com/swaywm/wlroots/pull/3117)
+
+A related complication discovered by River compositor users: at 1.25× scale, the same window width can produce different physical pixel widths depending on horizontal position, because `round((offset + width) × scale) − round(offset × scale)` is position-dependent. The practical fix is to use `ceil(width × scale)` for buffer sizes (client-side) and always expand damage by at least one extra physical pixel (compositor-side). [Source: River issue #953](https://codeberg.org/river/river/issues/953)
+
+### GNOME Mutter: MetaWaylandFractionalScale
+
+Mutter's implementation lives in `src/wayland/meta-wayland-fractional-scale.{c,h}`. The architecture:
+
+- `MetaWaylandFractionalScaleManager` wraps the `wp_fractional_scale_manager_v1` global.
+- Each `MetaWaylandSurface` carries a `MetaWaylandFractionalScale *frac_scale` pointer, created lazily when a client calls `get_fractional_scale`.
+- `MetaWindow` knows which `MetaLogicalMonitor` it is on. When the window moves to a monitor with a different scale, `meta_wayland_surface_notify_geometry_changed` triggers `meta_wayland_fractional_scale_update`, which calls `wp_fractional_scale_v1_send_preferred_scale` with the new value.
+
+The `xwayland-native-scaling` experimental feature (GNOME 46+) extends this: when enabled, Mutter tells XWayland to render its virtual screen at `ceil(scale) ×` logical size, then presents the resulting XWayland surface buffer through `wp_fractional_scale_v1` like any Wayland surface:
+
+```bash
+# Enable both fractional scaling and XWayland native scaling in GNOME:
+gsettings set org.gnome.mutter experimental-features \
+  "['scale-monitor-framebuffer', 'xwayland-native-scaling']"
+```
+
+[Source: GNOME Discourse on fractional scaling](https://discourse.gnome.org/t/full-explanation-of-current-hidpi-fractional-and-integer-scaling-support-in-wayland/14225)
+
+### KDE KWin: Integer vs. Fractional Mode by Content Type
+
+KWin (Plasma 6) registers `FractionalScaleManagerV1Interface` from `src/wayland/fractional_scale_v1.cpp`. KWin's compositor render loop in `scene/workspacescene.cpp` selects scaling behaviour based on **content type**:
+
+- **Native Wayland windows with `wp_fractional_scale_v1` support**: compositor composites the client-provided buffer at its declared viewport destination with bilinear filtering. No re-scaling by the compositor.
+- **Non-supporting Wayland windows** (older apps): KWin scales the buffer from the integer-scale size with bilinear filtering, accepting some blur.
+- **XWayland surfaces** (when KDE's "apply scaling themselves" mode is off): compositor upscales the 1× XWayland buffer. This is the blurry legacy path.
+- **Video surfaces** (identified by `wp_content_type_v1` with `TYPE_VIDEO`): KWin may switch to integer modes or use nearest-neighbour to avoid chroma smearing.
+
+KWin exposes the Lanczos upscaler (`KWIN_FORCE_LANCZOS=1`) for high-quality upscaling of non-native surfaces, at higher GPU cost. For a 1.5× scale, Lanczos produces visibly better results than bilinear for fine-detail UI elements rendered at 1× source, but cannot recover information that was never rendered. The correct solution remains native `wp_fractional_scale_v1` support in the client.
+
+The upcoming `xx-fractional-scale-v2` protocol (in development as of 2025–2026) aims to improve on `v1` by allowing clients and compositors to communicate in **unscaled physical-pixel coordinates** from the start, eliminating the lossy logical→physical rounding that causes the rounding-error artefacts described above. [Source: xx-fractional-scale-v2 Phoronix coverage](https://phoronix.com/news/xx-fractional-scale-v2-MR-KWin)
+
+---
+
+## Font and Text Rendering Under Fractional Scale
+
+### Why Fractional Scaling Historically Produced Blurry Text
+
+On integer-scale displays (1× or 2×), every glyph pixel maps exactly to one or four physical pixels. Hinting algorithms move glyph stem widths and baseline positions to align with the physical pixel grid, making stems one or two pixels wide — crisp. At 1.5×, a 1-logical-pixel stem occupies 1.5 physical pixels; hinting can round it to 1 or 2 physical pixels but cannot land it perfectly on both edges simultaneously.
+
+The pre-`wp_fractional_scale_v1` workaround made this worse: compositors asked clients to render at integer 2× scale, then downsampled to 1.5× on the compositor's GPU. The downsampling interpolated between the 2×-hinted pixel grid and the actual 1.5× grid, producing blurred stems. Since the glyph was hinted for the wrong pixel density, the blur was compounded by hinting artefacts.
+
+With `wp_fractional_scale_v1`, the client renders at the exact physical pixel density (e.g. 180/120 = 1.5×). Glyph rasterisation at 1.5× physical pixels still faces the half-pixel challenge, but it does so without an additional compositor downscale. The text softness is inherent to 1.5× density, not artificially introduced. [Source: GTK blog](https://blog.gtk.org/2024/03/07/on-fractional-scales-fonts-and-hinting/)
+
+### The Cairo / Pango / FreeType Pipeline
+
+Text rendering in GTK-based applications flows through three layers:
+
+1. **Pango** — layout engine: computes glyph sequences, line breaks, clusters. Emits glyph runs with positions.
+2. **Cairo** — 2D drawing API: receives the glyph run from Pango via `pango_cairo_show_layout()`. Calls FreeType to rasterise each glyph at the device scale.
+3. **FreeType** — rasteriser: loads the glyph outline from the font file, applies hinting, and rasterises to a bitmap at the requested pixel size.
+
+The device scale is communicated to Cairo via:
+
+```c
+/* After receiving preferred_scale = 180 (1.5×): */
+cairo_surface_t *target = /* your rendering target */;
+
+/* Tell Cairo that 1 logical unit = 1.5 physical pixels */
+cairo_surface_set_device_scale(target, 1.5, 1.5);
+
+/* All subsequent Cairo operations (including text) will be
+   rasterised at 1.5× without the caller needing to scale coordinates */
+cairo_t *cr = cairo_create(target);
+```
+
+FreeType is invoked by Cairo with the physical pixel size derived from the device scale × the font point size × the output DPI. Cairo passes FreeType load flags derived from the Cairo font options:
+
+```c
+/* Cairo font options for fractional-scale HiDPI */
+cairo_font_options_t *opts = cairo_font_options_create();
+cairo_font_options_set_antialias(opts, CAIRO_ANTIALIAS_SUBPIXEL);
+cairo_font_options_set_hint_style(opts, CAIRO_HINT_STYLE_SLIGHT);
+cairo_font_options_set_subpixel_order(opts, CAIRO_SUBPIXEL_ORDER_RGB);
+cairo_set_font_options(cr, opts);
+```
+
+`CAIRO_HINT_STYLE_SLIGHT` maps to `FT_LOAD_TARGET_LIGHT` in FreeType, which applies only vertical hinting (locking baselines and stem heights to full pixels) while allowing horizontal subpixel positioning (fractional x-advance). This is the mode recommended for fractional-scale HiDPI because:
+- Vertical hinting makes horizontal text baselines crisp (a 1px baseline doesn't straddle physical pixels).
+- Horizontal subpixel positioning allows glyph spacing to use the full 1/64th-pixel precision that FreeType tracks internally, giving the renderer maximum freedom to choose horizontal positions without grid rounding.
+
+### fontconfig DPI Hints
+
+fontconfig does not control rasterisation directly, but it adjusts the **requested DPI** fed to FreeType. If the system DPI is declared as 96 but the display is at 1.5× physical scale, the correct DPI to request is 144 (= 96 × 1.5). This ensures that a "12pt" font is rasterised at the physical size corresponding to 12 points at 144 DPI, not 96 DPI.
+
+```xml
+<!-- ~/.config/fontconfig/fonts.conf — HiDPI DPI hint -->
+<fontconfig>
+  <match target="font">
+    <edit name="dpi" mode="assign"><double>144</double></edit>
+    <edit name="hintstyle" mode="assign"><const>hintslight</const></edit>
+    <edit name="antialias" mode="assign"><bool>true</bool></edit>
+    <edit name="rgba" mode="assign"><const>rgb</const></edit>
+    <edit name="lcdfilter" mode="assign"><const>lcddefault</const></edit>
+  </match>
+</fontconfig>
+```
+
+In practice, GTK4 and Qt6 compute DPI from the `wp_fractional_scale_v1` preferred scale and pass it directly to Pango's font map rather than relying on fontconfig's DPI entry. The fontconfig hint is most relevant for applications that call FreeType directly or use older font stacks. [Source: ArchWiki HiDPI](https://wiki.archlinux.org/title/HiDPI)
+
+### GTK4's GTK 4.14 Improvement
+
+Prior to GTK 4.14, GTK's NGL/GL renderer rasterised text glyphs at the CSS pixel size (logical coordinates) and then relied on device scale transformation to magnify them. At 1.5×, this meant glyphs were sampled at a 2/3-integer device pixel grid, producing visible inter-glyph bleed and softness.
+
+GTK 4.14 (2024) introduced a new glyph rendering path in the NGL renderer where:
+
+1. Glyph positions are computed in **device pixel space** (physical pixels), not logical pixel space.
+2. Y-axis hinting aligns glyph baselines to device pixel boundaries.
+3. X-axis positions use subpixel precision (fractional device pixels for horizontal spacing).
+
+The net result is sharper text at 1.25×, 1.5×, and 1.75× on compositors that properly support `wp_fractional_scale_v1`. [Source: GTK Development Blog](https://blog.gtk.org/2024/03/07/on-fractional-scales-fonts-and-hinting/)
+
+### Qt6 Font Rendering
+
+Qt6's text pipeline uses HarfBuzz for shaping, FreeType for rasterisation, and Qt's own glyph cache. The `QFont::pixelSize()` is computed as `pointSize × physicalDPI / 72`, where `physicalDPI` takes the fractional scale into account:
+
+```cpp
+// Qt6 / QWaylandWindow: updating DPI after preferred_scale
+void QWaylandWindow::updateScale(qreal scale) {
+    m_scale = scale;
+    // Triggers QHighDpiScaling, which adjusts devicePixelRatio
+    // QFont objects deriving from this window get correct pixel sizes
+    QWindowSystemInterface::handleWindowDevicePixelRatioChanged(
+        window(), scale);
+}
+```
+
+Qt's `QRasterPaintEngine` passes `FT_LOAD_TARGET_LCD` when LCD subpixel antialiasing is active and `FT_LOAD_TARGET_LIGHT` otherwise, matching Cairo's behaviour for fractional scales.
+
+---
+
+## XWayland Fractional Scaling — Deep Dive
+
+This section expands the overview in [XWayland and X11 Comparison](#xwayland-and-x11-comparison) with implementation mechanics and known limitations.
+
+### How XWayland Presents a Logical Screen to X11 Apps
+
+XWayland is itself a Wayland client. It creates a `wl_surface` for the root window, which the compositor treats like any other window. X11 applications running inside XWayland see a virtual X screen whose size is determined by XWayland's view of the display geometry.
+
+Without fractional scaling support, XWayland always runs its virtual screen at the **logical** resolution (e.g. 1920×1080 at 1.5× scale on a 2880×1620 panel), because XWayland cannot relay `wp_fractional_scale_v1` events to individual X11 clients. When the compositor rescales XWayland's surface to fill the physical pixels, all X11 windows appear blurry.
+
+### The -dpi Flag and Screen DPI
+
+XWayland accepts a `-dpi N` command-line flag that sets the `Xft.dpi` resource in the X server's initial resource database:
+
+```bash
+Xwayland -dpi 144  # 96 × 1.5 = 144 DPI for 1.5× effective scale
+```
+
+This does **not** cause XWayland to render at a higher resolution. It only advertises a DPI value to X11 clients via `DisplayWidthMM` / `DisplayHeightMM` (from which clients compute DPI) and the `Xft.dpi` X resource. Applications that query DPI (such as `pango_cairo_context_get_resolution()`) will scale their fonts appropriately, but the actual pixel canvas remains at logical size.
+
+> **Note: needs verification** — Some older documentation references a `-hidpi` flag. As of XWayland 23.x and 24.x, no `-hidpi` flag appears in `Xwayland --help` output. The correct flag is `-dpi`. Verify with `man Xwayland` on your system.
+
+### Server-Side Scaling Path for X11 Apps
+
+When a compositor implements **server-side scaling** for XWayland, it presents XWayland with a virtual screen that is larger than the logical size — typically `ceil(scale)` times the logical size. For 1.5× scale on a 1920×1080 logical display:
+
+- Without server-side scaling: XWayland screen = 1920×1080, compositor upscales 1.5× (blurry).
+- With server-side scaling (GNOME `xwayland-native-scaling`): XWayland screen = 3840×2160 (= 1920×1080 × 2), X11 apps render at 2×, compositor downscales from 2× to 1.5× (one step of mild softening).
+
+GNOME Mutter implements this by coordinating two coordinate spaces for X11 clients:
+- **Stage coordinates** — the surface-local (logical) coordinate space that Wayland clients use.
+- **Protocol coordinates** — the X11 coordinate space, set to `stage × ceil(scale)` so that X11 apps see a HiDPI screen.
+
+```bash
+# Enable server-side XWayland scaling in GNOME (GNOME 46+):
+gsettings set org.gnome.mutter experimental-features \
+  "['scale-monitor-framebuffer', 'xwayland-native-scaling']"
+```
+
+[Source: GNOME Mutter XWayland fractional scaling development](https://phoronix.com/news/GNOME-XWayland-Frac-Scaling)
+
+KDE Plasma's approach differs: **System Settings → Display → Legacy Applications (XWayland)** offers two modes:
+1. **Apply scaling themselves** — KDE tells XWayland the full physical resolution; DPI-aware X11 apps scale correctly; DPI-unaware apps appear tiny.
+2. **Scale by compositor** — KDE upscales the 1× XWayland surface; all X11 apps look approximately right but blurry.
+
+### Cursor Warping Under Fractional Scale
+
+X11 applications frequently use `XWarpPointer` to teleport the cursor — used by games (camera lock), IDEs (keeping focus inside a widget), and older dialog boxes (snapping focus to a button). On Wayland, absolute pointer warping is not possible for security reasons; only relative motion is supported.
+
+XWayland emulates pointer warping by:
+1. Locking the pointer via `zwp_relative_pointer_manager_v1` and `zwp_pointer_constraints_v1`.
+2. Reporting to the X11 application that the warp succeeded (lying about pointer coordinates).
+3. Using relative motion events to move the pointer to the target position.
+
+Under fractional scaling, warp emulation has an additional complication: the conversion between X11 pixel coordinates (which are at the virtual screen's scale) and Wayland surface coordinates (logical pixels) must account for the scale factor. A misaligned coordinate transform in this path causes clicks and input events to land at visually incorrect positions — the well-known "click-through" bug observed in early GNOME fractional scaling patches. [Source: XWayland pointer warp emulation](https://lists.x.org/archives/xorg-devel/2016-April/049351.html) [Source: XWayland pointer coordinate fix](https://www.webpronews.com/xwayland-patch-fixes-pointer-coordinate-glitches-in-x11-on-wayland/)
+
+### Pointer Precision Limitations
+
+Because XWayland's virtual screen is at an integer scale (either 1× logical, or 2× for server-side scaling), pointer coordinates reported to X11 clients are always integers in that integer-scale space. At 1.5× compositor scale, this means:
+
+- Wayland delivers pointer coordinates at sub-logical-pixel precision (wl_fixed_t, 1/256 logical pixel).
+- XWayland quantises these to the nearest integer in X11 coordinate space, losing sub-pixel precision.
+- For 1.5× server-side scaling (screen at 2×), the quantisation error is ±0.5 × (1/2) = ±0.25 logical pixels — acceptable for most UI.
+- For 1× server-side scaling (no upscale), the quantisation error is ±0.5 logical pixels — significant for precision tasks like vector drawing or competitive gaming.
+
+Native Wayland clients do not have this limitation: `wl_pointer.motion` delivers `wl_fixed_t` coordinates, and the application can handle them with full sub-pixel precision.
+
+---
+
+## GPU Implications of Fractional Scaling
+
+### How the GPU Compositor Samples Surface Buffers
+
+In a GPU-composited Wayland session (wlroots with wlr_gles2_renderer or wlr_vulkan_renderer; Mutter with Cogl/GL; KWin with its OpenGL scene), each surface buffer is uploaded to the GPU as a texture. The compositor's render pass samples this texture and writes to the framebuffer at the physical pixel grid of the output.
+
+For a surface at 1.5× scale:
+- **Buffer** (texture): `ceil(logical_w × 1.5) × ceil(logical_h × 1.5)` physical pixels.
+- **Viewport destination** (on-screen): `logical_w × logical_h` logical pixels = `logical_w × 1.5 × logical_h × 1.5` physical pixels.
+- **Sampling ratio**: texture texels map 1:1 to output pixels — **no resampling occurs** for a correctly-authored `wp_fractional_scale_v1` surface.
+
+This is the key insight: when a native client renders at the exact physical pixel size dictated by `ceil(logical × scale / 120)`, the compositor maps each texture texel to exactly one framebuffer pixel. No bilinear filtering is needed and no resolution is lost. [Source: fractional-scale-v1 protocol wayland.app](https://wayland.app/protocols/fractional-scale-v1)
+
+### When Resampling Occurs
+
+Resampling is unavoidable in three situations:
+
+1. **Non-supporting clients** — the application renders at an integer scale (1× or 2×) and the compositor must rescale. At 1.5× output scale with a 1× client buffer, the compositor upscales by 1.5×, which requires bilinear or higher-quality filtering.
+
+2. **Window movement to a different output** — while the client re-renders at the new scale, the compositor must continue displaying the old buffer, scaled to the new output's coordinate space. The transient duration is typically 1–3 frames.
+
+3. **Surfaces spanning two outputs with different scales** — the same buffer must appear on two outputs simultaneously. The compositor renders it at the scale dominant on each output, applying a different sampling transform per output. This is unavoidable and always involves at least one resampled output.
+
+### Filter Selection: Nearest vs. Bilinear
+
+The wlroots scene graph (via `wlr_render_texture_options.filter_mode`) offers:
+
+```c
+/* wlroots render pass: per-surface filter selection */
+struct wlr_render_texture_options opts = {
+    .texture = surface_texture,
+    .src_box = { 0, 0, buf_w, buf_h },
+    .dst_box = { x, y, logical_w, logical_h },
+
+    /* For pixel-art content or games that want integer scaling: */
+    .filter_mode = WLR_SCALE_FILTER_NEAREST,
+
+    /* For standard UI surfaces (default): */
+    /* .filter_mode = WLR_SCALE_FILTER_BILINEAR, */
+};
+wlr_render_pass_add_texture(pass, &opts);
+```
+
+[Source: wlroots render pass header](https://kennylevinsen.pages.freedesktop.org/wlroots/wlr/render/pass.h.html)
+
+Practical guidance:
+- **Bilinear** (default): smoothly interpolates between source texels. Produces no pixel-border artefacts at fractional scales. Appropriate for vector-rendered UI, text, photos.
+- **Nearest-neighbour**: maps each destination pixel to the nearest source texel with no blending. Preserves hard pixel edges — correct for pixel-art games, retro emulators. Produces staircase artefacts on non-integer scale factors.
+- **Lanczos** (KWin option, not in wlroots): a higher-quality reconstruction filter that reduces ringing compared to simple bilinear. Higher computational cost; KWin applies it selectively for upscaling legacy surfaces.
+
+Trilinear filtering (bilinear + mipmapping) is not commonly used for compositor surface scaling because surfaces are displayed at essentially one scale per frame; the mipmap's multi-level benefit applies only when a surface is displayed at a range of scales simultaneously (which occurs in 3D engines, not 2D compositors).
+
+### Performance Impact in the Compositor Render Loop
+
+The GPU cost of fractional scaling depends on which path is taken:
+
+| Scenario | GPU cost relative to 1× |
+|---|---|
+| Native `wp_fractional_scale_v1` client, 1:1 texel mapping | 1.0× (zero additional cost) |
+| 1× client upscaled to 1.5× with bilinear | ~1.5× (more output pixels to fill) |
+| 2× client downscaled to 1.5× with bilinear | ~1.5× (more source pixels to read) |
+| Overscale path: 2× render then compositor downscale to 1.5× | ~1.78× (2×2 / 1.5×1.5 pixel overhead) |
+
+The overscale path (old GNOME pre-`wp_fractional_scale_v1`) was particularly expensive: requesting a client to render at 2× generates a buffer with 4× the pixel count of a 1× buffer, even though only 2.25× pixel count (1.5²) is needed on screen. Pixel shaders execute once per source pixel, so the wasted work is proportional to (2/1.5)² ≈ 1.78×. [Source: Shuhao Wu fractional scaling blog](https://shuhaowu.com/blog/2025/01-fractional-scaling.html)
+
+For Vulkan-based compositors (Hyprland's wlroots fork, experimental KWin Vulkan path), surface buffers are sampled via `VkSampler` with `VK_FILTER_LINEAR` or `VK_FILTER_NEAREST`. The Vulkan path enables additional optimisations:
+- **VK_FILTER_CUBIC_IMG** (where supported): higher-quality bicubic filter for legacy surface upscaling.
+- **Explicit GPU timeline synchronisation** (`VkSemaphore` timelines): eliminates CPU-GPU round-trips for buffer ready/release, reducing frame latency on multi-GPU setups.
+
+> **Note: needs verification** — Hyprland's Vulkan renderer uses `VK_FILTER_LINEAR` by default for fractional-scale compositing. The exact `VkSamplerCreateInfo` configuration should be confirmed against the Hyprland source at `src/render/OpenGL.cpp` or equivalent Vulkan source.
 
 ---
 
