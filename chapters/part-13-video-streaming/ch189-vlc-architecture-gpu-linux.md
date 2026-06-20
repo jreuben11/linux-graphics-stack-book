@@ -11,7 +11,7 @@
 1. [VLC Architecture Overview](#vlc-architecture-overview)
 2. [Demux and Input Layer](#demux-and-input-layer)
 3. [Hardware Video Decode — VA-API Path](#hardware-video-decode--va-api-path)
-4. [V4L2 Hardware Decode Path](#v4l2-hardware-decode-path)
+4. [Embedded Hardware Decode — V4L2 and MMAL Paths](#v4l2-hardware-decode-path)
 5. [Video Output — Wayland Zero-Copy Path](#video-output--wayland-zero-copy-path)
 6. [Video Output — Vulkan Renderer (VLC 4.0 master)](#video-output--vulkan-renderer-vlc-40-master)
 7. [OpenGL/EGL Renderer](#openglegl-renderer)
@@ -300,7 +300,7 @@ VLC's module bank selects the VA-API decoder automatically based on score (800 f
 
 ---
 
-## V4L2 Hardware Decode Path
+## Embedded Hardware Decode — V4L2 and MMAL Paths
 
 ### Module Location
 
@@ -975,7 +975,7 @@ This chapter connects directly to the following chapters:
 
 - **Chapter 24 — Vulkan**: Section 6 uses `VK_EXT_external_memory_dma_buf`, `VK_EXT_image_drm_format_modifier`, `VK_KHR_wayland_surface`, and `VkSwapchainKHR` — covered in depth in Chapter 24.
 
-- **Chapter 142 — V4L2 Media Subsystem**: VLC's V4L2 codec and access modules (Section 4) use the M2M API, `VIDIOC_QBUF`/`DQBUF`, and DMA-BUF export described in Chapter 142.
+- **Chapter 142 — V4L2 Media Subsystem**: VLC's V4L2 camera access module and the V4L2 M2M API that underlies embedded decode (via FFmpeg's V4L2 hwaccel on SoCs like Rockchip and AllWinner) are described in Chapter 142. The `VIDIOC_QBUF`/`DQBUF` cycle, DMA-BUF export, and stateless codec control sets are covered there. VLC's Raspberry Pi path uses MMAL (`modules/hw/mmal/`) rather than V4L2 directly.
 
 - **Chapter 158 — HDR Display**: libplacebo's PQ→SDR tone mapping (Sections 6, 10) and the display stack requirements for HDR10 and HLG output are covered in Chapter 158.
 
