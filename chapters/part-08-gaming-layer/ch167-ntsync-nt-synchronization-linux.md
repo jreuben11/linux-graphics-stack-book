@@ -534,6 +534,31 @@ The consensus in the kernel community is that ntsync presents no privilege escal
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Default device permissions fix in the kernel.** The `/dev/ntsync` character device shipped with mode `0600` in Linux 6.14, requiring a udev rule for non-root access. Kernel maintainer Greg Kroah-Hartman indicated openness to accepting a patch relaxing the default; a resolution — either in-kernel mode change or a standardized udev rule shipped with systemd — is expected to land in a near-term kernel release. [Source](https://www.phoronix.com/news/Linux-NTSYNC-Permissions-Issue)
+- **Flatpak permission model integration.** Flatpak 1.17.4 added support for enabling ntsync unconditionally as part of development toward the Flatpak 1.18 release, addressing the GitHub issue requesting explicit `--device=ntsync` permission instead of the blunt `--device=all` workaround. [Source](https://github.com/flatpak/flatpak/issues/6199)
+- **Proton 11 and Wine 11 stabilization.** Proton 11 (based on Wine 11, which merged ntsync support in its 10.15 development release) shipped in beta April–May 2026. Near-term work covers eliminating remaining regressions in frame-stutter patterns and ensuring the WoW64 architecture interoperates correctly with the ntsync dispatch path. [Source](https://www.phoronix.com/news/Wine-10.15-With-NTSYNC)
+- **Broader distro enablement.** Ubuntu 26.04 LTS ships Linux kernel 6.14+ with `CONFIG_NTSYNC=m` enabled by default, bringing ntsync to the largest LTS user base; similar work is tracked in Fedora's Changes/NTSYNC page and in openSUSE. [Source](https://fedoraproject.org/wiki/Changes/NTSYNC)
+- **Self-test coverage expansion.** The kernel selftests suite (`tools/testing/selftests/drivers/ntsync/`) already covers basic object operations; patches extending test coverage for edge cases in `NTSYNC_IOC_WAIT_ALL` with abandoned mutexes and alertable waits are expected as the driver matures. Note: needs verification for specific patchset status.
+
+### Medium-term (1–3 years)
+
+- **ARM64 / Steam Deck OLED and successor hardware.** Valve's Arm64 compatibility layer (shipping in Proton 11) brings Wine and ntsync to ARM Linux platforms. Medium-term work involves verifying that ntsync's spinlock and atomic operations behave correctly under ARM's weaker memory model and that performance characteristics hold on ARM SoCs used in handheld gaming devices. [Source](https://www.techpowerup.com/348297/steams-proton-gets-wine-11-gaming-performance-improvements-valve-launches-arm64-compatibility-layer)
+- **Anti-cheat ecosystem compatibility.** As ntsync becomes ubiquitous, anti-cheat modules (BattlEye, Easy Anti-Cheat) must be updated to recognize `/dev/ntsync` fds in game process fd tables as benign and to interact correctly with ntsync-dispatched synchronization rather than wineserver RPC. This is an ongoing negotiation between Valve/Wine developers and anti-cheat vendors (see Chapter 171).
+- **Container and sandbox integration.** Fully declarative per-app ntsync access in Flatpak, Toolbox, and Distrobox — analogous to how GPU device passthrough is modeled — requires coordinated work between the Flatpak runtime team, Steam's runtime container, and potentially a new `ntsync` portal in xdg-desktop-portal. Note: needs verification on specific portal proposal status.
+- **Wine Staging and community fork convergence.** With upstream Wine 11 shipping ntsync, the long-maintained esync/fsync patchsets in wine-staging and wine-tkg-git become redundant. Medium-term maintenance effort focuses on deprecating and eventually removing these out-of-tree synchronization backends while preserving fallback paths for kernels older than 6.14.
+
+### Long-term
+
+- **Possible extension to other NT object types.** The current driver covers semaphores, mutexes, and auto/manual-reset events — the core wait-any/wait-all primitives. Future NT object types used by newer Windows APIs (e.g., keyed events, I/O completion ports semantics as used by newer runtimes) could be added if Wine developers identify the wineserver as a bottleneck for those paths. Note: needs verification; no RFC is currently public.
+- **Integration with Linux futex2 and io_uring.** The kernel's synchronization primitive landscape continues to evolve: futex2 extensions and io_uring's `IORING_OP_FUTEX_WAIT` open architectural questions about whether ntsync's wait queues could eventually be expressed on top of, or composed with, these mechanisms rather than being a fully independent character device. This is speculative; current maintainers have not proposed such a unification.
+- **Upstreaming ntsync semantics for non-Wine use cases.** The vectored, multi-typed, state-mutating atomic wait that ntsync implements is a genuinely useful primitive for any multi-threaded application. Long-term, the kernel community may explore whether a generalized version of wait-all semantics (beyond the Wine-specific UAPI) belongs in a broader Linux synchronization framework. This remains a speculative direction without a current proposal.
+
+---
+
 ## 9. Integrations
 
 **Chapter 28 (Windows Compatibility: Wine and Proton).** This chapter provides the broader context of Wine's architecture: the wineserver, the NT emulation layer, DXVK, and the overall Proton stack. Ntsync is the synchronization enabler for that entire compatibility layer — without correct and fast synchronization semantics, no amount of translation quality in DXVK or VKD3D-Proton can compensate for wineserver bottlenecks. The dispatch table in `dlls/ntdll/unix/sync.c` that selects between ntsync, fsync, esync, and wineserver RPC is the same code path that Chapter 28's wineserver description terminates at.

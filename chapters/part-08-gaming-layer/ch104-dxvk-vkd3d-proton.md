@@ -773,6 +773,33 @@ This mechanism is how SteamOS manages shader compiler bug fixes on the Steam Dec
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **VK_EXT_descriptor_heap in VKD3D-Proton**: The VKD3D-Proton 3.0.1 release notes explicitly state that 3.0.1 is likely the last release before `VK_EXT_descriptor_heap` support lands, which will fundamentally improve how D3D12 descriptor heaps map to Vulkan — eliminating the need to emulate GPU-visible descriptor heaps via `VkDescriptorSet` copies. [Source](https://www.phoronix.com/news/VKD3D-Proton-3.0.1)
+- **NVIDIA DLSS4 integration for Proton**: While AMD FSR4 (via `VK_KHR_cooperative_matrix` / `VK_KHR_shader_float8`) landed in VKD3D-Proton 3.0/3.0.1, DLSS4 has no native Proton integration as of mid-2026. NVIDIA DLSS4 support is the most-requested outstanding feature for VKD3D-Proton; enabling it would require either NVAPI bridge work or a dedicated VKD3D-Proton extension interface. [Source](https://www.tomshardware.com/video-games/pc-gaming/vulkan-to-directx-12-translation-tool-used-in-valves-proton-now-supports-amds-fsr4-and-anti-lag-while-nvidias-dlss4-remains-unsupported-fsr4-now-also-works-on-older-gpus-vkd3d-proton-v3-0-brings-other-performance-improvements)
+- **DXVK-Sarek legacy GPU improvements**: The community fork DXVK-Sarek v1.12 (April 2026) added dyasync (async shader compilation) enabled by default for older hardware; near-term work continues on expanding Vulkan 1.1 compatibility shims for GPUs that cannot meet DXVK mainline's Vulkan 1.3 requirement. [Source](https://www.gamingonlinux.com/2026/04/gaming-on-linux-with-an-older-gpu-levels-up-with-dxvk-sarek-v1-12-bringing-major-new-features/)
+- **D3D12 Work Graphs promotion to stable**: Work graph support (`D3D12_WORK_GRAPHS`) landed in VKD3D-Proton 3.0 as experimental; stabilisation and enabling it by default for drivers that expose `VK_KHR_work_graphs` (or equivalent compute graph extensions) is expected in a near-term point release. Note: needs verification of exact extension name.
+- **Vulkan present timing integration**: VKD3D-Proton 3.0.1 added `VK_EXT_present_timing` support for smoother frame pacing; DXVK mainline is expected to adopt the same extension for D3D9/11 swap-chain paths. [Source](https://www.gamingonlinux.com/2026/05/vkd3d-proton-3-0-1-brings-many-linux-gaming-enhancements-for-direct3d-12-via-vulkan/)
+
+### Medium-term (1–3 years)
+
+- **Upstream vkd3d merge**: The DXBC shader backend rewrite in VKD3D-Proton 3.0 unified the DXBC frontend with DXVK's, creating a shared shader compiler path. A longer-term goal is to upstream enough of VKD3D-Proton's D3D12 improvements back into WineHQ's `vkd3d` so the two projects can share maintenance. [Source](https://9to5linux.com/vkd3d-proton-3-0-released-with-fsr4-support-dxbc-shader-backend-rewrite)
+- **Opacity micromap and ray tracing extensions**: `VK_EXT_opacity_micromap` (for compressed foliage and vegetation geometry) was exposed experimentally in VKD3D-Proton 3.0 for DXR titles; stabilisation as a production feature depends on driver support maturing across RADV, ANV, and NVK. [Source](https://www.phoronix.com/news/VKD3D-Proton-3.0)
+- **D3D12 view instancing and layered rendering**: View instancing (`D3D12_VIEW_INSTANCING_*`) was added experimentally in VKD3D-Proton 3.0.1; full stable support requires VR title validation and broader Vulkan multiview interaction testing. [Source](https://www.gamingonlinux.com/2026/05/vkd3d-proton-3-0-1-brings-many-linux-gaming-enhancements-for-direct3d-12-via-vulkan/)
+- **DXVK D3D8 completeness**: D3D8 support in DXVK is implemented as a thin shim over D3D9; medium-term work targets closing remaining fixed-function pipeline gaps in D3D8 that affect a subset of pre-2002 games not yet passing ProtonDB's Platinum bar.  Note: needs verification against open issue tracker.
+- **Mobile and Steam Deck GPU optimisations**: VKD3D-Proton 3.0.1 introduced deferred clears/discards and render-pass suspend-resume specifically for mobile GPU tile architectures (Steam Deck's AMD RDNA 2 APU). As Steam Deck 2 and next-generation handheld hardware arrives, both projects are expected to expand low-power-GPU tuning paths. [Source](https://www.phoronix.com/news/VKD3D-Proton-3.0.1)
+
+### Long-term
+
+- **DirectX 13 / next-generation D3D support**: Microsoft has not announced D3D13 publicly, but the VKD3D-Proton architecture has been structured to absorb new D3D12 feature levels incrementally (shader model 6.x tiers, enhanced barrier model). Any future D3D API generation would require new VKD3D-Proton feature tiers mapping to corresponding Vulkan extensions. Note: needs verification once D3D13 is formally announced.
+- **Full NVK (Mesa open-source NVIDIA) support**: NVK is an emerging Vulkan driver for NVIDIA hardware within Mesa; DXVK and VKD3D-Proton running on NVK is a stated use case. Long-term, as NVK matures toward feature-complete Vulkan 1.3 + extension coverage, it may become a supported first-class target alongside RADV and ANV. [Source](https://github.com/HansKristian-Work/vkd3d-proton)
+- **AI/ML upscaling ecosystem on Linux**: Beyond FSR4, the long-term roadmap for Proton gaming involves integrating neural upscaling (XeSS 2, DLSS 4's transformer model) through vendor API bridges. The architectural challenge is that these depend on vendor-specific inference backends (NVIDIA TensorRT, Intel OpenVINO) that have no Vulkan-native equivalent yet.
+- **Convergence with Wine's translation approach**: As Wine's own Vulkan and D3D infrastructure matures, there is community interest in whether DXVK and VKD3D-Proton's compile-time and runtime optimisations can be progressively adopted by the Wine project's default stack, reducing the need for Proton-specific forks. Note: needs verification of current Wine upstream discussions.
+
+---
+
 ## Integrations
 
 - **Chapter 28 (Windows Compatibility — Wine, DXVK, VKD3D)**: Chapter 28 provides an overview of the full Windows compatibility stack including Wine's architecture, DXVK's role within it, and practical usage. This chapter (104) is the deep-dive technical complement — covering DXVK and VKD3D-Proton architecture, shader translation internals, and Vulkan extension mechanics at a level of detail beyond what Chapter 28's overview can address. Readers encountering DXVK for the first time should start with Chapter 28; readers building on the translation layers should read both.

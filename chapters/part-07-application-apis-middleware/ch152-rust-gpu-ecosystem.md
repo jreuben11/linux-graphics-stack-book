@@ -543,6 +543,33 @@ WGPU_BACKEND=gl cargo run       # OpenGL fallback
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **wgpu stable API consolidation**: The gfx-rs project is working toward a stable 1.0 release of wgpu, with focus on API stability guarantees and reduced breaking changes across minor versions. [Source](https://wgpu.rs/)
+- **naga repository consolidation**: Following the RFC to merge naga into the wgpu monorepo ([Source](https://github.com/gfx-rs/wgpu/issues/4231)), naga continues development as an integrated but separately publishable crate within `gfx-rs/wgpu`, with improved WGSL validation and SPIR-V round-trip fidelity.
+- **rust-gpu community stewardship**: After Embark Studios handed off the project to community governance under the `Rust-GPU` GitHub organization ([Source](https://rust-gpu.github.io/blog/transition-announcement/)), the near-term priority is stabilising the rustc SPIR-V backend and expanding test coverage for Vulkan compute shaders.
+- **wgpu WebGPU spec compliance**: As the WebGPU specification stabilises in browsers, wgpu's `wgpu-core` (used as Firefox's WebGPU implementation) is tracking spec changes to keep browser and native backends in sync. Note: needs verification of specific milestone.
+- **gpu-allocator TLSF improvements**: Ongoing refinements to the TLSF sub-allocator to reduce fragmentation and add D3D12 backend support alongside the existing Vulkan/Metal paths. [Source](https://github.com/Traverse-Research/gpu-allocator)
+
+### Medium-term (1–3 years)
+
+- **wgpu bindless and ray-tracing extensions**: There is active discussion in the gfx-rs community about exposing `VK_KHR_ray_tracing_pipeline` and bindless resource models via opt-in `wgpu::Features` flags, analogous to how mesh-shader support (`POLYGON_MODE_LINE`, `MULTI_DRAW_INDIRECT`) was progressively added. Note: no merged implementation confirmed at time of writing.
+- **rust-gpu DXIL and WGSL targets**: The community rust-gpu roadmap lists potential support for DXIL (Direct3D shader bytecode) and WGSL as additional compiler output targets beyond the current SPIR-V backend, enabling Rust shaders on non-Vulkan platforms. [Source](https://github.com/EmbarkStudios/rust-gpu/issues/47)
+- **naga GLSL front-end stability**: naga's GLSL ingestion path is considered less mature than WGSL/SPIR-V; medium-term work targets full GLSL 4.5/4.6 coverage so existing shader assets can be translated without hand-editing.
+- **vulkano 1.0 type-system hardening**: The vulkano project aims to encode additional Vulkan validity constraints (pipeline compatibility, render-pass compatibility) in Rust's type system to eliminate a remaining class of runtime panics. Note: needs verification of current milestone status.
+- **Bevy renderer rewrite (Bevy 0.16+)**: Bevy's render architecture is undergoing modularisation (retained render world, async pipeline compilation) that feeds back into wgpu feature requests around pipeline caching and async GPU resource uploads. [Source](https://bevyengine.org/)
+
+### Long-term
+
+- **Safe Rust Vulkan abstractions at zero cost**: The broader ecosystem goal is to close the ergonomics and performance gap between `ash` (fully unsafe, zero-overhead) and `wgpu` (safe but abstracted), potentially via a mid-level crate that encodes Vulkan synchronisation and resource lifetimes as Rust types without hiding API concepts.
+- **Rust shaders in production engines**: As rust-gpu matures, a long-term goal is first-class shader authoring in Rust for production game engines (Bevy being the leading candidate), removing the impedance mismatch of writing game logic in Rust and shaders in WGSL/GLSL.
+- **WebGPU on Linux without a browser**: wgpu's native Vulkan backend could serve as the WebGPU implementation layer for Linux desktop applications, allowing the same WGSL shaders to target both the browser (via `wasm32`) and a native Linux Vulkan driver without any code change.
+- **Cooperative matrix and ML inference in wgpu**: Long-term, extensions such as `VK_KHR_cooperative_matrix` and `VK_NV_cooperative_matrix2` may be exposed through wgpu's feature flag system, enabling GEMM-optimised shaders for ML inference workloads written in safe Rust. Note: no timeline confirmed.
+
+---
+
 ## Integrations
 
 - **Ch19 (Vulkan Architecture)** — `ash` exposes identical Vulkan concepts to the C API; instance, device, command buffers, pipelines map 1:1

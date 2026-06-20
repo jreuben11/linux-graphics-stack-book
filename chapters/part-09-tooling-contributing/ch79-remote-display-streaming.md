@@ -1004,6 +1004,33 @@ Total GPU benefit for a 4K/60 pipeline: roughly **35–40 ms** end-to-end latenc
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Vulkan Video AV1 encode in game streaming**: Sunshine's Vulkan Video encode path (landed April 2026 for H.264/HEVC) is being extended to AV1 via `VK_KHR_video_encode_av1`; FFmpeg 8.0 already ships the `av1_vulkan` encoder and GStreamer's `vulkanh264enc` element is maturing. Full cross-driver AV1 streaming at 4K/60 over Moonlight is the near-term goal. [Source](https://www.phoronix.com/forums/forum/software/linux-gaming/1626828-sunshine-game-streaming-introduces-vulkan-video-encode-support)
+- **Event-driven XDG portal capture in Sunshine**: The new `xdg-desktop-portal` ScreenCast backend added in Sunshine v2026.516 captures frames as soon as the compositor renders them rather than at a fixed polling interval, improving frame pacing and reducing capture latency. Further integration work to make this the default path on Wayland compositors that implement `ext-image-copy-capture-v1` is underway. [Source](https://www.gamingonlinux.com/2026/05/sunshine-game-streaming-tool-adds-vulkan-encoding-plus-xdg-pipewire-and-kwin-direct-screencast-capture/)
+- **KWin direct screencast capture**: Sunshine v2026.516 added a KWin-specific screencopy path bypassing the portal D-Bus round-trip, reducing capture overhead on KDE Plasma/Wayland desktops. Hyprland and other wlroots-derived compositors are expected to follow via `ext-image-copy-capture-v1`. [Source](https://www.gamingonlinux.com/2026/05/sunshine-game-streaming-tool-adds-vulkan-encoding-plus-xdg-pipewire-and-kwin-direct-screencast-capture/)
+- **GNOME Remote Desktop on Ubuntu 26.04 / Wayland-only distros**: With Ubuntu 26.04 LTS dropping X11 server support, `gnome-remote-desktop`'s Wayland RDP path (PipeWire + libei + FreeRDP) is the only remaining remote desktop path on major distros. Near-term work focuses on GDM headless login reliability, multi-monitor support, and reducing black-screen-on-connect regressions. [Source](https://terrencemiao.github.io/blog/2026/06/02/Gnome-Remote-Desktop-on-Ubuntu-26-04/)
+- **PipeWire `SPA_META_SyncTimeline` DRM syncobj adoption**: OBS 31 introduced explicit GPU synchronisation using DRM syncobj timeline fds to eliminate `glFinish()` stalls in the PipeWire capture path. Broader adoption across other PipeWire consumers (GNOME Remote Desktop, Chromium's PipeWire capturer) is planned for 2026. Note: needs verification for specific consumer timelines.
+
+### Medium-term (1–3 years)
+
+- **`ext-image-copy-capture-v1` as the universal Wayland capture protocol**: The `wlr-screencopy-unstable-v1` protocol is in maintenance mode and `ext-image-copy-capture-v1` is the agreed successor in the Wayland protocol registry. All major compositors (Mutter, KWin, wlroots, Mir) are expected to implement it, unifying the capture backend for Sunshine, xdg-desktop-portal-wlr, and OBS without requiring compositor-specific forks. [Source](https://wayland.app/protocols/ext-image-copy-capture-v1)
+- **Vulkan Video decode acceleration in Moonlight**: Moonlight-Qt currently uses VA-API, NVDEC, and VDPAU for hardware-accelerated decode. A Vulkan Video decode path (`VK_KHR_video_decode_h264`, `VK_KHR_video_decode_av1`) would unify decode across vendor drivers and is feasible once FFmpeg's Vulkan decode path matures. Note: needs verification against Moonlight roadmap issues.
+- **RDP over Wayland without X11 fallback (xrdp)**: `xrdp` historically required an X11 session as its display backend. A native Wayland backend using `ext-image-copy-capture-v1` and libei for input is a medium-term design goal discussed in the xrdp community, enabling headless Wayland sessions over RDP without Xwayland. Note: needs verification against xrdp upstream tracking issues.
+- **HDR 10-bit streaming end-to-end (P010 / BT.2020)**: With KMS capture now supporting 10-bit DRM formats and VA-API gaining BT.2020/PQ encode profiles, Sunshine and Moonlight are working toward a complete HDR pipeline where the EDID of the virtual display signals HDR capability, the compositor tone-maps or passes through in P010, and the client renders with HDR output on OLED/HDR displays. [Source](https://www.phoronix.com/news/Sunshine-v2026.413.143228)
+- **WebRTC-based browser game streaming**: Replacing the proprietary RTSP/RTP transport in Sunshine with a WebRTC path (ICE + DTLS-SRTP) would allow browser clients to stream without installing Moonlight. PipeWire integration with GStreamer's `webrtcsink` element is a candidate implementation path. Note: needs verification against Sunshine WebRTC tracking issues.
+
+### Long-term
+
+- **GPU-direct NIC streaming (zero-copy to network)**: For ultra-low-latency LAN game streaming, a path from KMS DMA-BUF directly to RDMA/GPUDirect NIC memory (bypassing CPU and system RAM) is theoretically possible with `p2p_dma` kernel infrastructure and NVIDIA GPUDirect or AMD XGMI-equivalent technology. This eliminates the encode→system-memory→kernel-send copy chain, targeting sub-5 ms end-to-end latency. Note: needs verification; no production implementation exists as of mid-2026.
+- **AI-assisted adaptive super-resolution in streaming**: Client-side neural super-resolution (comparable to NVIDIA DLSS or AMD FSR on the client GPU) applied to a lower-bitrate stream could dramatically reduce bandwidth requirements for 4K streaming. Moonlight's renderer architecture (pluggable `FFmpegVideoDecoder` + renderer chain) is architecturally suited to inserting a post-decode upscale pass via Vulkan compute. Note: needs verification against Moonlight roadmap.
+- **Federated cloud gaming with DRM-free open protocols**: Long-term, the community is interested in open alternatives to proprietary cloud gaming (GeForce NOW, Xbox Cloud) built on Sunshine + Moonlight + open codecs (AV1) + WebRTC, potentially with decentralised session brokering. The infrastructure pieces (Vulkan Video AV1 encode, WebRTC transport, open session protocols) are converging, but a production-grade open cloud gaming stack remains a 3–5 year horizon. Note: speculative.
+- **Wayland remote desktop with full GPU passthrough isolation**: Paravirtualized GPU streaming (virtio-gpu-venus for Vulkan, virtio-gpu for display) combined with Wayland-native remote desktop could enable isolated multi-tenant GPU sharing for cloud workstations without the security risks of full VFIO passthrough. This requires kernel virtio-gpu Vulkan completeness and compositor integration that remains under active research. Note: needs verification.
+
+---
+
 ## 11. Integrations
 
 This chapter connects to the following chapters throughout the book:

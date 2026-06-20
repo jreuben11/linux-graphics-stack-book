@@ -1335,6 +1335,32 @@ The trajectory is clear: as inference workloads push toward smaller, more numero
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **rusticl OpenCL 3.0 extension broadening**: Mesa's rusticl continues gaining optional OpenCL 3.0 features; planned work includes wider `cl_khr_subgroups` coverage across radeonsi and iris, and expanded `cl_khr_external_memory_dma_buf` conformance to unblock zero-copy VA-API → OpenCL pipelines. [Source](https://docs.mesa3d.org/rusticl.html)
+- **ROCm 8.0 and TheRock build system**: AMD's TheRock project targets ROCm 8.0 for mid-2026 with first-class gfx1151 (Strix Halo / Ryzen AI Max) support and official PyTorch wheels built from the unified source tree, lowering the barrier for consumer-GPU ROCm adoption. [Source](https://github.com/ROCm/ROCm/releases)
+- **io_uring DRM/accel uring_cmd landing**: The RFC patchset adding `IORING_OP_URING_CMD` support to DRM accelerator drivers (first demonstrated on the Qualcomm Cloud AI and Panthor paths) is expected to progress toward mainline inclusion in Linux 6.13–6.15, reducing per-dispatch syscall overhead for inference serving. [Source](https://www.phoronix.com/news/IO_uring-DRM-Accelerator-2025)
+- **ROCm XIO accelerator-initiated I/O**: Introduced as an early-access technology preview in April 2026, ROCm XIO provides a GPU-side API for direct I/O to hardware devices without CPU intervention, targeting storage-to-GPU data-loading pipelines for large-model inference. [Source](https://www.mindstudio.ai/blog/running-local-ai-amd-rocm-ollama-lm-studio)
+- **Vulkan 1.4 compute shader subgroup extensions in Mesa**: ANV (Intel Vulkan) and RADV continue rolling out `VK_EXT_shader_subgroup_uniform_control_flow` and `VK_KHR_shader_maximal_reconvergence`, which are baseline in Vulkan 1.4 and relevant to ML inference kernels written in GLSL/SPIR-V. Note: exact per-driver landing versions need verification.
+
+### Medium-term (1–3 years)
+
+- **Unified DRM/accel submission model**: Arm's XDC 2025 proposal and the Panthor io_uring exploration point toward a kernel-wide rework of command submission that collapses the current `DRM_IOCTL_*_SUBMIT` proliferation into a single `uring_cmd`-based interface, enabling user-space schedulers for heterogeneous workloads. [Source](https://indico.freedesktop.org/event/6/contributions/309/)
+- **AMD UDNA architecture — CDNA/RDNA convergence**: AMD's planned UDNA microarchitecture (expected consumer cards 2027) unifies the CDNA (compute) and RDNA (graphics) design, bringing FP8 matrix acceleration to gaming GPUs and simplifying the ROCm/HIP kernel path, which currently maintains separate AMDKFD code paths for compute-class hardware. [Source](https://runlocalmodel.com/amd-radeon-rocm-local-llm-2026.html)
+- **Linux HMM and SVM maturity for APU workloads**: Ongoing work in `drivers/gpu/drm/amd/amdkfd/kfd_svm.c` to harden HMM-backed SVM on APU platforms (Steam Deck successor, Ryzen AI) — covering large-model weight streaming and multi-process fault isolation — is tracked in the amdkfd issue queue on freedesktop GitLab. Note: specific issue numbers need verification.
+- **SYCL / oneAPI broader hardware targets**: Intel's DPC++ compiler is adding ROCm and CUDA backend plugins to make SYCL a credible single-source alternative for HPC portability; the Level Zero backend on Intel GPUs is expected to reach feature parity with the CUDA plugin within this window. Note: release timeline needs verification.
+- **OpenCL `cl_khr_semaphore` and `cl_khr_command_buffer` promotion**: Khronos is advancing these two provisional extensions toward ratified status; `cl_khr_command_buffer` in particular enables GPU-side re-execution of recorded command sequences (analogous to Vulkan secondary command buffers), which rusticl is prototyping. [Source](https://registry.khronos.org/OpenCL/extensions/cl_khr_external_memory.html)
+
+### Long-term
+
+- **Convergence of GPU compute and NPU accel subsystems**: The DRM/accel subsystem (housing amdxdna, Qualcomm Cloud AI, Rockchip NPU drivers) is expected to grow into the canonical home for all non-graphics accelerators; long-term proposals envision a unified scheduling layer visible to user-space as a single heterogeneous device, abstracting GPU, NPU, and DSP behind a common fence/timeline API. [Source](https://dri.freedesktop.org/docs/drm/accel/index.html)
+- **Vulkan compute as the universal inference substrate**: Projects such as llama.cpp, GGML, and IREE already treat Vulkan compute as the cross-vendor fallback when CUDA and ROCm are unavailable; the longer-term trajectory is for Vulkan compute (with `VK_KHR_cooperative_matrix` for matrix acceleration) to become a first-class ML target with performance approaching vendor-specific stacks on discrete GPUs. Note: cooperative matrix adoption timeline across Mesa drivers needs verification.
+- **Disaggregated GPU memory and CXL-attached accelerators**: As CXL 3.x enables host-managed device memory (HDM) with cache coherency, future Linux GPU drivers may expose CXL-attached HBM as a DMA-BUF heap, blurring the line between system RAM, ReBAR, and device-local memory — with HMM providing the page-fault infrastructure. Note: kernel CXL/GPU integration is at an early RFC stage as of mid-2026.
+
+---
+
 ## 11. Integrations
 
 This chapter connects to several other chapters in the book:

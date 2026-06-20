@@ -860,6 +860,33 @@ Microsoft's dzn Vulkan driver continues to improve toward Vulkan 1.3 full confor
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **dxgkrnl v4 mainline review resolution**: The v4 patch series (55 patches) submitted to LKML in March 2026 is under active review. Key reviewer concerns — WDDM D3DKMT ABI coupling, absence of DRM integration, and Hyper-V-only utility — must be addressed before acceptance. A v5 reroll addressing these issues is expected; outcome could be conditional merge under `drivers/hv/` or continued deferral. [Source](https://lkml.iu.edu/2603.2/09609.html)
+- **WSL2 kernel 6.18.y stability series**: The active `linux-msft-wsl-6.18.y` branch continues to ship stable-kernel backports (e.g., the dxgkrnl sync fix in 6.18.33.1). Point releases are expected to continue at roughly monthly cadence through late 2026. [Source](https://windowsnews.ai/article/wsl-kernel-618331-delivers-critical-dxgkrnl-sync-fix-and-linux-61833-update.423194)
+- **dzn Vulkan 1.3 conformance push**: Microsoft's dzn ("Dozen") Vulkan-on-D3D12 driver continues accumulating extensions and conformance test fixes. The trajectory targets full Vulkan 1.3 conformance in Khronos CTS, removing the testing-only advisory and making dzn a first-class Vulkan ICD for WSL2 workloads. Note: no official milestone date is published.
+- **Mesa 26.x D3D12 Gallium improvements**: Mesa 26.1 (May 2026) shipped additional Vulkan and OpenGL extension coverage across the D3D12 backend; Mesa 26.2 and 26.3 are expected to close remaining OpenGL 4.6 feature gaps and improve shader compilation throughput via the NIR→DXIL pipeline. [Source](https://www.linuxcompatible.org/story/mesa-2610-released)
+- **WSLg RDP presentation path optimisation**: WSLg's architecture routes rendered frames through an RDP stream back to the Windows compositor, incurring a VRAM→system-memory copy. Near-term work is expected to reduce this overhead via shared-memory presentation on unified-memory architectures (integrated GPUs, NPUs). [Source](https://github.com/microsoft/wslg)
+
+### Medium-term (1–3 years)
+
+- **Virtio-GPU rutabaga as a potential dxgkrnl successor**: The Rust-based `rutabaga_gfx` framework — a standards-conformant VirtIO-GPU transport supporting Vulkan via host-visible memory and gfxstream — is tracked in upstream QEMU and the Linux kernel. Microsoft engineers have discussed rutabaga as a longer-term replacement for the bespoke dxgkrnl VMBus protocol, which would give WSL2 a mainline-kernel GPU driver without vendor-specific patches. [Source](https://github.com/magma-gpu/rutabaga_gfx/issues/24)
+- **SR-IOV GPU partitioning for WSL2**: Current GPU-P uses software partitioning (WDDMv2.9); Microsoft and GPU vendors are evaluating hardware SR-IOV virtual functions as a higher-isolation, lower-latency GPU access path for enterprise WSL2 deployments. This would allow per-VM GPU quotas and stronger scheduling guarantees than the current shared-scheduler model. Note: needs verification from public Microsoft roadmap sources.
+- **Improved multi-GPU and device selection**: Current WSL2 multi-GPU support does not expose per-GPU container assignment (`--gpus device=N` semantics). Medium-term work aims to expose individual `DxCore` adapter handles as selectable compute devices in ROCm, CUDA, and DirectML runtimes, matching the per-device control available natively. Note: needs verification.
+- **ROCm and oneAPI parity with native Linux**: AMD ROCm 7.2 introduced WSL2 support via `libdxcore.so`; further ROCm releases are expected to close the gap on features requiring `/dev/kfd` (e.g., HSA topology queries, P2P NVLink-equivalent transfers). Intel oneAPI DPC++ WSL2 support is similarly maturing. [Source](https://windowsnews.ai/article/microsoft-revives-dxgkrnl-for-linux-gpu-virtualization-in-wsl2-after-years-of-quiet-development.406197)
+- **VirtIO-GPU virgl removal and native Vulkan-only path**: Mesa 26.1 officially dropped VirGL support; the industry is converging on native Vulkan guest drivers (e.g., NVK, RADV, ANV) paired with virtio-gpu for non-WSL2 VM guests, which indirectly pushes WSL2 toward a cleaner Vulkan-native stack on both the Mesa and runtime sides. [Source](https://kernel-recipes.org/en/2025/schedule/modernizing-virtio-gpu/)
+
+### Long-term
+
+- **Unified memory model across VM boundary**: The fundamental performance ceiling in WSL2 GPU use is the VM memory boundary — GPU allocations in the Linux guest are shadowed on the Windows host, and UVM (Unified Virtual Memory) semantics are unavailable for CUDA. Long-term architectural work on Hyper-V enlightened IOMMU and coherent cross-partition memory could enable true zero-copy GPU memory sharing, unlocking CUDA UVM and enabling peer-to-peer transfers between WSL2 and Windows GPU processes.
+- **DRM integration for dxgkrnl**: Kernel maintainers have consistently requested that dxgkrnl integrate with the DRM subsystem (exposing a `drm_device`, GEM buffer objects, DMA-fence interop). Long-term, such integration would allow standard Linux GPU tooling (`nvidia-smi`, `radeontop`, `intel_gpu_top`, Vulkan WSI via GBM) to work inside WSL2, significantly closing the gap with native Linux. Note: this is a major architectural rework of the current design.
+- **WSL2 as a first-class Linux desktop environment**: Microsoft's stated long-term direction for WSLg is to reduce perceptible latency and visual fidelity gaps between WSLg and a native Wayland desktop. Speculative architectural goals include Wayland protocol compositing directly over the Windows Desktop Window Manager (DWM) without the intermediate RDP hop, and support for DRM leasing for VR/XR headsets connected to Windows systems.
+- **CUDA and ROCm containerisation maturity**: As Kubernetes and OCI container runtimes mature their WSL2 GPU backend support, long-term goals include full `nvidia-container-toolkit` feature parity (MIG partitioning, GPU time-slicing, NVML telemetry) and matching AMD ROCm container semantics under WSL2-backed Docker Desktop. Note: needs verification from vendor container roadmap announcements.
+
+---
+
 ## Integrations
 
 **Chapter 1 (DRM Architecture)**: DRM is notably absent in WSL2. `dxgkrnl` is a complete replacement: there is no `drm_driver`, no GEM, no KMS, no `drm_device`. Developers expecting `/dev/dri/` nodes will find them absent; all GPU access goes through `/dev/dxg`.

@@ -1081,6 +1081,33 @@ The dominant sources of variance are the compositor's frame scheduling (whether 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **HID-BPF as the standard quirk path.** The `udev-hid-bpf` tooling (written in Rust by Peter Hutterer and Benjamin Tissoires at Red Hat) is maturing toward being the canonical path for shipping per-device input fixes without kernel driver patches. Kernel 6.11 added new HID-BPF helpers and hooks; expect the approach to displace many entries in the libinput quirks database for hardware-level fixups. [Source: Phoronix udev-hid-bpf](https://www.phoronix.com/news/udev-hid-bpf) [Source: kernel HID-BPF docs](https://docs.kernel.org/hid/hid-bpf.html)
+- **libei / EIS stabilisation and wider compositor adoption.** `libei` 1.0 declared its C API and protocol stable; the near-term work is integrating the `org.freedesktop.portal.InputCapture` portal into additional compositors (KDE Plasma, Hyprland) and KVM-over-IP tools such as Input Leap. [Source: libei 1.0 announcement](https://lists.freedesktop.org/archives/wayland-devel/2023-May/042717.html) [Source: Phoronix libei 1.0 RC](https://www.phoronix.com/news/libei-1.0-RC)
+- **`zwp_input_timestamps_v1` promotion to stable.** The nanosecond-resolution input timestamp protocol remains in the `unstable/` tree despite widespread compositor support; a promotion MR to `stable/` is an expected near-term housekeeping step. Note: needs verification for exact timeline.
+- **High-frequency gaming mouse support improvements.** Mice reporting at 4000–8000 Hz (e.g., Razer HyperPolling, Logitech LIGHTSPEED at 2000 Hz) stress the `evdev_client` ring buffer and libinput batching model; kernel and libinput work to correctly handle burst event accumulation at these rates is ongoing. Note: needs verification.
+- **Bluetooth LE HID support hardening.** The `hid-btle` and BlueZ HID host profile continue to gain fixes for LE Audio controllers and next-generation Bluetooth 5.4 HID devices that use the new HOGP extensions. Note: needs verification.
+
+### Medium-term (1–3 years)
+
+- **Wayland pointer-constraints promotion and extension.** The `pointer-constraints-unstable-v1` protocol, in unstable/ since 2016, is a candidate for stabilisation and potential extension with region-warp semantics used by game engines and remote-desktop tools. Discussion exists in the `wayland-protocols` GitLab issues. Note: needs verification for specific MR numbers.
+- **Touchscreen gesture recognition in libinput.** Currently libinput passes raw touch points to compositors for gesture interpretation; there is a long-standing design discussion about whether libinput should recognise touchscreen (as opposed to touchpad) swipe and pinch gestures centrally. [Source: libinput gestures documentation](https://wayland.freedesktop.org/libinput/doc/latest/gestures.html)
+- **eBPF-based pointer acceleration.** Extending HID-BPF from report fixups to pointer acceleration curves would allow per-device, user-space-loaded acceleration profiles without compositor changes — a design direction discussed informally on input-related mailing threads. Note: needs verification.
+- **Unified `wp_input_device` stable protocol.** There are proposals to expose richer input device metadata (vendor/product, device type, capability sets) to Wayland clients through a stable protocol, enabling clients to adapt UI to the available input modalities without consulting libinput directly. Note: needs verification.
+- **Pressure-sensitive stylus improvements via `zwp_tablet_v3`.** The current `zwp_tablet_unstable_v2` protocol has been stable in practice for years; a `v3` revision addressing tilt normalization, eraser proximity events, and multi-barrel button disambiguation is discussed in the libinput / wayland-protocols communities. Note: needs verification.
+
+### Long-term
+
+- **Kernel input subsystem migration to Rust.** As the Linux kernel's Rust-for-Linux effort progresses, safe Rust abstractions over `struct input_dev` and `input_register_device()` are an eventual target — enabling memory-safe HID and input driver development matching the trajectory of the Nova/NVK GPU driver work (Ch10). Note: speculative; no published timeline.
+- **High-resolution scroll standardisation.** `REL_WHEEL_HI_RES` exists in the kernel but compositor and toolkit support remains incomplete; long-term convergence on a single high-resolution scroll model across Wayland, GTK4, and Qt6 is expected as high-resolution mice and touchpads proliferate. Note: needs verification.
+- **Compositor-side input prediction.** Extrapolating pointer position to reduce motion-to-photon latency (as Android and ChromeOS do) is an architectural direction for Wayland compositors; this would require new protocol feedback between the compositor and clients to provide predicted versus actual positions. Note: speculative direction, no concrete specification exists.
+- **XR / spatial input standardisation.** As OpenXR on Linux matures (Ch27), there is architectural pressure to reconcile Monado's hand-tracking and eye-gaze input with the Wayland seat model — potentially through new Wayland protocol extensions or a parallel XR input channel alongside `wl_seat`. Note: speculative.
+
+---
+
 ## Integrations
 
 This chapter describes the input stack that feeds every other interactive subsystem in the book.

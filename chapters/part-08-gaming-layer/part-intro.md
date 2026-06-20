@@ -18,6 +18,101 @@ Linux gaming has been transformed over the past decade from a niche curiosity in
 
 **Chapter 78 — Gamescope and the Steam Deck: A Complete Gaming Graphics Stack** synthesises the part by examining a single real shipping product that integrates every layer. It covers the **Van Gogh APU** unified memory architecture, the **SteamOS 3** immutable OS design, and **gamescope**'s role as a micro-compositor implementing its own **Wayland** server, embedding **XWayland**, delegating plane assignment to **libliftoff**, and optionally applying **FSR**, **NIS**, or **VRR** before the **KMS** atomic commit. The chapter also addresses the **OLED**-specific **HDR** and mura-correction pipelines, input latency minimisation, and docking via **DisplayPort Alternate Mode**.
 
+## Does Windows / DirectX Still Dominate PC Gaming?
+
+Yes — overwhelmingly, and understanding this context is essential for reading this part correctly. As of 2026, approximately 98% of commercial PC game titles target Windows as their primary platform. **DirectX 11** and **DirectX 12** together account for the dominant share of GPU API calls from games reaching real hardware. Native Vulkan Linux titles exist — a growing but still small fraction of the Steam catalogue (~15,000 of ~120,000 titles). The practical consequence for Linux players and platform engineers is that *the default is running Windows games on Linux*, not building for Linux natively.
+
+The calculus changed materially with the **Steam Deck**. Valve shipped over 5 million units running **SteamOS** (Arch Linux with gamescope), and every Windows title in a player's Steam library runs via Proton with no action required. This single product transformed the Linux gaming compatibility story from hobbyist workaround to first-class commercial delivery target — and motivated the engineering investment in DXVK, VKD3D-Proton, ntsync, and FSR integration described in this part.
+
+**The remaining Windows exclusivity factors** that Proton does not solve:
+- **Kernel-mode anti-cheat** (Riot Vanguard, XIGNCODE3, nProtect GameGuard): requires a signed Windows kernel driver; structurally incompatible with Linux
+- **DirectStorage**: requires NVMe hardware queue bypass via `IDStorageFactory`; not yet implemented in VKD3D-Proton; titles that require DS fail or fall back to the slow software path
+- **HWID-locked DRM** that fingerprints Windows kernel objects: some Denuvo and Arxan implementations probe structures absent in Wine
+- **Windows kernel driver dependencies**: any title that installs a Windows `.sys` driver at setup time is incompatible
+- **Shader Model 6.7 features** (Work Graphs, Wave Mesh Nodes): partial in VKD3D-Proton and not all tested
+- **Media Foundation video decode**: used by some cutscene playback; Wine's MF implementation is incomplete for some proprietary video formats
+
+## Key Concepts
+
+### Wine and the PE Loader
+
+**Wine** (Wine Is Not an Emulator) is not a virtual machine — it translates Windows system call semantics into Linux/POSIX calls at the API boundary, with no CPU instruction emulation. It implements the Windows `NT kernel` ABI: the `ntdll.dll` layer converts Windows NT native calls (`NtCreateFile`, `NtAllocateVirtualMemory`) into Linux syscalls; the `wineserver` background process emulates the Windows Object Manager, Registry, and the shared-memory region of `NTDLL` that Windows processes normally access via kernel-mapped pages.
+
+The **PE loader** (`loader/preloader.c`) loads Windows `.exe` and `.dll` files in **PE (Portable Executable)** format directly into the Wine process address space. Unlike compatibility layers that translate binaries, Wine executes PE code natively on the CPU — Windows x86-64 instructions run unmodified; only the system call boundary differs. This is why Wine requires the game's code to execute on the same CPU architecture as the host (x86-64 to x86-64); it is not an emulator in the QEMU sense.
+
+**wineserver** runs as a single shared background process per Wine prefix. It holds all kernel object state — event handles, mutexes, process handles, file mappings — that games synchronise on via `WaitForSingleObject` / `WaitForMultipleObjects`. The synchronisation latency of the original Wine wineserver model was a major gaming bottleneck; the **esync → fsync → ntsync** evolution (Chapter 167) addresses this.
+
+### DXVK: Direct3D 9/10/11 → Vulkan
+
+**DXVK** is a Wine DLL replacement for `d3d9.dll`, `d3d10core.dll`, and `d3d11.dll`. When a game calls a D3D11 API like `ID3D11DeviceContext::DrawIndexed()`, DXVK intercepts it inside the Wine process and emits equivalent **Vulkan** commands. This is possible because D3D11 and Vulkan share a conceptually similar GPU execution model (command lists, pipeline state objects, resource descriptors), though the specific mapping is non-trivial: D3D11's implicit resource hazard tracking must be converted to explicit Vulkan pipeline barriers; D3D11's fixed-function blend state must be compiled into `VkPipelineColorBlendStateCreateInfo`; and D3D11's DXBC shader bytecode must be translated to SPIR-V (via **dxvk-spirv**, which internally uses **spirv-cross** headers and its own DXBC → SPIR-V translation library).
+
+The **DXVK state cache** (`.dxvk-cache` files in the game directory) persists compiled `VkPipeline` objects across runs. On first run, new `VkPipeline` objects are compiled on-demand, causing the **pipeline stutter** familiar to many Linux gamers; on subsequent runs, the cache provides near-instant pipeline retrieval. Chapter 104 examines the DXVK and VKD3D-Proton implementations in depth.
+
+### VKD3D-Proton: Direct3D 12 → Vulkan
+
+**VKD3D-Proton** is the Valve-maintained fork of the Wine `vkd3d` project that translates **Direct3D 12** to **Vulkan**. D3D12 and Vulkan are closely aligned — both are explicit APIs with command lists, descriptor heaps, and explicit synchronisation — but the mapping is still complex: D3D12 root signatures must be translated to Vulkan pipeline layouts; D3D12 descriptor heaps must map onto `VK_EXT_descriptor_buffer` or a fallback emulation; D3D12 ray tracing (`DXR`, via the `ID3D12GraphicsCommandList4` ray tracing command interface) must map onto `VK_KHR_ray_tracing_pipeline`.
+
+**DXBC and DXIL** are the two shader bytecode formats D3D shaders use. **DXBC** (DirectX Bytecode) is the older format used by D3D9–D3D11 shaders, compiled from HLSL by the `fxc.exe` compiler. **DXIL** (DirectX Intermediate Language) is the LLVM bitcode-based format used by D3D12 shaders, compiled by DXC (the LLVM-based `dxcompiler.dll`). Both must be translated to **SPIR-V** before Mesa can consume them. DXVK handles DXBC translation; VKD3D-Proton handles both DXBC and DXIL, the latter via a DXIL → SPIR-V compiler built on top of LLVM. The translation quality — especially register allocation and ISA efficiency after Mesa's SPIR-V → NIR → ACO/BRW pipeline — directly impacts game performance relative to native Windows.
+
+### Proton and pressure-vessel
+
+**Proton** is Valve's distribution of the Wine + DXVK + VKD3D-Proton gaming stack. It ships as a Steam Tool — a versioned directory under `~/.steam/root/compatibilitytools.d/` or `steamapps/common/Proton 9.0/` — and is selected per-game in Steam's compatibility settings.
+
+**pressure-vessel** is the container runtime that establishes the library environment inside which Proton runs. The Steam client itself runs on the host OS with its own library dependencies, but the game inside Proton must see a specific, tested set of graphics libraries — the **Steam Runtime** (currently **Steam Runtime 3 "sniper"**, a Debian Bullseye-based container image with specific Mesa, libdxvk, libvkd3d-proton, libc, and Steam-specific libraries). pressure-vessel uses **bubblewrap** (`bwrap`) to bind-mount the Steam Runtime image into a new namespace, ensuring that a game's `libvulkan.so.1` is the Steam Runtime version rather than whatever the distribution ships. This eliminates the "works on my distro" class of breakage and is why Steam gaming on an obscure distribution works as reliably as on Ubuntu.
+
+The flow: Steam client → selects Proton version → invokes `pressure-vessel-wrap` → `bwrap` namespace with Steam Runtime libraries → Wine PE loader → DXVK/VKD3D-Proton → Mesa Vulkan → kernel DRM.
+
+### Valve's Ecosystem Role
+
+**Valve** is not merely a distributor; it is the primary engineering force behind modern Linux gaming compatibility:
+- Funds and employs DXVK and VKD3D-Proton maintainers
+- Shipped the Steam Deck, creating a 5M-unit commercial Linux gaming platform
+- Merged `ntsync` into the Linux kernel (upstream in Linux 6.14, funded by Valve/CodeWeavers)
+- Funded Mesa RADV driver performance work (GE-Proton RADV ACO path)
+- Developed gamescope and libliftoff
+- Funds FSR integration into gamescope
+- Operates the Linux game compatibility tracking infrastructure (ProtonDB, Steam Deck Verified program)
+
+### FSR: FidelityFX Super Resolution
+
+**FSR (FidelityFX Super Resolution)** is AMD's open-source spatial and temporal upscaling library, distributed under MIT licence. Three major algorithm versions exist:
+
+- **FSR 1.0**: Single-pass spatial upscaler using an EASU (Edge-Adaptive Spatial Upsampling) filter followed by RCAS (Robust Contrast-Adaptive Sharpening). Works on any GPU, no temporal data required, low latency. Integrated directly into gamescope for output-level upscaling.
+- **FSR 2.x**: Temporal accumulation + jitter-based antialiasing + spatial reconstruction. Requires per-frame motion vectors and depth buffers from the game engine; significantly sharper than FSR 1 but requires engine integration. Used in game engines via the FSR 2 SDK.
+- **FSR 4**: Uses a transformer-based neural network (trained on AMD RDNA4, requires ML execution units) for superior reconstruction quality. AMD-hardware-specific but results are far superior to temporal FSR.
+
+In the gamescope context, **FSR 1** is used at the compositor level — gamescope renders the game at native resolution and upscales the compositor output, requiring zero game engine integration. FSR 2/3 require game-side integration, though Proton's Steamworks Integration Layer can inject FSR 2 into some games.
+
+### Gamescope
+
+**gamescope** is a micro-compositor — a standalone **Wayland** compositor purpose-built for gaming. Unlike general-purpose compositors (KWin, Mutter), gamescope does exactly one thing: takes a single game window, optionally upscales or filters it, and outputs it to the display via KMS atomic commit. It implements its own Wayland server (accepting a game's Wayland or XWayland surface), manages **libliftoff** for hardware plane assignment, and supports **VRR**, **HDR**, and **FSR** as output-level post-processing passes.
+
+gamescope serves two roles in the Steam Deck ecosystem:
+1. **Embedded mode** (Steam Deck): gamescope *is* the session compositor; SteamOS boots directly to gamescope, which hosts the Steam UI and all games with no intermediate desktop compositor
+2. **Nested mode** (Linux desktop): gamescope runs inside a Wayland desktop session, presenting a game in a bordered window; useful for VRR, HDR, and FSR on titles that don't natively support those features
+
+The key engineering innovations in gamescope: zero-copy DMA-BUF buffer passing from XWayland client to KMS plane via libliftoff (no GPU compositing pass for full-screen games), HDR metadata injection via `DRM_CLIENT_CAP_WRITEBACK_CONNECTORS`, and the `GAMESCOPE_WAYLAND_DISPLAY` socket for Steam overlay injection.
+
+### GameMode
+
+**GameMode** (by Feral Interactive, open source) is a daemon that applies OS-level performance optimisations when a game launches. It does not touch the GPU driver directly; instead it adjusts the CPU governor (`performance` or `schedutil`), CPU and GPU scheduler hints, process priority (`nice`/`ionice`), and platform-specific power profiles. Applications request GameMode via:
+- **D-Bus** API (`com.feralinteractive.GameMode`)
+- `gamemoderun %command%` wrapper in Steam launch options
+- Proton automatic integration (Proton 8.0+ calls `gamemoded` if available)
+
+GameMode's impact on rendering latency is measurable on CPU-bound titles (3–8% improvement in frame rate) and on AMD platforms where switching from the `powersave` governor to `performance` prevents CPU frequency stalls during shader compilation.
+
+### MangoHud and DRM FDINFO
+
+**MangoHud** is an in-game overlay that displays real-time GPU and CPU performance metrics. It injects itself as a **Vulkan layer** (or Mesa OpenGL extension) and draws a configurable HUD into the game's framebuffer. The four metrics collection paths it uses are:
+
+1. **DRM FDINFO** (`/proc/<pid>/fdinfo/<drm_fd>`): the kernel's standardised per-client GPU metrics interface (merged Linux 5.19). Each open DRM file descriptor exposes a `drm-engine-*` entry with time-accumulated GPU busy metrics and `drm-memory-*` entries for VRAM usage. Works on AMD, Intel, and (via `nouveau`) older NVIDIA hardware. Zero kernel permission requirement beyond DRM render node access.
+2. **amdgpu sysfs** (`/sys/class/drm/card*/device/hwmon/*/`): per-sensor temperature, fan RPM, power draw. More granular than FDINFO but AMD-specific.
+3. **NVML** (`libnvidia-ml.so`): NVIDIA Management Library; provides GPU utilisation, memory, temperature, and clock data on proprietary NVIDIA drivers. Requires the NVIDIA management library.
+4. **i915 PMU** (Intel): hardware performance counters via `perf_event_open()` with `PERF_TYPE_RAW` events for Gen9/Xe GPU.
+
+MangoHud's HUD is rendered directly into the Vulkan or OpenGL framebuffer using a `VkRenderPass` that composites the overlay on top of the game frame, making it visible in game capture output (OBS, gamescope's screenshot path).
+
 ## How the Chapters Interrelate
 
 The seven chapters form a layered dependency graph that mirrors the software stack itself.

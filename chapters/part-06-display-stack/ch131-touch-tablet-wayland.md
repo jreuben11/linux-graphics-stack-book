@@ -1008,6 +1008,33 @@ The six values encode the top two rows of a 3×3 affine transform in row-major o
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **libinput Lua plugin system stabilisation (libinput ≥ 1.30):** The public plugin API, shipped in libinput 1.30 with Lua as the scripting language, enables compositor vendors and OEM partners to ship device-specific tablet quirks and pressure-curve overrides as loadable plugins rather than upstream patches. Further stabilisation of the plugin ABI and documentation of tablet-specific hooks are expected in the 1.31–1.32 cycle. [Source: libinput 1.30 Lua Plugins](https://wayland.freedesktop.org/libinput/doc/1.30.1/lua-plugins.html)
+- **Tablet pad relative dials in KWin and Sway:** GNOME Mutter merged support for `zwp_tablet_pad_v2` relative dial events in 2025, targeting GNOME 49. KWin and wlroots-based compositors (Sway, Hyprland) are expected to follow with equivalent dial support once the libinput and libwacom changes propagate to stable distributions. [Source: Phoronix — GNOME Mutter Tablet Pad Dials](https://www.phoronix.com/news/GNOME-Mutter-Tablet-Pad-Dials)
+- **Linux 6.12+ Wacom driver improvements:** Linux 6.12 extended the `wacom.ko` HID driver with high-resolution wheel scrolling, relative-motion touch rings, and dual touch-ring support for applicable hardware. Follow-on patches for newer Wacom Pro Pen 3 devices and additional Huion / XP-Pen HID quirks are in flight on the linux-input mailing list. [Source: Phoronix — Linux 6.12 HID](https://www.phoronix.com/news/Linux-6.12-HID)
+- **libinput area restriction API adoption:** The `libinput_device_config_area_set_rectangle()` API (libinput ≥ 1.24) for restricting the active tablet drawing area is not yet surfaced in GNOME Control Center or KDE System Settings. Compositor UI work to expose per-output area mapping through this API is planned for both desktops. Note: needs verification for specific release targets.
+- **DIGImend out-of-tree driver upstreaming:** The DIGImend project ([https://github.com/DIGImend/digimend-kernel-drivers](https://github.com/DIGImend/digimend-kernel-drivers)) maintains `hid-uclogic` extensions for Huion and XP-Pen tablets not yet covered upstream. Ongoing collaboration with the kernel HID maintainers aims to upstream remaining device tables into `hid-uclogic.ko` proper.
+
+### Medium-term (1–3 years)
+
+- **`zwp_tablet_manager_v3` protocol revision:** The `tablet-unstable-v2` protocol has been stable in practice for years but never formally promoted to `wp_tablet_v1` stable. A v3 revision is discussed in the wayland-protocols issue tracker to address outstanding gaps: richer tool capability advertisement (e.g., distinguishing airbrush from felt-pen beyond the current `type` enum), per-tool pressure curve negotiation, and high-resolution touch coordinates aligned with the `wl_pointer` high-resolution motion work. Note: needs verification for specific MR numbers.
+- **Wayland touch protocol high-resolution coordinates:** The `wl_touch.motion` event currently reports surface-local coordinates in the same fixed-point 24.8 format as `wl_pointer`. A proposed extension to deliver sub-pixel touch coordinates (matching what multitouch Protocol B provides in evdev) is under informal discussion in the Wayland community, relevant for high-DPI stylus displays. [Source: wayland-protocols cgit log](https://cgit.freedesktop.org/wayland/wayland-protocols/log/)
+- **libwacom Bluetooth LE tablet support:** Many modern Wacom and Huion tablets connect over Bluetooth LE rather than classic Bluetooth or USB. The libwacom device database and the kernel `wacom.ko` Bluetooth path need updates for newer BLE tablet models. libwacom maintainers have noted BLE quirk entries as a medium-term priority. Note: needs verification.
+- **Pressure calibration protocol:** Currently pressure curves are applied in userspace (per-application or via `input-remapper`). A Wayland protocol extension for compositor-level pressure curve configuration — analogous to xsetwacom's `PressureCurve` parameter — has been informally discussed to allow system-wide consistent pressure handling across GTK, Qt, and SDL applications. Note: needs verification.
+- **wlroots tablet v2 stable promotion:** The `wlr_tablet_v2` implementation in wlroots remains backed by the `unstable` protocol namespace. As the wayland-protocols governance process moves toward formally stabilising `tablet-v2`, wlroots will update its implementation to track the stable interface names, requiring compositor API changes in Sway and downstream compositors.
+
+### Long-term
+
+- **Unified input extension framework:** The Linux input stack currently has separate kernel-to-userspace paths for tablets (`zwp_tablet_manager_v2`), touch (`wl_touch`), gestures (`zwp_pointer_gestures_v1`), and gamepads. A longer-term architectural goal discussed in the Wayland community is a unified `wp_input_v1` extension that exposes all extended input device capabilities through a consistent object model, reducing per-device-class protocol proliferation. Note: speculative, no active proposal.
+- **In-kernel tablet calibration via BPF:** The Linux HID subsystem gained BPF-based event rewriting (`hid-bpf`) in kernel 6.3. Long-term, device-specific calibration matrices and axis remapping for tablets could be applied at the kernel BPF layer, eliminating the need for userspace quirk databases like libwacom for low-level axis correction. Note: speculative.
+- **AI-assisted pressure and tilt prediction:** Low-latency stylus input on touch displays suffers from prediction lag at the tip. Research prototypes have demonstrated neural-network-based stylus trajectory prediction integrated at the compositor level. Whether this lands as a standard libinput feature or a compositor-specific extension remains an open question.
+- **Cross-platform tablet protocol convergence:** As ChromeOS and Android also run Wayland compositors (Exo, Arc++), there is potential for convergence between the Linux `zwp_tablet_manager_v2` protocol and Android's `MotionEvent` stylus model. This could enable a single cross-platform API surface for stylus-aware creative applications targeting multiple platforms. Note: speculative.
+
+---
+
 ## 10. Integrations
 
 This chapter connects to the following chapters in the book:

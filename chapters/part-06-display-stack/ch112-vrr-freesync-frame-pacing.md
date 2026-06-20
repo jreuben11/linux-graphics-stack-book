@@ -1266,6 +1266,33 @@ Because the explicit sync protocol makes each step in this chain deterministic, 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Arm Komeda VRR support**: The Komeda DRM/KMS display driver (used in Arm Mali display processors) is receiving Adaptive-Sync and HDMI VRR enablement patches, extending kernel VRR support beyond AMD and Intel to Arm-based SoCs and mobile/embedded Linux targets. [Source: Phoronix — Arm Komeda Adding VRR Support](https://www.phoronix.com/forums/forum/linux-graphics-x-org-drivers/x-org-drm/1111410-arm-s-komeda-driver-adding-variable-refresh-rate-support)
+- **Intel Adaptive Sync SDP improvements**: Intel's i915/xe driver team posted patches in early 2026 to improve Adaptive Sync Secondary Data Packet (SDP) handling for Panel Replay and Auxless ALPM modes, important for VRR over DisplayPort protocol converters and eDP panels. [Source: Phoronix — Intel Adaptive Sync SDP Patches](https://www.phoronix.com/news/Intel-Adaptive-Sync-SDP-Patches)
+- **AMD HDMI VRR desktop mode (`freesync_on_desktop`)**: A 2026 patch series adds `freesync_on_desktop` logic for HDMI VRR to mitigate blanking glitches when VRR is toggled on TVs and HDMI sinks, bringing HDMI VRR closer to the seamless behaviour of DisplayPort Adaptive-Sync. [Source: LKML — drm/amd/display: freesync_on_desktop for HDMI VRR](https://lkml.iu.edu/2602.2/00869.html)
+- **HDMI VRRmax=0 support**: AMD display patches add support for `VRRmax=0` in HDMI VRR signalling (meaning the upper bound is capped by the selected video mode rather than an explicit value), improving compatibility with TVs that reject VTEM packets with high BRR values. [Source: LKML — drm/amd/display: Support HDMI VRRmax=0](https://lkml.iu.edu/hypermail/linux/kernel/2602.0/04026.html)
+- **COSMIC compositor VRR**: The COSMIC desktop environment (System76) is expected to implement VRR support later in 2026 or early 2027, extending adaptive sync beyond KWin and Mutter to a third major Wayland compositor. [Source: fosslinux — Wayland Linux Gaming in 2026](https://www.fosslinux.com/157640/wayland-linux-gaming-2026-desktop-comparison.htm)
+
+### Medium-term (1–3 years)
+
+- **`wp_fifo_v1` and `wp_tearing_control_v1` wider compositor adoption**: Both protocols are stable in wayland-protocols but implementation remains patchy across compositors as of 2026. Broader rollout in KWin, Mutter, wlroots, and COSMIC is expected, with Godot and game engine runtimes adopting `fifo_v1` for explicit FIFO semantics. [Source: Godot — fifo_v1 implementation PR](https://github.com/godotengine/godot/pull/101454) / [Source: Wayland Explorer — fifo-v1](https://wayland.app/protocols/fifo-v1)
+- **Atomic async page flip stabilisation**: The `DRM_MODE_PAGE_FLIP_ASYNC` atomic interface (combined with `IN_FENCE_FD` for explicit sync) is expected to progress from experimental patchset status toward mainline inclusion, enabling tear-present with deterministic sync across all drivers. Note: needs verification on merge timeline.
+- **VRR + HDR joint property management**: Ongoing work in the AMD display core and upstream DRM to allow `VRR_ENABLED` and HDR metadata properties (peak luminance, static metadata) to be updated atomically in the same commit, removing current restrictions that require separate commits for VRR and HDR state transitions. Note: needs verification on specific kernel version target.
+- **Refresh rate floor kernel property**: A proposed KMS property to set a minimum VRR refresh rate floor (to suppress OLED burn-in at very low refresh rates) is under design discussion. The intent is to expose it as an atomic CRTC property alongside `VRR_ENABLED`, with panel-specific defaults from EDID. Note: needs verification on upstream proposal status.
+- **Per-plane VRR hint from Vulkan**: Extensions building on `VK_EXT_swapchain_maintenance1` and `VK_EXT_present_mode_fifo_latest_ready` may expose per-swapchain VRR timing hints to the Vulkan driver, allowing Mesa/RADV and NVIDIA to integrate frame pacing policy directly in the present path rather than relying on compositor heuristics. Note: needs verification.
+
+### Long-term
+
+- **Hardware frame pacing in display controller**: AMD's hardware frame pacing (HFP) on RDNA3+ offloads frame interpolation and pacing to the display engine rather than the shader core. Future RDNA generations (RDNA4 and beyond) may extend HFP to handle LFC transitions, stutter suppression, and VRR floor enforcement in silicon, reducing compositor and driver involvement. Note: needs verification on RDNA4 specifics.
+- **HDMI VRR parity with DisplayPort**: HDMI VRR currently lacks seamless VRR toggle (unlike DisplayPort Adaptive-Sync) due to protocol differences. Future HDMI specifications and driver work aim to achieve blanking-free VRR enable/disable on par with DisplayPort, especially important for TV-connected desktop Linux systems.
+- **AI/ML-driven frame pacing prediction**: Speculative longer-term direction involves compositor-level or driver-level ML models predicting frame time variance per workload to proactively adjust VRR timing windows, reducing LFC activations and jitter on variable GPU workloads. This parallels NVIDIA's Reflex latency-reduction pipeline and AMD's Anti-Lag2 technology.
+- **Kernel-level frame timing API**: A unified kernel API (beyond `drm_vblank`) surfacing per-frame GPU completion timestamps, display scanout timestamps, and VRR period measurements to userspace (compositors and profiling tools) has been discussed as a long-term goal for enabling accurate, race-free frame pacing metrics without relying on userspace-only instrumentation.
+
+---
+
 ## 16. Integrations
 
 - **Ch2 — KMS Atomic Modesetting**: `VRR_ENABLED` is a KMS CRTC atomic property set via `drmModeAtomicAddProperty()`. VRR state is carried in `drm_crtc_state` during atomic check and commit. The atomic modesetting path (nonblocking commits, page-flip events) is the mechanism by which compositors update VRR state alongside buffer flips.

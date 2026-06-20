@@ -484,6 +484,32 @@ An important security property of the DawnWire protocol (Chapter 35) is that it 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Skia Graphite rollout on Linux**: Skia's next-generation rasterisation backend — **Graphite** — is designed from the ground up for modern multi-threaded, low-overhead APIs (Vulkan, Metal, D3D12). After initial launch on Apple Silicon Macs with ~15% Motionmark gains, the Chromium team is actively expanding Graphite to Linux/Vulkan. Once stable, it will replace the Ganesh backend used by OOP-R tile rasterisation throughout the GPU process. [Source](https://blog.chromium.org/2025/07/introducing-skia-graphite-chromes.html)
+- **WebGPU compatibility mode stabilisation**: Chrome 146 introduced `featureLevel: 'compatibility'` for WebGPU, targeting GPUs that cannot support the full WGSL/compute model. Near-term work focuses on widening this mode's coverage on Linux, particularly for older Intel and AMD hardware where the full Vulkan feature set may be unavailable. [Source](https://www.programming-helper.com/tech/webgpu-2026-next-generation-browser-graphics-api)
+- **GPU process sandbox ioctl hardening**: Following CVE-2026-11682 (a critical Linux sandbox escape patched in Chrome 149), the GPU process `seccomp-BPF` allowlist is being reviewed and tightened, with an ongoing effort to enumerate minimum required DRM render-node `ioctl` codes per driver vendor to reduce the sandbox attack surface. [Source](https://windowsnews.ai/article/chrome-14907827103-fixes-critical-linux-sandbox-escape-cve-2026-11682-patch-details-and-cpe-clarific.426687)
+- **Ozone/Wayland Mojo message reduction**: The Chromium graphics team is profiling and reducing unnecessary round-trips between the GPU process and browser process on the Wayland backend, particularly around `zwp_linux_dmabuf_v1` feedback negotiation and `wp_presentation` timestamping; Note: specific bug numbers needs verification.
+- **Dawn/WebGPU wire protocol versioning**: The DawnWire serialisation format is being extended to carry explicit API version metadata so that the GPU process can negotiate capabilities with the renderer process rather than relying on build-time ABI assumptions. Note: needs verification.
+
+### Medium-term (1–3 years)
+
+- **Full Vulkan-only rendering path on Linux**: The GPU Architecture Roadmap has long projected a future in which ANGLE and the legacy GL backend are eliminated in favour of a Vulkan-only code path on supported hardware, reducing the combinatorial test matrix and removing the GLES2-over-Vulkan translation overhead for all non-WebGL workloads. [Source](https://www.chromium.org/developers/design-documents/gpu-accelerated-compositing-in-chrome/gpu-architecture-roadmap/)
+- **Tighter Ozone/Wayland security layer**: Work is in-flight to run the Ozone Wayland host (currently in the browser process, which holds the Wayland connection and `wl_drm`/`zwp_linux_dmabuf_v1` negotiation) inside its own sandboxed utility process, further separating privilege levels and eliminating the browser process's need to proxy DMA-BUF handles on behalf of the GPU process. Note: needs verification against current design discussions.
+- **GPU memory pressure and reclaim**: The Chromium memory team is investigating exposing `VK_EXT_memory_budget` and DRM buffer object eviction hints through the GPU process's `GpuMemoryBufferManager` so that the browser can participate in system-level GPU memory pressure events triggered by the kernel's drm_buddy allocator.
+- **Per-renderer GPU process isolation**: A long-discussed hardening direction would give each high-value renderer (e.g., one holding payment or banking site origin) its own dedicated GPU process with a separate EGL context, removing cross-origin timing side-channels accessible through shared command-buffer scheduling. [Source](https://chromium.googlesource.com/chromium/src/+/main/docs/security/research/graphics/webgpu_technical_report.md)
+- **Mojo IPC shared-memory zero-copy texture upload path**: An in-progress design extends the command buffer's shared-memory region protocol to allow large texture uploads (video frames, canvas readbacks) to bypass the put/get ring buffer entirely and transfer directly via a one-shot `mojo::SharedMemoryRegion` with explicit GPU cache-coherency barriers.
+
+### Long-term
+
+- **GPU process elimination for trusted origins**: For browser-internal UI and trusted extensions, Chromium may eventually move back to in-process Skia/Graphite rendering for latency-critical paths, using GPU driver memory isolation features (e.g., Vulkan protected memory, ARM GPU privilege levels) rather than process separation as the security boundary.
+- **WebGPU as universal GPU IPC transport**: As WebGPU matures, there is architectural pressure to unify the GLES2 command buffer, the raster command buffer, and the DawnWire protocol into a single extensible command encoding based on the WebGPU wire format, reducing the number of distinct decoder implementations in `gpu/command_buffer/service/`. Note: needs verification.
+- **Hardware-enforced GPU sandboxing**: Future GPU hardware (e.g., ARM's GPU Realm extensions, NVIDIA's IOMMU-per-context confidential compute features) may allow the kernel's DRM subsystem to provide per-process GPU address-space isolation strong enough to permit direct GPU access from renderer processes without a GPU process intermediary, potentially collapsing the entire architecture.
+
+---
+
 ## 10. References
 
 1. Chromium multi-process architecture overview:  

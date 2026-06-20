@@ -462,6 +462,33 @@ Chrome's GPU process lifetime is per-renderer-process (in some configurations) o
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **WebGPU on Linux NVIDIA via NVK**: Chrome 147–148 shipped `wgpu linear_indexing` and began enabling WebGPU on Linux NVIDIA GPUs via NVK (Mesa's Vulkan driver for NVIDIA). Full allow-list enablement is expected to complete as NVK matures through 2026. [Source](https://developer.chrome.com/blog/new-in-webgpu-147-148)
+- **ANGLE retargeted to Dawn as its Vulkan backend**: Chrome's Q1 2026 plan involves making ANGLE's OpenGL ES implementation use Dawn as its Vulkan backend. This allows ANGLE to be moved into a more tightly-sandboxed process and reduces GPU attack surface. The effort is in active development with no committed milestone yet. [Source](https://www.chromium.org/Home/chromium-security/quarterly-updates/)
+- **Safe Buffers enforcement and MiraclePtr hardening in Dawn**: Chrome is applying the Safe Buffers C++ programming model and MiraclePtr use-after-free protection to the Dawn repository, extending the security hardening that previously covered ANGLE. [Source](https://www.chromium.org/Home/chromium-security/quarterly-updates/)
+- **Additional WGSL language extensions**: Recent milestones (Chrome 144–148) shipped `subgroup_id`, `uniform_buffer_standard_layout`, `texture_and_sampler_let`, and `linear_indexing`. Further ergonomic WGSL extensions targeting ML workloads (subgroup matrices, enhanced integer arithmetic) are in the GPU for the Web Working Group pipeline. [Source](https://developer.chrome.com/blog/new-in-webgpu-146)
+- **Firefox WebGPU on Linux**: Firefox began shipping WebGPU on Windows and macOS in 2025; Linux support via wgpu's Vulkan backend is in Nightly and targeting broad deployment in Firefox 147+. Note: needs verification on exact milestone.
+
+### Medium-term (1–3 years)
+
+- **Bindless texture and resource binding**: The `texture_and_sampler_let` WGSL extension (Chrome 146) is an explicit prerequisite step for full bindless support. Bindless would allow shaders to access an unbounded number of textures and buffers, enabling scene-wide resource access required by most leading-edge rendering algorithms. The proposal is under active design in the W3C GPU for the Web Working Group. [Source](https://developer.chrome.com/blog/next-for-webgpu)
+- **Subgroup and subgroup-matrix operations for ML inference**: Subgroup intrinsics (available in Chrome 131+ behind a flag) expose fast intra-warp communication. Subgroup matrices (hardware matrix-multiply units adjacent to shader cores) are the next step, targeting WebGPU as a first-class ML inference substrate competitive with WebNN. [Source](https://developer.chrome.com/blog/next-for-webgpu)
+- **WebGPU 2.0 / Candidate Recommendation stabilisation**: The WebGPU specification reached W3C Candidate Recommendation Draft status in June 2026. The W3C GPU for the Web Working Group (which includes Google, Mozilla, Apple, Intel, and Microsoft) is working toward a final CR; the 2025–2027 charter scope anticipates a stable 2.0 surface. [Source](https://www.w3.org/2025/01/gpuweb-charter.html)
+- **Tint IR-driven shader analysis**: The completed transition of Tint's internals from AST-to-backend to AST→IR→backend (delivering up to 7× compilation speedup on some platforms) unlocks sophisticated IR-level shader analysis — dead-code elimination, specialisation constants, and richer robustness transforms — that were impractical on the AST path. [Source](https://developer.chrome.com/blog/new-in-webgpu-141)
+- **WebXR + WebGPU rendering layer**: The Immersive Web Working Group is designing a 3D rendering layer that exposes a `GPULayer` surface to WebXR sessions, replacing the existing WebGL-only `XRWebGLLayer`. This would bring Dawn's explicit GPU model to VR/AR workloads directly. Note: needs verification on timeline.
+
+### Long-term
+
+- **Hardware ray tracing in WebGPU**: Ray tracing is explicitly blocked on bindless landing first. Community prototypes (WebRTX) demonstrate path tracing via compute shaders, but hardware `VK_KHR_ray_tracing_pipeline` exposure in the WebGPU API has not been committed by the Working Group. The earliest credible timeline is 2027–2028, contingent on bindless stabilising and security analysis of acceleration structure pointers in a sandboxed context. [Source](https://kaelan.fyi/research/webgpu-future-roadmap/)
+- **Mesh shaders and task/amplification shaders**: Exposing `VK_EXT_mesh_shader` through WebGPU would enable GPU-driven geometry culling and procedural geometry without compute-to-vertex buffer round-trips. This is in early discussion within the Working Group and requires both WGSL syntax design and safety analysis.
+- **Sparse textures and virtual texture support**: Tiled/sparse texture resources (`VkSparseImageMemoryBind`) would unlock virtual texturing techniques at web scale. The feature has undefined portability on older hardware and significant complexity in the DawnWire serialisation layer; it is considered a long-horizon investigation item. Note: needs verification.
+- **Dawn as a standalone cross-platform GPU library beyond Chrome**: Dawn's stable `webgpu.h` C header and multi-backend architecture position it as a portable native GPU library independent of the browser. Google has been increasing support for standalone (non-Chrome) Dawn usage; in the long term Dawn may become the de-facto open-source WebGPU runtime for native applications on Linux, displacing the need for Vulkan-only paths in C++ ML frameworks.
+
+---
+
 ## 9. Integrations
 
 This chapter connects to several other chapters in the book:

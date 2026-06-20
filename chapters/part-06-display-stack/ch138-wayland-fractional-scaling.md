@@ -1144,6 +1144,30 @@ For Vulkan-based compositors (Hyprland's wlroots fork, experimental KWin Vulkan 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **`xx-fractional-scale-v2` stabilisation** — The experimental `xx-fractional-scale-v2` protocol (revived from Xaver Hugl's 2022 `wp-fractional-scale-v2` proposal) aims to replace integer logical coordinate space with unscaled physical-pixel coordinates, eliminating subpixel rounding gaps between windows and panels at non-integer scales. KWin MR !9023 by Vlad Zahorodnii shipped in KDE Plasma 6.7 (June 2026); the protocol is expected to move from `xx-` staging to a stable `wp-` designation once multiple compositors adopt it. [Source: Phoronix — xx-fractional-scale-v2](https://www.phoronix.com/news/xx-fractional-scale-v2-MR-KWin) [Source: KWin MR !9023](https://invent.kde.org/plasma/kwin/-/merge_requests/9023)
+- **GNOME Mutter adoption of `xx-fractional-scale-v2`** — Mutter currently uses an overscale path (render at 2×, compositor downscale to 1.5×) for GNOME on Wayland. Adoption of the new protocol coordinate model is expected to land once KDE's implementation proves the semantics. Note: needs verification of current Mutter MR status.
+- **SDL3 and GLFW native support** — SDL3 already shipped `wp-fractional-scale-v1` support; GLFW PR #2215 implements `wp-fractional-scale-v2`/`xx-fractional-scale-v2` for correct per-window DPR delivery to game clients without requiring app-side hacks. [Source: GLFW PR #2215](https://github.com/glfw/glfw/pull/2215)
+- **XWayland rootful fractional scaling** — XWayland's rootful mode landed HiDPI/fractional scaling support recently; improvements to the XWayland bridge for fractional scale events in windowed X11 apps running under Wayland compositors are ongoing. [Source: Phoronix XWayland rootful HiDPI](https://www.phoronix.com/forums/forum/linux-graphics-x-org-drivers/wayland-display-server/1451190-xwayland-rootful-lands-hidpi-fractional-scaling-support)
+
+### Medium-term (1–3 years)
+
+- **`xx-fractional-scale-v2` as the new baseline** — As `xx-fractional-scale-v2` proves stable across KWin, Mutter, and wlroots, toolkit maintainers (GTK5, Qt 7) are expected to deprecate `wl_output.scale` integer path and `wp_fractional_scale_v1` in favour of the new coordinate model. This would allow logical coordinate space to be fully replaced by physical-pixel geometry in the protocol. Note: needs verification of toolkit roadmap commitments.
+- **Per-output colour and scaling metadata unification** — Ongoing work on the `xx-color-management-v4` and `wp-content-type-v1` protocols may be joined by a unified output-capability advertisement protocol that bundles fractional scale, HDR peak luminance, and colour primaries in one round-trip, reducing the number of protocol objects applications must negotiate at startup.
+- **Cursor protocol improvements** — The `wp_cursor_shape_v1` protocol delivers named cursors but does not yet carry fractional-scale metadata; a follow-on protocol or extension is expected to allow compositors to request cursor bitmaps at the exact physical pixel size for a given surface scale, eliminating cursor blur at non-integer DPR. Note: needs verification of upstream proposal status.
+- **Improved multi-output spanning** — Applications that span two outputs with different fractional scales (e.g., a 1.5× laptop panel and a 1.0× external monitor) currently receive only the scale of the output where the window is majority-resident. A protocol extension enabling per-output scale delivery for spanning surfaces is discussed but not yet formalised. Note: needs verification.
+
+### Long-term
+
+- **Physical-pixel-native Wayland coordinate model** — The long-term architectural direction suggested by `xx-fractional-scale-v2` is a shift away from logical-pixel protocol coordinates entirely: surfaces, subsurfaces, and input events could all be expressed in physical pixels with compositor-side transform metadata, eliminating the rounding errors inherent in fractional logical coordinates. This would be a breaking protocol change requiring a `wl_compositor` version bump. Note: speculative; no formal proposal exists as of mid-2026.
+- **Compositor-side AI upscaling for legacy clients** — GPU vendors (NVIDIA DLSS, AMD FSR, Intel XeSS) have upscaling techniques usable in display pipelines. Future compositors may optionally apply learned super-resolution to 1× legacy client buffers before compositing to a HiDPI framebuffer, improving visual quality over bilinear upscaling without requiring client-side changes. Note: speculative direction, not yet proposed in any compositor project.
+- **Unified HiDPI handling across Wayland and kernel DRM** — Kernel-level DRM scaling (via `DRM_CLIENT_CAP_ATOMIC` and plane scaling properties) currently operates independently of Wayland protocol scale factors. A future unified model might allow the compositor to offload fractional scale transforms to hardware plane scalers on supported GPUs, reducing GPU shader load for scaling legacy surfaces. Note: speculative; depends on hardware plane capabilities and driver maturity.
+
+---
+
 ## Integrations
 
 - **Ch20 (Wayland core)** — `wl_output.scale` protocol; surface-output enter/leave events that trigger scale re-negotiation

@@ -1222,6 +1222,32 @@ Keycap sequences (e.g. `1️⃣` = U+0031 DIGIT ONE + U+FE0F VARIATION SELECTOR-
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Stabilisation of `ext_text_input_v1`**: The long-running effort to promote `zwp_text_input_v3` from the `unstable` namespace into a stable `ext_text_input_v1` protocol remains the highest-priority item on the wayland-protocols text-input track. Several blocking issues around cursor-rectangle semantics and surrounding-text limits need resolution before the protocol can graduate. [Source](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/merge_requests?label_name%5B%5D=text-input)
+- **Preedit text style hints in `zwp_text_input_v3`**: MR !234 (merged July 2023) added preedit hint flags; follow-on work to propagate these hints through GTK4's `GtkIMContext` and Qt6's `QInputMethodEvent` into application drawing code is ongoing in both toolkits. [Source](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/merge_requests/234)
+- **IBus migration to `zwp_input_method_v2`**: IBus historically used `input-method-unstable-v1`; upstream work to port it to v2 (which wlroots compositors expose) is in progress and required for full Sway/Hyprland compatibility. Note: needs verification of current merge status.
+- **Qt 6.8+ text-input-v3 fixes**: Qt 6.8.2 and later ship stability fixes for the text-input-v3 client path; distributions shipping Qt 6.7.x are encouraged to backport these patches for correct preedit rendering. [Source](https://github.com/pop-os/cosmic-session/issues/185)
+- **COSMIC desktop IME support**: The COSMIC desktop (System76) identified in 2025 that its compositor ships versions of IBus/Fcitx5 too old for Wayland's `zwp_input_method_v2`; packaging updates targeting IBus ≥ 1.5.32 and Fcitx5 ≥ 5.1.12 are planned for upcoming releases. [Source](https://github.com/pop-os/cosmic-session/issues/185)
+
+### Medium-term (1–3 years)
+
+- **`ext_input_method_v1` stable protocol**: Once `ext_text_input_v1` is stable, a corresponding stable replacement for `zwp_input_method_v2` is expected to follow through the same wayland-protocols process, removing the `zwp`/unstable designation and giving compositors a stable ABI to target. Note: needs verification of current proposal status.
+- **Candidate-window positioning protocol**: There is no Wayland protocol for the IME to request a compositor-managed popup surface at the cursor rectangle; today each IME draws its own unmanaged popup. A dedicated protocol (analogous to `xdg_popup` but for IME candidate windows) has been discussed on the wayland-devel mailing list as a way to allow compositors to enforce correct stacking, scaling, and screen-edge avoidance. [Source](https://dorotac.eu/posts/input_method/)
+- **Unified text-input across Mutter and KWin**: GNOME's compositor (Mutter) routes text input through D-Bus to IBus rather than implementing `zwp_input_method_v2`, creating a behavioural divergence from wlroots compositors. Medium-term alignment — either Mutter adopting `zwp_input_method_v2` or a D-Bus bridge standardisation — is being discussed in GNOME issue trackers. Note: needs verification of specific issue links.
+- **Wayland text-input v4 (Qt proposal)**: Qt engineers proposed `text-input-unstable-v4` at QtCS 2021 to address deficiencies in v3 (content-purpose, input-panel visibility). The proposal has not yet been adopted in wayland-protocols but influences the design of `ext_text_input_v1`. [Source](https://wiki.qt.io/QtCS2021_-_Wayland_text-input-unstable-v4_protocol)
+- **Improved emoji and Unicode 16 support**: As Unicode 16 introduces new emoji families and ZWJ sequences, IME frameworks (ibus-typing-booster, fcitx5-chinese-addons) will need updated emoji databases; the `commit_string` transport is already sufficient — the work is entirely in the IME engines rather than the Wayland protocol layer.
+
+### Long-term
+
+- **Deprecation of XIM under XWayland**: As Wayland adoption completes in major distributions (Ubuntu 26.04 LTS ships without an Xorg session by default), the XWayland XIM bridge will see reduced investment; the long-term trajectory is for legacy X11 apps to either be ported or replaced, making the XIM compatibility layer progressively less critical. [Source](https://github.com/yazelin/ubuntu-26.04-setup/blob/main/notes/wayland-vs-xorg.md)
+- **AI-assisted input methods**: Next-generation IME frameworks may integrate local large-language-model inference for context-aware completion and transliteration. The `set_surrounding_text` request in `zwp_text_input_v3` already provides the context window needed; the bottleneck is IME engine capability rather than protocol expressiveness.
+- **Accessibility and switch-access integration**: Long-term, the virtual keyboard protocol (`zwp_virtual_keyboard_v1`) and the text-input protocol may be joined by a higher-level accessibility input protocol that allows switch-access devices and eye-tracking systems to drive text composition — a gap identified by the Wayland accessibility working group. Note: needs verification of working group formation and scope.
+
+---
+
 ## Integrations
 
 - **Ch34 (Wayland Core)** — `zwp_text_input_v3` follows the same `wl_registry`/listener pattern as all Wayland extensions

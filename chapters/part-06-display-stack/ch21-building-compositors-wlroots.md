@@ -1007,6 +1007,33 @@ The `with_damage` throttle flag (`zwlr_screencopy_frame_v1.copy_with_damage`) is
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **wlroots 0.21 and Sway 1.12 stabilisation**: wlroots 0.20 (released March 2026) landed `color-management-v1` minor version 2 and full Vulkan renderer coverage for HDR10; Sway 1.12-rc1 is already testing this path. The near-term focus is hardening these features for a stable Sway 1.12 release. [Source](https://www.phoronix.com/news/wlroots-0.20-Sway-1.12-rc1)
+- **`ext-workspace-v1` adoption**: wlroots 0.20 added the `ext-workspace-v1` protocol; compositor authors are expected to wire it into sway-ipc and Waybar-style status bars over the next release cycle. [Source](https://www.phoronix.com/news/wlroots-0.20-Sway-1.12-rc1)
+- **`xdg-toplevel-tag-v1` and `cursor-shape-v1` v2**: Both shipped in wlroots 0.20; downstream toolkits (GTK4, Qt 6) are expected to adopt them during 2026 to eliminate server-side cursor image uploads. [Source](https://www.phoronix.com/news/wlroots-0.20-Sway-1.12-rc1)
+- **Broader `linux-drm-syncobj-v1` rollout**: Explicit sync support landed in wlroots 0.19 and is now in wayland-protocols 1.34; the near-term work is ensuring all wlroots-based compositors (Wayfire, labwc, River) consistently enable it for NVIDIA and AMD drivers. [Source](https://9to5linux.com/sway-1-11-tiling-wayland-compositor-adds-support-for-explicit-synchronization)
+- **Xfce xfwm4 Wayland compositor integration**: Xfce's xfwm4 merged wlroots-based Wayland compositor code; stabilising this integration and reaching feature parity with the X11 path is a near-term goal for the Xfce project. [Source](https://www.phoronix.com/news/Xfce-xfwm4-Merges-Wayland-Code)
+
+### Medium-term (1–3 years)
+
+- **ABI / API stabilisation discussion**: wlroots' deliberate ABI-instability policy has forced major version upgrades on all downstream compositors at every release. There are ongoing discussions in the wlroots ecosystem about whether a stable subset API could be offered to reduce porting burden; no concrete proposal has been merged as of June 2026. Note: needs verification against current gitlab.freedesktop.org/wlroots/wlroots issue tracker.
+- **Hyprland ecosystem divergence**: Hyprland completed its migration off wlroots in 2024–2025, replacing the wlroots backend with the independent **Aquamarine** library for DRM/KMS/libinput abstraction. This fragmentation may push wlroots to sharpen its modular boundaries so that backend-only consumers can depend on a smaller surface area. [Source](https://blog.vaxry.net/articles/2024-wlrootsRewrite)
+- **Smithay (Rust) as an alternative ecosystem**: The Smithay project provides a Rust-native compositor framework that covers most of the same protocol surface as wlroots. As Rust gains ground in the Linux display stack, wlroots may coexist with or eventually influence a Rust-safe FFI boundary. Note: needs verification on Smithay's current feature parity status.
+- **`color-representation-v1` and wide-gamut display pipelines**: wlroots 0.20 shipped `color-representation-v1`; medium-term work involves compositors plumbing per-surface color metadata through the DRM `CRTC_DEGAMMA_LUT` / `PLANE_CTM` / `CRTC_GAMMA_LUT` chain to support BT.2020 and P3 content on OLED and HDR displays. [Source](https://www.phoronix.com/news/wlroots-0.20-Sway-1.12-rc1)
+- **`wp_security_context_v1` and portal permission model hardening**: As Flatpak and snap sandboxed desktops mature, wlroots-based compositors are expected to extend security context enforcement beyond screencopy to additional sensitive globals (`wlr_gamma_control_manager_v1`, `wlr_export_dmabuf_manager_v1`). Note: needs verification on current implementation status.
+
+### Long-term
+
+- **Potential ABI-stable "libwlroots" split**: There is speculative interest in separating the stable-ish protocol-object layer (`types/`) from the volatile backend/renderer layer, enabling compositor authors to target a versioned library without mandatory full rewrites on every wlroots release. Note: needs verification; no formal proposal exists as of mid-2026.
+- **Vulkan-first rendering pipeline**: The wlroots GLES2 renderer is increasingly legacy; long-term architectural direction is toward a Vulkan-only render path with zero-copy DMA-BUF import (`VK_EXT_external_memory_dma_buf`) as the default, retiring the GLES2 path for compositors that can require Vulkan-capable hardware.
+- **Wayland protocol graduation**: Several `zwlr_*` protocols (screencopy, export-dmabuf, layer-shell) remain in the wlr-protocols unstable namespace. Long-term, some are candidates for graduation into the upstream wayland-protocols `stable/` tree; `ext-layer-shell-v1` in particular has active discussion. Note: needs verification on standardisation progress. [Source](https://gitlab.freedesktop.org/wlroots/wlr-protocols)
+- **GPU-accelerated remote desktop**: The `zwlr_export_dmabuf_v1` + PipeWire path enables low-latency remote desktop via RDP/VNC backends; long-term integration of a native `wp_remote_display` protocol (analogous to RDP's `dxgi-output` export) is a speculative but widely discussed direction in the Wayland community.
+
+---
+
 ## Integrations
 
 - **Chapter 2 (KMS)**: The wlroots DRM backend is a direct implementation of the KMS atomic commit API; every concept in Chapter 2 (CRTC, planes, connectors, page flip events) has a corresponding code path in `wlroots/backend/drm/`. The `drmModeAtomicCommit` calls in `backend/drm/atomic.c` are the culmination of Chapter 2's theory.

@@ -851,6 +851,33 @@ Forward references: Chapter 20 (Wayland) will show how radeonsi and iris present
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **radeonsi defaults to ACO shader compiler.** Mesa 26.0 switched radeonsi's default shader compilation backend from LLVM to Valve's ACO compiler (the same backend RADV has used since Mesa 20.2), yielding faster shader compilation and reduced game-load stuttering while retaining LLVM as a fallback via `AMD_DEBUG=llvm`. [Source](https://www.phoronix.com/news/RadeonSI-ACO-Default-Mesa-26.0)
+- **Zink as the default OpenGL stack for additional hardware families.** Following Mesa 25.1's switch of Nouveau OpenGL from the legacy `nvc0` Gallium driver to Zink+NVK, the community is evaluating similar transitions for other drivers where the Vulkan driver is more actively maintained than the direct OpenGL Gallium driver. [Source](https://mesa-zink-nvk-switch) [Source](https://9to5linux.com/mesa-25-1-to-replace-nouveau-driver-with-zink-nvk-by-default-for-nvidia-gpus)
+- **iris VirtIO-GPU native-context support.** Mesa 26.1 added VirtIO-GPU native-context support for iris (and crocus/ANV), enabling hardware-accelerated Intel GPU paravirtualisation inside virtual machines without a full GPU passthrough. [Source](https://docs.mesa3d.org/relnotes/26.1.0.html)
+- **Wider `cl_khr_subgroup` coverage via rusticl.** Mesa 26.1 landed several `cl_khr_subgroup_*` extensions across radeonsi, iris, llvmpipe, Asahi, and Zink, broadening the OpenCL 3.0 surface available through rusticl's `pipe_context::launch_grid()` path. [Source](https://www.phoronix.com/news/Mesa-26.1-Released)
+- **`GL_NV_timeline_semaphore` on radeonsi.** The Mesa 26.1 release added `GL_NV_timeline_semaphore` support to radeonsi, allowing applications that use this timeline-based synchronisation extension (common in ported Windows titles) to run without falling back to less efficient fence polling. [Source](https://docs.mesa3d.org/relnotes/26.1.0.html)
+
+### Medium-term (1–3 years)
+
+- **ACO completion and LLVM deprecation path in radeonsi.** Now that ACO is the default in Mesa 26.0, the medium-term goal is to deprecate the LLVM NIR-to-LLVM IR path (`ac_nir_to_llvm.c`) for graphics shaders in radeonsi, reducing the radeonsi binary's LLVM linkage requirement. The LLVM path is expected to be retained for compute (OpenCL via rusticl) for the foreseeable future. Note: needs verification against upstream mailing-list discussion.
+- **Zink `VK_EXT_descriptor_buffer` (DB mode) as universal default.** Zink's DB descriptor mode, enabled on RADV and ANV, reduces per-draw CPU overhead significantly. The plan is to make DB mode the default when the underlying Vulkan driver advertises the extension, replacing the older LAZY descriptor path as the primary code path. [Source](https://deepwiki.com/bminor/mesa-mesa/3.2-zink-opengl-to-vulkan-translation-layer)
+- **OpenGL ES 2.0 via Zink for additional embedded/SoC Vulkan drivers.** Mesa 26.1 demonstrated this with PowerVR; the same approach is being pursued for other SoC Vulkan drivers (e.g., Mali with Panvk, Adreno with Turnip) that lack a mature direct GLES Gallium driver, allowing Zink to serve as the unified GLES compatibility layer on embedded Linux platforms. [Source](https://9to5linux.com/mesa-26-1-open-source-graphics-stack-officially-released-heres-whats-new)
+- **iris expansion to Intel Nova Lake (Xe3 architecture).** Intel's Nova Lake P experimental support appeared in Mesa 26.1 for the Vulkan ANV driver; the iris Gallium OpenGL driver is expected to follow as the hardware reaches broader availability and the `genX()` code-generation infrastructure is extended to the new hardware generation. [Source](https://www.phoronix.com/news/Mesa-26.1-Released)
+- **`GL_ARB_bindless_texture` and sparse texture extensions in Zink.** The remaining gap between Zink's OpenGL 4.6 conformance and full ARB extension coverage includes bindless texture and ARB_sparse_texture; both depend on Vulkan equivalents (`VK_EXT_descriptor_indexing` for bindless, `VK_EXT_image_2d_view_of_3d` / sparse image extensions) that are now broadly supported on desktop Vulkan drivers. Note: needs verification against Mesa issue tracker.
+
+### Long-term
+
+- **Consolidation of OpenGL state trackers around Zink.** The strategic direction endorsed by Mesa maintainers is to converge OpenGL support onto a single, well-maintained state tracker (Zink on Vulkan) rather than sustaining dozens of per-driver Gallium OpenGL implementations with divergent bug sets. Hardware-specific Gallium drivers would then only need a Vulkan backend, not a separate OpenGL one. [Source](https://www.collabora.com/news-and-blog/news-and-events/goodbye-nouveau-gl-hello-zink.html)
+- **OpenGL compatibility-profile emulation improvements.** The `glBegin`/`glEnd` and display-list paths in `src/mesa/main/` remain the hardest part of GL compatibility support for Zink (which must translate immediate-mode calls into buffered Vulkan draws). Long-term investment is expected in smarter batching and deferred-evaluation of display lists to close the performance gap with native radeonsi/iris for legacy scientific and CAD workloads.
+- **Shader-model evolution: ACO as a shared backend across radeonsi and RADV.** ACO was designed for RADV but now serves radeonsi. The long-term trajectory is deeper unification of the ACO NIR-to-GCN/RDNA backend, reducing duplication between the two AMD Mesa drivers and making future AMD GPU generation support land simultaneously in both. Note: needs verification against upstream roadmap discussions.
+- **iris/ANV EU compiler convergence for future Intel architectures.** The `brw_compile_*` EU ISA compiler is shared between iris (OpenGL) and ANV (Vulkan). As Intel's GPU architecture evolves beyond Xe2/Battlemage toward next-generation designs, maintaining this shared compiler infrastructure becomes increasingly important for keeping the OpenGL driver current without separate porting effort.
+
+---
+
 ## References
 
 1. Mesa source — radeonsi: `src/gallium/drivers/radeonsi/` — https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/gallium/drivers/radeonsi

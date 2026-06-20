@@ -877,6 +877,33 @@ flowchart TD
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Post-8.0.0 patch releases and migration tooling:** Following the OCCT 8.0.0 release (June 2026), the OCCT3D team (Capgemini Engineering) is focused on patch stability, automated migration scripts for external projects upgrading from 7.x, and closing remaining regressions identified during the release candidates. [Source: [OCCT 8.0.0 planned for Q1 2026](https://dev.opencascade.org/content/occt-800-planned-q1-2026-performance-stability-and-support-services)]
+- **STEP reader throughput improvements:** The 8.0.0 release already delivered up to 75% STEP read-speed gains versus 7.7; the next cycle targets similar improvements to IGES and XCAF-heavy assemblies through continued profiling and parallelism. [Source: [OCCT3D long-term vision](https://occt3d.com/performance-stability-long-term-vision-occt-8-0-0-arriving-q1-2026/)]
+- **Boolean operations robustness:** The TKBO parallel Boolean solver continues to receive robustness fixes for degenerate geometry (near-tangent faces, zero-thickness walls). Open tracker issues target reduced failure rates on real-world STEP imports without ShapeFix intervention. [Source: [OCCT MantisBT roadmap](https://tracker.dev.opencascade.org/roadmap_page.php)]
+- **WebAssembly / OpenCascade.js compatibility:** Community-maintained `opencascade.js` exposes OCCT compiled to WASM for browser-side CAD; known issues with `BRepAlgoAPI_BooleanOperation` under WASM multithreading (Emscripten pthreads) are tracked upstream. [Source: [OpenCascade.js project](https://ocjs.org/); [OCCT WASM multithreading forum thread](https://dev.opencascade.org/content/webassembly-whit-multithreadingbrepalgoapibooleanoperation-fail)]
+- **macOS / Metal path for TKOpenGl:** The deprecation of OpenGL on macOS 10.14+ has prompted ongoing discussion about an alternative rendering backend for Mac deployments. Near-term mitigation is EGL via ANGLE (OpenGL ES → Metal); a native Metal driver remains under evaluation. [Source: [Future of OpenGL on Macs — OCCT forum](https://dev.opencascade.org/content/future-opengl-macs)]
+
+### Medium-term (1–3 years)
+
+- **Vulkan rendering backend (`TKVulkan`):** Tracker issue #30631 tracks an experimental Vulkan driver. The prototype covers swapchain setup and basic geometry submission but has not merged into mainline as of 8.0.0p1. A production-quality Vulkan path requires porting OCCT's GLSL shader library (PBR, OIT, shadow maps) to SPIR-V and restructuring the resource-manager lifecycle around `vkDescriptorSet`. This is acknowledged as a multi-year effort. Note: needs verification of current issue status post-8.0.0.
+- **Improved BRepMesh parallelism:** The `BRepMesh_IncrementalMesh` engine is single-threaded per shape; a parallel-per-face design is under discussion for large assembly meshing. Expected to land in a 8.x minor or 9.0 release. Note: needs verification.
+- **XDE assembly performance and lazy loading:** XCAF-based large assemblies (thousands of components) are memory-heavy at open time; lazy-loading of sub-shapes and incremental XDE attribute read is a recurring forum request. The 8.0.0 STEP reader gains are partly motivated by this use-case. [Source: [OCCT3D roadmap announcement](https://occt3d.com/performance-stability-long-term-vision-occt-8-0-0-arriving-q1-2026/)]
+- **Expanded glTF support:** `RWGltf_CafWriter` already handles KHR_draco_mesh_compression (since 7.7.0); planned additions include KHR_materials_unlit, EXT_mesh_gpu_instancing (for large assemblies with repeated components), and round-trip preservation of XCAF layer/colour attributes in glTF extras. Note: needs verification of specific extension targets.
+- **FreeCAD 1.x / OCCT 8.x co-migration:** FreeCAD's move from OCCT 7.7 to 8.0 is gated on API breakage in `TopoDS`, `BRep_Builder`, and `STEPControl`; the FreeCAD community is coordinating with the OCCT3D team on a migration timeline. [Source: [OCCT3D patch migration announcement](https://occt3d.com/important-announcement-occt-8-0-release-and-patch-migration-process/)]
+
+### Long-term
+
+- **Full Vulkan-primary rendering with ray-tracing:** OCCT's BVH infrastructure (`BVH_Tree`, `BVH_Builder`) already powers CPU-side selection picking; a long-term goal is to expose this BVH to a Vulkan ray-tracing pipeline (VK_KHR_ray_tracing_pipeline) for ambient occlusion and shadow generation in engineering visualisation. This would bring OCCT closer to offline-rendering quality without requiring an external renderer.
+- **Native WebGPU backend:** As WebGPU matures in browsers and via `wgpu` on the desktop, a WebGPU rendering driver for OCCT would allow WASM deployments to use GPU-accelerated rendering without the OpenGL ES / ANGLE indirection. The `occt.js` community has expressed interest; no official OCCT3D commitment exists as of mid-2026. Note: needs verification.
+- **Exact Boolean operations via certified arithmetic:** Research prototypes (outside OCCT) demonstrate BRep Boolean operations with certified floating-point arithmetic (interval arithmetic + symbolic perturbation). Integrating such a solver into TKBO would eliminate the tolerance-related failures that currently require ShapeFix post-processing, at the cost of higher runtime complexity.
+- **Parametric constraint solver integration:** OCCT has never shipped a constraint solver (the kind that drives sketch-based modelling in SolidWorks or FreeCAD's Sketcher). Long-term architectural discussions on the OCCT forum consider whether a first-party solver could be integrated with OCAF to enable history-based parametric models natively, rather than delegating to application-layer solvers.
+
+---
+
 ## 11. Integrations
 
 - **Ch12 (Mesa Loader and Dispatch):** `OpenGl_GraphicDriver` targets the Mesa OpenGL ICD (`libGL.so`) or a proprietary OpenGL driver. OCCT negotiates OpenGL 3.2+ core profile via GLX or EGL — the same path described in Ch12's dispatch table.

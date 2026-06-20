@@ -684,6 +684,33 @@ GPU-intensive applications (games, 3D modellers, video editors) routinely use `-
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Virtio-GPU / Venus vtest transport for driver-agnostic GPU access**: Sebastian Wick's January 2026 proposal describes using Mesa's Venus Vulkan driver over a `vtest` Unix-socket transport to `virgl_test_server` on the host, eliminating the hard version-coupling between the Flatpak runtime's Mesa and the host kernel driver. Flatpak would auto-start `virgl_test_server` when the runtime's native driver is unavailable. [Source](https://blog.sebastianwick.net/posts/flatpak-graphics-drivers/)
+- **Backwards-compatible permission extensions**: A merged patch allows manifests to declare "new, more restricting permissions while not breaking compatibility when the app runs on older Flatpak versions," enabling finer-grained GPU and input device access (gamepads, USB portals) without breaking existing installs. [Source](https://blog.sebastianwick.net/posts/flatpak-happenings/)
+- **xdg-desktop-portal 1.21+ incremental hardening**: The 1.21 release (January 2026) added a `ConfigureShortcuts` method to the Global Shortcuts Portal and Linyaps app format support; follow-on releases are expected to expand the Settings Portal's accessibility signals and printer capabilities. [Source](https://www.phoronix.com/news/XDG-Desktop-Portal-1.21)
+- **bubblewrap overlay mounts**: Bubblewrap gained `--overlay`, `--tmp-overlay`, `--ro-overlay`, and `--overlay-src` options, enabling layered filesystem views inside the sandbox — relevant for compositing runtime + GL extension paths without separate bind-mounts. [Source](https://www.suse.com/support/update/announcement/2025/suse-ru-20250145-1/)
+- **Flathub automated CI for GPU manifests**: Flathub's build infrastructure is expanding automated validation of `--device=dri` and VA-API paths, reducing the lag between upstream Mesa releases and extension availability on Flathub. Note: needs verification for exact timeline.
+
+### Medium-term (1–3 years)
+
+- **GPU hardware access daemon**: The graphics virtualisation proposal explicitly plans a dedicated daemon to manage device permissions more granularly — moving away from the coarse `--device=dri` blanket grant to dynamic, per-capability GPU access control. This would allow sandboxed apps to acquire GPU compute access (e.g., `/dev/kfd` for ROCm) on demand rather than at manifest-declaration time. [Source](https://blog.sebastianwick.net/posts/flatpak-graphics-drivers/)
+- **Network sandboxing via pasta and PipeWire policies**: Flatpak's roadmap includes network isolation using `pasta` (unprivileged userspace networking) and PipeWire-enforced policies for sandboxed audio/video streams, complementing GPU isolation with tighter I/O boundaries. [Source](https://blog.sebastianwick.net/posts/flatpak-happenings/)
+- **systemd-appd and nested sandboxing**: The planned `systemd-appd` service would track running Flatpak instances and enable properly-nested sandboxes — removing the requirement for a D-Bus proxy process and allowing Electron/CEF sub-processes (currently handled by Zypak) to participate in the same permission-store lifecycle as the parent. [Source](https://blog.sebastianwick.net/posts/flatpak-happenings/)
+- **XDG Intents portal**: A new portal for deep-linking and thumbnail generation inside sandboxed apps, enabling file-manager thumbnailing of media formats (including GPU-decoded video frames via VA-API) without granting `--filesystem=host`. Note: needs verification for exact specification status.
+- **Varlink as D-Bus alternative for portal IPC**: Active exploratory work exists to make varlink a production-ready alternative to D-Bus for portal communication, which would simplify the permission-store interface and reduce latency for high-frequency portal calls (e.g., repeated ScreenCast frame requests). [Source](https://blog.sebastianwick.net/posts/flatpak-happenings/)
+
+### Long-term
+
+- **Full GPU virtualisation without host driver bleed**: The logical endpoint of the Venus/virglrenderer approach is a Flatpak sandbox that never loads host userspace GPU driver code at all — the Mesa inside the runtime is the sole userspace driver, and it communicates to the host GPU exclusively through a stable, versioned virtio-gpu protocol. This would make the GL extension mechanism obsolete and remove the NVIDIA strict-ABI problem entirely. [Source](https://blog.sebastianwick.net/posts/flatpak-graphics-drivers/)
+- **Declarative GPU capability requirements in manifests**: Future manifest syntax may allow applications to declare minimum Vulkan or OpenGL feature levels, letting the Flatpak installer select the appropriate runtime + driver combination and warn users on under-specified hardware at install time rather than at runtime. Note: needs verification.
+- **Unified portal for GPU context sharing with compositors**: Long-term convergence of the ScreenCast, Camera, and a hypothetical GPU-compute portal under a single `org.freedesktop.portal.GPU` interface — analogous to how Android's `SurfaceFlinger` exposes a single surface-allocation channel — has been discussed but not formally proposed. Note: needs verification.
+- **AppImage convergence on portal model**: As AppImage gains optional portal support (via `$APPIMAGE_EXTRACT_AND_RUN` and libfuse3 sandboxing), pressure is growing for convergence on the xdg-desktop-portal permission model rather than relying on ambient host library access — bringing AppImage's GPU access story closer to Flatpak's. Note: needs verification for timeline.
+
+---
+
 ## 11. Integrations
 
 This chapter connects to the following chapters in the book:

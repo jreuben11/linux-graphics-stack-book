@@ -955,6 +955,46 @@ Note: specific engine version details for UE5 Vulkan mesh shader adoption should
 
 ---
 
+## Roadmap
+
+The Vulkan ecosystem continues to evolve rapidly, with the Khronos Vulkan Working Group publishing annual roadmap milestones and a steady cadence of new extensions. The extensions covered in this chapter are themselves part of an ongoing arc from explicit but verbose (Vulkan 1.0) toward leaner, more GPU-native programming models.
+
+### Near-term (6–12 months)
+
+- **Vulkan Roadmap 2026 Milestone adoption in Mesa**: The Khronos-published Roadmap 2026 Milestone mandates variable-rate shading (`VK_KHR_fragment_shading_rate`), host-image copies (`VK_EXT_host_image_copy`), compute-shader derivatives, and higher descriptor/interface limits as a baseline for mid-to-high-end devices shipping in 2026. RADV, ANV, and NVK are expected to achieve this milestone profile during the Mesa 26.x cycle. [Source: Khronos — Vulkan Roadmap 2026](https://www.khronos.org/blog/vulkan-introduces-roadmap-2026-and-new-descriptor-heap-extension)
+
+- **`VK_EXT_descriptor_heap` stabilisation**: Released alongside Roadmap 2026 in Vulkan 1.4.340 (SDK 1.4.341, February 2026), this extension provides direct CPU/GPU access to descriptor memory in a flat heap, removing the set/layout abstraction entirely. It is an `EXT` seeking broad developer feedback before potential promotion to `VK_KHR_descriptor_heap` and eventual core inclusion. Mesa driver implementations are in early bring-up as of mid-2026. [Source: Vulkan SDK 1.4.341 announcement](https://www.khronos.org/news/permalink/vulkan-sdk-1.4.341-released-now-supporting-vk-ext-descriptor-heap)
+
+- **Mesa 26.1 NIR/URB mesh-shader unification**: Mesa 26.1 (May 2026) continued systematic conversion of mesh and task shader handling to use intrinsic URB in NIR, improving code quality and enabling better cross-driver sharing of mesh-shader lowering passes between ANV, RADV, and future drivers. [Source: Mesa 26.1.0 Release Notes](https://docs.mesa3d.org/relnotes/26.1.0.html)
+
+- **Ray-tracing incremental extensions**: Vulkan 1.4.351 added six new extensions including ray-tracing improvements, extending the `VK_KHR_ray_tracing_*` family with further convenience and performance features. RADV has seen significant ray-tracing performance improvements in Mesa 26.0. [Source: Phoronix — Vulkan 1.4.351](https://www.phoronix.com/news/Vulkan-1.4.351-Released)
+
+- **`VK_EXT_mesh_shader` and `VK_KHR_cooperative_matrix` promotion consideration**: Both extensions remain multi-vendor EXT/KHR as of 2026; conformance test coverage continues to expand, and Khronos is expected to evaluate promotion to Vulkan 1.5 core when a future minor version is declared. Note: no confirmed promotion timeline has been announced.
+
+### Medium-term (1–3 years)
+
+- **`VK_KHR_descriptor_heap` (KHR ratification)**: If developer feedback on `VK_EXT_descriptor_heap` is positive, Khronos has signalled intent to ratify it as a `KHR` extension and target it for a future Roadmap milestone, potentially unifying the bindless-descriptor programming model across Vulkan, Metal, and D3D12. [Source: Khronos Roadmap 2026 blog](https://www.khronos.org/blog/vulkan-introduces-roadmap-2026-and-new-descriptor-heap-extension)
+
+- **Vulkan 1.5 core and Roadmap 2027**: Khronos publishes annual Roadmap milestones; a Roadmap 2027 milestone is anticipated, likely mandating `VK_EXT_mesh_shader`, `VK_KHR_cooperative_matrix`, and `VK_EXT_shader_object` as baseline features for high-end devices. Note: no formal Roadmap 2027 document has been published as of mid-2026; watch [docs.vulkan.org/spec/latest/appendices/roadmap.html](https://docs.vulkan.org/spec/latest/appendices/roadmap.html) for updates.
+
+- **`VK_KHR_shader_object` promotion to core**: `VK_EXT_shader_object` is widely adopted in Mesa (RADV default since 24.1; ANV in 25.x) and NVIDIA proprietary drivers. The extension is a strong candidate for promotion to Vulkan 1.5 core given its role in enabling pipeline-free rendering and its relationship to Roadmap milestone requirements. Note: needs verification against Khronos WG discussions.
+
+- **Improved SPIR-V cooperative-matrix types**: The Khronos SPIR-V working group is expected to extend `OpCooperativeMatrixMulAddKHR` to cover additional numeric formats (FP8, INT4) as AI-inference workloads drive demand for sub-8-bit accumulation. This would be exposed via updated `VK_KHR_cooperative_matrix` feature bits. Note: needs verification.
+
+- **Variable-rate shading integration with mesh shaders**: Current `VK_KHR_fragment_shading_rate` interaction with mesh shaders has constraints on per-primitive shading-rate outputs; the Vulkan WG is working on lifting these for future hardware. Note: no public RFC tracked as of mid-2026.
+
+### Long-term
+
+- **Unified descriptor model across Vulkan, WebGPU, and Metal**: The long-term architectural goal of `VK_EXT_descriptor_heap` is API convergence — enabling translation layers (Dawn, ANGLE, DXVK) to map a single host-visible descriptor heap model without indirection. If adopted widely, this could simplify the Mesa Vulkan common layer's descriptor management code significantly. Note: speculative.
+
+- **Ray tracing tier 2 / hardware BVH management**: Current Vulkan ray tracing places BVH build and traversal control entirely on the application. Future extensions may expose tighter integration with fixed-function BVH traversal units (as on Ada/RDNA4), including asynchronous BVH compaction and hardware-managed BVH caches. Note: speculative; informed by hardware roadmap signals from NVIDIA and AMD.
+
+- **Neural/AI shader stages**: RTXNS (`VK_NV_cooperative_matrix2`, covered in Ch70) represents NVIDIA's vendor prototype for neural texture inference in shaders. A multi-vendor EXT or KHR path for AI-inference shader stages — combining cooperative matrices, bindless descriptors, and new data-type support — is a plausible long-term evolution of the extensions in this chapter. Note: speculative; no Khronos RFC published.
+
+- **Convergence of `VK_EXT_shader_object` with pipeline caching**: As `VK_EXT_shader_object` binary exports and `VK_EXT_pipeline_creation_cache_control` mature, a future extension may provide a unified shader-binary cache that works across shader objects and pipeline libraries, eliminating the current dual-cache complexity in engines like DXVK and VKD3D-Proton. Note: speculative.
+
+---
+
 ## 10. Integrations
 
 This chapter connects to the following chapters across the book:

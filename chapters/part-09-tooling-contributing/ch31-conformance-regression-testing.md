@@ -1077,6 +1077,33 @@ New Vulkan extension tests enter the CTS through Khronos's internal review proce
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Vulkan SC 1.0 CTS broadening**: The Vulkan SC Emulation Driver Stack released by the Khronos Vulkan SC Working Group in February 2025 is expected to drive expansion of the Vulkan SC CTS coverage, making it easier for Mesa-based safety-critical prototypes to run conformance tests without dedicated hardware. [Source](https://www.khronos.org/vulkansc/)
+- **skqp integration in Mesa CI**: A draft merge request (`!18771`) exists to add `deqp-runner` support for Skia's GPU test suite (skqp), which would extend Mesa CI's coverage to include Skia's GPU rendering paths as used by Chrome and Flutter. [Source](https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/18771)
+- **Additional Valve-sponsored bare-metal dEQP runners**: Valve has been actively adding more bare-metal GPU runner capacity to Mesa CI (e.g., `!14660`). Near-term expansion is expected to cover a broader range of RADV and Turnip hardware configurations, reducing the gap between the nightly full-mustpass run and per-MR fast subset. [Source](https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/14660)
+- **CTS 6-month embargo reduction for Vulkan extensions**: There is ongoing discussion within the Khronos Vulkan Working Group about shortening or eliminating the 6-month embargo period on new extension CTS tests, which would allow community implementers in Mesa to access tests earlier and reduce the conformance delay for new extensions. Note: needs verification of specific timeline.
+- **syzkaller DRM syscall descriptor improvements**: The `sys/linux/drm.txt` syscall descriptions in syzkaller are periodically updated as new DRM ioctls are added. With the introduction of the DRM GPUVM and VM_BIND interfaces, updates to syzkaller's DRM coverage are expected to appear within 6–12 months. [Source](https://github.com/google/syzkaller)
+
+### Medium-term (1–3 years)
+
+- **Vulkan 1.4 CTS mustpass list stabilisation and Vulkan 1.5 preparation**: Following the January 2025 Vulkan 1.4 day-zero conformance achievement by RADV, ANV, Turnip, NVK, and Honeykrisp, the medium-term focus will shift to hardening Vulkan 1.4 extension coverage (mesh shaders, ray tracing, cooperative matrices) and preparing the CTS infrastructure for a potential Vulkan 1.5 or next-generation API revision. [Source](https://www.khronos.org/blog/vulkan-continuing-to-forge-ahead-siggraph-2025)
+- **piglit OpenGL ES retirement and migration to dEQP-GLES**: piglit's GLES test coverage has historically overlapped with `dEQP-GLES31`. As dEQP's GLES modules have matured, the Mesa community has discussed gradually retiring redundant piglit GLES tests in favour of dEQP, reducing maintenance burden while retaining piglit's fast `quick.py` subset for CI. Note: needs verification of formal deprecation plans.
+- **AI-assisted shader fuzzing**: The SPIRV-Tools `spirv-fuzz` tool uses structured metamorphic transformations; there is growing academic interest (following the GraphicsFuzz line of work) in using machine-learning-guided mutation strategies to generate more semantically realistic shader test cases that exercise corner cases in register allocators and instruction selectors. [Source](https://github.com/google/graphicsfuzz)
+- **parallel-deqp-runner GPU-side result streaming**: The `parallel-deqp-runner` Rust tool currently aggregates results after test completion. Planned improvements (tracked in the Mesa GitLab issue [#2046](https://gitlab.freedesktop.org/mesa/mesa/-/issues/2046) for faster Mesa CI) include streaming partial results to the CI dashboard in real time, enabling earlier failure detection on long hardware runs.
+- **DRM kernel CI integration with KernelCI**: The DRM subsystem's IGT-based testing is progressively being integrated into the broader KernelCI infrastructure, which aggregates results from many kernel subsystems. Medium-term plans involve standardising the DRM CI reporting format with KernelCI's schema to enable cross-tree regression correlation. [Source](https://docs.kernel.org/gpu/automated_testing.html)
+
+### Long-term
+
+- **Unified Khronos conformance database and automated submission**: Currently, conformance submission is a periodic manual administrative process. A long-term goal articulated within Khronos discussions is a more automated submission pipeline where drivers that continuously pass the mustpass list on hardware can receive provisional conformance status without a separate submission ceremony. Note: needs verification.
+- **GPU-accelerated CTS execution**: The Vulkan CTS `deqp-vk` test executor itself runs entirely on the CPU; each test case launches GPU workloads and reads back results on the CPU. As Vulkan extensions such as `VK_KHR_device_group` and compute-only pipelines mature, there is architectural interest in moving CTS result validation and image comparison onto the GPU to reduce per-test CPU overhead and allow the 700,000+ test suite to run faster on constrained hardware. Note: needs verification.
+- **Formal methods integration**: Academic research groups are exploring the use of formal GPU memory model checkers (e.g., the Alloy-based Vulkan memory model verification work) as a complement to CTS testing, with the goal of providing mechanical proofs that specific synchronisation patterns are correctly handled. Long-term, such tools could be integrated into the spirv-fuzz / spirv-reduce pipeline to generate synchronisation stress tests that are provably distinguishing. [Source](https://github.com/nicowillis/gpu-memory-models)
+- **piglit archival and preservation**: piglit's test suite encodes decades of GPU driver bug history. A long-term goal is to curate and preserve the piglit corpus as a historical reference even if active development migrates fully to dEQP, ensuring that regressions involving legacy OpenGL behaviour remain detectable on old hardware configurations still in use in embedded and industrial systems. Note: needs verification of formal plans.
+
+---
+
 ## Integrations
 
 **Chapter 10 (NVK)**: NVK's Vulkan conformance journey is a concrete example of the Khronos Adopter Program process described in Section 7. NVK was tested with dEQP-VK throughout development; the test modules that NVK was passing (and failing) at each stage are visible in the Mesa CI history. NVK's path from a partial implementation to Vulkan 1.4 day-zero conformance is the best-documented recent example of the full testing pipeline.

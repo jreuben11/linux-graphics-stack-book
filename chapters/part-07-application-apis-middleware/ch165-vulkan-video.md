@@ -930,6 +930,32 @@ WiVRn similarly uses VA-API or Vulkan encode depending on what is available. Whe
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **VP9 encode extension (`VK_KHR_video_encode_vp9`)**: Khronos released `VK_KHR_video_decode_vp9` in June 2025, completing the currently planned decode extension set. [Source: Khronos Announces Vulkan Video Decode VP9 Extension](https://www.khronos.org/blog/khronos-announces-vulkan-video-decode-vp9-extension) A corresponding VP9 encode extension is a natural follow-on; no firm release date has been announced but community interest exists. Note: needs verification on current Khronos working-group status.
+- **Mesa RADV AV1 encode stabilisation and ANV re-enablement**: Mesa 26.1 shipped RADV Vulkan Video with unified decode infrastructure shared with RadeonSI, plus low-latency encode/decode improvements. [Source: Mesa 26.1 Released — Phoronix](https://www.phoronix.com/news/Mesa-26.1-Released) Intel ANV disabled video encode for Meteor Lake and Alchemist dGPUs and newer in Mesa 25.3.5 pending fixes; re-enabling these platforms after sufficient testing is a near-term goal. [Source: Intel ANV H.265 Encode Fixes — Phoronix](https://www.phoronix.com/news/Mesa-26.1-devel-ANV-H265-Encode)
+- **`VK_KHR_video_encode_quantization_map` Mesa adoption**: The quantization-map extension (allowing per-coding-block QP delta and emphasis maps) was announced alongside AV1 encode. [Source: Khronos AV1 Encode & Quantization Map](https://www.khronos.org/blog/khronos-announces-vulkan-video-encode-av1-encode-quantization-map-extensions) Broad Mesa driver support across RADV, ANV, and NVK is expected in the near term.
+- **`VK_KHR_video_encode_intra_refresh` broader driver coverage**: RADV intra-refresh encode landed in Mesa 25.3; ANV and NVK implementations are expected to follow. [Source: RADV Vulkan Video Intra-Refresh Encode — Phoronix](https://www.phoronix.com/news/RADV-Intra-Refresh-Video) This extension is particularly valuable for wireless VR streaming (ALVR/WiVRn) and broadcast applications.
+- **FFmpeg and GStreamer AV1 Vulkan encode element stabilisation**: The `av1_vulkan` FFmpeg encoder and `vulkav1enc` GStreamer element are newer than H.264/H.265 counterparts; conformance testing, quality tuning, and rate-control improvements are ongoing. Note: needs verification on current upstream merge status.
+
+### Medium-term (1–3 years)
+
+- **EVC (Essential Video Coding) and VVC (Versatile Video Coding) Vulkan extensions**: With H.264, H.265, AV1, and VP9 decode extensions now complete, next-generation codecs VVC (H.266) and EVC (MPEG-5) represent candidate targets for Vulkan Video encode extensions as hardware support matures. Note: needs verification — no Khronos proposals are publicly filed as of mid-2026.
+- **Temporal scalable encode (`SVC`/temporal layers) improvements**: The current temporal-layer encode support in `VkVideoEncodeH264RateControlInfoKHR` is limited to flat reference patterns. More flexible spatial and quality scalable encode (multi-layer SVC) using B-frame hierarchies is under discussion for streaming and conferencing use cases. Note: needs verification on Khronos working-group progress.
+- **Per-region quality-of-interest (ROI) encode via quantization maps**: The `VK_KHR_video_encode_quantization_map` extension provides the infrastructure for per-block QP control; tooling, ML-driven ROI detection, and application-level integration (e.g., foveated encoding for VR) are expected to mature over this horizon. [Source: Khronos Quantization Map task list](https://github.com/KhronosGroup/Vulkan-Docs/issues/2466)
+- **NVK (NVIDIA open-source Vulkan driver) video encode**: NVK has been developing Vulkan Video decode support; video encode implementation on NVIDIA's open-source driver stack is expected as NVK matures and NVENC integration via the kernel video interface stabilises. Note: needs verification on current NVK roadmap.
+- **Vulkan Video profiling and validation layer improvements**: The Vulkan Validation Layers and GPU-Assisted Validation do not yet fully cover video encode command sequences. Improved validation for `vkCmdEncodeVideoKHR`, rate-control state transitions, and DPB layout correctness is a medium-term infrastructure goal.
+
+### Long-term
+
+- **GPU-accelerated ML-based encode (neural video codecs)**: Future Vulkan Video extensions or companion Vulkan compute extensions may provide hooks for ML-based inter-frame prediction and entropy coding (as seen in cloud-oriented codecs like Google Lyra for audio). Vulkan's existing compute pipeline is already usable for neural codec inference; a unified encode+ML extension would reduce cross-pipeline synchronisation overhead.
+- **Unified cross-vendor video quality benchmarking**: Long-term, the industry may standardise objective video quality metrics (VMAF, SSIM, PSNR) as Vulkan query types, enabling GPU-side quality-feedback loops without CPU readback, analogous to how `VkQueryPool` now reports bitstream byte counts.
+- **Direct display encode path (zero-copy capture-to-stream)**: Tighter integration between `VK_KHR_present_wait`, direct scanout, and video encode queues could enable a fully GPU-resident screen-capture-to-encode pipeline with kernel-level scheduling, eliminating the WSI layer interception that OBS and ALVR currently require.
+
+---
+
 ## 10. Integrations
 
 **Chapter 50 — Vulkan Video Decode**: This chapter (Ch165) is the encode counterpart to Ch50. Ch50 covers `VK_KHR_video_queue` infrastructure, decode lifecycle, H.264/H.265/AV1 decode, DPB management, and FFmpeg decode hwaccel. The two chapters share the queue discovery and session lifecycle model described in Ch50 but diverge completely at the operation layer (`VK_KHR_video_decode_queue` vs `VK_KHR_video_encode_queue`). Zero-copy transcode pipelines combine both chapters' content: decode from Ch50, an image layout transition barrier, and encode from this chapter.

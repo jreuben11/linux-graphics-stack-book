@@ -618,6 +618,33 @@ From PipeWire 0.3.80 onwards, the built-in Vulkan SPA plugin (`spa/plugins/vulka
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Transaction system for atomic object linking**: WirePlumber and PipeWire are adding a client-facing transaction API that lets callers submit a set of objects (links, nodes, metadata changes) as a batch and commit them atomically, reducing the latency-inducing roundtrip chatter between the session manager and the daemon that currently occurs when linking complex graphs. [Source](https://arunraghavan.net/2026/06/notes-from-the-pipewire-hackfest-2026-part-2/)
+- **Maximum volume limits as per-route property**: Wim Taymans has begun implementing per-route maximum volume limits managed by WirePlumber, replacing the ad-hoc node-level ceiling currently in use; this is a prerequisite for robust accessibility volume clamping. [Source](https://arunraghavan.net/2026/06/notes-from-the-pipewire-hackfest-2026-part-2/)
+- **Click elimination via fade smoothing**: Stream start/stop transitions will gain fade-in/fade-out smoothing in the data thread to eliminate audible clicks caused by abrupt level changes, a long-standing complaint in professional audio use-cases. Note: needs verification of target release milestone.
+- **PipeWire 1.6 series stabilisation**: The 1.6 branch (current stable as of May 2026) continues receiving point releases — PipeWire 1.6.6 shipped 2026-05-26 — addressing JACK glitches, ALSA sequencer crashes, Bluetooth A2DP regressions, and Pulse server correctness. [Source](https://news.tuxmachines.org/n/2026/05/26/PipeWire_1_6_6_Improves_the_Pulse_Server_Volume_Initialization_.shtml)
+- **ACP to ALSA UCM migration**: The Audio Card Profile subsystem is being standardised on UCM2 configuration with richer expressiveness, unifying hardware capability description and removing a parallel configuration path that has caused maintenance burden. [Source](https://arunraghavan.net/2026/06/notes-from-the-pipewire-hackfest-2026-part-2/)
+
+### Medium-term (1–3 years)
+
+- **Vulkan video conversion filter**: A Vulkan-based `spa/plugins/vulkan/` format-conversion node, prototyped in a 2023 GSoC project, needs to be hardened with capability detection and fallback paths before it can be unconditionally activated. When complete, it enables automatic zero-copy linking of video ports with mismatched pixel formats and resolutions without any CPU involvement. [Source](https://www.collabora.com/news-and-blog/blog/2023/12/06/thoughts-on-pipewire-1-0-and-beyond/)
+- **Transparent video filtering (background replacement etc.)**: PipeWire's graph model makes it architecturally possible to insert a Vulkan or ONNX-accelerated processing node between a camera source and any consumer, providing compositor-level background replacement or noise suppression without requiring individual applications to implement it. The `filter-graph` module's FFmpeg and ONNX plug-in support (landed in PipeWire 1.6) is the foundation for this direction. [Source](https://www.collabora.com/news-and-blog/blog/2023/12/06/thoughts-on-pipewire-1-0-and-beyond/)
+- **Bluetooth LE Audio / Auracast**: A separate daemon managing Auracast broadcast audio (LE Audio broadcast source/sink) was demonstrated at the PipeWire Hackfest 2026 using PipeWire, WirePlumber, and BlueZ. Full integration requires reorganising Bluetooth policy from WirePlumber Lua scripts into higher-level PipeWire modules, addressing pairing complexity and inter-device synchronisation. [Source](https://arunraghavan.net/2026/06/notes-from-the-pipewire-hackfest-2026-part-2/)
+- **WirePlumber Rust core with Lua policy layer**: An architectural direction to port WirePlumber's core bookkeeping to Rust for memory-safety and performance, while retaining Lua 5.4/5.5 as the scripting surface for device linking policy. LuaJIT is also being evaluated as an intermediate step for policy-script performance. [Source](https://arunraghavan.net/2026/06/notes-from-the-pipewire-hackfest-2026-part-2/)
+- **Declarative session management**: WirePlumber's imperative Lua scripts are being refactored toward a declarative configuration model with explicit policy/action separation; device nodes would be persistently exposed with an availability state signal rather than being dynamically created and destroyed, simplifying hotplug handling and introspection. [Source](https://arunraghavan.net/2026/06/notes-from-the-pipewire-hackfest-2026-part-2/)
+
+### Long-term
+
+- **DSP capability federation**: Extending ALSA UCM to advertise available hardware DSP processing features (EQ, compression, beamforming) so that PipeWire's `audioconvert` node can delegate processing to internal hardware nodes, falling back to CPU only when hardware is unavailable. This mirrors how `spa/plugins/vulkan/` delegates GPU work today but for audio DSP blocks. [Source](https://arunraghavan.net/2026/06/notes-from-the-pipewire-hackfest-2026-part-2/)
+- **Neural network audio processing integration**: Exploratory work toward in-graph text-to-speech, speech-to-text, and noise suppression using ONNX Runtime or similar inference engines as SPA plugin backends, potentially exposing these as standard filter nodes that compositors and portals can insert on demand. Implementation approach remains undetermined. [Source](https://arunraghavan.net/2026/06/notes-from-the-pipewire-hackfest-2026-part-2/)
+- **Unified multimedia session bus**: The longer-term architectural vision expressed at the 2026 hackfest is for PipeWire to absorb more session management concern currently split across BlueZ, PulseAudio compatibility shims, and V4L2 management daemons, positioning it as the single IPC substrate for all Linux A/V session state, analogous to the role D-Bus plays for system services. Note: needs verification as a formally committed direction.
+- **`ext-image-capture-source-v1` full ecosystem adoption**: The replacement Wayland protocols for screen capture (`ext-image-capture-source-v1`, `ext-image-copy-capture-v1`) are still rolling out across compositor portal backends; long-term, all portal backends should use these protocols uniformly, deprecating the wlroots-specific `wlr-screencopy-unstable-v1` path and enabling richer capture semantics (cursor visibility, window-level capture) across all compositors. [Source](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html)
+
+---
+
 ## Integrations
 
 - **Chapter 4 — DMA-BUF Kernel Subsystem**: The `SPA_DATA_DmaBuf` type, modifier propagation, and the `VIDIOC_EXPBUF` path in the V4L2 SPA plugin all rely on the kernel `dma_buf` framework covered there. The modifier constants (`DRM_FORMAT_MOD_LINEAR`, `I915_FORMAT_MOD_Y_TILED_CCS`, etc.) are defined in `include/uapi/drm/drm_fourcc.h`.

@@ -838,6 +838,44 @@ From Mesa's perspective, IREE is just another Vulkan application. The SPIR-V it 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Intel XeVM dialect stabilisation in upstream LLVM.** Intel's `xevm` dialect — modelled after `nvvm` and `rocdl`, exposing Xe-architecture-specific features including 2D block loads/stores and XMX matrix multiply-add — was upstreamed to LLVM in mid-2025. Near-term work focuses on integration tests, lowering pipeline coverage, and enabling the `XeVM` target for full `mlir-opt` → ISA round-trips for Intel Arc and Battlemage GPUs. [Source](https://www.phoronix.com/news/Intel-XeVM-MLIR-In-LLVM) [Source](https://mlir.llvm.org/docs/Dialects/XeVMDialect/)
+
+- **Triton Gluon dialect and automatic warp specialisation.** The `gluon` dialect exposes warp-group MMA, TMA descriptors, and explicit warp specialisation to expert kernel authors. Work is ongoing to generalise compiler heuristics so that auto-warp-specialisation applies to a broader class of kernels beyond attention and GEMM, and to stabilise the transformation passes for production use. [Source](https://pytorch.org/blog/warp-specialization-in-triton-design-and-roadmap/) [Source](https://triton-lang.org/main/getting-started/tutorials/gluon/index.html)
+
+- **NVIDIA Blackwell and on-device TMA descriptor support in Triton.** Active upstream work adds support for Blackwell's Cluster Launch Control, distributed shared memory (DSMEM), multi-CTA tiling, and on-device TMA descriptor pipelines. These features are needed to match hand-written CUTLASS kernels on GB200 hardware. Note: needs verification for exact merge timeline.
+
+- **IREE HAL NPU backend expansion.** IREE's hardware abstraction layer is being extended to target dedicated NPU backends (Qualcomm QNN, Samsung Eden, emerging RISC-V NPU targets), following the same MLIR → Stream → HAL → SPIR-V (or NPU binary) pipeline described in Section 6. [Source](https://iree.dev/)
+
+- **SPIR-V cooperative matrix lowering improvements in Mesa.** Mesa's RADV and ANV drivers continue hardening their `VK_KHR_cooperative_matrix` paths as MLIR-generated SPIR-V that uses `OpCooperativeMatrixMulAddKHR` reaches production workloads via IREE and Triton's Vulkan backend. Note: needs verification for specific Mesa MR numbers.
+
+### Medium-term (1–3 years)
+
+- **Unified MLIR GPU dialect abstraction over vendor dialects.** The LLVM community is discussing a more principled separation between the hardware-neutral `gpu` dialect and vendor-specific dialects (`nvvm`, `rocdl`, `xevm`, `xegpu`). A proposed "GPU target" interface would allow a single `-convert-gpu-to-target` pass to dispatch to the correct vendor backend based on registered target attributes, eliminating the need for separate per-vendor lowering pipelines. Note: needs verification — track the LLVM discourse RFC threads.
+
+- **Triton Vulkan/SPIR-V backend reaching feature parity.** The experimental Triton SPIR-V path currently lacks asynchronous copy instructions (`cp.async` equivalent), warp shuffle, and Hopper-class TMA. Bridging these gaps via new SPIR-V extensions (`SPV_KHR_non_uniform_group_operations`, async copy proposals in the Khronos working group) is a medium-term goal to enable Triton kernels on AMD and Intel GPUs without a PTX intermediate. [Source](https://github.com/triton-lang/triton)
+
+- **StableHLO as the universal ML IR interchange.** The OpenXLA project is consolidating on StableHLO as the portable serialisation format across JAX, TensorFlow, and PyTorch XLA. Medium-term plans include a stable serialisation format with versioned compatibility guarantees, enabling IREE, XLA, and third-party runtimes to accept a single `.stablehlo` artifact and compile it independently. [Source](https://openxla.org/xla)
+
+- **`SPV_KHR_cooperative_matrix` v2 and finer-grain precision support.** Khronos is working on extensions to `VK_KHR_cooperative_matrix` to expose FP8 (E4M3 / E5M2) matrix operands, INT4 quantised weights, and mixed-precision accumulation matching NVIDIA Hopper H100 and AMD CDNA3 hardware capabilities. MLIR's `spirv` dialect will need corresponding type and op additions. Note: needs verification for extension naming and timeline.
+
+- **Structured kernel library approach in IREE.** IREE is developing a "codegen tuning" infrastructure where kernel tile configurations, vectorisation decisions, and pipeline depths are stored as external YAML specifications and applied at compile time, enabling model-specific tuning without recompilation of the full IREE stack. [Source](https://iree.dev/reference/mlir-dialects/HAL/)
+
+### Long-term
+
+- **MLIR as the universal GPU compiler IR across ML and graphics workloads.** A long-term architectural goal within LLVM/MLIR is to converge the graphics shader compilation path (GLSL → SPIR-V → Mesa NIR) and the ML compute path (linalg → gpu → SPIR-V) on a shared MLIR foundation. Mesa could in principle accept MLIR directly — bypassing the SPIR-V serialisation/deserialisation round-trip — for offline-compiled compute pipelines, reducing latency and debug friction.
+
+- **Hardware-native ML tensor types in Vulkan and SPIR-V.** As FP8 and INT4 become first-class hardware types on RDNA4, Blackwell, and Xe3+, pressure will grow to expose them natively in SPIR-V and Vulkan rather than through cooperative matrix extensions. Long-term, MLIR's type system could drive the design of these extensions rather than trail hardware by multiple generations.
+
+- **Automatic differentiation and training workloads on Vulkan via MLIR.** Current MLIR GPU infrastructure is optimised for inference (forward pass). Training requires reverse-mode automatic differentiation, gradient checkpointing, and cross-device collective communication (AllReduce). Long-term, frameworks such as JAX may route training through Vulkan on non-CUDA hardware via MLIR/IREE, requiring deep integration between the `linalg` / `scf` dialects and collective communication primitives. Note: needs verification — this is a speculative architectural direction.
+
+- **Formal verification of MLIR lowering passes for safety-critical GPU compute.** As MLIR-compiled GPU code is deployed in automotive, medical, and safety-critical contexts, correctness guarantees for lowering passes (particularly tiling, vectorisation, and memory ordering) become important. Research into formally verified MLIR pass semantics is an active academic direction. Note: needs verification — track PLDI / CGO academic literature.
+
+---
+
 ## Integrations
 
 This chapter sits at the intersection of Mesa's compiler infrastructure and the emerging ML/inference stack. The following chapters provide essential context in both directions:

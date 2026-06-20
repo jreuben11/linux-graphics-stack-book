@@ -426,6 +426,31 @@ ANGLE includes a built-in frame capture and replay system, enabled via the `ANGL
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **OpenGL ES 3.2 conformance certification.** ANGLE's Vulkan backend has had ES 3.2 coverage in-progress for several years; achieving formal Khronos conformance certification for ES 3.2 is an explicit stated goal in the ANGLE README. [Source](https://chromium.googlesource.com/angle/angle/+/main/README.md)
+- **Wider adoption of `VK_EXT_graphics_pipeline_library` (GPL).** Adoption of GPL sub-library pre-compilation at link time (vertex-input and fragment-output libraries) reduces per-draw pipeline stall hitching. The extension is now available on all major Linux Mesa drivers (RADV, ANV, NVK), making broader ANGLE exploitation of it the next step. [Source](https://www.khronos.org/blog/reducing-draw-time-hitching-with-vk-ext-graphics-pipeline-library)
+- **Continued `VK_EXT_extended_dynamic_state` expansion.** Migrating more rasterizer state (polygon mode, depth-bias parameters, sample mask) from baked pipeline objects to dynamic commands reduces the pipeline variant explosion that is ANGLE's primary source of stutter on first draw. Note: needs verification of specific ANGLE tracking bugs.
+- **Wayland `EGLSurface` stabilisation.** ANGLE's native Wayland window surface path (`WindowSurfaceVkWayland`) has an open tracking issue; stabilising it is required before Chrome can deprecate its XWayland fallback on Wayland compositors. [Source](https://issues.chromium.org/issues/334275637)
+- **Firefox Vulkan backend on Linux (Mozilla fork).** Mozilla's downstream ANGLE fork is evaluating the Vulkan backend for Linux; near-term work includes validating ANGLE Vulkan against Firefox's WebRender compositor integration. [Source](https://github.com/mozilla/angle)
+
+### Medium-term (1–3 years)
+
+- **Bindless descriptor adoption via `VK_EXT_descriptor_indexing` / `VK_EXT_descriptor_buffer`.** Moving ANGLE's per-draw descriptor set updates to a bindless model would eliminate the per-draw descriptor pool watermark management that is a significant CPU overhead in texture-heavy WebGL workloads. `VK_EXT_descriptor_heap` (proposed 2026) is a further candidate. [Source](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_descriptor_heap.html)
+- **WebGPU's ascendancy and ANGLE maintenance posture.** With WebGPU reaching ~82% global browser support as of 2026, new high-performance web graphics workloads are moving to WebGPU (backed by Dawn/wgpu rather than ANGLE). ANGLE's long-term role shifts toward providing a reliable WebGL 1.0/2.0 compatibility layer for the installed base of existing content. [Source](https://byteiota.com/webgpu-2026-70-browser-support-15x-performance-gains/)
+- **Metal backend maturation for non-Apple platforms and WebKit.** ANGLE's Metal backend, already shipping on Apple platforms, may expand to cover edge cases required by WebKit's GTK/WPE port on Linux (via MoltenVK); this is speculative but reflects the stated direction of the multi-platform ANGLE strategy. Note: needs verification.
+- **Android and ChromeOS OpenGL ES 3.2 full stack.** ANGLE is the OpenGL ES runtime on Android 12+ and ChromeOS. Completing ES 3.2 coverage (geometry shaders, tessellation, ASTC LDR/HDR, `EXT_texture_buffer`) closes the gap with console-class ES feature sets for mobile web content. Note: needs verification of exact Android rollout schedule.
+
+### Long-term
+
+- **ANGLE as the universal OpenGL ES compatibility shim.** As Vulkan and WebGPU displace legacy OpenGL, ANGLE is positioned to become the single trusted GL ES implementation across all platforms (browser, Flutter, Qt WebEngine, embedded). Maintaining conformance breadth rather than adding new API surface is the likely architectural direction. [Source](https://chromium.googlesource.com/angle/angle/+/main/README.md)
+- **Deeper integration with pipeline feedback and mesh/ray shading.** If Khronos extends WebGL or introduces a successor API that exposes mesh shading or ray-tracing queries, ANGLE's translation layer would need corresponding Vulkan backend work; bindless resources are the prerequisite that the WebGPU working group identifies as blocking both. [Source](https://kaelan.fyi/research/webgpu-future-roadmap/)
+- **Formal ES 3.2 + extensions conformance across all backends (Metal, D3D12).** Achieving full cross-backend parity at the ES 3.2 level would allow ANGLE to serve as the authoritative reference implementation for OpenGL ES conformance testing on all platforms, reinforcing its role in the Khronos ecosystem beyond Chrome.
+
+---
+
 ## Integrations
 
 This chapter connects to several other parts of the book.

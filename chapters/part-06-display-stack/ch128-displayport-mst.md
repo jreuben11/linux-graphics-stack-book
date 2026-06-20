@@ -968,6 +968,32 @@ wlr-randr \
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **UHBR MST over Thunderbolt/USB4 tunnels (Intel i915/Xe):** Intel's graphics driver is preparing UHBR DP tunnelling support, enabling DP 2.1 UHBR20 (up to 80 Gbps) through USB4/Thunderbolt 4 tunnels to drive 8K or 4K@240Hz outputs via docking stations. Preliminary prep patches landed ahead of Linux 7.1. [Source](https://www.phoronix.com/news/Intel-Linux-7.1-UHBR-DP-Prep)
+- **AMDGPU DP 2.0 MST maturation:** AMDGPU received initial DP 2.0 MST wiring in recent DRM-next cycles; remaining work includes full UHBR13.5/UHBR20 MST slot allocation, link training at 128b/132b for MST topologies, and robust fallback when an MST hub only trains at HBR3. [Source](https://www.phoronix.com/news/AMDGPU-DP-2.0-MST-PR)
+- **Qualcomm MSM DP MST controller initialisation:** Qualcomm upstream developers posted a v2 patch series (June 2025) to initialise a per-controller `dp_mst` module in the MSM drm driver, bringing MST support to Snapdragon-based ARM laptops and docking stations. [Source](https://lkml.iu.edu/hypermail/linux/kernel/2506.1/00906.html)
+- **RK3576/RK3588 DisplayPort MST enablement:** Rockchip SoC DP controller patches (v3 posted February 2026) add MST support for the RK3576; RK3588 DP MST work is in parallel development, targeting Chromebook-style ARM docks. [Source](https://lkml.iu.edu/hypermail/linux/kernel/2602.0/08130.html)
+- **DSC-over-MST reliability fixes (Intel):** Intel has revised MST DSC (Display Stream Compression) support across several patch revisions, addressing slice geometry negotiation failures and `drm_dp_mst_atomic_enable_dsc()` edge cases on Tiger Lake/Alder Lake hardware. [Source](https://www.phoronix.com/news/Intel-DP-MST-DSC-Linux)
+
+### Medium-term (1–3 years)
+
+- **DP 2.1 UHBR MST in the shared `drm_dp_mst_topology` helper:** The shared topology manager currently only models 63 time slots (DP 1.2 allocation table). Extending it to the DP 2.1 64-time-slot model (plus the expanded payload bandwidth table for 128b/132b links) is an architectural rework required before any driver can expose UHBR MST to user space generically. Note: needs verification of current patch status on LKML.
+- **USB4 DisplayPort Alt Mode 2.1 sideband routing:** DP Alt Mode 2.1 adds USB4 Gen3×2 lane configuration and UHBR13.5 signalling; the USB Type-C Alt Mode driver (`usb/typec/altmodes/displayport.c`) needs extensions to communicate the cable's UHBR capability to the MST topology manager. A v2 patch set was posted in August 2023; upstreaming remains incomplete. [Source](https://lkml.iu.edu/hypermail/linux/kernel/2308.3/07136.html)
+- **NVK (Nouveau Vulkan) MST integration with `drm_dp_mst_topology.c`:** The open-source NVK driver currently delegates MST to the legacy Nouveau code path, which implements its own partial topology manager. Full migration to the shared DRM MST helper—required for atomic DSC, UHBR, and proper vblank fence sequencing—is a medium-term goal tracked in Nouveau maintainer discussions. Note: needs verification of current issue tracker status on freedesktop GitLab.
+- **Improved hot-unplug resilience and port re-enumeration:** Current MST sideband handling has known races between topology removal and payload teardown (CVE-2024-57798 addressed one NULL-deref vector). Work is ongoing to harden `drm_dp_mst_handle_up_req()` and related paths against concurrent port removal, using fine-grained reference counting rather than topology-wide locks.
+- **`drm_dp_mst` debugfs expansion:** Planned additions to `drm/*/MST/*` debugfs entries (time-slot maps, per-port bandwidth budgets, sideband message traces) to make in-kernel state more observable without requiring custom vendor debug tools.
+
+### Long-term
+
+- **Adaptive-sync (FreeSync/VRR) over MST:** The DisplayPort 1.4a specification allows Adaptive-Sync on MST streams in principle, but the kernel's MST atomic path does not yet propagate VRR enable/disable to individual VC payloads. Long-term, each MST connector's `drm_connector_state.vrr_enabled` must influence the payload's time-slot recalculation on every refresh-rate change, a non-trivial interaction with the two-phase commit model.
+- **Panel Self-Refresh (PSR2) on downstream MST sinks:** PSR2 selective update requires direct AUX communication with the sink's ALPM (Autonomous Link Power Management) logic. For MST sinks behind a branch device, AUX messages must be routed through the sideband path, which conflicts with PSR2's latency requirements. Architectural solutions (branch-device-local PSR coordination) are speculative and depend on future VESA specification work.
+- **Automated MST topology validation tooling:** Long-term vision from DRM maintainers includes a kernel self-test (`KUnit`) suite that exercises the sideband protocol state machine against a software-emulated branch device, enabling CI regression testing of topology enumeration, hot-plug, and bandwidth allocation without physical hardware.
+
+---
+
 ## 11. Integrations
 
 **Chapter 2 — KMS (Kernel Mode Setting):** MST connectors are first-class KMS objects. `drm_dp_mst_topology_mgr` is a `drm_private_obj` participating in the atomic state machine. Atomic commits invoke `drm_dp_mst_atomic_check()` as part of the driver's `.atomic_check()` chain, and the two-phase payload add/remove integrates with `drm_atomic_helper_commit_hw_done()` sequencing.

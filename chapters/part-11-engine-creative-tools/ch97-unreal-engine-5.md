@@ -628,6 +628,33 @@ The following features are either unsupported or have known issues on Linux as o
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **UE5.8 as the UE5 long-term stability platform**: UE5.8 (released June 17, 2026) is the last planned major UE5 release; Epic has stated it may issue a UE5.9 if critical issues arise but UE5.8 is the LTS target for titles shipping through 2027 and beyond. Linux Vulkan support freezes at this quality level while the ecosystem stabilises. [Source](https://windowsforum.com/threads/unreal-engine-5-8-megalights-lumen-lite-and-the-road-to-ue6.427978/)
+- **MegaLights production-ready on Linux/Vulkan**: MegaLights, UE5.8's GPU-driven area-light system, graduated from Experimental to Production Ready and now targets 60 fps on current-generation hardware. On Linux, MegaLights executes via the Vulkan compute path; confirmation of full RADV/ACO compatibility on RDNA2 and RDNA3 is needed. [Source](https://dev.epicgames.com/documentation/unreal-engine/megalights-in-unreal-engine)
+- **Lumen Lite for lower-end hardware**: UE5.8 introduced Lumen Lite, a reduced-cost variant targeting 60 fps on constrained hardware including the Nintendo Switch 2. The Lumen Lite software-ray-tracing path may improve Steam Deck (RDNA2) performance for developers not using hardware ray tracing. [Source](https://www.unrealengine.com/news/unreal-engine-5-8-is-now-available)
+- **Steam Frame (XR) experimental support**: UE5.8 Preview added experimental Steam Frame VR support (contributed by Victor Brodin), relevant to Wayland-based XR compositors. [Source](https://www.gamingonlinux.com/2026/05/unreal-engine-5-8-adds-experimental-steam-frame-support-qualcomm-give-the-steam-frame-a-dedicated-page/)
+- **Vulkan Roadmap 2026 baseline adoption**: The Khronos Vulkan Roadmap 2026 milestone adds Variable Rate Shading, host image copies, compute shader derivatives, and higher descriptor limits as required driver features. UE5 Linux titles will benefit as RADV and ANV adopt these extensions in Mesa 25.x–26.x. [Source](https://www.phoronix.com/news/Vulkan-Roadmap-2026)
+
+### Medium-term (1–3 years)
+
+- **Native Wayland support**: Epic's current position is that pure Wayland (SDL3 `SDL_VIDEODRIVER=wayland`) is unsupported and that XWayland remains the recommended path. Community forum threads show ongoing demand but no committed Epic timeline. SDL3's Wayland backend improvements may allow Epic to revisit this; if SDL3 resolves the mouse-event routing bugs, native Wayland for the Unreal Editor could become viable without engine-level changes. Note: needs verification — Epic has not published a public commitment to native Wayland. [Source](https://forums.unrealengine.com/t/theres-a-way-to-run-or-build-ue-5-with-wayland-support/1744085)
+- **Unreal Engine 6 early access (late 2027)**: Epic has publicly stated that UE6 Early Access is targeted for late 2027, with a full release around mid-2029. UE6 is described as a "fundamental overhaul" rather than a feature extension; its Linux/Vulkan architecture is not yet publicly detailed. [Source](https://www.invenglobal.com/articles/22900/unreal-engine-6-to-feature-fundamental-overhaul-targeting-early-access-release-by-late-2027)
+- **Hardware video decode (VK_EXT_video_decode) stabilisation**: UE5's Media Framework hardware-accelerated video decode via `VK_EXT_video_decode_h264`/`h265` is not fully functional on Linux in all configurations as of UE5.7–5.8. Mesa's Vulkan video decode support in RADV and ANV continues to mature; as those drivers reach production readiness, Epic is expected to revisit the Linux Media Framework path. Note: needs verification against current UE5.8 and Mesa 25.x release notes.
+- **DLSS 4 / FSR 4 upscaler plugin stabilisation**: NVIDIA DLSS 4 and AMD FSR 4 are both available as UE5 plugins with Linux support; ongoing validation on Mesa/NVK (for DLSS on open-source NVIDIA drivers) and RADV (for FSR) is expected to improve as NVK matures. [Source](https://gpuopen.com/learn/unreal-engine-performance-guide/)
+- **Modular and distributed physics in UE6**: Epic's UE6 roadmap previews modular Chaos physics with distributed GPU simulation. On Linux, this would interact with Vulkan compute; the architecture has not been detailed publicly. [Source](https://www.guru3d.com/story/unreal-engine-6-preview-roadmap-to-modular-and-distributed-physics/)
+
+### Long-term
+
+- **UE6 Vulkan-first architecture**: The Linux community expects UE6 to treat Vulkan as a first-class (not ported) backend, given that D3D12 on Windows and Metal on macOS both share design patterns with Vulkan more than with D3D11. Whether UE6's RHI layer merges or rationalises the Vulkan and D3D12 command-submission paths is speculative but architecturally plausible. Note: needs verification once Epic publishes UE6 technical documentation.
+- **NVK (open-source NVIDIA Vulkan) production support**: As NVK (the open-source NVIDIA Vulkan driver in Mesa, described in Chapter 10) matures toward production quality on RTX hardware, UE5/UE6 on Linux will gain a fully open-source NVIDIA rendering path. Hardware Lumen (which requires `VK_KHR_ray_tracing_pipeline`) depends on NVK implementing ray tracing extensions, currently in progress. [Source](https://www.phoronix.com/news/Vulkan-Roadmap-2026)
+- **Mesh Terrain and next-generation landscape systems**: UE5.8 introduced Mesh Terrain as Experimental — a 3D landscape system without heightfield limitations. Its GPU compute requirements on Linux (Vulkan compute shaders for terrain tessellation and streaming) will depend on RADV/ACO and ANV optimisation for the access patterns it generates. Note: needs verification as the feature is Experimental as of UE5.8.
+- **Long-tail UE5 ecosystem support**: Even after UE6 ships, a large fraction of shipped titles (2026–2030 releases) will run on UE5.8. Mesa driver teams, Valve/SteamOS, and the Proton project will continue tuning for UE5 workloads for several years. This maintenance commitment — rather than new features — represents the dominant near-future Linux graphics investment for UE5.
+
+---
+
 ## Integrations
 
 This chapter connects to several other chapters in the book:

@@ -1237,6 +1237,31 @@ Key breaking changes for GPU code in OpenCV 5:
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **GPU inference in the native OpenCV 5.x DNN engine**: The OpenCV 5.0 graph-based DNN engine launched CPU-only; GPU execution providers (CUDA, OpenCL) for the new engine are the top post-release priority for the 5.x cycle. Until that lands, GPU inference routes through the `ENGINE_ORT` backend (ONNX Runtime with CUDA/TensorRT execution providers). [Source: OpenCV 5 release page](https://opencv.org/opencv-5/)
+- **libcamera VideoCapture backend stabilisation**: A pull request adding a native `libcamera` backend for `cv::VideoCapture` was opened in July 2025 and is being integrated into the 5.x tree. This replaces the indirect `libcamerasrc` GStreamer path with a direct `CameraManager` binding. [Source: OpenCV GSoC 2026 wiki](https://github.com/opencv/opencv/wiki/GSoC_2026)
+- **OpenCV 5.x T-API coverage expansion**: The `features2d` module gains more complete T-API (UMat/OpenCL) dispatch coverage in the 5.x maintenance releases following the 5.0 refactor. [Source: OpenCV OE-5 wiki](https://github.com/opencv/opencv/wiki/OE-5.-OpenCV-5)
+- **Non-CPU HAL (Hardware Acceleration Layer) for vendor integration**: OpenCV 5 defines a plug-in HAL interface so SoC vendors (Qualcomm, MediaTek, Arm) can supply optimised compute kernels without forking the library. Work on specifying and documenting the non-CPU HAL ABI is ongoing. [Source: OpenCV 5 release page](https://opencv.org/opencv-5/)
+- **WebGPU/Dawn DNN backend for OpenCV.js**: GSoC 2026 includes a project to add WebGPU (via Dawn) support to the DNN module as compiled to WebAssembly, bringing GPU-accelerated inference to browser deployments. [Source: GSoC 2026 GPU-enabled OpenCV.js](https://gist.github.com/NALLEIN/d7e0357574a958b7a8edb442e3488271)
+
+### Medium-term (1–3 years)
+
+- **Vulkan compute backend maturation**: Intel contributed an initial Vulkan compute backend for the DNN module that handles convolution, pooling, and activation layers. Expanding operator coverage to match the OpenCL T-API backend (which covers the full classic engine) is a design discussion item for OpenCV 5.x post-1.0 releases. [Source: Phoronix — Intel Begins Working On A Vulkan Compute Back-End For OpenCV](https://www.phoronix.com/news/Intel-Vulkan-OpenCV-Backend)
+- **ONNX Runtime execution provider as first-class GPU path**: As OpenCV's own graph engine ramps up GPU support, the boundary between `DNN_BACKEND_ORT` and native GPU backends is expected to stabilise around a clear policy: ORT for production inference (TensorRT, DirectML, QNN), native engine for integration with T-API pipelines. Note: needs verification on final API shape.
+- **PipeWire DMA-BUF camera source integration**: Deeper integration between PipeWire's camera portal (used on GNOME/KDE desktops) and `cv::VideoCapture`, including DMA-BUF zero-copy negotiation, is discussed on the OpenCV mailing list as a successor to the direct V4L2 path for sandboxed applications. Note: needs verification — no accepted patch yet.
+- **Universal Intrinsics 2.0 (HAL) RISC-V Vector extension**: The HAL rewrite to Universal Intrinsics 2.0 in OpenCV 5 maps the same codebase to SSE, AVX-512, NEON, SVE, and RISC-V Vector (RVV). Upstream SiFive and Alibaba T-Head contributions to the RVV HAL path are expected to land in 5.x point releases. [Source: OpenCV 5 release page](https://opencv.org/opencv-5/)
+
+### Long-term
+
+- **Graph DNN engine as sole inference path**: The long-term architectural goal is for the new graph-based engine to subsume the classic DNN engine entirely, with CUDA, OpenCL, and Vulkan backends ported to the new IR. The classic engine will be deprecated and eventually removed once GPU backend coverage is sufficient.
+- **Tighter Vulkan Video / KHR video decode interop**: As `VK_KHR_video_decode_h264/h265` stabilises across Mesa ANV/RADV and NVIDIA drivers, an OpenCV high-level API wrapping Vulkan-decoded frames (exported as DMA-BUF and imported into OpenCL or directly consumed by a Vulkan compute DNN kernel) is a speculative but architecturally natural extension of the existing VA-API interop path. Note: needs verification — no formal proposal yet.
+- **OpenVX as an optional HAL target**: OpenVX was designed as a vision-specific acceleration API that multiple SoC vendors implement. A long-standing discussion in the OpenCV community is whether T-API should gain an OpenVX dispatch path alongside OpenCL, particularly for automotive/embedded targets. [Source: OpenVX Wikipedia](https://en.wikipedia.org/wiki/OpenVX)
+
+---
+
 ## 13. Integrations
 
 This chapter connects to the following chapters across the book:

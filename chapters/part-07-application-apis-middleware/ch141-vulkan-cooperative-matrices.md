@@ -634,6 +634,31 @@ vulkaninfo --json 2>/dev/null | jq '.[] | .properties |
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **`VK_NV_cooperative_matrix2` broader adoption in RADV**: RADV landed partial support for `VK_NV_cooperative_matrix2` in Mesa 25.2 (gated behind the `radv_cooperative_matrix2_nv` DriConf option), initially targeting FidelityFX Super Resolution 4 and VKD3D-Proton; full production enablement and expanded `CooperativeMatrixConversionsNV` coverage is expected to follow. [Source](https://www.phoronix.com/news/RADV-NV-Coperative-Matrix2)
+- **`VK_QCOM_cooperative_matrix_conversion`**: Qualcomm's vendor extension adds optimised data-type conversion instructions that let shaders move data between invocation and subgroup scope without explicit shared-memory round-trips; adoption by other IHVs or promotion to KHR is under discussion. [Source](https://github.khronos.org/Vulkan-Site/features/latest/features/proposals/VK_QCOM_cooperative_matrix_conversion.html)
+- **RDNA4 (GFX12) cooperative matrix stabilisation in RADV**: `VK_KHR_cooperative_matrix` was merged for RDNA4 ahead of the RX 9000 series launch; expect ongoing tuning of tile sizes and VGPR scheduling for the new WMMA ISA variant on GFX12. [Source](https://www.phoronix.com/news/RADV-Lands-RDNA4-Coop-Matrix)
+- **ANV restricts cooperative matrix to hardware-backed devices**: Mesa 25.2 tightened `VK_KHR_cooperative_matrix` exposure on ANV so it is only advertised when genuine XMX/DPAS hardware instructions are present, removing the earlier software-emulation path; further Intel Xe2 (Battlemage) tuning is expected. [Source](https://docs.mesa3d.org/relnotes/25.2.0.html)
+- **Lavapipe `VK_NV_cooperative_matrix2` per-element operations**: Mesa 26.1 added per-element operation support in lavapipe (CPU Vulkan), providing a software reference implementation for testing cooperative matrix shaders without GPU hardware. [Source](https://docs.mesa3d.org/relnotes/26.1.0.html)
+
+### Medium-term (1–3 years)
+
+- **`VK_NV_cooperative_matrix2` KHR promotion**: The NVIDIA v2 extension introduces workgroup-scope matrices with compiler-managed shared-memory staging, flexible (non-power-of-two) tile sizes, and per-element callbacks — features missing from the base KHR extension. A Khronos working-group proposal to promote these capabilities to `VK_KHR_cooperative_matrix2` is anticipated once multi-vendor implementation experience is gathered. [Source](https://docs.vulkan.org/features/latest/features/proposals/VK_NV_cooperative_matrix2.html)
+- **AMD Instinct MI400 / CDNA 5 Vulkan support**: AMD's MI450X and MI430X data-centre accelerators (targeted for second half 2026) implement CDNA Next architecture with new matrix-core variants; AMDVLK/RADV will need ISA-level mapping of the new MFMA/WMMA instructions to `VK_KHR_cooperative_matrix` property queries. Note: needs verification for exact ISA details. [Source](https://wccftech.com/amd-to-battle-nvidia-ai-dominance-instinct-mi400-accelerators-2026-mi500-2027/)
+- **`cl_khr_cooperative_matrix` OpenCL 3.0 finalisation**: The parallel OpenCL path through rusticl (RADV) and Intel NEO shares the same GFX back-end as Vulkan cooperative matrices; spec finalisation and CTS coverage will unlock portability between Vulkan and OpenCL compute on Linux without duplicating matrix kernels. Note: needs verification on current draft status.
+- **SPIR-V cooperative matrix type extensions for FP8/INT4**: As LLM inference shifts to sub-byte quantisation (FP8, INT4, MX formats), SPIR-V and Vulkan will need new `VkComponentTypeKHR` enumerants and cooperative matrix property entries; AMD RDNA4 and Intel Xe2 already expose limited FP8 WMMA/DPAS paths at the ISA level. Note: needs verification on exact Khronos proposal status.
+
+### Long-term
+
+- **Graph-compiler integration (torch-mlir / IREE)**: ML compilers that target Vulkan (IREE's HAL Vulkan backend, torch-mlir) will increasingly drive the tile-size selection and layout transformation above the cooperative matrix level; long-term the expectation is that hand-written GLSL GEMM shaders give way to compiler-generated SPIR-V with auto-tuned tile strategies, similar to CUDA's cuBLAS vs. CUTLASS split.
+- **Hardware-managed matrix prefetch and caching**: Future GPU architectures may expose dedicated matrix-tile caches (analogous to NVIDIA H100's L2 sector cache for WGMMA), removing the need for shader-managed LDS staging entirely; this would change the cooperative matrix programming model from explicit tile management to a higher-level "load → compute → store" without shared-memory boilerplate.
+- **Unified ML inference API convergence**: Competitive pressure from DirectML (Windows) and Metal Performance Shaders (macOS) may drive Khronos toward a higher-level `VK_KHR_ml_inference` extension that sits above cooperative matrices, accepting operator graphs (ONNX-style) and compiling them to tiled GEMM internally — reducing the gap between Vulkan's low-level tile model and framework-level operator dispatch.
+
+---
+
 ## Integrations
 
 - **Ch24 (Vulkan API)** — cooperative matrices are a Vulkan compute extension; the pipeline model (compute pipelines, SSBO storage, push constants) is established in Ch24

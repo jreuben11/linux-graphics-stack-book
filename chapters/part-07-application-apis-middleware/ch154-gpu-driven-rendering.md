@@ -573,6 +573,31 @@ void main() {
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Vulkan Roadmap 2026 milestone mandates multi-draw indirect and shader draw parameters** as required features for conformant drivers, closing hardware gaps that previously made GPU-driven pipelines opt-in only. [Source](https://www.phoronix.com/news/Vulkan-Roadmap-2026)
+- **`VK_EXT_device_generated_commands` (DGC) is shipping in production drivers**: the extension allows GPU-side generation of full command sequences including pipeline/state changes per draw, going beyond `vkCmdDrawIndexedIndirectCount` which only selects draw arguments. Practical adoption details were presented at Vulkanised 2025. [Source](https://rg3.name/202503111630.html)
+- **AMD DGF (Discrete Geometry Format) super-compression** for meshlet geometry is now available via AMD GPUOpen, reducing the memory footprint of large meshlet scene representations. [Source](https://gpuopen.com/learn/introducing-amd-dgf-supercompression/)
+- **Vulkan Roadmap 2026 requires higher descriptor and shader interface limits**, enabling larger bindless descriptor arrays (textures, buffers) without per-vendor workarounds. [Source](https://docs.vulkan.org/spec/latest/appendices/roadmap.html)
+
+### Medium-term (1–3 years)
+
+- **GPU Work Graphs with mesh nodes (`VK_AMDX_shader_enqueue`)**: AMD's experimental extension adds mesh nodes to work graphs, allowing a single payload dispatch to spawn both compute and mesh shader work entirely GPU-side — a deeper form of GPU-driven rendering than indirect draw. Khronos is tracking this for eventual cross-vendor promotion. [Source](https://www.khronos.org/news/archives/amd-blog-gpu-work-graphs-mesh-node-are-now-in-vulkan)
+- **Standardised Variable Rate Shading (VRS) mandated by Roadmap 2026**: combined with GPU-driven culling, per-tile VRS rates computed by a compute shader can skip shading in low-detail regions, reducing fragment load on the surviving draw set. [Source](https://videocardz.com/newz/vulkan-api-sets-2026-feature-baseline-roadmap-milestone-with-variable-rate-shading)
+- **Wider engine adoption of two-phase occlusion culling with HZB (Hierarchical Z-Buffer)**: Bevy, Godot 4, and other open-source engines are expanding GPU-driven passes with hierarchical depth reprojection from the previous frame to reject occluded meshlets before mesh shader launch. Note: needs verification for specific merge/release timelines.
+- **Indirect Execution Sets (DGC `vkUpdateIndirectExecutionSetPipelineEXT`)**: enabling GPU-driven shader switching per draw without CPU rebinding, closing the last CPU-driven bottleneck for material diversity at large scene scale. [Source](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_device_generated_commands.html)
+- **Reconvergence guarantees (Roadmap 2026 requirement)** will make subgroup ops inside mesh and task shaders more predictable, enabling tighter meshlet culling algorithms that rely on ballot/vote intrinsics. [Source](https://www.phoronix.com/news/Vulkan-Roadmap-2026)
+
+### Long-term
+
+- **GPU Work Graphs as first-class Vulkan extension**: if `VK_AMDX_shader_enqueue` reaches multi-vendor agreement, a standardised work graph extension could replace the indirect dispatch + indirect draw pattern entirely — the GPU would traverse a scene DAG, cull, and shade without any host-side dispatch. Note: needs verification — currently AMD-vendor-only.
+- **Ray-traced occlusion replacing rasterised HZB culling**: as ray tracing hardware becomes cheaper per-ray, some engines may use sparse ray queries (inline `rayQueryEXT`) inside compute culling shaders to get accurate per-object visibility without a separate depth pre-pass or HZB construction step.
+- **Unified GPU scene graphs in OS compositor**: long-term, Wayland compositors (e.g., weston, cosmic-comp) may adopt persistent GPU scene representations similar to game-engine GPU-driven passes for managing surface trees, reducing CPU work per-frame in desktop compositing. Note: needs verification — speculative direction.
+
+---
+
 ## Integrations
 
 - **Ch19 (Vulkan Architecture)** — indirect draw commands (`vkCmdDrawIndexedIndirectCount`) and compute dispatch are core Vulkan; barrier types (INDIRECT_COMMAND_READ, SHADER_WRITE) are covered in the synchronisation chapter

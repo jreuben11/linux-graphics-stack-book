@@ -639,6 +639,32 @@ flowchart LR
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Legacy wl_drm and `EGL_WL_bind_wayland_display` removal**: Mesa 25.2 (August 2025) deprecated `EGL_WL_bind_wayland_display` behind the `-Dlegacy-wayland=bind-wayland-display` build flag and removed the pre-DMA-BUF `wl_drm` protocol path. The near-term expectation is that distros will drop the flag and complete the migration to exclusive DMA-BUF-based buffer sharing via `zwp_linux_dmabuf_v1`. [Source](https://docs.mesa3d.org/relnotes/25.2.0.html)
+- **`GL_MESA_EGL_sync` promotion**: The `GL_MESA_EGL_sync` extension, proposed for the Khronos OpenGL registry, enables desktop OpenGL to use EGL fence sync objects (`EGL_KHR_fence_sync`) and produce Linux sync files compatible with `EGL_ANDROID_native_fence_sync`. Promotion to a multi-vendor extension or incorporation into a future EGL revision is actively discussed. [Source](https://www.phoronix.com/news/GL_MESA_EGL_sync-Spec)
+- **Explicit sync (`linux-drm-syncobj-v1`) stabilisation**: The `wp_linux_drm_syncobj_v1` Wayland protocol (merged in wayland-protocols 1.34) is now implemented in Mesa, Mutter, and NVIDIA's `egl-wayland`. Near-term work focuses on completing support in remaining compositors (wlroots, KWin) and hardening the EGL fence-to-syncobj path. [Source](https://www.phoronix.com/news/GL_MESA_EGL_sync-Spec)
+- **DRI2 code removal in Mesa**: Following DRI3's universal adoption, Mesa is removing the remaining DRI2 codepaths from the EGL DRM/GBM platform, simplifying the driver dispatch stack and eliminating a source of security-sensitive legacy GEM name handling. [Source](https://docs.mesa3d.org/relnotes/25.2.0.html)
+- **NVIDIA `egl-wayland2` DMA-BUF-native library**: NVIDIA has published `egl-wayland2`, a rewrite of the EGL external platform library built entirely on DMA-BUF rather than the proprietary buffer channel used by the original `egl-wayland`. Adoption by major compositors is expected in this window. [Source](https://github.com/NVIDIA/egl-wayland2)
+
+### Medium-term (1–3 years)
+
+- **`zwp_linux_dmabuf_v1` version 5 or successor protocol**: The linux-dmabuf feedback mechanism (version 4) exposing per-surface format/modifier preference tables has stabilised; future protocol work may extend feedback to multi-GPU and heterogeneous display paths, and add explicit negotiation for compressed modifier tiling. Note: needs verification from wayland-protocols issue tracker.
+- **EGL platform unification for AI/compute workloads**: Growing use of EGL's `EGL_EXT_platform_device` / `EGL_MESA_platform_surfaceless` for headless GPU inference (ML, video transcoding) is driving requests for better enumeration of multiple render nodes and device selection APIs within EGL. Mediapipe and similar frameworks have filed upstream requests. [Source](https://github.com/google/mediapipe/issues/2489)
+- **Khronos EGL 1.6 specification**: EGL 1.5 (2014) is overdue for a revision. Discussions within the Khronos working group centre on incorporating `EGL_KHR_platform_*` as core, formalising DMA-BUF import/export semantics, and adding timeline semaphore interop analogous to Vulkan's `VK_KHR_timeline_semaphore`. No public draft exists yet; Note: needs verification from Khronos public meeting minutes.
+- **Rust-safe EGL bindings and safety audit**: As Rust gains ground in Mesa (NVK, the Nova kernel driver), pressure is building to provide sound Rust wrappers for EGL's platform and image APIs, replacing raw `unsafe` FFI in compositor toolkits such as Smithay. [Source](https://smithay.github.io/smithay/wayland_protocols/wp/linux_dmabuf/zv1/server/zwp_linux_dmabuf_v1/struct.ZwpLinuxDmabufV1.html)
+- **Multi-plane and compressed format modifier coverage**: Ongoing Mesa work extends `EGLImage` import to cover all format+modifier combinations reported by the kernel's KMS plane query, closing gaps for AFBC, UBWC, and Intel Xe tiling formats that currently require driver-specific workarounds.
+
+### Long-term
+
+- **EGL deprecation in favour of Vulkan WSI for new workloads**: Vulkan's `VK_KHR_wayland_surface` + `VK_EXT_external_memory_dma_buf` provides a semantically richer path than EGL for zero-copy buffer sharing. Long-term architectural direction in Mesa and Wayland toolkits points toward OpenGL-over-Vulkan (Zink) reducing EGL to a compatibility shim for legacy OpenGL and GLES applications.
+- **Unified kernel DMA-BUF heap and EGL device model**: The Linux DMA-BUF heap subsystem (`/dev/dma_heap/`) is a candidate to replace per-driver GBM/ION allocation, which would simplify the EGL platform model by removing the need for a GPU-vendor-specific allocator and allowing EGL to target a kernel-level heap abstraction directly. Note: needs verification as a long-term design discussion.
+- **Hardware-accelerated EGL stream compositing**: NVIDIA's EGL streams model (not standardised) demonstrated zero-copy frame delivery from producer to compositor without an intermediate DMA-BUF handle. Future Wayland protocol work may revisit the concept as display engines add native stream-capture hardware, potentially influencing a future `zwp_linux_dmabuf_v2` or stream protocol.
+
+---
+
 ## Integrations
 
 - **Ch4 (GPU Memory Management)** — DMA-BUF is the kernel-level buffer sharing mechanism; EGL is the userspace API for importing DMA-BUFs into OpenGL

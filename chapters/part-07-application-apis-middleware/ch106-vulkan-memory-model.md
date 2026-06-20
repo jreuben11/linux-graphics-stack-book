@@ -890,6 +890,38 @@ Without this barrier, the GPU may begin reading the indirect command buffer for 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Vulkan Roadmap 2026 milestone baseline consolidation:** The Vulkan Roadmap 2026 milestone (announced by Khronos in 2025) mandates Vulkan 1.4 as a baseline requirement, which includes the Vulkan Memory Model as a core feature. All Roadmap 2026-conformant drivers on desktop and mid-to-high-end mobile must report `vulkanMemoryModel = VK_TRUE`. This effectively ends optional-feature fragmentation for the model on targeted device classes. [Source](https://www.khronos.org/blog/vulkan-introduces-roadmap-2026-and-new-descriptor-heap-extension)
+
+- **Mesa 25.x driver conformance hardening:** RADV, ANV, and NVK all shipped Vulkan 1.4 conformance in Mesa 25.0, which subsumes `VK_KHR_vulkan_memory_model` as a promoted core feature. Ongoing work in Mesa 25.1 and beyond focuses on Vulkan CTS (Conformance Test Suite) coverage for memory model edge cases, particularly Device-scope atomics and multi-queue availability/visibility chains. [Source](https://docs.mesa3d.org/relnotes/25.1.0.html)
+
+- **`VK_EXT_descriptor_heap` interaction with memory visibility:** The new descriptor heap extension, actively seeking developer feedback before finalisation as a KHR extension, bypasses traditional descriptor set indirection. The memory ordering implications — particularly whether descriptor reads require explicit visibility operations — are under active discussion in the Vulkan Working Group. [Source](https://www.khronos.org/blog/vulkan-introduces-roadmap-2026-and-new-descriptor-heap-extension)
+
+- **Improved Vulkan validation layer coverage for memory model bugs:** The Khronos Validation Layer (`VK_LAYER_KHRONOS_validation`) continues expanding detection of incorrect memory scope usage and missing availability/visibility operations. Note: specific patch tracking needs verification against the Vulkan-ValidationLayers GitHub issue tracker.
+
+### Medium-term (1–3 years)
+
+- **Formal memory model testing tooling:** Academic and industry research (e.g., the TriCheck and GPU memory consistency verification work at SIGARCH) is being applied to GPU shader memory models. Integration of automated litmus-test generators into Vulkan CTS to cover `OpMemoryBarrier` scope combinations is a stated goal in the GPU memory consistency research community. [Source](https://www.sigarch.org/gpu-memory-consistency-specifications-testing-and-opportunities-for-performance-tooling/)
+
+- **SPIR-V memory model extensions for heterogeneous compute:** SPIR-V serves as the portable IR for OpenCL, Vulkan, and emerging SYCL/HIP front-ends. Khronos discussions around unified memory ordering semantics across compute APIs (reducing divergence between `SPV_KHR_vulkan_memory_model` and OpenCL memory model semantics) are ongoing. Note: specific RFC numbers need verification against the KhronosGroup/SPIRV-Registry GitHub.
+
+- **Subgroup scope tightening for wave/warp portability:** AMD RDNA, NVIDIA, and Intel Xe hardware differ in their subgroup sizes and the stability of subgroup membership. Proposals to formalise `gl_SubgroupSize` guarantees and their interaction with `Subgroup`-scoped atomics are expected to produce a follow-on SPIR-V extension. Note: needs verification against current Khronos working group drafts.
+
+- **ACO and NIR barrier optimisation advances in Mesa:** As GPU compute workloads grow more complex (task/mesh shaders, ray tracing, work graphs), the NIR pass `nir_opt_acquire_release_barriers` and ACO's `aco_insert_waitcnt.cpp` are expected to gain dataflow-aware barrier elimination to reduce unnecessary wait states while remaining formally correct under the memory model. [Source](https://deepwiki.com/bminor/mesa-mesa/2.1-radv-(amd-vulkan-driver))
+
+### Long-term
+
+- **Convergence with C++ `std::atomic` on GPU:** Long-term research directions aim to close the semantic gap between C++ `memory_order` operations executed on CPUs (via OpenMP/SYCL offload) and Vulkan/SPIR-V memory model operations on GPUs within the same heterogeneous program, enabling unified happens-before reasoning across CPU and GPU threads. The SIGARCH GPU memory consistency survey identifies this as an open research challenge. [Source](https://www.sigarch.org/gpu-memory-consistency-specifications-testing-and-opportunities-for-performance-tooling/)
+
+- **Hardware-enforced memory model validation:** As GPU hardware grows more sophisticated, future architectures may expose optional hardware support for memory model assertion checking (analogous to Intel's TSX transaction debugging features), allowing drivers to trap memory ordering violations at the hardware level rather than relying solely on software validation layers. Note: speculative direction, no public roadmap commitment confirmed.
+
+- **Vulkan memory model extension to mesh/task shader inter-stage communication:** Mesh and task shaders (part of `VK_EXT_mesh_shader`, promoted into Vulkan 1.4 ecosystem) introduce a new inter-stage payload memory space. The formal memory ordering guarantees for this payload — which invocations can observe it, and when — are currently defined informally in prose rather than through the rigorous availability/visibility chain model. A future specification revision or extension is expected to formalise this. [Source](https://docs.vulkan.org/spec/latest/appendices/memorymodel.html)
+
+---
+
 ## Integrations
 
 **Ch14 — NIR (Mesa Intermediate Representation):** NIR is the intermediate representation through which all SPIR-V memory model semantics flow on their way to hardware-specific code generation. The `nir_intrinsic_barrier` with `execution_scope`, `memory_scope`, `memory_semantics`, and `memory_modes` fields is the direct encoding of the Vulkan memory model within the compiler. SPIR-V front-end translation in `spirv_to_nir.c` maps `OpControlBarrier`/`OpMemoryBarrier` operands to NIR index fields. NIR optimisation passes such as `nir_opt_acquire_release_barriers` can legally eliminate or coalesce barriers only when they can prove the memory model contract remains satisfied.

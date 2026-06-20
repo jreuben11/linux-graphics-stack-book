@@ -866,6 +866,33 @@ The Cycles GLSL/SPIR-V kernels call `rayQueryInitializeEXT` and `rayQueryProceed
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **RADV HPLOC BVH builder shipping in Mesa 26.x**: Valve's Konstantin Seurer merged Hierarchical Parallel Locally-Ordered Clustering (HPLOC) for top-level AS builds into RADV ahead of Mesa 26.0, saving ~1 ms of frame time and boosting Cyberpunk 2077 by ~5%. Ongoing tuning of HPLOC parameters and BLAS-level application is expected in Mesa 26.1–26.2. [Source: Phoronix — RADV HPLOC](https://www.phoronix.com/news/RADV-Vulkan-Driver-HPLOC-Valve)
+- **RADV launch-ID swizzle rework for Unreal Engine 5 Lumen**: Natalie Vock (Valve) has an open Mesa MR to rework RADV's launch-ID swizzling in ray tracing shaders to fix Lumen's global illumination and reflection system, which misfire on certain dispatch shapes. Landing is expected in Mesa 26.1. [Source: Phoronix — RADV RT Performance 2026](https://www.phoronix.com/news/RADV-More-RT-Performance-2026)
+- **NVK experimental DLSS via `VK_NVX_binary_import`**: Experimental DLSS support is slated to merge into NVK in Mesa 26.2 (targeting August 2026 stable). Although not ray tracing per se, the `VK_NVX_binary_import` path that enables it also unblocks future NVIDIA-proprietary RT shader ABI research by exposing the binary extension infrastructure inside NVK. [Source: TechPowerUp — NVK DLSS](https://www.techpowerup.com/350134/nvidia-open-source-linux-nvk-driver-gets-experimental-dlss-support)
+- **Blender Cycles Vulkan RT path toward parity**: The Cycles Vulkan backend's `VK_KHR_ray_query`-based compute path is being brought closer to feature parity with the OptiX and HIP-RT backends; shader compilation and ray-query dispatch correctness fixes are expected across Blender 5.x point releases. Note: needs verification of specific milestone commits.
+- **Vulkan 2026 Roadmap baseline adoption**: The Khronos Vulkan 2026 Roadmap Milestone (including Variable Rate Shading and additional maintenance extensions) is being adopted by RADV and ANV as a new capability baseline, which will raise the floor for RT extensions that drivers are required to expose. [Source: VideoCardz — Vulkan 2026 Roadmap](https://videocardz.com/newz/vulkan-api-sets-2026-feature-baseline-roadmap-milestone-with-variable-rate-shading)
+
+### Medium-term (1–3 years)
+
+- **NVK hardware ray tracing via RT Core ABI reverse engineering**: NVK developers have identified the Turing/Ampere RT Core shader ABI as the primary blocker for open-source NVIDIA ray tracing. Ongoing reverse-engineering work on GSP firmware interaction and opaque BVH memory layout is in progress; a conformant `VK_KHR_ray_tracing_pipeline` implementation remains a multi-year effort. [Source: Phoronix — NVK Status 2025](https://www.phoronix.com/news/NVK-Status-Update-2025)
+- **RDNA 4 compressed BVH8 and OBB support in RADV**: RDNA 4 hardware exposes compressed BVH8 node formats and Oriented Bounding Boxes (OBBs) that can improve tree quality for elongated geometry. HIP-RT 3.0 (Blender 5.0) already consumes these via ROCm; extending RADV's AS builder to emit RDNA-4-native BVH8 nodes rather than falling back to BVH4 is a medium-term driver work item. [Source: Phoronix — Blender 5 HIP-RT](https://www.phoronix.com/news/Blender-5-HIP-RT-Update-Coming)
+- **`VK_KHR_ray_tracing_maintenance1` universally enabled**: `vkCmdTraceRaysIndirect2KHR` and the `VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_COPY_BIT_KHR` pipeline stage from `VK_KHR_ray_tracing_maintenance1` are in the process of being enabled across RADV, ANV, and NVK; full enablement will allow engines to use indirect dispatch without fallback code paths. [Source: Khronos — VK_KHR_ray_tracing_maintenance1](https://khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VK_KHR_ray_tracing_maintenance1.html)
+- **ANV PLOC → HPLOC BVH builder migration**: Intel ANV currently uses PLOC (Parallel Locally-Ordered Clustering) via GRL shaders for on-device BVH construction. Following RADV's HPLOC adoption, a parallel ANV migration to HPLOC is expected to reduce AS build times on Arc and Battlemage hardware. Note: needs verification of specific Mesa MR status.
+- **VKD3D-Proton SBT stride alignment improvements**: SBT stride padding to meet `shaderGroupHandleAlignment` constraints is a known source of compatibility friction in DXR-heavy games; VKD3D-Proton developers have flagged this for a future refactor that consolidates stride calculation into a single codepath rather than per-game workarounds. Note: needs verification of specific issue tracker reference.
+
+### Long-term
+
+- **NVK full `VK_KHR_ray_tracing_pipeline` conformance**: Full open-source NVIDIA ray tracing via NVK — including hardware RT Core invocation rather than software emulation — is a long-term goal contingent on complete RT Core shader ABI documentation or sufficiently detailed reverse engineering. Achieving this would make NVIDIA GPUs first-class Linux ray tracing citizens without the proprietary driver. Note: needs verification of timeline.
+- **Portable real-time ray tracing via Vulkan across all three vendors**: As NVK matures and RADV/ANV reach conformance parity with proprietary drivers, the Vulkan KHR ray tracing suite becomes the single portable real-time ray tracing API on Linux, enabling game engines (Unreal Engine 5 Lumen, Unity HDRP) to ship a single Linux codepath backed by RADV, ANV, or NVK.
+- **Khronos ray tracing extensions for neural rendering**: Khronos working groups are exploring extensions to support AI/neural-rendering features such as opacity micromaps (`VK_EXT_opacity_micromap`) being promoted further, and potential future extensions for radiance caching and neural irradiance fields that would interact with the BVH traversal pipeline. Note: needs verification against Khronos working group minutes.
+- **RDNA-native BVH format serialisation for disk caching**: Long-term, AMD and Mesa developers have discussed a stable serialised BVH format that applications can write to disk and reload without rebuilding, reusing `vkCmdCopyAccelerationStructureToMemoryKHR` semantics but backed by a vendor-neutral layout. This would reduce first-launch stutter in ray-traced games on Linux.
+
+---
+
 ## Integrations
 
 This chapter connects to several other chapters in the book:

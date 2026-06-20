@@ -881,6 +881,33 @@ For new applications targeting both VA-API and Vulkan Video, the recommended app
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **VP9 decode rollout across Mesa drivers**: `VK_KHR_video_decode_vp9` (ratified in Vulkan 1.4.317) has landed in RADV for RDNA1+ hardware and is under active integration in ANV. Wider Mesa driver adoption is expected through the Mesa 26.x release cycle. [Source: RADV VP9 Decode — Phoronix](https://www.phoronix.com/news/Mesa-RADV-Merges-VP9)
+- **AV1 encode via `VK_KHR_video_encode_av1`**: The AV1 encode extension (ratified with Vulkan 1.3.302) is now implemented in AMD's proprietary Adrenalin driver (since 26.2.1) and is in progress for RADV on VCN4+ hardware. ANV AV1 encode support is under review for Xe2 and later Intel GPUs. [Source: Khronos AV1 Encode Announcement](https://www.khronos.org/blog/khronos-announces-vulkan-video-encode-av1-encode-quantization-map-extensions)
+- **Intra-refresh encode (`VK_KHR_video_encode_intra_refresh`)**: AMD's proprietary driver added this extension in Adrenalin 26.3.1. Mesa RADV and ANV open-source implementations are expected to follow, enabling encoder-side intra-refresh for low-latency streaming use cases. [Source: Vulkan Driver Support — AMD](https://www.amd.com/en/resources/support-articles/release-notes/RN-RAD-WIN-VULKAN.html)
+- **ANV AV1 decode on Battlemage and Lunar Lake**: Initial `VK_KHR_video_decode_av1` support for ANV on Xe2 (Battlemage) and Xe1.5 (Lunar Lake) merged in Mesa development leading to Mesa 25.2; further refinement and CTS conformance work continues through 2026. [Source: Intel ANV AV1 Decode — Phoronix](https://www.phoronix.com/news/Intel-ANV-Vulkan-AV1-Decode)
+- **Chromium Vulkan Video integration**: Chromium's long-term video strategy targets replacing the VA-API hwaccel path in the GPU process with native Vulkan Video, eliminating the cross-API DMA-BUF round-trip. Active design discussion continues within the Chrome Media team; initial patches are expected to land in prototype form. [Source: Vulkan Video Integration into Chromium](https://www.khronos.org/vulkan/chrome-video/vulkan_video_integration.html)
+
+### Medium-term (1–3 years)
+
+- **NVK (Mesa NVIDIA) Vulkan Video support**: As of Mesa 26.1, NVK does not yet implement `VK_KHR_video_decode_queue` or encode equivalents. Community work is expected to bring video decode to NVK for Turing and later NVIDIA GPUs, leveraging the NVDEC firmware interface already used by the proprietary driver. Note: needs verification — no confirmed Mesa NVK video patchset as of June 2026.
+- **Encode Quantization Map (`VK_KHR_video_encode_quantization_map`)**: Announced alongside AV1 encode, this extension gives applications fine-grained per-region QP (quantisation parameter) control for quality-optimised and ROI-aware encoding. Mesa driver implementations are expected to follow proprietary driver support. [Source: Khronos AV1 Encode and Quantization Map](https://www.khronos.org/blog/khronos-announces-vulkan-video-encode-av1-encode-quantization-map-extensions)
+- **GStreamer and PipeWire Vulkan Video pipeline**: The GStreamer `vulkanvideodec` and `vulkanvideoenc` elements are maturing; deeper integration with PipeWire's `spa_buffer` DMA-BUF handling for screen sharing and WebRTC pipelines is an active area of development. [Source: Vulkan Video Status — Igalia](https://blogs.igalia.com/vjaquez/vulkan-video-status/)
+- **Zink VA-API-on-Vulkan-Video**: The Zink OpenGL-on-Vulkan driver's experimental VA-API bridge, which allows legacy VA-API applications to be served by Vulkan Video drivers, is expected to progress toward production quality, ultimately allowing VA-API application coverage on hardware that only exposes Vulkan Video drivers. [Source: Zink VA-API on Vulkan Video — Phoronix](https://www.phoronix.com/news/Zink-VA-API-On-Vulkan-Video)
+- **Vulkan Video CTS conformance expansion**: Khronos is expanding the Conformance Test Suite to cover VP9 decode, AV1 encode, and the new intra-refresh and quantization map extensions. Broader driver certification is expected as the CTS coverage widens.
+
+### Long-term
+
+- **Beyond H.264/H.265/AV1 — future codec extensions**: The Vulkan Video layered design anticipates future codec extensions (VVC/H.266, EVC, and potential next-generation codec standards). The VP9 decode extension's simplified session-parameters model (no global state object required) may serve as a template for similarly stateless future codecs. Note: needs verification — no formal Khronos working group announcement for VVC or EVC Vulkan Video extensions as of June 2026.
+- **Unified video + graphics + compute timeline**: The long-term architectural goal is a single `VkQueue` timeline that interleaves video decode, graphics rendering, and compute without explicit queue ownership transfers or semaphore chains. This requires hardware scheduler support across all vendor GPU families — currently AMD VCN and Intel VDENC operate on dedicated fixed-function queues. Note: needs verification — speculative direction based on Vulkan roadmap discussions.
+- **WebGPU video texture integration**: As WebGPU adoption grows, pressure will mount for a standardised video frame → GPU texture path that avoids the CPU-side `copyExternalImageToTexture` round-trip currently required for `<video>` elements. A Vulkan Video backend could supply decoded `VkImage` frames directly to Dawn/WebGPU without software conversion, pending W3C WebGPU working group and browser vendor alignment.
+- **Embedded and mobile SoC adoption**: V4L2 stateless decoders on ARM SoCs currently lack a Vulkan Video driver path. Long-term convergence — either through a V4L2-backed Vulkan Video implementation or through SoC vendors shipping native Vulkan Video drivers — would extend the unified API to the embedded and Android Linux ecosystem.
+
+---
+
 ## 9. Integrations
 
 **Chapter 18 — Vulkan Device Model**: The video session (`VkVideoSessionKHR`) is a device-level object created from the same `VkDevice` as the graphics and compute pipelines. Queue family selection for video decode and encode uses the same `vkGetPhysicalDeviceQueueFamilyProperties2` mechanism as graphics queue selection.

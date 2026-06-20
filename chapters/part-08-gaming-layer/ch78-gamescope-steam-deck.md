@@ -726,6 +726,32 @@ Beyond display resolution changes, docking also affects:
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Expanded hardware platform support**: Gamescope 3.x (SteamOS 3.8.7+) has landed initial Intel Arc GPU support, with MSI Claw 8 AI+ and Arc B580 desktop GPUs running SteamOS/Gamescope as of June 2026. Ongoing work targets VRR flickering on FreeSync+HDR Intel paths. [Source: HotHardware, SteamOS Intel Arc support](https://hothardware.com/news/valve-steamos-gain-intel-gpu-support) [Source: PC Guide](https://www.pcguide.com/news/steamos-support-for-intel-hardware-means-you-can-now-install-it-on-an-msi-claw-or-arc-b580-desktop/)
+- **FSR 3 / frame generation integration**: AMD FidelityFX Super Resolution 3 (frame generation via Fluid Motion Frames) has been shipping in the FidelityFX SDK; integration into Gamescope's Vulkan compute compositor — where it would benefit all games uniformly rather than requiring per-title support — is actively discussed on the Gamescope issue tracker. Note: no merged PR confirmed at time of writing; needs verification.
+- **HDR and Wayland colour-management stabilisation**: Gamescope's HDR handshake with KWin's `xx-color-management-v4` Wayland protocol is a known breakage point (Gamescope issue #2000, #2037). Near-term work focuses on aligning Gamescope's colour management extension with the standardised `wp_color_management_v1` protocol being ratified on the Wayland freedesktop list. [Source: Gamescope issue #2037](https://github.com/ValveSoftware/gamescope/issues/2037)
+- **VRAM budget management for low-VRAM GPUs**: A Valve developer landed improvements to reduce VRAM pressure for GPUs with limited memory (under 8 GB), enabling Gamescope's compositor targets to spill more gracefully. [Source: ProPakistani, Valve VRAM improvement April 2026](https://propakistani.pk/2026/04/10/valve-dev-brings-new-linux-gaming-improvement-for-gpus-with-limited-vram/)
+- **Improved desktop-mode VRR**: SteamOS 3.x updates are bringing VRR support to KDE Plasma desktop mode (not just Game Mode), aligning the Desktop Mode KWin session with the Gamescope Game Mode feature set. [Source: SteamOS 3.8 Preview, Phoronix](https://www.phoronix.com/news/SteamOS-3.8-Preview)
+
+### Medium-term (1–3 years)
+
+- **Steam Deck 2 / next-generation APU**: Valve has confirmed it is waiting for a major silicon architecture leap (beyond RDNA 4 / Zen 5 iterations) before shipping Steam Deck 2. The next platform will likely require Gamescope to support higher native resolutions (900p or 1080p handheld target), LPDDR5X unified memory, and updated DCN display engine paths. [Source: Tom's Hardware, Valve Steam Deck 2 silicon comments](https://www.tomshardware.com/video-games/handheld-gaming/valve-is-waiting-for-major-architectural-improvements-on-future-silicon-before-creating-the-steam-deck-2-drastically-better-performance-with-the-same-battery-life-is-not-enough)
+- **Native Wayland application support in Game Mode**: Gamescope currently embeds XWayland for all X11 games; native Wayland game support (Vulkan WSI over Wayland without XWayland) is planned but gated on Wayland swapchain feedback latency-marker extensions being deployed broadly. The `wp_fifo_v1` and `wp_commit_timing_v1` Wayland protocols are candidates to replace the current Gamescope latency-marker extension. [Source: Arch Wiki Gamescope](https://wiki.archlinux.org/title/Gamescope)
+- **Steam Machine 2026 platform**: Valve is launching a Steam Machine product in 2026, extending SteamOS/Gamescope to desktop-class GPUs from AMD, Intel, and potentially NVIDIA. This broadens Gamescope from a single-hardware compositor to a multi-vendor platform requiring more robust IHV-neutral paths. [Source: Geeky Gadgets, Valve Steam Machine 2026](https://www.geeky-gadgets.com/valve-steam-machine-2026-launch-2026/)
+- **AI-upscaling integration**: With AMD XESS-style neural upscalers and AMD's own AI Super Resolution landing on RDNA 4+, integration of ML-accelerated upscaling passes into Gamescope's compositor pipeline is under discussion, replacing or supplementing FSR spatial passes for hardware that supports NPU/shader-based inference. Note: no confirmed Gamescope implementation; needs verification.
+- **Mura correction generalisation**: The per-panel 2D LUT mura correction introduced for the Steam Deck OLED is expected to generalise to future handheld OLED panels across partner hardware running SteamOS. Note: needs verification of public roadmap.
+
+### Long-term
+
+- **Kernel-mode scheduling integration**: Long-term Gamescope latency improvements may depend on in-kernel compositor-aware scheduling (similar to what is proposed in the DRM scheduler / `drm_sched` rework) so that the kernel can prioritise Gamescope's Vulkan submit queue above other GPU workloads without requiring `SCHED_FIFO` userspace workarounds. Note: no confirmed kernel patchset targeting this; needs verification.
+- **Unified SteamOS gaming compositor across form factors**: Valve's trajectory suggests a single Gamescope binary (with backend plugins for handheld DRM, desktop Wayland nested, and headless) spanning Steam Deck, Steam Machines, and potential future VR/AR hardware, sharing the same FSR/HDR/colour-management Vulkan passes. [Source: Geeky Gadgets, Steam Machine 2026](https://www.geeky-gadgets.com/valve-steam-machine-2026-launch-2026/)
+- **Frame-timing protocol standardisation on Wayland**: Gamescope's custom latency-marker and frame-pacing Wayland extensions may eventually be submitted to the Wayland protocol working group for standardisation, enabling other compositors (KWin, Mutter) to implement the same just-in-time vblank scheduling that gives Gamescope its input-to-photon latency advantage. Note: speculative; no active freedesktop proposal confirmed at time of writing.
+
+---
+
 ## 11. Integrations
 
 This chapter intersects with the following chapters throughout the book:

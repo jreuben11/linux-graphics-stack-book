@@ -474,6 +474,30 @@ RADV's ACO backend handles NonUniform by emitting a waterfall loop: it executes 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **`VK_EXT_descriptor_heap` shipping in Vulkan SDK**: Ratified in Vulkan 1.4.340 and developed by NVIDIA, AMD, Arm, Nintendo, Valve, and Google, this extension completely replaces the descriptor-set subsystem with explicit heap memory management — one sampler heap and one resource heap — eliminating `VkDescriptorPool` and `VkPipelineLayout` entirely. SDK support was targeted for Q1 2026. [Source](https://www.khronos.org/blog/vulkan-introduces-roadmap-2026-and-new-descriptor-heap-extension)
+- **Mesa driver support for `VK_EXT_descriptor_heap`**: RADV and ANV are expected to land initial implementations tracking the new extension. RADV already implements `VK_EXT_descriptor_buffer` (since Mesa 23.0) and `VK_EXT_mutable_descriptor_type` (since Mesa 22.2), providing the foundation for the heap model. [Source](https://www.phoronix.com/news/RADV-VK_EXT_descriptor_buffer)
+- **VKD3D-Proton adoption of descriptor heap**: Valve's D3D12-over-Vulkan translation layer, which depends on efficient descriptor management for Windows game compatibility, is positioned as an early adopter of `VK_EXT_descriptor_heap` for bindless D3D12 resource binding. Note: needs verification on merge timeline.
+- **Vulkan Roadmap 2026 profile inclusion**: The Khronos Vulkan Working Group is targeting `VK_EXT_descriptor_heap` for promotion to a `KHR` extension and potential inclusion in the Vulkan Roadmap 2026 hardware baseline, which would mandate support on conformant drivers. [Source](https://www.khronos.org/blog/vulkan-introduces-roadmap-2026-and-new-descriptor-heap-extension)
+
+### Medium-term (1–3 years)
+
+- **Promotion of `VK_EXT_descriptor_heap` to `VK_KHR_descriptor_heap` or core**: The working group is actively soliciting developer feedback before finalising the API as a KHR extension. If widely adopted, it could be mandated in a future Vulkan core version analogous to how descriptor indexing moved to Vulkan 1.2 core. [Source](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_descriptor_heap.html)
+- **GPU-side descriptor update via compute**: As `VK_EXT_descriptor_heap` exposes descriptor memory directly (CPU and GPU accessible), future tooling and engine middleware is expected to handle descriptor patching entirely in compute shaders, eliminating CPU-side `vkUpdateDescriptorSets` round-trips for dynamic scenes. Note: needs verification of specific driver timelines.
+- **Shader compiler integration (`glslang`, `DXC`, `Tint`)**: WGSL (WebGPU Shading Language) and HLSL compilers will need new backends or decorations to target the heap model's offset-based lookup. Early compiler experiments are expected as `VK_EXT_descriptor_heap` stabilises. Note: needs verification.
+- **`VK_EXT_mutable_descriptor_type` convergence**: As the heap model makes descriptor types fluid by design, the rationale for the separate mutable-descriptor-type extension diminishes; it may be deprecated in favour of the heap model's inherent type agnosticism. [Source](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_mutable_descriptor_type.html)
+
+### Long-term
+
+- **Unified descriptor model across Vulkan, D3D12, and Metal**: `VK_EXT_descriptor_heap` intentionally mirrors D3D12's descriptor-heap design and is closer to Metal's argument buffers. Long-term convergence at the abstraction-layer level (wgpu, Vulkan portability) may allow a single descriptor-heap code path to target all three APIs without per-backend descriptor translation. Note: speculative.
+- **Hardware-native bindless on all GPU tiers**: Today bindless requires `VK_EXT_descriptor_indexing` plus driver workarounds on older IP. Future GPU hardware generations (post-RDNA 4, post-Xe2) may expose native heap addressing with no software emulation layer, reducing driver complexity. Note: speculative, no public hardware commitment.
+- **Integration with ray tracing resource binding**: Acceleration structures (`VK_KHR_acceleration_structure`) currently use a separate descriptor type. Future extensions may unify TLAS/BLAS handles into the descriptor heap model, simplifying bindless ray tracing scene management. Note: speculative direction based on API evolution trends.
+
+---
+
 ## Integrations
 
 - **Ch19 (Vulkan Architecture)** — descriptors are the Vulkan resource binding model; this chapter expands on the pipeline layout and descriptor set binding sections of the architecture overview

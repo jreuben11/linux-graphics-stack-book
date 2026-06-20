@@ -801,6 +801,33 @@ The fundamental latency floor for any remote desktop system is determined by two
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **`wlr-screencopy-unstable-v1` deprecation**: Now that `ext-image-copy-capture-v1` and `ext-image-capture-source-v1` were merged into wayland-protocols in August 2024, the wlroots project is expected to drop `wlr-screencopy-unstable-v1` as a fallback in favour of the standardised ext protocols. Tools like `grim`, `wf-recorder`, and `wayvnc` are tracking this migration. [Source](https://www.phoronix.com/news/Wayland-Merges-Screen-Capture)
+- **FreeRDP AV1 hardware acceleration**: FreeRDP 3.25 introduced experimental AV1 codec support (software only, via libaom). Near-term work targets VA-API and NVENC-backed AV1 encode paths to bring hardware-accelerated AV1 to RDP sessions. [Source](https://www.phoronix.com/news/FreeRDP-3.25-Released)
+- **KRdp NVIDIA hardware encoding**: KDE's `krdp` currently limits hardware H.264 encoding to VA-API, meaning NVIDIA GPUs fall back to software encoding. NVIDIA NVENC support via `ffmpeg` or a direct CUDA path is an open work item tracked in the KDE remote desktop discussion. [Source](https://discuss.kde.org/t/remote-desktop-using-the-rdp-protocol-for-plasma-wayland/3616)
+- **Cursor-metadata protocol extension**: The `ext-image-copy-capture-v1` cursor overlay uses a simple boolean flag today. An in-discussion staging protocol for separate cursor-plane metadata (position, hotspot, image) would allow consumers to composite or exclude the cursor independently — needed for remote desktop tools that re-inject input. Note: needs verification of specific MR status.
+- **xdg-desktop-portal mandatory PipeWire feature set clarification**: An open issue ([#869](https://github.com/flatpak/xdg-desktop-portal/issues/869)) calls for the portal specification to document which PipeWire buffer types and SPA pod fields are mandatory versus optional, reducing fragmentation across portal backend implementations (GNOME, KDE, wlr, COSMIC).
+
+### Medium-term (1–3 years)
+
+- **`ext-image-copy-capture-v2` with damage-aware zero-copy**: The `v1` protocol copies the full frame into a client-supplied buffer. A proposed `v2` revision under freedesktop discussion aims to expose region-damage information at the protocol level, enabling consumers to submit partial-update buffers and reducing bandwidth between compositor and PipeWire producer by skipping unchanged tiles. [Source](https://wayland.app/protocols/ext-image-copy-capture-v1)
+- **COSMIC compositor screen capture integration**: The COSMIC desktop (System76) adopted `ext-image-copy-capture-v1` at launch; medium-term roadmap includes privileged capture for accessibility tools and integration with COSMIC's remote desktop offering. Note: needs verification of specific timeline.
+- **RDP egress quality improvements in gnome-remote-desktop / KRdp**: Both GNOME and KDE remote desktop servers are expected to adopt AV1-hardware-encode RDP streams (via the RDP GFX-AV1 extension) as GPU AV1 encoders on Intel Arc and AMD RDNA 3/4 proliferate, targeting LAN-quality remote desktop at half the bitrate of H.264. [Source](https://monodes.com/predaelli/2026/02/25/remote-desktop-on-wayland-in-2026/2/)
+- **Sunshine Vulkan Video encode path**: Sunshine's 2026 release added `VK_KHR_video_encode_h264` as an alternative to VA-API. Ongoing work targets `VK_KHR_video_encode_av1` (Vulkan Video AV1) for the game-streaming encode path, decoupling Sunshine from the VA-API driver stack entirely. [Source](https://github.com/LizardByte/Sunshine/releases)
+- **WebRTC `getDisplayMedia()` region capture in browsers**: The W3C Screen Capture specification is evolving to support `cropTarget` and `RestrictionTarget` APIs that allow capturing a sub-region or single DOM element rather than the full screen. Firefox and Chromium are implementing these on Linux via the same PipeWire portal path, requiring compositor support for per-window capture sources. Note: needs verification of compositor-side API timeline.
+
+### Long-term
+
+- **Kernel KMS writeback cursor plane export**: The current DRM writeback connector captures the fully composited scanout buffer but cannot selectively exclude or isolate overlay planes (e.g., the hardware cursor plane). Long-term KMS API evolution may expose per-plane writeback targets, enabling capture tools to access individual DRM plane outputs for high-fidelity remote desktop or accessibility use cases without compositor involvement. Note: speculative; no upstream RFC as of 2026.
+- **Trusted-path hardware video encode for screen capture**: A potential future architecture would allow the compositor to hand a DMA-BUF reference directly to a hardware video encoder kernel driver (via a `dma-fence`-synchronised handoff) without any intermediate CPU-accessible buffer, creating a fully in-GPU capture-and-encode pipeline for zero-copy streaming. This would require kernel-level coordination between the DRM, V4L2, and media driver subsystems. Note: speculative architectural goal.
+- **Standardised multi-seat remote desktop protocol**: Current Wayland remote desktop (RDP, VNC, NX) is bolted on top of single-seat compositor assumptions. A long-term freedesktop.org design goal is a native multi-seat remote desktop protocol that exposes independent virtual seats to remote clients within a single compositor instance, analogous to Windows Remote Desktop Services multi-session hosting. Note: speculative; no concrete Wayland protocol RFC as of mid-2026.
+- **AI-assisted codec adaptation in streaming**: Game streaming servers (Sunshine) and remote desktop tools are beginning to experiment with ML-based perceptual quality metrics (VMAF, on-GPU inference) to drive adaptive bitrate and encoder parameter selection. Long-term integration of GPU-resident ML inference (via Vulkan Cooperative Matrices or CUDA) for real-time quality optimisation is an active research direction. Note: speculative.
+
+---
+
 ## 11. Integrations
 
 **Ch2 (KMS: The Display Pipeline)**: The KMS writeback connector (Section 3) is a first-class DRM object — a `drm_connector` with `DRM_MODE_CONNECTOR_WRITEBACK` type. It participates in atomic commits alongside CRTCs and planes, and its framebuffer output is a GEM buffer object in the DRM memory management system. Understanding KMS atomic modesetting is prerequisite to implementing writeback capture.

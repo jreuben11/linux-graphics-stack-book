@@ -1111,6 +1111,33 @@ xrCreateSwapchain(session, &(XrSwapchainCreateInfo){
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **OpenXR Spatial Entities extensions landing in Monado**: The Khronos OpenXR Working Group released a standardised suite of spatial-entities extensions (plane detection, spatial anchors, marker tracking, cross-session persistence) in late 2024 with implementations targeted throughout 2025–2026. Monado's Collabora team is among the collaborating runtimes. [Source](https://www.khronos.org/blog/openxr-spatial-entities-extensions-released-for-developer-feedback)
+- **`XR_EXT_future` async operations**: Monado 25.1.0 introduced the internal `xrt_future` system and support for `XR_EXT_future`, enabling asynchronous OpenXR operations that block on expensive runtime tasks (world-lock queries, anchor persistence) without stalling the render thread. Wider use of this primitive across Monado's driver layer is planned. [Source](https://www.collabora.com/news-and-blog/news-and-events/monado-25-1-0-enabling-tomorrows-openxr-experiences.html)
+- **Persistent SLAM mapping with Basalt VIO**: Monado's Basalt-based inside-out tracking fork (`vit_interface`) is gaining persistent map saving and re-localization so that virtual objects placed in a room survive session restarts. This builds on the existing Basalt VIO integration and is in active development. [Source](https://www.collabora.com/news-and-blog/news-and-events/openxr-and-monado-recent-progress-and-whats-to-come.html)
+- **Expanded hardware driver coverage**: Recent Monado releases (25.0.0, 25.1.0) added drivers for Blubur S1, Rift DK2, SolarXR IPC, Xreal Air 2 Ultra, and Fujitsu headsets. Near-term work continues to widen the device catalogue, particularly for USB-C and standalone Android-class headsets. [Source](https://www.gamingonlinux.com/2025/12/open-source-xr-runtime-monado-25-1-0-released-with-expanded-hardware-support/)
+- **XR vendor industry consolidation around Monado**: As of early 2026, multiple XR hardware vendors (PICO, Varjo, ByteDance and others) are contributing to or adopting Monado as an open reference runtime, accelerating conformance and feature parity. [Source](https://www.opensourceforu.com/2026/03/xr-vendors-rally-around-open-source-monado-runtime/)
+
+### Medium-term (1–3 years)
+
+- **OpenXR Spatial Entities full implementation**: Plane detection (`XR_EXT_plane_detection`), spatial anchors (`XR_EXT_spatial_anchor`), and mesh-based environment reconstruction are expected to reach stable implementation in Monado, enabling mixed-reality overlays that are anchored to real-world geometry. Further extensions for image and object tracking are under working-group discussion. Note: specific implementation timeline needs verification. [Source](https://www.khronos.org/blog/openxr-spatial-entities-extensions-released-for-developer-feedback)
+- **Standalone and Android/mobile Monado support**: Monado already has Android support; the medium-term goal is full standalone-device deployment (self-contained ARM SoC headsets without a desktop host), requiring rework of the display backend, power management, and the compositor's Vulkan present path. [Source](https://www.collabora.com/news-and-blog/news-and-events/monado-25-0-0-reaching-next-leve-openxr.html)
+- **GPU-accelerated ML inference for hand and eye tracking**: Monado's hand tracking currently uses camera + heuristics or libsurvive data. The roadmap moves toward on-device neural-network inference via Vulkan compute (ONNX/TFLite over `VK_KHR_pipeline_compute`), using the same GPU path as Vulkan compute shaders described in Chapter 25. Note: needs verification of specific timeline.
+- **Windows port maturation**: A Monado Windows port is in progress; medium-term stabilisation would allow cross-platform OpenXR content testing without requiring Linux hardware. [Source](https://www.collabora.com/news-and-blog/news-and-events/openxr-and-monado-recent-progress-and-whats-to-come.html)
+- **DRM leasing improvements for multi-GPU and USB-C headsets**: As USB4/Thunderbolt headsets become common, DRM leasing (`DRM_IOCTL_MODE_CREATE_LEASE`) will need to handle hot-plug, lease revocation on disconnect, and cross-GPU buffer sharing. Kernel and Wayland protocol work is expected to address these cases. Note: specific patchsets needs verification.
+
+### Long-term
+
+- **OpenXR 2.0 or major revision**: The Khronos OpenXR working group is accumulating extension experience that may crystallise into a revised core specification. Potential inclusions: native spatial-mesh types, standardised ML inference hooks for tracking, and a formalised passthrough API replacing vendor extensions (`XR_FB_passthrough`, `XR_EXTX_overlay`). Note: no public timeline confirmed.
+- **Foveated rendering with real eye tracking**: `XR_EXT_eye_gaze_interaction` currently provides gaze for interaction; long-term the ecosystem is moving toward Variable Rate Shading (VRS) driven by calibrated eye-tracking data, reducing per-pixel cost outside the foveal region. Monado would need driver-level eye-tracker calibration and a compositor path to pass VRS hints to the application's Vulkan shaders.
+- **Unified XR compositor with Wayland desktop integration**: The architectural boundary between the Monado compositor and a Wayland desktop compositor (KWin, Sway) remains a source of complexity. Long-term proposals envision a unified compositor that handles both desktop windows and XR layers in a single process, eliminating the DRM-lease handoff entirely. Note: speculative direction, no committed design exists.
+- **Standardised AR scene graph and semantic labelling**: As spatial computing matures, industry consensus may emerge around a scene-graph API above OpenXR — analogous to what WebXR does in browsers — providing semantic labels (floor, wall, table) and persistent object anchors across runtimes. Note: speculative; active in AR research community but no Khronos standard proposed.
+
+---
+
 ## 9. Integrations
 
 **Chapter 1 (DRM Architecture)**: DRM leasing (`DRM_IOCTL_MODE_CREATE_LEASE`, `drmModeCreateLease`) is the kernel mechanism enabling Monado's direct-mode display path. The DRM connector property `non-desktop` is set in the kernel's EDID quirk table to mark HMD displays. DRM render nodes (`/dev/dri/renderD128`) are used for Vulkan device creation in OpenXR.

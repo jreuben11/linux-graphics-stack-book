@@ -647,6 +647,31 @@ echo "scan" | cec-client -s -d 1 /dev/cec0
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **HDMI 2.1 FRL audio path**: AMD engineer Harry Wentland posted the first HDMI 2.1 FRL (Fixed Rate Link) patches to the Linux kernel mailing list in May 2026, targeting the Linux 7.2 merge window. FRL unlocks 4K 240Hz and 8K 120Hz video modes, and the associated high-bandwidth audio streams (Dolby Atmos, DTS:X at full fidelity) depend on this physical-layer work landing first. [Source](https://www.gamingonlinux.com/2026/05/further-expanded-amd-hdmi-2-1-support-is-coming-to-linux-now-with-frl-and-dsc/)
+- **Generic HDMI CEC helpers for DRM bridges**: A patchset (v5 posted to dri-devel in 2025) introduces standardised CEC helpers that integrate with `drm_bridge_connector`, removing the current impossibility of implementing CEC for bridge-based display chains and standardising physical-address handling across drivers. [Source](https://www.mail-archive.com/dri-devel@lists.freedesktop.org/msg539234.html)
+- **DRM HDMI audio helpers reused for DisplayPort bridges**: Linux 6.16 includes work to share the DRM HDMI audio helper infrastructure with DisplayPort bridge drivers, reducing duplicated ELD-generation and audio-component plumbing between HDMI and DP paths. Note: needs verification of final merge status.
+- **ALSA 1.2.15+ stabilisation**: The ALSA userspace library stable release (1.2.15.3 as of January 2026) continues hardening of the HDA HDMI codec plugin, including improved IEC 61937 pass-through framing for compressed audio formats. [Source](https://embeddedprep.com/complete-guide-of-alsa-linux-audio/)
+- **VRR + FRL audio clock recovery**: Until Variable Refresh Rate is reconciled with HDMI 2.1 FRL clock generation, FRL is disabled by default to avoid regressions; near-term patches are expected to resolve the VRR/FRL interaction. Note: needs verification.
+
+### Medium-term (1–3 years)
+
+- **Full eARC object-based audio pass-through**: Linux currently detects eARC-capable connectors but does not expose a full bidirectional eARC channel usable for Dolby Atmos object-based streaming from a Linux media player to an AV receiver. Full kernel eARC support — including the dedicated differential-pair signalling on HDMI 2.1 pins 13/14 — is an open design discussion on the alsa-devel mailing list. Note: needs verification of specific RFC.
+- **PipeWire passthrough for compressed HDMI audio (IEC 61937)**: WirePlumber and PipeWire's ALSA sink currently manage PCM routing well, but IEC 61937 compressed pass-through (AC-3, DTS, TrueHD) requires an "S/PDIF RAW" path that bypasses PipeWire's sample-rate converter. Upstream discussions are ongoing about a dedicated passthrough node type. Note: needs verification.
+- **DisplayPort 2.1 UHBR audio**: DP 2.1 Ultra-High Bit Rate (UHBR) links (20 Gbps+) require updated ACR (Audio Clock Recovery) tables and audio SDP (Secondary Data Packet) extensions. Kernel DRM DP helpers will need updates once AMD and Intel ship UHBR-capable hardware broadly on Linux. [Source](https://kernelnewbies.org/Linux_6.16)
+- **Unified DRM audio topology API**: There is a long-standing desire to expose the full DRM audio connector topology (connectors, mux paths, ELD per sink) as a proper ALSA topology blob, enabling sound servers to enumerate multi-sink setups (e.g., MST with per-port audio) without heuristics. Note: needs verification of RFC status.
+
+### Long-term
+
+- **Kernel-managed eARC CEC co-ordination**: eARC uses a subset of CEC signalling on the ARC channel to negotiate audio format support. Long-term, the kernel CEC and ALSA subsystems may need a new shared API layer to coordinate eARC negotiation without requiring userspace (e.g., libcec) to arbitrate between the two subsystems. Note: speculative.
+- **Spatial audio metadata in the Linux stack**: Dolby Atmos and DTS:X carry object-based metadata alongside audio. A future Linux spatial-audio API (analogous to Apple's `kAudioFormatFlagIsBigEndian` object path or Windows Spatial Sound) would require new ALSA PCM extensions, PipeWire node properties, and DRM HDMI audio-component changes to propagate rendering metadata end-to-end. Note: speculative.
+- **USB4/Thunderbolt DP audio integration**: As Thunderbolt 4 / USB4 docks increasingly use DP-over-USB4 tunnels, audio over those tunnels (via the DP AUX audio path) must be routed through the USB4 connection manager and the DRM DP audio helpers. Long-term unification of USB4 and native DP audio paths is expected. Note: speculative.
+
+---
+
 ## Integrations
 
 - **Ch2 (KMS)** — DRM connector holds the EDID and ELD; `drm_edid_to_eld` runs after connector detection

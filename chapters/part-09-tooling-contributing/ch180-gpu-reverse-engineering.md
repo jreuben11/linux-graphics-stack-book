@@ -558,6 +558,33 @@ Most open-source GPU drivers do not apply strict clean-room separation because t
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Nova (Rust NVIDIA kernel driver) maturation** — Red Hat's Nova driver, merged into Linux 6.15, is the designated successor to Nouveau for firmware-managed NVIDIA GPUs (Turing and later). Near-term work focuses on GSP command-stream coverage and power management, reducing reliance on RE by consuming NVIDIA's open-gpu-kernel-modules headers directly [Source](https://www.phoronix.com/news/NVIDIA-Linux-2025-Highlights).
+- **NVK extended GPU coverage** — NVK (the Vulkan driver for Nouveau/Nova) was enabled for Blackwell and Kepler generations in Mesa 25.2 (August 2025). Near-term work covers performance tuning and Ray Tracing extensions for Ada Lovelace, drawing on envytools rnndb register maps extended during the open-gpu-kernel-modules header integration [Source](https://nouveau.freedesktop.org/).
+- **PanVK Vulkan 1.4 conformance** — Collabora's PanVK Vulkan driver for Mali Midgard/Bifrost/Valhall achieved Vulkan 1.2 conformance for Mali G610 in mid-2025; Vulkan 1.4 conformance is in active development, requiring RE-derived understanding of the Valhall CSF firmware scheduling protocol [Source](https://www.phoronix.com/news/Valhall-Early-2022-Progress).
+- **Adreno Gen 8 (Snapdragon X2 Elite) bringup** — Initial freedreno Gallium3D support for Adreno Gen 8 landed in Mesa 26.0 (2026); RE-derived cffdump traces and `.rd` files are being accumulated to complete command-stream coverage for A8xx [Source](https://www.phoronix.com/news/Freedreno-Lands-Adreno-Gen-8).
+- **Ghidra 11.x GPU firmware scripting** — Ghidra 11.3 (2025) added JIT p-code emulation and improved scripting APIs; GPU RE teams are adopting headless Ghidra pipelines for automated firmware structure extraction from Apple ASC and NVIDIA GSP binaries. Note: specific adoption timelines need verification.
+
+### Medium-term (1–3 years)
+
+- **Apple M3/M4 AGX bringup** — M3 MacBook GPU support has progressed slowly due to hardware-accelerated ray tracing and mesh shading requiring extensive RE of new firmware message types. M4-series bring-up is experimental as of mid-2026, with m1n1 tracer updates needed each time Apple ships firmware changes [Source](https://asahilinux.org/about/). M5-series (released late 2025) bring-up is in very early stages. Note: exact timelines are subject to volunteer availability.
+- **LLM-assisted firmware decompilation** — Integration of local LLMs with GhidraMCP (the Ghidra Model Context Protocol server) for GPU firmware analysis is an emerging methodology, enabling natural-language queries over decompiled pseudocode of NVIDIA GSP and Apple ASC firmware [Source](https://medium.com/@clearbluejar/supercharging-ghidra-using-local-llms-with-ghidramcp-via-ollama-and-openweb-ui-794cef02ecf7). Adoption in structured GPU RE projects (Asahi, Nouveau) is expected but not yet confirmed.
+- **Automated ISA fuzzing frameworks** — The enumerate-trivial-shaders methodology used in etnaviv and Panfrost ISA discovery is increasingly being formalized into reusable fuzzing frameworks. Projects like `applegpu` (Dougall Johnson) and the freedreno ISA XML infrastructure provide models for structured automated ISA coverage measurement [Source](https://github.com/dougallj/applegpu). Note: no specific upstream RFC tracked yet.
+- **Panthor CSF documentation expansion** — ARM's semi-cooperation with the Panfrost project is expected to extend to Panthor (Valhall CSF firmware), with potential official documentation of the firmware message protocol reducing the RE burden for future Mali GPU generations. Note: needs verification against ARM's roadmap.
+- **rnndb tooling modernisation** — The envytools rnndb XML register database format, now over fifteen years old, has attracted discussion about migration to more structured formats (JSON schema, protobuf) that would support programmatic validation and cross-driver sharing. Note: no upstream RFC confirmed as of mid-2026.
+
+### Long-term
+
+- **Vendor documentation convergence** — The trend of partial vendor cooperation (ARM's documentation for Valhall, Qualcomm's partial Adreno docs, NVIDIA's open-gpu-kernel-modules headers) may eventually reduce the RE burden for new GPU generations to driver-bringup work rather than protocol discovery. The degree to which full hardware reference manuals become available remains speculative.
+- **Unified cross-driver RE infrastructure** — The freedreno `.rd` trace format, envytools rnndb XML, and Panfrost panwrap serve similar purposes with incompatible formats. A unified trace capture and register database format shared across Mesa driver families has been discussed as a long-term architectural goal. Note: no formal proposal has been filed.
+- **Formal verification of RE-derived state machines** — As RE-derived command-stream state machines grow in complexity (especially for firmware-mediated GPUs like AGX and GSP), applying formal verification tools to prove correctness of the RE-derived protocol models is an open research direction. Academic work on protocol reverse engineering with model checking is relevant but has not yet been applied to GPU firmware protocols in practice.
+- **Legal framework evolution** — DMCA Section 1201(f) and EU Directive 2009/24/EC interoperability exceptions have never been tested in the context of GPU firmware RE specifically. Future litigation, if any, could clarify or restrict the legal scope of GPU firmware binary analysis — the most legally sensitive area of current RE practice.
+
+---
+
 ## 15. Integrations
 
 This chapter provides the methodological foundation for understanding several other chapters:

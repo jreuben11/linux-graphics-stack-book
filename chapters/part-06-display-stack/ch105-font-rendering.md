@@ -737,6 +737,32 @@ GTK's emoji picker (added in GTK 3.22) uses Pango's emoji shaping support. Emoji
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **HarfBuzz WASM shaper stabilization**: The WebAssembly shaper introduced experimentally in HarfBuzz 8.0 (2023) allows fonts to embed custom WASM programs in a `Wasm` table, bypassing the standard OpenType/AAT/Graphite shaping paths for entirely font-controlled glyph substitution logic. As of 2026 it remains opt-in at build time; the near-term goal is to harden the sandbox, settle the API surface, and enable it by default. [Source: HarfBuzz WASM shaper docs](https://github.com/harfbuzz/harfbuzz/blob/main/docs/wasm-shaper.md)
+- **Incremental Font Transfer (IFT) client-side integration**: The W3C IFT specification allows progressive loading of font subsets over HTTP, critical for large CJK fonts on the web. HarfBuzz has shipped subsetting speedups (up to 88% faster for TTF/OTF subsets) as groundwork; the near-term work involves integrating IFT patch-merging into browser font loaders and Pango's font cache. [Source: HarfBuzz 8.0 release notes](https://github.com/harfbuzz/harfbuzz/releases/tag/8.0.0)
+- **Fontconfig 2.18.x font-matching regression fix**: Fontconfig 2.18.0 introduced a scoring regression that ranks dynamically-added fonts (via `FcConfigAppFontAddFile`) below system fonts when resolving generic families, breaking applications that register fonts at runtime. Fixes are being tracked upstream. Note: needs verification on exact fix timeline.
+- **FreeType 2.14.x maintenance and COLRv1 paint traversal improvements**: FreeType 2.14.3 (March 2026) continues the 2.14.x stable series; near-term work focuses on improving the COLRv1 paint graph API (`FT_Get_Color_Glyph_Paint()`) ergonomics so callers need less manual traversal boilerplate. [Source: FreeType project](https://freetype.org/)
+- **Pango variable-font optical sizing**: Pango 1.56.x (current stable) gained COLRv1 and Unicode 16 support; a near-term improvement is automatic `opsz` axis activation based on rendered point size, so text at 8 pt and 72 pt draws from the correct part of the optical-size design space without application intervention. Note: needs verification on exact release.
+
+### Medium-term (1–3 years)
+
+- **COLRv1 + variable font intersection (animated and parametric emoji)**: The combination of COLRv1 gradients with variable-font axes (`wght`, custom axes) enables animated or parametric color emoji. Google's Noto COLRv1 emoji already varies color stops; full integration with CSS `font-variation-settings` and HarfBuzz variation handling is an active area. [Source: COLRv1 Spec](https://docs.microsoft.com/en-us/typography/opentype/spec/colr)
+- **GPU-native glyph rasterization replacing FreeType**: Projects including cosmic-text (used in the COSMIC desktop) and browser text engines are exploring moving glyph rasterization fully to the GPU (via signed-distance fields or GPU curve rendering), eliminating the CPU FreeType rasterization + atlas upload round-trip. HarfBuzz would still handle shaping; only the rasterization back-end changes. [Source: cosmic-text GitHub](https://github.com/pop-os/cosmic-text)
+- **Wide-gamut and HDR-aware subpixel rendering**: FreeType's LCD filters assume sRGB primaries. On wide-gamut displays the R/G/B subpixel color fringing changes; per-display subpixel filter coefficients calibrated to the display's primaries are a proposed direction. This is coupled to the compositor's color management work (HDR Wayland protocols). Note: needs verification — no formal RFC found as of 2026.
+- **OpenType MATH table support in Pango/HarfBuzz**: Mathematical typesetting (TeX-quality layout of MATH-table fonts such as STIX Two and Latin Modern Math) is handled by specialized engines (HarfBuzz has `hb-ot-math.h` querying APIs). Integration into Pango's layout engine for native math layout without an external TeX renderer is a long-discussed design goal. [Source: HarfBuzz OT-MATH API](https://harfbuzz.github.io/harfbuzz-hb-ot-math.html)
+- **fontconfig ML-assisted font matching**: Research prototypes using glyph-similarity models to augment fontconfig's heuristic family/weight/style scoring have appeared in the academic literature; practical integration into fontconfig's scoring pipeline remains speculative but discussed. Note: needs verification — no upstream proposal found as of 2026.
+
+### Long-term
+
+- **Unified shaping + layout API**: The current pipeline requires application authors to orchestrate fontconfig → HarfBuzz → FreeType → Cairo/Skia manually or through Pango. Long-term proposals envision a single high-level "text rendering" library that encapsulates the entire pipeline (discovery, shaping, rasterization, atlas management) with a single API surface, reducing the integration burden for terminal emulators, GUI toolkits, and browsers. Note: speculative; no formal proposal as of 2026.
+- **Full Unicode script coverage in terminals**: As terminal emulators adopt HarfBuzz for shaping (foot, Kitty, Ghostty already do), the remaining challenge is full complex-script layout within the fixed-cell grid model — Devanagari, Tibetan, and Indic scripts that produce glyphs wider or taller than one cell. Standardized escape sequences or protocol extensions for variable-width terminal cells are a long-term direction. Note: needs verification on specific protocol proposals.
+- **Color-managed emoji compositing at the compositor level**: As Wayland compositors adopt ICC/HDR color management, color fonts (COLRv1 sRGB gradients, CBDT sRGB bitmaps) will need compositor-level gamut mapping when displayed on wide-gamut or HDR outputs, rather than the current approach of treating glyph colors as sRGB regardless of display gamut. This requires coordination between FreeType/HarfBuzz, the toolkit, and the compositor's color pipeline. Note: speculative architectural direction.
+
+---
+
 ## 11. Integrations
 
 This chapter describes the font rendering pipeline that is consumed by nearly every other chapter covering application-layer rendering on Linux. Key cross-references:

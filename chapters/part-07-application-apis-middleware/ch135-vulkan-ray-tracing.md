@@ -603,6 +603,28 @@ Compaction reduces BLAS memory 40–50%; critical for complex scenes. Use `PREFE
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **`VK_EXT_ray_tracing_invocation_reorder` (SER) broad adoption**: Shader Execution Reordering, which graduated from the NVIDIA-specific `VK_NV_ray_tracing_invocation_reorder` to a multi-vendor EXT extension, is expected to land in RADV and other open-source Mesa drivers after already shipping for NVIDIA and Intel Arc B-series hardware; benchmarks on the Vulkan glTF path tracer show up to 47% throughput improvement. [Source](https://www.khronos.org/blog/boosting-ray-tracing-performance-with-shader-execution-reordering-introducing-vk-ext-ray-tracing-invocation-reorder)
+- **Mesa 26.x RADV ray tracing optimisations**: Mesa 26.0 (released February 2026) introduced pipeline compilation changes and reduced shader inlining that delivered >2x faster ray tracing passes in titles like Ghostwire Tokyo; subsequent 26.x releases continue this tuning trajectory, driven in part by Valve's graphics team. [Source](https://www.phoronix.com/news/Mesa-26.0-Released)
+- **Vulkan Roadmap 2026 conformance push**: The Vulkan Working Group published Roadmap 2026 milestone requirements (announced January 2026), raising mandatory feature and limit baselines beyond Vulkan 1.4; driver teams are aligning conformance test suites with these raised requirements, which indirectly validates RT extension correctness in CTS runs. [Source](https://www.khronos.org/blog/vulkan-introduces-roadmap-2026-and-new-descriptor-heap-extension)
+- **Blender Cycles Vulkan RT stabilisation**: The Vulkan ray tracing backend for Blender Cycles, which uses `VK_KHR_ray_tracing_pipeline` on RADV and ANV, is expected to move from experimental to default for Linux GPU rendering as Mesa RT path stability improves. (Note: needs verification for exact release milestone)
+
+### Medium-term (1–3 years)
+
+- **Ray tracing in Vulkan Roadmap mandatory tier**: While ray tracing extensions are not yet mandatory in Roadmap 2026, industry discussion is exploring a future milestone that would require `VK_KHR_ray_query` on all high-end Vulkan implementations; this would effectively mandate RT support on all discrete-class GPUs shipping with Vulkan conformance. (Note: needs verification — no firm Khronos announcement as of mid-2026)
+- **Hardware-accelerated BVH construction on RDNA4 / future Intel Xe**: Current open-source Mesa drivers implement BVH build on compute shaders; future AMD and Intel hardware generations may expose dedicated BVH build hardware, enabling `VK_ACC_STRUCT_BUILD_FLAGS` fast-build paths an order of magnitude faster than LBVH compute. [Source](https://www.khronos.org/news/archives/new-vulkan-extension-boosts-ray-tracing-performance)
+- **`VK_NV_displacement_micromap` / AMD equivalent standardisation**: Micro-mesh displacement maps (NVIDIA Ada feature) allow compact high-detail geometry in BVHs; a cross-vendor KHR or EXT standardisation is expected as AMD RDNA4 and Intel Xe2 both target micro-triangle hardware. (Note: needs verification — no public KHR draft confirmed)
+- **NVK (Nouveau Vulkan) ray tracing support**: The NVK open-source Vulkan driver for NVIDIA hardware is approaching feature-completeness for Vulkan 1.3 core; RT extension support (`VK_KHR_ray_tracing_pipeline`) is a natural next milestone once the core pipeline model stabilises. [Source](https://www.gamingonlinux.com/2026/02/mesa-26-0-is-out-bringing-ray-tracing-performance-improvements-for-amd-radv/)
+
+### Long-term
+
+- **Unified ray tracing + mesh shader pipeline integration**: Architectural proposals in the Khronos working group discussion explore combining mesh shaders (Task + Mesh stages) with ray tracing dispatch to allow procedural geometry generation at BVH-build time, eliminating the CPU round-trip for dynamic scenes. (Note: speculative — no public RFC as of mid-2026)
+- **Neural radiance cache / AI denoising standardisation in Vulkan**: As GPU-integrated AI inference accelerators become standard (e.g., NPU-on-die in AMD RDNA4, Intel Xe3), a future Vulkan cooperative matrix or inference extension may standardise the denoiser workload that currently relies on vendor-specific libraries (DLSS-RR, XeSS, FSR4). (Note: speculative direction)
+- **Ray tracing on integrated GPUs and mobile-class Vulkan**: The `VK_KHR_ray_query` inline path is simpler to implement than the full pipeline; long-term roadmap discussion targets bringing ray query to AMD RDNA integrated graphics (Phoenix/Hawk Point) and Intel Arc integrated, enabling mainstream Linux desktop ray query without discrete GPU. (Note: needs verification for specific hardware timelines)
+
 ## Integrations
 
 - **Ch18 (RADV driver)** — RADV architecture; RT is implemented as a compute mega-kernel using RDNA2 `image_bvh_intersect_ray` instructions

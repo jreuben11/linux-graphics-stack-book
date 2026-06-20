@@ -671,6 +671,31 @@ This pattern is also used by `dogtail`, a higher-level Python test framework bui
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Newton Wayland protocol stabilisation**: GNOME's Newton project — funded through the Sovereign Tech Fund — has a working prototype using a new Wayland protocol to push per-surface accessibility trees from applications to Mutter, with Orca communicating back via a new D-Bus interface. The immediate goal is to stabilise these interfaces and ship them in a GNOME release so that Orca on Wayland no longer requires DE-specific hacks. [Source](https://blogs.gnome.org/a11y/2024/06/18/update-on-newton-the-wayland-native-accessibility-project/)
+- **GNOME DE-specific keyboard interception consolidation**: The ad-hoc D-Bus keyboard interception API that landed in GNOME 48 and KDE Plasma 6.4 is expected to be superseded or wrapped by the Newton protocol's key-intercept mechanism, reducing the number of parallel interception paths screen readers must handle. [Source](https://blogs.gnome.org/tbernard/2025/04/11/gnome-stf-2024/)
+- **COSMIC desktop AT-SPI extension**: System76's COSMIC compositor has already published `cosmic-atspi-unstable-v1`, a Wayland protocol extension for accessibility that mirrors Newton's push-based model. Further iteration on this protocol is expected as COSMIC matures toward a stable release. [Source](https://wayland.app/protocols/cosmic-atspi-unstable-v1)
+- **AccessKit AT-SPI2 Rust adapter**: The AccessKit project's Rust-based AT-SPI2 platform adapter — which uses AccessKit's Chromium-derived node schema — is being extended to cover more role types and to integrate with the Newton-style per-surface tree model. This would let non-GTK Rust applications (including terminal emulators like Alacritty and Ghostty) expose accessibility trees without depending on GTK internals. [Source](https://gnome.pages.gitlab.gnome.org/at-spi2-core/devel-docs/new-protocol.html)
+- **xdg-desktop-portal AT shortcuts portal**: A pending proposal at `flatpak/xdg-desktop-portal` to add `org.freedesktop.portal.AT.Shortcuts` would give sandboxed AT clients a portal-mediated path to keyboard interception, bypassing the need for DE-specific hacks. Near-term work focuses on reaching agreement on the API surface. [Source](https://github.com/flatpak/xdg-desktop-portal/issues/1046)
+
+### Medium-term (1–3 years)
+
+- **Newton plug-and-socket for web content**: The current Newton architecture assumes one accessibility tree per Wayland surface, but lacks an equivalent to AT-SPI2's plug-and-socket mechanism that allows out-of-process subtrees (such as a web rendering engine's DOM accessibility tree) to be grafted into a parent surface's tree. Design work on this sub-tree delegation model is identified as a prerequisite for full browser accessibility under Newton. Note: needs verification on current design discussions.
+- **Standardised Wayland accessibility protocol**: The GNOME-specific and COSMIC-specific Wayland protocol extensions are expected to feed into a Wayland protocols repository proposal for a cross-compositor accessibility extension, analogous to how `xdg-output` was extracted from GNOME-specific origins. [Source](https://github.com/splondike/wayland-accessibility-notes/blob/main/README.md)
+- **Terminal emulator AT-SPI2 adoption**: GPU-accelerated terminals (Ghostty, WezTerm, Alacritty) are tracking upstream AT-SPI2 and AccessKit developments; their respective issue trackers contain open requests for AT-SPI2 support. Medium-term adoption depends on AccessKit's Rust adapter reaching sufficient API stability to remove the dependency on GTK widget scaffolding. Note: needs verification on specific timelines.
+- **Flatpak and sandboxed application accessibility**: Currently, applications running inside Flatpak sandboxes cannot reach the accessibility bus without special portal support. A medium-term goal is to extend the XDG desktop portal so that sandboxed apps can register their AT-SPI2 trees via the portal, with the portal acting as an untrusted relay. This is a prerequisite for accessibility in the broader containerised-app ecosystem.
+
+### Long-term
+
+- **Newton as the default Linux accessibility protocol**: The long-term architectural goal is for Newton (or a standardised descendant) to replace AT-SPI2 as the primary accessibility mechanism on Wayland desktops, with AT-SPI2 retained only as a compatibility shim for legacy applications. This transition would require GTK, Qt, Electron, and web engines all shipping Newton-native providers. [Source](https://gnome.pages.gitlab.gnome.org/at-spi2-core/devel-docs/new-protocol.html)
+- **Unified key-intercept surface in the kernel input stack**: The current per-compositor, per-DE key interception models (GNOME D-Bus interface, Newton D-Bus protocol, COSMIC Wayland extension) may eventually converge on a kernel-level or compositor-protocol-level mechanism that lets screen readers register global key intercepts through a well-defined, security-audited interface, rather than relying on compositor-specific IPC. Note: needs verification on whether any kernel-level proposals exist.
+- **Real-time magnification via compositor capture protocol**: Long-term, the GNOME Shell magnifier's privileged framebuffer access is expected to be replaced by a general compositor-level screen capture protocol that grants magnifier tools access to the composited output at full frame rate without requiring shell-plugin privileges. This would allow third-party magnifiers to run as regular Wayland clients. Note: needs verification on specific protocol proposals.
+
+---
+
 ## 10. Integrations
 
 **Chapter 20 (Wayland Protocol Fundamentals)**: The security model described there — no global window enumeration, keyboard events delivered only to the focused surface — is precisely the architectural decision that creates the accessibility gap described in Section 4. The `keyboard-shortcuts-inhibit-unstable-v1` protocol discussed in Chapter 20 is examined in Section 4.2 here for its (in)ability to help screen readers.

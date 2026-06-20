@@ -72,25 +72,25 @@ The part has a clear dependency spine. **Chapter 24** must be read before most o
 
 **Chapter 111** (Flatpak) is best read after Chapter 24, which establishes the Vulkan ICD loader and the EGL/GBM context model that the GL extension mechanism replicates inside the sandbox, and after Chapter 38, whose PipeWire portal model (the ScreenCast and camera portals) is the authoritative access path for screen capture and camera within the Flatpak security boundary. It also intersects Chapter 26 (VA-API decode under the sandbox) and Chapter 96 (libcamera frames through the portal). Readers packaging vision applications in Flatpak will need Chapter 111 before applying the patterns in Chapter 114.
 
-**Chapter 114** (OpenCV) is designed as an integration chapter — it synthesises the camera, compute, video, and EGL/OpenGL threads from Chapters 24, 25, 26, 38, 48, and 96 into a single end-to-end vision pipeline narrative. It can be read after any of those chapters and will reinforce how the individual API pieces compose. Its Flatpak packaging section cross-references Chapter 111 directly.
+**Chapter 114** (OpenCV) is designed as an integration chapter — it synthesises the camera, compute, video, and EGL/OpenGL threads from Chapters 24, 25, 26, 38, 96, and Part XX's Chapter 48 into a single end-to-end vision pipeline narrative. It can be read after any of those chapters and will reinforce how the individual API pieces compose. Its Flatpak packaging section cross-references Chapter 111 directly.
 
 The shared data structures that thread through every chapter are `drm_prime` **DMA-BUF** file descriptors, **DRM format modifiers** (the 64-bit values like `DRM_FORMAT_MOD_LINEAR` or `AMD_FMT_MOD_*`), **DRM sync objects** (`drm_syncobj` / timeline semaphores), and **VkImage** as the universal GPU-resident buffer type. Understanding how these four primitives are negotiated, exported, imported, and synchronised across API boundaries is the practical skill this part conveys.
 
 ```mermaid
 graph TD
     Ch24["Ch24: Vulkan & EGL\n(foundation)"]
-    Ch25["Ch25: GPU Compute\n(OpenCL / ROCm / Vulkan compute)"]
+    Ch25["Ch25: GPU Compute\n(OpenCL / ROCm survey / Vulkan compute)"]
     Ch26["Ch26: Hardware Video\n(VA-API / V4L2 / GStreamer)"]
     Ch27["Ch27: VR & AR\n(OpenXR / Monado)"]
     Ch38["Ch38: PipeWire\n(session layer)"]
     Ch39["Ch39: Qt & GTK\n(toolkit rendering)"]
     Ch47["Ch47: Font & Text\n(FreeType / HarfBuzz / Pango)"]
-    Ch48["Ch48: ROCm & ML\n(amdkfd / HIP / PyTorch)"]
     Ch50["Ch50: Vulkan Video\n(VK_KHR_video_*)"]
     Ch76["Ch76: Modern Vulkan Extensions\n(dynamic rendering / mesh shaders)"]
     Ch96["Ch96: libcamera\n(ISP / PipelineHandler / IPA)"]
     Ch111["Ch111: Flatpak Graphics\n(sandbox / GL extension / portals)"]
     Ch114["Ch114: OpenCV GPU Vision\n(T-API / UMat / cv::dnn / GStreamer)"]
+    Ch48_XX["Ch48 (Part XX): ROCm & ML\n(amdkfd / HIP / PyTorch)"]
 
     Ch24 --> Ch25
     Ch24 --> Ch26
@@ -100,7 +100,7 @@ graph TD
     Ch24 --> Ch76
     Ch24 --> Ch111
     Ch24 --> Ch114
-    Ch25 --> Ch48
+    Ch25 --> Ch48_XX
     Ch25 --> Ch114
     Ch26 --> Ch38
     Ch26 --> Ch50
@@ -110,7 +110,7 @@ graph TD
     Ch38 --> Ch111
     Ch38 --> Ch114
     Ch39 --> Ch47
-    Ch48 --> Ch114
+    Ch48_XX --> Ch114
     Ch96 --> Ch114
     Ch111 --> Ch114
 ```

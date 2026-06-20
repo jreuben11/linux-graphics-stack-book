@@ -581,6 +581,33 @@ echo "=== GPU ===" && vulkaninfo --summary 2>/dev/null | head -20
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- OBS Studio 33.x is in active development (as of mid-2026); continued AV1 hardware encoding refinements on VA-API (Intel/AMD) and NVENC are expected, building on the AV1 VA-API support shipped in OBS 30.1. [Source](https://alternativeto.net/news/2024/3/obs-studio-30-1-released-with-av1-support-for-va-api-pipewire-video-capture-and-more/)
+- PipeWire video capture improvements introduced in OBS 32.0 (September 2025) — including improved format selection for DMA-BUF streams — are expected to be extended to cover more PipeWire source types and better negotiate modifiers with compositors. [Source](https://9to5linux.com/obs-studio-32-0-pipewire-video-capture-improvements-basic-plugin-manager)
+- Explicit sync support for PipeWire screen capture landed in OBS 31.1 (July 2025); further hardening of the sync path and reduction of black-frame glitches under compositors implementing `linux-drm-syncobj-v1` is on the near-term wish list. [Source](https://www.phoronix.com/news/OBS-Studio-31.1)
+- Native NVENC encode for Linux (landed in OBS 30.2 in mid-2024) is slated to receive AV1 encoding for Ada Lovelace+ GPUs via the `nvEncodeAPI` path rather than relying on VA-API. [Source](https://www.gamingonlinux.com/2024/07/obs-studio-302-is-out-now-with-native-nvenc-encode-for-linux/)
+- A basic Plugin Manager (shipped in OBS 32.0) will grow repository integration to allow one-click installation of community Linux plugins such as `obs-vkcapture` and `obs-gstreamer`. [Source](https://news.tuxmachines.org/n/2025/09/23/OBS_Studio_32_0_Adds_PipeWire_Video_Capture_Improvements_Basic_.shtml)
+
+### Medium-term (1–3 years)
+
+- A Vulkan rendering backend for `libobs` scene composition has been under long-running community discussion (GitHub Discussion #5057); a full Vulkan output path would allow zero-copy composition-to-encode via Vulkan Video (`VK_KHR_video_encode_queue`) on RADV and NVVK drivers. [Source](https://github.com/obsproject/obs-studio/discussions/5057)
+- `obs-vkcapture` Vulkan layer game capture is expected to stabilise as the Vulkan layer specification for implicit vs. explicit sync solidifies; integration with the `VK_LAYER_OBS_HOOK` implicit layer is an active area of maintenance. [Source](https://github.com/obsproject/obs-studio/issues/11023)
+- Mesa Vulkan Video encode support (`VK_KHR_video_encode_queue`) is maturing in RADV and ANV; once stable it could replace the VA-API encode path on AMD/Intel with a lower-latency direct Vulkan pipeline, eliminating the VA-API interop overhead. Note: needs verification against current Mesa merge status.
+- AI/ML scene processing hooks using RTX TensorRT infrastructure and AMD ROCm were discussed for OBS 33.x, enabling real-time background removal and denoising in hardware on supported GPUs. Note: needs verification against official OBS roadmap announcements.
+- The OBS Connect cloud sync service (scene collections, profiles) has been discussed as a medium-term feature; it would require GPU-side thumbnail rendering via an off-screen EGL surface, exercising the same DMA-BUF import path used for screen capture. Note: needs verification.
+
+### Long-term
+
+- Full Wayland-native operation without `xdg-desktop-portal` is a long-term goal, requiring compositors to expose a direct PipeWire socket with negotiated DMA-BUF modifiers (`zwp_linux_dmabuf_unstable_v1` → `wp_linux_drm_syncobj_v1`) rather than going through the D-Bus portal handshake for every session. Note: needs verification.
+- HDR streaming end-to-end (capture → compose in BT.2100 PQ → encode to HEVC/AV1 HDR → transmit) is a stated long-term direction; it depends on VA-API and NVENC exposing HDR-aware encode profiles, and on PipeWire negotiating 10-bit DMA-BUF formats through the portal. Note: needs verification against upstream VA-API and PipeWire HDR roadmaps.
+- Deeper integration with the Linux DRM lease API could allow OBS to take a direct DRM lease on an output, bypassing the compositor entirely for low-latency game recording on dedicated streaming machines — analogous to how VRR/direct scanout works for games. Note: speculative; no public RFC found.
+- As Vulkan Video encode matures across all major GPU vendors (Intel ANV, AMD RADV, NVIDIA proprietary), OBS could ship a unified hardware encode path that selects VA-API, NVENC, AMF, or Vulkan Video at runtime based on what the driver advertises, simplifying the current per-vendor encoder plugin model. [Source](https://github.com/obsproject/obs-studio/discussions/5057)
+
+---
+
 ## Integrations
 
 - **Ch38 (PipeWire)** — PipeWire is the screen capture transport; OBS receives frames as a PipeWire stream with DMA-BUF buffer type

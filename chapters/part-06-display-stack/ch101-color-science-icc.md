@@ -870,6 +870,33 @@ The compositor applies tone mapping in linear light (post-DEGAMMA, pre-GAMMA_LUT
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **`wp_color_management_v1` ecosystem consolidation:** The protocol reached stable status in wayland-protocols 1.47 (December 2025), but application and toolkit adoption is ongoing. GTK4, Qt6, and SDL3 are in various stages of implementing the protocol surface; wider deployment across the GNOME and KDE desktops is expected through 2026. [Source: Wayland Protocols 1.47 release, Phoronix](https://www.phoronix.com/news/Wayland-Protocols-1.47)
+- **mpv ICC-on-Wayland stabilization:** mpv 0.41.0 landed `--icc-auto` support via `wp_color_management_v1`, but the path from colord-provided profiles to accurate compositor-side transforms is still maturing. Further integration work (profile negotiation, fallback paths) is expected in subsequent mpv releases. [Source: mpv PR #15178](https://github.com/mpv-player/mpv/pull/15178)
+- **Chromium `color-management-v1` rollout:** Chromium merged initial support for `color-management-v1` on Wayland to enable HDR surface rendering. Ongoing stabilization of this path — including correct handling of ICC-based image descriptions for SDR pages — is expected to land in stable Chrome within the 2026 release cadence. [Source: Chromium commit 07c9a59](https://github.com/chromium/chromium/commit/07c9a59c2a5256ce49c22445a6c5108182c7da11)
+- **LittleCMS 2.17+ maintenance:** lcms2 2.17 (February 2025) added large-file profile support (up to 4 GB) and black-point compensation on multi-channel profiles. Near-term releases are expected to focus on correctness and compatibility fixes rather than new features, as the library is in maintenance mode for the v2 series. Note: no public lcms3 roadmap has been announced; check the [upstream repository](https://github.com/mm2/Little-CMS) for developments.
+- **KWin and Mutter HDR/ICC pipeline hardening:** Both compositors are actively extending their KMS color pipeline implementations. KWin's color management path, which already supports `wp_color_management_v1`, is expected to receive tone-mapping improvements and better ICC-to-KMS LUT accuracy through 2026 desktop releases. Note: needs verification against KDE and GNOME release schedules.
+
+### Medium-term (1–3 years)
+
+- **iccMAX (ICC v5) library and tooling maturity:** The ICC's iccMAX specification (branded iccDEV since September 2025) extends ICC v4 with scene-referred workflows, spectral data, and CAM (color appearance model) tags that go beyond D50 colorimetry. The open-source iccDEV reference library needs broader integration into the Linux ecosystem — LittleCMS and colord would each require significant extension to support v5 profiles. [Source: ICC iccMAX](https://www.color.org/iccmax/index.xalter)
+- **OKLab/OKLCH integration into compositor pipelines:** CSS Color Level 4 and Level 5 standardize OKLab and OKLCH as perceptually uniform spaces with better hue linearity than CIELAB. As web content increasingly uses `oklch()` values, compositors and ICC tooling will need paths that either convert these to ICC transforms or handle them natively in the KMS pipeline. [Source: Oklab color space, Wikipedia](https://en.wikipedia.org/wiki/Oklab_color_space)
+- **Vulkan `VK_EXT_swapchain_colorspace` and `VK_EXT_hdr_metadata` wider driver support:** Full wide-gamut and HDR Vulkan paths require driver-side support beyond the current Intel and RADV leaders. Broader NVIDIA (NVK) and other Mesa driver adoption of these extensions — and validation of their interaction with compositor color management — is a medium-term goal for the Linux graphics stack.
+- **Standardized colord D-Bus API stabilization:** colord's D-Bus interface has evolved organically; a formal API freeze and documentation effort would improve integration by application developers and toolkit authors. Note: needs verification — no formal freeze announcement found.
+- **Per-plane color management in KMS:** The `DEGAMMA_LUT`, `CTM`, and `GAMMA_LUT` properties are currently CRTC-wide. Ongoing kernel work toward per-plane color pipeline properties (tracking in the DRM color management redesign discussions) would allow compositors to apply per-surface ICC transforms in hardware rather than compositing to a single color space first. [Source: Developing Wayland Color Management and HDR, Collabora](https://www.collabora.com/news-and-blog/blog/2020/11/19/developing-wayland-color-management-and-high-dynamic-range/)
+
+### Long-term
+
+- **ICC v5 / iccMAX mainstream adoption:** If the iccDEV specification achieves broad industry adoption, the Linux color management stack (colord, compositors, GIMP, Krita, Darktable) would migrate from ICC v4 to v5, enabling spectral-based color management, improved appearance modeling across viewing conditions, and native support for scene-referred (linear light) HDR workflows without per-standard kludges.
+- **Scene-referred color pipelines end-to-end:** The professional photography and VFX industries are moving toward scene-referred, open-domain (values > 1.0) color management using ACES or OpenColorIO. Long-term, the Linux graphics stack may expose scene-referred color spaces at the Wayland protocol level, allowing applications to deliver scene-referred content that the compositor tone-maps on the fly based on real-time display capability metadata.
+- **Hardware-accelerated ICC transforms via Vulkan compute:** As displays become more varied (OLED, quantum dot, micro-LED with different gamuts and transfer curves), applying per-pixel ICC transforms in CPU-based LUTs becomes a bottleneck. A long-term architectural direction is offloading ICC profile application to Vulkan compute shaders, using the GPU's SIMD throughput to apply full 3D LUT color transforms at display refresh rate — effectively hardware-accelerating the color management pipeline that today runs in colord and the compositor CPU threads. Note: needs verification — no concrete upstream proposal identified.
+- **Unified display fingerprinting and auto-calibration:** Combining EDID/DisplayID color metadata, hardware sensor feedback (ambient light, display spectroradiometer), and open calibration data formats (beyond VCGT) into an automated closed-loop calibration system is a long-term goal articulated in freedesktop color management discussions. This would allow displays to self-calibrate without user intervention.
+
+---
+
 ## 12. Integrations
 
 This chapter is the color science foundation for several other chapters. The key connections:

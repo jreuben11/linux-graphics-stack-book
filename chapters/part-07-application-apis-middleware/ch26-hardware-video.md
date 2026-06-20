@@ -1077,6 +1077,32 @@ The transition from VA-API GStreamer elements to Vulkan Video elements is gated 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **RADV AV1 Vulkan Video encode** landed in Mesa 25.2, completing the full AV1 encode/decode cycle for AMD RDNA2+ hardware via `VK_KHR_video_encode_av1`. GStreamer `vkvideo` elements (`vkav1enc`) are expected to follow as the encode extensions stabilise. [Source](https://www.phoronix.com/news/RADV-Merges-AV1-Encode)
+- **Intel ANV VP9 Vulkan Video decode** (`VK_KHR_video_decode_vp9`) was merged into Mesa 25.2 by Igalia, and the Intel ANV driver already has H.264/H.265 Vulkan Video encode via `VK_KHR_video_encode_h264` / `_h265`. Further stabilisation and AV1 encode parity with RADV are in progress. [Source](https://www.phoronix.com/news/Intel-ANV-VP9-Vulkan-Video)
+- **GStreamer 1.28 AV1 stateful V4L2 decoder** (`v4l2slav1dec`) shipped in GStreamer 1.28.1, adding support for hardware SoCs that expose a stateful AV1 engine, as well as inter-frame resolution changes for AV1 and VP9 stateless paths. [Source](https://9to5linux.com/gstreamer-1-28-1-released-with-support-for-the-av1-stateful-v4l2-decoder)
+- **Khronos `VK_KHR_video_decode_vp9`** was formally announced as an extension for VP9 hardware decode, rounding out the Vulkan Video codec family alongside H.264, H.265, and AV1. Driver implementations for RADV and ANV are expected within the 25.x Mesa release cycle. [Source](https://www.khronos.org/blog/khronos-announces-vulkan-video-decode-vp9-extension)
+- **PipeWire libcamera integration** is being continuously tightened: PipeWire 1.4.x releases are adapting to libcamera API changes and improving DRM-format-modifier negotiation for zero-copy camera pipelines. [Source](https://9to5linux.com/pipewire-1-4-9-improves-alsa-recovery-and-adapts-to-newer-libcamera-changes)
+
+### Medium-term (1–3 years)
+
+- **GStreamer `vkvideo` elements as default decode/encode path**: once Vulkan Video encode achieves driver parity across RADV and ANV, the GStreamer `vkh264dec`, `vkh265dec`, `vkav1dec`, `vkh264enc`, `vkh265enc`, and `vkav1enc` elements are expected to supersede the legacy `vaapi*` elements in `gst-plugins-bad`. The transition is gated on encode completeness and sustained perf parity. Note: needs verification of exact release timeline.
+- **VA-API deprecation path**: the long-term trajectory for hardware video on Linux is Vulkan Video replacing VA-API as the primary acceleration mechanism. Intel and AMD have both invested driver effort in Vulkan Video, and the `nvidia-vaapi-driver` wrapper is a stopgap. A formal deprecation timeline has not been announced but is discussed in freedesktop community circles. Note: needs verification.
+- **libcamera hardware ISP and encode integration**: the libcamera 2025 workshop in Nice discussed improved buffer handling and DRM format modifier compatibility. A longer-term goal is integrating hardware ISP pipelines (Rockchip RKISP2, Qualcomm Camss) more tightly with V4L2 encode engines, enabling zero-copy ISP→encoder paths for embedded video products. [Source](https://lwn.net/Articles/1022874/)
+- **V4L2 stateless AV1 encode**: V4L2 stateless encode interfaces for AV1 (analogous to existing stateless decode control structures) are under discussion for SoCs that expose a thin AV1 encode engine; formal UAPI patches have not yet been posted as of mid-2026. Note: needs verification.
+- **Vulkan Roadmap 2026 baseline**: the Khronos Vulkan Roadmap 2026 milestone targets mid-to-high-end devices shipping in 2026 with variable rate shading and other graphics features. While not video-specific, the raised baseline simplifies driver quality requirements for Vulkan Video implementation on conformant hardware. [Source](https://docs.vulkan.org/spec/latest/appendices/roadmap.html)
+
+### Long-term
+
+- **Unified zero-copy pipeline from sensor to display**: the architectural goal across VA-API, V4L2, PipeWire, and Vulkan Video is a single DMA-BUF-backed buffer passing from camera sensor through ISP, codec, compositor, and display controller without a CPU copy. Each subsystem (libcamera, PipeWire, Wayland protocols, KMS) is incrementally closing the remaining gaps; full end-to-end zero-copy on embedded SoCs remains aspirational on most platforms. Note: needs verification of which platforms achieve this first.
+- **VA-API successor or standardisation**: if Vulkan Video does not achieve universal adoption (for example on very low-end or legacy SoC hardware), a lighter-weight successor to VA-API that retains the ICD plugin model but aligns semantics with Vulkan Video's formally specified codec parameter structures is a possible outcome from the freedesktop community. Note: speculative.
+- **Deeper PipeWire–Vulkan Video integration**: a future `pw_stream` variant backed directly by Vulkan Video sessions would allow media applications to receive decoded frames as `VkImage` objects without a round-trip through VA-API or GStreamer, enabling low-latency ML inference on decoded video. Note: speculative; no formal RFC as of 2026.
+
+---
+
 ## Integrations
 
 **Chapter 1 (DRM Architecture)**: VA-API drivers access GPU memory through DRM render nodes (`/dev/dri/renderD128`). `vaExportSurfaceHandle` calls `DRM_IOCTL_PRIME_HANDLE_TO_FD` under the hood to convert the GEM handle into a DMA-BUF fd. The render node security model (Chapter 1) controls which processes can call VA-API.

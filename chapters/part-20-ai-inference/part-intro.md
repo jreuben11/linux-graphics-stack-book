@@ -4,6 +4,8 @@ The Linux graphics stack was originally conceived as a path from pixels in kerne
 
 ## Chapters in This Part
 
+**Chapter 48 — ROCm and Machine Learning on Linux GPUs** *(moved here from Part VII)* provides an accessible introduction to AMD's ROCm compute stack positioned explicitly as an ML infrastructure chapter. It traces from the **amdkfd** kernel module's `kfd_ioctl.h` UAPI through the **HSA** runtime, **HIP** programming model, and the **LLVM AMDGPU** compilation pipeline, up to ML frameworks (**PyTorch ROCm**, **MIOpen**) and the **MI300X** Unified Memory Architecture. An Intel counterpart section covers **Intel Level Zero**, **IGC**, and **DPC++/SYCL**. Chapter 48 serves as the entry point for readers coming from a graphics-API background who are encountering ROCm for the first time; Chapter 108 then provides the definitive depth treatment of the same stack. Readers needing compute context from the graphics API side should first read Chapter 25 (in Part VII), which surveys the full OpenCL/ROCm/Level Zero landscape at a higher level.
+
 **Chapter 88 — NPU and AI Accelerator Integration on Linux** shifts focus from discrete GPU inference to purpose-built neural accelerators embedded in modern AI PC SoCs. It covers the Intel **NPU** (**`ivpu`** kernel driver, **`drivers/accel/ivpu/`**), AMD **XDNA2** (**`amdxdna`** driver, mainline since Linux 6.14), and Qualcomm **Hexagon** DSP/NPU, explaining how the **DRM accel** subsystem (**`drivers/accel/`**, introduced in Linux 6.2) provides a unified kernel interface for non-rendering accelerators. The chapter explains why NPUs complement GPUs architecturally — systolic-array **MMA** units, dedicated on-chip **SRAM**, and always-on low-power domains — and shows how **OpenVINO**, the **XRT/IRON** Ryzen AI SDK, and **PyTorch** dispatch workloads across heterogeneous **CPU + GPU + NPU** topologies. Readers working on AI PC integration or embedded inference will understand the kernel plumbing that sits beneath framework-level NPU dispatch.
 
 **Chapter 94 — ComfyUI and ComfyScript: Node-Graph AI Image Generation** examines **ComfyUI** as a pipeline orchestrator for diffusion model inference, showing how a browser-authored **DAG** of nodes maps onto sequential **PyTorch** GPU kernel calls. It covers the **`PromptExecutor`** topological scheduler (**`execution.py`**), the **`model_management.py`** VRAM allocator with LRU eviction, the **k-diffusion** sampler and scheduler system (**euler**, **dpmpp_2m**, **karras**), **FLUX.1** and **DiT**-architecture support with rectified-flow sampling, and the **ComfyScript** typed Python frontend for programmatic workflow authoring. It closes with Linux-specific performance optimisations, Docker deployment, and the REST/WebSocket API used for automation. This chapter grounds abstract diffusion-model concepts in concrete Python code paths and GPU memory management decisions visible to a Linux systems developer.
@@ -18,12 +20,14 @@ The Linux graphics stack was originally conceived as a path from pixels in kerne
 
 ```mermaid
 graph LR
+    CH48["Ch 48\nROCm & ML intro\n(KFD / HIP / PyTorch entry point)"]
     CH88["Ch 88\nNPU & AI Accelerators\n(ivpu / amdxdna / accel)"]
     CH94["Ch 94\nComfyUI & ComfyScript\n(diffusion pipelines)"]
-    CH108["Ch 108\nROCm & HIP\n(AMD GPU compute stack)"]
+    CH108["Ch 108\nROCm & HIP\n(AMD GPU compute stack — deep)"]
     CH115["Ch 115\nNeRFStudio & 3DGS\n(neural rendering)"]
     CH124["Ch 124\nLocal LLM Inference\n(GGML / Vulkan / ROCm)"]
 
+    CH48 --> CH108
     CH124 --> CH88
     CH124 --> CH94
     CH124 --> CH108
@@ -33,7 +37,9 @@ graph LR
     CH88 --> CH94
 ```
 
-**Chapter 124** is the recommended entry point. It establishes the foundational concepts shared across the entire part: the **`ggml_backend_i`** abstraction that decouples tensor operations from the underlying device, **Vulkan** compute dispatch via **SPIR-V** shaders and **`vkQueueSubmit`**, GGUF memory-mapped weight loading, and the VRAM pressure and quantisation tradeoffs that govern inference on every hardware target. These primitives reappear in all other chapters.
+**Chapter 48** is the recommended entry point for readers arriving from a graphics background who are new to the ROCm ecosystem. It introduces `amdkfd`, HIP, and ML frameworks at a comfortable pace and provides the vocabulary for Chapter 108's deeper treatment.
+
+**Chapter 124** is the recommended entry point for readers primarily interested in LLM inference infrastructure. It establishes the foundational concepts shared across the entire part: the **`ggml_backend_i`** abstraction that decouples tensor operations from the underlying device, **Vulkan** compute dispatch via **SPIR-V** shaders and **`vkQueueSubmit`**, GGUF memory-mapped weight loading, and the VRAM pressure and quantisation tradeoffs that govern inference on every hardware target. These primitives reappear in all other chapters.
 
 **Chapter 108** is the AMD-specific pillar. Readers who understood Chapter 124's treatment of the ROCm/HIP path for llama.cpp and vLLM will find Chapter 108 expanding that foundation into full depth: the **KFD** kernel interface beneath **`libhsakmt.so`**, the **HSA Runtime** agent enumeration and signal model, **rocBLAS**/**hipBLASLt** GEMM dispatch, **MIOpen** auto-tuning, and the **LLVM/Clang AMDGPU** backend that compiles HIP kernels to GCN/RDNA/CDNA ISA code objects. Chapter 108 also covers the AMD APU unified-memory path (**HMM**, **`hipMallocManaged`**) in detail, which is referenced but not fully explained in Chapter 124's discussion of Strix Halo. After reading both chapters, the reader has a complete picture of how an AMD MI300X or RX 7900 XTX runs transformer inference from user-space framework down to the **`amdgpu.ko`** kernel driver.
 

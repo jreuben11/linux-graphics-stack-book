@@ -1008,6 +1008,32 @@ Minimum Vulkan coverage for the Godot 4 RD path is determined by what the driver
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Fragment Density Map / foveated rendering on Vulkan Mobile**: `VK_EXT_fragment_density_map` support landed in Godot 4.6 via PR #99551, enabling foveated rendering on tile-based GPU architectures for standalone VR headsets (Meta Quest 3S, Pico 4 Ultra). [Source](https://github.com/godotengine/godot/pull/99551)
+- **VMA sub-allocation pooling**: Godot 4.6 updated the Vulkan Memory Allocator integration to sub-allocate from larger buffer pools rather than creating per-object `VkDeviceMemory` allocations, reducing fragmentation and `vkAllocateMemory` call overhead on memory-constrained devices. [Source](https://godotengine.org/releases/4.6/)
+- **Screen Space Reflections rewrite**: Godot 4.6 delivered a full rewrite of the SSR pass in `RenderForwardClustered`, reducing temporal instability at grazing angles and adding explicit half-resolution and full-resolution modes controllable from the `Environment` resource. [Source](https://www.strayspark.studio/blog/godot-46-rendering-deep-dive-ssr-lightmapper-performance)
+- **Lightmapper OIDN denoiser and adaptive sampling**: The GPU lightmapper gains an updated OpenImageDenoise integration and adaptive sampling in Godot 4.6, reducing bake times and improving output quality for large scenes. [Source](https://godotengine.org/releases/4.6/)
+- **Vulkan subsampled images for XR**: Godot 4.7 is adding `VK_EXT_fragment_density_map` subsampled image support to the XR compositor path, complementing the `XR_EXT_render_model` and `XR_EXT_interaction_render_model` extension bindings for controller rendering. Note: verify specific 4.7 staging against `godotengine/godot` main branch.
+
+### Medium-term (1–3 years)
+
+- **GPU-driven renderer (bindless + indirect draw)**: Lead developer reduz has published a design proposal for a GPU-driven Forward+ renderer that replaces the current CPU-side draw call submission with indirect dispatch, using bindless descriptor sets for mesh and material data. The design targets `VkDrawIndexedIndirectCommand` batching, `VK_EXT_descriptor_indexing` bindless textures, and vertex pulling via storage buffers — a fundamental change to how `RenderForwardClustered` issues work to the GPU. [Source](https://gist.github.com/reduz/c5769d0e705d8ab7ac187d63be0099b5)
+- **Mesh shader support in RenderingDevice**: An open proposal (godot-proposals #6822 and #11272) tracks adding `VK_EXT_mesh_shader` / `VK_NV_mesh_shader` support to the `RenderingDevice` API, which would enable amplification and meshlet-based rendering pipelines from GDExtension plugins and the built-in renderer. [Source](https://github.com/godotengine/godot-proposals/issues/6822)
+- **`VK_KHR_dynamic_rendering` migration**: Godot 4.4 uses traditional `vkCreateRenderPass2KHR` / `vkCmdBeginRenderPass` throughout `RenderingDeviceDriverVulkan`. Migrating to `VK_KHR_dynamic_rendering` (promoted to Vulkan 1.3 core) would eliminate render pass objects and framebuffers, simplifying the barrier logic in `RenderingDeviceGraph` and potentially improving driver compilation performance. Note: no confirmed timeline; tracked informally in the Godot rendering community.
+- **DMA-BUF / `VK_KHR_external_memory_fd` zero-copy video**: As noted in Section 6, `VideoStreamPlayer` currently copies frames through the CPU on every update. Integrating `VK_KHR_external_memory_fd` and `VK_EXT_image_drm_format_modifier` would allow zero-copy import of VA-API decoded frames as `VkImage` objects, eliminating the PCIe round-trip for video playback (see Chapter 36 on VA-API). Note: needs verification against active Godot proposals.
+- **DrawList access for CompositorEffect GPU-driven passes**: godot-proposals #13406 requests exposing draw list access to `CompositorEffect` plugins so third-party GDExtension renderers can inject GPU-driven indirect draw calls into the Forward+ pipeline without forking the engine. [Source](https://github.com/godotengine/godot-proposals/issues/13406)
+
+### Long-term
+
+- **Full GPU-driven scene graph**: The reduz GPU-driven renderer proposal envisions eventually moving frustum culling, LOD selection, and shadow caster filtering entirely to compute shaders, eliminating CPU readback latency. This architectural goal requires stable bindless support across all Mesa Vulkan drivers (RADV, ANV, NVK, Turnip) and would make Godot's rendering throughput scale with GPU rather than CPU thread count. [Source](https://gist.github.com/reduz/c5769d0e705d8ab7ac187d63be0099b5)
+- **Vulkan 1.3 / 1.4 minimum baseline**: As Vulkan 1.3 adoption matures on Linux (RADV promotes all required extensions from Mesa 22.x; ANV from Mesa 23.x; NVK from its Turing baseline), Godot may raise its minimum Vulkan requirement to 1.3 core, unlocking `VK_KHR_dynamic_rendering`, `VK_KHR_synchronization2`, and `VK_EXT_extended_dynamic_state` without runtime extension probing. Note: needs verification against Godot's device support policy.
+- **Metal and D3D12 backend parity**: The experimental `RenderingDeviceDriverMetal` and `RenderingDeviceDriverD3D12` backends (present in 4.4 source but not production-ready) are on a path toward parity with the Vulkan backend. On Linux this is relevant only insofar as the abstraction choices in `RenderingDeviceDriver` are shaped by multi-backend requirements, constraining which Vulkan-only extensions can be exposed through the public `RenderingDevice` API. Note: needs verification against Godot's multi-platform backend roadmap.
+
+---
+
 ## Integrations
 
 **Chapter 14 (NIR)**: The SPIR-V that Godot's glslang compilation produces enters Mesa NIR via `vk_spirv_to_nir()` identically to any other Vulkan client. Chapter 14's description of the SPIR-V front end and the NIR passes that normalize the IR applies without qualification to Godot's shaders. The `#version 450` GLSL that Godot's `ShaderCompilerRD` emits targets SPIR-V 1.0, which is the baseline input format for all Mesa Vulkan drivers.

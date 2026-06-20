@@ -361,6 +361,31 @@ The number of distinct `PipelineKey`s is bounded by the combinatorial product of
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Graphite rollout to Linux and Windows in Chrome.** Skia Graphite shipped as the default backend on Apple Silicon Macs in 2025 and is actively expanding to Linux and Windows. On Linux, Graphite uses the Dawn Vulkan backend; the rollout is gated on conformance (`dm` test parity) and stability data from field trials. [Source](https://blog.chromium.org/2025/07/introducing-skia-graphite-chromes.html)
+- **GPU compute-based path rasterisation.** Graphite's design includes a compute-shader path renderer to replace the stencil-and-cover and tessellation approaches used in Ganesh — eliminating the geometry shader dependency and enabling faster coverage mask generation, particularly for complex SVG paths. [Source](https://www.phoronix.com/news/Chromium-Skia-Graphite)
+- **Ganesh maintenance mode begins.** Skia's Ganesh backend is entering maintenance mode as active development shifts to Graphite. Ganesh will continue to receive security fixes and critical bug fixes for non-Chrome consumers (Flutter, Android), but new GPU features are being implemented only in Graphite. [Source](https://groups.google.com/g/skia-discuss/c/Pd92csb5o4o)
+- **SkSL language improvements.** The SkSL compiler continues to receive improvements to type coverage and operator support (e.g., `uvec2`/`uvec3`/`uvec4`, vector/matrix `++`/`--` operators) to close the gap with GLSL and WGSL expressiveness. Note: specific upcoming SkSL features beyond compiler parity are tracked at `https://bugs.chromium.org/p/skia` but no public milestone list is maintained.
+- **SkiaSharp and skiko Graphite bindings.** Third-party Skia bindings (SkiaSharp for .NET, skiko for JetBrains compose-multiplatform) are implementing Graphite support to follow Chrome's backend transition. [Source](https://github.com/mono/SkiaSharp/issues/3962)
+
+### Medium-term (1–3 years)
+
+- **Full Ganesh deprecation.** Once Graphite reaches feature parity with Ganesh across all Chrome-supported platforms (Linux, Windows, ChromeOS, Android, iOS, macOS), Google plans to remove Ganesh from the Skia codebase, significantly reducing binary size and maintenance burden. Note: no firm deprecation date has been announced publicly.
+- **Automatic multithreaded rasterisation.** Graphite's `Recorder`/`Context` split was designed from the outset to allow multiple CPU threads to record draw commands in parallel, then submit them to a single GPU context. Full exploitation of this architecture in Chrome's OOP-R tile raster workers is a medium-term goal. [Source](https://deepwiki.com/google/skia/4-graphite:-next-generation-gpu-backend)
+- **Reduced GPU memory via depth-tested overdraw elimination.** Graphite's 2D/3D depth buffer integration allows the GPU to discard occluded fragments before the fragment shader runs, reducing both bandwidth and memory pressure. This is a meaningful win for complex CSS backgrounds and stacked `<canvas>` layers. [Source](https://blog.chromium.org/2025/07/introducing-skia-graphite-chromes.html)
+- **Flutter Impeller convergence.** Flutter's own GPU rendering layer (Impeller) is built on similar design principles to Graphite and shares some SkSL/SPIR-V infrastructure. A longer-term direction discussed in the Skia community is converging Impeller and Graphite so Flutter on Linux uses the same GPU backend as Chrome. Note: needs verification against current Flutter roadmap.
+
+### Long-term
+
+- **Dawn/WebGPU as the universal abstraction.** Graphite's Dawn backend positions Skia to consume GPU features through the WebGPU API exclusively, enabling single-codebase support across Vulkan, Metal, D3D12, and future GPU APIs — eliminating the need for per-API Skia backends. [Source](https://shopify.engineering/webgpu-skia-web-graphics)
+- **ML-accelerated rasterisation.** Exploratory work exists (primarily in the Android context) on using GPU compute shaders or NPU/ML accelerators for font hinting, subpixel rendering, and path coverage estimation. No concrete Skia implementation exists as of mid-2026; this remains an area of research interest.
+- **Deprecation of SkSL GLSL emission.** As the ANGLE GL-ES path is retired in Chrome (replaced by Dawn Vulkan), the `SkSL::GLSLCodeGenerator` code path becomes redundant. Long-term, the SkSL compiler may drop GLSL emission entirely, leaving only SPIR-V and WGSL as output targets. Note: needs verification.
+
+---
+
 ## 9. Integrations
 
 This chapter is the final content chapter of Part X and draws together threads from throughout the book.

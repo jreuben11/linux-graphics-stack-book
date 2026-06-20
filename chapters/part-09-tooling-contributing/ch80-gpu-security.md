@@ -845,6 +845,33 @@ For kernel-version stability, the `drm_mode_setcrtc` symbol has been stable sinc
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **AMD vIOMMU hardware acceleration upstream.** AMD revived 22 patches for hardware-accelerated Virtualized IOMMU (vIOMMU) support in March 2026, removing the RFC tag. When merged, guest IOMMUs will benefit from lower CPU overhead and lower latency for hypervisor intercepts, tightening GPU passthrough isolation without the performance cost of software emulation. [Source](https://www.phoronix.com/news/AMD-vIOMMU-2026-Linux)
+- **AMDGPU isolation enforcement rework.** A patch series refactors how AMDGPU enforces per-partition isolation by tracking submissions in per-partition data structures and using DMA fences rather than VMID limits, improving correctness for multi-partition (SPX/DPX/QPX) deployments. [Source](https://www.mail-archive.com/amd-gfx@lists.freedesktop.org/msg119492.html)
+- **NVIDIA open-kernel confidential computing integration.** NVIDIA's Confidential Computing deployment guide (April 2026 revision) tracks ongoing alignment between the open GPU kernel modules and upstream CC attestation flows; SPDM-based remote attestation via `nvtrust` is expected to stabilise against a standardised kernel interface. Note: needs verification for exact upstream merge timeline. [Source](https://docs.nvidia.com/cc-deployment-guide-tdx.pdf)
+- **GPU Rowhammer mitigations hardening.** Following GPUHammer and the related GDDRHammer/GeForge attacks demonstrated in 2025 against GDDR6-equipped NVIDIA Ampere/Ada GPUs, hardware vendors are shipping GDDR7 with on-die ECC and scrubbing. Linux ECC enforcement paths in `amdgpu` and Nouveau are expected to be tightened for datacenter parts; NVIDIA advised enabling system-level ECC as an immediate mitigation. [Source](https://www.usenix.org/conference/usenixsecurity25/presentation/nazaraliyev)
+- **Intel VT-d domain-ID reclamation.** A Google-authored RFC patchset (December 2025) for Intel VT-d reworks domain ID reclamation for preserved devices, closing a potential IOMMU domain aliasing window relevant to GPU passthrough security. [Source](https://lists.openwall.net/linux-kernel/2025/12/02/1681)
+
+### Medium-term (1–3 years)
+
+- **Unified GPU TEE framework in the Linux kernel.** The Confidential Computing microconference at LPC has identified the need to unify AMD SEV-SNP GPU extensions, Intel TDX+GPU composite attestation, and NVIDIA H100 CC into a single kernel-level `trusted_io` software architecture, avoiding per-vendor silos. Expect a unified attestation ABI proposal targeting Linux 6.18–6.22. Note: needs verification.
+- **AMD SEV-SNP GPU memory extension.** AMD is extending SEV-SNP's Secure Nested Paging to cover GPU-resident memory (VRAM inside a confidential VM), requiring collaboration between the PSP firmware, the `amdgpu` DRM driver, and the HSMP interface. This closes the gap between CPU-side SEV isolation and GPU-side VRAM visibility. [Source](https://dl.acm.org/doi/pdf/10.1145/3793532)
+- **BPF LSM hooks for DRM ioctls.** Expanding `bpf_lsm` attach points to cover DRM render-node and primary-node ioctl paths would let security-aware compositors and container runtimes enforce fine-grained GPU access policies without modifying the kernel. This is currently not gated by any LSM hook, requiring seccomp rules for sandboxed applications. Note: needs verification for specific patchset status.
+- **HDCP 2.3 and Secure Display for Wayland.** The Wayland `zwp_linux_content_type_manager_v1` protocol covers content-type hints but lacks a full authenticated-pipeline status feedback path. A new Wayland protocol for protected-surface status is under informal discussion in freedesktop.org issues. Note: needs verification.
+- **GDDR7 on-die ECC integration.** GDDR7 introduces on-die ECC and error-scrubbing comparable to DDR5, which will require kernel-side driver support to expose ECC error counts and trigger corrective actions. AMD and NVIDIA driver maintainers are expected to surface these via the `ras` (Reliability, Availability, Serviceability) sysfs interface already used for HBM2e/HBM3 on datacenter parts. [Source](https://www.tomshardware.com/pc-components/gpus/new-geforge-and-gddrhammer-attacks-can-fully-infiltrate-your-system-through-nvidias-gpu-memory-rowhammer-attacks-in-gpus-force-bit-flips-in-protected-vram-regions-to-gain-read-write-access)
+
+### Long-term
+
+- **Formal verification of DRM ioctl permission logic.** The DRM ioctl dispatch table (`drm_ioctl.c`) and permission flags (`DRM_AUTH`, `DRM_MASTER`, `DRM_ROOT_ONLY`, `DRM_RENDER_ALLOW`) are candidates for model-checking tools such as Kani (Rust) or CBMC (C) as the kernel's formal verification tooling matures. A verified permission model would close the category of ioctl-level privilege escalation bugs entirely.
+- **GPU-native memory isolation via hardware security cells.** Future GPU architectures may expose hardware-enforced memory "cells" analogous to Intel MPX or SPARC ADI, providing sub-allocation isolation within a single process's VRAM without IOMMU granularity. Early research prototypes (e.g., NanoZone for Arm CCA) point in this direction. [Source](https://arxiv.org/pdf/2506.07034)
+- **Open-source NVIDIA H100 CC attestation in Nouveau/NVK.** As NVK matures toward feature parity with proprietary drivers, adding confidential computing support (CPR management, SPDM attestation, GSP CC firmware paths) would enable fully open-source confidential GPU workloads. This requires upstream GSP-RM collaboration and remains a long-term goal contingent on NVIDIA's firmware openness trajectory.
+- **Cross-vendor GPU security certification.** As confidential AI workloads enter regulated industries (finance, healthcare), demand for Common Criteria or FIPS 140-3 certification of GPU TEE paths will grow. This will drive standardisation of attestation report formats and kernel-level audit interfaces across AMD, Intel, and NVIDIA parts. Note: needs verification.
+
+---
+
 ## 12. Integrations
 
 This chapter connects to many other parts of the book:

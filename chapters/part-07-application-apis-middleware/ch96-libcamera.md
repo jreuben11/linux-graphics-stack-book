@@ -953,6 +953,33 @@ The layer intercepts `open()`, `ioctl()`, `mmap()`, and `close()` calls on paths
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **GPU-accelerated software ISP (GPUISP):** A 35-patch series introducing a GLES 2.0 GPU ISP backend for libcamera's `software_isp` path has been posted to the mailing list, aiming to offload Bayer demosaicing and 3A processing to the GPU for platforms without a dedicated hardware ISP (notably Intel IPU6 laptops). [Source](https://patchwork.libcamera.org/cover/23506/)
+- **Intel IPU6 image quality and power improvements:** Current IPU6 support via the Simple pipeline handler delivers adequate video-conferencing quality but degrades battery life relative to hardware ISP operation. Near-term work targets per-sensor tuning data and improved AEC/AWB algorithms in the software IPA to close the quality gap. [Source](https://fosdem.org/2026/schedule/event/TKSK3G-libcamera-softisp/)
+- **Multi-threaded software ISP debayering:** libcamera 0.7.1 introduced multi-threaded Bayer demosaicing in the SoftISP path; follow-on patches are expected to further parallelise the colour-correction and tone-mapping stages. [Source](https://www.phoronix.com/news/libcamera-0.7.1-Released)
+- **Camera synchronisation layer:** A synchronisation layer that aligns captured frames across heterogeneous cameras using `linux-ptp` is in active prototyping. Accuracy is currently around one image-line period; sub-line precision via horizontal-blanking adjustment is a stated near-term target. [Source](https://libcamera.org/entries/2025-08-25.html)
+- **Camshark debug/tuning toolchain:** A new developer tool — demonstrated at ELCE 2025 — for pipeline introspection and IPA tuning parameter visualisation is being upstreamed alongside the Layers plugin infrastructure. [Source](https://libcamera.org/entries/2025-08-25.html)
+
+### Medium-term (1–3 years)
+
+- **libcamera Layers plugin architecture:** The Layers design introduces a per-request middleware stack between the application API and the PipelineHandler, enabling features such as Zero Shutter Lag, burst HDR merging, and vendor post-processing extensions to be bolted in without forking core pipeline code. The architecture was presented at the 2025 libcamera workshop. [Source](https://lwn.net/Articles/1022874/)
+- **Renesas R-Car V4H and Dream Chip RPP-X1 ISP support:** Full pipeline handler and IPA support for the Renesas R-Car V4H (automotive SoC) with the Dream Chip RPP-X1 ISP companion chip was demonstrated at ELCE 2025; upstream submission of the pipeline handler is expected in the 1–2 year timeframe. [Source](https://libcamera.org/entries/2025-08-25.html)
+- **Intel IPU6 hardware PSYS pipeline handler:** The PSYS (Processing System) block of IPU6, which performs hardware ISP operations analogous to IPU3's ImgU, lacks a mainline kernel driver. A hardware PSYS pipeline handler is a medium-term goal that would eliminate the software ISP workaround on modern Intel laptops. Note: needs verification of upstream timeline.
+- **Android Camera HAL3 adapter stabilisation:** The `src/android/` HAL3 adapter that enables ChromeOS and Android-on-Linux to use libcamera is functional but not officially supported as a stable ABI; medium-term work aims to close the feature gap with vendor HALs and add CTS compliance testing. [Source](https://libcamera.org/faq.html)
+- **PipeWire camera portal v2 integration:** Deeper integration with the xdg-desktop-portal Camera interface is planned to support richer camera controls (zoom, focus, exposure) negotiated between PipeWire nodes and applications, aligning with the Flatpak sandboxing roadmap. Note: needs verification of specific portal API version timeline.
+
+### Long-term
+
+- **Networked / distributed camera synchronisation:** The `linux-ptp`-based synchronisation layer is designed to scale beyond dual-camera stereo rigs to larger arrays — surveillance, volumetric capture, multi-drone swarms — requiring robust clock discipline, fault-tolerance in the sync protocol, and network-transparent libcamera API extensions. [Source](https://libcamera.org/entries/2025-08-25.html)
+- **Machine-learning IPA modules:** Replacing hand-tuned 3A algorithms with on-device ML inference (NPU-offloaded AE/AF/AWB networks) is a research-stage direction discussed in the libcamera community; the IPA sandbox's process-isolation model is architecturally suited to hosting NPU runtimes. Note: needs verification.
+- **Unified kernel camera graph (MC next-gen):** Long-running discussions on the Linux media mailing list explore replacing the current per-driver Media Controller entity model with a more declarative firmware-described graph (Device Tree camera graph bindings, ACPI `_CRS` camera topology) that would reduce platform-specific PipelineHandler complexity. Note: needs verification of formal RFC status.
+- **libcamera as the universal V4L2 abstraction layer:** The V4L2 compatibility shim (`LD_PRELOAD=v4l2-compat.so`) is currently best-effort; a long-term goal is to make it reliable enough that unmodified FFmpeg, OpenCV, and legacy V4L2 applications transparently benefit from libcamera ISP processing on all supported platforms. [Source](https://libcamera.org/open-projects.html)
+
+---
+
 ## 11. Integrations
 
 **Ch26 (Hardware Video Decode/Encode)** — The libcamera DMA-BUF output is the natural input to V4L2 M2M hardware encoders. On Raspberry Pi 4, the `bcm2835-codec` encoder receives NV12 DMA-BUFs from the VC4 ISP output. VA-API encode on Intel platforms can similarly consume DMA-BUF surfaces via `vaExportSurfaceHandle()`. The `libcamera-vid` and `rpicam-vid` tools exercise this path directly.

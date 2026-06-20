@@ -20,7 +20,8 @@ This chapter targets **graphics application developers**, **game developers**, *
 10. [Intel-Specific: intel_gpu_top and EU Counters](#10-intel-specific)
 11. [Worked Case Study: Optimising a Path-Traced Scene](#11-worked-case-study)
 12. [eBPF-Based GPU Observability](#12-ebpf-based-gpu-observability)
-13. [Integrations](#13-integrations)
+13. [End-to-End Frame Delivery Latency](#13-end-to-end-frame-delivery-latency)
+14. [Integrations](#14-integrations)
 
 ---
 
@@ -1081,7 +1082,154 @@ The following one-liners cover the most common GPU observability tasks. Run each
 
 ---
 
-## 13. Integrations
+## 13. End-to-End Frame Delivery Latency
+
+Understanding GPU performance in isolation misses a critical dimension: the time from when a rendered frame leaves the GPU until it reaches the user's eyes. This section quantifies every hop in the Linux graphics pipeline and shows how to measure each one.
+
+### The Linux Frame Delivery Pipeline
+
+A fully rendered frame traverses the following stages from application to display panel:
+
+```
+Application CPU
+  └─ vkQueueSubmit() / eglSwapBuffers()
+       └─ DRM scheduler queue                    ← 0.1–1 ms (fence wake latency)
+            └─ GPU render                         ← 1–50 ms (workload dependent)
+                 └─ compositor wl_surface.commit  ← 0.1–0.5 ms (Wayland IPC)
+                      └─ compositor render pass   ← 0.5–3 ms (glass + overlay)
+                           └─ KMS atomic commit   ← wait for next vblank
+                                └─ scanout        ← 0 (atomic with vblank)
+                                     └─ panel     ← 1–10 ms (IPS) / 0.1–1 ms (OLED)
+```
+
+#### Per-Hop Latency Budget (at 60 Hz / 16.67 ms frame budget)
+
+| Hop | Typical latency | Measurement tool |
+|-----|-----------------|-----------------|
+| CPU command recording → `vkQueueSubmit` | 0.05–2 ms | `vkCmdWriteTimestamp2` before submit |
+| Kernel scheduler wake-up (fence → GPU start) | 0.1–0.5 ms | `drm_sched_job_run` tracepoint |
+| GPU render (vertex + fragment + post) | 1–50 ms | `vkCmdWriteTimestamp2` at pass boundaries |
+| `eglSwapBuffers` / `wl_surface.commit` IPC | 0.05–0.3 ms | `wp_presentation_feedback` timestamps |
+| Compositor compositing pass | 0.5–3 ms | DRM `drm_vblank_event` tracepoint |
+| KMS atomic commit → vblank | 0–16.67 ms | `vblank_time` in `wp_presentation_feedback` |
+| Panel pixel response | 1–10 ms (IPS), 0.1–1 ms (OLED) | Oscilloscope / manufacturer spec |
+
+The **dominant variable** at 60 Hz is typically either GPU render time (if GPU-bound, as §4 diagnoses) or the vblank alignment penalty (if the frame misses a vblank and must wait for the next one). At 144 Hz (6.94 ms frame budget), the vblank alignment penalty becomes the most common latency source.
+
+### Measuring Compositor Present Latency: wp\_presentation\_feedback
+
+The `wp_presentation_feedback` protocol [Source](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/stable/presentation-time/presentation-time.xml) provides per-frame timestamps from the compositor:
+
+```c
+/* bind wp_presentation at setup */
+struct wp_presentation *pres = wl_registry_bind(registry, name,
+    &wp_presentation_interface, 1);
+wp_presentation_add_listener(pres, &pres_listener, NULL);
+
+/* before each commit, request feedback */
+struct wp_presentation_feedback *fb =
+    wp_presentation_feedback(pres, surface);
+wp_presentation_feedback_add_listener(fb, &fb_listener, NULL);
+
+static void feedback_presented(void *data,
+    struct wp_presentation_feedback *feedback,
+    uint32_t tv_sec_hi, uint32_t tv_sec_lo,
+    uint32_t tv_nsec, uint32_t refresh,
+    uint32_t seq_hi, uint32_t seq_lo,
+    uint32_t flags)
+{
+    /* tv_sec_hi:tv_sec_lo + tv_nsec = actual scanout timestamp */
+    /* refresh = display refresh interval in nanoseconds */
+    /* flags: WP_PRESENTATION_FEEDBACK_KIND_VSYNC set if presented at vblank */
+    uint64_t present_ns = ((uint64_t)tv_sec_hi << 32 | tv_sec_lo) * 1000000000ULL + tv_nsec;
+    printf("presented at %" PRIu64 " ns, refresh %u ns\n", present_ns, refresh);
+}
+```
+
+The difference between the application's `clock_gettime(CLOCK_MONOTONIC)` at `wl_surface.commit` and the `tv_sec/tv_nsec` timestamp in the feedback callback is the **compositor-to-scanout latency** for that frame.
+
+### Measuring End-to-End with MangoHUD
+
+MangoHUD's `present_timing` overlay [Source](https://github.com/flightlessmango/MangoHud) reports per-frame latency using `wp_presentation_feedback` internally. Enable it in `~/.config/MangoHud/MangoHud.conf`:
+
+```ini
+# MangoHud.conf
+present_timing
+frametime
+```
+
+The `present_timing` stat shows the interval from `vkQueuePresentKHR` to `wp_presentation_feedback`'s presented callback — the compositor pipeline latency including the vblank alignment cost. This is the most practical zero-instrumentation latency measurement available on Wayland.
+
+### ftrace: Vblank and KMS Timing
+
+To measure vblank interval precision and detect vblank jitter (a source of stutter even with correct frame pacing):
+
+```bash
+# Enable DRM vblank tracepoint
+sudo trace-cmd record -e drm:drm_vblank_event -e drm:drm_atomic_commit_tail &
+sleep 5
+sudo trace-cmd stop
+sudo trace-cmd report | grep drm_vblank_event | awk '{print $4}' | \
+    awk 'NR>1{print $1-prev; prev=$1}1' | sort -n | uniq -c
+```
+
+The distribution of inter-vblank intervals shows whether the display is maintaining a stable refresh rate. A bimodal distribution (e.g., values clustering near 16.67 ms and 33.33 ms at 60 Hz) indicates missed vblanks.
+
+### Input-to-Display Latency (Motion-to-Photon)
+
+The full **motion-to-photon** latency includes input processing before the GPU render:
+
+```
+Input event (kernel evdev) → libinput → Wayland compositor → application
+  → vkQueueSubmit → GPU → compositor → KMS → panel
+```
+
+On a well-configured Wayland system at 144 Hz:
+- Input → application Wayland event: 1–3 ms
+- Application CPU frame: 1–3 ms
+- GPU render: 2–6 ms
+- Compositor + KMS: 1–4 ms
+- Panel: 0.5–5 ms
+- **Total: 5–21 ms** (motion-to-photon)
+
+Gamescope (Ch78) specifically targets reducing this latency via frame pacing, screen tearing control, and direct scanout plane assignment that bypasses compositor composition passes when the game is the only fullscreen surface.
+
+### Optimisation Strategies per Hop
+
+| Hop | Optimisation |
+|-----|-------------|
+| GPU render time | See §4–§11 (reduce GPU-bound bottlenecks) |
+| vblank alignment | Use VRR/FreeSync (Ch112) to make the vblank follow the frame |
+| Compositor pass | Use `VK_EXT_display_control` or `VK_KHR_display` for direct scanout bypassing compositor |
+| Panel response | Select panels with MPRT (Moving Picture Response Time) mode enabled |
+| Input latency | Enable `zwp_relative_pointer_v1`; use a compositor with low-latency input path (wlroots-based) |
+
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **RADV performance counter expansion for RDNA 4**: Mesa 26.0 added RADV support for new Radeon GPU Profiler 2.6 counters including LDS bank conflict counters, memory bytes counters, and memory counters as a percent of VRAM — expect continued counter coverage for RDNA 4 (GFX12) in Mesa 26.1 and 26.2. [Source](https://www.phoronix.com/news/AMD-RADV-RGP-2.6-Counters)
+- **RADV Wave32 ray-tracing performance**: Mesa 26.0 switched RADV ray-tracing shaders to Wave32 execution on RDNA 3 and RDNA 4, replacing the older Wave64 path — methodology in §5 (occupancy analysis) now needs to account for this mode change when interpreting CU occupancy counters on affected hardware. [Source](https://www.gamingonlinux.com/2026/02/mesa-26-0-is-out-bringing-ray-tracing-performance-improvements-for-amd-radv/)
+- **Nsight Systems 2026.x CLI/GUI parity on Linux**: NVIDIA's `nsys-ui` GUI is now distributed for Linux (Nsight Systems 2026.2.1 is current), improving the Linux-native workflow that previously required remote capture from a Windows host — reducing the gap noted in §1. [Source](https://docs.nvidia.com/nsight-systems/UserGuide/index.html)
+- **eBPF GPU kernel tracepoint tooling**: Stable DRM tracepoints (`drm_run_job`, `drm_sched_job_timedout`, fence events) are increasingly being combined with eBPF programs for zero-overhead GPU job latency measurement — continued refinement of `drm:drm_vblank_event` and scheduler tracepoints is expected in Linux 6.12+. [Source](https://eunomia.dev/tutorials/xpu/gpu-kernel-driver/)
+- **`VK_KHR_performance_query` broader driver coverage**: Intel ANV and Mesa RADV/TURNIP/V3DV already support the extension; ongoing work targets improving per-counter documentation and CTS coverage across all Mesa Vulkan drivers. [Source](https://www.phoronix.com/news/RADV-VK_KHR_performance_query)
+
+### Medium-term (1–3 years)
+
+- **eGPU: eBPF programmability extended onto GPU hardware**: The eGPU research prototype (presented at HCDS '25) dynamically compiles eBPF bytecode to PTX and injects instrumentation directly into running NVIDIA GPU kernels at runtime, enabling warp-level observability that today requires vendor tools. If upstreamed into the eBPF ecosystem, this would allow §12's eBPF-based GPU observability to reach inside shader execution rather than only the DRM scheduler boundary. [Source](https://dl.acm.org/doi/10.1145/3723851.3726984)
+- **`gpu_ext`: extensible OS GPU scheduling policies via eBPF struct_ops**: A complementary research direction proposes BPF struct_ops hooks in the DRM GPU scheduler, allowing user-defined GPU scheduling policies without kernel patches — relevant to §13's frame delivery latency analysis since scheduling priority affects compositor-to-scanout latency. [Source](https://arxiv.org/html/2512.12615)
+- **Unified cross-vendor GPU performance counter API above `VK_KHR_performance_query`**: Community interest (tracked on the Mesa and Khronos mailing lists) in a higher-level abstraction that normalises vendor counter semantics (e.g., mapping AMD `MemUnitBusy` and NVIDIA `l2_read_hit_rate` onto common bandwidth-utilisation concepts) — Note: needs verification as a formal working group proposal.
+- **Perfetto GPU backend consolidation**: Perfetto (used in Android and increasingly on Linux desktop via traced) is expected to gain a stable DRM-backend counter source for GPU timeline events, enabling the §13 end-to-end latency analysis to be done entirely within a single Perfetto trace rather than stitching `nsys` + `wp_presentation_feedback` timestamps manually. Note: needs verification for desktop Linux target date.
+- **RGP 3.x support for compute and mesh shader workloads**: Radeon GPU Profiler development is extending thread-trace coverage to task/mesh shader pipelines and compute workloads — aligning with the mesh shader extensions covered in Ch61 and the compute methodology in §5. [Source](https://www.phoronix.com/news/AMD-RADV-RGP-2.6-Counters)
+
+### Long-term
+
+- **GPU-internal eBPF (fully open): cross-vendor shader instrumentation**: The eGPU/bpftime prototype currently targets NVIDIA CUDA/PTX. A long-term goal in the open-source community is a vendor-agnostic eBPF-to-GPU-IR compiler path that works with RDNA (via ACO IR hooks) and Intel Xe — enabling §12's eBPF methodology to provide per-shader-invocation observability on all Linux GPU vendors without proprietary tooling. [Source](https://ebpf.foundation/ebpf-fellowship-update-tutorials-research-and-expanding-ebpf-into-gpu-and-ai/)
+- **Automated performance diagnosis via ML counter analysis**: Tooling that ingests `VK_KHR_performance_query` counter streams and applies classification models to automatically identify the bottleneck category from §7's stall taxonomy (TMU latency, LDS bank conflict, export stall, bandwidth-bound) — analogous to `ncu`'s "top-down" recommendation engine but portable across vendors. Note: needs verification; early prototypes exist in academic literature but no production-quality open-source tool is shipping as of mid-2026.
+- **KMS/DRM atomic commit latency tracing as a first-class kernel feature**: Current vblank latency measurement (§13) requires combining `ftrace`, `wp_presentation_feedback`, and `perf` — long-term kernel maintainers have discussed a unified `drm_atomic` latency histogram exported via `debugfs` or `sysfs` to make frame delivery latency measurement zero-setup for application developers.
+- **VRR/FreeSync + GPU performance counter co-analysis**: As variable refresh rate becomes universal, frame time variability analysis must account for the display's refresh rate tracking the GPU's delivery time. Future tooling is expected to expose VRR range adherence counters alongside GPU performance counters so that per-frame counter data can be correlated with the actual scanout interval — bridging §13 and Ch112's VRR coverage. Note: needs verification.
+
+## 14. Integrations
 
 - **Ch15 (ACO shader compiler)** — register pressure (VGPR count) that limits occupancy is determined at ACO compilation time. `RADV_DEBUG=shaders` shows ACO's VGPR allocation decisions, and the ACO IR can be inspected to understand why pressure is high.
 

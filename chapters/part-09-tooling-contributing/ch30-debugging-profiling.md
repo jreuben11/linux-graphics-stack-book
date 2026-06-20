@@ -1404,6 +1404,32 @@ The combination of the rolling ioctl history with the `dmesg` ring timeout messa
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **RenderDoc ray-tracing capture support**: RenderDoc currently does not support debugging `VK_KHR_ray_tracing_pipeline` or `VK_KHR_acceleration_structure` workloads, as per the [RenderDoc ray-tracing documentation](https://renderdoc.org/docs/behind_scenes/raytracing.html). Active work toward ray-tracing pipeline replay is the most-requested missing feature; watch the [RenderDoc GitHub releases](https://github.com/baldurk/renderdoc/releases) for progress.
+- **RenderDoc mesh shader visualisation**: Version 1.31 introduced a mesh shader visualisation view; subsequent releases are expected to extend it with amplification-shader inspection and per-primitive attribute overlays. [Source](https://github.com/baldurk/renderdoc/releases/tag/v1.31)
+- **GPU-Assisted Validation (GAV) expanded coverage**: Khronos is tracking ongoing GPU-AV improvements including enhanced `VK_EXT_buffer_device_address` out-of-bounds detection and descriptor indexing validation for ray-tracing pipelines. [Source](https://github.com/KhronosGroup/Vulkan-ValidationLayers/blob/main/docs/gpu_validation.md)
+- **`amdgpu_top` maturation**: The Rust-based `amdgpu_top` tool (exposing fdinfo, AMDGPU performance counters, and sensor data with a TUI similar to `intel_gpu_top`) continues active development toward feature parity with `radeontop` for RDNA 3/4 hardware. [Source](https://github.com/Umio-Yasuno/amdgpu_top)
+- **Radeon GPU Profiler RDNA 4 support**: RGP 2026 releases include disassembler fixes for RDNA 4 profiles and improved ray-tracing interoperability with Radeon GPU Analyzer. [Source](https://github.com/GPUOpen-Tools/radeon_gpu_profiler/releases)
+
+### Medium-term (1–3 years)
+
+- **eBPF-native GPU tracing**: The eBPF Foundation fellowship is actively exploring eBPF probes for GPU and AI infrastructure, with research into attaching eBPF programs to GPU kernel launches at the driver level. This would enable zero-instrumentation GPU workload tracing without `uprobe` symbol-visibility limitations. [Source](https://ebpf.foundation/ebpf-fellowship-update-tutorials-research-and-expanding-ebpf-into-gpu-and-ai/)
+- **Vulkan syncval phase-2 expansion**: Khronos Vulkan-ValidationLayers sync validation is on a multi-release trajectory to cover `VK_KHR_synchronization2` timeline semaphores, multi-queue synchronisation, and sparse-binding hazards more completely. Note: needs verification against current open issues at [KhronosGroup/Vulkan-ValidationLayers](https://github.com/KhronosGroup/Vulkan-ValidationLayers).
+- **Source-level SPIR-V shader debugging in RenderDoc**: RenderDoc 1.28+ supports `NonSemantic.Shader.DebugInfo.100` for source-level stepping in Vulkan shaders compiled with `glslang -gVS` or `dxc -fspv-debug=vulkan-with-source`. Broader coverage for compute and mesh shaders, and integration with HLSL sources via DXC, is expected over the next few Mesa/Vulkan SDK release cycles. [Source](https://renderdoc.org/docs/how/how_debug_shader.html)
+- **`VK_EXT_device_fault` wider driver adoption**: This extension exposes structured GPU-fault information (faulting VA, fault type) to debugging tools without requiring vendor-specific `debugfs` access. RADV and ANV support is in-tree; NVK support is Note: needs verification — watch Mesa MR tracker at [gitlab.freedesktop.org/mesa/mesa](https://gitlab.freedesktop.org/mesa/mesa).
+- **Perfetto GPU timeline integration**: Perfetto's `gpu.counters` and `gpu.renderstages` data sources are gaining wider Mesa/Linux driver support, enabling unified CPU+GPU timeline traces consumable in the Perfetto UI alongside Android-style render stages. Note: needs verification for Mesa upstream status.
+
+### Long-term
+
+- **Unified cross-vendor GPU debugging API**: The long-term goal articulated in DRM community discussions is a standardised kernel-level GPU debugging interface (extending `perf_event` and `CAP_PERFMON`) that abstracts vendor-specific OA streams (`i915_perf`, AMDGPU SQTT, NV PMU) behind a common UAPI, enabling a single tool stack across AMD, Intel, and NVIDIA open-source drivers. Note: needs verification — track `dri-devel` mailing list at [lists.freedesktop.org](https://lists.freedesktop.org/mailman/listinfo/dri-devel).
+- **GPU UBSan / ASAN analogues**: Research directions include GPU-side undefined-behaviour sanitisers that instrument NIR passes to emit bounds-checking code for every buffer access, analogous to CPU UBSan. Early prototypes exist in academia (NeutriNo, [OSDI 2025](https://www.usenix.org/system/files/osdi25-huang-songlin.pdf)); upstreaming into Mesa would require NIR infrastructure and significant performance budgeting.
+- **Standardised GPU crash dump format**: AMD's `RadeonGPUDetective` (RGD) is the first production tool providing structured post-mortem GPU crash analysis from a crash dump. A vendor-neutral crash dump format and toolchain, analogous to Linux kernel `kdump`, is a long-term goal that would require both DRM UAPI and userspace coordination. [Source](https://gpuopen.com/rgp/)
+
+---
+
 ## Integrations
 
 **Chapter 1 (DRM Architecture)**: Render nodes (`/dev/dri/renderDN`) are the access point for RenderDoc injection, profiling tool counter collection (Intel OA), and debugfs-based state inspection. The `perf_event_paranoid` and `CAP_PERFMON` permission model described here governs access to the render node's counter infrastructure at the kernel DRM level described in Chapter 1.

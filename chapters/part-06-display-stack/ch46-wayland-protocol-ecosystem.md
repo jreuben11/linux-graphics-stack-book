@@ -810,6 +810,32 @@ The only mechanism for a Wayland client to discover compositor capabilities is `
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **`wp_color_management_v1` stable graduation**: Following the 12+ year incubation period and active 2025–2026 implementation work in Mutter (GNOME 47) and KWin (Plasma 6.1+), the colour-management protocol is a strong candidate for stable graduation once the remaining `wp_color_representation_v1` gaps in wlroots are resolved. [Source: Collabora, "12 years of incubating Wayland color management"](https://www.collabora.com/news-and-blog/news-and-events/12-years-of-incubating-wayland-color-management.html)
+- **`linux-dmabuf-v1` multi-GPU improvements**: Wayland Protocols 1.49 (June 2026) added explicit multi-GPU device advertisement so compositors can enumerate supported devices and per-device format/modifier sets, directly addressing hybrid GPU laptop use-cases (Intel iGPU + NVIDIA/AMD dGPU). [Source: Phoronix, "Wayland Protocols 1.49"](https://www.phoronix.com/news/Wayland-Protocols-1.49)
+- **Windows BT.2100 HDR image descriptions**: Wayland Protocols 1.49 added a `windows_bt2100` image description request to `color-management-v1`, enabling compositors to apply special tone-mapping for Windows HDR content running under Proton/Wine. [Source: Phoronix, "Wayland Protocols 1.49"](https://www.phoronix.com/news/Wayland-Protocols-1.49)
+- **`ext-tray-v1` protocol proposal**: A formal `ext_tray_v1` staging protocol has been proposed in wayland-protocols addressing the long-standing system tray gap (§7.1); review and first compositor implementations are expected within the next release cycle. [Source: Wayland Explorer, ext_tray_v1](https://wayland.app/protocols/wayland-protocols/355)
+- **`wp_fifo_v1` / `wp_commit_timing_v1` Mutter and KWin completion**: Both frame-scheduling protocols are listed as "in-progress" in Mutter and KWin as of mid-2026; completion would resolve the gaming backpressure and media-player PTS scheduling gaps on GNOME and Plasma desktops. Note: needs verification of specific milestone dates.
+
+### Medium-term (1–3 years)
+
+- **`ext-workspace-v1` cross-desktop consensus**: The wlroots implementation is complete but Mutter and KWin have not adopted the staging candidate due to design differences. Active mailing-list discussion is expected to converge on a revised design or a new major version that all three major compositors can accept. Note: needs verification of active RFC status.
+- **Wayland Security Modules (SELinux integration)**: An RFC proposing a general-purpose `wp_security_module` extension to `wp_security_context_v1` — enabling SELinux and AppArmor policy hooks per compositor connection — was circulated in 2025. Prototyping is ongoing; promotion to staging depends on compositor buy-in from Mutter, KWin, and wlroots. [Source: mail-archive.com, RFC Wayland Security Modules](https://www.mail-archive.com/wayland-devel@lists.freedesktop.org/msg43548.html)
+- **Fractional scaling `xx_fractional_scale_v2`**: An experimental fractional-scaling protocol added in wayland-protocols 1.49 allows clients and compositors to negotiate a separate coordinate space for surface geometry, aiming to replace the current `wp_fractional_scale_v1` workarounds used by GTK and Qt. [Source: Phoronix, "Wayland Protocols 1.49"](https://www.phoronix.com/news/Wayland-Protocols-1.49)
+- **`ext-image-copy-capture-v1` Mutter adoption**: KWin and wlroots ship the screen-capture protocol but Mutter has not yet implemented it (Table 1). GNOME's screencast portal currently relies on a private compositor protocol; upstreaming to `ext-image-copy-capture-v1` is a stated goal for a future GNOME release. Note: needs verification of specific GNOME milestone.
+- **Camera and video device handling**: Discussion is underway to extend the compositor model to cover camera devices (V4L2 sources), unifying video capture under the same `ext-image-capture-source-v1` source-selection model used for screen and window capture. Note: needs verification of active proposal status.
+
+### Long-term
+
+- **Native Wayland network transparency**: Waypipe's fundamental limitation — the inability to forward DMA-BUF file descriptors over a network — has no clean protocol-level solution within the current buffer model. Long-term proposals include a compositor-native RDP/VNC back-end or a `wl_buffer` serialisation extension that encodes pixel content as a compressed stream opaque to client GPU drivers. These remain speculative; the more realistic near-term path is PipeWire-based screen-streaming (§7.4). Note: needs verification.
+- **`wl_registry` capability discovery (`wp_capabilities_v1`)**: The absence of a structured capability-discovery protocol (§7.5) requires every client to probe globals individually. A `wp_capabilities_v1` object that enumerates supported interfaces and their versions in a single round-trip is a recurring request in compositor developer forums; no formal proposal has reached staging. Note: needs verification of proposal timeline.
+- **Unified portal surface for AI/accessibility**: As on-device AI inference (e.g., voice recognition, accessibility overlays) is integrated into the Linux desktop, the `xdg-desktop-portal` is the expected integration point. Extensions to `org.freedesktop.portal.InputCapture` and new `org.freedesktop.portal.Accessibility` portals are discussed but no protocol text exists as of mid-2026. Note: needs verification.
+
+---
+
 ## 8. Integrations
 
 - **`wp_linux_drm_syncobj_v1`** is the Wayland surface of the DRM sync object infrastructure described in Chapter 3 §7 (timeline sync objects, `DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL`) and the DMA-BUF import/export pipeline of Chapter 4 §3. Its Mesa client implementation lives in `src/egl/drivers/dri2/platform_wayland.c` and `src/vulkan/wsi/wsi_common_wayland.c` (Ch12). This protocol resolves the NVIDIA implicit-sync problem documented in Chapter 20 §8.

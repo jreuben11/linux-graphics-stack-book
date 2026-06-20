@@ -1282,6 +1282,32 @@ This chapter sits at the intersection of the kernel DRM/KMS layer, the Mesa Vulk
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **io_uring-based GPU job submission at the DRM framework level**: Arm's Liviu Dudau proposed at XDC 2024 integrating io_uring into the DRM core so all GPU drivers can accept job submissions through an io_uring submission queue carrying only buffer and fence pointers, eliminating kernel copies and aligning naturally with explicit sync. Implementation work is ongoing in the Panthor Mali driver as a prototype. [Source](https://www.phoronix.com/news/DRM-Graphics-Drivers-IO_uring)
+- **Standardised `drm_syncobj` fd handle type in Vulkan**: KhronosGroup issue #2473 tracks the absence of a distinct `VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE` enum value for raw DRM `syncobj` fds, forcing userspace to use `OPAQUE_FD` with no way to distinguish the underlying object type. A new `VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_DRM_SYNCOBJ_FD_BIT` or relaxed import/export rules for timeline semaphores via `SYNC_FD` is under Khronos specification review. [Source](https://github.com/KhronosGroup/Vulkan-Docs/issues/2473)
+- **Full implicit-sync removal from open-source Mesa drivers**: The Mesa DRM interop layer still provides compatibility shims (`DMA_BUF_IOCTL_IMPORT_SYNC_FILE`) for applications and toolkits that have not yet adopted `wp_linux_drm_syncobj_v1`. Near-term work targets deprecating the shim path in RADV and ANV once GTK4, Qt, and Electron-based compositors have completed their explicit-sync migrations. Note: needs verification for exact timeline.
+- **Sway and Hyprland stabilisation of `linux-drm-syncobj-v1`**: Both compositors merged initial `linux-drm-syncobj-v1` support via wlroots 0.18 (2024); ongoing point releases are addressing edge cases with multi-GPU setups and NVIDIA closed-source driver interop. [Source](https://9to5linux.com/sway-1-11-tiling-wayland-compositor-adds-support-for-explicit-synchronization)
+- **Cross-GPU and cross-adapter synchronisation**: KhronosGroup issue #2443 discusses explicit sync across discrete and integrated GPU pairs (e.g., NVIDIA dGPU + Intel iGPU in hybrid laptop configurations), where `dma_fence` and `drm_syncobj` currently provide no cross-device signalling path without a CPU round-trip. [Source](https://github.com/KhronosGroup/Vulkan-Docs/issues/2443)
+
+### Medium-term (1–3 years)
+
+- **io_uring `IORING_OP_URING_CMD` for async DRM syncobj timeline waits**: The current path for non-blocking timeline fence waits requires either a dedicated kernel thread using `DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT` or an `eventfd` bridge via `DRM_IOCTL_SYNCOBJ_EVENTFD`. The RFC discussion on `IORING_OP_URING_CMD` in the io_uring subsystem (tracked in liburing issue #818) would allow a compositor's event loop to submit a syncobj timeline wait as an io_uring SQE and receive a CQE on completion, fully unifying GPU and I/O event handling. [Source](https://github.com/axboe/liburing/issues/818)
+- **Wayland protocol extension for cross-device fence export**: The `wp_linux_drm_syncobj_v1` protocol currently assumes all parties share the same DRM device. A successor protocol or extension to handle cross-device scenarios — exporting a `sync_file` fd whose fence is importable on a different GPU's `dma_resv` — is in early discussion on the wayland-devel mailing list. Note: needs verification for draft status.
+- **Vulkan Roadmap 2026 milestone GPU sync requirements**: The Vulkan Roadmap 2026 profile mandates `VK_KHR_synchronization2` (already promoted to Vulkan 1.3 core) and strengthens requirements for external semaphore interoperability. Conformant implementations on Linux will need verified `drm_syncobj` export/import round-trip semantics for all timeline semaphore operations. [Source](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_KHR_synchronization2.html)
+- **`dma_resv` locking scalability improvements**: The wound-wait mutex (`ww_mutex`) inside `dma_resv` serialises multi-buffer lock acquisition to prevent deadlock but creates contention at high frame rates with many shared buffers. Kernel maintainers have discussed replacing or supplementing the wound-wait approach with lock-free RCU reads for the common read-only case. Note: needs verification for patch status.
+- **NVK (Nouveau Vulkan) explicit sync feature parity**: NVK, the open-source NVIDIA Vulkan driver in Mesa, shipped initial timeline semaphore support via the shared `vk_drm_syncobj.c` backend but lags behind ANV/RADV in fence merge optimisations and sparse resource synchronization. Continued upstream NVK development aims to close this gap as NVIDIA's open-source GSP firmware matures. Note: needs verification for exact NVK roadmap.
+
+### Long-term
+
+- **Kernel-native GPU timeline abstraction**: Long-term architectural discussions propose a unified kernel timeline object that subsumes `drm_syncobj`, `dma_fence_chain`, and `sync_file` under a single file-descriptor type with standardised poll, eventfd, and io_uring semantics — eliminating the current proliferation of conversion ioctls. This would require coordinated changes across DRM, V4L2, and the io_uring subsystem. Note: needs verification — this reflects architectural direction discussed at XDC rather than a committed proposal.
+- **Hardware-accelerated fence signalling on heterogeneous SoCs**: On mobile and embedded platforms (Arm Mali, Qualcomm Adreno), GPU and display controller fences are already signalled in hardware without CPU involvement; the long-term goal is to bring equivalent zero-CPU-overhead fence signalling to desktop discrete GPU drivers, reducing compositor latency to the theoretical minimum of one scanout interval.
+- **Full deprecation of implicit synchronization in the Linux kernel**: Once all major userspace consumers (Xorg, XWayland, legacy OpenGL toolkits) have migrated to explicit sync paths, kernel maintainers may deprecate `dma_resv`-based implicit fence attachment for GPU buffers. This is a multi-year effort gated on ecosystem-wide adoption of `wp_linux_drm_syncobj_v1` and equivalent explicit sync protocols. Note: needs verification — no concrete deprecation timeline has been announced.
+
+---
+
 ## References
 
 1. Linux kernel source: `drivers/gpu/drm/drm_syncobj.c` — drm_syncobj implementation. [https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_syncobj.c](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_syncobj.c)

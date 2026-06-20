@@ -705,6 +705,33 @@ These limitations are real, but it is worth stating their context explicitly: mo
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **XDG Session Management stabilisation** (`xx-session-management-v1`): merged in wayland-protocols 1.48 (April 2026) as an experimental protocol, this extension allows clients to restore previous window positions and state across sessions. Compositor implementors (Mutter, KWin, wlroots) are expected to adopt it in the 2026–2027 release cycle. [Source](https://www.phoronix.com/news/Wayland-Protocols-1.48)
+- **Experimental Zones protocol** (`xx-zones-v1`): also landed in wayland-protocols 1.48 after over two years of review and 620+ comments, enabling structured screen-region reservation for panels, docks, and OSD overlays. Compositor uptake and potential promotion to staging is anticipated in the near term. [Source](https://www.phoronix.com/forums/forum/linux-graphics-x-org-drivers/wayland-display-server/1612542-experimental-zones-protocol-merged-to-wayland-after-2-years-620-comments)
+- **Text input protocol updates** (`zwp_text_input_v3` revisions): wayland-protocols 1.48 includes incremental corrections to the text-input protocol addressing long-standing compatibility issues with IBus and Fcitx5 IME stacks. Further refinements toward a stable `wp_text_input_v1` are expected. [Source](https://www.phoronix.com/news/Wayland-Protocols-1.48)
+- **`ext-tray-v1` system tray protocol**: an in-progress staging proposal (tracked at `wayland.app/protocols/wayland-protocols/355`) to provide a Wayland-native replacement for the XEMBED/StatusNotifierItem system tray model; as of mid-2026 it has not yet been merged into the main wayland-protocols tree. Note: needs verification of exact merge status.
+- **`xx-keyboard-filter` experimental protocol**: landed in wayland-protocols 1.48, enabling compositors to intercept and remap keyboard events at the compositor level, laying groundwork for richer input policy without requiring a privileged X server. [Source](https://www.phoronix.com/news/Wayland-Protocols-1.48)
+
+### Medium-term (1–3 years)
+
+- **Global keyboard shortcuts standardisation**: the `xdg-desktop-portal` GlobalShortcuts portal (D-Bus) is the current workaround for applications requiring global hotkey registration (OBS Studio, push-to-talk), but a native Wayland protocol analogous to `XGrabKey` remains under design discussion. Compositor-specific solutions (`hyprland-global-shortcuts-v1`) exist but lack cross-compositor interoperability. [Source](https://wayland.app/protocols/hyprland-global-shortcuts-v1)
+- **Promotion of widely-deployed staging protocols to stable**: `wp_fifo_v1`, `wp_linux_drm_syncobj_v1`, and `wp_color_management_v1` — all shipped in production compositors — are candidates for graduation from staging to stable under the two-independent-compositor rule defined in CONTRIBUTING.md. The pace of this process has historically been 2–4 years from initial proposal to stable. [Source](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/CONTRIBUTING.md)
+- **Colour management extension of HDR metadata**: `wp_color_management_v1` (stable in wayland-protocols 1.41) is expected to grow supplementary extensions covering dynamic metadata (SMPTE ST 2094-10, HDR10+) for per-frame tone-mapping control as display hardware support matures. Note: needs verification of specific proposal names.
+- **Remote display protocol integration**: ongoing work to formalise the `xdg-desktop-portal` remote desktop portal into a standardised Wayland extension, replacing ad-hoc PipeWire screen-cast + RDP compositions. This is tied to broader discussions around network-transparent Wayland for thin-client and cloud-gaming workloads.
+- **`xx-cutouts` protocol**: merged experimentally in wayland-protocols 1.48 to support non-rectangular window shapes (display cutouts, rounded corners) at the protocol level, decoupling this from compositor-specific implementations. Promotion to staging pending two compositor implementations. [Source](https://www.phoronix.com/news/Wayland-Protocols-1.48)
+
+### Long-term
+
+- **Unified capability discovery**: replacing the current pattern of probing `wl_registry` for each global individually with a mechanism analogous to `XQueryExtension`, so that clients can query a structured capability manifest in a single round-trip. This has been discussed in design threads but has no formal proposal as of 2026. Note: needs verification.
+- **Wayland over non-Unix transports**: the protocol is currently hard-coupled to Unix domain sockets and `SCM_RIGHTS` fd passing. Extending it to support secure loopback TCP or virtio-socket transports (for VM guest-to-host compositor paths) is an architectural direction discussed in the context of Android-on-Linux and cloud VM guest graphics. Note: needs verification.
+- **Tighter integration with explicit sync and display hardware fences**: as GPU and display hardware increasingly expose independent timeline semaphores (e.g., Intel Xe display engine, AMD DCN5), the `wp_linux_drm_syncobj_v1` model is expected to evolve toward richer per-plane fence point specification, enabling sub-frame scheduling and multi-plane atomic commits driven by client-provided timelines.
+- **Security context extension for containerised runtimes**: `wp_security_context_v1` provides Flatpak/snap sandbox labelling, but future work targets richer capability delegation — allowing sandboxed applications to access specific protocol subsets (e.g., screencopy for accessibility tools) without full compositor trust elevation, aligned with the evolving xdg-desktop-portal permission model.
+
+---
+
 ## Integrations
 
 **Chapter 2 (KMS/DRM)**: The `wl_output` refresh rate and mode are derived directly from the KMS CRTC mode set by the compositor. `wp_presentation` timestamps originate from DRM CRTC vblank hardware events (`drm_event_vblank`). `DRM_IOCTL_MODE_CREATE_LEASE` is the kernel primitive underlying `wp_drm_lease_v1`; Section 11 describes the complete kernel-to-protocol path.

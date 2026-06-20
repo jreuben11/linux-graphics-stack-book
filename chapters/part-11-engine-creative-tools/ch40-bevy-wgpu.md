@@ -826,6 +826,42 @@ UE5 and Unity are significant data points for Mesa driver development: their div
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Bevy 0.18 Solari ray-tracing integration**: Solari, Bevy's real-time ray-traced global illumination system, debuted experimentally in Bevy 0.17 and is being hardened for wider use in 0.18. It depends on wgpu's `EXPERIMENTAL_RAY_QUERY` feature flag, which maps to `VK_KHR_ray_query` on Vulkan. The path from WGSL `@compute` shaders with ray-query built-ins through naga → SPIR-V → RADV/ANV/NVK is the same naga pipeline documented in Section 3; Solari makes it load-bearing for production lighting. [Source](https://jms55.github.io/posts/2025-09-20-solari-bevy-0-17/)
+
+- **wgpu explicit Wayland sync completion**: The `add_signal_semaphore` half of `wp_linux_drm_syncobj_v1` explicit synchronisation landed in wgpu v25 (PR #6813); `add_wait_semaphore` / `remove_wait_semaphore` are queued for v30. Once both halves land, Bevy on Wayland compositors with explicit-sync support (KDE Plasma 6+, GNOME 47+) will eliminate implicit fence round-trips that currently add latency on NVIDIA. [Source](https://github.com/gfx-rs/wgpu/issues/8996)
+
+- **Bindless resource promotion from experimental**: Bevy 0.16 introduced bindless textures via a *material allocator* that supplies resources as arrays instead of per-object CPU binds, using wgpu `binding_array` (maps to `VK_EXT_descriptor_indexing`). WGSL front-end enforcement of an `enable wgpu_binding_array;` directive (issue #8875) is the remaining specification gap; once resolved, bindless will graduate from experimental to stable. [Source](https://github.com/gfx-rs/wgpu/issues/8875)
+
+- **Mesh-shader support in wgpu/naga**: A comprehensive tracking issue (#7197) covers adding mesh and task shader stages to the naga IR, WGSL front-end `@mesh` and `@task` built-ins, Vulkan back-end emission via `VK_EXT_mesh_shader`, and limits/validation. UE5's Nanite already exercises `VK_EXT_mesh_shader` on Linux; wgpu mesh shaders would bring the same hardware path to Bevy's virtual-geometry work. [Source](https://github.com/gfx-rs/wgpu/issues/7197)
+
+- **Hardware ray tracing stable API in wgpu v28+**: wgpu v28 introduced a documented hardware ray-tracing API (acceleration structures, ray-gen/closest-hit/miss shader stages); the API is subject to change but usable behind `Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE`. Stabilisation is expected once the WebGPU working group ratifies a ray-tracing extension. [Source](https://zenn.dev/kokutoupan/articles/eefc517ac4210d?locale=en)
+
+### Medium-term (1–3 years)
+
+- **Bevy OpenXR integration**: Community experiments connect Bevy's ECS render world to OpenXR session management (covered in Chapter 39). The `bevy_openxr` crate wraps Monado or the SteamVR runtime via wgpu's Vulkan backend, sharing swapchain images with the XR compositor through `VK_KHR_external_memory_fd`. Upstream Bevy has not yet merged first-party XR support; the medium-term goal is a `bevy_xr` working group proposal similar to the `bevy_editor` roadmap. [Source](https://bevyengine.github.io/bevy_editor_prototypes/roadmap.html)
+
+- **Bevy editor stable release**: The `bevy_editor_prototypes` repository tracks a full scene editor built with Bevy's own UI stack (Bevy UI + Bevy Feathers widgets, introduced in Bevy 0.17). The editor is itself a Bevy application driven by the same wgpu/Vulkan render path as game projects; its completion marks Bevy's transition from framework to full engine. [Source](https://bevyengine.github.io/bevy_editor_prototypes/roadmap.html)
+
+- **DLSS/FSR/XeSS upscaling integration**: DLSS support landed in Bevy 0.17 for NVIDIA RTX; AMD FidelityFX Super Resolution (FSR) and Intel XeSS are natural follow-ons. These require vendor SDK integration at the wgpu or Bevy plugin layer and — for DLSS on Linux — depend on the open-source NVK Vulkan driver (Chapter 10) exposing the necessary `VK_NVX_*` extensions. Note: needs verification for exact extension requirements on NVK.
+
+- **wgpu subgroup and 64-bit type support**: Mesh shaders and ray-tracing pipelines in wgpu are currently blocked partly by naga's lack of `subgroupBarrier` and wave-intrinsic built-ins. The WebGPU working group's `subgroups` extension proposal and `f64`/`i64` WGSL extensions are expected to land in naga once the spec stabilises, unlocking compute-heavy workloads such as physics solvers and GPU pathfinding on Bevy. Note: needs verification for current naga subgroup issue status.
+
+- **DMA-BUF texture import stable API**: `vulkan::Device::texture_from_dmabuf_fd()` (tracked in wgpu v30 milestone) will provide a stable wgpu API for importing externally produced buffers — from VA-API video decoders or camera capture — directly into Bevy textures without a CPU-side copy. This closes the loop between Bevy and the V4L2/VA-API stack covered in Chapters 28–29. [Source](https://github.com/gfx-rs/wgpu/issues/8996)
+
+### Long-term
+
+- **WebGPU ray-tracing specification ratification**: The Khronos WebGPU working group and GPU for the Web W3C group are discussing a first-class ray-tracing extension to the WebGPU spec. Once ratified, naga will gain a stable, spec-compliant path from WGSL ray-generation/intersection shaders through SPIR-V to `VK_KHR_ray_tracing_pipeline` — enabling Bevy Solari to compile for browser targets alongside native Linux. Note: needs verification for current working group timeline.
+
+- **Rust-native GPU driver collaboration**: As NVK (Chapter 10) and Nova (Chapter 10) mature, the Rust-language theme connecting Bevy, wgpu, naga, and the driver layer may eventually enable direct safe-Rust calls across what today is a C FFI boundary. Long-term proposals in the Rust GPU working group (`rust-gpu`, `wgsl-to-spirv`) explore using Rust as the shading language itself, eliminating the WGSL→naga→SPIR-V detour for native targets.
+
+- **Bevy as a reference WebGPU workload**: Because Bevy's shaders are expressed in WGSL and validated by naga against the WebGPU spec, a future Bevy renderer could run unmodified in a browser via WebAssembly and WebGPU. Achieving feature parity (ray tracing, bindless, mesh shaders) between the native Vulkan path and the browser path depends on each feature clearing the W3C standardisation process — a multi-year horizon that aligns Bevy's development roadmap with the WebGPU standard's evolution. [Source](https://bevy.org/news/bevy-webgpu/)
+
+---
+
 ## Integrations
 
 **Chapter 14 (NIR — Mesa's Intermediate Representation)**: The SPIR-V emitted by naga enters Mesa NIR via `vk_spirv_to_nir()` — the same front end that processes SPIR-V from glslang, DXC, and Tint. The NIR optimisation passes, lowering steps, and driver-specific back ends described in Chapter 14 apply identically to WGSL-originated shaders. From NIR's perspective, naga is simply another SPIR-V producer.

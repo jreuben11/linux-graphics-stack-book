@@ -908,6 +908,31 @@ Chrome DevTools (as of Chrome 120+) does not have a dedicated WebCodecs panel, b
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Media Source Extensions (MSE) + WebCodecs integration reaching Candidate Recommendation**: The W3C Media Working Group charter targets CR status for the MSE-WebCodecs bridge in Q4 2026, enabling applications to feed WebCodecs-decoded `VideoFrame` objects directly into an `HTMLMediaElement` buffering pipeline for adaptive playback without a separate demuxer. [Source](https://w3c.github.io/charter-media-wg/)
+- **VA-API on Wayland stabilisation across distros**: Chromium's `VaapiWrapper` unified the Linux Ozone/Wayland and Ozone/X11 codepaths to use `libva-drm` exclusively; the remaining work is removing the GPU blocklist entries that still disable VA-API on unsigned distro builds, making hardware-accelerated WebCodecs decode the default rather than an opt-in flag. [Source](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/docs/gpu/vaapi.md)
+- **AV1 10-bit hardware encoding broadening**: As of mid-2026 only ~8% of sessions support 10-bit AV1 encoding despite 91% hardware decoder coverage for 10-bit AV1; Intel iHD and AMD RADV AV1 encode paths are being hardened to surface 10-bit `VideoEncoder` configurations through `isConfigSupported()`. [Source](https://webcodecsfundamentals.org/datasets/codec-analysis-2026/)
+- **V4L2 stateless WebCodecs on mainline Linux desktop**: Chromium issue 372630272 tracks enabling V4L2 stateless decode (currently ChromeOS-only) for desktop Linux; blockers include `VIDIOC_EXPBUF` support in upstream drivers (rkvdec2, hantro) and GBM NV12 buffer allocation with Panfrost. [Source](https://issues.chromium.org/issues/372630272)
+
+### Medium-term (1–3 years)
+
+- **HDR `VideoFrame` metadata and tone-mapping**: W3C webcodecs issue #384 tracks full HDR colour metadata on `VideoFrame` — `colorSpace.matrix`, `primaries`, and `transfer` with HDR10/HLG values — and the corresponding `copyTo()` behaviour for 10-bit and 12-bit pixel formats. Note: no firm timeline for CR-level normative text as of mid-2026. [Source](https://github.com/w3c/webcodecs/issues/384)
+- **Encrypted media chunk support in WebCodecs**: The W3C Media Working Group plans to define a standard representation for encrypted `EncodedVideoChunk` / `EncodedAudioChunk` objects, allowing Encrypted Media Extensions (EME) key sessions to decrypt into WebCodecs pipelines rather than the opaque MSE pipeline. [Source](https://w3c.github.io/charter-media-wg/)
+- **WebCodecs in Node.js and server-side runtimes**: The `webcodecs-node` project exposes the WebCodecs API to Node.js via native add-ons backed by FFmpeg and platform VA-API; if adopted by the W3C, a non-`SecureContext` server profile could enable server-side transcoding with the same JS API surface. Note: needs verification for standardisation timeline. [Source](https://github.com/Brooooooklyn/webcodecs-node)
+- **`ImageDecoder` extension for arbitrary byte-array container formats**: The WICG ImageDecoder proposal aims to make container-coupled image formats (JPEG-XL, AVIF, animated WebP) accessible via a `decode()` → `ImageBitmap` per-frame API, eliminating the need for JS-side container parsers ahead of `VideoDecoder`. [Source](https://discourse.wicg.io/t/proposal-imagedecoder-api-extension-for-webcodecs/4418/)
+- **AV2 (Alliance for Open Media next-gen codec) WebCodecs codec registry entry**: AV2 standardisation is in progress at AOM; a WebCodecs codec string registry entry and `VideoDecoder` / `VideoEncoder` configuration surface will follow hardware availability. Note: needs verification on timeline relative to AOM AV2 ratification. [Source](https://en.wikipedia.org/wiki/AV2)
+
+### Long-term
+
+- **Zero-copy `VideoFrame` → WebGPU without `importExternalTexture` lifetime restrictions**: The current `GPUExternalTexture` model requires frames to be closed within the same task; a proposed shared-ownership model based on `VK_EXT_external_memory_dma_buf` persistent import would allow `VideoFrame` GPU memory to live in a `GPUTexture` with standard reference-counted lifetime, removing the need for per-frame re-import round-trips.  Note: needs verification — design discussion only as of mid-2026.
+- **Cross-process `VideoFrame` transfer via `SharedArrayBuffer`-backed zero-copy**: Long-term, the `VideoFrame.transfer()` model may extend to Shared Workers and cross-origin isolated iframes using `SharedArrayBuffer` for the CPU-side pixel data, enabling multi-tab video processing pipelines without serialisation overhead. Note: needs verification.
+- **Unified stateless codec kernel UAPI and Chromium V4L2 path on ARM Linux**: Upstream kernel work on a unified stateless codec control UAPI (`V4L2_CID_STATELESS_*`) is progressing; once driver coverage is sufficient, Chromium's V4L2 stateless path could become the primary decode mechanism on ARM Linux SBCs and laptops, complementing VA-API on x86. [Source](https://www.kernel.org/doc/html/latest/userspace-api/media/v4l/ext-ctrls-codec-stateless.rst)
+
+---
+
 ## 12. Integrations
 
 ### Chapter 26: VA-API Architecture

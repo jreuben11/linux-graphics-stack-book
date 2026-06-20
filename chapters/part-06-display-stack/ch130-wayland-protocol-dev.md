@@ -991,6 +991,33 @@ The `GOVERNANCE.md` requirements for `wp_` protocols include a `SECURITY.md` sec
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **XDG session management promotion**: `xdg-session-management-v1` entered the experimental `xx_` namespace in wayland-protocols 1.48 (April 2026) and is on track to move to `staging/` once a second compositor implementation lands; it allows clients to restore window positions and states across sessions. [Source](https://www.phoronix.com/news/Wayland-Protocols-1.48)
+- **Color management protocol ecosystem roll-out**: `wp_color_management_v1` merged into `staging/` in early 2025; the near-term focus is on driving compositor support in Mutter (GNOME), KWin (KDE), and Weston so the protocol can progress to `stable/`. Weston 16 Alpha (2026) added color-pipeline DRM back-end support as a prerequisite. [Source](https://www.phoronix.com/news/Wayland-Protocols-1.47)
+- **Background effects and pointer warp stabilisation**: Both `ext_background_effects_v1` and `ext_pointer_warp_v1` were added to `staging/` in wayland-protocols 1.45 (June 2025); a second production compositor implementation is required before either can graduate to `stable/`. [Source](https://www.phoronix.com/news/Wayland-Protocols-1.45)
+- **Text input protocol v4**: Wayland Protocols 1.46 (December 2025) included experimental text-input refinements resolving long-standing issues with input method coordination; a concrete `text-input-v4` staging proposal is expected within the 6–12 month window. [Source](https://www.phoronix.com/forums/forum/linux-graphics-x-org-drivers/wayland-display-server/1594241-wayland-protocols-1-46-released-with-new-experimental-additions)
+- **Keyboard filter protocol**: `xx-keyboard-filter-v1` (added in wayland-protocols 1.48) allows a privileged client to intercept keyboard events before they reach the focused surface — enabling use-cases like on-screen keyboards and accessibility tools — and is expected to proceed to `staging/` pending security review. [Source](https://www.phoronix.com/news/Wayland-Protocols-1.48)
+
+### Medium-term (1–3 years)
+
+- **Zone-based window management (`xx-zones`)**: An experimental protocol added in wayland-protocols 1.48 lets compositors expose named display zones (similar to Windows Fancy Zones) to allow clients to snap into predefined layout regions. Design discussions are ongoing to reconcile this with `xdg-toplevel` tile state. [Source](https://www.phoronix.com/news/Wayland-Protocols-1.48)
+- **Display cutouts protocol (`xx-cutouts`)**: Also added experimentally in 1.48, this protocol communicates notch and camera-hole regions to clients so they can avoid obscuring UI elements — essential for tablets and embedded displays. Promotion to `staging/` requires broad adoption across form factors. [Source](https://www.phoronix.com/news/Wayland-Protocols-1.48)
+- **Security context hardening (`wp_security_context_v1`)**: The existing `staging/` security context protocol (which allows a compositor to sandbox clients into named trust domains) is expected to see follow-on extensions for fine-grained capability delegation, feeding into Flatpak portal integration. Note: needs verification on exact staging timeline.
+- **Explicit GPU synchronisation `stable/` promotion**: `linux-drm-syncobj-v1` has been in `staging/` since 2024 and is implemented in Mesa, wlroots, Mutter, and KWin; the path to `stable/` depends on resolving remaining edge cases around multi-GPU timeline fence import. [Source](https://wayland.app/protocols/linux-drm-syncobj-v1)
+- **New input method protocol**: A major rework of input method handling announced alongside 1.45 aims to unify `text-input` and `input-method` into a single coherent protocol, an undertaking that historically has required multi-year consensus building. [Source](https://www.phoronix.com/news/Wayland-Protocols-1.45)
+
+### Long-term
+
+- **Wayland protocol governance automation**: The `GOVERNANCE.md` process currently relies on manual tracking of implementation counts; long-term plans include a CI-driven dashboard that automatically checks whether a staging protocol has the required two distinct compositor implementations before allowing a `stable/` promotion merge request to land. Note: needs verification on specific tooling proposals.
+- **Richer capability discovery**: The current global-registry model requires clients to speculatively bind globals; proposals have circulated (on wayland-devel) for a structured capabilities manifest that a compositor could advertise up front, reducing initial roundtrips and enabling better lazy binding of optional protocols. Note: needs verification.
+- **Colour pipeline compositing (`frog_color_management` successors)**: Beyond the stable `wp_color_management_v1`, compositor engineers are exploring Wayland-level signalling for scene-referred HDR compositing and gamut mapping hints that go beyond per-surface tagging — integrating tightly with future KMS colour pipeline kernel interfaces. [Source](https://www.phoronix.com/news/Wayland-CM-HDR-Merged)
+- **Wayland accessibility protocol**: Long-discussed but as yet unspecified, a formal `wp_accessibility_v1` would let assistive technologies (screen readers, magnifiers) hook into the compositor's surface tree; the AT-SPI2 community and GNOME accessibility team have identified this as necessary for post-X11 accessibility parity. Note: needs verification on formal proposal status.
+
+---
+
 ## 10. Integrations
 
 **Ch20 — Wayland Protocol Fundamentals**: This chapter is the prerequisite — it covers the core protocol objects (`wl_surface`, `wl_compositor`, `wl_seat`) that extension protocols build upon, and the registry model by which extensions are discovered.

@@ -750,6 +750,33 @@ Qt uses Fontconfig via `QFontconfigDatabase` (in `src/platformsupport/fontdataba
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Qt 6.12 indirect rendering and `VK_EXT_device_fault`**: Qt 6.12 (beta as of June 2026, targeting September 2026 release) adds indirect rendering support for `QRhi`, allowing GPU-driven draw calls via indirect draw buffers, and exposes Vulkan's `VK_EXT_device_fault` extension for improved GPU crash diagnostics. [Source](https://www.phoronix.com/news/Qt-6.12-Beta-1)
+- **Qt 6.12 QRhi Direct3D 12 graduation**: The D3D12 `QRhi` backend, added in Qt 6.6, is expected to become the default Windows backend in Qt 6.12, replacing D3D11; variable-rate shading support across D3D12, Vulkan, and Metal was already added in Qt 6.9. [Source](https://doc.qt.io/qt-6/whatsnew69.html)
+- **GTK 4.21+ GSK renderer refactoring**: GTK 4.21.x (in-development trunk) includes significant GSK renderer refactoring to close gaps in rendering infrastructure required for full SVG filter support, targeting COLRv1 and CSS `filter` effects that are currently partial or absent in the GPU path. [Source](https://discourse.gnome.org/t/gtk-planning-call-minutes-for-2026-04-24/34806)
+- **GTK `GskSubsurfaceNode` stabilisation**: The `GskSubsurfaceNode` type (used for Wayland subsurfaces and video overlays) introduced in GTK 4.14 is undergoing bug-fixing for hole-handling regressions; stabilisation is expected before GTK 4.22. Note: needs verification for exact milestone.
+- **Qt Quick XR and multiview by default**: Qt Quick 3D XR's use of multiview rendering (added in Qt 6.8) is being expanded to 2D AR glass targets via the Qt 6.12 XR module; this exercises `QRhi`'s `MultiView` feature flag on Vulkan 1.1+. [Source](https://www.phoronix.com/news/Qt-6.12-Beta-1)
+
+### Medium-term (1–3 years)
+
+- **GTK5 API planning**: GTK developers are actively identifying which features require API breaks for a future GTK5, with rendering architecture changes (possible re-evaluation of `GskRenderNode` hierarchy, CSS engine integration, and potential Vulkan 1.2+ baseline) among the topics under discussion. [Source](https://blogs.gnome.org/gtk/2026/02/06/gtk-hackfest-2026-edition/)
+- **GTK unstable/experimental API opt-in**: A proposal under discussion would allow GTK to ship unstable renderer APIs behind an opt-in flag, enabling faster iteration on GPU path experimentation (e.g., mesh shader support, `VK_EXT_descriptor_buffer`) without breaking the stable ABI. [Source](https://www.phoronix.com/news/GTK-2026-Planning-FOSDEM)
+- **Qt QRhi mesh shader support**: Qt's longer-term QRhi roadmap includes mesh and task shader exposure (analogous to `VK_EXT_mesh_shader` / D3D12 amplification shaders) for Qt Quick 3D GPU-driven geometry, currently tracked but not yet scheduled for a specific release. Note: needs verification for current tracking status.
+- **`wp_color_management_v1` integration in both toolkits**: The Wayland colour-management protocol (`wp_color_management_v1`), standardised in 2025, is expected to be wired into `GdkWaylandSurface` (GTK) and `QWaylandWindow` (Qt) to enable HDR surface submission with correct ICC profile metadata, a prerequisite for HDR-capable desktop applications on Linux.
+- **HarfBuzz COLRv1 full vector path in GTK**: GTK's unified GPU renderer currently pre-rasterises COLRv1 colour glyphs to RGBA textures; a medium-term goal is to implement the full `hb_paint_*` vector traversal path in the GSK renderer, reducing rasterisation artefacts at large display sizes.
+
+### Long-term
+
+- **Full GPU-driven scene graph in Qt Quick**: Longer-term speculation in the Qt community centres on replacing Qt Quick's current batch-and-sort renderer with a fully GPU-driven architecture using indirect draw, bindless resources, and persistent command buffers — analogous to what id Tech 7 / Unreal 5 do in games. This would require a `QRhi` redesign at the command-buffer level. Note: needs verification; no public RFC exists as of mid-2026.
+- **GTK Vulkan 1.2+ baseline and timeline semaphores**: As GPU driver Vulkan coverage matures, GTK may raise its minimum Vulkan requirement from 1.0 to 1.2, enabling use of timeline semaphores natively (rather than the `VK_KHR_timeline_semaphore` extension shim) and improving pipelining between the toolkit, the Wayland compositor, and KMS. Note: needs verification for specific planning status.
+- **Convergence of font rendering to SDF-first**: Both Qt (via `QSGDistanceFieldGlyphCache`) and GTK (via future GSK renderer work) may converge on SDF-first text rendering for all glyph sizes, eliminating the current size-threshold heuristics and enabling resolution-independent text at any zoom level, particularly relevant for XR and high-DPI displays.
+- **Wayland `ext_image_copy_capture` for toolkit screenshot APIs**: The proposed `ext_image_copy_capture` Wayland protocol (successor to `zwlr_screencopy`) would allow toolkits to expose screenshot and screen-capture APIs without compositor cooperation, affecting how both GTK and Qt implement accessibility and remote-desktop features. Note: needs verification for protocol ratification status.
+
+---
+
 ## Integrations
 
 This chapter is part of a broader narrative about how GPU work flows from application to display. Key related chapters:

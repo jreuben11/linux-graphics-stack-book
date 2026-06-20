@@ -825,6 +825,32 @@ The `drmdb` tool (part of `libdisplay-info` utility suite) can inspect all DRM c
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **HDMI 2.1 FRL support lands in Linux 7.2**: AMD submitted HDMI 2.1 Fixed Rate Link (FRL) patches to drm-next in June 2026, targeting the Linux 7.2 merge window. FRL enables bandwidth for 4K/120Hz and 8K HDR — a prerequisite for full HDR10 and HDR10+ at high refresh rates over HDMI. Support is initially disabled by default pending VRR readiness. [Source: Phoronix HDMI 2.1 FRL submission](https://www.phoronix.com/news/HDMI-FRL-2.1-Submitted-DRM)
+- **DRM Color Pipeline API CSC support**: The drm_colorop color-space conversion (CSC) extension to the Color Pipeline API (merged in Linux 6.19) is in active development by AMD's Harry Wentland. CSC colorop support will allow GPU display hardware to accelerate BT.2020→sRGB gamut conversion in the hardware display pipeline rather than in compositor software, directly benefiting HDR10 signaling accuracy. [Source: Phoronix AMD HDR/Color improvement](https://www.phoronix.com/news/AMD-More-HDR-KWin-Claude-Code)
+- **NVIDIA per-plane color pipeline API**: NVIDIA announced a preview of DRM per-plane Color Pipeline API support in April 2026, enabling their proprietary driver to participate in the same hardware-accelerated HDR pipeline that AMD and Intel have been building toward. [Source: GamingOnLinux NVIDIA color pipeline](https://www.gamingonlinux.com/2026/04/nvidia-announce-a-preview-of-drm-per-plane-color-pipeline-api-support-on-linux-good-for-hdr/)
+- **NVIDIA HDR metadata via Vulkan on Wayland**: NVIDIA's 580.94.11 Linux driver introduced `VK_EXT_hdr_metadata` support on Wayland, enabling games and applications to supply `VkHdrMetadataEXT` mastering display metadata that the driver maps to `HDR_OUTPUT_METADATA` KMS properties. [Source: Phoronix NVIDIA 580.94.11](https://www.phoronix.com/news/NVIDIA-580.94.11-Linux-Driver)
+- **libdisplay-info CTA-861 / DisplayID completion**: The library's CTA-861-H support remains partial. Ongoing work to expose the full set of HDR-related data blocks (including HDR10+ VSDB and colorimetry data blocks) will allow compositors to query display capabilities more accurately without falling back to kernel-internal EDID parsing. [Source: libdisplay-info 0.1 announcement](https://www.phoronix.com/news/libdisplay-info-0.1)
+
+### Medium-term (1–3 years)
+
+- **HDR10+ (SMPTE ST 2094-40) dynamic metadata upstream**: As of Linux 6.x, kernel support for assembling the SMPTE ST 2094-40 per-frame dynamic metadata payload in the HDMI Forum Vendor-Specific InfoFrame (HF-VSIF) is not yet merged upstream. HDMI 2.1 FRL landing in 7.2 creates the bandwidth foundation; standardised kernel-level HF-VSIF assembly and a `HDR10PLUS_OUTPUT_METADATA` KMS blob property analogous to `HDR_OUTPUT_METADATA` is the natural next step. Note: needs verification for specific patchset timeline.
+- **Dolby Vision signaling kernel support**: Dolby Vision uses a proprietary metadata tunnel inside the HDMI VSIF payload. Standardised kernel-level support for Dolby Vision metadata blobs (beyond what HDMI Forum licenses allow in open-source) is a long-standing unresolved area; industry pressure for open implementations may change this. Note: needs verification.
+- **DisplayPort 2.1 UHBR and HDR SDP extensions**: DisplayPort 2.1 Ultra High Bit Rate (UHBR) modes unlock 8K HDR at 120 Hz. Linux DP 2.1 UHBR link training support has been progressing in Intel and AMD drivers; once stable, the associated Video Stream Packet (VSP) extended SDPs that carry HDR10+ dynamic metadata over DP will require matching kernel changes. Note: needs verification for upstream status.
+- **Structured local dimming kernel API**: The existing `BACKLIGHT_BRIGHTNESS`/ABM interface for local dimming is coarse. A structured DRM property API for zone-level MiniLED dimming metadata — allowing compositors to hint content brightness per-zone — is a recurring request in dri-devel discussions but has no merged upstream proposal as of 2026. Note: needs verification.
+- **Wider compositor adoption of `wp_color_management_v1`**: The Wayland color management protocol (which supersedes the ad-hoc HDR10 Wayland surface metadata used by Gamescope) will increasingly drive the compositor-to-KMS flow described in this chapter. Stable protocol release and adoption in GNOME/KDE/wlroots will make `HDR_OUTPUT_METADATA` population more uniform.
+
+### Long-term
+
+- **Unified HDR/color pipeline across GPU vendors via drm_colorop**: The long-term architectural goal is a vendor-agnostic `drm_colorop` chain that can express the full HDR pipeline — EOTF, CSC, tone-mapping, and OETF — in terms the KMS core can validate and optimise regardless of whether the hardware is AMD DCN, Intel XE, or NVIDIA. Complete standardisation remains years away but the building blocks (Color Pipeline API, `drm_colorop` primitives) are now in place.
+- **Open HDR display certification testing tooling**: VESA DisplayHDR compliance testing currently requires proprietary test equipment. A Linux-native open-source HDR compliance test harness — analogous to IGT GPU Tools for KMS — would allow kernel and driver developers to verify HDR signaling correctness automatically in CI. No concrete upstream proposal exists yet.
+- **DisplayID 2.1 dynamic capability reporting**: DisplayID 2.1 (successor to EDID) supports richer display capability reporting including dynamic HDR formats. `libdisplay-info` and the kernel's EDID/DisplayID stack will need to evolve to parse and expose DisplayID 2.1 HDR capability data as displays migrate away from legacy EDID CTA-861 extensions.
+
+---
+
 ## Integrations
 
 - **Ch74 (HDR and Wide Color Gamut)** — the software complement to this chapter: KMS `DEGAMMA_LUT`/`CTM`/`GAMMA_LUT`, `wp_color_management_v1`, tone-mapping algorithms, and compositor HDR architecture. Ch74 and Ch158 together form the complete HDR picture; Ch74 owns the GPU/compositor pipeline, Ch158 owns the display wire signaling.

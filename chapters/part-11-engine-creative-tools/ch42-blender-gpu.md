@@ -785,6 +785,32 @@ In the RenderDoc capture, EEVEE's passes appear as labelled groups: `Shadow Pass
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Vulkan by default in Blender 5.1**: Blender 5.1 (released March 2026) enabled Vulkan as the default graphics API, completing the multi-year migration from OpenGL. The release also adds a Vulkan texture pool to reduce peak GPU memory consumption — the primary blocker for the earlier 5.0 default switch. [Source](https://www.phoronix.com/news/Blender-5.1-Vulkan-Default)
+- **Cycles texture cache in Blender 5.2 LTS**: A long-requested Cycles feature that streams high-resolution textures from disk rather than requiring all textures to fit simultaneously in GPU VRAM; expected to ship in Blender 5.2 LTS (July 2026). Significantly reduces memory pressure on scenes with many 4K+ textures, at a minor rendering throughput cost. [Source](https://code.blender.org/2026/05/cycles-texture-cache/)
+- **AMD HIP-RT ray-tracing enabled by default**: Blender 5.1 enables AMD hardware ray-tracing (HIP-RT) in Cycles by default on supported RDNA 2+ hardware, delivering throughput improvements on ray-divergent scenes comparable to NVIDIA OptiX. [Source](https://www.phoronix.com/news/Blender-5.1-Released)
+- **ROCm 7 runtime update for Cycles**: Blender 5.2 LTS is planned to migrate Cycles' HIP backend to the ROCm 7 runtime, aligning with the current AMD ROCm release series and adding support for newer GFX12 (RDNA 4) derivatives. [Source](https://www.blender.org/development/projects-to-look-forward-to-in-2026/)
+- **EEVEE planar reflections and glass material improvements**: Blender 5.1 adds improved planar reflections and glossy reflection/refraction support in EEVEE, closing feature-parity gaps with the pre-Vulkan EEVEE 3.x that have been tracked since the EEVEE Next rewrite shipped. [Source](https://www.cgchannel.com/2026/02/see-the-2026-blender-development-roadmap/)
+
+### Medium-term (1–3 years)
+
+- **EEVEE shader compilation optimisation**: Blender developers have identified first-launch SPIR-V compilation stalls (cold SPIR-V and Mesa disk-cache on new scenes) as a significant UX problem. Planned work includes pre-caching common shader permutations at install time and investigating Vulkan pipeline caching strategies to reduce stall duration on large production scenes. [Source](https://code.blender.org/roadmap/)
+- **Vulkan and OpenXR interoperability**: The Blender 2026 roadmap lists XR improvements tied to the Vulkan backend — notably, `VK_KHR_external_memory` and `VK_KHR_external_semaphore` wiring required for direct Vulkan→OpenXR frame submission through Monado, removing the intermediate blit present on the XR path today. [Source](https://www.blender.org/development/projects-to-look-forward-to-in-2026/)
+- **Cycles light transport and complex scene handling**: Once the texture-cache and HIP-RT milestones land, the Cycles team's stated next area is improved light transport (MIS strategies, better caustic handling) and scalability for scenes with millions of instances, targeting the same workloads currently bottlenecked by BVH memory bandwidth. [Source](https://devtalk.blender.org/t/2026-04-28-render-cycles-meeting/45113)
+- **External render engine API modernisation**: The Blender developer team is investigating improvements to the render engine API — the interface third-party renderers such as LuxCore and Radeon ProRender use — to better expose Vulkan objects and GPU memory handles, reducing the overhead of cross-API interop in external renderer integrations. [Source](https://code.blender.org/roadmap/)
+- **Sequencer GPU acceleration**: GPU-accelerated effects processing in the Video Sequencer is listed in the 2026 roadmap, extending the `GPUBackend` abstraction to compositor and sequencer effect workloads beyond rendering. Note: needs verification of final implementation scope.
+
+### Long-term
+
+- **Full deprecation of the OpenGL backend**: Now that Vulkan is the default in 5.1, the OpenGL path (`GLBackend`) is expected to enter a maintenance-only phase and eventually be removed. The removal timeline is undecided; the OpenGL path is retained for legacy GPU hardware that lacks Vulkan 1.2 support. [Source](https://developer.blender.org/docs/features/gpu/vulkan/)
+- **Cycles Vulkan compute backend promotion from experimental**: The Vulkan compute path in `intern/cycles/device/vulkan/` is currently experimental. Long-term it is intended as the portable compute backend for hardware that supports Vulkan but not HIP, CUDA, or oneAPI — including future RISC-V GPU targets and embedded Linux devices with Vulkan drivers (e.g., Raspberry Pi 5 with `v3dv`). Note: needs verification of timeline.
+- **GPU-accelerated compositing pipeline**: The existing CPU-bound compositor is a known bottleneck for VFX pipelines. A GPU compositing path using Vulkan compute dispatches through `GPUStorageBuf` and shader nodes is under exploratory discussion; this would complement the GPU sequencer work and complete the GPU acceleration story across all Blender pipeline stages. Note: needs verification of implementation details.
+
+---
+
 ## Integrations
 
 **Chapter 3 (Advanced Display Features and Color Management)**: OCIO's GPU color transforms (Section 5) produce display-referred output that aligns with the KMS color pipeline (`DEGAMMA_LUT` / `CTM` / `GAMMA_LUT`) described in Chapter 3. The `wp_color_management_v1` Wayland protocol gap noted in Section 5.3 is the currently open boundary between Blender's application-side color management and the kernel-side display color pipeline. Understanding both sides requires reading Chapters 3 and 40 together.

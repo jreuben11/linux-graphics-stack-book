@@ -553,6 +553,30 @@ The `chrome://gpu` page reports whether overlay promotion is active for the curr
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Skia Graphite as the default raster backend on Linux**: Graphite (Skia's Vulkan-native, multi-threaded rasterisation backend) has been shipping as the default on macOS and ChromeOS; the remaining work is hardening the Linux/Vulkan path and retiring the Ganesh/ANGLE fallback for GPU raster. The transition eliminates one GL→Vulkan translation layer in the OOP-R pipeline. [Source](https://blog.google/chromium/introducing-skia-graphite-chromes/)
+- **GPU compute-based path rasterisation in Graphite**: The Chrome Graphics team has described plans for GPU compute shaders to handle path fill and stroke rasterisation, improving over the current MSAA and CPU-fallback approaches for complex SVG and Canvas2D paths. [Source](https://www.phoronix.com/news/Chromium-Skia-Graphite)
+- **Removal of legacy `linux-explicit-synchronization-unstable-v1` support**: Now that `linux-drm-syncobj-v1` explicit-sync support has landed in Chrome, the older protocol code is marked for removal. This consolidates the Wayland fence-sync path to a single modern implementation. [Source](https://www.phoronix.com/news/Google-Chrome-linux-drm-syncobj)
+- **ANGLE native Wayland backend stabilisation**: ANGLE merged Wayland support in mid-2025; near-term work focuses on stabilising the path and enabling Chromium Embedded Framework (CEF) applications to run GPU-accelerated on Wayland without XWayland. [Source](https://www.phoronix.com/news/ANGLE-Merges-Wayland)
+
+### Medium-term (1–3 years)
+
+- **Delegated compositing on desktop Linux**: Delegated compositing — where Viz pushes individual draw quads as separate `wl_surface` objects for the Wayland compositor to arrange into hardware planes — is currently limited to ChromeOS (LaCrOS/Exo). Extending it to desktop Wayland compositors (Mutter, KWin) requires those compositors to implement the full set of required protocols (`linux-drm-syncobj-v1`, `wp_viewport`, `wp_alpha-modifer`, and others). This is an active area of Igalia and Google collaboration. [Source](https://archive.fosdem.org/2024/events/attachments/fosdem-2024-3177-delegated-compositing-utilizing-wayland-protocols-for-chromium-on-chromeos/slides/22799/Delegated_Compositing_b3OqHfM.pdf)
+- **Reduced GPU memory via shared tile pools**: The Graphite architecture enables a shared GPU tile cache across multiple renderer processes, reducing per-tab VRAM usage for common background and text tiles. This requires changes to `cc::TileManager` and the SharedImage allocator to support cross-process tile reuse. Note: needs verification of current status in upstream tracking.
+- **VRR-aware frame pacing improvements**: `viz::BeginFrameSource` currently adapts to Variable Refresh Rate displays reactively; planned work includes predictive frame pacing that can pre-emptively vary the refresh interval based on estimated render time, reducing unnecessary latency on VRR panels. Note: needs verification of specific upstream issue.
+- **Improved overlay promotion for HDR content**: As HDR display support matures in the Linux stack (DRM HDR metadata, Wayland `color-management-v1` protocol), Viz's `OverlayProcessor` needs to evaluate HDR format quads (e.g., `P010`, `BT2020_PQ`) and pass correct HDR metadata through the Wayland overlay submission path. [Source](https://www.chromium.org/developers/design-documents/aura/graphics-architecture/)
+
+### Long-term
+
+- **Full Vulkan rendering path without ANGLE**: The current Graphite-on-Vulkan path in Chrome still routes some operations through ANGLE for compatibility. The long-term architectural goal is a pure Vulkan raster and compositing path in which Graphite, SharedImage, and Viz all speak Vulkan natively, eliminating all GL translation overhead. [Source](https://developer.chrome.com/docs/chromium/renderingng-architecture)
+- **CC/Viz unification or further decomposition**: The two-compositor split (CC in the renderer process, Viz in the GPU process) was designed for the multi-process security model of the 2010s. Future work may either merge the two (reducing IPC overhead for single-process embeddings) or decompose Viz further to support display-server-as-service scenarios where the OS compositor absorbs the display compositor role entirely.
+- **WebGPU-native compositing**: As WebGPU (`wgpu`/Dawn) matures, there is an architectural direction toward allowing WebGPU canvases and WebGPU-rendered content to bypass the SharedImage/Mailbox indirection and instead present directly via `GPUCanvasContext.present()` to a Wayland surface, reducing copy and synchronisation overhead for GPU-heavy web applications. Note: needs verification against upstream Dawn/Chromium design docs.
+
+---
+
 ## 10. Integrations
 
 ### Forward References

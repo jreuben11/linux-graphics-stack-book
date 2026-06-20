@@ -943,6 +943,33 @@ For Rust, `wasm-pack --dev` passes `-C debuginfo=2` to `rustc`, embedding Rust s
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **WebGPU subgroups and subgroup matrices** reach stable status in Chrome and are proposed for the W3C Candidate Recommendation. Subgroups expose warp-level SIMD operations (`subgroupBroadcast`, `subgroupAdd`) and fixed-size matrix-multiply units (tensor cores / matrix engines) to WGSL shaders, directly accelerating browser-side ML inference. [Source: Chrome Developers — What's next for WebGPU](https://developer.chrome.google.cn/blog/next-for-webgpu)
+- **WASI 0.3 finalisation and Wasmtime 37+ preview support**: WASI 0.3 adds native async I/O and structured concurrency to the component model; follow-on 0.3.x releases will add cancellation tokens, stream optimisations, and a POSIX-threads-compatible threading model. While not directly used in browser GPU code, WASI 0.3 enables GPU-compute WASM modules to run in server-side runtimes (Wasmtime, WasmEdge) with async dispatch. [Source: The State of WebAssembly 2025–2026](https://platform.uno/blog/the-state-of-webassembly-2025-2026/)
+- **`shader-f16` extension for native half-precision compute** is entering origin trial in Chrome; it allows WGSL shaders to use the `f16` type for bandwidth-efficient ML inference and image processing passes, matching what fp16 path already offers in Vulkan on Mesa. [Source: GPU for the Web Working Group Charter 2025](https://www.w3.org/2025/01/gpuweb-charter.html)
+- **WebGPU Candidate Recommendation stabilisation**: W3C GPU for the Web Working Group published the WebGPU and WGSL specifications as Candidate Recommendation Drafts (June 2026). The Recommendation track process is expected to conclude with a formal W3C Recommendation within 12 months, giving browser vendors and wgpu a stable normative target. [Source: W3C WebGPU specification](https://www.w3.org/TR/webgpu/)
+- **Firefox WebGPU enabled by default**: as of mid-2026 WebGPU is still disabled by default in Firefox; the expectation is enablement once the wgpu-in-Firefox path passes the full WebGPU CTS on Linux Vulkan. Note: needs verification against mozilla-central planning.
+
+### Medium-term (1–3 years)
+
+- **WESL (WGSL Extended Shading Language)**: a community-driven superset of WGSL adding modules, generics, and import semantics is under active design. If adopted into the W3C standard or as a pre-processing layer, WESL would substantially improve large shader codebase maintainability in wgpu and Emscripten projects. [Source: gpuweb/gpuweb GitHub](https://github.com/gpuweb/gpuweb)
+- **WASI 1.0 and GPU-compute WASM runtimes**: WASI 1.0, targeting late 2026 or early 2027, is expected to stabilise the system interface for production server deployments. A WASI GPU extension (analogous to `wasi-nn`) could allow WASM modules to dispatch WebGPU-style compute workloads in server-side runtimes without a browser, unifying the browser and edge-compute deployment paths. [Source: WebAssembly in 2026 — DEV Community](https://dev.to/mysterious_xuanwu_5a00815/webassembly-in-2026-beyond-the-browser-and-into-the-cloud-2599)
+- **Memory64 mainstream adoption**: WebAssembly 3.0 (shipped late 2025) includes Memory64, which lifts the 4 GB linear memory cap. Widespread toolchain support (wasm-bindgen, wasm-pack, Emscripten) for Memory64 is expected to land over 2026–2027, enabling GPU-accelerated WASM applications that stage large buffers (4K/8K texture atlases, large ML weight tensors) entirely in WASM linear memory before upload to the GPU. [Source: The State of WebAssembly 2025–2026](https://platform.uno/blog/the-state-of-webassembly-2025-2026/)
+- **wgpu v1.x async pipeline compilation**: wgpu's roadmap includes fully async pipeline and shader compilation (`create_shader_module_async`, `create_render_pipeline_async`), matching the WebGPU spec's async path and eliminating main-thread stalls during shader compilation in WASM deployments. Note: track progress at [gfx-rs/wgpu](https://github.com/gfx-rs/wgpu).
+- **Portable ray-tracing via WebGPU extension**: the GPU for the Web Working Group has discussed a ray-tracing extension (analogous to `VK_KHR_ray_tracing_pipeline`) for WebGPU; if accepted it would allow wgpu-based renderers to expose BVH traversal in the browser, with Mesa's RADV and ANV RT extensions as the Linux backend. Note: needs verification against current gpuweb/gpuweb issues.
+
+### Long-term
+
+- **WASM GC and high-level language GPU bindings**: WebAssembly Garbage Collection (in WebAssembly 3.0) enables runtimes for Java, Kotlin, Dart, and Python to target WASM without a GC-in-WASM stub. Long-term, these languages may gain idiomatic WebGPU bindings, broadening the set of languages that can write GPU code deployable to both native Linux and the browser from a single source. [Source: WebAssembly in 2026 — atakinteractive](https://www.atakinteractive.com/blog/webassembly-2026)
+- **Unified WASM+native GPU abstraction layer**: wgpu already abstracts over Vulkan, Metal, D3D12, and WebGPU. A longer-term architectural goal (visible in wgpu RFCs) is to erase the distinction between `wasm32-unknown-unknown` and native targets at the API level, so that a single build can produce both a native binary and a WASM module with no `#[cfg(target_arch = "wasm32")]` guards. Note: needs verification against gfx-rs roadmap documents.
+- **Server-side GPU WASM via WASI-GPU**: analogous to `wasi-nn` for inference, a `wasi-gpu` interface could expose a GPU abstraction to WASM modules running in Wasmtime or WasmEdge on Linux, dispatching to Vulkan via Mesa. This would allow the same WASM binary to run GPU compute in a browser tab and on a GPU-accelerated edge server without recompilation. Note: needs verification; no formal WASI proposal exists as of mid-2026.
+- **WebGPU as a Vulkan compatibility layer for VR/XR**: as OpenXR on Linux matures (Chapter 62), browser-deployed XR applications using WebXR + WebGPU need direct-mode compositing. Long-term, the WebGPU/WebXR stack may gain a path to a native compositor (Monado) that bypasses the browser's own compositor, reducing latency for VR streaming applications.
+
+---
+
 ## 11. Integrations
 
 **Chapter 35 (Dawn and WebGPU)**: Dawn is the WebGPU C++ implementation whose Vulkan backend on Linux translates every WebGPU API call into Vulkan. When a browser-deployed wgpu or emdawnwebgpu application runs on Linux, it is Dawn—via Chromium or as a standalone native library—that interacts with Mesa's Vulkan drivers. Chapter 35 covers Dawn's architecture, the adapter enumeration logic, and the pipeline to `VkDevice` in detail.

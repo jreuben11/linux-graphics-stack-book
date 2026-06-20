@@ -931,6 +931,33 @@ Use `MESA_DEBUG=context` to surface OpenGL synchronization warnings; for Vulkan,
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **AMD RDNA 4 SQTT support in RADV.** AMD's Radeon Developer Tool Suite 2026 releases (RGP 2.7) have expanded hardware support to RDNA 4 (Radeon RX 9000 series). Corresponding RADV-side SQTT capture support for RDNA 4 wavefront tracing is expected to follow in Mesa as RADV becomes the default Vulkan driver on Linux following AMDVLK's discontinuation. [Source](https://gpuopen.com/learn/radeon-developer-tool-suite-update-rgp-2-6/)
+- **RGP shader source-code viewing and instruction-level divergence metrics.** RGP 2.7 introduced shader source code viewing and instruction-level divergence metrics for identifying warp/wavefront divergence hotspots. These features surface inside Linux `.rgp` captures when RADV SQTT is used. [Source](https://gpuopen.com/learn/radeon-developer-tool-suite-update-rgp-2-6/)
+- **Expanded `drm_fdinfo` counter coverage across drivers.** Panfrost, Nouveau, and other drivers have active patchsets to extend `drm-cycles-*` and `drm-engine-*` fdinfo keys to cover more engine types (video decode, media engines), making MangoHud and `drm_info` more informative across a broader GPU landscape. [Source](https://lkml.iu.edu/hypermail/linux/kernel/2403.0/03640.html)
+- **eBPF-backed GPU perf event sampling.** The Linux `perf` subsystem's eBPF integration has enabled `perf stat` to read PMU counters into BPF maps; near-term work focuses on extending this path to GPU PMU drivers (amdgpu, i915/Xe) so that eBPF programs can co-locate GPU counter sampling with CPU stack traces without switching tools. Note: needs verification for specific upstream commit status.
+- **Mesa Perfetto `gpu_memory` data source stabilization.** Mesa's Perfetto integration currently covers CPU-side Mesa state tracing; work is underway to stabilize the `gpu_memory` Perfetto data source (ftrace-backed) so that GPU VRAM pressure shows up natively in Perfetto timelines alongside CPU traces. [Source](https://docs.mesa3d.org/perfetto.html)
+
+### Medium-term (1–3 years)
+
+- **Vulkan `VK_KHR_performance_query` broader driver coverage.** Intel's ANV and NVIDIA's NVK (the open-source Vulkan driver) have partial or in-progress `VK_KHR_performance_query` implementations. Full coverage across all Mesa-hosted drivers would enable cross-vendor benchmark harnesses to use a single Vulkan API rather than vendor-specific perf paths. Note: needs verification for specific NVK implementation status.
+- **Kernel `perf` GPU counter unification.** Current GPU counter access is fragmented — AMD uses amdgpu's own ioctl path, Intel i915/Xe uses OA streams, NVIDIA uses proprietary SDK. A longer-term direction discussed in kernel mailing list threads is a unified `perf_event_open`-based GPU PMU interface so that all GPU counter collection is accessible through the same syscall as CPU profiling. Note: needs verification for specific RFC status.
+- **Perfetto GPU timeline first-class support in trace_processor.** Perfetto's `trace_processor` currently handles GPU counter tracks from Android (via `GpuCounterEvent` proto) but Linux GPU profiling data from `drm_fdinfo` requires custom importers. Upstream work to add a standard Linux GPU track importer would make Linux GPU profiling data queryable with the same SQL-based `trace_processor` tooling used for Android. [Source](https://lkml.iu.edu/hypermail/linux/kernel/2403.0/03640.html)
+- **Intel Xe driver OA stream stabilization.** The `i915` OA subsystem underpins Intel's `INTEL_MEASURE` and `VK_INTEL_performance_query` paths. The Xe kernel driver (i915's successor for Xe-generation hardware) is re-implementing the OA subsystem under a new driver model; stabilization of `xe_oa` will restore full counter access for Meteor Lake and Lunar Lake on the new driver. Note: needs verification for specific Xe OA upstream status.
+- **Shader occupancy visualization in open-source tooling.** AMD RGP's wavefront occupancy view has no direct open-source equivalent; RADV and Mesa developers have discussed adding occupancy estimation to `VK_AMD_shader_info` output and to Mesa's internal shader statistics, so that the shader compiler can report register pressure and theoretical occupancy without proprietary tooling.
+
+### Long-term
+
+- **Standardized cross-vendor GPU profiling protocol.** The profiling ecosystem is fragmented by vendor: RGP files are AMD-specific, Nsight traces are NVIDIA-specific, and there is no open interchange format analogous to SPIR-V for GPU trace data. A long-term goal in the open-source profiling community is a vendor-neutral GPU trace format (potentially built on Perfetto's proto schema) that tools like RenderDoc, GPA, and Nsight could all emit.
+- **AI-assisted performance diagnosis.** Both NVIDIA Nsight and AMD's tooling have begun integrating guided analysis (automated bottleneck identification). In the open-source Linux stack, similar guidance could emerge from LLM-backed tooling that interprets `VK_KHR_performance_query` counter dumps or Perfetto traces and suggests optimization strategies — though this remains speculative and raises questions about counter semantic accuracy.
+- **GPU profiling integration in system-wide observability platforms.** As platforms like Grafana, OpenTelemetry, and Prometheus expand into GPU infrastructure monitoring (primarily for ML/HPC workloads), the same `drm_fdinfo`-based metrics exported for desktop GPU profiling will likely feed into standardized observability pipelines, blurring the line between frame-level profiling tools and data-center infrastructure monitoring.
+- **Hardware-accelerated counter sampling.** Current GPU counter sampling interrupts the GPU pipeline or requires pass-multiplexing (as in `VK_KHR_performance_query`'s multi-pass requirement). Future GPU architectures may expose dedicated on-chip sampling hardware that can record counter snapshots between draw calls without disturbing execution, enabling always-on profiling with negligible overhead — analogous to ARM's SPE (Statistical Profiling Extension) for CPUs. Note: needs verification for specific hardware roadmap announcements.
+
+---
+
 ## 10. Integrations
 
 **Ch24 — Vulkan Internals.** `VK_KHR_performance_query` and `VK_QUERY_TYPE_TIMESTAMP` are both Vulkan core extension mechanisms described in Ch24's coverage of Vulkan query pools and extension promotion. The `timestampPeriod` value used to convert GPU ticks to nanoseconds is part of `VkPhysicalDeviceLimits`, detailed in Ch24.

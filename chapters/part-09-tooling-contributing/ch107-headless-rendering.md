@@ -1021,6 +1021,33 @@ The key technical insight is that all GPU work — including the headless render
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- Mesa 26.x continues expanding lavapipe's Vulkan extension coverage, particularly the extensions ANGLE requires for full WebGL2 support; the current gap leaves WebGL2 disabled on lavapipe-backed ANGLE, and closing it would make headless Chromium on CPU-only CI runners fully feature-complete. [Source](https://botbrowser.io/en/blog/mesa-llvmpipe-vs-swiftshader-chromium-linux/)
+- llvmpipe's new ORCJIT backend — upstreamed to Mesa main in 2025 and now shipping in Mesa 26.x — adds RISC-V 64-bit JIT compilation, enabling headless rendering on RISC-V CI runners without a GPU; remaining work includes full RISC-V coverage parity with x86/AArch64. [Source](https://www.deepin.org/en/mesa-llvmpipe-orcjit-deepin/)
+- VirtIO-GPU drops legacy VirGL support in Mesa 26.1, pushing all VM-based headless workloads onto the native-context (Venus Vulkan) or gfxstream (GLES) paths; distributions and CI images that have not migrated need updated base images before upgrading to Mesa 26.1. [Source](https://9to5linux.com/mesa-26-1-open-source-graphics-stack-officially-released-heres-whats-new)
+- The rutabaga_gfx crate (standalone Rust re-packaging of the gfxstream rutabaga backend) is being integrated into upstream QEMU; once merged, cloud CI runners using QEMU can get gfxstream-accelerated headless rendering without patching QEMU. [Source](https://github.com/magma-gpu/rutabaga_gfx)
+- Mesa 26.1 adds VirtIO-GPU native-context support for Intel Iris, Crocus, and ANV drivers, so Intel-GPU-backed QEMU hosts can now expose real Vulkan (not virgl-translated OpenGL) to guest VMs running headless workloads. [Source](https://9to5linux.com/mesa-26-1-open-source-graphics-stack-officially-released-heres-whats-new)
+
+### Medium-term (1–3 years)
+
+- Multiple DRM native-context types — `virtio-freedreno`, `virtio-intel`, `virtio-amdgpu` — are awaiting the addition of sync-object UAPI to the VirtIO-GPU kernel driver; once that UAPI lands, guests can run vendor GPU command streams directly against the host driver without any API translation, dramatically improving headless VM rendering performance. [Source](https://lkml.iu.edu/hypermail/linux/kernel/2304.1/00402.html)
+- The Vulkan Roadmap 2026 milestone (published alongside Vulkan 1.4.340) mandates `VK_EXT_descriptor_heap` and other extensions on conformant implementations; lavapipe will need to implement these to remain a valid Vulkan Roadmap 2026 driver, which matters for headless CI runners using CTS-level conformance testing. [Source](https://www.khronos.org/blog/vulkan-introduces-roadmap-2026-and-new-descriptor-heap-extension)
+- The Venus Mesa driver team has a long-term plan to define a new Vulkan extension allowing guest drivers to negotiate directly with host drivers, reducing the round-trip overhead of the current command-stream virtualisation and enabling tighter fence/timeline-semaphore integration — important for GPU-heavy headless workloads like training-loop visualisation. [Source](https://docs.mesa3d.org/drivers/venus.html)
+- Kubernetes GPU scheduling improvements (device plugins, CDI — Container Device Interface) are expected to converge on a standard render-node allocation model, making headless GPU containers in CI clusters schedulable without per-vendor NVIDIA/AMD/Intel operator plugins. Note: needs verification against upstream CDI and CNCF roadmaps.
+- Wlroots headless backend is expected to gain explicit output fractional scaling and HDR passthrough APIs as Wayland's `wp_fractional_scale_v1` and colour-management protocols stabilise, enabling headless CI screenshot testing at HiDPI and wide-gamut resolutions. Note: needs verification against wlroots upstream issue tracker.
+
+### Long-term
+
+- A unified "headless context" standard within the EGL and Vulkan ecosystems — analogous to `EGL_MESA_platform_surfaceless` but ratified as a cross-vendor KHR extension — would eliminate the current patchwork of vendor-specific environment variables (`LIBGL_ALWAYS_SOFTWARE`, `VK_DRIVER_FILES`, `WLR_BACKENDS`) and make headless setup portable across drivers and distributions. Note: needs verification; no formal proposal known as of mid-2026.
+- GPU SR-IOV (Single Root I/O Virtualisation) for discrete AMD and Intel GPUs is progressing in both kernel and userspace; once stable, each CI runner in a shared data-centre rack could receive a hardware-isolated GPU partition, turning "headless software rendering" into "headless hardware rendering" for all CI tiers without full GPU passthrough. Note: needs verification against upstream i915 and amdgpu SR-IOV patch status.
+- Declarative GPU workload description formats (similar to Docker's `--gpu` flag but standardised across NVIDIA, AMD, Intel, and software-fallback) could allow a single CI job descriptor to express "render with hardware GPU if available, else lavapipe", with the scheduler selecting the backend — removing the current per-project shell-script gymnastics around `LIBGL_ALWAYS_SOFTWARE` and `VK_DRIVER_FILES`. Note: needs verification.
+- As WebGPU matures and Dawn/wgpu gain headless compute modes, the distinction between "headless rendering" and "headless GPU compute" is expected to collapse: a single `WGPUDevice` obtained from a Dawn or wgpu instance with no surface will serve both ML inference and frame rendering in server-side CI environments, removing the need for separate OpenGL/Vulkan/CUDA code paths. Note: needs verification against Dawn upstream roadmap.
+
+---
+
 ## 11. Integrations
 
 This chapter connects to the following chapters throughout the book:

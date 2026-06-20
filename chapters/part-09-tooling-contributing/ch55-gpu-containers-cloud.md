@@ -910,6 +910,32 @@ The EFA environment variables (`FI_PROVIDER=efa`, `NCCL_SOCKET_IFNAME=efa0`) are
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **DRA vendor-neutral governance**: NVIDIA donated its Kubernetes DRA driver to the CNCF at KubeCon EU 2026, placing the `nvidia.com/gpu` ResourceSlice/ResourceClaim implementation under neutral stewardship. AMD and Intel are expected to align their DRA drivers to the same CNCF interface, making topology-aware GPU scheduling portable across vendors. [Source: Kubernetes v1.36 DRA updates](https://kubernetes.io/blog/2026/05/07/kubernetes-v1-36-dra-136-updates/)
+- **Device Plugin → DRA migration path**: With DRA graduating to GA in Kubernetes 1.34 and DRA v1.36 bringing multi-driver coordination, the ecosystem is actively migrating away from the integer-count Device Plugin API. GPU Operators from NVIDIA, AMD, and Intel are expected to ship DRA-only modes by end of 2026. [Source: Kubernetes GPU Orchestration 2026](https://www.spheron.network/blog/kubernetes-gpu-orchestration-2026/)
+- **AMD amdgpu SR-IOV improvements in Linux 6.19**: AMD is upstreaming a new SR-IOV mailbox interface and additional virtual-function resource-management APIs for the `amdgpu` driver, targeting Linux 6.19. This enables finer-grained per-VF memory and compute quota control for MxGPU deployments. [Source: Phoronix/gamegpu AMDGPU SR-IOV Linux 6.19](https://en.gamegpu.com/news/zhelezo/amd-gotovit-pervoe-obnovlenie-drajvera-amdgpu-dlya-linux-6-19-s-uluchsheniyami-sr-iov-dcn-i-ras)
+- **Intel Xe VFIO SR-IOV in Linux 6.19**: The Intel Xe driver is landing VFIO SR-IOV support in Linux 6.19, exposing Arc Alchemist and later GPUs as multiple Virtual Functions to KVM guests without requiring the proprietary GVT-g mediated device path (which only covered Gen9–Gen11). [Source: Intel Xe VFIO SR-IOV Medium](https://canartuc.medium.com/intel-xe-vfio-driver-gpu-virtualization-enters-the-mainstream-09982a2f6cd5)
+- **GPU confidential computing on Blackwell with Kata/TDX**: NVIDIA's April 2026 deployment guide documents Confidential Computing (CC) mode for Blackwell GPUs inside TDX-protected Kata containers, with Fabric Manager requiring explicit CC-mode configuration. AMD SEV-SNP support for ROCm containers is progressing in the same kernel window. [Source: NVIDIA CC Deployment Guide TDX](https://docs.nvidia.com/cc-deployment-guide-tdx.pdf)
+
+### Medium-term (1–3 years)
+
+- **DRM namespace isolation**: There is ongoing discussion in the DRM and container communities about proper kernel-level GPU namespace support, analogous to network or PID namespaces, to provide isolation stronger than the current bind-mount + DAC model. No merged patchset exists yet; RFC-level design work is expected. Note: needs verification.
+- **CDI as the universal GPU injection standard**: The Container Device Interface specification is expected to become the default injection mechanism across Docker, containerd, CRI-O, and Podman, superseding the NVIDIA prestart-hook path. The OCI Runtime Spec will likely absorb CDI device semantics natively. [Source: NVIDIA CDI Operator docs](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/cdi.html)
+- **Topology-aware and workload-aware GPU scheduling (KAI Scheduler + DRA)**: The NVIDIA-contributed KAI scheduler and the forthcoming upstream Kubernetes scheduler plugins will use DRA ResourceSlice topology attributes (NVLink domain, memory bandwidth, PCIe locality) for gang-scheduling distributed training jobs optimally across GPU nodes. [Source: Kubernetes GPU Orchestration 2026](https://www.spheron.network/blog/kubernetes-gpu-orchestration-2026/)
+- **DRA on AKS with vGPU**: Microsoft Azure is integrating DRA with NVIDIA vGPU on AKS, allowing fractional GPU allocation through structured ResourceClaims rather than the time-slicing approximation. This extends MIG-style partitioning semantics to vGPU environments without requiring bare-metal A100/H100. [Source: AKS DRA vGPU blog](https://blog.aks.azure.com/2026/03/06/dra-with-vGPUs-on-aks)
+- **Confidential GPU containers entering production**: With NVIDIA Hopper and Blackwell attestation paths stabilised and Kata CoCo (Confidential Containers) integrating TDX + AMD SEV-SNP, cloud providers are expected to expose confidential GPU instance types to tenants who require cryptographic proof of GPU firmware and driver integrity. [Source: Red Hat confidential containers with NVIDIA](https://www.redhat.com/en/blog/power-confidential-containers-red-hat-openshift-nvidia-gpus)
+
+### Long-term
+
+- **Unified GPU device model across containers and VMs**: The long-term architectural goal is a single unified Linux kernel device model — likely an evolution of DRM + SR-IOV + cgroups v2 device controller — that provides equal-quality isolation for containers, VMs, and bare-metal workloads from a single driver code path. VFIO, `mdev`, and render-node bind-mounting would become implementation strategies within a common abstraction. Note: needs verification.
+- **GPU cgroups v3 resource controllers**: The current GPU resource accounting in Linux is approximate (device-plugin counts, MIG static partitions). Future cgroups v3 work may introduce first-class GPU memory and compute controllers analogous to the existing memory and CPU controllers, enabling per-pod GPU bandwidth and VRAM quotas enforced by the kernel rather than by userspace drivers. Note: needs verification.
+- **Seamless multi-cloud GPU portability**: As CDI matures and DRA stabilises, workload portability across AWS, GCP, Azure, and on-premises Kubernetes clusters is expected to improve. Driver version pinning constraints (`NVIDIA_REQUIRE_CUDA`, ROCm ABI) remain a hard coupling; a future firmware abstraction layer or stable userspace ABI freeze could decouple container images from host driver versions. Note: needs verification.
+
+---
+
 ## Integrations
 
 This chapter connects to several other parts of the stack:

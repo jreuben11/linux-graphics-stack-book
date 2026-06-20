@@ -14,6 +14,8 @@ Video streaming occupies the layer of the Linux graphics stack that sits directl
 
 **Chapter 60 — Video Codec Algorithms and Implementations** steps back from frameworks and protocols to explain the mathematical foundations: the **2D DCT**, block-based motion estimation (Diamond, Hexagonal, and EPZS searches), sub-pixel interpolation, and **Decoded Picture Buffer (DPB)** management. It then traces four codec generations — **H.264/AVC**, **H.265/HEVC**, **AV1**, and **VVC/H.266** — explaining the entropy coders (**CABAC**, **ANS/MSAC**), in-loop filters (**deblocking**, **SAO**, **CDEF**, **Loop Restoration**), and encoder APIs (**x264**, **x265**, **libaom**, **rav1e**, **SVT-AV1**). This chapter is the theoretical anchor of the part: readers who want to understand why a given **VA-API** surface has the layout it does, or why **AV1** film-grain synthesis requires a separate GPU pass, will find the answers here.
 
+**Chapter 189 — VLC Media Player: Architecture, GPU Acceleration, and the Linux Graphics Stack** examines VLC's plugin-based architecture from the perspective of the GPU and display pipeline. The chapter covers the module bank scoring system, the demux → decoder → vout pipeline, VA-API hardware decode via the `vaapi` codec plugin and zero-copy DMA-BUF surface export, V4L2 M2M decode for embedded platforms, the Wayland zero-copy video output (zwp_linux_dmabuf_v1 buffer import from VASurfaces), the OpenGL/EGL renderer using EGLImage interop, the new Vulkan renderer in VLC 4.0 with VK_EXT_external_memory_dma_buf format modifier import, libplacebo HDR tone mapping via Vulkan compute, PipeWire and PulseAudio audio output, HDMI passthrough for AC3/DTS/TrueHD, and VLC's transcoding and streaming (`--sout`) pipeline with VA-API hardware encode. The chapter positions VLC alongside FFmpeg (Ch57) and GStreamer (Ch58) to show where a self-contained media player differs architecturally from a framework or library.
+
 **Chapter 60b — Video Streaming Protocols** addresses the network delivery layer that sits above the codec and framework layers. It covers **HLS** (**RFC 8216**) playlist grammar and **Low-Latency HLS** partial segments; **MPEG-DASH** **MPD** structure and **CMAF** chunked transfer for **LL-DASH**; **WebRTC** from **SDP** offer/answer through **ICE**/**STUN**/**TURN** to **DTLS-SRTP** and **RTP/RTCP** feedback loops, with **GStreamer** `webrtcbin` as the Linux integration point; **SRT** ARQ and latency budgeting via **libsrt**; and emerging **QUIC**-based transports (**WebTransport**, **MOQT**). The chapter also compares adaptive bitrate algorithms — throughput-based **EWMA**, buffer-based **BBA**, Lyapunov-optimal **BOLA**, model-predictive **MPC**, and reinforcement-learning **Pensieve** — grounding each in what a Linux packaging stack built on **FFmpeg** or **GStreamer** actually implements.
 
 ## How the Chapters Interrelate
@@ -31,6 +33,9 @@ graph LR
     CH57 --> CH60B
     CH58 --> CH60B
     CH58 --> CH59
+    CH57 --> CH189["Ch189: VLC"]
+    CH58 --> CH189
+    CH60 --> CH189
 ```
 
 **Chapter 60** is the conceptual prerequisite for all other chapters in the part. Its treatment of **NAL** unit structure, **DPB** management, **B-frame** DTS/PTS reordering, and rate-control theory directly informs the encoder and decoder configuration sections in Chapter 57 and the **VA-API** and **V4L2** element discussions in Chapter 58. Readers who already work professionally with **H.264** or **AV1** may skim Chapter 60 and return to specific sections on demand.

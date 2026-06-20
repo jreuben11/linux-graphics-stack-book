@@ -775,6 +775,32 @@ For Vulkan headless capture (no display server at all), the programmatic API pat
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Full mesh shader pipeline debugging**: `VK_EXT_mesh_shader` capture currently records draw calls and reflects results, but per-wave mesh/task shader stepping in the shader debugger is not yet complete. The open GitHub issue ([Source](https://github.com/baldurk/renderdoc/issues/2743)) tracks full introspection support; bounding-box display for mesh shaders shipped in v1.44 as a first step.
+- **Workgroup-accurate shader debugger for all stages**: v1.41 introduced workgroup-accurate debugging for compute and Vulkan shaders ([Source](https://renderdoc.org/docs/getting_started/features.html)); extending the same full-wave simulation to hull/domain and geometry stages is listed in the official planned features page ([Source](https://renderdoc.org/docs/behind_scenes/planned_features.html)).
+- **Dependency tracking**: the planned features page lists "tracking the dependencies or dependants of a given action" — enabling a developer to ask "what draw calls write to this texture before this dispatch?" — as a near-term goal. Note: no concrete timeline given.
+- **Low-overhead continuous capture mode**: the documented planned feature "enabling RenderDoc to run continuously with minimal overhead" would allow always-on capture for hard-to-reproduce bugs without requiring a manual frame trigger. This is particularly relevant for Linux Vulkan CI pipelines ([Source](https://renderdoc.org/docs/behind_scenes/planned_features.html)).
+- **Improved process-attachment support**: attaching to an already-running Vulkan application without `LD_PRELOAD` or the RenderDoc launcher is listed as planned. On Linux this is complicated by ASLR and Vulkan loader semantics; progress is tracked on the RenderDoc GitHub ([Source](https://github.com/baldurk/renderdoc)).
+
+### Medium-term (1–3 years)
+
+- **Frame diffing and event comparison**: the planned features page lists "diffing events in a given frame" as a design goal — comparing two draw calls' full pipeline state and resource contents side-by-side. This would formalise the manual A/B comparison workflow that Mesa developers currently do by opening two captures in separate `qrenderdoc` windows ([Source](https://renderdoc.org/docs/behind_scenes/planned_features.html)).
+- **Live pipeline state modification**: "modifying the pipeline on the fly to change state" (shader hot-swap, blend state overrides) is listed as planned. For Linux Mesa driver developers this would accelerate shader correctness triage by eliminating recompile cycles ([Source](https://renderdoc.org/docs/behind_scenes/planned_features.html)).
+- **VkVideo / hardware video decode debugging**: as `VK_KHR_video_decode_h264` and `VK_KHR_video_decode_h265` mature in RADV and ANV, capture-and-replay of video decode command buffers is an open gap. Note: no official RenderDoc issue has been confirmed as of this writing; needs verification.
+- **Python API expansion for CI integration**: the existing `renderdoc` Python module exposes replay and resource extraction; planned enhancements would add structured pipeline state diffing and automated pixel-hash regression suitable for Mesa's CI (piglit/dEQP integration). Note: needs verification against upstream issue tracker.
+- **Redundant state highlighting**: flagging redundant Vulkan state-setting calls (binding the same pipeline or descriptor set twice) is listed in the planned features page and would benefit RADV/ANV driver benchmarking by identifying driver overhead hotspots ([Source](https://renderdoc.org/docs/behind_scenes/planned_features.html)).
+
+### Long-term
+
+- **Ray tracing introspection**: the RenderDoc maintainer has explicitly stated there are no current plans to support full ray tracing shader debugging in Vulkan or D3D12, because the tooling model differs fundamentally from rasterisation ([Source](https://renderdoc.org/docs/behind_scenes/raytracing.html)). If community demand and driver-side support (e.g., `VK_KHR_ray_tracing_maintenance1` on RADV) mature sufficiently, this position may be revisited, but it remains speculative.
+- **Cross-architecture capture portability**: `gfxreconstruct` already handles Vulkan memory-type remapping for cross-GPU replay; long-term RenderDoc may adopt a similar mechanism to allow captures made on an AMD discrete GPU to replay on an Intel integrated GPU or an Arm Mali device. Note: needs verification.
+- **Integration with kernel-level GPU fault reporting**: as the Linux DRM subsystem develops richer GPU VM fault reporting (via `drm_exec` and the `VM_BIND` uAPI on amdgpu and xe), a long-term goal is for RenderDoc to correlate its API-level call stream with kernel-reported GPU page faults, enabling automatic hang attribution without needing `umr` or `intel_gpu_top` as separate tools. Note: speculative; no upstream issue confirmed.
+
+---
+
 ## 11. Integrations
 
 This chapter connects to the following chapters across the book:

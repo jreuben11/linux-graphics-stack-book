@@ -787,6 +787,33 @@ A widespread misconception is that the WSI layer is merely a thin wrapper. In pr
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Full Vulkan 1.4 baseline across all production drivers**: Mesa 26.0 and 26.1 completed Vulkan 1.4 conformance for RADV, ANV, NVK, Turnip, and Honeykrisp. Near-term work focuses on filling remaining extension gaps and achieving Vulkan 1.4 CTS sign-off for newer hardware generations such as RDNA4 (GFX12) and Xe2 (Battlemage). [Source](https://www.phoronix.com/news/Mesa-26.1-Released)
+- **RADV `VK_EXT_descriptor_buffer` (heap mode) stabilisation**: Experimental `VK_EXT_descriptor_heap` support landed behind `RADV_EXPERIMENTAL=heap` in Mesa 26.1; near-term work will harden the implementation for general availability, directly benefiting VKD3D-Proton's D3D12 descriptor heap path. [Source](https://linuxiac.com/mesa-26-1-graphics-stack-brings-vulkan-and-opengl-improvements/)
+- **`VK_EXT_present_timing` rollout**: The extension landed across RADV, ANV, NVK, Turnip, Honeykrisp, and PanVK in Mesa 26.1 and is being tracked toward stable implementation; per-frame present timestamps will benefit compositors and frame-pacing tools such as gamescope. [Source](https://www.phoronix.com/news/Mesa-26.1-Released)
+- **Turnip A8xx (Snapdragon 8 Elite) hardware bringup**: Qualcomm's A8xx Adreno architecture requires new register definitions, CP microcontroller firmware paths, and binning-pass updates in the Turnip driver; initial A8xx enablement patches are in review on the freedesktop Mesa list. Note: exact patch status needs verification.
+- **ANV VirtIO-GPU native context support**: Mesa 26.1 introduced native-context VirtIO-GPU support for ANV, enabling direct Intel GPU passthrough in paravirtualised virtual machines (QEMU/crosvm); stabilisation and wider CI coverage are planned in the following releases. [Source](https://linuxiac.com/mesa-26-1-graphics-stack-brings-vulkan-and-opengl-improvements/)
+
+### Medium-term (1–3 years)
+
+- **RADV RDNA4 ray-tracing and mesh-shader optimisation**: Mesa 26.0 delivered significant RDNA3/RDNA4 ray-tracing performance improvements driven by Valve; medium-term work targets RDNA4-specific BVH build heuristics, compressed acceleration structures, and `VK_KHR_ray_tracing_maintenance2` (Note: extension naming needs verification). [Source](https://www.phoronix.com/news/Mesa-26.0-Released)
+- **NVK NVIDIA closed-firmware compute and video decode parity**: NVK reached Vulkan 1.4 conformance (Mesa 26.1) and is adding `VK_KHR_pipeline_binary`, `VK_EXT_shader_uniform_buffer_unsized_array`, and `VK_KHR_maintenance10`; medium-term goals include closing the gap with the proprietary driver on compute workloads dependent on firmware-managed schedulers. [Source](https://www.collabora.com/news-and-blog/news-and-events/nvk-now-supports-vulkan-14.html)
+- **`VK_KHR_video_encode_queue` stabilisation across RADV and ANV**: `VK_VALVE_video_encode_rgb_conversion` landed in Mesa 26.0 for RADV; broader video encode queue promotion to KHR across RADV and ANV (replacing the EXT provisional path) is under active development as the Khronos video working group finalises the specification. [Source](https://docs.mesa3d.org/relnotes/26.0.0.html)
+- **Turnip Vulkan video decode on A7xx+**: Turnip's A7xx backend supports Vulkan 1.3 and is extending toward hardware-accelerated video decode (`VK_KHR_video_decode_h264`, `VK_KHR_video_decode_h265`) using the Adreno multimedia engine; implementation is underway in the freedreno community. Note: timeline needs verification.
+- **ANV Xe2 (Battlemage) feature completion**: The Xe2/BMG architecture enablement landed in Mesa 24.2 and has been under active hardening; medium-term work includes full `VK_EXT_mesh_shader` performance tuning on Xe2's enlarged EU geometry pipeline and XE_VM_BIND range-based eviction optimisation. [Source](https://docs.mesa3d.org/relnotes/24.2.0.html)
+
+### Long-term
+
+- **Unified shader compilation pipeline across RADV, ANV, and Turnip**: All three drivers independently compile SPIR-V through NIR into hardware ISA; long-term architectural discussions propose a more aggressive sharing of the mid-level optimisation pipeline (e.g., a common register-pressure-aware NIR-to-backend scheduler), reducing per-driver maintenance burden. Note: speculative; needs verification from Mesa mailing list.
+- **Sparse resource and residency (`VK_KHR_maintenance7`, future sparse tiling extensions)**: Large-scale sparse textures and partially-resident buffers require kernel VM range management (AMD's amdgpu sparse VA ops, Intel's XE_VM_BIND sparse semantics) and are an ongoing area across all three drivers as game engines increasingly depend on D3D12-equivalent tiled resource tiers.
+- **Mesa Vulkan software ray tracing via hardware-agnostic BVH library**: A GPU-agnostic BVH build and traversal library is a stated long-term goal to allow hardware-incapable drivers (Lavapipe, PanVK) to expose `VK_KHR_ray_tracing_pipeline` via pure compute shaders, reusing the build shaders already present in `src/amd/vulkan/bvh/` with driver-neutral wrappers. Note: speculative direction based on community discussions.
+- **Vulkan cooperative matrix and ML inference extensions**: Khronos `VK_KHR_cooperative_matrix` is landing in ANV for Xe2 and is under investigation for RDNA4's WMMA (Wave Matrix Multiply-Accumulate) instructions in RADV; long-term this feeds into on-GPU ML inference workloads for display upscaling and content generation inside Linux desktop pipelines.
+
+---
+
 ## Integrations
 
 **Chapter 3 (Wayland Explicit Sync)**: The `wp_linux_drm_syncobj_v1` protocol described in Chapter 3 is consumed directly by `wsi_wayland.c`. The protocol passes DRM syncobj timeline points (acquire and release) between the Vulkan driver and the Wayland compositor, allowing the compositor to GPU-wait on rendering completion without a CPU round-trip. The syncobj timeline handles produced by RADV's, ANV's, and Turnip's DRM syncobj-based `VkSemaphore` implementations are the signals passed through this protocol path (§8).

@@ -793,6 +793,42 @@ VkDeviceMemory alloc_with_oom_recovery(
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **VK_EXT_present_timing now in Mesa 26.1** — Hans-Kristian Arntzen (Valve) landed 19 patches wiring up `VK_EXT_present_timing` for X11 and Wayland WSI backends in RADV, ANV, NVK, PanVK, and Turnip, enabling applications to schedule presents to a precise display timestamp rather than relying on opaque FIFO pacing. Application developers should adopt this extension to replace the older `VK_KHR_present_wait` / `VK_KHR_present_id` polling pattern. [Source](https://www.phoronix.com/news/Mesa-Merges-Present-Timing)
+
+- **Mesa 26.2 (mid-July 2026) ray-tracing and NVK refinements** — Mesa 26.2 is expected to continue closing feature gaps in NVK (NVIDIA open-source Vulkan driver) and to improve ray-tracing performance on RADV (RDNA 2/3) and ANV (Xe HPG+). Developers targeting NVIDIA hardware via Mesa should track NVK extension coverage in the Mesa 26.2 cycle. [Source](https://www.phoronix.com/news/Mesa-26.1-Released)
+
+- **Vulkan Roadmap 2026 profile** — The Khronos Group's Roadmap 2026 milestone codifies a minimum extension baseline for mid-to-high-end devices shipping in 2026, including mandatory support for 8/16-bit integer and 16-bit float shader types, `VK_KHR_shader_maximal_reconvergence`, `VK_KHR_shader_quad_control`, and improved floating-point consistency. Application developers should validate against this profile rather than probing individual extensions. [Source](https://docs.vulkan.org/spec/latest/appendices/roadmap.html)
+
+- **EGL and GBM headless improvements** — Ongoing Mesa work on `EGL_EXT_device_base` and `EGL_MESA_platform_surfaceless` continues to improve reliability for server-side and container-based rendering scenarios (CI, ML inference, cloud gaming). Note: tracking specific patches requires monitoring [mesa-dev mailing list](https://lists.freedesktop.org/archives/mesa-dev/).
+
+- **`VK_EXT_swapchain_maintenance1` wider adoption** — Mesa's implementation of defer-retire semantics and per-present fence delivery via `VkSwapchainPresentFenceInfoEXT` is maturing; application developers using Wayland tearing control (`wp_tearing_control_v1`) should test with Mesa 26.x, which exposes the required `VK_EXT_surface_maintenance1` on both X11 and Wayland. [Source](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_swapchain_maintenance1.html)
+
+### Medium-term (1–3 years)
+
+- **`VK_KHR_cooperative_matrix` for GPU compute on Linux** — Mesa RADV and ANV are gaining support for `VK_KHR_cooperative_matrix`, enabling workloads such as LLM inference (llama.cpp already uses it on NVIDIA) to run on AMD and Intel hardware via the open-source stack. The `VK_KHR_shader_bfloat16` and `VK_KHR_shader_integer_dot_product` extensions are companion pieces for mixed-precision ML workloads. [Source](https://docs.vulkan.org/features/latest/features/proposals/VK_KHR_cooperative_matrix.html)
+
+- **Video decode/encode extension maturation** — `VK_KHR_video_decode_h264`, `VK_KHR_video_decode_h265`, `VK_KHR_video_decode_av1`, and encode counterparts are stabilising across RADV and ANV. The EGL interop path (`EGL_EXT_image_dma_buf_import_modifiers` + VA-API) that this chapter describes is expected to be supplemented by direct Vulkan video queue pipelines, removing the need for VA-API as an intermediary in modern applications. Note: needs verification against 2026–2027 Mesa roadmap.
+
+- **Wayland color management protocol stabilisation** — `wp_color_management_v1` (currently in the wayland-protocols staging area) will affect EGL and Vulkan WSI by requiring applications to declare HDR/wide-gamut colour spaces at surface-creation time. EGL and Vulkan WSI implementations in Mesa will need to wire up colour space negotiation — watch freedesktop GitLab for protocol finalisation. [Source](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/tree/main/staging)
+
+- **EGL migration to `EGL_EXT_platform_xcb`** — The long-standing `EGL_EXT_platform_x11` path (which relies on Xlib) is gradually being superseded by the XCB-based platform extension. Mesa's EGL already supports both; application developers using raw X11 EGL should plan the migration to avoid Xlib threading complexity. Note: needs verification for specific Mesa version targets.
+
+- **Improved multi-GPU Vulkan presentation** — `VkDeviceGroupPresentCapabilitiesKHR` and the device-group WSI chain are still underused. Research work on heterogeneous iGPU+dGPU frame delivery (relevant for laptops and hybrid desktops) is expected to mature alongside `VK_NV_present_barrier` and future KHR equivalents. [Source](https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#wsi-device-groups)
+
+### Long-term
+
+- **Unified explicit sync across all Linux subsystems** — The `wp_linux_drm_syncobj_v1` Wayland protocol and DRM syncobj timeline unify GPU-to-display synchronisation, but camera, video-codec, and media subsystems still use independent fence models (DMABUF implicit fences, V4L2 fences). Long-term architectural work aims to surface a single kernel timeline primitive spanning KMS, V4L2, and Vulkan, eliminating the EGL-to-VA-API impedance mismatch that currently requires explicit implicit-to-explicit fence conversion. [Source](https://www.collabora.com/news-and-blog/blog/2022/06/09/bridging-the-synchronization-gap-on-linux/)
+
+- **EGL deprecation trajectory** — As Wayland matures and Vulkan WSI covers more use cases, EGL's role is narrowing to OpenGL ES contexts, VA-API interop, and legacy X11 surfaces. The 3–5 year outlook sees new applications using Vulkan + `VK_KHR_video_queue` rather than EGL + VA-API, though EGL will remain maintained for the OpenGL ES and embedded/automotive ecosystems. Note: speculative direction based on current community discussion.
+
+- **`VK_KHR_display` and DRM-direct Vulkan** — Direct KMS presentation via Vulkan (bypassing a compositor) is currently viable only through `VK_KHR_display`, which has driver coverage gaps and lacks atomic KMS semantics. A future `VK_EXT_drm_display` or equivalent is periodically discussed as a way to expose KMS plane composition and CRTC selection directly through Vulkan, enabling Vulkan-native compositor backends. Note: no concrete patchset as of mid-2026; needs verification.
+
+---
+
 ## 10. Integrations
 
 This chapter connects in both directions with the hardware and protocol chapters that form the rest of the book.

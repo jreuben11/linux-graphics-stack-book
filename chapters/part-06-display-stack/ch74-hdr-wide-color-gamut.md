@@ -864,6 +864,33 @@ The Linux kernel assembles and programmes both formats from the same `hdr_output
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **NVIDIA full DRM Color Pipeline API integration**: NVIDIA released a preview Linux driver in April 2026 supporting the per-plane DRM color pipeline API merged in Linux 6.19; full production driver support for NVIDIA GPUs on Wayland HDR compositors is expected to land in stable driver releases by late 2026. [Source](https://www.phoronix.com/news/NVIDIA-Preview-DRM-Color-Pipe)
+- **Mesa Vulkan WSI color management stabilisation**: Mesa 25.1 integrated `wp_color_management_v1` into its Vulkan windowing system, enabling `VK_EXT_swapchain_colorspace` and `VK_EXT_hdr_metadata` over Wayland; further stabilisation across radv, anv, and nvk drivers is ongoing. [Source](https://www.phoronix.com/news/Mesa-Vulkan-WSI-HDR-CM)
+- **Broader compositor adoption of `color-representation-v1`**: wlroots-based compositors (Sway, Hyprland) are in the process of adopting the `color-representation-v1` and `color-management-v1` protocols; uptake is expected within the 6–12 month window as the protocol has reached stable status in wayland-protocols 1.44. [Source](https://wayland.app/protocols/color-management-v1)
+- **Mesa 26.x frame synchronisation improvements for HDR**: Mesa 26.2 is enhancing frame synchronisation capabilities relevant to latency-sensitive HDR display paths; tighter integration with DRM timeline semaphores for color-pipeline-programmed planes is a stated goal. [Source](https://www.fosslinux.com/156596/the-gaming-standard-proton-10-wayland-and-hdr-on-linux.htm)
+- **GStreamer and mpv Wayland color management adoption**: GStreamer video output and mpv are actively integrating `wp_color_management_v1` for HDR playback pipelines, expected to reach stable releases in the near term. [Source](https://www.collabora.com/news-and-blog/news-and-events/12-years-of-incubating-wayland-color-management.html)
+
+### Medium-term (1–3 years)
+
+- **HDR10+ dynamic metadata in the DRM UAPI**: HDR10+ (`SMPTE ST 2094-40`) scene-by-scene dynamic metadata is not yet formally exposed through the DRM connector property model; a `HDR_OUTPUT_METADATA` extension or new blob type to carry per-frame dynamic metadata is anticipated once compositor pipelines mature. Note: needs verification against current kernel RFC patchsets.
+- **Dolby Vision Linux support**: Dolby Vision's dynamic metadata and dual-layer encoding remain largely absent from the open Linux stack due to its proprietary licensing model; community discussions exist around read-only passthrough mode for HDMI Dolby Vision signalling, but no upstream kernel patches are merged. [Source](https://en.wikipedia.org/wiki/Dolby_Vision)
+- **Intel i915 / Xe DRM Color Pipeline API support**: AMD's DCN 3.x and NVIDIA's preview driver cover the major dGPU bases; Intel's Xe driver is expected to add DRM colorop chain support for its display engine over the 1–3 year window as the API stabilises. Note: needs verification against current Xe driver roadmap.
+- **`color-management-v1` v2 refinements**: The wayland-protocols working group is tracking implementation experience across KWin, Mutter, Weston, and SDL to inform a potential revision of the protocol addressing edge cases in ICC profile negotiation and extended color volume description. [Source](https://www.collabora.com/news-and-blog/news-and-events/12-years-of-incubating-wayland-color-management.html)
+- **Vulkan HDR swapchain on X11/XWayland**: HDR Vulkan surfaces under XWayland remain a known gap; work is ongoing to plumb `VK_EXT_swapchain_colorspace` through the XWayland translation layer so that legacy X11 applications benefit from compositor HDR without modification. Note: needs verification.
+
+### Long-term
+
+- **Hardware-accelerated 3D LUT tone mapping in the DRM colorop API**: The current DRM colorop model supports 1D LUTs and matrices; a standardised `drm_colorop` object type for hardware tetrahedral 3D LUTs (beyond AMD-specific driver properties) would enable display-engine-accelerated tone mapping without compositor GPU shaders, improving power efficiency on mobile platforms.
+- **Per-display ICC profile enforcement at the KMS level**: Long-term architectural goal of having the kernel (or a privileged colour server) own the per-display ICC profile and enforce it atomically in hardware, removing the need for each compositor to independently manage LUT programming and reducing the risk of colour-state races across VT switches.
+- **Standardised Linux HDR certification tooling**: As HDR display support matures, industry interest is growing in automated compliance testing (analogous to the VESA DisplayHDR certification suite) that exercises the full Linux kernel-to-compositor-to-display chain; no upstream project currently exists for this but it is a natural long-term complement to the libdisplay-info and KMS infrastructure.
+- **AV1 HDR10+ decode integration with DRM colorop**: `VK_KHR_video_decode_av1` and VA-API AV1 profiles are gaining HDR10+ dynamic metadata carriage; integrating per-frame metadata extraction into the DRM per-plane colorop pipeline for AV1 HDR10+ streams is a logical long-term evolution as AV1 becomes the dominant streaming codec.
+
+---
+
 ## Integrations
 
 This chapter connects to the following chapters in the book:

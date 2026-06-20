@@ -831,6 +831,33 @@ RTX Remix sits at the convergence of three threads from this chapter:
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Wine WoW64 and ntsync stabilisation.** Wine 11.0 shipped ntsync integration and the completed WoW64 single-binary model in January 2026; the near-term focus is ironing out regressions in less-tested 32-bit game titles and landing ntsync as the default synchronisation back-end in Proton builds. [Source](https://news.tuxmachines.org/n/2026/01/13/Wine_11_Officially_Released_with_NTSync_Support_Vulkan_H_264_De.shtml)
+- **VKD3D-Proton DXBC shader back-end rewrite.** VKD3D-Proton 3.0 (2026) replaced the legacy `vkd3d-shader` DXBC path with a full rewrite; 3.0.1 and follow-on point releases are expected to close remaining correctness gaps and reduce compile-time in the new path before the next major milestone. [Source](https://9to5linux.com/vkd3d-proton-3-0-released-with-fsr4-support-dxbc-shader-backend-rewrite)
+- **FSR4 and cooperative-matrix shader support.** VKD3D-Proton 3.0 added AMD FSR4 via `VK_KHR_cooperative_matrix` and `VK_KHR_shader_float8`; near-term work includes broader coverage of `VK_KHR_cooperative_matrix` intrinsics for AI-inference workloads in games and DLSS 4 parity on the NVIDIA path. [Source](https://www.gamingonlinux.com/2026/05/vkd3d-proton-3-0-1-brings-many-linux-gaming-enhancements-for-direct3d-12-via-vulkan/)
+- **`winewayland.drv` clipboard and input completion.** Wine 11 landed bidirectional clipboard and drag-and-drop for the Wayland driver; remaining gaps (IME input, pointer-constraint protocol, fractional scaling) are tracked as the driver approaches feature parity with `winex11.drv`. [Source](https://windowsforum.com/threads/wine-11-0-ntsync-wow64-overhaul-and-wayland-updates-for-better-linux-gaming.406839/)
+- **DXVK-Sarek legacy D3D expansion.** DXVK-Sarek v1.12 (April 2026) added Dynamic Asynchronous Pipeline Compilation and D3D3/5/6/7 support via the D7VK port; further releases targeting D3D8 correctness and older-GPU shader path optimisations are actively in development. [Source](https://www.gamingonlinux.com/2026/04/gaming-on-linux-with-an-older-gpu-levels-up-with-dxvk-sarek-v1-12-bringing-major-new-features/)
+
+### Medium-term (1–3 years)
+
+- **D3D12 Work Graphs emulation maturity.** VKD3D-Proton has prototyped Work Graphs emulation on top of Vulkan compute shaders, but Hans-Kristian Arntzen's analysis found core Vulkan compute to be up to 3× faster than the GPU-driven graph path for current game workloads; medium-term work focuses on `VK_EXT_device_generated_commands` as the performance-enabling primitive for a credible Work Graphs path. [Source](https://www.phoronix.com/news/VKD3D-Proton-Work-Graphs)
+- **Kernel-level anti-cheat interoperability.** Vanguard and similar kernel-mode AC systems remain architecturally incompatible with Linux; a medium-term solution may require either AC vendors shipping signed Linux kernel modules or a Windows-kernel virtualisation path (WHPX/KVM-based) that lets the AC driver observe an emulated Windows kernel environment. Note: needs verification of vendor roadmap commitments.
+- **DirectStorage GPU decompression on Linux.** The current VKD3D-Proton DirectStorage path is a CPU staging-buffer fallback; medium-term work requires Vulkan extensions for GPU-native GDeflate decompression (`VK_NV_memory_decompression` on NVIDIA, an AMD equivalent pending) plus `io_uring` bypass of the kernel page cache for `O_DIRECT` GPU-mapped reads. [Source](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_NV_memory_decompression.html)
+- **DirectML / Windows ML on Linux.** No open-source DirectML implementation exists for Linux; medium-term approaches under discussion include wrapping DirectML dispatch through a Vulkan compute or ROCm/OpenCL shim, or leveraging the emerging `VK_KHR_cooperative_matrix` path already used for FSR4 to handle inferencing kernels. Note: needs verification.
+- **Proton Steam Runtime "sniper" successor.** Valve has signalled a next-generation Steam Runtime container (beyond `sniper`) tracking a newer Debian/Ubuntu base; the transition will update the Mesa, LLVM, and glibc versions available to Proton-wrapped games without requiring host system upgrades. Note: needs verification of official announcement.
+
+### Long-term
+
+- **Wine Wayland as the default display back-end.** The long-term architectural goal is to retire `winex11.drv` as the default and route all Wine graphics through `winewayland.drv`, eliminating the XWayland compositing hop entirely and reducing latency on Wayland-native desktops. Note: needs verification of Wine project consensus.
+- **Hardware-virtualised Windows kernel for AC compatibility.** A speculative long-term direction is a lightweight KVM/WHPX Windows kernel stub that allows kernel-mode AC drivers to load in an isolated ring-0 environment while the game's user-space code runs natively under Wine/Proton — analogous to how Android emulators run ARM kernels on x86. Note: speculative; no confirmed upstream design.
+- **Unified D3D-to-Vulkan compiler pipeline.** The long-term vision shared by VKD3D-Proton and Mesa contributors is a single DXBC/DXIL→SPIR-V→NIR pipeline with Mesa's NIR as the canonical IR, replacing the forked `dxil-spirv` and `vkd3d-shader` DXBC paths with a single maintained translator that benefits from all Mesa compiler improvements. Note: needs verification of upstream consensus.
+- **Native DirectStorage with `io_uring` and Vulkan timeline semaphores.** A fully native Linux DirectStorage analogue would combine `io_uring` fixed-buffer reads, `O_DIRECT` bypass, GPU-native GDeflate, and Vulkan timeline semaphore signalling from completion queues into a zero-copy, GPU-scheduled asset streaming path competitive with the Windows NVMe driver stack. Note: speculative long-term design direction.
+
+---
+
 ## 10. References
 
 1. Wine source tree: [`https://gitlab.winehq.org/wine/wine`](https://gitlab.winehq.org/wine/wine) — `dlls/ntdll/loader.c`, `server/request.h`, `dlls/ntdll/unix/sync.c`

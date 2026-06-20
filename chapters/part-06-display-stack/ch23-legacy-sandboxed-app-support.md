@@ -795,6 +795,32 @@ finish-args:
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **KDE Plasma 6.8 drops the native X11 session (October 2026)**: Plasma 6.7 (mid-2026) will be the final release shipping a dedicated X11 session; from Plasma 6.8, only Wayland is offered at login. Legacy X11 applications continue to run through XWayland, making XWayland's correctness and performance critical to a smooth transition. [Source](https://9to5linux.com/kde-plasma-6-8-desktop-environment-to-drop-the-x11-session-and-go-wayland-only)
+- **Xwayland-satellite proliferation**: The `xwayland-satellite` project brings rootless XWayland integration to compositors that do not natively implement an XWM, with further polishing and distribution packaging expected as more compositors adopt the Wayland-only path. [Source](https://github.com/Supreeeme/xwayland-satellite)
+- **xdg-desktop-portal USB portal and Notification v2**: Released in xdg-desktop-portal 1.19.1, the new USB portal extends sandboxed hardware access patterns; continued new portal interfaces (camera, USB, location) are landing on short release cycles and model the eventual GPU portal design. [Source](https://www.phoronix.com/news/XDG-Desktop-Porta-1.19.1)
+- **X.Org server security-only maintenance**: RHEL 10 ships without the standalone Xorg server, retaining only XWayland. The upstream X.Org server is in security-fix-only mode, with all active feature development concentrated in XWayland. [Source](https://www.redhat.com/en/blog/rhel-10-plans-wayland-and-xorg-server)
+- **Explicit sync hardening across all compositors**: wlroots 0.19 / Sway 1.11 (June 2025) completed `wp_linux_drm_syncobj_v1` support; remaining work focuses on edge-case handling with multi-GPU configurations and NVIDIA proprietary driver interoperability. Note: needs verification for exact status in mid-2026.
+
+### Medium-term (1–3 years)
+
+- **Portal-mediated GPU context creation**: The long-standing tracking issue for a GPU access portal in `xdg-desktop-portal` — replacing the coarse-grained `--device=dri` Flatpak permission with a mediated, per-application GPU context — remains open and is the most significant unsolved sandboxing problem in the Linux graphics stack. [Source](https://gitlab.freedesktop.org/xdg/xdg-desktop-portal/-/issues/)
+- **`wp_security_context_v1` broader compositor adoption**: Flatpak 1.16 introduced `wp_security_context_v1` to propagate sandbox identity at the Wayland-protocol level; wider adoption across wlroots-based compositors and integration with per-sandbox Wayland-global filtering is expected to tighten sandboxed-client isolation incrementally. [Source](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/tree/main/staging/security-context)
+- **XWayland fractional scaling stabilisation**: The `wp_fractional_scale_v1` path under XWayland still produces subpixel-rendering artefacts in many X11 toolkits (GTK2, Qt4, Motif). Toolkit-independent fractional scale signalling via Xft.dpi and XRandR virtual-monitor geometry improvements are under active discussion on the `xorg-devel` mailing list. Note: needs verification for exact upstream status.
+- **Window-level screen capture in wlroots portals**: `xdg-desktop-portal-wlr` currently supports only full-output capture via `zwlr_screencopy_manager_v1`; proposals for window-level capture (matching KWin and Mutter capabilities) are pending a new wlroots protocol extension. Note: needs verification for current RFC status.
+- **Gamescope XWayland enhancements for HDR and VRR**: Gamescope's non-rootless XWayland mode is the primary deployment for Proton/Steam games; HDR passthrough (`wp_color_management_v1`) and variable-refresh-rate signalling through XWayland are active development areas within the Valve/gamescope project. Note: needs verification against latest gamescope milestones.
+
+### Long-term
+
+- **XWayland protocol-layer window management**: The current architecture relies on the X11 window manager (XWM) component running inside the compositor process to interpret X11 window state. A long-term architectural goal is moving XWM into the XWayland process itself (as xwayland-satellite demonstrates), eventually converging on a model where the compositor requires zero X11 knowledge.
+- **Wayland-native sandboxing primitives replacing Flatpak permissions**: The combination of `wp_security_context_v1`, a future GPU portal, and finer-grained Wayland global filtering could provide sufficient isolation that `--device=dri` and `--socket=wayland` sandbox holes are closed, achieving a fully mediated, zero-direct-device-access model for GPU graphics in containers.
+- **Elimination of X11 dependency in long-term-support distributions**: As Plasma 6.8, GNOME, and RHEL 10 lead the removal of native X11 sessions, the XWayland compat layer is projected to be the sole X11 interface on new Linux deployments by the late 2020s, eventually entering long-term maintenance mode itself once the remaining X11-only application population diminishes.
+
+---
+
 ## 12. Integrations
 
 **Chapter 1 (DRM Architecture)**: DRI3 is the X11 protocol that allows X11 applications to allocate GPU buffers directly. XWayland uses DRI3 to accept client-allocated GPU buffers (from Mesa's GLX driver) and present them to the compositor. Render nodes (`/dev/dri/renderDN`) are the device nodes DRI3 clients open. The security model of render nodes — designed to be world-readable/writable for unprivileged GPU compute — is why Flatpak's `--device=dri` represents a significant sandbox escape for GPU capabilities.

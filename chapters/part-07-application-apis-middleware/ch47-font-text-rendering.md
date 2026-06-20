@@ -794,6 +794,32 @@ Variable fonts introduce a challenge for glyph atlas caching: a glyph at weight 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **HarfBuzz GPU paint API stabilisation**: As of April 2026 the experimental `hb_gpu_paint_t` raster/vector/GPU libraries completed code review; the API is expected to graduate from experimental status in the near term, enabling COLRv0 and COLRv1 paint-tree encoding directly into a compact GPU-ready blob without a CPU intermediate pass. [Source](https://github.com/harfbuzz/harfbuzz/issues/5919)
+- **HarfBuzz 14.x maintenance and subsetting fixes**: HarfBuzz 14.2.0 (April 2026) is the current stable release; active work continues on fixing variable COLRv1 subsetting (where `ItemVariationStore` is incorrectly dropped, leaving `VarIndex` references dangling). [Source](https://github.com/harfbuzz/harfbuzz/issues/4085)
+- **FreeType 2.14.x continued maintenance**: FreeType 2.14.3 (March 2026) is the current stable release; autohinter improvements for diacritic separation at small sizes shipped recently and incremental maintenance continues. [Source](https://freetype.org/)
+- **Pango petite-caps and OpenType feature parity**: Pango 1.57.0 (August 2025) added petite-caps support; near-term work focuses on closing remaining OpenType feature gaps before a potential architectural split with GTK 5. [Source](https://lwn.net/Articles/987176/)
+- **COLRv1 Linux ecosystem adoption**: COLRv1 support now exists in FreeType, HarfBuzz, and Chrome but remains absent from GTK's Pango path and most terminal glyph atlas implementations; near-term work by downstream toolkit maintainers is expected to close this gap. Note: needs verification for specific patchset timelines.
+
+### Medium-term (1–3 years)
+
+- **GTK 5 text layout architecture**: Matthias Clasen (GTK maintainer) has proposed absorbing HarfBuzz-based text layout from Pango directly into GTK 5 and experimenting with GPU-based rasterisers to replace the FreeType CPU path; no final design decisions have been made. [Source](https://lwn.net/Articles/987176/)
+- **Variable COLRv1 full-stack support**: Complete variable COLRv1 rendering (colour axes animated by `wght`, `opsz`, etc.) requires coordinated updates to FreeType's `COLR` table renderer, HarfBuzz's paint subsetter, and toolkit glyph atlas key schemes to include colour-axis variation coordinates alongside outline axes. [Source](https://groups.google.com/a/chromium.org/g/blink-dev/c/oMcbPblmD-k)
+- **Fractional-scale-aware glyph caching**: As `wp_fractional_scale_v1` becomes the norm, toolkits must cache glyphs at non-integer physical pixel sizes. Medium-term work aims to extend SDF (Signed Distance Field) rendering strategies in Skia and GTK's GSK renderer so that a single cached SDF glyph covers a continuous range of fractional scales without per-scale re-rasterisation. Note: needs verification for specific upstream issues.
+- **HarfBuzz subset 2.0 streaming API**: The `hb-subset` library is targeting a streaming subsetting API that does not require loading the full font into memory, reducing memory pressure for web-font subsetting in browser renderers. Note: needs verification for release timeline.
+- **fontconfig cache format v10 and incremental scanning**: Discussions on the fontconfig mailing list have proposed an incremental directory-scan model and a revised binary cache format to reduce cold-start latency on systems with large font trees. Note: needs verification for specific RFC patchset status.
+
+### Long-term
+
+- **GPU-native glyph rasterisation**: The medium-term HarfBuzz GPU paint work points toward a long-term architecture where glyph outlines are rasterised directly on the GPU via compute shaders (bypassing FreeType's CPU scan-converter entirely), analogous to pathfinder/vello approaches already prototyped in the Rust graphics ecosystem. [Source](https://behdad.org/text2024/)
+- **Unified color-emoji and outline atlas**: Current toolkit implementations maintain separate atlas textures for grayscale glyphs, COLRv0/v1 colour emoji, and bitmap emoji (CBDT/CBLC/sbix). A unified atlas with a per-glyph-slot format tag is a long-term architectural goal to reduce GPU texture memory and draw-call fragmentation. Note: needs verification.
+- **Wayland subpixel rendering revival**: Long-term proposals (discussed at XDC and in Wayland protocol issues) would allow a compositor to communicate per-surface subpixel geometry after accounting for fractional scale and output transform, potentially re-enabling LCD subpixel hinting for axis-aligned surfaces. Adoption depends on protocol standardisation and toolkit opt-in. Note: needs verification for specific protocol draft status.
+
+---
+
 ## Integrations
 
 This chapter has described the foundational font and text rendering libraries that every higher-level component in the Linux graphics stack depends on. The key integration points are:

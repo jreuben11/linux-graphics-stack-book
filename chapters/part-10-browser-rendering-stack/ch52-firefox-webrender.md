@@ -955,6 +955,32 @@ When a CSS animation changes a property that lives in the `Transform` struct, on
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **WebGPU enabled by default on Linux and macOS**: Firefox 141 (July 2025) shipped WebGPU on Windows via wgpu-core; Mozilla's graphics team has indicated Linux and macOS enablement is targeted for subsequent releases, with Firefox 147 (January 2026) already expanding WebGPU to Apple Silicon. Full Linux enablement by default is expected in mid-2026. [Source: Shipping WebGPU on Windows in Firefox 141 — Mozilla GFX Blog](https://mozillagfx.wordpress.com/2025/07/15/shipping-webgpu-on-windows-in-firefox-141/)
+- **Vulkan rendering path for WebRender (bug 1735699)**: A Bugzilla tracking bug exists to enable Vulkan as a primary rendering backend in WebRender itself (distinct from wgpu's Vulkan usage for WebGPU). The bug received activity through late 2025. [Source: Bugzilla #1735699 — Enable Vulkan rendering in Firefox/WebRender](https://bugzilla.mozilla.org/show_bug.cgi?id=1735699)
+- **Naga WGSL specification compliance catch-up**: The `naga` shader compiler continues to track the evolving WGSL working draft. Planned near-term work includes 16-bit integer types (`i16`/`u16` via `Features::SHADER_I16`) and pointer/reference semantics alignment. [Source: wgpu/CHANGELOG.md](https://github.com/gfx-rs/wgpu/blob/trunk/CHANGELOG.md)
+- **Zero-copy video path on AMD (Linux)**: Firefox 147 introduced zero-copy video decoding for AMD GPUs; expanding this DMABuf-based path to Intel and Nvidia on Linux is tracked as a follow-on item. [Source: Firefox 147 — WebPRONews](https://www.webpronews.com/firefox-147-released-webgpu-support-enhanced-security-and-more/)
+- **wgpu 26.x update in Gecko**: The wgpu crate vendored in mozilla-central is periodically rebased against upstream (`wgpu update` meta-bugs e.g. bug 1879284); the next rebase cycle will pull naga 26.x HLSL-to-WGSL translation support. [Source: Bugzilla #1879284 — wgpu update](https://bugzilla.mozilla.org/show_bug.cgi?id=1879284)
+
+### Medium-term (1–3 years)
+
+- **WebGPU 2.0 features in Gecko**: The W3C GPUWeb working group is developing WebGPU 2.0 extensions including 64-bit integer atomics, ray-tracing query support, and bindless resources. Gecko's wgpu-core path will track these as they stabilise in the specification. [Source: WebGPU Implementation Status — gpuweb/gpuweb wiki](https://github.com/gpuweb/gpuweb/wiki/Implementation-Status)
+- **WebRender Vulkan backend full deployment**: Moving WebRender's draw-call submission from OpenGL/EGL to Vulkan would allow explicit memory management, timeline semaphores for frame pacing, and native DRM format modifiers without EGL extension negotiation. The architecture requires porting the `gleam`-based `dyn Gl` abstraction to a Vulkan surface (Note: needs verification — no committed timeline is public beyond the open tracking bug).
+- **Android WebGPU (wgpu on OpenGL ES / Vulkan)**: Mozilla has stated 2026 Android graphics work is planned; this includes bringing wgpu-based WebGPU to Firefox for Android via the `wgpu-hal` Vulkan/GLES backend. [Source: Firefox 147 release coverage — It's FOSS](https://itsfoss.com/news/firefox-webgpu-support/)
+- **Picture-cache tile budget expansion and HDR support**: As displays with HDR output become common on Linux (via the KMS HDR path in the kernel), WebRender's picture-cache tile format (`RGBA8`) will need to adopt `RGBA16F` or `RGB10A2` targets to carry wide-gamut content without banding. Note: needs verification — no public RFC has landed.
+- **Stylo integration with CSS Houdini layout/paint worklets**: Servo's style engine roadmap includes partial Houdini Paint API support; how this integrates with WebRender's display-list model and whether it lands in Gecko is subject to ongoing W3C standardisation.
+
+### Long-term
+
+- **Unified wgpu render path for WebRender primitives**: An architectural direction discussed informally in the Mozilla graphics team is whether WebRender's own primitive batching (currently OpenGL draw calls) could be re-expressed as wgpu render passes, unifying the rendering stack under a single GPU abstraction and eliminating the dual OpenGL/wgpu code paths. (Note: needs verification — speculative direction, no public design document confirmed.)
+- **Parallel display-list building across Stylo workers**: Currently `nsDisplayListBuilder` is single-threaded despite Stylo's parallel CSS engine. Future work may allow display-list emission to be parallelised across layout threads, reducing the frame-building latency that can dominate on complex pages.
+- **Full Wayland explicit-sync integration**: The `linux-drm-syncobj-v1` Wayland protocol (merged in Wayland 1.22) enables GPU timeline synchronisation without CPU readback. WebRender's frame-submission path would benefit from adopting explicit sync to eliminate stalls between EGL rendering and wl_surface commits, particularly for external DMABuf surfaces. [Source: Wayland linux-drm-syncobj-v1 protocol](https://gitlab.freedesktop.org/wayland/wayland-protocols)
+
+---
+
 ## Integrations
 
 This chapter connects to several other parts of the book:

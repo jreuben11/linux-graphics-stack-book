@@ -753,6 +753,33 @@ For a live view of browser support across Chrome, Firefox, and other browsers, t
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **WebNN stable channel launch in Chrome:** The `#web-machine-learning-neural-network` flag expires at Chrome Milestone 150; Google has signalled intent to ship WebNN without a flag once the origin trial (Chrome 146–149) collects sufficient compatibility data. Two independent implementations passing the W3C Web Platform Test suite are the remaining gate for advancing the spec to full Recommendation. [Source](https://groups.google.com/a/chromium.org/g/blink-dev/c/5CWKSChYo98/m/xMw0U5NkAAAJ)
+- **Chrome DevTools WebNN panel:** A dedicated DevTools panel for WebNN graph inspection has been prototyped, allowing developers to visualise the compiled operator graph and inspect tensor shapes at each node. Stabilisation and inclusion in a DevTools stable release is expected in the near term. [Source](https://chromium.googlesource.com/chromium/src/+/HEAD/services/webnn/)
+- **Firefox WebNN implementation:** Mozilla's `rustnn` project (a Rust-based WebNN implementation) is under active development as the basis for Firefox's WebNN backend, with the `wgpu`-backed `GPUDevice` interop path being a focus. [Source](https://blog.ziade.org/2025/12/17/building-rustnn-webnn-implementation-rust/)
+- **Dynamic shapes and tensor binding:** The W3C MLWG identified at TPAC 2025 that dynamic input shapes and a `bindInput()` / re-dispatch API are needed for transformer-based autoregressive generation (which changes sequence length at each decode step). Specification changes and Chromium implementation are expected in this window. [Source](https://www.w3.org/blog/2025/ai-at-tpac-2025/)
+- **Expanded operator coverage for transformers:** The CRD of 21 May 2026 added a third wave of operators targeting transformer architectures; remaining gaps (RoPE embedding, grouped-query attention) are tracked in the core operator set issue and targeted for near-term closure. [Source](https://github.com/webmachinelearning/webnn/issues/573)
+
+### Medium-term (1–3 years)
+
+- **Linux NPU backend in Chromium:** The current Linux WebNN path uses TFLite/XNNPACK (CPU) unconditionally. As Intel OpenVINO (`intel_vpu` kernel driver) and AMD XDNA user-space runtimes mature on Linux, a `services/webnn/` Linux NPU backend analogous to the existing DirectML (Windows) and Core ML (macOS) backends is a stated goal. Note: needs verification on the exact timeline.
+- **W3C WebNN full Recommendation:** Once two conformant implementations exist (Chromium on all major platforms, Firefox), the MLWG can advance to full W3C Recommendation, unlocking mandatory browser support and enabling frameworks like ONNX Runtime Web and TensorFlow.js to advertise WebNN as a stable execution provider. [Source](https://progosling.com/en/dev-digest/2026-02/webnn-candidate-recommendation)
+- **Small Language Model (SLM) acceleration:** The MLWG is specifically optimising WebNN for in-browser SLMs (quantised 1–7B-parameter models). This involves graph-level quantisation metadata, `int4` / `int8` weight types in the buffer management API, and model-weight caching across page navigations. [Source](https://www.w3.org/blog/2025/ai-at-tpac-2025/)
+- **WebMCP and agent integration:** The emerging WebMCP proposal, discussed alongside WebNN at W3C, would allow browser-based ML agents to call local model inference via WebNN as a typed capability channel — tying WebNN to the broader browser-native agentic computing story. [Source](https://speakerdeck.com/christianliebel/webnn-built-in-ai-webmcp-whats-new-in-web-ai)
+- **Cross-browser Web Platform Test suite hardening:** Passing the WPT suite for all operator semantics (numerical tolerances, edge-case handling, async execution ordering) is a prerequisite for the W3C gate; this represents a sustained medium-term engineering effort across Google, Intel, Microsoft, and Mozilla. [Source](https://webstatus.dev/features/webnn)
+
+### Long-term
+
+- **Universal NPU support across Linux hardware:** The long-term vision is for any Linux device with a discrete NPU (Intel AI Boost, Qualcomm Hexagon, AMD XDNA) to be reachable from WebNN via a standardised kernel interface — analogous to how any V4L2-compliant camera is accessible from `getUserMedia`. This depends on kernel-driver and user-space-runtime standardisation that is years away. Note: needs verification.
+- **WebNN as the canonical ML execution layer for browsers:** The architectural goal of the W3C MLWG is for WebNN to sit beneath all JavaScript ML frameworks (TensorFlow.js, ONNX Runtime Web, Transformers.js, MediaPipe) as a unified hardware-acceleration abstraction, replacing ad-hoc WebGPU compute shader libraries with a single API that the browser vendor optimises per platform. [Source](https://webmachinelearning.github.io/webnn-intro/)
+- **Tight integration with WebGPU's roadmap:** As WebGPU adds subgroup operations and cooperative matrix operations (targeting ML workloads), the boundary between WebNN operator dispatch and WebGPU compute dispatch will become a design question. Long-term, the two APIs may share a common scheduling and memory model, allowing seamless operator-level mixing of WebNN-accelerated primitives with custom WebGPU kernels.
+- **Standardised model-weight caching and offline inference:** Long-term, browser vendors are expected to add WebNN-aware model-weight caching (keyed by model hash) that survives page reload — reducing first-inference latency for recurring models without requiring a Service Worker workaround. Note: needs verification.
+
+---
+
 ## 9. Integrations
 
 - **Chapter 35 (Dawn and WebGPU)** — Dawn is Chrome's WebGPU implementation; it manages the `VkDevice` that a WebNN context created via `createContext(GPUDevice)` shares. Buffer interop between WebNN `MLTensor` objects and WebGPU `GPUBuffer` objects goes through the same `gpu::SharedImage` mailbox infrastructure that Dawn uses for WebGPU texture management. Dawn does not contain a WebNN implementation or WebNN backend, but it is the foundational GPU resource manager that makes zero-copy WebNN/WebGPU pipelines possible.

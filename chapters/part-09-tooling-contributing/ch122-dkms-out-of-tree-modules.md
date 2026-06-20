@@ -847,6 +847,33 @@ Distribution meta-packages declare strict version dependencies to prevent this, 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **DKMS 3.x maintenance and packaging integration**: The DKMS project (stable at 3.2.1 as of May 2025) continues incremental improvements focused on better integration with systemd-based distro packaging hooks, parallel builds for multi-kernel systems, and improved error reporting when kernel headers are missing. [Source](https://github.com/dkms-project/dkms/releases)
+- **NVIDIA open-gpu-kernel-modules R570+ ABI stabilisation**: NVIDIA has stated that upstreaming the open kernel modules into the mainline kernel tree requires first stabilising the GSP firmware interface ABI; near-term driver releases (R570 and beyond) continue that stabilisation work before any upstream submission. Note: specific timeline needs verification. [Source](https://developer-stg.nvidia.com/blog/nvidia-releases-open-source-gpu-kernel-modules/)
+- **Secure Boot certificate rotation (June 2026)**: Microsoft's original 2011 UEFI Driver Publisher certificate expires in June 2026; distributions shipping DKMS-signed modules via shim must migrate MOK infrastructure to the 2023 Microsoft UEFI CA key. Distro shim packages are being updated accordingly and DKMS documentation on `mokutil --import` will require refreshing for users. [Source](https://www.redhat.com/en/blog/expiration-secure-boot-signing-certificates-2026)
+- **Nova-core landing in Linux 6.15–6.17**: The Rust-based Nova GPU driver skeleton was merged in Linux 6.15, with further GSP communication scaffolding landing in 6.17. As Nova matures it offers an in-tree Rust replacement for the DKMS-shipped NVIDIA open modules on Turing and later hardware. [Source](https://www.phoronix.com/news/Linux-6.17-NOVA-Driver)
+- **Distribution adoption of NVIDIA open modules as default**: Arch Linux has already switched `nvidia-open` as the default for supported GPUs; Fedora and Ubuntu are evaluating the same transition for their 2026 release cycles, reducing dependence on the proprietary DKMS path. Note: exact release timelines need verification.
+
+### Medium-term (1–3 years)
+
+- **Nova-drm: full DRM driver on top of Nova-core**: The roadmap for Nova splits into `nova-core` (hardware/firmware abstraction) and `nova-drm` (DRM modesetting and render client). Completing `nova-drm` would allow a fully upstream, DKMS-free open driver for all Turing+ NVIDIA GPUs, eliminating the need for `open-gpu-kernel-modules` DKMS packaging entirely. [Source](https://rust-for-linux.com/nova-gpu-driver)
+- **NVIDIA upstream submission to drm-misc**: Once the GSP firmware protocol is sufficiently documented and the nova-core/nova-drm split is stable, Red Hat and NVIDIA have indicated intent to submit the driver for inclusion in the `drm-misc` tree — following the same path that `amdgpu` and `xe` took. Note: needs verification against active mailing list discussion.
+- **DKMS integration with systemd-sysupdate**: Proposals on the systemd mailing list discuss having `systemd-sysupdate` manage kernel + DKMS module bundles as atomic units, so that a kernel update and its associated DKMS rebuild happen together before the next boot, avoiding the window where a kernel is running but its DKMS module has not yet been rebuilt. Note: needs verification.
+- **Improved out-of-tree driver co-installation tooling**: Fedora/RHEL's `akmods` (automatic `kmod` builds analogous to DKMS) and Debian's `dkms` framework are converging on common metadata formats; work is ongoing to allow a single source tree to produce both `.dkms` and `.akmod` packages from the same `dkms.conf`-compatible descriptor. Note: needs verification.
+- **GSP firmware open documentation**: NVIDIA's commitment to open kernel modules implicitly requires documenting the GSP firmware protocol sufficiently for Nova to function without the binary GSP-RM blob. Progress on this documentation will determine how quickly Nova can replace the proprietary DKMS module in distributions. [Source](https://github.com/NVIDIA/open-gpu-kernel-modules)
+
+### Long-term
+
+- **End of DKMS for mainstream GPU drivers**: As AMD (`amdgpu`), Intel (`xe`), and NVIDIA (via Nova) all converge on fully upstreamed, in-tree kernel modules, the primary use case for DKMS shrinks to niche out-of-tree hardware and enterprise customisation. DKMS itself will persist for embedded, industrial, and proprietary peripheral drivers, but GPU workloads will likely no longer require it within the decade.
+- **Stable kernel module ABI via Rust type safety**: The Rust-for-Linux project's longer-term goal is to express kernel internal interfaces through Rust trait bounds and stable API wrappers, providing a limited form of ABI stability without freezing C struct layouts. If this matures, it could reduce or eliminate the current requirement for full recompilation on every kernel version change. Note: highly speculative; not an official kernel commitment.
+- **Hardware-enforced module attestation**: Future UEFI and TPM 2.0 workflows may allow kernel modules to be attested against a hardware-backed policy rather than only against static signing certificates, potentially simplifying the Secure Boot MOK dance for DKMS users on locked-down enterprise and consumer platforms. Note: speculative; no concrete upstream RFC at time of writing.
+- **Unified firmware packaging across GPU vendors**: Long-term, `linux-firmware` and vendor firmware repositories may converge on a common metadata and update mechanism (analogous to `fwupd` for device firmware), allowing GPU firmware — currently split across NVIDIA GSP blobs, AMD `amdgpu` firmwares, and Intel GuC/HuC blobs — to be updated and verified through a single distribution channel independently of the kernel module. Note: needs verification against fwupd project roadmap.
+
+---
+
 ## 11. Integrations
 
 **Chapter 1 (DRM Architecture and the Driver Model)**: Every GPU kernel module — whether loaded via DKMS or compiled into the kernel tree — registers itself as a DRM driver using `drm_dev_alloc()` and `drm_dev_register()`. The DRM subsystem's driver model (probe/remove lifecycle, sysfs nodes, `/dev/dri/card0` creation) is the foundation that all GPU modules build on. The GPL-symbol restrictions that DKMS packages must navigate are directly tied to `EXPORT_SYMBOL_GPL` on these DRM registration functions.

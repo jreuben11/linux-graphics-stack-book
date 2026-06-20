@@ -826,6 +826,33 @@ WezTerm also uses an asynchronous architecture with background PTY read threads 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **WezTerm: stabilise wgpu/Vulkan as default frontend on Linux.** The `WebGpu` front-end (wgpu 0.x → Vulkan on Linux via `ash`) is currently opt-in. Active issues (#6815, #6998, #7070) track crashes with fractional-scale Wayland compositors and explicit-sync; once resolved, the intent is to promote `WebGpu` to the default on systems where the Vulkan driver reports feature-complete support. [Source](https://github.com/wezterm/wezterm/issues/2756)
+- **WezTerm: full `zwp_text_input_v3` IME coverage.** Issue #1772 tracks incomplete IME support on Wayland (pre-edit rendering, commit-string races); targeted for closure in the next stable release cycle. [Source](https://github.com/wezterm/wezterm/issues/1772)
+- **WezTerm: `wp_fractional_scale_v1` crash fix.** Fractional scaling causes startup panics when the wgpu Vulkan path is active (#5149, #6998); the fix requires coordinating `wgpu-hal` swapchain resize with Wayland surface configure events. [Source](https://github.com/wezterm/wezterm/issues/5149)
+- **Alacritty: Sixel tracking issue resolution.** Issue #910 on the Alacritty tracker documents ongoing pressure for Sixel and Kitty Graphics Protocol support; maintainers have not rejected the feature outright, but the deliberate minimalism philosophy means any implementation would need to preserve latency guarantees. [Source](https://github.com/alacritty/alacritty/issues/910) Note: needs verification of current open/closed status.
+- **winit 0.31+ Wayland backend improvements.** Both terminals depend on `winit` for windowing; the winit 0.31 release cycle targets improved `wp_fractional_scale_v1` handling and `zwp_linux_drm_syncobj_v1` explicit-sync support on Wayland, which directly benefits both WezTerm and Alacritty. [Source](https://github.com/rust-windowing/winit)
+
+### Medium-term (1–3 years)
+
+- **Alacritty: Vulkan renderer investigation.** Issue #183 ("Add a Vulkan Renderer") has been open since early Alacritty history; a community fork (`w23/alacritty`, branch `new-renderer-pr`) prototyped a full-screen single-pass shader renderer. Whether this is adopted into mainline depends on whether Alacritty's maintainers accept the architectural complexity trade-off. [Source](https://github.com/alacritty/alacritty/issues/183)
+- **WezTerm: `glium` OpenGL backend deprecation.** `glium` is an older safe GL wrapper no longer actively developed; as `wgpu` matures and GPU coverage widens (including wgpu's own OpenGL ES fallback for devices without Vulkan), WezTerm is expected to deprecate the `glium` path and unify on wgpu with the GL backend handling non-Vulkan hardware. Note: needs verification of official timeline.
+- **`wgpu` 3.x HAL improvements benefiting both terminals.** The wgpu team is working on tighter integration of DMA-BUF import into the `wgpu-hal` Vulkan backend, which would allow WezTerm to implement zero-copy pixel graphics protocol rendering (DMA-BUF → `VkImage` → swapchain blit) without staging buffers. [Source](https://github.com/gfx-rs/wgpu)
+- **Alacritty: multi-GPU and power-aware adapter selection.** On hybrid Intel+dGPU laptops, Alacritty currently relies on EGL's default device selection; a future enhancement would expose explicit GPU selection (similar to WezTerm's `webgpu_preferred_adapter`) to allow users to pin the terminal to the integrated GPU for power savings. Note: needs verification.
+- **`naga` WGSL-to-SPIR-V pipeline hardening for terminal shaders.** WezTerm's WGSL shaders expose edge cases in `naga`'s validator and SPIR-V emitter; active naga issues track round-trip correctness for integer operations used in glyph index packing. Fixes here improve WezTerm shader reliability across RADV, ANV, and NVK. [Source](https://github.com/gfx-rs/naga)
+
+### Long-term
+
+- **Alacritty as a pure text renderer with external image overlay protocol.** The project's stated philosophy may converge on a standardised out-of-band image rendering mechanism (e.g., a Wayland sub-surface approach where the compositor or a separate process composites pixel graphics over the terminal surface) rather than in-process protocol implementation. This would keep Alacritty's renderer minimal while enabling image support via external tooling such as Überzug++. Note: speculative, based on design discussions.
+- **WezTerm multiplexer protocol standardisation.** The WezTerm mux PDU protocol is currently WezTerm-proprietary; long-term there has been community interest in defining a standardised open terminal multiplexer protocol that multiple terminals and clients (including TUI frameworks using `termwiz`) could interoperate with. Note: speculative.
+- **wgpu WebGPU backend portability enabling WezTerm WASM/browser targets.** As wgpu's WebGPU backend (targeting the browser via `wasm-bindgen`) matures, WezTerm's GPU rendering code — which is already abstracted behind `RenderContext` — becomes portable to WASM, enabling a fully GPU-accelerated browser-hosted WezTerm instance. This would reuse the same WGSL shaders that Mesa compiles on Linux. Note: speculative architectural direction.
+- **Explicit sync (`zwp_linux_drm_syncobj_v1`) support in both terminals' Wayland paths.** As KMS explicit sync lands broadly in Mesa and compositor stacks (Ch45), both terminals will need to thread `VkSemaphore`/`VkFence` handles through their Wayland WSI paths to avoid implicit sync fallbacks that increase frame latency on modern AMD and Intel hardware. [Source](https://gitlab.freedesktop.org/wayland/wayland-protocols)
+
+---
+
 ## 7. Integrations
 
 - **Ch44 (Terminal GPU Rendering Architectures)** — This chapter extends Ch44's coverage to WezTerm and Alacritty. Ch44 covers Kitty and Ghostty with the same depth; together they survey the four major GPU-accelerated Rust-or-C terminals of 2026.

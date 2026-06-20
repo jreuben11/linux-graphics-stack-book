@@ -951,6 +951,33 @@ For in-depth GPU timeline analysis on AMD, use [Radeon GPU Profiler](https://gpu
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Vulkan Roadmap 2026 mandates VRS**: The Khronos Vulkan working group's January 2026 milestone formally requires `VK_KHR_fragment_shading_rate` support from conforming drivers targeting desktops, laptops, and mid-to-high-end devices, with most adopters expected to have conformant implementations by end of 2026. [Source](https://www.phoronix.com/news/Vulkan-Roadmap-2026)
+- **RADV and ANV pipeline optimisations for mesh shaders**: Following Mesa 23.1's RDNA3 mesh shader enablement and RDNA2 general availability, ongoing optimisation of the "new fast launch" attribute ring mode in RADV and ANV's Xe2 mesh pipeline codegen are expected to close remaining performance gaps with the NV proprietary driver. [Source](https://www.phoronix.com/news/RADV-Vulkan-Mesh-Shaders)
+- **NVK mesh shader stabilisation**: NVK's open-source NVIDIA Vulkan driver merged initial `VK_EXT_mesh_shader` support (2025); the near-term focus is reaching feature parity with proprietary driver performance on Ada Lovelace and completing `VK_KHR_fragment_shading_rate` support. [Source](https://www.phoronix.com/news/NVK-Mesh-Shaders-Merged)
+- **Godot 4 and Blender EEVEE Next mesh shader adoption**: Both engines are community candidates for integrating `VK_EXT_mesh_shader` dispatch paths to replace CPU-driven indirect draw batching; contributors are tracking Mesa driver stability before upstreaming (Note: needs verification for concrete merge timeline).
+- **Vulkan SDK Q1 2026 tooling update**: Khronos planned an early-2026 Vulkan SDK release targeting Roadmap 2026 validation layers, conformance tests, and SPIRV-Tools updates covering mesh shader and VRS validation rules. [Source](https://www.khronos.org/blog/vulkan-introduces-roadmap-2026-and-new-descriptor-heap-extension)
+
+### Medium-term (1–3 years)
+
+- **WebGPU mesh shader proposal**: Dawn's native-path `WGPUFeature_MeshShaders` flag and wgpu's `SHADER_STAGE_MESH` feature bit are upstream, but no W3C WebGPU specification proposal has been filed as of mid-2026. A formal extension proposal is expected once mesh shaders achieve consistent cross-vendor coverage on desktop; WGSL shading language changes would be required. [Source](https://docs.rs/wgpu/latest/wgpu/struct.Features.html)
+- **Variable rate shading in open-source display compositors**: Neither KWin (KDE) nor GNOME Mutter exposes VRS to client surfaces via the Wayland protocol; a future `wp_fragment_shading_rate` Wayland protocol extension is a likely prerequisite, analogous to the existing `wp_presentation_time` and `wp_content_type_v1` protocols (Note: needs verification for active proposal status).
+- **Per-primitive fragment shading rate in mesh shaders**: `VK_KHR_fragment_shading_rate`'s `primitiveFragmentShadingRateWithMultipleViewports` feature, combined with `PerPrimitiveEXT`-decorated VRS outputs from mesh shaders, enables cluster-level shading rate selection without an image attachment; broader driver support and tooling for this combination is expected as Vulkan Roadmap 2026 adoption matures.
+- **AMDGPU gang-submit kernel interface stabilisation**: Reliable multi-process use of task shaders on AMD hardware depends on gang-submit support in the `amdgpu` DRM driver to prevent cross-process deadlocks; the kernel-side interface is under active AMDGPU developer work and is a prerequisite for fully unconditional task shader support in RADV. [Source](https://www.phoronix.com/news/RADV-Vulkan-Mesh-Shaders)
+- **Mesh shader support in Zink (OpenGL-on-Vulkan)**: Zink's translation of `GL_NV_mesh_shader` (and eventually an OpenGL mesh path) onto `VK_EXT_mesh_shader` is a medium-term Mesa project item, enabling mesh shader use from OpenGL applications without a Vulkan port.
+
+### Long-term
+
+- **Unified geometry pipeline successor**: GPU hardware architects (AMD, Intel, NVIDIA, ARM) are researching post-mesh-shader geometry pipeline models that eliminate even the task/mesh boundary, replacing it with a single programmable amplification unit feeding directly into a hardware rasterizer with dynamic LOD — an area of active GPU architecture research (Note: needs verification; no public RFC or ISA specification exists as of 2026).
+- **Ray tracing and mesh shader convergence**: Long-term Vulkan roadmap discussion includes tighter integration between ray tracing (`VK_KHR_ray_tracing_pipeline`) and mesh shaders, specifically allowing mesh shader outputs to feed directly into acceleration structure update passes — eliminating a BLAS rebuild step for deformable mesh clusters (Note: needs verification for formal Khronos proposal).
+- **VRS integration with AI-driven foveated rendering**: Hardware-accelerated eye tracking on consumer headsets (Meta Quest, Steam Deck successor, etc.) is expected to drive a `VK_EXT_fragment_shading_rate_enums` successor that accepts per-eye gaze vectors directly, replacing the image-attachment VRS approach with a sparser, hardware-managed shading map generated by an on-chip neural inference unit (Note: speculative; no public Khronos proposal as of 2026).
+- **OpenXR VRS standardisation**: The OpenXR working group is expected to standardise a foveated rendering extension that wraps `VK_KHR_fragment_shading_rate` with per-layer, per-view rate control, enabling portable VRS across Vulkan and Metal-backed OpenXR runtimes (Note: needs verification for timeline).
+
+---
+
 ## 11. Integrations
 
 - **Ch18 — RADV Driver Internals**: The RADV implementation of mesh shaders (legacy vs. new fast launch mode, attribute ring integration, RDNA2 invocation-per-vertex constraint) and the `radv_emit_fragment_shading_rate` VRS implementation in `radv_cmd_buffer.c`.

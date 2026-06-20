@@ -967,6 +967,31 @@ Anti-cheat systems (EAC, BattlEye) running on Linux via Proton may explicitly se
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **FSR 4 integration into gamescope**: AMD released FidelityFX SDK 2.0 with FSR 4 in August 2025, introducing ML-based upscaling using hardware matrix units on RDNA 3/4 GPUs. Gamescope currently ships FSR 1 at the compositor level; upstream work is underway to bring FSR 4's `ffx_fsr4.h` compute path into gamescope for machines with RDNA 3+ hardware, with FSR 1/2 as fallback. [Source](https://www.gamingonlinux.com/2025/08/amd-fidelityfx-super-resolution-4-fsr-4-now-available-for-all-developers-with-fidelityfx-sdk-2-0/)
+- **FSR 4 "Redstone" update with Neural Radiance Caching**: AMD announced a significant FSR 4 follow-up codenamed "Redstone" targeting H2 2025, adding Neural Radiance Caching and ML-enhanced ray regeneration. Linux support requires Vulkan extensions currently missing on Linux (`VK_AMD_*` ML extensions); upstream patches are anticipated. [Source](https://www.techradar.com/gaming/pc-gaming/the-future-of-pc-gaming-will-be-ai-driven-amd-confirms-machine-learning-fsr-4-for-2025-launching-in-call-of-duty-black-ops-6/)
+- **MangoHud 0.8.x continued platform expansion**: MangoHud 0.8 (February 2025) added Intel GPU support via `i915`/`xe` DRM FDINFO; 0.8.2 added Panfrost and Qualcomm KGSL support for ARM/mobile Linux. Near-term work focuses on improving per-engine queue granularity in FDINFO parsing and Wayland keybind reliability. [Source](https://www.gamingonlinux.com/2025/02/linux-gaming-overlay-mangohud-version-0-8-is-out-now-with-intel-gpu-support-improved-wayland-keybinds/)
+- **KDE KWin + gamescope HDR passthrough**: KDE developer Xaver Hugl landed a gamescope backend that forwards Wayland subsurfaces to KWin rather than compositing internally, enabling direct HDR content passthrough without double-tonemapping. Further refinement of `color-management-v1` protocol interaction with gamescope's HDR pipeline is ongoing. [Source](https://www.phoronix.com/news/KDE-HDR-Colors-Part-3)
+- **OptiScaler FSR 4 on non-RDNA hardware**: Community project OptiScaler demonstrated FSR 4 running on RDNA 3 under Linux via Wine 11; near-term goal is enabling the generic Vulkan `DP4a`/`INT8` path so FSR 4 degrades gracefully on older AMD and Intel Arc hardware without ML matrix units. [Source](https://en.gamegpu.com/news/zhelezo/apskejler-fsr-4-zarabotal-na-rdna-3-v-igrakh-na-baze-linux)
+
+### Medium-term (1–3 years)
+
+- **FSR 2/3 at gamescope compositor level**: gamescope's architectural constraint is that FSR 2/3 require per-frame motion vectors and depth data from the game itself — information unavailable at compositor level. A Wayland protocol extension to carry motion-vector buffers from game client to compositor (analogous to `linux-dmabuf-unstable-v1` for colour buffers) has been discussed in upstream gamescope issues; realisation depends on game engine cooperation or Proton-level interception. Note: needs verification of current RFC status.
+- **`VK_EXT_layer_settings` adoption in vkBasalt and MangoHud**: Both tools predate `VK_EXT_layer_settings` (Vulkan 1.3.272) and rely on environment variables and INI-file config. Migration to `VkLayerSettingsCreateInfoEXT` would allow Steam and Flatpak launchers to configure layers programmatically without environment variable injection, improving sandboxed deployment. No formal milestone has been announced; tracked in the respective GitHub issue trackers.
+- **LatencyFleX upstreaming / replacement by driver-native solutions**: `VK_NV_low_latency2` (NVIDIA Reflex 2) and `VK_AMD_anti_lag` are driver-native latency-reduction mechanisms that render LatencyFleX's software framepacing unnecessary on supported hardware. As DXVK/VKD3D-Proton gains broader `VK_NV_low_latency2` translation coverage, LatencyFleX is expected to become a legacy fallback path only. Note: needs verification of DXVK anti-lag upstream merge status.
+- **MangoHud Wayland-native overlay**: The current MangoHud `VkQueuePresentKHR` interception renders Dear ImGui into the swapchain image before present; a Wayland-native overlay using the `ext-overlay-v1` or similar protocol could render as a separate surface composited by the Wayland compositor, eliminating the need for swapchain image mutation and resolving anti-cheat conflicts. Protocol design work is preliminary.
+
+### Long-term
+
+- **ML-driven post-processing pipelines**: As AMD RDNA 4, Intel Xe2, and future NVIDIA Blackwell-generation GPUs expose dedicated ML inference units to Vulkan via `VK_KHR_cooperative_matrix` / `VK_NV_cooperative_matrix2`, vkBasalt-style layer frameworks could apply transformer-based denoising, super-resolution, and style-transfer shaders in real time without relying on vendor-specific SDK integrations. The FidelityFX SDK 2.0 ML infrastructure lays groundwork for vendor-neutral ML effect authoring. [Source](https://gpuopen.com/learn/amd-fsr4-gpuopen-release/)
+- **Compositor-level unified effect graph**: gamescope's current effect pipeline is a fixed sequence (FSR → NIS → HDR → ReShade). A longer-term architectural direction would expose a configurable effect-node graph (analogous to display post-processing in console SDKs), allowing users and distributions to insert, reorder, and parameterise effects without recompiling gamescope. Note: needs verification — no public RFC exists as of mid-2026.
+- **Anti-cheat and layer ecosystem reconciliation**: The tension between implicit Vulkan layers (MangoHud, vkBasalt) and EAC/BattlEye anti-cheat via `disable_environment` is a long-standing friction point. A potential resolution involves a Khronos-standardised "trusted overlay" mechanism (possibly extending `VK_EXT_layer_settings` with a signing or capability model) that anti-cheat systems can query rather than blanket-disabling all implicit layers. This remains speculative; no working group proposal is known.
+
+---
+
 ## Integrations
 
 ### Backward References

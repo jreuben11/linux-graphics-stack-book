@@ -1058,6 +1058,30 @@ For compiler performance specifically, the shader-db workflow (Section 7) is the
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **CI-tron full rollout as the default hardware CI gateway**: CI-tron is already in production use for Mesa hardware-in-the-loop testing, replacing the more complex LAVA dispatcher for many ARM and x86 DUTs. Near-term work focuses on expanding auto-discovery of new device types and stabilising the job scheduling interface across all major hardware farms. [Source](https://gfx-ci.pages.freedesktop.org/ci-tron/docs/introduction.html)
+- **deqp-runner piglit integration graduating from experimental**: deqp-runner's support for running piglit tests is currently experimental. The near-term plan is to stabilise this path and consolidate piglit and dEQP test execution under a single runner binary, simplifying CI job definitions and reducing per-MR CI time. [Source](https://www.collabora.com/news-and-blog/blog/2024/10/08/mesa-ci-and-the-power-of-pre-merge-testing/)
+- **Faster pre-merge CI through smarter test selection**: Mesa CI currently runs one-of-every-N tests (e.g., 1-in-6 for ES 2.0) for pre-merge jobs. Work is ongoing to replace static sharding with blame-aware test selection that prioritises tests most likely to catch regressions in the files touched by a given MR. Note: needs verification on specific timeline.
+- **Expanded Lavapipe (software Vulkan) coverage in MR-time CI**: As Lavapipe's Vulkan conformance improves, more dEQP-VK test cases are being promoted from nightly-only to pre-merge CI, giving contributors faster API-correctness feedback without requiring GPU hardware allocation. [Source](https://docs.mesa3d.org/ci/index.html)
+
+### Medium-term (1–3 years)
+
+- **VK-GL-CTS test count growth tracking Vulkan 1.4 and beyond**: The Khronos VK-GL-CTS suite continues to grow with each new Vulkan extension and version (over 700,000 test cases as of 2026). Mesa's CI infrastructure must scale nightly full-CTS runs to accommodate further test expansion, likely requiring additional sharding tiers and GPU hardware capacity. [Source](https://github.com/KhronosGroup/VK-GL-CTS)
+- **Performance regression detection as a first-class CI signal**: Current performance CI (vkmark, shader-db baselines) reports warnings but does not block merges. Medium-term plans include promoting performance regressions to merge-blocking failures for changes to core NIR passes and driver backends, alongside Grafana dashboard integration for per-commit performance tracking. Note: needs verification on specific blockers timeline.
+- **Trace-based CI coverage of Vulkan 1.3 and raytracing workloads**: The existing trace library is primarily OpenGL and Vulkan 1.1-era captures. As real applications adopt Vulkan 1.3 features (dynamic rendering, synchronisation2) and hardware ray tracing (on RADV/ANV), the trace archive needs new captures that exercise these paths on CI hardware. [Source](https://docs.mesa3d.org/ci/local-traces.html)
+- **RISC-V SBC hardware farm expansion**: Mesa CI already targets x86_64 and ARM64 hardware. Demand for RISC-V GPU driver testing (VisionFive2, StarFive platforms running Imagination PowerVR or etnaviv) is expected to require RISC-V DUTs in the CI farm, integrated via CI-tron's auto-discovery mechanism. Note: needs verification on specific timelines.
+
+### Long-term
+
+- **AI-assisted test prioritisation and flake detection**: Long-term research directions include using machine learning to predict which test cases are most likely to fail given a particular set of changed source files, further reducing CI latency. Flake detection using statistical models trained on historical run data is another proposed direction. Note: speculative, no committed implementation.
+- **Unified kernel and Mesa joint CI**: The Linux DRM kernel CI (which runs IGT GPU Tools on drm-tip) and Mesa CI currently run as separate pipelines. A long-term architectural goal is to enable joint kernel+Mesa CI runs where a kernel patch's impact on Mesa test results is immediately visible, closing the gap between kernel driver and userspace driver validation. Note: needs verification.
+- **Fully automated conformance submission pipeline**: Khronos conformance submissions currently require significant manual effort (running the full CTS, capturing logs, uploading results). A long-term goal is to automate the submission pipeline so that a passing nightly CTS run automatically triggers a Khronos adopter submission for drivers that maintain conformance status (e.g., ANV, RADV, Turnip). Note: speculative direction.
+
+---
+
 ## 11. Integrations
 
 **[Chapter 17: Software Renderers](../part-04-mesa-architecture/ch17-software-renderers.md)** — Lavapipe (software Vulkan) and llvmpipe are first-class CI targets. They can run the full dEQP-VK and piglit suites without GPU hardware, making them the first line of defence for API-correctness regressions on any developer machine.

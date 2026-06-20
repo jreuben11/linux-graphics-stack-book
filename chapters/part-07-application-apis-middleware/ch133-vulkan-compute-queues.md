@@ -966,6 +966,33 @@ The Vulkan Video ecosystem page at [rastergrid.com/vulkan-video/](https://www.ra
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **`VK_KHR_internally_synchronized_queues` promotion to KHR.** Published as a KHR extension in January 2026 alongside Vulkan 1.4.340, this allows game engines to opt-in to driver-managed queue synchronization, eliminating the mandatory external locking on `vkQueueSubmit` calls and reducing CPU overhead in multi-threaded submission paths. [Source](https://docs.vulkan.org/features/latest/features/proposals/VK_KHR_internally_synchronized_queues.html)
+- **`VK_EXT_descriptor_heap` driver adoption.** The collaborative descriptor heap extension (NVIDIA, AMD, Arm, Nintendo, Valve, Google) shipped in Vulkan 1.4.340 (January 2026) and Vulkan SDK Q1 2026. Descriptor heaps allow pre-allocated GPU-visible descriptor memory, reducing runtime reallocation stalls in multi-queue workloads where compute and graphics passes share resource views. [Source](https://www.khronos.org/blog/vulkan-introduces-roadmap-2026-and-new-descriptor-heap-extension)
+- **Vulkan Roadmap 2026 milestone baseline adoption.** The Roadmap 2026 milestone formalises mandatory extensions for mid-range and high-end GPUs shipping in 2026 and later, including synchronization2 and timeline semaphores as guaranteed baseline features rather than optional extensions — reducing driver query boilerplate in multi-queue engines. [Source](https://www.phoronix.com/news/Vulkan-Roadmap-2026)
+- **RADV and ANV video encode stabilisation.** `VK_KHR_video_encode_av1` merged into RADV mid-2025; remaining encode-queue plumbing (rate control, multi-slice) is expected to reach feature-complete status in Mesa 25.x. [Source](https://airlied.blogspot.com/2025/07/radv-vkkhrvideoencodeav1-support.html)
+- **`VK_NV_external_compute_queue` ecosystem expansion.** NVIDIA's extension for joining external compute APIs (CUDA, OpenCL) to a `VkDevice` enables simultaneous execution between CUDA streams and Vulkan compute queues on the same hardware engine. Broader multi-vendor adoption is anticipated as the pattern proves out on the NV driver. [Source](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_NV_external_compute_queue.html)
+
+### Medium-term (1–3 years)
+
+- **GPU Work Graphs (`VK_AMDX_shader_enqueue`) Mesh Node standardisation.** AMD's experimental extension, extended with mesh node support in 2025–2026, allows GPU-driven task dispatch graphs entirely driven by shader-generated payloads — eliminating CPU readback for culling and dispatch count decisions. A multi-vendor KHR equivalent is under discussion in the Khronos working group. [Source](https://www.khronos.org/news/archives/amd-blog-gpu-work-graphs-mesh-node-are-now-in-vulkan)
+- **Vulkan ML extensions for compute-queue ML workloads.** The Vulkan ML Task Sub Group has published KHR extensions for 8-bit and 16-bit type support; follow-on work targets fused ML operators and memory layout hints that interact with async compute queue scheduling for inference-during-rendering workloads. [Source](https://www.khronos.org/blog/vulkan-continuing-to-forge-ahead-siggraph-2025)
+- **Standardised render-graph / task-graph ABI.** Multiple engine vendors (Epic, Unity, id Software) have independently implemented frame-graph compilers on top of Vulkan timeline semaphores. The Khronos Vulkan Working Group has ongoing discussions about a lower-level "sync graph" API that would let drivers inspect the full frame dependency graph for hardware-level optimisation (e.g., eliminating L2 flushes between passes that share a cache line). Note: needs verification on formal proposal status.
+- **NVK video queue completion.** The open-source NVIDIA Vulkan driver (NVK, in Mesa) has video queue implementation ongoing; full H.264/H.265/AV1 decode on NVK is expected to track RADV's implementation timeline within one to two Mesa release cycles.
+- **`drm_sched` priority API extension.** Kernel-side work to expose finer-grained queue priorities via `drm_sched` (beyond the current three-level hint) would allow Vulkan `VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT` and real-time compositor queues to be scheduled with tighter latency guarantees. [Source](https://www.kernel.org/doc/html/latest/gpu/drm-mm.html)
+
+### Long-term
+
+- **Hardware-accelerated dependency tracking.** Future GPU architectures may expose hardware barrier coalescing units that accept a DAG of resource dependencies rather than per-barrier pipeline stage masks, enabling finer-grained overlap without API-level barrier explosion in deeply pipelined frame graphs. Note: needs verification — speculative based on current hardware trajectory.
+- **Unified GPU scheduling across Vulkan, CUDA, and media APIs.** Long-term kernel work targets a single `drm_sched` arbiter that can schedule Vulkan queues, CUDA compute streams, and V4L2/VA-API media queues with unified priority and preemption semantics — eliminating priority inversion when GPU-accelerated video decode competes with Vulkan async compute.
+- **Ray tracing + async compute integration.** As ray tracing workloads mature, architectural guidance is expected to evolve around running BVH traversal on the dedicated RT cores while async compute queues simultaneously execute denoising (DLSS/XeSS/FSR) — requiring new pipeline stage flags and memory domain definitions in the synchronization2 framework.
+- **Vulkan compute queue abstractions for heterogeneous compute.** Multi-chip module (MCM) GPUs and CPU+GPU tiled architectures raise questions about queue family semantics across chiplets with distinct L3 cache domains. Khronos is anticipated to address per-chiplet queue family annotations and cross-chiplet coherence domains in a future extension.
+
+---
+
 ## 11. Integrations
 
 **Ch24 — Vulkan API Fundamentals (`ch24-vulkan-egl-application-developers.md`):** Queue families, `VkDevice` creation, and basic command buffer recording are introduced there. This chapter builds on that foundation with multi-family queue setups and timeline semaphore synchronisation.

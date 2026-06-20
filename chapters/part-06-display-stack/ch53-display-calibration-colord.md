@@ -962,6 +962,32 @@ For professionals requiring HDR display calibration today, the practical path is
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **colord HDR profiling integration:** colord lacks built-in HDR display characterisation as of mid-2026; active discussion in [hughsie/colord issues](https://github.com/hughsie/colord/issues) targets a D-Bus API extension to register HDR profiles with ST.2086 metadata alongside conventional ICC entries. Note: needs verification of specific issue tracking.
+- **ArgyllCMS 3.x icclib rewrite:** ArgyllCMS has undergone extensive re-writing of `icclib` to switch to a processing-element pipeline for colour transforms and to improve future-proofing for iccMAX tags; version 3.x bumps are expected to land in distributions within 12 months [Source: ArgyllCMS](http://www.argyllcms.com/).
+- **Wayland Protocols colour management revisions:** `wayland-protocols` 1.47 relaxed `maxCLL`/`maxFALL` restrictions in `wp_color_management_v1` to align with CTA-861-H; further revisions to named primaries and transfer function enumerations are in-flight [Source: Phoronix — Wayland Protocols 1.47](https://www.phoronix.com/news/Wayland-Protocols-1.47).
+- **mpv ICC + HDR Wayland path:** mpv merged `wp-color-management-v1` ICC support and `wp-color-representation-v1` in late 2025, making `--icc-auto` functional on Wayland; remaining work targets HDR tone-mapping integration with the protocol [Source: mpv PR #15178](https://github.com/mpv-player/mpv/pull/15178).
+- **Chromium `wp_color_management_v1` support:** Chromium committed initial colour management protocol support for the Vulkan Wayland platform; broader rollout covering Canvas and WebGPU colour spaces is expected in 2026 [Source: Chromium commit 07c9a59](https://github.com/chromium/chromium/commit/07c9a59c2a5256ce49c22445a6c5108182c7da11).
+
+### Medium-term (1–3 years)
+
+- **iccMAX (ICC.2:2023) adoption in colord and lcms2:** The ICC.2:2023 iccMAX specification was approved October 2023 and adds `matf`/`cvst` tags for PQ and HLG EOTFs, spectral data, and BRDF elements; colord and lcms2 will need iccMAX parser support before HDR ICC-based workflows become practical [Source: ICC iccMAX](https://www.color.org/iccmax/index.xalter).
+- **3D LUT KMS pipeline integration:** Current VCGT loading uses only the 1D `GAMMA_LUT` KMS property; planned compositor work aims to use the full KMS colour pipeline (degamma + CTM + 3D shaper LUTs where hardware supports them, as exposed by the `COLOROP` atomic property patchsets) for full-gamut ICC LUT profiles. Note: needs verification of upstream kernel patch status.
+- **colord D-Bus API for Wayland image descriptions:** A proposed extension would allow colord to directly vend `wp_image_description_v1` object parameters over D-Bus, removing the current two-step path where compositors independently re-parse ICC files already registered with colord. Note: needs verification.
+- **Hyprland colour management:** Hyprland issue #4377 tracks `wp_color_management_v1` compositor-side implementation; completion would bring colord-based profile loading to the wlroots-successor ecosystem [Source: Hyprland issue #4377](https://github.com/hyprwm/Hyprland/issues/4377).
+- **W3C wide colour gamut / HDR workshop outcomes:** The W3C web-wcg-hdr workshop is examining iccMAX complexity for browser colour pipelines; outcomes may influence how Dawn/WebGPU and CSS Color 4 interact with ICC profiles on Linux [Source: W3C web-wcg-hdr workshop issue #11](https://github.com/w3c/web-wcg-hdr-workshop/issues/11).
+
+### Long-term
+
+- **Full iccMAX spectral and BRDF profile support:** iccMAX enables spectral colour spaces and BRDF-based rendering; long-term integration into compositor and GPU colour pipelines would allow per-material reflectance profiling for advanced rendering workflows, though practical deployment depends on hardware vendor support.
+- **Unified SDR/HDR calibration daemon:** The current architecture requires separate paths for SDR ICC profiles (colord), HDR metadata (EDID HDR Static Metadata via DRM), and Wayland colour descriptions (`wp_color_management_v1`); a future colord or replacement daemon might unify all three into a single session service with a coherent D-Bus API covering both SDR and HDR outputs.
+- **Kernel-level ICC profile caching:** Long-term proposals have suggested the kernel exposing calibration state as a sysfs or DRM blob so that GPU reset, VT switch, and multi-seat scenarios automatically reload the correct profile without userspace polling; this remains speculative. Note: needs verification.
+
+---
+
 ## 10. Integrations
 
 Display calibration and colord sit at the intersection of multiple subsystems described elsewhere in this book.

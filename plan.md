@@ -221,6 +221,18 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 178: The PTY/TTY Kernel Layer and Line Disciplines](#chapter-178-the-ptytty-kernel-layer-and-line-disciplines) *(Part XII)*
   - [Chapter 179: The Linux `accel` Subsystem — NPU and AI Accelerator Drivers](#chapter-179-the-linux-accel-subsystem--npu-and-ai-accelerator-drivers) *(Part II)*
   - [Chapter 180: GPU Reverse Engineering — Tools, Methodology, and Case Studies](#chapter-180-gpu-reverse-engineering--tools-methodology-and-case-studies) *(Part IX)*
+- **Part XXVII — Display Hardware, Connectors, and Signal Standards**
+  - [Chapter 181: Modern Display Interface Standards](#chapter-181-modern-display-interface-standards)
+  - [Chapter 182: Digital Display Connectors and the Physical Layer](#chapter-182-digital-display-connectors-and-the-physical-layer)
+  - [Chapter 183: EDID and DisplayID — How Linux Discovers Display Capabilities](#chapter-183-edid-and-displayid--how-linux-discovers-display-capabilities)
+  - [Chapter 184: Embedded DisplayPort (eDP) and Laptop Panel Management](#chapter-184-embedded-displayport-edp-and-laptop-panel-management)
+  - [Chapter 185: Wireless Display Technologies on Linux](#chapter-185-wireless-display-technologies-on-linux)
+  - [Chapter 186: Video Pixel Formats and Display Signal Encoding](#chapter-186-video-pixel-formats-and-display-signal-encoding)
+  - [Chapter 187: HDMI CEC and the Linux CEC Subsystem](#chapter-187-hdmi-cec-and-the-linux-cec-subsystem)
+  - [Chapter 188: Display Power States — DPMS, Panel Self-Refresh, and Display Idle Management](#chapter-188-display-power-states--dpms-panel-self-refresh-and-display-idle-management)
+- **Part XXVII additions to existing parts**
+  - [Chapter 189: VLC Media Player — Architecture, GPU Acceleration, and the Linux Graphics Stack](#chapter-189-vlc-media-player--architecture-gpu-acceleration-and-the-linux-graphics-stack) *(Part XIII)*
+  - [Chapter 190: VTK — Scientific Visualization on the Linux Graphics Stack](#chapter-190-vtk--scientific-visualization-on-the-linux-graphics-stack) *(Part XI)*
 
 ---
 
@@ -2217,4 +2229,16 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 
 ---
 
+## Part XXVII — New Appendices and Chapter Additions (June 2026)
+
+### Appendix N: Vulkan on Linux — Platform Extensions Reference
+The Linux/Wayland-specific Vulkan extensions absent from Windows/macOS: `VK_KHR_wayland_surface`, `VK_EXT_image_drm_format_modifier`, `VK_KHR_external_memory_fd`, `VK_EXT_external_memory_dma_buf`, `VK_KHR_external_semaphore_fd`, `VK_KHR_external_fence_fd`, `VK_EXT_acquire_drm_display`, `VK_KHR_display`/`VK_KHR_display_swapchain`, `VK_EXT_headless_surface`. Each extension: purpose, key structs/functions with C code examples, Mesa driver support status. Cross-links: Ch4 (DMA-BUF), Ch20 (linux-dmabuf), Ch24 (Vulkan app devs), Ch75 (explicit sync), Ch121 (DRM lease).
+
+### Appendix O: SPIR-V Binary Format Reference
+Compact reference card: 5-word module header (magic `0x07230203`, version, generator, bound, schema), instruction encoding (opcode in bits [15:0], word count in bits [31:16]), logical module section order, ~60-entry opcodes table, capabilities table, storage classes, decorations (with BuiltIn sub-table), execution models and modes, `spirv-dis`/`spirv-val`/`spirv-opt`/`spirv-cross`/`glslangValidator`/`dxc`/`tint` command recipes, annotated `spirv-dis` listing. Cross-links: Ch14 (NIR), Ch16 (Mesa Vulkan common), Ch61 (SPIR-V ecosystem), Ch77 (shader toolchain), Ch110 (SPIR-V tooling).
+
 ### Section additions to existing chapters (cross-chapter content)
+
+**Ch93 §13: End-to-End Frame Delivery Latency** *(Part IX — added June 2026)*: per-hop latency budget table (CPU → vkQueueSubmit → DRM scheduler → GPU render → wl_surface.commit → compositor → KMS → vblank → panel); `wp_presentation_feedback` for per-frame scanout timestamps; MangoHUD `present_timing`; `ftrace drm:drm_vblank_event` for vblank jitter; motion-to-photon budget at 144 Hz; optimisation per hop (VRR, direct scanout, MPRT).
+
+### Section additions to existing chapters (cross-chapter content — Part XXV)

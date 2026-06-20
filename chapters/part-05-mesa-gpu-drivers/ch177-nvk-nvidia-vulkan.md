@@ -667,6 +667,31 @@ NVK does not use `RADV_DEBUG` (which is AMD-specific) but the `NVK_DEBUG` flags 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Ray tracing stabilisation**: `VK_KHR_ray_tracing_pipeline` and `VK_KHR_acceleration_structure` remain the highest-profile missing extensions in NVK as of mid-2026. Reverse engineering of Turing's RT Core command stream is ongoing; the shader side is blocked on NAK support for ray-payload and callable-shader linkage conventions. [Source](https://www.phoronix.com/news/NVK-Status-Update-2025)
+- **Vulkan video decode promotion**: Experimental H.264 and H.265 decode (currently gated behind `NVK_I_WANT_A_BROKEN_DRIVER`) is progressing toward stable status. Encode support (`VK_KHR_video_encode_queue`) is the next target after decode stabilises. [Source](https://blogs.igalia.com/scerveau/vulkan-video-with-nvk-driver/)
+- **NAK instruction scheduler improvements**: A cross-basic-block pre-pass scheduler landed in Mesa 26.0; near-term work targets improved latency hiding for Turing memory operations and better warp occupancy estimation for Ampere and Ada. Note: specific Mesa release targets need verification.
+- **Additional Vulkan extension coverage**: `VK_EXT_descriptor_buffer`, `VK_KHR_cooperative_matrix`, and `VK_KHR_shader_subgroup_rotate` are actively being developed or reviewed for NVK, driven by DXVK and VKD3D-Proton compatibility needs. [Source](https://www.phoronix.com/news/Mesa-Q1-2025-Highlights)
+- **Performance parity work**: The NVK team has acknowledged resource constraints ("barely keeping the lights on"); focused benchmarking against the proprietary driver for Proton game workloads is a stated priority for 2026. [Source](https://www.phoronix.com/news/NVK-Status-Update-2025)
+
+### Medium-term (1–3 years)
+
+- **Nova kernel driver NVKMD backend**: The Nova project (a Rust-language replacement for nouveau targeting GSP-based GPUs) submitted its `nova-core` stub upstream in early 2025 and is progressing through kernel review. The NVKMD abstraction in NVK was designed with a Nova backend in mind; once Nova exposes stable DRM uAPIs, an NVKMD backend will allow NVK to run against either nouveau or Nova without any Vulkan-layer changes. [Source](https://docs.kernel.org/gpu/nova/index.html)
+- **Hopper and Blackwell compute feature parity**: Hopper adds transformer engine (FP8 tensor cores) and NVLink capabilities exposed through `VK_KHR_cooperative_matrix`; Blackwell adds fifth-generation tensor cores and structured sparsity. Exposing these through Vulkan compute extensions requires both NAK ISA support and class-header reverse engineering. Note: timeline needs verification.
+- **Reclocking on pre-GSP hardware**: Maxwell and Pascal cannot be reclocked to full performance under the open driver stack because the PMU firmware path is not upstreamed. Medium-term efforts involve either completing the PMU path or using GSP-RM reclocking where firmware is available. [Source](https://www.collabora.com/news-and-blog/news-and-events/nvk-enabled-for-maxwell,-pascal,-and-volta-gpus.html)
+- **OpenCL / Rusticl path via NVK compute**: The Rusticl OpenCL implementation in Mesa uses NIR-based compute; routing Rusticl through NVK's compute command submission rather than the legacy Gallium nouveau path is a medium-term architectural goal. Note: needs verification of current status.
+
+### Long-term
+
+- **Full Nova transition**: Once Nova stabilises and ships in a kernel LTS release, the expectation is that nouveau will enter maintenance mode for legacy GPU generations while Nova becomes the primary GSP-based driver. NVK's NVKMD layer would then point exclusively at Nova for Turing and later hardware. [Source](https://docs.kernel.org/gpu/nova/index.html)
+- **Hardware mesh shading and task shaders**: `VK_EXT_mesh_shader` requires reverse engineering of Turing and Ampere mesh pipeline commands; this is lower priority than ray tracing but has been discussed in the context of game compatibility with titles that require mesh shading.
+- **Video encoding pipeline**: Full `VK_KHR_video_encode_h264` and `VK_KHR_video_encode_h265` support is a long-term goal contingent on video decode stabilising first and on encoder command-stream reverse engineering for Ada and Blackwell. Note: specific timeline needs verification.
+
+---
+
 ## Integrations
 
 This chapter is part of the NVK/Nouveau sub-cluster of chapters. The following cross-references locate related content:

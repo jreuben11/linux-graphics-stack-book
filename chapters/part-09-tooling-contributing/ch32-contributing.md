@@ -1253,6 +1253,32 @@ For Mesa work, subscribe to GitLab label notifications for the components you ca
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Rust mandatory for new DRM kernel drivers**: DRM subsystem maintainer Dave Airlie has signalled that new DRM drivers in C will be blocked in approximately one year, accelerating the pace at which contributors must be fluent in the `rust/kernel/drm/` abstractions. Contributors writing new drivers for NVIDIA (Nova), ARM Mali (Tyr), or other hardware will need to target Rust from day one. [Source](https://www.phoronix.com/news/Rust-DRM-For-Linux-7.1)
+- **Expanded Rust DRM abstractions in Linux 7.1**: Linux 7.1 is landing reworked DMA coherent API bindings, GPU buddy allocator abstractions, DRM shared memory GEM helper abstractions, and I/O infrastructure improvements in Rust — all in `rust/kernel/drm/`. Contributors working on DRM drivers will find a richer safe API surface to build against. [Source](https://www.phoronix.com/news/Rust-DRM-For-Linux-7.1)
+- **wayland-protocols 1.48 and XDG session management**: Released April 2026, wayland-protocols 1.48 adds the long-awaited XDG Session Management protocol (window position/state restoration), `xx-cutouts`, `xx-zones`, and `xx-keyboard-filter` experimental protocols, and text-input v3 fixes. Protocol contributors should target these staged interfaces for compositor implementation work. [Source](https://www.phoronix.com/news/Wayland-Protocols-1.48)
+- **b4 tooling improvements**: The `b4` patch submission tool continues to receive updates that streamline threading, cover-letter tracking, and trailer collection, reducing friction for first-time kernel contributors. Monitoring `b4.docs.kernel.org` for release notes is recommended for contributors targeting `dri-devel`. [Source](https://b4.docs.kernel.org)
+- **Mesa CI hardware-in-the-loop expansion**: The Mesa project is expanding hardware-in-the-loop CI coverage for ARM Mali, NVIDIA NVK, and Intel Xe drivers, meaning MR authors will receive pass/fail results on real hardware before marge-bot merge. Expect stricter CI gates for new driver contributions. Note: needs verification
+
+### Medium-term (1–3 years)
+
+- **Asahi DRM UAPI stabilisation**: The Asahi Apple Silicon DRM driver, with its UAPI header queued in `drm-misc-next` for Linux 6.16, is expected to complete its stabilisation process and become the canonical example of an all-Rust kernel GPU driver with a stable binary interface for Mesa NVK-style userspace. Contributors studying Rust DRM driver patterns should track `drivers/gpu/drm/asahi/`. [Source](https://kernel-recipes.org/en/2025/schedule/a-rusty-odyssey-a-timeline-of-rust-in-the-drm-subsystem/)
+- **wayland-protocols governance evolution**: Ongoing discussion about `wayland-protocols` scope and governance (visible on `wayland-devel@lists.freedesktop.org`) may lead to a formal technical steering committee, clearer protocol lifecycle timelines, and a documented security review process — reducing the multi-year stabilisation delays seen with `wp_color_management_v1`. [Source](https://lists.freedesktop.org/hyperkitty/list/wayland-devel@lists.freedesktop.org/message/D34F25WMKN7PP7UGLLCCH4UO2J2RCXQX/)
+- **GitLab-based kernel patch submission**: Freedesktop.org infrastructure experimentation with GitLab-native kernel patch workflows (complementing but not replacing the `dri-devel` email flow) may lower the barrier for contributors unfamiliar with `git send-email`. Note: needs verification — watch `lore.kernel.org/dri-devel/` for pilot announcements.
+- **Mesa contributor onboarding tooling**: The Mesa project is expected to improve `Good First Issue` labelling, automated component-ownership inference (replacing the current `git shortlog`-based convention), and interactive CI failure triage to reduce the onboarding cliff for new contributors. Note: needs verification
+- **`wp_color_representation_v1` and HDR follow-on protocols**: Following the stabilisation of `wp_color_management_v1`, the next wave of display-pipeline protocols — covering tone-mapping, gamut mapping metadata, and per-surface luminance hints — is in early design on the `wayland-devel` list, requiring coordinated kernel DRM property additions, Mesa WSI extensions, and compositor implementations. Note: needs verification
+
+### Long-term
+
+- **Full Rust DRM subsystem**: With new C drivers blocked and existing drivers (AMDGPU, i915, `nouveau`) accumulating Rust-rewritten subsections, the long-term trajectory is a DRM subsystem that is predominantly Rust with C only in legacy paths. This would fundamentally change the skills expected of new DRM contributors and shift the emphasis of `checkpatch.pl`-style review toward Rust's ownership/lifetime model. [Source](https://www.programming-helper.com/tech/rust-in-the-linux-kernel-2026-memory-safe-drivers-future-kernel-development)
+- **Unified freedesktop.org contribution portal**: A long-term goal discussed at XDC and LPC is a single contributor entry point that maps a proposed change across kernel DRM, Mesa, `wayland-protocols`, and compositor repositories simultaneously — reducing the coordination overhead of the "four-domain" model described in Section 1. Note: needs verification
+- **AI-assisted patch review tooling**: Experimental use of static-analysis and ML-based review bots (analogous to but separate from Patchwork's CI integration) is under informal discussion for pre-screening `dri-devel` patches for common `checkpatch.pl` violations, missing `Fixes:` tags, and ABI breakage — potentially reducing reviewer load for high-volume subsystems. Note: needs verification
+
+---
+
 ## References
 
 1. Linux kernel submitting patches guide: [https://www.kernel.org/doc/html/latest/process/submitting-patches.html](https://www.kernel.org/doc/html/latest/process/submitting-patches.html)

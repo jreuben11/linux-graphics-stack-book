@@ -643,6 +643,33 @@ SR-IOV VF jitter is dominated by the hardware world-switch between VFs and any P
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Intel Xe3P SR-IOV on Nova Lake**: Linux 7.2 is expected to enable SR-IOV for Intel Nova Lake S/P integrated graphics via the `xe` driver, extending hardware VF partitioning to the next-generation Xe3P iGPU. [Source](https://www.phoronix.com/news/Intel-Nova-Lake-Graphics-SR-IOV)
+- **`VIRTIO_GPU_CAPSET_ROCM` capability set**: A patch series in review on LKML adds a new ROCm capset to `virtio-gpu`, enabling AMD compute workloads (HIP/ROCm) to run accelerated inside VMs using the paravirtual path — the first non-display, non-Vulkan compute forwarding mechanism in the virtio-gpu protocol. [Source](https://lkml.iu.edu/2601.1/09980.html)
+- **Venus per-context fence migration**: The virglrenderer Venus renderer is expected to transition to per-context fences only and mandate renderserver initialisation; this removes global fence serialisation and improves multi-VM throughput at the cost of a small API break for integrators. [Source](https://www.collabora.com/news-and-blog/blog/2025/01/15/the-state-of-gfx-virtualization-using-virglrenderer/)
+- **Kubernetes DRA and GPU fractional resources**: Dynamic Resource Allocation (DRA, GA in Kubernetes 1.31) is seeing active driver development for NVIDIA MIG partitions and Intel SR-IOV VFs, allowing `ResourceClaim`-based GPU scheduling without per-capability custom device plugins. [Source](https://blog.aks.azure.com/2025/11/17/dra-devices-and-drivers-on-kubernetes)
+- **KubeVirt + Intel Graphics SR-IOV Enablement Toolkit**: Intel's `kubevirt-gfx-sriov` project is actively being extended to support Xe-based discrete GPUs alongside existing 12th/13th-gen iGPU SR-IOV, enabling cloud/edge orchestration of graphics VFs inside KubeVirt VMs. [Source](https://github.com/intel/kubevirt-gfx-sriov)
+
+### Medium-term (1–3 years)
+
+- **Unified VFIO/SR-IOV abstraction for NPU devices**: AMD XDNA and Intel Meteor Lake NPU virtualization are expected to follow the VFIO SR-IOV template established for GPUs; IOMMU group isolation, FLR, and VF assignment should map directly once kernel driver support matures. Note: needs verification — no public RFC patchset exists at time of writing.
+- **NVIDIA open-kernel vGPU on Blackwell**: As the NVIDIA open-source GPU kernel modules (`nvidia-open`) have achieved feature parity with the proprietary modules for Hopper/Ada and newer, the expectation is that future vGPU Manager releases will be based on the open-source tree, enabling community-auditable virtualisation for Blackwell (`GB100`/`GB200`) architectures. [Source](https://eunomia.dev/blog/2025/10/14/nvidia-open-gpu-kernel-modules-comprehensive-source-code-analysis/)
+- **Confidential GPU Computing integration with vGPU**: NVIDIA's CC (Confidential Computing) mode — hardware VRAM encryption, PCIe bus encryption, and attestation — is currently a bare-metal or VFIO-passthrough feature; roadmap work is underway to integrate CC mode with MIG and eventually vGPU Manager so multi-tenant MIG partitions can provide encrypted VRAM per tenant. [Source](https://www.spheron.network/blog/confidential-gpu-computing-nvidia-tee-encrypted-vram/)
+- **VirGL replacement / Zink-over-Venus**: As Venus (Vulkan) matures and reaches wider driver coverage, the VirGL (OpenGL/TGSI) path faces deprecation in favour of routing OpenGL through Zink (OpenGL-on-Vulkan) on top of Venus, eliminating the TGSI translation tier. This path is architecturally preferred but requires Venus Vulkan coverage on all host drivers. Note: needs verification on concrete timeline.
+- **AMD MxGPU live migration**: Stateful SR-IOV VF migration (live VM migration without dropping the GPU context) is an active research area for AMD MxGPU; AMD has published initial GIM driver changes toward checkpoint/restore of VF state, analogous to CPU live migration. Note: needs verification on upstream patch status.
+
+### Long-term
+
+- **Hardware-native multi-tenant GPU architectures**: Future GPU generations from AMD, Intel, and NVIDIA are expected to expose more granular hardware partitioning — finer than today's MIG 7-way split — potentially allowing O(100) concurrent tenants per die as chiplet-based designs (AMD MI300X-style) become mainstream in datacenter GPUs.
+- **GPU TEE interoperability across hypervisors**: Long-term, the GPU TEE ecosystem (AMD SEV-SNP + GPU CC, Intel TDX + GPU extensions) is expected to converge on a common attestation format and VMPL/SEAM integration, allowing portable confidential GPU workloads that can be attested independently of the hypervisor vendor. [Source](https://arxiv.org/html/2408.11601v2)
+- **Full virtio-gpu display protocol unification**: The current split between display-only virtio-gpu, VirGL (OpenGL), Venus (Vulkan), and ROCM capsets may converge toward a unified extensible command stream modelled on the Vulkan extension mechanism, with negotiated capability sets replacing the current hard-coded protocol types.
+- **Standardised GPU virtualisation at the Khronos level**: Khronos working groups have discussed whether Vulkan Portability or a future "Vulkan Virtualisation" extension family could provide a standardised guest-to-host serialisation protocol, reducing fragmentation between Venus, gfxstream (Android), and potential future implementations. Note: needs verification — no formal Khronos WG proposal exists at time of writing.
+
+---
+
 ## 12. Integrations
 
 This chapter builds directly on foundations established across the book. The connections below cross-reference the chapters most relevant to extending or applying the material here.
