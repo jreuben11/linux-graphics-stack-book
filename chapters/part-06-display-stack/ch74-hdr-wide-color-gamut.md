@@ -892,6 +892,305 @@ The Linux kernel assembles and programmes both formats from the same `hdr_output
 
 ---
 
+## wp_color_management_v1: The Wayland Color Management Protocol
+
+### What It Is and Why It Matters
+
+**`wp_color_management_v1`** is the official Wayland color management protocol, accepted into the [wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/tree/main/staging/color-management) repository on 13 February 2025 in the `staging/color-management/` directory. It supersedes a decade of draft protocols — the `weston-color-management` experiment, the GNOME-private `xx_color_manager` drafts, and the KDE-private protocols — by providing a single, vendor-neutral wire protocol that any Wayland compositor can implement and any Wayland application can use. [Source: wayland-protocols staging/color-management](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/tree/main/staging/color-management)
+
+The fundamental problem the protocol solves is **surface color space declaration**: a Wayland compositor has historically had no way to know what color encoding a client surface uses. Every surface was assumed to be sRGB. This caused HDR content displayed on an HDR-capable output to be incorrectly interpreted: a PQ-encoded 10-bit surface from a media player or game would be treated as sRGB gamma and rendered at the wrong luminance. `wp_color_management_v1` gives clients a standard mechanism to attach a color description — a transfer function plus primaries — to each `wl_surface`, and gives compositors a standard mechanism to advertise the output's color capabilities.
+
+### Protocol Naming: xx_ to wp_ Progression
+
+The protocol went through two distinct naming phases that still appear in compositor and application code as of 2025–2026:
+
+**Experimental phase (`xx_color_manager_v4` / `xx_color_management_v4`)**: The fourth major design revision was prefixed `xx_` to signal "experimental, subject to breaking change". Compositor implementations in KWin 6.0–6.1 and early Mutter 47 patchsets used this prefix. The `xx_` interfaces include `xx_color_manager_v4`, `xx_image_description_v4`, `xx_image_description_creator_icc_v4`, and `xx_image_description_creator_params_v4`. These remain in the wild in older compositor releases and some downstream application SDKs.
+
+**Staging phase (`wp_color_management_v1`)**: Once accepted into `wayland-protocols`, the protocol was renamed with the `wp_` namespace, which signals "officially maintained, backward-compatible within a version". The staging designation (`staging/`, rather than `stable/`) indicates the protocol is stable enough for production use but may still receive additive extensions. The principal interfaces are now `wp_color_manager_v1`, `wp_color_management_surface_v1`, `wp_color_management_output_v1`, `wp_image_description_v1`, `wp_image_description_creator_icc_v1`, and `wp_image_description_creator_params_v1`. [Source: wayland-protocols 1.41 release](https://www.gamingonlinux.com/2025/02/wayland-colour-management-and-hdr-protocol-finally-merged/)
+
+Compositors and applications must negotiate which version they support. During the transition period (2024–2026), many implementations advertise both the `xx_color_manager_v4` and `wp_color_manager_v1` globals simultaneously for backward compatibility.
+
+**Note:** Some experimental image description features — particularly advanced parametric volume descriptions and certain HDR static metadata fields — continue to use `xx_`-prefixed sub-interfaces even within wayland-protocols staging, because those features were not yet considered stable at merge time. Always consult the current `.xml` protocol file for the authoritative interface names.
+
+### Core Interface Design
+
+#### wp_image_description_v1: Encoding a Color Space
+
+The central object is `wp_image_description_v1`, an immutable reference-counted object that encodes a color space as a combination of:
+
+1. **Transfer function (TF)**: How code values map to luminance (OETF/EOTF).
+2. **Primaries**: The chromaticity coordinates of the red, green, and blue primaries plus the white point.
+3. **Target luminance range**: The intended minimum and maximum display luminance in cd/m².
+4. **Optional content metadata**: MaxCLL and MaxFALL for HDR content.
+
+The `wp_image_description_creator_params_v1` factory is used to construct parametric descriptions. Named transfer functions supported by the protocol include:
+
+| TF Name (protocol enum) | Standard | Notes |
+|-------------------------|----------|-------|
+| `srgb` | IEC 61966-2-1 | Standard desktop color |
+| `gamma22` | Simple 2.2 power law | Approximates sRGB on many displays |
+| `gamma28` | Simple 2.8 power law | PAL/SECAM legacy |
+| `bt1886` | ITU-R BT.1886 | Reference EOTF for studio monitors |
+| `st2084_pq` | SMPTE ST 2084 | PQ — absolute luminance, 0–10,000 nits |
+| `hlg` | ITU-R BT.2100 HLG | Scene-referred, broadcast HDR |
+| `ext_srgb` | IEC 61966-2-2 | scRGB — extended range, linear sRGB |
+| `linear` | Linear light | No OETF; 1:1 code value to luminance |
+
+Named primary sets supported:
+
+| Primaries Name (protocol enum) | Standard | Gamut coverage (CIE 1931) |
+|-------------------------------|----------|--------------------------|
+| `srgb` | IEC 61966-2-1 / Rec.709 | ~35.9% |
+| `bt2020` | ITU-R BT.2020 / Rec.2020 | ~75.8% |
+| `dcip3` | SMPTE RP 431-2 | ~41.5% |
+| `displayp3` | Apple Display P3 (DCI-P3 + D65) | ~41.5% |
+| `adobergb` | Adobe RGB (1998) | ~52.1% |
+| `xyz` | CIE XYZ D50 | — |
+
+[Source: wayland-protocols color-management.xml](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/staging/color-management/color-management.xml)
+
+#### wp_color_management_surface_v1: Declaring Surface Color Space
+
+`wp_color_management_surface_v1` is the per-surface extension object obtained from `wp_color_manager_v1::get_surface(wl_surface)`. Its primary request is:
+
+```
+wp_color_management_surface_v1::set_image_description(
+    image_description: wp_image_description_v1,
+    render_intent: uint)
+```
+
+The `render_intent` enum follows ICC rendering intent semantics: `perceptual` (0), `relative_colorimetric` (1), `saturation` (2), and `absolute_colorimetric` (3). For HDR applications `perceptual` is the standard choice, allowing the compositor freedom to tone-map when the display cannot reproduce the full color volume. For color-critical calibration use `absolute_colorimetric`.
+
+After `set_image_description` is committed via the surface's commit cycle, the compositor knows the color space of that surface's buffer and can apply the appropriate conversion in its blending pipeline.
+
+#### wp_color_management_output_v1: Querying Display Color Space
+
+`wp_color_management_output_v1` is the per-output extension obtained from `wp_color_manager_v1::get_output(wl_output)`. Applications use it to discover what the display is capable of before deciding their rendering color space:
+
+```
+wp_color_management_output_v1::get_image_description
+    → wp_image_description_v1   (compositor sends 'ready' event with description ID)
+```
+
+The application then calls `wp_image_description_v1::get_information → wp_image_description_info_v1` and receives a sequence of informational events (`tf_named`, `primaries_named`, `luminances`, `target_max_cll`) followed by `done`. A smart application rendering HDR content queries the output description first, and only enables its HDR rendering path if the output reports a PQ or HLG transfer function with a target luminance above the SDR reference (~203 nits per ITU-R BT.2408).
+
+The output description also changes over time. When the user switches the monitor's HDR mode or the compositor adjusts color state, `wp_color_management_output_v1` emits an `image_description_changed` event; the application should re-query and update its surface image description accordingly.
+
+#### ICC Profile Path: wp_image_description_creator_icc_v1
+
+For displays and applications that use ICC profiles rather than parametric descriptions, `wp_image_description_creator_icc_v1` accepts a file descriptor to an ICC profile blob:
+
+```
+wp_color_manager_v1::create_icc_creator → wp_image_description_creator_icc_v1
+creator::set_icc_file(icc_fd: fd, offset: uint, length: uint)
+creator::create → wp_image_description_v1
+```
+
+The compositor reads the ICC profile from the fd, validates it, and uses it as the color description for subsequent `set_image_description` calls. The equivalent experimental name was `xx_image_description_creator_icc_v4`. This path is useful for display calibration tools that generate ICC profiles via colorimeter measurements and want to apply them at the compositor level without programming LUTs directly. [Source: wayland-protocols staging/color-management](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/tree/main/staging/color-management)
+
+### Compositor Implementation: KWin 6.2+
+
+KWin was the first major production compositor to ship `wp_color_management_v1` support, integrating it in **KWin 6.2 (Plasma 6.2, September 2024)** with the `xx_color_manager_v4` interface and transitioning to `wp_color_manager_v1` as the protocol was finalised for staging. [Source: Plasma 6.2 release notes](https://zamundaaa.github.io/wayland/2023/12/18/update-on-hdr-and-colormanagement-in-plasma.html)
+
+KWin's implementation connects the Wayland protocol directly to the KMS color pipeline and Vulkan swapchain:
+
+**1. Output image description → VkColorSpaceKHR**: When KWin creates a Vulkan swapchain for rendering a display output, it maps the output's image description to the appropriate `VkColorSpaceKHR`. An output with `tf=st2084_pq` and `primaries=bt2020` selects `VK_COLOR_SPACE_HDR10_ST2084_EXT`; `tf=hlg` selects `VK_COLOR_SPACE_HDR10_HLG_EXT`; SDR outputs use `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR`. [Source: VkColorSpaceKHR reference](https://docs.vulkan.org/refpages/latest/refpages/source/VkColorSpaceKHR.html)
+
+**2. Surface image description → tone-mapping decision**: When a surface declares a PQ image description (via `set_image_description`), KWin knows it must not apply sRGB EOTF to that surface. Instead it marks the surface as HDR-encoded and routes it through its ICtCp-domain tone mapping pipeline when compositing alongside SDR surfaces.
+
+**3. HDR output → VkHdrMetadataEXT**: For HDR-enabled outputs, KWin sets the swapchain's `VkHdrMetadataEXT` metadata from the display's EDID capabilities (parsed via libdisplay-info), forwarding mastering primaries, MaxCLL, and MaxFALL to the Vulkan driver which populates the HDMI/DP infoframe.
+
+**4. DRM color properties**: KWin programs KMS for HDR output by setting the following DRM connector and CRTC properties atomically:
+
+| DRM Property | Object | Value for HDR10 |
+|-------------|--------|----------------|
+| `HDR_OUTPUT_METADATA` | Connector | Blob with EOTF=ST2084, mastering primaries, MaxCLL, MaxFALL |
+| `Colorspace` | Connector | `BT2020_RGB` or `BT2020_YCC` |
+| `CTM` | CRTC | 3×3 identity or gamut-mapping matrix |
+| `GAMMA_LUT` | CRTC | Bypassed (display applies PQ EOTF itself) |
+
+For HDR gaming with per-plane color pipelines (Plasma 6.6+, Linux 6.19+), KWin additionally programs `COLOR_PIPELINE` drm plane properties with degamma(PQ) colorops on the video overlay plane, enabling direct scanout of PQ-encoded game framebuffers without a shader round-trip. [Source: KWin MR !6600](https://invent.kde.org/plasma/kwin/-/merge_requests/6600)
+
+### Compositor Implementation: Mutter/GNOME 47+
+
+GNOME's **Mutter 47** (September 2024) shipped the `xx_color_manager_v4` interface with a full implementation backed by a linear BT.2020 intermediate compositing buffer. **Mutter 48** (March 2025) transitioned to `wp_color_manager_v1`. [Source: GNOME 48 Mutter wp_color_management_v1](https://www.phoronix.com/news/GNOME-wp_color_management_v1)
+
+Mutter's compositor pipeline when handling a PQ surface on an HDR output:
+
+1. Receives the surface's `wp_image_description_v1` (tf=st2084_pq, primaries=bt2020, luminances=[0.005, 1000.0]).
+2. Applies the PQ EOTF to linearise the surface pixel data into absolute scene luminance.
+3. Converts from BT.2020 to the compositor's working space (linear BT.2020, D65).
+4. Composites with other surfaces.
+5. Re-encodes to PQ for the output (inverse OETF).
+6. Sets `HDR_OUTPUT_METADATA` and the `Colorspace` DRM connector property for the atomic commit.
+
+### wlroots 0.18 Support
+
+**wlroots 0.18** (late 2024) added color management protocol support, implementing both `wp_color_management_v1` and the companion `color-representation-v1` for YCbCr video surfaces. This enables wlroots-based compositors — including Sway, Wayfire, and Hyprland — to gain HDR support through their compositor-side wlroots integration without reimplementing the protocol from scratch. [Source: wlroots 0.18 changelog](https://gitlab.freedesktop.org/wlroots/wlroots/-/releases)
+
+### Application-Side C Client Example
+
+The following example shows a Wayland client using `wp_color_management_v1` to declare an HDR10 (PQ, BT.2020) surface encoding and a separate scRGB (linear extended sRGB) surface encoding for an intermediate compositing surface. Error handling is omitted for brevity.
+
+```c
+/*
+ * Client-side wp_color_management_v1 usage example.
+ * Protocol headers generated from:
+ *   wayland-protocols staging/color-management/color-management.xml
+ * Link: https://gitlab.freedesktop.org/wayland/wayland-protocols/-/tree/main/staging/color-management
+ */
+#include <wayland-client.h>
+#include "color-management-v1-client-protocol.h"  /* generated by wayland-scanner */
+
+/* Globals obtained from registry */
+struct wl_compositor         *compositor;
+struct wp_color_manager_v1   *color_manager;   /* bound from registry */
+struct wl_output             *output;
+
+/* Per-surface state */
+struct wl_surface                     *surface;
+struct wp_color_management_surface_v1 *cm_surface;
+struct wp_image_description_v1        *img_desc;
+
+/*
+ * Example 1: HDR10 surface — PQ transfer function, BT.2020 primaries,
+ * luminance range [0.005, 1000.0] nits, SDR reference white 203 nits.
+ */
+void setup_hdr10_surface(void)
+{
+    /* Create a parametric image description for HDR10 */
+    struct wp_image_description_creator_params_v1 *creator =
+        wp_color_manager_v1_create_parametric_creator(color_manager);
+
+    wp_image_description_creator_params_v1_set_tf_named(
+        creator,
+        WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_TF_NAMED_ST2084_PQ);
+
+    wp_image_description_creator_params_v1_set_primaries_named(
+        creator,
+        WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_PRIMARIES_NAMED_BT2020);
+
+    /* Luminances: min_lum (cd/m²×10000), max_lum (cd/m²×10000), ref_lum */
+    wp_image_description_creator_params_v1_set_luminances(
+        creator,
+        50,        /* min = 0.005 nits × 10000 */
+        10000000,  /* max = 1000.0 nits × 10000 */
+        2030000);  /* reference white = 203.0 nits × 10000 */
+
+    /* MaxCLL and MaxFALL for static HDR metadata */
+    wp_image_description_creator_params_v1_set_max_cll(creator, 10000000);  /* 1000 nits */
+    wp_image_description_creator_params_v1_set_max_fall(creator, 4000000);  /* 400 nits */
+
+    img_desc = wp_image_description_creator_params_v1_create(creator);
+    wp_image_description_creator_params_v1_destroy(creator);
+
+    /* Attach the color description to the surface */
+    cm_surface = wp_color_manager_v1_get_surface(color_manager, surface);
+    wp_color_management_surface_v1_set_image_description(
+        cm_surface,
+        img_desc,
+        WP_COLOR_MANAGEMENT_SURFACE_V1_RENDER_INTENT_PERCEPTUAL);
+
+    /* Color description takes effect on the next wl_surface::commit */
+    wl_surface_commit(surface);
+}
+
+/*
+ * Example 2: scRGB surface — linear extended sRGB for intermediate HDR compositing.
+ * Used by compositor-aware applications that render in linear light and rely on
+ * the compositor to apply tone mapping.
+ */
+void setup_scrgb_surface(void)
+{
+    struct wp_image_description_creator_params_v1 *creator =
+        wp_color_manager_v1_create_parametric_creator(color_manager);
+
+    wp_image_description_creator_params_v1_set_tf_named(
+        creator,
+        WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_TF_NAMED_LINEAR);
+
+    wp_image_description_creator_params_v1_set_primaries_named(
+        creator,
+        WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_PRIMARIES_NAMED_SRGB);
+
+    /* Target luminance: SDR reference white at 203 nits, max 1000 nits */
+    wp_image_description_creator_params_v1_set_luminances(
+        creator,
+        0,         /* black level */
+        10000000,  /* max 1000 nits */
+        2030000);  /* SDR ref white 203 nits */
+
+    img_desc = wp_image_description_creator_params_v1_create(creator);
+    wp_image_description_creator_params_v1_destroy(creator);
+
+    cm_surface = wp_color_manager_v1_get_surface(color_manager, surface);
+    wp_color_management_surface_v1_set_image_description(
+        cm_surface,
+        img_desc,
+        WP_COLOR_MANAGEMENT_SURFACE_V1_RENDER_INTENT_PERCEPTUAL);
+
+    wl_surface_commit(surface);
+}
+
+/*
+ * Query the output's image description to decide whether to enable HDR rendering.
+ * The compositor sends 'ready' event on the image_description_v1 when available.
+ */
+static void output_image_desc_ready(void *data,
+                                     struct wp_image_description_v1 *desc,
+                                     uint32_t identity)
+{
+    /* Retrieve informational events via get_information */
+    struct wp_image_description_info_v1 *info =
+        wp_image_description_v1_get_information(desc);
+    /* Register listener on info to receive tf_named, primaries_named,
+       luminances, target_max_cll events, then done */
+    (void)info;  /* see full listener pattern in compositor code */
+}
+
+void query_output_color(void)
+{
+    struct wp_color_management_output_v1 *cm_output =
+        wp_color_manager_v1_get_output(color_manager, output);
+
+    struct wp_image_description_v1 *out_desc =
+        wp_color_management_output_v1_get_image_description(cm_output);
+
+    static const struct wp_image_description_v1_listener desc_listener = {
+        .ready  = output_image_desc_ready,
+        .failed = NULL,
+    };
+    wp_image_description_v1_add_listener(out_desc, &desc_listener, NULL);
+
+    wl_display_roundtrip(/* wl_display */NULL);  /* process events */
+}
+```
+
+**Note:** The exact enum constant names (`WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_TF_NAMED_*`, etc.) are generated by `wayland-scanner` from the `.xml` protocol file. The luminance values in `set_luminances` and `set_max_cll`/`set_max_fall` are in units of `0.0001 cd/m²` (i.e., multiply nit values by 10,000) per the protocol XML — consult the authoritative [color-management.xml](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/staging/color-management/color-management.xml) for exact unit definitions, as they changed between the `xx_` and `wp_` revisions.
+
+### Status as of Mid-2025 and Mid-2026
+
+**Stable (merged to wayland-protocols staging)**: The core `wp_color_management_v1` interfaces — `wp_color_manager_v1`, `wp_color_management_surface_v1`, `wp_color_management_output_v1`, `wp_color_management_surface_feedback_v1`, `wp_image_description_v1`, `wp_image_description_creator_icc_v1`, `wp_image_description_creator_params_v1`, `wp_image_description_info_v1` — are stable in `wayland-protocols 1.41` and later. These are the interfaces applications and compositors should target. [Source: wayland-protocols 1.41](https://www.collabora.com/news-and-blog/news-and-events/12-years-of-incubating-wayland-color-management.html)
+
+**Still `xx_` (experimental)**: Certain advanced image description features that were not yet stable at merge time continue to use `xx_`-prefixed names in the `wayland-protocols` staging directory. Examples include advanced parametric color volume features beyond the core named-TF/named-primaries model. Consult the current protocol XML for the definitive list.
+
+**Compositor version support**:
+
+| Compositor | Version | Protocol Support |
+|-----------|---------|----------------|
+| KWin (KDE Plasma) | 6.0 | `xx_color_manager_v4` (experimental) |
+| KWin (KDE Plasma) | 6.2+ | `xx_color_manager_v4` + transitioning to `wp_color_management_v1` |
+| Mutter (GNOME) | 47 | `xx_color_manager_v4` (experimental) |
+| Mutter (GNOME) | 48+ | `wp_color_management_v1` |
+| wlroots | 0.18+ | `wp_color_management_v1` |
+| Weston | 15+ | `wp_color_management_v1` |
+| Sway | pending wlroots 0.18 uptake | via wlroots |
+| Hyprland | pending wlroots 0.18 uptake | via wlroots |
+
+**Toolkit support**: GTK 4 (from GTK 4.16), Qt 6.8+, SDL 3.2+, and Chromium's Ozone/Wayland backend have implemented or are implementing `wp_color_management_v1` client-side support. The GTK implementation is described in Section 7 of this chapter and in the `GdkColorState` API surface. [Source: GTK Blog — The Colors of GTK](https://blog.gtk.org/2024/08/11/the-colors-of-gtk/)
+
+---
+
 ## Integrations
 
 This chapter connects to the following chapters in the book:

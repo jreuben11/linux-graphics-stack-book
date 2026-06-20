@@ -34,7 +34,7 @@ After reading this chapter, the reader will understand how to select the right V
 
 ## 1. Vulkan Instance and Device Initialisation on Linux
 
-This chapter covers the full application-developer path from **Vulkan** and **EGL** initialisation through to compositor presentation and VRAM management on Linux. Section 1 begins with the **Vulkan** loader, ICD selection, physical device enumeration, and queue family scoring. Section 2 examines **Vulkan** memory management on **AMD** (**RADV**), **Intel** (**ANV**), and **NVIDIA** (**NVK**) hardware, including heap topology, **Resizable BAR** (**ReBAR**/**SAM**), **VK_EXT_memory_budget**, **VK_EXT_memory_priority**, and the **Vulkan Memory Allocator** (**VMA**) library. Section 3 covers **EGL** display, context, and surface creation — **eglGetPlatformDisplayEXT**, the **EGL_KHR_image_base** extension family, **EGLImage** handles, and zero-copy **DMA-BUF** import via **EGL_EXT_image_dma_buf_import_modifiers**. Section 4 walks through **GBM**-backed (**libgbm**) **EGL** surfaces and **KMS**-direct rendering with **drmModeAtomicCommit**, including the **VA-API** interop path via **vaExportSurfaceHandle** that enables zero-copy decoded video frames to reach **OpenGL ES** textures. Section 5 describes **Wayland** swapchain creation with **VK_KHR_wayland_surface**, the **linux-dmabuf** format and modifier negotiation, present modes (**VK_PRESENT_MODE_FIFO_KHR**, **VK_PRESENT_MODE_MAILBOX_KHR**, **VK_PRESENT_MODE_IMMEDIATE_KHR**), **VK_EXT_swapchain_maintenance1**, and accurate frame pacing with **VK_KHR_present_id** and **VK_KHR_present_wait**. Section 6 covers the full explicit synchronisation story: **VkFence**, binary and timeline **VkSemaphore**, **VK_KHR_synchronization2**, **DRM sync objects** (**drm_syncobj**), **VK_KHR_external_semaphore_fd**, the **wp_linux_drm_syncobj_v1** Wayland protocol, and the historical **EGLStreams** path. Section 7 addresses headless **EGL** and server-side rendering using the **EGL_EXT_device_base** extension family, **EGL_MESA_platform_surfaceless**, and **GBM** render nodes. Section 8 explains the **Vulkan** validation workflow under **VK_LAYER_KHRONOS_validation**, **VK_EXT_debug_utils**, **vkSetDebugUtilsObjectNameEXT**, and **RenderDoc** integration. Section 9 discusses **VRAM** pressure, **TTM** eviction, **VK_ERROR_OUT_OF_DEVICE_MEMORY** recovery patterns, and fine-grained residency via **VK_KHR_sparse_binding**.
+This chapter covers the full application-developer path from **Vulkan** and **EGL** initialisation through to compositor presentation and VRAM management on Linux. Section 1 begins with the **Vulkan** loader, ICD selection, physical device enumeration, and queue family scoring. Section 2 examines **Vulkan** memory management on **AMD** (**RADV**), **Intel** (**ANV**), and **NVIDIA** (**NVK**) hardware, including heap topology, **Resizable BAR** (**ReBAR**/**SAM**), **VK_EXT_memory_budget**, **VK_EXT_memory_priority**, and the **Vulkan Memory Allocator** (**VMA**) library. Section 3 covers **EGL** display, context, and surface creation — **eglGetPlatformDisplayEXT**, the **EGL_KHR_image_base** extension family, **EGLImage** handles, and zero-copy **DMA-BUF** import via **EGL_EXT_image_dma_buf_import_modifiers**. Section 4 walks through **GBM**-backed (**libgbm**) **EGL** surfaces and **KMS**-direct rendering with **drmModeAtomicCommit**, including the **VA-API** interop path via **vaExportSurfaceHandle** that enables zero-copy decoded video frames to reach **OpenGL ES** textures. Section 5 describes **Wayland** swapchain creation with **VK_KHR_wayland_surface**, the **linux-dmabuf** format and modifier negotiation, present modes (**VK_PRESENT_MODE_FIFO_KHR**, **VK_PRESENT_MODE_MAILBOX_KHR**, **VK_PRESENT_MODE_IMMEDIATE_KHR**), **VK_EXT_swapchain_maintenance1**, and accurate frame pacing with **VK_KHR_present_id** and **VK_KHR_present_wait**. Section 6 covers **Vulkan WSI internals on Linux**: the Mesa WSI layer's DMA-BUF swapchain implementation for Wayland (`wsi_common_wayland.c`), the X11 DRI3 path (`wsi_common_x11.c`), present-mode semantics and why `VK_PRESENT_MODE_IMMEDIATE_KHR` requires DRM leasing on Wayland, `VK_EXT_swapchain_maintenance1`, and DRM leasing for VR direct display via `VK_EXT_acquire_drm_display`. Section 7 covers the full explicit synchronisation story: **VkFence**, binary and timeline **VkSemaphore**, **VK_KHR_synchronization2**, **DRM sync objects** (**drm_syncobj**), **VK_KHR_external_semaphore_fd**, the **wp_linux_drm_syncobj_v1** Wayland protocol, and the historical **EGLStreams** path. Section 8 addresses headless **EGL** and server-side rendering using the **EGL_EXT_device_base** extension family, **EGL_MESA_platform_surfaceless**, and **GBM** render nodes. Section 9 explains the **Vulkan** validation workflow under **VK_LAYER_KHRONOS_validation**, **VK_EXT_debug_utils**, **vkSetDebugUtilsObjectNameEXT**, and **RenderDoc** integration. Section 10 discusses **VRAM** pressure, **TTM** eviction, **VK_ERROR_OUT_OF_DEVICE_MEMORY** recovery patterns, and fine-grained residency via **VK_KHR_sparse_binding**.
 
 The **Vulkan** loader sits between every application and the driver. On Linux the loader ships as **libvulkan.so.1**, installed by `libvulkan1` on Debian/Ubuntu or `vulkan-loader` on Fedora. When an application calls **vkCreateInstance**, the loader reads **ICD** manifest JSON files from a set of well-known directories: `/usr/share/vulkan/icd.d/`, `/etc/vulkan/icd.d/`, and, for per-user overrides, `$XDG_DATA_HOME/vulkan/icd.d/`. Each manifest names a shared library and a Vulkan API version. **Mesa** installs three primary manifests: `radeon_icd.x86_64.json` pointing at **libvulkan_radeon.so** (the **RADV** driver), `intel_icd.x86_64.json` pointing at **libvulkan_intel.so** (the **ANV** driver), and `nouveau_icd.x86_64.json` pointing at **libvulkan_nouveau.so** (the **NVK** driver). Software rendering is available through `lvp_icd.x86_64.json` (**Lavapipe**). Corresponding 32-bit manifests ending in `i686.json` support 32-bit Vulkan applications on 64-bit systems.
 
@@ -242,7 +242,7 @@ EGLDisplay egl_dpy = eglGetPlatformDisplayEXT(
     NULL);
 ```
 
-For pure offscreen work without a display, `EGL_MESA_platform_surfaceless` (a Mesa extension available since Mesa 13.0) or the more portable `EGL_EXT_device_base` path (covered in Section 7) are the correct choices.
+For pure offscreen work without a display, `EGL_MESA_platform_surfaceless` (a Mesa extension available since Mesa 13.0) or the more portable `EGL_EXT_device_base` path (covered in Section 8) are the correct choices.
 
 After obtaining a display, the standard initialisation sequence proceeds: `eglInitialize(dpy, &major, &minor)` probes the driver and returns the EGL version; `eglBindAPI(EGL_OPENGL_ES_API)` or `EGL_OPENGL_API` selects the rendering API before `eglCreateContext`; and `eglChooseConfig` filters `EGLConfig` objects by an attribute list specifying surface type, colour bit depths, depth/stencil requirements, and rendering type. A minimal GLES3 config:
 
@@ -437,7 +437,301 @@ Multi-window Vulkan requires one `VkSwapchainKHR` per `VkSurfaceKHR`. Each swapc
 
 ---
 
-## 6. Synchronisation: Fences, Semaphores, and the Explicit Sync Story
+## 6. Vulkan WSI Internals on Linux
+
+**Audiences**: Application developers who need to understand what happens below `vkCreateSwapchainKHR`; systems developers working on compositor integration or WSI layer code.
+
+This section opens the lid on Mesa's WSI layer — the code path that converts Vulkan swapchain operations into Wayland protocol messages or X11 DRI3 transactions. Understanding these internals is necessary when debugging presentation anomalies, choosing the right present mode for a given deployment environment, or writing OpenXR compositors that need direct display access.
+
+### 6.1 VK_KHR_wayland_surface: DMA-BUF Swapchain Internals
+
+`VK_KHR_wayland_surface` is the entry point, but the substantive work happens in Mesa's `src/vulkan/wsi/wsi_common_wayland.c` ([source](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/vulkan/wsi/wsi_common_wayland.c)). When `vkCreateWaylandSurfaceKHR` is called, Mesa binds a `zwp_linux_dmabuf_v1` listener to the `wl_display` and accumulates the compositor's advertised (format, modifier) pairs via the `zwp_linux_dmabuf_v1.format` and `zwp_linux_dmabuf_v1.modifier` events. This negotiation determines the exact set of formats and modifiers exposed by `vkGetPhysicalDeviceSurfaceFormats2KHR` — the list is not hard-coded but derived from what the compositor declares it can accept.
+
+At `vkCreateSwapchainKHR` time, Mesa allocates a pool of N swapchain images using the Vulkan driver's own allocator (e.g., RADV's `wsi_create_buffer` path). Each image is backed by a DMA-BUF file descriptor. The DMA-BUF is then imported into the Wayland compositor as a `wl_buffer` using `zwp_linux_dmabuf_v1.create_immed`:
+
+```c
+/*
+ * Pedagogical sketch of Mesa WSI Wayland swapchain image setup.
+ * Real code: src/vulkan/wsi/wsi_common_wayland.c, wsi_wl_image_init()
+ * Mesa main branch (as of 2025-Q4).
+ */
+
+/* Each swapchain image: allocate as DMA-BUF, wrap as wl_buffer */
+struct zwp_linux_buffer_params_v1 *params =
+    zwp_linux_dmabuf_v1_create_params(display->dmabuf);
+
+/* image->dma_buf_fd is the fd exported from the Vulkan driver allocator */
+zwp_linux_buffer_params_v1_add(params,
+    image->dma_buf_fd,
+    0,                   /* plane index */
+    image->offset,
+    image->row_pitch,
+    image->drm_modifier >> 32,     /* modifier_hi */
+    image->drm_modifier & 0xFFFFFFFF); /* modifier_lo */
+
+/* create_immed: synchronous buffer creation, returns wl_buffer immediately */
+image->buffer = zwp_linux_buffer_params_v1_create_immed(
+    params,
+    swapchain->extent.width,
+    swapchain->extent.height,
+    wl_drm_format,   /* e.g. WL_DRM_FORMAT_ARGB8888 */
+    0 /* flags */);
+zwp_linux_buffer_params_v1_destroy(params);
+```
+
+The relationship is one-to-one: each `VkImage` in the swapchain corresponds to exactly one DMA-BUF file descriptor and one `wl_buffer` handle. The DMA-BUF is the physical GPU allocation; the `wl_buffer` is the compositor's handle to it. No pixel data is copied — the compositor's KMS backend reads the same memory the GPU renders into.
+
+The `wl_buffer.release` event, sent by the compositor after it no longer needs a buffer for display, is what unblocks `vkAcquireNextImageKHR`. Mesa registers a `wl_buffer.release` listener; when the event fires, it marks that swapchain slot as available and wakes any thread blocked in `vkAcquireNextImageKHR`. `vkQueuePresentKHR` in turn calls `wl_surface.attach(surface, wl_buffer, 0, 0)` followed by `wl_surface.commit` — handing the rendered buffer to the compositor.
+
+```mermaid
+graph TD
+    Alloc["vkCreateSwapchainKHR\n→ allocate N DMA-BUF images"]
+    Export["Export each image as\nDMA-BUF fd (one per swapchain slot)"]
+    Import["zwp_linux_dmabuf_v1_create_params\n+ create_immed → wl_buffer"]
+    Acquire["vkAcquireNextImageKHR\n→ wait for wl_buffer.release event\n(compositor done with slot)"]
+    Render["GPU render into swapchain image\n(DMA-BUF)"]
+    Present["vkQueuePresentKHR\n→ wl_surface.attach(wl_buffer)\n→ wl_surface.commit"]
+    Compositor["Compositor: KMS scanout of DMA-BUF\n→ send wl_buffer.release when done"]
+
+    Alloc --> Export --> Import --> Acquire --> Render --> Present --> Compositor
+    Compositor -. "wl_buffer.release" .-> Acquire
+```
+
+### 6.2 VK_KHR_xcb_surface and VK_KHR_xlib_surface: The X11 DRI3 Path
+
+For X11 surfaces, Vulkan applications use either `VK_KHR_xcb_surface` (preferred, direct XCB connection) or `VK_KHR_xlib_surface` (wraps Xlib, which internally calls XCB). The create-info structures name their respective connection handles:
+
+```c
+/* XCB surface: direct XCB connection */
+VkXcbSurfaceCreateInfoKHR xcb_info = {
+    .sType      = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR,
+    .connection = xcb_connection,  /* xcb_connection_t* from xcb_connect() */
+    .window     = xcb_window,      /* xcb_window_t from xcb_create_window() */
+};
+VkSurfaceKHR vk_surface;
+vkCreateXcbSurfaceKHR(instance, &xcb_info, NULL, &vk_surface);
+
+/* Xlib surface: Xlib Display + Window (internally wraps to XCB) */
+VkXlibSurfaceCreateInfoKHR xlib_info = {
+    .sType  = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR,
+    .dpy    = x_display,    /* Display* from XOpenDisplay() */
+    .window = x_window,     /* Window (XID) from XCreateWindow() */
+};
+vkCreateXlibSurfaceKHR(instance, &xlib_info, NULL, &vk_surface);
+```
+
+The `VK_USE_PLATFORM_XCB_KHR` and `VK_USE_PLATFORM_XLIB_KHR` preprocessor defines (set in `<vulkan/vulkan.h>` before the Vulkan headers are included) gate the declarations of these structures. The xlib path calls `XGetXCBConnection(dpy)` to extract an `xcb_connection_t *` and delegates to the same XCB logic — it adds no additional capabilities, only Xlib convenience.
+
+The critical difference from the Wayland path is the buffer-sharing model. X11 Vulkan WSI uses **DRI3**, the Direct Rendering Infrastructure version 3 protocol, to share DMA-BUF file descriptors between the Vulkan application and the X compositor (Xorg, or XWayland running a Wayland compositor above it). Mesa's X11 WSI layer in `src/vulkan/wsi/wsi_common_x11.c` ([source](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/vulkan/wsi/wsi_common_x11.c)) issues `xcb_dri3_pixmap_from_buffers_checked` to register each swapchain DMA-BUF as an X11 Pixmap:
+
+```c
+/*
+ * DRI3: register a DMA-BUF fd as an X11 Pixmap (pedagogical).
+ * Real code: src/vulkan/wsi/wsi_common_x11.c, x11_image_init()
+ */
+
+/* Export the swapchain image's DMA-BUF fd */
+int dma_buf_fd = /* obtained from wsi_image_get_dma_buf_fd(image) */;
+
+xcb_pixmap_t pixmap = xcb_generate_id(xcb_conn);
+xcb_dri3_pixmap_from_buffers_checked(
+    xcb_conn,
+    pixmap,
+    xcb_window,
+    num_planes,         /* 1 for RGBA, 2 for NV12, etc. */
+    width, height,
+    stride, 0,          /* stride for plane 0, offset */
+    0, 0,               /* plane 1 stride/offset (unused for RGBA) */
+    0, 0,               /* plane 2 */
+    0, 0,               /* plane 3 */
+    depth, bpp,
+    drm_modifier >> 32,
+    drm_modifier & 0xffffffff,
+    &dma_buf_fd);       /* array of fds; ownership transferred to X server */
+```
+
+This approach — sharing DRM buffer objects directly via DRI3 — is the mechanism that eliminated the **MIT-SHM** copy that earlier X11 OpenGL implementations required. MIT-SHM allocated a shared memory segment, rendered into it on the CPU side, and then the X server copied those pixels into its internal scanout buffer. DRI3 replaces this with a file-descriptor handoff: the GPU renders into a DMA-BUF, the DRI3 Pixmap registration hands that fd to the X server, and the X Present extension (`xcb_present_pixmap`) schedules the GPU buffer for display at the correct vblank without any copy.
+
+The **X Present extension** (distinct from Vulkan's present modes) is what drives `vkQueuePresentKHR` on X11. Mesa calls `xcb_present_pixmap` with the Pixmap corresponding to the rendered swapchain image, specifying the target MSC (Media Stamp Counter — the display's vblank counter), and an XSync fence that the application signals after GPU rendering completes. The X server waits for the fence before latching the new scanout.
+
+On **XWayland** (X11 application running inside a Wayland session), the DRI3 path is preserved: XWayland acts as an X server, manages DRI3 Pixmaps internally, and translates them into `wl_buffer` objects passed to the outer Wayland compositor via `linux-dmabuf`. The Vulkan application sees only the XCB/Xlib surface; the Wayland protocol is hidden below.
+
+### 6.3 Present Modes on Wayland: Why IMMEDIATE Is Impossible Without DRM Lease
+
+Wayland's architectural principle — that the compositor owns the display and all client buffers pass through it — has direct consequences for Vulkan present mode semantics.
+
+**`VK_PRESENT_MODE_FIFO_KHR`** is the only mode the Vulkan spec requires to be available on any platform. On Wayland, it maps to the natural compositor pacing model: the application submits frames via `wl_surface.commit`, and the compositor presents one buffer per vblank cycle. The compositor's KMS backend drives the vblank timing; the application does not observe the vblank directly. This is synchronised, tearing-free, and latency-stable.
+
+**`VK_PRESENT_MODE_MAILBOX_KHR`** is advertised by Mesa on Wayland builds but does not provide true mailbox semantics. In a true mailbox, a queued-but-not-yet-displayed frame can be atomically replaced by a newer frame, reducing latency without tearing. On Wayland, the compositor processes `wl_surface.commit` requests in order — there is no protocol mechanism for a client to supersede a pending buffer. Mesa's approximation allocates an extra swapchain image slot so the application can render ahead, but the presented sequence remains first-in-first-out. Applications expecting the latency reduction of a real mailbox queue will not observe it on Wayland.
+
+**`VK_PRESENT_MODE_IMMEDIATE_KHR`** (tearing-permitted, minimum latency) requires a Wayland compositor-side implementation of `wp_tearing_control_v1` ([protocol XML](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/staging/tearing-control/tearing-control-v1.xml)). When both the compositor (KWin 6.0+, Mutter 46+, wlroots 0.17+) and Mesa 23.3+ support this protocol, `vkGetPhysicalDeviceSurfacePresentModesKHR` will include `VK_PRESENT_MODE_IMMEDIATE_KHR`. Even then, the compositor retains frame scheduling control — it attempts to present each committed buffer as quickly as possible, but cannot guarantee sub-vblank latency because the KMS page flip must still be scheduled by the kernel's display hardware. The "immediate" label means the compositor allows tearing rather than waiting for the next vblank; it does not bypass the compositor.
+
+Without `wp_tearing_control_v1`, `VK_PRESENT_MODE_IMMEDIATE_KHR` is structurally **impossible** on Wayland. The Wayland protocol has no mechanism for a client to directly control display scanout timing — only the compositor can issue `drmModeAtomicCommit`. Contrast this with DRM direct mode (Section 6.6 below), where an application that has acquired a DRM lease can call `drmModeAtomicCommit` directly with `DRM_MODE_ATOMIC_ALLOW_MODESET`, achieving sub-vblank presentation at the cost of bypassing the compositor entirely.
+
+### 6.4 VkSwapchainKHR Lifecycle on Wayland
+
+The full lifecycle of a Wayland swapchain image traverses five distinct ownership states:
+
+1. **Free**: the swapchain slot is available for the application to acquire.
+2. **Acquired**: `vkAcquireNextImageKHR` has returned the image index; the application owns the image and may submit GPU work rendering into it.
+3. **Pending present**: `vkQueuePresentKHR` has been called; the image is queued for presentation. The application must not access it.
+4. **Presented**: the compositor holds the `wl_buffer` as its current scanout buffer. The GPU may still be rendering (release fence is pending).
+5. **Released**: the compositor has sent `wl_buffer.release`; the slot returns to Free.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Free : vkCreateSwapchainKHR
+    Free --> Acquired : vkAcquireNextImageKHR
+    Acquired --> PendingPresent : vkQueuePresentKHR
+    PendingPresent --> Presented : wl_surface.commit processed\nby compositor
+    Presented --> Free : wl_buffer.release event
+    Free --> [*] : vkDestroySwapchainKHR
+```
+
+The minimum swapchain image count on Wayland is 2 (one being rendered while one is displayed), but triple buffering (3 images) is recommended to prevent the GPU from stalling while waiting for a `wl_buffer.release` during the compositor's scanout window. Mesa enforces a minimum of 2 in `wsi_common_wayland.c`; the `minImageCount` field of `VkSurfaceCapabilitiesKHR` reflects this.
+
+A subtle implementation detail: `vkAcquireNextImageKHR` does not block on GPU completion — it blocks on the `wl_buffer.release` event. These are different signals. If the GPU has not finished rendering when the release arrives, the application is responsible for waiting on the per-image fence (or semaphore) before submitting new GPU work into the same image. Skipping this wait is a write-after-write hazard: the GPU will overwrite memory the compositor is still displaying.
+
+### 6.5 VK_EXT_swapchain_maintenance1
+
+`VK_EXT_swapchain_maintenance1` ([spec](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_swapchain_maintenance1.html), Mesa 23.1+) addresses several lifetime management gaps that the base swapchain extensions leave open.
+
+**Per-present fences** (`VkSwapchainPresentFenceInfoEXT`): chains onto `VkPresentInfoKHR` to supply one `VkFence` per swapchain entry in `pSwapchains`. The fence signals when the presentation engine has finished consuming the semaphores listed in `VkPresentInfoKHR::pWaitSemaphores`. This enables the application to recycle those semaphores immediately after the fence signals, without having to infer readiness from the next acquire operation.
+
+```c
+VkFence present_fence;
+/* ... create present_fence as a normal VkFence ... */
+
+VkSwapchainPresentFenceInfoEXT fence_info = {
+    .sType          = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT,
+    .swapchainCount = 1,
+    .pFences        = &present_fence,
+};
+VkPresentInfoKHR present_info = {
+    .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+    .pNext              = &fence_info,
+    .swapchainCount     = 1,
+    .pSwapchains        = &swapchain,
+    .pImageIndices      = &image_index,
+    .waitSemaphoreCount = 1,
+    .pWaitSemaphores    = &render_done_semaphore,
+};
+vkQueuePresentKHR(queue, &present_info);
+/* After vkWaitForFences(device, 1, &present_fence, VK_TRUE, UINT64_MAX),
+   render_done_semaphore can be safely recycled or reset. */
+```
+
+**Explicit swapchain retirement** (`vkReleaseSwapchainImagesEXT`): returns one or more acquired-but-not-presented images back to the swapchain's free pool without presenting them. This is essential for clean swapchain recreation on resize: previously, an application that had already acquired an image when a resize was detected could not return the image — it had to either present it (wasting a frame) or let it leak until `vkDestroySwapchainKHR`. `vkReleaseSwapchainImagesEXT` eliminates this forced present.
+
+**Present mode switching without recreation** (`VkSwapchainPresentModesCreateInfoEXT` + `VkSwapchainPresentModeInfoEXT`): the application declares at swapchain creation which present modes it may switch between; at each `vkQueuePresentKHR` it can specify the mode for that particular present via `VkSwapchainPresentModeInfoEXT` in the `pNext` chain. This allows dynamic switching between `FIFO` (power-save) and `IMMEDIATE` (minimum latency) without swapchain destruction.
+
+### 6.6 DRM Leasing for VR and Direct Display
+
+Standard Wayland Vulkan presentation routes all frames through the desktop compositor. Virtual reality headsets and professional direct-display applications need **exclusive ownership of a display connector**, bypassing the compositor entirely to achieve sub-millisecond latency and precise vblank control. Linux supports this via **DRM display leasing**, exposed to Vulkan through two extension pairs.
+
+**Kernel-level leasing**: `DRM_IOCTL_MODE_CREATE_LEASE` ([kernel source](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_lease.c)) creates a lease — a new DRM file descriptor that grants access to a specific set of DRM object IDs (CRTCs, connectors, encoders, planes) while revoking those objects from the primary DRM fd. The leasee can call `drmModeAtomicCommit` on the leased fd as if it owned the display hardware outright. The desktop compositor (KWin, Mutter) implements the Wayland `wp_drm_lease_v1` protocol ([XML](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/staging/drm-lease/drm-lease-v1.xml)) to expose lease offers to clients, allowing a VR compositor like Monado to request a lease for the HMD connector without requiring root privileges. This path is covered in detail in Chapter 121 (DRM Leasing).
+
+**Vulkan extension path**: `VK_EXT_acquire_drm_display` ([spec](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_EXT_acquire_drm_display.html)) and `VK_EXT_direct_mode_display` ([spec](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_EXT_direct_mode_display.html)) bridge the DRM lease fd into a Vulkan `VkDisplayKHR` handle:
+
+```c
+/*
+ * Acquire a DRM display for direct Vulkan presentation (VR compositor path).
+ * Prerequisite: obtain a lease fd from wp_drm_lease_v1 or
+ * directly from DRM_IOCTL_MODE_CREATE_LEASE.
+ */
+
+/* Step 1: Enumerate displays available on the lease fd */
+uint32_t display_count = 0;
+vkGetDrmDisplayEXT(physical_device,
+    lease_drm_fd,            /* DRM fd from DRM_IOCTL_MODE_CREATE_LEASE */
+    connector_id,            /* DRM connector ID for the HMD */
+    &vk_display);            /* VkDisplayKHR output */
+
+/* Step 2: Acquire exclusive control */
+VkResult result = vkAcquireDrmDisplayEXT(
+    physical_device,
+    lease_drm_fd,
+    vk_display);
+/* After this succeeds, the Vulkan WSI layer owns the connector.
+   The desktop compositor can no longer scan out to it. */
+
+/* Step 3: Create a display surface for direct presentation */
+VkDisplaySurfaceCreateInfoKHR surface_info = {
+    .sType           = VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR,
+    .displayMode     = display_mode,   /* from vkGetDisplayModePropertiesKHR */
+    .planeIndex      = 0,
+    .planeStackIndex = 0,
+    .transform       = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+    .alphaMode       = VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR,
+    .imageExtent     = { width, height },
+};
+VkSurfaceKHR direct_surface;
+vkCreateDisplayPlaneSurfaceKHR(instance, &surface_info, NULL, &direct_surface);
+
+/* The resulting direct_surface supports VK_PRESENT_MODE_IMMEDIATE_KHR:
+   the application owns the CRTC and controls vblank timing directly. */
+```
+
+The `vkAcquireXlibDisplayEXT` variant (from `VK_EXT_acquire_xlib_display`) provides an alternative entry point for X11 environments where the display lease is acquired via the `XRandR` extension rather than a DRM lease fd. This path is less common in modern Linux VR stacks, which prefer the Wayland `wp_drm_lease_v1` path.
+
+**Monado** (the open-source OpenXR runtime, [source](https://gitlab.freedesktop.org/monado/monado)) uses this path for its DRM display backend: it requests a lease for the HMD connector from the desktop compositor (or obtains one directly if running without a compositor), calls `vkAcquireDrmDisplayEXT`, and runs its own Vulkan swapchain on the leased display. Because the application owns the CRTC, `VK_PRESENT_MODE_IMMEDIATE_KHR` is genuinely immediate — each `vkQueuePresentKHR` triggers a direct `drmModeAtomicCommit` on the leased fd without any compositor interposition.
+
+### 6.7 Platform Selection in Practice
+
+A portable Vulkan application must select the WSI extension that matches the windowing environment it is running in. The recommended approach queries `vkEnumerateInstanceExtensionProperties` and selects based on available extensions and environment variables:
+
+```c
+/* Portable WSI extension selection */
+typedef enum {
+    WSI_PLATFORM_WAYLAND,
+    WSI_PLATFORM_XCB,
+    WSI_PLATFORM_XLIB,
+    WSI_PLATFORM_DIRECT_DISPLAY,
+    WSI_PLATFORM_UNKNOWN,
+} WsiPlatform;
+
+WsiPlatform select_wsi_platform(void) {
+    /* Check environment first: explicit override wins */
+    const char *wayland_display = getenv("WAYLAND_DISPLAY");
+    const char *x_display       = getenv("DISPLAY");
+
+    /* Probe available instance extensions */
+    uint32_t ext_count = 0;
+    vkEnumerateInstanceExtensionProperties(NULL, &ext_count, NULL);
+    VkExtensionProperties *exts = malloc(ext_count * sizeof(*exts));
+    vkEnumerateInstanceExtensionProperties(NULL, &ext_count, exts);
+
+    bool has_wayland = false, has_xcb = false, has_xlib = false;
+    for (uint32_t i = 0; i < ext_count; i++) {
+        if (!strcmp(exts[i].extensionName,
+                    VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME)) has_wayland = true;
+        if (!strcmp(exts[i].extensionName,
+                    VK_KHR_XCB_SURFACE_EXTENSION_NAME))     has_xcb = true;
+        if (!strcmp(exts[i].extensionName,
+                    VK_KHR_XLIB_SURFACE_EXTENSION_NAME))    has_xlib = true;
+    }
+    free(exts);
+
+    /* Prefer Wayland when WAYLAND_DISPLAY is set and extension is present */
+    if (wayland_display && has_wayland) return WSI_PLATFORM_WAYLAND;
+    /* Fall back to XCB (preferred over Xlib: no Xlib threading issues) */
+    if (x_display && has_xcb)           return WSI_PLATFORM_XCB;
+    if (x_display && has_xlib)          return WSI_PLATFORM_XLIB;
+    return WSI_PLATFORM_UNKNOWN;
+}
+```
+
+**SDL3** abstracts this selection behind `SDL_CreateWindow` and `SDL_Vulkan_CreateSurface`. SDL3's Vulkan backend (`src/video/SDL_vulkan_utils.c`) checks for `WAYLAND_DISPLAY` and selects the Wayland video driver first, falling back to the X11 driver if Wayland is unavailable. Applications using SDL3 do not need to manage WSI extension selection manually. `SDL_Vulkan_GetInstanceExtensions` returns the correct set of required extensions for the selected backend.
+
+**GLFW** follows the same pattern: `glfwGetRequiredInstanceExtensions` returns `{"VK_KHR_surface", "VK_KHR_wayland_surface"}` on a Wayland session and `{"VK_KHR_surface", "VK_KHR_xcb_surface"}` on an X11 session. GLFW uses `glfwGetPlatform()` (GLFW 3.4+) to determine the active backend; `GLFW_PLATFORM_WAYLAND` and `GLFW_PLATFORM_X11` are the two Linux platform values. The `GLFW_PLATFORM` init hint or the `GLFW_PLATFORM` environment variable can force a specific backend.
+
+**Forcing a specific WSI** for testing is sometimes necessary — for example, to test the X11 path while running under XWayland. Setting `WAYLAND_DISPLAY=""` (empty string, or `unset WAYLAND_DISPLAY`) prevents GLFW and SDL from detecting Wayland. Conversely, `unset DISPLAY` suppresses X11 fallback. Mesa's WSI layer itself does not read `WAYLAND_DISPLAY` directly; the display backend is selected by whichever `wl_display *` or `xcb_connection_t *` the application passes into the surface create-info structure.
+
+A common debugging scenario is verifying which WSI path is active. On Mesa, setting `MESA_LOADER_DRIVER_OVERRIDE` is not relevant for WSI selection, but enabling `LIBGL_DEBUG=verbose` (for EGL/GL paths) or checking `VK_LOADER_DEBUG=all` in the Vulkan loader output will show which instance extensions were enabled. For Wayland-specific WSI debugging, the environment variable `WAYLAND_DEBUG=1` prints all Wayland protocol messages — including `zwp_linux_dmabuf_v1` modifier advertisements and `wl_buffer.release` events — to stderr, providing a direct view of the swapchain buffer lifecycle.
+
+---
+
+## 7. Synchronisation: Fences, Semaphores, and the Explicit Sync Story
 
 Vulkan's synchronisation primitives form a hierarchy. `VkFence` synchronises the CPU: it signals after a queue submission completes, allowing the CPU to wait via `vkWaitForFences`. Binary `VkSemaphore` synchronises GPU-to-GPU within a single device: one queue submission signals it, another waits on it, with no CPU visibility. Timeline `VkSemaphore` (promoted to core in Vulkan 1.2 from `VK_KHR_timeline_semaphore`) adds a 64-bit monotonically increasing counter that both the CPU and GPU can signal or wait on, enabling multi-frame dependency tracking without per-frame fence arrays.
 
@@ -592,7 +886,7 @@ graph TD
 
 ---
 
-## 7. Headless EGL and Server-Side Rendering
+## 8. Headless EGL and Server-Side Rendering
 
 Headless GPU contexts are necessary for a wide class of Linux workloads: ML inference pipelines that want to visualise activations, render farms processing frames without a display, CI systems that run GPU-accelerated test suites, and video transcoding pipelines that use VA-API plus OpenGL ES for colour-space conversion. "Headless" means the GPU context is valid and rendering is possible, but no window system or display output is involved.
 
@@ -667,7 +961,7 @@ This is the shortest path for Mesa-only deployments (CI, render servers running 
 
 ---
 
-## 8. Vulkan Validation Layers in a Linux Development Workflow
+## 9. Vulkan Validation Layers in a Linux Development Workflow
 
 Vulkan's explicit design makes errors invisible to the driver in release builds; validation is opt-in and handled entirely in user space by layers that intercept API calls. The `VK_LAYER_KHRONOS_validation` meta-layer is the standard debugging tool and wraps object lifetime tracking, synchronisation validation, best-practices checks, and GPU-assisted descriptor validation into a single layer identity. All major Linux distributions ship it via `vulkan-validationlayers`; the Vulkan SDK tarball and source builds from the KhronosGroup GitHub repo (`https://github.com/KhronosGroup/Vulkan-ValidationLayers`) are alternatives when distro packages lag upstream.
 
@@ -715,7 +1009,7 @@ In a CI pipeline, running the test suite under `VK_INSTANCE_LAYERS=VK_LAYER_KHRO
 
 ---
 
-## 9. Handling VRAM Pressure and GPU Out-of-Memory
+## 10. Handling VRAM Pressure and GPU Out-of-Memory
 
 VRAM scarcity is a first-order concern on consumer Linux systems. An 8 GB GPU is the mainstream configuration in 2024; large shadow maps, MSAA render targets, and asset texture arrays consume this budget quickly in demanding applications. The Linux kernel's TTM memory manager (described in Chapter 4) handles physical VRAM exhaustion by evicting BOs to GTT (system RAM mapped to the GPU's virtual address space) and, in the worst case, to ordinary system RAM. This eviction is transparent to the GPU command stream — the GPU does not fault — but the performance cost can be severe: a VRAM resident texture evicted to GTT may take 3–10× longer to access, and an eviction to system RAM is catastrophically slow. Applications that react to budget pressure proactively rather than waiting for the eviction machinery to engage will perform significantly better.
 
@@ -830,7 +1124,7 @@ VkDeviceMemory alloc_with_oom_recovery(
 
 ---
 
-## 10. Integrations
+## 11. Integrations
 
 This chapter connects in both directions with the hardware and protocol chapters that form the rest of the book.
 
@@ -838,9 +1132,9 @@ This chapter connects in both directions with the hardware and protocol chapters
 
 **Chapter 2 (KMS: Kernel Mode Setting)** describes atomic commits in detail. Section 4 of this chapter uses `drmModeAtomicCommit` for the GBM/EGL/KMS direct rendering path; the properties (CRTC_ID, FB_ID, SRC_W, SRC_H) set on plane objects in that example are the same KMS plane properties described in Chapter 2. The `DRM_EVENT_FLIP_COMPLETE` event handling discussed here maps directly to the flip-completion event infrastructure covered there.
 
-**Chapter 3 (Advanced Display Features)** covers explicit sync at the KMS level via DRM sync objects. Section 6 of this chapter is the application-facing complement: `wp_linux_drm_syncobj_v1` exposes those DRM sync objects to Wayland clients. HDR swapchain format selection (Section 5's `VK_FORMAT_R16G16B16A16_SFLOAT`, `VK_COLOR_SPACE_HDR10_ST2084_EXT`) connects to the KMS colour metadata pipeline described in Chapter 3. VRR (Variable Refresh Rate) interacts with `VK_PRESENT_MODE_IMMEDIATE_KHR` and `wp_tearing_control_v1`.
+**Chapter 3 (Advanced Display Features)** covers explicit sync at the KMS level via DRM sync objects. Section 7 of this chapter is the application-facing complement: `wp_linux_drm_syncobj_v1` exposes those DRM sync objects to Wayland clients. HDR swapchain format selection (Section 5's `VK_FORMAT_R16G16B16A16_SFLOAT`, `VK_COLOR_SPACE_HDR10_ST2084_EXT`) connects to the KMS colour metadata pipeline described in Chapter 3. VRR (Variable Refresh Rate) interacts with `VK_PRESENT_MODE_IMMEDIATE_KHR` and `wp_tearing_control_v1`.
 
-**Chapter 4 (GPU Memory Management)** describes the TTM eviction chain — VRAM → GTT → system RAM — which is the kernel mechanism that underlies the `VK_ERROR_OUT_OF_DEVICE_MEMORY` error discussed in Section 9. `VK_EXT_memory_budget` exposes driver-side TTM pressure estimates to the application. GBM buffer allocation and DMA-BUF fd passing (Section 4 of this chapter) connect to the dma-buf framework described in Chapter 4.
+**Chapter 4 (GPU Memory Management)** describes the TTM eviction chain — VRAM → GTT → system RAM — which is the kernel mechanism that underlies the `VK_ERROR_OUT_OF_DEVICE_MEMORY` error discussed in Section 10. `VK_EXT_memory_budget` exposes driver-side TTM pressure estimates to the application. GBM buffer allocation and DMA-BUF fd passing (Section 4 of this chapter) connect to the dma-buf framework described in Chapter 4.
 
 **Chapter 12 (Mesa Loader and ICD Dispatch)** explains how `libvulkan.so` routes calls to the correct ICD via the JSON manifest mechanism described in Section 1. Mesa EGL's DRI interface initialisation is also described there.
 
@@ -848,19 +1142,19 @@ This chapter connects in both directions with the hardware and protocol chapters
 
 **Chapter 20 (Wayland Fundamentals)** describes the `linux-dmabuf` protocol that backs `VK_KHR_wayland_surface`'s format and modifier negotiation, the `wp_presentation` protocol used by Mesa for `VK_KHR_present_wait` timestamps, and `wp_tearing_control_v1` needed for `VK_PRESENT_MODE_IMMEDIATE_KHR` tearing permission.
 
-**Forward: Chapter 25 (GPU Compute)** shares all sync primitives and memory types described here. CUDA-Vulkan interop uses `VK_KHR_external_memory_fd` for buffer sharing, and headless EGL/Vulkan setups from Section 7 are the standard deployment context for GPU compute without display infrastructure.
+**Forward: Chapter 25 (GPU Compute)** shares all sync primitives and memory types described here. CUDA-Vulkan interop uses `VK_KHR_external_memory_fd` for buffer sharing, and headless EGL/Vulkan setups from Section 8 are the standard deployment context for GPU compute without display infrastructure.
 
-**Forward: Chapter 26 (Hardware Video Acceleration)** relies on the VA-API → DMA-BUF → `eglCreateImageKHR` pipeline described in Section 4. Headless EGL (Section 7) is the standard context for hardware-accelerated transcoding pipelines.
+**Forward: Chapter 26 (Hardware Video Acceleration)** relies on the VA-API → DMA-BUF → `eglCreateImageKHR` pipeline described in Section 4. Headless EGL (Section 8) is the standard context for hardware-accelerated transcoding pipelines.
 
 **Forward: Chapter 27 (VR/AR)** OpenXR applications use `XrSwapchain` handles that internally correspond to the Vulkan swapchain model described in Section 5; the acquire/wait/release cycle of OpenXR images mirrors the Vulkan acquire/render/present cycle.
 
-**Forward: Chapter 28 (Windows Compatibility)** DXVK uses the same ICD loader and memory allocation patterns from Sections 1 and 2; its swapchain implementation uses `VK_KHR_wayland_surface` on Wayland. vkd3d-proton similarly relies on timeline semaphores (Section 6) for its GPU-CPU synchronisation model.
+**Forward: Chapter 28 (Windows Compatibility)** DXVK uses the same ICD loader and memory allocation patterns from Sections 1 and 2; its swapchain implementation uses `VK_KHR_wayland_surface` on Wayland. vkd3d-proton similarly relies on timeline semaphores (Section 7) for its GPU-CPU synchronisation model.
 
-**Forward: Chapter 30 (Debugging and Profiling)** Validation Layers and RenderDoc both hook into the layer dispatch mechanism above the Mesa Vulkan driver, at the API boundary described in Section 8. Debug regions (`vkCmdBeginDebugUtilsLabelEXT`) and object names (`vkSetDebugUtilsObjectNameEXT`) set in application code are visible directly in RenderDoc's capture interface.
+**Forward: Chapter 30 (Debugging and Profiling)** Validation Layers and RenderDoc both hook into the layer dispatch mechanism above the Mesa Vulkan driver, at the API boundary described in Section 9. Debug regions (`vkCmdBeginDebugUtilsLabelEXT`) and object names (`vkSetDebugUtilsObjectNameEXT`) set in application code are visible directly in RenderDoc's capture interface.
 
 ---
 
-## 11. References
+## 12. References
 
 1. Vulkan Loader Driver Interface documentation — how ICD manifests are found and loaded: https://vulkan.lunarg.com/doc/view/1.3.250.1/linux/LoaderDriverInterface.html
 

@@ -1229,6 +1229,430 @@ Gamescope (Ch78) specifically targets reducing this latency via frame pacing, sc
 - **KMS/DRM atomic commit latency tracing as a first-class kernel feature**: Current vblank latency measurement (§13) requires combining `ftrace`, `wp_presentation_feedback`, and `perf` — long-term kernel maintainers have discussed a unified `drm_atomic` latency histogram exported via `debugfs` or `sysfs` to make frame delivery latency measurement zero-setup for application developers.
 - **VRR/FreeSync + GPU performance counter co-analysis**: As variable refresh rate becomes universal, frame time variability analysis must account for the display's refresh rate tracking the GPU's delivery time. Future tooling is expected to expose VRR range adherence counters alongside GPU performance counters so that per-frame counter data can be correlated with the actual scanout interval — bridging §13 and Ch112's VRR coverage. Note: needs verification.
 
+## Perfetto GPU Tracing on Linux
+
+This section targets **graphics application developers** and **systems performance engineers** who need cross-vendor, system-wide GPU tracing that correlates GPU execution with CPU threads, memory consumption, and display timing on Linux desktop. Section 12 above showed how Perfetto's `traced_probes` daemon consumes DRM kernel tracepoints to build the GPU timeline track; this section deepens that coverage with Perfetto's dedicated GPU data sources, the DRM FDINFO memory accounting model, and how to integrate the Perfetto C++ SDK directly into a Vulkan renderer.
+
+### Perfetto Overview
+
+[Perfetto](https://perfetto.dev) is Google's open-source, system-wide tracing framework. Its architecture separates concerns across three components:
+
+- **`traced`**: the central tracing daemon that brokers connections between producers (data sources) and consumers (recording sessions). Producers register their data sources with `traced` and stream events into a shared memory ring buffer. Consumers issue `StartTracing`/`StopTracing` RPCs over a Unix socket to control sessions.
+- **`traced_probes`**: the kernel data-source process. It configures Linux kernel tracing subsystems (tracefs ftrace, `perf_event`, procfs) and forwards events to `traced`. The GPU timeline track in the Perfetto UI is produced primarily by `traced_probes` reading DRM tracepoints — no GPU vendor SDK is required (see §12 for the full ftrace configuration).
+- **`perfetto` CLI**: the command-line recording tool. Accepts a TextProto config file and writes a binary `trace.pb` output file. The resulting trace is viewed in the Perfetto UI at [ui.perfetto.dev](https://ui.perfetto.dev) or queried with `trace_processor_shell` via SQL.
+
+Perfetto is not Android-only. It runs natively on Linux, is the system tracing backend for ChromeOS, and is used by Chrome/Chromium on desktop Linux to emit process-level events into the same trace as kernel GPU events. The Linux GPU tracing path (`traced_probes` + DRM tracepoints) is the same code path used in ChromeOS GPU performance work, and Perfetto is the recommended tracing framework for Mesa driver developers integrating GPU timeline data. [Source: Perfetto documentation](https://perfetto.dev/docs/)
+
+### GPU-Specific Perfetto Data Sources on Linux
+
+Perfetto defines several GPU-oriented data source types. The tracing service uses **exact name matching**, so the config must use the exact registered source name. For vendor-specific sources (counters, render stages), drivers register a hardware-suffixed name.
+
+#### `linux.ftrace` — GPU Memory and Frequency
+
+On Linux desktop, per-process GPU memory totals and GPU frequency scaling are collected via the ftrace subsystem through `linux.ftrace`, not through a dedicated GPU memory data source. The relevant ftrace event is `gpu_mem/gpu_mem_total`, which reports total GPU memory usage per process. GPU frequency is reported via `power/gpu_frequency`. [Source: Perfetto GPU data sources](https://perfetto.dev/docs/data-sources/gpu)
+
+```protobuf
+# Collect per-process GPU memory totals and GPU frequency via ftrace
+data_sources {
+  config {
+    name: "linux.ftrace"
+    ftrace_config {
+      ftrace_events: "gpu_mem/gpu_mem_total"
+      ftrace_events: "power/gpu_frequency"
+    }
+  }
+}
+```
+
+> Note: The `gpu_mem/gpu_mem_total` ftrace event is supported on Android (where the kernel GPU driver emits it). On mainline Linux with DRM drivers (amdgpu, i915, nouveau), per-process GPU memory accounting is instead available via `/proc/PID/fdinfo` DRM FDINFO entries — see the "DRM FDINFO and GPU Memory Tracking" subsection below. Verify availability on your kernel with `sudo cat /sys/kernel/tracing/events/gpu_mem/gpu_mem_total/format`.
+
+#### `gpu.renderstages` — GPU Command Buffer Timeline
+
+`gpu.renderstages` provides a timeline of GPU render stage and compute activity: begin/end timestamps for graphics submissions, compute dispatches, and blitter operations. The data is structured as per-stage slice events (vertex, fragment, compute, etc.) in Perfetto's `GpuRenderStageEvent` proto format.
+
+On Android, Mesa drivers (Turnip/Freedreno for Qualcomm Adreno, and Pan for Mali) export render stage events via Perfetto's producer API. On Linux desktop, Chrome's GPU process emits render stage events using the Perfetto C++ SDK (see "Integrating Perfetto in Vulkan Applications" below). The Mesa driver build option `-Dperfetto=true` enables Perfetto instrumentation in Mesa itself; when built with this option, Mesa drivers register GPU render stage producers that connect to `traced`. [Source: Mesa meson_options.txt](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/meson_options.txt)
+
+GPU producers register with a hardware-specific suffix. For Intel ANV/i915:
+
+```protobuf
+data_sources {
+  config {
+    name: "gpu.renderstages.intel"
+  }
+}
+```
+
+For AMD (when Mesa is built with `-Dperfetto=true`), the registered name is `gpu.renderstages.msm` on Qualcomm or driver-specific on desktop. Consult `perfetto --query` on a running traced daemon to list registered producers. [Source: Perfetto data-sources documentation](https://perfetto.dev/docs/data-sources/gpu)
+
+#### `gpu.counters` — Hardware Performance Counters
+
+`gpu.counters` samples periodic or instrumented GPU hardware counter data — ALU utilization, cache miss rates, texture unit throughput, and similar metrics. The config specifies a sampling period in nanoseconds.
+
+Like render stages, counter producers register with a hardware suffix. On Linux desktop systems with Intel hardware and the i915 driver:
+
+```protobuf
+data_sources {
+  config {
+    name: "gpu.counters.i915"
+    gpu_counter_config {
+      counter_period_ns: 1000000    # Sample every 1 ms
+    }
+  }
+}
+```
+
+On AMD with RADV/amdgpu, `VK_KHR_performance_query` is the primary path for hardware counters (§3 above); a Perfetto `gpu.counters` data source for amdgpu on desktop Linux is a work in progress. On Android, Adreno and Mali counter access via `gpu.counters.adreno` and `gpu.counters.mali` is well established. [Source: Perfetto gpu.counters documentation](https://perfetto.dev/docs/data-sources/gpu)
+
+### VK\_KHR\_performance\_query and Perfetto Integration
+
+`VK_KHR_performance_query` (covered in depth in §3) exposes vendor hardware counters through a portable Vulkan API: `vkEnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR` enumerates available counters; `VkQueryPoolPerformanceCreateInfoKHR` creates a query pool; `vkAcquireProfilingLockKHR` / `vkReleaseProfilingLockKHR` serializes collection passes. Refer to §3 for the full code pattern.
+
+In the Perfetto integration layer, the `gpu.counters` data source on supported platforms reads hardware counters through the same underlying mechanism. The key driver support status as of mid-2026:
+
+| Driver | VK_KHR_performance_query | Notes |
+|--------|--------------------------|-------|
+| AMD RADV (Mesa) | Partial | Enable with `RADV_PERFTEST=perf_counters`; RDNA 2/3 counters |
+| Intel ANV (Mesa) | Partial | Via `VK_INTEL_performance_query` internally |
+| ARM Panfrost (Mesa) | Partial | Limited counter set on Mali G57 and newer |
+| NVIDIA NVK (Mesa) | In progress | NVK is the open-source Vulkan driver; counter support maturing |
+| NVIDIA proprietary | Yes (via ncu) | Not exposed to Perfetto; use `ncu` for NVIDIA hardware (§9) |
+
+[Source: Mesa VK_KHR_performance_query tracking](https://www.phoronix.com/news/RADV-VK_KHR_performance_query)
+
+For applications that want to embed VK_KHR_performance_query counter data directly in a Perfetto trace, the approach is to collect counter values from the Vulkan API (§3) and emit them as Perfetto counter track events using the Perfetto C++ SDK (see below). This produces per-frame hardware counter slices on the GPU counter track in the Perfetto UI, correlated on the same time axis as CPU threads and DRM scheduler events.
+
+### Linux Perfetto Setup and Configuration
+
+#### Installation
+
+The `perfetto` package is available in Ubuntu 23.10+ (Mantic Minotaur) and later:
+
+```bash
+sudo apt install perfetto
+```
+
+This installs the `perfetto` CLI, `traced`, and `traced_probes`. For older distributions or custom builds with Mesa `-Dperfetto=true` support:
+
+```bash
+git clone https://android.googlesource.com/platform/external/perfetto
+cd perfetto
+tools/install-build-deps
+tools/gn args out/linux      # set is_debug=false
+tools/ninja -C out/linux traced traced_probes perfetto trace_processor_shell
+```
+
+[Source: Perfetto build instructions](https://perfetto.dev/docs/contributing/build-instructions)
+
+#### Full GPU Trace Configuration
+
+The following `gpu_trace.cfg` captures GPU render stages, hardware counters (Intel i915), CPU scheduling, DRM tracepoints, and GPU memory — all on the same time axis for end-to-end frame delivery analysis as described in §13:
+
+```protobuf
+# gpu_trace.cfg — comprehensive GPU+CPU trace for Linux desktop
+duration_ms: 15000
+
+buffers {
+  size_kb: 131072
+  fill_policy: RING_BUFFER
+}
+
+# CPU scheduler events (for CPU-GPU correlation)
+data_sources {
+  config {
+    name: "linux.ftrace"
+    ftrace_config {
+      ftrace_events: "sched/sched_switch"
+      ftrace_events: "sched/sched_wakeup"
+      # DRM GPU scheduler — GPU job queue/run/done lifecycle
+      ftrace_events: "gpu_scheduler/drm_sched_job_queue"
+      ftrace_events: "gpu_scheduler/drm_sched_job_run"
+      ftrace_events: "gpu_scheduler/drm_sched_job_done"
+      # DMA-fence lifecycle — fence emit to signal = GPU execution window
+      ftrace_events: "dma_fence/dma_fence_emit"
+      ftrace_events: "dma_fence/dma_fence_signaled"
+      # Display vblank events
+      ftrace_events: "drm/drm_vblank_event"
+      # GPU frequency scaling
+      ftrace_events: "power/gpu_frequency"
+      # Per-process GPU memory totals (where available)
+      ftrace_events: "gpu_mem/gpu_mem_total"
+    }
+  }
+}
+
+# GPU render stage timeline (Intel; replace with vendor suffix for other GPUs)
+data_sources {
+  config {
+    name: "gpu.renderstages.intel"
+  }
+}
+
+# GPU hardware performance counters (Intel i915)
+data_sources {
+  config {
+    name: "gpu.counters.i915"
+    gpu_counter_config {
+      counter_period_ns: 2000000    # Sample every 2 ms
+    }
+  }
+}
+
+# Process metadata (maps PIDs to names in the UI)
+data_sources {
+  config {
+    name: "linux.process_stats"
+    process_stats_config {
+      scan_all_processes_on_start: true
+      proc_stats_poll_ms: 1000
+    }
+  }
+}
+```
+
+#### Recording and Visualizing
+
+```bash
+# Start the daemons (if not running as system services):
+sudo traced &
+sudo traced_probes &
+
+# Record:
+sudo perfetto --config gpu_trace.cfg --out trace.pb
+
+# Visualize: upload trace.pb to https://ui.perfetto.dev
+# Or query with SQL:
+trace_processor_shell trace.pb
+# > SELECT ts, dur, name FROM slice WHERE category = 'gpu' LIMIT 20;
+```
+
+The Perfetto UI at [ui.perfetto.dev](https://ui.perfetto.dev) renders the GPU timeline track (from `gpu_scheduler` tracepoints), fence signal markers, GPU counter tracks, CPU thread lanes, and vblank events all on a single time-aligned axis. See §12 for the deeper eBPF-level GPU observability using the same tracepoints.
+
+`trace_processor_shell` exposes the trace as a SQL database. Useful queries for GPU analysis:
+
+```sql
+-- GPU job duration histogram (from DRM scheduler tracepoints)
+SELECT
+  CAST((dur / 1e6) AS INT) AS dur_ms_bucket,
+  COUNT(*) AS job_count
+FROM slice
+WHERE name GLOB 'drm_sched_job*'
+GROUP BY dur_ms_bucket
+ORDER BY dur_ms_bucket;
+
+-- Per-process GPU memory over time (where gpu_mem/gpu_mem_total is available)
+SELECT ts, CAST(value AS INT64) AS gpu_bytes, process.name
+FROM counter
+JOIN process_counter_track ON counter.track_id = process_counter_track.id
+JOIN process USING (upid)
+WHERE process_counter_track.name = 'GPU Memory'
+ORDER BY ts;
+```
+
+[Source: Perfetto trace processor SQL documentation](https://perfetto.dev/docs/analysis/trace-processor)
+
+### DRM FDINFO and GPU Memory Tracking
+
+On mainline Linux with DRM drivers, per-process GPU resource usage is exposed through `/proc/PID/fdinfo/FD` for each open file descriptor pointing to a DRM device. This is the mechanism `traced_probes` and tools like `gfx-pps` read to track per-client GPU memory consumption. [Source: Linux kernel DRM usage stats documentation](https://www.kernel.org/doc/html/latest/gpu/drm-usage-stats.html)
+
+#### Standardized Key Schema
+
+The DRM FDINFO format uses a set of standardized keys (available since kernel 5.19 for i915 and amdgpu):
+
+**Identification:**
+- `drm-driver`: driver name string (e.g., `amdgpu`, `i915`, `nouveau`)
+- `drm-pdev`: PCI device address (e.g., `0000:03:00.0`)
+- `drm-client-id`: unique integer identifying this file descriptor
+
+**Engine utilization** (per named engine):
+- `drm-engine-<name>`: accumulated busy time in nanoseconds for the named engine. Common names: `render`, `copy`, `video`, `video-enhance`, `compute`
+- `drm-engine-capacity-<name>`: number of identical hardware engines of this type
+- `drm-cycles-<name>`: busy cycles in the engine's clock domain
+- `drm-total-cycles-<name>`: total elapsed cycles (used to compute utilization fraction: `drm-cycles / drm-total-cycles`)
+
+**Memory regions** (per named region, values in KiB or MiB with unit suffix):
+- `drm-total-<region>`: all GEM buffers ever allocated by this client for this region
+- `drm-resident-<region>`: buffers with instantiated backing store (physically present)
+- `drm-shared-<region>`: buffers shared with other clients via DMA-BUF
+- `drm-purgeable-<region>`: resident buffers eligible for eviction by the kernel
+- `drm-active-<region>`: buffers currently being accessed by GPU engines
+
+Common region names: `system` (system RAM, used for GTT-mapped memory), `gtt` (Graphics Translation Table aperture), `vram` (device-local VRAM on discrete GPUs), `stolen` (reserved memory on Intel integrated).
+
+> Note: The older `drm-memory-<region>` key is a deprecated amdgpu alias for `drm-resident-<region>`. Newer kernels expose `drm-resident-vram`, `drm-resident-gtt`, etc. Use the standardized form. [Source: DRM usage stats kernel doc](https://www.kernel.org/doc/html/latest/gpu/drm-usage-stats.html)
+
+#### Reading FDINFO from Shell
+
+```bash
+# List all open DRM fds for a process:
+PID=$(pgrep -x my_vulkan_app)
+for fd in /proc/$PID/fdinfo/*; do
+    if grep -q '^drm-driver' "$fd" 2>/dev/null; then
+        echo "=== $fd ==="
+        grep '^drm-' "$fd"
+    fi
+done
+```
+
+Example output on an AMD system (VRAM = discrete memory, gtt = system RAM mapped into GPU address space):
+
+```
+=== /proc/12345/fdinfo/5 ===
+drm-driver:      amdgpu
+drm-pdev:        0000:03:00.0
+drm-client-id:   42
+drm-engine-render:   148367 ns
+drm-engine-copy:     0 ns
+drm-total-vram:      512 MiB
+drm-resident-vram:   487 MiB
+drm-shared-vram:     12 MiB
+drm-purgeable-vram:  0 MiB
+drm-active-vram:     256 MiB
+drm-total-gtt:       128 MiB
+drm-resident-gtt:    103 MiB
+```
+
+#### How Perfetto and gfx-pps Read FDINFO
+
+`traced_probes` does not currently have a dedicated DRM FDINFO data source on Linux desktop; instead it relies on `gpu_mem/gpu_mem_total` ftrace events where available (Android/ChromeOS). For Linux desktop, per-process VRAM tracking can be done by polling FDINFO from a custom Perfetto producer or from `gfx-pps` (GPU Performance HUD), which reads `/proc/PID/fdinfo` on a configurable interval and reports `drm-resident-vram` as the primary VRAM usage metric.
+
+Tools like `nvtop` and MangoHUD's GPU memory display also parse the same FDINFO keys, using `drm-resident-vram` (discrete GPUs) and `drm-resident-gtt` (integrated GPUs) for the "VRAM used" figure. [Source: nvtop FDINFO parsing](https://github.com/Syllo/nvtop)
+
+### Integrating Perfetto in Vulkan Applications
+
+The Perfetto C++ SDK lets a Vulkan renderer emit custom trace events that appear in the Perfetto UI on the same timeline as kernel GPU tracepoints, compositor events, and CPU thread scheduling. This is how Chrome's GPU process emits "RenderPass" and "DrawCall" slices that correlate with the DRM scheduler's `drm_sched_job_run` events.
+
+#### SDK Setup
+
+Download the single-file SDK from [perfetto releases](https://github.com/google/perfetto/releases/latest) (`perfetto-cpp-sdk-src.zip`) — it contains two files: `sdk/perfetto.h` and `sdk/perfetto.cc`.
+
+CMake integration:
+
+```cmake
+# CMakeLists.txt
+include_directories(perfetto/sdk)
+add_library(perfetto STATIC perfetto/sdk/perfetto.cc)
+target_link_libraries(my_vulkan_app perfetto ${CMAKE_THREAD_LIBS_INIT})
+```
+
+#### Defining Trace Categories
+
+In one translation unit, declare categories and their storage:
+
+```cpp
+// trace_categories.h
+#include <perfetto.h>
+
+PERFETTO_DEFINE_CATEGORIES(
+    perfetto::Category("gpu")
+        .SetDescription("Vulkan GPU render stages"),
+    perfetto::Category("gpu.memory")
+        .SetDescription("GPU memory allocation events")
+);
+
+// trace_categories.cc
+#include "trace_categories.h"
+PERFETTO_TRACK_EVENT_STATIC_STORAGE();
+```
+
+#### Connecting to the traced Daemon
+
+Initialize with the system backend so that GPU events merge with kernel tracepoints on the same timeline:
+
+```cpp
+#include "trace_categories.h"
+
+void InitPerfetto() {
+    perfetto::TracingInitArgs args;
+    // System backend connects to the running traced daemon.
+    // Events from this process will appear on the same timeline as
+    // kernel DRM tracepoints captured by traced_probes.
+    args.backends |= perfetto::kSystemBackend;
+    perfetto::Tracing::Initialize(args);
+    perfetto::TrackEvent::Register();
+}
+```
+
+This requires `traced` to be running on the system. The connection is over a Unix socket (`/run/perfetto-producer`). When `traced` is not running, events are silently dropped — there is no recording overhead if no session is active.
+
+#### Wrapping Vulkan Command Buffer Recording
+
+Emit custom "GPU render stage" events around Vulkan command buffer recording to mark render pass boundaries in the trace:
+
+```cpp
+#include "trace_categories.h"
+
+void RecordGBufferPass(VkCommandBuffer cmd, GBufferResources& res) {
+    // TRACE_EVENT emits a begin-event at this line and an end-event
+    // at end-of-scope (RAII destructor). The "gpu" category must match
+    // a PERFETTO_DEFINE_CATEGORIES entry.
+    TRACE_EVENT("gpu", "GBufferPass");
+
+    VkRenderPassBeginInfo rpInfo = { /* ... */ };
+    vkCmdBeginRenderPass(cmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
+    // ... draw calls ...
+    vkCmdEndRenderPass(cmd);
+}
+
+void RecordPathTracingDispatch(VkCommandBuffer cmd, uint32_t w, uint32_t h) {
+    TRACE_EVENT("gpu", "PathTrace",
+        // Attach key-value annotations visible on hover in the UI:
+        "width", w, "height", h);
+    vkCmdDispatch(cmd, (w + 7) / 8, (h + 7) / 8, 1);
+}
+```
+
+Note that `TRACE_EVENT` timestamps are CPU-side (when the Vulkan API call is made), not GPU-side (when the GPU executes the work). For true GPU-side timestamps, use `vkCmdWriteTimestamp2` (§2) and emit the resulting GPU timestamps as Perfetto counter events:
+
+```cpp
+// After frame completion, read back GPU timestamps (§2) and emit:
+void EmitGPUTimingToPerfetto(uint64_t gbuffer_start_ns,
+                              uint64_t gbuffer_end_ns) {
+    // Create a named track for the GPU timeline:
+    auto gpu_track = perfetto::Track(0xGPU_TRACK_UUID);
+    perfetto::TrackEvent::SetTrackDescriptor(gpu_track, [](
+            perfetto::protos::gen::TrackDescriptor* desc) {
+        desc->set_name("GPU Timeline (vkTimestamp)");
+    });
+
+    // Emit a slice using absolute GPU timestamps:
+    TRACE_EVENT_BEGIN("gpu", "GBufferPass", gpu_track,
+                      gbuffer_start_ns);
+    TRACE_EVENT_END("gpu", gpu_track, gbuffer_end_ns);
+}
+```
+
+[Source: Perfetto tracing SDK documentation](https://perfetto.dev/docs/instrumentation/tracing-sdk)
+
+### Comparison with Other Linux GPU Profiling Tools
+
+Perfetto occupies a distinct position in the Linux GPU profiling ecosystem. Understanding the boundaries between tools prevents duplication of effort.
+
+| Tool | Scope | Vendor | Overhead | Primary use |
+|------|-------|--------|----------|-------------|
+| **Perfetto** | System-wide: CPU + GPU + memory + display | Cross-vendor | < 1% | Correlation across subsystems, production profiling |
+| **RenderDoc** (Ch30) | Single-frame API capture + shader debug | Cross-vendor (API) | 10–100× | Rendering correctness + per-draw investigation |
+| **AMD RGP** | GPU execution timeline, pipeline analysis | AMD only | 2–5× | Deep AMD pipeline analysis, barrier costs |
+| **NVIDIA ncu/nsys** (§9) | Per-kernel counters + CPU timeline | NVIDIA only | 2–20× | NVIDIA occupancy, roofline, stall analysis |
+| **Intel VTune / GPA** (§10) | EU utilization, per-kernel analysis | Intel only | 2–10× | Intel EU active/stall/idle breakdown |
+| **gfx-pps** | Lightweight overlay (DRM FDINFO + counters) | Cross-vendor | < 0.5% | Real-time HUD; less detail than Perfetto |
+| **MangoHUD** (Ch29) | Frame time + GPU/CPU utilization overlay | Cross-vendor | < 0.5% | In-game HUD; present timing via wp_presentation_feedback |
+| **bpftrace / eBPF** (§12) | Kernel-level fence/scheduler events | Cross-vendor | < 0.1% | Production-safe scheduler and fence observability |
+
+**Perfetto's key advantages over vendor profilers:**
+- **System-wide correlation**: A Perfetto trace shows GPU execution (`drm_sched_job_run` → `drm_sched_job_done`), CPU thread scheduling, vblank timing, and Wayland compositor events all on one time axis. Vendor profilers show only their GPU's view.
+- **Cross-vendor**: Works on AMD, Intel, NVIDIA (open NVK), ARM Mali (Panfrost) — any driver that implements DRM tracepoints.
+- **Open-source**: The entire stack from `traced_probes` through `ui.perfetto.dev` is Apache-2.0 licensed and publicly developed.
+- **Production safety**: `traced_probes` configures kernel ftrace; overhead is sub-percent and it can run on production systems without application modification.
+
+**Where vendor tools remain superior:**
+- **AMD RGP**: thread-trace capture (instruction-level GPU execution timeline, RADV `RADV_THREAD_TRACE=1`) has no Perfetto equivalent — it captures the actual ISA instruction stream executed on each CU. Perfetto sees job boundaries; RGP sees instructions.
+- **NVIDIA ncu**: per-warp counter collection with workload replay enables the roofline model and occupancy analysis (§9). Perfetto's `gpu.counters` data source samples counters periodically without replay; it cannot produce roofline data.
+- **RenderDoc**: full API-level frame capture and shader replay (Ch30) is complementary. Use RenderDoc when you need to inspect the rendering output (wrong pixel values, incorrect draw order); use Perfetto when you need to understand *timing* and *system interaction*.
+
+The recommended workflow is Perfetto-first for framing the performance investigation (system-wide, low-overhead, identifies which subsystem and which timeframe), then vendor tools for the targeted deep-dive into the bottleneck confirmed by Perfetto.
+
+---
+
 ## 14. Integrations
 
 - **Ch15 (ACO shader compiler)** — register pressure (VGPR count) that limits occupancy is determined at ACO compilation time. `RADV_DEBUG=shaders` shows ACO's VGPR allocation decisions, and the ACO IR can be inspected to understand why pressure is high.

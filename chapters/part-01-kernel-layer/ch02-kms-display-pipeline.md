@@ -332,7 +332,384 @@ void enumerate_plane_formats(int fd, uint32_t plane_id) {
 
 ---
 
-## 6. Page Flipping and VBLANK Synchronisation
+## 6. DRM Format Modifiers
+
+When a KMS plane accepts a `DRM_FORMAT_XRGB8888` framebuffer, that fourcc code describes the pixel layout within a single pixel — four eight-bit channels packed in a specific order — but says nothing about how rows of pixels are laid out in GPU memory. Is each row stored contiguously, left to right, with stride bytes between rows (linear layout)? Or is the surface divided into rectangular tiles to improve cache efficiency? Is it compressed in a proprietary lossless format to reduce memory bandwidth? Without a way to convey this information, a GPU driver that has just rendered a compressed, tiled surface cannot hand it to the display controller — which may need a different (or identical) layout to scan it out correctly — without a full decompression and re-layout step. DRM format modifiers solve exactly this problem.
+
+### What Format Modifiers Are
+
+A DRM format modifier is a 64-bit integer that extends a fourcc pixel format to fully specify the memory layout and compression mode of a buffer. The upper 8 bits encode a vendor ID identifying which company or standard body defined the modifier; the lower 56 bits are vendor-defined and encode tile size, compression variant, swizzle pattern, pipe configuration, and other layout parameters. [Source](https://elixir.bootlin.com/linux/latest/source/include/uapi/drm/drm_fourcc.h)
+
+Two special modifier values have universal meaning. `DRM_FORMAT_MOD_LINEAR` (value `0ULL`) designates a plain row-major, stride-separated layout with no tiling or compression — the simplest, most universally supported layout. `DRM_FORMAT_MOD_INVALID` (value `0x00ffffffffffffffULL`) is a sentinel that indicates no modifier has been negotiated; it must never be used as a surface layout descriptor and is used only in API context where "modifier unknown or not applicable" must be distinguished from `DRM_FORMAT_MOD_LINEAR`. Both constants, along with all vendor-specific modifiers, are defined in [`include/uapi/drm/drm_fourcc.h`](https://elixir.bootlin.com/linux/latest/source/include/uapi/drm/drm_fourcc.h).
+
+The modifier namespace is partitioned by vendor. The upper-byte vendor IDs include `DRM_FORMAT_MOD_VENDOR_NONE` (0x00, used for `LINEAR` and `INVALID`), `DRM_FORMAT_MOD_VENDOR_INTEL` (0x01), `DRM_FORMAT_MOD_VENDOR_AMD` (0x02), `DRM_FORMAT_MOD_VENDOR_NVIDIA` (0x03), `DRM_FORMAT_MOD_VENDOR_SAMSUNG` (0x04), `DRM_FORMAT_MOD_VENDOR_QCOM` (0x05), `DRM_FORMAT_MOD_VENDOR_VIVANTE` (0x06), `DRM_FORMAT_MOD_VENDOR_BROADCOM` (0x07), `DRM_FORMAT_MOD_VENDOR_ARM` (0x08), `DRM_FORMAT_MOD_VENDOR_ALLWINNER` (0x09), and `DRM_FORMAT_MOD_VENDOR_AMLOGIC` (0x0a). [Source](https://elixir.bootlin.com/linux/latest/source/include/uapi/drm/drm_fourcc.h)
+
+### Why Modifiers Are Necessary
+
+The problem modifiers solve becomes concrete when you trace a single `DRM_FORMAT_XRGB8888` buffer through a modern GPU stack without modifiers. The GPU driver allocates a surface and, for performance, may lay it out in one of several incompatible ways:
+
+- **Linear**: stride × height bytes, row-major, no tiling.
+- **Intel X-tiled**: 4 KiB tiles, 512 bytes × 8 rows, interleaved in a specific pattern to improve GPU cache line locality.
+- **Intel Y-tiled**: 4 KiB tiles, 128 bytes × 32 rows, better for scanout bandwidth.
+- **Intel Y-tiled with CCS** (Color Control Surface): Y-tiled pixel data paired with an auxiliary lossless compressed surface encoding render-compression metadata.
+- **AMD DCC** (Delta Color Compression): a surface with an auxiliary compression metadata surface encoding per-block compression state using a variable-length encoding.
+- **ARM AFBC** (Arm FrameBuffer Compression): a fixed-rate lossless compressed format with a header region followed by variable-length compressed body tiles.
+
+All of these are valid `DRM_FORMAT_XRGB8888` surfaces from the GPU's perspective. None of them are interchangeable without a full decode-recode pass. If a compositor allocates a surface in Intel Y-tiled-CCS format and tries to hand it to the display controller via a `DRM_IOCTL_MODE_ADDFB2` call without communicating the layout, the display controller would interpret the compressed metadata bytes as pixel data — producing garbage on screen, or triggering a display underflow.
+
+With modifiers, both the allocator and the consumer negotiate a shared layout before allocation. The GPU driver and display controller both declare the set of modifiers they support; the compositor picks a modifier from the intersection and allocates a buffer in exactly that layout. The buffer can then be passed between the GPU render pipeline, the display controller's scanout engine, and potentially also imported into another GPU process (for zero-copy video decode → display pipelines) without any copy or conversion.
+
+### Key Modifier Families
+
+The `drm_fourcc.h` header defines modifiers for every major GPU vendor. The most important families for desktop and mobile Linux are:
+
+**Linear**: `DRM_FORMAT_MOD_LINEAR` (`fourcc_mod_code(NONE, 0)`) — universally supported, universally a fallback. Any KMS plane that supports a given fourcc at all must support `DRM_FORMAT_MOD_LINEAR` for that fourcc. [Source](https://elixir.bootlin.com/linux/latest/source/include/uapi/drm/drm_fourcc.h)
+
+**Intel**: Three major tiling variants are defined in `drm_fourcc.h` for Intel integrated graphics (i915) display controllers:
+
+```c
+/* Source: include/uapi/drm/drm_fourcc.h */
+#define I915_FORMAT_MOD_X_TILED   fourcc_mod_code(INTEL, 1)
+#define I915_FORMAT_MOD_Y_TILED   fourcc_mod_code(INTEL, 2)
+#define I915_FORMAT_MOD_Y_TILED_CCS fourcc_mod_code(INTEL, 4)
+```
+
+`I915_FORMAT_MOD_X_TILED` is the legacy 4 KiB X-tile format, where the surface is divided into 512×8-byte tiles. `I915_FORMAT_MOD_Y_TILED` uses 128×32-byte tiles (32 × 128 = 4 KiB), which scan out more efficiently because the display controller can prefetch a full cache line per clock. `I915_FORMAT_MOD_Y_TILED_CCS` is Y-tiled data paired with a compressed CCS auxiliary plane: the main surface strides are for uncompressed data, but the hardware may have written compressed blocks; the CCS surface encodes per-64-byte-block compression metadata. From Gen12 onward, Intel added further variants including `I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS` (render compression), `I915_FORMAT_MOD_Y_TILED_GEN12_MC_CCS` (media compression), and Tile4/Tile64 variants for Xe-based hardware. [Source](https://elixir.bootlin.com/linux/latest/source/include/uapi/drm/drm_fourcc.h)
+
+**AMD**: AMD's modifier space is more complex because it encodes multiple independent hardware parameters — DCC enable/disable, DCC independent block mode, pipe config, swizzle mode, and memory bank configuration — as bit fields within the 56-bit modifier value. A macro `AMD_FMT_MOD` constructs a modifier value from these fields:
+
+```c
+/* Source: include/uapi/drm/drm_fourcc.h — AMD modifier structure */
+#define AMD_FMT_MOD_TILE_VER_GFX9     1
+#define AMD_FMT_MOD_TILE_VER_GFX10    2
+#define AMD_FMT_MOD_TILE_VER_GFX10_RBPLUS 3
+#define AMD_FMT_MOD_TILE_VER_GFX11    4
+
+/* The AMD modifier is constructed with AMD_FMT_MOD() macro */
+/* Bit fields: TILE_VERSION (4 bits), TILE (5 bits), DCC (1 bit),
+ *             DCC_RETILE (1 bit), DCC_PIPE_ALIGN (1 bit),
+ *             DCC_INDEPENDENT_64B (1 bit), DCC_INDEPENDENT_128B (1 bit),
+ *             DCC_MAX_COMPRESSED_BLOCK (2 bits), DCC_CONSTANT_ENCODE (1 bit),
+ *             PIPE_XOR_BITS (4 bits), BANK_XOR_BITS (4 bits),
+ *             PACKERS (4 bits), RB (4 bits), PIPE (5 bits) */
+#define AMD_FMT_MOD fourcc_mod_code(AMD, /* per-surface bit field encoding */)
+```
+
+The AMD modifier for a GFX10 DCC-compressed surface with 64B independent blocks and pipe alignment looks like a specific large integer. The AMDGPU display driver exposes the full set of supported AMD modifiers via the `IN_FORMATS` blob, and Mesa's RADV/RadeonSI allocates surfaces with the modifier the KMS plane reports as preferred, which is ordered by scanout efficiency. [Source](https://elixir.bootlin.com/linux/latest/source/include/uapi/drm/drm_fourcc.h)
+
+**ARM AFBC**: Arm FrameBuffer Compression is a standard lossy/lossless compression scheme supported by ARM Mali GPUs, Rockchip, Allwinner, MediaTek, and others. The modifier uses a flag-based scheme:
+
+```c
+/* Source: include/uapi/drm/drm_fourcc.h */
+#define DRM_FORMAT_MOD_ARM_AFBC(flags)  fourcc_mod_code(ARM, flags)
+
+/* Flag bits combined with bitwise OR: */
+#define AFBC_FORMAT_MOD_BLOCK_SIZE_16x16   (1ULL)
+#define AFBC_FORMAT_MOD_BLOCK_SIZE_32x8    (2ULL)
+#define AFBC_FORMAT_MOD_BLOCK_SIZE_64x4    (3ULL)
+#define AFBC_FORMAT_MOD_BLOCK_SIZE_32x8_64x4 (4ULL)
+#define AFBC_FORMAT_MOD_YTR    (1ULL << 4)  /* YCbCr-to-RGB transform */
+#define AFBC_FORMAT_MOD_SPLIT  (1ULL << 5)  /* split-block encoding */
+#define AFBC_FORMAT_MOD_SPARSE (1ULL << 6)  /* sparse allocation */
+#define AFBC_FORMAT_MOD_CBR    (1ULL << 7)  /* constant-bit-rate */
+#define AFBC_FORMAT_MOD_TILED  (1ULL << 8)  /* super-block tiling */
+#define AFBC_FORMAT_MOD_SC     (1ULL << 9)  /* solid-colour blocks */
+#define AFBC_FORMAT_MOD_DB     (1ULL << 10) /* double-buffer */
+#define AFBC_FORMAT_MOD_BCH    (1ULL << 11) /* block checksumming */
+#define AFBC_FORMAT_MOD_USM    (1ULL << 12) /* uncompressed storage mode */
+```
+
+A typical AFBC modifier for scanout on a Rockchip RK3588 would be `DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 | AFBC_FORMAT_MOD_TILED | AFBC_FORMAT_MOD_SPARSE)`. [Source](https://elixir.bootlin.com/linux/latest/source/include/uapi/drm/drm_fourcc.h)
+
+**Qualcomm UBWC**: The Qualcomm Universal Bandwidth Compression format, used on Adreno GPUs and Qualcomm display processors, is exposed as `DRM_FORMAT_MOD_QCOM_COMPRESSED` (`fourcc_mod_code(QCOM, 1)`). It supports a subset of DRM formats (typically ARGB8888, NV12, and UBWC-compressed YUV variants) and can be scanned out directly by Qualcomm's DPU (Display Processing Unit) when both the Adreno GPU and the DPU have negotiated this modifier. [Source](https://elixir.bootlin.com/linux/latest/source/include/uapi/drm/drm_fourcc.h)
+
+**Broadcom SAND**: The Raspberry Pi VideoCore IV and V hardware encoders produce video in the SAND (Semi-Planar Architectured Non-Discrete) format, where columns of pixels are stored in fixed-width strips rather than rows. `DRM_FORMAT_MOD_BROADCOM_SAND128` (strip width 128 bytes) and `DRM_FORMAT_MOD_BROADCOM_SAND256` (strip width 256 bytes) allow the VC4/VC6 display engine to scan out video frames directly from the hardware encoder's output buffer without a copy. [Source](https://elixir.bootlin.com/linux/latest/source/include/uapi/drm/drm_fourcc.h)
+
+### Modifier Flow Through the Stack
+
+Modifier negotiation is a dance between the KMS display pipeline (the consumer) and the buffer allocator/GPU driver (the producer). The flow has three phases: capability advertisement, intersection, and committed allocation.
+
+**Phase 1: Consumer declares accepted modifiers via `IN_FORMATS`.** Every KMS plane that supports modifier-aware scanout exposes an `IN_FORMATS` blob property. The blob contains a `struct drm_format_modifier_blob`, which is a header followed by two packed arrays: a list of fourcc format codes, and a list of `struct drm_format_modifier` records each of which identifies a modifier value and a bitmask indicating which of the listed fourcc codes it applies to. [Source](https://elixir.bootlin.com/linux/latest/source/include/uapi/drm/drm_mode.h)
+
+```c
+/* Source: include/uapi/drm/drm_mode.h */
+struct drm_format_modifier_blob {
+    __u32 version;         /* always 1 */
+    __u32 flags;           /* reserved, must be 0 */
+    __u32 count_formats;   /* number of formats in the format array */
+    __u32 formats_offset;  /* byte offset from start of blob to format array */
+    __u32 count_modifiers; /* number of modifiers in the modifier array */
+    __u32 modifiers_offset;/* byte offset from start of blob to modifier array */
+    /* followed by: __u32 formats[count_formats] */
+    /* followed by: struct drm_format_modifier modifiers[count_modifiers] */
+};
+
+struct drm_format_modifier {
+    __u64 formats;         /* bitmask: bit i set means formats[i] is supported */
+    __u32 offset;          /* index of first format this modifier applies to */
+    __u32 pad;
+    __u64 modifier;        /* the modifier value */
+};
+```
+
+**Phase 2: Producer declares supported modifiers via `zwp_linux_dmabuf_v1`.** In a Wayland compositor stack, the `zwp_linux_dmabuf_v1` Wayland protocol extension ([wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml)) allows clients to import dma-buf backed buffers. During binding, the compositor sends `zwp_linux_dmabuf_v1.modifier` events to advertise all supported (format, modifier) pairs. A GPU-accelerated client receiving these events knows exactly which layout it should allocate its render targets in to allow zero-copy import by the compositor. The version 4 extension added `zwp_linux_dmabuf_feedback_v1`, which extends this to per-surface and per-format-table feedback, enabling finer-grained modifier negotiation for multi-GPU setups. [Source](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml)
+
+**Phase 3: Intersection and allocation.** The compositor intersects the KMS plane's `IN_FORMATS` list with the producer's advertised modifiers (or with the GBM driver's supported modifier list for direct-render allocations). It passes the resulting intersection to `gbm_bo_create_with_modifiers2()`, which asks the underlying DRI driver to allocate a buffer in one of the acceptable modifiers. GBM returns a BO whose `gbm_bo_get_modifier()` value is guaranteed to be in the list the KMS plane accepts.
+
+**Phase 4: Framebuffer registration with `drmModeAddFB2WithModifiers`.** Once the BO is allocated, the compositor registers it as a KMS framebuffer. For modifier-aware framebuffers the correct call is `drmModeAddFB2WithModifiers()` (libdrm wrapper around `DRM_IOCTL_MODE_ADDFB2` with `DRM_MODE_FB_MODIFIERS` set in `flags`):
+
+```c
+/* Uses libdrm — include/xf86drmMode.h */
+uint32_t bo_handles[4] = { gbm_bo_get_handle(bo).u32, 0, 0, 0 };
+uint32_t pitches[4]    = { gbm_bo_get_stride(bo), 0, 0, 0 };
+uint32_t offsets[4]    = { 0, 0, 0, 0 };
+uint64_t modifiers[4]  = { gbm_bo_get_modifier(bo),
+                            DRM_FORMAT_MOD_INVALID,
+                            DRM_FORMAT_MOD_INVALID,
+                            DRM_FORMAT_MOD_INVALID };
+
+uint32_t fb_id;
+int ret = drmModeAddFB2WithModifiers(
+    fd,
+    gbm_bo_get_width(bo),
+    gbm_bo_get_height(bo),
+    GBM_FORMAT_ARGB8888,
+    bo_handles, pitches, offsets, modifiers,
+    &fb_id,
+    DRM_MODE_FB_MODIFIERS  /* MUST be set when modifier != LINEAR */
+);
+```
+
+Using the plain `drmModeAddFB2()` without `DRM_MODE_FB_MODIFIERS` for a tiled or compressed buffer causes the kernel to treat the buffer as linear, producing display corruption. The `DRM_MODE_FB_MODIFIERS` flag is the kernel's signal that the `modifier[]` array contains meaningful data. For multi-planar formats (NV12 is two planes — luma and chroma), separate `handles[1]`, `pitches[1]`, and `modifiers[1]` are populated for the second plane; the modifier value should be the same across all planes of a single surface. [Source](https://elixir.bootlin.com/linux/latest/source/include/uapi/drm/drm_mode.h)
+
+### Code Example: Full Modifier Query Flow
+
+The following C snippet demonstrates the complete modifier negotiation cycle: querying the KMS plane's `IN_FORMATS` blob, parsing the supported (fourcc, modifier) pairs, and registering a modifier-aware framebuffer. In a real compositor this query is cached at startup and compared against the GBM driver's modifier list.
+
+```c
+/* Uses libdrm — include/xf86drmMode.h, include/drm/drm_fourcc.h */
+#include <xf86drm.h>
+#include <xf86drmMode.h>
+#include <drm/drm_mode.h>
+#include <drm/drm_fourcc.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+/*
+ * parse_in_formats - parse an IN_FORMATS blob and print all
+ * (fourcc, modifier) pairs the plane accepts.
+ *
+ * Returns a heap-allocated array of accepted modifiers for
+ * DRM_FORMAT_XRGB8888; *count is set to the array length.
+ * Caller must free() the result.
+ */
+uint64_t *parse_in_formats(int fd, uint32_t plane_id,
+                            uint32_t target_fmt, uint32_t *count)
+{
+    drmModeObjectProperties *props =
+        drmModeObjectGetProperties(fd, plane_id, DRM_MODE_OBJECT_PLANE);
+    if (!props) return NULL;
+
+    drmModePropertyBlobRes *blob = NULL;
+    for (uint32_t i = 0; i < props->count_props; i++) {
+        drmModePropertyRes *prop = drmModeGetProperty(fd, props->props[i]);
+        if (prop && strcmp(prop->name, "IN_FORMATS") == 0 &&
+            props->prop_values[i] != 0) {
+            blob = drmModeGetPropertyBlob(fd, props->prop_values[i]);
+        }
+        drmModeFreeProperty(prop);
+        if (blob) break;
+    }
+    drmModeFreeObjectProperties(props);
+    if (!blob) return NULL;
+
+    /* Parse the drm_format_modifier_blob */
+    const struct drm_format_modifier_blob *fmb =
+        (const struct drm_format_modifier_blob *)blob->data;
+    const uint32_t *fmts = (const uint32_t *)
+        ((const char *)fmb + fmb->formats_offset);
+    const struct drm_format_modifier *mods = (const struct drm_format_modifier *)
+        ((const char *)fmb + fmb->modifiers_offset);
+
+    /* Find index of target_fmt in the format list */
+    int fmt_idx = -1;
+    for (uint32_t i = 0; i < fmb->count_formats; i++) {
+        if (fmts[i] == target_fmt) { fmt_idx = (int)i; break; }
+    }
+
+    uint64_t *result = NULL;
+    uint32_t n = 0;
+    if (fmt_idx >= 0) {
+        for (uint32_t i = 0; i < fmb->count_modifiers; i++) {
+            /* The modifier applies to format fmt_idx if the corresponding
+             * bit is set in the formats bitmask, relative to mods[i].offset */
+            int bit = fmt_idx - (int)mods[i].offset;
+            if (bit >= 0 && bit < 64 && (mods[i].formats >> bit) & 1) {
+                printf("  plane %u accepts %.4s with modifier 0x%016llx\n",
+                       plane_id, (const char *)&target_fmt,
+                       (unsigned long long)mods[i].modifier);
+                result = realloc(result, (n + 1) * sizeof(uint64_t));
+                result[n++] = mods[i].modifier;
+            }
+        }
+    }
+    drmModeFreePropertyBlob(blob);
+    *count = n;
+    return result;
+}
+
+/*
+ * add_fb_with_modifier - register a GEM BO as a modifier-aware framebuffer.
+ * modifier must be DRM_FORMAT_MOD_LINEAR or a value returned by
+ * parse_in_formats() for the target plane.
+ */
+int add_fb_with_modifier(int fd, uint32_t gem_handle, uint32_t width,
+                         uint32_t height, uint32_t fourcc, uint32_t stride,
+                         uint64_t modifier, uint32_t *out_fb_id)
+{
+    uint32_t handles[4] = { gem_handle, 0, 0, 0 };
+    uint32_t pitches[4] = { stride,     0, 0, 0 };
+    uint32_t offsets[4] = { 0,          0, 0, 0 };
+    uint64_t mods[4]    = { modifier,
+                            DRM_FORMAT_MOD_INVALID,
+                            DRM_FORMAT_MOD_INVALID,
+                            DRM_FORMAT_MOD_INVALID };
+
+    /* Use drmModeAddFB2WithModifiers so the kernel records the modifier.
+     * DRM_MODE_FB_MODIFIERS signals that the modifier[] array is valid.
+     * Without this flag the kernel treats the buffer as DRM_FORMAT_MOD_LINEAR
+     * regardless of the modifier[] values, causing display corruption on
+     * tiled or compressed surfaces. */
+    return drmModeAddFB2WithModifiers(fd, width, height, fourcc,
+                                      handles, pitches, offsets, mods,
+                                      out_fb_id, DRM_MODE_FB_MODIFIERS);
+}
+```
+
+A Wayland compositor implementing `zwp_linux_dmabuf_v1` advertises its supported (format, modifier) pairs by building the list from `parse_in_formats()` for each KMS plane and combining it with the list of modifiers the DRI/GBM driver can allocate. The Wayland listener for the `zwp_linux_dmabuf_v1.modifier` event (sent by a compositor to its clients) looks like:
+
+```c
+/* Client-side: receiving modifier advertisement from a Wayland compositor */
+/* Protocol: wayland-protocols unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml */
+static void dmabuf_modifier(void *data,
+                             struct zwp_linux_dmabuf_v1 *dmabuf,
+                             uint32_t format,
+                             uint32_t modifier_hi,
+                             uint32_t modifier_lo)
+{
+    uint64_t modifier = ((uint64_t)modifier_hi << 32) | (uint64_t)modifier_lo;
+
+    if (modifier == DRM_FORMAT_MOD_INVALID)
+        return;  /* sentinel — skip */
+
+    printf("Compositor supports: %.4s with modifier 0x%016llx\n",
+           (const char *)&format, (unsigned long long)modifier);
+
+    /* In practice, the client stores these pairs and passes the modifier list
+     * to gbm_bo_create_with_modifiers2() or vkCreateImage with
+     * VkImageDrmFormatModifierListCreateInfoEXT to allocate a buffer that
+     * the compositor can import without a copy. */
+}
+
+static const struct zwp_linux_dmabuf_v1_listener dmabuf_listener = {
+    .format   = NULL,          /* deprecated in favour of .modifier */
+    .modifier = dmabuf_modifier,
+};
+```
+
+### EGL Side: `EGL_EXT_image_dma_buf_import_modifiers`
+
+The `EGL_EXT_image_dma_buf_import_modifiers` extension ([Khronos registry](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_image_dma_buf_import_modifiers.txt)) exposes modifier-aware dma-buf import into EGL. Two new attributes on `eglCreateImageKHR` carry the 64-bit modifier split across two 32-bit EGL attribute values to accommodate EGL's `EGLAttrib` type:
+
+```c
+/* EGL_EXT_image_dma_buf_import_modifiers attribute keys */
+#define EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT  0x3443
+#define EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT  0x3444
+/* Similarly _PLANE1_ and _PLANE2_ variants for multi-planar formats */
+
+EGLImageKHR img = eglCreateImageKHR(
+    dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL,
+    (EGLint[]) {
+        EGL_WIDTH,                           width,
+        EGL_HEIGHT,                          height,
+        EGL_LINUX_DRM_FOURCC_EXT,            DRM_FORMAT_XRGB8888,
+        EGL_DMA_BUF_PLANE0_FD_EXT,          dmabuf_fd,
+        EGL_DMA_BUF_PLANE0_OFFSET_EXT,      0,
+        EGL_DMA_BUF_PLANE0_PITCH_EXT,       stride,
+        EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, (EGLint)(modifier & 0xFFFFFFFF),
+        EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, (EGLint)(modifier >> 32),
+        EGL_NONE
+    });
+```
+
+Mesa's EGL implementation queries the set of (format, modifier) pairs the underlying DRI driver supports via the `__DRI_IMAGE` extension's `queryDmaBufFormats` and `queryDmaBufModifiers` entry points. These in turn call into the gallium or radeonsi/iris/anv driver's modifier support table, which is itself derived from the driver's knowledge of the GPU hardware's allocation capabilities. The result is that `eglQueryDmaBufModifiersEXT()` returns the same modifier list that GBM's `gbm_bo_create_with_modifiers2()` would accept, ensuring consistent negotiation across EGL and GBM paths. [Source](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_image_dma_buf_import_modifiers.txt)
+
+### Vulkan Side: `VK_EXT_image_drm_format_modifier`
+
+Vulkan exposes modifier-aware image allocation through the `VK_EXT_image_drm_format_modifier` extension ([Vulkan specification](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_EXT_image_drm_format_modifier.html)), which allows applications and WSI layers to specify or query the DRM format modifier used for a `VkImage`.
+
+Two `pNext` structures chain onto `VkImageCreateInfo` to specify modifiers at image creation time:
+
+```c
+/* VkImageDrmFormatModifierListCreateInfoEXT — let the driver pick
+ * the best modifier from a caller-provided list */
+VkImageDrmFormatModifierListCreateInfoEXT modifier_list = {
+    .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT,
+    .pNext = NULL,
+    .drmFormatModifierCount = n_modifiers,
+    .pDrmFormatModifiers    = modifiers,   /* uint64_t[] from IN_FORMATS */
+};
+
+/* VkImageDrmFormatModifierExplicitCreateInfoEXT — caller specifies exact
+ * modifier and per-plane layout; used when importing an existing dma-buf */
+VkImageDrmFormatModifierExplicitCreateInfoEXT explicit_mod = {
+    .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT,
+    .pNext = NULL,
+    .drmFormatModifier              = chosen_modifier,
+    .drmFormatModifierPlaneCount    = 1,
+    .pPlaneLayouts                  = &(VkSubresourceLayout){
+        .offset     = 0,
+        .size       = stride * height,
+        .rowPitch   = stride,
+        .arrayPitch = 0,
+        .depthPitch = 0,
+    },
+};
+```
+
+After image creation with `VkImageDrmFormatModifierListCreateInfoEXT`, the application calls `vkGetImageDrmFormatModifierPropertiesEXT()` to query which modifier the driver actually selected:
+
+```c
+VkImageDrmFormatModifierPropertiesEXT props = {
+    .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_PROPERTIES_EXT,
+};
+vkGetImageDrmFormatModifierPropertiesEXT(device, image, &props);
+uint64_t chosen = props.drmFormatModifier;
+/* Use chosen modifier when calling drmModeAddFB2WithModifiers */
+```
+
+The Vulkan WSI (Window System Integration) layer in Mesa for Wayland (`vk_wsi_wayland.c`) uses exactly this flow: it queries the modifier list from `zwp_linux_dmabuf_feedback_v1`, creates swapchain images with `VkImageDrmFormatModifierListCreateInfoEXT`, queries the chosen modifier with `vkGetImageDrmFormatModifierPropertiesEXT`, exports the image as a dma-buf via `VK_KHR_external_memory_fd`, and passes the dma-buf and modifier to the compositor for import. The compositor then calls `drmModeAddFB2WithModifiers` with that modifier to register the swapchain image as a KMS framebuffer suitable for direct scanout — avoiding a copy entirely in the common case where the GPU renders directly into a tiled format the display controller can scan out natively. [Source](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_EXT_image_drm_format_modifier.html)
+
+### Modifier Negotiation in Practice: Zero-Copy Render-to-Scanout
+
+The full value of the modifier system is realised in zero-copy render-to-scanout. On a system where the GPU can render to Intel Y-tiled-CCS surfaces and the display controller can scan out Intel Y-tiled-CCS surfaces, a compositor can render a frame directly into the final scanout buffer without any decompression, detiling, or copy. The sequence is:
+
+1. At startup, query `IN_FORMATS` on the primary plane to get accepted (format, modifier) pairs.
+2. Pass that modifier list to `gbm_bo_create_with_modifiers2()` (or `VkImageDrmFormatModifierListCreateInfoEXT`).
+3. The DRI driver allocates a buffer in the best modifier both the GPU render engine and the display controller accept — typically the GPU's native tiled/compressed format.
+4. Render into the buffer with the GPU as normal.
+5. Call `drmModeAddFB2WithModifiers()` with the allocated modifier.
+6. Commit the framebuffer to the KMS plane.
+
+The display controller's HUBP or equivalent scanout engine reads the tiled buffer directly, performing hardware detiling in the scanout data path — a fixed-function path with no extra bandwidth cost compared to a linear scanout because the hardware is designed for it. Compression savings reduce DRAM read bandwidth further. The net result is that the display consumes less memory bandwidth than a linear scanout at the same resolution and refresh rate.
+
+When no common modifier exists (the GPU driver supports only compressed formats, but the display controller supports only linear), the compositor must insert an explicit copy or blit pass to convert the GPU-rendered buffer to a linear scanout buffer. This is the fallback path and is notably more expensive on high-refresh-rate, high-resolution displays.
+
+---
+
+## 7. Page Flipping and VBLANK Synchronisation
 
 Display tearing — the visible artefact where part of one frame and part of the next appear simultaneously on screen — results from updating the display controller's framebuffer pointer while the scanout beam is in the middle of a frame. Preventing tearing requires coordinating framebuffer updates with the VBLANK interval, the blanking period between frames during which the scanout hardware returns to the top of the display but is not yet emitting visible pixels.
 
@@ -403,7 +780,7 @@ The relationship between buffer count, GPU render time, and VBLANK interval dete
 
 ---
 
-## 7. The Display Pipeline: From GPU Memory to Physical Connector
+## 8. The Display Pipeline: From GPU Memory to Physical Connector
 
 With the object model and commit mechanics established, it is worth tracing the complete physical path from a GPU memory buffer to visible light leaving a connector. This path is what "submitting a frame" actually means at the hardware level.
 
@@ -468,7 +845,7 @@ Enabling or disabling a display requires careful ordering to avoid damage to the
 
 ---
 
-## 8. Damage Tracking and Partial Updates
+## 9. Damage Tracking and Partial Updates
 
 On desktop GPUs with high-bandwidth memory subsystems, redrawing the entire screen every frame is inexpensive. On mobile SoCs with LPDDR5 memory shared between CPU, GPU, and display controller, full-screen redraws at 90 or 120 Hz can represent a significant fraction of total system power consumption. Damage tracking is the mechanism by which the compositor communicates to the display pipeline which regions of the framebuffer have actually changed, enabling partial refresh and self-refresh optimisations.
 
@@ -488,7 +865,7 @@ Intel's eDP panels on laptops support Panel Self-Refresh, in which the display c
 
 ---
 
-## 9. Connector Probing: EDID, DisplayID, and Hotplug
+## 10. Connector Probing: EDID, DisplayID, and Hotplug
 
 A compositor cannot know what modes a display supports, or even whether a display is connected, without reading the monitor's identification data. This section covers the complete path from physical HPD signal to mode list in the compositor.
 
@@ -610,7 +987,7 @@ After injection, re-calling `DRM_IOCTL_MODE_GETCONNECTOR` will show the injected
 
 ---
 
-## 10. Screen Rotation, Panel Orientation, and Buffer Transforms
+## 11. Screen Rotation, Panel Orientation, and Buffer Transforms
 
 Display rotation in KMS involves hardware capabilities, firmware-provided physical orientation data, and Wayland protocol semantics that must all be aligned. Getting the chain right requires understanding where each piece of information originates and how it propagates to applications.
 
@@ -675,7 +1052,7 @@ Clients that produce pre-rotated buffers (camera applications, video decoders pr
 
 ---
 
-## 11. The DRM Bridge Framework: Composable Display Pipelines
+## 12. The DRM Bridge Framework: Composable Display Pipelines
 
 On SoC and embedded platforms, the display pipeline is almost never a direct encoder-to-connector connection. A typical embedded design routes the signal through two, three, or more discrete components — a MIPI DSI host controller in the SoC, a DSI-to-HDMI bridge chip on the PCB, and an HDMI transmitter IC with built-in HPD and EDID circuitry — each requiring independent driver code, power sequencing, register programming, and mode validation. The `struct drm_encoder` model was designed for discrete GPU architectures where the encoder logic is integrated on-chip and there is a single operational boundary between the CRTC and the connector. The DRM bridge framework generalises this to arbitrary chains.
 
@@ -788,7 +1165,7 @@ Because the bridge framework was introduced incrementally (bridges became mainst
 
 ---
 
-## 12. AMD Display Core: amdgpu_dm and the DCN Hardware Abstraction
+## 13. AMD Display Core: amdgpu_dm and the DCN Hardware Abstraction
 
 The AMD GPU display stack is the most architecturally elaborate in the mainline kernel. Where most GPU drivers implement KMS callbacks directly in terms of hardware register writes, AMD interposes a second, portable abstraction layer — the **Display Core** (**DC**) — between the KMS integration code and the DCN hardware registers. Understanding the two-layer split is essential for anyone reading or contributing to `drivers/gpu/drm/amd/display/`.
 

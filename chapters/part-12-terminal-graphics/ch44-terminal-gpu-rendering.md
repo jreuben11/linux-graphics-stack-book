@@ -16,6 +16,10 @@
 - [7. foot: CPU-Side Software Rendering](#7-foot-cpu-side-software-rendering)
 - [8. VTE: GTK4 Transition and Sixel Support](#8-vte-gtk4-transition-and-sixel-support)
 - [9. Compositing Pipeline: Text and Pixel Graphics Together](#9-compositing-pipeline-text-and-pixel-graphics-together)
+- [10. Damage Tracking and Partial Updates](#10-damage-tracking-and-partial-updates)
+- [11. VSync, Frame Pacing, and the Presentation Time Protocol](#11-vsync-frame-pacing-and-the-presentation-time-protocol)
+- [12. Fractional Scaling and HiDPI Rendering](#12-fractional-scaling-and-hidpi-rendering)
+- [Terminal Renderer Comparison](#terminal-renderer-comparison)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -27,17 +31,17 @@ This chapter examines how modern terminal emulators map the conceptually simple 
 
 The chapter is aimed at two overlapping audiences. Terminal developers who are building or extending a GPU-accelerated renderer will find concrete source references and design trade-off analysis for the dominant implementations — **kitty**, **Alacritty**, **WezTerm**, **Ghostty**, **foot**, and **VTE**. Graphics application developers who are already familiar with **Vulkan** and **OpenGL** from Parts IV–VI of this book will recognise the glyph atlas, atlas eviction, and premultiplied-alpha compositing patterns as instances of more general GPU techniques applied to a character-cell domain. Readers are assumed to have absorbed Parts I–VI (**DRM**, **KMS**, GPU drivers, **Mesa**, **Wayland**, compositors) and Chapter 43 (the **Sixel**, **Kitty Graphics Protocol**, and **iTerm2** wire formats); those protocols are referenced here for context but not re-explained.
 
-Section 2 establishes the glyph atlas as the shared foundation underlying every GPU terminal renderer. The path from a **Unicode** codepoint to a cached GPU bitmap passes through **HarfBuzz** (text shaping: ligatures, bidirectional runs, emoji clusters) and **FreeType** (rasterisation with hinting and antialiasing, controlled by **fontconfig** load flags such as **FT_LOAD_TARGET_LCD** for subpixel rendering). The rasterised bitmaps are packed into a **GL_TEXTURE_2D_ARRAY** using a skyline bin-packing algorithm; the **glTexSubImage3D** API uploads individual glyphs to specific layers. Cache misses trigger **LRU** eviction using per-slot frame counters, with the physical layer limit exposed via **GL_MAX_ARRAY_TEXTURE_LAYERS** and **VkPhysicalDeviceLimits.maxImageArrayLayers**.
+Section 2 establishes the glyph atlas as the shared foundation underlying every GPU terminal renderer. The path from a **Unicode** codepoint to a cached GPU bitmap passes through **HarfBuzz** (text shaping: ligatures, bidirectional runs, emoji clusters) and **FreeType** (rasterisation with hinting and antialiasing, controlled by **fontconfig** load flags such as **FT_LOAD_TARGET_LCD** for subpixel rendering). The rasterised bitmaps are packed into a **GL_TEXTURE_2D_ARRAY** using a skyline bin-packing algorithm; the **glTexSubImage3D** API uploads individual glyphs to specific layers. Cache misses trigger **LRU** eviction using per-slot frame counters, with the physical layer limit exposed via **GL_MAX_ARRAY_TEXTURE_LAYERS** and **VkPhysicalDeviceLimits.maxImageArrayLayers**. Grayscale glyphs (A8 single-channel) and colour emoji (BGRA four-channel) live in separate atlas textures so that neither wastes memory or requires format-switching.
 
-Section 3 covers **kitty**'s mature **OpenGL** renderer, whose glyph cache lives in **kitty/glyph-cache.c** and shader programs in **kitty/shaders.py**. Image textures from the **Kitty Graphics Protocol** are managed in **kitty/graphics.c** using an **LRU** cache of **GL** texture handles. Section 4 covers **Alacritty**'s minimal **OpenGL** design, implemented in Rust under **alacritty/src/renderer/**, with a 2D **GL_TEXTURE_2D** atlas and a multi-threaded architecture separating input polling, **VT** parsing, and rendering to achieve low input-to-photon latency; **Alacritty** deliberately omits image protocol support. Section 5 covers **WezTerm**'s **wgpu** multi-backend architecture, in which **WGSL** shaders are translated to **SPIR-V** by **naga** and handed to **Mesa**'s **Vulkan** driver (**RADV**, **ANV**, **NVK**) via **ash**; WezTerm supports **Sixel**, the **Kitty Graphics Protocol**, and **iTerm2** using a **wgpu::Buffer** staging path, with a known **HLS** colour-mapping deviation from the **DEC VT340** specification.
+Section 3 covers **kitty**'s mature **OpenGL** renderer, whose glyph cache lives in **kitty/glyph-cache.c** and shader programs in **kitty/shaders.py**. Image textures from the **Kitty Graphics Protocol** are managed in **kitty/graphics.c** using an **LRU** cache of **GL** texture handles. The `GPUCell` struct carries `sprite_idx`, `fg`, `bg`, `decoration_fg`, and `attrs` fields that the vertex shader reads directly as **OpenGL** vertex attributes. Section 4 covers **Alacritty**'s minimal **OpenGL** design, implemented in Rust under **alacritty/src/renderer/**, with a 2D **GL_TEXTURE_2D** atlas and a multi-threaded architecture separating input polling, **VT** parsing, and rendering to achieve low input-to-photon latency; **Alacritty** deliberately omits image protocol support. Section 5 covers **WezTerm**'s **wgpu** multi-backend architecture, in which **WGSL** shaders are translated to **SPIR-V** by **naga** and handed to **Mesa**'s **Vulkan** driver (**RADV**, **ANV**, **NVK**) via **ash**; WezTerm supports **Sixel**, the **Kitty Graphics Protocol**, and **iTerm2** using a **wgpu::Buffer** staging path, with a known **HLS** colour-mapping deviation from the **DEC VT340** specification.
 
-Section 6 covers **Ghostty** and **libghostty**. **Ghostty**'s **SIMD**-optimised **VT** parser scans the byte stream using **SSE4.2**, **AVX2**, and **NEON** intrinsics. The multi-threaded architecture separates a read thread, a parse/write thread, and a render thread communicating via a ring buffer, with the render thread woken by a **Wayland** frame callback. Rendering backends include **Metal** on macOS, **OpenGL** (via **GTK4**) on Linux with shaders under **src/renderer/shaders/glsl/**, and a **Vulkan** backend in development. **libghostty** exposes the headless **VT** emulation core (parser, state machine, terminal grid) as an embeddable C/Zig shared library independent of any rendering backend.
+Section 6 covers **Ghostty** and **libghostty**. **Ghostty**'s **SIMD**-optimised **VT** parser scans the byte stream using **SSE4.2**, **AVX2**, and **NEON** intrinsics. The multi-threaded architecture separates a read thread, a parse/write thread, and a render thread communicating via a ring buffer, with the render thread woken by a **Wayland** frame callback. Rendering backends include **Metal** on macOS, **OpenGL** (via **GTK4**) on Linux with shaders under **src/renderer/shaders/glsl/**, and a **Vulkan** backend in development. **Ghostty**'s glyph atlas system in **src/font/Atlas.zig** maintains separate **Grayscale**, **BGR** (subpixel), and **BGRA** (colour emoji) atlases packed with a square-texture bin-packer derived from "A Thousand Ways to Pack the Bin". **libghostty** exposes the headless **VT** emulation core (parser, state machine, terminal grid) as an embeddable C/Zig shared library independent of any rendering backend.
 
 Section 7 covers **foot**, which performs all rendering on the CPU and uploads results via **wl_shm**, avoiding any **OpenGL** or **Vulkan** dependency. The **footd** server-daemon architecture amortises font-loading cost across multiple windows. **Sixel** decoding (**foot/sixel.c**) fills the CPU framebuffer directly. **foot** supports the **wp_fractional_scale_v1** Wayland protocol extension for non-integer DPI scaling, implemented entirely in software.
 
 Section 8 covers **VTE**, the **GTK** terminal widget, whose GTK4 port (VTE 0.76, GNOME 46) replaced the **Cairo**/**Pango** rendering path with **GTK**'s **GSK** scene-graph layer (**src/drawing-gsk.cc**). With **GTK 4.16**, the default **GSK** backend on **Wayland** became the **Vulkan** renderer, routing **GskTextNode**, **GskTextureNode**, and **GskColorNode** render nodes through **Mesa**'s **Vulkan** drivers. **VTE** also added **Sixel** support via a dedicated **src/sixel-context.cc** decoder, exposed through **vte_terminal_set_enable_sixel()** and enabled at build time with the **-Dsixel=true** **Meson** option.
 
-Section 9 analyses the compositing pipeline that interleaves text and pixel graphics. The correct blend equation for premultiplied alpha uses **GL_ONE, GL_ONE_MINUS_SRC_ALPHA**; skipping gamma-correct blending in linear-light space causes dark fringe artefacts. **kitty** achieves compositing in a single **glDrawArrays** call by sorting all draw elements — background fill, background images, text cell quads, foreground images, cursor — into one vertex buffer on the CPU. **VTE**'s **GSK**-based path builds a tree of render nodes that the **GSK Vulkan** backend decomposes into **Vulkan** render passes. All GPU terminals implement damage tracking so that only changed cells are included in each frame's draw call, keeping GPU bandwidth near zero for static terminal content.
+Section 9 analyses the compositing pipeline that interleaves text and pixel graphics. Sections 10–12 cover damage tracking and partial updates, VSync and frame pacing via **wp_presentation_time_v1**, and fractional scaling via **wp_fractional_scale_v1** — the three Wayland-protocol concerns that determine whether a GPU terminal feels fluid on modern multi-monitor, high-refresh, mixed-DPI desktops.
 
 ---
 
@@ -101,9 +105,25 @@ graph LR
 
 Subpixel rendering via `FT_LOAD_TARGET_LCD` produces a bitmap three times as wide as a grayscale bitmap for the same glyph, because each colour channel is rendered independently against the subpixel geometry of the LCD panel. The terminal must upload this as an RGB texture (or a three-channel region of a larger atlas) and use a fragment shader that applies per-channel alpha blending rather than a single coverage value. Gamma-correct blending matters here: compositing should occur in linear-light space, not in sRGB space, because sRGB values are not additive. The terminal computes the blend in linear space — either by treating the atlas texture as `GL_SRGB8_ALPHA8` and enabling automatic sRGB decode, or by performing the `pow(v, 2.2)` linearisation manually in the shader — and then encodes the result back to sRGB for the framebuffer. Terminals that skip this step exhibit fringe artefacts, visible as colour fringing or uneven stroke weight at small font sizes.
 
+### Separate Atlases for Grayscale and Colour Emoji
+
+A critical architectural decision is whether to store all glyphs in a single atlas texture or to maintain separate atlases for different pixel formats. The dominant modern approach, exemplified by Ghostty's `src/font/Atlas.zig`, is to maintain three distinct atlas types:
+
+| Atlas type | Pixel format | Bytes per texel | Purpose |
+|---|---|---|---|
+| Grayscale | 8-bit single channel | 1 | Standard text, box-drawing, UI symbols |
+| BGR | 24-bit three-channel | 3 | FreeType LCD subpixel antialiased glyphs |
+| BGRA | 32-bit four-channel | 4 | Colour emoji (e.g. Noto Color Emoji), image data |
+
+[Source](https://deepwiki.com/ghostty-org/ghostty/5.5.3-glyph-rendering-and-atlases)
+
+Keeping grayscale text glyphs in a single-channel `GL_RED` (or `GL_R8`) texture rather than an RGBA texture reduces GPU memory consumption by a factor of four for the common case of monochrome text. Colour emoji require a full BGRA texture because their pixels encode arbitrary RGB colours with alpha transparency. Mixing the two in the same atlas would require either wasting three bytes per grayscale texel or downgrading emoji to grayscale — neither is acceptable. The fragment shader selects which atlas to sample based on a per-instance flag indicating whether the glyph is coloured. A secondary benefit of the separation is that the grayscale atlas can use simple `GL_RED` swizzle masking to fill the RGB channels identically for the foreground colour tint, while the BGRA atlas path uses the glyph's embedded RGB values directly.
+
 ### Atlas Packing and the 3D Texture Array
 
-A 2D texture atlas is the simplest possible organisation: a single large texture into which glyph bitmaps are packed using a bin-packing algorithm such as skyline or guillotine. [Source](https://www.freedesktop.org/wiki/Software/HarfBuzz/) The skyline algorithm maintains a height profile of the texture and inserts new rectangles at the lowest point above which the rectangle fits; it gives good packing density for glyph bitmaps, which tend to be narrow and similar in height within a single font and size. However, a 2D atlas has a hard size limit — typically 4096×4096 or 8192×8192 pixels, as bounded by `GL_MAX_TEXTURE_SIZE` — and when it fills, the renderer must either evict glyphs or allocate a second atlas texture, requiring the fragment shader to sample from multiple textures or restructure the draw call.
+A 2D texture atlas is the simplest possible organisation: a single large texture into which glyph bitmaps are packed using a bin-packing algorithm such as skyline or guillotine. [Source](https://www.freedesktop.org/wiki/Software/HarfBuzz/) The skyline algorithm maintains a height profile of the texture and inserts new rectangles at the lowest point above which the rectangle fits; it gives good packing density for glyph bitmaps, which tend to be narrow and similar in height within a single font and size. Ghostty's `Atlas.zig` implements a **square texture bin-packer** derived from "A Thousand Ways to Pack the Bin" — a node-based algorithm that tracks available space as a list of `Node` rectangles and searches them by width and height for the optimal fit. Atomic counters (`modified` and `resized`, lines 42–51 of `src/font/Atlas.zig`) signal the renderer that the GPU texture needs uploading only when the atlas contents have actually changed. [Source](https://deepwiki.com/ghostty-org/ghostty/5.5.3-glyph-rendering-and-atlases)
+
+However, a 2D atlas has a hard size limit — typically 4096×4096 or 8192×8192 pixels, as bounded by `GL_MAX_TEXTURE_SIZE` — and when it fills, the renderer must either evict glyphs or allocate a second atlas texture, requiring the fragment shader to sample from multiple textures or restructure the draw call.
 
 The 3D texture array (`GL_TEXTURE_2D_ARRAY`) offers a cleaner solution that several terminals have adopted. Each layer of the array is a 2D atlas of fixed dimensions; when one layer fills, a new layer is appended without disturbing the texture coordinates of glyphs already packed in earlier layers. The OpenGL API for growing the atlas is `glTexSubImage3D`, which uploads pixel data to a sub-region of a specific layer; adding a new layer requires `glTexImage3D` with the new depth count, which unfortunately requires re-specifying all layers on implementations that do not support `ARB_texture_storage` — a limitation that drives terminals toward allocating array layers in larger increments rather than one at a time. [Source](https://registry.khronos.org/OpenGL-Refpages/gl4/html/glTexSubImage3D.xhtml) The physical limit on the number of array layers is exposed via `GL_MAX_ARRAY_TEXTURE_LAYERS` (OpenGL) or `VkPhysicalDeviceLimits.maxImageArrayLayers` (Vulkan), and typically reaches 2048 on modern hardware — well beyond what any terminal session will exhaust.
 
@@ -148,17 +168,61 @@ void main() {
 
 When a glyph is first encountered, the renderer calls FreeType to rasterise it, then packs the resulting bitmap into the atlas via `glTexSubImage3D` or an equivalent buffer upload. If the atlas has no free space, the renderer must evict an existing entry. The standard policy is LRU (Least Recently Used): each atlas slot carries a frame counter updated on every frame in which the glyph appears; when space is needed, the slot with the oldest frame counter is selected for eviction and its coordinates are reused. The corresponding entry in the CPU-side glyph map is invalidated, and the next render cycle that needs the evicted glyph will re-rasterise it. In practice, for typical interactive terminal usage the hot working set (the glyphs that appear in the visible viewport) fits comfortably in a single atlas layer, and eviction is rare. It becomes relevant during operations like `cat` of a file with extremely diverse Unicode content, or emoji-heavy output.
 
+kitty's `SharedGrid` (the thread-safe glyph cache shared across render frames) uses a two-level cache with `std.Thread.RwLock`-style semantics: a shared lock suffices for cache hits, while an exclusive lock is taken only on cache miss when a new glyph must be rasterised and inserted. This design allows the render thread to look up most glyphs without blocking the parse thread that may be updating the terminal grid simultaneously.
+
 ---
 
 ## 3. kitty: Mature OpenGL Renderer
 
 kitty is the oldest of the GPU-first terminal emulators still in active development, first released in 2017 by Kovid Goyal. Its deliberate choice to build on OpenGL rather than Vulkan was made consciously: at the time of the initial design, Vulkan driver quality and application developer tooling were immature enough that the additional complexity was not warranted, and the OpenGL path has remained because it covers all hardware — including older Intel iGPUs and ARM Mali chips — without the driver quality concerns that still occasionally surface with Vulkan. [Source](https://github.com/kovidgoyal/kitty)
 
+### The GPU Cell Data Structure
+
+kitty's terminal grid is stored as parallel arrays of `CPUCell` and `GPUCell` records, one pair of arrays per row. `CPUCell` holds character content, layout metadata, and raw Unicode codepoint data needed by the VT parser and HarfBuzz shaper. `GPUCell` holds only the rendering artefacts needed by the vertex shader — it is the CPU-to-GPU contract for the renderer. [Source](https://deepwiki.com/kovidgoyal/kitty/2.5-terminal-buffer-data-structures)
+
+```c
+// kitty/screen.h (simplified) — GPUCell holds only rendering data
+typedef struct GPUCell {
+    sprite_index  sprite_idx[2];   // (x, y) position in the sprite texture atlas
+    color_type    fg;              // Foreground color (ARGB packed uint32)
+    color_type    bg;              // Background color (ARGB packed uint32)
+    color_type    decoration_fg;   // Underline / strikethrough color
+    CellAttrs     attrs;           // bold, italic, reverse, strike, dim, blink, mark
+} GPUCell;
+```
+
+The `sprite_idx` pair encodes the (x, y) tile position of the glyph within the sprite atlas (kitty uses "sprite" as its term for an atlas slot). Every field of `GPUCell` is bound as an OpenGL vertex attribute, so the vertex shader can read per-cell glyph coordinates and colours without any additional indirection — the GPU sees the entire terminal grid state as a single flat vertex buffer. This is the key performance property: a single `glDrawArraysInstanced` call (or equivalent) processes all visible cells in one GPU pass, with the vertex shader indexing the atlas and applying colours per instance. [Source](https://github.com/kovidgoyal/kitty/blob/master/kitty/shaders.c)
+
+When a cell's content changes (as detected by dirty-tracking after the VT parser runs), the parse thread updates the corresponding `GPUCell` in the row array. At render time, only rows containing dirty cells are re-uploaded to the GPU vertex buffer. The clean rows are left in the existing GPU buffer unchanged, so the upload volume scales with the rate of change rather than with the total grid size.
+
 ### The OpenGL Glyph Atlas
 
 kitty's OpenGL infrastructure lives in `kitty/gl.c`, with shader programs defined in `kitty/shaders.py` and compiled at runtime. The glyph cache is implemented in `kitty/glyph-cache.c`, and the Kitty Graphics Protocol image handling in `kitty/graphics.c`. The atlas is a 3D texture array, with each layer sized to hold a fixed grid of cell bitmaps determined at startup from the font metrics. When the renderer encounters a glyph it has not seen before, it rasterises the glyph via FreeType (with HarfBuzz shaping applied for multi-codepoint clusters) and uploads the bitmap to the next available slot in the current atlas layer via `glTexSubImage3D`. If the current layer is full, a new layer is appended. The atlas layer count grows dynamically; kitty has configurable limits via `kitty.conf`, and the eviction policy removes LRU glyphs when the configured maximum is reached.
 
-The vertex buffer for a frame holds one quad per visible cell. Each quad encodes the cell's screen-space rectangle, the UV coordinates of its glyph in the atlas, the atlas layer index (the z-coordinate of the 3D texture lookup), the foreground colour, and the background colour. The cell vertex shader transforms grid positions to clip space using a simple orthographic projection; the cell fragment shader fetches the glyph coverage value from the atlas with `texture(atlas, vec3(u, v, layer))` and applies it as the alpha for foreground colour over background colour. Subpixel rendering is handled in a variant shader that fetches three separate coverage values for the R, G, and B channels and applies per-channel blending.
+### The Cell Fragment Shader
+
+kitty's cell fragment shader in `kitty/cell_fragment.glsl` is more sophisticated than the simplified example in Section 2, handling multiple rendering modes and gamma correction. [Source](https://github.com/kovidgoyal/kitty/blob/master/kitty/cell_fragment.glsl) The shader accepts per-frame uniforms including `text_contrast`, `text_gamma_adjustment`, and `effective_background_premul`. Sprite data is loaded via `texture(sprites, sprite_pos)`. The key compositing logic applies per-channel contrast adjustment:
+
+```glsl
+// kitty/cell_fragment.glsl — excerpt showing gamma-corrected text compositing
+// sprites is a sampler2DArray; sprite_pos.z selects the atlas layer.
+vec4 text_fg = texture(sprites, sprite_pos);
+
+// Apply color tinting: colored emoji use their own RGB; grayscale glyphs
+// use the cell foreground color tinted by the coverage value.
+vec3 fg_rgb = mix(cell_foreground.rgb, text_fg.rgb, colored_sprite);
+
+// Gamma adjustment for text contrast against the background luminance.
+// over_luminance and under_luminance are computed from the background color.
+float gamma_scaled = (1.0 - over_luminance + under_luminance) * text_gamma_scaling;
+float alpha = text_fg.a * gamma_scaled;
+
+// Final premultiplied-alpha composite over background.
+frag_color = vec4(fg_rgb * alpha, alpha)
+             + effective_background_premul * (1.0 - alpha);
+```
+
+The `colored_sprite` flag distinguishes grayscale glyphs (where `.r` is coverage) from BGRA colour emoji (where `.rgb` carries the glyph's own colour). This per-fragment branch is free of performance concern because terminal renders are fragment-bound only during atlas misses; the typical case (cached glyphs at interactive speed) is vertex-bound.
 
 ### Image Handling and the Kitty Graphics Protocol
 
@@ -269,11 +333,47 @@ graph LR
     RenderThread --> GPU
 ```
 
+### Ghostty's Glyph Atlas Architecture
+
+Ghostty's atlas implementation in `src/font/Atlas.zig` maintains three separate atlas instances distinguished by pixel format — Grayscale (1-byte), BGR (3-byte for subpixel), and BGRA (4-byte for colour emoji) — as described in Section 2 above. The bin-packing uses a node-based square-texture algorithm that tracks available space as a list of `Node` rectangles and selects placement by width and height. Atomic counters `modified` and `resized` (lines 42–51 of `src/font/Atlas.zig`) allow the renderer to check efficiently whether any atlas content has changed since the last GPU upload, avoiding redundant `glTexSubImage2D` calls on frames where no new glyphs were needed. [Source](https://deepwiki.com/ghostty-org/ghostty/5.5.3-glyph-rendering-and-atlases)
+
+The font system's `SharedGrid` provides a thread-safe two-level glyph cache: shared read locks for cache hits (the common case), exclusive write locks only on cache misses when FreeType must rasterise a new glyph. This locking strategy allows the render thread and the parse thread to access the font cache concurrently without contention on every lookup. Platform-specific face implementations live in `src/font/face/freetype.zig` (Linux/BSD) and `src/font/face/coretext.zig` (macOS), with a web canvas path for WASM targets.
+
+A noteworthy feature is Ghostty's Nerd Font constraint system: `nerd_font_codegen.py` extracts alignment rules for thousands of Nerd Font codepoints and generates `nerd_font_attributes.zig`, ensuring that icon glyphs align correctly across different base font metrics (size, baseline, advance width) without manual per-font tweaking.
+
+### GPU Cell Buffer and Instanced Rendering
+
+The Ghostty rendering pipeline uses **instanced rendering** to draw the entire terminal grid in a single GPU draw call. The `Contents` struct in `src/renderer/cell.zig` manages per-frame glyph buffers, with `fg_rows` storing foreground text and attribute data organized by terminal row. [Source](https://deepwiki.com/ghostty-org/ghostty/5.3-rendering-pipeline-and-shaders)
+
+Each glyph is represented as a 32-byte `CellText` instance with the following fields:
+
+```zig
+// src/renderer/cell.zig (Ghostty) — approximate layout of CellText instance data
+const CellText = extern struct {
+    glyph_pos: [2]u32,       // atlas (x, y) coordinates
+    bearing: [2]i32,         // FreeType bearing (horizontal/vertical offset)
+    grid_pos: [2]u32,        // terminal grid column and row
+    color: [4]u8,            // RGBA text color
+    mode: u8,                // flags: color glyph, contrast adjust, cursor highlight
+    _pad: [3]u8,
+};
+```
+
+Per-frame global state (the projection matrix, cell dimensions, grid geometry columns × rows, grid padding with per-edge values, cursor position and color, background color, and colour space flags) is uploaded as a uniform buffer shared across all instances in the frame. The `Buffer(T)` generic in `src/renderer/` manages GPU memory with automatic 2×-size growth when capacity is exceeded, avoiding per-frame reallocation while keeping GPU memory use proportional to actual terminal grid size.
+
+The frame rendering sequence executes multiple specialised passes:
+1. Background cell pass — fills background colour rectangles for all cells
+2. Text/glyph pass — instanced draw of all visible glyphs from the atlas
+3. Cursor pass — renders the cursor shape at the current position
+4. Post-processing pass — applies any user-configured custom shaders
+
+Each pass uses a distinct shader pipeline but shares the same uniform buffer, so projection and grid geometry are uploaded once per frame regardless of pass count. [Source](https://deepwiki.com/ghostty-org/ghostty/5.3-rendering-pipeline-and-shaders)
+
 ### Platform Rendering Backends
 
-On macOS, Ghostty uses Metal via a Swift interoperability layer. The Metal backend achieves approximately 120 FPS on Apple Silicon at approximately 45 MB RSS for a typical session, according to the project's own benchmarks. The glyph atlas is a 3D texture array (a `MTLTextureDescriptor` with `textureType = MTLTextureType2DArray`) and the shaders in `src/renderer/shaders/shaders.metal` handle glyph sampling and image compositing in a single render pass.
+On macOS, Ghostty uses Metal via a Swift interoperability layer. The Metal backend achieves approximately 120 FPS on Apple Silicon at approximately 45 MB RSS for a typical session, according to the project's own benchmarks. The glyph atlas is a 3D texture array (a `MTLTextureDescriptor` with `textureType = MTLTextureType2DArray`) and the shaders in `src/renderer/shaders/shaders.metal` handle glyph sampling and image compositing in a single render pass. Triple-buffering is used on the Metal backend to ensure the GPU can work on frame N+1 while the CPU prepares frame N+2.
 
-On Linux, Ghostty uses OpenGL via the GTK4 application runtime (`src/apprt/gtk/`). The OpenGL renderer sources live in `src/renderer/OpenGL.zig` and `src/renderer/opengl/`, with shaders in `src/renderer/shaders/glsl/`. The cell shader (`cell_text.v.glsl`, `cell_text.f.glsl`) handles the same glyph atlas sampling and colour tinting pattern as kitty, while the image shader (`image.v.glsl`, `image.f.glsl`) handles compositing pixel graphics. Background images are supported via `bg_image.v.glsl` / `bg_image.f.glsl`. A Vulkan backend for Linux is under active development; readers should check the repository's `src/renderer/` directory for current status, as this was not yet merged to the main branch as of mid-2026. [Source](https://github.com/ghostty-org/ghostty/tree/main/src/renderer)
+On Linux, Ghostty requires OpenGL 4.3 or later (for compute shader support used in some rendering passes). It uses runtime GLSL compilation with an sRGB framebuffer for linear-space blending. The OpenGL renderer sources live in `src/renderer/OpenGL.zig` and `src/renderer/opengl/`, with shaders in `src/renderer/shaders/glsl/`. The cell shader (`cell_text.v.glsl`, `cell_text.f.glsl`) handles the same glyph atlas sampling and colour tinting pattern as kitty, while the image shader (`image.v.glsl`, `image.f.glsl`) handles compositing pixel graphics. Background images are supported via `bg_image.v.glsl` / `bg_image.f.glsl`. A Vulkan backend for Linux is under active development; readers should check the repository's `src/renderer/` directory for current status, as this was not yet merged to the main branch as of mid-2026. [Source](https://github.com/ghostty-org/ghostty/tree/main/src/renderer)
 
 ### libghostty: The Headless Emulation Core
 
@@ -301,7 +401,9 @@ graph TD
 
     VTParser --> StateMachine
     StateMachine --> TermGrid
-``` The public API is documented at [libghostty.tip.ghostty.org](https://libghostty.tip.ghostty.org) and exposes C-compatible types and function signatures, allowing embedding in applications that are not written in Zig. The primary intended use cases are editors and IDEs that want to embed a terminal pane, browser extensions, and compositors that want a built-in terminal without depending on a full terminal emulator binary. As of mid-2026, the libghostty API is not yet considered stable or versioned; the project documentation notes that the API may change without notice until a 1.0 release is declared. The library builds for macOS, Linux, Windows, and WASM targets via Zig's cross-compilation infrastructure.
+```
+
+The public API is documented at [libghostty.tip.ghostty.org](https://libghostty.tip.ghostty.org) and exposes C-compatible types and function signatures, allowing embedding in applications that are not written in Zig. The primary intended use cases are editors and IDEs that want to embed a terminal pane, browser extensions, and compositors that want a built-in terminal without depending on a full terminal emulator binary. As of mid-2026, the libghostty API is not yet considered stable or versioned; the project documentation notes that the API may change without notice until a 1.0 release is declared. The library builds for macOS, Linux, Windows, and WASM targets via Zig's cross-compilation infrastructure.
 
 ---
 
@@ -313,11 +415,13 @@ foot is a Wayland-native terminal emulator written in C that makes the opposite 
 
 foot ships with a server daemon, `footd`, that allows multiple terminal windows to share a single process. The shared process retains a single FreeType library instance and a single glyph cache in memory, amortising the startup cost of font loading across all windows. A typical foot window consumes approximately 30–50 MB RSS; by comparison, a GPU terminal running the OpenGL stack typically requires 60–100 MB for the OpenGL context and atlas textures alone. For users who open many terminal windows simultaneously, the footd model can represent a meaningful memory saving.
 
-### Software Rendering Pipeline
+### Software Rendering Pipeline and wl_shm
 
-The rendering pipeline, implemented in `foot/render.c`, is straightforward: for each changed cell, call FreeType to rasterise (or look up a cached rasterisation) the glyph and blit it into a 32-bit RGBA software framebuffer at the correct row-column position. Damage tracking records which rows or rectangular regions have been modified since the last frame; only those regions are written into the framebuffer on each render cycle. When the frame is complete, foot calls `wl_surface_damage_buffer` to inform the compositor of the changed region and `wl_surface_commit` to present the buffer. The compositor receives a `wl_buffer` backed by a `wl_shm_pool` — a file-descriptor-backed shared memory region — and the GPU (if present) DMAs the data from that region into a texture for display. The GPU involvement, if any, is entirely on the compositor side; foot itself never calls an OpenGL or Vulkan function.
+The rendering pipeline, implemented in `foot/render.c`, is straightforward: for each changed cell, call FreeType to rasterise (or look up a cached rasterisation) the glyph and blit it into a 32-bit RGBA software framebuffer at the correct row-column position. Damage tracking records which rows or rectangular regions have been modified since the last frame; only those regions are written into the framebuffer on each render cycle. When the frame is complete, foot calls `wl_surface_damage_buffer` to inform the compositor of the changed region and `wl_surface_commit` to present the buffer.
 
-The `wl_shm` path here is architecturally identical to the CPU-upload path used by any non-GPU Wayland client. Chapter 20 describes the `wl_shm` protocol mechanics; Chapter 21 describes how wlroots compositors handle `wl_shm` surfaces. foot is the most prominent example in this part of the book of a Wayland client that remains entirely in this software path by design.
+The compositor receives a `wl_buffer` backed by a `wl_shm_pool` — a file-descriptor-backed shared memory region — and the GPU (if present) DMAs the data from that region into a texture for display. The GPU involvement, if any, is entirely on the compositor side; foot itself never calls an OpenGL or Vulkan function. The wl_shm path here is architecturally identical to the CPU-upload path used by any non-GPU Wayland client. Chapter 20 describes the `wl_shm_pool`, `wl_buffer`, and `wl_surface_damage_buffer` protocol sequences that foot uses; foot is the most prominent example in this part of the book of a deliberate, production-quality application that stays entirely in this path.
+
+The performance tradeoff is concrete: `wl_shm` costs a CPU-to-GPU copy every frame, because the compositor must transfer the shared memory contents into a GPU-accessible texture before scanout. An EGL terminal like kitty avoids this copy entirely — the framebuffer is already in GPU memory after `eglSwapBuffers`. For a terminal that changes slowly (a shell prompt, a text editor with occasional cursor movement), the copy cost is paid at most at 60 Hz and is typically a few hundred microseconds on a modern CPU, making it imperceptible. For a terminal under burst I/O load (continuous output from a build tool), the copy adds a bounded constant overhead per frame regardless of content size, since foot tracks damage to the byte level and passes only the dirty rectangle(s) to the compositor rather than the entire surface.
 
 ### Sixel in the Software Path
 
@@ -393,7 +497,7 @@ The six terminals covered in this chapter represent a wide spectrum of design ch
 | kitty | OpenGL 3.3 (custom renderer) | Python (config/plugins) + C (core) | Kitty Graphics Protocol (inventor) | Yes | Yes | Yes (inventor) | Repaint batching, sync output protocol | Feature richness; pixel protocol innovation |
 | Alacritty | OpenGL (via glutin/winit) | Rust | None | Yes | No | No | Minimal pipeline; V-sync accurate | Raw latency; simplicity; correctness |
 | WezTerm | wgpu (Vulkan/Metal/DX12/GL) | Rust | Kitty, iTerm2 (partial), Sixel | Yes | Yes | Yes | Frame-paced; GPU compute for shaping | Cross-platform; multiplexer built-in; wgpu portability |
-| Ghostty | OpenGL (Metal on macOS) via libghostty | Zig | Kitty Graphics Protocol | Yes | No (planned) | Yes | Low-latency VBO streaming; platform-native | Zig-native; libghostty embeddable library design |
+| Ghostty | OpenGL 4.3+ (Metal on macOS) via libghostty | Zig | Kitty Graphics Protocol | Yes | No (planned) | Yes | Low-latency VBO streaming; platform-native | Zig-native; libghostty embeddable library design |
 | foot | CPU software rendering (pixman) | C | Sixel | Yes (Wayland-only) | Yes | No | Damage-aware partial redraws | Zero GPU dependency; pure Wayland; lightweight |
 | VTE (GNOME Terminal, Tilix, etc.) | OpenGL via GTK4/GSK | C (GObject) | Sixel (VTE 0.70+) | Yes (GTK4 Wayland) | Yes | No | GTK4 frame clock integration | GNOME ecosystem; accessibility; GTK widget embedding |
 
@@ -438,11 +542,228 @@ kitty achieves the entire compositing pipeline in a single OpenGL render pass by
 
 VTE's GSK-based path is structurally different. GSK builds a tree of render nodes — one `GskTextNode` per run of text (using Pango for layout), one `GskTextureNode` per Sixel or image region, one `GskColorNode` per background fill — and then the GSK Vulkan backend decomposes this tree into one or more Vulkan render passes. The decomposition may produce multiple GPU passes depending on node types and their blend requirements. This multi-node, potentially multi-pass structure is more flexible (it handles arbitrary GTK widget content alongside the terminal text) but requires the GSK backend to make good decisions about pass merging to avoid redundant GPU round-trips. GTK 4.16's GSK Vulkan renderer, which is the same backend used for all GTK4 widget rendering (Chapter 39), includes optimisations for common node patterns including runs of consecutive text nodes that can be batched into a single Vulkan draw.
 
-### Damage Tracking
+### Damage Tracking in the Compositing Pass
 
 All GPU terminals implement damage tracking: only cells that changed since the last frame are included in the vertex buffer for the next frame's draw call. In practice this means that a static terminal — one showing a shell prompt, for example — requires an almost empty draw call each frame (only the cursor blink, if enabled, changes), consuming negligible GPU bandwidth. During bulk output, such as a build system printing hundreds of lines per second, damage tracking is less helpful because nearly every cell changes every frame; this is precisely the case where the GPU atlas approach pays off because glyph rasterisation cost is amortised.
 
 The GPU memory budget for the atlas is configurable in both kitty and Ghostty. Administrators managing shared systems with many simultaneous terminal users can lower the atlas size limit to reduce per-terminal GPU memory consumption at the cost of more frequent glyph eviction. The physical upper bound is `GL_MAX_ARRAY_TEXTURE_LAYERS` for the OpenGL 3D texture array, which is at least 256 on any OpenGL 3.0-capable implementation and 2048 or more on current hardware, providing ample headroom for the largest atlas configurations used in practice.
+
+---
+
+## 10. Damage Tracking and Partial Updates
+
+Damage tracking is the mechanism by which a Wayland client communicates to the compositor exactly which pixels changed since the last submitted frame. Without damage information the compositor must assume the entire surface changed and recomposite the full area on every frame, wasting GPU bandwidth. With precise damage rectangles the compositor can limit its blending work to the changed regions.
+
+### wl_surface.damage_buffer vs. wl_surface.damage
+
+The Wayland protocol provides two requests for signalling surface damage. The older `wl_surface.damage` request takes coordinates in **surface-local coordinates** — the logical pixel space before any buffer scale or transform is applied. The newer `wl_surface.damage_buffer` (added in wl_surface version 4) takes coordinates in **buffer coordinates** — the native pixel space of the attached `wl_buffer`. [Source](https://wayland-book.com/surfaces-in-depth/damaging-surfaces.html)
+
+```c
+// wl_surface.damage — surface-local coordinates (deprecated for new clients)
+wl_surface_damage(surface,
+    x_surface, y_surface,
+    width_surface, height_surface);
+
+// wl_surface.damage_buffer — buffer coordinates (preferred for all new clients)
+wl_surface_damage_buffer(surface,
+    x_buffer, y_buffer,
+    width_buffer, height_buffer);
+```
+
+The key practical difference: when a client uses HiDPI scaling (buffer scale = 2) or `wp_viewport`, the buffer and surface coordinate spaces diverge. `wl_surface.damage_buffer` is always correct because it refers directly to the pixels in the attached buffer; the compositor converts to output coordinates internally. New clients should always use `wl_surface.damage_buffer`. [Source](https://wayland-devel.freedesktop.narkive.com/T6hqU0ZH/patch-v2-protocol-prefer-wl-surface-damage-buffer) foot uses `wl_surface_damage_buffer` for all damage reporting, matching buffer pixels directly.
+
+### Frame Damage vs. Buffer Damage
+
+There is an important conceptual distinction between the two types of damage relevant to double-buffered rendering. **Frame damage** is the set of pixels that changed since the previous displayed frame — what the client tracks internally when comparing the current terminal state to the last rendered state. **Buffer damage** is the set of pixels that need to be redrawn in the current *render buffer* before it can be presented — which, with double buffering, includes changes from the two most recent frames (since the render buffer was last used two frames ago, it still contains content from that earlier frame).
+
+For terminals this means: if rows 3–5 changed in frame N and rows 7–9 changed in frame N-1, the buffer damage for frame N+1 (assuming double buffering with buffer reuse) must include both sets of rows, not just the most recently changed ones. [Source](https://emersion.fr/blog/2019/intro-to-damage-tracking/)
+
+### EGL_EXT_buffer_age for Partial Swaps
+
+The `EGL_EXT_buffer_age` extension provides the mechanism for computing buffer damage accurately. When a client calls `eglQuerySurface(display, surface, EGL_BUFFER_AGE_EXT, &age)` after `eglSwapBuffers`, the driver returns the number of frames elapsed since the current back buffer was last presented. For a simple double-buffered EGL surface, `age` is typically 2. The client accumulates frame-damage rectangles for the last `age` frames and unions them to produce the correct buffer-damage region for the current render. [Source](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_buffer_age.txt)
+
+```c
+// EGL_EXT_buffer_age partial swap — compute buffer damage from frame history
+EGLint age = 0;
+eglQuerySurface(display, surface, EGL_BUFFER_AGE_EXT, &age);
+
+// accumulate damage from the last 'age' frames
+DamageRect buffer_damage = union_last_n_frame_damages(age);
+
+// render only the damaged region
+render_damaged_cells(buffer_damage);
+
+// inform EGL of the damage before swap (EGL_KHR_swap_buffers_with_damage)
+EGLint damage_rects[] = {
+    buffer_damage.x, buffer_damage.y,
+    buffer_damage.width, buffer_damage.height
+};
+eglSwapBuffersWithDamageKHR(display, surface, damage_rects, 1);
+```
+
+kitty uses `EGL_EXT_buffer_age` on EGL surfaces that expose it, allowing it to submit partial swap regions rather than full-surface swaps, reducing compositor bandwidth on large monitors when only a fraction of the terminal content is changing.
+
+### Per-Terminal Damage Strategies
+
+The terminals in this chapter implement damage tracking with different granularities:
+
+- **kitty**: tracks modified cells individually. The `GPUCell` dirty flag (set by the VT parser when a cell changes) allows the renderer to build a minimal set of vertex quads per frame covering only changed cells. Damage rectangles submitted to the compositor are the bounding boxes of changed cells mapped to buffer coordinates.
+- **foot**: tracks damaged rows as a bitfield (one bit per row). Row-level granularity is a reasonable compromise: most terminal output fills complete rows (shell commands, build output), and row-level tracking avoids per-cell overhead while still limiting damage to the changed portion of the grid. The bitfield is cleared after each `wl_surface_commit`. [Source](https://codeberg.org/dnkl/foot)
+- **Ghostty**: the `Contents` struct in `src/renderer/cell.zig` organises per-frame glyph data by row (`fg_rows`), allowing rows to be skipped entirely when submitting the instanced draw call if no cells in that row changed. The Wayland damage rectangle corresponds to the union of all changed-row bounding boxes.
+
+The "Swiss Cheese Problem" — where damage tracking produces many small disjoint rectangles that collectively cost more to process than a single large rectangle would — is mitigated by most terminals bounding their damage submission to a small number of rectangles per frame and merging adjacent ones. The complexity of optimal damage aggregation rarely justifies itself for terminals, since most changes are either localized to the current scroll region (contiguous rows at the bottom) or span the entire visible area (full screen clear / scroll).
+
+---
+
+## 11. VSync, Frame Pacing, and the Presentation Time Protocol
+
+A GPU terminal that renders at peak speed regardless of whether the compositor has consumed the previous frame wastes CPU and GPU resources and can produce tearing or dropped frames. The Wayland ecosystem provides two complementary mechanisms for well-behaved frame pacing: `wl_surface.frame` callbacks for basic vsync, and `wp_presentation_time_v1` for precise timing feedback.
+
+### wl_surface.frame Callbacks
+
+The simplest form of render pacing uses Wayland's built-in `wl_surface.frame` callback. Before calling `wl_surface_commit`, the client requests a frame callback:
+
+```c
+// Wayland frame callback — event-driven rendering loop
+struct wl_callback *cb = wl_surface_frame(surface);
+wl_callback_add_listener(cb, &frame_callback_listener, state);
+wl_surface_commit(surface);
+// ... event loop runs ...
+
+static void frame_done(void *data, struct wl_callback *cb, uint32_t time_ms) {
+    wl_callback_destroy(cb);
+    // request the next frame callback before rendering
+    struct wl_callback *next_cb = wl_surface_frame(surface);
+    wl_callback_add_listener(next_cb, &frame_callback_listener, data);
+    // render and commit
+    render_frame(data);
+    wl_surface_commit(surface);
+}
+```
+
+The compositor sends the `done` event (with a millisecond timestamp) when it is ready for the client's next frame — typically aligned to the display's vertical retrace. [Source](https://wayland-book.com/surfaces-in-depth/frame-callbacks.html) A terminal that responds only to frame callbacks achieves two desirable properties: it never submits frames faster than the compositor can consume them (preventing buffer starvation), and it automatically pauses rendering when the surface is hidden or minimised (because the compositor stops sending `done` events for invisible surfaces). foot uses this model: it submits a frame only when both the `wl_callback.done` event has arrived and the terminal state has actually changed. When the terminal is idle (showing a static shell prompt), no frames are submitted at all — the compositor's frame callback is requested but never fires because no content change triggers a commit. This "render on demand" approach reduces power consumption significantly on battery-powered systems compared to a timer-driven 60 Hz render loop.
+
+### wp_presentation_time_v1: Precise Timing Feedback
+
+For applications that need sub-frame precision — video players, audio-visual synchronisation, or terminals implementing variable-refresh-rate scheduling — the `wp_presentation_time_v1` protocol provides per-frame timing feedback. [Source](https://wayland.app/protocols/presentation-time)
+
+The protocol works through two interfaces. `wp_presentation` (the global singleton) provides a `feedback` request that associates a `wp_presentation_feedback` object with a specific surface commit:
+
+```c
+// Requesting presentation feedback for a specific commit
+struct wp_presentation_feedback *fb =
+    wp_presentation_feedback(presentation, surface);
+wp_presentation_feedback_add_listener(fb, &feedback_listener, state);
+wl_surface_commit(surface);  // the commit this feedback tracks
+```
+
+The `wp_presentation_feedback` object delivers one of two events:
+- **`presented`**: the content update was displayed, with fields `tv_sec_hi`, `tv_sec_lo`, `tv_nsec` (timestamp when content first appeared on screen), `refresh` (nanoseconds until the next refresh, for predicting future vblanks), `seq_hi`, `seq_lo` (the output's vertical retrace counter), and `flags` (bitfield: `vsync` if synchronized to a vblank, `hw_clock` if a hardware timestamp was used).
+- **`discarded`**: the content update was superseded by a later commit before being displayed (e.g. the client submitted two frames in one refresh interval).
+
+```c
+// wp_presentation_feedback.presented — handling timing data
+static void feedback_presented(void *data,
+    struct wp_presentation_feedback *fb,
+    uint32_t tv_sec_hi, uint32_t tv_sec_lo, uint32_t tv_nsec,
+    uint32_t refresh_ns, uint32_t seq_hi, uint32_t seq_lo,
+    uint32_t flags)
+{
+    wp_presentation_feedback_destroy(fb);
+
+    // Reconstruct presentation timestamp
+    uint64_t tv_sec = ((uint64_t)tv_sec_hi << 32) | tv_sec_lo;
+    struct timespec presented = { .tv_sec = tv_sec, .tv_nsec = tv_nsec };
+
+    // refresh_ns gives the period to the next vblank — use for scheduling
+    uint64_t next_vblank_ns = timespec_to_ns(&presented) + refresh_ns;
+
+    schedule_next_render_at(data, next_vblank_ns);
+}
+```
+
+A terminal using `wp_presentation_time_v1` can schedule its next render pass to complete just before the predicted next vblank, minimising input-to-photon latency while avoiding missed frames. The `flags` bitfield reveals whether the compositor was able to synchronize the presentation to a hardware vblank (`WP_PRESENTATION_FEEDBACK_KIND_VSYNC`), which indicates tearing-free display.
+
+### Event-Driven vs. Timer-Driven Rendering
+
+The two common approaches to terminal render scheduling differ significantly in their CPU and power consumption characteristics:
+
+**Event-driven rendering** (foot, kitty in idle state): the terminal submits a frame only when the terminal state has changed AND the compositor has signalled readiness via a `wl_callback.done` event. The render loop is entirely reactive. In steady state (no output), zero frames are submitted and the compositor's frame callback queue is never activated. CPU wakes from this path are dominated by pty I/O events, not by timer interrupts. This is optimal for battery life.
+
+**Timer-driven rendering** (a naive implementation): the terminal schedules a render callback at a fixed interval (e.g. 60 Hz via `timerfd` or `wl_event_loop_add_timer`) and submits a frame every interval regardless of whether content changed. This wastes GPU bandwidth on unchanged frames, prevents the display subsystem from entering low-power states, and is strictly inferior to the event-driven model for terminals, which are inherently idle most of the time.
+
+kitty's render loop is event-driven by default: it only renders when the terminal state changes (flagged by the parse thread setting dirty bits), and it limits the rate by aligning renders to `wl_callback.done` or EGL vsync signals. During periods of rapid output (streaming build logs) it can render at the full display refresh rate; during idle periods it renders at zero Hz. Ghostty follows the same model, with the render thread explicitly gated on the Wayland frame callback rather than a periodic timer.
+
+---
+
+## 12. Fractional Scaling and HiDPI Rendering
+
+Modern Linux desktops routinely combine monitors at different physical pixel densities — a 4K display at 200% DPI alongside a 1080p display at 100%, or a 2560×1440 panel at 125% or 150%. The `wp_fractional_scale_v1` Wayland protocol extension, stabilised in Wayland Protocols 1.31, allows compositors to request non-integer scale factors from clients. [Source](https://news.itsfoss.com/wayland-protocols-fractional-scaling/)
+
+### How wp_fractional_scale_v1 Works
+
+A client obtains its surface's fractional scale through the `preferred_scale` event on a `wp_fractional_scale_v1` object bound to its surface via the `wp_fractional_scale_manager_v1` global:
+
+```c
+// Binding wp_fractional_scale_v1 to a surface
+struct wp_fractional_scale_v1 *frac_scale =
+    wp_fractional_scale_manager_v1_get_fractional_scale(frac_scale_mgr, surface);
+wp_fractional_scale_v1_add_listener(frac_scale, &frac_scale_listener, state);
+
+// preferred_scale event — scale is the numerator with denominator 120
+static void preferred_scale(void *data,
+    struct wp_fractional_scale_v1 *obj,
+    uint32_t scale_120)
+{
+    // e.g. scale_120 = 180 means 180/120 = 1.5x
+    double scale = (double)scale_120 / 120.0;
+    resize_surface_for_scale(data, scale);
+}
+```
+
+The scale value is the numerator of a fraction with denominator 120. A 1.5× scale is represented as 180 (180/120 = 1.5); a 1.25× scale as 150 (150/120 = 1.25). The client computes the buffer size by multiplying logical surface dimensions by the scale factor and rounding up: `buffer_width = ceil(logical_width * scale)`. The `wl_surface` buffer scale is kept at 1; instead, a `wp_viewport` object sets the destination rectangle to the logical (unscaled) size, and the compositor handles the fractional mapping from buffer pixels to output pixels. [Source](https://wayland.app/protocols/fractional-scale-v1)
+
+```c
+// Buffer geometry for wp_fractional_scale_v1
+// logical surface size: 800 x 600
+// scale: 1.5x (scale_120 = 180)
+int buffer_w = (int)ceil(800 * 1.5);  // = 1200
+int buffer_h = (int)ceil(600 * 1.5);  // = 900
+
+// Attach a buffer of 1200 x 900 pixels
+// Set wp_viewport destination to the logical size
+wp_viewport_set_destination(viewport, 800, 600);
+// wl_surface buffer_scale remains 1
+wl_surface_set_buffer_scale(surface, 1);
+```
+
+### Glyph Rasterisation at Fractional Scales
+
+The fractional scale introduces a subtle challenge for glyph rendering: glyph bitmaps must be rasterised at a DPI that is not an integer multiple of the nominal font size. For a terminal configured with 12pt text at 96 DPI on a 1.5× scaled surface, the physical pixel size for each glyph is `12 * 1.5 = 18pt at 96 DPI` physical pixels — which is fine — but the advance width and bearing values from FreeType may not align precisely to whole pixel boundaries at the fractional scale.
+
+**Subpixel rendering at fractional scales** is problematic. FreeType's `FT_LOAD_TARGET_LCD` mode assumes that the rendered glyph lands at whole-pixel boundaries on the physical display, so that R, G, B subpixels are correctly addressed by the RGB-striped rendering. At a fractional scale, the sub-pixel alignment is not guaranteed — the glyph origin in the output buffer may be at a fractional pixel position, and the compositor's scaling step from the buffer to the display may further displace the subpixels. The practical consequence is that LCD subpixel rendering often looks *worse* at fractional scales than grayscale antialiasing: the subpixel fringes become misaligned and produce colour artifacts. Terminals should switch to grayscale antialiasing (`FT_LOAD_TARGET_NORMAL`) when a fractional scale is in effect, unless they have verified that their specific scale factor produces integer pixel boundaries for the fonts and sizes in use.
+
+**Grayscale rendering at fractional scales** avoids the subpixel alignment problem because it uses only per-pixel coverage without colour-channel separation. The coverage value is accurate regardless of whether the glyph origin falls at a fractional pixel position. Most terminals default to grayscale antialiasing under fractional scaling; Alacritty exposes a font rendering configuration option that allows users to override this for specific scale factors. [Source](https://github.com/alacritty/alacritty/issues/6973)
+
+### GPU Terminal HiDPI: Physical vs. Logical Pixels
+
+GPU terminals must correctly manage two coordinate spaces: **logical pixels** (the unit reported by the Wayland compositor and used for layout) and **physical pixels** (the actual buffer texels that map to hardware pixels). The OpenGL viewport, vertex buffer positions, and atlas glyph dimensions must all be computed in physical pixels, while the cell grid dimensions (columns × rows) are computed from logical pixel dimensions and the logical font metrics.
+
+For kitty, the transition between coordinate spaces occurs at the `glViewport` call, which must specify physical pixel dimensions, and in the orthographic projection matrix passed to the vertex shader. At 1.5× fractional scale on a 800×600 logical surface, kitty's OpenGL viewport is `glViewport(0, 0, 1200, 900)` and the projection matrix maps grid column–row coordinates to clip space using the 1200×900 physical resolution. The glyph atlas slots are sized in physical pixels (so a 12pt font at 1.5× scale stores 18px-high bitmaps in the atlas), while the vertex buffer uses physical-pixel positions for each cell rectangle. The cell dimension in logical pixels is computed once at startup and recomputed on scale change events (`preferred_scale`).
+
+foot handles HiDPI entirely in the CPU path. Its software framebuffer is allocated at physical pixel dimensions (e.g. 1200×900 for a 1.5× scaled 800×600 surface), FreeType is called at the physical DPI to rasterise glyphs at the correct pixel height, and the framebuffer is presented via `wl_shm` at the physical resolution with `wp_viewport` mapping it back to the logical size. This is exactly the same computation a GPU terminal performs, just without the OpenGL indirection.
+
+### Glyph Cache Invalidation on Scale Change
+
+When the compositor sends a new `preferred_scale` value (e.g. when the user moves the terminal window from a 100% monitor to a 150% monitor), the terminal must discard all cached glyph bitmaps. The atlas slots were sized for the previous scale's physical pixel dimensions, and the FreeType bitmaps were rasterised at the previous DPI. Simply rescaling the existing atlas bitmaps with a GPU sampler would produce blurry glyphs. The correct procedure is:
+
+1. Receive `preferred_scale` event with new scale value.
+2. Flush the glyph atlas (invalidate all slots or allocate a fresh atlas texture).
+3. Recompute cell dimensions in physical pixels from logical font metrics and the new scale.
+4. Re-rasterise all visible glyphs via FreeType at the new DPI.
+5. Upload new bitmaps to the atlas and rebuild the vertex buffer.
+
+This is a relatively expensive operation, but it happens only when the surface moves between monitors with different scales — which occurs at most a few times per user session in practice. Terminals can optimise by maintaining separate atlas caches per scale factor (so that moving back to the original monitor does not require re-rasterisation), at the cost of higher atlas memory when multiple scales are in use.
 
 ---
 
@@ -460,41 +781,77 @@ HarfBuzz text shaping is shared infrastructure across the entire Linux graphics 
 
 The `wl_shm` path used by foot is the same shared-memory buffer upload path used by any Wayland client that does not use GPU rendering — XWayland for X11 clients (Chapter 23), Wayland clients on hardware without GPU drivers, and software renderers such as Mesa's LLVMpipe (Chapter 17) in its software-fallback mode. Chapter 20 describes the `wl_shm_pool`, `wl_buffer`, and `wl_surface_damage_buffer` protocol sequences that foot uses; foot is the highest-profile example in this part of the book of a deliberate, production-quality application that stays entirely in this path.
 
+The damage tracking protocol described in Section 10 (`wl_surface.damage_buffer`, `EGL_EXT_buffer_age`, `EGL_KHR_swap_buffers_with_damage`) is used across all EGL-based Wayland clients, not only terminals. The same buffer-age loop appears in Chromium's EGL swap path (Chapter 35), weston's GL renderer, and any application that uses Mesa's EGL implementation directly. The Wayland Book's coverage of damaging surfaces provides the canonical reference for the protocol mechanics. [Source](https://wayland-book.com/surfaces-in-depth/damaging-surfaces.html)
+
+The `wp_presentation_time_v1` and `wp_fractional_scale_v1` protocols are part of the `wayland-protocols` repository and are implemented in the Smithay compositor toolkit, mpv (for video frame scheduling), and an increasing number of EGL clients. [Source](https://gitlab.freedesktop.org/wayland/wayland-protocols) The `wp_fractional_scale_v1` interaction with `wp_viewport` is the same mechanism used by SDL2, Qt 6.5+, and GTK4 for their non-integer-DPI rendering paths; a terminal implementing this protocol is following the same pattern as the major GUI toolkits.
+
 ---
 
 ## References
 
-1. Kovid Goyal, *kitty terminal emulator* — source repository including `kitty/gl.c`, `kitty/shaders.py`, `kitty/glyph-cache.c`, `kitty/graphics.c`: [https://github.com/kovidgoyal/kitty](https://github.com/kovidgoyal/kitty)
+1. Kovid Goyal, *kitty terminal emulator* — source repository including `kitty/gl.c`, `kitty/shaders.py`, `kitty/glyph-cache.c`, `kitty/graphics.c`, `kitty/cell_fragment.glsl`: [https://github.com/kovidgoyal/kitty](https://github.com/kovidgoyal/kitty)
 
-2. Alacritty contributors, *alacritty* — renderer source under `alacritty/src/renderer/`: [https://github.com/alacritty/alacritty](https://github.com/alacritty/alacritty)
+2. kitty `cell_fragment.glsl` — fragment shader source: [https://github.com/kovidgoyal/kitty/blob/master/kitty/cell_fragment.glsl](https://github.com/kovidgoyal/kitty/blob/master/kitty/cell_fragment.glsl)
 
-3. Wez Furlong, *WezTerm* — `wezterm-gui/src/renderstate.rs`, `wezterm-gui/src/glyphcache.rs`, `wezterm-gui/src/shader.wgsl`: [https://github.com/wez/wezterm](https://github.com/wez/wezterm)
+3. kitty `shaders.c` — shader compilation and management: [https://github.com/kovidgoyal/kitty/blob/master/kitty/shaders.c](https://github.com/kovidgoyal/kitty/blob/master/kitty/shaders.c)
 
-4. WezTerm issue #775, *[sixel] incorrect handling of HLS colors*: [https://github.com/wezterm/wezterm/issues/775](https://github.com/wezterm/wezterm/issues/775)
+4. kitty terminal buffer data structures (DeepWiki analysis): [https://deepwiki.com/kovidgoyal/kitty/2.5-terminal-buffer-data-structures](https://deepwiki.com/kovidgoyal/kitty/2.5-terminal-buffer-data-structures)
 
-5. Mitchell Hashimoto, *Ghostty* — `src/renderer/OpenGL.zig`, `src/renderer/Metal.zig`, `src/renderer/opengl/`, `src/renderer/metal/`, `src/renderer/shaders/`, `src/apprt/gtk/`: [https://github.com/ghostty-org/ghostty](https://github.com/ghostty-org/ghostty)
+5. Alacritty contributors, *alacritty* — renderer source under `alacritty/src/renderer/`: [https://github.com/alacritty/alacritty](https://github.com/alacritty/alacritty)
 
-6. *libghostty API documentation*: [https://libghostty.tip.ghostty.org](https://libghostty.tip.ghostty.org)
+6. Alacritty issue #6973, *Fonts not updated after Wayland (fractional) scale changes*: [https://github.com/alacritty/alacritty/issues/6973](https://github.com/alacritty/alacritty/issues/6973)
 
-7. Daniel Eklöf, *foot terminal emulator* — `foot/render.c`, `foot/sixel.c`, `foot/wayland.c`: [https://codeberg.org/dnkl/foot](https://codeberg.org/dnkl/foot)
+7. Wez Furlong, *WezTerm* — `wezterm-gui/src/renderstate.rs`, `wezterm-gui/src/glyphcache.rs`, `wezterm-gui/src/shader.wgsl`: [https://github.com/wez/wezterm](https://github.com/wez/wezterm)
 
-8. GNOME VTE project — `src/sixel-context.cc`, `src/drawing-context.hh`, `src/drawing-gsk.cc`: [https://gitlab.gnome.org/GNOME/vte](https://gitlab.gnome.org/GNOME/vte)
+8. WezTerm issue #775, *[sixel] incorrect handling of HLS colors*: [https://github.com/wezterm/wezterm/issues/775](https://github.com/wezterm/wezterm/issues/775)
 
-9. GNOME VTE GTK4 API reference, `vte_terminal_set_enable_sixel`: [https://gnome.pages.gitlab.gnome.org/vte/gtk4/method.Terminal.set_enable_sixel.html](https://gnome.pages.gitlab.gnome.org/vte/gtk4/method.Terminal.set_enable_sixel.html)
+9. Mitchell Hashimoto, *Ghostty* — `src/renderer/OpenGL.zig`, `src/renderer/Metal.zig`, `src/renderer/cell.zig`, `src/font/Atlas.zig`, `src/renderer/shaders/`, `src/apprt/gtk/`: [https://github.com/ghostty-org/ghostty](https://github.com/ghostty-org/ghostty)
 
-10. GNOME Blog, *GTK 4.16 Released With Vulkan GSK Renderer By Default On Wayland* (September 2024): [https://blog.gtk.org/2024/](https://blog.gtk.org/2024/)
+10. Ghostty rendering system — cell rendering and shaders (DeepWiki): [https://deepwiki.com/ghostty-org/ghostty/5.3-rendering-pipeline-and-shaders](https://deepwiki.com/ghostty-org/ghostty/5.3-rendering-pipeline-and-shaders)
 
-11. Phoronix, *GTK 4.16 Released With Vulkan GSK Renderer By Default On Wayland*: [https://www.phoronix.com/news/GTK-4.16-Released](https://www.phoronix.com/news/GTK-4.16-Released)
+11. Ghostty glyph rendering and atlases (DeepWiki): [https://deepwiki.com/ghostty-org/ghostty/5.5.3-glyph-rendering-and-atlases](https://deepwiki.com/ghostty-org/ghostty/5.5.3-glyph-rendering-and-atlases)
 
-12. HarfBuzz text shaping library documentation: [https://harfbuzz.github.io/](https://harfbuzz.github.io/)
+12. *libghostty API documentation*: [https://libghostty.tip.ghostty.org](https://libghostty.tip.ghostty.org)
 
-13. OpenGL Reference, `glTexSubImage3D`: [https://registry.khronos.org/OpenGL-Refpages/gl4/html/glTexSubImage3D.xhtml](https://registry.khronos.org/OpenGL-Refpages/gl4/html/glTexSubImage3D.xhtml)
+13. Daniel Eklöf, *foot terminal emulator* — `foot/render.c`, `foot/sixel.c`, `foot/wayland.c`: [https://codeberg.org/dnkl/foot](https://codeberg.org/dnkl/foot)
 
-14. Wayland protocols repository (including `wp_fractional_scale_v1`): [https://gitlab.freedesktop.org/wayland/wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols)
+14. GNOME VTE project — `src/sixel-context.cc`, `src/drawing-context.hh`, `src/drawing-gsk.cc`: [https://gitlab.gnome.org/GNOME/vte](https://gitlab.gnome.org/GNOME/vte)
 
-15. wgpu project (Rust GPU abstraction used by WezTerm and Bevy): [https://github.com/gfx-rs/wgpu](https://github.com/gfx-rs/wgpu)
+15. GNOME VTE GTK4 API reference, `vte_terminal_set_enable_sixel`: [https://gnome.pages.gitlab.gnome.org/vte/gtk4/method.Terminal.set_enable_sixel.html](https://gnome.pages.gitlab.gnome.org/vte/gtk4/method.Terminal.set_enable_sixel.html)
 
-16. naga shader IR (WGSL → SPIR-V translation, used by wgpu): [https://github.com/gfx-rs/wgpu/tree/trunk/naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga)
+16. GNOME Blog, *GTK 4.16 Released With Vulkan GSK Renderer By Default On Wayland* (September 2024): [https://blog.gtk.org/2024/](https://blog.gtk.org/2024/)
+
+17. HarfBuzz text shaping library documentation: [https://harfbuzz.github.io/](https://harfbuzz.github.io/)
+
+18. OpenGL Reference, `glTexSubImage3D`: [https://registry.khronos.org/OpenGL-Refpages/gl4/html/glTexSubImage3D.xhtml](https://registry.khronos.org/OpenGL-Refpages/gl4/html/glTexSubImage3D.xhtml)
+
+19. Wayland protocols repository (including `wp_fractional_scale_v1`, `wp_presentation_time_v1`): [https://gitlab.freedesktop.org/wayland/wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols)
+
+20. Wayland protocol — `wp_fractional_scale_v1` reference: [https://wayland.app/protocols/fractional-scale-v1](https://wayland.app/protocols/fractional-scale-v1)
+
+21. Wayland protocol — `wp_presentation_time_v1` reference: [https://wayland.app/protocols/presentation-time](https://wayland.app/protocols/presentation-time)
+
+22. Wayland Book — *Frame Callbacks*: [https://wayland-book.com/surfaces-in-depth/frame-callbacks.html](https://wayland-book.com/surfaces-in-depth/frame-callbacks.html)
+
+23. Wayland Book — *Damaging Surfaces*: [https://wayland-book.com/surfaces-in-depth/damaging-surfaces.html](https://wayland-book.com/surfaces-in-depth/damaging-surfaces.html)
+
+24. Simon Ser (emersion), *Introduction to damage tracking* (2019): [https://emersion.fr/blog/2019/intro-to-damage-tracking/](https://emersion.fr/blog/2019/intro-to-damage-tracking/)
+
+25. Khronos EGL registry, `EGL_EXT_buffer_age`: [https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_buffer_age.txt](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_buffer_age.txt)
+
+26. Mozilla bug 1590586, *Use EGL_EXT_buffer_age + EGL_EXT_swap_buffers_with_damage for partial present*: [https://bugzilla.mozilla.org/show_bug.cgi?id=1590586](https://bugzilla.mozilla.org/show_bug.cgi?id=1590586)
+
+27. *Wayland Protocols 1.31 Release Adds Fractional Scaling Support* (itsfoss.com): [https://news.itsfoss.com/wayland-protocols-fractional-scaling/](https://news.itsfoss.com/wayland-protocols-fractional-scaling/)
+
+28. Tomasz Patejko, *How Zutty works: Rendering a terminal with an OpenGL Compute Shader* (2020): [https://tomscii.sig7.se/2020/11/How-Zutty-works](https://tomscii.sig7.se/2020/11/How-Zutty-works)
+
+29. wgpu project (Rust GPU abstraction used by WezTerm and Bevy): [https://github.com/gfx-rs/wgpu](https://github.com/gfx-rs/wgpu)
+
+30. naga shader IR (WGSL → SPIR-V translation, used by wgpu): [https://github.com/gfx-rs/wgpu/tree/trunk/naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga)
+
+31. Wayland protocol `wl_surface.damage_buffer` (prefer over `wl_surface.damage`): [https://wayland-devel.freedesktop.narkive.com/T6hqU0ZH/patch-v2-protocol-prefer-wl-surface-damage-buffer](https://wayland-devel.freedesktop.narkive.com/T6hqU0ZH/patch-v2-protocol-prefer-wl-surface-damage-buffer)
+
+---
 
 ## Roadmap
 

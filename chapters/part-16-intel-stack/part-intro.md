@@ -34,3 +34,26 @@ The thematic thread unifying all sections is Intel's deliberate design choice to
 Readers should be comfortable with the **DRM subsystem** fundamentals from Part I (gem objects, fence seqnos, scheduler, KMS), the **Mesa** driver architecture from Part IV (Gallium3D, **NIR**, the **radv**/**anv** Vulkan driver model), and the **VA-API** overview from Part VII before tackling Chapter 71. Part XVII (AMD Ecosystem) and Part XVIII (Rendering Abstractions) build directly on the patterns introduced here: Part XVII contrasts Intel's **xe.ko** design with AMD's **AMDGPU** kernel driver and the **RADV**/**RadeonSI** userspace drivers, while Part XVIII explores cross-vendor abstractions (**Vulkan portability**, **WebGPU**, **OpenGL** compatibility layers) that must accommodate the Intel **ANV** driver's bindless descriptor model and **VM_BIND** memory semantics.
 
 ---
+
+## Part Roadmap Summary
+
+*Synthesised from the Roadmap sections of this part's chapters.*
+
+### Near-term (6–12 months)
+
+- **Xe3 (Panther Lake) upstream stabilisation**: Full GuC, display, and ANV support for Xe3-LPG (`graphics_verx100` 3000–3005) is landing in Linux 6.14–6.15, accompanied by matching iHD and NEO compute-runtime updates.
+- **Xe driver SR-IOV hardening**: Active development of SR-IOV virtual-function support in `xe.ko` targets LMEM partition management and VF-to-PF CTB communication stability for multi-tenant cloud deployments.
+- **ANV Vulkan 1.4 conformance for Xe3**: Following completed Xe2 conformance, Intel is expected to submit Xe3/Panther Lake results and enable new extensions such as `VK_KHR_video_encode_av1` in ANV.
+- **XeSS 2.x model refresh**: Continued SDK point releases aim to improve temporal stability on fast-motion scenes and reduce per-frame XMX utilisation through quantisation improvements to both XeSS-SR and XeSS-FG.
+
+### Medium-term (1–3 years)
+
+- **Xe4 (Nova Lake / Celestial) architecture integration**: The `xe` driver's GMD versioning scheme (`graphics_verx100`) is designed to absorb new IP generations without a rewrite; Xe4 ISA support will be integrated into IGC and the Mesa BRW/Elk compiler backend.
+- **Open-source XeSS and media kernels**: Intel has stated intent to open-source the XeSS-SR shader code and the remaining proprietary CM/MDF kernels in `iHD` (including AV1 film-grain synthesis), enabling fully open rebuilds of both the upscaling and video-encode pipelines.
+- **Level Zero 2.x and Vulkan compute interop**: Closer integration between Level Zero contexts and Vulkan device memory — via `VK_EXT_external_memory_host` and timeline semaphores — targets unified AI + graphics workloads under the SYCL 2020 / oneAPI umbrella.
+- **iHD VVC (H.266) decode**: Panther Lake's VVC hardware decode capability will require `VAProfileVVCMain10` support in `iHD` once the kernel-side VDBox programming interface for VVC is stabilised upstream.
+
+### Long-term
+
+- **Unified `xe` driver for all Intel GPUs**: The long-term goal is to absorb the remaining `i915`-only platforms (Alder Lake and older integrated graphics) into `xe` or a shared successor, eliminating parallel maintenance while preserving display, Wayland, and OpenGL feature parity — a multi-year effort.
+- **Ray tracing on the compute path**: Intel plans to expose RTU units through Level Zero / oneAPI, enabling SYCL programs to dispatch hardware ray-tracing workloads without requiring Vulkan RT extensions, pending new Level Zero extensions and IGC compiler support.
