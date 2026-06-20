@@ -206,6 +206,16 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 162: Framebuffer Compression: AFBC, DCC, CCS, and UBWC](#chapter-162-framebuffer-compression-afbc-dcc-ccs-and-ubwc) *(Part I)*
   - [Chapter 163: VKMS and Virtual Display Drivers for Testing](#chapter-163-vkms-and-virtual-display-drivers-for-testing) *(Part I)*
   - [Chapter 165: Vulkan Video: Hardware Decode and Encode via the Vulkan API](#chapter-165-vulkan-video-hardware-decode-and-encode-via-the-vulkan-api) *(Part VII)*
+- **Part XXVI — New Chapters: Gap Analysis Fill**
+  - [Chapter 167: NTSYNC — NT Synchronization Primitives in the Linux Kernel](#chapter-167-ntsync--nt-synchronization-primitives-in-the-linux-kernel) *(Part VIII)*
+  - [Chapter 168: WebNN — The Web Neural Network API](#chapter-168-webnn--the-web-neural-network-api) *(Part X)*
+  - [Chapter 169: Snapdragon X Elite on Linux — Adreno X1-85, freedreno, and the Arm Laptop Era](#chapter-169-snapdragon-x-elite-on-linux--adreno-x1-85-freedreno-and-the-arm-laptop-era) *(Part II)*
+  - [Chapter 170: AMDVLK vs. RADV — AMD's Two Open Vulkan Drivers](#chapter-170-amdvlk-vs-radv--amds-two-open-vulkan-drivers) *(Part XVII)*
+  - [Chapter 171: Linux Gaming Anti-Cheat — EasyAntiCheat, BattlEye, and the Ring-0 Problem](#chapter-171-linux-gaming-anti-cheat--easyanticheat-battleye-and-the-ring-0-problem) *(Part VIII)*
+  - [Chapter 172: eGPU on Linux — Thunderbolt, USB4, and PCIe Hot-Plug](#chapter-172-egpu-on-linux--thunderbolt-usb4-and-pcie-hot-plug) *(Part II)*
+  - [Chapter 173: VK\_EXT\_shader\_object — Pipeline-Free Shader Binding in Vulkan](#chapter-173-vk_ext_shader_object--pipeline-free-shader-binding-in-vulkan) *(Part VII)*
+  - [Chapter 174: WezTerm and Alacritty — GPU Terminal Rendering Architectures](#chapter-174-wezterm-and-alacritty--gpu-terminal-rendering-architectures) *(Part XII)*
+  - [Chapter 175: Linux Compositor Accessibility — AT-SPI2, Screen Readers, and the Wayland Gap](#chapter-175-linux-compositor-accessibility--at-spi2-screen-readers-and-the-wayland-gap) *(Part VI)*
 
 ---
 

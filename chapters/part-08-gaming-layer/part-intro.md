@@ -12,11 +12,15 @@ Linux gaming has been transformed over the past decade from a niche curiosity in
 
 **Chapter 104 — DXVK and VKD3D-Proton: Direct3D on Vulkan in Depth** is the most technically detailed treatment of D3D-to-Vulkan translation in the book, complementing Chapter 28's survey with a rigorous architectural dissection. It examines D3D9/10/11 and D3D12 API models side by side with the DXVK and VKD3D-Proton implementations: the DXBC/DXIL → SPIR-V shader translation pipeline, the DXVK state cache for eliminating pipeline-compilation stutter, VKD3D-Proton's use of VK_EXT_descriptor_buffer and VK_KHR_ray_tracing_pipeline to translate D3D12 ray tracing, and the Proton packaging that serves the 7 million Linux Steam users who are the dominant source of Vulkan commands reaching Mesa on the desktop.
 
+**Chapter 167 — NTSYNC: NT Synchronization Primitives in the Linux Kernel** covers the kernel module that solves the long-standing atomicity problem in Wine/Proton synchronization. It traces the history from **esync** (eventfd-based, 2018) through **fsync** (futex-based) to the in-kernel **ntsync** character device (`/dev/ntsync`) merged in **Linux 6.14** by Elizabeth Figura (CodeWeavers). The chapter documents the kernel UAPI (`include/uapi/linux/ntsync.h`): `NTSYNC_TYPE_SEM`, `NTSYNC_TYPE_MUTEX`, and `NTSYNC_TYPE_EVENT` objects; the `NTSYNC_IOC_WAIT_ALL` ioctl that provides the atomic multi-object wait semantics that `WaitForMultipleObjects` requires; and the Wine 10.x and GE-Proton integration paths. Performance benchmarks from the cover-letter patch series (Dirt 3 +678%, RE2 +196%) illustrate why the kernel-native approach matters for competitive gaming titles.
+
+**Chapter 171 — Linux Gaming Anti-Cheat: EasyAntiCheat, BattlEye, and the Ring-0 Problem** examines why Windows kernel-mode anti-cheat systems (Ring 0 drivers) cannot run on Linux, and what the industry has done instead. It covers the **EasyAntiCheat** and **BattlEye** Linux native PE DLL architecture (both announced September 2021, executed inside Wine's PE loader), the **Steam Linux Runtime** container delivery mechanism for anti-cheat runtimes, `PROTON_EAC_RUNTIME` / `PROTON_BATTLEYE_RUNTIME` environment variables, and anti-cheat systems that permanently block Linux: **Riot Vanguard**, **XIGNCODE3**, and **nProtect GameGuard**. The chapter gives a frank account of the architectural gap: without a signed kernel module path equivalent to Windows KMDF driver signing, kernel-level integrity verification cannot be achieved on Linux.
+
 **Chapter 78 — Gamescope and the Steam Deck: A Complete Gaming Graphics Stack** synthesises the part by examining a single real shipping product that integrates every layer. It covers the **Van Gogh APU** unified memory architecture, the **SteamOS 3** immutable OS design, and **gamescope**'s role as a micro-compositor implementing its own **Wayland** server, embedding **XWayland**, delegating plane assignment to **libliftoff**, and optionally applying **FSR**, **NIS**, or **VRR** before the **KMS** atomic commit. The chapter also addresses the **OLED**-specific **HDR** and mura-correction pipelines, input latency minimisation, and docking via **DisplayPort Alternate Mode**.
 
 ## How the Chapters Interrelate
 
-The five chapters form a layered dependency graph that mirrors the software stack itself.
+The seven chapters form a layered dependency graph that mirrors the software stack itself.
 
 Chapter 28 is the foundation. Before any upscaling, overlay, or ray tracing discussion can be grounded, the reader must understand how a Windows game's **D3D11** or **D3D12** API calls are translated into **Vulkan** commands by **DXVK** or **VKD3D-Proton**, how **DXBC** and **DXIL** shaders are lowered through **SPIR-V** into **Mesa** driver pipelines, and how **Proton**'s **pressure-vessel** container establishes the library environment. The **ntsync** synchronisation story also connects directly to the Linux kernel; readers who have not yet read Part I (DRM/KMS) and Part IV (Mesa architecture) should do so before this chapter.
 
@@ -38,14 +42,20 @@ graph LR
     CH104["Ch 104\nDXVK & VKD3D-Proton\n(D3D-to-Vulkan in depth)"]
     CH78["Ch 78\nGamescope & Steam Deck\n(end-to-end integration)"]
 
+    CH167["Ch 167\nNTSYNC\n(NT Sync Kernel)"]
+    CH171["Ch 171\nLinux Anti-Cheat\n(EAC / BattlEye)"]
+
     CH28 --> CH29
     CH28 --> CH56
     CH28 --> CH104
+    CH28 --> CH167
+    CH28 --> CH171
     CH56 --> CH104
     CH28 --> CH78
     CH29 --> CH78
     CH56 --> CH78
     CH104 --> CH78
+    CH167 --> CH78
 ```
 
 ## Prerequisites and What Comes Next

@@ -10,9 +10,11 @@ Terminal emulators occupy an unusual position in the Linux graphics stack: they 
 
 **Chapter 45 — Terminal Integration with the Compositor Stack** closes the loop by tracing how the GPU framebuffer produced by a terminal reaches physical display scanout. It covers **EGL** context acquisition, **GBM** buffer allocation via **gbm_surface_create_with_modifiers2()**, **DRM** format modifier negotiation through **zwp_linux_dmabuf_feedback_v1**, the GPU render loop from **eglSwapBuffers()** to **wl_surface.commit()**, the CPU path taken by **foot** via **wl_shm**, explicit synchronisation using **wp_linux_drm_syncobj_manager_v1**, compositor-side plane promotion, **KMS** atomic commit, colour management under **wp_color_management_v1**, and the security boundary enforced by **DRM** render nodes. This chapter requires familiarity with all preceding chapters in the part; it is the integration chapter that shows how every layer composes.
 
+**Chapter 174 — WezTerm and Alacritty: GPU Terminal Rendering Architectures** extends the Chapter 44 survey with dedicated architectural treatment of two widely-used terminals. **WezTerm** (`wezterm-gui` + `termwiz` + `wezterm-mux`) is examined through its **wgpu** GPU backend: `wgpu::Surface` → Mesa Vulkan (RADV/ANV) → kernel DRM; the HarfBuzz+FreeType2 glyph atlas uploaded to `wgpu::Texture`; ligature shaping; built-in tmux-compatible multiplexer via the `wezterm-mux` crate. **Alacritty** is examined through its OpenGL/EGL renderer: instanced cell rendering via the `gl` crate (not `glow`), the `crossfont` FreeType2 rasterisation library, and the multi-atlas architecture where `AtlasInsertError::Full` appends a new atlas rather than evicting existing glyphs. The chapter includes a comparative table across WezTerm, Alacritty, Kitty, and Ghostty for GPU API, multiplexer, Sixel support, Kitty Protocol support, and IME.
+
 ## How the Chapters Interrelate
 
-The three chapters form a strict dependency chain that mirrors the data path a pixel image follows from application to display.
+The four chapters form a dependency structure where Chapter 43 is the foundation and Chapter 45 is the integration capstone.
 
 Chapter 43 is the required starting point. It defines the vocabulary — image IDs, **APC** sequences, **DCS** parameters, **Sixel** bands, **OSC 1337** payloads — that Chapter 44 references when describing how decoded image data is turned into **GL** texture handles and **wgpu::Buffer** staging uploads. A reader who skips Chapter 43 will encounter unexplained references to protocol-specific fields (the `t=s` shared-memory transmission mode, the `f=32` **RGBA** pixel format key, the **DECSDM** mode 80 query) and will not appreciate why the **Kitty Graphics Protocol**'s server-side image persistence has GPU-architecture implications while **Sixel** and **iTerm2** do not.
 
@@ -26,8 +28,12 @@ graph LR
     CH44["Ch 44\nTerminal GPU Rendering\nkitty · Alacritty · WezTerm · Ghostty · foot · VTE"]
     CH45["Ch 45\nCompositor Integration\nGBM · DMA-BUF · KMS · explicit sync"]
 
+    CH174["Ch 174\nWezTerm & Alacritty\n(wgpu · OpenGL/EGL)"]
+
     CH43 -->|"decoded image data\nbecomes GPU texture"| CH44
     CH44 -->|"GPU framebuffer\nsubmitted as wl_buffer"| CH45
+    CH44 -->|"architecture detail"| CH174
+    CH174 --> CH45
 ```
 
 ## Prerequisites and What Comes Next
