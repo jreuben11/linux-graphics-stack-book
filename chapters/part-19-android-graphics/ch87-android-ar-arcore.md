@@ -17,7 +17,9 @@
 9. [OpenXR on Android and Android XR](#9-openxr-on-android-and-android-xr)
 10. [ARCore Recording, Playback, and the Dataset API](#10-arcore-recording-playback-and-the-dataset-api)
 11. [Performance, Power, and Mobile GPU Considerations](#11-performance-power-and-mobile-gpu-considerations)
-12. [Integrations](#12-integrations)
+12. [Snapdragon Spaces: Qualcomm's AR SDK](#12-snapdragon-spaces-qualcomms-ar-sdk)
+13. [Linux AR: Monado, SteamVR, and the Open Stack](#13-linux-ar-monado-steamvr-and-the-open-stack)
+14. [Integrations](#14-integrations)
 
 ---
 
@@ -1031,7 +1033,115 @@ This zero-copy design is critical for mobile power budgets: a 1280×720 YCbCr fr
 
 ---
 
-## 12. Integrations
+## 12. Snapdragon Spaces: Qualcomm's AR SDK
+
+### Overview
+
+Snapdragon Spaces is Qualcomm's Adreno-optimised AR SDK targeting Snapdragon XR platforms (standalone headsets and tethered glasses). It wraps OpenXR with a Unity and Unreal Engine integration layer and provides depth, hand tracking, eye tracking, plane detection, and image recognition on validated Snapdragon XR hardware. Supported targets include the Lenovo ThinkReality A3, Motorola Edge+ AR glasses, and third-party headsets using Snapdragon XR2+ and XR2 Gen 2.
+
+[Source: Snapdragon Spaces developer portal](https://spaces.qualcomm.com/developer/ar-sdk/)
+
+### Feature comparison with ARCore
+
+| Feature | ARCore (phone) | Snapdragon Spaces (headset/glasses) |
+|---|---|---|
+| Tracking | 6DoF VIO | 6DoF + dedicated XR tracking coprocessor |
+| Depth | MotionStereo or ToF | ToF point cloud via `SpacesDepthProvider` |
+| Plane detection | ARCore SLAM | OpenXR `XR_EXT_plane_detection` |
+| Hand tracking | None (phone) | `XR_EXT_hand_tracking` |
+| Eye tracking | None (phone) | `XR_EXT_eye_gaze_interaction` |
+| API surface | `ArSession` C API + Camera2 | OpenXR 1.0 extensions via Unity/Unreal plugin |
+| Target form factor | Android smartphones | XR headsets and AR glasses |
+
+### Depth provider
+
+Snapdragon Spaces exposes depth sensor data via the `SpacesDepthProvider` Unity component, which wraps an OpenXR depth extension. The raw output is a point cloud in device space, updated at the ToF sensor framerate (typically 5–30 Hz):
+
+```csharp
+// Snapdragon Spaces — Unity C# depth provider usage (representative pattern;
+// consult the official Snapdragon Spaces Unity SDK API reference for exact
+// member names, event signatures, and NativeArray element types)
+using Qualcomm.Snapdragon.Spaces;
+
+public class DepthVisualizer : MonoBehaviour
+{
+    private SpacesDepthProvider _depthProvider;
+
+    void Start()
+    {
+        _depthProvider = GetComponent<SpacesDepthProvider>();
+        _depthProvider.onDepthFrameReceived.AddListener(OnDepthFrame);
+    }
+
+    void OnDepthFrame(SpacesDepthFrame frame)
+    {
+        // Point cloud in device local space (metres) and per-point confidence
+        VisualizePointCloud(frame.Points, frame.Confidence);
+    }
+}
+```
+
+> **Note:** The exact property names (`Points`, `Confidence`) and the Unity event API surface (`onDepthFrameReceived`) for `SpacesDepthProvider` should be verified against the installed Snapdragon Spaces SDK package.
+
+### Foveated rendering on Adreno
+
+The Adreno GPU's foveated rendering capability exposes two paths:
+
+- **OpenGL ES**: `GL_QCOM_texture_foveated` — an extension that designates specific texture attachments as foveated, reducing texel resolution in peripheral screen regions ([Khronos OpenGL registry](https://registry.khronos.org/OpenGL/extensions/QCOM/QCOM_texture_foveated.txt)).
+- **Vulkan**: `VK_EXT_fragment_density_map` — the cross-vendor standard Vulkan extension for variable shading rate. The Adreno 740 driver exposes this extension, enabling foveated rendering in OpenXR Vulkan swapchains via the `XR_FB_foveation_vulkan` extension layer.
+
+Eye-tracked foveated rendering (ETF) combines `XR_ANDROID_eye_tracking` gaze data with `XR_FB_foveation` density maps: the compositor updates the fragment density map attachment each frame with the current gaze fixation point, directing full-resolution shading to the fovea (typically 5–8° visual angle) and reducing it toward the periphery.
+
+Snapdragon Spaces targets a different hardware tier than phone ARCore. ARCore runs on 1 billion+ phone SKUs with conservative sensor requirements; Snapdragon Spaces assumes dedicated XR sensor suites (ToF, IR cameras for hand tracking, eye tracking cameras) available only on validated Snapdragon XR headset designs.
+
+---
+
+## 13. Linux AR: Monado, SteamVR, and the Open Stack
+
+### Monado OpenXR runtime
+
+**Monado** (`https://monado.freedesktop.org`) is the open-source cross-platform OpenXR runtime, developed under the FreeDesktop umbrella and maintained by Collabora. It runs on Linux, Windows, and Android, and implements the OpenXR 1.0 core plus a growing set of extensions.
+
+On Linux, Monado integrates with:
+- **libcamera** (Ch96) — V4L2-backed camera pipeline for SLAM tracker input on devices without ARKit-style sensors.
+- **libsurvive** — SteamVR Lighthouse base-station tracking.
+- **realsense** (Intel RealSense ToF cameras) — depth and RGB streams for 6DoF SLAM.
+- **Northstar** and **ALVR** — open headset platforms for which Monado is the sole XR runtime.
+
+Monado's driver architecture is modular: each XR device (headset, controller, tracker) implements a `xrt_device` interface, and each input source (IMU, camera, USB HID) implements an `xrt_prober` driver. The AR/SLAM tracker subsystem (`t_imu.h`, `t_camera_slam.h`) wraps Basalt SLAM or OpenVINS as a pluggable VIO backend, mirroring ARCore's EKF/factor-graph approach on open hardware.
+
+[Source: Monado GitLab](https://gitlab.freedesktop.org/monado/monado)
+
+### SteamVR on Linux and DRM leases
+
+SteamVR for Linux (via Proton's VR path) requires direct display access to the headset's display to achieve the low-latency, tearing-free rendering that VR demands. This is achieved via **DRM leases** (`wp_drm_lease_device_v1`, covered in Ch121): the compositor leases the headset's DRM connector and CRTC directly to the SteamVR compositor process, bypassing Wayland composition for the headset display while the desktop compositor continues managing the host monitor.
+
+### ALVR and WiVRn: wireless VR streaming
+
+**ALVR** (Air Light VR) and **WiVRn** stream SteamVR content from a Linux PC to a standalone headset (Meta Quest, Pico) over WiFi. The Linux-side component encodes the rendered framebuffer with VA-API (H.264/HEVC/AV1 hardware encode; Ch26) and streams over UDP, while the headset-side client decodes and presents on the display. The result is SteamVR-compatible 6DoF tracking and rendering without a wired tether, using Monado as the OpenXR runtime on the Linux host.
+
+### libcamera as a Linux Camera HAL equivalent
+
+Linux has no Camera HAL3 equivalent in the Android sense, but **libcamera** (Ch96) fills the same architectural role: it abstracts camera hardware (V4L2 sensors, ISPs) behind a unified C++ API (`libcamera::Camera`, `libcamera::Stream`, `libcamera::Request`), handles ISP parameter tuning via IPA (Image Processing Algorithm) plugins, and delivers frames as DMA-BUF `libcamera::FrameBuffer` objects. Monado's `libcamera` driver passes these frames to its SLAM tracker exactly as ARCore's tracking thread would consume Camera2 frames.
+
+An ARCore-equivalent AR experience on Linux would require:
+
+1. **libcamera** for camera access and frame delivery (replacing Camera2).
+2. An IMU input driver via `iio-sensor-proxy` or direct `/dev/iio:deviceN` reads (replacing Android `SensorManager`).
+3. **Monado** as the OpenXR runtime hosting a VIO SLAM tracker (replacing ARCore's proprietary VIO).
+4. The app's GPU renderer using standard OpenXR swapchain images (same as Android XR).
+
+This stack exists and works on devices like the Raspberry Pi with a connected IMU and CSI camera, but is far from the polished OEM-validated experience of ARCore on Android.
+
+### Asahi Linux and the hardware constraint
+
+The Asahi Linux project (Ch73) demonstrates that new ARM SoC support on Linux requires extensive reverse engineering of proprietary firmware interfaces. The same constraint applies to AR: Apple Neural Engine acceleration for ARKit's depth and semantics models, Samsung Hexagon DSP code for ARCore's MotionStereo, and Qualcomm's XR tracking coprocessor firmware are all proprietary. An open-source AR stack on the same hardware is possible at a functional level (CPU-side VIO, software depth estimation) but cannot match the power efficiency or throughput of hardware-accelerated counterparts without open firmware or vendor cooperation.
+
+The path forward for Linux AR follows two tracks: open hardware (Project North Star, ALVR-connected Quest) where Monado has full access, and vendor cooperation (libcamera IPA plugins from Sony, NXP) that exposes ISP tuning without requiring full firmware reversal.
+
+---
+
+## 14. Integrations
 
 This chapter connects to the following chapters across the book:
 

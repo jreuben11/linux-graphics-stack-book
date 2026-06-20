@@ -205,9 +205,7 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 160: Freedreno, Turnip, and the Qualcomm Adreno Driver](#chapter-160-freedreno-turnip-and-the-qualcomm-adreno-driver) *(Part II)*
   - [Chapter 162: Framebuffer Compression: AFBC, DCC, CCS, and UBWC](#chapter-162-framebuffer-compression-afbc-dcc-ccs-and-ubwc) *(Part I)*
   - [Chapter 163: VKMS and Virtual Display Drivers for Testing](#chapter-163-vkms-and-virtual-display-drivers-for-testing) *(Part I)*
-  - [Chapter 164: GPU Power Management: Runtime PM, DVFS, and Power Caps](#chapter-164-gpu-power-management-runtime-pm-dvfs-and-power-caps) *(Part I)*
   - [Chapter 165: Vulkan Video: Hardware Decode and Encode via the Vulkan API](#chapter-165-vulkan-video-hardware-decode-and-encode-via-the-vulkan-api) *(Part VII)*
-  - [Chapter 166: Android AR: ARCore Architecture, Camera HAL Integration, and Android XR](#chapter-166-android-ar-arcore-architecture-camera-hal-integration-and-android-xr) *(Part XIX)*
 
 ---
 

@@ -7,10 +7,12 @@ This chapter targets two audiences: **systems and driver developers** who need t
 ## Table of Contents
 
 1. [DRM Runtime PM Framework](#1-drm-runtime-pm-framework)
+   - 1.4 [GPU DVFS: Dynamic Voltage and Frequency Scaling](#14-gpu-dvfs-dynamic-voltage-and-frequency-scaling)
 2. [amdgpu Power Management](#2-amdgpu-power-management)
 3. [Intel i915 and Xe Power Management](#3-intel-i915-and-xe-power-management)
 4. [NVIDIA Proprietary Power Management](#4-nvidia-proprietary-power-management)
 5. [Nouveau Power Management](#5-nouveau-power-management)
+   - 5.4 [Power Capping and TDP Control](#54-power-capping-and-tdp-control)
 6. [Thermal Management Framework](#6-thermal-management-framework)
 7. [power-profiles-daemon and powerprofilesctl](#7-power-profiles-daemon-and-powerprofilesctl)
 8. [Tools and Monitoring](#8-tools-and-monitoring)
@@ -136,6 +138,60 @@ This path is important on Optimus/PRIME laptops: when the dGPU handles no CRTC o
 Drivers that do not properly release their PM references when all CRTCs are disabled will prevent the GPU from autosuspending. This is a common source of unexpected power drain on laptops. The Nouveau driver, for instance, historically had bugs where the fbcon framebuffer layer held a PM reference even when the screen was blank.
 
 Note: the exact handoff between KMS DPMS callbacks and runtime PM release is driver-specific. It depends on whether the driver has implemented `drm_crtc_helper_funcs.disable` correctly, whether DRM's internal reference counting is complete, and whether any external userspace process holds the device open. Driver source review is required for any given driver; there is no single DRM-level guarantee. This is a needs-verification area for any driver not explicitly listed in the kernel's `Documentation/gpu/` docs as supporting runtime PM.
+
+---
+
+## 1.4 GPU DVFS: Dynamic Voltage and Frequency Scaling
+
+Linux's `devfreq` framework (`drivers/devfreq/`) manages GPU frequency scaling, particularly on ARM/mobile platforms. It decouples frequency policy (governors) from hardware control (drivers).
+
+```bash
+# GPU devfreq (typical on ARM/mobile):
+ls /sys/class/devfreq/
+# e.g. /sys/class/devfreq/1c40000.gpu/
+
+cat /sys/class/devfreq/*/cur_freq        # current frequency
+cat /sys/class/devfreq/*/available_frequencies  # all supported freqs
+cat /sys/class/devfreq/*/governor        # current governor (simple_ondemand, etc.)
+echo performance > /sys/class/devfreq/*/governor  # pin to max frequency
+```
+
+### devfreq Governors
+
+| Governor | Description | Use Case |
+|---|---|---|
+| `simple_ondemand` | Scale up on load, scale down after threshold | Default; balances perf/power |
+| `performance` | Pin to maximum frequency | Benchmarking |
+| `powersave` | Pin to minimum frequency | Maximum battery life |
+| `userspace` | Manual frequency control | Profiling, testing |
+| `passive` | Follows another device's policy | Mobile SoC (CPU-linked) |
+
+A key correctness requirement in DVFS is the voltage/frequency ordering. When scaling up, voltage must increase before frequency (to ensure sufficient supply); when scaling down, frequency decreases before voltage:
+
+```c
+/* Registering a GPU with devfreq (panfrost example): */
+/* panfrost/panfrost_devfreq.c */
+static int panfrost_devfreq_target(struct device *dev,
+    unsigned long *target_freq, u32 flags)
+{
+    struct panfrost_device *pfdev = dev_get_drvdata(dev);
+    struct dev_pm_opp *opp = dev_pm_opp_find_freq_ceil(dev, target_freq);
+    unsigned long voltage = dev_pm_opp_get_voltage(opp);
+
+    /* Set voltage first when scaling up, frequency then: */
+    if (*target_freq > pfdev->current_freq) {
+        regulator_set_voltage(pfdev->regulator, voltage, voltage);
+        clk_set_rate(pfdev->core_clk, *target_freq);
+    } else {
+        clk_set_rate(pfdev->core_clk, *target_freq);
+        regulator_set_voltage(pfdev->regulator, voltage, voltage);
+    }
+    pfdev->current_freq = *target_freq;
+    return 0;
+}
+```
+
+[Source: `drivers/gpu/drm/panfrost/panfrost_devfreq.c`](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/panfrost/panfrost_devfreq.c)
 
 ---
 
@@ -598,6 +654,46 @@ The `nouveau.runpm` parameter controls runtime PM for Optimus (hybrid graphics) 
 - `-1` — auto (default: enabled only on Optimus systems)
 
 On systems with an iGPU handling the display, Nouveau will use runtime PM to power down the dGPU when no 3D application is active, mirroring the behaviour of the proprietary driver. The display handoff uses PRIME DMA-BUF (Ch49).
+
+---
+
+## 5.4 Power Capping and TDP Control
+
+### RAPL for GPU (Intel Platforms)
+
+Intel RAPL (Running Average Power Limit) exposes GPU power consumption and TDP limits on integrated platforms via the `powercap` sysfs interface:
+
+```bash
+# GPU TDP via RAPL (PowerLimit):
+cat /sys/class/powercap/intel-rapl/intel-rapl:0/name
+# Domains: package, dram, uncore, core
+# Uncore = GPU on integrated platforms
+
+# Read GPU power (via turbostat):
+turbostat --quiet --show GFXWatt sleep 1
+```
+
+### hwmon Power Monitoring
+
+The `hwmon` subsystem exposes GPU power draw in microwatts across AMD, Intel, and Nouveau drivers:
+
+```bash
+# AMD GPU power via hwmon:
+cat /sys/class/drm/card0/device/hwmon/hwmon*/power1_average  # µW
+
+# Intel:
+cat /sys/class/drm/card0/device/hwmon/hwmon*/power1_average
+
+# All GPU sensors:
+sensors | grep -A5 "amdgpu\|nouveau\|radeon"
+```
+
+### cgroups v2 and GPU Power
+
+GPU power budget assignment via cgroups is not directly supported in mainline Linux — there is no GPU bandwidth or power controller in `cgroup2`. However, indirect mechanisms exist:
+- CPU cgroups affect GPU indirectly: fewer CPU submissions mean fewer GPU workloads
+- NVIDIA MIG (A100/H100) provides hardware-enforced GPU partitioning with per-instance power budgets
+- AMD compute isolation uses KFD contexts with priority classes to arbitrate GPU access among compute tenants
 
 ---
 
