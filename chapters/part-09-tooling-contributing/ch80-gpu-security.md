@@ -16,7 +16,8 @@
 8. [NVIDIA H100 Confidential Computing](#8-nvidia-h100-confidential-computing)
 9. [GPU Side-Channel Attacks](#9-gpu-side-channel-attacks)
 10. [Driver Security Hardening](#10-driver-security-hardening)
-11. [Integrations](#11-integrations)
+11. [eBPF for GPU Access Control and Security Monitoring](#11-ebpf-for-gpu-access-control-and-security-monitoring)
+12. [Integrations](#12-integrations)
 
 ---
 
@@ -633,7 +634,218 @@ The amdgpu driver has accumulated a number of CVEs related to bounds checking in
 
 ---
 
-## 11. Integrations
+## 11. eBPF for GPU Access Control and Security Monitoring
+
+The DRM subsystem's ioctl permission flags and render-node separation (Section 10) are necessary but not sufficient for fine-grained GPU access policy. They operate at the kernel's discretionary access control (DAC) level — anyone in the `render` group can open any render node. eBPF provides a second layer: programmable, per-process, in-kernel enforcement without requiring kernel patches, loadable modules, or daemon cooperation.
+
+### 11.1 BPF LSM Hooks on DRM Device Opens
+
+Linux 5.7 introduced **BPF LSM** — the ability to attach eBPF programs to Linux Security Module hooks [Source: `Documentation/bpf/prog_lsm.rst`](https://github.com/torvalds/linux/blob/master/Documentation/bpf/prog_lsm.rst). Enabling it requires `CONFIG_BPF_LSM=y` and `lsm=bpf` (or `lsm=...,bpf`) in the kernel boot parameters. Once active, BPF programs can enforce mandatory access control decisions on any LSM hook — including `file_open`, which fires every time a process opens a file descriptor.
+
+For GPU access control the relevant moment is the `open(2)` of `/dev/dri/renderD128` (or any higher render-device minor). DRM_MAJOR is 226; render nodes use minors ≥ 128 [Source: `include/drm/drm_ioctl.h`, torvalds/linux](https://github.com/torvalds/linux/blob/master/include/drm/drm_ioctl.h). Rather than matching the file path as a string (fragile in BPF), the correct approach is to inspect the inode's device number via `file->f_inode->i_rdev`.
+
+The following skeleton (using libbpf's CO-RE) attaches to `lsm/file_open` and denies GPU render-node access from processes outside a designated cgroup:
+
+```c
+/* gpu_lsm.bpf.c — deny /dev/dri/renderD* opens outside an allowed cgroup
+ * Requires: CONFIG_BPF_LSM=y, kernel boot param lsm=...,bpf
+ * Build: clang -O2 -target bpf -D__TARGET_ARCH_x86 -c gpu_lsm.bpf.c -o gpu_lsm.bpf.o
+ */
+#include "vmlinux.h"                    /* BTF-generated kernel types */
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
+
+#define DRM_MAJOR    226
+#define RENDER_MINOR_BASE 128
+
+/* cgroup id of the allowed GPU container hierarchy — set from userspace */
+const volatile __u64 allowed_cgrp_id = 0;
+
+SEC("lsm/file_open")
+int BPF_PROG(gpu_access_control, struct file *file, int ret)
+{
+    /* Pass through if a previous hook already denied */
+    if (ret != 0)
+        return ret;
+
+    struct inode *inode = BPF_CORE_READ(file, f_inode);
+    unsigned int major = MAJOR(BPF_CORE_READ(inode, i_rdev));
+    unsigned int minor = MINOR(BPF_CORE_READ(inode, i_rdev));
+
+    /* Only intercept DRM render nodes */
+    if (major != DRM_MAJOR || minor < RENDER_MINOR_BASE)
+        return 0;
+
+    /* Allow if process belongs to the permitted cgroup */
+    struct cgroup *cgrp = bpf_get_current_cgroup_v2();
+    if (cgrp && bpf_cgroup_id(cgrp) == allowed_cgrp_id)
+        return 0;
+
+    /* Deny all other processes — unprivileged containers, background jobs */
+    return -EPERM;
+}
+
+char LICENSE[] SEC("license") = "GPL";
+```
+
+The userspace loader calls `bpf_map__set_value_size`, reads the target cgroup's id from `/sys/fs/cgroup/<path>/cgroup.id`, and writes it into the `allowed_cgrp_id` global before attaching. The program returns 0 (allow) or a negative errno (deny); the kernel LSM framework calls `security_file_open` which accumulates votes from all loaded LSM modules. BPF LSM hooks are composed: a `bpf` deny overrides SELinux or AppArmor allows unless `CONFIG_SECURITY_LOCKDOWN_LSM` is also active.
+
+> Note: `bpf_get_current_cgroup_v2()` and `bpf_cgroup_id()` are available in kernel 5.14+. On earlier 5.7–5.13 kernels use `bpf_get_current_pid_tgid()` and a UID-keyed BPF map as an alternative policy store.
+
+This approach lets a container runtime or cloud hypervisor enforce GPU access policies — "only containers with a specific cgroup label may open render nodes" — without any DAC group changes or capability grants.
+
+### 11.2 Seccomp-BPF to Restrict DRM Ioctl Surface
+
+`open(2)` controls which processes acquire a GPU file descriptor. Once they have one, seccomp-BPF can restrict which DRM ioctls they may invoke. seccomp filters intercept `ioctl(2)` at the syscall level, matching on the `request` argument (a scalar integer) before the kernel even dispatches the call. Critically, seccomp cannot dereference the `argp` pointer (third argument) — that is a kernel pointer and cannot be safely read from a BPF filter program. This means filtering is at ioctl-number granularity only, not by individual field values inside the ioctl struct.
+
+DRM ioctls use `'d'` (0x64) as their type byte in the Linux `_IOWR`/`_IOW`/`_IOR` encoding [Source: `include/uapi/drm/drm.h`, torvalds/linux](https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/drm/drm.h). The numbers of interest:
+
+| Ioctl | Request nr | Encoding |
+|---|---|---|
+| `DRM_IOCTL_VERSION` | 0x00 | `DRM_IOWR(0x00, struct drm_version)` |
+| `DRM_IOCTL_GET_MAGIC` | 0x02 | `DRM_IOR(0x02, struct drm_auth)` |
+| `DRM_IOCTL_MODE_SETCRTC` | 0xA2 | `DRM_IOWR(0xA2, struct drm_mode_crtc)` |
+| `DRM_IOCTL_MODE_ADDFB2` | 0xB8 | `DRM_IOWR(0xB8, struct drm_mode_fb_cmd2)` |
+
+Mode-setting ioctls (0xA0–0xD2) should never be called by sandboxed render-only clients. A seccomp-BPF fragment that allowlists only render-node operations:
+
+```c
+/* seccomp BPF fragment — allowlist DRM render-node ioctls only
+ * Applied to a sandboxed GPU worker process after it has opened its fds.
+ * Uses Linux seccomp BPF (not eBPF) — classic BPF instructions.
+ */
+#include <linux/seccomp.h>
+#include <linux/filter.h>
+#include <sys/ioctl.h>
+
+/* DRM ioctl type byte */
+#define DRM_TYPE   0x64   /* 'd' */
+/* nr range that is safe for render-only clients (pre-modesetting ioctls) */
+#define DRM_NR_RENDER_MAX  0x3F
+/* nr base of modesetting commands — deny entirely */
+#define DRM_NR_MODE_BASE   0xA0
+
+static struct sock_filter drm_ioctl_filter[] = {
+    /* Load the syscall number */
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+             offsetof(struct seccomp_data, nr)),
+    /* If not ioctl(2), jump past this block */
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_ioctl, 0, 5),
+
+    /* ioctl: load the request argument (args[0]) */
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+             offsetof(struct seccomp_data, args[1])),
+    /* Extract the type byte (bits 8–15 in _IOC encoding) */
+    BPF_STMT(BPF_ALU | BPF_RSH | BPF_K, 8),
+    BPF_STMT(BPF_ALU | BPF_AND | BPF_K, 0xFF),
+    /* Allow if type != 'd' (0x64) — non-DRM ioctl, pass to next rule */
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, DRM_TYPE, 0, 1),
+    /* For DRM ioctls: reload request, extract nr byte (bits 0–7) */
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+             offsetof(struct seccomp_data, args[1])),
+    BPF_STMT(BPF_ALU | BPF_AND | BPF_K, 0xFF),
+    /* Deny if nr >= DRM_NR_MODE_BASE (modesetting range) */
+    BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, DRM_NR_MODE_BASE,
+             0 /* fall through to KILL */, 1),
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+    /* Non-DRM ioctls: allow (further rules may refine) */
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+};
+```
+
+Firefox's Remote Data Decoder (RDD) process sandbox uses exactly this class of approach: it explicitly permits DRM `'d'`-type ioctls in the RDD process sandbox — which handles hardware video decode via VA-API — while blocking them from the more exposed content process [Source: Mozilla bug 1698778](https://bugzilla.mozilla.org/show_bug.cgi?id=1698778). Flatpak uses bubblewrap's `--device=dri` option to grant access to `/dev/dri/*` device nodes inside the sandbox, paired with a seccomp blocklist that excludes dangerous system calls, but does not currently implement per-ioctl-number allowlisting at the DRM level [Source: Flatpak sandbox permissions](https://docs.flatpak.org/en/latest/sandbox-permissions.html).
+
+### 11.3 GPU Memory Isolation: Tracing DMA-BUF Exports
+
+DMA-BUF (DMA Buffer) sharing enables zero-copy GPU memory transfer between processes and devices. A GPU driver exports a buffer as a file descriptor via `dma_buf_fd()`; the recipient imports it via `dma_buf_get()`. This mechanism is legitimate for compositor-client shared surfaces, but in multi-tenant environments it can constitute a covert channel: two co-located processes sharing a DMA-BUF can communicate without any network socket or IPC, potentially bypassing seccomp or namespace isolation.
+
+The kernel exposes DMA-BUF lifecycle events as tracepoints in `include/trace/events/dma_buf.h` [Source](https://raw.githubusercontent.com/torvalds/linux/master/include/trace/events/dma_buf.h). The `dma_buf_fd` tracepoint fires when a buffer is exported to userspace as a new file descriptor (condition: `fd >= 0`), carrying the fields `exp_name` (exporter driver name), `size`, `ino` (unique inode identifier), and `fd`. A separate `dma_buf_export` tracepoint fires earlier in the export lifecycle and carries `exp_name`, `size`, and `ino` but does **not** carry the final `fd` value.
+
+To audit all DMA-BUF exports and flag cross-process sharing in real time:
+
+```bpftrace
+/* Monitor DMA-BUF userspace export events
+ * Run: sudo bpftrace -e '...'
+ * Requires: CONFIG_TRACING=y, tracefs mounted
+ */
+bpftrace -e '
+tracepoint:dma_buf:dma_buf_fd {
+    printf("PID %-6d COMM %-16s exp=%-12s size=%-10zu ino=%-8lu fd=%d\n",
+           pid, comm, args->exp_name, args->size, args->ino, args->fd);
+}'
+```
+
+The `args->exp_name` field identifies which kernel driver created the buffer (e.g., `"amdgpu"`, `"i915"`, `"v4l2"`). Cross-referencing `ino` values across events allows detection of cases where the same buffer (same inode) is imported by a second process — a pattern that warrants audit in hardened multi-tenant deployments.
+
+For tighter integration, a BPF program attached to `tracepoint:dma_buf:dma_buf_fd` can write alerts to a perf ring buffer, enabling real-time SIEM integration without polling `/proc`.
+
+### 11.4 Anomaly Detection for Crypto-Jacking
+
+Crypto-jacking — hijacking a host's GPU for unauthorised mining — is detectable because its signature differs from legitimate interactive workloads: a non-display process makes a high-rate stream of compute-submit ioctls on a render node but has no open primary node (no display output) and no user session association.
+
+The GPU command submission path on AMD hardware passes through `amdgpu_cs_ioctl()` in `drivers/gpu/drm/amd/amdgpu/amdgpu_cs.c`, with signature:
+
+```c
+/* drivers/gpu/drm/amd/amdgpu/amdgpu_cs.c */
+int amdgpu_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
+```
+
+A kprobe on this function counts submissions per PID. An eBPF program can maintain a BPF hash map keyed by PID, increment on each `amdgpu_cs_ioctl` entry, and periodically scan for processes exceeding a threshold:
+
+```bpftrace
+/* Conceptual: count amdgpu command submissions per process
+ * Adjust threshold to taste; 10 000 submissions/s is unusual for idle background work
+ */
+bpftrace -e '
+kprobe:amdgpu_cs_ioctl {
+    @submissions[pid, comm] = count();
+}
+
+interval:s:5 {
+    print(@submissions);
+    clear(@submissions);
+}'
+```
+
+A production implementation would additionally check whether the PID has ever opened `/dev/dri/card*` (primary node) — a heuristic that excludes legitimate compositor and media workloads. If a process exceeds the submission rate without primary-node access and without a logged-in user in its cgroup, the anomaly score warrants an alert or automatic SIGSTOP.
+
+> Note: kprobe stability is not guaranteed across kernel versions — function inlining or renaming may silently break attachment. Prefer tracepoints (stable ABI) where available; kprobes are appropriate here because `amdgpu_cs_ioctl` does not yet have a dedicated stable tracepoint in mainline.
+
+### 11.5 Audit Trail for Privileged DRM Operations
+
+In multi-user workstation or shared-display environments, privileged display operations — attaching framebuffers, reconfiguring CRTCs — represent a display-takeover capability. An attacker with access to `/dev/dri/card*` (the primary node) and DRM master status can redirect display output, capture screenshots via framebuffer reads, or disrupt a desktop session.
+
+The kernel-level handlers for the two most impactful operations are:
+
+- `drm_mode_setcrtc()` — dispatched by `DRM_IOCTL_MODE_SETCRTC` (nr 0xA2); reconfigures a display output to point at a new framebuffer.
+- `drm_mode_addfb2()` — dispatched by `DRM_IOCTL_MODE_ADDFB2` (nr 0xB8); registers a new framebuffer object, typically backed by a GEM buffer.
+
+kprobes on these functions provide an audit trail with no kernel modification:
+
+```bpftrace
+/* Audit trail for privileged DRM display operations
+ * Run as root: sudo bpftrace drm_audit.bt
+ */
+kprobe:drm_mode_setcrtc {
+    printf("[AUDIT] SETCRTC  pid=%-6d uid=%-6d comm=%s\n",
+           pid, uid, comm);
+}
+
+kprobe:drm_mode_addfb2 {
+    printf("[AUDIT] ADDFB2   pid=%-6d uid=%-6d comm=%s\n",
+           pid, uid, comm);
+}
+```
+
+Piping this output to a structured log (JSON via bpftrace's `-f json`) and forwarding to a SIEM produces a tamper-evident record of every display reconfiguration, attributable to PID and UID. On systems where the compositor is the only legitimate caller of these paths, any other PID appearing in the log warrants investigation.
+
+For kernel-version stability, the `drm_mode_setcrtc` symbol has been stable since DRM atomic modesetting landed; `drm_mode_addfb2` has been present since Linux 3.3. Both are non-inlined functions in `drivers/gpu/drm/drm_mode_config.c` and `drivers/gpu/drm/drm_framebuffer.c` respectively, making them reliable kprobe targets [Source: `drivers/gpu/drm/drm_crtc.c`, torvalds/linux](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_crtc.c).
+
+---
+
+## 12. Integrations
 
 This chapter connects to many other parts of the book:
 
@@ -678,3 +890,10 @@ This chapter connects to many other parts of the book:
 - [Weston content protection protocol — Wayland Explorer](https://wayland.app/protocols/weston-content-protection)
 - [CUDA Never Clears GPU Memory — Barrack AI](https://blog.barrack.ai/nvidia-cuda-never-clears-gpu-memory/)
 - [PCI Passthrough via OVMF — ArchWiki](https://wiki.archlinux.org/title/PCI_passthrough_via_OVMF)
+- [BPF LSM Programs — The Linux Kernel documentation](https://docs.kernel.org/bpf/prog_lsm.html)
+- [Linux kernel BPF LSM implementation (`kernel/bpf/bpf_lsm.c`)](https://github.com/torvalds/linux/blob/master/kernel/bpf/bpf_lsm.c)
+- [Linux kernel DMA-BUF tracepoints (`include/trace/events/dma_buf.h`)](https://raw.githubusercontent.com/torvalds/linux/master/include/trace/events/dma_buf.h)
+- [Linux kernel DRM UAPI header (`include/uapi/drm/drm.h`)](https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/drm/drm.h)
+- [Firefox RDD/VAAPI seccomp sandbox and DRM ioctl allowlist — Mozilla bug 1698778](https://bugzilla.mozilla.org/show_bug.cgi?id=1698778)
+- [Flatpak sandbox permissions — Flatpak documentation](https://docs.flatpak.org/en/latest/sandbox-permissions.html)
+- [Seccomp BPF — The Linux Kernel documentation](https://docs.kernel.org/userspace-api/seccomp_filter.html)

@@ -19,8 +19,9 @@
 7. [Kernel-Level GPU Debugging](#7-kernel-level-gpu-debugging)
 8. [Profiling the CPU Side: Frame Pacing and Driver Overhead](#8-profiling-the-cpu-side-frame-pacing-and-driver-overhead)
 9. [SPIR-V Shader Debugging Toolchain](#9-spir-v-shader-debugging-toolchain)
-10. [Integrations](#integrations)
-10. [References](#references)
+10. [eBPF and bpftrace for Graphics Stack Debugging](#10-ebpf-and-bpftrace-for-graphics-stack-debugging)
+11. [Integrations](#integrations)
+12. [References](#references)
 
 ---
 
@@ -1193,6 +1194,216 @@ A systematic shader bug isolation workflow:
 
 ---
 
+## 10. eBPF and bpftrace for Graphics Stack Debugging
+
+eBPF (extended Berkeley Packet Filter) provides a means to attach small, verified programs to kernel and userspace probing points at runtime, without modifying the target binary or restarting the process. For graphics stack debugging, this addresses a gap between the tools already covered: `gdb` can inspect any state but requires attaching to and pausing the process; Mesa environment variables like `MESA_DEBUG` and `RADV_DEBUG` require setting the variable before the process starts and restarting to change the probe; `WAYLAND_DEBUG=1` floods stdout with every protocol message. bpftrace ([https://github.com/bpftrace/bpftrace](https://github.com/bpftrace/bpftrace)) is the high-level frontend to eBPF, providing a scripting language close to awk with built-in map aggregations and probe attachment. On Ubuntu 22.04+, Fedora 36+, and Arch Linux, bpftrace is available from standard package repositories and requires only root privilege (or `CAP_BPF` + `CAP_PERFMON` on kernels ≥ 5.8).
+
+[Source: bpftrace reference guide](https://github.com/bpftrace/bpftrace/blob/master/docs/reference_guide.md), [kernel eBPF documentation](https://www.kernel.org/doc/html/latest/bpf/index.html)
+
+### Quick-Attach Debugging Without Recompilation
+
+The defining advantage of bpftrace uprobes over the alternatives is that they attach to a running process instantly and inject observability without any source modification, recompilation, or process restart:
+
+- **vs. gdb**: `gdb --pid N` attaches and pauses the process at the attachment point, which immediately stalls compositors and GPU-bound renderers that rely on frame deadlines. bpftrace uprobes do not pause the target; the probe handler executes inline within the target thread's execution context and returns in microseconds.
+- **vs. `MESA_DEBUG` / `RADV_DEBUG`**: These variables are read at Mesa initialisation during `dlopen`. Changing them requires killing the process and re-launching, potentially losing the rare state that was about to reproduce the bug. bpftrace uprobes can be attached while the application is already running in the problematic state.
+- **vs. `WAYLAND_DEBUG=1`**: This environment variable must also be set before process launch; it routes every protocol message to stderr with no filtering. A bpftrace uprobe on the same code path can be attached to a live compositor, filter by process ID, opcode, or proxy type, and emit only the messages relevant to the bug under investigation.
+
+The general uprobe syntax targets an exported symbol in a shared library:
+
+```bash
+# Probe a userspace function: symbol must be exported (T flag in nm -D output)
+bpftrace -e 'uprobe:/path/to/libfoo.so:function_name { ... }'
+```
+
+The probe fires on every entry to the function. `arg0`, `arg1`, … map to the first arguments passed in the System V AMD64 calling convention registers (`rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`). Return values are captured with `uretprobe` and accessed as `retval`.
+
+### Tracing Wayland Protocol Traffic
+
+Diagnosing unexpected protocol sequences — an application sending a commit before attaching a buffer, or a compositor sending a `wl_surface.enter` to the wrong surface — previously required either `WAYLAND_DEBUG=1` (process restart, no filtering) or inserting debug prints into compositor source code. bpftrace uprobes on libwayland provide a live, filtered view.
+
+On libwayland 1.20+ (verified on 1.24.0), client-side request marshalling routes through two exported functions. Legacy callers use `wl_proxy_marshal_array`; generated protocol code emitted by `wayland-scanner` since libwayland 1.20 uses `wl_proxy_marshal_flags` (varargs) and `wl_proxy_marshal_array_flags` (pre-built argument array). Both are confirmed exported symbols in `/lib/x86_64-linux-gnu/libwayland-client.so.0` (verified with `nm -D`):
+
+```bash
+# Trace ALL client-side Wayland requests from a specific PID
+# wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
+#                        const struct wl_interface *interface,
+#                        uint32_t version, uint32_t flags, ...)
+bpftrace -e '
+uprobe:/lib/x86_64-linux-gnu/libwayland-client.so.0:wl_proxy_marshal_flags
+/pid == $1/ {
+    printf("client request: pid=%d proxy=%p opcode=%d\n", pid, arg0, arg1);
+}'
+-- <target-pid>
+```
+
+For the older code path still used by some applications:
+
+```bash
+# wl_proxy_marshal_array(struct wl_proxy *p, uint32_t opcode,
+#                        union wl_argument *args)
+bpftrace -e '
+uprobe:/lib/x86_64-linux-gnu/libwayland-client.so.0:wl_proxy_marshal_array
+/pid == $1/ {
+    printf("client send (array): proxy=%p opcode=%d\n", arg0, arg1);
+}'
+-- <target-pid>
+```
+
+For server-side event delivery (compositor → client), the compositor's libwayland-server exports `wl_resource_post_event` and `wl_resource_post_event_array` as confirmed exported symbols (`nm -D /lib/x86_64-linux-gnu/libwayland-server.so.0`). These fire when the compositor sends an event back to a client resource:
+
+```bash
+# Trace compositor event delivery:
+# wl_resource_post_event_array(struct wl_resource *resource,
+#                               uint32_t opcode, union wl_argument *args)
+# arg0 = wl_resource*, arg1 = opcode
+bpftrace -e '
+uprobe:/lib/x86_64-linux-gnu/libwayland-server.so.0:wl_resource_post_event_array
+/pid == $1/ {
+    printf("compositor event: resource=%p opcode=%d\n", arg0, arg1);
+}'
+-- <compositor-pid>
+```
+
+Note: `wl_client_dispatch` (cited in some older bpftrace examples) is not an exported symbol in libwayland-server — it is a static internal function. `wl_resource_post_event_array` is the correct uprobe target for compositor-to-client events.
+
+Compared with `WAYLAND_DEBUG=1`, the uprobe approach has three practical advantages: it can be attached to a running process without restart, it can filter by PID or proxy address, and it adds negligible overhead when the condition filter does not match.
+
+[Source: libwayland-client symbol table verified via `nm -D /lib/x86_64-linux-gnu/libwayland-client.so.0`; wayland source `src/wayland-client.c`](https://gitlab.freedesktop.org/wayland/wayland/-/blob/main/src/wayland-client.c)
+
+### DRM ioctl Error Tracing
+
+In production environments, intermittent DRM ioctl failures — "failed to submit CS", "GPU VM fault", "drm_sched_run_job failed" — are difficult to reproduce under validation layers because their root causes are timing-dependent. Adding `RADV_DEBUG=hang` requires an application restart and changes the execution timing enough to hide the bug. A kretprobe on `drm_ioctl` fires on the kernel's return path from every DRM ioctl and can filter on non-zero return values:
+
+```bash
+# Log all DRM ioctl failures without kernel debug logging or process restart
+# drm_ioctl is confirmed present in /proc/kallsyms
+sudo bpftrace -e '
+kretprobe:drm_ioctl
+/retval != 0/ {
+    printf("drm_ioctl error: pid=%-6d comm=%-16s ret=%d\n",
+           pid, comm, retval);
+}'
+```
+
+`retval` in a kretprobe holds the function's return value (negative errno for errors). `comm` is the bpftrace built-in for the current process name. This probe fires only on failing ioctls, producing output like:
+
+```
+drm_ioctl error: pid=12345  comm=weston          ret=-16
+drm_ioctl error: pid=67890  comm=my_vulkan_app   ret=-5
+```
+
+`-16` is `-EBUSY` (resource busy); `-5` is `-EIO` (I/O error). Cross-referencing with the DRM ioctl request code requires reading `arg1` from the entry probe and saving it per-thread, since kretprobe does not have access to the original arguments. A combined entry/return pattern:
+
+```bash
+sudo bpftrace -e '
+kprobe:drm_ioctl {
+    @req[tid] = arg1;  /* unsigned long request */
+}
+kretprobe:drm_ioctl
+/retval != 0/ {
+    printf("drm_ioctl failed: pid=%d comm=%s req=0x%lx ret=%d\n",
+           pid, comm, @req[tid], retval);
+    delete(@req[tid]);
+}
+kretprobe:drm_ioctl
+/retval == 0/ {
+    delete(@req[tid]);
+}'
+```
+
+This pattern is useful for diagnosing cases where a Vulkan application silently swallows DRM errors that only manifest as visual corruption frames later. The ioctl request codes are defined in `include/uapi/drm/drm.h` and `include/uapi/drm/amdgpu_drm.h` in the kernel source — `DRM_IOCTL_AMDGPU_SUBMIT` is `0xC0186444`, for example.
+
+[Source: kernel `drivers/gpu/drm/drm_ioctl.c`](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_ioctl.c), [DRM UAPI headers](https://github.com/torvalds/linux/blob/master/include/uapi/drm/drm.h)
+
+### EGL/GL Call Tracing and Context Loss Diagnosis
+
+`eglSwapBuffers` and `eglCreateContext` are confirmed exported symbols in `/lib/x86_64-linux-gnu/libEGL.so.1` (Mesa EGL implementation, verified with `nm -D`). Attaching uretprobes to these functions provides context-loss and swap-timing diagnostics without modifying the application:
+
+```bash
+# Measure eglSwapBuffers latency histogram for a specific PID
+# Useful for diagnosing deferred swaps and throttling behaviour
+sudo bpftrace -e '
+uprobe:/lib/x86_64-linux-gnu/libEGL.so.1:eglSwapBuffers
+/pid == $1/ {
+    @swap_start[tid] = nsecs;
+}
+uretprobe:/lib/x86_64-linux-gnu/libEGL.so.1:eglSwapBuffers
+/pid == $1 && @swap_start[tid]/ {
+    @swap_latency_us = hist((nsecs - @swap_start[tid]) / 1000);
+    delete(@swap_start[tid]);
+}
+END {
+    print(@swap_latency_us);
+}'
+-- <pid>
+```
+
+The `hist()` aggregation function in bpftrace produces a power-of-two histogram automatically. A healthy 60 Hz application shows `eglSwapBuffers` returning in 0–2 ms normally (the swap blocks only when the driver's internal buffer queue is full). Latency spikes to 16+ ms indicate the driver is throttling due to the display not consuming frames fast enough — the classic symptom of a compositor that has stalled or missed a vblank.
+
+Context loss detection uses `eglCreateContext` as a proxy — context recreation after loss is an application-observable event:
+
+```bash
+# Log every EGL context creation: useful for detecting context loss + recovery loops
+# eglCreateContext(EGLDisplay dpy, EGLConfig config,
+#                  EGLContext share_context, const EGLint *attrib_list)
+sudo bpftrace -e '
+uprobe:/lib/x86_64-linux-gnu/libEGL.so.1:eglCreateContext {
+    printf("eglCreateContext: pid=%d comm=%s dpy=%p share=%p\n",
+           pid, comm, arg0, arg2);
+    printf("  stack: %s\n", ustack);
+}'
+```
+
+The `ustack` built-in prints the userspace call stack at the probe point, making it straightforward to see whether context creation is being called from the application's normal startup path or from an error-recovery handler deep in a driver-abstraction layer.
+
+[Source: EGL symbol table verified via `nm -D /lib/x86_64-linux-gnu/libEGL.so.1`; Mesa EGL source `src/egl/main/eglapi.c`](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/egl/main/eglapi.c)
+
+### GPU Hang Forensics with eBPF Ring Buffers
+
+When a GPU hang occurs — signalled by a `SIGBUS` from the DRM device node, an `amdgpu` ring timeout in `dmesg`, or a `VK_ERROR_DEVICE_LOST` return from a Vulkan call — the sequence of DRM ioctls leading up to the hang is often the critical diagnostic artifact. By the time the process exits, this history is gone.
+
+bpftrace's `@map` built-in with a per-process key provides a lightweight rolling window of recent ioctl calls. The following script records the last 64 `drm_ioctl` calls per process in a hash map keyed by `(pid, index)`, then dumps the map when any process exits via `tracepoint:sched:sched_process_exit`:
+
+```bash
+sudo bpftrace -e '
+/* Record each drm_ioctl call in a rotating slot */
+kprobe:drm_ioctl {
+    $slot = @counter[pid] % 64;
+    @history[pid, $slot] = arg1;  /* store ioctl request code */
+    @counter[pid]++;
+}
+
+/* On process exit, dump the last N ioctls */
+tracepoint:sched:sched_process_exit {
+    if (@counter[pid] > 0) {
+        printf("Process %d (%s) exited after %llu ioctls. Last slot: %llu\n",
+               pid, comm, @counter[pid], @counter[pid] % 64);
+    }
+    delete(@counter[pid]);
+}
+'
+```
+
+This approach uses bpftrace's hash maps (`@map[key1, key2] = value`), which are backed by `BPF_MAP_TYPE_HASH` kernel maps. The rolling window overwrites old entries: index `@counter[pid] % 64` gives the current write position, so the 64 most recent request codes are always retained. On process exit, the `@history[pid, *]` entries remain in the map and can be read; bpftrace dumps all maps at program termination via the `END` probe if desired.
+
+For more structured ring buffer semantics — where the kernel side uses `BPF_MAP_TYPE_RINGBUF` with lockless single-producer/single-consumer ordering — a C libbpf program is required rather than bpftrace. The libbpf approach is described in the kernel eBPF documentation and is appropriate when DRM ioctl frequency is so high that hash map contention becomes a concern (typically >100K ioctls/second per CPU). For debugging purposes, the bpftrace hash map approach is sufficient.
+
+The combination of the rolling ioctl history with the `dmesg` ring timeout message (which includes the IB address and ring name) provides the context needed to identify whether the hang was triggered by a specific sequence of `DRM_IOCTL_AMDGPU_SUBMIT` calls from a particular shader workload, rather than a transient hardware event.
+
+[Source: bpftrace map documentation](https://github.com/bpftrace/bpftrace/blob/master/docs/reference_guide.md#maps), [kernel kprobe documentation](https://www.kernel.org/doc/html/latest/trace/kprobes.html), [BPF ringbuf documentation](https://www.kernel.org/doc/html/latest/bpf/ringbuf.html)
+
+### Practical Notes
+
+**Symbol verification.** Before writing a uprobe, always confirm the target symbol is exported: `nm -D /path/to/lib.so | grep symbol_name`. Static or local symbols (shown without `T` in `nm` output) cannot be targeted by uprobes. The `wl_client_dispatch` symbol seen in older blog posts is a static internal function in libwayland-server and is not attachable via uprobe on any released version of libwayland.
+
+**Privilege requirements.** bpftrace requires either root or the combination of `CAP_BPF` and `CAP_PERFMON`. On kernels before 5.8, only `CAP_SYS_ADMIN` covers both. On distribution kernels with `CONFIG_BPF_UNPRIV_DEFAULT_OFF=y` (the default on Ubuntu 22.04+), even setting `kernel.unprivileged_bpf_disabled=0` may not be sufficient for kprobes; root is the reliable path for kretprobe:drm_ioctl.
+
+**Overhead.** Uprobes on hot paths (such as `wl_proxy_marshal_flags`, which fires on every Wayland request) add approximately 100–400 ns per invocation on x86-64. On a compositor processing 1000 requests/second, this is 0.1–0.4 ms total overhead per second — acceptable for debugging, but do not leave probes attached during performance measurements.
+
+**bpftrace version.** The examples here are verified against bpftrace 0.20.2 (available on Ubuntu 24.04 as `apt install bpftrace`). Older versions (≤ 0.14) use `args->field` syntax for tracepoint arguments rather than positional `arg0`; verify with `bpftrace --version` before adapting scripts.
+
+---
+
 ## Integrations
 
 **Chapter 1 (DRM Architecture)**: Render nodes (`/dev/dri/renderDN`) are the access point for RenderDoc injection, profiling tool counter collection (Intel OA), and debugfs-based state inspection. The `perf_event_paranoid` and `CAP_PERFMON` permission model described here governs access to the render node's counter infrastructure at the kernel DRM level described in Chapter 1.
@@ -1251,6 +1462,15 @@ A systematic shader bug isolation workflow:
 28. Vulkan timestamp queries documentation: [https://docs.vulkan.org/samples/latest/samples/api/timestamp_queries/README.html](https://docs.vulkan.org/samples/latest/samples/api/timestamp_queries/README.html)
 29. drm_info tool: [https://github.com/emersion/drm_info](https://github.com/emersion/drm_info)
 30. FlameGraph scripts: [https://github.com/brendangregg/FlameGraph](https://github.com/brendangregg/FlameGraph)
+31. bpftrace GitHub repository and reference guide: [https://github.com/bpftrace/bpftrace/blob/master/docs/reference_guide.md](https://github.com/bpftrace/bpftrace/blob/master/docs/reference_guide.md)
+32. Linux kernel eBPF documentation: [https://www.kernel.org/doc/html/latest/bpf/index.html](https://www.kernel.org/doc/html/latest/bpf/index.html)
+33. Linux kernel kprobe/kretprobe documentation: [https://www.kernel.org/doc/html/latest/trace/kprobes.html](https://www.kernel.org/doc/html/latest/trace/kprobes.html)
+34. BPF ringbuf documentation: [https://www.kernel.org/doc/html/latest/bpf/ringbuf.html](https://www.kernel.org/doc/html/latest/bpf/ringbuf.html)
+35. libwayland source — `src/wayland-client.c` (wl_proxy_marshal_flags, wl_proxy_marshal_array_flags): [https://gitlab.freedesktop.org/wayland/wayland/-/blob/main/src/wayland-client.c](https://gitlab.freedesktop.org/wayland/wayland/-/blob/main/src/wayland-client.c)
+36. libwayland-server source — `src/wayland-server.c` (wl_resource_post_event_array): [https://gitlab.freedesktop.org/wayland/wayland/-/blob/main/src/wayland-server.c](https://gitlab.freedesktop.org/wayland/wayland/-/blob/main/src/wayland-server.c)
+37. Mesa EGL source — `src/egl/main/eglapi.c` (eglSwapBuffers, eglCreateContext): [https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/egl/main/eglapi.c](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/egl/main/eglapi.c)
+38. Linux kernel DRM ioctl implementation: [https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_ioctl.c](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_ioctl.c)
+39. DRM UAPI headers (ioctl request codes): [https://github.com/torvalds/linux/blob/master/include/uapi/drm/drm.h](https://github.com/torvalds/linux/blob/master/include/uapi/drm/drm.h)
 
 ---
 

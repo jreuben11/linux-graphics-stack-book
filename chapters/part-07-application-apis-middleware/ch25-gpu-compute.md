@@ -26,8 +26,9 @@ The chapter deliberately avoids GPU algorithm design and parallel programming th
 7. [DMA-BUF Interop: Sharing Buffers Across Compute and Graphics Pipelines](#7-dma-buf-interop-sharing-buffers-across-compute-and-graphics-pipelines)
 8. [Unified Memory and HMM in GPU Compute](#8-unified-memory-and-hmm-in-gpu-compute)
 9. [Practical: GPU-Accelerated Image Processing with Vulkan Compute](#9-practical-gpu-accelerated-image-processing-with-vulkan-compute)
-10. [Integrations](#10-integrations)
-11. [References](#11-references)
+10. [io_uring and Async GPU Command Submission](#10-io_uring-and-async-gpu-command-submission)
+11. [Integrations](#11-integrations)
+12. [References](#12-references)
 
 ---
 
@@ -1084,7 +1085,257 @@ vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, query_pool, 3)
 
 ---
 
-## 10. Integrations
+## 10. io_uring and Async GPU Command Submission
+
+**Audience**: Systems programmers building high-frequency GPU dispatch loops — ML inference servers, real-time signal processing pipelines, game engine job systems — who want to minimise per-dispatch latency and overlap CPU work with GPU command submission on Linux.
+
+### The Blocking Problem: GPU Dispatch on the Critical Path
+
+Every GPU command submission on Linux ultimately crosses the kernel boundary through a driver `ioctl`. For Vulkan on AMD hardware, `vkQueueSubmit` ultimately calls `DRM_IOCTL_AMDGPU_CS` on the DRM render node; for Intel Vulkan (ANV), the equivalent is `DRM_IOCTL_I915_GEM_EXECBUFFER2` (i915) or `DRM_IOCTL_XE_EXEC` (Xe driver); for Mesa's software path it is analogous ioctls for command ring management. These ioctls are *synchronous by default*: the calling thread enters the kernel, the driver validates the command stream, schedules it onto a hardware ring, and only then returns to userspace. For large batches of GPU work — a single frame of a rendered scene, or a large compute dispatch — the ioctl cost is negligible compared to actual GPU execution time. But for high-frequency, fine-grained workloads the per-dispatch cost compounds:
+
+- **ML inference servers** processing many small requests must submit one GPU dispatch per request. An LLM serving system running at 100 QPS with per-request GPU dispatches spends non-trivial CPU time blocked in `ioctl` calls.
+- **Real-time signal processing** — radar processing, audio synthesis — requires submitting compute kernels at sub-millisecond intervals. A single blocking `ioctl` can introduce jitter exceeding the scheduling period.
+- **Game engine job systems** building fine-grained GPU task graphs may submit hundreds of small compute dispatches per frame. A thread blocked per-dispatch cannot overlap CPU job scheduling with GPU command recording.
+
+The conventional solution is a *dedicated GPU submission thread*: a single thread whose sole purpose is blocking in GPU `ioctl` calls while the rest of the application runs asynchronously on other threads. This works but wastes a thread and adds cross-thread communication overhead (a queue, a mutex, a condvar or pipe) for every submit.
+
+`io_uring` offers an alternative: submitting kernel operations — including those that map to driver ioctls — asynchronously from the same event loop that handles file I/O and network sockets, without a dedicated thread.
+
+### io_uring Architecture: SQEs, CQEs, and IORING_OP_URING_CMD
+
+`io_uring` is a Linux kernel interface for asynchronous I/O, introduced in Linux 5.1 by Jens Axboe. Applications communicate with the kernel through two shared-memory ring buffers: the *Submission Queue* (SQ) where the application enqueues *Submission Queue Entries* (SQEs) describing operations, and the *Completion Queue* (CQ) where the kernel posts *Completion Queue Entries* (CQEs) after each operation finishes. The key property is that neither queue requires a system call for normal operation: `io_uring_submit` batches all pending SQEs into the kernel with a single `io_uring_enter(2)` call, and completions appear in the CQ ring without any syscall. [Source: io_uring paper, Jens Axboe](https://kernel.dk/io_uring.pdf)
+
+The io_uring opcode relevant to GPU command submission is **`IORING_OP_URING_CMD`**, which landed in Linux 5.19 as the mechanism for device-specific passthrough commands. [Source: linux/include/uapi/linux/io_uring.h](https://github.com/torvalds/linux/blob/master/include/uapi/linux/io_uring.h) It is important to note what `IORING_OP_URING_CMD` is *not*: there is **no generic `IORING_OP_IOCTL` opcode** in the Linux kernel. An early RFC proposed one in 2021, but it was not merged. [Source: LWN RFC discussion, 2021](https://lwn.net/Articles/807442/) Instead, `IORING_OP_URING_CMD` requires the target device's `file_operations` to implement a `->uring_cmd()` callback; the io_uring core routes the SQE to that callback asynchronously.
+
+**NVMe** was the first subsystem to implement `->uring_cmd()` (for NVMe passthrough, Linux 5.19). **No mainline DRM driver** had a `->uring_cmd()` handler at the time of writing (mid-2026). This means that submitting `DRM_IOCTL_AMDGPU_CS` or `DRM_IOCTL_XE_EXEC` through `IORING_OP_URING_CMD` is **not yet possible on upstream Linux**. The application area is actively developing: Qualcomm engineers posted an RFC patch in June 2025 adding `drm_uring_cmd()` to the DRM/accel driver framework, reporting 50% speedups in ioctl execution time for large batches (128 concurrent ioctls) on the Qualcomm Cloud AI 100 accelerator. [Source: dri-devel RFC, Zack McKevitt, June 2025](https://lists.freedesktop.org/archives/dri-devel/2025-June/509457.html) The patch adds a `DRM_URING_CMD_IOCTL` operation code within the DRM uring_cmd layer that routes ioctl numbers through the existing `drm_ioctl()` dispatcher, making the change additive without requiring per-driver modifications.
+
+### Async Shader and Texture Loading with IORING_OP_READ and IOSQE_IO_LINK
+
+While GPU command submission via io_uring awaits DRM driver support, one immediately practical use of io_uring in GPU pipelines is *chained texture and shader loading*. Reading compressed texture data (e.g. KTX2/BCn) from disk and uploading it to the GPU is a multi-step operation:
+
+1. Allocate a host-visible Vulkan staging buffer (`VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT`).
+2. Read texture file data into the staging buffer via `read(2)`.
+3. Submit a GPU copy command that transfers the staging buffer to a `DEVICE_LOCAL` Vulkan image.
+
+Without io_uring, step 2 blocks the calling thread; step 3 cannot begin until step 2 completes and the thread unblocks. With io_uring, these steps can be encoded as *linked SQEs*:
+
+```c
+/*
+ * Chained io_uring pattern: file read → staging buffer, then GPU work notify.
+ *
+ * NOTE: As of mid-2026, step B must be a conventional ioctl (vkQueueSubmit)
+ * or a POLL_ADD on a sync_file, NOT IORING_OP_URING_CMD, because no
+ * upstream DRM driver implements ->uring_cmd() yet.
+ */
+#include <liburing.h>
+#include <linux/io_uring.h>
+
+struct io_uring ring;
+io_uring_queue_init(256, &ring, 0);
+
+/* === Step A: read texture data into staging buffer === */
+struct io_uring_sqe *read_sqe = io_uring_get_sqe(&ring);
+io_uring_prep_read(read_sqe,
+                   texture_fd,           /* open texture file */
+                   staging_buffer_ptr,   /* VkDeviceMemory mapped pointer */
+                   texture_file_size,
+                   0 /* offset */);
+/* IOSQE_IO_LINK: do not start the next SQE until this one completes */
+io_uring_sqe_set_flags(read_sqe, IOSQE_IO_LINK);
+read_sqe->user_data = USER_DATA_TEXTURE_READ;
+
+/*
+ * === Step B: signal an eventfd so the main loop can call vkQueueSubmit ===
+ *
+ * When DRM uring_cmd support lands, this would instead be an
+ * IORING_OP_URING_CMD SQE that dispatches DRM_URING_CMD_IOCTL
+ * wrapping DRM_IOCTL_AMDGPU_CS or DRM_IOCTL_XE_EXEC directly.
+ */
+struct io_uring_sqe *notify_sqe = io_uring_get_sqe(&ring);
+io_uring_prep_write(notify_sqe, upload_eventfd, &(uint64_t){1}, sizeof(uint64_t), 0);
+/* No IOSQE_IO_LINK on the last entry in the chain */
+notify_sqe->user_data = USER_DATA_GPU_NOTIFY;
+
+/* Submit both SQEs; they execute in order due to the link */
+io_uring_submit(&ring);
+
+/* Meanwhile, do other CPU work (parse next asset, handle network, etc.) */
+do_other_cpu_work();
+
+/* Collect completions */
+struct io_uring_cqe *cqe;
+io_uring_wait_cqe(&ring, &cqe);     /* waits for texture read done */
+assert(cqe->res > 0);               /* bytes read; < 0 means error */
+io_uring_cqe_seen(&ring, cqe);
+
+io_uring_wait_cqe(&ring, &cqe);     /* waits for notify write done */
+io_uring_cqe_seen(&ring, cqe);
+
+/* Now issue the GPU upload: the staging buffer is populated */
+vkQueueSubmit(compute_queue, 1, &gpu_copy_submit, VK_NULL_HANDLE);
+```
+
+[Source: IOSQE_IO_LINK semantics, io_uring(7)](https://man7.org/linux/man-pages/man7/io_uring.7.html)
+
+The IOSQE_IO_LINK flag enforces sequential execution within the chain without blocking the submission thread. If the file read fails (returns a negative `res`), io_uring cancels the subsequent linked SQE automatically and sets its `res` to `-ECANCELED`. Chains can be arbitrarily long; the tail of the chain is the first SQE without `IOSQE_IO_LINK` set.
+
+For bulk asset streaming — loading hundreds of texture mips and mesh buffers at level-of-detail transition time — an io_uring submission batch can contain dozens of such read+notify chains submitted in a single `io_uring_enter` syscall, dramatically reducing per-file syscall overhead compared to issuing individual `read(2)` calls.
+
+### Vulkan Timeline Semaphores, sync_file, and io_uring POLL_ADD
+
+The most immediately practical io_uring integration available today for GPU completion notification is **`IORING_OP_POLL_ADD` on a sync_file fd**. The mechanism exploits a property of the kernel's `sync_file` subsystem: a sync_file file descriptor — which wraps one or more `dma_fence` objects — becomes readable (`POLLIN`) when all its constituent fences signal. Since `io_uring`'s `IORING_OP_POLL_ADD` can monitor any file descriptor that implements `->poll()`, and `sync_file` does implement `->poll()` (via `sync_file_poll()` in `drivers/dma-buf/sync_file.c`), GPU fence completion can be integrated into the same io_uring event loop as file I/O and network sockets. [Source: Sync File API Guide, kernel.org](https://docs.kernel.org/driver-api/sync_file.html) [Source: Buffer Sharing and Synchronization, kernel.org](https://docs.kernel.org/driver-api/dma-buf.html)
+
+The workflow on the Vulkan side uses `VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT`:
+
+```c
+/*
+ * Vulkan timeline semaphore → sync_file → io_uring POLL_ADD
+ *
+ * Prerequisites: VK_KHR_external_semaphore + VK_KHR_external_semaphore_fd
+ * extensions enabled (both core in Vulkan 1.1+).
+ */
+
+/* 1. Create a Vulkan binary semaphore that can be exported as sync_fd */
+VkExportSemaphoreCreateInfo export_info = {
+    .sType       = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
+    .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+};
+VkSemaphoreCreateInfo sci = {
+    .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+    .pNext = &export_info,
+};
+VkSemaphore gpu_done_semaphore;
+vkCreateSemaphore(device, &sci, NULL, &gpu_done_semaphore);
+
+/* 2. Submit GPU work; the semaphore signals when work completes */
+VkSubmitInfo2 submit = {
+    .sType                    = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+    .commandBufferInfoCount   = 1,
+    .pCommandBufferInfos      = &cmd_info,
+    .signalSemaphoreInfoCount = 1,
+    .pSignalSemaphoreInfos    = &(VkSemaphoreSubmitInfo){
+        .sType     = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+        .semaphore = gpu_done_semaphore,
+        .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+    },
+};
+vkQueueSubmit2(queue, 1, &submit, VK_NULL_HANDLE);
+
+/*
+ * 3. Export the semaphore as a sync_fd.
+ *    IMPORTANT: vkGetSemaphoreFdKHR with SYNC_FD *consumes* the semaphore
+ *    signal — the semaphore is reset to unsignalled after the export.
+ *    The exported fd is a one-shot sync_file that becomes POLLIN when
+ *    the underlying dma_fence signals.
+ */
+VkSemaphoreGetFdInfoKHR get_fd = {
+    .sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
+    .semaphore  = gpu_done_semaphore,
+    .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+};
+int sync_fd;
+vkGetSemaphoreFdKHR(device, &get_fd, &sync_fd);
+/* sync_fd is now a Linux sync_file fd; readable when GPU work is done */
+
+/* 4. Register the sync_fd with io_uring for asynchronous completion polling */
+struct io_uring_sqe *poll_sqe = io_uring_get_sqe(&ring);
+io_uring_prep_poll_add(poll_sqe, sync_fd, POLLIN);
+poll_sqe->user_data = USER_DATA_GPU_DONE;
+io_uring_submit(&ring);
+
+/*
+ * 5. The calling thread is now free to process network requests,
+ *    submit I/O for the next batch, or respond to other events.
+ *    GPU completion arrives as a CQE in the same ring as file I/O completions.
+ */
+struct io_uring_cqe *cqe;
+io_uring_wait_cqe(&ring, &cqe);
+if (cqe->user_data == USER_DATA_GPU_DONE && cqe->res & POLLIN) {
+    /* GPU work has completed; safe to read results, free buffers, etc. */
+    process_gpu_results();
+}
+io_uring_cqe_seen(&ring, cqe);
+close(sync_fd);  /* one-shot: close after use */
+```
+
+This pattern is the strongest case for io_uring in GPU workloads today. An LLM inference server, for example, can use a single io_uring event loop to: read request batches from a network socket (`IORING_OP_RECV`), submit GPU inference dispatches (conventional `vkQueueSubmit`), poll for GPU completion on sync_file fds (`IORING_OP_POLL_ADD`), and write responses back to sockets (`IORING_OP_SEND`) — all without spawning a dedicated GPU-completion thread. The sync_file integration acts as the bridge between the GPU's fence-based completion model and io_uring's fd-based event model.
+
+The liburing issue tracker has an open discussion about `DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT` support via io_uring, proposing either eventfd integration or a dedicated `IORING_OP_URING_CMD` path for non-blocking timeline waits. [Source: liburing issue #818](https://github.com/axboe/liburing/issues/818) As of mid-2026, the sync_file POLL_ADD approach described above is the production-ready alternative.
+
+### The Emerging DRM uring_cmd Interface
+
+The Qualcomm RFC patch ([dri-devel, June 2025](https://lists.freedesktop.org/archives/dri-devel/2025-June/509457.html)) proposes adding `->uring_cmd` support to the DRM/accel driver layer through a new `drm_uring_cmd()` function and a `drm_uring_cmd_ioctl` 16-byte structure:
+
+```c
+/*
+ * Proposed DRM uring_cmd interface — NOT YET MERGED as of mid-2026.
+ * Structures as described in the RFC patch by Zack McKevitt (Qualcomm).
+ * Source: https://lists.freedesktop.org/archives/dri-devel/2025-June/509457.html
+ */
+
+/* RFC struct embedded in the io_uring_sqe command[] field */
+struct drm_uring_cmd_ioctl {
+    __u32 cmd;        /* DRM ioctl command number, e.g. DRM_IOCTL_AMDGPU_CS */
+    __u32 pad;        /* must be zero */
+    __u64 arg;        /* pointer to ioctl argument struct */
+};
+
+enum drm_uring_cmd_op {
+    DRM_URING_CMD_IOCTL = 0,
+};
+
+/*
+ * Hypothetical future usage (REQUIRES DRM driver uring_cmd support):
+ *
+ *   struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+ *   sqe->opcode = IORING_OP_URING_CMD;
+ *   sqe->fd     = drm_render_fd;
+ *   sqe->cmd_op = DRM_URING_CMD_IOCTL;
+ *   // populate sqe->cmd[] with drm_uring_cmd_ioctl { .cmd = DRM_IOCTL_AMDGPU_CS,
+ *   //                                                 .arg = (uint64_t)&cs_ioctl }
+ *   io_uring_submit(&ring);
+ *   // ... do CPU work ...
+ *   io_uring_wait_cqe(&ring, &cqe);  // GPU command scheduled asynchronously
+ */
+```
+
+> **Note**: This interface is RFC-only and not merged into mainline Linux as of mid-2026. Performance results (50% speedup for batches of 128 ioctls) were measured on a Qualcomm Cloud AI 100 accelerator, not on consumer AMD/Intel/NVIDIA GPUs. General-purpose GPU (AMDGPU, i915, Xe) `->uring_cmd` support would require additional patches beyond the DRM/accel RFC.
+
+An Arm engineer presented a complementary analysis at XDC 2025 ("io_uring for DRM"), exploring the latency benefits for display and render workloads, suggesting vendor interest beyond Qualcomm. [Source: XDC 2025 presentation](https://indico.freedesktop.org/event/6/contributions/309/)
+
+### Current Adoption Status (mid-2026)
+
+The table below summarises what is available today versus what is on the horizon:
+
+| Mechanism | Status | Use case |
+|---|---|---|
+| `IORING_OP_POLL_ADD` on sync_file fd | Available now (Linux 5.1+, Vulkan 1.1+) | GPU completion notification in io_uring event loop |
+| `IORING_OP_READ` + `IOSQE_IO_LINK` for staging uploads | Available now (Linux 5.1+) | Pipelined disk-to-staging-buffer reads |
+| `IORING_OP_URING_CMD` for DRM ioctls | RFC patch (dri-devel, June 2025); not merged | Async GPU command submission proper |
+| Mesa io_uring submission path | No patch; experimental interest only | Would require Mesa Vulkan/radeonsi changes |
+| wgpu (Rust) io_uring submission | Open issue (wgpu #9051, Feb 2026); not implemented | Async polling API for wgpu device |
+
+Most production GPU workloads — training jobs, inference services, game engines — still use **dedicated GPU submission threads with blocking ioctls**. The dedicated-thread model is well understood, debuggable, and the per-submit ioctl cost is typically dominated by actual GPU execution time for large-batch workloads. The io_uring integration adds most value when submitting many *small* GPU dispatches interleaved with file I/O or network I/O.
+
+### When Not to Use io_uring for GPU Work
+
+The overhead of io_uring machinery — SQE preparation, ring management, the `io_uring_enter(2)` batching syscall — is non-trivial for a single large GPU dispatch. The appropriate question is not "can I submit this GPU command via io_uring?" but "does the submission latency of this GPU command appear on the critical path, and do I have other work to overlap it with?"
+
+For a compute dispatch that will run for 50 ms on the GPU, shaving 50 µs off submission overhead is irrelevant — the bottleneck is entirely GPU execution time. io_uring GPU integration is appropriate when:
+
+- GPU dispatches are small (sub-millisecond GPU execution time) and numerous per second.
+- The application already has an io_uring event loop for file I/O or networking (an ML inference server reading data batches from storage while concurrently running GPU inference is the canonical example).
+- The goal is eliminating a dedicated GPU-completion thread rather than reducing per-dispatch latency.
+
+It is inappropriate when:
+- GPU dispatches are large and sustained: a training step, a full 4K frame render. The bottleneck is GPU throughput, not ioctl cost.
+- The driver stack is not yet adapted (i.e., standard DRM drivers without `->uring_cmd` support): submitting through an eventfd notification path adds latency compared to a direct blocking `ioctl`.
+
+The trajectory is clear: as inference workloads push toward smaller, more numerous GPU dispatches, and as ML serving architectures converge on unified event loops handling data loading, model inference, and result streaming, the case for io_uring GPU integration strengthens. The DRM/accel RFC and Arm's XDC presentation signal that kernel and driver maintainers are taking this path seriously for the next kernel cycle.
+
+---
+
+## 11. Integrations
 
 This chapter connects to several other chapters in the book:
 
@@ -1110,7 +1361,7 @@ This chapter connects to several other chapters in the book:
 
 ---
 
-## 11. References
+## 12. References
 
 1. Vulkan specification — compute pipelines: [https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#pipelines-compute](https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#pipelines-compute)
 
@@ -1159,6 +1410,30 @@ This chapter connects to several other chapters in the book:
 23. Vulkan-CUDA memory interoperability — Mikolaj Gucki (Medium): [https://medium.com/@mikolaj.gucki/vulkan-cuda-memory-interoperability-5442f3b43c3d](https://medium.com/@mikolaj.gucki/vulkan-cuda-memory-interoperability-5442f3b43c3d)
 
 24. ROCm GPU memory documentation: [https://rocm.docs.amd.com/en/docs-6.0.0/conceptual/gpu-memory.html](https://rocm.docs.amd.com/en/docs-6.0.0/conceptual/gpu-memory.html)
+
+25. io_uring paper — Jens Axboe: [https://kernel.dk/io_uring.pdf](https://kernel.dk/io_uring.pdf)
+
+26. linux/include/uapi/linux/io_uring.h — IORING_OP enum: [https://github.com/torvalds/linux/blob/master/include/uapi/linux/io_uring.h](https://github.com/torvalds/linux/blob/master/include/uapi/linux/io_uring.h)
+
+27. LWN: io_uring IORING_OP_IOCTL RFC (2021, not merged): [https://lwn.net/Articles/807442/](https://lwn.net/Articles/807442/)
+
+28. io_uring(7) Linux manual page — IOSQE_IO_LINK and SQE flags: [https://man7.org/linux/man-pages/man7/io_uring.7.html](https://man7.org/linux/man-pages/man7/io_uring.7.html)
+
+29. Kernel Sync File API Guide — sync_file poll/POLLIN: [https://docs.kernel.org/driver-api/sync_file.html](https://docs.kernel.org/driver-api/sync_file.html)
+
+30. Kernel DMA-BUF and sync_file documentation: [https://docs.kernel.org/driver-api/dma-buf.html](https://docs.kernel.org/driver-api/dma-buf.html)
+
+31. RFC PATCH: drm: Add support for io_uring's uring_cmd in DRM/accel (Qualcomm, June 2025): [https://lists.freedesktop.org/archives/dri-devel/2025-June/509457.html](https://lists.freedesktop.org/archives/dri-devel/2025-June/509457.html)
+
+32. Phoronix: IO_uring shows promising potential for Linux accelerator drivers: [https://www.phoronix.com/news/IO_uring-DRM-Accelerator-2025](https://www.phoronix.com/news/IO_uring-DRM-Accelerator-2025)
+
+33. XDC 2025: io_uring for DRM (Arm/Liviu Dudau): [https://indico.freedesktop.org/event/6/contributions/309/](https://indico.freedesktop.org/event/6/contributions/309/)
+
+34. liburing issue #818 — DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT support: [https://github.com/axboe/liburing/issues/818](https://github.com/axboe/liburing/issues/818)
+
+35. wgpu issue #9051 — async polling API (open, February 2026): [https://github.com/gfx-rs/wgpu/issues/9051](https://github.com/gfx-rs/wgpu/issues/9051)
+
+36. axboe/liburing — liburing user-space helper library: [https://github.com/axboe/liburing](https://github.com/axboe/liburing)
 
 ---
 

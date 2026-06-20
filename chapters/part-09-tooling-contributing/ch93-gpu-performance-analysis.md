@@ -19,7 +19,8 @@ This chapter targets **graphics application developers**, **game developers**, *
 9. [NVIDIA-Specific: Nsight and ncu](#9-nvidia-specific-nsight-and-ncu)
 10. [Intel-Specific: intel_gpu_top and EU Counters](#10-intel-specific)
 11. [Worked Case Study: Optimising a Path-Traced Scene](#11-worked-case-study)
-12. [Integrations](#12-integrations)
+12. [eBPF-Based GPU Observability](#12-ebpf-based-gpu-observability)
+13. [Integrations](#13-integrations)
 
 ---
 
@@ -705,7 +706,382 @@ After async BVH refit (approximate):
 
 ---
 
-## 12. Integrations
+## 12. eBPF-Based GPU Observability
+
+This section targets **systems performance engineers** and **GPU driver developers** who need production-safe, kernel-level GPU visibility without modifying applications, recompiling drivers, or deploying heavyweight capture tools.
+
+### Why eBPF for GPU Profiling
+
+Traditional GPU profiling approaches impose significant overhead or require invasive setup. **RenderDoc** captures entire frames by injecting into the Vulkan/OpenGL call stream — it intercepts `vkQueueSubmit`, replays command buffers, and serialises GPU resources to disk. The capture overhead can exceed 10× normal execution time, making it unusable in production and unsuitable for workloads that rely on real-time timing (e.g., VR, cloud gaming). **Vendor profilers** (NVIDIA Nsight, AMD RGP) require specific driver modes and environment variables, are tied to particular GPU families, and cannot run simultaneously on multi-GPU or multi-tenant systems.
+
+**eBPF** (Extended Berkeley Packet Filter) provides a fundamentally different approach. eBPF programs are loaded into the Linux kernel, verified for safety by the in-kernel verifier, and JIT-compiled to native machine code. They attach to **tracepoints**, **kprobes**, and **uprobes** at runtime — no recompile, no driver modification, no application restart. Overhead is sub-microsecond per probe firing; a typical bpftrace script adds fewer than 5 µs of total per-frame latency even at 240 Hz. Because eBPF programs cannot perform unbounded loops or dereference arbitrary pointers, they are safe to run in production environments, including cloud GPU instances. [Source: eBPF safety model, Linux kernel documentation](https://www.kernel.org/doc/html/latest/bpf/verifier.html)
+
+The key contrast:
+
+| Tool | Overhead | Requires recompile? | Multi-vendor? | Production-safe? |
+|------|----------|--------------------|--------------|----|
+| RenderDoc | 10–100× | No | Yes (API-level) | No |
+| Nsight / RGP | 2–20× | No | No (vendor-locked) | No |
+| intel_gpu_top | < 1% | No | Intel only | Yes |
+| **bpftrace/eBPF** | **< 0.1%** | **No** | **Yes (DRM tracepoints)** | **Yes** |
+
+### DRM Tracepoints: The Kernel's Observability Interface
+
+The Linux kernel exports a stable set of GPU-related tracepoints across two subsystems. Stability is intentional: the DRM maintainers have explicitly designated certain `gpu_scheduler` tracepoints as stable uAPI so that tools like GPUVis and umr can rely on their field names without breaking across kernel updates. [Source: DRM Scheduler patch series, Jan 2025, LKML](https://lkml.iu.edu/hypermail/linux/kernel/2501.3/06940.html)
+
+#### dma_fence tracepoints
+
+Defined in `include/trace/events/dma_fence.h` in the kernel source. [Source: linux/include/trace/events/dma_fence.h](https://github.com/torvalds/linux/blob/master/include/trace/events/dma_fence.h)
+
+All events share the same four fields via the `dma_fence` event class:
+- `driver` (string) — the fence driver name (e.g., `"amdgpu"`, `"i915"`, `"nouveau"`)
+- `timeline` (string) — timeline/context name
+- `context` (unsigned int) — unique fence context identifier
+- `seqno` (unsigned int) — sequence number within the context
+
+The seven defined events are:
+
+| Tracepoint | Fires when |
+|-----------|-----------|
+| `dma_fence:dma_fence_init` | A new fence is created |
+| `dma_fence:dma_fence_emit` | A fence is attached to a submission |
+| `dma_fence:dma_fence_enable_signal` | Signal callback is registered |
+| `dma_fence:dma_fence_signaled` | GPU has finished the fenced work |
+| `dma_fence:dma_fence_wait_start` | CPU begins waiting on a fence |
+| `dma_fence:dma_fence_wait_end` | CPU wait completes |
+| `dma_fence:dma_fence_destroy` | Fence reference count reaches zero |
+
+The pair `dma_fence_emit` + `dma_fence_signaled` brackets the full GPU execution window. A bpftrace script can record submission timestamps and compute elapsed GPU time with no application modification:
+
+```bpftrace
+#!/usr/bin/env bpftrace
+// gpu_fence_latency.bt — measure GPU fence round-trip time per driver
+
+tracepoint:dma_fence:dma_fence_emit {
+    @start[args->context] = nsecs;
+}
+
+tracepoint:dma_fence:dma_fence_signaled {
+    if (@start[args->context] != 0) {
+        $elapsed_us = (nsecs - @start[args->context]) / 1000;
+        printf("%-12s fence ctx=%u signaled after %llu µs\n",
+               str(args->driver), args->context, $elapsed_us);
+        @latency_us[str(args->driver)] = hist($elapsed_us);
+        delete(@start[args->context]);
+    }
+}
+
+END {
+    printf("\nGPU fence latency histograms (microseconds):\n");
+    print(@latency_us);
+    clear(@start);
+}
+```
+
+#### DRM vblank tracepoints
+
+Defined in the DRM core, `drm_vblank_event` fires each time a CRTC (display controller) completes a vertical blanking interval. Fields: `crtc` (integer, display index), `seq` (vblank sequence number), `time` (ktime_t timestamp). [Source: DRM internals documentation](https://www.kernel.org/doc/html/latest/gpu/drm-internals.html)
+
+```bpftrace
+// vblank_jitter.bt — measure display vblank interval jitter per CRTC
+tracepoint:drm:drm_vblank_event {
+    if (@prev_vblank[args->crtc] != 0) {
+        $interval_us = (nsecs - @prev_vblank[args->crtc]) / 1000;
+        @vblank_jitter[args->crtc] = hist($interval_us);
+    }
+    @prev_vblank[args->crtc] = nsecs;
+}
+END { print(@vblank_jitter); clear(@prev_vblank); }
+```
+
+A 60 Hz display should show intervals clustered around 16,667 µs; outliers indicate missed vblanks or compositor delays.
+
+#### DRM GPU Scheduler tracepoints
+
+Defined in `drivers/gpu/drm/scheduler/gpu_scheduler_trace.h`. [Source: linux/drivers/gpu/drm/scheduler/gpu_scheduler_trace.h](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/scheduler/gpu_scheduler_trace.h)
+
+The scheduler events use two DEFINE_EVENT instances from the `drm_sched_job` class, plus a separate `drm_sched_job_done` event:
+
+| Tracepoint | Fires when | Key fields |
+|-----------|-----------|-----------|
+| `gpu_scheduler:drm_sched_job_queue` | Job is queued in the software scheduler | `dev`, `name` (ring), `fence_context`, `fence_seqno`, `job_count`, `hw_job_count`, `client_id` |
+| `gpu_scheduler:drm_sched_job_run` | Job is submitted to hardware | same as above |
+| `gpu_scheduler:drm_sched_job_done` | GPU hardware completes the job | `fence_context`, `fence_seqno` |
+
+The `job_count` field reports the number of jobs pending in the entity's software queue; `hw_job_count` reports jobs in-flight on hardware. Tracking these together reveals whether the GPU is starved (queue drains to zero) or overloaded (queue grows without bound).
+
+List available GPU tracepoints on the running system:
+
+```bash
+sudo ls /sys/kernel/tracing/events/gpu_scheduler/
+sudo ls /sys/kernel/tracing/events/dma_fence/
+sudo ls /sys/kernel/tracing/events/drm/
+# Inspect a specific tracepoint's fields:
+sudo cat /sys/kernel/tracing/events/gpu_scheduler/drm_sched_job_run/format
+```
+
+### GPU Submission Latency Measurement
+
+The full round-trip from a Vulkan application calling `vkQueueSubmit` to the corresponding GPU fence signalling can be measured by combining a kprobe on the DRM ioctl entry point with the `dma_fence_signaled` tracepoint. On AMD, the AMDGPU command submission ioctl is `AMDGPU_CS`; on Intel it is `DRM_IOCTL_I915_GEM_EXECBUFFER2`. The `drm_ioctl` kernel function is the common dispatch point for all DRM ioctls regardless of vendor.
+
+```bpftrace
+#!/usr/bin/env bpftrace
+// gpu_submission_latency.bt
+// Measures round-trip from drm_ioctl entry to dma_fence_signaled.
+// Run as root: bpftrace gpu_submission_latency.bt
+
+BEGIN {
+    printf("Tracing GPU submission latency... Ctrl-C to print histogram.\n");
+}
+
+kprobe:drm_ioctl {
+    // arg0 = struct file*, arg1 = unsigned int cmd, arg2 = unsigned long arg
+    // Record entry time keyed by thread ID
+    @submit_start[tid] = nsecs;
+}
+
+kretprobe:drm_ioctl {
+    // Clear incomplete submissions (ioctls that don't produce fences)
+    delete(@submit_start[tid]);
+}
+
+tracepoint:dma_fence:dma_fence_signaled {
+    // For each fence signalled, find a recent submission from the same process.
+    // Note: keying by pid correlates submission process to fence completion.
+    if (@submit_start[pid] != 0) {
+        $elapsed_us = (nsecs - @submit_start[pid]) / 1000;
+        @latency_us = hist($elapsed_us);
+        delete(@submit_start[pid]);
+    }
+}
+
+END {
+    printf("\nGPU submission-to-signal latency (µs):\n");
+    print(@latency_us);
+    clear(@submit_start);
+}
+```
+
+> Note: The kprobe/tracepoint correlation shown above uses `pid` as a correlation key, which is correct for single-threaded submissions. In multi-threaded engines that submit from one thread and collect fences on another, extend the map key to include `args->context` (fence context) for precise correlation.
+
+For vendor-specific ioctl filtering, check the ioctl command number:
+
+```bpftrace
+kprobe:drm_ioctl {
+    // arg1 is the ioctl command number (e.g., 0xC0186440 = AMDGPU_CS)
+    if (arg1 == 0xC0186440) {  // AMDGPU_CS, from uapi/drm/amdgpu_drm.h
+        @amdgpu_cs_start[tid] = nsecs;
+    }
+}
+```
+
+On a healthy GPU at 60 FPS with simple geometry, `@latency_us` will cluster around 2,000–8,000 µs. Latencies above 33,000 µs (one frame at 30 Hz) indicate GPU scheduler stalls or fence signalling delays worth investigating.
+
+### Shader Compilation Detection via Uprobes
+
+One of the most common causes of frame-rate stutter in Vulkan applications is **runtime shader compilation** — a `vkCreateGraphicsPipelines` call that triggers ACO or LLVM SPIR-V→ISA compilation on the CPU, blocking the render thread for tens to hundreds of milliseconds. bpftrace uprobes can detect these events without modifying the application.
+
+First, locate the Mesa RADV shared library and verify the symbol exists:
+
+```bash
+# Find the library path:
+find /usr/lib -name "libvulkan_radeon.so" 2>/dev/null
+# e.g., /usr/lib/x86_64-linux-gnu/libvulkan_radeon.so
+
+# Verify the symbol is exported (RADV functions are not name-mangled):
+nm -D /usr/lib/x86_64-linux-gnu/libvulkan_radeon.so | grep -i 'CreateGraphicsPipelines'
+# Expected output: 0000000000123456 T radv_CreateGraphicsPipelines
+```
+
+Attach a uprobe to detect pipeline creation and measure compilation latency:
+
+```bpftrace
+#!/usr/bin/env bpftrace
+// shader_compile_detect.bt
+// Detect runtime Vulkan pipeline (shader) compilations in RADV.
+// Usage: bpftrace shader_compile_detect.bt
+//   (attach to specific PID with -p <pid> flag)
+
+uprobe:/usr/lib/x86_64-linux-gnu/libvulkan_radeon.so:radv_CreateGraphicsPipelines {
+    @compile_start[tid] = nsecs;
+    printf("[%llu ms] PID %d (%s) calling CreateGraphicsPipelines\n",
+           elapsed / 1000000, pid, comm);
+    @compiles_by_process[comm] = count();
+}
+
+uretprobe:/usr/lib/x86_64-linux-gnu/libvulkan_radeon.so:radv_CreateGraphicsPipelines {
+    if (@compile_start[tid] != 0) {
+        $latency_ms = (nsecs - @compile_start[tid]) / 1000000;
+        printf("  └─ compilation complete: %llu ms\n", $latency_ms);
+        @compile_latency_ms = hist($latency_ms);
+        delete(@compile_start[tid]);
+    }
+}
+
+END {
+    printf("\nShader compilation count by process:\n");
+    print(@compiles_by_process);
+    printf("\nCompilation latency distribution (ms):\n");
+    print(@compile_latency_ms);
+}
+```
+
+For the Intel ANV driver, the equivalent symbol is `anv_CreateGraphicsPipelines` in `libvulkan_intel.so`. For NVIDIA's open-source NVK driver in Mesa, the symbol is `nvk_CreateGraphicsPipelines` in `libvulkan_nouveau.so`.
+
+For deeper introspection, attach to the internal compilation function to see individual shader stage compilations:
+
+```bash
+# RADV internal shader compilation entry point:
+nm -D /usr/lib/.../libvulkan_radeon.so | grep 'radv_shader_spirv_to_nir\|radv_shader_compile'
+```
+
+A well-behaved Vulkan application should show zero compilations after the loading screen. Any `radv_CreateGraphicsPipelines` fires during gameplay indicate missing pipeline cache entries or VK_EXT_graphics_pipeline_library misuse (see Ch76).
+
+To target a specific process rather than system-wide:
+
+```bash
+bpftrace -p $(pgrep -x my_game) shader_compile_detect.bt
+```
+
+### DRM Scheduler Queue Depth Analysis
+
+The DRM GPU scheduler (`drivers/gpu/drm/scheduler/`) queues jobs per `drm_sched_entity` — an abstraction over a single Vulkan queue or OpenGL context. Under multi-process or multi-queue load, imbalanced queuing leads to GPU starvation: one entity's jobs dominate hardware while others wait.
+
+The `drm_sched_job_run` tracepoint fires when a job leaves the software queue and is submitted to hardware. The `job_count` field at that moment reports the remaining depth of the entity's software queue:
+
+```bpftrace
+#!/usr/bin/env bpftrace
+// gpu_sched_queue_depth.bt
+// Monitor DRM scheduler queue depth per ring to detect GPU starvation.
+
+tracepoint:gpu_scheduler:drm_sched_job_run {
+    // args->name is the hardware ring name (e.g., "gfx_0.0", "comp_1.0")
+    // args->job_count is pending software queue depth
+    // args->hw_job_count is in-flight hardware job count
+    @queue_depth[str(args->name)] = hist(args->job_count);
+    @hw_depth[str(args->name)]    = hist(args->hw_job_count);
+
+    if (args->job_count == 0) {
+        // Queue just drained — GPU may stall waiting for next submission
+        @starvation_events[str(args->name)] = count();
+    }
+}
+
+interval:s:5 {
+    printf("\n=== Queue depth snapshot (5s interval) ===\n");
+    print(@queue_depth);
+    printf("\nStarvation events (queue emptied):\n");
+    print(@starvation_events);
+    clear(@starvation_events);
+}
+```
+
+A `job_count` that is consistently 0 when `drm_sched_job_run` fires means the GPU is receiving work one job at a time rather than batched — a CPU submission-rate bottleneck. A `job_count` that grows without bound indicates the GPU cannot keep up with CPU submission rate — a GPU compute bottleneck. Healthy operation shows a depth of 1–4 with occasional 0 readings on the primary graphics ring.
+
+The `dev` field (added in kernel 6.14 via [commit in Jan 2025 LKML patch](https://lkml.iu.edu/hypermail/linux/kernel/2501.3/06940.html)) allows filtering by GPU device in multi-GPU systems: `if (str(args->dev) == "0000:03:00.0") { ... }`.
+
+### Perfetto GPU Timeline via eBPF
+
+**Perfetto** is the open-source system tracing framework used by ChromeOS, Android, and increasingly native Linux desktop tooling. Its `traced_probes` daemon uses Linux ftrace and eBPF to produce the GPU timeline track visible in the [Perfetto UI](https://ui.perfetto.dev). [Source: Perfetto documentation](https://perfetto.dev/docs/)
+
+On Linux, `traced_probes` configures the kernel's tracefs interface to enable `gpu_scheduler`, `dma_fence`, and `drm` tracepoints, then converts the resulting event stream into Perfetto's protobuf trace format. The GPU timeline track in the Perfetto UI is constructed from these kernel tracepoints — no GPU vendor SDK is required.
+
+A minimal `perfetto.cfg` that captures the GPU timeline alongside CPU scheduling:
+
+```protobuf
+# perfetto.cfg — GPU timeline + CPU scheduler trace
+duration_ms: 10000
+
+buffers {
+  size_kb: 65536
+  fill_policy: RING_BUFFER
+}
+
+# CPU scheduler events (for CPU–GPU correlation)
+data_sources {
+  config {
+    name: "linux.ftrace"
+    ftrace_config {
+      ftrace_events: "sched/sched_switch"
+      ftrace_events: "sched/sched_wakeup"
+      # DRM GPU scheduler events (stable uAPI since kernel 6.14)
+      ftrace_events: "gpu_scheduler/drm_sched_job_run"
+      ftrace_events: "gpu_scheduler/drm_sched_job_done"
+      ftrace_events: "gpu_scheduler/drm_sched_job_queue"
+      # DMA-fence lifecycle (fence emit → signal = GPU execution window)
+      ftrace_events: "dma_fence/dma_fence_emit"
+      ftrace_events: "dma_fence/dma_fence_signaled"
+      # Display vblank events (frame delivery timing)
+      ftrace_events: "drm/drm_vblank_event"
+      # GPU frequency scaling
+      ftrace_events: "power/gpu_frequency"
+    }
+  }
+}
+
+# Mesa per-driver GPU render stage traces (requires -Dperfetto=true Mesa build)
+data_sources {
+  config {
+    name: "gpu.renderstages.intel"   # Replace with gpu.renderstages.msm for AMD/Qualcomm
+  }
+}
+
+# GPU hardware performance counters (driver-specific counter IDs)
+data_sources {
+  config {
+    name: "gpu.counters.i915"
+    gpu_counter_config {
+      counter_period_ns: 1000000    # Sample every 1 ms
+    }
+  }
+}
+
+# Process metadata (maps PIDs to names in the UI)
+data_sources {
+  config {
+    name: "linux.process_stats"
+    process_stats_config {
+      scan_all_processes_on_start: true
+    }
+  }
+}
+```
+
+Run the capture:
+
+```bash
+# Start traced and traced_probes daemons:
+sudo traced &
+sudo traced_probes &
+
+# Capture:
+sudo perfetto -c perfetto.cfg -o gpu_trace.perfetto
+
+# View: open gpu_trace.perfetto at https://ui.perfetto.dev
+```
+
+The resulting trace in the Perfetto UI shows a **GPU timeline track** with coloured slices for each GPU job (`drm_sched_job_run` → `drm_sched_job_done`), fence signal markers, vblank timing, and GPU frequency, all correlated against CPU thread scheduling on the same time axis. This is the most comprehensive view of GPU–CPU interaction available on Linux without vendor-specific tooling. Cross-reference with Ch137 for the broader GPU profiling ecosystem, including MangoHUD's overlay and AMD's ROCm Perfetto integration.
+
+### bpftrace One-Liners Reference
+
+The following one-liners cover the most common GPU observability tasks. Run each as root (`sudo bpftrace -e '...'`).
+
+| Goal | bpftrace one-liner |
+|------|-------------------|
+| **Fence signal latency histogram** | `tracepoint:dma_fence:dma_fence_emit { @s[args->context]=nsecs; } tracepoint:dma_fence:dma_fence_signaled { @us=hist((nsecs-@s[args->context])/1000); delete(@s[args->context]); } END { print(@us); }` |
+| **Vblank interval jitter** | `tracepoint:drm:drm_vblank_event { @j[args->crtc]=hist((nsecs-@p[args->crtc])/1000); @p[args->crtc]=nsecs; } END { print(@j); }` |
+| **DRM ioctl rate by process** | `kprobe:drm_ioctl { @[comm]=count(); }` |
+| **Shader compilation count (RADV)** | `uprobe:/usr/lib/x86_64-linux-gnu/libvulkan_radeon.so:radv_CreateGraphicsPipelines { @[comm]=count(); }` |
+| **GPU scheduler queue depth** | `tracepoint:gpu_scheduler:drm_sched_job_run { @[str(args->name)]=hist(args->job_count); }` |
+| **Hardware job count (in-flight)** | `tracepoint:gpu_scheduler:drm_sched_job_run { @hw[str(args->name)]=hist(args->hw_job_count); }` |
+| **GPU fence wait time (CPU block)** | `tracepoint:dma_fence:dma_fence_wait_start { @w[args->context]=nsecs; } tracepoint:dma_fence:dma_fence_wait_end { @us=hist((nsecs-@w[args->context])/1000); delete(@w[args->context]); } END { print(@us); }` |
+| **AMD CS ioctl rate** | `kprobe:drm_ioctl /arg1==0xC0186440/ { @[comm]=count(); }` |
+
+> Note: The `gpu_scheduler` subsystem name in bpftrace tracepoints corresponds to the kernel's `gpu_scheduler` event class directory under `/sys/kernel/tracing/events/gpu_scheduler/`. Verify tracepoint availability on your kernel with `sudo bpftrace -l 'tracepoint:gpu_scheduler:*'` before use. The drm vblank tracepoint subsystem is `drm`, not `drm_vblank`. Uprobe paths must match your distribution's Mesa installation; adjust accordingly on distributions that install Mesa to `/usr/lib64/` or non-standard paths.
+
+---
+
+## 13. Integrations
 
 - **Ch15 (ACO shader compiler)** — register pressure (VGPR count) that limits occupancy is determined at ACO compilation time. `RADV_DEBUG=shaders` shows ACO's VGPR allocation decisions, and the ACO IR can be inspected to understand why pressure is high.
 
@@ -724,3 +1100,5 @@ After async BVH refit (approximate):
 - **Ch67 (DLSS)** — before deciding to use DLSS (Ch67) or FSR3 (Ch72) to hit a frame rate target, Ch93's methodology should confirm the application is GPU-bound and identify which passes are the bottleneck. DLSS is most effective when the path tracer pass (§11 example) is the bottleneck, not post-processing or CPU work.
 
 - **Ch87 (LLM Inference on Linux)** — bandwidth analysis (§6) applies directly to GEMM kernels in LLM inference. Arithmetic intensity of batch-1 token generation GEMM is typically 1–2 FLOPS/byte, far below the roofline boundary, confirming it as bandwidth-bound. The mitigation (quantisation reducing bytes loaded) mirrors texture compression in graphics workloads.
+
+- **Ch137 (GPU Profiling Ecosystem)** — §12 (eBPF-Based GPU Observability) describes how Perfetto's `traced_probes` daemon uses DRM tracepoints to build the GPU timeline track visible in the Perfetto UI; Ch137 covers the broader profiling ecosystem including MangoHUD, shader-db, and vendor profiler GUIs that complement the eBPF-level instrumentation shown in §12.

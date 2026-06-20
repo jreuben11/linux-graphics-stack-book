@@ -51,7 +51,13 @@
   - [9.4 CPU-Side vs. GPU-Side Fence Waiting](#94-cpu-side-vs-gpu-side-fence-waiting)
   - [9.5 Avoiding Common Explicit Sync Performance Pitfalls](#95-avoiding-common-explicit-sync-performance-pitfalls)
   - [9.6 Timeline Fence Accumulation and Garbage Collection](#96-timeline-fence-accumulation-and-garbage-collection)
-- [Section 10: Integrations](#section-10-integrations)
+- [Section 10: io_uring and sync_file: Unified Event Loop for GPU and I/O](#section-10-io_uring-and-sync_file-unified-event-loop-for-gpu-and-io)
+  - [10.1 sync_file as a Pollable Fence](#101-sync_file-as-a-pollable-fence)
+  - [10.2 IORING_OP_POLL_ADD on sync_file — Async Fence Completion](#102-ioring_op_poll_add-on-sync_file--async-fence-completion)
+  - [10.3 Compositor Unified Event Loop with io_uring](#103-compositor-unified-event-loop-with-io_uring)
+  - [10.4 linux-drm-syncobj-v1 and io_uring: Polling the Release Timeline](#104-linux-drm-syncobj-v1-and-io_uring-polling-the-release-timeline)
+  - [10.5 Limitations and Current State](#105-limitations-and-current-state)
+- [Section 11: Integrations](#section-11-integrations)
 - [References](#references)
 
 ---
@@ -936,9 +942,321 @@ The kernel's implementation handles this via RCU-protected lists and periodic pr
 
 ---
 
-## Section 10: Integrations
+## Section 10: io_uring and sync_file: Unified Event Loop for GPU and I/O
+
+The preceding sections have established that GPU synchronization on Linux is fundamentally file-descriptor-based: every fence primitive — `sync_file`, `drm_syncobj` fd, KMS `OUT_FENCE_PTR` — is a pollable file descriptor. This architectural choice was not accidental. It means that a Wayland compositor can in principle wait on GPU fence completion, Wayland socket messages, DRM vblank events, and input device reads all in a single event loop, without threads or blocking ioctls. **io_uring**, the Linux asynchronous I/O framework introduced in Linux 5.1 (2019), offers a compelling path toward that unified loop: its `IORING_OP_POLL_ADD` operation can watch any pollable file descriptor, including `sync_file` fds carrying GPU fences.
+
+### 10.1 sync_file as a Pollable Fence
+
+The `sync_file` kernel object (`drivers/dma-buf/sync_file.c`, `include/linux/sync_file.h`) was ported from the Android kernel, where it underpinned the Android explicit sync framework (`CONFIG_SYNC_FILE`). Its defining property for the event-loop use case is that it is a fully pollable file descriptor: `poll()`, `select()`, `epoll()`, and `io_uring` can all wait on it.
+
+The `sync_file_poll()` handler in the kernel is straightforward:
+
+```c
+/* drivers/dma-buf/sync_file.c — simplified */
+static __poll_t sync_file_poll(struct file *file, poll_table *wait)
+{
+    struct sync_file *sync_file = file->private_data;
+
+    poll_wait(file, &sync_file->wq, wait);
+
+    if (list_empty(&sync_file->cb_list)) {
+        /* First poll call: register fence callback so wq wakes on signal */
+        if (!test_and_set_bit(POLL_ENABLED, &sync_file->flags))
+            dma_fence_add_callback(sync_file->fence,
+                                   &sync_file->cb,
+                                   fence_check_cb_func);
+    }
+
+    return dma_fence_is_signaled(sync_file->fence) ? EPOLLIN : 0;
+}
+```
+
+The key behaviours are:
+
+- `EPOLLIN` is returned when the underlying `dma_fence` has signalled — i.e., the GPU operation the fence represents is complete.
+- Fence signalling is lazy: `dma_fence_add_callback()` is only registered on the first `poll()` call, avoiding overhead for fences that are checked a different way.
+- The callback (`fence_check_cb_func`) calls `wake_up_all(&sync_file->wq)` when the GPU signals, waking all waiters including `epoll` and `io_uring` poll operations.
+
+[Source: `drivers/dma-buf/sync_file.c`, https://github.com/torvalds/linux/blob/master/drivers/dma-buf/sync_file.c; sync_file API guide: https://docs.kernel.org/driver-api/sync_file.html]
+
+The file operations structure for `sync_file` confirms the `poll` handler:
+
+```c
+static const struct file_operations sync_file_fops = {
+    .release        = sync_file_release,
+    .poll           = sync_file_poll,
+    .unlocked_ioctl = sync_file_ioctl,
+    .compat_ioctl   = compat_ptr_ioctl,
+};
+```
+
+[Source: `drivers/dma-buf/sync_file.c`, https://github.com/torvalds/linux/blob/master/drivers/dma-buf/sync_file.c]
+
+A `sync_file` fd is obtained from one of three sources:
+
+**Vulkan — `vkGetSemaphoreFdKHR` with `VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT`**: This handle type exports the current binary semaphore payload as a `sync_file` fd. It is valid only for binary semaphores (not timeline semaphores, which must use `VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT` as noted in Section 4.3). An implementation may return `-1` for a semaphore that has already signalled; per the Vulkan specification, `-1` is treated as a pre-signalled fence. [Source: Vulkan spec, `VkSemaphoreGetFdInfoKHR`, https://docs.vulkan.org/refpages/latest/refpages/source/VkSemaphoreGetFdInfoKHR.html]
+
+**DRM — `DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD` with `DRM_SYNCOBJ_HANDLE_TO_FD_FLAGS_EXPORT_SYNC_FILE`**: As described in Section 3.3, this flag causes the ioctl to export the syncobj's *current fence* as a `sync_file` snapshot rather than exporting the live syncobj fd. The resulting `sync_file` fd captures the fence at the moment of export. [Source: `include/uapi/drm/drm.h`, https://github.com/torvalds/linux/blob/master/include/uapi/drm/drm.h]
+
+**EGL — `eglDupNativeFenceFDANDROID`**: As described in Section 6.2, this function exports an `EGLSyncKHR` object (created with `EGL_SYNC_NATIVE_FENCE_ANDROID`) as a `sync_file` fd. It is the EGL path for GL/GLES renderers that do not use Vulkan. [Source: https://registry.khronos.org/EGL/extensions/ANDROID/EGL_ANDROID_native_fence_sync.txt]
+
+### 10.2 IORING_OP_POLL_ADD on sync_file — Async Fence Completion
+
+`IORING_OP_POLL_ADD` is io_uring's async equivalent of `epoll_ctl(EPOLL_CTL_ADD)`. It watches a file descriptor for events specified in the `poll_events` field of the submission queue entry (SQE). When the specified event fires, io_uring posts a completion queue entry (CQE) whose `res` field holds the returned event mask. By default `IORING_OP_POLL_ADD` operates in one-shot mode: it fires once and must be resubmitted; setting `IORING_POLL_ADD_MULTI` in the SQE `len` field enables multi-shot mode for repeated events. [Source: io_uring_enter(2) man page, https://man7.org/linux/man-pages/man2/io_uring_enter.2.html]
+
+Since `sync_file` is an ordinary pollable file descriptor (its `file_operations.poll` handler is `sync_file_poll`), `IORING_OP_POLL_ADD` can watch it for `EPOLLIN` with no special driver support. The following example shows the liburing API to wait for both a Wayland client socket event and a GPU fence completion in a single io_uring submission batch:
+
+```c
+#include <liburing.h>
+#include <wayland-client.h>
+
+/*
+ * Submit poll requests for both the Wayland display fd and a GPU sync_file fd,
+ * then wait for whichever fires first. This is the minimal structure of a
+ * unified compositor/application event loop using io_uring.
+ *
+ * sync_fd:   sync_file fd obtained from vkGetSemaphoreFdKHR or
+ *             DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD w/ EXPORT_SYNC_FILE
+ * wl_fd:     wl_display_get_fd(display) — Wayland socket
+ */
+void submit_gpu_and_wayland_polls(struct io_uring *ring,
+                                  int sync_fd,
+                                  int wl_fd)
+{
+    struct io_uring_sqe *sqe;
+
+    /* Poll the GPU fence: EPOLLIN fires when dma_fence signals */
+    sqe = io_uring_get_sqe(ring);
+    io_uring_prep_poll_add(sqe, sync_fd, EPOLLIN);
+    io_uring_sqe_set_data64(sqe, (uint64_t)sync_fd);  /* user tag */
+
+    /* Poll the Wayland socket: EPOLLIN fires when server sends events */
+    sqe = io_uring_get_sqe(ring);
+    io_uring_prep_poll_add(sqe, wl_fd, EPOLLIN);
+    io_uring_sqe_set_data64(sqe, (uint64_t)wl_fd);    /* user tag */
+
+    io_uring_submit(ring);
+}
+
+/*
+ * Reap completions and dispatch. Both GPU-fence-done and Wayland-events
+ * arrive as CQEs in the same completion loop — no separate epoll() needed.
+ */
+void completion_loop(struct io_uring *ring, struct wl_display *display,
+                     int sync_fd)
+{
+    struct io_uring_cqe *cqe;
+    unsigned head;
+    int nr;
+
+    nr = io_uring_wait_cqe(ring, &cqe);
+    if (nr < 0)
+        return;
+
+    if ((int)io_uring_cqe_get_data64(cqe) == sync_fd) {
+        /* GPU fence signalled — buffer is safe to composite or scan out */
+        handle_gpu_fence_done();
+    } else {
+        /* Wayland socket readable — dispatch protocol events */
+        wl_display_dispatch(display);
+    }
+    io_uring_cqe_seen(ring, cqe);
+}
+```
+
+The liburing function `io_uring_prep_poll_add()` is defined in `src/include/liburing.h` as a thin wrapper that fills in the SQE fields. [Source: liburing, https://github.com/axboe/liburing; `io_uring_prep_poll_add` man page, https://man7.org/linux/man-pages/man3/io_uring_prep_poll_add.3.html]
+
+The `EPOLLIN` event used here is semantically identical to passing `POLLIN` to `poll(2)` — the kernel maps both through the same `vfs_poll()` path. Since `sync_file_poll()` uses the standard `poll_wait()` infrastructure, `io_uring`'s internal poll mechanism (which also uses `vfs_poll()` and wait queues) works without any sync_file-specific support.
+
+### 10.3 Compositor Unified Event Loop with io_uring
+
+A wlroots-based compositor's main loop is traditionally structured around a `wl_event_loop`, which internally uses `epoll`. In an io_uring-based unified loop, the same logical waits would be expressed as `IORING_OP_POLL_ADD` operations, all feeding into one completion queue:
+
+```c
+/*
+ * Hypothetical io_uring compositor event loop skeleton.
+ * Combines GPU fence, Wayland protocol, DRM page-flip/vblank,
+ * and input events in a single io_uring_wait_cqes() call.
+ *
+ * Tags (user_data) identify which fd caused the wakeup.
+ */
+#define TAG_GPU_FENCE   1
+#define TAG_WAYLAND_FD  2
+#define TAG_DRM_FD      3
+#define TAG_INPUT_FD    4
+
+void compositor_loop(struct io_uring *ring,
+                     int gpu_sync_fd,   /* sync_file from client acquire point */
+                     int wl_fd,         /* wl_display_get_fd(display)          */
+                     int drm_fd,        /* /dev/dri/cardN (vblank events)      */
+                     int input_fd)      /* libinput fd                         */
+{
+    struct io_uring_sqe *sqe;
+
+    /* ARM: GPU fence — signals when client render is complete */
+    sqe = io_uring_get_sqe(ring);
+    io_uring_prep_poll_add(sqe, gpu_sync_fd, EPOLLIN);
+    io_uring_sqe_set_data64(sqe, TAG_GPU_FENCE);
+
+    /* ARM: Wayland socket — client commits, protocol events */
+    sqe = io_uring_get_sqe(ring);
+    io_uring_prep_poll_add(sqe, wl_fd, EPOLLIN);
+    io_uring_sqe_set_data64(sqe, TAG_WAYLAND_FD);
+
+    /*
+     * ARM: DRM fd — vblank and page-flip completion events.
+     * DRM writes a struct drm_event_vblank to the fd on flip;
+     * poll() on drm_fd returns EPOLLIN when events are pending,
+     * which are then dispatched with drmHandleEvent(drm_fd, &evctx).
+     * This replaces the blocking DRM_IOCTL_WAIT_VBLANK.
+     */
+    sqe = io_uring_get_sqe(ring);
+    io_uring_prep_poll_add(sqe, drm_fd, EPOLLIN);
+    io_uring_sqe_set_data64(sqe, TAG_DRM_FD);
+
+    /* ARM: Input device — keyboard, pointer, touch */
+    sqe = io_uring_get_sqe(ring);
+    io_uring_prep_poll_add(sqe, input_fd, EPOLLIN);
+    io_uring_sqe_set_data64(sqe, TAG_INPUT_FD);
+
+    io_uring_submit(ring);
+
+    /* Single wait — whichever fd fires first produces a CQE */
+    struct io_uring_cqe *cqe;
+    io_uring_wait_cqe(ring, &cqe);
+
+    switch (io_uring_cqe_get_data64(cqe)) {
+    case TAG_GPU_FENCE:
+        /* Client GPU rendering complete; begin compositing pass */
+        compositor_begin_compositing();
+        break;
+    case TAG_WAYLAND_FD:
+        /* Dispatch protocol messages from clients */
+        wl_display_dispatch(wl_display);
+        break;
+    case TAG_DRM_FD:
+        /* Read DRM events: vblank, page-flip complete */
+        drmHandleEvent(drm_fd, &evctx);
+        break;
+    case TAG_INPUT_FD:
+        libinput_dispatch(li);
+        break;
+    }
+    io_uring_cqe_seen(ring, cqe);
+}
+```
+
+In this structure, `IORING_OP_POLL_ADD` on the DRM fd serves as the non-blocking alternative to `DRM_IOCTL_WAIT_VBLANK`. When the kernel delivers a vblank event or page-flip completion, it writes a `struct drm_event` or `struct drm_event_vblank` record to the DRM fd, which becomes readable (`EPOLLIN`). The compositor then calls `drmHandleEvent()` — from libdrm — to parse the event record and dispatch to registered callbacks. This is the same mechanism used by traditional `epoll`-based compositor loops; io_uring changes only *how* the compositor waits for the readable condition. [Source: DRM userland interfaces, https://docs.kernel.org/gpu/drm-uapi.html; David Herrmann's DRM mode-setting tutorial, https://dvdhrm.wordpress.com/2012/12/21/advanced-drm-mode-setting-api/]
+
+An alternative for the GPU fence wait — avoiding a `sync_file` export entirely — is `DRM_IOCTL_SYNCOBJ_EVENTFD`, added in Linux 6.6. This ioctl registers an eventfd with a `drm_syncobj` timeline point; the eventfd counter is incremented by one when the timeline point signals. The resulting eventfd is also pollable with `IORING_OP_POLL_ADD`:
+
+```c
+struct drm_syncobj_eventfd evfd_args = {
+    .handle = syncobj_handle,
+    .flags  = 0,
+    .point  = acquire_point,  /* 0 for binary syncobj */
+    .fd     = efd,            /* pre-created eventfd */
+    .pad    = 0,
+};
+ioctl(drm_fd, DRM_IOCTL_SYNCOBJ_EVENTFD, &evfd_args);
+
+/* Now arm io_uring to poll the eventfd — fires when acquire_point signals */
+sqe = io_uring_get_sqe(ring);
+io_uring_prep_poll_add(sqe, efd, EPOLLIN);
+io_uring_sqe_set_data64(sqe, TAG_GPU_FENCE);
+io_uring_submit(ring);
+```
+
+`DRM_IOCTL_SYNCOBJ_EVENTFD` was designed precisely for this compositor event-loop use case: the existing `DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT` blocks the calling thread, making it unsuitable for non-blocking event-driven architectures. With the eventfd bridge, the blocking wait is eliminated entirely and the compositor remains single-threaded. [Source: drm/syncobj eventfd patch, https://www.spinics.net/lists/dri-devel/msg405693.html; `include/uapi/drm/drm.h` `DRM_IOCTL_SYNCOBJ_EVENTFD`, https://github.com/torvalds/linux/blob/master/include/uapi/drm/drm.h]
+
+### 10.4 linux-drm-syncobj-v1 and io_uring: Polling the Release Timeline
+
+The `wp_linux_drm_syncobj_v1` Wayland protocol (Section 5) hands `drm_syncobj` timeline file descriptors between compositor and client. When a compositor receives a surface commit containing an acquire point, it must wait for that point to signal before it can safely composite from the client's buffer. The blocking `DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT` ioctl is inappropriate for an event-driven compositor: it stalls the entire event loop thread.
+
+The io_uring approach uses `DRM_IOCTL_SYNCOBJ_EVENTFD` (Linux 6.6) together with `IORING_OP_POLL_ADD` to express the wait without blocking:
+
+```c
+/*
+ * Compositor-side handling of linux-drm-syncobj-v1 acquire point,
+ * integrated into an io_uring event loop.
+ *
+ * syncobj_handle:  imported from client's drm_syncobj fd
+ *                  (via DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE)
+ * acquire_point:   the 64-bit timeline point set_acquire_point() specified
+ * efd:             eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)
+ */
+void compositor_wait_acquire_async(struct io_uring *ring,
+                                   int drm_fd,
+                                   uint32_t syncobj_handle,
+                                   uint64_t acquire_point,
+                                   int efd)
+{
+    struct drm_syncobj_eventfd args = {
+        .handle = syncobj_handle,
+        .flags  = 0,
+        .point  = acquire_point,
+        .fd     = efd,
+        .pad    = 0,
+    };
+    /* Non-blocking registration: the eventfd is written when the
+       client's GPU render completes and the timeline point signals */
+    ioctl(drm_fd, DRM_IOCTL_SYNCOBJ_EVENTFD, &args);
+
+    /* Add the eventfd to the io_uring poll set */
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    io_uring_prep_poll_add(sqe, efd, EPOLLIN);
+    io_uring_sqe_set_data64(sqe, TAG_GPU_FENCE);
+    io_uring_submit(ring);
+
+    /*
+     * The compositor's main loop continues handling other events.
+     * When the CQE fires with TAG_GPU_FENCE, it is safe to composite
+     * from the client's buffer and proceed with the KMS atomic commit.
+     */
+}
+```
+
+After compositing completes and the KMS `OUT_FENCE_PTR` sync_file signals at vblank (indicating the display controller has finished scanning the old frame), the compositor signals the release point:
+
+```c
+/* Signal the release timeline point so the client may reuse its buffer.
+   This is done after the KMS OUT_FENCE_PTR fires (via io_uring poll on
+   the out_fence fd), ensuring the display is truly done with the buffer. */
+struct drm_syncobj_timeline_array sig_args = {
+    .handles = (uintptr_t)&syncobj_handle,
+    .points  = (uintptr_t)&release_point,
+    .count_handles = 1,
+    .flags   = 0,
+};
+ioctl(drm_fd, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &sig_args);
+```
+
+This closes the loop: the client's `vkWaitSemaphores()` on the release-point timeline semaphore wakes up, and it may safely reuse the buffer for the next frame. The entire synchronization path — from the client's GPU rendering through compositor fence wait, compositing, KMS scanout, and buffer release — is expressed without any blocking ioctls or dedicated waiter threads.
+
+### 10.5 Limitations and Current State
+
+Several important caveats qualify the io_uring-based unified event loop as of mid-2026:
+
+**`IORING_OP_POLL_ADD` on `sync_file` works today without special driver support.** Since `sync_file_poll()` is a standard `vfs_poll()` implementation, any kernel version that supports both `CONFIG_SYNC_FILE` and io_uring (Linux 5.1 or later for io_uring; `CONFIG_SYNC_FILE` has been present since the Android fence framework was upstreamed in Linux 4.6) can use `IORING_OP_POLL_ADD` to wait on GPU fences. No graphics driver changes are required.
+
+**`DRM_IOCTL_SYNCOBJ_EVENTFD` requires Linux 6.6.** The eventfd bridge for syncobj timeline points was added in Linux 6.6 (released October 2023). It is the preferred approach for compositor acquire-point waiting because it avoids the overhead of exporting a `sync_file` snapshot — it watches the live timeline point directly. The eventfd itself is then polled by io_uring or `epoll` as usual. [Source: kernelnewbies.org Linux 6.6 changelog, https://kernelnewbies.org/Linux_6.6; patch: https://www.spinics.net/lists/dri-devel/msg405693.html]
+
+**True async DRM page-flip submission (`IORING_OP_URING_CMD` / `IORING_OP_IOCTL`) is not widely adopted.** `IORING_OP_URING_CMD` (the io_uring command-passthrough mechanism, merged in Linux 5.19) is designed for file-specific async commands including DRM ioctls. However, the DRM subsystem has not implemented `file_operations->uring_cmd()` handlers for page-flip ioctls as of 2026 — the `DRM_IOCTL_MODE_PAGE_FLIP` and atomic commit ioctls are still submitted as blocking calls from the compositor thread, relying on `DRM_MODE_ATOMIC_NONBLOCK` for non-blocking execution rather than io_uring for async dispatch. The liburing issue tracker has noted this gap. [Source: io_uring IOCTL support LWN discussion, https://lwn.net/Articles/807442/; liburing issue #818, https://github.com/axboe/liburing/issues/818]
+
+**DRM vblank events via `poll()`/io_uring on the DRM fd are the established pattern.** The DRM fd becomes readable (`EPOLLIN`) when vblank events or page-flip completions are available to read. This is already used by `epoll`-based compositor loops (wlroots, Mutter, KWin all use a variant of this pattern). Replacing `epoll_wait()` with `io_uring_wait_cqes()` for these events is straightforward and requires no kernel changes. The blocking `DRM_IOCTL_WAIT_VBLANK` is the pattern being retired; polling the DRM fd is the current standard. [Source: DRM userland interfaces, https://docs.kernel.org/gpu/drm-uapi.html]
+
+**Pure io_uring compositor event loops are research/experimental territory.** No production Wayland compositor (Mutter, KWin, wlroots, Sway, Hyprland) has yet replaced its core `wl_event_loop` / `epoll` loop with io_uring as of mid-2026. The Smithay Rust compositor framework (which powers the Cosmic desktop) has explored async I/O patterns using `calloop` (an epoll-based event loop), but not io_uring. The architectural argument is compelling — a single `io_uring_wait_cqes()` replacing separate epoll waits for Wayland, DRM, sync_file, and input fds — but the engineering effort to port an existing compositor and the marginal performance improvement over `epoll` have not yet motivated a production adoption.
+
+> Note: The `IORING_OP_URING_CMD` path for async DRM ioctls remains an open design space. Any implementation that uses it for `DRM_IOCTL_MODE_PAGE_FLIP` or `DRM_IOCTL_MODE_ATOMIC` would require corresponding `uring_cmd` handlers in the DRM core or individual DRM drivers; verify status against `drivers/gpu/drm/drm_ioctl.c` and mailing-list activity before implementing.
+
+---
+
+## Section 11: Integrations
 
 This chapter sits at the intersection of the kernel DRM/KMS layer, the Mesa Vulkan/EGL driver layer, the Wayland protocol layer, and the compositor implementation layer. The following chapters cover the components referenced here:
+
+**Section 10 of this chapter** (io_uring and sync_file) connects directly to the event-loop and I/O multiplexing concerns of every layer below; see also Appendix G for a concise sync-primitive conversion table that covers the `sync_file`/eventfd/io_uring paths.
 
 **Ch1 — DRM Architecture** (`chapters/part-01-kernel-layer/ch01-drm-architecture.md`): The `drm_syncobj` kernel infrastructure lives in the DRM subsystem. Chapter 1 covers the DRM driver model, GEM object lifecycle, and the DRM file descriptor context from which syncobj handles are valid. The render node isolation model described in Chapter 1 is the security boundary that makes sharing syncobj fds (rather than sharing GEM handles) the correct cross-process sync mechanism.
 
@@ -1017,6 +1335,26 @@ This chapter sits at the intersection of the kernel DRM/KMS layer, the Mesa Vulk
 25. LWN.net: "DRI3 and Present". [https://lwn.net/Articles/569701/](https://lwn.net/Articles/569701/)
 
 26. Phoronix: "Linux 5.19 Advances In Quest To Improve Explicit Synchronization For Graphics". [https://www.phoronix.com/news/Linux-5.19-Better-Graphics-Sync](https://www.phoronix.com/news/Linux-5.19-Better-Graphics-Sync)
+
+27. Linux kernel source: `drivers/dma-buf/sync_file.c` — sync_file implementation including `sync_file_poll()` and `fence_check_cb_func`. [https://github.com/torvalds/linux/blob/master/drivers/dma-buf/sync_file.c](https://github.com/torvalds/linux/blob/master/drivers/dma-buf/sync_file.c)
+
+28. Linux kernel documentation: "Sync File API Guide" — sync_file Android origins, driver-side API for creating and consuming sync_file fds. [https://docs.kernel.org/driver-api/sync_file.html](https://docs.kernel.org/driver-api/sync_file.html)
+
+29. io_uring_enter(2) man page — IORING_OP_POLL_ADD semantics, poll_events field, one-shot vs. multi-shot modes, completion result mask. [https://man7.org/linux/man-pages/man2/io_uring_enter.2.html](https://man7.org/linux/man-pages/man2/io_uring_enter.2.html)
+
+30. io_uring_prep_poll_add(3) man page — liburing helper for IORING_OP_POLL_ADD SQE setup. [https://man7.org/linux/man-pages/man3/io_uring_prep_poll_add.3.html](https://man7.org/linux/man-pages/man3/io_uring_prep_poll_add.3.html)
+
+31. DRI development mailing list: "[PATCH v4] drm/syncobj: add IOCTL to register an eventfd" (July 2023) — DRM_IOCTL_SYNCOBJ_EVENTFD motivation, design, and event-loop integration rationale. [https://www.spinics.net/lists/dri-devel/msg405693.html](https://www.spinics.net/lists/dri-devel/msg405693.html)
+
+32. Vulkan specification: `VkSemaphoreGetFdInfoKHR` (VK_KHR_external_semaphore_fd) — VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT semantics, binary-semaphore-only restriction, -1 for pre-signalled. [https://docs.vulkan.org/refpages/latest/refpages/source/VkSemaphoreGetFdInfoKHR.html](https://docs.vulkan.org/refpages/latest/refpages/source/VkSemaphoreGetFdInfoKHR.html)
+
+33. LWN.net: "ioctl() for io_uring" — RFC discussion of IORING_OP_IOCTL / IORING_OP_URING_CMD, DRM/dma-buf use cases, limitations. [https://lwn.net/Articles/844875/](https://lwn.net/Articles/844875/)
+
+34. liburing GitHub issue #818: "Support for DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT" — discussion of async syncobj timeline wait via io_uring vs. eventfd approach. [https://github.com/axboe/liburing/issues/818](https://github.com/axboe/liburing/issues/818)
+
+35. David Herrmann: "Advanced DRM Mode-Setting API" (2012) — DRM fd poll()/epoll/select integration for vblank events and page-flip completions, drmHandleEvent() usage. [https://dvdhrm.wordpress.com/2012/12/21/advanced-drm-mode-setting-api/](https://dvdhrm.wordpress.com/2012/12/21/advanced-drm-mode-setting-api/)
+
+36. kernelnewbies.org: Linux 6.6 changelog — DRM_IOCTL_SYNCOBJ_EVENTFD merge confirmation. [https://kernelnewbies.org/Linux_6.6](https://kernelnewbies.org/Linux_6.6)
 
 ---
 

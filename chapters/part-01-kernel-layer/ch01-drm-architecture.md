@@ -721,6 +721,129 @@ The argument to `drm_fbdev_generic_setup()` is the preferred bit depth for the e
 
 ---
 
+## Observing DRM with eBPF and bpftrace
+
+> **Audience note**: This section is aimed at driver developers and systems engineers who need to observe DRM internals on a live system without recompiling the kernel or inserting printk statements.
+
+The Linux kernel's tracing infrastructure exposes dozens of DRM-specific tracepoints that fire with zero overhead when disabled and with sub-microsecond overhead when enabled. Combined with `bpftrace` — the high-level eBPF scripting language — these tracepoints let a driver developer answer latency and correctness questions in seconds on a production kernel.
+
+### Available DRM Tracepoints
+
+The kernel ships three families of tracepoints directly relevant to DRM work. All are defined under `include/trace/events/` and require no patching or module insertion.
+
+**Display timing — `drm_vblank_event`** ([`include/trace/events/dma_fence.h` and the vblank trace header](https://elixir.bootlin.com/linux/latest/source/include/trace/events/dma_fence.h)): fires on every CRTC vertical blanking interval. Fields include `crtc` (integer index), `seq` (vblank sequence counter, equivalent to MSC), and `time` (kernel monotonic timestamp in nanoseconds). This is the ground-truth timing source for display jitter analysis.
+
+**GPU fence lifecycle — `dma_fence_init` / `dma_fence_emit` / `dma_fence_signaled`** ([`include/trace/events/dma_fence.h`](https://elixir.bootlin.com/linux/latest/source/include/trace/events/dma_fence.h)): track the full lifetime of a DMA fence from allocation through signal. Fields include `driver` (the fence driver name, e.g. `amdgpu` or `i915`), `timeline`, `context`, and `seqno`. These tracepoints are the canonical way to measure how long the GPU actually takes to complete a job from the kernel's perspective — independent of any userspace timing.
+
+**GPU scheduler — `drm_sched_job`** ([`include/trace/events/gpu_scheduler.h`](https://elixir.bootlin.com/linux/latest/source/include/trace/events/gpu_scheduler.h)): fires when a job enters the DRM GPU scheduler queue (`drm_sched_job_arm`) and when it completes. Fields include `entity`, `id`, and `fence`. This tracepoint is available for all drivers that use the common `drm_sched` layer — amdgpu, etnaviv, lima, panfrost, msm, and v3d among others; i915 and xe have their own scheduler paths.
+
+To enumerate every tracepoint currently available under the `drm` subsystem on a running kernel:
+
+```bash
+sudo bpftrace -l 'tracepoint:drm:*'
+sudo bpftrace -l 'tracepoint:dma_fence:*'
+sudo bpftrace -l 'tracepoint:gpu_scheduler:*'
+```
+
+> Note: The exact set varies by kernel version and Kconfig. Tracepoints in `CONFIG_DRM_USE_DYNAMIC_DEBUG` builds may appear differently. Always enumerate on the target kernel before scripting.
+
+### Three Essential One-Liners
+
+**1. Vblank jitter measurement**
+
+Display timing irregularities — dropped frames, stutters, sync loss — produce a vblank interval that deviates from the nominal refresh period (16.67 ms at 60 Hz, 6.94 ms at 144 Hz). This script accumulates a histogram of inter-vblank deltas per CRTC:
+
+```bpftrace
+// Vblank jitter: histogram of inter-vblank intervals in microseconds, per CRTC
+tracepoint:drm:drm_vblank_event
+{
+    @delta_us[args->crtc] = hist((nsecs - @prev[args->crtc]) / 1000);
+    @prev[args->crtc] = nsecs;
+}
+```
+
+Run with `sudo bpftrace vblank_jitter.bt` for 10–30 seconds during a repro scenario, then `Ctrl+C` to print the histogram. A healthy 60 Hz display shows a tight cluster around 16 667 µs; any outliers beyond ±500 µs indicate a missed interrupt, a CPU scheduling stall on the vblank handler, or a late DRM interrupt acknowledgement.
+
+**2. GPU fence latency histogram**
+
+This script measures the elapsed time between fence creation and fence signal — the wall-clock duration a GPU job took to complete, as seen by the kernel:
+
+```bpftrace
+// GPU fence latency: time from dma_fence_init to dma_fence_signaled, in µs
+tracepoint:dma_fence:dma_fence_init
+{
+    @start[args->context, args->seqno] = nsecs;
+}
+
+tracepoint:dma_fence:dma_fence_signaled
+{
+    $key_ctx  = args->context;
+    $key_seq  = args->seqno;
+    $t = @start[$key_ctx, $key_seq];
+    if ($t > 0) {
+        @fence_us = hist((nsecs - $t) / 1000);
+        delete(@start[$key_ctx, $key_seq]);
+    }
+}
+```
+
+The resulting histogram separates fast (sub-millisecond) compute fences from slow (tens of milliseconds) rendering jobs. Outliers on the right tail indicate GPU hangs, preemption stalls, or command ring contention. Cross-referencing with `tracepoint:gpu_scheduler:drm_sched_job` on supported drivers adds the scheduler queuing time to the picture.
+
+> Note: `bpftrace` map keys must be scalar. The two-field key `(args->context, args->seqno)` used above is valid in bpftrace 0.17+ as a tuple key. On older releases, encode as `args->context << 32 | args->seqno` if both values fit in 32 bits, or use a string key: `@start[sprintf("%d:%d", args->context, args->seqno)]`.
+
+**3. DRM ioctl rate by process**
+
+Unexpected latency spikes are sometimes caused by a process hammering DRM ioctls. This one-liner counts ioctl entries per process name, printing and clearing every second:
+
+```bpftrace
+// DRM ioctl rate: calls per second, broken out by process name
+kprobe:drm_ioctl          { @ioctls[comm] = count(); }
+interval:s:1              { print(@ioctls); clear(@ioctls); }
+```
+
+A compositor under normal load issues a few hundred ioctls per second (mostly atomic commits and event reads). Thousands of ioctls per second from a single process typically indicates a Mesa driver stuck in a retry loop, a broken fence wait, or a userspace busy-poll. The `comm` built-in in bpftrace gives the 16-character `task_comm` name; attach `pid` instead of `comm` if multiple instances of the same binary are suspected.
+
+### When to Reach for bpftrace vs. Other Tools
+
+bpftrace is the right tool when the question is temporal or statistical: *How long does this take? How often does this happen? Which process is the source?* It excels at one-shot latency questions, race condition detection, and correlating DRM events with concurrent application behaviour — all without modifying kernel or userspace source.
+
+It is the wrong tool for other classes of analysis:
+
+- **Per-drawcall GPU work** — Use [RenderDoc](https://renderdoc.org/) or [GFXR](https://github.com/LunarG/gfxreconstruct) to capture and replay individual draw calls with full pipeline state. bpftrace cannot see inside GPU command streams.
+- **Hardware performance counters** — GPU counter access (cache miss rate, shader occupancy, memory bandwidth) requires vendor profilers: [Intel GPA](https://www.intel.com/content/www/us/en/developer/tools/graphics-performance-analyzers/overview.html), [AMD Radeon GPU Profiler](https://gpuopen.com/rgp/), or [NVIDIA Nsight](https://developer.nvidia.com/nsight-systems). The kernel does not expose raw PMU counters via tracepoints for GPU hardware.
+- **Mesa and OpenGL/Vulkan API tracing** — `MESA_DEBUG=1`, `LIBGL_DEBUG=verbose`, or [apitrace](https://github.com/apitrace/apitrace) are the right tools for problems in the Mesa driver stack above the kernel. `MESA_DEBUG` adds overhead unconditionally; bpftrace adds none unless a script is running.
+- **Display colour and geometry correctness** — No kernel tracepoint can tell you whether a pixel is the wrong colour. Use compositor-level debug overlays or hardware test patterns from the KMS `debugfs` interface (`/sys/kernel/debug/dri/0/`).
+
+As a decision rule: if the symptom appears in `/sys/kernel/debug/dri/`, `dmesg`, or in frame timing graphs, reach for bpftrace first. If the symptom requires inspecting the content of GPU commands or pixel values, reach for userspace tooling.
+
+---
+
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **DRM GPU scheduler defaults to "fair" policy**: As of the Linux 7.2 merge window, the DRM GPU scheduler (used by amdgpu, Intel Xe, and other drivers) switches its default scheduling policy from FIFO to "fair", improving multi-client GPU timesharing. Drivers that previously relied on implicit FIFO ordering may need to audit their command-submission paths. [Source](https://www.phoronix.com/news/Linux-7.2-Initial-DRM-Misc-Next)
+- **Nova DRM driver graduates from staging**: The Rust-written Nova driver for NVIDIA GSP-based GPUs (Turing/RTX 20 and newer) continues to land infrastructure in `drivers/gpu/drm/nova/`. Memory management (page tables, virtual address space, BAR mapping) reached RFC v6 in early 2026 and is tracking mainline inclusion once Rust DRM abstractions stabilise. [Source](https://lkml.iu.edu/2601.2/00047.html)
+- **Rust DRM abstractions expand for Linux 7.x**: The `rust/kernel/drm/` tree is receiving new abstractions — DMA-coherent API rework, GPU buddy allocator, shared-memory GEM helpers, and I/O infrastructure — which are prerequisite building blocks for Nova and the Panthor/PowerVR Rust drivers. [Source](https://www.phoronix.com/news/Rust-DRM-For-Linux-7.1)
+- **GPU Scheduler todo-list cleanup**: The drm-misc todo list has added an explicit section for GPU scheduler improvements, including better error propagation, reset handling, and scheduler-priority exposure to userspace via `FDINFO`. Note: specific patchsets are in flux; needs verification against drm-misc-next.
+- **AMDXDNA FDINFO per-client memory tracking**: The AMDXDNA driver (AMD Ryzen AI NPUs) lands per-client buffer-object memory reporting via `FDINFO`, establishing a pattern for compute-accelerator (`DRIVER_COMPUTE_ACCEL`) resource accounting that may be generalised across other accelerator drivers. [Source](https://www.phoronix.com/news/Linux-7.2-Initial-DRM-Misc-Next)
+
+### Medium-term (1–3 years)
+
+- **Unified `drm_gpuvm` VM_BIND uAPI adoption**: The `drm_gpuvm` framework (CONFIG_DRM_GPUVM), already consumed by Xe, Nouveau, MSM, Panthor, and PowerVR, is being positioned as the canonical GPU virtual-address-space management layer. Ongoing work aims to converge the per-driver `VM_BIND` uAPI (userspace-managed GPU VA ranges) on a common interface so that Mesa's Vulkan drivers can use a single code path across hardware. [Source](https://docs.kernel.org/gpu/drm-mm.html)
+- **Nova-Core / Nova-DRM split architecture as a template**: The Nova architecture separates a hardware abstraction core (`nova-core`) from a DRM-facing driver (`nova-drm`) and a potential VFIO virtualisation driver sharing the same core. If successful, this layered model may influence how future DRM drivers for AI accelerators and non-display GPUs are structured under `DRIVER_COMPUTE_ACCEL`. [Source](https://rust-for-linux.com/nova-gpu-driver)
+- **Expanded explicit synchronisation surface**: Timeline sync objects (`DRIVER_SYNCOBJ_TIMELINE`) and DRM sync files continue to grow: proposals on the mailing list include exposing GPU-side timeline points directly in the `VM_BIND` submission path and tighter integration with io_uring for zero-copy command submission. Note: specific RFC numbers need verification.
+- **Display HDR and colour-management uAPI stabilisation**: Colour-pipeline properties (`drm_color_mgmt`) and HDR metadata connectors have been in tree for several kernel cycles but remain labelled "experimental" in several drivers. The medium-term goal is a stable, driver-neutral uAPI for wide-colour-gamut and HDR display pipelines. Note: needs verification against current drm-misc status.
+
+### Long-term
+
+- **Full Rust DRM driver ecosystem**: The expectation within the Rust-for-Linux and DRM communities is that future drivers for novel GPU ISAs (AI accelerators, RISC-V GPU IP) will be written primarily in Rust from the outset, using the `rust/kernel/drm/` abstractions rather than the legacy C helper layer. The Nova and Tyr (ARM Mali CSF) drivers are the current proving grounds for this model.
+- **Privilege model evolution — capability-based GPU access**: The current render-node + render-group model dates to 2012 and is acknowledged as a coarse grained mechanism. Longer-term proposals discuss replacing the group-membership check with a capability-based model (similar to `cap_net_bind_service`) that allows fine-grained delegation of GPU sub-resources to containers and sandboxed processes. Note: no formal RFC exists as of mid-2026; speculative direction.
+- **DRM as the unified kernel interface for AI/ML accelerators**: The `DRIVER_COMPUTE_ACCEL` flag introduced for non-display hardware is intended to allow DRM to serve as the kernel interface for AI NPUs, matrix engines, and fixed-function accelerators — not just GPUs. The long-term architectural question is whether a single DRM device model can accommodate display, 3D, compute, and inference workloads, or whether a parallel subsystem (analogous to `drm` versus `v4l2`) will emerge.
+- **KMS atomic API deprecation of legacy ioctls**: The legacy KMS ioctls (`drmModeSetCrtc`, `drmModeSetPlane`, `drmModeAddFB`) are candidates for eventual deprecation in favour of the atomic path. Complete removal requires verifying that all remaining userspace consumers (Plymouth, fbcon, older Weston versions) have migrated. Note: no deprecation timeline has been formally proposed.
+
+---
+
 ## Integrations
 
 **Chapter 2 (Kernel Mode Setting)**: Section 7 of this chapter introduces the atomic commit API (`drmModeAtomicCommit`) and the property-object model that replaces `drmModeSetCrtc`. Chapter 2 expands the entire KMS object model — planes, CRTCs, encoders, connectors, bridges — and explains how `DRM_MODE_ATOMIC_ALLOW_MODESET` interacts with hardware-specific constraints. The dumb buffer API that the fbdev emulation layer (Section 10) relies upon is also described in full in Chapter 2.
