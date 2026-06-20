@@ -19,8 +19,9 @@
    - [Protocol Detection Strategies](#protocol-detection-strategies)
    - [Selection Guidance](#selection-guidance)
    - [The Standardisation Landscape: Fragmentation by Pragmatism](#the-standardisation-landscape-fragmentation-by-pragmatism)
-6. [Integrations](#6-integrations)
-7. [References](#7-references)
+6. [Terminal Multiplexers and Pixel Protocol Passthrough](#6-terminal-multiplexers-and-pixel-protocol-passthrough)
+7. [Integrations](#7-integrations)
+8. [References](#8-references)
 
 ---
 
@@ -431,7 +432,125 @@ The three protocols differ not only in feature set but also in the fundamental a
 
 ---
 
-## 6. Integrations
+## 6. Terminal Multiplexers and Pixel Protocol Passthrough
+
+**Audiences targeted:** Terminal and TUI developers who need to ship image-capable applications that work reliably inside tmux, zellij, and GNU Screen; and terminal emulator developers who must understand the architectural constraints that multiplexers impose on the pixel protocol layer.
+
+### The Multiplexer Problem
+
+When a user runs a terminal application inside a multiplexer such as **tmux**, **zellij**, or **GNU Screen**, the multiplexer inserts itself between the application's PTY and the actual terminal emulator displayed on screen. The arrangement is a PTY-on-PTY chain: the outer terminal emulator opens a PTY master, the multiplexer attaches as the slave, and each multiplexer pane opens another PTY master whose slave is the user's shell and applications. Every byte the application writes to its PTY slave travels up to the multiplexer, which parses the escape sequence stream, updates its own internal cell grid, and then re-emits escape sequences to the outer terminal to reflect the change.
+
+This is an architectural constraint, not a bug. The multiplexer must intercept and re-emit sequences because its core features — detach/reattach, split panes, window switching, scrollback buffer management — all depend on knowing the current screen state. A multiplexer that simply forwarded all bytes blindly to the outer terminal would have no way to know which cells belong to which pane, how to redraw the screen after reattach, or how to implement its scrollback buffer.
+
+The consequence for pixel protocols is that any escape sequence the multiplexer does not understand is either silently discarded or treated as an error. A DCS Sixel stream sent from an application inside tmux disappears because tmux does not know how to store binary pixel data in its cell grid model or how to re-emit it to the outer terminal correctly. This is the fundamental reason pixel graphics are difficult inside multiplexers.
+
+### The tmux Cell-Grid Model and Why Sixel Disappears
+
+tmux represents the screen state of each pane as a virtual cell grid. The relevant data structures are `struct grid` and `struct grid_cell` in `tmux.h` [Source](https://github.com/tmux/tmux/blob/master/tmux.h). Each `grid_cell` stores a Unicode codepoint, foreground and background colour, and attribute flags; there is no field for raw pixel data or image references. When tmux processes output from a pane, it calls its escape sequence parser, which updates the appropriate `grid_cell` entries for recognised sequences (cursor movement, SGR colour attributes, character writes) and discards anything it does not recognise.
+
+A Sixel DCS stream is not representable in a `grid_cell` array. tmux has no way to store the image and no way to re-emit it to the outer terminal when it needs to redraw the pane — for example, after a window switch, a pane resize, or reattach. The practical result is that Sixel sequences sent to a pane inside tmux are silently dropped: the image never appears, and no error is reported.
+
+tmux 3.3 introduced an option that allows an exception to this discard policy. With `set -g allow-passthrough on` in `~/.tmux.conf`, tmux enables a DCS passthrough mechanism (described in the next section). Without this option, Sixel images sent inside any tmux version prior to 3.3 — and inside 3.3+ with the default configuration — disappear silently. [Source](https://raw.githubusercontent.com/tmux/tmux/3.4/CHANGES)
+
+```bash
+# ~/.tmux.conf — enable DCS passthrough for sixel and iTerm2 images (tmux 3.3+)
+set -g allow-passthrough on
+```
+
+### The DCS Passthrough Mechanism
+
+tmux 3.3 added a DCS passthrough facility: any DCS sequence that tmux receives from the pane and does not recognise as an internal tmux control sequence is relayed unmodified to the outer terminal, provided passthrough is enabled. The passthrough is triggered by wrapping an inner DCS sequence inside an outer DCS string of the form:
+
+```
+ESC P tmux; <inner-sequence-with-ESC-doubled> ESC \
+```
+
+In 7-bit form, the outer DCS initiator is `\033P`, the identifier string is `tmux;`, the inner sequence follows with every `ESC` byte (`\033`) doubled to `\033\033`, and the outer sequence is closed by the String Terminator `\033\`. For example, to pass through a Sixel stream (`ESC P ... ESC \`) from inside tmux to the outer terminal, an application must send:
+
+```
+\033Ptmux;\033\033P<sixel-params>q<sixel-data>\033\033\\\033\
+```
+
+The ESC-doubling requirement exists because the tmux DCS parser must be able to unambiguously find the outer `\033\` terminator even though the inner sequence may itself contain `\033` bytes. Without doubling, the first `\033\` in the inner sequence would be interpreted as the outer terminator, truncating the passthrough stream.
+
+Similarly, to pass through an iTerm2 `OSC 1337` image sequence:
+
+```
+\033Ptmux;\033\033]1337;File=<params>:<base64>\007\033\
+```
+
+The practical consequence of this mechanism is that applications which want to work both inside and outside tmux must detect whether they are running inside tmux (by checking `$TMUX` or `$TERM_PROGRAM`), and if so, wrap their pixel-protocol sequences in the `DCS tmux;` envelope with ESC-doubling applied. Tools such as `imgcat` from iTerm2 and `wezterm imgcat` implement this detection and wrapping automatically. [Source](https://github.com/tmux/tmux/issues/1502)
+
+```bash
+# Detect tmux and wrap a sixel stream accordingly
+if [ -n "$TMUX" ]; then
+    # inside tmux: wrap sixel in DCS Ptmux passthrough with ESC doubling
+    magick input.png sixel:- | sed 's/\x1b/\x1b\x1b/g' \
+        | printf '\x1bPtmux;%s\x1b\\' "$(cat)"
+else
+    magick input.png sixel:-
+fi
+```
+
+> Note: The `sed` ESC-doubling approach processes the full image buffer in memory; for large images, a streaming C implementation that doubles ESC bytes on the fly is preferable to avoid memory pressure.
+
+### Kitty Protocol: Unicode Placeholders as a Multiplexer Solution
+
+The Kitty Graphics Protocol addressed the multiplexer problem at the design level rather than through a wrapping mechanism. As described in [Section 3](#3-kitty-graphics-protocol-stateful-chunked-gpu-ready), the Unicode placeholder mechanism uses the private-use codepoint **U+10EEEE** as an image cell marker, with diacritic combining characters encoding the row, column, and image ID for each cell. These diacritics cause the U+10EEEE characters to carry all the information needed for the terminal to reconstruct the correct image sub-region at each cell position, wherever those characters end up.
+
+From a multiplexer's perspective, a Kitty image placed via the Unicode placeholder mechanism looks identical to a sequence of ordinary Unicode characters: the characters have codepoints, they have combining characters attached, and they occupy cells in the grid. When tmux processes these characters, it stores them in `grid_cell` entries exactly as it would any other Unicode text with combining marks. When tmux redraws a pane — on reattach, on window switch, on resize — it re-emits those cells to the outer terminal. The outer terminal, recognising U+10EEEE, looks up the image ID in its image store and renders the corresponding pixel sub-region for each cell.
+
+This is the architectural reason the Kitty protocol's Unicode placeholder design differs fundamentally from Sixel and iTerm2: it was specifically engineered so that images survive the multiplexer cell grid round-trip without requiring either ESC-doubling or DCS passthrough. The trade-off is that the image data itself must be transmitted once before the placeholder characters are sent — the application issues the image upload directly to the outer terminal (using the `t=d` or `t=f` transmission path), then writes the placeholder characters to the PTY in the normal way. [Source](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
+
+In practice, some multiplexers strip combining characters from private-use codepoints, which breaks the row/column metadata encoded in the diacritics. The Kitty protocol specification documents this risk and recommends that application developers test placeholder rendering explicitly under each multiplexer they target.
+
+### zellij: Passthrough Aspirations and Current Limitations
+
+zellij is a Rust-based multiplexer that uses a different internal architecture from tmux, with a plugin system and layout management built around a tile-based pane model. Like tmux, zellij maintains its own cell grid for each pane and re-emits cell content to the outer terminal.
+
+As of 2026, zellij does not implement a working pixel-protocol passthrough mechanism. Active feature requests exist — notably issues #371 (Sixel support), #2814 (Kitty Graphics Protocol), and #4500 (passthrough for Kitty graphics) on the zellij GitHub repository [Source](https://github.com/zellij-org/zellij/issues/4500) — but none had been merged into a release. zellij's existing Sixel handling is partial: there is enough parser awareness to prevent Sixel sequences from corrupting the cell grid, but images do not appear in panes. The Kitty Graphics Protocol is completely unimplemented.
+
+The zellij configuration language (KDL) does not expose a passthrough configuration option equivalent to tmux's `allow-passthrough`. Users who require pixel graphics inside a multiplexer and cannot switch to tmux should use WezTerm's built-in multiplexer (described in the next section) or accept that image display is unavailable within zellij panes.
+
+> Note: The zellij project is actively developed and the passthrough situation may have changed after this chapter was written. Check the current zellij changelog and the issue tracker at [https://github.com/zellij-org/zellij](https://github.com/zellij-org/zellij) for the latest status.
+
+GNU Screen, the oldest of the three multiplexers, discards all escape sequences it does not recognise and has no DCS passthrough mechanism. Sixel, Kitty, and iTerm2 images all fail silently inside a Screen session.
+
+### WezTerm's Built-in Multiplexer: Avoiding the Problem Entirely
+
+WezTerm takes a fundamentally different approach to multiplexing. Its multiplexer (`wezterm-mux`) runs as a daemon process inside the WezTerm process itself rather than as an independent program that wraps a PTY. The wezterm-mux daemon maintains its own representation of pane state, but because it runs inside WezTerm (or a WezTerm daemon on a remote host), it has full awareness of all image protocol state: it stores pixel data in its own image cache, associates images with their placement coordinates, and handles all three protocols (Sixel, Kitty, iTerm2) natively. [Source](https://wezterm.org/multiplexing.html)
+
+When using WezTerm's local multiplexer (tabs and panes inside a single WezTerm window), pixel protocol images simply work — there is no intermediate process that can discard the sequences, because WezTerm is both the multiplexer and the terminal renderer. The image data goes directly from the pane's PTY into WezTerm's image cache and then into the GPU render pipeline described in Chapter 44.
+
+For remote sessions, WezTerm provides two connection mechanisms. `wezterm connect <domain>` connects to a wezterm-mux daemon already running on a remote host (typically configured in `wezterm.lua` as a `unix` or `tls` domain). `wezterm ssh <host>` opens an SSH session to the remote host and attempts to spawn a wezterm-mux daemon there, then connects to it. In both cases, the remote daemon handles image protocol sequences from remote applications, and WezTerm's local renderer displays them — the images survive the connection because the multiplexer has full image awareness on both ends. [Source](https://wezterm.org/ssh.html)
+
+The limitation of this architecture is that it requires WezTerm on the remote host in addition to the local machine. A WezTerm user SSH-ing into a server that has only tmux and xterm installed gets no image benefits from the WezTerm mux architecture — they fall back to the standard PTY-on-PTY chain with all its constraints.
+
+### Testing Multiplexer Compatibility
+
+Terminal emulator developers adding pixel protocol support, and application developers shipping image-capable TUI tools, need a practical test procedure for verifying multiplexer behaviour. The following checks cover the common scenarios.
+
+**Detecting the multiplexer environment.** The `$TMUX` environment variable is set by tmux to a socket path and session information when running inside a tmux session; its presence is the most reliable tmux indicator. `$TERM_PROGRAM` is set to `tmux` by some tmux versions. Inside zellij, `$ZELLIJ` is set to a session ID. Applications should check these variables before deciding whether to apply DCS passthrough wrapping.
+
+**Querying tmux passthrough support.** `tmux info` (or `tmux display-message -p "#{allow-passthrough}"`) reports the current value of the `allow-passthrough` option. If the output is `on`, DCS passthrough is enabled. If the tmux version pre-dates 3.3, the option does not exist and passthrough is unavailable.
+
+**Smoke-testing Sixel passthrough.** The ImageMagick `magick` command (formerly `convert`) can generate a minimal Sixel stream and write it to stdout, which serves as a quick live test of the full passthrough chain:
+
+```bash
+# Quick Sixel smoke test — works both inside and outside tmux
+# (requires ImageMagick and a Sixel-capable outer terminal)
+magick -size 64x64 gradient:blue-red sixel:-
+```
+
+Inside tmux with `allow-passthrough on`, this command should display a small blue-to-red gradient rectangle in the pane. If nothing appears, the outer terminal does not support Sixel, or `allow-passthrough` is off.
+
+**Verifying the `TERM` variable.** Inside tmux the `$TERM` variable is typically set to `tmux-256color` or `screen-256color`, which affects what capabilities terminal-detection code discovers. Some image display tools check for `xterm-256color` specifically and refuse to attempt pixel output when they see `tmux-256color`. A permissive detection strategy checks `$TMUX` or `$ZELLIJ` first and then applies the appropriate passthrough policy regardless of `$TERM`.
+
+**Kitty Unicode placeholder test.** To verify that a multiplexer correctly passes through Kitty Unicode placeholder cells, the `kitty +kitten icat --transfer-mode=file` command (using the file transmission path to bypass shared memory limitations) writes a test image using placeholders. If the image displays correctly inside the multiplexer, placeholder round-trip through the cell grid is working. If cells display as garbled text or missing characters, the multiplexer is stripping combining characters from U+10EEEE codepoints.
+
+---
+
+## 7. Integrations
 
 **Chapter 44 — Terminal GPU Rendering Architectures**: The pixel data decoded by all three protocols described in this chapter ultimately becomes a GPU texture object managed by the terminal's rendering engine. Chapter 44 describes how kitty's OpenGL renderer maps Kitty protocol image IDs to `glTexImage2D`-managed textures, how WezTerm's wgpu path handles the same data, and how the terminal's single-pass compositing loop renders both glyph quads and image quads in z-index order in a single draw call. The protocol-level ID, placement, and z-index abstractions described here correspond directly to the texture handles, draw-call rectangles, and render-layer sort keys in the GPU render loop.
 
@@ -445,7 +564,7 @@ The three protocols differ not only in feature set but also in the fundamental a
 
 ---
 
-## 7. References
+## 8. References
 
 1. Kitty Graphics Protocol specification: https://sw.kovidgoyal.net/kitty/graphics-protocol/
 

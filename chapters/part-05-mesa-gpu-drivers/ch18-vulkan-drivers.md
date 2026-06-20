@@ -36,6 +36,14 @@
 - [6. Conformance Testing with dEQP-VK](#6-conformance-testing-with-deqp-vk)
 - [7. Cross-Driver Topics: Synchronisation, Present, and Debug Markers](#7-cross-driver-topics-synchronisation-present-and-debug-markers)
 - [8. Mesa Vulkan WSI: The Window System Integration Layer](#8-mesa-vulkan-wsi-the-window-system-integration-layer)
+- [9. v3dv: Broadcom VideoCore VI/VII Vulkan on Raspberry Pi](#9-v3dv-broadcom-videocore-vivii-vulkan-on-raspberry-pi)
+  - [9.1 Context and Conformance History](#91-context-and-conformance-history)
+  - [9.2 VideoCore VI/VII Architecture](#92-videocore-vivii-architecture)
+  - [9.3 Kernel Side: The v3d DRM Driver](#93-kernel-side-the-v3d-drm-driver)
+  - [9.4 v3dv Driver Architecture](#94-v3dv-driver-architecture)
+  - [9.5 Shader Compilation: NIR to QPU](#95-shader-compilation-nir-to-qpu)
+  - [9.6 Vulkan 1.3 on VideoCore VII (Raspberry Pi 5)](#96-vulkan-13-on-videocore-vii-raspberry-pi-5)
+  - [9.7 Practical Significance](#97-practical-significance)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -811,6 +819,181 @@ A widespread misconception is that the WSI layer is merely a thin wrapper. In pr
 - **Sparse resource and residency (`VK_KHR_maintenance7`, future sparse tiling extensions)**: Large-scale sparse textures and partially-resident buffers require kernel VM range management (AMD's amdgpu sparse VA ops, Intel's XE_VM_BIND sparse semantics) and are an ongoing area across all three drivers as game engines increasingly depend on D3D12-equivalent tiled resource tiers.
 - **Mesa Vulkan software ray tracing via hardware-agnostic BVH library**: A GPU-agnostic BVH build and traversal library is a stated long-term goal to allow hardware-incapable drivers (Lavapipe, PanVK) to expose `VK_KHR_ray_tracing_pipeline` via pure compute shaders, reusing the build shaders already present in `src/amd/vulkan/bvh/` with driver-neutral wrappers. Note: speculative direction based on community discussions.
 - **Vulkan cooperative matrix and ML inference extensions**: Khronos `VK_KHR_cooperative_matrix` is landing in ANV for Xe2 and is under investigation for RDNA4's WMMA (Wave Matrix Multiply-Accumulate) instructions in RADV; long-term this feeds into on-GPU ML inference workloads for display upscaling and content generation inside Linux desktop pipelines.
+
+---
+
+## 9. v3dv: Broadcom VideoCore VI/VII Vulkan on Raspberry Pi
+
+### 9.1 Context and Conformance History
+
+v3dv is the Mesa Vulkan driver for Broadcom's VideoCore VI GPU (Raspberry Pi 4, Pi 400, Compute Module 4) and VideoCore VII GPU (Raspberry Pi 5, Compute Module 5). It is developed primarily by Igalia in collaboration with the Raspberry Pi Foundation, with Iago Toral as the primary author. The driver's source lives in `src/broadcom/vulkan/` inside the Mesa repository, sharing the Broadcom compiler infrastructure in `src/broadcom/compiler/` with the older OpenGL ES v3d driver. [Source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/broadcom/vulkan)
+
+The driver reached conformance in several stages. It was merged into Mesa 20.3 (December 2020) as a Vulkan 1.0 conformant driver for VideoCore VI, passing over 100,000 dEQP-VK test cases at that time. [Source](https://www.igalia.com/2020/10/20/v3dv-becomes-an-official-Vulkan-Mesa-driver.html) Vulkan 1.1 conformance followed in late 2021, and Vulkan 1.2 conformance for the Raspberry Pi 4 was achieved in July 2022, announced jointly by Igalia and the Raspberry Pi Foundation. [Source](https://www.raspberrypi.com/news/vulkan-update-version-1-2-conformance-for-raspberry-pi-4/) Vulkan 1.3 conformance for both VideoCore VI and VideoCore VII landed in Mesa 24.3 (November 2024), contributed by Alejandro Piñeiro of Igalia; the final blocking item was correctly populating `maxInlineUniformBlockSize` and `maxInlineUniformTotalSize` in `VkPhysicalDeviceVulkan13Properties`. [Source](https://www.linuxtoday.com/blog/mesa-24-3-open-source-graphics-stack-adds-vulkan-1-3-conformance-for-v3dv/)
+
+The hardware generations the driver targets are identified internally by their V3D version number: V3D 4.2 for the BCM2711 SoC in the Raspberry Pi 4, and V3D 7.1 for the BCM2712 SoC in the Raspberry Pi 5. These version numbers appear throughout the driver source in `#if V3D_VERSION >= 71` guards.
+
+### 9.2 VideoCore VI/VII Architecture
+
+VideoCore VI and VII are tile-based deferred renderers (TBDR), placing them in the same architectural family as ARM Mali and Imagination PowerVR. The GPU processes geometry in two sequential phases: a **binning pass** (Binning Control List, BCL) and a **render pass** (Render Control List, RCL).
+
+During the binning pass, the GPU traverses all primitives submitted to a draw call and records, for each screen tile, which primitives intersect that tile. The result is a per-tile list of primitive references written to a tile allocation buffer in memory. During the render pass, each tile is processed in turn: the GPU executes the primitive shader for every primitive that the binner recorded as overlapping the tile, shading pixels in local tile memory before writing the resolved result to the framebuffer in main memory. This two-pass approach minimises bandwidth to external memory because most intermediate colour and depth data never leaves the on-chip tile buffer.
+
+This tile-based hardware model maps directly onto Vulkan's render pass and subpass abstraction. Vulkan `VkRenderPass` objects, with their explicit `loadOp`/`storeOp` and subpass dependencies, correspond closely to the hardware's tile-load and tile-store operations. When an application sets `ATTACHMENT_LOAD_OP_DONT_CARE` on a depth attachment, v3dv can skip the tile-load packet for that attachment; when it sets `ATTACHMENT_STORE_OP_DONT_CARE`, it can skip the tile-store packet, eliminating both read and write bandwidth to external RAM for that attachment.
+
+The VideoCore VI and VII share unified memory with the Arm CPU cores on the BCM2711/BCM2712 SoC. There is no dedicated VRAM; all GPU buffer objects (vertex data, textures, framebuffers, shader binaries) reside in the same LPDDR4 or LPDDR4X pool as the CPU's address space. Allocations are made from the Linux CMA (Contiguous Memory Allocator) pool or from the v3d driver's MMU-backed shmem heap. Because the GPU and CPU share the same physical memory, there is no need for DMA copies between host-visible and device-local memory — all GPU memory is host-visible. This simplifies v3dv's memory type layout, which exposes a single memory heap with both `VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT` and `VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT` set.
+
+The primary architectural difference between VideoCore VI and VII is QPU count. The BCM2711's VideoCore VI contains two slices, each with four QPUs, for a total of **8 QPUs**. The BCM2712's VideoCore VII adds a third slice, bringing the total to **12 QPUs** — a 50 % increase in raw compute throughput. Both GPUs operate the QPU at up to 500 MHz. [Source](https://forums.raspberrypi.com/viewtopic.php?t=380665)
+
+### 9.3 Kernel Side: The v3d DRM Driver
+
+The kernel-side component is the `v3d` DRM driver, located in `drivers/gpu/drm/v3d/` in the Linux kernel source tree. Unlike the older `vc4` driver (which handled VideoCore IV via DMA rings without an MMU), the v3d driver manages a hardware MMU that provides a 4 GB virtual address space for the GPU. Page tables for this MMU require up to 4 MB of physically contiguous memory (allocated as a DMA-coherent buffer in `v3d_gem.c`). All GPU buffer objects are mapped into this 4 GB window; virtual address 0 is never allocated, as several hardware units treat it as a null sentinel. [Source](https://www.kernel.org/doc/html/latest/gpu/v3d.html)
+
+Buffer objects are managed via the `drm_gem_shmem` helper — kernel shmem pages rather than CMA allocations, except for imported DMA-BUF objects which may be physically contiguous. Each buffer object is represented by a `struct v3d_bo` (embedding `drm_gem_shmem_object`) and is mapped into the GPU's MMU on demand when a job referencing it is submitted.
+
+Job submission is handled through the `DRM_IOCTL_V3D_SUBMIT_CL` ioctl (defined in `include/uapi/drm/v3d_drm.h`). The `drm_v3d_submit_cl` structure carries two pairs of addresses — `bcl_start`/`bcl_end` for the binner command list and `rcl_start`/`rcl_end` for the render command list — plus a list of referenced BO handles, and synchronisation fields. Critically, the binner and render phases are submitted as **two separate jobs** to the DRM GPU scheduler: a `v3d_bin_job` and a `v3d_render_job`, each containing a `v3d_job` base and the appropriate CL address range. The render job registers a dependency on the bin job's completion fence via `drm_sched_job_add_dependency()`, so the scheduler issues them sequentially to the hardware without requiring a CPU round-trip between the two phases. [Source](https://melissawen.github.io/blog/2022/05/10/multisync-p1)
+
+```c
+/* Source: include/uapi/drm/v3d_drm.h — Command List submission ioctl struct */
+struct drm_v3d_submit_cl {
+   /* Binner Command List: start and end GPU virtual addresses */
+   __u32 bcl_start;
+   __u32 bcl_end;
+   /* Render Command List: start and end GPU virtual addresses */
+   __u32 rcl_start;
+   __u32 rcl_end;
+   /* Syncobjs to wait on before starting the BCL */
+   __u32 in_sync_bcl;
+   /* Syncobjs to wait on before starting the RCL */
+   __u32 in_sync_rcl;
+   /* Syncobj to signal when the RCL completes */
+   __u32 out_sync;
+   /* Array of GEM BO handles referenced by this submission */
+   __u32 bo_handles;
+   __u32 bo_handle_count;
+   /* ... */
+};
+```
+
+The driver defines six queue types in `enum v3d_queue`: `V3D_BIN`, `V3D_RENDER`, `V3D_TFU` (Texture Formatting Unit for format conversion and mip generation), `V3D_CSD` (Compute Shader Dispatch, present on V3D 4.1+), `V3D_CACHE_CLEAN`, and `V3D_CPU` (for indirect CSD and CPU-executed utility jobs). Each queue has its own DRM GPU scheduler entity. The scheduler adopts a deliberate low-latency strategy: rather than filling the hardware's internal command queue with multiple jobs, it submits the next job only after the current job completes and fires its interrupt. This keeps interactive workloads (Wayland compositor rendering) from being head-of-line blocked behind background compute jobs. [Source](https://www.kernel.org/doc/html/latest/gpu/v3d.html)
+
+### 9.4 v3dv Driver Architecture
+
+The v3dv driver follows the same object-embedding pattern as every other Mesa Vulkan driver. `struct v3dv_device` embeds `vk_device` (from `src/vulkan/runtime/vk_device.h`) and holds a DRM file descriptor to the v3d render node, a reference to the physical device's hardware info struct, and a pool of pre-allocated GEM buffer objects for small transient allocations. `struct v3dv_physical_device` embeds `vk_physical_device` and stores the hardware revision and feature caps queried at device enumeration time. `struct v3dv_cmd_buffer` embeds `vk_command_buffer` and is the central recording object. `struct v3dv_pipeline` holds the compiled shader binaries (as `v3dv_shader_variant` objects, each containing the QPU binary and associated metadata) plus the hardware state packets that encode fixed-function configuration.
+
+Command buffer recording in v3dv works at the level of hardware Control Lists. When an application calls `vkCmdBeginRenderPass`, v3dv allocates a new GPU BO for the BCL and RCL and initialises the tile allocation memory. As draw calls are recorded with `vkCmdDraw` / `vkCmdDrawIndexed`, v3dv appends packets to the BCL: a `CONFIGURATION_BITS` packet for rasterisation state, `VERTEX_ARRAY_PRIMS` or `INDEXED_PRIM_LIST` packets for draw parameters, and `GL_SHADER_STATE` packets that reference the compiled QPU shader binary and its uniform data. When `vkCmdEndRenderPass` is called, v3dv closes the BCL with a `FLUSH` packet and constructs the RCL with per-tile `TILE_COORDINATES` and `BRANCH_TO_IMPLICIT_TILE_LIST` packets that drive the tile rendering loop. The resulting BCL and RCL BOs are then submitted to the kernel via `DRM_IOCTL_V3D_SUBMIT_CL`. [Source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/broadcom/vulkan)
+
+```c
+/* Source: src/broadcom/vulkan/v3dv_cmd_buffer.c — draw call BCL packet emission (pedagogical) */
+static void
+v3dv_cmd_buffer_emit_draw(struct v3dv_cmd_buffer *cmd_buffer,
+                           uint32_t vertex_count,
+                           uint32_t instance_count,
+                           uint32_t first_vertex)
+{
+   struct v3dv_job *job = cmd_buffer->state.job;
+   struct v3dv_cl *bcl = &job->bcl;
+
+   /* Flush pending state changes (pipeline, descriptors, viewport) */
+   v3dv_X(cmd_buffer->device, flush_graphics_state)(cmd_buffer);
+
+   /* Emit the draw packet into the Binning Command List */
+   cl_emit(bcl, VERTEX_ARRAY_PRIMS, prim) {
+      prim.mode         = hw_prim_type(topology);
+      prim.length       = vertex_count;
+      prim.index_of_first_vertex = first_vertex;
+   }
+}
+```
+
+The `v3dv_X()` macro selects the V3D-version-specific implementation of each function, enabling the same high-level source to handle both V3D 4.2 (Pi 4) and V3D 7.1 (Pi 5) packet encoding without `if (version >= 71)` scattered throughout the draw path.
+
+Compute dispatch uses the CSD (Compute Shader Dispatch) hardware unit, submitted via `DRM_IOCTL_V3D_SUBMIT_CSD`. Unlike the BCL/RCL path, compute shaders do not go through the tile binner; they are dispatched directly to the QPUs via a seven-register configuration block (`drm_v3d_submit_csd::cfg[7]`) that encodes workgroup dimensions, shader binary address, and uniform data address.
+
+### 9.5 Shader Compilation: NIR to QPU
+
+The Broadcom QPU (Quad Processing Unit) is a VLIW (Very Long Instruction Word) processor. Each QPU instruction encodes two independent ALU operations in parallel: an **add ALU** operation and a **multiply ALU** operation, each operating on 32-bit values. A signal field in the instruction controls side-band actions such as triggering a texture lookup, loading a uniform, or signalling thread switch. The basic VLIW format has been consistent from VideoCore IV through VideoCore VII, though VideoCore VI removed the VPM DMA path and added TMU write-to-memory support. [Source](https://github.com/Idein/py-videocore6)
+
+Shader compilation in v3dv follows the standard Mesa pipeline:
+
+1. **SPIR-V → NIR**: Mesa's shared SPIR-V translator runs first, with v3dv-specific Vulkan lowering passes for descriptor access, push constants, and image layout handling.
+2. **NIR lowering**: A series of Broadcom-specific NIR passes in `src/broadcom/compiler/` lower NIR constructs to QPU-friendly forms. This includes lowering indirect UBO accesses to TMU reads, lowering `nir_intrinsic_load_push_constant` to uniform loads, and scalarising vectors where the QPU requires scalar operands.
+3. **NIR → QPU IR**: The `v3d_compiler.c` function `vir_compile_shader()` translates NIR instructions into a QPU-specific virtual IR (VIR). VIR instructions map one-to-one to QPU operations but use virtual (unlimited) register names before allocation.
+4. **Register allocation**: A graph-colouring register allocator assigns physical QPU registers (the A and B register files, each 64 entries of 32 bits wide) to VIR virtual registers, subject to the constraint that the add ALU reads from one register file and the mul ALU from the other.
+5. **Instruction scheduling**: The scheduler pairs compatible add-ALU and mul-ALU instructions to fill both VLIW slots, and inserts `nop` delay slots where data dependencies prevent back-to-back issue. On QPU hardware, a result written by instruction N cannot be read by instruction N+1 (one cycle write-to-read latency for most operations), so the scheduler either reorders independent instructions into the gap or emits explicit `nop`s.
+6. **Binary emission**: The final QPU binary is packed into a GPU BO and referenced by the `GL_SHADER_STATE` packet in the BCL.
+
+```c
+/* Source: src/broadcom/compiler/v3d_compiler.c — shader compilation entry (simplified) */
+struct v3d_prog_data *
+v3d_compile(const struct v3d_compiler *compiler,
+            struct v3d_key *key,
+            struct v3d_prog_data **prog_data,
+            nir_shader *s,
+            /* ... */)
+{
+   struct v3d_compile *c = vir_compile_init(compiler, key, s);
+
+   /* Broadcom-specific NIR lowering passes */
+   v3d_nir_lower_io(c);
+   v3d_nir_lower_txf_ms(c);
+   v3d_nir_lower_uniform_offset_to_imm(c, s);
+
+   /* NIR → VIR (virtual QPU IR) */
+   nir_to_vir(c);
+
+   /* Register allocation: assign A/B file registers to VIR virtregs */
+   v3d_vir_to_qpu(c, /* qpu_insts */ NULL);
+
+   /* Instruction scheduling: pair add/mul slots, fill delay slots */
+   v3d_qpu_schedule_instructions(c);
+
+   return c->prog_data;
+}
+```
+
+The pipeline cache in v3dv serialises both the NIR (as the first cache key level) and the final QPU binary (as the cached artifact). Alejandro Piñeiro's 2021 pipeline cache improvement replaced the original two-lookup scheme — which required linking NIR shaders to compute the QPU cache key — with a single-lookup design that derives the cache key directly from the SPIR-V binary and pipeline state, reducing pipeline recreation time by up to 13x in synthetic workloads. [Source](https://blogs.igalia.com/apinheiro/2021/03/improving-v3dv-pipeline-caching/)
+
+### 9.6 Vulkan 1.3 on VideoCore VII (Raspberry Pi 5)
+
+Mesa 24.3 promoted v3dv to Vulkan 1.3 conformance on both VideoCore VI (V3D 4.2, Pi 4) and VideoCore VII (V3D 7.1, Pi 5). The hardware-level support on both generations is substantially the same — the V3D 7.x block is an evolutionary rather than a revolutionary change — but the 50 % QPU count increase (8 QPUs on Pi 4 vs. 12 QPUs on Pi 5) delivers proportionally higher throughput for shading-bound workloads.
+
+On the Vulkan feature side, the Vulkan 1.3 promotion required implementing `VK_KHR_dynamic_rendering` (render passes without `VkRenderPass` objects), `VK_KHR_synchronization2` (the revised barrier and semaphore API), `VK_EXT_inline_uniform_block`, `VK_EXT_pipeline_creation_cache_control`, and the extended inline uniform properties. Dynamic rendering is particularly relevant on TBDR hardware because v3dv must still perform the BCL/RCL split internally, even when the application uses dynamic rendering — the driver synthesises a `v3dv_job` with a BCL and RCL from the dynamic rendering begin/end calls, transparent to the application.
+
+Known hardware limitations that v3dv does not and cannot support reflect the VideoCore VI/VII hardware capabilities:
+
+- **No ray tracing**: The QPU has no BVH traversal hardware (`VK_KHR_ray_tracing_pipeline` and `VK_KHR_acceleration_structure` are not available and are unlikely to appear without a future hardware revision).
+- **No mesh shaders**: There is no task/mesh shader dispatch path in the BCL hardware (`VK_EXT_mesh_shader` is absent for the same reason).
+- **No hardware video decode**: The BCM2711 and BCM2712 include separate video decode hardware (H.264, H.265, HEVC) but these are not accessible through the v3d DRM driver's CL/CSD submission paths; they use a separate `bcm2835_codec` V4L2 driver.
+
+> Note: Specific Vulkan extensions that rely on VideoCore VII's new instruction set features vs. VideoCore VI should be verified against the Mesa v3dv changelog and the V3D 7.x programmer reference when that document becomes available.
+
+### 9.7 Practical Significance
+
+v3dv makes the Raspberry Pi a genuine Vulkan development and deployment target rather than merely a "works for demos" platform. The Khronos conformance imprimatur means the CTS has verified the correctness of every mandatory Vulkan 1.3 entry point, not just the subset exercised by application demos. This matters for: developers writing cross-platform Vulkan tutorials who want to test on a low-cost board; educators running Vulkan labs without access to desktop GPUs; and embedded and IoT deployments where the Pi 5 provides a $80 single-board computer with a conformant Vulkan 1.3 compute path.
+
+Real applications that run on v3dv include vkQuake (the Vulkan port of Quake), Vulkan compute shaders for image processing pipelines, and libplacebo (the shader-based video filter library used by mpv). The driver's support for `VK_KHR_synchronization2` and `VK_KHR_dynamic_rendering` means that Vulkan 1.3-targeting codebases compile and run without feature-detection workarounds.
+
+Because the Pi's memory is unified, v3dv's unified memory model also offers a zero-copy path for machine learning inference pipelines: a CPU-computed input tensor can be handed to a Vulkan compute shader without any explicit staging copy, relying on the `VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT` memory type that the driver exposes. This is an increasingly relevant use case as lightweight inference models run at the edge on Raspberry Pi hardware.
+
+```mermaid
+graph TD
+    SPIRV["SPIR-V Binary\n(vkCreateGraphicsPipelines)"]
+    NIR["NIR\n(Mesa SPIR-V translator\n+ Vulkan lowering)"]
+    BroadcomLower["Broadcom NIR Lowering\n(src/broadcom/compiler/)\nTMU reads, uniform offsets,\nvector scalarisation"]
+    VIR["VIR — Virtual QPU IR\n(unlimited virtual registers)"]
+    RegAlloc["Register Allocation\n(A/B file graph colouring)"]
+    Sched["Instruction Scheduling\n(pair add/mul VLIW slots;\nfill delay slots with nop)"]
+    QPUBin["QPU Binary BO\n(shader_variant→qpu_insts)"]
+    GLState["GL_SHADER_STATE packet\nin Binning Command List"]
+
+    SPIRV --> NIR
+    NIR --> BroadcomLower
+    BroadcomLower --> VIR
+    VIR --> RegAlloc
+    RegAlloc --> Sched
+    Sched --> QPUBin
+    QPUBin --> GLState
+```
 
 ---
 

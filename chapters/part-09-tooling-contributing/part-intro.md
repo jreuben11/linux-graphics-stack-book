@@ -36,6 +36,106 @@ The earlier parts of this book built the Linux graphics stack layer by layer: th
 
 **Chapter 153 — OBS Studio and the GPU Pipeline** documents how OBS Studio captures, encodes, and streams desktop content using the Linux graphics stack: DMA-BUF zero-copy screen capture via the PipeWire portal, VA-API and NVENC hardware encoding, the OBS Vulkan rendering pipeline for scenes and effects, and performance considerations for simultaneous gaming and streaming.
 
+## Key Concepts
+
+### Video Acceleration: VA-API and V4L2
+
+**VA-API (Video Acceleration API)** is a vendor-neutral C API for hardware-accelerated video decode, encode, and processing on Linux. The `libva` library dispatches through backend drivers (e.g. `libva-mesa-driver` for AMD/Intel open, `nvidia-vaapi-driver` for NVIDIA) to GPU hardware via DRM render nodes. A decode call allocates `VASurface` objects (GPU-resident frame buffers), submits bitstream data via `VABuffer`s, and signals completion via `vaSyncSurface()`. VA-API surfaces integrate with EGL via `EGLImage`/`EGL_EXT_image_dma_buf_import` and with Vulkan via `VK_EXT_external_memory_dma_buf`, enabling zero-copy GPU video pipelines.
+
+**V4L2 (Video4Linux2)** is the kernel subsystem for capture devices (cameras, capture cards) and memory-to-memory codec hardware. It uses `ioctl`-based operations: `VIDIOC_QUERYCAP`, `VIDIOC_S_FMT`, `VIDIOC_REQBUFS`, `VIDIOC_QBUF`/`VIDIOC_DQBUF`. Buffer memory types include `V4L2_MEMORY_MMAP`, `V4L2_MEMORY_USERPTR`, and `V4L2_MEMORY_DMABUF` (zero-copy to GPU). Unlike VA-API which is codec-focused, V4L2 covers capture and stateless codec paths; many ARM SoCs implement H.264 decode via V4L2 stateless rather than VA-API.
+
+**Vulkan Video vs. VA-API:**
+
+| Feature | VA-API | Vulkan Video |
+|---|---|---|
+| API style | C procedural (`libva`) | Vulkan extension (`VK_KHR_video_queue`) |
+| Buffer model | `VABuffer` IDs | `VkBuffer` + `VkVideoSessionKHR` |
+| Sync model | `vaSyncSurface()` | Vulkan timeline semaphores |
+| Decode codecs | H.264/H.265/AV1/VP9/VP8 | H.264/H.265/AV1 |
+| Zero-copy to GL | `EGLImage` from `VASurface` | `vkImportSemaphoreFdKHR` + `VkImage` |
+| Stability | Mature (20+ years) | Newer (Vulkan 1.3+ extensions) |
+
+VA-API remains the dominant production path on Linux in 2026. Vulkan Video offers tighter integration with Vulkan pipelines and explicit synchronisation but requires Mesa 23.1+ or vendor driver support.
+
+### Frame Capture and Replay: RenderDoc
+
+**RenderDoc** is an MIT-licensed GPU frame debugger and replay tool. It injects as a Vulkan layer or OpenGL interceptor, capturing every API call, GPU buffer, and texture in a single frame into a `.rdc` file. The Qt-based UI allows stepping through draw calls, inspecting pipeline state, viewing texture contents at any stage, and running a SPIR-V shader debugger. Remote capture is supported via `renderdoccmd remoteserver`; automated regression testing can replay `.rdc` files headlessly via `renderdoccmd replay` and compare output images.
+
+### Conformance: CTS Mustpass and IGT
+
+The **CTS mustpass list** is the subset of the full Khronos CTS that a driver **must** pass before it may be submitted to the Khronos Adopter Program to claim API conformance. The full VK-GL-CTS suite contains millions of test cases; the mustpass set (typically ~100,000–200,000 cases for a given Vulkan version) is the certification-required subset defined per API version and extension set. Mesa tracks baselines as `deqp-runner`-managed flake files in the CI pipeline.
+
+**IGT GPU Tools** is the test suite for Linux kernel DRM drivers. IGT tests run in a minimal environment (no compositor, DRM master via `drmSetMaster()`) and exercise hardware directly: `kms_atomic` exercises `drmModeAtomicCommit()`, `gem_exec_store` validates ring submission, `syncobj_timeline` exercises DMA-fence timeline sync. IGT is run in Mesa's CI on real hardware; failures block driver patches from landing. IGT validates the kernel DRM ABI the same way dEQP validates the userspace Mesa API.
+
+### Compute Device Interfaces: KFD and DAC
+
+**KFD** (`/dev/kfd`) is the AMD **Kernel Fusion Driver** character device exposing the HSA compute interface. Unlike the DRM render node, KFD provides queue creation (`AMDKFD_IOC_CREATE_QUEUE`), event signals, and per-process GPU virtual address space management — the primitives that ROCm's `libhsakmt.so` uses to submit compute work without a graphics context. Both KFD and the DRM render node (`renderDN`) are backed by `amdgpu.ko`; they expose different IOCTLs for compute vs. graphics contexts.
+
+**DAC (Discretionary Access Control)** is the Linux permission model applied to DRM device nodes. `/dev/dri/cardN` (KMS master) requires root or `CAP_SYS_ADMIN`; `/dev/dri/renderDN` (render-only) is readable by members of the `render` group (GID 108 on most distributions). Containers get GPU access by bind-mounting `/dev/dri/renderDN` with the container in the `render` group — no root required. `/dev/kfd` similarly requires `render` group membership. CDI (Container Device Interface) formalises how container runtimes inject device nodes and group memberships.
+
+### NVIDIA Hardware Video: NVENC and NvFBC
+
+**NVENC** is NVIDIA's dedicated hardware video encoder block on Kepler and later GPUs. It supports H.264, H.265, AV1 (Ada Lovelace+), and VP9 encode via the NVENC SDK and is also accessible via VA-API through `nvidia-vaapi-driver`. NVENC is the encoder backend for OBS Studio, Sunshine, and game streaming pipelines, offering 10–20× the throughput of software encoders at equal quality.
+
+**NvFBC (NVIDIA Framebuffer Capture)** is NVIDIA's proprietary GPU-side screen capture API. Unlike PipeWire-based capture (which requires compositor cooperation), NvFBC captures the framebuffer directly from the GPU output stage without a compositor round-trip. It is used by Sunshine for low-latency capture. NvFBC is not available on open-source NVIDIA drivers and requires the proprietary `nvidia-drm.ko`.
+
+### Game Streaming: Sunshine and Moonlight
+
+**Sunshine** is an open-source GPU-accelerated game streaming server. It captures the desktop using NvFBC (NVIDIA), VA-API / KMS DMA-BUF (AMD/Intel), or the PipeWire portal, encodes with NVENC or VA-API, and streams encoded frames over **RTP** over UDP at ~10–20 ms end-to-end latency using the Moonlight protocol (NVIDIA GameStream-compatible). **Moonlight** is the open-source client that decodes the RTP stream using VA-API, Vulkan Video, or software decode and presents frames at sub-20 ms total latency over local network or WireGuard VPN. Together they form the primary GPU-accelerated remote gaming pipeline on Linux.
+
+**RTP (Real-Time Transport Protocol)** is a UDP-based protocol for time-sensitive media transport. Each RTP packet carries a sequence number, timestamp, and SSRC identifier, enabling receivers to reorder, detect loss, and synchronise streams. RTP is paired with **RTCP** for transmission statistics and feedback. In game streaming, RTP carries H.264/HEVC/AV1 NAL units; in WebRTC, RTP carries encoded audio/video between peers.
+
+### Content Protection: HDCP
+
+**HDCP 2.2 (High-bandwidth Digital Content Protection)** is a DRM scheme for protecting video over HDMI/DisplayPort. Kernel support lives in `drivers/gpu/drm/*/` as DRM connector properties (`Content Protection`, `HDCP Content Type`). Applications set `DRM_MODE_CONTENT_TYPE_HDCP_TYPE0/1` on the connector; the kernel performs the HDCP 2.2 authentication handshake with the sink. Intel PXP (Protected Xe Path) enables GPU-to-display HDCP 2.3. Content protected via HDCP cannot be captured by NvFBC or PipeWire portal.
+
+### GPU Firmware: GSP-RM, GuC/HuC, PSP
+
+**GSP-RM** (GPU System Processor Resource Manager) is NVIDIA's closed firmware blob running on an ARM Falcon / RISC-V microprocessor embedded in the GPU. On Turing and later, it handles all GPU resource management IOCTLs — engine scheduling, power states, display PHY programming — previously handled by the host driver. The open kernel module submits IOCTLs via an RPC ring buffer; GSP-RM is a signed binary distributed with the NVIDIA driver package that cannot be replaced by open-source equivalents.
+
+**GuC** (Graphics Microcontroller) and **HuC** (HEVC Microcontroller) are Intel GPU co-processors. GuC handles GPU command scheduling (CT firmware-mediated H2G/G2H mailbox on Xe), workload prioritisation, and power management. HuC offloads HEVC encode/decode bitstream processing from the host CPU. Both run signed firmware blobs loaded by `i915.ko`/`xe.ko` from the `linux-firmware` package.
+
+**PSP** (Platform Security Processor) is AMD's ARM Cortex-M security processor embedded in RDNA/CDNA GPUs. It authenticates VBIOS and firmware, handles `amdgpu` firmware loading, and manages the Trusted Execution Environment. PSP authentication failures prevent `amdgpu.ko` from initialising the GPU.
+
+### Secure Boot: MOK
+
+**MOK (Machine Owner Key)** is the Secure Boot trust anchor for custom kernel modules. Under `CONFIG_MODULE_SIG_FORCE`, Linux refuses to load unsigned modules. For out-of-tree modules (NVIDIA proprietary, DKMS modules), the module is signed with a private key; the corresponding public key is enrolled into UEFI via `mokutil --import`. DKMS automates re-signing on kernel update when the key is configured at install time.
+
+### GPU Virtualisation: VFIO
+
+**VFIO (Virtual Function I/O)** is the Linux kernel framework for safe GPU passthrough to VMs. A physical GPU is unbound from its native driver and bound to `vfio-pci`; KVM + QEMU maps the GPU's BARs and interrupts into the VM's address space. The IOMMU (Intel VT-d or AMD-Vi) enforces DMA isolation: the VM's GPU driver can only DMA into its own IOMMU group pages. VFIO passthrough gives near-native GPU performance (~1–5% overhead) but dedicates the GPU to one VM. SR-IOV (AMD MxGPU, Intel Xe) extends this to hardware partitioning of a single GPU into multiple virtual functions.
+
+### Shader Register Pressure: VGPR/SGPR and RDNA Wave
+
+**VGPR (Vector General Purpose Register)** holds per-lane (per-thread) data in AMD GPU compute units; **SGPR (Scalar General Purpose Register)** holds per-wavefront (uniform) data. Each compute unit has a fixed register file. A shader using more VGPRs per thread occupies fewer concurrent wavefronts → lower GPU utilisation. This is **VGPR pressure**: complex shaders with high register usage reduce the GPU's ability to hide memory latency via wavefront switching. Reducing VGPR usage is a primary shader optimisation target measured with MangoHud and AMD Radeon GPU Profiler.
+
+A **wave** (wavefront) is the SIMD execution unit in AMD GPUs: 64 threads in wave64 mode (GCN/RDNA default) or 32 threads in wave32 mode (RDNA-specific). RDNA's `VK_EXT_subgroup_size_control` lets drivers choose wave32 or wave64 per pipeline, reducing divergence penalty for branchy code. The RDNA3 wave32 path is significantly faster for ray tracing and ML workloads.
+
+### Virtual Display: VKMS and EDID
+
+**VKMS (Virtual KMS)** is an in-kernel software DRM driver (`drivers/gpu/drm/vkms/`) that presents a virtual display without physical hardware. It supports atomic KMS, writeback connector output, and multiple virtual CRTCs. VKMS is used in CI pipelines (Mesa GitLab CI hardware-less stages), headless containers, and test environments where a physical monitor is unavailable but a KMS master is required.
+
+**EDID (Extended Display Identification Data)** is a 128-byte EEPROM structure broadcast by display hardware over DDC/I2C or DisplayPort AUX. It describes supported resolutions, refresh rates, HDR capabilities, and physical dimensions. The kernel parses EDID via `drivers/video/edid.c` and exposes connector properties via DRM. Overriding EDID with a custom blob (`drm.edid_firmware=DP-1:edid/1920x1080.bin`) allows testing specific display configurations without physical hardware — a common CI and embedding technique.
+
+### Kernel Modules: vermagic and DKMS
+
+**vermagic** is a string embedded in every compiled Linux kernel module encoding the kernel version, compiler version, and relevant `CONFIG_` flags (e.g. `6.8.0-124-generic SMP preempt mod_unload`). The kernel checks `vermagic` on `insmod` and refuses modules compiled for a different kernel. If `CONFIG_MODVERSIONS` is enabled, per-symbol CRC checksums provide finer-grained ABI checking beyond `vermagic`.
+
+**DKMS (Dynamic Kernel Module Support)** automatically recompiles out-of-tree kernel modules when a new kernel is installed. A `dkms.conf` file specifies build instructions; `kernel_postinst.d/dkms` hooks trigger recompilation. Used for the NVIDIA proprietary module and other out-of-tree drivers. On Secure Boot systems, DKMS must also re-sign modules with the enrolled MOK key.
+
+### GPU Metrics: DRM FDINFO
+
+**DRM FDINFO** is the kernel's per-client GPU metrics interface standardised in Linux 5.19 (`/proc/<pid>/fdinfo/<drm_fd>`). Each entry exposes:
+- `drm-engine-*`: time-accumulated GPU engine busy counters (render, video decode, compute, copy)
+- `drm-memory-*`: per-heap VRAM/GTT/shared memory usage in bytes
+- `drm-cycles-*`: GPU execution cycle counts (where hardware supports it)
+
+FDINFO is the mechanism MangoHud, `nvtop`, and `radeontop` use for real-time GPU utilisation display without requiring root or vendor-specific APIs. All major Mesa drivers (radeonsi, iris, RADV, ANV) and the NVIDIA kernel module implement FDINFO.
+
+### Streaming Production: OBS Studio
+
+**OBS Studio (Open Broadcaster Software)** is the dominant open-source screen capture and streaming application on Linux. Its GPU pipeline uses: (1) the PipeWire `xdg-desktop-portal` ScreenCast API for zero-copy DMA-BUF screen capture from the compositor; (2) a Vulkan or OpenGL rendering pipeline for scene compositing, transitions, and effects; (3) NVENC (NVIDIA), VA-API (AMD/Intel), or software x264/x265 for output encoding; (4) RTMP, SRT, or local file output. OBS exposes plugin APIs for custom sources, filters, and outputs; Chapter 153 covers the full GPU pipeline in depth.
+
 ## How the Chapters Interrelate
 
 The chapters in this part are grouped into four conceptual clusters that share data structures, kernel interfaces, and operational concerns, while remaining largely independent reading tracks at the chapter level.

@@ -19,6 +19,8 @@
 - [11. GPU Reset and Timeout Detection](#11-gpu-reset-and-timeout-detection)
 - [12. virtio-gpu: GPU Virtualisation and Paravirtualised Rendering](#12-virtio-gpu-gpu-virtualisation-and-paravirtualised-rendering)
 - [13. AMD HMM: Heterogeneous Memory Management and APU Unified Memory](#13-amd-hmm-heterogeneous-memory-management-and-apu-unified-memory)
+- [Intel i915 Kernel Driver: GEM, GuC Submission, and Display Engine](#intel-i915-kernel-driver-gem-guc-submission-and-display-engine)
+- [Iris: Intel's Gallium3D OpenGL Driver](#iris-intels-gallium3d-opengl-driver)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -886,6 +888,196 @@ The combination of KFD, HMM, and APU unified memory is what enables large-scale 
 - **Unified drm_gpuvm across amdgpu, Xe, and Nova.** The `drm_gpuvm` kernel API introduced alongside Xe's VM_BIND model is intended to be adopted by amdgpu and eventually Nova as a shared GPU virtual memory manager, eliminating per-driver TTM VM reimplementations and enabling cross-driver sparse binding via a common kernel interface.
 - **amdgpu and KFD convergence: unified SVM path for ROCm and graphics.** The long-term goal in AMD's kernel team is to collapse the KFD SVM allocator and amdgpu's GEM+TTM paths into a single unified SVM region type that can serve both graphics BOs and HSA compute allocations, removing the current dual-stack complexity visible in `amdgpu_svm.c` and `kfd_svm.c`.
 - **Rust-first DRM driver abstractions.** The Rust DRM bindings being developed for Nova (`drm::gem::Object<T>`, `drm::sched::Job<T>`) are intended to become the upstream-preferred abstraction layer for new DRM drivers; longer-term, successor drivers for embedded and mobile GPUs may be written from scratch in Rust against these APIs rather than porting C drivers. [Source](https://www.phoronix.com/news/Rust-DRM-For-Linux-7.1)
+
+---
+
+## Intel i915 Kernel Driver: GEM, GuC Submission, and Display Engine
+
+> **Audience note**: This section targets kernel and driver developers who need to navigate the i915 source tree. Section 4 above introduced GuC submission and softpin at a conceptual level; this section drills into the GEM object model internals, the `i915_request` lifecycle, the display engine atomic commit path, and the sysfs/debugfs tuning knobs.
+
+### GEM Object Model: drm_i915_gem_object and Backing Stores
+
+i915's memory management centres on `struct drm_i915_gem_object`, defined in `drivers/gpu/drm/i915/gem/i915_gem_object_types.h`. Unlike amdgpu's TTM-based `amdgpu_bo`, which uses a generic `ttm_buffer_object` as its base type, `drm_i915_gem_object` embeds either a `drm_gem_object` (for shmem and stolen-memory objects) or a `ttm_buffer_object` (for LMEM objects on Arc discrete GPUs) in a union. This dual backing allows i915 to maintain full backwards compatibility with its pre-TTM GEM design while adopting TTM for new discrete platforms. [Source](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/i915/gem/i915_gem_object_types.h)
+
+The operations vtable `struct drm_i915_gem_object_ops` provides the per-backing-store polymorphism:
+
+```c
+/* Source: drivers/gpu/drm/i915/gem/i915_gem_object_types.h */
+struct drm_i915_gem_object_ops {
+    unsigned int flags;
+
+    /* Backing store management */
+    int  (*get_pages)(struct drm_i915_gem_object *obj);
+    void (*put_pages)(struct drm_i915_gem_object *obj, struct sg_table *pages);
+
+    /* Optional CPU read/write override (e.g. stolen memory) */
+    int  (*pread) (struct drm_i915_gem_object *obj,
+                   const struct drm_i915_gem_pread *arg);
+    int  (*pwrite)(struct drm_i915_gem_object *obj,
+                   const struct drm_i915_gem_pwrite *arg);
+
+    /* Memory region migration (GTT ↔ LMEM ↔ system) */
+    int  (*migrate)(struct drm_i915_gem_object *obj,
+                    struct intel_memory_region *mr, unsigned int flags);
+
+    /* Shrinking and release */
+    int  (*shrink)(struct drm_i915_gem_object *obj, unsigned int flags);
+    void (*release)(struct drm_i915_gem_object *obj);
+
+    const char *name; /* "shmem", "stolen", "lmem", etc. */
+};
+```
+
+Three physical backing stores are in use. **Shmem objects** are the default for integrated graphics: `get_pages()` calls `shmem_read_mapping_page()` to fault in anonymous pages from a `tmpfs`-backed inode, producing a scatter-gather table that the GPU's GGTT page table walks. On systems with IOMMU, the same sg-table is DMA-mapped before being installed in the GPU's page table. **Stolen memory** is a firmware-carved region of system DRAM that the GPU can access without going through the PCIe BAR — historically used for the initial framebuffer and for pre-allocated kernel objects that must survive across GPU resets because stolen memory is not zeroed by a GT reset. **LMEM** (Local Memory) is GDDR6 on Arc discrete cards, backed by a `ttm_buffer_object` placed in the `intel_memory_region` representing device-local memory. When the CPU needs to read LMEM, the `migrate` op copies the object to a GTT-backed system-memory mirror.
+
+The `drm_i915_gem_object` tracks two domain-coherency fields inherited from the original GEM design: `read_domains` and `write_domain`, each a bitmask of `I915_GEM_DOMAIN_CPU`, `I915_GEM_DOMAIN_GTT`, and `I915_GEM_DOMAIN_RENDER`. When the CPU writes to a GEM object (via `pwrite` or a CPU virtual mapping), `write_domain` is set to `I915_GEM_DOMAIN_CPU`; the GPU cannot safely read the object until a cache-flush operation clears `write_domain` and sets the appropriate `read_domain`. This domain-tracking design predates `dma_resv` fences and is now maintained purely for ABI compatibility with legacy applications that use `DRM_IOCTL_I915_GEM_SET_DOMAIN`. All modern Mesa paths use `dma_resv` fences instead.
+
+### i915_request Lifecycle
+
+The unit of GPU command submission in i915 is `struct i915_request`, declared in `drivers/gpu/drm/i915/i915_request.h`. An `i915_request` wraps a region of the hardware ring buffer, the DMA fence that signals its completion, and the scheduling state connecting it to the DRM GPU scheduler:
+
+```c
+/* Source: drivers/gpu/drm/i915/i915_request.h — abbreviated */
+struct i915_request {
+    struct dma_fence       fence;   /* signalled on HW completion */
+    spinlock_t             lock;
+    struct drm_i915_private *i915;
+    struct intel_engine_cs  *engine;
+    struct intel_context    *context;
+    struct intel_ring       *ring;
+
+    /* Ring buffer positions */
+    u32 head;     /* start of this request's commands */
+    u32 infix;    /* after preamble, before user BB */
+    u32 postfix;  /* after user BB, before breadcrumb */
+    u32 tail;     /* end including breadcrumb */
+
+    /* Breadcrumb (sequence number written to HWSP on completion) */
+    u32 *hwsp_seqno;
+
+    /* Dependency tracking (in/out fences) */
+    struct i915_sw_fence    submit;    /* software fence: all deps satisfied */
+    struct i915_sw_fence    semaphore; /* engine-to-engine semaphore deps */
+    struct drm_i915_sched_node sched;
+};
+```
+
+The lifecycle proceeds in four steps. `i915_request_create()` allocates a request from the slab cache, calls `intel_timeline_get_seqno()` to assign a monotonically increasing sequence number on the context's timeline, and calls `dma_fence_init()` to initialise the `fence` member — the object that waiters (display, Wayland compositor, other engines) will block on. The ring buffer space for the breadcrumb is reserved at create time. Mesa's ANV and iris then write PM commands (pipeline state packets, 3DPRIMITIVE, MI_FLUSH_DW, etc.) into the ring buffer between `request->infix` and `request->postfix`. `i915_request_add()` is the commit point: it adds the request to the context's timeline, arms the software fence by signalling all software-side dependencies resolved, and enqueues the request with the GuC via `guc_submit_request()`. When the GPU writes the sequence number to the Hardware Status Page (HWSP) on completion, the breadcrumb interrupt fires, `dma_fence_signal()` is called, and all waiters are woken.
+
+On Gen12+ (Tiger Lake and later), the only supported submission path is GuC-mediated. For reference, earlier hardware used **EXECLIST** (execlists/ELSP — Engine List Submit Port): the driver wrote two `HW_CTX` pointers directly to the MMIO register `EXECLIST_SUBMITPORT`, bypassing GuC entirely. EXECLIST was removed as the primary path in Gen12 because it could not support the multi-context preemption required by modern workloads. GuC-mediated submission replaced it with context descriptors submitted via the CT (Command Transport) shared memory buffer. The GuC firmware is uploaded to device memory via `intel_guc_fw_upload()` (`drivers/gpu/drm/i915/gt/uc/intel_guc_fw.c`), which calls `guc_prepare_xfer()` to configure the transfer hardware, `guc_xfer_rsa()` to load the RSA signature, `intel_uc_fw_upload()` to DMA the CSS header and microkernel code, and `guc_wait_ucode()` to poll the GuC status register until it reports `INTEL_UC_FIRMWARE_RUNNING`. [Source](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/i915/gt/uc/intel_guc_fw.c)
+
+### Display Engine: Atomic Commit and DC States
+
+i915's display engine implements the DRM KMS atomic commit path through `intel_atomic_commit()` in `drivers/gpu/drm/i915/display/intel_display.c`. The function receives a `drm_atomic_state` — a validated snapshot of all KMS object states produced by `drm_atomic_helper_check()` — and applies it to hardware in two phases: a non-blocking preparation phase and a blocking flip phase.
+
+Two hardware-specific structs carry the Intel-specific state alongside the generic DRM structs. `intel_crtc_state` extends `drm_crtc_state` with fields for the pipe, transcoder, and clock configuration: the pixel clock in kilohertz, the DPLL parameters, the pipe mode (interlaced vs. progressive), the VRR (Variable Refresh Rate) state for DisplayPort Adaptive Sync, and the display power domain mask that must be held active during this mode. `intel_plane_state` extends `drm_plane_state` with the GGTT VMA (Virtual Memory Area) of the framebuffer, the hardware scaler configuration index, and the PSR2 (Panel Self Refresh 2) selective update area. Both are defined in `drivers/gpu/drm/i915/display/intel_display_types.h`. [Source](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/i915/display/intel_display_types.h)
+
+The hardware abstraction maps a display pipeline to three conceptual layers: the **pipe** (the colour processing, gamma/degamma, and dithering stages), the **plane** (a scanout surface with hardware position, scaling, and blending), and the **transcoder** (the output serialiser that feeds a port — DisplayPort, HDMI, or eDP). Each physical display is driven by one pipe connected to one transcoder; a pipe can feed multiple planes in hardware overlay mode. The CRTC corresponds to the pipe, the DRM plane to the hardware plane, and the encoder/connector pair to the transcoder + port.
+
+Display power saving on Gen9+ is handled via **DC (Display C) states**, managed by the DMC (Display Microcontroller) firmware loaded at startup. DC5 and DC6 are the deepest idle states:
+
+- **DC5**: the display engine's power rails are gated; the DMC saves and restores display engine register state automatically when the display becomes idle (all planes disabled or in self-refresh). Supported on Skylake (Gen9) and later.
+- **DC6**: extends DC5 by also gating the memory controller's power well; requires that no memory reads be outstanding. Not all platforms support DC6 — it requires specific memory power domain isolation.
+
+The kernel controls DC state entry via `intel_display_power_set_target_dc_state()` in `drivers/gpu/drm/i915/display/intel_display_power.c`, which sanitises the requested state against the platform's allowed mask (retrieved from `get_allowed_dc_mask()`), then enables or disables the "DC off" power well to effect the transition. The DMC firmware autonomously detects the idle condition and enters the target state without further CPU intervention. The module parameter `i915.enable_dc` (values: -1=auto, 0=disable, 1=DC5, 2=DC6) allows overriding the default behaviour for debugging. [Source](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/i915/display/intel_display_power.c)
+
+### Sysfs, Debugfs, and Module Parameters
+
+i915 exposes a rich set of diagnostic and tuning interfaces, accessible without recompiling the driver:
+
+**Debugfs** (under `/sys/kernel/debug/dri/0/`, registered in `drivers/gpu/drm/i915/i915_debugfs.c`):
+
+- `i915_gem_objects`: lists all live GEM objects, their sizes, backing store type (shmem, stolen, lmem), pin counts, and active fence states. Essential for diagnosing memory leaks and identifying objects stuck in GPU-active state.
+- `i915_frequency_info`: reports the current, requested, and minimum/maximum GPU frequencies in MHz, along with the RPS (Render P-State) boost count and the reason for the current frequency floor.
+- `i915_engine_info`: per-engine state — current request seqno, head/tail pointers, GuC context ID, and whether the engine is in a reset state.
+- `gt0/uc/guc_info` and `gt0/uc/huc_info`: GuC and HuC firmware version and authentication status. These are the primary diagnostics for firmware loading failures.
+
+**Module parameters** (viewed via `modinfo i915.ko`, set at load time via `/etc/modprobe.d/`):
+
+- `i915.enable_guc` (default -1=auto): bitmask — bit 0 enables GuC submission, bit 1 enables HuC loading via GuC. Setting to 0 forces EXECLIST mode on platforms that support it; on Gen12+ this is unsupported and the parameter is ignored.
+- `i915.enable_dc` (default -1=auto): controls DC5/DC6 entry as described above.
+- `i915.guc_log_level` (0–4): verbosity of GuC firmware log output, routed to `dmesg` via the relay channel. Levels 1–4 progressively increase verbosity; useful when diagnosing GuC scheduling anomalies.
+
+These knobs are the first line of investigation when a display does not resume from DC6 correctly, when GuC submission stalls, or when GPU frequency is stuck below the rated boost clock.
+
+---
+
+## Iris: Intel's Gallium3D OpenGL Driver
+
+> **Audience note**: This section targets graphics application developers and Mesa contributors who need to understand how OpenGL calls are translated into Intel EU ISA on modern Intel hardware. The kernel-side story (i915 GEM, request submission) is covered in Section 4 and the preceding subsection; Iris is the Mesa-side companion.
+
+### Role and Hardware Coverage
+
+Iris is Mesa's Gallium3D OpenGL driver for Intel Gen8 (Broadwell) and later hardware, living in `src/gallium/drivers/iris/` in the Mesa repository. It replaced `i965` — the classic Mesa driver that used a non-Gallium, non-NIR compilation path — for Gen8+ GPUs. The replacement was motivated by the need to use the NIR intermediate representation for all Intel hardware, eliminating a parallel compiler path that had to be maintained alongside the newer NIR-based stack. [Source](https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/283)
+
+Hardware coverage:
+
+- **Gen8 (Broadwell)**: supported by Iris, compiled through the **ELK** compiler backend (`src/intel/compiler/elk/`), which Intel has separated from the main BRW path to allow independent maintenance of the older ISA.
+- **Gen9 (Skylake, Kaby Lake, Coffee Lake) through Gen12 (Tiger Lake, Rocket Lake)**: the **BRW** compiler backend (`src/intel/compiler/brw/`), providing OpenGL 4.6 and OpenGL ES 3.2.
+- **Xe2 (Battlemage/Arc B-series)**: an experimental **Jay** compiler backend (`src/intel/compiler/`) was merged in Mesa 26.1 for this generation.
+
+For Gen4–Gen7 (Ivy Bridge and older), the separate **Crocus** Gallium driver is used. The Iris/Crocus split is at Gen8: Crocus handles hardware that predates Broadwell's 64-bit GEN8 ISA extension. [Source](https://www.phoronix.com/news/Intel-Mesa-Splitting-Gen8)
+
+### Architecture: Screen, Context, Batch, and Bufmgr
+
+The Iris driver follows the standard Gallium3D object hierarchy, with Intel-specific structs at each level:
+
+**`iris_screen`** is the per-`drm_device` singleton. It holds the `iris_bufmgr` (Intel's internal buffer manager, wrapping the i915 GEM memory allocator), the hardware device information struct (`intel_device_info`) that encodes the hardware generation and capability flags, and the `intel_compiler` instance shared by all contexts. `iris_screen` is created once when Mesa opens the DRM render node and is reference-counted across all `EGLContext`/`GLXContext` instances on the same device. [Source](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/gallium/drivers/iris/iris_screen.h)
+
+**`iris_context`** implements `pipe_context` — the Gallium draw and state-management interface. It holds the dirty-state bitmasks (`IRIS_DIRTY_VERTEX_BUFFERS`, `IRIS_DIRTY_COLOR_CALC_STATE`, etc.) that track which Gallium state objects need to be re-emitted into the batch on the next draw call, the current bound `iris_compiled_shader` per stage, and the three `iris_batch` instances (render, compute, blitter) described below.
+
+**`iris_batch`** is the command buffer. Iris maintains three batch objects per context, corresponding to the three i915 engine rings:
+
+```c
+/* Source: src/gallium/drivers/iris/iris_batch.h — enum iris_batch_name */
+enum iris_batch_name {
+    IRIS_BATCH_RENDER,   /* 3D render engine — 3DPRIMITIVE, pipeline state */
+    IRIS_BATCH_COMPUTE,  /* compute engine — GPGPU_WALKER / COMPUTE_WALKER */
+    IRIS_BATCH_BLITTER,  /* copy engine — XY_COPY_BLT, MEM_COPY */
+};
+```
+
+Each batch is a growable buffer of hardware command packets. When the batch reaches its threshold or the application calls `glFlush()`, `iris_batch_flush()` calls `iris_submit_cmd_buffer()`, which packages the batch into a `drm_i915_gem_execbuffer2` structure (on i915) with the list of referenced BOs and submits it via `ioctl(DRM_IOCTL_I915_GEM_EXECBUFFER2)`. The kernel's i915 driver then creates an `i915_request`, attaches it to the appropriate engine's timeline, and hands it to GuC as described above.
+
+**`iris_bufmgr`** wraps the i915 kernel memory allocator. It maintains a slab allocator for small BOs (shader binaries, constant buffers, descriptor tables) and a direct GEM allocator for large BOs (vertex buffers, textures). It tracks all live BOs and manages a BO cache (recently freed BOs are held for reuse to avoid kernel round-trips) and the relocation or softpin (address assignment) logic. All BOs allocated by `iris_bufmgr` correspond to `DRM_IOCTL_I915_GEM_CREATE` kernel handles.
+
+### Draw Call Execution: iris_draw_vbo to 3DPRIMITIVE
+
+When the application calls `glDrawArrays()` or `glDrawElements()`, Mesa's state tracker invokes `iris_draw_vbo()` on the `iris_context`. This function is the critical draw-time path:
+
+1. **Dirty state flush**: `iris_upload_render_state()` walks the context's dirty bitmask and `memcpy`s pre-computed CSO (Constant State Object) packets into the render batch. Iris's "stateless" design means that state objects like the depth-stencil state (`iris_depth_stencil_alpha_state`) and the blend state are pre-packed into the hardware packet format at CSO create time; `iris_draw_vbo` only needs to copy them, not re-encode them.
+2. **Vertex and index setup**: vertex buffer and index buffer BOs are referenced in the `drm_i915_gem_exec_object2` list for the batch; vertex element state packets (`3DSTATE_VERTEX_ELEMENTS`, `3DSTATE_VERTEX_BUFFERS`) are emitted if dirty.
+3. **3DPRIMITIVE emission**: the actual draw command is a `3DPRIMITIVE` hardware packet written via the genxml-generated helper — encoding the primitive type (triangles, lines, points), vertex count, instance count, and start vertex/instance:
+
+```c
+/* Source: src/gallium/drivers/iris/iris_draw.c — simplified 3DPRIMITIVE emission */
+iris_emit_cmd(batch, GENX(3DPRIMITIVE), prim) {
+    prim.VertexAccessType         = draw->index_size ? RANDOM : SEQUENTIAL;
+    prim.PrimitiveTopologyType    = translate_prim_type(info->mode, patches);
+    prim.VertexCountPerInstance   = sc->count;
+    prim.StartVertexLocation      = sc->start;
+    prim.InstanceCount            = draw->instance_count;
+    prim.StartInstanceLocation    = draw->start_instance;
+    prim.BaseVertexLocation       = draw->index_bias;
+}
+```
+
+The `iris_emit_cmd` macro expands to a genxml-generated struct initialisation and `memcpy` into the batch buffer. This is the lowest-level hardware command that causes the EU (Execution Unit) shader array to begin consuming vertices.
+
+### Shader Compilation: NIR to EU ISA
+
+When a GLSL shader is compiled in an Iris context, the pipeline is:
+
+1. **GLSL → NIR**: Mesa's GLSL compiler lowers GLSL into NIR, applying standard optimisations (DCE, constant folding, vectorisation).
+2. **Intel-specific NIR lowering**: Iris applies passes tailored to Intel hardware. `iris_lower_storage_image_derefs()` rewrites storage image accesses into the form the BRW backend expects (derefs through a descriptor index rather than a pointer). Additional passes lower bindless texture handles, demote discard to `demote_to_helper_invocation` for Gen11+ helper-lane semantics, and lower 64-bit operations for Gen8 which lacks native 64-bit integer ALU in some paths.
+3. **Backend compilation**: the NIR is handed to `brw_compile_vs()` / `brw_compile_fs()` / `brw_compile_cs()` (or the `elk_` equivalents for Gen8/Broadwell). These functions perform instruction selection (NIR → GEN assembly), register allocation across the EU's 128 GRF (General Register File) registers, and SIMD width selection (SIMD8, SIMD16, SIMD32 depending on register pressure and hardware generation). The output is a binary blob in **EU ISA** — Intel's proprietary instruction set for the Execution Units.
+4. **iris_compiled_shader**: the resulting binary, along with the `brw_stage_prog_data` struct that describes the shader's binding table layout, push constant ranges, and SIMD dispatch width, is stored in an `iris_compiled_shader`. The driver maintains a shader cache (keyed on a hash of the NIR and hardware generation) to avoid recompilation of identical shaders across context switches.
+
+### State Encoding: genxml Pack Macros
+
+A distinguishing implementation detail of Iris (shared with the earlier i965 driver and the ANV Vulkan driver) is that hardware command packet encoding is never done by hand-writing bit fields. Instead, Intel maintains a machine-readable XML description of every hardware command packet and state structure, in `src/intel/genxml/gen*.xml`. A code generator (`src/intel/genxml/gen_pack_header.py`) produces C header files with typed structs and `pack()` / `unpack()` functions for each packet. [Source](https://github.com/Igalia/mesa/blob/master/src/intel/genxml/genX_pack.h)
+
+The `iris_emit_cmd(batch, GENX(3DSTATE_DEPTH_BUFFER), db)` pattern (where `GENX` resolves to the correct generation's struct via a compile-time `GEN_VER` define) compiles down to a `memset` of the struct to zero, an initialisation of the named fields, and a `memcpy` of the packed struct into the batch buffer. This approach eliminates an entire class of bit-field encoding bugs that historically plagued GPU drivers written with manual shift-and-mask code, at the cost of a code generator tool in the build system. Chapter 19 covers radeonsi and iris from the application-API perspective, and revisits the genxml pattern in the context of Mesa's broader command encoding infrastructure.
 
 ---
 

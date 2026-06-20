@@ -16,6 +16,83 @@ The preceding parts of this book traced the open-source Linux graphics stack fro
 
 **Chapter 117 — Slang: Differentiable Shading Language** examines the open-source shader language and compiler that underpins neural rendering across both the RTX Kit and Omniverse ecosystems. On Linux, **`slangc`** targets **SPIR-V** for Vulkan pipelines as a first-class output, as well as **PTX**/**CUDA** and CPU C++ — a single shader source tree that compiles to every major GPU execution environment. The chapter covers Slang's HLSL-superset type system (generics, interfaces, associated types, the capability system), the programmatic **`IGlobalSession`**/**`ISession`** compilation API with its module-link-extract model, and the **`slang-rhi`** hardware-abstraction layer. The core of the chapter is the **differentiable programming model**: the `[Differentiable]` attribute, `IDifferentiable` interface, `DifferentialPair<T>`, forward-mode `fwd_diff` and reverse-mode `bwd_diff` operators, custom derivative overrides, and global buffer gradient accumulation. It then connects that model to the **Cooperative Vectors** (`VK_NV_cooperative_vector`) path for MLP inference in shaders — the same primitive that RTXNS and OptiX Cooperative Vectors expose — and demonstrates end-to-end neural rendering use cases: differentiable texture compression (as consumed by RTXNTC), NeRF training loops, and DLSS-adjacent denoiser training. Because Slang compiles to SPIR-V, it is fully usable in any Vulkan renderer without the rest of the NVIDIA proprietary stack.
 
+## Key Concepts
+
+### CUDA Infrastructure: NVML and NVRTC
+
+**NVML (NVIDIA Management Library)** is a C API (`libnvidia-ml.so`) for GPU monitoring and management. It provides per-GPU queries: clock frequencies, temperature, power draw, memory utilisation, PCIe bandwidth, ECC error counts, and per-process GPU utilisation and VRAM usage. NVML is the data source for `nvidia-smi`, MangoHud's NVIDIA metrics path, and monitoring tools like `nvtop` and Prometheus exporters. NVML accesses `/proc/driver/nvidia/` and the `nvidia-uvm.ko` module; it requires the NVIDIA proprietary driver but no GPU context.
+
+**NVRTC (NVIDIA Runtime Compilation)** is a C API for JIT-compiling CUDA C++ to PTX at runtime. `nvrtcCompileProgram()` takes a string of CUDA source, compile options, and header sources, and produces a PTX binary that can be loaded via `cuModuleLoadData()`. NVRTC is used by OptiX (which compiles ray tracing shaders to PTX at pipeline creation time), inference runtimes (TensorRT JIT engines), and research frameworks that need to generate GPU kernels from runtime-constructed expressions.
+
+### Ray Tracing Architecture: BVH, SBT, and SER
+
+**BVH (Bounding Volume Hierarchy)** is the acceleration structure that enables hardware ray tracing. A BVH is a binary tree of axis-aligned bounding boxes (AABBs) wrapping scene geometry at progressively finer levels. Ray traversal hardware (RT Cores on NVIDIA Turing+) traverses the BVH hierarchy in hardware, testing the ray against AABBs and intersecting leaf-node triangles in dedicated fixed-function units, without consuming shader execution resources. The Vulkan API calls this a `VkAccelerationStructureKHR`; OptiX calls it an `OptixAccelBufferSizes` / `OptixTraversableHandle`. Top-level and bottom-level acceleration structures (TLAS/BLAS) allow instancing of reusable geometry.
+
+**SBT (Shader Binding Table)** is the GPU buffer that maps from geometry/instance indices to shader handles and per-geometry data records. In `VK_KHR_ray_tracing_pipeline`, the SBT is divided into raygen, miss, hit group, and callable shader sections. When a ray hits a triangle in BLAS instance N, the hardware computes an offset into the SBT's hit group section to find the closest-hit and any-hit shader handles for that instance, plus any per-instance data (material parameters, texture indices). The SBT is how a ray tracer associates different shaders with different scene objects without branching in the ray generation shader.
+
+**SER (Shader Execution Reordering)** is an Ada Lovelace hardware feature that reduces warp divergence in ray tracing. After `traceRay()` returns, different threads in the same warp may have hit different materials, triggering different shader paths — classic SIMD divergence. SER hardware can reorder the continuation of those threads across warps to group threads with the same shader together, filling warps and dramatically reducing the divergence penalty (NVIDIA reports 2–3× throughput improvement for complex scenes). SER is exposed via `reorderThread()` / `hitObjectRecord*` in the HLSL SER extension and via OptiX's implicit SER.
+
+### Neural Rendering Features
+
+**Cooperative Vectors** (`VK_NV_cooperative_vector` Vulkan extension, also in OptiX) allow running small MLP (multi-layer perceptron) networks inside any shader stage — not just compute shaders — using Tensor Core acceleration. A shader calls `CoopVecMulAdd()` to multiply a vector by a matrix stored in a compact `coopvec_matmul_e4m3_e4m3` layout; the Tensor Core hardware executes the matrix-vector product in a few cycles. This enables **RTXNS** (neural shading), where per-hit BRDFs or emission functions are neural networks evaluated inside closest-hit shaders.
+
+**NGX (NVIDIA NGX SDK)** is the delivery system for NVIDIA's AI rendering features (`libnvidia-ngx.so`). Each feature is a cryptographically signed ELF plugin (`.nvsgf` / `.nvsig` signature section) verified at load time by the NGX runtime. Features include: **DLSS SR** (super-resolution), **DLSS-G / MFG** (frame generation), **Ray Reconstruction** (AI denoiser), **Reflex** (latency reduction), and **Streamline** wrapper features. NGX is initialised per-application via `NVSDK_NGX_VULKAN_Init_with_ProjectID()` and requires NVIDIA driver r555+ for DLSS 4 features.
+
+**MFG (Multi Frame Generation)** is DLSS 3.5's capability to generate up to 3 interpolated frames for each rendered frame (on Ada Lovelace and Blackwell GPUs). Unlike DLSS-G (frame generation, 1 interpolated frame per rendered frame since Turing), MFG uses additional Optical Flow and AI interpolation passes to produce multiple intermediate frames, increasing apparent frame rate by up to 4×. Quality degrades under fast camera motion; input latency remains tied to the rendered frame rate (Reflex integration is essential for compensating perceived latency).
+
+**RTX** is NVIDIA's platform brand combining RT Cores (hardware ray traversal), Tensor Cores (neural inference and matrix compute), and programmable shader stages into a coherent hardware + software ecosystem. "RTX" does not denote a specific architecture but appears on Turing, Ampere, Ada Lovelace, and Blackwell GPUs. The RTX platform is what enables the combination of features described in this part: ray tracing (RT Cores) + AI denoising and upscaling (Tensor Cores) + programmable shading (CUDA SMs).
+
+**Streamline** is an open-source C++ wrapper library (Apache 2.0, `github.com/NVIDIAGameWorks/Streamline`) that abstracts the NGX and PC Latency APIs behind a common `sl::Feature` interface. It allows integrating DLSS SR, DLSS-G, Reflex, and NIS without directly linking against the closed-source `libnvidia-ngx.so`. Streamline handles NGX initialisation, feature loading, and the per-frame inputs (motion vectors, depth, colour, exposure), making it the standard integration path for Vulkan-based game engines.
+
+### OpenUSD Composition: LIVERPS and AOUSD
+
+**LIVERPS** is a mnemonic for the USD composition arc ordering in the Prim Index that determines which **opinion** wins when multiple layers specify a value for the same attribute. In order from highest to lowest strength:
+1. **L** — Local: opinions in the layer stack of the current stage
+2. **I** — Inherits: `inherits` arcs pull in a class Prim's opinions
+3. **V** — Variants: `variantSet` selections resolve variant opinions
+4. **E** — rEferences: `references` arcs compose external USD files
+5. **R** — Payload: deferred-load `payload` arcs
+6. **PS** — Specializes: the weakest arc, used for specialisation (materials inheriting from a base)
+
+Understanding LIVERPS is essential for debugging USD scene assembly: when an attribute has an unexpected value, the LIVERPS ordering determines which layer or arc provided it.
+
+**AOUSD (Alliance for OpenUSD)** is a Linux Foundation project (formed 2023 by Apple, Adobe, Autodesk, NVIDIA, and Pixar) that standardises the OpenUSD core specification separately from any single vendor's implementation. AOUSD maintains the USD specification document, conformance test suite, and reference implementation. The AOUSD Core Specification 1.0 is the definitive USD standard reference for Chapter 69.
+
+### Ray Tracing Paradigms
+
+**Ray tracing** fires rays from the camera (or light sources) into the scene and tests for geometric intersections via a BVH. Each intersection triggers a shader that evaluates material properties and spawns secondary rays (shadow, reflection, refraction). Hardware RT Cores accelerate the BVH traversal. Result: physically correct hard shadows, reflections, and refraction with O(log N) scene traversal cost.
+
+**Ray marching** steps a ray through a volumetric scalar field (SDF, density volume, distance field) at fixed intervals or adaptive step sizes, accumulating colour and opacity. Used for rendering clouds, smoke, subsurface scattering, and implicit surfaces. Does not use BVH — steps through 3D texture samples or evaluates a mathematical SDF. Implemented in compute or fragment shaders; does not use RT Cores.
+
+**Path tracing** is Monte Carlo integration of the light transport equation via recursive ray tracing: from the camera, rays bounce at each surface according to the BRDF (randomly sampled), accumulating light contributions until hitting a light source or exceeding max depth. Converges to ground-truth photorealistic lighting given enough samples. 1 sample/pixel = extremely noisy; 512+ samples/pixel = visually converged. AI denoisers (NRD, OptiX denoiser) allow 1–4 spp path tracing to achieve acceptable quality in real time.
+
+### RTX SDK Components
+
+**RTXDI (RTX Direct Illumination)** implements **ReSTIR** (Reservoir-based Spatio-Temporal Importance Resampling) for rendering direct illumination from millions of virtual lights. The algorithm: each pixel maintains a **reservoir** — a compact data structure holding a weighted candidate light sample. Each frame, new candidates are generated and existing reservoirs are updated via resampling; spatio-temporal reuse shares samples from neighboring pixels and prior frames. RTXDI achieves quality equivalent to hundreds of shadow rays per pixel with only 1–2 rays per pixel.
+
+**Reservoir-based importance sampling** is the ReSTIR algorithm's core mechanism. A reservoir stores one selected sample and a weight. When considering a new sample, the reservoir performs weighted reservoir sampling: with probability `new_weight / (old_weight + new_weight)`, replace the selected sample. After combining many reservoirs (spatial/temporal reuse), the output is an unbiased estimator of the full integral. Reservoir operations are GPU-friendly: each pixel's reservoir fits in ~32 bytes.
+
+**RTXGI 2.0 (RTX Global Illumination)** provides real-time indirect lighting via two radiance cache strategies:
+- **SHaRC (Spatially Hashed Radiance Cache)**: a hash-grid world-space cache indexed by a spatial hash of the surface position. Each hash entry accumulates radiance contributions from path-traced rays into a running average. Hit shaders look up the cache at the secondary hit point instead of firing further rays. Compact (fixed 32 MB budget), fast, and works well for diffuse indirect lighting.
+- **NRC (Neural Radiance Cache)**: an online-trained tiny MLP (8 layers, 32 neurons, `fp16`) that approximates the scene's radiance field. Trained live during rendering via `CUDA` or `VK_NV_cooperative_vector` Tensor Core inference. Adapts to dynamic scenes but requires per-scene convergence time. Higher quality than SHaRC for glossy surfaces and specular inter-reflections.
+
+**NRD (NVIDIA Real-time Denoisers)** is a set of spatiotemporal denoising passes operating on noisy path-traced inputs (1–4 spp):
+- **REBLUR**: recurrent blur denoiser using temporal reprojection and adaptive spatial radius
+- **RELAX**: spatiotemporal variance-guided denoiser based on SVGF; works better for specular than REBLUR
+- **SIGMA**: shadow-specific denoiser for penumbra reconstruction
+
+All NRD passes use motion vectors and depth for reprojection across frames, accumulating samples over time to reduce variance. The signal-to-noise ratio improves approximately as √N where N is the effective temporal sample count.
+
+**RTXNS v1.3 (RTX Neural Shaders)** exposes the `VK_NV_cooperative_vector` Vulkan extension and a Slang `NeuralNetwork<>` template for running MLP inference inside any shader stage (closest-hit, miss, rasterisation fragment, compute). A shader function annotated with `NeuralNetwork<4, 4, 2>` compiles to `CoopVecMulAdd` instructions that execute on Tensor Cores. Use cases: neural BRDFs, neural LOD, neural material appearance functions.
+
+**RTXNTC v0.5 (RTX Neural Texture Compression)** compresses a texture atlas (potentially GB-scale) into a small MLP network (~4 MB) that, given UV coordinates, outputs the compressed texel values. The MLP is evaluated at sample time using Tensor Cores via RTXNS. This provides dramatic VRAM savings (100–1000× compression) at the cost of MLP inference overhead per texture lookup. RTXNTC requires per-texture training (offline step); inference is real-time.
+
+**NGC (NVIDIA GPU Cloud)** is NVIDIA's container registry (`ngc.nvidia.com`) providing GPU-optimised Docker containers for deep learning (PyTorch, TensorFlow, JAX), inference (TensorRT, Triton), HPC (CUDA, cuDNN, NCCL), and NVIDIA simulation tools (Omniverse, Isaac, Modulus). NGC containers include specific CUDA, driver, cuDNN, and framework version combinations that are validated together, eliminating dependency conflicts. On Linux, NGC containers are pulled via `docker pull nvcr.io/nvidia/<container>:<version>` and require the NVIDIA Container Toolkit.
+
+**Differentiable Shading** (via Slang) enables computing gradients through GPU shader programs — essential for neural rendering training loops. The Slang `[Differentiable]` attribute marks a function as differentiable; `fwd_diff(f)` returns the Jacobian-vector product (forward mode), `bwd_diff(f)` returns the vector-Jacobian product (reverse mode). `DifferentialPair<T>` carries a primal value and a differential value; custom `__bwd_diff` overrides allow manually specifying gradients for non-differentiable operations (texture lookups, hardware intrinsics). Differentiable shading is used in RTXNTC training (gradient descent through neural texture compression), NeRF training on GPU, and DLSS/denoiser model training where shader-in-the-loop training is needed.
+
+**Spatiotemporal denoisers** accumulate noisy samples across frames and pixels by exploiting temporal coherence and spatial smoothness. The key mechanisms: (1) **temporal reprojection** uses motion vectors to reproject the previous frame's pixel to its current position, warping the history buffer; (2) **adaptive accumulation** weights the new frame against the history based on reprojection confidence (disocclusions, fast motion, lighting changes invalidate history); (3) **spatial filtering** blurs across pixels within a radius determined by local variance, using a bilateral weighting function that preserves sharp edges. The result allows path tracers running at 1–4 samples/pixel to produce quality comparable to 64+ spp offline rendering.
+
 ## How the Chapters Interrelate
 
 ```mermaid

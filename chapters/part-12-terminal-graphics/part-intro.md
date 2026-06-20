@@ -14,6 +14,49 @@ Terminal emulators occupy an unusual position in the Linux graphics stack: they 
 
 **Chapter 174 — WezTerm and Alacritty: GPU Terminal Rendering Architectures** extends the Chapter 44 survey with dedicated architectural treatment of two widely-used terminals. **WezTerm** (`wezterm-gui` + `termwiz` + `wezterm-mux`) is examined through its **wgpu** GPU backend: `wgpu::Surface` → Mesa Vulkan (RADV/ANV) → kernel DRM; the HarfBuzz+FreeType2 glyph atlas uploaded to `wgpu::Texture`; ligature shaping; built-in tmux-compatible multiplexer via the `wezterm-mux` crate. **Alacritty** is examined through its OpenGL/EGL renderer: instanced cell rendering via the `gl` crate (not `glow`), the `crossfont` FreeType2 rasterisation library, and the multi-atlas architecture where `AtlasInsertError::Full` appends a new atlas rather than evicting existing glyphs. The chapter includes a comparative table across WezTerm, Alacritty, Kitty, and Ghostty for GPU API, multiplexer, Sixel support, Kitty Protocol support, and IME.
 
+## Key Concepts
+
+### Virtual Terminals and Pseudoterminals
+
+**VT (Virtual Terminal)** is the character-cell abstraction underlying all terminal emulators: a grid of columns × rows, where each cell holds a Unicode code point plus colour and attribute metadata (bold, italic, underline, reverse video). The VT model is controlled by **escape sequences** — byte sequences beginning with ESC (`\x1b`) — that move the cursor, set colours (SGR/Select Graphic Rendition: `ESC[<n>m`), and trigger mode changes. The "VT100/VT220" designation refers to DEC hardware terminals; their escape sequence conventions became the de facto standard, later formalised in the ECMA-48 and ISO 6429 standards that all modern terminal emulators implement.
+
+A **pseudoterminal (PTY)** is a software device pair: a **master** (opened via `/dev/ptmx`) and a **slave** (appearing as `/dev/pts/N` in the `devpts` filesystem). The terminal emulator holds the master end and reads/writes raw bytes; the shell or program running inside holds the slave end and sees a tty device with full line discipline support. `openpty()` / `forkpty()` are the standard POSIX library functions for allocating a PTY pair and launching a child process in it. PTY throughput is a practical performance concern — pushing large pixel graphics data through a PTY bottlenecks on the line discipline's byte-processing rate.
+
+### Pixel Protocol Concepts
+
+**Sixel** is DEC's 1980s pixel graphics standard using **DCS (Device Control String)** escape sequences. A Sixel stream looks like:
+
+```
+ESC P <Ps>;<Ps>;<Ps> q <sixel data> ST
+```
+
+where `ESC P` introduces the DCS and `ST` (String Terminator, `ESC \`) ends it. The core encoding: each column in a **Sixel band** (a 6-pixel-tall horizontal strip) is encoded as a single printable ASCII character: the pixel bitmask of that column (6 bits → values 0–63) plus 63 gives an ASCII printable character (offset 63 maps to `?`, which encodes the "all 6 pixels lit" column). Each character `#N;2;R;G;B` introduces a colour definition; `#N` selects a colour for subsequent pixels. The full DCS parameter string (`P1;P2;P3`) includes aspect ratio, background, and grid size settings.
+
+**DECSDM mode 80** (DEC private mode 80, set via `ESC[?80h`, reset via `ESC[?80l`) controls Sixel scrolling behaviour. When **set** (mode 80 on), Sixel images scroll: after the image is drawn, the cursor moves below it and the terminal scrolls normally. When **reset** (mode 80 off, the DEC default), images are drawn at the current cursor position in-place without advancing the cursor, and subsequent text may overwrite the image. Most modern terminal emulators implement mode 80-set (scrolling) by default.
+
+**APC sequences (Application Program Command)** use the escape `ESC _ <data> ST`. The **Kitty Graphics Protocol** uses APC to transmit image data and commands because APC is passed through by most terminal multiplexers (tmux/zellij forward unrecognised APC sequences unmodified), making it more multiplexer-compatible than DCS. A typical Kitty APC chunk:
+
+```
+ESC _ G a=t,f=32,s=100,v=100,i=1 ; <base64-encoded RGBA chunk> ST
+```
+
+where `a=t` means action=transmit, `f=32` means format=RGBA, `s`/`v` are pixel dimensions, and `i` is the **image ID**.
+
+**Image IDs** are 32-bit integers in the Kitty Graphics Protocol that identify images stored in the terminal's server-side image store. Once an image is transmitted (chunked over multiple APC sequences), it persists server-side until explicitly deleted (`a=d,i=<id>`). The client can redisplay the image at any cell position without retransmitting pixel data — only the image ID and placement parameters are needed. This is the key GPU-architecture advantage of the Kitty protocol: large images are uploaded once to GPU texture memory and can be displayed at multiple locations with minimal bandwidth.
+
+**DCS parameters** in the Sixel DCS header (`ESC P <P1>;<P2>;<P3> q`) are:
+- `P1` (pixel aspect ratio): 1 = 2:1 (default), 2 = 5:1, 7/8 = 1:1 (square pixels, most useful today)
+- `P2` (background colour): 0 = background unchanged, 1 = background is colour 0, 2 = background unchanged (same as 0)
+- `P3` (horizontal grid size): pixels per cell horizontally, typically 0 (default 10)
+
+**OSC 1337 payloads (iTerm2 Inline Images Protocol)** use Operating System Command escape sequences:
+
+```
+ESC ] 1337 ; File=<options> : <base64-encoded file data> BEL
+```
+
+Key options: `inline=1` (display inline, required), `width=N`, `height=N`, `preserveAspectRatio=0/1`. Unlike Kitty, OSC 1337 is stateless — there are no persistent server-side image IDs; each display requires retransmitting the full image data. The format supports PNG, JPEG, GIF, and other image formats (the terminal decodes from file format, not raw RGBA). OSC 1337 is supported by iTerm2, WezTerm, Hyper, and a growing list of terminals, but not by Kitty (which uses its own APC-based protocol).
+
 ## How the Chapters Interrelate
 
 The five chapters form a dependency structure where Chapter 178 is the kernel foundation, Chapter 43 is the protocol layer, and Chapter 45 is the compositor integration capstone.

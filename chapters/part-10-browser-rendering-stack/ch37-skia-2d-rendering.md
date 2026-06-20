@@ -15,8 +15,13 @@
 6. [CSS Filter Effects: Blur, Drop-Shadow, and Colour Matrix](#6-css-filter-effects-blur-drop-shadow-and-colour-matrix)
 7. [Canvas 2D API Implementation](#7-canvas-2d-api-implementation)
 8. [Skia's Shader Compilation Model](#8-skias-shader-compilation-model)
-9. [Integrations](#9-integrations)
-10. [References](#references)
+9. [SkSL and the Skia Shader Language](#9-sksl-and-the-skia-shader-language)
+10. [Graphite — Skia's GPU-First Architecture in Depth](#10-graphite--skias-gpu-first-architecture-in-depth)
+11. [Canvas 2D IPC Path in Chromium](#11-canvas-2d-ipc-path-in-chromium)
+12. [Text Rendering Pipeline in Depth](#12-text-rendering-pipeline-in-depth)
+13. [Linux-Specific Backend Notes](#13-linux-specific-backend-notes)
+14. [Integrations](#14-integrations)
+15. [References](#references)
 
 ---
 
@@ -386,7 +391,152 @@ The number of distinct `PipelineKey`s is bounded by the combinatorial product of
 
 ---
 
-## 9. Integrations
+## 9. SkSL and the Skia Shader Language
+
+Section 8 described SkSL as the compilation hub through which Skia's internal paint effects are turned into GPU shaders. This section completes that picture by examining SkSL as a developer-facing language: its syntax, its runtime effect system (`SkRuntimeEffect`), its use in CSS effects, and the full compiler pipeline from SkSL source to backend output.
+
+**SkSL as a language.** SkSL is syntactically close to GLSL but is a distinct language with Skia-specific concerns baked in from the start. Variable types use modern, unambiguous names: `float2` instead of `vec2`, `float3x3` instead of `mat3`, `half` for mediump-precision floats, and `int2` instead of `ivec2`. Built-in varyings use `sk_` prefixes (`sk_FragColor`, `sk_Position`, `sk_FragCoord`) that the backends map to the appropriate GLSL or WGSL equivalents. GPU capability queries are expressed as `sk_Caps.floatIs32Bits` or `sk_Caps.integerSupport`, allowing the compiler to choose code paths at compile time depending on the backend's actual capabilities. SkSL also allows `uniform shader childShader;` declarations so that a shader can evaluate another `SkShader` (such as a gradient or image shader) at any UV coordinate by calling `childShader.eval(xy)` — a higher-level abstraction than GLSL's `texture()` sampler calls. The SkSL source tree lives in `src/sksl/` in the Skia repository; the compiler entry point is `SkSL::Compiler` defined in `src/sksl/SkSLCompiler.cpp`. [Source](https://skia.org/docs/user/sksl/)
+
+**The SkSL compiler pipeline.** `SkSL::Compiler::convertProgram()` drives the compilation in four main stages. First, `SkSLParser` (in `src/sksl/SkSLParser.cpp`) converts SkSL source text into a typed abstract syntax tree. Second, the analyser resolves names, checks types, validates control flow, and rejects illegal constructs such as recursion or dynamic array indexing. Third, a set of IR-level optimisation passes run: constant folding replaces `1.0 * x` with `x` and evaluates constant-valued `if` conditions at compile time; dead code elimination removes branches and variables that can never affect the output; function inlining substitutes short function bodies at call sites to reduce per-call overhead in fragment shaders, where function call overhead can be significant on some GPU architectures. Fourth, one of three code generators converts the optimised IR to the target backend: `SkSL::GLSLCodeGenerator` (in `src/sksl/codegen/SkSLGLSLCodeGenerator.cpp`) emits GLSL ES 3.00 or GLSL ES 1.00; `SkSL::SPIRVCodeGenerator` (in `src/sksl/codegen/SkSLSPIRVCodeGenerator.cpp`) emits SPIR-V binary directly; and `SkSL::WGSLCodeGenerator` (in `src/sksl/codegen/SkSLWGSLCodeGenerator.cpp`) emits WGSL text for the Dawn/Graphite path. An MSL (Metal Shading Language) backend also exists for the Apple platforms. [Source](https://github.com/google/skia/blob/main/src/sksl/README.md)
+
+**`SkRuntimeEffect`: embedding custom shaders in the paint pipeline.** SkSL is not only used internally by Skia. The `SkRuntimeEffect` API (declared in `include/effects/SkRuntimeEffect.h`) allows application code to write a custom SkSL fragment shader and attach it to an `SkPaint` as an `SkShader`, `SkColorFilter`, or `SkBlender`. Chrome uses this mechanism to implement CSS `backdrop-filter: blur()`, CSS `mix-blend-mode` compositing effects, and certain WebGL compositing post-processing effects that require a custom colour transformation. The creation call is:
+
+```cpp
+// Create a runtime effect from SkSL source
+SkRuntimeEffect::Result result = SkRuntimeEffect::MakeForShader(SkString(R"(
+    // A radial gradient effect: smooth falloff from centre to edge
+    uniform float2 u_centre;   // centre in local coordinates
+    uniform float  u_radius;   // radius in local units
+    uniform vec4   u_inner;    // inner colour (premultiplied)
+    uniform vec4   u_outer;    // outer colour (premultiplied)
+
+    half4 main(float2 xy) {
+        float dist = distance(xy, u_centre);
+        float t    = clamp(dist / u_radius, 0.0, 1.0);
+        return half4(mix(u_inner, u_outer, t));
+    }
+)"));
+
+if (!result.effect) {
+    // Compilation failed; result.errorText contains the error message
+    SkDebugf("SkSL error: %s\n", result.errorText.c_str());
+    return;
+}
+sk_sp<SkRuntimeEffect> effect = std::move(result.effect);
+
+// Pack uniform data into a byte buffer in the order declared in the SkSL
+sk_sp<SkData> uniforms = SkData::MakeUninitialized(effect->uniformSize());
+float* u = static_cast<float*>(uniforms->writable_data());
+u[0] = 256.0f; u[1] = 256.0f;  // u_centre
+u[2] = 200.0f;                  // u_radius
+// u_inner = opaque white, u_outer = transparent black (premultiplied)
+u[3]=1.f; u[4]=1.f; u[5]=1.f; u[6]=1.f;
+u[7]=0.f; u[8]=0.f; u[9]=0.f; u[10]=0.f;
+
+// Create the shader and attach it to a paint
+sk_sp<SkShader> shader = effect->makeShader(std::move(uniforms),
+                                             /*children=*/ nullptr,
+                                             /*childCount=*/ 0);
+SkPaint paint;
+paint.setShader(std::move(shader));
+canvas->drawRect(SkRect::MakeWH(512, 512), paint);
+```
+[Source: `include/effects/SkRuntimeEffect.h`](https://skia.googlesource.com/skia/+/refs/heads/main/include/effects/SkRuntimeEffect.h)
+
+The `SkRuntimeEffect::Result` struct holds the compiled effect and any error text. The `makeShader()` call binds uniform data and any child shaders (e.g., an image shader or gradient that the custom SkSL will sample via `childShader.eval(xy)`) and returns an `SkShader` usable in any `SkPaint`. Uniform values are passed as a raw byte buffer in the order they are declared in the SkSL source; `effect->uniformSize()` returns the total buffer size.
+
+For CSS backdrop-filter blur, Chrome constructs an `SkRuntimeEffect` from an SkSL shader that samples a texture containing the captured background pixels and applies a Gaussian-weighted average of neighbouring samples. The effect is created once per distinct blur radius and cached so that CSS animations that modify `filter: blur(Npx)` across multiple N values compile at most a handful of runtime effects rather than one per frame.
+
+**SkRuntimeEffect for `SkColorFilter` and `SkBlender`.** The same API offers `MakeForColorFilter(SkString sksl)` for shaders with the entry point `half4 main(half4 inColor)` and `MakeForBlender(SkString sksl)` for shaders with the entry point `half4 main(half4 src, half4 dst)`. CSS `mix-blend-mode: multiply` and similar blend modes are implemented via `SkBlender`s, some of which are expressed as `SkRuntimeEffect`-backed custom blenders to support unusual compositing operations not covered by Skia's built-in Porter-Duff blenders. [Source](https://skia.org/docs/user/sksl/)
+
+---
+
+## 10. Graphite — Skia's GPU-First Architecture in Depth
+
+Section 3 gave a broad overview of Graphite's recording/submission split and its `TaskGraph`. This section examines the concrete data structures inside `src/gpu/graphite/` that make Graphite's performance claims possible, with particular attention to the atlas subsystems and task types that are relevant to the Linux/Chrome deployment.
+
+**The recording model in detail.** An `skgpu::graphite::Recorder` (declared in `include/gpu/graphite/Recorder.h`, implemented in `src/gpu/graphite/Recorder.cpp`) is the object that a CPU thread uses to record drawing commands. It is intentionally *not* thread-safe in itself; the design intention is that each CPU thread owns its own `Recorder`. Inside a `Recorder`, each active render target is represented by a `DrawContext` which accumulates a `DrawList` — a flat, ordered list of draw commands tagged with paint state and geometry information. When `Recorder::snap()` is called at frame-end, the `Recorder` hands ownership of its accumulated `DrawList`s to the `Context` as an immutable `Recording` object and resets itself to empty. [Source](https://skia.googlesource.com/skia/+/refs/heads/main/src/gpu/graphite/)
+
+The `Recording` object is a complete, backend-agnostic description of all GPU work required for one frame. It contains references to all `TextureProxy` inputs and outputs, all `Buffer` uploads, all pipeline keys, and the ordered `TaskList` of `Task` objects to execute. A `Recording` is self-contained enough to be passed to any `Context` that shares the same `SharedContext` (GPU device state), enabling future work where multiple `Recorder`-produced `Recording`s from different CPU threads are submitted to a single GPU queue in dependency order.
+
+**The task graph.** The `Recording`'s task list is a directed acyclic graph of `skgpu::graphite::Task` subclasses defined in `src/gpu/graphite/task/`. The concrete task types as of mid-2026 are:
+
+- **`RenderPassTask`** — issues a full GPU render pass drawing geometry into a `TextureProxy`; wraps one or more `DrawPass` objects;
+- **`UploadTask`** — copies CPU pixel data into a GPU texture (used for glyph atlas updates and CPU-decoded image uploads);
+- **`CopyTask`** — copies one GPU texture region into another (used for `backdrop-filter` background capture);
+- **`ComputeTask`** — dispatches a compute shader (used by `ComputePathAtlas` for GPU-side path coverage rasterisation);
+- **`DrawTask`** — a higher-level wrapper that contains sub-tasks for complex draw pipelines (e.g., a blur that needs a render pass plus a copy plus another render pass);
+- **`SynchronizeToCpuTask`** — inserts a readback barrier for `getImageData`-style pixel readbacks;
+- **`ClearBuffersTask`** — zeroes vertex or uniform buffers in preparation for the next recording.
+
+The `TaskGraph` executor in `Context::insertRecording()` walks the `TaskList`, resolves dependency edges between tasks (a `RenderPassTask` that reads from a `TextureProxy` that another task writes to must run after it), and records all tasks into a single GPU command buffer via the backend's command encoder. For the Dawn backend (used on Linux/Graphite), this means calling `wgpu::CommandEncoder` methods in dependency order. [Source: `src/gpu/graphite/task/`](https://skia.googlesource.com/skia/+/refs/heads/main/src/gpu/graphite/task/)
+
+**The `GlyphAtlas` and `TextAtlasManager`.** Graphite's text subsystem lives in `src/gpu/graphite/text/`. The central object is `TextAtlasManager` (in `src/gpu/graphite/text/TextAtlasManager.h`). It manages a set of `DrawAtlas` objects — one per pixel format needed for glyphs: `kAlpha_8_SkColorType` for greyscale antialiased glyphs, `kRGBA_8888_SkColorType` for colour emoji, and optionally a separate format for LCD subpixel rendering. Each `DrawAtlas` is a GPU texture (a `TextureProxy`) of fixed size (typically 2048×2048 pixels) partitioned into rows by a shelf-packing algorithm. The individual glyph bitmap is an `AtlasLocator` record: a small struct containing the atlas texture index and the `(u0, v0, u1, v1)` UV rectangle within the atlas where the glyph was placed.
+
+When `TextAtlasManager::addGlyphToBitmap()` is called for a new glyph, it checks whether the glyph's CPU-side bitmap (obtained via Skia's `SkStrikeCache` and ultimately from FreeType) fits in the current row of the active atlas. If it does not fit, a new shelf is started; if no more shelf space exists, an `UploadTask` is submitted for all pending glyph uploads, the atlas is evicted via LRU, and a new atlas texture generation begins. Eviction invalidates all draw calls that referenced the evicted atlas page, requiring their `DrawPass` to be rebuilt, but this is rare in practice for stable pages with a small glyph set. [Source: `src/gpu/graphite/text/TextAtlasManager.h`](https://skia.googlesource.com/skia/+/refs/heads/main/src/gpu/graphite/text/)
+
+**The `PathAtlas` system.** Skia Graphite provides two strategies for rasterising path coverage masks (alpha masks for anti-aliased path fills and strokes), selectable at runtime based on hardware capabilities:
+
+- **`RasterPathAtlas`** (in `src/gpu/graphite/RasterPathAtlas.cpp`): rasterises path coverage entirely on the CPU using Skia's software rasteriser, then uploads the resulting alpha mask into a GPU atlas texture via an `UploadTask`. This approach works on all hardware and produces identical results to software Skia, but uses CPU time for rasterisation.
+- **`ComputePathAtlas`** (in `src/gpu/graphite/ComputePathAtlas.cpp`): dispatches a compute shader (`ComputeTask`) that fills the atlas texture entirely on the GPU. The GPU-side rasteriser computes winding numbers or coverage samples per path segment and writes alpha values into the atlas texture. This avoids the CPU → GPU upload cost entirely and is significantly faster for complex paths at high resolutions, but requires compute-capable hardware (all modern Vulkan GPUs support this). [Source: `src/gpu/graphite/PathAtlas.h`](https://skia.googlesource.com/skia/+/refs/heads/main/src/gpu/graphite/PathAtlas.h)
+
+The choice between the two is made in `Device::choosePathAtlas()` based on `skgpu::graphite::Caps::computePathAtlasSupport()`. On Linux with a Vulkan-capable Mesa driver, `ComputePathAtlas` is preferred.
+
+**Contrast with Ganesh's immediate-mode approach.** In Ganesh, `GrOpsTask::onExecute()` calls into the GPU backend immediately at flush time, with no opportunity to globally reorder across all active render targets. Graphite's deferred model — where all `DrawList`s for all render targets are finalised before any `DrawPass` is built — enables global sort by pipeline key across the entire frame, reducing pipeline state switches substantially. The Graphite `DrawPass` builder can look at all draws in a `DrawList`, sort them by `PipelineKey`, and then emit a series of GPU draw calls with minimal pipeline rebinding. This is the concrete mechanism that delivered the 15% Motionmark improvement on Apple Silicon. [Source](https://blog.chromium.org/2025/07/introducing-skia-graphite-chromes.html)
+
+---
+
+## 11. Canvas 2D IPC Path in Chromium
+
+When a web page runs `<canvas>` JavaScript, it might seem that the drawing commands simply call into Skia directly. The reality for GPU-accelerated canvases is considerably more involved, because Chrome separates the renderer process (where JavaScript runs) from the GPU process (where GPU work is submitted). This section traces the path from a JavaScript `ctx.fillRect()` call to a GPU draw command, covering both the same-process path and the serialised cross-process path.
+
+**Same-process canvas (direct Skia call).** For a canvas element in the main document that is small enough to be accelerated but does not need cross-process isolation, Blink's `CanvasRenderingContext2D` calls `SkCanvas` methods directly. The `SkCanvas` is backed by a GPU-resident `SkSurface` that wraps a `SharedImage` texture allocated in the GPU process. The IPC boundary is crossed only at `CanvasRenderingContext2D::commit()` time (or when the compositor needs to sample the canvas texture), not at every draw call. Individual `SkCanvas` operations — `drawRect`, `drawPath`, `drawTextBlob`, `drawImage` — accumulate in the Skia recording layer and are batched into GPU draw calls when the `GrDirectContext` (Ganesh) or `Recorder` (Graphite) is flushed.
+
+**OffscreenCanvas and `PaintOpBuffer` serialisation.** The situation is fundamentally different for `OffscreenCanvas` objects transferred to a Web Worker, and for OOP-R (Out-of-Process Rasterisation) tile painting. In both cases, drawing commands are generated in one process but must be replayed in another. Chromium solves this with `cc::PaintOpBuffer` — a reimplementation of Skia's `SkLiteDL` that stores `PaintOp` records sequentially in a flat `char[]` buffer aligned to 8 bytes. Each `PaintOp` is a compact binary encoding of one Skia canvas operation: a `DrawRectOp` encodes an `SkRect` and an `SkPaint`; a `DrawTextBlobOp` encodes an `SkTextBlob` plus position; a `SaveLayerOp` encodes an `SkRect` and filter flags. The set of ops mirrors the `SkCanvas` API 1:1. [Source: Chromium source `cc/paint/paint_op_buffer.h`](https://chromium.googlesource.com/chromium/src/+/master/cc/paint/)
+
+When an `OffscreenCanvas` 2D context in a worker calls `ctx.fillText("hello", 10, 10)`, Blink records a `DrawTextBlobOp` into the worker's `PaintOpBuffer`. When `canvas.commit()` is called in the worker, the `PaintOpBuffer` is serialised as a binary blob and sent via Mojo IPC to the GPU process's raster worker thread. In the GPU process, `cc::PlaybackParams` drives `PaintOpBuffer::Playback()`, which iterates the ops and calls the corresponding `SkCanvas` methods — `canvas->drawTextBlob(blob, x, y, paint)`, etc. — on the GPU-backed `SkSurface`. [Source: Chromium `cc/paint/paint_op_buffer.cc`](https://chromium.googlesource.com/chromium/src/+/master/cc/paint/)
+
+**OOP-R tile rasterisation.** OOP-R (enabled by default in Chrome since M82) extends the same `PaintOpBuffer` serialisation to all tile rasterisation. Blink's paint system records each tile's content as a `cc::DisplayItemList` — a `PaintOpBuffer` with additional spatial index metadata. The `DisplayItemList` is serialised over Mojo IPC to the GPU process, where a pool of raster worker threads replay it onto the tile's GPU texture using Skia. This means CPU-expensive `SkCanvas` calls — tessellating a complex `Path2D`, rasterising a COLRv1 emoji, uploading an image — all happen in the GPU process, not in the renderer process, freeing the renderer's main thread for JavaScript execution.
+
+**Hardware-accelerated canvas and `gpu::Mailbox`.** When the GPU compositor handles a `<canvas>` element, the canvas's backing texture must enter the compositor's layer tree. Skia draws into a GPU-backed `SkSurface` (wrapping either a Ganesh `GrRenderTarget` or a Graphite `TextureProxy`). When the canvas is ready to be composited, Chrome calls `CanvasResourceProvider::ProduceCanvasResource()`, which produces a `gpu::Mailbox` — a small cross-process token that identifies the GPU texture. The compositor's `viz::TextureDrawQuad` references this mailbox, causing `viz::SkiaRenderer` to sample the canvas texture during compositing without any pixel copy. The mailbox system is also how `OffscreenCanvas::transferToImageBitmap()` achieves zero-copy transfer: the `Mailbox` is transmitted to the main thread, which wraps it in an `ImageBitmap` whose internal `SkImage` references the same underlying GPU texture.
+
+---
+
+## 12. Text Rendering Pipeline in Depth
+
+Section 5 described the six-stage text pipeline from an architectural perspective. This section examines the pipeline from the perspective of the data structures that cross stage boundaries, with particular attention to the cross-process glyph cache (`SkStrikeServer`/`SkStrikeClient`) that OOP-R introduces.
+
+**`SkFont` to `SkGlyphRunList`.** After HarfBuzz shaping produces a sequence of `(glyphID, advance, offset)` tuples, Blink constructs a `SkTextBlob` by calling `SkTextBlobBuilder::allocRunPosH()` for each shaped run. Each run contains the glyph IDs, X positions, and a shared Y baseline. When `SkCanvas::drawTextBlob()` is called, Skia internally converts the `SkTextBlob` into an `SkGlyphRunList` — a transient list of `SkGlyphRun` objects, each of which pairs glyph IDs with their positions and a fully resolved `SkFont`. The `SkGlyphRunList` is the fundamental unit of text work that the rest of the text subsystem operates on; it is never persisted between frames.
+
+**Cross-process glyph lookup: `SkStrikeServer` and `SkStrikeClient`.** In OOP-R, the renderer process holds an `SkStrikeServer` and the GPU process holds the corresponding `SkStrikeClient`. When the renderer records a text draw op into a `PaintOpBuffer`, it does not embed glyph bitmaps — the bitmaps are potentially large and often already cached in the GPU process. Instead, the renderer calls `SkStrikeServer::serializeTypeface()` for any typeface referenced by the text run, producing a compact serialised description of the typeface's glyph metrics. When the GPU-process raster worker deserialises the `PaintOpBuffer` and encounters the text op, its `SkStrikeClient` resolves glyph metric requests against its own local `SkStrikeCache`. If a glyph is not in the GPU-process cache, the `SkStrikeClient` calls back to the renderer process's `SkStrikeServer` to fetch the metrics and bitmaps — a round-trip that is amortised over many frames because glyphs are aggressively cached. [Source: `skia/tests/SkRemoteGlyphCacheTest.cpp`](https://github.com/google/skia/blob/main/tests/SkRemoteGlyphCacheTest.cpp)
+
+**`SkStrike` and FreeType rasterisation.** In the GPU process, a cache miss triggers a call through `SkTypeface::getScalerContext()` into Skia's FreeType port (`src/ports/SkFontScalerContext_freetype.cpp`). This calls `FT_Load_Glyph()` with the appropriate load flags: `FT_LOAD_NO_HINTING` at high DPI, `FT_LOAD_TARGET_NORMAL` with the autohinter at standard DPI, or `FT_LOAD_TARGET_LCD` for LCD-subpixel rendering (only when the surface is known to be opaque, as discussed in Section 5). The `FT_GlyphSlot` bitmap is then converted to a Skia `SkMask` and stored in the `SkStrike`. The rasterisation step is entirely CPU-bound; its cost per glyph is dominated by the number of Bezier curve segments in the glyph outline, which for CJK ideographs can be 50–200 segments, versus 10–30 segments for Latin glyphs.
+
+**COLRv1 colour fonts on Linux.** Noto Color Emoji and other system emoji fonts distributed with recent Linux distributions (Ubuntu 22.04 and later, Fedora 37 and later) include COLRv1 tables that encode glyphs as paint graphs: trees of operations (filled path with solid colour, linear gradient, radial gradient, sweep gradient, group with blend mode). Skia supports COLRv1 through `SkTypeface_FreeType::onGetCOLRv1()`, which walks the font's `COLR` table (via FreeType's `FT_Get_Color_Glyph_Paint()` API added in FreeType 2.11) and calls back into Skia drawing operations. The result is that COLRv1 emoji are rasterised as vectors, producing crisp, scale-independent output at any size — in contrast to CBDT/CBLC bitmap emoji, which pixelate above their stored bitmap resolution.
+
+**LCD subpixel rendering on Linux: the Wayland constraint.** Chrome on Linux uses `SkPixelGeometry::kRGB_H_SkPixelGeometry` (red left, green centre, blue right) for LCD-subpixel rendering when the following conditions hold: the rendering surface has `kOpaque_SkAlphaType`, the surface properties do *not* have `kUseDeviceIndependentFonts_Flag` set, and the display is X11 (or XWayland) with `Xft.rgba = rgb` in the X resources. On a native Wayland surface, Chrome cannot guarantee opacity (the compositor may blend the window against any arbitrary background) and therefore forces `kUnknown_SkPixelGeometry`, which disables LCD rendering and falls back to greyscale A8 antialiasing. The rendering quality difference is visible on 96 DPI displays but imperceptible on 192 DPI (HiDPI) displays, which is why this constraint matters less as HiDPI becomes ubiquitous. [Source: `src/core/SkSurfaceProps.h`](https://skia.googlesource.com/skia/+/refs/heads/main/include/core/SkSurfaceProps.h)
+
+---
+
+## 13. Linux-Specific Backend Notes
+
+**The ANGLE-on-Vulkan path for Ganesh.** Chrome on Linux has historically run Skia Ganesh through ANGLE, rather than using Ganesh's native Vulkan backend. The reason is pragmatic: ANGLE provides a well-tested, Chrome-maintained OpenGL ES implementation that abstracts over driver differences, and Ganesh's GL backend is significantly more mature and better tested than its native Vulkan backend. In this path, `GrGLGpu` (the Ganesh GL backend, in `src/gpu/ganesh/gl/GrGLGpu.cpp`) emits OpenGL ES draw calls — `glBindFramebuffer`, `glUseProgram`, `glDrawArrays` — which ANGLE's `GLESContext` captures and translates to Vulkan command buffer calls, which it then submits to the Mesa Vulkan driver. SkSL shaders are emitted as GLSL ES 3.00 by `SkSL::GLSLCodeGenerator`, compiled by ANGLE's built-in GLSL translator to SPIR-V, and passed to `vkCreateShaderModule`. The extra GLSL→SPIR-V translation step adds compile-time latency but has negligible runtime cost once the pipeline is compiled.
+
+**The Dawn-on-Vulkan path for Graphite.** On Linux with the Graphite feature flag enabled, Skia uses the Dawn Vulkan backend: the `DawnBackendContext` in `src/gpu/graphite/dawn/DawnBackendContext.h` holds a `wgpu::Device` created by Dawn's Vulkan backend (`src/dawn/native/vulkan/`). Graphite's Dawn adapter objects (`DawnGraphicsPipeline`, `DawnCommandBuffer`, `DawnTexture`) wrap the corresponding Dawn WebGPU objects. SkSL shaders are emitted as WGSL by `SkSL::WGSLCodeGenerator`, compiled by Tint's WGSL reader into Tint's IR, then emitted as SPIR-V by Tint's SPIR-V writer, and finally consumed by `vkCreateShaderModule` in the Mesa Vulkan driver. The shader compilation chain is therefore: SkSL compiler → WGSL text → Tint WGSL reader → Tint IR → Tint SPIR-V writer → SPIR-V → Mesa `spirv_to_nir` → NIR → ACO/ANV/NVK. This three-stage chain (SkSL, Tint, Mesa) is why Graphite's pre-compilation of all expected pipeline variants at startup is essential for eliminating first-draw stutter.
+
+**DMA-BUF import for zero-copy video compositing.** On Linux, hardware-decoded video frames produced by VA-API (see Chapter 26) are typically held as DMA-BUF file descriptors rather than in CPU-accessible memory. Skia can import these DMA-BUF-backed buffers as GPU-side `SkImage` objects for zero-copy compositing. The mechanism differs between the Ganesh and Graphite paths:
+
+For **Ganesh on Vulkan**, Chrome creates a `VkImage` from the DMA-BUF using the `VK_EXT_external_memory_dma_buf` and `VK_KHR_external_memory_fd` extensions: `vkCreateImage` with a `VkExternalMemoryImageCreateInfo` specifying `VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT`, then `vkAllocateMemory` with a `VkImportMemoryFdInfoKHR` specifying the DMA-BUF file descriptor. The resulting `VkImage` is wrapped in a `GrVkImageInfo` struct and used to create an `SkImage` via `SkImage::MakeFromAHardwareBuffer`-equivalent Vulkan APIs. Skia then samples this `SkImage` in a canvas `drawImage()` call using the imported `VkImage` directly as a texture, with no CPU copy. [Source: Skia Vulkan docs](https://skia.org/docs/user/special/vulkan/)
+
+For **Graphite on Dawn**, the path is slightly more complex: Dawn exposes `wgpu::SharedTextureMemory` — a WebGPU extension for importing external GPU memory — with a DMA-BUF specialisation (`wgpu::SharedTextureMemoryDmaBufDescriptor`). Chrome creates a `wgpu::SharedTextureMemory` from the video frame's DMA-BUF fd and then creates a `wgpu::Texture` from it, which Graphite wraps as a `DawnTexture` and presents to Skia as an `SkImage` backed by an external `TextureProxy`. The resulting `SkImage` can be drawn with `SkCanvas::drawImage()` as normal, and the compositor's layer tree can reference it directly through the `SharedImage` mailbox system.
+
+> Note: The `wgpu::SharedTextureMemory` DMA-BUF path in Dawn is an experimental WebGPU extension (`WGPUFeature::SharedTextureMemoryDmaBuf`) that is not yet part of the core WebGPU specification. Its availability on any given Linux system depends on the Dawn version shipped with Chrome and on driver support for `VK_EXT_external_memory_dma_buf`. Verify against `dawn/src/dawn/native/vulkan/SharedTextureMemoryVk.cpp` for the current implementation status.
+
+**ANGLE vs. native Vulkan: the long-term direction.** The Chrome graphics team has stated publicly that ANGLE will remain the GL-ES provider for Ganesh on Linux through the Ganesh maintenance period, but that Graphite-on-Dawn-on-Vulkan is the long-term target for all platforms. ANGLE's GL-ES layer will eventually be removed from the Chrome rendering stack as Graphite becomes the sole GPU backend, leaving the shader path purely SkSL → WGSL → Tint → SPIR-V → Mesa. This consolidation reduces the number of shader compilation steps and eliminates the Ganesh GL→Vulkan translation overhead in ANGLE.
+
+---
+
+## 14. Integrations
 
 This chapter is the final content chapter of Part X and draws together threads from throughout the book.
 

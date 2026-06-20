@@ -18,6 +18,7 @@
 - [9. Connector Probing: EDID, DisplayID, and Hotplug](#9-connector-probing-edid-displayid-and-hotplug)
 - [10. Screen Rotation, Panel Orientation, and Buffer Transforms](#10-screen-rotation-panel-orientation-and-buffer-transforms)
 - [11. The DRM Bridge Framework: Composable Display Pipelines](#11-the-drm-bridge-framework-composable-display-pipelines)
+- [12. AMD Display Core: amdgpu_dm and the DCN Hardware Abstraction](#12-amd-display-core-amdgpu_dm-and-the-dcn-hardware-abstraction)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -783,6 +784,203 @@ The **ANX7625** (`drivers/gpu/drm/bridge/analogix/anx7625.c`) handles USB-C Alt 
 ### Encoder vs. Bridge: Recognising the Pattern
 
 Because the bridge framework was introduced incrementally (bridges became mainstream in kernel 5.x, though the infrastructure existed earlier), real drivers exhibit both old-style and new-style patterns. An old-style driver creates both a `drm_encoder` and a `drm_connector` manually, implementing all connector callbacks in the encoder driver. A new-style driver creates a `drm_encoder`, calls `drm_bridge_attach()` to attach the first bridge, and calls `drm_bridge_connector_init()` to synthesise the connector. When reading an unfamiliar SoC display driver, look for `drm_bridge_connector_init` to identify the new-style pattern; its absence suggests an older driver that predates the helper.
+
+---
+
+## 12. AMD Display Core: amdgpu_dm and the DCN Hardware Abstraction
+
+The AMD GPU display stack is the most architecturally elaborate in the mainline kernel. Where most GPU drivers implement KMS callbacks directly in terms of hardware register writes, AMD interposes a second, portable abstraction layer — the **Display Core** (**DC**) — between the KMS integration code and the DCN hardware registers. Understanding the two-layer split is essential for anyone reading or contributing to `drivers/gpu/drm/amd/display/`.
+
+### The Two-Layer Architecture and the DC Inclusion Debate
+
+The display driver divides into two directories. `drivers/gpu/drm/amd/display/amdgpu_dm/` contains **amdgpu_dm** — the KMS integration layer, which implements the standard DRM callbacks (`drm_mode_config_funcs`, `drm_crtc_helper_funcs`, `drm_plane_helper_funcs`) and bridges between DRM's atomic state machine and the DC abstraction below. `drivers/gpu/drm/amd/display/dc/` contains **Display Core** (**DC**) itself — a vendor hardware abstraction layer approximately 300,000 lines of C that models display hardware without any Linux-specific dependencies and that AMD maintains as a shared codebase across multiple operating systems. [Source](https://docs.kernel.org/gpu/amdgpu/display/index.html)
+
+The decision to include DC as a shared-OS abstraction layer — rather than writing a conventional Linux DRM driver — was one of the most contentious kernel upstream debates of the decade. In February 2016 Harry Wentland (AMD) submitted the first patch series, then called the "DAL display driver," consisting of 279 files and nearly 94,000 lines of code. Graphics maintainer Dave Airlie and Daniel Vetter (Intel, primary DRM architect) blocked it on the grounds that the code's midlayer abstraction — its attempt to hide all Linux-specific details behind an OS-agnostic interface — would prevent community maintenance, block cross-driver refactoring, and create a maintenance burden that the kernel community could not shoulder. Airlie's assessment was direct: "this code base is pretty much unmergeable as-is." [Source](https://lwn.net/Articles/708891/)
+
+Over the course of 2017, AMD stripped out roughly a third of the midlayer indirection, removing many internal abstraction objects and directly calling Linux APIs in `amdgpu_dm/` while retaining the DC layer for hardware-specific logic. The compromise satisfied the maintainers: in November 2017, Airlie submitted the amdgpu-dc pull request and Linus Torvalds accepted it for Linux 4.15 — 132,395 lines of new code. [Source](https://kernelnewbies.org/Linux_4.15) The resulting architecture is impure by DRM standards but functional: `amdgpu_dm` is a normal DRM driver; `dc/` is a hardware abstraction layer that `amdgpu_dm` calls into rather than directly touching DCN registers.
+
+### The DCN Hardware Model
+
+AMD's **Display Core Next** (**DCN**) organises display hardware into a linear pipeline of specialised processing blocks. Each block maps to a C struct in `dc/inc/hw/` and a per-generation hardware implementation in `dc/dcn*/`. The canonical signal flow is:
+
+```
+HUBBUB/HUBP → DPP → MPC → OPP → OPTC/OTG → DIO → connector
+```
+
+[Source](https://docs.kernel.org/gpu/amdgpu/display/dcn-overview.html)
+
+**HUBBUB (Display Controller Hub)** is the gateway between the system memory fabric (AMD's Scalable Data Port) and the DCN pipeline. It contains memory arbitration logic, manages bandwidth requests to the DRAM controller, and provides per-pipe HUBP (Hub and Hub Bypass) instances. Each HUBP fetches pixel data for one pipe from system memory, converts tiled or compressed surface layouts into a linear, interleaved stream, and handles rotation and cursor composition. The `struct hubbub` and `struct hubp` types in `dc/hubbub/` and `dc/hubp/` respectively represent these blocks. [Source](https://docs.kernel.org/gpu/amdgpu/display/dcn-blocks.html)
+
+**DPP (Display Pipe and Plane)** is the unified per-pipe pixel processing engine. It chains together: a converter/cursor block (format conversion, 4:2:0→4:4:4 upsampling), a scaler (bilinear or polyphase), a color management block (degamma LUT, plane CTM, shaper LUT, 3D LUT, output gamma), and a digital bypass path. The DPP is the hardware realisation of per-plane color management: every color transformation applied to a plane before blending is programmed into DPP registers. Its `struct dpp` abstraction lives in `dc/dpp/`. [Source](https://docs.kernel.org/gpu/amdgpu/display/dcn-blocks.html)
+
+**MPC (Multiple Pipe/Plane Combiner)** blends the outputs of up to four DPP instances per output pipe into a single composited pixel stream, using programmable alpha blending and z-ordering. Post-blending, MPC hosts per-CRTC color correction: the CRTC-level CTM and regamma are applied here by post-blending transformation matrices and LUTs. Its `struct mpc` abstraction is in `dc/mpc/`. [Source](https://docs.kernel.org/gpu/amdgpu/display/dcn-blocks.html)
+
+**OPP (Output Pixel Processor)** formats the pixel stream for transmission: it applies dithering, truncation from internal precision to wire bit depth, and Adaptive Backlight Modulation (ABM) for laptop panel brightness management. It buffers pixel data and interfaces to the OTG timing generator. Its `struct output_pixel_processor` type lives in `dc/opp/`. [Source](https://docs.kernel.org/gpu/amdgpu/display/dcn-blocks.html)
+
+**OPTC/OTG (Output Timing Controller / Output Timing Generator)** generates CRTC timing: horizontal and vertical sync, blanking intervals, pixel clock, and the global sync signals (VStartup, VUpdate, VReady) that coordinate double-buffered register latching across the pipeline. Each OTG corresponds to one KMS CRTC. In `dc/optc/` the abstraction is `struct timing_generator`. [Source](https://docs.kernel.org/gpu/amdgpu/display/dcn-overview.html)
+
+**DIO (Display Input/Output)** provides the output encoders: stream encoders for DisplayPort, HDMI, DVI, and eDP, along with their associated link training and AUX channel logic. From the KMS perspective, DIO implements what the encoder and bridge layers do in other drivers. [Source](https://docs.kernel.org/gpu/amdgpu/display/dcn-blocks.html)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  System Memory (DRAM / MALL cache)                              │
+│          │ pixel data DMA                                       │
+│   ┌──────▼──────┐                                               │
+│   │  HUBBUB     │  bandwidth arbitration, per-pipe HUBP fetch   │
+│   └──────┬──────┘  rotation, cursor                            │
+│          │ linear pixel stream                                  │
+│   ┌──────▼──────┐                                               │
+│   │    DPP      │  scaler, degamma, plane CTM, 3D LUT,          │
+│   └──────┬──────┘  shaper, regamma                             │
+│          │ pre-blended pixels                                   │
+│   ┌──────▼──────┐                                               │
+│   │    MPC      │  alpha blend up to 4 planes → post-blend CTM  │
+│   └──────┬──────┘  + regamma (CRTC-level)                      │
+│          │ composited pixels                                    │
+│   ┌──────▼──────┐                                               │
+│   │    OPP      │  dithering, truncation, ABM                   │
+│   └──────┬──────┘                                              │
+│          │ formatted pixel stream                               │
+│   ┌──────▼──────┐                                               │
+│   │  OPTC/OTG   │  HSYNC, VSYNC, pixel clock, VUpdate          │
+│   └──────┬──────┘                                              │
+│          │ parallel timing                                      │
+│   ┌──────▼──────┐                                               │
+│   │    DIO      │  DP/HDMI/eDP stream encoder, link training    │
+│   └──────┬──────┘                                              │
+│          │ differential lanes                                   │
+│   connector → cable → display                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### The Dual State Model: dm_crtc_state and dc_stream_state
+
+AMD's atomic state model layers two state representations on top of each other. The DRM layer sees `struct dm_crtc_state`, which subclasses `struct drm_crtc_state` and is the object that participates in the standard KMS atomic state machine. Alongside the standard `drm_crtc_state` fields, `dm_crtc_state` carries a pointer to its DC counterpart and metadata needed for the translation: [Source](https://elixir.bootlin.com/linux/latest/source/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.h)
+
+```c
+/* Source: drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.h */
+struct dm_crtc_state {
+    struct drm_crtc_state base;        /* must be first */
+    struct dc_stream_state *stream;    /* corresponding DC stream, or NULL */
+
+    bool cm_has_degamma;               /* DRM degamma LUT is set */
+    bool cm_is_degamma_srgb;           /* degamma is the sRGB curve */
+    bool mpo_requested;                /* multi-plane overlay requested */
+
+    int update_type;                   /* DC_UPDATE_TYPE_* */
+    int active_planes;
+
+    bool vrr_supported;
+    struct mod_freesync_config freesync_config;
+    struct dc_info_packet vrr_infopacket;
+
+    int abm_level;                     /* Adaptive Backlight Modulation */
+    enum amdgpu_transfer_function regamma_tf;
+    enum amdgpu_dm_cursor_mode cursor_mode;
+};
+#define to_dm_crtc_state(x) container_of(x, struct dm_crtc_state, base)
+```
+
+`struct dc_stream_state` (declared in `drivers/gpu/drm/amd/display/dc/dc_stream.h`) is DC's version of the same concept. It carries the full display timing (`struct dc_crtc_timing timing`), the output color space, stream-level color transforms (`struct dc_transfer_func out_transfer_func`, `struct colorspace_transform gamut_remap_matrix`), HDR metadata infopackets, VRR/FreeSync configuration, dithering options, and a reference to the physical link. The `dm_crtc_state.stream` pointer is the bridge between the two worlds: when `amdgpu_dm` creates or updates a `dm_crtc_state`, it also creates or updates the corresponding `dc_stream_state` via `create_validate_stream_for_sink()`. [Source](https://elixir.bootlin.com/linux/latest/source/drivers/gpu/drm/amd/display/dc/dc_stream.h)
+
+### The Atomic Commit Path
+
+`amdgpu_dm_atomic_check()` (in `amdgpu_dm.c`) is the `drm_mode_config_funcs.atomic_check` implementation. It iterates over all modified CRTCs and planes in the incoming `drm_atomic_state`, reconstructs a `struct dc_state` reflecting the desired hardware configuration, and calls `dc_validate_with_context()` to ask DC whether that configuration is achievable given bandwidth constraints, clock limits, and DCN hardware capabilities. Critically, this validation step calls into the **Display Mode Library** (DML, in `dc/dml/`) to verify that the aggregate memory bandwidth required by all active streams fits within the system's DRAM and data-fabric constraints. Only if `dc_validate_with_context()` succeeds does `atomic_check` return 0, permitting the commit to proceed. Invalid configurations — such as four 4K@120Hz streams exceeding DRAM bandwidth — are rejected during `atomic_check` before any hardware is touched. [Source](https://docs.kernel.org/gpu/amdgpu/display/display-manager.html)
+
+`amdgpu_dm_atomic_commit_tail()` is the `drm_mode_config_helper_funcs.atomic_commit_tail` implementation that runs in the non-blocking commit workqueue. It translates the validated `drm_atomic_state` into DC update calls. For streams that have changed, it calls `dc_commit_updates_for_stream()` to program DCN register blocks for the affected pipeline. For full modeset changes it calls `dc_commit_state()` which reprograms the entire DC state including link training and OTG timing. The DC layer then programs HUBBUB, DPP, MPC, OPP, and OTG registers directly, using the double-buffered register architecture to ensure all changes latch atomically at the next VUpdate signal. [Source](https://docs.kernel.org/gpu/amdgpu/display/display-manager.html)
+
+```c
+/* Simplified sketch of the commit path — not literal kernel code */
+
+/* Phase 1: atomic_check (called from DRM_IOCTL_MODE_ATOMIC) */
+static int amdgpu_dm_atomic_check(struct drm_device *dev,
+                                   struct drm_atomic_state *state)
+{
+    struct dm_atomic_state *dm_state;
+    struct dc_state *dc_state;
+
+    /* Get or create a dc_state attached to this drm_atomic_state */
+    dm_atomic_get_state(state, &dm_state);
+    dc_state = dm_state->context;
+
+    /* Translate each modified dm_crtc_state → dc_stream_state,
+     * each modified dm_plane_state → dc_plane_state,
+     * then ask DC to validate the whole configuration. */
+    foreach_new_crtc_in_state(state, crtc, new_crtc_state, i) {
+        struct dm_crtc_state *dm_new = to_dm_crtc_state(new_crtc_state);
+        dc_add_stream_to_ctx(dc, dc_state, dm_new->stream);
+    }
+
+    /* DML bandwidth check happens inside dc_validate_with_context() */
+    return dc_validate_with_context(dc, dc_state) ? 0 : -EINVAL;
+}
+
+/* Phase 2: commit_tail (runs in per-CRTC workqueue for NONBLOCK) */
+static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_state *state)
+{
+    /* Program DCN registers via DC for each modified stream */
+    dc_commit_updates_for_stream(dc, plane_states, plane_count,
+                                  stream, stream_update, dc_state);
+    /* DC internally programs HUBP, DPP, MPC, OPP, OTG registers */
+}
+```
+
+Compared with i915's `intel_atomic_commit()`, `amdgpu_dm`'s commit tail is significantly longer and more complex — it must handle VRR state, FreeSync, PSR transitions, DSC (Display Stream Compression), DMUB firmware commands, and ABM level changes, all of which are managed by the DC layer's own internal state machines rather than directly by the KMS driver code.
+
+### Color Management in DCN
+
+DCN exposes an exceptionally deep color management pipeline that maps directly onto KMS properties. At the stream (CRTC) level, `dc_stream_state` carries `out_transfer_func` (regamma, written from `GAMMA_LUT`) and `gamut_remap_matrix` (output CSC, written from `CTM`). At the plane level, `dc_plane_state` carries: [Source](https://elixir.bootlin.com/linux/latest/source/drivers/gpu/drm/amd/display/dc/dc.h)
+
+```c
+/* Source: drivers/gpu/drm/amd/display/dc/dc.h — dc_plane_state (color fields) */
+struct dc_plane_state {
+    /* ... geometry and surface format fields ... */
+
+    struct dc_transfer_func  in_transfer_func;    /* degamma: linearise input */
+    struct dc_csc_transform  input_csc_color_matrix; /* input CSC */
+    struct colorspace_transform gamut_remap_matrix; /* plane CTM (3×4 s31.32) */
+
+    struct dc_transfer_func  in_shaper_func;      /* pre-3D-LUT 1D shaper */
+    struct dc_3dlut          lut3d_func;          /* 3D LUT (17³ entries) */
+    struct dc_transfer_func  blend_tf;            /* post-3D-LUT blend gamma */
+
+    struct dc_gamma          gamma_correction;    /* legacy gamma (GAMMA_LUT) */
+    /* ... */
+};
+```
+
+`amdgpu_dm_update_plane_color_mgmt()` in `amdgpu_dm_color.c` reads the DRM plane properties (`DEGAMMA_LUT`, `CTM`, `GAMMA_LUT`, and AMD-private driver properties) and populates the corresponding `dc_plane_state` fields. `amdgpu_dm_update_crtc_color_mgmt()` similarly maps CRTC-level DRM properties to `dc_stream_state` fields. The hardware implementation of these transforms lives in the DPP block: `in_transfer_func` (degamma) and `gamut_remap_matrix` (plane CTM) are applied in DPP before blending; MPC applies the post-blend CRTC CTM and regamma. [Source](https://docs.kernel.org/gpu/amdgpu/display/display-manager.html)
+
+DCN 3.0 (Sienna Cichlid / RX 6000 series, Linux 5.13+) added plane-level CTM support, allowing independent color space conversions per plane before they are blended. This enables accurate color management for mixed-gamut content (sRGB UI overlaid on BT.2020 HDR video) without compositor-side GPU processing. The full color pipeline — per-plane degamma → CTM → shaper → 3D LUT → blend gamma → MPC blend → CRTC CTM → regamma — is documented in the kernel's AMD display color documentation. For the compositor-side perspective on how these capabilities are used in practice, see Chapter 74 (HDR and Wide Color Gamut). [Source](https://melissawen.github.io/blog/2023/11/07/amd-steamdeck-colors-p2)
+
+### Display Bandwidth Management: The Display Mode Library
+
+The **Display Mode Library** (**DML**) in `dc/dml/` and `dc/dml2_0/` is a dedicated validation library that answers the question: given a set of display configurations (resolutions, refresh rates, pixel formats, compression, number of active planes), do the memory bandwidth and latency requirements fit within the current hardware's DRAM and data-fabric constraints?
+
+DML models the entire display subsystem's memory traffic: it accounts for DRAM bandwidth, data fabric clock frequency, MALL (Memory Access Latency Limiter) cache behaviour, display prefetch buffer (DET) allocation per pipe, watermark levels, and DCN's requirements for worst-case memory latency in order to avoid FIFO underflow glitches. The output is a set of hardware configuration parameters — DLG (Display Latency Governor) register values, TTU (Time-To-Urgent) thresholds, RQ (Request Queue) parameters — that are written to HUBBUB and HUBP registers by the hardware sequencer layer (`dc/hwss/`).
+
+`amdgpu_dm_atomic_check()` calls into DML implicitly via `dc_validate_with_context()`, which invokes `dml_calcs()` (or its DCN generation-specific equivalents) as part of the resource validation path. If DML determines that the requested configuration would require more memory bandwidth than the current DRAM operating point can supply, `dc_validate_with_context()` returns failure, and `atomic_check` rejects the configuration with `-EINVAL` before any hardware is programmed. The DML is therefore the gatekeeper that prevents display underrun on memory-bandwidth-limited configurations — for example, four independent 4K@60Hz displays sharing a single LPDDR5 memory channel. [Source](https://docs.kernel.org/gpu/amdgpu/display/programming-model-dcn.html)
+
+### Panel Self-Refresh (PSR) on eDP Displays
+
+PSR is a DP/eDP feature that allows the display controller to enter a low-power state while the panel's internal framebuffer refreshes itself without receiving new data from the host. AMD's eDP support on laptops implements PSR through the DC link layer.
+
+PSR capability is discovered during link training via `amdgpu_dm_set_psr_caps()`, which reads the panel's PSR capability DPCD registers and populates `struct psr_caps` on the `dc_link`. When the compositor submits a commit with no changed planes (a fully static frame), `amdgpu_dm` can call into DC to enable PSR entry, allowing the display controller to gate its clock and memory fetch while the panel drives itself. The `amdgpu_dm_psr.c` module manages this lifecycle: `amdgpu_dm_psr_set_event()` sends PSR enable/disable requests via DMUB (Display Micro-controller Unit for amdgpu) firmware, which handles the PSR entry/exit state machine asynchronously in firmware rather than in the main kernel driver. [Source](https://elixir.bootlin.com/linux/latest/source/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_psr.h)
+
+PSR was shipped disabled in AMD's kernel driver for several years due to compositor compatibility issues: early Wayland compositors did not always signal frame quiescence correctly, causing spurious PSR-entry when the compositor was still actively rendering. AMD enabled PSR by default for newer DCN hardware starting with Linux 5.16, after improving the interaction with compositor-driven page flip tracking. Users can verify PSR capability and current state via: [Source](https://www.phoronix.com/news/AMDGPU-Linux-5.16-PSR)
+
+```bash
+# Check PSR capability (requires debugfs, typically /sys/kernel/debug/dri/0/eDP-1/)
+cat /sys/kernel/debug/dri/0/eDP-1/psr_capability
+# Output: "PSR1" or "PSR2" and current state (enabled/disabled/active)
+
+# Force-enable PSR via dcfeaturemask (PSR1 = bit 3)
+# Add to kernel commandline: amdgpu.dcfeaturemask=0xb
+```
+
+**PSR2 selective update** goes further: instead of blanking the entire display, the panel accepts selective tile updates — only transmitting the changed rows of pixels over the DP link while the panel refreshes unchanged rows from its internal buffer. This allows the `FB_DAMAGE_CLIPS` plane damage information (described in Section 8) to directly reduce link utilisation: the display controller transmits only the dirty tiles, dramatically reducing power on panels that support PSR2 (most modern AMD laptop eDP panels do). The interaction between `FB_DAMAGE_CLIPS`, PSR2 selective update, and compositor damage tracking represents the lowest-latency, lowest-power path for static-dominant laptop workloads.
+
+The AMD display stack's depth — 300k LOC of DC, the DML bandwidth model, the DMUB firmware co-processor, and the multi-generational DCN hardware variants from DCN 1.0 (Raven Ridge, Linux 4.15) through DCN 4.x (RDNA4, Linux 6.x) — reflects the complexity of AMD's display hardware. The two-layer `amdgpu_dm`/DC split, controversial at inception, provides a pragmatic path for AMD to upstream new hardware support without rewriting the display stack from scratch with each GPU generation.
 
 ---
 

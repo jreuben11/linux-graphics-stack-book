@@ -18,6 +18,60 @@ The **Khronos Group** is the standards body that defines most of the open APIs s
 
 **Chapter 110 — SPIR-V Tooling** is the practical companion to Chapter 61's format-level reference. Where Chapter 61 explains *what* **SPIR-V** is and how it fits into the Mesa driver pipeline, this chapter explains *how to work with it at the tool level*. It covers the full **SPIRV-Tools** suite (**spirv-as**, **spirv-dis**, **spirv-val**, **spirv-opt**, **spirv-link**, **spirv-reduce**) with worked CLI examples; **SPIRV-Cross** for transpiling **SPIR-V** modules back to **GLSL**, **HLSL**, or **MSL** and for programmatic resource reflection; **spirv-reflect** for lightweight pipeline-layout introspection at engine runtime; and the front-end compiler paths (**glslang**, **DXC**, **Tint**, **clang/LLVM-SPIRV**) that feed into the toolchain. The chapter also covers **Mesa**'s `spirv_to_nir` ingestion layer, extended instruction sets for ray tracing and mesh shading, and shader debugging workflows that depend on **SPIR-V**'s debug information extensions. Engine authors, driver developers, and anyone who needs to audit, transform, or cross-compile **SPIR-V** binaries will find this chapter the most directly actionable in the part.
 
+## Key Concepts
+
+### GPU Texture Compression: BC7, ASTC, ETC2
+
+GPU texture compression formats allow textures to remain compressed in GPU VRAM, with the GPU hardware decompressing individual blocks on-demand during texture sampling — providing 4–8× VRAM savings at the cost of modest quality loss.
+
+**BC7 (Block Compression 7)** is Microsoft's DXTC/S3TC high-quality RGBA block compression format, part of DirectX 11 and OpenGL 4.2. BC7 encodes 4×4 pixel blocks as 128 bits (4 bits/pixel) using 8 different encoding modes optimised for various colour distributions. Quality approaches visually lossless for most content. Supported in hardware by all desktop GPUs since AMD GCN1 and Intel Ivy Bridge — these GPUs decompress BC7 in texture sampling hardware at zero performance cost. On Linux, BC7 is used for desktop Vulkan applications and is required for many glTF textures.
+
+**ASTC (Adaptive Scalable Texture Compression)** is ARM's open format supporting variable block sizes from 4×4 (8 bpp — same as BC7) to 12×12 (0.89 bpp), enabling a continuous quality/size tradeoff. ASTC is mandatory in Vulkan 1.0 on mobile (Android Vulkan Profiles) and universally supported on ARM Mali, Qualcomm Adreno, and Imagination PowerVR. On desktop, RDNA3+ GPUs support ASTC hardware decode, making it increasingly viable as a cross-platform format. ASTC supports 2D, 3D, HDR, and LDR textures in a single format family.
+
+**ETC2 (Ericsson Texture Compression 2)** is the mandatory baseline format for OpenGL ES 3.0 and Vulkan on Android. It provides RGB (`GL_COMPRESSED_RGB8_ETC2`) and RGBA (`GL_COMPRESSED_RGBA8_ETC2_EAC`) at 4 bpp and 8 bpp respectively. ETC2 is universally supported on all Android GPUs (hardware decode guaranteed by Android CDD) and is the minimum viable GPU texture format for Android apps that need better quality than paletted textures. Quality is lower than BC7 or ASTC at the same bit rate.
+
+The Basis Universal supercompression system (used in KTX2) transcodes to the best native format at runtime: BC7 on desktop, ASTC on mobile, ETC2 as fallback — removing the need to ship multiple format variants.
+
+### KTX2 and Texture Containers
+
+**KTX2 (Khronos Texture Container v2)** is the Khronos standard container for GPU textures. Unlike earlier DDS or KTX1 formats, KTX2 supports:
+- **Basis Universal supercompression**: textures are stored as a universal intermediate representation (ETC1S or UASTC) and transcoded at load time to the native format best supported by the current GPU
+- **Mipmaps**: full mipmap chains stored in the file, uploaded directly to GPU mipmap levels
+- **Cube maps, arrays, 3D textures**: all multi-image texture types in a single container
+- **GPU format diversity**: direct storage of BCn, ASTC, ETC2, or other native formats for pre-transcoded distributions
+
+The `libktx` C library handles both the container parsing and the Basis Universal transcoding. The `ktxVulkanTexture` API uploads KTX2 contents directly to a `VkImage` with correct format, mip levels, and layout transitions. The `KHR_texture_basisu` glTF extension references KTX2 textures from glTF materials.
+
+### PBR: Physically-Based Rendering
+
+**PBR (Physically-Based Rendering)** is the metallic-roughness material model standardised in **glTF 2.0** and broadly adopted across game engines and rendering tools. The glTF PBR model uses a Disney BRDF approximation with five material parameters:
+- **baseColor** / `baseColorTexture`: albedo (linear sRGB); for metals, this is the F0 specular colour
+- **metallic** (`metallicFactor`, `metallicRoughnessTexture` B channel): 0 = dielectric, 1 = metal
+- **roughness** (`roughnessFactor`, `metallicRoughnessTexture` G channel): 0 = mirror, 1 = Lambertian diffuse
+- **normal** (`normalTexture`): tangent-space normal map
+- **occlusion** (`occlusionTexture`): ambient occlusion map, premultiplied with IBL diffuse
+
+The BRDF is a Cook-Torrance specular lobe (GGX NDF, Smith G, Schlick Fresnel) combined with a Lambertian diffuse term. This model is physically motivated (energy-conserving, Fresnel-correct) and has become the standard interchange format for PBR materials in Blender, Substance Painter, Maya, and Unreal/Unity.
+
+### Portable Compute: DPC++, SMCP, and AdaptiveCpp
+
+**DPC++ (Data Parallel C++)** is Intel's SYCL 2020 implementation, distributed as part of the Intel oneAPI toolkit. DPC++ extends C++ with SYCL's `sycl::queue`, buffer/accessor model, and `parallel_for` kernel dispatch. It compiles to multiple backends via **Unified Runtime** adapter plugins: Level Zero (Intel GPU), OpenCL (CPU, FPGA), and optionally CUDA or ROCm via the same source code.
+
+**SMCP (Single-pass Mixed Compilation Pipeline)** is Intel DPC++'s compilation architecture. Unlike traditional SYCL implementations that require two separate compilation passes (host + device), SMCP compiles host and device code in a single compiler invocation, reducing build complexity and enabling better cross-boundary optimisations. The SMCP path uses LLVM IR as the intermediate representation and emits SPIR-V for the device code embedded in the host binary.
+
+**AdaptiveCpp** (formerly hipSYCL / OpenSYCL) is the community multi-backend SYCL implementation targeting CUDA, ROCm, OpenCL, and CPU in a single open-source codebase. It uses an **SSCP (Single-Source, Single-Pass Compilation Pipeline)** architecture similar in goal to DPC++'s SMCP but based on Clang's LLVM pipeline. AdaptiveCpp's key advantage is that it can compile a single SYCL source file to run on NVIDIA (CUDA), AMD (ROCm/HIP), Intel (Level Zero/OpenCL), and CPU targets without vendor-specific toolchains, using a common LLVM IR representation with a runtime library for target dispatch. This makes it the preferred SYCL implementation for portable academic and research compute code.
+
+### OpenVX: Vision Compute Graphs
+
+**OpenVX** is the Khronos declarative graph API for embedded computer-vision workloads. Unlike Vulkan (imperative command recording) or OpenCL (individual kernel dispatches), OpenVX represents a processing pipeline as a `vx_graph` containing `vx_node` operations connected by `vx_tensor` (or `vx_image`) data edges. The graph is verified and optimised once during `vxVerifyGraph()` — the implementation can fuse nodes, select optimal kernel implementations (CPU, GPU, DSP, NPU), and allocate intermediate buffers — then executed repeatedly via `vxProcessGraph()` with minimal overhead.
+
+OpenVX 1.3 includes:
+- Core image processing nodes (Gaussian blur, Sobel, HOG, optical flow, Harris corners)
+- `vx_tensor` for N-dimensional data + the `vx_khr_nn` extension for neural network inference graphs
+- `NNEF (Neural Network Exchange Format)` integration for importing trained models
+
+OpenVX targets embedded AI inference on NPUs (where graph-level scheduling enables systolic-array utilisation) more than general GPU compute, and is used in automotive (AUTOSAR Adaptive) and embedded vision platforms where Vulkan compute overhead is unacceptable.
+
 ## How the Chapters Interrelate
 
 ```mermaid

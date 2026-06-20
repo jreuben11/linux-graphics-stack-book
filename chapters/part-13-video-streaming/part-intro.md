@@ -18,6 +18,79 @@ Video streaming occupies the layer of the Linux graphics stack that sits directl
 
 **Chapter 60b — Video Streaming Protocols** addresses the network delivery layer that sits above the codec and framework layers. It covers **HLS** (**RFC 8216**) playlist grammar and **Low-Latency HLS** partial segments; **MPEG-DASH** **MPD** structure and **CMAF** chunked transfer for **LL-DASH**; **WebRTC** from **SDP** offer/answer through **ICE**/**STUN**/**TURN** to **DTLS-SRTP** and **RTP/RTCP** feedback loops, with **GStreamer** `webrtcbin` as the Linux integration point; **SRT** ARQ and latency budgeting via **libsrt**; and emerging **QUIC**-based transports (**WebTransport**, **MOQT**). The chapter also compares adaptive bitrate algorithms — throughput-based **EWMA**, buffer-based **BBA**, Lyapunov-optimal **BOLA**, model-predictive **MPC**, and reinforcement-learning **Pensieve** — grounding each in what a Linux packaging stack built on **FFmpeg** or **GStreamer** actually implements.
 
+## Key Concepts
+
+### Camera Capture: MIPI CSI-2, VB2, and ISP
+
+**MIPI CSI-2 (Camera Serial Interface 2)** is the physical interface from image sensor to SoC. It uses 2 or 4 DPHY or CPHY lanes carrying compressed differential serial data. The sensor transmits RAW Bayer or YUV frames at up to several Gbps per lane. The CSI-2 receiver inside the SoC is a DMA engine that writes frames into memory via the IOMMU; V4L2 models this as a `v4l2_subdev` linked into a media controller graph.
+
+**VB2 (videobuf2)** is the kernel framework for DMA buffer management in V4L2 drivers. It handles the mechanics of `VIDIOC_REQBUFS`, `VIDIOC_QBUF`/`VIDIOC_DQBUF`, and memory type selection (MMAP, USERPTR, DMABUF). For zero-copy GPU pipelines, buffers are allocated as GBM objects, exported as DMA-BUF file descriptors, and imported into V4L2 via `V4L2_MEMORY_DMABUF` — the same buffer flows directly from camera capture to GPU texture without a CPU copy.
+
+**ISP (Image Signal Processor)** is the dedicated hardware pipeline between the RAW Bayer sensor output and a displayable frame. ISP stages include: demosaicing (converting Bayer CFA patterns to RGB), auto-white balance (AWB), auto-exposure (AE), noise reduction (NR), and lens shading correction. On-SoC ISPs (Rockchip RKISP1, Allwinner sun6i, NXP i.MX) are modelled as V4L2 sub-devices in the media controller graph. ISP tuning (AWB/AE gains, noise reduction parameters) is typically vendor-proprietary.
+
+### Codec Workflows: Remuxing, Transcoding, Two-Pass Encoding
+
+**Remuxing** is repackaging a media stream into a different container format without re-encoding the elementary streams. Example: `ffmpeg -i input.mkv -c copy output.mp4` copies H.264 video and AAC audio bitstreams unchanged into an MP4 container. Zero quality loss, very fast.
+
+**Transcoding** is decode → re-encode to a different codec, resolution, or bitrate. Example: `ffmpeg -i input.h264 -c:v libx265 output.hevc` decodes H.264 and re-encodes to HEVC. Requires both a decoder and encoder; quality and bitrate tradeoffs apply.
+
+**Two-pass encoding** runs the encoder twice: pass 1 analyses the content and writes statistics; pass 2 uses those statistics for optimal bit allocation. The result is better quality at a given bitrate compared to single-pass VBR (Variable Bit Rate), because the encoder knows future scene complexity in advance. Used for file-output encoding where latency is irrelevant; not usable for live streaming.
+
+### Streaming Protocols
+
+**RTMP (Real-Time Messaging Protocol)** is a TCP-based protocol originally developed by Adobe for Flash streaming. RTMP uses a persistent connection and multiplexes audio, video, and data channels. Despite Flash's death, RTMP remains the dominant **ingest** protocol for live streaming (Twitch, YouTube, Facebook Live all accept RTMP ingest) due to its low-latency properties and wide encoder support (OBS, FFmpeg).
+
+**RTSP (Real-Time Streaming Protocol)** is a signaling protocol (like HTTP for media control) that negotiates media session setup; the actual media is transported via **RTP** over UDP or TCP. RTSP is used by IP cameras, CCTV systems, and traditional broadcast equipment. It is rarely used for internet delivery — HLS/DASH are preferred there.
+
+**SRT (Secure Reliable Transport)** is a UDP-based low-latency transport protocol with ARQ (Automatic Repeat Request) and AES encryption. SRT is designed for unreliable networks: it maintains a live stream at configurable latency (typically 120–500 ms) by retransmitting lost packets within the latency budget. SRT is increasingly used for contribution links (venue → production) and as a streaming ingest alternative to RTMP.
+
+**HLS (HTTP Live Streaming)** segments media into `.ts` (MPEG-TS) or `.fmp4` (Fragmented MP4) files and publishes a `.m3u8` playlist file. Clients poll or long-poll the playlist, downloading new segments as they appear. Standard HLS has ~6–30 s latency; **Low-Latency HLS** (Apple, 2019) uses partial segments and HTTP/2 push to achieve ~2–5 s latency.
+
+**DASH (Dynamic Adaptive Streaming over HTTP)** uses an XML manifest (**MPD — Media Presentation Description**) describing available AdaptationSets (video bitrate ladders), Representations (individual quality levels), and SegmentTemplate URLs. **CMAF (Common Media Application Format)** is the fMP4 fragment format used for both HLS and DASH segments, enabling segment sharing between the two protocols. DASH + CMAF is the dominant standard for large-scale VOD and live streaming (Netflix, Amazon Prime, Disney+).
+
+**WebRTC** uses **SDP (Session Description Protocol)** for offer/answer negotiation of codec capabilities, IP/port candidates, and transport parameters. **ICE (Interactive Connectivity Establishment)** with **STUN** (Session Traversal Utilities for NAT) and **TURN** (Traversal Using Relays around NAT) performs NAT traversal. Media is encrypted via **DTLS-SRTP** (Datagram TLS-keyed SRTP). The real-time transport uses **RTP** for media and **RTCP** for feedback (NACK, PLI, REMB/TWCC for bandwidth estimation).
+
+### Codec Fundamentals
+
+**NAL (Network Abstraction Layer)** units are the packetization layer for H.264 and H.265 bitstreams. Each NAL unit carries a header byte specifying the unit type (SPS, PPS, IDR slice, non-IDR P/B slice, SEI) and the payload. NAL units are delimited by start codes (`00 00 01` or `00 00 00 01`) in Annex B format (used in MPEG-TS) or by length prefixes in AVCC/HVCC format (used in MP4/ISOBMFF).
+
+**IDR (Instantaneous Decoder Refresh)** is a keyframe in H.264/H.265 that resets all decoder state, including the **DPB (Decoded Picture Buffer)** of reference frames. A decoder can start decoding from an IDR without any prior context. Segment boundaries in HLS/DASH must align to IDR frames so that a player switching to a new segment can decode immediately. IDR frames are typically ~10× larger than P-frames at the same quality.
+
+**GOP (Group of Pictures)** is the sequence of frames from one IDR to the next: IDR → P → P → B → B → P → ... The GOP length (keyframe interval) determines seek latency and segment boundary frequency. A 2-second GOP at 30 fps = 60 frames between keyframes. Shorter GOPs enable more frequent seek points and segment cuts but increase average bitrate.
+
+**DPB (Decoded Picture Buffer)** is the decoder's list of reference frames held in memory for inter-prediction. H.264/H.265 P-frames and B-frames reference earlier (or later for B-frames) decoded frames in the DPB. DPB size is bounded by the codec level (H.264 level 4.1 = max 12 reference frames). GPU hardware decoders allocate DPB surfaces as `VASurface` or `VkImage` objects that remain referenced until they slide out of the DPB window.
+
+**B-frame DTS/PTS:** B-frames are bidirectionally predicted — they can reference both past and future frames. This means they must be **decoded** out of display order. The **DTS (Decode Timestamp)** indicates when the decoder should consume the frame; the **PTS (Presentation Timestamp)** indicates when it should be displayed. For a B-frame sequence `I P B B P`, the decode order might be `I P P B B` but the display order is `I B B P P`. The DTS/PTS delta equals the decoder delay introduced by B-frames; a player must buffer decoded frames and reorder by PTS before display.
+
+**Planar frame layout** describes how YCbCr/YUV pixel data is arranged in memory:
+- **NV12**: Y plane (full resolution) + interleaved UV plane (half resolution): the most common 8-bit 4:2:0 layout for VA-API/V4L2 hardware decoders
+- **P010**: 10-bit NV12 equivalent (MSB-packed 16-bit values for each sample): used for HDR H.265/AV1 decode
+- **I420 (YU12)**: Y plane + separate U plane + separate V plane, each plane contiguous: common in software codecs but avoided in GPU pipelines due to U/V plane separate allocation
+
+### Adaptive Bitrate Algorithms
+
+**BOLA (Buffer-Occupancy-Based Lyapunov Algorithm)** selects the next segment quality level based on the current playback buffer occupancy using a Lyapunov utility function. BOLA provides provably optimal average bitrate subject to a rebuffering constraint, without requiring bandwidth estimation. Used in DASH.js reference player.
+
+**BBA (Buffer-Based Adaptation)** selects quality purely based on buffer level thresholds (e.g. buffer < 10 s → lowest quality, buffer > 30 s → highest quality). Simple, robust to bandwidth estimation errors, but slower to adapt to sudden bandwidth changes.
+
+**EWMA (Exponentially Weighted Moving Average)** is the classic throughput-based ABR algorithm: bandwidth estimate = α × latest_throughput + (1-α) × previous_estimate. Fast to implement but sensitive to bandwidth variability; smoothing factor α trades responsiveness for stability.
+
+**MPC (Model Predictive Control)** ABR formulates quality selection as an optimisation problem over a horizon of future segments, predicting bandwidth with EWMA and maximising a combined utility function of bitrate, rebuffering, and quality smoothness. Used in Netflix's BBA2.
+
+**ARQ (Automatic Repeat reQuest)** is SRT's packet loss recovery mechanism: the sender maintains a packet history buffer; the receiver sends NAK for missing packets; the sender retransmits within the configured latency budget (`SRTO_LATENCY`). If a packet cannot be retransmitted within the budget, it is dropped (SRT degrades gracefully under extreme loss rather than stalling).
+
+### Entropy Coders and In-Loop Filters
+
+**CABAC (Context-Adaptive Binary Arithmetic Coding)** is H.264/H.265's entropy coder. It encodes syntax elements (motion vectors, transform coefficients, prediction flags) as binary sequences using context-adapted probability models, achieving ~10–15% better compression than CAVLC at comparable quality. CABAC decoding is sequential and inherently serial, which is why H.264/H.265 decoder hardware devotes significant area to CABAC engines.
+
+**ANS (Asymmetric Numeral Systems)** is AV1's entropy coder (specifically the rANS variant used in the DAALA/AOM codec research). ANS is faster for software implementations than arithmetic coding and is more amenable to SIMD optimisation; it is part of what makes AV1 software decode faster than HEVC at similar compression.
+
+**In-loop filters** are applied to reconstructed frames *inside* the encode/decode loop, before those frames enter the DPB as references. They reduce blocking artefacts and ringing that degrade reference frame quality and propagate through inter-prediction:
+- **Deblocking filter** (H.264/H.265/AV1): smooths block boundaries by detecting and softening sharp edges along 4×4/8×8/64×64 block boundaries
+- **SAO (Sample Adaptive Offset)** (H.265): adds per-CTU offset tables to reduce banding and ringing artefacts
+- **CDEF (Constrained Directional Enhancement Filter)** (AV1): directional filter that enhances edges without blurring
+- **Loop Restoration** (AV1): Wiener filter + self-guided filter applied in larger 64×64 or 256×256 tiles to recover fine texture detail
+
 ## How the Chapters Interrelate
 
 ```mermaid

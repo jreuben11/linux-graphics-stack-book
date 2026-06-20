@@ -10,7 +10,7 @@ OpenGL is thirty years old, yet it remains the rendering API for a substantial f
 
 Chapter 13 introduced **Gallium3D**'s three central abstractions — **`pipe_screen`**, **`pipe_context`**, and **`pipe_resource`** — as interfaces between the hardware-independent **Mesa** state tracker and hardware-specific driver code. This section explains how **radeonsi** and **iris** satisfy those interfaces in practice, covering loader entry points, the **`PIPE_CAP_*`** capability system, and the full lifecycle of **`pipe_resource`** objects backed by **GEM** buffer objects through the **`radeon_winsys`** and iris winsys abstraction layers.
 
-The chapter then examines each of the three drivers that keep **OpenGL** alive on modern Linux hardware. For **radeonsi** (AMD's **OpenGL**/**GLES** **Gallium** driver), this includes: command submission via **`radeon_cmdbuf`** and **`amdgpu_cs_submit_raw2`**; **CSO** (Constant State Object) caching and **`si_shader_key`**-based shader variant compilation; **NIR** lowering through the **LLVM** backend; texture and sampler management with **DCC** (Delta Colour Compression) and **HTILE** metadata; **rusticl** integration for **OpenCL** compute via **`pipe_context::launch_grid()`**; and the **Shader DB** regression-tracking system that guards **VGPR** count and instruction-count regressions across the **GFX6**–**GFX12** hardware range. For **iris** (Intel's **Gallium** driver for **Gen8** through **Xe2**/**Battlemage**), the chapter covers: dual batch ring management (**`IRIS_BATCH_RENDER`** and **`IRIS_BATCH_BLITTER`**) synchronised via **`MI_SEMAPHORE_WAIT`**; the **`iris_binder`** surface state heap and per-draw binding table construction using **`RENDER_SURFACE_STATE`**; shader compilation through the purpose-built **`brw_compile_vs`**/**`brw_compile_fs`** **EU ISA** compiler shared with **ANV**; push-constant versus pull-constant **UBO** handling; and hardware workarounds (**WA_1607087103**, **WA_14010840176**, **CCS_E**) encoded in the **`genX(3DSTATE_*)`** emission functions. Section 3.6 and Section 9 address **Glamor**, the **X server** extension that implements **X11** 2D operations (**XRender**, **XCopyArea**) via **OpenGL ES** on the **DRM** render node (**`/dev/dri/renderD128`**), enabling hardware-accelerated **X11** 2D for all **XWayland** clients.
+The chapter then examines each of the three drivers that keep **OpenGL** alive on modern Linux hardware. For **radeonsi** (AMD's **OpenGL**/**GLES** **Gallium** driver), this includes: command submission via **`radeon_cmdbuf`** and **`amdgpu_cs_submit_raw2`**; **CSO** (Constant State Object) caching and **`si_shader_key`**-based shader variant compilation; **NIR** lowering through the **ACO** compiler backend (default since Mesa 26.0; previously **LLVM**); texture and sampler management with **DCC** (Delta Colour Compression) and **HTILE** metadata; **rusticl** integration for **OpenCL** compute via **`pipe_context::launch_grid()`**; and the **Shader DB** regression-tracking system that guards **VGPR** count and instruction-count regressions across the **GFX6**–**GFX12** hardware range. A dedicated deep-dive section later in this chapter covers **PM4 command packet encoding** (`PKT3_SET_CONTEXT_REG`, `si_emit_draw_packets()`), **OpenGL 4.6 extension internals** (`GL_ARB_bindless_texture` via `si_bindless.c`, `GL_ARB_indirect_parameters`, `GL_ARB_sparse_buffer`), **glthread** (`u_threaded_context`) CPU-offload architecture, and the **shared/divergent boundary between radeonsi and RADV**. For **iris** (Intel's **Gallium** driver for **Gen8** through **Xe2**/**Battlemage**), the chapter covers: dual batch ring management (**`IRIS_BATCH_RENDER`** and **`IRIS_BATCH_BLITTER`**) synchronised via **`MI_SEMAPHORE_WAIT`**; the **`iris_binder`** surface state heap and per-draw binding table construction using **`RENDER_SURFACE_STATE`**; shader compilation through the purpose-built **`brw_compile_vs`**/**`brw_compile_fs`** **EU ISA** compiler shared with **ANV**; push-constant versus pull-constant **UBO** handling; and hardware workarounds (**WA_1607087103**, **WA_14010840176**, **CCS_E**) encoded in the **`genX(3DSTATE_*)`** emission functions. Section 3.6 and Section 9 address **Glamor**, the **X server** extension that implements **X11** 2D operations (**XRender**, **XCopyArea**) via **OpenGL ES** on the **DRM** render node (**`/dev/dri/renderD128`**), enabling hardware-accelerated **X11** 2D for all **XWayland** clients.
 
 **Zink** — **Mesa**'s **Vulkan**-backed **OpenGL** implementation — is examined next. Its translation of **Gallium** calls to **Vulkan** API calls (**`vkCmdDraw`**, **`vkCreatePipeline`**, **`VkRenderPass`**, **`VK_KHR_dynamic_rendering`**, **`VK_EXT_graphics_pipeline_library`**) is dissected alongside **GLSL**→**NIR**→**SPIR-V** shader translation via **`nir_to_spirv()`**. The implicit-to-explicit synchronisation bridging (**`zink_resource_image_barrier()`**, **`vkCmdPipelineBarrier`**) and two descriptor management modes (**LAZY** and **DB** via **`VK_EXT_descriptor_buffer`**) are described, together with **Zink**'s performance ceiling in draw-call-limited workloads and its **OpenGL 4.6** conformance milestones with **RADV** (Mesa 23.1) and **ANV** (Mesa 24.0).
 
@@ -839,11 +839,213 @@ The `MESA_LOADER_DRIVER_OVERRIDE` and the libGL/EGL Gallium driver selection mec
 
 ---
 
+## radeonsi: AMD's Gallium OpenGL Driver — Deep Dive
+
+Sections 2 and 8 introduced radeonsi's high-level architecture and LLVM compilation path. This section goes deeper on four areas that those sections left implicit: how PM4 command packets are actually constructed inside the draw path; which OpenGL 4.6 extensions require driver-level work beyond the Gallium state tracker; how the `u_threaded_context` (glthread) layer reduces CPU-side stall; and what exactly radeonsi and RADV share versus where they diverge. The section also records the compiler-backend transition that landed in Mesa 26.0.
+
+**Audience:** Systems and driver developers who want implementation-level detail beyond the architectural overview; performance engineers investigating radeonsi CPU overhead.
+
+**Related sections:** §2 (architecture overview, CSO caching, si_context/si_screen, shader variant keys), §2.4 (NIR lowering, async queue), §2.5 (si_texture, DCC, HTILE), §8 (LLVM/ACO backend, disk cache).
+
+### Command Buffer Encoding: PM4 Packets and the `radeon_cmdbuf`
+
+AMD GPUs consume commands from an Indirect Buffer (IB) as sequences of **PM4 packets**. PM4 is the command language shared across all GCN, RDNA, and CDNA GPU generations; the packet set has grown with each generation but the framing format (a 32-bit header encoding packet type, sub-opcode, and word count, followed by payload words) has remained stable since GCN1. [Source: AMD RDNA3 ISA Reference, PM4 Command Stream chapter](https://developer.amd.com/resources/developer-guides-manuals/)
+
+Inside radeonsi, PM4 emission is wrapped by a pair of macros defined in `src/amd/common/sid.h` and used throughout `src/gallium/drivers/radeonsi/`:
+
+```c
+// Simplified from src/amd/common/sid.h and src/gallium/winsys/amdgpu/drm/amdgpu_cs.h
+#define radeon_begin(cs)   uint32_t *__cs_ptr = (cs)->current.buf + (cs)->current.cdw
+#define radeon_end()       /* commits __cs_ptr back; cdw updated */
+#define radeon_emit(value) *__cs_ptr++ = (value)
+
+// PKT3 header macro: type, sub-opcode, count (number of payload dwords minus 1)
+#define PKT3(op, count, pred) \
+    (0xC0000000u | (((count) & 0x3FFF) << 16) | ((op) << 8) | ((pred) & 1))
+```
+
+The two most common context-register-setting opcodes are:
+
+- **`PKT3_SET_CONTEXT_REG`** (`op = 0x69`): sets one or more registers in the GPU's per-draw context register space (base offset `0xA000`). This is how blend state, rasteriser state, colour-buffer format, primitive topology, and almost all per-draw state is programmed. radeonsi emits these in the CSO emit functions (`si_emit_blend_state`, `si_emit_rasterizer_state`, etc.) triggered by the dirty-bit mechanism described in §2.3.
+- **`PKT3_SET_CONFIG_REG`** (`op = 0x68`): sets registers in the GPU's configuration register space (base offset `0x2000`). Used less frequently than `SET_CONTEXT_REG`; covers GPU-wide or compute configuration registers.
+
+The draw-packet emission itself is in **`si_emit_draw_packets()`**, a heavily-templated C++ function in `src/gallium/drivers/radeonsi/si_state_draw.cpp`. The template parameters encode the GFX generation (`GFX_VERSION`), whether tessellation or geometry shaders are active (`HAS_TESS`, `HAS_GS`), and whether NGG (Next-Generation Geometry) is in use. This template instantiation replaces runtime conditionals with compile-time branches, eliminating conditional overhead from the hot draw path. [Source: `mesa/src/gallium/drivers/radeonsi/si_state_draw.cpp`](https://github.com/FireBurn/mesa/blob/main/src/gallium/drivers/radeonsi/si_state_draw.cpp)
+
+```c
+// Conceptual structure of si_emit_draw_packets (simplified from si_state_draw.cpp)
+template <amd_gfx_level GFX_VERSION, si_has_tess HAS_TESS, si_has_gs HAS_GS, si_has_ngg NGG>
+static void si_emit_draw_packets(struct si_context *sctx,
+                                  const struct pipe_draw_info *info,
+                                  unsigned drawid_base,
+                                  const struct pipe_draw_indirect_info *indirect,
+                                  const struct pipe_draw_start_count_bias *draws,
+                                  unsigned num_draws)
+{
+    struct radeon_cmdbuf *cs = &sctx->gfx_cs;
+
+    radeon_begin(cs);
+
+    // 1. Primitive type — SET_CONTEXT_REG VGT_PRIMITIVE_TYPE
+    radeon_set_uconfig_reg(R_030908_VGT_PRIMITIVE_TYPE,
+                           si_conv_pipe_prim(info->mode));
+
+    // 2. Index buffer binding (if indexed draw)
+    if (info->index_size) {
+        radeon_emit(PKT3(PKT3_INDEX_TYPE, 0, 0));
+        radeon_emit(index_type_and_size);
+        radeon_emit(PKT3(PKT3_INDEX_BASE, 1, 0));
+        radeon_emit(index_buffer_va_lo);
+        radeon_emit(index_buffer_va_hi);
+    }
+
+    // 3. Actual draw packet
+    if (indirect) {
+        radeon_emit(PKT3(PKT3_DRAW_INDIRECT, 3, render_cond_bit));
+        // ... indirect args
+    } else {
+        radeon_emit(PKT3(PKT3_DRAW_INDEX_AUTO, 1, render_cond_bit));
+        radeon_emit(draws[0].count);
+        radeon_emit(V_0287F0_DI_SRC_SEL_AUTO_INDEX);
+    }
+
+    radeon_end();
+}
+```
+
+The full draw path from a GL `glDrawArrays` call to IB submission is:
+
+```
+glDrawArrays()
+  → st_draw_vbo()             [Mesa state tracker, st_draw.c]
+  → si_draw_vbo()             [radeonsi, si_state_draw.cpp]
+      → si_update_shaders()   [bind compiled shader variants]
+      → si_emit_all_states()  [flush dirty CSO bits → PKT3_SET_CONTEXT_REG]
+      → si_emit_draw_packets() [emit PKT3_DRAW_INDEX_AUTO or PKT3_DRAW_INDIRECT]
+  → radeon_cmdbuf grows; flushed at IB capacity or glFlush
+  → amdgpu_cs_submit_raw2()   [winsys, amdgpu_cs.c]
+  → DRM_IOCTL_AMDGPU_CS       [kernel, amdgpu KMS driver]
+```
+
+[Source: `src/gallium/drivers/radeonsi/si_state_draw.cpp`, `src/gallium/winsys/amdgpu/drm/amdgpu_cs.c`](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/gallium/drivers/radeonsi)
+
+### NIR Lowering Passes: ABI and Resource Lowering
+
+Between the Mesa state tracker's NIR output and the compiler backend (ACO since Mesa 26.0; previously LLVM — see §8), radeonsi runs several driver-specific NIR lowering passes. The two most architecturally significant are:
+
+**`si_nir_lower_abi()`** (`src/gallium/drivers/radeonsi/si_nir_lower_abi.c`): Lowers abstract ABI references — system values, built-in inputs, shader-stage calling conventions — into AMD GCN-specific load intrinsics. For example, `load_vertex_id` in NIR becomes an SGPR load from the draw-call parameter block; `load_instance_id` becomes an SGPR load from a separate system SGPR. The pass also handles merged shader stages (LS+HS for tessellation, ES+GS before NGG) where two shader stages execute in a single hardware wave and must share SGPR inputs.
+
+**`si_nir_lower_resource()`** (`src/gallium/drivers/radeonsi/si_nir_lower_resource.c`): Lowers abstract texture, buffer, and sampler accesses into AMD-specific descriptor loads. A NIR `load_ubo` becomes a load from the UBO descriptor ring at the correct slot; a `tex` instruction is translated into a load from the T# (texture descriptor) SRD at the sampler binding offset in the descriptor ring. This pass understands the per-shader descriptor layout that `si_context`'s `si_descriptors` array implements. [Source: Mesa GitLab, `src/gallium/drivers/radeonsi/`](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/gallium/drivers/radeonsi)
+
+Early NIR lowering passes shared with the AMD common layer include `nir_lower_io` (maps GLSL I/O variables to load/store intrinsics), `nir_lower_tex` (lowers texture operations to explicit coordinates), and `ac_nir_lower_intrinsics_to_args` (translates Vulkan-style ABI intrinsics to the GCN hardware calling convention).
+
+### OpenGL 4.6 Feature Coverage
+
+radeonsi achieves full **OpenGL 4.6 conformance on GCN4 (GFX8, Fiji/Polaris) and later**, and OpenGL 4.5 on earlier GCN1–GCN3 hardware. The hardware feature that gates the jump from 4.5 to 4.6 is primarily `GL_ARB_gl_spirv` (SPIR-V shader ingestion), which landed in radeonsi via the shared `spirv_to_nir()` path in `src/compiler/spirv/`.
+
+Three extensions in the 4.6 mandate require significant radeonsi-specific driver work:
+
+**`GL_ARB_bindless_texture`** — implemented in `src/gallium/drivers/radeonsi/si_bindless.c`. Bindless textures replace the classic texture unit model: the application calls `glGetTextureHandleARB()` to receive a 64-bit handle encoding the texture descriptor, then passes that handle to shaders as a `uint64_t` uniform. The shader dereferences the handle directly without going through a texture unit binding. In radeonsi, `si_bindless.c` implements the handle allocation (handles are indices into a persistent descriptor heap backed by a GEM BO), the `glMakeTextureHandleResidentARB()` tracking (which adds the backing BO to the CS relocation list), and the NIR lowering that converts `load_texture_handle` to a direct descriptor load. The primary performance challenge is that every bindless texture's backing BO must be listed in the CS submission's relocation list; at large counts this can dominate amdgpu ioctl overhead. [Source: Mesa mailing list, "RFC PATCH 00/65 ARB_bindless_texture for RadeonSI"](https://lists.freedesktop.org/archives/mesa-dev/2017-May/156260.html)
+
+**`GL_ARB_indirect_parameters`** — enables `glMultiDrawArraysIndirectCountARB()` and `glMultiDrawElementsIndirectCountARB()`, where the draw count itself lives in a GPU buffer and is only read by the GPU at draw time. On GCN hardware this is implemented via the `PKT3_DRAW_INDIRECT_MULTI` packet with a count sourced from a VRAM buffer address, avoiding CPU readback. The implementation sits in `si_state_draw.cpp` inside the `indirect` draw path and requires `GFX_VERSION >= GFX9` for full HW support.
+
+**`GL_ARB_sparse_buffer`** — sparse (committed/uncommitted page) buffer objects. radeonsi implements this through the amdgpu winsys layer's virtual memory management: a sparse `pipe_resource` is backed by a GEM BO with `AMDGPU_GEM_CREATE_VM_ALWAYS_VALID` and per-page commit/decommit operations mapped to `AMDGPU_VA_OP_MAP`/`AMDGPU_VA_OP_UNMAP` ioctls. The `PIPE_CAP_SPARSE_BUFFER_PAGE_SIZE` capability reports the GPU's 64 KB (on GCN) or 64 KB (on RDNA) page granularity. [Source: `src/gallium/drivers/radeonsi/si_get.c`](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/gallium/drivers/radeonsi/si_get.c)
+
+### glthread: `u_threaded_context` Integration
+
+OpenGL's API contract is synchronous: each GL call must return before the application can issue the next one. On CPU-bound applications that submit many small draw calls, this forces the GPU to idle while the CPU processes the next batch of GL calls — the classic "CPU-bound GL" bottleneck.
+
+radeonsi addresses this with `u_threaded_context` (also called "glthread" in Mesa's documentation), enabled by default since Mesa 22.3. The mechanism is defined in `src/gallium/auxiliary/util/u_threaded_context.c` and is a Gallium-level wrapper that any pipe driver can opt into. [Source: Phoronix, "Mesa 22.3 RadeonSI Enables OpenGL Threading By Default"](https://www.phoronix.com/news/Mesa-22.3-RadeonSI-glthread-On)
+
+The architecture inserts a producer/consumer queue between the Mesa state tracker and the `si_context`:
+
+```
+Application thread                  Background (driver) thread
+─────────────────                   ──────────────────────────
+glDraw*() ──→ tc_draw_vbo()  ──→   [work queue]  ──→  si_draw_vbo()
+glBind*() ──→ tc_bind_*()    ──→   [work queue]  ──→  si_bind_*()
+                                                        ↓
+                                              radeon_cmdbuf emission
+                                                        ↓
+                                              amdgpu_cs_submit_raw2()
+```
+
+The `threaded_context` (`struct threaded_context *tc`) field in `si_context` holds the wrapper object. When glthread is active, `pipe_context` function pointers installed at context creation point to `tc_*` wrapper functions that serialise calls into a ring buffer; the background thread reads from the ring and calls the real `si_*` pipe functions.
+
+radeonsi must declare which `pipe_context` calls are safe to defer and which require a synchronous "batch flush" (for example, buffer mapping with CPU-visible coherent flags). The driver registers `si_replace_buffer_storage()` as the callback for buffer invalidation — the glthread layer can substitute a freshly allocated buffer for an in-use one (an "implicit orphaning") rather than stalling to wait for GPU completion. This is the principal mechanism by which glthread avoids the `GL_MAP_UNSYNCHRONIZED_BIT`-less buffer-map stall.
+
+Performance characteristics:
+- **CPU-bound workloads**: glthread typically reduces frame time 10–30%; Phoronix reported a ~30% improvement in Minecraft Java Edition. The gain comes from overlapping the application's GL API processing with the driver's command stream encoding.
+- **GPU-bound workloads**: No benefit; the GPU is the bottleneck regardless.
+- **`glFinish`-heavy applications**: Can hurt; `glFinish` must flush the threaded queue and wait, adding one round-trip through the ring buffer to an already-serialising operation.
+
+The `mesa_glthread=false` driconf key (or `GALLIUM_THREAD=0` environment variable) disables glthread for applications that perform poorly with it. `GALLIUM_HUD=GPU-load,CPU-load` can be used alongside glthread debugging to visualise whether the stall has shifted from GPU to CPU.
+
+A separate radeonsi performance mechanism, **`si_decompress_textures()`** (in `si_descriptors.c`), handles the case where a texture rendered to via a framebuffer attachment is subsequently sampled: the function checks whether DCC or HTILE metadata on each sampled texture is compatible with the current read operation, and if not, issues a decompression blit (either `si_decompress_dcc` or `si_decompress_depth_textures`) before the draw. This is called unconditionally at the top of `si_draw_vbo()` for any texture marked dirty-for-read after a render; the cost is small when no decompression is needed (a bitmask check), but can add blit operations when render-to-texture patterns mix compressed and uncompressed access.
+
+### Relationship to RADV: Same Hardware, Different Stack
+
+RADV (Chapter 18) and radeonsi target identical AMD GPU hardware — the same GFX6–GFX12 range, the same VRAM, the same compute units. The divergence is entirely in software stack and design goals.
+
+**Shader compilation backend**: radeonsi defaults to **ACO** since Mesa 26.0 (released February 2026), the same compiler RADV has used as its default since Mesa 20.2. ACO offers roughly 8× lower compile latency than LLVM for typical shaders, and produces code with better register allocation (fewer VGPR spills) due to a purpose-built register allocator tuned for AMD's wavefront model. LLVM remains available in radeonsi as a fallback via `AMD_DEBUG=usellvm` for cases where ACO produces incorrect output. RADV retains LLVM as a fallback via `RADV_DEBUG=llvm`. [Source: Phoronix, "AMD RadeonSI Driver Now Defaults To Enabling ACO"](https://www.phoronix.com/news/RadeonSI-ACO-Default-Mesa-26.0)
+
+> Note: The correct LLVM-fallback variable for radeonsi in Mesa 26.0+ is `AMD_DEBUG=usellvm`; the roadmap entry at the bottom of this chapter cites `AMD_DEBUG=llvm`, which was the earlier naming convention.
+
+**API interface layer**: radeonsi implements the **Gallium `pipe_context`** interface. RADV implements **Vulkan dispatch tables** (`vkCmdDraw`, `vkBeginCommandBuffer`, etc.). These are entirely separate code paths; radeonsi never calls Vulkan dispatch functions, and RADV never calls Gallium pipe functions.
+
+**Shared infrastructure under `src/amd/`**: Despite the interface split, the two drivers share a substantial amount of code:
+
+| Component | Location | Shared by |
+|---|---|---|
+| GPU hardware info | `src/amd/common/ac_gpu_info.c` — `radeon_info` struct | radeonsi + RADV |
+| Hardware register definitions | `src/amd/registers/` | radeonsi + RADV |
+| NIR → AMDGPU lowering passes | `src/amd/common/ac_nir_*.c` | radeonsi + RADV |
+| Format tables | `src/amd/common/ac_surface.c` | radeonsi + RADV |
+| ACO compiler | `src/amd/compiler/` | radeonsi + RADV (since Mesa 26.0 for radeonsi) |
+| LLVM backend (fallback) | `src/amd/llvm/` | radeonsi + RADV (via `AMD_DEBUG=usellvm` / `RADV_DEBUG=llvm`) |
+| Video decode/encode | `src/gallium/drivers/radeonsi/radeon_vcn_*.c` | radeonsi (RADV has separate video path) |
+
+[Source: Mesa GitLab, `src/amd/common/`](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/amd/common)
+
+The `radeon_info` struct (`src/amd/common/ac_gpu_info.h`) is the single source of truth for hardware capabilities queried from the `amdgpu` kernel driver via `DRM_IOCTL_AMDGPU_INFO`. Both drivers call `ac_query_gpu_info()` at screen/device creation and then read from the resulting `radeon_info` for all hardware-generation decisions. A fix to `ac_gpu_info.c` — for example correcting the RDNA4 wave size constants — benefits both radeonsi and RADV simultaneously.
+
+```c
+// src/amd/common/ac_gpu_info.h (excerpt — simplified)
+struct radeon_info {
+    /* PCI identity */
+    uint32_t pci_id;
+    enum amd_gfx_level  gfx_level;    /* GFX6..GFX12 */
+    enum radeon_family   family;       /* CHIP_TAHITI .. CHIP_GFX1201 */
+
+    /* Shader engine counts */
+    uint32_t num_se;                   /* shader engines */
+    uint32_t num_cu_per_sh;            /* CUs per shader array */
+    uint32_t num_simd_per_compute_unit;
+
+    /* Memory */
+    uint64_t vram_size_kb;
+    uint32_t max_alloc_size;
+
+    /* Feature flags used by both radeonsi and RADV */
+    bool     has_dcc;                  /* Delta Colour Compression available */
+    bool     has_rbplus;               /* RB+ (render backend+) present */
+    bool     has_ngg;                  /* NGG geometry pipeline */
+    bool     has_mesh_shader;          /* mesh/task shader support */
+    uint32_t ib_size_alignment;        /* IB alignment requirement */
+    /* ... many more fields ... */
+};
+```
+
+The `gfx_level` field is the primary branch point throughout both drivers: code blocks guarded by `info->gfx_level >= GFX10` enable RDNA1-specific paths in both radeonsi's CSO emit functions and RADV's pipeline creation code.
+
+**The amdgpu winsys** (`src/gallium/winsys/amdgpu/drm/`) is exclusively used by radeonsi (RADV has its own direct `libdrm_amdgpu` calls in `src/amd/vulkan/radv_device.c`), but both ultimately call the same set of `DRM_IOCTL_AMDGPU_*` ioctls. The radeonsi winsys provides the `radeon_winsys` abstraction that insulates the driver from direct libdrm calls, while RADV calls libdrm functions directly as is conventional in Vulkan driver implementations.
+
+---
+
 ## Summary
 
 This chapter has traced the OpenGL pipeline from the Gallium pipe interface down to hardware in radeonsi and iris, examined Zink's Vulkan-translation approach, and explored the infrastructure (LLVM backend, Shader DB, Glamor) that surrounds these drivers. The key architectural contrasts to keep in mind:
 
-- **radeonsi** uses LLVM for shader compilation, mitigated by async queues and disk cache; state is pre-compiled into CSOs; shader variants encode baked pipeline state.
+- **radeonsi** now defaults to the ACO compiler (since Mesa 26.0), mitigated by async queues and disk cache; state is pre-compiled into CSOs; shader variants encode baked pipeline state.
 - **iris** uses Intel's purpose-built NIR-to-EU compiler, giving lower compile-time latency; batch management separates render and blitter rings; per-draw binding tables trade memory bandwidth for OpenGL compatibility.
 - **Zink** adds a translation layer but provides OpenGL on any Vulkan driver; its primary overheads are synchronisation barrier insertion and descriptor management.
 
@@ -855,7 +1057,7 @@ Forward references: Chapter 20 (Wayland) will show how radeonsi and iris present
 
 ### Near-term (6–12 months)
 
-- **radeonsi defaults to ACO shader compiler.** Mesa 26.0 switched radeonsi's default shader compilation backend from LLVM to Valve's ACO compiler (the same backend RADV has used since Mesa 20.2), yielding faster shader compilation and reduced game-load stuttering while retaining LLVM as a fallback via `AMD_DEBUG=llvm`. [Source](https://www.phoronix.com/news/RadeonSI-ACO-Default-Mesa-26.0)
+- **radeonsi defaults to ACO shader compiler.** Mesa 26.0 switched radeonsi's default shader compilation backend from LLVM to Valve's ACO compiler (the same backend RADV has used since Mesa 20.2), yielding faster shader compilation and reduced game-load stuttering while retaining LLVM as a fallback via `AMD_DEBUG=usellvm`. [Source](https://www.phoronix.com/news/RadeonSI-ACO-Default-Mesa-26.0)
 - **Zink as the default OpenGL stack for additional hardware families.** Following Mesa 25.1's switch of Nouveau OpenGL from the legacy `nvc0` Gallium driver to Zink+NVK, the community is evaluating similar transitions for other drivers where the Vulkan driver is more actively maintained than the direct OpenGL Gallium driver. [Source](https://mesa-zink-nvk-switch) [Source](https://9to5linux.com/mesa-25-1-to-replace-nouveau-driver-with-zink-nvk-by-default-for-nvidia-gpus)
 - **iris VirtIO-GPU native-context support.** Mesa 26.1 added VirtIO-GPU native-context support for iris (and crocus/ANV), enabling hardware-accelerated Intel GPU paravirtualisation inside virtual machines without a full GPU passthrough. [Source](https://docs.mesa3d.org/relnotes/26.1.0.html)
 - **Wider `cl_khr_subgroup` coverage via rusticl.** Mesa 26.1 landed several `cl_khr_subgroup_*` extensions across radeonsi, iris, llvmpipe, Asahi, and Zink, broadening the OpenCL 3.0 surface available through rusticl's `pipe_context::launch_grid()` path. [Source](https://www.phoronix.com/news/Mesa-26.1-Released)

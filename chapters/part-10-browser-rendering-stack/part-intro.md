@@ -24,6 +24,24 @@ The layers examined in Parts I–IX — **DRM**, **KMS**, **GEM**, **Mesa**, **V
 
 **Chapter 98 — WebAssembly and WebGPU as a Deployment Target** closes the part by stepping outside the browser's internal implementation and examining the stack from an application developer's perspective. It covers how Rust code using **wgpu** or C++ code using **Emscripten** and **emdawnwebgpu** can compile to a **WebAssembly** module that dispatches to the browser's **WebGPU** implementation, which itself maps to **Mesa** Vulkan drivers on Linux. The chapter addresses **`wasm-bindgen`** JavaScript interop, **WGSL** shader portability, **WASM SIMD** for CPU-side computation, and real-world use cases ranging from ML inference to portable game engines like **Bevy** and **Godot 4**.
 
+## Servo: Mozilla's Parallel Browser Engine
+
+**Servo** is Mozilla's experimental browser engine written entirely in Rust — architecturally distinct from Firefox's **Gecko** engine, though they share some components. Servo is not a new version of Firefox; it is a parallel research and production engine exploring what a memory-safe, parallelised browser engine looks like at the architecture level.
+
+Key components of the Servo stack relevant to this book's scope:
+
+**CSS layout and styling (Stylo):** Servo developed **Stylo**, a parallel CSS style system written in Rust that performs style resolution across DOM nodes concurrently using Rayon work-stealing. Stylo was upstreamed into Gecko in Firefox 57 (Quantum), meaning Servo's CSS engine already ships in Firefox. Servo's own layout engine (currently in active development as of 2026) provides block layout, flexbox, and the emerging CSS grid implementation.
+
+**WebRender compositor:** Servo uses **WebRender** for compositing — the same scene-graph-based GPU compositor that Chapter 52 covers as Firefox's primary compositor since Firefox 67. In Servo, WebRender is instantiated via the **Servo embedder API** rather than the Firefox frontend. This means Servo shares the display-list-to-GPU rendering path, the `wgpu`-backed WebGPU implementation, and the `naga` shader compiler with Firefox, while differing in the HTML parsing, layout, and DOM layers above them.
+
+**WebGPU via wgpu:** Servo's WebGPU implementation is built on **`wgpu-core`** — the same Rust crate that underlies Firefox's WebGPU (Chapter 52). On Linux, `wgpu-core` targets the Vulkan backend via `wgpu-hal`, dispatching through Mesa Vulkan drivers (RADV, ANV, NVK). The shader compiler is **naga**, Servo/Firefox's pure-Rust WGSL/GLSL/SPIR-V translation library — the Rust counterpart to Chrome's **Tint** (Chapter 35).
+
+**Servo Embedder API:** Servo exposes an **Embedder API** (`servo::Servo<Window>`) that allows applications to embed the engine without the full browser chrome, similar to CEF (Chromium Embedded Framework). This API is used by projects embedding Servo in kiosks, HMDs, and experimental platforms. The Linux embedding path uses Winit (cross-platform window abstraction) with the Wayland backend for surface management.
+
+**Current status (2026):** Servo development was transferred to the **Linux Foundation** (via the Joint Development Foundation) in 2023, with active development continuing independently of Mozilla. As of mid-2026, Servo implements a substantial portion of CSS2.1 and CSS3 and is capable of rendering real-world web pages. It is not a drop-in Firefox replacement but is significant as the only production-quality browser engine component entirely written in memory-safe Rust — and as the proving ground for the `wgpu`/`naga`/WebRender stack that Firefox now uses in production.
+
+**Relevance to this part:** Servo is not covered as a dedicated chapter because its Linux GPU pipeline (Wayland surface → WebRender display list → wgpu Vulkan → Mesa RADV/ANV) is effectively the same as Firefox's pipeline (Chapter 52). The architectural contrast between Servo's full-Rust approach and Chrome's C++ + Mojo IPC approach illuminates the design-space of browser GPU architectures.
+
 ## How the Chapters Interrelate
 
 Chapter 33 is the mandatory entry point for the Chromium chapters. It defines the vocabulary — **GPU process**, **Mojo**, **GPU command buffer**, **Ozone**, **Viz**, **`seccomp-BPF`** sandbox — that every subsequent chapter assumes. Readers who skip it will find Chapters 34–37 opaque.
