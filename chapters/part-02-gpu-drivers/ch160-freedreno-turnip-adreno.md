@@ -459,6 +459,23 @@ Adreno's command processor uses type-4 and type-7 packets:
 
 Turnip exposes `VK_EXT_physical_device_drm`, which allows applications and compositors to correlate a Vulkan physical device with a DRM device file (e.g., `/dev/dri/renderD128`). This is essential on multi-GPU systems (discrete + integrated) and on Snapdragon platforms where the display DRM device and the GPU DRM device may have different minor numbers.
 
+The extension reports the DRM render and primary device node minor numbers:
+
+```c
+/* Query DRM device node minor for Turnip physical device: */
+VkPhysicalDeviceDrmPropertiesEXT drm_props = {
+    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT,
+};
+VkPhysicalDeviceProperties2 props2 = {
+    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+    .pNext = &drm_props,
+};
+vkGetPhysicalDeviceProperties2(phys_dev, &props2);
+/* drm_props.renderMinor == 128 → /dev/dri/renderD128 */
+```
+
+A compositor using this to select the correct GPU for rendering (e.g., to match the display's DRM primary node) can compare `drm_props.renderMinor` against the render node it opened for KMS. Without this extension, the compositor has to probe device node paths heuristically. On Snapdragon X Elite, where the DPU's DRM primary node and the GPU's render node share the same MSM DRM driver instance, the minor numbers are typically the same; on systems with a discrete GPU (e.g., a Thunderbolt eGPU), this distinction matters for zero-copy buffer sharing. [Source: VK_EXT_physical_device_drm spec](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_EXT_physical_device_drm.html)
+
 ---
 
 ## UBWC and AFBC: Bandwidth Compression on Adreno
@@ -488,7 +505,7 @@ fd_resource_set_usage(struct pipe_screen *pscreen,
 
 [Source: Phoronix UBWC for Freedreno](https://www.phoronix.com/news/Freedreno-UBWC-A6XX) | [Mesa MR: freedreno UBWC scanout](https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/20892)
 
-UBWC is distinct from AFBC: UBWC is Qualcomm-specific and uses a different block layout and metadata scheme; AFBC is ARM's format used on Mali GPUs. On Adreno SoCs, UBWC is the primary bandwidth compression format; Adreno hardware does not natively decode AFBC render targets.
+UBWC is distinct from AFBC: UBWC is Qualcomm-specific and uses a different block layout and metadata scheme; AFBC is ARM's format used on Mali GPUs. On Adreno SoCs, UBWC is the primary bandwidth compression format for GPU-produced render targets; Adreno GPU hardware does not natively produce AFBC-encoded render targets. However, Adreno display controllers (DPU) on certain SoCs can scan out AFBC-encoded framebuffers produced by a co-processor such as the ISP or a codec engine — in that case the AFBC modifier is carried in the DMA-BUF and negotiated through KMS.
 
 For Turnip, UBWC support on Vulkan images is controlled via `TU_DEBUG=noubwc` to disable it for debugging:
 
@@ -499,6 +516,32 @@ TU_DEBUG=noubwc vulkan_app
 # Also disable LRZ for comparison:
 TU_DEBUG=nolrz vulkan_app
 ```
+
+### UBWC Memory Layout
+
+UBWC stores image data in two planes: the primary colour plane (laid out in vendor-defined macro-tiles) and a metadata plane holding one 4-byte status word per 256-byte block. Status values indicate:
+
+- `0x00` — raw (uncompressed block)
+- `0x01`–`0xFF` — compressed size in 64-byte units (a fully compressed block occupies 64 bytes)
+
+The metadata plane base address is passed separately to the hardware. The Turnip image allocation code in `tu_image.c` aligns and sizes both planes and stores their offsets in `tu_image.layout`:
+
+```c
+/* src/freedreno/vulkan/tu_image.c */
+static void
+tu_image_layout_init(struct tu_image *image)
+{
+    struct fdl_layout *layout = &image->layout[0];
+
+    /* UBWC metadata plane follows immediately after the colour plane,
+     * aligned to the UBWC metadata granularity (4 KB on A6xx): */
+    image->ubwc_offset = ALIGN(layout->size, 4096);
+    image->ubwc_size   = fdl_ubwc_size(layout);
+    image->bo_size     = image->ubwc_offset + image->ubwc_size;
+}
+```
+
+[Source: Mesa tu_image.c](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/freedreno/vulkan/tu_image.c)
 
 ### DRM Format Modifiers and Compositor Integration
 
@@ -520,6 +563,24 @@ This gives a zero-copy path from GPU render target → KMS display plane, with U
 
 [Source: VK_EXT_image_drm_format_modifier spec](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_EXT_image_drm_format_modifier.html) | [Mesa 24.0 release notes](https://docs.mesa3d.org/relnotes/24.0.0.html)
 
+### AFBC on Adreno: Import, Not Export
+
+ARM's AFBC (Arm Framebuffer Compression) uses `DRM_FORMAT_MOD_ARM_AFBC_*` modifiers defined in `include/uapi/drm/drm_fourcc.h`. Unlike UBWC, which is both produced and consumed by the Adreno GPU, AFBC on Adreno SoCs appears only in the *import* direction: video decoder output (e.g., from the Qualcomm video firmware) or images from a Mali GPU on a heterogeneous SoC may arrive as AFBC-encoded DMA-BUFs. The Adreno display controller on some SoC families can scan out these AFBC buffers directly — avoiding a decompression step — but the GPU's shader units do not write AFBC.
+
+This is the key architectural distinction:
+
+| Format | GPU writes? | GPU reads (texture)? | DPU scan-out? |
+|---|---|---|---|
+| Linear | Yes | Yes | Yes |
+| UBWC | Yes (A5xx+) | Yes (A5xx+) | Yes (A5xx+) |
+| AFBC | No | No (no hardware decode) | Yes (select SoCs) |
+
+For display-only zero-copy of camera or codec output, a wlroots/Weston compositor can negotiate `DRM_FORMAT_MOD_ARM_AFBC_BLOCK_SIZE_16x16 | DRM_FORMAT_MOD_ARM_AFBC_SPARSE` through `zwp_linux_dmabuf_v1`, and the DPU will scan it out unmodified. The GPU (Turnip) is not involved in this path — it is a KMS-level concern only.
+
+When a Vulkan application needs to *texture from* an AFBC buffer, the buffer must first be decompressed (e.g., by a blit operation or by the codec engine itself writing a linear or UBWC fallback). There is no `VK_EXT_image_drm_format_modifier` path for AFBC on Adreno that allows the GPU shader units to sample an AFBC image directly. Note: this may change with future Adreno generations; verify against the modifier list exposed by `vkGetPhysicalDeviceImageFormatProperties2` on the target device.
+
+[Source: Linux kernel AFBC documentation](https://www.infradead.org/~mchehab/rst_conversion/gpu/afbc.html) | [drm_fourcc.h AFBC modifiers](https://github.com/torvalds/linux/blob/master/include/uapi/drm/drm_fourcc.h)
+
 ---
 
 ## Adreno 7xx and 8xx: Newer Generations
@@ -540,14 +601,23 @@ The Adreno A7xx family (Adreno 730 on Snapdragon 8 Gen 2; Adreno 740/750 on Snap
 
 ### Ray Tracing on A7xx
 
-Turnip gained initial ray tracing support for A7xx hardware in 2024. A presentation at XDC 2024 detailed the implementation: "Ray Tracing for Adreno GPUs on Turnip". [Source: XDC 2024 RT slides](https://indico.freedesktop.org/event/6/contributions/302/)
+Turnip's ray tracing journey for A7xx followed a staged rollout. The XDC 2024 talk "Ray Tracing for Adreno GPUs on Turnip" (Connor Abbott) laid out the architectural approach. [Source: XDC 2024 RT slides](https://indico.freedesktop.org/event/6/contributions/302/)
 
-The ray tracing implementation exposes:
-- `VK_KHR_acceleration_structure` — BVH building via compute shader
-- `VK_KHR_ray_tracing_pipeline` — ray generation, any-hit, closest-hit, miss, intersection shaders
-- `VK_KHR_ray_query` — inline ray queries from any shader stage
+**`VK_KHR_ray_query`** — accelerated inline ray queries from any shader stage — merged into Mesa 25.0 (January 2025), authored by Connor Abbott in 25 patches. This is enabled for **Adreno 740 and newer**. Ray query allows compute and fragment shaders to trace rays inline against an acceleration structure without the full pipeline machinery. [Source: Phoronix Turnip VK_KHR_ray_query](https://www.phoronix.com/news/Mesa-TURNIP-VK_KHR_ray_query)
 
-Adreno A7xx implements BVH traversal in hardware; the driver emits `CP_DRAW_INDIRECT_MULTI` packets with ray tracing pipeline state. The ir3 compiler gained new instruction encodings for the `raya` (ray acceleration) instructions used in the traversal shaders. Note: full conformance status and `VK_KHR_ray_tracing_pipeline` conformance submission timeline needs verification against current Mesa HEAD.
+**`VK_KHR_acceleration_structure`** — BVH building via compute shader — is the prerequisite; it was merged alongside ray_query. Acceleration structure build and update commands are encoded as compute dispatches on the Adreno CP.
+
+**`VK_KHR_ray_tracing_pipeline`** — full ray tracing pipeline with ray generation, any-hit, closest-hit, miss, and intersection shader stages — is a separate extension requiring deeper integration with the CP's indirect dispatch mechanism. As of Mesa 26.0, this extension is in progress; the ir3 compiler has gained new instruction encodings for the `raya` (ray acceleration) ALU instructions, but conformance submission for the full pipeline extension is still pending. Note: verify current status against Mesa HEAD before relying on this for production.
+
+The A7xx hardware implements BVH traversal acceleration units distinct from the shader processors. These units accept a ray descriptor (origin, direction, tmin, tmax, flags) and a BVH root pointer and return the closest intersection — the shader provides only the ray parameters and reads back the result, without looping over BVH nodes in software. This is the same model as NVIDIA's RT cores, and is why `VK_KHR_ray_query` lands first: it requires fewer changes to the command stream protocol than `VK_KHR_ray_tracing_pipeline` which needs dedicated shader stage switching packets.
+
+```c
+/* Conceptual ir3 ray query emission (simplified): */
+/* rayQueryInitializeEXT(rq, as, flags, mask, origin, tmin, dir, tmax) */
+raya.init r0.x, c0.xyz, c3.x, c4.xyz, c7.x  /* set ray params */
+raya.trav r0.x                               /* hardware BVH traversal */
+/* rayQueryGetIntersectionTEXT(rq, committed) → result in r1.x */
+```
 
 ### Mesh Shaders on A7xx
 
@@ -792,6 +862,34 @@ sudo ./fdperf
 ```
 
 The `AMD_performance_monitor` OpenGL extension (for Freedreno) and `VK_KHR_performance_query` (for Turnip) expose these same counters programmatically from user-space.
+
+### VK_KHR_performance_query Integration
+
+Turnip implements `VK_KHR_performance_query`, giving Vulkan applications direct access to the hardware performance counters defined in the `freedreno_perfcntrs` XML database. A profiling session looks like:
+
+```c
+/* 1. Enumerate available performance counters: */
+uint32_t counter_count;
+vkEnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR(
+    phys_dev, queue_family, &counter_count, NULL, NULL);
+
+VkPerformanceCounterKHR *counters =
+    calloc(counter_count, sizeof(*counters));
+vkEnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR(
+    phys_dev, queue_family, &counter_count, counters, NULL);
+
+/* 2. Create a query pool with selected counters: */
+uint32_t enabled[] = { LRZ_VISIBLE_PRIM_IDX, SP_BUSY_CYCLES_IDX };
+VkQueryPoolPerformanceCreateInfoKHR perf_info = {
+    .sType = VK_STRUCTURE_TYPE_QUERY_POOL_PERFORMANCE_CREATE_INFO_KHR,
+    .queueFamilyIndex   = 0,
+    .counterIndexCount  = ARRAY_SIZE(enabled),
+    .pCounterIndices    = enabled,
+};
+/* 3. Wrap draws with vkCmdBeginQuery/vkCmdEndQuery and read results. */
+```
+
+The counter indices correspond to the hardware groups defined in `src/freedreno/registers/adreno/`. On A6xx, there are 512 countable events spread across 16 groups; Turnip exposes all of them via `VK_KHR_performance_query`.
 
 [Source: Mesa fdperf source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/freedreno/fdperf) | [Mesa freedreno driver docs](https://docs.mesa3d.org/drivers/freedreno.html)
 

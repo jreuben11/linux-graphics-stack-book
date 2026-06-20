@@ -47,3 +47,28 @@ Readers should arrive with a working understanding of Part I (DRM/KMS: Chapters 
 This part feeds forward into Part IX (Tooling and Contributing — debugging display pipelines with `drm_info`, `ddcutil`, cec-ctl, edid-decode), Part XIII (Video Streaming — pixel formats and VA-API encode connect Ch186 to the multimedia frameworks), and Part XX (AI/ML — display power constraints relevant to accelerator thermal budgets).
 
 ---
+
+## Part Roadmap Summary
+
+*Synthesised from the Roadmap sections of this part's chapters.*
+
+### Near-term (6–12 months)
+
+- **DP 2.1 and UHBR enablement across open-source GPU drivers:** Intel Xe2 (Battlemage) and AMD RDNA 4 UHBR10/UHBR20 link training via the `drm_dp_helper` 128b/132b path is landing incrementally; parallel work in `drivers/usb/typec/altmodes/displayport.c` extends the TCPM Alt Mode driver to negotiate UHBR signalling rates during `DP_Configure` VDM exchange, and the Thunderbolt subsystem is gaining USB4 v2.0 80 Gbps tunnel support to carry UHBR20 streams.
+- **Panel Replay rollout on AMD and Intel APUs:** AMD RDNA 3/4 Panel Replay stabilisation is progressing through the amdgpu DC stack targeting kernels 6.11–6.12, while Intel Lunar Lake (Xe2) ships Panel Replay with Selective Update by default; both require updates to PSR state machines (`intel_psr.c`, amdgpu DC) for the revised eDP 1.5 VSC SDP CRC format.
+- **EDID and DisplayID infrastructure modernisation:** The `drm_edid.c` migration from raw `struct edid *` to the opaque `struct drm_edid` wrapper is completing for remaining bridge-chip and HDMI drivers; DisplayID 2.1 block parsers (VRR capability, improved DSC negotiation) and CTA-861-I 240 Hz VRR/HDR10+ metadata support are expected to land.
+- **HDR pipeline wiring in compositors:** Automatic HDR metadata propagation from EDID-parsed MaxCLL/MaxFALL into `drm_connector_state.hdr_output_metadata` is being completed in KWin and Mutter; the `hdr_output_metadata` UAPI is being extended to carry SMPTE ST 2094-10 dynamic metadata frames for HDR10+ displays; and the DRM `colorspace` property is gaining BT.2100 ICtCp entries.
+- **CEC and wireless display tooling improvements:** The CEC subsystem gains debugfs error injection for CI compliance testing, cec-pin adaptive sampling against timer jitter, and broader `drm_dp_cec` tunnelling coverage; GNOME Network Displays Miracast-over-Infrastructure (MICE) and PipeWire timestamp fixes for wireless display pipelines are also stabilising.
+
+### Medium-term (1–3 years)
+
+- **Convergence on Panel Replay as the universal laptop power-save mechanism:** Panel Replay is expected to subsume PSR1/PSR2 across all new eDP panels certified after eDP 1.5; both Intel and AMD drivers will treat PSR1/PSR2 as legacy fallbacks; AMD SubVP/MALL is evolving toward driver-transparent DMUB firmware-managed "display hibernation" targeting sub-1 W display idle on 4K RDNA 5 APUs.
+- **Unified display colour and format pipeline abstractions:** A `drm_colorop` pipeline object (prototyped by AMD and Red Hat) will let userspace compose CSC, 1D LUT, and 3D LUT operations per-plane; HDMI 2.1a Source-Based Tone Mapping (SBTM) requires new DRM connector properties; and DisplayID 2.x is expected to become the primary capability signalling mechanism, demoting the legacy EDID base block to a compatibility stub.
+- **USB-C and physical connector stack unification:** Kernel work targets a unified sysfs representation of USB-C ports acting simultaneously as DP Alt Mode, USB4, and Thunderbolt connectors; HDMI 2.1 FRL 6 (48 Gbps) enablement in `amdgpu` and `nouveau` via updated `drm_scdc_helper.c` SCDC register handling is also in this window; DDC/CI over I2C-over-AUX (`drm_dp_aux`) is being formalised for USB-C-attached monitors.
+- **Wireless display next generation and KMS uAPI extensions:** Wi-Fi Alliance WFD 3.0 (Wi-Fi 6/7, <20 ms, 4K/120 Hz Miracast) and AV1 hardware-encode adoption across Intel/AMD/NVIDIA will reshape wireless display pipelines; the KMS uAPI may gain `DRM_CRTC_PROP_SELF_REFRESH_MODE` for compositor PSR preference expression; OLED-specific `drm-oled-management-v1` and `systemd-logind` display-aware suspend inhibition are also targeted.
+
+### Long-term
+
+- **Rust adoption and unified cross-vendor display power backends:** Following Nova and drm-rs, Rust helper crates for `drm_dp_aux`, `drm_panel`, and PSR state machines are plausible long-term targets; convergence of Intel Display IPU, AMD DCN, and Qualcomm MDSS may produce a generic KMS display-power backend in `drivers/gpu/drm/display/` handling PSR/Panel Replay lifecycle across vendors without per-driver polling.
+- **Next-generation interconnect and bandwidth standards:** DisplayPort 2.2 (UHBR25, improved passive cable reach), HDMI 2.2 (96 Gbps FRL, 8K/120 Hz uncompressed), and USB4 v3 (160+ Gbps) will require the Thunderbolt/USB4 connection manager to implement QoS arbitration between DP, PCIe, and CXL traffic on a shared fabric; optical active cables will require PHY abstraction layers agnostic to copper vs optical medium.
+- **Supersession of legacy protocol layers:** VGA and DVI code paths are approaching removal as hardware support ends across all vendor drivers; DDC I²C may be supplanted by firmware-mediated capability exchange (ACPI `_DSM`, devicetree overlays) for USB4-tunnelled and optical DP; CEC itself may be extended or replaced by a higher-bandwidth in-band control channel as HDMI 2.2 matures; and a unified display capability ABI merging EDID, DisplayID, DPCD, and DDC/CI into a single DRM property object has been discussed at XDC as a long-term replacement for the current piecemeal approach.

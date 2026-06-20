@@ -28,3 +28,29 @@ graph LR
 Readers should be familiar with the **DRM/KMS** kernel subsystem (Part I), the **Mesa** userspace architecture (Part IV), and the **Wayland** compositor model (Part VI) before reading this part; Chapters 95 and 99 reference those layers extensively and do not re-explain their internals. Chapter 103 additionally references **Gallium3D**, **LLVM**, and **NIR** from Parts IV and V, and **NVK**/**AMDGPU** from Parts XVI and XVII. This part has no successors in the book — it is the capstone — but engineers moving from here to upstream contribution will find the kernel mailing-list culture and Mesa review process described in Part IX directly applicable to extending the systems this part explains.
 
 ---
+
+## Part Roadmap Summary
+
+*Synthesised from the Roadmap sections of this part's chapters.*
+
+### Near-term (6–12 months)
+
+- **XWayland explicit-sync hardening**: The `linux-drm-syncobj-v1` protocol, shipped experimentally in XWayland 24.1 and Mesa 24.1, is being stabilised across GNOME Mutter, KDE KWin, and the NVIDIA driver stack; remaining edge cases with PRIME multi-GPU and GLX compositing paths are being closed in Mesa's `src/glx/`.
+- **XWayland fractional-scaling and shell-v1 adoption**: `wp_fractional_scale_v1` integration is reducing HiDPI blurriness at non-integer scales, and the race-free `xwayland-shell-v1` protocol is completing compositor-side adoption (labwc, Hyprland following GNOME and KDE).
+- **Wayland HDR and colour-management stabilisation**: The `color-management-v1` protocol and KMS per-plane tone-mapping extensions are solidifying, with GNOME and KDE Plasma targeting end-to-end HDR on AMD and Intel hardware; this work directly affects X11 applications running via XWayland, which inherit the compositor's colour pipeline.
+- **Nova Rust driver reaching feature parity**: Nova's Rust-language NVIDIA kernel driver is expected to reach Turing/Ampere feature parity with Nouveau, including GSP-RM firmware power management — a milestone that validates the Rust-in-kernel-DRM approach whose history Chapter 103 traces.
+- **DRM accel subsystem growth**: Additional NPU vendors (MediaTek APU, Qualcomm Hexagon, Intel NPU) are upstreaming drivers into the DRM accel subsystem, accelerating the hardware-diversity arc described in Chapter 103's account of the DRI Project's origins.
+
+### Medium-term (1–3 years)
+
+- **Xorg maintenance-only and legacy GLX removal**: The X.Org Foundation is expected to place Xorg in maintenance-only mode; Mesa's indirect GLX path (`LIBGL_ALWAYS_INDIRECT`, server-side GLX request handling) is slated for removal, leaving the modesetting DDX and XWayland as the sole actively-developed X11 surfaces.
+- **XDG portal gap closure**: The `org.freedesktop.portal.GlobalShortcuts` and `org.freedesktop.portal.InputCapture` portals are being finalised to replace the last X11-only workflows (global hotkeys, gaming input capture) that currently require XWayland keyboard-grab workarounds.
+- **Rust abstractions land in mainline DRM**: GEM, scheduler, and syncobj Rust bindings are expected to reach mainline, enabling new GPU drivers to be written entirely in Rust — fulfilling the modernisation trajectory Chapter 103 traces from the C-only DRI Project through Nova.
+- **Explicit sync becomes mandatory**: `linux-drm-syncobj-v1` is expected to become required for all compositors, completing the decade-long migration from implicit to explicit GPU synchronisation and closing the last major correctness gap between open and proprietary NVIDIA stacks — a thread that runs through both the DRI legacy (Chapter 95) and the driver-history narrative (Chapter 103).
+- **NVIDIA open-module documentation for Hopper/Blackwell**: NVIDIA's open-kernel-module cadence is likely to yield register-level documentation for current-generation hardware, potentially enabling NVK to cover compute and ML workloads through an open Mesa stack.
+
+### Long-term
+
+- **X11 protocol freeze and GLX deprecation**: As XWayland matures and major toolkits (GTK4, Qt 6) complete EGL-only paths, the X11 protocol is expected to be frozen rather than extended — HDR, VRR, and colour management will be Wayland-only — and Mesa's `src/glx/` implementation deprecated, closing the architectural story Chapter 95 opens.
+- **Unified heterogeneous kernel programming model**: Convergence of the DRM graphics and accel subsystems may produce a single memory manager, scheduler, and dma-buf infrastructure covering render, display, video, and AI inference — fulfilling the zero-copy, mechanism-over-policy principles that Chapter 103 traces back to Scheifler and Gettys's X design philosophy.
+- **Open-hardware GPU trajectory**: AMD's GPUOpen model, RISC-V GPU ISA initiatives, and emerging community-maintained GPU IP may eventually produce a major GPU line designed from the start for open drivers — rather than the decades of reverse engineering and openness retrofitting that both chapters document.

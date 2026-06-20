@@ -15,7 +15,17 @@
 7. [GPU Compute with wgpu](#gpu-compute-with-wgpu)
 8. [Rendering Pipelines with wgpu](#rendering-pipelines-with-wgpu)
 9. [Ecosystem: erupt, vulkano, gpu-allocator](#ecosystem-erupt-vulkano-gpu-allocator)
-10. [Integrations](#integrations)
+10. [cuTile-rs: NVIDIA Tile Abstraction in Rust](#cutile-rs-nvidia-tile-abstraction-in-rust)
+11. [cudarc: Rust CUDA Driver API](#cudarc-rust-cuda-driver-api)
+12. [Vulkano: Compile-Time Safe Vulkan](#vulkano-compile-time-safe-vulkan)
+13. [rust-gpu: Rust as a Shading Language](#rust-gpu-rust-as-a-shading-language)
+14. [blade: Minimal GPU Library](#blade-minimal-gpu-library)
+15. [vello: Compute-Based 2D Vector Rendering](#vello-compute-based-2d-vector-rendering)
+16. [burn: Rust ML Framework](#burn-rust-ml-framework)
+17. [encase and bytemuck: GPU Buffer Layout](#encase-and-bytemuck-gpu-buffer-layout)
+18. [naga_oil: Shader Module Composition](#naga_oil-shader-module-composition)
+19. [Roadmap](#roadmap)
+20. [Integrations](#integrations)
 
 ---
 

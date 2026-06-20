@@ -16,7 +16,8 @@ This chapter targets **kernel display driver developers** implementing or debugg
 8. [Kernel Debugging MST](#8-kernel-debugging-mst)
 9. [Userspace and Compositor Interaction](#9-userspace-and-compositor-interaction)
 10. [Real-World Multi-Monitor Setup](#10-real-world-multi-monitor-setup)
-11. [Integrations](#11-integrations)
+11. [USB4 and Thunderbolt Display Connectivity](#11-usb4-and-thunderbolt-display-connectivity)
+12. [Integrations](#12-integrations)
 
 ---
 
@@ -994,7 +995,334 @@ wlr-randr \
 
 ---
 
-## 11. Integrations
+## 11. USB4 and Thunderbolt Display Connectivity
+
+This section targets **kernel driver developers** working on the Thunderbolt/USB4 subsystem and its interaction with DRM, **hardware engineers** integrating USB4 docks with display outputs, and **system integrators** debugging bandwidth contention on multi-device Thunderbolt setups. It builds directly on Section 5 (USB-C and DP Alt Mode) and the bandwidth allocation material in Section 7.
+
+### 11.1 USB4 Architecture
+
+USB4 is the open specification (published by the USB Implementers Forum in 2019, with USB4 Version 2.0 in 2022) that standardises the Thunderbolt 3 protocol as an interoperable, royalty-free standard [Source](https://www.usb.org/sites/default/files/USB4%20Specification_0.zip). The key differentiator from USB 3.x is the **tunneled-protocol model**: instead of dedicating physical lanes to a single protocol, the USB4 fabric multiplexes three protocol tunnels over a shared 40 Gbps (USB4 Gen 2×2) or 80 Gbps (USB4 Gen 3×2) link using a packet-switched architecture.
+
+The three tunneled protocols are:
+
+- **USB 3.2 tunnel**: carries USB SuperSpeed traffic (up to USB 3.2 Gen 2×2, 20 Gbps) over a dedicated tunnel with guaranteed bandwidth. Up to two SuperSpeed tunnels can be active simultaneously.
+- **DisplayPort tunnel (DP tunneling)**: wraps a DP 2.1 stream inside USB4 tunnel packets, delivered to a DisplayPort sink downstream of the USB4 fabric. This is fundamentally different from DP Alt Mode (see Section 11.2).
+- **PCIe Gen 3 tunnel**: carries PCIe traffic (×4 lanes for TB3, ×8 lanes for TB4, at PCIe Gen 3 speeds) to attach NVMe enclosures, eGPUs, or network adapters.
+
+Bandwidth allocation across these three protocol tunnels is **dynamic and negotiated at connection time** by the USB4 Connection Manager (implemented in firmware — the ICM, see Section 11.4 — or as a Software Connection Manager in the kernel). The total link capacity must be shared: a USB4 Gen 2×2 link at 40 Gbps (after encoding overhead, ~32 Gbps effective) allocates bandwidth in Gbps chunks to competing tunnels. A saturated USB 3.2 Gen 2 transfer coexisting with a 4K@144Hz DP tunnel and a PCIe NVMe device must share those 32 effective Gbps, and the Connection Manager enforces minimum guaranteed bandwidths per protocol to prevent starvation.
+
+USB4 Version 2.0 (2022) doubles throughput to 80 Gbps (USB4 Gen 3×2) using PAM-4 signalling over the same 40 Gbps cable (backward compatible, but only at the higher speed if both ends and the cable support it). Gen 3×2 allows asymmetric bandwidth mode at up to 120 Gbps in one direction (at the cost of halving bandwidth in the other direction) — useful for display-heavy workloads [Source](https://www.usb.org/sites/default/files/USB4_Version_2.0_Specification_20221110.zip).
+
+### 11.2 DP Alt Mode vs. DP Tunneling
+
+These two mechanisms both carry DisplayPort signals over a USB-C connector but are architecturally distinct:
+
+**DP Alt Mode (USB-C, Section 5)**:
+- Negotiated via USB Power Delivery (USB PD) Vendor Defined Messages (VDMs) on the CC line.
+- The USB-C connector physically re-maps its SuperSpeed lane pairs to carry **raw DP differential signal** — no USB4 fabric, no packetisation, no Thunderbolt required.
+- Works with USB 3.x cables (passive or active), as long as they carry the four SuperSpeed lane pairs.
+- A 4-lane DP Alt Mode configuration (pin assignment C or E) places all four SuperSpeed pairs on DP duty; USB 3.x is suspended and only USB 2.0 remains active through the cable.
+- Latency is essentially zero beyond the PHY: the DP signal enters the cable at one end and exits at the other with propagation delay only. There is no packetisation overhead.
+- On Linux, DP Alt Mode negotiation is handled by `drivers/usb/typec/altmodes/displayport.c` [Source](https://github.com/torvalds/linux/blob/master/drivers/usb/typec/altmodes/displayport.c), which sends `DP_CMD_CONFIGURE` VDMs to set the pin assignment.
+
+**DP Tunneling (USB4 / Thunderbolt 3/4)**:
+- Requires a USB4 or Thunderbolt 3/4 connection — a Thunderbolt cable or a USB4 Gen 2/3 cable.
+- The DP stream is **packetised** by the upstream USB4 router and delivered as a sequence of tunnel packets over the USB4 fabric to a downstream USB4 router, which reassembles the DP stream and drives the display.
+- Bandwidth is shared dynamically with concurrent USB 3.2 and PCIe tunnels — the Connection Manager can reclaim DP tunnel bandwidth if it is needed for USB 3.2 bursts, subject to minimum bandwidth guarantees.
+- Supports DP 2.1 (including UHBR rates) when both routers implement USB4 v2.0, enabling DisplayPort streams at up to 80 Gbps through a single USB4 cable.
+- Adds a small but measurable latency (a few microseconds of buffering and packetisation) compared to DP Alt Mode. For display use, this is below the pixel clock period and effectively invisible.
+- On Linux, DP tunneling is managed by the `drivers/thunderbolt/` subsystem in cooperation with the DRM layer (see Section 11.4).
+
+The practical consequence: a laptop with a standard USB-C port (USB 3.2, no Thunderbolt) will use DP Alt Mode for external display; a laptop with a Thunderbolt 3/4/USB4 port will use DP tunneling, because the Thunderbolt/USB4 controller intercepts the connection before the DP Alt Mode VDM exchange can put the lanes into Alt Mode.
+
+### 11.3 Thunderbolt 3, 4, and 5
+
+Intel's Thunderbolt specification sits on top of USB4 as a certification program and capability superset:
+
+| Standard | Bandwidth | PCIe | DP version | Notes |
+|---|---|---|---|---|
+| **Thunderbolt 3** | 40 Gbps | Gen 3 ×4 | DP 1.2 (HBR2) | First USB-C form factor, Intel proprietary |
+| **Thunderbolt 4** | 40 Gbps | Gen 3 ×8 (mandatory) | DP 1.4 HBR3 (mandatory) | USB4 v1.0 compliant; all features mandatory |
+| **Thunderbolt 5** | 80 Gbps (120 Gbps asymmetric) | Gen 4 ×4 or ×8 | DP 2.1 UHBR20 | USB4 v2.0; bandwidth boost mode |
+
+TB3 required 40 Gbps but had optional features: PCIe ×4 was mandatory while ×8 was optional. A TB3 dock might therefore expose only ×4 PCIe despite the cable bandwidth supporting more. TB4 tightened the requirements, mandating ×8 PCIe and DP 1.4 HBR3 (8.1 Gbps/lane × 4 lanes = 32.4 Gbps) on all certified products [Source](https://thunderbolttechnology.net/sites/default/files/Thunderbolt4_Spec_R1.pdf).
+
+TB5, announced with Intel Lunar Lake (2024), doubles the raw bandwidth to 80 Gbps using the USB4 Gen 3×2 physical layer. In **bandwidth boost mode**, the asymmetric allocation can reach 120 Gbps downstream and 40 Gbps upstream — ideal for driving two 8K@60Hz displays. TB5 supports DP 2.1 UHBR20 tunneling [Source](https://www.intel.com/content/www/us/en/architecture-and-technology/thunderbolt/thunderbolt-technology-general.html).
+
+**Thunderbolt security and daisy-chaining**: Thunderbolt adds two features beyond bare USB4:
+
+1. **DMA protection via IOMMU**: each Thunderbolt PCIe tunnel connects a downstream device to the host PCIe root complex. Without protection, a malicious dock could DMA arbitrary host memory. Thunderbolt uses the IOMMU (Intel VT-d) to restrict each tunnel to its allocated physical address ranges. The Linux `thunderbolt` driver configures these IOMMU mappings through the kernel's DMA remapping layer when a device is authorised.
+
+2. **Daisy-chaining**: Thunderbolt docks and displays can be daisy-chained up to six devices deep. Each device in the chain contains a Thunderbolt switch (router) with one upstream port and one or more downstream ports. The kernel's domain model represents this as a tree of `tb_switch` objects, mirroring the physical topology.
+
+### 11.4 Linux Kernel Thunderbolt Driver
+
+The Thunderbolt subsystem lives in `drivers/thunderbolt/` [Source](https://github.com/torvalds/linux/tree/master/drivers/thunderbolt). Its primary components are:
+
+**Connection Manager models**: the driver supports two modes:
+
+- **ICM (Internal Connection Manager)**: firmware in the Thunderbolt controller handles device enumeration and tunnel management. The kernel driver (`icm.c`) communicates with the ICM via a mailbox interface, sending commands like `TB_ICM_CMD_APPROVE_DEVICE` and receiving `TB_ICM_EVENT_DEVICE_CONNECTED` notifications [Source](https://github.com/torvalds/linux/blob/master/drivers/thunderbolt/icm.c). The ICM is used on most Intel client platforms (Skylake through Tiger Lake).
+
+- **Software Connection Manager (SCM)**: the kernel manages the Thunderbolt fabric directly, without firmware assistance. Used on newer platforms (Alder Lake and later) and on Apple Silicon Macs. The SCM implements domain enumeration, switch configuration, and tunnel allocation entirely in `tb.c` and friends [Source](https://github.com/torvalds/linux/blob/master/drivers/thunderbolt/tb.c).
+
+**Key data structures** (`drivers/thunderbolt/tb.h`):
+
+```c
+/* A Thunderbolt domain — one per Thunderbolt controller */
+struct tb_domain {
+    struct device dev;
+    int index;                    /* controller index (0, 1, ...) */
+    const struct tb_cm_ops *cm_ops; /* ICM or SCM ops */
+    struct tb *tb;
+    struct mutex lock;
+    struct notifier_block iommu_nb;
+};
+
+/* A Thunderbolt switch (router) — one per physical Thunderbolt device */
+struct tb_switch {
+    struct device dev;
+    struct tb_regs_switch_header config; /* config space header */
+    struct tb_port *ports;              /* array of ports */
+    struct tb_dma_port *dma_port;       /* DMA port for FW updates */
+    struct tb *tb;
+    u64 uid;                            /* unique 64-bit identifier */
+    uuid_t uuid;
+    u16 vendor;
+    u16 device;
+    int generation;                     /* 1=TB1, 2=TB2/TB3, 3=TB3/TB4, 4=USB4 */
+    int tunnel_count;                   /* active tunnels through this switch */
+    bool is_unplugged;
+    bool rpm;                           /* runtime PM enabled */
+    /* ... */
+};
+
+/* A Thunderbolt port on a switch */
+struct tb_port {
+    struct tb_regs_port_header config;
+    struct tb_switch *sw;
+    struct tb_port *remote;             /* connected port on remote switch */
+    struct tb_tunnel *tunnel;           /* active tunnel through this port */
+    int port;                           /* port number */
+    bool disabled;
+    bool bonded;                        /* lane bonded (two ports = one 40G link) */
+    /* ... */
+};
+```
+
+**Tunnel allocation** (`drivers/thunderbolt/tunnel.c`): when the Connection Manager decides to create a DP tunnel to a downstream display, it calls `tb_tunnel_alloc_dp()` [Source](https://github.com/torvalds/linux/blob/master/drivers/thunderbolt/tunnel.c):
+
+```c
+struct tb_tunnel *tb_tunnel_alloc_dp(struct tb *tb,
+                                     struct tb_port *in,
+                                     struct tb_port *out,
+                                     int link_nr,
+                                     int max_up,
+                                     int max_down);
+```
+
+Here `in` is the upstream DP adapter port (on the host controller's switch) and `out` is the downstream DP adapter port (on the dock's switch). `max_up` and `max_down` specify the maximum bandwidth in Mbps in each direction. Internally the function allocates a `struct tb_tunnel` and configures the path through the switch fabric using hop configuration registers.
+
+Once the DP tunnel is established, its downstream endpoint presents itself as a standard DisplayPort sink to the GPU. The GPU's AUX transactions to that display travel through the DP tunnel's AUX path (a separate, lower-bandwidth tunnel alongside the main DP link tunnel). The DRM layer then sees a standard DP MST or SST sink and enumerates it using `drm_dp_mst_topology.c` exactly as it would for a wired DP hub.
+
+The Thunderbolt driver notifies the DRM layer of DP bandwidth changes through `drm_dp_update_payload_part1()` — if the USB4 Connection Manager needs to reclaim bandwidth from the DP tunnel (e.g., to service a USB 3.2 burst), it informs the DRM driver, which must reduce the DP link rate or resolution. This bandwidth-change notification path is still evolving in the upstream kernel. Note: needs verification of the exact callback path in current upstream (Linux 6.10+).
+
+### 11.5 USB4 Dock Behavior on Linux
+
+When a USB4 dock with DP output is plugged in, DRM can see it in one of three ways depending on the dock hardware:
+
+**(a) DRM connector via DP tunneling through the USB4/Thunderbolt fabric** (most common for TB3/TB4/USB4 docks): The Thunderbolt driver establishes a DP tunnel; the GPU sees the tunnel endpoint as a native DP sink. The resulting KMS connector is `DRM_MODE_CONNECTOR_DisplayPort`. The path from GPU to display is: GPU DP output → Thunderbolt controller → USB4 fabric → dock switch → DP output → cable → display. Enumeration uses `drm_dp_mst_topology.c` if the dock's DP output drives an MST hub, or SST if it drives a single display.
+
+**(b) HDMI/DP Alt Mode adapter**: cheaper docks use a USB-C-to-HDMI/DP Alt Mode chip (e.g., a passive re-timer or an active converter like the ITE IT6263). In this case, no Thunderbolt fabric is involved; the USB PD VDM exchange configures DP Alt Mode, and the GPU sees the display directly as if it were a native DP or HDMI connector. Alt Mode docks appear to DRM as `DRM_MODE_CONNECTOR_HDMIA` or `DRM_MODE_CONNECTOR_DisplayPort`.
+
+**(c) DisplayLink USB device** (Section 6 compatibility note): some docks include a DisplayLink chip (e.g., DL-6xxx series from Synaptics/DisplayLink) that implements a USB display adapter. The display is driven by the CPU over USB, with the `evdi` kernel module (Chapter 155) creating a virtual DRM device. This path bypasses the GPU's display engine entirely and has much lower performance and higher CPU overhead.
+
+**Hotplug path for case (a)**: when a USB4/Thunderbolt dock is connected, the sequence is:
+
+1. USB-C PD negotiation completes; the Thunderbolt controller asserts Thunderbolt presence on the cable.
+2. The kernel Thunderbolt driver enumerates the dock's switch: udev emits `SUBSYSTEM=thunderbolt ACTION=add` for each discovered switch.
+3. Depending on security level, the user (or `bolt` daemon) authorises the device: `boltctl enroll <uuid>` or automatic `BOLTD_POLICY=auto` in `bolt.conf`.
+4. The Connection Manager creates a DP tunnel: `tb_tunnel_alloc_dp()` configures the path through the switch fabric.
+5. The Thunderbolt driver asserts the GPU's DP HPD (Hot-Plug Detect) line via a platform interrupt or a DP AUX HPD pulse.
+6. The GPU DRM interrupt handler processes the HPD → `drm_dp_mst_hpd_irq_handle_event()` if the dock presents as MST, or a standard HPD connector update if SST.
+7. Topology enumeration, EDID read, KMS connector creation, and udev `SUBSYSTEM=drm ACTION=change` events proceed as in Section 6.2.
+
+### 11.6 Bandwidth Allocation Challenges
+
+A TB4 dock running at 40 Gbps (after encoding: ~32 Gbps effective) must share its bandwidth among all active tunnels. Consider a demanding but realistic configuration:
+
+| Device | Tunnel type | Bandwidth requirement |
+|---|---|---|
+| 4K@144Hz display (DP 1.4 HBR3) | DP tunnel | ~18 Gbps |
+| External USB 3.2 Gen 2×2 SSD | USB 3.2 tunnel | ~20 Gbps peak |
+| PCIe NVMe enclosure | PCIe Gen 3 ×4 tunnel | ~16 Gbps peak |
+
+The total peak demand (~54 Gbps) far exceeds the 32 Gbps effective TB4 budget. The Connection Manager handles this through **bandwidth negotiation**: each tunnel type has a minimum guaranteed bandwidth (e.g., DP tunnel minimum is the bandwidth required to sustain the current display mode; USB 3.2 minimum is negotiated with the USB host controller; PCIe has no hard minimum). Excess bandwidth is allocated on a best-effort basis.
+
+In practice, the NVMe drive and USB SSD will never simultaneously saturate their peak rates. But the display DP tunnel **must** sustain its allocated bandwidth continuously or the display will glitch. The kernel enforces this hierarchy: the DP tunnel minimum bandwidth is reserved at tunnel creation and cannot be reclaimed by other protocols without dropping the display to a lower mode.
+
+The Linux USB4/Thunderbolt stack exposes bandwidth allocation state through the `sysfs` interface [Source](https://www.kernel.org/doc/html/latest/driver-api/thunderbolt.html):
+
+```bash
+# List all Thunderbolt domains and devices
+ls /sys/bus/thunderbolt/devices/
+
+# Check bandwidth allocation for a specific domain (domain0 = first controller)
+cat /sys/bus/thunderbolt/devices/domain0/0-0/rx_bandwidth_allocated
+cat /sys/bus/thunderbolt/devices/domain0/0-0/tx_bandwidth_allocated
+
+# Check available bandwidth on a link
+cat /sys/bus/thunderbolt/devices/domain0/0-1/rx_bandwidth
+cat /sys/bus/thunderbolt/devices/domain0/0-1/tx_bandwidth
+```
+
+When bandwidth allocation fails — for example, because the DP tunnel cannot negotiate enough bandwidth for the requested display mode — the kernel emits a dmesg warning:
+
+```
+[thunderbolt] bandwidth allocation failed for 0-1: not enough bandwidth for DP tunnel
+[drm:intel_dp_tunnel_atomic_check_link] *ERROR* Not enough BW for DP tunnel
+```
+
+In this case, the DRM atomic commit is rejected with `-EINVAL` or `-ENOSPC`, and the compositor must fall back to a lower resolution or refresh rate. On Intel platforms, `intel_dp_tunnel.c` implements the DRM ↔ Thunderbolt bandwidth negotiation callbacks [Source](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/i915/display/intel_dp_tunnel.c).
+
+For AMD platforms and the generic case, the bandwidth negotiation between the Thunderbolt driver and DRM is handled through a notifier chain: the Thunderbolt driver calls `drm_dp_tunnel_notify_bw_alloc_change()` (or equivalent, depending on kernel version) to signal available bandwidth changes to the DP driver. Note: the exact API surface here is still evolving — check `drivers/thunderbolt/` and `drivers/gpu/drm/display/drm_dp_tunnel.c` for current upstream state.
+
+### 11.7 Debugging Thunderbolt and USB4 Display Issues
+
+A systematic toolkit for diagnosing display connectivity through Thunderbolt/USB4:
+
+**`boltctl`** — the primary userspace tool for Thunderbolt device management:
+
+```bash
+# List all Thunderbolt devices and their authorisation state
+boltctl list
+
+# Example output:
+#  ● Caldigit TS4 Thunderbolt 4 Element Hub
+#    ├─ type:          peripheral
+#    ├─ name:          Thunderbolt 4 Element Hub
+#    ├─ vendor:        CalDigit
+#    ├─ uuid:          00000000-0000-0000-0000-<mac>
+#    ├─ status:        authorized
+#    ├─ authorized:    2026-06-20 12:34:56
+#    └─ stored:        yes
+
+# Enroll (permanently authorise) a device by UUID
+boltctl enroll --policy auto <uuid>
+
+# Check Thunderbolt security level
+boltctl info | grep -i security
+# security: user          <- requires manual authorisation each session
+# security: secure        <- cryptographic challenge-response required
+# security: dponly        <- only DP tunnels allowed, no PCIe
+# security: none          <- all devices auto-authorised (insecure)
+
+# Change security level (requires reboot to take effect on most platforms)
+# Set via BIOS/UEFI Thunderbolt settings, not boltctl
+```
+
+**`dmesg` Thunderbolt tracing**:
+
+```bash
+# Monitor Thunderbolt events in real time
+dmesg -w | grep -i "thunderbolt\|usb4\|tb_tunnel\|dp_tunnel"
+
+# Common messages:
+# thunderbolt 0000:00:0d.2: AMD USB4 v2 router found
+# thunderbolt 0-1: new device found, vendor=... device=...
+# thunderbolt 0-1: DP tunnel created
+# thunderbolt 0-1: DP tunnel bandwidth allocation: 17920 Mb/s
+# [drm] Thunderbolt DP tunnel BW allocation failed
+
+# Enable verbose Thunderbolt debug at boot:
+# thunderbolt.dyndbg=+pmf (or add to /etc/modprobe.d/thunderbolt.conf)
+echo "module thunderbolt +p" > /sys/kernel/debug/dynamic_debug/control
+```
+
+**`lspci -v`** — verifying PCIe tunnel is active:
+
+```bash
+# PCIe tunnel devices appear as PCI devices on a virtual root port
+lspci -tv | grep -A 5 "Thunderbolt\|USB4"
+
+# The NVMe in a TB dock shows up as a real PCIe device:
+lspci -v | grep -A 10 "Non-Volatile"
+# If the device appears here, the PCIe tunnel is active and the dock is authorised
+```
+
+**`xrandr --listproviders`** — confirming the display is driven by the GPU (not DisplayLink):
+
+```bash
+xrandr --listproviders
+# If only "Provider 0: id: 0x... cap: 0xf, 9 Sources, 0 Sinks" → GPU only (correct)
+# If a second provider appears → DisplayLink or software renderer in use
+
+# List all outputs including tunnel-connected displays
+xrandr --query | grep -E "^[A-Z]|connected|disconnected"
+# DP-1 connected 2560x1440+0+0 (normal left inverted right) 597mm x 336mm
+# DP-2 connected 1920x1080+2560+0 ...
+```
+
+**Thunderbolt security levels and `boltctl enroll`**: the security level controls when PCIe tunneling is permitted:
+
+- `none`: all devices auto-authorised at plug-in. Suitable for locked-down workstations where physical access implies trust.
+- `user`: user must authorise each new device via `boltctl enroll` or the GNOME/KDE system settings Thunderbolt panel. Device UUID is stored in `/var/lib/boltd/`.
+- `secure`: adds cryptographic challenge-response using the device's challenge key (a 32-byte value burned into the device's NVM). Protects against device cloning.
+- `dponly`: the ICM only creates DP tunnels; PCIe tunneling is blocked at firmware level. Prevents DMA attacks from untrusted docks while still allowing display output.
+
+Note: `dponly` security mode means external NVMe enclosures and eGPUs will not function. Only DP display output works through the Thunderbolt connection.
+
+```bash
+# Check current security level
+cat /sys/bus/thunderbolt/devices/domain0/security
+
+# Authorise a device stored by boltd (persistent across reboots)
+boltctl enroll --policy auto <device-uuid>
+
+# Or using the bolt DBus API (what GNOME Settings uses):
+gdbus call --system --dest org.freedesktop.bolt \
+    --object-path /org/freedesktop/bolt \
+    --method org.freedesktop.bolt.Manager.EnrollDevice \
+    "<uuid>" "auto" ""
+```
+
+**`thunderbolt-info`**: on some distributions, the `thunderbolt-tools` package provides a `thunderbolt-info` utility that dumps the full switch topology and tunnel state in a human-readable format. It reads directly from `/sys/bus/thunderbolt/devices/` and augments the `boltctl list` output with port-level connectivity information.
+
+**Combined diagnostic workflow** for a display that fails to appear after docking:
+
+```bash
+# 1. Is the dock physically enumerated at all?
+boltctl list
+# If empty: check cable quality, try different TB4 cable, check BIOS TB settings
+
+# 2. Is the device authorised?
+boltctl list | grep -i "status:"
+# "status: unauthorized" → run: boltctl enroll --policy auto <uuid>
+
+# 3. Did the DP tunnel get created?
+dmesg | grep -i "dp tunnel\|bandwidth"
+
+# 4. Did DRM see the HPD?
+dmesg | grep -i "HPD\|hotplug\|connector"
+
+# 5. Is the KMS connector present?
+ls /sys/class/drm/ | grep DP
+
+# 6. What does the connector report?
+cat /sys/class/drm/card0-DP-1/status
+cat /sys/class/drm/card0-DP-1/enabled
+
+# 7. Force re-probe (AMDGPU)
+echo 1 > /sys/kernel/debug/dri/0/amdgpu_dm_trigger_hpd_mst
+
+# 8. Dump MST topology (if dock is MST-capable)
+cat /sys/kernel/debug/dri/0/amdgpu_mst_topology
+# or on Intel:
+cat /sys/kernel/debug/dri/0/i915_dp_mst_info
+```
+
+---
+
+## 12. Integrations
 
 **Chapter 2 — KMS (Kernel Mode Setting):** MST connectors are first-class KMS objects. `drm_dp_mst_topology_mgr` is a `drm_private_obj` participating in the atomic state machine. Atomic commits invoke `drm_dp_mst_atomic_check()` as part of the driver's `.atomic_check()` chain, and the two-phase payload add/remove integrates with `drm_atomic_helper_commit_hw_done()` sequencing.
 
@@ -1021,3 +1349,10 @@ wlr-randr \
 - *i915 MST payload fix series (Imre Deak)*: [patchwork.kernel.org](https://patchwork.kernel.org/project/intel-gfx/cover/20230125114852.748337-1-imre.deak@intel.com/)
 - *VESA DisplayPort 2.1 specification*: [vesa.org](https://www.vesa.org/vesa-standards/standards/displayport/)
 - *AMD Xilinx DP TX payload BW management*: [docs.amd.com](https://docs.amd.com/r/en-US/pg199-displayport-tx-subsystem/Payload-Bandwidth-Management)
+- *Linux kernel Thunderbolt driver*: [github.com/torvalds/linux/drivers/thunderbolt](https://github.com/torvalds/linux/tree/master/drivers/thunderbolt)
+- *Linux kernel Thunderbolt documentation*: [kernel.org](https://www.kernel.org/doc/html/latest/driver-api/thunderbolt.html)
+- *Intel DP tunnel driver (i915)*: [github.com/torvalds/linux](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/i915/display/intel_dp_tunnel.c)
+- *USB4 Specification v1.0*: [usb.org](https://www.usb.org/sites/default/files/USB4%20Specification_0.zip)
+- *USB4 Version 2.0 Specification*: [usb.org](https://www.usb.org/sites/default/files/USB4_Version_2.0_Specification_20221110.zip)
+- *Thunderbolt 4 specification*: [thunderbolttechnology.net](https://thunderbolttechnology.net/sites/default/files/Thunderbolt4_Spec_R1.pdf)
+- *Intel Thunderbolt 5 overview*: [intel.com](https://www.intel.com/content/www/us/en/architecture-and-technology/thunderbolt/thunderbolt-technology-general.html)

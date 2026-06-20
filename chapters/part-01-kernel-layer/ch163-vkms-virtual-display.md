@@ -15,15 +15,16 @@
 7. [EDID Emulation](#edid-emulation)
 8. [VKMS Writeback Connector](#vkms-writeback-connector)
 9. [CRC Testing Infrastructure](#crc-testing-infrastructure)
-10. [VKMS in Mesa and Vulkan CI](#vkms-in-mesa-and-vulkan-ci)
-11. [Configfs Runtime Reconfiguration](#configfs-runtime-reconfiguration)
-12. [Comparison with Alternative Headless Backends](#comparison-with-alternative-headless-backends)
-13. [Other Virtual Display Drivers](#other-virtual-display-drivers)
-14. [DRM Leases and VR Direct Mode](#drm-leases-and-vr-direct-mode)
-15. [GPU Testing with LLVMpipe and softpipe](#gpu-testing-with-llvmpipe-and-softpipe)
-16. [Container and VM Display Stacks](#container-and-vm-display-stacks)
-17. [Roadmap](#roadmap)
-18. [Integrations](#integrations)
+10. [KUnit Tests for VKMS Internals](#kunit-tests-for-vkms-internals)
+11. [VKMS in Mesa and Vulkan CI](#vkms-in-mesa-and-vulkan-ci)
+12. [Configfs Runtime Reconfiguration](#configfs-runtime-reconfiguration)
+13. [Comparison with Alternative Headless Backends](#comparison-with-alternative-headless-backends)
+14. [Other Virtual Display Drivers](#other-virtual-display-drivers)
+15. [DRM Leases and VR Direct Mode](#drm-leases-and-vr-direct-mode)
+16. [GPU Testing with LLVMpipe and softpipe](#gpu-testing-with-llvmpipe-and-softpipe)
+17. [Container and VM Display Stacks](#container-and-vm-display-stacks)
+18. [Roadmap](#roadmap)
+19. [Integrations](#integrations)
 
 ---
 
@@ -304,9 +305,103 @@ for (int y = 0; y < output_height; y++) {
 
 The `pixel_read_line` and `pixel_write_line` callbacks are resolved at plane-update time from the `vkms_formats.c` dispatch table, one callback per pixel format. This avoids a per-pixel branch on the inner loop.
 
-### Color Operations (colorop)
+### Pixel Format Dispatch in vkms_formats.c
 
-`vkms_colorop.c` implements the DRM color pipeline operators that can be chained on a CRTC or plane: 1D EOTF curves, 3×4 color transformation matrices (CTM), HDR multiplier, and 3D LUT. These are applied via `apply_colorop()` before the final writeback, and their presence is what makes VKMS the kernel reference driver for the in-flight DRM Color Pipeline API work.
+`vkms_formats.c` is the format-specific layer that decouples the composition loop from pixel encoding details. It exposes two function-pointer types:
+
+```c
+/* drivers/gpu/drm/vkms/vkms_formats.h */
+
+/**
+ * pixel_read_line_t - read one scanline from a plane framebuffer
+ * @plane_state: the VKMS plane state carrying the GEM bo and frame_info
+ * @y:           output scanline index (in destination coordinates)
+ * @dst:         line_buffer to fill with pixel_argb_u16 values
+ */
+typedef void (*pixel_read_line_t)(struct vkms_plane_state *plane_state,
+                                  int y, struct line_buffer *dst);
+
+/**
+ * pixel_write_line_t - write one composited scanline to a writeback buffer
+ * @wb_job:  the active writeback job carrying the destination GEM bo
+ * @y:       output scanline index
+ * @src:     line_buffer holding the composited pixel_argb_u16 row
+ */
+typedef void (*pixel_write_line_t)(struct vkms_writeback_job *wb_job,
+                                   int y, const struct line_buffer *src);
+```
+
+These function pointers are resolved once — at plane-update time in `vkms_plane_atomic_update()` and at writeback-prepare time in `vkms_wb_prepare_job()` — via `get_pixel_read_line_function()` and `get_pixel_write_line_function()`. The inner composition loop then calls them without any format-dependent branching:
+
+```c
+/* vkms_formats.c — dispatch table entry (one per supported format) */
+static void read_line_xrgb8888(struct vkms_plane_state *plane_state,
+                               int y, struct line_buffer *dst)
+{
+    const u8 *src_pixels = plane_fb_addr_at_row(plane_state, y);
+    struct pixel_argb_u16 *out = dst->pixels;
+    int n = dst->n_pixels;
+
+    for (int i = 0; i < n; i++) {
+        const u32 px = le32_to_cpu(((const u32 *)src_pixels)[i]);
+        out[i].a = 0xffff;
+        out[i].r = (u16)(((px >> 16) & 0xff) * 0x0101);
+        out[i].g = (u16)(((px >>  8) & 0xff) * 0x0101);
+        out[i].b = (u16)(((px >>  0) & 0xff) * 0x0101);
+    }
+}
+```
+
+The `* 0x0101` idiom replicates 8-bit channel values into 16-bit range (e.g., `0xff → 0xffff`) without a division. Formats with fewer bits (RGB565) use appropriate shift/mask sequences; ARGB16161616 reads 64-bit words directly. For multi-planar formats (NV12, P010), the read function handles both the Y-plane and UV-plane stride calculations internally.
+
+The line-by-line approach was reintroduced by Louis Chauvet in 2024 (reverted from an earlier per-plane-at-once scheme) because it achieves 5–10% better cache utilisation: each scanline fits in L1 cache, so the output line buffer stays hot across the full plane stack, whereas the earlier scheme would evict the output buffer between planes.
+
+[Source: LWN — drm/vkms: Reimplement line-per-line pixel conversion](https://lwn.net/Articles/998618/) | [PATCH series — dri-devel](https://www.mail-archive.com/dri-devel@lists.freedesktop.org/msg493762.html)
+
+### Color Operations (colorop) and the DRM Color Pipeline API
+
+`vkms_colorop.c` implements the DRM color pipeline operators that can be chained on a CRTC or plane. VKMS is the kernel reference driver for the DRM Color Pipeline API, a major patchset (v5 at time of writing, 44 patches) led by Harry Wentland at AMD and upstream-merged to `drm-misc-next`.
+
+The supported colorop types mirror what is available on AMD DCN 3+ hardware, making VKMS a faithful software model:
+
+| Colorop type | Kernel enum | Effect |
+|---|---|---|
+| 1D EOTF curve | `DRM_COLOROP_1D_CURVE` | Electro-Optical Transfer Function (e.g., sRGB, PQ) |
+| 3×4 CTM | `DRM_COLOROP_CTM_3X4` | Color transformation matrix (gamut conversion) |
+| HDR multiplier | `DRM_COLOROP_MULTIPLIER` | Peak luminance scaling |
+| 1D inverse EOTF | `DRM_COLOROP_1D_CURVE` | OETF / inverse EOTF (linear → display) |
+| 3D LUT | `DRM_COLOROP_3D_LUT` | 17³ tetrahedral interpolated LUT |
+
+Supported 1D curve subtypes (set in `DRM_COLOROP_1D_CURVE_TYPE` property) include:
+- `DRM_COLOROP_1D_CURVE_SRGB_EOTF` / `DRM_COLOROP_1D_CURVE_SRGB_INV_EOTF`
+- `DRM_COLOROP_1D_CURVE_PQ_EOTF` / `DRM_COLOROP_1D_CURVE_PQ_INV_EOTF` (scaled to [0, 125 cd/m²])
+- `DRM_COLOROP_1D_CURVE_BT2020_INV_OETF` and its inverse
+
+The VKMS implementation in `vkms_colorop.c` applies these via `apply_colorop()` after the plane-blend loop and before writing to the writeback buffer (or computing the CRC). This placement mirrors the real hardware pipeline, where CRTC color operations occur post-composition. Because VKMS is software, it applies all operations with full floating-point precision, producing a deterministic reference output that real drivers can compare against during conformance testing.
+
+```c
+/* vkms_colorop.c — apply one colorop node to a scanline (simplified) */
+static void apply_colorop(const struct drm_colorop *colorop,
+                          struct pixel_argb_u16 *pixels, size_t n)
+{
+    switch (colorop->type) {
+    case DRM_COLOROP_1D_CURVE:
+        apply_1d_curve(colorop, pixels, n);
+        break;
+    case DRM_COLOROP_CTM_3X4:
+        apply_ctm(colorop->data.ctm_3x4, pixels, n);
+        break;
+    case DRM_COLOROP_MULTIPLIER:
+        apply_multiplier(colorop->data.mult, pixels, n);
+        break;
+    case DRM_COLOROP_3D_LUT:
+        apply_3d_lut(colorop, pixels, n);
+        break;
+    }
+}
+```
+
+The color pipeline operators are exposed through DRM properties created in `vkms_colorop.c`. Their IGT validation uses a pixel-by-pixel comparison with a configurable delta tolerance, because floating-point rounding in software makes exact CRC matching impractical for non-linear curves. The patchset was merged to drm-misc-next with VKMS as the sole in-tree reference implementation, ahead of the amdgpu backend. [Source: LWN Color Pipeline API](https://lwn.net/Articles/1033931/) | [PATCH v5 00/44](https://lore.freedesktop.org/wayland-devel/20240819205714.316380-12-harry.wentland@amd.com/T/)
 
 [Source: torvalds/linux vkms_composer.c](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/vkms/vkms_composer.c)
 
@@ -390,6 +485,11 @@ In the composition worker, the cursor plane appears as just another entry in the
 ### Why EDID Matters in Testing
 
 Compositors like Weston and sway call `drm_connector_get_modes()` on startup and pick a display mode based on the EDID blob. Without a well-formed EDID the connector may report no modes at all, causing the compositor to fail to set up its output. VKMS must therefore provide a synthetic EDID so that a headless instance behaves exactly like a connected monitor.
+
+Beyond mode selection, EDID encodes display capabilities that trigger specific code paths in compositors and color managers:
+- **HDR static metadata** (CTA-861 HDR/WCG metadata extension, EDID byte 7 flags): a compositor that sees `HDR_OUTPUT_METADATA` in the EDID will enable its HDR color pipeline; without it, the path is never exercised in CI.
+- **Color primaries and white point**: the colorimetry data block reports the display's native gamut (DCI-P3, BT.2020, sRGB), which compositors use to choose the ICC profile for color management.
+- **Supported VRR/FreeSync range** (EDID Monitor Range Limits): compositors check this to decide whether to enable variable refresh rate output.
 
 ### Default Synthetic EDID
 
@@ -582,7 +682,20 @@ compare_pixels(writeback_fb_mmap, reference_image);
 
 The out-fence (`WRITEBACK_OUT_FENCE_PTR`) is a DMA-fence backed sync file; userspace passes in a pointer to a 64-bit integer which the kernel fills with a file descriptor. The composition worker calls `drm_writeback_signal_completion()` when it finishes writing the frame, which signals the fence.
 
-[Source: VKMS writeback kernel docs](https://docs.kernel.org/gpu/vkms.html) | [drm_writeback.c](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_writeback.c)
+### Out-Fence Mechanics and Explicit Synchronization
+
+`WRITEBACK_OUT_FENCE_PTR` integrates writeback into the standard Linux explicit-synchronization framework. The value that userspace sets for this property is the address (cast to `u64`) of a `int32_t` variable — the kernel writes a `sync_file` file descriptor into that address before the `drmModeAtomicCommit()` call returns. The sequence at the kernel level is:
+
+1. `drm_writeback_connector_init_with_encoder()` allocates a DMA-fence timeline for the connector during initialization.
+2. On each atomic commit that carries a `WRITEBACK_FB_ID`, `drm_writeback_queue_job()` creates a `drm_writeback_job`, attaches the framebuffer, and allocates a new fence on the connector's timeline.
+3. The kernel exports that fence as a `sync_file` and fills in the userspace-provided pointer before returning from the ioctl.
+4. In `vkms_composer_worker()`, after the last composited scanline is written to the destination buffer, `drm_writeback_signal_completion(&out->wb_connector, 0)` advances the timeline and signals all waiters.
+
+This means the out-fence is a reliable guarantee: any process that calls `poll()` or `sync_wait()` on the file descriptor will unblock only after the CPU has finished writing the last pixel of the frame. A test harness can therefore safely mmap the destination buffer and compare pixels immediately after the fence signals, without any additional synchronization primitive.
+
+An important constraint: requesting `WRITEBACK_OUT_FENCE_PTR` without simultaneously setting `WRITEBACK_FB_ID` on the same commit is rejected by the kernel with `EINVAL`. The two properties are logically inseparable — there is no meaningful out-fence if there is no destination buffer to write into.
+
+[Source: VKMS writeback kernel docs](https://docs.kernel.org/gpu/vkms.html) | [drm_writeback.c](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_writeback.c) | [DRM writeback — LWN introduction](https://lwn.net/Articles/704647/)
 
 ---
 
@@ -675,7 +788,109 @@ sudo IGT_FORCE_DRIVER=vkms \
     --run-subtest pipe-A-tiling-none
 ```
 
+### The DRM CRC Debugfs Callbacks
+
+Beyond the userspace interface, the kernel side requires two CRTC helper callbacks before a driver can expose CRC values through debugfs:
+
+```c
+/* A driver that supports CRTC CRC must implement: */
+static const struct drm_crtc_funcs my_crtc_funcs = {
+    /* ... */
+    .verify_crc_source = vkms_verify_crc_source,
+    .set_crc_source    = vkms_set_crc_source,
+    .get_crc_sources   = vkms_get_crc_sources,
+};
+```
+
+`verify_crc_source()` is called when userspace writes to `crc/control`; it validates the requested source name and sets `values_cnt` to the number of 32-bit CRC words this driver produces per frame (VKMS uses 1; Intel pipe CRC produces 5). `set_crc_source()` starts or stops CRC generation by setting a flag that the composition worker checks:
+
+```c
+/* drivers/gpu/drm/vkms/vkms_crtc.c */
+static int vkms_set_crc_source(struct drm_crtc *crtc, const char *src_name)
+{
+    struct vkms_output *out = drm_crtc_to_vkms_output(crtc);
+    bool enabled = src_name && strcmp(src_name, "auto") == 0;
+
+    spin_lock_irq(&out->composer_lock);
+    out->crc_enabled = enabled;
+    vkms_composer_toggle(out, enabled);
+    spin_unlock_irq(&out->composer_lock);
+    return 0;
+}
+```
+
+`vkms_composer_toggle()` increments or decrements a `composer_enabled` reference count shared with the writeback path; when it reaches zero the hrtimer is stopped to save CPU cycles.
+
+### kms_writeback IGT Test
+
+The `kms_writeback` IGT test exercises the writeback connector directly. It submits an atomic commit with `WRITEBACK_FB_ID` set and then waits on the out-fence before comparing the captured framebuffer pixels against a reference pattern drawn with Cairo:
+
+```bash
+sudo IGT_FORCE_DRIVER=vkms \
+    ./build/tests/kms_writeback \
+    --run-subtest writeback-check-output
+```
+
+The test library call sequence mirrors what a real compositor would do:
+
+1. Allocate a destination GEM buffer and import it as a framebuffer (`drmModeAddFB2`).
+2. Get the writeback connector's `WRITEBACK_FB_ID` and `WRITEBACK_OUT_FENCE_PTR` property IDs.
+3. Build an atomic request: set `WRITEBACK_FB_ID` to the destination framebuffer, set `WRITEBACK_OUT_FENCE_PTR` to the address of a `int32_t` where the kernel will write the sync-file descriptor.
+4. Call `drmModeAtomicCommit()` with `DRM_MODE_ATOMIC_NONBLOCK`. The kernel fills in the fence fd before returning.
+5. Call `sync_wait(fence_fd, timeout_ms)` to block until the composition worker has finished writing the frame.
+6. Map the destination buffer with `mmap()` and compare pixels.
+
+An important nuance: `WRITEBACK_FB_ID` is a write-only property that is *not* preserved across commits. Userspace must re-set it every commit in which it wants a writeback frame captured. If it is omitted from a commit, no writeback occurs for that frame even if the writeback connector is active.
+
 [Source: IGT reference manual](https://drm.pages.freedesktop.org/igt-gpu-tools/igt-kms-tests.html) | [kms_cursor_crc overview](https://melissawen.github.io/blog/2020/06/03/overview_kms_cursor_crc)
+
+---
+
+## KUnit Tests for VKMS Internals
+
+VKMS includes an in-tree KUnit test suite at `drivers/gpu/drm/vkms/tests/`. These are kernel unit tests that run without loading the full DRM stack — they exercise isolated C functions directly, catching regressions in numerical routines that would otherwise only surface as wrong pixels in an IGT test.
+
+### What the Tests Cover
+
+The initial focus of the KUnit suite (as of Linux 6.13 and the Color Pipeline API patchset) is the LUT and color math:
+
+- **`get_lut_index` tests**: verify that the function mapping a 16-bit channel value to a LUT segment index returns the correct index at boundaries (0, mid-point, maximum), at power-of-two segment counts, and at non-power-of-two sizes.
+- **`lerp_u16` tests**: verify the linear interpolation function used inside 1D LUT evaluation. Edge cases include saturation at 0xffff, zero-span segments, and rounding behavior.
+- **Format conversion round-trips**: unit tests that write a pixel in a given format, read it back through the `pixel_read_line` callback, and assert the `pixel_argb_u16` fields round-trip correctly — ensuring no channels are swapped and no precision is lost for exact values.
+
+### Running KUnit Tests
+
+KUnit tests run inside a stripped-down kernel image via `kunit.py`:
+
+```bash
+# Run all VKMS KUnit tests (no hardware required):
+tools/testing/kunit/kunit.py run \
+    --kunitconfig=drivers/gpu/drm/vkms/tests
+
+# Sample output:
+#     [PASSED] vkms_formats_test: xrgb8888_read_roundtrip
+#     [PASSED] vkms_lut_test: get_lut_index_boundary_max
+#     [PASSED] vkms_lut_test: lerp_u16_midpoint
+#     [PASSED] vkms_lut_test: lerp_u16_saturation
+# Test suite summary: 12 passed, 0 failed
+```
+
+The `.kunitconfig` at `drivers/gpu/drm/vkms/tests/.kunitconfig` specifies:
+
+```
+CONFIG_KUNIT=y
+CONFIG_DRM=y
+CONFIG_DRM_VKMS=y
+CONFIG_DRM_VKMS_KUNIT_TEST=y
+```
+
+The `DRM_VKMS_KUNIT_TEST` Kconfig option depends on both `DRM_VKMS` and `KUNIT`, so it can only be enabled in test builds and is never compiled into a production kernel image. This makes the tests safe to ship in the kernel tree without bloating production builds.
+
+### Integration with CI
+
+The VKMS KUnit tests run in Mesa CI (via the kernel CI pipeline) and in the Linux kernel's own CI system (KernelCI / LAVA). Because they need no physical device, they run on any architecture — x86-64, arm64, and RISC-V — providing broad coverage of numerical bugs that would otherwise be platform-specific.
+
+[Source: PATCH 7/7 drm/vkms — Add how to run the KUnit tests](https://www.mail-archive.com/dri-devel@lists.freedesktop.org/msg484731.html) | [PATCH V13 02/51 — Add KUnit tests for VKMS LUT handling](http://www.mail-archive.com/amd-gfx@lists.freedesktop.org/msg132423.html)
 
 ---
 

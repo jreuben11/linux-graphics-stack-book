@@ -256,3 +256,40 @@ Readers should arrive here having read Parts I–IV: familiarity with `drmModeAt
 ---
 
 *Part VI spans Chapters 20–23, 46, 53, 54, 74, 75, 101, 105, 112, 123, 128, 130, 131, 132, 138, 140, 145, 151, 158, and 175. Chapter 20 is the entry point; begin there.*
+
+---
+
+## Part Roadmap Summary
+
+*Synthesised from the Roadmap sections of this part's chapters.*
+
+### Near-term (6–12 months)
+
+**Colour management reaching the ecosystem.** `wp_color_management_v1` stabilised in wayland-protocols 1.47 (December 2025) and is now in active roll-out: KWin already exposes it by default, Mutter added server-side support in GNOME 48, and wlroots 0.20 shipped `color-representation-v1`. Chromium, GStreamer, mpv, and SDL3 are completing their client-side integrations. colord gains HDR profiling APIs. NVIDIA's preview DRM Color Pipeline API support (April 2026) and RADV/ANV stabilisation in Mesa 25.1 close the dGPU gap; Intel Xe coverage follows.
+
+**X11 session retirement.** KDE Plasma 6.8 (late 2026) drops the X11 login session entirely, following GNOME's earlier Wayland-only transition. XWayland hardens in response: explicit sync via `linux-drm-syncobj-v1` is completing across all major compositors, `xwayland-satellite` proliferates as a compositor-decoupled XWM, and RHEL 10 ships without the standalone Xorg server. The remaining X11 surface is XWayland for legacy games and ISV software.
+
+**Display hardware protocol expansion.** AMD's HDMI 2.1 FRL patches target Linux 7.2, unlocking 4K/240Hz and associated high-bandwidth audio (Dolby Atmos, DTS:X). VRR hardware support extends to Arm Komeda SoCs and improves HDMI VRR blanking-glitch handling (`freesync_on_desktop`). DisplayPort MST gains DP 2.0 support in AMDGPU, Qualcomm MSM, and Rockchip SoCs. Intel Adaptive Sync SDP improvements land for Panel Replay.
+
+**Protocol ecosystem housekeeping.** `xdg-session-management-v1` and `xx-keyboard-filter-v1` enter the experimental namespace (wayland-protocols 1.48). `ext-tray-v1` enters staging. `zwp_input_timestamps_v1` is a candidate for stable promotion. The `ext-image-copy-capture-v1` standard capture protocol supersedes `wlr-screencopy-unstable-v1` in wlroots-family compositors. Newton Wayland accessibility protocol ships its first GNOME-integrated prototype.
+
+**Input and GPU synchronisation.** `udev-hid-bpf` matures as the canonical per-device input quirk path, displacing many libinput quirks-database entries. libinput 1.31–1.32 stabilises the Lua plugin ABI for tablet quirks. `wlroots` and downstream compositors complete `linux-drm-syncobj-v1` edge-case fixes for multi-GPU and NVIDIA configurations.
+
+### Medium-term (1–3 years)
+
+**Colour pipeline deepens in hardware and software.** `wp_color_management_v1` graduates from staging to stable once Mutter, KWin, and wlroots implementations converge. Per-plane KMS colour management (`drm_colorop` chain, including CSC objects merged in Linux 6.19) enables hardware-accelerated BT.2020→sRGB gamut conversion and per-surface ICC transforms without compositor GPU shaders. iccMAX (ICC v5 / iccDEV) parser support reaches colord and lcms2, enabling scene-referred HDR workflows. Intel Xe adds DRM colorop support.
+
+**Explicit sync and GPU timeline evolution.** `linux-drm-syncobj-v1` graduates to stable and implicit sync shim paths in Mesa are deprecated for RADV/ANV. `io_uring IORING_OP_URING_CMD` for timeline fence waits unifies GPU and I/O event handling. Cross-device fence export for hybrid GPU (dGPU + iGPU) setups gains protocol support. NVK (Nouveau Vulkan) closes the gap with ANV/RADV on timeline semaphore optimisations.
+
+**VRR and frame pacing mature.** `wp_fifo_v1` and `wp_tearing_control_v1` see wider compositor adoption including COSMIC. Atomic async page flip (`DRM_MODE_PAGE_FLIP_ASYNC`) progresses toward mainline. VRR and HDR state transitions are unified into the same atomic commit. A kernel VRR floor property is designed for OLED burn-in mitigation. `xx-fractional-scale-v2` (KDE Plasma 6.7) becomes the new baseline, eventually deprecating `wp_fractional_scale_v1`.
+
+**Wayland protocol governance.** The `ext-workspace-v1`, `wp_security_context_v1`, and input-related unstable protocols converge across Mutter, KWin, and wlroots through the two-compositor governance rule. A formal clipboard isolation protocol enters staging. Snap sandbox integration with `wp_security_context_v1` follows Flatpak. XWayland privilege separation (restricted namespace with limited GPU access) is prototyped. DP 2.1 UHBR MST support is architected in `drm_dp_mst_topology` to handle the 64-slot allocation model.
+
+**Accessibility and input method protocols.** `ext_text_input_v1` and `ext_input_method_v1` stable protocols replace the decade-old `zwp_text_input_v3`/`zwp_input_method_v2` unstable interfaces. Newton accessibility sub-tree delegation for web content is designed. A standardised cross-compositor Wayland accessibility protocol enters the wayland-protocols repository. GPU-accelerated terminals (Ghostty, Alacritty, WezTerm) adopt AccessKit's AT-SPI2 Rust adapter.
+
+### Long-term
+
+- **Full X11 elimination.** The native X11 session disappears from all major distributions; XWayland becomes an optional, user-initiated compatibility shim for Proton/Wine games and legacy ISV software. `xwayland-satellite`'s XWM-decoupled model may become the standard, removing per-compositor XWM code entirely. `dma_resv`-based implicit GPU sync is deprecated kernel-wide once the ecosystem completes migration to explicit sync.
+- **Unified display and colour hardware abstraction.** A vendor-agnostic `drm_colorop` chain expresses the full HDR pipeline across AMD DCN, Intel Xe, and NVIDIA display hardware. Per-display ICC profile enforcement moves toward the KMS layer. AV1 HDR10+ dynamic metadata integrates with the per-plane colorop pipeline. Hardware-accelerated 3D LUT tone mapping in the DRM colorop API eliminates compositor GPU shader overhead for tone mapping on mobile platforms.
+- **Newton replaces AT-SPI2 as the Wayland accessibility foundation.** Once GTK, Qt, Electron, and web engines ship Newton-native providers, AT-SPI2 becomes a legacy compatibility shim. A standardised compositor-level screen capture protocol replaces privileged shell-plugin framebuffer access for magnifiers and accessibility tools.
+- **Spatial and XR input, and ML-assisted display.** Monado's hand-tracking and eye-gaze input are reconciled with the Wayland seat model. Compositor-side ML models predict stylus trajectories and pointer positions to reduce motion-to-photon latency. AI-assisted codec adaptation (VMAF-based bitrate control) enters game streaming servers. Kernel-level frame timing APIs surface per-frame GPU completion and VRR period measurements to compositors without userspace-only instrumentation.

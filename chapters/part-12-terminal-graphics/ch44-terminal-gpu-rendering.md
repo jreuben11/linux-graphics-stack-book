@@ -10,10 +10,13 @@
 - [1. Why GPU Acceleration Matters for Terminals](#1-why-gpu-acceleration-matters-for-terminals)
 - [2. Glyph Atlas Fundamentals](#2-glyph-atlas-fundamentals)
 - [3. kitty: Mature OpenGL Renderer](#3-kitty-mature-opengl-renderer)
+  - [Rendering the Grid: Vertex Attributes vs. the Fullscreen Quad Approach](#rendering-the-grid-vertex-attributes-vs-the-fullscreen-quad-approach)
 - [4. Alacritty: Minimal OpenGL, Latency Optimised](#4-alacritty-minimal-opengl-latency-optimised)
 - [5. WezTerm: wgpu Multi-Backend Architecture](#5-wezterm-wgpu-multi-backend-architecture)
 - [6. Ghostty and libghostty: Zig-Native, Platform-Optimised](#6-ghostty-and-libghostty-zig-native-platform-optimised)
+  - [The Vulkan Renderer: SSBO and Indirect Draw Calls](#the-vulkan-renderer-ssbo-and-indirect-draw-calls)
 - [7. foot: CPU-Side Software Rendering](#7-foot-cpu-side-software-rendering)
+- [7.5 wl_shm vs. EGL: The CPU-to-GPU Copy Trade-off](#75-wl_shm-vs-egl-the-cpu-to-gpu-copy-trade-off)
 - [8. VTE: GTK4 Transition and Sixel Support](#8-vte-gtk4-transition-and-sixel-support)
 - [9. Compositing Pipeline: Text and Pixel Graphics Together](#9-compositing-pipeline-text-and-pixel-graphics-together)
 - [10. Damage Tracking and Partial Updates](#10-damage-tracking-and-partial-updates)
@@ -195,6 +198,18 @@ The `sprite_idx` pair encodes the (x, y) tile position of the glyph within the s
 
 When a cell's content changes (as detected by dirty-tracking after the VT parser runs), the parse thread updates the corresponding `GPUCell` in the row array. At render time, only rows containing dirty cells are re-uploaded to the GPU vertex buffer. The clean rows are left in the existing GPU buffer unchanged, so the upload volume scales with the rate of change rather than with the total grid size.
 
+### Rendering the Grid: Vertex Attributes vs. the Fullscreen Quad Approach
+
+Before examining kitty's atlas in detail, it is worth addressing a conceptual split in how GPU terminal renderers map the cell grid to the GPU. Two distinct approaches appear in the literature:
+
+**Approach A — Per-cell vertex attributes (kitty, Alacritty, Ghostty).** Each visible cell is a separate instance in the GPU draw call. A vertex buffer contains one entry per cell (or one entry per glyph quad where cells with two-codepoint ligatures produce two entries). Each entry carries the cell's grid position, atlas UV coordinates, foreground colour, background colour, and attribute flags as vertex attributes. The vertex shader positions the quad in clip space from the grid position, and the fragment shader samples the atlas using the UV coordinates. With `N` visible cells, the draw call has `N` instances and the GPU processes them independently.
+
+**Approach B — Grid-as-texture / fullscreen quad.** The entire terminal grid is encoded into a 2D texture where each texel represents one cell — carrying the foreground colour, background colour, glyph atlas coordinates, and cell attributes packed into the texture's channels. A single fullscreen quad (two triangles covering the entire terminal surface) is drawn. The fragment shader, invoked once per output pixel, computes which cell that pixel falls in, reads the cell data from the grid texture, samples the atlas at the UV coordinates stored in that cell, and composites the glyph colour over the background. This is the approach used by **Zutty** (which uses an OpenGL compute shader instead of a fragment shader) and is described in detail in the Zutty implementation notes. [Source](https://tomscii.sig7.se/2020/11/How-Zutty-works)
+
+kitty uses Approach A. Each `GPUCell` is a vertex attribute entry. The draw call is instanced over all visible cells, not a fullscreen quad. The practical difference: Approach A scales with the number of changed cells (the vertex buffer only needs updating for dirty cells), while Approach B scales with the output resolution (the grid texture must be re-uploaded whenever any cell changes, and the fragment shader runs for every screen pixel rather than once per glyph instance). For kitty's design goals — interactive responsiveness and support for large terminals — Approach A's per-cell granularity is the better fit. Approach B is simpler to implement but less cache-efficient for large resolutions, since the fragment shader must read from the grid texture for every output pixel even when it falls in an unchanged cell.
+
+The distinction matters for partial updates: with Approach A, kitty updates only the `GPUCell` entries for dirty rows and re-uploads those vertex buffer regions; with Approach B, a single changed cell requires re-uploading the entire cell grid texture (unless partial texture updates via `glTexSubImage2D` are used per changed cell, at which point the approaches converge). [Source](https://github.com/kovidgoyal/kitty/blob/master/kitty/shaders.c)
+
 ### The OpenGL Glyph Atlas
 
 kitty's OpenGL infrastructure lives in `kitty/gl.c`, with shader programs defined in `kitty/shaders.py` and compiled at runtime. The glyph cache is implemented in `kitty/glyph-cache.c`, and the Kitty Graphics Protocol image handling in `kitty/graphics.c`. The atlas is a 3D texture array, with each layer sized to hold a fixed grid of cell bitmaps determined at startup from the font metrics. When the renderer encounters a glyph it has not seen before, it rasterises the glyph via FreeType (with HarfBuzz shaping applied for multi-codepoint clusters) and uploads the bitmap to the next available slot in the current atlas layer via `glTexSubImage3D`. If the current layer is full, a new layer is appended. The atlas layer count grows dynamically; kitty has configurable limits via `kitty.conf`, and the eviction policy removes LRU glyphs when the configured maximum is reached.
@@ -369,6 +384,36 @@ The frame rendering sequence executes multiple specialised passes:
 
 Each pass uses a distinct shader pipeline but shares the same uniform buffer, so projection and grid geometry are uploaded once per frame regardless of pass count. [Source](https://deepwiki.com/ghostty-org/ghostty/5.3-rendering-pipeline-and-shaders)
 
+### The Vulkan Renderer: SSBO and Indirect Draw Calls
+
+While Ghostty's primary Linux renderer as of mid-2026 is OpenGL 4.3 via GTK's GDK GL context, the Vulkan renderer under development in `src/renderer/Vulkan.zig` takes a fundamentally different approach to GPU data layout that is worth examining in detail, as it represents the direction the ecosystem is moving.
+
+The Vulkan renderer replaces the OpenGL vertex-buffer model with a **Shader Storage Buffer Object (SSBO)** layout. An SSBO is a Vulkan `VkBuffer` bound with `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER`, readable and writable from any shader stage, whose size is not subject to the small per-binding limits of uniform buffers (`maxUniformBufferRange` is 64 KB on many implementations, far too small for a terminal grid). An SSBO can accommodate the entire terminal grid's cell data regardless of terminal dimensions, with a typical 200×50 grid requiring 200 × 50 × 32 bytes = 320 KB — well within SSBO limits but outside UBO limits.
+
+The conceptual layout maps one struct per terminal cell into the SSBO:
+
+```glsl
+// Ghostty Vulkan renderer — SSBO layout (illustrative; src/renderer/shaders/vulkan/)
+// VkBuffer bound as VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+struct CellData {
+    uvec2 glyph_pos;      // atlas (x, y) position in pixels
+    ivec2 bearing;         // FreeType horizontal and vertical bearing
+    uvec2 grid_pos;        // column and row in the terminal grid
+    uint  fg_color;        // packed RGBA foreground colour
+    uint  mode_flags;      // bit flags: colored_glyph, cursor, wide_cell
+};
+
+layout(std430, binding = 0) readonly buffer CellBuffer {
+    CellData cells[];
+};
+```
+
+The vertex shader indexes the SSBO using `gl_InstanceIndex` (OpenGL) or `SV_InstanceID` (HLSL/WGSL) to retrieve the cell data for each instance. A single `vkCmdDrawIndirect` or `vkCmdDrawIndexedIndirect` call dispatches all visible cells, with the draw parameters (instance count, base instance) written into a `VkBuffer` by the CPU immediately before the draw call. Because the CPU has already updated the SSBO with the current frame's cell data, the GPU can consume the draw parameters and process all instances in one submission without round-tripping back to the CPU for per-instance parameters. [Source](https://registry.khronos.org/vulkan/specs/latest/man/html/vkCmdDrawIndirect.html)
+
+The SSBO approach offers two advantages over vertex buffers for terminal rendering. First, **large sparse updates**: the CPU can write only the cells that changed (those flagged dirty by the VT parser) into the SSBO using `vkCmdUpdateBuffer` or a staging transfer, without re-uploading the full grid. Second, **simpler compute integration**: a compute shader can post-process or filter the SSBO contents (for example, applying text contrast or blending cursor highlights) without a separate render pass, because the SSBO is readable and writable from compute stages. The OpenGL renderer must perform equivalent operations in the fragment shader or via additional draw passes.
+
+The GTK4 GDK GL context used by the current OpenGL renderer provides EGL integration automatically: `gdk_gl_context_make_current()` binds the context created by GTK's EGL or GLX backend, and frame submission goes through `gdk_gl_context_flush()` which calls `eglSwapBuffers` internally. The Vulkan renderer bypasses GTK's rendering entirely and communicates with the Wayland compositor directly via `wl_surface` and a Vulkan swapchain (`VkSwapchainKHR`), created with `VK_KHR_wayland_surface`. This eliminates one layer of abstraction and allows Ghostty to use `VK_EXT_present_timing` for sub-millisecond frame scheduling when available. [Source](https://registry.khronos.org/vulkan/specs/latest/man/html/VkSwapchainKHR.html)
+
 ### Platform Rendering Backends
 
 On macOS, Ghostty uses Metal via a Swift interoperability layer. The Metal backend achieves approximately 120 FPS on Apple Silicon at approximately 45 MB RSS for a typical session, according to the project's own benchmarks. The glyph atlas is a 3D texture array (a `MTLTextureDescriptor` with `textureType = MTLTextureType2DArray`) and the shaders in `src/renderer/shaders/shaders.metal` handle glyph sampling and image compositing in a single render pass. Triple-buffering is used on the Metal backend to ensure the GPU can work on frame N+1 while the CPU prepares frame N+2.
@@ -430,6 +475,80 @@ Sixel images are decoded by foot's internal Sixel decoder (`foot/sixel.c`), whic
 ### Fractional Scaling and Performance
 
 foot supports the `wp_fractional_scale_v1` Wayland protocol extension, which allows the compositor to request a non-integer scale factor (for example, 1.5× on a 144 DPI display). [Source](https://gitlab.freedesktop.org/wayland/wayland-protocols) foot responds by rasterising glyphs at the correct DPI-scaled pixel size and rendering its framebuffer at the fractional-scaled resolution, allowing text to appear at the correct physical size without the blurriness of nearest-neighbour upscaling. This is achieved entirely in software with no GPU involvement. Frame rates for foot under normal interactive use are 50–60 FPS; during bulk scroll or large resize operations they can drop to 20–30 FPS as the CPU must rasterise and blit a large number of cells. Input latency is in the 5–10 ms range, driven primarily by the Wayland frame-clock commit cycle rather than by rendering cost, making it competitive with GPU terminals in terms of the latency most users will perceive.
+
+---
+
+## 7.5 wl_shm vs. EGL: The CPU-to-GPU Copy Trade-off
+
+The architectural divide between foot (which uses `wl_shm`) and kitty, Ghostty, Alacritty, and WezTerm (which use EGL or Vulkan swapchains) is worth examining in detail, because the performance implications are more nuanced than a simple "GPU is always faster" summary would suggest.
+
+### The CPU-to-GPU Copy in the wl_shm Path
+
+When a Wayland client attaches a `wl_shm`-backed buffer to a surface, the buffer lives in ordinary shared memory — a file descriptor backed by `memfd_create` or `/dev/shm`. The compositor, upon receiving a `wl_surface_commit`, must make this data available to the GPU for compositing. On a typical desktop compositor (weston, KWin, Mutter), the GPU import path works as follows:
+
+1. The compositor creates a `wl_drm` or `linux_dmabuf` texture from the shared memory contents. For `wl_shm` specifically, this requires a CPU-to-GPU copy, because shared memory is not directly accessible as a GPU texture on most hardware.
+2. The compositor uploads the shared memory contents into a GPU texture via `glTexSubImage2D` (on GL-based compositors) or `vkCmdCopyBufferToImage` (on Vulkan compositors), copying bytes from CPU-accessible RAM to GPU VRAM.
+3. The GPU texture is then composited with other surfaces in the compositor's render pass.
+
+The copy cost is bounded by: `surface_damage_area × bytes_per_pixel × (memory_bandwidth_cost)`. At 1920×1080 with a full-surface damage update and 4 bytes per pixel, this is approximately 8 MB per frame. On a system with 40 GB/s memory bandwidth (typical DDR5), the copy takes roughly 200 µs in ideal conditions. In practice, cache effects, contention, and per-pixel compositor blending operations mean the real cost is higher — typically 1–3 ms for a full-surface `wl_shm` update on integrated graphics. [Source](https://wayland-book.com/surfaces-in-depth.html)
+
+However, foot's damage tracking changes this calculation significantly. foot uses `wl_surface_damage_buffer` to communicate only the changed rows to the compositor, and the compositor copies only those rectangles. For a typical interactive terminal session — a shell prompt with occasional command output — the damage per frame is:
+
+- **Idle**: zero damage (no commit is made; the compositor skips the copy entirely)
+- **Cursor blink**: one cell row, typically 8×20 pixels — negligible
+- **Single line of output**: one row, typically 1920×20 pixels — about 150 KB, or under 10 µs copy time
+
+Only during sustained bulk output (a `yes` loop, a large `cat`, a scrolling build log) does foot approach the worst-case per-frame copy cost. And in those cases, at 60 Hz, the copy represents at most 3 ms of a 16.7 ms frame budget — comparable to the GPU rendering overhead of a GPU terminal at the same output rate.
+
+### The EGL Path: Zero-Copy but Context Overhead
+
+An EGL terminal like kitty renders directly into a GPU-managed framebuffer. The rendering pipeline is:
+
+1. `eglMakeCurrent` — bind the EGL context and surface
+2. OpenGL draw calls — render glyph quads from the atlas into the framebuffer (stays entirely in GPU memory)
+3. `eglSwapBuffers` — swap back-buffer to front; the Wayland EGL platform implementation posts the GPU buffer directly to the `wl_surface` as a `dmabuf`-backed `wl_buffer`
+
+The key difference: the rendered framebuffer never leaves the GPU. The compositor receives a `linux_dmabuf` buffer whose backing storage is a GPU texture allocated by Mesa's EGL implementation. No CPU-to-GPU copy occurs. The compositor's compositing pass samples directly from this texture.
+
+```c
+// EGL rendering loop — zero CPU-to-GPU copy for the framebuffer
+eglMakeCurrent(display, egl_surface, egl_surface, egl_context);
+
+// All rendering stays in GPU memory
+glBindFramebuffer(GL_FRAMEBUFFER, 0);  // default FBO = the EGL surface
+render_terminal_frame();               // glyph atlas sampling, colour tinting
+
+// eglSwapBuffers posts the GPU texture directly to Wayland as dmabuf
+eglSwapBuffers(display, egl_surface);
+```
+
+The overhead EGL does incur: context switching (`eglMakeCurrent`) takes 10–100 µs depending on driver, especially on first call after an idle period that allowed the GPU context to be deprioritised. For a terminal that renders 60 frames per second with rich content, this is amortised to negligibility. For a terminal that renders one frame every 5 seconds (a shell prompt), the `eglMakeCurrent` overhead per frame can exceed the rendering work itself.
+
+### When wl_shm Is the Right Choice
+
+foot's author documented the reasoning for choosing `wl_shm` explicitly: the goal is a correct, lightweight, zero-GPU-dependency terminal for Wayland. [Source](https://codeberg.org/dnkl/foot) The concrete benefits:
+
+**No GPU driver dependency.** A system with a broken, absent, or sandboxed GPU driver — remote SSH session, container environment, Raspberry Pi with a poor Mesa build — can still run foot correctly. GPU terminals fail silently or produce corrupted output when the GPU context is unavailable.
+
+**Lower RSS at idle.** A GPU terminal holds its EGL context, OpenGL textures, and atlas buffers in memory regardless of whether the terminal is visible or rendering. foot's `footd` server amortises font-loading cost but otherwise allocates no GPU resources. The actual RAM difference at idle is roughly 60–100 MB (GPU terminal with OpenGL context) vs. 30–50 MB (foot) per terminal instance.
+
+**Simpler damage accounting.** With `wl_shm`, damage tracking maps directly to `memcpy` bounds; there is no need to manage EGL buffer age, double-buffering state, or GPU fence synchronisation. The implementation in `foot/render.c` reflects this simplicity: the damage logic is a straightforward bitfield of dirty rows, and the render call is a loop over those rows.
+
+### When GPU Rendering Dominates
+
+The wl_shm model shows its limits at high update rates. Under sustained output at display refresh rate (60 or 120 Hz) with large terminal windows (say 4K at 200% scale), the per-frame CPU-to-GPU copy approaches 5–10 MB. At 120 Hz this is 600 MB/s to 1.2 GB/s — measurable memory bus pressure that reduces headroom for other tasks. A GPU terminal under the same conditions avoids this copy entirely; the GPU's internal memory bandwidth (200–600 GB/s on modern discrete GPUs) handles the atlas sampling and blending without memory bus impact.
+
+The practical threshold: for terminals larger than approximately 2560×1440 at 120 Hz with continuous full-screen output, a GPU terminal's zero-copy EGL path is strictly better than `wl_shm`. Below this threshold — which covers the vast majority of real terminal use — the difference is imperceptible, and foot's simplicity and reliability advantages are the dominant factors.
+
+| Scenario | wl_shm (foot) | EGL (kitty, Ghostty) |
+|---|---|---|
+| Idle terminal | Zero GPU/CPU cost | Context maintenance overhead |
+| Single line of output at 60 Hz | ~150 KB copy per frame | Same framebuffer area rendered |
+| Full-screen scroll at 60 Hz | ~8 MB copy per frame | Zero-copy; GPU-internal only |
+| Full-screen 4K at 120 Hz | ~32 MB/frame copy load | Near-zero marginal cost |
+| GPU driver absent / broken | Works correctly | Fails at context creation |
+| Remote SSH / container | Works (no GPU required) | Requires GPU or software fallback |
+| Memory usage per instance | 30–50 MB | 60–120 MB (with GPU context) |
 
 ---
 
@@ -850,6 +969,12 @@ The `wp_presentation_time_v1` and `wp_fractional_scale_v1` protocols are part of
 30. naga shader IR (WGSL → SPIR-V translation, used by wgpu): [https://github.com/gfx-rs/wgpu/tree/trunk/naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga)
 
 31. Wayland protocol `wl_surface.damage_buffer` (prefer over `wl_surface.damage`): [https://wayland-devel.freedesktop.narkive.com/T6hqU0ZH/patch-v2-protocol-prefer-wl-surface-damage-buffer](https://wayland-devel.freedesktop.narkive.com/T6hqU0ZH/patch-v2-protocol-prefer-wl-surface-damage-buffer)
+
+32. Vulkan specification, `vkCmdDrawIndirect` — indirect draw calls from GPU-side buffers: [https://registry.khronos.org/vulkan/specs/latest/man/html/vkCmdDrawIndirect.html](https://registry.khronos.org/vulkan/specs/latest/man/html/vkCmdDrawIndirect.html)
+
+33. Vulkan specification, `VkSwapchainKHR` — Vulkan swapchain and Wayland surface integration: [https://registry.khronos.org/vulkan/specs/latest/man/html/VkSwapchainKHR.html](https://registry.khronos.org/vulkan/specs/latest/man/html/VkSwapchainKHR.html)
+
+34. Wayland Book — *Surfaces in depth* (wl_shm pools, buffer upload, damage): [https://wayland-book.com/surfaces-in-depth.html](https://wayland-book.com/surfaces-in-depth.html)
 
 ---
 

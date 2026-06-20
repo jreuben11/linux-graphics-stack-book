@@ -97,3 +97,33 @@ Readers should arrive having worked through Part II (kernel DRM drivers, GEM buf
 Readers interested in **comparing NVIDIA's approach with AMD, Intel, and Qualcomm** will find the most complete side-by-side picture by reading Chapter 18 (RADV/ANV/Turnip) and Chapter 177 (NVK) together: descriptor model (SRD tables vs bindless heap vs surface-state heap vs bindless global buffer), submission path (IB1/IB2 ring vs EU batch vs CSF firmware vs GSP-RM FIFO), and shader compiler backend (ACO vs BRW/ELK vs ir3 vs NAK) are the four axes that most sharply differentiate the driver families.
 
 ---
+
+## Part Roadmap Summary
+
+*Synthesised from the Roadmap sections of this part's chapters.*
+
+### Near-term (6–12 months)
+
+- **Vulkan 1.4 baseline consolidation**: Mesa 26.0–26.1 completed Vulkan 1.4 conformance for RADV, ANV, NVK, and Turnip. Near-term effort shifts to closing extension gaps on newer hardware generations — RDNA4 (GFX12), Xe2 (Battlemage), and Adreno A8xx (Snapdragon 8 Elite) — and achieving CTS sign-off for each.
+- **ACO becomes the default across AMD OpenGL and Vulkan**: Mesa 26.0 switched radeonsi from LLVM to ACO, unifying RADV and radeonsi on the same compilation backend; near-term work hardens the shared pipeline and reduces game-load stuttering, while retaining LLVM as a fallback for compute.
+- **Synchronisation extension rollout**: `VK_EXT_present_timing` landed across RADV, ANV, NVK, Turnip, and PanVK in Mesa 26.1; `GL_NV_timeline_semaphore` arrived for radeonsi; and `VK_EXT_descriptor_buffer` heap mode is being stabilised for RADV behind `RADV_EXPERIMENTAL=heap`, directly benefiting VKD3D-Proton D3D12 descriptor-heap paths.
+- **Zink expands as the universal OpenGL compatibility layer**: Mesa 25.1 already replaced Nouveau OpenGL with Zink+NVK; the same pattern is being evaluated for other drivers (Turnip for Adreno, Panvk for Mali) where the Vulkan backend is more actively maintained than a direct Gallium OpenGL driver.
+- **VirtIO-GPU native-context support**: Mesa 26.1 added hardware-accelerated paravirtualised GPU support for both ANV and iris, enabling Intel GPU pass-through inside QEMU/crosvm VMs without a full physical pass-through.
+- **NVK ray-tracing and NAK scheduler progress**: Turing RT Core command-stream reverse engineering and NAK instruction scheduling improvements (cross-basic-block pre-pass scheduler landed in Mesa 26.0) are the highest-profile NVK near-term items; NAK latency hiding and warp-occupancy estimation for Ampere/Ada are active development targets.
+
+### Medium-term (1–3 years)
+
+- **Compiler backend consolidation**: ACO's role will deepen — the LLVM NIR-to-LLVM-IR graphics path (`ac_nir_to_llvm.c`) in radeonsi is a candidate for deprecation once ACO covers all RDNA generations, while the shared BRW/ELK/LKF EU ISA compiler will be extended to Xe3 (Nova Lake) for both ANV and iris simultaneously. The goal across both AMD and Intel is a single compiler path per vendor, shared between the Vulkan and OpenGL drivers.
+- **Zink as the default OpenGL state tracker**: The strategic direction endorsed by Mesa maintainers is to converge OpenGL support onto Zink-on-Vulkan rather than sustaining per-driver Gallium OpenGL implementations. Near-term enablements (PowerVR, Adreno, Mali) pave the way; medium-term work addresses `VK_EXT_descriptor_buffer` DB mode as the default descriptor path in Zink and closes remaining OpenGL 4.6 ARB extension gaps (bindless textures, sparse textures).
+- **Vulkan video encode/decode stabilisation**: `VK_KHR_video_encode_queue` promotion from EXT to KHR is under active Khronos specification work; RADV and ANV are tracking it. Turnip is adding `VK_KHR_video_decode_h264/h265` via the Adreno multimedia engine, and NVK is progressing H.264/H.265 decode from experimental toward stable.
+- **Nova kernel driver NVKMD backend for NVK**: The NVKMD abstraction layer was designed to decouple NVK from any specific kernel ABI. Once the Rust-language Nova driver (targeting GSP-based Turing+ GPUs) exposes stable DRM uAPIs, a Nova NVKMD backend will let NVK target either nouveau or Nova without Vulkan-layer changes.
+- **RDNA4 ray-tracing and Xe2 mesh-shader performance**: RDNA4-specific BVH build heuristics, compressed acceleration structures, and `VK_KHR_ray_tracing_maintenance2` are active RADV targets; ANV medium-term work on Xe2 focuses on `VK_EXT_mesh_shader` performance tuning across the enlarged EU geometry pipeline and XE_VM_BIND range-based eviction.
+
+### Long-term
+
+- **Full Nova transition and nouveau maintenance mode**: Once Nova ships in a kernel LTS release, nouveau is expected to enter maintenance mode for legacy generations while Nova becomes the primary driver for Turing and later. NVK's NVKMD layer would point exclusively at Nova, and the Rust-based kernel/userspace architecture becomes the reference model for future NVIDIA open-source work.
+- **GPU-agnostic BVH and cooperative-matrix extensions**: A hardware-neutral BVH build/traversal library (reusing `src/amd/vulkan/bvh/` shaders with driver-neutral wrappers) would enable `VK_KHR_ray_tracing_pipeline` on compute-only drivers such as Lavapipe and PanVK. In parallel, `VK_KHR_cooperative_matrix` landing on Xe2 (ANV) and RDNA4 WMMA (RADV), together with NVK's Hopper/Blackwell tensor-core support, feeds into on-GPU ML inference inside Linux desktop pipelines.
+- **Consolidation of OpenGL around Zink and deprecation of legacy Gallium drivers**: The ultimate endpoint of the Zink expansion is a Mesa tree where per-driver Gallium OpenGL state trackers are retired in favour of a single Zink path, with hardware-specific Gallium drivers providing only a Vulkan backend.
+- **Hardware mesh shading and video encoding on NVK**: Full `VK_EXT_mesh_shader` and `VK_KHR_video_encode_h264/h265` for NVIDIA hardware are long-horizon goals contingent on command-stream reverse engineering for Turing/Ampere mesh pipelines and Ada/Blackwell encoder paths.
+
+---

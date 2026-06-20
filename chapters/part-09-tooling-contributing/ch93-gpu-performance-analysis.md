@@ -21,7 +21,8 @@ This chapter targets **graphics application developers**, **game developers**, *
 11. [Worked Case Study: Optimising a Path-Traced Scene](#11-worked-case-study)
 12. [eBPF-Based GPU Observability](#12-ebpf-based-gpu-observability)
 13. [End-to-End Frame Delivery Latency](#13-end-to-end-frame-delivery-latency)
-14. [Integrations](#14-integrations)
+14. [Perfetto GPU Tracing on Linux](#perfetto-gpu-tracing-on-linux)
+15. [Integrations](#14-integrations)
 
 ---
 

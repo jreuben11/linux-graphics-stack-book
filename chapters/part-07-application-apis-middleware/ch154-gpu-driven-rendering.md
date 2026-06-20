@@ -15,7 +15,14 @@
 7. [Task and Mesh Shader Pipeline](#task-and-mesh-shader-pipeline)
 8. [Persistent GPU Scene Representation](#persistent-gpu-scene-representation)
 9. [Bindless Resources](#bindless-resources)
-10. [Integrations](#integrations)
+10. [Hierarchical Z-Buffer (Hi-Z) Pyramid](#hierarchical-z-buffer-hi-z-pyramid)
+11. [Visibility Buffer / Deferred Texturing](#visibility-buffer--deferred-texturing)
+12. [Cone Culling in Mesh Shaders](#cone-culling-in-mesh-shaders)
+13. [Cluster LOD Hierarchy](#cluster-lod-hierarchy)
+14. [VK_AMDX_shader_enqueue: Vulkan Workgraphs](#vk_amdx_shader_enqueue-vulkan-workgraphs)
+15. [Pipeline Statistics Queries](#pipeline-statistics-queries)
+16. [Roadmap](#roadmap)
+17. [Integrations](#integrations)
 
 ---
 
@@ -573,6 +580,599 @@ void main() {
 
 ---
 
+## Hierarchical Z-Buffer (Hi-Z) Pyramid
+
+Two-phase occlusion culling (introduced in the GPU Culling section above) depends on a **hierarchical Z-buffer** (Hi-Z pyramid): a mip chain of the depth buffer where each mip stores the minimum depth over a 2×2 region of the level above. The culling compute shader then samples the mip level whose texel footprint covers the projected bounding sphere, and rejects the object if the sphere's nearest depth is behind that conservative depth value. [Source](https://www.rastergrid.com/blog/2010/10/hierarchical-z-map-based-occlusion-culling/)
+
+### Min-Reduction Algorithm
+
+Each mip level samples the four texels from the previous level and writes their minimum. This is a conservative reduction: a texel in the pyramid is guaranteed to be no closer than any depth in the covered region, so a failed occlusion test is a true negative (no false culls). [Source](https://github.com/google/filament/blob/main/filament/src/materials/ssao/mipmapDepth.mat)
+
+For **non-power-of-two** dimensions (common on modern displays), the source mip at the odd boundary has only 1 or 2 texels along that axis. The standard fix is to widen the sample footprint at the last column/row: if `(src_width & 1) != 0`, sample a third column; if `(src_height & 1) != 0`, sample a third row. Filament's depth mip shader handles this explicitly. [Source](https://github.com/google/filament/blob/main/filament/src/materials/ssao/mipmapDepth.mat)
+
+### GLSL Compute Shader — Single Mip Reduction Pass
+
+```glsl
+/* hiz_reduce.comp — reduces mip level (N-1) → mip level N */
+#version 460
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+/* Previous mip (read) and current mip (write) bound as separate images */
+layout(set = 0, binding = 0) uniform sampler2D src_depth;   /* mip N-1 */
+layout(set = 0, binding = 1, r32f) writeonly uniform image2D dst_depth; /* mip N */
+
+layout(push_constant) uniform PushConstants {
+    ivec2 src_size;   /* dimensions of mip N-1 */
+    ivec2 dst_size;   /* dimensions of mip N   */
+};
+
+void main() {
+    ivec2 dst_coord = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(dst_coord, dst_size))) return;
+
+    /* Map dst texel to 2×2 source region */
+    ivec2 src_base = dst_coord * 2;
+
+    /* Gather 4 samples from previous mip level; clamp to border */
+    float d00 = texelFetch(src_depth, clamp(src_base + ivec2(0,0), ivec2(0), src_size - 1), 0).r;
+    float d10 = texelFetch(src_depth, clamp(src_base + ivec2(1,0), ivec2(0), src_size - 1), 0).r;
+    float d01 = texelFetch(src_depth, clamp(src_base + ivec2(0,1), ivec2(0), src_size - 1), 0).r;
+    float d11 = texelFetch(src_depth, clamp(src_base + ivec2(1,1), ivec2(0), src_size - 1), 0).r;
+
+    /* Conservative minimum — for reversed-Z, replace min with max */
+    float min_depth = min(min(d00, d10), min(d01, d11));
+
+    /* Extra column for odd-width source */
+    if ((src_size.x & 1) != 0) {
+        float dx0 = texelFetch(src_depth, clamp(src_base + ivec2(2,0), ivec2(0), src_size - 1), 0).r;
+        float dx1 = texelFetch(src_depth, clamp(src_base + ivec2(2,1), ivec2(0), src_size - 1), 0).r;
+        min_depth = min(min_depth, min(dx0, dx1));
+    }
+    /* Extra row for odd-height source */
+    if ((src_size.y & 1) != 0) {
+        float dy0 = texelFetch(src_depth, clamp(src_base + ivec2(0,2), ivec2(0), src_size - 1), 0).r;
+        float dy1 = texelFetch(src_depth, clamp(src_base + ivec2(1,2), ivec2(0), src_size - 1), 0).r;
+        min_depth = min(min_depth, min(dy0, dy1));
+    }
+
+    imageStore(dst_depth, dst_coord, vec4(min_depth));
+}
+```
+
+### C Dispatch Loop
+
+Building the full pyramid requires one dispatch per mip level, with an image memory barrier between each pass to ensure the previous write is visible to the next read:
+
+```c
+/* hiz_build() — call once after the depth pre-pass each frame */
+void hiz_build(VkCommandBuffer cmd,
+               VkImageView     *hiz_mip_views,  /* one view per mip, r32f */
+               VkDescriptorSet *hiz_desc_sets,  /* one set per mip transition */
+               uint32_t         mip_levels,
+               uint32_t         base_width,
+               uint32_t         base_height)
+{
+    for (uint32_t mip = 1; mip < mip_levels; mip++) {
+        uint32_t src_w = max(base_width  >> (mip - 1), 1u);
+        uint32_t src_h = max(base_height >> (mip - 1), 1u);
+        uint32_t dst_w = max(base_width  >> mip,       1u);
+        uint32_t dst_h = max(base_height >> mip,       1u);
+
+        /* Barrier: previous mip write → this mip's sampler read */
+        VkImageMemoryBarrier2 img_barrier = {
+            .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .srcAccessMask    = VK_ACCESS_2_SHADER_WRITE_BIT,
+            .dstStageMask     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .dstAccessMask    = VK_ACCESS_2_SHADER_READ_BIT,
+            .oldLayout        = VK_IMAGE_LAYOUT_GENERAL,
+            .newLayout        = VK_IMAGE_LAYOUT_GENERAL,
+            .image            = hiz_image,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 1, 0, 1 },
+        };
+        VkDependencyInfo dep = {
+            .sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers    = &img_barrier,
+        };
+        vkCmdPipelineBarrier2(cmd, &dep);
+
+        /* Bind descriptor set for this mip pair and dispatch */
+        struct { int32_t src_w, src_h, dst_w, dst_h; } pc = {
+            (int32_t)src_w, (int32_t)src_h, (int32_t)dst_w, (int32_t)dst_h };
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                hiz_layout, 0, 1, &hiz_desc_sets[mip - 1], 0, NULL);
+        vkCmdPushConstants(cmd, hiz_layout,
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+        vkCmdDispatch(cmd,
+                      (dst_w + 7) / 8,
+                      (dst_h + 7) / 8,
+                      1);
+    }
+}
+```
+
+Note: reversed-Z depth buffers (near=1, far=0) are common in Vulkan because they improve floating-point precision. In that case replace `min` with `max` throughout the reduction, and invert the occlusion comparison in the cull shader. [Source](https://developer.nvidia.com/content/depth-precision-visualized)
+
+---
+
+## Visibility Buffer / Deferred Texturing
+
+The G-buffer in a classic deferred renderer stores world-space position, normal, and material parameters for every visible fragment. On depth-complex scenes this wastes bandwidth: fragments that are later overwritten still write a full G-buffer record. The **visibility buffer** (also called the material buffer) decouples geometry rasterisation from shading by deferring all material evaluation to a full-screen compute or fragment pass. [Source](http://filmicworlds.com/blog/visibility-buffer-rendering-with-material-graphs/)
+
+### Pass 1: Visibility Rasterisation
+
+The first pass rasterises the scene with a minimal fragment shader that writes only the draw ID and primitive ID, packed into a single `uvec2`:
+
+```glsl
+/* visibility.frag — Pass 1: write visibility buffer */
+#version 460
+#extension GL_ARB_shader_draw_parameters : require
+
+layout(location = 0) out uvec2 vis_buf;  /* R32G32_UINT render target */
+
+void main() {
+    /* gl_DrawID: index within vkCmdDrawIndexedIndirectCount batch (0-based)
+       gl_PrimitiveID: triangle index within the current draw */
+    vis_buf = uvec2(uint(gl_DrawID), uint(gl_PrimitiveID));
+}
+```
+
+The render target format is `VK_FORMAT_R32G32_UINT`. Because the fragment shader does no texture sampling, the rasterisation pass is bandwidth-minimal and runs at high occupancy even on depth-complex scenes. Production adoption: *The Surge* (Deck13) used a visibility buffer variant to handle its dense industrial environments; *Ghost of Tsushima* PC port uses a similar deferred-texturing approach for its foliage. [Source](https://advances.realtimerendering.com/s2015/)
+
+### Pass 2: Full-Screen Shading with Barycentric Interpolation
+
+The shading pass reads the visibility buffer and reconstructs every shading attribute from BDA (buffer device address) scene buffers. UV coordinates are interpolated using `gl_BaryCoordEXT` from `VK_KHR_fragment_shader_barycentric`, which exposes the hardware barycentric weights of the current screen-space position within the triangle. [Source](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_KHR_fragment_shader_barycentric.html)
+
+```glsl
+/* shade.frag — Pass 2: full-screen deferred texturing */
+#version 460
+#extension GL_EXT_buffer_reference        : require
+#extension GL_KHR_fragment_shader_barycentric : require   /* VK_KHR_fragment_shader_barycentric */
+#extension GL_EXT_nonuniform_qualifier    : require
+
+/* --- BDA scene layout ------------------------------------------------ */
+layout(buffer_reference, scalar) readonly buffer IndexBuffer   { uint  idx[]; };
+layout(buffer_reference, scalar) readonly buffer PositionBuffer{ vec3  pos[]; };
+layout(buffer_reference, scalar) readonly buffer UVBuffer      { vec2  uv[];  };
+layout(buffer_reference, scalar) readonly buffer DrawDataBuffer{
+    /* per-draw: BDA pointers to the mesh's own index/vertex buffers */
+    IndexBuffer    indices;
+    PositionBuffer positions;
+    UVBuffer       uvs;
+    uint           material_id;
+};
+
+layout(push_constant) uniform PC {
+    DrawDataBuffer draws;         /* array base; index with draw_id */
+    uint64_t       material_buf;  /* MaterialData[] BDA */
+};
+
+/* Bindless texture array */
+layout(set = 0, binding = 0) uniform sampler2D textures[];
+
+/* Visibility buffer from Pass 1 */
+layout(set = 0, binding = 1) uniform usampler2D vis_buf;
+
+layout(location = 0) out vec4 out_color;
+
+void main() {
+    ivec2 coord = ivec2(gl_FragCoord.xy);
+    uvec2 vis   = texelFetch(vis_buf, coord, 0).rg;
+
+    uint draw_id = vis.x;
+    uint prim_id = vis.y;
+
+    /* Fetch per-draw BDA pointers */
+    DrawDataBuffer draw = draws[draw_id];  /* BDA array index */
+
+    /* Reconstruct the three vertex indices for this primitive */
+    uint i0 = draw.indices.idx[prim_id * 3 + 0];
+    uint i1 = draw.indices.idx[prim_id * 3 + 1];
+    uint i2 = draw.indices.idx[prim_id * 3 + 2];
+
+    /* Hardware barycentric weights — available as gl_BaryCoordEXT (vec3)
+       interpolated across the triangle at the current screen pixel */
+    vec3 bary = gl_BaryCoordEXT;   /* w0, w1, w2 */
+
+    /* Interpolate UV */
+    vec2 uv0 = draw.uvs.uv[i0];
+    vec2 uv1 = draw.uvs.uv[i1];
+    vec2 uv2 = draw.uvs.uv[i2];
+    vec2 uv  = bary.x * uv0 + bary.y * uv1 + bary.z * uv2;
+
+    /* Material lookup */
+    uint mat_id = draw.material_id;
+    /* (MaterialData fetched via BDA — omitted for brevity) */
+    uint albedo_tex = /* mat.albedo_texture */ mat_id;  /* placeholder */
+
+    out_color = texture(textures[nonuniformEXT(albedo_tex)], uv);
+}
+```
+
+The key advantage over a G-buffer: only pixels that survive the final depth test are shaded. On scenes where many triangles overlap (e.g., dense foliage, crowds), this dramatically reduces fragment shader invocations and memory bandwidth. [Source](http://filmicworlds.com/blog/visibility-buffer-rendering-with-material-graphs/)
+
+---
+
+## Cone Culling in Mesh Shaders
+
+Frustum culling eliminates meshlets outside the camera frustum, but many meshlets inside the frustum face away from the camera and will produce zero visible fragments. **Backface cone culling** rejects these meshlets before the mesh shader even launches, saving rasterisation and fragment shader work. [Source](https://github.com/zeux/meshoptimizer#mesh-shading)
+
+### Cone Representation
+
+`meshopt_computeMeshletBounds()` computes, for each meshlet, a bounding cone that encompasses all triangle face normals:
+
+```c
+/* meshoptimizer/src/clusterizer.cpp */
+meshopt_Bounds bounds = meshopt_computeMeshletBounds(
+    meshlet_vertices + m.vertex_offset,
+    meshlet_triangles + m.triangle_offset,
+    m.triangle_count,
+    positions, vertex_count, sizeof(float) * 3);
+
+/* bounds fields relevant to cone culling:
+     bounds.cone_apex[3]   — world-space apex of the normal cone
+     bounds.cone_axis[3]   — unit normal pointing away from the cluster face
+     bounds.cone_cutoff    — cos(half-angle): reject if all normals face away
+     bounds.cone_cutoff == -1  (stored as INT8_MIN in the packed form) →
+       degenerate meshlet (e.g. coplanar faces all facing the same way at 180°),
+       always consider visible */
+```
+
+[Source](https://github.com/zeux/meshoptimizer/blob/master/src/clusterizer.cpp)
+
+### Culling Test
+
+A meshlet is backface-culled if the vector from any camera position to the cone apex, projected onto the cone axis, is greater than `cone_cutoff`. In practice: if `dot(normalize(camera_pos - cone_apex), cone_axis) >= cone_cutoff`, every triangle in the meshlet faces away from the camera. [Source](https://github.com/zeux/meshoptimizer#mesh-shading)
+
+### GLSL Task Shader — Frustum + Cone Culling Combined
+
+The task shader below combines frustum culling (sphere test) with cone culling in a single invocation, avoiding two separate ballot passes:
+
+```glsl
+/* task_cull.task.glsl */
+#version 460
+#extension GL_EXT_mesh_shader : require
+
+layout(local_size_x = 32) in;
+
+struct MeshletBounds {
+    vec3  bounds_center;
+    float bounds_radius;
+    vec3  cone_apex;
+    vec3  cone_axis;
+    float cone_cutoff;   /* -1.0 = always visible (degenerate) */
+};
+
+layout(set = 0, binding = 0) readonly buffer BoundsBuffer {
+    MeshletBounds bounds[];
+};
+
+layout(push_constant) uniform CullPC {
+    mat4  view_proj;
+    vec4  frustum_planes[6];
+    vec3  camera_pos;
+    uint  meshlet_count;
+};
+
+taskPayloadSharedEXT struct {
+    uint meshlet_indices[32];
+    uint count;
+} payload;
+
+shared uint visible_count;
+
+bool frustum_cull_sphere(vec3 center, float radius) {
+    for (int i = 0; i < 6; i++) {
+        if (dot(frustum_planes[i], vec4(center, 1.0)) < -radius)
+            return false;
+    }
+    return true;
+}
+
+bool cone_cull(MeshletBounds b) {
+    /* Degenerate: always visible */
+    if (b.cone_cutoff < -0.999) return false;
+
+    /* Vector from cone apex to camera */
+    vec3 to_camera = normalize(camera_pos - b.cone_apex);
+
+    /* If the camera lies within the backface cone, cull */
+    return dot(to_camera, b.cone_axis) >= b.cone_cutoff;
+}
+
+void main() {
+    uint tid        = gl_LocalInvocationID.x;
+    uint meshlet_id = gl_WorkGroupID.x * 32 + tid;
+
+    if (tid == 0) visible_count = 0;
+    barrier();
+
+    if (meshlet_id < meshlet_count) {
+        MeshletBounds b = bounds[meshlet_id];
+
+        bool visible = frustum_cull_sphere(b.bounds_center, b.bounds_radius);
+        if (visible) visible = !cone_cull(b);  /* skip cone test if already culled */
+
+        if (visible) {
+            uint slot = atomicAdd(visible_count, 1);
+            payload.meshlet_indices[slot] = meshlet_id;
+        }
+    }
+
+    barrier();
+    if (tid == 0) payload.count = visible_count;
+
+    EmitMeshTasksEXT(payload.count, 1, 1);
+}
+```
+
+Note: cone culling is only exact for orthographic projections. Under perspective, the correct test requires checking whether the camera is outside the *apex* half-space, which the `cone_apex` + `cone_axis` formulation above handles correctly. [Source](https://github.com/zeux/meshoptimizer#mesh-shading)
+
+---
+
+## Cluster LOD Hierarchy
+
+Nanite (Unreal Engine 5) demonstrated that per-cluster LOD selection — where each meshlet cluster can be drawn at a different level of detail depending on its screen-space footprint — eliminates the discrete LOD popping and over-tessellation that plague traditional object-level LOD. The key insight is that LOD transitions happen at cluster boundaries, not mesh boundaries, so nearby clusters of the same object can be at different detail levels simultaneously. [Source](https://advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf)
+
+### DAG Structure
+
+Clusters are organised into a directed acyclic graph (DAG). Each node (cluster group) stores two error bounds as projected screen-space error in pixels:
+
+- `self_error`: the geometric error introduced by this level of simplification relative to the original mesh.
+- `parent_error`: the error of the coarser parent group that replaces this group at greater distance.
+
+The LOD selection invariant is: **draw a cluster at this level if `parent_error > threshold AND self_error <= threshold`**. This guarantees exactly one level of the DAG is selected for each region of the mesh, with no gaps and no overlaps. [Source](https://advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf)
+
+### CPU-Side Hierarchy with meshoptimizer
+
+Building the DAG requires iterative simplification. `meshopt_simplify()` reduces triangle count while minimising geometric error, returning an error metric that maps directly to the `self_error` field:
+
+```c
+/* Build one LOD level from the previous */
+float lod_error = 0.0f;
+size_t target_indices = index_count / 2;   /* 50% reduction per level */
+
+size_t new_index_count = meshopt_simplify(
+    simplified_indices,       /* output index buffer */
+    indices, index_count,     /* input */
+    positions, vertex_count, sizeof(float) * 3,
+    target_indices,
+    1e-2f,                    /* error threshold (relative to mesh AABB) */
+    0,                        /* options: 0 = default */
+    &lod_error);              /* out: actual geometric error achieved */
+
+/* lod_error is in mesh-local units; convert to pixels at a reference distance
+   to get a screen-space error threshold for the GPU LOD test */
+float screen_error = lod_error * projection_scale / reference_distance;
+```
+
+[Source](https://github.com/zeux/meshoptimizer#simplification)
+
+### GPU LOD Selection in the Task Shader
+
+Each cluster carries its `self_error` and `parent_error` in the persistent GPU scene buffer. The task shader performs the LOD test before deciding whether to emit a mesh shader workgroup:
+
+```glsl
+/* lod_task.task.glsl (extends the cone-cull task shader) */
+struct ClusterData {
+    vec3  bounds_center;
+    float bounds_radius;
+    vec3  cone_apex;
+    vec3  cone_axis;
+    float cone_cutoff;
+    float self_error;    /* screen-space error at this LOD level  */
+    float parent_error;  /* screen-space error of coarser parent  */
+};
+
+layout(push_constant) uniform CullPC {
+    /* ... frustum/cone fields from earlier ... */
+    float lod_threshold;   /* pixels: typ. 1.0 for sub-pixel error */
+    vec3  camera_pos;
+};
+
+float projected_error(float world_error, vec3 center) {
+    /* Project a world-space error distance to screen pixels.
+       Assumes a vertical FoV of ~60° and a 1080p display. */
+    float dist = max(length(camera_pos - center), 0.001);
+    return world_error * 1080.0 / (2.0 * dist * tan(radians(30.0)));
+}
+
+bool lod_select(ClusterData c) {
+    float se = projected_error(c.self_error,   c.bounds_center);
+    float pe = projected_error(c.parent_error, c.bounds_center);
+    /* Select this cluster if it's fine enough AND its parent is too coarse */
+    return (pe > lod_threshold) && (se <= lod_threshold);
+}
+```
+
+Note: the full Nanite implementation adds streaming — clusters outside a visibility range are evicted from GPU memory and fetched on demand. This section covers the static (fully-resident) case. Streaming integration is an active research area in open-source engines. [Source](https://advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf)
+
+---
+
+## VK_AMDX_shader_enqueue: Vulkan Workgraphs
+
+Every GPU-driven technique described so far still requires at least one `vkCmdDispatch` or `vkCmdDrawIndexedIndirectCount` command recorded by the CPU. `VK_AMDX_shader_enqueue` eliminates this residual CPU involvement: shaders can enqueue work for other shaders entirely on the GPU, without any host-side command recording round-trip. The concept is identical to D3D12 Work Graphs (both were co-designed by AMD). [Source](https://gpuopen.com/learn/work-graphs-in-vulkan/)
+
+### Core Concepts
+
+A **work graph** is a set of shader nodes connected by typed payload edges. Each node is a compute or mesh shader. When a node shader writes a payload to an output slot, the runtime schedules the downstream node automatically — no CPU involvement, no readback. `vkCmdDispatchGraphAMDX` launches the root node(s) of the graph from the CPU; all subsequent dispatch decisions happen on the GPU. [Source](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_AMDX_shader_enqueue.html)
+
+Current hardware support: RDNA3 (RX 7000 series) with RADV driver on Linux. [Source](https://gpuopen.com/learn/work-graphs-in-vulkan/)
+
+### Extension Setup
+
+```c
+/* Feature query */
+VkPhysicalDeviceShaderEnqueueFeaturesAMDX enqueue_features = {
+    .sType         = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ENQUEUE_FEATURES_AMDX,
+    .shaderEnqueue = VK_TRUE,
+};
+
+/* Pipeline type: VK_PIPELINE_BIND_POINT_EXECUTION_GRAPH_AMDX */
+VkExecutionGraphPipelineCreateInfoAMDX eg_ci = {
+    .sType      = VK_STRUCTURE_TYPE_EXECUTION_GRAPH_PIPELINE_CREATE_INFO_AMDX,
+    .stageCount = num_nodes,
+    .pStages    = node_stage_infos,   /* VkPipelineShaderStageCreateInfo[] */
+    .pLibraries = NULL,
+    .flags      = 0,
+};
+VkPipeline exec_graph;
+vkCreateExecutionGraphPipelinesAMDX(device, VK_NULL_HANDLE, 1, &eg_ci,
+                                    NULL, &exec_graph);
+```
+
+### Two-Node Cull → Draw Work Graph
+
+The simplest GPU-driven work graph replaces the `vkCmdDispatch` + barrier + `vkCmdDrawIndexedIndirectCount` triple with two connected nodes:
+
+```glsl
+/* Node 0: cull.comp — enqueues mesh draw payloads */
+#version 460
+#extension GL_AMDX_shader_enqueue : require
+
+layout(local_size_x = 64) in;
+
+/* Payload type sent to the draw node */
+struct DrawPayload {
+    uint meshlet_id;
+};
+
+/* Output queue to node "draw_node" */
+layout(max_payloads = 1024)
+    coalescing nodePayloadAMDX(DrawPayload) draw_queue;  /* → draw_node */
+
+layout(push_constant) uniform PC { uint meshlet_count; };
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= meshlet_count) return;
+
+    if (passes_cull_tests(id)) {
+        DrawPayload p;
+        p.meshlet_id = id;
+        /* Enqueue one mesh shader workgroup for this meshlet */
+        EnqueueNodePayloadsAMDX(draw_queue, p);
+    }
+}
+```
+
+```glsl
+/* Node 1: draw_node.mesh — receives payload, outputs geometry */
+#version 460
+#extension GL_AMDX_shader_enqueue : require
+#extension GL_EXT_mesh_shader      : require
+
+layout(local_size_x = 64) in;
+layout(triangles, max_vertices = 64, max_primitives = 124) out;
+
+/* Input payload from the cull node */
+layout() nodePayloadAMDX(DrawPayload) in_payload;
+
+void main() {
+    uint meshlet_id = in_payload.meshlet_id;
+    /* ... emit vertices and triangles as in a normal mesh shader ... */
+}
+```
+
+The CPU dispatch becomes a single call:
+
+```c
+VkDispatchGraphInfoAMDX graph_info = {
+    .nodeIndex = cull_node_index,
+    .payloadCount = { .staticCount = 1 },
+    /* seed payload: global meshlet count */
+};
+vkCmdDispatchGraphAMDX(cmd, scratch_buf, scratch_offset, &graph_info);
+```
+
+[Source](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_AMDX_shader_enqueue.html)
+
+Work graphs are currently AMD-vendor-only. Khronos is tracking the concept for a future cross-vendor extension, analogous to how `VK_NV_mesh_shader` eventually became `VK_EXT_mesh_shader`. [Source](https://gpuopen.com/learn/work-graphs-in-vulkan/)
+
+---
+
+## Pipeline Statistics Queries
+
+Culling is only worthwhile if it actually removes significant work. `VK_QUERY_TYPE_PIPELINE_STATISTICS` provides hardware counters that measure how many primitives survived the clipping stage and how many fragment shader invocations were executed, allowing cull efficiency to be computed in-frame without GPU readback stalls. [Source](https://registry.khronos.org/vulkan/specs/latest/man/html/VkQueryPipelineStatisticFlagBits.html)
+
+### Relevant Flag Bits
+
+| Flag | Meaning |
+|------|---------|
+| `VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT` | Primitives submitted to the clipper (after vertex/mesh shading) |
+| `VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT` | Primitives that survived clipping (sent to rasteriser) |
+| `VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT` | Total fragment shader invocations |
+| `VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT` | Vertex shader invocations (0 for mesh shader pipelines) |
+| `VK_QUERY_PIPELINE_STATISTIC_TASK_SHADER_INVOCATIONS_BIT_EXT` | Task shader invocations (requires `VK_EXT_mesh_shader`) |
+| `VK_QUERY_PIPELINE_STATISTIC_MESH_SHADER_INVOCATIONS_BIT_EXT` | Mesh shader invocations |
+
+[Source](https://registry.khronos.org/vulkan/specs/latest/man/html/VkQueryPipelineStatisticFlagBits.html)
+
+**Cull efficiency** = `clipping_primitives / clipping_invocations`. Values below 0.5 indicate that more than half of all primitives are being clipped away (expected behaviour for good frustum + backface culling). Values near 1.0 suggest culling is not working.
+
+### C Code — Query Pool, Recording, and Result Readback
+
+```c
+/* --- 1. Create query pool ------------------------------------------- */
+VkQueryPoolCreateInfo qp_ci = {
+    .sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+    .queryType  = VK_QUERY_TYPE_PIPELINE_STATISTICS,
+    .queryCount = 1,   /* one stats query wrapping the whole indirect draw */
+    .pipelineStatistics =
+        VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT  |
+        VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT   |
+        VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT,
+};
+VkQueryPool stats_pool;
+vkCreateQueryPool(device, &qp_ci, NULL, &stats_pool);
+
+/* --- Result struct matching the enabled bits (order = bit order) ----- */
+typedef struct {
+    uint64_t clipping_invocations;
+    uint64_t clipping_primitives;
+    uint64_t fragment_invocations;
+} PipelineStats;
+
+/* --- 2. Per-frame recording ------------------------------------------ */
+vkCmdResetQueryPool(cmd, stats_pool, 0, 1);
+vkCmdBeginQuery(cmd, stats_pool, 0, 0 /* flags */);
+
+    /* The indirect draw under measurement: */
+    vkCmdDrawIndexedIndirectCount(cmd, draw_buf, 0,
+                                  count_buf, 0,
+                                  max_draws,
+                                  sizeof(VkDrawIndexedIndirectCommand));
+
+vkCmdEndQuery(cmd, stats_pool, 0);
+
+/* --- 3. Readback (next frame, to avoid pipeline stall) --------------- */
+PipelineStats stats = {0};
+vkGetQueryPoolResults(
+    device, stats_pool,
+    0, 1,                              /* first query, count */
+    sizeof(PipelineStats), &stats,     /* data + stride */
+    sizeof(PipelineStats),
+    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+
+float cull_efficiency = (stats.clipping_invocations > 0)
+    ? (float)stats.clipping_primitives / (float)stats.clipping_invocations
+    : 1.0f;
+
+printf("Cull efficiency: %.1f%%  (%llu → %llu primitives, %llu frag invocations)\n",
+       cull_efficiency * 100.0f,
+       (unsigned long long)stats.clipping_invocations,
+       (unsigned long long)stats.clipping_primitives,
+       (unsigned long long)stats.fragment_invocations);
+```
+
+The `VK_QUERY_RESULT_WAIT_BIT` flag blocks until results are available. For production use, store results to a host-visible buffer with `vkCmdCopyQueryPoolResults` and read them one or two frames later to avoid stalling the GPU pipeline. [Source](https://registry.khronos.org/vulkan/specs/latest/man/html/vkGetQueryPoolResults.html)
+
+Pipeline statistics queries are supported on all Vulkan 1.0 hardware that exposes the `pipelineStatisticsQuery` physical device feature. They are disabled on some mobile GPUs. Check `VkPhysicalDeviceFeatures.pipelineStatisticsQuery` before creating the pool. [Source](https://registry.khronos.org/vulkan/specs/latest/man/html/VkPhysicalDeviceFeatures.html)
+
+---
+
 ## Roadmap
 
 ### Near-term (6–12 months)
@@ -606,3 +1206,8 @@ void main() {
 - **Ch23 (ANV)** — ANV implements mesh shaders on Xe-HPG using the EU thread dispatch path
 - **Ch145 (GPU Profiling)** — GPU-driven culling effectiveness is measured with `vkCmdWriteTimestamp2` around the cull dispatch and the indirect draw; AMD RGP shows per-meshlet occupancy
 - **Ch152 (Rust GPU)** — wgpu does not yet expose mesh shaders; `ash` is required for `VK_EXT_mesh_shader`
+- **Ch127 (Mesh Shaders / VRS)** — task and mesh shader pipeline details, variable-rate shading integration with GPU-driven tile classification; VRS rate image generated by a preceding compute pass maps directly onto the surviving draw set from GPU culling
+- **Ch157 (Descriptor Binding — Bindless / BDA)** — `VK_EXT_descriptor_indexing` partially-bound arrays and `VK_KHR_buffer_device_address` 64-bit pointers used in the visibility buffer shading pass and the cluster LOD GPU buffers
+- **Ch135 (Ray Tracing — TLAS Build as GPU-Driven Op)** — acceleration structure builds (`vkCmdBuildAccelerationStructuresKHR`) consume the same persistent instance buffer updated by the GPU culling pass; TLAS compaction and update share the indirect dispatch pattern
+- **Ch97 (UE5 Nanite)** — production cluster LOD DAG implementation; the `self_error`/`parent_error` selection criterion described in this chapter derives directly from the Nanite SIGGRAPH 2021 presentation; streaming and virtual geometry are covered in Ch97
+- **Ch133 (Vulkan Compute Queues — Async Cull Passes)** — the Hi-Z pyramid build and frustum/occlusion cull dispatches are natural candidates for an async compute queue, overlapping with graphics rasterisation; queue family ownership transfer and semaphore signalling for the depth pyramid are detailed in Ch133

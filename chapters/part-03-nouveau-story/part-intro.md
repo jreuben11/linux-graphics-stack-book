@@ -357,3 +357,33 @@ architecture (Ch. 1–2), GPU memory management (Ch. 4), and the structural GPU 
 ---
 
 *Part III spans Chapters 7–11 and Chapter 118, totalling seven chapters and approximately 90–120 pages.*
+
+---
+
+## Part Roadmap Summary
+
+*Synthesised from the Roadmap sections of this part's chapters.*
+
+### Near-term (6–12 months)
+
+- **Hopper and Blackwell enablement across the entire stack.** The 62-patch series adding Nouveau GSP-RM support for GH100, GB10x, and GB20x GPUs (using R570-series signed firmware blobs from `linux-firmware.git`) is the dominant theme across Ch. 7, 8, 9, and 11. Nova's v12+ Hopper/Blackwell enablement patch series targets Linux 7.3–7.4. NVK conformance testing on Hopper-class hardware follows once the kernel side stabilises.
+- **GSP-RM as the default path on Turing+.** Linux 6.18 makes `NvGspRm=1` the default for all Turing and later GPUs, bringing automatic reclocking and display engine initialisation via firmware to a much wider installed base without manual kernel parameters (Ch. 9, Ch. 11).
+- **Nova reaching functional usability.** The `DRM_NOVA_EXEC` command-submission ioctl and `drm_gpuvm`-backed GPUVM integration (Linux 7.2 preparation already merged) are the immediate gates for Nova transitioning from an infrastructure skeleton to a driver that runs real GPU workloads. `drm_syncobj` timeline support follows, enabling Wayland explicit-sync participation (Ch. 10a).
+- **NAK compiler quality improvements.** Register allocation quality is the primary performance gap between NVK and the proprietary driver; incremental improvements ship each Mesa release (Mesa 26.x). Delta Color Compression (DCC) for render targets — expected to halve memory bandwidth on supported hardware — requires coordinated NAK and nvkm changes and was in late draft at XDC 2025 (Ch. 118, Ch. 10b).
+- **Vulkan extension backlog.** `VK_KHR_maintenance10`, `VK_EXT_discard_rectangles`, DLSS via `VK_NVX_binary_import`, and a Zink/OpenGL regression triage following the Mesa 25.1 default switch to NVK+Zink are active near-term items for NVK (Ch. 10b, Ch. 118).
+- **Nova `fwctl` interface and voltage-scaling exposure.** March 2026 patches add a `fwctl` driver to `nova-core` enabling userspace GSP RPC commands; parallel work exposes `nvkm_volt` GPU voltage as a writable hwmon attribute on Kepler/early Maxwell hardware (Ch. 11).
+
+### Medium-term (1–3 years)
+
+- **Nova superseding Nouveau for Turing+ hardware.** The architectural direction agreed by Red Hat, NVIDIA, and the Nouveau maintainers is that Nova's clean-sheet Rust implementation replaces nvkm's Turing+ code paths, while Nouveau retains the pre-Turing (NV50 through Volta) installed base in maintenance mode. NVK's NVKMD abstraction layer is explicitly designed so the same Mesa Vulkan userspace can target either kernel driver without structural changes (Ch. 8, Ch. 9, Ch. 10a, Ch. 10b, Ch. 11).
+- **Nova `nova-drm` KMS and display support.** After compute/render stabilisation, display engine support (NVDisplay, HDMI/DP SOR, atomic KMS commit) is the next major Nova feature area, eventually porting or rewriting the `dispnv50/` codebase in Rust (Ch. 10a, Ch. 11).
+- **Ray tracing and hardware-accelerated video.** `VK_KHR_ray_tracing_pipeline` and `VK_KHR_acceleration_structure` require both NAK instruction encoders for RT-specific SASS opcodes and NVK BVH management — progress is contingent on further reverse engineering of RT Core internals or NVIDIA disclosure. NVENC/NVDEC via GSP-RM RPC is a parallel track, with partial documentation available in `open-gpu-doc` (Ch. 10b, Ch. 118, Ch. 9).
+- **Rust-in-Mesa compiler cross-pollination.** KRAID (ARM Mali Valhall Rust compiler, merged June 2026) modelled its IR on NAK; shared register-allocator and NIR-lowering infrastructure is expected to be factored into a common Rust crate, reducing duplication between the two backends and establishing Rust as the default pattern for new Mesa compiler backends (Ch. 118).
+- **Advanced display and power management features.** HDR full pipeline support (requiring the Wayland `color-management-v1` protocol, Mesa NVK colour management, and nouveau KMS coordination), UHBR10/13.5/20 (DP 2.0) link training on Ada, GPU Boost/per-application clock hinting via GSP RPC, and improved D3cold resume latency for PRIME multi-GPU laptops are all active medium-term development areas (Ch. 11).
+
+### Long-term
+
+- **Nova as the reference Rust DRM driver.** Alongside the ARM Tyr driver, Nova is positioned in `drm-rust-next` as one of two canonical Rust DRM driver implementations. The architectural choices it encodes — `FirmwareObject<F, S>` typestate, `bounded_enum!`-validated MMIO, auxiliary bus split — are expected to become the conventions for future Rust DRM drivers across GPU vendors, documented in `Documentation/gpu/nova/guidelines.rst`.
+- **Open compute ecosystem without proprietary toolchain.** The Tinygrad Mesa NIR backend (merged January 2026) makes NAK the critical path for free-software NVIDIA ML compute. Long-term, NAK coverage of cooperative matrix, Hopper collective-memory (`HGMMA`, `BGMMA`, `ACQBULK`), and PTX semantics not currently reachable from NIR could enable a CUDA-compatible compute path and Rusticl/OpenCL integration on NVK — reducing dependency on the proprietary CUDA runtime (Ch. 118, Ch. 10b, Ch. 9).
+- **Knowledge preservation for pre-Turing hardware.** As GSP-RM becomes the baseline for all post-2018 NVIDIA GPUs, the Envytools rnndb and the 17 years of mmiotrace-derived register knowledge for NV50 through Volta represent irreplaceable documentation of hardware the vendor will never officially document. Ensuring rnndb accuracy and discoverability — including eventual Blackwell entries backfilled from open-gpu-doc headers — is a long-horizon community responsibility independent of any feature work (Ch. 7).
+- **Unified open-source power management and GSP firmware transparency.** The long-term vision is a coherent voltage/clock/thermal/fan abstraction spanning Kepler through Ada, with GSP-RM handling firmware-signed operations and a clean kernel sysfs/hwmon API exposed to userspace. Competitive and regulatory pressure may eventually motivate NVIDIA to open-source GSP-RM firmware source or publish signing infrastructure for community builds, though no concrete signal for this exists as of 2026 (Ch. 9, Ch. 11).

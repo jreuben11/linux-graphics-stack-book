@@ -37,3 +37,30 @@ The conceptual threads that run through Chapter 72 and tie it to adjacent parts 
 Readers should be comfortable with the **Vulkan** API at the level of command buffer recording and synchronisation (Part IV), with the Linux **VA-API** encode/decode stack (Part V), and with the **AMDGPU** kernel driver's command-submission and memory-management ioctls (Part III). Chapter 72 does not re-derive those foundations; it builds application-level integration on top of them. The material here feeds directly into Part XVIII (Rendering Abstractions), where engine-level upscaling integration patterns — including how game engines plug **FSR**, **DLSS**, and **XeSS** through a common **super-resolution** abstraction — are examined alongside **Vulkan** **render graph** frameworks that depend on precisely the kind of GPU timestamp and barrier profiling data that **RGP** produces.
 
 ---
+
+## Part Roadmap Summary
+
+*Synthesised from the Roadmap sections of this part's chapters.*
+
+### Near-term (6–12 months)
+
+- **RDNA 4 (GFX12) driver hardening**: ACO's instruction scheduler and register allocator are being tuned for RDNA 4's updated wavefront model and new dual-issue compute units; BVH8 ray tracing, dynamic VGPR allocation via `s_alloc_vgpr`, and OBB support are all being hardened under dEQP-VK conformance testing (Ch143, Ch170).
+- **User-queue submission path**: The experimental `amdgpu_userq` path — which bypasses the kernel CS ioctl and reduces dispatch latency — is being finalised for RDNA 4; Mesa 26.x or 27.0 is the target landing window (Ch170).
+- **Vulkan Video encode stabilisation**: `VK_KHR_video_encode_queue` and `VK_KHR_video_decode_queue` in RADV are advancing from experimental to stable across H.264, H.265, and AV1 on VCN 5.x hardware, directly enabling the AMF Linux runtime's Vulkan-based encode path without requiring the proprietary `amf-amdgpu-pro` component (Ch143, Ch72).
+- **`VK_EXT_device_generated_commands` promotion**: Moving from experimental to stable status will unlock compute-shader-based indirect draw generation for DXR and mesh shader workloads in VKD3D-Proton (Ch143).
+- **FSR 4 Vulkan backend and SDK effects**: Native Vulkan support in the `ffx-api` Upgradable API layer is on AMD's stated roadmap, eliminating the Wine/Proton D3D12 translation requirement for FSR 4 neural upscaling on Linux; a Frame Interpolation effect for the SDK 1.x Vulkan path is expected within 2026 (Ch72).
+- **RGP RDNA 4 SQTT token decoding**: Full instruction-token decoding for RDNA 4 in the Radeon GPU Profiler, exposing WMMA (Wave Matrix Multiply-Accumulate) utilisation metrics in wavefront occupancy views (Ch72).
+
+### Medium-term (1–3 years)
+
+- **Full Vulkan 1.4 feature parity and bindless rendering**: Across both RADV and the now-consolidated AMD open-source stack, the targets include `VK_KHR_maintenance6`, `VK_KHR_shader_subgroup_rotate`, sparse residency graduation, and completion of the `VK_EXT_descriptor_buffer` / `VK_EXT_device_generated_commands` bindless pipeline that eliminates the traditional descriptor pool codepath and reduces per-draw CPU overhead (Ch143, Ch170).
+- **ACO quality improvements for compute-heavy workloads**: SSA-based register coalescing to reduce spill/fill code in ray tracing payloads, and systematic matrix-multiply and reduction kernel improvements to match LLPC on LLM-inference workloads (llama.cpp, ExecuTorch Vulkan backend) (Ch143, Ch170).
+- **`VK_AMDX_shader_enqueue` → KHR stabilisation**: AMD and Valve are collaborating on a non-`AMDX` Khronos Working Group proposal for work-graph pipelines; RADV is the expected reference Linux implementation (Ch170).
+- **Open-source AMF and unified profiling tooling**: AMD's trajectory toward removing the proprietary `libamfrt64.so` component points to AMF becoming a thin shim over VA-API/GStreamer/FFmpeg; in parallel, headless CLI export of RGP pipeline stall reports and RMV fragmentation scores would enable CI/CD integration comparable to `renderdoccmd` (Ch72).
+- **Brixelizer GI hardware ray tracing path**: Adding an optional RDNA 3/4 BVH-accelerated traversal variant using `vkCmdTraceRaysKHR` to substantially reduce SDF cascade trace cost (Ch72).
+
+### Long-term
+
+- **Unified AMD open-source driver stack**: With AMDVLK archived, the stated long-term direction is a single software stack where Vulkan (RADV), OpenGL (RadeonSI), OpenCL (rusticl), and HIP share front-ends over a common ACO or LLVM back-end; convergence of Vulkan and ROCm dispatch paths within the `amdgpu`/`amdkfd` kernel module is the architectural endpoint (Ch170, Ch143).
+- **Fixed-function BVH traversal on future RDNA architectures**: RDNA 5 and beyond are expected to introduce dedicated ray tracing execution units, requiring RADV to shift from generating software traversal shader code (`radv_nir_rt_shader.c`) to programming a hardware traversal unit via new PM4 packets and `amdgpu` kernel uAPI (Ch143, Ch170).
+- **FidelityFX as a system Vulkan layer and unified AMD profiling SDK**: Packaging FidelityFX effects (CAS, FSR 3/4) as an installable `VkLayer` — analogous to `vkBasalt` but with official AMD support — and consolidating RGP, RMV, and ROCm `rocprof` into a single capture format covering graphics, compute (HIP), and ML (MIGraphX) workloads (Ch72).
