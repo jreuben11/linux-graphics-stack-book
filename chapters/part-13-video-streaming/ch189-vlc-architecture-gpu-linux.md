@@ -138,9 +138,9 @@ VLC 3.x uses **autotools**; the master branch (targeting 4.0) has migrated to **
 
 On Linux distributions, VLC is typically split into:
 - `vlc` — the Qt GUI front-end binary
-- `libvlc` — the shared library (`libvlc.so.5`) exposing the embedding API
-- `libvlccore` — the core engine (`libvlccore.so.9`) handling the object system, module bank, and threading
-- `vlc-plugin-*` packages — individual codec, access, and output plugin packages (e.g. `vlc-plugin-pipewire`, `vlc-plugin-va`)
+- `libvlc` — the shared library exposing the embedding API (soname varies by distribution; `libvlc.so.5` on Debian/Ubuntu as of 3.0.x)
+- `libvlccore` — the core engine handling the object system, module bank, and threading
+- `vlc-plugin-*` packages — individual codec, access, and output plugin packages (exact package names vary by distribution; common examples include `vlc-plugin-base`, `vlc-plugin-video-output`, and GPU-specific packages)
 
 This packaging mirrors the plugin boundary at the package level: distributors can ship the player without optional GPU plugins and users can install them independently.
 
@@ -224,10 +224,17 @@ Between the demux and decoder, **packetiser** modules (capability `"packetizer"`
 
 ### Module Location
 
-VLC's VA-API hardware decode plugin lives in `modules/codec/vaapi/`. [Source](https://github.com/videolan/vlc/tree/master/modules/codec/vaapi). The directory contains per-codec entrypoint files (H.264, H.265/HEVC, VP8, VP9, AV1, MPEG-2) plus shared VA-API plumbing:
+VLC's VA-API support is split across two directories:
 
-- `va_utils.c` / `va_utils.h` — shared surface pool management, profile/entrypoint query
-- `vlc_va.h` — the `vlc_va_t` interface that codec-specific files implement
+1. **`modules/hw/vaapi/`** — the core VA-API helper library used across VLC's GPU subsystem. [Source](https://github.com/videolan/vlc/tree/master/modules/hw/vaapi). Files:
+   - `vlc_vaapi.c` / `vlc_vaapi.h` — the shared `vlc_va_t` interface, display handle management, surface pool helpers
+   - `decoder_device.c` — `vlc_decoder_device` implementation wrapping a `VADisplay`
+   - `chroma.c` — chroma/pixel format conversion between VLC and VA-API `VAImageFormat`
+   - `filters.c` / `filters.h` — VA-API VPP (video post-processing) filter wrappers for de-interlace and scaling
+
+2. **`modules/codec/avcodec/vaapi.c`** — the VA-API hwaccel bridge inside VLC's FFmpeg (`avcodec`) codec plugin. This is where hardware decode actually happens: FFmpeg's `AVCodecContext` is configured with a `VADisplay`-backed `AVHWDeviceContext`, and decoded `AVFrame`s carry `VASurface` handles. [Source](https://github.com/videolan/vlc/tree/master/modules/codec/avcodec)
+
+This architecture means VLC hardware decodes through FFmpeg's `avcodec` wrapper with a VA-API `AVHWContext`, rather than through a standalone VA-API decoder as some other players implement.
 
 ### VA-API Decode Flow
 
@@ -247,8 +254,8 @@ vaCreateContext(dpy, cfg, width, height, VA_PROGRESSIVE, surfaces,
 
 /* 3. Per-frame decode */
 vaBeginPicture(dpy, ctx, render_target);
-vaRenderPicture(dpy, ctx, &pic_param_buf, 1);   /* VAEncPictureParameterBuffer */
-vaRenderPicture(dpy, ctx, &slice_buf, 1);        /* VASliceDataBuffer */
+vaRenderPicture(dpy, ctx, &pic_param_buf, 1);   /* VAPictureParameterBufferH264 */
+vaRenderPicture(dpy, ctx, &slice_buf, 1);        /* VASliceDataBufferType */
 vaEndPicture(dpy, ctx);
 vaSyncSurface(dpy, render_target);               /* or use fences */
 ```
@@ -297,7 +304,15 @@ VLC's module bank selects the VA-API decoder automatically based on score (800 f
 
 ### Module Location
 
-The V4L2 codec module lives in `modules/codec/v4l2/`. [Source](https://github.com/videolan/vlc/tree/master/modules/codec/v4l2). It targets embedded platforms where hardware video accelerators expose the **V4L2 mem-to-mem (M2M)** API — a kernel model in which the same device node has an OUTPUT queue (receiving compressed bitstream) and a CAPTURE queue (producing decoded frames).
+VLC does not have a generic `modules/codec/v4l2/` decode plugin; instead, it approaches embedded hardware acceleration differently depending on the platform:
+
+- **Raspberry Pi** (VideoCore IV/VI): `modules/hw/mmal/` — uses the Broadcom **MMAL** (Multi-Media Abstraction Layer) API, not V4L2 M2M, for hardware decode on Raspberry Pi OS. The `codec.c` file implements the MMAL component lifecycle; `vout.c` is a zero-copy display path using MMAL renderer directly to the GPU. [Source: `modules/hw/mmal/`](https://github.com/videolan/vlc/tree/master/modules/hw/mmal)
+
+- **NVIDIA** (desktop/Tegra): `modules/hw/nvdec/` — uses NVIDIA's CUVID/NVDEC API for hardware decode on NVIDIA GPUs and Tegra SoCs.
+
+- **Other embedded platforms**: VLC relies on FFmpeg's V4L2 hwaccel support within `modules/codec/avcodec/` when a V4L2 M2M codec is detected by FFmpeg's `AVHWDeviceType`. This is not a native VLC V4L2 plugin.
+
+The **V4L2 M2M** (mem-to-mem) API does underpin embedded hardware decoders at the kernel level, and understanding it is essential for troubleshooting VLC on those platforms. It targets embedded SoCs where the video accelerator exposes the same device node for an OUTPUT queue (compressed bitstream input) and a CAPTURE queue (decoded frames output).
 
 ### V4L2 M2M Decode Flow
 
@@ -324,22 +339,36 @@ ioctl(fd, VIDIOC_DQBUF, &cbuf);   /* dequeue decoded frame */
 
 [Source: V4L2 M2M kernel documentation](https://www.kernel.org/doc/html/latest/userspace-api/media/v4l/dev-mem2mem.html)
 
-### Supported Platforms
+### V4L2 M2M Architecture (Kernel-Level)
 
-- **Raspberry Pi** (`bcm2835-codec`) — exposes H.264/HEVC decode via V4L2 M2M on the VideoCore VI GPU; userspace uses `/dev/video10` (decode) and `/dev/video11` (encode)
-- **Amlogic** (VDEC) — multi-format decode (H.264, H.265, VP9, AV1) via V4L2 stateless API; used in cheap Android TV boxes with mainline kernel support
-- **Qualcomm** (Venus) — V4L2 stateful H.264/H.265/VP8/VP9 decoder in Snapdragon SoCs; the driver exposes `VIDEO_DEC` capability on `/dev/videoN`
-- **Rockchip** (RKVDEC) — V4L2 stateless decode on RK3399/RK3588; `rkvdec` driver supports H.264 High, H.265 Main/Main10, VP9
+V4L2 M2M is the kernel interface that embedded SoC video decoders expose. Understanding it is necessary for troubleshooting VLC playback on ARM boards, even if VLC's userspace path goes through FFmpeg's hwaccel layer rather than directly:
 
-The **V4L2 stateless API** (used by modern drivers like `rkvdec`, `hantro`, `vdec`) requires the application to provide full codec slice parameters each frame (in a structured control set like `V4L2_CID_STATELESS_H264_SPS`, `_PPS`, `_SLICE_PARAMS`); the kernel driver handles only DMA scheduling and hardware bitfield injection. The **stateful API** (Venus, bcm2835-codec) hides this complexity — the driver manages codec state internally, requiring only raw bitstream input. VLC's V4L2 plugin handles both variants; selection is automatic based on which `V4L2_CAP_*` flags the device exposes.
+The **V4L2 stateless API** (used by modern drivers like `rkvdec`, `hantro`) requires the application to provide full codec slice parameters each frame (in a structured control set like `V4L2_CID_STATELESS_H264_SPS`, `_PPS`, `_SLICE_PARAMS`); the kernel driver handles only DMA scheduling and hardware bitfield injection. The **stateful API** (`bcm2835-codec` for Raspberry Pi, Qualcomm Venus) hides this complexity — the driver manages codec state internally, requiring only raw bitstream input.
 
 [Source: V4L2 stateless codec API](https://www.kernel.org/doc/html/latest/userspace-api/media/v4l/dev-stateless-decoder.html)
 
-### V4L2 Capture Access (Webcams)
+### V4L2 Platform Coverage
 
-VLC also uses V4L2 for camera input via `modules/access/v4l2/`. This access module enumerates formats with `VIDIOC_ENUM_FMT`, negotiates `VIDIOC_S_FMT`, and captures frames via `VIDIOC_QBUF`/`VIDIOC_DQBUF`. DMA-BUF export (`V4L2_MEMORY_DMABUF`) enables zero-copy delivery to a Wayland compositor or OpenGL texture.
+| Platform | Kernel driver | VLC path | API type |
+|---|---|---|---|
+| Raspberry Pi 4/5 (VideoCore VI) | `bcm2835-codec` | `modules/hw/mmal/` (MMAL, not V4L2) | MMAL |
+| Rockchip RK3399/RK3588 | `rkvdec` | FFmpeg V4L2 hwaccel → `avcodec` | V4L2 stateless |
+| Amlogic S905/S922 | `meson-vdec` | FFmpeg V4L2 hwaccel → `avcodec` | V4L2 stateful/stateless |
+| Qualcomm Snapdragon (Venus) | `venus` | FFmpeg V4L2 hwaccel → `avcodec` | V4L2 stateful |
+| AllWinner (CEDRUS) | `cedrus` | FFmpeg V4L2 hwaccel → `avcodec` | V4L2 stateless |
 
-[Source: `modules/access/v4l2/`](https://github.com/videolan/vlc/tree/master/modules/access/v4l2)
+### V4L2 Capture Access (Webcams, TV Tuners)
+
+VLC uses V4L2 extensively for camera and tuner *capture* (input, not decode) via `modules/access/v4l2/`. [Source](https://github.com/videolan/vlc/tree/master/modules/access/v4l2). Key files:
+
+- `v4l2.c` — module entry, device enumeration
+- `video.c` — pixel format negotiation, `VIDIOC_S_FMT`, `VIDIOC_QBUF`/`VIDIOC_DQBUF` capture loop
+- `access.c` — stream access wrapper for non-video (radio) devices
+- `controls.c` — V4L2 controls (brightness, contrast, gain) exposed as VLC variables
+
+The access module enumerates available pixel formats with `VIDIOC_ENUM_FMT`, selects the best match for VLC's internal chroma list, and captures frames. Memory mode is either `V4L2_MEMORY_MMAP` (kernel-mapped buffers) or `V4L2_MEMORY_USERPTR` (application-allocated). DMA-BUF export (`V4L2_MEMORY_DMABUF`) can enable zero-copy delivery to a Wayland compositor or OpenGL texture when the webcam driver supports it.
+
+Webcam URL: `vlc v4l2:///dev/video0 :v4l2-width=1920 :v4l2-height=1080`
 
 ---
 
@@ -732,12 +761,12 @@ PipeWire is preferred on modern GNOME (≥42) and KDE (≥5.25) Wayland desktops
 
 ### AV Synchronisation
 
-The audio clock drives video presentation timing during file playback. The audio output module provides a running clock (`aout_TimingReport()`) that the video output module reads to decide how long to display each frame. For MPEG-2 TS streams, PCR from the demux is the master; the audio output slews its clock to match via `snd_pcm_status_get_delay()` (ALSA) or the PipeWire clock domain.
+The audio clock drives video presentation timing during file playback. The audio output module reports its running clock position (accounting for driver/hardware latency) so the video output module can compute when to display each frame. For MPEG-2 TS streams, the PCR from the demux is the master; the audio output slews its internal clock to match. Audio latency is queried from `snd_pcm_status_get_delay()` (ALSA) or from the PipeWire node's reported latency.
 
-The synchronisation state machine in `src/audio_output/output.c` handles:
-- **Normal play**: audio clock is master; video output sleeps until `pts - delay` where `delay` is the audio pipeline latency reported by `aout_TimingReport()`
+The synchronisation state machine handles:
+- **Normal play**: audio clock is master; video output sleeps until `pts - pipeline_latency`
 - **Clock discontinuities**: after seeking, all decoders flush, PCR is re-locked, and audio prerolls before video displays
-- **Speed control**: `vlc_clock_SetRate()` stretches/shrinks presentation timestamps uniformly across audio (which uses a time-stretching filter) and video (which drops or duplicates frames)
+- **Speed control**: VLC's clock abstraction stretches/shrinks presentation timestamps uniformly across audio (which uses a time-stretching filter) and video (which drops or duplicates frames)
 
 ### HDMI/SPDIF Passthrough
 
@@ -793,7 +822,7 @@ vlc input.mkv \
 
 VA-API encode support in VLC's `transcode` module covers H.264 and HEVC on Intel/AMD; quality and options depend on driver capabilities. The underlying `modules/stream_out/transcode/` pipeline calls the encoder plugin's `encode()` callback per decoded `picture_t`. 
 
-When hardware decode and hardware encode are both active, VLC can route decoded `picture_t` objects directly from the VA-API decoder surface pool to the VA-API encoder — avoiding a GPU→CPU→GPU round-trip. This zero-copy transcode path is enabled when both the decoder and encoder share the same VA-API display handle (`VADisplay`) and the encode plugin recognises the `VLC_CODEC_VAAPI_420` opaque format.
+When hardware decode and hardware encode are both active, VLC can route decoded `picture_t` objects directly from the VA-API decoder surface pool to the VA-API encoder — avoiding a GPU→CPU→GPU round-trip. This zero-copy transcode path requires both the decoder and encoder to share the same VA-API `VADisplay` handle so surfaces can be passed without export. Note: the exact internal opaque pixel format identifier for VA-API decoded frames varies by VLC version — consult `modules/hw/vaapi/vlc_vaapi.h` for the current definition.
 
 [Source: `modules/stream_out/transcode/`](https://github.com/videolan/vlc/tree/master/modules/stream_out/transcode)
 
@@ -961,8 +990,10 @@ This chapter connects directly to the following chapters:
 - VideoLAN VLC source: [github.com/videolan/vlc](https://github.com/videolan/vlc)
 - libVLC API source (`lib/`): [github.com/videolan/vlc/tree/master/lib](https://github.com/videolan/vlc/tree/master/lib)
 - VLC plugin system (`include/vlc_plugin.h`): [github.com/videolan/vlc/blob/master/include/vlc_plugin.h](https://github.com/videolan/vlc/blob/master/include/vlc_plugin.h)
-- VA-API codec modules: [github.com/videolan/vlc/tree/master/modules/codec/vaapi](https://github.com/videolan/vlc/tree/master/modules/codec/vaapi)
-- V4L2 codec modules: [github.com/videolan/vlc/tree/master/modules/codec/v4l2](https://github.com/videolan/vlc/tree/master/modules/codec/v4l2)
+- VA-API helper modules (`modules/hw/vaapi/`): [github.com/videolan/vlc/tree/master/modules/hw/vaapi](https://github.com/videolan/vlc/tree/master/modules/hw/vaapi)
+- VA-API FFmpeg bridge (`modules/codec/avcodec/vaapi.c`): [github.com/videolan/vlc/blob/master/modules/codec/avcodec/vaapi.c](https://github.com/videolan/vlc/blob/master/modules/codec/avcodec/vaapi.c)
+- MMAL hardware decode (Raspberry Pi): [github.com/videolan/vlc/tree/master/modules/hw/mmal](https://github.com/videolan/vlc/tree/master/modules/hw/mmal)
+- V4L2 capture access: [github.com/videolan/vlc/tree/master/modules/access/v4l2](https://github.com/videolan/vlc/tree/master/modules/access/v4l2)
 - Wayland video output: [github.com/videolan/vlc/tree/master/modules/video_output/wayland](https://github.com/videolan/vlc/tree/master/modules/video_output/wayland)
 - Vulkan video output: [github.com/videolan/vlc/tree/master/modules/video_output/vulkan](https://github.com/videolan/vlc/tree/master/modules/video_output/vulkan)
 - OpenGL video output: [github.com/videolan/vlc/tree/master/modules/video_output/opengl](https://github.com/videolan/vlc/tree/master/modules/video_output/opengl)

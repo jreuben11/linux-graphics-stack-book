@@ -24,7 +24,7 @@
 
 The **Visualization Toolkit (VTK)** is an open-source, cross-platform software system for 3D computer graphics, image processing, and scientific visualization. Originally developed in 1993 by Will Schroeder, Ken Martin, and Bill Lorensen at GE Corporate Research and described in their textbook *The Visualization Toolkit* (Prentice Hall, 1996), VTK has grown into the foundational framework beneath most serious Linux scientific visualization applications. The Kitware company, founded by the VTK authors, continues to drive development. [Source](https://vtk.org/about/)
 
-The primary repository is hosted at [gitlab.kitware.com/vtk/vtk](https://gitlab.kitware.com/vtk/vtk). The current stable series is **VTK 9.4**, released November 2024 with over 4,000 commits relative to 9.3, introducing the ANARI rendering backend, runtime OpenGL loading via `glad`, WebGPU compute shaders, the `vtkCellGrid` higher-order element container, and `vtkImplicitArray` for zero-copy virtual data arrays. [Source](https://www.kitware.com/vtk-v9-4-0/)
+The primary repository is hosted at [gitlab.kitware.com/vtk/vtk](https://gitlab.kitware.com/vtk/vtk). As of mid-2026, the current stable series is **VTK 9.6**, released February 2026, followed by VTK 9.5.x (September 2025) and the earlier **VTK 9.4** (November 2024). VTK 9.4 introduced the ANARI rendering backend, runtime OpenGL loading via `glad`, WebGPU compute shaders, and `vtkImplicitArray`. VTK 9.5 brought further WebGPU and WASM improvements. VTK 9.6 added composite data texturing, a `vtkCartesianGrid` abstraction unifying `vtkImageData` and `vtkRectilinearGrid`, ONNX inference support, and JavaScript wrappers via Emscripten (`VTK_WRAP_JAVASCRIPT`). [Source](https://docs.vtk.org/en/latest/release_details/9.6.html)
 
 ### Pipeline Architecture
 
@@ -162,7 +162,7 @@ VTK 9.3 introduced `vtkCellGrid`, a parallel dataset class designed for **discon
 
 ```python
 import numpy as np
-from vtkmodules.vtkCommonCore import vtkPoints, vtkFloatArray
+from vtkmodules.vtkCommonCore import vtkPoints
 from vtkmodules.vtkCommonDataModel import vtkPolyData, vtkCellArray
 from vtkmodules.util.numpy_support import numpy_to_vtk
 
@@ -171,12 +171,13 @@ pts_np = np.array([[0, 0, 0], [1, 0, 0], [0.5, 1, 0]], dtype=np.float32)
 vtk_pts = vtkPoints()
 vtk_pts.SetData(numpy_to_vtk(pts_np))
 
-# One triangle cell: [3 verts, idx0, idx1, idx2]
-cells_np = np.array([3, 0, 1, 2], dtype=np.int64)
+# One triangle cell using VTK 9.x CellArray API:
+# SetData(offsets_array, connectivity_array)
+# offsets: [start_of_cell_0, start_of_cell_1] → [0, 3] for a single tri with 3 verts
 cell_arr = vtkCellArray()
 cell_arr.SetData(
-    numpy_to_vtk(np.array([0, 4], dtype=np.int64)),   # offsets
-    numpy_to_vtk(np.array([0, 1, 2], dtype=np.int64)) # connectivity
+    numpy_to_vtk(np.array([0, 3], dtype=np.int64)),   # offsets (one per cell + sentinel)
+    numpy_to_vtk(np.array([0, 1, 2], dtype=np.int64)) # connectivity (vertex indices)
 )
 
 # Scalar field (one value per point)
@@ -208,15 +209,17 @@ The OpenGL 2 rendering backend (`Rendering/OpenGL2/`) is the production renderin
 
 **`vtkOSOpenGLRenderWindow`** — offscreen Mesa software renderer via `libOSMesa`. Links against `libOSMesa.so`; no GPU or display required. Enabled with `VTK_OPENGL_HAS_OSMESA=ON`. Useful for CI pipelines and CPU-only containers.
 
-VTK 9.4 changed OpenGL symbol loading to use `glad` at runtime rather than link-time symbols, allowing a single VTK build to function with different OpenGL implementations (Mesa, NVIDIA, AMD) without recompilation. [Source](https://docs.vtk.org/en/latest/release_details/9.4.html)
+Starting with VTK 9.4, OpenGL symbol loading switched to `glad` at runtime rather than link-time symbols, allowing a single VTK build to function with different OpenGL implementations (Mesa, NVIDIA, AMD) without recompilation. This change carries forward in VTK 9.5 and 9.6. [Source](https://docs.vtk.org/en/latest/release_details/9.4.html)
 
 ### Wayland Support
 
 As of VTK 9.4, Wayland support is provided through the EGL path: `VTK_USE_WAYLAND_OPENGL=ON` (requires `VTK_OPENGL_HAS_EGL=ON`) switches the EGL render window's native display from `EGL_DEFAULT_DISPLAY` to the Wayland `wl_display*`, using `EGL_PLATFORM_WAYLAND_EXT`. This is the supported Wayland onscreen path; native `wl_surface` event handling (keyboard, pointer) is provided by `vtkWaylandOpenGLRenderWindow`. [Source](https://docs.vtk.org/en/latest/build_instructions/build_settings.html)
 
-### Vulkan Backend (Experimental)
+### Vulkan Backend (Not in Mainline)
 
-A Vulkan rendering branch exists in Ken Martin's fork at [gitlab.kitware.com/ken-martin/vtk/-/tree/vulkan](https://gitlab.kitware.com/ken-martin/vtk/-/tree/vulkan). The branch implements `vtkVulkanRenderWindow`, `vtkVulkanWindowNode`, and the core Vulkan object setup (VkInstance, VkPhysicalDevice, VkDevice, VkSwapchain), with platform surfaces via `VK_KHR_xlib_surface` on X11. As of mid-2025, the Vulkan branch had not been merged into the main VTK repository and the Linux/X11 platform code required further work. [Source](https://discourse.vtk.org/t/vulkan-development/3307) The **WebGPU** backend (Section 5) is the forward-looking GPU path now receiving investment in mainline VTK 9.4.
+There is **no `Rendering/Vulkan/` directory in the mainline VTK repository**. Inspection of the `master` branch at `github.com/Kitware/VTK/tree/master/Rendering` confirms the Rendering directory contains: `ANARI`, `OpenGL2`, `VolumeOpenGL2`, `WebGPU`, `VR`, `OpenXR`, and many other backends — but no `Vulkan/` subdirectory. [Source](https://github.com/Kitware/VTK/tree/master/Rendering)
+
+A proof-of-concept Vulkan branch was started by Ken Martin in 2020 at `gitlab.kitware.com/ken-martin/vtk/-/tree/vulkan`, implementing `vtkVulkanRenderWindow` and `vtkVulkanWindowNode`, but as of 2026 it remains a fork experiment and has not been merged. The VTK community has instead invested in the **WebGPU** backend (Section 5), which on desktop Linux runs via Dawn → Vulkan, giving VTK Vulkan-backed rendering without a bespoke VTK Vulkan renderer. [Source](https://discourse.vtk.org/t/vulkan-development/3307)
 
 ### CMake Configuration for Each Backend
 
@@ -299,14 +302,17 @@ The GLSL shader is dynamically generated by `vtkVolumeShaderComposer` — rather
 ### Transfer Functions and vtkVolumeProperty
 
 ```python
-from vtkmodules.vtkRenderingVolume import vtkVolume, vtkVolumeProperty
-from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
 from vtkmodules.vtkIOImage import vtkMetaImageReader
+from vtkmodules.vtkCommonDataModel import vtkPiecewiseFunction
 from vtkmodules.vtkRenderingCore import (
-    vtkColorTransferFunction, vtkRenderer, vtkRenderWindow,
+    vtkColorTransferFunction,
+    vtkVolume,
+    vtkVolumeProperty,
+    vtkRenderer,
+    vtkRenderWindow,
     vtkRenderWindowInteractor,
 )
-from vtkmodules.vtkRenderingCore import vtkPiecewiseFunction
+from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
 import vtkmodules.vtkRenderingOpenGL2
 
 # Load a MetaImage (.mhd/.raw) CT dataset
@@ -374,7 +380,7 @@ VTK supports simultaneous rendering of multiple overlapping volumes via `vtkMult
 Beyond 3D rendering, VTK provides a 2D charting subsystem via `VTK::ChartsCore`. `vtkChartXY` renders line plots, scatter plots, bar charts, and stacked plots into a `vtkContextScene` using a 2D vector graphics API (`vtkContext2D`) backed by OpenGL. Charts integrate with the same pipeline and data model: a `vtkTable` with column arrays drives a `vtkPlotLine` or `vtkPlotPoints` instance. The charting subsystem is used by ParaView's plot views and by 3D Slicer's Python console for exploratory data analysis within the same application window.
 
 ```python
-from vtkmodules.vtkChartsCore import vtkChart, vtkChartXY, vtkPlot
+from vtkmodules.vtkChartsCore import vtkChart, vtkChartXY
 from vtkmodules.vtkCommonCore import vtkFloatArray
 from vtkmodules.vtkCommonDataModel import vtkTable
 from vtkmodules.vtkViewsContext2D import vtkContextView
@@ -414,13 +420,14 @@ view.GetInteractor().Start()
 
 VTK 9.3 introduced the `VTK::RenderingWebGPU` module as an **experimental** alternative rendering backend. On Linux desktop, it uses **Dawn** (Google's C++ WebGPU implementation, [dawn.googlesource.com/dawn](https://dawn.googlesource.com/dawn)) as the underlying WebGPU implementation, which in turn uses Vulkan as its GPU API. On WebAssembly, it uses the browser's native WebGPU. This avoids a redundant abstraction layer above WebGPU — the VTK WebGPU backend talks directly to the `wgpu::Device` API. [Source](https://docs.vtk.org/en/latest/modules/vtk-modules/Rendering/WebGPU/README.html)
 
-Current capabilities (VTK 9.4):
+Current capabilities (VTK 9.4–9.6):
 - Polygonal geometry rendering (points, lines, triangles) with scalar-mapped coloring.
 - Compute shaders for GPU-parallel workloads — notably frustum culling and point cloud rendering. A demonstrated use case renders interactive point clouds of two billion points. [Source](https://www.kitware.com/vtk-v9-4-0/)
 - Hardware depth testing and selection.
 - Surface-with-edges and wireframe representations.
+- Texture mapping for 3D models (added in VTK 9.6). [Source](https://docs.vtk.org/en/latest/release_details/9.6.html)
 
-Volume rendering and advanced lighting are not yet ported to the WebGPU backend. Enable with:
+Volume rendering and advanced lighting are not yet ported to the WebGPU backend as of VTK 9.6. Enable with:
 
 ```bash
 cmake -S vtk -B build-webgpu \
@@ -431,7 +438,7 @@ cmake -S vtk -B build-webgpu \
 
 ### ANARI Backend (vtkRenderingANARI)
 
-VTK 9.4 introduced `vtkRenderingANARI`, integrating the [ANARI 1.0 standard](https://www.khronos.org/anari/) (Analytic Rendering Interface) published by Khronos. ANARI provides a portable C API for delegating rendering to advanced backends: path tracers (NVIDIA VisRTX, Intel OSPRay), rasterizers, or custom engines. [Source](https://www.khronos.org/blog/kitware-adds-anari-support-to-vtk-to-simplify-access-to-accelerated-3d-rendering-engines)
+VTK 9.4 introduced `vtkRenderingANARI`, and the integration has been refined through VTK 9.5 and 9.6. It integrates the [ANARI 1.0 standard](https://www.khronos.org/anari/) (Analytic Rendering Interface) published by Khronos. ANARI provides a portable C API for delegating rendering to advanced backends: path tracers (NVIDIA VisRTX, Intel OSPRay), rasterizers, or custom engines. [Source](https://www.khronos.org/blog/kitware-adds-anari-support-to-vtk-to-simplify-access-to-accelerated-3d-rendering-engines)
 
 Usage:
 
@@ -985,7 +992,7 @@ A common workflow in scientific publication: visualize in ParaView to understand
 
 This chapter connects to the following chapters across the book:
 
-**Ch12 — Mesa Loader**: VTK's OpenGL backend on Linux uses Mesa as the default OpenGL implementation on systems without proprietary GPU drivers. The Mesa loader (`libGL.so.1` → RADV/ANV/softpipe dispatch) is traversed every time `vtkXOpenGLRenderWindow` or `vtkEGLRenderWindow` calls `glDrawArrays`. VTK 9.4's switch to runtime `glad` loading interacts directly with the Mesa dynamic dispatch layer.
+**Ch12 — Mesa Loader**: VTK's OpenGL backend on Linux uses Mesa as the default OpenGL implementation on systems without proprietary GPU drivers. The Mesa loader (`libGL.so.1` → RADV/ANV/softpipe dispatch) is traversed every time `vtkXOpenGLRenderWindow` or `vtkEGLRenderWindow` calls `glDrawArrays`. VTK 9.4's switch to runtime `glad` loading (carried forward through 9.6) interacts directly with the Mesa dynamic dispatch layer.
 
 **Ch17 — Software Renderers**: VTK's `VTK_OPENGL_HAS_OSMESA=ON` build links against Mesa's `libOSMesa.so`, the Mesa offscreen software renderer described in Ch17. OSMesa is the fallback for CI pipelines and CPU-only container deployments.
 
@@ -1008,6 +1015,7 @@ This chapter connects to the following chapters across the book:
 *References consulted for this chapter:*
 
 - [VTK Repository](https://gitlab.kitware.com/vtk/vtk) — primary source
+- [VTK 9.6 Release Notes](https://docs.vtk.org/en/latest/release_details/9.6.html)
 - [VTK 9.4 Release Notes](https://docs.vtk.org/en/latest/release_details/9.4.html)
 - [VTK 9.3 Release Notes](https://docs.vtk.org/en/latest/release_details/9.3.html)
 - [VTK Build Settings](https://docs.vtk.org/en/latest/build_instructions/build_settings.html)
