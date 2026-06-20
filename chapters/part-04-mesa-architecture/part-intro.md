@@ -121,6 +121,8 @@ The chapters in this part form a layered dependency graph that matches the actua
 
 **Chapter 77** spans the whole part: it begins above Mesa (glslang, DXC, SPIRV-Tools) and traces through `spirv_to_nir()` and all three ISA backends. It is best read after Chapters 14 and 15 and serves as a synthesis chapter for the whole shader compilation arc.
 
+**Chapter 159** is the capstone synthesis chapter for the entire Part IV arc, and the natural bridge into Part V. It traces a single `vkCmdDraw()` call from the Vulkan loader through the Mesa common runtime, RADV/ANV/NVK command encoder, DRM GEM submission, `drm_gpu_scheduler`, syncobj timeline synchronisation, Mesa WSI, and KMS atomic commit to scanout. It is the only chapter that simultaneously draws on Chapters 13, 14, 15, 16, 17, and 119 and traces them into the kernel; read it after all other Part IV chapters are understood. It also covers NVIDIA's three-stack coexistence (proprietary, nvidia-open, and nouveau+NVK), making it the integration point between Part IV and Part III.
+
 **Chapter 91** sits above all others and is best read last. It examines ML-framework compiler stacks (Triton, IREE, XLA) that produce SPIR-V for Mesa to consume.
 
 ```mermaid
