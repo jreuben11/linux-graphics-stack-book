@@ -1344,4 +1344,24 @@ Applications migrating from OptiX 7.x or 8.x to OptiX 9.x should address the fol
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+- OptiX 9.2 is expected to extend the Cooperative Vectors API with INT8 and FP8 weight quantisation support, targeting inference workloads where model size is the primary constraint on Blackwell hardware.
+- The Clusters (CLAS) API is being refined with improved compaction support and tooling for authoring cluster templates from standard subdivision-surface cage meshes, lowering the barrier for DCC tool integration.
+- ARM platform support (added in OptiX 9.1) is being actively extended with performance tuning for NVIDIA Orin and future Arm-based workstation SKUs, broadening OptiX use in embedded and automotive rendering.
+- The `optix-toolkit` demand-loading library is tracking CUDA 13 virtual memory management APIs, enabling sparse-texture and on-demand geometry streaming without pinning entire scene assets in VRAM.
+
+### Medium-term (1–3 years)
+- Cooperative Vectors is likely to evolve toward supporting larger neural network architectures — multi-head attention layers and transformer blocks — as Blackwell's Tensor Core throughput increases and per-warp register file budgets grow to accommodate wider hidden dimensions.
+- A formal cross-vendor convergence of the OptiX programming model with the Vulkan `VK_KHR_ray_tracing_pipeline` extension is plausible: NVIDIA has historically upstreamed OptiX innovations (SER concepts map to `VK_KHR_ray_tracing_maintenance1`; curves and spheres are now in Vulkan extensions), and CLAS/MegaGeometry semantics may follow.
+- The OptiX denoiser temporal model is expected to be replaced or supplemented by a DLSS-class model (Ch68) accessible directly from the OptiX SDK without requiring full NGX integration, blurring the boundary between the two denoising tiers.
+- Increased integration between OptiX and NVIDIA Omniverse Kit will likely surface as a first-class OptiX render delegate for OpenUSD scenes, enabling real-time path tracing of city-scale USD assets via CLAS and on-demand demand loading.
+
+### Long-term
+- As neural rendering displaces triangle rasterisation for some content classes, OptiX's Cooperative Vectors path may evolve into a dedicated "neural primitive" acceleration structure type — an analogue of the GAS for learned implicit representations such as 3D Gaussian splatting fields and neural SDF volumes, with hardware RT-core support.
+- Multi-GPU OptiX rendering via NVLink and the emerging CUDA Fabric memory model is expected to enable transparent shared acceleration structure traversal across GPU boundaries, removing the need for per-GPU BVH replication in large-scale rendering farms.
+
+---
+
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

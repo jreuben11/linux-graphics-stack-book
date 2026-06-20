@@ -1031,6 +1031,25 @@ This chapter connects directly to the following chapters in the book:
 
 **Ch83 — Filament and the PBR Pipeline:** Filament's `FrameGraph` class is the reference open-source implementation of the frame graph pattern covered in Sections 7–9 of this chapter. Ch83 covers Filament's material system and PBR pipeline; this chapter covers the frame graph infrastructure that schedules and executes those passes.
 
+## Roadmap
+
+### Near-term (6–12 months)
+- bgfx is tracking Vulkan 1.3 promoted extensions (`VK_KHR_dynamic_rendering`, `VK_KHR_synchronization2`) to eliminate the need for explicit render pass objects, which would simplify the Vulkan backend's per-view `VkRenderPass` caching and reduce driver overhead on RADV and ANV.
+- Filament's FrameGraph is being extended with async-compute queue support, allowing compute passes to be scheduled on a dedicated transfer/compute queue and overlapped with graphics passes — a feature Unreal's RDG already exploits for particle simulation and occlusion culling.
+- The VMA library (v3.x) is adding first-class sparse resource support (`VkSparseImageMemoryRequirements`) and improved VRAM budget tracking via `VK_EXT_memory_budget`, both of which will improve transient resource pool accuracy in frame graph allocators.
+- The WebGPU backend in bgfx is receiving ongoing work following the Chromium WebGPU GA, enabling bgfx applications to target browser environments via Emscripten with minimal code changes.
+
+### Medium-term (1–3 years)
+- Frame graph implementations are expected to adopt `VK_EXT_descriptor_buffer` to replace the per-pass descriptor set allocation model with a plain GPU buffer of descriptor data, reducing CPU overhead at compilation time and making resource binding more cache-friendly across passes.
+- bgfx and similar abstraction libraries will likely surface mesh shader support (`VK_EXT_mesh_shader`) through an opt-in extension mechanism, allowing applications targeting Linux Vulkan to use mesh/task shaders without abandoning the cross-platform API.
+- Render dependency graphs will increasingly integrate GPU-driven occlusion and indirect drawing natively, with the graph compiler emitting `vkCmdDrawIndirectCount` sequences orchestrated from compute passes — mirroring the approach taken by Nanite and Lumen in Unreal Engine 5.
+- VMA's virtual block API is expected to gain a first-class "frame graph allocator" mode that directly tracks `firstUse`/`lastUse` pass indices and automates alias grouping, removing the need for custom lifetime-scanning code in each frame graph implementation.
+
+### Long-term
+- Cross-platform rendering abstraction layers may converge on a common intermediate representation above SPIR-V — analogous to how bgfx's `.sc` dialect unifies shader authoring today — as hardware-ray-tracing and mesh-shader divergence between Vulkan, Metal, and Direct3D 12 makes single-source shaders increasingly difficult to maintain across backends.
+- The frame graph pattern is likely to evolve toward fully GPU-resident dependency graphs, where the pass DAG and resource lifetime tables are uploaded to the GPU at frame start and the barrier sequence is resolved by a compute shader, eliminating the CPU compilation phase entirely for stable frame topologies.
+- As Vulkan's `VK_KHR_maintenance` extensions and `VK_KHR_shader_object` land broadly in Mesa drivers, higher-level abstractions like bgfx may expose pipeline-less draw call APIs, further simplifying the impedance mismatch between their cross-platform handle model and Vulkan's explicit pipeline state objects.
+
 ---
 
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

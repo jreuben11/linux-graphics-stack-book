@@ -1397,3 +1397,22 @@ DeepStream is proprietary and NVIDIA-GPU-only. Several open-source alternatives 
 ---
 
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
+
+## Roadmap
+
+### Near-term (6–12 months)
+- DeepStream 10.0 is expected to extend `nvvllmvlm` VLM integration beyond Cosmos Reason 2 to cover additional multimodal models (LLaVA-NeXT, InternVL) running in-process via Triton, closing the gap between video analytics pipelines and general-purpose vision-language inference.
+- The `nvstreammux2` adaptive batching path (currently opt-in via `USE_NEW_NVSTREAMMUX=yes`) is scheduled to become the default in a forthcoming release, with the legacy single-resolution `nvstreammux` moved to maintenance-only status.
+- NVIDIA is actively expanding the `pyservicemaker` Python API to reach full feature parity with the C++ Service Maker API, including support for custom `BatchMetadataOperator` types and YAML-driven probe attachment; the deprecated `pyds` bindings are expected to be removed entirely.
+- FP8 TensorRT inference (Hopper H100/H200) is expected to gain first-class `nvinfer` config-file support (`network-mode=4`) with published benchmark throughput figures comparable to the existing FP16/INT8 matrix.
+
+### Medium-term (1–3 years)
+- Integration of NVIDIA's Cosmos world-model family into the DeepStream pipeline is a stated roadmap item: temporal video understanding models could run as secondary `nvinferserver` stages, adding scene-level semantic annotations alongside per-object `NvDsObjectMeta` from frame-level detectors.
+- Multi-node distributed stream analytics — splitting batches across GPUs in different servers via NvLink Fabric or InfiniBand — is an architectural goal reflected in early DeepStream 9.x design documents; `NvBufSurface` remote memory descriptors and `nvmsgbroker` topology discovery are likely building blocks.
+- The `nvdsanalytics` spatial analytics element is expected to gain neural-network-backed anomaly detection (replacing rule-based thresholds) via an embedded lightweight TensorRT engine, reducing the need for separate secondary `nvinfer` stages for common overcrowding and direction-classification tasks.
+- Cross-platform NvBufSurface compatibility with ROCm and SYCL via an abstraction layer is under exploratory discussion in the Metropolis developer forums, targeting hybrid NVIDIA/AMD inference clusters without per-vendor pipeline reimplementation.
+
+### Long-term
+- As GStreamer 2.0 (speculative) or a successor framework matures, DeepStream's plugin architecture is likely to be redesigned around a graph-native metadata model — replacing the current linked-list `NvDsBatchMeta` hierarchy with a typed tensor graph compatible with the emerging MLCommons streaming inference API.
+- Increasing convergence between DeepStream and the Triton Inference Server codebase is anticipated: the `nvinferserver` in-process mode may eventually subsume `nvinfer` entirely, providing a single inference abstraction that covers local TensorRT, remote gRPC Triton, and cloud-based model endpoints within the same YAML configuration schema.
+- Privacy-preserving analytics — federated learning of tracker ReID galleries and on-device differential-privacy noise injection into `NvDsEventMsgMeta` cloud payloads — is a long-horizon goal aligned with EU AI Act compliance requirements for public-space surveillance deployments.

@@ -1165,3 +1165,21 @@ This chapter connects to several other parts of the book:
 **Ch49 (Multi-GPU and PRIME Render Offload):** XGMI peer-to-peer DMA between MI300X GPUs uses the same DRM P2P framework described in Ch49. RCCL's AllReduce over XGMI bypasses the CPU by issuing GPU-to-GPU DMA operations directly through the Infinity Fabric links. The `KFD_IOC_ALLOC_MEM_FLAGS_*` flags and the `kfd_ioctl_map_memory_to_gpu_args` structure support multi-GPU memory visibility mappings that underlie this collective communication.
 
 **Ch55 (GPU Containers):** The `/dev/kfd` and `/dev/dri/renderD*` device passthrough pattern described in this chapter is part of the broader GPU container story in Ch55, which covers `nvidia-container-toolkit` for CUDA workloads alongside the ROCm device plugin approach presented here.
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **ROCm 7.x CDNA4 / MI350X library coverage:** AMD is actively expanding Tensile and hipBLASLt tuning tables for the CDNA4 gfx950 ISA (MI350X, MI355X), including native FP4 and FP6 MX-format MFMA instructions that ship with the CDNA4 matrix cores. Expect `hipBLASLt` 0.16+ to expose these via new `hipDataType` enumerators.
+- **Upstream `amdkfd` GPU VM migration ioctl:** A patch series is in progress to add VM-level process migration support to `kfd_ioctl.h`, enabling live migration of GPU compute contexts between physical GPUs — a prerequisite for checkpoint/restore (CRIU) support for ROCm workloads. [Source: LKML amdkfd migration thread, 2025]
+- **`amd-smi` Python bindings GA:** The `amdsmi` Python package (wrapping `libamdsmi.so`) is being promoted to a stable API for ML operations teams, with Prometheus exporter support landing in the ROCm 7.x cycle to replace the older `rocm_smi_lib` library.
+- **MIOpen Flash Attention kernel for CDNA4:** AMD is upstreaming a native Flash Attention 3 implementation in MIOpen targeting gfx950 using the MI350X's larger MFMA tile sizes, to close the gap with cuDNN 9.x's fused attention kernels on H100/H200 systems.
+
+### Medium-term (1–3 years)
+- **ROCm Optiq network stack maturity:** The ROCm Optiq RDMA communication layer (introduced experimentally in ROCm 7.2) is planned to replace the libfabric backend in RCCL for scale-out InfiniBand clusters, exposing a unified API for both XGMI and network collectives that decouples transport selection from algorithm choice.
+- **Unified HSA memory model across CPU/GPU/NPU:** AMD's software roadmap targets extending the HSA topology sysfs and `hsa_amd_memory_pool_*` APIs to cover NPU (Neural Processing Unit) agents on Ryzen AI chips, allowing a single `hipMallocManaged` allocation to migrate transparently between CPU, GPU, and dedicated AI accelerator without framework changes.
+- **AdaptiveCpp / SYCL cross-vendor kernel caching:** The AdaptiveCpp project aims to introduce a portable fat-binary format (embedding SPIR-V, PTX, and AMDGPU device code) with a shared kernel cache daemon, so that ML frameworks compiled with SYCL can run on AMD ROCm and Intel Level Zero without per-vendor recompilation — moving portability above the compiler layer.
+- **`torch.compile` AOT integration with hipBLASLt tuning:** PyTorch's `torch.compile` is being extended to persist `TunableOp` CSV tables as part of the compiled artifact, so production deployments can ship pre-tuned GEMM selections without re-running benchmarks on first boot — reducing MI300X inference startup latency from minutes to seconds.
+
+### Long-term
+- **Convergence of ROCm compiler and Mesa ACO on a shared LLVM AMDGPU backend:** Both ACO (via its NIR-to-LLVM path for RADV ray tracing) and the ROCm LLVM backend increasingly share AMDGPU backend code; AMD's compiler team has stated a long-term goal of converging register allocation heuristics so that tuning work benefits both the compute and graphics stack simultaneously.
+- **Disaggregated GPU memory via CXL:** AMD's roadmap includes CXL 3.x fabric-attached memory that exposes as HSA memory pools, enabling rack-scale GPU memory pooling where MI-series accelerators can address remote HBM3 stacks across CXL switches — visible as additional `hsa_amd_memory_pool_t` agents with higher latency tiers, requiring ML frameworks to adopt locality-aware allocation strategies.

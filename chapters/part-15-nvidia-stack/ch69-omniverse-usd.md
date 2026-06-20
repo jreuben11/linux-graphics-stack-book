@@ -1751,3 +1751,22 @@ This chapter sits at the intersection of several threads developed throughout th
 36. [MaterialX Adds Slang Shader Generation — khronos.org](https://www.khronos.org/news/permalink/materialx-adds-support-for-slang-shader-generation)
 37. [Slang Official Site — shader-slang.org](https://shader-slang.org/)
 38. [NGC Kit SDK Linux — catalog.ngc.nvidia.com](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/omniverse/resources/kit-sdk-linux)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **AOUSD Core Specification 1.1** is expected to add normative geometry schemas (meshes, curves, points) and material/shading schemas that were intentionally deferred from 1.0, giving tooling vendors a stable conformance target for the full interchange pipeline.
+- **OpenUSD SDK 25.11** (Q4 2025 cadence) is anticipated to ship `HdsiLocatorCachingSceneIndex` improvements and further stabilise Hydra 2.0 as the sole scene-index path, removing the legacy `HdSceneDelegate` code path from the default build.
+- **Slang Initiative v2026.x** (under Khronos) is progressing work on `CoopVec<T,N>` support for Ampere SM 8.6 to narrow the feature gap with Ada, and on WGSL output quality improvements enabling Slang-authored differentiable shaders in WebGPU contexts.
+- **PhysX 5.x** is tracking GPU-accelerated cloth self-collision (currently CPU-only) and improved USD `PhysxSchema` round-trip fidelity for deformable body simulation state, enabling lossless physics checkpointing to USD layers.
+
+### Medium-term (1–3 years)
+- **USD 2.0 geometry and shading schemas** (AOUSD Specification 2.0 track) are expected to formalise `UsdGeomMesh` subdivisions, `UsdLux` physical units, and a unified OpenPBR surface schema (`UsdShadeSurface`) that supersedes `UsdPreviewSurface` as the interchange standard.
+- **Hydra 3.0** is expected to complete the removal of `HdRprim`/`HdSprim`/`HdBprim` prim-object lifecycle in favour of a fully data-source-driven render delegate API, where delegates consume `HdContainerDataSource` trees rather than typed prim objects — simplifying custom backend implementation significantly.
+- **Fabric Scene Delegate** is expected to subsume the USD composition stack entirely for simulation-heavy workflows in Kit, exposing a USDRT-only authoring path where the USD layer stack is an archival format rather than a live runtime data store.
+- **Newton physics engine** (NVIDIA, built on NVIDIA Warp) is planned as the differentiable-simulation successor to PhysX for robot learning workloads, with first-class USD schema support and zero-copy Fabric integration replacing the `PhysxSchema` USD bridge.
+
+### Long-term
+- **Universal Scene Description as an ISO standard** is a stated goal of AOUSD and the Linux Foundation following the Core 1.0 publication; a formal ISO/IEC submission would make USD mandatory for government digital-twin and defence simulation procurement.
+- **Neural USD representations** — Gaussian splats, neural radiance fields, and neural signed-distance fields as first-class USD schema types (building on the `UsdVolParticleField3DGaussianSplat` schema introduced in USD 25.05) — are expected to become the primary interchange format for photorealistic asset capture pipelines, with the RTX Renderer and open Hydra delegates consuming them natively alongside traditional mesh geometry.
+- **Fully differentiable RTX Renderer** via Slang's automatic differentiation applied to the entire path-tracing shader tree (material evaluation, light sampling, BVH traversal) is a long-horizon research goal demonstrated in NVIDIA Falcor; productisation in Omniverse would enable inverse rendering — optimising material and lighting parameters from reference photographs — as a first-class Kit workflow.

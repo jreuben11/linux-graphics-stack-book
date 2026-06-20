@@ -894,3 +894,22 @@ DMA-BUF chain from sensor to display: libcamera's `FrameBuffer` objects are back
 - [GStreamer V4L2 elements](https://gstreamer.freedesktop.org/documentation/video4linux2/) — v4l2src, v4l2sink, io-mode documentation
 - [EGL_EXT_image_dma_buf_import_modifiers](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_image_dma_buf_import_modifiers.txt) — DRM format modifier support for EGL image import
 - [VK_EXT_external_memory_dma_buf](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_EXT_external_memory_dma_buf.html) — Vulkan DMABUF import extension
+
+## Roadmap
+
+### Near-term (6–12 months)
+- Stabilisation of AV1 stateless decode controls (`V4L2_CID_STATELESS_AV1_*`) across drivers including Hantro and Rockchip RKVDEC2, following the AV1 control series merged in kernel 6.8–6.9 that moved the controls out of staging.
+- The V4L2 subdev streams API (multi-stream multiplexing over a single CSI-2 link, introduced in kernel 6.3) is gaining adoption in new sensor and bridge drivers; expect the streams API to become the required implementation path for multi-pad subdevs replacing the legacy `.s_stream` callback.
+- libcamera is expanding its pipeline handler coverage for Intel IPU6 (Meteor Lake) and Qualcomm Camss platforms, with the IPU6 handler expected to reach production quality in the 0.4–0.5 release cycle.
+- The rp1-cfe driver (merged in kernel 6.12) and the PiSP back-end M2M ISP are receiving ongoing bug fixes and performance work upstream, with DMA-BUF fence integration between the two pipeline stages under active review.
+
+### Medium-term (1–3 years)
+- A V4L2 per-buffer explicit synchronisation mechanism using `sync_file` fds (the long-pending "fences for V4L2" series) is expected to be revived and merged now that the request API is stable; this would enable V4L2 buffers to carry in-fences from GPU work and out-fences consumed by KMS or Wayland compositors, eliminating the current polling gap.
+- libcamera's IPA sandboxing model is evolving toward Seccomp-based process isolation with a defined IPA ABI, aiming to allow vendor-supplied binary IPA modules to run safely alongside open-source pipeline handlers without requiring kernel changes.
+- The `V4L2_MEMORY_DMABUF` import path is expected to gain support for heap-allocated DMABUF fds from the DMA-heap framework (`/dev/dma_heap/`) as the preferred allocator over ION, enabling a unified allocation path shared with display and GPU subsystems.
+- GStreamer's `v4l2codecs` plugin (implementing stateless H.264, HEVC, VP9, and AV1 decode via the request API) is expected to graduate from `gst-plugins-bad` to `gst-plugins-good` as driver and API coverage matures.
+
+### Long-term
+- The media controller topology model may be extended to express compute and ML inference nodes (ISP-attached NPUs on automotive SoCs) as first-class media entities, enabling pipeline graphs that mix capture, ISP, and on-chip inference without leaving the V4L2/media controller programming model.
+- MIPI CSI-3 and next-generation camera serialiser standards (GMSL3, FPD-Link IV) will require corresponding kernel driver infrastructure; the V4L2 async notifier and subdev routing models are the designated extension points, but multi-hop serialiser topologies may require new link type extensions to the media controller graph.
+- Long-term unification of V4L2 stateless codec controls with Vulkan Video decode parameters (which carry structurally identical SPS/PPS/slice metadata) could enable a common userspace parsing layer that feeds either V4L2 or Vulkan Video hardware paths without codec-level duplication.

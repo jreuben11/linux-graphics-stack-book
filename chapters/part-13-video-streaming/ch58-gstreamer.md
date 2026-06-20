@@ -1481,3 +1481,21 @@ GST_TRACERS="latency;rusage;leaks" GST_DEBUG="GST_TRACER:7" gst-launch-1.0 ...
 35. [gstreamer-rs Rust crate (docs.rs)](https://docs.rs/gstreamer/latest/gstreamer/)
 36. [gst-plugins-rs repository](https://github.com/GStreamer/gst-plugins-rs)
 37. [gstreamer-rs repository](https://github.com/GStreamer/gstreamer-rs)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **GStreamer 1.30 release**: The next stable cycle is expected to land H.266/VVC encode elements in the `va` plugin (`vah266enc`) alongside expanded V4L2 stateless VVC decode support via `v4l2slvvc dec`, mirroring kernel driver work already merged in Linux 6.10+.
+- **Vulkan Video encoder stabilisation**: The `vulkanvideoencode` element for H.265 and AV1 encoding (in gst-plugins-bad) is under active review; patches adding rate-control negotiation via `VkVideoEncodeRateControlInfoKHR` are expected to merge during the 1.29 development cycle.
+- **`gst-dots-viewer` integration with GST_TRACERS**: Work is in progress to have the `latency` and `rusage` tracers emit structured data consumable directly by `gst-dots-viewer`, providing live per-element performance overlays without a separate Babeltrace pipeline.
+- **libcamerasrc DMABuf modifier negotiation**: The `gst-plugins-libcamera` element is being updated to emit `GstVideoInfoDmaDrm`-annotated caps and negotiate DRM modifiers with downstream VA-API and Wayland sinks, closing the last zero-copy gap on ISP-attached camera platforms.
+
+### Medium-term (1–3 years)
+- **Full Rust plugin migration in gst-plugins-bad**: The GStreamer project has stated a goal of rewriting latency-sensitive and security-critical parsing elements (container demuxers, bitstream parsers) in Rust using `gstreamer-rs`; `qtdemux` and `matroskademux` Rust rewrites are tracked in the gst-plugins-rs issue tracker.
+- **PipeWire-native video path**: As PipeWire gains a dedicated video session manager role (replacing the camera portal model), `pipewiresrc` and `pipewiresink` are expected to expose DRM-modifier negotiation and buffer-pool sharing directly with the compositor, eliminating intermediate `videoconvert` hops in Wayland desktop capture pipelines.
+- **AdaptiveDemux2 low-latency DASH (LL-DASH) support**: The `dashdemux2` scheduling thread is being extended with chunk-transfer-encoding fragment download and `UTCTiming` element support required for CMAF-based low-latency DASH streams, targeting broadcast and cloud-gaming use cases.
+- **`va` plugin Wayland display backend**: An ongoing effort to add `GstVaDisplayWayland` (complementing `GstVaDisplayDRM` and `GstVaDisplayWrapped`) would allow VA-API elements to run inside a Wayland compositor process without a separate DRM render node file descriptor, simplifying Flatpak sandbox permissions.
+
+### Long-term
+- **Unified hardware buffer type**: Longer-term discussions on the GStreamer mailing list propose merging `GstVaDmabufAllocator`, `GstVulkanMemory`, and `NvBufSurface`-style CUDA allocators under a single `GstHwMemory` abstraction with a common zero-copy import/export API, reducing the per-vendor adapter code that each sink and filter element currently duplicates.
+- **AI/ML inference integration**: As hardware NPUs (Neural Processing Units) become first-class Linux devices exposed via the IOCTL-based IRIS/NPU kernel interface, GStreamer is expected to gain `GstNpuAllocator` and inference base-class elements analogous to `GstBaseTransform`, allowing AI pre/post-processing to sit inline in decode-to-display pipelines without CPU round-trips.

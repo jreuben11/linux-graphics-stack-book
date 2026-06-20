@@ -1138,3 +1138,21 @@ This chapter connects to many others in the book:
 ---
 
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
+
+## Roadmap
+
+### Near-term (6–12 months)
+- Turnip support for the Adreno 830 (Snapdragon 8 Elite) is actively under development in Mesa, with initial bring-up patches targeting the A8xx ISA and the new shader compiler requirements for mesh shaders and hardware ray traversal.
+- Android Vulkan Profiles are being extended with an AVP 2026 tier targeting Vulkan 1.4 core features, including `VK_KHR_maintenance6`, `VK_KHR_push_descriptor`, and `VK_EXT_shader_object` as mandatory on new Android 17 devices.
+- ANGLE's APEX-delivered system GLES driver is expected to become the default (opt-out, not opt-in) for Pixel devices in the Android 17 release cycle, completing Google's transition away from vendor-supplied OpenGL ES blobs.
+- `VK_EXT_shader_tile_image` and `VK_KHR_dynamic_rendering_local_read` adoption is increasing on Adreno and Mali, with both Turnip and Qualcomm's proprietary ICD adding support to allow deferred renderers to drop explicit `VkRenderPass` objects while retaining TBDR efficiency.
+
+### Medium-term (1–3 years)
+- The Android GPU driver updatability programme (APEX-delivered ICDs via `ro.vulkan.apex`) is expected to extend to third-party vendors beyond Qualcomm and Google, enabling over-the-air driver fixes without a full system image update for Mali and PowerVR devices.
+- Dawn's WebGPU backend on Android is expected to broaden device coverage to Android 11+ by relaxing the Vulkan 1.1 floor requirement and expanding the compatibility-mode adapter to cover OpenGL ES 3.1 devices with a feature-complete WebGPU subset.
+- Mesa's Turnip is being evaluated as a candidate for inclusion in the Android Compatibility Test Suite (CTS) reference driver path, which would allow Adreno devices with unlocked bootloaders to run a fully open-source Vulkan stack while remaining CTS-compliant.
+- Vulkan ray tracing (`VK_KHR_ray_tracing_pipeline`, `VK_KHR_acceleration_structure`) is expected to appear in Android Vulkan Profiles as Adreno 830 and Mali Immortalis-G920 both ship hardware BVH traversal units; mobile game engines (Unity, Unreal) have published prototype Android ray tracing integrations.
+
+### Long-term
+- The convergence of Android and ChromeOS GPU stacks is a stated Google architectural goal: a unified HAL and APEX ICD delivery pipeline across both platforms would allow the same Vulkan driver binary to serve tablet, Chromebook, and Android form factors, reducing driver fragmentation.
+- As LPDDR6 and on-package HBM become available in flagship SoCs, the unified-memory topology of Android GPUs may shift, potentially introducing a discrete-VRAM-like tier; the Vulkan memory model on Android would need to expose two distinct heaps, requiring updates to best-practice guidance around `VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT` and VMA usage modes.

@@ -714,3 +714,22 @@ DSC divides the image into horizontal slice rows. For a 3840×2160 display, a co
 - **Ch184 — eDP — The Laptop-Internal Variant**: Embedded DisplayPort uses the same DPCD/MST/PSR2/Panel Replay architecture as external DP, but with simplified connector requirements, different HPD signalling, and specific power-sequencing constraints. UHBR rates are beginning to appear in eDP 1.5 for high-refresh-rate laptop panels.
 
 - **Ch186 — Pixel Formats and Signal Encoding — Bandwidth Consumption Per Format**: The per-format bandwidth costs referenced in §8 are derived from the RGB/YCbCr, bit-depth, and chroma subsampling combinations detailed in Ch186, together with the packing rules for HDMI and DP transport streams.
+
+## Roadmap
+
+### Near-term (6–12 months)
+- AMDGPU HDMI 2.1 FRL support, merged targeting Linux 7.2, is expected to be enabled by default once the initial opt-in period confirms no regressions on FRL-capable displays that previously fell back to TMDS mode.
+- Intel i915 DP 2.1 SST DSC on Meteor Lake and Battlemage (targeted for Linux 6.15–6.16) will enable 4K/144 Hz and 5K/60 Hz uncompressed over a single UHBR10 cable without requiring MST, simplifying single-monitor setups.
+- VESA is expected to publish the **AdaptiveSync Display 1.2** revision, tightening the dual-mode certification matrix and adding explicit 240 Hz and 480 Hz profiling for high-refresh esports displays.
+- The `nova-drm` Rust NVIDIA kernel driver (Ch10) is progressing towards basic modesetting support, with HDMI 2.1 FRL and DP 2.1 UHBR planned as follow-on features once the initial DCB (Device Control Block) parser and display engine enumeration land upstream.
+
+### Medium-term (1–3 years)
+- **DisplayPort 2.2** is anticipated from VESA, building on UHBR20 with additional PHY-layer improvements targeting reliable passive cable performance at 80 Gbps over longer runs, and potentially introducing a new UHBR25 (25 Gbps per lane, 100 Gbps × 4) tier to close the gap below USB4 v2 bandwidth.
+- **HDMI 2.2** is in development at the HDMI Forum, targeting an increase beyond the current 48 Gbps FRL6 ceiling; early industry reports suggest 96 Gbps aggregate, which would enable 8K/120 Hz and 10K/60 Hz uncompressed without DSC.
+- USB4 v2 asymmetric (120 Gbps) DP tunnelling support in the Linux Thunderbolt driver is expected to mature with the arrival of USB4 v2 hubs and docks, requiring Thunderbolt 5 firmware CM updates and new `TB_TUNNEL_DP` bandwidth allocation accounting in the kernel software CM.
+- Panel Replay (§1.4) is expected to become the de-facto replacement for PSR2 across all DisplayPort 2.1 laptops, with the i915, amdgpu, and nouveau drivers all converging on a unified `drm_panel_replay` helper analogous to the existing `drm_dp_psr_helper.c` infrastructure.
+
+### Long-term
+- As MicroLED panels approach commercial volume production, the DisplayHDR True Black tier is expected to expand to a **True Black 1000** or higher tier, requiring the Linux `hdr_output_metadata` DRM property and compositor-side tone mapping to be extended to handle per-zone peak luminance metadata beyond the current 10,000 nit HDR10 static metadata ceiling.
+- The convergence of display and compute interconnects — with PCIe 7.0, USB4 v3 (anticipated at 160+ Gbps), and CXL 4.0 sharing the same physical Type-C ecosystem — will likely require the Linux Thunderbolt/USB4 connection manager to implement more sophisticated quality-of-service arbitration between DP tunnel, PCIe tunnel, and CXL memory-semantic traffic on a shared fabric.
+- HDBaseT 3.0's 100 Gbps aggregate capability may eventually attract an upstream Linux KMS bridge driver for commercial AV deployments, consolidating the currently out-of-tree Valens Semiconductor and other vendor bridge drivers into a generic `drm/bridge/hdbaset` framework.

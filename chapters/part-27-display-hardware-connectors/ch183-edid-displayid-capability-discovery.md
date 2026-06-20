@@ -987,4 +987,25 @@ This chapter is closely coupled to several other chapters in the book:
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+- The kernel's `drm_edid.c` is receiving ongoing refactoring to fully migrate drivers from the legacy raw `struct edid *` API to the opaque `struct drm_edid` wrapper; remaining in-tree drivers (primarily older HDMI drivers and bridge chips) are expected to complete this transition, closing the last paths where invalid EDID memory could escape the parsing layer.
+- DisplayID 2.1 support (released by VESA in 2024) adds new block types for variable refresh rate (VRR) capability and improved DSC negotiation; kernel patches are expected to land the new block parsers in `drm_edid.c` within this window.
+- The `edid-decode` reference tool (maintained at `https://git.linuxtv.org/edid-decode.git`) is tracking CTA-861-I, the next CTA-861 revision that adds explicit signalling for 240 Hz VRR ranges and expanded HDR10+ metadata; kernel parser updates will follow the spec.
+- Automatic HDR metadata application from EDID-parsed MaxCLL/MaxFALL into the compositor pipeline (via `drm_connector_state.hdr_output_metadata`) is being wired up in KWin and Mutter, eliminating the need for per-compositor workarounds to enable HDR on capable displays.
+
+### Medium-term (1–3 years)
+- DisplayID 2.x is expected to become the sole capability signalling mechanism for HDMI 2.1b and DisplayPort 2.1 Ultra-High Bit Rate (UHBR) displays; the legacy EDID base block is likely to be demoted to a compatibility stub, with Linux parsing logic shifting to treat DisplayID as the primary source of truth.
+- The VESA MCCS 3.1 specification, which extends the DDC/CI VCP code space for HDR luminance target control and wide-gamut preset selection, is expected to gain first-class `libddcutil` support, enabling power managers to adjust HDR peak brightness at runtime through a standardised interface.
+- Coordinated multi-tile display support (DisplayID Tiled Display Topology + DisplayPort MST) is targeted for Wayland protocols via the `ext-workspace` and potential `tiled-output` Wayland extensions, allowing compositors to expose a unified logical surface across physically tiled panels without driver-level stitching.
+- HDCP 2.3 per-stream content type enforcement (distinguishing Type 0 from Type 1 content on HDMI 2.1 streams) is expected to reach mainline via the Intel and AMDGPU HDCP state machines, enabling protected streaming of 4K HDR Blu-ray-equivalent content on Linux.
+
+### Long-term
+- A unified capability discovery ABI — potentially merging EDID, DisplayID, DPCD, and DDC/CI VCP data into a single structured DRM property object — has been discussed at XDC conferences as a long-term successor to the current piecemeal property set; such an ABI would allow compositors to query all display capabilities through a single `drmModeGetConnector` extension rather than parsing raw EDID blobs in userspace.
+- As display interfaces transition to optical and USB4-tunnelled DP, the I²C DDC channel may be supplanted by firmware-mediated capability exchange (similar to USB Billboard devices); the Linux DRM EDID subsystem would need to support capability data arriving over platform firmware tables (ACPI `_DSM` or devicetree overlays) rather than runtime DDC reads.
+- Long-term adoption of VESA's proposed Adaptive Sync Display (ASD) certification metadata in DisplayID may allow the kernel to precisely characterise VRR range, overdrive latency, and frame-rate multiplier capabilities, enabling Mesa and Wayland compositors to implement frame-pacing algorithms without per-monitor heuristics.
+
+---
+
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -409,3 +409,22 @@ This chapter is the concrete application layer for mechanisms described througho
 - Sway 1.11 explicit sync: [9to5Linux — Sway 1.11](https://9to5linux.com/sway-1-11-tiling-wayland-compositor-adds-support-for-explicit-synchronization)
 - Linux kernel GPU documentation: [kernel.org GPU docs](https://www.kernel.org/doc/html/latest/gpu/)
 - xdg-shell protocol (xdg_toplevel): [wayland.app/protocols/xdg-shell](https://wayland.app/protocols/xdg-shell)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- The `wp_color_management_v1` protocol is approaching stable status in wayland-protocols, and adoption by kitty and Ghostty to declare surfaces as sRGB is expected to follow, resolving the HDR compositor tone-mapping ambiguity for decoded Sixel and Kitty images.
+- The `zwp_linux_dmabuf_v1` protocol is being superseded by the `wp_linux_dmabuf_v1` stable extension; terminals will need to add a dual-path implementation that binds the stable interface when available and falls back to the unstable version on older compositors.
+- wlroots is actively expanding its plane promotion heuristics in the DRM backend to handle more overlay-plane configurations, which will increase the fraction of terminal windows eligible for zero-copy scan-out without compositor GPU re-rendering.
+- Flatpak's `xdg-desktop-portal` is under active discussion for a finer-grained DRM render node access portal (a step beyond the coarse `--device=dri` grant), which would allow sandboxed terminals to receive GPU access without exposing all render nodes.
+
+### Medium-term (1–3 years)
+- A formal HDR extension to the Kitty graphics protocol — carrying a colour volume descriptor alongside each image placement — is a plausible near-medium-term development as HDR-capable Wayland desktops become the default configuration on consumer hardware; terminals would then use `wp_color_management_v1` to signal per-image colour spaces to the compositor.
+- The `wp_presentation` v2 protocol is expected to add explicit support for per-plane presentation timestamps, allowing terminals on VRR displays to receive per-frame actual refresh intervals with higher precision and enabling sub-frame damage scheduling aligned to the display's true scanout window.
+- Wider adoption of Vulkan WSI (`VK_KHR_wayland_surface`) as a primary rendering path in GPU-accelerated terminals (replacing EGL/OpenGL) is underway in projects such as Ghostty and foot's experimental GPU branch, driven by explicit sync being a first-class Vulkan concept and by the richer query interface that `VkPhysicalDeviceExternalImageFormatInfo` provides for DMA-BUF modifier selection.
+- Kernel DMA-BUF heaps (`/dev/dma_heap/`) are gaining traction as a device-agnostic allocation path for CPU-path terminals on embedded SoCs, potentially replacing `memfd_create` + `wl_shm` with heap-allocated buffers that the display engine can scan out directly without a CPU-to-GPU upload.
+
+### Long-term
+- As the Wayland protocol stabilises around a content-type and colour-space signalling framework, terminals may gain the ability to mark individual sub-surface regions (e.g., embedded Kitty images) with distinct colour spaces, enabling compositors to apply per-region tone-mapping rather than treating the entire terminal surface as a single sRGB slab.
+- The long-term trajectory of KMS plane assignment points toward the compositor exposing a richer overlay-plane API to clients, analogous to Android's `SurfaceFlinger` layers, where a terminal could request dedicated scan-out planes for its background, text, and image layers separately — reducing compositing latency to near-zero for the common case of a full-screen terminal session.
+- Display engine direct-scan-out of compressed DRM modifiers (AMD DCC, Intel Tile4 CCS, NVIDIA block-linear) is expected to become a universal requirement in GPU driver certification paths, making zero-copy terminal plane promotion the default rather than an opportunistic optimisation on all major Linux GPU vendors.

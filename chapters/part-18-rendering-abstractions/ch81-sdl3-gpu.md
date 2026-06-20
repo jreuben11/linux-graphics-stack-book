@@ -1294,3 +1294,22 @@ As of SDL 3.2.x, a community-contributed WebGPU backend for SDL_GPU exists as a 
 - [SDL_BindGPUComputeStorageTextures wiki page](https://wiki.libsdl.org/SDL3/SDL_BindGPUComputeStorageTextures)
 - [SDL_GPUBufferUsageFlags wiki page](https://wiki.libsdl.org/SDL3/SDL_GPUBufferUsageFlags)
 - [Hacker News: SDL3 new GPU API merged](https://news.ycombinator.com/item?id=41396260)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **WebGPU/Emscripten backend merge**: The community-contributed WebGPU backend ([SDL PR #12046](https://github.com/libsdl-org/SDL/pull/12046)) is under active review; if merged it would give SDL_GPU a fifth backend and enable browser deployment via Emscripten without code changes.
+- **Query object support**: Timestamp and occlusion query APIs are on the SDL_GPU wish list; initial patches have appeared on the SDL mailing list to expose `VkQueryPool`-backed timing for GPU profiling.
+- **Pipeline caching**: SDL 3.x maintainers have discussed exposing an explicit `SDL_GPUPipelineCache` handle backed by `VkPipelineCache`, reducing first-frame shader-compilation stalls on repeated runs.
+- **Extended HDR and colour-space controls**: Wider adoption of `VK_EXT_swapchain_colorspace` is expected to land in the Vulkan backend, enabling more swapchain composition modes for HDR10 and wide-colour displays.
+
+### Medium-term (1–3 years)
+- **Indirect compute dispatch**: `SDL_DispatchGPUComputeIndirect` is a natural extension of the existing indirect draw support; GPU-driven pipelines (culling, LOD selection) would benefit from compute dispatch counts generated on-device.
+- **Multi-queue scheduling**: The current single-implicit-queue model is the biggest architectural constraint for high-performance workloads; a two-queue model (main + async-transfer) is the most requested feature and aligns with how RADV and ANV expose dedicated transfer queues.
+- **Shader cross-compilation integration**: Closer integration between SDL_GPU and the `SDL_shader_tools` project (or an embedded Tint/SPIRV-Cross path) could allow developers to write a single GLSL/WGSL shader and have SDL auto-translate it to MSL, DXIL, or SPIR-V at device-creation time.
+- **MSAA resolve improvements**: Current MSAA resolve must be declared at pipeline creation; a deferred-resolve API (similar to Metal's storeActionOptions) would enable TBDR-friendly multi-sample patterns on tile-based Mesa drivers.
+
+### Long-term
+- **Bindless resource tiers**: As Vulkan descriptor indexing (`VK_EXT_descriptor_indexing`) becomes universally supported across Mesa drivers, SDL_GPU may introduce an opt-in bindless texture tier so that large texture atlases can be sampled without per-draw rebinding.
+- **Ray tracing abstraction**: Once `VK_KHR_ray_tracing_pipeline` support matures in NVK and all three major Mesa drivers reach consistent coverage, a conservative ray tracing sub-API (BVH build, trace rays, miss/hit shaders) could be added behind a capability query, consistent with SDL_GPU's design of exposing the 80% portable subset.
+- **Console-aligned feature parity**: SDL's private console forks will continue to drive feature additions back into the public API; capabilities that ship first on console (tile-based shading hints, variable-rate shading) are likely to appear in the open backend once the public Vulkan extensions stabilise.

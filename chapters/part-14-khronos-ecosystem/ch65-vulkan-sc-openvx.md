@@ -1537,3 +1537,22 @@ For ParaView integration, the `vtkAnariRenderingPlugin` (part of VTK 9.3+) expos
 ---
 
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
+
+## Roadmap
+
+### Near-term (6–12 months)
+- Vulkan SC 1.0.22+ maintenance releases are expected to align with Vulkan 1.2 errata and to expand the VkSC-CTS coverage for `VK_KHR_object_refresh` edge cases, reducing integration risk for avionics vendors targeting DO-178C DAL A.
+- Khronos and RasterGrid are tracking additional SoC vendor conformance submissions (expected from Renesas R-Car and STMicroelectronics Stellar-E series) as automotive software-defined-vehicle platforms proliferate.
+- OpenVX 2.0 specification work has been announced; near-term progress is expected on the graph partitioning extension that allows a single `vx_graph` to span heterogeneous SoC subsystems (CPU, DSP, and dedicated NPU) with compiler-defined tile boundaries.
+- ANARI 1.1 ratification (reached feature freeze August 2025) is expected to produce a formal release and updated SDK in the near term, enabling `KHR_GEOMETRY_ISOSURFACE` and NanoVDB volumes for production ParaView and VTK deployments.
+
+### Medium-term (1–3 years)
+- Vulkan SC 2.0 based on Vulkan 1.3 is a stated Khronos goal; the challenge is scoping which 1.3 features (dynamic rendering, synchronisation2, format features) can be included without expanding the certifiable footprint — the working group is evaluating each extension individually.
+- NNEF 2.0 is in active development (post-1.0.4) with goals including dynamic shapes, transformer attention operators, and tighter ONNX round-trip fidelity, targeting deployment on embedded NPUs alongside OpenVX graphs.
+- Open-source Vulkan SC ICD development (e.g., a Mesa-based SC layer similar to the emulation ICD, but targeting bare-metal Linux on Arm Cortex-A platforms) is a plausible community project as more automotive SOCs run mainline Linux with open-source GPU stacks.
+- ANARI backends are expected to gain multi-GPU and CPU+GPU hybrid rendering support as the `barney` distributed backend matures, enabling in-situ scientific visualisation on HPC clusters without a proprietary compositing layer.
+
+### Long-term
+- Convergence of Vulkan SC and Zephyr RTOS is a long-horizon goal for ultra-low-power ASIL-certified microcontroller-class GPUs (sub-10W embedded systems), where the current SDK model assumes a POSIX-capable OS; Khronos has not yet published a roadmap for bare-metal profiles.
+- OpenVX's relevance depends on how dedicated NPU architectures (Arm Ethos-U, RISC-V ML extensions) evolve; if NPUs adopt Vulkan SC compute as their programming model, OpenVX may converge toward a thin scheduling layer over vendor compute kernels rather than remaining a standalone API.
+- ANARI's integration with the emerging OpenUSD Hydra 2.0 scene index API (replacing the Sprim/Rprim model) will determine its long-term role in scientific DCC pipelines; a first-class `HdAnari` Hydra 2.0 delegate is needed to keep pace with USD ecosystem evolution in Houdini and Pixar's usdview.

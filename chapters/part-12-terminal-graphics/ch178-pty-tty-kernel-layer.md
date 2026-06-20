@@ -837,4 +837,24 @@ This chapter is the kernel foundation for the entire terminal graphics stack pre
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+- **`TIOCSTI` removal completed upstream:** Linux 6.2 began restricting `TIOCSTI` to privileged callers; ongoing kernel work aims to remove `CONFIG_LEGACY_TIOCSTI` entirely, completing the elimination of this PTY injection attack surface from all non-container contexts.
+- **Extended `struct winsize` via a new ioctl:** Proposals on the linux-kernel and terminal-wg mailing lists discuss a `TIOCGWINSZ2` or `TIOCSWINSZ2` variant that carries sub-cell pixel precision and display DPI, addressing the current limitation where `ws_xpixel`/`ws_ypixel` are unreliably populated across emulators.
+- **`libghostty-vt` as a standalone library:** The Ghostty project is maturing its SIMD-accelerated VT parser into a formally versioned C ABI library; terminal emulators such as foot and WezTerm are evaluating adoption to consolidate parsing correctness and performance.
+- **tmux 3.5 `allow-passthrough` hardening:** The tmux project is adding per-sequence allowlists to `allow-passthrough` so that state-mutating sequences can be selectively forwarded without risking tmux's internal terminal model diverging from reality.
+
+### Medium-term (1–3 years)
+- **PTY I/O using `io_uring`:** As `io_uring` gains character-device support, terminal emulators may shift master-fd polling from `epoll`/`poll` to `io_uring` submission rings, reducing syscall overhead and enabling zero-copy reads for bulk terminal output on Linux 6.x+ kernels.
+- **`devpts` per-user-namespace isolation by default:** Container runtimes (systemd-nspawn, Docker, Podman) are pushing for `newinstance` devpts mounts to be the default in all new namespaces, fully isolating PTY number spaces between containers without relying on per-mount configuration.
+- **N_TTY buffer enlargement or dynamic sizing:** The hard-coded 4096-byte `N_TTY_BUF_SIZE` is a known bottleneck; proposals exist to make this a runtime-tunable `sysctl` or to replace the fixed-size ring with a dynamic allocation scheme that scales with available memory.
+- **Kitty terminal protocol standardisation at the terminal-wg level:** The freedesktop.org terminal working group is drafting a formal specification for pixel-transfer protocols, which would standardise shared-memory image transport (`t=s`) and resolve the ambiguity around `ws_xpixel`/`ws_ypixel` semantics across emulators.
+
+### Long-term
+- **TTY subsystem modernisation or replacement:** Long-standing proposals to replace the TTY core's character-by-character processing model with a vectorised buffer pipeline (akin to what `io_uring` does for block I/O) would remove the `N_TTY_BUF_SIZE` ceiling and bring PTY throughput closer to raw pipe performance; this requires broad ABI-compatibility work given how deeply POSIX terminal semantics are embedded in user-space tooling.
+- **Wayland compositor-native terminal multiplexing:** As Wayland compositors gain richer IPC (e.g. `wp_security_context`, extended foreign-toplevel protocols), a compositor-side multiplexer model could replace PTY chaining with direct compositor-mediated session sharing, eliminating the escape-sequence passthrough problem that plagues tmux + Kitty Graphics Protocol today.
+
+---
+
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

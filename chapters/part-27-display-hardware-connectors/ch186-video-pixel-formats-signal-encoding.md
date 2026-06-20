@@ -831,3 +831,22 @@ This processing is invisible to userspace; it is configured entirely by the DC l
 - [10-bit and 16-bit YUV Video Formats — Microsoft Learn](https://learn.microsoft.com/en-us/windows/win32/medfound/10-bit-and-16-bit-yuv-video-formats)
 - [HDR in Linux: Part 2 — Jeremy Cline](https://www.jcline.org/blog/fedora/graphics/hdr/2021/06/28/hdr-in-linux-p2.html)
 - [ARM Framebuffer Compression (AFBC) — Linux kernel docs](https://www.kernel.org/doc/html/v5.7/gpu/afbc.html)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- The DRM `colorspace` connector property is being extended to carry ITU-R BT.2100 ICtCp colorimetry alongside the existing BT.2020 YCC entries, enabling Dolby Vision display-referred signaling without out-of-band metadata blobs; patches are in review on dri-devel as of early 2026.
+- The `zwp_linux_dmabuf_v1` protocol version 5 work aims to let compositors advertise per-surface format/modifier feedback for cursor and overlay planes separately, reducing the need for TEST_ONLY atomic probing loops in video players such as MPV and GStreamer.
+- HEVC and AV1 hardware decoders on Intel Xe (Battlemage) and AMD RDNA 4 are gaining native P012 (12-bit 4:2:0) DMA-BUF export, which will allow Dolby Vision Profile 5 content to travel the NV12/P010 overlay path without a 16-bit upcast.
+- The `hdr_output_metadata` UAPI is being amended to carry SMPTE ST 2094-10 dynamic metadata frames alongside the existing ST 2086 static payload, enabling per-scene tone-map hints to HDR10+ capable displays over HDMI 2.1.
+
+### Medium-term (1–3 years)
+- HDMI 2.1a Source-Based Tone Mapping (SBTM) requires the kernel to expose a new DRM connector property for negotiating SBTM capability and sending the corresponding InfoFrame; Mesa/KWin coordination on this path is in early design as of 2026.
+- The V4L2 multiplanar API is expected to grow a formal `V4L2_PIX_FMT_P016` negotiation path for 16-bit-per-component decode output, driven by AV1 12-bit profile 2 content from next-generation streaming services.
+- A unified `drm_colorop` pipeline object — currently being prototyped by AMD and Red Hat engineers — will allow userspace to specify a composed sequence of CSC, 1D LUT, and 3D LUT operations on a per-plane basis, replacing the current driver-internal hardwiring of BT.709/BT.2020 matrix selection.
+- DisplayPort 2.1 UHBR20 tunneled over USB4 v2 requires the kernel's DP AUX and link-training code to recognize and negotiate new YCbCr 4:2:0 modes at 8K@120Hz, influencing the `IN_FORMATS` plane property content for upcoming integrated GPU platforms.
+
+### Long-term
+- As displays with native BT.2020 and DCI-P3 primaries become mainstream, the kernel's AVI InfoFrame construction path may adopt ITU-R BT.2100 ICtCp as the primary signaling colorimetry for HDR content, replacing the current BT.2020 YCbCr path and enabling more perceptually uniform tone mapping at the sink.
+- The convergence of video decode, display, and AI super-resolution (e.g., AMD FSR, Intel XeSS at the kernel/firmware boundary) may require new DRM plane properties that express upscaling algorithm selection and sharpness parameters, extending the current format-negotiation pipeline beyond raw pixel format into processing intent.
+- Long-term standardization of a royalty-free open HDR dynamic metadata format (potentially an AOM-driven successor to HDR10+) could introduce new HDMI/DP InfoFrame types and corresponding DRM UAPI structures that parallel the current `hdr_output_metadata` blob design.

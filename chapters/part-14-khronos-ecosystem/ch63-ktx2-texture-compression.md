@@ -1313,3 +1313,21 @@ Bevy's KTX2 asset loader (`bevy_render/src/texture/ktx2.rs`, using the `ktx2` Ru
 24. [BinomialLLC/basis_universal `transcoder/basisu_file_headers.h` — basis_file_header struct](https://github.com/BinomialLLC/basis_universal/blob/master/transcoder/basisu_file_headers.h)
 25. [google/etc2comp — ETC2/EAC offline encoder tool and library](https://github.com/google/etc2comp)
 26. [jkuhlmann/cgltf — single-file glTF 2.0 loader in C99 with KHR_texture_basisu support](https://github.com/jkuhlmann/cgltf)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **KTX-Software v5.0 stable release**: The v5.0.0-rc1 (May 2026) API-breaking changes — the `ktx_basis_codec_e` enum replacing the `uastc` bool, the `etc1sCompressionLevel` rename, and the new `ktxBasisParams` HDR fields — are expected to ship as a stable release within this window, requiring downstream libraries (Bevy's `ktx2` crate, Godot's importer, three.js KTX2Loader) to update.
+- **XUASTC LDR KTX2 scheme ID ratification**: The proposed `KTX2_SS_XUASTC_LDR = 5` scheme is being standardised with Khronos; once ratified and integrated into KTX-Software, XUASTC LDR's 0.3–5.7 bpp latent-space supercompression will become a viable production target alongside ETC1S and UASTC.
+- **ASTC HDR 6×6 transcoding improvements in basis_universal**: The UASTC HDR 6×6 Intermediate (`KTX2_SS_UASTC_HDR_6x6I = 4`) codec added in early 2026 is being actively refined; improved BC6H transcoding quality and reduced encoding latency for the 6×6 footprint are in-flight on the basis_universal main branch.
+- **Mesa RADV and ANV native ASTC LDR hardware decode on RDNA4 / Xe2+**: Intel Xe2 (Meteor Lake, Battlemage) introduced hardware ASTC decode; RADV RDNA4 support patches are progressing through Mesa MR review, which will eliminate the current SW-emulation penalty for ASTC on desktop Linux.
+
+### Medium-term (1–3 years)
+- **GPU compute transcoder in KTX-Software**: A Vulkan compute shader transcoder (decoding BasisLZ/UASTC directly on the GPU) is an architectural goal for libktx, enabling streaming pipelines where hundreds of textures are transcoded in parallel without CPU bottlenecks — particularly relevant for open-world games and XR scene loading.
+- **KHR_texture_basisu v2 / UASTC HDR in glTF**: The glTF working group is expected to extend `KHR_texture_basisu` to cover UASTC HDR 4×4 and ASTC HDR 6×6 for PBR emissive and environment map textures; a revised extension version or a companion `KHR_texture_hdr` extension is under discussion in the Khronos glTF repository.
+- **ASTC 3D block footprint support in libktx and KTX2 pipelines**: KTX2 already defines 3D ASTC block footprints (3×3×3 to 6×6×6) in the Vulkan spec, but libktx's encoder and the `ktx create` CLI do not yet support them; volumetric data pipelines (medical imaging, fluid simulation caches) are the primary driver.
+- **ETC2 encoder replacement for KTX pipeline**: The `etc2comp` standalone encoder is largely unmaintained; the `ktx create --format ETC2_*` path through libktx delegates to an internal encoder with limited quality-level control. A higher-quality ETC2/EAC backend (potentially via `etcpak` or a rewritten backend in KTX-Software) is a recurring request from mobile-first game teams.
+
+### Long-term
+- **Neural texture compression integration**: Research prototypes (NVIDIA NTC, Intel XeSS texture compression) use small MLPs to represent textures at sub-1 bpp, decoded via neural inference in shader. If any of these reach hardware fixed-function support, KTX2 container extensions or a successor format will need new supercompression scheme IDs and DFD `colorModel` values to carry neural-compressed payloads alongside traditional block formats.
+- **Unified LDR/HDR transcoder format**: The current split between ETC1S (LDR only), UASTC LDR 4×4, UASTC HDR 4×4, and ASTC HDR 6×6 codecs creates combinatorial complexity in asset pipelines that must support all target hardware. A single supercompression intermediate that transparently transcodes to any block format across the LDR/HDR boundary — analogous to how UASTC unifies LDR targets today — is a stated long-term goal in BinomialLLC discussions.

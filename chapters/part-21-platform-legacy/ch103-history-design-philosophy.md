@@ -441,3 +441,22 @@ This chapter is deliberately the connective tissue for the entire book. The majo
 - GamingOnLinux: "Nova — a Rust-based Linux driver for NVIDIA GPUs announced," March 2024. [Source](https://gamingonlinux.com/2024/03/nova-a-rust-based-linux-driver-for-nvidia-gpus-announced/)
 - Fedora Project Wiki: Changes/WaylandByDefault (Fedora 25 GNOME default). [Source](https://fedoraproject.org/wiki/Changes/WaylandByDefault)
 - Linux Kernel Documentation: Kernel Mode Setting. [Source](https://docs.kernel.org/gpu/drm-kms.html)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- Nova's Rust-language NVIDIA kernel driver is expected to reach feature parity with Nouveau for Turing and Ampere hardware, with GSP-RM firmware integration enabling proper power management and reclocking on those generations for the first time in the open driver.
+- The `color-management-v1` Wayland protocol and associated KMS color pipeline extensions (per-plane tone mapping, HDR metadata) are stabilizing, with GNOME and KDE Plasma expected to ship end-to-end HDR compositor support for supported AMD and Intel hardware within this window.
+- Panthor (Mali Valhall/CSF) is progressing toward OpenGL ES 3.1 and Vulkan 1.3 conformance in Mesa, extending fully open-source acceleration to the RK3588 and Dimensity device families.
+- The DRM accel subsystem is gaining additional in-tree driver entries as NPU vendors (MediaTek APU, Qualcomm Hexagon, Intel NPU) upstream their kernel drivers rather than shipping out-of-tree DKMS modules.
+
+### Medium-term (1–3 years)
+- Rust abstractions for the DRM GEM, scheduler, and syncobj subsystems are expected to reach mainline, enabling new drivers to be written entirely in Rust without C shim layers — a milestone that would validate the Nova approach as a template for future GPU drivers.
+- NVIDIA's open-kernel-module cadence is likely to produce register-level documentation for Hopper and Blackwell hardware, potentially enabling NVK to support compute and ML workloads on current-generation NVIDIA hardware through an open Mesa stack rather than only through the proprietary CUDA runtime.
+- The linux-drm-syncobj-v1 explicit synchronization Wayland protocol is expected to become mandatory for all compositors, completing the decade-long migration from implicit to explicit GPU synchronization and closing the last major correctness gap between the open and proprietary NVIDIA driver stacks.
+- Honeykrisp (Asahi Vulkan for Apple AGX) is expected to extend conformance to M2 and M3 hardware as Alyssa Rosenzweig's ISA documentation of AGX matures, with potential OpenCL/compute support enabling open-source ML inference on Apple Silicon under Linux.
+
+### Long-term
+- The open hardware trajectory — AMD's GPUOpen model, RISC-V GPU ISA initiatives, and emerging RISC-V-based GPU IP — may produce the first major GPU line designed from the start for community-maintained open drivers, rather than retrofitting openness onto a hardware design built for proprietary control.
+- The accel subsystem's convergence with the DRM graphics subsystem may produce a unified kernel programming model for heterogeneous workloads (render, display, video, AI inference) sharing the same memory manager, scheduler, and DMA-BUF infrastructure without architectural seams — fulfilling the zero-copy, mechanism-over-policy principles the stack was founded on.
+- X11 support in mainstream desktop environments (GNOME, KDE Plasma) is likely to reach end-of-life within this window, with XWayland transitioning from a compatibility layer to a legacy archival mode, marking the full completion of the display server transition that Kristian Høgsberg began in 2008.

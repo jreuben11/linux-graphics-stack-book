@@ -1663,3 +1663,22 @@ The Vulkan SDK distribution is the lowest-friction path for teams already using 
 ---
 
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
+
+## Roadmap
+
+### Near-term (6–12 months)
+- The Khronos Slang Initiative is actively standardising the `[Differentiable]` attribute and `bwd_diff`/`fwd_diff` intrinsics into a formal Slang language specification, with the goal of enabling alternative compiler implementations beyond the reference `slangc` backend.
+- The `VK_NV_cooperative_vector` Vulkan extension is progressing toward a multi-vendor `VK_KHR_cooperative_vector` specification, and Slang's `CoopVec<>` type is expected to track the KHR variant once ratified, extending hardware support beyond NVIDIA RTX to AMD RDNA 4 and Intel Xe2 architectures.
+- The `slangd` language server (LSP) is receiving improved diagnostics for autodiff errors — currently, mismatches in `IDifferentiable` implementations surface as cryptic IR-level messages; the near-term roadmap targets source-location-accurate error reporting for all `[Differentiable]` annotation failures.
+- SlangPy's PyTorch integration is being extended to support `torch.compile` (TorchDynamo) traces that span Slang kernels, enabling mixed Python/Slang training loops to be compiled end-to-end by a single optimising compiler pass.
+
+### Medium-term (1–3 years)
+- The WGSL emission backend, currently experimental, is targeted for production readiness to allow Slang's differentiable shaders to run inside WebGPU compute workloads in the browser, enabling gradient-based material optimisation in web-based rendering tools.
+- Khronos is expected to advance Slang's module system toward a cross-vendor binary module format (analogous to LLVM bitcode), enabling shader library vendors to ship pre-compiled Slang IR that links against downstream renderers without exposing source code.
+- Higher-order reverse-mode differentiation (i.e., `bwd_diff(bwd_diff(f))`) is a stated Slang research goal; the compiler IR currently requires forward-over-reverse composition as a workaround, and the medium-term plan is to support fully nested reverse passes, enabling second-order optimisers (L-BFGS, natural gradient) over GPU shader parameters.
+- The `slang-rhi` hardware abstraction layer is expected to gain a Vulkan video extensions backend, enabling differentiable rendering pipelines that include hardware video decode as a non-differentiable source of input frames (using the `no_diff` pattern) for training video-based neural material models.
+
+### Long-term
+- As Slang's Khronos governance matures, the expectation is that major game engines (Unreal Engine, Unity, Godot) will adopt Slang as a first-class shading language target alongside or replacing HLSL, eventually making the `[Differentiable]` annotation available to engine-level material authors without requiring bespoke research renderer infrastructure.
+- The convergence of Slang's autodiff system with hardware-accelerated sparse tensor operations (analogous to NVIDIA's `cuSPARSE` but expressed as Slang-level types) could enable differentiable sparse scene representations — NeuralVDB-style volumes, 3D Gaussian splats — to be trained entirely within the rasterisation pipeline without round-tripping through CUDA.
+- Long-term adoption of `VK_KHR_cooperative_vector` across all discrete and integrated GPU vendors would make Slang's `CoopVec<>`-based MLP inference a portable, API-agnostic primitive for in-shader neural computation, potentially displacing vendor-specific tensor intrinsics as the standard mechanism for neural rendering in production renderers.

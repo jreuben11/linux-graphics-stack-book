@@ -1104,3 +1104,22 @@ implements for its own hardware. Chapter 73 covers the Asahi driver in detail.
 ---
 
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
+
+## Roadmap
+
+### Near-term (6–12 months)
+- RDNA4 (GFX12) enablement continues to mature: BVH8 ray tracing, dynamic VGPR allocation via `s_alloc_vgpr`, and OBB support are being hardened in Mesa main with conformance testing under dEQP-VK.
+- The unified AMD video decode path (shared between RadeonSI and RADV introduced in Mesa 26.1) is being extended to cover AV1 encode and the VCN 5.x hardware found in RDNA4 APUs.
+- `VK_EXT_device_generated_commands` (`radv_dgc.c`) is being promoted from experimental to stable, enabling compute-shader-based indirect draw generation for DXR and mesh shader workloads in VKD3D-Proton.
+- ACO function-call ABI (introduced for ray tracing in Mesa 26.0) is being extended to support callable shaders in the CPS (Continuation Passing Style) lowering mode, gated behind `RADV_PERFTEST=rtcps`, with the goal of becoming the default traversal model.
+
+### Medium-term (1–3 years)
+- Full Vulkan 1.4 feature parity across all supported GFX levels, including `VK_KHR_maintenance6`, `VK_KHR_shader_subgroup_rotate`, and `VK_EXT_shader_replicated_composites` promotion to core.
+- Sparse residency (`VK_EXT_sparse_residency`) expected to graduate from experimental status as the sparse queue and VM reservation paths stabilise on GFX9+, unlocking virtual texture and streaming geometry workloads.
+- The ACO register allocator is expected to gain SSA-based coalescing to further reduce spill/fill code in shaders with large live ranges, targeting the high VGPR pressure common in ray tracing payloads.
+- RADV descriptor handling may migrate to a fully GPU-VA-only bindless model aligned with `VK_EXT_descriptor_buffer`, eliminating the traditional descriptor pool codepath and reducing per-draw CPU overhead.
+
+### Long-term
+- As AMD Vulkan conformance converges between RADV and the official `amdvlk` stack, shared infrastructure (e.g., `PAL`-independent shader compiler outputs) may allow cross-ICD binary caching, letting both drivers benefit from the same compiled shader cache entries.
+- Beyond RDNA4, future AMD GPU generations are expected to introduce fixed-function BVH traversal hardware (removing the software traversal loop currently in `radv_nir_rt_shader.c`), which would require RADV to shift from generating traversal shader code to programming a hardware traversal unit via new PM4 packets.
+- The Mesa Vulkan common infrastructure (`src/vulkan/`) is trending toward a unified memory model and command-buffer abstraction that could allow a single RADV command-recording path to target both amdgpu and a future user-mode submission interface, reducing kernel-driver coupling.

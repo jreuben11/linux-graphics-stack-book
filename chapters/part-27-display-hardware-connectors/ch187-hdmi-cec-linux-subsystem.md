@@ -944,3 +944,22 @@ Typical success sequence in `dmesg`:
 - **Ch183 (EDID and DisplayID — Capability Discovery):** The CEC physical address is carried in the HDMI Vendor Specific Data Block within the CTA-861 extension block of the EDID, at bytes 4–5 of the block with OUI `0x000C03`. The `cec_get_edid_phys_addr()` kernel function and the `edid-decode` tool both extract this field. When no HDMI VSDB is present, the CEC physical address is `0xFFFF` and CEC cannot function correctly.
 
 - **Ch182 (HDMI Connector Physical Layer):** HDMI pin 13 is the dedicated CEC bus conductor shared by all devices on an HDMI network. The HDMI specification section 6.3 defines the electrical characteristics: open-drain, 3.3 V pull-up, maximum 10 m cable, 400 baud. The other functionally related pin is pin 18 (5V power, used for EDID power) and pin 19 (HPD, which triggers EDID reads that provide the CEC physical address).
+
+## Roadmap
+
+### Near-term (6–12 months)
+- The CEC subsystem is gaining improved error injection infrastructure via debugfs, allowing kernel CI frameworks to automate CEC compliance testing against simulated bus faults — patches from Hans Verkuil are under active review on linux-media.
+- HDMI 2.1 brings an expanded CEC 2.0 command set including HEC (HDMI Ethernet Channel) coordination opcodes; kernel support for the remaining unimplemented CEC 2.0 messages is tracked in the v4l-utils compliance test suite and is expected to be filled incrementally.
+- The cec-pin software bit-bang framework is being hardened against high-resolution timer jitter through adaptive sampling windows, reducing CEC failures on heavily loaded embedded systems (Raspberry Pi in particular).
+- Upstream work on improving the `drm_dp_cec` tunnelling driver aims to extend DisplayPort CEC tunnelling to cover more Intel, AMD, and Nouveau GPU paths where DP-to-HDMI adapters are common.
+
+### Medium-term (1–3 years)
+- As eARC displaces ARC, CEC System Audio Mode negotiation will need tighter kernel-level coordination between the CEC subsystem and ALSA/ASoC audio routing drivers; a proposed `cec-audio` bridge API may unify volume and source selection across both control planes.
+- SoC vendors (Amlogic, Rockchip, MediaTek) are moving CEC hardware into always-on power islands that also contain PMU and RTC logic; future drivers will integrate CEC wake sources with the Linux `wakeup_source` and PM-domain frameworks to enable reliable standby-to-on transitions via CEC without main SoC power.
+- The libcec project is expected to consolidate its Linux backend exclusively around the `/dev/cecN` kernel interface, deprecating the legacy Raspberry Pi VideoCore firmware path in favour of the mainline vc4 DRM CEC driver which now supports Pi 4 and Pi 5.
+- Home automation platforms (Home Assistant, openHAB) are driving demand for a higher-level D-Bus CEC service daemon (similar to BlueZ for Bluetooth) that would expose CEC device discovery and control as standardised D-Bus interfaces, abstracting away `/dev/cecN` ioctls for application developers.
+
+### Long-term
+- As HDMI 2.2 and Ultra High Speed cabling mature, CEC may be extended or replaced by a higher-bandwidth in-band control channel (analogous to DisplayPort's sideband messaging) to support the growing command vocabulary needed by HDR metadata negotiation and adaptive sync coordination — the Linux stack would require a new subsystem layer bridging the existing CEC API to any successor protocol.
+- Industry convergence on Matter (formerly CHIP) as the dominant home automation protocol may eventually see CEC bridges standardised at the firmware level, with Linux SoC platforms expected to expose CEC-discovered device state as Matter endpoints via kernel-to-userspace bridge daemons.
+- Long-term kernel maintainer succession planning for the CEC subsystem (currently maintained by a small number of individuals at Cisco/LinuxTV) may lead to subsystem reorganisation, folding CEC more tightly into the DRM connector model rather than the media subsystem to reflect its role as a display control bus.

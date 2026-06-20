@@ -1182,3 +1182,22 @@ This chapter connects to the following chapters in the book:
 
 *Chapter 83 of "The Linux Graphics Stack: From Kernel to Compositor, Browser, and Terminal."*  
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **WebGPU backend maturation**: Filament's WGSL code-generation path (`.mat` → `matc` → WGSL) and the Dawn-backed WebGPU backend are being hardened for production use in Flutter Web and Chrome OS, with work ongoing to close feature parity gaps against the Vulkan backend (e.g., VSM shadows, GTAO).
+- **KTX2 support in cmgen**: The `cmgen` tool currently outputs KTX1 only; upstream issues and community MRs are tracking addition of KTX2 output with Basis Universal supercompression for smaller IBL asset sizes compatible with the broader ecosystem.
+- **Vulkan descriptor indexing and bindless textures**: Filament is incrementally adopting `VK_EXT_descriptor_indexing` to enable bindless material parameter tables, reducing per-draw descriptor-set overhead on scenes with many unique `MaterialInstance` objects.
+- **Improved Wayland support**: Work is underway to make the Wayland `VK_KHR_wayland_surface` path fully first-class on Linux desktop, including correct fractional-scale handling via `wp_fractional_scale_v1` and explicit sync with `linux-drm-syncobj-v1`.
+
+### Medium-term (1–3 years)
+- **Mesh shaders and task shaders**: As `VK_EXT_mesh_shader` becomes ubiquitous across AMD RDNA 2+, Intel Xe, and NVIDIA Turing+, Filament's clustered forward pipeline is expected to adopt mesh shaders for geometry amplification (e.g., GPU-driven culling of individual froxel-light pairs), replacing the current CPU-side froxelisation pass.
+- **Ray-traced shadows and reflections**: Filament's FrameGraph is architecturally ready for `VK_KHR_ray_tracing_pipeline` passes; a ray-traced shadow option (replacing PCSS for soft shadows) and screen-space-fallback reflections are on the aspirational roadmap, driven by ARCore and Google Maps quality requirements.
+- **Filament-as-compositing-engine on Chrome OS**: The Impeller rendering backend for Flutter (currently Skia-based on Linux) is expected to converge further with Filament's Vulkan backend for 3D Flutter scenes, blurring the line between Flutter 2D compositing and embedded Filament 3D views.
+- **C API and language-binding improvements**: A stable C ABI (in addition to the current C++ API) is discussed upstream to simplify Python, Rust, and Swift language bindings beyond the current hand-maintained Java/Kotlin wrappers.
+
+### Long-term
+- **GPU-driven rendering architecture**: A full transition to GPU-driven rendering — where the CPU emits a single indirect draw call per frame and the GPU culls, sorts, and instantiates geometry — would replace the current CPU sort-key approach, reducing driver overhead for scenes with tens of thousands of renderables.
+- **Hardware ray tracing as a primary lighting path**: As mobile GPU vendors (Qualcomm, ARM, Imagination) ship hardware ray-tracing units, Filament's IBL and shadow pipeline may eventually offer a hardware-accelerated path for dynamic GI (global illumination) and multi-bounce reflections, replacing the current split-sum approximation for high-end devices.
+- **Unified material graph editor**: The offline `matc` pipeline may evolve toward a visual node-graph material authoring tool (analogous to Blender's Shader Editor or Unreal's Material Editor), lowering the barrier for artists while preserving the offline compilation model and FILAMAT binary portability.

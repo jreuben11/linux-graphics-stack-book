@@ -1282,3 +1282,22 @@ This chapter connects to the following parts of the Linux graphics stack:
 - [PlayCanvas SuperSplat](https://github.com/playcanvas/supersplat)
 - [COLMAP: Structure-from-Motion Revisited](https://colmap.github.io/)
 - [ROCm/AMD discussion](https://github.com/nerfstudio-project/nerfstudio/discussions/2388)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **gsplat 2.x and compressed splat formats:** The gsplat team is actively working on 4-bit quantisation of SH coefficients and codebook-based Gaussian compression, targeting an official compressed `.ply` variant that cuts file sizes by 10–20× while retaining visual quality within 0.5 dB PSNR.
+- **MCMCStrategy stabilisation and default promotion:** `splatfacto-mcmc` is expected to become the recommended strategy over `DefaultStrategy` once benchmarks confirm consistent quality gains across diverse scene types; related densification heuristics are being tuned upstream in gsplat `strategy.py`.
+- **Official ROCm support for gsplat:** The nerfstudio team has opened tracking issues for first-class HIP/ROCm builds of gsplat CUDA extensions, targeting ROCm 6.x and PyTorch 2.4+; this would unblock AMD GPU users from the current pure-torch fallback.
+- **Viser 2.0 WebGPU client-side rendering:** Viser is prototyping a WebGPU render path that transfers raw Gaussian `.ply` data to the browser and rasterises client-side via compute shaders, eliminating the JPEG streaming latency for splatfacto models.
+
+### Medium-term (1–3 years)
+- **4D Gaussian Splatting for dynamic scenes:** Building on 4D-GS (Spacetime Gaussian Feature Splatting) research, NeRFStudio is expected to add a `splatfacto-4d` method that deforms Gaussians over time using compact flow fields, enabling neural video reconstruction at interactive frame rates.
+- **Language-embedded and open-vocabulary Gaussians:** Models such as LERF (Language Embedded Radiance Fields) and LangSplat are being integrated into the nerfstudio method registry; these co-embed CLIP/DINO features per Gaussian, enabling semantic scene editing and open-vocabulary object segmentation from language queries.
+- **Hardware-accelerated Gaussian rasterisation in Vulkan/Metal:** GPU vendors are evaluating native driver support for Gaussian splat primitives — analogous to how ray-tracing acceleration structures entered fixed-function hardware — which would allow Vulkan renderers to bypass the current sort-and-splat CUDA/compute path at reduced power.
+- **Federated and in-the-wild NeRF capture pipelines:** Tighter integration with ARKit/ARCore pose streams (via record3d and similar) and cloud SfM services is planned, moving ns-process-data toward real-time incremental reconstruction rather than the current offline COLMAP batch workflow.
+
+### Long-term
+- **Neural scene representations in game engines:** Unreal Engine 5 and Godot already have community 3DGS plugins; longer-horizon consolidation is expected to produce first-class runtime Gaussian splat scene nodes with LOD streaming, physics collision proxies derived from splat geometry, and lighting integration with existing PBR pipelines.
+- **Unified NeRF/3DGS inference on NPU silicon:** As NPU blocks on SoCs (Qualcomm Hexagon, Apple ANE, Intel NPU) gain broader ONNX/ExecuTorch coverage, NeRF MLP inference and Gaussian sorting kernels are candidates for NPU offload in mobile and edge capture devices, enabling on-device real-time novel view synthesis.
+- **Standardised interchange format beyond PLY:** The Khronos Group and Open Metaverse Interoperability groups have discussed a glTF extension for Gaussian splats; a ratified standard would supersede the current ad-hoc `.ply` convention and integrate neural scene assets into the broader 3D toolchain ecosystem.

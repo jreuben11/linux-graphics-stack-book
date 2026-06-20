@@ -704,3 +704,21 @@ A platform that passes S0ix validation with display correctly powered down shoul
 - **Ch126 (Hybrid Graphics and Optimus)**: On Optimus laptops, display power-off (CRTC disabled, DC9 entry) is the event that allows the discrete GPU to be fully powered down via the platform's power gating mechanism (ACPI D3cold). The display idle chain described in this chapter is therefore a prerequisite for dGPU power savings on hybrid graphics systems.
 
 - **Ch184 (Embedded DisplayPort and Laptop Panel Management)**: This chapter provides the system-level orchestration for the eDP-specific mechanisms (PSR1/PSR2/Panel Replay, DRRS, panel power sequencing) detailed in Ch184. Understanding both chapters together gives a complete picture of laptop display power management from the panel DPCD registers up through the compositor idle protocol.
+
+## Roadmap
+
+### Near-term (6–12 months)
+- Panel Replay adoption is widening from Intel Alder Lake/Raptor Lake into AMD RDNA 3/4 APUs; upstream kernel patches are landing support for Panel Replay on RDNA 4 eDP panels in the `amd-staging-drm-next` branch, with backports expected to stable kernels in late 2026.
+- The `ext-idle-notify-v1` Wayland protocol is being extended with a companion `ext-idle-inhibit-v2` proposal to close semantic gaps in how video players and game launchers communicate idle inhibition, with a draft in the `wayland-protocols` staging area as of mid-2026.
+- Intel Lunar Lake and Arrow Lake improve cross-tile DC-state coordination between the separate Display IPU and CPU tiles; driver patches adding `POWER_DOMAIN_TRANSCODER_*` descriptors for the new tile topology are under review on the `intel-gfx` mailing list.
+- `power-profiles-daemon` 0.22 is adding explicit PSR idle-timeout tuning on Intel platforms (writing to `i915.psr_min_idle_frames` module parameter at runtime), giving the power-saver profile a direct path to faster PSR entry without requiring a kernel reboot.
+
+### Medium-term (1–3 years)
+- AMD SubVP/MALL is expected to evolve into a driver-transparent "display hibernation" mode for RDNA 5 APUs, where the DMUB firmware autonomously manages MALL prefetch, PSR, and DRAM self-refresh without any per-frame driver intervention, targeting sub-1 W total display power at idle on 4K panels.
+- The KMS uAPI may gain a formal `DRM_CRTC_PROP_SELF_REFRESH_MODE` enum property allowing compositors to express a preference between PSR1 (deep DC6 capable) and PSR2 (low-latency partial updates), replacing the current driver-internal heuristic that selects between the two modes.
+- OLED-specific idle management — pixel shift, ABM dimming curves, and burn-in protection timers — is expected to be standardised in a `drm-oled-management-v1` kernel uAPI extension as OLED laptop panels become mainstream across Intel and AMD reference designs.
+- `systemd-logind` is being extended with display-device-aware suspend inhibition, allowing devices to register display-specific constraints (e.g., "do not enter S0ix until Panel Replay exit is confirmed") through a new `inhibit-display` lock type, reducing race conditions in the compositor → PM sequencing path.
+
+### Long-term
+- As eDP transitions toward embedded DisplayPort 2.1 (UHBR link rates) and next-generation Panel Replay 2.0, the DC-state architecture on both Intel and AMD platforms is expected to merge PSR, ALPM, and display C-states into a single hardware-managed "display power island" FSM that requires no software polling, with the kernel driver role reduced to initial configuration and error recovery.
+- The ongoing convergence of SoC display engines (Intel's Display IPU, AMD's DCN, and Qualcomm's MDSS targeting Linux via the `msm` driver) toward unified power management abstractions may eventually produce a generic KMS display-power backend in `drivers/gpu/drm/display/`, analogous to the existing `drm_dp_helper` layer, handling PSR/Panel Replay lifecycle across vendors.

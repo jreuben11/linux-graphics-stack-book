@@ -916,4 +916,25 @@ The `tune=zerolatency` option in x264 sets `b_vbv_delay_compensation=1`, disable
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+- **GNOME Network Displays Miracast-over-Infrastructure (MICE) stabilisation:** The 0.91 release introduced MICE support; ongoing work targets reliable multi-monitor virtual-screen casting and improved codec negotiation, with patches under review on the GNOME GitLab tracker.
+- **PipeWire 1.4.x timestamp fixes for wireless display:** PipeWire maintainers are merging buffer-timestamp propagation improvements needed for sub-frame latency accuracy in `pipewiresrc`-based Miracast and WebRTC pipelines, addressing drop issues that appear at 60+ fps capture rates.
+- **GStreamer `webrtcsink` WHIP/WHEP integration maturation:** GStreamer 1.24/1.26 development cycles are stabilising the `webrtcsink` composite element's built-in signalling server and adding `webrtcsrc` for the receiver path, enabling turnkey browser-based wireless display without external signalling infrastructure.
+- **KRdp hardware-accelerated encode (KDE Plasma 6.x):** KDE's KRdp project is adding VA-API H.264 and HEVC encode support via GStreamer's VA plugin, reducing CPU load for RDP-based Plasma session casting on AMD and Intel GPUs.
+
+### Medium-term (1–3 years)
+- **Miracast Wi-Fi 6 / Wi-Fi 7 profiles:** The Wi-Fi Alliance is drafting WFD 3.0 specifications that extend Miracast to Wi-Fi 6 (802.11ax) multi-link operation and Wi-Fi 7 (802.11be), targeting <20 ms end-to-end latency and 4K/120 Hz support; Linux open-source implementations will need corresponding wpa_supplicant and GStreamer pipeline updates.
+- **AV1 hardware encode adoption in wireless display pipelines:** As Intel Meteor Lake, AMD RDNA3+, and NVIDIA Ada hardware AV1 encoders become mainstream, wireless display tools (GNOME Network Displays, mkchromecast replacements, WebRTC paths) are expected to default to AV1 for equivalent quality at 30–40% lower bitrate versus H.264.
+- **WiGig 802.11ay dock-to-laptop display revival:** Intel and Qualcomm have signalled renewed interest in WiGig docking for laptop form factors; a coherent Linux WDE stack would require a userspace WiGig display daemon and DRM virtual connector integration, likely modelled on the DisplayPort Tunneling architecture used for USB4.
+- **xdg-desktop-portal v7 multi-stream and cursor improvements:** Planned portal revisions aim to expose multiple simultaneous capture streams per session and reliable cursor position metadata, closing gaps that currently require compositor-specific workarounds in Miracast and RDP backends.
+
+### Long-term
+- **DisplayPort Tunnelling over Wi-Fi 7 (native lossless display):** Wi-Fi 7's deterministic latency (OFDMA scheduling, multi-link diversity) makes native DisplayPort tunnelling over wireless feasible, potentially replacing MPEG-TS/H.264 streaming with a direct pixel-transport path analogous to USB4 Alt Mode — eliminating encode/decode latency entirely for short-range scenarios.
+- **Unified wireless display abstraction in PipeWire:** The PipeWire project's long-term vision includes a device-graph model that could abstract wired (DRM/KMS) and wireless (Miracast, WebRTC, RDP) outputs as first-class nodes, allowing compositors to treat a Miracast sink identically to a physical connector without per-compositor display protocol integration.
+- **Converged open-source WiGig/Wi-Fi 7 stack with WDE support:** As 802.11ay silicon matures and kernel cfg80211/mac80211 gains multi-link management, a community WiGig Display Extension daemon could emerge, targeting dock-to-laptop and monitor-to-laptop use cases with sub-5 ms latency, completing the unfinished work noted in the `wil6210` driver's current WDE-absent status.
+
+---
+
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

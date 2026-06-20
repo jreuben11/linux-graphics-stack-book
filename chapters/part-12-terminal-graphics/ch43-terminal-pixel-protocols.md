@@ -591,3 +591,22 @@ Inside tmux with `allow-passthrough on`, this command should display a small blu
 ---
 
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **zellij pixel-protocol passthrough**: Active issues (#2814, #4500) tracking Kitty Graphics Protocol support in zellij are expected to land a DCS passthrough mechanism or native Kitty image store in 2026, given the maintainers' stated intent to close the gap with tmux's `allow-passthrough`.
+- **Ghostty Sixel stabilisation**: Ghostty's Sixel support, described as indeterminate in 2026, is being actively tracked in the ghostty issue tracker; the project has stated Sixel parity with foot and WezTerm as a near-term goal given its growing user base.
+- **Unified terminal capability advertisement**: The freedesktop.org terminal-wg issue #49 on a standardised capability query mechanism is expected to produce a concrete proposal in 2026 as adoption of multiple competing protocols by single terminals (WezTerm, Ghostty) makes ad-hoc detection increasingly fragile.
+- **Kitty protocol adoption in foot**: The foot maintainer has stated interest in implementing the Kitty Graphics Protocol in addition to Sixel; initial merge requests implementing the APC framing and image store are anticipated as foot's Wayland-only architecture already provides a clean GPU upload path.
+
+### Medium-term (1–3 years)
+- **Good Image Protocol revival or replacement**: If the terminal-wg capability advertisement proposal succeeds, it is likely to be paired with a standardised image upload protocol that incorporates the DCS-framing of the Good Image Protocol and the RGBA support of Kitty, potentially superseding both for new terminal implementations while preserving Sixel compatibility shims.
+- **tmux native Kitty image store**: tmux's `allow-passthrough` is a workaround rather than a solution; the tmux project has discussed extending the `grid_cell` model or maintaining a parallel image store keyed to cell coordinates, which would allow Kitty images to survive pane resizes and reattach without requiring the Unicode placeholder mechanism.
+- **VTE true-colour image support**: GNOME's VTE library, which powers GNOME Terminal and Tilix, has Sixel support behind a build flag but lacks Kitty or iTerm2 support; as GNOME Shell moves to GPU compositing via libmutter's Clutter backend, the architectural barrier to adding Kitty protocol support (a GPU texture store) is diminishing.
+- **libsixel 2.x encoder performance**: The libsixel project has open issues targeting SIMD-accelerated Wu's algorithm quantisation and multithreaded dithering; a 2.x release addressing these is expected to improve encode throughput enough to make Sixel viable for video frame-rate display on modern hardware.
+
+### Long-term
+- **Protocol convergence under a freedesktop.org specification**: The most likely long-term outcome is a single freedesktop.org-blessed image protocol specification that mandates RGBA pixel delivery, named image IDs with explicit lifetimes, and a DCS or APC framing that passes safely through compliant multiplexers, with Sixel retained only as a compatibility alias for hardware serial terminals.
+- **Zero-copy DMA-BUF image delivery from application to terminal**: As Wayland compositors universally adopt the `linux-dmabuf` protocol and terminals increasingly run as Wayland clients with DMA-BUF import capability, a future terminal pixel protocol extension could allow applications to pass a DMA-BUF file descriptor directly to the terminal process via a Wayland sub-protocol, eliminating the base64/escape-sequence encoding overhead entirely for GPU-resident image data.
+- **Sextant and Unicode block graphics as a first-class fallback standard**: With Unicode 16+ adding further block element and mosaic characters, tools like chafa and notcurses are pushing toward a common TUI graphics rendering layer that treats Unicode approximation as a first-class fallback tier; long-term, this may be formalised as part of a terminal graphics capability hierarchy alongside Sixel, Kitty, and any successor protocol.

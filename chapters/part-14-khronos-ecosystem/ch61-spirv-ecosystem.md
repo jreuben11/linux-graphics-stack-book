@@ -1114,3 +1114,21 @@ SPIR-V is the lingua franca connecting every front end to every back end describ
 35. [Phoronix — RADV ACO performance benchmark (Mesa 19.3)](https://www.phoronix.com/review/radv-aco-okt)
 36. [AnKi 3D Engine — Parsing and rewriting SPIR-V](https://anki3d.org/parsing-and-rewriting-spir-v/)
 37. [SPV_KHR_cooperative_matrix specification](https://github.khronos.org/SPIRV-Registry/extensions/KHR/SPV_KHR_cooperative_matrix.html)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- SPIR-V 1.7 is expected to be standardized alongside Vulkan 1.4 maintenance releases, promoting several KHR cooperative-matrix and ray-tracing extensions to core and adding `OpTerminateRayKHR` semantics refinements already in the SPIR-V registry.
+- The SPIRV-Tools optimizer is gaining a new MLIR-based optimization tier (`spirv-opt --mlir-backend`) under active development in the Khronos working group, targeting more aggressive loop and memory access transformations than the current single-pass SPIR-V IR allows.
+- `SPV_KHR_untyped_pointers`, already merged into the SPIRV-Registry, is expected to ship in drivers and be required by upcoming HLSL SM 6.8 → SPIR-V mapping in DXC, removing the need for `OpTypePointer` proliferation in compute shaders.
+- naga is actively adding a SPIR-V 1.6 emission mode, closing the gap with Tint's WGSL-to-SPIR-V output and enabling wgpu-based applications to target Vulkan 1.3 features such as `VK_KHR_synchronization2` and inline uniform blocks.
+
+### Medium-term (1–3 years)
+- Khronos is scoping a `SPV_KHR_shader_execution_reordering` (SER) extension to allow GPU work-graph schedulers to reorder shader invocations, a feature already exposed in HLSL SM 6.9 and DirectX Agility SDK that requires a SPIR-V equivalent for Vulkan ray-tracing pipelines.
+- The SPIR-V WorkGraph execution model is under discussion to bring DirectX Work Graphs semantics to Vulkan, enabling GPU-driven dispatch graphs without CPU round-trips; glslang and DXC SPIR-V backends are expected to emit the new `TaskGraphAMDX` (AMDX extension, in-driver today) or a standardized KHR successor.
+- SPIRV-Cross MSL backend is expected to gain full support for SPIR-V 1.6 cooperative-matrix instructions as Metal 4 (WWDC 2026 announcement) introduces native matrix acceleration, closing the MoltenVK gap for ML workloads that currently require Metal Performance Shaders detours.
+- Mesa's `spirv_to_nir()` will likely absorb more SPIR-V capability surface directly, reducing the need for SPIRV-Tools preprocessing by handling physical-storage-buffer pointer arithmetic, cooperative-matrix lowering, and ray-query in the translator rather than via separate NIR lowering passes.
+
+### Long-term
+- A binary-stable, versioned SPIR-V container format (analogous to DXIL's signed container) is a long-standing discussion point in the Khronos Vulkan working group; if adopted it would allow IHVs to cache and redistribute pre-compiled ISA without application involvement while tying the binary to a specific driver ABI.
+- As Vulkan's shader object extension (`VK_EXT_shader_object`) matures, the need to serialize SPIR-V through `VkPipelineCache` may diminish in favour of driver-managed shader binary caches, shifting the SPIR-V ecosystem's role from a pipeline compilation input to a persistent interchange format stored once and compiled lazily on first device contact.

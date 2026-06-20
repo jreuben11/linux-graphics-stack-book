@@ -1032,3 +1032,22 @@ This chapter connects to the following chapters across the book:
 - [3D Slicer as Imaging Platform](https://pmc.ncbi.nlm.nih.gov/articles/PMC3466397/)
 - [IceT Scalable Rendering](https://www.kennethmoreland.com/scalable-rendering/)
 - [Kitware VTK 9.4.0 Blog Post](https://www.kitware.com/vtk-v9-4-0/)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- VTK's WebGPU backend (`vtkRenderingWebGPU`) is actively receiving volume rendering support; the near-term target is feature parity with the OpenGL2 `vtkGPUVolumeRayCastMapper` for the Dawn/Vulkan path on Linux desktop.
+- The VTKHDF format is on track to supersede parallel VTK XML (`.pvtu`/`.pvtp`) as the recommended output format for new HPC simulation codes, with continued MPI-IO performance work and time-series indexing improvements in VTK 9.7.
+- VTK-m 2.1 is expected to ship improved Kokkos/SYCL support targeting Intel GPU (PVC/Xe) compute, enabling VTK-m filters to run on Intel GPUs via Level Zero without a separate CUDA or HIP compilation.
+- The `vtkCellGrid` discontinuous Galerkin dataset class is scheduled to receive GPU-side rendering of high-order elements via tessellation shaders in the WebGPU backend, completing the round-trip from DG solver output to interactive visualization without tessellation on the CPU.
+
+### Medium-term (1–3 years)
+- A production-quality Vulkan rendering backend for VTK (going beyond the 2020 Ken Martin proof-of-concept) is a stated longer-term goal in VTK community discussions; the WebGPU/Dawn path currently serves as a Vulkan-backed route, but a native `vtkVulkanRenderWindow` would enable direct access to Vulkan ray tracing extensions (VK_KHR_ray_tracing_pipeline) without the WebGPU abstraction layer.
+- ParaView's trame-based web frontend is expected to fully replace the legacy Qt client for remote HPC visualization workflows, with vtk.js and WebGPU in the browser handling local rendering for datasets below the geometry threshold.
+- VTK-m's Kokkos backend is expected to mature into the recommended single unified GPU compute path, consolidating the separate CUDA and HIP adapters and simplifying multi-vendor HPC deployments.
+- ANARI integration within ParaView is planned to expose path-traced rendering (via VisRTX or OSPRay) as a first-class render mode selectable in the GUI, not just via the Python API.
+
+### Long-term
+- As WebAssembly and WebGPU mature, a full server-free VTK pipeline running in the browser (built via Emscripten with `VTK_WRAP_JAVASCRIPT`) is a plausible trajectory, enabling scientific visualization applications to run entirely client-side with no HPC backend required for moderate dataset sizes.
+- Deep learning-based upsampling and reconstruction filters (leveraging ONNX inference, added experimentally in VTK 9.6) may become first-class VTK pipeline stages, enabling AI-assisted volume rendering and super-resolution for clinical and simulation datasets.
+- Convergence of the Catalyst in-situ API with streaming HPC data fabrics (ADIOS2, RDMA-based) and cloud-native object stores (S3-compatible) is a stated direction for post-Exascale workflows, where VTK acts as the on-node serialization and analysis layer rather than a batch post-processor.

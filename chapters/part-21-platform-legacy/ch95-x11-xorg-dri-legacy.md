@@ -600,3 +600,21 @@ LIBGL_DEBUG=verbose glxinfo 2>&1 | grep -i "syncobj\|explicit"
 - [The X11 SECURITY extension history (OSnews, 2025)](https://www.osnews.com/story/142962/the-x11-security-extension-from-the-1990s/)
 - [Mesa source tree — src/glx/](https://github.com/Mesa3D/mesa/tree/main/src/glx)
 - [xf86-video-modesetting (cgit.freedesktop.org)](https://cgit.freedesktop.org/xorg/driver/xf86-video-modesetting/)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **XWayland fractional scaling improvements**: The `wp_fractional_scale_v1` Wayland protocol is being integrated more deeply into XWayland to reduce blurriness when running X11 apps at non-integer HiDPI scales (e.g., 1.5×, 1.25×); work is tracked in the XWayland merge request queue at freedesktop.org.
+- **Explicit sync stabilisation**: The `linux-drm-syncobj-v1` Wayland protocol (shipped experimentally in XWayland 24.1 and Mesa 24.1) is being hardened across GNOME Mutter, KDE KWin, and the NVIDIA driver stack; remaining edge cases with multi-GPU (PRIME) and GLX compositing are being addressed in Mesa's `src/glx/` explicit-sync paths.
+- **`xwayland-shell-v1` adoption**: Compositors that still rely on the legacy `WL_SURFACE_ID` ClientMessage for X11-window-to-Wayland-surface association are migrating to the race-free `xwayland-shell-v1` protocol; GNOME and KDE completed adoption in 2024, with smaller compositors (labwc, Hyprland) following.
+- **DRI3 v1.4 multi-plane buffer extensions**: Proposed DRI3 protocol additions to handle multi-plane modifier-negotiation for compressed framebuffer formats (AFBC, UBWC) are being discussed in the xorg-devel mailing list, driven by mobile/embedded use cases where X11 still runs on ARM SoCs.
+
+### Medium-term (1–3 years)
+- **Xorg server maintenance-only mode**: The X.Org Foundation has signalled that Xorg will enter maintenance-only status — no new feature development, only security and bug fixes — as the ecosystem completes migration to Wayland. The modesetting DDX and XWayland are expected to remain actively developed as the primary compatibility surface.
+- **XWayland input method (IME) protocol**: A standardised Wayland protocol for input method editors (`zwp_input_method_v2` successor) is being designed that XWayland can bridge to X11 applications using XIM, eliminating the current breakage of CJK input methods under XWayland on many compositors.
+- **Indirect GLX removal from Mesa**: Mesa's indirect GLX rendering path (`libGL.so.1` server-side GLX request handling) is slated for removal after a deprecation period; the `LIBGL_ALWAYS_INDIRECT` fallback path will be dropped, and applications that require indirect rendering will need to use software rendering (llvmpipe/softpipe) explicitly.
+- **XDG portal expansion for remaining X11 gaps**: The `org.freedesktop.portal.GlobalShortcuts` and `org.freedesktop.portal.InputCapture` portals are being finalised to replace the last widely-used X11-only workflows (global hotkeys, gaming input capture) that currently require XWayland keyboard-grab workarounds.
+
+### Long-term
+- **X11 protocol freeze and archival**: As XWayland matures and the remaining X11 application base either ports to Wayland or reaches end-of-life, X11 as an active protocol is expected to be frozen in place rather than extended — new display features (HDR, variable refresh rate, colour management) will only be available through native Wayland protocols.
+- **GLX deprecation in Mesa**: Once the major Linux desktop toolkits (GTK4, Qt 6) complete their EGL-only paths and XWayland itself switches to EGL/DRI3 for all rendering, the GLX implementation in Mesa (`src/glx/`) is expected to be deprecated and eventually removed, with EGL-on-Wayland becoming the sole OpenGL surface path.

@@ -866,3 +866,22 @@ The CDN edge must be configured to disable response buffering — nginx requires
 18. [RFC 9725 — WebRTC-HTTP Ingestion Protocol (WHIP)](https://datatracker.ietf.org/doc/rfc9725/)
 19. [MediaMTX SRT documentation](https://github.com/bluenviron/mediamtx)
 20. [FFmpeg HLS muxer documentation](https://ffmpeg.org/ffmpeg-formats.html#hls-2)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- MOQT (`draft-ietf-moq-transport`) is in IETF Last Call and expected to reach RFC status; FFmpeg and GStreamer experimental MOQT plugins are maturing toward stable API surface.
+- LL-HLS support in FFmpeg (`-hls_flags low_latency`) is being hardened for production use, with fixes to part-file generation and `#EXT-X-PRELOAD-HINT` accuracy landing in the FFmpeg 7.x series.
+- WHIP (RFC 9725) adoption is accelerating: OBS 30 shipped native WHIP output, and MediaMTX, OvenMediaEngine, and GStreamer `whipsink`/`whepsrc` elements are receiving interoperability fixes targeting sub-200 ms end-to-end latency.
+- The SRT Alliance is finalising SRT 1.6 with improved group (link-bonding) semantics and better integration with GStreamer `srtsrc`/`srtsink` for multi-path broadcast contribution.
+
+### Medium-term (1–3 years)
+- MOQT CDN relay deployment will enable a unified latency continuum (50 ms–30 s) under one protocol, likely displacing WebRTC SFU meshes for large-audience live events where per-viewer full-mesh connectivity is impractical.
+- WebTransport over HTTP/3 will reach broad browser support and replace long-poll LL-HLS as the preferred delivery mechanism for sub-second adaptive streaming, with CMAF chunks pushed via QUIC unidirectional streams.
+- ABR algorithm research is converging on hybrid learned/model-predictive approaches: production players (Shaka, dash.js) are expected to ship lightweight neural ABR policies (Pensieve successors) as optional backends, trained on operator-specific network trace datasets.
+- CMAF Common Encryption (CENC) with multi-DRM (Widevine L1 + FairPlay) will become the baseline for all HLS/DASH deployments as Apple mandates fMP4 across all platforms.
+
+### Long-term
+- QUIC may eventually subsume both SRT and WebRTC's transport layer: a unified QUIC-native broadcast stack (MOQT for distribution, WebTransport for the last mile) could eliminate the protocol proliferation between ingest (SRT/RTMP), CDN (HLS/DASH), and real-time (WebRTC) tiers.
+- ML-based bandwidth prediction integrated directly into the CDN edge (rather than the client player) may shift ABR decision-making server-side, reducing quality oscillation at the cost of centralising network intelligence.
+- End-to-end hardware offload of the packaging pipeline — GPU-encoded CMAF chunks written directly to NVMe via RDMA and served over QUIC without CPU involvement — is a plausible direction as GPU-direct storage and P2P DMA capabilities mature in the Linux kernel DMA-BUF and io_uring stacks.

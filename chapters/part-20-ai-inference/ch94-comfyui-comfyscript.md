@@ -1806,3 +1806,22 @@ VRAM bandwidth (hence the relevance of fp8 and quantisation techniques described
 15. [ComfyUI-GGUF (quantised model loader)](https://github.com/city96/ComfyUI-GGUF)
 16. [Classifier-free guidance paper (Ho & Salimans, 2022)](https://arxiv.org/abs/2207.12598)
 17. [SD3 / flow matching paper (Esser et al., 2024)](https://arxiv.org/abs/2403.03206)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **Native `torch.compile` integration in ComfyUI core:** upstream work is progressing to stabilise `fullgraph=True` compilation for the UNet/DiT forward pass, gated behind a `--use-torch-compile` flag, with CUDAGraph capture for fixed-shape inference eliminating per-step CPU overhead.
+- **ComfyUI backend split and `comfyorg/comfy-cli` tooling:** the Comfy Org is separating the execution engine (`comfy-execution`) from the frontend, making headless server deployments a first-class use case and enabling the `comfy` CLI to manage custom nodes, model downloads, and server launch.
+- **FLUX.1 ControlNet and IP-Adapter ecosystem maturation:** community node packs for FLUX ControlNet (depth, Canny, pose) and IP-Adapter conditioning adapters are stabilising; official Black Forest Labs ControlNet weights are expected to land with pip-installable loaders.
+- **ROCm 7.x and PyTorch ROCm wheel improvements:** AMD's ROCm 7.x release targets native Flash Attention 3 support on RDNA 4 (RX 9000 series), removing the need for the `HSA_OVERRIDE_GFX_VERSION` workaround on consumer cards; PyTorch ROCm wheels are expected to ship Flash Attention by default.
+
+### Medium-term (1–3 years)
+- **Video diffusion model support as a first-class pipeline:** models such as Wan 2.1, CogVideoX, and their successors will likely become primary ComfyUI use cases, driving architectural changes to the node execution model to support temporal batching, inter-frame caching, and streaming output over the WebSocket protocol.
+- **ComfyScript type-stub stability and IDE toolchain integration:** as ComfyScript matures toward a stable public API, integration with `pyright` strict mode and VS Code Python language server is expected, enabling full type-safe workflow authoring with inline documentation for every community node pack.
+- **Multi-GPU and distributed inference support:** the ComfyUI execution model is expected to gain first-class support for splitting large DiT models (FLUX.1-sized and beyond) across multiple GPUs using tensor parallelism via PyTorch's `DeviceMesh` and `DTensor` APIs, removing the current single-device limitation for models exceeding 24 GB VRAM.
+- **fp4 and next-generation quantisation backends:** NVIDIA Blackwell's native fp4 arithmetic (via `torch.float4_e2m1fn`) and AMD CDNA 4 int4 support are expected to drive new ComfyUI quantisation flags and `ComfyUI-GGUF`-style loader nodes targeting sub-4 GB VRAM for 12B-class models.
+
+### Long-term
+- **Declarative workflow IR and cross-framework portability:** the ComfyUI prompt JSON format is likely to evolve toward a standardised workflow intermediate representation (IR) that can target multiple inference backends (PyTorch, ONNX Runtime, TensorRT, DirectML) without node-level changes, analogous to what ONNX provides for static model graphs.
+- **Hardware-accelerated VAE and attention on integrated and mobile GPUs:** as inference workloads shift toward edge and on-device deployment, ComfyUI's backend abstraction is expected to accommodate Intel Xe-HPG and Qualcomm Adreno via PyTorch's XPU and Vulkan compute backends, broadening the platform matrix beyond CUDA and ROCm.
+- **Agentic workflow generation and self-modifying graphs:** longer-horizon integration with LLM-based agents that can construct, inspect, and iteratively refine ComfyUI prompt JSON at runtime — using `GET /object_info` as a schema source — is a stated direction for the ComfyUI ecosystem, closing the loop between natural-language image intent and node-graph execution.

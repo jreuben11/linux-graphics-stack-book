@@ -1178,3 +1178,22 @@ This chapter connects to many other parts of the book:
 [17] Android Frame Timeline (Perfetto) — [perfetto.dev](https://perfetto.dev/docs/data-sources/frametimeline)
 
 [18] Android 10 Features — [developer.android.com](https://developer.android.com/about/versions/10/features)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **HWC3 (AIDL) wider adoption**: Android 13 introduced the HWC3 AIDL interface; near-term work focuses on migrating the remaining vendor HIDL HWC2 implementations to AIDL, with the `drm_hwcomposer` open-source HAL tracking the transition to provide a stable reference path for GKI devices.
+- **Gralloc5 / IMapper5 stabilisation**: The stable C API for `IMapper5` (landed in Android 14) is being picked up by more vendor Gralloc implementations; near-term activity includes testing and bug-fixing across Adreno, Mali, and PowerVR stacks to broaden the AIDL-first allocator ecosystem.
+- **Front-buffer rendering improvements**: Google is actively iterating on low-latency stylus and gaming paths that render directly into front buffers via `ASurfaceTransaction`; API additions and SurfaceFlinger scheduling changes to reduce input-to-display latency below one vsync period are in review.
+- **Android Frame Pacing updates**: The Android Game Development Kit's frame-pacing library is being updated to expose pipeline-depth controls and jank-detection hooks that feed into SurfaceFlinger's `FrameTimeline` Perfetto tracing, giving game developers tighter feedback loops.
+
+### Medium-term (1–3 years)
+- **Vulkan-only composition path for SurfaceFlinger**: Google has stated intent to move SurfaceFlinger's GPU fallback path from OpenGL ES to Vulkan exclusively, aligning with the broader deprecation of OpenGL ES in Android's framework and enabling GPU-driven layer blending via compute shaders.
+- **Display HDR10+ and Dolby Vision dynamic metadata**: Current HWC2/HWC3 support for dynamic HDR metadata (HDR10+, Dolby Vision profile 5/8) is vendor-specific; medium-term roadmap items include standardised AIDL `PerFrameMetadata` extensions so SurfaceFlinger can pass scene-by-scene tone-mapping instructions without vendor workarounds.
+- **AHardwareBuffer plane metadata via IMapper5**: The `IMapper5` stable C API opened the door to richer per-plane metadata (compression modifier, chroma siting, DRM format modifier); medium-term work aims to expose these through `AHardwareBuffer_describe()` extensions so NDK callers can query layout without dropping to vendor-specific Gralloc internals.
+- **Wayland compatibility layer research**: Several AOSP contributors have explored running Wayland applications on Android via a translation layer that maps `wl_buffer` and `wl_surface.commit` to `AHardwareBuffer` and `ASurfaceTransaction`; this remains experimental but is driving alignment between the two buffer-sharing ABIs.
+
+### Long-term
+- **Unified Linux/Android graphics HAL**: The convergence of Android's Generic Kernel Image (GKI) with mainline Linux DRM and the growing use of `drm_hwcomposer` points toward a long-term future where a single DRM-backed compositor stack can serve both Wayland and Android clients, with SurfaceFlinger and a Wayland compositor sharing a common display-HAL layer.
+- **Hardware-accelerated AI compositing**: Display controllers and NPUs on future SoCs are expected to handle tone mapping, super-resolution (analogous to Arm's `FidelityFX` proposals), and motion compensation in hardware; Android's HWC interface will need new composition type enumerants and metadata structures to expose these capabilities to SurfaceFlinger.
+- **Post-quantum secure Binder transport**: As the Android ecosystem moves toward hardware-attested secure channels for inter-process communication, the Binder FD-passing mechanism used to share `sync_file` fences and `AHardwareBuffer` handles is a candidate for cryptographic attestation, ensuring that display buffers containing sensitive content cannot be intercepted mid-pipeline.

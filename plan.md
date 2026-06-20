@@ -38,6 +38,7 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 15: ACO: AMD's Optimising Compiler](#chapter-15-aco-amds-optimising-compiler)
   - [Chapter 16: Mesa's Vulkan Common Infrastructure](#chapter-16-mesas-vulkan-common-infrastructure)
   - [Chapter 17: Software Renderers](#chapter-17-software-renderers)
+  - [Chapter 159: The Vulkan–Mesa–DRM Stack: A Full Vertical Slice](#chapter-159-the-vulkanmesadrm-stack-a-full-vertical-slice)
 - **Part V — Mesa GPU Drivers**
   - [Chapter 18: Vulkan Drivers](#chapter-18-vulkan-drivers)
   - [Chapter 19: OpenGL and Compatibility Drivers](#chapter-19-opengl-and-compatibility-drivers)
@@ -447,6 +448,27 @@ Chapters signal which perspective is emphasised where they diverge.
 - Use cases: CI without GPU hardware, CI conformance, Wayland compositor fallback, driver bringup
 - Performance characteristics and known limitations of each
 - **Integrations**: llvmpipe and Lavapipe consume NIR via LLVM (Ch14); they are primary targets for dEQP and piglit in headless CI (Ch31); Wayland compositors (Ch21, Ch22) fall back to llvmpipe when no GPU KMS backend is available; Zink sits above the Vulkan driver layer (Ch18) and beneath the Gallium OpenGL state tracker (Ch13)
+
+### Chapter 159: The Vulkan–Mesa–DRM Stack: A Full Vertical Slice
+- Vulkan loader: ICD discovery via JSON manifests, dispatch table construction, implicit/explicit layers
+- Mesa Vulkan common runtime: `vk_device`/`vk_instance`/`vk_physical_device` hierarchy, driver registration
+- Shader compilation end-to-end: `spirv_to_nir()` → NIR optimisation passes → ACO/BRW/NAK ISA backends; when `vkCreateGraphicsPipelines()` fires compilation
+- Command buffer recording: lifecycle (begin/record/end/submit), `VK_KHR_dynamic_rendering` vs render passes, pool and secondary buffer model
+- Descriptor sets and resource binding: layout/pool/set creation, GPU-memory descriptor implementation, push constants and push descriptors
+- Pipeline barriers, image layouts, and hazard tracking: execution/memory dependencies, layout transition hardware semantics, barrier implementation
+- GPU rasterisation pipeline and cache hierarchy: fixed-function stages, fragment quad invocation, framebuffer compression, L1/L2 cache topology
+- DRM kernel rendezvous: render vs primary nodes, GEM buffer lifecycle, command submission ioctls, `drm_gpu_scheduler`
+- GBM and DMA-BUF: allocation, format modifier negotiation, PRIME cross-device buffer sharing
+- Explicit GPU synchronisation: `drm_syncobj` timeline, death of implicit fences, Vulkan timeline semaphores, `linux-drm-syncobj-v1` Wayland protocol
+- NVIDIA three-stack coexistence: proprietary closed, nvidia-open (open kernel + closed userspace), nouveau+NVK fully open; GSP firmware role
+- Present path: `vkQueuePresentKHR` → Mesa WSI swapchain → `linux-dmabuf-v1` compositor import → KMS atomic commit → scanout; triple-buffer timing
+- Supporting subsystems: Resizable BAR / Smart Access Memory, IOMMU DMA safety, GPU microcode firmware
+- Memory types, heaps, and `VkMemoryAllocateInfo`: heap topology, allocation strategy, staging buffer upload patterns
+- Debugging the full stack: ioctl tracing, GPU hang debugging, NIR dumps, ACO/NAK/BRW disassembly
+- Mesa–Wayland bidirectional relationship: Mesa WSI as Wayland client, compositor as Mesa consumer, what Wayland core doesn't know about Mesa
+- Common performance patterns: persistent mapped UBOs, indirect draw / GPU-driven rendering
+- Full stack diagram (Mermaid): loader → Mesa common → driver → DRM → GPU → KMS
+- **Integrations**: Ch01 (DRM/GEM lifecycle), Ch04 (drm_gpu_scheduler), Ch12 (Mesa loader), Ch14 (NIR/spirv_to_nir), Ch15 (ACO backend), Ch16 (Vulkan common layer), Ch18 (RADV/ANV/NVK driver implementations), Ch21/Ch22 (Wayland compositor as Mesa consumer), Ch75 (explicit GPU sync / syncobj), Ch177 (NVK — NVIDIA Vulkan in Mesa)
 
 ---
 

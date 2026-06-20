@@ -1017,3 +1017,22 @@ __shared__ float smem[BLOCK_SIZE][BLOCK_SIZE + 1]; // +1 padding
 ---
 
 *Sources consulted: [ROCm documentation](https://rocm.docs.amd.com/), [ROCm GitHub](https://github.com/ROCm/ROCm), [HIP documentation](https://rocm.docs.amd.com/projects/HIP/en/latest/), [LLVM AMDGPU Backend](https://llvm.org/docs/AMDGPUUsage.html), [Linux kernel amdkfd sources](https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/amd/amdkfd), [MIOpen](https://github.com/ROCm/MIOpen), [RCCL](https://github.com/ROCm/rccl), [ROCm 6.4 release notes](https://rocm.docs.amd.com/en/docs-6.4.0/about/release-notes.html), [ROCm 7.2 release notes](https://rocm.docs.amd.com/en/docs-7.2.0/about/release-notes.html), [Phoronix Rusticl vs ROCm benchmark](https://www.phoronix.com/review/rocm-7-rusticl-opencl), [Omniperf/rocprof-compute documentation](https://rocm.docs.amd.com/projects/rocprofiler-compute/en/docs-6.2.4/what-is-omniperf.html), [PyTorch ROCm compatibility matrix](https://rocm.docs.amd.com/en/latest/compatibility/ml-compatibility/pytorch-compatibility.html), [AMD GPUOpen occupancy guide](https://gpuopen.com/learn/occupancy-explained/).*
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **RDNA4 full ROCm support**: RDNA4 (gfx1200/gfx1201) was added in ROCm 7.2 with initial coverage; full library tuning for hipBLASLt, MIOpen, and rocFFT on Navi44/Navi48 is actively in progress in the `rocm-libraries` monorepo.
+- **ROCm 8.x and Code Object v6**: The AMDGPU ABI is transitioning to Code Object v6 with extended kernel descriptor fields for CDNA4; ROCm 8.x is expected to standardize on COv6 while dropping COv2 compatibility shims that have been deprecated since ROCm 6.0.
+- **rocprofv3 SDK stabilization**: The `rocprofiler-sdk` C API (underlying `rocprofv3`) is being stabilized for public consumption, allowing profiling tool vendors to build on a stable counter-collection interface without vendor-private headers.
+- **AOTriton FA3 attention kernels**: AMD is developing FA3-class fused attention kernels for MI300X using CK tile programming, targeting parity with FlashAttention-3's throughput gains on CDNA3; patches are under review in the AOTriton repository.
+
+### Medium-term (1–3 years)
+- **CDNA4 (MI400 series) and next-generation Infinity Fabric**: The successor to MI300X is expected to increase inter-die bandwidth and HBM4 capacity; the KFD PASID and SVM infrastructure will need updates to support wider NUMA topologies across more GPU compute dies.
+- **Unified HIP/Vulkan compute interop**: AMD has stated goals to reduce the friction of sharing buffers between HIP compute and RADV Vulkan rendering without explicit DMA-BUF round-trips, potentially via a shared memory model in the KFD/DRM interface using persistent mapped BOs.
+- **First-class MLIR/OpenXLA backend**: The `iree-amd-aie` and ROCm IREE backends are converging toward a production-quality path where ML compilers (JAX, PyTorch Dynamo) can lower directly to AMDGPU without going through Triton, using MLIR's `rocdl` and `amdgpu` dialects as the stable codegen target.
+- **Expanded FP8 training support**: ROCm's hipBLASLt and MIOpen are adding broader FP8 (E4M3/E5M2) training kernels following CDNA3's hardware support; a stable `torch.float8_e4m3fnuz` training path on MI300X is targeted for a forthcoming PyTorch release.
+
+### Long-term
+- **Open firmware and open-source CP microcode**: AMD has expressed intent to open-source additional GPU firmware components, including the Command Processor (CP) microcode for CDNA-class GPUs; this would allow the community to audit and patch the firmware that drives AQL dispatch, reducing the closed-source surface of the ROCm stack.
+- **HIP as a cross-vendor standard**: The HIP API's CUDA compatibility layer has attracted interest from Intel (oneAPI/SYCL interop) and ARM (for server GPU compute); longer-term, HIP may evolve toward a multi-vendor portable compute API standard under Khronos or a similar body, reducing its current positioning as a CUDA migration tool.
+- **Kernel-bypass GPU compute via userspace drivers**: Following the precedent of `rust-gpu` and the Nova Rust NVIDIA driver, AMD has exploratory work on userspace-side command submission for ROCm that would reduce KFD IOCTL overhead for short-running inference kernels, enabling sub-microsecond dispatch latency for edge inference on RDNA APUs.

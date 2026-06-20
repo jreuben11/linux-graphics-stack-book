@@ -965,3 +965,22 @@ Application (game, compute, media, browser)
 - [WCCFTech: XeSS 1.3 SDK new presets](https://wccftech.com/intel-xess-1-3-sdk-new-presets-scaling-factors-boost-performance-updated-xmx-dp4a-models/)
 - [Khronos: Vulkan 1.4 press release](https://www.khronos.org/news/press/khronos-streamlines-development-and-deployment-of-gpu-accelerated-applications-with-vulkan-1.4)
 - [AddictiveTips: Intel Battlemage Arc B580 & B570 specs](https://www.addictivetips.com/news/intel-battlemage-arc-b580-b570-specs-features-pricing/)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **Xe3 (Panther Lake) upstream stabilisation**: Xe3-LPG (graphics_verx100 3000–3005) patches are actively landing in the xe driver; expect full GuC, display, and ANV support to reach upstream in Linux 6.14–6.15 alongside the iHD and NEO compute-runtime updates for Panther Lake.
+- **Xe driver SR-IOV hardening**: SR-IOV virtual function support for cloud and virtualisation deployments is under active development in xe.ko; near-term patches focus on LMEM partition management and VF-to-PF CTB communication stability under multi-tenant workloads.
+- **XeSS 2.x quality model updates**: Intel's cadence of XeSS-SR and XeSS-FG model refreshes (via SDK point releases) continues; expect improved temporal stability on fast-motion scenes and lower per-frame XMX utilisation from quantisation improvements.
+- **ANV Vulkan 1.4 conformance submissions for Xe3**: With Xe2 conformance complete, Intel is expected to submit Xe3/Panther Lake conformance results and enable new extensions such as `VK_KHR_video_encode_av1` in ANV on the updated xe backend.
+
+### Medium-term (1–3 years)
+- **Xe4 (Nova Lake / Celestial) architecture**: Intel's next discrete GPU generation is expected to introduce architectural changes to the Xe-core compute hierarchy; the xe driver's GMD versioning scheme (graphics_verx100) is designed to accommodate new IP versions without a driver rewrite, and new Xe4 ISA support will be integrated into IGC and the Mesa BRW/Elk compiler backend.
+- **Open-source XeSS and media kernels**: Intel has stated intent to open-source XeSS-SR shader code and the remaining proprietary CM/MDF media kernels in iHD (including AV1 film grain synthesis); medium-term completion of this work would allow fully open rebuilds of both the upscaling and video encode pipelines.
+- **SYCL 2020 and Level Zero alignment with Vulkan compute**: The NEO compute-runtime is tracking the Level Zero 2.x specification; closer integration between Level Zero contexts and Vulkan device memory models (interop via `VK_EXT_external_memory_host` and timeline semaphores) is a stated roadmap goal for unified AI + graphics workloads.
+- **iHD VVC (H.266) decode support**: Panther Lake introduces VVC hardware decode capability; the iHD media driver will need corresponding `VAProfileVVCMain10` support once the xe/kernel-side VDBox programming interface for VVC is stabilised upstream.
+
+### Long-term
+- **Unified xe driver for all Intel GPUs**: The long-term intent is to eventually absorb the remaining i915-only platforms (Alder Lake and older integrated GPUs) into xe or a shared successor, eliminating the parallel maintenance burden; this is a multi-year effort gated on preserving feature parity for display, Wayland, and OpenGL workloads on those platforms.
+- **Hardware-accelerated ray tracing on compute path**: Intel has outlined plans to expose RTU units through the Level Zero / oneAPI compute stack (not just Vulkan RT), enabling general-purpose ray-tracing workloads in SYCL programs without requiring Vulkan; this requires new Level Zero extensions and IGC compiler support for RT dispatch.
+- **Heterogeneous tile scaling (multi-tile Xe for client GPUs)**: Lessons from Ponte Vecchio's multi-tile architecture may inform future client discrete GPUs; the xe driver's `xe_tile` / `xe_gt` abstraction is already designed for multi-tile configurations, positioning it to support higher-end successors to Battlemage with chiplet-style GPU dies.

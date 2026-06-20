@@ -1248,3 +1248,21 @@ A RenderDoc shader replacement workflow: capture the SPIR-V via `MESA_SPIRV_DUMP
 - [Mesa SPIR-V Debugging](https://docs.mesa3d.org/spirv/index.html)
 - [Mesa src/compiler/spirv/](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/compiler/spirv)
 - [Vulkan Versions & Porting Guide](https://docs.vulkan.org/guide/latest/versions.html)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **SPIR-V 1.7 and Vulkan 1.4 toolchain alignment**: spirv-tools and glslang are being updated to fully validate SPIR-V 1.7 modules, including stricter rules around `OpTerminateInvocation` and the promoted `SPV_KHR_maximal_reconvergence` extension; spirv-val target-env `vulkan1.4` is expected to ship in the next SPIRV-Tools release.
+- **glslang HLSL removal**: The deprecated HLSL front end in glslang is scheduled for removal at the next major version bump, completing the handoff of all HLSL-to-SPIR-V workloads to DXC; downstream projects (ANGLE, Dawn) are already defaulting to DXC for HLSL inputs.
+- **SPIRV-Cross ray tracing and mesh shader transpilation**: Active development is underway to extend SPIRV-Cross MSL output to handle `SPV_KHR_ray_tracing` execution models for MoltenVK's Metal 3 ray-tracing backend, and to emit `SPV_EXT_mesh_shader` as `[[mesh]]` functions in MSL.
+- **spirv-opt ML-targeting passes**: A new `--cooperative-matrix-layout` pass is in review to canonicalize `OpCooperativeMatrixLoadKHR` stride operands, improving downstream driver optimization for tensor workloads on NVIDIA and AMD hardware.
+
+### Medium-term (1–3 years)
+- **Naga/wgpu as a first-class SPIR-V front end**: The wgpu project's Naga shader translation library is maturing toward full SPIR-V 1.6 emission parity with Tint/Dawn; if adopted by Mesa's Rusticl or by additional Vulkan drivers, it would add a second well-maintained WGSL-to-SPIR-V path alongside Tint.
+- **MLIR SPIR-V dialect feature parity**: The MLIR `spirv` dialect is tracking new Khronos extensions including `SPV_KHR_tensor_addressing` and extended cooperative matrix layouts; once these land, MLIR-based ML compilers (IREE, XLA) will be able to emit SPIR-V for all matrix tile sizes exposed by current GPU generations without fallback to vendor-specific extensions.
+- **spirv-reflect descriptor-indexing support**: Bindless rendering patterns that use `VK_EXT_descriptor_indexing` with runtime-sized arrays are not fully introspectable today; a planned rework of spirv-reflect's type walker will add array-stride and runtime-array detection to the reflection API, enabling engine-side automatic bindless layout construction.
+- **Mesa spirv_to_nir parallel parsing**: Mesa's SPIR-V front end currently processes the instruction stream sequentially; a proposal to parallelize type resolution and constant evaluation across worker threads (mirroring the NIR parallel lowering work) is under design review on the mesa-dev mailing list.
+
+### Long-term
+- **SPIR-V as a stable cross-vendor ML IR**: Khronos is actively developing `SPV_KHR_tensor_layout` and `SPV_KHR_subgroup_rotate` as building blocks for a standardized tensor-compute dialect within SPIR-V, potentially displacing vendor-specific PTX/GCN IR for portable inference workloads on Linux.
+- **Integrated SPIR-V source debugging in Mesa**: Long-term plans for Mesa include consuming `NonSemantic.Shader.DebugInfo.100` annotations natively inside the driver's pipeline compilation path to generate DWARF-annotated GPU disassembly, enabling debuggers like `radeon-gpu-analyzer` and `intel_gpu_top` to correlate GPU counters with shader source lines without a separate offline tool step.

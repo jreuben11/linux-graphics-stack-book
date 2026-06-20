@@ -1064,3 +1064,22 @@ Implementations seeking Khronos conformance must pass all mandatory tests and re
 ---
 
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **rusticl fine-grain SVM and full OpenCL 3.0 CTS pass on radeonsi**: Karol Herbst's ongoing Mesa MRs target completing fine-grain SVM buffer support on radeonsi, the last major gap before rusticl can achieve conformance certification on AMD hardware to match the existing Intel iris submission.
+- **AMD ROCm OpenCL 3.0 conformance**: AMD's CLR roadmap targets OpenCL 3.0 certification for CDNA3 (MI300X) and RDNA3 hardware; the work involves completing the optional-feature tier (fine-grain SVM, pipes, device-side enqueue) required for a Khronos-accepted submission.
+- **`cl_khr_unified_svm` extension ratification**: The Khronos OpenCL working group has a draft specification for a portable USM extension (`cl_khr_unified_svm`) that standardises what Intel's `cl_intel_unified_shared_memory` currently provides; Intel NEO and rusticl are expected to ship initial implementations once the spec is ratified.
+- **pocl LLVM 21 stabilisation and RVV (RISC-V Vector) improvements**: pocl 7.x stabilises LLVM 21 support for the CPU backend, with active upstream work on scalable-vector (SVE/RVV) autovectorisation paths that improve throughput on AArch64 servers and RISC-V SBCs.
+
+### Medium-term (1–3 years)
+- **rusticl as the default Mesa OpenCL on all major distributions**: As rusticl achieves CTS conformance on radeonsi, Fedora, Ubuntu, and Arch are expected to pre-enable it by default (via `gallium-rusticl-enable-drivers=radeonsi,iris`) and begin the deprecation process for Clover, which is then expected to be removed from Mesa entirely.
+- **Clover removal from Mesa**: Clover is officially on a maintenance-only trajectory; once rusticl passes the mandatory CTS on the drivers Clover currently targets (radeonsi, iris, softpipe), the removal MR is expected to land, reducing the Gallium frontend maintenance surface significantly.
+- **`cl_khr_external_semaphore` and DMA-BUF interop becoming first-class in all major ICDs**: Adoption of the 2021 OpenCL 3.0 interop extension set (`cl_khr_external_memory_dma_buf`, `cl_khr_external_semaphore`) across Intel NEO, AMD CLR, and rusticl will enable zero-copy V4L2-to-OpenCL-to-display pipelines without application-specific workarounds, aligning with the broader Linux graphics stack's DMA-BUF-first memory model.
+- **OpenCL 3.1 specification work**: The Khronos OpenCL working group has active proposals for a 3.1 revision incorporating work-graph extensions (analogous to D3D12 work graphs), extended subgroup operations, and tighter SPIR-V 1.7 alignment; open-source implementations are tracking the provisional specifications.
+
+### Long-term
+- **Convergence of OpenCL and SYCL kernel representation around SPIR-V**: The long-term Khronos trajectory is for OpenCL C to remain supported but for SPIR-V (from SYCL/DPC++, Clang, or offline compilation) to become the dominant ingestion path; this will deepen the integration between `clCreateProgramWithIL`, the SPIR-V Tools ecosystem, and Mesa's `spirv_to_nir()` pipeline — blurring the line between OpenCL and Vulkan compute at the IR level.
+- **Unified kernel interface for heterogeneous compute (HSA 2.0 / Vulkan SC alignment)**: As ROCm's HSA runtime, Vulkan compute, and OpenCL converge on DMA-BUF and timeline semaphore synchronisation primitives, the architectural distinction between submitting an OpenCL NDRange and a Vulkan compute dispatch may reduce to a thin API layer above a shared kernel command-submission interface (DRM GEM + syncobj), enabling tighter cross-API scheduling in compositors and media pipelines.
+- **OpenCL on RISC-V and emerging accelerator architectures**: pocl's LLVM-first architecture positions it as the implementation most likely to support next-generation RISC-V GPU and AI-accelerator targets (e.g., OpenHW Group's CVA6-based GPU IP, Milk-V and StarFive RVV platforms); long-term, OpenCL's vendor-neutral ICD model may be the path of least resistance for bringing heterogeneous compute to open-hardware ecosystems.

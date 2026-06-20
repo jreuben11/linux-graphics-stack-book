@@ -1069,3 +1069,21 @@ The `/proc/driver/nvidia/` paths described in Section 9.2 are the NVIDIA-documen
 23. CUDA Context-Independent Module Loading (NVIDIA Technical Blog): https://developer.nvidia.com/blog/cuda-context-independent-module-loading/
 
 24. nebuly-ai/nos — GPU partitioning modes comparison (MPS vs MIG): https://nebuly-ai.github.io/nos/dynamic-gpu-partitioning/partitioning-modes-comparison/
+
+## Roadmap
+
+### Near-term (6–12 months)
+- CUDA 13.x will extend Green Contexts (`cudaGreenCtxCreate`) to expose finer-grained SM partitioning on Blackwell (GB200/GB300), enabling intra-process resource isolation without MIG overhead on multi-tenant inference nodes.
+- The Open Kernel Modules are expected to drop the last remaining closed-source firmware blobs for Hopper and Blackwell, completing the transition to a fully source-available driver stack on modern NVIDIA hardware.
+- NVRTC bundled header support (introduced in CUDA 13.3) will be extended to cover additional CCCL components (Thrust 2.x, CUB, libcu++) so that Toolkit-free deployment is practical for production ML inference workloads.
+- CUDA Graphs conditional node types (IF-ELSE, SWITCH, WHILE, introduced in CUDA 12.4–12.8) are expected to receive performance tuning for Blackwell's new command processor, reducing the overhead of on-device branching in training loops.
+
+### Medium-term (1–3 years)
+- Grace Blackwell (GB200) NVLink-C2C unified addressing will expand HMM semantics to hardware-coherent CPU-GPU shared memory, removing the need for explicit `cudaMallocManaged` prefetch and migrate calls in many workloads.
+- MIG is expected to gain support for time-shared GPU Instances on Blackwell and successors, blending MIG's hardware isolation with MPS-style temporal multiplexing for bursty workloads that do not warrant a full MIG slice.
+- The CUDA stream and graph APIs are likely to absorb concepts from the emerging Khronos Vulkan `VK_KHR_video_queue` and `VK_KHR_synchronization2` models, enabling tighter CUDA-Vulkan interop timelines in media and rendering pipelines without round-tripping through CPU synchronization.
+- NVML's GPU Performance Monitoring (GPM) API is expected to be extended to Blackwell's new tensor core and NVLink telemetry counters, enabling finer-grained per-operation profiling through `nvmlGpmMetricsGet`.
+
+### Long-term
+- As NVIDIA's open-source Nouveau/NVK Mesa driver (Ch10) matures for compute workloads, a community-maintained open alternative to `libcuda.so` (building on the GSP firmware interface) may emerge, enabling CUDA-compatible compute dispatch from non-proprietary driver stacks on Turing and later hardware.
+- The boundary between CUDA streams and Vulkan queues is likely to converge further; a unified GPU timeline abstraction shared across compute and graphics — analogous to how `sched_ext` provides a unified CPU scheduling extension point — would simplify mixed compute/render pipelines and reduce synchronization overhead across the API boundary.

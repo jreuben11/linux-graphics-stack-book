@@ -1174,3 +1174,22 @@ This chapter connects to the following chapters across the book:
 ---
 
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **Android XR SDK stabilization**: Jetpack XR (`androidx.xr`) is transitioning from alpha to beta, with API surface stabilization expected for `androidx.xr.scenecore` and `androidx.xr.compose` targeting the Project Moohan headset launch window; developers should watch the [Jetpack XR releases page](https://developer.android.com/jetpack/androidx/releases/xr) for stable API guarantees.
+- **ARCore Geospatial API expansion**: Google is actively extending VPS coverage beyond current Street View–dense urban areas, with rural and indoor coverage improvements announced at Google I/O 2025; the `ArGeospatialPose` altitude accuracy on terrain-relative anchors (`ArEarth_resolveAnchorOnTerrainAsync`) is a known area of active refinement.
+- **OpenXR extension ratification on Android**: The `XR_ANDROID_trackables` and `XR_ANDROID_eye_tracking` extensions are moving through Khronos working-group review, with ratification expected to land in ARCore and Android XR services updates without requiring an OS upgrade.
+- **Depth API improvements via ML**: ARCore's MotionStereo depth model is being retrained on larger datasets collected from the broader Android device fleet; expect depth map resolution and accuracy improvements to arrive silently via Play Services ARCore updates without API surface changes.
+
+### Medium-term (1–3 years)
+- **Android XR multi-headset ecosystem**: Beyond Samsung Project Moohan, additional OEM headsets based on Snapdragon XR2 Gen 2 and successor chips are expected to certify for Android XR; ARCore's device-validation model is being extended to cover headset form factors in addition to the current phone-centric supported-devices list.
+- **Tighter NPU integration for AR workloads**: As Qualcomm Hexagon NPU and MediaTek APU generations expose more fine-grained inference APIs (via NNAPI 2.x and Android's ML inference acceleration framework), ARCore's Scene Semantics and MotionStereo models are expected to migrate fully off GPU shader cores onto dedicated accelerators, freeing GPU bandwidth for the application render workload.
+- **Monado and libcamera convergence for Linux AR**: The Monado SLAM tracker subsystem's Basalt/OpenVINS integration is maturing; as libcamera's Android compatibility layer (`libcamera-android`) stabilizes, it becomes feasible to run a Monado-based AR session on the same libcamera stack that powers Android's Camera HAL, enabling shared SLAM algorithm development across Linux and AOSP.
+- **Persistent Cloud Anchors scalability**: Google is expanding the ARCore Cloud Anchor infrastructure to support larger-scale persistent maps (building-scale and campus-scale) via a Tile-based VPS localization layer built on the same 3D map tiles as the Geospatial API, reducing reliance on per-anchor feature descriptors for persistent shared experiences.
+
+### Long-term
+- **Standardized AR semantic APIs via OpenXR**: The Khronos OpenXR working group is evaluating AR-specific scene-understanding extensions (`XR_EXT_scene_understanding` derivatives) that would subsume ARCore's proprietary `ArPlane`, `ArDepthImage`, and `ArSemanticImage` APIs under a vendor-neutral interface, enabling Monado and non-Google runtimes to expose the same capabilities on Linux and future Android forks.
+- **Open hardware AR sensor integration**: As open RISC-V SoCs with dedicated vision/ISP coprocessors emerge (e.g., Allwinner T-series, Milk-V Venus), and as MIPI CSI-2 camera hardware becomes commodity on single-board computers, the Monado + libcamera + open VIO stack is expected to reach feature parity with ARCore on constrained hardware for robotics and embedded AR use cases — with the open firmware model that proprietary Hexagon DSP and Apple Neural Engine currently preclude.
+- **Headset-native passthrough standardization**: Long-term convergence between Meta's `XR_FB_passthrough`, Microsoft's `XR_MSFT_composition_layer_reprojection`, and Android XR's passthrough compositor APIs into a single `XR_KHR_passthrough` Khronos core extension would allow a single AR renderer codebase to target ARCore on phones, Android XR headsets, and Linux Monado runtimes without platform-specific passthrough layer code.

@@ -1006,3 +1006,22 @@ This chapter connects directly to the following chapters:
 - V4L2 M2M API: [kernel.org/doc/html/latest/userspace-api/media/v4l/dev-mem2mem.html](https://www.kernel.org/doc/html/latest/userspace-api/media/v4l/dev-mem2mem.html)
 - VideoLAN SoC 2026: [wiki.videolan.org/SoC_2026](https://wiki.videolan.org/SoC_2026/)
 - VLC nightly builds: [nightlies.videolan.org](https://nightlies.videolan.org/)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- VLC 4.0 stable release is approaching; the Qt6 UI, Vulkan renderer, and libplacebo HDR pipeline are targeted for the first stable 4.0 tag, with subtitle rendering in Vulkan shaders completing the feature set required for a production release.
+- The `linux-drm-syncobj-v1` explicit synchronisation path in the Wayland output is being finalised; once compositor support (Mutter 48+, KWin 6.4+) is widespread, it will land as the default, eliminating `vaSyncSurface()` CPU stalls.
+- libplacebo Dolby Vision Profile 5 (IPT-PQ) processing is an active VideoLAN SoC 2026 project; when complete, VLC will natively tone-map Dolby Vision streams on the Vulkan path without CPU preprocessing.
+- NVIDIA VA-API decode quality is improving via `nvidia-vaapi-driver` upstream contributions; AV1 hardware decode on RTX 40-series via the VA-API bridge is expected to stabilise in the next VLC stable update cycle.
+
+### Medium-term (1–3 years)
+- The V4L2 stateless codec API adoption is broadening across ARM SoC vendors (MediaTek MT8195, Qualcomm SA8775P); VLC's FFmpeg `avcodec` V4L2 hwaccel path will gain zero-copy DMA-BUF export to Wayland on these platforms, matching the existing VA-API pipeline quality.
+- VLC's `--sout` transcode chain is expected to gain a zero-copy VA-API encode path where both decoder and encoder share a `VADisplay`, eliminating the GPU→CPU→GPU round-trip for HEVC and AV1 encode on Intel Arc and AMD RDNA3 hardware.
+- PipeWire integration will deepen beyond playback: VLC's screen capture (`vlc screen://`) is expected to fully adopt the XDG desktop portal screencast API with camera and microphone isolation, making it compliant with Flatpak sandbox constraints.
+- The libadwaita/GTK4 UI prototype may mature into a shipping alternative to the Qt6 interface for GNOME-centric distributions, providing adaptive layout for tablet and portable use cases.
+
+### Long-term
+- As Vulkan Video (VK_KHR_video_decode_queue) matures and driver support broadens, VLC may add a native Vulkan decode path that keeps the entire pipeline — decode, tone mapping, scaling, composition — within a single Vulkan device, removing the VA-API inter-API hand-off entirely.
+- WebAssembly / WASI threading improvements may make VLC.js a viable hardware-decode-capable player in browsers, with Vulkan via WebGPU as the renderer backend, erasing the current software-only limitation for browser-embedded VLC.
+- Long-term convergence of VLC's Android, iOS, and desktop codebases around a shared libVLC core with platform-specific Vulkan/Metal/D3D12 renderers — a direction signalled by the modular renderer abstraction introduced in VLC 4.0 — could make VLC a true cross-platform Vulkan media framework.

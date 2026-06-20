@@ -1321,4 +1321,24 @@ The libraries in this chapter form the base layer of almost every production Vul
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+- **VMA 3.x maintenance and Vulkan 1.4 alignment.** AMD is tracking Vulkan 1.4 promotions (notably `VK_KHR_maintenance5` and `VK_EXT_memory_priority`) into VMA's default flag set; expect `VmaAllocatorCreateInfo` flag additions mirroring the new extension landscape. [Source: VMA GitHub issues and milestone tracker](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/issues)
+- **vk-bootstrap Vulkan 1.4 feature selectors.** `set_required_features_14` covering `VkPhysicalDeviceVulkan14Features` (maintenance6, push descriptor, dynamic rendering local read) is being prototyped in the vk-bootstrap main branch as Vulkan 1.4 adoption spreads. [Source: charles-lunarg/vk-bootstrap pull requests](https://github.com/charles-lunarg/vk-bootstrap/pulls)
+- **Dear ImGui Vulkan backend SDL3 stabilisation.** The `imgui_impl_sdl3` backend stabilised alongside SDL3's 3.0 release; ongoing work targets `ImGuiBackendFlags_RendererHasTextures` for automatic font atlas management, reducing per-frame CPU overhead in applications with many font sizes.
+- **Tracy 0.12 GPU calibration improvements.** Tracy's next major release targets improved `VK_EXT_calibrated_timestamps` support on Mesa/RADV and ANV, addressing sub-millisecond drift in long profiling sessions.
+
+### Medium-term (1–3 years)
+- **VMA sparse and virtual resource support.** AMD's architecture roadmap for VMA includes first-class `VK_SPARSE_*` binding helpers, enabling sparse residency patterns (virtual textures, megatexture streaming) to integrate with VMA's budget and defragmentation infrastructure without manual `VkSparseMemoryBind` management.
+- **Shader object integration in the helper stack.** As `VK_EXT_shader_object` displaces `VkPipeline` in more workloads, shaderc and SPIRV-Reflect are expected to add direct `VkShaderEXT` creation paths; the hot-reload pattern in Section 8 would reduce from full `vkCreateComputePipelines` recreation to an atomic shader-object swap.
+- **volk multi-device table ergonomics.** As Vulkan multi-adapter scenarios become more common on laptop-class hardware (integrated + discrete), `VolkDeviceTable` usage patterns and CMake integration are being documented and may be extended with automatic per-thread device table selection to reduce multi-GPU boilerplate.
+- **SPIRV-Reflect GLSL-Reflect convergence.** The Khronos SPIRV-Reflect team is tracking overlap with glslang's reflection API; a unified C ABI for shader introspection (covering both SPIR-V binaries and GLSL source) is under discussion as part of the Vulkan SC and OpenGL SC toolchain consolidation.
+
+### Long-term
+- **GPU-driven memory management integration.** As GPU-driven rendering (indirect draw, mesh shaders, work graphs) eliminates most per-frame CPU-to-GPU buffer updates, VMA's suballocation model is expected to evolve toward persistent residency pools with GPU-side reclamation signals, reducing the CPU overhead of `vmaBeginDefragmentation` in streaming asset scenarios.
+- **Standardised Vulkan application bootstrap layer.** The Khronos Vulkan working group has discussed a standardised `VK_LAYER_KHRONOS_profiles`-style mechanism for instance/device selection that would subsume parts of vk-bootstrap's device scoring logic into the loader itself, potentially reducing the need for third-party bootstrap libraries in production deployments.
+
+---
+
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

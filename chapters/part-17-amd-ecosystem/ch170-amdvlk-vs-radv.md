@@ -943,3 +943,22 @@ This chapter connects to several others in the book:
 ---
 
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **RADV user-queue enablement for RDNA4**: The experimental user-queue submission path (`amdgpu_userq`), which bypasses the kernel CS ioctl and reduces dispatch latency, is being finalised for RDNA4 (GFX12) hardware; Mesa MRs tracking this work are expected to land in Mesa 26.x or 27.0.
+- **VK_AMDX_shader_enqueue stabilisation**: AMD and Valve are collaborating to refine the work-graph pipeline extension beyond its experimental status; a non-`AMDX` KHR proposal is under Khronos Working Group discussion, with RADV likely to be the reference Linux implementation.
+- **Vulkan Video encode on RADV**: H.264 and H.265 encode support via `VK_KHR_video_encode_queue` is in active development in Mesa; patches have been posted to the Mesa mailing list targeting RDNA2+ hardware, complementing the existing decode path.
+- **ACO RDNA4 (GFX12) optimisation**: ACO's instruction scheduler and register allocator are being tuned for RDNA4's updated wave-front model and new dual-issue compute execution units, with profiling-driven patches expected throughout 2026.
+
+### Medium-term (1–3 years)
+- **Full ACO parity with LLPC on compute-heavy workloads**: As LLM inference via Vulkan compute grows (llama.cpp, ExecuTorch Vulkan backend), ACO's matrix-multiply and reduction kernel quality is being systematically improved; the medium-term goal is to match or exceed what LLPC achieved on compute-intensive shaders.
+- **Sparse resources and opacity micromap (OMM) in RADV**: `VK_EXT_opacity_micromap` (for ray tracing against masked geometry, e.g., foliage) and improved `VK_EXT_image_sliced_view_of_3d` / sparse image support are on the RADV backlog following AMDVLK's archival; AMD's hardware supports these features and driver-level work is expected.
+- **XGL/LLPC code reuse in downstream tools**: Although AMDVLK itself is archived, AMD has signalled that LLPC will live on as a compiler component for ROCm offline shader compilation (`amdllpc`) and the AMDGPU back-end in LLVM; further consolidation between the Mesa NIR/ACO path and LLPC's middle-end (LGC) remains a long-discussed possibility.
+- **Descriptor buffer and bindless improvements**: `VK_EXT_descriptor_buffer` landed in both drivers; the next phase — full bindless rendering with `VK_EXT_device_generated_commands` — is under active development in RADV, following Vulkan 1.4 promotion of this extension.
+
+### Long-term
+- **Single AMD open-source driver for all APIs**: With AMDVLK archived and ROCm's HIP compiler increasingly sharing infrastructure with Mesa's LLVM/ACO path, AMD's stated long-term direction is a unified open-source software stack where Vulkan, OpenGL (RadeonSI), OpenCL (Clover/rusticl), and HIP share front-ends over a common ACO or LLVM back-end.
+- **Ray tracing hardware specialisation on future RDNA architectures**: RDNA5 and beyond are expected to introduce dedicated ray tracing execution units; RADV's BVH builder (currently software-based, inherited from GPURT design concepts) will need hardware acceleration hooks analogous to what GPURT provided for AMDVLK, likely via new `amdgpu` kernel uAPI and RADV pipeline extensions.
+- **Convergence of Vulkan and ROCm dispatch paths**: The `amdgpu` kernel module already serves both graphics (`amdgpu`) and compute (`amdkfd`) clients; long-horizon work targets a unified queue model where RADV Vulkan compute and ROCm HIP kernels can share command queues and memory residency management without context switches between the two scheduler paths.

@@ -495,3 +495,22 @@ The `wl_shm` path used by foot is the same shared-memory buffer upload path used
 15. wgpu project (Rust GPU abstraction used by WezTerm and Bevy): [https://github.com/gfx-rs/wgpu](https://github.com/gfx-rs/wgpu)
 
 16. naga shader IR (WGSL → SPIR-V translation, used by wgpu): [https://github.com/gfx-rs/wgpu/tree/trunk/naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- Ghostty's Vulkan backend for Linux is expected to land on the main branch; it will replace the GTK4/OpenGL path as the preferred Linux renderer, removing the GTK4 runtime dependency and allowing lower-latency frame submission via `VK_EXT_present_timing`. [Source](https://github.com/ghostty-org/ghostty/tree/main/src/renderer)
+- Sixel support in Ghostty is under active development and is expected to reach users in an upcoming release, making Ghostty the only terminal with both SIMD-optimised VT parsing and full pixel-protocol breadth (Kitty Graphics Protocol + Sixel). [Source](https://github.com/ghostty-org/ghostty/issues)
+- libghostty's C API is tracking toward a stabilised 1.0 ABI; once declared stable, editors and compositors embedding it can depend on a versioned interface without tracking Ghostty main-branch churn. [Source](https://libghostty.tip.ghostty.org)
+- GTK 4.18 is expected to bring further GSK Vulkan renderer optimisations, including improved render-node batching for consecutive `GskTextNode` runs, reducing the number of Vulkan draw calls VTE-based terminals issue per frame. [Source](https://blog.gtk.org/2024/)
+
+### Medium-term (1–3 years)
+- Alacritty's maintainers have discussed a Vulkan rendering backend (via `ash` or `wgpu`) to replace the current OpenGL renderer; this would eliminate the last OpenGL dependency in a codebase that already treats GPU rendering as a latency-critical path, and would open the door to `VK_EXT_present_timing` for more accurate frame scheduling.
+- wgpu is expected to expose WebGPU compute shaders to terminal applications; WezTerm could use a compute shader for text shaping and atlas packing rather than the current CPU-driven skyline bin-packing, moving glyph cache management partially onto the GPU and freeing a CPU thread.
+- The `wp_commit_timing_v1` and `wp_fifo_v1` Wayland protocol extensions (in the wayland-protocols staging area as of 2026) will allow terminals to submit frames with explicit presentation timestamps, enabling more precise input-to-photon scheduling for terminals like kitty and Ghostty that already separate parse and render threads.
+- VTE and GNOME Terminal are expected to enable Sixel by default in a future GNOME release once the Sixel context decoder has accumulated sufficient compatibility testing; the current opt-in build flag (`-Dsixel=true`) and widget-level toggle are interim measures.
+
+### Long-term
+- As Wayland compositors gain support for direct scanout of terminal-sized surfaces (via `DRM_FORMAT_MOD_LINEAR` scanout for fullscreen terminal windows), GPU terminals may be able to bypass the compositor's compositing pass entirely for fullscreen use, reducing the display pipeline latency to KMS pageflip timing rather than compositor commit timing.
+- A unified pixel-graphics protocol that merges the Kitty Graphics Protocol's virtual placement model with Sixel's ubiquity is a recurring topic on the terminal-wg mailing list; standardisation through the Wayland protocols repository or a freedesktop.org specification would allow terminals to implement a single GPU upload path rather than maintaining separate decoders for each protocol.
+- SIMD-accelerated VT parsing, pioneered by Ghostty, is likely to be adopted by VTE and other terminals as AVX-512 and NEON SVE become more widely available; a shared parsing library (analogous to how FreeType and HarfBuzz are shared) would allow the ecosystem to consolidate this work rather than each terminal re-implementing it.

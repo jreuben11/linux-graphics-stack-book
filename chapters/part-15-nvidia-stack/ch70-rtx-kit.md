@@ -733,3 +733,22 @@ At 1440p with DLSS Quality mode (rendering at 960p), the RTX Kit overhead scales
 10. [VK_NV_cooperative_vector specification — registry.khronos.org](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_NV_cooperative_vector.html)
 11. [NRD Integration Guide — github.com/NVIDIA-RTX/NRD/blob/master/Docs/NRD.md](https://github.com/NVIDIA-RTX/NRD/blob/master/Docs/NRD.md)
 12. [Slang Neural Shaders integration — github.com/NVIDIA-RTX/RTX-Neural-Shaders/blob/main/docs/SlangIntegration.md](https://github.com/NVIDIA-RTX/RTX-Neural-Shaders/blob/main/docs/SlangIntegration.md)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **VK_KHR_cooperative_vector ratification**: The `VK_NV_cooperative_vector` extension is on track for promotion to `VK_KHR_cooperative_vector` through the Khronos Vulkan Working Group, which will extend tensor-core-backed MLP inference (RTXNS, RTXNTC) to AMD RDNA 4 and Intel Battlemage hardware, removing the NVIDIA-only limitation.
+- **NRD v5.0 with Ray Reconstruction integration path**: NRD is expected to ship a co-operative mode that feeds directly into DLSS 4 Ray Reconstruction's transformer, enabling the two systems to share history buffers and reduce the combined denoiser+upscaler latency by approximately 30%.
+- **RTXDI v3.1 ReSTIR GI**: An in-progress branch on the RTXDI GitHub tracks ReSTIR GI (spatiotemporal reuse for global illumination path suffixes), which would allow RTXDI to partially replace RTXGI SHaRC for small-to-medium scenes at a lower integration cost.
+- **RTXNTC v1.0 with Vulkan-native training**: RTXNTC's offline encoder currently requires CUDA; a Vulkan compute training backend is in active development to support non-CUDA toolchains (e.g., Linux ROCm build environments and CI pipelines without a CUDA toolkit).
+
+### Medium-term (1–3 years)
+- **Online NRC convergence on Blackwell**: Blackwell's 5th-generation tensor cores, with native FP8 accumulation and higher FLOPS/watt, are expected to reduce NRC per-frame training overhead from ~4–8 ms to under 2 ms on RTX 50xx, making NRC the default indirect illumination path (replacing SHaRC) for enclosed and architectural scenes.
+- **Unified RTX Kit render graph API**: NVIDIA has signalled intent to provide a render-graph-aware abstraction layer over all five SDKs, replacing the current per-SDK manual command-buffer injection pattern and enabling automatic inter-SDK barrier insertion, resource aliasing, and async compute scheduling.
+- **RTXNS support for recurrent network topologies**: Current RTXNS is limited to feed-forward MLPs due to the stateless CoopVec dispatch model; planned extensions to the cooperative vector shader model would enable GRU/LSTM cells evaluated across shader threads, opening neural animation and temporal network inference inside shaders.
+- **SPIRV-Tools cooperative_vector validation**: The SPIR-V ecosystem (spirv-val, spirv-cross) is expected to gain full `cooperative_vector` capability support, removing the current workaround of using Vulkan validation layers instead of standard SPIR-V tooling for RTXNS shaders.
+
+### Long-term
+- **Fully neural rendering pipeline**: The architectural direction across RTXGI NRC, RTXNS, and RTXNTC points toward a pipeline where the distinction between material evaluation, lighting, denoising, and upscaling dissolves into a single large neural model trained per-scene — a trajectory visible in NVIDIA's research on NeAT (Neural Appearance Tables) and in the long-term Omniverse RTX roadmap.
+- **Open Khronos neural rendering standard**: As cooperative vector and neural texture sampling patterns consolidate across vendors, a Khronos working group is expected to standardise neural rendering primitives (weight buffer layout, MLP dispatch, hash encoding) as a cross-API extension analogous to how `VK_KHR_ray_tracing_pipeline` standardised ray tracing after `VK_NV_ray_tracing`.
+- **ReSTIR on non-NVIDIA hardware via open implementations**: The ReSTIR DI and PT algorithms are patent-licensed to allow open implementations; Mesa's RADV (Vulkan for RDNA) and the open-source Vulkan-CTS conformance work are expected to enable hardware-agnostic ReSTIR implementations, breaking the current de-facto NVIDIA-only deployment of RTXDI in shipping titles.

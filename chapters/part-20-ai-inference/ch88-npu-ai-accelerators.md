@@ -948,3 +948,22 @@ Key upstream sources used in this chapter:
 - [ONNX Runtime Execution Providers](https://onnxruntime.ai/docs/execution-providers/)
 - [NPU vs GPU power efficiency analysis (2026)](https://www.solidaitech.com/2026/05/npu-vs-gpu-explained-ai-chips-difference.html)
 - [Hybe: GPU-NPU Hybrid System for LLM Inference — ACM ISCA 2025](https://dl.acm.org/doi/10.1145/3695053.3731051)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- The `amdxdna` driver is expected to gain native DMA-BUF import/export support, enabling true zero-copy tensor sharing between the Radeon iGPU and the XDNA2 NPU via the shared SoC interconnect on Strix Point platforms.
+- Intel's `ivpu` driver has pending patches (tracked in linux-accel mailing list discussions) to upstream the `DRM_IOCTL_IVPU_BO_CREATE_FROM_DMABUF` ioctl as a first-class PRIME import path, replacing the current workaround through the userptr code path.
+- OpenVINO 2026.x releases are expected to complete the Compiler-In-Plugin transition for the NPU backend, fully removing the dependency on the OEM-supplied Level Zero NPU compiler shared library for Meteor Lake and Lunar Lake targets.
+- Qualcomm is expected to submit the Snapdragon X Elite Hexagon CDSP firmware loader upstream to `drivers/accel/` following pressure from the linaro-kernel and linux-arm-kernel communities; early RFC patches were circulated in Q2 2026.
+
+### Medium-term (1–3 years)
+- The DRM accel subsystem will likely gain a standardised `drm_accel_sched` integration path built on `drm_gpu_scheduler`, allowing NPU drivers to share the same GPU scheduler infrastructure used by AMD and Intel GPU drivers and enabling cross-device fence synchronisation without bespoke IPC mechanisms.
+- `torch.compile` is expected to gain a first-class NPU backend via the OpenVINO TorchDynamo frontend for Intel and via the MLIR-AIE compiler for AMD XDNA, eliminating the current two-step ONNX export → EP execution path for PyTorch 3.x workflows.
+- As XDNA2 column-partition counts increase in future SoC generations (e.g., post-Strix Halo designs), the `amdxdna` driver will need to evolve a proper hardware context scheduling policy (analogous to GPU timeslicing) to fairly multiplex up to 32+ concurrent NPU contexts; early design work is visible in AMD kernel mailing list discussions.
+- MediaTek APU and Arm Ethos-N drivers are likely to graduate from staging (`drivers/staging/`) to `drivers/accel/` following the pattern established by `amdxdna`, bringing embedded SoC NPUs under the same UAPI as PC-class NPUs.
+
+### Long-term
+- Convergence toward a unified NPU UAPI layer — analogous to how Vulkan unified GPU programming — is a stated goal of the DRM accel subsystem maintainers; a common set of buffer object types, fence primitives, and performance query ioctls shared across `ivpu`, `amdxdna`, and future drivers would allow userspace frameworks to target NPU hardware without vendor-specific code paths.
+- As on-device LLM model sizes grow into the 30B–70B range and exceed what any single NPU's SRAM can accommodate, kernel-level NPU memory management will need to evolve toward demand-paged model weights analogous to GPU VRAM overcommit — early academic work (e.g., the Hybe paper) points toward collaborative GPU-NPU KV-cache management as the dominant architecture.
+- The Qualcomm Hexagon NPU and future RISC-V-based custom accelerators (e.g., announced collaboration between SiFive and NPU IP vendors) may drive adoption of a vendor-neutral firmware ABI specification at the kernel level, reducing the proprietary firmware blob dependency that currently limits open-source reproducibility for Intel `ivpu` and AMD XDNA.

@@ -134,6 +134,7 @@ graph TD
     CH77["Ch 77 — Shader Toolchain\n(glslang, DXC, SPIR-V, NAK, BRW)"]
     CH91["Ch 91 — MLIR\n(Triton, IREE, XLA → SPIR-V → Mesa)"]
     CH119["Ch 119 — Zink: OpenGL on Vulkan\n(Gallium → VkCommandBuffer, OpenGL 4.6 atop any Vulkan driver)"]
+    CH159["Ch 159 — Full Vertical Slice\n(Vulkan loader → Mesa → DRM → GPU → KMS)"]
 
     CH12 --> CH13
     CH13 --> CH14
@@ -150,6 +151,10 @@ graph TD
     CH16 --> CH77
     CH77 --> CH91
     CH14 --> CH91
+    CH15 --> CH159
+    CH16 --> CH159
+    CH13 --> CH159
+    CH119 --> CH159
 ```
 
 ## Prerequisites and What Comes Next

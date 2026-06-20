@@ -541,3 +541,22 @@ This chapter covers the physical connectors and electrical signalling beneath th
 ---
 
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **DP 2.1 UHBR adoption in mainline GPU drivers:** Intel Xe2 (Battlemage) and AMD RDNA 4 both support UHBR10/UHBR20; kernel patches enabling full UHBR link training via the `drm_dp_helper` 128b/132b path are landing incrementally, with full enablement expected within the next kernel release cycle.
+- **USB4 v2.0 DisplayPort tunnelling:** The Linux Thunderbolt subsystem (`drivers/thunderbolt/`) is gaining support for USB4 v2.0 80 Gbps tunnels, which are required to carry UHBR20 DP 2.1 streams; patches from Intel and the USB4 community are actively under review on the `linux-usb` mailing list.
+- **TCPM Alt Mode rework for DP 2.1 UHBR pin assignments:** The `drivers/usb/typec/altmodes/displayport.c` driver is being extended to negotiate UHBR signalling rates during the `DP_Configure` VDM exchange; this requires coordinating PHY rate selection between the TCPM and GPU display controller drivers.
+- **Improved HPD debounce and IRQ coalescing:** Several mailing-list patches address spurious HPD event storms from low-quality cables and docks by adding configurable debounce delays in `drm_probe_helper.c`, reducing compositor-level reconnect flicker.
+
+### Medium-term (1–3 years)
+- **HDMI 2.1 FRL enablement across open-source drivers:** While FRL is specified, open-source driver support (particularly in `amdgpu` and `nouveau`) lags behind TMDS support; the medium-term trajectory is full FRL 6 (48 Gbps) enablement in DRM, requiring new link-training sequences over DDC and updated SCDC register handling in `drm_scdc_helper.c`.
+- **DisplayPort 2.1 DP-to-HDMI 2.1 active cable spec adoption:** As VESA's DP-to-HDMI 2.1 cable standard matures, kernel heuristics for identifying these adapters via DPCD OUI and properly exposing UHBR→FRL bandwidth to userspace will need formalisation in the connector detection path.
+- **USB-C connector class unification:** Ongoing kernel work aims to unify the sysfs representation of USB-C ports that may simultaneously act as DP Alt Mode, USB4, and Thunderbolt connectors, giving userspace (and compositors) a single consistent connector model rather than separate `drm` and `thunderbolt` sysfs trees.
+- **DDC/CI standardisation for USB-C-attached monitors:** As USB-C becomes the dominant display connection, reliable DDC/CI access over I2C-over-AUX (rather than native I2C) is increasingly important; work on improving `ddcutil`'s DP AUX path and exposing `/dev/i2c-*` interfaces from `drm_dp_aux` is in progress.
+
+### Long-term
+- **Optical connector dominance for high-bandwidth runs:** As UHBR20 (80 Gbps) and future higher-rate standards exceed practical passive copper cable reach at 2+ metres, active optical cables (AOC) with SFP-style or integrated optics are expected to become standard for data-centre and professional AV installations, requiring kernel PHY abstraction layers that are agnostic to the copper vs optical medium.
+- **Consolidation of legacy connector support:** VGA DAC removal from GPU silicon is already complete in modern discrete GPUs; DVI is similarly being dropped from new monitor and GPU designs. The long-term trajectory for the Linux DRM stack is removal of vgacon/DVI-specific code paths and the analogue encoder infrastructure as hardware support ends across all vendor drivers.
+- **Standardised connector health telemetry:** Future display interface revisions (DP 3.x and beyond) are expected to incorporate in-band link-quality reporting beyond the existing voltage/pre-emphasis feedback, enabling kernel-level predictive cable failure detection and automated adaptation without user-visible link retraining disruption.

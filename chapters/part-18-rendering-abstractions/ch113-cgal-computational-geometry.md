@@ -980,3 +980,22 @@ CGAL output meshes can be consumed by any GPU abstraction layer — the `std::ve
 ---
 
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
+
+## Roadmap
+
+### Near-term (6–12 months)
+- CGAL 6.2 (beta released May 2026) is expected to ship stabilised support for the `Triangulations` package refactor, consolidating 2D and 3D triangulation APIs under a unified concept hierarchy to reduce code duplication and improve kernel parametrization ergonomics.
+- The `Polygon_mesh_processing` package is tracking upstream issues around self-intersection repair and non-manifold handling in `corefine_and_compute_*`, with patches targeting the CGAL 6.2 release to handle a broader class of degenerate inputs without precondition failures.
+- CVD-based remeshing (`PMP::approximated_centroidal_Voronoi_diagram_remeshing()`), added experimentally in CGAL 6.1, is undergoing quality and performance hardening with the goal of marking it non-experimental in CGAL 6.2.
+- The `cgal-paraview-plugins` repository has open issues targeting compatibility with ParaView 5.11+; a port of the IsotropicRemeshingFilter plugin to the current ParaView VTK-m backend is under community discussion.
+
+### Medium-term (1–3 years)
+- CGAL's stated architectural goal is to deepen integration with Eigen's sparse solvers and to expose a unified "geometry processing pipeline" API that chains point-set processing, reconstruction, and remeshing steps without intermediate file I/O, reducing friction for scientific visualization pipelines.
+- A GPU-offload layer for BVH queries is under long-running community discussion: while CGAL's exact-arithmetic core will remain CPU-only, there is interest in an optional path where `AABB_tree` bulk queries (ray batches, closest-point batches) can be dispatched to a Vulkan compute shader, with the CPU falling back for individual exact-arithmetic queries.
+- The `Mesh_3` package is expected to gain tighter coupling with finite-element solver libraries (deal.II, FEniCS) through standardised mesh format adapters, reducing the export-to-VTU round-trip currently required before mesh data reaches those solvers.
+- Support for `std::span` and C++23 ranges throughout the property map and iterator interfaces is a stated code-modernisation goal, which would make the CGAL–GPU handoff pattern in §4 expressible without explicit `reserve`/`push_back` loops.
+
+### Long-term
+- As GPU hardware gains native support for exact or interval arithmetic (e.g., via INT64 or emulated rational types in compute shaders), CGAL maintainers have discussed whether a subset of geometric predicates — specifically orientation and in-circle tests — could be offloaded to GPU compute, potentially enabling GPU-accelerated Delaunay refinement for very large point clouds.
+- The long-term license trajectory of CGAL's GPL-licensed packages (Nef_polyhedron_3, certain arrangement packages) is an open governance question: GeometryFactory has indicated interest in moving more packages to LGPL to lower the barrier for commercial integration in DCC tools, which would remove the current GPL encumbrance from `Nef_polyhedron_3`-based Boolean pipelines.
+- Integration with the emerging USD geometry schema for computational geometry outputs (triangulated surfaces, tetrahedral meshes) is a plausible roadmap item as USD adoption in scientific and VFX pipelines grows, potentially positioning CGAL as the computation backend for USD's procedural geometry layer.

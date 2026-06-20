@@ -974,3 +974,22 @@ The algorithms described in this chapter are the mathematical substrate of every
 49. ForaSoft — Rate control CBR/VBR/CRF: https://www.forasoft.com/learn/video-encoding/articles/rate-control-cbr-vbr-crf
 50. Silent Aperture — x264 psychovisual settings guide: https://silentaperture.gitlab.io/mdbook-guide/encoding/x264.html
 51. Springer — libaom encoding complexity analysis: https://link.springer.com/article/10.1007/s11554-023-01308-5
+
+## Roadmap
+
+### Near-term (6–12 months)
+- VA-API and Vulkan Video extensions for VVC/H.266 hardware decode are advancing through the Khronos standardisation process; draft VVC Vulkan Video profiles are expected to reach provisional status, with early hardware support appearing on Qualcomm and Intel Arc successors.
+- SVT-AV1 continues rapid iteration: planned improvements to the temporal dependency model and multi-tile threading are targeted to close the remaining quality gap with libaom's slowest presets while maintaining real-time throughput on server hardware.
+- dav1d 1.5+ is expected to land further AVX-512 VNNI and SVE2 (ARM Scalable Vector Extension) optimisations, targeting sub-real-time 8K AV1 decode on high-end workstation and mobile SoCs.
+- NVIDIA Blackwell (RTX 50xx) and AMD RDNA4 GPUs are shipping with expanded AV1 encode quality modes; FFmpeg and GStreamer hardware encoder plugins are being updated to expose new rate-control capabilities and 10-bit HDR encode paths via NVENC and AMF.
+
+### Medium-term (1–3 years)
+- EVC (Essential Video Coding, MPEG-5 Part 1) and LC-EVC (Low Complexity Enhancement Video Coding, MPEG-5 Part 2) are gaining traction in broadcast and streaming deployments where VVC licensing complexity is a barrier; VA-API EVC decode support is expected to arrive in Intel and AMD Mesa drivers within this window.
+- AV2, the Alliance for Open Media's successor to AV1, is in early specification work; architectural decisions around neural-network-based in-loop filters and learned entropy coding are being evaluated alongside the traditional block-transform pipeline, with reference encoder experiments published via the AOM research codebase.
+- Hardware VVC decode is expected to become mainstream on desktop discrete GPUs (AMD, Intel, NVIDIA) as the standardisation and patent licensing situation settles; VVdeC and VVenC will gain SIMD paths for ARM SVE2 and RISC-V Vector extension, broadening server and edge deployment.
+- Vulkan Video AV1 encode (currently in progress in the Khronos extension registry) is expected to reach final extension status, enabling fully cross-vendor GPU encode pipelines without vendor-specific APIs.
+
+### Long-term
+- Neural video codecs — architectures that replace the DCT/motion-estimation pipeline with learned latent representations — are transitioning from research to standardisation; MPEG's Video Coding for Machines (VCM) and the emerging Neural Image/Video Compression (NIC/NVC) standards may introduce hybrid block-transform plus neural post-filter modes that hardware GPUs can accelerate via tensor core operations.
+- The rate-distortion optimisation landscape is likely to shift toward perceptual loss functions trained on large-scale human opinion data (VMAF-style) as the primary encoder objective, replacing PSNR-oriented Lagrangian optimisation in production encoders like SVT-AV1 and x265.
+- Unified hardware codec engines integrating fixed-function block-transform decode with programmable neural post-processing (denoising, super-resolution, grain synthesis) are on roadmaps from NVIDIA, Intel, and AMD; future VA-API and Vulkan Video extensions will need to expose these hybrid pipelines as first-class decode targets.

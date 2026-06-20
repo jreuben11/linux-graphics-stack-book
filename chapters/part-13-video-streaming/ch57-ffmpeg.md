@@ -2457,3 +2457,22 @@ ffmpeg -loglevel debug -hwaccel vaapi -i input.mp4 -f null /dev/null 2>&1 | grep
 40. [mediamtx GitHub — bluenviron](https://github.com/bluenviron/mediamtx)
 41. [SRS streaming server releases — ossrs](https://github.com/ossrs/srs/releases)
 42. [Rendi FFmpeg 8.0 Vulkan compute analysis](https://www.rendi.dev/blog/ffmpeg-8-0-part-3-failed-attempts-to-use-vulkan-for-av1-encoding-vp9-decoding)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- FFmpeg 8.1 is expected to stabilise the Vulkan compute codec suite (FFv1, VP9, AV1, ProRes RAW) introduced in 8.0 by flushing out remaining driver compatibility issues and expanding `av1_vulkan` to production quality with full rate-control support.
+- The `swscale` library is undergoing a multi-year rewrite (`libswscale2`) that landed its first output-format pass in 8.0; near-term work targets SIMD-accelerated chroma subsampling paths and full AVX-512 support for the new fast-path API (`sws_scale_frame()`).
+- VVC (H.266) software decode via `libvvdec` and encode via `libvvenc` are actively being upstreamed to FFmpeg's main branch following the codec's patent licensing improvements, with initial CLI support (`-c:v libvvdec`) expected in the 8.x series.
+- The PipeWire `libavdevice` source is receiving screen-capture negotiation improvements to integrate cleanly with the xdg-desktop-portal ScreenCast API, removing the need for manual PipeWire node IDs on GNOME and KDE Wayland sessions.
+
+### Medium-term (1–3 years)
+- The ffmpeg-devel mailing list's long-running discussion on a stable out-of-tree filter/codec plugin ABI is expected to produce a loadable plugin interface anchored to a public subset of `AVFilter`; this would allow GPU vendors and codec implementors to ship binary plugins without forking FFmpeg.
+- AV1 hardware encode via `av1_vaapi` (Intel Arc and AMD RDNA3+) and `av1_nvenc` (Ada Lovelace+) is projected to reach broad deployment parity with H.264 VAAPI encode as GPU driver support matures and the Mesa `iHD` and `RadeonSI` VA-API back ends complete their AV1 encode paths.
+- The FFmpeg Scheduler (introduced in 7.0) is expected to gain dynamic graph reconfiguration — the ability to attach or detach filter graph branches and encoder instances at runtime without tearing down the entire pipeline — enabling live-stream rendition ladder changes without output interruption.
+- EVC (Essential Video Coding, MPEG-5 Part 1) decode and encode wrappers are in early prototype stages on the mailing list; production support will follow standardisation of open-source `libxeve` (encoder) and `libxevd` (decoder) as their patent covenants are clarified.
+
+### Long-term
+- As Vulkan Video's `VK_KHR_video_encode_av1` extension becomes universally supported across AMD, Intel, and NVIDIA drivers, FFmpeg's `av1_vulkan` compute codec is expected to transition to a hardware-assisted hybrid path — using fixed-function AV1 encode units where available and falling back to Vulkan compute shaders on implementations that lack them, all under a single `AVCodec` descriptor.
+- The broader adoption of CMAF (Common Media Application Format) and Low-Latency DASH is likely to motivate a unified FFmpeg ABR muxer that generates both HLS and DASH manifests from a single mux pass with a shared fMP4 segment pool, replacing the current dual-muxer pattern.
+- Neural-network-based video coding (NNVC) and AI-assisted in-loop filters (super-resolution upscale, perceptual rate control) are actively researched in the codec community; FFmpeg's DNN module (`libavfilter/dnn/`) is positioned as the integration layer once a stable inference backend (ONNX Runtime, OpenVINO) with GPU acceleration achieves sufficient performance to be practical in a transcode pipeline.

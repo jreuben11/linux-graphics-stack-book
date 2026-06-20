@@ -1060,3 +1060,22 @@ For a typical denoiser (NRD-equivalent quality, 1080p), calibration requires 100
 ---
 
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
+
+## Roadmap
+
+### Near-term (6–12 months)
+- VKD3D-Proton is expected to gain DLSS 4 MFG support in a point release following 3.0, with NVIDIA actively working with Valve to close the gap for Linux Proton users running RTX 50 Series hardware.
+- NVK's experimental DLSS support (merged to Mesa 26.2 in August 2026) will likely be promoted from `NVK_EXPERIMENTAL=dlss` to a stable default in Mesa 26.3 or 27.0, once the `VK_NVX_binary_import` ELF parsing is hardened and cross-GPU PTX-to-NIR compilation is implemented.
+- TensorRT 11 is announced with native `torch.compile` integration and HuggingFace model import, making it significantly easier to deploy custom neural rendering networks without ONNX as an intermediate format.
+- The `low_latency_layer` open Vulkan layer is expected to land upstream in Mesa as an implicit layer, shipping vendor-agnostic Reflex and Anti-Lag 2 scheduling support to all Linux Vulkan drivers without per-game patching.
+
+### Medium-term (1–3 years)
+- DLSS 5 or an equivalent transformer generation will likely extend Dynamic MFG beyond 6× through improved temporal stability models, targeting 240+ Hz display panels where the majority of displayed frames are AI-generated; hardware-side improvements in Blackwell successors will widen the FP4 Tensor Core budget available to MFG Component A.
+- The `VK_NVX_binary_import` and `VK_NVX_image_view_handle` extensions — currently NVIDIA-vendor-specific — may be rationalised into vendor-agnostic Vulkan extensions as other GPU vendors explore neural shader inference, following the precedent of `VK_NV_cooperative_vector` drafting into `VK_KHR_cooperative_matrix`.
+- 3DGS is expected to gain a standardised LOD and mesh-occlusion integration specification through ongoing collaboration between NVIDIA (vk_gaussian_splatting), the OpenUSD working groups (AOUSD), and game engine middleware vendors, addressing the current lack of G-buffer, shadow casting, and streaming primitives.
+- LatencyFleX and the open `low_latency_layer` are likely to absorb Reflex Frame Warp semantics over this timeframe, providing AI-inpainting-based late-stage reprojection on non-NVIDIA hardware through Vulkan compute shaders.
+
+### Long-term
+- Neural rendering representations such as 3DGS and NeRF variants are expected to partially displace polygon-mesh rasterisation for certain scene categories (reconstructed environments, volumetric effects), driving demand for standardised Vulkan extensions for differentiable rendering and in-shader Gaussian splatting without requiring a separate CUDA compute dispatch.
+- The NGX SDK's cryptographic `.nvsig` plugin verification model — which currently prevents open-source reimplementation of DLSS network weights — may be renegotiated as NVIDIA's competitive position shifts; precedents from the open-source release of `nvidia-open` kernel modules and the NVK Mesa driver suggest an incremental opening is plausible over a 3–5 year horizon.
+- OpenUSD's `ParticleField3DGaussianSplat` schema and MaterialX are positioned to become the interchange format for neural scene assets across the industry, with Khronos likely folding 3DGS rendering into a future glTF extension, mirroring the pattern by which KHR_materials_* incorporated PBR shading.

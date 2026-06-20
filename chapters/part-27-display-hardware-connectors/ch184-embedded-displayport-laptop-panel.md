@@ -695,3 +695,22 @@ This chapter connects to several other chapters in the book:
 ---
 
 *This chapter covers kernel code primarily in the `v6.8` range of the mainline kernel. Rapidly evolving areas — Panel Replay on AMD hardware, UHBR eDP link training — should be verified against the current DRM mailing list.*
+
+## Roadmap
+
+### Near-term (6–12 months)
+- AMD Panel Replay stabilisation on RDNA3 and RDNA4 APUs is progressing through the amdgpu DC stack; patches enabling Panel Replay by default on Rembrandt and Phoenix APUs have been posted to the amd-gfx mailing list and are expected to land in kernel 6.11–6.12.
+- Intel Lunar Lake (Xe2 integrated GPU) ships Panel Replay with Selective Update enabled by default, requiring updates to `intel_psr.c` to handle the revised VSC SDP CRC format specified in eDP 1.5 errata; these patches are in the intel-gfx review queue.
+- The `drm_dp_aux` AUX channel helper is being extended to support UHBR10/13.5 AUX clock scaling, which is required for eDP 1.5 UHBR link training; initial patches were posted to dri-devel in early 2026.
+- A new `drm_backlight` helper abstraction is under discussion on dri-devel to unify PWM, I2C, DPCD AUX, and ACPI backlight backends behind a single DRM-integrated interface, removing the dependency on the legacy `backlight_device` class.
+
+### Medium-term (1–3 years)
+- eDP UHBR20 (20 Gbps/lane) support will be required for 8K laptop panels; this depends on UHBR20 PHY support landing in both Intel and AMD display drivers, plus DSC 1.2a mandatory compression profiles to fit 8K@120Hz within the available link bandwidth.
+- Panel Replay is expected to subsume PSR1 and PSR2 on all new panel designs certified after eDP 1.5; the kernel PSR state machine in `intel_psr.c` will likely be refactored to treat PSR1/PSR2 as legacy fallbacks and Panel Replay as the primary path.
+- The `drm_panel` ecosystem is expected to gain structured Device Tree bindings for eDP-specific features (PSR capability overrides, panel replay quirks, custom T1–T12 timing overrides) as more ARM SoC vendors upstream eDP panel drivers via `panel-edp.yaml`.
+- Integration of the IIO ALS subsystem directly into the DRM backlight path (bypassing userspace daemons) is a long-standing kernel TODO; a kernel-side automatic brightness driver using `iio_channel_get()` is under periodic discussion on the linux-iio and dri-devel lists.
+
+### Long-term
+- VRR and DRRS unification: as eDP panels increasingly support variable refresh rates natively (via the DP Adaptive-Sync extension in eDP 1.5), DRRS may be deprecated in favour of a unified VRR-based power-save mode where the compositor controls per-frame timing to achieve both rendering synchronisation and power reduction simultaneously.
+- Rust-based display helper libraries: following the trend of Rust driver infrastructure in the kernel (Nova, drm-rs), helper crates for `drm_dp_aux`, `drm_panel`, and PSR state management are plausible long-term targets, as these subsystems have well-defined state machines amenable to safe Rust abstractions.
+- Optical interconnects for eDP are being explored at the PHY layer for future laptop form factors where flex cable length or EMI constraints exceed what copper differential pairs can handle at UHBR20 rates; no kernel-visible changes are expected in the near term, but the AUX channel protocol will require adaptation if optical retimers are placed in-line.

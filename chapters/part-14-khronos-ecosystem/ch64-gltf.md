@@ -1447,3 +1447,22 @@ Note: The glTF 3.0 specification had not been finalised as of the writing of thi
 30. gltf-transform concepts: https://gltf-transform.dev/concepts
 31. asset.schema.json: https://github.com/KhronosGroup/glTF/blob/main/specification/2.0/schema/asset.schema.json
 32. camera.schema.json: https://github.com/KhronosGroup/glTF/blob/main/specification/2.0/schema/camera.schema.json
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **EXT_meshopt_compression promotion to KHR**: The meshoptimizer-based lossless buffer compression extension is on track to be ratified as a full KHR extension before or alongside the glTF 3.0 release, reflecting its broad adoption across Bevy, Godot, Blender, and gltf-transform.
+- **KHR_audio_emitter ratification**: The spatial audio extension defining point sources, global sources, and reverb zones is under active Khronos review and is expected to ship as a ratified KHR extension, enabling engines to load audio placement directly from glTF assets.
+- **fastgltf v1.0 stable release**: The C++17, simdjson-accelerated loader continues performance hardening; a v1.0 stable API freeze is expected in the near term, making it viable as a drop-in replacement for tinygltf in throughput-critical asset pipelines.
+- **Blender 4.x addon improvements**: The `io_scene_gltf2` addon shipped in Blender 4.2+ continues to gain support for additional KHR material extensions (`KHR_materials_specular`, `KHR_materials_anisotropy`, `KHR_materials_clearcoat`) and improved round-trip fidelity for complex Principled BSDF node trees.
+
+### Medium-term (1–3 years)
+- **glTF 3.0 specification release**: The Khronos 3D Formats Working Group is targeting glTF 3.0 to formalise MaterialX integration, instancing via `EXT_mesh_gpu_instancing`, and the promoted audio and physics extensions; the draft specification is expected to reach public review within this window.
+- **MaterialX node-graph materials in glTF 3.0**: The planned adoption of MaterialX 1.39 as glTF 3.0's procedural material layer will extend the asset format beyond the fixed-function metallic-roughness BRDF to support subsurface scattering, hair, cloth, and toon shading — aligning glTF with the OpenUSD/AOUSD material ecosystem.
+- **WebGPU-native glTF loaders**: As WebGPU supersedes WebGL in browsers, glTF loaders targeting `GPUBuffer` and `GPUTexture` directly (rather than the GL buffer object model) will become the standard path; proposals for a `KHR_gpu_buffer_layout` accessor extension are under early discussion in the working group.
+- **GPU-accelerated Draco decode**: Google Draco's WebAssembly SIMD path and GPU mesh shader-based decode are under investigation to reduce the 5–50 ms CPU decode latency that currently makes Draco unsuitable for streaming many assets per frame.
+
+### Long-term
+- **Convergence with OpenUSD interchange**: As OpenUSD adoption grows in film and simulation pipelines, a formal bidirectional glTF ↔ USD interchange specification (beyond today's ad-hoc USD plugins) is a stated direction of both the Khronos and AOUSD working groups, enabling single-source assets for both real-time and offline rendering.
+- **Neural and compressed geometry representations**: Research into neural radiance field (NeRF) and 3D Gaussian splatting representations may be formalised as glTF extensions, providing a path to include scene-captured volumetric content alongside traditional polygon meshes in the same container.
+- **Unified asset streaming protocol**: Long-horizon work in the Khronos ecosystem envisions a streaming counterpart to GLB — a chunked, range-request-friendly binary format that allows progressive rendering of large scenes (terrain, cities) without loading full GLB files into memory first.

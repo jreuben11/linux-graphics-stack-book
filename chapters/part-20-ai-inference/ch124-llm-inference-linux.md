@@ -935,3 +935,22 @@ This chapter draws on and extends topics covered across the book:
 - [Unified Evaluation of llama.cpp Quantisation](https://arxiv.org/html/2601.14277v1)
 - [LLM Inference at the Edge: Power Efficiency](https://arxiv.org/html/2603.23640)
 - [nvtop GPU monitor](https://github.com/Syllo/nvtop)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- **VK_KHR_cooperative_matrix broader adoption**: AMD RDNA4 and Intel Xe2 (Battlemage) drivers are landing full `VK_KHR_cooperative_matrix` support in RADV and ANV, enabling GGML's cooperative-matrix flash-attention shaders to reach parity with CUDA Tensor Core throughput on those GPUs.
+- **llama.cpp RPC backend stabilisation**: The RPC backend that distributes layers across machines over TCP is progressing toward stable API status, enabling multi-node consumer-GPU inference clusters without a full MPI stack.
+- **ROCm 7.x hipBLASLt TunableOp expansion**: AMD is extending TunableOp auto-selection to cover grouped GEMM and mixture-of-experts (MoE) gate-and-expert dispatch, directly accelerating Mixtral-class models on RDNA3/CDNA3 hardware.
+- **Ollama structured output and JSON schema enforcement**: Ollama's roadmap includes first-class grammar-constrained decoding (integrating llama.cpp's GBNF grammar engine into the REST API), reducing application-side post-processing for tool-call workflows.
+
+### Medium-term (1–3 years)
+- **FP8 inference on consumer GPUs**: As NVIDIA Ada Lovelace FP8 tensor-core support matures in CUDA and GGML adds `GGML_TYPE_FP8_E4M3`/`E5M2` quantisation types, 70B models will fit in 35 GB VRAM at near-F16 quality, eliminating the need for aggressive K-quant compression on high-VRAM cards.
+- **DMA-BUF zero-copy weight streaming**: Proposals on the linux-media and DRM mailing lists aim to expose GGUF tensor data directly to GPU via DMA-BUF heaps, bypassing the staging-buffer upload path entirely on unified-memory APUs and systems with PCIe P2P support (AMD SAM + NVLink equivalent).
+- **Speculative decoding and draft-model integration in Ollama/vLLM**: Both projects are integrating speculative decoding (a small draft model generates candidate tokens verified by the main model), which can multiply effective throughput by 2–4× on memory-bandwidth-bound generation workloads while keeping the API surface unchanged.
+- **Kernel-side GPU scheduling for inference QoS**: Linux DRM scheduler patches targeting time-sliced GPU contexts and priority classes will allow inference daemons (Ollama, vLLM) to co-exist with interactive Wayland compositors on the same GPU without frame-time disruption.
+
+### Long-term
+- **Unified inference runtime over Linux ioctl API**: Longer-term kernel proposals (discussed in the DRM compute working group) envision a vendor-neutral `DRM_IOCTL_COMPUTE_SUBMIT` for structured tensor dispatch, allowing runtimes like GGML and ONNX Runtime to bypass the Vulkan/HIP/CUDA API layers and submit compute workloads directly to the DRM scheduler, reducing per-token dispatch overhead and enabling GPU resource accounting at the kernel level.
+- **Near-memory and CXL-attached weight storage**: CXL 3.0 memory expansion modules with 1–8 TB capacity and 200–400 GB/s bandwidth are expected to become viable weight-streaming targets for very large models (>200B parameters), with Linux CXL subsystem drivers coordinating allocation between host RAM, CXL memory, and GPU VRAM as a unified inference memory hierarchy.
+- **NPU + GPU heterogeneous inference as first-class Linux stack**: As Intel Lunar Lake, AMD XDNA2, and Qualcomm Hexagon NPUs gain upstream Linux kernel drivers (`amdxdna`, `qcom_npu`), frameworks like OpenVINO and ONNX Runtime are expected to converge on a common heterogeneous-dispatch API, making prefill-on-NPU / generation-on-GPU pipelines (the `HETERO:NPU,GPU` pattern of §7.4) routine rather than experimental.

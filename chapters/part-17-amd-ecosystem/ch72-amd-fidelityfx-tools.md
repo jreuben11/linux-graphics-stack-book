@@ -1314,4 +1314,22 @@ This chapter connects to numerous other chapters across the book:
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+- **FSR 4 Vulkan backend in SDK 2.x**: AMD has stated that Vulkan support in the `ffx-api` Upgradable API layer is on the roadmap; delivery would allow Linux Vulkan applications to use FSR 4 neural upscaling natively without Wine/Proton D3D12 translation.
+- **RGP support for RDNA 4 SQTT tokens**: the Radeon GPU Profiler is expected to add full RDNA 4 SQTT instruction-token decoding, exposing WMMA (Wave Matrix Multiply-Accumulate) utilisation metrics in the Wavefront Occupancy and instruction-level stall views.
+- **Mesa Vulkan Video stabilisation for AMF interop**: `VK_KHR_video_encode_queue` and `VK_KHR_video_decode_queue` in RADV are still marked experimental; as they reach stable status, the AMF Linux runtime's Vulkan-based encode path will benefit from a stable ABI without requiring the proprietary `amf-amdgpu-pro` component.
+- **FidelityFX SDK 1.2 effects additions**: AMD's GPUOpen roadmap lists upcoming additions including a Frame Interpolation effect for the SDK 1.x Vulkan path (complementing the SDK 2.x frame-generation module), expected to ship within 2026.
+
+### Medium-term (1–3 years)
+- **FSR 5 and next-generation neural upscaling**: the FSR lineage is expected to continue advancing its neural model architecture, likely requiring RDNA 5 or later Matrix Core extensions; public model-weight licensing under GPUOpen would make open-source inference feasible on Mesa/RADV with Vulkan Cooperative Matrix (`VK_KHR_cooperative_matrix`).
+- **Brixelizer GI and hardware ray tracing convergence**: Brixelizer GI currently avoids `VK_KHR_acceleration_structure` to preserve pre-RDNA 2 compatibility; future iterations may add an optional RDNA 3/4 BVH-accelerated path that uses `vkCmdTraceRaysKHR` for the SDF cascade traversal, substantially reducing trace cost.
+- **RGP and RMV Linux CLI tooling**: the Radeon Developer Tools suite currently requires the Qt-based GUI for analysis; AMD has indicated interest in headless CLI export of RGP pipeline stall reports and RMV fragmentation scores, enabling CI/CD integration similar to RenderDoc's `renderdoccmd` scriptable replay.
+- **Open-source AMF encode via Mesa Multimedia**: AMD's trajectory of removing proprietary components (driver 25.20) points toward a fully open AMF runtime on Linux that is simply a thin shim over `VA-API`/`GStreamer`/`FFmpeg`, removing the separate `libamfrt64.so` runtime requirement.
+
+### Long-term
+- **FidelityFX as a Vulkan layer**: AMD has discussed the possibility of packaging FidelityFX effects (particularly CAS and FSR 3/4) as a standard `VkLayer` installable system-wide, allowing any Vulkan application to opt in via environment variable — analogous to `vkBasalt` but with official AMD support and driver-level neural weight delivery.
+- **Unified AMD profiling SDK**: the current fragmentation between RGP (SQTT shader traces), RMV (memory events), and separate ROCm `rocprof` tooling is a recognised pain point; AMD's longer-term architecture points toward a unified capture format and front-end that handles graphics, compute (HIP), and ML (MIGraphX) workloads in a single session file, possibly layered on top of a `perf`-compatible kernel event interface.
+
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

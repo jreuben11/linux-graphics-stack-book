@@ -1320,3 +1320,22 @@ For greenfield projects on Linux targeting multiple GPU vendors, SYCL 2020 via D
 38. [SYCLomatic get started guide](https://oneapi-src.github.io/SYCLomatic/get_started/index.html)
 39. [DPCT namespace reference](https://oneapi-src.github.io/SYCLomatic/dev_guide/reference/dpct-namespace-reference.html)
 40. [CUDA vs. SYCL programming model comparison (SYCLomatic docs)](https://oneapi-src.github.io/SYCLomatic/dev_guide/reference/compare-prog-models.html)
+
+## Roadmap
+
+### Near-term (6–12 months)
+- SYCL 2020 Revision 12 is expected to promote several experimental extensions — including `sycl_ext_oneapi_bindless_images` and the graph extension (`sycl_ext_oneapi_graph`) — to provisional or final status after feedback from IWOCL 2025 and ongoing Codeplay/Intel implementations.
+- Intel oneAPI DPC++ 2026.x will complete the Unified Runtime L0 v2 adapter for Xe2/Arc B-series, removing the legacy PI codepath and enabling direct Immediate Command List submission by default on all Level Zero targets.
+- AdaptiveCpp 26.x is expected to stabilise the Portable CUDA (PCUDA) feature and the `acpp --acpp-deploy` "compile-once, run-anywhere" distribution path across NVIDIA, AMD, Intel, and CPU backends introduced in 25.10.
+- The `sycl_ext_oneapi_graph` command-graph extension — analogous to CUDA Graph and Vulkan's `VK_KHR_maintenance5` render graph — is in active DPC++ development and is anticipated to land as a provisional Khronos extension, enabling persistent, replayable kernel DAGs with reduced CPU overhead.
+
+### Medium-term (1–3 years)
+- SYCL 3.0 is expected to incorporate cooperative-groups semantics (grid-level synchronisation and multi-work-group reductions), closing the primary feature gap with CUDA cooperative groups that currently requires algorithmic restructuring during migration.
+- Khronos is scoping a standardised SYCL AI/ML extension library — analogous to oneDNN — that would provide portable interfaces for matrix-multiply, convolution, and attention primitives backed by vendor-optimised backends (AMX on Intel, WMMA on NVIDIA, WMMA on CDNA), reducing per-vendor library fragmentation.
+- AdaptiveCpp's JIT adaptivity infrastructure (`ACPP_ADAPTIVITY_LEVEL`) is expected to mature toward profile-guided kernel specialisation: the runtime re-JITs hot kernels with observed access-pattern constants baked in, closing the specialisation-constant ergonomics gap relative to DPC++'s AOT flow.
+- Cross-vendor binary distribution via SYCL fat binaries is expected to be standardised at the Khronos level, moving beyond DPC++'s vendor-specific `-fsycl-targets` flag toward a portable `sycl_bundle` format that embeds SPIR-V, PTX, and AMDGCN IR in a single distributable.
+
+### Long-term
+- As SPIR-V continues to be adopted as the universal device IR (by Vulkan, OpenCL, SYCL, and WebGPU's WGSL compilation target), the distinction between SYCL's SPIR-V device image and Vulkan's shader module is expected to narrow; a unified Khronos kernel-execution extension could allow SYCL `kernel_bundle` objects to be imported directly into Vulkan compute pipelines without round-tripping through the current external-memory/semaphore interop path.
+- SYCL's Unified Shared Memory model is expected to converge with heterogeneous memory management (HMM) advances in the Linux kernel (Chapter 5), enabling coherent page-fault-driven migration for `malloc_shared` allocations on all discrete GPU architectures without explicit `prefetch` or `mem_advise` hints.
+- With RISC-V GPU architectures (e.g., Ventana Veyron, Esperanto) gaining OpenCL/SPIR-V support, AdaptiveCpp's `llvm-to-backend` JIT architecture positions SYCL as the portable compute layer for RISC-V accelerators, extending the vendor-neutral story beyond the current AMD/Intel/NVIDIA triad.
