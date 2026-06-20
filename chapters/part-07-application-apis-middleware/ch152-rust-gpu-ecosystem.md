@@ -553,6 +553,678 @@ WGPU_BACKEND=gl cargo run       # OpenGL fallback
 
 ---
 
+## cuTile-rs: NVIDIA Tile Abstraction in Rust
+
+[cuTile-rs](https://github.com/nvlabs/cutile-rs) is NVIDIA's official Rust library for tensor-core–oriented GPU kernel authoring. It forms part of NVIDIA's strategic investment in Rust for performance-critical GPU code — evidence that the company views Rust as viable beyond systems software and into HPC kernel authoring.
+
+### The Tile Programming Model
+
+The central idea is *tile programs, not threads*: a kernel is written as a single-threaded program that operates on typed data tiles, and the compiler (backed by CUDA Tile IR) maps those operations onto warps, thread-blocks, and Tensor Cores automatically. The programmer never manually manages shared memory, warp-level synchronisation, or `wmma` instruction selection.
+
+The core abstraction is a `Tile<T, ROWS, COLS>` generic type representing a 2-D partition of an array held cooperatively by a group of threads. On NVIDIA hardware this maps to the PTX cooperative matrix family — `wmma.load`, `wmma.mma.sync`, and `wmma.store` for older architectures, and the newer `wgmma` (Warp-Group Matrix Multiply Accumulate) on Hopper/Ada — giving Tensor Core throughput with a safe Rust API. [PTX reference](https://docs.nvidia.com/cuda/parallel-thread-execution/)
+
+### GEMM Kernel Pattern
+
+```rust
+// Illustrative cuTile-rs GEMM pattern (refer to nvlabs/cutile-rs examples for
+// the exact API version targeting your CUDA toolkit).
+use cutile::prelude::*;
+
+#[kernel]
+pub fn gemm_kernel(
+    a: &Tensor2D<f16>,
+    b: &Tensor2D<f16>,
+    c: &mut Tensor2D<f32>,
+) {
+    // Partition the output space into tiles matching the cooperative group size.
+    let output_tile = c.partition_like_output();
+
+    // Load input tiles in shapes that match the output partition.
+    let a_tile = a.load_tile_like(&output_tile);
+    let b_tile = b.load_tile_like(&output_tile);
+
+    // Tensor Core multiply-accumulate: maps to wgmma.mma_async on Hopper.
+    let acc = Tile::mma(&a_tile, &b_tile);
+
+    // Write the accumulated result back.
+    output_tile.store(&acc);
+}
+```
+
+The `#[kernel]` procedural macro wraps the Rust function into a CUDA kernel entry point, while `Tile::mma` is lowered by the CUDA Tile IR backend to the appropriate PTX cooperative matrix instructions for the target architecture. On B200 hardware this approach reaches 96 % of cuBLAS GEMM throughput. [Source](https://nvlabs.github.io/cutile-rs/main/)
+
+### Why NVIDIA Is Investing
+
+NVIDIA's rationale follows the broader industry pattern: Rust eliminates buffer overruns and data races in device code, and the ownership model can statically encode GPU memory hazards (concurrent read/write aliasing) that CUDA C++ can only catch at run time via the sanitizer. cuTile-rs targets research teams and framework authors (e.g., cuDNN successor kernels) rather than end-application developers. [Source](https://github.com/nvlabs/cutile-rs)
+
+---
+
+## cudarc: Rust CUDA Driver API
+
+[cudarc](https://github.com/coreylowman/cudarc) provides safe, ergonomic Rust wrappers around the CUDA Driver API, cuBLAS, cuDNN, cuRAND, NVRTC, and related libraries. It is the standard Rust crate for driving NVIDIA GPUs from host code without writing CUDA C++.
+
+### Architecture
+
+cudarc exposes three API tiers for each wrapped library:
+
+- **Safe API** — ergonomic types, error as `Result`, no `unsafe` at call sites
+- **Result API** — wraps raw FFI with error checking, some `unsafe`
+- **Sys API** — raw generated FFI bindings, fully `unsafe`
+
+The primary entry points are `CudaContext` (device handle, maps to `CUcontext`) and `CudaStream` (command queue, maps to `CUstream`), with `CudaSlice<T>` as the typed GPU allocation. [Source](https://docs.rs/cudarc)
+
+### Device Initialisation and Memory Allocation
+
+```rust
+use cudarc::driver::safe::{CudaContext, CudaStream, LaunchConfig};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create a context on GPU 0 (analogous to cudaSetDevice(0)).
+    let ctx = CudaContext::new(0)?;
+    let stream = ctx.default_stream();
+
+    // Allocate device memory initialised to zero — returns CudaSlice<f32>.
+    let mut output: cudarc::driver::CudaSlice<f32> =
+        stream.alloc_zeros::<f32>(1024)?;
+
+    // Allocate and copy from host slice.
+    let input_data: Vec<f32> = (0..1024).map(|x| x as f32).collect();
+    let input = stream.memcpy_stoh(&input_data)?;
+
+    Ok(())
+}
+```
+
+### Launching a PTX Kernel
+
+cudarc can load PTX assembly strings compiled offline (e.g., via `nvcc -ptx` or NVRTC) and invoke them with the builder-pattern launcher:
+
+```rust
+use cudarc::driver::safe::{CudaContext, LaunchConfig};
+
+fn launch_ptx_kernel() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = CudaContext::new(0)?;
+    let stream = ctx.default_stream();
+
+    // Load PTX source — can be produced by cuTile-rs or nvcc.
+    let ptx = cudarc::nvrtc::compile_ptx(include_str!("my_kernel.cu"))?;
+    ctx.load_ptx(ptx, "my_module", &["add_kernel"])?;
+
+    let add_fn = ctx.get_func("my_module", "add_kernel").unwrap();
+
+    let mut out = stream.alloc_zeros::<f32>(1024)?;
+    let inp  = stream.memcpy_stoh(&vec![1.0f32; 1024])?;
+
+    // Type-checked builder: args must match the PTX parameter list.
+    let mut builder = stream.launch_builder(&add_fn);
+    builder.arg(&mut out);
+    builder.arg(&inp);
+    unsafe { builder.launch(LaunchConfig::for_num_elems(1024)) }?;
+
+    let result = stream.memcpy_dtoh(&out)?;
+    println!("result[0] = {}", result[0]);
+    Ok(())
+}
+```
+
+`LaunchConfig::for_num_elems(n)` selects a sensible block/grid split for `n` elements. For hand-tuned configurations supply `LaunchConfig { block_dim: (256,1,1), grid_dim: (n/256, 1, 1), shared_mem_bytes: 0 }`. [Source](https://github.com/coreylowman/cudarc)
+
+### Pairing with cuTile-rs
+
+The typical workflow combines both crates: cuTile-rs compiles Rust kernel code to PTX via the CUDA Tile IR backend, and cudarc loads that PTX and manages host-side data movement. cuTile-rs owns the *what* (tile computation) and cudarc owns the *how* (driver interaction, memory, streams).
+
+---
+
+## Vulkano: Compile-Time Safe Vulkan
+
+[vulkano](https://github.com/vulkano-rs/vulkano) encodes as much of the Vulkan specification as possible into Rust's type system, turning Vulkan validity violations that would be runtime errors (or worse, silent corruption) into compile-time failures.
+
+> **Note:** The existing Ecosystem section contains a brief `vulkano` buffer-allocation snippet. This section expands on the pipeline and shader compilation side of the API.
+
+### Compile-Time Shader Integration
+
+The `vulkano_shaders::shader!` macro compiles GLSL inline or from a file at Cargo build time, emitting a Rust module with typed structs for every uniform block, push constant, and vertex input:
+
+```rust
+mod vs {
+    vulkano_shaders::shader! {
+        ty: "vertex",
+        src: r"
+            #version 450
+            layout(location = 0) in vec2 position;
+            void main() {
+                gl_Position = vec4(position, 0.0, 1.0);
+            }
+        ",
+    }
+}
+
+mod fs {
+    vulkano_shaders::shader! {
+        ty: "fragment",
+        src: r"
+            #version 450
+            layout(location = 0) out vec4 f_color;
+            void main() { f_color = vec4(1.0, 0.0, 0.0, 1.0); }
+        ",
+    }
+}
+```
+
+The macro calls `glslc` (or the bundled `shaderc`) and embeds the SPIR-V as a byte literal. The generated `load()` function returns an `Arc<ShaderModule>` tied to a specific `Device` — making it impossible to mix shaders across devices. [Source](https://github.com/vulkano-rs/vulkano/tree/master/examples)
+
+### Graphics Pipeline Creation
+
+```rust
+use vulkano::{
+    pipeline::{
+        GraphicsPipeline, GraphicsPipelineCreateInfo, PipelineLayout,
+        graphics::{
+            vertex_input::VertexDefinition,
+            viewport::{Viewport, ViewportState},
+            input_assembly::InputAssemblyState,
+            rasterization::RasterizationState,
+            multisample::MultisampleState,
+            color_blend::ColorBlendState,
+        },
+    },
+    render_pass::Subpass,
+};
+
+let vs = unsafe { vs::load(device.clone()) }.unwrap();
+let fs = unsafe { fs::load(device.clone()) }.unwrap();
+
+let vertex_input_state = MyVertex::per_vertex()
+    .definition(&vs.info().input_interface)
+    .unwrap();
+
+let stages = [
+    PipelineShaderStageCreateInfo::new(vs),
+    PipelineShaderStageCreateInfo::new(fs),
+];
+let layout = PipelineLayout::from_stages(&device, &stages).unwrap();
+
+let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
+let pipeline = GraphicsPipeline::new(
+    device.clone(),
+    None,
+    GraphicsPipelineCreateInfo {
+        stages:              stages.into_iter().collect(),
+        vertex_input_state:  Some(vertex_input_state),
+        input_assembly_state: Some(InputAssemblyState::default()),
+        viewport_state:      Some(ViewportState::default()),
+        rasterization_state: Some(RasterizationState::default()),
+        multisample_state:   Some(MultisampleState::default()),
+        color_blend_state:   Some(ColorBlendState::with_attachment_states(
+            1, Default::default(),
+        )),
+        subpass:             Some(subpass.into()),
+        dynamic_state:       [DynamicState::Viewport].into_iter().collect(),
+        ..GraphicsPipelineCreateInfo::layout(layout)
+    },
+).unwrap();
+```
+
+### Type-System Safety Guarantees
+
+vulkano's key invariant is render-pass compatibility: `Subpass::from(render_pass, 0)` binds the pipeline type to a concrete render-pass object, and the Rust type system prevents using the pipeline with an incompatible render pass at no runtime overhead. `Subbuffer<T>` wraps a typed slice view over a `Buffer`, enabling the allocator to reject mismatched bindings at compile time. [Source](https://docs.rs/vulkano)
+
+---
+
+## rust-gpu: Rust as a Shading Language
+
+[rust-gpu](https://github.com/rust-gpu/rust-gpu) (originally Embark Studios, now community-governed under the Rust-GPU GitHub organisation) compiles ordinary Rust code to SPIR-V, making Rust usable as a shading language for Vulkan, wgpu, and any SPIR-V consumer.
+
+> **Note:** The Ecosystem section contains a short stub for rust-gpu. This section provides the full treatment.
+
+### spirv-builder: Compiling Shaders in build.rs
+
+The `spirv-builder` crate invokes `rustc` with `--target spirv-unknown-vulkan1.2` from a Cargo `build.rs` script:
+
+```rust
+// shader_crate/build.rs
+use spirv_builder::{MetadataPrintout, SpirvBuilder};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    SpirvBuilder::new("../shader_crate", "spirv-unknown-vulkan1.2")
+        .print_metadata(MetadataPrintout::Full)
+        .build()?;
+    Ok(())
+}
+```
+
+The compiled `.spv` file path is written to `OUT_DIR`, where it can be embedded with `include_bytes!` in the host crate. [Source](https://github.com/rust-gpu/rust-gpu)
+
+### Shader Entry Points
+
+Entry points are ordinary Rust functions tagged with `#[spirv(...)]` attributes from `spirv-std`:
+
+```rust
+#![no_std]
+use spirv_std::spirv;
+use spirv_std::glam::{Vec2, Vec4, vec4};
+
+/// Vertex shader: passes through clip-space position.
+#[spirv(vertex)]
+pub fn main_vs(
+    #[spirv(vertex_index)] vert_idx: u32,
+    #[spirv(position)] out_pos: &mut Vec4,
+) {
+    // Full-screen triangle trick — no vertex buffer needed.
+    let x = (vert_idx & 1) as f32 * 4.0 - 1.0;
+    let y = (vert_idx >> 1) as f32 * 4.0 - 1.0;
+    *out_pos = vec4(x, y, 0.0, 1.0);
+}
+
+/// Fragment shader: samples a 2-D texture.
+#[spirv(fragment)]
+pub fn main_fs(
+    #[spirv(frag_coord)] frag_coord: Vec4,
+    #[spirv(descriptor_set = 0, binding = 0)] tex: &spirv_std::image::Image2d,
+    #[spirv(descriptor_set = 0, binding = 1)] sampler: &spirv_std::Sampler,
+    output: &mut Vec4,
+) {
+    let uv = Vec2::new(frag_coord.x / 1920.0, frag_coord.y / 1080.0);
+    *output = tex.sample(*sampler, uv);
+}
+```
+
+Compute shaders use `#[spirv(compute(threads(64, 1, 1)))]` and receive `#[spirv(global_invocation_id)] id: glam::UVec3` as built-in inputs.
+
+### spirv-std: The GPU Standard Library
+
+`spirv-std` provides the primitives that the GPU needs but the Rust standard library does not supply in a `#![no_std]` context:
+
+- **`Image<...>` / `Image2d`** — typed texture handles with `sample()`, `fetch()`, `read()`, `write()`
+- **`Sampler`** — opaque sampler handle
+- **`arch::`** — architecture intrinsics (barriers, fences, atomics)
+- **`glam` re-export** — `Vec2`, `Vec4`, `Mat4`, etc. as GPU-compatible types
+
+### Limitations
+
+rust-gpu imposes hard constraints that stem from SPIR-V's execution model:
+
+- **No dynamic dispatch** — trait objects (`dyn Trait`) are not supported; all dispatch must be monomorphised at compile time.
+- **No recursion** — SPIR-V prohibits recursive call graphs; the compiler rejects programs that contain cycles.
+- **No heap allocation** — `Box`, `Vec`, `HashMap` are unavailable; all data lives in fixed-size locals or buffer bindings.
+- **Limited `std`** — only `#![no_std]`-compatible crates are usable in shader crates.
+- **Experimental `rustc` backend** — the `rustc_codegen_spirv` backend is not stable; it must be built from a pinned nightly toolchain specified in `rust-toolchain.toml`. [Source](https://github.com/rust-gpu/rust-gpu)
+
+---
+
+## blade: Minimal GPU Library
+
+[blade](https://github.com/kvark/blade) (authored by Mykhailo Parfeniuk / kvark, the architect of wgpu's `wgpu-hal`) is a deliberately small GPU abstraction library. Where wgpu targets maximum portability through a layered architecture, blade targets minimal indirection for research renderers, game prototypes, and tools that only need to run on one or two backends.
+
+### Design Philosophy
+
+blade collapses wgpu's `wgpu → wgpu-hal → backend` stack into a single `blade-graphics` crate. There is no backend abstraction trait: on Linux the Vulkan path is compiled directly; on macOS it is Metal; on the web it is WebGL via GLES. The library uses `ash` for Vulkan directly (no additional wrapper) and exposes a minimal surface area.
+
+Resource limits enforce the philosophy: a maximum of 8 resources per bind group (`RESOURCES_IN_GROUP`), 256 bytes of plain data per pipeline (`PLAIN_DATA_SIZE`), and 1 000 passes per command encoder (`PASS_COUNT`). These are deliberate constraints that prevent API patterns that scale poorly.
+
+### Context Initialisation and Resource Creation
+
+```rust
+use blade_graphics as gpu;
+
+fn main() -> Result<(), gpu::PlatformError> {
+    // Single-call init; selects Vulkan on Linux.
+    let context = unsafe {
+        gpu::Context::init(gpu::ContextDesc {
+            validation: cfg!(debug_assertions),
+            overlay: false,
+            ..Default::default()
+        })?
+    };
+
+    // Allocate a GPU-only buffer (no explicit memory type selection needed).
+    let vertex_buf = context.create_buffer(gpu::BufferDesc {
+        name:  "vertices",
+        size:  (3 * std::mem::size_of::<[f32; 4]>()) as u64,
+        memory: gpu::Memory::Device,
+    });
+
+    // Create a command encoder for a single frame.
+    let mut encoder = context.create_command_encoder(gpu::CommandEncoderDesc {
+        name:        "frame",
+        buffer_count: 2,
+    });
+
+    // ... record render pass ...
+
+    // Submit and get a sync point for CPU–GPU synchronisation.
+    let sync = context.submit(&mut encoder);
+    context.wait_for(sync, !0); // wait indefinitely
+    Ok(())
+}
+```
+
+[Source: blade-graphics crate docs](https://docs.rs/blade-graphics)
+
+### Comparison with wgpu
+
+| Aspect | wgpu | blade |
+|---|---|---|
+| Backend selection | Runtime via `wgpu-hal` trait | Compile-time `#[cfg]` |
+| Memory management | Hidden inside HAL | Explicit `Memory::Device` / `Memory::Shared` |
+| Render graph | User-built or implicit | Single-pass, manual |
+| Target use case | Production apps, Firefox | Research, prototypes, tools |
+| `unsafe` surface | Minimal (safe API) | `Context::init` is `unsafe` |
+
+blade's single-pass approach means there is no render graph scheduler: the developer explicitly records passes in order. This is simpler for small renderers but becomes burdensome for complex multi-pass pipelines. The codebase is also small enough to read in a day, making it an excellent learning resource for GPU API internals.
+
+---
+
+## vello: Compute-Based 2D Vector Rendering
+
+[vello](https://github.com/linebender/vello) is a GPU-accelerated 2-D vector renderer from the Linebender project (the same team behind the Xilem UI framework). Unlike Cairo or Skia, which rasterise on the CPU, vello encodes all geometry on the CPU into a compact data stream and executes the entire rasterisation pipeline as WGSL compute shaders on the GPU via wgpu.
+
+### Rendering Pipeline
+
+vello's GPU pipeline has four compute stages:
+
+1. **Coarse rasterisation** — tiles the scene into 16×16 pixel bins, determining which draw calls touch each tile.
+2. **Path encoding** — curves are flattened to line segments using the Euler-spiral flatten algorithm.
+3. **Fine rasterisation** — each tile is rendered in a single-pass kernel that resolves fill/stroke coverage.
+4. **Composite** — the final RGBA image is composited into the wgpu texture.
+
+All shaders are WGSL compiled by naga, with no Vulkan-specific extensions required, making vello portable across any wgpu backend. [Source](https://github.com/linebender/vello)
+
+### Scene Construction and Rendering
+
+```rust
+use vello::{
+    Scene, Renderer, RendererOptions, RenderParams, AaConfig,
+    peniko::{Color, Fill},
+    kurbo::{Affine, Circle, Rect},
+};
+
+async fn render_scene(device: &wgpu::Device, queue: &wgpu::Queue)
+    -> wgpu::Texture
+{
+    // CPU-side scene encoding — no GPU calls yet.
+    let mut scene = Scene::new();
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        Color::from_rgba8(255, 0, 0, 255),
+        None,
+        &Circle::new((200.0, 200.0), 100.0),
+    );
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        Color::from_rgba8(0, 128, 255, 200),
+        None,
+        &Rect::new(50.0, 50.0, 350.0, 350.0),
+    );
+
+    // GPU renderer — created once, reused every frame.
+    let mut renderer = Renderer::new(device, RendererOptions {
+        use_cpu:              false,
+        antialiasing_support: vello::AaSupport::all(),
+        ..Default::default()
+    }).unwrap();
+
+    // Output texture.
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label:  Some("vello output"),
+        size:   wgpu::Extent3d { width: 800, height: 600, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format:    wgpu::TextureFormat::Rgba8Unorm,
+        usage:     wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&Default::default());
+
+    // Dispatch the compute pipeline — all GPU work happens here.
+    renderer.render_to_texture(device, queue, &scene, &view, &RenderParams {
+        base_color:          Color::WHITE,
+        width:               800,
+        height:              600,
+        antialiasing_method: AaConfig::Msaa16,
+    }).unwrap();
+
+    texture
+}
+```
+
+### Role in the Xilem / Linux Desktop Ecosystem
+
+Vello is the intended rendering backend for Xilem, Linebender's reactive UI framework, replacing software Cairo on Linux/Wayland. Applications use `winit` for windowing and event dispatch, `wgpu` targeting Vulkan (via `wgpu-hal/vulkan`) for the GPU layer, and vello for all 2-D drawing. The compute-based approach avoids the GPU stall points of traditional rasterisation (no depth buffer, no triangle setup) and achieves better GPU utilisation for vector-heavy UIs than tile-based rasterisers. [Source](https://github.com/linebender/vello)
+
+---
+
+## burn: Rust ML Framework
+
+[burn](https://github.com/tracel-ai/burn) is a Rust deep-learning framework designed for backend portability. The same model code runs on WGSL compute shaders (via wgpu), CUDA (via cudarc), ROCm, Metal, and WebAssembly without modification. The abstraction key is the `Backend` trait.
+
+### The Backend Trait
+
+Every burn operation is generic over `B: Backend`. Backends are pluggable:
+
+- **`burn-wgpu`** — WGSL compute shaders compiled by naga, runs on any wgpu backend (Vulkan, Metal, DX12, WebGPU).
+- **`burn-cuda`** — kernel generation and launch via cudarc, targets NVIDIA CUDA.
+- **`burn-ndarray`** — CPU fallback using ndarray, useful for testing.
+- **`burn-candle`** — thin wrapper over the Candle ML framework.
+
+The compute language unifying `burn-wgpu` and `burn-cuda` is **CubeCL**, burn's own GPU DSL that compiles to WGSL or PTX depending on the backend. [Source](https://github.com/tracel-ai/burn)
+
+### Module Derive and Linear Layer
+
+```rust
+use burn::{
+    nn::{Linear, LinearConfig, Relu},
+    module::Module,
+    tensor::{backend::Backend, Tensor},
+};
+
+/// A simple MLP generic over any burn Backend.
+#[derive(Module, Debug)]
+pub struct Mlp<B: Backend> {
+    fc1: Linear<B>,
+    fc2: Linear<B>,
+    activation: Relu,
+}
+
+impl<B: Backend> Mlp<B> {
+    pub fn new(device: &B::Device) -> Self {
+        Self {
+            fc1: LinearConfig::new(784, 512).init(device),
+            fc2: LinearConfig::new(512, 10).init(device),
+            activation: Relu::new(),
+        }
+    }
+
+    /// Forward pass: [batch, 784] → [batch, 10]
+    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+        let x = self.fc1.forward(x);
+        let x = self.activation.forward(x);
+        self.fc2.forward(x)
+    }
+}
+```
+
+`#[derive(Module)]` implements parameter serialisation, device movement (`model.to_device(&dev)`), gradient zeroing, and autodiff (`AutodiffModule`) without any boilerplate. The `Linear<B>` struct holds `Param<Tensor<B, 2>>` weight and optional bias, initialised from a uniform distribution `U(-1/√d_in, 1/√d_in)`. [Source](https://docs.rs/burn/latest/burn/nn/struct.Linear.html)
+
+### Running on wgpu vs CUDA
+
+```rust
+// Select backend at the call site — model code is identical.
+#[cfg(feature = "wgpu")]
+type MyBackend = burn_wgpu::Wgpu;
+
+#[cfg(feature = "cuda")]
+type MyBackend = burn_cuda::Cuda;
+
+fn main() {
+    let device = Default::default();
+    let model: Mlp<MyBackend> = Mlp::new(&device);
+    let input = Tensor::<MyBackend, 2>::zeros([32, 784], &device);
+    let output = model.forward(input);
+    println!("output shape: {:?}", output.shape());
+}
+```
+
+---
+
+## encase and bytemuck: GPU Buffer Layout
+
+Passing structured data from Rust to GPU shaders requires exact byte layout. WGSL's std430 rules (uniform buffers use std140) impose alignment constraints that differ from Rust's `#[repr(C)]`. Two crates address this complementarily.
+
+### WGSL Alignment Rules
+
+WGSL uniform buffers follow **std140**: each member is aligned to the larger of its natural alignment and 16 bytes. Storage buffers follow **std430**: members align to their natural alignment (4 bytes for `f32`, 16 bytes for `vec4<f32>`). A `struct { f32, vec3<f32> }` in std430 has 4 bytes of padding after the `f32` because `vec3` aligns to 16.
+
+### encase: Derive-Based Padding
+
+[encase](https://crates.io/crates/encase) provides a `ShaderType` derive macro that emits the correct padding for WGSL host-shareable types:
+
+```rust
+use encase::{ShaderType, UniformBuffer};
+use encase::matrix::AsMat4;
+
+#[derive(ShaderType)]
+struct CameraUniform {
+    view_proj: glam::Mat4,   // 64 bytes, 16-byte aligned — std140 OK
+    eye_pos:   glam::Vec3,   // 12 bytes, but padded to 16 in std140
+    _pad:      f32,           // explicit pad to reach 16-byte boundary
+    time:      f32,           // 4 bytes
+    _pad2:     [f32; 3],     // pad struct to 16-byte multiple
+}
+
+fn write_uniform(device: &wgpu::Device, queue: &wgpu::Queue, cam: &CameraUniform)
+    -> wgpu::Buffer
+{
+    let mut byte_buf = UniformBuffer::new(Vec::<u8>::new());
+    byte_buf.write(cam).unwrap();
+    let bytes = byte_buf.into_inner();
+
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("camera uniform"),
+        size:  bytes.len() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&buf, 0, &bytes);
+    buf
+}
+```
+
+`UniformBuffer::write` serialises the struct into a `Vec<u8>` respecting std140 layout, so `glam::Vec3` gets the 16-byte alignment it needs automatically. [Source](https://docs.rs/encase)
+
+### bytemuck: Zero-Copy Casting
+
+[bytemuck](https://crates.io/crates/bytemuck) is complementary: it enables zero-copy casts from typed slices to `&[u8]` for types that are already correctly laid out in Rust memory (`#[repr(C)]` structs where Rust layout matches GPU layout — common for simple vertex data):
+
+```rust
+use bytemuck::{Pod, Zeroable};
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct Vertex {
+    position: [f32; 3],  // 12 bytes
+    color:    [f32; 3],  // 12 bytes (no alignment surprise — both are vec3 of f32)
+}
+
+fn upload_vertices(queue: &wgpu::Queue, buf: &wgpu::Buffer, verts: &[Vertex]) {
+    // bytemuck::cast_slice is zero-copy: no allocation, just pointer reinterpretation.
+    queue.write_buffer(buf, 0, bytemuck::cast_slice(verts));
+}
+```
+
+**Rule of thumb**: use `encase` for uniform/storage buffers containing types with non-trivial WGSL alignment (structs with `vec3`, `mat4`, mixed scalar+vector); use `bytemuck` for vertex buffers and index buffers where the Rust layout is already flat.
+
+---
+
+## naga_oil: Shader Module Composition
+
+[naga_oil](https://github.com/bevyengine/naga_oil) is a shader composition and preprocessing library built on top of naga. It adds `#import` / `#define_import_path` directives to WGSL (and GLSL), enabling modular shader code with scoped namespaces — the feature most conspicuously missing from plain WGSL. It is the engine behind Bevy's PBR shader library.
+
+### The Composer API
+
+A `Composer` instance holds the set of known shader modules. Modules declare their public name with `#define_import_path` and are added incrementally; their dependents are resolved at compose time:
+
+```rust
+use naga_oil::compose::{Composer, ComposableModuleDescriptor, NagaModuleDescriptor};
+
+fn build_pbr_shader() -> naga::Module {
+    let mut composer = Composer::default();
+
+    // Register the PBR types module (no entry point — library only).
+    composer.add_composable_module(ComposableModuleDescriptor {
+        source:         include_str!("pbr_types.wgsl"),
+        file_path:      "pbr_types.wgsl",
+        language:       naga_oil::compose::ShaderLanguage::Wgsl,
+        ..Default::default()
+    }).unwrap();
+
+    // Register mesh utility functions.
+    composer.add_composable_module(ComposableModuleDescriptor {
+        source:         include_str!("mesh_functions.wgsl"),
+        file_path:      "mesh_functions.wgsl",
+        language:       naga_oil::compose::ShaderLanguage::Wgsl,
+        ..Default::default()
+    }).unwrap();
+
+    // Compose the final fragment shader that imports both modules.
+    composer.make_naga_module(NagaModuleDescriptor {
+        source:    include_str!("pbr_fragment.wgsl"),
+        file_path: "pbr_fragment.wgsl",
+        ..Default::default()
+    }).unwrap()
+}
+```
+
+### Import Syntax
+
+WGSL modules use Rust-inspired import paths:
+
+```wgsl
+// pbr_types.wgsl — declares its public name:
+#define_import_path bevy_pbr::pbr_types
+
+struct StandardMaterial {
+    base_color:        vec4<f32>,
+    emissive:          vec4<f32>,
+    perceptual_roughness: f32,
+    metallic:          f32,
+};
+```
+
+```wgsl
+// pbr_fragment.wgsl — imports by path:
+#import bevy_pbr::pbr_types::{StandardMaterial}
+#import bevy_pbr::mesh_functions::{get_world_position}
+
+@fragment
+fn fragment(in: MeshVertexOutput) -> @location(0) vec4<f32> {
+    let material: StandardMaterial = get_material();
+    let world_pos = get_world_position(in.instance_index, in.vertex_index);
+    return material.base_color;
+}
+```
+
+### Virtual Function Override
+
+naga_oil supports overriding `virtual` functions declared in library modules, enabling a plugin-like customisation pattern:
+
+```wgsl
+// Override a virtual lighting function from Bevy's PBR pipeline:
+#import bevy_pbr::lighting as Lighting
+
+override fn Lighting::point_light(world_position: vec3<f32>) -> vec3<f32> {
+    let original = Lighting::point_light(world_position);
+    // Quantise to cel-shading bands.
+    return floor(original * 3.0) / 3.0;
+}
+```
+
+All calls to `Lighting::point_light` throughout the composed shader graph are redirected to this override. Bevy uses this mechanism extensively in its render pipeline to allow user code to swap in custom lighting, shadow, and material functions without forking the engine shaders. [Source](https://github.com/bevyengine/naga_oil)
+
+---
+
 ## Roadmap
 
 ### Near-term (6–12 months)
