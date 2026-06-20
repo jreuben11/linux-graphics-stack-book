@@ -84,7 +84,7 @@ The original KMS API (`DRM_IOCTL_MODE_SETCRTC`) set display state one object at 
 
 **Chapter 163 — VKMS: Virtual Kernel Mode Setting** examines the `vkms` software-only DRM driver that provides a fully functional KMS device with no physical hardware, enabling headless rendering, CI test environments, and compositing research; it covers the frame-generation timer loop, writeback connector implementation, and how VKMS integrates with the DRM atomic commit path.
 
-**Chapter 164 — GPU Power Management: Runtime PM and Power Domains** provides a second, deeper treatment of runtime power management from the kernel perspective, covering `pm_runtime_*` lifecycle hooks, GENPD power-domain controllers, DVFS via the OPP framework, and the interaction between display engine DC states and GPU engine power gating across vendors.
+**Chapter 51 — GPU Power Management and Thermal** (expanded) covers `pm_runtime_*` lifecycle hooks, GENPD power-domain controllers, DVFS via the devfreq framework (governors table, `panfrost_devfreq_target()`), display engine DC states vs. GPU engine power gating, and Power Capping via Intel RAPL and hwmon, in addition to per-vendor DPM/RC6/Nouveau power management and the thermal subsystem.
 
 ## How the Chapters Interrelate
 
