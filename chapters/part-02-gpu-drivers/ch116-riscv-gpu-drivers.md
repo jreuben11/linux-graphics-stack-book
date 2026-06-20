@@ -790,6 +790,33 @@ CONFIG_EXTRA_FIRMWARE_DIR="/lib/firmware"
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **BXE-4-32 upstreaming for StarFive JH7110**: The Imagination BXE-4-32 GPU used in the StarFive JH7110 (VisionFive 2) was absent from the initial `drm/imagination` upstreaming to Linux 6.7–6.8 ([Source](https://forum.rvspace.org/t/img-bxe4-32-gpu-open-source-plan/600)). Community work toward enabling this GPU via the existing `drm/imagination` framework is underway, with Vulkan and kernel 6.6+ LTS enablement tracked on the RVspace upstream wiki ([Source](https://wiki.rvspace.org/en/project/JH7110_Upstream_Plan)). Note: a specific kernel version target for full upstream merge is unconfirmed.
+- **VeriSilicon DC8200 DRM driver mainline merge**: The RFC patchset for the DC8200 display controller driver — used on both the TH1520 and JH7110 — was posted to dri-devel in late 2024 ([Source](https://lwn.net/Articles/1033823/)). Completing the merge of this driver is the next milestone for a fully mainline KMS+GPU stack on RISC-V SBCs.
+- **Vulkan 1.2 Khronos conformance for additional GPU SKUs**: The Mesa `src/imagination` driver achieved Vulkan 1.2 conformance on the BXS-4-64, and upstream driver code is expected to undergo Khronos conformance validation for additional PowerVR GPU SKUs including BXM-4-64 ([Source](https://developer.imaginationtech.com/solutions/open-source-gpu-driver/)). Note: timeline needs verification.
+- **ESWIN EIC7700 GPU bring-up**: The ESWIN EIC7700 SoC (used in the SiFive HiFive Premier P550) arrived with initial kernel patches in 2025 ([Source](https://www.phoronix.com/news/Linux-Patches-EIC7700-HiFive)); its integrated GPU (reported as an Imagination variant) has not yet been addressed in upstream drivers. Bring-up patches are anticipated within the next year.
+- **OpenCL support in Mesa `src/imagination`**: OpenGL ES is currently proxied through Zink, and OpenCL is absent from the open Mesa PowerVR driver. Imagination's open-source developer portal lists compute API support as a planned addition ([Source](https://developer.imaginationtech.com/solutions/open-source-gpu-driver/)). Note: concrete timeline needs verification.
+
+### Medium-term (1–3 years)
+
+- **SpacemiT K1 (Imagination PowerVR) open driver**: The SpacemiT K1 SoC currently ships only with a proprietary DDK. Community interest in enabling the `drm/imagination` framework for K1 exists (it uses similar Imagination IP), but no public upstream patchset has been submitted as of mid-2026. Note: needs verification.
+- **amdkfd full functionality on RISC-V**: AMD's `amdkfd` compute driver became buildable on RISC-V in Linux 6.16 ([Source](https://www.phoronix.com/news/AMDKFD-RISC-V-Linux-6.16)), but hardware-assisted HSA compute on RISC-V PCIe hosts (Milk-V Pioneer) remains unverified at the application level. Full ROCm stack enablement on RISC-V is a medium-term research objective.
+- **RV64X GPU ISA extension standardization**: SiliconArts and Georgia Tech's Vortex project have proposed RV64X and related ISA extensions to bring GPU-class vector and texture operations into the RISC-V ISA formally ([Source](https://www.einpresswire.com/article/557733456/siliconarts-joins-risc-v-foundation-to-collaborate-on-graphics-extensions-for-risc-v-isa)). Progressing these from research proposals to RISC-V International ratified extensions is a multi-year standardization effort.
+- **Vortex 3.0 ASIC tapeout on open process nodes**: The Vortex 3.0 release (June 2026) introduced ASIC synthesis flows targeting three open process design kits ([Source](https://www.phoronix.com/news/Vortex-3.0-RISC-V-GPGPU)). Actual tapeout of a Vortex-derived open silicon GPU, enabling hardware testing beyond FPGA emulation, is a realistic 2–3 year objective depending on funding and PDK maturity.
+- **Panthor/Imagination co-scheduler integration**: As the `drm_sched` framework evolves to support multi-engine GPU scheduling (driven by Panthor/Xe developments), the `drm/imagination` driver is expected to adopt updated scheduling APIs. This aligns with a broader DRM scheduler refactor in progress on dri-devel. Note: specific patch series tracking this for `drm/imagination` needs verification.
+
+### Long-term
+
+- **Native RISC-V GPU silicon with open firmware**: All current RISC-V GPUs rely on proprietary firmware blobs (Imagination's `rogue_*.fw`). The long-term architectural goal is a RISC-V SoC with an open-hardware GPU whose firmware is fully open-source and auditable — an objective being pursued in academic form by the Vortex project and in hardware by the open-PDK community, but not yet achievable on commercial silicon.
+- **Vulkan Ray Tracing and Mesh Shader extensions on Imagination B-Series**: Future Imagination GPU generations (C-Series and beyond) are expected to expose hardware ray traversal and mesh shading. Upstream Mesa and kernel driver support for these extensions on RISC-V SoCs would follow, contingent on new silicon arriving in RISC-V SoC designs. Note: speculative; depends on vendor roadmap.
+- **A unified RISC-V graphics platform**: The convergence of an upstream DRM display driver (DC8200), a conformant Vulkan driver (`drm/imagination` + Mesa), a compute stack (OpenCL/ROCm), and a Wayland compositor on a single RISC-V board represents the long-term goal of the community. The TH1520 milestone in Linux 6.18 is the first real step; achieving feature parity with ARM Cortex-A72-class SBC platforms (e.g., Raspberry Pi 4) is the realistic long-term bar for RISC-V embedded graphics.
+- **RISC-V in automotive and edge AI graphics SoCs**: Imagination is actively licensing GPU IP to automotive SoC vendors considering RISC-V application cores. Long-term, `drm/imagination`-based RISC-V platforms may appear in ADAS and edge inference hardware, bringing safety-critical display and compute requirements into the upstream driver stack. Note: speculative based on current vendor trajectory.
+
+---
+
 ## Integrations
 
 This chapter connects to several other chapters in the book:

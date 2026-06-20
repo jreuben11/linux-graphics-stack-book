@@ -855,6 +855,30 @@ The timestamp gap between the `simpledrm` initialization line and the `i915` ape
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **In-kernel DRM splash client reaching upstream consensus.** A DRM client-based splash implementation (RFC posted October 2025, revised January 2026) can draw a coloured background, a static BMP image loaded as firmware, and the EFI BGRT OEM logo without requiring a user-space daemon. Its target is small embedded platforms where Plymouth is impractical. Upstream acceptance remains uncertain because Plymouth is the preferred solution for general-purpose systems. [Source: Phoronix — Splash DRM Client Proposed For Linux](https://www.phoronix.com/news/Linux-Splash-DRM-Client-RFC)
+- **Plymouth DRM master handoff reliability.** The NVIDIA proprietary driver 550.x series exposed a bug in `nv_drm_revoke_modeset_permission` that silently broke Plymouth's DRM master handoff on kernel 6.10+. Fixes are expected in both the NVIDIA driver and defensive error-handling in Plymouth itself. [Source: Getting Plymouth Boot Splash Working with NVIDIA 580 on Debian 13](https://ricklamers.io/posts/plymouth-nvidia-580-debian-13/)
+- **Continued removal of legacy fbdev paths.** `CONFIG_FB_EFI` (efifb) and `CONFIG_FB_VESA` (vesafb) are marked deprecated; distributions are converging on `CONFIG_DRM_SIMPLEDRM=y` built-in. The DRM TODO list tracks removal of the remaining fbdev-only drivers once all consumers have migrated. [Source: DRM TODO list — The Linux Kernel documentation](https://dri.freedesktop.org/docs/drm/gpu/todo.html)
+- **sysfb and Device Tree conflict resolution.** An RFC patch (`of/platform: Disable sysfb if a simple-framebuffer node is found`, November 2023) addresses the race where both sysfb and the DT simple-framebuffer path register competing devices on ARM SBCs. Follow-up patches are expected to land in a stable kernel release. Note: needs verification on exact landing kernel version. [Source: LKML RFC](https://lkml.iu.edu/hypermail/linux/kernel/2311.1/04443.html)
+
+### Medium-term (1–3 years)
+
+- **Unified EFI framebuffer driver consolidation.** The long-standing goal of replacing `efifb`, `vesafb`, and `simplefb` entirely with simpledrm — already achieved by Fedora 36+ — is expected to propagate to all major distributions and be codified with the legacy drivers marked `BROKEN` or removed from the default Kconfig. [Source: Fedora Changes/ReplaceFbdevDrivers](https://fedoraproject.org/wiki/Changes/ReplaceFbdevDrivers)
+- **Improved 64-bit GOP framebuffer support across architectures.** As UEFI deployments move to high-memory configurations on ARM64 and RISC-V, the `ext_lfb_base` / `lfb_base` split in `struct screen_info` requires careful handling. Work is ongoing to ensure all driver paths (sysfb, simpledrm, efifb) correctly reconstruct 64-bit physical addresses above the 4 GB boundary. Note: needs verification for specific patchset status.
+- **Plymouth replacement or major redesign.** Plymouth's codebase (last major release 23.x) is increasingly seen as a maintenance burden. Discussions in the freedesktop community have proposed either a minimal Wayland-native compositor for boot splash (integrating with systemd) or promoting the DRM splash client into a first-class kernel facility. The outcome is likely to influence how the boot-to-compositor handoff is structured in the long term. Note: needs verification on current proposal status.
+- **Secure Boot and measured boot integration.** Tighter coupling between UEFI Secure Boot, TPM PCR measurements, and the kernel's early boot display path — for example, displaying a visual attestation indicator (EFI BGRT or custom logo) tied to the measured boot chain — is being discussed in the firmware and security communities. Note: needs verification on specific upstream proposals.
+
+### Long-term
+
+- **Kernel boot display as a DRM subsystem first-class concern.** The current model (sysfb → simpledrm → native driver) was designed around x86 UEFI. Future work may generalise this into a unified `drm_boot_fb` abstraction that handles UEFI GOP, ACPI, Device Tree, and U-Boot hand-offs through a single API, eliminating the current proliferation of parallel code paths. Note: speculative direction based on DRM subsystem trends.
+- **Zero-flash boot display.** The visible flash during the simpledrm-to-native-driver transition is caused by the framebuffer being temporarily unmapped. Hardware support for seamless plane takeover (analogous to Windows' WDDM2 "seamless driver transition") requires firmware cooperation and driver-side atomic plane import — an architectural goal that may require UEFI and PCIe firmware specification work beyond the kernel. Note: speculative direction.
+- **Integration with confidential computing and TDX/SEV boot.** As confidential VM technologies (Intel TDX, AMD SEV-SNP) mature, the boot display pipeline in guest kernels needs to operate without direct framebuffer access to physical MMIO. Paravirtualised display paths (virtio-gpu, QEMU-virt) are expected to absorb the simpledrm pattern, and the long-term architecture may involve attestation-gated display initialisation. Note: speculative direction.
+
+---
+
 ## Integrations
 
 **Chapter 1 — DRM Architecture and the Driver Model**

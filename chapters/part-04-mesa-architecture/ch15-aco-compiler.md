@@ -463,6 +463,33 @@ GDS (Global Data Share) is a fixed-function unit for cross-workgroup atomic oper
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **RadeonSI now defaults to ACO**: Mesa 26.0 (February 2026) switched the RadeonSI OpenGL driver's default shader-compiler backend from LLVM to ACO, bringing the same compile-time and occupancy benefits that RADV users have had since Mesa 20.2 to the entire AMD Mesa OpenGL stack. [Source](https://www.phoronix.com/news/RadeonSI-ACO-Default-Mesa-26.0)
+- **GFX12 (RDNA4) production hardening**: ACO's GFX12 support shipped with Mesa 25.0 ahead of the Radeon RX 9000 series launch (February 2025) and continues to receive correctness and performance fixes through 2026 as real-world workloads expose edge cases in new instruction encodings and new hardware features. [Source](https://www.phoronix.com/news/Mesa-ACO-Changes-GFX12)
+- **Ray-tracing register allocation improvements in RADV**: Mesa 26.x work by Natalie Vock targets the ACO spill heuristics that insert memory stores inside the BVH traversal loop; fixing these has delivered over 2× RT-pass speedups in titles using Unreal Engine 5 Lumen. [Source](https://www.phoronix.com/news/RADV-More-RT-Performance-2026)
+- **Continued Vulkan extension coverage**: RADV/ACO tracks new Vulkan extensions (`VK_KHR_maintenance10`, `VK_EXT_shader_uniform_buffer_unsized_array`, `VK_EXT_custom_resolve`) that require ACO instruction-selection and metadata changes for each addition. [Source](https://linuxiac.com/mesa-26-0-released-with-radv-ray-tracing-performance-gains/)
+- **Launch-ID swizzling rework for RT pipelines**: A RADV merge request (Natalie Vock, 2026) restructures how ray-generation work is dispatched to fix Unreal Engine 5's Lumen on AMD hardware, touching ACO's callable-shader ABI and the `p_call` pseudo-instruction. [Source](https://pixelcluster.github.io/Mesa-26/)
+
+### Medium-term (1–3 years)
+
+- **GFX13 (RDNA5) dual-issue VALU pipeline support**: RDNA5 implements a full dual-issue VALU pipeline for Wave32, with simultaneous dispatch to X and Y ALU lanes. ACO will need a new post-RA pairing pass analogous to the GFX11 VOPD scheduler, but extended to cover a wider class of instruction pairs across the wider execution units. Note: needs verification of exact GFX13 opcode constraints.
+- **Broader ACO adoption for compute and OpenCL**: With RadeonSI now using ACO by default for OpenGL, pressure to extend ACO to Mesa's OpenCL/compute paths (clover, rusticl) will increase; this would require ACO to handle compute-specific lowering currently handled by LLVM. Note: no confirmed Mesa roadmap item as of mid-2026.
+- **Pipeline-library and shader-object linking improvements**: `VK_EXT_graphics_pipeline_library` and `VK_EXT_shader_object` require ACO to link separately compiled stage binaries at finalisation time. Improvements to the linker's register-file management and code-size reduction are anticipated as these extensions see heavier use in shipping engines. [Source](https://docs.mesa3d.org/drivers/radv.html)
+- **shader-db integration with CI**: The Mesa CI pipeline is progressively tightening integration with `shader-db` regression metrics so that ACO code-quality regressions (VGPR pressure increases, instruction-count regressions) are caught automatically per merge request rather than discovered post-release. [Source](https://gitlab.freedesktop.org/mesa/shader-db)
+- **Improved spill-reload scheduling**: ACO's spiller currently inserts reload instructions conservatively; planned work targets moving reloads closer to their use sites and hoisting spills out of loops, a significant latency reduction for register-pressure-heavy compute shaders on RDNA3/RDNA4.
+
+### Long-term
+
+- **Potential ROCm/HIP integration**: The long-term question for the AMD Linux stack is whether ACO's fast-compilation approach could benefit ROCm HIP compute workloads, where LLVM's compilation latency is observable in kernel launch times. Any such integration would require ACO to cover the full HIP intrinsic set and to coexist with LLVM's existing ROCm toolchain infrastructure. Note: highly speculative; no public proposal exists.
+- **Unified AMD compiler strategy across Mesa stacks**: As ACO matures and covers radeonsi and potentially OpenCL/rusticl, the AMD compiler surface in Mesa could converge on a single IR-and-backend strategy, reducing the maintenance burden of maintaining parallel LLVM and ACO paths for the same hardware. [Source](https://www.phoronix.com/forums/forum/linux-graphics-x-org-drivers/open-source-amd-linux/1512912-last-minute-amd-gfx12-changes-for-radeonsi-driver-enable-aco-for-rdna4)
+- **Formal verification of register allocation correctness**: The AMD open-source driver team has discussed (informally, in XDC talks) interest in formally verified components for critical GPU compiler passes; the VGPR/SGPR allocator is a natural candidate given that allocation bugs produce silent GPU hangs or corrupted rendering rather than clean crashes. Note: speculative; no confirmed project.
+- **RDNA5 and beyond — architectural feedback loop**: As ACO tracks successive RDNA generations (GFX12, GFX13, and beyond), each generation's new instruction types and execution-model changes will require corresponding ACO IR extensions; the goal is to keep the ACO–hardware feedback loop tighter than the LLVM upstream review cycle allows. [Source](https://forums.anandtech.com/threads/rdna-5-cdna-4-architectures-thread.2625461/post-41389871)
+
+---
+
 ## Integrations
 
 **Chapter 5 (amdgpu Kernel Driver)**: The `ac_shader_config` header that ACO populates — SGPR count, VGPR count, LDS size, scratch size — feeds directly into the PM4 command stream that RADV submits to amdgpu. The kernel driver uses `COMPUTE_PGM_RSRC1` and `COMPUTE_PGM_RSRC2` register fields derived from these values to allocate the correct amount of register file space per wavefront before dispatch. An understanding of ACO's register accounting is necessary to diagnose amdgpu dispatch failures or corruption that trace back to incorrect resource declarations.

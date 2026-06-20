@@ -770,6 +770,32 @@ record_android_trace -o trace.pb -t 5 -c ... gpu
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Tyr driver full functional parity**: The Rust-based Tyr DRM driver (submitted for Linux 6.18) is being built out incrementally to implement the complete Panthor uAPI, including full job submission, VM management, and tiler heap support. It aims to become a drop-in replacement for Panthor for use with PanVK. [Source](https://www.phoronix.com/news/Rust-DRM-Drivers-Linux-6.18-Tyr)
+- **KRAID Rust compiler maturation**: The KRAID Rust shader compiler, which landed in Mesa 26.2 behind a `-Dpanfrost-rust` Meson flag in June 2026, is being actively developed toward production quality for Mali v9+ (Valhall/5th-gen) targets. It replaces the C-based Bifrost-era compiler for these architectures. [Source](https://www.phoronix.com/news/Mesa-Arm-Mali-KRAID)
+- **PanVK Vulkan 1.3/1.4 conformance and Roadmap 2022 profile**: Following Vulkan 1.2 conformance on Mali-G610, the team is working toward Vulkan 1.3 and 1.4 feature coverage and the Khronos Roadmap 2022 profile requirements (including descriptor indexing, synchronization2, dynamic rendering). [Source](https://www.collabora.com/news-and-blog/news-and-events/panvk-reaches-vulkan-12-conformance-on-mali-g610.html)
+- **AFBC YUV 4:2:2 video decode support**: Mesa's Panfrost video decode path added AFBC-compressed YUV 4:2:0 textures in Mesa 25.2; AFBC for YUV 4:2:2 is in progress for higher-quality video output on ARM SoC platforms. [Source](https://www.collabora.com/news-and-blog/news-and-events/improvements-to-mesa-video-decoding-for-panfrost.html)
+- **Performance counter and coredump support in Panthor**: The Panthor maintainers have called out performance counter support (for GPU profiling tools such as Perfetto and `perf`) and device coredump (for firmware/driver crash debugging) as near-term development items. Note: specific kernel version targets need verification.
+
+### Medium-term (1–3 years)
+
+- **5th-generation Mali (v12–v14) full enablement**: Mesa 25.1 added initial Panfrost/PanVK support for Mali 5th-gen v12/v13 (G720, G725). Full feature parity — including all Vulkan extensions, video decode, and performance counters — for these and forthcoming v14 parts is ongoing. [Source](https://www.phoronix.com/news/Mesa-25.1-Newer-Mali-5th-Gen)
+- **Khronos Roadmap 2024 Vulkan profile**: The Collabora PanVK team has stated intent to eventually target the Roadmap 2024 profile, which requires mesh shading, ray query, maintenance5, and other extensions not yet implemented. [Source](https://www.collabora.com/news-and-blog/news-and-events/mesa-25-panvk-moves-towards-production-quality.html)
+- **Tyr as Panthor replacement in mainline**: Over several kernel release cycles, Tyr is intended to reach feature parity with the C Panthor driver and potentially replace it as the primary upstream driver for CSF-based Mali GPUs. The timeline depends on Rust DRM bindings maturity. [Source](https://www.collabora.com/news-and-blog/news-and-events/kernel-618-tyr-advances-rust-in-linux.html)
+- **Lima Vulkan (speculative)**: Lima currently only supports OpenGL ES via the Gallium driver; there has been no announced plan for a Vulkan backend for Utgard hardware, but community interest exists given the widespread Mali-400/450 installed base. Note: needs verification from mailing list discussion.
+- **`drm_gpuvm` enhancements for heterogeneous compute**: `drm_gpuvm` (co-developed for Panthor) is being extended by multiple driver teams to support sparse VM, large BAR mappings, and heterogeneous compute workloads; Panthor and Tyr would inherit these improvements automatically.
+
+### Long-term
+
+- **KRAID coverage expansion to Bifrost**: KRAID currently targets Mali v9+ Valhall architectures. Long-term, a Rust compiler path covering Bifrost (v7) would unify the compiler stack and could retire the C-based Bifrost compiler entirely. Note: no public commitment yet; needs verification.
+- **Conformance for OpenGL ES 3.2 on Bifrost/Valhall**: The current conformance achievement is OpenGL ES 3.1 on Mali-G610 (Panthor). Achieving ES 3.2 conformance (adding geometry shaders, ASTC decode modes, advanced blend) is a plausible long-term target as PanVK and the Gallium driver mature. Note: needs verification.
+- **Upstream ARM hardware documentation**: Greater official documentation from ARM (beyond the existing public ISA specs and driver stubs) could accelerate feature completeness and reduce maintenance burden for the Panfrost/Panthor teams. This is a recurring community aspiration without a concrete commitment. Note: speculative.
+
+---
+
 ## 11. Integrations
 
 This chapter's drivers and compiler infrastructure touch many other parts of the Linux graphics stack:

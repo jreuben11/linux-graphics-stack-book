@@ -717,6 +717,33 @@ The two modules are `NovaCore` and `Nova` in the kernel's module namespace (the 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **GPU command submission (DRM_NOVA_EXEC ioctl)**: The highest-priority open item is an exec ioctl allowing userspace to submit GPU work via the nova-drm interface. This is a prerequisite for any userspace Vulkan driver integration and is the focus of active development in the `drm-rust-next` tree as of mid-2026. [Source](https://rust-for-linux.com/nova-gpu-driver)
+- **GPUVM integration via `drm_gpuvm`**: GPU virtual address space management using the kernel's `drm_gpuvm` framework is planned in parallel with command submission; the Linux 7.2 pull request already added a GPUVM immediate-mode abstraction to the DRM Rust layer in preparation. [Source](https://www.phoronix.com/news/Linux-7.2-DRM-Rust)
+- **Hopper and Blackwell GPU enablement**: A multi-version patch series (v12+ as of March 2026) adding FSP boot path, MCTP/NVDM infrastructure, and Hopper/Blackwell Falcon HAL entries is progressing toward mainline inclusion, targeting Linux 7.3 or 7.4. [Source](https://lwn.net/Articles/1064636/) [Source](https://www.phoronix.com/news/Hopper-Blackwell-Nova-Closer)
+- **`drm_syncobj` and timeline semaphore support**: Explicit synchronization primitives (`DRIVER_SYNCOBJ`, `DRIVER_SYNCOBJ_TIMELINE`) will be added once command submission is in place, enabling Nova to participate in the Wayland explicit-sync protocol. Note: needs verification for exact target kernel version.
+- **End-user usability milestone**: With command submission and GPUVM integration landing, the Nova driver is expected to become useful to end-users for the first time in 2026 — transitioning from an infrastructure-only driver to one that can run real workloads. [Source](https://www.phoronix.com/news/Hopper-Blackwell-Nova-Prep)
+
+### Medium-term (1–3 years)
+
+- **NVK (Mesa Vulkan) Nova backend**: Once nova-drm reaches a stable UAPI covering command submission and GPUVM bind/unbind, NVK will gain a Nova kernel backend alongside its current Nouveau backend. The architectural intent — that the same Mesa Vulkan userspace runs over either kernel driver — has been stated explicitly by the Nova developers. [Source](https://www.phoronix.com/news/Nova-DRM-Skeleton-Driver-Patch)
+- **Display/KMS support**: Modesetting, output management, and atomic commit support are planned but explicitly deferred until the compute/render path is stable. This is a prerequisite for Nova replacing Nouveau as a display driver on Turing+ hardware. Note: needs verification for specific design proposals.
+- **VFIO vGPU manager as a second-level driver**: nova-core's auxiliary bus architecture was designed from the outset to support a VFIO-based virtual GPU manager binding to the same nova-core auxiliary device without DRM involvement. No public patch series exists yet, but the design intent is documented in upstream discussions. [Source](https://rust-for-linux.com/nova-gpu-driver)
+- **NVENC/NVDEC video engine support**: Video encode and decode via the GSP-RM video engine RPC interface is planned as a follow-on once the general RPC infrastructure matures; no concrete patch series is public as of mid-2026. Note: needs verification.
+- **Transition from Nouveau as default Turing+ driver**: Feature parity with Nouveau's GSP-RM path (items 1–3 above plus KMS) is the gate for Nova becoming the kernel's default open driver for Turing and later GPUs. The development cadence through Linux 7.x suggests this transition is reachable but not imminent. [Source](https://www.phoronix.com/news/Linux-7.2-DRM-Rust)
+
+### Long-term
+
+- **Full Rust DRM abstraction layer maturity**: Nova is the primary driver proving out the Rust DRM abstraction layer types (`drm::Device<T>`, `gem::Object<T>`, `auxiliary::Driver`). As the abstractions stabilise across Nova and the ARM Tyr driver, they will be adopted more broadly across DRM, potentially influencing how future drivers — including non-NVIDIA — are written in the Linux kernel. [Source](https://www.phoronix.com/news/DRM-Rust-Kernel-Tree)
+- **Blackwell and future GPU architecture coverage**: The Hopper/Blackwell enablement work under way establishes the pattern for adding new GPU generations cleanly — replacing the generation-spanning vtable sprawl of nvkm with focused HAL additions to the `Falcon<E>` generic. Future NVIDIA architectures beyond Blackwell are expected to follow the same GSP-RM model and be supportable within Nova's existing framework. [Source](https://www.phoronix.com/news/Hopper-Blackwell-Nova-Closer)
+- **Nova as the reference Rust DRM driver**: The `drm-rust-next` development tree positions Nova alongside Tyr as the two reference implementations for Rust-based DRM drivers. Long-term, Nova's design choices — the auxiliary bus split, `FirmwareObject<F, S>` typestate, typed MMIO via `bounded_enum!` — are likely to influence the Rust DRM driver conventions codified in `Documentation/gpu/nova/guidelines.rst`. [Source](https://docs.kernel.org/gpu/nova/guidelines.html)
+- **Speculative: OpenCL and CUDA-adjacent compute paths**: CUDA support is explicitly out of scope for Nova and remains proprietary. However, as GSP-RM command infrastructure matures, community interest in supporting OpenCL compute workloads via the open firmware path is plausible, following the pattern of Nouveau's experimental CUDA support. Note: highly speculative, no public proposals as of 2026.
+
+---
+
 ## Integrations
 
 **Chapter 8 (nvkm Architecture)**: Nova is the architectural successor to nvkm for Turing+ GPUs. The generation-spanning object hierarchy in nvkm — described in Chapter 8, Section 2 — is precisely what Nova discards in favour of a flat, GSP-RM-centric design. The `drm_gpuvm` framework described in Chapter 8, Section 5 is the same framework that nova-drm will use when its GPUVM integration is implemented. nova-core's `Falcon<E>` generic, which dispatches per-architecture HAL implementations through Rust trait objects, is the Rust equivalent of nvkm's per-generation vtable chains, but covers only the two distinct boot paths (Turing/GA100 PIO vs. Ampere/Ada DMA) rather than the full generation spread of nvkm.

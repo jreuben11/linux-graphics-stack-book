@@ -403,6 +403,33 @@ cat /sys/kernel/debug/dri/0/state  # shows plane modifier
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **AMD DCC for multi-plane and video formats on RDNA4 (GFX12)**: Mesa 25.1 landed DCC support for multi-plane formats on RDNA4 hardware, and tiling is now enabled by default for VAAPI/VCN encode, decode, and JPEG paths — extending bandwidth savings to video workloads previously left uncompressed. [Source](https://www.phoronix.com/news/Mesa-25.1-Multi-Plane-DCC-RDNA4)
+- **RADV DCC fast clears on RDNA3 (GFX11)**: Samuel Pitoiset (Valve) expanded DCC fast-clear support to 8 bpp and 16 bpp block sizes on RDNA3, reducing the number of cases where a full clear pass is required. [Source](https://www.phoronix.com/forums/forum/linux-graphics-x-org-drivers/open-source-amd-linux/1530895-radv-driver-expands-use-of-performance-helping-dcc-fast-clears-on-rdna3-gpus)
+- **Intel CCS restoration for Xe2 (Battlemage) via SR-IOV**: The Xe kernel driver is adding SR-IOV support to restore Compression Control Surface (CCS) state for Xe2 and newer GPUs; Battlemage requires 64 KB scanout-buffer alignment for compressed formats — enforcement patches are in flight for Linux 6.18. [Source](https://www.phoronix.com/news/Linux-6.18-More-Xe-SR-IOV)
+- **Qualcomm UBWC gralloc detection fixes in Turnip/Freedreno**: Upstream Mesa commits are addressing UBWC detection failures introduced by newer Qualcomm gralloc versions (`u_gralloc` magic-check removal), preventing display corruption on A6xx/A7xx devices. [Source](https://deepwiki.com/bminor/mesa-mesa/2.3-turnip-qualcomm-vulkan-driver)
+- **AFBC for additional Rockchip and MediaTek DPU display cores**: Ongoing upstreaming of AFBC modifier support for newer Rockchip (RK3588 DPU) and MediaTek display subsystems in the `drm-misc` tree. Note: needs verification for specific kernel cycle targets.
+
+### Medium-term (1–3 years)
+
+- **Unified modifier negotiation via KMS `IN_FORMATS` v2 / format feedback**: The existing `zwp_linux_dmabuf_feedback_v1` mechanism works well but is Wayland-only; there is ongoing discussion around making format-modifier capability tables (producer/consumer matching) a first-class DRM ioctl so headless and non-Wayland consumers benefit. Note: needs verification — no merged RFC as of 2026.
+- **AFBC v3 and AFBC wide-block (32×8) broader driver adoption**: ARM's newer Immortalis GPU IP supports wider AFBC superblock variants and the AFBC v3 encoding; display driver support (Komeda, DW-HDMI, and SoC display engines) needs to catch up to allow zero-copy compressed scanout on the latest ARM Cortex/Immortalis platforms. [Source](https://developer.arm.com/Architectures/Arm%20Frame%20Buffer%20Compression)
+- **AMD DCC on Infinity Cache (RDNA4)**: AMD's RDNA4 architecture extends DCC compression into the Infinity Cache hierarchy; Mesa and radeonsi will need cache-coherence and flush-sequence updates to exploit this safely. [Source](https://chipsandcheese.com/p/amds-rdna4-gpu-architecture-at-hot)
+- **Qualcomm UBWC for A8xx (Gen 4) in mainline**: Newer Adreno A810/A825/A830 GPU configurations have appeared in upstream Mesa; full UBWC scanout support for these cores (including KMS modifier advertisement in the msm DRM driver) is expected to follow as the hardware matures in the mainline kernel. [Source](https://deepwiki.com/bminor/mesa-mesa/2.3-turnip-qualcomm-vulkan-driver)
+- **Cross-vendor modifier validation helpers**: A kernel-level helper library to validate modifier constraints (alignment, pitch, format compatibility) common across AFBC, DCC, and UBWC, reducing duplicated validation code in each driver. Note: needs verification — discussed on dri-devel but no patchset merged.
+
+### Long-term
+
+- **Compressed memory import/export across GPU vendors**: Long-term ambition to allow, for example, a Qualcomm VPU to decompress a frame that a downstream Adreno GPU reads without an explicit decompress blit — requires a common modifier namespace and cross-IP coherency protocol that no current SoC fully implements.
+- **Lossy compression tiers via DRM modifiers**: Some hardware (e.g., ARM's Immortalis "Fixed-Rate Compression") supports configurable lossy compression at fixed bit-rates; exposing this via a modifier quality field or a new KMS property is an open design question in the DRM community. Note: needs verification.
+- **Transparent compression below the DRM layer (SMMU/IOMMU)**: Research directions propose offloading compression entirely to the SMMU/IOMMU or memory controller so that producers and consumers see uncompressed addresses — eliminating the need for per-driver modifier negotiation at the cost of hardware complexity.
+- **Standardised compression metadata for cross-process zero-copy**: Extending `dma_buf` with a standardised sidecar for compression metadata (block map, header tables) so that any consumer (display, codec, ML accelerator) can decompress a buffer produced by any vendor GPU without a driver-specific path. Note: needs verification — no agreed standard as of 2026.
+
+---
+
 ## Integrations
 
 - **Ch04 (DRM Framebuffers)** — `drmModeAddFB2WithModifiers` is the kernel API for creating a compressed framebuffer; the modifier must be supported by both the plane and the GPU driver

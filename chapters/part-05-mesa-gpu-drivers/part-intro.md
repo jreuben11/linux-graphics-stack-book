@@ -90,6 +90,10 @@ graph LR
 
 ## Prerequisites and What Comes Next
 
-Readers should arrive having worked through Part II (kernel DRM drivers, GEM buffer objects, ioctl submission), Part III (Mesa loader, EGL/GLX dispatch), and Part IV (NIR, ACO, EU ISA, Gallium3D). Part VI (display and compositor stack) consumes the DMA-BUF handles and DRM framebuffers these drivers produce; Part VII (Vulkan extensions, VA-API, OpenXR) relies on the driver capabilities and extension support established here.
+Readers should arrive having worked through Part II (kernel DRM drivers, GEM buffer objects, ioctl submission), **Part III** (the NVIDIA story — GSP-RM, NVK architecture, Nova kernel driver), and Part IV (Mesa loader, EGL/GLX dispatch, NIR, ACO, EU ISA, Gallium3D). Part VI (display and compositor stack) consumes the DMA-BUF handles and DRM framebuffers these drivers produce; Part VII (Vulkan extensions, VA-API, OpenXR) relies on the driver capabilities and extension support established here.
+
+**NVIDIA in this part**: Chapter 10b in Part III introduced NVK as a narrative about driver construction under hardware opacity. Chapter 177 in this part (Part V) is the architectural deep-dive: NVKMD abstraction, push buffer encoding, NAK compiler integration, WSI/Kopper explicit-sync, and the full conformance history. Readers working specifically on NVIDIA open-source Vulkan should read Part III (Ch. 7–11, 118) first, then return here for Chapter 177's architectural treatment.
+
+Readers interested in **comparing NVIDIA's approach with AMD, Intel, and Qualcomm** will find the most complete side-by-side picture by reading Chapter 18 (RADV/ANV/Turnip) and Chapter 177 (NVK) together: descriptor model (SRD tables vs bindless heap vs surface-state heap vs bindless global buffer), submission path (IB1/IB2 ring vs EU batch vs CSF firmware vs GSP-RM FIFO), and shader compiler backend (ACO vs BRW/ELK vs ir3 vs NAK) are the four axes that most sharply differentiate the driver families.
 
 ---

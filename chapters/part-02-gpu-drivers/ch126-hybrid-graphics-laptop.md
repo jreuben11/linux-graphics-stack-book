@@ -880,6 +880,33 @@ If the discharge rate drops by 10–15W after applying `envycontrol --switch int
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **NVIDIA open kernel module as the default for Optimus laptops.** Arch Linux switched its `nvidia` packages to use NVIDIA's open-source kernel modules by default for Turing and newer GPUs in late 2025, with other distributions (Fedora, Ubuntu) expected to follow. The open modules expose cleaner interfaces for RTD3 and PRIME that the proprietary closed modules could not. [Source: Phoronix — Arch Linux NVIDIA Open Kernel Modules](https://www.phoronix.com/news/Arch-LInux-NVIDIA-Open-Default)
+- **RTD3 monitor hotplug fix in NVIDIA open modules.** A known regression in the open kernel module prevents the dGPU from re-entering D3cold after an external monitor is plugged and then unplugged during a PRIME offload session. Active upstream issue tracking a fix. [Source: NVIDIA open-gpu-kernel-modules issue #759](https://github.com/NVIDIA/open-gpu-kernel-modules/issues/759)
+- **power-profiles-daemon battery-state awareness for hybrid GPUs.** Power Profiles Daemon 0.22 introduced AMD-specific improvements; near-term work targets tighter integration between the `performance`/`balanced`/`power-saver` profile transitions and dGPU `power/control` sysfs writes so that switching to `power-saver` automatically triggers RTD3 suspend on the dGPU without requiring manual `envycontrol` invocation. [Source: Phoronix — Power-Profiles-Daemon 0.22](https://www.phoronix.com/news/Power-Profiles-Daemon-0.22)
+- **AMD AMDGPU User Mode Queues (UserQ) improvements in Linux 6.19.** The Linux 6.19 merge window (February 2026) brought significant UserQ work from AMD engineers; this infrastructure underlies future SmartShift-aware scheduling where the driver can more dynamically balance workloads between the APU and dGPU. [Source: WebProNews — AMD Linux 6.19 Kernel Upgrades](https://www.webpronews.com/amds-linux-graphics-surge-decoding-the-6-19-kernel-upgrades/)
+- **envycontrol 4.x: Wayland-native switching without reboot.** The `envycontrol` maintainer has discussed eliminating the logout/reboot requirement for switching between integrated and hybrid modes by hooking into compositor restart mechanisms on Wayland. Note: needs verification against upstream issue tracker.
+
+### Medium-term (1–3 years)
+
+- **Unified sysfs power control API across NVIDIA and AMD.** Currently, NVIDIA RTD3 is governed by `NVreg_DynamicPowerManagement` module parameters and udev rules, while `amdgpu` uses `amdgpu.runpm` and per-device sysfs `power/control`. A proposed kernel-level abstraction would allow `power-profiles-daemon` and TLP to manage both drivers through a single interface without driver-specific knowledge. Note: needs verification — concept discussed in freedesktop.org power management mailing threads.
+- **Advanced Optimus MUX abstraction in the kernel.** NVIDIA RTX 50 Series laptops ship with "Advanced Optimus" hardware that can switch the MUX in-session without a reboot. Exposing this through a standardised kernel interface (extending `vga_switcheroo` or a new `drm_mux` subsystem) is a medium-term goal so that compositors can initiate seamless MUX switching transparently. Note: needs verification.
+- **AMD SmartShift 2.0 (SS2.0) bias control integration with schedulers.** The `amdgpu` sysfs `smartshift_bias` knob (range −100 to +100) is currently only settable by privileged user-space tools. Integration with the kernel's power-aware CPU scheduler (`schedutil`) and `power-profiles-daemon` to adjust the bias dynamically based on workload type is a stated direction. [Source: kernel.org amdgpu driver-misc documentation](https://docs.kernel.org/gpu/amdgpu/driver-misc.html)
+- **PRIME implicit sync via kernel fence timelines.** As Wayland moves to explicit sync (`linux-drm-syncobj-v1`), the DMA-BUF fence-passing path used by PRIME render offload needs corresponding updates to avoid implicit sync fallbacks that reduce throughput on multi-GPU compositing paths. RFC patches have circulated on the dri-devel mailing list. Note: needs verification of current RFC status.
+- **bbswitch retirement.** The `bbswitch` out-of-tree DKMS module is in maintenance mode; medium-term expectation is that NVIDIA RTD3 in the open modules will render it obsolete and distributions will drop bbswitch from repositories once RTD3 D3cold reliability reaches parity. [Source: Bumblebee-Project/bbswitch GitHub](https://github.com/Bumblebee-Project/bbswitch)
+
+### Long-term
+
+- **Kernel DRM MUX subsystem replacing `vga_switcheroo`.** The `vga_switcheroo` code is a legacy subsystem that predates modern DRM. Long-term architectural plans discussed at XDC suggest a proper `drm_mux` abstraction integrated with DRM device links, enabling in-kernel MUX switching events to propagate to compositors via DRM hotplug notifications. Note: needs verification.
+- **Wayland display server-side PRIME elimination.** In the long term, if hardware MUX switching becomes reliable and standardised, MUX-less PRIME offload (which requires copying framebuffers through the iGPU) may become optional: the dGPU could scan out directly when the MUX is in dGPU mode and fall back to PRIME only in iGPU mode. This would reduce PRIME-induced memory bandwidth and latency overhead on gaming workloads.
+- **AI/NPU-directed power gating.** NVIDIA RTX 50 Series laptops already include on-chip AI that learns usage patterns to anticipate when the dGPU should wake from D3cold before the user launches a workload. Future Linux kernel support for NPU-directed PM hints (communicating via a standardised kernel interface) could replicate this on open-stack AMD and NVIDIA hardware. Note: needs verification — framed as vendor direction in public CES 2026 materials.
+- **Cross-vendor hybrid graphics without vendor-specific tools.** The long-term goal of initiatives like `envycontrol`, `supergfxctl`, and `system76-power` converging on a shared D-Bus API (potentially absorbed into `power-profiles-daemon`) would mean a laptop user never needs to install vendor-specific tooling to achieve correct hybrid GPU power management regardless of whether the dGPU is NVIDIA, AMD, or a future architecture.
+
+---
+
 ## Integrations
 
 - **Ch5 (x86 GPU Drivers — amdgpu / NVIDIA)**: The `amdgpu` driver's `runpm` and SmartShift sysfs described here are implemented in the driver internals covered in Ch5. NVIDIA driver module parameters including `NVreg_DynamicPowerManagement` are rooted in the proprietary driver architecture covered there.

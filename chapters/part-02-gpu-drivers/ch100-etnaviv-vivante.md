@@ -806,6 +806,33 @@ The etnaviv GitHub organisation at [github.com/etnaviv](https://github.com/etnav
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **OpenGL ES 3.0 conformance on GC7000 (HALTI5)**: Christian Gmeiner is actively publishing a series of posts on resolving the remaining dEQP failures on the GC7000 rev 6214 (NXP i.MX8MQ). The hard cases involve undocumented hardware quirks requiring workarounds derived from command-stream traces of the proprietary `galcore.ko` driver. [Source](https://christian-gmeiner.info/2026-02-20-gles3-on-etnaviv-fixing-the-hard-parts/)
+- **PPU flop reset support in Linux 7.0**: Gert Wollny (Collabora) submitted a v5 patch series adding PPU (Pixel Processing Unit) flop reset support for the GC8000 Nano Ultra VIP r6205, as found in the ST STM32MP25. The feature clears temporary GPU registers after power-on/resume to prevent rendering corruption; it was queued in `drm-misc-next` for the Linux 6.20/7.0 cycle. [Source](https://lkml.iu.edu/2511.2/08738.html)
+- **STM32MP25 platform bring-up**: The same Collabora patch series extends etnaviv hardware identification to the ST STM32MP25 SoC family (GC8000 Nano Ultra VIP), broadening the driver beyond the NXP i.MX lineage into the ST Microelectronics embedded Linux ecosystem. [Source](https://www.collabora.com/news-and-blog/news-and-events/from-panthor-to-rk3588-advancing-graphics-video-soc-support-linux-kernel-7.html)
+- **VIPNano NPU driver maintenance**: The etnaviv NPU path for VeriSilicon VIPNano-QI (as found in the Khadas VIM3 and NXP i.MX8M Plus) reached upstream Mesa in early 2024; near-term work focuses on extending NPU support to additional SoC variants and stabilising the kernel–userspace interface. [Source](https://blog.tomeuvizoso.net/2024/01/etnaviv-npu-update-15-we-are-upstream.html)
+- **CI and dEQP baseline maintenance**: The etnaviv LAVA CI boards (GC2000 and GC7000UL hardware) run automatically on Mesa merge requests; the near-term focus includes expanding the dEQP-GLES3 baseline and reducing the flake rate on the i.MX8M Plus board. [Source](https://gitlab.freedesktop.org/mesa/mesa)
+
+### Medium-term (1–3 years)
+
+- **OpenGL ES 3.1 on GC7000UL (compute shaders)**: The GC7000UL in the i.MX8M Plus has a hardware compute shader engine capable of OpenCL 1.2 and GLES3.1 compute. Achieving formal GLES3.1 support requires completing the geometry shader and compute dispatch paths in the Mesa compiler — work that has been discussed but not yet merged. Note: needs verification against current Mesa MR status.
+- **Rusticl OpenCL support via the compute engine**: Collabora demonstrated ML inference via the GC7000UL compute engine using a custom OpenCL path in 2022; longer-term integration with Mesa's Rusticl OpenCL 3.0 frontend (replacing the ad-hoc path) is a natural goal once GLES3.1 compute is stable. [Source](https://www.collabora.com/news-and-blog/blog/2022/12/15/machine-learning-with-etnaviv-and-opencl/)
+- **NPU acceleration for i.MX8M Plus (VIPNano-SI+)**: Extending the etnaviv NPU kernel/userspace driver from VIPNano-QI to the larger VIPNano-SI+ variant (as found in the i.MX8M Plus) is in active development, with Ideas On Board sponsoring the work. Mesa upstreaming of the i.MX8M Plus NPU path was pending as of late 2024. [Source](https://www.phoronix.com/news/Etnaviv-NPU-NXP-MX8M-Plus)
+- **Further SoC bring-up (GC8000 family)**: The GC8000 Nano Ultra VIP (STM32MP25) PPU flop reset work is a precursor to broader GC8000 series support. Medium-term work is expected to expand register documentation and feature flags for GC8000 variants. Note: needs verification against upstream mailing-list activity.
+- **Improved rnndb register documentation**: The hardware register XML database (`state.xml`, `state_3d.xml`) continues to have gaps in areas such as the RS resolve engine's format conversion modes and GC7000 HALTI5 geometry shader state. Community-contributed documentation from command-stream analysis remains the primary method of filling these gaps.
+
+### Long-term
+
+- **Vulkan driver exploration**: The GC7000 HALTI5 feature level includes primitives (compute, geometry shaders, MRT) that are prerequisites for a minimal Vulkan 1.0 implementation. No active Vulkan effort for etnaviv is publicly known as of 2026, but the precedent set by NVK (Nouveau→Vulkan) and Panfrost's Vulkan work suggests this is a plausible long-term direction if hardware demand grows. Note: needs verification.
+- **Formal ISA documentation or VeriSilicon engagement**: VeriSilicon (successor to Vivante) has not released public ISA documentation. Long-term driver quality would benefit from even a partial specification covering the GC7000 HALTI5 instruction set; community discussion has occasionally raised the possibility of engagement with VeriSilicon, but no formal programme exists as of 2026. Note: needs verification.
+- **Power management and runtime PM improvements**: The etnaviv driver currently supports basic runtime power management via the DRM GPU scheduler's idle callback; more aggressive per-core clock and voltage scaling (DVFS) on platforms like the i.MX8M Plus would require deeper integration with NXP's SoC power domains and has been discussed as a long-term goal in the embedded Linux community. Note: needs verification.
+- **Broader automotive certification paths**: As i.MX8-based designs enter ISO 26262 ASIL-B safety domains in automotive HMI, there is growing interest in safety-qualified etnaviv builds. This would require deterministic rendering latency guarantees and formal CTS certification — a multi-year effort dependent on NXP and Tier-1 automotive Linux vendor investment. Note: speculative.
+
+---
+
 ## 11. Integrations
 
 This chapter connects to several other parts of the book:

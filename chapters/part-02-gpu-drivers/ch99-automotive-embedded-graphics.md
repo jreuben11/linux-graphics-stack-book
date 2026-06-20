@@ -922,6 +922,33 @@ Adaptive AUTOSAR (AP) defines a standardised software architecture for SDV high-
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- AGL SoDeV "Ultimate Unagi" (UCB, released May 2026) is being rolled out to production SDV platforms; the near-term focus is hardening the multi-ECU containerisation story using LXC/VirtIO, with graphics frames forwarded between containers via Waltham and DMA-BUF sharing over PCIe. [Source](https://www.linuxfoundation.org/press/automotive-grade-linux-releases-open-source-sodev-reference-platform-for-software-defined-vehicles-and-welcomes-five-new-members)
+- NXP i.MX 952 (i.MX 9 series) is expected to begin sampling in H1 2026, bringing an integrated eIQ Neutron NPU alongside an updated GPU and display subsystem. The etnaviv / imx-drm bring-up work for i.MX 95 is anticipated to follow within the same window. [Source](https://www.nxp.com/company/about-nxp/newsroom/NW-NXP-AI-ENABLED-IMX952-PROCESSOR)
+- Mesa Turnip (Adreno Vulkan) continues adding ray-query and Vulkan 1.3 feature coverage for Adreno 7xx/8xx as found on the Qualcomm SA8295P and next-generation SA platforms, improving the open-source graphics path for automotive Vulkan workloads. [Source](https://www.phoronix.com/news/Mesa-TURNIP-VK_KHR_ray_query)
+- Linux 7.0 added `GPU_PM_RT` support in panfrost for the Renesas RZ/G3E SoC and BO-sync ioctl enhancements; follow-on patches targeting RZ/G3L cluster-display integration with `rcar-du` are expected in the 7.1–7.2 cycle. Note: needs verification on exact kernel version.
+- AGL European All Member Meeting (Berlin, September–October 2026) is expected to formalise the next-generation agl-compositor roadmap, including SDL3-based Wayland surface management for application portability across IVI and cluster ECUs. [Source](https://events.linuxfoundation.org/agl-at-embedded-world/)
+
+### Medium-term (1–3 years)
+
+- wlroots-based agl-compositor replacement is under architectural discussion: IoT.bzh published a feasibility analysis showing wlroots as a potential foundation for the next generation of AGL's Wayland compositor, replacing the current libweston dependency and enabling tighter integration with the wlroots DRM backend. [Source](https://iot.bzh/articles/94-wlroots-a-potential-foundation-for-next-generation-of-agl-wayland-compositor)
+- COVESA wayland-ivi-extension protocol is being rationalised: the long-standing `ivi-application`/`ivi-shell` protocol is expected to be superseded by xdg-shell-based role assignment with automotive-specific surface policy enforced by the compositor rather than a dedicated protocol, aligning with mainstream Wayland practice. [Source](https://github.com/COVESA/wayland-ivi-extension)
+- Open-source 3D driver coverage for remaining proprietary GPU islands: Imagination PowerVR (used in Renesas R-Car Gen3 and TI TDA4VM) remains the largest gap; the `pvr` Mesa driver targeting the PVR Rogue family is progressing in Mesa mainline and may reach production quality for automotive targets within this window. Note: needs verification on Mesa pvr driver timeline.
+- ISO 26262 / ASIL-B qualified open-source rendering path: industry groups (ELISA, Linux Foundation Safety Critical SIG) are working toward a methodology for qualifying selected Linux kernel DRM subsystem paths at ASIL-B, which would reduce the need for proprietary safety-renderer sidecars on cluster ECUs.
+- Adaptive AUTOSAR + AGL integration: Elektrobit and Vector are expected to release reference integrations of AGL UCB SoDeV as an Adaptive AUTOSAR adaptive application, using SOME/IP for state feeds and DMA-BUF-over-VirtIO for graphics surface handoff. [Source](https://www.elektrobit.com/newsroom/elektrobit-underscores-linux-for-automotive-safety-expertise-at-embedded-world-2026/)
+
+### Long-term
+
+- Software-defined vehicle (SDV) consolidation onto a single high-compute SoC (e.g., Qualcomm SA8775P, NVIDIA DRIVE Thor, or a future NXP i.MX flagship) running all in-vehicle displays — IVI, cluster, HUD, ADAS HMI — as isolated GPU contexts with hardware-enforced memory partitioning, replacing the current multi-SoC cabin architecture.
+- Full Vulkan safety extension (`VK_KHR_display` + safety-partition extensions) adoption in automotive: Khronos has signalled intent to define formal safety profiles for Vulkan to enable ASIL-qualified Vulkan rendering paths, which would allow a single Vulkan driver to serve both the QM-rated HMI and the safety-rated warning overlay. Note: needs verification on Khronos safety profile timeline.
+- Zero-copy DMA-BUF sharing across heterogeneous SoCs via CXL or automotive Ethernet extensions: as cabin networks migrate to 10 Gigabit automotive Ethernet (10GBase-T1), zero-copy buffer forwarding between ECUs (replacing H.264 re-encode) becomes architecturally viable, potentially enabling distributed GPU rendering without per-hop re-compression latency.
+- Rust-language DRM drivers for automotive-grade embedded SoCs: following the precedent set by the Nova (NVIDIA) and Apple AGX Rust DRM drivers, etnaviv and panfrost may see Rust rewrites or Rust-based helper crates, improving memory-safety guarantees relevant for ISO 26262 compliance arguments.
+
+---
+
 ## Integrations
 
 - **Chapter 1 (DRM Architecture)**: Platform GPU drivers — `etnaviv` for Vivante, `msm` for Adreno, `panfrost` for Mali — all register with the DRM core via `platform_driver_register()`, implement `struct drm_driver`, and follow the `drm_dev_alloc` / `drm_dev_register` lifecycle described in Ch1.

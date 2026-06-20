@@ -1472,6 +1472,33 @@ flowchart TD
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Vulkan 1.4 baseline across all major Mesa ICDs.** Mesa 26.1 (May 2026) landed full Vulkan 1.4 conformance in RADV, ANV, NVK, Turnip, and HoneyKrisp. The immediate near-term work is closing the remaining extension gaps in PanVK and Venus to reach parity. [Source](https://www.phoronix.com/news/Mesa-26.1-Released)
+- **NVK ray-tracing and Vulkan Video.** NVK's open NVIDIA Vulkan driver still has ray-tracing and Vulkan Video acceleration as explicit work-in-progress items on Faith Ekstrand's public status board; both are expected to land in Mesa 26.x or 27.0. [Source](https://www.phoronix.com/news/NVK-Status-Update-2025)
+- **Nova driver reaching end-user utility for Hopper/Blackwell.** The twelfth iteration of Hopper and Blackwell enablement patches for the Rust-based nova-drm kernel driver was posted in mid-2026; the series is converging on merge and is expected to make Nova useful to end-users on these GPU generations within the year. [Source](https://www.phoronix.com/news/Hopper-Blackwell-Nova-Closer)
+- **`VK_EXT_present_timing` across the display path.** Mesa 26.1 exposed `VK_EXT_present_timing` on RADV, ANV, NVK, and Turnip; the near-term integration work is plumbing precise frame-delivery timestamps through the KMS atomic commit path and the Wayland `linux-dmabuf-v1` feedback mechanism. [Source](https://linuxiac.com/mesa-26-1-graphics-stack-brings-vulkan-and-opengl-improvements/)
+- **DRM colour-pipeline API and NVIDIA proprietary support.** NVIDIA's 610.43 driver series (May 2026) added support for the upstream DRM colour pipeline API, enabling HDR compositing on Wayland without compositor-side workarounds. Full KMS atomic integration for wide-gamut and tone-mapping metadata is the remaining milestone. [Source](https://www.gamingonlinux.com/2026/05/nvidia-driver-610-43-02-arrives-for-linux-with-vulkan-upgrades-drm-colour-pipeline-api-support/)
+
+### Medium-term (1–3 years)
+
+- **Khronos Vulkan Roadmap 2026 milestone adoption.** Khronos published the Vulkan Roadmap 2026 milestone, which mandates variable-rate shading, host-image copies (`VK_EXT_host_image_copy`), and additional maintenance extensions as baseline for "modern" Vulkan hardware. Mesa drivers are tracking conformance with this milestone across RADV, ANV, and NVK. [Source](https://www.phoronix.com/news/Vulkan-Roadmap-2026)
+- **Nova as a drop-in Nouveau replacement with NVK.** The longer-term NVIDIA open-source strategy is for Nova to supersede the classic Nouveau DRM driver for Turing and later GPUs, with NVK consuming the Nova userspace API directly rather than the older Nouveau ioctl surface. NVIDIA is supplying NDA documentation to Red Hat to accelerate NVK feature completeness. [Source](https://www.phoronix.com/news/NVIDIA-Linux-2025-Highlights)
+- **GPU-driven rendering and mesh shaders in Mesa.** Upstream Mesa and Vulkan extension work on `VK_EXT_mesh_shader`, `VK_NV_mesh_shader`, and multi-draw indirect with count (`VK_KHR_draw_indirect_count`) is ongoing across RADV and ANV; the medium-term goal is full GPU-driven pipeline support without CPU round-trips. Note: needs verification for specific merge targets.
+- **DRM Rust abstraction layer maturity.** Linux 7.2 continues expanding DRM Rust bindings (GPUVM immediate mode, HRT support), laying groundwork for new drivers (nova-drm, future drm-nova replacement) to be written in safe Rust without C shim layers. [Source](https://www.phoronix.com/news/Linux-7.2-DRM-Rust)
+- **VirtIO-GPU native-context for all Mesa drivers.** Mesa 26.1 added native-context VirtIO-GPU support for Intel's Iris, Crocus, and ANV; the roadmap extends this to RADV and NVK so that paravirtualised guests can use the full Mesa Vulkan stack without host-side translation overhead. [Source](https://linuxiac.com/mesa-26-1-graphics-stack-brings-vulkan-and-opengl-improvements/)
+
+### Long-term
+
+- **Unified GSP firmware interface across open and proprietary NVIDIA stacks.** As Nova matures, a longer-term architectural goal is a stable ABI between the GSP firmware (running on the GPU's internal microcontroller) and both the open kernel driver and the proprietary blob, reducing the current triplication of firmware interaction code. Note: needs verification — no public RFC yet.
+- **Explicit sync as universal default and removal of implicit fence paths.** The `linux-drm-syncobj-v1` Wayland protocol has made explicit synchronisation the default for compositors on modern hardware; the long-term goal is to remove all implicit-fence fallback paths from Mesa WSI, the KMS pageflip path, and DMA-BUF importers, simplifying the synchronisation model to a single explicit timeline. [Source](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_syncobj.c)
+- **Full Vulkan compute stack for AI/ML workloads via open drivers.** As NVK approaches feature parity with the NVIDIA proprietary Vulkan driver on Turing/Ampere/Hopper, the open-source stack becomes viable for compute-heavy Vulkan workloads (cooperative matrices, subgroup operations, Vulkan shader objects) currently requiring the closed driver. This depends on both NVK feature completeness and Nova kernel stability.
+- **Cross-vendor GPU scheduling and memory pressure APIs.** Linux memory pressure and GPU scheduling work (building on `drm_gpu_scheduler`, cgroup GPU accounting, and unified memory APIs) aims to provide OS-level fairness between display, compute, and media workloads across AMD, Intel, and NVIDIA hardware in a common framework. Note: needs verification for specific kernel version targets.
+
+---
+
 ## 20. Integrations
 
 This chapter is a cross-cutting integration reference. It synthesises content from, and should be read alongside:

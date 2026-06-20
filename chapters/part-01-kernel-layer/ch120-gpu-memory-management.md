@@ -939,6 +939,31 @@ The `nvidia-smi` tool's `dmon` subcommand provides streaming per-second VRAM usa
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **DMEM cgroup adoption across TTM drivers**: The `dmem` (Device Memory) cgroup controller, introduced for Intel Xe in Linux 6.14, is expected to be wired into AMDGPU and other TTM-based drivers so that VRAM budgets can be enforced per-cgroup for containerised and gaming workloads. [Source](https://www.phoronix.com/news/DMEM-cgroup-vRAM-Control)
+- **drm_gpuvm robustness and adoption**: The `drm_gpuvm` + `drm_exec` framework introduced in Linux 6.7 continues to see adoption in nouveau and refinements in Xe/amdgpu — particularly around `drm_gpuvm_bo` abstraction, evicted-object tracking, and userspace VM_BIND IOCTL stabilisation. Note: specific patchset status needs verification against current DRM-next.
+- **TTM eviction policy improvements for low-VRAM GPUs**: Work has been posted to fix AMDGPU VRAM management heuristics that cause stuttering on 4–8 GB RDNA2/RDNA3 GPUs under mixed workloads — tuning when the eviction LRU demotes BOs from VRAM to GTT. [Source](https://pixelcluster.github.io/VRAM-Mgmt-fixed/)
+- **drm_buddy / gpu_buddy defragmentation**: The buddy allocator lacks a compaction path; in-flight proposals address fragmentation of VRAM in long-running compositor + game sessions by coalescing freed blocks during idle frames. Note: needs verification against current lore.kernel.org threads.
+- **Improved `drm_info` / fdinfo standardisation**: Continued push to unify the per-client `drm-total-vram0` and `drm-resident-vram0` fdinfo keys across all drivers so monitoring tools (`drm_info`, `nvtop`, `radeontop`) have a consistent interface. [Source](https://docs.kernel.org/gpu/drm-usage-stats.html)
+
+### Medium-term (1–3 years)
+
+- **CXL-backed GPU memory tiering**: CXL 2.0/3.0 memory expanders can expose Type-3 memory as NUMA nodes. Work is underway in the memory-tiering subsystem to let DRM drivers register GPU VRAM and CXL nodes in a common tier hierarchy, enabling the kernel's NUMA balancing daemon to migrate GPU BOs between HBM, GDDR, CXL-attached DRAM, and system RAM transparently. [Source](https://kernel-internals.org/mm/cxl-memory-tiering/)
+- **Unified GPU–CPU virtual address space (SVM / HMM integration)**: The Heterogeneous Memory Management (HMM) subsystem provides `migrate_to_ram` and `migrate_vma` hooks; deeper integration of HMM with TTM's placement engine (replacing the current GTT→VRAM manual migration model with demand-paged GPU faults) is a stated goal for discrete GPU drivers on platforms with PCIe P2P or CXL.cache coherent interconnects. [Source](https://www.kernel.org/doc/html/v5.0/vm/hmm.html)
+- **Standardised GPU memory pressure notifications**: A kernel-to-userspace GPU memory pressure interface (analogous to `memory.pressure` in memory cgroups) is under design discussion, allowing compositors and runtimes to receive early warning before VRAM is exhausted and self-evict GPU caches proactively. Note: needs verification — RFC stage as of 2026.
+- **Sparse/large-BAR mandatory support and 64-bit BAR normalisation**: As PCIe 6.x and CXL 3.x become mainstream, the expectation is that all discrete GPUs will ship with full-VRAM ReBAR enabled by default, removing the need for the 256 MB windowed BAR fallback and simplifying the TTM CPU mapping path.
+
+### Long-term
+
+- **GPU memory as a first-class kernel MM citizen**: The long-term architectural goal is to give GPU VRAM pages a `struct page` representation (the `DEV_PAGEMAP` + HMM `device_private` page infrastructure) so they participate in LRU scanning, OOM scoring, and page reclaim alongside system RAM — eliminating the current two-tier world where LMKD is blind to GPU pressure.
+- **Descriptor-based GPU virtual memory (beyond VM_BIND)**: Research prototypes (e.g., proposals from Intel and Red Hat for Vulkan sparse binding on Linux) suggest replacing the current BO-centric model with a descriptor-based GPU VA allocation model where userspace allocates VA ranges independently of backing storage, enabling large sparse textures and GPU-driven LOD streaming without driver involvement per mip level.
+- **Formal GPU memory bandwidth QoS / throttling**: Analogous to CPU bandwidth cgroups, future DRM cgroup extensions may expose per-client VRAM bandwidth quotas enforced by the GPU's memory controller, relevant for multi-tenant cloud GPU virtualisation (vGPU/SR-IOV environments). [Source](https://lwn.net/Articles/1000744/)
+
+---
+
 ## Integrations
 
 - **Ch1 — DRM Architecture and the Driver Model**: GEM and TTM are DRM subsystems; `drm_gem_object` is the fundamental DRM buffer primitive. The DRM device probe and `drm_driver` registration described in Ch1 is the context in which TTM is initialised via `ttm_device_init()`.

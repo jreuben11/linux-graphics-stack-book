@@ -832,6 +832,33 @@ Note that unloading `amdgpu` terminates all OpenGL/Vulkan contexts, kills compos
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **fwupd GPU firmware update coverage expansion**: fwupd 2.x (latest release 2.1.3, May 2026) is expanding AMD GPU firmware update support beyond Navi 3x to additional RDNA 4 SKUs, and Intel is contributing GuC/HuC update plugins. Broader fwupd integration means system tools like GNOME Software and KDE Discover will surface GPU firmware updates alongside UEFI and NIC firmware. [Source](https://en.wikipedia.org/wiki/Fwupd)
+- **NVIDIA GSP-RM firmware consolidation in linux-firmware**: Following the large GSP binary firmware blob commits to linux-firmware.git, NVIDIA's open kernel module (nvidia-open) increasingly relies on signed GSP-RM blobs for all Turing and later GPUs; near-term work focuses on packaging these blobs in distro firmware packages so open-driver users no longer require manual firmware installation. [Source](https://www.phoronix.com/news/NVIDIA-Big-GSP-Firmware-Dump)
+- **Firmware version mismatch detection improvements**: Kernel maintainers are working on better tooling to detect and warn when the linux-firmware package version diverges from the loaded kernel module's expected firmware ABI, reducing silent fallback-to-software-mode failures on rolling-release distros. Note: needs verification.
+- **Rust-based firmware loading abstractions**: The Linux kernel's ongoing Rust integration (600,000+ lines of Rust in kernel as of early 2026) is expected to produce safe Rust wrappers around the `request_firmware` C API, initially for drivers being re-implemented in Rust (such as Nova, the Rust NVIDIA kernel driver). [Source](https://www.webpronews.com/linux-kernel-2026-rust-integration-and-security-advances/)
+- **AMD PSP 14.0 firmware enablement for RDNA 4**: PSP 14.0 and associated GC/VCN/SDMA firmware components are being staged in linux-firmware for upcoming RDNA 4 hardware, with amdgpu driver patches in the `drm-next` tree adding matching IP block registration. [Source](https://www.phoronix.com/news/AMDGPU-Enabling-PSP-14.0)
+
+### Medium-term (1–3 years)
+
+- **Firmware authentication via kernel keyring and IMA**: A long-discussed direction for the firmware loader subsystem is integrating with the Integrity Measurement Architecture (IMA) so that firmware blobs are measured and their hashes recorded in the TPM PCR registers at load time. This would allow remote attestation frameworks to verify that a specific GPU firmware version was loaded, closing a gap in measured-boot coverage. Note: needs verification.
+- **Nova (Rust NVIDIA driver) GSP-RM interface stabilisation**: Nova's Rust kernel driver (Ch10) is expected to reach feature parity with Nouveau's GSP-RM path within 1–2 years; this requires a stable kernel-to-GSP-RM RPC interface specification, which NVIDIA is developing in coordination with the Nouveau/Nova maintainers. [Source](https://forums.developer.nvidia.com/t/cannot-initialize-gsp-firmware-rm/351473)
+- **Distributing GPU firmware via OCI/container registries**: There is ongoing discussion in the linux-firmware and fwupd communities about publishing firmware blobs as OCI container image layers, which would enable Kubernetes and container-native GPU workloads to pin exact firmware versions and update them via standard container tooling rather than host package managers. Note: needs verification.
+- **Intel Xe2/Battlemage GuC firmware co-design**: The Xe driver's GuC submission path (introduced with Xe2) involves a rearchitected GuC firmware interface compared to i915; medium-term work focuses on aligning the GuC firmware ABI across both drivers and simplifying the dual-driver maintenance burden for Intel. [Source](https://docs.kernel.org/gpu/xe/xe_firmware.html)
+- **Firmware signing key lifecycle management**: The UEFI Secure Boot certificate changes of 2026 (expiry of Microsoft's 2011 third-party signing key) have prompted discussion about formal lifecycle policies for GPU firmware signing keys — particularly for AMD's PSP, where the CPU-side firmware (SEV) has moved to open source but GPU PSP firmware signing keys remain proprietary. [Source](https://access.redhat.com/articles/7128933)
+
+### Long-term
+
+- **Open GPU firmware for compute-class hardware**: The open-source GPU movement (e.g., open NVIDIA kernel modules, AMD's open-source driver stack) creates long-term pressure to open-source at least the security-critical PSP/GSP firmware source under auditable licences, even if signing keys remain controlled. AMD has published SEV firmware source as a precedent. [Source](https://www.phoronix.com/forums/forum/hardware/processors-memory/1406519-amd-publishes-sev-firmware-as-open-source)
+- **Unified GPU firmware manifest and dependency system**: As GPU firmware ecosystems grow (AMD ships 50+ MB of firmware per generation across SMU, PSP, GFX, VCN, SDMA, DMCUB components), there is architectural interest in a manifest-based dependency system (similar to UEFI Capsule Update manifests) so that the kernel can atomically load or reject a coherent set of firmware versions rather than loading each blob independently and discovering version mismatches at runtime.
+- **Confidential computing integration for GPU workloads**: AMD's SEV-SNP and Intel TDX confidential VM technologies are being extended to cover GPU-attached workloads; long-term, GPU firmware will need to participate in attestation flows so that the guest VM can verify it is running a specific, unmodified firmware version inside a trusted execution environment. [Source](https://docs.nvidia.com/infra-controller/documentation/provisioning-day-0/measured-boot-attestation)
+- **Elimination of initramfs firmware duplication**: For systems where the GPU drives the boot display, firmware must be duplicated into the initramfs. Long-term kernel infrastructure improvements (e.g., early firmware loader with compressed in-kernel cache, or EFI stub firmware hand-off from UEFI) could eliminate this duplication and reduce initramfs size for GPU-heavy embedded and set-top-box platforms. Note: needs verification.
+
+---
+
 ## Integrations
 
 The GPU firmware subsystem intersects with many other chapters in this book:

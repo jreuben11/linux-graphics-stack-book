@@ -494,6 +494,33 @@ OpenGL renderer string: Adreno (TM) X1-85 (LLVM 18.x, DRM 3.xx, ...)
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Snapdragon X2 Elite (X1E80200 / Adreno X2-85) kernel and Mesa support:** Qualcomm has posted patch series targeting Linux 6.19 to add the Adreno X2-85 (`a8xx` family) to the `msm` DRM driver, with freedreno Gallium3D (OpenGL) support landing first and Turnip Vulkan support to follow. [Source: Phoronix, "Qualcomm Upstreaming Initial GPU Support For Snapdragon X2 Elite In Linux 6.19"](https://www.phoronix.com/news/Qualcomm-X2-Elite-GPU-Linux-619)
+- **Turnip Vulkan for Adreno Gen 8 (Mesa 26.0+):** Adreno Gen 8 Vulkan support — covering both the Snapdragon X2 and Snapdragon 8 Elite Gen 5 platforms — was merged for Mesa 26.0. Additional conformance work (full dEQP-VK coverage, ray-tracing extensions) is expected across subsequent Mesa releases. [Source: Phoronix, "Adreno Gen 8 Vulkan Graphics Merged For Mesa 26.0"](https://www.phoronix.com/news/Mesa-26.0-Adreno-Gen-8-Graphics)
+- **IRIS video decode expansion (H.265, VP9, AV1) on X Elite:** The IRIS V4L2 driver that landed in kernel 6.15 initially covers H.264 decode only on the X1E80100. Qualcomm's upstream driver development (v5/v6 patchsets on `linux-media`) lists H.265 and AV1 decode capabilities in the hardware; bringing these codecs to VA-API and GStreamer on the laptop platform is expected within the near-term window. Note: needs verification for exact target kernel version. [Source: kernel.org Patchwork, `[v6,00/28] Qualcomm iris video decoder driver`](https://patchwork.kernel.org/project/linux-media/cover/20241120-qcom-video-iris-v6-0-a8cf6704e992@quicinc.com/)
+- **Per-OEM device-tree and ACPI overlay maturation:** Linaro's Snapdragon X Elite Linux effort continues to land board-specific device trees for additional laptop models (Lenovo ThinkPad T14s Gen 6, HP EliteBook, Dell XPS 13 9345, and others). Each model requires display, USB-C DP alt-mode, and suspend/resume validation. [Source: Linaro blog, "Linux on Snapdragon X Elite"](https://www.linaro.org/blog/linux-on-snapdragon-x-elite/)
+- **Panel Self-Refresh (PSR) and eDP power management:** Improvements to `msm_dpu`'s PSR implementation for eDP panels on the X Elite — reducing idle display power toward what Windows achieves — are an active focus area among freedreno contributors. Note: needs verification for specific patch landing target.
+
+### Medium-term (1–3 years)
+
+- **Same-day upstream support for Snapdragon X-series successors:** Qualcomm demonstrated same-day upstream Linux kernel support for the Snapdragon 8 Elite Gen 5 mobile platform, signalling an intent to extend this commitment to future X-series compute platforms. If maintained, Snapdragon X3 or successor SoCs would have day-one kernel support. [Source: Qualcomm developer blog, "Same-day upstream Linux support for Snapdragon 8 Elite Gen 5"](https://www.qualcomm.com/developer/blog/2025/10/same-day-snapdragon-8-elite-gen-5-upstream-linux-support)
+- **Hexagon/CDSP NPU driver (`accel/qda` RFC):** The RFC `accel/qda` kernel driver for on-die Hexagon inference acceleration remains the most-watched pending piece of the X Elite Linux stack. Qualcomm's decision not to open-source the DSP firmware headers has stalled progress; re-engagement — perhaps through a firmware-blob model similar to the Raspberry Pi's VPU — remains possible if enterprise Linux demand grows sufficiently. [Source: VideoCardz, "Qualcomm shuts door on Snapdragon X DSP headers open-sourcing"](https://videocardz.com/newz/qualcomm-shuts-door-on-snapdragon-x-dsp-headers-open-sourcing-linux-support-hopes-fade)
+- **OpenCL 3.0 conformance via Rusticl or Clover on Turnip:** Mesa's Rusticl (Rust-based OpenCL implementation on top of Gallium3D NIR) is expanding hardware support; bringing X1-85 to a conformant OpenCL 3.0 implementation on Linux would enable compute workloads (image processing, physics simulation) without the proprietary Adreno Control Panel. Note: needs verification for timeline.
+- **HDR and wide-colour-gamut display pipeline:** The DPU on the X1E80100 includes hardware DSPP post-processing units capable of HDR tone-mapping. Full HDR support in KMS/KWin/Mutter under the Wayland HDR protocol extension (`color-management-v1`) is a multi-year effort involving both the `msm_dpu` driver and compositor stack changes. [Source: Phoronix, "Big Improvements For Qualcomm GPU Driver With Linux 6.17"](https://www.phoronix.com/news/Qualcomm-MSM-DRM-Linux-6.17)
+- **Firmware/fwupd LVFS support for OEM BIOS updates:** No LVFS path exists for X Elite laptop models as of mid-2026; Linaro and OEM partners are expected to work toward this for commercial Linux laptop viability.
+
+### Long-term
+
+- **Full Hexagon NPU open-source stack:** If Qualcomm or the community achieves an open firmware ABI for the Hexagon CDSP, a complete open-source ML inference path — Hexagon kernel driver → ONNX Runtime / OpenVINO backend → WebNN in Chromium — becomes achievable, analogous to what Intel has achieved with IVPU on Meteor Lake.
+- **Ray-tracing and mesh-shader extensions on Turnip (A7xx/A8xx):** Qualcomm's A7xx hardware has documented support for hardware ray-tracing acceleration. Turnip's development roadmap is expected to expose `VK_KHR_ray_tracing_pipeline` and mesh shaders as driver maturity increases, making the X Elite viable for Vulkan ray-tracing workloads on Linux.
+- **Integration with upcoming Arm laptop ecosystem convergence:** As more Arm-based laptops (Apple M-series via Asahi, Snapdragon X, NVIDIA Thor) target Linux, shared infrastructure for UEFI/DT-overlay boot, Wayland compositing, and Vulkan ICD management is likely to converge. The `msm` driver's approach to ACPI+DT co-existence may inform a broader Arm laptop driver model.
+- **Snapdragon X-series in commercial Linux laptop offerings:** TUXEDO halted its X Elite Linux laptop plans citing driver maturity gaps; longer-term re-engagement (possibly with Snapdragon X2 or beyond) would validate the upstream stack at a commercial QA level, accelerating kernel and Mesa development velocity. [Source: VideoCardz, "TUXEDO halts Snapdragon X Elite Linux laptop plans"](https://videocardz.com/newz/tuxedo-halts-snapdragon-x-elite-linux-laptop-plans-may-revisit-with-snapdragon-x2)
+
+---
+
 ## 11. Integrations
 
 This chapter connects to several other parts of the book:

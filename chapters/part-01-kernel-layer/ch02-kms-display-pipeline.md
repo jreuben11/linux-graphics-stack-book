@@ -786,6 +786,32 @@ Because the bridge framework was introduced incrementally (bridges became mainst
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **DRM Color Pipeline API stabilisation**: The `drm_color_pipeline` API, merged into `drm-misc-next` in November 2025 and included in Linux 6.13-rc1, provides a standardised, driver-agnostic KMS interface for injecting colour transform pipelines (degamma LUT → matrix → gamma LUT chains) per CRTC and per plane. Near-term work focuses on wiring compositor support (Mutter, KWin, gamescope) to the new uAPI and expanding driver coverage beyond AMD and Intel. [Source](https://melissawen.github.io/blog/2025/05/19/drm-info-with-kms-color-api)
+- **KMS display-brightness connector property**: An RFC patchset proposes adding a `brightness` property directly to `drm_connector` objects, allowing compositors to control panel brightness through the same atomic modesetting path as all other display state, obsoleting the `/sys/class/backlight` interface and eliminating the many-to-one mapping ambiguity. Initial implementation targets AMD eDP connectors. [Source](https://lwn.net/Articles/1069679/)
+- **`wp_linux_drm_syncobj` explicit sync rollout**: The Wayland `linux-drm-syncobj-v1` protocol, which conveys DRM syncobj timeline points alongside `wl_surface` commits, is being adopted by major compositors and GPU drivers to replace the implicit fence model; near-term effort concentrates on full Mesa/ANV/RADV driver integration and compositor support in Mutter 47+ and KWin 6.x. Note: needs verification of exact compositor release versions.
+- **VKMS (Virtual KMS) capability expansion**: The virtual test driver (`drivers/gpu/drm/vkms/`) is being extended to support writeback connectors, CRC capture for all plane formats, and simulation of hardware colour pipeline stages, improving automated CI coverage for KMS features without physical hardware. [Source](https://dri.freedesktop.org/docs/drm/gpu/todo.html)
+- **HDR static metadata property standardisation**: Following the merge of `hdr_output_metadata` as a connector blob property, work is under way to standardise HDR10+ and Dolby Vision dynamic metadata paths through KMS, coordinating with HDMI 2.1 VSIF (Vendor-Specific InfoFrame) kernel helpers.
+
+### Medium-term (1–3 years)
+
+- **Per-plane colour management properties**: The current KMS colour pipeline operates at the CRTC level; medium-term proposals extend per-plane degamma/gamma/CTM control to allow compositors to apply ICC profile corrections at the plane level before CRTC-level blending, enabling accurate colour management for mixed-gamut content on a single display head. [Source](https://canartuc.medium.com/drm-color-pipeline-api-and-hdr-on-linux-the-long-road-to-proper-display-color-management-539d56acaa33)
+- **Unified backlight/brightness KMS API**: Longer-term refactoring aims to merge the legacy `struct backlight_device` sysfs interface entirely into KMS, routing all brightness control through `drm_connector` atomic properties and removing the parallel `/sys/class/backlight/` code path from drivers that already expose a KMS connector. Note: needs verification of kernel merge timeline.
+- **DisplayPort 2.1 UHBR (Ultra High Bit Rate) link training**: DP 2.1 introduces UHBR10, UHBR13.5, and UHBR20 link rates requiring updated link training sequences in `drm_dp_link_train` helpers and significant changes in the Intel and AMD display engine drivers to support 80 Gbit/s aggregate bandwidth per connector. [Source](https://dri.freedesktop.org/docs/drm/gpu/todo.html)
+- **Atomic KMS test coverage generalisation**: The `igt-gpu-tools` project is extending its KMS test suite so that display pipeline tests (atomic commit validation, plane format negotiation, VBLANK timing verification) run generically against any DRM driver rather than requiring vendor-specific skips, enabling broader CI for embedded and SoC display drivers.
+- **`drm_lease` protocol integration with Wayland**: The `DRM lease` mechanism (which delegates KMS object ownership to VR runtimes like Monado) is being integrated with a forthcoming Wayland protocol extension to replace the current out-of-band D-Bus negotiation, making headset direct-mode display management a first-class Wayland operation.
+
+### Long-term
+
+- **Hardware-accelerated display pipeline composition**: As display controllers on modern SoCs gain more programmable plane-blending stages, the long-term architectural goal is to expose these capabilities generically through KMS properties rather than vendor-specific driver ioctls, allowing compositors to offload scene-graph blending to the display engine without involving the GPU.
+- **KMS GPU-less display path for embedded systems**: There is a recurring architectural desire to allow framebuffer-only compositors (targeting very low-power or headless embedded Linux) to drive KMS display pipelines without requiring a full GPU DRM driver, using only the display controller's DMA engine via `DRM_IOCTL_MODE_CREATE_DUMB` and standard atomic commits.
+- **Removal of legacy modesetting API**: The non-atomic `DRM_IOCTL_MODE_SETCRTC` and `DRM_IOCTL_MODE_PAGE_FLIP` ioctls remain in the kernel for compatibility with X.Org DDX drivers and older userspace; the very long-term goal is to mark these interfaces deprecated once all major compositors and the X.Org modesetting DDX have migrated fully to atomic, clearing the way for simplifying driver implementations.
+
+---
+
 ## Integrations
 
 **Chapter 1 (DRM: The Kernel Graphics Subsystem)**: Chapter 1 introduces the DRM device nodes (`/dev/dri/card*`), the DRM authentication model, and the `DRM_CLIENT_CAP_UNIVERSAL_PLANES` and `DRM_CLIENT_CAP_ATOMIC` capability flags. These caps must be set before any API in this chapter will work correctly: without `UNIVERSAL_PLANES`, plane enumeration returns empty results; without `ATOMIC`, `DRM_IOCTL_MODE_ATOMIC` fails with `EOPNOTSUPP`. Chapter 1 also introduces `drm_vblank_event` delivery on the DRM file descriptor, which Section 6 of this chapter uses for flip completion notification.

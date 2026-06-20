@@ -400,6 +400,33 @@ TU_DEBUG=perf vulkan_app 2>&1 | grep -i "sysmem\|gmem"
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Adreno Gen 8 / Snapdragon X2 Elite support in Mesa 26.0**: Turnip Vulkan driver support for the Adreno Gen 8 GPU (used in the Snapdragon X2 Elite and Snapdragon 8 Elite Gen 5) was merged into Mesa 26.0, paired with kernel enablement in Linux 6.19's MSM driver — enabling accelerated graphics on the latest Qualcomm laptop platform with no proprietary blobs. [Source](https://www.phoronix.com/news/Mesa-26.0-Adreno-Gen-8-Graphics)
+- **Variable Rate Shading (VRS) on A8xx**: Initial Gen 8 support ships with VRS disabled while developers resolve stability issues; enabling it is an active near-term goal. [Source](https://news.lavx.hu/article/adreno-gen-8-vulkan-support-merged-into-mesa-26-0-for-snapdragon-x2-elite-linux-graphics)
+- **Qualcomm iris video decoder upstream**: The `iris` V4L2 video decoder driver (for H.264/H.265 decode offload on Snapdragon SoCs) completed its v10 patch series in early 2025 and landed for Linux 6.15, replacing the older `venus` driver path on newer hardware and unblocking VA-API hardware video decode for Freedreno/Turnip users. [Source](https://www.phoronix.com/news/Linux-6.15-Media-Subsystem)
+- **Suspend/resume on Snapdragon X Elite**: Power management for MSM-based laptops (suspend-to-RAM, runtime PM) is in active upstream patch series; expected to stabilize as hardware becomes more widely deployed. Note: needs verification of exact landing kernel version.
+- **Vulkan 1.4 conformance for Turnip**: With Turnip already supporting Vulkan 1.3 on A6xx/A7xx, the driver is tracking the Vulkan 1.4 specification (ratified in early 2024); conformance submission is expected as extension coverage is completed. Note: needs verification of official conformance timeline.
+
+### Medium-term (1–3 years)
+
+- **GMEM tile-based rendering on A7xx**: Optimisation of the GMEM tiling path specifically for the A7xx (Adreno 730/740/830) micro-architecture is ongoing; correct GMEM handling on A7xx was a significant 2024–2025 work item and further bandwidth-reduction tuning is expected. [Source](https://pocket-gaming.org/2026/06/15/the-definitive-guide-to-android-turnip-drivers-hardware-compatibility-2026/)
+- **Ray tracing maturation on A7xx/A8xx**: Turnip gained initial ray-tracing support on A7xx; the medium-term goal is full `VK_KHR_ray_tracing_pipeline` and `VK_KHR_ray_query` conformance and enabling RT on A8xx. Note: needs verification of exact extension status per generation.
+- **Mesh shaders and task shaders**: `VK_EXT_mesh_shader` enablement on A7xx+ is in progress; full support requires ir3 compiler work for the mesh/task shader stages. Note: needs verification of current implementation state.
+- **FastRPC and DSP offload integration**: Qualcomm's FastRPC mechanism (for DSP-accelerated AI/ML and camera pipelines) needs deeper Linux integration to support workloads that interleave GPU and Hexagon DSP compute. Note: needs verification of upstream driver plans.
+- **ir3 compiler performance**: Ongoing NIR-level optimisations (instruction scheduling, register allocation tuning for A7xx wave sizes) are expected to close the performance gap with the proprietary Qualcomm driver on SPEC and gaming benchmarks.
+
+### Long-term
+
+- **Unified msm_drm → DRM upstream consolidation**: Longer-term architectural goal to further consolidate display (DPU), GPU, and camera (CSI/ISP) subsystems within the MSM DRM driver tree, aligning with the kernel's ongoing work to improve ARM SoC graphics coherence. Note: needs verification.
+- **OpenCL/Compute on Turnip**: Adding a Clover/RustiCL compute path using the ir3 compiler backend to enable OpenCL workloads on Adreno GPUs — relevant for AI inference and GPGPU on Snapdragon Linux laptops. Note: needs verification of feasibility and upstream interest.
+- **Vulkan video extensions (VK_KHR_video_decode_*)**: Integration of the Vulkan video decode extensions with the `iris` firmware interface would enable GPU-accelerated decode directly through the Vulkan API rather than V4L2/VA-API, reducing pipeline complexity for media applications. Note: needs verification.
+- **Rust-language contributions to ir3/Turnip**: Following the trend set by the `nova` Rust NVIDIA kernel driver (Ch10), there is speculative interest in introducing Rust for safety-critical parts of the Turnip or ir3 codebase; no official RFC exists yet. Note: speculative.
+
+---
+
 ## Integrations
 
 - **Ch01 (DRM Architecture)** — msm_drm registers as a DRM driver; it uses `drm_sched` for GPU job scheduling and implements DRM KMS for the Qualcomm DPU display

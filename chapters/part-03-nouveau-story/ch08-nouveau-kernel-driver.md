@@ -812,6 +812,34 @@ The capability gating mechanism uses GETPARAM queries for feature presence rathe
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Hopper and Blackwell GSP support in mainline**: The 62-patch series adding Nouveau support for NVIDIA Hopper (GH100) and Blackwell (GB100) GPUs — via the GSP firmware code path — landed in Linux 6.16. This uses R570 signed GSP firmware blobs upstreamed to `linux-firmware.git`. [Source](https://www.phoronix.com/news/NVIDIA-Blackwell-Hopper-616)
+- **Nova `nova-core` v5 stabilisation**: The fifth revision of the `nova-core` stub driver (a Rust-written hardware and firmware abstraction layer for GSP-based GPUs) was submitted to LKML in March 2025 and is advancing toward merge. It forms the base for both `nova-drm` and the VFIO vGPU manager. [Source](https://lkml.iu.edu/hypermail/linux/kernel/2503.0/05057.html)
+- **GA100 (Ampere data-centre) Nouveau GSP bring-up**: NVIDIA posted patches in early 2026 enabling the NVIDIA A100/GA100 GPU under Nouveau via the GSP code path, extending datacenter GPU coverage without proprietary drivers. [Source](https://www.phoronix.com/news/Nouveau-GSP-NVIDIA-GA100)
+- **Continued `drm_gpuvm` and `DRM_NOUVEAU_EXEC` hardening**: NVK's adoption of `DRM_NOUVEAU_EXEC` and `DRM_NOUVEAU_VM_BIND` continues to drive robustness improvements in the `drm_gpuvm` infrastructure shared across Nouveau, Xe, and Panfrost; further sparse-binding and robustness features are expected in drm-next cycles through late 2026. Note: needs verification for specific patch numbers.
+- **Removal of legacy pre-GSP UAPI paths from newer-generation code**: As GSP becomes mandatory for Turing+ (enforced by NVK), there is active work to separate legacy nvkm paths from the GSP-backed paths to reduce maintenance surface, complementing the Nova migration strategy. Note: needs verification for specific target kernel version.
+
+### Medium-term (1–3 years)
+
+- **Nova `nova-drm` DRM driver reaching functional completeness**: The Rust-written `nova-drm` driver (successor to `nouveau_drm.c` for Turing+ hardware) is iterating toward feature parity with the GSP-RM code path in nvkm. Hopper and Blackwell GPU enablement for Nova (12th iteration as of June 2026) signals active progress. [Source](https://www.phoronix.com/news/Hopper-Blackwell-Nova-Closer)
+- **Gradual deprecation of nvkm for Turing+ hardware**: As Nova matures, the expectation is that nvkm's Turing+ code paths will be deprecated in favour of Nova's clean-sheet Rust implementation, which intentionally avoids carrying nvkm's multi-generation vtable complexity for hardware that has only ever used GSP-RM. [Source](https://rust-for-linux.com/nova-gpu-driver)
+- **NVK Vulkan 1.3+ conformance expansion**: NVK's Vulkan conformance on Turing and Ampere hardware is advancing; medium-term goals include ray-tracing extension support (`VK_KHR_ray_tracing_pipeline`) and video decode/encode extensions (`VK_KHR_video_decode_h264` etc.) — these require corresponding nvkm engine and firmware-call additions. Note: needs verification for specific extension landing schedule.
+- **`drm_gpuvm` sparse binding maturation**: The VM_BIND asynchronous sparse-binding model introduced for NVK is expected to gain additional synchronisation primitives (cross-driver timeline fence import/export) and integration with the kernel's `dma_resv` implicit fencing improvements. Note: needs verification.
+- **Improved power management via GSP RPC**: On GSP-managed GPUs, power and clock management currently relies on GSP RPC calls; work is ongoing to expose finer-grained power capping and P-state control to the `nouveau_pstate` sysfs interface. Note: needs verification.
+
+### Long-term
+
+- **Full nvkm retirement for GSP-era hardware**: The long-term architectural goal, as articulated by Red Hat and the Nouveau maintainers, is for Nova to fully supersede Nouveau for all RTX 20-series (Turing) and newer GPUs, with nvkm retained only for the pre-GSP legacy hardware it currently supports well. [Source](https://9to5linux.com/red-hat-announces-nova-a-rust-based-gsp-only-driver-for-nvidia-gpus)
+- **Upstream NVIDIA open-kernel-module GSP firmware alignment**: NVIDIA's own open-source kernel modules (`NVIDIA/open-gpu-kernel-modules`) and the Nouveau GSP path both consume the same signed GSP firmware; long-term convergence on shared firmware interfaces (e.g., unified RPC calling conventions) could reduce duplication. Note: speculative — no public roadmap confirmed.
+- **Rust-native `drm_gpuvm` and scheduler bindings**: As the Rust-for-Linux DRM abstractions mature, both Nova and future Nouveau contributions are expected to use Rust-safe wrappers around `drm_gpu_scheduler`, `drm_gpuvm`, and `dma_resv`, eventually eliminating the unsafe `bindings::` calls currently required. Note: speculative direction based on Rust-for-Linux trajectory.
+- **VFIO vGPU support via `nova-core`**: The `nova-core` platform driver is explicitly designed to serve as the base for an open-source NVIDIA vGPU manager, enabling virtualised GPU access (SR-IOV or MIG partitions) without proprietary VFIO-PCI extensions. The timeline for a functional upstream VFIO path depends on NVIDIA's cooperation with firmware interfaces. [Source](https://lkml.iu.edu/hypermail/linux/kernel/2503.0/05057.html)
+- **Preservation of nvkm for pre-Turing legacy hardware**: The existing nvkm architecture — covering NV04 through Volta — is expected to remain in the kernel in maintenance mode for the foreseeable future, given the large installed base of older NVIDIA hardware running Nouveau for display-only or OpenGL workloads.
+
+---
+
 ## Integrations
 
 **Chapter 7 (Reverse Engineering NVIDIA Hardware)**: The `nvkm_oclass` tables and register constant names throughout nvkm originate directly from the Envytools `rnndb` register database described in Chapter 7. Functions like `nvkm_wr32(device, 0x002254, ...)` use the bare hexadecimal register addresses that Envytools decoded from NVIDIA hardware. The Falcon ISA documented in the Envytools project (`envydis`, `https://envytools.readthedocs.io/en/latest/hw/falcon/index.html`) is the same ISA that nvkm loads and executes on the PMU, GR CTX, and SEC2 processors described in Section 2.

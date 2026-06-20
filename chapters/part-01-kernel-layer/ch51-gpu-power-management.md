@@ -1037,6 +1037,33 @@ cat /sys/class/drm/card0/device/power/autosuspend_delay_ms
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **AMDGPU power module consolidation** — AMD is integrating a dedicated power module into the amdgpu driver to bring Linux power management behavior closer to parity with Radeon Software on Windows, including finer-grained SMU policy exposure. Initial patches appeared in the Linux 7.2 DRM merge window. [Source](https://www.phoronix.com/news/Linux-7.2-DRM)
+- **AMDGPU GCN 1.0 power management fixes** — Valve-sponsored patches (Timur Kristóf, January 2026) address residual power management regressions on Southern Islands (GCN 1.0) GPUs that remain in service on low-end and embedded hardware. [Source](https://www.phoronix.com/news/AMDGPU-SI-Power-Management)
+- **Intel i915 GPU temperature monitoring enhancement** — Linux 7.0 standardises temperature reporting from the i915 DRM subsystem, exposing per-tile granular thermal metrics through the DRM thermal zone interface, reducing the need for vendor-specific hwmon workarounds. [Source](https://www.webpronews.com/linux-kernel-7-0-enhances-intel-gpu-temp-monitoring-with-i915-driver/)
+- **ACPI platform profile `max-power` mode** — A patchset (v3 posted late 2025) adds a `max-power` profile level to the ACPI platform profile framework, enabling devices like Lenovo Legion laptops to expose their full-TDP "extreme" operating mode through power-profiles-daemon. [Source](https://lkml.iu.edu/2511.1/06388.html)
+- **power-profiles-daemon multi-driver stacking** — Following the 0.20 release, ongoing work aims to support simultaneous activation of independent power backend drivers (e.g., `amd-pstate` + ACPI `platform_profile` + AMDGPU ABM), enabling more precise per-subsystem policy layering. [Source](https://www.phoronix.com/news/Power-Profiles-Daemon-0.20)
+
+### Medium-term (1–3 years)
+
+- **Unified DRM power state machine** — There is ongoing discussion on dri-devel about a common DRM-level abstraction for GPU power states (active, idle, suspended, off) that would allow drivers to register power state transitions consistently rather than reimplementing autosuspend logic per vendor. Note: needs verification for formal RFC status.
+- **Intel Xe SLPC and GuCRC hardening for Battlemage (Xe2)** — The Xe driver's Single Loop Power Conservation (SLPC) and GuC render-C-state (GuCRC) implementation are expected to receive continued tuning as Arc Battlemage platforms mature, including better interaction with display DC states and panel power savings. [Source](https://docs.kernel.org/gpu/xe/xe_pm.html)
+- **Nouveau GSP-RM power management on Ada Lovelace** — With NVIDIA's open kernel modules now covering RTX 40 series (Ada Lovelace) via GSP firmware, the Nouveau driver team is working toward GSP-RM-based automatic reclocking and power gating for these GPUs, which previously required closed firmware blobs for any frequency management. Note: needs verification for timeline.
+- **Kernel-level GPU cgroup power accounting** — The `dmem` cgroup controller (merged for memory) may be extended to track and limit per-cgroup GPU power draw in multi-tenant environments, complementing existing `--power-limit` sysfs controls. Note: needs verification for formal proposal status.
+- **Thermal governor improvements for GPU workloads** — Discussions in the linux-thermal list target a new `workload_aware` governor that would account for GPU workload type (compute vs. render vs. display) when selecting cooling actions, moving beyond the current frequency-clamp-only approach of `step_wise`.
+
+### Long-term
+
+- **Hardware-agnostic GPU power HAL** — A long-term architectural goal among Mesa/kernel developers is a stable userspace API (possibly extending `DRM_IOCTL_*` or adding a new `/dev/power-gpu` interface) that decouples application-level power hints (latency tolerance, throughput target) from driver-specific sysfs knobs. Note: needs verification.
+- **Energy-aware scheduling integration** — Extending the kernel EAS (Energy-Aware Scheduling) framework — currently CPU-centric — to jointly optimise CPU and GPU frequency decisions, particularly on integrated APU and mobile SoC designs where CPU and GPU share a power budget.
+- **Per-submission power profiles** — Conceptually similar to Vulkan's `VkPerformanceQuerySubmitInfoKHR`, a kernel interface allowing per-command-buffer or per-submit power hints to the SMU/GuC would enable games and ML frameworks to request high-performance clocks only for critical submissions and drop to idle between frames. Note: needs verification for any formal RFC.
+- **Standardised fan curve userspace API** — Current fan control requires vendor-specific tools (thinkfan, NBFC-Linux) or hwmon `pwm*` direct writes. A standardised thermal cooling policy interface exposed through power-profiles-daemon or a new freedesktop specification is a recurring proposal on the linux-laptop mailing list. Note: needs verification.
+
+---
+
 ## Integrations
 
 GPU power management does not operate in isolation — it interacts with multiple layers of the stack described elsewhere in this book.

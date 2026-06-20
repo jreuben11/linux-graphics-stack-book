@@ -751,6 +751,31 @@ The kernel scheduler has a KUnit test suite in `drivers/gpu/drm/scheduler/tests/
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Fair scheduler stabilisation and merge**: The CFS-inspired fair DRM scheduler (replacing per-priority FIFO queues with a single vruntime-ordered red-black tree) is progressing through patch review after reaching v5; the expectation is mainline inclusion in a v6.20 or v6.21 cycle. [Source: Phoronix — Fair DRM Scheduler v5](https://www.phoronix.com/news/Fair-DRM-Scheduler-v5)
+- **Deadline propagation / priority inheritance**: The `drm_sched_fence::deadline` field exists in the current tree but the boosting mechanism — which would temporarily elevate a blocked entity's effective vruntime when a `HIGH`-priority waiter holds a fence dependency on it — is described as future work in the chapter and in mailing-list discussion. Full implementation is anticipated on a short horizon. [Source: RFC v3 Deadline DRM Scheduler](https://www.mail-archive.com/dri-devel@lists.freedesktop.org/msg537779.html)
+- **KUnit test coverage expansion**: The `drivers/gpu/drm/scheduler/tests/` suite currently covers basic submission, dependency resolution, and TDR. Near-term patch series aim to add stress tests for concurrent entity fairness and synthetic hang/recovery scenarios to gate the fair-scheduler changes. Note: needs verification for specific patch landing timeline.
+- **`drm-engine-*` fdinfo standardisation**: Ongoing work to make per-engine GPU time accounting (§8) consistent across all DRM drivers — AMDGPU, Intel Xe, Nouveau, Panfrost — so that tools like `drm_info` and `nvtop` can display comparable per-process utilisation figures without driver-specific workarounds. Note: needs verification for exact kernel version target.
+
+### Medium-term (1–3 years)
+
+- **Hardware preemption integration**: Most consumer GPUs today lack mid-command-buffer preemption, making the software scheduler the only arbitration layer. AMD RDNA 3/4 and Intel Xe HPC expose finer-grained preemption hooks; integrating these with the DRM scheduler's entity model would allow true time-slicing between clients rather than waiting for a job to complete before switching. [Source: Towards Fully-fledged GPU Multitasking via Proactive Memory Scheduling (arXiv 2512.24637)](https://arxiv.org/pdf/2512.24637)
+- **SR-IOV and GuC multi-VM scheduling**: Intel Xe has landed SR-IOV scheduler groups; AMD is pursuing similar VF-per-VM submission paths. Coordinating the host DRM scheduler's vruntime fairness with in-hardware GuC/MES firmware schedulers — so that per-VM GPU time guarantees are enforced at both the software and firmware layers — is an active design area. [Source: Intel Xe Multi-Device SVM / SR-IOV, December 2025](https://www.linux.org/threads/phoronix-intels-xe-linux-driver-ready-with-multi-device-svm-to-end-out-2025.60682/)
+- **Heterogeneous-engine credit model**: Jobs submitted to compute, video, or display engines carry driver-defined credit costs. A richer credit model — where the total credit budget is dynamically shared across engine types based on observed throughput rather than a static per-engine `credit_limit` — would improve resource utilisation for mixed workloads such as simultaneous game rendering, video transcoding, and ML inference. Note: needs verification for specific proposal or RFC.
+- **Real-time / `SCHED_DEADLINE` integration for GPU**: Research (GCAPS, FIKIT) and kernel mailing-list discussion explore coupling Linux `SCHED_DEADLINE` task scheduling with GPU job scheduling so that a real-time camera pipeline's GPU work inherits the task's deadline and is boosted accordingly. [Source: GCAPS: GPU Context-Aware Preemptive Priority-based Scheduling (arXiv 2406.05221)](https://arxiv.org/pdf/2406.05221)
+- **Cross-driver load balancing for compute**: In systems with multiple GPU devices (multi-GPU desktops, discrete + integrated), the scheduler's `sched_list` load-balancing currently operates within one driver domain. A unified cross-driver scheduler that can route compute jobs across AMD and Intel devices transparently is under discussion in the compute/HSA community. Note: needs verification for specific upstream proposal.
+
+### Long-term
+
+- **Unified GPU scheduling framework**: As AI/ML workloads drive heterogeneous compute adoption, there is architectural pressure to converge DRM GPU scheduling, DMA engine scheduling (`dmaengine`), and NPU/accelerator scheduling under a single framework with consistent fairness semantics, deadline propagation, and cgroup-based resource limits. Note: speculative; no concrete RFC as of mid-2026.
+- **cgroup GPU accounting and throttling**: Linux has CPU and memory cgroup controllers; a `gpu` cgroup controller that enforces GPU time quotas per cgroup — building on `drm-engine-*` fdinfo accounting — has been discussed at kernel summits. Full implementation would require the scheduler to track entity vruntime at the cgroup level and gate submission when a cgroup exceeds its quota. Note: speculative direction.
+- **Formal verification of TDR state machine**: The timeout-detection-reset (TDR) escalation path (soft reset → per-ring reset → full GPU reset) involves complex interactions with the scheduler's pending list, fence signalling, and driver callbacks. Applying formal methods (e.g., TLA+ or Dafny) to verify the absence of races and livelock in this path has been suggested but not pursued upstream. Note: speculative; no concrete proposal.
+
+---
+
 ## 11. Integrations
 
 - **Ch1 — DRM Architecture**: The scheduler is a core DRM subsystem component, built as a separate `drm_sched` module linked by all DRM drivers. The `drm_gpu_scheduler` struct is embedded or referenced by every driver's ring/engine object.

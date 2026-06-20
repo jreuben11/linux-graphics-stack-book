@@ -890,6 +890,33 @@ The GPU driver upstreaming effort is ongoing but incomplete as of mid-2026:
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **`drm/asahi` kernel driver upstreaming**: The ~21,000-line Rust AGX kernel driver remains out-of-tree pending upstream of the required Rust DRM abstractions and completion of IGT test coverage. The UAPI header (`asahi_drm.h`) is already in mainline; the next step is landing the driver body itself, which the maintainers expect to be a lengthy review process given its complexity. [Source: Phoronix — DRM User-Space API For Apple Silicon Graphics Posted For Review](https://www.phoronix.com/news/DRM-User-Space-API-Asahi)
+- **`drm/apple` DCP display driver upstreaming**: The Apple Display Co-Processor (DCP) KMS driver remains downstream. Portions of the Apple Display Pipe (ADP) controller support reached mainline in Linux 6.15; the full DCP atomic modesetting driver, including USB-C external display ("fairydust") support, is the next major upstream target. [Source: Asahi Linux Progress Report 6.19](https://asahilinux.org/2026/02/progress-report-6-19/)
+- **VRR without full modeset**: Variable Refresh Rate currently requires a full modeset to toggle on DCP, a known limitation relative to conventional KMS drivers like `i915` and `amdgpu`. A fix reducing VRR toggle cost is in active development. [Source: Asahi Linux Progress Report 7.0](https://asahilinux.org/2026/04/progress-report-7-0/)
+- **M3 GPU alpha release**: M3 MacBooks can boot to the KDE Plasma desktop with software rendering as of early 2026. Getting to an installable alpha with GPU acceleration on M3 (G15 ISA) is the primary near-term milestone. [Source: Phoronix — Apple M3 Progress On Linux: Asahi Can Boot To KDE Desktop But No GPU Acceleration Yet](https://www.phoronix.com/news/Apple-M3-Linux-Boot-To-KDE)
+- **Multi-display USB-C support**: The experimental "fairydust" branch coordinating DCP, DPXBAR, ATCPHY, and ACE for USB-C DisplayPort alternate mode external displays is being stabilised for inclusion in the main Asahi kernel tree. [Source: Asahi Linux Progress Report 6.19](https://asahilinux.org/2026/02/progress-report-6-19/)
+
+### Medium-term (1–3 years)
+
+- **M3/M4 GPU acceleration**: Reverse engineering of the G15 (M3) and G16 (M4) GPU architectures is underway, building on ISA work by Dougall Johnson and TellowKrinkle. The G15/G16 introduce hardware-accelerated ray tracing, mesh shaders, and Dynamic Caching — a dynamic local memory allocation model that represents a significant architectural departure from G13/G14. Each of these features requires new firmware ABI structures, new ISA instructions, and new Mesa driver paths. [Source: Phoronix — Asahi Linux Has Experimental Code For DisplayPort, Apple M3/M4/M5 Bring-Up Still Ongoing](https://www.phoronix.com/news/Asahi-Linux-EOY-2025-CCC)
+- **Rust DRM abstraction upstreaming**: The `drm/asahi` driver depends on a large set of Rust kernel abstractions for DRM (device, GEM, syncobj, scheduler, memory management). These abstractions must be reviewed and landed in upstream Linux before the driver body can merge. Progress on the broader Rust-in-kernel effort directly gates this milestone. Note: needs verification for specific patchset status in 2026.
+- **Mesh shader and hardware ray tracing in Mesa**: Once G15/G16 ISA reverse engineering matures, Mesa's Honeykrisp Vulkan driver will need new backend paths for `VK_KHR_ray_tracing_pipeline`, `VK_EXT_mesh_shader`, and the Dynamic Caching memory model. These represent the largest feature gap between current Honeykrisp and the hardware capabilities of M3+ SoCs.
+- **Improved FEX + muvm integration**: The x86-on-ARM translation stack (FEX + Wine + DXVK/VKD3D-Proton + muvm) is the primary gaming path. Medium-term work includes tighter Vulkan WSI integration, improved JIT performance in FEX for AVX/AVX2 workloads, and better memory pressure handling when GPU and CPU compete on UMA bandwidth. Note: needs verification for specific upstream plans.
+- **HDR display support**: Very early-stage HDR output via DCP is a stated goal; delivering it requires understanding Apple's proprietary tone-mapping pipeline running inside DCP firmware. Note: needs verification for timeline.
+
+### Long-term
+
+- **M5 and beyond**: Each new Apple Silicon generation introduces GPU firmware ABI changes that require re-reverse-engineering key structures before driver support can begin. The project anticipates a perpetual multi-year lag between hardware release and GPU acceleration support for each new generation, driven by the time required for ISA documentation and firmware ABI recovery. [Source: Phoronix — Asahi Linux Has Experimental Code For DisplayPort, Apple M3/M4/M5 Bring-Up Still Ongoing](https://www.phoronix.com/news/Asahi-Linux-EOY-2025-CCC)
+- **Full conformance on M3/M4**: Achieving the same OpenGL 4.6, OpenGL ES 3.2, OpenCL 3.0, and Vulkan 1.4 conformance bar on G15/G16 that Honeykrisp achieved on G13/G14 is the long-horizon conformance goal. Hardware ray tracing and mesh shaders may enable `VK_KHR_ray_tracing_pipeline` and `VK_EXT_mesh_shader` conformance on M3+, surpassing what is available on G13/G14.
+- **Unified memory cooperative scheduling**: The AGX GPU and the Apple Neural Engine (ANE) share the same LPDDR5/LPDDR5X bandwidth pool. Long-term, a scheduler-level co-ordination framework across `drm/asahi`, the ANE driver, ISP, and video decode engines could enable more predictable QoS under mixed GPU/ML/video workloads. Note: needs verification — no concrete upstream proposal exists as of mid-2026.
+- **OpenCL and compute workload expansion**: OpenCL 3.0 conformance was achieved on G13/G14. Long-term investment in compute — ML inference via OpenCL or Vulkan compute on Apple Silicon — is a natural fit given the hardware's UMA architecture and the growing Linux ML inference ecosystem. Note: needs verification for specific plans.
+
+---
+
 ## Integrations
 
 - **Chapter 1 — DRM Architecture & the Driver Model**: The Asahi driver is a standard `drm_driver` with GEM, render node, and syncobj features. The Rust DRM abstractions (`drm::device::Device<T>`, `declare_drm_ioctls!`) that Asahi introduced are the first production use of Rust in the DRM core layer.

@@ -26,6 +26,17 @@ Before any Gallium or Vulkan code runs, Mesa must be discovered, loaded, and con
 
 On top of DRI, **GLVND** (GL Vendor-Neutral Dispatch) separates `libGL.so` into a vendor-neutral stub that dispatches at runtime to per-vendor libraries such as `libGLX_mesa.so`. The **Vulkan ICD** mechanism is analogous: `libvulkan.so` reads JSON manifests under `/usr/share/vulkan/icd.d/` and dlopen-loads `libvulkan_radeon.so`, `libvulkan_intel.so`, or `libvulkan_nouveau.so` as appropriate.
 
+**Historical status of DRI generations** — readers encountering DRI references in older code or documentation should understand which generation is current:
+
+| Generation | Era | Status | Notes |
+|-----------|-----|--------|-------|
+| **DRI1** | pre-2008 | **Historical — obsolete.** | Required a kernel lock (`LOCK_HARDWARE`) and shared memory mapping between the X server and client. The X server performed hardware setup; the client drove the GPU under that lock. Effectively absent from any post-2010 kernel or Mesa release. |
+| **DRI2** | 2008–2013 | **Deprecated — do not use.** | Removed the hardware lock but still negotiated buffer names through the X server as an intermediary. X server involvement in every buffer exchange was a latency and security concern. Superseded by DRI3. |
+| **DRI3** | 2013–present | **Current for X11 / XWayland.** | Replaced buffer name negotiation with explicit DMA-BUF fd passing over the X11 connection. The X server is a pure intermediary for fd delivery; the GPU memory is shared directly. Still required for X11 applications running under XWayland. |
+| **EGL** | 2004–present | **Current — primary for Wayland, headless, and embedded.** | Platform-neutral, X-server-free. Required for all Wayland native clients, Wayland compositor rendering, and any headless/compute workload. On modern Wayland desktops, EGL is the dominant context-creation path. |
+
+**EGL is not historical.** It is the current and preferred API for all Wayland-native rendering, headless GPU compute (via `EGL_EXT_platform_device` and `EGL_KHR_surfaceless_context`), and embedded targets. GLX is the legacy X11-specific binding that still works but is not the forward path.
+
 **Chapter 12** covers this entire loader, dispatch, and platform layer in full.
 
 ## Cluster 2 — Gallium3D: The Shared OpenGL and Compute Framework
@@ -44,13 +55,15 @@ On top of DRI, **GLVND** (GL Vendor-Neutral Dispatch) separates `libGL.so` into 
 
 The **winsys** layer sits beneath `pipe_screen` and handles GPU-specific memory management and command submission. Each hardware driver pairs a `pipe_screen` implementation with a winsys backend: `radeon_drm_winsys` and `amdgpu_winsys` for AMD hardware, `intel_drm_bo_alloc` for Intel. The winsys allocates display-scannable BOs via the DRM ioctl layer and submits command buffers through driver-specific submit ioctls (`DRM_IOCTL_AMDGPU_CS`, `DRM_IOCTL_I915_GEM_EXECBUFFER2`).
 
+**Gallium3D and the Vulkan path — a critical architectural distinction**: Gallium3D is **current and actively maintained** for OpenGL, OpenCL (Clover/RustiCL), and `nine` (Direct3D 9). Every `radeonsi`, `iris`, `panfrost`, `etnaviv`, `freedreno`, and `zink` instance runs through the `pipe_screen` / `pipe_context` interface. However, the Vulkan path in Mesa **bypasses Gallium entirely**. RADV, ANV, NVK, Turnip, and v3dv do not implement `pipe_screen` or `pipe_context`. They are separate drivers that use Mesa's Vulkan common layer (`src/vulkan/runtime/`) instead of the Gallium state-tracker infrastructure. There is no `pipe_draw_info` in a Vulkan draw, no `draw_vbo()` call, no winsys in the Gallium sense. This means: if you are reading this book specifically for Vulkan driver development, Chapters 13 and the Gallium3D material is architectural context for understanding how OpenGL drivers work, not the code path your Vulkan driver will implement. Zink (Chapter 119) is the only entity that bridges the two worlds — it is a Gallium state tracker that drives a Vulkan backend.
+
 **Chapter 13** traces all of these interfaces through a complete `glDrawArrays` call, from the OpenGL state tracker through `st_draw_vbo()` to `pipe_context::draw_vbo()` to command-buffer encoding in a hardware driver.
 
 ## Cluster 3 — NIR and the Shader Compiler Pipeline
 
 Every shader that enters Mesa — whether **GLSL** from an OpenGL application or **SPIR-V** from a Vulkan driver or game — is immediately translated into a single canonical intermediate representation before any hardware-specific compilation begins. That representation is **NIR** (New Intermediate Representation), defined in [`src/compiler/nir/`](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/compiler/nir).
 
-NIR was introduced to replace **TGSI** (Tungsten Graphics Shader Infrastructure), Mesa's earlier per-driver IR. TGSI was too low-level and ISA-like to support useful high-level optimisations: it lacked a type system expressive enough for modern compute, did not represent control flow in a form amenable to loop analysis, and had no standard optimisation pass library. NIR replaced it with a fully structured, **SSA**-form IR.
+NIR was introduced to replace **TGSI** (Tungsten Graphics Shader Infrastructure), Mesa's earlier per-driver IR. **TGSI is historical and fully superseded by NIR.** No new Mesa driver uses TGSI; it exists only in legacy paths within old code that has not yet been migrated. TGSI was too low-level and ISA-like to support useful high-level optimisations: it lacked a type system expressive enough for modern compute, did not represent control flow in a form amenable to loop analysis, and had no standard optimisation pass library. NIR replaced it with a fully structured, **SSA**-form IR.
 
 **SSA (Static Single Assignment)** means every variable in NIR (`nir_def *`) is assigned exactly once. This property — guaranteed by construction — is what makes classical compiler optimisations cheap and correct: Global Value Numbering (GVN) can deduplicate identical computations by simple equality checks; Dead Code Elimination (DCE) needs only a single backwards sweep; Sparse Conditional Constant Propagation (SCCP) can reason about values without alias analysis. `nir_alu_instr` represents arithmetic; `nir_intrinsic_instr` represents memory accesses and system value reads; `nir_tex_instr` represents texture operations. The NIR pass infrastructure runs a chain of `nir_shader_instructions_pass()` callbacks, each implementing one optimisation or lowering.
 

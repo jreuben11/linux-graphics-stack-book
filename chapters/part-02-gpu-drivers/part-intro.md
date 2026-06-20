@@ -96,6 +96,90 @@ ARM SoC display pipelines connect to panels via **MIPI DSI** (Display Serial Int
 
 **Chapter 172 — eGPU on Linux: Thunderbolt, USB4, and PCIe Hot-Plug** covers external GPU attachment via Thunderbolt 3/4 and USB4 PCIe tunneling, the **bolt** daemon (`boltctl enroll`, `org.freedesktop.bolt` D-Bus) for Thunderbolt device authorization, the kernel `drivers/thunderbolt/` and `drivers/thunderbolt/usb4.c` subsystems, and how **amdgpu** implements PCIe hot-plug via `drm_dev_register` / `drm_dev_unplug`. The chapter covers Reverse PRIME (DMA-BUF blit from eGPU to iGPU scanout), NVIDIA eGPU limitations, and practical setup with `boltctl`, `lspci`, and `DRI_PRIME`.
 
+## The Missing Driver: NVIDIA
+
+Every chapter in this part covers a driver that ships in the mainline Linux kernel and is fully developed in the open: amdgpu, i915/Xe, Panfrost, Lima, etnaviv, V3D, freedreno, and the emerging RISC-V drivers. **NVIDIA is conspicuously absent from this list.** NVIDIA hardware is the most widely deployed discrete GPU on Linux desktops and laptops, yet its driver story is so architecturally distinct — and historically so fraught — that it fills an entire part of its own.
+
+**Part III — The Nouveau Story** covers NVIDIA exclusively and in depth. The short version: for 17 years, NVIDIA withheld hardware documentation and shipped only a monolithic proprietary kernel module (`nvidia.ko`). The open Nouveau driver (`drivers/gpu/drm/nouveau/`) was built by reverse engineering BAR0 MMIO traces without a register spec, using the Envytools toolchain. It ran on every NVIDIA GPU since 2004 but could never reliably reclock to rated performance because doing so required signed PMU firmware. In 2022 NVIDIA released the `nvidia-open` kernel module (host-side source) and enabled `nouveau` to boot via the GSP-RM firmware blob, finally unlocking reclocking on Turing and later GPUs. Simultaneously, Faith Ekstrand began NVK — a clean-slate Vulkan driver in Mesa — which reached Vulkan 1.4 conformance on Mesa 25.x. The Nova driver (Rust, merged Linux 6.15) is the clean-sheet replacement for the C-based Nouveau.
+
+Reading Part II first is still the right approach: the DRM contracts — GEM, drm_gpu_scheduler, KMS, dma_resv — that every AMD, Intel, and ARM driver implements are **identical** for NVIDIA's open drivers. Part III shows what happens when those same contracts are built on top of a closed GSP-RM firmware boundary instead of directly-accessible hardware registers.
+
+## Comparing GPU Driver Architectures
+
+The drivers surveyed in this part converge on the DRM subsystem contracts (Ch. 1–4) but diverge significantly in their submission model, memory management, firmware dependency, and design philosophy. Understanding the tradeoffs helps readers choose the right driver as a reference and anticipate where complexity lives.
+
+### Submission Model
+
+| Driver | Mechanism | Notes |
+|--------|-----------|-------|
+| **amdgpu** | PM4 ring buffers + doorbells; `DRM_IOCTL_AMDGPU_CS` | Multiple rings per engine (GFX, SDMA, compute, VCN). IB1/IB2 indirect buffer chaining for secondary command buffers. |
+| **i915** (legacy) | Execlist (ELSP register writes); `DRM_IOCTL_I915_GEM_EXECBUFFER2` | Per-engine ELSP register pair; software scheduler in the kernel. Deprecated on Xe-class hardware. |
+| **Xe** | GuC CT firmware-mediated; `DRM_XE_EXEC`; VM_BIND-only | All submission routed through H2G/G2H CT mailbox. GuC firmware owns scheduling policy. VM_BIND is the *only* memory model — no legacy relocation. |
+| **Panfrost / Lima** | Job-slot register writes | GPU has a fixed number of job slots (typically 2). Driver writes job descriptor address into slot register and polls for completion. Simple, but limits concurrency and preemption depth. |
+| **Panthor / Asahi** | Firmware-mediated CSF (Command Stream Frontend) | GPU fetches from a firmware-managed command stream. Preemption is firmware-handled. Closer to the GuC CT model than the job-slot model. |
+| **freedreno / MSM** | Ring buffer + doorbells; `MSM_SUBMIT` | Per-ring-per-priority-queue on newer Adreno (A6xx+). GMEM tiling decisions made at submit time by the driver. |
+| **Nouveau** | FIFO pushbuffer channels; GSP-RM routes to engine | Host writes pushbuffer descriptors to `DRM_IOCTL_NOUVEAU_EXEC`; GSP-RM firmware performs actual hardware FIFO management. |
+
+**Key insight:** The shift from job-slot (Lima, etnaviv) through ring-buffer (amdgpu, i915) to firmware-mediated (Xe/GuC, Asahi, Panthor) reflects increasing GPU complexity and the corresponding desire to move preemption and scheduling policy out of the kernel and into firmware where it can be updated without kernel changes. The tradeoff is opacity: a firmware-mediated driver is harder to debug because the scheduling decisions are hidden inside a firmware blob.
+
+### Memory Management
+
+| Driver | Kernel allocator | GPU VA management | Highlights |
+|--------|-----------------|-------------------|------------|
+| **amdgpu** | TTM (with GEM wrapper) | Per-process `amdgpu_vm`; multi-level page tables (4-level on Vega+); `DRM_IOCTL_AMDGPU_VM_BIND` | Three heaps: VRAM (GPU-local), GTT (system RAM in GPU VA), BAR (CPU-writable VRAM window). PSP authenticates each firmware blob before the engine can accept commands. |
+| **Xe** | GEM + drm_gpuvm | VM_BIND-only; `DRM_XE_VM_BIND`; no implicit relocation | LMEM (local memory on discrete) + system memory. `drm_gpuvm` library manages GPU VA interval tree. |
+| **i915** | GEM + TTM (Xe-HP+) | Relocation-based historically; VM_BIND on newer APIs | Moving toward Xe's model; older i915 uses `execbuffer2` relocations. |
+| **Panfrost / Lima** | GEM + CMA (for non-IOMMU SoCs) | IOMMU via ARM SMMU; per-process address spaces | CMA (`drm_gem_dma_object`) for physically-contiguous allocation. SMMU provides per-process isolation on hardware that supports it. |
+| **etnaviv** | GEM + CMA | Simple IOVA mapping; no per-process VM | Vivante hardware lacks per-process GPU VA isolation; all processes share the GPU address space. Security implications for multi-user embedded deployments. |
+| **Nouveau** | TTM | `DRM_IOCTL_NOUVEAU_VM_BIND`; GSP-RM manages page tables | GSP-RM owns the actual hardware page-table updates; Nouveau tells it what to map via RPC. |
+
+**Key insight:** Discrete GPUs (AMD, Intel, NVIDIA) maintain a separate VRAM heap backed by on-board GDDR/HBM. Embedded and SoC GPUs (Lima, Panfrost, etnaviv, freedreno, Asahi) work in unified system memory. This has profound implications for buffer allocation strategy: discrete drivers must explicitly migrate buffers between CPU-accessible and GPU-optimal memory domains; unified-memory drivers do not, but may still need physically contiguous allocations where the IOMMU is absent.
+
+### Firmware Dependency and Trust Model
+
+| Driver | Critical firmware | Source availability | Notes |
+|--------|------------------|--------------------|-|
+| **amdgpu** | GFX fw, SDMA fw, VCN fw, DCN fw; **PSP** (security processor) | Binary blobs, signed by AMD | PSP authenticates every other firmware blob. GFX cannot initialise until PSP approves. Blobs distributed under permissive licence from `linux-firmware`. |
+| **Xe / i915** | **GuC** (graphics microcontroller), HuC (video), GSC (media) | Binary blobs from Intel, open specs for firmware API | GuC implements the scheduler; its firmware API (CT protocol) is documented and used by the open Xe driver. |
+| **Panthor / Asahi** | Mali CSF firmware; Apple RTKit firmware | Proprietary blobs, loaded at boot | Extracted from vendor OS images. No specification published. Reverse-engineered driver communicates with firmware via message queues. |
+| **Nouveau / Nova** | **GSP-RM** (Falcon/RISC-V firmware, closed) | Host-side RPC client is open (`nvidia-open`); firmware binary is proprietary | The single largest remaining opacity in the NVIDIA open story. Part III covers this in depth. |
+
+**The fundamental tradeoff:** Firmware offloads complexity from the kernel driver (scheduling, power management, security) but creates a trust boundary — bugs and limitations in the firmware blob are outside the open-source community's control. AMD's PSP is the most extreme example: no GPU command can execute before PSP signs off, meaning a PSP firmware bug can brick a GPU. NVIDIA's GSP-RM is architecturally similar but affects all operations, not just boot-time authentication. Intel's GuC is the most transparent of the three, with its CT protocol publicly documented.
+
+### Pros and Cons by Driver Family
+
+**amdgpu (AMD Radeon)**
+- ✓ Full hardware documentation provided to the community; RADV/radeonsi written with vendor support
+- ✓ Mature, feature-complete: hardware ray tracing, mesh shaders, VRR, hardware video encode/decode
+- ✓ Excellent open Vulkan driver (RADV) with ACO compiler; competitive with proprietary performance
+- ✗ Complex codebase: IP block decomposition, 12+ firmware images, DC/DM display stack is large and AMD-Windows-derived
+- ✗ PSP authentication chain means cold-boot latency and a trust dependency on AMD signing keys
+
+**Intel i915 / Xe**
+- ✓ Longest history of open-source development; documentation available since the i915 days
+- ✓ Xe is a clean-slate design with VM_BIND-only memory model, well-suited to Vulkan
+- ✓ GuC firmware policy is documented; CT protocol is open
+- ✗ Complexity of supporting 15+ years of GPU generations (Gen 6 through Xe2) in one driver
+- ✗ GuC firmware required for all submission on Xe; a GuC firmware bug blocks all GPU access
+
+**ARM open drivers (Panfrost, Panthor, Lima, etnaviv, V3D)**
+- ✓ Fully open, community-driven; excellent CI via IGT and dEQP
+- ✓ Appropriate for constrained embedded platforms; no proprietary user requirement
+- ✗ Reverse-engineered without hardware documentation; some features permanently missing or unstable
+- ✗ Performance typically 20–40% below the vendor proprietary driver (Mali) due to missing optimisations
+
+**Qualcomm Adreno (freedreno / Turnip)**
+- ✓ Turnip (Mesa Vulkan) achieves near-parity with the proprietary Adreno driver on recent generations
+- ✓ Qualcomm has provided some hardware documentation for newer GPU generations
+- ✗ TBDR architecture (sysmem vs GMEM) adds complexity not found in IMR (Immediate Mode Rendering) GPUs
+- ✗ Firmware still required and not fully documented
+
+**NVIDIA (Nouveau / Nova / NVK)** — see Part III for the full account
+- ✓ NVK achieves Vulkan 1.4 conformance on Mesa 25.x; near-native performance on Turing+
+- ✓ Nova (Rust) provides a clean, safe kernel interface
+- ✗ GSP-RM binary blob remains proprietary — the open stack cannot function without it
+- ✗ Pre-Turing GPUs: limited by the historical lack of documentation for VBIOS P-state tables
+
 ## How the Chapters Interrelate
 
 ```mermaid

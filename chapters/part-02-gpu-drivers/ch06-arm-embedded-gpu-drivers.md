@@ -987,6 +987,32 @@ The `pm_runtime_get_noresume` call increments the usage count so that the device
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Tyr driver replacing Panthor**: Tyr, the Rust-language reimplementation of the Panthor CSF driver merged in Linux 6.18, is progressing toward being a fully conformant drop-in replacement for Panthor. Collabora reports Tyr already works with GNOME, Weston, and full-screen 3D games at matching performance, with the remaining work being stabilisation and the final kernel ABI decisions before Panthor is retired. [Source](https://www.collabora.com/news-and-blog/news-and-events/introducing-tyr-a-new-rust-drm-driver.html)
+- **Asahi AGX full mainline merger**: The Asahi team is working to reduce the remaining out-of-tree patch count (858 patches as of the 6.18 series, down from 1,232) and get the full Rust AGX kernel driver — not just the uAPI header — merged into mainline. The February 2026 progress report notes USB-C DisplayPort, M3 Mac support, and 120 Hz display enhancements as near-term deliverables. [Source](https://ubos.tech/news/asahi-linux-february-2026-progress-report-usb%e2%80%91c-displayport-m3-mac-support-and-120-hz-display-enhancements/)
+- **Turnip ray query on Adreno 7xx+**: `VK_KHR_ray_query` hardware-accelerated ray tracing, merged in Mesa 25.0 for Adreno 740 and newer, is being extended to the Adreno 830 (Snapdragon 8 Elite) architecture with patchwork underway for A8xx support in mid-2026. [Source](https://www.phoronix.com/news/Mesa-TURNIP-VK_KHR_ray_query)
+- **PanVK Vulkan 1.3 conformance on Valhall**: Collabora is actively working on the missing Vulkan 1.3 and 1.4 features and the Roadmap 2022 profile for PanVK to follow its Vulkan 1.2 conformance milestone on Mali-G610, with Roadmap 2024 profile support as a longer-running goal. [Source](https://9to5linux.com/panvk-open-source-vulkan-driver-for-arm-mali-gpus-is-now-vulkan-1-2-conformant)
+- **Panthor support for newest Arm Mali-G7xx / Immortalis-G9xx**: Arm has been preparing Panthor driver support for the latest Valhall-generation hardware (Mali-G725, Immortalis-G925) with enablement patches circulating on the mailing list. [Source](https://www.phoronix.com/news/Arm-Mali-G725-Friends-Panthor)
+
+### Medium-term (1–3 years)
+
+- **Honeykrisp Vulkan 1.4 and Roadmap 2024 on Apple Silicon**: The Honeykrisp Vulkan driver for AGX reached Vulkan 1.3 conformance; the next milestones are Vulkan 1.4 and the Khronos Roadmap 2024 profile. Upstreaming the full Mesa Asahi Gallium3D and Honeykrisp drivers into Mesa mainline (rather than the Asahi Mesa fork) remains an open task dependent on the kernel ABI stabilising. Note: specific timeline needs verification.
+- **PanVK Midgard/Bifrost hardware-accelerated geometry shading and compute**: PanVK currently supports Mali Midgard (v6/v7) and Bifrost (v9) at Vulkan 1.2; bringing those older hardware generations to full Vulkan 1.3 conformance requires implementing pipeline libraries, shader objects, and synchronisation primitives that stress the older job-slot submission model. [Source](https://www.collabora.com/news-and-blog/news-and-events/panvk-an-open-source-vulkan-driver-for-arm-mali-midgard-and-bifrost-gpus.html)
+- **MSM compute and ML acceleration on Adreno 7xx/8xx**: The freedreno/Turnip stack is expanding Adreno compute support — OpenCL via rusticl and compute shaders — to cover the Adreno 7xx Hexagon-adjacent compute engines, with hardware-accelerated ML inference (SYCL on Snapdragon) targeted for Cycles and similar workloads in 2026–2027. Note: specific patchset status needs verification.
+- **Tyr as the canonical driver for future CSF Mali hardware**: The longer-arc plan is for new Arm Mali CSF GPUs (generations beyond Immortalis-G9xx) to be supported exclusively via Tyr rather than Panthor, making Tyr the forward-looking CSF submission path. [Source](https://rust-for-linux.com/tyr-gpu-driver)
+- **drm_gpuvm and memory management improvements**: Ongoing refinement of the `drm_gpuvm` GPU VA manager (used by Panthor, Tyr, and Asahi) is expected to add sparse-binding support and improved fault recovery, benefiting all CSF-based Mali and AGX drivers simultaneously. Note: specific patchset status needs verification.
+
+### Long-term
+
+- **Open-source support for Arm Ethos-N neural accelerators alongside GPU drivers**: As SoCs increasingly integrate dedicated NPU/ML accelerators alongside Mali GPUs, the DRM subsystem may expand to encompass NPU scheduling and memory sharing, analogous to how the MSM driver already manages both GPU and display hardware. Note: speculative direction based on industry trends.
+- **Fully upstream Apple Silicon graphics stack in Fedora/Ubuntu**: Once the Asahi AGX kernel driver and Mesa drivers are fully merged into their respective upstreams, major distributions are expected to ship them in standard kernel and Mesa packages for ARM64, removing the need for the Asahi Linux distribution layer. Note: timeline speculative.
+- **Standardised Rust DRM driver infrastructure**: Tyr and the Asahi AGX driver are establishing the Rust-in-DRM infrastructure (`rust/kernel/drm/`). Long-term, this may attract more embedded GPU drivers to be written or rewritten in Rust, particularly for new SoC GPU IP blocks where starting fresh in Rust is lower cost than porting legacy C. [Source](https://rust-for-linux.com/apple-agx-gpu-driver)
+
+---
+
 ## Integrations
 
 **Chapter 1 (DRM Driver Model)**: The `drm_driver` structure and `drm_dev_register` flow introduced in Chapter 1 are the same entry points all embedded GPU drivers use. The distinction is that `drm_driver.open`, `.close`, `.ioctl`, and `.gem_*` callbacks are the same DRM interfaces; only the `platform_driver` registration path (not `pci_driver`) differs. The `panfrost_drm_driver` struct, `msm_drm_driver`, and `lima_drm_driver` all instantiate this same interface.

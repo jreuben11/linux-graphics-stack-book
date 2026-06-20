@@ -429,6 +429,30 @@ journalctl -u displaylink-driver --since "5 minutes ago" -f
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Wayland compositor session handoff fixes**: Active bugs in evdi cause module state corruption when transitioning between Wayland compositor instances (e.g., logging out and back in without a full module reload). Patches to address teardown and re-connection sequencing are under discussion. [Source](https://github.com/DisplayLink/evdi/issues/540)
+- **Kernel 6.x compatibility maintenance**: evdi is out-of-tree and must be updated for each new kernel's DRM API changes; the project tracks upstream regularly (verified up to kernel 6.15 as of mid-2026). Continued DKMS compatibility work is expected with each major kernel release. [Source](https://github.com/DisplayLink/evdi)
+- **USB 3.2 Gen 2 / USB4 throughput improvements**: DL-7xxx chips support 4K@60 over USB 3.2 Gen 2 (10 Gbps). Near-term DLM improvements are expected to better saturate available bandwidth and reduce compression latency for high-refresh-rate displays. Note: needs verification for specific release timeline.
+- **HDR metadata passthrough**: As Wayland compositors gain HDR support (via the `color-management-v1` protocol), evdi will need to propagate HDR10/PQ metadata through the DRM connector's `HDR_OUTPUT_METADATA` property to the DLM daemon. Note: needs verification.
+
+### Medium-term (1–3 years)
+
+- **Open-source DLM / full open stack**: The most-requested long-standing community goal is for Synaptics/DisplayLink to open-source the DisplayLink Manager daemon, removing the binary blob from the stack. This would also unblock upstreaming evdi, since the DRM maintainers require an open userspace for new uAPI. [Source](https://support.displaylink.com/forums/287786-displaylink-feature-suggestions/suggestions/17798941-make-the-linux-driver-open-source-and-get-it-into)
+- **Upstream kernel merge attempt**: No serious RFC patchset for mainlining evdi has been submitted as of 2026, primarily because of the closed DLM userspace. If Synaptics opens the DLM, an upstreaming effort under `drivers/gpu/drm/evdi/` (similar to `udl` for older DisplayLink USB 2.0 devices) becomes viable. Note: needs verification for concrete timeline.
+- **`FB_DAMAGE_CLIPS` atomic property adoption**: Broader compositor support for the `FB_DAMAGE_CLIPS` DRM plane property would allow finer-grained dirty-region reporting to evdi, reducing CPU copy overhead. Work in Mutter and KWin on atomic damage tracking is relevant here. [Source](https://github.com/DisplayLink/evdi/issues)
+- **GPU-side compression offload**: Currently the DLM compresses on CPU. Medium-term, offloading compression (JPEG or AV1 intra-frame) to the host GPU's video encoder (VAAPI/NVENC) could significantly reduce CPU load for 4K streams. Note: needs verification.
+
+### Long-term
+
+- **UDP / wireless display tunnelling**: The evdi architecture (virtual DRM + userspace pixel consumer) is display-transport-agnostic. Future directions include tunnelling over USB4 Alt-Mode without proprietary chips, or over Wi-Fi 7 (IEEE 802.11be) for wireless docking, with the DLM replaced by an open transport daemon.
+- **DMA-BUF zero-copy path**: The fundamental performance limit today is CPU memcpy for imported DMA-BUFs. A long-term architectural goal is a kernel-level DMA engine path where the GPU scatters dirty tiles directly into USB transfer buffers, bypassing CPU copies entirely. This would likely require a redesign of the evdi ↔ DLM interface. Note: needs verification.
+- **Integration with the Linux USB4 / Thunderbolt display stack**: USB4 tunnels native DisplayPort Alt-Mode, potentially making USB DisplayLink hardware unnecessary for high-end docks. DisplayLink's relevance long-term may shift toward lower-cost USB 3.x docks and multi-display scenarios that exceed native DP bandwidth, alongside the `thunderbolt` / `typec` kernel subsystem evolution. [Source](https://www.notebookcheck.net/AMD-DisplayPort-Thunderbolt-Tunneling-driver-already-available-in-latest-Linux-kernel-patches-USB4-support-finally-coming-in-early-2022.570527.0.html)
+
+---
+
 ## Integrations
 
 - **Ch01 (DRM Architecture)** — evdi is a DRM driver; it registers a `drm_driver` with `drm_dev_alloc`/`drm_dev_register` like any real GPU driver

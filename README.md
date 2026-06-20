@@ -21,7 +21,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 | IV | Mesa Architecture | Ch 12–17, 77, 91, 119, 156, 159 | 11 |
 | V | Mesa GPU Drivers | Ch 18–19 | 2 |
 | VI | The Display Stack | Ch 20–23, 46, 53–54, 74–75, 101, 105, 112, 123, 128, 130–132, 138, 140, 145, 151, 158 | 22 |
-| VII | Application APIs & Middleware | Ch 24–27, 38–39, 47–48, 50, 76, 96, 106, 111, 114, 127, 133, 135, 141, 148, 150, 152, 154, 157, 165 | 24 |
+| VII | Application APIs & Middleware | Ch 24–27, 38–39, 47, 50, 76, 96, 106, 111, 114, 127, 133, 135, 141, 148, 150, 152, 154, 157, 165 | 23 |
 | VIII | Gaming Layer | Ch 28–29, 56, 78, 104 | 5 |
 | IX | Tooling & Contributing | Ch 30–32, 55, 79–80, 89, 93, 107, 109, 122, 125, 136–137, 153 | 15 |
 | X | Browser Rendering Stack | Ch 33–37, 52, 98, 146–147 | 9 |
@@ -34,7 +34,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 | XVII | AMD Developer Ecosystem | Ch 72, 143 | 2 |
 | XVIII | Rendering Abstraction Libraries | Ch 81–84, 113 | 5 |
 | XIX | Android Graphics | Ch 85–87 | 3 |
-| XX | AI/ML Inference on Linux | Ch 88, 94, 108, 115, 124 | 5 |
+| XX | AI/ML Inference on Linux | Ch 48, 88, 94, 108, 115, 124 | 6 |
 | XXI | Platform, Legacy & History | Ch 95, 103 | 2 |
 | — | Appendices | A–M (13 appendices) | 13 |
 
@@ -130,7 +130,6 @@ chapters/
     ch38-pipewire.md
     ch39-qt-gtk-rendering.md
     ch47-font-text-rendering.md
-    ch48-rocm-ml-linux.md
     ch50-vulkan-video.md
     ch76-modern-vulkan-extensions.md
     ch96-libcamera.md
@@ -227,6 +226,7 @@ chapters/
     ch86-android-vulkan.md
     ch87-android-ar-arcore.md
   part-20-ai-inference/
+    ch48-rocm-ml-linux.md
     ch88-npu-ai-accelerators.md
     ch94-comfyui-comfyscript.md
     ch108-rocm-hip.md

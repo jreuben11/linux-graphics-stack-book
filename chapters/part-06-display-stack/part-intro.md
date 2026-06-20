@@ -2,6 +2,115 @@
 
 Parts I–V establish the substrate: kernel memory management, DRM/KMS atomic modesetting, Mesa, and the Vulkan driver stack. Part VI is where that substrate becomes visible. It covers every layer between a rendered DMA-BUF and the photons leaving the display panel: the Wayland compositor protocol, compositor toolkits and production compositor implementations, backward compatibility for X11 applications, the input pathway from kernel interrupt to Wayland event, colour science and calibration, the advanced synchronisation and colour-management protocols that define the state of the art in 2026, font rendering and text layout, variable-refresh-rate display technology, and privacy-respecting screen capture and remote desktop. The compositor is the conductor of this stack — it orchestrates KMS, GPU buffers, input, colour management, and adaptive timing into a coherent user experience. Nothing that reaches a screen passes outside this part's scope.
 
+## What a Compositor Is and Does
+
+A **Wayland compositor** is a single privileged process that is simultaneously a Wayland server, a DRM/KMS client, and a libinput consumer. It occupies the architectural intersection of three systems and is the only process with unmediated access to all of them at once. Understanding its role precisely makes the rest of this part coherent.
+
+**As a Wayland server**, the compositor accepts connections from every application that wants to display output. Each application is a Wayland client. When a client wants to show a window, it:
+1. Allocates a GPU buffer (typically via GBM or EGL) and renders into it.
+2. Exports the buffer as a DMA-BUF file descriptor.
+3. Announces the buffer to the compositor via the `zwp_linux_dmabuf_v1` protocol, attaching it to a `wl_surface`.
+4. Commits the surface (`wl_surface.commit`), which transfers ownership of the buffer to the compositor until the compositor releases it.
+
+The compositor receives these buffer fds from potentially hundreds of clients simultaneously. It is the only process that sees all surfaces.
+
+**As a KMS client**, the compositor owns the DRM device fd for the display hardware. After compositing all client surfaces into a final frame (via GPU rendering), it submits the result to the display via `drmModeAtomicCommit()`. The compositor decides:
+- Which surfaces go directly onto hardware KMS overlay planes (direct scanout — no GPU compositing).
+- Which surfaces must be composited via a GPU render pass (multiple surfaces blended together).
+- The final timing: the commit is gated on a GPU fence (`IN_FENCE_FD`) and completes at VBLANK.
+
+**As a libinput consumer**, the compositor reads raw input events from `/dev/input/event*`, processes them through libinput (normalisation, gesture recognition, pointer acceleration), and routes them to the focused Wayland client via `wl_pointer`, `wl_keyboard`, `wl_touch`, or the appropriate `wp_tablet_v2` / `wp_relative_pointer_v1` protocols. No other process receives input events; the compositor is the exclusive input arbiter.
+
+**Additional responsibilities**: The compositor manages window geometry (position, size, stacking order — or in the Wayland model, which surfaces are visible and where), keyboard/pointer focus, XDG shell surface roles (toplevel windows, popups, layer-shell surfaces), window decorations (server-side or client-side), animation and transition effects, and the security boundary that prevents one application from reading another's surface content.
+
+The short definition: **a compositor owns the display hardware, arbitrates all surface presentation, and arbitrates all input routing.** It is not just a "window manager" in the X11 sense — on Wayland, the compositor and the display server are the same process.
+
+## VBLANK: The Display Timing Heartbeat
+
+**VBLANK** (Vertical Blanking Interval) is the period between the end of one video frame's scanout and the start of the next. During scanout, the display controller reads pixels row by row from the framebuffer and sends them to the display panel at a rate determined by the pixel clock. After the last row of a frame is sent, there is a short gap — the blanking interval — before the controller begins reading the next frame. This gap is the VBLANK period.
+
+The VBLANK is important for three reasons:
+
+1. **Buffer swap safety**: If the compositor swaps the framebuffer (changes which buffer the display controller is reading) during active scanout, the panel shows part of the old frame and part of the new frame — a horizontal tear. Waiting for VBLANK to perform the swap ensures a clean transition. `drmModeAtomicCommit()` with the `DRM_MODE_PAGE_FLIP_EVENT` flag waits for the next VBLANK before applying the new plane configuration.
+
+2. **Timing synchronisation**: The compositor schedules its render-and-commit cycle to complete just before the next VBLANK. Applications receive `wp_presentation` feedback timestamps indicating exactly when their frame appeared on screen, allowing render loops to maintain precise frame pacing.
+
+3. **Power gating**: The GPU and display engine can perform power-saving operations during VBLANK when no pixels are being read.
+
+**Duration**: VBLANK duration equals `1 / refresh_rate` seconds:
+- 60 Hz: 16.67 ms per frame; the blanking interval is a small fraction (typically 1–2 ms) of this
+- 120 Hz: 8.33 ms per frame
+- 144 Hz: 6.94 ms per frame
+- 240 Hz: 4.17 ms per frame
+- VRR (Variable Refresh Rate): frame duration is variable within the panel's supported range (e.g., 48–165 Hz); VBLANK occurs when the compositor commits a new frame or when a timeout forces a refresh
+
+**Kernel interface**: The kernel DRM subsystem delivers VBLANK events to userspace via the DRM file descriptor:
+
+```c
+/* Request VBLANK event notification */
+struct drm_wait_vblank vblank = {
+    .request.type = _DRM_VBLANK_RELATIVE | _DRM_VBLANK_EVENT,
+    .request.sequence = 1,
+    .request.signal = (unsigned long)user_data,
+};
+drmIoctl(drm_fd, DRM_IOCTL_WAIT_VBLANK, &vblank);
+
+/* Read events from DRM fd (epoll/poll) */
+drmEventContext evctx = {
+    .version = DRM_EVENT_CONTEXT_VERSION,
+    .vblank_handler = my_vblank_handler,  /* DRM_EVENT_VBLANK */
+    .page_flip_handler2 = my_flip_handler, /* DRM_EVENT_FLIP_COMPLETE */
+};
+drmHandleEvent(drm_fd, &evctx);
+```
+
+`drmModeAtomicCommit()` with `DRM_MODE_PAGE_FLIP_EVENT` delivers a `DRM_EVENT_FLIP_COMPLETE` event on the next VBLANK after the new buffer becomes active. This is the signal compositors use to know when it is safe to release the old buffer back to the client and to schedule the next frame.
+
+## When the Display Stack Is Bypassed
+
+The compositor-mediated path through Wayland and KMS is not the only path from GPU to display. Several scenarios bypass some or all of this stack:
+
+### Direct KMS from an Application (`VK_KHR_display` / `VK_EXT_acquire_drm_display`)
+
+A Vulkan application can enumerate connected displays with `vkGetPhysicalDeviceDisplayPropertiesKHR()`, create a display surface with `vkCreateDisplayPlaneSurfaceKHR()`, and drive KMS scanout directly from its swapchain — entirely outside any compositor. The Wayland compositor, if running, is bypassed or must release the display first.
+
+`VK_EXT_acquire_drm_display` is the explicit version: the application calls `vkAcquireDrmDisplayEXT()` passing the DRM lease or direct fd, then presents via a `VkSwapchainKHR` backed by direct KMS plane assignment. Mesa's WSI layer implements this in `wsi_common_drm.c`.
+
+**When used**: Kiosk applications, digital signage, GPU benchmarking tools that want zero-compositor-latency display, any application that is itself the only output consumer.
+
+### DRM Leasing for VR Headsets (`DRM_IOCTL_MODE_CREATE_LEASE`)
+
+**DRM lease** allows the compositor to grant a subset of its DRM resources (specific CRTCs, connectors, and planes) to a VR runtime for the duration of an XR session. The VR runtime receives its own DRM fd with restricted scope — it can drive the leased display resources directly, bypassing compositor compositing entirely, without the compositor surrendering all its other displays.
+
+```c
+/* Compositor creates a lease for the VR connector */
+struct drm_mode_create_lease lease_req = {
+    .object_ids = (uint64_t)(uintptr_t)lease_objects,
+    .object_count = n_objects,
+    .flags = 0,
+};
+drmIoctl(drm_fd, DRM_IOCTL_MODE_CREATE_LEASE, &lease_req);
+/* lease_req.fd is the new restricted DRM fd handed to the VR runtime */
+```
+
+**Monado** (the open-source OpenXR runtime) uses DRM leasing to drive the HMD display at full refresh rate without compositor involvement. Chapter 121 covers DRM leasing in detail.
+
+### TTY Virtual Console Switch
+
+When a user switches to a Linux virtual console (`Ctrl+Alt+F2`), the kernel's VT subsystem takes over the display hardware. The compositor receives a `VT_RELDISP` ioctl signal, must suspend its DRM usage, and relinquishes the DRM master role. The text console or framebuffer console drives the display directly via the `fbdev` or `simplefb` driver. When the user switches back, the compositor reclaims DRM master and resumes normal operation.
+
+During the TTY switch, the compositor, Wayland clients, and all Wayland protocol activity is suspended. No frames are presented.
+
+### Headless / Compute Workloads
+
+On systems without a physical display (cloud GPU instances, render farm nodes, CI servers), there is no KMS output and no compositor. Mesa provides:
+
+- **GBM headless**: `gbm_create_device(drmOpenRender("/dev/dri/renderD128"))` — allocates GPU buffers without a display. Used by off-screen rendering pipelines.
+- **`EGL_EXT_platform_device`**: Creates an EGL display from a DRM render node without a windowing system. Used by headless Vulkan/OpenGL rendering in containers and server workloads.
+- **`VK_KHR_display` with no connected monitors**: On some headless machines, a virtual connector can be created; on others, applications simply never call `vkCreateSwapchainKHR` and render into `VkImage` objects that are read back via `vkMapMemory()` or copied to host via a staging buffer.
+
+Chapter 107 covers headless rendering in depth.
+
 ## The IPC Foundation: Unix Sockets and File Descriptor Passing
 
 Every Wayland connection begins with a **Unix domain socket** located at `$XDG_RUNTIME_DIR/wayland-0` (overridden by `WAYLAND_DISPLAY`). A client calls [`wl_display_connect()`](https://wayland.freedesktop.org/docs/html/apb.html#Client-classwl__display_1a4c3f1b9cb0f5bec8e53acf0c0ad4febb) to open this socket, which then acts as a full-duplex byte stream. The critical property of a Unix socket — compared to TCP or pipes — is that it can carry file descriptors out-of-band alongside data bytes, using the `SCM_RIGHTS` ancillary message type delivered via `sendmsg()`/`recvmsg()` ([UNIX man page](https://man7.org/linux/man-pages/man7/unix.7.html)). When a Wayland client submits a GPU buffer for display, it exports a **DMA-BUF** file descriptor from Mesa/GBM and sends it to the compositor over the socket using `SCM_RIGHTS`. The compositor receives the fd, imports the buffer, and reads the pixel data directly — the GPU memory is shared without copying. This is zero-copy buffer sharing at the IPC layer: `SCM_RIGHTS` passes the *capability to access* a buffer, not a copy of its contents.

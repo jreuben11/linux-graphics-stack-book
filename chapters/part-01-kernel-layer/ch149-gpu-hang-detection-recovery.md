@@ -1023,6 +1023,32 @@ cat /sys/kernel/debug/dri/0/i915_engine_info
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **amdgpu pipe-reset support for compute workloads**: AMD posted a 42-patch series enabling pipe-level reset for AMDKFD compute queues, addressing corner cases where single-queue reset fails to recover a hung compute ring. Pipe reset resets all queues on the affected pipe but avoids a full device reset. [Source](https://www.phoronix.com/news/AMDGPU-Pipe-Reset-Support)
+- **`DRM_GPU_SCHED_STAT_NO_HANG` — spurious-timeout fast path**: Merged in the v6.12–v6.13 cycle, this return code from `timedout_job` allows drivers to skip the reset sequence when the fence has already signalled by the time the TDR work item fires. Remaining drivers (vc4, lima, etnaviv) are expected to adopt the pattern. [Source](https://lwn.net/Articles/1029951/)
+- **Preemption-aware hangcheck for MSM/Adreno A7xx**: Patches track per-ring progress via the `CP_ALWAYS_ON_CONTEXT` counter register; the hangcheck now distinguishes "context has not advanced" from "context has advanced but not finished", eliminating false positives during long preemptive compute dispatches. [Source](https://lkml.iu.edu/2509.3/07182.html)
+- **Intel Xe2 hang debugging via GDB**: Intel GDB 2025 added Xe2-specific support for tracking kernel hangs that previously required hardware resets, exposing GPU state through the kernel debugger without invoking TDR. [Source](https://markaicode.com/intel-gdb-2025-xe2-gpu-debugging-kernel-hanging-fixes/)
+- **MES hang-detection debugfs interface for amdgpu**: The `hang_hws` debugfs knob used by GPU reset tests currently crashes the kernel with a NULL pointer dereference on MES-based hardware (gfx11+); a CVE fix skips MES for now with a proper MES debugfs interface tracked for completion. [Source](https://osv.dev/vulnerability/CVE-2025-37853)
+
+### Medium-term (1–3 years)
+
+- **Hardware GPU preemption on consumer RDNA and Arc**: True mid-draw preemption (not just inter-draw) would allow the scheduler to interrupt a hung shader dispatch and recover without a full ring reset. AMD's RDNA4 and Intel's Battlemage expose finer-grained preemption points in hardware; driver plumbing to expose these to `drm_gpu_scheduler` is an active design discussion. Note: needs verification of specific timeline commitments.
+- **Standardised `VK_EXT_device_fault` breadcrumb protocol**: The extension is ratified and implemented in RADV and ANV, but the kernel-side breadcrumb memory (GPU-written fault addresses flushed to system RAM before the hang) currently uses driver-private ABIs. A proposal to standardise the kernel uAPI for fault breadcrumbs via a new `DRM_IOCTL_SUBMIT_BREADCRUMB` ioctl has been discussed on the dri-devel mailing list. Note: needs verification.
+- **Per-context reset isolation (no cross-context blast radius)**: Today, a full GPU reset kills all contexts sharing the device. Per-context reset — isolating the hang to a single VM — requires hardware Memory Protection Unit support (AMD's GFXHUB VM-level fault isolation on RDNA3+). Wider driver support for per-context reset without disturbing peer contexts is a medium-term goal tied to virtual machine and container workload isolation.
+- **GSP-RM crash recovery without unbind/rebind (NVIDIA open)**: When the NVIDIA GSP-RM firmware crashes, the current open kernel module requires a full PCIe device unbind and rebind, which is disruptive in multi-tenant environments. NVIDIA's open-source kernel module roadmap (post-v595) includes GSP watchdog recovery that restarts the firmware in place without losing device registration. Note: needs verification of specific release target.
+- **ECC RAS integration with kernel EDAC framework**: AMD CDNA and RDNA3 Pro expose RAS events via `amdgpu_ras.c`; integrating these with the kernel's `drivers/edac/` framework would allow standard EDAC tools and IPMI baseboard management controllers to consume GPU ECC errors alongside CPU/DRAM errors. This has been proposed but not yet merged.
+
+### Long-term
+
+- **Mandatory kernel-wide GPU TDR analogous to Windows WDDM**: A long-standing proposal would introduce a `drm_tdr` core layer that mandates a maximum hang dwell time across all DRM drivers, enforced by the core rather than individual driver timeouts. Drivers that do not implement `timedout_job` would receive a default kill-and-wedge behaviour. This would require all in-tree DRM drivers to be updated and is a multi-year effort. Note: needs verification.
+- **GPU fault domains and IOMMU-based sandbox reset**: Using PCIe ACS (Access Control Services) and IOMMU fault domains, a future architecture could reset a single PCIe function (SR-IOV virtual function) hosting a hung guest without touching peer VFs or the physical function. This would make GPU virtualisation as resilient as CPU virtualisation for hung guest VMs.
+- **Standardised cross-vendor GPU coredump format**: Each driver (`i915_error_state`, `amdgpu_gpu_recover`, MSM crashdump) emits its own binary format. A kernel-standard GPU coredump format (analogous to ELF core dumps) that captures ring contents, register state, and page table snapshots in a vendor-neutral structure would enable cross-vendor tooling and postmortem analysis pipelines. Discussions have occurred at XDC (X.Org Developers Conference) but no formal RFC exists yet.
+
+---
+
 ## 13. Integrations
 
 - **Ch01 — DRM Driver Architecture**: The DRM driver lifecycle (`drm_driver_register`, `drm_dev_exit`) is the context in which GPU reset runs. `drm_dev_enter()` / `drm_dev_exit()` are the SRCU-based guards that prevent reset from racing with driver unbind — `amdgpu_job_timedout` calls `drm_dev_enter()` first to bail cleanly if the PCIe device has been removed.

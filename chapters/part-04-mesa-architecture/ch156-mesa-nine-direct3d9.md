@@ -403,6 +403,33 @@ GALLIUM_DRIVER=softpipe wine game.exe
 
 ---
 
+## Roadmap
+
+> **Note:** Gallium Nine is in end-of-life status. It was deprecated in Mesa 25.1 (April 2025) and is scheduled for removal in Mesa 25.2 (Q3 2025). [Source](https://www.phoronix.com/news/Gallium-Nine-Deprecated) The sections below document the trajectory leading to that removal and the ecosystem consequences.
+
+### Near-term (6–12 months)
+
+- **Removal from Mesa mainline (Mesa 25.2, Q3 2025):** Mike Blumenkrantz deprecated the `src/gallium/frontends/nine/` state tracker in Mesa 25.1 and flagged it for deletion in the subsequent 25.2 branch; Gallium-XA was deprecated in the same commit. [Source](https://www.phoronix.com/news/Gallium-Nine-Deprecated)
+- **wine-nine-standalone maintenance status:** The `iXit/wine-nine-standalone` out-of-tree package that let users ship Nine without patching Wine will need to either vendor its own copy of Nine or archive the project once upstream Mesa removes the code. [Source](https://github.com/iXit/wine-nine-standalone)
+- **Distribution package drops:** Downstream distros (Arch, Fedora, Ubuntu) that ship `d3dadapter9.so` will remove or orphan that package during their Mesa 25.2 packaging cycles. Note: needs verification per-distro.
+- **Proton/Wine migration to DXVK D3D9:** Valve's Proton already defaults to DXVK for D3D9 titles; the Nine removal simply closes the Gallium Nine opt-in path that some users had configured manually. [Source](https://github.com/ValveSoftware/Proton/wiki/Changelog/664d37be002868c1b6ed27fc2b49adebcd8d1f49)
+- **Documentation archival:** Mesa's official Gallium Nine documentation page (`mesa.freedesktop.org/gallium-nine.html`) will be removed or redirected once the code is gone. [Source](https://idr.pages.freedesktop.org/mesa/gallium-nine.html)
+
+### Medium-term (1–3 years)
+
+- **DXVK as the canonical D3D9 path:** DXVK translates D3D9 through Vulkan and supports AMD, Intel, and NVIDIA GPUs alike, removing the Gallium-only restriction that Nine carried. DXVK 1.9.1+ benchmarks show ~15% average uplift over native D3D9 on CPU-bound workloads. Note: performance parity with historical Gallium Nine benchmarks needs re-verification on modern hardware. [Source](https://linuxreviews.org/Gallium_Nine)
+- **VKD3D-Proton for D3D12 titles:** As game developers move to D3D12, VKD3D-Proton covers that tier; the D3D9 segment of the compat layer market continues to shrink naturally. Note: needs verification of current VKD3D-Proton roadmap items.
+- **Zink (OpenGL-on-Vulkan) as an indirect beneficiary:** Users who required Gallium drivers for Nine but want OpenGL compatibility can move to Zink, which runs on top of any Vulkan driver, broadening hardware reach. [Source](https://docs.mesa3d.org/drivers/zink.html)
+- **Wine-staging patch set retirement:** The Wine-staging patchset that carries the `d3d9-nine` patches will eventually be retired; downstream Wine forks may archive rather than forward-port the integration. Note: needs verification of wine-staging maintainer plans.
+
+### Long-term
+
+- **Gallium3D frontend landscape consolidation:** The removal of Nine (and Clover before it) reflects a broader Mesa strategy of reducing Gallium frontend diversity in favour of standardising on Vulkan-backed paths (RADV, ANV, NVK) with Zink bridging legacy APIs on top. Note: this is an architectural trend, not a stated roadmap item.
+- **D3D9 API relevance decline:** Direct3D 9 titles are aging; Steam hardware surveys show fewer active D3D9-only games each year. The long-term expectation is that DXVK's D3D9 mode will become maintenance-only as the game catalogue shifts to D3D11/12 and Vulkan native. Note: needs verification against current Steam survey data.
+- **Historical reference implementation:** The Nine source (now archived post-removal) will remain useful as a reference for anyone building a minimal Gallium frontend or studying how COM-style interfaces can map to a native pipe_context — the code is approximately 25 KLOC and well-commented. [Source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/gallium/frontends/nine)
+
+---
+
 ## Integrations
 
 - **Ch14 (Gallium3D)** — Nine is a Gallium frontend: it calls `pipe_context` and `pipe_screen` directly, the same interface used by the OpenGL, OpenCL, and Vulkan (Zink) state trackers

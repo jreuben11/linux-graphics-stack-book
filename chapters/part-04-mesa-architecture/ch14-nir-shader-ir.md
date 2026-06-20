@@ -854,6 +854,34 @@ NVIDIA (NVK) maps task and mesh shaders to native Tesla/Ampere hardware mesh pip
 
 ---
 
+## Roadmap
+
+NIR is a mature, production-grade compiler IR that underpins every Mesa driver. Development activity in 2025–2026 is concentrated on extending NIR's type system and intrinsic vocabulary to cover new GPU compute and graphics features, improving compilation performance, and spawning a new generation of NIR-consuming backends that take better advantage of the IR's SSA properties.
+
+### Near-term (6–12 months)
+
+- **Cooperative matrix expansion**: Mesa 26.0 added `nir_op_cmat_reduce` and per-element cooperative matrix operations together with SPIR-V front-end support, enabling `VK_NV_cooperative_matrix2` and related Khronos extensions. Further arithmetic and layout intrinsics are in review on the mesa-dev mailing list. [Source](https://docs.mesa3d.org/relnotes/26.0.0.html)
+- **Intel "Jay" backend reaching users**: Jay — a new SSA-aware NIR backend for Intel GPUs featuring the Colombet register allocator, styled after ACO, NAK, and AGX — was merged into Mesa 26.1-devel but is not yet the default path. Near-term work focuses on correctness and coverage sufficient for opt-in testing. [Source](https://www.igorslab.de/en/intel-has-released-jay-in-mesa-26-1-devel-the-new-shader-compiler-has-been-merged-but-is-not-yet-intended-for-users/)
+- **ARM KRAID (Rust NIR backend) stabilisation**: KRAID, a Rust-written NIR-to-hardware compiler for Mali Valhall (v9+) GPUs, was merged into Mesa 26.2-devel in June 2026. Near-term effort is completing coverage of NIR intrinsics required for Vulkan 1.3 conformance on Mali-G710 and newer. [Source](https://www.techtimes.com/articles/317763/20260604/arm-mali-open-source-driver-gets-first-rust-shader-compiler-mesa-history.htm)
+- **RadeonSI NIR compilation refactoring**: A 36-patch series by Marek Olšák restructured radeonsi's NIR pipeline, yielding a 3.2 % reduction in user-mode GLSL compile time and a 20 % reduction in sys-mode time. Follow-on patches extending this approach to more shader stages are in progress. [Source](https://www.phoronix.com/news/RadeonSI-NIR-Comp-Refactoring)
+- **`nir_lower_vars_to_scratch_global()` adoption**: The new pass introduced in Mesa 26.0 that spills variables to global memory scratch space is being adopted by mobile drivers (Panfrost, Turnip) as an alternative to register pressure–driven spilling via LDS. Note: adoption status in individual drivers needs verification.
+
+### Medium-term (1–3 years)
+
+- **Ray-tracing NIR intrinsic convergence**: As RADV, ANV, and NVK mature their ray-tracing stacks (BVH traversal, ray queries, callable shaders), pressure is growing to standardise the NIR intrinsics that represent `OpTraceRayKHR`, `OpExecuteCallableKHR`, and inline ray-query operations into a shared cross-driver vocabulary rather than per-driver lowering shims. Note: a formal cross-driver RFC for this is not yet published; needs verification.
+- **Soft-float and mediump IR support**: Mesa 26.0 added `softfloat32` support at the NIR level to preserve fp32 denormal semantics on hardware that flushes them. Extending this mechanism to cover fp16 mediump guarantees and fp64 emulation in a uniform NIR type-flag framework is a stated medium-term goal for mobile-class hardware. [Source](https://docs.mesa3d.org/relnotes/26.0.0.html)
+- **Shader caching via serialised NIR**: The `nir_serialize()` / `nir_deserialize()` path is used by several drivers for disk cache but lacks versioning guarantees across Mesa releases. Efforts are ongoing to formalise a stable-enough wire format that pre-compiled NIR pipelines can survive minor Mesa updates without full recompilation. Note: needs verification against current mesa-dev discussion.
+- **`nir_opt_algebraic` machine-learning augmentation**: Research prototypes inside the Mesa community have explored using ML-guided rewrite-rule selection for `nir_opt_algebraic` to replace or supplement the hand-written Python pattern table, targeting shader-compilation throughput improvements for large games. Note: no merged patches as of mid-2026; needs verification.
+
+### Long-term
+
+- **Rust-native NIR API surface**: The success of KRAID in writing a NIR-consuming backend in Rust has opened discussion about exposing a safe Rust API to the core NIR data structures (currently C structs accessed via FFI). A Rust-idiomatic `nir_builder` equivalent would allow new passes to be authored in Rust with compile-time borrow-checking of the SSA use-def invariants. Note: speculative; no formal proposal as of 2026.
+- **NIR as a multi-language compilation target**: With SPIR-V, GLSL, HLSL (via DXC-to-SPIR-V), and WGSL (via Tint-to-SPIR-V) all flowing through `spirv_to_nir()`, there is architectural interest in NIR becoming the explicit convergence IR for GPU compute frameworks including OpenCL (Rusticl already does this) and potentially SYCL and oneAPI on the Linux stack.
+- **Elimination of remaining NIR-to-TGSI bridge**: A small number of legacy Gallium drivers (notably VMware's `svga` driver) still consume TGSI via the NIR-to-TGSI bridge. Long-term, the Mesa project aims to retire the bridge entirely once these drivers either migrate to native NIR consumption or are removed, completing the TGSI sunset that began with the GLSL-to-TGSI removal in Mesa 22.2.
+- **Formal verification of NIR algebraic rules**: The `nir_opt_algebraic.py` rewrite rules encode integer and floating-point algebraic identities that are occasionally incorrect under IEEE 754 corner cases. Using SMT-solver-backed verification tools (similar to Alive2 for LLVM) to prove the soundness of each rule is a long-term correctness goal discussed in Mesa compiler developer meetings. Note: speculative; needs verification.
+
+---
+
 ## Integrations
 
 **Chapter 12 (Disk Cache)**: The Mesa disk cache stores compiled shader binaries keyed by a hash that includes the `nir_shader_compiler_options` values. The compiler options struct feeds into the cache key because different hardware (or different driver option sets) that would produce different binaries from the same SPIR-V must not share a cached binary. The NIR compilation result itself, or the final hardware binary derived from it, is what the cache stores. `nir_serialize()` and `nir_deserialize()` functions in `src/compiler/nir/nir_serialize.c` handle the case where NIR itself must be stored to disk.

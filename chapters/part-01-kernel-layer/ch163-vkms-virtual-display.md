@@ -402,6 +402,32 @@ qemu-system-x86_64 \
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Color pipeline API integration**: An RFC patchset (v5, 44 patches) to implement the DRM Color Pipeline API is in progress, with VKMS as the reference implementation for validating the new `drm_color_pipeline` abstraction covering 1D EOTF curves, 3×4 CTM, HDR multiplier, 3D LUT, and inverse EOTF stages — mirroring the color pipeline used by gamescope. [Source](https://www.mail-archive.com/amd-gfx@lists.freedesktop.org/msg111875.html)
+- **configfs-based reconfiguration**: Work is planned to allow VKMS instances to be reconfigured at runtime via configfs without reloading the module, enabling hotplug/hotremove of virtual connectors and dynamic EDID or refresh-rate changes — essential for compositor hot-plug CI tests. [Source](https://docs.kernel.org/gpu/vkms.html)
+- **Multi-planar YUV format support**: Adding NV12 and other semi-planar YUV formats to the software compositor (`vkms_composer.c`) so that video decode pipelines (VA-API, V4L2) can be integration-tested headlessly. Note: needs verification of landing target kernel version.
+- **Blend mode properties on overlay planes**: Implementing per-plane `pixel blend mode` properties (None, Pre-multiplied, Coverage) so IGT `kms_plane_alpha_blend` tests can run against VKMS, closing a coverage gap relative to real hardware drivers. [Source](https://www.phoronix.com/news/VKMS-Driver-2023)
+- **Multiple CRTC support**: Extending VKMS to expose more than one CRTC/connector pair so multi-monitor compositor code paths (mirror, extended desktop) can be exercised in CI without physical hardware. [Source](https://docs.kernel.org/gpu/vkms.html)
+
+### Medium-term (1–3 years)
+
+- **HDR/wide-color-gamut testing surface**: Once the Color Pipeline API lands, VKMS is expected to become the canonical headless surface for testing HDR compositor paths (Wayland `color-management-v1` protocol) end-to-end, from surface color space through CRTC LUT to writeback output capture. [Source](https://www.mail-archive.com/wayland-devel@lists.freedesktop.org/msg42796.html)
+- **Variable refresh rate / Adaptive-Sync emulation**: Planned support for VRR/FreeSync via VKMS by driving the hrtimer at variable periods, enabling IGT `kms_vrr` tests to run headlessly; this also requires PRIME buffer-sharing groundwork. Note: needs verification of RFC patchset status.
+- **composer_enabled refcounting**: The current boolean `composer_enabled` flag shared between writeback and CRC capture paths needs to be replaced with proper reference counting so both features can co-exist without races — a prerequisite for reliable parallel CI test runs. [Source](https://www.mail-archive.com/linux-kernel@vger.kernel.org/msg2154714.html)
+- **PRIME / dma-buf import support**: Allowing VKMS to import dma-buf objects from software renderers (LLVMpipe, lavapipe) would enable zero-copy headless rendering pipelines in CI, removing the current CPU-memcpy path for composited frames. Note: needs verification.
+
+### Long-term
+
+- **Acceleration via DRM scheduler integration**: Longer-term proposals envision wiring VKMS into `drm_gpu_scheduler` so asynchronous flip and compute workloads can be stress-tested for scheduling correctness without requiring real GPU hardware.
+- **Synthetic display feature flags**: Exposing configurable capability bits (rotation, scaling, cursor size, connector type) through configfs to simulate the exact display feature profile of a target GPU, allowing driver feature tests to be run deterministically in CI without that GPU being present.
+- **Integration with kernel self-test (kselftest) framework**: Moving VKMS-driven tests into `tools/testing/selftests/drm/` so they run as part of the standard kernel CI suite (`kunit`/`kselftest`) rather than requiring the separate IGT harness. Note: needs verification of upstream consensus.
+- **Virtualised display topology for VR/XR testing**: Coupling VKMS with DRM lease infrastructure (Ch07) to simulate multi-display direct-mode VR setups so OpenXR runtimes like Monado can run their headless CI without a physical HMD.
+
+---
+
 ## Integrations
 
 - **Ch01 (DRM Architecture)** — VKMS is a DRM driver implementing the same `drm_driver` and `drm_crtc_helper_funcs` interfaces as real GPU drivers; it serves as a clean reference implementation

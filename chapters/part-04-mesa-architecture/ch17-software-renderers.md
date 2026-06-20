@@ -719,6 +719,32 @@ The Mesa CI documentation (`https://docs.mesa3d.org/ci/`) provides the canonical
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Lavapipe Vulkan 1.4 conformance consolidation**: Mesa 26.1 advanced Lavapipe to a Vulkan 1.4 frontend, completing FP16 support across llvmpipe and Lavapipe landed in 2025–26. Expect ongoing extension gap-filling to maintain parity with hardware drivers for CI correctness. [Source](https://www.phoronix.com/news/LLVMpipe-Lavapipe-FP16)
+- **Wine using Zink by default**: A CodeWeavers merge request (April 2026) proposes building Zink as a Windows PE for Wine so that all OpenGL calls in Wine applications route through Zink to the host Vulkan driver, eliminating the maintenance burden of Wine's legacy WGL/GL implementation. [Source](https://www.phoronix.com/news/Wine-MR-Zink-By-Default)
+- **Nouveau GL removed, Zink+NVK as the default NVIDIA OpenGL path**: Beginning with Mesa 25.1 (and continuing through 26.x), NVIDIA users receive Zink on top of NVK instead of the old Nouveau OpenGL Gallium driver. Remaining compatibility gaps are being closed iteratively. [Source](https://www.collabora.com/news-and-blog/news-and-events/goodbye-nouveau-gl-hello-zink.html)
+- **llvmpipe OrcJIT migration**: The Deepin community upstreamed work migrating llvmpipe's JIT infrastructure from the legacy LLVM MCJIT to OrcJIT, which provides better multi-threading support and is the LLVM-recommended JIT API going forward. This migration is expected to fully land in the Mesa 26.x cycle. [Source](https://www.deepin.org/en/mesa-llvmpipe-orcjit-deepin/)
+- **cl_khr_subgroup extensions in llvmpipe**: Mesa 26.1 added several `cl_khr_subgroup` OpenCL extensions to llvmpipe, extending its utility as a CPU-side Rusticl/OpenCL target alongside its graphics role. [Source](https://docs.mesa3d.org/relnotes/26.1.0.html)
+
+### Medium-term (1–3 years)
+
+- **softpipe removal**: The legacy softpipe driver (`src/gallium/drivers/softpipe/`) has been unmaintained for years. There are ongoing discussions to formally remove it from the Mesa tree once no remaining CI jobs or downstream consumers reference it. Note: no firm removal date has been announced; needs verification from Mesa mailing list.
+- **Zink as the universal OpenGL fallback on Apple/macOS via MoltenVK**: With MoltenVK providing Vulkan on macOS, Zink+MoltenVK is the emerging path for OpenGL support on Apple Silicon. Stabilising this stack — particularly around `VK_EXT_extended_dynamic_state` and descriptor buffer support on MoltenVK — is a medium-term goal. [Source](https://docs.mesa3d.org/drivers/zink.html)
+- **Lavapipe ray tracing maturity**: Lavapipe's software BVH implementation (`lvp_bvh_box_node`, `lvp_bvh_triangle_node`) supporting `VK_KHR_ray_tracing_pipeline` and `VK_KHR_ray_query` landed in Mesa 24.1. Medium-term work targets full dEQP-VK ray tracing conformance, enabling CI coverage of ray tracing shaders on renderer-less CI machines. [Source](https://www.phoronix.com/news/Mesa-Lavapipe-Vulkan-RayTracing)
+- **AVX-512 tuning in llvmpipe on Zen 4 / Sapphire Rapids**: Initial AVX-512 experimentation in llvmpipe was merged around Mesa 23–24 targeting AMD Zen 4. Ongoing tuning of vector widths and instruction selection for AVX-512 EVEX encodings (via `LP_NATIVE_VECTOR_WIDTH`) is expected to continue, particularly as Zen 4 and Intel Sapphire Rapids become common CI host platforms. [Source](https://www.phoronix.com/news/Mesa-AVX-512-LLVMpipe-Start)
+- **Zink performance parity with native drivers for common workloads**: Benchmarks show Zink already outperforming native OpenGL Gallium drivers on some workloads. The medium-term goal is closing remaining gaps for geometry-heavy and compute-shader workloads, making Zink the preferred OpenGL delivery mechanism even when native drivers exist. [Source](https://linux-digest.com/opengl-on-linux-reimagined-how-zinks-vulkan-layer-is-outperforming-native-drivers)
+
+### Long-term
+
+- **llvmpipe as the foundation for a hardware-agnostic OpenGL test oracle**: As GPU hardware becomes increasingly heterogeneous, llvmpipe's deterministic, fully CPU-executed output positions it as a reference oracle for driver conformance — not just a CI fallback. Long-term architectural work may formalise this role, potentially integrating llvmpipe output comparison into CI result validation pipelines. Note: speculative direction based on current CI usage trends.
+- **Gallium consolidation around NIR/Vulkan common**: The long-term trajectory for Mesa's Gallium layer is consolidation toward NIR-first, Vulkan-common-first driver architecture. For software renderers, this means llvmpipe's JIT path and Lavapipe's execution model may eventually share more infrastructure with hardware drivers than they do today, particularly around descriptor management and synchronisation. Note: speculative; watch Mesa architecture mailing list discussions.
+- **Zink as the definitive solution to OpenGL fragmentation**: With Nouveau GL already retired in favour of Zink+NVK, and Wine proposing Zink-by-default, the long-term direction points toward Zink becoming the sole maintained OpenGL implementation for any platform that has a conformant Vulkan driver, allowing Mesa to reduce per-driver OpenGL maintenance to zero for non-Gallium targets. [Source](https://www.gamingonlinux.com/2026/04/a-future-wine-release-could-use-zink-to-run-opengl-via-vulkan/)
+
+---
+
 ## Integrations
 
 **Chapter 12 (Mesa disk shader cache)**: llvmpipe and Lavapipe use the Mesa disk shader cache to persist compiled LLVM modules between runs. The first run with a new shader compiles via LLVM (slow); subsequent runs load the serialised bitcode from disk and JIT-compile it (fast). `MESA_SHADER_CACHE_DISABLE=1` forces recompilation. Chapter 12 covers the cache key design and eviction policy.

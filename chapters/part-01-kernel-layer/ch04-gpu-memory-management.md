@@ -966,6 +966,32 @@ Topology discovery tools:
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **`drm_gpusvm` stabilisation and broader driver adoption**: the generic GPU Shared Virtual Memory framework (`drm/gpusvm`) introduced by Danilo Krummrich has been through multiple revision cycles (v3/v4 on dri-devel). AMD engineers are prototyping an amdgpu SVM implementation atop it (reported March 2026); near-term work focuses on fixing HMM partial huge-page mapping bugs (CVE-2025-40336) and finalising the locking model. [Source](https://www.phoronix.com/news/AMDGPU-Experiment-DRM-GPUSVM)
+- **DMA-BUF heap improvements — explicit-decryption option**: a 2026 patchset adds an opt-in flag to the system DMA-BUF heap (`DMA_HEAP_IOCTL_ALLOC`) enabling callers to request memory that is explicitly excluded from kernel memory encryption (TME/SME), needed for certain V4L2 and ISP camera pipelines. [Source](https://lwn.net/Articles/1058016/)
+- **Explicit sync: remaining implicit-sync retirement**: the Wayland `linux-drm-syncobj-v1` protocol and KMS `IN_FENCE_FD`/`OUT_FENCE_PTR` landed; near-term work is deprecating the kernel's implicit fence read/write path on `dma_resv` for modern drivers, removing the last mandatory dependency on `dma_resv_wait_timeout` in KMS page-flip paths. [Source](https://www.phoronix.com/news/DMA-BUF-Explicit-Sync-RFC)
+- **`drm_gpuvm` ops state machine extensions**: follow-on patches extend `drm_gpuvm_ops` with `sm_step_sparse` and `sm_step_split` to handle sparse-residency VA ranges, targeted at Nouveau and Xe sparse-buffer extensions. Note: needs verification of upstream merge status.
+- **DMA-BUF import DMA-API mapping improvements**: ongoing work to allow the dma-buf heap exporter to issue DMA-map calls on behalf of importers at attach time (instead of at `map_dma_buf`), reducing latency on first access in V4L2 decoder pipelines. [Source](https://docs.kernel.org/driver-api/dma-buf.html)
+
+### Medium-term (1–3 years)
+
+- **Unified GPU-VM abstraction across `drm_gpuvm` and `drm_gpusvm`**: the long-term design discussion (visible in "[RFC] DRM GPUVM features" LWN thread, 2023–2024) aims at a single `drm_gpu_vm` type that unifies discrete-memory GPU-VA management (`drm_gpuvm`) and unified/SVM memory (`drm_gpusvm`), eliminating per-driver interval trees and per-driver HMM range notifier patterns. [Source](https://lwn.net/Articles/949845/)
+- **Format modifier generalisation — HDR and planar YUV tile variants**: as displays adopt HDR10 and Dolby Vision, new `DRM_FORMAT_MOD_*` entries are needed for compressed HDR surfaces (AMD `AMD_FMT_MOD_DCC_RETILE` variants, Intel Xe2 CCS). Khronos `VK_EXT_image_drm_format_modifier` revision discussions track the Vulkan side. Note: needs verification of specific patchset status.
+- **P2P DMA improvements for CXL-attached memory**: as CXL (Compute Express Link) memory expanders appear alongside GPU VRAM in server systems, `p2pdma` infrastructure needs updating to enumerate CXL device memory nodes in `pci_p2pdma_distance`, handle CXL Type 3 device BARs, and integrate with the kernel's CXL memory driver (`drivers/cxl/`). Note: needs verification.
+- **GEM LRU shrinker improvements**: the `drm_gem_lru` infrastructure (used by Panthor, Nouveau, and Xe) is being extended to support per-NUMA-node shrinker pressure feedback, so that GPU memory eviction under system memory pressure prefers to reclaim VRAM on NUMA nodes topologically distant from the faulting CPU. Note: needs verification.
+- **`zwp_linux_dmabuf_feedback_v1` revision**: the Wayland DMA-BUF feedback protocol is under discussion for a v2 that can express per-surface modifier preferences (rather than a single per-device table), reducing unnecessary buffer re-allocation in multi-GPU compositor setups. [Source](https://wayland.app/protocols/linux-dmabuf-v1)
+
+### Long-term
+
+- **HMM-based unified memory for all GPU drivers**: the long-term architectural goal is making HMM (Heterogeneous Memory Management) the default GPU memory backend across all discrete GPU drivers, replacing TTM's `TTM_PL_SYSTEM` eviction fallback with HMM range migrations, enabling true CPU/GPU shared virtual address spaces without explicit migration calls. This aligns with HSA/ROCm's hUMA model and OpenCL 3.0 SVM requirements. Note: needs verification of timeline.
+- **GEM object compression transparency**: future kernel support for driver-transparent lossless compression of GEM objects (analogous to ARM AFBC but generalised), where the driver selects a compression modifier at allocation time and the kernel automatically decompresses on CPU-access faults via `begin_cpu_access` — removing the need for explicit modifier negotiation in purely GPU-internal pipelines. Note: speculative; no public RFC at time of writing.
+- **Peer-to-peer DMA without PCIe root-complex bottleneck**: current `p2pdma` still requires traffic to traverse the PCIe root complex on many topologies. Long-term, as CXL fabrics and NVLink-C2C mature, the expectation is that the kernel's `pci_p2pdma_distance` heuristic will be replaced by a richer fabric-topology model (possibly via the `cxl_topology` subsystem) that enables true fabric-direct DMA between GPUs, NVMe SSDs, and SmartNICs. Note: speculative.
+
+---
+
 ## Integrations
 
 **Chapter 1 (DRM Core and the ioctl Interface)**: Chapter 1 introduced GEM handles as opaque `uint32_t` values returned by allocation ioctls. This chapter explains what those handles refer to (`struct drm_gem_object`), how they are reference-counted, and why the handle namespace is per-`drm_file` rather than global. The `DRM_IOCTL_GEM_CLOSE` ioctl drops a handle; `drm_gem_object_put` drops the underlying reference.

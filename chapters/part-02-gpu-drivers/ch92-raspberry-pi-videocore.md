@@ -645,6 +645,33 @@ gst-launch-1.0 libcamerasrc ! \
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Rusticl OpenCL on V3D reaches production quality**: Mesa's Rust-based Rusticl OpenCL implementation gained V3D support in Mesa 24.2 (August 2024), enabling GPU compute workloads on Raspberry Pi 4 and Pi 5 via the Gallium3D V3D driver. The near-term goal is stabilising OpenCL CTS conformance and enabling Rusticl by default for the V3D device — currently it must be opted-in manually. [Source](https://www.phoronix.com/news/Rusticl-V3D-OpenCL-Raspberry-Pi)
+- **V3DV Vulkan extension expansion post-1.3**: Following Vulkan 1.3 conformance achieved in Mesa 24.3 (November 2024), the v3dv driver is expected to add further optional Vulkan extensions including `VK_EXT_descriptor_indexing` advanced use cases and improved `VK_KHR_pipeline_library` support for faster pipeline compilation on the Pi 5's V3D 7.1 hardware. [Source](https://www.linuxtoday.com/blog/mesa-24-3-open-source-graphics-stack-adds-vulkan-1-3-conformance-for-v3dv/)
+- **Mesa 25.x V3D/V3DV stability and performance improvements**: The Mesa 25.x series (ongoing through 2025–2026) continues to land bug fixes and performance tuning for V3D 4.2 (Pi 4) and V3D 7.1 (Pi 5), with compiler improvements targeting QPU instruction scheduling and register allocation quality. Note: needs verification for specific 25.x milestones.
+- **bcm2835-codec de-staging progress**: The BCM2835 V4L2 M2M codec driver remains in `drivers/staging/vc04_services/` despite years of use; continued cleanup work aims to meet mainline V4L2 driver quality requirements and move it out of staging. Note: needs verification for specific upstream patch series timelines.
+- **labwc and Wayfire on Pi OS**: Raspberry Pi OS adopted labwc as its default Wayland compositor in November 2024; near-term work focuses on improving labwc's wlr-output-management and idle-inhibit support to close remaining gaps versus the previous Wayfire default. [Source](https://www.raspberrypi.com/news/a-new-release-of-raspberry-pi-os)
+
+### Medium-term (1–3 years)
+
+- **VideoCore VII (V3D 7.1) feature completeness on Pi 5**: The Pi 5's V3D 7.1 block has hardware capabilities not yet fully exposed by the v3d/v3dv drivers, including wider QPU slices and enhanced memory bandwidth features. Medium-term work focuses on exposing these fully through Mesa's compiler and Vulkan driver, potentially enabling Vulkan 1.4 conformance as the specification matures. Note: needs verification against Igalia / Broadcom development plans.
+- **OpenGL ES 3.2 conformance for V3D**: The V3D Mesa Gallium driver currently targets GLES 3.1; GLES 3.2 adds geometry shaders, tessellation, and advanced blend modes. Achieving GLES 3.2 conformance requires new NIR lowering passes and QPU binary generation for the geometry shader stage, a non-trivial compiler effort underway. Note: needs verification.
+- **Unicam and ISP upstream in mainline Linux**: The libcamera Unicam CSI-2 receiver and hardware ISP drivers for Raspberry Pi went through upstream review cycles in 2024; medium-term, these are expected to land in mainline `drivers/media/` to remove the dependency on the Raspberry Pi kernel fork for camera support. [Source](https://lists.libcamera.org/pipermail/libcamera-devel/2024-March/040711.html)
+- **Vulkan Video decode via V4L2**: The Vulkan Video extensions (`VK_KHR_video_decode_h264`, `VK_KHR_video_decode_h265`) are being adopted across Mesa drivers; a future v3dv implementation could bridge Vulkan Video API calls to the underlying bcm2835-codec V4L2 M2M hardware, enabling zero-copy Vulkan-controlled hardware decode. Note: needs verification.
+- **Compute Module 5 industrial ecosystem maturation**: The CM5 with BCM2712 and PCIe 2.0 x4 enables attaching NVMe SSDs and custom accelerators; medium-term work includes improving PCIe endpoint DMA coherency with the V3D MMU and expanding the vendor ecosystem around CM5 carrier boards for machine vision and edge AI.
+
+### Long-term
+
+- **GPGPU / ML acceleration through V3D compute**: As edge AI deployments on Pi grow, there is interest in exposing V3D's QPU compute capability through higher-level frameworks such as TensorFlow Lite GPU delegate or ONNX Runtime via OpenCL or Vulkan Compute backends — building on Rusticl and V3DV Vulkan compute as foundations. Note: needs verification.
+- **Open firmware replacement for VideoCore VII**: The Pi 5's BCM2712 still relies on a proprietary VideoCore VII firmware blob for boot and peripheral initialisation. Long-term community ambitions involve replacing or substantially reducing this blob via open-source U-Boot and open ARM Trusted Firmware paths, following the precedent set by the Allwinner and Rockchip communities. Note: speculative; no official Raspberry Pi commitment.
+- **DisplayPort and USB4 display support**: Future Pi SoC generations beyond BCM2712 may integrate native DisplayPort output or Thunderbolt/USB4, requiring new DRM encoder drivers and potentially a new display controller beyond the HVS/PixelValve architecture. Note: speculative.
+- **Vulkan Ray Tracing extensions**: VideoCore VII has no dedicated ray tracing hardware; long-term, if future Broadcom V3D generations add BVH traversal acceleration, the v3dv driver would require new kernel-side submission paths and Mesa pipeline stages. This is speculative and depends on Broadcom SoC roadmap decisions not publicly announced.
+
+---
+
 ## 11. Integrations
 
 The Raspberry Pi graphics stack touches nearly every layer described in this book:

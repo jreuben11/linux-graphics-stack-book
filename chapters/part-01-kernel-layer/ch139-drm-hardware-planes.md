@@ -633,6 +633,33 @@ WESTON_DEBUG=drm-backend weston 2>&1 | grep plane
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **DRM Color Pipeline API rollout to compositor stacks**: The per-plane Color Pipeline API merged into Linux 6.19 (drm-misc-next, November 2025) and NVIDIA published a preview open-kernel-module implementation in April 2026. Mutter, KWin, and wlroots are actively integrating it to offload per-plane HDR tone-mapping to display hardware rather than GPU shaders. [Source](https://www.phoronix.com/news/NVIDIA-Preview-DRM-Color-Pipe) [Source](https://docs.kernel.org/gpu/rfc/color_pipeline.html)
+- **NVIDIA open driver plane support hardening**: The NVIDIA 610.43.02 driver (May 2026) introduced production HDR output support; near-term work focuses on stabilising per-plane colour pipeline negotiation for Wayland compositors that rely on the `drm_color_pipeline` property chain. [Source](https://ubuntuhandbook.org/index.php/2026/05/nvidia-610-43-02-released-with-hdr-output-support-for-linux/)
+- **Mutter/GNOME direct scanout reliability improvements**: Mutter 46+ now falls back from direct scanout correctly for scaled outputs; ongoing work targets more surface types (video subtitles, cursor overlays) as valid direct-scanout candidates without compositor GPU blend. Note: needs verification of exact milestone.
+- **`DRM_FORMAT_P010` and `BT.2020` overlay for HDR10 video**: AMD DCN and Intel display engine plane support for P010/P016 with full HDR metadata (`HDR_OUTPUT_METADATA` property) on overlay planes is being aligned across distros shipping kernel 6.19+. [Source](https://www.omgubuntu.co.uk/2026/02/linux-6-19-kernel-features-amd-performance)
+- **Splash DRM client and kmsprint tooling**: An RFC Splash DRM client for kernel-space boot splash (reducing dependency on fbdev) has been proposed; related tooling improvements to `modetest` and `kmsprint` are expected to expose plane colour-pipeline properties. [Source](https://www.phoronix.com/news/Linux-Splash-DRM-Client-RFC)
+
+### Medium-term (1–3 years)
+
+- **Plane-level colour pipeline for all major vendor drivers**: Intel i915/xe, AMD AMDGPU, and Qualcomm DRM drivers are expected to implement `drm_color_pipeline` callbacks for their display engines, enabling compositors to query per-plane tone-mapping and gamut-mapping hardware capabilities via a unified kernel API. [Source](https://canartuc.medium.com/drm-color-pipeline-api-and-hdr-on-linux-the-long-road-to-proper-display-color-management-539d56acaa33)
+- **Extended plane capability introspection**: Proposals exist in the DRM community to standardise plane capability reporting (rotation, scaling limits, format modifier fallback chains) through a richer property model, reducing the need for compositor-side trial-and-error atomic `TEST_ONLY` commits.  Note: needs verification of specific patchset status.
+- **Multi-plane video overlay for HDR + SDR simultaneous**: As displays gain dual-pipeline HDR/SDR support, driver work is expected to enable one overlay plane in `BT.2020/PQ` and a second in `sRGB` on the same CRTC — relevant for picture-in-picture and HUD overlays in gaming and VR contexts.
+- **DRM lease API enhancements for VR/XR**: Monado and other XR runtimes rely on DRM leases for direct KMS access (Path D). Upcoming work targets lease introspection APIs so runtimes can enumerate which planes are available under a lease without requiring KMS master. Note: needs verification.
+- **`VKMS` overlay plane improvements**: The virtual KMS (VKMS) driver is gaining overlay plane compositing support in CI pipelines; this enables automated testing of multi-plane compositor logic without real hardware. [Source](https://docs.kernel.org/gpu/vkms.html)
+
+### Long-term
+
+- **Hardware plane allocation as a compositor service**: Architectural discussions in the Wayland ecosystem consider exposing a plane-allocation protocol so privileged clients (video players, VR runtimes) can negotiate hardware planes directly through the compositor rather than requiring DRM lease or KMS master, improving security and multi-client coordination. Note: speculative — no formal protocol draft exists yet.
+- **AI-assisted plane assignment**: GPU vendors are exploring using on-die ML inference blocks to predict optimal plane assignments (direct scanout vs. GPU composite) based on content classification (video, UI, game), potentially offloading the compositor's atomic test loop. Note: speculative direction.
+- **Unified cross-vendor modifier registry**: Long-term goal of a machine-readable, formally versioned `drm_format_modifier` registry (beyond the current header-comment approach) would allow user-space libraries to negotiate modifiers without embedding per-vendor knowledge. This would simplify GBM/EGL modifier negotiation across the stack.
+- **Display engine compute offload**: Future display engines (post-DCN 4.x, post-Xe) may expose programmable blend stages accessible via the KMS plane API, blurring the boundary between hardware overlay and lightweight GPU compute — allowing tone curves and dithering to run on the display engine without a full GPU render pass.
+
+---
+
 ## Integrations
 
 - **Ch2 (KMS)** — DRM plane objects are first-class KMS citizens; atomic KMS is the foundation of the plane API described here

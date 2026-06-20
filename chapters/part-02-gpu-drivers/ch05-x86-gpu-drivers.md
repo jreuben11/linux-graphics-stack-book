@@ -862,6 +862,33 @@ The combination of KFD, HMM, and APU unified memory is what enables large-scale 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **amdgpu: GCN 1.x legacy driver consolidation.** Timur Kristóf (Valve) has announced plans to add DRM format modifier support for SI/CIK/VI/Polaris GPUs, enabling purely Vulkan-based compositors and Zink on older hardware, and to retire the non-DC legacy display path from amdgpu to reduce maintenance burden. [Source](https://www.phoronix.com/news/Timur-More-Old-AMDGPU-2026)
+- **Intel Xe: Nova Lake and Xe3 enablement.** Linux 7.1 already carries significant Xe3(P) code for Crescent Island and Nova Lake P, including VM_BIND DECOMPRESS, context-based TLB invalidations, and Xe3P_LPG L2 cache flush optimisations; remaining Nova Lake production support is expected to land in the 7.x cycle. [Source](https://www.phoronix.com/news/Intel-Xe-VM-BIND-DECOMPRESS)
+- **Intel Xe: Transparent Hugepages for device SVM.** THP support for `drm_pagemap` device pages is being enabled in Linux 7.1, yielding significant SVM bandwidth improvements for GPU compute workloads by reducing TLB pressure on large allocation regions. [Source](https://www.phoronix.com/news/Intel-Xe-THP-For-Device-SVM)
+- **Nova: Turing baseline completion.** Linux 7.1 Rust driver work focuses on hardening the GSP-RM command queue, large RPC support, Falcon firmware parsing, and DebugFS exposure of GSP-RM log buffers, bringing Nova to a functionally complete Turing display and compute baseline before tackling Ampere. [Source](https://www.phoronix.com/news/Rust-DRM-For-Linux-7.1)
+- **amdgpu RDNA 4 (GFX 12.1) consolidation.** DCN 4.2, SMU 13 updates, and MES 12 landed at launch in Linux 7.1; near-term work covers fine-tuning power management heuristics and validating GFXOFF behaviour on RX 9000 series under sustained compute loads. Note: needs verification for specific patchset status.
+
+### Medium-term (1–3 years)
+
+- **Nova superseding nouveau for Turing+.** The Nova architecture — nova-core (GSP-RM, firmware, memory) and nova-drm (DRM KMS/GEM) — is explicitly designed to replace nouveau on Turing and newer GPUs; full Ampere and Ada Lovelace support will follow once the Turing baseline is stable, requiring porting of the nvkm display engine into Rust DRM abstractions. [Source](https://rust-for-linux.com/nova-gpu-driver)
+- **amdgpu APU compute memory improvements: GCN legacy PM retirement.** Timur Kristóf's roadmap includes refactoring SI and KV power management to retire the legacy SMC/power management code paths, simplifying the amdgpu power state machine to a single SMU-based path. [Source](https://www.phoronix.com/news/Timur-More-Old-AMDGPU-2026)
+- **drm_gpu_scheduler: multi-queue scheduling improvements.** The GPU scheduler infrastructure (`sched_main.c`) is under active development to support per-engine priority inheritance, more granular preemption timeout controls, and improved heartbeat liveness probing for compute-heavy workloads sharing a ring with display scanout; RFC patchsets are circulating on dri-devel. Note: needs verification for specific RFC links.
+- **Xe: SR-IOV guest driver hardening.** VF FLR synchronisation improvements for Xe VFIO were queued in Linux 7.1; medium-term roadmap includes extending Xe's SR-IOV to support live migration of GPU contexts between VFs, which is a prerequisite for Kubernetes GPU checkpoint-restore. [Source](https://www.phoronix.com/news/Intel-DRM-Xe-Next-Linux-7.1)
+- **nvidia-open: Blackwell (SM 9.x) open kernel module coverage.** NVIDIA has committed to open kernel modules as the only supported path for Blackwell and later; medium-term work includes exposing Blackwell's NVLink 5 and confidential computing extensions via the open module's `dma_resv` and HMM interfaces. [Source](https://developer.nvidia.com/blog/nvidia-transitions-fully-towards-open-source-gpu-kernel-modules.md/)
+
+### Long-term
+
+- **GPU memory protection and per-process fault isolation.** Hardware GPU page faults (available on RDNA 3+ and Intel Xe) could enable true per-process GPU address space isolation so that a hung process does not force a full-GPU reset affecting other users; the architecture requires VM_BIND semantics (already present in Xe, under design for amdgpu) and kernel-side fault handler infrastructure. Note: needs verification for timeline.
+- **Unified drm_gpuvm across amdgpu, Xe, and Nova.** The `drm_gpuvm` kernel API introduced alongside Xe's VM_BIND model is intended to be adopted by amdgpu and eventually Nova as a shared GPU virtual memory manager, eliminating per-driver TTM VM reimplementations and enabling cross-driver sparse binding via a common kernel interface.
+- **amdgpu and KFD convergence: unified SVM path for ROCm and graphics.** The long-term goal in AMD's kernel team is to collapse the KFD SVM allocator and amdgpu's GEM+TTM paths into a single unified SVM region type that can serve both graphics BOs and HSA compute allocations, removing the current dual-stack complexity visible in `amdgpu_svm.c` and `kfd_svm.c`.
+- **Rust-first DRM driver abstractions.** The Rust DRM bindings being developed for Nova (`drm::gem::Object<T>`, `drm::sched::Job<T>`) are intended to become the upstream-preferred abstraction layer for new DRM drivers; longer-term, successor drivers for embedded and mobile GPUs may be written from scratch in Rust against these APIs rather than porting C drivers. [Source](https://www.phoronix.com/news/Rust-DRM-For-Linux-7.1)
+
+---
+
 ## Integrations
 
 **Chapter 1 (The DRM Subsystem)**: the `struct drm_driver` registration pattern in Section 1 is a direct realisation of the DRM driver contract introduced there. `DRIVER_GEM`, `DRIVER_MODESET`, `DRIVER_RENDER`, and `DRIVER_ATOMIC` flags correspond to specific DRM core subsystems described in Chapter 1. The `drm_dev_alloc()` → `drm_dev_register()` lifecycle maps exactly onto the driver model presented there.

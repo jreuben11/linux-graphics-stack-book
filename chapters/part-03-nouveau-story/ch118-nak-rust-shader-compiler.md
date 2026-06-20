@@ -785,6 +785,33 @@ Initial NAK targeting compute-only workloads (before NVK production readiness) s
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Vulkan ray tracing (`VK_KHR_ray_tracing_pipeline`)**: Active reverse-engineering work is ongoing on NVIDIA's RT core BVH traversal hardware and the shader invocation semantics during traversal. NAK will need new instruction encoders for RT-specific SASS opcodes once the ISA details are sufficiently documented. [Source](https://www.phoronix.com/news/NVK-Status-Update-2025)
+- **Delta Color Compression (DCC) for render targets**: DCC support was in draft state at XDC 2025 and requires coordinated changes in both the nvkm kernel driver (for DCC table management) and NVK/NAK (for correct image layout handling). When landed, DCC is expected to reduce memory bandwidth by up to 50% for render targets on supported hardware. [Source](https://www.phoronix.com/news/NAK-Merged-Mesa-24.0)
+- **Mesa 26.x NAK optimization work**: Mesa 26.0 (February 2026) brought further NAK compiler optimizations alongside a `VK_EXT_shader_uniform_buffer_unsized_array` extension landing in NVK. Ongoing Mesa 26.x point releases are expected to continue incremental NAK correctness and performance fixes. [Source](https://docs.mesa3d.org/relnotes/26.0.0.html)
+- **Kepler instruction scheduling improvements**: NAK received Kepler (sm30/sm35) instruction scheduling in Mesa 25.2, providing significant performance improvements on GTX 600/700 hardware in select compute-heavy workloads. Further Kepler scheduling refinements and correctness fixes are planned. [Source](https://www.phoronix.com/news/NVK-Status-Update-2025)
+- **Hopper (sm90) collective memory instructions**: Consumer Hopper hardware does not exist (data center only), but targeted fixes for Hopper-specific issues are anticipated as NVK developers gain access to test hardware. The `ACQBULK`, `ENDCOLLECTIVE`, and tensor memory instructions (`HGMMA`, `BGMMA`) remain NAK gaps for sm90. Note: needs verification for specific timeline.
+
+### Medium-term (1–3 years)
+
+- **Ray tracing pipeline completion**: Once BVH traversal shader semantics are sufficiently reverse-engineered, NAK will require new IR nodes and ISA encoders for RT pipeline-specific instructions, plus NVK integration for acceleration structure build and pipeline creation. This is the largest remaining gap between NVK and the proprietary driver for gaming workloads. [Source](https://www.phoronix.com/news/NVK-Status-Update-2025)
+- **Vulkan Video decode/encode**: NVK has `VK_KHR_video_decode_queue` and `VK_KHR_video_encode_queue` as active work items. These extensions require NAK support for video-specific shader stages and NVK integration with the NVDEC/NVENC hardware blocks, which are documented to varying degrees in the NVIDIA open-gpu-doc corpus. [Source](https://www.phoronix.com/news/NVK-Status-Update-2025)
+- **Expanded Tinygrad/free-software compute path**: The Tinygrad Mesa NIR backend (merged January 2026) makes NAK the critical path for free-software NVIDIA ML compute. Upstream work is expected to extend this to larger model workloads, requiring NAK improvements in cooperative matrix performance and better async compute scheduling on Hopper/Blackwell SM architectures. [Source](https://github.com/tinygrad/tinygrad/pull/12089)
+- **Further KRAID/NAK cross-pollination**: KRAID (ARM Mali Valhall Rust compiler, merged June 2026) explicitly modeled its IR on NAK. Shared Rust infrastructure — register allocator abstractions, NIR lowering helpers, Meson build patterns — is expected to be factored into a common crate to reduce duplication between the two Rust compiler backends. [Source](https://www.phoronix.com/news/Mesa-Arm-Mali-KRAID)
+- **Post-RA scheduling refinements for Blackwell (sm100+)**: The Blackwell ISA changes (no inline cbuf, additional UGPR sources, new fp16 variants) introduced in Mesa 25.2 are a new target for the post-RA instruction scheduler. Tuning dual-issue and latency-hiding for sm100+ arithmetic pipelines is expected to be a multi-release effort. [Source](https://www.phoronix.com/news/Vulkan-1.4-NVK-Blackwell)
+
+### Long-term
+
+- **Full Hopper tensor memory and collective operations**: As NVIDIA's open-gpu-doc coverage of Hopper expands, NAK is expected to gain encoders for `HGMMA`, `BGMMA`, and the collective fence instructions (`ACQBULK`, `ENDCOLLECTIVE`) that enable Hopper's shared-memory async copy model. This would close the last major NAK gap for sm90. Note: needs verification on NVIDIA open-gpu-doc roadmap.
+- **Rust compiler backend as Mesa standard pattern**: With NAK (NVK) and KRAID (Mali) both established, new Mesa driver backends for future GPU architectures may default to Rust rather than C++. The design patterns NAK established — SSA-throughout IR, `Src` enum operands, NIR as the sole input, `bindgen`-generated FFI boundary — are expected to become de facto norms for Mesa compiler backends. [Source](https://www.phoronix.com/news/Mesa-Arm-Mali-KRAID)
+- **NAK-based CUDA path without proprietary toolchain**: The Tinygrad precedent opens a longer-term possibility of a more general CUDA-compatible compute path using NAK as the backend, bypassing NVPTX and the CUDA SDK entirely. This would require significant NAK extension to cover PTX semantics not currently reachable from NIR. Note: needs verification as a formally stated project goal.
+- **Cooperative matrix and tensor core performance parity**: NAK's cooperative matrix support reached within 90% of the proprietary compiler on sm86/sm89 at XDC 2025. Long-term work aims to close the remaining gap through improved warp-level scheduling, better WGMMA layout optimization, and potential NVIDIA-provided documentation improvements. [Source](https://indico.freedesktop.org/event/10/contributions/401/attachments/264/352/2025-09-29%20-%20XDC%202025%20-%20Nouveau%20NVK%20Update.pdf)
+
+---
+
 ## Integrations
 
 **Chapter 7 (Reverse-Engineering NVIDIA Hardware)**: Section 7 of this chapter describes NAK's ISA encoders for the NVIDIA SASS ISA — an ISA that was historically undocumented and required reverse engineering for Kepler through Pascal, with Volta+ later supplemented by NVIDIA-provided latency tables. Chapter 7 covers the reverse-engineering methodology (Envytools, nv_isa_solver, decuda, microbenchmarking) that produced the ISA knowledge NAK's encoders are built on. Readers who want to understand the provenance of the instruction encoding tables in `sm50_encode.rs` and `sm70_encode.rs` — why certain bit positions are known, which fields remain uncertain for less-common instruction forms — should read Chapter 7 first.

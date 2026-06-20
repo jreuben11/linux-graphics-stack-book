@@ -724,6 +724,30 @@ drm_info | grep -i "mst"
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **`VK_GOOGLE_display_timing` direct display support (Mesa 26.2)**: Mesa 26.2 is landing `VK_GOOGLE_display_timing` support for `VK_KHR_display` (the direct-to-display path used by VR runtimes), built on top of the `VK_EXT_present_timing` foundation merged in Mesa 26.1. This allows VR runtimes to query per-frame display timestamps and tune their composition timing loops without relying on estimated VBLANK intervals. [Source](https://www.phoronix.com/news/VK-Google-Timing-KHR-Display)
+- **NVIDIA proprietary driver DRM lease latency fix**: A significant regression where NVIDIA's proprietary userland injects an extra compositing pass into the DRM lease path — making VR effectively unusable on NVIDIA hardware — remains unresolved as of driver series 570. Community pressure and NVIDIA developer forum threads are ongoing; a targeted driver fix is anticipated in a 2026 release cycle, though no public commitment exists. [Source](https://forums.developer.nvidia.com/t/substantial-drm-lease-presentation-latency-resulting-in-unusable-vr-hmd-experience/332386)
+- **Monado `xrt_future` and `XR_EXT_future` extension**: Monado 25.1.0 introduced the `xrt_future` internal system and initial support for the `XR_EXT_future` OpenXR extension, enabling asynchronous operation completion that improves compositor scheduling under the DRM lease path. Further integration with the direct-display compositor backend is expected through 2026. [Source](https://www.collabora.com/news-and-blog/news-and-events/monado-25-1-0-enabling-tomorrows-openxr-experiences.html)
+- **Broader `VK_EXT_present_timing` VR adoption**: Now that `VK_EXT_present_timing` is supported across RADV, ANV, NVK, Turnip, and PanVK in Mesa 26.1, VR runtimes including Monado are expected to update their Vulkan composition backends to use presentation deadline scheduling rather than the older `VK_GOOGLE_display_timing` heuristics. [Source](https://www.phoronix.com/forums/forum/linux-graphics-x-org-drivers/vulkan/1608746-vulkan-vk_ext_present_timing-merged-to-mesa-26-1-for-x11-wayland)
+
+### Medium-term (1–3 years)
+
+- **Monado as common XR foundation for vendor runtimes**: As of early 2026, Monado has been adopted as the upstream foundation by multiple commercial XR platforms including Google AndroidXR, NVIDIA CloudXR, Pico, and Qualcomm Snapdragon Spaces. This growing vendor adoption is expected to drive upstreaming of proprietary DRM lease improvements — particularly around multi-GPU heterogeneous display topologies and wireless streaming compositor paths — back into the open-source codebase. [Source](https://www.gamingonlinux.com/2026/03/monado-becomes-the-open-source-foundation-for-various-openxr-vr-vendors/)
+- **`wp_drm_lease_device_v1` promotion from staging**: The DRM lease Wayland protocol has been in `staging` status since its merge into wayland-protocols in 2021. As compositor adoption matures — KWin/Plasma and Mutter/GNOME both now implement it — a proposal to graduate the protocol to `stable` within wayland-protocols is a natural next step. Note: needs verification of specific timeline.
+- **OpenXR hand tracking and eye tracking integration with DRM lease path**: The `XR_EXT_hand_tracking_data_source` extension (landed in Monado 25.1.0) and forthcoming eye-tracking extensions require low-latency sensor data to reach the compositor's ATW (Asynchronous TimeWarp) pass. Tighter integration between these input paths and the DRM lease compositor — including priority-boosted Vulkan queue submission for sensor-driven reprojection — is an active design area in the Monado compositor subsystem. Note: needs verification.
+- **VRR (Variable Refresh Rate) on leased CRTCs**: Some VR HMDs support VRR modes that reduce judder when frames run long. Extending the kernel's `VRR_ENABLED` CRTC property path to cooperate correctly with the DRM lease hierarchy (so a lessee can negotiate VRR without requiring lessor involvement on each mode change) is a pending design discussion in the DRM mailing list community. Note: needs verification of specific patchset status.
+
+### Long-term
+
+- **SR-IOV and multi-tenant GPU VR**: As AMD and Intel extend SR-IOV (Single Root I/O Virtualisation) support in their open-source GPU drivers, a hybrid model may emerge where VR workloads run in a lightweight VM partition sharing the GPU with the host desktop via SR-IOV, eliminating the need for DRM lease entirely in favour of hardware-enforced resource partitioning. DRM lease would remain relevant for non-SR-IOV hardware indefinitely. Note: needs verification.
+- **Wireless VR compositor path standardisation**: The ALVR and WiVRn projects provide wireless streaming for standalone headsets (Meta Quest, Pico) over Wi-Fi 6/6E. A Wayland protocol extension for signalling streaming compositor intent — and coordinating with the DRM lease layer to select appropriate encoder clock domains — has been discussed in the vronlinux community but has no formal proposal yet. Note: needs verification.
+- **Kernel-side lease revocation improvements**: The current DRM lease revocation path (`DRM_IOCTL_MODE_REVOKE_LEASE`) is synchronous and does not provide the lessee with a grace period to complete in-flight page flips. A more cooperative revocation protocol — potentially using a new kernel uapi notification event on the lease fd — has been noted as a desirable improvement for clean HMD hot-unplug handling, but no patchset has been posted. Note: needs verification.
+
+---
+
 ## Integrations
 
 **Chapter 2 (KMS: The Display Pipeline)**: The DRM lease mechanism operates entirely within the KMS object model. The CRTC, connector, and plane IDs passed to `DRM_IOCTL_MODE_CREATE_LEASE` are the same KMS object IDs that Chapter 2 describes in Section 1. The lessee's atomic commits (`DRM_IOCTL_MODE_ATOMIC`) and page flip events (`DRM_EVENT_FLIP_COMPLETE`) use the same kernel paths described in Chapter 2, Sections 3 and 6. Understanding the KMS object lifecycle and the atomic commit transaction model is prerequisite knowledge for working with DRM lease.

@@ -732,6 +732,31 @@ lstbt -v
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **NVIDIA open kernel module Thunderbolt 4/5 and USB4 eGPU detection**: A community PR (#981) to NVIDIA's open-gpu-kernel-modules targets extending eGPU recognition beyond Thunderbolt 3 bridges, adding proper hotplug timeout handling and stability improvements for TB4/TB5/USB4 connections that currently hard-lock during CUDA operations. [Source](https://github.com/NVIDIA/open-gpu-kernel-modules/pull/981)
+- **AMDGPU hot device unplug hardening**: The long-running RFC patch series by Andrey Grodzovsky for graceful eGPU unplug handling in `amdgpu` (avoiding application crashes and GEM buffer object corruption on surprise removal) continues to be refined toward merge readiness. [Source](https://www.phoronix.com/news/AMDGPU-Hot-Unplug-V2)
+- **NVIDIA thunderbolt hotplug issue resolution**: Issue #842 in NVIDIA's open-gpu-kernel-modules tracks a recurring problem where reconnecting a Thunderbolt eGPU after sleep/suspend leaves the module in a "fallen off the bus" state requiring a reboot. Active community attention and upstream triage are ongoing. [Source](https://github.com/NVIDIA/open-gpu-kernel-modules/issues/842)
+- **Wider USB4 v2 / Thunderbolt 5 enablement**: The USB4 v2 host controller driver support (merged for basic operation) is expected to gain more complete PCIe bandwidth allocation and Bandwidth Boost mode control, reducing the performance gap between eGPU and internal PCIe 4.0 ×16 slots. Note: needs verification of exact kernel milestone.
+
+### Medium-term (1–3 years)
+
+- **DRM device lifecycle formalisation**: The `drm_dev_enter`/`drm_dev_exit` reference-counting infrastructure needs to be uniformly adopted across all GPU drivers (not just `amdgpu`) to allow clean surprise-removal without hung fds. A generalised DRM hot-unplug helper layer is under informal discussion on dri-devel. Note: needs verification of current RFC status.
+- **Wayland compositor eGPU hot-plug recovery**: The wlroots GPU hot-plug PR (#2423) merged basic device-arrival handling; graceful renderer migration on mid-session GPU removal (compositor surviving an eGPU unplug while a client is rendering to it) remains an open design problem. [Source](https://egpu.io/forums/thunderbolt-linux-setup/linux-egpus-and-wayland-in-2026/)
+- **IOMMU / PCIe ACS enforcement for Thunderbolt**: Tightening Access Control Services (ACS) policy for Thunderbolt PCIe subtrees to guarantee peer-to-peer DMA isolation on multi-GPU eGPU systems is being discussed as part of broader vIOMMU/PCIe security hardening work in the kernel. Note: needs verification.
+- **`thunderbolt-utils` lstbt bandwidth reporting**: Intel's `thunderbolt-utils` tooling is expected to gain structured bandwidth query support for USB4 v2 Bandwidth Boost mode, enabling userspace tools and compositors to make better scheduling decisions. [Source](https://www.phoronix.com/news/Intel-Linux-thunderbolt-utils)
+- **Bolt 2.0 / unified USB4 device management**: The `bolt` daemon may be extended or superseded by a unified USB4 device management layer that covers both Thunderbolt-legacy and native USB4 host controllers under a single D-Bus API. Note: needs verification.
+
+### Long-term
+
+- **Native USB4 PCIe tunneling without Thunderbolt firmware**: As USB4-native (non-Thunderbolt) host controllers proliferate on ARM and RISC-V SoCs, the kernel USB4 subsystem may need to manage PCIe tunnel allocation entirely in software without relying on Thunderbolt NHI firmware, enabling eGPU connectivity on a broader range of hardware. Note: speculative direction.
+- **eGPU as a first-class DRM render node with live migration**: Long-term, the graphics stack could treat eGPU attach/detach like a live VM migration: freezing client rendering, migrating GEM objects and Vulkan state to a new device, and resuming without application restart. This requires cooperation between Mesa, the kernel DRM core, and compositor protocols not yet designed. Note: speculative direction.
+- **Standardised USB4 eGPU bandwidth negotiation API**: A userspace API (likely via a new `ioctl` on the Thunderbolt/USB4 character device) for applications to query and reserve PCIe + DisplayPort bandwidth shares across the USB4 fabric would allow display servers and compute runtimes to avoid bandwidth starvation conflicts dynamically. Note: speculative direction.
+
+---
+
 ## 11. Integrations
 
 **Chapter 4 (GPU Memory Management)** — DMA-BUF PRIME file descriptors are the mechanism by which the eGPU's GEM buffer objects are shared with the iGPU for reverse PRIME blit. The DMA-BUF attachment, mapping, and synchronization mechanisms described in Chapter 4 underpin every eGPU-to-iGPU frame transfer.

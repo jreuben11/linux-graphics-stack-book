@@ -1108,6 +1108,32 @@ Slang is not yet part of the Mesa compilation toolchain — its SPIR-V output pa
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Intel Jay compiler reaching end-user readiness**: Jay, a new ground-up NIR-based shader compiler for Intel Xe GPU architectures, was merged into Mesa 26.1-devel in early 2026 as an experimental backend. Initial benchmarks already show dramatically fewer emitted instructions and roughly 3x faster compilation times compared to BRW; the next milestone is enabling it by default for Xe2 (Battlemage) hardware. [Source](https://www.phoronix.com/news/Intel-Jay-Mesa-Shader-Compiler)
+- **ARM Mali KRAID Rust compiler stabilisation**: KRAID, a Rust-written NIR-to-ISA backend for ARM Mali Valhall (v9+) GPUs, was merged into the Mesa 26.2 development tree in June 2026, making it the second Rust-based GPU compiler backend in Mesa after NAK. Near-term work focuses on correctness hardening and enabling it for Mali v9/v10 production use. [Source](https://www.techtimes.com/articles/317763/20260604/arm-mali-open-source-driver-gets-first-rust-shader-compiler-mesa-history.htm)
+- **DXC Shader Model 6.9 SPIR-V support**: DXC now carries production support for SM 6.9 long vectors (up to 1024-element), Work Graphs, and the expanded `WaveSizeRange` attribute; SPIR-V codegen for these features is receiving correctness and ABI fixes tracked in the DirectXShaderCompiler repository. [Source](https://github.com/microsoft/DirectXShaderCompiler/releases)
+- **Slang MaterialX integration and symposium**: MaterialX gained a dedicated Slang shader generator in January 2026, and the inaugural Khronos Shading Languages Symposium (co-located with Vulkanised 2026) will focus on Slang standardisation progress and emerging shading language topics. [Source](https://www.khronos.org/news/press/inaugural-shading-language-symposium-siggraph-2025)
+- **SPIRV-Tools maximal reconvergence and quad-control validation**: Khronos shipped the `SPV_KHR_maximal_reconvergence` and `SPV_KHR_quad_control` extensions; SPIRV-Tools validation and optimizer passes for these features are being upstreamed and the Mesa `spirv_to_nir()` path needs corresponding lowering. [Source](https://www.khronos.org/blog/khronos-releases-maximal-reconvergence-and-quad-control-extensions-for-vulkan-and-spir-v)
+
+### Medium-term (1–3 years)
+
+- **Slang becoming a Khronos standard**: The Khronos Group launched a formal Slang Initiative in November 2024 to move Slang from NVIDIA-originated open-source software into a multi-vendor standard with open governance, analogous to how SPIR-V and GLSL are governed. Formal specification drafts and Working Group activity are expected to mature over this period. [Source](https://www.khronos.org/news/press/khronos-group-launches-slang-initiative-hosting-open-source-compiler-contributed-by-nvidia)
+- **Jay replacing BRW as Intel's primary Mesa compiler**: Once correctness and performance parity with BRW are demonstrated on the full CTS suite, Intel engineers plan to enable Jay as the default ANV/iris compiler for Xe-class and newer GPUs, retiring the aging BRW register allocator and ISA lowering code. Note: needs verification against upstream Intel driver roadmap.
+- **`VK_EXT_shader_object` broad adoption and Fossilize integration**: As `VkShaderEXT` objects replace monolithic pipeline objects in more Mesa drivers, the Fossilize serialisation format is expected to be extended to capture `VkShaderEXT` state alongside the existing `VkPipeline` graph, enabling pre-compilation cache warming for engines that adopt shader objects. [Source](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_shader_object.html)
+- **Rust compiler backends converging on shared NIR infrastructure**: With NAK (NVK) and KRAID (Mali) both being Rust NIR backends and Jay (Intel) written in C but architecturally similar, there is ongoing discussion in the Mesa community about extracting shared Rust utilities (register allocator, liveness analysis, instruction scheduling) into a common crate that multiple backends can depend on. Note: needs verification against Mesa GitLab issue tracker.
+- **SPIR-V 1.7 / Vulkan 1.4 capability uplift in SPIRV-Tools**: Ongoing extension additions to the SPIR-V registry — including cooperative matrix shapes, typed buffer access extensions, and mesh/task shader expansions — will require corresponding SPIRV-Tools validation rules and optimizer canonicalisations as Vulkan 1.4 driver adoption widens. [Source](https://registry.khronos.org/SPIR-V/)
+
+### Long-term
+
+- **Differentiable shading as a first-class pipeline stage**: Slang's automatic differentiation (`[ForwardDifferentiable]`/`[BackwardDifferentiable]`) points toward a future where derivative computation is not a research artifact but a standard GPU pipeline feature, potentially requiring SPIR-V extensions and Mesa NIR intrinsics to represent gradient accumulation, atomic scatter operations, and dual-number types natively. Note: needs verification.
+- **Unified IR beyond NIR**: The proliferation of Rust NIR backends (NAK, KRAID) and new C backends (Jay) designed with the same philosophy may eventually motivate a successor to NIR — possibly a Rust-native typed SSA IR — that can be shared across all Mesa backends with stronger type safety guarantees and easier FFI from both C and Rust driver code. Note: speculative, based on architectural trends.
+- **Convergence of offline and online compilation**: The long-term trajectory of `VK_EXT_graphics_pipeline_library`, Fossilize pre-compilation, and Steam's shader pre-caching infrastructure points toward a model where essentially all shader compilation is offline, leaving only fast link steps at draw time; this would require the glslang/DXC/Slang ecosystem to emit richer reflection metadata to enable link-time specialisation without recompilation. Note: speculative direction.
+
+---
+
 ## Integrations
 
 This chapter connects to many others in the book:

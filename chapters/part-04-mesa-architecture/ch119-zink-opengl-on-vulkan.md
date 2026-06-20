@@ -642,6 +642,33 @@ Starting with Mesa 25.1, Zink unconditionally enables GL threading (`mesa_glthre
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Legacy render-pass code removal.** The three-command-buffer architecture described in Section 2 still carries compatibility shims for drivers that predate `VK_KHR_dynamic_rendering`. Work is in-flight to remove the legacy `VkRenderPass`/`VkFramebuffer` paths once all first-tier CI targets (RADV, ANV, NVK) report full dynamic-rendering support. [Source: Mesa Zink documentation](https://docs.mesa3d.org/drivers/zink.html)
+- **Wine PE-side Zink integration.** As of mid-2026, a future Wine release is embedding a Mesa 26.0.3 subset to build Zink as an OpenGL PE-side implementation over PE-side Vulkan. Initial tests (Steam, KOTOR) pass. Full upstream Wine integration is the expected near-term milestone. [Source: GamingOnLinux — Wine + Zink 2026](https://www.gamingonlinux.com/2026/04/a-future-wine-release-could-use-zink-to-run-opengl-via-vulkan/)
+- **`GL_EXT_mesh_shader` stabilisation.** Mesh shader support landed in Mesa 25.3-devel making Zink the first Mesa driver to advertise the OpenGL mesh shader extension; near-term work focuses on fixing hang-on-lower-end-hardware edge cases seen in Mesa 26.0.3 and completing the conformance test suite pass. [Source: Phoronix — Zink mesh shaders](https://www.phoronix.com/news/Zink-Does-Mesh-Shaders)
+- **SPECViewPerf workstation parity.** Zink improved from ~18 FPS to >60 FPS on SPECViewPerf relative to radeonsi's ~100 FPS baseline. Continued profiling by Mike Blumenkrantz (Valve) targets closing the remaining gap, particularly for geometry-heavy CAD workloads. [Source: Phoronix — Zink SPECViewPerf milestone](https://www.phoronix.com/news/Zink-Even-Faster-SPECViewPerf)
+- **Broader SoC / embedded driver coverage.** The PowerVR upstream Vulkan driver merged for Mesa 26.1 brings another Zink backend target; near-term effort goes into validating OpenGL ES 3.2 CTS on that driver and on the panthor (Mali CSF) Vulkan path. [Source: Imagination Technologies blog](https://blog.imaginationtech.com/powervr-the-path-to-open-source-zink-and-opengl-es-support/)
+
+### Medium-term (1–3 years)
+
+- **OpenGL Compatibility Profile completeness.** The compatibility profile (Section 8) remains the largest gap: display lists, `glBegin`/`glEnd`, client-side vertex arrays, and the accumulation buffer are either slow or partially emulated. Mesa GitLab tracks dozens of open issues; full CTS passage for the compatibility profile is a 1–2 year goal. Note: needs verification for specific issue numbers.
+- **`VK_EXT_descriptor_buffer` universalisation.** The `db` descriptor mode (Section 5) is already the default where available, but requires the driver to advertise `VK_EXT_descriptor_buffer`. Extending the fast path to drivers that only support `VK_KHR_descriptor_update_template` would improve performance on older hardware. Note: needs verification.
+- **Zink as the canonical Wine OpenGL backend.** If the Wine PE-side Zink experiment succeeds, the medium-term outcome is retiring Wine's wgl/OpenGL32 emulation layer in favour of a Zink+VKD3D-Proton stack, consolidating all GPU work through a single Vulkan command stream per process. [Source: GamingOnLinux — Wine + Zink 2026](https://www.gamingonlinux.com/2026/04/a-future-wine-release-could-use-zink-to-run-opengl-via-vulkan/)
+- **Kopper WSI EGL/surfaceless robustness.** Kopper (Section 9) still has edge cases when multiple windows share a `zink_screen` on Wayland. Medium-term work aims at full multi-window, multi-thread stability needed for browser-compositor use cases.
+- **GLSL 4.60 / SPIR-V 1.6 emission hardening.** The `nir_to_spirv()` path (Chapter 61) is extended as SPIR-V 1.6 features become relevant; closer alignment between what Zink emits and what `spirv-val` expects will reduce driver-side shader-compiler workarounds. Note: needs verification.
+
+### Long-term
+
+- **Vulkan 1.4 as the mandatory baseline.** As Vulkan 1.4 (released early 2025) becomes the default expectation across AMD, Intel, and NVIDIA Linux drivers, Zink can drop many per-feature extension checks and consolidate state management, potentially simplifying the `zink_screen::info` extension-flag matrix significantly. Note: needs verification.
+- **Zink as the sole OpenGL implementation in Mesa.** The long-term architectural direction implied by retiring Nouveau GL and leveraging Zink on PowerVR is that hardware-specific Gallium GL drivers (radeonsi-as-GL, iris-as-GL) may eventually hand off to Zink once the performance gap closes completely, leaving one OpenGL implementation in the tree. This is speculative and not a stated Mesa project goal.
+- **OpenXR profile via Zink.** As Monado (Chapter 67) and other OpenXR runtimes move to Vulkan-native rendering, the use of Zink to provide OpenGL-ES support for XR application compatibility could broaden, especially on ARM/mobile SoCs that ship only a Vulkan driver.
+- **Full OpenGL 4.6 on mobile Vulkan SoCs.** Turnip (Qualcomm Adreno) and the panthor Mali path are making rapid Vulkan progress; the long-term target is Zink advertising OpenGL 4.6 core on these drivers, enabling Linux desktop-class GL support on ARM-based portable hardware. Note: needs verification.
+
+---
+
 ## 11. Integrations
 
 **Chapter 13 (Gallium3D)** — Zink is a Gallium driver: it implements `pipe_screen`, `pipe_context`, and the resource/surface interfaces. All Gallium3D concepts (pipe caps, bind flags, resource creation, draw info) flow through Zink.

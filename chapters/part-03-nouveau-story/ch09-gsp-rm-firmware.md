@@ -387,6 +387,32 @@ The unanswered question for the decade ahead is whether the GSP-RM architecture 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Hopper and Blackwell GSP boot in Nouveau**: A 60-patch series adding GSP-RM firmware version 570.144 support for GH100, GB10x, and GB20x GPUs has been posted to the nouveau mailing list and is expected to merge in Linux 6.19 or 6.20. [Source](https://www.mail-archive.com/nouveau@lists.freedesktop.org/msg46407.html)
+- **Linux 6.18 default to GSP firmware on Turing+**: Starting with Linux 6.18, Nouveau will enable the GSP firmware path by default for all Turing and newer GPUs, removing the need for the `NvGspRm=1` module parameter for most users. [Source](https://itsfoss.gitlab.io/blog/linux-618-with-nouveau-driver-will-default-to-using-gsp-firmware/)
+- **Nova Hopper/Blackwell enablement**: The 12th iteration of Nova's Hopper and Blackwell bring-up patches is in active review; once merged, Nova will support these GPU families through the same R570 GSP firmware path used by Nouveau. [Source](https://www.phoronix.com/news/Hopper-Blackwell-Nova-Closer)
+- **R570 GSP firmware in linux-firmware.git**: NVIDIA has already upstreamed R570-derived GSP firmware blobs to the kernel's `linux-firmware` repository, enabling Hopper/Blackwell coverage for both Nouveau and Nova without a separate extraction step. [Source](https://www.phoronix.com/news/NVIDIA-GSP-RM-570-Firmware)
+- **Additional open-gpu-doc headers for Blackwell**: NVIDIA released approximately 12,000 lines of new C header files covering Blackwell GPU register layouts, accelerating open-driver implementation of Blackwell-specific features across both Nouveau/NVK and Nova. [Source](https://news.slashdot.org/story/25/07/21/207245/nvidia-makes-more-hopper-blackwell-header-files-open-source)
+
+### Medium-term (1–3 years)
+
+- **Nova reaching end-user functionality**: Nova's developer 400-item TODO list is actively being worked through; the medium-term goal is achieving Mesa NVK integration so that Rust-based Nova can replace Nouveau for Turing+ GPUs on mainstream distributions. Note: no firm timeline has been publicly committed. [Source](https://rust-for-linux.com/nova-gpu-driver)
+- **NVENC/NVDEC via GSP-RM RPC**: Hardware-accelerated video encode/decode on Nouveau and Nova depends on implementing the GSP-RM RPC calls for NVENC/NVDEC engine allocation. These engines are present in Blackwell and confirmed in open-gpu-doc headers; the RPC protocol stubs are visible in nvidia-open, but userspace VA-API/V4L2 integration work has not yet begun. Note: needs verification on current upstream state.
+- **Ray tracing object allocation via RPC**: Implementing `NV0060_ALLOC_PARAMETERS` and related BLS/TLAS management RPCs would enable hardware ray tracing through NVK on Turing+ hardware; this work is identified in `nvkm/subdev/gsp/rm/` as a gap but no patch series has been posted as of mid-2026. Note: needs verification.
+- **GSP-RM RPC protocol version tracking (r570 and beyond)**: Each major NVIDIA driver release increments the RPC protocol revision; Nouveau and Nova must track these changes. NVIDIA's continued upstream engagement, demonstrated by the r570 firmware contribution, suggests this will remain an ongoing engineering collaboration rather than a one-time lift. [Source](https://www.phoronix.com/news/NVIDIA-GSP-RM-570-Firmware)
+- **DisplayPort 2.0/2.1 bandwidth support**: Full DP 2.0 UHBR link training requires GSP-RM display engine RPC calls that are not yet exposed in Nouveau's KMS layer; this gap affects 8K/240 Hz display support on Ada Lovelace and Blackwell hardware. Note: needs verification on current upstream state.
+
+### Long-term
+
+- **Possible open-sourcing of GSP-RM firmware**: The fundamental barrier to a fully open NVIDIA stack is the hardware-enforced firmware signing requirement. Competitive and regulatory pressure (EU Cyber Resilience Act, AI infrastructure scrutiny) could eventually motivate NVIDIA to either open-source the GSP-RM firmware source or publish signing infrastructure for community builds — but no announcement or concrete signal for this exists as of 2026. Note: speculative.
+- **Unified Nova/Nouveau GSP client**: The architectural incompatibility between nvkm's object hierarchy and Nova's clean-sheet Rust abstractions may lead, over a 3–5 year horizon, to distributions defaulting to Nova for all Turing+ hardware and retiring Nouveau's GSP path, leaving Nouveau's role as the driver for pre-Turing (pre-GSP) hardware only. Note: speculative.
+- **CUDA-open or open compute userspace**: GSP-RM-based compute engine initialisation is now achievable through open kernel drivers; the remaining gap is the CUDA and NVCC proprietary userspace. Long-term open alternatives (rusticl on NVK, potential community PTX-to-SPIR-V translation) could reduce this dependency, but CUDA binary compatibility remains outside the scope of any current open-source effort. Note: speculative.
+
+---
+
 ## Integrations
 
 **Chapter 3 (Explicit Sync and Wayland)**: The nvidia-open module's GPLv2 licensing enables direct use of `drm_syncobj` and `drm_syncobj_timeline` kernel-internal APIs that were previously inaccessible to the closed module. The Wayland explicit synchronization protocol described in Chapter 3, Section 5 — specifically the `linux-drm-syncobj-v1` Wayland protocol and its `drm_syncobj` kernel counterpart — depends directly on this change. Without `drm_syncobj` support in the kernel driver, the compositor cannot guarantee correct explicit sync semantics for GPU-rendered buffers, resulting in the tearing and race conditions that plagued NVIDIA/Wayland setups before 2023.

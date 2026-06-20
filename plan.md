@@ -59,7 +59,6 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 38: PipeWire and the Video Session Layer](#chapter-38-pipewire-and-the-video-session-layer)
   - [Chapter 39: Qt and GTK GPU Rendering](#chapter-39-qt-and-gtk-gpu-rendering)
   - [Chapter 47: Font and Text Rendering Pipeline](#chapter-47-font-and-text-rendering-pipeline)
-  - [Chapter 48: ROCm and Machine Learning on Linux GPUs](#chapter-48-rocm-and-machine-learning-on-linux-gpus)
   - [Chapter 50: Vulkan Video Extensions](#chapter-50-vulkan-video-extensions)
   - [Chapter 111: Flatpak Graphics — GPU Access in Sandboxed Applications](#chapter-111-flatpak-graphics--gpu-access-in-sandboxed-applications)
   - [Chapter 114: OpenCV and GPU-Accelerated Computer Vision on Linux](#chapter-114-opencv-and-gpu-accelerated-computer-vision-on-linux)
@@ -133,6 +132,7 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 86: Vulkan on Android: Drivers, ANGLE, and Mobile GPU Performance](#chapter-86-vulkan-on-android-drivers-angle-and-mobile-gpu-performance)
   - [Chapter 87: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform](#chapter-87-android-ar-arcore-architecture-camera-hal-integration-and-the-android-xr-platform)
 - **Part XX — AI/ML Inference on Linux**
+  - [Chapter 48: ROCm and Machine Learning on Linux GPUs](#chapter-48-rocm-and-machine-learning-on-linux-gpus)
   - [Chapter 88: NPU and AI Accelerator Integration on Linux](#chapter-88-npu-and-ai-accelerator-integration-on-linux)
   - [Chapter 94: ComfyUI and ComfyScript: Node-Graph AI Image Generation on Linux GPUs](#chapter-94-comfyui-and-comfyscript-node-graph-ai-image-generation-on-linux-gpus)
   - [Chapter 108: ROCm and HIP — AMD's GPU Compute Stack](#chapter-108-rocm-and-hip--amds-gpu-compute-stack)
@@ -663,17 +663,6 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - Subpixel rendering on Wayland: why Wayland's composited pixel pipeline broke X11 LCD subpixel rendering (buffer compositing multiplies alpha, destroying channel offsets); the grayscale fallback; per-output subpixel orientation hints via `wl_output.subpixel`; FreeType flags per display
 - Variable fonts: OpenType variable font axes (wght, wdth, slnt, ital); FreeType 2.7+ variable instance support; HarfBuzz variation API; rendering performance implications
 - **Integrations**: FreeType/HarfBuzz are used by Qt (Ch39), GTK (Ch39), Skia (Ch37), Pango, and terminal emulators (Ch44); fontconfig is the font resolver for all of the above; Cairo's GL backend uses Mesa OpenGL (Ch19); Wayland's `wl_output.subpixel` hint (Ch20) controls FreeType rendering mode; the compositor's HiDPI scaling (Ch22) affects font metrics and atlas density
-
-### Chapter 48: ROCm and Machine Learning on Linux GPUs
-- ROCm stack overview: the KFD (Kernel Fusion Driver) at `/dev/kfd`; `amdkfd` kernel module and its relation to `amdgpu` DRM (Ch5); the HSA (Heterogeneous System Architecture) memory model; ROCm hardware support matrix (CDNA vs. RDNA generations)
-- HIP runtime: `hipMalloc` / `hipMemcpy` / `hipLaunchKernelGGL`; HIP as a CUDA-portable API; `hipcc` compiler driver; `hipify-perl` and `hipify-clang` for CUDA→HIP porting
-- ROCm compilation pipeline: HIP C++ → Clang/LLVM → AMDGPU LLVM backend → GCN/CDNA ISA; `amdgcn-amd-amdhsa` target triple; `--offload-arch=gfx942` for MI300X; comparison with Mesa's ACO (Ch15) — ACO is for graphics command streams, LLVM is for compute
-- ML frameworks on ROCm: PyTorch ROCm backend (`torch.version.hip`); TensorFlow ROCm via `tensorflow-rocm`; JAX via `jax[rocm]`; how `hipblaslt` replaces `cuBLAS` and `MIOpen` replaces `cuDNN`
-- Math library ecosystem: rocBLAS (BLAS), rocFFT, rocRAND, MIOpen (DNN primitives), hipSPARSE; kernel autotuning via `Tensile` (convolution/GEMM auto-tuner); `rocm-smi` for device and memory monitoring
-- AMD CDNA3 / MI300X for ML: 192 CUs, HBM3 memory, FP8 support, Unified Memory Architecture (CPU+GPU in one address space); implications for large-model inference; `amdgpu` XGMI (Infinity Fabric) for multi-GPU communication
-- Intel oneAPI on Linux: Level Zero (Ch25); `intel-compute-runtime` as the Level Zero ICD; SYCL/DPC++ compilation via `icpx`; `intel_gpu_top` for Arc workload monitoring; oneAPI vs. ROCm portability story
-- ROCm containers and cloud: Docker/Kubernetes with `--device /dev/kfd --device /dev/dri/renderDN`; ROCm Device Plugin for Kubernetes; AWS EC2 `g4ad` (RDNA2) vs. `p4d` (A100/CUDA); AMD Instinct MI300X cloud availability
-- **Integrations**: ROCm uses `amdgpu`'s KFD compute queue (Ch5), distinct from the DRM render node used by Mesa; HIP kernels compile via the same AMDGPU LLVM backend as `radeonsi` (Ch19) but at a different level; ML inference via Vulkan compute (Ch25) is an alternative for portable inference; GPU containers (Ch55) wrap this stack for cloud ML deployments; multi-GPU collective ops use p2p DMA (Ch49)
 
 ### Chapter 50: Vulkan Video Extensions
 - Why Vulkan Video: the fragmentation of VA-API, VDPAU, and codec-specific APIs; the argument for a unified GPU video API inside Vulkan; timeline of `VK_KHR_video_*` specification development (2021–2025)
@@ -1462,6 +1451,21 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 ---
 
 ## Part XX — AI/ML Inference on Linux
+
+> **Note:** Chapter 48 (ROCm and Machine Learning on Linux GPUs) was originally part of Part VII (Application APIs & Middleware) and has been moved here as it is more naturally an AI/ML infrastructure chapter than a general middleware chapter.
+
+### Chapter 48: ROCm and Machine Learning on Linux GPUs
+
+*(Moved from Part VII to Part XX — AI/ML infrastructure chapter)*
+- ROCm stack overview: the KFD (Kernel Fusion Driver) at `/dev/kfd`; `amdkfd` kernel module and its relation to `amdgpu` DRM (Ch5); the HSA (Heterogeneous System Architecture) memory model; ROCm hardware support matrix (CDNA vs. RDNA generations)
+- HIP runtime: `hipMalloc` / `hipMemcpy` / `hipLaunchKernelGGL`; HIP as a CUDA-portable API; `hipcc` compiler driver; `hipify-perl` and `hipify-clang` for CUDA→HIP porting
+- ROCm compilation pipeline: HIP C++ → Clang/LLVM → AMDGPU LLVM backend → GCN/CDNA ISA; `amdgcn-amd-amdhsa` target triple; `--offload-arch=gfx942` for MI300X; comparison with Mesa's ACO (Ch15) — ACO is for graphics command streams, LLVM is for compute
+- ML frameworks on ROCm: PyTorch ROCm backend (`torch.version.hip`); TensorFlow ROCm via `tensorflow-rocm`; JAX via `jax[rocm]`; how `hipblaslt` replaces `cuBLAS` and `MIOpen` replaces `cuDNN`
+- Math library ecosystem: rocBLAS (BLAS), rocFFT, rocRAND, MIOpen (DNN primitives), hipSPARSE; kernel autotuning via `Tensile` (convolution/GEMM auto-tuner); `rocm-smi` for device and memory monitoring
+- AMD CDNA3 / MI300X for ML: 192 CUs, HBM3 memory, FP8 support, Unified Memory Architecture (CPU+GPU in one address space); implications for large-model inference; `amdgpu` XGMI (Infinity Fabric) for multi-GPU communication
+- Intel oneAPI on Linux: Level Zero (Ch25); `intel-compute-runtime` as the Level Zero ICD; SYCL/DPC++ compilation via `icpx`; `intel_gpu_top` for Arc workload monitoring; oneAPI vs. ROCm portability story
+- ROCm containers and cloud: Docker/Kubernetes with `--device /dev/kfd --device /dev/dri/renderDN`; ROCm Device Plugin for Kubernetes; AWS EC2 `g4ad` (RDNA2) vs. `p4d` (A100/CUDA); AMD Instinct MI300X cloud availability
+- **Integrations**: ROCm uses `amdgpu`'s KFD compute queue (Ch5), distinct from the DRM render node used by Mesa; HIP kernels compile via the same AMDGPU LLVM backend as `radeonsi` (Ch19) but at a different level; ML inference via Vulkan compute (Ch25) is an alternative for portable inference; GPU containers (Ch55) wrap this stack for cloud ML deployments; multi-GPU collective ops use p2p DMA (Ch49); compare with CUDA/NVML-based inference (Ch88, Ch124)
 
 ### Chapter 124: Local LLM Inference on Linux GPUs
 

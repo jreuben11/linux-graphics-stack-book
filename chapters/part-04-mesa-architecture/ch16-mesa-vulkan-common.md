@@ -542,6 +542,30 @@ The physical device and instance levels have analogous dispatch table structures
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Vulkan 1.4 consolidation across all Mesa drivers**: Mesa 26.1 (released May 2026) completed Vulkan 1.4 conformance for ANV, RADV, NVK, and Turnip. The common layer's extension dispatch infrastructure now covers the full Vulkan 1.4 promoted set; the near-term focus is propagating 1.4 support to smaller drivers (PanVK, v3dv) through the same `vk_device_dispatch_table` mechanism. [Source](https://docs.mesa3d.org/relnotes/26.1.0.html)
+- **`VK_EXT_shader_object` (ESO) common runtime expansion**: NVK's landing of ESO and `VK_EXT_graphics_pipeline_library` introduced new common runtime entry points where drivers implement a non-Vulkan interface and the actual Vulkan entrypoints live in the runtime layer. This pattern is expected to be extended to additional drivers over the next release cycle. [Source](https://www.phoronix.com/news/NVK-ESO-GPL-Support)
+- **Mesa 26.2 ray-tracing and pipeline-library improvements**: The next feature release (expected mid-2026) targets continued work on pipeline libraries and link-time optimisation in the common cache, improving cache hit rates for applications that use `VK_EXT_graphics_pipeline_library` with link-time optimisation enabled. [Source](https://blog.desdelinux.net/en/Mesa-26.1-supports-Vulkan-1.4-and-accelerates-graphics-in-virtual-machines/)
+- **Ongoing RADV common-layer migration**: RADV retains parallel implementations of several entry points that the common layer now provides for newer drivers. Active Mesa development continues to migrate remaining RADV-specific render pass and descriptor set code into `src/vulkan/runtime/`, shrinking the driver-specific surface. Note: specific MR numbers need verification.
+
+### Medium-term (1–3 years)
+
+- **`VK_EXT_descriptor_heap` support in the common descriptor infrastructure**: Khronos published the `VK_EXT_descriptor_heap` extension alongside the Vulkan Roadmap 2026 milestone as a complete overhaul of the descriptor system, providing direct access to descriptor memory. Because Mesa's `vk_descriptor_set_layout` is the shared abstraction, adopting this extension will require significant changes to the common layer's descriptor infrastructure before per-driver adoption is feasible. [Source](https://www.khronos.org/blog/vulkan-introduces-roadmap-2026-and-new-descriptor-heap-extension)
+- **Vulkan Roadmap 2026 feature promotion**: The Roadmap 2026 milestone mandates variable-rate shading, host image copies, and extended synchronisation features beyond the Vulkan 1.4 baseline. Common implementations of newly promoted entry points (following the same pattern as `VK_KHR_synchronization2` promotion in Mesa) are expected to land in `src/vulkan/runtime/` as the milestone matures. [Source](https://www.phoronix.com/news/Vulkan-Roadmap-2026)
+- **Continued ESO-style architecture expansion**: The ESO pattern — where driver-implemented structs are not Vulkan entrypoints and the runtime owns the API surface — is under active discussion as a possible foundation for a broader "new Gallium for Vulkan" architecture. The `mesa-dev` thread from 2024 initiated this conversation; medium-term development may formalise the interface between runtime-owned dispatch and driver-owned shader/state objects. [Source](https://lists.freedesktop.org/archives/mesa-dev/2024-January/226101.html)
+- **Pipeline cache format versioning and cross-driver portability improvements**: Current pipeline cache UUIDs are per-driver and per-compiler-flags, preventing cache sharing between driver versions. Discussions on mesa-dev have raised the possibility of a more structured cache namespace that could survive minor driver updates; this would build on the existing `blake3`-based key infrastructure in `vk_pipeline_cache`. Note: no concrete MR exists yet — needs verification.
+
+### Long-term
+
+- **Common Vulkan runtime as a first-class shared library**: The long-term architectural goal discussed in Faith Ekstrand's 2024 mesa-dev thread is whether the Mesa Vulkan common layer should become a standalone shared library (analogous to Gallium for OpenGL drivers), rather than a set of statically compiled translation units included by each driver. This would allow common-layer bug fixes to be deployed without recompiling individual drivers. [Source](https://www.mail-archive.com/mesa-dev@lists.freedesktop.org/msg224619.html)
+- **Unified memory model and `VK_EXT_descriptor_heap` as the dominant path**: If `VK_EXT_descriptor_heap` is promoted to core Vulkan in a future version, the common layer's `vk_descriptor_set_layout` abstraction would need to support both the legacy set-based model and the new heap-based model in a unified type hierarchy, representing a significant rearchitecting of the shared descriptor infrastructure. [Source](https://vulkan.org/features/latest/features/proposals/VK_EXT_descriptor_heap.html)
+- **Rust components in the common runtime**: The broader Mesa project is evaluating Rust for safety-critical subsystems (the Nova kernel driver is one example). Over a longer horizon, portions of the Vulkan common runtime — particularly object lifetime tracking and hash table management — are candidates for Rust rewrite, building on the precedent set by Nova and by the Rust NIR bindings under development. Note: no formal proposal yet — speculative direction.
+
+---
+
 ## Integrations
 
 **Chapter 10 (NVK)**: NVK is the canonical example of a driver built entirely on the common layer. It implements dynamic rendering natively and uses the common render pass lowering (`src/vulkan/runtime/vk_render_pass.c`) for all `VkRenderPass` entry points. It registers all compiled shader binaries with the common `vk_pipeline_cache` using `vk_pipeline_cache_add_object()`. Its `nvk_device` struct embeds `vk_device` as its first member, and its shader object struct embeds `vk_pipeline_cache_object`. NVK's development philosophy — to treat any copy-paste from ANV as an indication that code should be factored into the common layer — has been a primary driver of the common layer's growth since Mesa 22.

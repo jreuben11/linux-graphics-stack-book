@@ -181,6 +181,40 @@ is a significant architectural divergence from AMD RADV, which must program hard
 tables via userspace ring buffer writes. Chapter 10b examines this in detail within NVK's
 descriptor set implementation.
 
+### What Is Now Open — and What Remains Proprietary
+
+The 2022 nvidia-open release and the subsequent NVK/Nova/NAK work represent a genuine and significant shift. But the boundary between open and closed is precise, and understanding it exactly matters for anyone building production systems on NVIDIA hardware.
+
+**What is now open (source-available and community-maintainable):**
+
+- **nvidia-open host code**: The `nvidia-open` kernel module published at [github.com/NVIDIA/open-gpu-kernel-modules](https://github.com/NVIDIA/open-gpu-kernel-modules) is the host-side RPC client — the code that runs on the CPU, constructs GSP-RM RPC calls, and manages the DMA rings. It is licensed under MIT/GPL dual licence. This is what lets Nouveau (and Nova) communicate with GSP-RM without reverse engineering the RPC protocol.
+- **NVK**: Mesa's Vulkan driver (`src/nouveau/vulkan/`) is fully open source, written from scratch by Faith Ekstrand and contributors. It holds Vulkan 1.4 conformance on Mesa 25.x for Turing (TU) through Ada (AD) GPUs, with Hopper (GH) and Blackwell (GB) support under development.
+- **NAK (Nvidia Awesome Kompiler)**: Mesa's Rust shader compiler backend (`src/nouveau/compiler/`) that compiles NIR to NVIDIA SASS ISA for Maxwell through Hopper. Fully open, merged in Mesa 24.0.
+- **Nova**: The Rust reimplementation of the kernel driver (`drivers/gpu/drm/nova/`), merged in Linux 6.15. `nova-core` manages GSP-RM communication; `nova-drm` provides the DRM interface. Both are GPL and actively maintained in-tree.
+- **Envytools / rnndb**: The register database, microcontroller disassemblers, and ISA documentation accumulated over 17 years of reverse engineering. These remain the foundation of the SASS ISA knowledge that NAK encodes.
+
+**What remains proprietary (binary-only, not open source):**
+
+- **GSP-RM firmware binary** (`gsp_tu10x.bin`, `gsp_ga10x.bin`, `gsp_ad10x.bin`, etc.): This is a signed ARM Falcon / RISC-V binary blob loaded via `request_firmware()`. The firmware runs the entire GPU resource manager on the GPU's system processor — handling memory management, power transitions, and fault recovery. It is distributed via the linux-firmware repository under a restricted licence that permits redistribution but not modification. **Without this blob, no NVK, Nova, or nvidia-open frame reaches the screen on Turing and later hardware.** The firmware is signed by NVIDIA and cannot be replaced or modified by the community.
+- **VBIOS**: The Video BIOS ROM stored on GPU flash is still a closed binary. On GSP-RM-based GPUs, the VBIOS is loaded and consumed by GSP-RM directly; the host driver does not need to parse it directly, but the content is not documented.
+- **Display PHY microcode**: The firmware for NVIDIA's display engine PLL/PHY units (the `hdmi_gsp_*.bin` blobs for HDMI 2.1 on Ampere+ hardware) is a separate signed binary. Without it, HDMI output at 4K/120Hz is not available. This is distinct from the main GSP-RM blob.
+- **Hardware register and ISA documentation for unreleased generations**: NVIDIA still does not publish register-level documentation or hardware architecture manuals. The Envytools rnndb database covers generations through Ampere (GA10x); Hopper (GH100) and Blackwell (GB200) ISA details are known only through the GSP-RM open-source code's embedded #defines and through NAK's reverse-engineered instruction encoding tables.
+
+**Practical consequence**: The open NVIDIA stack on Linux requires exactly one proprietary artefact — the GSP-RM firmware blob — for all display and GPU functionality on Turing (2018) and later hardware. Pre-Turing GPUs (Maxwell, Pascal) can in principle function without GSP-RM, but face the historical reclocking limitations documented in Chapter 11.
+
+### RT-Cores and Hardware Ray Tracing on NVIDIA
+
+NVIDIA introduced dedicated ray tracing hardware units — **RT-Cores** — with the Turing architecture (TU102, 2018). RT-Cores are fixed-function BVH traversal accelerators integrated into each SM. When a shader executes a ray tracing instruction, the SM dispatches the ray to the RT-Core hardware, which walks the two-level BVH (`TLAS` → `BLAS` tree) and returns the nearest intersection without consuming shader execution cycles on the main ALU units. This is the hardware that underpins the Vulkan `VK_KHR_ray_tracing_pipeline` and `VK_KHR_acceleration_structure` extensions.
+
+**Status on the open stack:**
+
+- **NVK exposes `VK_KHR_ray_tracing_pipeline` on Turing+ GPUs** (confirmed in Mesa 24.2+). The extension requires hardware support for BVH traversal, shader binding tables, and callable shaders — all of which are routed through GSP-RM when NVK submits work.
+- **`VK_KHR_acceleration_structure`** (BVH build/query) is also supported. NVK compiles the BVH build shaders through NAK and submits the BVH construction as a compute dispatch; the actual traversal hardware is invoked at ray dispatch time.
+- **The RT-Core microarchitecture is not publicly documented.** NVIDIA has not published the internal register interface for the RT-Core units, the BVH node format constraints beyond what the Vulkan spec requires, or the performance characteristics of the traversal hardware. Functional access is available through the standard Vulkan ray tracing API — which NVK implements correctly — but low-level tuning (e.g., optimal BVH node size, hardware traversal batch depth) relies on inference from performance measurements rather than architectural documentation.
+- **Ampere (GA10x, 2020) and Ada Lovelace (AD10x, 2022)** added 2nd and 3rd generation RT-Cores with improved throughput. All three generations are accessible through the same Vulkan API surface; differences are observable only through performance, not through API capability flags.
+
+Chapter 10b examines the NVK acceleration structure implementation; Chapter 135 covers Vulkan ray tracing across all open and proprietary Linux drivers including RADV (AMD RDNA2+) and RADV+ACO vs NVK+NAK compile-time differences.
+
 ---
 
 ## Chapters in This Part
