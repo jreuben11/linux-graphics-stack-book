@@ -551,7 +551,7 @@ vkUpdateDescriptorSetWithTemplate(device, descriptor_set, tmpl, &data);
 
 The `offset` and `stride` fields in each `VkDescriptorUpdateTemplateEntry` index into the raw `pData` pointer using byte arithmetic — no Vulkan struct headers needed. The driver (RADV, ANV) compiles the template entries at `vkCreateDescriptorUpdateTemplate` time into a compact internal representation, reducing per-update dispatch overhead.
 
-**DXVK and RADV use**: DXVK uses `vkUpdateDescriptorSetWithTemplate` for all its per-draw descriptor updates since it tracks D3D11 state changes as tightly-packed arrays, matching the template model exactly. RADV implements the template path in `radv_descriptor_set.c` using `vk_descriptor_update_template` from Mesa's common Vulkan layer (`src/vulkan/util/vk_descriptor_update_template.c`).
+**DXVK and RADV use**: DXVK uses `vkUpdateDescriptorSetWithTemplate` for all its per-draw descriptor updates since it tracks D3D11 state changes as tightly-packed arrays, matching the template model exactly. RADV implements the template path in `radv_descriptor_set.c` using `vk_descriptor_update_template` from Mesa's common Vulkan runtime layer (`src/vulkan/runtime/vk_descriptor_update_template.c`).
 
 ---
 
@@ -634,7 +634,7 @@ vkUpdateDescriptorSets(device, 1, &write, 0, NULL);
 
 **DXVK and VKD3D-Proton**: Both translation layers use `VK_EXT_mutable_descriptor_type` to emulate D3D12's descriptor heap model. VKD3D-Proton's bindless heap implementation allocates one large mutable descriptor pool per heap type and maps D3D12 `SetGraphicsRootDescriptorTable` calls to offset arithmetic within it, eliminating the per-type pool management that would otherwise be required. [Source](https://github.com/doitsujin/dxvk)
 
-RADV has supported this extension since Mesa 22.2 and sizes mutable slots at 32 bytes (the AMD image descriptor size, which is the largest concrete type on GCN/RDNA hardware).
+RADV has supported this extension since Mesa 22.2 and sizes mutable slots at 32 bytes (the AMD image descriptor T# size, which is the largest concrete type on GCN/RDNA hardware).
 
 ---
 
@@ -714,6 +714,10 @@ layout(set = 0, binding = 0) uniform MaterialBlock {
     uint  tex_id;
 } material;
 
+/* textures[] and uv declared elsewhere (set 1, bindless array + vertex interp): */
+layout(set = 1, binding = 0) uniform sampler2D textures[];
+layout(location = 0) in vec2 uv;
+
 void main() {
     vec4 col = texture(textures[nonuniformEXT(material.tex_id)], uv);
     /* apply PBR with material.roughness, material.metallic ... */
@@ -728,7 +732,7 @@ On RADV, inline uniform block data is stored directly in the pool's BO at the se
 
 ### The Hazard
 
-A descriptor set updated on the CPU while the GPU is still reading it in a previous frame's command buffer causes undefined behaviour. Standard Vulkan synchronisation (fences, semaphores) only signals when a frame completes; it does not prevent the next frame from overwriting descriptors before the GPU is done reading them. The correct pattern is to maintain N independent copies of mutable descriptor state — one per frame-in-flight slot. [Source](https://github.com/KhronosGroup/Vulkan-Samples/tree/main/samples/performance/descriptor_management)
+A descriptor set updated on the CPU while the GPU is still reading it in a previous frame's command buffer causes undefined behaviour. Standard Vulkan synchronisation (fences, semaphores) only signals when a frame completes; it does not prevent the next frame from overwriting descriptors before the GPU is done reading them. The correct pattern is to maintain N independent copies of mutable descriptor state — one per frame-in-flight slot. [Source: Vulkan-Samples descriptor_management](https://github.com/KhronosGroup/Vulkan-Samples/tree/main/samples/performance/descriptor_management)
 
 ### N-Sets-Per-N-Frames Pattern
 
@@ -908,7 +912,7 @@ static void nvk_descriptor_writer_finish(struct nvk_descriptor_writer *w) {
 
 ### Contrast with RADV
 
-RADV also uses a GPU-visible BO per pool, but its descriptor infrastructure predates `VK_EXT_descriptor_buffer` and uses Mesa's common Vulkan `vk_object_base` layer without an equivalent to NVK's nvkmd abstraction. RADV writes descriptors directly into the mapped BO pointer using AMD GCN hardware resource descriptor format (32-byte image T# / 8-byte buffer T#), while NVK writes NVIDIA-format texture/sampler headers (indexed through a global bindless descriptor table on Turing and later GPUs).
+RADV also uses a GPU-visible BO per pool, but its descriptor infrastructure predates `VK_EXT_descriptor_buffer` and uses Mesa's common Vulkan `vk_object_base` layer without an equivalent to NVK's nvkmd abstraction. RADV writes descriptors directly into the mapped BO pointer using AMD GCN hardware resource descriptor format (32-byte image T# / 16-byte buffer V# — GCN buffer resource descriptors are 4 dwords), while NVK writes NVIDIA-format texture/sampler headers (indexed through a global bindless descriptor table on Turing and later GPUs).
 
 ---
 
@@ -968,6 +972,12 @@ layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
 
 /* Output image for ray tracing result: */
 layout(set = 0, binding = 1, rgba8) uniform image2D result_image;
+
+/* Camera matrices UBO (set 0, binding 2): */
+layout(set = 0, binding = 2) uniform CameraUBO {
+    mat4 inv_view;
+    mat4 inv_proj;
+} camera;
 
 layout(location = 0) rayPayloadEXT vec3 hit_value;
 

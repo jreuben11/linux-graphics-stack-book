@@ -597,6 +597,8 @@ The `#[kernel]` procedural macro wraps the Rust function into a CUDA kernel entr
 
 NVIDIA's rationale follows the broader industry pattern: Rust eliminates buffer overruns and data races in device code, and the ownership model can statically encode GPU memory hazards (concurrent read/write aliasing) that CUDA C++ can only catch at run time via the sanitizer. cuTile-rs targets research teams and framework authors (e.g., cuDNN successor kernels) rather than end-application developers. [Source](https://github.com/nvlabs/cutile-rs)
 
+The tile abstraction also decouples algorithmic intent from microarchitecture. A GEMM that today targets Hopper's `wgmma` instructions can retarget Blackwell's next-generation matrix engine by recompiling; the kernel source stays unchanged. This composability is exactly what custom training loop authors need when they want to experiment with quantised data types (fp8, int4) or non-standard accumulation orders without rewriting schedule logic. The companion `TileGym` benchmark suite tests these kernels against cuBLAS baselines, measuring how close the safe Rust path gets to hand-tuned assembly across GPU generations. [Source](https://nvlabs.github.io/cutile-rs/main/)
+
 ---
 
 ## cudarc: Rust CUDA Driver API
@@ -637,41 +639,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Launching a PTX Kernel
 
-cudarc can load PTX assembly strings compiled offline (e.g., via `nvcc -ptx` or NVRTC) and invoke them with the builder-pattern launcher:
+cudarc loads PTX assembly produced offline (by `nvcc -ptx`, NVRTC, or the cuTile-rs compiler pipeline) via `CudaContext::load_module`, then retrieves individual kernel handles with `CudaModule::load_function`:
 
 ```rust
-use cudarc::driver::safe::{CudaContext, LaunchConfig};
+use cudarc::driver::safe::{CudaContext, CudaModule, LaunchConfig};
+use cudarc::driver::Ptx;
 
 fn launch_ptx_kernel() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = CudaContext::new(0)?;
     let stream = ctx.default_stream();
 
-    // Load PTX source — can be produced by cuTile-rs or nvcc.
-    let ptx = cudarc::nvrtc::compile_ptx(include_str!("my_kernel.cu"))?;
-    ctx.load_ptx(ptx, "my_module", &["add_kernel"])?;
+    // Load PTX from a file produced by nvcc or cuTile-rs.
+    // Ptx::from_file reads the .ptx text; Ptx::from_src accepts a &str.
+    let ptx    = Ptx::from_file("./add_kernel.ptx");
+    let module = ctx.load_module(ptx)?;              // Arc<CudaModule>
 
-    let add_fn = ctx.get_func("my_module", "add_kernel").unwrap();
+    // Retrieve the specific kernel entry point by name.
+    let add_fn = module.load_function("add_kernel")?;
 
     let mut out = stream.alloc_zeros::<f32>(1024)?;
-    let inp  = stream.memcpy_stoh(&vec![1.0f32; 1024])?;
+    let inp     = stream.memcpy_stoh(&vec![1.0f32; 1024])?;
 
-    // Type-checked builder: args must match the PTX parameter list.
+    // Type-checked builder: args must match the PTX parameter list order.
     let mut builder = stream.launch_builder(&add_fn);
     builder.arg(&mut out);
     builder.arg(&inp);
     unsafe { builder.launch(LaunchConfig::for_num_elems(1024)) }?;
 
     let result = stream.memcpy_dtoh(&out)?;
-    println!("result[0] = {}", result[0]);
+    println!("result[0] = {}", result[0]);   // 1.0
     Ok(())
 }
 ```
 
-`LaunchConfig::for_num_elems(n)` selects a sensible block/grid split for `n` elements. For hand-tuned configurations supply `LaunchConfig { block_dim: (256,1,1), grid_dim: (n/256, 1, 1), shared_mem_bytes: 0 }`. [Source](https://github.com/coreylowman/cudarc)
+`LaunchConfig::for_num_elems(n)` selects a sensible block/grid split automatically. For hand-tuned configurations supply `LaunchConfig { block_dim: (256,1,1), grid_dim: (n/256, 1, 1), shared_mem_bytes: 0 }`. The PTX can also be compiled at run time via the bundled `cudarc::nvrtc::compile_ptx` wrapper, which invokes NVRTC in-process from a CUDA C source string — useful for JIT compilation of generated kernels. [Source](https://docs.rs/cudarc/latest/cudarc/driver/safe/struct.CudaContext.html)
 
 ### Pairing with cuTile-rs
 
 The typical workflow combines both crates: cuTile-rs compiles Rust kernel code to PTX via the CUDA Tile IR backend, and cudarc loads that PTX and manages host-side data movement. cuTile-rs owns the *what* (tile computation) and cudarc owns the *how* (driver interaction, memory, streams).
+
+From a build-system perspective, a project typically has three crates: a `kernel` crate (Rust code annotated with `#[kernel]`, compiled to PTX by the cuTile-rs procedural macro), a `host` crate (the application, which depends on `cudarc` and embeds the compiled PTX via `include_bytes!`), and a `build.rs` that invokes the cuTile-rs toolchain. This mirrors the rust-gpu / spirv-builder split exactly, but targeting CUDA rather than Vulkan. The practical benefit over raw CUDA C++ is that kernel bugs involving out-of-bounds tile accesses or race conditions on shared state are caught by rustc's borrow checker rather than discovered at run time under CUDA-MEMCHECK. For ML framework authors building custom attention kernels or quantised GEMMs, this shifts a class of subtle correctness bugs from production inference to the compile step. [Source](https://github.com/coreylowman/cudarc)
 
 ---
 
@@ -768,6 +775,8 @@ let pipeline = GraphicsPipeline::new(
 ### Type-System Safety Guarantees
 
 vulkano's key invariant is render-pass compatibility: `Subpass::from(render_pass, 0)` binds the pipeline type to a concrete render-pass object, and the Rust type system prevents using the pipeline with an incompatible render pass at no runtime overhead. `Subbuffer<T>` wraps a typed slice view over a `Buffer`, enabling the allocator to reject mismatched bindings at compile time. [Source](https://docs.rs/vulkano)
+
+**Historical note — `AutoCommandBufferBuilder`.** In vulkano versions through 0.34, command recording used an `AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>` that enforced render-pass state via Rust generics: the type parameter transitioned between `OutsideRenderPass` and `InsideRenderPass` states so that calling `draw()` outside a render pass was a compile error. The current vulkano master replaced this with a *task graph* abstraction (`RecordingCommandBuffer`) where synchronisation is derived from declared resource accesses rather than from type-state transitions. The two designs make the same guarantee — you cannot submit a mis-ordered command sequence — but via different mechanisms: the old approach is more explicit about render-pass bracketing, while the task graph approach scales better to complex multi-pass frames with automatic dependency tracking. If you encounter vulkano tutorials referencing `AutoCommandBufferBuilder::primary(...)`, they target the 0.34 era; the current pipeline-creation pattern shown above is from master as of 2025–2026. [Source](https://github.com/vulkano-rs/vulkano/tree/master/examples)
 
 ---
 
@@ -911,7 +920,7 @@ fn main() -> Result<(), gpu::PlatformError> {
 | Target use case | Production apps, Firefox | Research, prototypes, tools |
 | `unsafe` surface | Minimal (safe API) | `Context::init` is `unsafe` |
 
-blade's single-pass approach means there is no render graph scheduler: the developer explicitly records passes in order. This is simpler for small renderers but becomes burdensome for complex multi-pass pipelines. The codebase is also small enough to read in a day, making it an excellent learning resource for GPU API internals.
+blade's single-pass approach means there is no render graph scheduler: the developer explicitly records passes in order. This is simpler for small renderers but becomes burdensome for complex multi-pass pipelines. The codebase is also small enough to read in a day, making it an excellent learning resource for GPU API internals. kvark originally developed blade as a testbed for ideas that later informed wgpu-hal's design — the `Context` API mirrors `wgpu-hal`'s `Device` trait philosophy while exposing the Vulkan / Metal / GLES selection as a compile-time cfg rather than a runtime dispatch chain. [Source](https://github.com/kvark/blade)
 
 ---
 
@@ -992,7 +1001,9 @@ async fn render_scene(device: &wgpu::Device, queue: &wgpu::Queue)
 
 ### Role in the Xilem / Linux Desktop Ecosystem
 
-Vello is the intended rendering backend for Xilem, Linebender's reactive UI framework, replacing software Cairo on Linux/Wayland. Applications use `winit` for windowing and event dispatch, `wgpu` targeting Vulkan (via `wgpu-hal/vulkan`) for the GPU layer, and vello for all 2-D drawing. The compute-based approach avoids the GPU stall points of traditional rasterisation (no depth buffer, no triangle setup) and achieves better GPU utilisation for vector-heavy UIs than tile-based rasterisers. [Source](https://github.com/linebender/vello)
+Vello is the intended rendering backend for Xilem, Linebender's reactive UI framework, replacing software Cairo on Linux/Wayland. Applications use `winit` for windowing and event dispatch, `wgpu` targeting Vulkan (via `wgpu-hal/vulkan`) for the GPU layer, and vello for all 2-D drawing. The compute-based approach avoids the GPU stall points of traditional rasterisation (no depth buffer, no triangle setup) and achieves better GPU utilisation for vector-heavy UIs than tile-based rasterisers.
+
+One important property of vello's `Scene` model is that it is entirely CPU-side and allocation-free once the internal buffer has been warmed up. A new frame begins with `scene.reset()`, which clears the draw-call list without releasing memory; all geometry is then re-encoded into the same backing storage. This means the GPU compute pipeline always ingests a fresh scene description with zero cross-frame state, which simplifies correctness reasoning dramatically compared to an incremental scene graph where partial redraws and dirty-region tracking can cause subtle rendering artefacts. The tradeoff is that every visible element must be re-submitted every frame — which is acceptable for UI (where most of the scene changes every frame due to animations or scroll) but would be wasteful for a static document renderer. For those use cases vello can cache pre-encoded `Fragment` objects that represent sub-scenes, deferring re-encoding to only the changed portions. [Source](https://github.com/linebender/vello)
 
 ---
 
@@ -1067,6 +1078,8 @@ fn main() {
 }
 ```
 
+This backend-agnostic design means a model developed and tested on `burn-ndarray` (pure CPU, easy to debug) can be deployed on `burn-wgpu` for Vulkan GPUs — including AMD (via RADV) and Intel (via ANV) — or `burn-cuda` for NVIDIA, with no changes to model code. The CubeCL compiler handles kernel fusion and tiling differently for each target: for WGSL it emits `@compute` shader modules consumed by wgpu, while for CUDA it emits PTX loaded via cudarc's `load_module` / `load_function` path. This positions burn as the Rust equivalent of PyTorch's device-agnostic tensor abstraction, but with Rust's ownership guarantees preventing the reference-counting pitfalls that cause mysterious memory leaks in Python ML frameworks. [Source](https://github.com/tracel-ai/burn)
+
 ---
 
 ## encase and bytemuck: GPU Buffer Layout
@@ -1135,6 +1148,8 @@ fn upload_vertices(queue: &wgpu::Queue, buf: &wgpu::Buffer, verts: &[Vertex]) {
 ```
 
 **Rule of thumb**: use `encase` for uniform/storage buffers containing types with non-trivial WGSL alignment (structs with `vec3`, `mat4`, mixed scalar+vector); use `bytemuck` for vertex buffers and index buffers where the Rust layout is already flat.
+
+These two crates are not in conflict — a single frame may use both. A typical wgpu application uses `bytemuck::cast_slice` to upload vertex positions every frame (no padding, hot path) and `encase::UniformBuffer` to serialise a camera or lighting uniform once per frame (complex struct, correct padding guaranteed). The derive macros are also composable: a struct can derive both `bytemuck::Pod` and `encase::ShaderType`, though the latter will enforce padding that the former requires to be pre-applied in the Rust struct definition. Getting the padding wrong in either direction is a silent correctness bug on the GPU — the shader reads a value from the wrong byte offset and produces corrupted output with no diagnostic. Deriving `ShaderType` and then running naga's `validate` on the WGSL is the most reliable way to catch mismatches before they reach a GPU. [Source: encase](https://docs.rs/encase) | [Source: bytemuck](https://docs.rs/bytemuck)
 
 ---
 
@@ -1222,6 +1237,10 @@ override fn Lighting::point_light(world_position: vec3<f32>) -> vec3<f32> {
 ```
 
 All calls to `Lighting::point_light` throughout the composed shader graph are redirected to this override. Bevy uses this mechanism extensively in its render pipeline to allow user code to swap in custom lighting, shadow, and material functions without forking the engine shaders. [Source](https://github.com/bevyengine/naga_oil)
+
+### Design Tradeoffs
+
+naga_oil's composition model has performance implications to be aware of. Each call to `add_composable_module` builds naga IR for that module in isolation, which means compile times scale with the module count rather than the total shader size — a good property for incremental builds (modifying `mesh_functions.wgsl` only recompiles modules that import it). However, the `Composer` is an in-process object that holds state between frames, so hot-reloading a shader module during development means removing the old module, clearing its dependents, and re-adding them — a process the Bevy `hot_reload` feature gate handles automatically. The tree-shaking semantics (only imported items that are actually called end up in the final SPIR-V) mean naga_oil is also useful as a shader preprocessor for large codebases where monolithic shaders would otherwise grow unboundedly. Projects not using Bevy can use naga_oil standalone by adding `naga-oil` to `Cargo.toml` and calling `Composer::make_naga_module`, then feeding the result to naga's SPIR-V writer or directly to wgpu's `device.create_shader_module_from_naga`. This makes naga_oil a composable building block for any Rust graphics project that wants modular WGSL without coupling to Bevy's render graph. [Source](https://github.com/bevyengine/naga_oil)
 
 ---
 
