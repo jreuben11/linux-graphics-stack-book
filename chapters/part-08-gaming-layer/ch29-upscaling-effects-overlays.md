@@ -804,7 +804,7 @@ NVIDIA DLSS (Deep Learning Super Sampling) uses Tensor Core matrix multiply unit
 
 **DLSS-to-FSR translation:** for NVIDIA GPUs without DLSS support (or when using RADV/NVK), community projects like **dlss-to-fsr** intercept NGX API calls and redirect them to FidelityFX Super Resolution compute shaders. This allows games that only expose a DLSS upscaling path to run with FSR quality on AMD hardware.
 
-**Open-source NVIDIA drivers (NVK):** NVK does not currently support DLSS because the NGX SDK requires the proprietary firmware blob and tensor-core programming paths that NVK does not implement. FSR2 and XeSS are available on NVK and are the recommended alternatives.
+**Open-source NVIDIA drivers (NVK):** NVK gained DLSS super-resolution support in Mesa 26.2 (August 2026), contributed by Autumn Ashton (Valve). The implementation uses two NVIDIA vendor extensions: `VK_NVX_binary_import` (import pre-compiled CUDA binaries as Vulkan shader objects) and `VK_NVX_image_view_handle` (expose `VkImageView` handles as CUDA texture references). DLSS reduces to dispatching these cubin shaders against the rendered frame without requiring any tensor-core firmware paths inside NVK itself — the network weights run as pre-compiled CUDA binaries supplied by the NGX SDK. Enable with the `NVK_EXPERIMENTAL=dlss` environment variable. Frame generation (DLSS-G / MFG) and Ray Reconstruction are not supported; SR only. FSR2 and XeSS remain the recommended alternatives on NVK for parity with AMD/Intel GPUs and for frame generation.
 
 ### LatencyFleX: Software Framepacing Without Runtime Support
 

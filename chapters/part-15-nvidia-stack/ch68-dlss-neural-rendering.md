@@ -796,7 +796,15 @@ NVK (Mesa's open-source NVIDIA Vulkan driver) gained experimental DLSS support i
 
 `VK_NVX_image_view_handle` merged to Mesa Git; `VK_NVX_binary_import` requires parsing CUDA binary ELF containers ("there are weirdly packed attributes spread across multiple sections" — Ashton) that contain ordinal-based and name-based metadata formats. Once parsed, the dispatch code is straightforward.
 
-Current limitation: only DLSS cubins compiled for the exact GPU in use are supported; cross-GPU PTX-to-NIR compilation is significantly harder and not yet implemented. The experimental support is not merged to Mesa's main release branch as of mid-2026. [Source: Phoronix — DLSS in NVK experimental](https://www.phoronix.com/news/NVIDIA-DLSS-NVK-Experimental); [Source: Mesa NVK docs](https://docs.mesa3d.org/drivers/nvk.html)
+Current limitation: only DLSS cubins compiled for the exact GPU in use are supported; cross-GPU PTX-to-NIR compilation is significantly harder and not yet implemented.
+
+Both extensions — `VK_NVX_image_view_handle` and `VK_NVX_binary_import` — merged into Mesa 26.2-devel (targeting the August 2026 stable release). DLSS is gated behind the `NVK_EXPERIMENTAL=dlss` environment variable and is not enabled by default. Enable it with:
+
+```bash
+NVK_EXPERIMENTAL=dlss %command%  # Steam launch option
+```
+
+[Source: Phoronix — NVK Vulkan Does DLSS](https://www.phoronix.com/news/Mesa-NVK-Vulkan-Does-DLSS); [Source: Mesa NVK docs](https://docs.mesa3d.org/drivers/nvk.html)
 
 NVK is conformant for Vulkan 1.4 on Kepler through Blackwell; Mesa 25.1 makes NVK+Zink the default OpenGL driver for Turing and later. Kernel 6.6+ required.
 
@@ -812,7 +820,7 @@ For AMD or Intel GPU users on Linux running games that use Reflex or DLSS, the *
 | DLSS SR (Proton/VKD3D-Proton) | Through DLSS 3; DLSS 4 models need DLSS Updater ≥ 3.3.0 |
 | DLSS Frame Gen DLSS-G | DLSS 3 FG via Proton; DLSS 4 MFG not in VKD3D-Proton 3.0 |
 | DLSS Ray Reconstruction | Full since SDK 310.5.3 + driver 590.44.01+; requires CUDA/Vulkan interop |
-| NVK experimental DLSS | Experimental only; not in Mesa releases; needs `VK_NVX_binary_import` |
+| NVK DLSS (Mesa 26.2+) | Merged to Mesa 26.2 (Aug 2026); enable with `NVK_EXPERIMENTAL=dlss`; SR only, no MFG |
 | NGX model management | Default `/usr/share/nvidia/ngx`; override via `__NGX_CONF_FILE` |
 | DLSS Updater tool | Linux officially supported since v3.3.0 |
 | Omniverse DLSS-RR | Requires Kit ≥ 106.5.3 on Blackwell GPUs |
