@@ -1460,6 +1460,31 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Performance and power: VIO tracking one dedicated CPU core; camera preview 30 fps 640×480 or 1280×720; thermal throttling effect on `ArSession_update()` latency; `Choreographer`/`FrameRateCompatibility` for VSYNC alignment; AR tracking thread decoupled from render thread; AHardwareBuffer zero-copy from HAL → gralloc → ARCore → app
 - **Integrations**: Ch85 (SurfaceFlinger buffer pipeline for AR overlays), Ch86 (Vulkan AHardwareBuffer import, YCbCr conversion), Ch27 (OpenXR on Linux/Monado — compare to ARCore OpenXR), Ch26 (Camera HAL / V4L2 — Linux-side equivalent), Ch6 (ARM Mali/Adreno driver powering ARCore rendering), Ch24 (Vulkan EGL interop analogous to AHardwareBuffer Vulkan path)
 
+### Chapter 166: Android AR: ARCore Architecture, Camera HAL Integration, and Android XR (expanded)
+
+- Expanded companion to Chapter 87 covering the Android XR era
+- Android XR platform: Samsung Galaxy XR / Project Moohan; Jetpack XR SDK (`androidx.xr`): `Session.create()`, `Entity`, `PanelEntity`, `GltfModelEntity`, `SpatialCapabilities`
+- OpenXR on Android: `XR_KHR_android_create_instance`, `XrSwapchainImageAndroidKHR`; ARCore's embedded OpenXR loader; how ARCore implements the OpenXR runtime contract on Android phones vs. headsets
+- Qualcomm Snapdragon Spaces XDK: Snapdragon Spaces OpenXR profile, hand tracking extensions, passthrough API
+- Monado OpenXR runtime as forward reference: the open-source alternative for Linux AR/VR development
+- Deeper Vulkan camera import: `VK_ANDROID_external_memory_android_hardware_buffer`, `VkSamplerYcbcrConversion`, `VkExternalFormatANDROID` for camera YUV
+- `VK_EXT_plane_detection` for spatial plane query via Vulkan
+- Environmental HDR spherical harmonic light estimation API deep dive
+- **Integrations**: Ch87, Ch27 (OpenXR session model on Linux/Monado), Ch86 (Vulkan Android extensions), Ch85 (SurfaceFlinger swapchain)
+
+### Chapter 191: LiteRT and MediaPipe — On-Device ML Inference on the Android Graphics Stack
+
+- LiteRT (formerly TensorFlow Lite, renamed 2024): on-device inference runtime for `.tflite` model files; `Interpreter` / `InterpreterApi`; `AllocateTensors()` → `Invoke()`
+- Delegate model: NNAPI delegate (Android 8.1+, routes to DSP/NPU via `ANeuralNetworksModel`), GPU delegate (OpenGL ES 3.1 compute shaders or Vulkan compute), Edge TPU delegate (Coral hardware); delegate selection heuristics
+- `AHardwareBuffer` tensor interop: GPU delegate supports `AHardwareBuffer`-backed tensors for zero-copy from camera → inference → display; `TfLiteGpuDelegateOptionsV2`; `GlBufferHandle` input/output binding
+- LiteRT model formats: `.tflite` flatbuffer; quantised models (INT8, INT4, dynamic range quant); `SignatureDef`-based multi-signature models; LiteRT's relationship to ONNX Runtime and OpenVINO mobile backends
+- MediaPipe framework: `CalculatorGraph` as a directed compute graph; `Packet` data flow; `GlCalculatorHelper` for GPU-accelerated calculator nodes; `GpuBuffer` ↔ `GlTexture` ↔ `AHardwareBuffer` interop
+- MediaPipe Tasks API (2022+): high-level `ObjectDetector`, `PoseLandmarker`, `HandLandmarker`, `FaceLandmarker`, `ImageClassifier`; `BaseOptions` for model loading; `RunningMode` (IMAGE, VIDEO, LIVE_STREAM)
+- Camera2 → MediaPipe pipeline: `SurfaceTexture` from Camera2 → `GL_TEXTURE_EXTERNAL_OES` → MediaPipe `GlTextureBuffer` input; zero-copy camera-to-inference path
+- ARCore + MediaPipe composition: using ARCore for world tracking + MediaPipe for person segmentation or pose overlays; shared `ArFrame` timestamp for synchronisation
+- On-device ML performance: latency vs. accuracy tradeoffs; INT8 quantisation impact; batch size 1 constraints on mobile; thermal throttling; profiling via Android GPU Inspector
+- **Integrations**: Ch85 (AHardwareBuffer, SurfaceFlinger), Ch86 (GPU delegate via GLES/Vulkan compute), Ch87 (ARCore + MediaPipe composition), Ch88 (NPU/NNAPI — NNAPI delegate backend), Ch108 (ROCm comparison — desktop ML inference contrast)
+
 ---
 
 ## Part XX — AI/ML Inference on Linux

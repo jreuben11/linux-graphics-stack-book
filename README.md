@@ -33,12 +33,12 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 | XVI | Intel Open Graphics Stack | Ch 71 | 1 |
 | XVII | AMD Developer Ecosystem | Ch 72, 143 | 2 |
 | XVIII | Rendering Abstraction Libraries | Ch 81–84, 113 | 5 |
-| XIX | Android Graphics | Ch 85–87 | 3 |
+| XIX | Android Graphics | Ch 85–87, 166, 191 | 5 |
 | XX | AI/ML Inference on Linux | Ch 48, 88, 94, 108, 115, 124 | 6 |
 | XXI | Platform, Legacy & History | Ch 95, 103 | 2 |
 | — | Appendices | A–M (13 appendices) | 13 |
 
-**Total: 166 chapters + 13 appendices**
+**Total: 167 chapters + 13 appendices**
 
 ## Repository Structure
 
@@ -225,6 +225,8 @@ chapters/
     ch85-android-surfaceflinger.md
     ch86-android-vulkan.md
     ch87-android-ar-arcore.md
+    ch166-android-xr.md
+    ch191-litert-mediapipe.md
   part-20-ai-inference/
     ch48-rocm-ml-linux.md
     ch88-npu-ai-accelerators.md
