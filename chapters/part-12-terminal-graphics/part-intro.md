@@ -4,6 +4,8 @@ Terminal emulators occupy an unusual position in the Linux graphics stack: they 
 
 ## Chapters in This Part
 
+**Chapter 178 — The PTY/TTY Kernel Layer and Line Disciplines** is the kernel foundation for the part. It covers the `tty_struct` / `tty_driver` / `tty_operations` object model, the PTY architecture (master/slave, `/dev/ptmx`, `devpts` filesystem, PTY lifecycle), the **N_TTY** line discipline in depth (cooked vs. raw mode, echo, erase, signal generation), `termios` settings (`ICANON`, `ISIG`, `ECHO`, `VMIN`/`VTIME`), the `TIOCSWINSZ` ioctl and **SIGWINCH** chain, `openpty()` / `forkpty()` terminal emulator startup, PTY buffer sizing and throughput limits, and how terminal multiplexers (tmux, zellij) chain PTY pairs. Readers learn the kernel path that every keystroke and every byte of output traverses before reaching the terminal emulator.
+
 **Chapter 43 — Terminal Pixel Protocols: Sixel, Kitty, and iTerm2** establishes the wire-level encoding layer: how pixel data is serialised into **VT** escape sequences, transmitted across a pseudoterminal, and decoded by the terminal emulator. It covers the **DCS**-framed **Sixel** protocol inherited from the **DEC VT340**, the **APC**-framed **Kitty Graphics Protocol** with its stateful image IDs, server-side persistence, **Unicode** placeholder mechanism, and animation support, and the stateless **OSC 1337** **iTerm2 Inline Images** format. Readers will learn the trade-offs each protocol makes across bandwidth, colour depth, alpha transparency, multiplexer compatibility, and GPU readiness, and will gain practical protocol-detection strategies for applications that must target multiple terminals.
 
 **Chapter 44 — Terminal GPU Rendering Architectures** moves from the wire format to the render pipeline, explaining how modern terminal emulators — **kitty**, **Alacritty**, **WezTerm**, **Ghostty**, **foot**, and **VTE** — map the character-cell grid onto GPU draw calls. It covers the shared foundation of the **HarfBuzz**/**FreeType** glyph atlas stored as a **GL_TEXTURE_2D_ARRAY**, then examines how each terminal diverges: **kitty**'s mature **OpenGL** renderer, **Alacritty**'s latency-optimised multi-threaded design, **WezTerm**'s **wgpu**/**WGSL**/**naga** cross-backend architecture, **Ghostty**'s **SIMD**-optimised **VT** parser and **libghostty** embeddable core, **foot**'s CPU-only **wl_shm** path, and **VTE**'s migration to the **GSK** scene-graph with a **Vulkan** backend. Readers will understand how pixel images decoded from the Chapter 43 protocols are composited with text in a single render pass using premultiplied alpha.
@@ -14,7 +16,7 @@ Terminal emulators occupy an unusual position in the Linux graphics stack: they 
 
 ## How the Chapters Interrelate
 
-The four chapters form a dependency structure where Chapter 43 is the foundation and Chapter 45 is the integration capstone.
+The five chapters form a dependency structure where Chapter 178 is the kernel foundation, Chapter 43 is the protocol layer, and Chapter 45 is the compositor integration capstone.
 
 Chapter 43 is the required starting point. It defines the vocabulary — image IDs, **APC** sequences, **DCS** parameters, **Sixel** bands, **OSC 1337** payloads — that Chapter 44 references when describing how decoded image data is turned into **GL** texture handles and **wgpu::Buffer** staging uploads. A reader who skips Chapter 43 will encounter unexplained references to protocol-specific fields (the `t=s` shared-memory transmission mode, the `f=32` **RGBA** pixel format key, the **DECSDM** mode 80 query) and will not appreciate why the **Kitty Graphics Protocol**'s server-side image persistence has GPU-architecture implications while **Sixel** and **iTerm2** do not.
 
@@ -30,6 +32,9 @@ graph LR
 
     CH174["Ch 174\nWezTerm & Alacritty\n(wgpu · OpenGL/EGL)"]
 
+    CH178["Ch 178\nPTY/TTY Kernel Layer\nLine Disciplines"]
+
+    CH178 -->|"PTY byte stream\nto emulator"| CH43
     CH43 -->|"decoded image data\nbecomes GPU texture"| CH44
     CH44 -->|"GPU framebuffer\nsubmitted as wl_buffer"| CH45
     CH44 -->|"architecture detail"| CH174

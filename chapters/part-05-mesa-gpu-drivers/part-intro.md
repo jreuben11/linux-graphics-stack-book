@@ -6,6 +6,8 @@ Part IV built the infrastructure every Mesa driver relies on: the **GLVND**/**IC
 
 **Chapter 18 — Mesa Vulkan Drivers: RADV, ANV, and the Driver Landscape** dissects three production Vulkan drivers. **RADV** (AMD) covers VRAM/GTT/BAR memory management, PM4 command encoding, SRD-based descriptor sets, NGG geometry, and hardware ray tracing on RDNA2+. **ANV** (Intel) covers the bindless surface-state heap, genxml packet emission, and EU ISA shader compilation. **Turnip** (Qualcomm Adreno) covers TBDR sysmem-vs-GMEM rendering, the ir3 compiler, and CCU flush ordering. The chapter closes with dEQP-VK conformance workflows and the shared Mesa WSI layer (X11, Wayland, direct-to-display).
 
+**Chapter 177 — NVK: NVIDIA Vulkan in Mesa — Architecture, WSI, and Conformance** provides in-depth coverage of NVK beyond the origin-story treatment in Chapter 10b. It examines the **NVKMD abstraction layer** (`nvkmd_dev`, `nvkmd_mem`, `nvkmd_timeline`) that decouples NVK from any specific kernel ABI — enabling the same Mesa driver to target both the new `DRM_IOCTL_NOUVEAU_EXEC`/`DRM_IOCTL_NOUVEAU_VM_BIND` uAPI (Linux 6.6+) and potential future kernel interfaces. The **push buffer encoding** layer (`nv_push`, class headers derived from envytools rnndb) is examined in detail, explaining how NVK encodes `GROBJ`, `QMDV3_00`, and 3D-class methods into the DMA-ring that GSP-RM firmware submits to the hardware. A dedicated section covers **NAK integration** — how NVK hands NIR to the Rust NAK backend for Maxwell–Blackwell, while falling back to the GLSL path for Kepler — including the NIR lowering passes specific to NVIDIA's SASS ISA (WARP divergence, register file allocation, `s2r` lane ID injection). **WSI integration** via the **Kopper** layer, explicit **DMA-BUF** import/export, and the **Wayland explicit sync** path (`wp_linux_drm_syncobj_v1` + `VK_EXT_external_fence_fd`) is traced end-to-end, showing how a frame produced by NVK reaches a Wayland compositor without requiring timeline semaphore emulation. The conformance and deployment history tracks the driver from its Mesa 23.3 experimental landing through Vulkan 1.3 in Mesa 24.1, Vulkan 1.4 in Mesa 25.x, and Kepler/Blackwell enablement in Mesa 25.x–26.x. The chapter closes with a practical guide to building NVK, running dEQP-VK, and diagnosing hangs via `nv.dbg.gpuHangDump`.
+
 **Chapter 19 — OpenGL Compatibility Drivers: RadeonSI, iris, and Zink** covers the Mesa components that sustain OpenGL on modern hardware. **radeonsi** (AMD Gallium) addresses `radeon_cmdbuf` submission, DCC/HTILE metadata, and the Shader DB regression system. **iris** (Intel Gallium, Gen8–Xe2) covers dual batch ring management and the `iris_binder` surface-state heap. **Zink** (Gallium-on-Vulkan) covers Gallium-to-Vulkan translation and its role as a portability layer for ARM drivers. The chapter also covers panfrost, lima, etnaviv, freedreno, mesa_glthread, Glamor, and VA-API.
 
 ## Key Concepts Introduced in Part V
@@ -72,14 +74,18 @@ Part IV introduced concepts that are common to all Mesa drivers. Part V introduc
 
 Chapter 18 (Vulkan drivers) is the natural starting point for systems developers: RADV, ANV, and Turnip operate with explicit lifetimes, explicit DRM syncobj synchronisation, and explicit memory management, leaving no hidden state between the application and the hardware command stream. Understanding how RADV assembles a PM4 command buffer and submits it through `amdgpu_cs_submit_raw2` is prerequisite knowledge for the contrasts in Chapter 19.
 
+Chapter 177 (NVK) extends the Chapter 18 survey with a dedicated deep dive into NVIDIA's Mesa Vulkan driver. Where Chapter 18 provides a comparative treatment of RADV, ANV, and Turnip, Chapter 177 goes significantly deeper on the NVKMD abstraction, GSP-RM command submission, NAK compiler integration, and the WSI/Kopper explicit-sync path — topics that Chapter 18 touches on but does not develop fully. Chapter 177 also provides the conformance history that Chapter 18 can only summarise. Readers focused on NVIDIA open-source Vulkan on Linux should read 18 → 177 in sequence; readers working on other drivers may treat Chapter 177 as an optional deep-dive reference.
+
 Chapter 19 (OpenGL drivers) builds on Chapter 18 in two ways. First, radeonsi and iris share their shader compiler backends with RADV and ANV: radeonsi calls `ac_nir_to_llvm()` from the same `src/amd/` tree; iris calls `brw_compile_vs()` / `brw_compile_fs()` from `src/intel/compiler/` — the identical functions ANV uses. Second, Zink sits directly on top of the Vulkan drivers from Chapter 18, routing all rendering through `vkCmdDraw` and `vkCreatePipeline`: any RADV or ANV performance characteristic is visible through Zink-on-RADV or Zink-on-ANV.
 
 ```mermaid
 graph LR
     A["Ch 18: Mesa Vulkan Drivers\n(RADV, ANV, Turnip)\nDRM render node, command encoding,\ndescriptor sets, WSI layer"]
     B["Ch 19: OpenGL & Compat Drivers\n(radeonsi, iris, Zink)\nGallium pipe interface,\nLLVM/EU ISA compilers, Glamor"]
+    C["Ch 177: NVK — NVIDIA Vulkan in Mesa\nNVKMD abstraction · push buffers\nNAK · WSI/Kopper · conformance"]
 
     A -->|"Zink translates GL to Vulkan\nShared compiler backends (brw, amdgpu)\nShared Mesa WSI layer"| B
+    A -->|"shared WSI layer\nKopper/DMA-BUF patterns"| C
 ```
 
 ## Prerequisites and What Comes Next

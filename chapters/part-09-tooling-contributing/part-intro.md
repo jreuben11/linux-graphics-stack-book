@@ -26,6 +26,8 @@ The earlier parts of this book built the Linux graphics stack layer by layer: th
 
 **Chapter 122 — DKMS and Out-of-Tree GPU Kernel Modules** addresses the recompilation problem: GPU kernel modules must be rebuilt for every kernel the system runs, yet many are distributed outside the kernel tree. The chapter explains why Linux deliberately provides no stable in-kernel ABI, how `vermagic` strings and **`CONFIG_MODVERSIONS`** CRC checksums enforce compatibility, and how **DKMS** (Dynamic Kernel Module Support) automates recompilation on kernel updates via its `dkms.conf` hooks and `kernel_postinst.d` integration. It then surveys each vendor's position on the proprietary-to-upstream spectrum: **NVIDIA proprietary** modules (closed C source + binary stub, DKMS-distributed, `EXPORT_SYMBOL_GPL` complications), **NVIDIA open kernel modules** (MIT/GPL dual-licensed, Turing and later, supported alongside the proprietary flavour), **AMD amdgpu** (fully upstreamed; DKMS only for the `amdgpu-pro` proprietary userspace shim), and **Intel i915/Xe** (fully upstreamed; no DKMS, but requiring separate `linux-firmware` firmware blob packages). A dedicated section covers module signing under **Secure Boot** — **MOK** (Machine Owner Key) enrollment, `mokutil`, and `CONFIG_MODULE_SIG_FORCE` — and the chapter closes with distribution packaging strategies for RPM (`kmod`) and Debian (`dkms` and `linux-headers`) ecosystems. This chapter complements Chapter 80's treatment of firmware supply-chain trust and Chapter 32's contributing guide, which discusses the upstream-first policy that makes DKMS unnecessary for well-maintained in-tree drivers.
 
+**Chapter 180 — GPU Reverse Engineering: Tools, Methodology, and Case Studies** addresses the engineering discipline that underlies every open-source driver for undocumented GPU hardware. It covers the four-layer RE target (MMIO register space, command-stream format, firmware protocol, shader ISA), the **envytools** suite (**nva** direct MMIO access, **rnndb** XML register database, **envydis**/**envyas** ISA disassembly and assembly), **valgrind-mmt** and **demmt** for capturing and decoding proprietary command streams, **mmiotrace** via the `x86` tracing subsystem, and the LD_PRELOAD intercept libraries used in each driver project (**libwrap**/**cffdump**/.rd format for freedreno, **panwrap**/**panloader** for Panfrost, **viv_interpose**/**libvivhook** for etnaviv). Four case studies trace RE methodology from bare hardware to a working driver: Nouveau and envytools (mmiotrace → rnndb register names → firmware reverse engineering with Ghidra), Panfrost and the Mali job descriptor format (panwrap traces → Midgard/Bifrost ISA recovery), Asahi Linux and the Apple AGX firmware (m1n1 hypervisor tracing + macOS dyld_shared_cache analysis → AGX command-stream model), and etnaviv and the Vivante GC series (viv_interpose intercepts → GC800–GC7000 command-stream reconstruction). The chapter closes with a legal considerations section on the clean-room methodology that has allowed all these drivers to co-exist with proprietary vendor software.
+
 **Chapter 125 — RenderDoc on Linux** covers the open-source GPU frame capture and replay tool in depth: the Vulkan and OpenGL capture layers, in-application overlay, remote capture via RenderDoc server, the shader debugger and disassembler, performance counters via `VK_AMD_shader_info` and `VK_AMD_buffer_marker`, and the command-line replay infrastructure used in automated regression testing.
 
 **Chapter 136 — WSL2 and the Linux Graphics Stack** explains how GPU-accelerated graphics reaches Windows Subsystem for Linux 2: the `dxgkrnl` kernel module, the `libdxcore.so` D3D12 backend, the Mesa `d3d12` Gallium driver, `VirtIOGPU` display for WSLg GUI applications, and the VA-API and Vulkan capability limitations of the WSL2 translation path.
@@ -41,6 +43,8 @@ The chapters in this part are grouped into four conceptual clusters that share d
 **The core tooling triad** — Chapters 30, 31, and 93 — forms a coherent discipline of observation. Chapter 30 maps tools to bug categories and establishes the essential vocabulary: **NIR** IR dumps, **DRM** `ftrace` tracepoints, **`VkQueryPool`** timestamps, and the **`CAP_PERFMON`** permission model. Chapter 31 builds directly on Chapter 30: the **AddressSanitizer** and **`spirv-fuzz`** sanitiser builds that Chapter 30 mentions in passing become the main subject of Chapter 31's fuzzing section, and the **GitLab CI** pipeline described in Chapter 31 is precisely where **Mesa** debug builds and **dEQP** runs intersect. Chapter 93 picks up where Chapter 30 ends: where Chapter 30 introduces **RGP**, **`intel_gpu_top`**, and **`ncu`** as tools, Chapter 93 explains *how to think with them* — the top-down measurement hierarchy (system → API → hardware counter → ISA), the roofline model, and stall taxonomy. A reader should encounter these chapters in order: 30 → 31 → 93.
 
 Chapter 32 is the community complement to the tooling triad. It explains how to move a patch from a locally reproduced bug (found with Chapter 30's tools, validated by Chapter 31's tests) through the upstream review process. It can be read independently but benefits from Chapter 31's explanation of **dEQP** CI and the **Meson** build system.
+
+**Chapter 180** (GPU Reverse Engineering) sits at the deepest end of the spectrum: where Chapter 30 assumes the register maps and command-stream formats are already known, Chapter 180 explains how those maps are discovered in the first place. It is the prerequisite that makes contributing a *new* driver possible — the Chapter 32 contributing guide presupposes that the hardware is already understood well enough to write an independent implementation, and Chapter 180 explains the observational methodology that reaches that point. Chapter 30's **mmiotrace** and **ftrace** DRM tracepoints are also the primary MMIO observation tools described in Chapter 180 §6, making Chapter 30 a useful prerequisite. Readers intending to contribute a driver for undocumented hardware should read 180 → 32 in sequence; readers already working on an in-tree driver can treat Chapter 180 as historical context.
 
 **The CI and testing cluster** — Chapters 31, 109, and 107 — addresses the automated infrastructure that validates every Mesa change. Chapter 31 describes the conformance suite landscape and certification theory. Chapter 109 goes deeper into operational mechanics: how **`deqp-runner`** shards a 700,000-case CTS run across hardware farm nodes, how **LAVA** and **CI-tron** flash and exercise ARM GPU boards, and how **shader-db** catches compiler regressions without a GPU. Chapter 107 provides the prerequisite for both: it explains how CI runners obtain a valid GPU context when no monitor is attached — whether via **llvmpipe**/**lavapipe** software rendering, the **EGL surfaceless platform**, **GBM** render-node access, or **VKMS** virtual display injection. The natural reading order within this sub-cluster is 107 → 31 → 109.
 
@@ -62,8 +66,11 @@ graph TD
     CH109["Ch 109\nMesa Testing & CI"]
     CH122["Ch 122\nDKMS & Out-of-Tree Modules"]
 
+    CH180["Ch 180\nGPU Reverse Engineering\nenvytools · valgrind-mmt · mmiotrace"]
+
     CH30 --> CH31
     CH30 --> CH93
+    CH30 --> CH180
     CH31 --> CH32
     CH31 --> CH109
     CH55 --> CH89
@@ -76,6 +83,7 @@ graph TD
     CH107 --> CH31
     CH107 --> CH109
     CH122 --> CH32
+    CH180 --> CH32
 ```
 
 ## Prerequisites and What Comes Next

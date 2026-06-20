@@ -92,6 +92,8 @@ ARM SoC display pipelines connect to panels via **MIPI DSI** (Display Serial Int
 
 **Chapter 169 — Snapdragon X Elite on Linux: Adreno X1-85, freedreno, and the Arm Laptop Era** examines the first Qualcomm SoC to enter the Linux laptop mainstream at volume. It covers the **SC8380** hardware architecture: the **Adreno X1-85** GPU (family ADRENO_7XX_GEN2, chip ID 0x43050c01), the Oryon CPU cores, and the Hexagon CDSP NPU. The chapter documents the `msm` DRM driver's X Elite support timeline (GPU functional ~Linux 6.14, IRIS video decoder in 6.15), Mesa Turnip Vulkan milestones (initial A7xx Gallium3D in 24.3, working X1-85 Vulkan + ray query in 25.0), firmware extraction requirements, display pipeline via `msm_dpu`, and the practical state of Linux laptop configurations on devices such as the Lenovo ThinkPad T14s Gen 6 and Dell XPS 13 9345.
 
+**Chapter 179 — The Linux `accel` Subsystem: NPU and AI Accelerator Drivers** documents the dedicated kernel subsystem for non-display AI accelerators, merged into Linux 6.2 (February 2023). It explains why the `accel` subsystem was created alongside DRM rather than replacing it: `DRIVER_COMPUTE_ACCEL` flag, separate `/dev/accel/accel0` character device (major 261), and the shared GEM, DRM GPU scheduler, and DMA-BUF infrastructure. The chapter covers the five production drivers under `drivers/accel/`: **ivpu** (Intel VPU on Meteor/Lunar Lake), **habanalabs** (Gaudi/Greco at AWS), **qaic** (Qualcomm Cloud AI 100), **amdxdna** (AMD Phoenix/Hawk Point XDNA NPU), and **ethos-u** (ARM Cortex-M55 microcontroller NPU). It also covers the **drm_gpuvm** memory model without display, security via unprivileged `/dev/accel` access, and userspace runtime integration (OpenVINO, ONNX Runtime EP, ROCm HIP).
+
 **Chapter 172 — eGPU on Linux: Thunderbolt, USB4, and PCIe Hot-Plug** covers external GPU attachment via Thunderbolt 3/4 and USB4 PCIe tunneling, the **bolt** daemon (`boltctl enroll`, `org.freedesktop.bolt` D-Bus) for Thunderbolt device authorization, the kernel `drivers/thunderbolt/` and `drivers/thunderbolt/usb4.c` subsystems, and how **amdgpu** implements PCIe hot-plug via `drm_dev_register` / `drm_dev_unplug`. The chapter covers Reverse PRIME (DMA-BUF blit from eGPU to iGPU scanout), NVIDIA eGPU limitations, and practical setup with `boltctl`, `lspci`, and `DRI_PRIME`.
 
 ## How the Chapters Interrelate
@@ -110,6 +112,7 @@ graph LR
 
     CH169["Ch 169\nSnapdragon X Elite\nAdreno X1-85 Linux"]
     CH172["Ch 172\neGPU Thunderbolt\nUSB4 Hot-Plug"]
+    CH179["Ch 179\nLinux accel Subsystem\nNPU/AI Drivers"]
 
     CH05 --> CH49
     CH05 --> CH06
@@ -122,6 +125,7 @@ graph LR
     CH06 --> CH160
     CH160 --> CH169
     CH49 --> CH172
+    CH05 --> CH179
     CH90 --> CH99
     CH100 --> CH99
     CH92 -. "comparable\nembedded bring-up" .-> CH99

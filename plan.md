@@ -216,6 +216,11 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 173: VK\_EXT\_shader\_object — Pipeline-Free Shader Binding in Vulkan](#chapter-173-vk_ext_shader_object--pipeline-free-shader-binding-in-vulkan) *(Part VII)*
   - [Chapter 174: WezTerm and Alacritty — GPU Terminal Rendering Architectures](#chapter-174-wezterm-and-alacritty--gpu-terminal-rendering-architectures) *(Part XII)*
   - [Chapter 175: Linux Compositor Accessibility — AT-SPI2, Screen Readers, and the Wayland Gap](#chapter-175-linux-compositor-accessibility--at-spi2-screen-readers-and-the-wayland-gap) *(Part VI)*
+  - [Chapter 176: OpenCASCADE Technology — The BRep Kernel and 3D Visualization Stack](#chapter-176-opencascade-technology--the-brep-kernel-and-3d-visualization-stack) *(Part XI)*
+  - [Chapter 177: NVK — NVIDIA Vulkan in Mesa: Architecture, WSI, and Conformance](#chapter-177-nvk--nvidia-vulkan-in-mesa-architecture-wsi-and-conformance) *(Part V)*
+  - [Chapter 178: The PTY/TTY Kernel Layer and Line Disciplines](#chapter-178-the-ptytty-kernel-layer-and-line-disciplines) *(Part XII)*
+  - [Chapter 179: The Linux `accel` Subsystem — NPU and AI Accelerator Drivers](#chapter-179-the-linux-accel-subsystem--npu-and-ai-accelerator-drivers) *(Part II)*
+  - [Chapter 180: GPU Reverse Engineering — Tools, Methodology, and Case Studies](#chapter-180-gpu-reverse-engineering--tools-methodology-and-case-studies) *(Part IX)*
 
 ---
 
