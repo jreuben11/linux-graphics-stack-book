@@ -567,13 +567,15 @@ Non-Android embedded Linux contexts include automotive infotainment systems (man
 
 ## 8. LLVM as a Mesa Compiler Backend
 
-### 8.1 Why radeonsi Uses LLVM (Not ACO)
+### 8.1 radeonsi Compiler Backend History: LLVM to ACO
 
-ACO (the AMD compiler in RADV, described in Chapter 15) was designed for the Vulkan driver's requirements: predictable, low-latency compilation with a self-contained code generator. It was never ported to radeonsi. The reasons are partly historical (radeonsi's LLVM integration was mature before ACO existed) and partly architectural (LLVM's general-purpose optimisations, though slower, can produce marginally better code for some shader patterns that appear more often in OpenGL workloads than in Vulkan workloads).
+ACO (the AMD compiler in RADV, described in Chapter 15) was designed for the Vulkan driver's requirements: predictable, low-latency compilation with a self-contained code generator. It was originally not available in radeonsi; radeonsi used LLVM exclusively until Mesa 23.2 added an opt-in `AMD_DEBUG=useaco` flag, followed by Mesa 24.0 making ACO feature-complete for radeonsi OpenGL, and finally Mesa 26.0 making ACO the **default** for all radeonsi shader compilation. [Source: Phoronix, "AMD RadeonSI Driver Now Defaults To Enabling ACO"](https://www.phoronix.com/news/RadeonSI-ACO-Default-Mesa-26.0)
 
-The practical consequence: radeonsi compiles all shader stages (vertex, fragment, geometry, tessellation, compute) through LLVM. RADV defaults to ACO and reaches LLVM only via `RADV_DEBUG=llvm`, kept as a correctness comparison path.
+**Current state (Mesa 26.0+):** radeonsi defaults to ACO for all shader stages. LLVM remains available as a fallback via `AMD_DEBUG=usellvm` for debugging and correctness comparison. The historical LLVM-first design is preserved in the codebase (`src/amd/llvm/`, `src/gallium/drivers/radeonsi/si_shader_llvm.c`) and Section 8.2 onwards documents that path, which remains authoritative for the LLVM backend's mechanics.
 
-The OpenGL compilation model also differs from Vulkan's: OpenGL shaders are compiled on first use, with implicit caching. radeonsi's async shader queue (Section 2.4) and disk cache (Section 8.5) mitigate LLVM's startup cost in a way that is less applicable to Vulkan's explicit pipeline model, where the application controls pipeline compilation timing.
+The transition matters for understanding radeonsi's performance model: ACO's roughly 8× lower compile latency means first-frame shader stutter is now much reduced compared to the LLVM era. The async shader queue and disk cache (Section 8.5) are still present and still help with cache-miss cold starts, but their role is less critical than when LLVM could take 50–200 ms per shader.
+
+The OpenGL compilation model also differs from Vulkan's: OpenGL shaders are compiled on first use, with implicit caching. radeonsi's async shader queue (Section 2.4) and disk cache (Section 8.5) mitigate per-shader cost in a way that is less applicable to Vulkan's explicit pipeline model, where the application controls pipeline compilation timing.
 
 ### 8.2 The radeonsi LLVM Path
 
@@ -987,8 +989,6 @@ A separate radeonsi performance mechanism, **`si_decompress_textures()`** (in `s
 RADV (Chapter 18) and radeonsi target identical AMD GPU hardware — the same GFX6–GFX12 range, the same VRAM, the same compute units. The divergence is entirely in software stack and design goals.
 
 **Shader compilation backend**: radeonsi defaults to **ACO** since Mesa 26.0 (released February 2026), the same compiler RADV has used as its default since Mesa 20.2. ACO offers roughly 8× lower compile latency than LLVM for typical shaders, and produces code with better register allocation (fewer VGPR spills) due to a purpose-built register allocator tuned for AMD's wavefront model. LLVM remains available in radeonsi as a fallback via `AMD_DEBUG=usellvm` for cases where ACO produces incorrect output. RADV retains LLVM as a fallback via `RADV_DEBUG=llvm`. [Source: Phoronix, "AMD RadeonSI Driver Now Defaults To Enabling ACO"](https://www.phoronix.com/news/RadeonSI-ACO-Default-Mesa-26.0)
-
-> Note: The correct LLVM-fallback variable for radeonsi in Mesa 26.0+ is `AMD_DEBUG=usellvm`; the roadmap entry at the bottom of this chapter cites `AMD_DEBUG=llvm`, which was the earlier naming convention.
 
 **API interface layer**: radeonsi implements the **Gallium `pipe_context`** interface. RADV implements **Vulkan dispatch tables** (`vkCmdDraw`, `vkBeginCommandBuffer`, etc.). These are entirely separate code paths; radeonsi never calls Vulkan dispatch functions, and RADV never calls Gallium pipe functions.
 

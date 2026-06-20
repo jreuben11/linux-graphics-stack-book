@@ -17,6 +17,7 @@
 - [8. NIR as Universal Interchange](#8-nir-as-universal-interchange)
 - [9. Tessellation and Geometry Shaders in NIR](#9-tessellation-and-geometry-shaders-in-nir)
 - [9.1 Mesh and Task Shaders in NIR](#91-mesh-and-task-shaders-in-nir)
+- [NIR to EU ISA: Intel's BRW/ELK Compiler Backend](#nir-to-eu-isa-intels-brwelk-compiler-backend)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -879,6 +880,282 @@ NIR is a mature, production-grade compiler IR that underpins every Mesa driver. 
 - **NIR as a multi-language compilation target**: With SPIR-V, GLSL, HLSL (via DXC-to-SPIR-V), and WGSL (via Tint-to-SPIR-V) all flowing through `spirv_to_nir()`, there is architectural interest in NIR becoming the explicit convergence IR for GPU compute frameworks including OpenCL (Rusticl already does this) and potentially SYCL and oneAPI on the Linux stack.
 - **Elimination of remaining NIR-to-TGSI bridge**: A small number of legacy Gallium drivers (notably VMware's `svga` driver) still consume TGSI via the NIR-to-TGSI bridge. Long-term, the Mesa project aims to retire the bridge entirely once these drivers either migrate to native NIR consumption or are removed, completing the TGSI sunset that began with the GLSL-to-TGSI removal in Mesa 22.2.
 - **Formal verification of NIR algebraic rules**: The `nir_opt_algebraic.py` rewrite rules encode integer and floating-point algebraic identities that are occasionally incorrect under IEEE 754 corner cases. Using SMT-solver-backed verification tools (similar to Alive2 for LLVM) to prove the soundness of each rule is a long-term correctness goal discussed in Mesa compiler developer meetings. Note: speculative; needs verification.
+
+---
+
+## NIR to EU ISA: Intel's BRW/ELK Compiler Backend
+
+The preceding sections describe NIR as a hardware-agnostic IR. This section follows NIR all the way to Intel's GPU machine code — the Execution Unit (EU) ISA — to illustrate concretely what a driver-side backend does with NIR. Intel currently maintains two NIR-consuming backends in Mesa, both living under `src/intel/compiler/`:
+
+- **BRW** (`src/intel/compiler/brw/`): the current backend targeting Gfx9 (Skylake) through Xe2 (Battlemage/Arc) and beyond. Used by the iris OpenGL driver and the ANV Vulkan driver for all modern Intel hardware.
+- **ELK** (`src/intel/compiler/elk/`): a fork of BRW for Gfx8 (Broadwell) and earlier hardware, where `elk_compiler_create()` asserts `devinfo->ver <= 8`. ELK is used by the crocus OpenGL driver, which covers Intel hardware from Gen4 through Gen8. [Source: Mesa 24.1.0 release notes, and `src/intel/compiler/elk/elk_compiler.h`](https://docs.mesa3d.org/relnotes/24.1.0.html)
+
+The fork was made in Mesa 24.1 (released May 2024). Before then, a single compiler handled all Intel hardware; as Xe-LP, Xe-HPG, and Xe2 introduced divergent hardware semantics — tiled memory access, new sampler message formats, updated SIMD dispatch mechanisms — the cost of maintaining Gfx8-and-below code paths alongside them became untenable. The split allowed BRW to drop all `devinfo->ver < 9` guards and simplify aggressively (notably, "intel/brw: Assert Gfx9+" and "intel/brw: Always use scalar shaders" in Mesa 24.1), while ELK could carry the legacy paths without bloating the hot path. Both compilers share the same NIR input and the same generic NIR optimisation infrastructure.
+
+### EU ISA Fundamentals
+
+Intel's Execution Unit executes SIMD instructions across a programmable execution width called the **Execution Size** (ExecSize). The baseline widths are SIMD8, SIMD16, and SIMD32; a given compiled shader is compiled at one width and may have multiple variants. The GRF (General Register File) is the sole storage class for live values during execution:
+
+- On Gfx9 through Xe-LP: **BRW_MAX_GRF = 128 registers**, each `REG_SIZE = 8 × 4 = 32 bytes`, for 4 KiB of per-thread GRF. [Source: `src/intel/compiler/brw/brw_eu_defines.h` and `brw_reg.h`](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/intel/compiler/brw/brw_eu_defines.h)
+- On Xe2 (Gfx20+): `XE2_MAX_GRF = 256 registers`; Xe3 extends this further to 512.
+- The SIMD width and the GRF size are coupled: at SIMD8 a shader can use up to 128 GRF registers per lane; at SIMD16 only 64 are available per lane; at SIMD32 only 32 are available per lane, because a SIMD32 thread occupies the GRF of two SIMD16 threads.
+
+```c
+/* Source: src/intel/compiler/brw/brw_eu_defines.h — GRF constants */
+/** Size of general purpose register space in REG_SIZE units */
+#define BRW_MAX_GRF  128   /* Gfx9–Xe-LP */
+#define XE2_MAX_GRF  256   /* Xe2 / Battlemage */
+#define XE3_MAX_GRF  512   /* Xe3 */
+#define REG_SIZE     (8*4) /* 32 bytes per register */
+```
+
+Instructions are natively 128-bit wide. A 64-bit "compact" encoding exists for a subset of instructions (those that use only a limited set of immediates and source modifiers); the hardware decompresses compact instructions on fetch. From the compiler's perspective all instructions are manipulated as 128-bit `brw_inst` objects; compaction is a final emission step in `brw_fs_generator.cpp` (now `brw_compile_fs.cpp`). [Source: Mesa BSpec GPU Overview, and Intel EU ISA documentation at 01.org](https://cdrdv2-public.intel.com/689939/intel-gfx-bspec-osrc-chv-bsw-vol-03-gpu-overview.pdf)
+
+The major instruction classes visible in EU assembly (and in the BRW backend IR) are:
+
+| Class | EU opcode examples | Notes |
+|---|---|---|
+| Integer/FP ALU | `MOV`, `ADD`, `MUL`, `MAD` | `MAD` is fused multiply-add: `dst = src2 + src0 * src1` |
+| Math / SFU | `math SINCOS`, `math RSQRTM`, `math LOG` | Executes on the Shared Function Unit (SFU); higher latency than ALU |
+| SEND | `send`, `sendc` | All memory, sampler, and inter-unit communication; carries a 32-bit message descriptor |
+| Flow | `if`, `else`, `endif`, `while`, `do`, `break`, `cont`, `jmpi` | Structured and unstructured control flow |
+| Synchronisation | `sync`, `fence` | LSC and typed fence variants |
+
+### Compiler Entry Points and the NIR Lowering Pipeline
+
+Each shader stage has its own top-level compilation function. In BRW these are defined in individual source files:
+
+```c
+/* Source: src/intel/compiler/brw/brw_compiler.h — unified entry point */
+const unsigned *
+brw_compile(const struct brw_compiler *compiler,
+            struct brw_compile_params *params);
+
+/* brw_compile_params embeds the nir_shader * and prog_key, and is
+ * embedded as 'base' in per-stage parameter structs:
+ *
+ *   brw_compile_vs_params  — vertex shader
+ *   brw_compile_fs_params  — fragment shader (adds allow_spilling, vue_map, …)
+ *   brw_compile_cs_params  — compute shader
+ *   brw_compile_tcs_params — tessellation control shader
+ *   brw_compile_tes_params — tessellation evaluation shader
+ *   brw_compile_gs_params  — geometry shader
+ *   brw_compile_bs_params  — ray-tracing bindless shaders
+ *   brw_compile_task_params / brw_compile_mesh_params — mesh pipeline
+ */
+```
+
+The `brw_compile_fs_params` struct shows the FS-specific fields beyond the base:
+
+```c
+/* Source: src/intel/compiler/brw/brw_compiler.h — fragment shader params */
+struct brw_compile_fs_params {
+   struct brw_compile_params base;  /* .nir, .key, .prog_data, .mem_ctx, … */
+   const struct intel_vue_map *vue_map;
+   const struct brw_mue_map  *mue_map;
+   bool  allow_spilling;
+   bool  use_rep_send;
+   uint8_t max_polygons;           /* for multi-polygon dispatch (Xe2+) */
+};
+```
+
+Inside `brw_compile_fs()` (in `src/intel/compiler/brw/brw_compile_fs.cpp`), the NIR shader goes through a sequence of Intel-specific lowering passes before reaching the backend IR translation. The key passes visible in the source are:
+
+```c
+/* Source: src/intel/compiler/brw/brw_compile_fs.cpp — NIR lowering pipeline
+ * (condensed; BRW_NIR_PASS macro wraps nir_pass calls with snapshot support) */
+
+/* 1. Apply hardware-specific key to NIR */
+brw_nir_apply_key(pt, &key->base, max_subgroup_size);
+
+/* 2. Lower fragment shader I/O from deref form to explicit slot intrinsics */
+brw_nir_lower_fs_inputs(nir, devinfo, key);
+brw_nir_lower_fs_outputs(nir);
+
+/* 3. Optimisation and out-of-SSA conversion */
+brw_postprocess_nir_opts(pt);                    /* algebraic, DCE, copy-prop */
+brw_postprocess_nir_out_of_ssa(pt, debug_enabled); /* phi → explicit copies */
+```
+
+`brw_nir_lower_fs_inputs()` handles interpolation mode lowering, converting `nir_intrinsic_load_input` with barycentric coordinate sources into the forms the EU's interpolation hardware understands. `brw_postprocess_nir_out_of_ssa()` converts NIR from SSA form to explicit GRF assignments — the point at which NIR's SSA phi nodes are replaced by explicit move sequences — before the backend IR translation in `brw_from_nir.cpp`.
+
+Other stage-relevant lowering passes used across the compiler:
+
+- **`brw_nir_lower_storage_image()`** (`src/intel/compiler/brw/brw_nir_lower_image_load_store.c`) — converts `nir_intrinsic_image_load/store/atomic` into explicit SEND message sequences targeting the data port, applying the correct surface message type for image format. [Source](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/intel/compiler/brw/brw_nir_lower_image_load_store.c)
+- **`brw_nir_lower_cs_intrinsics()`** — translates compute shader built-ins (`gl_LocalInvocationID`, `gl_WorkGroupID`, `gl_SubgroupID`) to GRF payload reads.
+- **`brw_nir_lower_subgroup_ops()`** — lowers NIR subgroup ballot and shuffle operations to EU-native equivalents (using `cmp` with flag registers for ballot, and `dp4a`/`simd_shuffle` for shuffle on Xe2+).
+
+### The NIR-to-Backend IR Translation: brw_from_nir
+
+After NIR lowering completes, `brw_from_nir()` (in `src/intel/compiler/brw/brw_from_nir.cpp`) translates NIR to the BRW backend IR — a list of `brw_inst` objects operating on explicit `brw_reg` virtual GRF values. The translation works through a `nir_to_brw_state` struct that tracks the mapping from `nir_def *` SSA values to `brw_reg` virtual GRF assignments:
+
+```cpp
+/* Source: src/intel/compiler/brw/brw_from_nir.cpp — translation state */
+struct nir_to_brw_state {
+   brw_shader &s;          /* the target shader object */
+   const nir_shader *nir;
+   const intel_device_info *devinfo;
+   brw_builder bld;        /* instruction builder positioned at end of program */
+   brw_reg *ssa_values;    /* map from nir_def index → brw_reg */
+   brw_reg *system_values; /* map from system_value index → brw_reg */
+};
+
+/* Top-level dispatch in brw_from_nir_emit_instr(): */
+static void brw_from_nir_emit_instr(nir_to_brw_state &ntb, nir_instr *instr) {
+   switch (instr->type) {
+   case nir_instr_type_alu:
+      brw_from_nir_emit_alu(ntb, bld, nir_instr_as_alu(instr));  break;
+   case nir_instr_type_intrinsic:
+      brw_from_nir_emit_intrinsic(ntb, bld, nir_instr_as_intrinsic(instr)); break;
+   case nir_instr_type_tex:
+      brw_from_nir_emit_texture(ntb, bld, nir_instr_as_tex(instr)); break;
+   /* … */
+   }
+}
+```
+
+All deref-based memory access must have been eliminated by NIR lowering before this point; `brw_from_nir` asserts that no `nir_deref_instr` remain.
+
+### Register Allocation: Graph Colouring Over the GRF
+
+After `brw_from_nir` produces a virtual-register program, register allocation assigns each virtual GRF (VGRF) to one or more physical GRF registers. BRW uses graph-colouring allocation:
+
+```c
+/* Source: src/intel/compiler/brw/brw_shader.h — RA entry points */
+void brw_allocate_registers(brw_shader &s, bool allow_spilling);
+bool brw_assign_regs(brw_shader &s, bool allow_spilling, bool spill_all);
+bool brw_lower_fill_and_spill(brw_shader &s);
+```
+
+`brw_assign_regs()` builds an interference graph over VGRFs (two VGRFs interfere if their live ranges overlap), then applies graph colouring to assign physical GRF numbers. When colouring fails — register pressure exceeds the physical GRF count — the allocator spills VGRFs to scratch space. The EU has a per-thread scratch buffer accessible through the `A0` address register (the Address Register file); spills emit `brw_scratch_inst` SCRATCH read/write instructions that the hardware converts to global memory accesses.
+
+```c
+/* Source: brw_shader.h — per-shader spill tracking fields */
+unsigned last_scratch;          /* next available byte in scratch buffer */
+bool     spilled_any_registers; /* true if any spills occurred */
+```
+
+### SIMD Width Selection
+
+Fragment shaders are compiled at multiple SIMD widths and the driver selects among them at draw time based on hardware occupancy and register pressure. The `brw_compile_fs()` selection logic (simplified from `src/intel/compiler/brw/brw_compile_fs.cpp`):
+
+```c
+/* Source: src/intel/compiler/brw/brw_compile_fs.cpp — SIMD width selection
+ * (Gfx9–Xe-LP path; Xe2 uses a different multi-polygon strategy) */
+
+/* SIMD8 is compiled first and must succeed; it is the fallback */
+shader_params.dispatch_width = 8;
+v8 = std::make_unique<brw_shader>(&shader_params);
+if (!run_fs(*v8, allow_spilling, false))
+    return NULL; /* fatal: even SIMD8 failed */
+
+/* SIMD16 is attempted; register pressure estimate gates the attempt */
+if (!beyond_threshold[SIMD16] && !has_spilled) {
+    shader_params.dispatch_width = 16;
+    v16 = std::make_unique<brw_shader>(&shader_params);
+    run_fs(*v16, allow_spilling, false);
+}
+
+/* SIMD32 is opportunistic — only if SIMD16 did not spill */
+if (!beyond_threshold[SIMD32] && !has_spilled) {
+    shader_params.dispatch_width = 32;
+    v32 = std::make_unique<brw_shader>(&shader_params);
+    run_fs(*v32, allow_spilling, false);
+}
+```
+
+The `dispatch_width` field on `brw_shader` (exposed as `brw_fs_prog_data::dispatch_grf_start_reg`) is what the iris and ANV drivers write into the hardware pipeline state when setting up a draw.
+
+### SEND Instructions and Message Descriptors
+
+All memory and texture traffic in the EU goes through SEND instructions. A SEND carries a message descriptor — a 32-bit field whose bit layout encodes the target unit, message type, response length, and surface binding table index. BRW exposes helper functions to construct these descriptors:
+
+```c
+/* Source: src/intel/compiler/brw/brw_eu.h — message descriptor helpers */
+
+/* Generic message header: message length, response length, header present */
+static inline uint32_t
+brw_message_desc(const struct intel_device_info *devinfo,
+                 unsigned msg_length,
+                 unsigned response_length,
+                 bool header_present)
+{
+   return (SET_BITS(msg_length   / reg_unit(devinfo), 28, 25) |
+           SET_BITS(response_length / reg_unit(devinfo), 24, 20) |
+           SET_BITS(header_present,  19, 19));
+}
+
+/* Sampler message descriptor: binding_table_index in bits [7:0],
+ * sampler index in bits [11:8], message type in bits [16:12] */
+static inline uint32_t
+brw_sampler_desc(const struct intel_device_info *devinfo,
+                 unsigned binding_table_index,
+                 unsigned sampler,
+                 unsigned msg_type,
+                 unsigned simd_mode,
+                 unsigned return_format)
+{
+   return (SET_BITS(binding_table_index, 7, 0) |
+           SET_BITS(sampler,             11, 8) |
+           SET_BITS(msg_type,            16, 12) | /* and upper bits for Gfx20+ */
+           SET_BITS(simd_mode,           18, 17));
+}
+
+/* Data port message (buffer/image load-store):
+ * binding_table_index [7:0], msg_control [13:8], msg_type [18:14] */
+static inline uint32_t
+brw_dp_desc(const struct intel_device_info *devinfo,
+            unsigned binding_table_index,
+            unsigned msg_type,
+            unsigned msg_control)
+{
+   return (SET_BITS(binding_table_index, 7, 0) |
+           SET_BITS(msg_control,         13, 8) |
+           SET_BITS(msg_type,            18, 14));
+}
+```
+
+The binding table index in bits `[7:0]` of a sampler or data port message is the slot number in the hardware binding table — the hardware-visible array of surface state descriptors set up by the driver command stream. A value of 0 means the first surface, 1 means the second, and so on; the binding table itself lives in the Surface State Base Address region. URB (Unified Return Buffer) write messages carry the vertex output data from vertex shaders; they use a separate URB message descriptor format constructed by `brw_urb_inst` helpers in the backend. [Source: Intel UHD Graphics Programmer's Reference Manual, Render Engine volume](https://cdrdv2-public.intel.com/682648/intel-gfx-prm-osrc-lkf-vol09-renderengine.pdf)
+
+The instruction class hierarchy in `brw_inst.h` maps directly onto these message categories:
+
+```c
+/* Source: src/intel/compiler/brw/brw_inst.h — instruction kind enum */
+enum ENUM_PACKED brw_inst_kind {
+   BRW_KIND_BASE,         /* general ALU, MOV, math */
+   BRW_KIND_SEND,         /* SEND to sampler / data port / LSC */
+   BRW_KIND_LOGICAL,      /* logical send (before lowering to physical) */
+   BRW_KIND_TEX,          /* texture sample (lowered to SEND by brw_lower_logical_sends) */
+   BRW_KIND_MEM,          /* memory load/store (lowered to SEND) */
+   BRW_KIND_DPAS,         /* dot product accumulate systolic (Xe+) */
+   BRW_KIND_URB,          /* URB write (vertex/geometry output) */
+   BRW_KIND_FB_WRITE,     /* framebuffer write (fragment output) */
+   BRW_KIND_SCRATCH,      /* register spill/fill via scratch buffer */
+};
+```
+
+`brw_lower_logical_sends()` (in `src/intel/compiler/brw/brw_lower_logical_sends.cpp`) converts `BRW_KIND_TEX`, `BRW_KIND_MEM`, and other logical send kinds into physical `BRW_KIND_SEND` instructions carrying fully-constructed message descriptors. This pass runs near the end of the pipeline, just before final binary emission.
+
+### Shader Cache Integration
+
+The EU ISA binary produced by BRW is cached in Mesa's disk shader cache. The cache key combines the NIR shader's BLAKE3 hash, the `brw_base_prog_key` (which encodes all NOS — non-orthogonal state — that affects compilation), and a device-specific hash from `brw_device_blake3_update()` (encoding `devinfo` fields that distinguish hardware variants). A cache hit bypasses all NIR lowering and all backend compilation, returning the cached binary directly. [Source: `src/intel/compiler/brw/brw_compiler.h` — "initializes every bit in the shader cache keys"](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/intel/compiler/brw/brw_compiler.h)
+
+This is the same mechanism that Fossilize (Chapter 104) and ANV's pipeline cache bypass: Fossilize replays serialised Vulkan pipeline create calls, seeding the Mesa shader cache with pre-compiled EU ISA binaries so that the first run of a game does not trigger JIT compilation.
+
+### BRW vs. ACO: Architectural Comparison
+
+BRW and ACO (the RADV AMD backend described in Chapter 15) are both production NIR-consuming backends but they take different architectural approaches:
+
+| Aspect | BRW (Intel) | ACO (RADV, AMD) |
+|---|---|---|
+| **Backend IR** | `brw_reg` virtual GRF assignments; out-of-SSA form after `brw_postprocess_nir_out_of_ssa` | Explicit SSA throughout; phi nodes survive until final register allocation |
+| **Register allocation** | Graph colouring on explicit virtual GRF objects (`brw_assign_regs`) | Graph colouring on SSA-form IR; converts out of SSA after RA |
+| **Instruction selection** | `brw_from_nir.cpp` walks NIR and emits `brw_inst` objects; SEND lowering is a separate late pass | `isel.cpp` walks NIR and emits `aco::Instruction` objects in one pass |
+| **SIMD width** | Multiple compilations (SIMD8/16/32) with driver selecting at draw time | Single SIMD64/SIMD32 wave compilation; RDNA hardware has a fixed wave width per stage |
+| **Spilling** | Scratch buffer via A0 address register; `brw_scratch_inst` | LDS and global scratch; handled in RA phase |
+| **Language** | C++ | C++ |
+
+The fundamental difference is that ACO defers out-of-SSA conversion until after register allocation, which allows the allocator to exploit SSA liveness properties (SSA def ranges are tighter than live ranges of explicit assignments). BRW converts to explicit assignments earlier, which simplifies the code generator at the cost of some RA quality. This trade-off reflects the different lineages: BRW descends from the classic i965 compiler (pre-2014) that predates widespread SSA-based GPU compiler research, while ACO was designed from scratch in 2019 with SSA-throughout as a founding constraint.
 
 ---
 
