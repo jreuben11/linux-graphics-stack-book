@@ -19,7 +19,8 @@
 9. [Vulkan and HDR](#vulkan-and-hdr)
 10. [Tone Mapping in the Compositor](#tone-mapping-in-the-compositor)
 11. [HDR Video Passthrough](#hdr-video-passthrough)
-12. [Integrations](#integrations)
+12. [wp_color_management_v1: The Wayland Color Management Protocol](#wp_color_management_v1-the-wayland-color-management-protocol)
+13. [Integrations](#integrations)
 
 ---
 

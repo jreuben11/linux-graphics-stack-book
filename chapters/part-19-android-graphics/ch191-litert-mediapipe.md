@@ -1,0 +1,930 @@
+# Chapter 191 — LiteRT and MediaPipe: On-Device ML Inference on the Android Graphics Stack
+
+> **Audiences:** Graphics and GPU developers who want to understand how ML inference shares `AHardwareBuffer` and GPU compute infrastructure with the Android rendering pipeline; Android application developers integrating on-device ML with camera and display workflows; and systems engineers bridging the ML and GPU subsystems on Android, including those evaluating how the delegate and hardware-accelerator model maps onto the kernel DRM/DMA-BUF and HAL abstractions described in earlier parts of this book.
+
+---
+
+## Table of Contents
+
+1. [Why ML Inference Belongs in a Graphics Stack Book](#1-why-ml-inference-belongs-in-a-graphics-stack-book)
+2. [LiteRT Architecture](#2-litert-architecture)
+3. [Delegate Architecture: Routing Inference to Hardware](#3-delegate-architecture-routing-inference-to-hardware)
+4. [AHardwareBuffer Tensor Interop](#4-ahardwarebuffer-tensor-interop)
+5. [Model Formats and Quantisation](#5-model-formats-and-quantisation)
+6. [MediaPipe Framework Architecture](#6-mediapipe-framework-architecture)
+7. [MediaPipe Tasks API](#7-mediapipe-tasks-api)
+8. [Camera2 → MediaPipe Zero-Copy Pipeline](#8-camera2--mediapipe-zero-copy-pipeline)
+9. [ARCore + MediaPipe Composition](#9-arcore--mediapipe-composition)
+10. [Performance Profiling and Tuning](#10-performance-profiling-and-tuning)
+11. [Roadmap](#11-roadmap)
+12. [Integrations](#12-integrations)
+
+---
+
+## 1. Why ML Inference Belongs in a Graphics Stack Book
+
+A natural question arises when encountering LiteRT and MediaPipe in a book whose previous chapters have traced the path from the Linux DRM subsystem through Mesa, SurfaceFlinger, and Vulkan: why does on-device machine learning inference belong here at all? The answer is that it does not live *beside* the Android graphics stack — it lives *inside* it, sharing the same GPU command queues, the same `AHardwareBuffer` memory objects, the same DMA-BUF backing, and the same EGL context infrastructure described in Ch85 and Ch86.
+
+When an Android application runs pose-landmark detection at 30 frames per second on a phone camera stream, the path is approximately as follows. The Camera HAL produces frames as Gralloc-backed `AHardwareBuffer` objects (Ch85). Those buffers are imported into an OpenGL ES 3.1 compute pipeline — exactly the same command-submission path that GLES rendering uses. The inference result may then flow, still as a GPU-resident tensor, into SurfaceFlinger for overlay composition (Ch85) or into an ARCore pass for world-anchored landmark projection (Ch87). No CPU copy need occur from the moment the camera image leaves the sensor ISP until the landmark overlay is composited to the display framebuffer.
+
+This architecture, pioneered in LiteRT's GPU delegate and systematised by the MediaPipe framework, makes on-device ML inference a *first-class user of GPU resources* on Android. Understanding the buffer lifecycle, delegate dispatch, and synchronisation primitives is therefore essential knowledge for any engineer working at the intersection of Android graphics and ML — and increasingly, that intersection is most of the stack.
+
+A secondary motivation is the rise of LiteRT-LM (announced May 2026), which brings multi-turn large-language-model inference to the same GPU compute pipeline, targeting 52 tokens/second on Android GPU and 56 tokens/second on Apple Metal. [Source: Google Developers Blog, LiteRT-LM](https://developers.googleblog.com/blazing-fast-on-device-genai-with-litert-lm/) On-device LLM inference is not a different technology layer — it is the GPU compute pipeline operating on larger models.
+
+---
+
+## 2. LiteRT Architecture
+
+**LiteRT** is the name Google adopted in 2024 for the inference runtime previously known as TensorFlow Lite (TFLite). The rebrand reflects a strategic broadening: LiteRT is positioned as a universal on-device inference runtime independent of the TensorFlow training ecosystem, competing directly with ONNX Runtime Mobile and CoreML. [Source: ai.google.dev/edge/litert](https://ai.google.dev/edge/litert)
+
+### 2.1 The `.tflite` FlatBuffer Model Format
+
+LiteRT models are stored as [FlatBuffers](https://flatbuffers.dev/), a schema-based binary serialisation format with zero-copy read access. The schema lives in the LiteRT repository at `tflite/schema/schema.fbs`. [Source: LiteRT schema](https://github.com/google-ai-edge/LiteRT/blob/main/tflite/schema/schema.fbs)
+
+A `.tflite` file contains:
+- One or more **subgraphs** (usually one for single-entry-point models; multiple for multi-signature models). Each subgraph has an ordered list of **operators** (encoded as operator codes referencing a built-in or custom op), a list of **tensors** (shape, element type, quantisation parameters, name, and an index into the buffer table), and lists of input and output tensor indices.
+- A **buffer table**: an array of byte arrays holding constant data. Weight tensors point into this table; activation tensors point to a null entry (allocated at runtime).
+- **Metadata**: key-value pairs that attach schema-versioned blobs — used by the `SignatureDef` mechanism and by model-card metadata.
+
+The FlatBuffer layout enables the interpreter to memory-map the file and read tensor weights with zero copy — important on memory-constrained devices where a full deserialization would double peak RSS.
+
+### 2.2 Built-in Op Coverage and Custom Ops
+
+LiteRT ships with a `BuiltinOpResolver` that covers the standard TensorFlow Lite operator set: convolution variants (`CONV_2D`, `DEPTHWISE_CONV_2D`, `TRANSPOSE_CONV`), pooling, activations, element-wise arithmetic, reshape, concatenation, attention-related ops (`BATCH_MATMUL`, `SPLIT`), and quantisation/dequantisation ops. The resolver can be extended with custom ops:
+
+```cpp
+tflite::MutableOpResolver resolver;
+resolver.AddBuiltin(tflite::BuiltinOperator_CONV_2D,
+                    tflite::ops::builtin::Register_CONV_2D());
+// Register a custom C++ kernel
+resolver.AddCustom("MyCustomLayer", RegisterMyCustomLayer());
+```
+
+Custom ops that the GPU delegate does not know about automatically fall back to the CPU partition. If a critical custom op must run on GPU, it can be implemented as a `DelegateKernelInterface` registered with the delegate at creation time — a more advanced pattern used by MediaPipe's `TfLiteInferenceCalculator` for pre/post-processing fusion.
+
+### 2.3 The Interpreter API
+
+The C++ Interpreter API follows a construction-then-invoke pattern:
+
+```cpp
+#include "tflite/interpreter_builder.h"
+#include "tflite/kernels/register.h"
+#include "tflite/model_builder.h"
+
+// Load model (memory-maps the file, no copy)
+auto model = tflite::FlatBufferModel::BuildFromFile("model.tflite");
+
+// Create the op resolver (built-in ops) and build an Interpreter
+tflite::ops::builtin::BuiltinOpResolver resolver;
+std::unique_ptr<tflite::Interpreter> interpreter;
+tflite::InterpreterBuilder(*model, resolver)(&interpreter);
+
+// Allocate activation tensors (malloc/mmap based on planner)
+interpreter->AllocateTensors();
+
+// Access the input tensor and populate it
+float* input = interpreter->typed_input_tensor<float>(0);
+// ... populate input buffer, e.g. from a camera frame ...
+
+// Run inference
+interpreter->Invoke();
+
+// Read the output tensor
+float* output = interpreter->typed_output_tensor<float>(0);
+```
+[Source: LiteRT C++ inference guide](https://ai.google.dev/edge/litert/inference)
+
+The `TfLiteTensor` struct, accessible via `interpreter->input_tensor(i)` and `interpreter->output_tensor(i)`, exposes the layout:
+
+```c
+typedef struct TfLiteTensor {
+    TfLiteType type;           // kTfLiteFloat32, kTfLiteInt8, etc.
+    TfLiteIntArray* dims;      // shape: dims->data[0..rank-1]
+    TfLiteQuantizationParams params; // zero_point, scale for INT8
+    void* data;                // raw pointer to tensor memory
+    size_t bytes;              // byte size of the buffer
+    TfLiteAllocationType allocation_type; // kTfLiteArenaRw, kTfLiteMmapRo, etc.
+    // ... additional fields omitted for brevity
+} TfLiteTensor;
+```
+
+After `AllocateTensors()`, weight tensors point into the memory-mapped model file (`kTfLiteMmapRo`) while activation tensors point into a contiguous arena (`kTfLiteArenaRw`). When a GPU or NNAPI delegate takes ownership of a subgraph, its tensors may switch to a delegate-managed allocation type.
+
+### 2.4 Python API
+
+The Python runtime uses the `tflite-runtime` package (a thin wrapper around the C++ library, separate from the full `tensorflow` package):
+
+```python
+import numpy as np
+from tflite_runtime.interpreter import Interpreter
+
+interpreter = Interpreter(model_path="model.tflite")
+interpreter.allocate_tensors()
+
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+# Populate input
+interpreter.set_tensor(input_details[0]['index'],
+                       np.expand_dims(image_array, axis=0))
+interpreter.invoke()
+
+output = interpreter.get_tensor(output_details[0]['index'])
+```
+[Source: LiteRT Python quickstart](https://ai.google.dev/edge/litert/microcontrollers/python)
+
+The Python API is primarily used for desktop development, rapid prototyping, and the benchmark/evaluation pipeline before deploying models to Android NDK.
+
+---
+
+## 3. Delegate Architecture: Routing Inference to Hardware
+
+The delegate system is LiteRT's mechanism for offloading operator subgraphs to hardware accelerators. After `InterpreterBuilder` constructs the interpreter with a CPU kernel map, delegates inspect the graph, claim the subset of operators they can accelerate, and replace those nodes with an opaque "delegate node" whose `Invoke()` method dispatches to hardware. The remaining operators run on CPU. This partitioning is called **delegation**.
+
+### 3.0 Graph Partitioning
+
+When `interpreter->ModifyGraphWithDelegate(delegate)` is called, LiteRT's graph partitioner runs a DFS over the operator DAG. For each operator, it queries `TfLiteDelegate::flags` and calls the delegate's `IsNodeSupportedFn` callback to determine which nodes the delegate can handle. Contiguous runs of supported nodes form **delegate partitions** — opaque super-nodes in the graph. The remaining unsupported nodes stay on CPU. `max_delegated_partitions` bounds the number of partitions the delegate may claim; setting it to 1 forces all accelerated ops into a single contiguous subgraph, which is often preferable because partitioned graphs incur CPU↔GPU synchronisation overhead at each partition boundary.
+
+After partitioning, each delegate partition registers a `TfLiteNode` whose `invoke` callback calls into the delegate's `DelegateKernelInterface::Invoke()`. From the scheduler's perspective, a delegate partition is just another op with GPU memory inputs and outputs.
+
+### 3.1 NNAPI Delegate
+
+**Note (2025):** The Android Neural Networks API (NNAPI) was deprecated in Android 15 (API level 35). Google recommends migrating to vendor-specific NPU delegates (see §3.3 below) or the GPU delegate for hardware acceleration on Android 15+ devices. [Source: Android NNAPI migration guide](https://developer.android.com/ndk/guides/neuralnetworks/migration-guide)
+
+For devices on Android 8.1 through 14, the NNAPI delegate routes inference through `ANeuralNetworksModel` to the OEM-provided NNAPI runtime, which may dispatch to a DSP (e.g., Qualcomm Hexagon), NPU, or the GPU. The delegate creates an `ANeuralNetworksModel`, adds operations by walking the claimed subgraph, calls `ANeuralNetworksCompilation_create()`, and submits execution via `ANeuralNetworksExecution_startComputeWithDependencies()` with sync fence support.
+
+```cpp
+#include "tflite/delegates/nnapi/nnapi_delegate.h"
+
+TfLiteNnapiDelegateOptions options = TfLiteNnapiDelegateOptionsDefault();
+options.allow_fp16 = true;
+options.execution_preference =
+    StatefulNnApiDelegate::Options::kSustainedSpeed;
+// Limit delegation to top-N partitions to avoid fragmented small subgraphs
+options.max_number_delegated_partitions = 3;
+
+TfLiteDelegate* nnapi_delegate = TfLiteNnapiDelegateCreate(&options);
+interpreter->ModifyGraphWithDelegate(nnapi_delegate);
+```
+[Source: LiteRT NNAPI delegate](https://ai.google.dev/edge/litert/android/delegates/nnapi)
+
+The NNAPI delegate handles automatic op fallback: ops that the hardware runtime rejects remain on the CPU partition.
+
+**NNAPI compilation caching** reduces cold-start latency. Pass a cache directory and token to `ANeuralNetworksCompilation_setCaching()`:
+
+```cpp
+options.cache_dir = "/data/local/tmp/nnapi_cache";
+options.model_token = "my_model_v1";
+```
+
+Without caching, NNAPI compilation can take 1–5 seconds on first launch, unacceptable for production apps.
+
+### 3.2 GPU Delegate
+
+The GPU delegate runs inference as **OpenGL ES 3.1 compute shaders** (the default on most Android devices) or **Vulkan compute pipelines** (when `TFLITE_GPU_EXPERIMENTAL_FLAGS_ENABLE_VULKAN_INFERENCE` is set in `experimental_flags`). The delegate translates the LiteRT operator graph into a series of GLSL compute shaders (or SPIR-V compute pipelines), compiling each op into one or more dispatch calls. [Source: LiteRT GPU delegate](https://ai.google.dev/edge/litert/performance/gpu)
+
+The options struct, defined in `tflite/delegates/gpu/delegate_options.h`, controls behaviour:
+
+```cpp
+#include "tflite/delegates/gpu/delegate.h"
+
+TfLiteGpuDelegateOptionsV2 options = TfLiteGpuDelegateOptionsV2Default();
+
+// For sustained inference (live camera stream) — maximise throughput:
+options.inference_preference =
+    TFLITE_GPU_INFERENCE_PREFERENCE_SUSTAINED_SPEED;
+
+// Priority ordering: latency first, then precision, then memory:
+options.inference_priority1 = TFLITE_GPU_INFERENCE_PRIORITY_MIN_LATENCY;
+options.inference_priority2 = TFLITE_GPU_INFERENCE_PRIORITY_MAX_PRECISION;
+options.inference_priority3 = TFLITE_GPU_INFERENCE_PRIORITY_MIN_MEMORY_USAGE;
+
+// Serialisation: cache compiled shaders to avoid recompilation on restart:
+options.serialization_dir = "/data/local/tmp/litert_gpu_cache";
+options.model_token = "pose_landmark_lite_v1";
+
+TfLiteDelegate* gpu_delegate = TfLiteGpuDelegateV2Create(&options);
+interpreter->ModifyGraphWithDelegate(gpu_delegate);
+```
+[Source: TfLiteGpuDelegateOptionsV2 header](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/lite/delegates/gpu/delegate_options.h)
+
+Key fields in `TfLiteGpuDelegateOptionsV2`:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `inference_preference` | `int32_t` | `FAST_SINGLE_ANSWER` (0) or `SUSTAINED_SPEED` (1) or `BALANCED` (2) |
+| `inference_priority1/2/3` | `int32_t` | Ordered priorities: AUTO, MAX_PRECISION, MIN_LATENCY, MIN_MEMORY_USAGE |
+| `experimental_flags` | `int64_t` | Bitmask for Vulkan backend, etc. |
+| `max_delegated_partitions` | `int32_t` | Limit graph partitioning (default 1) |
+| `serialization_dir` | `const char*` | Path for compiled kernel cache |
+| `model_token` | `const char*` | Unique identifier for cache namespace |
+
+**Thread-safety note:** When calling `Interpreter::ModifyGraphWithDelegate()` or `Interpreter::Invoke()`, the calling thread must have an EGLContext active. If one does not exist, the delegate creates one internally, but then all subsequent `Invoke()` calls must originate from the same thread. This is a common integration pitfall in Android JNI code. [Source: LiteRT GPU C/C++ guide](https://ai.google.dev/edge/litert/android/gpu_native)
+
+Shader serialisation (`serialization_dir` + `model_token`) persists compiled GLSL/SPIR-V kernels to disk. On subsequent runs, the delegate loads the binary directly, reducing first-inference latency from ~500 ms to ~10 ms on a mid-range Adreno GPU.
+
+### 3.3 NPU / Vendor Delegates
+
+Following NNAPI's deprecation, chip vendors ship LiteRT delegate libraries directly:
+
+- **Qualcomm AI Engine Direct Delegate** (`libQnnTFLiteDelegate.so`): Routes inference to the Hexagon DSP via the Qualcomm Neural Network API (QNN). Available on Maven Central. [Source: Google Developers Blog, Qualcomm NPU LiteRT](https://developers.googleblog.com/unlocking-peak-performance-on-qualcomm-npu-with-litert/)
+- **Google Tensor NPU delegate**: Experimental Tensor ML SDK targeting Pixel 9's Tensor G4 TPU; expected general availability in late 2026.
+- **Intel OpenVINO delegate**: Targets Intel NPU on x86 platforms via LiteRT's `CompiledModel` API.
+
+### 3.4 Edge TPU Delegate
+
+Coral hardware (USB, M.2, and PCIe Edge TPU accelerators) uses a separate delegate:
+
+```cpp
+#include "edgetpu.h"
+
+TfLiteDelegate* edgetpu_delegate = edgetpu_create_delegate(
+    EDGETPU_APEX_USB, /*device=*/nullptr, /*options=*/nullptr, 0);
+interpreter->ModifyGraphWithDelegate(edgetpu_delegate);
+```
+
+Edge TPU models must be compiled with the [Edge TPU compiler](https://coral.ai/docs/edgetpu/compiler/) ahead of time, which quantises ops to INT8 and maps them to the TPU's SIMD arrays. Ops that the compiler cannot map remain on CPU.
+
+---
+
+## 4. AHardwareBuffer Tensor Interop
+
+This section covers the primary integration point with Ch85 (SurfaceFlinger and `AHardwareBuffer`) and Ch86 (Vulkan on Android). The GPU delegate can bind `AHardwareBuffer`-backed memory directly as tensor storage, enabling a zero-copy path from the Android Camera HAL to the inference engine.
+
+### 4.1 Memory Model
+
+An `AHardwareBuffer` wraps a Gralloc-allocated buffer — a DMA-BUF file descriptor managed by the kernel's GEM/DMA heap subsystem. On import into OpenGL ES, the buffer becomes an **SSBO** (shader storage buffer object) or an **EGLImage** depending on its format. The GPU delegate imports it as an OpenGL ES SSBO when the format is `AHARDWAREBUFFER_FORMAT_BLOB` (a raw byte array suitable for tensor data), or as an `EGLImage` (via `eglCreateImageKHR` with `EGL_ANDROID_image_native_buffer`) when the format is a pixel format.
+
+### 4.2 Usage Flags
+
+`AHardwareBuffer_Desc.usage` encodes the access pattern. For tensor data:
+
+```c
+AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER   // Generic GPU-readable/writable blob
+AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN   // CPU fills the buffer from camera/sensor
+AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE // GPU reads it as a texture (pixel inputs)
+```
+
+[Source: AHardwareBuffer NDK docs](https://developer.android.com/ndk/reference/group/a-hardware-buffer)
+
+### 4.3 Allocating and Binding a Tensor Buffer
+
+The following pattern allocates an `AHardwareBuffer` for use as a 1-D float tensor of `N` elements, then binds it to the GPU delegate:
+
+```c
+#include <android/hardware_buffer.h>
+#include "tflite/delegates/gpu/delegate.h"
+
+// Step 1: Describe the buffer
+AHardwareBuffer_Desc desc = {
+    .width  = N,           // number of floats (blob: width = total bytes / 4)
+    .height = 1,
+    .layers = 1,
+    .format = AHARDWAREBUFFER_FORMAT_BLOB,
+    .usage  = AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER |
+              AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN,
+};
+
+// Step 2: Allocate the buffer (requires API level 26 / Android 8.0+)
+AHardwareBuffer* ahwb = nullptr;
+AHardwareBuffer_allocate(&desc, &ahwb);
+
+// Step 3: Import the AHardwareBuffer into an OpenGL ES buffer object.
+// Use EGL_ANDROID_image_native_buffer + GL_OES_EGL_image to get a GL
+// buffer handle, then bind it to the LiteRT GPU delegate.
+// TfLiteGpuDelegateAssignGLBufferToTensor() binds an existing GL buffer
+// object (obtained via eglCreateImageKHR + glEGLImageTargetTexture2DOES
+// or via GL_EXT_memory_object_fd for DMA-BUF import) to a tensor index.
+//
+// Note: The exact binding function name varies by LiteRT version. As of
+// LiteRT 1.x, the API is TfLiteGpuDelegateAssignGLBufferToTensor();
+// check the installed header tflite/delegates/gpu/gl/gl_buffer.h for
+// the current signature. The function requires the GPU delegate to be
+// created with experimental_flags enabling the advanced buffer API.
+//
+// Pseudocode — verify against installed headers before use:
+GLuint gl_buffer = ImportAHardwareBufferAsGLBuffer(ahwb); // platform-specific
+TfLiteGpuDelegateAssignGLBufferToTensor(gpu_delegate, tensor_index, gl_buffer);
+```
+
+**Zero-copy flow:** Camera2 `ImageReader` → `Image.getHardwareBuffer()` → `AHardwareBuffer` → GPU delegate input tensor (imported as GL SSBO) → GLSL compute dispatch → output tensor (GPU-resident) → SurfaceFlinger via `ASurfaceTransaction_setBuffer()` or Vulkan via `VK_ANDROID_external_memory_android_hardware_buffer`.
+
+The critical detail is that once the `AHardwareBuffer` is bound to the GPU delegate's input tensor, `Interpreter::Invoke()` initiates a compute dispatch that reads the buffer directly from the GPU L2 cache, never involving a CPU data transfer. The caller must ensure the Camera2 acquisition fence has been signalled before invoking — use Android's `Sync` fence API (`sync_wait()` or `eglClientWaitSyncKHR()`) to block until the HAL has finished writing. [Source: Ch85, SurfaceFlinger sync fence discussion]
+
+### 4.4 Pixel Tensor Inputs (Image Format)
+
+For image-format inputs (e.g., RGB float textures for vision models), the GPU delegate can read from an `EGLImage` backed by an `AHardwareBuffer` with `AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM`. The `TfLiteGpuDelegateOptionsV2` must have quantisation inference enabled if the model expects normalised `uint8` inputs. A GLSL preprocessing shader scales `[0, 255]` → `[-1.0, 1.0]` before the first convolution layer. This preprocessing pass executes on-GPU alongside the rest of inference, adding negligible overhead relative to a CPU-side normalisation loop.
+
+---
+
+## 5. Model Formats and Quantisation
+
+### 5.1 FlatBuffer Schema
+
+The `.tflite` schema (`tflite/schema/schema.fbs`, current schema version 3) encodes quantisation parameters at the per-tensor level using `QuantizationParameters`: an array of `scale` values and `zero_point` offsets, supporting per-channel quantisation for weights and per-tensor quantisation for activations. [Source: LiteRT schema FBS](https://github.com/google-ai-edge/LiteRT/blob/main/tflite/schema/schema.fbs)
+
+### 5.2 INT8 Post-Training Quantisation (PTQ)
+
+INT8 PTQ reduces a float32 model's weight and activation tensors to 8-bit signed integers. The primary benefits are 4× weight memory reduction and faster arithmetic on DSP/NPU hardware (which often has native INT8 MACs but no float32 MAC units). The typical conversion workflow uses TensorFlow's `tf.lite.TFLiteConverter`:
+
+```python
+import tensorflow as tf
+
+converter = tf.lite.TFLiteConverter.from_saved_model("saved_model/")
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+
+# Provide a representative dataset for activation range calibration
+def representative_data_gen():
+    for image in calibration_images[:100]:
+        yield [image[np.newaxis, :, :, :].astype(np.float32)]
+
+converter.representative_dataset = representative_data_gen
+converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+converter.inference_input_type  = tf.int8
+converter.inference_output_type = tf.int8
+
+tflite_model = converter.convert()
+```
+
+INT8 quantisation typically achieves 2–4× latency speedup on NNAPI/NPU and 1.5–2× on the GPU delegate, with <1% accuracy loss on most vision models when a good calibration dataset is used.
+
+### 5.3 INT4 Quantisation for On-Device LLMs
+
+LiteRT 2.x supports block-wise INT4 weight quantisation targeting large language models. INT4 stores two weight values per byte, achieving 8× compression relative to float32. This enables Gemma 2B (2 billion parameters) to reside in approximately 1 GB of device RAM, within reach of mid-range Android devices. The quantisation scheme is group-wise (block size 32 or 64 weights), storing a float16 scale per group. Activations remain in float16 at runtime.
+
+```python
+# ai-edge-torch export with INT4 quantization
+import ai_edge_torch
+import torch
+
+model = MyGemmaModel()
+sample_inputs = (torch.randint(0, 32000, (1, 128)),)  # token ids
+
+# INT4 weight-only quantization via ai_edge_torch
+edge_model = ai_edge_torch.convert(
+    model.eval(), sample_inputs,
+    quant_config=ai_edge_torch.quantize.quant_config.QuantConfig(
+        generative_weights=ai_edge_torch.quantize.QuantizationRecipe.INT4_WEIGHT_ONLY
+    )
+)
+edge_model.export("gemma2b_int4.tflite")
+```
+[Source: ai-edge-torch](https://github.com/google-ai-edge/ai-edge-torch)
+
+### 5.4 Dynamic Range Quantisation
+
+Dynamic range quantisation quantises weights to INT8 at conversion time but dequantises them to float32 at runtime before MAC operations. This yields ~2× weight-memory reduction with minimal accuracy impact, and requires no calibration dataset. Activations remain in float32, so it is less effective on NPUs that prefer fully-quantised INT8 graphs.
+
+### 5.5 Multi-Signature Models
+
+`SignatureDef` allows multiple named inference entry points in a single `.tflite` file. Call `interpreter->GetSignatureRunner("encode")` and `interpreter->GetSignatureRunner("decode")` to switch between subgraphs. This pattern is used by LLM tokeniser+model combos and by multi-task models that share a backbone but expose separate task heads.
+
+### 5.6 ONNX and PyTorch Conversion
+
+The `ai-edge-torch` package provides a PyTorch-native export path:
+
+```python
+import ai_edge_torch
+
+# Convert directly from a PyTorch nn.Module
+edge_model = ai_edge_torch.convert(torch_model.eval(), sample_inputs)
+edge_model.export("model.tflite")
+```
+
+The resulting `.tflite` is semantically identical to one produced from TensorFlow SavedModel. `onnx-tf` followed by `tf.lite.TFLiteConverter` remains an option for ONNX sources, though `ai-edge-torch` is now preferred for PyTorch-originating models. [Source: ai-edge-torch GitHub](https://github.com/google-ai-edge/ai-edge-torch)
+
+| Runtime | Format | Primary Backend | Android Delegation |
+|---|---|---|---|
+| LiteRT | `.tflite` | GPU (GLES/Vulkan), NPU | GPU delegate, Qualcomm QNN |
+| ONNX Runtime Mobile | `.onnx` / `.ort` | CPU / NNAPI | NNAPI EP (deprecated API 35+) |
+| CoreML (iOS) | `.mlpackage` | ANE | N/A |
+| OpenVINO Mobile | `.xml`/`.bin` | CPU / Intel NPU | LiteRT CompiledModel |
+
+---
+
+## 6. MediaPipe Framework Architecture
+
+**MediaPipe** is Google's cross-platform framework for building live, streaming ML pipelines from modular, composable processing nodes. It is developed in the [google-ai-edge/mediapipe](https://github.com/google-ai-edge/mediapipe) repository and supports Android, iOS, Linux, macOS, and Web (via WASM). [Source: MediaPipe framework](https://developers.google.com/mediapipe/framework)
+
+### 6.1 CalculatorGraph
+
+The central abstraction is the `CalculatorGraph`: a directed acyclic graph (DAG) of `Calculator` nodes connected by typed, timestamped **Packet** streams. Graphs are defined as Protocol Buffer text (`CalculatorGraphConfig`) and compiled into a validated execution graph at runtime.
+
+```proto
+// Minimal pose inference graph (text proto)
+input_stream: "input_video"
+output_stream: "pose_landmarks"
+
+node {
+  calculator: "ImageToTensorCalculator"
+  input_stream: "IMAGE:input_video"
+  output_stream: "TENSORS:input_tensors"
+  options { [mediapipe.ImageToTensorCalculatorOptions.ext] {
+    output_tensor_width: 256
+    output_tensor_height: 256
+    keep_aspect_ratio: false
+    output_tensor_float_range { min: -1.0 max: 1.0 }
+    gpu_origin: TOP_LEFT
+  }}
+}
+node {
+  calculator: "TfLiteInferenceCalculator"
+  input_stream: "TENSORS:input_tensors"
+  output_stream: "TENSORS:output_tensors"
+  options { [mediapipe.TfLiteInferenceCalculatorOptions.ext] {
+    model_path: "pose_landmark_lite.tflite"
+    delegate { gpu {} }
+  }}
+}
+node {
+  calculator: "TfLiteTensorsToLandmarksCalculator"
+  input_stream: "TENSORS:output_tensors"
+  output_stream: "NORM_LANDMARKS:pose_landmarks"
+}
+```
+[Source: MediaPipe framework graph documentation](https://developers.google.com/mediapipe/framework/framework_concepts/calculators)
+
+### 6.2 Calculator Lifecycle
+
+Every `Calculator` subclass implements:
+
+```cpp
+class MyCalculator : public mediapipe::CalculatorBase {
+ public:
+  // Declares input/output stream types and side-packet types
+  static absl::Status GetContract(CalculatorContract* cc);
+
+  // Called once before the first Process(); open resources
+  absl::Status Open(CalculatorContext* cc) override;
+
+  // Called once per packet; do computation here
+  absl::Status Process(CalculatorContext* cc) override;
+
+  // Called once after all packets are processed; release resources
+  absl::Status Close(CalculatorContext* cc) override;
+};
+```
+
+`GetContract()` is a static method that describes the calculator's interface to the graph validation engine. Input and output streams carry typed packets; the type is encoded as a C++ type tag (e.g., `mediapipe::ImageFrame`, `mediapipe::GpuBuffer`, `std::vector<mediapipe::Tensor>`).
+
+### 6.3 Packets and Timestamps
+
+A `Packet` is an immutable, typed, reference-counted data container with a `Timestamp`:
+
+```cpp
+// Wrapping data in a Packet
+auto packet = mediapipe::MakePacket<mediapipe::GpuBuffer>(gpu_buffer)
+                  .At(mediapipe::Timestamp(frame_timestamp_us));
+
+// Extracting data from a Packet
+const mediapipe::GpuBuffer& buffer = packet.Get<mediapipe::GpuBuffer>();
+```
+
+Timestamps are in microseconds and flow monotonically through the graph. The graph scheduler dispatches `Process()` in timestamp order, enabling correct synchronisation when multiple input streams must be aligned (e.g., combining camera frames with depth frames that arrive at different rates).
+
+### 6.4 GlCalculatorHelper and GPU Context Management
+
+For calculators that execute GLES commands, `GlCalculatorHelper` manages the EGL context and provides safe context-switch operations:
+
+```cpp
+class MyGlCalculator : public mediapipe::CalculatorBase {
+  mediapipe::GlCalculatorHelper gpu_helper_;
+
+  absl::Status Open(CalculatorContext* cc) override {
+    // Acquires an EGL context; all GPU operations must be wrapped in
+    // RunInGlContext to ensure correct context-switch semantics
+    return gpu_helper_.Open(cc);
+  }
+
+  absl::Status Process(CalculatorContext* cc) override {
+    return gpu_helper_.RunInGlContext([&]() -> absl::Status {
+      auto src = gpu_helper_.CreateSourceTexture(
+          cc->Inputs().Tag("IMAGE").Get<mediapipe::GpuBuffer>());
+      gpu_helper_.BindFramebuffer(dst_texture_);
+      // ... issue GLES draw calls ...
+      return absl::OkStatus();
+    });
+  }
+};
+```
+[Source: GlCalculatorHelper header](https://github.com/google-ai-edge/mediapipe/blob/master/mediapipe/gpu/gl_calculator_helper.h)
+
+`RunInGlContext()` switches to the helper's EGL context, executes the lambda, and restores the previous context. This abstraction means that multiple graph threads can share a single EGL context without race conditions.
+
+### 6.5 GpuBuffer, GlTexture, and AHardwareBuffer Interop
+
+`mediapipe::GpuBuffer` is a platform-neutral container for GPU-resident image data. On Android it wraps an `AHardwareBuffer` via `GpuBufferStorageAhwb` (when available), falling back to `GpuBufferStorageEglImage` for older devices. [Source: MediaPipe GPU docs](https://developers.google.com/mediapipe/framework/framework_concepts/gpu)
+
+The interop chain:
+
+```
+AHardwareBuffer (Gralloc, DMA-BUF)
+    ↓ eglCreateImageKHR(EGL_ANDROID_image_native_buffer)
+EGLImageKHR
+    ↓ glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, ...)
+GL_TEXTURE_EXTERNAL_OES (samplerExternalOES in GLSL)
+    ↓ GlTexture / GpuBuffer::GetGlTextureBufferSharedPtr()
+mediapipe::GpuBuffer
+    ↓ MakePacket<GpuBuffer>()
+MediaPipe Packet
+```
+
+`AHardwareBufferView` on Android 29+ enables direct CPU access to the buffer with automatic GPU-CPU synchronisation, ensuring that GPU writes have completed before the CPU reads the data. This is used by `GpuBuffer::GetReadView<AHardwareBufferView>()` in newer MediaPipe versions.
+
+### 6.6 InputStreamHandlers
+
+`CalculatorGraph` supports multiple scheduling modes:
+
+- `DefaultInputStreamHandler`: Synchronises packets across all input streams by timestamp. A calculator's `Process()` is called only when all inputs have a packet at the same timestamp. Appropriate for cameras + depth-sensor fusion.
+- `ImmediateInputStreamHandler`: Calls `Process()` whenever any new packet arrives on any input stream, without waiting for other streams. Appropriate for low-latency single-stream inference.
+- `FixedSizeInputStreamHandler`: Bounds queue depth to prevent backpressure accumulation during transient slowdowns.
+
+---
+
+## 7. MediaPipe Tasks API
+
+The **Tasks API**, introduced in 2022, wraps `CalculatorGraph` behind strongly-typed, high-level task interfaces that hide graph configuration entirely. It is the recommended entry point for application developers. [Source: MediaPipe Tasks API](https://developers.google.com/mediapipe/solutions/guide)
+
+### 7.1 BaseOptions and RunningMode
+
+All Tasks share a common `BaseOptions` structure:
+
+```kotlin
+val baseOptions = BaseOptions.builder()
+    .setModelAssetPath("pose_landmarker_lite.task")
+    .setDelegate(Delegate.GPU)          // CPU, GPU, or NNAPI (deprecated API 35+)
+    .build()
+```
+
+`RunningMode` controls the processing contract:
+- `IMAGE`: Single still image input, synchronous result.
+- `VIDEO`: Timestamped video frames; the task uses inter-frame state (e.g., tracking).
+- `LIVE_STREAM`: Asynchronous streaming mode; results are delivered via a registered callback on a MediaPipe-managed thread. Callers must not block in the callback.
+
+### 7.2 Available Vision Tasks
+
+| Task | Output Type | Key Output Fields |
+|---|---|---|
+| `ObjectDetector` | `ObjectDetectionResult` | Bounding boxes, category labels, scores |
+| `PoseLandmarker` | `PoseLandmarkerResult` | 33 normalised landmarks + 33 world landmarks (metres) per person |
+| `HandLandmarker` | `HandLandmarkerResult` | 21 landmarks per hand, handedness (Left/Right + score) |
+| `FaceLandmarker` | `FaceLandmarkerResult` | 478 mesh landmarks, 52 blend shape coefficients |
+| `ImageClassifier` | `ClassificationResult` | Category label, score |
+| `ImageSegmenter` | `ImageSegmenterResult` | Per-pixel mask tensors (confidence per category) |
+| `GestureRecognizer` | `GestureRecognitionResult` | Hand gesture category, landmarks |
+
+[Source: MediaPipe Solutions guide](https://developers.google.com/mediapipe/solutions/vision/pose_landmarker)
+
+### 7.3 PoseLandmarker — Kotlin Live-Stream Example
+
+```kotlin
+import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.core.Delegate
+import com.google.mediapipe.tasks.vision.core.RunningMode
+import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarker
+import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarker.PoseLandmarkerOptions
+import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarkerResult
+import com.google.mediapipe.framework.image.MPImage
+
+val options = PoseLandmarkerOptions.builder()
+    .setBaseOptions(
+        BaseOptions.builder()
+            .setModelAssetPath("pose_landmarker_lite.task")
+            .setDelegate(Delegate.GPU)
+            .build()
+    )
+    .setRunningMode(RunningMode.LIVE_STREAM)
+    .setNumPoses(1)
+    .setMinPoseDetectionConfidence(0.5f)
+    .setMinPosePresenceConfidence(0.5f)
+    .setMinTrackingConfidence(0.5f)
+    .setResultListener { result: PoseLandmarkerResult, input: MPImage ->
+        renderLandmarks(result)
+    }
+    .setErrorListener { error -> Log.e(TAG, "Pose error", error) }
+    .build()
+
+val poseLandmarker: PoseLandmarker =
+    PoseLandmarker.createFromOptions(context, options)
+
+// Per camera frame (called from CameraX ImageAnalysis.Analyzer):
+val mpImage = BitmapImageBuilder(bitmap).build()  // or MediaImageBuilder
+poseLandmarker.detectAsync(mpImage, SystemClock.uptimeMillis())
+```
+[Source: MediaPipe PoseLandmarker Android guide](https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker/android)
+
+The `detectAsync()` call is non-blocking. The Tasks runtime enqueues the frame on MediaPipe's internal `CalculatorGraph`, and the `setResultListener` callback fires on a background thread when inference completes. The 33 normalised landmarks are in `[0, 1]` image coordinates; the 33 world landmarks are in metres relative to the hip midpoint.
+
+### 7.4 LLM Inference Task
+
+MediaPipe's `LlmInference` task (Android/iOS) has been superseded by **LiteRT-LM** (announced May 2026), which provides a dedicated orchestration layer for autoregressive LLM inference including KV-cache management, INT4/INT8 weight dispatch, and NPU routing. The MediaPipe LLM Inference API is now in maintenance-only mode; new projects should use the LiteRT-LM Android/iOS SDK. [Source: LiteRT-LM announcement](https://developers.googleblog.com/blazing-fast-on-device-genai-with-litert-lm/)
+
+---
+
+## 8. Camera2 → MediaPipe Zero-Copy Pipeline
+
+The primary production use-case for MediaPipe on Android is live inference on camera frames. The full zero-copy path avoids any CPU-side pixel copy between the camera HAL and the inference GPU.
+
+### 8.1 Camera2 SurfaceTexture Path
+
+```
+┌─────────────────────────────────────────────────────┐
+│ Camera HAL3                                          │
+│ process_capture_result() → AHardwareBuffer           │
+└───────────────────────────┬─────────────────────────┘
+                            │ Gralloc / DMA-BUF fd
+                            ▼
+┌─────────────────────────────────────────────────────┐
+│ SurfaceTexture (android.graphics.SurfaceTexture)    │
+│ updateTexImage() → GL_TEXTURE_EXTERNAL_OES           │
+└───────────────────────────┬─────────────────────────┘
+                            │ EGLImage (EGL_ANDROID_image_native_buffer)
+                            ▼
+┌─────────────────────────────────────────────────────┐
+│ MediaPipe GpuBuffer (GpuBufferStorageEglImage)       │
+│ MakePacket<GpuBuffer>()                              │
+└───────────────────────────┬─────────────────────────┘
+                            │ Packet on "input_video" stream
+                            ▼
+┌─────────────────────────────────────────────────────┐
+│ ImageToTensorCalculator                              │
+│ Normalise + resize → std::vector<Tensor>             │
+└───────────────────────────┬─────────────────────────┘
+                            │ Packets on "input_tensors" stream
+                            ▼
+┌─────────────────────────────────────────────────────┐
+│ TfLiteInferenceCalculator (GPU delegate)             │
+│ GLSL compute dispatch                                │
+└───────────────────────────┬─────────────────────────┘
+                            │ Packets on "output_tensors" stream
+                            ▼
+┌─────────────────────────────────────────────────────┐
+│ LandmarksToRenderDataCalculator                      │
+│ OverlayRenderer → AHardwareBuffer output frame       │
+└─────────────────────────────────────────────────────┘
+```
+
+### 8.2 CameraX Integration
+
+MediaPipe's Android SDK integrates with CameraX via `CameraXPreviewHelper` and `CameraXSourceCalculator`. The recommended integration in 2025/2026 is via CameraX's `ImageAnalysis` use-case:
+
+```kotlin
+val imageAnalyzer = ImageAnalysis.Builder()
+    .setTargetResolution(Size(1280, 720))
+    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+    .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+    .build()
+    .also { analysis ->
+        analysis.setAnalyzer(cameraExecutor) { imageProxy ->
+            // Convert ImageProxy to MPImage and feed to the Task
+            val mpImage = MediaImageBuilder(imageProxy.image!!).build()
+            poseLandmarker.detectAsync(mpImage, imageProxy.imageInfo.timestamp / 1000L)
+            imageProxy.close()
+        }
+    }
+```
+
+`ImageProxy.image` is a `Media.Image` backed by a `PRIVATE` format `ImageReader`, which on Adreno and Mali GPUs allocates a GPU-tiled `AHardwareBuffer`. `MediaImageBuilder` wraps it as an `MPImage` without copying. [Source: CameraX image analysis](https://developer.android.com/training/camerax/analyze)
+
+### 8.3 Timestamp Synchronisation
+
+Camera2 timestamps are in nanoseconds since boot (`Image.getTimestamp()`, type `long`). MediaPipe timestamps are in microseconds. The conversion is:
+
+```kotlin
+val mediapipeTimestampUs = imageProxy.imageInfo.timestamp / 1_000L
+poseLandmarker.detectAsync(mpImage, mediapipeTimestampUs)
+```
+
+Monotonic alignment is guaranteed since both use `CLOCK_BOOTTIME`. Failure to convert correctly manifests as the scheduler rejecting out-of-order packets — a common integration bug.
+
+### 8.4 AHardwareBuffer Direct Path (API 29+)
+
+On devices with Android 10+ (API 29+), `Image.getHardwareBuffer()` returns the underlying `AHardwareBuffer` directly, enabling MediaPipe's `GpuBufferStorageAhwb` path:
+
+```kotlin
+val hardwareBuffer: HardwareBuffer? = imageProxy.image?.hardwareBuffer
+if (hardwareBuffer != null) {
+    // MediaPipe can wrap this directly without creating an EGLImage
+    val mpImage = BitmapImageBuilder(
+        Bitmap.wrapHardwareBuffer(hardwareBuffer, null)!!
+    ).build()
+}
+```
+
+On hardware that supports Vulkan memory import (`VK_ANDROID_external_memory_android_hardware_buffer`), the GPU delegate's Vulkan backend can import the buffer via `vkGetAndroidHardwareBufferPropertiesANDROID()` and dispatch compute directly — the same import mechanism described for ARCore in Ch86.
+
+---
+
+## 9. ARCore + MediaPipe Composition
+
+Combining ARCore (Ch87) with MediaPipe enables spatial-aware on-device inference: ARCore provides world geometry, camera pose, and the background camera texture; MediaPipe runs ML inference on the same camera image simultaneously.
+
+### 9.1 Shared GL Context and Texture
+
+ARCore and MediaPipe can operate within the same EGLContext. ARCore's `ArSession` owns the camera texture handle — a `GL_TEXTURE_EXTERNAL_OES` texture populated by the Camera HAL at each `ArSession_update()` call. MediaPipe's `GlCalculatorHelper` is initialised with the existing EGL context rather than creating a new one:
+
+```cpp
+// In JNI / NDK layer after ArSession_create()
+mediapipe::GlCalculatorHelper gpu_helper;
+// Pass existing EGLContext from ARCore session
+gpu_helper.InitializeForTest(ar_gl_context);
+
+// Wrap ARCore's camera texture as a MediaPipe GpuBuffer
+mediapipe::GpuBuffer camera_gpu_buffer =
+    mediapipe::WrapGpuBufferFromExternalOES(ar_camera_texture_id,
+                                            frame_width, frame_height);
+```
+
+Sharing the context eliminates the need for EGL sync objects at the ARCore/MediaPipe boundary — both AR rendering and ML inference read from the same texture object.
+
+### 9.2 Timestamp Synchronisation
+
+`ArFrame_getTimestamp()` returns nanoseconds since boot (`int64_t`), identical to Camera2's `Image.getTimestamp()`. Convert to MediaPipe microseconds:
+
+```c
+int64_t ar_timestamp_ns;
+ArFrame_getTimestamp(ar_session, ar_frame, &ar_timestamp_ns);
+mediapipe::Timestamp mp_timestamp(ar_timestamp_ns / 1000LL);
+```
+
+### 9.3 Person Segmentation Overlay on AR Scene
+
+A practical pattern for AR applications:
+
+1. ARCore provides the `GL_TEXTURE_EXTERNAL_OES` camera image and the `ArCamera_getViewMatrix()` / `ArCamera_getProjectionMatrix()` transforms.
+2. MediaPipe `SelfieSegmentationCalculator` processes the camera texture in GLES compute, producing a single-channel `GpuBuffer` mask (confidence that each pixel is foreground person).
+3. The mask is uploaded to a GLES texture and blended in the AR fragment shader:
+
+```glsl
+// Fragment shader: blend AR scene with real-world background
+// based on segmentation mask
+uniform sampler2D u_ArSceneTexture;
+uniform sampler2D u_SegmentationMask;
+uniform samplerExternalOES u_CameraTexture;
+
+void main() {
+    float mask = texture2D(u_SegmentationMask, vTexCoord).r;
+    vec4 ar_scene = texture2D(u_ArSceneTexture, vTexCoord);
+    vec4 camera   = texture2D(u_CameraTexture,  vTexCoord);
+    gl_FragColor  = mix(camera, ar_scene, mask);
+}
+```
+
+### 9.4 Pose Landmarks to AR World Space
+
+MediaPipe 3D pose landmarks are in **normalised image space**. To project them into ARCore's world coordinate space:
+
+1. Obtain camera intrinsics via `ArCamera_getImageIntrinsics()` (`focal_length_x/y`, `principal_point_x/y`).
+2. Use the depth value from ARCore's Depth API (Ch87 §6) at the landmark's `(x, y)` pixel position to reconstruct the 3D point: `X = (x - cx) * Z / fx`, `Y = (y - cy) * Z / fy`.
+3. Transform from camera space to world space using `ArCamera_getViewMatrix()` inverse.
+
+This produces world-anchored pose landmarks that remain stable as the device moves, enabling AR overlays such as skeleton visualisations anchored to a person walking through a scene.
+
+---
+
+## 10. Performance Profiling and Tuning
+
+### 10.1 LiteRT Profiler
+
+LiteRT's built-in profiler reports per-operator execution time:
+
+```cpp
+#include "tflite/profiling/buffered_profiler.h"
+
+auto profiler = std::make_unique<tflite::profiling::BufferedProfiler>(
+    /*max_num_entries=*/1024);
+interpreter->SetProfiler(profiler.get());
+profiler->StartProfiling();
+interpreter->Invoke();
+profiler->StopProfiling();
+
+auto profile_events = profiler->GetProfileEvents();
+for (const auto* event : profile_events) {
+    LOG(INFO) << "Op " << event->tag << ": "
+              << event->end_timestamp_us - event->begin_timestamp_us
+              << " us";
+}
+```
+[Source: LiteRT profiling](https://ai.google.dev/edge/litert/performance/measurement)
+
+This exposes bottleneck operators — commonly `DEPTHWISE_CONV_2D` or `FULLY_CONNECTED` — that may benefit from quantisation or from switching delegate.
+
+### 10.2 GPU Delegate Latency Breakdown
+
+The GPU delegate's latency decomposes into:
+- **CPU→GPU transfer**: Eliminated entirely with `AHardwareBuffer` binding (§4).
+- **GLSL kernel compilation** (cold start only): Eliminated by shader serialisation (`serialization_dir`).
+- **Kernel dispatch**: The main runtime cost; scales with model FLOPs and GPU frequency.
+- **GPU→CPU readback**: Eliminated if the output tensor remains GPU-resident (e.g., feeding into a GLES overlay shader).
+
+For a typical 256×256 pose landmark model on an Adreno 740 (Snapdragon 8 Gen 3), the fully warm path achieves ~2 ms inference latency, comfortably within a 33 ms frame budget at 30 fps.
+
+### 10.3 Adreno and Mali GPU Monitoring
+
+```bash
+# Adreno GPU frequency and utilisation (Qualcomm devices)
+adb shell cat /sys/class/kgsl/kgsl-3d0/gpuclk
+adb shell cat /sys/class/kgsl/kgsl-3d0/gpu_busy_percentage
+
+# Mali GPU utilisation (ARM devices)
+adb shell cat /sys/devices/platform/mali.0/utilisation
+
+# General GPU info via dumpsys
+adb shell dumpsys gpu
+```
+
+### 10.4 Systrace / Perfetto End-to-End Tracing
+
+Use Perfetto to visualise the full camera→inference→render pipeline:
+
+```bash
+adb shell perfetto \
+    -c - --txt \
+    -o /data/misc/perfetto-traces/trace.pftrace \
+<<EOF
+buffers: { size_kb: 65536 }
+data_sources: { config { name: "track_event" } }
+data_sources: { config { name: "android.surfaceflinger.frame" } }
+duration_ms: 5000
+EOF
+adb pull /data/misc/perfetto-traces/trace.pftrace .
+```
+
+In the resulting trace, look for `tflite::Interpreter::Invoke` slices on the inference thread and `GlCalculatorHelper::RunInGlContext` slices on the MediaPipe GPU thread. The gap between Camera2 timestamp and MediaPipe's `Process()` call reveals buffering latency.
+
+### 10.5 Thermal Throttling
+
+Sustained 30 fps inference at full GPU frequency triggers thermal limits within 3–5 minutes on most phones. Mitigation strategies:
+
+- Register `PowerManager.OnThermalStatusChangedListener` and reduce inference resolution or frame rate when `THERMAL_STATUS_SEVERE` is reached.
+- Switch from GPU delegate to NPU delegate (Qualcomm QNN) at elevated temperatures — NPUs are typically more power-efficient than the GPU for quantised INT8 models.
+- Use `TFLITE_GPU_INFERENCE_PREFERENCE_FAST_SINGLE_ANSWER` instead of `SUSTAINED_SPEED` when thermal state is elevated; the GPU may lower frequency between frames.
+- Enable adaptive frame skipping: skip inference on every other camera frame when `SystemClock.uptimeMillis()` shows the previous frame took more than 40 ms.
+
+### 10.6 Quantisation Impact Summary
+
+| Configuration | Typical Latency | Memory | Notes |
+|---|---|---|---|
+| Float32, CPU | 100–200 ms | 4× base | Baseline, no delegate |
+| Float32, GPU delegate | 5–15 ms | 4× base | GLSL compute shaders |
+| INT8, GPU delegate | 3–10 ms | 1× base | ~1.5–2× speedup |
+| INT8, NNAPI/NPU (pre-API 35) | 2–8 ms | 1× base | 2–4× speedup vs GPU |
+| INT8, Qualcomm QNN delegate | 1–5 ms | 1× base | Hexagon DSP, lowest power |
+
+---
+
+## 11. Roadmap
+
+### 11.1 LiteRT-LM (Shipping, May 2026)
+
+LiteRT-LM is the production orchestration layer for on-device LLM inference, superseding MediaPipe's `LlmInference` task. It achieves 52 tokens/second on Android GPU (OpenCL backend) and 56 tokens/second on Apple Metal, with multimodal support (text + vision + audio). Backends: CPU (XNNPack), GPU (OpenCL on Android, Metal on iOS, WebGPU in browser), NPU (Android only, via vendor delegates). [Source: LiteRT-LM announcement](https://developers.googleblog.com/blazing-fast-on-device-genai-with-litert-lm/)
+
+KV-cache management stores Key and Value tensors in GPU high-bandwidth memory between decode steps, reducing per-token latency from O(context_length²) to O(context_length) via incremental attention computation.
+
+### 11.2 Vulkan Compute Backend for GPU Delegate
+
+The current GPU delegate defaults to OpenGL ES 3.1 compute shaders. The Vulkan compute backend (`TFLITE_GPU_EXPERIMENTAL_FLAGS_ENABLE_VULKAN_INFERENCE`) targets devices with Vulkan 1.1+. Advantages over GLES include lower driver overhead (no OpenGL state machine), explicit memory management (`VkDeviceMemory` from imported `AHardwareBuffer` via `VK_ANDROID_external_memory_android_hardware_buffer`), and access to Vulkan subgroup operations for more efficient SIMD reductions. Expect Vulkan backend to exit experimental status by late 2026.
+
+### 11.3 LiteRT on Linux
+
+The `ai-edge-litert` package is expanding to x86-64 and ARM64 Linux (targeting Raspberry Pi 5 and NVIDIA Jetson). The GPU delegate runs via OpenGL ES on Mesa (panfrost, v3d, freedreno). This is the convergence path between Android on-device ML and Linux embedded ML described in Ch88 and Ch124. [Source: LiteRT universal framework](https://developers.googleblog.com/litert-the-universal-framework-on-device-ai/)
+
+### 11.4 WebAssembly / WebGPU
+
+LiteRT-LM's Web SDK runs via WebGPU (WASM + JavaScript API) in Chrome and other browsers, with 2026 parity between mobile-native and browser inference performance on the same GPU. This connects to the WebGPU stack described in Ch35 (Dawn and WebGPU).
+
+### 11.5 Vendor NPU Convergence
+
+The post-NNAPI model (API 35+) pushes hardware acceleration into vendor-supplied LiteRT delegate libraries loaded at runtime. The long-term expectation is that all major Android SoC vendors (Qualcomm, MediaTek, Samsung Exynos, Google Tensor) ship production LiteRT delegates, converging on a uniform ABI where the delegate `.so` is the accelerator contract — analogous to how ICD `.so` files are the Vulkan driver contract.
+
+### 11.6 On-Device Foundation Models
+
+Vision-language models in the PaliGemma 3B class (3 billion parameters, vision + text) are feasible on 2026 flagship hardware at INT4 with LiteRT-LM. The GPU serves as the primary compute engine; the NPU handles INT8 attention layers. The camera→inference→display pipeline described in §8 of this chapter becomes the execution path for camera-grounded VLM queries ("What is this object?") running entirely on-device.
+
+---
+
+## 12. Integrations
+
+**Ch85 — Android Compositor: SurfaceFlinger, HardwareBuffer, and the Buffer Pipeline**
+`AHardwareBuffer` is the central memory object shared between the Camera HAL, the LiteRT GPU delegate, and SurfaceFlinger. The buffer lifecycle (allocate → acquire → GPU write → release → compositor acquire) described in Ch85 applies directly to the inference pipeline §§4 and 8.
+
+**Ch86 — Vulkan on Android: Drivers, ANGLE, and Mobile GPU Performance**
+The GPU delegate's Vulkan backend imports `AHardwareBuffer` via `VK_ANDROID_external_memory_android_hardware_buffer` (Ch86 §3). The same `VkSamplerYcbcrConversion` used for YUV camera textures in Ch86 is needed when feeding YCbCr camera frames to LiteRT vision models. ANGLE's GLES-on-Vulkan translation layer means that the GLES compute delegate runs on Vulkan on Chrome-backed Android targets.
+
+**Ch87 — Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform**
+§9 of this chapter describes the ARCore + MediaPipe composition pattern. ARCore provides world geometry; MediaPipe provides ML inference on the same camera texture. The shared GL context model, timestamp synchronisation (`ArFrame_getTimestamp()` → MediaPipe `Timestamp`), and the `GL_TEXTURE_EXTERNAL_OES` sharing pattern all build on the ARCore architecture in Ch87.
+
+**Ch88 — NPU and AI Accelerator Integration on Linux**
+The NNAPI delegate (deprecated in API 35) was the primary Android NPU routing mechanism; Ch88 covers the underlying `ANeuralNetworksModel` API and OEM NPU firmware. Post-NNAPI, vendor LiteRT delegates (Qualcomm QNN, §3.3) access the same Hexagon DSP hardware via a direct delegate ABI rather than through the NNAPI abstraction layer.
+
+**Ch108 — ROCm and HIP — AMD's GPU Compute Stack**
+On desktop Linux (x86-64), ROCm provides the ML compute stack via HIP/MIOpen. LiteRT on Linux uses OpenGL ES via Mesa instead. Ch108 provides the contrast: ROCm is a GPGPU runtime with batch-optimised kernels; LiteRT is a latency-optimised runtime designed for single-inference-at-a-time execution at mobile frame rates.
+
+**Ch124 — Local LLM Inference on Linux GPUs**
+LiteRT-LM (§11.1) converges on-device Android LLM inference with the desktop Linux LLM stack (llama.cpp, Ollama, vLLM) via the `ai-edge-litert` Linux package. Ch124 covers the llama.cpp/Vulkan compute path; this chapter covers LiteRT-LM's GPU delegate path, which targets the same GPU hardware on ARM64 Linux.
+
+**Ch166 — Android AR: ARCore Architecture, Camera HAL Integration, and Android XR (Expanded)**
+Ch166 expands the Android XR platform coverage (Samsung Galaxy XR / Project Moohan, Jetpack XR SDK). On Android XR headsets, MediaPipe's hand-landmark and pose-landmark tasks are the primary input recognition mechanisms, operating on passthrough camera streams at the full GPU bandwidth available to an XR-class SoC.
+
+**Ch48 — ROCm and Machine Learning on Linux GPUs** *(optional)*
+For context on how desktop-class AMD GPUs handle the same model families covered here, see Ch48's discussion of ROCm's MIOpen operator libraries — the functional equivalent of LiteRT's GPU delegate GLSL compute kernels at datacenter scale.

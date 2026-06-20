@@ -22,12 +22,13 @@ After reading this chapter, the reader will understand how to select the right V
 3. [EGL: Display, Context, and Surface Creation](#3-egl-display-context-and-surface-creation)
 4. [GBM-Backed EGL Surfaces and KMS-Direct Rendering](#4-gbm-backed-egl-surfaces-and-kms-direct-rendering)
 5. [Swapchains on Wayland: VK_KHR_wayland_surface and Present Modes](#5-swapchains-on-wayland-vk_khr_wayland_surface-and-present-modes)
-6. [Synchronisation: Fences, Semaphores, and the Explicit Sync Story](#6-synchronisation-fences-semaphores-and-the-explicit-sync-story)
-7. [Headless EGL and Server-Side Rendering](#7-headless-egl-and-server-side-rendering)
-8. [Vulkan Validation Layers in a Linux Development Workflow](#8-vulkan-validation-layers-in-a-linux-development-workflow)
-9. [Handling VRAM Pressure and GPU Out-of-Memory](#9-handling-vram-pressure-and-gpu-out-of-memory)
-10. [Integrations](#10-integrations)
-11. [References](#11-references)
+6. [Vulkan WSI Internals on Linux](#6-vulkan-wsi-internals-on-linux)
+7. [Synchronisation: Fences, Semaphores, and the Explicit Sync Story](#7-synchronisation-fences-semaphores-and-the-explicit-sync-story)
+8. [Headless EGL and Server-Side Rendering](#8-headless-egl-and-server-side-rendering)
+9. [Vulkan Validation Layers in a Linux Development Workflow](#9-vulkan-validation-layers-in-a-linux-development-workflow)
+10. [Handling VRAM Pressure and GPU Out-of-Memory](#10-handling-vram-pressure-and-gpu-out-of-memory)
+11. [Integrations](#11-integrations)
+12. [References](#12-references)
 
 ---
 
