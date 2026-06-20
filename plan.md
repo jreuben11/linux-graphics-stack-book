@@ -1764,6 +1764,25 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Platform coverage: Raspberry Pi (RkISP1 + Unicam), Intel IPU3/IPU6, RockChip RKISP1, simple pipeline for USB cameras (UVC), Qualcomm Camss; hardware-specific quirks
 - **Integrations**: Ch26 (VA-API — hardware encode of camera output), Ch38 (PipeWire), Ch57 (FFmpeg — libcamerasrc feeds FFmpeg), Ch85 (Android Camera HAL comparison), Ch92 (Raspberry Pi — PipelineHandlerRPi)
 
+### Chapter 176: OpenCASCADE Technology — The BRep Kernel and 3D Visualization Stack *(Part XI)*
+
+- Why OCCT: exact BRep geometry (B-spline/NURBS, not triangles), topology/geometry separation, STEP/IGES data exchange; powers FreeCAD, Salome, Code_Aster; OCCT 8.0.0p1 (June 2026), C++17 mandatory
+- Architecture: six modules — FoundationClasses (`TKernel`, `TKMath`, `gp`, `BVH`, `NCollection`), ModelingData (`TKBRep`, `TKG3d`, `TKG2d`), ModelingAlgorithms (`TKBO`, `TKFillet`, `TKPrim`, `TKOffset`, `TKMesh`), Visualization (`TKOpenGl`, `TKV3d`, `TKService`), DataExchange (`TKDESTEP`, `TKDEIGES`, `TKDEGLTF`, `TKDEOBJ`, `TKDESTL`), ApplicationFramework (`TKCAF`, `TKXCAF`)
+- BRep model: topology (`TopoDS_Shape`, `TopoDS_Face/Edge/Wire/Solid`, `TopLoc_Location`, `TopAbs_Orientation`) vs geometry (`Geom_Surface`, `Geom_Curve`, `Geom2d_Curve`); `BRep_TFace`/`BRep_TEdge` bridging; tolerance invariant `Tol(Vertex) >= Tol(Edge) >= Tol(Face)`; `TopoDS_Iterator`, `TopExp_Explorer`
+- `BRep_Builder` low-level: `MakeFace(surface, tol)`, `UpdateEdge(curve, tol)`, `MakeVertex(pt, tol)`, `MakeFace(triangulation)`; `BRepBuilderAPI_*` high-level wrappers
+- Modeling algorithms: Boolean ops (`BRepAlgoAPI_Fuse/Cut/Common`, multi-shape modern API, `SetRunParallel`, `BOPAlgo_Options::SetParallelMode`); primitives (`BRepPrimAPI_MakeBox/Cylinder/Sphere/Cone`, `MakePrism`, `MakeRevol`); fillets (`BRepFilletAPI_MakeFillet`, constant/variable radius, `Law_Function`); offsets (`BRepOffsetAPI_MakeThickSolid`, `MakePipe`, `ThruSections`); mesh (`BRepMesh_IncrementalMesh`, linear + angular deflection, `Poly_Triangulation`)
+- Visualization stack: `AIS_InteractiveContext` → `V3d_Viewer/View` → `Graphic3d_GraphicDriver` → `OpenGl_GraphicDriver` → GLX (X11) or EGL (Wayland/headless); `AIS_Shape`, `AIS_ColoredShape`, sub-shape selection modes (0=whole, 1=vertex, 2=edge, 4=face); `OpenGl_GraphicDriver::InitEglContext(EGLDisplay, EGLContext, EGLConfig)` for Wayland; shader-based rendering (Blinn-Phong + PBR since 7.5.0); Z-layers
+- BVH picking: `Select3D`, `SelectMgr_ViewerSelector`, `BVH_Tree<Real,3>`, `BVH_BinnedBuilder`, `BVH_LinearBuilder`; `AIS_InteractiveContext::MoveTo` → BVH traversal → closest selectable entity
+- Vulkan status: NO shipped Vulkan backend as of 8.0.0p1; prototype tracked as issue #30631 (unmerged); all rendering via `TKOpenGl` (OpenGL 3.2+ core minimum)
+- Data exchange: STEP (`STEPControl_Reader/Writer`, `STEPCAFControl_*` for assemblies + colors; 75% faster in 8.0.0); IGES (`IGESControl_*`); STL (`StlAPI_Writer/Reader`); glTF 2.0 (`RWGltf_CafWriter/Reader`, since 7.5.0, Draco since 7.7.0, Y-up/metres via `RWMesh_CoordinateSystemConverter`); OBJ (`RWObj_CafReader`, since 7.4.0); PLY (`TKDEPLY`)
+- XDE (`TKXCAF`): `TDocStd_Document`, `XCAFDoc_ShapeTool` (assembly tree), `XCAFDoc_ColorTool`, `XCAFDoc_LayerTool`; assembly references via `TNaming_NamedShape` + `TopLoc_Location`
+- OCAF: `TDF_Label` tree, `TNaming_Builder`, undo/redo (`doc->NewCommand()/CommitCommand()/Undo()/Redo()`), binary persistence (`TKBin`, `.cbf`), XML persistence (`TKXml`, `.xbf`)
+- FreeCAD integration: `Part::TopoShape` wrapping `TopoDS_Shape`; `Part::Feature` parametric DAG; Python `Part.makeBox/fuse/cut` → OCCT calls; FreeCAD's own document system (not OCAF); Coin3D viewer (not OCCT AIS)
+- Build and packaging: cmake flags (`USE_OPENGL`, `USE_OPENMP`, `USE_VTK=OFF` by default in 8.0), Ubuntu split packages (`libocct-foundation-dev`, `libocct-modeling-data-dev`, etc.), Fedora `opencascade-devel`; linking toolkit names (`libTKernel`, `libTKBRep`, `libTKOpenGl`, `libTKDESTEP`, …)
+- **Integrations**: Ch12 (Mesa OpenGL ICD — `OpenGl_GraphicDriver` dispatches through Mesa), Ch20 (Wayland — EGL + `wl_egl_window` for `InitEglContext`), Ch42 (Blender — separate geometry kernel; FreeCAD/Blender STL exchange), Ch64 (glTF — `RWGltf_CafWriter` produces glTF 2.0 with coordinate conversion), Ch77 (GLSL shaders — OCCT PBR shaders compiled at runtime), Ch107 (headless rendering — EGL `EGL_EXT_platform_device` for CI), Ch113 (CGAL — complementary geometry: CGAL for mesh repair before OCCT BRep reconstruction), Ch150 (EGL and DMA-BUF — OCCT EGL surface creation)
+
+---
+
 ### Chapter 97: Unreal Engine 5 on Linux *(Part XI)*
 
 - UE5 Linux support: EpicGames' commitment to Linux as a first-class target; Steam Deck as the key platform; Proton vs native builds; supported GPU tiers
