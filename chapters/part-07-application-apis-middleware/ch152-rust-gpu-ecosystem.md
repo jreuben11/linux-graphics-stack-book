@@ -1255,9 +1255,14 @@ All calls to `Lighting::point_light` throughout the composed shader graph are re
 ## Integrations
 
 - **Ch19 (Vulkan Architecture)** — `ash` exposes identical Vulkan concepts to the C API; instance, device, command buffers, pipelines map 1:1
-- **Ch20 (SPIR-V)** — naga produces SPIR-V for wgpu's Vulkan backend; naga's SPIR-V front-end consumes glslc output
+- **Ch20 (SPIR-V)** — naga produces SPIR-V for wgpu's Vulkan backend; naga's SPIR-V front-end consumes glslc output; rust-gpu also targets SPIR-V via `rustc_codegen_spirv`
 - **Ch22 (RADV)** — wgpu selects RADV on AMD via Vulkan enumeration; `adapter.get_info()` returns the Mesa driver name
 - **Ch23 (ANV)** — ANV is the Vulkan driver used by wgpu on Intel
 - **Ch57 (WebGPU in Chromium)** — Firefox's WebGPU implementation (`wgpu-core`) is the production wgpu implementation
-- **Ch141 (Cooperative Matrices)** — wgpu does not yet expose `VK_KHR_cooperative_matrix`; that requires `ash` or raw Vulkan
+- **Ch141 (Cooperative Matrices)** — wgpu does not yet expose `VK_KHR_cooperative_matrix`; that requires `ash` or raw Vulkan; blade's Vulkan backend uses `khr::cooperative_matrix` directly
 - **Ch134 (Asahi/Apple GPU)** — wgpu's Metal backend is used by the Asahi Linux WebGPU stack
+- **Ch25 (GPU Compute)** — cudarc and cuTile-rs cover CUDA-path GPU compute; burn's `burn-wgpu` backend uses wgpu storage buffers for the same compute patterns on open drivers
+- **Ch35 (Dawn/WebGPU)** — Dawn is Chrome's WebGPU implementation; wgpu (Firefox) and Dawn share the WGSL/naga shader layer and both consume SPIR-V from rust-gpu or `vulkano_shaders`
+- **Ch40 (Bevy/wgpu)** — Bevy's entire renderer is built on wgpu; naga_oil's `Composer` powers Bevy's modular PBR shader system; vello is the planned 2-D rendering layer for Bevy UI
+- **Ch177 (NVK — NVIDIA Vulkan)** — cuTile-rs and cudarc target the CUDA path; on Linux with NVK (open-source NVIDIA Vulkan), wgpu and ash speak to the same hardware through the Vulkan layer instead
+- **Ch15 (ACO — AMD Shader Compiler)** — naga-compiled WGSL from wgpu, vello, and burn-wgpu all enter the Mesa shader pipeline (ACO on RADV) as SPIR-V; ACO's instruction scheduling is the final stage before the GPU executes shaders that began as Rust or WGSL source
