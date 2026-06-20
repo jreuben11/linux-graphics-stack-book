@@ -625,7 +625,7 @@ This section demonstrates how the extensions chain together in the most common r
 struct gbm_device *gbmDev = gbm_create_device(drmFd);
 struct gbm_bo *bo = gbm_bo_create_with_modifiers2(
     gbmDev, 1920, 1080, GBM_FORMAT_ARGB8888,
-    (uint64_t[]){ AMD_FMT_MOD_GFX9_64K_S, DRM_FORMAT_MOD_LINEAR }, 2,
+    (uint64_t[]){ AMD_FMT_MOD_TILE_GFX9_64K_S, DRM_FORMAT_MOD_LINEAR }, 2, /* illustrative; see App H §3 for real AMD modifier encoding */
     GBM_BO_USE_RENDERING | GBM_BO_USE_SCANOUT);
 
 int   dma_buf_fd  = gbm_bo_get_fd(bo);
@@ -777,6 +777,8 @@ The modifier is negotiated at surface creation time via `zwp_linux_dmabuf_feedba
 ## 14. Extension Support Matrix
 
 The table below summarises which Mesa Vulkan drivers advertise each extension as of Mesa 25.1. "All" means ANV (Intel), RADV (AMD), NVK (NVIDIA/Nouveau), Turnip (Qualcomm Adreno), panvk (ARM Mali), and v3dv (Broadcom VideoCore). Where driver support differs the individual drivers are listed. Mesa version in parentheses is the earliest release where the extension was enabled in that driver.
+
+**Note: the version numbers and Partial/No entries in this table are approximate.** They are derived from Mesa release notes, mailing-list threads, and per-driver `vk_extensions` tables available at time of writing, but Mesa extension enablement changes frequently. For authoritative per-driver status, check `src/gallium/drivers/<driver>/` or `src/<vendor>/vulkan/` in the Mesa source tree at the tag for your release, or use `vulkaninfo --json` and cross-reference against [vulkan.gpuinfo.org](https://vulkan.gpuinfo.org/).
 
 | Extension | ANV | RADV | NVK | Turnip | panvk | v3dv | Minimum Mesa |
 |---|---|---|---|---|---|---|---|
