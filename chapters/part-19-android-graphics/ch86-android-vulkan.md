@@ -18,7 +18,9 @@
 10. [Mobile GPU Architecture — Tile-Based Deferred Rendering](#10-mobile-gpu-architecture--tile-based-deferred-rendering)
 11. [Android GPU Performance Tools](#11-android-gpu-performance-tools)
 12. [Chrome and Chromium on Android](#12-chrome-and-chromium-on-android)
-13. [Integrations](#13-integrations)
+13. [The Language-Runtime Bridge: JNI, NDK, and ART](#13-the-language-runtime-bridge-jni-ndk-and-art)
+14. [The NDK's Future: Rust as Co-equal Language](#14-the-ndks-future-rust-as-co-equal-language)
+15. [Integrations](#15-integrations)
 
 ---
 
@@ -1105,7 +1107,254 @@ Key architectural differences from the desktop GPU process:
 
 ---
 
-## 13. Integrations
+## 13. The Language-Runtime Bridge: JNI, NDK, and ART
+
+When an Android application issues a Vulkan command — whether written in Kotlin, Java, or native C++ — the path to the GPU hardware traverses a specific call stack that every Android graphics developer needs to understand.
+
+### The Android GPU call stack
+
+```
+Kotlin / Java (app code)
+    │  JNI transition (may use @FastNative / @CriticalNative)
+    ▼
+Android Runtime (ART) — the Android JVM implementation
+    │
+    ▼
+Framework native C++ (libhwui.so, libEGL.so, libGLESv2.so …)
+    │  dlopen / HAL discovery
+    ▼
+Vendor Vulkan ICD (libvulkan_adreno.so, libvulkan_mali.so …)
+    │  ioctl
+    ▼
+Kernel DRM driver (msm_drm, mali, pvr …)
+    │
+    ▼
+GPU hardware
+```
+
+For performance-critical rendering, Java or Kotlin code never touches the hot path. The established pattern is the **NDK-direct** model: cross the JNI boundary once during initialisation — to create the `VkDevice`, allocate the `VkSwapchainKHR`, and record long-lived command buffers. A dedicated native thread then owns the entire GPU submission timeline (`vkQueueSubmit`, `vkAcquireNextImageKHR`, `vkQueuePresentKHR`) without ever returning to ART.
+
+JNI transitions introduce overhead even with ART's improvements in Android 13+:
+- Checking whether the calling thread holds any GC-safepoint-blocking monitors.
+- Transitioning thread state from `kRunnable` to `kNative`.
+- Registering the native stack frame with the GC root table.
+
+Eliminating JNI from the render loop eliminates all of this.
+
+### @FastNative and @CriticalNative
+
+ART provides two annotations for reducing JNI call overhead on cases where the boundary cannot be eliminated. Both are public API since Android 8.0:
+
+**`@dalvik.annotation.optimization.FastNative`**: Removes the managed→unmanaged state-transition overhead. The native method must not call back into Java and must not allocate managed objects. Reduces overhead by approximately 2× on AArch64.
+
+**`@dalvik.annotation.optimization.CriticalNative`**: Removes the JNI envelope entirely. The native method receives raw C-type arguments with no `JNIEnv*` and no `jobject`/`jclass` parameters. Must be `static`, must not interact with Java objects, must not allocate. Overhead approaches that of a direct C function call — 3–5× cheaper than standard JNI on AArch64.
+
+```java
+// File: com/example/vulkan/VulkanBridge.java
+import dalvik.annotation.optimization.CriticalNative;
+import dalvik.annotation.optimization.FastNative;
+
+public class VulkanBridge {
+    // Standard JNI: full JNIEnv overhead; may call back into JVM
+    public static native void submitCommandBuffer(long cmdBufHandle);
+
+    // FastNative: ~2× cheaper; no Java callbacks, no allocation
+    @FastNative
+    public static native int getFenceStatus(long fenceHandle);
+
+    // CriticalNative: ~3–5× cheaper; no JNIEnv param; static only
+    @CriticalNative
+    public static native long getGpuTimestamp();
+}
+```
+
+```c
+// File: vulkan_bridge.c
+#include <jni.h>
+#include <vulkan/vulkan.h>
+
+// Standard JNI — receives JNIEnv* and jclass
+JNIEXPORT void JNICALL
+Java_com_example_vulkan_VulkanBridge_submitCommandBuffer(
+        JNIEnv* env, jclass clazz, jlong cmdBufHandle)
+{
+    VkCommandBuffer cmdBuf = (VkCommandBuffer)(uintptr_t)cmdBufHandle;
+    // ... vkQueueSubmit etc.
+}
+
+// CriticalNative — no JNIEnv*, no jclass; raw C types only
+JNIEXPORT jlong JNICALL
+Java_com_example_vulkan_VulkanBridge_getGpuTimestamp()
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (jlong)ts.tv_nsec;
+}
+```
+
+[Source: ART JNI Tips](https://developer.android.com/training/articles/perf-jni), [dalvik.annotation.optimization source](https://android.googlesource.com/platform/libcore/+/refs/heads/main/dalvik/src/main/java/dalvik/annotation/optimization/)
+
+### Why Project Panama FFM does not apply to Android
+
+Java 21 standardised the **Foreign Function & Memory API** (FFM, JEP 454) as a replacement for JNI in the OpenJDK/HotSpot JVM. FFM provides `MethodHandle`-based native dispatch and `MemorySegment` for off-heap memory without `sun.misc.Unsafe`. It is widely discussed as the future of Java native interop.
+
+**FFM is a HotSpot-internal, not a portable JVM contract.** FFM's implementation is built on HotSpot's JVM TI, MethodHandle intrinsics, and Graal-based foreign call stubs. Android Runtime (ART) is a separate, incompatible JVM implementation with its own bytecode format (Dalvik bytecode → ART IR), its own concurrent-copying garbage collector, and its own JIT/AOT pipeline (`dex2oat`, Cloud Profiles). None of the HotSpot machinery that FFM depends on exists in ART.
+
+| Feature | OpenJDK HotSpot | Android Runtime (ART) |
+|---|---|---|
+| VM bytecode format | JVM `.class` files | Dalvik `.dex` bytecode |
+| FFM / JEP 454 | Yes — Java 21+ | No — not implemented in ART |
+| `@FastNative` / `@CriticalNative` | No | Yes — Android 8.0+ |
+| `sun.misc.Unsafe` | Yes | Restricted since API 28 |
+| JVM TI | Yes | Partial (debug builds only) |
+| Garbage collector | G1 / ZGC / Shenandoah | Concurrent Copying (CC) |
+
+ART's evolution path for native interop is **not FFM**: it is `@FastNative`/`@CriticalNative` for unavoidable JNI calls, the NDK-direct pattern for the hot path, and — for shared business logic — Kotlin Multiplatform (which on Android still targets ART, not Kotlin/Native).
+
+[Source: JEP 454 — Foreign Function & Memory API](https://openjdk.org/jeps/454), [ART Dex format overview](https://source.android.com/docs/core/runtime/dex-format)
+
+### What is evolving on the managed side
+
+For Kotlin/Java developers who want GPU access without dropping to the NDK:
+
+**`android.graphics.vulkan` managed wrappers (Android 14+)**: A thin `AutoCloseable`-lifetime wrapper layer over the Vulkan NDK surface — `VulkanDevice`, `VulkanCommandBuffer`, `VulkanFence`. These are JNI-backed at the implementation level; the wrapper provides ergonomics and lifetime safety for Kotlin code that occasionally issues Vulkan commands, not performance for the hot render loop. [Source: Android Vulkan Overview](https://developer.android.com/games/develop/vulkan/overview)
+
+**ANGLE as default system GLES (Android 17+)**: For apps using `android.opengl.*`, ANGLE's promotion to the default GLES implementation (Section 5) is transparent below the JNI boundary. The managed API surface is unchanged; the call stack below it now routes through ANGLE → Vulkan ICD instead of a vendor GLES blob.
+
+**LiteRT Vulkan delegate**: TensorFlow Lite's successor LiteRT (Large-scale Inference with RealTime efficiency) ships a Vulkan compute delegate for on-device ML inference. As of Android 14 this is exiting experimental status. Kotlin/Java LiteRT API callers get Vulkan-accelerated inference without writing any JNI or NDK code directly. [Source: LiteRT Vulkan delegate](https://ai.google.dev/edge/litert/inference#vulkan_delegate)
+
+---
+
+## 14. The NDK's Future: Rust as Co-equal Language
+
+### The NDK is not going away
+
+A recurring question in Android ecosystem discussions is whether the NDK is "going away" — deprecated by Kotlin, superseded by WebAssembly, or replaced by a higher-level abstraction. The answer is direct: the NDK is not going away. It is the ABI through which every native library on Android is delivered and called. SurfaceFlinger, HWComposer, the Vulkan ICD, `libaaudio.so`, codec2, the Vulkan loader itself, and `libvulkan.so` are all NDK consumers. The NDK ABI surface is stable indefinitely.
+
+The realistic trajectory is: C and C++ remain fully supported; **Rust is being added as a co-equal native language** for new Android platform code and increasingly for app-layer native code.
+
+### The Rust NDK ecosystem
+
+Google has been shipping Rust in AOSP since 2021, and the NDK tooling has expanded accordingly.
+
+**`ndk` and `ndk-sys` Rust crates**: Safe and unsafe Rust bindings to the NDK public API. `ndk-sys` provides raw `extern "C"` FFI bindings generated from the NDK headers; `ndk` provides idiomatic safe wrappers. Coverage includes `AHardwareBuffer`, `ANativeWindow`, `ANativeActivity`, `AInputQueue`, `AAudio`, and EGL. [Source: ndk-rs GitHub](https://github.com/rust-mobile/ndk)
+
+```toml
+# Cargo.toml
+[dependencies]
+ndk     = "0.9"   # idiomatic safe wrappers over NDK APIs
+ndk-sys = "0.6"   # raw FFI bindings (auto-generated from NDK headers)
+ash     = "0.38"  # raw Vulkan bindings — works via NDK ABI unchanged
+```
+
+**`ash` for Vulkan in Rust**: The `ash` crate provides thin Vulkan bindings generated from `vk.xml`. On Android it loads `/system/lib64/libvulkan.so` via `dlopen` at runtime — the same loader that NDK-C Vulkan apps use. No Android-specific support is required.
+
+```rust
+// File: src/vulkan_init.rs — ash Vulkan on Android
+use ash::{vk, Entry, Instance};
+
+pub fn create_vulkan_instance() -> (Entry, Instance) {
+    // Loads /system/lib64/libvulkan.so via dlopen
+    let entry = unsafe { Entry::load().expect("failed to load Vulkan") };
+
+    let app_info = vk::ApplicationInfo::default()
+        .application_name(c"MyApp")
+        .application_version(vk::make_api_version(0, 1, 0, 0))
+        .api_version(vk::API_VERSION_1_3);
+
+    let extensions = [
+        ash::khr::android_surface::NAME.as_ptr(),
+        ash::khr::surface::NAME.as_ptr(),
+    ];
+
+    let create_info = vk::InstanceCreateInfo::default()
+        .application_info(&app_info)
+        .enabled_extension_names(&extensions);
+
+    let instance = unsafe {
+        entry.create_instance(&create_info, None)
+            .expect("failed to create instance")
+    };
+    (entry, instance)
+}
+```
+
+[Source: ash crate](https://github.com/ash-rs/ash)
+
+**`cargo-ndk`**: Cross-compiles Rust libraries to the four Android ABI targets and sets the correct NDK toolchain environment:
+
+```bash
+# Install
+cargo install cargo-ndk
+
+# Build an AArch64 release .so targeting Android API 30
+cargo ndk --target aarch64-linux-android --platform 30 build --release
+# Output: target/aarch64-linux-android/release/libmygame.so
+
+# Push to device for testing
+adb push target/aarch64-linux-android/release/libmygame.so \
+    /data/local/tmp/libmygame.so
+```
+
+Android Studio (via AGP 8.4+) supports Rust natively for Android library modules through a `cargo` block in `build.gradle.kts`, integrating `cargo-ndk` into the standard build pipeline without manual CI scripting. [Source: cargo-ndk](https://github.com/bbqsrc/cargo-ndk)
+
+**`android-activity` crate**: Provides the `AndroidApp` entry-point type for fully-native Rust Android apps (the Rust equivalent of `android_native_app_glue`):
+
+```rust
+// File: src/main.rs — Rust-native Android app
+#[no_mangle]
+fn android_main(app: android_activity::AndroidApp) {
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Debug),
+    );
+    // Obtain ANativeWindow via app.native_window(), init Vulkan via ash …
+}
+```
+
+[Source: android-activity crate](https://github.com/rust-mobile/android-activity)
+
+### APEX delivery and NDK ABI stability
+
+APEX packages allow individual system libraries — `libvulkan.so`, ANGLE, codec2, `libGLES*` — to be updated via Play Store without a full OTA image. **APEX delivery does not change the NDK calling convention.** The NDK public API headers (`android/`, `vulkan/`, `EGL/`) define the stable ABI that APEX-delivered libraries implement. A Rust `.so` compiled against those headers gets bug-fix updates to the underlying `libvulkan.so` automatically when Google ships an APEX update — the same guarantee C libraries have always had.
+
+### Expanding the `android/` header namespace
+
+The NDK public API surface — headers in the `android/` namespace — grows with each API level:
+
+| Android API | Notable `android/` additions |
+|---|---|
+| 26 (Oreo) | `AHardwareBuffer`, `ANativeWindow` formalised |
+| 29 (Q) | `AImageDecoder`, `ANeuralNetworks` stable |
+| 30 (R) | `APerformanceHint`, game-mode hints |
+| 33 (T) | `ASurfaceControl` stable, `AMediaCodec` extensions |
+| 35 (V) | `android/thermal.h` improvements, `AChoreographer` extensions |
+
+The `ndk-sys` crate tracks these additions via auto-generated bindings, so Rust NDK consumers gain new headers as they are formalised.
+
+### What will not replace the NDK
+
+**Project Panama FFM**: As established in Section 13, FFM is a HotSpot-internal not present in ART.
+
+**WebAssembly / WebGPU on Android**: WASM modules run inside a sandbox and cannot obtain a `VkDevice` or `AHardwareBuffer` directly from the Android kernel ABI. WASM runtimes that run natively on Android (WAMR, wasmtime) are themselves NDK consumers — WASM becomes one more library loaded via the NDK, not a replacement.
+
+**Kotlin/Native**: Kotlin Multiplatform compiles shared Kotlin code to native binaries. On iOS, Kotlin/Native runs its own runtime. On Android, KMP targets compile to Dalvik/ART bytecode — the Kotlin/Native runtime is not used on Android. KMP Android targets still run on ART and still use JNI for native interop.
+
+**Flutter Dart FFI**: Dart FFI (`dart:ffi`) allows Dart code to call C functions. On Android, Flutter itself is a native library loaded into an Activity's thread pool via the NDK. Dart FFI calls still cross the same NDK ABI boundary. Dart FFI is an ergonomics improvement for Flutter apps, not an NDK replacement.
+
+### NDK trajectory
+
+| Horizon | NDK evolution |
+|---|---|
+| Near-term (2026–2027) | `ndk` Rust crate stabilises to 1.0; more `android/` headers formalised; AGP Rust plugin matures; Rust in new AOSP drivers (Nova GPU kernel driver in staging) |
+| Medium-term (2027–2029) | New Google platform code defaults to Rust where applicable; C++ NDK enters "maintained but not preferred for new code" posture internally; `ndk` crate covers full public NDK surface |
+| Long-term (2030+) | NDK ABI stable indefinitely; Rust and C/C++ coexist; the practical question is which language to use for new native code, not whether the NDK survives |
+
+[Source: Android Rust overview](https://source.android.com/docs/setup/build/rust/building-rust-modules/overview), [Google security blog: Memory-safe languages in Android 13](https://security.googleblog.com/2022/12/memory-safe-languages-in-android-13.html)
+
+---
+
+## 15. Integrations
 
 This chapter connects to many others in the book:
 
@@ -1134,6 +1383,12 @@ This chapter connects to many others in the book:
 **Ch82 — VMA Toolkit**: Section 9's `VMA_MEMORY_USAGE_GPU_LAZILY_ALLOCATED` usage on Android is covered in the broader VMA API discussion in Ch82.
 
 **Ch85 — Android SurfaceFlinger**: Section 6's AHardwareBuffer export from Vulkan feeds directly into SurfaceFlinger's BufferQueue via `ASurfaceControl`, the mechanism described in Ch85. That chapter covers the compositor side; this chapter covers the Vulkan-producer side.
+
+**Ch87 — Android Native Development and the NDK**: Section 14's coverage of `ndk`/`ndk-sys` Rust crates, `cargo-ndk`, and `android-activity` extends Ch87's deeper treatment of the NDK build system, ABI compatibility, and multi-language native development on Android.
+
+**Part I — The Kernel Layer (Nova driver)**: Section 14 notes that Rust is now entering the Android GPU *kernel* path via the Nova DRM driver (the Rust-language successor to `nouveau` for NVIDIA hardware on Linux). The same language shift visible in the NDK ecosystem at the application layer is simultaneous with the kernel-driver layer covered in the kernel chapters.
+
+**Part XVII — Shader Toolchain**: The `glslc` and `shaderc` tooling discussed in Section 8 is part of the wider shader toolchain covered in Part XVII. On Android, `glslc` is bundled inside the NDK; its output SPIR-V is consumed by the same Vulkan drivers discussed throughout this chapter.
 
 ---
 
