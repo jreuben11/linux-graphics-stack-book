@@ -10,20 +10,28 @@
 2. [DisplayLink Hardware and Protocol](#displaylink-hardware-and-protocol)
 3. [evdi: Extensible Virtual Display Interface](#evdi-extensible-virtual-display-interface)
 4. [evdi Kernel Module Architecture](#evdi-kernel-module-architecture)
-5. [libevdi: The Userspace Library](#libevdi-the-userspace-library)
-6. [DisplayLink Manager (DLM) and the Full Stack](#displaylink-manager-dlm-and-the-full-stack)
-7. [DRM Integration and Atomic Modesetting](#drm-integration-and-atomic-modesetting)
-8. [Compression and USB Bandwidth](#compression-and-usb-bandwidth)
-9. [Troubleshooting and Diagnostics](#troubleshooting-and-diagnostics)
-10. [Integrations](#integrations)
+5. [evdi GEM Memory Model](#evdi-gem-memory-model)
+6. [The evdi Painter: Damage Tracking and Update Flow](#the-evdi-painter-damage-tracking-and-update-flow)
+7. [Cursor Emulation](#cursor-emulation)
+8. [libevdi: The Userspace Library](#libevdi-the-userspace-library)
+9. [DisplayLink Manager (DLM) and the Full Stack](#displaylink-manager-dlm-and-the-full-stack)
+10. [DRM Integration and Atomic Modesetting](#drm-integration-and-atomic-modesetting)
+11. [USB4, Thunderbolt, and the DL-7400 Generation](#usb4-thunderbolt-and-the-dl-7400-generation)
+12. [Limitations and Performance](#limitations-and-performance)
+13. [Open-Source Alternatives and the Ecosystem](#open-source-alternatives-and-the-ecosystem)
+14. [Troubleshooting and Diagnostics](#troubleshooting-and-diagnostics)
+15. [Roadmap](#roadmap)
+16. [Integrations](#integrations)
 
 ---
 
 ## Introduction
 
-DisplayLink is a USB-to-display technology by Synaptics that lets a USB 3.0 or USB-C connection drive an external monitor. It is widely used in USB docking stations (Dell, Lenovo, CalDigit, Plugable). On Linux, DisplayLink depends on the **evdi** (Extensible Virtual Display Interface) kernel module, which creates a virtual DRM device that the userspace DisplayLink Manager (DLM) can write pixels into.
+DisplayLink is a USB-to-display technology by Synaptics that lets a USB 3.0 or USB-C connection drive an external monitor. It is widely used in USB docking stations from Dell, Lenovo, CalDigit, Plugable, and many other vendors. On Linux, DisplayLink depends on the **evdi** (Extensible Virtual Display Interface) kernel module, which creates a virtual DRM device that the userspace DisplayLink Manager (DLM) can write pixels into.
 
-The architecture is unusual: evdi is a DRM driver whose "GPU" is actually a userspace daemon that compresses the framebuffer and sends it over USB. This makes it a useful case study in virtual DRM devices and the boundary between kernel DRM and userspace display processing.
+The architecture is unusual: evdi is a DRM driver whose "GPU" is actually a userspace daemon that compresses the framebuffer and sends it over USB. This makes it a valuable case study in virtual DRM devices and the boundary between kernel DRM and userspace display processing.
+
+Understanding evdi requires decomposing it into four distinct layers: the kernel module that presents a standard DRM interface to compositors; the GEM memory model backing framebuffers with shmem-allocated pages; the painter subsystem that tracks dirty regions and delivers pixel data to userspace; and the libevdi wrapper that mediates between the kernel module and the proprietary DLM daemon. Each layer interacts with upstream DRM infrastructure in ways that illuminate the broader Linux graphics stack.
 
 Sources: [evdi on GitHub](https://github.com/DisplayLink/evdi) | [DisplayLink Linux driver](https://www.synaptics.com/products/displaylink-graphics/downloads/ubuntu)
 
@@ -33,43 +41,54 @@ Sources: [evdi on GitHub](https://github.com/DisplayLink/evdi) | [DisplayLink Li
 
 ### USB Display Architecture
 
+The DisplayLink architecture is best understood as a software-defined display pipeline. Unlike a conventional GPU that drives a display via a direct electrical interface (HDMI, DisplayPort), a DisplayLink adapter relies entirely on host-side software to encode the framebuffer before it ever reaches hardware:
+
 ```
-GPU (Intel/AMD/NVIDIA)
-  │ renders to framebuffer
+GPU (Intel/AMD/Nouveau)
+  │ renders to framebuffer (DMA-BUF)
   ▼
-evdi virtual DRM device (kernel module)
-  │ exports framebuffer updates via mmap + netlink
+evdi virtual DRM device (/dev/dri/cardN)
+  │ exports damage regions + pixel data to userspace
   ▼
-DisplayLink Manager (DLM) userspace daemon
-  │ compresses (JPEG/custom codec)
+DisplayLink Manager (DLM) — proprietary daemon
+  │ encodes using DL3 codec
   ▼
-libusb → USB 3.0 host controller
-  │
+libusb → USB 3.0/3.2/USB4 host controller
+  │ USB bulk transfers
   ▼
-DisplayLink chip (DL-6xxx, DL-7xxx) in dock/adapter
-  │
+DisplayLink chip (DL-5xxx / DL-6xxx / DL-7400) in dock
+  │ decodes DL3 stream, drives pixel clock
   ▼
-HDMI/DP/DVI output to monitor
+HDMI/DisplayPort output to monitor
 ```
+
+The key implication of this architecture is that **all computation happens on the host CPU**: frame capture, damage detection, encoding, and USB scheduling. The DisplayLink chip in the dock is purely a decoder and display interface; there is no GPU in the adapter capable of compositing, rendering, or handling hardware overlays.
 
 ### DisplayLink USB Protocol
 
-DisplayLink uses a proprietary USB bulk transfer protocol. The DLM daemon:
-1. Receives raw pixel regions from evdi (where the framebuffer changed)
-2. Compresses them (JPEG or DisplayLink's DLCL codec)
-3. Sends compressed tiles to the DisplayLink chip via USB bulk transfers
-4. The chip decompresses and drives the display's pixel clock
+The DisplayLink chip communicates with the host via USB bulk transfers carrying a proprietary encoded stream. DisplayLink uses their **DL3** adaptive codec across all current product generations. The DL3 codec adapts compression to content type — applying heavier compression for video-like content and higher quality (closer to lossless) for static UI and text. The specific algorithm is proprietary and not publicly documented; DisplayLink describes it as providing "low latency, pixel-perfect graphics" that "adapt automatically to bandwidth constraints." [Source](https://www.synaptics.com/products/displaylink-graphics/integrated-chipsets/dl-6000)
 
-USB 3.0 provides ~400 MB/s practical throughput — sufficient for 1920×1080@60 with ~4:1 compression. USB 3.2 Gen 2 (10 Gbps) supports 4K@60.
+> **Note: needs verification.** The exact internal structure of DL3 (whether it uses JPEG, intra-frame DCT, or a custom scheme for lossy passes, and what lossless path it uses) is not publicly disclosed. Claims of JPEG or RLE should be treated as unverified speculation.
+
+The DLM daemon uses a plugin-based pipeline, analogous to GStreamer:
+1. **Source plugin**: receives raw pixel regions from evdi
+2. **Transform plugin**: encodes via DL3 into a compressed bytestream
+3. **Sink plugin**: writes to the USB bulk endpoint via libusb
+
+This architecture allows the same DLM core to run on Windows, macOS, Chrome OS, and Linux with platform-specific source and sink plugins. [Source](https://support.displaylink.com/knowledgebase/articles/1104056)
+
+A critical asymmetry: the DLM only sends *changed* tiles. Because evdi reports dirty rectangles via the DRM `FB_DAMAGE_CLIPS` plane property, the DLM receives exactly which screen regions changed per frame. For a typical desktop with mostly static content, only a fraction of the screen changes per frame — effective USB bandwidth consumption is typically far lower than worst-case.
 
 ### Supported Chipsets
 
 | Chip | Max Resolution | USB Speed | Notes |
 |---|---|---|---|
-| DL-3xxx | 1920×1080@60 | USB 2.0 | Legacy, slow |
-| DL-5xxx | 2560×1440@60 | USB 3.0 | Common in docks |
-| DL-6xxx | 3840×2160@30 | USB 3.0 | 4K (30 Hz) |
-| DL-7xxx | 3840×2160@60 | USB 3.2 Gen2 | 4K@60, current gen |
+| DL-3xxx | 1920×1080@60 (4K@30 reported for some variants) | USB 2.0/3.0 | Legacy, DL3 codec. Note: needs verification — marketing materials conflict on max resolution. |
+| DL-5xxx | 2560×1440@60 | USB 3.0 | First USB 3.0 gen; common in docks |
+| DL-6xxx / DL-6950 | 5120×2880@60 (5K) or dual 4K@60 | USB 3.0/3.2 | DL3 codec, SoC with GbE + audio |
+| DL-7400 | Quad 4K@120Hz or dual 8K@60Hz HDR10 | USB4 / Thunderbolt / DP 2.1 | Current gen, DP 2.1 Alt Mode |
+
+Sources: [DL-6000 product page](https://www.synaptics.com/products/displaylink-graphics/integrated-chipsets/dl-6000) | [DL-7400 announcement](https://www.synaptics.com/company/news/synaptics-introduces-displayport-21-and-displaylink-quad-display)
 
 ---
 
@@ -77,125 +96,376 @@ USB 3.0 provides ~400 MB/s practical throughput — sufficient for 1920×1080@60
 
 ### What evdi Provides
 
-evdi (`drivers/gpu/drm/evdi/` in its out-of-tree repo) is a DRM driver that:
-- Creates a virtual `/dev/dri/card*` DRM device
-- Accepts framebuffer updates from a connected DRM master (the compositor)
-- Notifies userspace about which regions of the framebuffer changed (damage tracking)
-- Delivers those regions to userspace via a shared memory interface
+evdi ([github.com/DisplayLink/evdi](https://github.com/DisplayLink/evdi)) is an out-of-tree DRM driver built and installed via DKMS. It:
 
-evdi does not itself do USB — it is a generic virtual display. The DisplayLink Manager is the component that reads from evdi and sends over USB.
+- Creates one or more virtual `/dev/dri/cardN` DRM devices, each representing a potential virtual display
+- Implements the full DRM modesetting stack: CRTC, connector, encoder, primary plane
+- Tracks framebuffer damage using the `FB_DAMAGE_CLIPS` DRM plane property and the `drm_atomic_helper_dirtyfb` callback
+- Delivers pixel data and damage rectangles to userspace via DRM ioctls from the `evdi_painter_ioctls` table
+- Supports DDC/CI monitor control passthrough from userspace (via I²C over the DRM connector) [Source](https://github.com/DisplayLink/evdi/tree/main/module)
 
-### evdi Architecture
+evdi does **not** perform USB transfers — it is a transport-agnostic virtual display. Any userspace program that speaks the evdi ioctl protocol can consume its output, whether the target is USB, network, Wi-Fi, or a test harness.
+
+### evdi Architecture Overview
 
 ```
 Compositor (Mutter/KWin/sway)
   │ opens /dev/dri/cardN (evdi virtual device)
-  │ sets mode, creates framebuffer
+  │ sets mode, creates GEM-backed framebuffer
+  │ commits planes via drmModeAtomicCommit()
   ▼
 evdi kernel module
-  │ tracks framebuffer writes
-  │ exports damage regions via update events
+  │ on each commit: copies GPU DMA-BUF to GEM pages (CPU copy)
+  │ tracks damage via FB_DAMAGE_CLIPS property
+  │ stores dirty rects in evdi_painter; wakes update waiter
   ▼
-DLM userspace (via /dev/evdi/cardN char device)
-  │ reads pixel data + damage rects
-  │ compresses + sends via USB
+DLM (DisplayLink Manager) userspace daemon
+  │ opens same /dev/dri/cardN DRM node
+  │ calls EVDI_CONNECT ioctl with EDID
+  │ calls EVDI_REQUEST_UPDATE → waits for update_ready event
+  │ calls EVDI_GRABPIX → kernel copies dirty rects to client buffer
+  │ encodes with DL3 → USB bulk transfer → DisplayLink chip
 ```
+
+The critical insight is that the DLM talks to evdi through the **same DRM device node** (`/dev/dri/cardN`) as the compositor, using custom DRM ioctls registered in the `evdi_painter_ioctls` table. There is no separate character device.
 
 ---
 
 ## evdi Kernel Module Architecture
 
-### Module Initialization
+### Module Structure
+
+The evdi module is structured as a standard out-of-tree DRM platform driver. Its source lives in `module/` within the evdi repository, with these key files:
+
+| File | Purpose |
+|---|---|
+| `evdi_drm_drv.c` | `drm_driver` definition, device init/teardown |
+| `evdi_platform_drv.c` | Platform driver probe/remove |
+| `evdi_platform_dev.c` | sysfs-triggered device creation |
+| `evdi_painter.c` | Damage tracking, ioctl handling, update flow |
+| `evdi_gem.c` | GEM object allocation, shmem page management, mmap |
+| `evdi_fb.c` | `drm_framebuffer` wrapper and dirty callback |
+| `evdi_modeset.c` | CRTC, encoder, connector, atomic helpers |
+| `evdi_cursor.c` | Software cursor compositing |
+| `evdi_sysfs.c` | `/sys/bus/platform/devices/evdi.*` interface |
+| `evdi_i2c.c` | DDC/CI I²C adapter for monitor control |
+
+### The drm_driver Definition
+
+The evdi DRM driver declares support for modesetting, GEM memory management, and atomic commits. Abridged from `module/evdi_drm_drv.c` at `main`:
 
 ```c
-/* evdi/module/evdi_drm_drv.c */
-static int __init evdi_init(void)
-{
-    /* Register as a platform driver: */
-    platform_driver_register(&evdi_platform_driver);
-    /* Register character device for userspace DLM: */
-    evdi_register_char_dev();
-    return 0;
-}
+/* module/evdi_drm_drv.c (abridged from DisplayLink/evdi main) */
+static const struct drm_driver driver = {
+    .driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
+    .open            = evdi_driver_open,
+    .postclose       = evdi_driver_postclose,
+    .ioctls          = evdi_painter_ioctls,
+    .num_ioctls      = ARRAY_SIZE(evdi_painter_ioctls),
+    .fops            = &evdi_driver_fops,
+    /* GEM object functions provided via evdi_gem_object_funcs */
+};
+```
 
-/* Creates a new virtual DRM device on demand: */
-static int evdi_platform_probe(struct platform_device *pdev)
+The driver advertises `DRIVER_ATOMIC` — compositors that support the atomic modesetting API (Mutter ≥ 3.36, KWin ≥ 5.20, sway) commit frames atomically. Legacy `drmModeSetCrtc` still works via the DRM atomic emulation layer.
+
+### Device Lifecycle
+
+Virtual evdi devices are created on demand via sysfs, not by hardware enumeration. The DLM writes to `/sys/bus/platform/driver/evdi/add` to instantiate a new virtual device, which triggers `evdi_platform_probe()`. The resulting device appears as `/dev/dri/cardN`. The `evdi_drm_device_init()` function sets up the painter, cursor state, and vblank tracking:
+
+```c
+/* module/evdi_drm_drv.c (abridged) */
+int evdi_drm_device_init(struct drm_device *dev)
 {
-    struct drm_device *drm;
-    drm = drm_dev_alloc(&evdi_driver, &pdev->dev);
-    evdi_modeset_init(drm);    /* modesetting hooks */
-    evdi_fbdev_init(drm);      /* legacy fbdev compat */
-    drm_dev_register(drm, 0);  /* expose as /dev/dri/cardN */
+    struct evdi_device *evdi = to_evdi_device(dev);
+
+    evdi_modeset_init(dev);     /* CRTC, connector, encoder, planes */
+    evdi_painter_init(evdi);    /* dirty-rect tracking + ioctl state */
+    evdi_cursor_init(evdi);     /* software cursor compositor */
+    drm_vblank_init(dev, 1);    /* single CRTC vblank */
+    return 0;
 }
 ```
 
-### DRM Connector and CRTC
+### Custom ioctl Table
 
-evdi implements a minimal DRM modesetting stack:
+evdi registers five custom DRM ioctls via `evdi_painter_ioctls[]`:
 
 ```c
-/* evdi/module/evdi_connector.c */
-static const struct drm_connector_funcs evdi_connector_funcs = {
-    .fill_modes          = drm_helper_probe_single_connector_modes,
-    .detect              = evdi_connector_detect,
-    .destroy             = drm_connector_cleanup,
-    .reset               = drm_atomic_helper_connector_reset,
-    .atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
-    .atomic_destroy_state   = drm_atomic_helper_connector_destroy_state,
+/* module/evdi_painter.c (abridged) */
+const struct drm_ioctl_desc evdi_painter_ioctls[] = {
+    DRM_IOCTL_DEF_DRV(EVDI_CONNECT,
+        evdi_painter_connect_ioctl,       DRM_UNLOCKED),
+    DRM_IOCTL_DEF_DRV(EVDI_REQUEST_UPDATE,
+        evdi_painter_request_update_ioctl, DRM_UNLOCKED),
+    DRM_IOCTL_DEF_DRV(EVDI_GRABPIX,
+        evdi_painter_grabpix_ioctl,        DRM_UNLOCKED),
+    DRM_IOCTL_DEF_DRV(EVDI_DDCCI_RESPONSE,
+        evdi_painter_ddcci_response_ioctl, DRM_UNLOCKED),
+    DRM_IOCTL_DEF_DRV(EVDI_ENABLE_CURSOR_EVENTS,
+        evdi_painter_enable_cursor_events_ioctl, DRM_UNLOCKED),
 };
+```
 
-/* Modes are reported by the DLM (which knows the real monitor's EDID): */
+Connection is established via `EVDI_CONNECT` with `connected=1` in `struct drm_evdi_connect`; disconnection reuses the same ioctl with `connected=0`. There is no separate disconnect ioctl. Cursor events are **opt-in**: by default the kernel composites the cursor into the grabbed framebuffer; after calling `EVDI_ENABLE_CURSOR_EVENTS`, the client receives `cursor_set` / `cursor_move` kernel events and is responsible for blending the cursor itself.
+
+### DRM Connector and EDID
+
+The evdi connector is a stub until the DLM connects. Once `EVDI_CONNECT` is called with EDID data, the painter stores the EDID, triggers a hotplug detection event via `drm_helper_hpd_irq_event()`, and the DRM core runs the connector's `get_modes` callback, which parses the stored EDID:
+
+```c
+/* module/evdi_connector.c (abridged) */
 static int evdi_connector_get_modes(struct drm_connector *connector)
 {
     struct evdi_connector *evdi_con = to_evdi_connector(connector);
-    /* DLM has pushed EDID data; parse it: */
-    drm_connector_update_edid_property(connector, evdi_con->edid);
-    return drm_add_edid_modes(connector, evdi_con->edid);
+    struct evdi_painter *painter = evdi_con->evdi->painter;
+
+    if (!painter->edid)
+        return 0;
+    drm_connector_update_edid_property(connector, painter->edid);
+    return drm_add_edid_modes(connector, painter->edid);
 }
 ```
 
-### Framebuffer Damage Tracking
+This means the compositor sees a fully populated monitor — correct resolutions, preferred mode, HDCP flags — without knowing it is talking to a virtual device.
 
-The critical evdi feature is damage tracking — knowing which pixels changed so evdi doesn't send the entire framebuffer over USB each frame:
+---
 
-```c
-/* evdi/module/evdi_fb.c */
-static void evdi_framebuffer_dirty(struct drm_framebuffer *fb,
-    struct drm_file *file_priv, unsigned flags, unsigned color,
-    struct drm_clip_rect *clips, unsigned num_clips)
-{
-    /* Merge damage rects and notify DLM: */
-    evdi_painter_send_update(evdi_dev->painter, clips, num_clips);
-}
-```
+## evdi GEM Memory Model
 
-With atomic modesetting, damage is tracked via `DRM_MODE_FB_DIRTY_MARK_DAMAGE` or the plane's `FB_DAMAGE_CLIPS` property.
+### GEM Object Structure
 
-### The Painter and Update Events
+evdi manages framebuffer memory via a custom GEM object type, `evdi_gem_object`, that wraps standard DRM GEM. Backing store is provided by shmem (anonymous pageable kernel memory), allocated lazily on first `mmap()`. Abridged from `module/evdi_gem.c` at `main`:
 
 ```c
-/* evdi/module/evdi_painter.c */
-struct evdi_painter {
-    struct evdi_device *evdi;
-    bool            is_connected;    /* DLM has opened char dev */
-    struct mutex    lock;
-    wait_queue_head_t updates_wq;
-    /* Ring of pending update regions: */
-    struct evdi_event_update updates[MAX_UPDATES];
-    int update_ready;
+/* module/evdi_gem.c (abridged) */
+struct evdi_gem_object {
+    struct drm_gem_object base;       /* must be first */
+    struct page         **pages;      /* shmem pages, NULL until pinned */
+    struct sg_table      *sg;         /* scatter-gather table for DMA */
+    void                 *vmapping;   /* kernel vmap address */
+    bool                  vmap_is_iomem;
+    bool                  allow_sw_cursor_rect_updates;
+    int                   pages_pin_count;
+    struct mutex          pages_lock;
 };
+```
 
-void evdi_painter_send_update(struct evdi_painter *painter,
-    struct drm_clip_rect *rects, int count)
+Allocation uses `drm_gem_object_init()`, which creates an shmem-backed file of the requested size. Pages are not faulted in until `mmap()` is called or until `evdi_pin_pages()` is explicitly invoked:
+
+```c
+struct evdi_gem_object *evdi_gem_alloc_object(struct drm_device *dev,
+                                               size_t size)
 {
-    /* Copy damage rects into the painter's update queue: */
-    mutex_lock(&painter->lock);
-    /* ... store rects ... */
-    painter->update_ready = 1;
-    mutex_unlock(&painter->lock);
-    wake_up_interruptible(&painter->updates_wq);
+    struct evdi_gem_object *obj = kzalloc(sizeof(*obj), GFP_KERNEL);
+    if (!obj)
+        return NULL;
+    if (drm_gem_object_init(dev, &obj->base, size)) {
+        kfree(obj);
+        return NULL;
+    }
+    mutex_init(&obj->pages_lock);
+    return obj;
 }
 ```
+
+### Page Pinning and Cache Coherency
+
+Before pixel data can be read by the DLM, the GEM pages must be pinned in memory and the CPU cache must be flushed to ensure coherency. evdi uses `drm_clflush_pages()` after obtaining the page array, which issues cache-line flush instructions on x86 (CLFLUSH). This is the mechanism that makes CPU-written pixels visible to subsequent reads:
+
+```c
+/* module/evdi_gem.c (abridged) */
+static int evdi_gem_get_pages(struct evdi_gem_object *obj, gfp_t gfpmask)
+{
+    struct page **pages;
+    if (obj->pages)
+        return 0;  /* already have pages */
+
+    pages = drm_gem_get_pages(&obj->base);
+    if (IS_ERR(pages))
+        return PTR_ERR(pages);
+
+    obj->pages = pages;
+    /* Flush CPU caches so subsequent reads see up-to-date pixel data: */
+    drm_clflush_pages(obj->pages,
+        DIV_ROUND_UP(obj->base.size, PAGE_SIZE));
+    return 0;
+}
+```
+
+### mmap and VM Flags
+
+The userspace DLM allocates its own pixel buffer and registers it with `evdi_register_buffer()`. When evdi grabs pixels (`EVDI_GRABPIX`), it copies from the GEM pages into the client-registered buffer using `copy_primary_pixels()`. The module also exposes `evdi_drm_gem_mmap()` for direct mapping with adjusted VM flags:
+
+```c
+/* module/evdi_gem.c (abridged) */
+int evdi_drm_gem_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+    int ret = drm_gem_mmap(filp, vma);
+    if (ret)
+        return ret;
+    /* Replace VM_PFNMAP with VM_MIXEDMAP to allow struct-page access: */
+    vm_flags_mod(vma, VM_MIXEDMAP, VM_PFNMAP);
+    return ret;
+}
+```
+
+This distinction matters because CLFLUSH requires struct-page pointers, not raw PFNs — `VM_MIXEDMAP` enables the kernel to obtain page references for cache operations on mapped memory.
+
+---
+
+## The evdi Painter: Damage Tracking and Update Flow
+
+### evdi_painter Structure
+
+The `evdi_painter` is the heart of evdi's userspace interaction model. It maintains connection state, the dirty-rectangle ring, the currently displayed framebuffer, and the DRM event queue for delivering `update_ready` signals to the DLM. Abridged from `module/evdi_painter.c` at `main`:
+
+```c
+/* module/evdi_painter.c (abridged) */
+#define MAX_DIRTS 16
+
+struct evdi_painter {
+    bool                     is_connected;
+    struct edid             *edid;
+    unsigned int             edid_length;
+    struct mutex             lock;
+
+    /* Dirty rectangle ring: */
+    struct drm_clip_rect     dirty_rects[MAX_DIRTS];
+    int                      num_dirts;
+
+    struct evdi_framebuffer *scanout_fb;   /* current displayed FB */
+    struct drm_file         *drm_filp;     /* the DLM's DRM file handle */
+    struct drm_device       *drm_device;
+
+    bool                     was_update_requested;
+    bool                     needs_full_modeset;
+    struct drm_crtc         *crtc;
+    struct drm_pending_vblank_event *vblank;
+    struct list_head         pending_events;
+    struct delayed_work      send_events_work;
+
+    /* DDC-CI (I²C monitor control) passthrough: */
+    struct completion        ddcci_response_received;
+    char                    *ddcci_buffer;
+    unsigned int             ddcci_buffer_length;
+
+    /* VT switching: pause updates when a VT is active: */
+    struct notifier_block    vt_notifier;
+    int                      fg_console;
+};
+```
+
+### Damage Tracking: Mark Dirty
+
+When the compositor commits a new frame to evdi, the `drm_atomic_helper_dirtyfb` callback fires, which ultimately calls `evdi_painter_mark_dirty()`. This function sanitizes each damage rectangle against framebuffer bounds and adds it to the ring:
+
+```c
+/* module/evdi_painter.c (abridged) */
+void evdi_painter_mark_dirty(struct evdi_device *evdi,
+                              const struct drm_clip_rect *dirty_rect)
+{
+    struct evdi_painter *painter = evdi->painter;
+    struct drm_clip_rect sanitized =
+        evdi_framebuffer_sanitize_rect(painter->scanout_fb, dirty_rect);
+
+    mutex_lock(&painter->lock);
+
+    if (painter->num_dirts < MAX_DIRTS) {
+        painter->dirty_rects[painter->num_dirts++] = sanitized;
+    } else {
+        /* Ring full: merge two rects into their bounding box */
+        merge_dirty_rects(painter->dirty_rects, &painter->num_dirts);
+        if (painter->num_dirts == MAX_DIRTS)
+            collapse_dirty_rects(painter->dirty_rects, &painter->num_dirts);
+        painter->dirty_rects[painter->num_dirts++] = sanitized;
+    }
+
+    mutex_unlock(&painter->lock);
+}
+```
+
+When the ring overflows 16 slots, evdi tries pairwise bounding-box merging before falling back to collapsing all rects into a single full-framebuffer update. This design trades precision for bounded memory: at worst, the DLM re-encodes the entire framebuffer.
+
+### Update Ready Notification
+
+After marking dirty, evdi delivers a `DRM_EVDI_EVENT_UPDATE_READY` event to the DLM's event queue if an update has been requested:
+
+```c
+/* module/evdi_painter.c (abridged) */
+void evdi_painter_send_update_ready_if_needed(struct evdi_painter *painter)
+{
+    if (painter->was_update_requested && painter->num_dirts > 0) {
+        evdi_painter_send_event(painter, &painter->update_ready_event);
+        painter->was_update_requested = false;
+    }
+}
+```
+
+The DLM reads this event via the standard `poll()` / `read()` interface on the DRM device file descriptor — the same mechanism used by compositors to receive vblank completion events.
+
+### EVDI_GRABPIX: Pixel Data Delivery
+
+When the DLM receives an `update_ready` event, it calls `EVDI_GRABPIX`. The kernel copies dirty pixels from the GEM pages into the client's registered buffer:
+
+```c
+/* Abridged flow for EVDI_GRABPIX ioctl */
+struct drm_evdi_grabpix {
+    uint32_t mode;        /* EVDI_GRABPIX_MODE_DIRTY */
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;
+    uint64_t buffer;      /* userspace buffer pointer */
+    uint32_t num_rects;   /* in/out: max rects / actual rects returned */
+    struct drm_clip_rect rects[MAX_DIRTS];
+};
+```
+
+The `copy_primary_pixels()` function iterates over dirty rectangles and copies row-by-row from pinned GEM pages to the client buffer, with `drm_clflush_virt_range()` ensuring cache coherency before each copy on x86. This is a standard CPU memcpy — there is no DMA, no zero-copy, and no GPU involvement.
+
+**This is the fundamental performance bottleneck**: for 1920×1080 XRGB8888, a full-frame grab copies ~8 MB. At memory bandwidth of ~30 GB/s (typical DDR4), this takes ~270 µs minimum — but in practice, cache pressure and page-fault handling push typical latencies to 1–5 ms per frame.
+
+---
+
+## Cursor Emulation
+
+### Hardware Cursor Impossibility
+
+A DisplayLink adapter has no GPU, no 2D overlay hardware, and no compositor. All cursor rendering must happen before pixels reach USB. evdi offers two strategies: **automatic cursor compositing** (default) and **cursor event forwarding** (opt-in via `EVDI_ENABLE_CURSOR_EVENTS`).
+
+### Software Cursor Compositor
+
+In default mode, evdi composites the cursor into the grabbed framebuffer pixel-by-pixel. The `evdi_cursor` state tracks the current cursor shape, dimensions, hotspot, and position:
+
+```c
+/* module/evdi_cursor.c (abridged) */
+struct evdi_cursor {
+    bool              enabled;
+    int32_t           x, y;
+    uint32_t          width, height;
+    int32_t           hot_x, hot_y;
+    uint32_t          pixel_format;   /* ARGB8888 */
+    uint32_t          stride;
+    struct evdi_gem_object *obj;      /* cursor bitmap in GEM memory */
+    struct mutex      lock;
+};
+```
+
+The `evdi_cursor_compose_and_copy()` function blends cursor pixels onto the framebuffer using per-pixel alpha: for each cursor pixel within the framebuffer bounds, it calculates the blended output as:
+
+```c
+/* Per-channel alpha blend: dest = (dest*(255-a) + src*a) / 255 */
+static uint8_t blend_component(uint8_t dest, uint8_t src, uint8_t alpha)
+{
+    return (uint16_t)(dest * (255 - alpha) + src * alpha) / 255;
+}
+```
+
+This approach generates an `update_ready` event on every cursor movement — even a mouse pan generates a dirty rect containing the old and new cursor positions and triggers a full grab-compress-send cycle.
+
+### Cursor Event Mode
+
+When the DLM calls `EVDI_ENABLE_CURSOR_EVENTS`, evdi stops compositing the cursor. Instead, each `evdi_cursor_set` or `evdi_cursor_move` generates a `DRM_EVDI_EVENT_CURSOR_SET` or `DRM_EVDI_EVENT_CURSOR_MOVE` event carrying cursor metadata. The DLM then blends the cursor into its own output buffer before encoding. This reduces CPU overhead for high-cursor-activity scenarios by decoupling cursor position updates from full framebuffer grabs.
 
 ---
 
@@ -203,76 +473,101 @@ void evdi_painter_send_update(struct evdi_painter *painter,
 
 ### Library API
 
-libevdi provides a C API used by the DLM:
+libevdi (in `library/` within the evdi repository) provides a C API used by the DLM to interact with the kernel module. It wraps the DRM ioctl interface with a callback-based event model:
 
 ```c
+/* library/evdi_lib.h (abridged) */
 #include <evdi_lib.h>
 
-/* Open an evdi device: */
+/* Open or create an evdi device: */
 evdi_handle handle = evdi_open(0);  /* first evdi device */
 if (handle == EVDI_INVALID_HANDLE) {
-    /* Create a new evdi device: */
-    evdi_add(1);  /* add 1 device via sysfs */
+    evdi_add(1);                    /* create one new device via sysfs */
     handle = evdi_open(0);
 }
 
 /* Connect with monitor EDID: */
-evdi_connect(handle, edid_data, edid_size,
-    1920, 1080,       /* preferred resolution */
-    60,               /* preferred refresh rate */
-    DRM_FORMAT_XRGB8888);
+evdi_connect(handle,
+    edid_data, edid_size,
+    pixel_area_limit,         /* max pixels per frame (bandwidth limit) */
+    pixel_per_second_limit);  /* max pixels per second (throughput cap) */
 
-/* Register update handler: */
-struct evdi_event_context ctx = {
-    .update_ready_handler = my_update_ready_callback,
+/* Register a pixel buffer (client-allocated): */
+evdi_buffer buf = {
+    .id     = 0,
+    .buffer = pixels_ptr,     /* userspace-allocated framebuffer */
+    .width  = 1920,
+    .height = 1080,
+    .stride = 1920 * 4,
 };
-evdi_register_event_handler(handle, &ctx);
+evdi_register_buffer(handle, buf);
 
-/* Main loop: */
-while (running) {
+/* Register event handlers: */
+struct evdi_event_context ctx = {
+    .update_ready_handler   = my_update_ready_cb,
+    .mode_changed_handler   = my_mode_changed_cb,
+    .dpms_handler           = my_dpms_cb,
+    .cursor_set_handler     = my_cursor_set_cb,
+    .cursor_move_handler    = my_cursor_move_cb,
+    .ddcci_data_handler     = my_ddcci_cb,
+};
+
+/* Main event loop: */
+while (running)
     evdi_handle_events(handle, &ctx);
-}
 ```
 
-### Grabbing Pixel Data
+Source: [library/evdi_lib.c at main](https://github.com/DisplayLink/evdi/blob/main/library/evdi_lib.c)
+
+### Render Loop: Request → Update Ready → Grab
+
+The render loop follows a request-notify-grab pattern. Unlike a polling model, the DLM does not busy-loop; it sleeps on `poll()` until the kernel signals readiness:
 
 ```c
-static void my_update_ready_callback(int buf_id, void *user_data)
+/* Typical DLM render loop (abridged) */
+static void my_update_ready_cb(int buf_id, void *user_data)
 {
     evdi_handle handle = user_data;
+    struct drm_clip_rect rects[EVDI_HANDLES_MAX];
+    int num_rects = EVDI_HANDLES_MAX;
 
-    /* Acquire the grab buffer: */
-    struct evdi_grab_pixels gp = {
-        .rects     = damage_rects,
-        .num_rects = MAX_RECTS,
-    };
-    /* Returns pixel data in gp.buffer for each damage rect: */
-    evdi_grab_pixels(handle, gp.rects, &gp.num_rects);
+    /*
+     * EVDI_GRABPIX: kernel copies dirty pixels into our registered
+     * buffer and fills rects[] with the damage rectangles.
+     * This is a kernel→user CPU copy, not mmap of the GEM buffer.
+     */
+    evdi_grab_pixels(handle, rects, &num_rects);
 
-    /* gp.rects[i].{x1,y1,x2,y2} = damage region */
-    /* pixel data accessible via mmap of the evdi buffer */
-    for (int i = 0; i < gp.num_rects; i++) {
-        /* Compress and send the damaged region over USB: */
-        displaylink_send_region(handle, &gp.rects[i]);
+    /* For each dirty region: encode with DL3, send via USB bulk: */
+    for (int i = 0; i < num_rects; i++) {
+        uint8_t *region_pixels = pixels_ptr_for_rect(&rects[i]);
+        displaylink_encode_and_send(handle, &rects[i], region_pixels);
     }
 
-    /* Release grab: */
+    /* Re-arm: EVDI_REQUEST_UPDATE tells kernel we're ready for next frame */
     evdi_request_update(handle, buf_id);
 }
 ```
 
-### Buffer Registration
+`evdi_request_update()` corresponds to the `EVDI_REQUEST_UPDATE` ioctl. It sets `painter->was_update_requested = true` in the kernel, so the next `evdi_painter_mark_dirty()` call will immediately deliver a `DRM_EVDI_EVENT_UPDATE_READY` event.
+
+### evdi_connect2 and Bandwidth Limiting
+
+The `evdi_connect2()` variant (preferred in DLM ≥ 5.x) accepts separate `pixel_area_limit` (pixels per frame) and `pixel_per_second_limit` (pixels per second) constraints. The kernel uses these to reject mode setting requests that would exceed the transport's bandwidth:
 
 ```c
-/* Register a shared buffer between kernel and userspace: */
-evdi_register_buffer(handle, 0,   /* buffer id */
-    width, height,
-    DRM_FORMAT_XRGB8888,
-    pixels_ptr,                    /* userspace-allocated pixel buffer */
-    stride);
-
-/* evdi maps this buffer into kernel space; updates write directly here */
+/* struct drm_evdi_connect (abridged) */
+struct drm_evdi_connect {
+    int      connected;             /* 1=connect, 0=disconnect */
+    int      dev_index;
+    uint8_t __user *edid;           /* pointer to EDID data in userspace */
+    uint32_t edid_length;
+    uint32_t pixel_area_limit;      /* max screen area in pixels */
+    uint32_t pixel_per_second_limit; /* bandwidth in pixels/second */
+};
 ```
+
+For a USB 3.0 DL-5xxx device, a typical `pixel_per_second_limit` is 2560 × 1440 × 60 ≈ 221 million pixels/second, preventing the user from accidentally setting 4K@60 which would saturate the USB link.
 
 ---
 
@@ -280,36 +575,69 @@ evdi_register_buffer(handle, 0,   /* buffer id */
 
 ### DLM Architecture
 
-The DisplayLink Manager (closed-source, `displaylink-driver-*.run` from Synaptics) is a userspace daemon that:
+The DisplayLink Manager (proprietary, distributed as `displaylink-driver-*.run` from Synaptics) is a userspace daemon that bridges evdi and the DisplayLink USB hardware. It is distributed as a self-extracting installer that bundles:
 
-1. Discovers DisplayLink USB devices via udev
-2. Creates evdi virtual displays via `evdi_add()`
-3. Connects each evdi handle to a USB device
-4. Reads pixel updates from evdi and compresses them
-5. Sends compressed tiles via libusb to the DisplayLink chip
-6. Receives EDID from the chip and pushes it to evdi
+- `evdi.ko` DKMS source (open source, MIT/GPLv2)
+- `DisplayLinkManager` binary (proprietary)
+- udev rules (`74-displaylink.rules`)
+- systemd service (`displaylink-driver.service`)
+- Firmware blobs for the DisplayLink chip
+
+Installation on Ubuntu/Debian:
 
 ```bash
-# Install DLM:
-# Download from: https://www.synaptics.com/products/displaylink-graphics/downloads/ubuntu
+# Download from Synaptics:
+# https://www.synaptics.com/products/displaylink-graphics/downloads/ubuntu
 chmod +x displaylink-driver-6.0.run
-sudo ./displaylink-driver-6.0.run   # installs evdi.ko + dlm.service
+sudo ./displaylink-driver-6.0.run
 
-# Check status:
-systemctl status displaylink-driver
-journalctl -u displaylink-driver -f
+# This installs:
+# /usr/lib/displaylink/DisplayLinkManager   (proprietary daemon)
+# /usr/lib/displaylink/libevdi.so           (libevdi shared library)
+# /etc/udev/rules.d/74-displaylink.rules    (udev hotplug rules)
+# /lib/systemd/system/displaylink-driver.service
+# /usr/src/evdi-*/                          (DKMS kernel module source)
 ```
+
+The installer runs `dkms install evdi/<version>` to compile and register the kernel module. Each kernel update triggers a DKMS rebuild automatically.
 
 ### udev Integration
 
-```bash
-# DisplayLink USB devices:
-lsusb | grep DisplayLink
-# e.g.: Bus 002 Device 003: ID 17e9:6006 DisplayLink
+The `74-displaylink.rules` file matches DisplayLink USB devices by vendor ID (`17e9`) and calls a helper that signals the DLM:
 
-# evdi devices after DLM starts:
-ls /dev/dri/  # should show new card* device
+```bash
+# /etc/udev/rules.d/74-displaylink.rules (excerpt)
+ACTION=="add", SUBSYSTEM=="usb", \
+    ATTR{idVendor}=="17e9", \
+    RUN+="/usr/lib/displaylink/displaylink-installer.sh attach %k"
+
+ACTION=="remove", SUBSYSTEM=="usb", \
+    ATTR{idVendor}=="17e9", \
+    RUN+="/usr/lib/displaylink/displaylink-installer.sh detach %k"
 ```
+
+When a DisplayLink dock is plugged in, udev fires the `attach` helper, which triggers the DLM to write to `/sys/bus/platform/driver/evdi/add` (creating a new virtual evdi device) and then open the resulting `/dev/dri/cardN` node.
+
+### systemd Service
+
+```bash
+# Check DLM status:
+systemctl status displaylink-driver
+
+# Follow log output:
+journalctl -u displaylink-driver -f --since "1 minute ago"
+
+# Restart DLM (required after evdi module reload):
+sudo systemctl restart displaylink-driver
+```
+
+The service runs as `root` to access USB bulk endpoints and DRM device nodes. It does not require `CAP_SYS_ADMIN` for normal operation but does require read/write access to `/dev/dri/cardN` and `/dev/bus/usb/<bus>/<device>`.
+
+### Why DisplayLink Manager Is Closed Source
+
+DisplayLink's stated rationale is that the DLM's DL3 encoder is shared across Windows, macOS, Chrome OS, and Android via a plugin-based architecture. The encoder logic constitutes DisplayLink's core IP. DisplayLink acknowledges that "root causes of most issues people see with Ubuntu driver are outside the closed-source client," making the open-source evdi kernel module and libevdi the primary debugging surface. [Source](https://support.displaylink.com/knowledgebase/articles/1104056)
+
+This split architecture — open kernel interface, closed userspace — is precisely why evdi cannot be upstreamed into mainline Linux: the DRM subsystem maintainers require an open userspace before accepting drivers that define new uAPI.
 
 ---
 
@@ -317,60 +645,204 @@ ls /dev/dri/  # should show new card* device
 
 ### Compositor View
 
-From the compositor's perspective, evdi presents as a normal DRM device:
+From the compositor's perspective, evdi presents as a normal DRM device with standard KMS objects. The compositor discovers it via `drmModeGetResources()` and programs it identically to a real GPU output:
 
 ```bash
-# modetest on evdi device:
-modetest -M evdi -c   # connectors
-# Shows: HDMI-A-1 connected 1920x1080 ...
+# Inspect the evdi DRM device:
+modetest -M evdi -c
+# Output: Connector HDMI-A-1, 1920x1080@60, connected
+
+# Verify with drm-info:
+drm-info /dev/dri/card2   # substitute actual evdi card number
 ```
 
-The compositor (Mutter/KWin/sway) sets modes and commits frames to the evdi DRM device exactly as with a real GPU output:
+The compositor (Mutter, KWin, sway) performs an atomic commit to evdi exactly as it would to a real GPU:
 
 ```c
-/* Atomic commit to evdi (compositor internal): */
+/* Compositor atomic commit to evdi device (standard DRM): */
 drmModeAtomicAddProperty(req, crtc_id, mode_id_prop, mode_blob_id);
 drmModeAtomicAddProperty(req, conn_id, crtc_id_prop, crtc_id);
 drmModeAtomicAddProperty(req, plane_id, fb_id_prop, fb_id);
-drmModeAtomicCommit(evdi_fd, req, DRM_MODE_ATOMIC_FLIP_EVENT, NULL);
+/* Attach damage clips for efficient dirty tracking: */
+drmModeAtomicAddProperty(req, plane_id, fb_damage_clips_prop,
+    damage_blob_id);
+drmModeAtomicCommit(evdi_fd, req,
+    DRM_MODE_ATOMIC_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK, NULL);
 ```
 
-### Prime / DMA-BUF Import
+The `FB_DAMAGE_CLIPS` plane property is crucial for performance: it tells evdi precisely which rectangles changed so only those regions need to be encoded and transmitted.
 
-When the GPU renders to a DMA-BUF and the compositor commits that buffer to evdi, evdi must CPU-copy the pixel data (since it can't do GPU DMA). This is the main performance limitation:
+### DMA-BUF Import and the CPU Copy
+
+When the primary GPU renders to a DMA-BUF and the compositor attaches that buffer to the evdi plane, evdi must perform a CPU copy. The adapter chip cannot perform PCIe DMA — it has no host memory access. The copy path is:
 
 ```
-GPU renders → DMA-BUF → evdi: CPU maps DMA-BUF → copies to evdi pixel buffer → DLM reads
+GPU renders → DMA-BUF (GPU VRAM or system memory)
+  ↓ CPU: kmap() / vmap() the DMA-BUF pages
+  ↓ CPU: copy to evdi GEM shmem pages (with clflush)
+  ↓ EVDI_GRABPIX: copy GEM pages to DLM client buffer
+  ↓ DLM: DL3 encode → USB bulk transfer
 ```
 
-The copy is typically 5–15 ms for 1080p, meaning evdi displays are limited to ~30–40 fps practical maximum even on USB 3.2.
+On modern hardware (DDR5, high-bandwidth integrated graphics), this double-copy typically takes 3–10 ms for 1080p. It is a hard architectural constraint: until a zero-copy DMA-engine path exists (see Roadmap), all DisplayLink data must transit the CPU.
+
+### No Hardware Overlays
+
+evdi implements a single primary plane. The DRM plane model allows hardware to composite multiple layers (cursor plane, overlay planes) without a full GPU pass. On a real GPU, this is done in scanout hardware. On evdi, there is no scanout hardware — the adapter chip receives a pre-composited stream. This means:
+
+- No cursor plane (cursor is software-composited, see Section 7)
+- No overlay planes for video or UI layers
+- No YUV hardware conversion in the adapter
+- Every pixel presented to the display must flow through the DLM encode path
 
 ---
 
-## Compression and USB Bandwidth
+## USB4, Thunderbolt, and the DL-7400 Generation
 
-### Bandwidth Requirements
+### USB4 and DisplayPort 2.1
 
-| Resolution | Refresh | Uncompressed | Required Compression |
-|---|---|---|---|
-| 1920×1080 | 60 Hz | ~380 MB/s | ~3× (USB 3.0 ~400 MB/s) |
-| 2560×1440 | 60 Hz | ~670 MB/s | ~5× |
-| 3840×2160 | 30 Hz | ~720 MB/s | ~5× |
-| 3840×2160 | 60 Hz | ~1440 MB/s | ~4× (USB 3.2 Gen2) |
+The DL-7400 is Synaptics's current-generation DisplayLink chip, announced in 2024. It represents a fundamental architectural advance over the DL-6xxx series:
 
-### Damage Region Compression
+**Key DL-7400 capabilities** [Source](https://www.synaptics.com/company/news/synaptics-introduces-displayport-21-and-displaylink-quad-display):
+- Quad 4K@120Hz HDR10 display support
+- Dual 8K@60Hz HDR10 display support
+- DisplayPort 2.1 Alt Mode (UHBR10 / UHBR20 signaling)
+- Compatible with USB4, Thunderbolt 3/4, and DisplayPort Alt Mode over USB-C
+- 2.5 Gbps Ethernet integrated
+- Explicit support for Variable Refresh Rate (VRR/G-Sync/FreeSync)
 
-evdi only sends changed regions. For a typical desktop with mostly static content, only 10–20% of pixels change per frame — effective throughput is thus much lower than worst case.
+### USB4 vs. USB 3.2 Bandwidth
 
-```c
-/* DLM compresses each damage rect independently: */
-for each rect in damage_rects:
-    uint8_t *pixels = evdi_get_pixels(rect);
-    size_t compressed_size;
-    uint8_t *compressed = displaylink_compress(pixels, rect.width, rect.height,
-                                               &compressed_size);
-    usb_bulk_send(compressed, compressed_size);
-```
+The DL-7400 communicates with the host over USB4 tunneled links:
+
+| Interface | Raw Bandwidth | Practical Video Bandwidth |
+|---|---|---|
+| USB 3.2 Gen 1 (5 Gbps) | 500 MB/s | ~200–250 MB/s for display |
+| USB 3.2 Gen 2 (10 Gbps) | 1,000 MB/s | ~400–500 MB/s |
+| USB4 Gen 2×2 (20 Gbps) | 2,000 MB/s | ~800 MB/s |
+| USB4 Gen 3×2 (40 Gbps) | 4,000 MB/s | ~1.5 GB/s |
+| Thunderbolt 4 (40 Gbps) | 4,000 MB/s | ~1.5 GB/s |
+
+With USB4 / Thunderbolt 4 at 40 Gbps, the DL-7400 has sufficient bandwidth to transmit quad-4K@120Hz streams after DL3 compression. Compare this to the DL-6xxx on USB 3.0 (5 Gbps), where 4K@30Hz was achievable but 4K@60Hz required high compression ratios.
+
+### USB4 Alt Mode vs. DP Tunneling
+
+USB4 supports two mechanisms for display data:
+
+1. **DisplayPort Tunneling**: the USB4 fabric creates a DP tunnel that carries raw DisplayPort packets. The endpoint is a standard DP sink (no DisplayLink chip needed). This is native DP over USB4 — supported by the Linux `thunderbolt` / `typec` kernel subsystem.
+
+2. **DisplayLink over USB4**: the DL-7400 chip uses the USB4 fabric as a high-bandwidth USB device — it enumerates as a USB device (VID 17e9) and carries DL3-encoded streams over USB protocol. The higher USB4 bandwidth enables the higher resolutions.
+
+These are distinct and non-interchangeable. A USB4 dock with a DL-7400 chip requires the full evdi + DLM stack. A USB4 dock using native DP tunneling requires only the kernel's built-in DP Alt Mode / DRM connector code.
+
+### Linux Support for DL-7400
+
+As of Linux 6.10 and evdi ≥ 1.14, the DL-7400 is supported by the standard evdi + DLM stack. The VID/PID is 17e9 (DisplayLink family), and the same udev rule triggers DLM association. The chip appears over USB4 but the software path is identical to DL-6xxx — only bandwidth and resolution limits change.
+
+> **Note: needs verification.** Specific evdi version requirements for DL-7400 and minimum kernel version for reliable USB4 enumeration should be confirmed against release notes.
+
+---
+
+## Limitations and Performance
+
+### Latency
+
+DisplayLink adds measurable latency to the display path that does not exist on a direct-attach GPU output:
+
+1. **Compositor commit → evdi dirty event**: ≈ 0–2 ms (kernel scheduling)
+2. **EVDI_GRABPIX CPU copy** (1080p): ≈ 1–5 ms
+3. **DLM DL3 encoding** (1080p, full frame): ≈ 5–15 ms (CPU-dependent)
+4. **USB bulk transfer** (USB 3.0, 1080p compressed): ≈ 2–8 ms
+5. **Chip DL3 decode + display output**: ≈ 1–3 ms
+
+Total round-trip latency from compositor commit to display pixel: **≈ 10–35 ms**, compared to ≈ 1–5 ms for a directly connected display with vsync. This latency is imperceptible for office work and web browsing but is noticeable during interactive gaming or low-latency applications.
+
+### CPU Overhead
+
+All encoding is done on the host CPU in the DLM daemon. Observed CPU utilization:
+
+- **Static desktop** (no movement): ≈ 1–3% of one CPU core
+- **Mouse cursor movement** (default cursor mode): ≈ 10–15% of one CPU core (every mouse position triggers a dirty event for the cursor bounding box)
+- **Video playback (1080p)**: ≈ 25–40% of one CPU core
+- **4K@60Hz full-motion content**: ≈ 60–100% of one CPU core (may not be achievable in real-time)
+
+Source: community measurements via Arch Linux forums and DisplayLink's own product documentation. [Source](https://displaylink.org/forum/archive/index.php/t-66909.html)
+
+Using `EVDI_ENABLE_CURSOR_EVENTS` reduces cursor-motion CPU overhead by decoupling cursor position updates from framebuffer grabs. This is the single most impactful optimization for typical desktop use.
+
+### Why Gaming Through DisplayLink Is Impractical
+
+Three factors combine to make DisplayLink unsuitable for gaming:
+
+1. **Frame latency**: The 10–35 ms encode-transfer pipeline adds to input lag on top of game engine latency and display response time. Competitive gaming targets < 5 ms total display pipeline latency.
+
+2. **No hardware overlays**: Games that use the DRM overlay plane (PRIME offload output) or direct scanout (DRM_MODE_PAGE_FLIP) cannot bypass the evdi CPU copy path. Every frame must be captured, encoded, and transmitted.
+
+3. **Variable encode time**: The DL3 encode time is content-dependent. Complex scenes (many edges, high spatial frequency) encode slower than simple ones, introducing frame-rate jitter that manifests as stuttering.
+
+DisplayLink documentation explicitly targets "productivity applications" and notes it is "not recommended for high-motion content." [Source](https://kb.plugable.com/docking-stations-and-video/displaylink-based-displays-running-slow-heres-how-to-improve-performance)
+
+### No GPU Acceleration
+
+There is no GPU in the DisplayLink adapter. This means:
+
+- No hardware video decode on the display side (no VDPAU/VAAPI offload to the dock)
+- No 2D/3D acceleration on the adapter (all rendering on host GPU)
+- No hardware compositor in the dock (all compositing on host CPU/GPU, with result transmitted to dock)
+- No HDR tone mapping on the adapter side (host must produce the correct signal before encoding)
+
+### Interaction with NVIDIA Proprietary Driver
+
+DisplayLink on Linux requires an open-source GPU driver on the primary display adapter. The NVIDIA proprietary driver does not expose DMA-BUFs in a form compatible with evdi's CPU-copy path; additionally, NVIDIA's proprietary modesetting stack does not support the atomic `FB_DAMAGE_CLIPS` property in a form evdi can consume. As a result, DisplayLink officially does not support NVIDIA proprietary driver configurations on Linux. Systems with Intel or AMD primary GPUs using Mesa (i915, amdgpu, nouveau) work correctly. [Source](https://support.displaylink.com/knowledgebase/articles/615714)
+
+---
+
+## Open-Source Alternatives and the Ecosystem
+
+### udlfb: The Legacy fbdev Driver
+
+The original DisplayLink USB 2.0 driver in the Linux kernel was `udlfb`, a framebuffer device (`/dev/fb*`) driver for the older "Alex" and "Ollie" DisplayLink chips (USB VID 17e9 with USB 2.0). It is documented in the kernel at `Documentation/fb/udlfb.rst` [Source](https://docs.kernel.org/fb/udlfb.html).
+
+`udlfb` has two fundamental limitations:
+1. **fbdev's mmap model** assumes a real hardware framebuffer. For USB, all writes to the mapped region must be detected and encoded into USB bulk transfers by the CPU — typically via deferred I/O (`fb_defio`), which uses the page-dirty bits to detect which pages changed.
+2. **No DRM integration**: fbdev lacks the atomic modesetting, damage clip properties, and plane model that enable efficient dirty-region tracking.
+
+A patch to remove `udlfb` was proposed in 2020 ([dri-devel, November 2020](https://lists.freedesktop.org/archives/dri-devel/2020-November/289574.html)), and the driver is considered legacy. Note: `fb_defio` (deferred framebuffer I/O) is the **udlfb** damage-tracking mechanism — not evdi's. evdi uses `drm_atomic_helper_dirtyfb` and the `FB_DAMAGE_CLIPS` DRM plane property instead.
+
+### udl: The In-Kernel DRM DisplayLink Driver
+
+`udl` (`drivers/gpu/drm/udl/`) is the in-kernel DRM driver for USB 2.0-era DisplayLink hardware. It is the DRM successor to `udlfb` and is fully open-source and mainline. `udl` supports only USB 2.0 DisplayLink chips (DL-1xx, DL-1x5) and is limited to 1920×1080@60. It does not use evdi or the DLM.
+
+For users with legacy USB 2.0 DisplayLink docks, `udl` is the preferred driver: no proprietary daemon required. [Source](https://www.kernel.org/doc/html/latest/gpu/)
+
+### evdi + DLM: Current Stack for USB 3.0+
+
+For USB 3.0 and newer DisplayLink hardware (DL-3xxx through DL-7400), the required stack is evdi (open source, out-of-tree) + DLM (proprietary). The split is intentional: evdi defines the kernel ↔ userspace interface, and the DLM provides the proprietary DL3 codec and USB protocol implementation.
+
+### Community Open-Source Efforts
+
+Several community projects extend or replace components of the evdi stack:
+
+**pyevdi** ([github.com/DisplayLink/pyevdi](https://github.com/DisplayLink/pyevdi)): Python bindings for libevdi. Enables scripting and testing of the evdi ioctl interface without the proprietary DLM. [Source](https://github.com/DisplayLink/evdi)
+
+**evdipp**: A minimal C++ example client for evdi/libevdi that demonstrates the complete connection-update-grab loop. Useful as a reference for developers implementing custom evdi clients.
+
+**displaylink-rpm** ([github.com/displaylink-rpm/displaylink-rpm](https://github.com/displaylink-rpm/displaylink-rpm)): Community-maintained RPM build scripts that repackage the DisplayLink `.run` installer for Fedora, CentOS Stream, Rocky Linux, and AlmaLinux. [Source](https://github.com/displaylink-rpm/displaylink-rpm)
+
+**displaylink-debian** ([github.com/edclement/displaylink-debian](https://github.com/edclement/displaylink-debian)): A shell script that extracts and repackages the DisplayLink `.run` installer as a proper Debian package with correct DKMS integration.
+
+### The Open DLM Question
+
+The most-requested community goal is for Synaptics to open-source the DLM. An open DLM would:
+1. Enable evdi to be upstreamed into mainline Linux (DRM maintainers require open userspace for new uAPI)
+2. Allow community improvements to the DL3 encoder (e.g., GPU offload, better bandwidth adaptation)
+3. Enable packaging in distributions without proprietary blobs (Fedora, Debian main)
+
+As of mid-2026, Synaptics has not announced plans to open-source the DLM. The community feature request has over 2,000 votes on the DisplayLink forum. [Source](https://support.displaylink.com/forums/287786-displaylink-feature-suggestions/suggestions/17798941-make-the-linux-driver-open-source-and-get-it-into)
+
+### USB CDC Display Class: Not a Current Reality
+
+There is no standardized USB Display Device Class analogous to USB Audio or USB Mass Storage. Each USB display vendor implements a proprietary protocol. The DisplayLink protocol (DL3 + USB bulk) is proprietary; the `udl` driver was reverse-engineered/documented for USB 2.0 hardware but the modern DL3 protocol for DL-5xxx/6xxx/7xxx is not publicly specified. Proposals for a USB display class have been discussed in standards bodies but have not resulted in a standardized class code as of 2026. Note: needs verification.
 
 ---
 
@@ -382,49 +854,108 @@ for each rect in damage_rects:
 ```bash
 # Check DLM is running:
 systemctl status displaylink-driver
-# Check evdi loaded:
+
+# Check evdi module is loaded:
 lsmod | grep evdi
-# Check USB device seen:
-lsusb | grep DisplayLink
-# Check DRM device created:
-ls -la /dev/dri/  # new card* should appear
+
+# Check USB device is enumerated:
+lsusb | grep -i displaylink
+# e.g.: Bus 002 Device 003: ID 17e9:6006 DisplayLink
+
+# Check new DRM device appeared:
+ls -la /dev/dri/
+# A new cardN should appear when DLM connects to evdi
+
+# Check DLM log for connection errors:
+journalctl -u displaylink-driver --since "5 minutes ago"
 ```
 
 **Low performance / stuttering:**
 ```bash
-# Check USB speed (should be SuperSpeed 5 Gbps or better):
-lsusb -t | grep -A2 DisplayLink
-# Check CPU usage of DLM:
-top -p $(pgrep dlm)
-# Disable compositor effects if possible
+# Verify USB speed (should be SuperSpeed 5 Gbps or better):
+lsusb -t | grep -A 3 17e9
+# Look for: speed=5000Mbps or higher
+
+# Check DLM CPU usage:
+top -p $(pgrep -x DisplayLinkMana)  # actual process name may vary
+
+# Enable cursor event mode in DLM config to reduce cursor-drag CPU:
+# (Depends on DLM version; check Synaptics documentation)
+
+# Disable compositor effects (e.g., Kwin effects) for the evdi output
 ```
 
-**EDID not recognized:**
+**EDID not recognized / wrong resolution:**
 ```bash
-# Check monitor EDID via evdi:
-drm-info /dev/dri/card2  # replace with evdi card number
-# Force mode:
-xrandr --addmode HDMI-1 "1920x1080" && xrandr --output HDMI-1 --mode "1920x1080"
+# Check EDID is loaded by evdi connector:
+drm-info /dev/dri/card2  # substitute actual evdi card number
+
+# Force a mode:
+xrandr --addmode HDMI-1 "1920x1080"
+xrandr --output HDMI-1 --mode "1920x1080"
+
+# Under Wayland, use wlr-randr or KScreen to force mode
 ```
 
-**evdi module fails to build:**
+**evdi module fails to build with DKMS:**
 ```bash
-# evdi requires matching kernel headers:
+# Install kernel headers for current kernel:
 sudo apt install linux-headers-$(uname -r)
-# Re-run DKMS build:
+
+# Trigger DKMS rebuild:
 sudo dkms autoinstall
-dkms status  # should show evdi/version, installed
+
+# Check DKMS status:
+dkms status
+# Expected: evdi/<version>, <kernel-version>, <arch>: installed
+
+# If build fails, check error log:
+cat /var/lib/dkms/evdi/<version>/<kernel>/<arch>/log/make.log
 ```
+
+**Module not compatible with kernel 6.x:**
+
+evdi is an out-of-tree module and must track kernel DRM API changes. Known breakage points:
+- Kernel 6.0: `drm_irq.h` removed as legacy
+- Kernel 6.6: atomic helper API changes
+- Kernel 6.17+: ongoing compatibility maintained in evdi `main` branch
+
+Always use the evdi version bundled with the DLM installer, or the latest tag from the evdi GitHub repo that lists your kernel version in its compatibility matrix. [Source](https://github.com/DisplayLink/evdi/issues/433)
 
 ### Debug Logging
 
 ```bash
-# evdi kernel debug:
+# Enable evdi kernel debug messages via dynamic debug:
 echo 'module evdi +p' | sudo tee /sys/kernel/debug/dynamic_debug/control
-dmesg | grep evdi
 
-# DLM debug log:
-journalctl -u displaylink-driver --since "5 minutes ago" -f
+# Watch kernel messages:
+dmesg -w | grep -i evdi
+
+# Verbose DLM log:
+journalctl -u displaylink-driver -f
+
+# Check evdi sysfs state:
+ls /sys/bus/platform/devices/ | grep evdi
+cat /sys/bus/platform/devices/evdi.0/count  # number of virtual displays
+
+# Trace USB bulk transfers (requires usbmon):
+sudo modprobe usbmon
+sudo tcpdump -i usbmon2 -w /tmp/usb-capture.pcap  # substitute bus number
+```
+
+### Performance Profiling
+
+```bash
+# Measure DLM CPU cost with perf:
+sudo perf top -p $(pgrep -x DisplayLinkMana)
+
+# Trace evdi ioctl call rates:
+sudo bpftrace -e '
+  tracepoint:syscalls:sys_enter_ioctl
+  /comm == "DisplayLinkMana"/
+  { @[args->cmd] = count(); }
+  interval:s:5 { print(@); clear(@); }
+'
 ```
 
 ---
@@ -433,31 +964,33 @@ journalctl -u displaylink-driver --since "5 minutes ago" -f
 
 ### Near-term (6–12 months)
 
-- **Wayland compositor session handoff fixes**: Active bugs in evdi cause module state corruption when transitioning between Wayland compositor instances (e.g., logging out and back in without a full module reload). Patches to address teardown and re-connection sequencing are under discussion. [Source](https://github.com/DisplayLink/evdi/issues/540)
-- **Kernel 6.x compatibility maintenance**: evdi is out-of-tree and must be updated for each new kernel's DRM API changes; the project tracks upstream regularly (verified up to kernel 6.15 as of mid-2026). Continued DKMS compatibility work is expected with each major kernel release. [Source](https://github.com/DisplayLink/evdi)
-- **USB 3.2 Gen 2 / USB4 throughput improvements**: DL-7xxx chips support 4K@60 over USB 3.2 Gen 2 (10 Gbps). Near-term DLM improvements are expected to better saturate available bandwidth and reduce compression latency for high-refresh-rate displays. Note: needs verification for specific release timeline.
-- **HDR metadata passthrough**: As Wayland compositors gain HDR support (via the `color-management-v1` protocol), evdi will need to propagate HDR10/PQ metadata through the DRM connector's `HDR_OUTPUT_METADATA` property to the DLM daemon. Note: needs verification.
+- **Kernel 6.x compatibility maintenance**: evdi is out-of-tree and must be updated for each DRM API change; the project has tracked upstream through kernel 6.15 as of mid-2026. [Source](https://github.com/DisplayLink/evdi)
+- **Wayland compositor session handoff fixes**: Active bugs cause module state corruption when Wayland compositor instances restart (e.g., log out and log back in). Patches addressing teardown and re-connection sequencing are under discussion. [Source](https://github.com/DisplayLink/evdi/issues/540)
+- **DL-7400 Linux driver maturation**: USB4/Thunderbolt enumeration edge cases and multi-4K configuration stability are being worked on.
+- **HDR metadata passthrough**: As Wayland compositors gain HDR support via `color-management-v1`, evdi will need to propagate `HDR_OUTPUT_METADATA` connector properties through the painter to the DLM. Note: needs verification.
 
 ### Medium-term (1–3 years)
 
-- **Open-source DLM / full open stack**: The most-requested long-standing community goal is for Synaptics/DisplayLink to open-source the DisplayLink Manager daemon, removing the binary blob from the stack. This would also unblock upstreaming evdi, since the DRM maintainers require an open userspace for new uAPI. [Source](https://support.displaylink.com/forums/287786-displaylink-feature-suggestions/suggestions/17798941-make-the-linux-driver-open-source-and-get-it-into)
-- **Upstream kernel merge attempt**: No serious RFC patchset for mainlining evdi has been submitted as of 2026, primarily because of the closed DLM userspace. If Synaptics opens the DLM, an upstreaming effort under `drivers/gpu/drm/evdi/` (similar to `udl` for older DisplayLink USB 2.0 devices) becomes viable. Note: needs verification for concrete timeline.
-- **`FB_DAMAGE_CLIPS` atomic property adoption**: Broader compositor support for the `FB_DAMAGE_CLIPS` DRM plane property would allow finer-grained dirty-region reporting to evdi, reducing CPU copy overhead. Work in Mutter and KWin on atomic damage tracking is relevant here. [Source](https://github.com/DisplayLink/evdi/issues)
-- **GPU-side compression offload**: Currently the DLM compresses on CPU. Medium-term, offloading compression (JPEG or AV1 intra-frame) to the host GPU's video encoder (VAAPI/NVENC) could significantly reduce CPU load for 4K streams. Note: needs verification.
+- **Open-source DLM**: The most-requested community goal — Synaptics opening the DLM — would unblock evdi upstreaming. Without an open userspace, the DRM maintainers cannot accept evdi into mainline. [Source](https://support.displaylink.com/forums/287786-displaylink-feature-suggestions/suggestions/17798941-make-the-linux-driver-open-source-and-get-it-into)
+- **Upstream kernel merge**: If the DLM is opened, a formal RFC patchset for mainlining evdi under `drivers/gpu/drm/evdi/` becomes viable, analogous to how `udl` covers USB 2.0 hardware. Note: needs verification for timeline.
+- **`FB_DAMAGE_CLIPS` adoption in more compositors**: Broader compositor support for damage clips reduces the frequency of full-framebuffer grabs. KWin and Mutter have relevant work underway.
+- **GPU-side encode offload**: Offloading DL3 encode to the host GPU's video encoder (VAAPI/NVENC) could reduce CPU overhead significantly for 4K streams. Note: needs verification.
 
 ### Long-term
 
-- **UDP / wireless display tunnelling**: The evdi architecture (virtual DRM + userspace pixel consumer) is display-transport-agnostic. Future directions include tunnelling over USB4 Alt-Mode without proprietary chips, or over Wi-Fi 7 (IEEE 802.11be) for wireless docking, with the DLM replaced by an open transport daemon.
-- **DMA-BUF zero-copy path**: The fundamental performance limit today is CPU memcpy for imported DMA-BUFs. A long-term architectural goal is a kernel-level DMA engine path where the GPU scatters dirty tiles directly into USB transfer buffers, bypassing CPU copies entirely. This would likely require a redesign of the evdi ↔ DLM interface. Note: needs verification.
-- **Integration with the Linux USB4 / Thunderbolt display stack**: USB4 tunnels native DisplayPort Alt-Mode, potentially making USB DisplayLink hardware unnecessary for high-end docks. DisplayLink's relevance long-term may shift toward lower-cost USB 3.x docks and multi-display scenarios that exceed native DP bandwidth, alongside the `thunderbolt` / `typec` kernel subsystem evolution. [Source](https://www.notebookcheck.net/AMD-DisplayPort-Thunderbolt-Tunneling-driver-already-available-in-latest-Linux-kernel-patches-USB4-support-finally-coming-in-early-2022.570527.0.html)
+- **DMA-BUF zero-copy path**: The fundamental latency and CPU overhead arise from the double CPU copy (GPU→evdi GEM, evdi GEM→DLM buffer). A kernel DMA-engine path scattering dirty tiles directly into USB transfer buffers would bypass both copies. This requires a redesign of the evdi ↔ DLM interface. Note: needs verification.
+- **USB4 native DP tunneling displacement**: USB4 native DisplayPort tunneling (built into the Linux kernel `thunderbolt`/`typec` subsystem) may displace DisplayLink for high-end docks on USB4/Thunderbolt 4 hosts, since it requires no proprietary codec and achieves lower latency. DisplayLink's value proposition may shift toward lower-cost USB 3.x multi-display scenarios.
+- **Wireless docking**: The evdi architecture (virtual DRM + userspace transport) is transport-agnostic. Future directions include Wi-Fi 7 (IEEE 802.11be) wireless docking, with the DLM replaced by an open transport daemon. Note: needs verification.
 
 ---
 
 ## Integrations
 
-- **Ch01 (DRM Architecture)** — evdi is a DRM driver; it registers a `drm_driver` with `drm_dev_alloc`/`drm_dev_register` like any real GPU driver
-- **Ch04 (Framebuffer and Planes)** — evdi implements a single primary plane; damage tracking uses the plane's `FB_DAMAGE_CLIPS` property in atomic mode
-- **Ch06 (KMS Atomic Modesetting)** — compositors commit frames to evdi via the standard atomic commit path; evdi's connector/CRTC appear in `drmModeGetResources`
-- **Ch11 (DMA-BUF)** — evdi must CPU-copy imported DMA-BUFs since the USB chip cannot do PCIe DMA; this is the core performance limitation
-- **Ch49 (Multi-GPU)** — DisplayLink monitors appear as a third GPU output; DRI_PRIME is not needed since evdi has no 3D capability — it is display-only
-- **Ch139 (DRM Hardware Planes)** — evdi supports only primary planes; hardware overlay planes are not possible since the USB chip has no compositor
+- **Ch01 (DRM Architecture)** — evdi is a DRM driver; it registers a `drm_driver` with `DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC` and creates device nodes via `drm_dev_register()`, identically to any real GPU driver
+- **Ch04 (Framebuffer and Planes)** — evdi implements a single primary plane; damage tracking uses the `FB_DAMAGE_CLIPS` DRM plane property and `drm_atomic_helper_dirtyfb`; `udlfb` used the older `fb_defio` page-dirty mechanism
+- **Ch06 (KMS Atomic Modesetting)** — compositors commit frames to evdi via the standard atomic commit path; evdi's connector/CRTC appear in `drmModeGetResources()` and are programmed identically to physical display outputs
+- **Ch11 (DMA-BUF)** — evdi must CPU-copy imported DMA-BUFs since the USB chip cannot perform PCIe DMA; this double-copy (GPU→evdi GEM, evdi GEM→DLM buffer) is the core performance and latency limitation
+- **Ch49 (Multi-GPU)** — DisplayLink monitors appear as additional DRM devices; DRI_PRIME is not needed since evdi has no 3D capability — it is display-only
+- **Ch139 (DRM Hardware Planes)** — evdi supports only a single primary plane; hardware overlay planes are not possible since the DisplayLink chip has no compositor and no GPU
+- **Ch147 (VA-API and Video Decode)** — GPU-side video decode offload (VA-API) cannot be tunnelled through evdi; decoded frames must be read back to system memory and re-encoded via DL3 before USB transmission
+- **Ch172 (eGPU / Thunderbolt / USB4)** — USB4 native DisplayPort tunneling (built into the kernel's `thunderbolt` subsystem) is an alternative to DisplayLink for high-end USB4 docks that does not require a proprietary stack
