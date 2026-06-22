@@ -738,3 +738,7 @@ This pattern is also used by `dogtail`, a higher-level Python test framework bui
 - [GNOME Shell magnifier — GNOME Wiki](https://wiki.gnome.org/Projects/GnomeShell/Magnification)
 - [KDE Plasma Wayland and accessibility — KDE Blogs](https://blogs.kde.org/2025/06/14/this-week-in-plasma-wayland-pip-and-accessibility/)
 - [Wayland protocols accessibility issue #65 — gitlab.freedesktop.org](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/issues/65)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

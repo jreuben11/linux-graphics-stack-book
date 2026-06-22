@@ -757,3 +757,7 @@ On systems with both an integrated GPU (Intel/AMD iGPU) and a discrete GPU, VA-A
 - `EGL_EXT_image_dma_buf_import` extension specification: https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_image_dma_buf_import.txt
 - Mesa 26.1 release notes (unified VCN backend): https://docs.mesa3d.org/relnotes/26.1.0.html
 - Linux kernel GPU documentation: https://www.kernel.org/doc/html/latest/gpu/
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

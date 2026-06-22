@@ -1285,3 +1285,7 @@ naga_oil's composition model has performance implications to be aware of. Each c
 - **Ch40 (Bevy/wgpu)** — Bevy's entire renderer is built on wgpu; naga_oil's `Composer` powers Bevy's modular PBR shader system; vello is the planned 2-D rendering layer for Bevy UI
 - **Ch177 (NVK — NVIDIA Vulkan)** — cuTile-rs and cudarc target the CUDA path; on Linux with NVK (open-source NVIDIA Vulkan), wgpu and ash speak to the same hardware through the Vulkan layer instead
 - **Ch15 (ACO — AMD Shader Compiler)** — naga-compiled WGSL from wgpu, vello, and burn-wgpu all enter the Mesa shader pipeline (ACO on RADV) as SPIR-V; ACO's instruction scheduling is the final stage before the GPU executes shaders that began as Rust or WGSL source
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

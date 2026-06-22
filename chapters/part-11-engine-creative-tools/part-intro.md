@@ -65,3 +65,7 @@ The medium-term horizon is dominated by two converging architectural shifts: **G
 - **Full GPU-driven scene graphs and compute-side physics**: Godot's long-term GPU-driven renderer (frustum culling, LOD, and shadow-caster selection in compute shaders) and UE6's modular Chaos distributed physics both target architectures where GPU thread count — not CPU thread count — governs rendering and simulation throughput, requiring stable bindless support across all Mesa Vulkan drivers (RADV, ANV, NVK, Turnip).
 - **OpenGL backend removal and Vulkan-minimum baselines**: Blender's OpenGL `GLBackend` is in maintenance-only mode post-5.1 and headed for eventual removal; Godot may raise its minimum to Vulkan 1.3 core once RADV, ANV, and NVK coverage is sufficient. OCCT's `TKOpenGl` faces macOS deprecation pressure and is evaluating a Metal/ANGLE fallback, while a native WebGPU backend for WASM deployments remains a stated but uncommitted aspiration.
 - **Browser-side and embedded scientific visualization**: VTK's Emscripten/WebGPU trajectory (full pipeline in-browser for moderate dataset sizes) and OCCT's `opencascade.js` WASM path both converge on eliminating the HPC backend requirement for interactive use — a horizon that aligns with WebGPU standardisation progress and the maturity of Dawn on Linux.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

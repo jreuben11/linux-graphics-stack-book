@@ -1132,3 +1132,7 @@ The Snapdragon X Elite ships with a firmware-signed UEFI and SecureBoot; Turnip 
 - **Ch20/21 (Wayland/wlroots)** — Turnip exports UBWC DMA-BUF surfaces to Wayland compositors via `zwp_linux_dmabuf_v1`; the DPU1 KMS driver scans out UBWC framebuffers directly
 - **Ch159 (Panfrost/Mali)** — Compare ARM Mali (Panfrost/Panthor) vs Qualcomm Adreno (Freedreno/Turnip) open-source maturity; both targets TBDR architectures and use NIR-based compilers with per-generation ISA backends
 - **Ch169 (Snapdragon X Elite Linux)** — Chapter 169 covers the full system perspective of Linux on Snapdragon X Elite; this chapter covers the GPU driver stack component in depth
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

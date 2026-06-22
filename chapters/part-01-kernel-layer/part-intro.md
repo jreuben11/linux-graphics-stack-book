@@ -156,3 +156,6 @@ Readers should arrive at this part with a working knowledge of Linux kernel deve
 - **Display pipeline unification and legacy API deprecation.** The non-atomic KMS ioctls (`DRM_IOCTL_MODE_SETCRTC`, `DRM_IOCTL_MODE_PAGE_FLIP`) are candidates for deprecation once all major compositors and the X.Org modesetting DDX complete migration to atomic. A unified `drm_boot_fb` abstraction across UEFI GOP, ACPI, Device Tree, and U-Boot hand-offs would replace the current proliferation of parallel boot-display code paths. Hardware-accelerated display-engine composition (programmable blend stages via KMS plane properties) blurs the boundary between hardware overlay and GPU compute.
 - **Cross-vendor standards: GPU coredump format, modifier registry, and firmware manifests.** Standardised GPU coredump format (analogous to ELF core dumps) for post-mortem analysis, a machine-readable `drm_format_modifier` registry for modifier negotiation without per-vendor embedding, and a manifest-based GPU firmware dependency system (atomically loading coherent firmware version sets) are recurring architectural goals without committed timelines.
 
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

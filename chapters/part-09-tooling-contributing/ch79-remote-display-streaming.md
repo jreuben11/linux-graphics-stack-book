@@ -1087,3 +1087,7 @@ This chapter connects to the following chapters throughout the book:
 - [NVIDIA 515.57 NvFBC improvements](https://www.phoronix.com/news/NVIDIA-515.57-Linux-Driver)
 - [Sunshine Advanced Usage](https://docs.lizardbyte.dev/projects/sunshine/v0.22.2/about/advanced_usage.html)
 - [nvfbc-v4l2 capture latency benchmark](https://github.com/t1stm/nvfbc-v4l2)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

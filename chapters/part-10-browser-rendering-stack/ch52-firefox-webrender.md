@@ -1015,3 +1015,7 @@ This chapter connects to several other parts of the book:
 - [TileCacheInstance API docs — doc.servo.org](https://doc.servo.org/webrender/picture/struct.TileCacheInstance.html)
 - [Picture caching PR — servo/webrender#3379](https://github.com/servo/webrender/pull/3379)
 - [Stylo hacking guide — servo/servo wiki](https://github.com/servo/servo/wiki/Stylo-hacking-guide)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

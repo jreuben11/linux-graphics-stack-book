@@ -1183,3 +1183,7 @@ This chapter connects to several other parts of the book:
 ### Long-term
 - **Convergence of ROCm compiler and Mesa ACO on a shared LLVM AMDGPU backend:** Both ACO (via its NIR-to-LLVM path for RADV ray tracing) and the ROCm LLVM backend increasingly share AMDGPU backend code; AMD's compiler team has stated a long-term goal of converging register allocation heuristics so that tuning work benefits both the compute and graphics stack simultaneously.
 - **Disaggregated GPU memory via CXL:** AMD's roadmap includes CXL 3.x fabric-attached memory that exposes as HSA memory pools, enabling rack-scale GPU memory pooling where MI-series accelerators can address remote HBM3 stacks across CXL switches — visible as additional `hsa_amd_memory_pool_t` agents with higher latency tiers, requiring ML frameworks to adopt locality-aware allocation strategies.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

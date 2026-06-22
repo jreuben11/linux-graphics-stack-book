@@ -1044,3 +1044,7 @@ On RADV, an acceleration structure descriptor is stored as the 64-bit device add
 - **Ch16 (Mesa Vulkan Common)** — NVK's `nvk_descriptor_set` and the descriptor update template path both build on Mesa's common `vk_object_base`, `vk_descriptor_update_template`, and `util_vma_heap` infrastructure shared across RADV, ANV, and NVK
 - **Ch154 (GPU-Driven Rendering)** — bindless descriptors (`VK_EXT_descriptor_indexing`) are the prerequisite for bindless scene rendering; this chapter explains the binding model that Ch154 assumes; null descriptors (`VK_EXT_robustness2`) enable safe sparse binding in streaming scenes
 - **Ch135 (Vulkan Ray Tracing)** — acceleration structure descriptors (`VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR`) use the same descriptor set mechanism as buffers and images; RADV and NVK store TLAS handles as 64-bit GPU VAs in the descriptor slot
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -1184,3 +1184,7 @@ The removal of Nine (and Clover for OpenCL before it) reflects a broader Mesa st
 - **Ch17 (Iris)**: Iris is the Gallium driver Nine used on Intel hardware (Gen 8+). Nine worked on Iris but not on ANV (Intel's Vulkan driver), because ANV does not expose a `pipe_context` interface.
 - **Ch66 (Wine/Proton D3D)**: Wine's D3D9 → WineD3D path is what Nine replaced. DXVK is the successor that targets Vulkan instead of Gallium, providing wider hardware and OS compatibility. DXVK's D3D9 mode is documented in that chapter.
 - **Ch152 (Rust GPU)**: wgpu targets Vulkan/Metal/GL, not Gallium; there is no Rust equivalent of Nine's native Gallium approach.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -1324,3 +1324,7 @@ qemu-system-x86_64 \
 - **Ch121 (DRM Lease/VR Direct Display)** — DRM leases allow VR runtimes to take exclusive control of a VKMS connector for headless OpenXR testing
 - **Ch125 (RenderDoc)** — RenderDoc captures work from lavapipe (software Vulkan) for shader debugging without a GPU; VKMS provides the display surface for the captured session
 - **Ch147 (VA-API Video Decode)** — VKMS's planned YUV plane support will enable headless VA-API decode pipeline tests by providing a DRM display target for video composition
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -1186,3 +1186,7 @@ This chapter connects to many others in the book:
 - CyberSys/mesa-shader-db: [https://github.com/CyberSys/mesa-shader-db](https://github.com/CyberSys/mesa-shader-db)
 - shader-slang/slang: [https://github.com/shader-slang/slang](https://github.com/shader-slang/slang)
 - Themaister, "My personal hell of translating DXIL to SPIR-V – part 1": [https://themaister.net/blog/2021/09/05/my-personal-hell-of-translating-dxil-to-spir-v-part-1/](https://themaister.net/blog/2021/09/05/my-personal-hell-of-translating-dxil-to-spir-v-part-1/)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

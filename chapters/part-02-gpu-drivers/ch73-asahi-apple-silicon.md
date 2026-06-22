@@ -961,3 +961,7 @@ The GPU driver upstreaming effort is ongoing but incomplete as of mid-2026:
 - [Dougall Johnson — Apple G13 GPU ISA documentation](https://dougallj.github.io/applegpu/docs.html)
 - [Asahi Linux Tales of the M1 GPU (November 2022)](https://asahilinux.org/2022/11/tales-of-the-m1-gpu/)
 - [Asahi Linux — GPU Drivers Now in Asahi Linux (December 2022)](https://asahilinux.org/2022/12/gpu-drivers-now-in-asahi-linux/)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

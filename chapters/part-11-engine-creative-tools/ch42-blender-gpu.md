@@ -878,3 +878,7 @@ In the RenderDoc capture, EEVEE's passes appear as labelled groups: `Shadow Pass
 21. [Cycles CPU Kernel Dispatch — GitHub](https://github.com/blender/cycles/blob/main/src/device/cpu/kernel.cpp) — `CPUKernels` constructor; macro-based multi-arch dispatch (scalar, AVX2) without ISPC; ISPC used only in Embree/OIDN dependencies, not in the path-tracing kernel
 
 22. [EEVEE-Next: Virtual Shadow Map Initial Implementation](https://projects.blender.org/blender/blender/commit/a0f52400890) — Commit introducing tilemap-based virtual shadow atlas replacing legacy cascade/cubemap system
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

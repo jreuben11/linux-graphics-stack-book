@@ -1675,3 +1675,7 @@ The recommended workflow is Perfetto-first for framing the performance investiga
 - **Ch87 (LLM Inference on Linux)** — bandwidth analysis (§6) applies directly to GEMM kernels in LLM inference. Arithmetic intensity of batch-1 token generation GEMM is typically 1–2 FLOPS/byte, far below the roofline boundary, confirming it as bandwidth-bound. The mitigation (quantisation reducing bytes loaded) mirrors texture compression in graphics workloads.
 
 - **Ch137 (GPU Profiling Ecosystem)** — §12 (eBPF-Based GPU Observability) describes how Perfetto's `traced_probes` daemon uses DRM tracepoints to build the GPU timeline track visible in the Perfetto UI; Ch137 covers the broader profiling ecosystem including MangoHUD, shader-db, and vendor profiler GUIs that complement the eBPF-level instrumentation shown in §12.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -196,3 +196,7 @@ Code excerpts are real upstream snippets wherever possible. When a snippet has b
 ## A Note on Versions
 
 Kernel references in this book pin to mainline Linux 6.12–6.14 unless otherwise noted. Mesa references pin to the 24.x–25.x release series. Vulkan coverage targets the 1.3 core specification with KHR and EXT extensions current as of mid-2026. All source URLs link to upstream repositories rather than versioned snapshots; readers are encouraged to verify details against the current tree, since the stack evolves rapidly and a specific commit may have been superseded by the time you read this. When a feature landed in a specific kernel or Mesa version, that version is cited inline.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

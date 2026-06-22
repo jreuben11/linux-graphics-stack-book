@@ -954,3 +954,7 @@ This chapter draws on and extends topics covered across the book:
 - **Unified inference runtime over Linux ioctl API**: Longer-term kernel proposals (discussed in the DRM compute working group) envision a vendor-neutral `DRM_IOCTL_COMPUTE_SUBMIT` for structured tensor dispatch, allowing runtimes like GGML and ONNX Runtime to bypass the Vulkan/HIP/CUDA API layers and submit compute workloads directly to the DRM scheduler, reducing per-token dispatch overhead and enabling GPU resource accounting at the kernel level.
 - **Near-memory and CXL-attached weight storage**: CXL 3.0 memory expansion modules with 1–8 TB capacity and 200–400 GB/s bandwidth are expected to become viable weight-streaming targets for very large models (>200B parameters), with Linux CXL subsystem drivers coordinating allocation between host RAM, CXL memory, and GPU VRAM as a unified inference memory hierarchy.
 - **NPU + GPU heterogeneous inference as first-class Linux stack**: As Intel Lunar Lake, AMD XDNA2, and Qualcomm Hexagon NPUs gain upstream Linux kernel drivers (`amdxdna`, `qcom_npu`), frameworks like OpenVINO and ONNX Runtime are expected to converge on a common heterogeneous-dispatch API, making prefill-on-NPU / generation-on-GPU pipelines (the `HETERO:NPU,GPU` pattern of §7.4) routine rather than experimental.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

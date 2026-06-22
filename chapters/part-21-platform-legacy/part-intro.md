@@ -54,3 +54,7 @@ Readers should be familiar with the **DRM/KMS** kernel subsystem (Part I), the *
 - **X11 protocol freeze and GLX deprecation**: As XWayland matures and major toolkits (GTK4, Qt 6) complete EGL-only paths, the X11 protocol is expected to be frozen rather than extended — HDR, VRR, and colour management will be Wayland-only — and Mesa's `src/glx/` implementation deprecated, closing the architectural story Chapter 95 opens.
 - **Unified heterogeneous kernel programming model**: Convergence of the DRM graphics and accel subsystems may produce a single memory manager, scheduler, and dma-buf infrastructure covering render, display, video, and AI inference — fulfilling the zero-copy, mechanism-over-policy principles that Chapter 103 traces back to Scheifler and Gettys's X design philosophy.
 - **Open-hardware GPU trajectory**: AMD's GPUOpen model, RISC-V GPU ISA initiatives, and emerging community-maintained GPU IP may eventually produce a major GPU line designed from the start for open drivers — rather than the decades of reverse engineering and openness retrofitting that both chapters document.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

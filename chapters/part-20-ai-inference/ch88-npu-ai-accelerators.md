@@ -967,3 +967,7 @@ Key upstream sources used in this chapter:
 - Convergence toward a unified NPU UAPI layer — analogous to how Vulkan unified GPU programming — is a stated goal of the DRM accel subsystem maintainers; a common set of buffer object types, fence primitives, and performance query ioctls shared across `ivpu`, `amdxdna`, and future drivers would allow userspace frameworks to target NPU hardware without vendor-specific code paths.
 - As on-device LLM model sizes grow into the 30B–70B range and exceed what any single NPU's SRAM can accommodate, kernel-level NPU memory management will need to evolve toward demand-paged model weights analogous to GPU VRAM overcommit — early academic work (e.g., the Hybe paper) points toward collaborative GPU-NPU KV-cache management as the dominant architecture.
 - The Qualcomm Hexagon NPU and future RISC-V-based custom accelerators (e.g., announced collaboration between SiFive and NPU IP vendors) may drive adoption of a vendor-neutral firmware ABI specification at the kernel level, reducing the proprietary firmware blob dependency that currently limits open-source reproducibility for Intel `ivpu` and AMD XDNA.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

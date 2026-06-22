@@ -1211,3 +1211,7 @@ Pipeline statistics queries are supported on all Vulkan 1.0 hardware that expose
 - **Ch135 (Ray Tracing — TLAS Build as GPU-Driven Op)** — acceleration structure builds (`vkCmdBuildAccelerationStructuresKHR`) consume the same persistent instance buffer updated by the GPU culling pass; TLAS compaction and update share the indirect dispatch pattern
 - **Ch97 (UE5 Nanite)** — production cluster LOD DAG implementation; the `self_error`/`parent_error` selection criterion described in this chapter derives directly from the Nanite SIGGRAPH 2021 presentation; streaming and virtual geometry are covered in Ch97
 - **Ch133 (Vulkan Compute Queues — Async Cull Passes)** — the Hi-Z pyramid build and frustum/occlusion cull dispatches are natural candidates for an async compute queue, overlapping with graphics rasterisation; queue family ownership transfer and semaphore signalling for the depth pyramid are detailed in Ch133
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

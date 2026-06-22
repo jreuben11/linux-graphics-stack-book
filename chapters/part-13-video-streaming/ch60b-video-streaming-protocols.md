@@ -885,3 +885,7 @@ The CDN edge must be configured to disable response buffering — nginx requires
 - QUIC may eventually subsume both SRT and WebRTC's transport layer: a unified QUIC-native broadcast stack (MOQT for distribution, WebTransport for the last mile) could eliminate the protocol proliferation between ingest (SRT/RTMP), CDN (HLS/DASH), and real-time (WebRTC) tiers.
 - ML-based bandwidth prediction integrated directly into the CDN edge (rather than the client player) may shift ABR decision-making server-side, reducing quality oscillation at the cost of centralising network intelligence.
 - End-to-end hardware offload of the packaging pipeline — GPU-encoded CMAF chunks written directly to NVMe via RDMA and served over QUIC without CPU involvement — is a plausible direction as GPU-direct storage and P2P DMA capabilities mature in the Linux kernel DMA-BUF and io_uring stacks.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

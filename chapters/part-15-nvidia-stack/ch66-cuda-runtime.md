@@ -1087,3 +1087,7 @@ The `/proc/driver/nvidia/` paths described in Section 9.2 are the NVIDIA-documen
 ### Long-term
 - As NVIDIA's open-source Nouveau/NVK Mesa driver (Ch10) matures for compute workloads, a community-maintained open alternative to `libcuda.so` (building on the GSP firmware interface) may emerge, enabling CUDA-compatible compute dispatch from non-proprietary driver stacks on Turing and later hardware.
 - The boundary between CUDA streams and Vulkan queues is likely to converge further; a unified GPU timeline abstraction shared across compute and graphics — analogous to how `sched_ext` provides a unified CPU scheduling extension point — would simplify mixed compute/render pipelines and reduce synchronization overhead across the API boundary.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

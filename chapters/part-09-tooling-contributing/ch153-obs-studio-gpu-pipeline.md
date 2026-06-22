@@ -618,3 +618,7 @@ echo "=== GPU ===" && vulkaninfo --summary 2>/dev/null | head -20
 - **Ch55 (GPU Containers)** — OBS in containers requires `/dev/dri/renderD128` passthrough and portal socket access
 - **Ch80 (GPU Security)** — The portal ScreenCast ACL is the security boundary for screen capture; without it any application could capture the screen
 - **Ch135 (Vulkan Ray Tracing)** — obs-vkcapture Vulkan layer intercepts the game's swapchain at `vkQueuePresentKHR`, the same hook point used by RenderDoc (Ch125)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

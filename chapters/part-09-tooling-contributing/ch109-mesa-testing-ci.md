@@ -1121,3 +1121,7 @@ For compiler performance specifically, the shader-db workflow (Section 7) is the
 - Phoronix Test Suite: [https://www.phoronix-test-suite.com/](https://www.phoronix-test-suite.com/)
 - Mesa src/amd/ci/: [https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/amd/ci](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/amd/ci)
 - VK-GL-CTS Vulkan README: [https://github.com/KhronosGroup/VK-GL-CTS/blob/main/external/vulkancts/README.md](https://github.com/KhronosGroup/VK-GL-CTS/blob/main/external/vulkancts/README.md)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -1770,3 +1770,7 @@ This chapter sits at the intersection of several threads developed throughout th
 - **Universal Scene Description as an ISO standard** is a stated goal of AOUSD and the Linux Foundation following the Core 1.0 publication; a formal ISO/IEC submission would make USD mandatory for government digital-twin and defence simulation procurement.
 - **Neural USD representations** — Gaussian splats, neural radiance fields, and neural signed-distance fields as first-class USD schema types (building on the `UsdVolParticleField3DGaussianSplat` schema introduced in USD 25.05) — are expected to become the primary interchange format for photorealistic asset capture pipelines, with the RTX Renderer and open Hydra delegates consuming them natively alongside traditional mesh geometry.
 - **Fully differentiable RTX Renderer** via Slang's automatic differentiation applied to the entire path-tracing shader tree (material evaluation, light sampling, BVH traversal) is a long-horizon research goal demonstrated in NVIDIA Falcor; productisation in Omniverse would enable inverse rendering — optimising material and lighting parameters from reference photographs — as a first-class Kit workflow.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

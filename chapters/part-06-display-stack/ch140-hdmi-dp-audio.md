@@ -679,3 +679,7 @@ echo "scan" | cec-client -s -d 1 /dev/cec0
 - **Ch38 (PipeWire)** — PipeWire ALSA monitor discovers HDMI PCM devices; WirePlumber manages hotplug routing
 - **Ch128 (DisplayPort MST)** — Each MST sink has its own ELD and ALSA PCM; `drm_dp_mst_port` per-port audio
 - **Ch139 (Hardware Planes)** — Video overlay plane + audio timing: hardware planes change display mode, triggering audio ACR recalculation
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -1095,3 +1095,7 @@ GPU power management does not operate in isolation — it interacts with multipl
 - [intel_rc6.c — torvalds/linux (master)](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/i915/gt/intel_rc6.c)
 - [nvtop — GPU & Accelerator process monitoring](https://github.com/Syllo/nvtop)
 - [AMDGPU Panel Power Saving Action — power-profiles-daemon reference](https://freedesktop-team.pages.debian.net/power-profiles-daemon/power-profiles-daemon-AMDGPU-Power-Panel-Saving-Action.html)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

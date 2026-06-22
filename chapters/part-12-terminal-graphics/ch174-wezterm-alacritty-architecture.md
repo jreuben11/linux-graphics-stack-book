@@ -891,3 +891,7 @@ WezTerm also uses an asynchronous architecture with background PTY read threads 
 - Are We Sixel Yet?: [arewesixelyet.com](https://www.arewesixelyet.com/)
 - termwiz crate: [crates.io/crates/termwiz](https://crates.io/crates/termwiz)
 - Terminal feature comparison: [tmuxai.dev/terminal-compatibility/](https://tmuxai.dev/terminal-compatibility/)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

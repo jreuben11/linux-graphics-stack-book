@@ -618,3 +618,7 @@ LIBGL_DEBUG=verbose glxinfo 2>&1 | grep -i "syncobj\|explicit"
 ### Long-term
 - **X11 protocol freeze and archival**: As XWayland matures and the remaining X11 application base either ports to Wayland or reaches end-of-life, X11 as an active protocol is expected to be frozen in place rather than extended — new display features (HDR, variable refresh rate, colour management) will only be available through native Wayland protocols.
 - **GLX deprecation in Mesa**: Once the major Linux desktop toolkits (GTK4, Qt 6) complete their EGL-only paths and XWayland itself switches to EGL/DRI3 for all rendering, the GLX implementation in Mesa (`src/glx/`) is expected to be deprecated and eventually removed, with EGL-on-Wayland becoming the sole OpenGL surface path.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

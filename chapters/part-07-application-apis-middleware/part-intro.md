@@ -164,3 +164,7 @@ Readers should arrive here having read Parts I–III: the **DRM/KMS** substrate 
 - **EGL and pipeline-model deprecation.** EGL's role is narrowing to OpenGL ES, VA-API interop, and legacy X11 surfaces as Vulkan WSI and Zink (OpenGL-on-Vulkan) mature; new applications are expected to use Vulkan `VK_KHR_video_queue` rather than EGL + VA-API. Similarly, `VK_EXT_shader_object` — already default in RADV and shipped in ANV/NVK — may become the primary shader-binding model in a future Vulkan Roadmap milestone, with `VkPipeline` receding to a compatibility layer (Ch150, Ch173). The Rust GPU ecosystem's long-term goal of safe, zero-overhead Vulkan abstractions (bridging `ash` and `wgpu`) and rust-gpu as a first-class shader authoring path aligns with this direction (Ch152).
 
 - **XR, foveated rendering, and compositor convergence.** OpenXR 2.0 or a major revision is accumulating spatial-mesh types, standardised ML tracking hooks, and a formal passthrough API. VRS driven by calibrated eye-tracking data (`VK_KHR_fragment_shading_rate` fed by on-chip neural inference) and OpenXR standardisation of per-layer rate control are expected for consumer headsets. The long-term proposal of a unified compositor handling both desktop Wayland windows and XR layers in a single process would eliminate the DRM-lease handoff entirely (Ch27, Ch127).
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

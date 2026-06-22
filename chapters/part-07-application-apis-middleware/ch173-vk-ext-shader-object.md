@@ -813,3 +813,7 @@ The RADV chapter covers the ACO compiler architecture that underlies the RADV `V
 - [Vulkan 1.3.246 Released With VK_EXT_shader_object — Phoronix](https://www.phoronix.com/news/Vulkan-1.3.246-VK-shader-object)
 - [RADV CI: enable RADV_PERFTEST=shader_object for vkcts-polaris10-valve — Mesa GitLab MR !27139](https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/27139)
 - [Mesa src/amd/vulkan/radv_shader_object.c — gitlab.freedesktop.org/mesa/mesa](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/amd/vulkan/radv_shader_object.c)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

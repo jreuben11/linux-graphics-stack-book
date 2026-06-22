@@ -1036,3 +1036,7 @@ __shared__ float smem[BLOCK_SIZE][BLOCK_SIZE + 1]; // +1 padding
 - **Open firmware and open-source CP microcode**: AMD has expressed intent to open-source additional GPU firmware components, including the Command Processor (CP) microcode for CDNA-class GPUs; this would allow the community to audit and patch the firmware that drives AQL dispatch, reducing the closed-source surface of the ROCm stack.
 - **HIP as a cross-vendor standard**: The HIP API's CUDA compatibility layer has attracted interest from Intel (oneAPI/SYCL interop) and ARM (for server GPU compute); longer-term, HIP may evolve toward a multi-vendor portable compute API standard under Khronos or a similar body, reducing its current positioning as a CUDA migration tool.
 - **Kernel-bypass GPU compute via userspace drivers**: Following the precedent of `rust-gpu` and the Nova Rust NVIDIA driver, AMD has exploratory work on userspace-side command submission for ROCm that would reduce KFD IOCTL overhead for short-running inference kernels, enabling sub-microsecond dispatch latency for edge inference on RDNA APUs.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

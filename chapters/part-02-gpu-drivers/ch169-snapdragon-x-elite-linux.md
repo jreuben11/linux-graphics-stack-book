@@ -562,3 +562,7 @@ Chapter 168 covers the Web Neural Network API and its browser-level hardware bac
 - [Linaro blog, "Linux on Snapdragon X Elite"](https://www.linaro.org/blog/linux-on-snapdragon-x-elite/)
 - [Tweaktown, "Qualcomm Adreno X1 GPU detailed: specs, performance"](https://www.tweaktown.com/news/98810/qualcomm-adreno-x1-gpu-detailed-specs-performance-adreno-control-panel-shown-off/index.html)
 - [Arch Linux, linux-firmware-qcom package file list (firmware naming reference)](https://archlinux.org/packages/core/any/linux-firmware-qcom/files/)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -2320,3 +2320,4 @@ The `zwp_relative_pointer_v1` Wayland protocol extension (wayland-protocols, sta
 
 ---
 
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

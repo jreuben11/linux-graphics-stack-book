@@ -1499,3 +1499,7 @@ GST_TRACERS="latency;rusage;leaks" GST_DEBUG="GST_TRACER:7" gst-launch-1.0 ...
 ### Long-term
 - **Unified hardware buffer type**: Longer-term discussions on the GStreamer mailing list propose merging `GstVaDmabufAllocator`, `GstVulkanMemory`, and `NvBufSurface`-style CUDA allocators under a single `GstHwMemory` abstraction with a common zero-copy import/export API, reducing the per-vendor adapter code that each sink and filter element currently duplicates.
 - **AI/ML inference integration**: As hardware NPUs (Neural Processing Units) become first-class Linux devices exposed via the IOCTL-based IRIS/NPU kernel interface, GStreamer is expected to gain `GstNpuAllocator` and inference base-class elements analogous to `GstBaseTransform`, allowing AI pre/post-processing to sit inline in decode-to-display pipelines without CPU round-trips.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

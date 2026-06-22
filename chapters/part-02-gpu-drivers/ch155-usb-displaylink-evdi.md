@@ -994,3 +994,7 @@ sudo bpftrace -e '
 - **Ch139 (DRM Hardware Planes)** — evdi supports only a single primary plane; hardware overlay planes are not possible since the DisplayLink chip has no compositor and no GPU
 - **Ch147 (VA-API and Video Decode)** — GPU-side video decode offload (VA-API) cannot be tunnelled through evdi; decoded frames must be read back to system memory and re-encoded via DL3 before USB transmission
 - **Ch172 (eGPU / Thunderbolt / USB4)** — USB4 native DisplayPort tunneling (built into the kernel's `thunderbolt` subsystem) is an alternative to DisplayLink for high-end USB4 docks that does not require a proprietary stack
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

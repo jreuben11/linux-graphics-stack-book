@@ -789,3 +789,7 @@ lstbt -v
 - [NVIDIA Linux 2025 highlights (Nova driver progress) — Phoronix](https://www.phoronix.com/news/NVIDIA-Linux-2025-Highlights)
 - [LWN: The modernization of PCIe hotplug in Linux](https://lwn.net/Articles/767904/)
 - [eGPU.io community Linux forums](https://egpu.io/forums/thunderbolt-linux-setup/)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

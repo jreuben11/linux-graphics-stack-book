@@ -439,3 +439,7 @@ cat /sys/kernel/debug/dri/0/state  # shows plane modifier
 - **Ch22 (RADV)** — RADV DCC management and fast-clear elimination; DCC clearing uses a special compute pass rather than memset
 - **Ch23 (ANV)** — Intel CCS is tightly integrated with ISL (Intel Surface Layout library) in ANV; ISL abstracts tiling and CCS placement
 - **Ch159 (Panfrost)** — Panfrost/Panthor support AFBC on Mali hardware; RK3588's Mali-G610 + ARM DPU both understand AFBC, enabling zero-copy scanout
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

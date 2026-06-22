@@ -827,3 +827,7 @@ This chapter is the concrete application layer for mechanisms described througho
 - The long-term trajectory of KMS plane assignment points toward the compositor exposing a richer overlay-plane API to clients, analogous to Android's `SurfaceFlinger` layers, where a terminal could request dedicated scan-out planes for its background, text, and image layers separately — reducing compositing latency to near-zero for the common case of a full-screen terminal session.
 - Display engine direct-scan-out of compressed DRM modifiers (AMD DCC, Intel Tile4 CCS, NVIDIA block-linear) is expected to become a universal requirement in GPU driver certification paths, making zero-copy terminal plane promotion the default rather than an opportunistic optimisation on all major Linux GPU vendors.
 - GPU atlas management will likely shift toward **sparse resident textures** (OpenGL `ARB_sparse_texture`, Vulkan `VK_EXT_image_2D_view_of_3d`) for very large terminal grids, allowing glyph atlas pages to be committed and decommitted from GPU memory on demand without requiring contiguous physical allocation of the full 4096×4096 region.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

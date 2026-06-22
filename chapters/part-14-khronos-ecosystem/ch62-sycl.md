@@ -1339,3 +1339,7 @@ For greenfield projects on Linux targeting multiple GPU vendors, SYCL 2020 via D
 - As SPIR-V continues to be adopted as the universal device IR (by Vulkan, OpenCL, SYCL, and WebGPU's WGSL compilation target), the distinction between SYCL's SPIR-V device image and Vulkan's shader module is expected to narrow; a unified Khronos kernel-execution extension could allow SYCL `kernel_bundle` objects to be imported directly into Vulkan compute pipelines without round-tripping through the current external-memory/semaphore interop path.
 - SYCL's Unified Shared Memory model is expected to converge with heterogeneous memory management (HMM) advances in the Linux kernel (Chapter 5), enabling coherent page-fault-driven migration for `malloc_shared` allocations on all discrete GPU architectures without explicit `prefetch` or `mem_advise` hints.
 - With RISC-V GPU architectures (e.g., Ventana Veyron, Esperanto) gaining OpenCL/SPIR-V support, AdaptiveCpp's `llvm-to-backend` JIT architecture positions SYCL as the portable compute layer for RISC-V accelerators, extending the vendor-neutral story beyond the current AMD/Intel/NVIDIA triad.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

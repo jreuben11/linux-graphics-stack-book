@@ -580,3 +580,7 @@ The consensus in the kernel community is that ntsync presents no privilege escal
 - [The futex_waitv() syscall and gaming on Linux — Collabora](https://www.collabora.com/news-and-blog/blog/2023/02/17/the-futex-waitv-syscall-gaming-on-linux/) — context on fsync's kernel dependency and how futex_waitv() partially addressed it.
 - [NTSYNC v6 patch series cover letter](https://lkml.iu.edu/hypermail/linux/kernel/2412.1/02004.html) — Zebediah Figura's December 2024 submission with performance benchmarks and design rationale.
 - [Debian Wiki: Wine/NtsyncHowto](https://wiki.debian.org/Wine/NtsyncHowto) — practical setup guide including DKMS backport for pre-6.14 kernels.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

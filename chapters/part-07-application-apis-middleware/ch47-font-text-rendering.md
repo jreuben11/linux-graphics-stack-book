@@ -858,3 +858,7 @@ This chapter has described the foundational font and text rendering libraries th
 - [WebRender glyph rasteriser](https://searchfox.org/mozilla-central/source/gfx/wr/webrender/src/glyph_rasterizer/)
 - [Subpixel rendering — Wikipedia](https://en.wikipedia.org/wiki/Subpixel_rendering)
 - [Smithay wl_output::Subpixel enum](https://smithay.github.io/wayland-rs/wayland_client/protocol/wl_output/enum.Subpixel.html)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

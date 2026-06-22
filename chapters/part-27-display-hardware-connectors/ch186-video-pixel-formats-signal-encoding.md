@@ -850,3 +850,7 @@ This processing is invisible to userspace; it is configured entirely by the DC l
 - As displays with native BT.2020 and DCI-P3 primaries become mainstream, the kernel's AVI InfoFrame construction path may adopt ITU-R BT.2100 ICtCp as the primary signaling colorimetry for HDR content, replacing the current BT.2020 YCbCr path and enabling more perceptually uniform tone mapping at the sink.
 - The convergence of video decode, display, and AI super-resolution (e.g., AMD FSR, Intel XeSS at the kernel/firmware boundary) may require new DRM plane properties that express upscaling algorithm selection and sharpness parameters, extending the current format-negotiation pipeline beyond raw pixel format into processing intent.
 - Long-term standardization of a royalty-free open HDR dynamic metadata format (potentially an AOM-driven successor to HDR10+) could introduce new HDMI/DP InfoFrame types and corresponding DRM UAPI structures that parallel the current `hdr_output_metadata` blob design.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

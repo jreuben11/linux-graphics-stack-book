@@ -635,3 +635,7 @@ Compaction reduces BLAS memory 40–50%; critical for complex scenes. Use `PREFE
 - **Ch127 (Mesh Shaders)** — hybrid rendering: mesh shaders for primary G-buffer, RT for shadows/reflections
 - **Ch133 (Async Compute)** — RT pipelines dispatch on compute queue alongside graphics; timeline semaphore synchronisation
 - **Ch141 (Cooperative Matrices)** — denoising via cooperative matrix GEMM in the post-RT denoising compute shader
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -1025,3 +1025,7 @@ This chapter connects directly to the following chapters:
 - As Vulkan Video (VK_KHR_video_decode_queue) matures and driver support broadens, VLC may add a native Vulkan decode path that keeps the entire pipeline — decode, tone mapping, scaling, composition — within a single Vulkan device, removing the VA-API inter-API hand-off entirely.
 - WebAssembly / WASI threading improvements may make VLC.js a viable hardware-decode-capable player in browsers, with Vulkan via WebGPU as the renderer backend, erasing the current software-only limitation for browser-embedded VLC.
 - Long-term convergence of VLC's Android, iOS, and desktop codebases around a shared libVLC core with platform-specific Vulkan/Metal/D3D12 renderers — a direction signalled by the modular renderer abstraction introduced in VLC 4.0 — could make VLC a true cross-platform Vulkan media framework.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

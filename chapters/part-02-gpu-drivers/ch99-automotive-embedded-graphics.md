@@ -989,3 +989,7 @@ Adaptive AUTOSAR (AP) defines a standardised software architecture for SDV high-
 16. Qualcomm — Adreno 800 series Linux driver patches: [https://www.phoronix.com/news/Linux-Kernel-Adreno-800-Patches](https://www.phoronix.com/news/Linux-Kernel-Adreno-800-Patches)
 17. AGL Instrument Cluster Expert Group on GitHub: [https://github.com/agl-ic-eg](https://github.com/agl-ic-eg)
 18. Weston compositor documentation: [https://wayland.freedesktop.org/weston.html](https://wayland.freedesktop.org/weston.html)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

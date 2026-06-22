@@ -1123,3 +1123,7 @@ This chapter describes the input stack that feeds every other interactive subsys
 **InputCapture portal (Ch46).** The `org.freedesktop.portal.InputCapture` D-Bus portal (Section 7.4) sits above the Wayland compositor and uses libei/EIS to inject synthetic input events back into the stack at the compositor level, bypassing the kernel input layer entirely. This is the sanctioned path for remote desktop applications, KVM software (Barrier, Deskflow), and accessibility tools that need compositor-level input injection on Wayland.
 
 **Display and latency tooling (Ch29).** MangoHud's input latency overlay reads evdev timestamps directly from the libinput event stream and correlates them with DRM page-flip timestamps to compute end-to-end latency. The `wp_presentation` protocol timestamps described in Ch29 (frame presentation timing) are the display-side counterpart to the `zwp_input_timestamps_v1` kernel-side timestamps described in Section 6.3, together enabling full input-to-photon measurement.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -64,3 +64,7 @@ Readers should be comfortable with the **Vulkan** API at the level of command bu
 - **Unified AMD open-source driver stack**: With AMDVLK archived, the stated long-term direction is a single software stack where Vulkan (RADV), OpenGL (RadeonSI), OpenCL (rusticl), and HIP share front-ends over a common ACO or LLVM back-end; convergence of Vulkan and ROCm dispatch paths within the `amdgpu`/`amdkfd` kernel module is the architectural endpoint (Ch170, Ch143).
 - **Fixed-function BVH traversal on future RDNA architectures**: RDNA 5 and beyond are expected to introduce dedicated ray tracing execution units, requiring RADV to shift from generating software traversal shader code (`radv_nir_rt_shader.c`) to programming a hardware traversal unit via new PM4 packets and `amdgpu` kernel uAPI (Ch143, Ch170).
 - **FidelityFX as a system Vulkan layer and unified AMD profiling SDK**: Packaging FidelityFX effects (CAS, FSR 3/4) as an installable `VkLayer` — analogous to `vkBasalt` but with official AMD support — and consolidating RGP, RMV, and ROCm `rocprof` into a single capture format covering graphics, compute (HIP), and ML (MIGraphX) workloads (Ch72).
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

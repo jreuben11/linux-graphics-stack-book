@@ -733,3 +733,7 @@ DSC divides the image into horizontal slice rows. For a 3840×2160 display, a co
 - As MicroLED panels approach commercial volume production, the DisplayHDR True Black tier is expected to expand to a **True Black 1000** or higher tier, requiring the Linux `hdr_output_metadata` DRM property and compositor-side tone mapping to be extended to handle per-zone peak luminance metadata beyond the current 10,000 nit HDR10 static metadata ceiling.
 - The convergence of display and compute interconnects — with PCIe 7.0, USB4 v3 (anticipated at 160+ Gbps), and CXL 4.0 sharing the same physical Type-C ecosystem — will likely require the Linux Thunderbolt/USB4 connection manager to implement more sophisticated quality-of-service arbitration between DP tunnel, PCIe tunnel, and CXL memory-semantic traffic on a shared fabric.
 - HDBaseT 3.0's 100 Gbps aggregate capability may eventually attract an upstream Linux KMS bridge driver for commercial AV deployments, consolidating the currently out-of-tree Valens Semiconductor and other vendor bridge drivers into a generic `drm/bridge/hdbaset` framework.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -995,3 +995,7 @@ The `nvidia-smi` tool's `dmon` subcommand provides streaming per-second VRAM usa
 - AMDGPU BAR resize patch: [https://lkml.iu.edu/hypermail/linux/kernel/1703.2/05968.html](https://lkml.iu.edu/hypermail/linux/kernel/1703.2/05968.html)
 - PCIe Resizable BAR — Phoronix AMD SAM analysis: [https://www.phoronix.com/news/AMD-Smart-Access-Memory-Initial](https://www.phoronix.com/news/AMD-Smart-Access-Memory-Initial)
 - `include/linux/dma-buf.h` — DMA-BUF ops: [https://github.com/torvalds/linux/blob/master/include/linux/dma-buf.h](https://github.com/torvalds/linux/blob/master/include/linux/dma-buf.h)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

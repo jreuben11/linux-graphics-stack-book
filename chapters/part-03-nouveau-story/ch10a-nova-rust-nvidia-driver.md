@@ -801,3 +801,7 @@ The two modules are `NovaCore` and `Nova` in the kernel's module namespace (the 
 19. [Falcon (FAst Logic Controller) — Linux Kernel Documentation](https://docs.kernel.org/gpu/nova/core/falcon.html) — nova-core's Falcon documentation covering the microprocessor architecture, boot modes, DMA and PIO loading
 
 20. [NVIDIA Nova Driver Progress & Other NVIDIA Linux News From 2025 — Phoronix](https://www.phoronix.com/news/NVIDIA-Linux-2025-Highlights) — Year-in-review summary of Nova milestones, Nouveau progress, and the broader NVIDIA open-source trajectory through 2025
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

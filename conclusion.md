@@ -162,3 +162,7 @@ That is the Linux graphics stack this book has been mapping toward.
 ---
 
 *The roadmap summaries synthesised here are drawn from the Part Roadmap sections of each part introduction. Specific timelines, merge windows, and extension names are accurate as of June 2026; kernel development timelines routinely shift by one or two cycles and should be verified against current upstream state.*
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

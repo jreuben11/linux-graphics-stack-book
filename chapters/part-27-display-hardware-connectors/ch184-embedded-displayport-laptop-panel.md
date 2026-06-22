@@ -714,3 +714,7 @@ This chapter connects to several other chapters in the book:
 - VRR and DRRS unification: as eDP panels increasingly support variable refresh rates natively (via the DP Adaptive-Sync extension in eDP 1.5), DRRS may be deprecated in favour of a unified VRR-based power-save mode where the compositor controls per-frame timing to achieve both rendering synchronisation and power reduction simultaneously.
 - Rust-based display helper libraries: following the trend of Rust driver infrastructure in the kernel (Nova, drm-rs), helper crates for `drm_dp_aux`, `drm_panel`, and PSR state management are plausible long-term targets, as these subsystems have well-defined state machines amenable to safe Rust abstractions.
 - Optical interconnects for eDP are being explored at the PHY layer for future laptop form factors where flex cable length or EMI constraints exceed what copper differential pairs can handle at UHBR20 rates; no kernel-visible changes are expected in the near term, but the AUX channel protocol will require adaptation if optical retimers are placed in-line.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

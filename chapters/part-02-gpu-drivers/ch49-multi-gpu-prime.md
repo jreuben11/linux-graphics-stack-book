@@ -914,3 +914,7 @@ The DMA-BUF / p2pdma framework is not directly used by NCCL or RCCL — those li
 - [system76-power GitHub](https://github.com/pop-os/system76-power/)
 - [PRIME — ArchWiki](https://wiki.archlinux.org/title/PRIME)
 - [Evaluating GPU Interconnect: PCIe, NVLink, NVSwitch — arXiv:1903.04611](https://arxiv.org/pdf/1903.04611)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

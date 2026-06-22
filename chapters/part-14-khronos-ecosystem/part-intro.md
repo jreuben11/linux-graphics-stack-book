@@ -124,3 +124,5 @@ The medium-term converges on three overarching themes. First, **SPIR-V as a univ
 - **Open-hardware and RISC-V compute expansion**: AdaptiveCpp's LLVM-first `llvm-to-backend` JIT architecture and pocl's RISC-V Vector (RVV) backend position SYCL and OpenCL as the portable compute layers for emerging open-hardware GPU and AI-accelerator targets (OpenHW CVA6, Milk-V, StarFive RVV platforms), extending the Khronos vendor-neutral story beyond the current AMD/Intel/NVIDIA triad.
 
 ---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

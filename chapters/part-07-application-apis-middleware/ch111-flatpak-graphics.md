@@ -748,3 +748,7 @@ This chapter connects to the following chapters in the book:
 - Firefox Flatpak hardware acceleration: [discourse.flathub.org/t/how-to-enable-video-hardware-acceleration-on-flatpak-firefox/3125](https://discourse.flathub.org/t/how-to-enable-video-hardware-acceleration-on-flatpak-firefox/3125)
 - Snap graphics-core24 interface: [discourse.ubuntu.com/t/the-graphics-core20-snap-interface/23000](https://discourse.ubuntu.com/t/the-graphics-core20-snap-interface/23000)
 - Flatpak GitHub — /dev/kfd feature request (resolved in 1.18): [github.com/flatpak/flatpak/issues/5383](https://github.com/flatpak/flatpak/issues/5383)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -984,3 +984,7 @@ Application (game, compute, media, browser)
 - **Unified xe driver for all Intel GPUs**: The long-term intent is to eventually absorb the remaining i915-only platforms (Alder Lake and older integrated GPUs) into xe or a shared successor, eliminating the parallel maintenance burden; this is a multi-year effort gated on preserving feature parity for display, Wayland, and OpenGL workloads on those platforms.
 - **Hardware-accelerated ray tracing on compute path**: Intel has outlined plans to expose RTU units through the Level Zero / oneAPI compute stack (not just Vulkan RT), enabling general-purpose ray-tracing workloads in SYCL programs without requiring Vulkan; this requires new Level Zero extensions and IGC compiler support for RT dispatch.
 - **Heterogeneous tile scaling (multi-tile Xe for client GPUs)**: Lessons from Ponte Vecchio's multi-tile architecture may inform future client discrete GPUs; the xe driver's `xe_tile` / `xe_gt` abstraction is already designed for multi-tile configurations, positioning it to support higher-end successors to Battlemage with chiplet-style GPU dies.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

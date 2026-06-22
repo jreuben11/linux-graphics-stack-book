@@ -1301,3 +1301,7 @@ This chapter connects to the following parts of the Linux graphics stack:
 - **Neural scene representations in game engines:** Unreal Engine 5 and Godot already have community 3DGS plugins; longer-horizon consolidation is expected to produce first-class runtime Gaussian splat scene nodes with LOD streaming, physics collision proxies derived from splat geometry, and lighting integration with existing PBR pipelines.
 - **Unified NeRF/3DGS inference on NPU silicon:** As NPU blocks on SoCs (Qualcomm Hexagon, Apple ANE, Intel NPU) gain broader ONNX/ExecuTorch coverage, NeRF MLP inference and Gaussian sorting kernels are candidates for NPU offload in mobile and edge capture devices, enabling on-device real-time novel view synthesis.
 - **Standardised interchange format beyond PLY:** The Khronos Group and Open Metaverse Interoperability groups have discussed a glTF extension for Gaussian splats; a ratified standard would supersede the current ad-hoc `.ply` convention and integrate neural scene assets into the broader 3D toolchain ecosystem.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

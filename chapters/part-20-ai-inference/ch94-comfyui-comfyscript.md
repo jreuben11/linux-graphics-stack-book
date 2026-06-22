@@ -1825,3 +1825,7 @@ VRAM bandwidth (hence the relevance of fp8 and quantisation techniques described
 - **Declarative workflow IR and cross-framework portability:** the ComfyUI prompt JSON format is likely to evolve toward a standardised workflow intermediate representation (IR) that can target multiple inference backends (PyTorch, ONNX Runtime, TensorRT, DirectML) without node-level changes, analogous to what ONNX provides for static model graphs.
 - **Hardware-accelerated VAE and attention on integrated and mobile GPUs:** as inference workloads shift toward edge and on-device deployment, ComfyUI's backend abstraction is expected to accommodate Intel Xe-HPG and Qualcomm Adreno via PyTorch's XPU and Vulkan compute backends, broadening the platform matrix beyond CUDA and ROCm.
 - **Agentic workflow generation and self-modifying graphs:** longer-horizon integration with LLM-based agents that can construct, inspect, and iteratively refine ComfyUI prompt JSON at runtime — using `GET /object_info` as a schema source — is a stated direction for the ComfyUI ecosystem, closing the loop between natural-language image intent and node-graph execution.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

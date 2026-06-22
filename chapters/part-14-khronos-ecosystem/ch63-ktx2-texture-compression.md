@@ -1331,3 +1331,7 @@ Bevy's KTX2 asset loader (`bevy_render/src/texture/ktx2.rs`, using the `ktx2` Ru
 ### Long-term
 - **Neural texture compression integration**: Research prototypes (NVIDIA NTC, Intel XeSS texture compression) use small MLPs to represent textures at sub-1 bpp, decoded via neural inference in shader. If any of these reach hardware fixed-function support, KTX2 container extensions or a successor format will need new supercompression scheme IDs and DFD `colorModel` values to carry neural-compressed payloads alongside traditional block formats.
 - **Unified LDR/HDR transcoder format**: The current split between ETC1S (LDR only), UASTC LDR 4×4, UASTC HDR 4×4, and ASTC HDR 6×6 codecs creates combinatorial complexity in asset pipelines that must support all target hardware. A single supercompression intermediate that transparently transcodes to any block format across the LDR/HDR boundary — analogous to how UASTC unifies LDR targets today — is a stated long-term goal in BinomialLLC discussions.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

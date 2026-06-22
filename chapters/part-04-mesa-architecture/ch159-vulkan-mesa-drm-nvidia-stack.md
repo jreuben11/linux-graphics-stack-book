@@ -1516,3 +1516,7 @@ This chapter is a cross-cutting integration reference. It synthesises content fr
 - **Chapter 75 (Explicit GPU Sync)**: The full `drm_syncobj` and `linux-drm-syncobj-v1` story expanded with timeline semaphore edge cases and debugging techniques.
 - **Chapter 148 (Vulkan Synchronisation: A Complete Developer Reference)**: The application-facing view of the fences, semaphores, and pipeline barriers that map to the syncobj infrastructure described in §7.
 - **Chapter 150 (EGL Architecture and DMA-BUF)**: The EGL / OpenGL equivalent of the WSI present path described in §9.1–9.2.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

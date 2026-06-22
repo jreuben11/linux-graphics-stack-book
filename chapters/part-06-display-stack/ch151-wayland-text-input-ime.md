@@ -1255,3 +1255,7 @@ Keycap sequences (e.g. `1️⃣` = U+0031 DIGIT ONE + U+FE0F VARIATION SELECTOR-
 - **Ch36 (wlroots)** — wlroots `wlr_text_input_v3` and `wlr_input_method_v2` are the reference implementations used by Sway, Hyprland, labwc
 - **Ch123 (XWayland)** — XWayland's XIM bridge uses `zwp_text_input_v3` as the Wayland-side transport for X11 app text input
 - **Ch39 (Wayland Input)** — `wl_keyboard.key` events are routed by the compositor to the IME process via `zwp_input_method_v2` before forwarding to applications
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

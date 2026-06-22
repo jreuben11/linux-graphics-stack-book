@@ -2476,3 +2476,7 @@ ffmpeg -loglevel debug -hwaccel vaapi -i input.mp4 -f null /dev/null 2>&1 | grep
 - As Vulkan Video's `VK_KHR_video_encode_av1` extension becomes universally supported across AMD, Intel, and NVIDIA drivers, FFmpeg's `av1_vulkan` compute codec is expected to transition to a hardware-assisted hybrid path — using fixed-function AV1 encode units where available and falling back to Vulkan compute shaders on implementations that lack them, all under a single `AVCodec` descriptor.
 - The broader adoption of CMAF (Common Media Application Format) and Low-Latency DASH is likely to motivate a unified FFmpeg ABR muxer that generates both HLS and DASH manifests from a single mux pass with a shared fMP4 segment pool, replacing the current dual-muxer pattern.
 - Neural-network-based video coding (NNVC) and AI-assisted in-loop filters (super-resolution upscale, perceptual rate control) are actively researched in the codec community; FFmpeg's DNN module (`libavfilter/dnn/`) is positioned as the integration layer once a stable inference backend (ONNX Runtime, OpenVINO) with GPU acceleration achieves sufficient performance to be practical in a transcode pipeline.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

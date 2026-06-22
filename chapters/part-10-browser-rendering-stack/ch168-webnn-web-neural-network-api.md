@@ -820,3 +820,7 @@ For a live view of browser support across Chrome, Firefox, and other browsers, t
 - [AMD Ryzen AI NPUs on Linux — Phoronix](https://www.phoronix.com/news/AMD-Ryzen-AI-NPUs-Linux-LLMs)
 - [Characterising WebGPU Dispatch Overhead for LLM Inference (arXiv:2604.02344)](https://arxiv.org/html/2604.02344)
 - [Introduction to Web Neural Network API — webmachinelearning.github.io](https://webmachinelearning.github.io/get-started/2024/05/16/introduction-to-web-neural-network-api.html)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

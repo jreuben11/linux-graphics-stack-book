@@ -908,3 +908,7 @@ This chapter connects to several other chapters in the book:
 **Ch25 — Compute Shaders and GPGPU**: Ray queries (Section 2.3) are the most portable ray tracing path because they work from compute shaders without any SBT infrastructure. The `rayQueryEXT` GLSL built-in compiles through the same SPIR-V compute pipeline described in Ch25. RADV emits `IMAGE_BVH_INTERSECT_RAY` for ray queries just as for the full pipeline, making the hardware acceleration transparent to the GLSL source.
 
 **Ch9 — NVIDIA GSP Firmware** and **Ch10 — Nova (Rust NVIDIA Kernel Driver)**: NVK's path to ray tracing support (Section 7) depends on the kernel-side infrastructure for exposing RT Core capabilities. Chapter 9 covers GSP firmware initialisation of GPU resources including RT Cores; Chapter 10 covers the Nova Rust kernel driver that will eventually replace Nouveau and provide the kernel-side foundation for NVK ray tracing.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

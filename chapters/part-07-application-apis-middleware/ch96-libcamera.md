@@ -1010,3 +1010,7 @@ The layer intercepts `open()`, `ioctl()`, `mmap()`, and `close()` calls on paths
 - IPCUnixSocket API reference: [https://libcamera.org/api-html/classlibcamera_1_1IPCUnixSocket.html](https://libcamera.org/api-html/classlibcamera_1_1IPCUnixSocket.html)
 - IPU3 Pipeline Handler deep-dive: [https://deepwiki.com/kbingham/libcamera/3.1-ipu3-pipeline-handler](https://deepwiki.com/kbingham/libcamera/3.1-ipu3-pipeline-handler)
 - Wikipedia: libcamera: [https://en.wikipedia.org/wiki/Libcamera](https://en.wikipedia.org/wiki/Libcamera)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

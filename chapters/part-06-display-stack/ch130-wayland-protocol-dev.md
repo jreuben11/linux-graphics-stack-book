@@ -1054,3 +1054,7 @@ The `GOVERNANCE.md` requirements for `wp_` protocols include a `SECURITY.md` sec
 - [DRM Lease Protocol | Wayland Explorer](https://wayland.app/protocols/drm-lease-v1)
 - [wlr-protocols repository](https://github.com/swaywm/wlr-protocols)
 - [Pekka Paalanen: Wayland Protocol Design — Object Lifespan](https://ppaalanen.blogspot.com/2014/07/wayland-protocol-design-object-lifespan.html)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -700,3 +700,7 @@ Starting with Mesa 25.1, Zink unconditionally enables GL threading (`mesa_glthre
 - [Imagination Technologies: PowerVR path to Zink](https://blog.imaginationtech.com/powervr-the-path-to-open-source-zink-and-opengl-es-support/)
 - [Mesa GitLab: zink_types.h, zink_screen.c, zink_program.h (FireBurn/mesa mirror)](https://github.com/FireBurn/mesa/blob/main/src/gallium/drivers/zink/zink_screen.c)
 - [Mesa GitLab issue: handle more pipeline states dynamically](https://gitlab.freedesktop.org/mesa/mesa/-/issues/3359)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

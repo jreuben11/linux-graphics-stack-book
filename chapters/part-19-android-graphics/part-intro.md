@@ -104,3 +104,7 @@ Readers should be comfortable with the Linux **DRM/KMS** and **DMA-BUF** subsyst
 - **Unified Linux/Android display HAL**: The convergence of Android's Generic Kernel Image (GKI) with mainline DRM and the maturing `drm_hwcomposer` open-source HAL points toward a single DRM-backed compositor stack that can serve both Wayland and Android SurfaceFlinger clients from a common display-HAL layer, resolving the current architectural bifurcation documented throughout this part.
 - **Standardised AR semantic APIs via OpenXR**: The Khronos OpenXR working group is evaluating AR scene-understanding extensions (`XR_EXT_scene_understanding` derivatives) that would subsume ARCore's proprietary `ArPlane`, `ArDepthImage`, and `ArSemanticImage` APIs under a vendor-neutral interface, enabling Monado and non-Google runtimes to expose equivalent capabilities on Linux and future Android forks.
 - **Open-hardware AR and vendor NPU delegate ecosystem**: As RISC-V SoCs with open ISP coprocessors mature and all major Android SoC vendors (Qualcomm, MediaTek, Samsung Exynos, Google Tensor) ship production LiteRT delegates, the delegate `.so` ABI is expected to become the uniform hardware-accelerator contract — analogous to the Vulkan ICD model — closing the gap between proprietary and open ML acceleration paths on both Android and Linux.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

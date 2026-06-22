@@ -675,3 +675,7 @@ flowchart LR
 - **Ch39 (Qt/GTK)** — Both toolkits use EGL (via their Wayland QPA / GDK Wayland backend) transparently
 - **Ch75 (Explicit Sync)** — `EGL_ANDROID_native_fence_sync` produces the DRM sync files used by `wp_linux_drm_syncobj_v1`
 - **Ch139 (Hardware Planes)** — The zero-copy chain: GL render → EGLImage export as DMA-BUF → KMS plane import (no CPU involved)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

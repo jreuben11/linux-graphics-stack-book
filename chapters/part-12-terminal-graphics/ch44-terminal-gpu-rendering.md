@@ -996,3 +996,7 @@ The `wp_presentation_time_v1` and `wp_fractional_scale_v1` protocols are part of
 - As Wayland compositors gain support for direct scanout of terminal-sized surfaces (via `DRM_FORMAT_MOD_LINEAR` scanout for fullscreen terminal windows), GPU terminals may be able to bypass the compositor's compositing pass entirely for fullscreen use, reducing the display pipeline latency to KMS pageflip timing rather than compositor commit timing.
 - A unified pixel-graphics protocol that merges the Kitty Graphics Protocol's virtual placement model with Sixel's ubiquity is a recurring topic on the terminal-wg mailing list; standardisation through the Wayland protocols repository or a freedesktop.org specification would allow terminals to implement a single GPU upload path rather than maintaining separate decoders for each protocol.
 - SIMD-accelerated VT parsing, pioneered by Ghostty, is likely to be adopted by VTE and other terminals as AVX-512 and NEON SVE become more widely available; a shared parsing library (analogous to how FreeType and HarfBuzz are shared) would allow the ecosystem to consolidate this work rather than each terminal re-implementing it.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

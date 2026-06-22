@@ -548,3 +548,7 @@ A game that uses EAC or BattlEye but has not enabled Linux support will receive 
 - Wikipedia — Easy Anti-Cheat: [Easy Anti-Cheat](https://en.wikipedia.org/wiki/Easy_Anti-Cheat)
 - Wikipedia — BattlEye: [BattlEye](https://en.wikipedia.org/wiki/BattlEye)
 - Wikipedia — Kernel-level anti-cheat: [Kernel-level anti-cheat](https://en.wikipedia.org/wiki/Kernel-level_anti-cheat)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

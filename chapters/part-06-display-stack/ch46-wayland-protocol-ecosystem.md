@@ -851,3 +851,7 @@ The only mechanism for a Wayland client to discover compositor capabilities is `
 - **Network transparency (§7.4)** is architecturally coupled to the DMA-BUF model (Ch4 §3): the inability to forward fds over a network connection is the root cause of Waypipe's limitations. Systems that require genuine remote rendering should consider the virtio-gpu path (Appendix F) instead.
 
 - **Chapter 46 as a whole** is a snapshot chapter for mid-2026: protocols at the frontier of shipping but not yet stable. The graduation trajectory from staging → stable is driven by two independent compositor implementations and a protocol committee review. Readers should consult the `wayland-protocols` changelog at `https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/CHANGES` for post-2026 graduations.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -722,3 +722,7 @@ A platform that passes S0ix validation with display correctly powered down shoul
 ### Long-term
 - As eDP transitions toward embedded DisplayPort 2.1 (UHBR link rates) and next-generation Panel Replay 2.0, the DC-state architecture on both Intel and AMD platforms is expected to merge PSR, ALPM, and display C-states into a single hardware-managed "display power island" FSM that requires no software polling, with the kernel driver role reduced to initial configuration and error recovery.
 - The ongoing convergence of SoC display engines (Intel's Display IPU, AMD's DCN, and Qualcomm's MDSS targeting Linux via the `msm` driver) toward unified power management abstractions may eventually produce a generic KMS display-power backend in `drivers/gpu/drm/display/`, analogous to the existing `drm_dp_helper` layer, handling PSR/Panel Replay lifecycle across vendors.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

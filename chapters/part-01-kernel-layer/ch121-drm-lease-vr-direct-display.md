@@ -793,3 +793,5 @@ drm_info | grep -i "mst"
 23. [libdrm DRM lease wrappers](https://gitlab.freedesktop.org/mesa/drm/-/blob/main/xf86drm.h) — `drmModeCreateLease`, `drmModeListLessees`, `drmModeGetLease`, `drmModeRevokeLease` declarations in libdrm ≥ 2.4.89
 
 ---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

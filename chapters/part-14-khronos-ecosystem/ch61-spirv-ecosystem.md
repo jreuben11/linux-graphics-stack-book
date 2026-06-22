@@ -1132,3 +1132,7 @@ SPIR-V is the lingua franca connecting every front end to every back end describ
 ### Long-term
 - A binary-stable, versioned SPIR-V container format (analogous to DXIL's signed container) is a long-standing discussion point in the Khronos Vulkan working group; if adopted it would allow IHVs to cache and redistribute pre-compiled ISA without application involvement while tying the binary to a specific driver ABI.
 - As Vulkan's shader object extension (`VK_EXT_shader_object`) matures, the need to serialize SPIR-V through `VkPipelineCache` may diminish in favour of driver-managed shader binary caches, shifting the SPIR-V ecosystem's role from a pipeline compilation input to a persistent interchange format stored once and compiled lazily on first device contact.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

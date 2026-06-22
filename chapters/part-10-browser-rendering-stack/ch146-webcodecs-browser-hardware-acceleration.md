@@ -973,3 +973,7 @@ When `VaapiVideoDecoder` is unavailable — missing iHD driver, unsupported hard
 - Dawn WebGPU `importExternalTexture`: [https://dawn.googlesource.com/dawn](https://dawn.googlesource.com/dawn)
 - Chrome Platform Status — WebCodecs: [https://chromestatus.com/feature/5669293909868544](https://chromestatus.com/feature/5669293909868544)
 - W3C GPU for the Web Working Group — `GPUExternalTexture`: [https://www.w3.org/TR/webgpu/#gpu-external-texture](https://www.w3.org/TR/webgpu/#gpu-external-texture)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

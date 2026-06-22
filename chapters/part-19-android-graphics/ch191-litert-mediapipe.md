@@ -928,3 +928,7 @@ Ch166 expands the Android XR platform coverage (Samsung Galaxy XR / Project Mooh
 
 **Ch48 — ROCm and Machine Learning on Linux GPUs** *(optional)*
 For context on how desktop-class AMD GPUs handle the same model families covered here, see Ch48's discussion of ROCm's MIOpen operator libraries — the functional equivalent of LiteRT's GPU delegate GLSL compute kernels at datacenter scale.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

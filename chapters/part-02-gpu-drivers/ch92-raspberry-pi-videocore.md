@@ -720,3 +720,7 @@ The Raspberry Pi graphics stack touches nearly every layer described in this boo
 - bcm2835-codec V4L2 driver: [github.com/raspberrypi/linux/blob/rpi-6.6.y/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c](https://github.com/raspberrypi/linux/blob/rpi-6.6.y/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c)
 - Raspberry Pi 5 benchmarking: [raspberrypi.com/news/benchmarking-raspberry-pi-5](https://www.raspberrypi.com/news/benchmarking-raspberry-pi-5/)
 - Raspberry Pi config.txt reference: [raspberrypi.com/documentation/computers/config_txt.html](https://www.raspberrypi.com/documentation/computers/config_txt.html)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

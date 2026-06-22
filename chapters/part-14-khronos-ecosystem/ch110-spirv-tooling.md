@@ -1266,3 +1266,7 @@ A RenderDoc shader replacement workflow: capture the SPIR-V via `MESA_SPIRV_DUMP
 ### Long-term
 - **SPIR-V as a stable cross-vendor ML IR**: Khronos is actively developing `SPV_KHR_tensor_layout` and `SPV_KHR_subgroup_rotate` as building blocks for a standardized tensor-compute dialect within SPIR-V, potentially displacing vendor-specific PTX/GCN IR for portable inference workloads on Linux.
 - **Integrated SPIR-V source debugging in Mesa**: Long-term plans for Mesa include consuming `NonSemantic.Shader.DebugInfo.100` annotations natively inside the driver's pipeline compilation path to generate DWARF-annotated GPU disassembly, enabling debuggers like `radeon-gpu-analyzer` and `intel_gpu_top` to correlate GPU counters with shader source lines without a separate offline tool step.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

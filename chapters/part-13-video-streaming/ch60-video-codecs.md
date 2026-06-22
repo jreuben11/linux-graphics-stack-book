@@ -993,3 +993,7 @@ The algorithms described in this chapter are the mathematical substrate of every
 - Neural video codecs — architectures that replace the DCT/motion-estimation pipeline with learned latent representations — are transitioning from research to standardisation; MPEG's Video Coding for Machines (VCM) and the emerging Neural Image/Video Compression (NIC/NVC) standards may introduce hybrid block-transform plus neural post-filter modes that hardware GPUs can accelerate via tensor core operations.
 - The rate-distortion optimisation landscape is likely to shift toward perceptual loss functions trained on large-scale human opinion data (VMAF-style) as the primary encoder objective, replacing PSNR-oriented Lagrangian optimisation in production encoders like SVT-AV1 and x265.
 - Unified hardware codec engines integrating fixed-function block-transform decode with programmable neural post-processing (denoising, super-resolution, grain synthesis) are on roadmaps from NVIDIA, Intel, and AMD; future VA-API and Vulkan Video extensions will need to expose these hybrid pipelines as first-class decode targets.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

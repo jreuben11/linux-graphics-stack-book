@@ -1051,3 +1051,7 @@ This chapter connects to the following chapters across the book:
 - As WebAssembly and WebGPU mature, a full server-free VTK pipeline running in the browser (built via Emscripten with `VTK_WRAP_JAVASCRIPT`) is a plausible trajectory, enabling scientific visualization applications to run entirely client-side with no HPC backend required for moderate dataset sizes.
 - Deep learning-based upsampling and reconstruction filters (leveraging ONNX inference, added experimentally in VTK 9.6) may become first-class VTK pipeline stages, enabling AI-assisted volume rendering and super-resolution for clinical and simulation datasets.
 - Convergence of the Catalyst in-situ API with streaming HPC data fabrics (ADIOS2, RDMA-based) and cloud-native object stores (S3-compatible) is a stated direction for post-Exascale workflows, where VTK acts as the on-node serialization and analysis layer rather than a batch post-processor.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

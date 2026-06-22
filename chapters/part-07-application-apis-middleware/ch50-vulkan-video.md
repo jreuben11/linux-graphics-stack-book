@@ -937,3 +937,7 @@ For new applications targeting both VA-API and Vulkan Video, the recommended app
 - [Vulkan Video on VCN2/VCN3 enabled by default — Phoronix](https://www.phoronix.com/news/Vulkan-Video-VCN2-VCN3-Default)
 - [Zink VA-API on Vulkan Video — Phoronix](https://www.phoronix.com/news/Zink-VA-API-On-Vulkan-Video)
 - [Dave Airlie: RADV AV1 status blog](https://airlied.blogspot.com/2024/02/radv-vulkan-av1-video-decode-status.html)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

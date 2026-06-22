@@ -84,3 +84,7 @@ Readers should be comfortable with the **DRM/KMS** device model (Part I), **GEM*
 - **CXL-attached and disaggregated memory hierarchies:** AMD's roadmap includes CXL 3.x fabric-attached HBM3 pools visible as additional `hsa_amd_memory_pool_t` agents with tiered latency, requiring locality-aware allocation in ML frameworks. CXL 3.0 memory expansion modules (1–8 TB, 200–400 GB/s) are expected to become viable weight-streaming targets for >200B-parameter models, with the Linux CXL subsystem coordinating between host RAM, CXL memory, and GPU VRAM.
 - **Convergence of ROCm compiler and Mesa ACO on a shared LLVM AMDGPU backend:** AMD's compiler team has stated a long-term goal of converging register-allocation heuristics between ACO (RADV ray tracing) and the ROCm LLVM backend so that tuning work benefits both compute and graphics simultaneously. HIP may evolve toward a multi-vendor portable compute API standard — potentially under Khronos — reducing its current positioning as a CUDA migration tool.
 - **Neural scene representations as first-class platform citizens:** NPU offload of NeRF MLP inference and Gaussian sorting kernels on Qualcomm Hexagon, Intel NPU, and AMD XDNA will enable on-device real-time novel view synthesis; a ratified glTF extension for Gaussian splats from Khronos would integrate neural scene assets into the broader 3D toolchain and game-engine ecosystem (Unreal Engine 5, Godot) with LOD streaming and PBR lighting integration.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

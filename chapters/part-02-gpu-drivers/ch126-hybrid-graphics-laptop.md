@@ -934,3 +934,7 @@ If the discharge rate drops by 10–15W after applying `envycontrol --switch int
 - [power-profiles-daemon GitLab](https://gitlab.freedesktop.org/upower/power-profiles-daemon)
 - [NVIDIA libglvnd (GL Vendor-Neutral Dispatch)](https://github.com/NVIDIA/libglvnd)
 - [bbswitch README (Bumblebee Project)](https://github.com/Bumblebee-Project/bbswitch/blob/master/README.md)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

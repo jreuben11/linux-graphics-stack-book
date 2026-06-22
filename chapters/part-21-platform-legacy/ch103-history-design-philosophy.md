@@ -460,3 +460,7 @@ This chapter is deliberately the connective tissue for the entire book. The majo
 - The open hardware trajectory — AMD's GPUOpen model, RISC-V GPU ISA initiatives, and emerging RISC-V-based GPU IP — may produce the first major GPU line designed from the start for community-maintained open drivers, rather than retrofitting openness onto a hardware design built for proprietary control.
 - The accel subsystem's convergence with the DRM graphics subsystem may produce a unified kernel programming model for heterogeneous workloads (render, display, video, AI inference) sharing the same memory manager, scheduler, and DMA-BUF infrastructure without architectural seams — fulfilling the zero-copy, mechanism-over-policy principles the stack was founded on.
 - X11 support in mainstream desktop environments (GNOME, KDE Plasma) is likely to reach end-of-life within this window, with XWayland transitioning from a compatibility layer to a legacy archival mode, marking the full completion of the display server transition that Kristian Høgsberg began in 2008.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

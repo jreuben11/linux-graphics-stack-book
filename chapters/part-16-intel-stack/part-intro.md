@@ -58,3 +58,7 @@ Readers should be comfortable with the **DRM subsystem** fundamentals from Part 
 - **Unified `xe` driver for all Intel GPUs**: The long-term goal is to absorb the remaining `i915`-only platforms (Alder Lake and older integrated graphics) into `xe` or a shared successor, eliminating parallel maintenance while preserving display, Wayland, and OpenGL feature parity — a multi-year effort.
 - **Ray tracing on the compute path**: Intel plans to expose RTU units through Level Zero / oneAPI, enabling SYCL programs to dispatch hardware ray-tracing workloads without requiring Vulkan RT extensions, pending new Level Zero extensions and IGC compiler support.
 - **Heterogeneous tile scaling for client GPUs**: Lessons from the Ponte Vecchio multi-tile architecture may carry into future Battlemage successors with chiplet-style GPU dies; the `xe` driver's `xe_tile` / `xe_gt` abstraction is already designed for multi-tile configurations, positioning it to support higher-end discrete GPUs without further driver restructuring.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

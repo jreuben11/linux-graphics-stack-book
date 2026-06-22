@@ -929,3 +929,7 @@ UE5 and Unity are significant data points for Mesa driver development: their div
 22. [Explicit Sync in Wayland — Xaver's blog](https://zamundaaa.github.io/wayland/2024/04/05/explicit-sync.html) — Technical explanation of the wp_linux_drm_syncobj_v1 protocol and adoption across Mesa, Mutter, and NVIDIA
 
 23. [Bevy 0.18 release notes](https://bevy.org/news/bevy-0-18/) — Latest major Bevy release as of writing (early 2026), including rendering pipeline improvements
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

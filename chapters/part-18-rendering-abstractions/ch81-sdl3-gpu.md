@@ -1313,3 +1313,7 @@ As of SDL 3.2.x, a community-contributed WebGPU backend for SDL_GPU exists as a 
 - **Bindless resource tiers**: As Vulkan descriptor indexing (`VK_EXT_descriptor_indexing`) becomes universally supported across Mesa drivers, SDL_GPU may introduce an opt-in bindless texture tier so that large texture atlases can be sampled without per-draw rebinding.
 - **Ray tracing abstraction**: Once `VK_KHR_ray_tracing_pipeline` support matures in NVK and all three major Mesa drivers reach consistent coverage, a conservative ray tracing sub-API (BVH build, trace rays, miss/hit shaders) could be added behind a capability query, consistent with SDL_GPU's design of exposing the 80% portable subset.
 - **Console-aligned feature parity**: SDL's private console forks will continue to drive feature additions back into the public API; capabilities that ship first on console (tile-based shading hints, variable-rate shading) are likely to appear in the open backend once the public Vulkan extensions stabilise.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

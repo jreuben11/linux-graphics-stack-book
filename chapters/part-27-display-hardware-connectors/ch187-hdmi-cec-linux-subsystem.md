@@ -963,3 +963,7 @@ Typical success sequence in `dmesg`:
 - As HDMI 2.2 and Ultra High Speed cabling mature, CEC may be extended or replaced by a higher-bandwidth in-band control channel (analogous to DisplayPort's sideband messaging) to support the growing command vocabulary needed by HDR metadata negotiation and adaptive sync coordination — the Linux stack would require a new subsystem layer bridging the existing CEC API to any successor protocol.
 - Industry convergence on Matter (formerly CHIP) as the dominant home automation protocol may eventually see CEC bridges standardised at the firmware level, with Linux SoC platforms expected to expose CEC-discovered device state as Matter endpoints via kernel-to-userspace bridge daemons.
 - Long-term kernel maintainer succession planning for the CEC subsystem (currently maintained by a small number of individuals at Cisco/LinuxTV) may lead to subsystem reorganisation, folding CEC more tightly into the DRM connector model rather than the media subsystem to reflect its role as a display control bus.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

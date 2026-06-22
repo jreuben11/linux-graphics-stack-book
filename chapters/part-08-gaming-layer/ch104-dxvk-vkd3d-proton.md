@@ -840,3 +840,7 @@ This mechanism is how SteamOS manages shader compiler bug fixes on the Steam Dec
 - RADV forced shader re-compilation (drirc knobs): [phoronix.com/news/RADV-Force-Shader-Re-Comp](https://www.phoronix.com/news/RADV-Force-Shader-Re-Comp)
 - Mesa environment variables (RADV_DEBUG): [docs.mesa3d.org/envvars.html](https://docs.mesa3d.org/envvars.html)
 - DeepWiki Fossilize overview: [deepwiki.com/ValveSoftware/Fossilize/1-overview](https://deepwiki.com/ValveSoftware/Fossilize/1-overview)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

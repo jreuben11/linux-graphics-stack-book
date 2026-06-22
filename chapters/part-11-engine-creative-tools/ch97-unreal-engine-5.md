@@ -703,3 +703,7 @@ This chapter connects to several other chapters in the book:
 22. [Niagara Overview — Epic Games](https://dev.epicgames.com/documentation/en-us/unreal-engine/overview-of-niagara-effects-for-unreal-engine) — Niagara GPU simulation architecture, FNiagaraGPUSystemTick
 23. [Unreal Insights — Epic Games](https://dev.epicgames.com/documentation/en-us/unreal-engine/unreal-insights-in-unreal-engine) — Profiling tool for CPU/GPU timeline analysis on Linux
 24. [RenderDoc In-Application API](https://renderdoc.org/docs/in_application_api.html) — RenderDoc frame capture integration with UE5 on Linux
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

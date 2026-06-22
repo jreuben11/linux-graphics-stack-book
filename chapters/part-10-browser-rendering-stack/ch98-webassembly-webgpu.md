@@ -1014,3 +1014,7 @@ For Rust, `wasm-pack --dev` passes `-C debuginfo=2` to `rustc`, embedding Rust s
 - [WebLLM arXiv paper](https://arxiv.org/html/2412.15803v1)
 - [Figma rendering with WebGPU](https://www.figma.com/blog/figma-rendering-powered-by-webgpu/)
 - [Wasmer COOP/COEP header patching](https://docs.wasmer.io/sdk/wasmer-js/how-to/coop-coep-headers/)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

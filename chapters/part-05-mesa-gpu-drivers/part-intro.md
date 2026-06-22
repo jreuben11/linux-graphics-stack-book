@@ -127,3 +127,5 @@ Readers interested in **comparing NVIDIA's approach with AMD, Intel, and Qualcom
 - **Hardware mesh shading and video encoding on NVK**: Full `VK_EXT_mesh_shader` and `VK_KHR_video_encode_h264/h265` for NVIDIA hardware are long-horizon goals contingent on command-stream reverse engineering for Turing/Ampere mesh pipelines and Ada/Blackwell encoder paths.
 
 ---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -1013,3 +1013,7 @@ For in-depth GPU timeline analysis on AMD, use [Radeon GPU Profiler](https://gpu
 - [Intel ANV Fragment Shading Rate](https://www.phoronix.com/news/Intel-ANV-Fragment-Shading-Rate) — Phoronix
 - [Intel ANV Mesh Shaders](https://www.phoronix.com/news/Intel-Lands-Mesh-Shaders) — Phoronix
 - [Mesa 23.1 RADV Mesh Shaders for RDNA3](https://www.phoronix.com/news/RADV-Mesh-Shaders-RDNA3) — Phoronix
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -854,3 +854,7 @@ All paths relative to the Mesa repository root at [Mesa 25.1](https://gitlab.fre
 - Wayland linux-dmabuf-unstable-v1 protocol: [https://gitlab.freedesktop.org/wayland/wayland-protocols/-/tree/main/unstable/linux-dmabuf](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/tree/main/unstable/linux-dmabuf)
 - GBM API reference: [https://gitlab.freedesktop.org/mesa/drm/-/tree/main/lib/gbm](https://gitlab.freedesktop.org/mesa/drm/-/tree/main/lib/gbm)
 - Vulkan GPU Info (extension support per GPU): [https://vulkan.gpuinfo.org/](https://vulkan.gpuinfo.org/)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

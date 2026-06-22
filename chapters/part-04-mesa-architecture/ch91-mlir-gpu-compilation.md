@@ -938,3 +938,7 @@ This chapter sits at the intersection of Mesa's compiler infrastructure and the 
 - Intel XMX overview: https://www.intel.com/content/www/us/en/support/articles/000091112/graphics.html
 - AMD WMMA on RDNA3: https://gpuopen.com/learn/wmma_on_rdna3/
 - StableHLO: https://github.com/openxla/stablehlo
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

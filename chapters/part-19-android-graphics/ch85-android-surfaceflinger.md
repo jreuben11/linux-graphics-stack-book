@@ -1197,3 +1197,7 @@ This chapter connects to many other parts of the book:
 - **Unified Linux/Android graphics HAL**: The convergence of Android's Generic Kernel Image (GKI) with mainline Linux DRM and the growing use of `drm_hwcomposer` points toward a long-term future where a single DRM-backed compositor stack can serve both Wayland and Android clients, with SurfaceFlinger and a Wayland compositor sharing a common display-HAL layer.
 - **Hardware-accelerated AI compositing**: Display controllers and NPUs on future SoCs are expected to handle tone mapping, super-resolution (analogous to Arm's `FidelityFX` proposals), and motion compensation in hardware; Android's HWC interface will need new composition type enumerants and metadata structures to expose these capabilities to SurfaceFlinger.
 - **Post-quantum secure Binder transport**: As the Android ecosystem moves toward hardware-attested secure channels for inter-process communication, the Binder FD-passing mechanism used to share `sync_file` fences and `AHardwareBuffer` handles is a candidate for cryptographic attestation, ensuring that display buffers containing sensitive content cannot be intercepted mid-pipeline.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

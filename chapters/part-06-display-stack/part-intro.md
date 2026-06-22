@@ -293,3 +293,7 @@ Readers should arrive here having read Parts I–IV: familiarity with `drmModeAt
 - **Unified display and colour hardware abstraction.** A vendor-agnostic `drm_colorop` chain expresses the full HDR pipeline across AMD DCN, Intel Xe, and NVIDIA display hardware. Per-display ICC profile enforcement moves toward the KMS layer. AV1 HDR10+ dynamic metadata integrates with the per-plane colorop pipeline. Hardware-accelerated 3D LUT tone mapping in the DRM colorop API eliminates compositor GPU shader overhead for tone mapping on mobile platforms.
 - **Newton replaces AT-SPI2 as the Wayland accessibility foundation.** Once GTK, Qt, Electron, and web engines ship Newton-native providers, AT-SPI2 becomes a legacy compatibility shim. A standardised compositor-level screen capture protocol replaces privileged shell-plugin framebuffer access for magnifiers and accessibility tools.
 - **Spatial and XR input, and ML-assisted display.** Monado's hand-tracking and eye-gaze input are reconciled with the Wayland seat model. Compositor-side ML models predict stylus trajectories and pointer positions to reduce motion-to-photon latency. AI-assisted codec adaptation (VMAF-based bitrate control) enters game streaming servers. Kernel-level frame timing APIs surface per-frame GPU completion and VRR period measurements to compositors without userspace-only instrumentation.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

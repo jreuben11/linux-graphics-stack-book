@@ -1176,3 +1176,7 @@ For Vulkan-based compositors (Hyprland's wlroots fork, experimental KWin Vulkan 
 - **Ch39 (GTK/Qt)** — `GdkWaylandSurface` fractional scale handler; `QWaylandWindow::setPreferredScale`; device pixel ratio APIs
 - **Ch105 (Font Rendering)** — HiDPI pipeline in FreeType/Pango; subpixel rendering at fractional DPR
 - **Ch130 (Protocol Development)** — `wp_fractional_scale_v1` as an example of a staging protocol lifecycle: from experimental staging → stable; protocol XML grammar
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

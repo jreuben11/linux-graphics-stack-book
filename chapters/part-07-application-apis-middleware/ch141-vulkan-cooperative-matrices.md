@@ -668,3 +668,7 @@ vulkaninfo --json 2>/dev/null | jq '.[] | .properties |
 - **Ch127 (Mesh Shaders and VRS)** — geometry (mesh) + ML (cooperative matrix) in the same frame: e.g. ray-traced GI (Ch135) followed by cooperative-matrix denoising
 - **Ch133 (Vulkan Compute Queues)** — GEMM workloads dispatch on async compute queues alongside graphics; timeline semaphores synchronise ML inference with render pipeline
 - **Ch135 (Vulkan Ray Tracing)** — neural denoising (OIDN-style): 1 spp RT → cooperative matrix network → denoised frame; same pipeline
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

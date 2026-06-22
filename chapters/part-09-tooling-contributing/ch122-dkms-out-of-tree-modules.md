@@ -906,3 +906,7 @@ Distribution meta-packages declare strict version dependencies to prevent this, 
 - [Intel Xe3/Panther Lake GuC/HuC Firmware Upstreamed (Phoronix)](https://www.phoronix.com/news/Intel-PTL-Xe3-GuC-HuC-Firmware)
 - [RPMFusion akmod vs kmod Discussion](https://rpmfusion-developers.rpmfusion.narkive.com/2xZ1hzx6/akmod-vs-kmod)
 - [AMDGPU Install Documentation](https://amdgpu-install.readthedocs.io/en/latest/install-installing.html)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

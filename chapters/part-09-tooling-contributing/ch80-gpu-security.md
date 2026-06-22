@@ -924,3 +924,7 @@ This chapter connects to many other parts of the book:
 - [Firefox RDD/VAAPI seccomp sandbox and DRM ioctl allowlist — Mozilla bug 1698778](https://bugzilla.mozilla.org/show_bug.cgi?id=1698778)
 - [Flatpak sandbox permissions — Flatpak documentation](https://docs.flatpak.org/en/latest/sandbox-permissions.html)
 - [Seccomp BPF — The Linux Kernel documentation](https://docs.kernel.org/userspace-api/seccomp_filter.html)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

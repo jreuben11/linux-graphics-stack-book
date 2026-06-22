@@ -868,3 +868,7 @@ This chapter connects to several other chapters in the book:
 33. meta-riscv Yocto layer: https://github.com/riscv/meta-riscv
 34. OpenEmbedded-core mesa.inc: https://github.com/openembedded/openembedded-core/blob/master/meta/recipes-graphics/mesa/mesa.inc
 35. SpacemiT AMD GPU adaptation reference: https://sdk.spacemit.com/en/graphics/AMD_graphics_card_adaptation_reference/
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

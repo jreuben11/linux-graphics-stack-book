@@ -1356,3 +1356,7 @@ cat /sys/kernel/debug/dri/0/i915_dp_mst_info
 - *USB4 Version 2.0 Specification*: [usb.org](https://www.usb.org/sites/default/files/USB4_Version_2.0_Specification_20221110.zip)
 - *Thunderbolt 4 specification*: [thunderbolttechnology.net](https://thunderbolttechnology.net/sites/default/files/Thunderbolt4_Spec_R1.pdf)
 - *Intel Thunderbolt 5 overview*: [intel.com](https://www.intel.com/content/www/us/en/architecture-and-technology/thunderbolt/thunderbolt-technology-general.html)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

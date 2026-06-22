@@ -752,3 +752,7 @@ At 1440p with DLSS Quality mode (rendering at 960p), the RTX Kit overhead scales
 - **Fully neural rendering pipeline**: The architectural direction across RTXGI NRC, RTXNS, and RTXNTC points toward a pipeline where the distinction between material evaluation, lighting, denoising, and upscaling dissolves into a single large neural model trained per-scene — a trajectory visible in NVIDIA's research on NeAT (Neural Appearance Tables) and in the long-term Omniverse RTX roadmap.
 - **Open Khronos neural rendering standard**: As cooperative vector and neural texture sampling patterns consolidate across vendors, a Khronos working group is expected to standardise neural rendering primitives (weight buffer layout, MLP dispatch, hash encoding) as a cross-API extension analogous to how `VK_KHR_ray_tracing_pipeline` standardised ray tracing after `VK_NV_ray_tracing`.
 - **ReSTIR on non-NVIDIA hardware via open implementations**: The ReSTIR DI and PT algorithms are patent-licensed to allow open implementations; Mesa's RADV (Vulkan for RDNA) and the open-source Vulkan-CTS conformance work are expected to enable hardware-agnostic ReSTIR implementations, breaking the current de-facto NVIDIA-only deployment of RTXDI in shipping titles.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

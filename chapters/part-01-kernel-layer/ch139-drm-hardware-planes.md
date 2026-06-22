@@ -671,3 +671,7 @@ WESTON_DEBUG=drm-backend weston 2>&1 | grep plane
 - **Ch38 (Video Decode / VA-API)** — NV12 DMA-BUF from VA-API decoder placed directly on overlay plane (zero-copy video)
 - **Ch74 (HDR)** — `DRM_FORMAT_P010` + `COLOR_ENCODING` + `BT.2020` for HDR10 video on overlay planes
 - **Ch123 (Screen Capture)** — DRM writeback connector captures the post-blend output of all planes
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

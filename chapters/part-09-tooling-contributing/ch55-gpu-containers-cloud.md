@@ -975,3 +975,7 @@ This chapter connects to several other parts of the stack:
 - [AWS EFA + NVIDIA Open-Source Driver Compatibility](https://github.com/aws/aws-parallelcluster/wiki/Newer-Linux-kernels-are-no-longer-compatible-with-EFA-and-closed-Source-Nvidia-drivers-in-instances-with-GPU-Direct-RDMA-support)
 - [GCP GPU Instance Types](https://cloud.google.com/compute/docs/gpus)
 - [libdrm udev rules](https://gitlab.freedesktop.org/mesa/drm/-/blob/main/rules.d/91-drm-modeset.rules)
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

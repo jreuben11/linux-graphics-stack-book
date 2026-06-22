@@ -1093,3 +1093,7 @@ Minimum Vulkan coverage for the Godot 4 RD path is determined by what the driver
 19. [Using compute shaders in Godot 4 (tutorial)](https://docs.godotengine.org/en/4.4/tutorials/rendering/using_compute_shaders.html) — Official guide to RenderingDevice compute from GDExtension
 
 20. [servers/rendering/renderer_rd/shader_rd.cpp](https://github.com/godotengine/godot/blob/4.4/servers/rendering/renderer_rd/shader_rd.cpp) — `ShaderRD::_compile_variant()`, shader caching via `"GDSC"` format, glslang invocation
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

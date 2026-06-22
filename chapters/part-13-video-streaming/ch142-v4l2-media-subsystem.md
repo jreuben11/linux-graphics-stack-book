@@ -913,3 +913,7 @@ DMA-BUF chain from sensor to display: libcamera's `FrameBuffer` objects are back
 - The media controller topology model may be extended to express compute and ML inference nodes (ISP-attached NPUs on automotive SoCs) as first-class media entities, enabling pipeline graphs that mix capture, ISP, and on-chip inference without leaving the V4L2/media controller programming model.
 - MIPI CSI-3 and next-generation camera serialiser standards (GMSL3, FPD-Link IV) will require corresponding kernel driver infrastructure; the V4L2 async notifier and subdev routing models are the designated extension points, but multi-hop serialiser topologies may require new link type extensions to the media controller graph.
 - Long-term unification of V4L2 stateless codec controls with Vulkan Video decode parameters (which carry structurally identical SPS/PPS/slice metadata) could enable a common userspace parsing layer that feeds either V4L2 or Vulkan Video hardware paths without codec-level duplication.
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
