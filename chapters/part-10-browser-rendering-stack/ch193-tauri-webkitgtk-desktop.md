@@ -17,8 +17,9 @@
 9. [The Plugin System](#9-the-plugin-system)
 10. [Distribution: AppImage, Debian, and RPM](#10-distribution-appimage-debian-and-rpm)
 11. [Tauri vs. Electron: A Linux Graphics Perspective](#11-tauri-vs-electron-a-linux-graphics-perspective)
-12. [Roadmap](#12-roadmap)
-13. [Integrations](#13-integrations)
+12. [Platform Strategy: WebKit, GTK, and the Dependency Question](#12-platform-strategy-webkit-gtk-and-the-dependency-question)
+13. [Roadmap](#13-roadmap)
+14. [Integrations](#14-integrations)
 
 ---
 
@@ -739,33 +740,108 @@ The Tauri-vs-Electron comparison is frequently framed as a binary size argument.
 
 ---
 
-## 12. Roadmap
+## 12. Platform Strategy: WebKit, GTK, and the Dependency Question
 
-### Near-term (6–12 months)
+A natural question when comparing Tauri to Electron is: if WebKitGTK on Linux lags in Vulkan support, WebGPU coverage, and CSS feature parity, does Tauri plan to migrate away from WebKit or GTK? The short answer is **no** — and understanding why reveals the architectural constraints that define Tauri's design space on Linux.
 
-**GTK4 / webkitgtk-6.0 migration**: The Tauri community is actively investigating migrating Tao and Wry from `webkit2gtk-4.1` (GTK3) to `webkitgtk-6.0` (GTK4). The GTK4 migration would bring access to GTK4's GSK Vulkan renderer for the window chrome (toolbars, sidebars), though the WebKit rendering canvas would remain on its own GL path until WebKitGTK's GTK4 port gains wider hardware acceleration coverage. Tracking issue: [github.com/tauri-apps/wry/issues/616](https://github.com/tauri-apps/wry/issues/616).
+### Why Tauri Will Not Migrate Away from WebKit
 
-**WebKit WebGPU stabilisation**: WebKit's WebGPU implementation (built on `wgpu` rather than Dawn) is maturing rapidly. Enabling WebGPU by default in WebKitGTK would allow Tauri applications on Linux to use WebGPU for compute and rendering without requiring Electron.
+Tauri's defining architectural choice is *not* "use WebKit everywhere" — it is "use the platform's **native** WebView everywhere." Wry already abstracts over four different engines across its supported targets:
 
-**Wayland native window decorations**: Tao currently relies on server-side decorations or the `libdecor` fallback for Wayland window chrome. Proper `xdg-decoration-v1` negotiation and client-side decoration support are in development, improving consistency across Wayland compositors.
+| Platform | Engine | Notes |
+|---|---|---|
+| Windows | Microsoft Edge WebView2 | Chromium-based; auto-updated by OS |
+| macOS / iOS | WKWebView | Apple's WebKit framework |
+| Linux | WebKitGTK | GTK-embedded WebKit |
+| Android | Android System WebView | Chromium-based; updatable independently |
 
-### Medium-term (1–3 years)
+The Linux port uses WebKit not as a ideological commitment to the WebKit project, but because **WebKitGTK is the only production-grade system WebView available on Linux**. The alternatives are:
 
-**Native compositing on Wayland**: A long-standing limitation is that Tauri's window and the WebKit rendering canvas are two separate compositing layers within GTK. An explicit `zwp_linux_dmabuf_v1`-based zero-copy path — where the WebKit Web Content Process submits its composited frame directly as a Wayland subsurface without going through GTK's rendering pipeline — would reduce GPU memory copies and improve frame timing. This requires changes in both WebKitGTK and Tao.
+- **CEF (Chromium Embedded Framework)**: bundles a full Chromium build, yielding 80–200 MB application size — identical to Electron. This directly defeats Tauri's core value proposition.
+- **Servo**: Mozilla's Rust browser engine is not yet production-ready for arbitrary web content as of 2026. It lacks the CSS feature breadth, WebGL conformance, and multimedia support needed for most application UIs. When Servo reaches that threshold, a Wry backend is plausible; no concrete plan exists today.
+- **Qt WebEngine**: based on Chromium; requires a Qt dependency (LGPL, which introduces complications for proprietary applications); no smaller than CEF in practice.
+- **No other option**: there is no third production browser engine on Linux besides WebKit and Chromium. A migration away from WebKit on Linux means bundling Chromium.
 
-**Tauri Mobile convergence**: As Tauri 2.0's iOS (WKWebView) and Android (System WebView / Chromium) targets mature, the IPC and plugin APIs are stabilising across platforms. Future Tauri releases will likely merge the desktop/mobile capability schemas, enabling a single `tauri.conf.json` for all targets.
+The IPC bridge also enforces the dependency. Wry's Linux backend is built on three WebKit-specific APIs with no portable equivalents:
 
-**Plugin ecosystem expansion**: `tauri-plugin-camera`, `tauri-plugin-biometrics`, `tauri-plugin-bluetooth` are in development, all requiring Linux-specific backends (V4L2 for camera, libfido2/PAM for biometrics, BlueZ D-Bus for Bluetooth) — each of which connects to subsystems covered elsewhere in this book.
+```c
+// These three APIs are what make the Tauri IPC and asset-serving work on Linux:
+webkit_user_content_manager_register_script_message_handler(mgr, "ipc");
+webkit_web_context_register_uri_scheme(ctx, "tauri", handler_cb, data, NULL);
+webkit_web_view_evaluate_javascript(view, script, -1, NULL, NULL, NULL, cb, data);
+```
 
-### Long-term
+Replacing these would require reimplementing the IPC transport, the custom protocol handler, and the JS-to-Rust message bridge from scratch against a completely different API surface — functionally a new Wry Linux backend, which is only worthwhile if the replacement engine is itself production-ready.
 
-- **WPE WebKit rendering**: WebKit's **WPE** (Web Platform for Embedded) port uses the WebKit codebase without a GTK dependency, rendering via GBM/DMA-BUF directly. A WPE backend for Wry would allow Tauri applications to run on minimal Linux systems (embedded, kiosk, automotive) without a GTK or X11/Wayland display server — connecting to the embedded Linux graphics path of DRM/KMS directly.
-- **Shared WebView process across windows**: The current model spawns a Web Content Process per WebView. A shared multi-window Web Content Process (analogous to Chrome's `--process-per-site` mode) would reduce per-window memory overhead for applications with many panels.
-- **WASM component model integration**: If WebKitGTK gains support for the W3C WASM Component Model, Tauri's plugin architecture could be partially unified with WASM components — allowing plugins to be written in any WASM-targeting language (Rust, C, Kotlin) and invoked by both the Rust backend and the JavaScript frontend without a separate IPC round-trip.
+### Why Tauri Will Not Migrate Away from GTK on the Desktop
+
+The dependency on GTK is structurally imposed by WebKitGTK: `WebKitWebView` is a `GtkWidget` subclass. Embedding it in an application window requires that window to be a `GtkWindow`. There is no supported path for embedding a `WebKitWebView` in a winit window (which operates at the raw Wayland protocol level), an iced surface, or any non-GTK window system.
+
+GTK also provides capabilities that Tauri's plugin system depends on for desktop Linux:
+
+- **Native file dialogs**: `GtkFileChooserDialog` — no portable alternative without GTK on Linux
+- **System tray**: `libappindicator3` (a GTK extension) — the D-Bus `StatusNotifierItem` protocol requires an appindicator-compatible library
+- **Native message dialogs**: `GtkMessageDialog`
+- **IME support**: GTK3's `GtkIMContext` wiring — critical for CJK input methods
+
+Replacing these without GTK would require writing Linux-specific backends for each feature using raw D-Bus, XDG portals, or Wayland protocol extensions — essentially reimplementing what GTK already provides.
+
+### The WPE Escape Hatch for Embedded Linux
+
+The one scenario where GTK *can* be dropped is **embedded/kiosk Linux** where no desktop window manager or GTK session is running. WebKit's **WPE** (Web Platform for Embedded) port renders directly to GBM/DMA-BUF without a GTK dependency, making it viable for:
+
+- Automotive HMI (no desktop compositor)
+- Kiosk displays
+- Embedded systems with custom display pipelines
+
+A WPE backend for Wry is a stated long-term goal ([wry#617](https://github.com/tauri-apps/wry/issues/617)). However, WPE is not a replacement for WebKitGTK on desktop Linux — it provides no window chrome, no native dialogs, and no system tray; the application would need to manage the display surface and all UI chrome itself. For full desktop applications, GTK remains required.
+
+### The Honest Assessment of the Tech Stack
+
+Tauri's Linux stack (GTK3 + webkit2gtk-4.1 + Mesa OpenGL ES) is genuinely less modern than Electron's (Chromium + ANGLE/Vulkan) on several dimensions. The Tauri team acknowledges this openly. The trade-off is deliberate: **binary size, memory footprint, and startup time** matter more to Tauri's target use case (productivity desktop applications in Rust) than **rendering-stack modernity**. An application that loads a GTK3 window and a WebKitGTK view in 0.5 seconds at 60 MB RAM is more useful for most Tauri application types than one with a Vulkan compositor that takes 3 seconds and 350 MB.
+
+The expectation is that the underlying technology will be modernised incrementally through upstream projects — GTK4, webkitgtk-6.0, WebKit WebGPU — rather than by Tauri abandoning the native-WebView model.
 
 ---
 
-## 13. Integrations
+## 13. Roadmap
+
+### Near-term (6–12 months)
+
+**GTK4 / webkitgtk-6.0 migration** is the most significant modernisation in the pipeline. Migrating Tao from GTK3 to GTK4 and Wry from `webkit2gtk-4.1` to `webkitgtk-6.0` would bring:
+
+- **GSK Vulkan renderer** for the window chrome on Wayland: GTK 4.16 defaults to the Vulkan GSK renderer on Wayland (Ch39), meaning window borders, toolbars, and overlay widgets would be Vulkan-composited rather than Cairo/OpenGL-rendered.
+- **Improved HiDPI and fractional scaling**: GTK4's `wp_fractional_scale_v1` support is more complete than GTK3's scaling path.
+- **Better Wayland-native behaviour**: GTK4 has cleaner `xdg-shell` and `xdg-decoration-v1` integration.
+
+The WebKit *content* rendering path — the web page canvas itself — does not move to Vulkan with this migration. The `webkitgtk-6.0` web content process still renders web pages via OpenGL ES through Mesa. The Vulkan gain is in the GTK4 window chrome only.
+
+Tracking issue: [github.com/tauri-apps/wry/issues/616](https://github.com/tauri-apps/wry/issues/616). This is primarily blocked on Tao porting effort and testing breadth, not a technical impossibility.
+
+**WebKit WebGPU stabilisation**: WebKit's WebGPU implementation — notably built on `wgpu` (the same crate underlying Firefox's WebGPU, Ch52) rather than Dawn — is advancing toward default enablement. Once it lands in WebKitGTK, Tauri applications gain WebGPU `<canvas>` and compute shader support on Linux without any Electron dependency. The wgpu Vulkan backend would bring the first Vulkan path *inside* the WebKit web content renderer on Linux.
+
+**Wayland native window decorations**: Proper `xdg-decoration-v1` negotiation (preferring server-side decorations from the compositor, falling back to client-side via `libdecor`) is in active development in Tao, replacing the current ad-hoc fallback behaviour.
+
+**WebKitGTK Vulkan for web content** (upstream WebKit, not Tauri-specific): The WebKit project is actively developing a Vulkan rendering backend for the web compositor. This would replace the current GL ES path inside the Web Content Process with Vulkan, closing the last major rendering-stack gap versus Chromium. Tauri would benefit automatically when this lands in WebKitGTK packages — it requires no changes in Tauri or Wry.
+
+### Medium-term (1–3 years)
+
+**Native DMA-BUF compositing on Wayland**: Currently the WebKit Web Content Process renders into an offscreen GL surface, shares it as a GPU texture with the UI process, and GTK paints it into the GTK window. A zero-copy path — the Web Content Process submitting its composited frame directly as a `wl_subsurface` backed by a DMA-BUF — would eliminate the GTK compositing step and allow compositor-level plane promotion for the web canvas. This requires changes in both WebKitGTK and GTK4's Wayland backend; it is architecturally analogous to how a terminal emulator achieves zero-copy scanout (Ch45).
+
+**Tauri Mobile and cross-platform capability convergence**: As Tauri 2.0's iOS (WKWebView) and Android (System WebView / Chromium) targets mature, the capability JSON schema is stabilising across desktop and mobile. A unified `tauri.conf.json` covering all platforms is the stated goal for Tauri 3.0.
+
+**Plugin ecosystem for Linux system integration**: `tauri-plugin-camera` (V4L2), `tauri-plugin-biometrics` (libfido2/PAM), `tauri-plugin-bluetooth` (BlueZ D-Bus) are in development. Each connects Tauri's JavaScript/Rust bridge to Linux-specific kernel and D-Bus subsystems not accessible to Electron without native Node addons.
+
+### Long-term
+
+- **WPE WebKit backend for embedded Linux**: A Wry backend targeting WebKit's WPE port (GBM/DMA-BUF, no GTK dependency) would enable Tauri applications on minimal Linux systems — automotive HMI, kiosks, embedded displays — where no desktop compositor or GTK session exists. ([wry#617](https://github.com/tauri-apps/wry/issues/617))
+- **Shared Web Content Process**: The current model spawns a Web Content Process per WebView, consuming ~30–50 MB RAM each. A shared multi-window Web Content Process (analogous to Chrome's `--process-per-site`) would reduce per-window overhead for multi-panel applications.
+- **WASM Component Model integration**: If WebKitGTK gains WASM Component Model support, Tauri plugins could be written as WASM components invokable from both Rust and JavaScript without a separate IPC round-trip, blurring the backend/frontend boundary.
+- **Servo as a future Linux WebView option**: If Servo (Ch52, Servo section) reaches production-grade CSS and WebGL conformance, a Wry Servo backend for Linux would provide a fully Rust, fully Vulkan (`wgpu`-backed) web rendering path with no GTK dependency — the most architecturally aligned choice with Tauri's own Rust-first philosophy. This is speculative for the 2026–2028 timeframe but not implausible beyond that.
+
+---
+
+## 14. Integrations
 
 **Chapter 39 — GTK4 and the GNOME Application Stack**: Tao's GTK3 window creation (`ApplicationWindow`, `gtk::init()`, the GTK main loop) is the foundational GTK usage in Tauri. Chapter 39 covers the GTK4 object model, widget hierarchy, and GSK rendering in depth; the GTK3 patterns used by Tao are structurally identical to GTK4 but use Cairo rather than GSK for the window chrome. The planned GTK4 / webkitgtk-6.0 migration (§12) will bring Tauri's window management fully into the Chapter 39 architecture.
 
