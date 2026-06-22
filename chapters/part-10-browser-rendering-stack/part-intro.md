@@ -2,6 +2,107 @@
 
 The layers examined in Parts I–IX — **DRM**, **KMS**, **GEM**, **Mesa**, **Vulkan**, **Wayland**, and the display compositor — form the foundation on which web browsers must build. A browser tab is not a native application; it executes untrusted, sandboxed code that cannot directly open **`/dev/dri/renderD128`**, call **`vkCreateDevice`**, or issue **Wayland** protocol messages. This part explains how Chromium and Firefox solve that problem: how they isolate GPU access behind process boundaries, translate legacy **OpenGL ES** and modern **WebGPU** APIs across those boundaries, rasterise and composite every pixel of web content, and ultimately deliver frames to the **Wayland** compositor through the same **DMA-BUF** and **linux-dmabuf-unstable-v1** mechanisms the rest of the graphics stack uses. This layer exists because the web's security model and cross-platform portability requirements impose constraints that make direct driver access impossible, and because the scale of a full browser — millions of concurrent DOM nodes, CSS animations, video frames, canvas workloads, and WebGPU compute shaders — demands a rendering architecture qualitatively different from any native application.
 
+## Chrome Rendering Architecture
+
+Chrome separates its GPU work across three OS processes. The diagram below maps all major components across those boundaries and down into the Linux graphics stack.
+
+```mermaid
+graph TD
+    subgraph RP["Renderer Process — sandboxed"]
+        Blink["Blink\nHTML · CSS · JS · DOM"]
+        CC["CC — Chromium Compositor\nlayer tree · property trees · tile mgmt"]
+        WebCodecs["WebCodecs\nVideoDecoder · VideoEncoder · VideoFrame"]
+        WebNN_API["WebNN API\nMLGraphBuilder · MLTensor · dispatch()"]
+    end
+
+    subgraph BP["Browser Process"]
+        Mojo["Mojo IPC\nmessage pipes · DataPipe · SharedMemory"]
+        WebNN_Svc["WebNN Service\nservices/webnn/ · XNNPACK · NPU dispatch"]
+    end
+
+    subgraph GP["GPU Process — privileged"]
+        Viz_OOPD["Viz — OOP-D\nviz::DisplayCompositor\nSurfaceAggregator · OverlayProcessor"]
+
+        subgraph OOPR["OOP-R — Out-of-Process Rasterizer"]
+            Ganesh["Skia Ganesh\nGrDirectContext · GrOpsTask\nGL ES / Vulkan raster backend"]
+            Graphite["Skia Graphite\nskgpu::graphite::Recorder\nTaskGraph · DrawPass · Vulkan / Dawn"]
+        end
+
+        FontPipeline["Font Pipeline\nFontConfig · FreeType · HarfBuzz\nGrAtlasManager — GPU glyph atlas"]
+        SkImageFilter_N["SkImageFilter\nCSS blur · drop-shadow · color-matrix\nimage-filter DAG evaluation"]
+        SkSL_N["SkSL — Skia Shading Language\nruntime compile → GLSL ES · SPIR-V · WGSL"]
+
+        ANGLE_N["ANGLE\nOpenGL ES → Vulkan\negl::Display / rx::DisplayVk\nContextVk · GraphicsPipelineDesc\nGLSL ES → SPIR-V via glslang"]
+        Dawn_N["Dawn — WebGPU\ndawn_native · DawnWire (Mojo wire)\nTint: WGSL → SPIR-V\nVulkan / Metal / D3D12 backends"]
+
+        Ozone_N["Ozone — platform abstraction\nWayland · GBM · X11 backends\nDMA-BUF export · EGLSurface"]
+    end
+
+    subgraph LS["Linux Graphics Stack"]
+        MesaVK["Mesa Vulkan Drivers\nRADV · ANV · NVK · Turnip"]
+        VAAPI_N["VA-API / Vulkan Video\nhardware encode · decode\nlibva · VASurface · VkVideoSession"]
+        DRM_N["Linux DRM / KMS\n/dev/dri/renderD128\nGEM · DMA-BUF · atomic commit"]
+        WaylandComp["Wayland Compositor\nMutter · KWin · wlroots\nhardware overlay plane assignment"]
+    end
+
+    %% Renderer process internal
+    Blink --> CC
+    Blink --> WebCodecs
+    Blink --> WebNN_API
+
+    %% Renderer → IPC
+    CC -->|"CompositorFrame\ngpu::Mailbox texture refs"| Mojo
+    CC -->|"RasterSource / tile tasks"| Mojo
+    WebCodecs -->|"MojoVideoDecoder / Encoder"| Mojo
+    WebNN_API -->|"pending::Receiver"| Mojo
+
+    %% IPC routing into GPU process
+    Mojo -->|"DisplayCompositorClient\nBeginFrame signals"| Viz_OOPD
+    Mojo -->|"RasterInterface (OOP-R)"| OOPR
+    Mojo -->|"DawnWire over DataPipe"| Dawn_N
+    Mojo --> WebNN_Svc
+
+    %% Viz ↔ OOP-R coordination
+    Viz_OOPD -->|"gpu::SharedImage / Mailbox\ntexture lifetime mgmt"| OOPR
+    Viz_OOPD -->|"compositing draw calls"| ANGLE_N
+    Viz_OOPD --> Ozone_N
+
+    %% Skia shared subsystems
+    Ganesh --> FontPipeline
+    Ganesh --> SkImageFilter_N
+    Ganesh --> SkSL_N
+    Graphite --> FontPipeline
+    Graphite --> SkImageFilter_N
+    Graphite --> SkSL_N
+
+    %% Skia → GPU API backends
+    Ganesh -->|"GL ES draw calls"| ANGLE_N
+    Graphite -->|"WebGPU API calls"| Dawn_N
+
+    %% GPU API → Mesa Vulkan
+    ANGLE_N -->|"vkCmd* · VkPipeline · VkDescriptorSet"| MesaVK
+    Dawn_N -->|"vkCmd* · VkPipeline · VkDescriptorSet"| MesaVK
+    WebNN_Svc -->|"Vulkan compute shaders / XNNPACK"| MesaVK
+
+    %% Hardware video
+    Mojo -->|"codec IPC → GPU process"| VAAPI_N
+    VAAPI_N -->|"VASurface / VkVideoSession"| MesaVK
+
+    %% Platform output
+    Ozone_N -->|"zwp_linux_dmabuf_v1\nwl_surface::commit"| WaylandComp
+    WaylandComp -->|"DRM atomic commit\nplane assignment"| DRM_N
+    MesaVK -->|"GEM BO · DMA-BUF fd"| DRM_N
+
+    %% Zero-copy DMA-BUF sharing (dashed — shared buffer, not a call)
+    MesaVK -. "DMA-BUF / SharedImage\nzero-copy GPU tex" .-> Viz_OOPD
+    VAAPI_N -. "VideoFrame GPU texture\nDMA-BUF import" .-> Ganesh
+    VAAPI_N -. "VideoFrame GPU texture\nDMA-BUF import" .-> Graphite
+```
+
+**Process boundaries matter:** the renderer process is sandboxed by `seccomp-BPF` and cannot open `/dev/dri/` or call `vkCreateDevice` directly. Every GPU operation crosses the Mojo IPC boundary into the GPU process, which holds the DRM render-node file descriptor and all live Vulkan/GL contexts. The OOP-D and OOP-R architectural patterns (Out-of-Process Display compositor and Out-of-Process Rasterizer) are the two main GPU-process services the renderer drives via Mojo. ANGLE translates OpenGL ES to Vulkan for Skia Ganesh and Viz's compositing draw calls; Dawn translates WebGPU commands for Skia Graphite and JavaScript WebGPU; both ultimately dispatch `vkCmd*` calls to Mesa Vulkan drivers which manage DRM/GEM buffer objects and DMA-BUF export to the Wayland compositor.
+
+---
+
 ## Chapters in This Part
 
 **Chapter 33 — Chromium's Multi-Process GPU Architecture** establishes the architectural foundation for all subsequent Chromium chapters. It explains how Chrome separates rendering into a sandboxed **renderer process** (running **Blink**), a privileged **GPU process** (holding all hardware contexts), and a **browser process** (owning **DRM** device nodes and the **Wayland** connection). Readers learn how the **Mojo** IPC framework and the **GPU command buffer** ring-buffer protocol ferry serialised GPU commands across process boundaries, how the **Ozone** platform abstraction decouples Chrome from specific display backends, and how the **`seccomp-BPF`** sandbox enforces the renderer's isolation. The chapter also introduces **Viz** — the **`viz::DisplayCompositor`** running inside the GPU process — and the **OOP-D** (Out-of-Process Display Compositor) architecture that underpins the rest of the part.
