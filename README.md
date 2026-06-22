@@ -210,6 +210,8 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 98: WebAssembly and WebGPU as a Deployment Target](chapters/part-10-browser-rendering-stack/ch98-webassembly-webgpu.md)
 - [Ch 146: WebCodecs and Browser Hardware Acceleration](chapters/part-10-browser-rendering-stack/ch146-webcodecs-browser-hardware-acceleration.md)
 - [Ch 147: Chrome and Firefox Hardware Video Decode via VA-API](chapters/part-10-browser-rendering-stack/ch147-chrome-firefox-vaapi-video-decode.md)
+- [Ch 168: WebNN — The Web Neural Network API](chapters/part-10-browser-rendering-stack/ch168-webnn-web-neural-network-api.md)
+- [Ch 193: Tauri — Rust-Native Desktop Applications via WebKitGTK](chapters/part-10-browser-rendering-stack/ch193-tauri-webkitgtk-desktop.md)
 
 ---
 
@@ -234,6 +236,9 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 43: Terminal Pixel Protocols — Sixel, Kitty, and iTerm2](chapters/part-12-terminal-graphics/ch43-terminal-pixel-protocols.md)
 - [Ch 44: Terminal GPU Rendering Architectures](chapters/part-12-terminal-graphics/ch44-terminal-gpu-rendering.md)
 - [Ch 45: Terminal Integration with the Compositor Stack](chapters/part-12-terminal-graphics/ch45-terminal-compositor-integration.md)
+- [Ch 174: WezTerm and Alacritty — GPU Terminal Rendering Architectures](chapters/part-12-terminal-graphics/ch174-wezterm-alacritty-architecture.md)
+- [Ch 178: The PTY/TTY Kernel Layer and Line Disciplines](chapters/part-12-terminal-graphics/ch178-pty-tty-kernel-layer.md)
+- [Ch 192: Ratatui — The Rust TUI Application Framework](chapters/part-12-terminal-graphics/ch192-ratatui-tui-framework.md)
 
 ---
 

@@ -125,6 +125,8 @@ graph TD
 
 **Chapter 98 — WebAssembly and WebGPU as a Deployment Target** closes the part by stepping outside the browser's internal implementation and examining the stack from an application developer's perspective. It covers how Rust code using **wgpu** or C++ code using **Emscripten** and **emdawnwebgpu** can compile to a **WebAssembly** module that dispatches to the browser's **WebGPU** implementation, which itself maps to **Mesa** Vulkan drivers on Linux. The chapter addresses **`wasm-bindgen`** JavaScript interop, **WGSL** shader portability, **WASM SIMD** for CPU-side computation, and real-world use cases ranging from ML inference to portable game engines like **Bevy** and **Godot 4**.
 
+**Chapter 193 — Tauri: Rust-Native Desktop Applications via WebKitGTK** examines the third major browser-engine path on Linux: the **native WebView** model. Where Electron bundles a full Chromium build, Tauri delegates HTML/CSS/JavaScript rendering to the platform's system **WebKitGTK** library (`webkit2gtk-4.1`), managing everything else — window creation, IPC, file access, system integration — in Rust. The chapter traces the complete rendering chain: **Wry** (the cross-platform WebView Rust abstraction) → **Tao** (GTK3-based window management, a fork of winit) → the `WebKitWebView` GTK3 widget → the **WebKit Web Content Process** (which renders pages using **WebCore** and **JavaScriptCore**) → **OpenGL ES via Mesa** (not Vulkan — WebKitGTK uses the Mesa GL state tracker directly, unlike Chrome's ANGLE) → **DMA-BUF** surface sharing → **GTK3** Wayland surface submission. It covers Tauri's command IPC (`#[tauri::command]`, `invoke()`), the `Channel<T>` streaming API, the Tauri 2.0 **capabilities** security system (replacing the allowlist), **CSP** compile-time nonce injection, the **Isolation Pattern** for untrusted content, the plugin ecosystem (fs, shell, dialog, notification via D-Bus), and Linux distribution formats (AppImage, `.deb`, `.rpm`). A comparative table contrasts Tauri/WebKitGTK against Electron/Chromium on binary size (2–10 MB vs 80–200 MB), memory use, startup time, WebGPU/WebCodecs API coverage, and rendering path (Mesa GL vs ANGLE → Vulkan).
+
 ## Servo: Mozilla's Parallel Browser Engine
 
 **Servo** is Mozilla's experimental browser engine written entirely in Rust — architecturally distinct from Firefox's **Gecko** engine, though they share some components. Servo is not a new version of Firefox; it is a parallel research and production engine exploring what a memory-safe, parallelised browser engine looks like at the architecture level.
@@ -166,6 +168,7 @@ graph LR
     Ch37["Ch37: Skia\n(Ganesh, Graphite, SkSL, text)"]
     Ch52["Ch52: Firefox and WebRender\n(display list, wgpu-core, naga)"]
     Ch98["Ch98: WASM + WebGPU\n(wgpu, Emscripten, portability)"]
+    Ch193["Ch193: Tauri\n(WebKitGTK · Wry · Tao\nMesa GL ES · GTK3 · D-Bus)"]
 
     Ch33 --> Ch34
     Ch33 --> Ch35
@@ -177,6 +180,8 @@ graph LR
     Ch35 -.->|"Dawn vs wgpu-core"| Ch52
     Ch35 --> Ch98
     Ch52 -.->|"wgpu runtime"| Ch98
+    Ch34 -.->|"ANGLE vs Mesa GL ES\nrendering path contrast"| Ch193
+    Ch52 -.->|"WebKitGTK vs\nWebRender"| Ch193
 ```
 
 ## Prerequisites and What Comes Next
