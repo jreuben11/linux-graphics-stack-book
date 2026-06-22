@@ -57,9 +57,11 @@ ESC ] 1337 ; File=<options> : <base64-encoded file data> BEL
 
 Key options: `inline=1` (display inline, required), `width=N`, `height=N`, `preserveAspectRatio=0/1`. Unlike Kitty, OSC 1337 is stateless — there are no persistent server-side image IDs; each display requires retransmitting the full image data. The format supports PNG, JPEG, GIF, and other image formats (the terminal decodes from file format, not raw RGBA). OSC 1337 is supported by iTerm2, WezTerm, Hyper, and a growing list of terminals, but not by Kitty (which uses its own APC-based protocol).
 
+**Chapter 192 — Ratatui: The Rust TUI Application Framework** takes the application developer's view of the terminal graphics stack. Starting from Ratatui's immediate-mode, diff-based rendering model — `Terminal<B>`, `Buffer`/`Cell`, the `Widget` and `StatefulWidget` traits, and the `Layout`/`Constraint` solver — the chapter shows how a TUI application maps its widget tree onto the VT escape sequences that flow through the PTY layer (Chapter 178) to the terminal emulator. It then covers the **ratatui-image** crate's `Picker` protocol-detection stack and `Image`/`StatefulImage` widgets, which connect directly to the pixel protocols of Chapter 43. The chapter also covers three ecosystem libraries: **Tachyonfx** (shader-like Buffer post-processing effects with spatial patterns and the `Shader` trait), **Mousefood** (the embedded-graphics `Backend` implementation that runs Ratatui widgets on LCD/OLED microcontroller hardware without any terminal emulator), and **Ratzilla** (the WebAssembly backend that renders Ratatui widgets in a browser via DOM, Canvas, or WebGL2 — ultimately traversing the Chromium GPU pipeline described in Part X).
+
 ## How the Chapters Interrelate
 
-The five chapters form a dependency structure where Chapter 178 is the kernel foundation, Chapter 43 is the protocol layer, and Chapter 45 is the compositor integration capstone.
+The six chapters form a dependency structure where Chapter 178 is the kernel foundation, Chapter 43 is the protocol layer, Chapter 45 is the compositor integration capstone, and Chapter 192 is the application-developer view.
 
 Chapter 43 is the required starting point. It defines the vocabulary — image IDs, **APC** sequences, **DCS** parameters, **Sixel** bands, **OSC 1337** payloads — that Chapter 44 references when describing how decoded image data is turned into **GL** texture handles and **wgpu::Buffer** staging uploads. A reader who skips Chapter 43 will encounter unexplained references to protocol-specific fields (the `t=s` shared-memory transmission mode, the `f=32` **RGBA** pixel format key, the **DECSDM** mode 80 query) and will not appreciate why the **Kitty Graphics Protocol**'s server-side image persistence has GPU-architecture implications while **Sixel** and **iTerm2** do not.
 
@@ -77,11 +79,16 @@ graph LR
 
     CH178["Ch 178\nPTY/TTY Kernel Layer\nLine Disciplines"]
 
+    CH192["Ch 192\nRatatui TUI Framework\nWidgets · ratatui-image\nTachyonfx · Mousefood · Ratzilla"]
+
     CH178 -->|"PTY byte stream\nto emulator"| CH43
     CH43 -->|"decoded image data\nbecomes GPU texture"| CH44
     CH44 -->|"GPU framebuffer\nsubmitted as wl_buffer"| CH45
     CH44 -->|"architecture detail"| CH174
     CH174 --> CH45
+    CH178 -->|"SIGWINCH resize\nchain"| CH192
+    CH43 -->|"Sixel/Kitty/Halfblocks\nprotocol selection"| CH192
+    CH44 -->|"protocol capability\ndetection"| CH192
 ```
 
 ## Prerequisites and What Comes Next
