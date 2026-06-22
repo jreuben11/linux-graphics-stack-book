@@ -12,6 +12,7 @@ This chapter targets **browser and web platform engineers** who need to understa
 - [WebRender and Wayland](#webrender-and-wayland)
 - [Gecko WebGPU: wgpu-core and naga](#gecko-webgpu-wgpu-core-and-naga)
 - [Stylo: Parallel CSS Layout Engine](#stylo-parallel-css-layout-engine)
+- [Servo: The Rust Browser Engine](#servo-the-rust-browser-engine)
 - [Integrations](#integrations)
 
 ---
@@ -955,6 +956,209 @@ When a CSS animation changes a property that lives in the `Transform` struct, on
 
 ---
 
+## Servo: The Rust Browser Engine
+
+Servo is Mozilla Research's experimental browser engine written entirely in Rust, first announced in 2012 as a research project into parallelised, memory-safe browser architecture. It is not a rewrite of Gecko — it is a separate codebase — yet its influence on Firefox is decisive: **WebRender**, **Stylo**, and the `wgpu`/`naga` shader stack all originated in Servo before being integrated into production Firefox. Since 2023 Servo has operated under the **Linux Foundation** (via the Joint Development Foundation), independent of Mozilla, and has become a production-quality embedded browser engine. Understanding Servo's architecture closes the circle on everything this chapter covers: WebRender, wgpu, and Stylo are not just Firefox technologies — they are Servo technologies that Firefox adopted.
+
+### Historical lineage: what Servo gave Firefox
+
+| Contribution | Servo origin | Firefox landing |
+|---|---|---|
+| **WebRender** | 2014 — compositor research in Servo | Firefox 55 (partial) → Firefox 67 (all content) |
+| **Stylo** | Servo `style` crate, parallel CSS | Firefox 57 (Quantum CSS) |
+| **wgpu / naga** | `gfx-rs` community, adopted by Servo first | Firefox 141 WebGPU default (Windows) |
+| **peek-poke** (zero-copy IPC serialisation) | Servo webrender crate | Used in `gfx/wr/` in mozilla-central |
+
+WebRender continues to live in both trees. The canonical Servo copy is in `servo/servo`; the Firefox copy is in `mozilla-central/gfx/wr/`. They diverge in implementation details but share the same `webrender_api` public interface, and bug fixes are periodically upstreamed between them. [Source: servo/webrender original repo](https://github.com/servo/webrender)
+
+### Cargo workspace layout
+
+The `servo/servo` repository is a single Cargo workspace:
+
+```text
+servo/
+├── components/
+│   ├── servo/          # public embedder API — servo::Servo<Window>
+│   ├── layout_2020/    # block, flexbox, grid layout (Rust)
+│   ├── script/         # DOM, SpiderMonkey JS bindings, Web APIs
+│   ├── style/          # Stylo CSS engine (shared source with Firefox)
+│   ├── compositing/    # IOCompositor — drives WebRender
+│   ├── canvas/         # HTML5 Canvas 2D
+│   ├── webgpu/         # WebGPU API bindings → wgpu-core
+│   ├── net/            # Networking (HTTP, TLS, DNS)
+│   └── media/          # Media decoding (GStreamer integration)
+├── ports/
+│   ├── servoshell/     # Desktop embedding via winit
+│   └── android/        # Android port
+└── support/
+    └── crown/          # Custom JS tracer for Servo DOM GC
+```
+
+[Source: servo/servo repository](https://github.com/servo/servo)
+
+### The Embedder API
+
+Servo exposes embedding through the `servo::Servo<Window>` generic type. Any windowing system that implements `WindowMethods` — supplying a `RenderingContext`, an event sink, clipboard, and IME access — can host a Servo instance.
+
+```rust
+// components/servo/src/lib.rs (schematic)
+pub struct Servo<Window: WindowMethods + 'static> {
+    compositor: IOCompositor<Window>,
+    // constellation is Servo's multi-process coordinator equivalent
+    constellation: Sender<ConstellationMsg>,
+}
+
+pub trait WindowMethods {
+    fn get_rendering_context(&self) -> RenderingContext;
+    fn make_gl_context_current(&self);
+    fn present(&self, token: ServoDisplay);
+    // ... clipboard, IME, resize, hidpi scale ...
+}
+```
+
+`RenderingContext` wraps either a hardware-accelerated EGL/GL surface or a software fallback, provided by the **`surfman`** crate — Servo's cross-platform OpenGL surface management library. `servoshell` implements `WindowMethods` using **winit** for window creation and event dispatch. [Source: surfman crate](https://github.com/servo/surfman)
+
+### Servo on Linux: winit and Wayland
+
+`servoshell` uses **winit** for cross-platform window and event management. On Wayland, winit's backend is built on `wayland-client` (via the Smithay client toolkit). The rendering path:
+
+```text
+winit::EventLoop (Wayland backend via smithay-client-toolkit)
+    │  Window::new() → wl_surface + wl_egl_window
+    ▼
+surfman::Context (EGL context on wl_egl_window)
+    │
+    ▼
+WebRender Renderer thread (GL backend)
+    │  gleam dyn Gl trait over surfman EGL context
+    │  glDrawArraysInstanced (same batching path as in Firefox)
+    ▼
+Mesa OpenGL driver (radeonsi · iris · nouveau …)
+    │
+    ▼
+wl_surface::commit → Wayland compositor
+```
+
+A key difference from Firefox: Servo currently presents its content via a **single `wl_surface`** backed by an EGL context, rather than Firefox's hierarchy of `wl_subsurface` objects for picture-cache slices (Section 5). Delegated compositing and DMABuf-based native layers are tracked as future improvements. [Source: Servo Wayland tracking issue #29711](https://github.com/servo/servo/issues/29711)
+
+### WebRender instantiation in Servo
+
+Servo drives WebRender through the same `webrender_api` public crate that Firefox uses. The `components/compositing/` crate holds `IOCompositor`, which owns the WebRender instances:
+
+```rust
+// components/compositing/compositor.rs (schematic)
+pub struct IOCompositor<Window: WindowMethods> {
+    window: Rc<Window>,
+    webrender: webrender::Renderer,          // owns the GL context
+    webrender_api: webrender::RenderApi,     // submit BuiltDisplayList updates
+    webrender_document: webrender::DocumentId,
+    async_font_context: AsyncFontContext,    // FreeType + HarfBuzz glyph rasteriser
+}
+```
+
+`IOCompositor` receives `ConstellationMsg` from Servo's constellation thread — the coordinator that manages browsing contexts and inter-frame communication — and calls `webrender_api.send_transaction()` to push new `BuiltDisplayList` blobs through the SceneBuilder → RenderBackend → Renderer pipeline. The three-thread model described in Section 2 of this chapter is identical to Firefox's.
+
+### WebGPU in Servo: wgpu-core and naga
+
+Servo's `components/webgpu/` crate implements the WebGPU Web IDL surface using `wgpu-core` and `naga`, the same crates as Firefox. The integration model:
+
+```text
+SpiderMonkey JS (components/script/)
+    ↓  Web IDL bindings (script thread)
+components/webgpu/WebGPURequest enum
+    ↓  message channel to background thread
+wgpu-core::Device (Vulkan backend via wgpu-hal / ash)
+    ↓  vkCmd*
+Mesa Vulkan driver (RADV / ANV / NVK)
+```
+
+```rust
+// components/webgpu/lib.rs (schematic)
+pub enum WebGPURequest {
+    CreateBuffer        { device_id, buffer_id, descriptor },
+    CreateShaderModule  { device_id, program_id, module: naga::Module },
+    RunComputePass      { command_encoder_id, compute_pass },
+    SwapChainPresent    { external_id, image_key, document_id },
+    // ...
+}
+```
+
+Completed WebGPU textures are shared with WebRender via `webrender_api::ExternalImageId` and an `ExternalImageHandler` callback — the same mechanism Firefox uses for its `SharedTextureDMABuf`. On Linux the shared handle is a DMABuf fd exported from wgpu's Vulkan memory and imported via `EGL_EXT_image_dma_buf_import`. [Source: Servo WebGPU tracking issue #28186](https://github.com/servo/servo/issues/28186)
+
+The WGSL shader compilation path is identical to Firefox's (Section 6): `naga::front::wgsl::parse_str()` → naga IR → `naga::back::spv::Writer` → SPIR-V → `vkCreateShaderModule`. The naga IR representation and SPIR-V code generation are shared by both engines.
+
+### Stylo source relationship
+
+`components/style/` in `servo/servo` is the canonical upstream Stylo source. Firefox's copy lives in `servo/components/style/` within `mozilla-central` and is kept in sync through a periodic upstreaming process (using the `moz-phab` tool and a Phabricator review queue). The Servo tree's style crate leads on some CSS features in specification flux; mozilla-central's copy leads on Gecko-specific extensions (e.g., `-moz-` prefixed properties, `::part()` pseudo-element handling for Web Components in Gecko's frame tree).
+
+The structural difference: in Servo, the `style` crate communicates with Servo's DOM via Rust traits compiled together. In Gecko, it communicates via the `GeckoBindings` FFI layer in `layout/style/GeckoBindings.cpp` — a layer of C-compatible function pointers that exists only in mozilla-central, not in the Servo source tree.
+
+### Current capabilities and Linux status (mid-2026)
+
+| Feature | Status |
+|---|---|
+| CSS 2.1 block layout | Substantially complete |
+| Flexbox | Substantially complete |
+| CSS Grid | Substantially complete (actively developed) |
+| CSS animations / transitions | Partial |
+| Shadow DOM / Web Components | Partial |
+| HTML5 Canvas 2D | Working (`components/canvas/`) |
+| WebGL | Working (EGL context via surfman) |
+| WebGPU | Working (wgpu-core, Vulkan/GLES backends) |
+| WebAssembly | Working (via SpiderMonkey mozjs crate) |
+| Media (video) | Limited (GStreamer integration, in progress) |
+| Accessibility | Partial (in progress 2026) |
+| Wayland native layers | Not yet — single wl_surface |
+
+The primary development platform in 2026 is Linux (Wayland and X11), with macOS as a close second. Servo rendering on Linux reaches Mesa OpenGL or Mesa Vulkan (via wgpu) through the same driver paths covered throughout this book.
+
+[Source: Servo 2025 in review](https://servo.org/blog/2026/01/31/servo-in-2025/)
+
+```mermaid
+graph TD
+    subgraph "Servo process"
+        Script["components/script/\nSpiderMonkey JS · DOM · Web APIs"]
+        Style["components/style/ (Stylo)\nparallel CSS computation"]
+        Layout["components/layout_2020/\nblock · flexbox · grid"]
+        Compositing["components/compositing/\nIOCompositor"]
+        WebGPUComp["components/webgpu/\nWebGPURequest dispatch"]
+        WR_API["webrender_api\nBuiltDisplayList · Transaction"]
+    end
+
+    subgraph "WebRender pipeline (in-process)"
+        SB["SceneBuilder thread"]
+        RB["RenderBackend thread"]
+        RT_Renderer["Renderer thread (owns GL)"]
+    end
+
+    subgraph "GPU abstraction"
+        surfman["surfman\nEGL context on wl_egl_window"]
+        wgpu_core["wgpu-core\nDevice · Queue · CommandEncoder"]
+        naga_wgsl["naga\nWGSL → SPIR-V"]
+    end
+
+    subgraph "Linux graphics stack"
+        MesaGL["Mesa OpenGL\nradeonsi · iris · nouveau"]
+        MesaVK["Mesa Vulkan\nRADV · ANV · NVK"]
+        Wayland["Wayland compositor\nwl_surface::commit"]
+    end
+
+    Script --> Style
+    Style --> Layout
+    Layout --> WR_API
+    Script --> WebGPUComp
+    WR_API --> Compositing
+    Compositing --> SB --> RB --> RT_Renderer
+    RT_Renderer --> surfman --> MesaGL --> Wayland
+
+    WebGPUComp --> wgpu_core
+    wgpu_core --> naga_wgsl
+    wgpu_core --> MesaVK
+    MesaVK --> Wayland
+```
+
+---
+
 ## Roadmap
 
 ### Near-term (6–12 months)
@@ -994,6 +1198,8 @@ This chapter connects to several other parts of the book:
 **Wayland linux-dmabuf (Ch20)** — NativeLayerWayland's external surface path (`NativeLayerWaylandExternal`) uses `zwp_linux_dmabuf_v1` to wrap DMABuf file descriptors as `wl_buffer` objects. The DRM modifier negotiation described in Ch20 applies directly: Firefox queries preferred modifiers at startup and allocates GBM buffers accordingly.
 
 **Chrome's Dawn (Ch35)** — Gecko's wgpu/naga path is architecturally parallel to Chrome's Dawn/Tint path. Both implement the WebGPU spec atop Vulkan on Linux, but they are independent implementations with different validation behaviour. The `naga` WGSL compiler and the `Tint` WGSL compiler both target SPIR-V output but are separate codebases. WebGPU content that stresses edge cases in the WGSL validator may behave differently in Firefox vs Chrome.
+
+**Servo (this chapter, Servo section)** — Servo is the upstream source for WebRender, Stylo, and wgpu integration. The `webrender_api` crate used by both Servo and Gecko is the same public interface; the `components/style/` Stylo source is the upstream of mozilla-central's copy. Servo's architecture on Linux (surfman EGL → Mesa GL; wgpu-core → Mesa Vulkan) represents the same stack as Firefox without Firefox's native-layer compositing complexity. Servo's issue tracker and blog are the canonical sources for Wayland delegated compositing and WebGPU progress outside the Firefox release train.
 
 **Bevy game engine (Ch40)** — wgpu is not a Firefox-specific technology. The Bevy game engine uses the same `wgpu` crate (with the same naga shader compiler and the same Vulkan/GLES backends) as its rendering foundation. This means that Bevy applications on Linux share the same wgpu-hal Vulkan instance machinery, the same naga SPIR-V code generation, and many of the same Mesa driver code paths as Firefox's WebGPU. Driver bugs or wgpu-hal quirks found in one context are often reproducible in the other.
 
