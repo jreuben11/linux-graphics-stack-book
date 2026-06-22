@@ -203,6 +203,11 @@ graph TD
     CH20 --> CH175
     CH22 --> CH112
     CH22 --> CH123
+    CH194[Ch 194 — Cross-Stack Integration]
+    CH20 --> CH194
+    CH46 --> CH194
+    CH74 --> CH194
+    CH75 --> CH194
 ```
 
 The diagram reveals two independent tributaries that merge at the advanced chapters. The **protocol tributary** runs CH20 → CH21 → CH22 → CH46, then fans out to CH74, CH75, CH112, and CH123. The **colour tributary** runs CH53 → CH101 → CH74, converging with the protocol work at the HDR chapter. Font rendering (CH105) sits downstream of both the protocol layer (CH20) and the HDR colour pipeline (CH74), since colour-managed text requires both correct Wayland surface semantics and an understanding of output colour spaces. VRR (CH112) depends on compositor internals (CH21, CH22), presentation timing (CH46 via `wp_presentation`), and explicit sync (CH75), because VRR flips must be gated behind the same GPU fence mechanism as ordinary atomic commits. Screen capture (CH123) is the most protocol-interconnected chapter: it draws on the Wayland isolation model (CH20), compositor implementation details (CH21, CH22), the staging capture protocols (CH46), and explicit sync (CH75), since captured frames must be GPU-fence-complete before they are valid for encoding or transmission.
@@ -251,11 +256,13 @@ Readers should arrive here having read Parts I–IV: familiarity with `drmModeAt
 
 **Chapter 158 — HDR on the Linux Desktop: End-to-End Pipeline** is an integration chapter tracing the complete HDR pipeline from application color space declaration through `wp_color_management_v1`, compositor tone mapping, KMS `HDR_OUTPUT_METADATA` connector property, and display EOTF selection, with per-compositor implementation status for Mutter, KWin, and gamescope.
 
+**Chapter 194 — Cross-Stack Integration: Protocols, Synchronisation, and the Coordination Layer** examines the systemic costs of the Linux graphics stack's modular architecture — latency stalls, redundant copies, colour-space blindness, implicit sync hazards, and debuggability gaps — and the cross-component mechanisms the community has developed to address them. The chapter treats the Wayland protocol ecosystem as the stack's coordination bus, covering DMA-BUF and format modifiers (zero-copy buffer transport), `wp_linux_drm_syncobj_v1` (explicit GPU sync, summarised here with full treatment in Ch75), `wp_color_management_v1` (end-to-end colour management, full treatment in Ch74), `wp_fifo_v1` and `wp_tearing_control_v1` (frame pacing and tearing), KMS overlay plane promotion, Mesa NIR as the cross-driver shader IR unification mechanism, and cross-stack debugging tools. The chapter is intended as a synthesis read after the individual protocol and renderer chapters.
+
 **Chapter 175 — Linux Compositor Accessibility: AT-SPI2, Screen Readers, and the Wayland Gap** covers the full Linux accessibility stack from the AT-SPI2 D-Bus protocol (`org.a11y.atspi.Accessible`, `org.a11y.atspi.Text`, `org.a11y.atspi.Registry`) through GTK4's `GtkATContext`/`GtkAtSpiContext` and Qt6's `QAccessible` AT-SPI2 bridge to the **Orca** screen reader (speech via `libspeech-dispatcher`, braille via `brlapi`). The chapter explains the Wayland security gap: Wayland's client isolation prevents global keyboard hooks and cross-client window inspection that Orca relied on under X11, and examines the GNOME/KDE solutions (toolkit-side AT-SPI2, compositor D-Bus keyboard interfaces), the **Newton** three-layer accessibility protocol proposal, and terminal emulator accessibility coverage. Readers building accessible Wayland applications will find the GTK4 `GtkAccessibleText` vfunc reference and the `accerciser`/`dbus-monitor` testing workflow.
 
 ---
 
-*Part VI spans Chapters 20–23, 46, 53, 54, 74, 75, 101, 105, 112, 123, 128, 130, 131, 132, 138, 140, 145, 151, 158, and 175. Chapter 20 is the entry point; begin there.*
+*Part VI spans Chapters 20–23, 46, 53, 54, 74, 75, 101, 105, 112, 123, 128, 130, 131, 132, 138, 140, 145, 151, 158, 175, and 194. Chapter 20 is the entry point; begin there.*
 
 ---
 

@@ -11,9 +11,11 @@
 - [2. Qt Wayland Integration and Swapchain](#2-qt-wayland-integration-and-swapchain)
 - [3. Qt Shader Pipeline: qsb and SPIR-V](#3-qt-shader-pipeline-qsb-and-spir-v)
 - [4. GTK4 Rendering Architecture: GskRenderer](#4-gtk4-rendering-architecture-gskrenderer)
+- [4.6 Gdk-Pixbuf and GLib: Supporting Infrastructure](#46-gdk-pixbuf-and-glib-supporting-infrastructure)
 - [5. GTK4 Wayland Integration and Explicit Sync](#5-gtk4-wayland-integration-and-explicit-sync)
 - [6. GTK4 Shader Pipeline and CSS GPU Effects](#6-gtk4-shader-pipeline-and-css-gpu-effects)
 - [7. Font and Text Rendering: FreeType, HarfBuzz, and Glyph Atlases](#7-font-and-text-rendering-freetype-harfbuzz-and-glyph-atlases)
+- [8. WebKitGTK: Embedding Web Content in GTK Applications](#8-webkitgtk-embedding-web-content-in-gtk-applications)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -493,6 +495,85 @@ graph TD
     C -- "used by" --> E[GskNglRenderer]
 ```
 
+### 4.6 Gdk-Pixbuf and GLib: Supporting Infrastructure
+
+Two foundational GNOME libraries sit beneath the GTK4 rendering stack and are prerequisites for understanding how images reach the GPU and how the render loop is driven.
+
+#### Gdk-Pixbuf: Raster Images into the GPU Texture Pipeline
+
+**`GdkPixbuf`** (package `gdk-pixbuf-2.0`) is GTK's image loading library. It decodes JPEG, PNG, WebP, TIFF, and other formats into a CPU-side RGBA pixel buffer. From a GPU rendering perspective its role is narrow but important: it is the path by which raster images from disk enter the `GskTextureNode` pipeline.
+
+```c
+/* Load a PNG file from disk into a CPU-side pixel buffer */
+GError *err = NULL;
+GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file("icon.png", &err);
+
+/* Upload to the GPU: GdkTexture wraps the pixbuf and owns a GL/Vulkan texture object */
+GdkTexture *texture = gdk_texture_new_for_pixbuf(pixbuf);
+g_object_unref(pixbuf);   /* GPU copy exists; CPU buffer can be freed */
+
+/* Use in a widget snapshot — becomes a GskTextureNode in the render tree */
+gtk_snapshot_append_texture(snapshot, texture, &bounds);
+```
+
+The conversion chain is:
+```
+gdk_pixbuf_new_from_file()   → GdkPixbuf  (CPU RGBA buffer)
+gdk_texture_new_for_pixbuf() → GdkTexture (uploads to GL texture / VkImage on first use)
+gtk_snapshot_append_texture()→ GskTextureNode in render node tree
+gsk_renderer_render()        → textured quad draw call
+```
+
+For resource-embedded images, GTK 4.12+ introduces `GdkTexture` constructors that bypass `GdkPixbuf` entirely by loading directly into a GPU texture from compressed data, avoiding the CPU round-trip. The preferred modern API for static assets is `gdk_texture_new_from_resource()` with a `.png` file embedded in a GResource bundle.
+
+`GdkPixbuf` also provides pixel-level image manipulation — scaling (`gdk_pixbuf_scale_simple()`), compositing, and colour-space transforms — that happens on the CPU before the texture upload. For simple display without transformation, applications should prefer `GdkTexture` directly.
+
+#### GLib Main Loop: Driving the GTK4 Render Loop
+
+**GLib** (package `glib-2.0`) provides the event loop, object system, and thread primitives that GTK4 builds on. The **`GMainLoop`** / **`GMainContext`** pair is the mechanism by which all GTK rendering events are dispatched:
+
+```
+GMainLoop (driven by gtk_main() or g_application_run())
+  │
+  GMainContext  ← polls multiple GSource instances
+    │
+    ├── GdkWaylandEventSource    ← wl_display fd, Wayland protocol events
+    ├── GdkFrameClockIdle        ← frame pacing (GdkFrameClock)
+    ├── Timer GSources           ← g_timeout_add(), CSS animations
+    └── I/O GSources             ← file descriptors, DBus, network
+```
+
+The critical path for rendering is `GdkFrameClock`, GTK4's frame scheduler. It replaces the raw `wl_callback` frame event with a higher-level API:
+
+```c
+GdkFrameClock *clock = gtk_widget_get_frame_clock(widget);
+
+/* Request a repaint — GTK will schedule it on the next frame clock tick */
+gtk_widget_queue_draw(widget);
+
+/* The frame clock signals "update" just before rendering each frame */
+g_signal_connect(clock, "update", G_CALLBACK(on_frame_update), NULL);
+g_signal_connect(clock, "paint",  G_CALLBACK(on_frame_paint),  NULL);
+```
+
+Internally, `GdkFrameClock` wraps the Wayland `wl_callback` frame notification: after each `wl_surface_commit`, the GDK Wayland backend registers a `wl_callback` listener; when the compositor sends `done`, the callback fires a GLib idle source that advances the `GdkFrameClock`, which in turn triggers widget snapshot, render node tree construction, and `GskRenderer` submission.
+
+```
+wl_surface_commit()
+  │
+  wl_callback (compositor fires "done" when buffer can be replaced)
+    │
+    GdkWaylandEventSource wakes GMainContext
+      │
+      GdkFrameClock::update signal
+        │
+        gtk_widget_snapshot() on dirty widgets
+          │
+          GskRenderNode tree → GskRenderer → next wl_surface_commit()
+```
+
+This loop gives GTK frame pacing without busy-waiting: the render thread sleeps in `g_main_context_iteration()` (or `epoll_wait` at the kernel level) until the compositor acknowledges the previous frame, then wakes to render the next one. The `GdkFrameTimings` API exposes presentation timestamps from the `wp_presentation` protocol for latency-sensitive applications.
+
 ---
 
 ## 5. GTK4 Wayland Integration and Explicit Sync
@@ -750,6 +831,272 @@ Qt uses Fontconfig via `QFontconfigDatabase` (in `src/platformsupport/fontdataba
 
 ---
 
+## 8. WebKitGTK: Embedding Web Content in GTK Applications
+
+**WebKitGTK** is the GTK port of the WebKit browser engine — the same engine that powers Safari on macOS and iOS. On Linux it is the primary mechanism for embedding live web content (HTML, CSS, JavaScript) inside a native GTK application. Its most prominent consumers are **GNOME Web** (Epiphany, the default GNOME browser), **Geary** (email HTML rendering), **Evolution** (email/calendar), and **Liferea** (RSS). It is also the rendering engine used by **Tauri** on Linux via the Wry crate (Ch193).
+
+Understanding WebKitGTK completes the GTK4 rendering picture: the `WebKitWebView` widget that an application embeds is, from GTK4's perspective, an ordinary `GtkWidget` node in the widget tree — but behind that widget lies a full multi-process browser stack with its own GPU compositor, its own EGL context, and its own path to the Wayland display server, largely independent of GSK.
+
+### 8.1 API Versions: webkit2gtk-4.1 vs webkitgtk-6.0
+
+WebKitGTK ships under two distinct API series that differ in both GTK version and network library:
+
+| Package | GTK version | Network library | WebKit API namespace | Use case |
+|---|---|---|---|---|
+| `webkit2gtk-4.0` | GTK3 | libsoup2 | `WebKit2` | Legacy; deprecated |
+| `webkit2gtk-4.1` | GTK3 | libsoup3 | `WebKit2` | Current GTK3 target; Tauri 2.0 |
+| `webkitgtk-6.0` | GTK4 | libsoup3 | `WebKit` | Modern GTK4 applications |
+
+The `4.x` in `webkit2gtk-4.1` is a WebKit API soname version, not the GTK version. GTK3 applications — including Tauri via Tao — must use `webkit2gtk-4.1`. GTK4 applications such as GNOME Web 45+ use `webkitgtk-6.0`. The underlying WebCore layout engine and JavaScriptCore are identical between these packages; the difference is only in the GTK widget integration layer and the GObject type hierarchy.
+
+On-disk the packages install different shared libraries and pkg-config names:
+```bash
+# GTK3 / webkit2gtk-4.1
+pkg-config --libs webkit2gtk-4.1
+# → -lwebkit2gtk-4.1 -ljavascriptcoregtk-4.1
+
+# GTK4 / webkitgtk-6.0
+pkg-config --libs webkitgtk-6.0
+# → -lwebkitgtk-6.0 -ljavascriptcoregtk-6.0
+```
+
+Both libraries can be installed simultaneously on the same system; they do not conflict.
+
+### 8.2 The WebKit2 Multi-Process Architecture
+
+WebKitGTK uses the **WebKit2** multi-process model, which isolates untrusted web content from the application process:
+
+```
+┌─────────────────────────────────────────────────────┐
+│  UI Process (the GTK application)                    │
+│  WebKitWebView widget ← GTK4 widget tree → GSK      │
+│  WebKitWebContext  WebKitCookieManager               │
+│  WebKitUserContentManager                            │
+└──────────────────┬──────────────────────────────────┘
+                   │  WebKit IPC (Unix domain socket)
+       ┌───────────┴──────────────┐
+       │                          │
+       ▼                          ▼
+┌─────────────────┐   ┌───────────────────────────────┐
+│  Network Process │   │  Web Content Process           │
+│  libsoup3 HTTP   │   │  WebCore: HTML/CSS layout      │
+│  DNS, TLS        │   │  JavaScriptCore: JIT + WASM    │
+│  Cache, cookies  │   │  WebKit threaded compositor    │
+└─────────────────┘   │  EGL context → Mesa GL ES      │
+                       │  → offscreen GBM surface       │
+                       └───────────────────────────────┘
+```
+
+The **UI Process** is the GTK application itself. It hosts the `WebKitWebView` widget and all application-level APIs (`WebKitSettings`, `WebKitUserContentManager`, `WebKitCookieManager`). It never executes web content.
+
+The **Web Content Process** (`WebKitWebProcess`) is spawned automatically when a `WebKitWebView` is created. It runs WebCore (HTML parsing, CSS cascade, layout, paint) and JavaScriptCore (a tiered JIT compiler for JavaScript and WebAssembly). Critically, it also runs **WebKit's threaded compositor** — a background thread that assembles the painted layer tree into a composited GPU frame using OpenGL ES.
+
+The **Network Process** (introduced in WebKitGTK 2.26) handles all network I/O: HTTP/HTTPS via libsoup3, DNS resolution, TLS certificate validation, and the HTTP cache. Isolating it means a compromised web page cannot directly observe or modify network traffic.
+
+The three processes communicate via **WebKit's internal IPC layer** (Unix domain sockets with structured message serialisation), which is entirely separate from the Wayland protocol or GTK's event loop.
+
+### 8.3 GPU Rendering in the Web Content Process
+
+WebKit's threaded compositor renders web page content into an **offscreen GPU surface** inside the Web Content Process. This is the key architectural point: the GPU commands for web content are issued entirely within the Web Content Process, not in the UI process that owns the GTK widget.
+
+The rendering path inside the Web Content Process:
+
+```
+WebCore paint() — display list
+  │
+WebKit Threaded Compositor
+  │  layer tree → composited frame
+  │  CSS transforms, animations, filters applied as GL operations
+  ▼
+OpenGL ES 3.0 via EGL (Mesa GLES state tracker)
+  │  eglCreateContext(EGL_PLATFORM_WAYLAND_KHR, ...)
+  │  render into offscreen EGLImage backed by GBM buffer object
+  ▼
+GBM buffer object (DRM GEM)
+  │
+DMA-BUF file descriptor
+  │  sent to UI process via WebKit IPC socket
+  ▼
+UI Process: WebKitWebView widget
+```
+
+The EGL context is created against `EGL_PLATFORM_WAYLAND_KHR` pointing to the user-session `wl_display`. The Web Content Process is **not** a Wayland client — it does not own a `wl_surface`. It renders into a GBM-backed offscreen surface and exports the result as a DMA-BUF fd via `gbm_bo_get_fd()`, then sends that fd to the UI process over the WebKit IPC socket.
+
+> **Important**: The web content renderer uses **OpenGL ES via Mesa's GL state tracker** — not Vulkan, and not ANGLE. Unlike Chromium (which routes WebGL through ANGLE's GL-ES-to-Vulkan translation), WebKitGTK calls Mesa's OpenGL ES API directly. On AMD hardware this goes to `radeonsi`'s OpenGL state tracker; on Intel to `iris`; on NVIDIA to `nouveau` or the proprietary driver. The Vulkan path in webkitgtk-6.0 is under development upstream but not yet the default as of mid-2026.
+
+### 8.4 Displaying Web Content in the GTK Widget: GskTextureNode
+
+Once the DMA-BUF fd arrives in the UI process, the `WebKitWebView` widget presents it to GTK4's rendering pipeline as a `GskTextureNode` — the same node type used by `GtkGLArea` (§4) and `GskSubsurfaceNode`:
+
+```
+UI Process receives DMA-BUF fd from Web Content Process
+  │
+  │  EGL import: eglCreateImageKHR(EGL_LINUX_DMA_BUF_EXT, ...)
+  ▼
+GdkTexture backed by EGLImage (or VkImage with external memory on Vulkan GTK path)
+  │
+GskTextureNode inserted into GSK render tree by WebKitWebView::snapshot()
+  │
+GskRenderer (GskVulkanRenderer or GskNglRenderer)
+  │  composites WebKitWebView texture alongside other GTK4 widgets
+  ▼
+wl_surface::commit → Wayland compositor → KMS → display
+```
+
+With `webkitgtk-6.0` and GTK 4.14+, the `WebKitWebView` can produce a `GskSubsurfaceNode` instead of a `GskTextureNode` when the Wayland compositor supports the `wp_linux_drm_syncobj_v1` explicit-sync protocol (§5). In that mode, the WebKit surface is assigned a Wayland subsurface by GTK, allowing it to be promoted by the compositor to a KMS overlay plane — the same zero-copy scanout path described in Ch45 for terminal emulators.
+
+### 8.5 The Key C API
+
+**Creating and embedding a WebView** (webkitgtk-6.0 / GTK4):
+
+```c
+#include <webkit/webkit.h>
+
+/* A WebKitWebContext manages shared state across WebViews */
+WebKitWebContext *ctx = webkit_web_context_new();
+
+/* Enable the seccomp-based sandbox for the Web Content Process */
+webkit_web_context_set_sandbox_enabled(ctx, TRUE);
+
+/* Create a WebView — it is a GtkWidget */
+WebKitWebView *view = WEBKIT_WEB_VIEW(
+    webkit_web_view_new_with_context(ctx));
+
+/* Add directly to the GTK4 widget tree */
+gtk_box_append(GTK_BOX(box), GTK_WIDGET(view));
+
+/* Load content */
+webkit_web_view_load_uri(view, "https://gnome.org/");
+```
+
+`WebKitWebView` derives from `GtkWidget` in `webkitgtk-6.0`, so standard GTK4 layout APIs apply: `gtk_box_append()`, `gtk_grid_attach()`, `gtk_widget_set_hexpand()`, and so on.
+
+**Configuring rendering behaviour** via `WebKitSettings`:
+
+```c
+WebKitSettings *settings = webkit_web_view_get_settings(view);
+
+/* Force GPU accelerated compositing (default: ALWAYS on desktop) */
+webkit_settings_set_hardware_acceleration_policy(settings,
+    WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS);
+
+/* Disable JavaScript for a static content viewer */
+webkit_settings_set_enable_javascript(settings, FALSE);
+
+/* Enable WebGL */
+webkit_settings_set_enable_webgl(settings, TRUE);
+
+/* Zoom factor (1.0 = 100%) */
+webkit_settings_set_zoom_text_only(settings, FALSE);
+webkit_web_view_set_zoom_level(view, 1.25);
+```
+
+**Injecting JavaScript and receiving messages** via `WebKitUserContentManager`:
+
+```c
+WebKitUserContentManager *mgr =
+    webkit_web_view_get_user_content_manager(view);
+
+/* Register a message handler: JS calls window.webkit.messageHandlers.myapp.postMessage(...) */
+webkit_user_content_manager_register_script_message_handler(mgr, "myapp", NULL);
+
+g_signal_connect(mgr, "script-message-received::myapp",
+    G_CALLBACK(on_message_received), NULL);
+
+/* Inject a script that runs at document start */
+WebKitUserScript *script = webkit_user_script_new(
+    "window.myAppVersion = '1.0';",
+    WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+    WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
+    NULL, NULL);
+webkit_user_content_manager_add_script(mgr, script);
+webkit_user_script_unref(script);
+```
+
+**Cookie and private browsing management**:
+
+```c
+/* Default persistent context */
+WebKitCookieManager *cookies =
+    webkit_web_context_get_cookie_manager(ctx);
+webkit_cookie_manager_set_persistent_storage(cookies,
+    "/home/user/.local/share/myapp/cookies.db",
+    WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+
+/* Ephemeral (private) context — no on-disk storage */
+WebKitWebContext *private_ctx =
+    webkit_web_context_new_ephemeral();
+WebKitWebView *private_view = WEBKIT_WEB_VIEW(
+    webkit_web_view_new_with_context(private_ctx));
+```
+
+**Custom URI scheme handler** — serve application assets without a network server:
+
+```c
+webkit_web_context_register_uri_scheme(ctx, "app",
+    uri_scheme_request_cb, NULL, NULL);
+
+static void uri_scheme_request_cb(WebKitURISchemeRequest *request,
+                                   gpointer user_data) {
+    const char *path = webkit_uri_scheme_request_get_path(request);
+    GBytes *data = load_asset(path);  /* application-defined */
+    GInputStream *stream = g_memory_input_stream_new_from_bytes(data);
+    webkit_uri_scheme_request_finish(request, stream,
+        g_bytes_get_size(data), "text/html");
+    g_object_unref(stream);
+    g_bytes_unref(data);
+}
+```
+
+### 8.6 Security: Sandboxing the Web Content Process
+
+WebKitGTK supports sandboxing the Web Content Process via **bubblewrap** (`bwrap`) and **seccomp-BPF** when `webkit_web_context_set_sandbox_enabled(ctx, TRUE)` is set. The sandbox:
+
+- Uses Linux namespaces (`CLONE_NEWUSER`, `CLONE_NEWNS`, `CLONE_NEWNET`) to isolate the process from the host filesystem and network stack.
+- Applies a seccomp-BPF syscall allowlist restricting the Web Content Process to a whitelist of syscalls needed for rendering.
+- Allows only the DRM render node (`/dev/dri/renderD128`) through bind-mounting, not the DRM master node.
+
+The sandbox model is less strict than Chromium's (Ch33): there is no GPU process boundary — the Web Content Process holds the EGL context directly. A GPU exploit in the Web Content Process can call arbitrary GL commands, though the seccomp filter prevents most kernel escape routes.
+
+GNOME Web enables the sandbox by default. Applications embedding WebKitGTK in security-sensitive contexts (browser, email client with remote images) should enable it; applications embedding only trusted local content (app help pages, changelogs) may omit it at the cost of a simpler deployment.
+
+### 8.7 GNOME Web (Epiphany): Reference Consumer
+
+**GNOME Web** (`gnome-web`, package `epiphany-browser`) is the reference GTK4 application embedding `webkitgtk-6.0`. Its architecture illustrates patterns applicable to any GTK4+WebKit application:
+
+- `EphyEmbed` wraps a `WebKitWebView` in a container widget that adds a progress bar, find toolbar, and status overlay — all standard GTK4 widgets composited alongside the WebKit surface via GSK.
+- **Tab management**: each tab owns a separate `WebKitWebView` instance sharing a common `WebKitWebContext`. This means cookies, localStorage, and the HTTP cache are shared across tabs, but each tab has an independent Web Content Process.
+- **Web Extensions**: GNOME Web supports WebKit web extensions — shared libraries loaded into the Web Content Process at startup via `webkit_web_context_set_web_process_extensions_directory()`. Extensions can intercept DOM events, inject scripts, and communicate back to the UI process via GDBus.
+- **GNOME 45+ migration**: GNOME Web 45 (2023) completed the migration from `webkit2gtk-4.1` (GTK3) to `webkitgtk-6.0` (GTK4), taking advantage of GTK4's `GskSubsurfaceNode` for zero-copy WebKit surface presentation and the improved fractional scaling support in `GdkWaylandSurface`.
+
+### 8.8 WPE: WebKitGTK Without GTK
+
+**WPE WebKit** (`wpe-webkit`) is the embedded port of WebKit that removes the GTK dependency entirely. Where WebKitGTK uses GTK widgets for window management and Cairo/GSK for displaying the composited WebKit surface, WPE renders directly to a GBM surface or DMA-BUF buffer and submits it to whatever display system is present — DRM/KMS directly, a Wayland compositor, or a custom EGL compositor.
+
+```
+WPE architecture on embedded Linux:
+  WebCore + JSC + WPE compositor
+    │  GL ES → GBM buffer → DMA-BUF
+    ▼
+  wpe-backend-fdo (Wayland) or wpe-backend-drm (direct KMS)
+    │
+  Wayland compositor or DRM atomic commit
+    │
+  Display
+```
+
+WPE is targeted at:
+- **Automotive HMI** (no desktop compositor; full-screen WebKit surface scanned out via KMS)
+- **Smart TV / set-top-box** (STB) UIs
+- **Kiosk displays**
+- **Embedded IoT** displays
+
+From a graphics stack perspective WPE is simpler than WebKitGTK: there is no GTK rendering pipeline, no GSK compositor, no `GdkWaylandSurface` — just WebKit's own GL compositor writing to a GBM buffer and handing it directly to the display system. This makes WPE architecturally closer to a standalone browser process (like Chrome's GPU process) than to an embeddable widget.
+
+For desktop application developers, WPE is generally not the right choice — it provides no window management, no native dialogs, and no system tray. The Tauri project tracks a WPE backend for Wry as a long-term goal for embedded Linux targets (Ch193 §13).
+
+---
+
 ## Roadmap
 
 ### Near-term (6–12 months)
@@ -758,6 +1105,7 @@ Qt uses Fontconfig via `QFontconfigDatabase` (in `src/platformsupport/fontdataba
 - **Qt 6.12 QRhi Direct3D 12 graduation**: The D3D12 `QRhi` backend, added in Qt 6.6, is expected to become the default Windows backend in Qt 6.12, replacing D3D11; variable-rate shading support across D3D12, Vulkan, and Metal was already added in Qt 6.9. [Source](https://doc.qt.io/qt-6/whatsnew69.html)
 - **GTK 4.21+ GSK renderer refactoring**: GTK 4.21.x (in-development trunk) includes significant GSK renderer refactoring to close gaps in rendering infrastructure required for full SVG filter support, targeting COLRv1 and CSS `filter` effects that are currently partial or absent in the GPU path. [Source](https://discourse.gnome.org/t/gtk-planning-call-minutes-for-2026-04-24/34806)
 - **GTK `GskSubsurfaceNode` stabilisation**: The `GskSubsurfaceNode` type (used for Wayland subsurfaces and video overlays) introduced in GTK 4.14 is undergoing bug-fixing for hole-handling regressions; stabilisation is expected before GTK 4.22. Note: needs verification for exact milestone.
+- **webkitgtk-6.0 Vulkan compositor**: WebKit's web content GL compositor (currently OpenGL ES / Mesa only) has an upstream work-in-progress branch exploring a Vulkan render path for the threaded compositor, which would allow the Web Content Process to export frames as Vulkan external memory objects rather than DMA-BUF EGLImages. Not yet merged as of mid-2026. Note: needs verification for current upstream status.
 - **Qt Quick XR and multiview by default**: Qt Quick 3D XR's use of multiview rendering (added in Qt 6.8) is being expanded to 2D AR glass targets via the Qt 6.12 XR module; this exercises `QRhi`'s `MultiView` feature flag on Vulkan 1.1+. [Source](https://www.phoronix.com/news/Qt-6.12-Beta-1)
 
 ### Medium-term (1–3 years)
@@ -794,6 +1142,8 @@ This chapter is part of a broader narrative about how GPU work flows from applic
 - **Chapter 47 (Font and Text Rendering)**: The FreeType, HarfBuzz, and Fontconfig stack described in Section 7 of this chapter is covered end-to-end in Chapter 47, including OpenType layout engine internals, `hb_paint_*` COLRv1 support, and Fontconfig's cache invalidation protocol.
 
 - **Chapter 61 (SPIR-V Ecosystem)**: The `qsb` tool's SPIR-V output, Qt's use of `glslang` and `SPIRV-Cross`, and GTK's offline SPIR-V compilation for the Vulkan renderer are all part of the SPIR-V toolchain ecosystem described in Chapter 61.
+
+- **Chapter 193 (Tauri and WebKitGTK Desktop Applications)**: Section 8 of this chapter describes WebKitGTK as embedded widget technology. Chapter 193 covers the next layer up: the Tauri application framework, which uses `webkit2gtk-4.1` via the Wry and Tao crates to build cross-platform Rust desktop applications with a WebKit-rendered frontend and a native Rust backend connected via a JavaScript IPC bridge.
 
 ---
 

@@ -52,6 +52,7 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 54: The Linux Input Stack](#chapter-54-the-linux-input-stack)
   - [Chapter 105: Font Rendering — FreeType2, HarfBuzz, and the Text Pipeline](#chapter-105-font-rendering--freetype2-harfbuzz-and-the-text-pipeline)
   - [Chapter 112: Variable Refresh Rate — FreeSync, G-Sync, and Frame Pacing](#chapter-112-variable-refresh-rate--freesync-g-sync-and-frame-pacing)
+  - [Chapter 194: Cross-Stack Integration — Protocols, Synchronisation, and the Coordination Layer](#chapter-194-cross-stack-integration--protocols-synchronisation-and-the-coordination-layer)
 - **Part VII — Application APIs & Middleware**
   - [Chapter 24: Vulkan and EGL for Application Developers](#chapter-24-vulkan-and-egl-for-application-developers)
   - [Chapter 25: GPU Compute](#chapter-25-gpu-compute)

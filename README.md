@@ -126,6 +126,8 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 145: XWayland: Architecture and the X11-to-Wayland Bridge](chapters/part-06-display-stack/ch145-xwayland-architecture.md)
 - [Ch 151: Wayland Text Input and Input Method Editors](chapters/part-06-display-stack/ch151-wayland-text-input-ime.md)
 - [Ch 158: HDR and Display Color Management on Linux](chapters/part-06-display-stack/ch158-hdr-linux-display.md)
+- [Ch 175: Linux Compositor Accessibility: AT-SPI2, Screen Readers, and the Wayland Gap](chapters/part-06-display-stack/ch175-atspie2-compositor-accessibility.md)
+- [Ch 194: Cross-Stack Integration — Protocols, Synchronisation, and the Coordination Layer](chapters/part-06-display-stack/ch194-cross-stack-integration.md)
 
 ---
 
