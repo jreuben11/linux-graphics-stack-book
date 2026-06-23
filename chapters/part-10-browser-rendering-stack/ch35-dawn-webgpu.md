@@ -16,8 +16,9 @@
 6. [Memory Management and Buffer Mapping](#6-memory-management-and-buffer-mapping)
 7. [WebGPU Canvas Presentation](#7-webgpu-canvas-presentation)
 8. [Adapter Enumeration and Feature Detection on Linux](#8-adapter-enumeration-and-feature-detection-on-linux)
-9. [Integrations](#9-integrations)
-10. [References](#10-references)
+9. [WebGPU Level 2: Subgroups, Bindless, and GPU-Driven Rendering](#9-webgpu-level-2-subgroups-bindless-and-gpu-driven-rendering)
+10. [Integrations](#10-integrations)
+11. [References](#11-references)
 
 ---
 
@@ -462,6 +463,202 @@ Chrome's GPU process lifetime is per-renderer-process (in some configurations) o
 
 ---
 
+## 9. WebGPU Level 2: Subgroups, Bindless, and GPU-Driven Rendering
+
+WebGPU v1 (shipped in Chrome 113, May 2023) deliberately deferred several features for portability or specification complexity reasons. The W3C GPU for the Web Working Group's 2025–2027 charter defines a **Level 2** milestone that adds these capabilities as optional `GPUDevice.features` — fully backward-compatible with v1 applications. Level 2 is not a new API version but an expanded feature set; the `webgpu.h` object model is unchanged.
+
+### 9.1 Subgroups: Intra-Wavefront Communication
+
+**Subgroups** (called warps on NVIDIA, wavefronts on AMD, SIMD lanes on Intel) are the fundamental unit of lock-step GPU execution: a fixed-width set of shader invocations that execute the same instruction simultaneously. Subgroup intrinsics enable direct data exchange between lanes without routing through shared memory, eliminating the store-barrier-load round-trip that makes shared-memory reductions expensive.
+
+WebGPU Level 2 exposes subgroup operations via the `"subgroups"` `GPUFeatureName`. On the Vulkan path, Dawn maps these to `VK_KHR_shader_subgroup_extended_types` and the core Vulkan 1.1 subgroup operations.
+
+```wgsl
+enable subgroups;
+
+@compute @workgroup_size(64)
+fn softmax_row(
+    @builtin(local_invocation_id) lid: vec3u,
+    @builtin(subgroup_size)       sg_size: u32,
+) {
+    let lane = lid.x;
+    var val: f32 = input[lane];
+
+    // Reduce max across the subgroup — no shared memory needed
+    let row_max: f32 = subgroupMax(val);
+
+    val = exp(val - row_max);
+
+    // Sum the exponents across the subgroup
+    let row_sum: f32 = subgroupAdd(val);
+
+    output[lane] = val / row_sum;
+}
+```
+
+The core subgroup built-ins exposed by the Level 2 proposal: [Source: https://www.w3.org/TR/WGSL/#subgroup-builtins]
+
+| Built-in | Operation | Vulkan mapping |
+|---|---|---|
+| `subgroupBroadcast(v, srcLane)` | Broadcast value from one lane to all | `subgroupBroadcast` |
+| `subgroupBroadcastFirst(v)` | Broadcast from the lowest active lane | `subgroupBroadcastFirst` |
+| `subgroupAdd(v)` | Reduction: sum across all lanes | `subgroupAdd` |
+| `subgroupMax(v)` | Reduction: max across all lanes | `subgroupMax` |
+| `subgroupBallot(cond)` | Bitmask of lanes where `cond` is true | `subgroupBallot` |
+| `subgroupShuffle(v, lane)` | Arbitrary lane→lane data exchange | `subgroupShuffle` |
+| `subgroupShuffleXor(v, mask)` | XOR-indexed butterfly exchange | `subgroupShuffleXor` |
+| `subgroupElect()` | True in exactly one lane per subgroup | `subgroupElect` |
+| `subgroupAll(cond)` | True iff all lanes have `cond == true` | `subgroupAll` |
+| `subgroupAny(cond)` | True iff any lane has `cond == true` | `subgroupAny` |
+
+Dawn has shipped `subgroupBroadcast`, `subgroupAdd`, `subgroupMax`, `subgroupBallot`, and `subgroupShuffle` in Chrome 131+ (behind `chrome://flags/#enable-unsafe-webgpu`) and began enabling them in stable releases from Chrome 147. The `wgpu` crate exposes the same operations under `wgpu::Features::SUBGROUP_OPS`. [Source: https://developer.chrome.com/blog/new-in-webgpu-131]
+
+**Impact for ML inference.** Softmax, layer normalisation, and attention score scaling all require row-wise reductions over large vectors. On a shared-memory path these each cost a workgroup barrier; on a subgroup path the reduction completes within the warp in a logarithmic number of shuffle instructions with no barrier. For transformer inference in the browser (via frameworks such as `transformers.js` or `mediapipe-web`), subgroup reductions can reduce attention kernel time by 30–50% on AMD RDNA2 and NVIDIA Turing-generation GPUs. [Source: https://developer.chrome.com/blog/next-for-webgpu]
+
+### 9.2 Subgroup Matrices: Hardware Matrix-Multiply Units
+
+Beyond scalar subgroup operations, the Level 2 roadmap includes **subgroup matrices** (also called cooperative matrices): direct access to the hardware matrix-multiply accumulate (MMA) units present on NVIDIA Tensor Cores (A100/H100), Intel XMX units (Xe), and AMD WMMA (RDNA3+).
+
+The WebGPU proposal maps to `VK_KHR_cooperative_matrix` on the Vulkan side. The tentative WGSL syntax uses a new `subgroup_matrix` type:
+
+```wgsl
+enable subgroup_matrix;  // proposed syntax, not yet stable
+
+@compute @workgroup_size(32)
+fn gemm_tile(/* ... */) {
+    // Load 16×16 f16 tiles from global memory
+    var a: subgroup_matrix<f16, subgroup_matrix_use::left,  16, 16>;
+    var b: subgroup_matrix<f16, subgroup_matrix_use::right, 16, 16>;
+    var c: subgroup_matrix<f32, subgroup_matrix_use::result,16, 16>;
+
+    subgroup_matrix_load(&a, &src_a, stride, false);
+    subgroup_matrix_load(&b, &src_b, stride, true);   // transpose
+    subgroup_matrix_multiply_accumulate(&c, a, b, c);  // C += A × B
+    subgroup_matrix_store(&c, &dst, stride, false);
+}
+```
+
+The primary target is GEMM (general matrix multiply) — the core of linear layers, attention projection, and convolution in neural networks. Hardware MMA units deliver 4–16× throughput over scalar FMAs for the same FLOP count. With subgroup matrices in WebGPU, browser-side LLM inference (`transformers.js`, ONNX Web Runtime, MediaPipe WASM) would reach performance competitive with WebNN's ML-specific path for GEMM-dominated models.
+
+As of mid-2026, the subgroup matrices proposal is in design in the W3C GPU for the Web Working Group; Dawn has experimental internal prototypes but no stable API surface. The `wgpu` crate is tracking the proposal via the `SUBGROUP_MATRIX` feature flag. Note: implementation status requires verification.
+
+### 9.3 Bindless Resources
+
+WebGPU v1's binding model requires every texture, buffer, and sampler accessed in a shader to be declared statically in the pipeline layout (`GPUBindGroupLayout`) and bound before each draw call. This matches Vulkan's default descriptor set model. It prevents GPU-driven rendering where a shader selects which texture to sample based on per-instance data stored in a buffer (a material ID, an atlas slot, etc.) — because at pipeline creation time the shader cannot name a runtime-variable resource.
+
+**WebGPU Level 2 bindless** exposes WGSL `binding_array<T, N>` — an array of resources indexable at runtime within a shader:
+
+```wgsl
+// Pipeline layout declares an array of up to 1024 textures
+@group(0) @binding(0) var material_textures: binding_array<texture_2d<f32>, 1024>;
+@group(0) @binding(1) var material_sampler: sampler;
+
+struct DrawData {
+    material_id: u32,
+    // per-draw constants...
+}
+@group(1) @binding(0) var<uniform> draw: DrawData;
+
+@fragment
+fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
+    // Index into the array at runtime — no rebinding between draws
+    return textureSample(material_textures[draw.material_id], material_sampler, uv);
+}
+```
+
+On the Vulkan backend, this maps to `VK_EXT_descriptor_indexing` with `VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT` and `VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT`. Dawn already requires `VK_EXT_descriptor_indexing` internally (it is in the Level 1 Vulkan extension baseline); the Level 2 work is exposing the partially-bound and runtime-indexed access modes through the public API with appropriate bounds checking in Tint's Robustness pass. [Source: https://developer.chrome.com/blog/next-for-webgpu]
+
+The `wgpu` crate exposes `binding_array` today under `wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY` and `wgpu::Features::BINDING_ARRAY`. Dawn's Level 2 API surface is under active design in the Working Group; a concrete WebGPU IDL proposal was posted in mid-2026.
+
+### 9.4 Multi-Draw Indirect and GPU-Driven Rendering
+
+WebGPU v1 includes single indirect draw calls (`renderPassEncoder.drawIndirect(buffer, offset)`) where one set of draw parameters lives in a GPU buffer. Level 2 adds **multi-draw indirect** — a contiguous array of draw parameter structs in a buffer, consumed by the GPU in a single command:
+
+```js
+// Encode a buffer containing N draw calls on the GPU (e.g., via a compute pass)
+const indirectBuffer = device.createBuffer({
+    size: N * 5 * 4,  // 5 u32 per DrawIndirectParameters: vertexCount, instanceCount,
+    usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.STORAGE,  // firstVertex, firstInstance, pad
+});
+
+// ... compute pass generates draw calls into indirectBuffer ...
+
+const pass = encoder.beginRenderPass(/* ... */);
+pass.setPipeline(pipeline);
+pass.setBindGroup(0, bindGroup);
+// Issue N draw calls without CPU involvement:
+pass.multiDrawIndirect(indirectBuffer, 0, N);
+pass.end();
+```
+
+Combined with bindless resource access (§9.3), multi-draw indirect completes the GPU-driven rendering pattern: a compute pass performs frustum culling and occlusion testing on the GPU, writes surviving draw calls into the indirect buffer, and the render pass consumes them — all without the CPU reading results or emitting per-object draw calls. On scenes with thousands of objects this reduces CPU-to-GPU transfer and driver overhead by orders of magnitude.
+
+The Vulkan mapping is `vkCmdDrawIndirect` with a non-zero `drawCount` and `stride`, backed by `VK_KHR_draw_indirect_count` for GPU-generated draw count. `wgpu` exposes this as `wgpu::Features::MULTI_DRAW_INDIRECT`. Dawn's implementation is in progress. [Source: https://gpuweb.github.io/gpuweb/explainer/#gpu-driven-rendering]
+
+### 9.5 Read-Write Storage Textures and 64-bit Integers
+
+Two Level 2 features that have already shipped in Dawn:
+
+**Read-write storage textures** (`read_write` access mode for `texture_storage_*`) allow a compute shader to both read and write the same texture without allocating separate input and output bindings. This simplifies in-place image processing — inpainting, denoising, histogram equalisation — and is mandatory for correct implementation of many image filter algorithms. Dawn shipped this in Chrome 144 (`"rw-storage-texture"` feature). [Source: https://developer.chrome.com/blog/new-in-webgpu-144]
+
+```wgsl
+@group(0) @binding(0)
+var image: texture_storage_2d<rgba8unorm, read_write>;
+
+@compute @workgroup_size(8, 8)
+fn blur(@builtin(global_invocation_id) id: vec3u) {
+    let current: vec4f = textureLoad(image, id.xy);
+    let right:   vec4f = textureLoad(image, id.xy + vec2u(1, 0));
+    textureStore(image, id.xy, (current + right) * 0.5);
+}
+```
+
+**64-bit integers** (`i64` / `u64` in WGSL) are required for buffer addressing beyond the 4 GiB limit, 64-bit atomic operations (compare-and-swap for lock-free data structures), and timestamp arithmetic. The WGSL `enable int64` proposal is being specified; `naga` (the wgpu WGSL compiler) already supports `i64`/`u64` as an extension, and Dawn has an experimental implementation. Mapping to Vulkan uses `VK_KHR_shader_int64`.
+
+### 9.6 WGSL Module System
+
+WGSL v1 provides no mechanism for splitting shader code across files or importing library functions; each shader is a single monolithic string. The **WGSL module proposal** under active specification adds an `import` declaration:
+
+```wgsl
+// math_utils.wgsl — a library module
+export fn safe_normalize(v: vec3f) -> vec3f {
+    let len = length(v);
+    return select(vec3f(0.0), v / len, len > 1e-6);
+}
+
+// main.wgsl — imports the library
+import "math_utils.wgsl" as M;
+
+@vertex
+fn vs_main(@location(0) pos: vec3f) -> @builtin(position) vec4f {
+    return vec4f(M::safe_normalize(pos), 1.0);
+}
+```
+
+From Tint's perspective, modules introduce a dependency graph between compilation units. The Tint IR (§4.2) is well-suited to cross-module inlining and dead-code elimination; the AST-based path could not handle inter-module transforms cleanly. This is part of why the Tint IR transition was a prerequisite for the module system work.
+
+Browser-side implications: the module resolution algorithm must sandbox path references (no `file://` or absolute paths), cache compiled module IR across pipelines that share the same module (critical for library code reuse), and handle circular imports with an appropriate error. The proposal is in early design in the Working Group as of mid-2026.
+
+### 9.7 Level 2 Feature Matrix
+
+Implementation status across the two major open-source WebGPU runtimes:
+
+| Feature | Dawn (Chrome) | wgpu (Firefox/Rust) | Vulkan mapping |
+|---|---|---|---|
+| Subgroup scalar ops | Chrome 147+ (partial stable) | `SUBGROUP_OPS` (wgpu 0.20+) | `VK_KHR_shader_subgroup_extended_types` |
+| Subgroup matrices | Experimental / in design | `SUBGROUP_MATRIX` (in design) | `VK_KHR_cooperative_matrix` |
+| Bindless `binding_array` | Internal / under API design | `PARTIALLY_BOUND_BINDING_ARRAY` | `VK_EXT_descriptor_indexing` |
+| Multi-draw indirect | In progress | `MULTI_DRAW_INDIRECT` | `vkCmdDrawIndirect` (count > 1) |
+| Read-write storage textures | GA (Chrome 144) | Stable | `VK_KHR_shader_read_write_logical_ptr` |
+| 64-bit integers | Experimental | `wgpu::Dx12Compiler::Dxc` + naga | `VK_KHR_shader_int64` |
+| WGSL modules | In design | In design (naga roadmap) | N/A (compiler feature) |
+| Clip distances | `"clip-distances"` (Chrome 146) | Stable | Core Vulkan |
+| Dual source blending | `"dual-source-blending"` (Chrome 144) | `DUAL_SOURCE_BLENDING` | `VK_EXT_blend_operation_advanced` |
+
+Note: feature availability varies by GPU and driver; Dawn gates on `gpu_driver_bug_list.json` and adapter capability checks.
+
+---
+
 ## Roadmap
 
 ### Near-term (6–12 months)
@@ -474,9 +671,8 @@ Chrome's GPU process lifetime is per-renderer-process (in some configurations) o
 
 ### Medium-term (1–3 years)
 
-- **Bindless texture and resource binding**: The `texture_and_sampler_let` WGSL extension (Chrome 146) is an explicit prerequisite step for full bindless support. Bindless would allow shaders to access an unbounded number of textures and buffers, enabling scene-wide resource access required by most leading-edge rendering algorithms. The proposal is under active design in the W3C GPU for the Web Working Group. [Source](https://developer.chrome.com/blog/next-for-webgpu)
-- **Subgroup and subgroup-matrix operations for ML inference**: Subgroup intrinsics (available in Chrome 131+ behind a flag) expose fast intra-warp communication. Subgroup matrices (hardware matrix-multiply units adjacent to shader cores) are the next step, targeting WebGPU as a first-class ML inference substrate competitive with WebNN. [Source](https://developer.chrome.com/blog/next-for-webgpu)
-- **WebGPU 2.0 / Candidate Recommendation stabilisation**: The WebGPU specification reached W3C Candidate Recommendation Draft status in June 2026. The W3C GPU for the Web Working Group (which includes Google, Mozilla, Apple, Intel, and Microsoft) is working toward a final CR; the 2025–2027 charter scope anticipates a stable 2.0 surface. [Source](https://www.w3.org/2025/01/gpuweb-charter.html)
+- **WebGPU Level 2 feature rollout**: Subgroups, bindless `binding_array`, multi-draw indirect, WGSL modules, and subgroup matrices are under active standardisation and implementation (see §9). The W3C GPU for the Web Working Group's 2025–2027 charter scope targets a Level 2 Candidate Recommendation; individual features gate on conformance test suite coverage and cross-browser agreement. [Source](https://www.w3.org/2025/01/gpuweb-charter.html)
+- **WebGPU 2.0 / Candidate Recommendation stabilisation**: The WebGPU specification reached W3C Candidate Recommendation Draft status in June 2026. Full CR requires two independent interoperable implementations; Chrome (Dawn) and Firefox (wgpu) are the two primary candidates. [Source](https://www.w3.org/2025/01/gpuweb-charter.html)
 - **Tint IR-driven shader analysis**: The completed transition of Tint's internals from AST-to-backend to AST→IR→backend (delivering up to 7× compilation speedup on some platforms) unlocks sophisticated IR-level shader analysis — dead-code elimination, specialisation constants, and richer robustness transforms — that were impractical on the AST path. [Source](https://developer.chrome.com/blog/new-in-webgpu-141)
 - **WebXR + WebGPU rendering layer**: The Immersive Web Working Group is designing a 3D rendering layer that exposes a `GPULayer` surface to WebXR sessions, replacing the existing WebGL-only `XRWebGLLayer`. This would bring Dawn's explicit GPU model to VR/AR workloads directly. Note: needs verification on timeline.
 
@@ -489,7 +685,7 @@ Chrome's GPU process lifetime is per-renderer-process (in some configurations) o
 
 ---
 
-## 9. Integrations
+## 10. Integrations
 
 This chapter connects to several other chapters in the book:
 
@@ -517,7 +713,7 @@ This chapter connects to several other chapters in the book:
 
 ---
 
-## 10. References
+## 11. References
 
 1. Dawn source repository: https://dawn.googlesource.com/dawn
 
