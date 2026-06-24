@@ -484,6 +484,8 @@ GTK4 loads icons from `hicolor` theme at `icon_size × scale` pixels. For a 1.5�
 
 At integer scales, LCD subpixel rendering (ClearType-style) works perfectly: each physical pixel maps cleanly to one logical pixel. At fractional scales, the mapping is non-integer, making subpixel positioning more critical.
 
+**The Wayland subpixel compositing gap.** `wl_output.subpixel` broadcasts the display's physical sub-pixel layout (`horizontal_rgb`, `horizontal_bgr`, `vertical_rgb`, `vertical_bgr`, `none`, `unknown`) so clients know the correct fringe direction. `wl_surface.set_opaque_region` gives clients a way to declare full-window opacity; KWin 6 uses this to enable LCD-aware surface handling for opaque native GTK/Qt windows. What the protocol currently lacks is a mechanism for *subpixel-aware compositing* — there is no way to tell the compositor "blend this surface using the assumption that the background behind my text is colour X." A **surface background-colour hint** ("matte colour") extension has been proposed on `wayland-devel` but has not progressed to staging as of mid-2026. For browsers specifically, the GPU process sandbox intercepts `wl_surface` protocol messages and does not forward `set_opaque_region`, so Chrome and Firefox default to grayscale antialiasing on Wayland regardless of the compositor. The browser-specific rendering path and the sandbox constraint are covered in **Chapter 37 §5** (Skia — Subpixel Rendering on Linux).
+
 FreeType 2 with HarfBuzz:
 - `FT_LOAD_TARGET_LCD` for RGB subpixel rendering
 - Fractional advance widths via `FT_LOAD_NO_HINTING` for smooth text at arbitrary scale
