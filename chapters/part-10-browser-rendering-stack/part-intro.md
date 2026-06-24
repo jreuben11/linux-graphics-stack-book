@@ -125,6 +125,8 @@ graph TD
 
 **Chapter 98 — WebAssembly and WebGPU as a Deployment Target** closes the part by stepping outside the browser's internal implementation and examining the stack from an application developer's perspective. It covers how Rust code using **wgpu** or C++ code using **Emscripten** and **emdawnwebgpu** can compile to a **WebAssembly** module that dispatches to the browser's **WebGPU** implementation, which itself maps to **Mesa** Vulkan drivers on Linux. The chapter addresses **`wasm-bindgen`** JavaScript interop, **WGSL** shader portability, **WASM SIMD** for CPU-side computation, and real-world use cases ranging from ML inference to portable game engines like **Bevy** and **Godot 4**.
 
+**Chapter 195 — Browser Image Formats: Decode Pipelines, Compression Mechanisms, and HDR** traces the full path from image bytes on the network to a GPU texture in the **Viz** compositor. Every `<img>`, CSS `background-image`, and `createImageBitmap()` call triggers a codec selection (via **`SkCodec`**), an incremental CPU decode into an **`SkBitmap`**, a colour space conversion via **skcms**, and a staging-buffer GPU upload into a **`gpu::SharedImage`** backed by a **`VkImage`**. The chapter covers the six principal raster formats — **JPEG** (DCT + **libjpeg-turbo**), **PNG** (DEFLATE + **libpng**), **WebP** (VP8/VP8L + **libwebp**), **AVIF** (AV1 intra-frame + **libavif**/**dav1d**, 10/12-bit HDR), **JPEG XL** (VarDCT + Modular + **libjxl**, lossless JPEG recompression), and **GIF** (LZW palette animation) — plus **SVG** (XML DOM rasterised by Skia). It explains HTTP `Accept` header negotiation, the `<picture>`/`srcset` explicit format selection mechanism, ICC profile and NCLX colour space handling through the **skcms** pipeline, and the `ImageDecoder` **WebCodecs** API for frame-level access and `VideoFrame` GPU import.
+
 **Chapter 193 — Tauri: Rust-Native Desktop Applications via WebKitGTK** examines the third major browser-engine path on Linux: the **native WebView** model. Where Electron bundles a full Chromium build, Tauri delegates HTML/CSS/JavaScript rendering to the platform's system **WebKitGTK** library (`webkit2gtk-4.1`), managing everything else — window creation, IPC, file access, system integration — in Rust. The chapter traces the complete rendering chain: **Wry** (the cross-platform WebView Rust abstraction) → **Tao** (GTK3-based window management, a fork of winit) → the `WebKitWebView` GTK3 widget → the **WebKit Web Content Process** (which renders pages using **WebCore** and **JavaScriptCore**) → **OpenGL ES via Mesa** (not Vulkan — WebKitGTK uses the Mesa GL state tracker directly, unlike Chrome's ANGLE) → **DMA-BUF** surface sharing → **GTK3** Wayland surface submission. It covers Tauri's command IPC (`#[tauri::command]`, `invoke()`), the `Channel<T>` streaming API, the Tauri 2.0 **capabilities** security system (replacing the allowlist), **CSP** compile-time nonce injection, the **Isolation Pattern** for untrusted content, the plugin ecosystem (fs, shell, dialog, notification via D-Bus), and Linux distribution formats (AppImage, `.deb`, `.rpm`). A comparative table contrasts Tauri/WebKitGTK against Electron/Chromium on binary size (2–10 MB vs 80–200 MB), memory use, startup time, WebGPU/WebCodecs API coverage, and rendering path (Mesa GL vs ANGLE → Vulkan).
 
 ## Servo: Mozilla's Parallel Browser Engine
@@ -169,6 +171,7 @@ graph LR
     Ch52["Ch52: Firefox and WebRender\n(display list, wgpu-core, naga)"]
     Ch98["Ch98: WASM + WebGPU\n(wgpu, Emscripten, portability)"]
     Ch193["Ch193: Tauri\n(WebKitGTK · Wry · Tao\nMesa GL ES · GTK3 · D-Bus)"]
+    Ch195["Ch195: Browser Image Formats\n(JPEG · PNG · WebP · AVIF · JXL\nSkCodec · skcms · SharedImage)"]
 
     Ch33 --> Ch34
     Ch33 --> Ch35
@@ -182,6 +185,8 @@ graph LR
     Ch52 -.->|"wgpu runtime"| Ch98
     Ch34 -.->|"ANGLE vs Mesa GL ES\nrendering path contrast"| Ch193
     Ch52 -.->|"WebKitGTK vs\nWebRender"| Ch193
+    Ch37 -.->|"SkCodec / SkBitmap"| Ch195
+    Ch36 -.->|"SharedImage / TextureDrawQuad"| Ch195
 ```
 
 ## Prerequisites and What Comes Next

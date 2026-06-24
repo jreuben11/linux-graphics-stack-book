@@ -214,6 +214,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 147: Chrome and Firefox Hardware Video Decode via VA-API](chapters/part-10-browser-rendering-stack/ch147-chrome-firefox-vaapi-video-decode.md)
 - [Ch 168: WebNN — The Web Neural Network API](chapters/part-10-browser-rendering-stack/ch168-webnn-web-neural-network-api.md)
 - [Ch 193: Tauri — Rust-Native Desktop Applications via WebKitGTK](chapters/part-10-browser-rendering-stack/ch193-tauri-webkitgtk-desktop.md)
+- [Ch 195: Browser Image Formats — Decode Pipelines, Compression Mechanisms, and HDR](chapters/part-10-browser-rendering-stack/ch195-browser-image-formats.md)
 
 ---
 
@@ -528,6 +529,7 @@ chapters/
     ch98-webassembly-webgpu.md
     ch146-webcodecs-browser-hardware-acceleration.md
     ch147-chrome-firefox-vaapi-video-decode.md
+    ch195-browser-image-formats.md
   part-11-engine-creative-tools/
     ch40-bevy-wgpu.md
     ch41-godot4-rendering-device.md

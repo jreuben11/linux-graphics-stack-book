@@ -18,10 +18,11 @@
 9. [SkSL and the Skia Shader Language](#9-sksl-and-the-skia-shader-language)
 10. [Graphite — Skia's GPU-First Architecture in Depth](#10-graphite--skias-gpu-first-architecture-in-depth)
 11. [Canvas 2D IPC Path in Chromium](#11-canvas-2d-ipc-path-in-chromium)
-12. [Text Rendering Pipeline in Depth](#12-text-rendering-pipeline-in-depth)
-13. [Linux-Specific Backend Notes](#13-linux-specific-backend-notes)
-14. [Integrations](#14-integrations)
-15. [References](#references)
+12. [Canvas Context Types: 2D, WebGL, WebGPU, and OffscreenCanvas](#12-canvas-context-types-2d-webgl-webgpu-and-offscreencanvas)
+13. [Text Rendering Pipeline in Depth](#13-text-rendering-pipeline-in-depth)
+14. [Linux-Specific Backend Notes](#14-linux-specific-backend-notes)
+15. [Integrations](#15-integrations)
+16. [References](#references)
 
 ---
 
@@ -502,7 +503,157 @@ When an `OffscreenCanvas` 2D context in a worker calls `ctx.fillText("hello", 10
 
 ---
 
-## 12. Text Rendering Pipeline in Depth
+## 12. Canvas Context Types: 2D, WebGL, WebGPU, and OffscreenCanvas
+
+`HTMLCanvasElement` is a single DOM element that exposes four distinct GPU contexts through `getContext()`. Each has a different rendering model, process architecture, thread model, and performance profile. Choosing the wrong context for a workload is one of the most common sources of browser rendering inefficiency.
+
+### 12.1 Context Acquisition
+
+```js
+const canvas = document.createElement('canvas');
+canvas.width = 1920; canvas.height = 1080;
+
+// 2D: immediate-mode drawing API backed by Skia
+const ctx2d = canvas.getContext('2d', { alpha: false });
+
+// WebGL2: stateful OpenGL ES 3.0, backed by ANGLE on Vulkan on Linux
+const gl = canvas.getContext('webgl2', { antialias: true, powerPreference: 'high-performance' });
+
+// WebGPU: explicit GPU API backed by Dawn on Vulkan on Linux
+const gpu = canvas.getContext('webgpu');
+const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+const device  = await adapter.requestDevice();
+gpu.configure({ device, format: navigator.gpu.getPreferredCanvasFormat(), alphaMode: 'opaque' });
+
+// OffscreenCanvas: detach rendering to a Worker thread
+const offscreen = canvas.transferControlToOffscreen();
+worker.postMessage({ canvas: offscreen }, [offscreen]);
+// In the worker: const ctx = offscreen.getContext('2d') / 'webgl2' / 'webgpu'
+```
+
+Once a context is acquired, the canvas is **locked** to that context type for its lifetime. Calling `getContext('webgpu')` on a canvas that already has a `2d` context returns `null`.
+
+### 12.2 CanvasRenderingContext2D
+
+**Backing implementation**: Skia `SkCanvas` — either Ganesh (ANGLE/GL path) or Graphite (Dawn/Vulkan path).
+
+**Programming model**: Immediate-mode state machine. The context carries a mutable current transform, fill style, clip region, and compositing mode that apply to all subsequent drawing operations. Every call to `fillRect`, `stroke`, `drawImage`, or `fillText` records a Skia operation; Skia batches these into GPU draw calls at flush time.
+
+**Shader path**: SkSL → GLSL ES (Ganesh/ANGLE path) → ANGLE SPIR-V → Mesa NIR → ISA; or SkSL → WGSL (Graphite/Dawn path) → Tint → SPIR-V → Mesa NIR → ISA.
+
+**Key performance characteristics**:
+- `fillRect`, `strokePath`, `fillText`: low overhead, heavily batched by Skia's `GrOpsTask`
+- `drawImage(video, ...)`: can be zero-copy via DMA-BUF import (§13) when the video frame is a hardware-decoded DMA-BUF
+- `getImageData()`: **expensive** — triggers a GPU→CPU readback (`vkCmdCopyImageToBuffer` + fence wait); avoid in hot paths
+- `save()`/`restore()` with nested clips: each clip level may add an intermediate framebuffer (opacity layer); minimise nesting depth
+
+**Best for**: 2D charts, data visualisation overlays, image compositing, UI, text. Not suited to 3D or per-frame `getImageData` workflows.
+
+### 12.3 WebGLRenderingContext / WebGL2RenderingContext
+
+**Backing implementation**: ANGLE — Chrome's OpenGL ES 2.0/3.0 implementation that translates to Vulkan on Linux (Ch34).
+
+**Programming model**: Stateful GL state machine. The application manages vertex buffers, textures, framebuffers, shader programs, and uniform state explicitly. Each draw call records a `DrawArrays` or `DrawElements` command; ANGLE serialises these into a Vulkan command buffer in the GPU process.
+
+**IPC model**: The renderer process serialises GL calls into a command buffer (the GPU channel command buffer, Ch33) and sends them to the GPU process's passthrough command decoder, which forwards them to ANGLE. Unlike Canvas 2D, GL calls cross the process boundary immediately rather than being batched in a `PaintOpBuffer`.
+
+**Shader path**: GLSL ES source → ANGLE frontend parser → ANGLE SPIR-V emitter (`OutputSPIRV`) → `vkCreateShaderModule` → Mesa `spirv_to_nir` → NIR → ISA. First-draw stutter from synchronous `vkCreateGraphicsPipelines` is the primary performance hazard.
+
+**WebGL2 additions**: Uniform Buffer Objects (`gl.UNIFORM_BUFFER`), transform feedback (GPU→GPU compute without a compute shader), instanced drawing (`drawArraysInstanced`), multiple render targets, 3D textures, `gl.TEXTURE_2D_ARRAY`. These close most of the gap with native OpenGL 3.3.
+
+**Best for**: 3D scenes with complex vertex shaders, particle systems, legacy WebGL codebases, workloads that benefit from transform feedback for GPU-side computation.
+
+### 12.4 GPUCanvasContext (WebGPU)
+
+**Backing implementation**: Dawn — Chrome's explicit GPU library backed by its Vulkan backend on Linux (Ch35).
+
+**Programming model**: Explicit — the application creates pipeline objects, bind groups, command encoders, and render/compute passes. Synchronisation is explicit via the `GPUQueue.submit()` → promise model; the JavaScript timeline and GPU timeline are tracked separately.
+
+**IPC model**: The renderer process encodes WebGPU commands via DawnWire (`WireClient`), which serialises them into Mojo `DataPipe` chunks. The GPU process's `WireServer` deserialises and forwards to `dawn::native`, which builds real `VkCommandBuffer`s and submits to Mesa. Each `queue.submit()` triggers one IPC flush.
+
+**Canvas integration**: `GPUCanvasContext.getCurrentTexture()` returns a `GPUTexture` wrapping a `VkImage` pre-registered with the Viz compositor as a `gpu::SharedImage` backed by `VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT`. After `queue.submit()` and the frame's GPU work completes, `gpu.present()` (called implicitly at the end of the task) signals Viz that the texture is ready. The compositor samples it at zero copy.
+
+**Shader path**: WGSL source → Tint WGSL reader → Tint IR → Tint SPIR-V writer → `vkCreateShaderModule` → Mesa `spirv_to_nir` → NIR → ISA.
+
+**Best for**: high-performance 3D (game engines, Babylon.js, Three.js WebGPU renderer), ML inference (`GPUComputePipeline` with subgroup operations), custom post-processing pipelines, any workload requiring multi-pass rendering with explicit resource lifetimes.
+
+### 12.5 OffscreenCanvas
+
+`OffscreenCanvas` is not a new context type but a **thread-transfer mechanism** that decouples canvas rendering from the main document thread:
+
+```js
+// Main thread: create canvas, transfer to worker
+const canvas = document.getElementById('game');
+const offscreen = canvas.transferControlToOffscreen();
+const worker = new Worker('renderer.js');
+worker.postMessage({ canvas: offscreen }, [offscreen]);
+
+// renderer.js worker: own the canvas context without blocking the main thread
+self.onmessage = ({ data: { canvas } }) => {
+    const ctx = canvas.getContext('2d');           // or 'webgl2' / 'webgpu'
+    function frame() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // ... draw ...
+        requestAnimationFrame(frame);              // Worker-side rAF
+    }
+    requestAnimationFrame(frame);
+};
+```
+
+Once transferred, the `HTMLCanvasElement` on the main thread becomes a **proxy**: its display is driven by the worker's rendering without any main-thread involvement. The main thread cannot call `getContext()` on the original canvas after transfer.
+
+**IPC paths by context type in a worker**:
+- **2D**: `PaintOpBuffer` records drawing ops in the worker; `canvas.commit()` serialises the buffer to the GPU process via Mojo; OOP-R raster workers replay it onto the SharedImage texture.
+- **WebGL2**: GL command buffer is serialised from the worker's renderer-side encoder directly to the GPU process; functionally identical to main-thread WebGL but without blocking the JS main thread.
+- **WebGPU**: DawnWire serialisation from the worker's `WireClient` is identical to the main-thread path; the worker owns the `GPUDevice` and submits work independently.
+
+**Commit semantics**: For 2D contexts, `offscreenCanvas.commit()` explicitly signals that the frame is ready for compositing. For WebGL2 and WebGPU, the browser manages compositing automatically after each `queue.submit()` / `gl.commit()`.
+
+### 12.6 Shared Currency: gpu::SharedImage
+
+All four contexts produce frames as `gpu::SharedImage` textures — cross-process tokens (identified by `gpu::Mailbox`) that let the Viz compositor sample canvas content without pixel copying:
+
+| Context | SharedImage production mechanism |
+|---|---|
+| `CanvasRenderingContext2D` | `CanvasResourceProvider::ProduceCanvasResource()` → `gpu::Mailbox` |
+| `WebGLRenderingContext` | `OffscreenSurfaceVk::present()` → exported `VkImage` → `gpu::Mailbox` |
+| `GPUCanvasContext` | `getCurrentTexture()` returns a pre-registered `VkImage` SharedImage |
+| `OffscreenCanvas commit()` | Serialises the backing SharedImage mailbox to the compositor via Mojo |
+
+The Viz `TextureDrawQuad` references the mailbox; `viz::SkiaRenderer` samples the texture at composite time with zero copy regardless of which context produced it.
+
+### 12.7 createImageBitmap: Async Decode for Any Context
+
+`createImageBitmap(source, options)` provides an asynchronous decode pathway whose result is usable across all four context types:
+
+```js
+const bitmap = await createImageBitmap(avifBlob, {
+    resizeWidth: 512, resizeHeight: 512,
+    colorSpaceConversion: 'none',  // preserve embedded ICC profile
+});
+
+ctx2d.drawImage(bitmap, 0, 0);                                      // Canvas 2D
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap); // WebGL
+const tex = device.importExternalTexture({ source: bitmap });        // WebGPU
+```
+
+Chrome routes `createImageBitmap` through `ImageBitmapLoader` in the renderer process: the image is decoded to a CPU `SkBitmap` via Skia's codec layer (libjpeg-turbo, libpng, libwebp, libavif), then uploaded asynchronously to a GPU-backed SharedImage. The resulting `ImageBitmap` is a zero-copy GPU texture handle. On close, the `ImageBitmap` releases the SharedImage reference.
+
+### 12.8 Context Selection Guide
+
+| Requirement | Best context |
+|---|---|
+| 2D charts, text, image compositing | `CanvasRenderingContext2D` |
+| 3D scene with existing WebGL codebase | `WebGLRenderingContext` / `WebGL2RenderingContext` |
+| High-performance 3D, ML inference, explicit GPU control | `GPUCanvasContext` (WebGPU) |
+| Non-blocking background rendering | Any context via `OffscreenCanvas` |
+| Video frame processing (AR effects, transcoding) | WebGPU + `importExternalTexture` from `VideoFrame` |
+| Legacy GL compute (transform feedback) | `WebGL2RenderingContext` |
+| Async image decode into GPU texture | `createImageBitmap()` → any context |
+
+---
+
+## 13. Text Rendering Pipeline in Depth
 
 Section 5 described the six-stage text pipeline from an architectural perspective. This section examines the pipeline from the perspective of the data structures that cross stage boundaries, with particular attention to the cross-process glyph cache (`SkStrikeServer`/`SkStrikeClient`) that OOP-R introduces.
 
@@ -518,7 +669,7 @@ Section 5 described the six-stage text pipeline from an architectural perspectiv
 
 ---
 
-## 13. Linux-Specific Backend Notes
+## 14. Linux-Specific Backend Notes
 
 **The ANGLE-on-Vulkan path for Ganesh.** Chrome on Linux has historically run Skia Ganesh through ANGLE, rather than using Ganesh's native Vulkan backend. The reason is pragmatic: ANGLE provides a well-tested, Chrome-maintained OpenGL ES implementation that abstracts over driver differences, and Ganesh's GL backend is significantly more mature and better tested than its native Vulkan backend. In this path, `GrGLGpu` (the Ganesh GL backend, in `src/gpu/ganesh/gl/GrGLGpu.cpp`) emits OpenGL ES draw calls — `glBindFramebuffer`, `glUseProgram`, `glDrawArrays` — which ANGLE's `GLESContext` captures and translates to Vulkan command buffer calls, which it then submits to the Mesa Vulkan driver. SkSL shaders are emitted as GLSL ES 3.00 by `SkSL::GLSLCodeGenerator`, compiled by ANGLE's built-in GLSL translator to SPIR-V, and passed to `vkCreateShaderModule`. The extra GLSL→SPIR-V translation step adds compile-time latency but has negligible runtime cost once the pipeline is compiled.
 
@@ -536,7 +687,7 @@ For **Graphite on Dawn**, the path is slightly more complex: Dawn exposes `wgpu:
 
 ---
 
-## 14. Integrations
+## 15. Integrations
 
 This chapter is the final content chapter of Part X and draws together threads from throughout the book.
 

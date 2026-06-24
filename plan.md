@@ -898,6 +898,23 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - Stylo: the Servo-derived parallel CSS layout engine in Firefox; how style values feed `DisplayItem` generation; the thread-parallel style computation model
 - **Integrations**: WebRender uses Mesa OpenGL (Ch19) or Vulkan (Ch18) backends; font rendering uses FreeType/HarfBuzz (Ch47); Wayland linux-dmabuf integration (Ch20) is the zero-copy surface path; Gecko's wgpu WebGPU backend is architecturally parallel to Chrome's Dawn (Ch35); wgpu also underlies Bevy (Ch40), making it a shared Rust GPU abstraction across browser and game engine; picture caching is architecturally analogous to Viz's surface aggregation (Ch36)
 
+### Chapter 195: Browser Image Formats — Decode Pipelines, Compression Mechanisms, and HDR
+
+- The `<img>` decode pipeline in Chrome: resource loader, codec selection via `SkCodec`, incremental decode, `SkBitmap` production, colour space conversion via skcms
+- GPU upload path: `SkBitmap` → `gpu::SharedImage` → `VkImage` staging buffer upload → `viz::TextureDrawQuad`
+- Format negotiation: HTTP `Accept` header and `<picture>`/`srcset`
+- JPEG: DCT, quantisation, progressive decode, libjpeg-turbo SIMD acceleration
+- PNG: DEFLATE/LZ77, filter prediction, libpng, 16-bit per channel
+- WebP: VP8 (lossy), VP8L (lossless), extended container (alpha, animation, ICC), libwebp
+- AVIF: AV1 intra-frame coding, block partitioning, 10/12-bit HDR, CLLI/MDCV HDR metadata, libavif + dav1d
+- JPEG XL: VarDCT and Modular modes, lossless JPEG recompression, libjxl, Chrome/Safari support
+- GIF: LZW, palette animation, migration to animated WebP/AVIF
+- SVG: XML/DOM rasterisation via Skia
+- ICC profiles and colour management: skcms, NCLX codes, AVIF HDR → `wp_color_management_v1` → KMS `drm_hdr_output_metadata`
+- `ImageDecoder` API (WebCodecs): frame-level access, `VideoFrame` output, GPU import via `importExternalTexture`
+- Format comparison table and decision guide
+- **Integrations**: AVIF/JXL HDR metadata connects to the KMS HDR output pipeline (Ch74) and `wp_color_management_v1` (Ch194 §5); `ImageDecoder` output as `VideoFrame` is the same type WebCodecs produces (Ch146); all raster decode uses `SkCodec` inside Skia (Ch37); decoded textures become `viz::TextureDrawQuad` references in the Viz compositor (Ch36); AVIF hardware decode would use the same VA-API / Vulkan Video path as Ch147
+
 ---
 
 ## Part XI — Engines & Creative Tools
