@@ -254,10 +254,29 @@ As of mid-2026, tauri-runtime-verso **works** for basic desktop applications. Th
 
 **Linux-specific note:** The pre-built `versoview` binary requires a minimum glibc version. On older distributions (Ubuntu 20.04, RHEL 8-era) the binary may fail with "No such file or directory" from the dynamic linker; building from source or using a newer distro is the workaround.
 
+**Rendering pipeline — does Verso use Vulkan?**
+
+No. Servo's core 2D rendering pipeline uses **WebRender** (a GPU-accelerated compositor written in Rust) backed by **OpenGL**, managed through **Surfman** (Servo's cross-platform OpenGL context abstraction). This is the same graphics API tier as WebKitGTK — both Tauri backends end up issuing OpenGL calls to Mesa on Linux. There is no Vulkan rendering path in either.
+
+The nuance: Servo implements **WebGPU** via the **wgpu** crate, which on Linux defaults to the Vulkan backend. So WebGPU API calls from page JavaScript do traverse a Vulkan path — but only for WebGPU content, not for the 2D page compositor, CSS rendering, or canvas 2D. The situation is summarised:
+
+```
+Servo (Verso) rendering paths on Linux:
+
+ Page layout + CSS + 2D paint → WebRender → OpenGL (via Surfman → EGL/GLX → Mesa)
+ WebGPU API calls             → wgpu     → Vulkan (via Ash → Mesa Vulkan driver)
+ WebGL API calls              → WebRender GL context → OpenGL ES (via Mesa)
+```
+
+Compare with Chromium/Electron, where the 2D compositor itself runs on Vulkan (via ANGLE and Dawn). Verso/Servo and WebKitGTK share the same weakness relative to Chromium for this book's audience: neither exposes a Vulkan rendering path for the compositor. The difference between them is Rust vs C++, and GTK vs no GTK — not OpenGL vs Vulkan.
+
+[Source: Servo renders using OpenGL via Surfman; Vulkan texture-sharing with Slint required an explicit bridge — Slint blog, Jan 2026](https://slint.dev/blog/using-servo-with-slint)
+
 | Dimension | tauri-runtime-wry (WebKitGTK) | tauri-runtime-verso (Servo) |
 |---|---|---|
 | Engine | WebKit (C++, Apple-maintained) | Servo (Rust, Linux Foundation) |
-| Linux backend | GTK3 / GLib event loop | Servo's own rendering loop |
+| Linux compositor | OpenGL via EGL/GLX → Mesa | OpenGL via Surfman → EGL/GLX → Mesa |
+| Vulkan path | None (compositor) | None (compositor); wgpu → Vulkan for WebGPU only |
 | GTK dependency | Required | None |
 | Feature completeness | Full Tauri 2 API | Core subset only |
 | Pre-built engine | System WebKitGTK library | Pre-built `versoview` binary (x64) |
@@ -265,7 +284,7 @@ As of mid-2026, tauri-runtime-verso **works** for basic desktop applications. Th
 | IPC security | Origin checked against capabilities | **Origin hardcoded — do not load remote URLs** |
 | Production readiness | Production | Experimental / internal tooling only |
 
-For Linux specifically, Verso/Servo eliminates the GTK3 dependency entirely — an application can create a window without requiring GTK or GLib. This matters for applications that want a non-GTK windowing system. The trade-off is that Servo's web platform coverage remains incomplete and the IPC security hole disqualifies it for any application that loads untrusted content.
+For Linux specifically, Verso/Servo eliminates the GTK3 dependency entirely — an application can create a window without requiring GTK or GLib. This matters for applications that want a non-GTK windowing system. The trade-off is that Servo's web platform coverage remains incomplete and the IPC security hole disqualifies it for any application that loads untrusted content. Neither backend offers a path to Vulkan page compositing — that distinction belongs to Chromium/Electron (Chapter 33).
 
 #### CEF and Alternative Chromium-Based Backends
 
