@@ -159,6 +159,64 @@ receiver.transform = new RTCRtpScriptTransform(worker, { readable, writable });
 
 `RTCEncodedVideoFrame` carries the same `type` (`key` / `delta`), `timestamp`, and raw `data` as `EncodedVideoChunk`. Chrome 94 shipped both APIs simultaneously, making them a matched pair: WebRTC captures the camera, Encoded Transform extracts frames, WebCodecs re-decodes them in a worker for GPU processing, and a `VideoFrame` goes to `importExternalTexture()` for WebGPU compositing. This pipeline underpins advanced video conferencing features like virtual backgrounds and real-time noise gating. [Source](https://www.w3.org/TR/webrtc-encoded-transform/)
 
+#### WebRTC Transport Stack
+
+The line "uses SRTP over UDP, with DTLS and ICE" in the opening paragraph covers five distinct protocols that each solve a different problem. Here is what each one does:
+
+**RTP** (Real-time Transport Protocol; RFC 3550) is the media packet format. Every audio or video frame is chopped into one or more **RTP packets** with a 12-byte fixed header: [Source](https://www.rfc-editor.org/rfc/rfc3550)
+
+```
+RTP Header (12 bytes minimum):
+  V=2 | P | X | CC (4 bits) | M | PT (7 bits) | Sequence Number (16 bits)
+  Timestamp (32 bits) — media clock units (90 kHz for video, 48 kHz for audio)
+  SSRC (32 bits)      — synchronisation source; identifies the sender's stream
+  CSRC list (0–15 × 4 bytes) — contributing sources for mixed streams
+```
+
+`Timestamp` uses the codec's native clock: 90 kHz for video (same as MPEG-TS PTS), 48 000 Hz for Opus audio. `Sequence Number` increments per packet; gaps indicate loss. `SSRC` uniquely identifies one media stream — a call with camera + screen share has two video SSRCs. RTP carries no encryption; that is SRTP's job.
+
+**SRTP** (Secure RTP; RFC 3711) adds confidentiality and integrity to RTP by encrypting the payload and authenticating the header + payload with a message authentication code. [Source](https://www.rfc-editor.org/rfc/rfc3711) Two cipher suites dominate WebRTC:
+- `AES_CM_128_HMAC_SHA1_80` — AES-128 Counter Mode + HMAC-SHA1 with 80-bit tag (legacy)
+- `AEAD_AES_128_GCM` — AES-128-GCM; authenticates in one pass; preferred in RFC 7714
+
+The keys are never in RTP packets; they are established by DTLS.
+
+**DTLS** (Datagram TLS; RFC 9147) is TLS 1.3 adapted for UDP — it adds sequencing and retransmission logic because UDP drops and reorders packets. [Source](https://www.rfc-editor.org/rfc/rfc9147) In WebRTC, DTLS runs over the ICE-established UDP path and performs a standard TLS handshake. At the end of the handshake, both peers extract the **SRTP key material** from the TLS `exportKeyingMaterial()` function (RFC 5705) — this is the DTLS-SRTP binding defined in RFC 5764. After that the DTLS channel carries only data channel (SCTP) traffic; media travels as SRTP.
+
+**ICE** (Interactive Connectivity Establishment; RFC 8445) solves the NAT traversal problem: two browsers behind different NATs cannot directly address each other. [Source](https://www.rfc-editor.org/rfc/rfc8445) ICE gathers a set of **candidates** — network addresses the peer might be reachable at:
+- **Host candidates**: local IP:port pairs
+- **Server-reflexive (srflx) candidates**: the public IP:port seen by a STUN server
+- **Relayed (relay) candidates**: a TURN server's address that will proxy traffic
+
+**STUN** (RFC 8489) is a simple request/response protocol: the client sends a Binding Request to a public STUN server, which echoes back the client's observed public IP and port — this is the server-reflexive candidate. **TURN** (RFC 8656) is a relay: when direct connectivity fails (symmetric NAT, firewall), the TURN server allocates a relay address and forwards all media. TURN is expensive (full media bandwidth through the server) and used only as a last resort. ICE tries all candidate pairs in priority order and selects the one that succeeds.
+
+**SDP** (Session Description Protocol; RFC 8866) is the text format used to describe what each peer can do and agree on what they will do. [Source](https://www.rfc-editor.org/rfc/rfc8866) A WebRTC SDP offer/answer contains:
+
+```sdp
+v=0
+o=- 1234567890 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 0 1          ← multiplex audio+video on one port
+m=video 9 UDP/TLS/RTP/SAVPF 96 97 98
+c=IN IP4 0.0.0.0
+a=rtcp-mux
+a=fingerprint:sha-256 AA:BB:...  ← DTLS certificate fingerprint
+a=ice-ufrag:F7gI
+a=ice-pwd:x9cml...
+a=rtpmap:96 VP9/90000          ← RTP payload type 96 = VP9, 90 kHz clock
+a=rtpmap:97 H264/90000
+a=fmtp:97 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=4d0034
+a=rtpmap:98 AV01/90000
+a=extmap:1 urn:ietf:params:rtp-hdrext:toffset   ← RTP header extension
+a=ssrc:1234 cname:s9hDwDQNjISOvji
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+a=rtpmap:111 opus/48000/2
+a=fmtp:111 minptime=10;useinbandfec=1
+```
+
+`profile-level-id=4d0034` in the `fmtp` line is the same hex triplet as the `avc1.4d0034` codec string — SDP and BMFF use the same H.264 profile/level encoding. The `fingerprint` line ties DTLS identity to SDP, preventing man-in-the-middle attacks. ICE credentials (`ice-ufrag`, `ice-pwd`) are also in the SDP, so the signalling channel that carries SDP must be secured (typically WebSocket over HTTPS).
+
 ---
 
 ### 1.4 Background: EBML, Matroska, and WebM
@@ -542,6 +600,76 @@ LL-HLS reaches 1–2 seconds end-to-end latency versus 15–30 seconds for stand
 
 **FairPlay Streaming (FPS)**: Apple's DRM for HLS, used on iOS, tvOS, macOS Safari, and Apple TV. FairPlay uses `METHOD=SAMPLE-AES` in `#EXT-X-KEY`, where individual media samples (not whole segments) are encrypted. The key exchange uses Apple's `skd://` URI scheme, resolved by the application via `AVContentKeySession` (native) or `com.apple.fps` key system in EME (Encrypted Media Extensions). On Linux, FairPlay is not available outside Safari — Chrome and Firefox use Widevine, which requires DASH or MSE-level integration.
 
+#### DRM Ecosystem: EME, CDM, CENC, Widevine, PlayReady
+
+DRM for streaming video in browsers is a three-layer stack. Understanding each layer explains why Widevine is "better" on Chrome, FairPlay is "better" on Safari, and PlayReady is "better" on Edge — they are not competing quality levels but platform-specific implementations of the same standard interface.
+
+**CENC** (Common Encryption; ISO/IEC 23001-7) is the container-level standard that specifies how encrypted samples are stored in fMP4/CMAF segments. [Source](https://www.iso.org/standard/84637.html) It defines two encryption schemes:
+- **`cenc`** — AES-128 Counter Mode (CTR); used by Widevine and PlayReady
+- **`cbcs`** — AES-128 Cipher Block Chaining with constant IV; used by FairPlay
+
+A CENC-encrypted fMP4 segment is identical to an unencrypted one except:
+1. Each sample's data is encrypted (video NAL unit payloads, audio frame payloads)
+2. A `pssh` (Protection System Specific Header) box in the `moov` atom carries DRM-system-specific data — one `pssh` per DRM system, identified by a 16-byte System ID UUID
+3. The `sinf`/`schm` box in the `stsd` replaces the codec box to signal encryption
+
+The same CMAF segment file can be decrypted by multiple DRM systems because each DRM's `pssh` is included in the `moov`. This **multi-DRM** pattern (one set of segments, multiple `pssh` boxes) is the standard for cross-platform streaming.
+
+**EME** (Encrypted Media Extensions; W3C Recommendation) is the browser API that connects JavaScript to the DRM system. [Source](https://www.w3.org/TR/encrypted-media-2/) It does not implement DRM itself — it provides a standard interface to a platform-supplied **CDM** (Content Decryption Module). The flow:
+
+```javascript
+// 1. Detect encrypted content
+video.addEventListener('encrypted', async e => {
+  // e.initDataType: 'cenc' | 'keyids' | 'webm'
+  // e.initData: the pssh box bytes from the segment
+
+  // 2. Create a MediaKeys session for the DRM system
+  const access = await navigator.requestMediaKeySystemAccess('com.widevine.alpha', [{
+    initDataTypes: ['cenc'],
+    videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.4d0034"' }],
+    distinctiveIdentifier: 'required',
+    persistentState: 'required',
+  }]);
+  const mediaKeys = await access.createMediaKeys();
+  await video.setMediaKeys(mediaKeys);
+
+  // 3. Open a key session
+  const session = mediaKeys.createSession('temporary');
+  session.addEventListener('message', async e => {
+    // e.message: licence request blob (opaque, DRM-system-specific)
+    // Send to licence server, receive licence response
+    const licence = await fetch('/licence', { method: 'POST', body: e.message })
+                          .then(r => r.arrayBuffer());
+    await session.update(licence);  // gives the CDM the decryption key
+  });
+  await session.generateRequest(e.initDataType, e.initData);
+});
+```
+
+The `'com.widevine.alpha'` string is the **Key System ID** — a reverse-domain string that identifies which CDM to use. Each DRM vendor registers their own:
+
+| Key System ID | DRM System | Platforms |
+|---------------|-----------|-----------|
+| `com.widevine.alpha` | Widevine | Chrome, Edge, Firefox, Android |
+| `com.apple.fps` | FairPlay | Safari (macOS, iOS, tvOS) |
+| `com.microsoft.playready` | PlayReady | Edge, IE, Xbox, Tizen |
+| `org.w3.clearkey` | ClearKey (no DRM, test only) | All browsers |
+
+**CDM** (Content Decryption Module) is the sandboxed native binary that actually holds the decryption keys and decrypts media samples. The browser communicates with the CDM via EME; the CDM communicates with the DRM vendor's licence server. The CDM runs in a separate process (Chrome's `media/cdm/`) with restricted syscalls (seccomp-BPF) so it cannot be inspected or tampered with. On Linux, the Widevine CDM is a proprietary Google binary (`libwidevinecdm.so`) shipped with Chrome; Firefox downloads it via `mozplayernative`.
+
+**Widevine** (Google) operates three **security levels** that differ in where the key and decode happen:
+- **L1** (highest): decryption and decode happen inside a TEE (Trusted Execution Environment) or secure video path; the decrypted frame never appears in normal memory; required for 1080p+ on streaming platforms
+- **L2**: decryption in TEE but decode in software; rare; transitional
+- **L3** (most common on desktop Linux): decryption and decode in software inside the CDM process; sufficient for SD/HD; what Chrome on Linux typically achieves without TEE hardware
+
+**PlayReady** (Microsoft) uses a similar security-level model (SL150/SL2000/SL3000). PlayReady 4.0 introduced CBCS support alongside the older CTR mode, enabling CMAF compatibility.
+
+**What is "better"**: CENC/EME/CDM is the framework — it has no inherent quality difference from Widevine vs PlayReady. The practical hierarchy is:
+- **Widevine L1** > **L3** for content protection strength (L3 is reversible in software)
+- **Widevine** is better than **PlayReady** on Linux (PlayReady has no Linux CDM for Chrome)
+- **FairPlay** is required for Safari/iOS; there is no alternative on Apple platforms
+- **ClearKey** is not real DRM — it is an EME test mode with unprotected key delivery
+
 ---
 
 #### HLS vs DASH Summary
@@ -627,16 +755,43 @@ Hardware decode (Linux): Intel Tiger Lake / Gen12+ via iHD driver; AMD RDNA3 (RX
 
 ---
 
-#### Image Codecs (ImageDecoder)
+#### Image Codecs and Containers (ImageDecoder)
 
-`ImageDecoder` (part of WebCodecs) handles still images with full metadata preservation:
+`ImageDecoder` (part of WebCodecs) handles still images with full metadata preservation. Unlike `VideoDecoder`, it handles container parsing itself — you pass the entire image blob, not individual frames. The image world has both **codecs** (compression algorithms) and **containers** (file formats that wrap the codec output):
 
-- **JPEG** — lossy, DCT-based, 8-bit; ubiquitous; `image/jpeg`
-- **PNG** — lossless, deflate-compressed, supports alpha; `image/png`
-- **WebP** — Google 2010; lossy mode uses VP8 intra coding (~25–35% smaller than JPEG); lossless uses a custom palette-based predictor; supports animation and alpha; `image/webp`
-- **AVIF** — AV1 intra frames packaged in HEIF (ISO 23008-12) container; best compression (~50% smaller than JPEG at same quality); supports HDR, wide colour gamut, 10/12-bit; `image/avif`; hardware decode follows AV1 hardware availability
+**JPEG** (ISO/IEC 10918; 1992) — the universal lossy still-image codec. DCT-based 8×8 block transform, Huffman entropy coding, 8-bit per channel, no alpha channel, no HDR. Ubiquitous: every camera, every browser, every OS has a JPEG decoder. `image/jpeg`. JPEG's successor is JPEG-XL.
 
-`ImageDecoder` exposes per-frame access for animated WebP and AVIF, and HDR metadata for AVIF/JPEG-XL (when supported). Unlike `VideoDecoder`, `ImageDecoder` handles container parsing itself — you pass the entire image blob, not individual frames.
+**PNG** (ISO 15948; 2003) — lossless, deflate-compressed, supports 8/16-bit per channel and full alpha. The standard for graphics, icons, and screenshots where lossless fidelity matters. `image/png`. No HDR colour space support in the base spec (but HDR metadata via ICC profiles is possible).
+
+**WebP** (Google; 2010) — a dual-mode codec: lossy WebP uses VP8 intra-frame coding (same DCT as VP8 video), lossless WebP uses a palette-based predictor with LZ77+Huffman. Supports animation (replacing animated GIF), alpha in both modes. 25–35% smaller than JPEG at equivalent quality. `image/webp`. Supported in all modern browsers.
+
+**HEIF** (High Efficiency Image File Format; ISO/IEC 23008-12; 2015) is a **container**, not a codec. [Source](https://www.iso.org/standard/83102.html) It is an ISOBMFF-derived file format that can store any codec's intra frames as still images or image sequences:
+- **HEIC** (`.heic`) — HEIF container + HEVC intra frames; Apple's default camera format on iPhone; supported natively in macOS/iOS; not supported in Chrome on Linux without a system decoder
+- **AVIF** (`.avif`) — HEIF container + AV1 intra frames; royalty-free; the dominant modern still-image format for web use; `image/avif`
+
+The HEIF container adds features the codec itself doesn't have: image collections (burst shots), image sequences (animations), thumbnail storage, depth maps, and auxiliary image items (alpha channel stored as a separate image item). An AVIF file is literally an AV1 Sequence Header OBU + a single AV1 frame (or multiple frames for animation) wrapped in HEIF metadata boxes.
+
+**AVIF** (AOM; 2019): AV1 intra frames in HEIF. Best compression of any browser-supported still-image format — ~50% smaller than JPEG at equivalent quality, ~30% smaller than WebP. Supports HDR (10/12-bit), wide colour gamut (P3, Rec.2020), and lossless. Hardware decode follows AV1 hardware availability (Intel Tiger Lake+, AMD RDNA3+). `image/avif`. Supported Chrome 85+, Firefox 93+, Safari 16+.
+
+**JPEG-XL** (ISO/IEC 18181; 2022) is the next-generation image codec designed to supersede JPEG, WebP, and PNG in a single format. [Source](https://jpeg.org/jpegxl/) Key properties:
+- **Lossless JPEG recompression**: can transcode existing JPEG files to JPEG-XL losslessly and recover the original JPEG bitstream exactly — unique among image codecs; enables migration without re-encoding
+- **Visually lossless quality** at ~60% of JPEG file size; comparable to AVIF but faster to encode/decode
+- **HDR and wide gamut** natively: 32-bit float per channel, any colour space
+- **Progressive decode**: a small header enables a rough preview; subsequent passes refine quality
+- **Animation**: `image/jxl`
+
+Browser support: Chrome removed its JPEG-XL trial in 2023 (citing insufficient ecosystem traction), then re-added it behind a flag in Chrome 126 (2024). Firefox has it behind `image.jxl.enabled`. Safari added support in Safari 18 (2024). As of mid-2026, JPEG-XL is supported by `ImageDecoder` in Chrome when the flag is enabled; `ImageDecoder` exposes HDR metadata for JPEG-XL via `ImageDecodeResult.image.colorSpace`.
+
+**Image format comparison table:**
+
+| Format | Type | Year | RF | Alpha | Animation | HDR | Compression vs JPEG | Browser support |
+|--------|------|------|----|-------|-----------|-----|---------------------|-----------------|
+| JPEG | Codec | 1992 | Yes | No | No | No | baseline | Universal |
+| PNG | Codec+container | 2003 | Yes | Yes | No | Partial | larger (lossless) | Universal |
+| WebP | Codec | 2010 | Yes | Yes | Yes | No | ~30% smaller | Chrome 23+, FF 65+, Safari 14+ |
+| AVIF | AV1 in HEIF | 2019 | Yes | Yes | Yes | Yes | ~50% smaller | Chrome 85+, FF 93+, Safari 16+ |
+| HEIC | HEVC in HEIF | 2015 | No | Yes | Yes | Yes | ~50% smaller | Safari only (Linux: no) |
+| JPEG-XL | Codec | 2022 | Yes | Yes | Yes | Yes | ~40% smaller | Chrome 126+ (flag), Safari 18+, FF (flag) |
 
 ---
 
@@ -668,6 +823,88 @@ Hardware decode (Linux): Intel Tiger Lake / Gen12+ via iHD driver; AMD RDNA3 (RX
 | AV1 | `av01.0.08M.10` — Main, level 4.0, Main tier, 10-bit | Binary `av1C` record (Sequence Header OBU) | `av1C` = 4-byte config + raw OBU |
 | Opus | `opus` | Binary `OpusHead` identification header | 8-byte magic + channels + pre-skip + sample rate |
 | AAC-LC | `mp4a.40.2` | Binary AudioSpecificConfig (2–5 bytes) | Derived from `esds` box in MP4 |
+
+---
+
+#### What Is Better Than What: Selection Guides
+
+"Better" is always context-dependent. The tables below rank each dimension explicitly.
+
+**Video codec: compression efficiency** (same visual quality, lower bitrate = better):
+
+```
+AV1  >  H.265/HEVC  >  VP9  >  H.264  >  VP8
+ ~50%        ~40%         ~30%     baseline    ~10% worse than H.264
+ vs H.264   vs H.264    vs H.264
+```
+
+AV1 delivers the best quality per bit, but its encode is 5–20× slower than H.264 in software (SVT-AV1 narrows this gap). HEVC achieves near-AV1 quality but has royalty costs. VP9 is the royalty-free alternative before AV1 reached hardware support ubiquity.
+
+**Video codec: hardware decode breadth** (more hardware = better real-world support):
+
+```
+H.264  >  VP9  >  H.265  >  AV1  >  VP8
+(universal)  (Intel Gen9+,  (Intel Gen9+  (Intel Gen12+  (Intel Gen6,
+              RDNA1+,        flag in        RDNA3+,        some ARM)
+              Pascal+)       Chrome,        Ampere+)
+                             AMD RDNA2+)
+```
+
+H.264 is the only codec with hardware decode on literally every GPU sold in the last 15 years. AV1 hardware decode is growing fast (all 2022+ GPUs) but absent on anything older.
+
+**Video codec: royalty status**:
+```
+AV1 = VP9 = VP8 = Opus (royalty-free)  >  H.264 (near-free, ~2028)  >  H.265 (royalties)
+```
+
+**Practical video codec decision tree:**
+```
+Need maximum compatibility (all browsers, all devices)?  → H.264
+Need royalty-free + good quality, broad HW decode?       → VP9
+Need best compression, royalty-free, 2024+ devices?      → AV1
+Need Safari HDR on Apple devices?                        → H.265 (HEVC)
+Need WebRTC video?                                       → VP8 (legacy) or VP9/AV1 (modern)
+```
+
+**Audio codec ranking:**
+
+| Goal | Best choice | Reason |
+|------|-------------|--------|
+| Web/WebRTC, royalty-free | **Opus** | Mandatory in WebRTC; best quality at all bitrates; royalty-free |
+| MP4/DASH/HLS compatibility | **AAC-LC** | Default audio in every MP4 container; hardware encode everywhere |
+| Legacy WebM files | **Vorbis** | Only if reading existing WebM; use Opus for new content |
+| Highest quality (archival) | **FLAC** (via Matroska) | Lossless; but not in WebM or browser-native containers |
+
+Opus beats AAC at every bitrate below 128 kbps according to subjective listening tests. Above 192 kbps the difference is inaudible. Use Opus for WebRTC and new WebM; use AAC for DASH/HLS where client device AAC hardware decode matters.
+
+**Container decision tree:**
+```
+DASH or HLS streaming?                    → fMP4 / CMAF (interoperable)
+Browser video, royalty-free codecs?       → WebM (VP9/AV1 + Opus)
+Widest compatibility (any codec)?         → MP4 (ISO BMFF)
+Archival, complex multi-track, subtitles? → Matroska (MKV)
+HLS + MPEG-TS legacy pipeline?            → .ts (only if forced; prefer fMP4)
+```
+
+**Streaming protocol decision tree:**
+```
+Apple devices (iOS, tvOS, macOS Safari)?      → HLS required
+Android / Chrome / Linux?                     → DASH preferred (or HLS via hls.js)
+Both?                                         → CMAF origin + both manifests (single segment set)
+Sub-2-second live latency?                    → LL-HLS or Chunked CMAF DASH
+Standard live (< 10 s latency)?               → DASH (6–10 s) or HLS (15–30 s)
+Real-time (< 500 ms, bidirectional)?          → WebRTC (SRTP/ICE, not HTTP segments)
+```
+
+**DRM decision tree:**
+```
+Chrome / Firefox / Android?   → Widevine (com.widevine.alpha)
+Safari / iOS / Apple TV?      → FairPlay (com.apple.fps)
+Edge / Xbox / Tizen?          → PlayReady (com.microsoft.playready)
+All of the above?             → Multi-DRM: CENC (one CMAF segment set) + pssh boxes for all three
+Linux Chrome specifically?    → Widevine L3 (software CDM); L1 requires TEE hardware not present on PC
+Testing only (no real DRM)?   → ClearKey (org.w3.clearkey)
+```
 
 ---
 
