@@ -1194,6 +1194,79 @@ Java_com_example_vulkan_VulkanBridge_getGpuTimestamp()
 
 [Source: ART JNI Tips](https://developer.android.com/training/articles/perf-jni), [dalvik.annotation.optimization source](https://android.googlesource.com/platform/libcore/+/refs/heads/main/dalvik/src/main/java/dalvik/annotation/optimization/)
 
+#### How they work internally: the ART JNI trampoline
+
+When ART AOT-compiles (`dex2oat`) or JIT-compiles a `native` method it generates a *JNI trampoline stub* — machine code inserted between the managed caller and the C function. On AArch64, a standard JNI stub does the following before the native function executes:
+
+1. **Thread state transition `kRunnable → kNative`** — ART's concurrent-copying GC tracks every thread's state in `art::Thread::tls32_.state_and_flags`. Changing to `kNative` requires a `StoreRelease` memory barrier so the GC thread sees the update; without it the GC could begin compacting heap objects the native frame still references.
+2. **HandleScope push** — A `HandleScope` frame is pushed onto the managed stack. Every `jobject`/`jarray`/`jstring` parameter is wrapped as an indirect handle so the GC can relocate the underlying object if it compacts the heap during the call.
+3. **Exception state save** — The pending-exception slot is recorded so the stub can detect a Java exception raised indirectly by the native code.
+4. **`JNIEnv*` + `jclass`/`jobject` prepend** — The native function's first two arguments are always injected: a `JNIEnv*` pointer and a `jclass` (static) or `jobject` (instance), regardless of the Java signature.
+5. **Call the native function** — `blr x17` using the pointer from `ArtMethod::GetEntryPointFromJni()`.
+6. **GC safepoint check on return** — The stub loads `Thread::tls32_.state_and_flags` and checks `kSuspendRequest` / `kCheckpointRequest`. If a GC is waiting, the thread calls `art::Thread::CheckSuspend()` and blocks.
+7. **`kNative → kRunnable` transition** — Reversed with another barrier.
+8. **HandleScope pop + local-ref cleanup** — The frame is torn down; a `jobject` return value is unwrapped from its handle.
+
+Steps 1–2 and 6–8 — two barrier-protected state writes, the HandleScope push/pop, and the conditional GC-suspension check — dominate the call overhead. On a trivial native function these 10–15 extra instructions can be comparable to the function body itself.
+
+#### @FastNative internals: skip the HandleScope, keep the state transition
+
+ART records the annotation as the access flag `kAccFastNative` (`0x00080000`) in `ArtMethod`'s modifier word. The JNI trampoline generator (`art/compiler/jni/jni_compiler.cc`, `JniCompiler::Compile()`) checks this flag and emits a reduced stub:
+
+- **Omitted**: HandleScope push/pop and all local-reference table bookkeeping. The contract guarantees no new managed objects are created, so the table never needs to exist.
+- **Kept**: `kRunnable → kNative` state transition with its `StoreRelease` barriers.
+- **Kept**: GC safepoint check on return.
+- **Kept**: `JNIEnv*` + `jclass`/`jobject` first-argument injection — the method can still read and convert parameters through JNI helpers; it just cannot create new Java objects or call back into the JVM.
+
+The transition barriers are the remaining dominant cost, which is why the speedup is approximately 2× rather than more.
+
+#### @CriticalNative internals: eliminate the state transition, change the ABI
+
+`@CriticalNative` (flag `kAccCriticalNative`, `0x00200000`) removes the thread state transition entirely. The thread stays in `kRunnable` throughout the call.
+
+The generated stub:
+- **Omitted**: `kRunnable → kNative` transition and all associated barriers.
+- **Omitted**: HandleScope and all local-reference machinery.
+- **Omitted**: `JNIEnv*` and `jclass`/`jobject` prepend — the C function's calling convention becomes a plain C ABI matching the Java primitive types directly (`jlong → int64_t`, `jint → int32_t`, `jfloat → float`). No JVM pointers appear in the frame.
+- **Omitted**: GC safepoint check on return (the thread never left `kRunnable`).
+- **Result**: the stub reduces to register setup + `blr` + `ret`, which the compiler backend treats identically to a direct C call.
+
+The ABI change is why `@CriticalNative` is `static`-only. Instance methods require a `jobject this` as the first Java argument. Without a HandleScope there is no safe way to pin an object reference across the call — so instance methods cannot use this annotation.
+
+#### GC interaction: why @CriticalNative methods must be short
+
+ART's Concurrent Copying (CC) collector classifies threads by state:
+
+- `kNative` threads are *passively suspended* from the GC's perspective: their native frames hold no live heap pointers the GC needs to scan (those are in the HandleScope), so the collector can proceed with compaction without waiting for them.
+- `kRunnable` threads are *actively running*: the GC cannot compact heap objects while they might be accessing them. Before a compacting phase, the GC issues `SuspendAll()`, which spin-waits for every `kRunnable` thread to reach a safepoint or enter `kNative`.
+
+A `@CriticalNative` call leaves the thread in `kRunnable`. If a GC `SuspendAll()` arrives mid-call, the GC thread must wait until the method returns and the thread hits its next managed safepoint. A long `@CriticalNative` call directly delays GC pause completion. Standard JNI and `@FastNative` avoid this: their `kNative` transition lets the collector proceed concurrently, paying the barrier cost in exchange for not blocking the GC. The practical rule: `@CriticalNative` is for nanosecond-to-low-microsecond operations (timestamp reads, flag polls, arithmetic on GPU handles); anything that might block the GC should use `@FastNative` instead.
+
+#### What the three modes strip compared to standard JNI
+
+| Step | Standard JNI | `@FastNative` | `@CriticalNative` |
+|---|---|---|---|
+| `kRunnable → kNative` barrier | Yes | Yes | **No** |
+| HandleScope push/pop | Yes | **No** | **No** |
+| `JNIEnv*` + `jclass` prepend | Yes | Yes | **No** |
+| GC safepoint check on return | Yes | Yes | **No** |
+| Can call Java / allocate | Yes | **No** | **No** |
+| Can be instance method | Yes | Yes | **No** |
+| Blocks GC during call | No | No | **Yes** |
+
+#### Relevant ART source files
+
+| File | Role |
+|---|---|
+| `art/compiler/jni/jni_compiler.cc` | Trampoline stub generator; branches on `kAccFastNative` / `kAccCriticalNative` |
+| `art/runtime/entrypoints/quick/quick_jni_entrypoints.cc` | Fast/critical entry-point implementations |
+| `art/runtime/thread.cc` | `TransitionFromRunnableToSuspended()`, `TransitionFromSuspendedToRunnable()`, `CheckSuspend()` |
+| `art/runtime/jni/jni_env_ext.cc` | HandleScope push/pop, local reference table |
+| `art/libdex/modifiers.h` | `kAccFastNative = 0x00080000`, `kAccCriticalNative = 0x00200000` |
+| `art/runtime/art_method.h` | `ArtMethod::IsFastNative()`, `ArtMethod::IsCriticalNative()` |
+
+[Source: ART JNI compiler](https://android.googlesource.com/platform/art/+/refs/heads/main/compiler/jni/jni_compiler.cc), [ART thread state machine](https://android.googlesource.com/platform/art/+/refs/heads/main/runtime/thread.cc)
+
 ### Why Project Panama FFM does not apply to Android
 
 Java 21 standardised the **Foreign Function & Memory API** (FFM, JEP 454) as a replacement for JNI in the OpenJDK/HotSpot JVM. FFM provides `MethodHandle`-based native dispatch and `MemorySegment` for off-heap memory without `sun.misc.Unsafe`. It is widely discussed as the future of Java native interop.
