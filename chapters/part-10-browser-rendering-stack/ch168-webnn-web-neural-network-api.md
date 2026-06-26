@@ -598,7 +598,7 @@ NVIDIA does not provide a VA-API driver for Chrome on Linux (Chapter 147, §11 �
 | WebNN NPU | No | No |
 | WebGPU ML | Yes (Vulkan/D3D12) | **Yes** (Vulkan, best current option) |
 | Video decode (Chrome) | DirectX Video, DXVA | **No** (software fallback) |
-| Video decode (Firefox) | DirectX Video | Yes via nvidia-vaapi-driver (ch147 §11) |
+| Video decode (Firefox) | DirectX Video | Yes — native Vulkan Video (Firefox 153, July 2026); previously nvidia-vaapi-driver shim |
 
 ---
 
@@ -612,9 +612,29 @@ An active open-source project, **rustnn**, is building a Rust implementation of 
 2. **Backend converters** — Transform the graph into ONNX format (for ONNX Runtime) or CoreML format.
 3. **Executors** — Run the converted graph on the native runtime.
 
-Rustnn achieves coverage of all 95 WebNN operators and validates against the W3C Web Platform Tests. As a proof of concept, the author demonstrated an image classification model running through a rustnn-backed WebNN implementation in a Firefox build. However, as the author explicitly notes, the current integration runs inference in the **content process** (the Gecko equivalent of the Blink renderer process) rather than in a dedicated sandboxed GPU process — "a big security hole" that would need to be addressed before shipping. A separate GPU process design is being explored.
+Rustnn achieves coverage of all 95 WebNN operators and validates against the W3C Web Platform Tests. As a proof of concept, the author demonstrated an image classification model running through a rustnn-backed WebNN implementation in a Firefox build. However, as the author explicitly notes, the current integration runs inference in the **content process** (the Gecko equivalent of the Blink renderer process) rather than in a dedicated sandboxed GPU process — "a big security hole" that would need to be addressed before shipping. The intended final architecture involves a dedicated AI GPU service process being designed by Paul Adenot; the WebNN implementation will use it once the process exists. An IPC layer between C++ and the Rust bridge does not yet exist in the proof-of-concept patches.
 
 There is no `dom/webnn/` directory in the main Firefox source tree as of this writing. **Note: needs verification** — check `searchfox.org/mozilla-central` for the current state of Gecko WebNN work.
+
+#### rustnn Executors and NVIDIA Support
+
+rustnn's executor layer currently supports three backends:
+
+| Executor | Platform | Status |
+|---|---|---|
+| ONNX Runtime | Cross-platform | Stable |
+| CoreML | macOS | Stable |
+| TensorRT-RTX | Windows (NVIDIA RTX 30+) | Work in progress |
+
+The TensorRT-RTX executor uses a new Rust binding crate (`trtx-rs`) written by the rustnn author because the existing NVIDIA TensorRT Rust binding was five years old and unmaintained. Development is slower because it requires a separate Windows machine.
+
+**For NVIDIA Linux specifically:** rustnn has no TensorRT or CUDA executor for Linux. However, Firefox's architecture provides a more direct future path than Chrome's: Firefox's wgpu-based WebGPU implementation uses Vulkan as its Linux backend, and Vulkan works natively with NVIDIA's proprietary Linux driver (unlike Chrome's WebNN, which is tied to OS-level API stacks — Windows ML on Windows, CoreML on macOS). When Firefox's sandboxed AI GPU process exists and rustnn (or a native Gecko implementation) is wired into it, a `createContext(GPUDevice)` path through wgpu → Vulkan → NVIDIA driver would give NVIDIA Linux users GPU-accelerated WebNN inference — something Chrome's architecture makes significantly harder to deliver.
+
+#### Firefox 153: Vulkan Video Decode for NVIDIA Linux
+
+Separately from WebNN, Firefox 153 (scheduled July 21, 2026) adds [native Vulkan Video decode for NVIDIA GPUs on Linux](https://goodtech.info/firefox-153-integration-decodage-video-vulkan-linux-nvidia/), covering H.264, H.265, AV1, and VP9 via the Vulkan backend within Firefox's RDD (Remote Data Decoder) process. This eliminates the `nvidia-vaapi-driver` shim that Chapter 147 §11 documents as the current workaround. The code was merged to Firefox Nightly as of June 2026.
+
+This is not WebNN, but it signals a consistent direction: Firefox is investing in direct Vulkan-based NVIDIA Linux acceleration rather than relying on translation layers. The same architectural investment (wgpu, Vulkan process isolation) that enables Vulkan Video is the foundation a future NVIDIA-accelerated Firefox WebNN would build on.
 
 Firefox's **wgpu**-based WebGPU implementation (Chapter 52) provides the GPU context that a future Firefox WebNN could use for the `createContext(GPUDevice)` interop path. The alignment here is architectural: just as Chromium's WebNN can share a Dawn `GPUDevice`, a future Firefox WebNN could share a wgpu `GPUDevice` with Gecko's WebGPU implementation.
 
