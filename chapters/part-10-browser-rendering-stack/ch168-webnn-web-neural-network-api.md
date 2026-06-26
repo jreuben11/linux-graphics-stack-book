@@ -573,6 +573,25 @@ On Linux, NVIDIA has no contribution to the WebNN stack:
 
 The practical consequence: an RTX 4090 on Linux running Chrome gets the same WebNN inference performance as an Intel Celeron N4000 — both execute on XNNPACK. For GPU-accelerated ML inference on NVIDIA Linux today, the correct API is **WebGPU**, using ONNX Runtime Web's WebGPU execution provider or Transformers.js with `device: 'webgpu'`.
 
+#### Why NVIDIA Has Not Prioritised a Linux WebNN Path
+
+Five interlocking reasons explain the gap:
+
+**1. The partnership is with Microsoft, not with Chromium.**
+NVIDIA's browser-ML investment went into TensorRT-RTX as a [Windows ML execution provider](https://developer.nvidia.com/blog/deploy-ai-models-faster-with-windows-ml-on-rtx-pcs/). The [RTX Spark / Windows AI PC initiative](https://nvidianews.nvidia.com/news/nvidia-microsoft-windows-pcs-agents-rtx-spark) is a bilateral Microsoft–NVIDIA deal: Microsoft owns the Windows ML stack; NVIDIA contributed an EP optimised for its hardware. There is no Linux operating-system vendor in an analogous position — no entity that owns a "browser ML service layer" for Linux as Microsoft does for Windows.
+
+**2. WebNN on Linux is a Chromium engineering problem, not an NVIDIA driver problem.**
+On Windows the chain is `services/webnn/ → Windows ML API → TensorRT-RTX`. The OS API glues the pieces together. On Linux, building an equivalent path would require writing a `services/webnn/ → CUDA/TensorRT` backend inside Chromium's sandboxed GPU service process. That is the work of Chromium contributors, not of NVIDIA driver engineers. NVIDIA could supply a sandboxable inference library, but neither the Chromium project nor NVIDIA has committed to building that integration.
+
+**3. NVIDIA's Linux answer for browser ML is WebGPU, which now works.**
+Chrome 147–148 [added Linux NVIDIA WebGPU support](https://www.izendestudioweb.com/articles/2026/04/28/whats-new-in-webgpu-in-chrome-147-148-wgsl-linear-indexing-and-linux-nvidia-support/) via Vulkan, using NVIDIA's proprietary Vulkan driver. ONNX Runtime Web's WebGPU execution provider and Transformers.js `device: 'webgpu'` both run CUDA-like compute through WGSL shaders on RTX hardware today. A WebNN GPU backend for Linux would be a second GPU path to maintain on top of an already-working WebGPU path, with marginal incremental benefit for browser developers.
+
+**4. Market math does not justify the investment.**
+Linux desktop holds roughly 3–4 % of the PC market. The sub-segment of "NVIDIA GPU + browser ML" on Linux is a small fraction of that. NVIDIA's RTX revenue comes from Windows gamers and from enterprise Linux *CUDA* (servers, HPC, AI training) — neither population relies on in-browser WebNN. The RTX AI PC programme targets hundreds of millions of Windows laptops; Linux desktop is outside that addressable market.
+
+**5. The same pattern is consistent across the Linux browser stack.**
+NVIDIA does not provide a VA-API driver for Chrome on Linux (Chapter 147, §11 — the community wrote `nvidia-vaapi-driver` as a NVDEC→VA-API shim for Firefox). NVIDIA does not publish an open Mesa Vulkan driver analogous to Intel ANV or AMD RADV (NVK exists but is community-driven). The common thread: NVIDIA invests in Linux support where CUDA/enterprise compute is the use case, and defers browser standards integration unless a partner fills the gap.
+
 | | NVIDIA Windows (RTX 30+) | NVIDIA Linux |
 |---|---|---|
 | WebNN GPU | **Yes** via TensorRT-RTX + Windows ML | **No** (CPU/XNNPACK only) |
