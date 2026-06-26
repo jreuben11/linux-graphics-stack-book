@@ -539,6 +539,48 @@ The relationship between WebNN and Dawn on Linux is indirect:
 
 Putting it plainly for Linux graphics stack engineers: **WebNN and WebGPU share a GPU device at the resource level on Linux, but not a compute dispatch path**. There is no "WebNN dispatches WGSL compute shaders through Dawn" scenario.
 
+### 4.4 NVIDIA: Windows Acceleration vs Linux Gap
+
+NVIDIA's position in the WebNN ecosystem is sharply split by platform.
+
+#### NVIDIA on Windows (TensorRT-RTX via Windows ML)
+
+On Windows, NVIDIA has the best-performing WebNN path available in any browser. The chain is:
+
+```
+Browser WebNN API
+  → Chromium services/webnn/ort/  (Windows 11 24H2+)
+  → Windows ML / ONNX Runtime system component
+  → TensorRT-RTX Execution Provider  (RTX 30 / Ampere+)
+  → CUDA + TensorRT graph compiler
+  → NVIDIA GPU
+```
+
+Microsoft delivered this path via **KB5096142** (Windows Update, 2025), which ships the NVIDIA TensorRT-RTX ONNX Runtime execution provider (v2.2605.1.0) to Windows 11 24H2 and 25H2 systems as a system component — meaning it is available to any application using Windows ML/ORT without requiring a separate NVIDIA SDK install. [Source](https://onnxruntime.ai/docs/execution-providers/TensorRTRTX-ExecutionProvider.html)
+
+TensorRT-RTX delivers approximately **50% higher throughput** compared to the DirectML execution provider on NVIDIA RTX GPUs, because TensorRT's ahead-of-time graph compilation fuses operators and selects CUDA kernels at a level that DirectML's shader-based approach cannot match. Supported GPU generation: Ampere (RTX 30xx) and later. TensorRT-RTX also integrates with Windows ML's just-in-time compilation for deployment to end-user devices where the exact model structure may not be known in advance.
+
+On Windows, this means an Transformers.js or ORT Web application using `device: 'webnn-gpu'` on an RTX 3070 laptop will transparently use CUDA-accelerated TensorRT inference without any NVIDIA SDK visible to the web developer.
+
+#### NVIDIA on Linux (no WebNN path)
+
+On Linux, NVIDIA has no contribution to the WebNN stack:
+
+- **No VA-API in Chrome** (Chapter 147, §11): Chrome's video decode falls back to software on NVIDIA Linux; hardware video uses Firefox + `nvidia-vaapi-driver`
+- **No WebNN GPU/NPU backend**: the `services/webnn/tflite/` backend runs on CPU via XNNPACK regardless of GPU vendor. There is no CUDA or TensorRT backend for Chrome's WebNN service on Linux.
+- **No ONNX Runtime TensorRT-RTX on Linux**: TensorRT-RTX is a Windows-only execution provider; the Linux ONNX Runtime build uses CUDA EP or TensorRT EP for native inference, but these are not wired into Chrome's sandboxed WebNN service.
+- **WebGPU (not WebNN)** is the only GPU-accelerated ML inference path for NVIDIA on Linux in the browser — via Vulkan compute shaders through NVK (open-source) or the proprietary NVIDIA Vulkan driver. This goes through the WebGPU API and WGSL compute shaders, entirely bypassing WebNN.
+
+The practical consequence: an RTX 4090 on Linux running Chrome gets the same WebNN inference performance as an Intel Celeron N4000 — both execute on XNNPACK. For GPU-accelerated ML inference on NVIDIA Linux today, the correct API is **WebGPU**, using ONNX Runtime Web's WebGPU execution provider or Transformers.js with `device: 'webgpu'`.
+
+| | NVIDIA Windows (RTX 30+) | NVIDIA Linux |
+|---|---|---|
+| WebNN GPU | **Yes** via TensorRT-RTX + Windows ML | **No** (CPU/XNNPACK only) |
+| WebNN NPU | No | No |
+| WebGPU ML | Yes (Vulkan/D3D12) | **Yes** (Vulkan, best current option) |
+| Video decode (Chrome) | DirectX Video, DXVA | **No** (software fallback) |
+| Video decode (Firefox) | DirectX Video | Yes via nvidia-vaapi-driver (ch147 §11) |
+
 ---
 
 ## 5. Firefox Implementation
@@ -750,6 +792,80 @@ The `chrome://gpu` page includes WebNN feature status in its output, and `about:
 **Chrome DevTools WebNN panel:** A dedicated DevTools panel for WebNN graph inspection has been prototyped but was not in stable DevTools as of this writing. **Note: needs verification.** Check the Chrome DevTools changelog for updates.
 
 For a live view of browser support across Chrome, Firefox, and other browsers, the **Web Platform Status** tracker at [webstatus.dev/features/webnn](https://webstatus.dev/features/webnn) is the authoritative source.
+
+### 8.5 Framework WebNN Support: TensorFlow.js, Transformers.js, ONNX Runtime Web
+
+The W3C MLWG's stated architectural goal is for WebNN to sit beneath all JavaScript ML frameworks as a unified hardware-acceleration layer. The degree to which each major framework has implemented this varies significantly as of mid-2026.
+
+#### ONNX Runtime Web (most mature)
+
+As covered in §8.2, ORT Web has the most complete WebNN integration. The `executionProviders: ['webnn']` path is actively maintained, supports `MLTensor` IO binding to avoid GPU readback, and is the reference implementation that other frameworks build on top of. On Windows 11 24H2+, ORT Web's WebNN EP routes through the Windows ML ONNX Runtime system component, which on NVIDIA RTX hardware uses the TensorRT-RTX execution provider (§8.5 NVIDIA below).
+
+#### Transformers.js (shipped since v3)
+
+Transformers.js ([huggingface.co/docs/transformers.js](https://huggingface.co/docs/transformers.js)) uses ONNX Runtime Web as its inference backend, inheriting ORT Web's WebNN EP. WebNN support shipped in **Transformers.js v3** and carries forward in **v4** (released March 2025, which rewrote the WebGPU runtime but retained the WebNN path). [Source](https://huggingface.co/blog/transformersjs-v4)
+
+```javascript
+import { pipeline } from '@huggingface/transformers';
+
+// WebNN with default device selection (browser chooses GPU/NPU/CPU)
+const classifier = await pipeline('image-classification', 'model-id', {
+  device: 'webnn',
+});
+
+// Explicit device preference (maps to powerPreference internally)
+const classifierNpu = await pipeline('image-classification', 'model-id', {
+  device: 'webnn-npu',   // prefers NPU (Copilot+ PC, Apple Silicon)
+});
+const classifierGpu = await pipeline('image-classification', 'model-id', {
+  device: 'webnn-gpu',   // prefers GPU
+});
+const classifierCpu = await pipeline('image-classification', 'model-id', {
+  device: 'webnn-cpu',   // forces CPU (XNNPACK on all platforms)
+});
+```
+
+**Critical limitation — static shapes only**: WebNN does not currently support dynamic tensor shapes. Transformers.js requires `free_dimension_overrides` to be set for models with variable sequence lengths or batch sizes. In practice this means fixing the input shape at session creation time:
+
+```javascript
+const session = await ort.InferenceSession.create('./model.onnx', {
+  executionProviders: ['webnn'],
+  freeDimensionOverrides: {
+    batch_size: 1,
+    sequence_length: 128,   // must match actual input at inference time
+  },
+});
+```
+
+This is a significant ergonomic constraint for NLP models (variable sequence lengths) and detection models (variable number of detections). The WebNN spec working group is tracking dynamic shape support; it is not in the current Candidate Recommendation Draft.
+
+On Linux, `device: 'webnn-gpu'` and `device: 'webnn-npu'` both fall back to TFLite/XNNPACK CPU inference (see §4.1). `device: 'webnn-cpu'` behaves identically. Transformers.js users on Linux should prefer `device: 'webgpu'` for GPU-accelerated inference until WebNN's Linux GPU backend matures.
+
+#### TensorFlow.js (no WebNN backend)
+
+TensorFlow.js ships four backend packages: `@tensorflow/tfjs-backend-webgl` (default), `@tensorflow/tfjs-backend-webgpu`, `@tensorflow/tfjs-backend-wasm`, and `@tensorflow/tfjs-node`. There is no `@tensorflow/tfjs-backend-webnn` package as of mid-2026, and no public roadmap entry for one has been found in the TF.js GitHub issue tracker or ROADMAP.md. [Source](https://github.com/tensorflow/tfjs)
+
+The W3C MLWG architecture document describes TF.js as a future WebNN consumer, but the TF.js project itself has not committed to this. The practical route for TF.js users wanting WebNN acceleration is to **convert models to ONNX format and use ONNX Runtime Web** — TF.js model → `tensorflowjs_converter` → ONNX → ORT Web WebNN EP. This conversion is lossy for some ops and requires the SavedModel or keras format as input.
+
+TF.js's continued investment in its WebGPU backend (via `@tensorflow/tfjs-backend-webgpu`) suggests the team's GPU acceleration strategy remains WebGPU-centric rather than WebNN-centric.
+
+#### Framework support summary
+
+| Framework | WebNN status | Implementation path | Dynamic shapes | Linux GPU |
+|-----------|-------------|---------------------|---------------|-----------|
+| ONNX Runtime Web | **Shipped** (production preview) | Native WebNN EP | No (static only) | CPU/XNNPACK fallback |
+| Transformers.js v3+ | **Shipped** (via ORT Web EP) | ORT Web WebNN EP | No | CPU/XNNPACK fallback |
+| TensorFlow.js | **Not implemented** | — | — | — |
+| MediaPipe | **Partial** (via WASM + XNNPACK) | No WebNN EP; uses own WASM runtime | N/A | No |
+| WebNN polyfill | **Full coverage** (software only) | WebGPU/WebGL dispatch | Yes | Via WebGPU |
+
+The bottom line: as of mid-2026, WebNN in the browser is **production-ready only on Windows** (DirectML/TensorRT-RTX/Core ML on macOS) and specifically through ORT Web or Transformers.js. On Linux, it is a CPU-only path offering XNNPACK performance rather than GPU or NPU acceleration. The recommendation for cross-platform production deployment is to feature-detect WebNN and fall back to WebGPU compute:
+
+```javascript
+const hasWebNN = 'ml' in navigator;
+const device = hasWebNN ? 'webnn' : 'webgpu';
+const model = await pipeline('task', 'model', { device });
+```
 
 ---
 
