@@ -133,6 +133,7 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 85: Android Compositor: SurfaceFlinger, HardwareBuffer, and the Buffer Pipeline](#chapter-85-android-compositor-surfaceflinger-hardwarebuffer-and-the-buffer-pipeline)
   - [Chapter 86: Vulkan on Android: Drivers, ANGLE, and Mobile GPU Performance](#chapter-86-vulkan-on-android-drivers-angle-and-mobile-gpu-performance)
   - [Chapter 87: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform](#chapter-87-android-ar-arcore-architecture-camera-hal-integration-and-the-android-xr-platform)
+  - [Chapter 161: Android Game Development Kit (AGDK): Native Game Architecture, Input, Audio, and Frame Pacing](#chapter-161-android-game-development-kit-agdk-native-game-architecture-input-audio-and-frame-pacing)
 - **Part XX — AI/ML Inference on Linux**
   - [Chapter 48: ROCm and Machine Learning on Linux GPUs](#chapter-48-rocm-and-machine-learning-on-linux-gpus)
   - [Chapter 88: NPU and AI Accelerator Integration on Linux](#chapter-88-npu-and-ai-accelerator-integration-on-linux)
@@ -1514,6 +1515,21 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Recording and Playback: `ArRecordingConfig`, `ArSession_startRecording()` to MP4 with custom tracks; `ArSession_startPlayback()`; `ArDataset` for offline pipelines; deterministic CI/test replay
 - Performance and power: VIO tracking one dedicated CPU core; camera preview 30 fps 640×480 or 1280×720; thermal throttling effect on `ArSession_update()` latency; `Choreographer`/`FrameRateCompatibility` for VSYNC alignment; AR tracking thread decoupled from render thread; AHardwareBuffer zero-copy from HAL → gralloc → ARCore → app
 - **Integrations**: Ch85 (SurfaceFlinger buffer pipeline for AR overlays), Ch86 (Vulkan AHardwareBuffer import, YCbCr conversion), Ch27 (OpenXR on Linux/Monado — compare to ARCore OpenXR), Ch26 (Camera HAL / V4L2 — Linux-side equivalent), Ch6 (ARM Mali/Adreno driver powering ARCore rendering), Ch24 (Vulkan EGL interop analogous to AHardwareBuffer Vulkan path)
+
+### Chapter 161: Android Game Development Kit (AGDK): Native Game Architecture, Input, Audio, and Frame Pacing
+
+- AGDK component overview: `game-activity`, `game-text-input`, `games-controller`/Paddleboat, `games-frame-pacing`/Swappy, `oboe`, `games-performance`/Android Performance Tuner, `games-memory-advice`; Gradle Prefab AAR distribution; CMake `find_package()` integration
+- NativeActivity and android_native_app_glue: `android_app` struct layout; background pthread model; `ALooper` pipe (LOOPER_ID_MAIN/INPUT/USER); `ANativeActivityCallbacks` 16 fields; `AInputQueue` event loop; NativeActivity limitations (broken text input, no SurfaceView, coarse batching)
+- GameActivity: Kotlin subclass requirement; AGDK `android_app` struct differences (`GameActivity*`, input arrays replacing `onInputEvent`); CMake integration and linker entry-point change; `APP_CMD_INIT_WINDOW` as canonical Vulkan swapchain creation hook
+- Input: `android_app_swap_input_buffers()` double-buffered model; `GameActivityMotionEvent` historical samples; per-pointer axis access via `GameActivityPointerAxes_getAxisValue()`; event filters and axis enable; `GameTextInput` IME bridge (`GameActivity_setImeEditorInfo`, `GameActivity_getTextInputState`)
+- Paddleboat: controller enumeration and mapping; `Paddleboat_init/update`; `processGameActivityMotionInputEvent` filter pattern; `Paddleboat_Controller_Data` struct (buttons, sticks, triggers); vibration (`Paddleboat_Vibration_Data`); connect/disconnect callbacks; `getActiveAxisMask()` for axis registration
+- Swappy frame pacing: double-present jank and buffer-stuffing problems; `SwappyVk_determineDeviceExtensions` → `initAndGetRefreshCycleDuration` → `setWindow` → `setSwapIntervalNS` → `queuePresent` → `destroySwapchain` sequence; `VK_GOOGLE_display_timing` injection; Choreographer vsync calibration; pipeline/non-pipeline/auto modes; multi-refresh-rate auto-selection; `SwappyGL_swap` for GLES apps
+- ANativeWindow: producer end of BufferQueue / Surface vtable; `acquire/release` reference counting; `setBuffersGeometry` and format constants; Vulkan `vkCreateAndroidSurfaceKHR` integration; EGL `eglCreateWindowSurface`; CPU `lock/unlockAndPost` software path
+- Oboe audio: OpenSL ES vs AAudio latency history; `AudioStreamBuilder` with `PerformanceMode::LowLatency` + `SharingMode::Exclusive`; MMAP path on AAudio; `AudioStreamCallback::onAudioReady` callback model; input (microphone) stream; stream restart on disconnect; `AudioFormat::Float`
+- Android Performance Tuner: `TuningFork_init/frameTick/flush`; instrument IDs (PACED_FRAME_TIME, CPU_TIME, GPU_TIME, SWAPPY_WAIT_TIME); fidelity parameters and annotation protobufs; Google Play backend integration
+- Memory Advice API: `MemoryAdvice_init/registerWatcher/getMemoryState`; `APPROACHING_LIMIT` / `CRITICAL` states; `getPercentageAvailableCapacity()`; `/proc/meminfo` + `ActivityManager.MemoryInfo` sampling model
+- Android GPU Inspector: frame capture (Vulkan API trace + GPU counter per draw call); system profiling (perfetto GPU counter tracks); supported GPU families (Adreno, Mali, PowerVR); Vulkan validation layer integration; `TRACE_EVENT` perfetto annotation from app code; CLI capture for CI
+- **Integrations**: Ch85 (SurfaceFlinger/BufferQueue as ANativeWindow consumer), Ch86 (Vulkan swapchain creation, @FastNative JNI boundary), Ch87 (ARCore / OpenXR loop analogous to android_main), Ch75 (Swappy fence backpressure on dma_fence/sync_file), Ch26 (AMediaCodec NDK video decode parallel to VA-API)
 
 ### Chapter 166: Android AR: ARCore Architecture, Camera HAL Integration, and Android XR (expanded)
 
