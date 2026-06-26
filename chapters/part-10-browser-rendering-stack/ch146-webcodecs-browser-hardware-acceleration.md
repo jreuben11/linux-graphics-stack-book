@@ -12,7 +12,10 @@
    - [1.1 Background: Media Source Extensions (MSE)](#11-background-media-source-extensions-mse)
    - [1.2 Background: DASH — Dynamic Adaptive Streaming over HTTP](#12-background-dash--dynamic-adaptive-streaming-over-http)
    - [1.3 Background: WebRTC — Real-Time Peer-to-Peer Media](#13-background-webrtc--real-time-peer-to-peer-media)
-   - [1.4 Why WebCodecs Instead of MSE or WebRTC?](#14-why-webcodecs-instead-of-mse-or-webrtc)
+   - [1.4 Background: WebM Container Format](#14-background-webm-container-format)
+   - [1.5 Background: ISO BMFF and Fragmented MP4](#15-background-iso-bmff-and-fragmented-mp4)
+   - [1.6 Background: HLS — HTTP Live Streaming](#16-background-hls--http-live-streaming)
+   - [1.7 Why WebCodecs Instead of MSE or WebRTC?](#17-why-webcodecs-instead-of-mse-or-webrtc)
 2. [VideoDecoder: Chunk Submission, Frame Delivery, and Lifecycle](#2-videodecoder-chunk-submission-frame-delivery-and-lifecycle)
 3. [VideoEncoder: Parameters, Latency Modes, and Key Frame Control](#3-videoencoder-parameters-latency-modes-and-key-frame-control)
 4. [The Hardware Acceleration Path on Linux](#4-the-hardware-acceleration-path-on-linux)
@@ -157,7 +160,196 @@ receiver.transform = new RTCRtpScriptTransform(worker, { readable, writable });
 
 ---
 
-### 1.4 Why WebCodecs Instead of MSE or WebRTC?
+### 1.4 Background: WebM Container Format
+
+**WebM** is a royalty-free, open-source media container format released by Google in 2010 alongside VP8 and the first public version of WebRTC. [Source](https://www.webmproject.org/about/) It is a restricted profile of the **Matroska** container (`MKV`): it uses the same **EBML** (Extensible Binary Meta Language) wire format — a binary TLV encoding where element IDs and sizes are encoded as variable-length integers — but constrains codec choices and strips rarely-used features like chapters and complex tag hierarchies.
+
+**Allowed codecs in WebM:**
+| Track type | Permitted codecs |
+|------------|-----------------|
+| Video | VP8, VP9, AV1 |
+| Audio | Vorbis, Opus |
+
+The container hierarchy for a WebM file:
+
+```
+EBML Header          (magic bytes: 0x1A 0x45 0xDF 0xA3)
+└── Segment
+    ├── SeekHead     (index into top-level element positions)
+    ├── Info         (duration, timecode scale, muxing app)
+    ├── Tracks
+    │   ├── TrackEntry (Video: codec=V_VP9, width, height, colour metadata)
+    │   └── TrackEntry (Audio: codec=A_OPUS, channels, sample rate)
+    ├── Cues         (keyframe seek index: timestamp → cluster offset)
+    └── Cluster*     (group of frames, timecode anchor)
+        └── SimpleBlock* | BlockGroup*
+            └── Block (track number, relative timestamp, frame data)
+```
+
+Each `Cluster` holds a batch of `SimpleBlock` elements. A `SimpleBlock` carries the raw codec bitstream (VP9 frame, AV1 OBU sequence, Opus packet) with a track reference and a timecode relative to the cluster's base. There are no codec-specific framing bytes in the container: the block data IS the raw codec output. This matters for WebCodecs: when a JavaScript demuxer (such as the `mp4box.js`/`ebml-stream` family) parses a WebM file, each `SimpleBlock` payload maps 1:1 to one `EncodedVideoChunk`.
+
+```javascript
+// Feeding a WebM video track to WebCodecs via a userspace EBML parser
+import EBMLReader from 'ebml-stream';
+
+const reader = new EBMLReader();
+const decoder = new VideoDecoder({
+  output: frame => { /* render */ frame.close(); },
+  error: e => console.error(e),
+});
+
+reader.on('SimpleBlock', ({ track, keyframe, timestamp, payload }) => {
+  if (track === videoTrackNumber) {
+    decoder.decode(new EncodedVideoChunk({
+      type: keyframe ? 'key' : 'delta',
+      timestamp: timestamp * 1000,   // WebM timecodes are µs; WebCodecs uses µs
+      data: payload,
+    }));
+  }
+});
+```
+
+**WebM and MediaRecorder**: when `MediaRecorder` outputs `video/webm`, it produces a live WebM stream with VP8, VP9, or AV1 video (browser-selected). Clusters are closed after each keyframe interval, making the stream seekable after receipt. MSE accepts `video/webm; codecs="vp09.00.10.08"` as a `SourceBuffer` MIME type.
+
+**libwebm** is the reference C++ library for WebM muxing/demuxing ([github.com/webmproject/libwebm](https://github.com/webmproject/libwebm)). Chromium's media pipeline uses `webm_video_util.cc` / `webm_audio_util.cc` from this library for both playback and `MediaRecorder` output.
+
+---
+
+### 1.5 Background: ISO BMFF and Fragmented MP4
+
+**ISO BMFF** (ISO Base Media File Format, ISO/IEC 14496-12) is the container standard underlying `.mp4`, `.m4a`, `.m4v`, `.mov`, and the CMAF segments used by DASH and HLS. [Source](https://www.iso.org/standard/83102.html) It uses a **box** (also called _atom_) structure where every element is:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  size (4 bytes, big-endian)  │  type (4 bytes, ASCII)   │
+│               data (size − 8 bytes)                     │
+└─────────────────────────────────────────────────────────┘
+```
+
+Extended size: if the 4-byte size field is 1, the next 8 bytes hold a 64-bit size (used for boxes >4 GiB). Type `uuid` signals a vendor extension box.
+
+**Standard (non-fragmented) MP4** layout:
+```
+ftyp  (file type + compatible brands: "isom", "mp42", "avc1", ...)
+free  (padding / placeholder)
+moov  (movie container — ALL metadata lives here)
+│  mvhd  (duration, timescale, creation time)
+│  trak  (one per track)
+│  │  tkhd  (track header: width, height, duration)
+│  │  mdia
+│  │  │  mdhd  (media timescale)
+│  │  │  hdlr  ('vide' | 'soun' | 'text')
+│  │  │  minf → stbl  (sample table: stts, stss, stco, stsz, stsc, stsd)
+│  │  │  └── stsd  (sample description → avcC / hvcC / av1C / vpCC boxes)
+mdat  (raw encoded frame data, indexed by stbl offsets)
+```
+
+The `stsd` child box (`avcC`, `hvcC`, `av1C`, `vpCC`) carries the codec configuration record — the SPS/PPS for H.264, VPS/SPS/PPS for H.265, or Sequence Header OBU for AV1. This is what `VideoDecoder` needs as the `description` field in `VideoDecoderConfig`.
+
+**Fragmented MP4 (fMP4)** replaces the monolithic `mdat` with repeating `moof`+`mdat` pairs:
+```
+ftyp  (brands include "iso5", "avc1", "dash" for DASH CMAF)
+moov  (minimal: track declarations only, no sample table)
+│  mvex/trex  (track extends defaults)
+│
+moof  ← movie fragment (one per segment boundary)
+│  mfhd  (sequence number)
+│  traf  (track fragment)
+│     tfhd  (base data offset, default sample flags)
+│     tfdt  (decode time of first sample in this fragment)
+│     trun  (per-sample: duration, size, flags, composition offset)
+mdat  ← raw encoded data for this fragment
+moof  ← next fragment
+mdat
+...
+```
+
+The `tfdt` box gives absolute decode time without requiring the full `stts` sample table — MSE uses it to place each fragment on the media timeline. The `trun` box lists per-sample composition time offsets (PTS − DTS), critical for B-frame reordering in H.264 and H.265.
+
+**CMAF** (Common Media Application Format, ISO/IEC 23000-19) is a profile of fMP4 that constrains which codec configurations and box combinations are permitted, enabling a single set of segment files to be served by both DASH and HLS manifests. A CMAF track file is a self-contained fMP4 stream; the DASH MPD and the HLS `.m3u8` playlist both reference the same `.cmfv`/`.cmfa` segments.
+
+**Codec string mapping**: the `stsd` codec configuration box determines the codec string used in WebCodecs and MSE:
+
+| `stsd` box | Codec string example |
+|------------|---------------------|
+| `avcC` | `avc1.64001f` (profile=High, constraints=0x00, level=31) |
+| `hvcC` | `hvc1.1.6.L120.90` |
+| `av1C` | `av01.0.08M.10` (profile=0, level=8, tier=Main, depth=10) |
+| `vpCC` | `vp09.00.10.08` (profile=0, level=10, bit-depth=8) |
+| `Opus` | `opus` |
+| `mp4a` | `mp4a.40.2` (MPEG-4 AAC-LC) |
+
+The codec string is what you pass to `VideoDecoderConfig.codec`, `SourceBuffer.addSourceBuffer()`, and `MediaCapabilities.decodingInfo()`. The `avcC` box content (the SPS/PPS NAL units) becomes `VideoDecoderConfig.description`.
+
+**Ogg** is the third browser-supported container, predating both WebM and BMFF. It carries Vorbis audio and Theora video (both deprecated in favour of Opus/AV1) but Opus-in-Ogg remains in use for audio-only streams. MSE support for Ogg is limited (Firefox only); WebCodecs ignores containers entirely, so Ogg-demuxed Opus packets feed `AudioDecoder` identically to WebM-demuxed ones.
+
+---
+
+### 1.6 Background: HLS — HTTP Live Streaming
+
+**HLS** (HTTP Live Streaming) is Apple's adaptive bitrate streaming protocol, defined in RFC 8216. [Source](https://www.rfc-editor.org/rfc/rfc8216) It uses a hierarchical **M3U8 playlist** format and is the dominant streaming protocol for iOS/Safari and Apple TV, while DASH dominates Android/Chrome. The two protocols have largely converged on the same CMAF segment format.
+
+**Master playlist** (`master.m3u8`):
+```m3u8
+#EXTM3U
+#EXT-X-VERSION:6
+
+# Video renditions
+#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,CODECS="avc1.64001f,mp4a.40.2"
+360p/index.m3u8
+
+#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,CODECS="avc1.64001f,mp4a.40.2"
+720p/index.m3u8
+
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"
+1080p/index.m3u8
+
+# Audio-only rendition (for offline/low-bandwidth)
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,URI="audio/index.m3u8"
+```
+
+**Variant playlist** (`720p/index.m3u8`):
+```m3u8
+#EXTM3U
+#EXT-X-VERSION:7
+#EXT-X-TARGETDURATION:6
+#EXT-X-MAP:URI="720p/init.mp4"         ← CMAF initialization segment (ftyp + moov)
+
+#EXTINF:6.000,
+720p/seg-001.m4s                        ← CMAF media segment (moof + mdat)
+#EXTINF:6.000,
+720p/seg-002.m4s
+#EXTINF:6.000,
+720p/seg-003.m4s
+```
+
+`#EXT-X-MAP` points to the initialization segment — the same `init.mp4` that a DASH `initialization` URL would reference. When HLS uses fMP4 segments (indicated by `#EXT-X-VERSION:7` and `.m4s` extensions), the segment files are byte-for-byte identical to DASH CMAF segments; only the manifest format differs.
+
+**Legacy MPEG-TS segments**: older HLS deployments use `.ts` (MPEG Transport Stream) segments instead of fMP4. TS segments are self-contained (no init segment needed), but they carry H.264 and AAC only — no VP9, AV1, or HEVC in practice. MSE requires `video/mp2t` MIME type for TS ingest. Browsers other than Safari require an MSE-based player library (hls.js) for MPEG-TS segments.
+
+**Low-Latency HLS (LL-HLS)**: Apple extended HLS in 2019 to achieve sub-2-second live latency using:
+- **Partial segments** (`#EXT-X-PART`): 200 ms sub-segments within the 6-second target duration
+- **Preload hints** (`#EXT-X-PRELOAD-HINT`): client pre-fetches the next partial segment before it's listed in the playlist
+- **Server push / blocking playlist reload**: the server holds the playlist request until a new part is available (HTTP/2 required)
+
+LL-HLS reaches 1–2 seconds end-to-end latency versus 15–30 seconds for standard HLS and 6–10 seconds for standard DASH. CMAF chunked encoding (sub-segment boundaries in fMP4) enables the same technique for DASH: Apple, AWS, and Akamai support both simultaneously from a single CMAF origin.
+
+**Browser support**: Safari handles HLS natively via the `<video>` element — the browser's AVFoundation layer (or equivalent on Linux Safari) parses the M3U8 and feeds segments to the system decoder. Chromium and Firefox require an MSE-based library such as `hls.js`, which fetches segments in JavaScript and calls `sourceBuffer.appendBuffer()`. The WebCodecs path is the same regardless: `hls.js` can be modified to intercept segments and pass them to a `VideoDecoder` worker instead of MSE, enabling frame-level processing of HLS streams.
+
+**HLS vs DASH summary**:
+| | HLS | DASH |
+|---|---|---|
+| Spec body | IETF RFC 8216 | ISO/IEC 23009-1 |
+| Manifest | M3U8 (text) | MPD (XML) |
+| Segments | MPEG-TS or fMP4/CMAF | fMP4/CMAF |
+| Native browser | Safari | None (all use MSE libraries) |
+| Live latency (standard) | ~15–30 s | ~6–10 s |
+| Live latency (low) | LL-HLS ~1–2 s | Chunked CMAF ~2–4 s |
+| DRM | FairPlay | Widevine, PlayReady |
+
+---
+
+### 1.7 Why WebCodecs Instead of MSE or WebRTC?
 
 Media Source Extensions feeds segments to the browser's internal decoder, but frames are never exposed to JavaScript — they go directly from the internal decoder to the compositor. WebRTC's `RTCPeerConnection` similarly hides the codec layer, exposing only rendered frames via `<video>` elements. Neither gives frame-level access or allows the application to choose per-frame processing.
 
