@@ -107,7 +107,7 @@ The body consists of a sequence of **sections**, each identified by a one-byte s
 
 WASM modules see a single flat address space called **linear memory**, exposed to the host as an `ArrayBuffer` or `SharedArrayBuffer`. Memory is allocated in pages of 64 KB each; modules declare an initial page count and an optional maximum. All pointer arithmetic happens within this linear address space — there is no virtual memory, no kernel page tables, and no `mmap`. The host (JavaScript or Wasmtime) grants the module access to a contiguous region; all WASM load/store instructions validate against that region's bounds.
 
-This design has a direct implication for GPU work: data in WASM linear memory must be explicitly copied to GPU buffers via the WebGPU API (`wgpuQueueWriteBuffer` or `queue.write_buffer`). Zero-copy sharing between WASM linear memory and the GPU is not possible in the current WebGPU spec.
+This design has a direct implication for GPU work: data in WASM linear memory must be explicitly copied to GPU buffers via the WebGPU API (`wgpuQueueWriteBuffer` or `queue.write_buffer`). Zero-copy sharing between WASM linear memory and the GPU is not possible in the current browser WebGPU spec — the `GPUBuffer.mapAsync` path requires a separate allocation outside WASM linear memory. In a native embedding context (§12), however, zero-copy is achievable on UMA hardware by backing WASM linear memory with `mmap`-allocated pages and importing them into Vulkan via `VK_EXT_external_memory_host`; see §12 Roadmap (Long-term) for the verified approach.
 
 ### 2.3 WASI: WebAssembly System Interface
 
@@ -1144,7 +1144,7 @@ pub fn add_gpu_imports(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
                 .expect("WASM module must export 'memory'");
             let data: Vec<u8> = mem.data(&caller)
                 [wasm_ptr as usize..(wasm_ptr + len) as usize]
-                .to_vec();          // copy out before mutably borrowing caller
+                .to_vec();          // copy out before mutably borrowing caller (see Roadmap §12 Long-term for zero-copy on UMA)
             let state = caller.data_mut();
             let buf = state.handles.buffers.get(&buf_h).expect("invalid buffer handle");
             state.queue.write_buffer(buf, offset, &data);
@@ -1357,7 +1357,7 @@ The critical correctness property is that reading WASM linear memory from a Wasm
 
 2. **The host reads a `&[u8]` slice**, not a raw pointer. `mem.data(&caller)` returns a Rust shared reference to the WASM linear memory region. Rust's borrow checker enforces that no mutation through `data_mut()` can occur while this reference is live.
 
-3. **Data must be copied before re-borrowing `caller` mutably.** The `to_vec()` call in `gpu_write_buffer` copies the WASM data before `caller.data_mut()` is used to access the handle table. This is the only safe ordering — the alternative (passing the WASM slice directly to `queue.write_buffer`) would require a `'static` lifetime that the temporary borrow cannot satisfy.
+3. **Data must be copied before re-borrowing `caller` mutably.** The `to_vec()` call in `gpu_write_buffer` copies the WASM data before `caller.data_mut()` is used to access the handle table. This is the only safe ordering in the proof-of-concept — the alternative (passing the WASM slice directly to `queue.write_buffer`) would require a `'static` lifetime that the temporary borrow cannot satisfy. A production implementation on UMA hardware can eliminate this software copy entirely by backing WASM linear memory with `mmap`-allocated pages imported into Vulkan via `VK_EXT_external_memory_host` (see §12 Roadmap, Long-term); on discrete PCIe GPUs the PCIe bus transfer still occurs regardless.
 
 ```rust
 // CORRECT: copy out of WASM memory first, then mutably borrow state
