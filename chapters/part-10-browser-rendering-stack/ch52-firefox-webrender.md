@@ -17,6 +17,7 @@ This chapter targets **browser and web platform engineers** who need to understa
   - [naga vs Tint: A Technical Comparison](#naga-vs-tint-a-technical-comparison)
 - [Stylo: Parallel CSS Layout Engine](#stylo-parallel-css-layout-engine)
 - [Servo: The Rust Browser Engine](#servo-the-rust-browser-engine)
+- [Verso: Servo as an Embeddable WebView](#verso-servo-as-an-embeddable-webview)
 - [Integrations](#integrations)
 
 ---
@@ -1265,6 +1266,170 @@ graph TD
     wgpu_core --> MesaVK
     MesaVK --> Wayland
 ```
+
+---
+
+## Verso: Servo as an Embeddable WebView
+
+Servo's `WindowMethods` embedding API (§ above) is intentionally low-level: the embedder must implement surface management, EGL context creation, event routing, IME, clipboard, and frame presentation. **Verso** ([gitlab.com/verso-browser/verso](https://gitlab.com/verso-browser/verso)) is a higher-level embedding layer built on top of Servo, designed to make Servo practical to embed in applications without implementing the full `WindowMethods` contract. It is the engine underneath `tauri-runtime-verso` (Chapter 193, §4.4), making it the only production-path alternative to WebKitGTK for Tauri applications on Linux.
+
+> **Note on repository**: The GitHub mirror at `github.com/versotile-org/verso` is archived (read-only). Active development continues at the GitLab primary: `gitlab.com/verso-browser/verso`.
+
+### Why Verso Exists: The Embedding Gap
+
+The gap between Servo and a usable WebView:
+
+```
+Raw Servo embedding (servo::Servo<Window>)
+  requires: EGL surface, event loop, IME, clipboard, hidpi, resize, present()
+
+servoshell (ports/servoshell/)
+  fills the gap for a standalone demo browser using winit
+  NOT designed as an embeddable library
+
+Verso
+  fills the gap for application embedding:
+  - pre-wired winit event loop
+  - multi-webview management
+  - Panel (UI) webview served from bundled assets
+  - versoview_messages IPC for external control
+  - pre-built binary (versoview) for Tauri integration
+```
+
+### Crate Structure
+
+Verso is a Cargo workspace with three crates ([Source: versotile-org/verso](https://github.com/versotile-org/verso)):
+
+```text
+verso/
+├── verso/                 # Main browser implementation
+│   ├── src/
+│   │   ├── compositor.rs  # WebRender integration, frame presentation
+│   │   ├── window.rs      # winit window, tab manager, Glutin GL context
+│   │   ├── webview.rs     # WebView type wrapping a Servo browsing context
+│   │   ├── tab.rs         # Tab management (each tab owns a WebView)
+│   │   ├── config.rs      # Preferences and startup options
+│   │   └── keyboard.rs    # Input event normalisation
+├── versoview_messages/    # Message types for external IPC control
+│   └── src/lib.rs         # EmbedderToVerso / VersoToEmbedder enums
+└── versoview_build/       # Build utilities (downloads versoview binary)
+```
+
+### The Two-WebView Panel Architecture
+
+Each Verso window contains **two Servo WebViews**, not one:
+
+```
+┌─────────────────────────────────────────────┐
+│  Verso Window (winit::Window)                │
+│                                              │
+│  ┌───────────────────────────────────────┐  │
+│  │  Panel WebView                        │  │
+│  │  Servo renders: address bar, tabs,    │  │
+│  │  navigation buttons                   │  │
+│  │  Source: bundled HTML/CSS/JS assets   │  │
+│  └───────────────────────────────────────┘  │
+│  ┌───────────────────────────────────────┐  │
+│  │  Content WebView                      │  │
+│  │  Servo renders: the web page          │  │
+│  └───────────────────────────────────────┘  │
+└─────────────────────────────────────────────┘
+         │                    │
+         └────────────────────┘
+              Single Servo instance
+              Single WebRender context
+              Single OpenGL surface
+```
+
+This is a deliberate architectural choice: **the browser UI itself is a web page rendered by Servo**, eliminating any native toolkit dependency for the chrome. The Panel WebView loads a bundled HTML application; Verso routes navigation events from the Panel (address bar input, back/forward clicks) to the content WebView via `EmbedderMsg` channels. [Source: Servo blog, Building a browser using Servo](https://servo.org/blog/2024/09/11/building-browser/)
+
+For `tauri-runtime-verso`, the Panel WebView is replaced by Tauri's `tauri://localhost` asset protocol — the bundled Tauri frontend replaces the Verso address bar.
+
+### Single OpenGL Context with Multiple Surfaces
+
+Unlike a naïve multi-webview design that would create one GL context per view, Verso uses a **single WebRender instance with multiple surfaces**. This is required because WebGL, WebGPU, and WebXR all bind to a single `RenderingContext` — Servo cannot share GPU resources across multiple independent WebRender instances. The compositing tree holds all WebView display lists; `IOCompositor` submits them in a single combined render pass.
+
+### Rendering Path on Linux
+
+```
+winit::EventLoop (Wayland via smithay-client-toolkit, or X11)
+    │  Window::new() → wl_surface + wl_egl_window
+    ▼
+Glutin (OpenGL context manager, wraps EGL/WGL/CGL per platform)
+    │  glutin::ContextWrapper<PossiblyCurrent, glutin::window::Window>
+    ▼
+Servo → IOCompositor → WebRender Renderer thread
+    │  gleam dyn Gl trait — same OpenGL batching pipeline as in Firefox (§2)
+    │  glDrawArraysInstanced, texture atlases, picture-cache tiles
+    ▼
+Mesa OpenGL driver (radeonsi · iris · nouveau · NVK via GLES compat)
+    ▼
+wl_surface::commit → Wayland compositor
+```
+
+**Key difference from servoshell**: Verso uses **Glutin** for OpenGL context management where servoshell uses **surfman**. Both wrap EGL on Linux; the difference is that Glutin integrates directly with winit's window handle whereas surfman is Servo's own cross-platform surface management crate. Verso chose Glutin for better alignment with the broader Rust GUI ecosystem.
+
+**Vulkan**: Verso inherits Servo's renderer — WebRender on OpenGL. There is no Vulkan compositor path. The WebRender→wgpu migration tracked at [servo#37149](https://github.com/servo/servo/issues/37149) is the prerequisite; if it lands, Verso would automatically gain a wgpu→Vulkan compositor path on Linux since wgpu defaults to Vulkan there.
+
+**WebGPU in-page**: Servo's `components/webgpu/` → `wgpu-core` → Vulkan (via wgpu-hal/ash → Mesa Vulkan driver). Same path as in Firefox, same wgpu crate. The WebGPU Vulkan path is live; it is the 2D compositor that remains on OpenGL.
+
+### versoview_messages: External IPC Protocol
+
+Verso exposes control through a typed message protocol. External processes (such as `tauri-runtime-verso`) communicate with a running `versoview` instance via this channel:
+
+```rust
+// versoview_messages/src/lib.rs (schematic)
+pub enum EmbedderToVerso {
+    Navigate { id: WebViewId, url: ServoUrl },
+    Reload    { id: WebViewId },
+    GoBack    { id: WebViewId },
+    GoForward { id: WebViewId },
+    ExecuteScript { id: WebViewId, script: String },
+    SetPreferences(Preferences),
+    // ...
+}
+
+pub enum VersoToEmbedder {
+    NavigationStarted { id: WebViewId, url: ServoUrl },
+    TitleChanged      { id: WebViewId, title: String },
+    LoadComplete      { id: WebViewId },
+    ConsoleMessage    { id: WebViewId, level: Level, message: String },
+    // ...
+}
+```
+
+`tauri-runtime-verso` launches `versoview` as a child process and communicates via this protocol — the Tauri application's `#[tauri::command]` handlers translate to `EmbedderToVerso::ExecuteScript` or navigation messages.
+
+### Verso vs servoshell: Comparison
+
+| Dimension | servoshell (`ports/servoshell/`) | Verso |
+|---|---|---|
+| Purpose | Servo development / demo browser | Embeddable WebView for applications |
+| Windowing | winit + surfman | winit + Glutin |
+| OpenGL context | surfman (Servo's own crate) | Glutin |
+| Multi-webview | Single content view | Two views (Panel + Content) per window |
+| Browser UI | Native toolbar built into servoshell | Web-rendered Panel (Servo renders the UI) |
+| External control | None | `versoview_messages` IPC protocol |
+| Tauri integration | No | Yes (`tauri-runtime-verso`) |
+| Pre-built binary | No (must build from Servo source) | Yes (x64 Linux, x64 Windows, arm64 macOS) |
+| Production use | No | Experimental (see Ch193 §4.4) |
+
+### Linux Status (mid-2026)
+
+| Feature | Status |
+|---|---|
+| Wayland | Working (winit smithay-client-toolkit backend) |
+| X11 | Working (winit X11 backend) |
+| Multi-tab | Working |
+| Panel/UI WebView | Working (bundled HTML app) |
+| tauri-runtime-verso IPC | Working |
+| DevTools | Via Firefox remote debugger (no built-in panel) |
+| WebGL in content | Working (EGL context shared with WebRender) |
+| WebGPU in content | Working (wgpu → Vulkan) |
+| Vulkan compositor | **Not yet** (WebRender/OpenGL; awaits servo#37149) |
+| Pre-built binary glibc requirement | glibc 2.35+ (Ubuntu 22.04+); older distros need source build |
+
+[Source: versotile-org/verso progress tracking issue #200](https://github.com/versotile-org/verso/issues/200)
 
 ---
 
