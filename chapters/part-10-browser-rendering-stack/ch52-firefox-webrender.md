@@ -14,6 +14,7 @@ This chapter targets **browser and web platform engineers** who need to understa
 - [WebRender Backends on Linux](#webrender-backends-on-linux)
 - [WebRender and Wayland](#webrender-and-wayland)
 - [Gecko WebGPU: wgpu-core and naga](#gecko-webgpu-wgpu-core-and-naga)
+  - [naga vs Tint: A Technical Comparison](#naga-vs-tint-a-technical-comparison)
 - [Stylo: Parallel CSS Layout Engine](#stylo-parallel-css-layout-engine)
 - [Servo: The Rust Browser Engine](#servo-the-rust-browser-engine)
 - [Integrations](#integrations)
@@ -842,6 +843,88 @@ graph TD
 This contrasts with Chrome's Dawn/Tint path where WGSL is compiled by the Tint C++ library into SPIR-V or MSL. The naga and Tint implementations are independently developed but must both conform to the [WebGPU WGSL specification](https://www.w3.org/TR/WGSL/). They sometimes differ in validation stringency and error messages, which can cause content that works in one browser to fail in the other during edge cases — a known WebGPU interop concern.
 
 [Source: Mozilla Hacks — Firefox WebGPU enabled](https://en.ubunlog.com/Firefox-joins-the-new-generation-of-web-graphics.-WebGPU-comes-to-Linux-and-other-platforms/)
+
+### naga vs Tint: A Technical Comparison
+
+The two WGSL compilers share a specification target but diverge in architecture, language, IR design, output targets, and governance. Understanding the differences matters because WGSL content that is valid per the W3C specification may still behave differently across browsers, and because the SPIR-V each compiler emits affects how Mesa's NIR pipeline optimises and compiles the shader.
+
+**Architecture**
+
+Tint is a multi-pass C++ compiler with an explicit AST phase. The "Tint IR" (introduced in the Tint v2 rewrite) is a second IR used for transformation passes (robustness bounds-checking, binding remapping, workgroup memory zeroing) before SPIR-V or MSL emission. Tint's pipeline:
+
+```text
+WGSL source
+    ↓ tint::wgsl::reader (recursive descent)
+    Tint AST
+    ↓ tint::Resolver (type checking, name resolution)
+    Tint typed AST
+    ↓ tint::core::ir::Builder (optional; used for transform passes)
+    Tint IR
+    ↓ tint::writer::spirv / tint::writer::msl / tint::writer::hlsl
+    SPIR-V / MSL / HLSL
+```
+
+naga by contrast has a single-stage IR. After parsing, the program is immediately in naga IR and all transforms operate on it — there is no separate AST retained:
+
+```text
+WGSL source
+    ↓ naga::front::wgsl (recursive descent)
+    naga IR (Module/Function/Arena<Expression>)
+    ↓ naga::valid::Validator
+    validated naga IR
+    ↓ naga::back::spv / naga::back::glsl / naga::back::msl / naga::back::hlsl
+    SPIR-V / GLSL / MSL / HLSL
+```
+
+naga's IR is a typed SSA with handle-indexed arenas (`Arena<Expression>`, `Arena<Statement>`); there are no raw pointers. Tint's IR uses a value/instruction model closer to traditional compiler SSA. The naga design makes IR traversal and transformation composable in safe Rust; the Tint design makes it straightforward for C++ developers familiar with LLVM-style IR to contribute.
+
+**Validation Stringency and Spec Conformance**
+
+Both compilers target the WGSL specification, but they track it at different rates and sometimes interpret ambiguous spec language differently. Known divergence areas as of 2025–2026:
+
+| Area | naga behaviour | Tint behaviour |
+|---|---|---|
+| `override` constants | Partial; some cases missing | More complete per spec |
+| `ptr`/`ref` semantics | Conservative; rejects some valid programs | More permissive |
+| `textureSampleLevel` on depth textures | Supported | Supported |
+| `atomicCompareExchangeWeak` result struct | naga uses a named struct type | Tint uses an anonymous struct |
+| `@must_use` attribute | Enforced | Enforced |
+| 16-bit types (`f16`, `i16`) | Behind `Features::SHADER_F16` flag | Behind `chromium_experimental_f16` |
+| Abstract numerics (spec §6.1) | Partial spec coverage | More complete |
+
+The practical consequence is that WGSL shaders authored and tested only in Chrome may hit naga validation errors in Firefox, and vice versa. The WebGPU CTS is the arbiter: both implementations must pass the CTS for a given WGSL feature to be considered interoperable. Firefox's naga-based CTS pass rate is publicly tracked and was approximately 94% of applicable tests at Firefox 141 launch, with the gap predominantly in newer `override`, abstract numeric, and texture gather cases. [Source: wgpu WebGPU CTS tracking issue](https://github.com/gfx-rs/wgpu/issues/2914)
+
+**SPIR-V Output Quality**
+
+Both compilers produce correct SPIR-V that Mesa's NIR front-end (`spirv_to_nir`) can consume, but the emitted SPIR-V differs in structure. naga's SPIR-V writer tends to produce more straightforward SSA-structured SPIR-V with explicit `OpPhi` nodes, which Mesa's NIR SSA passes handle well. Tint's SPIR-V output was historically more verbose for control-flow-heavy shaders (nested loops, `switch` statements) but improved significantly with the Tint IR rewrite.
+
+For the Mesa shader compiler pipeline (NIR → ACO on RADV, NIR → ISA on ANV), the primary determinant of final GPU performance is Mesa's own optimisation passes, not the source compiler. Both naga and Tint SPIR-V enter the same `spirv_to_nir` front-end and receive the same NIR optimisation treatment. Observed performance differences between Firefox and Chrome WebGPU benchmarks are therefore rarely attributable to naga vs Tint SPIR-V quality; they are more often due to pipeline compilation timing, device resource management, or feature flag differences.
+
+**Output Targets**
+
+| Target | naga | Tint |
+|---|---|---|
+| SPIR-V | ✓ (primary on Linux/Android) | ✓ (primary on Linux/Android) |
+| GLSL | ✓ (wgpu GLES fallback) | ✗ (Tint does not emit GLSL) |
+| MSL (Metal) | ✓ | ✓ |
+| HLSL | ✓ | ✓ |
+| WGSL (round-trip) | ✓ (for tooling/debugging) | ✓ |
+
+naga's GLSL back-end is significant on Linux: when the Vulkan backend is unavailable (e.g., on very old Mesa versions or embedded GLES-only systems), wgpu falls back to the GLES backend, which requires GLSL output. Tint does not have a GLSL emitter — Dawn's GLES path on Android uses a different codegen route. This makes naga's output target set broader for Linux portability.
+
+**Language and Governance**
+
+Tint is written in C++ and maintained primarily by Google engineers within the Chromium/Dawn project. Contributions from external parties are accepted but the roadmap is Google-controlled, and Tint ships as part of Chrome's release train with Chrome's security and stability requirements. Because Tint is the WebGPU specification's reference implementation team's primary tool, it often implements new WGSL features first.
+
+naga is written in Rust and governed by the gfx-rs community under an open contribution model. Mozilla is the largest single stakeholder but not the project owner — Bevy, Servo, wgpu-native, and Deno are also significant consumers with upstream commit rights. This means naga's roadmap reflects a broader set of use cases (game engines, server-side GPU compute, non-browser WebGPU runtimes) but no single organisation can steer it as tightly as Google steers Tint. The trade-off: naga is less likely to ship speculative Chrome-specific features; it is more likely to accurately reflect what the broader WGSL ecosystem needs.
+
+**Security Boundary Role**
+
+Both compilers serve as a security boundary: malicious WGSL content must not reach the Vulkan driver in a form that exploits GPU driver bugs or leaks data across processes. Tint's robustness transforms (bounds-checking for buffer accesses, `@internal` attribute stripping, binding validation) are well-audited within Chrome's security review process. naga's validation pass (`naga::valid::Validator`) performs the equivalent checks; its memory safety derives from being written in Rust rather than from a separate security audit layer. For Firefox's multi-process architecture, naga validation runs in the GPU process — the WgpuServer — which is already sandboxed; a naga vulnerability that allowed malformed SPIR-V to reach the Vulkan driver would be contained within the GPU process sandbox.
+
+[Source: Tint source — chromium.googlesource.com/angle/angle](https://chromium.googlesource.com/angle/angle)
+[Source: naga source — github.com/gfx-rs/wgpu/tree/trunk/naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga)
+[Source: WebGPU CTS — github.com/gpuweb/cts](https://github.com/gpuweb/cts)
 
 ### dom/webgpu: The JavaScript-to-Rust Bridge
 
