@@ -14,6 +14,105 @@ Android is a Linux-based operating system, and its graphics stack is built direc
 
 **Chapter 191 — LiteRT and MediaPipe: On-Device ML Inference on the Android Graphics Stack** covers Google's two cross-platform on-device ML frameworks and their integration with the Android GPU pipeline. **LiteRT** (formerly TensorFlow Lite, renamed 2024) is the on-device inference runtime for `.tflite` model files; it dispatches to hardware accelerators via the **NNAPI** delegate (Android 8.1+, routes to DSP/NPU), the **GPU delegate** (OpenGL ES 3.1 or Vulkan compute — shared `AHardwareBuffer` tensors with the graphics pipeline), and the **Edge TPU** delegate. The chapter covers `Interpreter` lifecycle, tensor allocation via `AllocateTensors()`, `AHardwareBuffer` tensor interop with OpenGL ES compute, and how LiteRT integrates with the GPU pipeline in Chapters 85–86 via shared `AHardwareBuffer` tensor memory. **MediaPipe** is Google's cross-platform ML pipeline framework; its `CalculatorGraph` runs on-device vision tasks as directed compute graphs with GPU-accelerated preprocessing via OpenGL ES. The chapter covers the MediaPipe Tasks API (pose estimation, hand tracking, face landmarking, object detection), `GlCalculatorHelper` for GPU-accelerated pre/post-processing, `SurfaceTexture` integration with Camera2 for zero-copy camera → ML → display pipelines, and ARCore + MediaPipe composition for spatially-aware on-device inference. Readers from a GPU or graphics background will understand how on-device ML inference shares `AHardwareBuffer` infrastructure with the compositing and rendering pipeline already described in this part.
 
+## Android Graphics Stack: Component Diagram
+
+```mermaid
+graph TD
+    subgraph AppLayer ["Application Layer"]
+        direction LR
+        APP["Kotlin / Java App\n(JNI → NDK)"]
+        FLUTTER["Flutter\n(Dart FFI / Impeller)"]
+        ARCORE["ARCore SDK\n(Play Services)\nCh 87 / Ch 166"]
+        LITERT["LiteRT + MediaPipe\n(on-device ML)\nCh 191"]
+    end
+
+    subgraph NDKLayer ["NDK / API Layer"]
+        direction LR
+        ANHW["ANativeWindow"]
+        AHB["AHardwareBuffer\n(wraps DMA-BUF fd\nin native_handle_t)"]
+        ASCTL["ASurfaceControl\n(atomic multi-layer)"]
+        VK["Vulkan API\nvkCreateAndroidSurfaceKHR"]
+        GLES["OpenGL ES API\n(via ANGLE)"]
+        CAM2["android.hardware.camera2\n(Camera2 API)"]
+    end
+
+    subgraph FWLayer ["Android Framework  —  Ch 85"]
+        direction LR
+        BQ["BufferQueue\n(producer ↔ consumer\nring of AHardwareBuffers)"]
+        SF["SurfaceFlinger\n(compositor — Android's\nWayland equivalent)"]
+        HWUI["HWUI\nSkiaVulkanPipeline /\nSkiaOpenGLPipeline\n(View / Canvas rendering)"]
+    end
+
+    subgraph HALLayer ["HAL Layer"]
+        direction LR
+        GRALLOC["Gralloc\nIAllocator / IMapper\n(Gralloc4/5 AIDL)\nbufferallocation"]
+        HWC["HWComposer\nHWC2 → HWC3 AIDL\nvalidate + present\n→ DRM atomic commit"]
+        CAMHAL["Camera HAL3\ncamera_device3_ops_t\nprocess_capture_request"]
+        NNAPI["NNAPI\nANeuralNetworksModel\n→ DSP / NPU delegate"]
+    end
+
+    subgraph GPULayer ["GPU Driver Layer  —  Ch 86"]
+        direction LR
+        VK_ICD["Vulkan ICD\nQualcomm Adreno\nARM Mali\nPowerVR\nMesa Turnip (open)"]
+        ANGLE_DRV["ANGLE\nOpenGL ES → Vulkan\n(Pixel default, APEX)"]
+    end
+
+    subgraph KernelLayer ["Linux Kernel"]
+        direction LR
+        DRM["DRM / KMS\natomic modeset\ndisplay planes"]
+        DMABUF["DMA-BUF\nzero-copy buffer\nsharing"]
+        SYNCF["sync_file\ndma_fence\nacquire/release fences"]
+    end
+
+    %% App → NDK
+    APP     --> ANHW
+    APP     --> AHB
+    APP     --> VK
+    APP     --> GLES
+    FLUTTER --> VK
+    ARCORE  --> CAM2
+    ARCORE  --> AHB
+    LITERT  --> AHB
+    LITERT  --> NNAPI
+
+    %% NDK → Framework
+    ANHW --> BQ
+    AHB  --> BQ
+    ASCTL --> SF
+    VK   --> SF
+    GLES --> HWUI
+    HWUI --> SF
+
+    %% Framework → HAL
+    BQ --> GRALLOC
+    SF --> HWC
+    SF --> GRALLOC
+
+    %% Camera path
+    CAM2 --> CAMHAL
+    CAMHAL -->|"camera frame\nas AHardwareBuffer"| AHB
+
+    %% HAL → GPU
+    GRALLOC -->|"DMA-BUF-backed\nbuffer"| VK_ICD
+    ANGLE_DRV --> VK_ICD
+    NNAPI -->|"GPU delegate\ncompute"| VK_ICD
+
+    %% GPU → Kernel
+    VK_ICD --> DMABUF
+    VK_ICD --> DRM
+    ANGLE_DRV --> DMABUF
+
+    %% HWC → Kernel
+    HWC -->|"DRM atomic commit\nplane assignment"| DRM
+
+    %% Kernel internals
+    DRM  --> DMABUF
+    DRM  --> SYNCF
+    DMABUF --> SYNCF
+```
+
+**Reading the diagram top-to-bottom:** Applications (Kotlin/Java, Flutter, ARCore, LiteRT) call into the NDK API layer, which presents `ANativeWindow`, `AHardwareBuffer`, and the Vulkan / OpenGL ES APIs. Frames flow down through `BufferQueue` into `SurfaceFlinger`, which delegates hardware-plane assignment to `HWComposer` and GPU compositing to the Vulkan ICD. `HWComposer` closes the loop with a DRM atomic commit. **`AHardwareBuffer`** (wrapping a `DMA-BUF` file descriptor) is the zero-copy shared-buffer type that connects every layer — camera frames, GPU render targets, ML tensors, and compositor surfaces all pass through it.
+
 ## Key Concepts
 
 ### How Android Applications Reach the GPU: JNI, NDK, and Dart FFI
