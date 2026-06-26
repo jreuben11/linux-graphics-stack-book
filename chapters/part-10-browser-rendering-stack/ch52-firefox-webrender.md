@@ -1229,6 +1229,8 @@ This chapter connects to several other parts of the book:
 
 **Bevy game engine (Ch40)** — wgpu is not a Firefox-specific technology. The Bevy game engine uses the same `wgpu` crate (with the same naga shader compiler and the same Vulkan/GLES backends) as its rendering foundation. This means that Bevy applications on Linux share the same wgpu-hal Vulkan instance machinery, the same naga SPIR-V code generation, and many of the same Mesa driver code paths as Firefox's WebGPU. Driver bugs or wgpu-hal quirks found in one context are often reproducible in the other.
 
+**The Rust GPU Ecosystem: ash, wgpu, naga, and Bevy (Ch152)** — This chapter covers Firefox's *use* of wgpu-core, wgpu-hal, ash, and naga. For the internals of these crates — the `hal::Api` trait design, wgpu-hal Vulkan backend implementation, naga's typed-SSA IR module structure, ash's instance/device extension loading pattern, and how to contribute to these projects — see Chapter 152, which treats the Rust GPU ecosystem as a first-class subject. Ch152 also covers gpu-allocator, vulkano, rust-gpu, erupt, cuTile-rs, and cudarc, giving a complete picture of the Rust GPU library landscape that wgpu and naga inhabit.
+
 ---
 
 *Sources consulted for this chapter:*

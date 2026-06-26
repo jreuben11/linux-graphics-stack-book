@@ -265,4 +265,8 @@ The kernel driver implementations here form the hardware substrate on which ever
 
 ---
 
+**Chapter 196 — The GPU as Embedded Computer: Firmware-as-OS Architecture Across Vendors** closes Part II with a cross-cutting architectural synthesis. Modern GPUs are not pure hardware accelerators — they contain dedicated management processors running their own firmware operating systems, and the host kernel driver is increasingly an RPC or CTB client to the GPU's embedded OS rather than a direct hardware programmer. The chapter compares all major vendors on this axis: NVIDIA's GSP-RM (the most complete firmware-OS, where the full Resource Manager runs on a RISC-V processor on the GPU die); AMD's tiered model (PSP, SMU, DMCUB, MES, and VCN firmware alongside open register-programming for the graphics engine); Intel's firmware-assisted submission model (GuC schedules workloads, xe.ko/i915.ko still do hardware init); Qualcomm's minimal-firmware approach (freedreno programs registers directly, Zap only for secure mode); and ARM Mali's evolving CSF model (job scheduling moving into firmware on Valhall, changing how Panthor submits work). A vendor spectrum table, security trust-model comparison, and open-source driver feasibility analysis conclude the chapter with a strategic outlook on where the industry is heading.
+
+---
+
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

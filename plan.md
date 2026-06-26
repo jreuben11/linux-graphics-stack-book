@@ -327,6 +327,20 @@ Chapters signal which perspective is emphasised where they diverge.
 - Peer-to-peer DMA: NVLink and AMD Infinity Fabric; the `p2pdma` kernel framework; GPU NUMA topology; implications for ML multi-GPU (Ch48) and ROCm collective operations
 - **Integrations**: PRIME uses DMA-BUF (Ch4) as the cross-GPU transport; Wayland compositors (Ch21, Ch22) handle PRIME outputs via the DRM backend; gamescope (Ch22) supports PRIME for Steam Deck-like topologies; GPU power management (Ch51) must coordinate power states across both GPUs during offload; GPU containers (Ch55) need PRIME-aware device selection for the correct GPU to handle compute vs. display
 
+### Chapter 196: The GPU as Embedded Computer — Firmware-as-OS Architecture Across Vendors *(Part II)*
+- The GPU-as-embedded-computer paradigm: modern GPUs contain dedicated management processors (Falcon, RISC-V, GuC IA cores, ARM cores) running their own firmware OSes; the host driver is increasingly an RPC/CTB client
+- NVIDIA GSP-RM: the most complete firmware-OS model; Falcon-to-RISC-V evolution; full Resource Manager on GPU; CPU driver as thin RPC client; hardware-signed firmware; SR-IOV virtualisation model
+- AMD's tiered firmware architecture: PSP (root of trust), SMU (power/thermal), DMCUB (display DSP), GFX ME/MEC (command processor firmware), MES (hardware queue scheduler), VCN; contrast — amdgpu still does direct register programming for GPU engine init
+- Intel GuC/HuC/GSC: GuC handles workload scheduling (CTB ring-less submission) and HuC authentication; GSC handles PXP DRM attestation on Xe; xe.ko/i915.ko still perform hardware init and memory management; lighter firmware dependency than NVIDIA
+- Qualcomm Adreno: minimal firmware model; freedreno does direct register programming; Zap security firmware for mobile SoCs; CP microcode partially open; the "old model" surviving through vendor cooperation
+- Other vendors: Broadcom V3D (minimal firmware, mostly in-kernel); ARM Mali CSF on Valhall (job scheduling moves into firmware, changing submission model — Panthor implements this); Apple AGX (adversarial, full firmware RE by Asahi)
+- Vendor spectrum table: register-programming ↔ firmware-assisted ↔ firmware-as-OS across all vendors
+- Security and trust model comparison: IOMMU firmware DMA, hardware signature verification, vGPU/SR-IOV isolation, attestation (NVIDIA vGPU licensing, Intel PXP), threat surface differences
+- Open-source driver feasibility: can you write a correct open-source driver without firmware source? Verdict by vendor; NVIDIA nova/NVK as existence proof; ARM Mali CSF as the hardest non-adversarial case
+- Convergence trajectory: evidence the industry is moving toward NVIDIA's model (AMD MES expansion, Intel GSC scope growth, ARM Mali CSF); counter-evidence (Qualcomm staying open, RISC-V GPU community)
+- Strategic outlook: implications for kernel driver developers, security researchers, distribution maintainers, and the open-source GPU ecosystem
+- **Integrations**: x86 GPU drivers in detail (Ch5); NVIDIA GSP-RM deep dive (Ch9); Asahi AGX adversarial RE (Ch73); ARM Mali CSF/Panthor (Ch90); firmware loading mechanics (Ch129); Qualcomm minimal-firmware model (Ch160)
+
 ---
 
 ## Part III — The Nouveau Story

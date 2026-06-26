@@ -52,6 +52,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 126: Hybrid Graphics and Laptop Power Management](chapters/part-02-gpu-drivers/ch126-hybrid-graphics-laptop.md)
 - [Ch 155: USB DisplayLink and the evdi Virtual DRM Driver](chapters/part-02-gpu-drivers/ch155-usb-displaylink-evdi.md)
 - [Ch 160: Freedreno, Turnip, and the Qualcomm Adreno Driver](chapters/part-02-gpu-drivers/ch160-freedreno-turnip-adreno.md)
+- [Ch 196: The GPU as Embedded Computer — Firmware-as-OS Architecture Across Vendors](chapters/part-02-gpu-drivers/ch196-gpu-firmware-as-os.md)
 
 ---
 
@@ -427,6 +428,7 @@ chapters/
     ch126-hybrid-graphics-laptop.md
     ch155-usb-displaylink-evdi.md
     ch160-freedreno-turnip-adreno.md
+    ch196-gpu-firmware-as-os.md
   part-03-nouveau-story/
     ch07-reverse-engineering-nvidia.md
     ch08-nouveau-kernel-driver.md
