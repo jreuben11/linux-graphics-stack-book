@@ -24,8 +24,9 @@
 16. [burn: Rust ML Framework](#burn-rust-ml-framework)
 17. [encase and bytemuck: GPU Buffer Layout](#encase-and-bytemuck-gpu-buffer-layout)
 18. [naga_oil: Shader Module Composition](#naga_oil-shader-module-composition)
-19. [Roadmap](#roadmap)
-20. [Integrations](#integrations)
+19. [Contributing to wgpu-core, wgpu-hal, and naga](#contributing-to-wgpu-core-wgpu-hal-and-naga)
+20. [Roadmap](#roadmap)
+21. [Integrations](#integrations)
 
 ---
 
@@ -1241,6 +1242,214 @@ All calls to `Lighting::point_light` throughout the composed shader graph are re
 ### Design Tradeoffs
 
 naga_oil's composition model has performance implications to be aware of. Each call to `add_composable_module` builds naga IR for that module in isolation, which means compile times scale with the module count rather than the total shader size — a good property for incremental builds (modifying `mesh_functions.wgsl` only recompiles modules that import it). However, the `Composer` is an in-process object that holds state between frames, so hot-reloading a shader module during development means removing the old module, clearing its dependents, and re-adding them — a process the Bevy `hot_reload` feature gate handles automatically. The tree-shaking semantics (only imported items that are actually called end up in the final SPIR-V) mean naga_oil is also useful as a shader preprocessor for large codebases where monolithic shaders would otherwise grow unboundedly. Projects not using Bevy can use naga_oil standalone by adding `naga-oil` to `Cargo.toml` and calling `Composer::make_naga_module`, then feeding the result to naga's SPIR-V writer or directly to wgpu's `device.create_shader_module_from_naga`. This makes naga_oil a composable building block for any Rust graphics project that wants modular WGSL without coupling to Bevy's render graph. [Source](https://github.com/bevyengine/naga_oil)
+
+---
+
+## Contributing to wgpu-core, wgpu-hal, and naga
+
+The wgpu ecosystem lives in a single monorepo at [github.com/gfx-rs/wgpu](https://github.com/gfx-rs/wgpu). The four crates most relevant to Linux Vulkan development are:
+
+- **`wgpu`** — the public API surface (`Device`, `Queue`, `Buffer`, `Texture`, `RenderPipeline`, etc.)
+- **`wgpu-core`** — the implementation: resource tracking, command encoding, WebGPU validation, and the device lifecycle
+- **`wgpu-hal`** — the hardware abstraction layer: the `hal::Api` trait and its Vulkan (`src/vulkan/`), GLES (`src/gles/`), and Metal backends
+- **`naga`** — the shader translation library: WGSL/SPIR-V/GLSL front-ends, the typed-SSA IR, and back-end writers for SPIR-V, GLSL, MSL, HLSL, and WGSL
+
+Naga merged into the wgpu monorepo in 2023 (previously at `gfx-rs/naga`) and is developed in the `naga/` subdirectory but still published as an independent crate on crates.io. [Source: naga consolidation RFC](https://github.com/gfx-rs/wgpu/issues/4231)
+
+### Repository Setup
+
+```bash
+git clone https://github.com/gfx-rs/wgpu
+cd wgpu
+cargo build -p wgpu-core
+cargo build -p wgpu-hal
+cargo build -p naga
+# Run tests against the Vulkan backend on Linux
+WGPU_BACKEND=vulkan cargo test -p wgpu
+```
+
+Key environment variables for Linux development:
+
+| Variable | Effect |
+|---|---|
+| `WGPU_BACKEND=vulkan` | Force the Vulkan backend (disables auto-selection) |
+| `WGPU_POWER_PREF=high` | Prefer discrete GPU at adapter enumeration |
+| `RUST_LOG=wgpu_core=debug,wgpu_hal=trace` | Verbose per-crate logging |
+| `WGPU_VALIDATION=1` | Enable wgpu-core's internal validation layer |
+
+The repository CI runs on Linux using `lavapipe` (the llvmpipe Vulkan software renderer) so hardware GPU is not required for basic test runs. For driver-specific testing, the full Mesa stack (ANV, RADV, NVK) is used in downstream CI at Firefox and Bevy.
+
+### wgpu-core: Resource Tracking and Validation
+
+`wgpu-core` implements the WebGPU specification layer above the HAL. Its central type is `Device<A>`, where `A: HalApi` is a backend type parameter:
+
+```rust
+// wgpu-core/src/device/resource.rs (simplified)
+pub struct Device<A: HalApi> {
+    pub(crate) raw: ManuallyDrop<A::Device>,  // the wgpu-hal device
+    pub(crate) adapter: Arc<Adapter<A>>,
+    pub(crate) limits: wgt::Limits,
+    pub(crate) features: wgt::Features,
+    // resource registries keyed by typed IDs
+    pub(crate) buffers: Storage<Buffer<A>>,
+    pub(crate) textures: Storage<Texture<A>>,
+    pub(crate) render_pipelines: Storage<RenderPipeline<A>>,
+}
+```
+
+`HalApi` is the trait bound that makes `wgpu-core` backend-agnostic. Every GPU call routes through `device.raw` (the `wgpu-hal` device) after wgpu-core validates the WebGPU invariants.
+
+**To add a new wgpu feature** (e.g., exposing a new Vulkan extension as a `wgpu::Features` flag):
+
+1. Add a `Features::MY_FEATURE` bitflag constant in `wgpu-types/src/features.rs`.
+2. Map it to the Vulkan extension in `wgpu-hal/src/vulkan/adapter.rs` inside `PhysicalDeviceFeatures::from_extensions_and_requested_features`.
+3. Implement the HAL operation in `wgpu-hal/src/vulkan/device.rs` or `command.rs`.
+4. Guard the wgpu-core operation with `device.features.contains(Features::MY_FEATURE)`.
+5. Add a `gpu_test` in `wgpu/tests/` that exercises the new path (see Testing section).
+
+Validation logic lives in `wgpu-core/src/validation.rs` (for resource state and API invariants) and in `naga/src/valid/` (for shader IR). PRs that touch WebGPU API behaviour are expected to reference the relevant spec section in the PR description.
+
+### wgpu-hal: Vulkan Backend Implementation
+
+`wgpu-hal` abstracts GPU APIs behind traits in `wgpu-hal/src/lib.rs`. The root trait is:
+
+```rust
+// wgpu-hal/src/lib.rs (abridged)
+pub trait Api: Clone + Sized + 'static {
+    type Instance: Instance<A = Self>;
+    type Adapter: Adapter<A = Self>;
+    type Device: Device<A = Self>;
+    type Queue: Queue<A = Self>;
+    type CommandEncoder: CommandEncoder<A = Self>;
+    type Buffer: Send + Sync + fmt::Debug;
+    type Texture: Send + Sync + fmt::Debug;
+    type RenderPipeline: Send + Sync;
+    // ...
+}
+```
+
+The Vulkan backend implements `Api` in `wgpu-hal/src/vulkan/`. The key files are:
+
+| File | Role |
+|---|---|
+| `instance.rs` | `vkCreateInstance`, extension/layer enumeration, debug utils |
+| `adapter.rs` | Physical device selection, feature/limit mapping, extension requirements |
+| `device.rs` | `vkCreateDevice`, buffer/texture/pipeline creation, descriptor sets |
+| `command.rs` | `CommandEncoder`: render and compute pass recording, pipeline barriers |
+| `conv.rs` | Type conversion: wgpu enums/structs ↔ Vulkan enums/structs |
+
+The backend uses **ash** exclusively for Vulkan bindings. Extension objects are loaded at device creation and stored in the `Device` struct:
+
+```rust
+// wgpu-hal/src/vulkan/device.rs (pattern for an extension)
+pub struct Device {
+    shared: Arc<DeviceShared>,
+    // extension function tables, loaded once at vkCreateDevice time
+    ext_mesh_shader: Option<ash::khr::MeshShader>,
+    ext_external_memory_fd: ash::khr::ExternalMemoryFd,
+    // ...
+}
+
+// Usage in command recording:
+if let Some(ext) = &self.ext_mesh_shader {
+    unsafe { ext.cmd_draw_mesh_tasks(cmd_buffer, x, y, z); }
+}
+```
+
+To implement a new Vulkan extension in the HAL:
+
+1. Add the extension name to `DeviceExtensions::required_by_features` or `optional_extensions` in `adapter.rs`.
+2. Load the ash extension struct in `Device::new` and store it as `Option<ash::ext::Foo>`.
+3. Implement the HAL trait method, guarding with `if let Some(ext) = &self.ext_foo`.
+4. Add `conv.rs` conversions for any new Vulkan enums the extension introduces.
+
+The `wgpu-hal/src/vulkan/conv.rs` file is the most frequently touched during feature work — it contains hundreds of `match` arms mapping wgpu's format/usage/stage enums to Vulkan equivalents.
+
+### naga: Shader IR and Compilation
+
+Naga's IR is a typed SSA representation. The root types are:
+
+```rust
+// naga/src/lib.rs — core IR containers
+pub struct Module {
+    pub types: UniqueArena<Type>,       // deduplicated type table
+    pub constants: Arena<Constant>,
+    pub global_variables: Arena<GlobalVariable>,
+    pub functions: Arena<Function>,
+    pub entry_points: Vec<EntryPoint>,
+}
+
+pub struct Function {
+    pub arguments: Vec<FunctionArgument>,
+    pub result: Option<FunctionResult>,
+    pub local_variables: Arena<LocalVariable>,
+    pub expressions: Arena<Expression>,  // SSA expression nodes
+    pub body: Block,                     // statement list
+}
+```
+
+`Arena<T>` is naga's typed handle-indexed allocator. Every expression and statement is reached via a `Handle<T>`, which is an index into the arena — there are no raw pointers in the IR.
+
+**Contributing to naga** falls into four categories:
+
+**1. Fixing WGSL validation** — the validator runs in `naga/src/valid/` after parsing. It enforces shader-stage constraints (`@vertex`/`@fragment`/`@compute`), type compatibility, resource binding rules, and WGSL spec invariants. Most validation bugs are discovered via WebGPU CTS failures. The fix pattern is: identify the `ValidationError` variant, trace it to the validator pass that emits it, and add or relax the check per spec.
+
+**2. Adding IR nodes for new language features** — new WGSL built-ins (e.g., subgroup operations, `textureSampleBias` variants) require adding `Expression::*` or `Statement::*` variants. The Rust compiler enforces exhaustive `match` coverage across all backends, so adding a variant immediately surfaces all sites that need updating.
+
+**3. Improving back-end writers** — the SPIR-V writer (`naga/src/back/spv/`) and GLSL writer (`naga/src/back/glsl/`) are the most active on Linux. Common contributions: fixing texture sampling edge cases, improving control-flow translation (WGSL `loop`/`continuing` blocks → SPIR-V structured control flow), and handling integer type-cast corner cases.
+
+**4. Adding snapshot tests** — naga uses the `insta` crate for snapshot testing. Each test compiles a shader input and compares the output against a stored snapshot:
+
+```bash
+# Run tests and accept new or changed snapshots
+INSTA_UPDATE=new cargo test -p naga
+# Review changed snapshots interactively
+cargo insta review
+```
+
+Snapshot files live in `naga/tests/snapshots/`. The CI enforces that all snapshots are committed and reviewed — un-reviewed snapshot changes fail CI. This makes naga regressions detectable without a physical GPU.
+
+### Testing Infrastructure
+
+`wgpu/tests/` contains the hardware integration tests. The `gpu_test` attribute macro declares a test with device requirements:
+
+```rust
+// wgpu/tests/render_pass.rs (representative pattern)
+#[gpu_test]
+static DEPTH_CLIP_CONTROL: GpuTestConfiguration = GpuTestConfiguration::new()
+    .parameters(
+        TestParameters::default()
+            .features(Features::DEPTH_CLIP_CONTROL)
+            .expect_fail(FailureCase::backend(Backends::GLES)),
+    )
+    .run_sync(|ctx| {
+        // ctx.device: wgpu::Device, ctx.queue: wgpu::Queue
+        let pipeline = ctx.device.create_render_pipeline(&RenderPipelineDescriptor {
+            // ...
+        });
+        // submit and readback
+    });
+```
+
+Tests that require features absent on the test device are automatically skipped. `expect_fail` marks known backend-specific failures without breaking CI.
+
+**WebGPU CTS integration**: wgpu maintains a harness that runs the W3C WebGPU conformance test suite against `wgpu-core`. CTS failures in `webgpu:shader/execution/*` are usually naga issues; failures in `webgpu:api/*` are usually wgpu-core validation or resource management issues.
+
+```bash
+# Run the CTS against the Vulkan backend (requires cloning the CTS separately)
+WGPU_BACKEND=vulkan cargo run -p wgpu-cts-runner -- --filter webgpu:shader/execution
+```
+
+### Mozilla's Upstream Relationship
+
+Firefox does not maintain a wgpu fork. Mozilla engineers contribute upstream to `gfx-rs/wgpu` and pin a specific commit in `mozilla-central/third_party/rust/` managed via `mach vendor rust`. The update cadence is approximately quarterly, gated by Firefox's release train and CTS pass rate on the pinned commit.
+
+Mozilla's primary upstream contributions from the Firefox integration have been: WGSL validation correctness fixes (reducing spec divergence from Tint that caused Firefox–Chrome WebGPU behaviour differences), Linux Wayland DMABuf surface integration in `wgpu-hal::vulkan::Surface`, GLES backend robustness for the Android WebGPU path, and `wgpu-core` resource lifecycle edge cases surfaced by the WebGPU CTS.
+
+The most impactful areas for contributors who want their work to benefit Firefox are: naga WGSL validation correctness (reducing CTS failures in `webgpu:shader/`), the Vulkan HAL's Linux Wayland surface path, and `wgpu-core` resource tracking for `GPUBuffer.mapAsync` and timestamp query edge cases.
+
+[Source: wgpu CONTRIBUTING.md](https://github.com/gfx-rs/wgpu/blob/trunk/CONTRIBUTING.md)
+[Source: Mozilla central wgpu-core vendored source](https://searchfox.org/mozilla-central/source/third_party/rust/wgpu-core)
 
 ---
 
