@@ -233,17 +233,39 @@ The two runtimes are **mutually exclusive** — you pick one at compile time. Th
 
 #### tauri-runtime-verso: Current Status and Linux Implications
 
+As of mid-2026, tauri-runtime-verso **works** for basic desktop applications. The project received [NLnet funding](https://nlnet.nl/project/Tauri-Servo/) with a June 2026 milestone, and pre-built `versoview` binaries are distributed for x64 Linux, x64 Windows, and arm64 macOS — no Verso build from source required for these targets.
+
+**What works today:**
+
+- Webviews with custom protocol IPC (`tauri://localhost`)
+- Tray icons
+- App-wide menus (macOS)
+- React and standard Tauri plugins (`log`, `opener`)
+- DevTools via the Firefox remote debugger protocol
+
+**What does not work yet:**
+
+- Per-window menus
+- Mobile (Android/iOS)
+- Built-in DevTools panel (must use an external Firefox debugger)
+- Full Tauri 2 plugin API surface
+
+**Critical security limitation:** The Origin header in custom protocol IPC is currently hardcoded. This means Tauri cannot distinguish between a local `tauri://localhost` request and an arbitrary remote URL — the capability system's local/remote URL check is bypassed. The project documentation explicitly warns: *"please don't use this to load arbitrary websites if you have related settings."* This is a fundamental limitation for applications that load any external web content.
+
+**Linux-specific note:** The pre-built `versoview` binary requires a minimum glibc version. On older distributions (Ubuntu 20.04, RHEL 8-era) the binary may fail with "No such file or directory" from the dynamic linker; building from source or using a newer distro is the workaround.
+
 | Dimension | tauri-runtime-wry (WebKitGTK) | tauri-runtime-verso (Servo) |
 |---|---|---|
 | Engine | WebKit (C++, Apple-maintained) | Servo (Rust, Linux Foundation) |
 | Linux backend | GTK3 / GLib event loop | Servo's own rendering loop |
 | GTK dependency | Required | None |
-| Feature completeness | Full Tauri 2 API | Small subset only |
-| Pre-built engine | System WebKitGTK library | Must compile Verso from source |
+| Feature completeness | Full Tauri 2 API | Core subset only |
+| Pre-built engine | System WebKitGTK library | Pre-built `versoview` binary (x64) |
 | CSS/JS compatibility | High (Safari-grade WebKit) | Incomplete — Servo still catching up |
-| Production readiness | Production | Experimental |
+| IPC security | Origin checked against capabilities | **Origin hardcoded — do not load remote URLs** |
+| Production readiness | Production | Experimental / internal tooling only |
 
-For Linux specifically, Verso/Servo eliminates the GTK3 dependency entirely — an application can create a window without requiring GTK or GLib. This matters for applications that want to use a non-GTK windowing system (e.g., raw Wayland via `wayland-client`, or winit). The trade-off is that Servo's web platform coverage remains incomplete: many CSS features, Web APIs, and performance characteristics that WebKitGTK handles correctly are not yet implemented in Servo.
+For Linux specifically, Verso/Servo eliminates the GTK3 dependency entirely — an application can create a window without requiring GTK or GLib. This matters for applications that want a non-GTK windowing system. The trade-off is that Servo's web platform coverage remains incomplete and the IPC security hole disqualifies it for any application that loads untrusted content.
 
 #### CEF and Alternative Chromium-Based Backends
 
