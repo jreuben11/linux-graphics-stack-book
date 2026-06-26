@@ -416,6 +416,19 @@ At `wasm-pack build` time, wasm-bindgen processes the compiled WASM file and emi
 
 ### 5.2 web-sys: DOM and WebGPU Bindings
 
+**WebIDL** (Web Interface Definition Language) is the IDL used by W3C and WHATWG to specify every browser JavaScript API. Each Web Platform API — `GPUDevice`, `HTMLCanvasElement`, `fetch()`, `WebSocket` — is defined in a `.webidl` file that describes its interfaces, attributes, methods, and type coercion rules. For example, the WebGPU spec defines:
+
+```webidl
+interface GPUDevice : EventTarget {
+    readonly attribute GPUSupportedFeatures features;
+    GPUBuffer createBuffer(GPUBufferDescriptor descriptor);
+    GPURenderPipeline createRenderPipeline(GPURenderPipelineDescriptor descriptor);
+    Promise<undefined> popErrorScope();
+};
+```
+
+Browser engines (Chromium's Blink, Firefox's Gecko) run a WebIDL compiler over these files to auto-generate the C++ ↔ JavaScript binding glue. `web-sys` applies the same principle to Rust: it runs `wasm-bindgen`'s WebIDL processor over the same `.webidl` files to produce Rust types and `extern "C"` stubs. This means `web_sys::GpuDevice` is a direct mirror of the WebIDL `GPUDevice` — same methods, same attribute names, same async `Promise<T>` → `JsFuture` mapping. WebIDL is also the upstream source of truth: when the WebGPU spec adds a new method, `web-sys` gains it by regenerating from the updated `.webidl`. The `[Exposed=Window,Worker]` annotation in WebIDL maps to which Rust feature flag gates the binding. WebIDL's counterpart in the WASM Component Model ecosystem is **WIT** (WebAssembly Interface Types) — same concept (typed interface definition), different syntax and target runtime (see §12 Roadmap).
+
 `web-sys` provides Rust bindings to virtually every browser Web API, generated directly from the WebIDL specification. Features are gated by Cargo features to avoid bloating the binary:
 
 ```toml
