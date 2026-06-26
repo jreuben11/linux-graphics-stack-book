@@ -12,7 +12,7 @@
    - [1.1 Background: Media Source Extensions (MSE)](#11-background-media-source-extensions-mse)
    - [1.2 Background: DASH — Dynamic Adaptive Streaming over HTTP](#12-background-dash--dynamic-adaptive-streaming-over-http)
    - [1.3 Background: WebRTC — Real-Time Peer-to-Peer Media](#13-background-webrtc--real-time-peer-to-peer-media)
-   - [1.4 Background: WebM Container Format](#14-background-webm-container-format)
+   - [1.4 Background: EBML, Matroska, and WebM](#14-background-ebml-matroska-and-webm)
    - [1.5 Background: ISO BMFF and Fragmented MP4](#15-background-iso-bmff-and-fragmented-mp4)
    - [1.6 Background: HLS — HTTP Live Streaming](#16-background-hls--http-live-streaming)
    - [1.7 Background: Video and Audio Codecs](#17-background-video-and-audio-codecs)
@@ -161,9 +161,107 @@ receiver.transform = new RTCRtpScriptTransform(worker, { readable, writable });
 
 ---
 
-### 1.4 Background: WebM Container Format
+### 1.4 Background: EBML, Matroska, and WebM
 
-**WebM** is a royalty-free, open-source media container format released by Google in 2010 alongside VP8 and the first public version of WebRTC. [Source](https://www.webmproject.org/about/) It is a restricted profile of the **Matroska** container (`MKV`): it uses the same **EBML** (Extensible Binary Meta Language) wire format — a binary TLV encoding where element IDs and sizes are encoded as variable-length integers — but constrains codec choices and strips rarely-used features like chapters and complex tag hierarchies.
+#### EBML (Extensible Binary Meta Language)
+
+**EBML** is a binary serialization format designed by the Matroska team (Steve Lhomme et al.) in 2002 and standardised as **IETF RFC 8794** in 2020. [Source](https://www.rfc-editor.org/rfc/rfc8794) It is the wire format shared by both Matroska and WebM. EBML is self-describing at the structural level: every element carries its own ID, size, and data, so a reader can traverse any EBML document without a pre-shared schema — similar in spirit to XML but binary and far more compact.
+
+Every EBML element follows this layout:
+
+```
+┌─────────────┬──────────────┬──────────────────────┐
+│  ID  (VINT) │  Size (VINT) │  Data (size bytes)   │
+└─────────────┴──────────────┴──────────────────────┘
+```
+
+Both ID and Size use **VINT** (Variable-Length Integer) encoding, analogous to UTF-8's width detection: the number of leading zero bits in the first byte determines how many bytes follow.
+
+```
+VINT width encoding:
+  1 byte : 1xxx xxxx                        (values 0x01 – 0x7E)
+  2 bytes: 01xx xxxx  xxxx xxxx             (values 0x7F – 0x3FFE)
+  3 bytes: 001x xxxx  xxxx xxxx  xxxx xxxx
+  4 bytes: 0001 xxxx  ...                   (used for most Matroska element IDs)
+
+Examples:
+  ID 0x1A45DFA3  →  bytes: 0x1A 0x45 0xDF 0xA3  (4-byte VINT: leading 0001)
+  Size = 31      →  byte:  0x9F                  (1-byte VINT: 1001 1111 → 0x1F = 31)
+  Size = unknown →  bytes: 0x01 0xFF 0xFF 0xFF 0xFF 0xFF 0xFF 0xFF  (all-ones sentinel)
+```
+
+The **unknown-size sentinel** (all data bits set to 1) is critical for streaming: the top-level `Segment` and each `Cluster` may be written with unknown size, allowing a live muxer to write elements without knowing the final duration. This is exactly how `MediaRecorder` generates WebM streams from a live camera capture.
+
+The EBML document always begins with an **EBML Header** element (ID `0x1A45DFA3`) that carries schema metadata:
+
+```
+EBML Header
+  EBMLVersion:       1
+  EBMLReadVersion:   1
+  EBMLMaxIDLength:   4
+  EBMLMaxSizeLength: 8
+  DocType:           "matroska"  (or "webm")
+  DocTypeVersion:    4
+  DocTypeReadVersion: 2
+```
+
+`DocType` is the only field that distinguishes a Matroska file from a WebM file at the EBML level.
+
+---
+
+#### Matroska (MKV)
+
+**Matroska** is an open-source multimedia container format, first released in 2003 and standardised as **IETF RFC 9559** in 2024. [Source](https://www.rfc-editor.org/rfc/rfc9559) It uses EBML with `DocType: "matroska"` and supports virtually any codec, making it the dominant archival and remux container on Linux. File extensions: `.mkv` (video+audio), `.mka` (audio only), `.mks` (subtitles only).
+
+Top-level Matroska element hierarchy:
+
+```
+EBML Header       (DocType="matroska", DocTypeVersion=4)
+└── Segment       (may be unknown-size for live streams)
+    ├── SeekHead  (byte-offset index to top-level elements for fast seeking)
+    ├── Info      (duration, TimestampScale [default 1ms], title, muxing app)
+    ├── Tracks
+    │   └── TrackEntry × N
+    │       ├── TrackType    (1=video, 2=audio, 17=subtitle)
+    │       ├── CodecID      (e.g. "V_MPEGH/ISO/HEVC", "A_AAC", "A_OPUS")
+    │       ├── CodecPrivate (codec init data — same role as avcC/hvcC in BMFF)
+    │       └── Video / Audio  (resolution, pixel format, sample rate, channels)
+    ├── Chapters  (ordered chapter list, edition entries — absent in WebM)
+    ├── Tags      (key/value metadata: title, artist, date, IMDB ID, ...)
+    ├── Cues      (seek index: timestamp → Cluster byte offset + track relative pos)
+    ├── Attachments (fonts, cover art, ICC profiles — absent in WebM)
+    └── Cluster × N   (time-anchored group of blocks, may be unknown-size)
+        ├── Timestamp    (absolute cluster base time in TimestampScale units)
+        ├── SimpleBlock × N  (single frame: track ref + relative timestamp + flags + data)
+        └── BlockGroup × N   (block + optional BlockDuration, BlockAdditions, ReferenceBlock)
+            ├── Block          (same payload as SimpleBlock but in a wrapper)
+            └── BlockAdditions (HDR metadata, Dolby Vision RPU, etc.)
+```
+
+**CodecID and CodecPrivate** are the Matroska equivalents of the BMFF `stsd` box. The `CodecPrivate` element carries the codec initialisation record:
+
+| CodecID | Codec | CodecPrivate content |
+|---------|-------|----------------------|
+| `V_MPEG4/ISO/AVC` | H.264 | Binary `avcC` record (SPS + PPS NAL units) |
+| `V_MPEGH/ISO/HEVC` | H.265 | Binary `hvcC` record (VPS + SPS + PPS) |
+| `V_AV1` | AV1 | Binary `av1C` record (Sequence Header OBU) |
+| `V_VP9` | VP9 | VP9 codec features struct (optional) |
+| `V_VP8` | VP8 | None required |
+| `A_AAC` | AAC | AudioSpecificConfig (same as BMFF `esds`) |
+| `A_OPUS` | Opus | `OpusHead` identification header (8 bytes + channels) |
+| `A_VORBIS` | Vorbis | Three Vorbis header packets concatenated |
+| `A_FLAC` | FLAC | `fLaC` marker + STREAMINFO metadata block |
+| `A_AC3` | AC-3 | None required |
+
+This `CodecPrivate` content maps directly to `VideoDecoderConfig.description` or `AudioDecoderConfig.description` in WebCodecs — a Matroska demuxer extracts it and passes it verbatim.
+
+Matroska supports a much broader codec set than WebM: H.264, H.265, AV1, VP8, VP9, Theora, MPEG-2, FFV1 (lossless), RealVideo for video; AAC, AC-3, E-AC-3, DTS, TrueHD, FLAC, MP3, Opus, Vorbis for audio. It also supports ordered chapters (referencing segments in other files), complex subtitle formats (ASS/SSA, PGS, DVBSUB), and file attachments (fonts for subtitle rendering, cover art). These features are explicitly excluded from the WebM profile.
+
+---
+
+#### WebM: A Restricted Matroska Profile
+
+**WebM** is a royalty-free, open-source media container format released by Google in 2010 alongside VP8 and the first public version of WebRTC. [Source](https://www.webmproject.org/about/) It is a restricted profile of Matroska with `DocType: "webm"`: it uses the same EBML wire format but constrains codec choices and removes rarely-used features to produce a simpler, browser-friendly container.
 
 **Allowed codecs in WebM:**
 | Track type | Permitted codecs |
@@ -290,7 +388,13 @@ The codec string is what you pass to `VideoDecoderConfig.codec`, `SourceBuffer.a
 
 **HLS** (HTTP Live Streaming) is Apple's adaptive bitrate streaming protocol, defined in RFC 8216. [Source](https://www.rfc-editor.org/rfc/rfc8216) It uses a hierarchical **M3U8 playlist** format and is the dominant streaming protocol for iOS/Safari and Apple TV, while DASH dominates Android/Chrome. The two protocols have largely converged on the same CMAF segment format.
 
-**Master playlist** (`master.m3u8`):
+---
+
+#### M3U8 Playlist Format
+
+M3U8 is a plain-text playlist format derived from the extended M3U format. Every line is either a URI (pointing to a segment or a sub-playlist) or a tag beginning with `#`. Tags with `#EXT-X-` prefix are HLS-specific extensions.
+
+**Master playlist** (`master.m3u8`) — selects among quality variants:
 ```m3u8
 #EXTM3U
 #EXT-X-VERSION:6
@@ -309,7 +413,7 @@ The codec string is what you pass to `VideoDecoderConfig.codec`, `SourceBuffer.a
 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,URI="audio/index.m3u8"
 ```
 
-**Variant playlist** (`720p/index.m3u8`):
+**Variant playlist** (`720p/index.m3u8`) — lists individual segments:
 ```m3u8
 #EXTM3U
 #EXT-X-VERSION:7
@@ -324,20 +428,124 @@ The codec string is what you pass to `VideoDecoderConfig.codec`, `SourceBuffer.a
 720p/seg-003.m4s
 ```
 
-`#EXT-X-MAP` points to the initialization segment — the same `init.mp4` that a DASH `initialization` URL would reference. When HLS uses fMP4 segments (indicated by `#EXT-X-VERSION:7` and `.m4s` extensions), the segment files are byte-for-byte identical to DASH CMAF segments; only the manifest format differs.
+Key M3U8 tags and their semantics:
 
-**Legacy MPEG-TS segments**: older HLS deployments use `.ts` (MPEG Transport Stream) segments instead of fMP4. TS segments are self-contained (no init segment needed), but they carry H.264 and AAC only — no VP9, AV1, or HEVC in practice. MSE requires `video/mp2t` MIME type for TS ingest. Browsers other than Safari require an MSE-based player library (hls.js) for MPEG-TS segments.
+| Tag | Meaning |
+|-----|---------|
+| `#EXTM3U` | File type marker; must be first line |
+| `#EXT-X-VERSION:N` | HLS spec version; version 7 required for fMP4 segments |
+| `#EXT-X-TARGETDURATION:N` | Maximum segment duration in seconds (ceiling of all `#EXTINF` values) |
+| `#EXT-X-MAP:URI=...` | Initialization segment URI; required for fMP4; absent for MPEG-TS |
+| `#EXTINF:duration,title` | Duration of the following segment in seconds |
+| `#EXT-X-STREAM-INF:...` | Describes a variant stream in the master playlist |
+| `#EXT-X-MEDIA:TYPE=AUDIO,...` | Declares an alternate audio/subtitle rendition |
+| `#EXT-X-KEY:METHOD=...,URI=...` | Encryption key for following segments |
+| `#EXT-X-ENDLIST` | Marks a complete VOD playlist (absent in live streams) |
+| `#EXT-X-PLAYLIST-TYPE:VOD\|EVENT` | VOD = static; EVENT = live that only appends |
+| `#EXT-X-PART:DURATION=...,URI=...` | LL-HLS partial segment declaration |
+| `#EXT-X-PRELOAD-HINT:TYPE=PART,...` | LL-HLS prefetch hint for next partial segment |
+| `#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES` | Enables LL-HLS blocking playlist reload |
 
-**Low-Latency HLS (LL-HLS)**: Apple extended HLS in 2019 to achieve sub-2-second live latency using:
-- **Partial segments** (`#EXT-X-PART`): 200 ms sub-segments within the 6-second target duration
-- **Preload hints** (`#EXT-X-PRELOAD-HINT`): client pre-fetches the next partial segment before it's listed in the playlist
-- **Server push / blocking playlist reload**: the server holds the playlist request until a new part is available (HTTP/2 required)
+`#EXT-X-MAP` points to the same `init.mp4` a DASH `initialization` URL references. When HLS uses fMP4 segments (version ≥ 7, `.m4s` extensions), those segment files are byte-for-byte identical to DASH CMAF segments — only the manifest format differs.
 
-LL-HLS reaches 1–2 seconds end-to-end latency versus 15–30 seconds for standard HLS and 6–10 seconds for standard DASH. CMAF chunked encoding (sub-segment boundaries in fMP4) enables the same technique for DASH: Apple, AWS, and Akamai support both simultaneously from a single CMAF origin.
+---
 
-**Browser support**: Safari handles HLS natively via the `<video>` element — the browser's AVFoundation layer (or equivalent on Linux Safari) parses the M3U8 and feeds segments to the system decoder. Chromium and Firefox require an MSE-based library such as `hls.js`, which fetches segments in JavaScript and calls `sourceBuffer.appendBuffer()`. The WebCodecs path is the same regardless: `hls.js` can be modified to intercept segments and pass them to a `VideoDecoder` worker instead of MSE, enabling frame-level processing of HLS streams.
+#### MPEG-TS: Legacy HLS Segment Format
 
-**HLS vs DASH summary**:
+Older HLS deployments (and still default for broadcast-to-web pipelines) use **MPEG-TS** (MPEG Transport Stream, ISO/IEC 13818-1) segments instead of fMP4. [Source](https://www.iso.org/standard/83348.html) TS is a fixed-size packet format originally designed for broadcast (DVB, ATSC) where fixed packet sizes simplify hardware multiplexers and error-correction schemes.
+
+Every TS packet is exactly **188 bytes** — 4-byte header + up to 184 bytes of payload:
+
+```
+TS Packet (188 bytes):
+┌─────────────────────────────────────────────────────────────┐
+│ Byte 0: Sync byte = 0x47 (always)                           │
+│ Bytes 1–2:                                                   │
+│   bit 15    : Transport Error Indicator (TEI)                │
+│   bit 14    : Payload Unit Start Indicator (PUSI)           │
+│                 — set on first TS packet of a new PES        │
+│   bit 13    : Transport Priority                             │
+│   bits 12–0 : PID (13 bits, identifies the elementary stream)│
+│ Byte 3:                                                      │
+│   bits 7–6  : Transport Scrambling Control (00 = not scrambled)│
+│   bits 5–4  : Adaptation Field Control                       │
+│                 01 = payload only                            │
+│                 10 = adaptation field only                   │
+│                 11 = adaptation field + payload              │
+│   bits 3–0  : Continuity Counter (wraps 0–15, per PID)      │
+├─────────────────────────────────────────────────────────────┤
+│ Adaptation Field (if AFC = 10 or 11):                        │
+│   length (1 byte) + flags + optional PCR + stuffing bytes   │
+│   PCR (Program Clock Reference): 33+9 bit timestamp         │
+│         at 27 MHz; used for A/V synchronisation             │
+├─────────────────────────────────────────────────────────────┤
+│ Payload (up to 184 bytes)                                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**PIDs** (Packet Identifiers) demultiplex streams within a TS file:
+- **PID 0x0000** — PAT (Program Association Table): maps program numbers to PMT PIDs
+- **PID from PAT** — PMT (Program Map Table): maps elementary stream PIDs to stream types
+- **Elementary stream PIDs** — carry video, audio, or subtitle data
+
+Stream type values in the PMT determine the codec:
+
+| Stream type | Codec |
+|-------------|-------|
+| `0x1B` | H.264 / AVC |
+| `0x24` | H.265 / HEVC |
+| `0x10` | MPEG-4 Part 2 video |
+| `0x0F` | AAC (ADTS-framed) |
+| `0x81` | AC-3 / Dolby Digital |
+| `0x06` | Private data (may carry AAC, SCTE-35 splice points, etc.) |
+
+**PES** (Packetized Elementary Stream) wraps the raw codec data with a timing header. When `PUSI = 1`, the TS payload starts with a PES header:
+
+```
+PES Header:
+  Start code:    0x000001 (3 bytes)
+  Stream ID:     0xE0 (video), 0xC0 (audio first), 0xC1 (audio second), ...
+  PES Length:    2 bytes (0 = unbounded, used for video)
+  Flags:         PTS_DTS_flags, scrambling, priority, alignment
+  Header length: 1 byte
+  PTS:           33-bit timestamp at 90 kHz clock (optional)
+  DTS:           33-bit decode timestamp (optional, only when PTS ≠ DTS)
+  Payload:       raw codec data (Annex-B H.264, ADTS AAC, etc.)
+```
+
+The **90 kHz PTS** is the timing unit for all MPEG-TS timestamps — 1 tick = 1/90000 seconds ≈ 11.1 µs. To convert to WebCodecs `timestamp` (microseconds): `pts_us = pts_90khz * 1000 / 90`. This conversion is performed by hls.js in `src/demux/tsdemuxer.ts` when extracting `EncodedVideoChunk` data from TS segments.
+
+TS segments are self-contained: the PAT and PMT repeat at the start of every segment, so no initialization segment is needed. This is why `#EXT-X-MAP` is absent in MPEG-TS playlists. The trade-off is that TS segments are larger than equivalent fMP4 segments (due to padding and repeated table overhead) and limited to H.264 + AAC in practice — VP9, AV1, and HEVC are technically specifiable via private stream types but lack standardised carriage and browser support.
+
+---
+
+#### Low-Latency HLS (LL-HLS)
+
+Apple extended HLS in 2019 to achieve sub-2-second live latency using three mechanisms:
+- **Partial segments** (`#EXT-X-PART`): 200 ms CMAF chunks within the 6-second target duration; the server publishes them as they complete
+- **Preload hints** (`#EXT-X-PRELOAD-HINT`): the playlist advertises the next partial segment's URI before it exists; the client begins the fetch immediately (HTTP/2 push or 206 range request)
+- **Blocking playlist reload**: the client appends `_HLS_msn=` and `_HLS_part=` query parameters; the server holds the response until that sequence number/part is available
+
+LL-HLS reaches 1–2 seconds end-to-end latency versus 15–30 seconds for standard HLS. CMAF chunked encoding (sub-segment boundaries in fMP4) enables the equivalent technique for DASH. Apple, AWS Elemental, and Akamai serve both simultaneously from a single CMAF origin by generating one set of `.m4s` files referenced by both the M3U8 and the DASH MPD.
+
+---
+
+#### HLS Encryption and DRM
+
+**Segment encryption** (`#EXT-X-KEY`): HLS can encrypt segments with AES-128 in CBC mode. The key URI points to a 16-byte key file; the IV is derived from the segment sequence number or specified explicitly:
+
+```m3u8
+#EXT-X-KEY:METHOD=AES-128,URI="https://keys.example.com/key",IV=0x000000000000000000000000000001A3
+#EXTINF:6.000,
+720p/seg-004.m4s
+```
+
+**FairPlay Streaming (FPS)**: Apple's DRM for HLS, used on iOS, tvOS, macOS Safari, and Apple TV. FairPlay uses `METHOD=SAMPLE-AES` in `#EXT-X-KEY`, where individual media samples (not whole segments) are encrypted. The key exchange uses Apple's `skd://` URI scheme, resolved by the application via `AVContentKeySession` (native) or `com.apple.fps` key system in EME (Encrypted Media Extensions). On Linux, FairPlay is not available outside Safari — Chrome and Firefox use Widevine, which requires DASH or MSE-level integration.
+
+---
+
+#### HLS vs DASH Summary
+
 | | HLS | DASH |
 |---|---|---|
 | Spec body | IETF RFC 8216 | ISO/IEC 23009-1 |
@@ -346,7 +554,8 @@ LL-HLS reaches 1–2 seconds end-to-end latency versus 15–30 seconds for stand
 | Native browser | Safari | None (all use MSE libraries) |
 | Live latency (standard) | ~15–30 s | ~6–10 s |
 | Live latency (low) | LL-HLS ~1–2 s | Chunked CMAF ~2–4 s |
-| DRM | FairPlay | Widevine, PlayReady |
+| DRM | FairPlay (`SAMPLE-AES`) | Widevine, PlayReady (CENC) |
+| Timing unit | 90 kHz PTS (MPEG-TS) / `tfdt` (fMP4) | `tfdt` (fMP4) |
 
 ---
 
