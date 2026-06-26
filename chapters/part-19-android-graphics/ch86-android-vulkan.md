@@ -1267,6 +1267,16 @@ A `@CriticalNative` call leaves the thread in `kRunnable`. If a GC `SuspendAll()
 
 [Source: ART JNI compiler](https://android.googlesource.com/platform/art/+/refs/heads/main/compiler/jni/jni_compiler.cc), [ART thread state machine](https://android.googlesource.com/platform/art/+/refs/heads/main/runtime/thread.cc)
 
+#### Java licensing: do these annotations raise IP concerns?
+
+No, for three independent reasons.
+
+**`dalvik.*` is not Java SE IP.** `@FastNative` and `@CriticalNative` live in the `dalvik.annotation.optimization` package. The `dalvik.*` namespace is Android-proprietary and has no counterpart in the Java SE specification or OpenJDK. Oracle's IP claims centred on the `java.*` and `javax.*` API packages — their structure, sequence, and organisation (SSO). Google never asserted `dalvik.*` was Java SE; it is an ART-internal extension with no standardised equivalent.
+
+**Oracle v. Google (SCOTUS 2021) settled the broader question.** Android reimplements 37 `java.*` / `javax.*` API packages (e.g. `java.io`, `java.util`, `java.lang`) using its own runtime (ART) rather than a licensed JVM. Oracle sued Google over this in 2010. The US Supreme Court ruled 6–2 in April 2021 that Google's reimplementation constituted **fair use**. The `dalvik.*` extensions were never part of Oracle's claim and are even further removed from any Java IP concern than the packages actually litigated.
+
+**JNI is an open specification; Java syntax is not proprietary.** The Java Native Interface specification is published by Oracle as part of the Java SE documentation and may be freely implemented. The JNI trampoline stubs that these annotations optimise do not require a Java licence. Android compiles Java source with `javac` then converts `.class` bytecode to `.dex` via `d8`/`r8`; OpenJDK's compiler is GPL with Classpath Exception, making it freely usable. Oracle's copyright in Oracle v. Google covered the SSO of the API packages, not the Java language grammar.
+
 ### Why Project Panama FFM does not apply to Android
 
 Java 21 standardised the **Foreign Function & Memory API** (FFM, JEP 454) as a replacement for JNI in the OpenJDK/HotSpot JVM. FFM provides `MethodHandle`-based native dispatch and `MemorySegment` for off-heap memory without `sun.misc.Unsafe`. It is widely discussed as the future of Java native interop.
