@@ -1593,13 +1593,44 @@ The proof-of-concept above works, but three things prevent it from being a produ
 - **WASM GC and high-level language GPU bindings**: WebAssembly Garbage Collection (in WebAssembly 3.0) enables runtimes for Java, Kotlin, Dart, and Python to target WASM without a GC-in-WASM stub. Long-term, these languages may gain idiomatic WebGPU bindings, broadening the set of languages that can write GPU code deployable to both native Linux and the browser from a single source. [Source: WebAssembly in 2026 — atakinteractive](https://www.atakinteractive.com/blog/webassembly-2026)
 - **Unified WASM+native GPU abstraction layer**: wgpu already abstracts over Vulkan, Metal, D3D12, and WebGPU. A longer-term architectural goal (visible in wgpu RFCs) is to erase the distinction between `wasm32-unknown-unknown` and native targets at the API level, so that a single build can produce both a native binary and a WASM module with no `#[cfg(target_arch = "wasm32")]` guards. Note: needs verification against gfx-rs roadmap documents.
 - **Server-side GPU WASM via WASI-GPU**: analogous to `wasi-nn` for inference, a `wasi-gpu` interface could expose a GPU abstraction to WASM modules running in Wasmtime or WasmEdge on Linux, dispatching to Vulkan via Mesa. This would allow the same WASM binary to run GPU compute in a browser tab and on a GPU-accelerated edge server without recompilation. Note: needs verification; no formal WASI proposal exists as of mid-2026.
-- **Zero-copy between WASM linear memory and the GPU**: as noted in §2.2 and §12.7, all current paths from WASM linear memory to a GPU buffer require a CPU-side copy (`queue.write_buffer`, `to_vec()`). Two distinct technical routes could close this gap:
+- **Zero-copy between WASM linear memory and the GPU**: as noted in §2.2 and §12.7, all current paths from WASM linear memory to a GPU buffer require a CPU-side copy (`queue.write_buffer`, `to_vec()`). Two distinct technical routes could close this gap, and the native one has a working proof-of-concept.
 
-  *Browser path.* The WebGPU spec would need a mechanism to create a `GPUBuffer` backed by a `SharedArrayBuffer` — the WASM linear memory segment — so that the GPU reads directly from the same physical pages the CPU writes. The prerequisite is that `SharedArrayBuffer`-backed memory be in a form the GPU driver can map (aligned, pinned, satisfying IOMMU constraints). This is architecturally feasible on unified-memory platforms (Apple Silicon, AMD APU, Intel iGPU) where CPU and GPU share the same DRAM; on discrete PCIe GPUs the copy across the PCIe bus would remain unavoidable regardless. No WebGPU spec proposal for this exists as of mid-2026; it is a known gap in the gpuweb/gpuweb issue tracker.
+  *Browser path.* The WebGPU spec would need a mechanism to create a `GPUBuffer` backed by a `SharedArrayBuffer` — the WASM linear memory segment — so that the GPU reads directly from the same physical pages the CPU writes. The prerequisite is that `SharedArrayBuffer`-backed memory be in a form the GPU driver can map (aligned, pinned, satisfying IOMMU constraints). This is architecturally feasible on unified-memory platforms (Apple Silicon, AMD APU, Intel iGPU) where CPU and GPU share the same DRAM; on discrete PCIe GPUs the copy across the PCIe bus remains unavoidable. No WebGPU spec proposal for this exists as of mid-2026.
 
-  *Native embedding path (§12).* For WASM modules running in Wasmtime with a native wgpu host, the copy in `gpu_write_buffer` is not architecturally mandatory — it is a consequence of the current proof-of-concept design. A host that allocates WASM linear memory from a `wgpu::BufferUsages::MAP_WRITE | COPY_SRC` staging buffer (via `wgpu::Buffer::map_async` + `wgpu::Buffer::get_mapped_range_mut`) could pass those pages to Wasmtime as the WASM linear memory backing, letting the WASM module write vertex and uniform data directly into GPU-accessible mapped memory. The GPU then reads from the staging buffer without any intermediate copy. This requires Wasmtime support for externally-provided linear memory backing (the WASM `memory.init` / custom memory allocator path) and careful synchronisation (the host must call `buffer.unmap()` before the GPU reads, which requires knowing when the WASM module's write phase is complete). On unified-memory hardware the staging buffer *is* the GPU buffer, reducing the path to a cache-coherency flush rather than a DMA copy.
+  *Native embedding path (§12) — verified approach.* A working proof-of-concept ([lilting.ch, 2026](https://lilting.ch/en/articles/wasm-metal-zero-copy-gpu-inference-apple-silicon)) achieves zero-copy WASM↔GPU memory on Apple Silicon using Metal and Wasmtime, with ~0.03 MB RSS overhead versus ~16.78 MB for the copy path. The technique chains three layers:
 
-  Note: needs verification against Wasmtime memory-provider APIs and wgpu mapped memory lifetime guarantees.
+  1. **Page-aligned allocation**: `mmap(MAP_ANON | MAP_PRIVATE)` provides a 16 KB-aligned region. `malloc` cannot be used — it does not guarantee the alignment that GPU APIs require.
+
+  2. **GPU import without copy**: On Metal, `MTLDevice.makeBuffer(bytesNoCopy:length:options:deallocator:)` wraps the `mmap` pointer as a `MTLBuffer` with pointer identity confirmed (same physical pages, no copy). On Linux/Vulkan the equivalent is `VK_EXT_external_memory_host`: `vkImportHostPointerMemoryEXT()` imports a host `void *` as `VkDeviceMemory`, which is then bound to a `VkBuffer`. This extension is widely supported on AMD, Intel, and NVIDIA Vulkan drivers.
+
+  3. **Wasmtime `MemoryCreator` + `LinearMemory`**: Wasmtime exposes two traits — `MemoryCreator` (a factory) and `LinearMemory` (the backing) — that replace its default `mmap` allocator. Implementing these and returning the pre-allocated pointer from `LinearMemory::as_ptr()` gives the WASM module the same physical pages as the GPU buffer:
+
+  ```rust
+  // host: implement LinearMemory backed by the mmap/VK_EXT_external_memory_host region
+  struct ExternalLinearMemory { ptr: *mut u8, byte_size: usize, byte_capacity: usize }
+
+  unsafe impl LinearMemory for ExternalLinearMemory {
+      fn byte_size(&self)     -> usize { self.byte_size }
+      fn byte_capacity(&self) -> usize { self.byte_capacity }
+      fn grow_to(&mut self, new_size: usize) -> anyhow::Result<()> {
+          if new_size > self.byte_capacity { anyhow::bail!("fixed-size external memory") }
+          self.byte_size = new_size;
+          Ok(())
+      }
+      fn as_ptr(&self) -> *mut u8 { self.ptr }
+  }
+  ```
+
+  **Mandatory constraints**:
+  - Guard pages are required: Wasmtime's JIT omits bounds checks when guard pages are present; the tail of the allocation must be `mprotect`'d to `PROT_NONE`.
+  - `MemoryCreator` parameters use WASM page units (64 KB), not OS page size (4 KB or 16 KB on ARM).
+  - The host must unmap the GPU buffer (Vulkan `vkUnmapMemory` / Metal `endAccess`) before submitting GPU commands that read it, then re-acquire access after. This is coordinated around the WASM `wasm_render()` export boundary.
+
+  **Note**: wgpu's `Buffer::map_async` + `get_mapped_range_mut` is **not** a viable alternative for this use case. `map_async` is asynchronous (requires `device.poll()` before the mapping is available), `BufferViewMut` does not implement `DerefMut` to a raw slice (it exposes only `WriteOnly<'a, [u8]>`), and wgpu's own docs state "while a buffer is mapped, you may not submit any commands to the GPU that access it" — mutually exclusive with the read-while-WASM-writes model. The correct Vulkan path is `VK_EXT_external_memory_host` + raw `ash` bindings, bypassing wgpu's buffer abstraction for this allocation only.
+
+  **Hardware limitation**: the zero-copy property only holds on unified-memory architectures (Apple Silicon, AMD APU/iGPU, Intel Iris Xe) where CPU and GPU share physical DRAM. On discrete PCIe GPUs (NVIDIA Ada, AMD RDNA discrete) the pages imported via `VK_EXT_external_memory_host` still reside in system RAM and must traverse the PCIe bus for the GPU to read them; the technique eliminates the software copy overhead but not the PCIe transfer.
+
+  [Source: Zero-copy GPU inference on Apple Silicon with WebAssembly and Metal](https://lilting.ch/en/articles/wasm-metal-zero-copy-gpu-inference-apple-silicon) | [Wasmtime `LinearMemory` trait](https://docs.wasmtime.dev/api/wasmtime/trait.LinearMemory.html) | [wgpu `Buffer::unmap` constraints](https://docs.rs/wgpu/latest/wgpu/struct.Buffer.html)
 
 ---
 
