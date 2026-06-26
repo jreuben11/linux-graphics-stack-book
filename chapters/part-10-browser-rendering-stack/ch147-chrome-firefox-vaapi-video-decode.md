@@ -3,6 +3,10 @@
 **Part**: X — The Browser Rendering Stack  
 **Primary audience**: Browser and web platform engineers who need to understand how Chrome and Firefox offload video decoding to the GPU via VA-API on Linux; systems and driver developers debugging VA-API integration, sandbox policies, or zero-copy NV12 compositing failures in browser environments.
 
+> **Relationship to Chapter 146.** This chapter covers the **browser implementation side** of hardware video acceleration: the C++ internals of Chrome's `VaapiVideoDecoder` / `VaapiWrapper`, codec-specific delegates, `OzoneImageBacking` zero-copy compositing, the Out-of-Process Video Decode (OOP-VD) sandbox, Firefox's `FFmpegVideoDecoder`, `DMABufSurface`, and the RDD process — plus NVIDIA-specific quirks (§11) and per-codec deep-dives (§10).
+>
+> **Chapter 146** covers the **API and specification side**: the W3C WebCodecs JavaScript API (`VideoDecoder`, `VideoEncoder`, `VideoFrame`), how decoded frames reach WebGPU and Canvas, querying hardware support via `isConfigSupported()` and `MediaCapabilities`, and background on all the related formats and protocols (MSE, DASH, HLS, EBML, DRM, codecs). Chapter 146 §4 gives a developer-facing overview of the same VA-API path that this chapter dissects in depth — read both chapters together for the complete picture from JavaScript call to kernel DRM driver.
+
 ---
 
 ## Table of Contents
@@ -506,42 +510,70 @@ vainfo --display drm --device /dev/dri/renderD128
 
 ## 11. NVIDIA: No Native VA-API in Chrome, nvidia-vaapi-driver for Firefox
 
+> **Does Firefox have a better video experience than Chrome on NVIDIA Linux?**  
+> **Yes — with caveats.** On a correctly configured NVIDIA Linux system, Firefox with `nvidia-vaapi-driver` achieves full GPU-accelerated video decode (NVDEC) for H.264, HEVC, VP9, AV1, and more. Chrome on the same system falls back to software decode for all video. The practical consequences are real: lower CPU usage, lower power draw, and the ability to play 4K streams smoothly that would stutter or overheat the CPU in Chrome. However, this advantage requires manual configuration and relies on a community-maintained driver shim — it is not a plug-and-play situation. Chrome's planned Vulkan Video backend will eventually close this gap. The full picture follows.
+
 ### Chrome on NVIDIA
 
-Chrome does not have a VA-API decode path for NVIDIA GPUs on Linux. The Chrome GPU blocklist explicitly disables VA-API for NVIDIA hardware; the underlying reason is that NVIDIA's proprietary driver does not ship a VA-API library, and Chrome's `VaapiWrapper` requires a working VA-API driver. The `--enable-features=VaapiOnNvidiaGPUs` Chrome flag exists for experimental testing but is not a supported path.
+Chrome does not have a VA-API decode path for NVIDIA GPUs on Linux. The Chrome GPU blocklist explicitly disables VA-API for NVIDIA hardware because NVIDIA's proprietary driver does not ship a VA-API library, and Chrome's `VaapiWrapper` requires a working VA-API implementation. The `--enable-features=VaapiOnNvidiaGPUs` flag exists for experimental testing but is not a supported path and may not function correctly.
 
-NVIDIA hardware video decode in Chrome on Linux is accessible via:
-1. **Vulkan Video** — a future path; Khronos published a Chromium Vulkan Video integration design document in December 2025 positioning it as a complementary backend. Note: needs verification of shipped Chrome version.
-2. **Software decode** — `FFmpegVideoDecoder` falls back to libavcodec CPU decode.
-3. **GStreamer backend** — the `gst-nv-video-dec` GStreamer element uses NVIDIA's NVDEC, but this is not Chrome's video decode path; Chrome does not use GStreamer.
+The result: on NVIDIA Linux, Chrome uses **software decode** for all video content — `FFmpegVideoDecoder` falls back to libavcodec CPU decode. For typical 1080p30 streams this is manageable but noticeably more CPU-intensive than hardware decode. For 4K60 or multi-stream scenarios, software decode saturates CPU cores and causes thermal throttling on laptops.
+
+The planned fix is **Vulkan Video**: Khronos published a Chromium Vulkan Video integration design document in December 2025, positioning it as a backend that would work on any Vulkan 1.3 implementation — including NVIDIA's. As of mid-2026 this path is not yet shipped in a stable Chrome release. [Note: verify current Chrome Vulkan Video status against Chromium issue tracker before citing.]
 
 ### Firefox on NVIDIA via nvidia-vaapi-driver
 
-The `nvidia-vaapi-driver` project (https://github.com/elFarto/nvidia-vaapi-driver) is a third-party VA-API implementation that wraps NVIDIA's NVDEC via the NVIDIA kernel driver. It is supported by Firefox but **explicitly unsupported** by Chrome.
+The `nvidia-vaapi-driver` project ([github.com/elFarto/nvidia-vaapi-driver](https://github.com/elFarto/nvidia-vaapi-driver)) is a community-maintained VA-API implementation that translates libva calls into NVIDIA's NVDEC interface via the NVIDIA kernel driver's VDPAU/direct NVDEC APIs. Firefox's `FFmpegVideoDecoder` calls libva; `nvidia-vaapi-driver` sits in between and drives NVDEC. Chrome refuses to use it — the blocklist check happens before any library probe.
 
-Requirements for `nvidia-vaapi-driver` with Firefox:
-- `nvidia-drm.modeset=1` kernel module parameter.
-- `LIBVA_DRIVER_NAME=nvidia` (supported on libva ≥ 2.20).
-- `MOZ_DISABLE_RDD_SANDBOX=1` — required on older Firefox builds where the RDD sandbox blocked VA-API; may not be needed on Firefox 136+.
-- NVIDIA proprietary driver 470+ or 500+.
+**Requirements:**
+- `nvidia-drm.modeset=1` kernel module parameter (required for GEM buffer sharing)
+- NVIDIA proprietary driver 470+ (500+ recommended for AV1 support)
+- `libva` ≥ 2.20
+- `MOZ_DISABLE_RDD_SANDBOX=1` on older Firefox builds; not needed on Firefox 136+
 
 ```bash
-# /etc/environment or session startup:
+# /etc/environment (or session startup script):
 LIBVA_DRIVER_NAME=nvidia
-NVD_BACKEND=direct          # preferred; bypasses EGL, accesses NVDEC directly
-                             # EGL backend regressed in driver 525+
+NVD_BACKEND=direct      # bypasses EGL; accesses NVDEC directly
+                         # EGL backend regressed in driver series 525+; avoid it
 ```
 
-Supported codecs via `nvidia-vaapi-driver`: AV1, H.264, HEVC, VP8, VP9, MPEG-2, VC-1. Not supported: MPEG-4 Part 2, JPEG decode.
+**Supported codecs via `nvidia-vaapi-driver`** (maps NVDEC capabilities to VA-API profiles):
 
-Firefox verification:
+| Codec | VA-API profile | NVIDIA GPU requirement |
+|-------|---------------|----------------------|
+| H.264 | `VAProfileH264High` | Fermi (GTX 400+) |
+| H.265 / HEVC 8-bit | `VAProfileHEVCMain` | Maxwell (GTX 900+) |
+| H.265 / HEVC 10-bit | `VAProfileHEVCMain10` | Maxwell+ |
+| VP9 Profile 0 | `VAProfileVP9Profile0` | Maxwell+ |
+| AV1 | `VAProfileAV1Profile0` | Ampere (RTX 30+) |
+| MPEG-2 | `VAProfileMPEG2Main` | Fermi+ |
+| VC-1 | `VAProfileVC1Advanced` | Fermi+ |
+
+Not supported: MPEG-4 Part 2, JPEG decode via VA-API.
+
+**Firefox verification:**
 ```bash
 MOZ_LOG="FFmpegVideo:5" firefox 2>&1 | grep -i vaapi
-# Logging at level 5 for the FFmpegVideo module shows VA-API init, profile selection,
-# and per-frame decode operations.
+# Shows VA-API init, profile selection, and per-frame decode decisions.
+# Look for: "Using VA-API for video decoding" vs "Falling back to software"
 ```
 
-Note: The environment variable `MOZ_VA_DEBUG` is sometimes referenced in older documentation, but the correct logging mechanism for `FFmpegVideoDecoder` is `MOZ_LOG="FFmpegVideo:5"`.
+Note: older documentation references `MOZ_VA_DEBUG`; this was superseded. The correct mechanism is `MOZ_LOG="FFmpegVideo:5"`.
+
+**What "better video experience" means in practice on NVIDIA Linux:**
+
+| Scenario | Chrome (software decode) | Firefox + nvidia-vaapi-driver |
+|----------|--------------------------|-------------------------------|
+| 1080p30 H.264 YouTube | ~15–25% CPU (1 core) | ~2–5% CPU |
+| 4K60 H.264 | Often stutters / throttles | Smooth (NVDEC handles it) |
+| 4K AV1 (RTX 30+) | Not viable in software | Smooth via NVDEC |
+| Battery life (laptop) | Significantly worse | Comparable to Intel/AMD |
+| WebCodecs `VideoDecoder` | Software decode always | Hardware via libva path |
+| Setup required | None | Manual env vars + driver flags |
+| Officially supported | N/A (Chrome has no path) | Community-supported (not Mozilla official) |
+
+The advantage is real and measurable but the setup requirement means most users on NVIDIA Linux run Chrome in software decode without realising it. Distribution packages (Fedora, Arch, NixOS) have begun providing `nvidia-vaapi-driver` as an optional package with documentation for Firefox configuration.
 
 ---
 

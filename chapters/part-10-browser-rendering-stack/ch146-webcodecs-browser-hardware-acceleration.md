@@ -4,6 +4,10 @@
 
 **Primary audiences**: Browser and web platform engineers building real-time media pipelines — live streaming, video conferencing, custom codec transcoders, and frame-level WebGPU compositing. Application developers who need to understand the performance boundaries between the web platform and the Linux hardware stack beneath it: VA-API, DMA-BUF, SharedImage, and the GPU process sandbox. Systems engineers debugging hardware video acceleration on Linux Chrome who need to trace the path from a JavaScript `VideoDecoder.decode()` call down to a libva `vaEndPicture()` invocation in a kernel DRM driver.
 
+> **Relationship to Chapter 147.** This chapter covers the **API and specification side** of browser video acceleration: what JavaScript developers call (`VideoDecoder`, `VideoFrame`, `importExternalTexture`), what the W3C WebCodecs spec promises, how decoded frames reach WebGPU and Canvas, and how to query and debug hardware support from JavaScript. It includes an overview of how Chrome maps a `decode()` call through to VA-API (§4), sufficient for a developer to understand the performance contract.
+>
+> **Chapter 147** covers the **browser implementation side**: how Chrome and Firefox implement VA-API hardware decode in C++ — `VaapiVideoDecoder`, `VaapiWrapper`, codec-specific delegates, `OzoneImageBacking`, the Out-of-Process Video Decode sandbox, Firefox's `FFmpegVideoDecoder` and `DMABufSurface`, and NVIDIA-specific quirks. Readers who want to understand browser internals, contribute to Chrome or Firefox media code, or debug VA-API failures at the driver level should read Chapter 147 alongside this one.
+
 ---
 
 ## Table of Contents
