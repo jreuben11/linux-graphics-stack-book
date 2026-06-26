@@ -998,25 +998,386 @@ This architecture is an emerging pattern, not yet a polished product. The compon
 
 ### 12.2 Active Projects and Proposals
 
-**`wasi-webgpu` (Bytecode Alliance / W3C WASI Community Group)**
+Six projects are at varying stages of relevance to the native WASM+GPU embedding model. Each is described below with its current status, how to use it today, and the gaps that prevent it from being a complete solution.
 
-The most directly relevant standards effort. `wasi-webgpu` is a WASI interface proposal to expose WebGPU surface and GPU device access to WASM modules running in Wasmtime *outside* a browser. A companion proposal, `wasi-graphics-context`, defines how a WASM module acquires a rendering surface. Together they would give a WASM plugin access to a `WGPUDevice` and `WGPUSwapChain` via WASI-imported functions — exactly the host ABI described below. As of mid-2026 the proposal is in design phase within the WebAssembly Community Group; no stable Wasmtime implementation exists. [Source: github.com/WebAssembly/wasi-webgpu](https://github.com/WebAssembly/wasi-webgpu)
+---
 
-**Makepad (`makepad/makepad`)**
+#### `wasi-webgpu` (Bytecode Alliance / W3C WASI Community Group)
 
-The closest *working* project to the DOM-free rendering model. Makepad is a Rust UI framework that renders entirely to GPU — no DOM elements, no layout engine — and compiles either to a native binary (using OpenGL/Metal/Vulkan) or to a WASM module that writes to a bare `<canvas>` via WebGL2/WebGPU. The Robrix Matrix client and the Makepad Studio IDE are production deployments. Makepad demonstrates that the GPU-only rendering model is viable and performant; the architecture the current section describes is the *plugin host* version of Makepad's model. [Source: github.com/makepad/makepad](https://github.com/makepad/makepad)
+**Status**: Design phase (WebAssembly CG, mid-2026). No Wasmtime implementation exists.
 
-**`wasi-nn` (WASM Neural Network interface, production in Wasmtime)**
+The most directly relevant standards effort. `wasi-webgpu` is a WASI interface proposal to expose WebGPU surface and GPU device access to WASM modules running outside a browser. A companion proposal, `wasi-graphics-context`, defines surface and swapchain acquisition. Together they would give a WASM plugin typed access to a GPU device via WIT-generated bindings rather than hand-rolled `func_wrap` closures. [Source: github.com/WebAssembly/wasi-webgpu](https://github.com/WebAssembly/wasi-webgpu)
 
-Not GPU rendering, but proves the structural pattern. Wasmtime exposes hardware ML inference (via OpenVINO, CoreML, CUDA) to WASM modules through WASI-imported functions — the WASM module calls `nn_graph_init()` and `nn_infer()`, and the Wasmtime host dispatches to native hardware without the WASM module ever seeing a native pointer. This is architecturally identical to a WASM module calling `gpu_draw()` with the host dispatching to wgpu. The `wasi-nn` implementation in Wasmtime is the proof-of-concept that the hardware-access-via-WASI pattern works in production. [Source: github.com/bytecodealliance/wasmtime/tree/main/crates/wasi-nn](https://github.com/bytecodealliance/wasmtime/tree/main/crates/wasi-nn)
+*How to use today*: There is no usable implementation yet. The WIT files are in flux; the closest you can do is read the current proposal shape and write a private ABI that mirrors it (which is what §12.3–12.9 does). The intended future usage once the proposal stabilises:
 
-**Dawn standalone (C++ hosts)**
+```wit
+// wasi:webgpu/webgpu.wit (proposal shape as of mid-2026 — subject to change)
+package wasi:webgpu;
 
-Dawn (Chrome's WebGPU C++ implementation) compiles as a standalone native library exposing the full `webgpu.h` C API. A C++ application can embed Dawn, create a `WGPUDevice`, and simultaneously embed Wasmtime. Wiring the two together — exposing Dawn's `wgpuDeviceCreateBuffer`, `wgpuQueueWriteBuffer`, etc. as Wasmtime import functions — gives a C++ host the complete architecture with no new primitives required. No project has packaged this wiring as a reusable library.
+interface webgpu {
+  resource gpu-device {
+    create-buffer:   func(size: u64, usage: u32) -> gpu-buffer;
+    create-shader:   func(wgsl: string) -> gpu-shader-module;
+    create-pipeline: func(shader: borrow<gpu-shader-module>) -> gpu-render-pipeline;
+    queue-submit:    func(encoder: gpu-command-encoder);
+  }
+  resource gpu-buffer {
+    write: func(offset: u64, data: list<u8>);
+  }
+  resource gpu-command-encoder {
+    begin-render-pass: func(surface: borrow<gpu-surface>) -> gpu-render-pass-encoder;
+  }
+  resource gpu-render-pass-encoder {
+    set-pipeline: func(pipeline: borrow<gpu-render-pipeline>);
+    draw:         func(vertices: u32, instances: u32);
+    end:          func() -> gpu-command-encoder;
+  }
+}
+```
 
-**`bevy_mod_scripting` (WASM game logic, not GPU)**
+A guest module would then be built with `cargo component build --target wasm32-wasip2` and import `wasi:webgpu/webgpu` as a WIT dependency. The `wit-bindgen`-generated guest bindings replace all the raw `extern "C"` declarations in §12.6.
 
-Bevy's community scripting plugin loads WASM modules as game scripts. The WASM module calls imported functions to query and mutate Bevy ECS components; the host dispatches to Bevy systems. GPU access is not yet exposed to scripts. The structural pattern — WASM imports → host dispatches to Rust subsystems — is the right shape; GPU is just another resource class.
+*Current gaps*:
+- **No implementation**: No Wasmtime version implements even the device-creation path. No polyfill or shim exists.
+- **WIT interface not frozen**: The WIT file has had breaking revisions; binding generated today will not match the final spec.
+- **No surface model**: `wasi-graphics-context` (how a plugin acquires a Wayland/X11/Win32 window surface) is a separate, equally early proposal. Without it, `wasi-webgpu` alone cannot present pixels to the screen.
+- **No security model**: GPU resource quotas, per-plugin memory limits, and preemption of GPU work from a misbehaving plugin are not yet addressed in the proposal.
+- **No testing infrastructure**: No reference test suite, no CTS equivalent for the WASI GPU path.
+
+---
+
+#### Makepad (`makepad/makepad`)
+
+**Status**: Production. Makepad Studio IDE and Robrix Matrix client ship as production deployments on native and WASM targets.
+
+The closest *working* project to the DOM-free GPU rendering model. Makepad is a Rust UI framework that renders entirely to GPU — no DOM, no layout engine — and compiles to either a native binary (Vulkan/Metal/OpenGL) or a WASM module targeting a bare `<canvas>` via WebGL2/WebGPU. [Source: github.com/makepad/makepad](https://github.com/makepad/makepad)
+
+*How to use*:
+
+```toml
+# Cargo.toml
+[dependencies]
+makepad-widgets = "0.6"
+
+[[bin]]
+name = "my_app"
+```
+
+```rust
+use makepad_widgets::*;
+
+live_design! {
+    // Makepad "Live DSL" — a CSS-like shader/layout language embedded in Rust macros.
+    // Changes are hot-reloaded at runtime without recompilation.
+    import makepad_draw::shader::std::*;
+
+    MyView = {{MyView}} {
+        draw_bg: {
+            // Inline WGSL-like shader — compiled by Makepad's own shader compiler
+            fn pixel(self) -> vec4 {
+                return mix(#f00, #00f, self.pos.x);
+            }
+        }
+        height: 200, width: Fill
+    }
+}
+
+#[derive(Live, LiveHook, Widget)]
+pub struct MyView { #[walk] walk: Walk, #[layout] layout: Layout }
+
+impl Widget for MyView {
+    fn draw_walk(&mut self, cx: &mut Cx2d, _scope: &mut Scope, walk: Walk) -> DrawStep {
+        self.draw_bg.draw_walk(cx, walk);
+        DrawStep::done()
+    }
+    fn handle_event(&mut self, _cx: &mut Cx, _event: &Event, _scope: &mut Scope) {}
+}
+
+app_main!(App);
+
+struct App { ui: WidgetRef }
+impl AppMain for App {
+    fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        self.ui.handle_widget_event(cx, event);
+    }
+}
+```
+
+Build and run:
+```bash
+# Native (Vulkan/Metal/OpenGL — picked at runtime)
+cargo run
+
+# WASM (targets browser <canvas> via WebGL2)
+cargo install makepad-studio           # includes wasm build tooling
+makepad build wasm --release           # outputs web/ directory
+# Serve with any HTTP server; open in browser
+```
+
+*Current gaps*:
+- **Inverted architecture**: Makepad apps *are* the WASM module. The §12 model requires WASM modules to be *plugins inside* a native host that owns the GPU. Makepad has no mechanism for a Wasmtime host to load a Makepad-built component as a sandboxed plugin.
+- **No inter-plugin isolation**: All Makepad widgets share the same process, the same GPU device, and the same heap. There is no sandbox boundary between components.
+- **WASM target is browser-only**: Makepad's WASM path outputs a module for `wasm32-unknown-unknown` targeting the browser's WebGL2/WebGPU API via `web-sys`. It cannot be loaded by Wasmtime because it depends on browser imports (`canvas.getContext`, `requestAnimationFrame`) that Wasmtime does not provide.
+- **Custom shader language**: Makepad's Live DSL uses its own shader language (GLSL-like, not WGSL) compiled by its own backend. Plugins cannot bring arbitrary WGSL shaders without going through Makepad's shader compiler.
+- **No headless / server-side path**: Makepad requires a GPU surface; it cannot render offscreen to a texture inside Wasmtime for server-side compositing.
+
+---
+
+#### `wasi-nn` (Wasmtime production, version 0.7)
+
+**Status**: Production in Wasmtime 19+. Backends: OpenVINO, GGML (CPU), CoreML, experimental CUDA/Torch. [Source: wasmtime/crates/wasi-nn](https://github.com/bytecodealliance/wasmtime/tree/main/crates/wasi-nn)
+
+Proves the hardware-access-via-WASI pattern at production quality. A WASM module calls imported functions (`nn_graph_init`, `nn_set_input`, `nn_compute`, `nn_get_output`); the host dispatches to a native ML framework without the module ever touching a native pointer. The GPU render equivalent — `gpu_create_pipeline`, `gpu_draw`, `gpu_submit` — is the same pattern applied to rendering.
+
+*How to use*:
+
+**Guest (WASM module)**:
+```toml
+# Cargo.toml for the WASM plugin
+[dependencies]
+wasi-nn = "0.7"
+```
+```rust
+use wasi_nn::{ExecutionTarget, GraphEncoding, TensorType};
+
+fn infer(model: &[u8], input: &[f32]) -> Vec<f32> {
+    let graph = wasi_nn::load(
+        &[model],
+        GraphEncoding::Onnx,
+        ExecutionTarget::GPU,      // host picks the actual GPU backend
+    ).expect("load graph");
+    let ctx = wasi_nn::init_execution_context(graph).unwrap();
+    wasi_nn::set_input(ctx, 0, wasi_nn::Tensor {
+        dimensions: &[1, 3, 224, 224],
+        type_:      TensorType::F32,
+        data:       bytemuck::cast_slice(input),
+    }).unwrap();
+    wasi_nn::compute(ctx).unwrap();
+    let mut out = vec![0f32; 1000];
+    wasi_nn::get_output(ctx, 0, bytemuck::cast_slice_mut(&mut out)).unwrap();
+    out
+}
+```
+
+**Host (Wasmtime)**:
+```rust
+use wasmtime_wasi_nn::{WasiNnCtx, backend::onnxruntime::OnnxruntimeBackend};
+
+let mut wasi_nn_ctx = WasiNnCtx::new();
+wasi_nn_ctx.add_backend(Box::new(OnnxruntimeBackend::default()));
+
+// Wire into the Wasmtime linker (witx-based API, pre-Component-Model):
+wasmtime_wasi_nn::witx::add_to_linker(&mut linker, |s: &mut MyState| {
+    (&mut s.wasi_nn_ctx, &mut s.wasi_ctx)
+})?;
+```
+
+*Current gaps*:
+- **Inference only**: `wasi-nn` exposes tensor graph execution. There is no path to raw GPU compute shaders, vertex/fragment pipelines, or WGSL. A WASM module cannot render pixels via `wasi-nn`.
+- **No render surface**: Tensor output is a flat `Vec<f32>` — there is no way to write the result directly to a GPU texture that a compositor could scanout.
+- **No wgpu interop**: `wasi-nn` tensors live in wasi-nn's own memory model. They cannot be passed directly to a `wgpu::Buffer` without a CPU-side copy, even on UMA hardware, because the `wasi-nn` ABI has no concept of DMA-BUF or external memory handles.
+- **witx-based ABI (legacy)**: `wasi-nn` still uses the witx interface model predating the Component Model. Migration to a WIT-based interface is planned but not yet shipped — the current API will break when the Component Model version lands.
+- **Backend gaps on Linux**: OpenVINO backend works well on Intel hardware; GGML is CPU-only by default. ROCm and pure Vulkan compute backends are not yet available, leaving AMD and discrete NVIDIA GPUs underserved.
+
+---
+
+#### Dawn standalone (C++ WebGPU host)
+
+**Status**: Buildable from source; used in production by Flutter Web, Chromium, and Skia Graphite. No prebuilt packages; build via CMake + depot_tools. [Source: dawn.googlesource.com/dawn](https://dawn.googlesource.com/dawn)
+
+Dawn exposes the full `webgpu.h` C API as a standalone native library. A C++ (or Rust-via-FFI) host can create a `WGPUDevice` and simultaneously embed Wasmtime, wiring Dawn's GPU functions as Wasmtime imports. This gives the complete §12 architecture using a production-quality WebGPU implementation as the GPU backend rather than wgpu.
+
+*How to use*:
+
+```bash
+# Fetch and build Dawn (requires depot_tools, Clang, CMake)
+git clone https://dawn.googlesource.com/dawn && cd dawn
+cp scripts/standalone.gclient .gclient
+gclient sync
+cmake -B build -DDAWN_BUILD_SAMPLES=OFF -DDAWN_ENABLE_VULKAN=ON
+cmake --build build --target webgpu_dawn -j$(nproc)
+# Produces: build/src/dawn/native/libwebgpu_dawn.so
+```
+
+```cpp
+// Minimal Dawn + Wasmtime host (C++)
+#include <webgpu/webgpu.h>
+#include <dawn/native/DawnNative.h>
+#include <wasmtime.h>   // C API
+
+// 1. Create Dawn device (Vulkan backend on Linux)
+WGPUInstanceDescriptor inst_desc{};
+WGPUInstance instance = wgpuCreateInstance(&inst_desc);
+
+WGPUAdapter adapter = nullptr;
+wgpuInstanceRequestAdapter(instance, nullptr,
+    [](WGPURequestAdapterStatus, WGPUAdapter a, const char*, void* u) {
+        *reinterpret_cast<WGPUAdapter*>(u) = a;
+    }, &adapter);
+
+WGPUDevice device = nullptr;
+WGPUDeviceDescriptor dev_desc{};
+wgpuAdapterRequestDevice(adapter, &dev_desc,
+    [](WGPURequestDeviceStatus, WGPUDevice d, const char*, void* u) {
+        *reinterpret_cast<WGPUDevice*>(u) = d;
+    }, &device);
+
+// 2. Wire to Wasmtime: expose wgpuDeviceCreateBuffer as an import
+wasmtime_func_callback_t gpu_create_buffer_cb =
+    [](void* env, wasmtime_caller_t*, const wasmtime_val_t* args, size_t,
+       wasmtime_val_t* results, size_t) -> wasm_trap_t* {
+        WGPUDevice dev = reinterpret_cast<WGPUDevice>(env);
+        uint64_t size = args[0].of.i64;
+        uint32_t usage = args[1].of.i32;
+        WGPUBufferDescriptor desc{ .size = size, .usage = usage };
+        WGPUBuffer buf = wgpuDeviceCreateBuffer(dev, &desc);
+        results[0].of.i32 = register_handle(buf);   // your handle table
+        return nullptr;
+    };
+wasmtime_linker_define_func(linker, "env", "gpu_create_buffer",
+    create_buf_type, gpu_create_buffer_cb, device, nullptr);
+```
+
+*Current gaps*:
+- **No prebuilt packages**: Dawn must be built from source using Google's `depot_tools` / `gclient` workflow, which is unfamiliar to most Rust/native developers. No Debian, Fedora, or crates.io package exists.
+- **C++ only at the API boundary**: Dawn's primary API is C++ (`webgpu_cpp.h`); the C API (`webgpu.h`) is auto-generated but less ergonomic. Bridging to Wasmtime (Rust) requires writing C FFI boilerplate or using the unstable `dawn-rs` crate.
+- **No packaged Wasmtime integration**: The wiring between `WGPUDevice` and Wasmtime import functions is entirely hand-written — the same problem §12.10 identifies for wgpu.
+- **Build fragility**: Dawn vendors specific versions of SPIRV-Tools, Abseil, and Tint via `depot_tools`. These conflict with system packages and Cargo workspace dependencies; embedding in a mixed C++/Rust project requires careful CMake + Cargo integration.
+- **Validation layer mismatch**: Dawn's built-in validation is separate from the Vulkan validation layers. Shader errors in standalone Dawn produce different messages than in Chrome, complicating cross-environment debugging.
+
+---
+
+#### `bevy_mod_scripting` (WASM game scripts)
+
+**Status**: Active pre-release (0.10.x). WASM target supported via the `wasm` feature flag; Lua and Rhai targets are more mature. [Source: github.com/makspll/bevy_mod_scripting](https://github.com/makspll/bevy_mod_scripting)
+
+Bevy's community scripting plugin loads WASM modules as game scripts that can query and mutate ECS components. The structural pattern — WASM imports → host dispatches to Rust subsystems — matches the §12 GPU model exactly; GPU access is the missing resource class.
+
+*How to use*:
+
+```toml
+# Cargo.toml (host app)
+[dependencies]
+bevy = "0.15"
+bevy_mod_scripting = { version = "0.10", features = ["wasm"] }
+```
+
+```rust
+use bevy::prelude::*;
+use bevy_mod_scripting::prelude::*;
+
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins)
+        .add_plugins(ScriptingPlugin)
+        .add_plugins(bevy_mod_scripting::wasm::WasmScriptingPlugin)
+        .add_systems(Startup, load_script)
+        .run();
+}
+
+fn load_script(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands.spawn(ScriptCollection::<WasmScript> {
+        scripts: vec![Script::new("my_plugin.wasm",
+                                   asset_server.load("scripts/my_plugin.wasm"))],
+    });
+}
+```
+
+WASM plugin side (the script module — compiled with `--target wasm32-unknown-unknown`):
+```rust
+// No std, no wgpu — only the host ABI declared as extern
+extern "C" {
+    fn bevy_get_component_f32(entity: u64, component_type: u32, field: u32) -> f32;
+    fn bevy_set_transform(entity: u64, x: f32, y: f32, z: f32);
+    // No GPU functions available here yet
+}
+
+#[no_mangle]
+pub extern "C" fn on_update(delta_time: f32) {
+    let entity = 1u64;
+    let speed = unsafe { bevy_get_component_f32(entity, 0, 0) };
+    unsafe { bevy_set_transform(entity, speed * delta_time, 0.0, 0.0) };
+}
+```
+
+*Current gaps*:
+- **No GPU access**: Scripts can query and mutate ECS components but cannot issue draw calls, create render pipelines, or execute shaders. Adding GPU access requires the host to expose `wgpu::Device` functions as additional imports — which `bevy_mod_scripting` does not do today.
+- **No render hooks**: Scripts cannot add draw calls to a render pass, modify the render graph, or inject a custom shader variant. The render world is entirely opaque to scripts.
+- **Immature isolation model**: The WASM sandbox boundary exists at the Wasmtime level, but `bevy_mod_scripting` 0.10 does not enforce per-script resource quotas, GPU memory limits, or CPU time budgets. A misbehaving script can stall the frame loop.
+- **Reflection-only ECS access**: Only `Reflect`-derived components are accessible from scripts. Components that do not derive `Reflect` (including most third-party crates and all render-world components) are invisible.
+- **API instability**: The scripting API will change before Bevy 1.0; `bevy_mod_scripting` is not covered by Bevy's compatibility guarantees, and the WASM feature is the least-tested backend.
+
+---
+
+#### Extism (`extism/extism`) — Production WASM Plugin Framework
+
+**Status**: Production (v1.0+). Used in Zellij terminal multiplexer, GoatCounter analytics, and several CLI tools. Multi-language host SDKs (Rust, Go, Python, JS, Ruby). [Source: github.com/extism/extism](https://github.com/extism/extism)
+
+Extism is a mature production WASM plugin framework built on Wasmtime. It is not GPU-specific, but it demonstrates the fully productised host side of the §12 architecture — including plugin lifecycle management, structured input/output via shared memory, and a PDK (Plugin Development Kit) that hides the raw `extern "C"` ABI. Its model is the closest existing analogue to what a future `wasmtime-gpu` library should look like.
+
+*How to use*:
+
+```toml
+# Host Cargo.toml
+[dependencies]
+extism = "1"
+```
+
+```rust
+use extism::*;
+
+let plugin = Plugin::new(
+    Wasm::file("my_plugin.wasm"),
+    [],      // no extra imports; Extism provides its own host functions
+    false,   // not wasi-enabled
+)?;
+
+// Call an export by name; input/output is typed via serde
+let result: String = plugin.call::<&str, String>("process", "hello world")?;
+```
+
+WASM plugin side (uses the Extism PDK — Rust):
+```toml
+[dependencies]
+extism-pdk = "1"
+```
+```rust
+use extism_pdk::*;
+
+#[plugin_fn]
+pub fn process(input: String) -> FnResult<String> {
+    Ok(format!("processed: {input}"))
+}
+// Extism PDK handles the memory protocol (ptr/len pairs, shared memory region)
+// so plugin authors never write extern "C" declarations manually
+```
+
+For GPU access, Extism's host function registration maps cleanly onto the §12 model:
+```rust
+// Register custom GPU host functions alongside Extism's built-ins
+let gpu_create_buffer = Function::new(
+    "gpu_create_buffer",
+    [ValType::I64],   // size
+    [ValType::I32],   // handle
+    UserData::new(device.clone()),
+    move |caller, inputs, outputs| {
+        let size = inputs[0].unwrap_i64() as u64;
+        let handle = state.create_buffer(size);
+        outputs[0] = Val::I32(handle);
+        Ok(())
+    },
+);
+
+let plugin = Plugin::new(Wasm::file("gpu_plugin.wasm"),
+                          [gpu_create_buffer, /* ... */], true)?;
+```
+
+*Current gaps*:
+- **No GPU integration**: Extism provides no built-in GPU host functions. A host using Extism for GPU plugins must register all GPU functions manually (as shown above) — the same hand-wiring problem as the raw Wasmtime approach.
+- **Memory protocol mismatch**: Extism's built-in memory protocol (input/output via a managed shared heap region) is designed for serialised data, not raw pixel buffers or WGSL strings. Large GPU data payloads (vertex buffers, textures) are awkward to pass through Extism's standard memory model.
+- **No surface / swapchain concept**: Extism has no notion of a rendering surface, frame loop, or vsync — concepts fundamental to interactive GPU rendering.
+- **No async dispatch**: Extism's call model is synchronous. GPU submission (`queue.submit`) and shader compilation (`create_render_pipeline`) are inherently asynchronous; mapping them to synchronous Extism calls requires polling on the host side.
+- **Plugin isolation too coarse**: Extism loads one WASM module per `Plugin` instance. Multi-plugin GPU scenes (several plugins rendering into the same swapchain) have no coordination model in Extism.
 
 ### 12.3 Architecture: Wasmtime + wgpu as Host
 
@@ -1597,6 +1958,10 @@ The proof-of-concept above works, but three things prevent it from being a produ
 - **WASM Component Model toolchain (wit-bindgen, cargo-component, wasm-tools)**: WASI Preview 2, stable in Wasmtime 18+ (2024) and production-ready in mid-2026, adds the Component Model to production Wasmtime. The Component Model's WIT (WebAssembly Interface Types) IDL and `wit-bindgen` code-generator allow hosts to define typed, versioned interfaces in `.wit` files and generate Rust host+guest bindings automatically — replacing the hand-rolled `func_wrap` closures used in §12 with generated, type-safe stubs. `cargo-component` and `wasm-tools` complete the build pipeline. These tools are available now; the missing piece is a stabilised `wasi-webgpu.wit` interface file (see medium-term). When that lands, the entire §12 host-ABI (`gpu_create_buffer`, `gpu_write_buffer`, etc.) becomes auto-generated from the WIT definition. [Source: Bytecode Alliance Component Model documentation](https://component-model.bytecodealliance.org/)
 - **WebGPU Compatibility Mode**: A Chrome 130+ extension that allows WebGL-style resource management patterns (implicit synchronisation, non-zero default framebuffer) within WebGPU shaders, lowering the migration barrier from WebGL to WebGPU. On Linux the compatibility layer routes through ANGLE (OpenGL ES → Vulkan) or directly to Mesa's Vulkan drivers depending on the backend selected by Dawn. The extension is entering W3C standardisation alongside the main WebGPU spec; once stable it removes the largest porting friction for the existing corpus of WebGL content. [Source: WebGPU Compatibility Mode explainer — gpuweb/gpuweb](https://github.com/gpuweb/gpuweb)
 - **WASM threads and SharedArrayBuffer GPU dispatch**: WASM threads (WebAssembly 2.0, Shared Linear Memory + Atomics) are supported in all major browsers and in Wasmtime with `--wasm-features=threads`. Near-term work is completing ergonomics: `wasm-bindgen-rayon` for parallel data preparation, `parking_lot` compatibility under WASM threads, and stable patterns for submitting GPU `CommandEncoder`s from worker threads while the main thread owns the swapchain. On Linux this maps to Vulkan multi-queue submission; Mesa's RADV and ANV both support concurrent compute and graphics queues. This enables parallel shader compilation and multi-threaded mesh staging into GPU buffers without blocking the render loop. [Source: WebAssembly Threads Proposal](https://github.com/WebAssembly/threads)
+- **`wasi-nn` migration to Component Model WIT**: The current `wasi-nn` 0.7 API uses the legacy witx interface model. A WIT-based `wasi:nn/inference` interface is in design; when it ships, the `wasmtime-wasi-nn` crate will replace `witx::add_to_linker` with a Component Model binding and guest modules will use `cargo component build`. This is the template for how `wasi-webgpu` will be deployed — `wasi-nn`'s migration is the rehearsal run.
+- **`wasi-nn` Vulkan compute and ROCm backends**: A Vulkan compute backend for `wasi-nn` (dispatching ONNX graph operators as Vulkan compute shaders via `ort` + `wgpu`) is under community development. This would make the `ExecutionTarget::GPU` path work on AMD and NVIDIA Linux GPUs without requiring OpenVINO or CUDA, closing the biggest backend gap for Linux deployments of WASM ML workloads.
+- **Extism v2 host-function API hardening**: Extism is moving its host-function registration API toward a more ergonomic builder pattern in v2, reducing the boilerplate of the `Function::new` + `Val` approach shown in §12.2. For GPU plugin hosts built on Extism, this reduces the code required to register each GPU import function.
+- **Makepad WASM performance improvements (compute shaders)**: Makepad's WASM target currently uses WebGL2 as its GPU backend; migration to WebGPU (via `web-sys` WebGPU bindings) is in progress. This would unlock compute shaders in Makepad's Live DSL, enabling GPU-accelerated layout and animation effects in the browser path.
 
 ### Medium-term (1–3 years)
 
@@ -1619,6 +1984,10 @@ The proof-of-concept above works, but three things prevent it from being a produ
 
   `wit-bindgen` generates the host-side dispatch and guest-side import stubs; no `unsafe` pointer reads cross the boundary. `wasi-graphics-context` provides the companion WIT interface for surface and swapchain acquisition (analogous to `eglCreateWindowSurface`), so a plugin can obtain a Wayland or X11 rendering surface without the host exposing a raw handle. A WASM plugin compiled once against these WIT interfaces runs in any compliant host — Wasmtime on Linux, WasmEdge, or a future browser mode — without recompilation, closing the portability gap §12.10 identifies. [Source: WebAssembly/wasi-webgpu](https://github.com/WebAssembly/wasi-webgpu) | [WebAssembly/wasi-graphics-context](https://github.com/WebAssembly/wasi-graphics-context)
 - **Emscripten 4.x and emdawnwebgpu for C++ WebGPU**: The `emdawnwebgpu` project (part of the Dawn repository) provides an Emscripten-compatible C++ WebGPU header that targets the browser's native `navigator.gpu` when compiled for `wasm32-unknown-emscripten`. Emscripten 4.x is hardening the integration between `emdawnwebgpu`, Emscripten's threading model, and the browser's GPU command encoder, with the goal of allowing C++ graphics libraries (Dear ImGui, Filament, BGFX) to target WebGPU via Emscripten with the same source as their native Vulkan/Metal builds. On Linux, the Emscripten toolchain compiles C++ against Dawn's WebGPU headers to produce WASM that dispatches to Chrome's Dawn via the JavaScript WebGPU API — with Mesa's ANV or RADV as the final Vulkan backend. This closes the gap between C++ graphics codebases that currently require separate Vulkan and WebGL ports. Note: verify Emscripten 4.x release timeline against [emscripten.org](https://emscripten.org/). [Source: emdawnwebgpu — Dawn repository](https://dawn.googlesource.com/dawn)
+- **Dawn standalone CMake packaging and Rust bindings**: Dawn's build team is working on a CMake install target and a `dawn-rs` crate that would allow Rust applications to depend on Dawn via Cargo without invoking `depot_tools`. This would eliminate the biggest barrier to building Dawn-backed Wasmtime hosts in Rust — the current requirement to hand-write C FFI for every `webgpu.h` function used.
+- **`bevy_mod_scripting` GPU render hooks**: The `bevy_mod_scripting` roadmap includes exposing Bevy's render world to scripts via a safe ABI. The planned approach mirrors `wasi-nn`: scripts call `bevy_gpu_create_render_pipeline(shader_wgsl_ptr, len)` and `bevy_gpu_draw(pipeline, vertices)`, and the host dispatches to Bevy's `RenderApp`. This would make WASM scripts first-class participants in Bevy's render graph. Note: this is on the roadmap but not yet scheduled for a specific Bevy release.
+- **`wasi-webgpu` first Wasmtime prototype**: The Bytecode Alliance has indicated intent to implement `wasi-webgpu` in Wasmtime once the WIT interface freezes. Based on the pattern of `wasi-nn`, the implementation path is: WIT interface freeze → `wit-bindgen` generates host and guest stubs → Wasmtime team writes the host-side dispatch to wgpu or Dawn → first PR lands in `wasmtime/crates/wasi-webgpu`. The current estimate (needs verification) is 2027–2028, contingent on `wasi-graphics-context` co-stabilising.
+- **Extism GPU plugin pattern library**: As the GPU-via-WASM-plugin pattern matures, a community library (`extism-gpu` or similar) is likely to emerge that provides pre-registered GPU host functions (buffer management, pipeline creation, texture upload) on top of Extism's host-function API, eliminating the hand-wiring step shown in §12.2. No such library exists as of mid-2026.
 
 ### Long-term
 
