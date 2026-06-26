@@ -921,9 +921,11 @@ The expectation is that the underlying technology will be modernised incremental
 
 The WebKit *content* rendering path — the web page canvas itself — does not move to Vulkan with this migration. The `webkitgtk-6.0` web content process still renders web pages via OpenGL ES through Mesa. The Vulkan gain is in the GTK4 window chrome only.
 
-Tracking issue: [github.com/tauri-apps/wry/issues/616](https://github.com/tauri-apps/wry/issues/616). This is primarily blocked on Tao porting effort and testing breadth, not a technical impossibility.
+Tracking issues: [tauri#12561](https://github.com/tauri-apps/tauri/issues/12561) and [tauri#12563](https://github.com/tauri-apps/tauri/issues/12563), marked **prioritised** with an open pull request (#14684) in the GTK4 Upgrade Transition project. The migration is motivated in part by a glib unsoundness issue in versions prior to 0.2. Primarily blocked on Tao porting effort and testing breadth rather than technical impossibility.
 
 **WebKit WebGPU stabilisation**: WebKit's WebGPU implementation — notably built on `wgpu` (the same crate underlying Firefox's WebGPU, Ch52) rather than Dawn — is advancing toward default enablement. Once it lands in WebKitGTK, Tauri applications gain WebGPU `<canvas>` and compute shader support on Linux without any Electron dependency. The wgpu Vulkan backend would bring the first Vulkan path *inside* the WebKit web content renderer on Linux.
+
+**tauri-runtime-verso stabilisation**: The Verso/Servo runtime (§4.4) is experimental but functional as of mid-2026. The near-term work to graduate it from "internal tooling only" requires: (1) fixing the hardcoded Origin header in IPC so Tauri's capability system can distinguish local from remote URLs; (2) per-window menu support; (3) expanding plugin API coverage to match `tauri-runtime-wry`. The NLnet-funded deliverables — offscreen rendering and multi-webview support — are also outstanding. Until the IPC security fix lands, `tauri-runtime-verso` is unsuitable for any application that loads external web content.
 
 **Wayland native window decorations**: Proper `xdg-decoration-v1` negotiation (preferring server-side decorations from the compositor, falling back to client-side via `libdecor`) is in active development in Tao, replacing the current ad-hoc fallback behaviour.
 
@@ -935,6 +937,8 @@ Tracking issue: [github.com/tauri-apps/wry/issues/616](https://github.com/tauri-
 
 **Tauri Mobile and cross-platform capability convergence**: As Tauri 2.0's iOS (WKWebView) and Android (System WebView / Chromium) targets mature, the capability JSON schema is stabilising across desktop and mobile. A unified `tauri.conf.json` covering all platforms is the stated goal for Tauri 3.0.
 
+**Servo WebRender → wgpu migration (the path to Vulkan for Verso)**: Servo's 2D compositor is currently coupled to WebRender on OpenGL (§4.4). A tracked proposal ([servo#37149](https://github.com/servo/servo/issues/37149)) outlines two approaches: (a) adding a wgpu port of WebRender's `Device` struct — translating its GLSL shaders to SPIR-V and replacing its OpenGL buffer management with wgpu abstractions; or (b) defining renderer traits that would allow Servo to plug in alternative renderers (Vello, wgpu-native, etc.). Either path would bring Vulkan to Verso's page compositor on Linux, since wgpu defaults to Vulkan on Linux. This is the concrete prerequisite for a "fully Vulkan" Tauri/Verso stack — currently listed as a tracking issue with no active implementation.
+
 **Plugin ecosystem for Linux system integration**: `tauri-plugin-camera` (V4L2), `tauri-plugin-biometrics` (libfido2/PAM), `tauri-plugin-bluetooth` (BlueZ D-Bus) are in development. Each connects Tauri's JavaScript/Rust bridge to Linux-specific kernel and D-Bus subsystems not accessible to Electron without native Node addons.
 
 ### Long-term
@@ -942,7 +946,7 @@ Tracking issue: [github.com/tauri-apps/wry/issues/616](https://github.com/tauri-
 - **WPE WebKit backend for embedded Linux**: A Wry backend targeting WebKit's WPE port (GBM/DMA-BUF, no GTK dependency) would enable Tauri applications on minimal Linux systems — automotive HMI, kiosks, embedded displays — where no desktop compositor or GTK session exists. ([wry#617](https://github.com/tauri-apps/wry/issues/617))
 - **Shared Web Content Process**: The current model spawns a Web Content Process per WebView, consuming ~30–50 MB RAM each. A shared multi-window Web Content Process (analogous to Chrome's `--process-per-site`) would reduce per-window overhead for multi-panel applications.
 - **WASM Component Model integration**: If WebKitGTK gains WASM Component Model support, Tauri plugins could be written as WASM components invokable from both Rust and JavaScript without a separate IPC round-trip, blurring the backend/frontend boundary.
-- **Servo as a future Linux WebView option**: If Servo (Ch52, Servo section) reaches production-grade CSS and WebGL conformance, a Wry Servo backend for Linux would provide a fully Rust, fully Vulkan (`wgpu`-backed) web rendering path with no GTK dependency — the most architecturally aligned choice with Tauri's own Rust-first philosophy. This is speculative for the 2026–2028 timeframe but not implausible beyond that.
+- **tauri-runtime-verso as a production Linux option**: `tauri-runtime-verso` (§4.4) already exists and works for basic use. The remaining prerequisites for production status are: (1) IPC Origin security fix; (2) the Servo WebRender→wgpu migration (medium-term above) to resolve CSS/WebGL conformance and bring Vulkan to the compositor; (3) broader Tauri plugin API coverage. If all three land, `tauri-runtime-verso` would offer a fully Rust, Vulkan-composited (`wgpu`→Vulkan on Linux), no-GTK web rendering path — the most architecturally aligned choice with Tauri's Rust-first philosophy. Note: this is a separate `tauri-runtime-*` crate path, not a wry backend — wry remains system-WebView-only by design.
 
 ---
 
