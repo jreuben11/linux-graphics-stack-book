@@ -10,6 +10,7 @@
 2. [Architecture Overview: Process Model and Crate Structure](#2-architecture-overview-process-model-and-crate-structure)
 3. [Tao: GTK-First Window Management](#3-tao-gtk-first-window-management)
 4. [Wry: The Cross-Platform WebView Abstraction](#4-wry-the-cross-platform-webview-abstraction)
+   - [4.4 Backend Swapping: What Wry Can and Cannot Do](#44-backend-swapping-what-wry-can-and-cannot-do)
 5. [WebKitGTK on Linux: The Rendering Engine](#5-webkitgtk-on-linux-the-rendering-engine)
 6. [The Linux Rendering Path in Detail](#6-the-linux-rendering-path-in-detail)
 7. [IPC: Commands, Events, and the Channel API](#7-ipc-commands-events-and-the-channel-api)
@@ -200,6 +201,69 @@ let webview = WebViewBuilder::new()
 ```
 
 Tauri's built-in `tauri://localhost` and `asset://` schemes are implemented via this mechanism. The scheme handler runs in the application process (not the Web Content Process), meaning it has full access to Rust application state and the filesystem. This is the primary mechanism for serving the compiled frontend bundle to the WebView without exposing a network socket.
+
+### 4.4 Backend Swapping: What Wry Can and Cannot Do
+
+**Short answer:** wry itself cannot swap Linux backends at runtime. On Linux, wry wraps WebKitGTK and only WebKitGTK — there is no configuration option to select a different engine within wry. What Tauri's architecture *does* allow is choosing a different **`tauri-runtime-*` crate** at compile time, which can bypass wry entirely.
+
+#### Within Wry: One Linux Backend, One Possible Addition
+
+Wry's design philosophy is *system WebViews only* — it wraps whatever the platform provides natively. On Linux that is WebKitGTK (GTK3). A second Linux backend under active consideration within wry is **WPE (WebKit Platform Engine)**, the non-GTK port of WebKit targeting embedded and minimal Linux environments (set-top boxes, automotive, Raspberry Pi). WPE does not require GTK, uses its own display backend abstraction, and is supported by Igalia. If WPE were added to wry, Tauri applications could compile against it for embedded Linux targets where GTK is unavailable — but this would still be a compile-time choice, not a runtime swap. [Source: wry discussions #1014](https://github.com/tauri-apps/wry/discussions/1014)
+
+#### Via the tauri-runtime Abstraction: Compile-Time Engine Substitution
+
+§2 above described `tauri-runtime` as a trait abstraction. The key implication: an application can replace `tauri-runtime-wry` in its `Cargo.toml` with any crate that implements the `Runtime` trait — and the rest of the Tauri API (`tauri::command`, `tauri::State`, window management, plugin API) is unchanged.
+
+There is currently one experimental alternative: **`tauri-runtime-verso`** ([github.com/versotile-org/tauri-runtime-verso](https://github.com/versotile-org/tauri-runtime-verso)), which uses **Verso** — a Rust-native browser built on the **Servo** layout engine — as the rendering backend. Verso wraps Servo's low-level embedding API with a higher-level interface; `tauri-runtime-verso` wraps Verso with the `tauri-runtime` trait. [Source: Tauri blog, Experimental Tauri Verso Integration](https://v2.tauri.app/blog/tauri-verso-integration/)
+
+The substitution at the `Cargo.toml` level:
+
+```toml
+# Default: WebKitGTK on Linux (via wry)
+[dependencies]
+tauri = { version = "2", features = ["wry"] }
+
+# Alternative: Verso/Servo on all platforms (experimental)
+[dependencies]
+tauri = { version = "2", default-features = false }
+tauri-runtime-verso = { git = "https://github.com/versotile-org/tauri-runtime-verso" }
+```
+
+The two runtimes are **mutually exclusive** — you pick one at compile time. There is no mechanism to load both or switch between them at runtime.
+
+#### tauri-runtime-verso: Current Status and Linux Implications
+
+| Dimension | tauri-runtime-wry (WebKitGTK) | tauri-runtime-verso (Servo) |
+|---|---|---|
+| Engine | WebKit (C++, Apple-maintained) | Servo (Rust, Linux Foundation) |
+| Linux backend | GTK3 / GLib event loop | Servo's own rendering loop |
+| GTK dependency | Required | None |
+| Feature completeness | Full Tauri 2 API | Small subset only |
+| Pre-built engine | System WebKitGTK library | Must compile Verso from source |
+| CSS/JS compatibility | High (Safari-grade WebKit) | Incomplete — Servo still catching up |
+| Production readiness | Production | Experimental |
+
+For Linux specifically, Verso/Servo eliminates the GTK3 dependency entirely — an application can create a window without requiring GTK or GLib. This matters for applications that want to use a non-GTK windowing system (e.g., raw Wayland via `wayland-client`, or winit). The trade-off is that Servo's web platform coverage remains incomplete: many CSS features, Web APIs, and performance characteristics that WebKitGTK handles correctly are not yet implemented in Servo.
+
+#### CEF and Alternative Chromium-Based Backends
+
+**CEF (Chromium Embedded Framework)** is a third option under discussion. The wry maintainer has acknowledged it is "reasonable to support CEF on Linux" given distribution consistency concerns (different distros ship wildly different WebKitGTK versions). CEF bundles a pinned Chromium version, eliminating engine version variance at the cost of binary size (~120 MB, similar to Electron). No decision has been made whether CEF integration would live inside wry (as a selectable backend) or as a separate `tauri-runtime-cef` crate. [Source: wry discussions #1014](https://github.com/tauri-apps/wry/discussions/1014)
+
+#### Summary
+
+```
+Tauri application code (tauri::command, tauri::State, plugins)
+    │
+    ├── tauri-runtime-wry  ──► wry ──► WebKitGTK (Linux, production)
+    │                                   WPE (Linux embedded, planned)
+    │                                   WKWebView (macOS)
+    │                                   WebView2 (Windows)
+    │
+    └── tauri-runtime-verso ──► Verso ──► Servo (all platforms, experimental)
+                                           (no GTK dependency on Linux)
+```
+
+The `tauri-runtime` abstraction means the engine choice is a **Cargo dependency decision**, not a runtime configuration. Wry does not expose a "pick your backend" API — it is a thin safe wrapper around a single platform engine per OS.
 
 ---
 
