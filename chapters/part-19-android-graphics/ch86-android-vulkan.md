@@ -1313,6 +1313,254 @@ Yes — extensively, but the architecture has evolved to confine it to the cold 
 
 **Summary: JNI's role is narrowing.** Its domain is (a) the unchangeable `java.*` / `android.*` API surface, (b) lifecycle glue for native apps, and (c) legacy code not yet ported. `@FastNative` and `@CriticalNative` exist because even these unavoidable boundary calls matter at initialisation time. The direction of new Android platform work — Rust Binder services, `GameActivity`, AGDK — is to reduce per-frame JNI calls to zero on the hot path, not merely to make the remaining ones faster.
 
+### NativeActivity, GameActivity, and ANativeWindow
+
+The zero-JNI-per-frame pattern rests on two NDK foundations: an activity hosting mechanism that delivers lifecycle events as C callbacks, and an opaque surface handle that feeds directly into Vulkan and EGL.
+
+#### NativeActivity and android_native_app_glue
+
+`android.app.NativeActivity` is a Java `Activity` subclass that loads a native `.so` and resolves the C entry point `ANativeActivity_onCreate` by name (overridable via `android.app.func_name` in `AndroidManifest.xml`). The NDK-provided `android_native_app_glue` library wraps this with a more ergonomic model: it spawns a **dedicated background pthread** for `android_main()`, keeping the app's C loop entirely separate from the Java main thread so that Android framework callbacks never block long enough to trigger an ANR.
+
+The glue library's central type is `android_app`:
+
+```c
+// sources/android/native_app_glue/android_native_app_glue.h
+struct android_app {
+    void*             userData;
+    void (*onAppCmd)(struct android_app*, int32_t cmd);   // APP_CMD_* handler
+    int32_t (*onInputEvent)(struct android_app*, AInputEvent*);
+    ANativeActivity*  activity;
+    AConfiguration*   config;
+    void*             savedState;
+    size_t            savedStateSize;
+    ALooper*          looper;        // LOOPER_ID_MAIN / LOOPER_ID_INPUT / LOOPER_ID_USER
+    AInputQueue*      inputQueue;
+    ANativeWindow*    window;        // non-NULL when surface is ready
+    ARect             contentRect;
+    int               activityState;
+    int               destroyRequested;
+};
+```
+
+The application defines `void android_main(struct android_app* app)`. The glue library's `ANativeActivity_onCreate` allocates `android_app`, opens a pipe pair for main-thread ↔ glue-thread communication, and calls `android_main()` on the new pthread. Android lifecycle callbacks on the Java main thread (`onStart`, `onResume`, `onNativeWindowCreated`, etc.) are serialised as `APP_CMD_*` integers onto the write end of the pipe; the background thread reads them via `ALooper_pollOnce()`.
+
+`ANativeActivityCallbacks` exposes all 16 lifecycle points as C function pointers (all fire on the Java main thread; all default to NULL):
+
+```c
+struct ANativeActivityCallbacks {
+    void  (*onStart)(ANativeActivity*);
+    void  (*onResume)(ANativeActivity*);
+    void* (*onSaveInstanceState)(ANativeActivity*, size_t* outSize);
+    void  (*onPause)(ANativeActivity*);
+    void  (*onStop)(ANativeActivity*);
+    void  (*onDestroy)(ANativeActivity*);
+    void  (*onWindowFocusChanged)(ANativeActivity*, int hasFocus);
+    void  (*onNativeWindowCreated)(ANativeActivity*, ANativeWindow*);
+    void  (*onNativeWindowResized)(ANativeActivity*, ANativeWindow*);
+    void  (*onNativeWindowRedrawNeeded)(ANativeActivity*, ANativeWindow*);
+    void  (*onNativeWindowDestroyed)(ANativeActivity*, ANativeWindow*);
+    void  (*onInputQueueCreated)(ANativeActivity*, AInputQueue*);
+    void  (*onInputQueueDestroyed)(ANativeActivity*, AInputQueue*);
+    void  (*onContentRectChanged)(ANativeActivity*, const ARect*);
+    void  (*onConfigurationChanged)(ANativeActivity*);
+    void  (*onLowMemory)(ANativeActivity*);
+};
+```
+
+Input events arrive via `AInputQueue` on the `LOOPER_ID_INPUT` fd:
+
+```c
+AInputEvent* event = NULL;
+while (AInputQueue_getEvent(app->inputQueue, &event) >= 0) {
+    if (AInputQueue_preDispatchEvent(app->inputQueue, event)) continue;
+    int32_t handled = 0;
+    int type = AInputEvent_getType(event);
+    if (type == AINPUT_EVENT_TYPE_MOTION) {
+        float x = AMotionEvent_getX(event, 0);
+        float y = AMotionEvent_getY(event, 0);
+        handled = 1;
+    }
+    AInputQueue_finishEvent(app->inputQueue, event, handled);
+}
+```
+
+**NativeActivity limitations:** (1) No `SurfaceView` control — the activity owns the entire window. (2) Text input is broken — `ANativeActivity_showSoftInput()` raises the IME but there is no callback to receive the resulting text. (3) Input event coalescing — high-frequency touch events are batched and historical samples are not exposed.  [Source: android_native_app_glue.h](https://android.googlesource.com/platform/ndk/+/refs/heads/master/sources/android/native_app_glue/android_native_app_glue.h)
+
+#### GameActivity and AGDK
+
+The **Android Game Development Kit** (AGDK, 2021+) is a Jetpack library suite addressing NativeActivity's limitations. The core package `androidx.games:games-activity` provides `GameActivity`, a Kotlin/Java subclass (apps must subclass it: `class MainActivity : GameActivity()`) that replaces the glue layer:
+
+```cmake
+find_package(game-activity REQUIRED CONFIG)
+target_link_libraries(${PROJECT_NAME} PUBLIC game-activity::game-activity_static)
+# Linker entry point changes from ANativeActivity_onCreate to:
+# -u Java_com_google_androidgamesdk_GameActivity_initializeNativeCode
+```
+
+The AGDK `android_app` struct replaces `ANativeActivity*` with `GameActivity*` and drops the `onInputEvent` callback in favour of a **double-buffered input array**:
+
+```c
+struct android_app {
+    GameActivity* activity;     // replaces ANativeActivity*
+    ANativeWindow* window;
+    ALooper*       looper;
+    // Input arrays — no AInputQueue callback:
+    GameActivityMotionEvent motionEvents[NATIVE_APP_GLUE_MAX_NUM_MOTION_EVENTS];
+    uint64_t                motionEventsCount;
+    GameActivityKeyEvent    keyDownEvents[NATIVE_APP_GLUE_MAX_NUM_KEY_EVENTS];
+    uint64_t                keyDownEventsCount;
+    GameActivityKeyEvent    keyUpEvents[NATIVE_APP_GLUE_MAX_NUM_KEY_EVENTS];
+    uint64_t                keyUpEventsCount;
+    int                     textInputState;
+    // ... remainder same as classic glue
+};
+```
+
+Input is consumed by swapping the buffer rather than polling a queue — this exposes all historical samples and all pointer axes:
+
+```c
+GameActivityInputBuffer* ib = android_app_swap_input_buffers(app);
+if (ib) {
+    for (uint64_t i = 0; i < ib->motionEventsCount; i++) {
+        GameActivityMotionEvent* e = &ib->motionEvents[i];
+        int32_t action = e->action & AMOTION_EVENT_ACTION_MASK;
+        float x = GameActivityPointerAxes_getAxisValue(
+                      &e->pointers[0], AMOTION_EVENT_AXIS_X);
+    }
+    android_app_clear_motion_events(ib);
+}
+```
+
+**Text input** is handled by `game-text-input`: `GameActivity_setImeEditorInfo()` configures the IME, and `GameActivity_getTextInputState()` retrieves pending text — the broken NativeActivity path is replaced entirely.
+
+**Paddleboat** (`androidx.games:games-controller`) adds gamepad enumeration, mapping, vibration, and battery. It plugs into the GameActivity input stream:
+
+```c
+Paddleboat_init(env, jcontext);
+// Per frame:
+Paddleboat_update(env);
+Paddleboat_processGameActivityMotionInputEvent(&motionEvent, sizeof(motionEvent));
+// Read controller state:
+Paddleboat_Controller_Data ctrl;
+Paddleboat_getControllerData(0, &ctrl);
+// ctrl.buttonsDown bitmask, ctrl.leftStick.stickX/Y, ctrl.triggerL2, etc.
+```
+
+[Source: GameActivity overview](https://developer.android.com/games/agdk/game-activity/overview), [android_app struct](https://developer.android.com/reference/games/game-activity/struct/android-app)
+
+#### ANativeWindow in depth
+
+`ANativeWindow*` is an opaque C handle to a `Surface` — the **producer end of a `BufferQueue`**. Internally, `frameworks/native`'s `Surface` class implements the `ANativeWindow` C vtable; casting a `Surface*` to `ANativeWindow*` is the bridge. Buffers pushed through it flow via Binder IPC to SurfaceFlinger as the consumer.
+
+**Reference counting** — both Vulkan and EGL manage the window lifetime through acquire/release:
+
+```c
+ANativeWindow_acquire(window);   // increment refcount
+ANativeWindow_release(window);   // decrement; may free
+// vkCreateAndroidSurfaceKHR calls acquire internally;
+// vkDestroySurfaceKHR calls release. A window cannot be bound
+// to both a VkSurfaceKHR and an EGLSurface simultaneously.
+```
+
+**Geometry and format:**
+
+```c
+int32_t w = ANativeWindow_getWidth(window);
+int32_t h = ANativeWindow_getHeight(window);
+// Override: pass 0,0 to use the window's natural size
+ANativeWindow_setBuffersGeometry(window, 0, 0,
+    WINDOW_FORMAT_RGBA_8888);  // = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM
+```
+
+**Vulkan swapchain creation** — the only JNI in the entire Vulkan path:
+
+```c
+// One-time at APP_CMD_INIT_WINDOW:
+ANativeWindow* anw = app->window;  // from android_app — no JNI needed here
+VkAndroidSurfaceCreateInfoKHR info = {
+    .sType  = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
+    .window = anw,
+};
+vkCreateAndroidSurfaceKHR(instance, &info, NULL, &surface);
+// All subsequent Vulkan calls: pure C, zero JNI
+```
+
+When obtained from `ANativeWindow_fromSurface(env, jSurface)` (e.g., from a `SurfaceHolder` in a hybrid app) that single call is the only JNI crossing for the entire render lifetime.
+
+**CPU software rendering path** (for 2D fallback or screenshot readback):
+
+```c
+ANativeWindow_Buffer buf;
+ARect dirty = {0, 0, w, h};
+ANativeWindow_lock(window, &buf, &dirty);
+// buf.bits → raw pixel pointer; buf.stride → row stride in pixels
+memset(buf.bits, 0xFF, buf.stride * h * 4);  // fill white
+ANativeWindow_unlockAndPost(window);
+```
+
+[Source: ANativeWindow NDK reference](https://developer.android.com/ndk/reference/group/a-native-window)
+
+#### Swappy: Android Frame Pacing
+
+**Swappy** (part of AGDK, `com.google.android.games:games-frame-pacing`) solves two jank patterns that arise when a Vulkan app calls `vkQueuePresentKHR` without vsync awareness:
+
+- **Double-present jank**: a short frame completes early and is displayed for fewer vsync intervals than intended, causing uneven cadence.
+- **Buffer stuffing**: a long frame causes the BufferQueue to fill; the CPU keeps submitting work, increasing pipeline depth and adding input latency.
+
+Swappy injects `VkPresentTimesInfoGOOGLE` (via `VK_GOOGLE_display_timing`) into the `VkPresentInfoKHR.pNext` chain to schedule presentation at the correct future vsync, and uses Android `Choreographer` for per-device vsync calibration. On multi-refresh-rate displays it selects the closest matching rate (a 45 fps game targets 90 Hz rather than dropping to 30 Hz on 60 Hz).
+
+```c
+// Step 1 — query required extensions (adds VK_GOOGLE_display_timing if available)
+SwappyVk_determineDeviceExtensions(physDevice,
+    availCount, pAvail, &reqCount, ppReq);
+
+// Step 2 — initialise after swapchain creation
+uint64_t refreshNs;
+SwappyVk_initAndGetRefreshCycleDuration(env, jactivity,
+    physDevice, device, swapchain, &refreshNs);
+
+// Step 3 — bind the ANativeWindow for display-timing queries
+SwappyVk_setWindow(device, swapchain, anw);
+
+// Step 4 — set target frame interval (nanoseconds)
+SwappyVk_setSwapIntervalNS(device, swapchain, refreshNs); // e.g. 16_666_666 for 60 Hz
+
+// Step 5 — replace vkQueuePresentKHR in the render loop
+VkResult r = SwappyVk_queuePresent(queue, &presentInfo);
+
+// Cleanup before vkDestroySwapchainKHR
+SwappyVk_destroySwapchain(device, swapchain);
+```
+
+[Source: Android Frame Pacing library](https://developer.android.com/games/sdk/frame-pacing), [SwappyVk API reference](https://developer.android.com/games/sdk/reference/frame-pacing/group/swappy-vk)
+
+#### Lifecycle event ordering and Vulkan swapchain
+
+The critical ordering rule: **create the Vulkan swapchain in `APP_CMD_INIT_WINDOW`, not `APP_CMD_RESUME`**. The surface is created after `onResume` fires, and it can be destroyed while the activity remains resumed (e.g., when another window covers it). `android_app::window` is the authoritative signal:
+
+| `APP_CMD_*` event | `window` state | Vulkan action |
+|---|---|---|
+| `APP_CMD_RESUME` | may be NULL | — |
+| `APP_CMD_INIT_WINDOW` | non-NULL | **Create `VkSurfaceKHR` and swapchain** |
+| `APP_CMD_GAINED_FOCUS` | non-NULL | Begin render loop |
+| `APP_CMD_LOST_FOCUS` | non-NULL | Pause render loop |
+| `APP_CMD_TERM_WINDOW` | about to become NULL | **Destroy swapchain and `VkSurfaceKHR`** |
+| `APP_CMD_PAUSE` | NULL or non-NULL | — |
+| `APP_CMD_DESTROY` | NULL | Destroy all Vulkan resources |
+
+```c
+void handle_cmd(struct android_app* app, int32_t cmd) {
+    switch (cmd) {
+    case APP_CMD_INIT_WINDOW:
+        vulkan_create_surface_and_swapchain(app->window);
+        break;
+    case APP_CMD_TERM_WINDOW:
+        vulkan_destroy_swapchain_and_surface();
+        break;
+    }
+}
+```
+
 ### What is evolving on the managed side
 
 For Kotlin/Java developers who want GPU access without dropping to the NDK:
