@@ -1296,6 +1296,23 @@ ART's evolution path for native interop is **not FFM**: it is `@FastNative`/`@Cr
 
 [Source: JEP 454 — Foreign Function & Memory API](https://openjdk.org/jeps/454), [ART Dex format overview](https://source.android.com/docs/core/runtime/dex-format)
 
+### Is JNI still used? Current status and trends
+
+Yes — extensively, but the architecture has evolved to confine it to the cold path.
+
+**JNI is unavoidable at the framework boundary.** The Android API surface is Java/Kotlin by design, and every Java/Kotlin call into a system service crosses JNI. `android.media.MediaCodec` calls into the C++ `MediaCodec` in `frameworks/av`; `android.hardware.camera2` reaches the Camera HAL via `CameraService`; every `android.opengl.GLES31.*` call invokes the native GL driver through JNI. SurfaceFlinger, AudioFlinger, and the sensor stack are C++ services with JNI-wrapped Java APIs above them. This layer is not going away — it is the Android API surface.
+
+**The hot-path pattern: JNI only at startup, zero per frame.** For graphics and game workloads the current idiom is to use JNI only at the lifecycle boundary — obtaining a surface handle, requesting permissions, reading device properties — and then drop entirely into NDK C/C++ for the render loop. Two mechanisms enable this:
+
+- **`NativeActivity` / `GameActivity`** (Android Game Development Kit, AGDK) — `android.app.NativeActivity` delivers Android lifecycle callbacks (`onStart`, `onSurfaceCreated`, `onInputEvent`) as C function pointers via `ANativeActivity_onCreate`. The entire app loop — Vulkan frame submission, input handling, audio — runs in C/C++ with zero JNI per frame. `GameActivity` (AGDK 2021+) extends this with lower-latency input and `SurfaceView` integration.
+- **`ANativeWindow`** — a C handle to the platform surface, obtained once at startup via a single `ANativeWindow_fromSurface(env, surface)` JNI call, then passed directly to `vkCreateAndroidSurfaceKHR`. All subsequent Vulkan API calls are pure C — no JNI in the render loop.
+
+**Rust on Android bypasses JNI for new platform services.** Android's own codebase increasingly uses Rust (Keystore2, DNS-over-HTTPS, Bluetooth, `virtualizationservice`). New Rust services communicate with each other via Binder AIDL, not JNI. Where Rust must call Java APIs, the `jni` crate provides JNI bindings; but the preference is to keep Rust services below the Java layer entirely. Rust Vulkan code (`ash`, `vulkano`) calls the Vulkan C API via FFI — no JNI involved.
+
+**Flutter, Unity, and Unreal use JNI only as a startup shim.** All three engines integrate with the Android `Activity` lifecycle and Play Store APIs via a thin JNI layer, then keep their render loops in C++. Flutter's Impeller renderer submits Vulkan commands with no JNI in the render path; Unity and Unreal follow the same pattern.
+
+**Summary: JNI's role is narrowing.** Its domain is (a) the unchangeable `java.*` / `android.*` API surface, (b) lifecycle glue for native apps, and (c) legacy code not yet ported. `@FastNative` and `@CriticalNative` exist because even these unavoidable boundary calls matter at initialisation time. The direction of new Android platform work — Rust Binder services, `GameActivity`, AGDK — is to reduce per-frame JNI calls to zero on the hot path, not merely to make the remaining ones faster.
+
 ### What is evolving on the managed side
 
 For Kotlin/Java developers who want GPU access without dropping to the NDK:
