@@ -8,19 +8,24 @@ The Linux graphics stack is not a single coherent design; it is four decades of 
 
 **Chapter 103 — History and Design Philosophy of the Linux Graphics Stack** is the book's narrative thread. It traces the arc from the first **X10** server in 1984 through the **DRI Project**, **KMS** and the display revolution, **Gallium3D**, the **Wayland** story, AMD's open-source pivot, and ARM GPU reverse engineering up to the **Vulkan**- and Rust-era stack of 2026. Readers gain a causal account of why **DRM** is separate from **V4L2**, why **Mesa** carries both **Gallium3D** and native **Vulkan** driver paths, and why the community's consistent preference for mechanism over policy produced the architecture described throughout the rest of the book.
 
+**Chapter 197 — The Linux Graphics Stack in Context: Comparison with Windows and macOS** places the full stack in direct competitive comparison with the two dominant proprietary graphics platforms. It identifies where Linux leads (Mesa NIR as open universal shader IR, DMA-BUF cross-process zero-copy, explicit sync as a Wayland protocol primitive, Rust GPU drivers, community reverse-engineering quality, DXVK/VKD3D-Proton translation performance), where Windows and macOS each lead, and — critically — what the Linux community is actively doing to close each gap. Velocity comparisons, feature-parity matrices, and a strategic outlook on the SPIR-V/WGSL convergence conclude the chapter.
+
 ## How the Chapters Interrelate
 
-The two chapters form a natural sequence rather than a parallel survey.
+The three chapters form a natural sequence rather than a parallel survey.
 
 Chapter 95 should be read first by anyone who arrived at this book with a Wayland-native background and has never worked directly with **Xorg**, **libX11**, **XCB**, or the **GLX** API. It establishes the concrete legacy: the Unix-domain socket at **`/tmp/.X11-unix/X0`**, the global **X atom** namespace, the **XDND** drag-and-drop protocol, **XGetWindowProperty** as the clipboard mechanism, and the three generations of **DRI** that progressively moved buffer allocation from server to client. Without that foundation, the claim in Chapter 103 that "every Wayland protocol that seems over-engineered is a considered response to a concrete X11 problem" cannot be evaluated — it can only be accepted on faith.
 
 Chapter 103 is the interpretive frame: it explains the Nouveau reverse-engineering project that Chapter 95's DRI evolution implicitly required, AMD's open-source pivot that unlocked the **AMDGPU** driver described in Part XVII, and the community debates around **KMS** that made the clean kernel/userspace split described in Part I possible. Reading Chapter 103 after Chapter 95 means the historical narrative arrives with concrete technical examples already in the reader's working memory, so the "why" lands with full force.
 
-The shared conceptual threads across both chapters are: the **DRM/KMS** subsystem as the universal hardware abstraction layer that X11 legacy bridges and modern Wayland compositors all depend on; the **dma-buf** zero-copy buffer-sharing mechanism whose evolution Chapter 103 narrates and Chapter 95 demonstrates in practice; and the community norm of mechanism-over-policy that Chapter 103 traces to Scheifler and Gettys's X design principles and that explains why **XWayland** is a separate program rather than a compile-time configuration of a monolithic server.
+Chapter 197 is the competitive synthesis: it takes the systems described throughout the book and positions them against Windows WDDM/DirectX and macOS Metal — identifying specific gaps (WDDM TDR isolation, DirectStorage, DirectX Agility SDK velocity, macOS HDR timeline) alongside specific Linux responses (drm_gpuvm, io_uring + P2P DMA, Steam Runtime, KWin 6 + wp-color-management-v1). Readers who work across platforms will find this the single most practically useful chapter for understanding where Linux graphics is today and why.
+
+The shared conceptual threads across all three chapters are: the **DRM/KMS** subsystem as the universal hardware abstraction layer that X11 legacy bridges and modern Wayland compositors all depend on; the **dma-buf** zero-copy buffer-sharing mechanism whose evolution Chapter 103 narrates and Chapter 197 positions against peer platform designs; and the community norm of mechanism-over-policy that Chapter 103 traces to Scheifler and Gettys's X design principles and Chapter 197 demonstrates produces competitive GPU driver quality through open selection pressure.
 
 ```mermaid
 graph LR
     A["Ch 95\nX11/Xorg & DRI Legacy"] --> B["Ch 103\nHistory & Design Philosophy"]
+    B --> C["Ch 197\nLinux vs Windows vs macOS"]
 ```
 
 ## Prerequisites and What Comes Next

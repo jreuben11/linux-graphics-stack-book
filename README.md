@@ -355,6 +355,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Part Overview](chapters/part-21-platform-legacy/part-intro.md)
 - [Ch 95: X11/Xorg Architecture and the DRI Legacy Stack](chapters/part-21-platform-legacy/ch95-x11-xorg-dri-legacy.md)
 - [Ch 103: The Linux Graphics Stack: History and Design Philosophy](chapters/part-21-platform-legacy/ch103-history-design-philosophy.md)
+- [Ch 197: The Linux Graphics Stack in Context — Comparison with Windows and macOS](chapters/part-21-platform-legacy/ch197-linux-windows-macos-graphics-comparison.md)
 
 ---
 
@@ -591,6 +592,7 @@ chapters/
   part-21-platform-legacy/
     ch95-x11-xorg-dri-legacy.md
     ch103-history-design-philosophy.md
+    ch197-linux-windows-macos-graphics-comparison.md
   appendices/
     appendix-a-glossary.md
     appendix-b-environment-variables.md

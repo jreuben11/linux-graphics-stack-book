@@ -17,6 +17,17 @@
 9. [Real-World Use Cases](#9-real-world-use-cases)
 10. [Build Tooling and Distribution](#10-build-tooling-and-distribution)
 11. [Integrations](#11-integrations)
+12. [Native WASM+WebGPU Embedding — A DOM-Free Micro-Runtime](#12-native-wasmwebgpu-embedding--a-dom-free-micro-runtime)
+    - [12.1 The Concept: Beyond the Browser Sandbox](#121-the-concept-beyond-the-browser-sandbox)
+    - [12.2 Active Projects and Proposals](#122-active-projects-and-proposals)
+    - [12.3 Architecture: Wasmtime + wgpu as Host](#123-architecture-wasmtime--wgpu-as-host)
+    - [12.4 GPU Handle Table: The Core Abstraction](#124-gpu-handle-table-the-core-abstraction)
+    - [12.5 Wiring Wasmtime Imports to wgpu](#125-wiring-wasmtime-imports-to-wgpu)
+    - [12.6 The WASM Plugin Side](#126-the-wasm-plugin-side)
+    - [12.7 Safe Memory Sharing](#127-safe-memory-sharing)
+    - [12.8 Input Event Mapping](#128-input-event-mapping)
+    - [12.9 Framework Integration](#129-framework-integration)
+    - [12.10 What Is Missing: The wasi-webgpu Gap](#1210-what-is-missing-the-wasi-webgpu-gap)
 
 ---
 
@@ -940,6 +951,622 @@ wasm-pack build --dev --target web
 ```
 
 For Rust, `wasm-pack --dev` passes `-C debuginfo=2` to `rustc`, embedding Rust source locations in the WASM DWARF sections. Chrome's DevTools can then show Rust source in the debugger, set breakpoints, and inspect variables — treating the WASM binary like a native binary with debug symbols.
+
+---
+
+## 12. Native WASM+WebGPU Embedding — A DOM-Free Micro-Runtime
+
+### 12.1 The Concept: Beyond the Browser Sandbox
+
+The chapters above describe WebGPU and WASM as deployed *inside* a browser: a `<canvas>` element is the rendering surface, JavaScript is the glue, and the browser provides the WebGPU JS API. But the same two technologies — WASM as a portable, sandboxed binary format, WebGPU as an explicit GPU API — can be combined in a completely different deployment model: embedded inside a **native GUI application**, with no HTML, no CSS, no DOM, and no JavaScript runtime anywhere in the stack.
+
+The use case is a secure, lightweight plugin or widget system:
+
+- A native desktop application (Rust egui app, Qt QML app, Slint app) wants to execute untrusted third-party UI components or logic
+- Those components need GPU access to render custom visualisations, shader-heavy widgets, or game-like content
+- The host application wants to sandbox the plugin — it cannot access the filesystem, the network, or host memory beyond what is explicitly shared
+- CEF (Chromium Embedded Framework) or Qt WebEngine would work but bring 100–300 MB of Chromium runtime, DOM parsing, CSS layout, V8 JIT, and the full Web Platform for a use case that needs none of those things
+
+The alternative: embed a **lightweight WASM runtime** (Wasmtime, ~4 MB shared library) and expose GPU access through a custom set of WASM import functions backed by the host's native GPU device (wgpu on Rust hosts, Dawn on C++ hosts). The WASM module renders into a texture; the host composites that texture into its own UI. The result is a GPU-accelerated plugin sandbox with millisecond startup, ~4 MB runtime overhead, and a well-defined security boundary.
+
+```
+CEF/QtWebEngine approach:        WASM micro-runtime approach:
+──────────────────────────       ──────────────────────────
+HTML + CSS + JS runtime          No DOM, no CSS, no JS
+Chromium GPU command buffer      Native wgpu / Dawn directly
+100–300 MB runtime               ~4 MB Wasmtime
+Full Web Platform attack surface Capability-based imports only
+DOM = shared mutable state       Linear memory = isolated sandbox
+```
+
+This architecture is an emerging pattern, not yet a polished product. The components exist and compose correctly; what is missing is a standardised ABI (`wasi-webgpu`) and a packaged host library that GUI frameworks can integrate.
+
+### 12.2 Active Projects and Proposals
+
+**`wasi-webgpu` (Bytecode Alliance / W3C WASI Community Group)**
+
+The most directly relevant standards effort. `wasi-webgpu` is a WASI interface proposal to expose WebGPU surface and GPU device access to WASM modules running in Wasmtime *outside* a browser. A companion proposal, `wasi-graphics-context`, defines how a WASM module acquires a rendering surface. Together they would give a WASM plugin access to a `WGPUDevice` and `WGPUSwapChain` via WASI-imported functions — exactly the host ABI described below. As of mid-2026 the proposal is in design phase within the WebAssembly Community Group; no stable Wasmtime implementation exists. [Source: github.com/WebAssembly/wasi-webgpu](https://github.com/WebAssembly/wasi-webgpu)
+
+**Makepad (`makepad/makepad`)**
+
+The closest *working* project to the DOM-free rendering model. Makepad is a Rust UI framework that renders entirely to GPU — no DOM elements, no layout engine — and compiles either to a native binary (using OpenGL/Metal/Vulkan) or to a WASM module that writes to a bare `<canvas>` via WebGL2/WebGPU. The Robrix Matrix client and the Makepad Studio IDE are production deployments. Makepad demonstrates that the GPU-only rendering model is viable and performant; the architecture the current section describes is the *plugin host* version of Makepad's model. [Source: github.com/makepad/makepad](https://github.com/makepad/makepad)
+
+**`wasi-nn` (WASM Neural Network interface, production in Wasmtime)**
+
+Not GPU rendering, but proves the structural pattern. Wasmtime exposes hardware ML inference (via OpenVINO, CoreML, CUDA) to WASM modules through WASI-imported functions — the WASM module calls `nn_graph_init()` and `nn_infer()`, and the Wasmtime host dispatches to native hardware without the WASM module ever seeing a native pointer. This is architecturally identical to a WASM module calling `gpu_draw()` with the host dispatching to wgpu. The `wasi-nn` implementation in Wasmtime is the proof-of-concept that the hardware-access-via-WASI pattern works in production. [Source: github.com/bytecodealliance/wasmtime/tree/main/crates/wasi-nn](https://github.com/bytecodealliance/wasmtime/tree/main/crates/wasi-nn)
+
+**Dawn standalone (C++ hosts)**
+
+Dawn (Chrome's WebGPU C++ implementation) compiles as a standalone native library exposing the full `webgpu.h` C API. A C++ application can embed Dawn, create a `WGPUDevice`, and simultaneously embed Wasmtime. Wiring the two together — exposing Dawn's `wgpuDeviceCreateBuffer`, `wgpuQueueWriteBuffer`, etc. as Wasmtime import functions — gives a C++ host the complete architecture with no new primitives required. No project has packaged this wiring as a reusable library.
+
+**`bevy_mod_scripting` (WASM game logic, not GPU)**
+
+Bevy's community scripting plugin loads WASM modules as game scripts. The WASM module calls imported functions to query and mutate Bevy ECS components; the host dispatches to Bevy systems. GPU access is not yet exposed to scripts. The structural pattern — WASM imports → host dispatches to Rust subsystems — is the right shape; GPU is just another resource class.
+
+### 12.3 Architecture: Wasmtime + wgpu as Host
+
+The full data flow:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Native Host Application                           │
+│                                                                      │
+│  ┌──────────────┐   ┌────────────────────────────────────────────┐  │
+│  │ winit /      │   │           Wasmtime Engine                   │  │
+│  │ egui /       │   │  ┌──────────────────────────────────────┐  │  │
+│  │ Qt / Slint   │   │  │         WASM Plugin Module            │  │  │
+│  │              │   │  │  • #![no_std], no web-sys             │  │  │
+│  │ keyboard /   │──▶│  │  • extern "C" GPU imports             │  │  │
+│  │ mouse events │   │  │  • exports: init, render, on_input    │  │  │
+│  │              │   │  └───────────────┬──────────────────────┘  │  │
+│  └──────┬───────┘   │                  │ calls host ABI imports   │  │
+│         │           │  ┌───────────────▼──────────────────────┐  │  │
+│         │           │  │  Wasmtime Linker (host import fns)    │  │  │
+│         │           │  │  gpu_create_buffer(size) → handle     │  │  │
+│         │           │  │  gpu_write_buffer(h, ptr, len, off)   │  │  │
+│         │           │  │  gpu_create_shader(wgsl_ptr, len) → h │  │  │
+│         │           │  │  gpu_create_pipeline(shader) → h      │  │  │
+│         │           │  │  gpu_begin_render_pass(out_tex) → h   │  │  │
+│         │           │  │  gpu_set_pipeline(enc, pipe)          │  │  │
+│         │           │  │  gpu_draw(enc, vtx, inst)             │  │  │
+│         │           │  │  gpu_submit(enc)                      │  │  │
+│         │           │  │  gpu_get_output_texture() → h         │  │  │
+│         │           │  └───────────────┬──────────────────────┘  │  │
+│         │           └──────────────────│──────────────────────────┘  │
+│         │                              │                              │
+│         │           ┌──────────────────▼──────────────────────────┐  │
+│         │           │   wgpu Device + Queue + GpuHandleTable       │  │
+│         │           │   output_texture: wgpu::Texture              │  │
+│         │           └──────────────────┬──────────────────────────┘  │
+│         │                              │                              │
+│         │           ┌──────────────────▼──────────────────────────┐  │
+│         └──────────▶│   GUI Framework Compositor                   │  │
+│                     │   (egui / Iced / Slint / Qt)                 │  │
+│                     │   displays WASM output_texture as a widget   │  │
+│                     └─────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+The key design invariants:
+
+1. **WASM module never holds native pointers.** It only holds `u32` handles that index into the host's `GpuHandleTable`. Passing a corrupted handle produces a controlled error, not a memory safety violation.
+2. **All GPU resource lifetimes are host-managed.** The WASM module calls `gpu_drop_buffer(handle)` to signal intent; the host frees the real `wgpu::Buffer`. The host can also apply per-plugin resource quotas.
+3. **Host reads WASM memory; WASM never reads host memory.** WASM linear memory is a `&[u8]` slice from the host's perspective. The WASM module cannot reach outside its sandbox by construction.
+4. **Rendering flows into a host-owned texture.** The WASM module renders into a `wgpu::Texture` that the host pre-allocated. The host composites it into the GUI without the WASM module ever controlling the compositor.
+
+### 12.4 GPU Handle Table: The Core Abstraction
+
+The handle table maps `u32` integer handles to real wgpu objects. This is the same pattern as Unix file descriptors, OpenGL object names, and Windows `HANDLE` — an opaque integer that the guest uses and the host resolves.
+
+```rust
+// host/src/gpu_handle_table.rs
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+pub struct GpuHandleTable {
+    pub buffers:        HashMap<u32, wgpu::Buffer>,
+    pub textures:       HashMap<u32, wgpu::Texture>,
+    pub texture_views:  HashMap<u32, wgpu::TextureView>,
+    pub shaders:        HashMap<u32, wgpu::ShaderModule>,
+    pub pipelines:      HashMap<u32, wgpu::RenderPipeline>,
+    pub encoders:       HashMap<u32, wgpu::CommandEncoder>,
+    pub command_bufs:   HashMap<u32, wgpu::CommandBuffer>,
+    next_handle:        AtomicU32,
+    // Handle 0 is reserved for the host-managed output texture
+}
+
+impl GpuHandleTable {
+    pub fn new() -> Self {
+        Self {
+            buffers: HashMap::new(),
+            textures: HashMap::new(),
+            texture_views: HashMap::new(),
+            shaders: HashMap::new(),
+            pipelines: HashMap::new(),
+            encoders: HashMap::new(),
+            command_bufs: HashMap::new(),
+            next_handle: AtomicU32::new(1), // 0 reserved
+        }
+    }
+
+    pub fn alloc(&self) -> u32 {
+        self.next_handle.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+// Host state threaded through Wasmtime Store
+pub struct HostState {
+    pub device:          wgpu::Device,
+    pub queue:           wgpu::Queue,
+    pub output_texture:  wgpu::Texture,       // handle 0 for WASM
+    pub output_view:     wgpu::TextureView,
+    pub handles:         GpuHandleTable,
+}
+```
+
+### 12.5 Wiring Wasmtime Imports to wgpu
+
+Each host ABI function is a Wasmtime `Linker::func_wrap` closure that receives a `Caller<HostState>`, reads the handle table, and dispatches to real wgpu operations.
+
+```rust
+// host/src/linker.rs
+use wasmtime::*;
+
+pub fn add_gpu_imports(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
+
+    // gpu_get_output_texture() -> u32
+    // Returns handle 0, the pre-allocated render target
+    linker.func_wrap("gpu", "get_output_texture",
+        |_: Caller<HostState>| -> u32 { 0 })?;
+
+    // gpu_create_buffer(size: u32, usage: u32) -> u32
+    linker.func_wrap("gpu", "create_buffer",
+        |mut caller: Caller<HostState>, size: u32, usage: u32| -> u32 {
+            let usage = wgpu::BufferUsages::from_bits_truncate(usage);
+            let buf = caller.data().device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: size as u64,
+                usage,
+                mapped_at_creation: false,
+            });
+            let h = caller.data().handles.alloc();
+            caller.data_mut().handles.buffers.insert(h, buf);
+            h
+        })?;
+
+    // gpu_write_buffer(buf_h: u32, wasm_ptr: u32, len: u32, offset: u64)
+    linker.func_wrap("gpu", "write_buffer",
+        |mut caller: Caller<HostState>, buf_h: u32, wasm_ptr: u32, len: u32, offset: u64| {
+            // Read from WASM linear memory — safe because WASM execution is
+            // paused at this import boundary; no concurrent mutation possible.
+            let mem = caller.get_export("memory")
+                .and_then(Extern::into_memory)
+                .expect("WASM module must export 'memory'");
+            let data: Vec<u8> = mem.data(&caller)
+                [wasm_ptr as usize..(wasm_ptr + len) as usize]
+                .to_vec();          // copy out before mutably borrowing caller
+            let state = caller.data_mut();
+            let buf = state.handles.buffers.get(&buf_h).expect("invalid buffer handle");
+            state.queue.write_buffer(buf, offset, &data);
+        })?;
+
+    // gpu_create_shader(wgsl_ptr: u32, wgsl_len: u32) -> u32
+    linker.func_wrap("gpu", "create_shader",
+        |mut caller: Caller<HostState>, wgsl_ptr: u32, wgsl_len: u32| -> u32 {
+            let mem = caller.get_export("memory")
+                .and_then(Extern::into_memory).unwrap();
+            let wgsl = std::str::from_utf8(
+                &mem.data(&caller)[wgsl_ptr as usize..(wgsl_ptr + wgsl_len) as usize]
+            ).expect("WGSL must be valid UTF-8").to_owned();
+            let shader = caller.data().device.create_shader_module(
+                wgpu::ShaderModuleDescriptor {
+                    label: None,
+                    source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+                });
+            let h = caller.data().handles.alloc();
+            caller.data_mut().handles.shaders.insert(h, shader);
+            h
+        })?;
+
+    // gpu_begin_render_pass(out_tex_h: u32) -> u32   (returns encoder handle)
+    linker.func_wrap("gpu", "begin_render_pass",
+        |mut caller: Caller<HostState>, _out_tex_h: u32| -> u32 {
+            // _out_tex_h == 0 → use host output_view; other values could
+            // reference plugin-owned render targets.
+            let enc = caller.data().device.create_command_encoder(
+                &wgpu::CommandEncoderDescriptor::default());
+            let h = caller.data().handles.alloc();
+            caller.data_mut().handles.encoders.insert(h, enc);
+            h
+        })?;
+
+    // gpu_set_pipeline(enc_h: u32, pipe_h: u32)
+    linker.func_wrap("gpu", "set_pipeline",
+        |_caller: Caller<HostState>, _enc_h: u32, _pipe_h: u32| {
+            // In a real impl: look up encoder, begin_render_pass on it,
+            // set_pipeline on the render pass. Split here for brevity.
+        })?;
+
+    // gpu_draw(enc_h: u32, vertices: u32, instances: u32)
+    linker.func_wrap("gpu", "draw",
+        |_caller: Caller<HostState>, _enc_h: u32, _vertices: u32, _instances: u32| {})?;
+
+    // gpu_submit(enc_h: u32)
+    linker.func_wrap("gpu", "submit",
+        |mut caller: Caller<HostState>, enc_h: u32| {
+            if let Some(enc) = caller.data_mut().handles.encoders.remove(&enc_h) {
+                let cmd_buf = enc.finish();
+                caller.data().queue.submit(std::iter::once(cmd_buf));
+            }
+        })?;
+
+    // gpu_drop_buffer(h: u32)  — plugin signals it is done with a resource
+    linker.func_wrap("gpu", "drop_buffer",
+        |mut caller: Caller<HostState>, h: u32| {
+            caller.data_mut().handles.buffers.remove(&h);
+            // wgpu::Buffer drops here, freeing GPU memory
+        })?;
+
+    Ok(())
+}
+```
+
+Loading and driving the WASM module:
+
+```rust
+// host/src/runtime.rs
+pub struct WasmRuntime {
+    store:    Store<HostState>,
+    instance: Instance,
+}
+
+impl WasmRuntime {
+    pub fn load(wasm_bytes: &[u8], state: HostState) -> anyhow::Result<Self> {
+        let engine = Engine::default();
+        let module = Module::new(&engine, wasm_bytes)?;
+
+        let mut linker = Linker::<HostState>::new(&engine);
+        add_gpu_imports(&mut linker)?;
+
+        let mut store = Store::new(&engine, state);
+        let instance = linker.instantiate(&mut store, &module)?;
+
+        // Call the plugin's init export
+        instance
+            .get_typed_func::<(), ()>(&mut store, "wasm_init")?
+            .call(&mut store, ())?;
+
+        Ok(Self { store, instance })
+    }
+
+    pub fn render(&mut self, time_ms: f64) -> anyhow::Result<()> {
+        self.instance
+            .get_typed_func::<f64, ()>(&mut self.store, "wasm_render")?
+            .call(&mut self.store, time_ms)
+    }
+
+    pub fn on_mouse_move(&mut self, x: f32, y: f32) -> anyhow::Result<()> {
+        self.instance
+            .get_typed_func::<(f32, f32), ()>(&mut self.store, "wasm_mouse_move")?
+            .call(&mut self.store, (x, y))
+    }
+
+    pub fn on_key_down(&mut self, keycode: u32) -> anyhow::Result<()> {
+        self.instance
+            .get_typed_func::<u32, ()>(&mut self.store, "wasm_key_down")?
+            .call(&mut self.store, keycode)
+    }
+
+    pub fn on_resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
+        self.instance
+            .get_typed_func::<(u32, u32), ()>(&mut self.store, "wasm_resize")?
+            .call(&mut self.store, (width, height))
+    }
+}
+```
+
+### 12.6 The WASM Plugin Side
+
+The plugin is a `#![no_std]` Rust crate with no browser dependencies. It declares the host GPU ABI as `extern "C"` imports under the `"gpu"` module namespace:
+
+```rust
+// plugin/src/lib.rs
+#![no_std]
+extern crate alloc;
+
+// GPU imports — implemented by the Wasmtime host
+#[link(wasm_import_module = "gpu")]
+extern "C" {
+    fn get_output_texture() -> u32;
+    fn create_buffer(size: u32, usage: u32) -> u32;
+    fn write_buffer(buf_h: u32, ptr: *const u8, len: u32, offset: u64);
+    fn create_shader(wgsl_ptr: *const u8, wgsl_len: u32) -> u32;
+    fn create_render_pipeline(shader_h: u32) -> u32;
+    fn begin_render_pass(out_tex_h: u32) -> u32;
+    fn set_pipeline(enc_h: u32, pipe_h: u32);
+    fn draw(enc_h: u32, vertices: u32, instances: u32);
+    fn submit(enc_h: u32);
+    fn drop_buffer(h: u32);
+}
+
+// WGSL shader source embedded at compile time
+const TRIANGLE_WGSL: &str = include_str!("triangle.wgsl");
+
+// Plugin-private state in WASM linear memory (not visible to host)
+static mut PIPELINE_H: u32 = 0;
+static mut VERTEX_BUF_H: u32 = 0;
+
+const VERTICES: &[[f32; 2]] = &[[0.0, 0.5], [-0.5, -0.5], [0.5, -0.5]];
+
+// Exported: called once by host after instantiation
+#[no_mangle]
+pub extern "C" fn wasm_init() {
+    unsafe {
+        let bytes = core::slice::from_raw_parts(
+            VERTICES.as_ptr() as *const u8,
+            VERTICES.len() * 8,
+        );
+        // Usage bits: VERTEX (0x0020) | COPY_DST (0x0008)
+        VERTEX_BUF_H = create_buffer(bytes.len() as u32, 0x0028);
+        write_buffer(VERTEX_BUF_H, bytes.as_ptr(), bytes.len() as u32, 0);
+
+        let shader_h = create_shader(
+            TRIANGLE_WGSL.as_ptr(),
+            TRIANGLE_WGSL.len() as u32,
+        );
+        PIPELINE_H = create_render_pipeline(shader_h);
+    }
+}
+
+// Exported: called every frame by host
+#[no_mangle]
+pub extern "C" fn wasm_render(time_ms: f64) {
+    let _ = time_ms;
+    unsafe {
+        let out_tex = get_output_texture();      // handle 0
+        let enc = begin_render_pass(out_tex);
+        set_pipeline(enc, PIPELINE_H);
+        draw(enc, 3, 1);
+        submit(enc);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn wasm_mouse_move(_x: f32, _y: f32) {}
+
+#[no_mangle]
+pub extern "C" fn wasm_key_down(_keycode: u32) {}
+
+#[no_mangle]
+pub extern "C" fn wasm_resize(_w: u32, _h: u32) {}
+```
+
+Build the plugin:
+
+```bash
+# No std, no web APIs, no wasm-bindgen
+cargo build --target wasm32-unknown-unknown --release
+# Output: target/wasm32-unknown-unknown/release/plugin.wasm (~30 KB stripped)
+```
+
+### 12.7 Safe Memory Sharing
+
+The critical correctness property is that reading WASM linear memory from a Wasmtime import function is **always safe**, even without explicit locks. Wasmtime's execution model guarantees:
+
+1. **WASM execution is fully paused** at an import boundary. When `gpu_write_buffer` executes in the host, the WASM module's instruction pointer is suspended. No WASM thread can mutate WASM memory concurrently with a synchronous import call.
+
+2. **The host reads a `&[u8]` slice**, not a raw pointer. `mem.data(&caller)` returns a Rust shared reference to the WASM linear memory region. Rust's borrow checker enforces that no mutation through `data_mut()` can occur while this reference is live.
+
+3. **Data must be copied before re-borrowing `caller` mutably.** The `to_vec()` call in `gpu_write_buffer` copies the WASM data before `caller.data_mut()` is used to access the handle table. This is the only safe ordering — the alternative (passing the WASM slice directly to `queue.write_buffer`) would require a `'static` lifetime that the temporary borrow cannot satisfy.
+
+```rust
+// CORRECT: copy out of WASM memory first, then mutably borrow state
+let data: Vec<u8> = mem.data(&caller)[ptr..ptr+len].to_vec();  // copy
+let state = caller.data_mut();                                   // now safe
+state.queue.write_buffer(buf, offset, &data);
+
+// INCORRECT: would not compile — conflicting borrows
+// state.queue.write_buffer(buf, offset, &mem.data(&caller)[ptr..ptr+len]);
+```
+
+**Resource quota enforcement.** Because the host owns the handle table, it can enforce per-plugin resource limits:
+
+```rust
+fn create_buffer(mut caller: Caller<HostState>, size: u32, usage: u32) -> u32 {
+    let state = caller.data();
+    let current_usage: u64 = state.handles.buffers.values()
+        .map(|b| b.size()).sum();
+    if current_usage + size as u64 > MAX_PLUGIN_BUFFER_BYTES {
+        return u32::MAX; // sentinel: allocation denied
+    }
+    // ... proceed with allocation
+}
+```
+
+### 12.8 Input Event Mapping
+
+Input flows from the native windowing system through the host into WASM exports. The translation layer maps platform key codes to a simple u32 encoding the WASM plugin declares as its own ABI:
+
+```rust
+// host/src/input.rs
+use winit::keyboard::{KeyCode, PhysicalKey};
+
+/// Maps winit physical keys to a portable u32 keycode.
+/// ASCII values (32–126) for printable characters;
+/// values ≥ 0x100 for non-printable (arrows, function keys, etc.)
+pub fn map_keycode(key: PhysicalKey) -> u32 {
+    match key {
+        PhysicalKey::Code(KeyCode::Space)        => 32,
+        PhysicalKey::Code(KeyCode::Enter)        => 13,
+        PhysicalKey::Code(KeyCode::Escape)       => 27,
+        PhysicalKey::Code(KeyCode::Backspace)    => 8,
+        PhysicalKey::Code(KeyCode::Tab)          => 9,
+        PhysicalKey::Code(KeyCode::ArrowLeft)    => 0x100,
+        PhysicalKey::Code(KeyCode::ArrowRight)   => 0x101,
+        PhysicalKey::Code(KeyCode::ArrowUp)      => 0x102,
+        PhysicalKey::Code(KeyCode::ArrowDown)    => 0x103,
+        PhysicalKey::Code(KeyCode::F1)           => 0x111,
+        // Letters: map to ASCII uppercase (plugin handles case via modifier state)
+        PhysicalKey::Code(k) => {
+            let s = format!("{:?}", k);
+            if s.starts_with("Key") && s.len() == 4 {
+                s.chars().nth(3).unwrap_or('\0') as u32
+            } else {
+                0 // unknown key → 0, plugin ignores
+            }
+        }
+        _ => 0,
+    }
+}
+```
+
+The host event loop translates winit events and calls WASM exports:
+
+```rust
+// Inside winit event_loop.run() / run_on_demand()
+use winit::event::{ElementState, WindowEvent};
+
+match event {
+    WindowEvent::CursorMoved { position, .. } => {
+        // Normalise to 0.0..1.0 viewport-relative coordinates
+        let (w, h) = (window_size.width as f64, window_size.height as f64);
+        runtime.on_mouse_move((position.x / w) as f32,
+                              (position.y / h) as f32)?;
+    }
+    WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
+        let btn_id: u32 = match button {
+            MouseButton::Left  => 0,
+            MouseButton::Right => 1,
+            MouseButton::Middle => 2,
+            _ => 0xFF,
+        };
+        runtime.on_key_down(0x200 | btn_id)?; // 0x200 prefix = mouse button
+    }
+    WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+        runtime.on_key_down(map_keycode(event.physical_key))?;
+    }
+    WindowEvent::Resized(new_size) => {
+        // Recreate output texture at new size; notify plugin
+        state.recreate_output_texture(new_size.width, new_size.height);
+        runtime.on_resize(new_size.width, new_size.height)?;
+    }
+    WindowEvent::RedrawRequested => {
+        let t = start_time.elapsed().as_secs_f64() * 1000.0;
+        runtime.render(t)?;
+        // Composite output_texture into GUI frame — see §12.9
+    }
+    _ => {}
+}
+```
+
+Modifier state (Shift, Ctrl, Alt) can be passed as a bitfield via a separate import function `gpu_get_modifiers() -> u32` that the host populates from the winit `ModifiersState`, avoiding a separate API call per keypress.
+
+### 12.9 Framework Integration
+
+The integration point in each GUI framework is the same conceptually — display a GPU texture as a widget — but the mechanism differs.
+
+| Framework | Texture import mechanism | WASM render call site | Notes |
+|---|---|---|---|
+| **egui / eframe** | `egui_wgpu::Renderer::register_native_texture(view, filter)` → `TextureId` | `App::update()` before `CentralPanel::show` | `RenderState` gives direct `wgpu::Device` access; cleanest integration |
+| **Iced** | `iced_wgpu` custom `Primitive::Custom` with `wgpu::TextureView` | Inside `Application::view()` → custom `canvas::Program` | Requires `iced_wgpu` backend; `iced_tiny_skia` cannot accept GPU textures |
+| **gpui** | `gpui::Image` from raw GPU texture via `gpui::RenderImage` | Custom `Element::paint()` | gpui on Linux uses Vulkan; share `VkDevice` with wgpu via `wgpu::Device::from_hal` |
+| **xilem** | Custom `View` rendering Vello `Image` from wgpu texture | Inside `xilem::App` render pass | Vello renders via wgpu; texture import is `vello::peniko::Image` backed by wgpu |
+| **Slint** | `slint::Image::from_rgba8_premultiplied(pixel_data)` (CPU readback) or `slint::platform::opengl_context` for GPU path | `Timer`-driven repaint | GPU path experimental; CPU readback loses zero-copy advantage |
+| **Qt / QML** | `QSGTexture::fromNativeObject(vkImage, ...)` in `QQuickItem::updatePaintNode()` | `QQuickWindow::beforeRendering` signal | Requires `QSGRendererInterface::Vulkan`; share `VkDevice` with wgpu |
+
+**egui integration (most complete example):**
+
+```rust
+// host/src/egui_app.rs
+use eframe::{egui, egui_wgpu};
+
+struct App {
+    runtime:    WasmRuntime,
+    texture_id: egui::TextureId,
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // 1. Drive the WASM render export
+        let t = frame.info().cpu_usage.unwrap_or(0.0) as f64 * 1000.0;
+        self.runtime.render(t).expect("WASM render failed");
+
+        // 2. Forward egui input events to WASM plugin
+        ctx.input(|i| {
+            for event in &i.events {
+                match event {
+                    egui::Event::PointerMoved(pos) => {
+                        self.runtime.on_mouse_move(pos.x, pos.y).ok();
+                    }
+                    egui::Event::Key { key, pressed: true, .. } => {
+                        self.runtime.on_key_down(egui_key_to_u32(*key)).ok();
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        // 3. Display the WASM output texture as an egui image widget
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let size = ui.available_size();
+            ui.image(egui::load::SizedTexture::new(self.texture_id, size));
+        });
+
+        ctx.request_repaint(); // continuous animation
+    }
+}
+
+fn setup(cc: &eframe::CreationContext) -> Box<dyn eframe::App> {
+    let render_state = cc.wgpu_render_state.as_ref().unwrap();
+    let device = &render_state.device;
+    let queue  = &render_state.queue;
+
+    // Pre-allocate the WASM render target texture
+    let output_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("wasm_output"),
+        size: wgpu::Extent3d { width: 800, height: 600, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let output_view = output_texture.create_view(&Default::default());
+
+    // Register with egui's wgpu renderer so it can be shown as a TextureId
+    let texture_id = render_state.renderer.write().register_native_texture(
+        device,
+        &output_view,
+        wgpu::FilterMode::Linear,
+    );
+
+    let state = HostState {
+        device: device.clone(),
+        queue: queue.clone(),
+        output_texture,
+        output_view,
+        handles: GpuHandleTable::new(),
+    };
+
+    let wasm_bytes = include_bytes!("../../plugin/target/wasm32-unknown-unknown/release/plugin.wasm");
+    let runtime = WasmRuntime::load(wasm_bytes, state).unwrap();
+
+    Box::new(App { runtime, texture_id })
+}
+```
+
+### 12.10 What Is Missing: The wasi-webgpu Gap
+
+The proof-of-concept above works, but three things prevent it from being a production ecosystem:
+
+**1. No standard ABI.** The GPU import function names and signatures (`gpu_create_buffer`, `gpu_write_buffer`, etc.) are invented here. A WASM plugin built for one host will not run on another host with a different ABI. The `wasi-webgpu` proposal would standardise this into a portable WASI interface — plugins would target `wasi:webgpu/device` and run on any compliant host (Wasmtime, WasmEdge, or even a future browser mode). Until that proposal stabilises, any deployment of this architecture is tied to a private host ABI.
+
+**2. No packaged host library.** There is no `wasmtime-gpu` crate analogous to `wasmtime-wasi` that GUI developers can add to their `Cargo.toml`. The wiring between Wasmtime imports and wgpu must be hand-written. This is the gap that a focused library (a few thousand lines) could close.
+
+**3. WASM modules cannot use wgpu directly.** The wgpu crate's WebGPU backend targets the browser's JavaScript WebGPU API (via `web-sys`). There is no `wgpu` backend for "running inside Wasmtime with host-provided GPU imports". Plugin developers cannot write `use wgpu::*; let device = instance.request_device(...)` and have it work in this runtime — they must use the raw `extern "C"` host ABI. A thin crate wrapping the host ABI with a wgpu-shaped API would fix this but does not yet exist.
+
+**The expected unlock**: when `wasi-webgpu` defines a stable WASM interface, the Bytecode Alliance will implement it in Wasmtime as a first-class WASI implementation (parallel to `wasmtime-wasi`). Plugin developers will be able to use a safe Rust wrapper crate; GUI frameworks will gain a standardised `WasmGpuView` widget; and a WASM plugin compiled once will run in any compliant host — native GUI, server-side, or browser — without recompilation.
 
 ---
 

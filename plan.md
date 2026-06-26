@@ -149,6 +149,7 @@ Chapters signal which perspective is emphasised where they diverge.
 - **Part XXI — Platform, Legacy, and History**
   - [Chapter 95: X11/Xorg Architecture and the DRI Legacy Stack](#chapter-95-x11xorg-architecture-and-the-dri-legacy-stack)
   - [Chapter 103: The Linux Graphics Stack: History and Design Philosophy](#chapter-103-the-linux-graphics-stack-history-and-design-philosophy)
+  - [Chapter 197: The Linux Graphics Stack in Context — Comparison with Windows and macOS](#chapter-197-the-linux-graphics-stack-in-context--comparison-with-windows-and-macos)
 - **Part XXI additions to existing parts**
   - [Chapter 96: libcamera and the Linux Camera Stack](#chapter-96-libcamera-and-the-linux-camera-stack) *(Part VII)*
   - [Chapter 97: Unreal Engine 5 on Linux](#chapter-97-unreal-engine-5-on-linux) *(Part XI)*
@@ -1833,6 +1834,18 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Display bring-up: LVDS, MIPI DSI, HDMI; `drm_panel` for display panels; `panel-simple` driver; EDID via DDC I²C; DSI bridge chips (TC358764, SN65DSI86)
 - Remote rendering: cluster GPU rendering frame forwarded over SOME/IP or DoIP to instrument cluster SoC; `GStreamer` pipeline for H.264 over Ethernet in automotive cabin networks
 - **Integrations**: Ch1 (DRM — platform drivers), Ch2 (KMS atomic — display bring-up), Ch21 (wlroots — agl-compositor), Ch39 (Qt/GTK — Qt IVI), Ch57 (FFmpeg — camera + rear-view video), Ch90 (Panfrost/Lima — ARM Mali in i.MX8), Ch100 (etnaviv — Vivante in i.MX6/8), Ch92 (Raspberry Pi — comparable embedded bring-up)
+
+### Chapter 197: The Linux Graphics Stack in Context — Comparison with Windows and macOS *(Part XXI)*
+
+- Structural philosophy: bazaar (Linux), cathedral (Windows), monastery (macOS) — how governance models drive technical outcomes
+- Innovations where Linux leads: Mesa NIR (open universal shader IR), DMA-BUF (cross-process zero-copy), explicit sync as Wayland protocol primitive, Rust GPU drivers (Nova, Asahi), community reverse engineering quality, DXVK/VKD3D-Proton translation layer performance
+- Windows leads — and Linux's response: WDDM TDR GPU hang recovery vs. drm_gpuvm isolation work; DirectX 12 Ultimate feature set vs. Vulkan extension parity table; DirectStorage vs. io_uring + P2P DMA infrastructure; DirectX Agility SDK vs. Steam Runtime + Flatpak Mesa delivery; PIX tooling vs. RenderDoc + RGP + Nsight; gaming ecosystem vs. Steam Play/Proton; DirectML/DLSS vs. ROCm + FSR + llama.cpp Vulkan
+- macOS leads — and Linux's response: Apple unified memory vs. HMM on AMD APU / Intel iGPU / ARM SoCs; Metal ergonomics vs. VK_KHR_dynamic_rendering + wgpu; HDR 2016 vs. KWin 6 + wp-color-management-v1 (2024); ProRes hardware vs. software FFmpeg; ANE on-device ML vs. /dev/accel/ XDNA + Qualcomm HTP + llama.cpp Vulkan; compositor stability vs. KWin 6 + explicit sync
+- Windows and macOS catching up to Linux: Vulkan on Windows; WSL2 GPU passthrough (dxgkrnl + Mesa D3D12); MoltenVK; Game Porting Toolkit; Asahi architectural leverage
+- Velocity comparison: Mesa quarterly cadence vs. D3D12 Agility SDK vs. Apple hardware-launch day; distribution lag vs. Steam Runtime
+- Platform comparison tables: overall stack characteristics; feature parity matrix (ray tracing, mesh shaders, VRS, HDR, VRR, DirectStorage, hardware ML, AV1 encode)
+- Strategic convergence: SPIR-V + WGSL as lingua franca; shader path across all three platforms from a single WGSL source; competitive differentiation moving to hardware ISA compiler quality
+- **Integrations**: Ch103 (history — context for structural choices), Ch28 (DXVK/VKD3D-Proton), Ch119 (Zink), Ch52 (Firefox/naga), Ch34 (ANGLE), Ch118 (NAK), Ch196 (GPU firmware), Ch88 (NPU/accel subsystem)
 
 ### Chapter 103: The Linux Graphics Stack: History and Design Philosophy
 
