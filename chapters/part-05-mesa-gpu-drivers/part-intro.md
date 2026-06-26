@@ -98,6 +98,55 @@ Readers interested in **comparing NVIDIA's approach with AMD, Intel, and Qualcom
 
 ---
 
+## GPU Vendor Open-Source Strategy: A Cross-Vendor Analysis
+
+The chapters in Part V cover individual drivers in depth. This section steps back and asks the cross-cutting strategic question: **why does each GPU vendor engage with the open-source Linux graphics stack the way it does, and where is each vendor's strategy heading?**
+
+### Three Axes of Comparison
+
+Every GPU vendor's Linux strategy can be characterised along three axes:
+
+1. **Kernel driver model** — who writes and maintains the DRM kernel driver, and how much hardware knowledge it requires
+2. **Mesa userspace model** — whether the vendor drives, participates in, or is absent from Mesa Vulkan/OpenGL development
+3. **Firmware posture** — the boundary between open driver code and closed firmware blobs, and how that boundary is shifting
+
+### Per-Vendor Positions
+
+**Intel** occupies the most open position on all three axes. The i915 driver (now transitioning to the clean-slate Xe driver, with Xe2/Battlemage as its first full-generation deployment) is entirely open-source, including GuC firmware source since 2021. Intel engineers are the top contributors to Mesa NIR, the EU ISA compiler backend shared between ANV (Vulkan) and iris (OpenGL), and the genxml packet-generation infrastructure. There is no proprietary Intel graphics userspace alternative on Linux — Intel's business interest is to make Linux a first-class platform for its GPU hardware, which means contributing the driver stack rather than controlling it. The strategic risk for Intel is thin: being upstream-first means slower ability to differentiate on proprietary features, but the Linux developer mindshare Intel earns from being the "most open" vendor has indirect business value in the data-centre and workstation markets.
+
+**AMD** is the second-most open vendor and has undergone the most visible strategic shift over the past decade. The amdgpu kernel driver is fully open; firmware blobs (GFX, SDMA, VCN video, DCN display) are required but distributed through `linux-firmware` under binary redistribution licences. In Mesa, AMD does not own RADV — it is a community driver, originated by Bas Nieuwenhuizen and Dave Airlie and now maintained by a team including Valve, Collabora, and individual contributors — but AMD engineers participate and AMD's ACO compiler was contributed upstream. AMD's one attempt at a parallel proprietary Vulkan driver, AMDVLK, was effectively archived in 2024 after it failed to achieve feature or performance parity with the community RADV. The strategic lesson: **AMD tried to maintain two Vulkan drivers and the community one won.** ROCm (CUDA competitor for compute) remains the area where AMD's proprietary investment is highest, because ROCm is the competitive moat AMD holds against NVIDIA in HPC/ML — not desktop graphics.
+
+**NVIDIA** is the most strategically complex vendor and the one undergoing the most active transition. Until 2022, NVIDIA's Linux position was binary: the proprietary `nvidia.ko` kernel driver and proprietary userspace, or the community reverse-engineered Nouveau driver with limited capability. The 2022 release of `nvidia-open` changed the kernel driver from a completely opaque blob to an open-source module — but `nvidia-open` is not a clean-room driver: it is built around the GSP (GPU System Processor) firmware that runs a proprietary GPU operating system, and the open kernel module is primarily a thin IPC layer that sends commands to the GSP via a mailbox. The consequence is structurally significant: **NVIDIA's open kernel driver is a firmware-RPC client, not a hardware programming layer.** This is architecturally different from Intel or AMD kernel drivers, which contain the actual command-stream encoding. On the Mesa side, NVK has moved from zero to Vulkan 1.4 conformance in approximately two years, driven largely by Faith Ekstrand (ex-Intel ANV) and NVIDIA engineers who joined the effort starting in 2023. The NAK Rust shader compiler, replacing LLVM for NVIDIA ISA, is the first new Rust-language compiler backend in Mesa. NVIDIA's proprietary moat — CUDA, OptiX, DLSS, and the compute software stack — remains entirely closed; the open-sourcing is limited to the graphics path, which NVIDIA views as a cost centre on Linux rather than a competitive differentiator.
+
+**Qualcomm (Adreno)** has followed a similar trajectory to AMD but from a mobile-first starting point. The freedreno kernel driver was originally reverse-engineered by Rob Clark; Qualcomm engineers began contributing after 2018. Turnip (Mesa Vulkan for Adreno) was likewise community-started and Qualcomm has since embedded engineers in the Mesa project. The proprietary Qualcomm Adreno driver continues to ship on Android, making Linux support a secondary concern — but the commercial importance of Linux on Snapdragon (Windows on ARM, automotive SoCs, AI Edge devices) is pushing Qualcomm toward more active Mesa engagement. Turnip's TBDR architecture — sysmem vs. GMEM rendering — represents genuinely novel design patterns that benefited Mesa by introducing the first production tile-based Vulkan driver into the codebase.
+
+**Broadcom (VideoCore / v3dv)** is a cooperative but resource-constrained vendor. Igalia has been the primary implementer of v3dv (Mesa Vulkan for VideoCore VI/VII) under contract with Raspberry Pi and with Broadcom's hardware documentation support. The strategy is vendor-cooperative but not vendor-led: Broadcom provides hardware access and documentation, the Linux/Mesa community does the implementation. v3dv reaching Vulkan 1.3 conformance on Raspberry Pi 5 is a landmark in making Broadcom a full participant in the Mesa Vulkan ecosystem despite limited internal GPU software engineering resources.
+
+**ARM (Mali)** remains the most reluctant participant. Panfrost (Midgard/Bifrost OpenGL ES) and Panthor (Valhall CSF, adding Vulkan) are community reverse-engineering efforts; ARM's cooperation has been improving since approximately 2022 but ARM still ships a proprietary Mali userspace driver on Android and has not made definitive commitments to upstream-first development. The firmware model for Mali Valhall (CSF — Command Stream Frontend) requires firmware for the CSF itself, adding another opaque layer. The strategic risk for ARM is reputational: as Android moves toward Vulkan and the proprietary driver has a long history of security vulnerabilities and poor upstream engagement, the pressure to open-source increases. PanVK (Mesa Vulkan for Mali) is the community bet that eventually ARM will follow the AMD/NVIDIA trajectory.
+
+**Apple (AGX)** is the adversarial case. Asahi Linux's AGX driver (Mesa Vulkan) and Lina kernel driver (Rust-language DRM driver) were reverse-engineered from hardware behaviour, public documentation, and macOS kernel driver analysis — with no cooperation from Apple, which has no business interest in Linux. The AGX Mesa driver is significant beyond its user base: it demonstrated that a fully conformant, performance-competitive Mesa Vulkan driver can be built through fuzzing and hardware-level reverse engineering in under three years, a pace that would have seemed implausible before Asahi began. The techniques developed — GPU command stream fuzzing, register-level coverage tracing, macOS hypervisor-based hardware observation — are relevant to any future reverse-engineering effort.
+
+### The Convergent Trend: Firmware-as-GPU-OS
+
+The most important structural trend across all vendors is the shift toward **firmware-as-GPU-OS**: the GPU runs an embedded processor (NVIDIA GSP, AMD PSP/SMU, Intel GuC/HuC) that owns the hardware scheduling and power management, and the kernel driver is increasingly a message-passing layer into that firmware rather than a hardware programmer. This trend has consequences:
+
+- **Debugging becomes harder**: hardware registers that were previously accessible to the kernel driver are now only accessible to the GPU firmware. Debugging a GPU hang requires reading firmware logs, not just DRM debugfs state.
+- **Open-source audibility is reduced**: even with an open kernel driver, the firmware executing on the GPU is a closed binary. NVIDIA's `nvidia-open` is the extreme case; AMD and Intel are heading in the same direction with expanding firmware scope.
+- **Third-party driver feasibility decreases**: Nouveau's historical approach — reverse-engineering hardware registers — becomes less viable as more state moves behind firmware interfaces. NVK's path (open kernel module + GSP firmware RPC) is the model that future open-source NVIDIA GPU drivers will follow.
+- **Interoperability improves**: firmware-mediated submission standardises the ABI between the kernel and the hardware, making it easier for multiple contexts (DRM render nodes, compute contexts, display) to share the GPU without kernel driver conflicts.
+
+### Strategic Outlook
+
+**The near-term destination is clear**: all discrete GPU vendors are converging on DRM kernel driver + Mesa Vulkan as the Linux graphics stack, with firmware blobs handling an increasing share of hardware management. Intel is already there. AMD completed the transition with AMDVLK's de facto retirement. NVIDIA is mid-transition, with NVK accelerating past the point where it can be ignored. Qualcomm is following on mobile SoCs. ARM is the laggard.
+
+**The medium-term competition shifts to compute**: Once Vulkan graphics coverage is comparable across vendors (2–3 years), the open-source differentiation moves to compute — ROCm vs. CUDA vs. Vulkan compute vs. OpenCL. This is where vendor proprietary moats will be contested and where open-source community leverage is weakest, because CUDA's ecosystem lock-in is not a technical problem that Mesa can solve.
+
+**The Zink convergence accelerates the transition**: As Zink-on-Vulkan becomes the default OpenGL implementation (Mesa 25.1 replaced Nouveau's OpenGL with Zink-on-NVK; the same pattern is being applied to Turnip, PanVK, and v3dv), the number of code paths requiring hardware-specific maintenance halves. A vendor that maintains a good Vulkan driver gets OpenGL support for free. This strengthens the incentive for every vendor to invest in Mesa Vulkan rather than maintaining parallel OpenGL state trackers.
+
+**The Rust inflection**: NAK (for NVK) and the Nova kernel driver (Ch10a) are the first production Rust-language GPU software components in the Linux kernel and Mesa. If they succeed — particularly if NAK outperforms LLVM on NVIDIA ISA quality — it will accelerate the question of whether ACO (AMD, C++) and the BRW backend (Intel, C++) should eventually be rewritten in Rust. The answer is not imminent, but the trajectory is set: Rust is entering the GPU driver stack from the NVIDIA side.
+
+---
+
 ## Part Roadmap Summary
 
 *Synthesised from the Roadmap sections of this part's chapters.*
