@@ -466,6 +466,45 @@ Hardware decode (Linux): Intel Tiger Lake / Gen12+ via iHD driver; AMD RDNA3 (RX
 
 Media Source Extensions feeds segments to the browser's internal decoder, but frames are never exposed to JavaScript — they go directly from the internal decoder to the compositor. WebRTC's `RTCPeerConnection` similarly hides the codec layer, exposing only rendered frames via `<video>` elements. Neither gives frame-level access or allows the application to choose per-frame processing.
 
+#### Do MSE Level 2 and RTCRtpScriptTransform Make WebCodecs Redundant?
+
+A natural question arises: MSE Level 2 added `appendEncodedChunks()` (accepting `EncodedVideoChunk` directly), and `RTCRtpScriptTransform` exposes the encoded bitstream inside a WebRTC pipeline. Don't those two additions close the gap?
+
+They open cracks in the opaque pipelines, but WebCodecs is the toolbox that operates on what flows through those cracks. The gaps they leave are specific:
+
+**`appendEncodedChunks()` does not provide:**
+- Decoded frame access — frames still flow from the internal decoder directly to the compositor, never surfacing as JavaScript objects
+- Any encoding capability — MSE has no encoder concept
+- Freedom from the media timeline — MSE is still governed by a presentation clock; there is no way to decode at an arbitrary application-driven rate
+
+**`RTCRtpScriptTransform` does not provide:**
+- Decoded pixel data — `RTCEncodedVideoFrame.data` is the compressed bitstream (NAL units, VP9 superframes, AV1 OBUs), not decoded samples
+- Rerouting of decoded output — frames still go through WebRTC's internal decoder into a `<video>` element; they cannot be redirected to `importExternalTexture()` or a Canvas without WebCodecs in the chain
+- An encoder with explicit control — the WebRTC encoder is opaque; you cannot force keyframes on demand or switch bitrate modes programmatically
+
+**What WebCodecs uniquely provides:**
+1. **Decoded `VideoFrame` as a first-class JS object** — CPU access via `copyTo()`, GPU access via `importExternalTexture()`, `drawImage()`, or `texImage2D()`
+2. **No playback clock** — decode on demand, out of order, at application-driven rate (game streaming scrubbing, frame-by-frame ML inference, custom A/V sync)
+3. **Any encoded source** — file bytes, WASM-generated bitstreams, network blobs, `RTCEncodedVideoFrame.data` — not limited to HTTP segments or RTP packets
+4. **Explicit encoder** — configurable bitrate, latency mode, keyframe forcing, codec-specific options; MSE has no equivalent
+5. **Cross-source compositing** — simultaneously decode a file stream and a WebRTC stream, composite both into one WebGPU scene; neither MSE nor WebRTC alone can express this
+
+In practice, the three APIs form a **pipeline, not alternatives**:
+
+```
+Camera → RTCPeerConnection → RTCRtpScriptTransform
+         (encoded frames extracted)
+              ↓ RTCEncodedVideoFrame.data
+         VideoDecoder (WebCodecs)
+              ↓ VideoFrame
+         importExternalTexture() → WebGPU compositor
+              ↓ WebGPU rendered output
+         VideoEncoder (WebCodecs) → appendEncodedChunks()
+                                    → MSE Level 2 → <video> timed playback
+```
+
+`RTCRtpScriptTransform` is the *source tap*; `appendEncodedChunks()` is the *downstream sink*; WebCodecs is the *processing stage* between them. This pipeline underpins virtual backgrounds, real-time transcoding, and server-side rendering in browser-based production tools.
+
 WebCodecs is deliberately designed around four principles missing from those APIs:
 
 - **Frame-level access**: Each decoded `VideoFrame` is a JavaScript object wrapping a GPU surface or CPU buffer, accessible via `copyTo()` for CPU data or passable directly to WebGPU's `importExternalTexture()`.
