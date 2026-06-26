@@ -134,6 +134,7 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 86: Vulkan on Android: Drivers, ANGLE, and Mobile GPU Performance](#chapter-86-vulkan-on-android-drivers-angle-and-mobile-gpu-performance)
   - [Chapter 87: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform](#chapter-87-android-ar-arcore-architecture-camera-hal-integration-and-the-android-xr-platform)
   - [Chapter 161: Android Game Development Kit (AGDK): Native Game Architecture, Input, Audio, and Frame Pacing](#chapter-161-android-game-development-kit-agdk-native-game-architecture-input-audio-and-frame-pacing)
+  - [Chapter 164: Android Runtime and Native Interop: ART, JNI, and the NDK](#chapter-164-android-runtime-and-native-interop-art-jni-and-the-ndk)
 - **Part XX — AI/ML Inference on Linux**
   - [Chapter 48: ROCm and Machine Learning on Linux GPUs](#chapter-48-rocm-and-machine-learning-on-linux-gpus)
   - [Chapter 88: NPU and AI Accelerator Integration on Linux](#chapter-88-npu-and-ai-accelerator-integration-on-linux)
@@ -1530,6 +1531,37 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Memory Advice API: `MemoryAdvice_init/registerWatcher/getMemoryState`; `APPROACHING_LIMIT` / `CRITICAL` states; `getPercentageAvailableCapacity()`; `/proc/meminfo` + `ActivityManager.MemoryInfo` sampling model
 - Android GPU Inspector: frame capture (Vulkan API trace + GPU counter per draw call); system profiling (perfetto GPU counter tracks); supported GPU families (Adreno, Mali, PowerVR); Vulkan validation layer integration; `TRACE_EVENT` perfetto annotation from app code; CLI capture for CI
 - **Integrations**: Ch85 (SurfaceFlinger/BufferQueue as ANativeWindow consumer), Ch86 (Vulkan swapchain creation, @FastNative JNI boundary), Ch87 (ARCore / OpenXR loop analogous to android_main), Ch75 (Swappy fence backpressure on dma_fence/sync_file), Ch26 (AMediaCodec NDK video decode parallel to VA-API)
+
+### Chapter 164: Android Runtime and Native Interop: ART, JNI, and the NDK
+
+- ART vs HotSpot JVM: register-based DEX bytecode (register vs stack machine); `d8`/`r8` toolchain; DEX shared string/type/proto pool
+- dex2oat compilation tier ladder: `verify`, `quicken`, `speed-profile`, `speed`, `everything`; `.oat` ELF format; JIT compiler (`libart-compiler.so`) + JIT profile recording
+- Profile-Guided Compilation (PGC) and Cloud Profiles: JIT hot-method recording; `dexopt` background recompilation; Google Play aggregated profile delivery; Baseline Profiles API (`androidx.profileinstaller`)
+- Concurrent Copying (CC) GC and Baker read barriers: per-reference-load barrier; from/to-space flip; `kRunnable` safepoint model; `kNative` passive suspension; interaction with `@CriticalNative`
+- userfaultfd GC (Android 13+, A-GC): `mremap()` compaction; page-fault-driven copy; zero per-reference overhead in steady state; kernel 5.10+ requirement
+- Zygote fork model and `.art` boot images: pre-initialised heap serialisation; CoW page sharing across processes; OTA image regeneration via `dexopt`
+- nterp interpreter (Android 12+): opcode-indexed table dispatch; DEX-direct operation; JIT-compatible frame layout for on-stack replacement
+- Non-SDK interface restrictions (API 28+): `@hide`/`@UnsupportedAppUsage` greylist/blacklist; reflection blocking; JNI `GetMethodID` null-return; NDK symbol versioning
+- ART intrinsics: `java.lang.Math`, `String`, `System.arraycopy`, bit manipulation, VarHandle CAS; NEON SIMD codegen; comparison with HotSpot intrinsics
+- ART deoptimisation model: inline cache overflow; CHA invalidation; OSR exit; dex register map; comparison with HotSpot uncommon traps
+- ART vs HotSpot feature matrix (summary table across 12 dimensions)
+- The Android GPU call stack: Kotlin/Java → JNI boundary → ART → framework native C++ → vendor Vulkan ICD → kernel DRM → GPU hardware
+- `@FastNative` and `@CriticalNative`: `kAccFastNative = 0x00080000`; `kAccCriticalNative = 0x00200000`; ABI change (no `JNIEnv*`); static-only restriction; 2× / 3–5× speedup on AArch64
+- ART JNI trampoline internals: 8-step standard stub; HandleScope push/pop; `kRunnable → kNative` `StoreRelease` barrier; GC safepoint check; `@FastNative` omits HandleScope; `@CriticalNative` omits both barrier and HandleScope
+- GC interaction: `kNative` passive suspension vs `kRunnable` blocking; `SuspendAll()` and `@CriticalNative` deadlock risk; practical guidance (nanosecond-range methods only)
+- Java licensing: `dalvik.*` namespace outside Java SE IP; Oracle v. Google SCOTUS 2021 fair-use ruling; JNI as open specification
+- Why Project Panama FFM does not apply to Android (HotSpot-internal; ART lacks JVM TI, Graal stubs)
+- Is JNI still used? Framework boundary; zero-per-frame NDK-direct pattern; Rust Binder services; Flutter/Unity/Unreal shim model
+- NativeActivity and `android_native_app_glue`: background pthread; `android_app` struct; `ANativeActivityCallbacks` 16 fields; `AInputQueue` event loop; 3 limitations
+- GameActivity (AGDK): Kotlin subclass; double-buffered input arrays; `android_app_swap_input_buffers`; `GameTextInput`; Paddleboat integration
+- `ANativeWindow` in depth: producer end of `BufferQueue`; acquire/release refcount; `setBuffersGeometry`; `vkCreateAndroidSurfaceKHR`; `eglCreateWindowSurface`; CPU `lock/unlockAndPost`
+- Swappy frame pacing (cross-reference with Ch161): `VK_GOOGLE_display_timing`; `SwappyVk` 5-step sequence; Choreographer calibration; pipeline/auto modes
+- Vulkan swapchain lifecycle ordering: `APP_CMD_INIT_WINDOW` vs `APP_CMD_RESUME`; authoritative `android_app::window` signal
+- Managed GPU access: `android.graphics.vulkan` wrappers (Android 14+); ANGLE as default GLES (Android 17+); LiteRT Vulkan delegate
+- NDK trajectory: C/C++ fully supported; Rust as co-equal; `ndk`/`ndk-sys` Rust crates; `ash` for Vulkan; `cargo-ndk`; `android-activity` entry point; APEX ABI stability
+- What will not replace the NDK: Project Panama FFM, WASM/WebGPU, Kotlin/Native (targets ART on Android), Flutter Dart FFI
+- NDK evolution table (near/medium/long term)
+- **Integrations**: Ch85 (SurfaceFlinger/ANativeWindow consumer side), Ch86 (Vulkan-only chapter now; runtime context here), Ch87 (Quest platform runs on Android 14 ART), Ch161 (AGDK components in depth), Ch4 (GPU memory topology), Ch34 (ANGLE below JNI boundary), Ch26 (Binder for Zygote ServiceManager; non-SDK enforcement)
 
 ### Chapter 166: Android AR: ARCore Architecture, Camera HAL Integration, and Android XR (expanded)
 
