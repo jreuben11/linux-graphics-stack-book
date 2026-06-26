@@ -361,6 +361,8 @@ The `webgpu` Cargo feature enables the `web-sys` WebGPU bindings. Without it, wg
 
 ### 4.4 Surface and Window Integration
 
+**`winit`** is the standard Rust crate for cross-platform window creation and event loop management. It handles the OS-specific plumbing of opening a window and receiving input events without doing any rendering itself. On Linux it creates a `wl_surface` via the Wayland backend (selected when `WAYLAND_DISPLAY` is set) or an `xcb`/`xlib` window on X11, choosing at runtime based on environment variables. On WASM it creates an `HtmlCanvasElement` and integrates with the browser's `requestAnimationFrame` loop. In all cases `winit` exposes a `RawWindowHandle` and `RawDisplayHandle` (via the `raw-window-handle` crate) — opaque OS handles that GPU APIs use to create a rendering surface. `winit` carries no renderer; it is paired with wgpu, `ash` (raw Vulkan), `glutin` (OpenGL), or Skia for drawing. Bevy, egui (`eframe`), Iced, and most Rust GPU projects use it as their windowing layer.
+
 On native Linux, wgpu surfaces are created from a `RawWindowHandle` (provided by `winit`). On WASM, winit's `EventLoop` target creates a `SurfaceTarget` from an `HtmlCanvasElement`. The same application loop drives both paths:
 
 ```rust
