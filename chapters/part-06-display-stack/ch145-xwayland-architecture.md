@@ -36,6 +36,8 @@ This chapter targets **systems and driver developers** who need to understand ho
 - [XWayland vs. Rootful Xwayland](#xwayland-vs-rootful-xwayland)
 - [Debugging XWayland](#debugging-xwayland)
 - [xwayland-satellite: Decoupling XWayland from the Compositor](#xwayland-satellite-decoupling-xwayland-from-the-compositor)
+- [Strategic Outlook: Will XWayland Ever Be Retired?](#strategic-outlook-will-xwayland-ever-be-retired)
+- [Roadmap](#roadmap)
 - [Integrations](#integrations)
 
 ---
@@ -636,6 +638,29 @@ Requirements: XWayland ≥ 23.1, host compositor with `xdg_wm_base` v5. [Source:
 This architecture enables tiling compositors like niri and early versions of Hyprland to support XWayland without implementing the full X11 window manager protocol themselves. The compositor sees only regular Wayland `xdg_toplevel` surfaces — it does not need `xwayland-shell-v1` or any XWayland-specific protocol knowledge.
 
 The trade-off is reduced integration: compositor-specific XWayland features (KWin's `_XWAYLAND_ALLOW_COMMITS` resize sync, GNOME Shell's fractional scale integration) are not available through xwayland-satellite. It is a compatibility layer, not a full-fidelity replacement for embedded XWayland support.
+
+---
+
+## Strategic Outlook: Will XWayland Ever Be Retired?
+
+The framing question — "when will XWayland be retired?" — contains a definitional ambiguity that shapes the entire answer. Two distinct retirements are often conflated: retirement of the **X.org server** (the compositor-as-Xserver model where a display server forks `/usr/bin/X`), and retirement of **XWayland** (the Wayland-client X11 bridge). The first is already underway; the second is not scheduled and is unlikely on any foreseeable horizon.
+
+GNOME's long-term goal is to ship without the standalone X.org server — meaning GNOME Shell will no longer launch an Xorg session at all. Fedora 40 removed Xorg from the default GNOME session in 2024, and Red Hat has committed to dropping the standalone Xorg server from RHEL 10 entirely. [Source: Red Hat RHEL 10 plans for Wayland and Xorg server](https://www.redhat.com/en/blog/rhel-10-plans-wayland-and-xorg-server) KDE Plasma has similarly committed to becoming Wayland-native, with the KWin team explicitly positioning Wayland as the only forward path. [Source: KDE Blogs — Going all-in on a Wayland future](https://blogs.kde.org/2025/11/26/going-all-in-on-a-wayland-future/) Neither of these commitments touches XWayland, which will continue to ship as the X11 compatibility bridge in both desktop environments indefinitely.
+
+**The practical sunset blockers.** Four application categories currently make XWayland load-bearing infrastructure with no near-term replacement path:
+
+- *Anti-cheat and kernel-level game security.* EAC and BattleEye anti-cheat systems rely on `ptrace`, `/proc/[pid]/mem` introspection, and kernel modules that are X11-session-aware; several titles explicitly whitelist Linux only when an X11 display is present. Without platform-level certification that Wayland is equally auditable, anti-cheat vendors will not drop the X11 requirement. Native Wayland support in this category requires engine-level changes, not just toolkit ports.
+- *Accessibility tooling.* AT-SPI2 (the Linux accessibility bus) bridges Wayland via a compositor-side accessibility socket, but screen readers (Orca), screen magnifiers, and switch-access tools have deep dependencies on X11 `XAccessibility`, `XTest`, and `XRecord` extensions for programmatic input synthesis and on-screen DOM traversal. The `atspi-wayland` protocol work is ongoing but not yet feature-complete for full assistive-technology workflows. (See Ch175 — AT-SPI2 and Compositor Accessibility.)
+- *Screen sharing and remote desktop.* Pipewire-based screen capture via `xdg-desktop-portal` is now standard for native Wayland apps, but many professional conferencing and recording tools (OBS, corporate virtual meeting software) still emit or consume `DISPLAY`-based capture paths. The transition requires both application changes and Wayland portal API stabilisation for capture-source selection.
+- *Input method editors for CJK text.* XIM (X Input Method) is still in active use by legacy CJK applications. The XIM-to-`zwp_text_input_v3` bridge in XWayland has known ordering bugs under rapid composition events. Until applications migrate to Fcitx5's or IBus's native Wayland input interfaces, XWayland remains the only reliable input path.
+
+**The xwayland-satellite path.** Rather than leading to XWayland's removal, the `xwayland-satellite` project points toward a different trajectory: making XWayland lower-maintenance and lighter-weight indefinitely. [Source: xwayland-satellite GitHub](https://github.com/Supreeeme/xwayland-satellite) By decoupling the X11 window manager from the compositor process, xwayland-satellite reduces the implementation burden on compositor authors to zero — they never need to handle `xcb_connection_t`, X11 atoms, or `_NET_WM_*` properties. If this model becomes standard, XWayland evolves from a demanding compositor integration obligation into a background daemon, sustained by a small focused team, needed only when an X11 application is actually running. This is a sustainable steady state, not a path to removal.
+
+**The protocol gap XWayland cannot bridge.** Regardless of maintenance trajectory, certain capabilities introduced by modern Wayland protocols are structurally inexpressible to X11 applications. The `wp_tearing_control_v1` protocol allows a Wayland application to opt into tearing for low-latency rendering — an X11 application cannot discover or signal this intent through any X11 extension. The `linux-drm-syncobj-v1` explicit sync timeline, while implemented in XWayland 24.1, exposes timeline fence semantics that have no X11 protocol equivalent; XWayland approximates synchronisation rather than exposing it. HDR surface metadata from `xx-color-management-v1` can be received by XWayland's root window ICC bridge, but X11 applications cannot consume per-frame HDR tone-mapping hints. `wp_fractional_scale_v1` can be read by XWayland to set a synthetic RandR DPI, but the X11 application must then honour the DPI itself — fractional rendering quality remains compositor-native-only. These gaps will widen as the Wayland protocol ecosystem develops: each new capability must be bridged imperfectly or not at all.
+
+**Realistic timeline.** On a 5–10 year horizon, XWayland is best understood as **permanent infrastructure**, not a transitional technology with a scheduled sunset. Major distributions will complete the X.org server removal over 2–4 years, leaving XWayland as the sole maintained X11 implementation. The application long tail — the set of X11 applications that will never receive a native Wayland port — will shrink but will not reach zero: there are proprietary ISV applications, industrial control software, and niche scientific tools for which the developer is either unable or unwilling to port. For this population, XWayland is the final maintenance environment.
+
+What "X11 retirement" actually means in practice is therefore narrow and already in progress: compositor developers stop forking an X.org server process; display managers stop offering "GNOME on Xorg" sessions; distributions stop shipping `xf86-video-*` DDX drivers. XWayland itself remains, evolves, and carries forward the X11 application ecosystem for as long as those applications exist. The question is not whether XWayland will be retired — it will not — but whether it will be maintained actively or enter a slower-moving legacy phase. The RHEL 10 commitment and xwayland-satellite's architecture both suggest it will remain a well-maintained component for the foreseeable future.
 
 ---
 

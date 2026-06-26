@@ -46,8 +46,9 @@
     - 10.1 [Migration Workflow](#101-migration-workflow)
     - 10.2 [CUDA-to-SYCL Programming Model Mapping](#102-cuda-to-sycl-programming-model-mapping)
     - 10.3 [Productivity Cost vs. Portability Gain](#103-productivity-cost-vs-portability-gain)
-11. [Integrations](#11-integrations)
-12. [References](#12-references)
+11. [Strategic Outlook: SYCL's Position in the GPU Compute Landscape](#11-strategic-outlook-sycls-position-in-the-gpu-compute-landscape)
+12. [Integrations](#12-integrations)
+13. [References](#13-references)
 
 ---
 
@@ -1258,7 +1259,23 @@ For greenfield projects on Linux targeting multiple GPU vendors, SYCL 2020 via D
 
 ---
 
-## 11. Integrations
+## 11. Strategic Outlook: SYCL's Position in the GPU Compute Landscape
+
+The GPU compute API landscape in 2026 is structurally dominated by CUDA: NVIDIA holds roughly 80–85% of the data-centre accelerator market, PyTorch and TensorFlow are CUDA-first, and the most-optimised libraries — cuBLAS, cuDNN, NCCL, cuSPARSE — have no specification-level equivalents outside NVIDIA's ecosystem. SYCL was standardised by Khronos to address this concentration, but understanding what it actually delivers requires separating the specification's portability promise from the deployment reality.
+
+**The problem SYCL is solving.** CUDA lock-in is structural: CUDA kernels compile only with `nvcc` or `clang --cuda-gpu-arch`, and CUDA libraries are tied to the NVIDIA driver ABI. AMD's ROCm/HIP partially addresses this by offering a syntactically compatible API (`hipify` handles mechanical translation), but HIP is not vendor-neutral — it runs on AMD GPUs natively and NVIDIA GPUs through a compatibility shim, with no Intel or Arm path. SYCL's pitch is genuine vendor neutrality: a single C++17 source tree that DPC++ or AdaptiveCpp can compile to SPIR-V for Intel Level Zero, PTX for NVIDIA, AMDGCN for AMD, and native LLVM JIT for CPU, without forking the source. For organisations running heterogeneous fleets — a scenario common in European HPC — this is a real engineering benefit.
+
+**HPC adoption vs. ML near-zero.** SYCL has achieved measurable adoption in HPC, primarily in Intel-sponsored deployments. The Aurora supercomputer at Argonne National Laboratory (DOE) uses Intel Xe HPCs programmed via DPC++ as its primary compute language. EuroHPC initiatives — particularly the MareNostrum 5 Intel partition and JUPITER at Forschungszentrum Jülich — deploy SYCL workloads in climate modelling, particle physics (CERN's ACTS tracking framework has a SYCL backend), and computational chemistry codes such as GROMACS. Outside Intel-adjacent HPC, adoption falls sharply. In machine learning, SYCL is essentially absent from production: PyTorch's Intel XPU backend targets Intel GPU via PyTorch native C++ extensions rather than SYCL, TensorFlow's Intel plugin uses oneDNN directly, and JAX has no SYCL backend. The SYCL backends that exist for ML frameworks are research prototypes, not production-quality paths.
+
+**Intel's strategic interest.** oneAPI/DPC++/SYCL is first and foremost Intel's answer to the question "how do you programme Intel Xe GPU compute?" Intel Xe GPUs did not inherit a legacy of CUDA-compatible tooling; the path to making them programmable for HPC required a high-level, portable abstraction that Intel could champion through a standards body (Khronos) rather than impose unilaterally. From this angle, SYCL is a vehicle for Intel GPU adoption in HPC markets — a reasonable strategy given Intel's position — but it implies that Intel's investment in SYCL implementations on non-Intel hardware is secondary, maintained primarily to demonstrate the portability story and to enable CUDA migration workflows that land workloads on Intel hardware.
+
+**The fragmentation risk.** SYCL's portability claim is weakened by implementation divergence. Intel DPC++ (`icpx` / `intel/llvm`) is the most complete implementation but is Intel-primary in testing. AdaptiveCpp (formerly hipSYCL) independently implements the spec and uses a different compilation model (SSCP vs. DPC++'s SMCP), with different extension namespaces, different JIT caching semantics, and slightly different conformance coverage on edge cases. Codeplay's ComputeCpp (now maintenance-only, superseded by DPC++ CUDA/HIP adapters) and the research-grade triSYCL further fragment the ecosystem. Differences in `sycl_ext_oneapi_*` extension support across implementations mean that code using experimental features must be conditionally compiled per implementation, partially defeating the portability goal. The SYCL conformance test suite (CTS) exists and is mandatory for Khronos conformance claims, but implementation-specific behaviour in areas such as sub-group sizes and USM shared allocation coherence guarantees is observable in production code.
+
+**Realistic outlook.** SYCL will remain a niche compute API in the Linux ecosystem through the near and medium term. It occupies a defensible position in two contexts: Intel Xe HPC workloads, where it is the primary programming model with genuine upstream support from IGC, Level Zero, and oneAPI libraries; and CUDA migration tooling, where SYCLomatic/`dpct` provides a credible automated path for organisations evaluating non-NVIDIA infrastructure. It is not a challenger to CUDA dominance in ML, and it is not a replacement for Vulkan compute shaders in graphics-adjacent workloads where the tooling, pipeline integration, and driver maturity strongly favour staying in the Vulkan command buffer model. The strategic value of SYCL is real but bounded: it matters most where Intel-sponsored HPC deployments make it the default, and it provides migration optionality for codebases that need to escape CUDA lock-in — provided they are willing to absorb the library ecosystem gap and accept that performance parity on non-Intel hardware requires ongoing implementation work.
+
+---
+
+## 12. Integrations
 
 **Chapter 25 — Vulkan and Level Zero compute**: SYCL on Intel GPUs routes through Level Zero; the Unified Runtime's `libur_adapter_level_zero.so` wraps the same `ze*` calls described in Chapter 25. DMA-BUF external memory interop (Section 9.1) uses the same kernel buffer-sharing mechanism as CUDA–Vulkan interop in Chapter 25.
 
@@ -1278,7 +1295,7 @@ For greenfield projects on Linux targeting multiple GPU vendors, SYCL 2020 via D
 
 ---
 
-## 12. References
+## 13. References
 
 1. [Khronos SYCL 2020 Specification Revision 11](https://registry.khronos.org/SYCL/specs/sycl-2020/html/sycl-2020.html)
 2. [Khronos SYCL 2020 PDF](https://registry.khronos.org/SYCL/specs/sycl-2020/pdf/sycl-2020.pdf)

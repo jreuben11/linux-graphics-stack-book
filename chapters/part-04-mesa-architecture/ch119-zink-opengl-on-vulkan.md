@@ -642,6 +642,18 @@ Starting with Mesa 25.1, Zink unconditionally enables GL threading (`mesa_glthre
 
 ---
 
+## Strategic Outlook: Is Zink a Bridge or the Destination?
+
+The question divides along the hardware line. For drivers that would otherwise have no OpenGL at all — NVK, v3dv, Turnip, PanVK, PowerVR — Zink was always the bridge, and it became the destination the moment those projects chose not to write a native Gallium GL driver. That commitment is now irreversible: Mesa does not maintain two OpenGL implementations per driver, and no one is volunteering to write a native Nouveau GL from scratch.
+
+The NVK precedent is the clearest signal of architectural intent in Mesa's recent history. Faith Ekstrand's team at Collabora did not build Zink-on-NVK as a stopgap to be replaced when bandwidth allowed; they built NVK with the explicit assumption that Zink would carry the GL workload permanently. When Mesa 25.1 shipped and the loader began routing OpenGL calls on Turing+ hardware through Zink, it made that assumption a production reality for the largest installed base of discrete GPUs on Linux. [Source: GamingOnLinux — Mesa 25.1 Zink+NVK](https://www.gamingonlinux.com/2025/03/mesa-25-1-will-default-to-zink-nvk-instead-of-the-old-nouveau-opengl-driver-for-nvidia-on-linux/) If Zink is good enough for NVIDIA Turing at scale, the architecture requires no further justification for Adreno, Mali, Broadcom, or PowerVR.
+
+The harder question is radeonsi and iris. Both are actively maintained, heavily optimised, and not scheduled for replacement. Here the bridge-versus-destination framing is a trajectory argument rather than a committed plan: one well-maintained Vulkan driver plus Zink gives two APIs for the price of one future maintenance bill. Every extension that Zink learns to exploit — `VK_EXT_descriptor_buffer`, `VK_EXT_extended_dynamic_state3`, `VK_EXT_graphics_pipeline_library` — narrows the engineering surface that a native GL driver must cover. The Mesa maintainer consensus, as expressed in the long-term roadmap, is that these paths converge; the timeline is a matter of when the performance gap closes, not whether the direction is correct.
+
+That gap is real and must be stated plainly. The 5–15% overhead Zink carries on typical mixed workloads (Section 10) is negligible for legacy desktop applications, compatibility layers, and embedded SoCs. It is non-trivial for OpenGL 4.6 AAA games, SPECViewPerf CAD workloads, and scientific visualisation at full GPU throughput. For those cases, radeonsi and iris remain the better choice in 2026, and "destination" does not mean "immediately superior." It means the target that continued investment is converging on.
+
+The verdict is therefore: Zink is simultaneously a bridge and a destination, stratified by driver generation. For every Vulkan-only Mesa driver — the entire emerging generation of open-source GPU drivers — Zink is already the permanent, sole OpenGL implementation. For AMD and Intel, it is a long-run destination on a 3–5 year horizon, contingent on closing the remaining performance ceiling. The distinction matters for application developers tuning performance today; it does not change the architectural trajectory of the project.
+
 ## Roadmap
 
 ### Near-term (6–12 months)
