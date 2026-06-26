@@ -9,6 +9,10 @@
 ## Table of Contents
 
 1. [WebCodecs Overview: The Web Platform's First Low-Latency Codec API](#1-webcodecs-overview-the-web-platforms-first-low-latency-codec-api)
+   - [1.1 Background: Media Source Extensions (MSE)](#11-background-media-source-extensions-mse)
+   - [1.2 Background: DASH — Dynamic Adaptive Streaming over HTTP](#12-background-dash--dynamic-adaptive-streaming-over-http)
+   - [1.3 Background: WebRTC — Real-Time Peer-to-Peer Media](#13-background-webrtc--real-time-peer-to-peer-media)
+   - [1.4 Why WebCodecs Instead of MSE or WebRTC?](#14-why-webcodecs-instead-of-mse-or-webrtc)
 2. [VideoDecoder: Chunk Submission, Frame Delivery, and Lifecycle](#2-videodecoder-chunk-submission-frame-delivery-and-lifecycle)
 3. [VideoEncoder: Parameters, Latency Modes, and Key Frame Control](#3-videoencoder-parameters-latency-modes-and-key-frame-control)
 4. [The Hardware Acceleration Path on Linux](#4-the-hardware-acceleration-path-on-linux)
@@ -30,7 +34,130 @@ For most of the web's history, video decoding was an opaque operation controlled
 
 **WebCodecs** is the W3C specification that closes this gap. [Source](https://www.w3.org/TR/webcodecs/) It gives JavaScript direct, low-level access to the browser's codec machinery: not as a black-box playback pipeline but as individual primitives — decode an `EncodedVideoChunk`, receive a `VideoFrame`, inspect or transform its pixel data, render it wherever you need it. The API shipped in **Chrome 94** (September 2021) and was enabled on all desktop platforms in **Firefox 130** (September 2024). [Source](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API)
 
-### Why WebCodecs Instead of MSE or WebRTC?
+### 1.1 Background: Media Source Extensions (MSE)
+
+**Media Source Extensions (MSE)** is the W3C API that gave JavaScript its first programmatic control over the browser media pipeline — not frame-level control, but segment-level control. [Source](https://www.w3.org/TR/media-source-2/) Before MSE, the only way to play video in a browser was to point an `<video src="...">` at a file and let the browser download and decode it monolithically. MSE replaced that with a streaming contract where JavaScript owns the byte flow:
+
+```javascript
+const video = document.querySelector('video');
+const mediaSource = new MediaSource();
+video.src = URL.createObjectURL(mediaSource);
+
+mediaSource.addEventListener('sourceopen', async () => {
+  // MIME type includes codec string for decoder pre-configuration
+  const sourceBuffer = mediaSource.addSourceBuffer(
+    'video/mp4; codecs="avc1.64001f,mp4a.40.2"'
+  );
+
+  // Fetch and append the initialization segment (ftyp + moov boxes)
+  const init = await fetch('/stream/init.mp4').then(r => r.arrayBuffer());
+  sourceBuffer.appendBuffer(init);
+
+  sourceBuffer.addEventListener('updateend', async () => {
+    // Append successive media segments (moof + mdat boxes)
+    const seg = await fetch('/stream/segment-1.m4s').then(r => r.arrayBuffer());
+    sourceBuffer.appendBuffer(seg);
+  });
+});
+```
+
+The `SourceBuffer` accepts ISO BMFF (MP4) or WebM containers and forwards the enclosed encoded data to the browser's internal decoder. The critical constraint: **decoded frames never surface to JavaScript**. They flow from the internal decoder directly into the compositor. MSE is a _feeding pipe_, not a processing API. [Source](https://www.w3.org/TR/media-source-2/#sourcebuffer)
+
+MSE Level 2 (the current revision) added `appendEncodedChunks()`, which accepts `EncodedVideoChunk` and `EncodedAudioChunk` directly — the same objects that WebCodecs produces. This creates a compositing bridge: WebCodecs decodes, JavaScript transforms, `appendEncodedChunks()` re-feeds into the MSE pipeline for timed playback. The full round-trip avoids re-encapsulating in a container.
+
+---
+
+### 1.2 Background: DASH — Dynamic Adaptive Streaming over HTTP
+
+**DASH** (Dynamic Adaptive Streaming over HTTP, ISO/IEC 23009-1) is the adaptive bitrate (ABR) streaming standard built on top of MSE. [Source](https://www.iso.org/standard/83005.html) A DASH session begins with an **MPD** (Media Presentation Description), an XML manifest that describes available quality tiers:
+
+```xml
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" minBufferTime="PT2S" type="dynamic">
+  <Period>
+    <!-- Video: three quality representations -->
+    <AdaptationSet mimeType="video/mp4" codecs="avc1.640028" frameRate="30">
+      <Representation id="360p"  bandwidth="800000"  width="640"  height="360"
+                      initialization="video/360p/init.mp4"
+                      media="video/360p/seg-$Number$.m4s" startNumber="1"/>
+      <Representation id="720p"  bandwidth="2500000" width="1280" height="720"
+                      initialization="video/720p/init.mp4"
+                      media="video/720p/seg-$Number$.m4s" startNumber="1"/>
+      <Representation id="1080p" bandwidth="5000000" width="1920" height="1080"
+                      initialization="video/1080p/init.mp4"
+                      media="video/1080p/seg-$Number$.m4s" startNumber="1"/>
+    </AdaptationSet>
+    <!-- Audio -->
+    <AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2">
+      <Representation id="aac128" bandwidth="128000"
+                      initialization="audio/init.mp4"
+                      media="audio/seg-$Number$.m4s" startNumber="1"/>
+    </AdaptationSet>
+  </Period>
+</MPD>
+```
+
+The DASH player library (dash.js, Shaka Player, hls.js for HLS) implements the **ABR algorithm**: it monitors network throughput and buffer fullness, selects the highest representation that can be fetched without rebuffering, fetches the next segment via `fetch()`, and feeds it to MSE's `SourceBuffer`. Segment boundaries are typically 2–6 seconds, allowing quality switches at each boundary without decoding glitches.
+
+**CMAF** (Common Media Application Format, ISO/IEC 23000-19) standardised the container profile — chunked CMAF can produce sub-segment boundaries of 100–500 ms, dramatically reducing DASH live latency. Netflix, YouTube, and Disney+ all use CMAF-based DASH. [Source](https://www.iso.org/standard/71975.html)
+
+DASH itself has no JavaScript API — it is entirely implemented in userspace libraries that use `fetch()` + MSE. The browser sees only a stream of `appendBuffer()` calls; the segment selection logic runs in the page. This makes DASH highly extensible (custom ABR, custom DRM integration via Encrypted Media Extensions) but keeps frame access equally opaque.
+
+---
+
+### 1.3 Background: WebRTC — Real-Time Peer-to-Peer Media
+
+**WebRTC** (Web Real-Time Communication) is the IETF/W3C suite for browser-to-browser audio and video communication without a server in the media path. [Source](https://www.w3.org/TR/webrtc/) The core API is `RTCPeerConnection`, which manages connection negotiation, codec selection, and media transport:
+
+```javascript
+// Offer/answer SDP exchange (signalling channel is application-defined)
+const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.example.com' }] });
+
+// Add local camera track
+const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+// Create SDP offer
+const offer = await pc.createOffer();
+await pc.setLocalDescription(offer);
+// ... send offer via signalling, receive answer ...
+await pc.setRemoteDescription(new RTCSessionDescription(answer));
+
+// ICE candidate exchange
+pc.onicecandidate = e => { if (e.candidate) signalling.send(e.candidate); };
+
+// Receive remote media
+pc.ontrack = e => {
+  const remoteVideo = document.querySelector('#remote-video');
+  remoteVideo.srcObject = e.streams[0];
+};
+```
+
+The transport layer uses **SRTP** (Secure Real-time Transport Protocol) over UDP, with **DTLS** for key exchange and **ICE** (Interactive Connectivity Establishment) for NAT traversal via STUN/TURN servers. Codec negotiation happens in the **SDP** (Session Description Protocol) offer/answer: the browser proposes VP8/VP9/H.264/AV1 depending on hardware availability, and the remote peer selects from the intersection.
+
+Like MSE, the baseline WebRTC API exposes no access to encoded frames or decoded pixels — the video track goes from the RTP receiver directly into the compositor. The `<video>` element shows the received stream, but JavaScript cannot inspect NAL units, apply GPU transforms, or reroute frames to a canvas.
+
+**Insertable Streams / Encoded Transform** (now standardised as `RTCRtpScriptTransform`) is the WebRTC extension that opens the codec layer — and is where WebRTC and WebCodecs intersect. Covered in §9 of this chapter.
+
+```javascript
+// Encoded Transform: intercept encoded video frames on the receive path
+const receiver = pc.getReceivers().find(r => r.track.kind === 'video');
+const { readable, writable } = new TransformStream({
+  transform(encodedFrame, controller) {
+    // encodedFrame is an RTCEncodedVideoFrame — same structure as EncodedVideoChunk
+    // Inspect H.264 NAL units, apply E2E encryption, watermark, etc.
+    const view = new DataView(encodedFrame.data);
+    console.log('NAL unit type:', view.getUint8(4) & 0x1f);
+    controller.enqueue(encodedFrame);  // pass through unchanged
+  }
+});
+receiver.transform = new RTCRtpScriptTransform(worker, { readable, writable });
+```
+
+`RTCEncodedVideoFrame` carries the same `type` (`key` / `delta`), `timestamp`, and raw `data` as `EncodedVideoChunk`. Chrome 94 shipped both APIs simultaneously, making them a matched pair: WebRTC captures the camera, Encoded Transform extracts frames, WebCodecs re-decodes them in a worker for GPU processing, and a `VideoFrame` goes to `importExternalTexture()` for WebGPU compositing. This pipeline underpins advanced video conferencing features like virtual backgrounds and real-time noise gating. [Source](https://www.w3.org/TR/webrtc-encoded-transform/)
+
+---
+
+### 1.4 Why WebCodecs Instead of MSE or WebRTC?
 
 Media Source Extensions feeds segments to the browser's internal decoder, but frames are never exposed to JavaScript — they go directly from the internal decoder to the compositor. WebRTC's `RTCPeerConnection` similarly hides the codec layer, exposing only rendered frames via `<video>` elements. Neither gives frame-level access or allows the application to choose per-frame processing.
 
