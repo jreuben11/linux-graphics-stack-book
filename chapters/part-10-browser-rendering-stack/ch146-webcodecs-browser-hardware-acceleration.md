@@ -15,7 +15,8 @@
    - [1.4 Background: WebM Container Format](#14-background-webm-container-format)
    - [1.5 Background: ISO BMFF and Fragmented MP4](#15-background-iso-bmff-and-fragmented-mp4)
    - [1.6 Background: HLS — HTTP Live Streaming](#16-background-hls--http-live-streaming)
-   - [1.7 Why WebCodecs Instead of MSE or WebRTC?](#17-why-webcodecs-instead-of-mse-or-webrtc)
+   - [1.7 Background: Video and Audio Codecs](#17-background-video-and-audio-codecs)
+   - [1.8 Why WebCodecs Instead of MSE or WebRTC?](#18-why-webcodecs-instead-of-mse-or-webrtc)
 2. [VideoDecoder: Chunk Submission, Frame Delivery, and Lifecycle](#2-videodecoder-chunk-submission-frame-delivery-and-lifecycle)
 3. [VideoEncoder: Parameters, Latency Modes, and Key Frame Control](#3-videoencoder-parameters-latency-modes-and-key-frame-control)
 4. [The Hardware Acceleration Path on Linux](#4-the-hardware-acceleration-path-on-linux)
@@ -349,7 +350,119 @@ LL-HLS reaches 1–2 seconds end-to-end latency versus 15–30 seconds for stand
 
 ---
 
-### 1.7 Why WebCodecs Instead of MSE or WebRTC?
+### 1.7 Background: Video and Audio Codecs
+
+WebCodecs operates on raw encoded bitstreams rather than containers, so the codec — not the wrapper — determines the `VideoDecoderConfig.codec` string, the `description` field layout, and what hardware acceleration paths are available on Linux. This section explains every codec referenced in this chapter.
+
+---
+
+#### Video Codecs
+
+**H.264 / AVC** (ISO/IEC 14496-10, ITU-T H.264; 2003) is the most widely deployed video codec in history, carried in virtually every MP4, HLS, and DASH stream. [Source](https://www.itu.int/rec/T-REC-H.264/en) Its bitstream is structured as **NAL units** (Network Abstraction Layer): SPS (Sequence Parameter Set, global configuration), PPS (Picture Parameter Set, per-slice settings), IDR slices (intra/keyframe), and non-IDR slices (inter/delta frames).
+
+Two bitstream framing formats exist:
+- **Annex B** — NAL units prefixed with a start code `0x00 0x00 0x00 0x01`; used in MPEG-TS and raw H.264 files
+- **AVCC** (AVC Configuration) — length-prefixed NAL units; the `avcC` box in ISO BMFF stores the SPS+PPS, and each sample carries 4-byte length-prefixed slices
+
+`VideoDecoderConfig` for AVCC streams must set `description` to the binary `avcC` record. For Annex B streams, `description` may be omitted. The `format` field in `VideoEncoderConfig.avc` selects output framing: `'annexb'` or `'avc'`.
+
+Profiles encode the feature set: Baseline (no B-frames, no interlaced) → Main → High. The codec string `avc1.PPCCLL` encodes profile (`PP`), constraint flags (`CC`), and level (`LL`) as hex bytes — e.g., `avc1.4d0034` = Main Profile (0x4d), no constraints (0x00), Level 5.2 (0x34).
+
+H.264's patent portfolio (Via LA LLC) is scheduled to expire around 2028 for most jurisdictions, making it royalty-free in practice for new deployments. Hardware decode support is universal: Intel Gen7+, AMD GCN1+, NVIDIA Fermi+, and every ARM SoC with a video engine supports H.264 VLD acceleration.
+
+---
+
+**VP8** (Google / On2 Technologies; 2010; IETF RFC 6386) was released alongside WebM and WebRTC as a royalty-free H.264 alternative. [Source](https://www.rfc-editor.org/rfc/rfc6386) It uses a partition-based bitstream (no NAL units), DCT-based transform with 4×4 and 8×8 prediction, and a binary arithmetic (range) coder. VP8 was the original mandatory video codec in WebRTC, specified in RFC 7742.
+
+VP8 is now largely superseded by VP9 for new deployments. Its hardware decode support is present on some Intel (Gen6 Ivy Bridge+) and ARM SoCs but absent on AMD discrete GPUs. No mainstream Linux GPU supports VP8 hardware **encode**. In WebCodecs, `VideoDecoder` supports VP8 (`codec: 'vp8'`) on all platforms in software; hardware decode is opportunistic.
+
+---
+
+**VP9** (Google; 2013) is the successor to VP8, offering roughly double the compression efficiency at the same quality level. [Source](https://www.webmproject.org/vp9/) YouTube adopted VP9 as its primary streaming codec in 2014 and only began transitioning to AV1 after 2020. VP9 introduced 64×64 superblock coding units (versus VP8's 16×16 macroblock maximum), improved intra prediction, and a more sophisticated entropy coder.
+
+VP9 defines four profiles by bit depth and chroma subsampling:
+- **Profile 0**: 8-bit, 4:2:0 (most common; `vp09.00.LL.08`)
+- **Profile 1**: 8-bit, 4:2:2 or 4:4:4
+- **Profile 2**: 10 or 12-bit, 4:2:0 (HDR)
+- **Profile 3**: 10 or 12-bit, 4:2:2 or 4:4:4
+
+The codec string is `vp09.PP.LL.BB.CC` — profile, level (×10), bit depth, chroma subsampling. Hardware decode is available on Intel Gen9 (Skylake+), AMD RDNA1+, NVIDIA Pascal+, and Rockchip/MediaTek ARM SoCs. Hardware encode via VA-API is rare; software encode (libvpx-vp9) is standard.
+
+---
+
+**H.265 / HEVC** (ISO/IEC 23008-2, ITU-T H.265; 2013) achieves approximately 40% better compression than H.264 at the same perceptual quality by using larger coding tree units (up to 64×64 CTU vs H.264's 16×16 macroblock), improved intra prediction (35 directions vs 9), and sample-adaptive offset filtering. [Source](https://www.itu.int/rec/T-REC-H.265/en)
+
+HEVC's browser support is complicated by a fragmented patent pool (MPEG LA, Via LA, Access Advance / HEVC Advance). Safari and Edge support it natively; Chrome ships it as an optional hardware-decode path gated behind `chrome://flags/#enable-hevc-for-streaming`; Firefox has no HEVC support. On Linux, Chrome enables HEVC hardware decode via VA-API when the `hvcC` entrypoint is advertised (Intel Gen9+ for 8-bit Main Profile, Gen12+ for Main10 10-bit).
+
+The codec string is `hvc1.PP.CC.LX.FF` — profile, compatibility flags, level indicator, tier flag.
+
+---
+
+**AV1** (Alliance for Open Media; 2018) is the dominant royalty-free next-generation video codec, targeting 30% better efficiency than VP9 and 50% better than H.264. [Source](https://aomedia.org/av1-bitstream-and-decoding-process-specification/) Its design is radically different from the NAL-unit codecs: the bitstream is structured as **OBUs** (Open Bitstream Units) — Temporal Delimiter, Sequence Header, Frame Header, Tile Group, and Metadata OBUs. The Sequence Header OBU is what `VideoDecoderConfig.description` carries for AV1 in MP4 (via the `av1C` box).
+
+Key technical advances: superblock sizes up to 128×128 (vs VP9's 64×64), 56 intra prediction modes, compound inter prediction, constrained directional enhancement filter (CDEF), loop restoration filter, and a non-binary arithmetic entropy coder. AV1 defines three profiles — **Main** (4:2:0, 8/10-bit), **High** (4:4:4), **Professional** (12-bit).
+
+The codec string is `av01.P.LLT.BB[.MC.CP.TC.MX]` — profile (0–2), level (`LL`), tier (`M`ain/`H`igh), bit depth (08 or 10). Example: `av01.0.08M.10` = Main Profile, Level 4.0, Main Tier, 10-bit.
+
+Hardware decode (Linux): Intel Tiger Lake / Gen12+ via iHD driver; AMD RDNA3 (RX 7000 series); NVIDIA Ampere (RTX 3000+). Hardware encode: Intel DG2/Arc and Meteor Lake+ via VA-API; AMD hardware encode is present but has known bugs in Chrome's delegate (see §7.2). Software encode is via SVT-AV1 (fastest) or libaom (reference, slowest).
+
+---
+
+#### Audio Codecs
+
+**AAC** (Advanced Audio Coding; ISO/IEC 13818-7; 1997) is the default audio codec for MP4, DASH, and HLS. It superseded MP3 for most streaming applications. The most common profile is **AAC-LC** (Low Complexity), codec string `mp4a.40.2`. **HE-AAC** (High Efficiency, using Spectral Band Replication) is `mp4a.40.5` and targets lower bitrates (24–64 kbps). **HE-AACv2** adds Parametric Stereo (`mp4a.40.29`). `AudioDecoder` accepts AAC in ADTS framing (with sync word `0xFFF`) or in raw form with the codec-specific box data as `description`.
+
+**Opus** (Xiph/Google; IETF RFC 6716; 2012) is the mandatory audio codec for WebRTC and the preferred audio codec for WebM. [Source](https://www.rfc-editor.org/rfc/rfc6716) It is a hybrid codec combining the **SILK** vocoder (optimised for speech below 8 kHz) with the **CELT** wideband codec, switching dynamically. Frame sizes range from 2.5 ms to 60 ms; bitrates from 6 kbps to 510 kbps; sample rates up to 48 kHz. Opus is fully royalty-free. `AudioDecoder` uses codec string `opus` (no profile suffix); the initialization packet is carried in the `OpusHead` structure in the `dOps` box or WebM TrackEntry.
+
+**Vorbis** (Xiph.org; 2000) is the predecessor to Opus, royalty-free, and the original WebM audio codec. It is carried in the WebM `A_VORBIS` track codec ID. Vorbis is considered legacy for new deployments — Opus supersedes it — but remains in existing WebM files. `AudioDecoder` supports Vorbis with codec string `vorbis`; the three Vorbis header packets (identification, comment, setup) must be concatenated and passed as `description`.
+
+---
+
+#### Image Codecs (ImageDecoder)
+
+`ImageDecoder` (part of WebCodecs) handles still images with full metadata preservation:
+
+- **JPEG** — lossy, DCT-based, 8-bit; ubiquitous; `image/jpeg`
+- **PNG** — lossless, deflate-compressed, supports alpha; `image/png`
+- **WebP** — Google 2010; lossy mode uses VP8 intra coding (~25–35% smaller than JPEG); lossless uses a custom palette-based predictor; supports animation and alpha; `image/webp`
+- **AVIF** — AV1 intra frames packaged in HEIF (ISO 23008-12) container; best compression (~50% smaller than JPEG at same quality); supports HDR, wide colour gamut, 10/12-bit; `image/avif`; hardware decode follows AV1 hardware availability
+
+`ImageDecoder` exposes per-frame access for animated WebP and AVIF, and HDR metadata for AVIF/JPEG-XL (when supported). Unlike `VideoDecoder`, `ImageDecoder` handles container parsing itself — you pass the entire image blob, not individual frames.
+
+---
+
+#### Codec Comparison Table
+
+| Codec | Standard | Year | RF | Bitstream unit | Typical web use | HW decode (Linux) | HW encode (Linux) | Codec string |
+|-------|----------|------|----|----------------|-----------------|-------------------|-------------------|--------------|
+| H.264 / AVC | ISO 14496-10 | 2003 | Near† | NAL unit | DASH, HLS, WebRTC | Universal (Gen7+/GCN+) | Intel Gen7+, NVENC | `avc1.PPCCLL` |
+| VP8 | RFC 6386 | 2010 | Yes | Partition frame | WebRTC (legacy) | Intel Gen6, some ARM | None | `vp8` |
+| VP9 | AOM | 2013 | Yes | Superframe | YouTube, WebM | Intel Gen9+, RDNA1+, Pascal+ | Rare | `vp09.PP.LL.BB` |
+| H.265 / HEVC | ISO 23008-2 | 2013 | No | NAL unit | Streaming (Safari) | Intel Gen9+ (flag), AMD | VA-API (iHD) | `hvc1.PP.CC.LX` |
+| AV1 | AOM | 2018 | Yes | OBU | YouTube, Netflix, WebM | Intel Gen12+, RDNA3+, Ampere+ | Intel DG2+, AMD (buggy) | `av01.P.LLT.BB` |
+| AAC-LC | ISO 13818-7 | 1997 | No | ADTS frame | MP4, DASH, HLS | Software only | Software only | `mp4a.40.2` |
+| Opus | RFC 6716 | 2012 | Yes | Opus frame | WebRTC, WebM | Software only | Software only | `opus` |
+| Vorbis | Xiph | 2000 | Yes | Vorbis packet | WebM (legacy) | Software only | Software only | `vorbis` |
+| VP8 (audio: N/A) | | | | | | | | |
+| WebP (image) | Google | 2010 | Yes | VP8 intra / custom | Web images | Via AV1/VP8 path | N/A | `image/webp` |
+| AVIF (image) | AOM | 2019 | Yes | AV1 intra (HEIF) | Web images (HDR) | Intel Gen12+, RDNA3+ | N/A | `image/avif` |
+
+†H.264 patents expire ~2028 in most jurisdictions; royalty-free for most current deployments under Via LA LLC terms.
+
+**RF** = royalty-free. **HW decode/encode** refers to VA-API hardware paths available in Chrome on Linux as of mid-2026.
+
+| Codec | Profile/level notation | `description` field | Notes |
+|-------|----------------------|---------------------|-------|
+| H.264 | `avc1.4d0034` — profile `4d`=Main, level `34`=5.2 hex | Binary `avcC` record (SPS+PPS); omit for Annex B | `avc.format: 'annexb'|'avc'` encoder option |
+| VP9 | `vp09.00.40.08.00` — profile 0, level 4.0, 8-bit, 4:2:0 | None required | Profile 2 for 10-bit HDR |
+| H.265 | `hvc1.1.6.L150.B0` — Main, compat=6, level 5.0 | Binary `hvcC` record (VPS+SPS+PPS) | Chrome requires flag on Linux |
+| AV1 | `av01.0.08M.10` — Main, level 4.0, Main tier, 10-bit | Binary `av1C` record (Sequence Header OBU) | `av1C` = 4-byte config + raw OBU |
+| Opus | `opus` | Binary `OpusHead` identification header | 8-byte magic + channels + pre-skip + sample rate |
+| AAC-LC | `mp4a.40.2` | Binary AudioSpecificConfig (2–5 bytes) | Derived from `esds` box in MP4 |
+
+---
+
+### 1.8 Why WebCodecs Instead of MSE or WebRTC?
 
 Media Source Extensions feeds segments to the browser's internal decoder, but frames are never exposed to JavaScript — they go directly from the internal decoder to the compositor. WebRTC's `RTCPeerConnection` similarly hides the codec layer, exposing only rendered frames via `<video>` elements. Neither gives frame-level access or allows the application to choose per-frame processing.
 
