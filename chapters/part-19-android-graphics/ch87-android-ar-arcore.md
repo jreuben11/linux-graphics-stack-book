@@ -1094,6 +1094,119 @@ Eye-tracked foveated rendering (ETF) combines `XR_ANDROID_eye_tracking` gaze dat
 
 Snapdragon Spaces targets a different hardware tier than phone ARCore. ARCore runs on 1 billion+ phone SKUs with conservative sensor requirements; Snapdragon Spaces assumes dedicated XR sensor suites (ToF, IR cameras for hand tracking, eye tracking cameras) available only on validated Snapdragon XR headset designs.
 
+### Meta Quest 3 and Meta Horizon OS
+
+Meta Quest 3 is a standalone XR headset that runs **Meta Horizon OS** — an Android AOSP fork that Meta has customised heavily over more than a decade. It is the dominant standalone VR/MR platform as of 2025–2026, and its architecture sits in direct contrast to both phone-based ARCore and Google's Android XR platform.
+
+#### Where Quest 3 fits in the three-platform landscape
+
+| | ARCore (phone AR) | Android XR (headset) | Meta Quest 3 |
+|---|---|---|---|
+| OS | Stock Android + Play Services | Stock Android + Google services | Meta Horizon OS (Android AOSP fork) |
+| OpenXR runtime | ARCore's embedded loader | ARCore's OpenXR runtime | Meta's proprietary OpenXR runtime |
+| API for tracking/scene | `ArSession` C API | Jetpack XR (`androidx.xr`) | Meta OpenXR SDK (`XR_FB_*` extensions) |
+| Google controls OS? | Yes | Yes | **No** — Meta declined Android XR |
+| Example hardware | Pixel, Samsung phones | Samsung Galaxy XR / Project Moohan | Quest 2, Quest 3, Quest 3S, Quest Pro |
+
+> **Why Meta declined Android XR**: Google approached Meta about adopting Android XR as the operating system for Quest devices. Meta declined, preferring to maintain control of the full software stack including the compositor, social layer, and app store. The result is two parallel Android-derived headset platforms that share Snapdragon SoCs and OpenXR but diverge above the HAL layer. [Source: Android Central, Android XR vs Meta Horizon OS](https://www.androidcentral.com/gaming/virtual-reality/android-xr-vs-meta-horizon-os)
+
+#### Hardware architecture: Snapdragon XR2 Gen 2 + Adreno 740
+
+Quest 3 is powered by the Snapdragon XR2 Gen 2 SoC (4 nm), featuring:
+- **Adreno 740 GPU** — the same GPU family as high-end 2023 Android phones, but thermally constrained to ~4–6 W in the headset form factor
+- **Hexagon DSP** — handles room-scale tracking, hand tracking, and passthrough camera processing without touching the main GPU
+- **Dedicated compute for SpaceWarp** — Application SpaceWarp (ASW) interpolates frames using motion vectors, enabling effective 90 fps output from a 45 fps render loop
+- **Stereo colour passthrough cameras** — two forward-facing RGB cameras for mixed reality, processed at hardware level for low-latency compositing
+
+The Adreno 740 is a TBDR GPU — all the tile-based rendering considerations from Chapter 86 apply: avoid load/store operations that flush tile memory between render passes, use `VK_SUBPASS_INPUT_ATTACHMENT` or `VK_ATTACHMENT_LOAD_OP_DONT_CARE` where possible, and leverage `VK_EXT_fragment_density_map` for fixed foveated rendering. The tile memory budget is approximately 2 MB.
+
+#### Meta's OpenXR runtime and the XR_FB extension family
+
+Meta ships its own OpenXR 1.0 runtime as part of Horizon OS. Unlike ARCore's loader (which implements a relatively small set of Android XR extensions), Meta's runtime exposes **61 vendor-specific `XR_FB_*` extensions** — many of which have become de facto standards adopted by Pico, Snapdragon Spaces, and Android XR for cross-platform compatibility. Key extensions:
+
+| Extension | Function |
+|---|---|
+| `XR_FB_passthrough` | Colour camera passthrough as a compositor layer — app never accesses pixels |
+| `XR_FB_foveation` / `XR_FB_foveation_vulkan` | Fixed foveated rendering (FFR) via `VK_EXT_fragment_density_map` |
+| `XR_FB_space_warp` | Application SpaceWarp: submit motion vectors + depth, runtime generates in-between frames |
+| `XR_FB_display_refresh_rate` | Query and set 72/90/120 Hz display refresh |
+| `XR_FB_color_space` | Control display colour space (P3, Rec.2020, etc.) |
+| `XR_FB_spatial_entity` | Persistent spatial anchors stored in Horizon OS |
+| `XR_FB_scene` | Room mesh and labelled semantic objects from room-setup scan |
+| `XR_FB_hand_tracking_mesh` | High-fidelity hand mesh alongside `XR_EXT_hand_tracking` joint poses |
+| `XR_FB_swapchain_update_state` | Per-swapchain performance hints (sharpness, texture LOD) |
+
+[Source: Meta OpenXR SDK documentation](https://developers.meta.com/horizon/documentation/native/android/mobile-openxr/)
+
+#### Passthrough compositing: how XR_FB_passthrough works
+
+Quest 3's colour passthrough is not a camera texture the application samples — it is a **compositor-managed layer**. The OpenXR compositor blends passthrough camera feeds with the application's rendered eye buffers entirely in the system compositor, without exposing raw pixel data to the app. This serves both latency and privacy goals: the camera-to-display latency is minimised by bypassing the application render loop, and the app cannot capture or modify the passthrough image.
+
+```
+Quest 3 passthrough rendering path:
+
+ Passthrough cameras (RGB stereo)
+       │
+       ▼
+ Hexagon DSP (camera ISP, distortion correction, depth warp)
+       │
+       ▼
+ Meta system compositor (XrPassthroughLayerFB)
+       │  ← app submits virtual content layers separately ↓
+       ▼
+ Compositor blends passthrough + virtual layers
+       │
+       ▼
+ Pancake lenses → display panels (2064×2208 per eye, 90/120 Hz)
+```
+
+An application using `XR_FB_passthrough` creates an `XrPassthroughFB` handle, starts it, creates a `XrPassthroughLayerFB` (full-screen or projected onto geometry), and submits it as a composition layer in `xrEndFrame()` alongside the standard eye swapchain layer. The runtime compositor handles the blend order.
+
+#### OpenXR swapchain → Adreno 740 rendering path
+
+For the application-rendered (virtual content) layers:
+
+```
+xrWaitFrame() / xrBeginFrame()
+    │
+    ▼
+xrAcquireSwapchainImage() → VkImage (Adreno 740 memory, stereo texture array)
+    │
+    ▼
+Application renders to swapchain image
+(Vulkan render pass, TBDR-optimised, foveated via VK_EXT_fragment_density_map)
+    │
+    ▼
+xrReleaseSwapchainImage() → transfers ownership to runtime compositor
+    │
+    ▼
+Meta compositor blends virtual layers + XR_FB_passthrough layers
+    │
+    ▼
+Reprojection / ASW interpolation (SpaceWarp, if XR_FB_space_warp submitted)
+    │
+    ▼
+Display panels via custom compositor (not SurfaceFlinger for XR content)
+```
+
+Meta Horizon OS retains SurfaceFlinger for 2D Android application windows displayed as floating panels in the XR environment (`XR_FB_scene` panels, 2D app layer), but XR stereo swapchain compositing bypasses SurfaceFlinger entirely — it is handled by Meta's dedicated XR compositor process, analogous to how SteamVR's compositor works on Linux (§13 below).
+
+#### Quest 3 vs ARCore vs Android XR: graphics pipeline comparison
+
+| Pipeline stage | ARCore (phone) | Android XR (Moohan) | Meta Quest 3 |
+|---|---|---|---|
+| Camera input | Camera2 / Camera HAL3 | Camera HAL3 + ARCore sensors | Proprietary camera stack via Hexagon DSP |
+| Tracking | ARCore VIO (CPU+GPU, Play Services) | ARCore VIO (Play Services) | Meta's proprietary 6DoF tracking (Insight) |
+| OpenXR runtime | ARCore loader (since 1.33) | ARCore loader | Meta runtime (Horizon OS) |
+| Extension family | `XR_ANDROID_*`, `XR_EXT_*` | `XR_ANDROID_*`, `XR_EXT_*` | `XR_FB_*` (61 extensions) |
+| Compositor | SurfaceFlinger + ASurfaceControl | Android XR compositor | Meta XR compositor (not SurfaceFlinger) |
+| Passthrough | Camera2 frame → app texture | Platform compositor | `XR_FB_passthrough` (compositor-managed) |
+| GPU | Any Android GPU | Snapdragon 8 Elite, Adreno 830 | Snapdragon XR2 Gen 2, Adreno 740 |
+
+#### Linux relevance: ALVR, WiVRn, and streaming
+
+The primary Linux intersection with Quest 3 is the **ALVR / WiVRn** streaming path described in §13 below: the Linux host runs Monado as its OpenXR runtime and encodes the rendered framebuffer with VA-API; the Quest 3 headset runs the ALVR or WiVRn client, decodes the stream, and presents it using its own compositor and 6DoF tracking. From the application's perspective on the Linux host, it sees a standard Monado OpenXR runtime with `XR_ALVR_*` or `WiVRn` extensions — the Quest 3 is transparent hardware on the other end of a WiFi link.
+
 ---
 
 ## 13. Linux AR: Monado, SteamVR, and the Open Stack
