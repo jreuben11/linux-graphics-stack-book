@@ -18,6 +18,8 @@
 10. [ARCore Recording, Playback, and the Dataset API](#10-arcore-recording-playback-and-the-dataset-api)
 11. [Performance, Power, and Mobile GPU Considerations](#11-performance-power-and-mobile-gpu-considerations)
 12. [Snapdragon Spaces: Qualcomm's AR SDK](#12-snapdragon-spaces-qualcomms-ar-sdk)
+    - [Meta Quest 3 and Meta Horizon OS](#meta-quest-3-and-meta-horizon-os)
+    - [Meta Horizon OS Full Software Stack](#meta-horizon-os-full-software-stack)
 13. [Linux AR: Monado, SteamVR, and the Open Stack](#13-linux-ar-monado-steamvr-and-the-open-stack)
 14. [Integrations](#14-integrations)
 
@@ -1206,6 +1208,165 @@ Meta Horizon OS retains SurfaceFlinger for 2D Android application windows displa
 #### Linux relevance: ALVR, WiVRn, and streaming
 
 The primary Linux intersection with Quest 3 is the **ALVR / WiVRn** streaming path described in §13 below: the Linux host runs Monado as its OpenXR runtime and encodes the rendered framebuffer with VA-API; the Quest 3 headset runs the ALVR or WiVRn client, decodes the stream, and presents it using its own compositor and 6DoF tracking. From the application's perspective on the Linux host, it sees a standard Monado OpenXR runtime with `XR_ALVR_*` or `WiVRn` extensions — the Quest 3 is transparent hardware on the other end of a WiFi link.
+
+### Meta Horizon OS Full Software Stack
+
+Understanding how the Quest platform fits together requires looking at two levels simultaneously: the OS and runtime layers that underpin the hardware, and the high-level SDK tiers through which applications are actually developed. The diagram below shows the full vertical slice.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              Application / SDK Tier                                     │
+│  ┌──────────────┐  ┌─────────────────┐  ┌──────────────────────────┐   │
+│  │ Meta XR Core │  │ Meta Spatial SDK│  │ Meta XR Platform SDK     │   │
+│  │ SDK (Unity)  │  │ (Kotlin/native) │  │ (social/IAP/identity)    │   │
+│  └──────┬───────┘  └────────┬────────┘  └────────────┬─────────────┘   │
+│         │                   │                         │                 │
+│  ┌──────▼──────────────────▼─────────────────────────▼─────────────┐   │
+│  │          Meta OpenXR SDK (C++, XR_FB_* extensions)               │   │
+│  └────────────────────────────┬──────────────────────────────────────┘  │
+└───────────────────────────────│─────────────────────────────────────────┘
+                                │ OpenXR 1.0 calls
+┌───────────────────────────────▼─────────────────────────────────────────┐
+│              Meta OpenXR Runtime (openxr_loader.so in Horizon OS)       │
+│  • XR session lifecycle • Swapchain management • Layer compositing      │
+│  • TimeWarp / ATW reprojection • Application SpaceWarp (ASW)            │
+└────────────────────┬─────────────────────────┬───────────────────────────┘
+                     │ XrSwapchain images       │ Tracking data
+┌────────────────────▼──────────┐   ┌──────────▼───────────────────────────┐
+│  Adreno 740 GPU               │   │  Insight Tracking System              │
+│  Vulkan swapchain rendering   │   │  4×IR cameras + IMU (6DoF inside-out) │
+│  VK_EXT_fragment_density_map  │   │  Hexagon DSP: hand / room / passthrough│
+└────────────────────┬──────────┘   └──────────────────────────────────────┘
+                     │
+┌────────────────────▼──────────────────────────────────────────────────────┐
+│  Meta Horizon OS (Android 14 AOSP fork)                                   │
+│  • Meta's custom SurfaceFlinger (2D panels only)                          │
+│  • Custom HAL: camera, sensor, display, power                             │
+│  • Meta Horizon Store, social layer, Group Presence                       │
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
+#### API generation history
+
+The API surface developers write against has gone through three generations:
+
+| Generation | Name | Era | Status |
+|---|---|---|---|
+| 1 | **LibOVR** | 2013–2019 (Rift PC-tethered) | Legacy / PC only |
+| 2 | **VrApi** | 2016–2022 (mobile Quest 1/2) | **EOL August 2022** |
+| 3 | **OpenXR 1.0** with `XR_FB_*` | 2021–present | Current / mandatory |
+
+All new Quest development targets OpenXR 1.0. VrApi apps continue running on Quest via compatibility shim, but no new VrApi features are added. [Source: Meta developer blog — VrApi deprecation](https://developer.oculus.com/blog/transitioning-your-oculus-mobile-apps-to-openxr/)
+
+#### TimeWarp and Asynchronous TimeWarp (ATW)
+
+**TimeWarp** is Meta's cornerstone latency-reduction technique, predating OpenXR. At the moment the application submits a completed frame (`xrEndFrame()`), the Meta compositor records the current headset orientation. By the time the image reaches the display panels, a brief additional rotation has occurred. TimeWarp applies a lightweight 2D reprojection warp using the known rotation delta — effectively "rotating" the rendered image by the amount the head moved between render completion and display, without re-rendering the scene.
+
+**Asynchronous TimeWarp (ATW)** extends this: if the application misses its frame deadline entirely, the compositor's dedicated ATW thread reprojects the *previous* frame rather than displaying a stale image or dropping to black. The ATW thread runs at display refresh priority (90 or 120 Hz) and is entirely transparent to the application — it kicks in automatically whenever `xrEndFrame()` is late. The result is perceived motion-to-photon latency under 20 ms even when the application only runs at 45 fps.
+
+**Application SpaceWarp (ASW)** — `XR_FB_space_warp` — takes this further: the application intentionally renders at half the display refresh rate (45 fps for a 90 Hz display), submits motion vectors and a depth buffer alongside each frame, and the runtime's ASW engine synthesises the in-between frames. The synthesised frames are generated by the Snapdragon XR2 Gen 2's dedicated compute block, not the main GPU, so the GPU is freed for higher per-frame quality at the same power budget.
+
+#### Insight tracking: Meta's proprietary 6DoF inside-out system
+
+Quest 3's inside-out tracking runs entirely on the device — no external base stations, no external cameras. The **Insight** tracking system uses four wide-angle monochrome IR cameras positioned at the four corners of the headset's front surface. Each camera runs at 60 fps. The Hexagon DSP runs a SLAM (Simultaneous Localisation and Mapping) algorithm:
+
+1. Feature point extraction (ORB-style features) from IR frames.
+2. IMU preintegration at 1 kHz (gyroscope + accelerometer).
+3. Factor graph optimisation fusing visual features with IMU data.
+4. Controller tracking: the active IR LEDs on the Touch Plus controllers are also detected by the same cameras (no IMU in the controllers themselves).
+
+The 6DoF pose is delivered to the OpenXR runtime, which makes it available through `xrWaitFrame()` and `xrLocateSpace()`. Applications never call Insight APIs directly — the abstraction is entirely inside the runtime.
+
+#### High-level SDK tier
+
+Meta provides seven distinct SDK packages above the bare OpenXR layer:
+
+| SDK | Language / Engine | Primary purpose |
+|---|---|---|
+| **Meta OpenXR SDK** (`Meta-OpenXR-SDK`) | C++ | Thin C++ wrappers over OpenXR + all `XR_FB_*` extensions |
+| **Meta XR Core SDK** | Unity (UPM package) | Input, passthrough, anchors, scene, building blocks |
+| **Interaction SDK** | Unity | Ray-cast, poke, grab, locomotion, gesture detection |
+| **Meta Spatial SDK** | Kotlin / Android native | ECS-based spatial apps without Unity/Unreal |
+| **Meta XR Platform SDK** | Unity + Android | Social, identity, IAP, achievements, Group Presence |
+| **Movement SDK** | Unity | Body tracking, face tracking, eye tracking |
+| **Meta XR Audio SDK** | Unity / Unreal / FMOD | HRTF spatialization, room acoustics simulation |
+
+**Meta OpenXR SDK** ([github.com/meta-quest/Meta-OpenXR-SDK](https://github.com/meta-quest/Meta-OpenXR-SDK)) is the bare-metal option: C++ header wrappers and Android CMake scaffolding for writing directly against the OpenXR C API with `XR_FB_*` extensions. All other SDKs ultimately call through to these OpenXR extension calls at runtime.
+
+**Meta XR Core SDK** is the mandatory foundation for Unity development. Installed as a UPM (Unity Package Manager) package, it provides:
+- `OVRInput` — abstraction over Touch Plus and Pro controllers, hands, and mouse/gamepad fallback
+- `OVRPassthroughLayer` — Unity-facing wrapper over `XR_FB_passthrough`
+- `OVRSpatialAnchor` — persistent anchors via `XR_FB_spatial_entity`
+- `OVRSceneManager` — room mesh and semantic objects via `XR_FB_scene`
+- **Building Blocks** — prebuilt Unity prefabs for common XR patterns (locomotion, grab interactions, passthrough)
+- **Meta XR Immersive Debugger** — in-headset runtime inspection of Unity GameObjects
+
+[Source: Meta XR Core SDK documentation](https://developers.meta.com/horizon/documentation/unity/unity-ovr-unity-sdk-overview/)
+
+**Meta Spatial SDK** is Meta's native-Android SDK for building Quest apps in Kotlin without Unity or Unreal. Introduced in 2024 and substantially upgraded in 2025, it provides an entity-component system (ECS) layered directly on the Android Activity lifecycle:
+
+```kotlin
+// Meta Spatial SDK: minimal spatial app skeleton
+class MyXRActivity : AppSystemActivity() {
+    override fun registerFeatures(): List<SpatialFeature> = listOf(
+        VrFeature(this),       // enter VR/MR mode
+        SceneFeature(this),    // room-scale scene access
+    )
+
+    override fun onSceneReady() {
+        scene.setViewOrigin(0f, 0f, -2f, 0f)
+        // create spatial entities with glTF meshes, physics, animations
+        val entity = Entity.create(
+            Mesh(Uri.parse("apk:///models/my_object.glb")),
+            Transform(Pose(Vector3(0f, 1f, -1f))),
+        )
+    }
+}
+```
+
+The Spatial SDK provides glTF loading, physically-based rendering (IBL + PBR), skeletal animation, a physics engine, and 2D panel embedding — all running on top of Adreno 740 Vulkan without the Unity runtime overhead. The Interaction SDK for Spatial SDK (beta as of mid-2026) adds hand/controller interaction parity with the Unity variant.
+
+[Source: Meta Spatial SDK explainer](https://developers.meta.com/horizon/documentation/spatial-sdk/spatial-sdk-explainer/)
+
+**Meta XR Platform SDK** sits orthogonal to the rendering stack — it handles the social layer: user identity (`User.getLoggedInUser()`), Group Presence (rich presence showing where in the game a player is), invite flows, matchmaking, in-app purchases, cloud save, achievements, and voice chat. It integrates with the Horizon Store IAP pipeline and is mandatory for any app requiring multiplayer or monetisation.
+
+**Movement SDK** exposes body tracking, face expression tracking, and eye tracking to Unity applications via OpenXR extensions (`XR_FB_body_tracking`, `XR_FB_face_tracking2`, `XR_FB_eye_tracking_social`). Body tracking delivers a 70-joint skeletal pose; face tracking delivers 63 blend shapes per frame. Eye tracking uses Quest Pro's dedicated IR eye cameras.
+
+**Meta XR Audio SDK** wraps the [Facebook Audio 360 (spatializer)](https://facebookresearch.github.io/audio360/) engine:
+- **HRTF (Head-Related Transfer Function)** spatialization — frequency-domain convolution with a personalizable HRTF, giving spatial audio the "outside the head" perception
+- **Acoustic ray casting** — early reflection modelling using the `XR_FB_scene` room mesh
+- **Occlusion and reverb** — material-based absorption coefficients per wall/floor/ceiling semantic label
+- Integrations: Unity native plugin, Unreal Engine plugin, FMOD, Wwise, and a raw C API for custom engines
+
+#### Complete software stack summary
+
+```
+┌─────────────────────────────────────────────────────┐
+│ Application Layer                                    │
+│  Unity + Meta XR Core SDK / Interaction SDK          │
+│  Kotlin + Meta Spatial SDK                           │
+│  C++ + Meta OpenXR SDK (raw OpenXR + XR_FB_*)        │
+│  + Platform SDK (social/IAP) + Movement SDK (body)   │
+│  + Audio SDK (HRTF/room acoustics)                   │
+├─────────────────────────────────────────────────────┤
+│ Meta OpenXR Runtime (Horizon OS system service)      │
+│  XrSession ← xrCreateSession()                       │
+│  XrSwapchain ← xrCreateSwapchain()                   │
+│  TimeWarp / ATW / ASW                                │
+│  61 XR_FB_* extension implementations                │
+├───────────────────┬─────────────────────────────────┤
+│ Adreno 740 Vulkan │ Insight Tracking (Hexagon DSP)   │
+│ swapchain images  │ 4×IR cameras, IMU, hand, room    │
+│ FFR / FDM         │ passthrough camera ISP           │
+├───────────────────┴─────────────────────────────────┤
+│ Meta Horizon OS (Android 14 AOSP fork)               │
+│ Camera HAL / Sensor HAL / Custom power mgmt          │
+│ Meta app store, social layer, Horizon Home shell     │
+├─────────────────────────────────────────────────────┤
+│ Linux kernel (Android baseline + Meta patches)       │
+│ V4L2, ALSA, DRM (not exposed to apps directly)       │
+└─────────────────────────────────────────────────────┘
+```
 
 ---
 

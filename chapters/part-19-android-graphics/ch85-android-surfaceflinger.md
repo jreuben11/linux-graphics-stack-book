@@ -9,6 +9,7 @@
 ## Table of Contents
 
 1. [Android's Graphics Architecture Overview](#1-androids-graphics-architecture-overview)
+    - [1.3 Consolidation Efforts: Where the Stacks Are Converging](#13-consolidation-efforts-where-the-stacks-are-converging)
 2. [Gralloc: Android's GPU Memory Allocator](#2-gralloc-androids-gpu-memory-allocator)
 3. [AHardwareBuffer — The Public Buffer API](#3-ahardwarebuffer--the-public-buffer-api)
 4. [BufferQueue: The Producer-Consumer Pipeline](#4-bufferqueue-the-producer-consumer-pipeline)
@@ -88,7 +89,94 @@ While Android runs on the same Linux kernel DRM/KMS stack described in Ch1 and C
 
 Despite this different userspace surface, the kernel base is identical: SurfaceFlinger ultimately drives the display through DRM/KMS atomic commits, and GPU buffers are DMA-BUF objects under the hood.
 
-### 1.3 Data Flow Overview
+#### Why the differences exist
+
+The divergences above follow a single pattern: Android was designed in 2007–2009 for a resource-constrained, single-user, hostile-app-store mobile environment running on heterogeneous vendor silicon, and solved each problem in-process or behind a HAL at a time when the corresponding Linux kernel and Mesa primitives either did not exist or were not mature enough. Wayland arrived from 2008–2012 on the Linux desktop, could assume standardised DRM drivers and POSIX process isolation, and built its architecture directly on kernel-native primitives from the start. They now share the same kernel layer — `dma_fence`, DMA-BUF, `drmModeAtomicCommit` — but the userspace differs because the two stacks were designed for different threat models and hardware realities, roughly five years apart.
+
+**Binder IPC vs. Wayland wire protocol.** Android chose OpenBinder (originally from Be/Palm) because Binder is a kernel driver (`/dev/binder`) that mediates every IPC transaction and stamps each with the caller's verified UID. On a phone where arbitrary third-party apps run alongside privileged system services, kernel-enforced identity per call was necessary. Wayland came later for Linux desktops, where POSIX uid/pid isolation was already trusted and a lightweight Unix domain socket was sufficient — no kernel transaction broker needed.
+
+**SurfaceFlinger as always-on system service vs. per-session compositor.** Android has no concept of logout. The compositor must run from boot to shutdown, managing the lock screen, status bar, and all apps within a fixed single-user session. A per-session daemon model doesn't fit: SurfaceFlinger crashing triggers a `system_server` restart (visible as a soft reboot). Wayland compositors crash and restart silently because the session model tolerates it.
+
+**Gralloc HAL vs. GBM.** In 2009–2015, every Android SoC (Qualcomm, MediaTek, Samsung Exynos, etc.) had its own proprietary buffer allocation mechanism — different tiling formats, IOMMU mapping quirks, camera-specific YUV layouts. Gralloc gave each OEM a stable interface to hide that detail below the HAL line. GBM arrived on the Linux desktop where Mesa's generic DRM drivers made a single interface practical from the start; OEM diversity was not the design problem to solve.
+
+**HWComposer HAL vs. direct KMS atomic.** Display controller behaviour varies more across SoCs than GPU behaviour does. HWC lets vendor BSPs implement overlay scheduling, plane assignment, and HDR tone mapping in proprietary code beneath the HAL boundary. Desktop compositors (wlroots, Mutter, KWin) call `drmModeAtomicCommit()` directly because the DRM KMS API is a stable, open, well-specified kernel interface that the same drivers implement uniformly.
+
+**`android::Fence` (sw_sync timeline) vs. drm_syncobj.** Android's sync timeline predates the kernel's `drm_syncobj` by several years. Google solved the GPU fence problem via `sw_sync` — a synthetic timeline in the kernel's `sync_file` subsystem — because the DRM drivers on early Android SoCs did not expose `dma_fence` objects cleanly to userspace. The desktop route (`drm_syncobj`, `wp_linux_drm_syncobj`) arrived later, is aligned with DRM-native primitives, and is now what new Android driver work targets as well.
+
+**MediaProjection API vs. xdg-desktop-portal screencopy.** Android's screen-capture API requires an explicit user consent dialog enforced by the platform, reflecting the mobile threat model: background screen recording by malicious apps must be blocked at the OS level. Wayland's compositor isolation already prevents unauthenticated screen capture by default; xdg-desktop-portal adds the consent dialog at a higher layer (via PipeWire and the portal daemon) without baking it into the compositor itself.
+
+### 1.3 Consolidation Efforts: Where the Stacks Are Converging
+
+Now that the Linux kernel primitives — DMA-BUF, `dma_fence`/`sync_file`, DRM/KMS atomic, `drm_syncobj` — are mature and Wayland is the established Linux desktop compositor protocol, there are active efforts to consolidate or align the two stacks. None of these amount to a wholesale merger; Android's HAL abstraction layer and Binder IPC are load-bearing for OEM diversity in ways that Wayland's wire protocol is not. But at every layer, the gap is narrowing.
+
+#### DMA-BUF heaps: ION removal and shared kernel ABI
+
+The most complete consolidation has already happened at the allocator layer. Android's ION allocator (`drivers/staging/android/ion/`) was the original DMA-BUF heap implementation — it predated the mainline equivalent and never made it out of staging. From **Linux 5.6** (2020), the DMA-BUF heaps subsystem (`drivers/dma-buf/heaps/`) replaced ION with a clean per-heap interface (`/dev/dma_heap/<name>`, `DMA_HEAP_IOCTL_ALLOC`). Android 12 with GKI 2.0 mandated DMA-BUF heaps exclusively — `CONFIG_ION` is disabled in the Android 12 ACK (Android Common Kernel) kernel from March 2021. ION has since been removed from mainline Linux entirely. The result: Android and Linux desktop now share the same kernel ABI for DMA-BUF allocation. A buffer allocated by Mesa's GBM on a Linux desktop and a buffer allocated by Android's Gralloc HAL are both DMA-BUF file descriptors produced by the same heap infrastructure. [Source: Android DMA-BUF Heaps](https://source.android.com/docs/core/architecture/kernel/dma-buf-heaps), [Kernel docs](https://docs.kernel.org/userspace-api/dma-buf-heaps.html)
+
+#### Generic Kernel Image (GKI): "upstream first" for DRM drivers
+
+Android 12 introduced **GKI 2.0**, which establishes a stable kernel module interface (KMI) — SoC vendors must move their display and GPU drivers either upstream into mainline Linux or into a loadable vendor kernel module that attaches to the stable KMI. This has forced Qualcomm and others to upstream code that previously lived in private Android BSP trees. Google's stated policy since 2021 is "upstream first": new Android kernel features must land in mainline before AOSP. Qualcomm's `drm/msm` driver (covering Adreno GPUs and Snapdragon display controllers) is now the upstream path; Adreno A8xx patches for Snapdragon 8 Elite were posted to LKML in October 2025. The net effect: the same DRM driver serves both a mainline Linux Wayland desktop and an Android GKI device. [Source: Android GKI](https://source.android.com/docs/core/architecture/kernel/generic-kernel-image)
+
+#### drm_hwcomposer: HWC HAL backed by direct DRM/KMS
+
+**drm_hwcomposer** ([gitlab.freedesktop.org/drm-hwcomposer/drm-hwcomposer](https://gitlab.freedesktop.org/drm-hwcomposer/drm-hwcomposer)) is an open-source Android HWComposer HAL implementation that calls `drmModeAtomicCommit()` directly, with no vendor binary blob below it. It eliminates the proprietary HWC between SurfaceFlinger and the display driver, replacing it with the same DRM atomic commit path that Wayland compositors use. Maintained by Roman Stratiienko, it is actively used in: ChromeOS ARC++, the AOSP Cuttlefish/ranchu emulator, GloDroid, Android-x86, and ARM Mali downstream BSPs. As of 2025 it is transitioning from HIDL `composer@2.x` to **AIDL `composer3`** (`android.hardware.graphics.composer3`). This is the most direct bridge: the same DRM atomic calls, the same kernel plane objects, whether the compositor above is SurfaceFlinger or a Wayland compositor.
+
+#### minigbm: Gralloc HAL backed by GBM/libdrm
+
+**minigbm** ([chromium.googlesource.com/chromiumos/platform/minigbm](https://chromium.googlesource.com/chromiumos/platform/minigbm/)) is Google's actively maintained GBM-backed Gralloc HAL, used in ChromeOS and ARCVM. Its `cros_gralloc` backend implements the Android Gralloc HAL on top of `libdrm` GBM for Intel, AMD, Qualcomm MSM, Rockchip, and others — i.e., it allocates Android `native_handle_t` buffers using the same GBM `gbm_bo_create()` path that a wlroots compositor would use on the same machine. A Rust-based successor, **rutabaga_gralloc** (part of crosvm's `rutabaga_gfx` library), targets broader cross-platform compatibility beyond ChromeOS. Also in AOSP at `android.googlesource.com/platform/external/minigbm/`.
+
+#### Explicit sync convergence: sync_file → drm_syncobj → wp_linux_drm_syncobj_v1
+
+Android's `sync_file` (carrying `dma_fence` objects across process boundaries via file descriptors) originated in Android's BSP around 2012 and was upstreamed to Linux mainline in **Linux 4.9** (2016). `drm_syncobj` — GPU timeline semaphores in the DRM subsystem — arrived in mainline shortly after. The **`wp_linux_drm_syncobj_v1`** Wayland protocol (added to wayland-protocols 1.34, authored by Chromium Authors, Intel, Collabora, and Simon Ser) wraps `drm_syncobj` as a first-class Wayland object, giving Wayland clients and compositors explicit GPU synchronisation with the same semantics Android has had for years. As of 2025–2026, `wp_linux_drm_syncobj_v1` is implemented by KWin (v6.6), Mutter (v49.2), Sway (v1.11), Hyprland, Weston (v14), Gamescope, and more. XWayland 24.1 (2024) shipped explicit sync support, resolving the primary NVIDIA/Wayland stutter issue. The circle closes: the kernel primitive (`dma_fence` wrapped in `sync_file`) that Android invented is now the standard fence mechanism for both stacks. [Source: Collabora blog — Bridging the synchronization gap](https://www.collabora.com/news-and-blog/blog/2022/06/09/bridging-the-synchronization-gap-on-linux/), [Protocol spec](https://wayland.app/protocols/linux-drm-syncobj-v1)
+
+#### Mesa serving both stacks from a single driver
+
+Mesa builds for Android using the NDK (`meson` + `--cross-file android`), producing Vulkan ICD `.so` files dropped into `/vendor/lib64/hw/vulkan.<soc>.so`. The same driver codebase serves Linux desktop (via GBM/Wayland WSI) and Android (via `VK_KHR_android_surface` / `ANativeWindow`):
+
+| Mesa driver | Linux desktop | Android |
+|---|---|---|
+| **Turnip** (Adreno Vulkan) | wlroots / KDE / GNOME | AOSP Cuttlefish, ARC++, Steam Frame |
+| **Panfrost / Panthor** (Mali) | Mainline Linux | Mainlined Android devices |
+| **NVK** (NVIDIA) | Wayland + X11 | Android (experimental) |
+| **llvmpipe / lavapipe** | Software rendering | Emulator / CI |
+
+Turnip reached Vulkan 1.3 compliance on Adreno 6xx and became the **default ARM64 Mesa driver in Mesa 25.1** (2025). Adreno 8xx support arrived in Mesa 26.0. The practical effect: a developer debugging a Mesa Turnip regression can do so on a Linux desktop with a USB-attached phone's GPU exposed via KMS, using the same driver binary that runs on Android. [Source: Mesa Android docs](https://docs.mesa3d.org/android.html)
+
+#### ChromeOS Exo: a compositor that speaks both languages
+
+ChromeOS **Exo** is the most production-grade example of a compositor that bridges both worlds simultaneously. Exo is a Wayland server (part of Chrome's Ash compositor) that:
+- Serves **Linux Crostini** containers via **Sommelier** (a Wayland proxy that translates guest Wayland protocol to host Exo Wayland, with zero-copy buffer sharing via `virtio-gpu`).
+- Serves **Android ARCVM** apps running inside **crosvm** (a Rust VMM) via `virtio-gpu` and a `virtio_wl` Wayland passthrough. The **rutabaga_gfx** library (Rust, inside crosvm) implements the cross-domain context type, sharing DMA-BUF fences zero-copy between the Android guest and the ChromeOS host.
+
+Both paths ultimately deliver DMA-BUF-backed buffers to the same Exo compositor, which then composites them via KMS atomic commit. The fence model uses `sync_file` throughout. This is the production proof-of-concept that the two stacks can coexist above a shared kernel layer. [Source: ChromeOS ARCVM blog](https://chromeos.dev/en/posts/making-android-runtime-on-chromeos-more-secure-and-easier-to-upgrade-with-arcvm)
+
+#### WayDroid and wlroots-android-bridge: Wayland on Android
+
+**WayDroid** ([waydro.id](https://waydro.id)) runs a full AOSP image inside an LXC container on a Linux/Wayland host. Its `hwcomposer.wayland` replaces SurfaceFlinger's HWC with a Wayland client — Android's display pipeline terminates at a `wl_surface` on the host compositor rather than a DRM plane. Android apps appear as normal Wayland windows.
+
+A complementary experiment, **wlroots-android-bridge** (Xtr126, GitHub, 2025), goes the other direction: a wlroots-based Wayland compositor running *inside* Android, using `AHardwareBuffer` as the `wlr_allocator` backend and `ASurfaceTransaction_setBuffer()` to present Wayland client surfaces via SurfaceFlinger. Multi-window support was added in August 2025. Neither project is in AOSP, but both prove the buffer and fence primitives are now compatible enough to support cross-protocol composition.
+
+> **Note on Wayland as a first-class Android surface**: Faith Ekstrand's analysis ([gfxstrand.net — Wayland on Android](https://www.gfxstrand.net/faith/projects/wayland/wayland-android/)) documents a fundamental EGL protocol mismatch: Android EGL drivers don't guarantee synchronous buffer queuing from `eglSwapBuffers()`, and `EGL_BUFFER_PRESERVED` semantics conflict with Wayland's assumption of a fresh buffer on every commit. There is no official AOSP effort to make Wayland a first-class Android display surface; these are community experiments. `android.googlesource.com/platform/external/wayland/` ships the Wayland library as a build dependency for tooling, not as an app-facing API.
+
+#### AHardwareBuffer / DMA-BUF: Vulkan as the unification layer
+
+At the Vulkan level, the two buffer worlds are already interoperable in principle. `VK_ANDROID_external_memory_android_hardware_buffer` (Android) and `VK_EXT_external_memory_dma_buf` (Linux desktop) are parallel extensions over the same underlying DMA-BUF file descriptor — the difference is the handle type enum (`VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID` vs. `VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT`). Mesa's Vulkan drivers implement both. `AHardwareBuffer_getNativeHandle()` exposes the DMA-BUF fd from an AHardwareBuffer, and `AHardwareBuffer_createFromHandle()` (NDK API 29+) goes the other way. Cross-OS buffer sharing via Vulkan external memory is structurally complete at the kernel level; the remaining gap is the handle-type abstraction that each platform's Vulkan extension exposes.
+
+#### Summary
+
+| Area | Status |
+|---|---|
+| DMA-BUF heap kernel ABI | **Fully converged** — same `/dev/dma_heap/` on both |
+| DRM driver upstreaming (GKI) | **In progress** — Qualcomm MSM, Panfrost, Panthor mainlined; Adreno 8xx in 2025 |
+| HWComposer via DRM atomic | **Production** — drm_hwcomposer in ChromeOS, AOSP emulator, GloDroid |
+| Gralloc via GBM | **Production** — minigbm/cros_gralloc in ChromeOS/ARCVM; rutabaga_gralloc WIP |
+| Explicit sync (drm_syncobj) | **Fully converged** — `sync_file` in both; `wp_linux_drm_syncobj_v1` Wayland-side |
+| Mesa drivers (Turnip/Panfrost) | **Production** — same source, both platforms, Mesa 25.1+ |
+| Binder IPC → Wayland wire protocol | **Not converging** — different session models; no AOSP commitment |
+| SurfaceFlinger → Wayland compositor | **Experimental only** — WayDroid HWC shim; no AOSP plan |
+| AHardwareBuffer ↔ DMA-BUF via Vulkan | **Structurally complete** — different handle-type enums, same fd underneath |
+
+### 1.4 Data Flow Overview
 
 Frames flow through three major choke points:
 
