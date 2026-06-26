@@ -5,6 +5,9 @@ This chapter targets **browser and web platform engineers** who need to understa
 ## Table of Contents
 
 - [Firefox Rendering Architecture vs Chromium](#firefox-rendering-architecture-vs-chromium)
+  - [The Fundamental Design Divergence](#the-fundamental-design-divergence)
+  - [Why GPU Compositing Moved Into WebRender](#why-gpu-compositing-moved-into-webrender)
+  - [Strategic Outlook: Which Architecture Wins, and Will They Converge?](#strategic-outlook-which-architecture-wins-and-will-they-converge)
 - [WebRender: Crate Layout and Display List Wire Format](#webrender-crate-layout-and-display-list-wire-format)
 - [WebRender Render Graph](#webrender-render-graph)
 - [Picture Caching](#picture-caching)
@@ -64,7 +67,30 @@ When the Mozilla graphics team designed **WebRender** (originally a **Servo** pr
 
 This design has several consequences visible in the thread model. In Chromium, the compositor runs on its own thread and animates transform/opacity independently of the renderer. In Firefox, the **RenderBackend** thread does both scene preparation and the frame-building that determines GPU commands. There is no separate "compositor thread" that executes transform animations — instead, the rendering system handles the full pipeline each frame. [Source: Firefox Rendering Overview](https://firefox-source-docs.mozilla.org/gfx/RenderingOverview.html)
 
-### Multi-Process Flow
+### Strategic Outlook: Which Architecture Wins, and Will They Converge?
+
+**WebRender's bet is architecturally sounder for where the web is heading.** The tile-raster model made sense in 2010 when pages were primarily static document content and CPU rasterisation was the only practical path for complex CSS layout. Treating the page as a retained scene submitted to the GPU each frame is the natural fit for hardware with tens of thousands of parallel shader threads; the GPU draws 10 million textured quads per frame in a game engine, and a complex web page has perhaps 10,000 — a trivial workload by comparison. The Chromium team has implicitly acknowledged this by building **Skia Graphite**, which replaces Skia Ganesh's stateful GL model with a task-graph-based GPU backend built on **Dawn/WebGPU** — moving Skia's rendering model structurally closer to WebRender's scene-graph approach. Graphite's `TaskGraph`, `DrawPass`, and `Recorder` abstractions parallel WebRender's `RenderTaskGraph`, `RenderPass`, and `SceneBuilder` directly.
+
+**Where Chromium's model retains an advantage.** The CC tile-raster pipeline is not simply legacy overhead — it is load-bearing for Chrome's multi-renderer architecture. Chrome spawns one renderer process per site isolation group; each renderer has its own CC instance managing its own tile budget independently. A renderer that is scrolled offscreen can drop its tile budget without affecting others. WebRender's picture-caching system (`PictureCache`, `TileCacheInstance`) is Gecko's answer to this, but it operates within a single content process rather than across multiple isolated renderer sandboxes. For pages with very large static regions and small dynamic elements — a long document with a single animated counter, for example — CC's tile invalidation model can be more CPU-efficient than WebRender redrawing the full primitive list each frame. Chrome's `--process-per-site-instance` security model also gains structural support from having per-renderer CC instances with independent GPU memory budgets.
+
+**Convergence at the GPU API layer; divergence at the architecture layer.** The two stacks are converging where it matters least for the rendering model and diverging where it matters most:
+
+*Converging:*
+- Both targeting **Vulkan** as the primary GPU API on Linux (Skia Graphite + Dawn on Chrome; wgpu-hal on Firefox)
+- Both compiling shaders to **SPIR-V** via the Mesa NIR pipeline ultimately (Tint → SPIR-V → Mesa for Chrome; naga → SPIR-V → Mesa for Firefox)
+- Both using **linux-dmabuf** / `zwp_linux_dmabuf_v1` for zero-copy Wayland surface submission
+- Both adopting **explicit GPU synchronisation** (`VK_KHR_external_semaphore_fd`, `wp_linux_drm_syncobj_v1`)
+- Both implementing **WebGPU** to the same W3C specification
+
+*Not converging:*
+- The **tile-raster vs. display-list** rendering model — this is the core architectural decision; reversing it in either browser would be a ground-up rewrite
+- **Dawn (C++) vs. wgpu (Rust)** — independent implementations of the same WebGPU spec, serving different language ecosystems; wgpu is also used by Bevy and Servo, making it a Rust-native GPU stack; Dawn is Chrome-maintained and the reference implementation for the specification
+- **Tint vs. naga** — independent WGSL compilers that sometimes diverge in validation stringency, causing edge-case WebGPU content to behave differently across browsers
+- **Process model** — Chrome's tri-process browser/renderer/GPU split vs. Firefox's parent/GPU split; these reflect different sandboxing philosophies and are not moving toward each other
+
+**The wgpu/naga ecosystem effect.** The fact that **wgpu** is used by both Firefox and the Rust game engine ecosystem (Bevy, Rend3, Winit's GPU examples) and that Servo shares wgpu with Firefox creates a broader community of contributors and users than Dawn's more Chrome-centric development model. This is meaningful for long-term sustainability: WebRender's Rust GPU stack benefits from improvements made for game workloads, not just browser workloads. Conversely, Dawn benefits from Google's engineering scale and from being the shipping WebGPU implementation in the highest-market-share browser, making it the de facto reference for WebGPU specification development.
+
+**Practical conclusion.** The two rendering architectures will remain parallel implementations of the web platform indefinitely — the architectural choices are too deeply embedded in each codebase to unwind. The competitive pressure from Chrome's market dominance is the principal force acting on Firefox's architecture decisions, not any technical desire to converge. WebRender's rendering model is more elegant and more GPU-appropriate; Chrome's process isolation model and staffing scale give it durability. For Linux graphics stack engineers, the meaningful takeaway is that both browsers exercise the same Mesa Vulkan drivers, the same DMA-BUF zero-copy paths, and the same Wayland protocols — the stack beneath them is common even if the rendering logic above it is not.
 
 Firefox uses a multi-process architecture that maps roughly to this pipeline:
 
