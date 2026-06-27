@@ -36,6 +36,7 @@
     - [16.5 Capability Limits and Task Fit](#165-capability-limits-and-task-fit)
     - [16.6 Gemini Nano vs LiteRT-LM + Open Weights](#166-gemini-nano-vs-litert-lm--open-weights)
 17. [Roadmap](#17-roadmap)
+   - [17.10 GGUF and llama.cpp on Android](#1710-gguf-and-llamacpp-on-android)
 18. [Integrations](#18-integrations)
 
 
@@ -2535,6 +2536,202 @@ The on-device LLM ecosystem is splitting into two camps with different optimisat
 | **ARCore integration** | Via `ArFrame_acquireCameraImage()` → LiteRT pipeline | Not integrated |
 
 The two ecosystems are converging at the GGUF level: Google has published a GGUF→LiteRT-LM converter, and `llama.cpp` has added experimental Android OpenCL support that targets the same Adreno/Mali GPU path as LiteRT-LM's GPU delegate.
+
+### 17.10 GGUF and llama.cpp on Android
+
+**GGUF** (GGML Unified Format) is the binary model file format used by `llama.cpp` and the broader GGML ecosystem. Introduced in August 2023 as a replacement for the older GGML binary format, GGUF is a self-describing container that stores model weights, tokeniser vocabulary, metadata, and architecture hyperparameters in a single file. It has become the dominant distribution format for open-weight LLMs on consumer hardware — the majority of quantised Llama 3, Mistral, Gemma, Phi-3, and Qwen models on HuggingFace are distributed as GGUF. [Source: GGUF specification](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md)
+
+#### GGUF File Structure
+
+A GGUF file consists of a header followed by key-value metadata and tensor data blocks:
+
+```
+GGUF magic (4 bytes: "GGUF")
+Version (uint32: 3)
+Tensor count (uint64)
+Metadata KV count (uint64)
+─── Metadata key-value pairs ───
+  general.architecture = "llama"
+  general.name = "Llama-3-8B-Instruct"
+  llama.context_length = 8192
+  llama.embedding_length = 4096
+  llama.block_count = 32
+  llama.attention.head_count = 32
+  tokenizer.ggml.model = "llama"
+  tokenizer.ggml.tokens = [... vocab ...]
+─── Tensor descriptors ───
+  name, n_dims, shape, type (Q4_K_M / Q8_0 / F16 / ...)
+─── Tensor data (page-aligned) ───
+```
+
+All metadata and tokeniser data is embedded directly — no separate vocabulary files or config JSON. This self-contained design makes GGUF models trivially distributable as single files, which is the primary reason for their adoption on Android where the APK asset model favours bundling.
+
+#### GGUF Quantisation Schemes
+
+GGUF defines its own quantisation types, distinct from LiteRT's INT8/INT4 schemes. The naming convention is `Q<bits>_<variant>`:
+
+| Type | Bits/weight | Description | Size (7B model) | Quality loss |
+|---|---|---|---|---|
+| `F16` | 16 | Half-precision float; no quantisation | ~14 GB | None |
+| `Q8_0` | 8 | Simple 8-bit; high quality | ~7.7 GB | Minimal |
+| `Q6_K` | 6.5 | K-quant 6-bit; near-lossless | ~5.9 GB | Very low |
+| `Q5_K_M` | 5.5 | K-quant 5-bit medium; recommended for quality | ~5.0 GB | Low |
+| `Q4_K_M` | 4.5 | K-quant 4-bit medium; **best quality/size ratio** | ~4.1 GB | Low–medium |
+| `Q4_K_S` | 4.4 | K-quant 4-bit small; slightly smaller than M | ~3.9 GB | Medium |
+| `Q3_K_M` | 3.9 | K-quant 3-bit medium; aggressive compression | ~3.3 GB | Medium–high |
+| `Q2_K` | 3.35 | 2-bit with 4-bit scale blocks | ~2.9 GB | High |
+| `IQ4_NL` | 4.5 | Importance-aware 4-bit; often better than Q4_K_M | ~4.1 GB | Low |
+
+**K-quants** (the `_K_` variants, introduced in GGUF) quantise weights in blocks of 256, storing a separate FP16 scale and minimum per block rather than per-tensor, which recovers ~0.5–1.0 perplexity point over the simpler `Q4_0` format at the same bit depth.
+
+**`Q4_K_M` is the practical default for Android.** At ~4 GB for a 7B-parameter model, it fits in RAM on devices with 8 GB (leaving headroom for the OS and other apps), delivers 15–25 tokens/second on Snapdragon 8 Gen 2 CPU, and the quality degradation versus F16 is typically <5% on standard benchmarks.
+
+#### llama.cpp on Android
+
+`llama.cpp` builds natively for Android via the NDK. The official Android demo app (`examples/llama.android/`) provides a complete reference integration.
+
+**Building from source:**
+
+```bash
+git clone https://github.com/ggerganov/llama.cpp
+cd llama.cpp
+
+# Build for arm64-v8a with NEON optimisations:
+cmake -B build-android \
+    -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
+    -DANDROID_ABI=arm64-v8a \
+    -DANDROID_PLATFORM=android-26 \
+    -DLLAMA_ANDROID_ENABLE_NEON=ON \
+    -DLLAMA_VULKAN=ON \          # enable Vulkan compute backend
+    -DCMAKE_BUILD_TYPE=Release
+
+cmake --build build-android --config Release -j$(nproc)
+# Produces: build-android/bin/llama-cli (executable for adb shell testing)
+#           build-android/src/libllama.so (library for app integration)
+```
+
+**Vulkan compute backend on Android.** When `DLLAMA_VULKAN=ON`, llama.cpp uses Vulkan compute shaders for matrix-vector multiplication (the dominant operation in transformer inference). On Adreno 740+ and Mali G715+ the Vulkan path delivers 2–3× higher throughput than the NEON CPU path for Q4_K_M 7B models:
+
+| Backend | Snapdragon 8 Gen 2 | Samsung Exynos 2400 |
+|---|---|---|
+| CPU NEON (4 threads) | ~15 tok/s (Q4_K_M 7B) | ~12 tok/s |
+| Vulkan compute | ~35–45 tok/s | ~28 tok/s |
+| OpenCL (experimental) | ~30–40 tok/s | ~25 tok/s |
+
+**Integrating `libllama.so` into an Android app via JNI:**
+
+The official `llama.android` example wraps `llama.cpp` in a thin JNI layer. The essential pattern:
+
+```cpp
+// File: app/src/main/cpp/llama-android.cpp
+#include "llama.h"
+#include <jni.h>
+#include <android/log.h>
+
+static llama_model* g_model = nullptr;
+static llama_context* g_ctx = nullptr;
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_llama_LlamaAndroid_loadModel(
+        JNIEnv* env, jobject, jstring model_path_j) {
+    const char* path = env->GetStringUTFChars(model_path_j, nullptr);
+
+    llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = 99;   // offload all layers to GPU (Vulkan)
+
+    g_model = llama_load_model_from_file(path, mparams);
+    env->ReleaseStringUTFChars(model_path_j, path);
+
+    llama_context_params cparams = llama_context_default_params();
+    cparams.n_ctx    = 4096;    // context window
+    cparams.n_batch  = 512;     // prompt processing batch size
+    cparams.n_threads = 4;      // CPU threads for non-GPU layers
+
+    g_ctx = llama_new_context_with_model(g_model, cparams);
+    __android_log_print(ANDROID_LOG_INFO, "llama", "Model loaded: %s", path);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_llama_LlamaAndroid_generate(
+        JNIEnv* env, jobject, jstring prompt_j) {
+    const char* prompt = env->GetStringUTFChars(prompt_j, nullptr);
+
+    // Tokenise prompt:
+    std::vector<llama_token> tokens(llama_n_ctx(g_ctx));
+    int n_tokens = llama_tokenize(g_model, prompt,
+        strlen(prompt), tokens.data(), tokens.size(), true, false);
+    tokens.resize(n_tokens);
+    env->ReleaseStringUTFChars(prompt_j, prompt);
+
+    // Evaluate prompt batch:
+    llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
+    llama_decode(g_ctx, batch);
+
+    // Greedy decode loop (simplified):
+    std::string result;
+    for (int i = 0; i < 256; ++i) {
+        llama_token id = llama_sampler_sample(/* sampler */, g_ctx, -1);
+        if (id == llama_token_eos(g_model)) break;
+        result += llama_token_to_piece(g_model, id);
+        batch = llama_batch_get_one(&id, 1);
+        llama_decode(g_ctx, batch);
+    }
+    return env->NewStringUTF(result.c_str());
+}
+```
+
+**Model delivery on Android.** A Q4_K_M GGUF for a 7B model is ~4 GB — far too large for the 150 MB APK limit. Delivery options:
+
+1. **Play Asset Delivery** (on-demand pack): declare a `fast-follow` or `on-demand` asset pack containing the GGUF file; downloaded after install via `AssetPackManager` (ch161 §PAD). Max 512 MB per pack — requires splitting a 7B GGUF across two packs or using a smaller 1B–3B model (Phi-3-mini at Q4_K_M is ~2 GB).
+2. **Runtime download**: download from a CDN (S3, Cloudflare R2) at first launch; store in `getFilesDir()` or `getExternalFilesDir()`. Simpler but requires network on first use.
+3. **Small models only in APK**: 1B models (TinyLlama-1.1B Q4_K_M ~670 MB, Gemma-2-2B Q4_K_M ~1.4 GB) can fit within the 150 MB APK limit only with aggressive quantisation (Q2_K) — generally not recommended.
+
+#### GGUF ↔ LiteRT-LM Conversion
+
+Google's `ai-edge-litert` toolchain now includes a GGUF→LiteRT converter, allowing GGUF-format models to be run on LiteRT-LM's GPU delegate rather than llama.cpp's Vulkan backend:
+
+```bash
+pip install ai-edge-litert-nightly
+python -m ai_edge_litert.tools.convert_gguf \
+    --input_gguf llama-3-8b-instruct.Q4_K_M.gguf \
+    --output_tflite llama-3-8b.tflite
+```
+
+The converted `.tflite` can then use LiteRT-LM's first-class Android integration (AHardwareBuffer memory, ADPF thermal hints via `AThermal_getThermalHeadroom`, Play Store delivery infrastructure) while retaining the GGUF quantised weights. The conversion is lossy at the quantisation level — GGUF Q4_K_M uses k-quant block scaling that does not map 1:1 to LiteRT's NF4/INT4 scheme; expect ~1–3% perplexity change after conversion.
+
+#### MLC-LLM: TVM-Compiled Models on Android
+
+**MLC-LLM** (Machine Learning Compilation for LLMs) is an alternative to both llama.cpp and LiteRT-LM. It compiles HuggingFace-format or GGUF models via Apache TVM's ML compiler to optimised Vulkan compute shaders or OpenCL kernels tuned specifically for the target GPU microarchitecture:
+
+```bash
+# Install MLC-LLM toolchain:
+pip install mlc-llm mlc-ai-nightly
+
+# Compile Llama-3-8B for Android Vulkan (Adreno target):
+mlc_llm convert_weight ./Llama-3-8B-Instruct/ \
+    --quantization q4f16_1 \
+    --output ./llama3-8b-q4f16-MLC/
+
+mlc_llm gen_config ./Llama-3-8B-Instruct/ \
+    --quantization q4f16_1 \
+    --conv-template llama-3 \
+    --output ./llama3-8b-q4f16-MLC/
+
+# Build Android app with compiled model:
+mlc_llm package --task android \
+    --model-list llama3-8b-q4f16-MLC
+```
+
+MLC-LLM's advantage is GPU-architecture-specific kernel autotuning — TVM's AutoScheduler finds the optimal tile sizes and memory layouts for a specific Adreno or Mali GPU model, achieving better throughput than llama.cpp's generic Vulkan shaders. The trade-off is a longer compile step (minutes per model per GPU target) and a less mature Android ecosystem compared to llama.cpp.
+
+| Runtime | Format | Android GPU | Relative throughput (7B Q4, Adreno 740) |
+|---|---|---|---|
+| llama.cpp | GGUF | Vulkan generic | 35–45 tok/s |
+| MLC-LLM | TVM compiled | Vulkan tuned | 50–65 tok/s |
+| LiteRT-LM | `.tflite` INT4 | OpenCL | 45–56 tok/s |
+| ORT GenAI | ONNX | CPU+QNN EP | 20–30 tok/s (QNN) |
+
+[Source: llama.cpp GitHub](https://github.com/ggerganov/llama.cpp), [GGUF spec](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md), [MLC-LLM Android](https://llm.mlc.ai/docs/deploy/android.html)
 
 ---
 
