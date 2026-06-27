@@ -260,7 +260,7 @@ graph TD
         DMABUF["DMA-BUF fd\ngbm_bo_get_fd()"]
         ZwpBuf["zwp_linux_dmabuf_v1\nwl_buffer"]
     end
-    subgraph "CPU Path (foot)"]
+    subgraph "CPU Path (foot)"
         Pixman["pixman / FreeType\nCPU render"]
         MemFD["memfd_create()\nmmap'd pixel buffer"]
         ShmPool["wl_shm_pool\nwl_shm.create_pool(fd, size)"]
