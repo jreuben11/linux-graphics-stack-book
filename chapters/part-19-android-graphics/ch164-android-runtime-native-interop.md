@@ -40,6 +40,10 @@
    - 3.4 [Expanding the android/ Header Namespace](#34-expanding-the-android-header-namespace)
    - 3.5 [What Will Not Replace the NDK](#35-what-will-not-replace-the-ndk)
    - 3.6 [NDK Trajectory](#36-ndk-trajectory)
+   - 3.7 [The Security Motivation: Memory Safety and Android Vulnerabilities](#37-the-security-motivation-memory-safety-and-android-vulnerabilities)
+   - 3.8 [JNI from Rust: The `jni` Crate](#38-jni-from-rust-the-jni-crate)
+   - 3.9 [Rust in AOSP: Platform Components and the Soong Build System](#39-rust-in-aosp-platform-components-and-the-soong-build-system)
+   - 3.10 [wgpu: Cross-Platform Graphics in Rust on Android](#310-wgpu-cross-platform-graphics-in-rust-on-android)
 4. [Integrations](#4-integrations)
 
 ---
@@ -1554,9 +1558,263 @@ The `ndk-sys` crate tracks these additions via auto-generated bindings, so Rust 
 
 [Source: Android Rust overview](https://source.android.com/docs/setup/build/rust/building-rust-modules/overview), [Google security blog: Memory-safe languages in Android 13](https://security.googleblog.com/2022/12/memory-safe-languages-in-android-13.html)
 
----
+### 3.7 The Security Motivation: Memory Safety and Android Vulnerabilities
 
-## 4. Integrations
+The adoption of Rust in Android is not a stylistic preference — it is a direct response to a documented vulnerability pattern. Google's Android Security team has consistently tracked the root cause of critical and high-severity Android vulnerabilities, and the finding has been stable across years: approximately **70% of Android's security vulnerabilities are caused by memory-safety bugs in C and C++**. [Source: Google Security Blog — Memory safe languages in Android 13](https://security.googleblog.com/2022/12/memory-safe-languages-in-android-13.html)
+
+The specific vulnerability classes involved are: buffer overflows (spatial memory safety), use-after-free (temporal memory safety), double-free, use of uninitialised memory, and integer overflow feeding into pointer arithmetic. These are not rare edge cases — they are the dominant attack surface because Android's most security-sensitive components (Bluetooth, Wi-Fi, NFC, codec parsers, kernel drivers, the TrustZone TEE) are implemented in C or C++, and the combination of network-reachable code with memory-unsafe languages reliably produces high-severity RCE vulnerabilities.
+
+**The data across the industry is consistent.** Microsoft reported the same ~70% figure for their security bugs. Chromium's security team found that ~70% of severe Chromium bugs were memory safety issues. The NSA issued a 2022 advisory recommending a shift away from C/C++ to memory-safe languages. [Source: NSA guidance on memory-safe languages](https://media.defense.gov/2022/Nov/10/2003112742/-1/-1/0/CSI_SOFTWARE_MEMORY_SAFETY.PDF)
+
+**Why Rust and not a GC language?** Java, Kotlin, and Go eliminate most of these bugs via garbage collection, but they are unsuitable for the layers where the vulnerabilities occur: kernel drivers cannot use a GC runtime; codec parsers must have deterministic latency; Bluetooth and Wi-Fi stacks run in constrained environments where GC pauses are unacceptable. Rust's ownership and borrow-checking system eliminates the same vulnerability classes as a GC — use-after-free, double-free, data races — at compile time with zero runtime overhead and no GC pauses. This makes it the only practical memory-safe option for system-level Android code.
+
+**The adoption timeline and measurable impact.** Google began introducing Rust into AOSP in 2021. In Android 13 (2022), new code written in Rust appeared in the Bluetooth stack, DNS resolver, and the keystore service. The Android Security team subsequently reported that **zero memory-safety vulnerabilities were found in new Rust code** shipped in Android 13 and 14, while C/C++ code continued to generate the majority of memory-safety bugs. This is the expected outcome — it is structurally impossible to write certain classes of memory bugs in safe Rust — but the empirical validation across production Android code is significant. [Source: Google Security Blog — Eliminating Memory Safety Vulnerabilities at the Source](https://security.googleblog.com/2024/09/eliminating-memory-safety-vulnerabilities-Android.html)
+
+**Implication for graphics developers.** The `nova` DRM kernel driver (Rust, in Linux/Android kernel staging), future Vulkan ICD components, and NPU kernel drivers are the areas where Rust's safety properties are most compelling. A memory-safety bug in a GPU kernel driver can yield a full kernel compromise — the attack surface is wide (attacker-controlled shader compilation, attacker-controlled memory descriptors) and the consequence of a bug is severe.
+
+### 3.8 JNI from Rust: The `jni` Crate
+
+The Rust NDK ecosystem (§3.2) covers the case of calling native C/NDK APIs from Rust. The reverse direction — calling into the Java/Kotlin layer from Rust, or exposing Rust functions as JNI methods callable from Java — requires the `jni` crate. [Source: jni crate on crates.io](https://crates.io/crates/jni)
+
+```toml
+# Cargo.toml
+[dependencies]
+jni = "0.21"
+```
+
+**Exposing a Rust function as a JNI method.** The naming convention is identical to C JNI: `Java_<package>_<class>_<method>` with `_` replacing `.`:
+
+```rust
+// File: src/lib.rs
+use jni::JNIEnv;
+use jni::objects::{JClass, JString};
+use jni::sys::jstring;
+
+/// Called from Java as:
+///   com.example.myapp.RustBridge.greet(String name)
+#[no_mangle]
+pub extern "system" fn Java_com_example_myapp_RustBridge_greet<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    name: JString<'local>,
+) -> jstring {
+    // Convert Java String to Rust &str:
+    let name: String = env
+        .get_string(&name)
+        .expect("invalid Java string")
+        .into();
+
+    let greeting = format!("Hello from Rust, {}!", name);
+
+    // Convert Rust String back to Java String:
+    env.new_string(greeting)
+        .expect("failed to create Java string")
+        .into_raw()
+}
+```
+
+The Java declaration needs only:
+```java
+// RustBridge.java
+package com.example.myapp;
+public class RustBridge {
+    static { System.loadLibrary("myapp"); }
+    public static native String greet(String name);
+}
+```
+
+**Calling Java methods from Rust.** The `jni` crate also provides `JNIEnv::call_method` and related helpers to call back into the Java layer from Rust — the equivalent of the C `env->CallVoidMethod(...)` pattern described in §2.12:
+
+```rust
+use jni::objects::JObject;
+use jni::signature::{Primitive, ReturnType};
+
+fn notify_java(env: &mut JNIEnv, callback: &JObject) {
+    env.call_method(
+        callback,
+        "onFrameReady",           // method name
+        "(I)V",                   // signature: (int) → void
+        &[jni::objects::JValue::Int(42)],
+    ).expect("JNI call failed");
+
+    // Always check for pending exceptions after Java calls:
+    if env.exception_check().unwrap_or(false) {
+        env.exception_describe().ok();
+        env.exception_clear().ok();
+    }
+}
+```
+
+**Threading and `JavaVM`.** The `JNIEnv` is not `Send` — it is bound to the thread on which it was obtained. To call Java from a Rust background thread, obtain a `JavaVM` reference at startup (via `JNI_OnLoad`) and call `java_vm.attach_current_thread()` on the background thread:
+
+```rust
+use jni::JavaVM;
+use std::sync::Arc;
+
+static JAVA_VM: std::sync::OnceLock<Arc<JavaVM>> = std::sync::OnceLock::new();
+
+#[no_mangle]
+pub extern "system" fn JNI_OnLoad(vm: JavaVM, _: *mut std::ffi::c_void) -> jni::sys::jint {
+    JAVA_VM.set(Arc::new(vm)).ok();
+    jni::sys::JNI_VERSION_1_6
+}
+
+fn call_java_from_background_thread() {
+    let vm = JAVA_VM.get().expect("JavaVM not initialised");
+    let mut env = vm.attach_current_thread().expect("attach failed");
+    // env is now valid for JNI calls on this thread
+    // Automatically detaches when the AttachGuard is dropped
+}
+```
+
+**`JNIEnv` vs raw `*mut JNIEnv`.** The `jni` crate wraps the raw `*mut sys::JNIEnv` pointer (which C JNI uses) in a safe `JNIEnv<'_>` struct with lifetime tracking. This prevents the most common C JNI bugs: calling `env` from the wrong thread, using a `JNIEnv` after the frame it belongs to has been popped, and forgetting to check `ExceptionCheck`. The crate's `JObject`, `JString`, `JClass`, `JByteArray` etc. are newtype wrappers over `jobject` with proper drop semantics for local references.
+
+[Source: jni-rs documentation](https://docs.rs/jni/latest/jni/)
+
+### 3.9 Rust in AOSP: Platform Components and the Soong Build System
+
+Since 2021, Google has been writing new Android platform components in Rust and migrating security-critical existing components away from C/C++. This section describes what has been rewritten, what is in progress, and how Rust modules integrate into Android's `Soong` build system — relevant for engineers working on AOSP forks, vendor BSPs, or Android kernel drivers.
+
+**Production Rust components in AOSP (as of Android 14/15):**
+
+| Component | Previous language | Rust module | Notes |
+|---|---|---|---|
+| Bluetooth stack (Gabeldorsche) | C++ | `packages/modules/Bluetooth/system/gd/` | Stack-level BT host code; HCI, SDP, GATT |
+| DNS resolver (`doh` module) | C | `packages/modules/DnsResolver/doh/` | DNS-over-HTTPS implementation |
+| `keystore2` | C++ | `system/security/keystore2/` | Android Keystore service (API 31+) |
+| `virtualizationservice` | C++ | `packages/modules/Virtualization/` | pKVM guest VM management |
+| `crosvm` | Rust (upstream) | `external/crosvm/` | Virtual machine monitor for pKVM |
+| Networking stack components | C | Various in `system/netd/` | Incremental migration |
+| `rdroid` | New | `frameworks/native/libs/renderscript/` | RenderScript deprecation path |
+| `nova` DRM kernel driver | New | Linux kernel staging | Rust Vulkan GPU kernel driver (§3.6) |
+
+**The Soong build system and `Android.bp`.** Android's `Soong` build system (which replaced `make`-based builds in AOSP) uses `Android.bp` Blueprint files to declare build modules. Rust modules use the following module types:
+
+```
+// Android.bp — AOSP Rust module declarations
+rust_library_shared {
+    name: "libmy_android_lib",
+    crate_name: "my_android_lib",
+    srcs: ["src/lib.rs"],
+    rustlibs: [
+        "liblog_rust",        // Android log crate (wraps __android_log_write)
+        "libnix",             // Unix syscall bindings
+        "libanyhow",          // Error handling
+    ],
+    apex_available: [":anyapex"],  // Available for APEX delivery
+    min_sdk_version: "30",
+}
+
+rust_binary {
+    name: "my_rust_daemon",
+    srcs: ["src/main.rs"],
+    rustlibs: ["libmy_android_lib"],
+    init_rc: ["my_rust_daemon.rc"],   // systemd-equivalent init script
+}
+
+rust_test {
+    name: "my_android_lib_tests",
+    srcs: ["src/lib.rs"],
+    rustlibs: ["libmy_android_lib"],
+    test_suites: ["general-tests"],
+}
+```
+
+Soong resolves Rust dependencies from the AOSP tree (vendored crates in `external/rust/crates/`) rather than from crates.io. Every third-party crate used in AOSP must be reviewed and checked into `external/rust/crates/<crate-name>/`. The `cargo2android.py` tool automates the conversion of a `Cargo.toml` into an `Android.bp` and copies the crate into the correct location. [Source: AOSP — Using Rust](https://source.android.com/docs/setup/build/rust/building-rust-modules/overview)
+
+**APEX delivery of Rust libraries.** Rust libraries compiled as `rust_library_shared` can be included in APEX packages (§3.3) the same way as C shared libraries. The `apex_available` field in `Android.bp` controls which APEXes can include the library. Rust's `libc++`-equivalent (`librustc_demangle`, `libstd`) is linked statically by default in AOSP Rust builds, avoiding the `libc++_shared.so` ABI concerns described in §2.10 — Rust's standard library is statically linked into each APEX that uses it.
+
+**Rust in the Android kernel.** The Linux kernel has supported Rust since 6.1 (December 2022), and Android's kernel tree tracks this support. The `nova` DRM driver (for NVIDIA's open-source GPU kernel interface) is the most visible Rust GPU driver in the kernel tree — it is the successor to the `nouveau` driver, written in Rust from scratch rather than porting the existing C code. Android's GKI (Generic Kernel Image) does not yet enable Rust kernel modules by default as of 2025, but vendor kernels can enable `CONFIG_RUST` and include Rust modules. [Source: Linux kernel Rust documentation](https://docs.kernel.org/rust/index.html)
+
+### 3.10 wgpu: Cross-Platform Graphics in Rust on Android
+
+`wgpu` is the dominant cross-platform graphics API for Rust, implementing the WebGPU specification across multiple backends. On Android it uses the Vulkan backend via `ash`, making it the highest-level Rust graphics option that still targets the native GPU with full performance. It is used as Mozilla Firefox's WebGPU implementation on Android, giving it production-level validation on a major shipping app. [Source: wgpu on GitHub](https://github.com/gfx-rs/wgpu)
+
+**Backend selection on Android.** `wgpu` on Android uses the Vulkan backend by default when `VK_VERSION_1_1` or higher is available (virtually all Android 8.0+ devices). A GLES3 backend (`wgpu-hal` → `wgpu-hal/gles`) is available as a fallback for devices without Vulkan:
+
+```toml
+# Cargo.toml
+[dependencies]
+wgpu  = { version = "22", features = ["vulkan"] }
+winit = { version = "0.30", features = ["android-native-activity"] }
+android-activity = { version = "0.6", features = ["game-activity"] }
+```
+
+**ANativeWindow surface creation.** `wgpu` creates an Android surface from an `ANativeWindow*` pointer, obtained from `AndroidApp::native_window()` in the `android-activity` crate:
+
+```rust
+use wgpu::SurfaceTargetUnsafe;
+
+async fn init_wgpu(app: &android_activity::AndroidApp) -> (wgpu::Device, wgpu::Queue, wgpu::Surface) {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::VULKAN,
+        ..Default::default()
+    });
+
+    // Obtain ANativeWindow* from android-activity:
+    let native_window = app.native_window()
+        .expect("no native window");
+
+    // Create wgpu surface from ANativeWindow:
+    let surface = unsafe {
+        instance.create_surface_unsafe(
+            SurfaceTargetUnsafe::from_window(&*native_window)
+                .expect("failed to create surface target")
+        ).expect("failed to create surface")
+    };
+
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            ..Default::default()
+        })
+        .await
+        .expect("no suitable Vulkan adapter");
+
+    let (device, queue) = adapter
+        .request_device(&wgpu::DeviceDescriptor::default(), None)
+        .await
+        .expect("failed to create device");
+
+    (device, queue, surface)
+}
+```
+
+**Swapchain configuration.** `wgpu`'s `SurfaceConfiguration` maps directly to `VkSwapchainCreateInfoKHR` on the Vulkan backend. The `present_mode` field should be set to `wgpu::PresentMode::Mailbox` or `Fifo` — `Fifo` corresponds to `VK_PRESENT_MODE_FIFO_KHR` (vsync), which is the only mode guaranteed on all Android Vulkan implementations:
+
+```rust
+let surface_caps = surface.get_capabilities(&adapter);
+let config = wgpu::SurfaceConfiguration {
+    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+    format: surface_caps.formats[0],   // typically Bgra8UnormSrgb on Android
+    width: window_width,
+    height: window_height,
+    present_mode: wgpu::PresentMode::Fifo,
+    alpha_mode: surface_caps.alpha_modes[0],
+    view_formats: vec![],
+    desired_maximum_frame_latency: 2,
+};
+surface.configure(&device, &config);
+```
+
+**WGSL shaders.** `wgpu` uses WGSL (WebGPU Shading Language) as its portable shader language. The `naga` compiler (included in `wgpu`) translates WGSL to SPIR-V for the Vulkan backend at runtime:
+
+```rust
+let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    label: Some("my_shader"),
+    source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+});
+// naga compiles WGSL → SPIR-V → Vulkan VkShaderModule on Android
+```
+
+This compilation happens at `create_shader_module` time — the first call bears a compilation cost (typically 1–5 ms for simple shaders on Adreno). For production, pre-compile and cache SPIR-V via `wgpu`'s pipeline cache support, or ship pre-compiled WGSL `.spv` via `ShaderSource::SpirV`.
+
+**Relation to Firefox on Android.** Mozilla uses `wgpu` as the WebGPU implementation in Firefox for Android (`fenix`), with `wgpu` targeting the Vulkan backend on devices that support it and the GLES3 backend as a fallback. This makes `wgpu` one of the few Rust graphics libraries with a large-scale production Android deployment, and Firefox's conformance test runs against the WebGPU CTS provide ongoing validation of `wgpu`'s Android Vulkan correctness. [Source: wgpu WebGPU conformance](https://github.com/gfx-rs/wgpu/wiki/Conformance-Testing)
+
+**`wgpu` vs `ash` directly.** `ash` (§3.2) gives full access to every Vulkan extension and requires managing lifetimes, synchronisation, and validation manually — appropriate when Vulkan-specific extensions (`VK_ANDROID_external_memory_android_hardware_buffer`, `VK_QCOM_render_pass_transform`) are needed. `wgpu` abstracts these away behind the WebGPU API surface, trading extension access for portability and safety. For a cross-platform Rust game that also targets web (via WebGPU) and desktop, `wgpu` is the correct choice. For an Android-specific engine that needs `AHardwareBuffer` import or explicit tile-memory control, `ash` gives the necessary access.
+
+[Source: wgpu on Android guide](https://github.com/gfx-rs/wgpu/wiki/Running-on-Android)
 
 **Ch85 — Android SurfaceFlinger**: The `ANativeWindow` described in Section 2.6 is the producer end of SurfaceFlinger's `BufferQueue`. The full consumer-side pipeline — how buffers flow from `vkQueuePresentKHR` through the Binder IPC into the compositor — is covered in Ch85.
 
