@@ -901,6 +901,37 @@ The post-NNAPI model (API 35+) pushes hardware acceleration into vendor-supplied
 
 Vision-language models in the PaliGemma 3B class (3 billion parameters, vision + text) are feasible on 2026 flagship hardware at INT4 with LiteRT-LM. The GPU serves as the primary compute engine; the NPU handles INT8 attention layers. The camera→inference→display pipeline described in §8 of this chapter becomes the execution path for camera-grounded VLM queries ("What is this object?") running entirely on-device.
 
+### 11.7 MediaPipe Tasks SDK Evolution
+
+MediaPipe Tasks (§7) is transitioning from a community-maintained SDK to a Google-supported production API:
+- **New modalities (2026–2027)**: Audio classification, face stylisation, and gesture customisation tasks are in preview. The Tasks API schema is being extended to support multi-modal tasks that accept both image and text inputs in a single `TaskRunner.process()` call, enabling on-device vision-language queries without the separate LiteRT-LM layer.
+- **Stable ABI**: The current Tasks API targets Kotlin/Java and Python. A stable C API (`mediapipe/tasks/c/`) is under active development to allow C++ and Rust callers to consume Tasks results without going through the JNI boundary — eliminating the 0.5–1 ms JNI overhead on high-frequency (30 Hz) inference pipelines.
+- **Calculator graph persistence**: The multi-calculator MediaPipe graph (§6.1) currently reconstructs packet routing on each `TaskRunner` call. A session-mode API keeps the `CalculatorGraph` resident in memory between frames, amortising graph construction cost across inference runs — critical for 60 Hz real-time use cases like AR overlay (§9).
+
+### 11.8 Gemini Nano + LiteRT Convergence
+
+Gemini Nano (the on-device Gemini variant) is currently deployed via AICore (`android.ai.app.aicore.AICore`) as a system-level service on Pixel 9+ devices. The convergence trajectory with LiteRT-LM:
+
+- **Phase 1 (2026)**: Gemini Nano remains an AICore-brokered black box; apps call `GenerativeModel("gemini-nano")` via ML Kit GenAI API. LiteRT-LM serves open-weight models (Gemma 2B, PaliGemma). No shared inference path.
+- **Phase 2 (2027+)**: Google is expected to expose Gemini Nano's internal transformer as a LiteRT-LM model, allowing apps to run the same Gemini model weights with the LiteRT-LM engine (rather than through AICore). This would allow fine-tuning, custom LoRA adapters, and private on-device inference without AICore telemetry.
+- **Multimodal cache sharing**: LiteRT-LM and Gemini Nano both need KV-cache GPU memory. A shared KV-cache arbiter (analogous to how SurfaceFlinger arbitrates display memory) is the long-horizon solution for devices running multiple concurrent LLM sessions (e.g., ARCore scene description + background document assistant).
+
+### 11.9 Competitive Landscape: GGML/llama.cpp vs LiteRT-LM
+
+The on-device LLM ecosystem is splitting into two camps with different optimisation targets:
+
+| Dimension | LiteRT-LM (Google) | llama.cpp / GGML |
+|---|---|---|
+| **Primary target** | Mobile (Android/iOS), browser | Desktop Linux, macOS, embedded |
+| **GPU backend** | OpenCL, Metal, WebGPU | Vulkan, CUDA, Metal, ROCm |
+| **Quantisation** | INT4 NF4, INT8 via `dynamic_range_quant` | GGUF Q2–Q8, FP16, BF16 |
+| **Android integration** | First-class: NNAPI delegates, AHardwareBuffer, Thermal API | Via JNI wrapper (`llama-android`); no AHardwareBuffer |
+| **Model ecosystem** | TFLite/LiteRT format; Keras export | GGUF format; llama3/Gemma/Mistral natively |
+| **Latency target** | Real-time mobile (30–60 Hz inference) | High-throughput batch |
+| **ARCore integration** | Via `ArFrame_acquireCameraImage()` → LiteRT pipeline | Not integrated |
+
+The two ecosystems are converging at the GGUF level: Google has published a GGUF→LiteRT-LM converter, and `llama.cpp` has added experimental Android OpenCL support that targets the same Adreno/Mali GPU path as LiteRT-LM's GPU delegate.
+
 ---
 
 ## 12. Integrations
