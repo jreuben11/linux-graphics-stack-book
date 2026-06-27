@@ -14,6 +14,8 @@
    - [3.5 XNNPack: CPU Inference with SIMD and Thread Parallelism](#35-xnnpack-cpu-inference-with-simd-and-thread-parallelism)
 4. [AHardwareBuffer Tensor Interop](#4-ahardwarebuffer-tensor-interop)
 5. [Model Formats and Quantisation](#5-model-formats-and-quantisation)
+   - [5.6 ONNX: The Open Neural Network Exchange Format](#56-onnx-the-open-neural-network-exchange-format)
+   - [5.7 ONNX Runtime Mobile on Android](#57-onnx-runtime-mobile-on-android)
 6. [Model Conversion and Quantization Workflow](#6-model-conversion-and-quantization-workflow)
 7. [MediaPipe Framework Architecture](#7-mediapipe-framework-architecture)
 8. [MediaPipe Tasks API](#8-mediapipe-tasks-api)
@@ -657,26 +659,247 @@ Dynamic range quantisation quantises weights to INT8 at conversion time but dequ
 
 `SignatureDef` allows multiple named inference entry points in a single `.tflite` file. Call `interpreter->GetSignatureRunner("encode")` and `interpreter->GetSignatureRunner("decode")` to switch between subgraphs. This pattern is used by LLM tokeniser+model combos and by multi-task models that share a backbone but expose separate task heads.
 
-### 5.6 ONNX and PyTorch Conversion
+### 5.6 ONNX: The Open Neural Network Exchange Format
 
-The `ai-edge-torch` package provides a PyTorch-native export path:
+**ONNX** (Open Neural Network Exchange) is an open standard for representing machine learning models, originally developed by Microsoft and Facebook in 2017 and now governed by the Linux Foundation's LF AI & Data. It defines a common intermediate representation that allows models trained in one framework (PyTorch, TensorFlow, JAX, scikit-learn) to be loaded and executed by any compatible runtime. [Source: ONNX specification](https://onnx.ai/onnx/intro/concepts.html)
+
+#### Format Structure
+
+An ONNX model is a Protobuf-serialised `ModelProto` containing:
+- A **graph** (`GraphProto`) of nodes, each representing a single operator (Conv, MatMul, Relu, etc.)
+- **Initializers**: constant weight tensors stored inline in the file
+- **Inputs / outputs**: typed tensor descriptors with optional shape information (static or symbolic dynamic shapes)
+- **Opset imports**: the operator set version(s) the model uses
 
 ```python
-import ai_edge_torch
-
-# Convert directly from a PyTorch nn.Module
-edge_model = ai_edge_torch.convert(torch_model.eval(), sample_inputs)
-edge_model.export("model.tflite")
+import onnx
+model = onnx.load("resnet50.onnx")
+print(f"Opset: {model.opset_import[0].version}")   # e.g. 17
+print(f"IR version: {model.ir_version}")            # e.g. 8
+onnx.checker.check_model(model)                     # validate graph integrity
 ```
 
-The resulting `.tflite` is semantically identical to one produced from TensorFlow SavedModel. `onnx-tf` followed by `tf.lite.TFLiteConverter` remains an option for ONNX sources, though `ai-edge-torch` is now preferred for PyTorch-originating models. [Source: ai-edge-torch GitHub](https://github.com/google-ai-edge/ai-edge-torch)
+#### Opset Versions
+
+ONNX operators are versioned independently of the file format via **opsets**. Each opset increment may add new operators, change operator semantics, or deprecate old ones. Runtimes declare which opsets they support; a model targeting opset 17 will not run on a runtime that only supports opset 13.
+
+| Opset | ONNX version | Notable additions |
+|---|---|---|
+| 13 | 1.10 (2021) | `Squeeze`/`Unsqueeze` shape-input; quantised ops |
+| 17 | 1.13 (2022) | `LayerNormalization`, `BlackmanWindow`, STFT ops |
+| 18 | 1.14 (2023) | `CenterCropPad`, grouped `Conv` improvements |
+| 19 | 1.15 (2023) | `AveragePool` dilations; `Identity` extended |
+| 20 | 1.16 (2024) | `ConstantOfShape` extensions; `IsInf` / `IsNaN` updates |
+| 21 | 1.17 (2024) | `StringConcat`, `RegexFullMatch`; `RoiAlign` extensions |
+
+Mobile runtimes typically support up to opset 17–19. Models exported from modern PyTorch (`torch.onnx.export` with `opset_version=17`) are broadly compatible. Opset 20+ features may not be supported by ONNX Runtime Mobile or LiteRT's ONNX ingestion path.
+
+#### Exporting to ONNX
+
+**From PyTorch** (the most common source):
+```python
+import torch
+import torch.onnx
+
+model = MyModel().eval()
+dummy_input = torch.randn(1, 3, 224, 224)
+
+torch.onnx.export(
+    model,
+    dummy_input,
+    "model.onnx",
+    opset_version=17,
+    input_names=["input"],
+    output_names=["output"],
+    dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},  # dynamic batch
+    export_params=True,   # embed weights
+)
+```
+
+**From TensorFlow / Keras** via `tf2onnx`:
+```bash
+pip install tf2onnx
+python -m tf2onnx.convert \
+    --saved-model ./saved_model_dir \
+    --output model.onnx \
+    --opset 17
+```
+
+**Verification and inspection:**
+```python
+import onnx
+from onnx import shape_inference
+
+model = onnx.load("model.onnx")
+onnx.checker.check_model(model)                    # raises if graph is invalid
+inferred = shape_inference.infer_shapes(model)     # propagate tensor shapes
+onnx.save(inferred, "model_with_shapes.onnx")
+
+# Visualise with Netron: https://netron.app — drag and drop .onnx file
+```
+
+#### ONNX on Android: Conversion vs Direct Execution
+
+There are two strategies for using an ONNX model on Android:
+
+1. **Convert to `.tflite`** (LiteRT path): use `ai-edge-torch` (for PyTorch-origin models) or `onnx-tf` + `tf.lite.TFLiteConverter` (for any ONNX model) to produce a `.tflite` artefact, then run with the LiteRT engine and its full delegate ecosystem (GPU, QNN, XNNPack). This is the recommended path when the model's operators map cleanly to LiteRT's op set.
+
+2. **Run ONNX natively** with ONNX Runtime Mobile (§5.7): keep the `.onnx` file and execute it with ORT Mobile. This avoids the conversion step and is preferred when the model uses opsets or operators that LiteRT's converter does not support (e.g., attention layers with complex reshape patterns, newer ONNX operator versions).
+
+| Approach | Keeps `.onnx` | LiteRT delegates | Conversion required | Operator coverage |
+|---|---|---|---|---|
+| Convert → `.tflite` | No | Full (QNN, GPU, XNNPack) | Yes | Limited by converter |
+| ORT Mobile | Yes | Partial (NNAPI EP deprecated; QNN EP available) | No | Broader ONNX opset support |
+
+**ONNX Model Zoo.** Microsoft maintains a curated set of pre-trained ONNX models at [github.com/onnx/models](https://github.com/onnx/models), including ResNet, EfficientNet, BERT, YOLOv8, and Whisper. These are ready-to-use `.onnx` files suitable for direct ORT Mobile execution or conversion to `.tflite`.
+
+### 5.7 ONNX Runtime Mobile on Android
+
+**ONNX Runtime Mobile** (ORT Mobile) is Microsoft's on-device inference engine for Android and iOS. It runs `.onnx` models (or the pre-packaged `.ort` format) without requiring conversion to a platform-native format. ORT Mobile shares its core with the server-side ONNX Runtime but is compiled with a reduced operator set and optimised for mobile memory and latency constraints. [Source: ORT Mobile documentation](https://onnxruntime.ai/docs/tutorials/mobile/)
+
+#### Android Integration
+
+ORT Mobile is distributed as a Maven AAR:
+
+```kotlin
+// build.gradle.kts
+dependencies {
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
+    // or the GPU-enabled variant:
+    // implementation("com.microsoft.onnxruntime:onnxruntime-gpu-android:1.19.2")
+}
+```
+
+The `onnxruntime-android` AAR contains the ORT native library (`libonnxruntime.so`) for `arm64-v8a` and `armeabi-v7a`, the Java/Kotlin API classes, and the default CPU Execution Provider. The `onnxruntime-gpu-android` variant additionally includes the NNAPI and GPU Execution Providers.
+
+#### Kotlin Inference API
+
+```kotlin
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
+import ai.onnxruntime.OnnxTensor
+import java.nio.FloatBuffer
+
+// 1. Create environment (one per process):
+val env = OrtEnvironment.getEnvironment()
+
+// 2. Create session from assets:
+val modelBytes = context.assets.open("model.onnx").readBytes()
+val sessionOptions = OrtSession.SessionOptions().apply {
+    setIntraOpNumThreads(4)           // parallelism within a single op
+    setInterOpNumThreads(1)           // parallelism between independent ops
+    setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+    // Append NNAPI EP if available (API 27+, deprecated API 35+):
+    // addNnapi()
+}
+val session = env.createSession(modelBytes, sessionOptions)
+
+// 3. Inspect model I/O:
+val inputName = session.inputNames.iterator().next()  // e.g. "input"
+println("Output names: ${session.outputNames}")
+
+// 4. Prepare input tensor (1×3×224×224 float32):
+val inputData = FloatBuffer.allocate(1 * 3 * 224 * 224)
+// ... fill inputData with normalised pixel values ...
+val inputShape = longArrayOf(1, 3, 224, 224)
+val inputTensor = OnnxTensor.createTensor(env, inputData, inputShape)
+
+// 5. Run inference:
+val results = session.run(mapOf(inputName to inputTensor))
+
+// 6. Extract output:
+val outputTensor = results["output"]?.value as Array<FloatArray>
+inputTensor.close()
+results.close()
+```
+
+#### Execution Providers on Android
+
+ORT Mobile dispatches computation through **Execution Providers (EPs)**, each targeting a different hardware backend. EPs are evaluated in priority order; ops not supported by a higher-priority EP fall back to the CPU EP automatically.
+
+| Execution Provider | Android support | Status (2026) | Notes |
+|---|---|---|---|
+| CPU EP | All devices | Stable; default | XNNPACK-accelerated for supported ops |
+| NNAPI EP | API 27–34 | Deprecated (API 35+) | Mirrors NNAPI fate (§3.1); avoid for new projects |
+| QNN EP | Snapdragon (API 29+) | Active development | Qualcomm Hexagon via QNN SDK; best on Snapdragon 8 Gen 2+ |
+| CoreML EP | iOS only | N/A | |
+| XNNPACK EP | All devices | Stable | CPU SIMD kernels; similar to LiteRT XNNPack delegate |
+| DirectML EP | Windows only | N/A | |
+
+**Enabling the QNN Execution Provider:**
+```kotlin
+val sessionOptions = OrtSession.SessionOptions().apply {
+    // QNN EP: requires libQnnHtp.so on device (ships with Snapdragon devices)
+    val qnnOptions = mapOf(
+        "backend_path" to "/vendor/lib64/libQnnHtp.so",
+        "htp_performance_mode" to "burst",   // sustained high perf
+        "enable_htp_fp16_precision" to "1",  // FP16 on HTP
+    )
+    addQnn(qnnOptions)
+}
+```
+
+The QNN EP on ORT Mobile follows the same Hexagon HTP path as LiteRT's QNN delegate (§3.3) — both ultimately call into `libQnnHtp.so`. The practical difference is the host runtime: ORT dispatches ONNX graph nodes to QNN, while LiteRT dispatches `.tflite` ops.
+
+#### The `.ort` Pre-Optimised Format
+
+For production deployment, convert the `.onnx` model to ORT's **pre-optimised `.ort` format** offline. This strips the graph optimisation and partitioning cost from the first inference, reducing cold-start session creation time from seconds to tens of milliseconds on a typical classification model:
+
+```bash
+# Install ORT tools:
+pip install onnxruntime
+
+# Convert .onnx → .ort with graph optimisation applied offline:
+python -c "
+import onnxruntime as ort
+sess_options = ort.SessionOptions()
+sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+sess_options.optimized_model_filepath = 'model.ort'
+ort.InferenceSession('model.onnx', sess_options)
+"
+```
+
+The `.ort` file is a FlatBuffer (analogous to `.tflite`'s FlatBuffer) containing the pre-optimised graph, pre-partitioned EP assignment, and serialised weight tensors. It is typically 10–30% smaller than the source `.onnx` file because constant-folding and op fusion have already been applied.
+
+#### Quantisation with ORT Mobile
+
+ORT Mobile supports INT8 quantisation via the `onnxruntime.quantization` Python package:
+
+```python
+from onnxruntime.quantization import quantize_dynamic, QuantType
+
+quantize_dynamic(
+    model_input="model.onnx",
+    model_output="model_int8.onnx",
+    weight_type=QuantType.QInt8,      # INT8 weights, FP32 activations
+    # For full static INT8 (activations too), use quantize_static() with calibration data
+)
+```
+
+Dynamic quantisation compresses weight tensors to INT8 and dequantises them to FP32 at inference time — reducing model size by ~4× with minimal accuracy loss for transformer-based models. Static quantisation (INT8 weights + INT8 activations) requires a calibration dataset but achieves better latency on CPU EP and is required for QNN EP acceleration.
+
+#### ORT Mobile vs LiteRT: When to Choose Each
+
+| Decision factor | Prefer LiteRT | Prefer ORT Mobile |
+|---|---|---|
+| Model origin | TensorFlow, Keras, JAX | PyTorch, HuggingFace Transformers |
+| Hardware acceleration | Full delegate ecosystem (QNN, GPU, XNNPack) | QNN EP available; GPU EP less mature |
+| Operator coverage | Strong for vision/audio ops | Broader ONNX opset; better transformer support |
+| Model format | `.tflite` required by existing pipeline | Can ship `.onnx`/`.ort` directly |
+| Ecosystem integration | MediaPipe Tasks, LiteRT-LM, benchmark_model | ORT GenAI for on-device LLMs |
+| File size overhead | ~1 MB runtime | ~5–8 MB AAR (larger runtime) |
+| Google Play ML Kit | Supported | Not supported |
+
+**ORT GenAI** (2024+) is Microsoft's extension for generative AI on ORT Mobile, supporting Phi-3-mini, Mistral-7B (quantised), and ONNX-format LLMs via the same `OrtSession` API. It competes with LiteRT-LM (§17.1) for on-device LLM inference, with ORT GenAI having an advantage for PyTorch-origin transformer models that export cleanly to ONNX but lose fidelity through the LiteRT conversion path. [Source: ORT GenAI](https://github.com/microsoft/onnxruntime-genai)
+
+**Runtime comparison:**
 
 | Runtime | Format | Primary Backend | Android Delegation |
 |---|---|---|---|
-| LiteRT | `.tflite` | GPU (GLES/Vulkan), NPU | GPU delegate, Qualcomm QNN |
-| ONNX Runtime Mobile | `.onnx` / `.ort` | CPU / NNAPI | NNAPI EP (deprecated API 35+) |
-| CoreML (iOS) | `.mlpackage` | ANE | N/A |
-| OpenVINO Mobile | `.xml`/`.bin` | CPU / Intel NPU | LiteRT CompiledModel |
+| LiteRT | `.tflite` | GPU (GLES/Vulkan), NPU | GPU delegate, QNN, XNNPack |
+| ORT Mobile | `.onnx` / `.ort` | CPU / QNN EP | QNN EP (Snapdragon); NNAPI EP deprecated |
+| CoreML (iOS) | `.mlpackage` | ANE | N/A on Android |
+| OpenVINO Mobile | `.xml`/`.bin` | CPU / Intel NPU | LiteRT CompiledModel (Linux/x86) |
 
 ---
 
