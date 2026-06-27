@@ -931,6 +931,85 @@ android { buildFeatures { prefab = true } }
 
 The `buildFeatures.prefab = true` flag enables AGP's Prefab processing. The `find_package` call then resolves to the correct ABI variant at configure time. Without Prefab, distributing C++ libraries required either source distribution or a manual `jniLibs`-path arrangement that broke with NDK updates — Prefab makes `find_package` as ergonomic for Android as it is on desktop CMake.
 
+#### C++ Standard Version Support
+
+The NDK has used **Clang exclusively** since NDK r18 (2018) — GCC support was removed entirely. The Clang version tracks LLVM releases: NDK r23 shipped Clang 12, r25 shipped Clang 14, r26 shipped Clang 17, r27 shipped Clang 18, r28 shipped Clang 19. This matters because C++ standard support is determined by the Clang version bundled with the NDK, not by the Android API level of the target device.
+
+**Setting the standard in CMake:**
+
+```cmake
+# Global (all targets in the project):
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)   # use -std=c++17, not -std=gnu++17
+
+# Per-target (preferred for mixed-standard projects):
+set_target_properties(mygame PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
+```
+
+`CMAKE_CXX_EXTENSIONS OFF` is important: without it CMake passes `-std=gnu++17` (GNU extensions enabled) rather than `-std=c++17`. GNU extensions include VLAs, `__int128`, and statement expressions — technically non-standard. Most Android NDK code works correctly with either, but setting `OFF` enforces portable standard C++ and avoids surprises when porting to other platforms.
+
+**Standard version support matrix:**
+
+| C++ standard | NDK support status | Notes |
+|---|---|---|
+| C++14 | Fully supported (NDK r13+) | Default before r21; all features present |
+| C++17 | Fully supported (NDK r21+, Clang 9+) | **Recommended default**; `if constexpr`, `std::optional`, `std::variant`, structured bindings, fold expressions, `std::string_view` |
+| C++20 | Broadly supported (NDK r23+, Clang 12+) | Language features: concepts, ranges, coroutines, designated initialisers, `std::span`, `std::bit_cast`; **modules not supported** (see below) |
+| C++23 | Partially supported (NDK r27+, Clang 18+) | `std::expected`, `std::print`, `std::flat_map`, `std::flat_set`; library completeness lags language features |
+
+**C++20 features in graphics code.** Several C++20 additions are directly useful for Android graphics and NDK work:
+
+- **Concepts**: constrain template parameters for shader-interop types, delegate types, and SIMD wrappers without enable_if boilerplate:
+  ```cpp
+  template<typename T>
+  concept GpuBuffer = requires(T b) {
+      { b.data() } -> std::convertible_to<void*>;
+      { b.size() } -> std::convertible_to<size_t>;
+  };
+  template<GpuBuffer B> void upload_vertices(const B& buf) { ... }
+  ```
+- **`std::span`**: non-owning view over contiguous data; ideal for passing vertex/index data to Vulkan `vkCmdUpdateBuffer` or LiteRT tensor buffers without copying:
+  ```cpp
+  void fill_vertex_buffer(std::span<const Vertex> vertices) {
+      memcpy(mapped_ptr, vertices.data(), vertices.size_bytes());
+  }
+  ```
+- **Designated initialisers**: Vulkan struct initialisation without the `{}` chain:
+  ```cpp
+  auto info = VkCommandPoolCreateInfo{
+      .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+      .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+      .queueFamilyIndex = graphics_family,
+  };
+  ```
+- **`std::bit_cast`**: type-punning without undefined behaviour; replaces `memcpy`-into-float tricks for shader constant packing.
+- **Coroutines**: `co_await` / `co_yield` supported; useful for async asset loading pipelines. Requires `<coroutine>` header, present in libc++ from Clang 12+.
+
+**C++20 modules: not supported.** Despite Clang supporting modules (`import std;`, named module units) since Clang 16, the Android NDK's CMake integration does not support C++20 modules as of NDK r28. The NDK's build system relies on traditional header inclusion, and AGP's CMake integration does not pass the module-scanning flags Clang requires. Do not use `import` syntax in NDK code targeting production — fall back to `#include`.
+
+**`__cplusplus` macro values** for compile-time version detection:
+
+```cpp
+#if __cplusplus >= 202302L
+    // C++23 path
+#elif __cplusplus >= 202002L
+    // C++20 path
+#elif __cplusplus >= 201703L
+    // C++17 path
+#else
+    #error "C++17 or later required"
+#endif
+```
+
+**Practical recommendation.** Set `CMAKE_CXX_STANDARD 17` as the project default and opt specific targets into C++20 where concepts or `std::span` provide clear value. Avoid C++23 in production until NDK r28+ is the minimum supported NDK version in your project — library completeness across vendor toolchains that consume your `.so` (e.g., Unity native plugins, third-party SDK integrations) may lag the NDK's own Clang version.
+
+[Source: NDK C++ support](https://developer.android.com/ndk/guides/cpp-support), [Android NDK release notes](https://github.com/android/ndk/releases)
+
 [Source: Android NDK CMake guide](https://developer.android.com/ndk/guides/cmake), [Native dependencies with Prefab](https://developer.android.com/build/native-dependencies)
 
 ---
