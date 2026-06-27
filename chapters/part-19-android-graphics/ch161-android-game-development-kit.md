@@ -7,6 +7,8 @@
 ## Table of Contents
 
 1. [What AGDK Is](#1-what-agdk-is)
+   - 1.1 [Component Overview and Distribution](#11-component-overview-and-distribution)
+   - 1.2 [Historical Context: Android Game Development Before AGDK](#12-historical-context-android-game-development-before-agdk)
 2. [NativeActivity: The Foundation and Its Limits](#2-nativeactivity-the-foundation-and-its-limits)
 3. [GameActivity: The Modern Native App Model](#3-gameactivity-the-modern-native-app-model)
 4. [Input Handling with GameActivity](#4-input-handling-with-gameactivity)
@@ -17,7 +19,8 @@
 9. [Android Performance Tuner](#9-android-performance-tuner)
 10. [Memory Advice API](#10-memory-advice-api)
 11. [Android GPU Inspector](#11-android-gpu-inspector)
-12. [Integrations](#12-integrations)
+12. [ARCore Integration: Building AR-Native Games](#12-arcore-integration-building-ar-native-games)
+13. [Integrations](#13-integrations)
 
 ---
 
@@ -80,6 +83,67 @@ target_link_libraries(mygame
 ### Distribution model
 
 AGDK libraries are **not bundled with the OS**; they ship as part of the app's APK/AAB. This lets Google update the libraries independently of Android OS releases, and lets apps always target the latest version. Pre-built binaries are provided for `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64`. The `_static` variants link the library into the `.so`; the shared variants reduce APK size when multiple `.so` files use the same library.
+
+### 1.2 Historical Context: Android Game Development Before AGDK
+
+AGDK was not born in a vacuum. It is the result of fifteen years of incremental, often painful evolution of the Android native game development story.
+
+#### Phase 1 — Java-only (Android 1.0–2.2, 2008–2010)
+
+The original Android SDK (Android 1.0, September 2008) was Java-only. Every game ran in the Dalvik VM. The only graphics path was either `android.graphics.Canvas` (software rendering) or `GLSurfaceView`, which managed an OpenGL ES context in a Java rendering thread. There was no mechanism to run a tight C/C++ game loop, no native audio API, and no way to avoid the JNI boundary on every frame. Games like the original Angry Birds shipped as Java apps with JNI for their C++ physics engine — but the renderer and main loop were still Java.
+
+#### Phase 2 — NDK arrives, OpenGL ES goes native (NDK r1–r4, 2009–2010)
+
+**NDK r1** (June 2009, targeting Android 1.5 Cupcake) introduced the first Android Native Development Kit. It was narrow in scope: the available headers were `<stdlib.h>`, `<math.h>`, `<zlib.h>`, `<jni.h>`, and `<android/log.h>`. Crucially, OpenGL ES 1.1 was available via `libGLESv1_CM.so` — but OpenGL ES 2.0 was not, audio was absent, and the only way to run native code was as a `.so` called via JNI from a Java `Activity`. The game loop, lifecycle, and `GLSurfaceView` management remained in Java.
+
+**NDK r3** (December 2009) added OpenGL ES 2.0 (`libGLESv2.so`) and EGL (`libEGL.so`), enabling programmable shaders from native C++. The Java rendering thread in `GLSurfaceView` still owned the game loop, but shader-based rendering could now run entirely in native code.
+
+#### Phase 3 — NativeActivity: the first true native game loop (NDK r5, Android 2.3, 2010–2011)
+
+**NDK r5** (December 2010), paired with **Android 2.3 Gingerbread** (API 9), was the pivotal release. It introduced:
+
+- **`android.app.NativeActivity`**: A Java `Activity` subclass that loaded a native `.so` and forwarded all 16 lifecycle callbacks as C function pointers via `ANativeActivityCallbacks`. For the first time a C/C++ game loop could own the entire app lifecycle.
+- **`android_native_app_glue`**: The NDK-provided threading wrapper (§2) that serialised Android callbacks to a background pthread via a pipe — keeping the game loop off the Java main thread and preventing ANR watchdog triggers.
+- **OpenSL ES audio** (`libOpenSLES.so`): The Khronos OpenSL ES 1.0.1 API gave native C/C++ code direct access to the audio HAL with lower latency than Java `AudioTrack`. This was the first path to sub-50ms audio latency on Android without Java.
+- **Android Asset Manager** NDK API: `AAssetManager_open()` allowed native code to read APK assets without a JNI call.
+
+The [Android Developers blog post "Gingerbread NDK Awesomeness" (January 2011)](https://android-developers.googleblog.com/2011/01/gingerbread-ndk-awesomeness.html) framed this release explicitly as enabling game porting: "You can now write a fully-native Android application."
+
+#### Phase 4 — Ecosystem matures: Vulkan, 64-bit, GCC removal (2014–2018)
+
+**Android 5.0 Lollipop** (2014) made ART the default runtime (replacing Dalvik) and added 64-bit AArch64 support. NDK r10 added AArch64 and x86_64 targets.
+
+**Android 7.0 Nougat** (2016) introduced **Vulkan 1.0** support — the most significant graphics API change since OpenGL ES 2.0. The NDK `vulkan/vulkan.h` header and `/system/lib64/libvulkan.so` loader became available. GPU vendors (Qualcomm, ARM) began shipping Vulkan ICDs in their drivers.
+
+**NDK r17–r18** (2018) completed the GCC→Clang transition: GCC was deprecated in r17 and removed entirely in r18. All Android NDK code must use LLVM/Clang. r22 (2021) made LLD the default linker, removing the final GNU toolchain component.
+
+#### Phase 5 — Android Game SDK and early Swappy (2019)
+
+**Android Game SDK** (December 2019) was Google's first attempt to consolidate game-specific native libraries under a unified umbrella — but it shipped with only one component: **Android Frame Pacing** (Swappy). Frame pacing was a known pain point: without vsync-aware presentation scheduling, game engines either burned extra CPU spinning on `eglSwapBuffers`/`vkQueuePresentKHR` or jittered between vsync intervals. Swappy solved this by injecting `VK_GOOGLE_display_timing` and using Android's `Choreographer` for vsync calibration. Unity 2019.2+ integrated Swappy with a checkbox in Android Player Settings.
+
+#### Phase 6 — Google Play Games Services (2013) and the Java social layer
+
+**Google Play Games Services** (GPGS, launched July 2013) provided the social layer for Android games: leaderboards, achievements, cloud saves, and multiplayer matchmaking. GPGS was Java/Kotlin API-only — native games called it via JNI. It remained the only Google-provided game services SDK for eight years. In 2022, Google launched the **Google Play Games PC** client (Windows), and in 2024 GPGS APIs began supporting Kotlin coroutines. GPGS is entirely separate from the AGDK C/C++ stack; native games use it only at startup/shutdown for session initialisation and score submission.
+
+#### Phase 7 — AGDK v1.0: the unified kit (July 2021)
+
+**AGDK v1.0** was announced at Google for Games Developer Summit, July 12, 2021. It unified all game-specific native libraries — `GameActivity`, `game-text-input`, Paddleboat (controller), Swappy (frame pacing), Oboe (audio), Android Performance Tuner (telemetry), Memory Advice API — under the `androidx.games` Jetpack namespace distributed as Prefab AAR packages via Maven Central. The key addition was **`GameActivity`**: a modern replacement for `NativeActivity` that supported `SurfaceView`, fixed text input, exposed all historical input samples, and integrated cleanly with Kotlin app code via subclassing (`class MainActivity : GameActivity()`).
+
+**Sceneform** (Google's high-level AR rendering library, built on Filament) had been deprecated in August 2020 and its GitHub repository was archived in December 2021 — just as AGDK launched. Sceneform had abstracted ARCore + Filament + lifecycle management into a Java API; its deprecation signalled a move toward the raw ARCore C API + native rendering that AGDK enables.
+
+#### AGDK component version history
+
+| Library | Stable since | Notable milestones |
+|---|---|---|
+| `games-frame-pacing` (Swappy) | Android Game SDK 2019 | Predates AGDK; added GL+Vulkan unified API in AGDK 1.0 |
+| `games-activity` (GameActivity) | v1.0.0 July 2021 | v2: 16KB page size; v4.3: mouse support; v4.4 (May 2026): current |
+| `games-controller` (Paddleboat) | v1.0 July 2021 | v2: touchpad, LED light control (June 2024) |
+| `games-text-input` | v1.0 July 2021 | Bundled with games-activity; multi-line mode added v4.3 |
+| `oboe` | v1.0 2018 (standalone) | Pre-dates AGDK; adopted into `androidx.games` umbrella |
+| `games-performance` (Tuner) | v1.0 2021 | v2.0 (August 2024): quality prediction, Play aggregation |
+| `games-memory-advice` | v1.0 2021 | v2.0 (September 2023): ML-based memory pressure model |
+
+[Source: AGDK release notes](https://developer.android.com/games/agdk/release-notes), [NDK revision history](https://developer.android.com/ndk/downloads/revision_history), [Gingerbread NDK announcement](https://android-developers.googleblog.com/2011/01/gingerbread-ndk-awesomeness.html), [AGDK launch announcement](https://android-developers.googleblog.com/2021/07/introducing-android-game-development-kit.html)
 
 ---
 
@@ -867,7 +931,268 @@ vkCmdDrawIndexed(cmd, indexCount, 1, 0, 0, 0);
 
 ---
 
-## 12. Integrations
+## 12. ARCore Integration: Building AR-Native Games
+
+ARCore is Google's augmented reality platform for Android. It is a separate SDK from AGDK but integrates directly with GameActivity and the NDK-direct game loop model. The combination — AGDK for lifecycle and surface management, ARCore C API for tracking and camera — is the recommended pattern for native AR games and XR apps.
+
+### ARCore availability and CMake integration
+
+ARCore requires Play Services AR (`com.google.ar.core`) to be installed on the device, and verification must happen at startup:
+
+```c
+// Link: add -larcore to CMakeLists.txt
+// Gradle: implementation 'com.google.ar:core:1.46.0'
+// CMake: find_package(arcore REQUIRED CONFIG) or link directly
+
+#include "arcore_c_api.h"
+
+// Check availability before ArSession_create
+ArAvailability avail;
+ArCoreApk_checkAvailability(env, activity, &avail);
+if (avail != AR_AVAILABILITY_SUPPORTED_INSTALLED) {
+    // Request install or show unsupported message
+    ArCoreApk_requestInstall(env, activity, true, &install_status);
+}
+```
+
+[Source: ARCore C API quickstart](https://developers.google.com/ar/develop/c/quickstart)
+
+### ArSession lifecycle inside android_main
+
+The `ArSession` maps cleanly onto GameActivity's `APP_CMD_*` lifecycle. The critical mapping is:
+
+| `APP_CMD_*` event | `ANativeWindow` state | ARCore action |
+|---|---|---|
+| `APP_CMD_RESUME` | may be NULL | `ArSession_resume(session)` |
+| `APP_CMD_INIT_WINDOW` | non-NULL | Set display geometry; create Vulkan swapchain |
+| `APP_CMD_GAINED_FOCUS` | non-NULL | Begin AR frame loop |
+| `APP_CMD_LOST_FOCUS` | non-NULL | Pause AR frame loop |
+| `APP_CMD_PAUSE` | non-NULL | `ArSession_pause(session)` |
+| `APP_CMD_TERM_WINDOW` | about to become NULL | Destroy swapchain; do not destroy `ArSession` |
+| `APP_CMD_DESTROY` | NULL | `ArSession_destroy(session)` |
+
+```c
+// File: ar_game_main.cpp — combined AGDK + ARCore game loop
+#include <game-activity/native_app_glue/android_native_app_glue.h>
+#include "arcore_c_api.h"
+
+static ArSession* ar_session = nullptr;
+static ArFrame*   ar_frame   = nullptr;
+
+static void handle_cmd(struct android_app* app, int32_t cmd) {
+    switch (cmd) {
+    case APP_CMD_CREATE:
+        ArSession_create(app->activity->env, app->activity->clazz, &ar_session);
+        ArFrame_create(ar_session, &ar_frame);
+        break;
+    case APP_CMD_RESUME:
+        ArSession_resume(ar_session);
+        break;
+    case APP_CMD_INIT_WINDOW:
+        // Set the display geometry after the surface is ready
+        ArSession_setDisplayGeometry(ar_session,
+            app->activity->env,          // JNIEnv*
+            0,                           // ROTATION_0 (update on config change)
+            ANativeWindow_getWidth(app->window),
+            ANativeWindow_getHeight(app->window));
+        vulkan_create_swapchain(app->window);
+        break;
+    case APP_CMD_CONFIG_CHANGED: {
+        // Update geometry when orientation changes
+        int32_t rot = AConfiguration_getOrientation(app->config);
+        ArSession_setDisplayGeometry(ar_session, app->activity->env,
+            rot, ANativeWindow_getWidth(app->window),
+            ANativeWindow_getHeight(app->window));
+        break;
+    }
+    case APP_CMD_PAUSE:
+        ArSession_pause(ar_session);
+        break;
+    case APP_CMD_TERM_WINDOW:
+        vulkan_destroy_swapchain();
+        break;
+    case APP_CMD_DESTROY:
+        ArFrame_destroy(ar_frame);
+        ArSession_destroy(ar_session);
+        break;
+    }
+}
+
+static void do_frame(struct android_app* app) {
+    // 1. Update AR session — fills ar_frame with new camera pose
+    ArStatus status = ArSession_update(ar_session, ar_frame);
+    if (status != AR_SUCCESS) return;
+
+    // 2. Get camera pose and projection
+    ArCamera* camera;
+    ArFrame_acquireCamera(ar_session, ar_frame, &camera);
+
+    float view_mat[16], proj_mat[16];
+    ArCamera_getViewMatrix(ar_session, camera, view_mat);
+    ArCamera_getProjectionMatrix(ar_session, camera, 0.1f, 100.0f, proj_mat);
+
+    ArCamera_release(camera);
+
+    // 3. Render AR content with view_mat/proj_mat via Vulkan (see §12.2)
+    vulkan_render_frame(view_mat, proj_mat);
+}
+
+void android_main(struct android_app* app) {
+    app->onAppCmd = handle_cmd;
+    while (!app->destroyRequested) {
+        GameActivityInputBuffer* ib = android_app_swap_input_buffers(app);
+        if (ib) android_app_clear_motion_events(ib);
+        int events;
+        android_poll_source* source;
+        ALooper_pollOnce(0, nullptr, &events, (void**)&source);
+        if (source) source->process(app, source);
+        if (app->window) do_frame(app);
+    }
+}
+```
+
+### The two camera texture paths
+
+ARCore produces the live camera image on every `ArSession_update()`. There are two paths for consuming it in rendering:
+
+#### OpenGL ES path: ArSession_setCameraTextureName
+
+The traditional path registers a `GL_TEXTURE_EXTERNAL_OES` texture that ARCore writes the camera YUV image into:
+
+```c
+// Call once after ArSession_create, before ArSession_resume
+GLuint camera_tex_id;
+glGenTextures(1, &camera_tex_id);
+ArSession_setCameraTextureName(ar_session, camera_tex_id);
+
+// After ArSession_update(), camera_tex_id contains the latest frame
+// Fragment shader must use samplerExternalOES:
+//   #extension GL_OES_EGL_image_external : require
+//   uniform samplerExternalOES u_CameraTexture;
+//   void main() { fragColor = texture(u_CameraTexture, texCoord); }
+```
+
+For apps with a multi-threaded rendering pipeline, `ArSession_setCameraTextureNames()` accepts a ring buffer of texture IDs — ARCore assigns each incoming frame to the next texture in the array, allowing the render thread to consume the previous frame while ARCore fills the next.
+
+#### Vulkan path: AHardwareBuffer export
+
+ARCore's Vulkan path (API 27+, requires `VK_ANDROID_external_memory_android_hardware_buffer`) exposes the camera frame as an `AHardwareBuffer`:
+
+```c
+// Configure session to expose hardware buffers:
+ArConfig* config;
+ArConfig_create(ar_session, &config);
+ArConfig_setTextureUpdateMode(ar_session, config,
+    AR_TEXTURE_UPDATE_MODE_EXPOSE_HARDWARE_BUFFER);
+ArSession_configure(ar_session, config);
+ArConfig_destroy(config);
+
+// After ArSession_update(), retrieve the buffer for the current frame:
+AHardwareBuffer* hw_buf = nullptr;
+ArFrame_getHardwareBuffer(ar_session, ar_frame, &hw_buf);
+// hw_buf is valid until the next ArSession_update() call.
+// If you need to retain it across frames:
+AHardwareBuffer_acquire(hw_buf);  // keep alive
+// ... render the frame ...
+AHardwareBuffer_release(hw_buf);  // release when done
+
+// Import into Vulkan via VK_ANDROID_external_memory_android_hardware_buffer:
+// (same pattern as AHardwareBuffer × Vulkan in Ch86 §6)
+VkAndroidHardwareBufferPropertiesANDROID hw_props = { ... };
+vkGetAndroidHardwareBufferPropertiesANDROID(device, hw_buf, &hw_props);
+// Create VkImage backed by the AHardwareBuffer; add VkSamplerYcbcrConversion
+// for the camera YUV format (VkExternalFormatANDROID).
+```
+
+The camera YUV data uses an implementation-defined external format on most devices. The Vulkan import path requires `VkSamplerYcbcrConversion` to convert Y'CBCR → RGB in the fragment shader. The ARCore SDK's `hello_ar_vulkan_c` sample shows the complete pipeline: session configuration → `ArFrame_getHardwareBuffer()` → `VkExternalFormatANDROID` → `VkSamplerYcbcrConversionCreateInfo` → per-frame image barrier → sampler usage in GLSL. [Source: hello_ar_vulkan_c](https://github.com/google-ar/arcore-android-sdk/tree/main/samples/hello_ar_vulkan_c)
+
+### Plane detection, hit-testing, and anchors
+
+ARCore provides world-understanding on top of the camera frame:
+
+```c
+// Plane detection — enumerate all detected planes
+ArTrackableList* plane_list;
+ArTrackableList_create(ar_session, &plane_list);
+ArSession_getAllTrackables(ar_session, AR_TRACKABLE_PLANE, plane_list);
+
+int32_t plane_count;
+ArTrackableList_getSize(ar_session, plane_list, &plane_count);
+for (int32_t i = 0; i < plane_count; i++) {
+    ArTrackable* trackable;
+    ArTrackableList_acquireItem(ar_session, plane_list, i, &trackable);
+    ArPlane* plane = ArAsPlane(trackable);
+    ArTrackingState state;
+    ArTrackable_getTrackingState(ar_session, trackable, &state);
+    if (state == AR_TRACKING_STATE_TRACKING) {
+        // ArPlane_getPolygon() gives the boundary vertices
+        // ArPlane_getCenterPose() gives the plane pose for rendering a quad
+    }
+    ArTrackable_release(trackable);
+}
+ArTrackableList_destroy(plane_list);
+
+// Hit-test: tap screen → find surface intersection
+ArHitResultList* hit_list;
+ArHitResultList_create(ar_session, &hit_list);
+ArFrame_hitTest(ar_session, ar_frame, tap_x, tap_y, hit_list);
+int32_t hit_count;
+ArHitResultList_getSize(ar_session, hit_list, &hit_count);
+if (hit_count > 0) {
+    ArHitResult* hit;
+    ArHitResult_create(ar_session, &hit);
+    ArHitResultList_getItem(ar_session, hit_list, 0, hit);
+    ArAnchor* anchor;
+    ArHitResult_acquireNewAnchor(ar_session, hit, &anchor);
+    // Store anchor; retrieve pose each frame for object placement
+    ArHitResult_destroy(hit);
+}
+ArHitResultList_destroy(hit_list);
+```
+
+### Game Mode API (Android 12+)
+
+Android 12 introduced the **Game Mode API** — orthogonal to both AGDK and ARCore but relevant to any native game. It allows the system to apply preset optimisation profiles based on user preference:
+
+- **`GAME_MODE_PERFORMANCE`**: Maximise FPS; system boosts CPU/GPU clocks. Typical result: +10–30% GPU throughput.
+- **`GAME_MODE_BATTERY`**: Reduce power draw; may throttle clocks or lower default render resolution.
+- **`GAME_MODE_STANDARD`**: Balanced default.
+
+Android 13 extended the API with `setGameState()` — the app can signal `GAME_STATE_GAMEPLAY_INTERACTING`, `GAME_STATE_GAMEPLAY_UNINTERACTING`, or `GAME_STATE_LOADING`, and the system can apply per-state power policies (e.g., boost CPU during asset loading, relax during idle menus).
+
+```java
+// In Kotlin/Java layer (GameActivity subclass):
+import android.app.GameManager
+val gameManager = getSystemService(GameManager::class.java)
+val mode = gameManager.gameMode
+// mode: GAME_MODE_UNSUPPORTED / STANDARD / PERFORMANCE / BATTERY / CUSTOM
+
+// Android 13+ game state:
+import android.app.GameState
+gameManager.setGameState(GameState(true, GameState.MODE_GAMEPLAY_INTERACTING))
+```
+
+The Game Mode API is a system-level hint; the actual effect is device-dependent and OEM-specific. [Source: Game Mode API](https://developer.android.com/games/optimize/adpf/gamemode/gamemode-api)
+
+### Android XR and ARCore for Jetpack XR
+
+Android XR (Samsung Galaxy XR / Project Moohan, 2025) introduces a new **ARCore for Jetpack XR** API (`com.google.ar:arcore-jetpack-xr`). This is Kotlin-first (not C), but the underlying session model is the same:
+
+- `XrSession` (Jetpack XR) maps to `ArSession` (mobile ARCore): tracking, plane detection, anchor persistence.
+- Hand tracking (`XrHandTrackingState`) is available as a first-class API on XR headsets.
+- The rendering surface is a `SurfaceView` managed by `GameActivity` or a Jetpack Compose `AndroidView`.
+- Native Vulkan rendering on XR headsets follows the same `ANativeWindow → vkCreateAndroidSurfaceKHR` path, with `VK_KHR_multiview` strongly recommended for stereo rendering.
+
+For native games targeting both mobile ARCore and Android XR headsets, the recommended pattern is:
+1. GameActivity manages the `ANativeWindow` and app lifecycle (unchanged).
+2. ARCore C API handles mobile tracking; Jetpack XR SDK handles headset tracking (called from Kotlin).
+3. Vulkan render loop is common code in both cases: the same command buffers, same AGDK frame pacing (Swappy), same ANativeWindow integration.
+
+[Source: ARCore for Android XR](https://developer.android.com/develop/xr/jetpack-xr-sdk/arcore), [hello_ar_c sample](https://github.com/google-ar/arcore-android-sdk/tree/main/samples/hello_ar_c)
+
+---
+
+## 13. Integrations
 
 - **Ch85 — SurfaceFlinger and BufferQueue**: `ANativeWindow` is the producer end of a `BufferQueue`; SurfaceFlinger is the consumer. Every buffer submitted through a Vulkan swapchain or EGL surface traverses the pipeline described in Ch85. The HWComposer path (hardware overlay vs. GPU composition) applies equally to GameActivity windows.
 
@@ -875,7 +1200,7 @@ vkCmdDrawIndexed(cmd, indexCount, 1, 0, 0, 0);
 
 - **Ch86 — @FastNative / @CriticalNative**: The JNI transition cost that `@FastNative` reduces is the same cost that `GameActivity` eliminates from the per-frame render path. The two approaches are complementary: `@FastNative` optimises unavoidable JNI calls (framework boundaries); GameActivity eliminates JNI from the hot path entirely.
 
-- **Ch87 — Android AR / ARCore / Android XR**: ARCore's `ArSession_update()` loop and the OpenXR `xrWaitFrame()` / `xrEndFrame()` loop are analogous to `android_main()`'s event loop. GameActivity and `ANativeWindow` are used in ALVR and WiVRn to host the decoded VR stream surface on the headset.
+- **Ch87 — Android AR / ARCore / Android XR**: ARCore's `ArSession_update()` loop and the OpenXR `xrWaitFrame()` / `xrEndFrame()` loop are analogous to `android_main()`'s event loop. Section 12 of this chapter covers the ARCore C API + GameActivity integration pattern in depth. GameActivity and `ANativeWindow` are also used in ALVR and WiVRn to host the decoded VR stream surface on a headset.
 
 - **Ch26 — VA-API and Video Decode**: Android's `MediaCodec` codec pipeline, accessible from C via `AMediaCodec` (NDK), produces decoded frames as `AHardwareBuffer` that can be imported into Vulkan via `VK_ANDROID_external_memory_android_hardware_buffer` — the same AHardwareBuffer model described in Ch85 and Ch86. Oboe's AAudio MMAP path and VA-API's DMA-BUF zero-copy both aim at the same goal: eliminating unnecessary copies between hardware subsystems.
 
