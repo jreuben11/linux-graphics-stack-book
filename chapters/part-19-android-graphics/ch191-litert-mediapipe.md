@@ -18,6 +18,7 @@
    - [5.7 ONNX Runtime Mobile on Android](#57-onnx-runtime-mobile-on-android)
    - [5.8 ExecuTorch: PyTorch's Native Mobile Runtime](#58-executorch-pytorchs-native-mobile-runtime)
    - [5.9 JAX and StableHLO: Export Path to LiteRT](#59-jax-and-stablehlo-export-path-to-litert)
+   - [5.10 NVIDIA and Android: Why There Is No NVIDIA Mobile AI Stack](#510-nvidia-and-android-why-there-is-no-nvidia-mobile-ai-stack)
 6. [Model Conversion and Quantization Workflow](#6-model-conversion-and-quantization-workflow)
 7. [MediaPipe Framework Architecture](#7-mediapipe-framework-architecture)
 8. [MediaPipe Tasks API](#8-mediapipe-tasks-api)
@@ -1197,6 +1198,43 @@ JAX's native **quantization-aware training (QAT)** uses `aqt` (Accurate Quantize
 | Production status | Google (internal) / research | Meta production (2023+) | Microsoft production |
 
 **Key insight**: JAX has no dedicated mobile runtime. The Android deployment story for JAX models is always mediated by LiteRT — either via the `jax2tf` + TFLiteConverter legacy path (stable, widely supported) or the `jax.export` + StableHLO + `ai-edge-litert` path (newer, required for QAT models). Teams training in JAX/Flax who need Android inference should plan the LiteRT conversion step into their model pipeline from the start, as it constrains op choice (particularly XLA-specific ops that have no TFLite equivalent).
+
+---
+
+### 5.10 NVIDIA and Android: Why There Is No NVIDIA Mobile AI Stack
+
+NVIDIA dominates server and desktop AI inference (H100 data centre, RTX workstation, TensorRT-LLM) but has **no presence in the Android smartphone AI stack**. Understanding why clarifies the competitive landscape for the runtimes described in §§5.6–5.9.
+
+#### The Tegra Exit
+
+NVIDIA manufactured mobile SoCs under the **Tegra** brand from 2008 to approximately 2016. Tegra K1 (2014) introduced a Kepler GPU powerful enough to run full CUDA, and Tegra X1 (2015) powered the Nintendo Switch and NVIDIA Shield TV. However, NVIDIA failed to win volume design-wins from major Android OEMs (Samsung, Xiaomi, OPPO) who preferred Qualcomm Snapdragon (for modem integration) and later their own Exynos/Dimensity designs. NVIDIA exited the smartphone SoC market around 2016; the Tegra line was subsequently repositioned as the **Jetson** platform for edge computing. [Source: NVIDIA Jetson platform](https://developer.nvidia.com/embedded/jetson)
+
+#### What NVIDIA Has (and What It Runs On)
+
+| Product | Hardware | OS | Android relevance |
+|---|---|---|---|
+| **TensorRT** | CUDA GPUs (RTX, A/H-series) | Linux / Windows | None — CUDA not present on Android phones |
+| **TensorRT-LLM** | CUDA GPUs, Hopper/Blackwell | Linux | None on Android |
+| **Jetson Orin / Nano** | Custom ARM + Ampere GPU | Ubuntu L4T (Linux) | Edge robotics/automotive, not Android |
+| **Shield TV** | Tegra X1 (2019 revision) | Android TV | CUDA on-device, but niche consumer device |
+| **GeForce NOW** | Cloud RTX fleet | Server Linux | AI upscaling runs server-side; Android app is a thin client |
+| **DLSS / RTX Remix** | RTX desktop/laptop | Windows/Linux | No Android path |
+
+The Jetson platform — NVIDIA's only current embedded AI product — runs **Ubuntu 22.04 (L4T)**, not Android. CUDA and TensorRT work on Jetson. They do not run on Android smartphones. LiteRT's §17.3 roadmap entry noting "NVIDIA Jetson" support refers to LiteRT running on L4T Linux via the Mesa OpenGL ES path, not to any NVIDIA-supplied inference SDK.
+
+#### Why NVIDIA Is Absent From the NPU Delegate Table
+
+The LiteRT delegate ecosystem (§3) lists: CPU (XNNPack), GPU (OpenCL/Vulkan), QNN (Qualcomm), CoreML (Apple), NeuroPilot (MediaTek). There is no NVIDIA delegate because:
+
+1. **No NVIDIA silicon in shipping Android phones** — there is no CUDA-capable GPU in any volume Android smartphone (2016 onwards).
+2. **No CUDA on Android** — `libcuda.so` and the NVVM IR compiler are not part of the Android NDK or the Android Compatibility Definition Document. Google explicitly excludes CUDA from Android's API surface.
+3. **TensorRT has no Android port** — TensorRT requires the NVIDIA driver and CUDA runtime. Neither exists in Android's userspace.
+
+#### The Contrast With Desktop and Edge AI
+
+This absence is structurally significant. NVIDIA controls the AI training stack (PyTorch + CUDA is the dominant training environment) and the datacenter inference stack (TensorRT-LLM on H100). But the inference path from PyTorch model to Android device *must* exit the CUDA ecosystem entirely — either via `torch.export` → ExecuTorch (§5.8), via ONNX → ORT Mobile (§5.7), or via conversion to LiteRT (§5.6/§5.9). NVIDIA's tooling (TensorRT, ONNX export from PyTorch) is useful in the *preparation* stages (model optimisation before export) but has no role in the *on-device execution* stage on Android.
+
+Developers moving from CUDA-accelerated training or server inference to Android deployment should expect to re-validate model behaviour after format conversion, as TensorRT operator fusion and INT8 calibration do not translate to any Android delegate. The closest analogue on Android is Qualcomm's QNN delegate with QDQ (quantize-dequantize) node insertion — conceptually similar to TensorRT's INT8 calibration but entirely separate toolchain. [Source: Qualcomm AI Hub](https://aihub.qualcomm.com/)
 
 ---
 
