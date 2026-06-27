@@ -18,11 +18,12 @@
 9. [OpenXR on Android and Android XR](#9-openxr-on-android-and-android-xr)
 10. [ARCore Recording, Playback, and the Dataset API](#10-arcore-recording-playback-and-the-dataset-api)
 11. [Performance, Power, and Mobile GPU Considerations](#11-performance-power-and-mobile-gpu-considerations)
-12. [Snapdragon Spaces: Qualcomm's AR SDK](#12-snapdragon-spaces-qualcomms-ar-sdk)
+12. [ARCore AI and ML: On-Device Intelligence](#12-arcore-ai-and-ml-on-device-intelligence)
+13. [Snapdragon Spaces: Qualcomm's AR SDK](#13-snapdragon-spaces-qualcomms-ar-sdk)
     - [Meta Quest 3 and Meta Horizon OS](#meta-quest-3-and-meta-horizon-os)
     - [Meta Horizon OS Full Software Stack](#meta-horizon-os-full-software-stack)
-13. [Linux AR: Monado, SteamVR, and the Open Stack](#13-linux-ar-monado-steamvr-and-the-open-stack)
-14. [Integrations](#14-integrations)
+14. [Linux AR: Monado, SteamVR, and the Open Stack](#14-linux-ar-monado-steamvr-and-the-open-stack)
+15. [Integrations](#15-integrations)
 
 ---
 
@@ -1060,7 +1061,259 @@ This zero-copy design is critical for mobile power budgets: a 1280×720 YCbCr fr
 
 ---
 
-## 12. Snapdragon Spaces: Qualcomm's AR SDK
+## 12. ARCore AI and ML: On-Device Intelligence
+
+ARCore is not merely a tracking SDK — it ships a layered on-device ML stack that powers scene semantics, depth estimation, visual positioning, and is beginning to integrate with Google's foundation models via ML Kit and Gemini Nano. This section covers each AI subsystem, its inference architecture, and how it connects to other Android ML frameworks.
+
+### The ARCore on-device ML stack
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Application Layer                                          │
+│  (ARCore C API / Java SDK / Unity AR Foundation)           │
+├─────────────────┬───────────────────┬───────────────────────┤
+│  Scene          │  MotionStereo     │  VPS / Geospatial     │
+│  Semantics      │  Depth            │  Neural Matching      │
+│  (on-device     │  (on-device VIO   │  (Street View 3D      │
+│   segmentation) │   + ML depth)     │   point cloud)        │
+├─────────────────┴───────────────────┴───────────────────────┤
+│  Android ML Runtime (GPU delegate / NNAPI / Hexagon DSP)   │
+├─────────────────────────────────────────────────────────────┤
+│  Camera HAL3 + IMU  ←  AHardwareBuffer zero-copy           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Scene Semantics: on-device pixel-level segmentation
+
+The **Scene Semantics API** (`ArConfig_setSemanticMode`) runs a neural semantic segmentation network on every camera frame, entirely on-device. The model is an efficient mobile architecture (ENet-style) running on the device GPU via the Vulkan/GLES compute backend.
+
+**Scope:** Outdoor scenes only. Portrait orientation required for quality guarantees; landscape labels are not guaranteed. Not all ARCore devices support it (check `ArSession_isSemanticModeSupported()`).
+
+**11 semantic labels** (`AR_SEMANTIC_LABEL_*` enum):
+
+| Value | Label | Typical use in AR |
+|---|---|---|
+| 0 | `UNLABELED` | Ignore / fallback |
+| 1 | `SKY` | Don't place objects above skyline |
+| 2 | `BUILDING` | Facade AR anchoring, occlusion |
+| 3 | `TREE` | Avoid anchor placement in foliage |
+| 4 | `ROAD` | Navigation AR overlays |
+| 5 | `SIDEWALK` | Pedestrian path visualisation |
+| 6 | `TERRAIN` | Ground-plane AR (grass, soil, sand) |
+| 7 | `STRUCTURE` | Fences, guardrails — avoid placement |
+| 8 | `OBJECT` | Dynamic obstacle detection |
+| 9 | `VEHICLE` | Moving objects — AR safety apps |
+| 10 | `PERSON` | People occlusion, privacy masking |
+| 11 | `WATER` | Avoid placement on water surfaces |
+
+```c
+// Enable Scene Semantics
+ArConfig* config;
+ArConfig_create(ar_session, &config);
+ArConfig_setSemanticMode(ar_session, config, AR_SEMANTIC_MODE_ENABLED);
+ArSession_configure(ar_session, config);
+ArConfig_destroy(config);
+
+// Per frame: acquire semantic image (uint8 per pixel, AR_SEMANTIC_LABEL_* values)
+ArImage* sem_image = nullptr;
+ArFrame_acquireSemanticImage(ar_session, ar_frame, &sem_image);
+
+// Acquire confidence image (uint8 per pixel, 0=low confidence, 255=high)
+ArImage* conf_image = nullptr;
+ArFrame_acquireSemanticConfidenceImage(ar_session, ar_frame, &conf_image);
+
+// Get fraction of frame covered by a label (0.0–1.0)
+float person_fraction = 0.0f;
+ArFrame_getSemanticLabelFraction(ar_session, ar_frame,
+    AR_SEMANTIC_LABEL_PERSON, &person_fraction);
+
+ArImage_release(sem_image);
+ArImage_release(conf_image);
+```
+
+[Source: ARCore Scene Semantics](https://developers.google.com/ar/develop/scene-semantics), [Semantic label reference](https://developers.google.com/ar/reference/c/group/ar-semantic-label)
+
+### Depth API and MotionStereo: ML-assisted depth estimation
+
+The **Depth API** produces a 16-bit unsigned depth image (millimetre encoding, up to 65,535 mm range) through a pipeline that combines:
+
+1. **VIO ego-motion estimation** — the same 6DoF pose tracker that powers world tracking provides frame-to-frame camera motion.
+2. **MotionStereo** — a self-supervised monocular depth network that uses the estimated camera motion as a geometric constraint to infer per-pixel depth. The model runs on-device on the GPU.
+3. **Hardware sensor fusion** — if a Time-of-Flight (dToF) sensor or stereo camera is present (e.g., Pixel 4's infrared dot projector, Samsung ToF modules), the hardware depth is fused with the MotionStereo estimate for higher accuracy.
+4. **Geospatial Depth** — when both Depth mode and Geospatial mode are active in a VPS-covered area, Streetscape Geometry building and terrain meshes extend the range to the full 65 m ceiling.
+
+```c
+ArConfig_setDepthMode(ar_session, config, AR_DEPTH_MODE_AUTOMATIC);
+
+// Smooth depth (temporally filtered, suitable for occlusion rendering):
+ArImage* depth_img = nullptr;
+ArFrame_acquireDepthImage16Bits(ar_session, ar_frame, &depth_img);
+
+// Raw depth (per-frame, noisier, for measurement/point cloud use):
+ArImage* raw_depth = nullptr;
+ArFrame_acquireRawDepthImage16Bits(ar_session, ar_frame, &raw_depth);
+
+// Per-pixel confidence (0=low, 255=high):
+ArImage* conf = nullptr;
+ArFrame_acquireRawDepthConfidenceImage(ar_session, ar_frame, &conf);
+```
+
+Device coverage: 88% of active ARCore devices as of May 2026. iOS is not supported.
+
+### VPS and Geospatial API: neural visual positioning
+
+The **Geospatial API** uses a neural visual positioning pipeline to achieve sub-5-metre localisation accuracy in outdoor urban environments — substantially better than GPS (typically ±5–15 m in cities, degraded by multipath).
+
+**Pipeline:**
+1. A neural feature identification network (trained on Street View imagery from 100+ countries) identifies durable visual landmarks — building facades, signs, kerbs — that remain recognisable across seasons and lighting changes.
+2. The device runs a real-time localisation network on incoming camera frames to extract matching features.
+3. The extracted features are matched against Google's 3D point cloud (derived from trillions of Street View images) to compute a WGS84 pose.
+4. The VPS pose is fused with GPS, compass, and IMU via a Kalman filter to produce `ArGeospatialPose` (latitude, longitude, altitude, heading + per-axis accuracy estimates).
+
+```c
+ArConfig_setGeospatialMode(ar_session, config, AR_GEOSPATIAL_MODE_ENABLED);
+
+// After ArSession_update():
+ArEarth* earth = nullptr;
+ArSession_acquireEarth(ar_session, &earth);
+
+ArGeospatialPose geo_pose;
+ArEarth_getCameraGeospatialPose(ar_session, earth, &geo_pose);
+// geo_pose.latitude, .longitude, .altitude (WGS84)
+// geo_pose.heading_degrees  (compass bearing)
+// geo_pose.horizontal_accuracy, .vertical_accuracy, .heading_accuracy
+
+// Place a world-locked anchor at a GPS coordinate:
+ArAnchor* anchor = nullptr;
+ArEarth_acquireNewAnchor(ar_session, earth,
+    51.5014, -0.1419, 10.0,   // lat, lon, alt (WGS84)
+    quaternion,               // 4-float orientation
+    &anchor);
+
+ArEarth_release(earth);
+```
+
+[Source: ARCore Geospatial API](https://developers.google.com/ar/develop/geospatial)
+
+### LiteRT (TensorFlow Lite successor) + ARCore
+
+**LiteRT** (Google AI Edge, formerly TensorFlow Lite) is the recommended on-device inference runtime for custom ML models in AR apps. There is no binary link between ARCore and LiteRT — they share the camera frame as the integration point:
+
+```c
+// Native C integration pattern (C17 + NDK):
+// 1. Acquire CPU-accessible camera image from ARCore
+ArImage* cpu_image = nullptr;
+ArFrame_acquireCameraImage(ar_session, ar_frame, &cpu_image);
+
+const uint8_t* y_plane;
+int32_t y_stride, width, height;
+ArImage_getPlaneData(ar_session, cpu_image, 0, &y_plane, nullptr);
+ArImage_getWidth(ar_session, cpu_image, &width);
+ArImage_getHeight(ar_session, cpu_image, &height);
+
+// 2. Feed pixel data into LiteRT interpreter
+//    (LiteRT C API: TfLiteInterpreterInvoke)
+TfLiteInterpreter* interp = TfLiteInterpreterCreate(model, options);
+TfLiteTensor* input = TfLiteInterpreterGetInputTensor(interp, 0);
+TfLiteTensorCopyFromBuffer(input, y_plane, width * height);
+TfLiteInterpreterInvoke(interp);
+
+// 3. Read output (e.g., object detection bounding boxes)
+const TfLiteTensor* output = TfLiteInterpreterGetOutputTensor(interp, 0);
+// ... parse detections, place ArAnchors at detected positions
+
+ArImage_release(cpu_image);
+```
+
+LiteRT supports hardware delegation for ARCore apps:
+- **GPU delegate** (`TfLiteGpuDelegateV2Create`) — broadest operator coverage; recommended for segmentation and detection models.
+- **NNAPI delegate** — routes to NPU/DSP on supported SoCs; lower power but limited operator set (~60 ops; segmentation models partially supported).
+- **Hexagon DSP delegate** — Qualcomm Snapdragon-specific; highest efficiency for quantised models on Adreno devices.
+
+[Source: LiteRT framework](https://developers.google.com/edge/litert), [ARCore + ML pattern](https://developers.google.com/ar/develop/machine-learning)
+
+### MediaPipe + ARCore: no unified SDK
+
+**MediaPipe** (Google AI Edge) provides real-time on-device ML pipelines for hand tracking (21 landmarks), face mesh (478 landmarks), pose estimation (33 landmarks), and object detection. Despite both being Google products, **there is no official MediaPipe + ARCore unified SDK**. The fundamental tension: ARCore opens the camera exclusively via Camera2 for its repeating capture session; MediaPipe also wants exclusive camera access for its graph pipeline.
+
+The practical workarounds developers use:
+
+| Pattern | How it works | Trade-off |
+|---|---|---|
+| Sequential frames | ARCore → `ArFrame_acquireCameraImage()` → copy to MediaPipe graph | Extra frame copy; latency from two-stage pipeline |
+| ARCore primacy | ARCore controls camera; push `ArImage` CPU data into MediaPipe `ImageFrame` | Works; no GPU sharing — double CPU–GPU upload |
+| Separate sensors | MediaPipe on front camera, ARCore on back camera | Only works if both cameras can run simultaneously |
+| Post-detection anchors | Run MediaPipe on video at startup; bake landmarks to anchors | Not real-time; suitable for studio/setup mode |
+
+Google's documented guidance is the first pattern — acquire the CPU camera image from `ArFrame_acquireCameraImage()` and feed it to a MediaPipe graph. GPU texture sharing between ARCore's `GL_TEXTURE_EXTERNAL_OES` and MediaPipe's GPU graph is architecturally possible but not officially supported.
+
+[Source: MediaPipe documentation](https://ai.google.dev/edge/mediapipe/solutions/guide), [ARCore ML guide](https://developers.google.com/ar/develop/machine-learning)
+
+### Gemini Nano + ARCore: emerging integration
+
+**Gemini Nano** is Google's smallest on-device foundation model, delivered via **AICore** (the Android system service). On Pixel 9/10 and partner devices (Samsung, OPPO, vivo), Gemini Nano provides multimodal text+image reasoning at inference speeds suitable for interactive use, with no network round-trip. The **ML Kit GenAI API** (`com.google.mlkit:genai-common`) is the developer-facing interface.
+
+As of mid-2026, there is no officially documented ARCore + Gemini Nano integration. The emerging pattern, demonstrated in developer previews and I/O 2025 sessions, is:
+
+```
+ArFrame_acquireCameraImage() → JPEG encode → ML Kit GenAI Prompt API
+    → "What objects are in this outdoor scene? Which are safe to place AR content on?"
+    → Parse response → create ArAnchors at semantic locations
+```
+
+This is a one-shot or low-frequency query (not per-frame) due to the inference latency of even the Nano model (~200–800 ms on Pixel 9). It is suitable for AR scene onboarding (initial scene description, object identification) rather than real-time occlusion or tracking. The **Gemini 2.0 Multimodal Live API** (streaming bidirectional, available via Vertex AI) could theoretically stream ARCore camera frames for richer real-time understanding but has not been demonstrated with ARCore at the time of writing.
+
+```kotlin
+// Kotlin — ML Kit GenAI API on Pixel 9+ (experimental, API subject to change)
+import com.google.mlkit.genai.common.DownloadCallback
+import com.google.mlkit.genai.text.TextInference
+
+val textInference = TextInference.getClient(context)
+// Check and download Gemini Nano model if not present
+textInference.checkFeatureStatus()
+    .addOnSuccessListener { status ->
+        if (status == FeatureStatus.AVAILABLE) {
+            textInference.generateText(
+                TextInferenceRequest.builder()
+                    .setInputText("Describe the outdoor scene: $scene_description")
+                    .build()
+            ).addOnSuccessListener { result ->
+                // result.text → parse for AR placement guidance
+            }
+        }
+    }
+```
+
+[Source: ML Kit GenAI APIs](https://developers.google.com/ml-kit/genai)
+
+### Android XR AI: Gemini Nano and hand tracking
+
+Android XR (Project Moohan) adds AI capabilities that go beyond what's possible on a phone:
+
+- **On-device Gemini Nano** is a first-class platform feature on Android XR, not an optional app-layer integration. The AICore service on Moohan runs Gemini Nano with awareness of the XR session context (pass-through camera feed, spatial anchors, gaze direction).
+- **Hand tracking** is implemented via an on-device neural network (architecture not disclosed) that produces 21 skeletal landmarks per hand from RGB or IR sensor input. This feeds `XrHandJointLocationsEXT` in the OpenXR extension `XR_EXT_hand_tracking` and the Jetpack XR `HandTrackingState` API.
+- **Semantic room understanding** on Moohan extends ARCore's outdoor-oriented Scene Semantics to indoor environments — an architectural shift enabled by the richer sensor suite (stereo cameras, depth sensor) of a dedicated headset.
+
+### Feature and status matrix
+
+| AI capability | Platform | Status (mid-2026) | Inference location |
+|---|---|---|---|
+| Scene Semantics (segmentation) | Android, iOS, Unity | Shipped/stable | On-device GPU |
+| MotionStereo depth | Android, Unity | Shipped/stable | On-device GPU |
+| VPS neural matching | Android, iOS, Unity | Shipped/stable | On-device + Street View cloud data |
+| Geospatial Depth | Android, iOS, Unity | Shipped/stable | On-device (requires VPS) |
+| LiteRT custom models | Android NDK/Java | Shipped/stable | On-device (GPU/NNAPI/DSP) |
+| MediaPipe + ARCore | Community workarounds | No official SDK | On-device |
+| Gemini Nano scene understanding | Android (Pixel 9+) | Experimental | On-device (AICore) |
+| Android XR hand tracking ML | Android XR (Moohan) | Preview | On-device neural net |
+| Android XR Gemini Nano | Android XR (Moohan) | Preview | On-device (AICore) |
+| Unreal Engine AI extensions | — | Not available | — |
+
+[Source: ARCore machine learning guide](https://developers.google.com/ar/develop/machine-learning), [Scene Semantics & Geospatial Depth codelab](https://github.com/google-ar/codelab-scene-semantics-geospatial-depth), [ARCore release notes](https://developers.google.com/ar/whatsnew-arcore)
+
+---
+
+## 13. Snapdragon Spaces: Qualcomm's AR SDK
 
 ### Overview
 
@@ -1395,7 +1648,7 @@ The Spatial SDK provides glTF loading, physically-based rendering (IBL + PBR), s
 
 ---
 
-## 13. Linux AR: Monado, SteamVR, and the Open Stack
+## 14. Linux AR: Monado, SteamVR, and the Open Stack
 
 ### Monado OpenXR runtime
 
@@ -1440,7 +1693,7 @@ The path forward for Linux AR follows two tracks: open hardware (Project North S
 
 ---
 
-## 14. Integrations
+## 15. Integrations
 
 This chapter connects to the following chapters across the book:
 
