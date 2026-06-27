@@ -26,8 +26,16 @@
 13. [Model Security: Encryption, Signing, and Integrity Protection](#13-model-security-encryption-signing-and-integrity-protection)
 14. [Privacy by Design: Data Protection for On-Device ML](#14-privacy-by-design-data-protection-for-on-device-ml)
 15. [On-Device Training and Federated Learning](#15-on-device-training-and-federated-learning)
-16. [Roadmap](#16-roadmap)
-17. [Integrations](#17-integrations)
+16. [Gemini Nano: On-Device Generative AI](#16-gemini-nano-on-device-generative-ai)
+    - [16.1 AICore System Architecture](#161-aicore-system-architecture)
+    - [16.2 ML Kit GenAI API](#162-ml-kit-genai-api)
+    - [16.3 Streaming Inference and Token Budget](#163-streaming-inference-and-token-budget)
+    - [16.4 Hardware Requirements and Memory Footprint](#164-hardware-requirements-and-memory-footprint)
+    - [16.5 Capability Limits and Task Fit](#165-capability-limits-and-task-fit)
+    - [16.6 Gemini Nano vs LiteRT-LM + Open Weights](#166-gemini-nano-vs-litert-lm--open-weights)
+17. [Roadmap](#17-roadmap)
+18. [Integrations](#18-integrations)
+
 
 ---
 
@@ -2033,42 +2041,255 @@ The gradient update itself can be large — for a 5 million parameter model (Mob
 
 ---
 
-## 16. Roadmap
+## 16. Gemini Nano: On-Device Generative AI
 
-### 16.1 LiteRT-LM (Shipping, May 2026)
+Gemini Nano is Google's on-device large language model — the smallest member of the Gemini family, optimised for inference on Android smartphones without a network connection. Unlike LiteRT models that apps load directly, Gemini Nano is delivered and managed by the Android operating system through the **AICore** system service, and accessed by applications through the **ML Kit GenAI API**. This section covers the full stack: AICore architecture, the developer API, hardware requirements, capability boundaries, and the strategic trade-offs between Gemini Nano and deploying open-weight models via LiteRT-LM. [Source: Google AI Edge — Gemini Nano](https://ai.google.dev/gemini-api/docs/android)
+
+### 16.1 AICore System Architecture
+
+AICore (`android.ai.app.aicore`) is an Android system service introduced on Pixel 8 series devices and expanded to Pixel 9+ and selected Samsung Galaxy S25 devices. It runs as a persistent system daemon with higher permissions than a standard app, giving it exclusive access to the SoC's AI-dedicated hardware (Google Tensor G4 NPU, Samsung Exynos NPU) that is deliberately not exposed to the general NNAPI or LiteRT delegate surfaces.
+
+```
+Application
+    │ ML Kit GenAI API (Java/Kotlin, API 34+)
+    ▼
+com.google.android.gms.ai (Google Play Services module)
+    │ Binder IPC
+    ▼
+AICore system service (persistent daemon, UID=system)
+    │ proprietary HAL
+    ▼
+Gemini Nano model weights (encrypted, /data/data/com.google.android.aicore/)
+    │ vendor runtime
+    ▼
+Tensor G4 / Exynos NPU  ←→  GPU (fallback compute)
+```
+
+The key architectural distinction from LiteRT: **Gemini Nano weights are never accessible to apps.** The model is provisioned by Google as a system update (via `com.google.android.aicore` APK), verified with hardware attestation, and decrypted only inside the AICore daemon's isolated process. Applications never receive the raw FlatBuffer or weight tensors — they interact exclusively through the ML Kit API, receiving only text token outputs.
+
+Gemini Nano is updated over-the-air independently of Android OS updates, via the `android.ai.app.aicore` Google Play Services module. This allows Google to update the model quarterly without requiring a full Android system update. [Source: AICore release notes](https://developer.android.com/ml/on-device/aicore)
+
+### 16.2 ML Kit GenAI API
+
+The ML Kit GenAI API (`com.google.mlkit:genai-common` + `com.google.mlkit:genai-tasks-generate-text`) is the developer-facing interface to Gemini Nano. Available on API 34+, it wraps the AICore Binder IPC in a familiar Tasks-style async API.
+
+**Gradle dependencies:**
+```kotlin
+// app/build.gradle.kts
+dependencies {
+    implementation("com.google.mlkit:genai-common:0.0.1-beta1")
+    implementation("com.google.mlkit:genai-tasks-generate-text:0.0.1-beta1")
+}
+```
+
+**Availability check (required before any inference):**
+
+Not all devices with Pixel 9 hardware actually have the Gemini Nano model downloaded — the model is a ~1.8 GB download that may not be present on first boot. Apps must check availability and trigger a download if needed:
+
+```kotlin
+import com.google.mlkit.genai.common.DownloadCallback
+import com.google.mlkit.genai.common.GenAiException
+import com.google.mlkit.genai.text.generation.TextGeneration
+import com.google.mlkit.genai.text.generation.TextGenerationParams
+
+val textGenerator = TextGeneration.getClient(
+    TextGenerationParams.builder()
+        .setTemperature(0.7f)
+        .setTopK(40)
+        .setMaxOutputTokens(256)
+        .build()
+)
+
+// Check if Gemini Nano is available on this device:
+textGenerator.checkFeatureStatus()
+    .addOnSuccessListener { status ->
+        when (status) {
+            FeatureStatus.DOWNLOADABLE -> {
+                // Model available but not yet downloaded; trigger download:
+                textGenerator.downloadFeature(object : DownloadCallback {
+                    override fun onDownloadStarted(bytesToDownload: Long) { }
+                    override fun onDownloadProgress(totalBytesDownloaded: Long) { }
+                    override fun onDownloadCompleted() { /* ready to use */ }
+                    override fun onDownloadFailed(e: GenAiException) { /* handle */ }
+                })
+            }
+            FeatureStatus.DOWNLOADING -> { /* show progress UI */ }
+            FeatureStatus.AVAILABLE   -> { /* ready now */ }
+            FeatureStatus.NOT_SUPPORTED -> { /* fall back to cloud or LiteRT-LM */ }
+        }
+    }
+```
+
+**Text generation (non-streaming):**
+
+```kotlin
+val request = TextGenerationRequest.builder()
+    .addSystemInstructions("You are a concise assistant.")
+    .addContent(contentFromText("user", "Summarise this review in one sentence: $reviewText"))
+    .build()
+
+textGenerator.generateText(request)
+    .addOnSuccessListener { result ->
+        val outputText = result.text   // full generated string
+        Log.d("Gemini", outputText)
+    }
+    .addOnFailureListener { e ->
+        Log.e("Gemini", "Error: ${e.message}")
+    }
+```
+
+Multi-turn conversation is supported by accumulating `Content` objects with alternating `"user"` and `"model"` roles, then passing the full list to `generateText`. The AICore daemon maintains no session state between calls — the app is responsible for conversation history management.
+
+### 16.3 Streaming Inference and Token Budget
+
+For interactive use cases (chat, real-time completion), Gemini Nano supports streaming: tokens are delivered to the app as they are generated, rather than waiting for the full response. This reduces perceived latency from ~8–15 seconds (full response for 256 tokens) to first-token latency of ~400–800 ms on Pixel 9.
+
+```kotlin
+import com.google.mlkit.genai.text.generation.StreamingTextGenerationCallback
+
+val streamingRequest = TextGenerationRequest.builder()
+    .addContent(contentFromText("user", userMessage))
+    .build()
+
+textGenerator.generateTextStream(streamingRequest,
+    object : StreamingTextGenerationCallback {
+        override fun onPartialResult(partialResult: TextGenerationResult) {
+            // Called on main thread for each new token chunk:
+            appendToUI(partialResult.text)
+        }
+        override fun onComplete(finalResult: TextGenerationResult) {
+            val totalTokensUsed = finalResult.totalTokenCount
+            Log.d("Gemini", "Done. Tokens: $totalTokensUsed")
+        }
+        override fun onFailure(e: GenAiException) {
+            Log.e("Gemini", "Stream failed: ${e.message}")
+        }
+    }
+)
+```
+
+**Token counting (pre-flight check):**
+
+Before sending a long prompt, count tokens to avoid exceeding the context window:
+
+```kotlin
+textGenerator.countTokens(request)
+    .addOnSuccessListener { countResult ->
+        Log.d("Gemini", "Prompt tokens: ${countResult.totalTokenCount}")
+        // Gemini Nano context window: ~8192 tokens (input + output combined)
+    }
+```
+
+The context window is approximately 8192 tokens on Pixel 9 hardware (subject to change with model updates). Input tokens + output tokens must not exceed this limit; the AICore daemon returns `GenAiException` with `ERROR_CONTEXT_LIMIT_EXCEEDED` if the limit is breached.
+
+### 16.4 Hardware Requirements and Memory Footprint
+
+Gemini Nano imposes strict hardware requirements due to the model's size and the need for a hardware-backed secure enclave to protect the weights:
+
+| Device | SoC | Gemini Nano variant | RAM min | Context window |
+|---|---|---|---|---|
+| Pixel 8 / 8 Pro | Tensor G3 | Nano 1 (original, smaller) | 8 GB | ~4096 tokens |
+| Pixel 9 / 9 Pro / 9 Pro XL / 9 Pro Fold | Tensor G4 | Nano 2 (improved) | 8 GB | ~8192 tokens |
+| Samsung Galaxy S25 / S25+ / S25 Ultra | Exynos 2500 / Snapdragon 8 Elite | via Google AICore | 8 GB | ~8192 tokens |
+| Other Android phones | — | Not supported | — | — |
+
+**Memory footprint**: Gemini Nano 2 weights occupy ~1.8 GB on-disk (INT4 quantised). At inference time, the AICore daemon loads weights into a combination of NPU SRAM and system DRAM. The occupied DRAM appears in `/proc/meminfo` as `KernelMalloc` or mapped to the AICore process — it is not reclaimed between AICore calls, but may be evicted under severe memory pressure (LMK). After eviction, the next call incurs a cold-load penalty of ~3–8 seconds.
+
+**Battery impact**: Gemini Nano inference at 256 output tokens consumes approximately 150–300 mJ on Pixel 9, depending on whether the Tensor G4 NPU (more efficient) or the Arm Mali GPU (fallback) handles the compute. For sustained use in a chat application, thermal throttling becomes relevant after ~5–10 minutes of continuous generation; combine with `AThermal_getThermalHeadroom()` (§17 of ch161) to detect imminent throttling and pause generation.
+
+### 16.5 Capability Limits and Task Fit
+
+Gemini Nano 2 as exposed through the ML Kit GenAI API (mid-2026) has the following limitations compared to full Gemini cloud models:
+
+| Capability | Gemini Nano 2 (on-device) | Gemini Pro / Flash (cloud) |
+|---|---|---|
+| Text input | Yes | Yes |
+| Vision input (images) | Not in public API | Yes |
+| Audio input | Not in public API | Yes |
+| Function calling | Not in public API | Yes |
+| System instructions | Yes | Yes |
+| Multi-turn conversation | Yes (app-managed history) | Yes |
+| Context window | ~8192 tokens | 1M tokens |
+| Output token limit | 256 (configurable, max ~1024) | 8192+ |
+| Latency (first token) | 400–800 ms | 200–500 ms (network) |
+| Throughput | ~15–25 tokens/s | ~100+ tokens/s |
+| Offline operation | Yes | No |
+| Privacy (data stays on device) | Yes | No |
+
+**Best-fit tasks for Gemini Nano**:
+- **Smart reply generation**: suggest 3 short replies to an incoming message; low token count, latency-tolerant
+- **On-device summarisation**: summarise a document or email without sending content to cloud; privacy-critical use case
+- **Text classification and routing**: classify user intent or sentiment; small output, fast
+- **Proofreading and rewriting**: short passages; offline-capable grammar correction
+- **On-device RAG** (Retrieval-Augmented Generation): embed a small local document corpus with a lightweight embedding model, retrieve top-k chunks, feed to Gemini Nano for answer synthesis
+
+**Tasks where Gemini Nano is insufficient**:
+- Long document processing (>8K tokens)
+- Vision-language tasks (describe image, OCR + reason)
+- Complex multi-step function calling
+- Code generation (model quality below GPT-4-class for complex algorithms)
+
+### 16.6 Gemini Nano vs LiteRT-LM + Open Weights
+
+The on-device generative AI landscape now offers two distinct paths. Choosing between them involves quality, control, and hardware trade-offs:
+
+| Dimension | Gemini Nano via ML Kit | LiteRT-LM + Gemma/PaliGemma |
+|---|---|---|
+| Model quality | Higher (proprietary, Google-trained) | Lower (open-weight, smaller parameter count) |
+| Hardware requirement | Pixel 8+ / Galaxy S25 only | Any Android with ≥4 GB RAM |
+| Model customisation | None (black box) | Full: fine-tune, LoRA, quantise |
+| Weight access | None (encrypted in AICore) | Full FlatBuffer access |
+| Privacy | On-device; AICore attestation | On-device; app-controlled |
+| Cold start | 3–8 s if weights evicted | 1–3 s (smaller model) |
+| Throughput | 15–25 tok/s | 25–56 tok/s (Gemma 2B INT4 on GPU) |
+| Integration complexity | ML Kit dependency; Play Services required | Add `litert-lm` AAR; no Play Services |
+| LoRA adapter support | No | Yes (LiteRT-LM adapter loading) |
+| Multimodal (vision) | Not yet in public API | PaliGemma, Gemma 3 (text+image) |
+
+**Decision rule**:
+- Use **Gemini Nano** when: (1) the app targets Pixel 9+ as the primary device, (2) model quality matters more than broad device coverage, (3) the use case is text-in/text-out and privacy is paramount
+- Use **LiteRT-LM + open weights** when: (1) the app needs to run on a wide range of Android devices, (2) fine-tuning or domain adaptation is needed, (3) vision input is required, or (4) no dependency on Google Play Services is acceptable
+
+The two paths can coexist in a single app: check `FeatureStatus.AVAILABLE` for Gemini Nano; if not supported, fall back to LiteRT-LM with a smaller open model. This is the recommended production pattern for apps targeting both high-end and mid-range Android devices. [Source: Google AI Edge decision guide](https://ai.google.dev/edge/litert/models/gemma/android)
+
+---
+
+## 17. Roadmap
+
+### 17.1 LiteRT-LM (Shipping, May 2026)
 
 LiteRT-LM is the production orchestration layer for on-device LLM inference, superseding MediaPipe's `LlmInference` task. It achieves 52 tokens/second on Android GPU (OpenCL backend) and 56 tokens/second on Apple Metal, with multimodal support (text + vision + audio). Backends: CPU (XNNPack), GPU (OpenCL on Android, Metal on iOS, WebGPU in browser), NPU (Android only, via vendor delegates). [Source: LiteRT-LM announcement](https://developers.googleblog.com/blazing-fast-on-device-genai-with-litert-lm/)
 
 KV-cache management stores Key and Value tensors in GPU high-bandwidth memory between decode steps, reducing per-token latency from O(context_length²) to O(context_length) via incremental attention computation.
 
-### 16.2 Vulkan Compute Backend for GPU Delegate
+### 17.2 Vulkan Compute Backend for GPU Delegate
 
 The current GPU delegate defaults to OpenGL ES 3.1 compute shaders. The Vulkan compute backend (`TFLITE_GPU_EXPERIMENTAL_FLAGS_ENABLE_VULKAN_INFERENCE`) targets devices with Vulkan 1.1+. Advantages over GLES include lower driver overhead (no OpenGL state machine), explicit memory management (`VkDeviceMemory` from imported `AHardwareBuffer` via `VK_ANDROID_external_memory_android_hardware_buffer`), and access to Vulkan subgroup operations for more efficient SIMD reductions. Expect Vulkan backend to exit experimental status by late 2026.
 
-### 16.3 LiteRT on Linux
+### 17.3 LiteRT on Linux
 
 The `ai-edge-litert` package is expanding to x86-64 and ARM64 Linux (targeting Raspberry Pi 5 and NVIDIA Jetson). The GPU delegate runs via OpenGL ES on Mesa (panfrost, v3d, freedreno). This is the convergence path between Android on-device ML and Linux embedded ML described in Ch88 and Ch124. [Source: LiteRT universal framework](https://developers.googleblog.com/litert-the-universal-framework-on-device-ai/)
 
-### 16.4 WebAssembly / WebGPU
+### 17.4 WebAssembly / WebGPU
 
 LiteRT-LM's Web SDK runs via WebGPU (WASM + JavaScript API) in Chrome and other browsers, with 2026 parity between mobile-native and browser inference performance on the same GPU. This connects to the WebGPU stack described in Ch35 (Dawn and WebGPU).
 
-### 16.5 Vendor NPU Convergence
+### 17.5 Vendor NPU Convergence
 
 The post-NNAPI model (API 35+) pushes hardware acceleration into vendor-supplied LiteRT delegate libraries loaded at runtime. The long-term expectation is that all major Android SoC vendors (Qualcomm, MediaTek, Samsung Exynos, Google Tensor) ship production LiteRT delegates, converging on a uniform ABI where the delegate `.so` is the accelerator contract — analogous to how ICD `.so` files are the Vulkan driver contract.
 
-### 16.6 On-Device Foundation Models
+### 17.6 On-Device Foundation Models
 
 Vision-language models in the PaliGemma 3B class (3 billion parameters, vision + text) are feasible on 2026 flagship hardware at INT4 with LiteRT-LM. The GPU serves as the primary compute engine; the NPU handles INT8 attention layers. The camera→inference→display pipeline described in §10 of this chapter becomes the execution path for camera-grounded VLM queries ("What is this object?") running entirely on-device.
 
-### 16.7 MediaPipe Tasks SDK Evolution
+### 17.7 MediaPipe Tasks SDK Evolution
 
 MediaPipe Tasks (§8) is transitioning from a community-maintained SDK to a Google-supported production API:
 - **New modalities (2026–2027)**: Audio classification, face stylisation, and gesture customisation tasks are in preview. The Tasks API schema is being extended to support multi-modal tasks that accept both image and text inputs in a single `TaskRunner.process()` call, enabling on-device vision-language queries without the separate LiteRT-LM layer.
 - **Stable ABI**: The current Tasks API targets Kotlin/Java and Python. A stable C API (`mediapipe/tasks/c/`) is under active development to allow C++ and Rust callers to consume Tasks results without going through the JNI boundary — eliminating the 0.5–1 ms JNI overhead on high-frequency (30 Hz) inference pipelines.
 - **Calculator graph persistence**: The multi-calculator MediaPipe graph (§7.1) currently reconstructs packet routing on each `TaskRunner` call. A session-mode API keeps the `CalculatorGraph` resident in memory between frames, amortising graph construction cost across inference runs — critical for 60 Hz real-time use cases like AR overlay (§11).
 
-### 16.8 Gemini Nano + LiteRT Convergence
+### 17.8 Gemini Nano + LiteRT Convergence
 
 Gemini Nano (the on-device Gemini variant) is currently deployed via AICore (`android.ai.app.aicore.AICore`) as a system-level service on Pixel 9+ devices. The convergence trajectory with LiteRT-LM:
 
@@ -2076,7 +2297,7 @@ Gemini Nano (the on-device Gemini variant) is currently deployed via AICore (`an
 - **Phase 2 (2027+)**: Google is expected to expose Gemini Nano's internal transformer as a LiteRT-LM model, allowing apps to run the same Gemini model weights with the LiteRT-LM engine (rather than through AICore). This would allow fine-tuning, custom LoRA adapters, and private on-device inference without AICore telemetry.
 - **Multimodal cache sharing**: LiteRT-LM and Gemini Nano both need KV-cache GPU memory. A shared KV-cache arbiter (analogous to how SurfaceFlinger arbitrates display memory) is the long-horizon solution for devices running multiple concurrent LLM sessions (e.g., ARCore scene description + background document assistant).
 
-### 16.9 Competitive Landscape: GGML/llama.cpp vs LiteRT-LM
+### 17.9 Competitive Landscape: GGML/llama.cpp vs LiteRT-LM
 
 The on-device LLM ecosystem is splitting into two camps with different optimisation targets:
 
@@ -2094,7 +2315,7 @@ The two ecosystems are converging at the GGUF level: Google has published a GGUF
 
 ---
 
-## 17. Integrations
+## 18. Integrations
 
 **Ch85 — Android Compositor: SurfaceFlinger, HardwareBuffer, and the Buffer Pipeline**
 `AHardwareBuffer` is the central memory object shared between the Camera HAL, the LiteRT GPU delegate, and SurfaceFlinger. The buffer lifecycle (allocate → acquire → GPU write → release → compositor acquire) described in Ch85 applies directly to the inference pipeline §§4 and 10.
