@@ -20,7 +20,8 @@
 10. [Memory Advice API](#10-memory-advice-api)
 11. [Android GPU Inspector](#11-android-gpu-inspector)
 12. [ARCore Integration: Building AR-Native Games](#12-arcore-integration-building-ar-native-games)
-13. [Integrations](#13-integrations)
+13. [Engine Integration: Unity, Unreal, Godot, and Bevy](#13-engine-integration-unity-unreal-godot-and-bevy)
+14. [Integrations](#14-integrations)
 
 ---
 
@@ -1192,7 +1193,151 @@ For native games targeting both mobile ARCore and Android XR headsets, the recom
 
 ---
 
-## 13. Integrations
+## 13. Engine Integration: Unity, Unreal, Godot, and Bevy
+
+Most Android games are not written directly against AGDK — they go through a game engine that internally consumes AGDK components. This section traces how each major engine maps onto the libraries described in this chapter.
+
+### 13.1 Unity
+
+Unity's Android backend is the most deeply integrated with AGDK, largely because Google has co-developed several features with the Unity team.
+
+**Activity type**: Unity used `NativeActivity` from the beginning. Unity 2023.1 introduced `GameActivity` as an opt-in alternative; Unity 6 (2024) made `GameActivity` the default for new projects. The switch is controlled by **Edit → Project Settings → Player → Android → Activity Type**. GameActivity provides text-input handling via `GameTextInput` (§3), eliminating the overlay workaround Unity historically used for on-screen keyboards. [Source: Unity GameActivity docs](https://developer.android.com/games/engines/unity/gameactivity)
+
+**Swappy (Android Frame Pacing)**: Integrated since Unity 2019.2. Enable via **Player Settings → Android → Resolution and Presentation → Optimized Frame Pacing**. The integration hooks into Unity's Vulkan and OpenGL ES swapchain; Swappy's `SwappyVk_queuePresent()` / `Swappy_swap()` replaces the bare `vkQueuePresentKHR`/`eglSwapBuffers` calls. In measured cases (e.g., *Mir 2*), this reduced slow-frame percentage from 40% to 10%. [Source: Unity Optimized Frame Pacing](https://docs.unity3d.com/ScriptReference/PlayerSettings.Android-optimizedFramePacing.html)
+
+**Android Adaptive Performance (ADPF bridge)**: The `com.unity.adaptiveperformance.google.android` package (requires Unity 2021.3+, Adaptive Performance 4.0+) integrates ADPF's `PerformanceHintManager` and `ThermalManager` into Unity's [Adaptive Performance](https://docs.unity3d.com/Packages/com.unity.adaptiveperformance@4.0/manual/) API. From C# game code:
+
+```csharp
+using UnityEngine.AdaptivePerformance;
+
+IAdaptivePerformance ap = Holder.Instance;
+// Read thermal warning level (0=none, 1=moderate, 2=imminent shutdown)
+ThermalMetrics t = ap.ThermalStatus.ThermalMetrics;
+if (t.WarningLevel == WarningLevel.ThrottlingImminent) {
+    QualitySettings.SetQualityLevel(1);   // drop to low preset
+}
+// ADPF performance hints are sent automatically by the provider
+```
+
+**Oboe (audio)**: Unity 2023 added first-party Oboe integration for low-latency audio output on Android. Earlier versions used OpenSL ES through Unity's platform audio layer. The integration is transparent to C# code — configure via `AudioSettings.outputSampleRate` and `AudioSettings.dspBufferSize`; the backend selects `AAudio` (Oboe's primary path) when the device supports it.
+
+**Memory Advice API**: Available via `GoogleMemoryAdvice` JNI bridge documented at [developer.android.com/games/engines/unity/memory-advice](https://developer.android.com/games/engines/unity/memory-advice). The Java polling interface maps `APPROACHING_LIMIT` → reduce texture resident set; `CRITICAL` → force GC.
+
+**Android GPU Inspector**: AGI is engine-agnostic. For Vulkan traces, start AGI and attach to the Unity app. For OpenGL ES, AGI uses a custom ANGLE build to translate GLES calls to Vulkan before capture — no Unity-specific configuration needed, but Vulkan rendering mode (`Graphics API = Vulkan` in Player Settings) is recommended for highest-fidelity traces.
+
+**AGDK support matrix for Unity:**
+
+| AGDK Component | Unity Integration | Since |
+|---|---|---|
+| GameActivity | Official (opt-in then default) | 2023.1 / Unity 6 |
+| Swappy frame pacing | Official checkbox | 2019.2 |
+| ADPF | Official (Adaptive Performance package) | 2021.3+ |
+| Oboe audio | Official (transparent) | 2023.x |
+| Memory Advice API | Official (JNI helper) | 2022.x |
+| Paddleboat | Via Unity Input System (indirect) | — |
+
+### 13.2 Unreal Engine
+
+Unreal Engine has a longer history on Android and predates AGDK, resulting in a more selective integration.
+
+**Activity type**: UE has its own `com.epicgames.ue4.GameActivity` Java class (the name has not changed even in UE5). This is **not** `androidx.games.GameActivity` — it extends `android.app.NativeActivity` and predates AGDK by several years. It provides JNI entry points for C++ interop. UE5 has not adopted AGDK's `GameActivity` due to the scope of migration required and the existing custom solution's maturity.
+
+**Swappy**: Integrated by default since **UE 5.2**. Controlled via `bUseSwappyForFramePacing` in `AndroidRuntimeSettings` (also settable as `UseSwappyForFramePacing=0` in the Android device profile to opt out). Swappy is injected into UE's Vulkan present path; Android's `VK_GOOGLE_display_timing` (used by Swappy for frame timing) is queried via UE's Vulkan RHI extension enumeration.
+
+**ADPF**: The [adpf-unreal-plugin](https://github.com/android/adpf-unreal-plugin) (maintained in the Android samples org) provides `UAndroidPerformancePlugin` — a UE plugin that creates ADPF `PerformanceHintSession` objects for the game thread and render thread and reports actual vs. target frame durations each tick. Thermal headroom is forwarded to UE's `IAndroidPlatformFile` scalability system, which can call `UGameUserSettings::SetQualityLevels()` to reduce shadow quality, draw distance, or resolution. [Source: ADPF Unreal plugin](https://developer.android.com/games/engines/unreal/unreal-adpf)
+
+```cpp
+// In UnrealEngine/Plugins/AndroidPerformance/Source/...:
+// Plugin calls ANativeWindow pointer to detect display refresh rate,
+// then creates a hint session for the game thread:
+APerformanceHintManager* hint_manager = APerformanceHint_getManager();
+APerformanceHintSession* session = APerformanceHint_createSession(
+    hint_manager, &game_thread_tid, 1, target_nanos);
+// Each frame:
+APerformanceHint_reportActualWorkDuration(session, actual_nanos);
+```
+
+**Oboe**: No first-party Oboe integration. UE uses its own Android audio backend (based on OpenSL ES with an AAudio fallback). Community plugins exist on the Marketplace.
+
+**AGDK support matrix for Unreal Engine:**
+
+| AGDK Component | UE Integration | Since |
+|---|---|---|
+| GameActivity (AGDK) | Not adopted (uses own GameActivity) | — |
+| Swappy frame pacing | Official, default on | UE 5.2 |
+| ADPF | Official plugin (android/adpf-unreal-plugin) | UE 5.0+ |
+| Oboe | Not integrated | — |
+| Memory Advice API | Not integrated | — |
+
+### 13.3 Godot 4
+
+Godot 4 approaches Android integration more conservatively — its plugin ecosystem is in active development and AGDK adoption has been incremental.
+
+**Activity type**: Godot 4 currently uses `NativeActivity`. A `GameActivity` migration is proposed in [godot-proposals#7692](https://github.com/godotengine/godot-proposals/issues/7692) but had not shipped in stable releases as of mid-2026.
+
+**Swappy**: Added in **Godot 4.4** (PR [#96439](https://github.com/godotengine/godot/pull/96439), shipped in 4.4-dev4, November 2024). Godot's Vulkan renderer queries `VK_GOOGLE_display_timing` at device initialisation; when present, Swappy's Vulkan integration (`SwappyVk_initAndGetRefreshCycleDuration`) is activated. There is no GLES3 path since Godot 4 uses Vulkan as its primary mobile renderer. Configure via `swappy_mode` in the Android export preset.
+
+**Vulkan frame timing**: Even before Swappy was integrated, Godot 4 queried `VK_GOOGLE_display_timing` to compute `VkDisplayPresentInfoGOOGLE.desiredPresentTime` for each frame — the same mechanism Swappy uses internally. Swappy in Godot replaces this manual computation with Swappy's pipeline-depth-aware scheduling.
+
+**Other AGDK components**: No first-party Oboe, ADPF, or Memory Advice API integration as of Godot 4.4. The GDExtension system (Godot 4's native plugin layer, replacing GDNative from 3.x) can host any Android `.aar`/`.so`, so community plugins can wrap these.
+
+**AGDK support matrix for Godot 4:**
+
+| AGDK Component | Godot Integration | Since |
+|---|---|---|
+| GameActivity (AGDK) | Proposed, not shipped | — |
+| Swappy frame pacing | Official | Godot 4.4 |
+| ADPF | Not integrated | — |
+| Oboe | Not integrated | — |
+| Memory Advice API | Not integrated | — |
+
+### 13.4 Bevy
+
+Bevy's Android story is uniquely Rust-native and sits closer to the AGDK primitives than any higher-level engine.
+
+**Activity type**: Bevy uses the [`android-activity`](https://github.com/rust-mobile/android-activity) crate (maintained by the `rust-mobile` project) as its Android glue layer. The crate provides two Cargo feature flags:
+- `android-game-activity`: wraps `androidx.games.GameActivity` 4.4.0+ — default since **Bevy 0.14** (requires Android API 31+)
+- `android-native-activity`: wraps the legacy `android.app.NativeActivity` — use for API < 31 targets
+
+```toml
+# Cargo.toml
+[target.'cfg(target_os = "android")'.dependencies]
+bevy = { version = "0.15", features = ["android-game-activity"] }
+```
+
+The `android-activity` crate handles the `ANativeActivity` / `GameActivity` lifecycle callbacks, input event pumping via `GameTextInput`, and `ANativeWindow` surface creation — mapping these into `winit`'s event loop abstraction that Bevy uses on all platforms.
+
+**Swappy, Oboe, ADPF**: Not integrated in `android-activity` or in Bevy itself. The crate scope is strictly the Activity glue and window surface. Bevy's Vulkan backend (`wgpu` via `ash`) calls `vkQueuePresentKHR` directly without Swappy wrapping. Integrating Swappy would require calling `SwappyVk_initAndGetRefreshCycleDuration` after `vkCreateDevice` and replacing `vkQueuePresentKHR` with `SwappyVk_queuePresent` in Bevy's `wgpu` Vulkan backend — achievable as a community crate but not yet shipped.
+
+**ADPF**: No integration. Bevy's Android support does not yet include performance hint sessions. Calling `APerformanceHint_createSession()` via JNI is straightforward (the NDK function is available) and could be wrapped in a Bevy plugin, but no first-party effort exists.
+
+**Overall**: Bevy is the most AGDK-primitive of the four engines — it uses `GameActivity` directly via `android-activity` and gets frame timing from `wgpu`'s Vulkan path. The higher AGDK components (Swappy, Oboe, ADPF) require community plugins or fork-level integration.
+
+**AGDK support matrix for Bevy:**
+
+| AGDK Component | Bevy Integration | Since |
+|---|---|---|
+| GameActivity (AGDK) | Official (android-activity crate) | Bevy 0.14 |
+| Swappy frame pacing | Not integrated | — |
+| ADPF | Not integrated | — |
+| Oboe | Not integrated | — |
+| Memory Advice API | Not integrated | — |
+
+### 13.5 Cross-Engine Summary
+
+| Feature | Unity | Unreal | Godot 4 | Bevy |
+|---|---|---|---|---|
+| **Activity type** | GameActivity (default Unity 6) | Own NativeActivity subclass | NativeActivity (GameActivity proposed) | GameActivity via android-activity |
+| **Swappy frame pacing** | ✅ 2019.2+ | ✅ UE 5.2+ | ✅ Godot 4.4+ | ❌ |
+| **ADPF** | ✅ Adaptive Performance pkg | ✅ adpf-unreal-plugin | ❌ | ❌ |
+| **Oboe audio** | ✅ 2023+ | ❌ | ❌ | ❌ |
+| **Memory Advice API** | ✅ JNI helper | ❌ | ❌ | ❌ |
+| **Paddleboat** | Indirect (Input System) | Via UE gamepad API | Via Godot Input | Manual JNI |
+| **ARCore** | ✅ AR Foundation + ARCore XR Plugin | ✅ ARCore UE Plugin (OpenXR trend) | ✅ godot_arcore GDExtension | ❌ |
+
+---
+
+## 14. Integrations
 
 - **Ch85 — SurfaceFlinger and BufferQueue**: `ANativeWindow` is the producer end of a `BufferQueue`; SurfaceFlinger is the consumer. Every buffer submitted through a Vulkan swapchain or EGL surface traverses the pipeline described in Ch85. The HWComposer path (hardware overlay vs. GPU composition) applies equally to GameActivity windows.
 

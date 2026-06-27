@@ -19,11 +19,12 @@
 10. [ARCore Recording, Playback, and the Dataset API](#10-arcore-recording-playback-and-the-dataset-api)
 11. [Performance, Power, and Mobile GPU Considerations](#11-performance-power-and-mobile-gpu-considerations)
 12. [ARCore AI and ML: On-Device Intelligence](#12-arcore-ai-and-ml-on-device-intelligence)
-13. [Snapdragon Spaces: Qualcomm's AR SDK](#13-snapdragon-spaces-qualcomms-ar-sdk)
+13. [Engine Integration: Unity, Unreal, Godot, and Bevy](#13-engine-integration-unity-unreal-godot-and-bevy)
+14. [Snapdragon Spaces: Qualcomm's AR SDK](#14-snapdragon-spaces-qualcomms-ar-sdk)
     - [Meta Quest 3 and Meta Horizon OS](#meta-quest-3-and-meta-horizon-os)
     - [Meta Horizon OS Full Software Stack](#meta-horizon-os-full-software-stack)
-14. [Linux AR: Monado, SteamVR, and the Open Stack](#14-linux-ar-monado-steamvr-and-the-open-stack)
-15. [Integrations](#15-integrations)
+15. [Linux AR: Monado, SteamVR, and the Open Stack](#15-linux-ar-monado-steamvr-and-the-open-stack)
+16. [Integrations](#16-integrations)
 
 ---
 
@@ -1313,7 +1314,163 @@ Android XR (Project Moohan) adds AI capabilities that go beyond what's possible 
 
 ---
 
-## 13. Snapdragon Spaces: Qualcomm's AR SDK
+## 13. Engine Integration: Unity, Unreal, Godot, and Bevy
+
+Most ARCore applications are not written against the native C API directly. They go through one of four engine/framework layers — each of which abstracts `ArSession`, `ArFrame`, and the associated rendering pipeline in different ways.
+
+### 13.1 Unity: AR Foundation + ARCore XR Plugin
+
+Unity's cross-platform AR abstraction is **AR Foundation** (`com.unity.xr.arfoundation`). On Android, it delegates to the **ARCore XR Plugin** (`com.unity.xr.arcore`, current stable: 5.x for Unity 6). AR Foundation provides C# manager components that map directly to ARCore concepts:
+
+| AR Foundation Component | ARCore Native Equivalent |
+|---|---|
+| `ARSession` | `ArSession_create/resume/pause/destroy` |
+| `ARCameraManager` | `ArCamera_getPose`, `ArCamera_getProjectionMatrix` |
+| `ARPlaneManager` | `ArPlaneList`, `ArPlane_getType/getPolygon` |
+| `ARAnchorManager` | `ArAnchor_getPose`, `ArAnchor_getTrackingState` |
+| `ARRaycastManager` | `ArFrame_hitTest`, `ArHitResultList` |
+| `ARPointCloudManager` | `ArPointCloud_getData` |
+| `ARLightEstimation` | `ArLightEstimate` (HDR environment intensity) |
+
+**Installation**: Unity 6, Android:
+```
+# Package Manager → Add package by name:
+com.unity.xr.arfoundation
+com.unity.xr.arcore
+```
+
+**Minimal AR scene (C#)**:
+```csharp
+using UnityEngine.XR.ARFoundation;
+using UnityEngine.XR.ARSubsystems;
+
+public class PlaneSpawner : MonoBehaviour {
+    [SerializeField] ARPlaneManager planeManager;
+    [SerializeField] ARRaycastManager raycastManager;
+    [SerializeField] GameObject prefab;
+
+    private List<ARRaycastHit> hits = new();
+
+    void Update() {
+        if (Input.touchCount == 0) return;
+        Touch touch = Input.GetTouch(0);
+        if (touch.phase != TouchPhase.Began) return;
+
+        if (raycastManager.Raycast(touch.position, hits, TrackableType.PlaneWithinPolygon)) {
+            Pose hitPose = hits[0].pose;
+            Instantiate(prefab, hitPose.position, hitPose.rotation);
+        }
+    }
+}
+```
+
+**ARCore Extensions for AR Foundation** (`com.google.ar.core.arfoundation.extensions`) adds features not yet in upstream AR Foundation:
+- **Cloud Anchors**: `ARAnchorManager.ResolveCloudAnchorAsync()`
+- **Geospatial API**: `ARGeospatialAnchorManager`, `GeospatialPose` (lat/lon/altitude + heading accuracy)
+- **Depth API**: `AROcclusionManager` (backed by `ArFrame_acquireDepthImage16Bits`)
+- **Scene Semantics**: `ARSemanticManager` (backed by `ArFrame_acquireSemanticImage`)
+
+**Camera texture**: AR Foundation's `ARCameraBackground` component manages the `GL_TEXTURE_EXTERNAL_OES` external texture (`ArSession_setCameraTextureName`) and renders it as a full-screen background quad each frame — the same path as the native §4 camera background.
+
+**Vulkan mode**: Unity 6 with AR Foundation 6.x supports Vulkan on Android. The ARCore XR Plugin uses `AR_TEXTURE_UPDATE_MODE_EXPOSE_HARDWARE_BUFFER` and imports `ArFrame_getHardwareBuffer()` as a `VkImage` via `VK_ANDROID_external_memory_android_hardware_buffer` — the same path described in §4.
+
+[Source: AR Foundation docs](https://docs.unity3d.com/Packages/com.unity.xr.arfoundation@6.0/manual/) | [ARCore XR Plugin](https://docs.unity3d.com/Packages/com.unity.xr.arcore@5.0/manual/) | [ARCore Extensions](https://developers.google.com/ar/develop/unity-arf/getting-started-extensions)
+
+### 13.2 Unreal Engine: ARCore UE Plugin (→ OpenXR)
+
+Unreal Engine includes a built-in **Google ARCore plugin** (`/Engine/Plugins/Runtime/AR/Google/GoogleARCore/`). The plugin wraps the ARCore Java SDK (not the C API) via JNI, calling `Session.update()` from the game thread and mapping results to UE's XR abstraction layer.
+
+**Blueprint nodes** expose the main ARCore concepts:
+- `Get ARsession status` → `ArSession_getTrackingState`
+- `Line Trace Tracked Objects` → `ArFrame.hitTest`
+- `Create ARPin` → `ArSession.createAnchor`
+- `Get All Geometry` → `ArPlaneList`
+
+**C++ access** via the `IARSystemSupport` interface:
+```cpp
+// Get the current frame's camera transform:
+TSharedPtr<FARFrame, ESPMode::ThreadSafe> frame = FARSystemSupportBase::GetCurrentFrame();
+FTransform cameraPose = frame->GetCameraToWorldTransform();
+
+// Hit test at screen centre:
+TArray<FARTraceResult> results;
+ARBlueprintLibrary::LineTraceTrackedObjects(
+    FVector2D(0.5f, 0.5f), false, false, false, results);
+```
+
+**OpenXR transition (UE 5.1+)**: Epic increasingly recommends the **OpenXR plugin** over engine-specific AR plugins for cross-platform XR work. The ARCore plugin remains functional in UE 5.5 but some Blueprint functions were deprecated in 5.0. For Android XR (headsets), the OpenXR path with ARCore's `XR_GOOGLE_display_timing` and `XR_ANDROID_*` extensions is preferred over the legacy ARCore plugin. [Source: UE ARCore docs](https://dev.epicgames.com/documentation/unreal-engine/developing-for-arcore-in-unreal-engine)
+
+### 13.3 Godot 4: godot_arcore GDExtension
+
+Godot 4's native plugin system is **GDExtension** (replaces GDNative from 3.x). The [godot_arcore](https://github.com/GodotVR/godot_arcore) plugin (maintained by the GodotVR community) wraps the ARCore C API via Godot's GDExtension C ABI.
+
+**Installation**: Drop the plugin `.aar` and `.gdextension` file into `android/plugins/`, enable in export preset.
+
+**GDScript usage**:
+```gdscript
+extends Node3D
+
+var arcore_interface: XRInterface
+
+func _ready():
+    arcore_interface = XRServer.find_interface("ARCore")
+    if arcore_interface and arcore_interface.initialize():
+        get_viewport().use_xr = true
+        DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+
+func _process(_delta):
+    # Plane detection results arrive as XRPositionalTracker objects
+    for tracker_name in XRServer.get_trackers(XRServer.TRACKER_ANCHOR):
+        var tracker = XRServer.get_tracker(tracker_name)
+        var pose: XRPose = tracker.get_pose("default")
+        # pose.transform contains the plane's world transform
+```
+
+**What the plugin provides**: Plane detection, hit-testing, anchors, and camera background texture. The camera background is rendered via Godot's `BackBufferCopy` + a `SubViewport` with the `GL_TEXTURE_EXTERNAL_OES` texture exposed as a Godot `ImageTexture`. Depth API and Geospatial API are **not** exposed in the current community plugin.
+
+**Limitation**: `godot_arcore` is community-maintained with no Google funding. Feature parity with the Unity/Unreal integrations lags — Cloud Anchors, Depth API, and Geospatial API require community PRs. As of mid-2026 the plugin targets Godot 4.2+. [Source: GodotVR/godot_arcore](https://github.com/GodotVR/godot_arcore)
+
+### 13.4 Bevy: No Official ARCore Integration
+
+Bevy has no official ARCore integration. The `android-activity` crate provides `GameActivity` lifecycle and `ANativeWindow` surface — enough to run a Bevy scene on Android — but `ArSession` must be created manually via JNI.
+
+A minimal JNI bridge pattern in a Bevy plugin:
+
+```rust
+use jni::{JNIEnv, objects::JObject};
+
+fn setup_arcore_session(env: &mut JNIEnv, activity: &JObject) {
+    // Call ArSession_create via JNI into the ARCore .aar:
+    // ARCore's Java API is easier to call than the C API from Rust
+    // because the C API requires linking against libarcore_sdk_c.so
+    // which complicates cargo-ndk builds.
+    let ar_session_cls = env.find_class("com/google/ar/core/Session").unwrap();
+    let session = env.new_object(ar_session_cls, "(Landroid/content/Context;)V",
+        &[activity.into()]).unwrap();
+    // Store session handle for per-frame ArSession.update() calls ...
+}
+```
+
+Practical ARCore+Bevy development requires calling the ARCore Java API via JNI (simpler than linking the C SDK with `cargo-ndk`), forwarding camera poses as Bevy `Transform` components, and manually managing the `GL_TEXTURE_EXTERNAL_OES` camera texture within `wgpu`'s Vulkan/GLES backend. No crate on crates.io provides this at production quality as of mid-2026; the path exists but is DIY.
+
+### 13.5 Engine ARCore Feature Coverage
+
+| Feature | Unity (AR Foundation + Extensions) | Unreal (ARCore plugin) | Godot (godot_arcore) | Bevy |
+|---|---|---|---|---|
+| **Plane detection** | ✅ ARPlaneManager | ✅ Blueprint | ✅ XRPositionalTracker | Manual JNI |
+| **Hit testing** | ✅ ARRaycastManager | ✅ LineTraceTrackedObjects | ✅ | Manual JNI |
+| **Anchors** | ✅ ARAnchorManager | ✅ CreateARPin | ✅ | Manual JNI |
+| **Cloud Anchors** | ✅ Extensions pkg | ✅ | ❌ | ❌ |
+| **Geospatial API** | ✅ Extensions pkg | ❌ | ❌ | ❌ |
+| **Depth API** | ✅ AROcclusionManager | ❌ | ❌ | ❌ |
+| **Scene Semantics** | ✅ ARSemanticManager | ❌ | ❌ | ❌ |
+| **Light estimation** | ✅ | ✅ | ❌ | ❌ |
+| **Vulkan camera path** | ✅ Unity 6 + AF 6.x | ❌ (GLES path) | ❌ | Manual |
+| **OpenXR / Android XR** | ✅ (OpenXR plugin) | ✅ (preferred) | Partial | ❌ |
+
+---
+
+## 14. Snapdragon Spaces: Qualcomm's AR SDK
 
 ### Overview
 
@@ -1648,7 +1805,7 @@ The Spatial SDK provides glTF loading, physically-based rendering (IBL + PBR), s
 
 ---
 
-## 14. Linux AR: Monado, SteamVR, and the Open Stack
+## 15. Linux AR: Monado, SteamVR, and the Open Stack
 
 ### Monado OpenXR runtime
 
@@ -1693,7 +1850,7 @@ The path forward for Linux AR follows two tracks: open hardware (Project North S
 
 ---
 
-## 15. Integrations
+## 16. Integrations
 
 This chapter connects to the following chapters across the book:
 
