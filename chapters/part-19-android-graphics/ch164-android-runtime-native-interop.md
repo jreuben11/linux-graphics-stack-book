@@ -23,6 +23,14 @@
    - 2.4 [Why Project Panama FFM Does Not Apply to Android](#24-why-project-panama-ffm-does-not-apply-to-android)
    - 2.5 [Is JNI Still Used? Current Status and Trends](#25-is-jni-still-used-current-status-and-trends)
    - 2.6 [NativeActivity, GameActivity, and ANativeWindow](#26-nativeactivity-gameactivity-and-anativewindow)
+   - 2.7 [JNI Reference Management: Local, Global, and Weak References](#27-jni-reference-management-local-global-and-weak-references)
+   - 2.8 [CMake Toolchain for Android NDK: Multi-ABI Builds and Prefab](#28-cmake-toolchain-for-android-ndk-multi-abi-builds-and-prefab)
+   - 2.9 [dlopen, Linker Namespaces, and Android's Library Isolation Model](#29-dlopen-linker-namespaces-and-androids-library-isolation-model)
+   - 2.10 [C++ Standard Library ABI: libc++_shared vs libc++_static](#210-c-standard-library-abi-libc_shared-vs-libc_static)
+   - 2.11 [Signal Handling in Native Code: Async Safety and ANR Avoidance](#211-signal-handling-in-native-code-async-safety-and-anr-avoidance)
+   - 2.12 [C++ Exceptions Across the JNI Boundary](#212-c-exceptions-across-the-jni-boundary)
+   - 2.13 [Memory Sanitizers on Android: ASan, HWASan, UBSan, and MTE](#213-memory-sanitizers-on-android-asan-hwasan-ubsan-and-mte)
+   - 2.14 [Native Crash Analysis: Tombstones, Unwinding, and Symbolication](#214-native-crash-analysis-tombstones-unwinding-and-symbolication)
 3. [The NDK's Future: Rust as Co-equal Language](#3-the-ndks-future-rust-as-co-equal-language)
    - 3.1 [The NDK Is Not Going Away](#31-the-ndk-is-not-going-away)
    - 3.2 [The Rust NDK Ecosystem](#32-the-rust-ndk-ecosystem)
@@ -680,6 +688,658 @@ For Kotlin/Java developers who want GPU access without dropping to the NDK:
 **ANGLE as default system GLES (Android 17+)**: For apps using `android.opengl.*`, ANGLE's promotion to the default GLES implementation is transparent below the JNI boundary. The managed API surface is unchanged; the call stack below it now routes through ANGLE → Vulkan ICD instead of a vendor GLES blob.
 
 **LiteRT Vulkan delegate**: TensorFlow Lite's successor LiteRT (Large-scale Inference with RealTime efficiency) ships a Vulkan compute delegate for on-device ML inference. As of Android 14 this is exiting experimental status. Kotlin/Java LiteRT API callers get Vulkan-accelerated inference without writing any JNI or NDK code directly. [Source: LiteRT Vulkan delegate](https://ai.google.dev/edge/litert/inference#vulkan_delegate)
+
+### 2.7 JNI Reference Management: Local, Global, and Weak References
+
+Every `jobject`, `jclass`, `jstring`, `jarray`, or derived type returned from a JNI call is a **reference** — a handle into the ART heap, not a raw C pointer. ART manages three reference lifetimes, and confusing them is the most common source of memory corruption, native crashes, and subtle memory leaks in JNI code.
+
+#### Local References
+
+The default type produced by most JNI calls is a **local reference**. It is valid for exactly the duration of the native method that created it — once the JNI frame returns to Java, ART frees all local references automatically. Most JNI functions that return object types produce local refs: `FindClass`, `NewObject`, `GetObjectField`, `NewStringUTF`, `NewByteArray`, and so on. Applications can also create them explicitly with `NewLocalRef(env, obj)` and release them early with `DeleteLocalRef(env, ref)` to free the handle slot.
+
+Local references are stored in a per-frame **local reference table** whose default capacity is **512 entries** per JNI call frame. If a native method creates more than 512 local references without deleting any, ART terminates the process with `JNI ERROR (app bug): local reference table overflow (max=512)` visible in logcat. The fix is to either call `DeleteLocalRef` inside loops that create many objects, or to call `EnsureLocalCapacity(env, n)` or `PushLocalFrame(env, n)` / `PopLocalFrame(env, result)` to pre-allocate additional capacity. The frame-based pair is useful when a native helper function needs to create a temporary burst of objects and guarantees cleanup even on early-return paths.
+
+#### Global References
+
+A **global reference** persists until the native code explicitly deletes it with `DeleteGlobalRef(env, ref)`. It is created from any existing reference via `NewGlobalRef(env, obj)` and is valid across JNI calls, across threads, and after the creating JNI frame has returned. ART's global reference table holds up to **51200 entries** by default. Global refs are the correct choice whenever a native object (a C++ class member, a singleton, a renderer) needs to hold a reference to a Java object between frames — for example, caching a `jobject` callback handle that the render loop will invoke.
+
+The critical discipline: **every `NewGlobalRef` must have a matching `DeleteGlobalRef` when the cached reference is no longer needed**. The most common leak pattern is storing a global ref for a listener or callback object in `JNI_OnLoad` and forgetting to delete it in a teardown path. While ART does not unload individual classes at runtime in typical app usage, plugin-style architectures that load DEX at runtime via custom class loaders can encounter class unloading, at which point an uncollected global ref keeps the class — and its entire ClassLoader — alive indefinitely.
+
+#### Weak Global References
+
+**Weak global references** (`NewWeakGlobalRef` / `DeleteWeakGlobalRef`) are similar to global refs in lifetime scope, but ART's GC is allowed to clear them when no strong references remain. Before dereferencing a weak ref, always verify it is still alive:
+
+```cpp
+jweak weak_callback = env->NewWeakGlobalRef(callback_obj);
+// ... later, when invoking:
+if (env->IsSameObject(weak_callback, NULL)) {
+    // GC has cleared the referent — the Java object was collected
+    return;
+}
+jobject local = env->NewLocalRef(weak_callback);
+env->CallVoidMethod(local, on_event_method_id, event_data);
+env->DeleteLocalRef(local);
+```
+
+The `IsSameObject(env, ref, NULL)` call is the canonical liveness check. Skipping it and calling methods on a cleared weak ref produces undefined behaviour. Weak refs are the correct choice for listener and observer patterns where the native code should not prevent the Java side from being garbage collected — for example, a native audio callback that calls back into an `Activity` only if the Activity is still alive.
+
+#### String Handling
+
+`GetStringUTFChars(env, jstr, &isCopy)` returns a C `const char*` in **modified UTF-8** — not standard UTF-8. The difference: null bytes (`\0`) are encoded as the two-byte sequence `0xC0 0x80` so that the string remains null-terminated in the C sense, and Unicode supplementary characters (code points above U+FFFF) are encoded as CESU-8 six-byte pairs rather than standard UTF-8's four-byte sequence. Code that blindly treats this output as standard UTF-8 and passes it to a UTF-8 validator or a protocol encoder will produce malformed data for strings containing emoji or other supplementary characters.
+
+For round-tripping arbitrary Unicode without encoding concerns, prefer `GetStringChars(env, jstr, &isCopy)`, which returns raw UTF-16 code units. The `isCopy` out-parameter signals whether ART returned a direct pointer to the internal heap string data (`JNI_FALSE`) or allocated a copy (`JNI_TRUE`). Either way, the corresponding release call — `ReleaseStringUTFChars` or `ReleaseStringChars` — is mandatory. When `isCopy == JNI_TRUE`, omitting the release leaks the copy. When `isCopy == JNI_FALSE`, omitting the release causes ART to keep the heap string pinned (unpinned only on release), interfering with the GC's ability to compact it.
+
+`GetStringLength` returns the length in UTF-16 code units; `GetStringUTFLength` returns the byte count of the modified UTF-8 representation. Neither includes the null terminator.
+
+#### Array Pinning and Zero-Copy Access
+
+`GetIntArrayElements(env, arr, &isCopy)` either pins the ART heap array and returns a direct pointer (`isCopy == JNI_FALSE`) or copies the array to a native heap buffer (`isCopy == JNI_TRUE`). `ReleaseIntArrayElements(env, arr, ptr, mode)` takes one of three mode constants: `0` copies the data back and unpins, `JNI_COMMIT` copies back but keeps the array pinned (used to flush intermediate updates without ending access), and `JNI_ABORT` discards any modifications and unpins — the right choice for read-only access.
+
+`GetPrimitiveArrayCritical(env, arr, &isCopy)` is the zero-copy API. It is the most likely call to return a direct pointer to the ART heap array without copying. The contract is severe: while holding a critical pointer, the **GC is suspended** and no other JNI calls are permitted. The critical region must be as short as possible — the ART guidelines say under 100 µs. Any heap allocation, any `pthread_mutex_lock` that another thread might hold during GC, or any blocking system call inside the critical section risks a deadlock or a severe GC pause spike. `GetByteArrayRegion` / `SetByteArrayRegion` copy a specified range without pinning at all; they are safer for small arrays or when the GC-stop risk of the critical API is not acceptable.
+
+#### ExceptionCheck After Every Call
+
+Any JNI function that involves Java execution — `CallVoidMethod`, `NewObject`, `FindClass`, `GetFieldID` — can leave a pending Java exception in the `JNIEnv`. ART does not propagate these exceptions automatically; native code continues executing. Failing to check `ExceptionCheck(env)` after such calls and then making another JNI call with a pending exception produces undefined behaviour. The minimum safe pattern:
+
+```cpp
+env->CallVoidMethod(obj, method_id, arg);
+if (env->ExceptionCheck()) {
+    env->ExceptionDescribe();  // logs the stack trace to logcat
+    env->ExceptionClear();
+    return;  // or ThrowNew a different exception
+}
+```
+
+Detailed exception-to-C++ interop — including `ThrowNew`, conversion of C++ exceptions to Java exceptions, and the semantics of C++ exceptions propagating through JNI frames — is covered in Section 2.12.
+
+[Source: Android JNI Tips](https://developer.android.com/training/articles/perf-jni), [JNI reference types](https://docs.oracle.com/en/java/docs/books/jni/html/refs.html)
+
+---
+
+### 2.8 CMake Toolchain for Android NDK: Multi-ABI Builds and Prefab
+
+The Android NDK ships a CMake toolchain file that configures the cross-compiler, sysroot, and linker flags required to build native code for Android targets. Understanding it is essential for any NDK project that goes beyond the default Android Studio defaults.
+
+#### The Toolchain File
+
+The toolchain file lives at `${ANDROID_NDK}/build/cmake/android.toolchain.cmake`. It sets the cross-compiler triple (e.g. `aarch64-linux-android26-clang++`), the sysroot to the NDK's per-API-level system headers, and the link script for the target ABI. Three CMake variables control the build:
+
+```cmake
+set(ANDROID_ABI arm64-v8a)       # also: armeabi-v7a, x86_64, x86
+set(ANDROID_PLATFORM android-26) # minimum API level for this .so
+set(ANDROID_STL c++_shared)      # STL linkage: c++_shared, c++_static, or none
+```
+
+`ANDROID_ABI` selects the target ISA. `ANDROID_PLATFORM` sets both the minimum API level that `dlopen` requires and the sysroot generation — the NDK will only expose headers and stubs for APIs available at that level or below. `ANDROID_STL` controls which C++ Standard Library variant is linked (see Section 2.10 for the trade-offs).
+
+#### AGP Integration
+
+Android Gradle Plugin (AGP) integrates CMake when `externalNativeBuild.cmake.path` is set in `build.gradle.kts`. AGP drives CMake automatically: it selects the NDK version from `ndkVersion`, runs CMake configure for each ABI, and `make` (or ninja) to produce the `.so` files, which AGP then packages into the APK under `lib/<abi>/`.
+
+```kotlin
+// build.gradle.kts
+android {
+    ndkVersion = "27.2.12479018"  // r27 LTS
+    defaultConfig {
+        externalNativeBuild { cmake { path = "CMakeLists.txt" } }
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+    }
+    externalNativeBuild { cmake { path = "CMakeLists.txt" } }
+}
+```
+
+The `abiFilters` list controls which ABIs are compiled. Shipping both `arm64-v8a` and `armeabi-v7a` covers essentially all active Android devices. Adding `x86_64` is recommended for emulator testing and Chrome OS; `x86` can be omitted for new projects as 32-bit x86 Android device share is negligible.
+
+#### Per-ABI Compile Options
+
+When a single build needs different code paths per ABI, `CMakeLists.txt` can branch on `ANDROID_ABI`:
+
+```cmake
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+    target_compile_options(mygame PRIVATE
+        -march=armv8.2-a+fp16     # fp16 arithmetic
+        -DNEON_ENABLED=1
+    )
+elseif(ANDROID_ABI STREQUAL "armeabi-v7a")
+    target_compile_options(mygame PRIVATE
+        -mfpu=neon-vfpv4
+        -DNEON_ENABLED=1
+    )
+endif()
+```
+
+Care is needed with ARMv8.2 extensions: `-march=armv8.2-a+fp16` enables dot-product and half-precision float intrinsics that are absent on early ARMv8.0 devices (Cortex-A53, Snapdragon 625). At runtime, query `android_getCpuFamily()` + `android_getCpuFeatures()` (from `<cpu-features.h>`, NDK API 9+) or read `/proc/cpuinfo` before dispatching to the optimised path.
+
+#### Stripping and Symbol Files
+
+AGP automatically strips `.so` files before packaging into the release APK. Unstripped copies are retained in `build/intermediates/merged_native_libs/<variant>/<abi>/` for upload to crash reporting services. The CMake variable `CMAKE_BUILD_TYPE=RelWithDebInfo` retains DWARF debug info in the build-tree `.so` without affecting the stripped APK copy. Setting `android.defaultConfig.packaging.jniLibs.keepDebugSymbols.add("**/*.so")` in `build.gradle.kts` includes unstripped `.so` in a debug APK — useful for on-device symbolication during development but dramatically increases APK size.
+
+#### Prefab: Pre-built Libraries in AAR Files
+
+**Prefab** is the Android packaging mechanism for distributing pre-built native libraries and their C/C++ headers inside `.aar` files, letting Gradle-based consumers link against them without managing include paths or linker flags manually. All major AGDK components — GameActivity, Swappy (Frame Pacing), Oboe (audio), Paddleboat (gamepad) — ship as Prefab AAR packages on Maven Central.
+
+A Prefab AAR contains a `prefab/` directory with per-module `include/` headers and per-ABI `.so` or `.a` files. AGP 7.0+ processes Prefab AARs automatically: when a CMake project calls `find_package`, AGP generates a CMake package config file (`<module>Config.cmake`) that exposes the headers and library as an IMPORTED target.
+
+```cmake
+# CMakeLists.txt — consume AGDK GameActivity via Prefab
+find_package(game-activity REQUIRED CONFIG)
+find_package(games-frame-pacing REQUIRED CONFIG)
+
+target_link_libraries(mygame
+    game-activity::game-activity
+    games-frame-pacing::swappy_static
+    android  log  vulkan)
+# CMake automatically adds -I<prefab_headers> and links the correct ABI .a/.so
+```
+
+```kotlin
+// build.gradle.kts — declare Prefab AAR dependencies
+dependencies {
+    implementation("androidx.games:games-activity:3.0.5")
+    implementation("androidx.games:games-frame-pacing:2.1.4")
+}
+android { buildFeatures { prefab = true } }
+```
+
+The `buildFeatures.prefab = true` flag enables AGP's Prefab processing. The `find_package` call then resolves to the correct ABI variant at configure time. Without Prefab, distributing C++ libraries required either source distribution or a manual `jniLibs`-path arrangement that broke with NDK updates — Prefab makes `find_package` as ergonomic for Android as it is on desktop CMake.
+
+[Source: Android NDK CMake guide](https://developer.android.com/ndk/guides/cmake), [Native dependencies with Prefab](https://developer.android.com/build/native-dependencies)
+
+---
+
+### 2.9 dlopen, Linker Namespaces, and Android's Library Isolation Model
+
+Android's dynamic linker (`/system/bin/linker64`) enforces a **namespace isolation model** that restricts which shared libraries an app can open. Understanding this model is necessary for any native code that loads libraries at runtime via `dlopen`, wraps optional hardware-specific libraries, or ships plugin architectures.
+
+#### Linker Namespace Isolation (Android 7.0+, API 24)
+
+Before Android 7.0 (Nougat), app native code could `dlopen` arbitrary system libraries by path. This created fragility: an app relying on `/system/lib/libbinder.so` or `/system/lib/libGLES_mali.so` would break silently when the OEM changed those libraries' internal ABI between device models or Android versions. Android 7.0 introduced **linker namespace isolation** to prevent this.
+
+Each process runs in a **default namespace** with a restricted allowed-library list. Attempting to open a private platform library by path returns NULL, and `dlerror()` reports: `dlopen failed: library "libbinder.so" not found`. The namespace configuration is defined in `/system/etc/ld.config.txt` (and vendor-partition variants `/vendor/etc/ld.config.txt`). It specifies allowed namespaces — `default`, `vndk`, `sphal` (SoC HAL), `rs` (RenderScript legacy) — and which libraries each can access. Apps run in `default`, which is limited to the NDK public library list.
+
+#### The NDK Public Library List
+
+The set of libraries guaranteed available to apps at any API level is the **NDK public library list**, defined in `ndk/meta/public_api.json` in the NDK distribution. It includes `libandroid.so`, `libvulkan.so`, `libEGL.so`, `libGLESv2.so`, `liblog.so`, `libz.so`, `libm.so`, `libc.so`, and a handful of others. Only these are accessible to the `default` namespace. Libraries outside this list — even if visible in `adb shell ls /system/lib64/` — cannot be opened by app code; the linker namespace blocks them.
+
+#### dlopen in App Code
+
+When native code needs to open a library at runtime, the correct approach is to open libraries from paths within the APK's native library directory:
+
+```c
+#include <dlfcn.h>
+#include <jni.h>
+
+// Get the native library dir from Java side and pass it to native:
+// Java: getApplicationInfo().nativeLibraryDir -> String -> jstring
+const char* lib_path = /* path assembled from nativeLibraryDir */;
+void* handle = dlopen(lib_path, RTLD_NOW | RTLD_LOCAL);
+if (!handle) {
+    __android_log_print(ANDROID_LOG_ERROR, "dlopen", "%s", dlerror());
+    return;
+}
+typedef void (*InitFn)(void);
+InitFn init = (InitFn)dlsym(handle, "plugin_init");
+if (init) init();
+```
+
+Play Asset Delivery can deliver `.so` files as on-demand assets to a per-app writable directory; those paths are also `dlopen`-able since they live under the app's data directory.
+
+`RTLD_GLOBAL` vs `RTLD_LOCAL`: `RTLD_GLOBAL` exports the loaded library's symbols into the process-wide symbol table, making them visible to subsequently loaded libraries. This is occasionally required for plugin architectures where the host provides symbols that plugins depend on. However, `RTLD_GLOBAL` can cause symbol conflicts when two libraries export the same name — for example, two plugins each statically linking different versions of a codec utility, both exporting `compress()`. Prefer `RTLD_LOCAL` unless symbol visibility across `dlopen` boundaries is explicitly required.
+
+`RTLD_NOW` vs `RTLD_LAZY`: `RTLD_NOW` resolves all undefined symbols in the library immediately at `dlopen` time; `RTLD_LAZY` (the default) defers resolution until first call. `RTLD_NOW` is useful in development to surface missing-symbol errors at load time rather than at the first call to the missing function — a crash deep in a render loop. In production, `RTLD_LAZY` is generally preferred since it distributes the resolution cost across the library's usage rather than concentrating it at startup.
+
+#### dlopen_ext and APK Loading
+
+`dlopen_ext()` is an Android-specific extension declared in `<android/dlext.h>` (API 21+). It accepts an `android_dlextinfo` struct that enables capabilities unavailable in POSIX `dlopen`:
+
+```c
+#include <android/dlext.h>
+
+// Load a .so from within an APK/zip file without extraction:
+int fd = open("/data/app/com.example.game/base.apk", O_RDONLY);
+android_dlextinfo info = {
+    .flags = ANDROID_DLEXT_USE_LIBRARY_FD
+           | ANDROID_DLEXT_USE_LIBRARY_FD_OFFSET,
+    .library_fd        = fd,
+    .library_fd_offset = offset_of_so_within_apk,
+};
+void* handle = android_dlopen_ext("libgame.so", RTLD_NOW, &info);
+```
+
+The `ANDROID_DLEXT_USE_LIBRARY_FD_OFFSET` flag lets the dynamic linker mmap the `.so` directly from the APK's zip container, skipping extraction to disk entirely. ART's `ClassLoader` implementation uses `dlopen_ext` internally when loading `.so` files from APKs configured for uncompressed native libraries. The `ANDROID_DLEXT_USE_NAMESPACE` flag allows native code to specify which linker namespace the loaded library should be placed in — used by HAL loaders and the Vulkan loader to open vendor libraries in the `sphal` namespace.
+
+#### Diagnosing Namespace Violations
+
+When `dlopen` fails due to namespace isolation, `dlerror()` returns a message that names the namespace violation. Enable verbose linker logging for development diagnosis:
+
+```bash
+adb shell setprop debug.ld.all dlopenclose
+adb logcat -s linker
+```
+
+This logs every `dlopen`/`dlclose` with namespace transitions, useful for identifying whether a transitive dependency is pulling in a non-public platform library.
+
+[Source: Android linker namespaces](https://developer.android.com/ndk/guides/using-native-api-and-linker-namespaces), [android/dlext.h](https://developer.android.com/ndk/reference/group/libdl)
+
+---
+
+### 2.10 C++ Standard Library ABI: libc++\_shared vs libc++\_static
+
+The choice of C++ STL linkage is one of the most consequential build-time decisions in an NDK project, and getting it wrong produces bugs that are subtle and hard to reproduce.
+
+#### One STL, Two Linkage Modes
+
+Since NDK r18 (Android 9), the Android NDK ships exactly one C++ Standard Library implementation: **LLVM's libc++**. The legacy STLs (gnustl, libstlport, STLport) have been removed. libc++ is available in two linkage modes:
+
+**`c++_shared`**: the application links against `/data/app/<package>/lib/<abi>/libc++_shared.so`, which must be bundled in the APK's `lib/<abi>/` directory. All `.so` files in the APK that use C++ STL types share a single libc++ instance. This is the correct choice whenever multiple `.so` files need to exchange STL objects — `std::string`, `std::vector`, `std::function`, `std::exception` — across their boundaries.
+
+**`c++_static`**: libc++ is statically linked into each `.so`. There is no `libc++_shared.so` to bundle. This seems simpler, but has a critical failure mode: if more than one `.so` in the same process uses `c++_static`, each has its own private copy of the STL's global state. This causes several classes of subtle bugs:
+- **`dynamic_cast` failures across boundaries**: RTTI type information is stored as global symbols; with two copies, a `Base*` cast to `Derived*` through a boundary returns null even when the types match, because the two copies have different `typeinfo` addresses.
+- **Double-destruction of globals**: `std::locale::global()`, `std::cout`, and other STL globals are constructed and destructed once per copy — if their lifetime crosses a `dlclose`, the destructor fires twice.
+- **`std::exception` not caught across boundaries**: the exception unwinding tables from the two copies do not interoperate; a `std::runtime_error` thrown in one `.so` is not caught by `catch (std::exception&)` in another.
+
+The rule is clear: **if the APK loads exactly one `.so` that uses C++** (plus statically-linked dependencies that do not cross STL objects), `c++_static` is safe. If the APK loads multiple `.so` files that pass STL objects to each other — including via Prefab-distributed library ABIs — use `c++_shared`.
+
+#### Exceptions and RTTI
+
+Both are enabled by default in NDK CMake builds (`-fexceptions -frtti`). RTTI is required for `dynamic_cast` and `typeid`; exceptions are required for standard C++ exception handling and for `std::terminate` to fire correctly. Disabling either requires care:
+
+```cmake
+# Disable exceptions and RTTI for a specific target (code size reduction):
+set_target_properties(my_hot_target PROPERTIES
+    COMPILE_FLAGS "-fno-exceptions -fno-rtti"
+)
+```
+
+Disabling exceptions is safe only for code that genuinely never throws and never calls into standard library functions that throw (e.g., `std::vector::at()`). Mixing `-fno-exceptions` and `-fexceptions` code in the same `.so` is supported — unwinding records are emitted for `noexcept` functions so the linker can route around them — but mixing them across a `dlopen` boundary introduces the same multiple-EH-table problem as mixing `c++_static` copies.
+
+#### The RTTI Pointer-Identity Problem in Depth
+
+The `dynamic_cast` failure mode with `c++_static` is worth understanding precisely, because it produces incorrect behaviour rather than a crash — making it particularly hard to diagnose. When C++ compiles a class hierarchy, every class with virtual functions gets a `typeinfo` object: a `std::type_info` instance whose address serves as the type's identity token. `dynamic_cast` works by comparing `typeinfo*` pointers, not the type name strings they contain.
+
+With `c++_shared`, there is one copy of each `typeinfo` symbol in the process, resolved by the dynamic linker. All `.so` files that reference `typeinfo for Base` get the same pointer. With `c++_static`, each `.so` has its own copy of `typeinfo for Base` at a different address. A `dynamic_cast<Derived*>(base_ptr)` executed in `.so A` against an object whose `Derived` class was compiled into `.so B` compares `A`'s `typeinfo` pointer with `B`'s `typeinfo` pointer — they point to different addresses even though the string name is identical, so the cast returns `nullptr`.
+
+The same pointer-identity issue affects `typeid` comparisons: `typeid(*obj) == typeid(Derived)` returns `false` across a `c++_static` boundary even when `*obj` genuinely is a `Derived`. This silently breaks visitor patterns, discriminated unions, and any code that uses `typeid` for type discrimination across module boundaries.
+
+The linker normally deduplicates weak symbols — `typeinfo` objects are emitted as `STB_WEAK` symbols so that the linker merges multiple definitions into one. With `c++_shared`, the dynamic linker performs this deduplication at runtime across all loaded `.so` files. With `c++_static`, the `typeinfo` symbols are incorporated into each `.so`'s private data segment, not exported globally, so the dynamic linker has no opportunity to merge them. This is the mechanism behind the failure; the fix is always to use `c++_shared` when types are shared across module boundaries.
+
+#### Vtable Layout and Cross-Boundary Virtual Dispatch
+
+Virtual function tables (vtables) are subject to a related problem. A vtable is a per-class array of function pointers, emitted as a `STB_WEAK` ELF symbol (`vtable for Foo`). In `c++_shared` builds, the dynamic linker resolves all references to `vtable for Foo` to a single definition. In `c++_static` builds, each `.so` embeds its own vtable, and objects created in one `.so` whose vtable pointers are dereferenced in another `.so` can invoke stale or mismatched function pointers if the vtable layout differs — for instance, if one `.so` was compiled against a different version of a base class header that added or reordered virtual functions. This is the C++ One Definition Rule (ODR) violation problem in practice, and `c++_static` with shared types makes ODR violations far more likely.
+
+#### C++ Exceptions Across the JNI Boundary
+
+A C++ exception that unwinds through a JNI call frame reaches ART's JNI trampoline, which has no catch handler for C++ exceptions. ART calls `std::terminate()`, terminating the process with a tombstone. The fix is to catch all C++ exceptions at the JNI boundary and convert them to pending Java exceptions before returning. Section 2.12 covers this pattern in full.
+
+The STL linkage choice interacts with exception handling: if the throwing code was compiled with `c++_static` and the catching code lives in a different `.so` with its own `c++_static`, the exception class hierarchy (`std::exception`, `std::runtime_error`, etc.) has the same pointer-identity problem as `typeinfo`. A `catch (const std::exception&)` in `.so B` does not catch a `std::runtime_error` thrown in `.so A` because the two `typeinfo for std::runtime_error` pointers differ. This is another argument for `c++_shared` whenever exception types cross module boundaries.
+
+#### ABI Stability Across NDK Versions
+
+libc++ itself does not guarantee ABI stability across NDK versions. However, within a single APK where all `.so` files are compiled with the same NDK version, the ABI is consistent. APEX-delivered library updates (e.g., the `libvulkan.so` Mainline module) are compiled by Google with the same NDK LTS release used for the NDK-facing ABI, so app `.so` files compiled against NDK r27 LTS headers remain compatible with APEX updates that implement those same headers.
+
+The practical guidance for teams managing multiple NDK versions across libraries: use NDK r27 LTS (or the latest LTS at the time of project start) and pin it in `ndkVersion` in `build.gradle.kts`. Mixing `.so` files compiled with NDK r21 (which shipped an older libc++ with a slightly different `std::optional` and `std::variant` layout) with files compiled against NDK r27 in the same process can cause ABI mismatches — silent data corruption, not immediate crashes — for types whose layout changed between NDK versions.
+
+[Source: Android NDK C++ library support](https://developer.android.com/ndk/guides/cpp-support)
+
+---
+
+### 2.11 Signal Handling in Native Code: Async Safety and ANR Avoidance
+
+POSIX signals are the mechanism by which the kernel notifies a process of hardware faults, inter-process signals, and timers. On Android, signals are central to crash reporting, ART GC coordination, and ANR detection. Native code that installs custom signal handlers must understand all three uses to avoid breaking the platform.
+
+#### Signals Relevant to Android Native Code
+
+`SIGSEGV` fires on null or invalid pointer dereferences; on ARMv8, accessing a misaligned address for a data type that requires alignment (e.g., `uint64_t` at an odd address) on some microarchitectures raises `SIGBUS` instead. `SIGABRT` is sent by `abort()`, `__android_log_assert`, and ART itself when it detects a fatal internal error. `SIGILL` fires on execution of an illegal instruction — most commonly seen when code compiled with ARMv8.2 SIMD intrinsics (`sse4.2`, `dotprod`, `fp16`) runs on an ARMv8.0 device that lacks the extension. `SIGPIPE` is generated when writing to a closed socket or pipe; the NDK default-ignores it (via `sigaction(SIGPIPE, SIG_IGN, NULL)` during `JNI_OnLoad`), preventing unexpected process termination on broken connections. `SIGUSR1` and `SIGUSR2` are used internally by ART for GC coordination — native code must not mask or reuse them.
+
+#### Async-Signal-Safe Functions
+
+Signal handlers execute asynchronously — the signal can arrive while the interrupted thread holds any lock, including `malloc`'s internal lock. Calling any function that acquires a lock from inside a signal handler risks deadlock. POSIX defines a set of **async-signal-safe** functions guaranteed not to hold internal locks: `write(2)`, `_exit(2)`, `getpid(2)`, `sigaction(2)`, `kill(2)`, `send(2)`, `clock_gettime(2)`. Standard library functions — `printf`, `malloc`, `pthread_mutex_lock`, `std::string` operations — are not async-signal-safe. A signal handler that calls `printf` can deadlock when the signal arrives while the main thread holds `stdout`'s lock.
+
+The practical pattern for crash signal handlers: write a small fixed-size buffer to a pipe or `STDERR_FILENO` using `write()`, then chain to the original handler. Do not attempt to format, allocate, or log.
+
+#### ART GC and Signals
+
+ART's Concurrent Copying GC uses two mechanisms that involve signals:
+- **`SIGUSR1`** (on some ART configurations): triggers explicit GC from external tooling.
+- **Safepoint polling**: ART does not use signals for safepoints in the modern GC; instead, it polls a thread-local flag at backward branches. However, the ART runtime reserves `SIGUSR1` and `SIGUSR2` — native code should not `sigaction` these without understanding the interaction.
+
+More critically, `pthread_sigmask` should only mask signals for threads that specifically handle them. Masking `SIGABRT` in a worker thread prevents ART's abort mechanism from reaching that thread, making crash dumps incomplete.
+
+#### ANR Detection and SIGQUIT
+
+An **Application Not Responding** (ANR) condition is detected by the system when the app's main thread does not process an input event within 5 seconds, or a broadcast receiver does not complete within 10 seconds. The ANR watchdog sends `SIGQUIT` to the process; Android's `debuggerd` catches `SIGQUIT` and dumps the thread stacks of all threads to logcat and a tombstone file. The dump is the primary diagnostic for ANR investigations.
+
+For native apps using `NativeActivity` or `GameActivity`, the `android_main` function runs on the glue library's background pthread, not the Java main thread. The Java main thread is the `ANativeActivity`'s Java thread — it must continue processing Android lifecycle callbacks without blocking. The `android_native_app_glue` library handles this separation; but if the native loop blocks on a mutex that the Java thread is waiting on (for example, during surface teardown), the Java thread can stall long enough to trigger ANR.
+
+Thread names visible in ANR traces and `debuggerd` tombstones are set via `prctl`:
+
+```c
+#include <sys/prctl.h>
+prctl(PR_SET_NAME, "game_render_thread");
+// Thread now appears as "game_render_thread" in ANR traces and debuggerd output
+```
+
+#### Installing a Signal Handler with Correct Chaining and an Alternate Stack
+
+`SIGSEGV` caused by a stack overflow is particularly dangerous: the handler attempts to run on the same overflowed stack and immediately faults again, producing an infinite loop. The solution is an **alternate signal stack** installed via `sigaltstack`, combined with `SA_ONSTACK` in the `sigaction` flags:
+
+```c
+#include <signal.h>
+#include <sys/mman.h>
+
+static uint8_t alt_stack_buf[SIGSTKSZ * 4];
+
+static void install_crash_handler(void) {
+    stack_t alt = {
+        .ss_sp    = alt_stack_buf,
+        .ss_size  = sizeof(alt_stack_buf),
+        .ss_flags = 0,
+    };
+    sigaltstack(&alt, NULL);
+
+    struct sigaction sa = {}, old_sa = {};
+    sa.sa_sigaction = my_crash_handler;
+    sa.sa_flags     = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, &old_sa);
+    // Store old_sa to chain in handler
+}
+
+static void my_crash_handler(int signo, siginfo_t* info, void* ctx) {
+    // Write crash info async-signal-safely, then chain:
+    old_sa.sa_sigaction(signo, info, ctx);
+}
+```
+
+Not chaining to `old_sa` (the handler registered by `debuggerd_init`) prevents tombstone generation. The rule: custom crash signal handlers must always chain to the previous handler to preserve `debuggerd` behaviour.
+
+[Source: Android signal handling guide](https://developer.android.com/ndk/guides/signal-handling)
+
+---
+
+### 2.12 C++ Exceptions Across the JNI Boundary
+
+The JNI boundary between ART-managed Java code and native C++ is not a transparent exception conduit in either direction. Understanding the rules is essential for writing JNI code that behaves correctly under error conditions.
+
+#### The JNI Boundary as a Hard Exception Barrier
+
+A C++ exception thrown in native code that unwinds into a JNI trampoline frame reaches code generated by ART that has no `catch` clause for C++ exceptions. ART calls `std::terminate()`, which (if `std::terminate_handler` is the default) calls `abort()`, producing a tombstone. The JNI trampoline frame is not a C++ frame in the DWARF/EHABI sense — it is generated by ART's stub emitter and does not participate in C++ exception unwinding. **Never allow a C++ exception to propagate across a `JNIEXPORT` function boundary.**
+
+In the other direction: a Java exception that was thrown by a JNI call — or was already pending before the JNI call — does not stop native execution. The exception sits pending in the `JNIEnv` until the JNI method returns to Java, at which point ART throws it. This means a native method can inadvertently continue executing with a pending exception if it does not check `ExceptionCheck` after every call that can throw (see Section 2.7 for the `ExceptionCheck` pattern).
+
+#### Detecting Pending Java Exceptions
+
+```cpp
+env->CallVoidMethod(obj, method_id, arg);
+if (env->ExceptionCheck()) {
+    env->ExceptionDescribe();   // prints stack trace to logcat
+    env->ExceptionClear();      // clears the pending exception; required before further JNI calls
+    // Handle the error: return early, or throw a different exception
+    env->ThrowNew(
+        env->FindClass("java/lang/RuntimeException"),
+        "unexpected failure in native method"
+    );
+    return;
+}
+```
+
+After `ExceptionClear()`, the pending exception is gone and further JNI calls are safe. Do not make additional JNI calls between detecting an exception and clearing it — those calls have undefined behaviour with a pending exception.
+
+#### Throwing a Java Exception from Native Code
+
+```cpp
+jclass exc_cls = env->FindClass("java/lang/IllegalArgumentException");
+if (exc_cls) {
+    env->ThrowNew(exc_cls, "index out of bounds in native layer");
+}
+env->DeleteLocalRef(exc_cls);
+return;  // return immediately after ThrowNew; the exception is thrown when the JNI frame exits
+```
+
+`ThrowNew` sets a pending exception in the `JNIEnv`. The native method must return promptly after calling `ThrowNew`; continuing to call JNI functions with a pending exception is undefined behaviour. The exception is actually thrown to the Java caller only when the JNI frame returns.
+
+#### Converting C++ Exceptions to Java Exceptions
+
+The safe pattern for JNI methods that call into C++ code that may throw:
+
+```cpp
+JNIEXPORT jint JNICALL Java_com_example_Renderer_initVulkan(JNIEnv* env, jobject) {
+    try {
+        return do_vulkan_init();  // may throw std::bad_alloc, std::runtime_error, etc.
+    } catch (const std::bad_alloc&) {
+        env->ThrowNew(env->FindClass("java/lang/OutOfMemoryError"),
+                      "native Vulkan allocation failed");
+    } catch (const std::runtime_error& e) {
+        env->ThrowNew(env->FindClass("java/lang/RuntimeException"), e.what());
+    } catch (...) {
+        env->ThrowNew(env->FindClass("java/lang/RuntimeException"),
+                      "unknown native exception");
+    }
+    return -1;
+}
+```
+
+This pattern catches all C++ exceptions at the JNI boundary, converts them to the appropriate Java exception type, and returns a sentinel value. The Java caller sees the Java exception rather than a native crash.
+
+#### noexcept at the JNI Boundary
+
+Marking a JNI entry point `noexcept` is a valid optimisation for code that is proven to never throw:
+
+```cpp
+JNIEXPORT jlong JNICALL Java_com_example_GPU_getTimestamp(JNIEnv*, jclass) noexcept {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<jlong>(ts.tv_nsec);
+}
+```
+
+If a C++ exception escapes a `noexcept` function, the C++ runtime calls `std::terminate()` immediately — without unwinding — rather than letting the exception propagate toward the JNI trampoline. This is correct behaviour (it prevents the undefined-behaviour crash at the trampoline), but it bypasses the exception-to-Java-exception conversion pattern above. Use `noexcept` only on functions genuinely incapable of throwing.
+
+#### Stack Unwinding Through the JNI Frame
+
+C++ stack unwinding via DWARF CFI or ARM EHABI proceeds through native frames normally. The ART JNI trampoline frame is not a DWARF frame, so unwinding terminates when the C++ runtime's unwinder reaches it and fails to find a matching `catch`. This is by design — ART invokes `std::terminate()` at this point rather than letting the exception escape into managed code in an undefined state.
+
+`JNI_OnUnload` (called when the library's class loader is GC'd, rare in practice) is safe to call JNI from, but must not throw — there is no exception handler above it in the call stack. Always wrap `JNI_OnUnload` body in a broad try-catch if it calls C++ that might throw.
+
+[Source: Android JNI Tips — exceptions](https://developer.android.com/training/articles/perf-jni#exceptions)
+
+---
+
+### 2.13 Memory Sanitizers on Android: ASan, HWASan, UBSan, and MTE
+
+Memory safety bugs — use-after-free, buffer overflow, null dereference, integer overflow — are the most common sources of security vulnerabilities and stability crashes in native Android code. The NDK ships four complementary sanitizer tools that detect these bugs at different cost points. A mature native Android codebase runs all four at appropriate stages of the development cycle.
+
+#### AddressSanitizer (ASan)
+
+ASan (`-fsanitize=address`) instruments every heap allocation, stack frame, and global variable with **red zones** — poisoned memory regions surrounding the allocation. A shadow memory byte map stores the poisoning state of every aligned 8-byte block. On every memory access, ASan inserts an inline check against the shadow map; if the accessed address lies in a poisoned region, ASan reports the error with a full stack trace. ASan catches heap buffer overflow, stack buffer overflow, use-after-free, use-after-return, and global buffer overflow.
+
+The cost is significant: approximately **2× memory usage** (from the shadow map) and **1.5–2× CPU overhead** (from the inline checks). This makes ASan unsuitable for production use but ideal for CI runs and targeted bug investigation.
+
+```cmake
+# CMakeLists.txt — enable ASan for a specific target
+target_compile_options(mygame PRIVATE
+    -fsanitize=address -fno-omit-frame-pointer)
+target_link_options(mygame PRIVATE
+    -fsanitize=address)
+```
+
+ASan requires the `libclang_rt.asan-<arch>-android.so` runtime library, which must be bundled in the APK or preloaded via `LD_PRELOAD`. The NDK's `wrap.sh` mechanism (place a `wrap.sh` script in the APK's `lib/<abi>/` directory) is the recommended way to inject the ASan runtime without modifying the app's Java code.
+
+#### HWAddressSanitizer (HWASan)
+
+HWASan (`-fsanitize=hwaddress`) takes a different approach: it stores a **tag** in the top 8 bits of every pointer (bits 56–63, exploiting ARM's **Top Byte Ignore** — TBI — feature, which silently masks those bits on normal memory accesses). Every allocation and stack frame is tagged; every pointer derived from the allocation carries the same tag. On access, a brief inline check compares the pointer's top byte against the tag stored in a shadow map; mismatches (indicating out-of-bounds or use-after-free access) are reported.
+
+HWASan's key advantage over ASan is lower overhead: approximately **15% memory overhead** (versus ASan's 2×) and lower CPU overhead, making it suitable for extended dogfooding sessions. It runs on Armv8+ devices (API 27+, the TBI feature is mandatory on AArch64). Android 11+ supports HWASan via `ndk-build APP_SANITIZE := hwaddress` or CMake `ANDROID_SANITIZE` variable. On Pixel 6 and later (Cortex-X1, ARMv8.5+), HWASan hardware acceleration is available through Memory Tagging Extension (see below).
+
+#### Memory Tagging Extension (MTE)
+
+MTE is an ARMv8.5+ hardware feature that elevates HWASan's tagging concept to hardware enforcement. Physical memory tags are stored alongside each 16-byte granule; pointer tags are stored in the top byte. On every memory access, the hardware compares the pointer tag against the granule tag in a single pipeline stage — zero CPU overhead when no violation occurs. Detection is reported via a `SIGSEGV`-like signal.
+
+Android 13 exposes MTE control via the app manifest:
+
+```xml
+<!-- AndroidManifest.xml -->
+<application android:memtagMode="async">
+    <!-- async: violations reported asynchronously (non-fatal by default); best for production -->
+    <!-- sync:  violations immediately terminate the process with a tombstone; best for testing -->
+```
+
+`async` mode is suitable for production deployment on Pixel 8+ devices (Cortex-X3, ARMv8.5+): it catches a meaningful fraction of memory bugs at zero throughput cost, reporting them via crash reporting SDKs without killing the process for every detection. `sync` mode is for testing — every violation produces a tombstone with a full stack trace.
+
+On devices without ARMv8.5+ hardware (which is most devices in 2026), `android:memtagMode` has no effect. HWASan fills the same role in software.
+
+#### UBSan (Undefined Behaviour Sanitizer)
+
+UBSan (`-fsanitize=undefined` or specific subchecks) inserts lightweight checks for C++ undefined behaviour: signed integer overflow, null pointer dereference, out-of-bounds array access, misaligned access, and others. Unlike ASan/HWASan, UBSan has **zero memory overhead** and typically only **5–10% CPU overhead**, making it viable in CI builds that run test suites under time constraints.
+
+```cmake
+target_compile_options(mygame PRIVATE
+    -fsanitize=integer-divide-by-zero,null,signed-integer-overflow,bounds
+    -fno-sanitize-recover=all)  # terminate on first violation instead of continuing
+target_link_options(mygame PRIVATE -fsanitize=undefined)
+```
+
+On Android, UBSan reports route through `__ubsan_on_report`, which calls `__android_log_write` to logcat. The `-fno-sanitize-recover=all` flag causes the process to abort on the first violation, producing a tombstone — useful in CI where you want a hard failure, not a log message that might be missed.
+
+#### Symbolication of Sanitizer Output
+
+Sanitizer output in logcat contains raw addresses. Symbolicate with `llvm-symbolizer` from the NDK:
+
+```bash
+# Symbolicate an ASan/HWASan error from logcat:
+adb logcat | grep -A 20 "AddressSanitizer\|HWAddressSanitizer" | \
+    ${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-symbolizer \
+    --obj=build/intermediates/merged_native_libs/debug/arm64-v8a/lib/arm64-v8a/libgame.so
+```
+
+The unstripped `.so` must be available locally; the stripped APK copy cannot be symbolicated. This is why retaining unstripped copies in `build/intermediates/` or uploading them to a crash reporting service is essential.
+
+`__attribute__((no_sanitize("address")))` can suppress sanitizer checks on specific functions — hot paths where the overhead is prohibitive or where the sanitizer produces known false positives (e.g., deliberately aliasing memory in a custom allocator). Suppress sparingly; the goal is to fix the underlying issue.
+
+#### Recommended Sanitizer Workflow
+
+| Stage | Sanitizer | Rationale |
+|---|---|---|
+| CI unit/integration tests | UBSan | Near-zero overhead; catches integer and pointer UB on every test run |
+| Dogfooding on Pixel 6+ | HWASan | ~15% overhead; catches memory bugs without stopping session |
+| Targeted bug investigation | ASan | Full precision; 2× memory overhead acceptable for short sessions |
+| Production (Pixel 8+) | MTE async mode | Zero overhead hardware tagging; catches subset of bugs in production |
+
+[Source: Android NDK sanitizers guide](https://developer.android.com/ndk/guides/sanitizers), [HWASan design](https://clang.llvm.org/docs/HardwareAssistedAddressSanitizerDesign.html)
+
+---
+
+### 2.14 Native Crash Analysis: Tombstones, Unwinding, and Symbolication
+
+When an Android process dies due to a fatal signal — `SIGSEGV`, `SIGABRT`, `SIGBUS`, `SIGILL` — the kernel delivers the signal to `debuggerd`, Android's crash reporting daemon. `debuggerd` generates a **tombstone** file containing everything needed to diagnose the crash post-hoc. Understanding the tombstone format and the toolchain for symbolication is essential for debugging crashes that only manifest on device.
+
+#### The Tombstone File
+
+Tombstones are written to `/data/tombstones/tombstone_NN` with NN cycling through 00–99 (oldest is overwritten when the ring fills). They are accessible via `adb bugreport` (which packages all tombstones in the bug report zip) or directly via `adb shell cat /data/tombstones/tombstone_00` (requires root or the `android.permission.READ_LOGS` on debug builds).
+
+A tombstone contains:
+- Build fingerprint and API level of the device
+- Process and thread IDs, thread name, and package name
+- Signal name, signal code, and fault address
+- CPU register dump (all 31 general-purpose registers on AArch64, plus `sp`, `pc`, `pstate`)
+- Full backtrace of the crashing thread
+- Backtraces of all other threads in the process
+- Open file descriptor table
+- Memory maps (`/proc/<pid>/maps`)
+- Logcat output (last ~1000 lines, if logd is running)
+
+#### Annotated Tombstone Excerpt
+
+```text
+*** *** *** *** *** *** *** *** *** *** *** ***
+Build fingerprint: 'google/redfin/redfin:14/UP1A.231005.007/...'
+ABI: 'arm64'
+Timestamp: 2026-06-27 10:42:18.132000000+0000
+
+pid: 12345, tid: 12347, name: game_render_thread  >>> com.example.game <<<
+uid: 10188
+signal 11 (SIGSEGV), code 1 (SEGV_MAPERR), fault addr 0x0000000000000010
+Cause: null pointer dereference
+
+    x0  0000000000000000  x1  00000072b1234abc  x2  0000000000000001
+    x3  00000072b1234ab8  x4  0000000000000000  x5  0000000000000000
+    ...
+    sp  0000007ff8a12340  lr  000000720012abcc  pc  000000720012abc0
+
+backtrace:
+  #00 pc 000000000012abc0  /data/app/~~xyz/com.example.game/lib/arm64/libgame.so
+  #01 pc 00000000000f1234  /data/app/~~xyz/com.example.game/lib/arm64/libgame.so
+  #02 pc 00000000001a5678  /system/lib64/libandroid.so
+```
+
+The `pc` values are offsets within the loaded library (address minus load base). Symbolication maps these to source file and line numbers.
+
+#### Symbolication with ndk-stack
+
+`ndk-stack` is the simplest path for symbolication: it reads a tombstone or logcat stream and annotates backtrace `pc` entries with function names and source locations using the unstripped `.so` files from the build directory.
+
+```bash
+# Stream logcat through ndk-stack in real time:
+adb logcat | ndk-stack \
+    -sym ./app/build/intermediates/merged_native_libs/debug/arm64-v8a/
+
+# Or symbolicate a saved tombstone:
+ndk-stack -sym ./app/build/intermediates/merged_native_libs/debug/arm64-v8a/ \
+    < /tmp/tombstone_00
+```
+
+`ndk-stack` matches each `pc <offset>  <library>` backtrace line and queries the unstripped copy of `<library>` using DWARF debug info. It requires the unstripped `.so` for the matching ABI to be in the directory passed to `-sym`.
+
+#### Symbolication with llvm-symbolizer
+
+For more control — DWARF5 support, demangling, inline expansion — use `llvm-symbolizer` directly from the NDK toolchain:
+
+```bash
+NDK_LLVM="${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+# Symbolicate a single address (0x12abc0 within libgame.so):
+${NDK_LLVM}/llvm-symbolizer \
+    --obj=./app/build/intermediates/merged_native_libs/debug/arm64-v8a/lib/arm64-v8a/libgame.so \
+    0x12abc0
+# Output:
+# GameRenderer::render()
+# /home/user/game/src/renderer.cpp:142:12
+```
+
+`llvm-symbolizer` expands inlined frames: if `render()` was inlined into `GameLoop::tick()` which was inlined into `android_main()`, all three frames appear in the output, each with their source location. This is valuable for release builds with `RelWithDebInfo` that inline aggressively.
+
+#### Annotating Crashes with Application Context
+
+Android API 23+ provides `ACrashDetail_register` (in `<android/crash_detail.h>`) to embed application-specific context in the tombstone:
+
+```c
+#include <android/crash_detail.h>
+
+// Register a detail buffer before the frame that might crash:
+static char gpu_ctx[256];
+snprintf(gpu_ctx, sizeof(gpu_ctx), "frame=%u pipeline=%p", frame_count, pipeline);
+crash_detail_t* detail = ACrashDetail_register(
+    "gpu_state", gpu_ctx, strlen(gpu_ctx));
+
+// ... do work that might crash ...
+
+// Unregister when the context is no longer valid:
+ACrashDetail_unregister(detail);
+```
+
+Registered details appear in the tombstone under an `Extra crash detail` section. They survive the crash because `debuggerd` reads them from the process's memory map before the process exits, using `ptrace`. This technique is valuable for embedding game state — current level, GPU pipeline handle, active shader — that disambiguates which code path triggered the crash.
+
+#### Common Causes of Missing Symbols
+
+Three patterns produce `?? ??:0` entries in symbolicated backtraces:
+1. **Stripped `.so` without unstripped copy**: the APK's stripped library is used for symbolication instead of the build tree's unstripped copy. Always pass the `merged_native_libs` path, not the APK-extracted path.
+2. **Inlined frames with `-O2` without debug info**: add `-fno-inline` or use `RelWithDebInfo` to retain DWARF. Production crash reporting services (Firebase Crashlytics, Play Vitals) require pre-uploaded unstripped `.so` files to perform server-side symbolication.
+3. **Wrong ABI path**: passing `arm64-v8a` unstripped libraries to symbolicate an `armeabi-v7a` crash. Verify the ABI from the tombstone's `ABI:` header line before selecting the symbol path.
+
+#### DWARF and ARM EHABI Unwinding Prerequisites
+
+Reliable stack unwinding in the tombstone requires either `.debug_frame` (DWARF CFI) or `.ARM.exidx` / `.ARM.extab` (ARM Exception Handling ABI) sections in the `.so`. Building with `-fno-omit-frame-pointer` provides a fallback frame pointer chain that `debuggerd` can follow even when CFI is incomplete — at the cost of one extra register per function. For release builds, keep `-fno-omit-frame-pointer` on the `.so` used for crash reporting, even if the APK's copy is stripped.
+
+[Source: Android native crash guide](https://source.android.com/docs/core/tests/debug/native-crash), [ndk-stack reference](https://developer.android.com/ndk/guides/ndk-stack)
 
 ---
 

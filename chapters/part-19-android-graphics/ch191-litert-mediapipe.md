@@ -11,15 +11,23 @@
 3. [Delegate Architecture: Routing Inference to Hardware](#3-delegate-architecture-routing-inference-to-hardware)
    - [3.1 NNAPI: Historical Context (API 27–34)](#31-nnapi-historical-context-api-2734) — HAL evolution, LiteRT delegate, why deprecated
    - [3.3 What Replaced NNAPI: Vendor Delegates](#33-what-replaced-nnapi-vendor-delegates) — QNN/HTP, Tensor NPU, MediaTek APU, discovery chain, op coverage
+   - [3.5 XNNPack: CPU Inference with SIMD and Thread Parallelism](#35-xnnpack-cpu-inference-with-simd-and-thread-parallelism)
 4. [AHardwareBuffer Tensor Interop](#4-ahardwarebuffer-tensor-interop)
 5. [Model Formats and Quantisation](#5-model-formats-and-quantisation)
-6. [MediaPipe Framework Architecture](#6-mediapipe-framework-architecture)
-7. [MediaPipe Tasks API](#7-mediapipe-tasks-api)
-8. [Camera2 → MediaPipe Zero-Copy Pipeline](#8-camera2--mediapipe-zero-copy-pipeline)
-9. [ARCore + MediaPipe Composition](#9-arcore--mediapipe-composition)
-10. [Performance Profiling and Tuning](#10-performance-profiling-and-tuning)
-11. [Roadmap](#11-roadmap)
-12. [Integrations](#12-integrations)
+6. [Model Conversion and Quantization Workflow](#6-model-conversion-and-quantization-workflow)
+7. [MediaPipe Framework Architecture](#7-mediapipe-framework-architecture)
+8. [MediaPipe Tasks API](#8-mediapipe-tasks-api)
+   - [8.5 Audio Processing with MediaPipe Tasks](#85-audio-processing-with-mediapipe-tasks)
+9. [MediaPipe Model Maker: Custom Task Training](#9-mediapipe-model-maker-custom-task-training)
+10. [Camera2 → MediaPipe Zero-Copy Pipeline](#10-camera2--mediapipe-zero-copy-pipeline)
+11. [ARCore + MediaPipe Composition](#11-arcore--mediapipe-composition)
+12. [Performance Profiling and Tuning](#12-performance-profiling-and-tuning)
+   - [12.7 Benchmarking with benchmark_model](#127-benchmarking-with-benchmark_model)
+13. [Model Security: Encryption, Signing, and Integrity Protection](#13-model-security-encryption-signing-and-integrity-protection)
+14. [Privacy by Design: Data Protection for On-Device ML](#14-privacy-by-design-data-protection-for-on-device-ml)
+15. [On-Device Training and Federated Learning](#15-on-device-training-and-federated-learning)
+16. [Roadmap](#16-roadmap)
+17. [Integrations](#17-integrations)
 
 ---
 
@@ -442,6 +450,71 @@ interpreter->ModifyGraphWithDelegate(edgetpu_delegate);
 
 Edge TPU models must be compiled with the [Edge TPU compiler](https://coral.ai/docs/edgetpu/compiler/) ahead of time, which quantises ops to INT8 and maps them to the TPU's SIMD arrays. Ops that the compiler cannot map remain on CPU.
 
+### 3.5 XNNPack: CPU Inference with SIMD and Thread Parallelism
+
+XNNPack is the default CPU inference backend in LiteRT and deserves more than a footnote. Unlike the vendor delegates in §3.3, XNNPack is not a "delegate" in the traditional sense — it does not claim a subgraph via `ModifyGraphWithDelegate()` and replace nodes with an opaque partition. Instead, it is integrated directly into the `BuiltinOpResolver` as the preferred implementation of each supported operator. When `InterpreterBuilder` constructs an interpreter from a `BuiltinOpResolver`, XNNPack-optimised kernels are automatically registered for all ops it covers. No explicit delegate creation is required for the default path; the fallback to the original reference CPU kernels only occurs for ops XNNPack does not yet support. [Source: XNNPack GitHub](https://github.com/google/XNNPACK) [Source: LiteRT best practices](https://ai.google.dev/edge/litert/performance/best-practices)
+
+That said, XNNPack *can* also be invoked explicitly as a delegate — this is useful when you need to control thread count or enable experimental flags while still relying on the CPU path:
+
+```cpp
+#include "tflite/delegates/xnnpack/xnnpack_delegate.h"
+
+TfLiteXNNPackDelegateOptions xnnpack_opts =
+    TfLiteXNNPackDelegateOptionsDefault();
+xnnpack_opts.num_threads = 4;  // use 4 threads for compute
+TfLiteDelegate* xnnpack_delegate = TfLiteXNNPackDelegateCreate(&xnnpack_opts);
+interpreter->ModifyGraphWithDelegate(xnnpack_delegate);
+// Release when done: TfLiteXNNPackDelegateDelete(xnnpack_delegate);
+```
+
+#### Microkernel Architecture
+
+XNNPack's design philosophy is to compile per-operator microkernels for every ISA it encounters, selecting at runtime the highest-performance path available on the current CPU. The ISA targets as of 2026 are:
+
+- **NEON** (Armv7, Armv8): baseline for all Android ARM devices
+- **NEON+FP16** (Armv8.2+): FP16 arithmetic for the compute path, reducing bandwidth on mid-to-high-end chips (Cortex-A55+, Cortex-X1+)
+- **SVE / SVE2** (Armv8.2+ with SVE extensions, Cortex-X1+, Cortex-X4): scalable vector extensions; XNNPack SVE kernels adapt to the CPU's vector length at runtime, covering 128-bit through 512-bit SIMD widths
+- **SSE4.1 / AVX / AVX-512** (x86): covers x86-64 Linux and Chrome OS ML inference
+- **WebAssembly SIMD**: the WASM target uses the 128-bit `v128` type, enabling browser-side LiteRT to benefit from the same microkernel investment
+
+CPU feature detection at startup determines which microkernel set is loaded. The selection is done once at `InterpreterBuilder` time via CPUID (x86) or `getauxval(AT_HWCAP)` (ARM), storing the result in a global capability bitmask. Each XNNPack operator then dispatches through a function pointer set to the best available implementation.
+
+#### Thread Pool and Parallelism
+
+`XNNPackDelegate` creates a `pthreadpool` thread pool with `num_threads` workers. When `num_threads` is left at its default of 0, XNNPack queries the number of physical (not hyperthreaded) CPU cores and creates that many workers. On a Snapdragon 8 Gen 3 with 1 prime + 3 performance + 4 efficiency cores, this yields 8 workers; XNNPack's tiling strategy partitions the output tensor into horizontal strips, assigning one strip per thread. The `pthreadpool` library uses futex-based barriers — threads block in the kernel between operator invocations rather than spinning, which is critical for power efficiency on battery-constrained devices.
+
+Setting `num_threads` above the physical core count does not help and typically hurts: hyper-thread siblings share L1 cache bandwidth with the primary sibling, and the thread synchronisation overhead at strip boundaries adds latency without throughput benefit. For power-sensitive workloads, setting `num_threads = 2` or `num_threads = 4` and pinning to the performance core cluster (via `pthread_setaffinity_np`) is a common tuning choice.
+
+#### Weight Caching and Subgraph Reshaping
+
+For quantised INT8 models, XNNPack pre-packs weight tensors into an optimised memory layout on first use — for example, NEON matrix-multiply kernels prefer a packed, block-transposed column-major layout rather than the row-major weight storage in the `.tflite` FlatBuffer. This pre-packing occurs during `AllocateTensors()` and is cached in heap memory for the lifetime of the interpreter.
+
+When the input tensor shape changes at runtime (e.g., the application switches from 640×480 to 1280×720 camera resolution), the default behaviour is to re-run graph partitioning and re-allocate activation tensors, which can discard the pre-packed weights. Enabling subgraph reshaping preserves the weight cache across `ResizeInputTensor()` calls:
+
+```cpp
+xnnpack_opts.flags |= TFLITE_XNNPACK_DELEGATE_FLAG_ENABLE_SUBGRAPH_RESHAPING;
+```
+
+This flag is important for applications that dynamically adjust resolution based on thermal state or frame rate targets — without it, each resize triggers a costly re-pack of all weight tensors.
+
+#### When XNNPack CPU Beats the GPU Delegate
+
+The received wisdom is that GPU is always faster than CPU for neural network inference, but this is not universally true on Android. The GPU delegate's pipeline involves shader compilation (amortised with caching), GPU command submission overhead, and CPU↔GPU synchronisation at the delegate boundary. For models with fewer than approximately 1 million parameters, these fixed overheads can dominate the actual compute time.
+
+Concrete guidance for typical models (benchmarked on Cortex-A78, 4 threads):
+
+| Precision | Latency (4 threads) | Latency (1 thread) |
+|---|---|---|
+| FP32 | ~18 ms | ~65 ms |
+| FP16 (Armv8.2+) | ~11 ms | ~40 ms |
+| INT8 (quantised) | ~6 ms | ~21 ms |
+
+For comparison, the GPU delegate on a mid-range Adreno 640 achieves ~5 ms for the same MobileNetV3-Small model — comparable to XNNPack INT8 at 4 threads. For MobileNetV2-Small and all MediaPipe "lite" model variants (pose landmark lite, hand landmark lite — all under 5 MB), benchmarking frequently shows XNNPack INT8 matching or beating the GPU delegate, particularly when shader serialisation is not configured (cold-start GPU path adds 200–500 ms on first run). Always benchmark both paths on your target device before assuming GPU is the right choice.
+
+#### Operator Coverage
+
+XNNPack covers the majority of vision-model operators: `CONV_2D`, `DEPTHWISE_CONV_2D`, `TRANSPOSE_CONV`, `FULLY_CONNECTED`, all pooling variants, element-wise arithmetic (`ADD`, `MUL`, `SUB`), activations (`RELU`, `RELU6`, `SIGMOID`, `HARD_SWISH`), `CONCATENATION`, `RESHAPE`, `PAD`, `MEAN`, and `SOFTMAX`. It does not accelerate `LSTM` or `UNIDIRECTIONAL_SEQUENCE_LSTM` — for recurrent models, use the GPU delegate's `LSTM` path or the platform's `BATCH_MATMUL`-based reformulation. The full supported op set can be queried at runtime via `TfLiteXNNPackDelegateGetFlags()`, which returns a bitmask of enabled capabilities.
+
 ---
 
 ## 4. AHardwareBuffer Tensor Interop
@@ -599,11 +672,189 @@ The resulting `.tflite` is semantically identical to one produced from TensorFlo
 
 ---
 
-## 6. MediaPipe Framework Architecture
+## 6. Model Conversion and Quantization Workflow
+
+Producing a production-ready `.tflite` model involves more than a single API call. This section covers the full toolchain from training framework to deployed INT4/INT8/FP16 artefact, including the key decision points around quantisation strategy. The quantisation *theory* (scale/zero-point encoding, schema representation) is covered in §5; this section focuses on the *process and tooling*. [Source: LiteRT model conversion guide](https://ai.google.dev/edge/litert/models/convert/convert_models) [Source: LiteRT optimisation guide](https://ai.google.dev/edge/litert/models/optimize/)
+
+### 6.1 Conversion Pipeline Overview
+
+The general path from a trained model to a deployed LiteRT artefact is:
+
+```
+PyTorch / JAX / Keras
+    │ ai-edge-torch / tf.lite.TFLiteConverter
+    ▼
+.tflite FlatBuffer (fp32)
+    │ post-training quantization or QAT
+    ▼
+.tflite (INT8 / INT4 / FP16)
+    │ ai-edge-quantizer (advanced) or TFLiteConverter
+    ▼
+Deploy to LiteRT
+```
+
+Choosing the entry point depends on the training framework. TensorFlow/Keras users go directly through `tf.lite.TFLiteConverter`. PyTorch users use `ai-edge-torch`, which reached stable release in 2024 and is now the preferred path for PyTorch-originating models. JAX users can export via `orbax-export` to SavedModel format, then apply `TFLiteConverter`. Each path produces semantically identical FlatBuffer artefacts.
+
+### 6.2 TFLiteConverter for TensorFlow and Keras Models
+
+`tf.lite.TFLiteConverter` is the canonical tool for TensorFlow SavedModel and Keras model formats. The following converts a SavedModel to a fully integer-quantised INT8 model suitable for NPU deployment:
+
+```python
+import tensorflow as tf
+
+converter = tf.lite.TFLiteConverter.from_saved_model("saved_model_dir")
+converter.optimizations = [tf.lite.Optimize.DEFAULT]  # enables PTQ
+
+# Provide a representative dataset for INT8 calibration
+def representative_dataset():
+    for image, _ in val_dataset.take(100):
+        yield [tf.cast(image, tf.float32)]
+
+converter.representative_dataset = representative_dataset
+converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+converter.inference_input_type = tf.int8
+converter.inference_output_type = tf.int8
+tflite_model = converter.convert()
+
+with open("model_int8.tflite", "wb") as f:
+    f.write(tflite_model)
+```
+
+Setting `inference_input_type = tf.int8` means the model expects pre-quantised INT8 input — the application is responsible for converting the raw float image to INT8 before calling `set_tensor()`. If this is inconvenient, omit both `inference_input_type` and `inference_output_type`; the model will accept float32 input and output, with quantisation/dequantisation ops inserted automatically at the graph boundary.
+
+### 6.3 ai-edge-torch for PyTorch Models
+
+`ai-edge-torch` converts a `torch.nn.Module` directly to a `.tflite` FlatBuffer without going through TensorFlow. It uses `torch.export` (PyTorch 2.x) to capture a static computation graph and then lowers it to LiteRT operators:
+
+```python
+import ai_edge_torch
+import torch
+
+model = MobileNetV3().eval()
+sample_input = (torch.randn(1, 3, 224, 224),)
+
+edge_model = ai_edge_torch.convert(model, sample_input)
+edge_model.export("mobilenet_v3.tflite")
+```
+
+For quantised export, `ai-edge-torch` integrates with PyTorch's `torch.ao.quantization` pipeline:
+
+```python
+from ai_edge_torch.quantize import pt2e_quantizer, quant_config
+
+quantizer = pt2e_quantizer.PT2EQuantizer().set_global(
+    quant_config.get_symmetric_quantization_config(is_per_channel=True)
+)
+edge_model = ai_edge_torch.convert(model, sample_input, quant_config=quantizer)
+edge_model.export("mobilenet_v3_int8.tflite")
+```
+
+[Source: ai-edge-torch GitHub](https://github.com/google-ai-edge/ai-edge-torch)
+
+### 6.4 PTQ versus QAT: When to Use Each
+
+**Post-Training Quantisation (PTQ)** requires no retraining. The converter runs a calibration pass over the representative dataset (100–500 samples is usually sufficient) to determine activation value ranges, then selects the per-layer scale and zero-point that minimises quantisation error. PTQ is fast — typically minutes on a laptop GPU — and for most convolutional vision models achieves accuracy loss below 1% on standard metrics (top-1 ImageNet, COCO mAP).
+
+**Quantization-Aware Training (QAT)** inserts fake-quantisation nodes into the model's forward pass during training, so the model learns to compensate for the rounding noise introduced by quantisation. The resulting model is typically within 0.5% of the FP32 baseline. QAT requires a training infrastructure, access to the training data, and training time (hours to days), so it is reserved for cases where PTQ accuracy degradation exceeds the acceptable threshold.
+
+A practical decision rule: run PTQ first and measure accuracy on your target evaluation set. If the degradation exceeds 2% on the primary metric, switch to QAT. Common cases where PTQ struggles include:
+- Object detection models with complex feature pyramid networks (FPN)
+- Transformer-based models with attention mechanisms (activation distributions are bimodal, hard to calibrate with a single scale)
+- LSTM/GRU-based sequence models (recurrent activations have high dynamic range)
+- Models with a small number of output classes where per-class accuracy matters more than top-1
+
+### 6.5 Representative Dataset Selection
+
+The quality of INT8 PTQ depends critically on the representative dataset. The calibration samples determine the min/max (or percentile) of each activation tensor's range, which in turn sets the quantisation scale. Biased calibration — using images from a single class, or using training images that differ in distribution from deployment — will produce sub-optimal scales that hurt accuracy in deployment.
+
+Guidelines: use 100–500 samples drawn uniformly from the *validation* set (not training); ensure the samples cover the full range of expected deployment inputs (all lighting conditions, all relevant object categories); avoid duplicate frames from video sequences, which inflate the apparent frequency of a particular activation range. If the deployment domain differs from the training domain (e.g., industrial camera with different white balance), use samples from the deployment domain for calibration.
+
+### 6.6 Per-Channel vs Per-Tensor Quantisation
+
+LiteRT supports two quantisation granularities for weight tensors:
+
+**Per-tensor quantisation** assigns a single scale and zero-point to the entire weight tensor. It is simpler to implement in hardware and produces smaller model metadata, but results in ~0.5–1% more accuracy loss than per-channel on deep convolutional networks, because different output channels in a convolution layer typically have very different weight magnitude ranges.
+
+**Per-channel quantisation** (also called per-output-channel) assigns a separate scale to each output filter. This is the LiteRT default when `target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]` is set. It is particularly important for `DEPTHWISE_CONV_2D`, where channel-to-channel weight magnitude variation is high and per-tensor quantisation often causes >2% accuracy loss.
+
+Activations are always quantised per-tensor in LiteRT's current implementation, since per-channel activation quantisation is rarely supported in hardware and adds significant complexity to the runtime.
+
+### 6.7 ai-edge-quantizer for Advanced Scenarios
+
+For production deployments requiring selective quantisation or INT4 weight-only quantisation, the `ai-edge-quantizer` package provides more control than `TFLiteConverter`:
+
+```python
+from ai_edge_quantizer import quantizer, algorithm_manager
+
+quantization_config = quantizer.QuantizationConfig(
+    algorithm_key=algorithm_manager.AlgorithmName.MIN_MAX_UNIFORM_QUANTIZE,
+    op_selection_config=quantizer.OpSelectionConfig(
+        # Skip the first and last layers, which are sensitivity to quantisation:
+        skip_ops_with_output_layer_count=[0, -1]
+    )
+)
+qt = quantizer.Quantizer("model.tflite", quantization_config)
+qt.load_representative_dataset(representative_dataset_gen)
+result = qt.quantize()
+result.export_model("model_quantized.tflite")
+```
+
+`ai-edge-quantizer` supports selective quantisation (skip sensitive layers), INT4 weight-only quantisation (2× weight compression vs INT8), and clustering quantisation (grouping weights into centroid clusters to preserve accuracy). [Source: ai-edge-quantizer](https://github.com/google-ai-edge/ai-edge-quantizer)
+
+### 6.8 INT4 Weight-Only Quantisation for LLMs
+
+For transformer decoder models (LLMs), the dominant compute pattern is weight-dequantise-then-matrix-multiply (GeMM-bound). INT4 weight-only quantisation stores weights in 4-bit groups of 32 or 64 elements, each group with a FP16 scale. Activations remain in FP16 at runtime; only weights are stored compressed. This achieves 2× memory reduction versus INT8, enabling Gemma 2B-class models (~2 billion parameters) to reside in approximately 1 GB of GPU high-bandwidth memory on mid-range Android devices.
+
+```python
+converter = tf.lite.TFLiteConverter.from_saved_model("gemma_2b_saved_model")
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+converter.target_spec.supported_types = [tf.float16, tf.int4]
+tflite_model = converter.convert()
+```
+
+Note: INT4 weight-only is supported by LiteRT-LM's GPU delegate (OpenCL backend) and by the Qualcomm QNN delegate (v2.22+) and MediaTek NeuroPilot (Dimensity 9400+). The standard GPU delegate (`TfLiteGpuDelegateV2`) does not yet support INT4.
+
+### 6.9 Measuring Accuracy Regression
+
+After conversion and quantisation, always compare output on a held-out test set before and after:
+
+```python
+import numpy as np
+from tflite_runtime.interpreter import Interpreter
+
+interp_fp32 = Interpreter("model_fp32.tflite")
+interp_int8 = Interpreter("model_int8.tflite")
+
+for interp in [interp_fp32, interp_int8]:
+    interp.allocate_tensors()
+
+correct_fp32, correct_int8 = 0, 0
+for image, label in test_dataset:
+    for interp, counter in [(interp_fp32, "fp32"), (interp_int8, "int8")]:
+        interp.set_tensor(interp.get_input_details()[0]["index"], image)
+        interp.invoke()
+        pred = np.argmax(interp.get_tensor(
+            interp.get_output_details()[0]["index"]))
+        if pred == label:
+            if counter == "fp32":
+                correct_fp32 += 1
+            else:
+                correct_int8 += 1
+
+print(f"FP32 accuracy: {correct_fp32/len(test_dataset):.3f}")
+print(f"INT8 accuracy: {correct_int8/len(test_dataset):.3f}")
+print(f"Accuracy delta: {(correct_fp32 - correct_int8)/len(test_dataset):.3f}")
+```
+
+A delta exceeding 2% on top-1 accuracy for classification, 1.5 mAP for detection, or 2% WER for speech recognition is a signal to switch from PTQ to QAT or to increase the bit width of the sensitive layers.
+
+---
+
+## 7. MediaPipe Framework Architecture
 
 **MediaPipe** is Google's cross-platform framework for building live, streaming ML pipelines from modular, composable processing nodes. It is developed in the [google-ai-edge/mediapipe](https://github.com/google-ai-edge/mediapipe) repository and supports Android, iOS, Linux, macOS, and Web (via WASM). [Source: MediaPipe framework](https://developers.google.com/mediapipe/framework)
 
-### 6.1 CalculatorGraph
+### 7.1 CalculatorGraph
 
 The central abstraction is the `CalculatorGraph`: a directed acyclic graph (DAG) of `Calculator` nodes connected by typed, timestamped **Packet** streams. Graphs are defined as Protocol Buffer text (`CalculatorGraphConfig`) and compiled into a validated execution graph at runtime.
 
@@ -641,7 +892,7 @@ node {
 ```
 [Source: MediaPipe framework graph documentation](https://developers.google.com/mediapipe/framework/framework_concepts/calculators)
 
-### 6.2 Calculator Lifecycle
+### 7.2 Calculator Lifecycle
 
 Every `Calculator` subclass implements:
 
@@ -664,7 +915,7 @@ class MyCalculator : public mediapipe::CalculatorBase {
 
 `GetContract()` is a static method that describes the calculator's interface to the graph validation engine. Input and output streams carry typed packets; the type is encoded as a C++ type tag (e.g., `mediapipe::ImageFrame`, `mediapipe::GpuBuffer`, `std::vector<mediapipe::Tensor>`).
 
-### 6.3 Packets and Timestamps
+### 7.3 Packets and Timestamps
 
 A `Packet` is an immutable, typed, reference-counted data container with a `Timestamp`:
 
@@ -679,7 +930,7 @@ const mediapipe::GpuBuffer& buffer = packet.Get<mediapipe::GpuBuffer>();
 
 Timestamps are in microseconds and flow monotonically through the graph. The graph scheduler dispatches `Process()` in timestamp order, enabling correct synchronisation when multiple input streams must be aligned (e.g., combining camera frames with depth frames that arrive at different rates).
 
-### 6.4 GlCalculatorHelper and GPU Context Management
+### 7.4 GlCalculatorHelper and GPU Context Management
 
 For calculators that execute GLES commands, `GlCalculatorHelper` manages the EGL context and provides safe context-switch operations:
 
@@ -708,7 +959,7 @@ class MyGlCalculator : public mediapipe::CalculatorBase {
 
 `RunInGlContext()` switches to the helper's EGL context, executes the lambda, and restores the previous context. This abstraction means that multiple graph threads can share a single EGL context without race conditions.
 
-### 6.5 GpuBuffer, GlTexture, and AHardwareBuffer Interop
+### 7.5 GpuBuffer, GlTexture, and AHardwareBuffer Interop
 
 `mediapipe::GpuBuffer` is a platform-neutral container for GPU-resident image data. On Android it wraps an `AHardwareBuffer` via `GpuBufferStorageAhwb` (when available), falling back to `GpuBufferStorageEglImage` for older devices. [Source: MediaPipe GPU docs](https://developers.google.com/mediapipe/framework/framework_concepts/gpu)
 
@@ -728,7 +979,7 @@ MediaPipe Packet
 
 `AHardwareBufferView` on Android 29+ enables direct CPU access to the buffer with automatic GPU-CPU synchronisation, ensuring that GPU writes have completed before the CPU reads the data. This is used by `GpuBuffer::GetReadView<AHardwareBufferView>()` in newer MediaPipe versions.
 
-### 6.6 InputStreamHandlers
+### 7.6 InputStreamHandlers
 
 `CalculatorGraph` supports multiple scheduling modes:
 
@@ -738,11 +989,11 @@ MediaPipe Packet
 
 ---
 
-## 7. MediaPipe Tasks API
+## 8. MediaPipe Tasks API
 
 The **Tasks API**, introduced in 2022, wraps `CalculatorGraph` behind strongly-typed, high-level task interfaces that hide graph configuration entirely. It is the recommended entry point for application developers. [Source: MediaPipe Tasks API](https://developers.google.com/mediapipe/solutions/guide)
 
-### 7.1 BaseOptions and RunningMode
+### 8.1 BaseOptions and RunningMode
 
 All Tasks share a common `BaseOptions` structure:
 
@@ -758,7 +1009,7 @@ val baseOptions = BaseOptions.builder()
 - `VIDEO`: Timestamped video frames; the task uses inter-frame state (e.g., tracking).
 - `LIVE_STREAM`: Asynchronous streaming mode; results are delivered via a registered callback on a MediaPipe-managed thread. Callers must not block in the callback.
 
-### 7.2 Available Vision Tasks
+### 8.2 Available Vision Tasks
 
 | Task | Output Type | Key Output Fields |
 |---|---|---|
@@ -772,7 +1023,7 @@ val baseOptions = BaseOptions.builder()
 
 [Source: MediaPipe Solutions guide](https://developers.google.com/mediapipe/solutions/vision/pose_landmarker)
 
-### 7.3 PoseLandmarker — Kotlin Live-Stream Example
+### 8.3 PoseLandmarker — Kotlin Live-Stream Example
 
 ```kotlin
 import com.google.mediapipe.tasks.core.BaseOptions
@@ -812,17 +1063,233 @@ poseLandmarker.detectAsync(mpImage, SystemClock.uptimeMillis())
 
 The `detectAsync()` call is non-blocking. The Tasks runtime enqueues the frame on MediaPipe's internal `CalculatorGraph`, and the `setResultListener` callback fires on a background thread when inference completes. The 33 normalised landmarks are in `[0, 1]` image coordinates; the 33 world landmarks are in metres relative to the hip midpoint.
 
-### 7.4 LLM Inference Task
+### 8.4 LLM Inference Task
 
 MediaPipe's `LlmInference` task (Android/iOS) has been superseded by **LiteRT-LM** (announced May 2026), which provides a dedicated orchestration layer for autoregressive LLM inference including KV-cache management, INT4/INT8 weight dispatch, and NPU routing. The MediaPipe LLM Inference API is now in maintenance-only mode; new projects should use the LiteRT-LM Android/iOS SDK. [Source: LiteRT-LM announcement](https://developers.googleblog.com/blazing-fast-on-device-genai-with-litert-lm/)
 
+### 8.5 Audio Processing with MediaPipe Tasks
+
+MediaPipe Tasks extends beyond vision to include audio inference, using `AUDIO_CLIPS` and `AUDIO_STREAM` running modes that mirror the `IMAGE` and `LIVE_STREAM` modes familiar from vision tasks. Audio tasks operate on short audio windows (typically 0.975–2 s) and can be chained with vision tasks for multi-modal applications. [Source: MediaPipe audio classifier](https://ai.google.dev/edge/mediapipe/solutions/audio/audio_classifier)
+
+#### AudioClassifier
+
+`AudioClassifier` classifies environmental sounds, music genres, or speech commands using models like YAMNet (521 AudioSet classes: car horn, glass break, baby cry, applause, music genre, etc.) or custom models fine-tuned with MediaPipe Model Maker (§9). YAMNet processes 0.975-second audio windows (15600 samples at 16 kHz), classifying each window into 521 AudioSet categories.
+
+```kotlin
+import com.google.mediapipe.tasks.audio.audioclassifier.AudioClassifier
+import com.google.mediapipe.tasks.audio.audioclassifier.AudioClassifierOptions
+import com.google.mediapipe.tasks.audio.core.RunningMode
+import com.google.mediapipe.tasks.components.containers.AudioData
+
+val options = AudioClassifierOptions.builder()
+    .setBaseOptions(
+        BaseOptions.builder()
+            .setModelAssetPath("yamnet.tflite")
+            .setDelegate(Delegate.GPU)
+            .build()
+    )
+    .setRunningMode(RunningMode.AUDIO_STREAM)
+    .setMaxResults(5)
+    .setScoreThreshold(0.05f)
+    .setResultListener { result, timestamp ->
+        result.classificationResults().firstOrNull()
+            ?.categories()?.take(3)
+            ?.forEach { cat ->
+                Log.d("Audio", "${cat.categoryName()}: ${cat.score()}")
+            }
+    }
+    .build()
+
+val classifier = AudioClassifier.createFromOptions(context, options)
+
+// For live microphone input via AudioRecord:
+val recorder = classifier.createAudioRecord(
+    /* channelConfig = */ AudioFormat.CHANNEL_IN_MONO,
+    /* sampleRateHz = */ 16000,
+    /* bufferSizeInSeconds = */ 2.0f
+)
+recorder.startRecording()
+
+// Feed audio windows in a background thread:
+val bufferSize = classifier.requiredInputBufferSize()
+val audioBuffer = ShortArray(bufferSize)
+
+while (isRecording) {
+    val samplesRead = recorder.read(audioBuffer, 0, bufferSize)
+    if (samplesRead > 0) {
+        val audioData = AudioData.create(
+            AudioData.AudioDataFormat.create(
+                /* numChannels = */ 1,
+                /* sampleRate = */ 16000
+            ),
+            bufferSize
+        )
+        audioData.load(audioBuffer)
+        classifier.classifyAsync(audioData, SystemClock.uptimeMillis())
+    }
+}
+```
+
+#### On-Device Performance
+
+YAMNet at INT8 quantisation runs at under 5 ms inference latency on Pixel 7's GPU delegate, well within the 975 ms audio window it processes. This makes always-on audio event detection feasible with negligible CPU and battery impact — the GPU returns to idle between windows. Example applications include smart home sound monitors (glass break detection, smoke alarm), industrial machinery anomaly detection, and accessibility features (alert deaf users to environmental sounds).
+
+#### Audio Buffer Management
+
+The critical engineering challenge in audio inference is buffer management. `AudioRecord` delivers PCM at the model's required sample rate (16 kHz for YAMNet, 22050 Hz for some music models). The `classifier.requiredInputBufferSize()` method returns the exact frame count the model expects — for YAMNet, 15600 samples (0.975 s at 16 kHz). The caller must collect enough PCM samples before passing to `classifyAsync()`.
+
+For continuous classification, the recommended pattern is a **circular ring buffer**: maintain a `FloatArray` of size `bufferSize * 2`, append new audio as it arrives from `AudioRecord`, and slide the inference window forward by `bufferSize / 2` samples (50% overlap) to avoid missing events at window boundaries. Overlapping windows at 50% doubles the classification rate — two classifications per second rather than one — and catches events that straddle a window boundary.
+
+#### Multi-Modal Composition
+
+MediaPipe Tasks does not yet provide an official fused audio+video task runner (as of mid-2026). For applications requiring both audio classification and video inference simultaneously (e.g., a dashboard camera detecting both dangerous sounds and visual hazards), compose the two task runners manually: run `AudioClassifier` on the audio track in a dedicated background thread and `ImageClassifier` or `ObjectDetector` on video frames in the CameraX analyser thread. Fuse results in a post-processing step keyed on timestamp — match the audio classification timestamp to the nearest video frame timestamp within a 500 ms window.
+
+#### Latency Constraints and Model Selection
+
+The 0.975-second window of YAMNet introduces fundamental latency for event detection: a sound event that begins at window start is not classified until the window ends, adding up to ~1 s of detection delay. For applications requiring lower latency (speech commands with <200 ms response), two options exist: (1) use a custom model trained on shorter windows (e.g., 0.25 s / 4000 samples at 16 kHz) created with MediaPipe Model Maker (§9); (2) use Google's `SpeechCommandsClassifier` model which processes 1-second windows but is optimised for onset detection and begins scoring partway through the window.
+
 ---
 
-## 8. Camera2 → MediaPipe Zero-Copy Pipeline
+## 9. MediaPipe Model Maker: Custom Task Training
+
+MediaPipe Model Maker (`mediapipe-model-maker` Python package) provides transfer learning pipelines for MediaPipe task types, enabling developers to fine-tune pre-trained TFLite backbones (MobileNetV2, EfficientDet-Lite, EfficientNet, etc.) on custom datasets without writing training infrastructure from scratch. The resulting models are exported directly to `.tflite` format and can be loaded by the Tasks API described in §8. [Source: MediaPipe Model Maker](https://ai.google.dev/edge/mediapipe/solutions/model_maker)
+
+### 9.1 Supported Task Types
+
+As of mid-2026, Model Maker supports fine-tuning for:
+
+| Task | Pre-trained backbone | Dataset format |
+|---|---|---|
+| Image classification | MobileNetV2, EfficientNet-Lite0–4 | Directory tree: `class_name/image.jpg` |
+| Object detection | EfficientDet-Lite0–4 | Pascal VOC XML or COCO JSON |
+| Image segmentation | DeepLab v3 (MobileNetV3 backbone) | PNG mask per image |
+| Text classification | MobileBERT, BERT-Base | CSV with text + label columns |
+| Audio classification | YAMNet | WAV files in directory tree |
+| Gesture recognition | MediaPipe hand pose → class | Video clips or labeled frame sequences |
+| Face stylisation | U-Net style transfer | Paired image dataset |
+
+Model Maker is appropriate when the task type matches a standard MediaPipe task, the dataset is under 100k samples, and the base model already covers the general domain (e.g., a YAMNet fine-tuned for factory sounds still benefits from pre-training on 521 AudioSet categories). For custom architectures, larger datasets, or cross-domain transfer, use the full TFLite conversion pipeline described in §6.
+
+### 9.2 Image Classification Example
+
+The most common Model Maker use case is adapting an image classification model to a custom set of categories:
+
+```python
+from mediapipe_model_maker import image_classifier
+
+# Dataset loaded from directory structure:
+# dataset/
+#   cats/image1.jpg image2.jpg ...
+#   dogs/image1.jpg image2.jpg ...
+data = image_classifier.Dataset.from_folder("/path/to/dataset")
+train_data, test_data = data.split(0.9)
+
+# Configure training with MobileNetV2 backbone:
+options = image_classifier.ImageClassifierOptions(
+    supported_model=image_classifier.SupportedModels.MOBILENET_V2,
+    hparams=image_classifier.HParams(
+        epochs=10,
+        batch_size=8,
+        learning_rate=0.001,
+        export_dir="/tmp/classifier_export"
+    )
+)
+
+# Create and train the classifier:
+classifier = image_classifier.ImageClassifier.create(
+    train_data=train_data,
+    validation_data=test_data,
+    options=options,
+)
+
+# Evaluate and inspect metrics:
+loss, accuracy = classifier.evaluate(test_data)
+print(f"Loss: {loss:.4f}, Accuracy: {accuracy:.4f}")
+
+# Export to .tflite (saved to options.export_dir/model.tflite):
+classifier.export_model()
+```
+
+The `create()` method freezes all backbone layers, replaces the classification head with a new `Dense(num_classes)` layer, and trains only the head for the first half of epochs. In the second half, it unfreezes the top few backbone blocks and fine-tunes end-to-end with a lower learning rate. This two-phase training is automatic and generally achieves good accuracy without requiring the user to manage layer freezing manually.
+
+### 9.3 Object Detection Example
+
+Object detection fine-tuning uses EfficientDet-Lite as the backbone, which is specifically designed for mobile inference and produces `.tflite` models that run on the GPU delegate and Qualcomm QNN:
+
+```python
+from mediapipe_model_maker import object_detector
+
+# Dataset in Pascal VOC format (XML annotation per image):
+data = object_detector.Dataset.from_pascal_voc_folder(
+    "/path/to/voc_dataset",
+    data_pipeline_options=object_detector.DataPipelineOptions(
+        prefetch_buffer_size=10
+    )
+)
+train_data, test_data = data.split(0.9)
+
+# EfficientDet-Lite1 gives a good accuracy/latency trade-off:
+options = object_detector.ObjectDetectorOptions(
+    supported_model=object_detector.SupportedModels.MOBILENET_MULTI_AVG,
+    hparams=object_detector.HParams(
+        epochs=50,
+        batch_size=8,
+        learning_rate=0.01
+    ),
+    model_options=object_detector.ModelOptions(
+        l2_weight_decay=4e-5
+    )
+)
+
+detector = object_detector.ObjectDetector.create(
+    train_data=train_data,
+    validation_data=test_data,
+    options=options
+)
+
+# Export as INT8-quantised model for NPU deployment:
+from mediapipe_model_maker.python.vision.object_detector import (
+    object_detector as od
+)
+detector.export_model(
+    quantization_config=od.QuantizationConfig.for_int8(
+        representative_data=test_data
+    )
+)
+```
+
+### 9.4 Quantisation Export
+
+Model Maker integrates quantisation into the export step. Calling `export_model(quantization_config=QuantizationConfig.for_int8(representative_data))` runs PTQ using the test dataset as the representative calibration set and exports a fully INT8-quantised `.tflite` ready for NPU deployment. For FP16 export (suitable for GPU delegate without quantisation accuracy impact):
+
+```python
+from mediapipe_model_maker.python.core.utils.quantization import QuantizationConfig
+classifier.export_model(
+    quantization_config=QuantizationConfig.for_float16()
+)
+```
+
+INT4 weight-only export is not yet available through Model Maker's public API as of mid-2026; for INT4 export, use `ai-edge-quantizer` directly on the exported FP32 `.tflite`.
+
+### 9.5 Google Colab Workflow and Practical Considerations
+
+Model Maker runs on Google Colab's free tier (T4 GPU). A typical fine-tuning session for MobileNetV2 on 1000 images takes approximately 10 minutes on a T4. The recommended workflow:
+
+1. Upload the dataset to Google Drive.
+2. Mount Drive in Colab: `from google.colab import drive; drive.mount('/content/drive')`.
+3. Run `pip install mediapipe-model-maker` (Colab already has TF installed).
+4. Train, evaluate, export.
+5. Download the `.tflite` file from Drive to local machine for APK packaging.
+
+**Choosing Model Maker versus the full TFLite pipeline:** Model Maker constrains the architecture to pre-approved backbones and heads. This is the right choice when the task type matches exactly and dataset size is modest. When you need a custom model architecture (e.g., a two-stage detector with a custom feature pyramid, or a multi-head model that simultaneously outputs classification and depth), the full `ai-edge-torch` or `TFLiteConverter` pipeline described in §6 is necessary. Model Maker's `export_model()` output is compatible with the Tasks API without any modification — the exported `.tflite` includes the metadata (`TFLiteModelMetadataPopulator`) and label file required by `ImageClassifier.createFromFile()` or `ObjectDetector.createFromFile()`.
+
+---
+
+## 10. Camera2 → MediaPipe Zero-Copy Pipeline
 
 The primary production use-case for MediaPipe on Android is live inference on camera frames. The full zero-copy path avoids any CPU-side pixel copy between the camera HAL and the inference GPU.
 
-### 8.1 Camera2 SurfaceTexture Path
+### 10.1 Camera2 SurfaceTexture Path
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -861,7 +1328,7 @@ The primary production use-case for MediaPipe on Android is live inference on ca
 └─────────────────────────────────────────────────────┘
 ```
 
-### 8.2 CameraX Integration
+### 10.2 CameraX Integration
 
 MediaPipe's Android SDK integrates with CameraX via `CameraXPreviewHelper` and `CameraXSourceCalculator`. The recommended integration in 2025/2026 is via CameraX's `ImageAnalysis` use-case:
 
@@ -883,7 +1350,7 @@ val imageAnalyzer = ImageAnalysis.Builder()
 
 `ImageProxy.image` is a `Media.Image` backed by a `PRIVATE` format `ImageReader`, which on Adreno and Mali GPUs allocates a GPU-tiled `AHardwareBuffer`. `MediaImageBuilder` wraps it as an `MPImage` without copying. [Source: CameraX image analysis](https://developer.android.com/training/camerax/analyze)
 
-### 8.3 Timestamp Synchronisation
+### 10.3 Timestamp Synchronisation
 
 Camera2 timestamps are in nanoseconds since boot (`Image.getTimestamp()`, type `long`). MediaPipe timestamps are in microseconds. The conversion is:
 
@@ -894,7 +1361,7 @@ poseLandmarker.detectAsync(mpImage, mediapipeTimestampUs)
 
 Monotonic alignment is guaranteed since both use `CLOCK_BOOTTIME`. Failure to convert correctly manifests as the scheduler rejecting out-of-order packets — a common integration bug.
 
-### 8.4 AHardwareBuffer Direct Path (API 29+)
+### 10.4 AHardwareBuffer Direct Path (API 29+)
 
 On devices with Android 10+ (API 29+), `Image.getHardwareBuffer()` returns the underlying `AHardwareBuffer` directly, enabling MediaPipe's `GpuBufferStorageAhwb` path:
 
@@ -912,11 +1379,11 @@ On hardware that supports Vulkan memory import (`VK_ANDROID_external_memory_andr
 
 ---
 
-## 9. ARCore + MediaPipe Composition
+## 11. ARCore + MediaPipe Composition
 
 Combining ARCore (Ch87) with MediaPipe enables spatial-aware on-device inference: ARCore provides world geometry, camera pose, and the background camera texture; MediaPipe runs ML inference on the same camera image simultaneously.
 
-### 9.1 Shared GL Context and Texture
+### 11.1 Shared GL Context and Texture
 
 ARCore and MediaPipe can operate within the same EGLContext. ARCore's `ArSession` owns the camera texture handle — a `GL_TEXTURE_EXTERNAL_OES` texture populated by the Camera HAL at each `ArSession_update()` call. MediaPipe's `GlCalculatorHelper` is initialised with the existing EGL context rather than creating a new one:
 
@@ -934,7 +1401,7 @@ mediapipe::GpuBuffer camera_gpu_buffer =
 
 Sharing the context eliminates the need for EGL sync objects at the ARCore/MediaPipe boundary — both AR rendering and ML inference read from the same texture object.
 
-### 9.2 Timestamp Synchronisation
+### 11.2 Timestamp Synchronisation
 
 `ArFrame_getTimestamp()` returns nanoseconds since boot (`int64_t`), identical to Camera2's `Image.getTimestamp()`. Convert to MediaPipe microseconds:
 
@@ -944,7 +1411,7 @@ ArFrame_getTimestamp(ar_session, ar_frame, &ar_timestamp_ns);
 mediapipe::Timestamp mp_timestamp(ar_timestamp_ns / 1000LL);
 ```
 
-### 9.3 Person Segmentation Overlay on AR Scene
+### 11.3 Person Segmentation Overlay on AR Scene
 
 A practical pattern for AR applications:
 
@@ -967,7 +1434,7 @@ void main() {
 }
 ```
 
-### 9.4 Pose Landmarks to AR World Space
+### 11.4 Pose Landmarks to AR World Space
 
 MediaPipe 3D pose landmarks are in **normalised image space**. To project them into ARCore's world coordinate space:
 
@@ -979,9 +1446,9 @@ This produces world-anchored pose landmarks that remain stable as the device mov
 
 ---
 
-## 10. Performance Profiling and Tuning
+## 12. Performance Profiling and Tuning
 
-### 10.1 LiteRT Profiler
+### 12.1 LiteRT Profiler
 
 LiteRT's built-in profiler reports per-operator execution time:
 
@@ -1006,7 +1473,7 @@ for (const auto* event : profile_events) {
 
 This exposes bottleneck operators — commonly `DEPTHWISE_CONV_2D` or `FULLY_CONNECTED` — that may benefit from quantisation or from switching delegate.
 
-### 10.2 GPU Delegate Latency Breakdown
+### 12.2 GPU Delegate Latency Breakdown
 
 The GPU delegate's latency decomposes into:
 - **CPU→GPU transfer**: Eliminated entirely with `AHardwareBuffer` binding (§4).
@@ -1016,7 +1483,7 @@ The GPU delegate's latency decomposes into:
 
 For a typical 256×256 pose landmark model on an Adreno 740 (Snapdragon 8 Gen 3), the fully warm path achieves ~2 ms inference latency, comfortably within a 33 ms frame budget at 30 fps.
 
-### 10.3 Adreno and Mali GPU Monitoring
+### 12.3 Adreno and Mali GPU Monitoring
 
 ```bash
 # Adreno GPU frequency and utilisation (Qualcomm devices)
@@ -1030,7 +1497,7 @@ adb shell cat /sys/devices/platform/mali.0/utilisation
 adb shell dumpsys gpu
 ```
 
-### 10.4 Systrace / Perfetto End-to-End Tracing
+### 12.4 Systrace / Perfetto End-to-End Tracing
 
 Use Perfetto to visualise the full camera→inference→render pipeline:
 
@@ -1049,7 +1516,7 @@ adb pull /data/misc/perfetto-traces/trace.pftrace .
 
 In the resulting trace, look for `tflite::Interpreter::Invoke` slices on the inference thread and `GlCalculatorHelper::RunInGlContext` slices on the MediaPipe GPU thread. The gap between Camera2 timestamp and MediaPipe's `Process()` call reveals buffering latency.
 
-### 10.5 Thermal Throttling
+### 12.5 Thermal Throttling
 
 Sustained 30 fps inference at full GPU frequency triggers thermal limits within 3–5 minutes on most phones. Mitigation strategies:
 
@@ -1058,7 +1525,7 @@ Sustained 30 fps inference at full GPU frequency triggers thermal limits within 
 - Use `TFLITE_GPU_INFERENCE_PREFERENCE_FAST_SINGLE_ANSWER` instead of `SUSTAINED_SPEED` when thermal state is elevated; the GPU may lower frequency between frames.
 - Enable adaptive frame skipping: skip inference on every other camera frame when `SystemClock.uptimeMillis()` shows the previous frame took more than 40 ms.
 
-### 10.6 Quantisation Impact Summary
+### 12.6 Quantisation Impact Summary
 
 | Configuration | Typical Latency | Memory | Notes |
 |---|---|---|---|
@@ -1068,44 +1535,540 @@ Sustained 30 fps inference at full GPU frequency triggers thermal limits within 
 | INT8, NNAPI/NPU (pre-API 35) | 2–8 ms | 1× base | 2–4× speedup vs GPU |
 | INT8, Qualcomm QNN delegate | 1–5 ms | 1× base | Hexagon DSP, lowest power |
 
+### 12.7 Benchmarking with benchmark_model
+
+`benchmark_model` is the standard LiteRT performance measurement tool, providing reproducible, hardware-isolated latency measurements that are not affected by application-level overhead (JNI marshalling, Kotlin object allocation, UI thread jank). It is built from `tflite/tools/benchmark/` in the LiteRT repository and is also available as a prebuilt binary in the Android NDK tools package. [Source: LiteRT performance measurement](https://ai.google.dev/edge/litert/performance/measurement)
+
+#### Deploying and Running
+
+The binary runs as a shell command directly on the device, bypassing the Android framework entirely:
+
+```bash
+# Push the binary to a writable location
+adb push benchmark_model /data/local/tmp/
+adb shell chmod +x /data/local/tmp/benchmark_model
+
+# Push the model
+adb push model.tflite /data/local/tmp/
+
+# Run with GPU delegate, 50 inference runs, 10 warmup runs:
+adb shell /data/local/tmp/benchmark_model \
+    --graph=/data/local/tmp/model.tflite \
+    --num_threads=4 \
+    --num_runs=50 \
+    --warmup_runs=10 \
+    --use_gpu=true \
+    --gpu_precision_loss_allowed=true \
+    --enable_op_profiling=true \
+    --report_peak_memory_footprint=true
+```
+
+Key flags:
+- `--num_threads`: CPU thread count, passed to XNNPack; ignored when `--use_gpu=true`
+- `--warmup_runs`: Number of inferences to run before timing begins; critical for GPU delegate, where the first 1–3 runs may include JIT compilation even with shader serialisation
+- `--use_xnnpack=true`: Force XNNPack CPU delegate (normally auto-applied)
+- `--use_nnapi=false`: Disable NNAPI delegate
+- `--external_delegate_path=/data/local/tmp/libQnnTFLiteDelegate.so`: Load a vendor delegate `.so` directly, useful for testing QNN or NeuroPilot without a full app
+
+#### Interpreting the Output
+
+A typical output for a GPU-delegate run looks like:
+
+```
+Inference timings in us: Init: 8234, First inference: 43210,
+Warmup (avg): 12340 us, Inference (avg): 11890 us
+Peak memory footprint: 47.2 MB
+Note: as the benchmark was running in a separate thread, the timings
+above may be slightly higher than if the benchmark was run in the main thread.
+```
+
+The four timing fields have distinct meanings:
+
+- **Init**: Model loading time including memory mapping, FlatBuffer parsing, and delegate setup. For the GPU delegate, this includes EGL context creation and delegate registration. This is a fixed cost paid once at app startup.
+- **First inference**: The first `Invoke()` call after `AllocateTensors()`. Even with shader serialisation, the first inference may load compiled kernels from disk and bind GPU buffers, so this is typically 2–5× the steady-state latency.
+- **Warmup avg**: Average over `--warmup_runs` invocations. After the first inference, the GPU command queue is pre-populated and shader bindings are cached, so warmup latency represents the cache-warm path.
+- **Inference avg**: Average over `--num_runs` invocations after warmup. This is the number to use for frame-budget planning. For a 30 fps pipeline, the inference avg must be below 33 ms; for 60 fps, below 16 ms.
+
+#### Per-Op Profiling
+
+With `--enable_op_profiling=true`, `benchmark_model` prints a per-operator breakdown after the main benchmark loop:
+
+```
+Op[0]: CONV_2D                  2340 us (19.7%)
+Op[1]: DEPTHWISE_CONV_2D         890 us  (7.5%)
+Op[2]: ADD                        45 us  (0.4%)
+...
+Op[34]: FULLY_CONNECTED          3120 us (26.2%)
+DELEGATE[GPU]:          9870 us total for 35 ops
+CPU fallback ops:        320 us for 2 ops (CUSTOM_OP_X, RESHAPE)
+```
+
+This breakdown identifies which operators are consuming the most inference time and, critically, which operators fell back to CPU (the "CPU fallback ops" line). CPU fallback within a GPU-delegated graph introduces synchronisation overhead: the runtime must finish the GPU compute, copy results to CPU, run the CPU op, copy back to GPU, and resume — typically adding 2–5 ms per CPU fallback boundary. When `benchmark_model` shows CPU fallback ops, the fix is either to implement those ops in the GPU delegate (if they are custom ops) or to restructure the model to avoid the unsupported operation.
+
+#### Latency Percentiles and Regression Detection
+
+For real-time applications, average latency is insufficient. A model with 10 ms average inference but 80 ms p99 will cause visible stutter at 30 fps. Use `--print_preinvoke_state=true` combined with CSV output (`--profiling_output_csv_file=/data/local/tmp/profile.csv`) to capture per-run latency, then compute percentiles offline:
+
+```bash
+adb pull /data/local/tmp/profile.csv .
+python3 -c "
+import csv, numpy as np
+with open('profile.csv') as f:
+    latencies = [float(row['inference_time_us']) for row in csv.DictReader(f)]
+print(f'p50={np.percentile(latencies,50):.0f}us '
+      f'p90={np.percentile(latencies,90):.0f}us '
+      f'p99={np.percentile(latencies,99):.0f}us')
+"
+```
+
+For CI regression detection, wrap `benchmark_model` in a shell script that parses the `Inference (avg)` field from stdout and compares it against a stored baseline. A latency increase of more than 10% on the same reference device is a signal to investigate — common causes include a kernel update changing GPU governor behaviour, a new TF op that falls back to CPU, or a model change that added a non-delegatable op.
+
 ---
 
-## 11. Roadmap
+## 13. Model Security: Encryption, Signing, and Integrity Protection
 
-### 11.1 LiteRT-LM (Shipping, May 2026)
+On-device ML models represent significant intellectual property. A `.tflite` model bundled in the APK's `assets/` directory is trivially extractable: `apktool d app.apk` unpacks the APK and exposes the model file with no obfuscation. An attacker with the extracted `.tflite` can inspect the model architecture using `flatc --json schema.fbs model.tflite`, infer training data characteristics, or fine-tune the model on their own dataset. For proprietary models with commercial value — medical diagnosis, premium recommendation engines, or specialised vision capabilities — encryption and integrity protection are essential. [Source: Android KeyStore](https://developer.android.com/privacy-and-security/keystore) [Source: Google Play Integrity](https://developer.android.com/google/play/integrity)
+
+### 13.1 AES-256-GCM Encryption
+
+The recommended approach is AES-256-GCM authenticated encryption. The model is encrypted offline before APK packaging; the decryption key is stored in the Android KeyStore (never in the APK); and the model is decrypted in memory at runtime, never written to disk in plaintext.
+
+**Offline encryption** (CI/CD step, not in the APK):
+
+```python
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import os
+
+# 256-bit key — generated once, stored securely in your build system's
+# secret manager (GitHub Actions Secrets, Google Cloud Secret Manager, etc.)
+# NOT hardcoded in source and NOT bundled in the APK.
+key = os.urandom(32)
+aesgcm = AESGCM(key)
+
+# 96-bit nonce — unique per encryption, safe to store with ciphertext
+nonce = os.urandom(12)
+
+with open("model.tflite", "rb") as f:
+    plaintext = f.read()
+
+# GCM produces ciphertext + 128-bit authentication tag (appended automatically)
+ciphertext = aesgcm.encrypt(nonce, plaintext, associated_data=None)
+
+# Store nonce prepended to ciphertext for runtime decryption
+with open("model.enc", "wb") as f:
+    f.write(nonce + ciphertext)
+```
+
+**Runtime decryption** using a key provisioned into the Android KeyStore:
+
+```kotlin
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+
+// --- Key provisioning (done once at app first-run or from server) ---
+// This example shows generating a key in the KeyStore; in production,
+// the key would be fetched from a server and imported via ECDH key agreement.
+fun generateKeyInKeyStore(alias: String) {
+    val keyGenerator = KeyGenerator.getInstance(
+        KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore"
+    )
+    keyGenerator.init(
+        KeyGenParameterSpec.Builder(alias,
+            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
+            // Key is not exportable from the KeyStore:
+            .setUnlockedDeviceRequired(true)
+            .build()
+    )
+    keyGenerator.generateKey()
+}
+
+// --- Runtime decryption ---
+fun decryptModel(context: Context, encryptedAssetName: String): ByteArray {
+    val keyStore = java.security.KeyStore.getInstance("AndroidKeyStore")
+    keyStore.load(null)
+    val secretKey = keyStore.getKey("model_key", null) as SecretKey
+
+    val encBytes = context.assets.open(encryptedAssetName).readBytes()
+    val nonce = encBytes.copyOfRange(0, 12)
+    val ciphertext = encBytes.copyOfRange(12, encBytes.size)
+
+    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+    cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, nonce))
+    // GCM authentication tag is verified automatically; throws AEADBadTagException
+    // if the ciphertext has been tampered with.
+    return cipher.doFinal(ciphertext)
+}
+
+// Load the decrypted model into LiteRT:
+val modelBytes = decryptModel(context, "model.enc")
+val interpreter = org.tensorflow.lite.Interpreter(
+    java.nio.ByteBuffer.wrap(modelBytes)
+)
+```
+
+### 13.2 Android KeyStore and Hardware Security
+
+Keys created in the Android KeyStore with the `AndroidKeyStore` provider are backed by hardware security: on Pixel 6+ and other devices with Arm TrustZone or a discrete Strongbox secure element, the AES key material is stored inside tamper-resistant hardware and **never leaves that hardware in plaintext**. Even with root access to the Android OS, the key cannot be extracted. The `Cipher` object is handed to the hardware for decryption, and the decrypted bytes are returned directly to the calling process.
+
+Key protection options worth configuring in production:
+
+- `setUnlockedDeviceRequired(true)`: Key is only accessible when the device is unlocked; prevents offline attack with a stolen device.
+- `setUserAuthenticationRequired(true)` with `setUserAuthenticationValidityDurationSeconds(30)`: Requires biometric or PIN authentication before the key is accessible; appropriate for models containing sensitive healthcare or financial data.
+- `setIsStrongBoxBacked(true)`: Force use of the Strongbox secure element (API 28+, Pixel 3+); slower than TrustZone but provides the highest resistance to side-channel attacks.
+
+### 13.3 HMAC Signing for Integrity Without Encryption
+
+In cases where the model is not proprietary but tamper-resistance is still important (e.g., a safety-critical model where a modified model could produce unsafe outputs), HMAC-SHA256 signing is a lightweight alternative to full encryption:
+
+```python
+import hmac, hashlib
+
+signing_key = b"..."  # 32-byte key from your signing system
+with open("model.tflite", "rb") as f:
+    model_bytes = f.read()
+
+# Compute HMAC-SHA256 over the entire model file
+signature = hmac.new(signing_key, model_bytes, hashlib.sha256).digest()
+
+# Store signature alongside the model (e.g., model.tflite.sig)
+with open("model.tflite.sig", "wb") as f:
+    f.write(signature)
+```
+
+On device, verify before loading:
+
+```kotlin
+fun verifyModelSignature(modelBytes: ByteArray, signatureBytes: ByteArray,
+                          signingKey: ByteArray): Boolean {
+    val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+    mac.init(javax.crypto.spec.SecretKeySpec(signingKey, "HmacSHA256"))
+    val computed = mac.doFinal(modelBytes)
+    return computed.contentEquals(signatureBytes)
+}
+
+if (!verifyModelSignature(modelBytes, sigBytes, key)) {
+    throw SecurityException("Model integrity check failed — file may be tampered")
+}
+```
+
+The signing key itself must come from the Android KeyStore or from a remote attestation service — storing it in the APK defeats the purpose.
+
+### 13.4 Google Play Asset Delivery for Key Management
+
+An alternative to managing your own key provisioning is **Google Play Secure Delivery** for on-demand or install-time asset packs. The Play Store manages APK signing; for models, you can deliver an encrypted model via an `installTime` asset pack where the decryption key is bound to the user's Play license. This means the key cannot be obtained without a valid Play Store license — preventing model extraction via a repackaged APK that strips license checks. The downside is tight coupling to Play infrastructure and the added complexity of asset pack delivery.
+
+### 13.5 Play Integrity API for Runtime Attestation
+
+Even with model encryption and KeyStore-backed decryption, a sophisticated attacker can repackage the APK (adding instrumentation code) and sign it with their own certificate, intercepting the decrypted model bytes from process memory after `cipher.doFinal()`. The **Play Integrity API** addresses this by verifying that the running app is genuine and unmodified:
+
+```kotlin
+val integrityManager = IntegrityManagerFactory.create(context)
+val request = IntegrityTokenRequest.newBuilder()
+    .setNonce(generateNonce())  // server-issued nonce to prevent replay
+    .build()
+
+integrityManager.requestIntegrityToken(request)
+    .addOnSuccessListener { response ->
+        val token = response.token()
+        // Send token to your server; server decrypts and verifies:
+        // - MEETS_DEVICE_INTEGRITY
+        // - MEETS_BASIC_INTEGRITY
+        // - Package name matches expected
+        // Only after server confirms integrity, send the decryption key
+        fetchDecryptionKeyFromServer(token)
+    }
+```
+
+This architecture ensures that the decryption key is only issued to a genuine, unmodified install of your app. An attacker with a repackaged APK receives a token that fails server-side integrity verification and never gets the key. [Source: Play Integrity API](https://developer.android.com/google/play/integrity)
+
+---
+
+## 14. Privacy by Design: Data Protection for On-Device ML
+
+The fundamental privacy advantage of LiteRT and MediaPipe is that inference runs locally — camera frames, audio, health sensor data, and text never leave the device. This is a concrete GDPR and CCPA compliance advantage, but it requires careful design to realise: the on-device inference guarantee can be undermined by incidental data collection elsewhere in the application, by telemetry SDKs, or by logging of inference outputs. [Source: Android privacy best practices](https://developer.android.com/privacy/best-practices)
+
+### 14.1 What Stays On-Device
+
+When using LiteRT directly (no cloud services integrated), the following never leave the device:
+- Input tensors (camera frames, audio buffers, text tokens)
+- Intermediate activation tensors during inference
+- Model weight tensors
+- Output tensors (landmarks, classification scores, detection boxes)
+- The `.tflite` model file itself (once loaded into memory)
+
+The Android OS does not receive inference inputs or outputs from the LiteRT runtime. There are no telemetry hooks in the LiteRT C++ runtime itself — it is a pure in-process library. Google Play Services *does* receive crash reports from apps, but stack traces do not include tensor contents.
+
+### 14.2 What May Leave the Device
+
+Developers must audit their application carefully for data paths that could inadvertently exfiltrate inference inputs or outputs:
+
+- **Firebase Performance Monitoring / Crashlytics**: If the app logs inference latency, model file path, or input tensor shapes as custom attributes in Firebase events, those attributes are uploaded to Google servers. Log only latency numbers, not tensor contents.
+- **Cloud Anchor queries (ARCore)**: If ARCore Visual Positioning System (VPS) is used alongside MediaPipe, anonymised feature point descriptors extracted from camera frames are uploaded to Google for localisation (as documented in Ch87 §5). This is independent of MediaPipe inference.
+- **Crash reports containing model path in stack traces**: If `Interpreter::Invoke()` crashes, the stack trace may include the model file path as a string argument. Ensure the model file path does not include user-identifying information.
+- **Any explicit app-level logging**: Inference outputs themselves — landmark coordinates, detected object labels, classification scores — are the developer's responsibility. If the app logs or uploads these, that is the app's data processing decision, not LiteRT's.
+
+### 14.3 GDPR Article 9 and Biometric Special Category Data
+
+Face landmarks (from `FaceLandmarker`), iris coordinates, hand geometry (from `HandLandmarker`), and voice embeddings are **special category biometric data** under GDPR Article 9. Processing this data requires explicit prior consent from the data subject (Article 9(2)(a)), or that processing is necessary for the data subject's own vital interests (Article 9(2)(c)) — a narrow exception. Apps using any of these MediaPipe tasks that operate on EU users must:
+
+1. Present a clear, specific consent dialog before activating the feature — generic "we use your camera" consent in the privacy policy is insufficient for GDPR Article 9.
+2. Log the consent event with a timestamp and the specific biometric data type consented to.
+3. Provide a mechanism to withdraw consent and delete associated data (e.g., derived embeddings stored in a local database).
+4. Document the processing in the Records of Processing Activities (RoPA) required under GDPR Article 30.
+
+Even though the raw pixel data never leaves the device, the *derived biometric features* (landmark coordinates, embeddings) may be stored locally or transmitted if the application design requires it, and these are subject to GDPR Article 9 regardless of where they are stored.
+
+### 14.4 Data Minimisation at Inference Time
+
+The camera pipeline described in §10 handles `ImageProxy` objects backed by hardware-accelerated `AHardwareBuffer` allocations. The privacy-correct pattern is to close the image immediately after passing to MediaPipe, preventing the buffer from accumulating in a queue where it could be accessed by other application components:
+
+```kotlin
+analysis.setAnalyzer(cameraExecutor) { imageProxy ->
+    val image = imageProxy.image ?: run {
+        imageProxy.close()  // close before returning on error
+        return@setAnalyzer
+    }
+    val mpImage = BitmapImageBuilder(
+        image.toBitmap()  // or MediaImageBuilder(image)
+    ).build()
+
+    // Pass to MediaPipe and close immediately — do NOT store mpImage
+    poseLandmarker.detectAsync(mpImage, imageProxy.imageInfo.timestamp / 1_000L)
+
+    imageProxy.close()  // close immediately; don't buffer frames
+}
+```
+
+Do not maintain a ring buffer of recent `ImageProxy` frames unless the application requires it for temporal smoothing. If temporal smoothing is needed, buffer only the already-processed inference outputs (landmark coordinates, confidence scores), not the raw camera frames.
+
+### 14.5 Differential Privacy for On-Device Training
+
+If the application fine-tunes a model on device (§15), differential privacy (DP) prevents the trained model update from revealing individual training samples. The TensorFlow Privacy library provides `DPKerasAdamOptimizer`, which adds calibrated Gaussian noise to gradients before they are applied:
+
+```python
+from tensorflow_privacy import DPKerasAdamOptimizer
+from tensorflow_privacy.privacy.analysis import compute_dp_sgd_privacy
+
+optimizer = DPKerasAdamOptimizer(
+    l2_norm_clip=1.0,           # gradient clipping bound
+    noise_multiplier=1.1,       # noise scale (higher = more privacy)
+    num_microbatches=None,      # vectorised per-example gradients
+    learning_rate=0.001
+)
+model.compile(optimizer=optimizer, loss='sparse_categorical_crossentropy',
+              metrics=['accuracy'])
+```
+
+The privacy budget (ε, δ) can be computed after training to quantify the privacy guarantee:
+
+```python
+eps, delta = compute_dp_sgd_privacy.compute_dp_sgd_privacy(
+    n=len(train_dataset),
+    batch_size=32,
+    noise_multiplier=1.1,
+    epochs=10,
+    delta=1e-5
+)
+print(f"DP guarantee: ε={eps:.2f}, δ={delta}")
+# Typical output: ε=2.34, δ=1e-5
+```
+
+DP training is relevant when inference results are used to fine-tune local models that are then aggregated (Federated Learning, §15). For pure inference without local training, DP is not applicable.
+
+### 14.6 Privacy Policy Disclosure Checklist
+
+The following data processing activities require explicit disclosure in the app's privacy policy and, where applicable, an in-app consent flow:
+
+- **ARCore + VPS**: Disclose that anonymised camera feature points are uploaded to Google for visual localisation (required by ARCore Terms of Service §4).
+- **FaceLandmarker / iris tracking**: Disclose biometric data processing, purpose (e.g., "face filter rendering"), retention period (e.g., "not stored"), and GDPR Article 9 legal basis.
+- **HandLandmarker**: Disclose hand geometry processing if the derived data is stored or transmitted.
+- **AudioClassifier**: If audio windows are retained beyond the single inference call (e.g., for debug logging), disclose; 16 kHz PCM retained even briefly constitutes audio recording under many privacy frameworks.
+- **On-device LLM inference**: If the user's text inputs to the LLM are used to fine-tune the local model (via on-device training, §15), disclose this to the user — even though the data stays on device, the user's input is affecting model behaviour, which many users consider a privacy-relevant action.
+
+---
+
+## 15. On-Device Training and Federated Learning
+
+On-device inference — passing a camera frame through a fixed model — is the dominant pattern in LiteRT deployments today. But a growing class of applications requires on-device *training*: personalising a model to a specific user's behaviour, adapting to domain shift (a factory camera's lighting is different from the training dataset), or fine-tuning a base model on locally collected labelled data. This section covers LiteRT's experimental on-device training API and the Federated Learning infrastructure that allows privacy-preserving model updates across millions of devices. [Source: On-Device Personalization](https://developer.android.com/on-device-personalization) [Source: TensorFlow Federated](https://www.tensorflow.org/federated)
+
+### 15.1 On-Device Training Use Cases
+
+The cases where on-device training makes sense are distinct from those where it does not:
+
+**Good fit for on-device training:**
+- Typed word completion or next-word prediction personalised to a user's vocabulary and style
+- Wake-word detection adapted to the user's specific voice and accent
+- Health anomaly detection tuned to an individual's physiological baseline (heart rate variability, gait pattern)
+- Gesture recognition customised to a user's specific hand size and motion patterns
+
+**Poor fit for on-device training:**
+- General-purpose model improvement (use server-side training with federated updates)
+- Cases where >10k labelled examples are needed (data collection on-device is too slow)
+- Models requiring architecture changes (on-device training only fine-tunes weights, not architecture)
+
+### 15.2 LiteRT On-Device Training API
+
+LiteRT's on-device training API is experimental as of 2026. It requires a model converted with training mode enabled, which preserves the gradient computation subgraph alongside the inference subgraph in the `.tflite` FlatBuffer:
+
+```python
+# Export in training mode (TF/Keras)
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+converter.experimental_enable_resource_variables = True
+# Note: training-mode export requires the experimental TrainingSession API;
+# verify the exact converter flags against the current LiteRT release.
+tflite_train_model = converter.convert()
+```
+
+On-device, `TfLiteTrainingSession` runs forward and backward passes:
+
+```cpp
+// Note: LiteRT on-device training API is experimental;
+// API names and header locations may change between releases.
+// Verify against the installed tflite/experimental/learning/ headers.
+#include "tflite/experimental/learning/training_session.h"
+
+TfLiteTrainingSessionOptions opts;
+opts.max_gradient_norm = 1.0f;   // gradient clipping
+TfLiteTrainingSession* session =
+    TfLiteTrainingSessionCreate(interpreter, &opts);
+
+// Run one training step (forward + backward pass + weight update):
+TfLiteStatus status = TfLiteTrainingSessionRun(
+    session,
+    /*inputs=*/input_tensors,
+    /*labels=*/label_tensors,
+    /*outputs=*/output_tensors
+);
+// Updated weights are written back into the interpreter's weight tensors.
+TfLiteTrainingSessionDelete(session);
+```
+
+The on-device training API is deliberately limited to fine-tuning the last few layers (classification head, adapter layers) rather than the full model. Training the full backbone on-device requires too much memory for the gradient tensors — a MobileNetV2 backbone produces ~14 MB of gradient tensors even at INT8, exceeding available RAM on mid-range devices when combined with the inference activations.
+
+### 15.3 Federated Learning Architecture
+
+**Federated Learning (FL)** is the privacy-preserving approach to aggregating on-device training across many users. No raw data leaves any device. Each device trains on its local data, computes a gradient update (the change to the model weights), and uploads only the update — not the training data — to a central server. The server aggregates updates from many devices using **FedAvg** (Federated Averaging) and sends back an updated global model.
+
+```
+Device A: local training → gradient update ΔW_A
+Device B: local training → gradient update ΔW_B
+Device C: local training → gradient update ΔW_C
+        ...
+Server: W_global += α × average(ΔW_A, ΔW_B, ΔW_C, ...)
+Server → sends updated W_global back to all devices
+```
+
+The privacy guarantee is that the server sees only gradient updates, not raw training data. This is substantially stronger than "data stays on device" — the gradient update itself must be further protected with differential privacy (§14.5) because gradients can leak information about individual training examples through gradient inversion attacks.
+
+### 15.4 TensorFlow Federated
+
+**TensorFlow Federated (TFF)** is Google's Python framework for FL simulation and production deployment. The core building block is `tff.learning.algorithms.build_weighted_fed_avg()`, which produces a `tff.templates.IterativeProcess` implementing FedAvg:
+
+```python
+import tensorflow_federated as tff
+
+# Define the model via a model_fn:
+def model_fn():
+    keras_model = create_keras_model()
+    return tff.learning.models.from_keras_model(
+        keras_model,
+        input_spec=train_data[0].element_spec,
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(),
+        metrics=[tf.keras.metrics.SparseCategoricalAccuracy()]
+    )
+
+# Build the FedAvg algorithm:
+training_process = tff.learning.algorithms.build_weighted_fed_avg(
+    model_fn=model_fn,
+    client_optimizer_fn=tff.learning.optimizers.build_sgdm(learning_rate=0.1),
+    server_optimizer_fn=tff.learning.optimizers.build_adam(learning_rate=0.001)
+)
+
+# Simulate a training round with 10 participating devices:
+state = training_process.initialize()
+for round_num in range(100):
+    sampled_clients = np.random.choice(len(train_data), size=10, replace=False)
+    client_datasets = [train_data[i] for i in sampled_clients]
+    result = training_process.next(state, client_datasets)
+    state = result.state
+    print(f"Round {round_num}, loss: {result.metrics['client_work']['train']['loss']:.4f}")
+```
+
+TFF runs in simulation mode on a desktop/server, allowing you to prototype and evaluate the FL algorithm before deploying. The same algorithm is used for production deployment via the Android **On-Device Personalization (ODP)** service.
+
+### 15.5 Android On-Device Personalization Service
+
+Android 14+ (API 34+) introduced the **On-Device Personalization (ODP)** framework, which provides a secure, sandboxed execution environment for FL training tasks. It is implemented as a system service (`OnDevicePersonalizationService`) with strict isolation guarantees:
+
+- FL training tasks run in an `IsolatedProcess`, a sandboxed process that cannot make arbitrary network requests
+- Raw training data (keyboard history, app usage, health data) never leaves the `IsolatedProcess`
+- Gradient updates are processed by the **Federated Compute service** before any aggregation; differential privacy noise is added automatically
+- The aggregated model update is only uploaded when the device is idle, charging, and on Wi-Fi
+- The ODP service enforces a privacy budget across all FL tasks on the device; if a task exceeds its allotted (ε, δ) budget, future updates are suppressed
+
+The typical FL round on Android proceeds as follows:
+
+1. The ODP service receives a task from the FL server (model file + training hyperparameters + privacy budget allocation).
+2. The `IsolatedProcess` is launched and the global model is fetched.
+3. Local SGD runs on on-device data using the isolated environment's access to keyboard history, app usage patterns, and other permitted data sources.
+4. The ODP service applies DP noise to the gradient update (Gaussian mechanism, calibrated to the allocated ε, δ budget).
+5. The privacy-noised update is compressed (top-k gradient sparsification retaining only the k largest-magnitude gradients) and uploaded to the FL server.
+6. The FL server runs FedAvg across updates from N devices and produces a new global model.
+
+### 15.6 Communication Efficiency
+
+The gradient update itself can be large — for a 5 million parameter model (MobileNetV2), a FP32 gradient update is 20 MB. Standard FL communication efficiency techniques reduce this:
+
+- **Top-k sparsification**: Upload only the k% of gradient components with largest absolute value. At k=0.1% (top-0.1% of gradients), the upload is 2000× smaller with typically <1% accuracy impact on the final model. Sparsification is applied by the ODP service automatically.
+- **Quantised gradients**: Compress gradient values to INT8 before upload; 4× bandwidth reduction with negligible accuracy impact.
+- **Federated dropout**: Randomly drop a fraction of neurons during local training; the resulting gradient is inherently sparse, reducing update size without separate sparsification.
+- **Encoded aggregation**: TFF's `tff.aggregators.EncodedSumFactory` applies the same compression on the simulation side, allowing you to evaluate the accuracy/bandwidth trade-off before production deployment.
+
+---
+
+## 16. Roadmap
+
+### 16.1 LiteRT-LM (Shipping, May 2026)
 
 LiteRT-LM is the production orchestration layer for on-device LLM inference, superseding MediaPipe's `LlmInference` task. It achieves 52 tokens/second on Android GPU (OpenCL backend) and 56 tokens/second on Apple Metal, with multimodal support (text + vision + audio). Backends: CPU (XNNPack), GPU (OpenCL on Android, Metal on iOS, WebGPU in browser), NPU (Android only, via vendor delegates). [Source: LiteRT-LM announcement](https://developers.googleblog.com/blazing-fast-on-device-genai-with-litert-lm/)
 
 KV-cache management stores Key and Value tensors in GPU high-bandwidth memory between decode steps, reducing per-token latency from O(context_length²) to O(context_length) via incremental attention computation.
 
-### 11.2 Vulkan Compute Backend for GPU Delegate
+### 16.2 Vulkan Compute Backend for GPU Delegate
 
 The current GPU delegate defaults to OpenGL ES 3.1 compute shaders. The Vulkan compute backend (`TFLITE_GPU_EXPERIMENTAL_FLAGS_ENABLE_VULKAN_INFERENCE`) targets devices with Vulkan 1.1+. Advantages over GLES include lower driver overhead (no OpenGL state machine), explicit memory management (`VkDeviceMemory` from imported `AHardwareBuffer` via `VK_ANDROID_external_memory_android_hardware_buffer`), and access to Vulkan subgroup operations for more efficient SIMD reductions. Expect Vulkan backend to exit experimental status by late 2026.
 
-### 11.3 LiteRT on Linux
+### 16.3 LiteRT on Linux
 
 The `ai-edge-litert` package is expanding to x86-64 and ARM64 Linux (targeting Raspberry Pi 5 and NVIDIA Jetson). The GPU delegate runs via OpenGL ES on Mesa (panfrost, v3d, freedreno). This is the convergence path between Android on-device ML and Linux embedded ML described in Ch88 and Ch124. [Source: LiteRT universal framework](https://developers.googleblog.com/litert-the-universal-framework-on-device-ai/)
 
-### 11.4 WebAssembly / WebGPU
+### 16.4 WebAssembly / WebGPU
 
 LiteRT-LM's Web SDK runs via WebGPU (WASM + JavaScript API) in Chrome and other browsers, with 2026 parity between mobile-native and browser inference performance on the same GPU. This connects to the WebGPU stack described in Ch35 (Dawn and WebGPU).
 
-### 11.5 Vendor NPU Convergence
+### 16.5 Vendor NPU Convergence
 
 The post-NNAPI model (API 35+) pushes hardware acceleration into vendor-supplied LiteRT delegate libraries loaded at runtime. The long-term expectation is that all major Android SoC vendors (Qualcomm, MediaTek, Samsung Exynos, Google Tensor) ship production LiteRT delegates, converging on a uniform ABI where the delegate `.so` is the accelerator contract — analogous to how ICD `.so` files are the Vulkan driver contract.
 
-### 11.6 On-Device Foundation Models
+### 16.6 On-Device Foundation Models
 
-Vision-language models in the PaliGemma 3B class (3 billion parameters, vision + text) are feasible on 2026 flagship hardware at INT4 with LiteRT-LM. The GPU serves as the primary compute engine; the NPU handles INT8 attention layers. The camera→inference→display pipeline described in §8 of this chapter becomes the execution path for camera-grounded VLM queries ("What is this object?") running entirely on-device.
+Vision-language models in the PaliGemma 3B class (3 billion parameters, vision + text) are feasible on 2026 flagship hardware at INT4 with LiteRT-LM. The GPU serves as the primary compute engine; the NPU handles INT8 attention layers. The camera→inference→display pipeline described in §10 of this chapter becomes the execution path for camera-grounded VLM queries ("What is this object?") running entirely on-device.
 
-### 11.7 MediaPipe Tasks SDK Evolution
+### 16.7 MediaPipe Tasks SDK Evolution
 
-MediaPipe Tasks (§7) is transitioning from a community-maintained SDK to a Google-supported production API:
+MediaPipe Tasks (§8) is transitioning from a community-maintained SDK to a Google-supported production API:
 - **New modalities (2026–2027)**: Audio classification, face stylisation, and gesture customisation tasks are in preview. The Tasks API schema is being extended to support multi-modal tasks that accept both image and text inputs in a single `TaskRunner.process()` call, enabling on-device vision-language queries without the separate LiteRT-LM layer.
 - **Stable ABI**: The current Tasks API targets Kotlin/Java and Python. A stable C API (`mediapipe/tasks/c/`) is under active development to allow C++ and Rust callers to consume Tasks results without going through the JNI boundary — eliminating the 0.5–1 ms JNI overhead on high-frequency (30 Hz) inference pipelines.
-- **Calculator graph persistence**: The multi-calculator MediaPipe graph (§6.1) currently reconstructs packet routing on each `TaskRunner` call. A session-mode API keeps the `CalculatorGraph` resident in memory between frames, amortising graph construction cost across inference runs — critical for 60 Hz real-time use cases like AR overlay (§9).
+- **Calculator graph persistence**: The multi-calculator MediaPipe graph (§7.1) currently reconstructs packet routing on each `TaskRunner` call. A session-mode API keeps the `CalculatorGraph` resident in memory between frames, amortising graph construction cost across inference runs — critical for 60 Hz real-time use cases like AR overlay (§11).
 
-### 11.8 Gemini Nano + LiteRT Convergence
+### 16.8 Gemini Nano + LiteRT Convergence
 
 Gemini Nano (the on-device Gemini variant) is currently deployed via AICore (`android.ai.app.aicore.AICore`) as a system-level service on Pixel 9+ devices. The convergence trajectory with LiteRT-LM:
 
@@ -1113,7 +2076,7 @@ Gemini Nano (the on-device Gemini variant) is currently deployed via AICore (`an
 - **Phase 2 (2027+)**: Google is expected to expose Gemini Nano's internal transformer as a LiteRT-LM model, allowing apps to run the same Gemini model weights with the LiteRT-LM engine (rather than through AICore). This would allow fine-tuning, custom LoRA adapters, and private on-device inference without AICore telemetry.
 - **Multimodal cache sharing**: LiteRT-LM and Gemini Nano both need KV-cache GPU memory. A shared KV-cache arbiter (analogous to how SurfaceFlinger arbitrates display memory) is the long-horizon solution for devices running multiple concurrent LLM sessions (e.g., ARCore scene description + background document assistant).
 
-### 11.9 Competitive Landscape: GGML/llama.cpp vs LiteRT-LM
+### 16.9 Competitive Landscape: GGML/llama.cpp vs LiteRT-LM
 
 The on-device LLM ecosystem is splitting into two camps with different optimisation targets:
 
@@ -1131,16 +2094,16 @@ The two ecosystems are converging at the GGUF level: Google has published a GGUF
 
 ---
 
-## 12. Integrations
+## 17. Integrations
 
 **Ch85 — Android Compositor: SurfaceFlinger, HardwareBuffer, and the Buffer Pipeline**
-`AHardwareBuffer` is the central memory object shared between the Camera HAL, the LiteRT GPU delegate, and SurfaceFlinger. The buffer lifecycle (allocate → acquire → GPU write → release → compositor acquire) described in Ch85 applies directly to the inference pipeline §§4 and 8.
+`AHardwareBuffer` is the central memory object shared between the Camera HAL, the LiteRT GPU delegate, and SurfaceFlinger. The buffer lifecycle (allocate → acquire → GPU write → release → compositor acquire) described in Ch85 applies directly to the inference pipeline §§4 and 10.
 
 **Ch86 — Vulkan on Android: Drivers, ANGLE, and Mobile GPU Performance**
 The GPU delegate's Vulkan backend imports `AHardwareBuffer` via `VK_ANDROID_external_memory_android_hardware_buffer` (Ch86 §3). The same `VkSamplerYcbcrConversion` used for YUV camera textures in Ch86 is needed when feeding YCbCr camera frames to LiteRT vision models. ANGLE's GLES-on-Vulkan translation layer means that the GLES compute delegate runs on Vulkan on Chrome-backed Android targets.
 
 **Ch87 — Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform**
-§9 of this chapter describes the ARCore + MediaPipe composition pattern. ARCore provides world geometry; MediaPipe provides ML inference on the same camera texture. The shared GL context model, timestamp synchronisation (`ArFrame_getTimestamp()` → MediaPipe `Timestamp`), and the `GL_TEXTURE_EXTERNAL_OES` sharing pattern all build on the ARCore architecture in Ch87.
+§11 of this chapter describes the ARCore + MediaPipe composition pattern. ARCore provides world geometry; MediaPipe provides ML inference on the same camera texture. The shared GL context model, timestamp synchronisation (`ArFrame_getTimestamp()` → MediaPipe `Timestamp`), and the `GL_TEXTURE_EXTERNAL_OES` sharing pattern all build on the ARCore architecture in Ch87.
 
 **Ch88 — NPU and AI Accelerator Integration on Linux**
 Ch88 covers Linux NPU kernel drivers (Intel ivpu, AMD XDNA) and the OpenVINO/ROCm compute stack on desktop Linux. This chapter (§3.1) covers the Android NNAPI C API and HAL architecture in depth — the two chapters are complementary: Ch88 is the Linux NPU driver story; this chapter is the Android HAL-to-hardware path. Post-NNAPI, vendor LiteRT delegates (Qualcomm QNN, §3.3) access the Hexagon DSP via a direct in-process `.so` rather than the NNAPI HAL Binder IPC.

@@ -8,14 +8,21 @@
 
 1. [ARCore Architecture Overview](#1-arcore-architecture-overview)
    - [Historical Context: From Cardboard to Android XR](#historical-context-from-cardboard-to-android-xr)
+   - [SLAM Internals: Visual-Inertial Odometry, Keyframes, and Drift Handling](#1a-slam-internals-visual-inertial-odometry-keyframes-and-drift-handling)
 2. [The Android Camera Pipeline and ARCore](#2-the-android-camera-pipeline-and-arcore)
 3. [Session Lifecycle and the ArSession API](#3-session-lifecycle-and-the-arsession-api)
+   - [Device Capability Matrix and ARCore Feature Availability](#3a-device-capability-matrix-and-arcore-feature-availability)
+   - [Privacy Model, Permissions, and Regulatory Compliance](#3b-privacy-model-permissions-and-regulatory-compliance)
 4. [AR Rendering Pipeline: Camera Background and Virtual Content](#4-ar-rendering-pipeline-camera-background-and-virtual-content)
 5. [Plane Detection and Environment Understanding](#5-plane-detection-and-environment-understanding)
+   - [Augmented Faces: 3D Face Mesh Tracking](#5a-augmented-faces-3d-face-mesh-tracking)
+   - [Augmented Images: 2D Target Recognition and Tracking](#5b-augmented-images-2d-target-recognition-and-tracking)
+   - [Hand Tracking on ARCore Phones](#5c-hand-tracking-on-arcore-phones)
 6. [Depth API](#6-depth-api)
 7. [Anchors, Persistent Anchors, and Cloud Anchors](#7-anchors-persistent-anchors-and-cloud-anchors)
 8. [Light Estimation](#8-light-estimation)
 9. [OpenXR on Android and Android XR](#9-openxr-on-android-and-android-xr)
+   - [WebXR Device API: Browser-Based AR on Android](#9a-webxr-device-api-browser-based-ar-on-android)
 10. [ARCore Recording, Playback, and the Dataset API](#10-arcore-recording-playback-and-the-dataset-api)
 11. [Performance, Power, and Mobile GPU Considerations](#11-performance-power-and-mobile-gpu-considerations)
 12. [ARCore AI and ML: On-Device Intelligence](#12-arcore-ai-and-ml-on-device-intelligence)
@@ -104,6 +111,107 @@ Apple's **ARKit** occupies the analogous position in the iOS stack. Both SDKs ar
 | Geospatial | **VPS** via Street View tiles | —  |
 | OpenXR | Supported via loader | Partial via visionOS |
 | Headset support | **Android XR** / **Project Moohan** | Apple Vision Pro |
+
+---
+
+## 1a. SLAM Internals: Visual-Inertial Odometry, Keyframes, and Drift Handling
+
+Section 2 introduces ARCore's VIO loop at a structural level — IMU preintegration, factor graph, feature extraction. This section goes deeper: the sub-system boundaries, keyframe lifecycle, loop-closure mechanism, scale disambiguation, and how drift accumulates and is corrected over long sessions. ARCore's VIO is closed-source, but the architecture closely matches published tightly-coupled VIO systems (VINS-Mono, OKVIS, ORB-SLAM3) and is partially described in Google's [ARCore technical documentation](https://developers.google.com/ar/develop/concepts).
+
+### Feature extraction and short-baseline tracking
+
+Each camera frame delivered from Camera HAL at ~30 fps is processed through a two-stage feature pipeline:
+
+1. **Corner detection**: FAST (Features from Accelerated Segment Test) keypoints are detected on the luma (Y) plane of the YCbCr frame. FAST is chosen over more expensive detectors (SIFT, SURF) because it runs in a single pixel-ring comparison pass — well-suited to the ~33 ms inter-frame budget at 30 fps on an ARM CPU core.
+2. **Short-baseline tracking**: Between consecutive frames, tracked features are propagated using **Lucas-Kanade optical flow** (a sparse iterative image alignment), not descriptor matching. KLT tracking is robust to small inter-frame motion and avoids the cost of descriptor extraction for every feature on every frame. Descriptors are only computed (ORB or ARCore's internal learned variant) when a new keyframe is selected or when loop-closure matching is required.
+
+A typical VIO front-end tracks 200–400 features per frame. Features that cannot be tracked (occlusion, blurring, leaving frame) are dropped; new FAST corners fill the map to maintain a target density.
+
+### IMU preintegration between camera frames
+
+The IMU delivers accelerometer and gyroscope readings at 400–1000 Hz on modern Snapdragon and Exynos SoCs. Processing every IMU sample individually in the optimizer would be computationally prohibitive. **IMU preintegration** accumulates all IMU samples between two consecutive camera timestamps into a single compact relative-motion constraint (Δp, Δv, ΔR — relative position, velocity, rotation), computed using Euler integration with online bias correction:
+
+```
+δR_ij = ∏_{k=i}^{j-1} Exp((ω_k − b_g) · Δt)
+δv_ij = Σ_{k=i}^{j-1} δR_ik · (a_k − b_a) · Δt
+δp_ij = Σ_{k=i}^{j-1} [δv_ik · Δt + ½ · δR_ik · (a_k − b_a) · Δt²]
+```
+
+where `ω_k` is gyroscope reading, `a_k` is accelerometer reading, `b_g` / `b_a` are the current gyroscope/accelerometer bias estimates, and `Exp(·)` is the SO(3) exponential map. The preintegrated quantity is a single node in the factor graph, connecting the poses at camera frames i and j. This design means that when the optimizer updates the bias estimate, only the preintegration residual need be re-linearised — not all individual IMU samples. [Source: Forster et al., "On-Manifold Preintegration for Real-Time Visual-Inertial Odometry," 2017](https://rpg.ifi.uzh.ch/docs/TRO16_forster.pdf)
+
+### Keyframe selection
+
+Not every camera frame becomes a keyframe. Keyframes are the nodes in the sliding-window optimizer; adding every frame would grow the optimization problem beyond real-time budget. ARCore's keyframe selection heuristic (consistent with published VIO systems) triggers a new keyframe when either:
+
+- **Parallax threshold**: tracked features have moved more than ~20 pixels on average from the last keyframe, indicating sufficient baseline for triangulation.
+- **Rotation threshold**: cumulative rotation from the last keyframe exceeds ~15°, at which point feature tracks begin to degrade.
+- **Track loss**: fewer than a threshold number of features (typically 80–100) remain tracked from the last keyframe.
+
+Keyframe selection has a direct impact on depth estimation quality: insufficient parallax between keyframes causes MotionStereo to produce unreliable depth estimates (see §6).
+
+### Factor graph optimization and iSAM2-style incremental smoothing
+
+ARCore's state estimation is formulated as a **factor graph**: poses, IMU biases, and 3D landmark positions are *variable nodes*; reprojection errors and IMU preintegration constraints are *factor nodes* representing the log-likelihood of the measurements. The MAP (Maximum A Posteriori) estimate minimizes the sum of squared residuals, solved iteratively using a Gauss-Newton or Levenberg-Marquardt optimizer.
+
+Rather than re-solving the full batch problem every frame, ARCore (and systems like VINS-Mono, ORB-SLAM3) uses **incremental smoothing**: when a new keyframe arrives, only the new factors are added and the sparse linear system is updated incrementally — analogous to iSAM2 (incremental Smoothing and Mapping). Older keyframes are *marginalized*: they are removed from the active window, but their information is preserved as a *prior factor* on the remaining variables. This **sliding-window** approach bounds computation to O(n) in the window size rather than O(n³) for the full trajectory. [Source: Kaess et al., "iSAM2", 2012](https://journals.sagepub.com/doi/10.1177/0278364911430419)
+
+### Map management and landmark culling
+
+Triangulated 3D landmarks (the point cloud visible via `ArFrame_acquirePointCloud()`, see §5) are managed by a map that tracks each landmark's observation history:
+
+- A newly triangulated landmark is *tentative* until observed from at least 3 keyframes.
+- Landmarks with fewer than 3 keyframe observations are culled — they lack sufficient angular baseline for reliable triangulation.
+- Landmarks whose reprojection error exceeds a threshold (RANSAC outlier) are immediately removed.
+- During marginalization, landmarks observed only by the oldest keyframe in the window are also marginalized — their position is encoded into the prior.
+
+The point cloud visible via `ArPointCloud_getData()` is the subset of landmarks currently in the active sliding window, with a confidence value in [0.0, 1.0] representing how many keyframes have observed the landmark (higher observation count → higher confidence).
+
+### Loop closure and visual place recognition
+
+Over long sessions (minutes, building-scale), VIO accumulates **drift**: small errors in IMU bias estimation and feature tracking integrate into a growing pose error. After 60 seconds of normal phone movement, typical VIO drift is 0.5–2% of path length — enough to cause virtual objects to visibly "slide" on real surfaces. ARCore mitigates this via **loop closure**:
+
+1. **Global descriptor extraction**: At each keyframe, a compact global descriptor is computed (e.g., a bag-of-visual-words or a learned global feature vector) that characterizes the visual appearance of the scene.
+2. **Place recognition**: The descriptor is matched against a database of prior keyframe descriptors. A successful match above a similarity threshold indicates the camera has returned to a previously visited location.
+3. **Loop constraint**: A relative pose constraint between the current keyframe and the matched prior keyframe is added to the factor graph as a strong loop-closing edge.
+4. **Re-linearization**: The optimizer re-solves with the new constraint, distributing the accumulated drift across the loop trajectory. From the application's perspective, `ArAnchor` poses may shift slightly as the map corrects itself — this is expected behavior.
+
+### Relocalization after tracking loss
+
+When the device is covered, enters a featureless environment (blank wall, dim room), or moves too fast (motion blur), ARCore enters `AR_TRACKING_STATE_PAUSED`. The VIO front-end cannot track features. Upon exposure to a recognizable environment again, ARCore attempts **relocalization**:
+
+1. Compute a global descriptor for the current frame.
+2. Match against all stored keyframe descriptors.
+3. If a match is found, compute a 2D-3D pose via PnP (Perspective-n-Point) using stored 3D landmarks and their 2D projections in the current frame.
+4. If the PnP solve passes RANSAC verification, resume with `AR_TRACKING_STATE_TRACKING` from the recovered pose.
+
+The relocalised pose is consistent with the pre-loss map; virtual objects placed before tracking loss remain at their correct world positions upon recovery.
+
+### Scale disambiguation via IMU gravity
+
+A monocular camera system (single lens, no stereo baseline, no depth sensor) cannot recover metric scale — a scene at 1 m and the same scene at 2 m are geometrically identical from monocular image sequences alone. ARCore resolves this fundamental ambiguity via the IMU:
+
+- The accelerometer measures the gravity vector `g ≈ 9.81 m/s²` in device coordinates.
+- During the `AR_TRACKING_STATE_INITIALIZING` phase (typically 1–3 seconds), ARCore collects IMU data and uses the known magnitude of gravity to establish the metric scale of the first triangulated landmarks.
+- From that point, the IMU's linear acceleration provides an absolute metric constraint at every frame, preventing scale drift even as the camera baseline changes.
+
+This is why ARCore requires the user to move the device (not just rotate it) during initialization: parallax between at least two viewpoints is needed to triangulate the first landmarks, and those landmarks, combined with the gravity magnitude, yield the metric scale.
+
+### Drift handling in practice
+
+For short AR sessions (< 60 s, room-scale), VIO drift is negligible — anchors stay fixed to within millimetres. For long sessions (museum tours, navigation, persistent city-scale AR), drift becomes significant. ARCore provides two architectural solutions:
+
+- **Cloud Anchors** (§7): hosted feature maps are globally consistent; resolving a Cloud Anchor provides a world-coordinate correction that resets local drift.
+- **Geospatial VPS** (§7): VPS localisation against Google's global 3D map provides an external absolute pose reference, effectively eliminating long-term drift in VPS-covered areas. The VPS pose is fused with VIO via a Kalman filter, with VPS providing the global anchor and VIO providing high-frequency, low-latency local updates between VPS queries.
+
+For sessions without Cloud Anchors or VPS, the application can check `ArPose` consistency over time by monitoring how much placed `ArAnchor` poses drift relative to the physical world — a visible mismatch signals cumulative drift.
+
+### Dynamic environment handling and RANSAC outlier rejection
+
+People, vehicles, and other moving objects generate feature tracks that violate the static-world assumption of SLAM. A person walking through the frame will have features tracked across multiple frames with reprojection errors inconsistent with any static 3D point. ARCore's front-end uses **RANSAC** (Random Sample Consensus) during the feature-matching and triangulation steps: it randomly selects minimal subsets of feature matches, computes a homography or essential matrix, and counts inliers (features consistent with the model). Moving object features become outliers and are excluded from the VIO factor graph.
+
+For the majority of cases — AR app usage where a person is the device operator — the person is behind the camera and does not appear in the frame. In settings where people or vehicles dominate the field of view (crowded streets, retail), RANSAC outlier rejection handles them gracefully, though tracking quality degrades proportionally to the fraction of the image covered by moving objects.
+
+[Source: ARCore developer concepts](https://developers.google.com/ar/develop/concepts), [ORB-SLAM3 paper](https://arxiv.org/abs/2007.11898), [VINS-Mono paper](https://arxiv.org/abs/1708.03852)
 
 ---
 
@@ -309,6 +417,213 @@ ArPose_destroy(ar_pose);
 `AR_UPDATE_MODE_LATEST_CAMERA_IMAGE` (the default) causes `ArSession_update()` to return immediately with the most recently delivered camera frame, even if a newer frame has not arrived since the last call. `AR_UPDATE_MODE_BLOCKING` causes `ArSession_update()` to block until a new camera frame is available — useful when the render thread should be paced by camera arrival rather than a separate timer.
 
 `AR_FOCUS_MODE_AUTO` enables continuous auto-focus, which generally improves feature tracking quality at the cost of occasional brief refocus transients. For depth-sensitive use cases (e.g., close-range object tracking), fixed focus may be preferable.
+
+---
+
+## 3a. Device Capability Matrix and ARCore Feature Availability
+
+Not every ARCore-capable device supports every ARCore feature. The SDK's certification model separates device eligibility from feature availability, and applications must query capability at runtime before enabling advanced modes.
+
+### The ARCore supported devices list
+
+Google maintains a continuously updated [ARCore supported devices list](https://developers.google.com/ar/devices) that currently covers over 500 certified Android device models (as of mid-2026). Certification requires OEM validation of:
+
+- IMU quality: accelerometer and gyroscope must meet minimum noise and latency specifications for VIO.
+- Camera frame delivery latency: the camera-to-tracking-thread pipeline must sustain ≥ 30 fps at the required resolution.
+- GPU driver compliance: the Vulkan or GLES driver must support the extensions ARCore requires for AHardwareBuffer import and external textures.
+
+Importantly, not every Android 7.0+ device is eligible — ARCore applies hardware quality gates that exclude budget devices with poor IMU or non-compliant camera drivers.
+
+### Certification tiers
+
+ARCore defines two certification tiers that affect how apps declare the dependency in their manifest:
+
+- **ARCore Optional** (`android:required="false"`): The device may or may not have ARCore installed. ARCore is downloaded via the Play Store when the user first launches an AR Optional app. The app must degrade gracefully when ARCore is unavailable. Minimum API level 24.
+- **ARCore Required** (`android:required="true"`): ARCore is preinstalled and guaranteed. The Google Play Store filters to only show the app on ARCore Required devices. Minimum API level 28. Basic tracking, plane detection, and light estimation are guaranteed.
+
+### Availability check at runtime
+
+Before creating an `ArSession`, verify ARCore availability:
+
+```c
+ArAvailability availability;
+ArCoreApk_checkAvailability(env, context, &availability);
+
+switch (availability) {
+    case AR_AVAILABILITY_SUPPORTED_INSTALLED:
+        // ARCore is installed and ready — proceed with ArSession_create()
+        break;
+    case AR_AVAILABILITY_SUPPORTED_APK_TOO_OLD:
+    case AR_AVAILABILITY_SUPPORTED_NOT_INSTALLED:
+        // Prompt user to install or update ARCore via Play Store
+        // ArCoreApk.requestInstall() in Java; in C, redirect to Play Store intent
+        break;
+    case AR_AVAILABILITY_UNSUPPORTED_DEVICE_NOT_CAPABLE:
+        // Device hardware cannot run ARCore; disable AR features permanently
+        break;
+    case AR_AVAILABILITY_UNKNOWN_CHECKING:
+    case AR_AVAILABILITY_UNKNOWN_ERROR:
+    case AR_AVAILABILITY_UNKNOWN_TIMED_OUT:
+        // Retry after a delay
+        break;
+}
+```
+
+[Source: ARCore C API — ArAvailability](https://developers.google.com/ar/reference/c/group/ar-core-apk)
+
+### Per-feature capability checks
+
+Individual features require additional runtime checks before configuration. Enabling an unsupported feature causes `ArSession_configure()` to return `AR_ERROR_INVALID_ARGUMENT`:
+
+```c
+// Check depth API support:
+int32_t depth_supported = 0;
+ArSession_isDepthModeSupported(session, AR_DEPTH_MODE_AUTOMATIC, &depth_supported);
+if (depth_supported) {
+    ArConfig_setDepthMode(config, AR_DEPTH_MODE_AUTOMATIC);
+}
+
+// Check semantic mode support (Android 12+, outdoor):
+int32_t semantic_supported = 0;
+ArSession_isSemanticModeSupported(session, AR_SEMANTIC_MODE_ENABLED, &semantic_supported);
+
+// Check Geospatial support:
+// Requires network connectivity and VPS-covered area; check at runtime:
+ArEarth *earth = NULL;
+ArSession_acquireEarth(session, &earth);
+ArTrackingState earth_state;
+ArEarth_getTrackingState(session, earth, &earth_state);
+// If AR_TRACKING_STATE_PAUSED after ~60s, the area lacks VPS coverage
+ArEarth_release(earth);
+```
+
+### Feature availability by hardware tier
+
+The table below summarises which hardware capabilities unlock each ARCore feature and gives representative device examples. Entries reflect ARCore state as of mid-2026.
+
+| Feature | ARCore version required | Minimum API level | Hardware requirement | Representative support |
+|---|---|---|---|---|
+| Motion tracking + plane detection | 1.0 (Feb 2018) | API 24 | Any certified device | 500M+ devices |
+| Cloud Anchors | 1.2 (Jun 2018) | API 24 | Network access | All certified devices |
+| Augmented Images | 1.6 (Nov 2018) | API 24 | Any certified device | All certified devices |
+| Light Estimation (HDR) | 1.9 (May 2019) | API 24 | Any certified device | All certified devices |
+| Augmented Faces | 1.7 (Feb 2019) | API 24 | Front-facing camera | Most phones with front camera |
+| Depth API (MotionStereo) | 1.18 (Aug 2021) | API 24 | Any certified device with camera motion | ~88% of active ARCore devices |
+| Depth API (hardware dToF) | 1.18 (Aug 2021) | API 24 | Physical ToF sensor | Pixel 4+, selected Samsung/LG/Xiaomi |
+| Raw Depth + Confidence | 1.20 (Oct 2021) | API 24 | Depth API capable device | Subset of Depth API devices |
+| Geospatial / VPS | 1.31 (Jun 2022) | API 26 | GPS + VPS coverage area | Certified devices in Street View zones |
+| Scene Semantics | 1.36 (Mar 2023) | API 26 | Any certified device (outdoor only) | Limited: certified 2021+ phones |
+| Streetscape Geometry | 1.36 (Mar 2023) | API 26 | Geospatial + Depth enabled | Devices with Depth + VPS coverage |
+| Geospatial Creator (AR anchors) | 1.39 (Oct 2023) | API 26 | Geospatial capable | VPS-covered areas |
+| Android XR hand/eye tracking | Android XR only | API 34+ | Android XR headset | Samsung Galaxy XR (Moohan) |
+
+> **Note:** ARCore version and API level requirements in this table are derived from ARCore release notes and developer guides; verify against the [ARCore release history](https://developers.google.com/ar/whatsnew-arcore) for the most current values.
+
+### Camera config selection for capability-dependent features
+
+Some features require a specific camera facing direction or resolution. The `ArCameraConfigFilter` API selects a camera configuration before session creation:
+
+```c
+ArCameraConfigList *config_list = NULL;
+ArCameraConfigList_create(session, &config_list);
+
+ArCameraConfigFilter *filter = NULL;
+ArCameraConfigFilter_create(session, &filter);
+
+// For Augmented Faces, require front-facing camera:
+ArCameraConfigFilter_setFacingDirection(session, filter,
+    AR_CAMERA_CONFIG_FACING_DIRECTION_FRONT);
+
+ArSession_getSupportedCameraConfigsWithFilter(session, filter, config_list);
+
+int32_t num_configs = 0;
+ArCameraConfigList_getSize(session, config_list, &num_configs);
+if (num_configs > 0) {
+    ArCameraConfig *camera_config = NULL;
+    ArCameraConfig_create(session, &camera_config);
+    ArCameraConfigList_getItem(session, config_list, 0, camera_config);
+    ArSession_setCameraConfig(session, camera_config);
+    ArCameraConfig_destroy(camera_config);
+}
+
+ArCameraConfigFilter_destroy(filter);
+ArCameraConfigList_destroy(config_list);
+```
+
+[Source: ARCore device support](https://developers.google.com/ar/devices), [ARCore feature availability](https://developers.google.com/ar/develop/c/enable-arcore)
+
+---
+
+## 3b. Privacy Model, Permissions, and Regulatory Compliance
+
+ARCore processes camera and sensor data continuously during an AR session. Understanding which data stays on-device, which is transmitted, and what disclosures are legally required is essential for shipping compliant AR applications.
+
+### Required permissions
+
+**`android.permission.CAMERA`** is the only Android permission ARCore mandates. This runtime permission (since Android 6.0, API 23) must be granted before `ArSession_resume()` is called. The key privacy distinction: ARCore's internal use of the camera for VIO tracking does not grant the application access to camera pixels. The app only receives camera image data if it explicitly calls `ArFrame_acquireCameraImage()`, which returns a CPU-accessible `ArImage`. This distinction matters for privacy disclosures — an AR app that does not call `ArFrame_acquireCameraImage()` does not process raw camera frames at the application layer, even though ARCore does so internally.
+
+**`android.permission.INTERNET`** is required for:
+- **Cloud Anchors**: feature map descriptors are uploaded to Google's ARCore Cloud API servers.
+- **Geospatial VPS**: anonymised visual feature descriptors from camera frames are sent to Google's VPS infrastructure for localization.
+
+**`android.permission.ACCESS_FINE_LOCATION`** is *not* required by ARCore itself. The Geospatial API uses VPS (visual localization) as its primary position source; GPS/GNSS is a secondary input fused via Kalman filter. If the application wants to display or log the `ArGeospatialPose` latitude/longitude as a user-facing location (e.g., "you are at 51.5°N"), it must hold FINE_LOCATION and disclose it accordingly. If only using Geospatial for placing AR content without exposing raw coordinates, FINE_LOCATION is not required.
+
+### What stays on-device
+
+The following ARCore data never leaves the device and exists only in memory for the duration of the `ArSession`:
+
+- **Point cloud** (`ArPointCloud`): 3D feature point positions and confidence values.
+- **Planes** (`ArPlane`): polygon boundary vertices, plane type, and pose.
+- **Light estimates** (`ArLightEstimate`): pixel intensity, color correction, and HDR environment map.
+- **Depth images** (`ArImage` from `ArFrame_acquireDepthImage16Bits()`): per-pixel depth in millimetres.
+- **Semantic images** (`ArImage` from `ArFrame_acquireSemanticImage()`): per-pixel semantic labels.
+- **6DoF camera pose** (`ArCamera_getPose()`): device position and orientation in the local AR world coordinate frame.
+- **IMU data** consumed internally by the VIO tracker.
+
+When `ArSession_destroy()` is called, all session state is discarded. ARCore does not cache tracking maps to local storage unless the application explicitly uses the **Dataset Recording API** (§10).
+
+### What is transmitted: Cloud Anchors
+
+When `ArSession_hostCloudAnchorAsync()` is called, ARCore uploads a **feature map descriptor** — a compact representation of the visual features around the anchor location — to Google's ARCore Cloud API. This descriptor does not contain raw image pixels; it is a set of compressed visual feature descriptors similar to a binary ORB descriptor bag. The feature map is associated with the anchor ID returned by the API and stored on Google's servers for the TTL (time-to-live) specified in the hosting call.
+
+Per Google's [ARCore Privacy Requirements](https://developers.google.com/ar/develop/privacy-requirements), applications using Cloud Anchors must:
+1. Inform users that environmental data (feature point descriptors) is uploaded to Google.
+2. Include a link to Google's Privacy Policy in their own privacy policy.
+3. Not use Cloud Anchors in contexts where users have a reasonable expectation of environmental privacy (e.g., private medical facilities) without explicit consent.
+
+### What is transmitted: Geospatial VPS
+
+When Geospatial mode is enabled (`AR_GEOSPATIAL_MODE_ENABLED`), ARCore periodically sends **anonymised visual queries** to Google's VPS servers — compact descriptors of the current scene, without raw image data, for server-side matching against the 3D map tile database. The geographic location (from GPS/GNSS) is sent alongside the visual query to narrow the search space. Per the [ARCore Privacy Requirements](https://developers.google.com/ar/develop/privacy-requirements), Geospatial API use requires the same disclosure as Cloud Anchors, plus acknowledgment that approximate location data is shared.
+
+### Face tracking and biometric data
+
+Augmented Faces (§5a) computes a 468-vertex 3D mesh of the user's face on-device. The face mesh data is **not transmitted** by ARCore — it is produced by a neural network running entirely on the device GPU and exists only in memory. However, if the application records or transmits the face mesh data (for example, to animate a remote avatar or to log face geometry for analytics), the face mesh constitutes **biometric data** under:
+
+- **GDPR Article 9** (EU): Processing of biometric data for the purpose of uniquely identifying a natural person is prohibited without explicit consent.
+- **CCPA § 1798.140(o)** (California): Biometric information is sensitive personal information requiring explicit disclosure and opt-in.
+- **Illinois BIPA** (Biometric Information Privacy Act): Requires written consent before collecting biometric identifiers; provides a private right of action.
+
+Apps that transmit face mesh data must implement explicit, informed consent flows before enabling the Augmented Faces feature, and must provide mechanisms for users to request deletion of stored biometric data.
+
+### ARCore Terms of Service compliance
+
+All applications using ARCore must comply with the [Google ARCore Additional Terms of Service](https://developers.google.com/ar/about/terms), which require:
+
+- Attribution: Apps must display the "Built with ARCore" branding or equivalent acknowledgment in the app's About screen or splash screen.
+- No circumvention: Apps must not attempt to bypass ARCore's certificate-pinned API calls to the Cloud Anchor or VPS services.
+- Lawful use: AR experiences must comply with applicable local laws; ARCore may not be used for surveillance, biometric identification of individuals without consent, or any purpose that violates Google's [Generative AI Prohibited Use Policy](https://policies.google.com/terms/generative-ai/use-policy) where AR is combined with generative AI.
+
+### Minimum privacy policy disclosure template
+
+For apps using Cloud Anchors or Geospatial VPS, the following disclosure (or equivalent) is required in the application's privacy policy:
+
+> "This application uses Google ARCore to provide augmented reality features. ARCore may collect environmental data — including visual feature descriptors of the physical space around the device — to enable Cloud Anchor and Geospatial features. This data may be transmitted to Google's servers for processing. ARCore does not transmit raw camera images. For information on how Google handles this data, see [Google's Privacy Policy](https://policies.google.com/privacy) and the [ARCore Additional Terms of Service](https://developers.google.com/ar/about/terms)."
+
+For apps using Augmented Faces that transmit or store face mesh data, add:
+
+> "This application collects 3D facial geometry data for [stated purpose]. This constitutes biometric data. By [enabling this feature / creating an account], you consent to the collection, use, and storage of this biometric information as described herein. You may withdraw consent at any time by [stated mechanism]. Stored biometric data is deleted [within X days / upon account deletion]."
+
+[Source: ARCore Privacy Requirements](https://developers.google.com/ar/develop/privacy-requirements), [ARCore Terms of Service](https://developers.google.com/ar/about/terms)
 
 ---
 
@@ -555,6 +870,489 @@ ArFrame_hitTestInstantPlacement(ar_session, ar_frame,
 // AR_INSTANT_PLACEMENT_POINT_TRACKING_METHOD_SCREENSPACE_WITH_APPROXIMATE_DISTANCE
 // until a real plane is detected, then upgrades to full plane tracking
 ```
+
+---
+
+## 5a. Augmented Faces: 3D Face Mesh Tracking
+
+ARCore's Augmented Faces API provides real-time 3D face mesh tracking using the front-facing camera and an on-device neural network. It is the canonical path for face filter AR (virtual masks, glasses, cosmetics) on Android, targeting **graphics application developers** building face-AR experiences.
+
+### Front-facing camera requirement
+
+Augmented Faces requires the front-facing camera. The session must be configured with a front-camera `ArCameraConfig` (see §3a for `ArCameraConfigFilter_setFacingDirection()`) and the face mesh mode must be enabled before the session resumes:
+
+```c
+// 1. Select front-facing camera config (see §3a for filter pattern)
+ArCameraConfigFilter *filter = NULL;
+ArCameraConfigFilter_create(session, &filter);
+ArCameraConfigFilter_setFacingDirection(session, filter,
+    AR_CAMERA_CONFIG_FACING_DIRECTION_FRONT);
+// ... select and set config ...
+ArCameraConfigFilter_destroy(filter);
+
+// 2. Enable face mesh mode
+ArConfig *config = NULL;
+ArConfig_create(session, &config);
+ArConfig_setAugmentedFaceMode(session, config, AR_AUGMENTED_FACE_MODE_MESH3D);
+ArSession_configure(session, config);
+ArConfig_destroy(config);
+```
+
+> **Important**: `AR_AUGMENTED_FACE_MODE_MESH3D` is **mutually exclusive** with horizontal and vertical plane detection (`AR_PLANE_FINDING_MODE_HORIZONTAL_*`, `AR_PLANE_FINDING_MODE_VERTICAL`) on most devices. The GPU budget for running front-camera face tracking and a world-mapping SLAM front-end simultaneously is insufficient on current mobile hardware. For back-camera AR with face filters, use MediaPipe FaceLandmarker (discussed below) rather than ARCore's Augmented Faces API.
+
+[Source: ARCore Augmented Faces](https://developers.google.com/ar/develop/c/augmented-faces)
+
+### Querying the face list
+
+Each frame, query the list of tracked `ArAugmentedFace` objects:
+
+```c
+ArTrackableList *face_list = NULL;
+ArTrackableList_create(session, &face_list);
+ArSession_getAllTrackables(session, AR_TRACKABLE_AUGMENTED_FACE, face_list);
+
+int32_t face_count = 0;
+ArTrackableList_getSize(session, face_list, &face_count);
+
+for (int32_t i = 0; i < face_count; i++) {
+    ArTrackable *trackable = NULL;
+    ArTrackableList_acquireItem(session, face_list, i, &trackable);
+
+    ArAugmentedFace *face = ArAsAugmentedFace(trackable);
+
+    ArTrackingState tracking_state;
+    ArTrackable_getTrackingState(session, trackable, &tracking_state);
+    if (tracking_state != AR_TRACKING_STATE_TRACKING) {
+        ArTrackable_release(trackable);
+        continue;
+    }
+
+    // ... process face mesh ...
+
+    ArTrackable_release(trackable);
+}
+ArTrackableList_destroy(face_list);
+```
+
+### The 468-vertex canonical face mesh
+
+ARCore returns a canonical 3D face mesh with **468 vertices** in face-local coordinates. The mesh topology is fixed — the same triangle connectivity applies to every tracked face, only vertex positions vary per frame. This is distinct from MediaPipe's FaceLandmarker (which delivers 478 landmarks: the same 468 canonical vertices plus 10 additional iris landmark points for pupil tracking — see §12 for MediaPipe integration). ARCore does not expose iris landmarks.
+
+```c
+const float *mesh_vertices = NULL;
+int32_t mesh_vertex_count = 0;
+ArAugmentedFace_getMeshVertices(session, face,
+    &mesh_vertices, &mesh_vertex_count);
+// mesh_vertices: float array of mesh_vertex_count * 3 values (x, y, z in metres)
+// mesh_vertex_count is always 468 for AR_AUGMENTED_FACE_MODE_MESH3D
+
+const float *mesh_normals = NULL;
+int32_t mesh_normal_count = 0;
+ArAugmentedFace_getMeshNormals(session, face,
+    &mesh_normals, &mesh_normal_count);
+// mesh_normals: float array of mesh_normal_count * 3 values (unit normals)
+
+const float *mesh_uvs = NULL;
+int32_t mesh_uv_count = 0;
+ArAugmentedFace_getMeshTextureCoordinates(session, face,
+    &mesh_uvs, &mesh_uv_count);
+// mesh_uvs: float array of mesh_uv_count * 2 values (u, v in [0,1])
+
+const uint16_t *mesh_indices = NULL;
+int32_t mesh_index_count = 0;
+ArAugmentedFace_getMeshTriangleIndices(session, face,
+    &mesh_indices, &mesh_index_count);
+// mesh_indices: uint16_t array of mesh_index_count values
+// (mesh_index_count / 3 triangles, each index into the 468 vertex array)
+```
+
+The UV coordinates reference a canonical UV atlas — a predefined UV layout for the 468-vertex mesh that maps consistently across sessions. This allows texture assets (virtual makeup, masks, tattoos) to be authored once against the UV atlas and applied to any tracked face.
+
+### Uploading the face mesh to the GPU
+
+A typical face filter render loop uploads the mesh to a VBO and draws it per frame:
+
+```c
+// Upload mesh geometry to GPU each frame (vertices change per frame)
+glBindBuffer(GL_ARRAY_BUFFER, vbo_vertices);
+glBufferData(GL_ARRAY_BUFFER,
+    mesh_vertex_count * 3 * sizeof(float),
+    mesh_vertices, GL_DYNAMIC_DRAW);
+
+glBindBuffer(GL_ARRAY_BUFFER, vbo_normals);
+glBufferData(GL_ARRAY_BUFFER,
+    mesh_normal_count * 3 * sizeof(float),
+    mesh_normals, GL_DYNAMIC_DRAW);
+
+glBindBuffer(GL_ARRAY_BUFFER, vbo_uvs);
+glBufferData(GL_ARRAY_BUFFER,
+    mesh_uv_count * 2 * sizeof(float),
+    mesh_uvs, GL_DYNAMIC_DRAW);
+
+// Index buffer is constant across frames (topology does not change):
+if (!index_buffer_uploaded) {
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo_indices);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+        mesh_index_count * sizeof(uint16_t),
+        mesh_indices, GL_STATIC_DRAW);
+    index_buffer_uploaded = true;
+}
+
+// Bind face texture asset and draw
+glBindTexture(GL_TEXTURE_2D, face_filter_texture);
+glDrawElements(GL_TRIANGLES, mesh_index_count, GL_UNSIGNED_SHORT, 0);
+```
+
+The view matrix for face rendering is obtained from `ArCamera_getViewMatrix()` using the front camera's pose — the same function as for back-camera AR. The face mesh vertices are already in world coordinates, so the MVP transform applies directly.
+
+### Named region poses
+
+For precise placement of accessories (nose ring, forehead jewel, ear decorations), ARCore provides poses for three named facial regions:
+
+```c
+// Named region identifiers:
+// AR_AUGMENTED_FACE_REGION_NOSE_TIP
+// AR_AUGMENTED_FACE_REGION_FOREHEAD_LEFT
+// AR_AUGMENTED_FACE_REGION_FOREHEAD_RIGHT
+
+ArPose *nose_pose = NULL;
+ArPose_create(session, NULL, &nose_pose);
+ArAugmentedFace_getRegionPose(session, face,
+    AR_AUGMENTED_FACE_REGION_NOSE_TIP, nose_pose);
+
+float nose_matrix[16];
+ArPose_getMatrix(session, nose_pose, nose_matrix);
+// nose_matrix is a column-major 4×4 OpenGL model matrix for the nose-tip region
+// Use as the model transform for a virtual nose piercing, etc.
+
+ArPose_destroy(nose_pose);
+```
+
+The `FOREHEAD_LEFT` and `FOREHEAD_RIGHT` region poses provide approximate left/right gaze directions — useful for simple gaze-based interactions. For pixel-accurate iris tracking (required for eye makeup AR or precise gaze estimation), the ARCore Augmented Faces API is not sufficient; MediaPipe's [Iris landmark model](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) (10 iris landmarks per eye on top of the 478-point FaceLandmarker output) is the appropriate tool.
+
+### What ARCore Augmented Faces does not provide
+
+ARCore's Augmented Faces API intentionally omits several capabilities present in competing face AR SDKs (ARKit on iOS, MediaPipe FaceLandmarker):
+
+- **Blend shapes / FACS coefficients**: ARCore does not expose facial action unit weights or blend shape coefficients. Generating real-time blend shape animations (for driving a rigged avatar) on Android requires MediaPipe's FaceLandmarker output, or Unity AR Foundation's face tracking subsystem (which uses ARKit blend shapes on iOS but falls back to ARCore mesh data without blend shapes on Android).
+- **Eye gaze vectors**: The `FOREHEAD_*` region poses provide approximate directional data but not calibrated eye gaze vectors. Pixel-accurate gaze tracking requires MediaPipe Iris.
+- **Mouth open/close or expression classification**: Not exposed by ARCore. Use MediaPipe's [Face Landmarker blendshape API](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker#blendshape) (52 blend shape coefficients) for expression-driven AR.
+- **Multiple simultaneous faces**: ARCore typically tracks a single face; the `ArTrackableList` may return more than one `ArAugmentedFace` object on some devices, but single-face tracking is the documented and tested scenario. MediaPipe FaceLandmarker supports up to 10 simultaneous faces.
+
+### Performance considerations
+
+The on-device neural network for face mesh inference runs on the device GPU (GLES compute or Vulkan compute backend). On Snapdragon 8 Gen 2 and equivalent hardware, face mesh inference takes approximately 3–6 ms per frame — adding to the GPU budget alongside the camera background rendering. `AR_AUGMENTED_FACE_MODE_MESH3D` disabling plane detection is a deliberate trade-off: the GPU resources freed by skipping the SLAM plane-finding model are reallocated to the face-tracking model.
+
+For apps that need both world-scale AR and face tracking simultaneously (e.g., placing virtual objects in a room while also rendering a face filter), MediaPipe FaceLandmarker running on the CPU or GPU delegate alongside ARCore (back camera) world tracking is the architecturally correct solution, at the cost of integration complexity described in §12.
+
+[Source: ARCore Augmented Faces C API](https://developers.google.com/ar/develop/c/augmented-faces), [ARCore augmented-faces reference](https://developers.google.com/ar/reference/c/group/ar-augmented-face)
+
+---
+
+## 5b. Augmented Images: 2D Target Recognition and Tracking
+
+The Augmented Images API enables ARCore to recognise predefined 2D images in the camera view and report their real-world pose — enabling AR content to be anchored to physical printed targets (product packaging, posters, museum labels, playing cards). Targeting **graphics application developers** and experience designers.
+
+### The image database
+
+Augmented Images requires a pre-built **image database** — a binary file containing hashed image descriptors for each target image. The database can be built in two ways:
+
+1. **Offline CLI tool** (`arcoreimg`): for production apps, build the database ahead of time and ship it as an asset. The `arcoreimg` tool computes ORB-style feature descriptors for each image, stores them in a binary `.imgdb` file, and outputs a quality score (0.0–1.0) for each image.
+2. **Runtime API**: add images to the database during an active session using `ArAugmentedImageDatabase_addImage()`. This dynamic path (available on API 29+) is useful for cases where the target images are not known at compile time (e.g., scanning a user-provided QR code as an AR anchor).
+
+```c
+// --- Offline path: load pre-built database from assets ---
+const uint8_t *serialized_db_bytes = /* read from assets */;
+int64_t serialized_db_size = /* asset size in bytes */;
+
+ArAugmentedImageDatabase *image_db = NULL;
+ArStatus db_status = ArAugmentedImageDatabase_deserialize(session,
+    serialized_db_bytes, serialized_db_size, &image_db);
+if (db_status != AR_SUCCESS) {
+    // AR_ERROR_DATA_INVALID_FORMAT: file is corrupted or wrong version
+}
+
+// --- Runtime path: create an empty database and add images ---
+ArAugmentedImageDatabase *runtime_db = NULL;
+ArAugmentedImageDatabase_create(session, &runtime_db);
+
+// Add image with physical size (width in metres):
+// Physical size is critical for scale: without it, ARCore cannot determine
+// how far away the image is from the camera (monocular scale ambiguity).
+int32_t image_index = 0;
+ArStatus add_status = ArAugmentedImageDatabase_addImageWithPhysicalSize(session,
+    runtime_db,
+    "product_label",        // name (UTF-8 string, used for identification)
+    image_grayscale_pixels, // uint8_t* grayscale pixel data
+    image_width_px,         // int32_t
+    image_height_px,        // int32_t
+    image_width_px,         // row stride in bytes (for packed grayscale)
+    0.10f,                  // physical width in metres (here: 10 cm label)
+    &image_index);
+// image_index can be used later to identify which image was detected
+```
+
+### Configuring the session with the image database
+
+```c
+ArConfig_setAugmentedImageDatabase(session, config, image_db);
+ArSession_configure(session, config);
+ArAugmentedImageDatabase_destroy(image_db);
+```
+
+Only one database can be active per session. If you need to track images from multiple databases, merge them into a single database before session creation.
+
+### Detecting and tracking augmented images
+
+```c
+ArTrackableList *image_list = NULL;
+ArTrackableList_create(session, &image_list);
+ArSession_getAllTrackables(session, AR_TRACKABLE_AUGMENTED_IMAGE, image_list);
+
+int32_t image_count = 0;
+ArTrackableList_getSize(session, image_list, &image_count);
+
+for (int32_t i = 0; i < image_count; i++) {
+    ArTrackable *trackable = NULL;
+    ArTrackableList_acquireItem(session, image_list, i, &trackable);
+    ArAugmentedImage *image = ArAsAugmentedImage(trackable);
+
+    // Tracking method tells you how confident the pose is:
+    ArAugmentedImageTrackingMethod tracking_method;
+    ArAugmentedImage_getTrackingMethod(session, image, &tracking_method);
+    // AR_AUGMENTED_IMAGE_TRACKING_METHOD_NOT_TRACKING: image not detected this frame
+    // AR_AUGMENTED_IMAGE_TRACKING_METHOD_LAST_KNOWN_POSE: image left frame; pose is stale
+    // AR_AUGMENTED_IMAGE_TRACKING_METHOD_FULL_TRACKING: image visible and actively tracked
+
+    if (tracking_method == AR_AUGMENTED_IMAGE_TRACKING_METHOD_FULL_TRACKING) {
+        // Get pose of image centre in world space
+        ArPose *image_pose = NULL;
+        ArPose_create(session, NULL, &image_pose);
+        ArAugmentedImage_getCenterPose(session, image, image_pose);
+
+        // Get physical extents (metres):
+        float extent_x, extent_z;
+        ArAugmentedImage_getExtentX(session, image, &extent_x); // width in metres
+        ArAugmentedImage_getExtentZ(session, image, &extent_z); // height in metres
+        // Use extent_x and extent_z to scale your AR overlay to match the physical image
+
+        // Identify which database entry was detected:
+        int32_t index;
+        ArAugmentedImage_getIndex(session, image, &index);
+
+        const char *image_name = NULL;
+        ArAugmentedImage_acquireName(session, image, &image_name);
+        // image_name is the string passed to ArAugmentedImageDatabase_addImageWithPhysicalSize
+        // Must be released: AR_STRING_RELEASE(image_name)  // macro or ArString_release
+
+        ArPose_destroy(image_pose);
+    }
+
+    ArTrackable_release(trackable);
+}
+ArTrackableList_destroy(image_list);
+```
+
+### Tracking state transitions
+
+Augmented image tracking follows a three-state machine:
+
+```
+         image enters frame
+  NOT_TRACKING ──────────────────► FULL_TRACKING
+       ▲                                │
+       │   image lost for >N frames     │  image leaves frame
+       └────────────────────────────────┤  (briefly)
+                                        ▼
+                              LAST_KNOWN_POSE
+                                        │
+                              image lost permanently
+                                        ▼
+                                  NOT_TRACKING
+```
+
+`LAST_KNOWN_POSE` is the "coast" state: the image left the camera view momentarily, and ARCore retains the last valid pose so that anchored AR content does not snap to the origin. If the image re-enters the frame, it transitions back to `FULL_TRACKING`. If the image is not seen for a device-specific timeout, tracking stops and the trackable is removed.
+
+### Image quality and the arcoreimg tool
+
+Image quality directly affects detection speed and robustness. The `arcoreimg eval-min-image-score` command outputs a score from 0.0 to 1.0 for each candidate image:
+
+```bash
+arcoreimg eval-min-image-score --input_image_path=product_label.png
+# Output: min image score: 0.85 (→ acceptable for ARCore targeting)
+# Scores below 0.75 may result in unreliable detection
+```
+
+ARCore's image quality guidelines:
+- **Minimum 300×300 pixels** for robust detection.
+- **High contrast, rich texture**: images with smooth gradients, solid color regions, or repetitive patterns (tiled wallpaper, brick walls) score poorly because ARCore cannot extract distinct feature matches.
+- **Avoid glare and reflections**: glossy packaging or metallic substrates reduce effective contrast.
+- **Physical size accuracy matters**: providing an incorrect `physicalWidthInMeters` to `addImageWithPhysicalSize()` causes the AR overlay to scale incorrectly even when detection succeeds.
+- **Maximum images per database**: 1000 images per database; performance degrades gracefully but detection latency increases linearly with database size on CPU-based matching.
+
+### Placing 3D content at the image centre
+
+The most common use case — placing a 3D object at the centre of the detected image — uses `ArAugmentedImage_getCenterPose()` as the model matrix:
+
+```c
+float image_model_matrix[16];
+ArPose_getMatrix(session, image_pose, image_model_matrix);
+
+// Apply to your object's model transform:
+glUniformMatrix4fv(u_ModelMatrix, 1, GL_FALSE, image_model_matrix);
+// Combined MVP: projection × view × model
+```
+
+For objects that should sit "on top of" the image (floating above the printed surface), apply a translation along the +Y axis in the model's local frame before multiplying by the image pose matrix.
+
+[Source: ARCore Augmented Images](https://developers.google.com/ar/develop/c/augmented-images), [arcoreimg tool](https://developers.google.com/ar/develop/augmented-images/arcoreimg)
+
+---
+
+## 5c. Hand Tracking on ARCore Phones
+
+This section addresses a frequent source of confusion: **ARCore on phones does not have a built-in hand tracking API as of mid-2026**. Understanding which path provides hand pose data — and at what cost — is essential for developers building gesture-driven phone AR applications.
+
+### The two hand-tracking paths
+
+**Path 1 — Android XR headsets (OpenXR)**
+
+On Android XR dedicated headsets (e.g., Samsung Galaxy XR / Project Moohan), hand tracking is a first-class platform feature implemented via the OpenXR `XR_EXT_hand_tracking` extension:
+
+```c
+// OpenXR hand tracking on Android XR (NOT available on phones):
+XrHandTrackerCreateInfoEXT create_info = {
+    .type  = XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT,
+    .hand  = XR_HAND_LEFT_EXT,
+    .handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT,  // 26 joints
+};
+XrHandTrackerEXT hand_tracker;
+xrCreateHandTrackerEXT(xr_session, &create_info, &hand_tracker);
+
+// Per frame:
+XrHandJointLocationsEXT joint_locations = {
+    .type       = XR_TYPE_HAND_JOINT_LOCATIONS_EXT,
+    .jointCount = XR_HAND_JOINT_COUNT_EXT,  // 26
+    .jointLocations = joint_location_array,
+};
+XrHandJointsLocateInfoEXT locate_info = {
+    .type      = XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT,
+    .baseSpace = app_space,
+    .time      = predicted_display_time,
+};
+xrLocateHandJointsEXT(hand_tracker, &locate_info, &joint_locations);
+```
+
+The 26 joints follow the `XR_HAND_JOINT_*` enumeration: wrist, palm, 4 joints per finger (metacarpal, proximal, intermediate, distal phalanges), and the thumb (3 joints + metacarpal). This path is covered in detail in §9 (OpenXR on Android and Android XR). It is **not available** on phone ARCore sessions — `xrCreateHandTrackerEXT` requires an Android XR runtime, not the ARCore phone loader.
+
+**Path 2 — Phone ARCore with MediaPipe HandLandmarker**
+
+On standard Android phones, hand pose estimation requires [MediaPipe HandLandmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker) — a separate on-device ML task that delivers **21 landmark keypoints per hand** in normalized image coordinates and, optionally, in metric world coordinates. MediaPipe HandLandmarker is not part of ARCore; it is distributed as a Maven artifact (`com.google.mediapipe:tasks-vision`) from the Google AI Edge (formerly MediaPipe) SDK.
+
+```kotlin
+// Kotlin — MediaPipe HandLandmarker integration with ARCore camera frames
+
+// Initialization (once):
+val options = HandLandmarkerOptions.builder()
+    .setBaseOptions(BaseOptions.builder()
+        .setModelAssetPath("hand_landmarker.task")
+        .setDelegate(Delegate.GPU)  // GPU delegate for ~8–15 ms inference
+        .build())
+    .setNumHands(2)
+    .setMinHandDetectionConfidence(0.5f)
+    .setMinHandPresenceConfidence(0.5f)
+    .setMinTrackingConfidence(0.5f)
+    .setRunningMode(RunningMode.LIVE_STREAM)
+    .setResultListener { result, _ -> processHandResult(result) }
+    .build()
+val handLandmarker = HandLandmarker.createFromOptions(context, options)
+
+// Per ARCore frame — feed the CPU camera image to MediaPipe:
+val arImage: ArImage = frame.acquireCameraImage()
+val bitmap = arImage.toBitmap()  // conversion utility; see ARCore Java samples
+val mpImage = BitmapImageBuilder(bitmap).build()
+handLandmarker.detectAsync(mpImage,
+    frame.timestamp.nanoseconds / 1_000L)  // timestamp in microseconds
+arImage.close()
+```
+
+> **Note:** `ArImage.toBitmap()` is not part of the ARCore Java SDK — it is a convenience method that must be implemented by the app using `android.media.ImageReader` conventions. The `ArImage` API is analogous to `android.media.Image`; call `ArImage_getPlaneData()` in C or access `Image.getPlanes()` in Java to retrieve the YCbCr planes, then convert to ARGB via `YuvToArgbConverter` or a similar utility.
+
+### World-space projection of MediaPipe landmarks
+
+MediaPipe HandLandmarker returns landmark coordinates in two forms:
+- **Normalised image coordinates** `(x, y)` in [0, 1] relative to the camera frame.
+- **World coordinates** `(x, y, z)` in metres, with the coordinate origin at the wrist landmark.
+
+To place an AR anchor at a detected hand landmark's position in the physical world, project from 2D image coordinates to a 3D ray using ARCore's camera matrices and intersect with a detected ARCore plane:
+
+```c
+// C — unproject a MediaPipe 2D landmark to an ARCore hit-test ray
+float screen_x = landmark_x * camera_width;   // normalised → pixel
+float screen_y = landmark_y * camera_height;
+
+// Hit-test ARCore planes at the landmark's screen position:
+ArHitResultList *hits = NULL;
+ArHitResultList_create(session, &hits);
+ArFrame_hitTest(session, frame, screen_x, screen_y, hits);
+
+int32_t hit_count = 0;
+ArHitResultList_getSize(session, hits, &hit_count);
+if (hit_count > 0) {
+    ArHitResult *hit = NULL;
+    ArHitResultList_getItem(session, hits, 0, &hit);
+    ArAnchor *hand_anchor = NULL;
+    ArHitResult_acquireNewAnchor(session, hit, &hand_anchor);
+    // hand_anchor is now world-locked to the surface beneath the detected hand
+    ArHitResult_destroy(hit);
+}
+ArHitResultList_destroy(hits);
+```
+
+For world-anchored hand tracking without a plane (e.g., mid-air gestures), use MediaPipe's world-coordinate output directly and transform via `ArCamera_getViewMatrix()` + `ArCamera_getProjectionMatrix()` to convert from camera space to world space.
+
+### Gesture recognition with MediaPipe GestureRecognizer
+
+MediaPipe's `GestureRecognizer` task classifies hand poses into 7 predefined gesture categories from the 21-landmark output, running as a post-processing step with negligible additional latency:
+
+| Gesture category | CATEGORY_NAME | Typical AR use |
+|---|---|---|
+| Closed fist | `CLOSED_FIST` | "Grab" interaction |
+| Open palm | `OPEN_PALM` | "Stop" / dismiss |
+| Pointing up (index finger) | `POINTING_UP` | Ray-cast / select |
+| Thumb down | `THUMB_DOWN` | Negative feedback |
+| Thumb up | `THUMB_UP` | Positive feedback / confirm |
+| Victory (V sign) | `VICTORY` | AR photo trigger |
+| ILoveYou (🤟) | `ILOVE_YOU` | Custom shortcut |
+
+```kotlin
+// GestureRecognizer Kotlin result processing:
+fun processHandResult(result: HandLandmarkerResult) {
+    val gestures = result.gestures()  // List<List<Category>>
+    for (handGestures in gestures) {
+        val topGesture = handGestures.maxByOrNull { it.score() }
+        when (topGesture?.categoryName()) {
+            "Closed_Fist" -> onGrabGesture()
+            "Pointing_Up" -> onRaycastGesture()
+            "Thumb_Up"    -> onConfirmGesture()
+            else -> { /* ignore */ }
+        }
+    }
+}
+```
+
+### Latency budget for phone AR hand interaction
+
+MediaPipe HandLandmarker with GPU delegate adds approximately 8–15 ms inference latency on Snapdragon 8 Gen 2 (mid-2026 flagship SoC), on top of:
+
+- ARCore `ArSession_update()`: ~2–5 ms (tracking thread already running on separate core)
+- Camera frame delivery: ~33 ms inter-frame at 30 fps
+- `ArFrame_acquireCameraImage()` to CPU: ~1–2 ms (memory copy from camera buffer)
+- YUV-to-ARGB conversion for MediaPipe: ~2–4 ms
+
+Total pipeline latency from real-world gesture to AR response: approximately **50–65 ms** at 30 fps. This is sufficient for discrete gesture commands (tap, grab, confirm) but too slow for continuous direct manipulation (finger-dragging an object in real-time). For low-latency direct manipulation, the application should interpolate between detected poses using IMU data from ARCore's `ArCamera_getPose()` delta between frames.
+
+[Source: MediaPipe Hand Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker), [MediaPipe GestureRecognizer](https://ai.google.dev/edge/mediapipe/solutions/vision/gesture_recognizer), [ARCore + MediaPipe integration guide](https://developers.google.com/ar/develop/machine-learning)
 
 ---
 
@@ -929,6 +1727,212 @@ Passthrough (the see-through camera feed composited with virtual content) on And
 - Or platform-native Android XR passthrough APIs via `androidx.xr.runtime`
 
 The passthrough layer is inserted below the application's swapchain images in the compositor stack, analogous to how ARCore's `GL_TEXTURE_EXTERNAL_OES` background works on phones, but composited by the headset's dedicated display pipeline rather than a phone's SurfaceFlinger.
+
+---
+
+## 9a. WebXR Device API: Browser-Based AR on Android
+
+The [WebXR Device API](https://www.w3.org/TR/webxr/) is a W3C specification that allows web applications to initiate immersive AR and VR sessions directly in the browser, without requiring a native app installation. On Android, Chrome implements WebXR AR sessions using ARCore as the underlying runtime — making the browser a first-class ARCore host. This section targets **browser and web platform engineers** building AR experiences for the open web.
+
+### Architecture: Chrome as an ARCore host
+
+When a web page requests an `immersive-ar` WebXR session, Chrome on Android:
+1. Creates an `ArSession` internally, analogous to a native app calling `ArSession_create()`.
+2. Maps WebXR frame data (`XRFrame`, `XRViewerPose`) onto ARCore's `ArFrame` and `ArCamera_getPose()` equivalents.
+3. Exposes WebXR optional features (`hit-test`, `plane-detection`, `depth-sensing`, etc.) as thin wrappers over the corresponding ARCore C API calls.
+4. Renders the camera background via the same `GL_TEXTURE_EXTERNAL_OES` / `EGLImageKHR` path (§4), composited by Chrome's GPU process.
+
+The WebXR implementation lives in Chrome's Blink rendering engine at `//third_party/blink/renderer/modules/xr/`, with the ARCore session created in the browser process at `//chrome/browser/vr/`. The two halves communicate via a `XRDevice` [Mojo IPC interface](https://source.chromium.org/chromium/chromium/src/+/main:device/vr/), keeping the ARCore session (and camera access) sandboxed from untrusted web content.
+
+### Session request and feature declaration
+
+```javascript
+// Browser JavaScript — check WebXR AR support and request a session:
+async function startAR() {
+    if (!navigator.xr) {
+        console.error('WebXR not available in this browser');
+        return;
+    }
+
+    const supported = await navigator.xr.isSessionSupported('immersive-ar');
+    if (!supported) {
+        console.error('immersive-ar not supported on this device/browser');
+        return;
+    }
+
+    // Request the session with required and optional features:
+    const session = await navigator.xr.requestSession('immersive-ar', {
+        requiredFeatures: ['hit-test'],
+        optionalFeatures: [
+            'dom-overlay',         // overlay HTML elements on camera feed
+            'plane-detection',     // expose ArPlane as XRPlane objects
+            'depth-sensing',       // expose ArDepthImage as XRDepthInformation
+            'light-estimation',    // expose ArLightEstimate as XRLightEstimate
+            'anchors',             // expose ArAnchor as XRAnchor
+        ],
+        domOverlay: { root: document.getElementById('ar-overlay') },
+    });
+
+    // Set up WebGL rendering context for AR:
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl2', { xrCompatible: true });
+    await session.updateRenderState({
+        baseLayer: new XRWebGLLayer(session, gl),
+    });
+
+    // Start the frame loop:
+    const refSpace = await session.requestReferenceSpace('local');
+    session.requestAnimationFrame((time, frame) => renderFrame(time, frame, refSpace, session, gl));
+}
+```
+
+The `requiredFeatures` array causes `requestSession()` to reject if any listed feature is unavailable — equivalent to failing `ArSession_configure()` when a required mode is unsupported. `optionalFeatures` are enabled if available and silently ignored otherwise.
+
+### The WebXR frame loop
+
+```javascript
+function renderFrame(time, frame, refSpace, session, gl) {
+    session.requestAnimationFrame((t, f) => renderFrame(t, f, refSpace, session, gl));
+
+    // Get viewer pose — equivalent to ArCamera_getPose():
+    const pose = frame.getViewerPose(refSpace);
+    if (!pose) return;  // tracking lost
+
+    const glLayer = session.renderState.baseLayer;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, glLayer.framebuffer);
+
+    for (const view of pose.views) {
+        const viewport = glLayer.getViewport(view);
+        gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+
+        // view.transform.matrix → column-major Float32Array view matrix (inverse)
+        // view.projectionMatrix → column-major Float32Array projection matrix
+        // Equivalent to ArCamera_getViewMatrix() + ArCamera_getProjectionMatrix()
+
+        renderVirtualContent(gl, view.projectionMatrix,
+            view.transform.inverse.matrix);
+    }
+}
+```
+
+### Hit testing
+
+The `hit-test` feature exposes ARCore's plane hit-test (`ArFrame_hitTest()`) via the `XRHitTestSource` API:
+
+```javascript
+// Setup hit-test source (once after session start):
+const hitTestSource = await session.requestHitTestSource({
+    space: await session.requestReferenceSpace('viewer'),
+});
+
+// Per-frame — get hit results:
+function renderFrame(time, frame, refSpace, session, gl) {
+    const hitResults = frame.getHitTestResults(hitTestSource);
+    if (hitResults.length > 0) {
+        const hit = hitResults[0];
+        const hitPose = hit.getPose(refSpace);
+        if (hitPose) {
+            // hitPose.transform.matrix → 4x4 world-space transform at hit point
+            // Equivalent to ArHitResult pose via ArHitResult_getHitPose()
+            placeReticle(hitPose.transform.matrix);
+        }
+    }
+    // ... rest of render ...
+}
+```
+
+### Feature support matrix on Android Chrome
+
+The following table documents which WebXR AR features are backed by ARCore on Android Chrome (as of Chrome 126 / mid-2026). WebXR feature availability is separate from ARCore feature availability — Chrome may not expose every ARCore capability through the WebXR surface.
+
+| WebXR feature string | ARCore backing | Chrome Android support |
+|---|---|---|
+| `hit-test` | `ArFrame_hitTest()` | Chrome 81+ (stable) |
+| `dom-overlay` | HTML elements composited over camera | Chrome 83+ (stable) |
+| `plane-detection` | `ArPlane` → `XRPlane` | Chrome 102+ (stable) |
+| `anchors` | `ArAnchor` → `XRAnchor` | Chrome 85+ (stable) |
+| `light-estimation` | `ArLightEstimate` → `XRLightEstimate` | Chrome 90+ (stable) |
+| `depth-sensing` | `ArFrame_acquireDepthImage16Bits()` → `XRDepthInformation` | Chrome 90+ (behind flag; not production-stable) |
+| `camera-access` | Raw camera pixel access | **Not exposed** (privacy) |
+| Geospatial / VPS | `ArEarth` | **Not exposed** in WebXR |
+| Cloud Anchors | `ArSession_hostCloudAnchorAsync()` | **Not exposed** in WebXR |
+| Augmented Faces | `ArAugmentedFace` | **Not exposed** in WebXR |
+| Augmented Images | `ArAugmentedImageDatabase` | **Not exposed** in WebXR |
+
+The privacy-motivated exclusions are notable:
+- **No raw camera access**: `ArFrame_acquireCameraImage()` has no WebXR equivalent. Web pages cannot obtain raw camera pixels via WebXR — they see only the composited AR view. This prevents web-based surveillance and preserves the "web page should not capture the camera" expectation.
+- **No Geospatial/VPS**: exposing precise GPS-tied positioning to arbitrary websites raises location privacy concerns beyond what the Geolocation API already addresses. VPS is excluded from the WebXR surface.
+- **No face tracking**: Face mesh data from `ArAugmentedFace` is considered biometric data; exposing it to web origins without OS-level consent UI is not permitted.
+
+### Plane detection via WebXR
+
+When `plane-detection` is granted, `XRPlane` objects are available via `frame.detectedPlanes`:
+
+```javascript
+// WebXR plane detection — equivalent to ArSession_getAllTrackables(AR_TRACKABLE_PLANE):
+if (frame.detectedPlanes) {
+    for (const plane of frame.detectedPlanes) {
+        const planePose = plane.getPose(refSpace);
+        if (planePose) {
+            // plane.orientation: 'horizontal' | 'vertical'
+            // plane.polygon: Float32Array of (x, z) vertex pairs in plane-local space
+            // Equivalent to ArPlane_getPolygon() and ArPlane_getType()
+            renderPlaneOutline(planePose.transform.matrix,
+                plane.polygon, plane.orientation);
+        }
+    }
+}
+```
+
+### Depth sensing via WebXR
+
+When `depth-sensing` is granted (behind `chrome://flags/#webxr-depth-api`), `XRDepthInformation` provides per-pixel depth data backed by ARCore's depth image:
+
+```javascript
+// Depth sensing (non-production; flag required as of mid-2026):
+const depthInfo = frame.getDepthInformation(pose.views[0]);
+if (depthInfo) {
+    // depthInfo.data: Uint16Array of raw depth values (millimetres, same encoding
+    // as ArFrame_acquireDepthImage16Bits() — uint16, 0 = invalid)
+    // depthInfo.width, depthInfo.height: depth image dimensions
+    // depthInfo.normDepthBufferFromNormView: 4x4 matrix mapping view-space UV
+    // to depth-buffer UV (accounts for depth/camera resolution mismatch)
+    uploadDepthTexture(gl, depthInfo.data, depthInfo.width, depthInfo.height);
+}
+```
+
+### Light estimation via WebXR
+
+```javascript
+// XRLightEstimate backed by ArLightEstimate:
+const lightEstimate = frame.getLightEstimate(session.requestLightProbe());
+if (lightEstimate) {
+    // lightEstimate.primaryLightDirection: Float32Array[3] → ArLightEstimate_getEnvironmentalHdrMainLightDirection()
+    // lightEstimate.primaryLightIntensity: Float32Array[3] RGB → getEnvironmentalHdrMainLightIntensity()
+    // lightEstimate.sphericalHarmonicsCoefficients: Float32Array[27] L2 SH
+    //   → ArLightEstimate_getEnvironmentalHdrAmbientSphericalHarmonics()
+    updateSceneLighting(lightEstimate);
+}
+```
+
+### Performance overhead vs native ARCore
+
+The WebXR layer introduces measurable overhead compared to native ARCore:
+
+- **JavaScript↔C++ bridge per frame**: Extracting pose matrices, hit-test results, and plane polygons via the Blink↔browser-process Mojo IPC adds approximately 2–5 ms per frame on a Snapdragon 8 Gen 2 device.
+- **WebGL vs Vulkan**: WebXR sessions use WebGL (GLES 3.0 via ANGLE's Vulkan backend on Android 10+; see Ch34 for ANGLE architecture). The ANGLE translation layer adds ~0.5–2 ms of GPU command translation overhead vs native Vulkan. WebGPU sessions (`immersive-ar` with WebGPU backing) are in development but not production-stable as of mid-2026.
+- **Single-process security model**: The AR session, Blink renderer, and GPU process are separate OS processes communicating via IPC — inherent overhead compared to a native NDK app where `ArSession_update()` and the render context share memory directly.
+
+For simple AR experiences (hit-test reticles, plane-anchored objects, basic light estimation), the WebXR path on modern Android hardware delivers smooth 30/60 fps at acceptable latency. For depth-occlusion, high-frequency hand gesture, or large scene semantic processing, native ARCore remains necessary.
+
+### WebXR AR samples and further resources
+
+- [Immersive Web Working Group samples](https://immersive-web.github.io/webxr-samples/) — interactive demos for hit-test, plane detection, light estimation, and anchors running live in Chrome
+- [WebXR spec](https://www.w3.org/TR/webxr/) — W3C Working Draft (Living Standard) including hit-test module
+- [Chrome WebXR status](https://developer.chrome.com/docs/web-platform/webxr) — current feature flags and stable/origin-trial status per Chrome version
+- [ARCore for the Web developer guide](https://developers.google.com/ar/develop/webxr) — Google's guide to building ARCore-backed WebXR experiences on Android Chrome
+
+[Source: W3C WebXR Device API](https://www.w3.org/TR/webxr/), [Chrome WebXR](https://developer.chrome.com/docs/web-platform/webxr), [ARCore WebXR](https://developers.google.com/ar/develop/webxr)
 
 ---
 
