@@ -21,6 +21,7 @@
    - [5.10 NVIDIA and Android: Why There Is No NVIDIA Mobile AI Stack](#510-nvidia-and-android-why-there-is-no-nvidia-mobile-ai-stack)
 6. [Model Conversion and Quantization Workflow](#6-model-conversion-and-quantization-workflow)
 7. [MediaPipe Framework Architecture](#7-mediapipe-framework-architecture)
+   - [7.7 MediaPipe–LiteRT Integration Architecture](#77-mediapipelitert-integration-architecture)
 8. [MediaPipe Tasks API](#8-mediapipe-tasks-api)
    - [8.5 Audio Processing with MediaPipe Tasks](#85-audio-processing-with-mediapipe-tasks)
 9. [MediaPipe Model Maker: Custom Task Training](#9-mediapipe-model-maker-custom-task-training)
@@ -1552,6 +1553,164 @@ MediaPipe Packet
 - `DefaultInputStreamHandler`: Synchronises packets across all input streams by timestamp. A calculator's `Process()` is called only when all inputs have a packet at the same timestamp. Appropriate for cameras + depth-sensor fusion.
 - `ImmediateInputStreamHandler`: Calls `Process()` whenever any new packet arrives on any input stream, without waiting for other streams. Appropriate for low-latency single-stream inference.
 - `FixedSizeInputStreamHandler`: Bounds queue depth to prevent backpressure accumulation during transient slowdowns.
+
+---
+
+### 7.7 MediaPipe–LiteRT Integration Architecture
+
+MediaPipe and LiteRT are not independent frameworks that happen to be used together — MediaPipe's inference layer is structurally built on top of LiteRT. This section traces the full integration path from `CalculatorGraph` to LiteRT delegate dispatch.
+
+#### 7.7.1 Layer Map
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Application / Tasks API                            │  (§8)
+│  ImageClassifier, ObjectDetector, HandLandmarker…   │
+├─────────────────────────────────────────────────────┤
+│  TaskRunner  (CalculatorGraph)                      │  (§7.1)
+│  pre-processing → TfLiteInferenceCalculator         │
+│                 → post-processing calculators       │
+├─────────────────────────────────────────────────────┤
+│  TfLiteInferenceCalculator                          │  ← integration point
+│  • loads .tflite via LiteRT Interpreter             │
+│  • selects delegate (GPU / CPU / NNAPI / QNN)       │
+│  • manages GPU context sharing with GlCalculatorHelper│
+├─────────────────────────────────────────────────────┤
+│  LiteRT  (libTensorFlowLite.so)                     │  (§2–§3)
+│  Interpreter → delegate dispatch → kernel execution │
+├──────────────────────┬──────────────────────────────┤
+│  GPU delegate        │  QNN delegate / XNNPack       │
+│  (GLES compute / Vk) │  (NPU / CPU SIMD)             │
+└──────────────────────┴──────────────────────────────┘
+```
+
+Every MediaPipe task that performs neural-network inference ultimately calls into `TfLiteInferenceCalculator`, which owns a `tflite::Interpreter` and its delegate. The calculator is the single seam between MediaPipe's graph scheduling world and LiteRT's tensor execution world.
+
+#### 7.7.2 TfLiteInferenceCalculator in Detail
+
+`TfLiteInferenceCalculator` is a MediaPipe calculator (`mediapipe/calculators/tflite/tflite_inference_calculator.cc`) that:
+
+1. **Loads the model** — accepts either a model path (from calculator options) or a pre-built `tflite::FlatBufferModel` passed in via a side packet, allowing model hot-swap without graph reconstruction.
+2. **Allocates tensors** — calls `interpreter->AllocateTensors()` once at `Open()`, not per frame.
+3. **Selects delegate** — reads `TfLiteInferenceCalculatorOptions.delegate` (CPU / GPU / NNAPI / XNNPACK) and calls `ModifyGraphWithDelegate()`. On Android the GPU delegate uses the EGL context established by `GlCalculatorHelper` (§7.4) so MediaPipe GL calculators and LiteRT share the same `EGLContext` — no texture readback required between the camera decoder and the inference input tensor.
+4. **Runs inference** — calls `interpreter->Invoke()` on the inference thread; the result tensors are wrapped in `TfLiteTensors` packets and pushed downstream.
+
+The calculator options proto:
+
+```proto
+// mediapipe/calculators/tflite/tflite_inference_calculator.proto
+message TfLiteInferenceCalculatorOptions {
+  string model_path = 1;
+  bool use_gpu = 2 [deprecated = true];   // replaced by delegate field
+  message Delegate {
+    message Gpu {
+      bool use_advanced_gpu_api = 1;       // uses GpuDelegate v2 API
+      bool use_gl_texture_buffer = 2;      // keep tensors on GPU as GL textures
+      bool allow_precision_loss = 3;       // FP16 on FP32 models
+      GpuBackend gpu_backend = 4;          // OPENGL / OPENCL / VULKAN
+    }
+    message Xnnpack { int32 num_threads = 1; }
+    message Nnapi   { string accelerator_name = 1; bool allow_fp16 = 2; }
+    message Qnn     { string dsp_library_path = 1; }
+    oneof delegate { Gpu gpu = 1; Xnnpack xnnpack = 2; Nnapi nnapi = 3; Qnn qnn = 4; }
+  }
+  Delegate delegate = 9;
+  int32 num_threads = 4;
+}
+```
+
+[Source: MediaPipe tflite_inference_calculator.proto](https://github.com/google-ai-edge/mediapipe/blob/master/mediapipe/calculators/tflite/tflite_inference_calculator.proto)
+
+#### 7.7.3 Shared GPU Context and Zero-Copy Tensor Path
+
+The most important MediaPipe–LiteRT integration detail is the **shared EGL context**. Without it, a camera frame flowing through a GL-based MediaPipe pipeline would need to be read back to CPU memory before being fed into the LiteRT GPU delegate — a round-trip that costs 3–8 ms on a 720p frame.
+
+MediaPipe avoids this by creating the LiteRT GPU delegate with the *same* `EGLContext` and `EGLDisplay` that `GlCalculatorHelper` uses for all other GL calculators:
+
+```cpp
+// Simplified from mediapipe/calculators/tflite/tflite_inference_calculator.cc
+TfLiteGpuDelegateOptionsV2 options = TfLiteGpuDelegateOptionsV2Default();
+options.egl_display = egl_display_;   // shared with GlCalculatorHelper
+options.egl_context = egl_context_;  // same context → shared texture namespace
+options.inference_preference =
+    TFLITE_GPU_INFERENCE_PREFERENCE_SUSTAINED_SPEED;
+options.inference_priority1 =
+    TFLITE_GPU_INFERENCE_PRIORITY_MIN_LATENCY;
+
+auto* delegate = TfLiteGpuDelegateV2Create(&options);
+interpreter_->ModifyGraphWithDelegate(delegate);
+```
+
+With the shared context, an upstream `GlTextureFrameCalculator` can produce a GL texture handle. The `TfLiteInferenceCalculator` binds that texture directly to the LiteRT input tensor's `GlBuffer` via `glBindImageTexture` — no CPU round-trip. The inference output tensor is similarly a GL texture that downstream landmark or detection calculators consume without leaving the GPU. [Source: TfLiteGpuDelegateOptionsV2](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/lite/delegates/gpu/delegate.h)
+
+#### 7.7.4 `BaseOptions.delegate` in the Tasks API
+
+The Tasks API (§8) exposes delegate selection via `BaseOptions`:
+
+```kotlin
+val baseOptions = BaseOptions.builder()
+    .setModelAssetPath("hand_landmarker.task")
+    .setDelegate(Delegate.GPU)   // maps to TfLiteInferenceCalculator GPU delegate
+    .build()
+```
+
+`Delegate.GPU` is a thin wrapper that sets the `TfLiteInferenceCalculatorOptions.Delegate.Gpu` field in the calculator graph spec embedded in the `.task` bundle. The `.task` file format (used by all Tasks API models) is a ZIP archive containing the `.tflite` model plus a `metadata.json` describing the graph configuration, including which calculators wrap the model and what pre/post-processing the task requires. Extracting a `.task` file:
+
+```bash
+unzip -l hand_landmarker.task
+# Archive:  hand_landmarker.task
+#   hand_landmarker.tflite
+#   hand_landmark_lite.tflite   (second model for full pipeline)
+#   metadata.json
+#   palm_detection_lite.tflite
+```
+
+The Tasks runtime reads `metadata.json`, reconstructs the `CalculatorGraph` proto, substitutes the model bytes, and creates the inference calculator — all transparently to the application. [Source: MediaPipe Tasks model cards](https://developers.google.com/mediapipe/solutions/vision/hand_landmarker)
+
+#### 7.7.5 Model Metadata: The Contract Between LiteRT and Tasks
+
+LiteRT `.tflite` models used by MediaPipe Tasks embed **TFLite Metadata** — a FlatBuffer appended to the model file that describes:
+
+- Input tensor normalization (`mean`, `std`)
+- Input/output tensor names and semantics (e.g., `image` input, `Identity` output)
+- Label map file (embedded as an associated file)
+- Model card and version
+
+The Tasks API parser (`MediaPipeTasksMetadataParser`) reads this metadata to configure the pre-processing calculators (resizing, normalization) and post-processing calculators (dequantization, sigmoid/softmax, label lookup) automatically. A raw `.tflite` without metadata can still be run via `TfLiteInferenceCalculator` directly, but it requires explicit graph configuration — the Tasks API refuses to load it.
+
+Model Maker (§9) populates this metadata automatically as part of `model.export()`, which is why Model Maker output is directly compatible with `ImageClassifier.createFromFile()` without manual metadata authoring.
+
+```python
+# Model Maker populates metadata so Tasks API can load it
+model = image_classifier.ImageClassifier.create(
+    train_data=train_data, validation_data=validation_data,
+    options=image_classifier.ImageClassifierOptions(
+        supported_model=image_classifier.SupportedModels.MOBILENET_V2,
+        hparams=image_classifier.HParams(epochs=10)
+    )
+)
+model.export(export_dir="/tmp/classifier/")
+# → /tmp/classifier/classifier.tflite  (with embedded metadata)
+# → /tmp/classifier/labels.txt         (also embedded in .tflite)
+```
+
+[Source: LiteRT metadata schema](https://github.com/google-ai-edge/mediapipe/blob/master/mediapipe/tasks/metadata/metadata_schema.fbs)
+
+#### 7.7.6 CPU/GPU Dispatch Decision
+
+When `Delegate.GPU` is requested, the Tasks runtime checks at model-load time whether the GPU delegate can claim *all* model operators. If any operator is unsupported by the GPU delegate, the runtime either:
+
+- **Falls back to CPU entirely** (`TFLITE_GPU_INFERENCE_PRIORITY_AUTO`) — safest, default
+- **Partitions the graph** — GPU handles the supported subgraph, CPU handles the remainder; requires explicit `allow_precision_loss = false` to avoid silent fp16 rounding on the CPU partition
+
+The partitioning decision is logged to Logcat:
+
+```
+TfLiteGpuDelegate: Delegate supports 143 of 147 nodes.
+TfLiteGpuDelegate: 4 node(s) will run on CPU.
+```
+
+The 4 CPU-resident nodes are typically custom ops, tf.string ops, or ops using int64 tensors (unsupported on most GPU delegates). Profiling with `benchmark_model` (§12 of this chapter, §6.7 in the conversion workflow) reveals which ops are causing fallback and whether replacing them with GPU-compatible equivalents (e.g., replacing `tf.cast(x, tf.int64)` with `tf.cast(x, tf.int32)`) eliminates the CPU partition.
 
 ---
 
