@@ -4,7 +4,9 @@
 
 ## Table of Contents
 
+0. [Jetpack and AndroidX: The Modern Android Library Ecosystem](#0-jetpack-and-androidx-the-modern-android-library-ecosystem)
 1. [ART and Dalvik: Where They Diverge from the JVM](#1-art-and-dalvik-where-they-diverge-from-the-jvm)
+   - 1.0 [Historical Background: Dalvik and the Road to ART](#10-historical-background-dalvik-and-the-road-to-art)
    - 1.1 [DEX Bytecode: Register-Based vs Stack-Based](#11-dex-bytecode-register-based-vs-stack-based)
    - 1.2 [dex2oat and the Compilation Tier Ladder](#12-dex2oat-and-the-compilation-tier-ladder)
    - 1.3 [Profile-Guided Compilation and Cloud Profiles](#13-profile-guided-compilation-and-cloud-profiles)
@@ -42,9 +44,91 @@
 
 ---
 
+## 0. Jetpack and AndroidX: The Modern Android Library Ecosystem
+
+Before examining the runtime internals, it is worth orienting the reader on the library layer that application developers interact with most directly: **Jetpack** and **AndroidX**. Understanding this layer clarifies why the chapter references libraries like `androidx.games.activity` (GameActivity), `androidx.camera.core` (CameraX), and AGDK Prefab AARs — and how they relate to the platform APIs and runtime described in §§1–3.
+
+### 0.1 The Support Library Problem
+
+Android's early extensibility mechanism was the **Android Support Library** — a collection of backport and utility classes that Google shipped outside the OS update cycle. By 2017 the Support Library had accumulated version confusion (`v4`, `v7`, `v13`, `v14`... `28.0.x`), overlapping APIs, and a naming scheme that no longer reflected its scope. Apps routinely depended on incompatible revisions of the same library pulled in by different dependencies.
+
+### 0.2 AndroidX and the Jetpack Relaunch
+
+At Google I/O 2018, Google announced **Jetpack** — an umbrella brand for all first-party Android libraries going forward — alongside **AndroidX**, a new Maven coordinate and package namespace (`androidx.*`) that replaced the entire `android.support.*` hierarchy. The migration was a hard cut: Support Library 28.x was the final release; all subsequent development moved to AndroidX. The `androidx.*` namespace is semantically versioned independently of the Android OS, allowing libraries to ship updates to devices running Android 5.0+ without waiting for OS releases. [Source: Android developers blog — Hello World, AndroidX](https://android-developers.googleblog.com/2018/05/hello-world-androidx.html)
+
+The migration tool (`./gradlew migrateToAndroidX`) rewrites import statements and manifest entries in existing projects. Third-party libraries that depend on Support Library are mapped to their AndroidX equivalents via the `jetifier` Gradle plugin, which rewrites bytecode at build time — a temporary bridge that Google has signalled will eventually be retired as the ecosystem fully migrates.
+
+### 0.3 Jetpack Libraries Relevant to Graphics and NDK Development
+
+Jetpack covers a broad surface. The libraries most directly relevant to the topics in this chapter are:
+
+| Library | AndroidX coordinates | Relevance |
+|---|---|---|
+| **GameActivity** | `androidx.games:games-activity` | Replaces NativeActivity for NDK apps (§2.6); ships as Prefab AAR |
+| **Games Performance** (Swappy) | `androidx.games:games-frame-pacing` | Vulkan/GLES frame pacing (ch161 §8) |
+| **Games Controller** (Paddleboat) | `androidx.games:games-controller` | Gamepad input in NDK (ch161 §4) |
+| **Games Memory Advice** | `androidx.games:games-memory-advice` | On-device memory pressure signals (ch161 §10) |
+| **CameraX** | `androidx.camera:camera-core` | Lifecycle-aware Camera2 wrapper; used with MediaPipe (ch191 §10) |
+| **Lifecycle** | `androidx.lifecycle:lifecycle-runtime-ktx` | ViewModel + LiveData; governs `ArSession` pause/resume (ch87 §3) |
+| **Compose** | `androidx.compose.ui:ui` | Declarative UI compiled to standard DEX, runs on ART |
+| **Core KTX** | `androidx.core:core-ktx` | Kotlin extension functions over framework APIs |
+| **DataStore** | `androidx.datastore:datastore-preferences` | Async preferences replacement for SharedPreferences |
+| **WorkManager** | `androidx.work:work-runtime-ktx` | Background tasks; used for deferred ML model updates (ch191 §15) |
+
+**AGDK libraries as Jetpack AARs.** The Android Game Development Kit libraries (GameActivity, Swappy, Paddleboat, Oboe, Memory Advice) are distributed as Jetpack AARs containing Prefab packages — a mechanism that packages pre-built native `.so` files and headers inside an `.aar` for consumption by `find_package()` in CMake (§2.8). This makes them first-class Jetpack citizens even though their primary interface is C/C++, not Kotlin.
+
+### 0.4 Jetpack Compose and ART
+
+Jetpack Compose compiles Kotlin `@Composable` functions to ordinary DEX bytecode — there is no separate runtime or interpreter. The Compose compiler plugin (a Kotlin compiler plugin, not a separate tool) transforms `@Composable` annotated functions at compile time, inserting `Composer` parameter threading and group tracking calls. At runtime, Compose's diffing and recomposition logic runs entirely inside ART, subject to the same GC, JIT, and compilation tier mechanics described in §1. The `remember {}` primitive maps directly to a slot table maintained in the composition's node tree — not to any platform-specific memory mechanism.
+
+### 0.5 The Release Cadence Advantage
+
+Because AndroidX libraries ship on Maven independent of Android OS releases, a library like GameActivity can add a new API for Android 14 features and ship it to apps running on Android 8.0+ the same week. Apps consuming Jetpack libraries via `implementation("androidx.games:games-activity:3.0.0")` get bugfixes and features on the Google Maven cadence (~monthly), not the Android OS release cadence (~annual). This decoupling is Jetpack's primary engineering value proposition over directly calling `android.*` platform APIs.
+
+[Source: Jetpack release notes](https://developer.android.com/jetpack/androidx/releases)
+
+---
+
 ## 1. ART and Dalvik: Where They Diverge from the JVM
 
 Android Runtime (ART) is not a JVM. It shares Java syntax and Java's standard library API surface but diverges at every level of implementation: bytecode format, compilation model, garbage collector, bootstrap strategy, and interpreter architecture. Understanding these divergences matters directly for graphics developers: the GC model explains why `@CriticalNative` must be short, the compilation tier ladder explains warm-up jank, and the Zygote model explains the memory layout every Android process inherits.
+
+### 1.0 Historical Background: Dalvik and the Road to ART
+
+**Dalvik** was Android's original managed runtime, created by Dan Bornstein at Google and shipping with Android 1.0 in September 2008. The name comes from the fishing village of Dalvík in Iceland — Bornstein's family heritage. [Source: Wikipedia — Dalvik]
+
+Dalvik was designed around a hard constraint that no longer applies to modern Android: devices with 256 MB of RAM running many apps simultaneously, with no swap space. Three design decisions followed directly from this constraint:
+
+1. **DEX consolidation**: where the JVM compiles each `.java` file to a separate `.class` file, the Android build toolchain (`dx`, later `d8`) compiles all of an app's classes into a *single* `.dex` file. A single string pool and constant pool across the entire app reduces storage compared to the JVM's per-class constant pools — significant when flash storage was measured in hundreds of megabytes.
+2. **Register-based bytecode** (detailed in §1.1): fewer bytecode instructions per method means smaller `.dex` files and faster interpreter dispatch.
+3. **Zygote process**: a pre-warmed Android process (`/system/bin/app_process`) that `fork()`s new app processes, sharing read-only pages of the framework class libraries across all apps via copy-on-write. Described in §1.6.
+
+**Dalvik JIT (Android 2.2 Froyo, May 2010).** Dalvik's original interpreter was purely interpretive — every bytecode instruction dispatched through a switch table. Android 2.2 added a **trace-based JIT**: rather than compiling whole methods (as HotSpot does), Dalvik's JIT identified frequently-executed *traces* — linear sequences of bytecodes across method boundaries, including branches that turned out to be always-taken — and compiled those traces to native ARM code at runtime. This was faster than interpretation for hot paths but left cold code and complex control flow uncompiled. [Source: Dalvik JIT paper — Google I/O 2010]
+
+**Dalvik's GC: stop-the-world copying.** Dalvik's garbage collector was a concurrent mark-sweep with stop-the-world collection pauses of 50–200 ms. These pauses were the primary cause of the "Android is janky" perception during the 2.x/3.x era — a 16 ms frame budget at 60 fps is violated by a single GC pause. The 4.x era brought incremental GC improvements but the fundamental architecture remained.
+
+**ART preview (Android 4.4 KitKat, October 2013).** Google introduced ART as a developer-accessible option in KitKat, off by default. ART's defining architectural shift was **AOT (ahead-of-time) compilation**: `dex2oat` compiled the entire `.dex` file to an `.oat` file (an ELF shared object containing native ARM64 code) at **install time**. On first run, ART executed the pre-compiled native code directly with no JIT warm-up. The cost was a longer install time (~2–5× for large apps) and additional storage for the `.oat` file.
+
+**ART as default (Android 5.0 Lollipop, November 2014).** Dalvik was removed entirely. Every app ran under ART. The install-time AOT compilation made apps feel faster on first launch but increased install times and consumed storage — on devices with 8–16 GB flash, `.oat` files for all installed apps could consume 1–2 GB.
+
+**Hybrid JIT+AOT (Android 7.0 Nougat, August 2016).** Google reconsidered full AOT in response to storage and install-time complaints. Nougat introduced a **tiered hybrid system**: apps are installed without upfront `dex2oat`; a new JIT compiler (method-based, not trace-based) runs during execution and records which methods are hot into a **profile file** (`.prof`). A background `dex2oat` daemon runs when the device is idle/charging and AOT-compiles only the hot methods indicated by the profile. This model — profile-guided selective AOT — became the foundation of all subsequent ART versions and is described in depth in §§1.2 and 1.3.
+
+**Key milestones from Android 8.0 onward:**
+
+| Android version | Year | ART improvement |
+|---|---|---|
+| 8.0 Oreo | 2017 | Cloud profiles (§1.3); `dex2oat` speed improvements; Vdex (verified DEX) |
+| 9.0 Pie | 2018 | App startup improvements; generational GC experiments |
+| 10 | 2019 | Concurrent copying GC (concurrent moving phases); reduced GC pause time |
+| 11 | 2020 | ART APEX (ART updateable via Mainline without OS update) |
+| 12 | 2021 | `nterp` switch-dispatch interpreter (§1.7) replacing the old `mterp` |
+| 13 | 2022 | `userfaultfd`-based GC (§1.5); further GC pause reduction |
+| 14 | 2023 | ART fully Mainline-updateable; profile sharing improvements |
+| 15 | 2024 | Improved deoptimisation pipeline; Kotlin-specific JIT optimisations |
+
+**Dalvik's legacy.** The DEX bytecode format, the `.dex` consolidation, and the Zygote fork model were all Dalvik inventions that ART inherited intact. ART replaced Dalvik's runtime engine (interpreter, JIT, GC) while preserving its bytecode and process architecture. Developers writing pure Kotlin or Java today have no direct awareness of Dalvik — but the `.dex` file their app ships is a direct descendant of the format Bornstein designed in 2007.
+
+[Source: AOSP — ART and Dalvik](https://source.android.com/docs/core/runtime)
 
 ### 1.1 DEX Bytecode: Register-Based vs Stack-Based
 
