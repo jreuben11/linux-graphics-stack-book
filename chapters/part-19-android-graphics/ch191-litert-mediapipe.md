@@ -16,6 +16,8 @@
 5. [Model Formats and Quantisation](#5-model-formats-and-quantisation)
    - [5.6 ONNX: The Open Neural Network Exchange Format](#56-onnx-the-open-neural-network-exchange-format)
    - [5.7 ONNX Runtime Mobile on Android](#57-onnx-runtime-mobile-on-android)
+   - [5.8 ExecuTorch: PyTorch's Native Mobile Runtime](#58-executorch-pytorchs-native-mobile-runtime)
+   - [5.9 JAX and StableHLO: Export Path to LiteRT](#59-jax-and-stablehlo-export-path-to-litert)
 6. [Model Conversion and Quantization Workflow](#6-model-conversion-and-quantization-workflow)
 7. [MediaPipe Framework Architecture](#7-mediapipe-framework-architecture)
 8. [MediaPipe Tasks API](#8-mediapipe-tasks-api)
@@ -901,6 +903,300 @@ Dynamic quantisation compresses weight tensors to INT8 and dequantises them to F
 | ORT Mobile | `.onnx` / `.ort` | CPU / QNN EP | QNN EP (Snapdragon); NNAPI EP deprecated |
 | CoreML (iOS) | `.mlpackage` | ANE | N/A on Android |
 | OpenVINO Mobile | `.xml`/`.bin` | CPU / Intel NPU | LiteRT CompiledModel (Linux/x86) |
+
+---
+
+### 5.8 ExecuTorch: PyTorch's Native Mobile Runtime
+
+**ExecuTorch** is Meta's official on-device inference runtime for PyTorch models, announced at PyTorch Conference 2023 and shipped in production in WhatsApp and Instagram. It replaces the deprecated **PyTorch Mobile** (TorchScript-based, maintenance-only since 2023) with a fundamentally different architecture: rather than shipping a general interpreter, ExecuTorch compiles the model graph to a portable binary (`.pte`) containing the execution plan, constants, and operator kernels needed — nothing more. [Source: ExecuTorch documentation](https://pytorch.org/executorch/stable/)
+
+#### 5.8.1 The Export Pipeline
+
+The ExecuTorch export pipeline has three stages:
+
+```python
+import torch
+from executorch.exir import to_edge
+from torch.export import export
+
+# Stage 1: torch.export — capture the full computation graph
+model = MobileNetV3(pretrained=True).eval()
+example_input = (torch.randn(1, 3, 224, 224),)
+exported = export(model, example_input)
+
+# Stage 2: to_edge — lower to ExecuTorch's Edge IR (subset of ATen ops)
+edge_program = to_edge(exported)
+
+# Stage 3: to_executorch — partition for delegates, serialise to .pte
+et_program = edge_program.to_executorch()
+with open("mobilenet_v3.pte", "wb") as f:
+    f.write(et_program.buffer)
+```
+
+**Key design difference from TorchScript**: `torch.export.export()` performs *ahead-of-time* full-graph capture with symbolic shapes rather than tracing. It produces a strict `ExportedProgram` with no Python fallbacks, ensuring the resulting `.pte` contains only statically-resolved operators that the runtime can execute without an interpreter loop. [Source: torch.export documentation](https://pytorch.org/docs/stable/export.html)
+
+**Edge IR** is an ATen-dialect IR (a subset of ~180 core ATen operators) that sits below `torch.export`'s full ATen IR. Lowering to Edge IR eliminates training-only operators and resolves dtype/layout constraints that would be ambiguous on mobile hardware. [Source: ExecuTorch EXIR spec](https://pytorch.org/executorch/stable/ir-exir.html)
+
+#### 5.8.2 Android Integration
+
+ExecuTorch ships as an **Android AAR** available from Maven Central:
+
+```kotlin
+// build.gradle.kts (app)
+dependencies {
+    implementation("org.pytorch:executorch-android:0.4.0")
+    // Optional delegates
+    implementation("org.pytorch:executorch-android-xnnpack:0.4.0")
+    implementation("org.pytorch:executorch-android-vulkan:0.4.0")
+}
+```
+
+The runtime API is minimal by design — the execution plan is pre-computed in the `.pte`:
+
+```kotlin
+import org.pytorch.executorch.EValue
+import org.pytorch.executorch.Module
+import org.pytorch.executorch.Tensor
+
+val module = Module.load(assetFilePath(context, "mobilenet_v3.pte"))
+
+val inputData = FloatArray(1 * 3 * 224 * 224) { /* ... */ }
+val inputTensor = Tensor.fromBlob(inputData, longArrayOf(1, 3, 224, 224))
+
+val outputs: Array<EValue> = module.forward(EValue.from(inputTensor))
+val outputTensor = outputs[0].toTensor()
+val scores = outputTensor.dataAsFloatArray
+```
+
+The `Module.load()` call memory-maps the `.pte` — no deserialization copy — and the `forward()` call dispatches directly to the pre-planned execution sequence. Cold-start latency is substantially lower than ORT Mobile or LiteRT because there is no graph optimization pass at load time. [Source: ExecuTorch Android tutorial](https://pytorch.org/executorch/stable/demo-apps-android.html)
+
+#### 5.8.3 Delegate Backends
+
+ExecuTorch's partitioner-delegate architecture allows selective offload:
+
+| Delegate | Target | Notes |
+|---|---|---|
+| **XNNPACK** | CPU NEON/SVE | Default; Meta production path; covers most float/quant8 ops |
+| **Vulkan** | Adreno/Mali GPU | Compute shader backend; covers linear/conv/ReLU |
+| **QNN** | Snapdragon NPU | Qualcomm AI Engine Direct; requires Qualcomm SDK |
+| **CoreML** | Apple ANE (iOS only) | N/A on Android |
+| **Custom** | Any | Implement `BackendInterface` in C++ |
+
+The **XNNPACK delegate** is Meta's primary production backend for Android, covering the float32 and per-channel int8 operator set used in WhatsApp's ML features. The **Vulkan delegate** is newer and covers a subset of operators; for full coverage, operators not claimed by Vulkan fall back to the XNNPACK kernel.
+
+Partitioning is performed at export time:
+
+```python
+from executorch.backends.xnnpack.partition.xnnpack_partitioner import XnnpackPartitioner
+
+edge_program = to_edge(exported)
+# Partition ops that XNNPACK can handle; remainder stays on ATen CPU
+edge_program = edge_program.to_backend(XnnpackPartitioner())
+et_program = edge_program.to_executorch()
+```
+
+[Source: ExecuTorch XNNPACK backend](https://pytorch.org/executorch/stable/tutorial-xnnpack-delegate-lowering.html)
+
+#### 5.8.4 Quantization
+
+ExecuTorch uses **PyTorch 2.0 Export Quantization** (`torch.ao.quantization`) rather than LiteRT's post-training quantization API. The flow applies quantization at the `torch.export` stage:
+
+```python
+from torch.ao.quantization.quantize_pt2e import convert_pt2e, prepare_pt2e
+from torch.ao.quantization.quantizer.xnnpack_quantizer import (
+    XNNPACKQuantizer, get_symmetric_quantization_config
+)
+
+quantizer = XNNPACKQuantizer()
+quantizer.set_global(get_symmetric_quantization_config(is_per_channel=True))
+
+# Calibrate
+prepared = prepare_pt2e(exported, quantizer)
+for sample in calibration_data:
+    prepared(sample)
+
+# Convert to int8
+quantized = convert_pt2e(prepared)
+edge_program = to_edge(quantized)
+et_program = edge_program.to_executorch()
+```
+
+INT8 symmetric per-channel quantization (the XNNPACK default) typically achieves <1% accuracy loss on classification models. INT4 support is available via the `Int4WeightOnlyQuantizer` for LLM weight compression. [Source: ExecuTorch quantization tutorial](https://pytorch.org/executorch/stable/quantization-overview.html)
+
+#### 5.8.5 ExecuTorch vs LiteRT vs ORT Mobile
+
+| Factor | ExecuTorch | LiteRT | ORT Mobile |
+|---|---|---|---|
+| Native model origin | PyTorch | TensorFlow/Keras/JAX | PyTorch/HuggingFace |
+| Format | `.pte` | `.tflite` | `.onnx` / `.ort` |
+| Runtime size (AAR) | ~2–4 MB (modular) | ~1–2 MB | ~5–8 MB |
+| Cold-start overhead | Very low (pre-planned) | Low (load-time optimization) | Medium (graph optimization at load) |
+| GPU acceleration | Vulkan delegate (partial) | GPU delegate (full, GLES+Vulkan) | Vulkan EP (experimental) |
+| NPU acceleration | QNN delegate | QNN delegate, GPU delegate | QNN EP |
+| LLM support | `executorch-llm` (Llama 3) | LiteRT-LM | ORT GenAI |
+| Maintenance status | Active (Meta production) | Active (Google production) | Active (Microsoft) |
+| PyTorch ecosystem fit | Native | Requires ONNX or ai-edge-torch | Requires ONNX export |
+
+ExecuTorch is the correct choice when: (1) the model is trained in PyTorch and must remain on the PyTorch operator set without format conversion, (2) Meta-compatible licensing and tooling is acceptable, or (3) the team already uses `torch.compile` / `torch.export` in the training pipeline.
+
+---
+
+### 5.9 JAX and StableHLO: Export Path to LiteRT
+
+**JAX** (developed by Google DeepMind) is a NumPy-compatible array framework with XLA-based JIT compilation. Unlike PyTorch, JAX has no dedicated mobile inference runtime — instead, JAX models export to **StableHLO** (a stable subset of HLO/MHLO), which then converts to `.tflite` via the `ai-edge-torch` toolchain. [Source: JAX documentation](https://jax.readthedocs.io/en/latest/) [Source: StableHLO spec](https://openxla.org/stablehlo)
+
+#### 5.9.1 The StableHLO Ecosystem
+
+**StableHLO** is an open standard for ML computation defined by the OpenXLA project (Google, Meta, AMD, Nvidia, Intel). It provides:
+
+- A stable opset with forward/backward compatibility guarantees (unlike HLO, which changes with XLA releases)
+- A textual IR (`func.func @main(%arg0: tensor<1x224x224x3xf32>`) based on MLIR
+- Serialization to `stablehlo.mlirbc` (MLIR bytecode)
+- Consumption by LiteRT, IREE, TensorFlow, and JAX itself
+
+StableHLO sits at the *same abstraction level* as ONNX — it's a portability interchange format, not a runtime. Both XLA (via JAX/TensorFlow) and PyTorch 2.0 (via `torch-mlir`) can produce StableHLO. [Source: OpenXLA StableHLO repository](https://github.com/openxla/stablehlo)
+
+#### 5.9.2 JAX Export Flow
+
+```python
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+# Define a simple CNN inference function
+def predict(params, x):
+    # ... JAX functional model
+    return output
+
+# JIT-compile and export to StableHLO
+predict_jit = jax.jit(predict, static_argnames=())
+example_input = jnp.ones((1, 224, 224, 3), dtype=jnp.float32)
+
+# JAX 0.4.25+: jax.export produces a StableHLO artifact
+exported = jax.export.export(
+    predict_jit,
+    platforms=['cpu']  # or 'tpu', 'cuda'
+)(jax.ShapeDtypeStruct((1, 224, 224, 3), jnp.float32))
+
+stablehlo_text = exported.mlir_module()
+```
+
+[Source: jax.export API](https://jax.readthedocs.io/en/latest/export/)
+
+#### 5.9.3 StableHLO to LiteRT: ai-edge-torch and ai-edge-litert
+
+Google provides the **`ai-edge-torch`** library to convert PyTorch and StableHLO models to `.tflite`. For JAX models, the path is:
+
+```bash
+pip install ai-edge-litert-nightly
+```
+
+```python
+import ai_edge_litert
+from ai_edge_litert.compiler import LiteRTCompiler
+
+# Convert StableHLO bytecode to .tflite
+compiler = LiteRTCompiler()
+litert_model = compiler.compile_from_stablehlo(
+    exported.mlir_module_serialized,   # bytes: MLIR bytecode
+    input_shapes=[(1, 224, 224, 3)],
+    input_dtypes=["float32"],
+)
+litert_model.export("jax_model.tflite")
+```
+
+Alternatively, for **Flax** (the common JAX neural network library) models trained with Orbax checkpoints, Google provides a reference conversion path via `jax2tf` (stable) then TFLiteConverter:
+
+```python
+import jax
+import tensorflow as tf
+from jax.experimental import jax2tf
+
+# Legacy path (stable): JAX → TF SavedModel → TFLite
+tf_predict = tf.function(
+    jax2tf.convert(predict, enable_xla=False),
+    input_signature=[tf.TensorSpec((1, 224, 224, 3), tf.float32)]
+)
+
+converter = tf.lite.TFLiteConverter.from_concrete_functions(
+    [tf_predict.get_concrete_function()]
+)
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+tflite_model = converter.convert()
+with open("jax_model.tflite", "wb") as f:
+    f.write(tflite_model)
+```
+
+The `enable_xla=False` flag forces `jax2tf` to use only TensorFlow ops (no XLA-specific ops), which is required for TFLiteConverter compatibility. The XLA path (`enable_xla=True`) produces ops that the TFLite runtime cannot execute. [Source: jax2tf documentation](https://github.com/google/jax/tree/main/jax/experimental/jax2tf)
+
+#### 5.9.4 Flax/Orbax Checkpoint Integration
+
+For production JAX/Flax models, the typical Android deployment path:
+
+```python
+import orbax.checkpoint as ocp
+import flax.linen as nn
+
+class MobileModel(nn.Module):
+    @nn.compact
+    def __call__(self, x):
+        x = nn.Conv(32, (3, 3))(x)
+        x = nn.relu(x)
+        x = nn.avg_pool(x, window_shape=(2, 2), strides=(2, 2))
+        x = x.reshape((x.shape[0], -1))
+        x = nn.Dense(10)(x)
+        return x
+
+# Restore from Orbax checkpoint
+checkpointer = ocp.StandardCheckpointer()
+params = checkpointer.restore("checkpoint_dir/", target=None)
+
+# Bind params and export
+model = MobileModel()
+bound_predict = lambda x: model.apply({"params": params["params"]}, x)
+
+# → jax2tf → TFLiteConverter pipeline as above
+```
+
+[Source: Orbax documentation](https://orbax.readthedocs.io/)
+
+#### 5.9.5 Quantization for JAX → LiteRT
+
+The `jax2tf` → TFLiteConverter path supports the same post-training quantization options as native TF models:
+
+```python
+converter = tf.lite.TFLiteConverter.from_concrete_functions([cf])
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+
+# INT8 full quantization requires a representative dataset
+def representative_data_gen():
+    for _ in range(100):
+        yield [np.random.randn(1, 224, 224, 3).astype(np.float32)]
+
+converter.representative_dataset = representative_data_gen
+converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+converter.inference_input_type = tf.int8
+converter.inference_output_type = tf.int8
+
+int8_model = converter.convert()
+```
+
+JAX's native **quantization-aware training (QAT)** uses `aqt` (Accurate Quantized Training) from Google, but `aqt`-quantized models require conversion via the StableHLO path (not `jax2tf`) to preserve quantization annotations in the resulting `.tflite`. The `ai-edge-litert` compiler handles this correctly while `jax2tf` loses the annotations. [Source: AQT library](https://github.com/google/aqt)
+
+#### 5.9.6 JAX vs PyTorch Mobile Paths: Summary
+
+| Aspect | JAX → LiteRT | PyTorch → ExecuTorch | PyTorch → ORT Mobile |
+|---|---|---|---|
+| Export mechanism | `jax.export` / `jax2tf` | `torch.export.export()` | `torch.onnx.export()` |
+| Intermediate format | StableHLO / TF SavedModel | ExecuTorch Edge IR | ONNX |
+| Mobile runtime | LiteRT (Google) | ExecuTorch (Meta) | ORT Mobile (Microsoft) |
+| Native mobile format | `.tflite` | `.pte` | `.onnx` / `.ort` |
+| Hardware delegation | Full LiteRT delegate stack | XNNPACK, Vulkan, QNN | QNN EP, CPU |
+| QAT support | AQT → StableHLO path | PT2E quantization | ORT quantization |
+| LLM path | LiteRT-LM / Gemini Nano | executorch-llm (Llama 3) | ORT GenAI |
+| Production status | Google (internal) / research | Meta production (2023+) | Microsoft production |
+
+**Key insight**: JAX has no dedicated mobile runtime. The Android deployment story for JAX models is always mediated by LiteRT — either via the `jax2tf` + TFLiteConverter legacy path (stable, widely supported) or the `jax.export` + StableHLO + `ai-edge-litert` path (newer, required for QAT models). Teams training in JAX/Flax who need Android inference should plan the LiteRT conversion step into their model pipeline from the start, as it constrains op choice (particularly XLA-specific ops that have no TFLite equivalent).
 
 ---
 
