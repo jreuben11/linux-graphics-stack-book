@@ -9,6 +9,7 @@
 1. [Why ML Inference Belongs in a Graphics Stack Book](#1-why-ml-inference-belongs-in-a-graphics-stack-book)
 2. [LiteRT Architecture](#2-litert-architecture)
 3. [Delegate Architecture: Routing Inference to Hardware](#3-delegate-architecture-routing-inference-to-hardware)
+   - [3.1 NNAPI In Depth](#31-nnapi-in-depth): architecture, HAL history, model building, compilation, burst execution, AHardwareBuffer memory domains, device enumeration, LiteRT delegate internals, deprecation
 4. [AHardwareBuffer Tensor Interop](#4-ahardwarebuffer-tensor-interop)
 5. [Model Formats and Quantisation](#5-model-formats-and-quantisation)
 6. [MediaPipe Framework Architecture](#6-mediapipe-framework-architecture)
@@ -147,37 +148,422 @@ When `interpreter->ModifyGraphWithDelegate(delegate)` is called, LiteRT's graph 
 
 After partitioning, each delegate partition registers a `TfLiteNode` whose `invoke` callback calls into the delegate's `DelegateKernelInterface::Invoke()`. From the scheduler's perspective, a delegate partition is just another op with GPU memory inputs and outputs.
 
-### 3.1 NNAPI Delegate
+### 3.1 NNAPI In Depth
 
-**Note (2025):** The Android Neural Networks API (NNAPI) was deprecated in Android 15 (API level 35). Google recommends migrating to vendor-specific NPU delegates (see §3.3 below) or the GPU delegate for hardware acceleration on Android 15+ devices. [Source: Android NNAPI migration guide](https://developer.android.com/ndk/guides/neuralnetworks/migration-guide)
+> **Status:** NNAPI was deprecated in Android 15 (API level 35, 2024). For new development targeting API 35+, use vendor NPU delegates (§3.3) or the GPU delegate. For devices on Android 8.1–14 (API 27–34) — still the large majority of the installed base in 2026 — NNAPI remains the primary hardware acceleration path. This section covers the API and architecture in depth because NNAPI-era devices dominate the field population and the deprecation does not remove existing functionality. [Source: Android NNAPI migration guide](https://developer.android.com/ndk/guides/neuralnetworks/migration-guide)
 
-For devices on Android 8.1 through 14, the NNAPI delegate routes inference through `ANeuralNetworksModel` to the OEM-provided NNAPI runtime, which may dispatch to a DSP (e.g., Qualcomm Hexagon), NPU, or the GPU. The delegate creates an `ANeuralNetworksModel`, adds operations by walking the claimed subgraph, calls `ANeuralNetworksCompilation_create()`, and submits execution via `ANeuralNetworksExecution_startComputeWithDependencies()` with sync fence support.
+#### 3.1.1 Architecture: From C API to Hardware
+
+NNAPI is a layered system spanning four components:
+
+```
+App / LiteRT NNAPI delegate
+         │  NeuralNetworks.h C API  (libneuralnetworks.so)
+         ▼
+    NNAPI Runtime (system process: neuralnetworks_service)
+         │  android.hardware.neuralnetworks HAL
+         ▼
+  OEM HAL implementation (.so loaded by hwservicemanager)
+         │  vendor-specific command submission
+         ▼
+  Hardware: DSP (Hexagon), NPU, GPU
+```
+
+The `libneuralnetworks.so` library (part of AOSP, lives in `packages/modules/NeuralNetworks/`) exports the public C API. It links against a runtime that communicates with the NNAPI HAL service across the HIDL/AIDL interface boundary, using a Binder IPC. The HAL implementation (`android.hardware.neuralnetworks@1.x` or AIDL `android.hardware.neuralnetworks`) lives in vendor partition and loads firmware (e.g., Hexagon DSP firmware on Snapdragon) independently.
+
+From Android 13+, an **NNAPI Shim** (`INeuralNetworksShim`) enables hardware vendors to ship NNAPI-compatible implementations as APEX modules — the same mainline-modularity mechanism used for ART (Ch164 §1.3). This decouples the NNAPI HAL version from the system image OTA and allows faster hardware bring-up. [Source: AOSP NNAPI Shim](https://source.android.com/docs/core/ml/nnapi/nnapi-shim)
+
+#### 3.1.2 HAL Version History
+
+| HAL Version | Android Release | API Level | Key Additions |
+|---|---|---|---|
+| v1.0 | Android 8.1 Oreo | 27 | 29 ops: Conv2D, DepthwiseConv2D, FullyConnected, MaxPool2D, AveragePool2D, RELU, Softmax, Reshape, CONCATENATION; FP32 only |
+| v1.1 | Android 9 Pie | 28 | 8 new ops: BATCH_TO_SPACE_ND, DIV, MEAN, PAD, SPACE_TO_BATCH_ND, SQUEEZE, STRIDED_SLICE, SUB; relaxed FP16 compute option |
+| v1.2 | Android 10 Q | 29 | 60+ new ops including LSTM variants, ARGMAX, TOPK_V2, ELU, PRELU; **device enumeration** (`ANeuralNetworksDevice`); **AHardwareBuffer memory domains** (`ANeuralNetworksMemory_createFromAHardwareBuffer`); **sync fence execution** (`ANeuralNetworksExecution_startComputeWithDependencies`); **burst execution** (`ANeuralNetworksBurst_create`); performance hints via `ANeuralNetworksExecution_setTimeout` |
+| v1.3 | Android 11 R | 30 | Signed INT8 quantisation (vs unsigned INT8 in v1.2); memory descriptor API (`ANeuralNetworksMemoryDesc`); fenced memory copies; quality of service API (`ANeuralNetworksCompilation_setPriority`) |
+| AIDL v1 | Android 12 S | 31 | HAL migrated from HIDL to AIDL; Shim API for APEX delivery |
+| AIDL v2 | Android 13 T | 33 | NNAPI Shim GA; fenced execution improvements |
+| Deprecated | Android 15 V | 35 | `@Deprecated` annotation; API remains functional but no new features |
+
+[Source: AOSP NeuralNetworks HAL evolution](https://source.android.com/docs/core/ml/nnapi)
+
+#### 3.1.3 Model Building: `ANeuralNetworksModel`
+
+Building an NNAPI model is explicit and low-level — there is no graph tracing or `torch.jit`. Each operand (tensor or scalar) is added individually, then operations are wired by operand index:
+
+```c
+#include <android/NeuralNetworks.h>
+
+ANeuralNetworksModel* model = NULL;
+ANeuralNetworksModel_create(&model);
+
+// 1. Add operands (tensors and scalars)
+// Input tensor: {1, 224, 224, 3} FLOAT32
+ANeuralNetworksOperandType input_type = {
+    .type = ANEURALNETWORKS_TENSOR_FLOAT32,
+    .dimensionCount = 4,
+    .dimensions = (uint32_t[]){1, 224, 224, 3},
+    .scale = 0.0f,
+    .zeroPoint = 0,
+};
+ANeuralNetworksModel_addOperand(model, &input_type);  // operand index 0
+
+// Filter tensor: {32, 3, 3, 3} FLOAT32 (32 filters, 3×3 kernel, 3 input channels)
+ANeuralNetworksOperandType filter_type = {
+    .type = ANEURALNETWORKS_TENSOR_FLOAT32,
+    .dimensionCount = 4,
+    .dimensions = (uint32_t[]){32, 3, 3, 3},
+    .scale = 0.0f, .zeroPoint = 0,
+};
+ANeuralNetworksModel_addOperand(model, &filter_type);  // operand index 1
+
+// Bias: {32} FLOAT32
+ANeuralNetworksOperandType bias_type = {
+    .type = ANEURALNETWORKS_TENSOR_FLOAT32,
+    .dimensionCount = 1,
+    .dimensions = (uint32_t[]){32},
+    .scale = 0.0f, .zeroPoint = 0,
+};
+ANeuralNetworksModel_addOperand(model, &bias_type);    // operand index 2
+
+// Scalar operands for Conv2D padding, strides, activation
+// ANEURALNETWORKS_INT32 scalars for: padding_mode, stride_w, stride_h, dilation_w, dilation_h, activation_fn
+for (int i = 0; i < 5; i++) {
+    ANeuralNetworksOperandType scalar = {
+        .type = ANEURALNETWORKS_INT32, .dimensionCount = 0,
+    };
+    ANeuralNetworksModel_addOperand(model, &scalar);   // indices 3-7
+}
+
+// Output tensor: {1, 222, 222, 32} FLOAT32
+ANeuralNetworksOperandType output_type = {
+    .type = ANEURALNETWORKS_TENSOR_FLOAT32,
+    .dimensionCount = 4,
+    .dimensions = (uint32_t[]){1, 222, 222, 32},
+    .scale = 0.0f, .zeroPoint = 0,
+};
+ANeuralNetworksModel_addOperand(model, &output_type);  // operand index 8
+
+// 2. Set constant values for filter, bias, and scalar operands
+ANeuralNetworksModel_setOperandValue(model, 1, filter_weights, filter_bytes);
+ANeuralNetworksModel_setOperandValue(model, 2, bias_data, bias_bytes);
+int32_t padding     = ANEURALNETWORKS_PADDING_VALID;   // operand 3
+int32_t stride_w    = 1;   // operand 4
+int32_t stride_h    = 1;   // operand 5
+int32_t dilation_w  = 1;   // operand 6
+int32_t dilation_h  = 1;   // operand 7 (v1.2+)
+// (setOperandValue calls for scalars omitted for brevity)
+
+// 3. Add the Conv2D operation
+uint32_t conv_inputs[]  = {0, 1, 2, 3, 4, 5, 6, 7};
+uint32_t conv_outputs[] = {8};
+ANeuralNetworksModel_addOperation(model,
+    ANEURALNETWORKS_CONV_2D,
+    8, conv_inputs,
+    1, conv_outputs);
+
+// 4. Identify graph inputs and outputs
+ANeuralNetworksModel_identifyInputsAndOutputs(model, 1, (uint32_t[]){0}, 1, (uint32_t[]){8});
+
+// 5. Finish: validates the graph and makes it immutable
+ANeuralNetworksModel_finish(model);
+```
+[Source: AOSP NeuralNetworks.h](https://developer.android.com/ndk/reference/group/neural-networks)
+
+**Quantised operands** use `ANEURALNETWORKS_TENSOR_QUANT8_ASYMM` (v1.0+) or `ANEURALNETWORKS_TENSOR_QUANT8_ASYMM_SIGNED` (v1.3+). The `scale` and `zeroPoint` fields in `ANeuralNetworksOperandType` encode the quantisation parameters (`value = (q - zeroPoint) * scale`). The transition from unsigned `QUANT8_ASYMM` (zeroPoint 0–255) to signed `QUANT8_ASYMM_SIGNED` (zeroPoint −128 to 127) in v1.3 aligns with TFLite's default INT8 quantisation scheme.
+
+#### 3.1.4 Compilation: Preferences, Caching, and Priority
+
+After the model is finalised, `ANeuralNetworksCompilation` translates the abstract graph into hardware-specific kernel code. Compilation is the most expensive step — potentially 1–10 seconds on first run:
+
+```c
+ANeuralNetworksCompilation* compilation = NULL;
+// Basic compilation (targets default accelerator):
+ANeuralNetworksCompilation_create(model, &compilation);
+
+// Or target a specific device (API 29+):
+// ANeuralNetworksCompilation_createForDevices(model, devices, num_devices, &compilation);
+
+// Execution preference — affects scheduling and power:
+// ANEURALNETWORKS_PREFER_LOW_POWER        — battery-sensitive workloads
+// ANEURALNETWORKS_PREFER_FAST_SINGLE_ANSWER — lowest latency, ignore power
+// ANEURALNETWORKS_PREFER_SUSTAINED_SPEED  — throughput (camera stream inference)
+ANeuralNetworksCompilation_setPreference(compilation,
+    ANEURALNETWORKS_PREFER_SUSTAINED_SPEED);
+
+// Priority (API 30+): HIGH, MEDIUM (default), LOW
+// HIGH processes the execution before MEDIUM/LOW in the hardware queue.
+ANeuralNetworksCompilation_setPriority(compilation,
+    ANEURALNETWORKS_PRIORITY_HIGH);
+
+// Compilation caching (API 29+):
+// Without caching, compilation runs on every app cold start.
+// With caching, the compiled binary is stored at cache_dir/model_token.{nb,nc}
+// and loaded directly on subsequent runs — reducing first-inference latency
+// from ~3 seconds to ~30 ms on a Snapdragon 888.
+ANeuralNetworksCompilation_setCaching(compilation,
+    "/data/data/com.example.app/nnapi_cache",
+    (uint8_t[32]){"mymodel_v1_sha256_truncated"});
+
+// Finalise compilation (blocks until hardware compilation completes):
+ANeuralNetworksCompilation_finish(compilation);
+```
+
+**Cache invalidation:** The model token is an opaque 32-byte key. Apps must change the token when the model weights change; NNAPI does not verify cache freshness by content-hashing weights. A common pattern is to embed the model file's SHA-256 (truncated to 32 bytes) as the token.
+
+#### 3.1.5 Execution: Synchronous, Asynchronous, and Burst
+
+NNAPI provides three execution modes:
+
+**Synchronous (API 30+, preferred for single-shot queries):**
+```c
+ANeuralNetworksExecution* exec = NULL;
+ANeuralNetworksExecution_create(compilation, &exec);
+
+// Set input/output buffers:
+ANeuralNetworksExecution_setInput(exec, 0, NULL, input_buffer, input_bytes);
+ANeuralNetworksExecution_setOutput(exec, 0, NULL, output_buffer, output_bytes);
+
+// Blocking call — returns when inference completes:
+ANeuralNetworksExecution_compute(exec);   // API 29+; blocks caller thread
+
+ANeuralNetworksExecution_free(exec);
+```
+
+**Asynchronous with sync fence (API 29+ for fences, recommended for camera pipelines):**
+```c
+ANeuralNetworksExecution_create(compilation, &exec);
+ANeuralNetworksExecution_setInput(exec, 0, NULL, input_buffer, input_bytes);
+ANeuralNetworksExecution_setOutput(exec, 0, NULL, output_buffer, output_bytes);
+
+// Optional: wait for input to be ready (e.g., fence from Camera HAL or GPU):
+// ANeuralNetworksExecution_startComputeWithDependencies takes an array of
+// ANeuralNetworksEvent* from prior operations as dependency fences.
+ANeuralNetworksEvent* input_ready_event = /* ... from GPU render or Camera */ NULL;
+ANeuralNetworksEvent* compute_event = NULL;
+
+ANeuralNetworksExecution_startComputeWithDependencies(
+    exec,
+    &input_ready_event, 1,   // wait for these fences first
+    0,                        // deadline (0 = no deadline, API 30+)
+    &compute_event);
+
+// compute_event is signalled when NNAPI finishes.
+// You can pass it as input_ready_event to downstream operations.
+ANeuralNetworksEvent_wait(compute_event);   // block if needed
+ANeuralNetworksEvent_free(compute_event);
+```
+
+**Burst execution (API 29+, for high-frequency streams):**
+
+Burst objects amortise the per-execution overhead of IPC between the app process and the NNAPI runtime daemon. A burst keeps a shared memory channel open across repeated executions on the same compilation:
+
+```c
+ANeuralNetworksBurst* burst = NULL;
+ANeuralNetworksBurst_create(compilation, &burst);
+
+// Inference loop at 30 Hz:
+while (running) {
+    ANeuralNetworksExecution* exec = NULL;
+    ANeuralNetworksExecution_create(compilation, &exec);
+    ANeuralNetworksExecution_setInput(exec, 0, NULL, frame_buffer, frame_bytes);
+    ANeuralNetworksExecution_setOutput(exec, 0, NULL, result_buffer, result_bytes);
+
+    // burstCompute uses the persistent burst channel — lower IPC overhead
+    // than ANeuralNetworksExecution_compute() per call:
+    ANeuralNetworksExecution_burstCompute(exec, burst);
+    ANeuralNetworksExecution_free(exec);
+
+    process_result(result_buffer);
+}
+
+ANeuralNetworksBurst_free(burst);
+```
+
+On a Snapdragon 888 Hexagon DSP, burst execution reduces per-inference IPC latency from ~0.8 ms (non-burst) to ~0.15 ms by avoiding repeated Binder transaction setup.
+
+#### 3.1.6 Memory Domains: Zero-Copy with AHardwareBuffer
+
+NNAPI v1.2 (API 29) introduced **memory domains** — a mechanism for passing `AHardwareBuffer`-backed tensors directly to NNAPI without CPU copies. This is the same `AHardwareBuffer` that SurfaceFlinger and the Camera HAL exchange, meaning the camera→inference path can be zero-copy end-to-end:
+
+```c
+// AHardwareBuffer received from Camera2 ImageReader or from GPU render target:
+AHardwareBuffer* ahb = /* ... */ NULL;
+
+// Wrap the AHardwareBuffer as an NNAPI memory object:
+ANeuralNetworksMemory* nnapi_memory = NULL;
+ANeuralNetworksMemory_createFromAHardwareBuffer(ahb, &nnapi_memory);
+
+// Set the input tensor to point into the AHardwareBuffer memory:
+ANeuralNetworksExecution_setInputFromMemory(
+    exec,
+    0,          // input index
+    NULL,       // use full tensor type from compilation
+    nnapi_memory,
+    0,          // byte offset within the AHardwareBuffer
+    input_bytes);
+
+ANeuralNetworksExecution_compute(exec);
+
+ANeuralNetworksMemory_free(nnapi_memory);
+// AHardwareBuffer release is the caller's responsibility
+```
+
+**Memory descriptor (API 30+)** provides finer-grained control over which hardware-specific memory pools the NNAPI driver allocates:
+
+```c
+// Ask NNAPI to allocate a memory object in a format the DSP can access natively:
+ANeuralNetworksMemoryDesc* desc = NULL;
+ANeuralNetworksMemoryDesc_create(&desc);
+
+// Declare usage for input operand 0 of the compiled model:
+ANeuralNetworksMemoryDesc_addInputRole(desc, compilation, 0, 1.0f);
+ANeuralNetworksMemoryDesc_finish(desc);
+
+ANeuralNetworksMemory* dsp_memory = NULL;
+ANeuralNetworksMemory_createFromDesc(desc, &dsp_memory);
+ANeuralNetworksMemoryDesc_free(desc);
+
+// Now copy host data in once:
+ANeuralNetworksMemory_copy(host_nnapi_memory, dsp_memory);
+
+// Use dsp_memory directly in execution — no host↔DSP copy at inference time:
+ANeuralNetworksExecution_setInputFromMemory(exec, 0, NULL, dsp_memory, 0, input_bytes);
+```
+
+[Source: AOSP ANeuralNetworksMemory](https://developer.android.com/ndk/reference/group/neural-networks#aneuralnetworksmemory_createfromdesc)
+
+#### 3.1.7 Device Enumeration and Capability Querying
+
+NNAPI v1.2 (API 29) added `ANeuralNetworksDevice`, allowing apps to enumerate available accelerators and select a specific one for compilation:
+
+```c
+uint32_t num_devices = 0;
+ANeuralNetworks_getDeviceCount(&num_devices);
+
+for (uint32_t i = 0; i < num_devices; i++) {
+    ANeuralNetworksDevice* device = NULL;
+    ANeuralNetworks_getDevice(i, &device);
+
+    const char* name = NULL;
+    ANeuralNetworksDevice_getName(device, &name);
+
+    // Device type: CPU (reference), GPU, ACCELERATOR (DSP/NPU), UNKNOWN
+    int32_t type = 0;
+    ANeuralNetworksDevice_getType(device, &type);
+
+    const char* version = NULL;
+    ANeuralNetworksDevice_getVersion(device, &version);
+
+    // Feature level corresponds to HAL version:
+    // 27 = v1.0, 28 = v1.1, 29 = v1.2, 30 = v1.3
+    int64_t feature_level = 0;
+    ANeuralNetworksDevice_getFeatureLevel(device, &feature_level);
+
+    // Check whether the model can be compiled on this device:
+    bool supported = false;
+    ANeuralNetworksModel_getSupportedOperationsForDevices(
+        model, &device, 1, &supported);
+
+    printf("Device %u: %s (type=%d, HAL level=%lld, model_supported=%d)\n",
+        i, name, type, (long long)feature_level, (int)supported);
+}
+```
+
+Typical output on a Snapdragon 8 Gen 3 device:
+```
+Device 0: nnapi-reference (type=ANEURALNETWORKS_DEVICE_TYPE_CPU, HAL level=30, model_supported=1)
+Device 1: qti-hta (type=ANEURALNETWORKS_DEVICE_TYPE_ACCELERATOR, HAL level=30, model_supported=1)
+Device 2: qti-gpu (type=ANEURALNETWORKS_DEVICE_TYPE_GPU, HAL level=29, model_supported=1)
+Device 3: qti-dsp (type=ANEURALNETWORKS_DEVICE_TYPE_ACCELERATOR, HAL level=30, model_supported=1)
+```
+
+`nnapi-reference` is always present — it is the AOSP CPU reference implementation and is the fallback for ops unsupported by hardware accelerators. `qti-dsp` is the Hexagon DSP; `qti-hta` is Qualcomm's Hexagon Tensor Accelerator.
+
+**Performance measurement (API 29+):** Call `ANeuralNetworksDevice_getPerformanceInfo()` to retrieve the hardware's stated FP32, FP16, and quantised INT8 performance figures (in ops/second) and the relative power consumption vs the `nnapi-reference` CPU implementation. These are vendor-self-reported figures, not benchmarks, but they are useful for selecting between multiple accelerators.
+
+#### 3.1.8 LiteRT NNAPI Delegate Internals
+
+The LiteRT NNAPI delegate (`tflite/delegates/nnapi/nnapi_delegate.cc`) bridges the LiteRT graph format to the NNAPI C API. Its internal flow on `ModifyGraphWithDelegate()`:
+
+1. **Op support query**: For each node in the claimed partition, the delegate calls `ANeuralNetworksModel_getSupportedOperationsForDevices()` to ask the target device which ops it supports. Unsupported ops remain on CPU.
+
+2. **Graph translation**: Each supported TFLite op maps to an NNAPI op code. The mapping handles:
+   - **Activation fusion**: TFLite encodes activations inline in Conv/FC ops (via `activation` attribute). NNAPI v1.0 supports fused activation in Conv2D directly; for ops that don't support fusion, the delegate inserts a separate `ANEURALNETWORKS_RELU` op.
+   - **Padding mode translation**: TFLite uses `SAME`/`VALID` string attributes; NNAPI uses `ANEURALNETWORKS_PADDING_SAME` / `ANEURALNETWORKS_PADDING_VALID` integer operands.
+   - **Dynamic shapes**: LiteRT supports dynamic batch/spatial dimensions; NNAPI v1.0–v1.2 requires fixed shapes. The delegate resizes the NNAPI model when `interpreter->ResizeInputTensor()` is called.
+
+3. **FP16 relaxation**: When `options.allow_fp16 = true`, the delegate calls `ANeuralNetworksModel_relaxComputationFloat32toFloat16(model, true)`. This instructs the hardware runtime that FP32 tensor accumulations may be performed in FP16 — a significant speedup on DSPs and mobile GPUs at the cost of slight precision reduction.
+
+4. **Compilation preference mapping**:
+   | LiteRT `execution_preference` | NNAPI preference |
+   |---|---|
+   | `kFastSingleAnswer` | `ANEURALNETWORKS_PREFER_FAST_SINGLE_ANSWER` |
+   | `kSustainedSpeed` | `ANEURALNETWORKS_PREFER_SUSTAINED_SPEED` |
+   | `kLowPower` | `ANEURALNETWORKS_PREFER_LOW_POWER` |
+   | `kUndecided` | `ANEURALNETWORKS_PREFER_FAST_SINGLE_ANSWER` |
+
+5. **Execution submission**: The delegate uses burst execution (if the target device supports API 29+) or falls back to synchronous `ANeuralNetworksExecution_compute()`. Sync-fence-based execution (`startComputeWithDependencies`) is used when the input tensor is backed by an `AHardwareBuffer` and the caller provides a GPU or camera fence.
+
+**Using the delegate:**
 
 ```cpp
 #include "tflite/delegates/nnapi/nnapi_delegate.h"
 
-TfLiteNnapiDelegateOptions options = TfLiteNnapiDelegateOptionsDefault();
-options.allow_fp16 = true;
+StatefulNnApiDelegate::Options options;
 options.execution_preference =
     StatefulNnApiDelegate::Options::kSustainedSpeed;
-// Limit delegation to top-N partitions to avoid fragmented small subgraphs
+options.allow_fp16 = true;
+options.allow_dynamic_dimensions = true;   // API 29+ only
 options.max_number_delegated_partitions = 3;
+options.cache_dir = cache_dir.c_str();
+options.model_token = model_token.c_str();
 
-TfLiteDelegate* nnapi_delegate = TfLiteNnapiDelegateCreate(&options);
-interpreter->ModifyGraphWithDelegate(nnapi_delegate);
-```
-[Source: LiteRT NNAPI delegate](https://ai.google.dev/edge/litert/android/delegates/nnapi)
+// Optionally target a specific named device:
+options.accelerator_name = "qti-dsp";
 
-The NNAPI delegate handles automatic op fallback: ops that the hardware runtime rejects remain on the CPU partition.
-
-**NNAPI compilation caching** reduces cold-start latency. Pass a cache directory and token to `ANeuralNetworksCompilation_setCaching()`:
-
-```cpp
-options.cache_dir = "/data/local/tmp/nnapi_cache";
-options.model_token = "my_model_v1";
+auto nnapi_delegate = std::make_unique<StatefulNnApiDelegate>(options);
+interpreter->ModifyGraphWithDelegate(nnapi_delegate.get());
 ```
 
-Without caching, NNAPI compilation can take 1–5 seconds on first launch, unacceptable for production apps.
+[Source: LiteRT NNAPI delegate options](https://ai.google.dev/edge/litert/android/delegates/nnapi)
+
+#### 3.1.9 Supported Op Coverage and Fallback Behaviour
+
+Not all TFLite ops have NNAPI equivalents, and hardware implementations vary in which ops they support:
+
+| Category | Representative TFLite ops | NNAPI v1.0 | NNAPI v1.2 | Hardware Reality |
+|---|---|---|---|---|
+| Convolution | Conv2D, DepthwiseConv2D, TransposeConv | ✅ | ✅ | Full DSP support |
+| Activation | ReLU, ReLU6, Sigmoid, Tanh | ✅ | ✅ | Full DSP support |
+| Pooling | MaxPool2D, AveragePool2D | ✅ | ✅ | Full DSP support |
+| FC / Dense | FullyConnected | ✅ | ✅ | Full DSP support |
+| Normalisation | BatchNorm (as mul+add), L2Norm | ✅ | ✅ | Often CPU fallback |
+| Recurrent | LSTM, RNN, GRU | ❌ | ✅ | Patchy hardware support |
+| Element-wise | Add, Mul, Sub, Div | ✅ (add/mul) | ✅ | Full support |
+| Reshape/slice | Reshape, Squeeze, StridedSlice | ❌ | ✅ | Usually fused |
+| Reduction | Mean, ArgMax, TopK | ❌ | ✅ | Often CPU fallback |
+| Custom ops | any `@custom_op` | ❌ | ❌ | CPU only |
+
+When a hardware driver rejects an op, the NNAPI delegate automatically partitions that op back to the CPU partition — this is "automatic fallback". The cost is that data must cross from GPU/DSP memory to CPU memory at each partition boundary, which can eliminate the speedup from hardware acceleration if many ops fall back. Calling `ANeuralNetworksModel_getSupportedOperationsForDevices()` beforehand lets you audit coverage before deciding whether to delegate.
+
+**Measuring actual delegation:** LiteRT's `Interpreter::execution_plan()` and `GetDelegateNodeAndRegistrations()` APIs enumerate which nodes are covered by which delegate at runtime. The [`benchmark_model`](https://ai.google.dev/edge/litert/performance/measurement) tool's `--enable_op_profiling` flag reports per-op latency to identify which ops are running on hardware vs CPU fallback.
+
+#### 3.1.10 Why NNAPI Was Deprecated
+
+Google deprecated NNAPI at API 35 for several compounding reasons:
+
+1. **HAL version fragmentation**: A significant fraction of Android 14 devices shipped with NNAPI HAL v1.0 or v1.1 (Android 8.1–9 era hardware without firmware updates), meaning apps could not rely on burst execution, AHardwareBuffer memory domains, or sync fences being available — forcing complex runtime version-checking.
+
+2. **Vendor quality variability**: The NNAPI specification left enough implementation latitude that op results on some vendors' hardware differed numerically from the reference CPU implementation beyond acceptable tolerances. Google documented many such issues in the [NNAPI conformance suite](https://source.android.com/docs/core/ml/nnapi/conformance), but could not enforce fixes without breaking the vendor contract.
+
+3. **Compilation time**: NNAPI compilation (especially without caching) could take multiple seconds. The caching mechanism helped but required apps to manage cache invalidation manually.
+
+4. **Indirect dispatch overhead**: The HAL Binder IPC introduced ~0.5–1 ms round-trip overhead per inference that direct in-process delegates (§3.3) avoid entirely.
+
+5. **New accelerator architectures**: Newer NPU designs (Pixel Tensor G4, Snapdragon X Elite NPU, Dimensity 9400 APU) expose capabilities that don't map cleanly to the NNAPI op vocabulary — requiring vendor-specific extensions that undermined the portability goal.
+
+The replacement model (§3.3) is vendor delegates loaded directly into the app process as `.so` files, with the LiteRT delegate ABI as the only contract. This is a tighter API with lower overhead and allows vendors to expose hardware-specific features without the HAL versioning constraint.
 
 ### 3.2 GPU Delegate
 
@@ -946,7 +1332,7 @@ The GPU delegate's Vulkan backend imports `AHardwareBuffer` via `VK_ANDROID_exte
 §9 of this chapter describes the ARCore + MediaPipe composition pattern. ARCore provides world geometry; MediaPipe provides ML inference on the same camera texture. The shared GL context model, timestamp synchronisation (`ArFrame_getTimestamp()` → MediaPipe `Timestamp`), and the `GL_TEXTURE_EXTERNAL_OES` sharing pattern all build on the ARCore architecture in Ch87.
 
 **Ch88 — NPU and AI Accelerator Integration on Linux**
-The NNAPI delegate (deprecated in API 35) was the primary Android NPU routing mechanism; Ch88 covers the underlying `ANeuralNetworksModel` API and OEM NPU firmware. Post-NNAPI, vendor LiteRT delegates (Qualcomm QNN, §3.3) access the same Hexagon DSP hardware via a direct delegate ABI rather than through the NNAPI abstraction layer.
+Ch88 covers Linux NPU kernel drivers (Intel ivpu, AMD XDNA) and the OpenVINO/ROCm compute stack on desktop Linux. This chapter (§3.1) covers the Android NNAPI C API and HAL architecture in depth — the two chapters are complementary: Ch88 is the Linux NPU driver story; this chapter is the Android HAL-to-hardware path. Post-NNAPI, vendor LiteRT delegates (Qualcomm QNN, §3.3) access the Hexagon DSP via a direct in-process `.so` rather than the NNAPI HAL Binder IPC.
 
 **Ch108 — ROCm and HIP — AMD's GPU Compute Stack**
 On desktop Linux (x86-64), ROCm provides the ML compute stack via HIP/MIOpen. LiteRT on Linux uses OpenGL ES via Mesa instead. Ch108 provides the contrast: ROCm is a GPGPU runtime with batch-optimised kernels; LiteRT is a latency-optimised runtime designed for single-inference-at-a-time execution at mobile frame rates.
