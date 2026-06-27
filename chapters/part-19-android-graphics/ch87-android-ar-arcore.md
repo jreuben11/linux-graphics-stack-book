@@ -7,6 +7,7 @@
 ## Table of Contents
 
 1. [ARCore Architecture Overview](#1-arcore-architecture-overview)
+   - [Historical Context: From Cardboard to Android XR](#historical-context-from-cardboard-to-android-xr)
 2. [The Android Camera Pipeline and ARCore](#2-the-android-camera-pipeline-and-arcore)
 3. [Session Lifecycle and the ArSession API](#3-session-lifecycle-and-the-arsession-api)
 4. [AR Rendering Pipeline: Camera Background and Virtual Content](#4-ar-rendering-pipeline-camera-background-and-virtual-content)
@@ -26,6 +27,30 @@
 ---
 
 ## 1. ARCore Architecture Overview
+
+### Historical context: from Cardboard to Android XR
+
+Google's Android AR/VR platform has gone through four distinct eras:
+
+**Google Cardboard (June 2014 — present).** Announced at Google I/O 2014, Cardboard turned any Android phone into a 3DoF VR viewer via a folded-cardboard headset costing a few dollars. The SDK handled stereoscopic lens distortion correction and head rotation tracking (gyroscope only — no position). Cardboard required no special hardware, no OS support, and no certification. It was deprecated as an actively developed product in 2019 when Daydream shut down, then open-sourced in November 2019 as [github.com/googlevr/cardboard](https://github.com/googlevr/cardboard) for iOS and Android. Cardboard's lasting contribution was proving that a smartphone screen and gyroscope were sufficient for immersive VR content — which shaped every mobile VR SDK that followed.
+
+**Project Tango (2014–2017).** Announced in February 2014 as an ATAP (Advanced Technology and Projects) initiative, Tango was depth-sensing AR for Android. It required custom hardware: a structured-light depth sensor, a fisheye wide-angle camera, and a motion-tracking camera — all on the same device. The Tango SDK exposed three capabilities: motion tracking (6DoF), area learning (building a persistent SLAM map of a room), and depth perception (real-time point cloud via `TangoXyzIjData`). The only consumer Tango phone was the Lenovo Phab 2 Pro (2016). **Google cancelled Tango in November 2017**, replacing it with ARCore — which achieved software-estimated depth and 6DoF tracking on standard hardware, without Tango's custom sensors. Tango's SLAM algorithms and VIO approach directly informed ARCore's architecture.
+
+**Google Daydream VR (October 2016–October 2019).** Daydream was Google's high-quality mobile VR platform. Unlike Cardboard, it required *Daydream-ready* certification: specific display refresh rate (60 Hz minimum with low-persistence), sensor latency constraints, and a fast IMU. The Daydream View headset and its 3DoF controller (tracked via 9-axis IMU) were sold separately. The Daydream SDK rendered stereoscopic scenes at 60 fps with asynchronous reprojection (ATW — Asynchronous TimeWarp) to compensate for frame latency, and exposed a proprietary scan-line-racing mode for supported displays. Daydream-ready phones included the Pixel (1st gen), Pixel 2, and a handful of partner devices. **Google discontinued Daydream in October 2019**, citing a "lack of consumer traction" and the emergence of standalone headsets (Oculus Quest). The Pixel 4, announced that same month, was notably *not* Daydream-ready. Daydream's engineering — low-latency sensor pipelines, ATW, display synchronisation — was subsequently absorbed into the standalone headset space.
+
+**ARCore (August 2017 preview → February 2018 v1.0 → present).** ARCore was announced at Google I/O 2017 and launched in public preview in August 2017 as a direct replacement for Tango — same goals (6DoF world tracking, plane detection, light estimation), no special hardware. It used Visual-Inertial Odometry on the existing back camera and IMU already present on any mid-range Android phone. ARCore 1.0 shipped in February 2018 with Vulkan rendering support and a cloud anchor service. Subsequent releases added Geospatial/VPS anchors (2020), the Depth API with MotionStereo (2021), Scene Semantics per-pixel labels (2022), and the Raw Compass API. The Play Services delivery model allowed tracking improvements to reach all supported devices without OTA updates.
+
+**Android XR (2024–present).** Android XR is Google's next spatial-computing platform, targeting dedicated headsets rather than phones. Project Moohan (Samsung, 2025) is the first commercial Android XR headset. The platform is built on Android 15+, runs standard Android apps in 2D panels, and adds the Jetpack XR SDK (`androidx.xr`) for spatial UI, hand tracking, and passthrough compositing. ARCore for Jetpack XR extends the ARCore session model to headsets. Android XR uses the same Vulkan/OpenXR stack described throughout this chapter.
+
+| Era | Years | Tracking | Hardware | Status |
+|---|---|---|---|---|
+| Google Cardboard | 2014–present | 3DoF (gyro) | Any phone | Open-sourced 2019 |
+| Project Tango | 2014–2017 | 6DoF + depth sensor | Custom hardware (Phab 2 Pro) | Cancelled; succeeded by ARCore |
+| Google Daydream VR | 2016–2019 | 3DoF + controller | Daydream-ready phones | Discontinued |
+| ARCore | 2017–present | 6DoF VIO, no extra HW | Android 7.0+, 1B+ devices | Active |
+| Android XR | 2024–present | 6DoF + hand tracking | Dedicated headsets (Moohan) | Active |
+
+[Source: ARCore history](https://developers.google.com/ar/develop/android/quickstart), [Project Tango deprecation](https://developers.google.com/tango), [Daydream discontinuation](https://support.google.com/daydream/answer/9526971), [Cardboard open-source](https://github.com/googlevr/cardboard)
 
 **ARCore** is Google's augmented reality SDK for Android. It is not a kernel subsystem, a **HAL** module, or a **Vulkan** layer — it is an application-layer SDK that sits above the Android operating system, consuming data from the **Camera HAL** and **IMU** sensors via standard Android APIs, and producing world-understanding primitives (poses, planes, anchors, depth maps, light estimates) that app-layer renderers consume. **ARCore** ships as a Play Services component (**`com.google.ar.core`**) that is updated independently of the Android OS version, letting Google iterate on tracking algorithms without waiting for OEM firmware updates. [Source: ARCore quickstart](https://developers.google.com/ar/develop/android/quickstart)
 
