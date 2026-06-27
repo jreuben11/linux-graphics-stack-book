@@ -2644,6 +2644,43 @@ Meta Horizon OS retains SurfaceFlinger for 2D Android application windows displa
 | Passthrough | Camera2 frame → app texture | Platform compositor | `XR_FB_passthrough` (compositor-managed) |
 | GPU | Any Android GPU | Snapdragon 8 Elite, Adreno 830 | Snapdragon XR2 Gen 2, Adreno 740 |
 
+#### Pipeline quality analysis: which is actually better and why
+
+The table above describes the *structure* of each pipeline. Which is *better* depends entirely on what the application is optimising for, and the three platforms are solving meaningfully different problems.
+
+**Compositor architecture.** Quest 3 has the most technically mature XR compositor of the three. Its dedicated XR compositing process bypasses SurfaceFlinger entirely for stereo swapchain layers — eliminating the buffer-queue latency that SurfaceFlinger introduces in a general-purpose Android windowing context. More importantly, Quest 3 ships Application SpaceWarp (`XR_FB_space_warp`): the application intentionally renders at half the display refresh rate (45 fps on a 90 Hz display), submits motion vectors and a depth buffer alongside each frame, and the Snapdragon XR2 Gen 2's dedicated compute block synthesises the intermediate frames on the SoC's fixed-function hardware rather than the main Adreno GPU. The result is that the GPU is freed to render higher-quality frames at half the cadence, while the displayed frame rate stays at the full 90 Hz. Neither ARCore on phones nor Android XR has an equivalent mechanism as of mid-2026.
+
+Android XR (Project Moohan) also uses a dedicated XR compositor rather than SurfaceFlinger for headset rendering, and its Snapdragon 8 Elite / Adreno 830 GPU is considerably faster than the Adreno 740 in Quest 3 — but Android XR's compositor ecosystem is younger, and the `XR_ANDROID_*` extension surface does not yet cover the depth of optimisation `XR_FB_*` has accumulated over eight years of Meta's investment.
+
+ARCore on phones uses SurfaceFlinger and `ASurfaceControl`, which imposes a compositor-path overhead that headset runtimes deliberately avoid. This is an unavoidable architectural consequence of phones being general-purpose devices whose display pipeline is owned by SurfaceFlinger rather than a dedicated XR runtime.
+
+**Passthrough pipeline.** Quest 3 wins decisively on passthrough latency. Camera passthrough is managed entirely by the platform compositor via `XR_FB_passthrough` — the application layer is never involved. The camera-to-photon round trip is approximately 8 ms at 90 Hz, achieved by the compositor compositing the camera feed and application layers simultaneously rather than sequentially. The application cannot read raw passthrough pixels, which also means zero application-side synchronisation complexity and zero copy.
+
+ARCore on phones exposes passthrough differently: the camera frame arrives as a `GL_TEXTURE_EXTERNAL_OES` that the application samples in its own fragment shader (§4). This approach is *more flexible* — the application can run LiteRT inference on the texture (§11), apply colour grading, or composite depth-based occlusion in GLSL — but it adds the application's render-loop latency (16–33 ms at 60–30 fps) to the camera-to-display path. For AR filters, object detection, or any use case requiring per-pixel camera access, ARCore's app-texture model is the right design. For transparent see-through MR where latency is the primary concern, Quest 3's compositor model is superior.
+
+Android XR's passthrough is compositor-managed like Quest 3, and Moohan's multi-camera array (stereo RGB + ToF) provides better depth-keyed passthrough blending than Quest 3's mono-depth estimation. In principle this is the best passthrough *quality*, though the field is narrow.
+
+**Tracking quality.** Quest 3's Insight tracking system represents roughly ten years of continuous refinement on standalone 6DoF SLAM running on the Hexagon DSP against four 60 Hz IR cameras. Sub-millimetre hand-anchor stability in controlled indoor environments and robust re-localisation after occlusion are characteristics that independent evaluations consistently confirm. Android XR uses ARCore's VIO stack adapted for a multi-camera headset sensor suite — a more recent transition that inherits ARCore's phone-era design assumptions (monocular SLAM + IMU preintegration) rather than being designed ground-up for inside-out headset tracking.
+
+ARCore on phones solves a fundamentally harder calibration problem: 6DoF pose from a single RGB camera and consumer-grade IMU, with no IR illumination, on a device that moves continuously in the user's hand rather than being fixed to their head. That it works as well as it does is the more remarkable engineering achievement. But it drifts more over long sessions and degrades in feature-poor environments (white walls, dark scenes) in ways that structured-light or IR-illuminated indoor-out tracking does not.
+
+**GPU performance and extension ecosystem.** Android XR has the fastest GPU of the three as of 2026 (Adreno 830 on Snapdragon 8 Elite, shipping in Moohan), and because it runs stock Android it inherits the full Vulkan 1.3 ecosystem, TBDR optimisations (§7 of ch161), and every Android GPU driver improvement without platform-specific porting effort. Quest 3's Adreno 740 is a generation behind but is extremely well-tuned by Meta's driver team specifically for XR workloads, and the `XR_FB_*` extension catalogue — 61 extensions as of mid-2026 — covers capabilities that have no equivalent in `XR_ANDROID_*` yet: `XR_FB_scene` (room understanding and furniture geometry), `XR_FB_body_tracking` (54-joint skeleton), `XR_FB_face_tracking2` (70 blend shapes), `XR_FB_eye_tracking_social`, and `XR_META_spatial_entity_persistence` (cloud-synced anchors). The Android XR extension surface will grow over time as the platform matures, but it is currently narrower than Meta's.
+
+**Summary: what each platform is actually best at.**
+
+| What you are optimising for | Winner | Reason |
+|---|---|---|
+| Lowest compositor latency | Quest 3 | Compositor-managed passthrough; no SurfaceFlinger in the stereo path |
+| Richest MR extension ecosystem | Quest 3 | 61 `XR_FB_*` extensions; body/face/eye tracking; scene understanding |
+| Raw GPU throughput | Android XR | Adreno 830 on Snapdragon 8 Elite |
+| Per-pixel camera access for ML | ARCore on phones | App-owned `GL_TEXTURE_EXTERNAL_OES`; direct LiteRT integration |
+| Broadest device reach | ARCore on phones | 1 billion+ certified Android devices |
+| Long-term open platform trajectory | Android XR | Standard Android + OpenXR; Google + Samsung investment |
+| Standalone MR production content today | Quest 3 | Mature platform; largest standalone XR user base |
+| ASW / frame synthesis | Quest 3 | `XR_FB_space_warp`; dedicated SoC compute block |
+
+The honest summary as of mid-2026: **Quest 3 leads on graphics pipeline maturity for standalone XR** — its compositor design, passthrough architecture, ASW, and Insight tracking reflect a decade of dedicated headset development that neither ARCore (optimised for phones) nor Android XR (first hardware in 2025) yet matches in depth. Android XR will likely close the raw GPU gap as Snapdragon 8 Elite devices multiply, and has the structural advantage of being an open Android standard — making it the safer long-term platform investment. ARCore on phones is solving a different problem entirely and is not meaningfully comparable to headset pipelines; the correct comparison for ARCore is ARKit, not Quest 3.
+
 #### Linux relevance: ALVR, WiVRn, and streaming
 
 The primary Linux intersection with Quest 3 is the **ALVR / WiVRn** streaming path described in §13 below: the Linux host runs Monado as its OpenXR runtime and encodes the rendered framebuffer with VA-API; the Quest 3 headset runs the ALVR or WiVRn client, decodes the stream, and presents it using its own compositor and 6DoF tracking. From the application's perspective on the Linux host, it sees a standard Monado OpenXR runtime with `XR_ALVR_*` or `WiVRn` extensions — the Quest 3 is transparent hardware on the other end of a WiFi link.
