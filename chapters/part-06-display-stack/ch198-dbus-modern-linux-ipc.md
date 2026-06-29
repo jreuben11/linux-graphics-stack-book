@@ -18,7 +18,8 @@
 10. [hyprwire and hyprtavern: The Hyprland IPC Ecosystem](#10-hyprwire-and-hyprtavern-the-hyprland-ipc-ecosystem)
 11. [BUS1: In-Kernel IPC in Rust](#11-bus1-in-kernel-ipc-in-rust)
 12. [Comparison and Selection Guide](#12-comparison-and-selection-guide)
-13. [Integrations](#13-integrations)
+13. [Roadmap](#13-roadmap)
+14. [Integrations](#14-integrations)
 
 ---
 
@@ -1315,7 +1316,37 @@ However, D-Bus's advantages — ecosystem inertia, tooling, and introspection �
 
 ---
 
-## 13. Integrations
+## 13. Roadmap
+
+### Near-term (6–12 months)
+
+**dbus-broker becomes the universal default.** As of mid-2026 dbus-broker is the default session and system bus implementation on Fedora, Arch, openSUSE Tumbleweed, and Void Linux. Debian 13 (Trixie) and Ubuntu 26.04 are tracking adoption; the remaining holdout is Debian stable's conservatism around replacing a daemon that ships on every installed system. The `DBUS_SESSION_BUS_PID` and `DBUS_SESSION_BUS_ADDRESS` interfaces are wire-compatible, so no application changes are required. The two-process architecture (policy broker + privileged activator helper) should eliminate the last class of dbus-daemon CVEs (privilege escalation via the monolithic single-process model).
+
+**Varlink broadcast signals proposal.** The single most-requested Varlink feature is broadcast notification (signals in D-Bus terms). Without it, Varlink cannot replace `org.freedesktop.login1` (seat add/remove events), `org.freedesktop.NetworkManager` (link state changes), or colord `Changed` signals — all of which are consumed by Wayland compositors. A kernel `io_uring`-backed multicast primitive has been proposed on the `systemd-devel` mailing list (2025): the sender writes to an eventfd; listening processes block on `io_uring IORING_OP_READ` against the fd. If accepted into systemd, this would close Varlink's primary gap against D-Bus for compositor use cases within a 1–2 release cycle.
+
+**zbus 5.x stabilisation.** The zbus crate is the de-facto Rust D-Bus library and is tracking full support for both the D-Bus wire protocol and Varlink in a unified async API. The `zlink` sub-crate (Varlink client) stabilised in zbus 4.x; zbus 5 is expected to add `zlink` server-side support and a unified `Connection` abstraction that handles both D-Bus and Varlink over the same `tokio` event loop.
+
+**hyprtavern 0.1 stable.** Vaxry's hyprtavern bus layer (the session-scoped IPC routing daemon for the Hyprland ecosystem) is targeting its first stable release alongside Hyprland 0.54. This will define the hyprtavern wire format, the capability model, and the service discovery mechanism. Third-party Hyprland plugins will be able to register as hyprtavern services rather than using the flat `hyprctl dispatch` Unix socket, enabling structured IPC between plugins for the first time.
+
+### Medium-term (1–3 years)
+
+**Varlink replaces remaining sd-bus compositor interfaces.** The current trajectory in systemd is to expose every new API as a Varlink interface first and consider D-Bus only if broadcast signals are required. Key graphics-adjacent targets: `io.systemd.Inhibitor` (suspend/resume coordination for screen lockers), `io.systemd.Session` (the full logind seat and session model), and `io.systemd.login` (VT switching). If `io.systemd.Session` gains Varlink support, compositors will be able to call `TakeDevice` and `PauseDevice` via Varlink rather than D-Bus, removing the `libdbus`/`sd-bus` dependency from the compositor's IPC path for seat management.
+
+**BUS1 kernel submission.** David Rheinsberg's BUS1 in-kernel Rust IPC driver is targeting initial upstream submission to `drivers/misc` or a new `drivers/ipc` subsystem. The kernel Rust-for-Linux infrastructure (landed in 6.1, maturing through 6.x) is the prerequisite — BUS1 uses Rust's ownership model to enforce at compile time that kernel IPC references cannot be forged or outlive the owning process. If accepted, BUS1 would provide a `O_CLOEXEC`-capable `/dev/bus1` fd-based IPC with unforgeable capability references — the same security model as Android Binder but available on mainline Linux desktop. Expected first submission: 2026–2027 kernel cycle.
+
+**xdg-desktop-portal Varlink migration.** The portal layer (Ch23) is the primary cross-compositor IPC surface for Flatpak and sandboxed applications. The portal team has discussed migrating from D-Bus to Varlink for the internal portal-implementation protocol (the portal frontend calls the portal backend over a private socket). If this lands, portal backends would no longer require a D-Bus service file and activation mechanism — simplifying compositor-specific portal implementations (the wlr-portal backend for wlroots, hyprland-xdg-desktop-portal, etc.).
+
+**Android Binder on mainline Linux.** The `CONFIG_ANDROID_BINDER_IPC` option already builds in mainline kernel, but the userspace toolchain (`libbinder`, AIDL compiler) is tightly coupled to the Android build system. Projects like `binder-linux` (a standalone Binder userspace library for GNU/Linux) are gaining traction for running Android HALs in container environments (e.g., Waydroid, Anbox). If libbinder is packaged in major distributions, the hardware abstraction layer for camera, codecs, and display could be reused on Linux without Android's full stack — relevant for platforms like RISC-V and ARM SBCs shipping Android BSPs.
+
+### Long-term
+
+- **Unified IPC surface for the Wayland compositor ecosystem.** The current landscape (D-Bus for freedesktop specs, Varlink for systemd, Wayland protocols for window management, compositor-specific sockets for extensions) may converge toward a smaller set: Wayland protocol for rendering and input, Varlink+signals for system service integration, and compositor-native sockets (hyprwire / ext-ipc-v1 or similar Wayland protocol extension) for privileged compositor control. D-Bus would be retained only for legacy freedesktop compatibility.
+- **BUS1 as Android Binder replacement on Linux desktop.** If BUS1 matures and gains broad distribution support, it could serve the same role as Binder on Android — a high-performance, capability-safe kernel IPC for HAL boundaries — without Android's driver infrastructure. Gralloc, V4L2, and codec HAL interfaces could potentially be expressed as BUS1 services rather than D-Bus/Varlink, with stronger isolation guarantees.
+- **Varlink IDL tooling maturity.** Current Varlink tooling is minimal: `.varlink` files are parsed by hand in most implementations. As adoption grows, expect generated client stubs (analogous to `gdbus-codegen` or `aidl`) for C, Rust, Go, and Python, reducing Varlink integration from raw JSON socket I/O to type-safe generated API calls.
+
+---
+
+## 14. Integrations
 
 This chapter connects to the following chapters throughout the book:
 
