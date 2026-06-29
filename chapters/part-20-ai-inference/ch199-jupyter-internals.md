@@ -39,6 +39,58 @@ The server-side anchor is **`jupyter_server`** ([source](https://github.com/jupy
 
 The REST API design is intentionally minimal. A `POST /api/kernels` body contains `{"name": "python3"}` and returns a kernel-id and connection info. A `GET /api/sessions` returns active sessions mapping notebooks to kernels. The single WebSocket at `kernels/<id>/channels` carries all five ZMQ socket channels multiplexed by a `channel` field in each JSON message envelope, described in the next section.
 
+### nteract: Desktop-Native Jupyter Frontend
+
+**nteract** ([source](https://github.com/nteract/nteract)) is an Electron-based desktop application and React component SDK that implements the Jupyter frontend without requiring a running `jupyter_server` process. Understanding its architecture clarifies the clean separation between the Jupyter *protocol* and any particular server or browser implementation.
+
+**Electron process model.** nteract runs as two Electron processes:
+
+- **Main process** (Node.js): spawns kernel subprocesses directly via `child_process.spawn`, reads `kernelspec` JSON from `~/.local/share/jupyter/kernels/`, and creates ZMQ sockets using the `zeromq` npm package (a Node.js binding to libzmq). It owns the five ZMQ socket connections (shell, iopub, stdin, control, hb) for each live kernel.
+- **Renderer process** (Chromium): hosts the React/Redux UI. It communicates with the main process over Electron's IPC (`ipcRenderer` / `ipcMain`) to send execution requests and receive output messages. There is no HTTP layer and no WebSocket — the ZMQ protocol is spoken directly from Node.js to the kernel subprocess.
+
+This direct-ZMQ architecture means nteract has lower latency than browser-based frontends (no WebSocket round-trip through `jupyter_server`) and can work fully offline without a Python server process.
+
+**Redux state model.** The nteract application state is managed by a Redux store defined in `@nteract/core` ([source](https://github.com/nteract/nteract/tree/main/packages/core)). The store shape mirrors the notebook document: `entities.kernels`, `entities.kernelspecs`, `entities.contents` (the notebook cells and outputs), and `entities.hosts` (local vs. remote Jupyter server). Actions such as `SEND_EXECUTE_REQUEST`, `APPEND_OUTPUT`, and `UPDATE_CELL_SOURCE` flow through reducers that update the immutable state tree. React components subscribe to slices of this store via `react-redux` selectors.
+
+**`@nteract/messaging`** ([source](https://github.com/nteract/nteract/tree/main/packages/messaging)) is a TypeScript library that encodes and decodes Jupyter wire-format messages. It provides factory functions (`executeRequest()`, `kernelInfoRequest()`) that produce properly structured message objects, and type guards (`isExecuteResultMsg()`, `isStreamMsg()`) for discriminating incoming iopub messages. The main process uses this library to construct ZMQ multipart frames and to parse incoming frames into typed message objects before forwarding them to the renderer via IPC.
+
+```javascript
+// Excerpt illustrating nteract's direct ZMQ kernel launch (Node.js main process)
+// Conceptual — actual implementation in @nteract/kernel-lifecycle
+const { spawn } = require("child_process");
+const jmp = require("jmp");           // ZMQ message protocol for Jupyter
+const uuid = require("uuid");
+
+// Connection file written to a temp path; kernel reads it at startup
+const connectionInfo = {
+  transport: "tcp",
+  ip: "127.0.0.1",
+  shell_port: 55000,
+  iopub_port: 55001,
+  stdin_port: 55002,
+  control_port: 55003,
+  hb_port: 55004,
+  signature_scheme: "hmac-sha256",
+  key: uuid.v4()
+};
+
+// Spawn the kernel subprocess directly — no jupyter_server involved
+const kernelProc = spawn("python3", [
+  "-m", "ipykernel_launcher",
+  "-f", "/tmp/kernel-abc123.json"
+]);
+
+// Open ZMQ DEALER socket on shell channel
+const shellSocket = new jmp.Socket("dealer");
+shellSocket.connect(`tcp://127.0.0.1:${connectionInfo.shell_port}`);
+```
+
+**`@nteract/outputs`** is the renderer-side React component library for cell outputs. It implements the same MIME renderer registry concept as JupyterLab's `IRenderMimeRegistry`: a priority-ordered list of renderer components keyed by MIME type. Vega, Plotly, GeoJSON, and LaTeX renderers are available as separate `@nteract/transform-*` packages that plug into the registry.
+
+**VS Code Jupyter extension** follows the same direct-ZMQ pattern on Linux when the "local" kernel mode is used: the extension host (Node.js) spawns the kernel subprocess and communicates over ZMQ via the `vscode-jupyter-ipywidgets` and `@vscode/jupyter-extension` packages, bypassing `jupyter_server` entirely. When connecting to a remote Jupyter server, VS Code switches to the WebSocket-over-HTTP path, identical to JupyterLab.
+
+**Current status.** Active development of the nteract desktop application slowed after 2021 as VS Code's Jupyter extension matured. The `@nteract/` npm packages — particularly `@nteract/core`, `@nteract/messaging`, and `@nteract/outputs` — remain in use as building blocks in other projects. GitHub historically used nteract components to render `.ipynb` files; they have since moved to a custom renderer. The nteract SDK is still the cleanest reference implementation of a Jupyter frontend that speaks ZMQ directly without a server intermediary.
+
 ---
 
 ## 2. The ZMQ Kernel Protocol
