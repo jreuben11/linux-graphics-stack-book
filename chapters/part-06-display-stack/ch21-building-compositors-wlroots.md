@@ -14,6 +14,7 @@
 - [5. The Scene Graph API](#5-the-scene-graph-api)
 - [6. Input Handling](#6-input-handling)
 - [6a. The Linux Input Stack and libinput](#6a-the-linux-input-stack-and-libinput)
+- [6b. Seat Management: logind, seatd, and libseat](#6b-seat-management-logind-seatd-and-libseat)
 - [7. Protocol Implementations in wlroots](#7-protocol-implementations-in-wlroots)
 - [8. XWayland Integration](#8-xwayland-integration)
 - [9. Walkthrough: A Minimal Compositor](#9-walkthrough-a-minimal-compositor)
@@ -623,6 +624,179 @@ The **pointer constraints protocol** (`zwp_pointer_constraints_v1`) provides:
 - `zwp_locked_pointer_v1`: locks cursor to a fixed position; all motion is delivered as relative events. Used by FPS games. **Common compositor bug**: subtle errors in how the constraint is deactivated and reactivated on focus changes cause games to lose control. Compositors must re-activate the constraint when the surface regains focus, and deactivate it cleanly on focus loss.
 
 The **text input and IME chain** (`zwp_text_input_v3`, `zwp_input_method_v2`) routes between text-entry surfaces (GTK4, Qt6 text fields) and IME applications (fcitx5, ibus). The compositor acts as relay: it forwards `zwp_text_input_v3` state from the focused text field to the active `zwp_input_method_v2`, and routes IME output back as `commit_string`, `preedit_string`, `delete_surrounding_text`. wlroots provides `wlr_text_input_manager_v3` and `wlr_input_method_manager_v2`. Both protocols are technically in the `unstable` namespace but are widely deployed (GTK4, Qt6, fcitx5, ibus all support them). The `ext_input_method_v1` standardisation in wayland-protocols staging is ongoing.
+
+---
+
+## 6b. Seat Management: logind, seatd, and libseat
+
+A Wayland compositor needs privileged access to at least two classes of kernel device: DRM/KMS nodes (`/dev/dri/card0`) and input event nodes (`/dev/input/event*`). Both are owned by `root:input` or `root:video` with mode `0660`. A production compositor must not run as root and must not be setuid. The solution is a **seat manager** — a privileged daemon that brokers device file descriptors to the compositor on behalf of the logged-in user's session.
+
+### Why a Seat Manager Is Necessary
+
+Three kernel mechanisms make unprivileged compositor access possible, but they require a privileged intermediary to set up:
+
+1. **`DRM_IOCTL_SET_MASTER`** — only the process holding the active VT, or one with `CAP_SYS_ADMIN`, can become DRM master (the entity that issues KMS commits). A normal user process cannot call this ioctl directly.
+2. **`udev uaccess` tagging** — udev rules tag GPU and input devices with `TAG+="uaccess"`. The seat manager uses `udevd`'s ACL mechanism to grant the active session user `rw` permission on those nodes dynamically, at login.
+3. **VT switching** — when the user switches VTs, DRM master must transfer atomically to the compositor on the new VT. This requires signalling both compositors to pause/resume in a coordinated way that only a seat-level daemon can orchestrate.
+
+The seat manager is the process that holds root (or the relevant capabilities), owns the open device fds, and passes them to the compositor as ancillary data over a Unix socket or D-Bus. The compositor never opens the DRM or input nodes directly.
+
+### systemd-logind
+
+`systemd-logind` is the seat manager included with systemd. It manages *sessions* (a user's login context) and *seats* (the set of hardware devices assigned to one physical location). It exposes its API via D-Bus at `org.freedesktop.login1`.
+
+**Relevant D-Bus methods on `org.freedesktop.login1.Session`:**
+
+| Method | What it does |
+|---|---|
+| `TakeControl(force)` | Grants the caller exclusive control of the session; required before `TakeDevice` |
+| `TakeDevice(major, minor)` | Opens the device node and passes back a paused fd via SCM_RIGHTS |
+| `ReleaseDevice(major, minor)` | Releases a previously taken device fd |
+| `SetType(type)` | Sets the session type (`wayland`, `x11`, `tty`) — compositors call this at startup |
+
+**VT switching signals on the session object:**
+
+| Signal | Meaning |
+|---|---|
+| `PauseDevice(major, minor, type)` | Compositor must stop using the device (DRM: drop master; input: stop reading) |
+| `ResumeDevice(major, minor, fd)` | Compositor may resume; a fresh fd is delivered if `type` was `"pause"` |
+
+The full compositor startup sequence with logind:
+
+```c
+// 1. Connect to D-Bus system bus
+sd_bus *bus;
+sd_bus_open_system(&bus);
+
+// 2. Find our own session path
+char *session_path;
+sd_bus_call_method(bus, "org.freedesktop.login1",
+    "/org/freedesktop/login1",
+    "org.freedesktop.login1.Manager",
+    "GetSessionByPID", NULL, &reply, "u", getpid());
+// extract session_path from reply…
+
+// 3. Take control of the session
+sd_bus_call_method(bus, "org.freedesktop.login1", session_path,
+    "org.freedesktop.login1.Session",
+    "TakeControl", NULL, NULL, "b", false);
+
+// 4. Open the DRM card node via logind (not directly)
+struct stat st;
+stat("/dev/dri/card0", &st);
+sd_bus_call_method(bus, "org.freedesktop.login1", session_path,
+    "org.freedesktop.login1.Session",
+    "TakeDevice", NULL, &reply,
+    "uu", major(st.st_rdev), minor(st.st_rdev));
+// reply contains fd (via SCM_RIGHTS) and paused (bool)
+
+// 5. Set session type so logind knows we are a Wayland compositor
+sd_bus_call_method(bus, "org.freedesktop.login1", session_path,
+    "org.freedesktop.login1.Session",
+    "SetType", NULL, NULL, "s", "wayland");
+```
+
+[Source: sd-login(3)](https://www.freedesktop.org/software/systemd/man/latest/sd-login.html) [Source: logind D-Bus API](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.login1.html)
+
+### seatd
+
+`seatd` (by kennylevinsen) is a minimal standalone seat management daemon with no systemd dependency. It runs as a small privileged process (`/usr/sbin/seatd`) and exposes a Unix socket at `$SEATD_SOCK` (typically `/run/seatd.sock`). The protocol is a simple custom binary protocol — not D-Bus — which makes it lighter and easier to audit than logind.
+
+`seatd` is the default seat manager on non-systemd Linux distributions (Alpine Linux, Void Linux, Artix) and on OpenBSD. It supports the same fundamental operations as logind: opening device nodes and passing fds, pausing/resuming on VT switch.
+
+The seatd daemon is started as a root service:
+
+```bash
+# OpenRC (Alpine/Artix)
+rc-service seatd start
+rc-update add seatd default
+
+# Or run directly (for testing):
+seatd -g video    # grant access to members of the 'video' group
+```
+
+Compositors communicate with seatd via the `libseat` library — they never speak the seatd binary protocol directly. [Source: seatd repository](https://git.sr.ht/~kennylevinsen/seatd)
+
+### libseat: The Portability Abstraction
+
+`libseat` is a small C library that provides a single API for seat management, with pluggable backends:
+
+- **`builtin` backend** — speaks the seatd Unix socket protocol; used when seatd is running
+- **`logind` backend** — speaks logind's D-Bus API via `sd-bus`; used when systemd-logind is running
+- **`noop` backend** — opens devices directly as root; used for testing or in embedded environments with no seat manager
+
+The backend is selected automatically at runtime based on what is available (`SEATD_SOCK` env var → builtin; systemd session → logind; fallback → noop).
+
+**Core libseat API:**
+
+```c
+#include <libseat.h>
+
+// Open a seat connection (auto-selects backend)
+struct libseat *seat = libseat_open_seat(&(struct libseat_seat_listener){
+    .enable_seat  = on_enable_seat,   // called when seat becomes active (resume)
+    .disable_seat = on_disable_seat,  // called when seat becomes inactive (pause/VT switch)
+}, userdata);
+
+// Open a privileged device — returns an fd the compositor can use directly
+int fd, device_id;
+device_id = libseat_open_device(seat, "/dev/dri/card0", &fd);
+
+// Release a device (called on compositor exit or suspend)
+libseat_close_device(seat, device_id);
+
+// Dispatch pending seat events (VT switch notifications, etc.)
+// Call this whenever the libseat fd is readable
+libseat_dispatch(seat, 0);
+
+// Close the seat connection
+libseat_close_seat(seat);
+```
+
+The `enable_seat` / `disable_seat` callbacks are the VT switch hooks: when the user switches away, `disable_seat` fires and the compositor must drop DRM master and stop reading input; when the user switches back, `enable_seat` fires and the compositor resumes.
+
+wlroots uses libseat in its session abstraction (`backend/session/session.c`). All device opens in the DRM and libinput backends go through `wlr_session_open_file`, which calls `libseat_open_device` internally. This is why wlroots-based compositors (Sway, river, wayfire, Hyprland) work on both systemd and non-systemd systems without recompilation — libseat's backend selection happens at runtime. [Source: wlroots session backend](https://gitlab.freedesktop.org/wlroots/wlroots/-/blob/master/backend/session/session.c)
+
+### elogind: logind Without systemd
+
+`elogind` is a fork of `systemd-logind` extracted from systemd and packaged as a standalone daemon. It provides the same `org.freedesktop.login1` D-Bus interface as logind, so compositors using the logind D-Bus API (or libseat's logind backend) work unchanged. elogind is used on Gentoo, Devuan, and other systemd-free distributions that nevertheless want the full logind feature set (multi-seat, XDG_RUNTIME_DIR management, DPMS inhibitors).
+
+### udev and Device ACLs
+
+The seat manager's device access grant is implemented via POSIX ACLs set by udev when a session becomes active:
+
+```bash
+# udev rule (installed by systemd or elogind):
+# /usr/lib/udev/rules.d/73-seat-late.rules
+TAG=="uaccess", RUN+="/usr/lib/udev/uaccess %p %M:%m"
+```
+
+`uaccess` calls `setfacl` to grant the session user `rw` on the device node:
+
+```bash
+# What logind/elogind does at login for /dev/dri/card0:
+setfacl -m u:1000:rw /dev/dri/card0
+
+# What it does at logout or VT switch away:
+setfacl -x u:1000 /dev/dri/card0
+```
+
+This means the compositor's `libseat_open_device` call returns an fd that the compositor owns directly — the fd persists even if the seat manager crashes, because file descriptors are reference-counted by the kernel independently of any daemon. [Source: systemd uaccess](https://github.com/systemd/systemd/blob/main/src/udev/udev-builtin-uaccess.c)
+
+### Seat Manager Comparison
+
+| Aspect | systemd-logind | seatd | elogind |
+|---|---|---|---|
+| Interface | D-Bus (`org.freedesktop.login1`) | Unix socket (binary protocol) | D-Bus (`org.freedesktop.login1`) |
+| Dependency | systemd | None | libsystemd (extracted) |
+| Multi-seat support | Yes | Yes | Yes |
+| `XDG_RUNTIME_DIR` management | Yes | No (needs `pam_rundir` or similar) | Yes |
+| DPMS / idle inhibit API | Yes (`org.freedesktop.login1.Manager.Inhibit`) | No | Yes |
+| Distributions | Arch, Fedora, Ubuntu, Debian, openSUSE | Alpine, Void, Artix, OpenBSD | Gentoo, Devuan |
+| libseat backend name | `logind` | `builtin` | `logind` |
+| Runtime selection | Automatic (sd-bus session detection) | `SEATD_SOCK` env var | Automatic (sd-bus) |
+
+For compositor authors: target `libseat`. Do not call logind D-Bus methods or seatd's socket protocol directly. libseat handles backend selection, and wlroots' session layer wraps libseat — compositors built on wlroots get portability for free. Direct logind calls are appropriate only when building a compositor from scratch without wlroots, or when needing logind-specific features such as idle inhibitors (`org.freedesktop.login1.Manager.Inhibit`) not exposed by libseat. [Source: libseat](https://git.sr.ht/~kennylevinsen/seatd/tree/master/item/libseat)
 
 ---
 
