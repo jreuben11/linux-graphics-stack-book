@@ -8,6 +8,7 @@
 
 - [178.1 The TTY Subsystem: An Architectural Overview](#1781-the-tty-subsystem-an-architectural-overview)
 - [178.1a TTY Device Types: A Field Guide](#1781a-tty-device-types-a-field-guide)
+- [178.1b Using TTY Devices from Bash](#1781b-using-tty-devices-from-bash)
 - [178.2 `tty_struct`, `tty_driver`, and `tty_operations`](#1782-tty_struct-tty_driver-and-tty_operations)
 - [178.3 PTY Architecture: Master, Slave, and `/dev/ptmx`](#1783-pty-architecture-master-slave-and-devptmx)
 - [178.4 The `devpts` Filesystem and PTY Lifecycle](#1784-the-devpts-filesystem-and-pty-lifecycle)
@@ -190,6 +191,163 @@ PTYs are the mechanism beneath every terminal emulator window, every SSH session
 - **Standard vs vendor driver**: CDC-ACM uses a USB-standard driver (`cdc_acm`) that works for any conforming device. USB serial adapters require a per-chip vendor driver. PTYs use the in-tree `pty.c` driver with no hardware enumeration at all.
 - **Line discipline role**: For all terminal-facing devices (UART, USB serial, CDC-ACM, PTY slave) the line discipline is N_TTY, providing canonical mode, echo, and signal generation. For the Bluetooth HCI bridge the line discipline is N_HCI, which does framing instead of terminal processing — no shell ever reads from it.
 - **Who consumes the data**: UART, USB serial, CDC-ACM, and PTY slave nodes are read by user-space processes (shells, `minicom`, terminal emulators). The Bluetooth HCI bridge's data is consumed by the `hci_uart` kernel driver and never surfaces as readable bytes in user space. The JTAG debug channel bypasses the TTY layer entirely — it is handled by OpenOCD via `libusb`, not via a `/dev` node.
+
+---
+
+## 178.1b Using TTY Devices from Bash
+
+Every `/dev/tty*` and `/dev/pts/*` node is a regular file from the shell's perspective — `open()`, `read()`, `write()`, and `ioctl()` work on them just as on any other file. This section shows the practical patterns for each device class.
+
+### `/dev/tty` — Reaching the Terminal When stdio Is Redirected
+
+`/dev/tty` always refers to the **calling process's own controlling terminal**, regardless of how stdin/stdout are redirected. It is the standard escape hatch for interactive prompts inside scripts:
+
+```bash
+#!/usr/bin/env bash
+# This script may be invoked as: generate-report | encrypt | upload
+# stdin is a pipe — /dev/tty reaches the real keyboard/screen
+
+read -rsp "GPG passphrase: " passphrase < /dev/tty
+echo                              # newline after silent read
+echo "Signing report…" > /dev/tty # progress visible even if stdout is a pipe
+
+gpg --batch --passphrase "$passphrase" --sign report.pdf
+```
+
+Tools that must interact with a user regardless of their stdio context — `sudo`, `ssh-add`, `git credential helper`, `pass` — all open `/dev/tty` for the same reason. The `tty` command prints the path of the current controlling terminal:
+
+```bash
+$ tty
+/dev/pts/3
+$ tty < /dev/null
+not a tty        # stdin is not a terminal
+```
+
+### `/dev/pts/N` — Writing to Another Terminal Window
+
+Each open terminal emulator window or SSH session owns a `/dev/pts/N` slave node. You can write to another session's terminal directly:
+
+```bash
+# Identify your own terminal and others
+tty             # → /dev/pts/3
+who             # shows all logged-in users and their pts nodes
+w               # same, with CPU/command info
+
+# Send a message to another window
+echo "Build finished: 142 tests passed" > /dev/pts/4
+
+# Broadcast to every pts (requires write permission or root)
+wall "Rebooting for kernel update in 5 minutes"
+
+# From a tmux pane, target a specific pane's pts
+# (tmux exposes each pane as a pts node)
+tmux list-panes -F "#{pane_tty}"   # → /dev/pts/5, /dev/pts/6, …
+echo "done" > /dev/pts/5
+```
+
+Write permission to another user's pts is controlled by `chmod g+w` (set by `login`/`sshd` when the session starts) and the `mesg` command (`mesg y` allows writes, `mesg n` denies them).
+
+### `/dev/ttyS*` / `/dev/ttyUSB*` / `/dev/ttyACM*` — Serial Port I/O
+
+The kernel exposes serial ports as plain character devices. `stty` configures the `termios` settings; then ordinary `read`/`write` shell operations work:
+
+```bash
+# Configure port: 115200 baud, raw mode (no line processing), no echo
+stty -F /dev/ttyUSB0 115200 cs8 -cstopb -parenb raw -echo
+
+# Receive: print everything arriving on the port
+cat /dev/ttyUSB0
+
+# Send a single command (e.g. an AT command to a modem)
+echo -e "AT+GMR\r" > /dev/ttyUSB0
+
+# Bidirectional scripted exchange using a bash file descriptor
+exec 3<>/dev/ttyUSB0            # open port read+write on fd 3
+stty -F /dev/ttyUSB0 115200 raw -echo
+printf "AT+CGMI\r" >&3          # send
+sleep 0.1
+read -t 1 response <&3          # receive one line
+echo "Response: $response"
+exec 3>&-                       # close fd
+```
+
+**When to use raw bash vs a dedicated tool**: the `exec 3<>` pattern suits automated scripting — CI flash-and-test pipelines, firmware provisioning scripts, AT command health checks. For interactive sessions where you need line editing and a visible stream, use `picocom` or `minicom` instead.
+
+**Permissions**: serial ports are typically owned by `root:dialout` with mode `0660`. Add your user to the `dialout` group (`sudo usermod -aG dialout $USER`) to avoid needing `sudo` for every serial access.
+
+### `/dev/console` — Kernel and initramfs Context
+
+`/dev/console` is the system console: the device the kernel writes boot messages to, and the terminal attached to PID 1 before any user sessions exist. Ordinary scripts running under a desktop session should not use it (it maps to a VT, not your terminal window). It is relevant in two contexts:
+
+```bash
+# Inside an initramfs init script (before /dev/tty exists):
+echo "initramfs: mounting root filesystem" > /dev/console
+
+# From a root shell to force a message onto the VT console
+# regardless of which VT the user has switched to:
+echo "ALERT: disk nearly full" > /dev/console
+```
+
+The kernel's `console=` boot parameter (e.g. `console=ttyS0,115200`) controls which physical device `/dev/console` maps to. On headless embedded systems `console=ttyS0` makes `/dev/console` the UART, so initramfs scripts and kernel panics both appear on the serial port.
+
+### Virtual Serial Pairs with `socat`
+
+`socat` (SOcket CAT) can create virtual linked PTY pairs — useful for testing firmware communication code without physical hardware:
+
+```bash
+# Create a virtual serial pair: /dev/ttyV0 ↔ /dev/ttyV1
+socat PTY,link=/dev/ttyV0,raw,echo=0 \
+      PTY,link=/dev/ttyV1,raw,echo=0 &
+
+# Anything written to ttyV0 is readable from ttyV1 and vice versa
+picocom /dev/ttyV0 &           # one end: interactive
+cat /dev/ttyV1                 # other end: observe raw bytes
+
+# Bridge a real serial port to a TCP socket (remote serial console
+# over SSH tunnel or VPN — no need for a hardware console server):
+socat /dev/ttyUSB0,b115200,raw TCP-LISTEN:2023,reuseaddr,fork
+# Connect from another machine:
+socat - TCP:remotehost:2023
+# or with picocom:
+picocom -b 115200 /dev/ttyUSB0   # on the local end
+```
+
+The virtual pair is useful for:
+- **Firmware unit tests**: the test harness opens one end, the firmware-under-test opens the other; no hardware needed in CI
+- **Protocol fuzzing**: inject malformed bytes into `/dev/ttyV1` while the firmware reads from `/dev/ttyV0`
+- **Remote console**: expose a UART serial port over TCP without a dedicated hardware console server
+
+### Identifying and Inspecting TTY State
+
+```bash
+# What terminal am I on?
+tty                         # → /dev/pts/3
+
+# What are the current termios settings?
+stty -F /dev/ttyUSB0 -a    # all settings verbose
+stty -a                     # current terminal's settings
+
+# What process has a TTY open?
+fuser /dev/ttyUSB0          # → PID(s) with the device open
+lsof /dev/ttyUSB0           # same with process names
+
+# List all active PTY slaves
+ls /dev/pts/
+
+# Check USB serial device enumeration
+dmesg | grep tty            # kernel messages when device was plugged in
+udevadm info /dev/ttyUSB0  # full udev attribute tree (vendor/product IDs)
+```
+
+`udevadm` is particularly useful when multiple USB serial devices are plugged in simultaneously — the `/dev/ttyUSBN` numbering is enumeration-order-dependent and can shift between reboots. Writing a udev rule that creates a stable symlink (`/dev/arduino`, `/dev/gps`) based on USB vendor/product ID is the standard solution:
+
+```udev
+# /etc/udev/rules.d/99-usb-serial.rules
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{idProduct}=="0043", \
+    SYMLINK+="arduino"
+```
+
+After `udevadm control --reload && udevadm trigger`, the device appears at both `/dev/ttyUSB0` and `/dev/arduino`, with `arduino` being stable across replugs.
 
 ---
 
