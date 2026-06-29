@@ -7,6 +7,7 @@
 ## Table of Contents
 
 - [178.1 The TTY Subsystem: An Architectural Overview](#1781-the-tty-subsystem-an-architectural-overview)
+- [178.1a TTY Device Types: A Field Guide](#1781a-tty-device-types-a-field-guide)
 - [178.2 `tty_struct`, `tty_driver`, and `tty_operations`](#1782-tty_struct-tty_driver-and-tty_operations)
 - [178.3 PTY Architecture: Master, Slave, and `/dev/ptmx`](#1783-pty-architecture-master-slave-and-devptmx)
 - [178.4 The `devpts` Filesystem and PTY Lifecycle](#1784-the-devpts-filesystem-and-pty-lifecycle)
@@ -60,6 +61,58 @@ The TTY subsystem's character device nodes are rooted in `/dev`. The most import
 | `/dev/pts/0`, `/dev/pts/1`, … | PTY slave endpoints, one per open PTY master |
 
 [Source: Linux kernel documentation — TTY overview](https://docs.kernel.org/driver-api/tty/index.html)
+
+---
+
+## 178.1a TTY Device Types: A Field Guide
+
+The TTY layer abstracts several fundamentally different hardware and virtual device classes behind one uniform interface. The four most relevant to terminal and systems work are described below.
+
+### UART Controller (`/dev/ttyS*`, `/dev/ttyAMA*`)
+
+A **UART** (Universal Asynchronous Receiver-Transmitter) is the hardware block that serialises bytes to voltage levels on a pair of wires (TX/RX) at a negotiated baud rate. Every PC has at least one (historically COM1/COM2); ARM SoCs typically expose several (PL011 on Raspberry Pi, 8250-compatible on x86).
+
+The kernel driver (`drivers/tty/serial/8250/` for the 8250 family, `drivers/tty/serial/amba-pl011.c` for PL011) registers a `uart_driver` that plugs into the TTY layer via `uart_register_driver()`. From user space the device appears as `/dev/ttyS0` (PC) or `/dev/ttyAMA0` (Raspberry Pi). The UART driver handles baud rate programming (`CBAUD` flags in `termios`), hardware flow control (RTS/CTS), and interrupt-driven byte reception into the TTY flip buffer (§178.5).
+
+Common uses: serial consoles (`console=ttyS0,115200`), JTAG/debug probes, embedded sensor buses, and the Bluetooth UART transport described below.
+
+### USB Serial Adapter (`/dev/ttyUSB*`) and CDC-ACM (`/dev/ttyACM*`)
+
+USB serial adapters come in two flavours depending on how the USB device presents itself:
+
+**`/dev/ttyUSB*` — vendor-specific USB-to-serial chips.** Devices based on FTDI FT232, Prolific PL2303, or Silicon Labs CP210x use vendor-specific USB descriptors. Each has its own kernel driver (`drivers/usb/serial/ftdi_sio.c`, `pl2303.c`, `cp210x.c`) that registers with the `usb-serial` framework. The USB bulk endpoints carry raw bytes; the driver translates `termios` settings into vendor control requests to programme baud rate and flow control into the chip's internal UART logic.
+
+**`/dev/ttyACM*` — CDC-ACM (Communications Device Class, Abstract Control Model).** CDC-ACM is a USB standard: the device declares a CDC Communication Interface with an Abstract Control Model functional descriptor, meaning it advertises serial/modem semantics without relying on vendor-specific USB descriptors. The kernel driver is `drivers/usb/class/cdc-acm.c` (`cdc_acm` module). Devices that use CDC-ACM include Arduino boards, many ARM microcontroller dev boards (STM32, nRF52), and USB modems. Because CDC-ACM is a standard, no vendor-specific driver is needed — `cdc_acm` handles all conforming devices.
+
+Both paths register a `tty_driver` and create TTY nodes. From the perspective of a shell or `screen`/`minicom`, `/dev/ttyUSB0` and `/dev/ttyACM0` are indistinguishable: they accept `termios` configuration and provide a `read()`/`write()` byte stream. [Source: kernel CDC-ACM driver](https://github.com/torvalds/linux/blob/master/drivers/usb/class/cdc-acm.c)
+
+### Bluetooth HCI Bridge (`/dev/ttyS*` with `N_HCI` line discipline)
+
+When a Bluetooth controller chip is connected to the host via UART — common on embedded ARM boards where the Bluetooth and Wi-Fi combo chip (e.g., Cypress CYW43455 on Raspberry Pi 4) shares a UART with the application processor — the TTY layer acts as the physical transport for the Bluetooth **Host Controller Interface (HCI)**.
+
+The kernel's `hci_uart` driver (`drivers/bluetooth/hci_uart.c`) implements a TTY **line discipline** (`N_HCI`, discipline number 15). Attaching it to a serial port:
+
+```bash
+# userspace: attach HCI UART line discipline to /dev/ttyAMA0
+btattach -B /dev/ttyAMA0 -P h4 -S 3000000
+```
+
+With `N_HCI` active, the TTY's `receive_buf()` callback — instead of feeding bytes into the N_TTY canonical buffer — passes them to the `hci_uart` framing layer. The H4 transport framing is trivial (one type byte prefix: `0x01`=command, `0x02`=ACL data, `0x04`=event), but BCSP and Three-Wire (`H5`) add CRC and reliable retransmission on top of the raw UART. The framed HCI packets are handed up to `hci_core` and from there to BlueZ in user space via the `AF_BLUETOOTH`/`BTPROTO_HCI` socket.
+
+The TTY here is a *bridge*: it provides the byte-stream transport between the physical UART wires and the structured HCI packet world of the Bluetooth stack. No shell or terminal reads from this TTY — it is consumed entirely by the Bluetooth driver. [Source: hci_uart driver](https://github.com/torvalds/linux/blob/master/drivers/bluetooth/hci_uart.c)
+
+### Pseudo-Terminal Pair (`/dev/ptmx` + `/dev/pts/N`)
+
+A **pseudo-terminal (PTY)** is a kernel-synthesised TTY with no physical hardware. It consists of a bidirectionally linked pair:
+
+- **Master side** (`/dev/ptmx`): opened by the terminal emulator (kitty, foot, Ghostty) or by SSH `sshd`. Writing to the master delivers bytes to the slave's read queue; reading from the master receives bytes the slave has written (after line discipline processing).
+- **Slave side** (`/dev/pts/N`): the file descriptor the shell and its children inherit as `stdin`/`stdout`/`stderr`. It behaves identically to a physical UART TTY from the process's perspective — `termios`, `SIGWINCH`, job control, all work unchanged.
+
+Opening `/dev/ptmx` allocates a new PTY pair atomically. The kernel assigns the next available slave number and mounts the slave node under `devpts` (§178.4). The master's file descriptor is returned; `ptsname(fd)` returns the slave path (e.g., `/dev/pts/7`). The master caller then forks a shell with the slave as its controlling terminal.
+
+The line discipline (N_TTY by default) sits on the *slave* side and performs echo, canonical buffering, and signal generation. Data written by the shell to the slave passes through N_TTY, emerges from the master's `read()`, and is displayed by the terminal emulator. Data typed by the user is written to the master, passes through N_TTY (echo, `^C` → `SIGINT`, etc.), and is delivered to the shell via the slave's `read()`. The full data flow is elaborated in §178.3.
+
+PTYs are the mechanism beneath every terminal emulator window, every SSH session, and every `script(1)` recording. They are the reason that programs compiled decades ago for physical terminals work unmodified inside a modern GPU-accelerated terminal window.
 
 ---
 
