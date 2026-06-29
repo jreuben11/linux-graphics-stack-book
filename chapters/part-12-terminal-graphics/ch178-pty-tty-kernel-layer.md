@@ -104,6 +104,35 @@ The JTAG and UART channels are electrically independent on the target board: JTA
 
 Multi-chip boards use JTAG's **scan chain** feature: TDO of one chip feeds TDI of the next, so a single probe can access an SoC, an FPGA, and a microcontroller sequentially by shifting data through the combined chain. OpenOCD's `jtag newtap` configuration declares each device in the chain with its IR length and `IDCODE`. [Source: OpenOCD documentation](https://openocd.org/doc/html/Config-File-Guidelines.html)
 
+**OpenOCD** (Open On-Chip Debugger) is the open-source host daemon that drives the JTAG probe via `libusb` and exposes two interfaces to the developer:
+
+- A **GDB remote serial protocol server** (default port 3333) — `arm-none-eabi-gdb` connects here for source-level debugging: breakpoints, watchpoints, register and memory inspection
+- A **telnet/TCL command interface** (port 4444) — scriptable flash programming, reset sequences, and register dumps
+
+```bash
+# Start OpenOCD with a J-Link probe and STM32F4 target
+openocd -f interface/jlink.cfg -f target/stm32f4x.cfg
+
+# In a second terminal: attach GDB
+arm-none-eabi-gdb vmlinux
+(gdb) target remote :3333
+(gdb) monitor reset halt
+(gdb) break start_kernel
+(gdb) continue
+```
+
+OpenOCD consumes the JTAG channel via `libusb` directly — it does not open a `/dev` node. The UART console channel on the same probe is a separate TTY (`/dev/ttyUSB0`) opened independently by `minicom` or `screen`. The two paths are entirely independent: you can halt the CPU via GDB/OpenOCD and simultaneously read its last serial console output from the TTY, because they run on different USB endpoints.
+
+**minicom** is the canonical interactive serial terminal for `/dev/ttyUSB*` and `/dev/ttyACM*` devices. It opens the TTY with configurable `termios` settings and provides a full-screen session:
+
+```bash
+minicom -D /dev/ttyUSB0 -b 115200
+# or save a named configuration:
+minicom -s            # interactive setup → saves to /etc/minicom/minirc.dfl
+```
+
+It handles XON/XOFF flow control, ZMODEM/YMODEM file transfer, and AT command interaction with modems. Lighter alternatives are `picocom` (minimal, scriptable) and `screen /dev/ttyUSB0 115200` (no setup, exits cleanly with `Ctrl-A k`). All three are user-space programs that simply `open()` the TTY device and relay bytes — the kernel TTY layer handles everything beneath them. [Source: minicom](https://salsa.debian.org/minicom-team/minicom)
+
 ### Bluetooth HCI Bridge (`/dev/ttyS*` with `N_HCI` line discipline)
 
 When a Bluetooth controller chip is connected to the host via UART — common on embedded ARM boards where the Bluetooth and Wi-Fi combo chip (e.g., Cypress CYW43455 on Raspberry Pi 4) shares a UART with the application processor — the TTY layer acts as the physical transport for the Bluetooth **Host Controller Interface (HCI)**.
