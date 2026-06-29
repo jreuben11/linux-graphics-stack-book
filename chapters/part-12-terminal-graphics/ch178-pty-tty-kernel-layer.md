@@ -132,6 +132,24 @@ The line discipline (N_TTY by default) sits on the *slave* side and performs ech
 
 PTYs are the mechanism beneath every terminal emulator window, every SSH session, and every `script(1)` recording. They are the reason that programs compiled decades ago for physical terminals work unmodified inside a modern GPU-accelerated terminal window.
 
+### Comparison Table
+
+| Device type | `/dev` node | Kernel driver | Physical medium | Line discipline | Primary use |
+|---|---|---|---|---|---|
+| UART controller | `/dev/ttyS*`, `/dev/ttyAMA*` | `8250`, `amba-pl011` | RS-232 / 3.3 V TTL wires | N_TTY (default) | Serial console, sensor buses, embedded debug |
+| USB serial adapter | `/dev/ttyUSB*` | `ftdi_sio`, `pl2303`, `cp210x` | USB bulk endpoints → internal UART chip | N_TTY | USB-to-RS232 dongles, dev board console |
+| CDC-ACM device | `/dev/ttyACM*` | `cdc_acm` (standard) | USB CDC Communication Interface | N_TTY | Arduino, STM32, nRF52, USB modems |
+| JTAG probe (UART channel) | `/dev/ttyUSB*` or `/dev/ttyACM*` | `ftdi_sio` / `cdc_acm` | USB (UART channel of dual-function probe) | N_TTY | Serial console alongside JTAG debug channel |
+| Bluetooth HCI bridge | `/dev/ttyS*` / `/dev/ttyAMA*` | `hci_uart` | UART (to Bluetooth combo chip) | N_HCI (15) | Bluetooth HCI transport; consumed by BlueZ |
+| Pseudo-terminal (PTY) | `/dev/pts/N` (slave) | `pty.c` | No hardware — kernel ring buffer | N_TTY on slave | Terminal emulators, SSH, `tmux`, `script` |
+
+**Key distinctions:**
+
+- **Physical vs virtual**: UART, USB serial, CDC-ACM, and JTAG UART channels all correspond to real hardware wires. PTYs are entirely software. Bluetooth HCI bridges sit in between — real UART hardware, but the bytes are never seen by a user; they carry a structured protocol consumed by the kernel's Bluetooth stack.
+- **Standard vs vendor driver**: CDC-ACM uses a USB-standard driver (`cdc_acm`) that works for any conforming device. USB serial adapters require a per-chip vendor driver. PTYs use the in-tree `pty.c` driver with no hardware enumeration at all.
+- **Line discipline role**: For all terminal-facing devices (UART, USB serial, CDC-ACM, PTY slave) the line discipline is N_TTY, providing canonical mode, echo, and signal generation. For the Bluetooth HCI bridge the line discipline is N_HCI, which does framing instead of terminal processing — no shell ever reads from it.
+- **Who consumes the data**: UART, USB serial, CDC-ACM, and PTY slave nodes are read by user-space processes (shells, `minicom`, terminal emulators). The Bluetooth HCI bridge's data is consumed by the `hci_uart` kernel driver and never surfaces as readable bytes in user space. The JTAG debug channel bypasses the TTY layer entirely — it is handled by OpenOCD via `libusb`, not via a `/dev` node.
+
 ---
 
 ## 178.2 `tty_struct`, `tty_driver`, and `tty_operations`
