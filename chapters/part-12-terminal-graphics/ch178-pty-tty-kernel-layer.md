@@ -23,6 +23,8 @@
 - [178.13 Terminal Multiplexers and PTY Chaining](#17813-terminal-multiplexers-and-pty-chaining)
   - [tmux: Architecture and PTY Layer in Depth](#tmux-architecture-and-pty-layer-in-depth)
   - [zellij: Multiplexer with a WebAssembly Plugin System](#zellij-multiplexer-with-a-webassembly-plugin-system)
+  - [PTY I/O with io_uring](#pty-io-with-io_uring)
+  - [Wayland Compositor-Native Terminal Multiplexing](#wayland-compositor-native-terminal-multiplexing)
 - [178.14 Integrations](#17814-integrations)
 
 ---
@@ -1325,6 +1327,169 @@ zellij --session dev action write-chars "git status\n"
 ```
 
 The `zellij action` subcommand communicates with the running server via the Unix socket, issuing structured commands that the server translates into PTY writes or layout changes. This is the equivalent of `tmux send-keys` and `tmux split-window`, but with a typed action model rather than string commands. [Source: zellij CLI reference](https://zellij.dev/documentation/cli-actions)
+
+---
+
+### PTY I/O with io_uring
+
+Traditional PTY I/O in terminal emulators and multiplexers uses `epoll` + `read()`/`write()`: the process blocks in `epoll_wait()`, receives a notification that the PTY master fd is readable, then calls `read()`. Each PTY read requires two syscalls (one `epoll_wait` wakeup + one `read`), and each write similarly. For a terminal emulator processing 100 MB/s of output (Ghostty's target throughput), this syscall overhead is measurable.
+
+**io_uring** (Linux 5.1+) reduces this by submitting I/O operations to a shared ring buffer between user space and the kernel, allowing the kernel to complete operations without a per-operation syscall. The interface consists of two lock-free ring buffers: the **Submission Queue (SQ)** where user space places `sqe` (submission queue entry) descriptors, and the **Completion Queue (CQ)** where the kernel deposits `cqe` (completion queue entry) results.
+
+#### Basic io_uring PTY Read Loop
+
+```c
+#include <liburing.h>
+
+struct io_uring ring;
+io_uring_queue_init(32, &ring, 0);   // 32-entry ring
+
+// Register the PTY master fd for reduced per-op overhead
+int fds[] = { pty_master_fd };
+io_uring_register_files(&ring, fds, 1);
+
+// Submit a read request — no syscall needed if SQ is not full
+char buf[65536];
+struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+io_uring_prep_read(sqe, 0, buf, sizeof(buf), 0);  // fd index 0 = pty_master_fd
+sqe->flags |= IOSQE_FIXED_FILE;                    // use registered fd
+io_uring_sqe_set_data(sqe, (void *)PTY_READ_TAG);
+io_uring_submit(&ring);
+
+// Wait for completion
+struct io_uring_cqe *cqe;
+io_uring_wait_cqe(&ring, &cqe);
+int bytes_read = cqe->res;           // < 0 = error, >= 0 = bytes
+io_uring_cqe_seen(&ring, cqe);      // advance CQ tail
+```
+
+#### Multishot Reads (Linux 6.1+)
+
+`IORING_OP_READ_MULTISHOT` allows a single submission to generate multiple completions — the kernel re-arms the read automatically after each completion, avoiding the re-submission round-trip entirely. This is the natural fit for PTY master fds, which deliver output continuously:
+
+```c
+// Submit once; kernel re-arms after every successful read
+struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+io_uring_prep_read_multishot(sqe, 0, 0, 0, 0);  // buf_group 0, provided buffers
+sqe->flags |= IOSQE_FIXED_FILE | IOSQE_BUFFER_SELECT;
+io_uring_submit(&ring);
+
+// Completions arrive in CQ continuously until the fd is closed or errors
+// Each CQE carries IORING_CQE_F_MORE if more completions are coming
+```
+
+Multishot reads require **provided buffers** (`io_uring_register_buffers` or buffer rings), where user space pre-registers a pool of buffers and the kernel selects one for each completion. This eliminates the need to keep a buffer pinned between submission and completion. [Source: io_uring multishot documentation](https://kernel.dk/io_uring.pdf)
+
+#### Terminal Emulator Adoption
+
+**Ghostty** uses io_uring for PTY reads on Linux (falling back to epoll on kernels < 5.1). The io_uring path is in `src/terminal/posix/Pty.zig` and uses multishot reads when available. The measured benefit is primarily in CPU efficiency at high throughput — fewer context switches, better instruction cache utilisation — rather than raw latency, since PTY round-trip latency is dominated by the VT parser and renderer, not the read syscall. [Source: Ghostty PTY implementation](https://github.com/ghostty-org/ghostty/blob/main/src/terminal/posix/Pty.zig)
+
+**WezTerm** evaluated io_uring for PTY I/O; as of 2025 it uses `tokio`'s async I/O which on Linux uses `epoll` internally. The `tokio-uring` crate provides io_uring integration for tokio runtimes and is the path by which WezTerm and zellij (both tokio-based) could adopt io_uring without a full rewrite.
+
+#### io_uring Splice for Zero-Copy PTY Bridging
+
+`IORING_OP_SPLICE` allows data to be moved between two fds via the kernel's pipe buffer without a user-space copy. For a multiplexer that forwards inner PTY master → outer PTY slave, this enables zero-copy forwarding:
+
+```c
+// Zero-copy forward: inner PTY master → pipe → outer PTY slave
+struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+io_uring_prep_splice(sqe,
+    inner_pty_master_fd, -1,   // source: inner PTY master
+    pipe_write_fd, -1,         // dest: pipe (intermediary required)
+    4096,                      // bytes to splice
+    SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+```
+
+In practice, multiplexers like tmux re-parse PTY output to update their internal terminal state machine, so zero-copy forwarding is not compatible with their VT-aware architecture — they must examine every byte. io_uring splice is more applicable to transparent PTY proxies (SSH forwarding, serial port bridging) than to state-aware multiplexers. [Source: io_uring splice](https://man7.org/linux/man-pages/man2/splice.2.html)
+
+---
+
+### Wayland Compositor-Native Terminal Multiplexing
+
+The fundamental problem with PTY chaining (tmux/zellij model) is that it inserts a **VT state machine** between the shell and the terminal emulator. Every byte of output must be parsed by the multiplexer to maintain its internal grid model, even if the multiplexer is simply forwarding the data. This causes:
+
+- **Graphics protocol failures**: Kitty and Sixel sequences require opt-in passthrough configuration and can still break when sequences mutate state that the multiplexer models
+- **GPU rendering loss**: only the outermost terminal emulator has a GPU renderer; tmux's panes are rendered by tmux's own ASCII grid, not individual GPU-accelerated terminal instances
+- **Clipboard, IME, colour management degradation**: Wayland protocol features (e.g. `zwp_primary_selection_v1`, `zwp_text_input_v3`) operate on the outer PTY surface only; inner panes cannot directly participate
+
+**Compositor-native terminal multiplexing** resolves these problems by making each pane a **separate Wayland surface** backed by a **direct PTY pair** — no intermediary VT parser, no PTY chaining.
+
+#### foot's Server Mode: The Reference Implementation
+
+**foot** implements compositor-native multiplexing via its `--server` flag:
+
+```bash
+# Start the foot server daemon (creates a Wayland client with no windows)
+foot --server &
+
+# Create a new terminal window — returns immediately, window appears instantly
+footclient
+
+# Create another window (reuses the server process; no new Wayland connection)
+footclient
+
+# Each footclient window:
+# - Gets its own direct PTY pair (openpty() → fork() → exec shell)
+# - Has its own Wayland wl_surface and xdg_toplevel
+# - Has its own pixman CPU renderer (foot is CPU-rendered)
+# - Shares the Wayland connection with the server → amortises connection overhead
+```
+
+The foot server architecture:
+
+```
+foot --server
+    │ Wayland connection (one per server, shared across all windows)
+    │ wl_display, wl_registry
+    │
+    ├── footclient window 1
+    │     wl_surface + xdg_toplevel
+    │     openpty() → /dev/pts/8  (shell 1)
+    │     pixman render → wl_shm_pool → wl_buffer → wl_surface.commit
+    │
+    └── footclient window 2
+          wl_surface + xdg_toplevel
+          openpty() → /dev/pts/9  (shell 2)
+          pixman render → wl_shm_pool → wl_buffer → wl_surface.commit
+```
+
+Each window is an independent terminal with no shared VT state — there is no "multiplexer layer". The server merely amortises the Wayland connection and font loading cost. [Source: foot server mode documentation](https://codeberg.org/dnkl/foot/wiki/Server-mode)
+
+The contrast with tmux running inside a single foot window:
+
+| | tmux inside foot | foot --server |
+|---|---|---|
+| PTY pairs | 1 outer + N inner (chained) | N direct (unchained) |
+| VT parsing | tmux parses all inner output | foot parses each window's output directly |
+| GPU/CPU rendering | foot renders tmux's ASCII grid | foot renders each shell's raw output |
+| Kitty graphics | Requires `allow-passthrough on` | Works natively (no intermediary) |
+| Wayland surfaces | 1 (the foot window) | N (one per footclient window) |
+| Session persistence | tmux daemon survives detach | foot server survives display reconnect |
+
+#### GPU-Accelerated Compositor-Native Multiplexing
+
+The foot server model uses a CPU renderer (pixman). A GPU-accelerated equivalent — where each pane is a separate `wl_surface` with its own OpenGL/Vulkan glyph atlas — would give each pane full GPU rendering without PTY chaining overhead.
+
+**Ghostty's multi-window model** approximates this: multiple windows each have their own OpenGL surface, direct PTY pair, and VT parser, sharing only the GPU glyph atlas and the font rendering pipeline across windows. Within a single Ghostty window, splits/tabs share one OpenGL context and one PTY-per-pane direct to the shell. [Source: Ghostty architecture](https://github.com/ghostty-org/ghostty)
+
+A fully compositor-native approach would go further: each pane would be a separate `wl_subsurface` (or `xdg_toplevel` in a tiling compositor), allowing the compositor to:
+
+- Apply different colour profiles per pane via `wp_color_management_v1`
+- Handle per-pane IME via `zwp_text_input_v3` focus independently
+- Promote individual pane surfaces to KMS overlay planes (zero-copy scanout per pane)
+- Apply fractional scaling per pane if panes span monitor boundaries
+
+#### The `ext-terminal-pane-v1` Design Space
+
+As of mid-2026 there is no standardised Wayland protocol for compositor-managed terminal pane layout. The closest proposals are:
+
+- **`wlr-layer-shell-unstable-v1`** (wlroots) — compositors can tile applications as layer surfaces; terminals tiled this way get separate PTYs but no inter-pane communication protocol
+- **Sway's IPC tiling** — Sway's custom IPC (`swaymsg`) can place terminal windows in a tiling layout without a multiplexer; each terminal retains its direct PTY and Wayland surface
+- **`ext-session-lock-v1`** analogy — demonstrates that compositor-managed surface sets are feasible as Wayland protocol extensions; a hypothetical `ext-terminal-pane-v1` could formalise pane layout, focus, and resize signalling
+
+The design challenge is that a "compositor-native multiplexer" would require the compositor to understand terminal semantics (SIGWINCH on resize, focus delivery to the correct pane's `wl_keyboard`), which current compositor protocol is not designed for. The wayland-terminal working group has discussed these trade-offs without producing a stable protocol. [Source: wayland-protocols issue tracker](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/issues)
+
+For current practice: if escape-sequence passthrough and GPU rendering correctness matter, prefer **foot --server** (CPU renderer, no PTY chaining) or **Ghostty splits** (GPU renderer, no PTY chaining) over tmux/zellij inside a single terminal window.
 
 ---
 
