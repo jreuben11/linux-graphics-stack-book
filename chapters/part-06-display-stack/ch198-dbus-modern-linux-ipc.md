@@ -13,13 +13,16 @@
 5. [Programming D-Bus: GLib/GIO (gdbus-codegen)](#5-programming-d-bus-glibgio-gdbus-codegen)
 6. [Programming D-Bus: Python (dasbus)](#6-programming-d-bus-python-dasbus)
 7. [Programming D-Bus: Rust — zbus](#7-programming-d-bus-rust--zbus)
-8. [Varlink: systemd's Simpler IPC](#8-varlink-systemds-simpler-ipc)
-9. [Android Binder: IPC for the Graphics HAL](#9-android-binder-ipc-for-the-graphics-hal)
-10. [hyprwire and hyprtavern: The Hyprland IPC Ecosystem](#10-hyprwire-and-hyprtavern-the-hyprland-ipc-ecosystem)
-11. [BUS1: In-Kernel IPC in Rust](#11-bus1-in-kernel-ipc-in-rust)
-12. [Comparison and Selection Guide](#12-comparison-and-selection-guide)
-13. [Roadmap](#13-roadmap)
-14. [Integrations](#14-integrations)
+8. [Programming D-Bus: Qt (QDBus)](#8-programming-d-bus-qt-qdbus)
+9. [Varlink: systemd's Simpler IPC](#9-varlink-systemds-simpler-ipc)
+10. [Android Binder: IPC for the Graphics HAL](#10-android-binder-ipc-for-the-graphics-hal)
+11. [hyprwire and hyprtavern: The Hyprland IPC Ecosystem](#11-hyprwire-and-hyprtavern-the-hyprland-ipc-ecosystem)
+12. [BUS1: In-Kernel IPC in Rust](#12-bus1-in-kernel-ipc-in-rust)
+13. [D-Bus vs Wayland Protocol: When to Use Which](#13-d-bus-vs-wayland-protocol-when-to-use-which)
+14. [Testing D-Bus and IPC Code](#14-testing-d-bus-and-ipc-code)
+15. [Comparison and Selection Guide](#15-comparison-and-selection-guide)
+16. [Roadmap](#16-roadmap)
+17. [Integrations](#17-integrations)
 
 ---
 
@@ -240,6 +243,71 @@ pgrep -a dbus-broker
 ```
 
 **Configuration compatibility**: dbus-broker reads the same `/etc/dbus-1/system.d/` policy XML files as dbus-daemon. For distributions that default to dbus-broker, no policy file changes are needed. The `dbus-broker-launch` unit replaces `dbus.service` and reads the same activation `.service` files.
+
+### Debugging with busctl
+
+`busctl` is the systemd-provided D-Bus inspection and call tool, and the recommended replacement for the older `dbus-monitor` and `dbus-send` utilities. It is included in the `systemd` package on all major distributions.
+
+**List all services on the session bus:**
+```bash
+busctl --user list
+```
+Output shows the unique name (`:1.42`), the well-known name (`org.freedesktop.portal.desktop`), PID, process name, and whether the service is activatable (i.e., has a `.service` file but is not yet running).
+
+**Introspect an object's interfaces and methods:**
+```bash
+busctl --user introspect org.freedesktop.login1 /org/freedesktop/login1/session/auto
+```
+This calls `org.freedesktop.DBus.Introspectable.Introspect` and prints a human-readable table of interfaces, methods (with argument types), signals, and properties — including the direction (`→` for in, `←` for out).
+
+**Call a method:**
+```bash
+# Ask logind for the active session path (no args, returns object path)
+busctl --system call org.freedesktop.login1 \
+    /org/freedesktop/login1 \
+    org.freedesktop.login1.Manager \
+    GetSessionByPID u $$
+
+# Open a DRM device (major=226, minor=0 = /dev/dri/card0; read-only=false)
+busctl --system call org.freedesktop.login1 \
+    /org/freedesktop/login1/session/auto \
+    org.freedesktop.login1.Session \
+    TakeDevice uu 226 0
+```
+The argument format uses D-Bus type codes inline: `u` = uint32, `s` = string, `b` = boolean, `h` = Unix fd (returned, not passed). `busctl` unmarshals the reply and prints it as a typed value tree.
+
+**Monitor all messages in real time:**
+```bash
+busctl --user monitor
+# Filter to a specific service:
+busctl --user monitor org.freedesktop.portal.desktop
+```
+This is the replacement for `dbus-monitor`; it uses the kernel-level socket monitor (`SO_ATTACH_FILTER`) to capture messages without requiring a match rule subscription, so it works even for point-to-point replies.
+
+**Read a property:**
+```bash
+busctl --system get-property org.freedesktop.login1 \
+    /org/freedesktop/login1/session/auto \
+    org.freedesktop.login1.Session \
+    State
+# → s "active"
+```
+
+**Set a property:**
+```bash
+busctl --system set-property org.freedesktop.login1 \
+    /org/freedesktop/login1/session/auto \
+    org.freedesktop.login1.Session \
+    IdleHint b false
+```
+
+**Capture to a pcap file for Wireshark analysis:**
+```bash
+busctl --system capture > /tmp/dbus.pcap
+wireshark /tmp/dbus.pcap   # D-Bus dissector built-in since Wireshark 3.0
+```
+
+`busctl` is the primary tool for interactive D-Bus exploration and debugging when developing compositor seat management code or portal backends. For automated test assertions, `dbus-test-runner` (covered in §14) is more appropriate.
 
 ---
 
@@ -841,7 +909,134 @@ For new projects targeting modern Linux, **zbus is the recommended choice**. The
 
 ---
 
-## 8. Varlink: systemd's Simpler IPC
+## 8. Programming D-Bus: Qt (QDBus)
+
+Qt's D-Bus binding, `QDBus`, is part of the `QtDBus` module (shipped with every Qt5/Qt6 install). It is the backbone of KDE Plasma's IPC layer — every KDE application, Plasma shell component, and KWin compositor extension communicates via `QDBus`. Understanding it is essential for working with or extending any KDE-adjacent compositor or desktop integration code.
+
+### Core Classes
+
+| Class | Purpose |
+|---|---|
+| `QDBusConnection` | Represents a connection to a bus (session or system) |
+| `QDBusInterface` | Proxy object for calling methods on a remote service |
+| `QDBusMessage` | Raw message — used for low-level send/receive |
+| `QDBusReply<T>` | Typed reply wrapper (wraps a `QDBusMessage`) |
+| `QDBusAbstractInterface` | Base class for generated proxies (via `qdbusxml2cpp`) |
+| `QDBusAbstractAdaptor` | Base class for server-side D-Bus object adaptor |
+
+### Calling a Method: QDBusInterface
+
+```cpp
+#include <QDBusConnection>
+#include <QDBusInterface>
+#include <QDBusReply>
+#include <QUnixFileDescriptor>
+
+// Connect to the system bus and call TakeDevice on the active logind session
+QDBusConnection bus = QDBusConnection::systemBus();
+QDBusInterface session(
+    "org.freedesktop.login1",
+    "/org/freedesktop/login1/session/auto",
+    "org.freedesktop.login1.Session",
+    bus
+);
+
+// TakeDevice(major: u32, minor: u32) -> (fd: h, inactive: b)
+QDBusReply<QDBusUnixFileDescriptor> reply =
+    session.call("TakeDevice", QVariant((uint)226), QVariant((uint)0));
+
+if (reply.isValid()) {
+    int drm_fd = reply.value().fileDescriptor();
+    // dup() before the QDBusUnixFileDescriptor goes out of scope
+    int owned_fd = dup(drm_fd);
+}
+```
+
+`QDBusUnixFileDescriptor` wraps a Unix fd received over D-Bus, handling the SCM_RIGHTS receive path. Qt handles fd lifetime: the descriptor is closed when the `QDBusUnixFileDescriptor` object is destroyed, so `dup()` it immediately if the fd needs to outlive the reply object.
+
+### Subscribing to Signals
+
+```cpp
+// Subscribe to PauseDevice signal (sent by logind on VT switch)
+QObject::connect(
+    &session,
+    SIGNAL(PauseDevice(uint, uint, QString)),
+    this,
+    SLOT(onPauseDevice(uint, uint, QString))
+);
+
+// The slot receives (major, minor, type) where type = "pause" or "force"
+void MyCompositor::onPauseDevice(uint major, uint minor, const QString &type) {
+    if (type == "pause") {
+        drm_drop_master(drm_fd);
+        session.call("PauseDeviceComplete", QVariant(major), QVariant(minor));
+    }
+}
+```
+
+Qt's signal/slot system maps directly onto D-Bus signals: `QDBusConnection::connect()` registers a match rule internally, and incoming signal messages are dispatched as Qt signals.
+
+### Code Generation with qdbusxml2cpp
+
+Qt provides `qdbusxml2cpp` to generate typed proxy and adaptor classes from D-Bus introspection XML. This is the recommended approach for stable, well-typed D-Bus interfaces:
+
+```bash
+# Generate a client proxy from logind's introspection XML
+dbus-send --system --dest=org.freedesktop.login1 \
+    --type=method_call --print-reply \
+    /org/freedesktop/login1 \
+    org.freedesktop.DBus.Introspectable.Introspect \
+    2>/dev/null | grep -A9999 '<?xml' > logind_session.xml
+
+qdbusxml2cpp -c LogindSessionInterface -p logind_session_iface logind_session.xml
+# Generates: logind_session_iface.h / logind_session_iface.cpp
+```
+
+The generated `LogindSessionInterface` subclasses `QDBusAbstractInterface` and provides typed C++ methods (`takeDevice()`, `releaseDevice()`, etc.) and Qt signals (`PauseDevice`, `ResumeDevice`), eliminating all string-based method name dispatch.
+
+### Server Side: QDBusAbstractAdaptor
+
+```cpp
+class ScreenCastAdaptor : public QDBusAbstractAdaptor {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.ScreenCast")
+public:
+    explicit ScreenCastAdaptor(QObject *parent) : QDBusAbstractAdaptor(parent) {}
+
+Q_SIGNALS:
+    void StreamsChanged();
+
+public Q_SLOTS:
+    uint CreateSession(const QVariantMap &options, QDBusMessage &message);
+    uint SelectSources(const QDBusObjectPath &session_handle,
+                       const QVariantMap &options, QDBusMessage &message);
+    uint Start(const QDBusObjectPath &session_handle,
+               const QString &parent_window,
+               const QVariantMap &options, QDBusMessage &message);
+};
+
+// Register with the session bus:
+QDBusConnection::sessionBus().registerObject("/org/freedesktop/portal/desktop",
+                                              new ScreenCastImpl());
+QDBusConnection::sessionBus().registerService("org.freedesktop.portal.desktop");
+```
+
+`QDBusAbstractAdaptor` subclasses attached to a `QObject` are automatically discovered by QtDBus. Slot signatures are introspected at runtime and exposed as D-Bus methods; `Q_SIGNALS` are exposed as D-Bus signals. The `QDBusMessage &message` parameter enables asynchronous replies (call `message.setDelayedReply(true)` and later send the reply manually — essential for portal methods that show a user-interaction dialog before responding).
+
+### KDE Usage Patterns
+
+KDE makes extensive use of the generated-proxy pattern. Key examples relevant to the Linux graphics stack:
+
+- **KWin's D-Bus API** (`org.kde.KWin`): exposes window management, compositor effects, screen configuration, and screenshot APIs. Tools like `kwin_wayland --replace`, Spectacle (screenshot app), and KScreen all use QDBus to call into KWin.
+- **KScreen/KRandR** (`org.kde.KScreen`): screen layout persistence and monitor hot-plug handling via D-Bus.
+- **KWin Wayland scripts**: KWin's scripting API is exposed as a D-Bus interface, allowing external tools to register window rules or trigger effects dynamically.
+- **Plasma Wayland session**: the `org.kde.KSplash`, `org.kde.KWinFT` (KWin with KFramework Theming), and `org.kde.plasmashell` services are all QDBus-based.
+
+[Source: Qt QDBus documentation](https://doc.qt.io/qt-6/qtdbus-index.html)
+
+---
+
+## 9. Varlink: systemd's Simpler IPC
 
 ### What Varlink Is
 
@@ -1055,6 +1250,76 @@ fn main() {
 
 > **Note**: The raw socket example above illustrates the protocol structure. In production, use the `zlink` crate with generated types from the `.varlink` IDL; this handles NUL framing, error types, and async I/O correctly. The `varlink-inspect` example in zlink demonstrates introspecting `io.systemd.Resolve` directly.
 
+### Varlink in C: Direct Socket Implementation
+
+For C compositor code, there is no widely-adopted Varlink C library (the original `libvarlink` is unmaintained). The protocol is simple enough to implement directly with POSIX sockets — the cost is writing the JSON serialiser/deserialiser, for which most C projects already have a library (`jansson`, `json-c`, or a lightweight custom parser).
+
+```c
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdio.h>
+
+/* Varlink: send a JSON call, receive a NUL-terminated JSON reply */
+static int varlink_call(const char *socket_path,
+                        const char *json_call,
+                        char *reply_buf, size_t reply_max)
+{
+    struct sockaddr_un addr = { .sun_family = AF_UNIX };
+    strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
+
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd); return -1;
+    }
+
+    /* Varlink framing: message body + NUL byte terminator */
+    size_t len = strlen(json_call);
+    if (write(fd, json_call, len) != (ssize_t)len ||
+        write(fd, "\0", 1) != 1) {
+        close(fd); return -1;
+    }
+
+    /* Read until NUL byte */
+    size_t n = 0;
+    char c;
+    while (n < reply_max - 1) {
+        ssize_t r = read(fd, &c, 1);
+        if (r <= 0) break;
+        if (c == '\0') break;
+        reply_buf[n++] = c;
+    }
+    reply_buf[n] = '\0';
+    close(fd);
+    return (int)n;
+}
+
+int main(void) {
+    /* io.systemd.Resolve.ResolveHostname: resolve "localhost" A record */
+    const char *call =
+        "{\"method\":\"io.systemd.Resolve.ResolveHostname\","
+        "\"parameters\":{\"name\":\"localhost\",\"family\":2}}";
+
+    char reply[4096];
+    int n = varlink_call("/run/systemd/resolve/io.systemd.Resolve",
+                         call, reply, sizeof(reply));
+    if (n > 0)
+        printf("Reply: %s\n", reply);
+    return 0;
+}
+```
+
+Key points for C Varlink implementations:
+- **NUL terminator**: the message boundary is a single `\0` byte appended after the JSON body. `read_until('\0')` is the framing rule — do not use line-oriented I/O.
+- **`more` mode**: for streaming replies (multi-value responses), set `"more": true` in the request. The service sends multiple NUL-terminated JSON objects; the final reply omits `"continues": true`.
+- **Error replies**: the service sends `{"error": "io.systemd.Resolve.NoNameServers", "parameters": {...}}` on failure — check for the `"error"` key before reading `"parameters"`.
+- **Socket discovery**: Varlink service sockets live under `/run/systemd/` (system services) or `$XDG_RUNTIME_DIR/` (user services). For user services, resolve via `$DBUS_SESSION_BUS_ADDRESS` or `systemd-userdb` discovery.
+
+For production C code, wrapping the above into a small `varlink_ctx` with epoll/`io_uring` support (for async calls without blocking the compositor event loop) is the recommended approach.
+
 ### The logind Inflection Point for Compositor Authors
 
 logind's D-Bus interface — `org.freedesktop.login1.Session.TakeDevice`, `PauseDevice`, `ResumeDevice` — is the seat management gatekeeper for every non-root Wayland compositor. It currently has no Varlink equivalent. This is the single most graphics-critical interface that remains D-Bus-only, and for good reason: `PauseDevice` and `ResumeDevice` are D-Bus signals sent simultaneously to all session controllers — a broadcast notification model that Varlink cannot currently replicate.
@@ -1079,7 +1344,7 @@ This is the principal architectural reason why Varlink cannot yet replace D-Bus 
 
 ---
 
-## 9. Android Binder: IPC for the Graphics HAL
+## 10. Android Binder: IPC for the Graphics HAL
 
 ### What Binder Is
 
@@ -1174,7 +1439,7 @@ For NDK code (C/C++ targeting the stable NDK ABI), `libbinder_ndk` provides acce
 
 ---
 
-## 10. hyprwire and hyprtavern: The Hyprland IPC Ecosystem
+## 11. hyprwire and hyprtavern: The Hyprland IPC Ecosystem
 
 ### Background: Vaxry's D-Bus Critique
 
@@ -1240,7 +1505,7 @@ For Hyprland users and developers, hyprwire is already production-relevant for c
 
 ---
 
-## 11. BUS1: In-Kernel IPC in Rust
+## 12. BUS1: In-Kernel IPC in Rust
 
 ### History: KDBUS and the First BUS1 Proposal
 
@@ -1285,7 +1550,251 @@ However, D-Bus's advantages — ecosystem inertia, tooling, and introspection �
 
 ---
 
-## 12. Comparison and Selection Guide
+## 13. D-Bus vs Wayland Protocol: When to Use Which
+
+Every compositor author eventually faces a design choice: should a new integration surface be a **D-Bus interface**, a **Wayland protocol extension**, a **Varlink service**, or a **compositor-specific Unix socket**? The choice has significant consequences for portability, security, toolability, and long-term maintenance. This section provides structured guidance.
+
+### The Core Distinction
+
+**D-Bus and Varlink** are general-purpose IPC mechanisms. They operate independently of the Wayland connection: a client does not need a Wayland display connection to call a D-Bus or Varlink method. This makes them suitable for:
+- System-level concerns (power management, colour management, seat management)
+- Cross-session communication (system bus)
+- Services accessed by non-GUI tools (CLI tools, daemons, sandboxed apps via portals)
+- Interfaces that predate Wayland or must be compositor-neutral (e.g. logind)
+
+**Wayland protocol extensions** are multiplexed over the Wayland Unix socket and can only be spoken by clients with a valid `wl_display` connection. They are suitable for:
+- Window management (positioning, focus, decoration, fullscreen)
+- Input handling (seat, keyboard, pointer, touch, tablet)
+- Output configuration (resolution, rotation, colour primaries per-output)
+- Surface-level operations (subsurfaces, layer surfaces, fractional scaling)
+- Pixel data exchange (DMA-BUF import, shared memory buffers)
+
+### Decision Matrix
+
+| Requirement | D-Bus | Varlink | Wayland Extension | Compositor Socket |
+|---|---|---|---|---|
+| Compositor-agnostic (works on GNOME + KDE + wlroots) | ✓ | ✓ | Only if ratified in wayland-protocols | ✗ |
+| Non-Wayland clients (CLI tools, daemons) | ✓ | ✓ | ✗ | ✗ |
+| Broadcast notifications (1:N signals) | ✓ | ✗ (no broadcast) | ✓ (events to subscribed clients) | ✗ |
+| Carries file descriptors | ✓ (`h` type) | ✗ (JSON only) | ✓ (native fd passing) | ✓ (SCM_RIGHTS) |
+| Access to compositor internal state | ✗ | ✗ | ✓ | ✓ |
+| Sandboxed app access (Flatpak) | Via portals | Via portals | ✗ (Wayland socket not in sandbox) | ✗ |
+| Rate: messages per second | ~5k–20k/s | ~10k–50k/s | ~100k–500k/s | ~100k–500k/s |
+| Requires freedesktop standardisation | Usually yes | Rarely | For cross-compositor use | Never |
+| Introspectable / toolable | ✓ (busctl, d-feet) | ✓ (varlinkctl) | ✗ (wayland-info only) | ✗ |
+
+### The Canonical Partition
+
+In practice, the Linux desktop ecosystem has converged on a clear partition:
+
+**Use D-Bus** for any interface from the `org.freedesktop.*` namespace — logind seat management, colord, NetworkManager, PipeWire activation, xdg-desktop-portal. These are cross-compositor contracts; no Wayland extension is appropriate because they must work without a compositor or be shared across compositors.
+
+**Use Varlink** for new systemd-integrated services (`io.systemd.*`). If your service integrates with systemd for activation, units, or resources and does not need broadcast signals, Varlink is the right choice. Avoid D-Bus for brand-new systemd-facing APIs.
+
+**Use a ratified Wayland extension** (from `wayland-protocols` or `wlr-protocols`) for window management, surface operations, output configuration, and input when cross-compositor compatibility is needed. The `xdg-shell`, `xdg-output`, `wlr-layer-shell`, and `ext-session-lock` protocols are the reference examples. If a Wayland extension exists for the use case, use it in preference to a D-Bus interface.
+
+**Use a compositor-specific Wayland extension or private socket** for features that are intentionally compositor-specific — KWin's `org.kde.kwin.dpms`, Hyprland's `hyprctl` socket, sway's IPC socket. These are not intended to be portable, and trying to standardise them prematurely adds maintenance burden without adding users.
+
+### Anti-Patterns
+
+**Do not use D-Bus for per-frame or per-input-event signalling.** The D-Bus round-trip latency (~40–100 µs typical, workload-dependent) and message-size limitations make it unsuitable for any latency-sensitive path. Frame timing, cursor position updates, and touch tracking belong in Wayland protocol event streams.
+
+**Do not use a Wayland extension for compositor ↔ system-service communication.** A compositor talking to logind, NetworkManager, or PipeWire uses D-Bus, not a Wayland extension — these system services have no Wayland connection.
+
+**Do not invent a new binary IPC protocol** when D-Bus, Varlink, or Wayland extensions cover the use case. Custom binary protocols lack introspection, have no standard tooling, and create unnecessary maintenance burden. The cost of implementing a D-Bus adaptor is low; the cost of debugging a custom protocol without `busctl monitor` is high.
+
+### fd Passing: D-Bus vs Wayland
+
+Both D-Bus (`h` type with `SCM_RIGHTS`) and Wayland protocol use Unix domain socket fd passing, but at different abstraction levels. D-Bus fd passing is used for:
+- logind `TakeDevice` returning a DRM device fd
+- PipeWire returning a memfd for shared memory
+- `org.freedesktop.portal.ScreenCast` returning a PipeWire stream fd
+
+Wayland fd passing is used for:
+- `wl_shm_pool` (shared memory buffer allocation)
+- `linux_dmabuf_v1` DMA-BUF import
+- `wl_drm` (legacy EGL buffer sharing)
+
+The rule of thumb: if the fd is produced by a system service and consumed by a Wayland client, D-Bus carries it. If the fd is produced by the client and consumed by the compositor (or vice versa) as part of the rendering pipeline, the Wayland protocol carries it.
+
+---
+
+## 14. Testing D-Bus and IPC Code
+
+Untested D-Bus code is a common source of subtle bugs — method signature mismatches, missing error handling, signal subscriptions that fire too early or not at all, and policy denials that only appear in production. This section covers the testing tools and patterns for each layer of the D-Bus and Varlink stack.
+
+### Private dbus-daemon Session for CI
+
+The most reliable approach for integration tests is to start a private, isolated `dbus-daemon` instance scoped to the test process tree:
+
+```bash
+#!/bin/bash
+# Start a private session bus for the test run
+eval $(dbus-launch --sh-syntax)
+# $DBUS_SESSION_BUS_PID and $DBUS_SESSION_BUS_ADDRESS are now set
+trap "kill $DBUS_SESSION_BUS_PID" EXIT
+
+# Run the service under test
+my-dbus-service &
+SERVICE_PID=$!
+
+# Run the test client
+./test-client
+EXIT_CODE=$?
+
+kill $SERVICE_PID
+exit $EXIT_CODE
+```
+
+`dbus-launch --sh-syntax` spawns a `dbus-daemon` process, prints `export DBUS_SESSION_BUS_ADDRESS=...` and `export DBUS_SESSION_BUS_PID=...`, and the `eval $()` pattern sets them in the current shell. All child processes inherit these variables and connect to the private bus, completely isolated from the desktop session bus.
+
+This is the basis for most D-Bus integration tests in open-source projects including Mutter, KWin, and xdg-desktop-portal.
+
+### dbus-test-runner
+
+`dbus-test-runner` (from the Ubuntu `dbus-test-runner` package, also available on Fedora/Arch) wraps the `dbus-launch` pattern and adds:
+- **Service activation**: services listed in `--task` arguments are started and waited for before the test task runs.
+- **Bus ready waiting**: waits until the service appears on the bus before starting the test.
+- **Timeout and exit code propagation**: the test binary's exit code is propagated; a configurable timeout kills all tasks.
+
+```bash
+dbus-test-runner \
+    --task my-dbus-service \
+    --task-name "service" \
+    --wait-for "org.freedesktop.MyService" \
+    --task ./test-client \
+    --task-name "test"
+```
+
+### Testing with sd-bus (C)
+
+For sd-bus code, `systemd`'s `sd_bus_open_user_machine()` with a synthesised `dbus-daemon` address enables in-process bus creation:
+
+```c
+sd_bus *bus = NULL;
+/* Use the private bus address from the environment */
+const char *addr = getenv("DBUS_SESSION_BUS_ADDRESS");
+assert(addr);
+sd_bus_new(&bus);
+sd_bus_set_address(bus, addr);
+sd_bus_start(bus);
+
+/* Now call methods or register objects on the isolated bus */
+```
+
+For unit tests without a daemon, `sd-bus` supports an **"in-process bus pair"** via `sd_bus_new_pair()` (available in libsystemd 255+): two `sd_bus` objects connected via a socket pair, usable without any daemon process. This is the fastest option for testing method dispatch and signal delivery in isolation.
+
+### Testing with zbus (Rust)
+
+zbus provides a first-class in-process test mechanism via `zbus::connection::Builder::p2p()`:
+
+```rust
+use zbus::{connection, interface, proxy};
+
+#[proxy(interface = "org.example.Counter", default_path = "/counter")]
+trait Counter {
+    fn increment(&self) -> zbus::Result<u32>;
+    #[zbus(signal)]
+    fn counted(&self, value: u32) -> zbus::Result<()>;
+}
+
+struct CounterImpl { count: u32 }
+
+#[interface(name = "org.example.Counter")]
+impl CounterImpl {
+    async fn increment(&mut self) -> u32 {
+        self.count += 1;
+        CounterImplSignals::counted(self.signal_context(), self.count)
+            .await.unwrap();
+        self.count
+    }
+}
+
+#[tokio::test]
+async fn test_counter() {
+    // Create a peer-to-peer connection pair with no daemon
+    let (server_conn, client_conn) = zbus::Connection::pair().await.unwrap();
+
+    // Register the service object on the server side
+    let _object_server = server_conn.object_server()
+        .at("/counter", CounterImpl { count: 0 }).await.unwrap();
+
+    // Use the generated proxy on the client side
+    let proxy = CounterProxy::new(&client_conn).await.unwrap();
+    assert_eq!(proxy.increment().await.unwrap(), 1);
+    assert_eq!(proxy.increment().await.unwrap(), 2);
+}
+```
+
+`zbus::Connection::pair()` creates two endpoints connected via a `socketpair()` with no bus daemon involved. Both method calls and signals work over the pair, making it suitable for unit-testing both client proxy and server adaptor code in a single test process.
+
+### Testing with Qt (QDBus)
+
+Qt's D-Bus testing uses a `QDBusConnection::connectToBus()` call with a private `dbus-daemon` address, combined with Qt Test:
+
+```cpp
+class DBusTest : public QObject {
+    Q_OBJECT
+private Q_SLOTS:
+    void initTestCase() {
+        // Start private bus (set DBUS_SESSION_BUS_ADDRESS in setUp script)
+        m_bus = QDBusConnection::connectToBus(
+            qgetenv("DBUS_SESSION_BUS_ADDRESS"), "test-bus");
+        QVERIFY(m_bus.isConnected());
+        QVERIFY(m_bus.registerService("org.example.TestService"));
+    }
+    void testMethodCall() {
+        QDBusInterface iface("org.example.TestService",
+                             "/", "org.example.TestInterface", m_bus);
+        QVERIFY(iface.isValid());
+        QDBusReply<QString> reply = iface.call("getVersion");
+        QVERIFY(reply.isValid());
+        QCOMPARE(reply.value(), QString("1.0"));
+    }
+private:
+    QDBusConnection m_bus = QDBusConnection::sessionBus();
+};
+```
+
+KDE projects use `dbus-test-runner` in their CI pipelines with `QDBusConnection` pointed at the private bus address.
+
+### Testing Varlink (C and Rust)
+
+For Varlink, since there is no central daemon, testing is straightforward: start the service as a child process (or thread) listening on a `socketpair()` or a temporary socket path, then send JSON requests and assert on responses.
+
+```bash
+# Shell-level Varlink test using varlinkctl
+SOCKET=$(mktemp -d)/test.socket
+my-varlink-service --socket $SOCKET &
+sleep 0.1  # wait for socket to appear
+
+# Call a method and assert on JSON output
+RESULT=$(varlinkctl call $SOCKET io.example.Service.GetStatus '{}')
+echo "$RESULT" | jq -e '.status == "running"' || exit 1
+
+kill %1
+```
+
+For Rust, the same `socketpair()` approach used for D-Bus applies: bind a `UnixListener` in one task, connect from another, and exchange NUL-terminated JSON strings directly — no external process needed.
+
+### Monitoring in CI: busctl capture + Wireshark
+
+For debugging flaky CI test failures involving D-Bus, the `busctl capture` → pcap workflow is invaluable:
+
+```bash
+# Record all D-Bus traffic to a pcap file during the test run
+busctl capture > /tmp/test-bus.pcap &
+CAPTURE_PID=$!
+./run-tests
+kill $CAPTURE_PID
+# Upload /tmp/test-bus.pcap as a CI artifact
+```
+
+In Wireshark, the D-Bus dissector (built-in) shows every method call, reply, signal, and error with decoded type values — dramatically faster than parsing `busctl monitor` text output for multi-service interaction bugs.
+
+---
+
+## 15. Comparison and Selection Guide
 
 ### Feature Comparison Table
 
@@ -1316,7 +1825,7 @@ However, D-Bus's advantages — ecosystem inertia, tooling, and introspection �
 
 ---
 
-## 13. Roadmap
+## 16. Roadmap
 
 ### Near-term (6–12 months)
 
@@ -1346,7 +1855,7 @@ However, D-Bus's advantages — ecosystem inertia, tooling, and introspection �
 
 ---
 
-## 14. Integrations
+## 17. Integrations
 
 This chapter connects to the following chapters throughout the book:
 
