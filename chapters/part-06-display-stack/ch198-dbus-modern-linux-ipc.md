@@ -18,11 +18,13 @@
 10. [Android Binder: IPC for the Graphics HAL](#10-android-binder-ipc-for-the-graphics-hal)
 11. [hyprwire and hyprtavern: The Hyprland IPC Ecosystem](#11-hyprwire-and-hyprtavern-the-hyprland-ipc-ecosystem)
 12. [BUS1: In-Kernel IPC in Rust](#12-bus1-in-kernel-ipc-in-rust)
-13. [D-Bus vs Wayland Protocol: When to Use Which](#13-d-bus-vs-wayland-protocol-when-to-use-which)
-14. [Testing D-Bus and IPC Code](#14-testing-d-bus-and-ipc-code)
-15. [Comparison and Selection Guide](#15-comparison-and-selection-guide)
-16. [Roadmap](#16-roadmap)
-17. [Integrations](#17-integrations)
+13. [PipeWire Native Protocol](#13-pipewire-native-protocol)
+14. [eBPF and io_uring: Modern IPC Acceleration](#14-ebpf-and-io_uring-modern-ipc-acceleration)
+15. [D-Bus vs Wayland Protocol: When to Use Which](#15-d-bus-vs-wayland-protocol-when-to-use-which)
+16. [Testing D-Bus and IPC Code](#16-testing-d-bus-and-ipc-code)
+17. [Comparison and Selection Guide](#17-comparison-and-selection-guide)
+18. [Roadmap](#18-roadmap)
+19. [Integrations](#19-integrations)
 
 ---
 
@@ -57,6 +59,32 @@ The table below catalogs the D-Bus interfaces most relevant to graphics and disp
 | `org.gnome.Shell.Screenshot` | `org.gnome.Shell` | GNOME Shell screenshot API | — |
 
 The situation is not static. Three forces are reshaping this ecosystem: dbus-broker has displaced the aging dbus-daemon on most modern distributions; systemd is routing new services to Varlink instead of D-Bus; and a small but vocal faction in the compositor community — led by Hyprland's Vaxry — is building a parallel IPC world around hyprwire and hyprtavern. Understanding each option, and when to choose it, is the goal of this chapter.
+
+### Linux IPC Primitives: The Transport Substrate
+
+Every IPC bus mechanism discussed in this chapter is built on top of lower-level Linux kernel IPC primitives. Understanding the primitives clarifies why each bus mechanism makes the design choices it does, and which primitive is optimal for a given throughput, latency, or semantic requirement.
+
+| Mechanism | Kernel object | Max throughput | Typical latency | fd passing | Named | Persistence | Primary use in graphics stack |
+|---|---|---|---|---|---|---|---|
+| **Anonymous pipe** | `pipe2(O_CLOEXEC)` | 4–6 GB/s | 1–5 µs | No | No | Lifetime of fd pair | ffmpeg → Sixel encoder, shell pipelines |
+| **Named pipe (FIFO)** | `mkfifo` / VFS inode | 4–6 GB/s | 1–5 µs | No | Yes (`/tmp/foo`) | Until unlinked | Rare; replaced by Unix sockets |
+| **POSIX shared memory** | `shm_open` / `memfd_create` | Memory bus (~50 GB/s) | <1 µs (after setup) | Via fd | `/dev/shm/` name or anonymous | Until `shm_unlink` / fd GC | `wl_shm` pixel buffers, PipeWire memfds, GBM bo dmabuf |
+| **socketpair** | Two connected `AF_UNIX SOCK_STREAM` sockets | 3–5 GB/s | 2–8 µs | Yes (SCM_RIGHTS) | No | Lifetime of both fds | D-Bus daemon↔client, Wayland display fd, zbus `Connection::pair()` tests |
+| **Unix domain socket** | `AF_UNIX` bound to VFS path | 3–5 GB/s | 5–20 µs | Yes (SCM_RIGHTS) | Yes (`/run/...`) | Server holds bind | Wayland compositor socket, D-Bus bus socket, Varlink service sockets |
+| **memfd + splice / io_uring** | `memfd_create` + `IORING_OP_SPLICE` | ~Memory bus | <1 µs (zero-copy) | Via fd | No | Until fd closed | DMA-BUF passing, PipeWire zero-copy, Ghostty PTY I/O |
+| **Kernel Binder (`/dev/binder`)** | `drivers/android/binder.c` ioctl | 1–2 GB/s | 5–20 µs | Yes (native) | Via kernel ref table | Kernel ref counting | Android SurfaceFlinger, HAL transactions |
+| **BUS1 (`/dev/bus1`, proposed)** | Rust kernel driver, ioctl | TBD (similar to Binder) | ~5–15 µs (estimated) | Yes (native) | Via kernel cap refs | Kernel ref counting | Future: Linux HAL isolation, compositor privilege separation |
+
+**Throughput figures** are approximations for same-machine, same-NUMA-node transfers at message sizes of 4–64 kB on a modern x86_64 system. Real-world figures depend on message size, CPU frequency, kernel version, and whether the data is already in cache. For small messages (< 256 bytes), latency dominates throughput; for large transfers (> 1 MB), `memfd`/`splice` zero-copy paths become essential.
+
+**How bus mechanisms relate to primitives:**
+
+- **D-Bus and Varlink** run over **Unix domain sockets**. Every D-Bus method call is a `write()` of a serialised message to a Unix socket, routed by the broker (dbus-broker) using `sendmsg()` with `SCM_RIGHTS` for fd passing. The broker adds service discovery, naming, policy enforcement, and signal fan-out on top of the raw socket transport.
+- **Wayland** uses a **Unix domain socket** (`/run/user/$UID/wayland-0`) for control messages (protocol events and requests), but pixel data moves through **shared memory** (`wl_shm`) or **DMA-BUF fds** (via `linux-dmabuf-v1`) — not through the Wayland socket itself.
+- **PipeWire** uses a **Unix domain socket** for its native protocol (session management, graph topology) and **memfds** or **DMA-BUF fds** for the actual media data — the same split as Wayland.
+- **Android Binder** bypasses the userspace socket layer entirely: transactions go through a kernel ioctl on `/dev/binder`, and the kernel copies (or maps) the data directly between process address spaces.
+- **Anonymous pipes** appear in the graphics stack primarily as the stdin/stdout of external tools: a terminal emulator piping Sixel-encoded image data from `ffmpeg` or `img2sixel` reads it from the subprocess's stdout pipe. They are not used for service IPC.
+- **memfd + io_uring splice** is the emerging zero-copy path for high-throughput IPC: data written into a `memfd` by one process can be `splice()`d into another's socket buffer without any userspace copy — or, with io_uring, enqueued as an `IORING_OP_SPLICE` submission without blocking. PipeWire uses this for low-latency audio buffer handoff; Ghostty uses io_uring for PTY I/O.
 
 ---
 
@@ -1550,7 +1578,333 @@ However, D-Bus's advantages — ecosystem inertia, tooling, and introspection �
 
 ---
 
-## 13. D-Bus vs Wayland Protocol: When to Use Which
+## 13. PipeWire Native Protocol
+
+PipeWire is the universal media server on modern Linux — it handles audio (replacing PulseAudio and JACK), video capture, and screen capture. Its IPC model is distinct from both D-Bus and Wayland: PipeWire defines its own binary protocol over a Unix domain socket, with D-Bus used only for service activation and portal integration. Understanding the native protocol is essential for graphics-adjacent work: screen capture (via the `org.freedesktop.portal.ScreenCast` portal → PipeWire stream), camera sharing, and GPU-accelerated video processing all go through it.
+
+### Architecture Overview
+
+```
+Application / Compositor
+        │
+        │  PipeWire native protocol (Unix socket: /run/pipewire-0)
+        ▼
+  pipewire (session daemon)
+        │
+        ├── wireplumber (session manager, policy — communicates via PW protocol)
+        │
+        ├── pipewire-pulse (PulseAudio compatibility — /run/user/$UID/pulse/native)
+        │
+        ├── pipewire-jack (JACK compatibility — libpipewire-jack intercept)
+        │
+        └── pipewire-v4l2 (V4L2 compatibility shim)
+```
+
+D-Bus role: `pipewire.service` (or the user session unit) is activated on demand; `wireplumber` registers `org.freedesktop.ReserveDevice1` on the session bus to prevent ALSA/JACK conflicts. Once running, all real communication uses the PipeWire native protocol.
+
+### The Native Protocol Wire Format
+
+PipeWire's protocol is a **binary, little-endian, type-tagged message format** sent over a Unix domain socket. It is not based on D-Bus, Varlink, or Wayland. [Source: PipeWire source, `src/pipewire/protocol-native.c`](https://gitlab.freedesktop.org/pipewire/pipewire/-/blob/master/src/pipewire/protocol-native.c)
+
+Each message is a **Pod** (Plain Old Data) encoded with PipeWire's pod serialiser (`spa_pod`). A pod is a tagged union of:
+- `SPA_TYPE_Int`, `SPA_TYPE_Long`, `SPA_TYPE_Float`, `SPA_TYPE_Double`
+- `SPA_TYPE_String` (NUL-terminated)
+- `SPA_TYPE_Bytes` (raw buffer)
+- `SPA_TYPE_Object` (named key-value pairs, like a D-Bus `a{sv}` but typed)
+- `SPA_TYPE_Struct` (ordered sequence of typed fields)
+- `SPA_TYPE_Fd` (file descriptor, carried via `SCM_RIGHTS`)
+- `SPA_TYPE_Choice` (value + allowed range/enum for negotiation)
+
+```c
+/* spa/include/spa/pod/pod.h — the pod header layout */
+struct spa_pod {
+    uint32_t size;   /* body size in bytes, NOT including this header */
+    uint32_t type;   /* SPA_TYPE_* tag */
+    /* body follows immediately */
+};
+```
+
+Messages are framed with an 8-byte header (`id` + `opcode` + `size` + `seq`) followed by a pod body. The protocol is **object-centric**: each connection is modelled as a graph of `pw_proxy` objects (client side) and `pw_global` objects (server side), identified by uint32 IDs.
+
+### Core Protocol Objects
+
+| Object type | Server global | Client proxy | Purpose |
+|---|---|---|---|
+| `pw_core` | `pw_context` | `pw_core` | Root connection object; `sync`, `error`, `get_registry` |
+| `pw_registry` | Global list | `pw_registry` | Enumerate and bind global objects |
+| `pw_node` | Audio/video node | `pw_node` | A processing element (source, sink, filter) |
+| `pw_port` | Node port | `pw_port` | Input or output port on a node |
+| `pw_link` | Graph edge | `pw_link` | Connection between two ports |
+| `pw_client` | Peer client | — | Metadata about a connected client |
+| `pw_device` | Hardware device | `pw_device` | ALSA card, V4L2 device, libcamera device |
+| `pw_stream` | — | `pw_stream` | High-level streaming abstraction (most apps use this) |
+| `pw_filter` | — | `pw_filter` | Low-latency processing filter node |
+
+### pw_stream: The Application-Level API
+
+Most application code uses `pw_stream` rather than the raw protocol objects. `pw_stream` abstracts the connection, port negotiation, buffer allocation, and data callback:
+
+```c
+#include <pipewire/pipewire.h>
+#include <spa/param/video/format-utils.h>
+
+static void on_process(void *userdata)
+{
+    struct pw_stream *stream = userdata;
+    struct pw_buffer *buf = pw_stream_dequeue_buffer(stream);
+    if (!buf) return;
+
+    struct spa_buffer *sb = buf->buffer;
+    /* sb->datas[0].data  — pointer to raw frame data (CPU mapping)
+       sb->datas[0].fd    — DMA-BUF fd for zero-copy GPU import (if type = MemFd/DmaBuf) */
+    void *frame = sb->datas[0].data;
+    uint32_t stride = sb->datas[0].chunk->stride;
+
+    /* Process frame... */
+
+    pw_stream_queue_buffer(stream, buf);
+}
+
+static const struct pw_stream_events stream_events = {
+    PW_VERSION_STREAM_EVENTS,
+    .process = on_process,
+};
+
+/* Connect a video capture stream (screen cast source) */
+struct pw_main_loop *loop = pw_main_loop_new(NULL);
+struct pw_context *ctx = pw_context_new(pw_main_loop_get_loop(loop), NULL, 0);
+struct pw_core *core = pw_context_connect(ctx, NULL, 0);
+
+struct pw_stream *stream = pw_stream_new(core, "my-capture",
+    pw_properties_new(PW_KEY_MEDIA_TYPE, "Video",
+                      PW_KEY_MEDIA_CATEGORY, "Capture",
+                      PW_KEY_MEDIA_ROLE, "Screen", NULL));
+pw_stream_add_listener(stream, &listener, &stream_events, stream);
+
+/* Negotiate format: BGRA at any resolution */
+uint8_t buffer[1024];
+struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
+const struct spa_pod *params[] = {
+    spa_format_video_raw_build(&b, SPA_PARAM_EnumFormat,
+        &SPA_VIDEO_INFO_RAW_INIT(.format = SPA_VIDEO_FORMAT_BGRA))
+};
+pw_stream_connect(stream, PW_DIRECTION_INPUT, PW_ID_ANY,
+    PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
+    params, 1);
+
+pw_main_loop_run(loop);
+```
+
+[Source: PipeWire examples, `src/examples/video-capture.c`](https://gitlab.freedesktop.org/pipewire/pipewire/-/blob/master/src/examples/video-capture.c)
+
+### Buffer Types and Zero-Copy
+
+PipeWire negotiates the buffer type during stream connection. The `spa_data` type field determines how the buffer is shared:
+
+| `spa_data_type` | Backing memory | GPU import path | Zero-copy? |
+|---|---|---|---|
+| `SPA_DATA_MemPtr` | `malloc` in server | CPU memcpy required | No |
+| `SPA_DATA_MemFd` | `memfd_create` | mmap + EGL `EGL_EXT_image_dma_buf_import` via CPU upload | Partial |
+| `SPA_DATA_DmaBuf` | GBM buffer object | Direct DMA-BUF fd import → `eglCreateImageKHR(EGL_LINUX_DMA_BUF_EXT)` | **Yes** |
+
+When the producer (e.g. a compositor's screen capture) and the consumer (e.g. a recording application) both support `SPA_DATA_DmaBuf`, the frame data never leaves GPU memory — the compositor renders to a GBM BO, PipeWire passes the DMA-BUF fd via `SCM_RIGHTS`, and the consumer imports it directly into its EGL context. This is the zero-copy screen capture path used by OBS Studio, wf-recorder, and the xdg-desktop-portal ScreenCast implementation.
+
+### D-Bus Integration: Activation and Portal Handoff
+
+PipeWire's D-Bus presence is minimal but critical:
+
+1. **Service activation**: `pipewire.service` and `wireplumber.service` are systemd user units; on D-Bus-activated systems, `pipewire-pulse.service` activates when an application connects to the PulseAudio-compatible socket.
+2. **Device reservation**: `wireplumber` holds `org.freedesktop.ReserveDevice1.Audio0` on the session bus, preventing JACK or `arecord` from claiming ALSA devices while PipeWire is running.
+3. **Screen cast portal handoff**: when `xdg-desktop-portal-wlr` or `xdg-desktop-portal-gnome` handles a `org.freedesktop.portal.ScreenCast.Start` D-Bus call, it:
+   - Creates a PipeWire stream in the compositor's context
+   - Returns the PipeWire **node ID** and **fd** (the socket fd for the PipeWire connection) to the calling application via the D-Bus reply
+   - The application connects to PipeWire using the provided fd and binds to the node ID — bypassing service discovery entirely
+
+This fd-passing handoff is why screen capture works in sandboxed Flatpak applications: the Flatpak sandbox cannot connect to the PipeWire socket directly, but the portal (running outside the sandbox) connects on the app's behalf and passes the already-connected fd through the D-Bus reply.
+
+### Wireplumber: Session Policy via Lua
+
+`wireplumber` is the session manager responsible for routing policy (which streams connect to which devices) and policy scripting. It communicates with `pipewire` exclusively over the PipeWire native protocol — not D-Bus. Policy logic is written in **Lua scripts** loaded from `/usr/share/wireplumber/` and `~/.config/wireplumber/`.
+
+```lua
+-- wireplumber/main.lua.d/51-alsa-jumbo.lua
+-- Route all audio to the headphone output when plugged in
+rule = Rule {
+    matches = { { { "node.name", "matches", "alsa_output.*" } } },
+    apply_properties = { ["audio.channels"] = 2 }
+}
+rule:apply()
+```
+
+For graphics-adjacent use cases (routing a compositor's screen capture node to a recording tool's input), wireplumber policy rules determine the default connection. Compositors that implement `wp_export_dmabuf_manager` or `ext-image-capture-source-v1` feed into PipeWire nodes managed by wireplumber.
+
+---
+
+## 14. eBPF and io_uring: Modern IPC Acceleration
+
+eBPF and io_uring are two Linux kernel features that fundamentally change the performance and observability characteristics of IPC-heavy applications. Neither replaces D-Bus or Varlink — they accelerate or instrument the underlying socket layer on which those protocols run.
+
+### eBPF and D-Bus: Observability Without Overhead
+
+**eBPF** (extended Berkeley Packet Filter) allows safe, JIT-compiled programs to run in the kernel in response to events — including socket send/receive, system calls, and tracepoints. For D-Bus and Varlink debugging, eBPF provides observability that `busctl monitor` cannot: it can trace at the `write()`/`sendmsg()` syscall level without requiring a match rule subscription on the bus.
+
+#### Tracing D-Bus Method Calls with bpftrace
+
+```bash
+# Trace all write() calls to any socket that looks like a D-Bus message
+# (D-Bus messages start with 'l' (0x6c) for little-endian or 'B' for big-endian)
+bpftrace -e '
+tracepoint:syscalls:sys_enter_write
+/comm == "dbus-broker"/
+{
+    printf("pid=%d size=%d\n", pid, args->count);
+}'
+```
+
+A more sophisticated approach uses the `sock:inet_sock_set_state` or `sock:unix_sock_connect` tracepoints to track when compositors connect to the D-Bus socket, then correlates `sendmsg()` calls with process names to build a per-process D-Bus traffic profile.
+
+#### eBPF-Based D-Bus Policy Enforcement
+
+**BPF LSM** (Linux Security Module hooks via eBPF, available since Linux 5.7) enables dynamic D-Bus-adjacent security policy. Rather than configuring static policy XML for dbus-broker, a BPF LSM program can:
+- Block `connect()` to `/run/dbus/system_bus_socket` from specific cgroups or UID ranges
+- Intercept `sendmsg()` on the D-Bus socket and inspect the first bytes of the message header to detect specific interface names
+- Emit audit events to `bpf_ringbuf` when a sandboxed process attempts a privileged D-Bus call
+
+This is more flexible than dbus-broker's XML policy (which can only match on service names and interface names, not on calling process cgroup or container namespace) and does not require a policy reload to take effect.
+
+```c
+/* BPF LSM: deny connect to dbus system socket from cgroup != trusted */
+SEC("lsm/socket_connect")
+int BPF_PROG(restrict_dbus_connect, struct socket *sock,
+             struct sockaddr *address, int addrlen)
+{
+    struct sockaddr_un *un = (struct sockaddr_un *)address;
+    if (sock->type != SOCK_STREAM) return 0;
+
+    /* Check if connecting to the D-Bus system socket */
+    const char dbus_path[] = "/run/dbus/system_bus_socket";
+    char path[108];
+    bpf_probe_read_kernel_str(path, sizeof(path), un->sun_path);
+    if (__builtin_memcmp(path, dbus_path, sizeof(dbus_path) - 1) != 0)
+        return 0;
+
+    /* Allow only processes in the trusted cgroup */
+    uint64_t cgroup_id = bpf_get_current_cgroup_id();
+    if (cgroup_id != TRUSTED_CGROUP_ID)
+        return -EPERM;
+    return 0;
+}
+```
+
+#### eBPF for Varlink Monitoring
+
+Since Varlink uses plain Unix domain sockets with NUL-terminated JSON, eBPF can parse Varlink messages directly in the kernel. A `uprobe` on `write()` combined with a BPF map can:
+- Count calls per Varlink method (by scanning for the `"method":` JSON key in the first 256 bytes of each message)
+- Measure latency between `sendmsg()` and the matching `recvmsg()` on the server side
+- Export per-method histograms to userspace via `bpf_ringbuf` for continuous monitoring
+
+This level of observability is impossible with Varlink's current tooling (varlinkctl cannot monitor live traffic on an established connection).
+
+### io_uring and IPC: Latency Reduction for Socket-Heavy Applications
+
+**io_uring** (Linux 5.1+) is an asynchronous I/O interface based on shared-memory submission and completion rings between userspace and the kernel. For IPC-heavy applications (compositors, media servers, TUI frameworks) it reduces the per-operation overhead from a `read()`/`write()` syscall pair to a single `io_uring_enter()` that drains the entire submission queue — or, with `SQPOLL` mode, zero syscalls per operation.
+
+#### io_uring and the Wayland Socket
+
+A Wayland compositor's event loop typically `poll()`s or `epoll_wait()`s on the Wayland display socket fd, processes incoming requests, and `write()`s events back. With io_uring:
+
+```c
+struct io_uring ring;
+io_uring_queue_init(32, &ring, 0);
+
+/* Register the Wayland client fd to avoid repeated fd table lookups */
+int fds[] = { wl_display_get_fd(display) };
+io_uring_register_files(&ring, fds, 1);
+
+/* Submit a multishot read — one SQE, continuous CQEs until fd is closed */
+struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+io_uring_prep_read_multishot(sqe, 0 /* registered fd index */, buf, sizeof(buf), 0);
+io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
+io_uring_submit(&ring);
+
+/* Event loop: drain CQEs without poll() */
+struct io_uring_cqe *cqe;
+while (io_uring_wait_cqe(&ring, &cqe) == 0) {
+    handle_wayland_data(buf, cqe->res);
+    io_uring_cqe_seen(&ring, cqe);
+}
+```
+
+`IORING_OP_READ_MULTISHOT` (Linux 6.1+) issues a single submission and generates a CQE for every available read, eliminating the `poll()` → `read()` → `poll()` pattern. For a compositor handling hundreds of Wayland clients, this significantly reduces syscall count under high message rates.
+
+#### io_uring and D-Bus / Varlink Sockets
+
+The same multishot read pattern applies to D-Bus and Varlink sockets. An sd-bus or zbus application can use io_uring to:
+- Read incoming D-Bus messages without blocking the event loop thread
+- Submit `write()` operations for outgoing method calls and signal emissions as SQEs, batching them into a single `io_uring_submit()` call
+- Use `IORING_OP_SEND_ZC` (zero-copy send, Linux 6.0+) for large D-Bus messages (e.g. `org.freedesktop.portal.ScreenCast` returning a large PipeWire fd bundle) to avoid a userspace copy into the kernel socket buffer
+
+For Varlink, where each call is a short NUL-terminated JSON string (~100–500 bytes), the fixed-buffer registered I/O path (`io_uring_register_buffers`) eliminates per-call buffer registration overhead:
+
+```c
+/* Pre-register a fixed buffer for Varlink call/reply cycles */
+char buf[4096];
+struct iovec iov = { .iov_base = buf, .iov_len = sizeof(buf) };
+io_uring_register_buffers(&ring, &iov, 1);
+
+/* Issue fixed-buffer read for NUL-terminated Varlink reply */
+struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+io_uring_prep_read_fixed(sqe, varlink_fd, buf, sizeof(buf), 0, 0 /* buf index */);
+io_uring_submit(&ring);
+```
+
+#### io_uring and PipeWire
+
+PipeWire's event loop (`pw_loop`) uses `epoll` internally. A PipeWire application can substitute an io_uring-backed loop via the `spa_loop` abstraction. The most impactful use case is the `SPA_DATA_DmaBuf` zero-copy path:
+
+```
+Producer (compositor GBM BO render)
+    │
+    │  io_uring IORING_OP_SEND_ZC  ──►  PipeWire socket (passes DMA-BUF fd via SCM_RIGHTS)
+    │
+Consumer (OBS, wf-recorder)
+    │
+    │  eglCreateImageKHR(EGL_LINUX_DMA_BUF_EXT)  ──►  GPU texture (zero-copy import)
+```
+
+The splice path (`IORING_OP_SPLICE`) can pipe DMA-BUF-backed memfds between PipeWire nodes without any userspace copies, reducing the latency of the screen-capture → encoding pipeline to near-zero memory-bandwidth cost.
+
+#### SQPOLL for Ultra-Low-Latency IPC
+
+For latency-critical IPC paths (compositor ↔ GPU driver communication, real-time audio with PipeWire), `io_uring`'s `IORING_SETUP_SQPOLL` mode runs a kernel thread that continuously polls the submission ring without requiring any userspace `io_uring_enter()` syscall:
+
+```c
+struct io_uring_params params = {
+    .flags = IORING_SETUP_SQPOLL,
+    .sq_thread_idle = 2000,  /* poll for 2ms before sleeping */
+};
+io_uring_queue_init_params(64, &ring, &params);
+```
+
+With SQPOLL, a userspace loop that continuously submits Wayland events or PipeWire buffer notifications to the kernel operates with **zero syscall overhead** for the I/O path — only the `io_uring_get_sqe()` / `io_uring_sqe_set_*()` / ring write sequence remains, which is pure userspace memory operations.
+
+SQPOLL requires `CAP_SYS_NICE` (or `io_uring` being allowed by seccomp policy) and is most appropriate for the compositor's own event loop, not for general-purpose IPC clients. Ghostty uses io_uring (without SQPOLL) for its PTY I/O path (Ch178); wlroots-based compositors have experimental io_uring backends for Wayland socket dispatch.
+
+### Summary: eBPF + io_uring in the IPC Stack
+
+| Tool | Layer | Purpose in IPC context |
+|---|---|---|
+| **bpftrace / eBPF tracepoints** | Kernel syscall | Observe D-Bus / Varlink traffic without match rules; latency histograms |
+| **BPF LSM** | Kernel security | Dynamic socket-level policy: block connects, audit message content |
+| **uprobe + BPF map** | Userspace+kernel boundary | Parse Varlink JSON methods, count per-method calls, export to userspace |
+| **io_uring IORING_OP_READ_MULTISHOT** | Kernel async I/O | Reduce `poll`→`read` pairs to single SQE; ideal for Wayland / D-Bus sockets |
+| **io_uring IORING_OP_SEND_ZC** | Kernel async I/O | Zero-copy send for large D-Bus replies or PipeWire fd bundles |
+| **io_uring IORING_OP_SPLICE** | Kernel async I/O | Zero-copy memfd/DMA-BUF handoff between PipeWire nodes |
+| **io_uring SQPOLL** | Kernel async I/O | Zero-syscall IPC for compositor main loop; real-time PipeWire audio |
+
+---
+
+## 15. D-Bus vs Wayland Protocol: When to Use Which
 
 Every compositor author eventually faces a design choice: should a new integration surface be a **D-Bus interface**, a **Wayland protocol extension**, a **Varlink service**, or a **compositor-specific Unix socket**? The choice has significant consequences for portability, security, toolability, and long-term maintenance. This section provides structured guidance.
 
@@ -1619,7 +1973,7 @@ The rule of thumb: if the fd is produced by a system service and consumed by a W
 
 ---
 
-## 14. Testing D-Bus and IPC Code
+## 16. Testing D-Bus and IPC Code
 
 Untested D-Bus code is a common source of subtle bugs — method signature mismatches, missing error handling, signal subscriptions that fire too early or not at all, and policy denials that only appear in production. This section covers the testing tools and patterns for each layer of the D-Bus and Varlink stack.
 
@@ -1794,7 +2148,7 @@ In Wireshark, the D-Bus dissector (built-in) shows every method call, reply, sig
 
 ---
 
-## 15. Comparison and Selection Guide
+## 17. Comparison and Selection Guide
 
 ### Feature Comparison Table
 
@@ -1825,7 +2179,7 @@ In Wireshark, the D-Bus dissector (built-in) shows every method call, reply, sig
 
 ---
 
-## 16. Roadmap
+## 18. Roadmap
 
 ### Near-term (6–12 months)
 
@@ -1855,7 +2209,7 @@ In Wireshark, the D-Bus dissector (built-in) shows every method call, reply, sig
 
 ---
 
-## 17. Integrations
+## 19. Integrations
 
 This chapter connects to the following chapters throughout the book:
 
