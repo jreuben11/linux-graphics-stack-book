@@ -131,7 +131,19 @@ minicom -D /dev/ttyUSB0 -b 115200
 minicom -s            # interactive setup → saves to /etc/minicom/minirc.dfl
 ```
 
-It handles XON/XOFF flow control, ZMODEM/YMODEM file transfer, and AT command interaction with modems. Lighter alternatives are `picocom` (minimal, scriptable) and `screen /dev/ttyUSB0 115200` (no setup, exits cleanly with `Ctrl-A k`). All three are user-space programs that simply `open()` the TTY device and relay bytes — the kernel TTY layer handles everything beneath them. [Source: minicom](https://salsa.debian.org/minicom-team/minicom)
+It handles XON/XOFF flow control, ZMODEM/YMODEM file transfer, and AT command interaction with modems. [Source: minicom](https://salsa.debian.org/minicom-team/minicom)
+
+**picocom** is a minimal serial terminal designed for scripting and embedded workflows. Unlike minicom it has no curses UI — it runs in the invoking terminal and relays bytes directly:
+
+```bash
+picocom -b 115200 -r -l /dev/ttyUSB0
+# -r: map CR→CRLF on receive   -l: add timestamp to log
+picocom --send-cmd "sz -vv" /dev/ttyUSB0   # ZMODEM send via sz
+```
+
+Its key advantage over minicom is that it exits cleanly with `Ctrl-A Ctrl-X` and accepts all settings as command-line flags — no saved configuration file needed — making it straightforward to invoke from a `Makefile` or CI script immediately after flashing firmware. `screen /dev/ttyUSB0 115200` covers the same zero-setup use case but is a general multiplexer rather than a dedicated serial tool, so picocom is preferred when the workflow is serial-only. [Source: picocom](https://github.com/npat-efault/picocom)
+
+All three tools — minicom, picocom, `screen` — are user-space programs that simply `open()` the TTY device node and relay bytes between it and the invoking terminal. The kernel TTY layer handles `termios` enforcement, flow control, and line discipline processing entirely beneath them.
 
 ### Bluetooth HCI Bridge (`/dev/ttyS*` with `N_HCI` line discipline)
 
