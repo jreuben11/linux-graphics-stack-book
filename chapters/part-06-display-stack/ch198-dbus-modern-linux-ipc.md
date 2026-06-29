@@ -23,8 +23,9 @@
 15. [D-Bus vs Wayland Protocol: When to Use Which](#15-d-bus-vs-wayland-protocol-when-to-use-which)
 16. [Testing D-Bus and IPC Code](#16-testing-d-bus-and-ipc-code)
 17. [Comparison and Selection Guide](#17-comparison-and-selection-guide)
-18. [Roadmap](#18-roadmap)
-19. [Integrations](#19-integrations)
+18. [libzmq and the Jupyter Kernel Protocol](#18-libzmq-and-the-jupyter-kernel-protocol)
+19. [Roadmap](#19-roadmap)
+20. [Integrations](#20-integrations)
 
 ---
 
@@ -2468,7 +2469,323 @@ In these cases, ZeroMQ/nng over an in-process `inproc://` or Unix-socket `ipc://
 
 ---
 
-## 18. Roadmap
+## 18. libzmq and the Jupyter Kernel Protocol
+
+Jupyter (formerly IPython Notebook) is the most widely-deployed interactive GPU computing environment in the world. Its architecture is one of the most instructive real-world uses of ZeroMQ outside the traditional messaging-middleware domain: a language-agnostic kernel protocol built on five ZMQ sockets, enabling any language kernel (Python, Julia, Rust, C++, Haskell) to serve any frontend (JupyterLab, VS Code, Jupyter Notebook, nteract) over a standardised wire protocol. For GPU developers, this is the IPC layer beneath every RAPIDS, CuPy, PyTorch, and JAX notebook.
+
+### Architecture: Kernel as Subprocess
+
+The Jupyter architecture decouples the execution kernel from the user interface completely. Each kernel runs as an independent OS process; the notebook server or JupyterLab starts it via `jupyter_client.KernelManager.start_kernel()`, which spawns the kernel subprocess and passes it a **connection file** — a JSON document describing which ZMQ ports to bind.
+
+```
+JupyterLab / VS Code / nteract (frontend)
+        │
+        │  Five ZMQ sockets (described in connection file)
+        │
+┌───────▼────────────────────────────────────┐
+│           Kernel Process                   │
+│  (python / julia / rustkernel / xeus-cpp)  │
+│                                            │
+│  GPU runtime (CUDA, ROCm, oneAPI, Vulkan)  │
+└────────────────────────────────────────────┘
+```
+
+A single kernel can serve multiple frontends simultaneously (JupyterLab tab + VS Code + a monitoring dashboard) because ZMQ's `PUB/SUB` and `ROUTER/DEALER` patterns support multiple simultaneous connections.
+
+### The Five ZMQ Sockets
+
+| Socket | ZMQ type (kernel/client) | Purpose |
+|---|---|---|
+| `shell` | ROUTER / DEALER | Client → kernel requests: `execute_request`, `inspect_request`, `complete_request`, `history_request` |
+| `iopub` | PUB / SUB | Kernel → all frontends broadcast: `stream` (stdout/stderr), `display_data`, `execute_result`, `error`, `status` |
+| `stdin` | ROUTER / DEALER | Kernel → client input requests (`input_request`); client → kernel reply (`input_reply`) |
+| `control` | ROUTER / DEALER | Interrupt (`interrupt_request`) and shutdown (`shutdown_request`) — separate socket prevents blocking behind `shell` |
+| `hb` (heartbeat) | REP / REQ | Kernel echoes back any bytes sent; frontend uses this to detect kernel death |
+
+The `iopub` socket is the ZMQ broadcast mechanism in action: one `PUB` socket in the kernel, multiple `SUB` sockets in different frontends, each receiving all output independently. This is the 1:N fan-out pattern that D-Bus signals provide for desktop IPC, applied here at the process level with ZMQ.
+
+[Source: Jupyter Messaging Protocol specification](https://jupyter-client.readthedocs.io/en/stable/messaging.html)
+
+### Connection File Format
+
+When the kernel manager starts a kernel, it writes a connection file to `$JUPYTER_RUNTIME_DIR/kernel-<pid>.json`:
+
+```json
+{
+  "shell_port": 52817,
+  "iopub_port": 52818,
+  "stdin_port": 52819,
+  "control_port": 52820,
+  "hb_port": 52821,
+  "ip": "127.0.0.1",
+  "key": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "transport": "tcp",
+  "signature_scheme": "hmac-sha256",
+  "kernel_name": "python3"
+}
+```
+
+- `transport`: `"tcp"` for network-capable operation, `"ipc"` for Unix socket (higher performance, local-only). Most kernels default to `"tcp"` on localhost.
+- `key`: a shared secret for HMAC-SHA256 message signing — every message has a signature computed over its header, parent header, metadata, and content. This prevents arbitrary code injection via the ZMQ sockets.
+- `ip`: always `127.0.0.1` for local kernels; remote kernels (SSH-tunneled or containerised) use the tunnel endpoint.
+
+### Message Format
+
+Every Jupyter message is a multi-part ZMQ message with a fixed structure:
+
+```
+[identity frames (routing, ROUTER sockets only)]
+["<IDS|MSG>"]           ← delimiter
+[hmac_signature]        ← hex string, HMAC-SHA256 over the next 4 frames
+[header JSON]           ← msg_id, session, date, username, version, msg_type
+[parent_header JSON]    ← header of the message this is a reply to (or {})
+[metadata JSON]         ← optional key-value pairs
+[content JSON]          ← message-type-specific payload
+[buffers ...]           ← optional binary buffers (for display_data images, etc.)
+```
+
+The `<IDS|MSG>` delimiter separates routing frames (used by `ROUTER` to track which client sent the message) from the signed payload frames.
+
+### Python: Connecting to a Running Kernel
+
+```python
+import jupyter_client
+import json, time
+
+# Start a fresh kernel (or connect to an existing one via connection file)
+km = jupyter_client.KernelManager(kernel_name='python3')
+km.start_kernel()
+kc = km.client()
+kc.start_channels()
+kc.wait_for_ready(timeout=30)
+
+# Execute code in the kernel
+msg_id = kc.execute("import cupy as cp; a = cp.ones((1024,1024)); print(a.sum())")
+
+# Collect output: drain iopub until the execution completes
+while True:
+    try:
+        msg = kc.get_iopub_msg(timeout=10)
+    except Exception:
+        break
+    mt = msg['msg_type']
+    if mt == 'stream':
+        print(f"[{msg['content']['name']}] {msg['content']['text']}", end='')
+    elif mt == 'display_data':
+        data = msg['content']['data']
+        if 'image/png' in data:
+            # Inline image — base64 PNG for matplotlib or GPU-rendered output
+            import base64
+            png = base64.b64decode(data['image/png'])
+            open('/tmp/kernel_output.png', 'wb').write(png)
+    elif mt == 'error':
+        print(f"ERROR: {''.join(msg['content']['traceback'])}")
+    elif mt == 'status' and msg['content']['execution_state'] == 'idle':
+        break  # kernel finished executing
+
+kc.stop_channels()
+km.shutdown_kernel()
+```
+
+### Raw pyzmq: Direct Protocol Access
+
+For tooling that needs fine-grained control (custom kernels, kernel proxies, monitoring dashboards), using `pyzmq` directly against the wire protocol is more appropriate than `jupyter_client`:
+
+```python
+import zmq, json, hmac, hashlib, uuid, datetime
+
+def sign(key, frames):
+    """Compute HMAC-SHA256 signature over message frames."""
+    h = hmac.new(key.encode(), digestmod=hashlib.sha256)
+    for f in frames:
+        h.update(f if isinstance(f, bytes) else f.encode())
+    return h.hexdigest()
+
+def send_message(socket, key, msg_type, content, parent=None):
+    session = str(uuid.uuid4())
+    header = json.dumps({
+        "msg_id": str(uuid.uuid4()),
+        "session": session,
+        "date": datetime.datetime.utcnow().isoformat() + "Z",
+        "username": "tool",
+        "version": "5.3",
+        "msg_type": msg_type,
+    }).encode()
+    parent_header = json.dumps(parent or {}).encode()
+    metadata = b"{}"
+    content_bytes = json.dumps(content).encode()
+
+    frames = [header, parent_header, metadata, content_bytes]
+    sig = sign(key, frames).encode()
+    socket.send_multipart([b"<IDS|MSG>", sig] + frames)
+
+# Connect directly to a running kernel's shell socket
+ctx = zmq.Context()
+shell = ctx.socket(zmq.DEALER)
+shell.connect("tcp://127.0.0.1:52817")
+
+iopub = ctx.socket(zmq.SUB)
+iopub.connect("tcp://127.0.0.1:52818")
+iopub.setsockopt(zmq.SUBSCRIBE, b"")   # subscribe to all topics
+
+KEY = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"   # from connection file
+
+# Send an execute_request
+send_message(shell, KEY, "execute_request", {
+    "code": "import torch; print(torch.cuda.get_device_name(0))",
+    "silent": False, "store_history": True,
+    "user_expressions": {}, "allow_stdin": False,
+})
+
+# Read output from iopub
+poller = zmq.Poller()
+poller.register(iopub, zmq.POLLIN)
+while True:
+    socks = dict(poller.poll(5000))
+    if iopub not in socks:
+        break
+    frames = iopub.recv_multipart()
+    # frames: [topic, <IDS|MSG>, sig, header, parent, metadata, content, ...]
+    content = json.loads(frames[6])
+    header  = json.loads(frames[3])
+    if header['msg_type'] == 'stream':
+        print(content['text'], end='')
+    elif header['msg_type'] == 'status' and content['execution_state'] == 'idle':
+        break
+```
+
+### Implementing a Minimal Custom Kernel
+
+Any language or runtime can become a Jupyter kernel by implementing the five-socket protocol. The minimum viable kernel:
+
+```python
+import zmq, json, hmac, hashlib, sys
+
+def kernel_main(connection_file):
+    with open(connection_file) as f:
+        cfg = json.load(f)
+
+    ctx = zmq.Context()
+    key = cfg['key']
+    t   = cfg['transport']
+    ip  = cfg['ip']
+
+    def addr(port): return f"{t}://{ip}:{port}"
+
+    shell   = ctx.socket(zmq.ROUTER); shell.bind(addr(cfg['shell_port']))
+    iopub   = ctx.socket(zmq.PUB);   iopub.bind(addr(cfg['iopub_port']))
+    control = ctx.socket(zmq.ROUTER); control.bind(addr(cfg['control_port']))
+    stdin   = ctx.socket(zmq.ROUTER); stdin.bind(addr(cfg['stdin_port']))
+    hb      = ctx.socket(zmq.REP);   hb.bind(addr(cfg['hb_port']))
+
+    poller = zmq.Poller()
+    poller.register(shell, zmq.POLLIN)
+    poller.register(control, zmq.POLLIN)
+    poller.register(hb, zmq.POLLIN)
+
+    execution_count = 0
+
+    while True:
+        socks = dict(poller.poll())
+        if hb in socks:
+            hb.send(hb.recv())   # heartbeat echo — keeps kernel "alive"
+
+        if shell in socks:
+            frames = shell.recv_multipart()
+            # Parse: [identity..., b"<IDS|MSG>", sig, header, parent, meta, content]
+            delim_idx = frames.index(b"<IDS|MSG>")
+            idents    = frames[:delim_idx]
+            header    = json.loads(frames[delim_idx + 2])
+            content   = json.loads(frames[delim_idx + 5])
+
+            if header['msg_type'] == 'execute_request':
+                execution_count += 1
+                code = content['code']
+
+                # Broadcast "busy" status
+                # (full implementation would sign all outgoing messages)
+                iopub.send_multipart([b"status", json.dumps({
+                    "msg_type": "status",
+                    "content": {"execution_state": "busy"}
+                }).encode()])
+
+                # Execute the code (here: eval in Python itself)
+                try:
+                    result = str(eval(compile(code, "<kernel>", "exec")))
+                    iopub.send_multipart([b"execute_result", json.dumps({
+                        "msg_type": "execute_result",
+                        "content": {
+                            "execution_count": execution_count,
+                            "data": {"text/plain": result},
+                            "metadata": {}
+                        }
+                    }).encode()])
+                except Exception as e:
+                    iopub.send_multipart([b"error", json.dumps({
+                        "msg_type": "error",
+                        "content": {"ename": type(e).__name__,
+                                    "evalue": str(e), "traceback": []}
+                    }).encode()])
+
+                iopub.send_multipart([b"status", json.dumps({
+                    "msg_type": "status",
+                    "content": {"execution_state": "idle"}
+                }).encode()])
+
+if __name__ == '__main__':
+    kernel_main(sys.argv[1])
+```
+
+Production kernel implementations use the **xeus** framework (C++, [github.com/jupyter-xeus/xeus](https://github.com/jupyter-xeus/xeus)) or **ipykernel** (Python). Xeus is the basis for xeus-python, xeus-cling (C++ via Cling REPL), and xeus-lua; it handles all ZMQ socket management, message signing, and comm (widget) protocol, leaving only the language-specific evaluation loop to implement.
+
+### GPU Kernels: RAPIDS, CuPy, and GPU-Accelerated Notebooks
+
+For GPU computing, several kernel variants expose GPU runtimes through the standard Jupyter protocol:
+
+| Kernel | GPU backend | Use case |
+|---|---|---|
+| **ipykernel** (standard Python) | CUDA via CuPy / PyTorch / JAX / TensorFlow | General GPU ML/data science |
+| **RAPIDS cuDF kernel** | CUDA (RAPIDS) | GPU-accelerated DataFrame operations (like pandas on GPU) |
+| **xeus-python** | CUDA via Python ecosystem | C++-backed Python kernel; lower overhead than ipykernel |
+| **IJulia** | CUDA.jl / AMDGPU.jl | Julia GPU computing notebooks |
+| **IHaskell** | Accelerate / ArrayFire | Haskell GPU notebooks |
+| **xeus-cling** | CUDA C++ via Cling | Interactive CUDA C++ in Jupyter |
+
+In all cases, the GPU work happens entirely inside the kernel process — the ZMQ protocol carries only the code strings in and the text/image results out. The `display_data` message type carries binary content (base64-encoded PNG images, HTML, JSON) via the `data` dict; GPU-rendered visualisations (matplotlib with CUDA backend, RAPIDS cuDF plots, Plotly) are serialised to PNG or JSON and sent over this channel.
+
+**Widget protocol (ipywidgets / comm)**: For interactive GPU visualisations (slider controls that update a GPU simulation in real time), the **comm** sub-protocol runs over the `shell` and `iopub` sockets:
+- Frontend sends `comm_open` → kernel creates a `Comm` object (e.g., a live plot widget)
+- Frontend sends `comm_msg` with slider value → kernel updates GPU array, re-renders, sends back `display_data`
+- This is ZMQ request/reply over the shell socket, with iopub broadcasting the updated display to all connected frontends simultaneously
+
+The comm protocol is what `ipywidgets`, `plotly.FigureWidget`, `bqplot`, and `ipyvolume` (GPU 3D volume rendering in the browser) all use — ZMQ's `PUB/SUB` is the transport that makes interactive multi-frontend GPU visualisation possible without any additional IPC infrastructure.
+
+### Kernel Registration: kernel.json
+
+Each kernel registers itself with Jupyter by placing a `kernel.json` file in a kernelspec directory (`~/.local/share/jupyter/kernels/<name>/kernel.json`):
+
+```json
+{
+  "argv": ["/usr/bin/python3", "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+  "display_name": "Python 3 (GPU)",
+  "language": "python",
+  "env": {
+    "CUDA_VISIBLE_DEVICES": "0",
+    "LD_LIBRARY_PATH": "/usr/local/cuda/lib64"
+  },
+  "metadata": {
+    "debugger": true
+  }
+}
+```
+
+`{connection_file}` is replaced at launch time by the kernel manager with the path to the JSON file it wrote. The `env` dict is merged into the kernel subprocess environment — this is how GPU kernels select a specific CUDA device or set library paths without modifying the user's shell environment.
+
+For containerised GPU kernels (JupyterHub with Docker or Kubernetes), the `argv` invokes a container runtime instead of a local binary, but the ZMQ sockets are the same — typically tunnelled via SSH port forwarding or exposed on the container network.
+
+---
+
+## 19. Roadmap
 
 ### Near-term (6–12 months)
 
@@ -2498,7 +2815,7 @@ In these cases, ZeroMQ/nng over an in-process `inproc://` or Unix-socket `ipc://
 
 ---
 
-## 19. Integrations
+## 20. Integrations
 
 This chapter connects to the following chapters throughout the book:
 
