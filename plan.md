@@ -1594,6 +1594,23 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 
 > **Note:** Chapter 48 (ROCm and Machine Learning on Linux GPUs) was originally part of Part VII (Application APIs & Middleware) and has been moved here as it is more naturally an AI/ML infrastructure chapter than a general middleware chapter.
 
+### Chapter 199: Jupyter Internals — Architecture, Python Runtime, Multi-Kernel Support, and GPU Computing
+
+- Architecture: `jupyter_server` Tornado HTTP+WebSocket server; JupyterLab SPA vs Classic Notebook vs nteract; kernel/frontend decoupling via ZMQ (→ ch198 §18); JupyterHub multi-user model (Proxy + Hub + Spawner + KernelManager + kernel subprocess); REST API (`/api/kernels`, `/api/sessions`) and WebSocket `channels` endpoint multiplexing all five ZMQ sockets
+- ZMQ→WebSocket bridge: how `jupyter_server` proxies ZMQ multi-part messages over a single browser WebSocket; `@jupyterlab/services` kernel client demultiplexing by `channel` field
+- IPython/Python internals: `ZMQInteractiveShell` execution pipeline (input transformers → AST transform → compile → exec); `sys.displayhook` → `PlainTextFormatter`/`HTMLFormatter`; `sys.stdout` → `OutStream` writing iopub `stream` messages; `_repr_html_`/`_repr_png_`/`_repr_mimebundle_` rich display dispatch; line/cell magic dispatch (`MagicsMixin`); `IPCompleter`+jedi tab completion; Traitlets reactive config system; DAP debugger via `debugpy` on control socket
+- Multi-kernel support: `KernelManager`/`MultiKernelManager`; kernelspec (`kernel.json` schema: argv, env, metadata); xeus C++ kernel framework (`xinterpreter` virtual interface; xeus-python, xeus-cling CUDA C++, xeus-lua); kernel provisioners (local, Docker, Kubernetes via Enterprise Gateway); SSH-tunnelled remote kernels
+- Notebook file format: `.ipynb` JSON schema (nbformat, cells, outputs, MIME data dict); `nbconvert` (HTMLExporter, LatexExporter, ScriptExporter, Jinja2 templates); `papermill` parameterised execution; `jupytext` notebook↔Python/Markdown sync; `nbmake`/`nbval` pytest testing
+- JupyterLab rendering pipeline: Lumino widget framework (`Widget`, `DockPanel`, `CommandRegistry`, plugin DI system); MIME renderer registry (`IRenderMimeRegistry`, `IRenderMime.IRenderer`); cell `OutputArea`; renderers for vega, plotly, GeoJSON; Voilà dashboard server; `anywidget` ESM custom widget authoring
+- Interactive widgets: `comm_open`/`comm_msg` protocol; `ipywidgets` `HasTraits` sync; slider→GPU update loop example; `Output` widget; `anywidget` WebGL canvas widget
+- GPU computing: CuPy `cupy.ndarray` (single CUDA context per kernel process, shared across all cells); RAPIDS cuDF/cuML; PyTorch/JAX CUDA context lifecycle; GPU memory accumulation across cells; `torch.cuda.empty_cache()`; multi-GPU with `CUDA_VISIBLE_DEVICES`; ROCm/HIP notebooks
+- GPU visualisation: `ipyvolume` WebGL volume rendering (Three.js, CuPy→numpy→base64→WebGL path); `plotly` WebGL traces (`Scattergl`, `Scatter3d`); `vispy`/`moderngl` PNG export limitation; `pydeck` deck.gl GPU tiles; emerging `wgpu-py`+`anywidget` WebGPU path
+- Real-time collaboration: Yjs CRDT (`Y.Doc`, `Y.Map`, `Y.Text`); `@jupyter/ydoc` (`YNotebook`, `YCell`); `jupyter-collaboration` y-websocket endpoint; awareness protocol for cursor presence
+- JupyterLite: static-site Jupyter; Pyodide (CPython→Wasm via Emscripten, `micropip`); service worker REST/WebSocket intercept; `SharedArrayBuffer` in-process kernel messaging; no CUDA/no Unix sockets; `jupyter lite build`
+- Linux-specific: GPU device access (`/dev/nvidia*`, `/dev/dri/renderD128`); `nvidia-container-toolkit` CDI; JupyterHub `DockerSpawner`/`KubeSpawner` GPU resource limits; cgroup v2 `MemoryMax`/`CPUQuota` via `SystemdSpawner`; MIG partitioning for shared GPU notebooks; `jupyter-server-proxy` for TensorBoard/Dask dashboard
+- Roadmap: JupyterLab 4/5 (virtual output scrolling, notebook v5 format, binary ZMQ frame protocol); Jupyter AI (`%%ai` magic, Ollama local LLM backend); WebGPU widgets; JupyterLite WebGPU; DAP GPU debugger integration
+- **Integrations**: ch198 §18 (ZMQ kernel protocol detail); ch34 (ANGLE/WebGL for ipyvolume/plotly); ch98 (WebAssembly/Pyodide JupyterLite); ch48 (ROCm, KFD, RAPIDS); ch55 (GPU containers, nvidia-container-toolkit); ch88 (NPU/accel device access); ch124 (LLM inference, Ollama as jupyter_ai backend)
+
 ### Chapter 48: ROCm and Machine Learning on Linux GPUs
 
 *(Moved from Part VII to Part XX — AI/ML infrastructure chapter)*
