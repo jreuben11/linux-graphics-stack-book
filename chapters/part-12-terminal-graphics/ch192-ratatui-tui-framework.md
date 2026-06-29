@@ -17,8 +17,9 @@
 9. [Visual Effects with Tachyonfx](#9-visual-effects-with-tachyonfx)
 10. [Ratatui on Embedded Hardware: The Mousefood Backend](#10-ratatui-on-embedded-hardware-the-mousefood-backend)
 11. [Ratatui in the Browser: Ratzilla and WebAssembly](#11-ratatui-in-the-browser-ratzilla-and-webassembly)
-12. [Roadmap](#12-roadmap)
-13. [Integrations](#13-integrations)
+12. [Ecosystem Comparison: Ratatui vs Rich, Textual, Bubble Tea, and ncurses](#12-ecosystem-comparison-ratatui-vs-rich-textual-bubble-tea-and-ncurses)
+13. [Roadmap](#13-roadmap)
+14. [Integrations](#14-integrations)
 
 ---
 
@@ -818,7 +819,213 @@ On Linux/Chromium, this rendering pipeline runs as: JavaScript `requestAnimation
 
 ---
 
-## 12. Roadmap
+## 12. Ecosystem Comparison: Ratatui vs Rich, Textual, Bubble Tea, and ncurses
+
+TUI frameworks exist in every major systems language. This section compares Ratatui against the four most commonly encountered alternatives, focusing on the architectural decisions that matter when choosing a framework for a Linux graphics-adjacent terminal application.
+
+### Python Rich
+
+**Rich** (by Will McGugan) is a Python library for rich text and beautiful formatting in the terminal. It is not a full TUI framework — it has no event loop, no widget state model, and no input handling. Its domain is **output formatting**: syntax highlighting, tables, progress bars, markdown rendering, tracebacks, and log formatting, all streamed to stdout.
+
+```python
+from rich.console import Console
+from rich.table import Table
+
+console = Console()
+table = Table(title="GPU Adapters")
+table.add_column("Device", style="cyan")
+table.add_column("VRAM", justify="right")
+table.add_row("Radeon RX 7900 XTX", "24 GB")
+table.add_row("RTX 4090", "24 GB")
+console.print(table)
+```
+
+Rich's rendering model is **streaming**: it writes escape sequences to stdout one line at a time. There is no off-screen buffer, no diff algorithm, no full-screen repaint — Rich's `Console.print()` is essentially a sophisticated `print()`. This makes it excellent for CLI tools that produce formatted output, but unsuitable for interactive full-screen applications.
+
+| Aspect | Ratatui | Rich |
+|---|---|---|
+| Paradigm | Immediate-mode full-screen TUI | Streaming formatted output |
+| Event loop | Application-owned (crossterm/termion) | None |
+| Input handling | Via crossterm `event::read()` | None |
+| Screen model | Double-buffer diff | Single-pass stdout write |
+| Primary use | Interactive TUI apps | CLI output, logging, progress |
+| Language | Rust | Python |
+| Pixel graphics | Via ratatui-image | Via `rich.console` image (limited) |
+
+[Source: Rich documentation](https://rich.readthedocs.io/)
+
+### Python Textual
+
+**Textual** (also by Will McGugan, built on Rich) is a full TUI application framework for Python. Unlike Rich, it has an event loop, widget composition, CSS-like layout, reactive state, and mouse support — making it the closest Python equivalent to Ratatui.
+
+```python
+from textual.app import App, ComposeResult
+from textual.widgets import Header, Footer, DataTable
+
+class GPUMonitor(App):
+    CSS = "DataTable { height: 1fr; }"
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield DataTable()
+        yield Footer()
+
+    def on_mount(self) -> None:
+        table = self.query_one(DataTable)
+        table.add_columns("Device", "Utilisation", "VRAM")
+        table.add_rows([("RX 7900 XTX", "87%", "18/24 GB")])
+
+app = GPUMonitor()
+app.run()
+```
+
+Textual uses a **CSS-inspired layout engine** (flexbox-like, with Textual's own CSS dialect) rather than Ratatui's constraint-based `Layout`. Widgets are class instances with persistent state (retained-mode), reactive attributes that trigger re-renders, and an async message-passing system for inter-widget communication. Ratatui is immediate-mode (widgets are stateless render functions; state lives in the application); Textual is retained-mode (widgets own their state).
+
+| Aspect | Ratatui | Textual |
+|---|---|---|
+| Language | Rust | Python |
+| Rendering model | Immediate-mode (stateless widgets) | Retained-mode (stateful widget objects) |
+| Layout | Constraint solver (`Length`, `Percentage`, `Min`, `Max`, `Ratio`) | CSS-like (flexbox, grid) |
+| State management | Application-owned, manual | Reactive attributes (`reactive`, `watch`) |
+| Async integration | Via `tokio`/`async-std` manually | Built-in async event loop (asyncio) |
+| Styling | `Style` struct (fg, bg, modifiers) | Full CSS subset with theming |
+| Testing | `TestBackend` + `Buffer::assert_eq` | `App.run_test()` async test harness |
+| Pixel graphics | ratatui-image (Kitty/Sixel/iTerm2) | None (terminal images not supported) |
+| Startup time | ~1ms (Rust binary) | ~200ms+ (Python startup + imports) |
+| Deployment | Single static binary | Python + virtualenv |
+
+Textual's CSS layout and retained-mode widgets make complex layouts more ergonomic to write; Ratatui's immediate-mode model is more predictable for performance-sensitive rendering loops (no hidden re-render triggers from reactive attribute chains). [Source: Textual documentation](https://textual.textualize.io/)
+
+### Go Bubble Tea
+
+**Bubble Tea** (by Charm, written in Go) is a TUI framework based on **The Elm Architecture**: a pure functional update model where the application is a `Model` struct, a `Update(msg) (Model, Cmd)` function, and a `View(Model) string` function. There is no mutable state — each event produces a new model.
+
+```go
+package main
+
+import (
+    tea "github.com/charmbracelet/bubbletea"
+    "fmt"
+)
+
+type model struct { count int }
+
+func (m model) Init() tea.Cmd { return nil }
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+    switch msg := msg.(type) {
+    case tea.KeyMsg:
+        if msg.String() == "+" { return model{m.count + 1}, nil }
+        if msg.String() == "q" { return m, tea.Quit }
+    }
+    return m, nil
+}
+
+func (m model) View() string {
+    return fmt.Sprintf("Count: %d\n\nPress + to increment, q to quit.", m.count)
+}
+
+func main() {
+    tea.NewProgram(model{}).Run()
+}
+```
+
+Bubble Tea's `View()` returns a **string** of escape sequences — not a structured widget tree. Layout is performed by string concatenation or the companion **Lip Gloss** library (CSS-like string styling). The framework re-renders by calling `View()` on every update and diffing the resulting strings line-by-line to emit minimal escape sequences. Ratatui, by contrast, diffs at the **cell level** (per character with attributes), which is more precise but requires a structured widget system rather than string rendering.
+
+| Aspect | Ratatui | Bubble Tea |
+|---|---|---|
+| Language | Rust | Go |
+| Architecture | Immediate-mode widget tree | Elm Architecture (Model/Update/View) |
+| Render unit | Cell (char + style) | String (escape sequences) |
+| Diff granularity | Per-cell (precise) | Per-line (coarser) |
+| Layout | Constraint solver | Lip Gloss string composition |
+| Concurrency | Rust ownership model | Go goroutines + `tea.Cmd` |
+| Async I/O | Tokio / async-std | Goroutines via `tea.Cmd` |
+| Ecosystem | ratatui-image, tachyonfx, ratzilla | Bubble components (list, spinner, viewport…) |
+| Binary size | ~3–5 MB (static) | ~8–12 MB (Go runtime embedded) |
+| Pixel graphics | Kitty/Sixel/iTerm2 via ratatui-image | None |
+
+The Elm Architecture in Bubble Tea makes unit-testing straightforward (pure functions, no side effects in `Update`), but complex applications with many event sources can become difficult to manage with a single monolithic `Update` function. Ratatui's immediate-mode model defers architectural decisions about state management to the application, enabling patterns from simple `match event` loops to full actor systems via Tokio channels. [Source: Bubble Tea repository](https://github.com/charmbracelet/bubbletea)
+
+### ncurses
+
+**ncurses** (and its successor **ncursesw** for Unicode) is the oldest and most widely deployed TUI library, providing a C API that abstracts terminal capabilities via the **terminfo** database. It is the substrate beneath applications like `vim`, `htop`, `mc` (Midnight Commander), and `less`.
+
+```c
+#include <ncurses.h>
+
+int main(void) {
+    initscr();
+    cbreak();
+    noecho();
+    keypad(stdscr, TRUE);
+
+    WINDOW *win = newwin(10, 40, 5, 10);
+    box(win, 0, 0);
+    mvwprintw(win, 1, 2, "GPU: RX 7900 XTX");
+    mvwprintw(win, 2, 2, "VRAM: 18/24 GB");
+    wrefresh(win);
+
+    getch();
+    endwin();
+    return 0;
+}
+```
+
+ncurses uses a **retained-mode window model** (`WINDOW*` structs) with an explicit `refresh()`/`wrefresh()` call to flush changes. The diff between the virtual screen and the physical screen is computed by ncurses internally and emitted as minimal escape sequences. It reads terminal capabilities from `terminfo` (e.g. `/usr/share/terminfo/x/xterm-256color`) rather than hardcoding sequences, making it portable across terminal types.
+
+| Aspect | Ratatui | ncurses |
+|---|---|---|
+| Language | Rust | C (bindings in many languages) |
+| Rendering model | Immediate-mode, full buffer diff | Retained-mode `WINDOW*`, explicit `refresh()` |
+| Terminal capabilities | Hardcoded ANSI + crossterm detection | terminfo database |
+| Unicode | Full (Rust `char` = Unicode scalar) | ncursesw (wide-char extension required) |
+| Mouse support | crossterm mouse events | `mousemask()` + `MEVENT` |
+| Thread safety | Rust ownership (safe by construction) | Not thread-safe without wrappers |
+| Pixel graphics | ratatui-image (Kitty/Sixel/iTerm2) | None |
+| Memory model | Stack-allocated `Buffer` | Heap `WINDOW*` graph |
+| Binary dependency | No dynamic libs (crossterm is pure Rust) | `libncurses.so` (dynamic link) |
+| Maturity | ~2019 (tui-rs) / 2023 (ratatui fork) | 1993 (ncurses) / 1986 (curses) |
+
+ncurses's terminfo portability is its key advantage: it works correctly on VT100, xterm, screen, and exotic terminals without special-casing. Ratatui targets modern ANSI terminals and assumes 256-colour or truecolour support, trading portability for a simpler programming model and Rust memory safety. For new applications targeting Linux desktop terminals (kitty, foot, Ghostty, WezTerm), Ratatui's assumptions hold universally. [Source: ncurses documentation](https://invisible-island.net/ncurses/)
+
+### Gap-Closing Roadmap
+
+Ratatui's active development explicitly targets several gaps identified against its competitors.
+
+**Retained-mode ergonomics (gap vs Textual)**: The core impedance mismatch with Textual is that Ratatui widgets are stateless — the application holds all state and re-renders everything on each frame, whereas Textual widgets own their state reactively. The `WidgetRef` stabilisation (targeting 0.30–0.31) and the upcoming `StatefulWidget` trait improvements reduce this friction by allowing widget state structs to carry update methods, approaching the retained-mode feel without abandoning the immediate-mode render contract. A formally proposed `Component` abstraction (issue tracker RFC, 2025) would allow pre-built widget trees to re-use state between frames without full application ownership — closing the most common complaint against the immediate-mode model.
+
+**Async-native rendering (gap vs Textual's asyncio)**: Ratatui currently requires `ThreadProtocol` to prevent the Kitty image encoding step from blocking the `tokio` event loop. Native `async` encoding via `ratatui-image`'s planned `async-std`/`tokio` integration (§13, near-term) removes this workaround, bringing Ratatui's async model closer to Textual's where widget updates are naturally asynchronous.
+
+**Inline (non-full-screen) mode (gap vs Rich)**: Rich's primary use case — printing formatted output to stdout in a scrolling terminal — has no equivalent in Ratatui, which always occupies the full alternate screen. An **inline viewport** mode has been under discussion since 2024: rather than entering the alternate screen with `EnterAlternateScreen`, the application renders into a fixed-height region at the cursor position, scrolling with normal terminal output. This would allow Ratatui widgets (progress bars, tables, spinners) to appear in CLI tool output alongside unstructured text, directly competing with Rich for that use case.
+
+**Elm-style testability (gap vs Bubble Tea)**: Bubble Tea's pure-function `Update(msg) → (Model, Cmd)` model makes unit-testing trivial with no test backend required. Ratatui addresses this differently: the `TestBackend` + `Buffer::assert_eq!()` integration test approach verifies rendered cells without a real terminal. A planned `EventSimulator` utility (tracking in the ratatui-org repository) would let callers inject synthetic `Event::Key` and `Event::Mouse` events and assert on resulting buffer state, giving a comparable isolated-test story without requiring the Elm architectural constraint.
+
+**terminfo portability (gap vs ncurses)**: Ratatui does not plan to add terminfo lookup — this would conflict with the goal of zero system-library dependencies. Instead, `crossterm`'s runtime detection expands: colour support queries via `COLORTERM` and `$TERM`, `DECSCUSR` cursor-shape fallbacks, and mouse protocol detection via `DA1` all improve compatibility with non-standard terminals without reaching for the full terminfo database.
+
+**CSS/design-system layout (gap vs Textual)**: No CSS layout engine is planned for Ratatui core — this is a deliberate architectural decision. The Tachyonfx and Ratzilla ecosystems partially address the visual-design gap for effects and browser targets respectively, but the constraint solver is intended to remain the layout primitive.
+
+### Summary Comparison
+
+| Framework | Language | Model | Layout | Pixel graphics | Best for |
+|---|---|---|---|---|---|
+| **Ratatui** | Rust | Immediate-mode | Constraint solver | Kitty/Sixel/iTerm2 | High-performance TUI, Rust ecosystem |
+| **Rich** | Python | Streaming output | None (inline) | Limited | CLI output formatting, logging |
+| **Textual** | Python | Retained-mode | CSS-like | None | Complex Python TUI apps |
+| **Bubble Tea** | Go | Elm Architecture | Lip Gloss strings | None | Go services, Charm ecosystem tools |
+| **ncurses** | C | Retained WINDOW* | Manual placement | None | Portable C/C++ TUI, legacy terminals |
+
+**When to choose Ratatui**: Rust codebase; need pixel graphics (Kitty/Sixel); performance-critical render loop (diff at cell level, no GC pauses); embedding in a terminal emulator or graphics-adjacent tool; need WebAssembly target (Ratzilla).
+
+**When to choose Textual**: Python codebase; need CSS layout expressiveness; prefer retained-mode reactive state; development speed matters more than binary startup time.
+
+**When to choose Bubble Tea**: Go codebase; value Elm Architecture's testability; building tools in the Charm ecosystem (`gum`, `soft-serve`, `mods`).
+
+**When to choose ncurses**: C/C++ codebase; must run on legacy terminals; need the terminfo portability guarantee; maintaining existing ncurses application.
+
+---
+
+## 13. Roadmap
 
 ### Near-term (6–12 months)
 
@@ -846,7 +1053,7 @@ On Linux/Chromium, this rendering pipeline runs as: JavaScript `requestAnimation
 
 ---
 
-## 13. Integrations
+## 14. Integrations
 
 **Chapter 43 — Terminal Pixel Protocols (Sixel, Kitty, iTerm2)**: `ratatui-image` is the primary application-layer consumer of the protocols described in that chapter. The `Picker::from_query_stdio()` detection stack and the `Resize::Fit` / `Resize::Crop` encoding paths map directly onto the escape-sequence semantics of Sixel DCS, Kitty APC, and iTerm2 OSC 1337 documented there. Readers implementing custom image widgets in Ratatui must understand the Kitty image ID / placement lifecycle to avoid ID exhaustion in long-running applications.
 
