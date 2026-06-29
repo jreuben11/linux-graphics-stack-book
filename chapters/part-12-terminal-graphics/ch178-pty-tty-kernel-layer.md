@@ -86,6 +86,24 @@ USB serial adapters come in two flavours depending on how the USB device present
 
 Both paths register a `tty_driver` and create TTY nodes. From the perspective of a shell or `screen`/`minicom`, `/dev/ttyUSB0` and `/dev/ttyACM0` are indistinguishable: they accept `termios` configuration and provide a `read()`/`write()` byte stream. [Source: kernel CDC-ACM driver](https://github.com/torvalds/linux/blob/master/drivers/usb/class/cdc-acm.c)
 
+### JTAG Probes and the Dual-Channel USB Adapter
+
+**JTAG** (IEEE 1149.1, named after the Joint Test Action Group that defined it) is a 4-wire hardware debug interface (`TCK`, `TMS`, `TDI`, `TDO`) built into chips at silicon level. It gives a debugger direct access to CPU registers, memory, and hardware breakpoints without requiring a working OS or bootloader — essential for bring-up, kernel crash post-mortems, and flash programming.
+
+The connection to the TTY layer is indirect but ubiquitous: most JTAG probe hardware (J-Link, CMSIS-DAP, FTDI FT2232H-based adapters) is a **dual-channel USB device**. One channel carries the JTAG debug protocol, consumed by OpenOCD or pyOCD running on the host. The second channel is a USB-to-UART bridge that connects to the target board's serial console TX/RX pins. That second channel appears to the kernel as `/dev/ttyUSB0` or `/dev/ttyACM0` — a perfectly ordinary TTY device that a developer opens with `screen /dev/ttyUSB0 115200` to read kernel boot messages or a U-Boot prompt.
+
+```
+Host USB port
+    │
+    ├─ JTAG channel ──→ OpenOCD/pyOCD (CPU halt, register read/write, flash)
+    │
+    └─ UART channel ──→ /dev/ttyUSB0 ──→ screen / minicom (serial console)
+```
+
+The JTAG and UART channels are electrically independent on the target board: JTAG connects to the CPU's DAP (Debug Access Port on ARM Cortex), while UART connects to a UART peripheral (`/dev/ttyAMA0` on the target, if it runs Linux). This means you can halt the target CPU via JTAG and simultaneously read its last console output via the UART TTY — the two paths do not interfere.
+
+Multi-chip boards use JTAG's **scan chain** feature: TDO of one chip feeds TDI of the next, so a single probe can access an SoC, an FPGA, and a microcontroller sequentially by shifting data through the combined chain. OpenOCD's `jtag newtap` configuration declares each device in the chain with its IR length and `IDCODE`. [Source: OpenOCD documentation](https://openocd.org/doc/html/Config-File-Guidelines.html)
+
 ### Bluetooth HCI Bridge (`/dev/ttyS*` with `N_HCI` line discipline)
 
 When a Bluetooth controller chip is connected to the host via UART — common on embedded ARM boards where the Bluetooth and Wi-Fi combo chip (e.g., Cypress CYW43455 on Raspberry Pi 4) shares a UART with the application processor — the TTY layer acts as the physical transport for the Bluetooth **Host Controller Interface (HCI)**.
