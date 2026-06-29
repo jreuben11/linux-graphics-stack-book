@@ -21,6 +21,8 @@
 - [178.11 Sessions, Process Groups, and the Controlling Terminal](#17811-sessions-process-groups-and-the-controlling-terminal)
 - [178.12 `openpty()` and `forkpty()`: Terminal Emulator Startup](#17812-openpty-and-forkpty-terminal-emulator-startup)
 - [178.13 Terminal Multiplexers and PTY Chaining](#17813-terminal-multiplexers-and-pty-chaining)
+  - [tmux: Architecture and PTY Layer in Depth](#tmux-architecture-and-pty-layer-in-depth)
+  - [zellij: Multiplexer with a WebAssembly Plugin System](#zellij-multiplexer-with-a-webassembly-plugin-system)
 - [178.14 Integrations](#17814-integrations)
 
 ---
@@ -1104,6 +1106,225 @@ When the outer terminal window is resized:
 5. Each shell in an inner pane receives `SIGWINCH` via the inner PTY slave.
 
 This cascade means that a single window resize generates one `SIGWINCH` per tmux pane, plus one for tmux itself.
+
+---
+
+### tmux: Architecture and PTY Layer in Depth
+
+**tmux** (terminal multiplexer, by Nicholas Marriott) is the dominant terminal multiplexer on Linux. It operates as a **client–server daemon**: the first invocation forks a background server process that persists independently of any terminal; subsequent `tmux attach` invocations are thin clients that connect to it via a Unix socket (`/tmp/tmux-<uid>/default`).
+
+#### Process Model
+
+```
+┌─────────────────────────────────────────────────────┐
+│  tmux server (daemon, survives terminal close)       │
+│                                                      │
+│  session "main"                                      │
+│    window 0 "editor"                                 │
+│      pane 0: inner PTY master ──→ /dev/pts/5 (nvim)  │
+│      pane 1: inner PTY master ──→ /dev/pts/6 (shell) │
+│    window 1 "logs"                                   │
+│      pane 0: inner PTY master ──→ /dev/pts/7 (tail)  │
+└─────────────┬────────────────────────────────────────┘
+              │ Unix socket /tmp/tmux-1000/default
+┌─────────────▼────────────────────────────────────────┐
+│  tmux client (attached terminal emulator)            │
+│  outer PTY slave ←──── outer PTY master ←── kitty   │
+└──────────────────────────────────────────────────────┘
+```
+
+The server owns all inner PTY masters. The client owns the outer PTY slave (or reads directly from the terminal if detached). This separation is what enables **session persistence**: when a terminal window closes, the outer PTY pair is destroyed but the server and all inner PTY pairs survive. `tmux attach` creates a new outer PTY pair and reconnects the client. [Source: tmux repository](https://github.com/tmux/tmux)
+
+#### Terminal State Machine
+
+tmux maintains a complete **VT100/xterm-compatible terminal state machine** per pane (`struct grid` + `struct screen` in `tmux/grid.c` and `tmux/screen.c`). This is separate from the kernel's N_TTY line discipline — tmux's state machine operates on the decoded character stream, not on raw bytes. It tracks:
+
+- Grid cells with character, attribute (bold/italic/underline), and 24-bit colour
+- Cursor position, scroll region, tab stops
+- Alternate screen vs main screen state
+- Title string (OSC 2), window title, icon name
+
+The state machine is what allows tmux to reconstruct a pane's current visual state for a newly attached client, replaying only the current screen contents rather than the full historical byte stream.
+
+#### Key tmux Kernel Interactions
+
+```bash
+# tmux creates one PTY pair per pane via openpty() / posix_openpt()
+# Each inner master fd is polled in a libevent event loop
+# tmux server's main loop: event_base_dispatch() on libevent
+
+# Inspect which pts nodes tmux owns:
+tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index} #{pane_tty}"
+# → main:0.0 /dev/pts/5
+# → main:0.1 /dev/pts/6
+
+# Send a signal to a specific pane's process group via the pts:
+tmux send-keys -t main:0.0 "q" Enter   # sends 'q\n' to pane's pts slave
+
+# Resize: tmux issues TIOCSWINSZ on inner PTY master for each pane
+tmux resize-pane -t main:0.0 -x 80 -y 24
+```
+
+#### Copy Mode and the Scrollback Buffer
+
+tmux's scrollback buffer is stored entirely in user space in the server process (`struct grid` with a configurable `history-limit`, default 2000 lines). This is independent of the kernel's line discipline read buffer. When a pane produces output faster than the client consumes it:
+
+1. The inner PTY slave blocks (N_TTY buffer full → write blocks the pane process)
+2. tmux reads the inner PTY master in its event loop, draining the kernel buffer
+3. tmux appends to its user-space `grid`
+4. tmux encodes a screen update and writes to the outer PTY slave
+5. If the outer PTY slave blocks (client can't keep up), tmux's libevent write buffer absorbs the backpressure
+
+The two-level buffering (kernel N_TTY + tmux user-space grid) means that even when the attached terminal is slow, the pane's shell is not blocked as long as tmux can drain the inner PTY. [Source: tmux grid.c](https://github.com/tmux/tmux/blob/master/grid.c)
+
+#### Configuration Relevant to PTY/Terminal Behaviour
+
+```bash
+# ~/.tmux.conf
+
+# Allow escape sequence passthrough to outer terminal (needed for Kitty graphics,
+# OSC 52 clipboard, etc.) — tmux 3.3+
+set -g allow-passthrough on
+
+# Set outer terminal capabilities correctly so tmux knows what the outer term supports
+set -g default-terminal "tmux-256color"
+set -ga terminal-overrides ",xterm-kitty:RGB"   # 24-bit colour passthrough
+
+# Increase scrollback buffer
+set -g history-limit 50000
+
+# Mouse support (tmux intercepts mouse events and routes them to panes)
+set -g mouse on
+```
+
+The `allow-passthrough` setting is particularly important for the graphics stack: without it, Kitty graphics protocol sequences (`ESC _G...ST`) and Sixel sequences are consumed by tmux's VT parser and never reach the outer terminal emulator.
+
+---
+
+### zellij: Multiplexer with a WebAssembly Plugin System
+
+**zellij** (by the Zellij contributors, written in Rust) is a modern terminal multiplexer that distinguishes itself from tmux in two architectural areas: a **layout-first session model** and a **WebAssembly plugin system** for extending multiplexer behaviour at runtime. [Source: zellij repository](https://github.com/zellij-org/zellij)
+
+#### Architecture
+
+```
+┌───────────────────────────────────────────────────────────┐
+│  zellij server (Rust async, tokio)                        │
+│                                                           │
+│  Layout engine  ──→  Tab → Pane → PTY master fd           │
+│                                                           │
+│  Plugin system (Wasmtime runtime)                         │
+│    status-bar.wasm   ←─ plugin API (IPC over Unix pipe)   │
+│    tab-bar.wasm      ←─ plugin API                        │
+│    user-plugin.wasm  ←─ plugin API                        │
+└────────────────────────┬──────────────────────────────────┘
+                         │ Unix socket
+┌────────────────────────▼──────────────────────────────────┐
+│  zellij client (thin, renders UI to outer PTY)            │
+└───────────────────────────────────────────────────────────┘
+```
+
+Like tmux, zellij uses a client–server model with persistent sessions surviving terminal close. Unlike tmux, the server is written in async Rust using Tokio, with PTY I/O handled via the `nix` crate's `openpty()` binding and read/write on async fd wrappers. [Source: zellij PTY handling](https://github.com/zellij-org/zellij/blob/main/zellij-server/src/pty.rs)
+
+#### PTY Layer Differences from tmux
+
+| Aspect | tmux | zellij |
+|---|---|---|
+| Language | C, libevent | Rust, tokio async |
+| Plugin system | External scripts via `run-shell` | WASM plugins via Wasmtime |
+| Session file | Auto-named socket | Named sessions + layout YAML |
+| Scrollback | `struct grid` (C) | `VecDeque<Row>` (Rust) |
+| Passthrough | `allow-passthrough` (opt-in) | `allow_exec_host_cmd` for plugins |
+| Config format | `tmux.conf` (key-value) | KDL (Kurious Document Language) |
+| Default UI | Minimal (status bar only) | Floating panes, tab bar, status bar built-in |
+
+#### Layout System
+
+zellij's primary differentiator is its **declarative layout system** (KDL format):
+
+```kdl
+// ~/.config/zellij/layouts/dev.kdl
+layout {
+    pane split_direction="vertical" {
+        pane size=1 borderless=true {
+            plugin location="zellij:tab-bar"
+        }
+    }
+    pane split_direction="horizontal" {
+        pane command="nvim" size="70%"
+        pane split_direction="vertical" {
+            pane command="cargo watch -x test"
+            pane command="lazygit"
+        }
+    }
+    pane size=2 borderless=true {
+        plugin location="zellij:status-bar"
+    }
+}
+```
+
+Each `pane` with a `command` causes zellij to `openpty()`, `fork()`, and `exec()` that command into the PTY slave — identical to what a terminal emulator does, but orchestrated by the layout engine rather than by shell invocation. [Source: zellij layouts documentation](https://zellij.dev/documentation/layouts)
+
+#### WebAssembly Plugin System
+
+zellij's plugin system runs WASM modules in a Wasmtime sandbox. Plugins communicate with the zellij server via a defined IPC API (serialised with protobuf) over an internal channel:
+
+```rust
+// Example zellij plugin (Rust → WASM)
+use zellij_tile::prelude::*;
+
+#[derive(Default)]
+struct MyPlugin { count: usize }
+
+register_plugin!(MyPlugin);
+
+impl ZellijPlugin for MyPlugin {
+    fn load(&mut self, _config: BTreeMap<String, String>) {
+        subscribe(&[EventType::Key, EventType::PaneUpdate]);
+    }
+
+    fn update(&mut self, event: Event) -> bool {
+        if let Event::Key(key) = event {
+            if key == Key::Ctrl('g') {
+                self.count += 1;
+                return true;  // trigger re-render
+            }
+        }
+        false
+    }
+
+    fn render(&mut self, rows: usize, cols: usize) {
+        println!("Ctrl-G pressed {} times", self.count);
+    }
+}
+```
+
+The plugin runs in isolation: it cannot directly access PTY fds or kernel interfaces, only the events and APIs exposed by the zellij plugin API. This is architecturally different from tmux's `run-shell` hooks, which execute arbitrary shell commands with full process privileges. [Source: zellij-tile crate](https://crates.io/crates/zellij-tile)
+
+#### Passthrough and Graphics Protocol Support
+
+zellij's VT parser (in `zellij-utils/src/vte/`) handles escape sequences with awareness of pixel graphics protocols. As of zellij 0.40+, Kitty graphics protocol passthrough is supported transparently without requiring an opt-in flag equivalent to tmux's `allow-passthrough` — the parser forwards `APC` (Application Program Command, `ESC _`) sequences to the outer terminal without consuming them. Sixel (`DCS ... ST`) passthrough is in active development. [Source: zellij graphics protocol tracking issue](https://github.com/zellij-org/zellij/issues/2206)
+
+#### Session Management from the Command Line
+
+```bash
+# Start a new named session with a layout
+zellij --session dev --layout dev.kdl
+
+# List active sessions
+zellij list-sessions
+
+# Attach to an existing session
+zellij attach dev
+
+# Run a command in a new pane of an existing session
+zellij --session dev action new-pane --command "htop"
+
+# Send a command to a specific pane (by pane ID)
+zellij --session dev action write-chars "git status\n"
+```
+
+The `zellij action` subcommand communicates with the running server via the Unix socket, issuing structured commands that the server translates into PTY writes or layout changes. This is the equivalent of `tmux send-keys` and `tmux split-window`, but with a typed action model rather than string commands. [Source: zellij CLI reference](https://zellij.dev/documentation/cli-actions)
 
 ---
 
