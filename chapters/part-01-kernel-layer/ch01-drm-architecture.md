@@ -8,6 +8,7 @@
 
 - [Overview](#overview)
 - [1. Locating DRM in the Kernel and Software Stack](#1-locating-drm-in-the-kernel-and-software-stack)
+  - [UAPI: The Kernel–Userspace Contract](#uapi-the-kernelâuserspace-contract)
 - [2. The DRM Driver Model: Probe, Bind, and the Component Framework](#2-the-drm-driver-model-probe-bind-and-the-component-framework)
 - [3. Device Nodes: Primary vs. Render Nodes](#3-device-nodes-primary-vs-render-nodes)
 - [4. Privilege Separation Between Display Ownership and Rendering](#4-privilege-separation-between-display-ownership-and-rendering)
@@ -90,6 +91,53 @@ graph TD
 The evolution of the DRI (Direct Rendering Infrastructure) protocol family shows why the architecture evolved the way it did. DRI1 gave application processes direct access to GPU memory-mapped registers via `/dev/dri/card0`, but required `CAP_SYS_ADMIN` or root membership and offered no isolation between clients. DRI2 introduced authenticated buffer sharing: the X server would vouch for a client by exchanging a magic token, allowing the client to share SHM-backed pixmaps with the compositor. DRI2 worked but introduced unavoidable CPU copies and required the X server to be involved in every buffer handoff — a bottleneck that became increasingly painful as GPU output resolutions and frame rates climbed. DRI3, introduced in 2013, solved both problems at once by passing GPU buffer file descriptors directly over the X socket using the standard Unix `SCM_RIGHTS` mechanism. The X server receives a DMA-BUF file descriptor and imports it as a pixmap without ever reading or copying the pixel data. DRI2 is effectively dead on modern stacks; any kernel older than 3.14 that lacks render nodes can be safely treated as legacy.
 
 The two halves of DRM are worth naming precisely to avoid confusion throughout the book. The **KMS half** manages the display pipeline: it models the hardware as a tree of KMS objects (planes, CRTCs, encoders, connectors, and bridges), and provides ioctls to enumerate and reconfigure those objects. The **GEM/render half** manages GPU memory (via GEM objects) and GPU workload submission. In the kernel source this split is visible in the naming: `drm_mode_*` functions belong to KMS, while `drm_gem_*`, `drm_sched_*`, and the driver-private ioctls for command submission belong to the render path. Chapter 2 covers the KMS pipeline in full depth; Chapter 4 covers GEM and memory management.
+
+### UAPI: The Kernel–Userspace Contract
+
+**UAPI** stands for *User-space API*. In the Linux kernel source tree, the directory `include/uapi/` is a specially demarcated zone of headers whose contents form part of the **kernel's ABI (Application Binary Interface) stability guarantee** — a guarantee inherited from the kernel's broader promise that a binary compiled against a given kernel version will continue to work, unmodified, on every future kernel version.
+
+For DRM, the relevant headers live in `include/uapi/drm/` ([source](https://elixir.bootlin.com/linux/latest/source/include/uapi/drm)):
+
+| Header | Contents |
+|---|---|
+| `drm.h` | Core DRM ioctl numbers, argument structs, capability constants, event types |
+| `drm_mode.h` | KMS object structs: `drm_mode_info`, `drm_mode_create_dumb`, `drm_mode_atomic`, `drm_mode_obj_get_properties`, format modifier types |
+| `amdgpu_drm.h` | AMD GPU–private ioctls: GEM create/mmap/wait, command submission (`AMDGPU_CS`), VM management, query (`AMDGPU_INFO`) |
+| `i915_drm.h` | Intel i915/Xe–private ioctls: GEM create/execbuffer/busy/mmap, GPU reset, perf, GuC submission |
+| `nouveau_drm.h` | Nouveau (NVIDIA open-kernel) private ioctls |
+| `virtgpu_drm.h` | Virtio-GPU guest driver ioctls |
+
+**The immutability rule.** Once a UAPI ioctl struct is shipped in a released kernel, its layout is frozen. The C struct must never change size; fields must never be reinterpreted. Adding capabilities requires one of three approaches:
+
+1. **Reserved fields**: the original struct includes padding bytes or a `flags` field; new functionality is gated by a new flag bit and only the newly written fields are interpreted when the flag is set.
+2. **New ioctl number**: a new ioctl `DRM_IOCTL_FOO_V2` is introduced alongside the original; old userspace continues to use the old number.
+3. **Capability negotiation**: `DRM_IOCTL_GET_CAP` / `DRM_IOCTL_SET_CLIENT_CAP` allow new behaviour to be opted into without changing existing ioctls.
+
+This constraint has a practical consequence visible throughout `i915_drm.h`: some structs carry fields that encode assumptions about the Gen6/Gen7 memory management model that have been architecturally superseded, but cannot be removed. The technical debt is real and acknowledged; it is the price of a stable ABI.
+
+```c
+/* Excerpt from include/uapi/drm/drm.h showing the pattern:
+   reserved padding in a UAPI struct guarantees future extensibility.
+   Source: https://elixir.bootlin.com/linux/latest/source/include/uapi/drm/drm.h */
+
+struct drm_gem_open {
+    __u32 name;       /* the flink global name to import */
+    __u32 handle;     /* OUT: GEM handle in this file's namespace */
+    __u64 size;       /* OUT: object size in bytes */
+};
+
+/* DRM sync object — note the pad field reserving space */
+struct drm_syncobj_create {
+    __u32 handle;     /* OUT: handle for the new sync object */
+    __u32 flags;      /* IN: DRM_SYNCOBJ_CREATE_SIGNALED or 0 */
+};
+```
+
+**Why `include/uapi/` is a separate directory.** Before Linux 3.5, kernel headers and userspace headers were entangled — userspace programs that included kernel headers would inadvertently pull in kernel-internal definitions, types, and macros. The `include/uapi/` split (merged in 3.5 via David Howells' header sanitisation work) cleanly separates headers intended for userspace from those used only within the kernel. Build tools (`make headers_install`) export only `uapi/` headers to the installed sysroot (`/usr/include/linux/`, `/usr/include/drm/`), preventing userspace from accidentally depending on kernel-internal definitions.
+
+**The libdrm abstraction.** Userspace is strongly discouraged from including UAPI headers directly and calling `ioctl(2)` with raw structs. The **libdrm** library ([source](https://gitlab.freedesktop.org/mesa/drm)) wraps every UAPI ioctl in a typed C function (`drmModeGetResources()`, `drmPrimeHandleToFD()`, `drmModeAtomicCommit()`, etc.) and handles struct-size differences between kernel versions. Section 9 of this chapter covers libdrm in detail. The key point is that the UAPI headers are the *contract*; libdrm is the *recommended implementation* of that contract for userspace C programs.
+
+**UAPI review process.** Any kernel patch that adds or modifies a DRM UAPI header must receive explicit sign-off from the DRM maintainers and typically from the broader kernel community. The patch must include documentation of the new ioctl's semantics, preconditions, and error codes in `Documentation/gpu/`. A common review comment on first-time submissions is "add a reserved/pad field for future extension" — this is enforced as a matter of policy, not preference, because forgetting to reserve space means the next capability will require a new ioctl number. Chapter 32 covers the contribution and review process in detail.
 
 ---
 
