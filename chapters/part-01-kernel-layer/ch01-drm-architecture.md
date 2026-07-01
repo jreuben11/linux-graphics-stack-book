@@ -59,33 +59,46 @@ graph TD
         Mesa["Mesa\n(OpenGL / Vulkan / OpenCL)"]
         Compositor["Wayland Compositor\n(wlroots / mutter / kwin)"]
         libdrm["libdrm"]
+        DevNodes["/dev/dri/cardN  /dev/dri/renderDN"]
+    end
+    subgraph "UAPI Headers (include/uapi/drm/)"
+        UAPICore["drm.h · drm_mode.h"]
+        UAPIDriver["amdgpu_drm.h · i915_drm.h\nnouveay_drm.h · virtgpu_drm.h …"]
     end
     subgraph "DRM Subsystem (drivers/gpu/drm/)"
-        DRMCore["DRM Core\n(drm_drv.c · drm_ioctl.c)"]
-        KMS["KMS Half\n(drm_mode_*)"]
+        DRMCore["DRM Core\n(drm_drv.c · drm_ioctl.c\ndrm_auth.c · drm_file.c)"]
+        KMS["KMS Half\n(drm_mode_* · planes · CRTCs\nencoders · connectors)"]
         GEM["GEM / Render Half\n(drm_gem_* · drm_sched_*)"]
+        Helpers["Helpers\n(scheduler/ · bridge/ · panel/)"]
+        Drivers["Per-HW Drivers\n(amd/ · i915/ · nouveau/\nmsm/ · xe/ · tiny/)"]
     end
     subgraph "Kernel Dependencies"
-        dmabuf["dma-buf"]
-        dmafence["dma-fence"]
-        TTM["TTM\n(VRAM manager)"]
+        dmabuf["dma-buf\n(cross-device buffer sharing)"]
+        dmafence["dma-fence\n(GPU sync primitives)"]
+        TTM["TTM\n(VRAM heap allocator)"]
         slab["slab allocator"]
     end
     subgraph Hardware
         PCIe["PCIe Bus\n(discrete GPU)"]
-        Platform["ARM Platform Bus\n(SoC)"]
+        Platform["ARM Platform Bus\n(SoC display engine)"]
     end
     Mesa --> libdrm
     Compositor --> libdrm
-    libdrm --> DRMCore
+    Compositor -->|"KMS display path\n(bypasses Mesa)"| DevNodes
+    libdrm --> DevNodes
+    DevNodes --> DRMCore
+    UAPICore --> DRMCore
+    UAPIDriver --> Drivers
     DRMCore --> KMS
     DRMCore --> GEM
+    DRMCore --> Drivers
+    Drivers --> Helpers
     GEM --> TTM
     TTM --> slab
     DRMCore --> dmabuf
     DRMCore --> dmafence
-    DRMCore --> PCIe
-    DRMCore --> Platform
+    Drivers --> PCIe
+    Drivers --> Platform
 ```
 
 The evolution of the DRI (Direct Rendering Infrastructure) protocol family shows why the architecture evolved the way it did. DRI1 gave application processes direct access to GPU memory-mapped registers via `/dev/dri/card0`, but required `CAP_SYS_ADMIN` or root membership and offered no isolation between clients. DRI2 introduced authenticated buffer sharing: the X server would vouch for a client by exchanging a magic token, allowing the client to share SHM-backed pixmaps with the compositor. DRI2 worked but introduced unavoidable CPU copies and required the X server to be involved in every buffer handoff — a bottleneck that became increasingly painful as GPU output resolutions and frame rates climbed. DRI3, introduced in 2013, solved both problems at once by passing GPU buffer file descriptors directly over the X socket using the standard Unix `SCM_RIGHTS` mechanism. The X server receives a DMA-BUF file descriptor and imports it as a pixmap without ever reading or copying the pixel data. DRI2 is effectively dead on modern stacks; any kernel older than 3.14 that lacks render nodes can be safely treated as legacy.
