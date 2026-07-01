@@ -62,15 +62,15 @@ graph TD
         DevNodes["/dev/dri/cardN  /dev/dri/renderDN"]
     end
     subgraph "UAPI Headers (include/uapi/drm/)"
-        UAPICore["drm.h · drm_mode.h"]
-        UAPIDriver["amdgpu_drm.h · i915_drm.h\nnouveay_drm.h · virtgpu_drm.h …"]
+        UAPICore["Core UAPI\n(drm + drm_mode)"]
+        UAPIDriver["Driver UAPI\n(amdgpu · i915 · nouveau · virtgpu …)"]
     end
     subgraph "DRM Subsystem (drivers/gpu/drm/)"
-        DRMCore["DRM Core\n(drm_drv.c · drm_ioctl.c\ndrm_auth.c · drm_file.c)"]
-        KMS["KMS Half\n(drm_mode_* · planes · CRTCs\nencoders · connectors)"]
-        GEM["GEM / Render Half\n(drm_gem_* · drm_sched_*)"]
-        Helpers["Helpers\n(scheduler/ · bridge/ · panel/)"]
-        Drivers["Per-HW Drivers\n(amd/ · i915/ · nouveau/\nmsm/ · xe/ · tiny/)"]
+        DRMCore["DRM Core"]
+        KMS["KMS Half\n(planes · CRTCs · encoders · connectors)"]
+        GEM["GEM / Render Half"]
+        Helpers["Helpers\n(scheduler · bridge · panel)"]
+        Drivers["Per-HW Drivers\n(amd · i915 · nouveau · msm · xe · tiny)"]
     end
     subgraph "Kernel Dependencies"
         dmabuf["dma-buf\n(cross-device buffer sharing)"]
