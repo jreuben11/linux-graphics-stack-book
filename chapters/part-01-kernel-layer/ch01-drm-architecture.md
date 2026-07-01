@@ -282,6 +282,86 @@ The numbering of primary and render nodes is independent. A single GPU might app
 
 For multi-GPU systems, the symlink forest `/dev/dri/by-path/` provides stable names that survive device renumbering across reboots. udev generates these symlinks from PCIe bus addresses, making them suitable for configuration files where `card0` versus `card1` would be ambiguous.
 
+### Key Primary Node Operations: Connector Enumeration, CRTC Programming, and Page Flipping
+
+Three operations define the display side of the primary node. They are listed together because they form a sequential workflow: enumerate to discover hardware, program to set a mode, then flip to show frames.
+
+**Connector enumeration** is how a compositor discovers what physical outputs the GPU has and what monitors are attached. A *connector* is the kernel object for one port — HDMI-1, DisplayPort-2, eDP-1. The compositor calls `drmModeGetResources()` to obtain a list of connector IDs, then `drmModeGetConnector()` for each to read its `connection` state (`DRM_MODE_CONNECTED` / `DRM_MODE_DISCONNECTED`), its `modes[]` array of `drm_mode_info` structs derived from the monitor's **EDID** data, and its `connector_type`. Enumeration is also triggered on demand when the kernel fires a `drm` udev hotplug event (a monitor is plugged or unplugged). The `drm_info` tool in §8 runs this enumeration and prints a human-readable dump — its source is the canonical reference for correct enumeration code. Section 9 shows a full `drmModeGetResources` + `drmModeGetConnector` code example.
+
+**CRTC programming** means configuring a display controller to drive a specific resolution and refresh rate on a specific output. The hardware chain is:
+
+```
+Framebuffer → Plane → CRTC → Encoder → Connector → Monitor
+```
+
+A *CRTC* (historically "Cathode Ray Tube Controller") owns the scanout pipeline: it reads pixels from a framebuffer, generates the h-sync/v-sync timing, and feeds the pixel stream to an encoder. "Programming" it means specifying: use *this* framebuffer, apply *this* display mode (e.g. 1920×1080@60 Hz), route output through *this* connector. In the modern **atomic** API this is done by building a property request — `ACTIVE` and `MODE_ID` on the CRTC, `CRTC_ID` on the connector, `FB_ID` and `CRTC_ID` on the plane — and submitting with `drmModeAtomicCommit()`. The `DRM_MODE_ATOMIC_TEST_ONLY` flag validates the entire proposed state before applying any of it, so partial or conflicting configurations are rejected atomically. The legacy `drmModeSetCrtc()` still exists but is deprecated. Section 7 has a full atomic commit example; Chapter 2 covers the KMS object model in depth.
+
+**Page flipping** is the mechanism for displaying a newly rendered frame without tearing. The display hardware continuously scans out from one framebuffer. To switch to a new frame you don't copy pixels — you change the framebuffer *pointer* in the CRTC atomically at the vertical blank interval (the brief period when the display beam retraces to the top of the screen). The sequence:
+
+1. Render the next frame into a back buffer (a GEM object registered as a framebuffer with `drmModeAddFB2WithModifiers()`).
+2. Submit the flip via `drmModeAtomicCommit()` with `DRM_MODE_PAGE_FLIP_EVENT` set, or via the legacy `DRM_IOCTL_MODE_PAGE_FLIP`.
+3. The kernel queues the flip; at the next VBLANK the display controller switches scanout to the new framebuffer.
+4. The kernel pushes a `drm_event_vblank` onto the DRM fd's event queue; the compositor reads it with `poll()` + `read()` (the `drmHandleEvent()` loop shown in §7).
+5. The flip completion event confirms the old framebuffer is no longer being scanned — it is safe to render into it again.
+
+**Double buffering** (two framebuffers alternating) prevents tearing; **triple buffering** decouples render latency from display latency. The VBLANK event's `sequence` field is the **MSC** (Media Stream Counter), the monotonically incrementing display clock that the Present extension and `wp_presentation` protocol both synchronise to.
+
+### Key Render Node Operations: PRIME Import/Export and Sync Object Management
+
+The render node's four primary operations — GEM allocation, PRIME import/export, command submission, and sync object management — are the foundation of all GPU compute and compositing work on Linux.
+
+**PRIME import/export** is the zero-copy buffer sharing mechanism. A GEM object (a GPU memory allocation) is exported from one DRM file context as a **DMA-BUF** file descriptor with `DRM_IOCTL_PRIME_HANDLE_TO_FD` (`drmPrimeHandleToFD()`). That fd can then be sent to any other process over a Unix socket (via `SCM_RIGHTS`) or inherited. The receiving process imports it with `DRM_IOCTL_PRIME_FD_TO_HANDLE` (`drmPrimeFDToHandle()`), obtaining a GEM handle in its own namespace that references the same physical GPU pages. No pixel data is copied at any point. This is how:
+- A Vulkan renderer shares a completed frame with a Wayland compositor without a readback.
+- A video decoder (VA-API) shares a decoded frame with a display compositor.
+- Two GPUs in a heterogeneous system exchange buffers (the DMA-BUF fd crosses driver boundaries).
+
+Section 5 covers PRIME in full with kernel ioctl structs and a complete sendmsg/recvmsg example. The security model is important: because DMA-BUF fds are opaque kernel references, a receiving process cannot forge or guess handles to access unrelated GPU memory.
+
+**Sync object management** provides explicit GPU synchronisation — the ability to express "operation B must not start until operation A has completed on the GPU" without inserting a CPU-side stall. DRM sync objects (`drm_syncobj`) are kernel objects that hold either a binary semaphore state (signalled / unsignalled) or a timeline point (a monotonically increasing `uint64_t` counter). They are the kernel primitive underlying **Vulkan semaphores** and **Vulkan timeline semaphores** on Linux.
+
+```c
+/* Sync object lifecycle — binary and timeline variants.
+   Source: include/uapi/drm/drm.h — DRM_IOCTL_SYNCOBJ_* */
+#include <xf86drm.h>
+
+/* --- Binary sync object --- */
+
+/* Create: returns a handle in syncobj_create.handle */
+uint32_t binary_handle;
+drmSyncobjCreate(fd, 0 /* flags */, &binary_handle);
+
+/* After submitting GPU work that signals this syncobj,
+   wait for it to reach the signalled state: */
+drmSyncobjWait(fd, &binary_handle, 1 /* count */,
+               INT64_MAX /* timeout_nsec */,
+               DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL, NULL);
+
+/* Export to a sync_file fd for cross-process / cross-driver use */
+int sync_fd;
+drmSyncobjExportSyncFile(fd, binary_handle, &sync_fd);
+
+/* --- Timeline sync object (requires DRM_CAP_SYNCOBJ_TIMELINE) --- */
+
+uint32_t timeline_handle;
+drmSyncobjCreate(fd, 0, &timeline_handle);
+
+/* Signal point 5 explicitly (GPU submission normally does this) */
+uint64_t point = 5;
+drmSyncobjTimelineSignal(fd, &timeline_handle, &point, 1);
+
+/* Wait for point 5 to be reached */
+drmSyncobjTimelineWait(fd, &timeline_handle, &point, 1,
+                       INT64_MAX,
+                       DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL, NULL);
+
+drmSyncobjDestroy(fd, binary_handle);
+drmSyncobjDestroy(fd, timeline_handle);
+```
+
+**Binary sync objects** represent a single signalled/unsignalled state, equivalent to a Vulkan binary semaphore. **Timeline sync objects** hold a monotonically increasing counter: you can wait for point 42 while the GPU is executing point 39, and the wait resolves automatically when point 42 is reached. This maps directly to Vulkan's `VkSemaphoreTypeTimeline`.
+
+Sync objects cross process and driver boundaries via **sync files** (`drmSyncobjExportSyncFile` / `drmSyncobjImportSyncFile`). A sync file fd can be passed over a Unix socket; the recipient imports it and waits for it or uses it as a fence for a subsequent GPU submission. This is the mechanism behind `EGL_ANDROID_native_fence_sync` and the Wayland `linux-drm-syncobj-v1` explicit sync protocol. Chapter 3 covers the full sync object and sync file API, including how timeline points map to Vulkan timeline semaphore operations and how `VM_BIND` command submission integrates sync objects for out-of-order GPU scheduling.
+
 ```mermaid
 graph LR
     subgraph "DRM Device"
