@@ -539,9 +539,87 @@ On the Wayland side, the `linux-dmabuf` protocol serves exactly the same role as
 
 ---
 
+## 5b. The Wayland Equivalent: linux-dmabuf, dmabuf-feedback, and linux-drm-syncobj
+
+Wayland has no concept of a global pixmap namespace or an X atom table — every resource is created through protocol objects bound per-client. Buffer sharing consequently works through a dedicated protocol: `zwp_linux_dmabuf_v1` (stable since Wayland Protocols 1.24). The protocol achieves the same kernel path as DRI3/PRIME — DMA-BUF fd via `SCM_RIGHTS` over the Unix socket — while fitting naturally into Wayland's stateful object model.
+
+**`zwp_linux_dmabuf_v1`: the Wayland parallel to `DRI3PixmapFromBuffer`.** A Wayland client that finishes rendering into a GEM object:
+
+1. Exports the GEM object to a DMA-BUF fd with `DRM_IOCTL_PRIME_HANDLE_TO_FD` (same as the X path).
+2. Creates a `zwp_linux_buffer_params_v1` object from the `zwp_linux_dmabuf_v1` global.
+3. Calls `zwp_linux_buffer_params_v1.add()` to add the fd, plane index, offset, stride, and DRM format modifier.
+4. Calls `zwp_linux_buffer_params_v1.create_immed()` (or the asynchronous `.create()`) to obtain a `wl_buffer`.
+5. Attaches the `wl_buffer` to a `wl_surface` and calls `wl_surface.commit()`.
+
+The compositor receives the fd over the socket via `SCM_RIGHTS`, calls `DRM_IOCTL_PRIME_FD_TO_HANDLE` to import it, and creates a KMS framebuffer from it with `DRM_IOCTL_MODE_ADDFB2` — supplying the modifier so the display controller knows the tiling layout. At no point are pixels copied; the compositor scans out the same physical pages the client rendered into.
+
+```xml
+<!-- Source: wayland-protocols/stable/linux-dmabuf/linux-dmabuf-v1.xml
+     https://gitlab.freedesktop.org/wayland/wayland-protocols -->
+<request name="add">
+  <description summary="add a dmabuf to the temporary set">
+    This request adds one dmabuf fd to the set in this
+    linux_buffer_params_v1 object.
+  </description>
+  <arg name="fd"       type="fd"   summary="dmabuf fd"/>
+  <arg name="plane_idx" type="uint" summary="plane index"/>
+  <arg name="offset"   type="uint" summary="offset in bytes"/>
+  <arg name="stride"   type="uint" summary="stride in bytes"/>
+  <arg name="modifier_hi" type="uint" summary="high 32 bits of layout modifier"/>
+  <arg name="modifier_lo" type="uint" summary="low 32 bits of layout modifier"/>
+</request>
+<request name="create_immed">
+  <description summary="immediately create a wl_buffer for the dmabuf"/>
+  <arg name="buffer_id" type="new_id" interface="wl_buffer"
+       summary="id for the newly created wl_buffer"/>
+  <arg name="width"  type="int"  summary="base surface width in pixels"/>
+  <arg name="height" type="int"  summary="base surface height in pixels"/>
+  <arg name="format" type="uint" summary="DRM_FORMAT code"/>
+  <arg name="flags"  type="uint" summary="not used"/>
+</request>
+```
+
+**`linux-dmabuf-feedback` (protocol version 4+): format/modifier negotiation.** Early versions of `zwp_linux_dmabuf_v1` required the client to guess which `(format, modifier)` combinations the compositor could scanout directly. If the client allocated in the wrong layout the compositor had to blit (copy and detile) before scanning out, defeating the zero-copy goal. Protocol version 4 introduced `zwp_linux_dmabuf_feedback_v1`, which allows the compositor to advertise, per-surface, exactly which format+modifier pairs it can scanout directly versus which it can import only into composition.
+
+The compositor sends a `format_table` (a shared-memory file of `(format, modifier)` pairs), then sends `tranche_target_device` (the DRM device node the compositor renders to), `tranche_formats` (indices into the table that this tranche supports), and `tranche_flags` (whether scanout is possible). Clients observe the feedback, allocate GEM objects in a supported modifier, and the compositor can then KMS-scanout the client buffer directly — zero copies, zero blits, one buffer from application memory to display. [Source: `wayland-protocols/staging/linux-dmabuf/linux-dmabuf-v1.xml` — `zwp_linux_dmabuf_feedback_v1`](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/stable/linux-dmabuf/linux-dmabuf-v1.xml)
+
+```mermaid
+graph TD
+    Client["Wayland Client\n(OpenGL/Vulkan)"]
+    GEMBuf["GEM buffer\n(dma_buf / physical pages)"]
+    Compositor["Wayland Compositor\n(wlroots / mutter / kwin)"]
+    KMS["KMS\n(CRTC + plane)"]
+
+    Compositor -- "dmabuf-feedback\n(format+modifier table)" --> Client
+    Client -- "allocate in optimal\nformat+modifier" --> GEMBuf
+    Client -- "DRM_IOCTL_PRIME_HANDLE_TO_FD" --> GEMBuf
+    Client -- "zwp_linux_buffer_params.add(fd)\ncreate_immed() → wl_buffer\nwl_surface.commit()" --> Compositor
+    Compositor -- "DRM_IOCTL_PRIME_FD_TO_HANDLE\nDRM_IOCTL_MODE_ADDFB2" --> GEMBuf
+    Compositor -- "drmModeAtomicCommit\n(direct scanout)" --> KMS
+```
+
+**`linux-drm-syncobj-v1`: explicit sync over Wayland.** The DRI3 path passed sync files (Linux fence fds) via `DRI3FenceFromFD`/`DRI3FDFromFence`, letting the X server and client share GPU timeline points. Wayland's `linux-drm-syncobj-v1` protocol (landed in wayland-protocols in 2023) provides the direct parallel. A client can attach an `acquire_point` (a DRM timeline syncobj point that the compositor must wait for before using the buffer) and a `release_point` (a point the compositor signals when the buffer can be reused), both expressed as DRM syncobj handles exported to fds and passed over the Wayland socket. This protocol supersedes the implicit synchronisation approach where drivers silently serialised GPU work behind the scenes — implicit sync is fragile when client and compositor use different kernel drivers (e.g., a client rendering on a discrete GPU whose work must be visible to an integrated GPU running the compositor). [Source: `wayland-protocols/staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml`](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml)
+
+**The XWayland bridge.** XWayland is itself a Wayland client. When an X application renders through Mesa/DRI3, it produces a DMA-BUF fd in the normal PRIME manner. XWayland, acting as both an X server (receiving DRI3 buffer fds from X clients) and a Wayland client (speaking `zwp_linux_dmabuf_v1` to the compositor), takes those fds and re-submits them as `wl_buffer` objects. The same physical GEM pages flow from X application to XWayland to Wayland compositor to display without any copy. The only overhead relative to a native Wayland client is the extra fd-passing hop through the X socket and the XWayland process — the kernel buffer is never touched.
+
+```
+X Application
+   │  DRI3PixmapFromBuffer (SCM_RIGHTS over X socket, fd → GEM pages)
+   ▼
+XWayland (X server role)
+   │  zwp_linux_buffer_params.add(same fd) (SCM_RIGHTS over Wayland socket)
+   ▼
+Wayland Compositor
+   │  DRM_IOCTL_PRIME_FD_TO_HANDLE → drmModeAtomicCommit
+   ▼
+KMS / Display
+```
+
+---
+
 ## 6. The Present Extension: Synchronised Frame Delivery
 
-The DRI3 mechanism answers the question of how to share a rendered buffer with the display system. The Present extension answers the complementary question: when should that buffer appear on screen, and how does the application learn that the display has moved on to the next frame? Without explicit timing, an application must either block waiting for vsync (wasting CPU), submit frames as fast as possible and accept tearing, or guess the timing and hope for the best. Present provides a principled, explicit timing model built on top of DRM VBLANK events.
+The DRI3 mechanism (and its Wayland parallel `zwp_linux_dmabuf_v1`, covered in §5b) answers the question of how to share a rendered buffer with the display system. The Present extension answers the complementary question: when should that buffer appear on screen, and how does the application learn that the display has moved on to the next frame? Without explicit timing, an application must either block waiting for vsync (wasting CPU), submit frames as fast as possible and accept tearing, or guess the timing and hope for the best. Present provides a principled, explicit timing model built on top of DRM VBLANK events.
 
 **The MSC/UST model.** Every DRM CRTC (display output) maintains a counter called the MSC (Media Stream Counter), which increments by one at each display refresh. The UST (Unadjusted System Time) is the kernel's monotonic clock timestamp at which the most recent vblank occurred. Together, MSC and UST give an application a precise timeline of display events. The application learns the current MSC/UST pair by calling `DRM_IOCTL_WAIT_VBLANK` with the `DRM_VBLANK_RELATIVE` flag set to zero and the sequence set to zero (a non-blocking query).
 
@@ -568,7 +646,7 @@ graph TD
 
 **Present vs. SwapBuffers.** The `SwapBuffers` call familiar from GLX and EGL hides all of this machinery. Under the covers, Mesa's EGL/GLX swap chain implementation on X11 uses the Present extension to submit the rendered back buffer. The present-swap path in Mesa constructs a `PresentPixmap` request with a target MSC computed from the application's swap interval, submits it, and waits for `PresentCompleteNotify` before returning `SwapBuffers` to the caller. The advantage of using Present directly (without going through Mesa's swap chain) is that an application can queue multiple frames ahead, specifying distinct target MSCs, without blocking — this is the basis of low-latency frame pipelining used in game engines.
 
-**The Wayland analogue.** Wayland's `wp_presentation` protocol provides an equivalent mechanism for Wayland clients. A client attaches a DMA-BUF buffer to a surface and commits it; the compositor, after displaying the buffer, sends a `wp_presentation_feedback.presented` event with the VBLANK timestamp and the CRTC refresh cycle count. The compositor obtains this timing from DRM VBLANK events via the same kernel path as the X server. Chapter 20 examines the `wp_presentation` protocol in detail.
+**The Wayland analogue.** The `linux-dmabuf` protocol (§5b) handles the buffer-sharing half for Wayland clients. The timing half — the equivalent of Present's MSC/UST model — is provided by `wp_presentation`. A client attaches a DMA-BUF buffer to a surface and commits it; the compositor, after displaying the buffer, sends a `wp_presentation_feedback.presented` event carrying the VBLANK timestamp (`tv_sec`/`tv_nsec`), the CRTC refresh interval (`refresh` in nanoseconds), and a 64-bit MSC-equivalent sequence counter. The compositor derives all of these from DRM VBLANK events via the same kernel path as the X server. Unlike Present, Wayland has no explicit "target MSC" submission — the client double-buffers and relies on the compositor's frame callback (`wl_callback` from `wl_surface.frame()`) to know when to render the next frame. Chapter 20 examines `wp_presentation` in detail.
 
 ---
 
