@@ -14,9 +14,10 @@ This chapter targets three overlapping audiences: **systems and driver developer
 6. [PRIME Reverse Offload with eGPU](#6-prime-reverse-offload-with-egpu)
 7. [AMD eGPU Support](#7-amd-egpu-support)
 8. [NVIDIA eGPU Support](#8-nvidia-egpu-support)
-9. [USB4 eGPU: Current Status](#9-usb4-egpu-current-status)
-10. [Practical Setup Guide](#10-practical-setup-guide)
-11. [Integrations](#11-integrations)
+9. [Comparative External GPU Technologies](#9-comparative-external-gpu-technologies)
+10. [USB4 eGPU: Current Status](#10-usb4-egpu-current-status)
+11. [Practical Setup Guide](#11-practical-setup-guide)
+12. [Integrations](#12-integrations)
 
 ---
 
@@ -545,7 +546,61 @@ NVK, the Mesa open-source Vulkan driver for NVIDIA GPUs, operates in userspace o
 
 ---
 
-## 9. USB4 eGPU: Current Status
+## 9. Comparative External GPU Technologies
+
+Beyond Thunderbolt and USB4, several other interconnects can carry a PCIe link to an external or remotely-located GPU. Understanding how they compare clarifies why Thunderbolt dominates the consumer eGPU market and where the alternatives fit.
+
+### PCIe: The Baseline
+
+All of the technologies below are ultimately tunnelling or extending **PCIe** — the native GPU interconnect. Understanding PCIe first grounds everything else.
+
+PCIe (Peripheral Component Interconnect Express) is a point-to-point serial bus defined by the PCI-SIG. A GPU typically occupies a ×16 slot (16 differential pairs for transmit + 16 for receive). Each lane carries 8 Gbps (Gen 3), 16 Gbps (Gen 4), or 32 Gbps (Gen 5) of raw bandwidth; after 128b/130b encoding overhead (Gen 3+), usable throughput per lane is approximately 7.88 / 15.75 / 31.5 Gbps. A ×16 Gen 4 slot delivers ~252 Gbps bidirectional — far exceeding any cable-based solution. The GPU BAR (Base Address Register) exposes VRAM into the CPU's physical address map through the PCIe root complex; resizable BAR (ReBAR/SAM) allows the full VRAM to be mapped rather than the historical 256 MB window.
+
+All cable-based solutions described below share the fundamental constraint that they provide at most ×4 Gen 3–4 worth of PCIe bandwidth (~32–64 Gbps), which is roughly 12–25 % of an internal ×16 slot — creating a bottleneck for workloads with high CPU↔GPU data transfer, while compute-only workloads (where data stays on the GPU) are much less affected.
+
+### OCuLink
+
+**OCuLink** (Optical Copper Link, though it is copper in practice) is a direct PCIe cable standard defined by the PCI-SIG. It is the simplest approach: it exposes raw PCIe differential pairs over a cable with no encapsulation, no tunnelling, and no firmware negotiation.
+
+- **Bandwidth**: ×4 Gen 3 (~32 Gbps) in OCuLink 1.0; ×4 Gen 4 (~64 Gbps) in OCuLink 2.0
+- **Cable length**: limited to ~0.5 m (passive) due to PCIe signal integrity requirements
+- **Linux support**: zero additional driver needed — the GPU appears as a standard PCIe device; hot-plug requires PCIe hot-plug driver support (`CONFIG_HOTPLUG_PCI`)
+- **Security**: no DMA protection — any device on the cable is a DMA master from the moment the link trains; IOMMU must be enabled separately
+- **Use case**: DIY eGPU builds on compact mini-PCs (Framework laptop's expansion cards do not use OCuLink; some mini-PCs like the MINISFORUM V3 tablet expose an OCuLink port); GPU compute offload boxes; low-latency machine learning inference appliances
+- **vs Thunderbolt**: lower latency (no encapsulation overhead), higher raw PCIe bandwidth ceiling, shorter range, no DisplayPort carry, no DMA security model, not consumer-friendly
+
+### ExpressCard and M.2 PCIe Adapters
+
+Both are legacy/niche paths that expose a PCIe ×1 or ×4 slot via a laptop expansion slot.
+
+- **ExpressCard/54** (found on 2006–2014 laptops): exposed PCIe ×1 Gen 1 (~2.5 Gbps) — far too narrow for a GPU; historically used for video capture cards, not eGPUs
+- **M.2 (Key B or Key M) PCIe adapters**: some M.2 eGPU adapters (e.g., the ADT-Link R43SG) tap the M.2 slot's PCIe ×4 lanes, bypassing Thunderbolt entirely. Bandwidth is ×4 Gen 3 (~32 Gbps). These require disabling the NVMe SSD that normally occupies the slot. Linux support is the same as OCuLink — standard PCIe hot-plug. Primarily used on AMD laptops that lack Thunderbolt.
+
+### XLink / NVLink (GPU-to-GPU, not eGPU)
+
+**NVLink** (NVIDIA) and **AMD Infinity Fabric Link** are GPU-to-GPU interconnects for multi-GPU workstations and servers, not host-to-eGPU cables. They operate at much higher bandwidths (NVLink 4.0: 900 GB/s bidirectional between two H100 GPUs) and are relevant for distributed GPU memory (peer-to-peer DMA, unified memory across GPUs) rather than external enclosures. These are covered in the multi-GPU chapters (Ch49).
+
+### Fibre-Channel and InfiniBand GPU Clusters
+
+For data-centre remote GPU access (GPU-as-a-Service), the relevant technologies are InfiniBand (up to 800 Gbps HDR/NDR) and GPU-Direct RDMA — where the GPU's VRAM is directly accessible to an InfiniBand HCA (Host Channel Adapter) without CPU involvement. This is the mechanism behind multi-node GPU clusters (NVIDIA DGX/HGX, AMD Instinct MI300X). Covered in Ch01 §3 (HCA and GPU-Direct RDMA).
+
+### Comparative Summary
+
+| Technology | PCIe bandwidth | Cable length | Display carry | Linux driver | DMA security | Primary use |
+|---|---|---|---|---|---|---|
+| PCIe ×16 Gen 4 (internal) | ~252 Gbps | N/A (slot) | No | Standard PCI | IOMMU | Internal GPU |
+| Thunderbolt 3/4 | ~22–32 Gbps | 2 m (passive), 50 m (active optical) | Yes (DP 1.4/2.0) | `thunderbolt` kernel driver | bolt + IOMMU | Consumer eGPU |
+| USB4 v2 / Thunderbolt 5 | ~64 Gbps | 2 m passive | Yes (DP 2.1) | `thunderbolt` + `usb4` | Same | Next-gen eGPU |
+| OCuLink 2.0 | ~64 Gbps | 0.5 m | No | Standard PCI hot-plug | IOMMU only | DIY / mini-PC |
+| M.2 PCIe adapter | ~32 Gbps | 0.5 m | No | Standard PCI hot-plug | IOMMU only | AMD laptop eGPU |
+| NVLink 4.0 | 900 GB/s | ~10 cm (NVLink bridge) | No | NVIDIA driver | N/A | Multi-GPU server |
+| InfiniBand NDR (GPU-Direct RDMA) | 800 Gbps | Up to 100 m | No | `ib_core` + `nv_peer_mem` | IOMMU + RDMA | HPC cluster |
+
+**Active optical cables (AOC)** extend Thunderbolt range to 50–100 m using fibre-optic transceivers in the cable connectors, while still presenting a standard Thunderbolt electrical interface at each end. These are used in broadcast studios and large-space VR installations.
+
+---
+
+## 10. USB4 eGPU: Current Status
 
 ### USB4 Gen 3×2 vs. Thunderbolt 4
 
