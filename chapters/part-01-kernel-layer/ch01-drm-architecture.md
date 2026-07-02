@@ -362,6 +362,51 @@ drmSyncobjDestroy(fd, timeline_handle);
 
 Sync objects cross process and driver boundaries via **sync files** (`drmSyncobjExportSyncFile` / `drmSyncobjImportSyncFile`). A sync file fd can be passed over a Unix socket; the recipient imports it and waits for it or uses it as a fence for a subsequent GPU submission. This is the mechanism behind `EGL_ANDROID_native_fence_sync` and the Wayland `linux-drm-syncobj-v1` explicit sync protocol. Chapter 3 covers the full sync object and sync file API, including how timeline points map to Vulkan timeline semaphore operations and how `VM_BIND` command submission integrates sync objects for out-of-order GPU scheduling.
 
+### GEM Backing Storage, GPU Memory Domains, and Kernel-Bypass Paths
+
+**GEM is not always system memory.** This is one of the most common misconceptions about the DRM memory model. *GEM* (Graphics Execution Manager) is a *naming and lifetime* layer — it provides the `struct drm_gem_object` base type, the integer handle namespace scoped to a `drm_file`, and the `drm_gem_object_funcs` vtable — but it says nothing about *where* the memory actually lives. The backing storage is entirely driver-determined. There are four distinct cases:
+
+| Backing type | Kernel helper | Where memory lives | Typical users |
+|---|---|---|---|
+| Anonymous shmem | `drm_gem_shmem_object` | CPU system RAM (demand-paged, swappable) | Panfrost, Lima, V3D, software renderers |
+| Physically contiguous | `drm_gem_cma_object` | CPU system RAM, contiguous (via `dma_alloc_coherent`) | Display controllers, embedded video IP |
+| IOMMU-mapped | `drm_gem_dma_object` | CPU system RAM, non-contiguous (IOVA via IOMMU) | ARM SoC GPU/display drivers |
+| VRAM / GTT (TTM-backed) | `ttm_buffer_object` embedded in driver BO | GPU VRAM or GART-mapped system RAM | amdgpu, nouveau, i915/Xe |
+
+So on an integrated GPU (Intel UHD, AMD Vega APU, ARM Mali) a GEM object typically is system memory. On a discrete GPU with its own VRAM (NVIDIA, AMD RDNA/CDNA, Intel Arc) a GEM object is more commonly VRAM, with system RAM used only as a fallback.
+
+**TTM and the memory domain hierarchy.** For discrete GPUs, the **Translation Table Manager** (TTM) manages buffer objects across multiple named *placement tiers*:
+
+- `TTM_PL_SYSTEM` — CPU system RAM, not yet mapped to the GPU.
+- `TTM_PL_TT` / GTT — system RAM mapped into the GPU's address space via the GART or IOMMU; CPU-accessible, GPU-accessible, slower than VRAM.
+- `TTM_PL_VRAM` — GPU-private video RAM; fastest for GPU shaders, typically inaccessible to the CPU without a BAR mapping or a readback copy.
+
+When VRAM fills up, TTM *evicts* buffer objects to GTT or system RAM by copying them across the PCIe bus (or using a hardware DMA engine like AMD SDMA). Display framebuffers and command ring buffers are *pinned* (`ttm_bo_pin`) to prevent eviction. Chapter 4 §2 covers TTM placement, eviction, and pinning in detail.
+
+**CPU access to VRAM — BAR windows.** On PCIe discrete GPUs, the GPU's VRAM is exposed to the CPU through a *Base Address Register* (BAR) window mapped into the CPU's physical address space. Historically, the BAR was limited to 256 MB (the `BAR0` aperture), making large VRAM buffers inaccessible to the CPU without a staged readback. **Resizable BAR** (ReBAR / AMD SAM — Smart Access Memory) allows the BAR to be expanded to cover the full VRAM range at system boot, enabling CPU-readable/writable access to all VRAM at PCIe bandwidth (typically 16–32 GB/s on PCIe 4.0 ×16). With ReBAR, a driver can allocate a `TTM_PL_VRAM` buffer and map it to userspace via `mmap` with write-combining, eliminating the GTT staging tier for CPU-written data.
+
+**`userptr` — GPU access to userspace memory.** Some GPU drivers (notably amdgpu and i915) support "userptr" buffer objects: the application provides a range of its own virtual address space, and the driver pins those pages and maps them into the GPU's IOMMU/GART so the GPU can read them directly. This avoids a copy for use cases like texture streaming from CPU-side decompression. The HMM (Heterogeneous Memory Management) subsystem (`mm/hmm.c`, merged in Linux 5.8 mainline) provides the kernel infrastructure for this: `hmm_range_fault` pins CPU pages on demand and installs GPU PTE mappings, and MMU notifiers invalidate GPU PTEs when the CPU VMA is modified. Chapter 4 §9 covers HMM-based SVM (Shared Virtual Memory) in depth.
+
+**Kernel-bypass: PCIe peer-to-peer DMA (p2pdma).** The `drivers/pci/p2pdma.c` subsystem (Linux 4.20+) enables DMA directly between two PCIe devices — GPU VRAM to NVMe SSD, or GPU VRAM to InfiniBand HCA — without the data ever touching system RAM or the CPU. The kernel API:
+
+```c
+/* Check if two PCIe devices can do peer DMA without CPU involvement.
+   Source: include/linux/pci-p2pdma.h */
+int dist = pci_p2pdma_distance(provider_pdev, client_pdev,
+                               false /* verbose */);
+/* dist == 0: direct peer path through PCIe switch (no CPU hop)
+   dist  > 0: peer path exists but routes via root complex
+   dist  < 0 (-ENODEV): no p2p path available */
+```
+
+p2pdma is the foundation for **GPU-Direct Storage** (NVMe → GPU VRAM DMA, bypassing the CPU memory copy that normally occurs in `read()`/`write()` I/O paths) and **GPU-Direct RDMA** (InfiniBand → GPU VRAM DMA, used for distributed deep learning collectives over RDMA fabric). Practical deployment requires a PCIe switch that implements peer transactions; commodity desktop motherboards typically do not. AMD EPYC and Intel Xeon server platforms are the common deployment targets. Chapter 4 §9 covers p2pdma, NVLink, and AMD xGMI (Infinity Fabric) peer topologies in full detail.
+
+**Kernel-bypass: RDMA and GPUDirect.** NVIDIA's **GPUDirect RDMA** allows InfiniBand HCAs to DMA directly into GPU VRAM. The mechanism uses the `nv_p2p_get_pages` / `nv_p2p_put_pages` API exported by the NVIDIA kernel module to register GPU BAR pages with the RDMA subsystem. The open-source `nvidia-open` driver exposes the same API surface. On the AMD side, ROCm's `amdkfd` exposes GPU VRAM pages to RDMA via the `hsa_amd_ipc_memory_*` API, backed by HMM pinning. Both paths ultimately register physical GPU memory ranges with the kernel's DMA mapping layer so that a third-party device (the InfiniBand HCA) can program its IOMMU to DMA into them.
+
+**Shared memory between CPU and GPU — shmem GEM and `mmap`.** For integrated GPUs and for TTM buffers in GTT placement, the same physical pages are simultaneously visible to the CPU (via normal virtual memory mappings) and to the GPU (via the GPU's GART/IOMMU mapping). The GEM `mmap` path (`drm_gem_mmap` → driver's `gem_mmap_offset` callback) installs a VM area in the calling process's address space backed by the GEM object's pages. For shmem-backed GEM objects this is a straightforward `remap_pfn_range`; for VRAM-backed objects with ReBAR it maps the BAR aperture; for objects in GTT it maps the GART-accessible system pages. This CPU–GPU shared mapping is what allows zero-copy vertex/uniform buffer uploads from CPU to GPU on integrated hardware.
+
+All of these mechanisms — TTM placement, HMM userptr, p2pdma, GPUDirect RDMA, and mmap — are invisible at the GEM API surface. From userspace's perspective, a GEM handle is just an opaque integer. The physical memory location, the migration policy, and the kernel-bypass capability are all kernel-internal decisions made by the driver and TTM based on allocation flags and hardware topology. Chapter 4 is the definitive reference for how each path works end-to-end.
+
 ```mermaid
 graph LR
     subgraph "DRM Device"
