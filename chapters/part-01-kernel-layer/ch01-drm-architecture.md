@@ -579,9 +579,30 @@ The compositor receives the fd over the socket via `SCM_RIGHTS`, calls `DRM_IOCT
 </request>
 ```
 
-**`linux-dmabuf-feedback` (protocol version 4+): format/modifier negotiation.** Early versions of `zwp_linux_dmabuf_v1` required the client to guess which `(format, modifier)` combinations the compositor could scanout directly. If the client allocated in the wrong layout the compositor had to blit (copy and detile) before scanning out, defeating the zero-copy goal. Protocol version 4 introduced `zwp_linux_dmabuf_feedback_v1`, which allows the compositor to advertise, per-surface, exactly which format+modifier pairs it can scanout directly versus which it can import only into composition.
+**`linux-dmabuf-feedback` (protocol version 4+): format/modifier negotiation.** Early versions of `zwp_linux_dmabuf_v1` required the client to guess which `(format, modifier)` combinations the compositor could scanout directly. If the client allocated in the wrong layout the compositor had to **blit** before scanning out, defeating the zero-copy goal. Protocol version 4 introduced `zwp_linux_dmabuf_feedback_v1`, which allows the compositor to advertise, per-surface, exactly which format+modifier pairs it can scanout directly versus which it can import only into composition.
 
-The compositor sends a `format_table` (a shared-memory file of `(format, modifier)` pairs), then sends `tranche_target_device` (the DRM device node the compositor renders to), `tranche_formats` (indices into the table that this tranche supports), and `tranche_flags` (whether scanout is possible). Clients observe the feedback, allocate GEM objects in a supported modifier, and the compositor can then KMS-scanout the client buffer directly — zero copies, zero blits, one buffer from application memory to display. [Source: `wayland-protocols/staging/linux-dmabuf/linux-dmabuf-v1.xml` — `zwp_linux_dmabuf_feedback_v1`](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/stable/linux-dmabuf/linux-dmabuf-v1.xml)
+> **What is a blit?** "Blit" (from "block transfer") is a GPU or CPU copy of pixel data from one buffer to another. In this context it has two parts. First, GPUs do not store pixels in simple row-by-row (linear) order; they use **tiled** layouts where pixels are grouped into small 2D blocks (e.g., 4×4 or 64×64 depending on GPU generation) so that accessing a 2D region hits cache-friendly adjacent addresses. Hardware-specific tiling formats are called **modifiers** (`DRM_FORMAT_MOD_*`). The display scanout engine can accept certain modifiers directly, but if the client allocated in a GPU-optimal modifier the display engine does not understand, the compositor must read the tiled buffer, rewrite it into a linear or display-compatible layout — the **detile** step — and then scanout the rewritten copy. That read–rewrite–scanout sequence is the blit. `linux-dmabuf-feedback` exists to eliminate it: the compositor tells the client upfront which modifiers the display engine accepts, so the client allocates in the right layout and the compositor can scanout the original buffer with no copy at all.
+
+The compositor sends a `format_table` event carrying a shared-memory file descriptor containing an array of `{ uint32_t format; uint32_t pad; uint64_t modifier; }` entries. It then sends `tranche_target_device` (the DRM device node the compositor renders to), `tranche_formats` (indices into the table that this tranche supports), and `tranche_flags` (whether scanout is possible). Clients observe the feedback, allocate GEM objects in a supported modifier, and the compositor can then KMS-scanout the client buffer directly — zero copies, zero blits, one buffer from application memory to display.
+
+> **The shared-memory file descriptor.** The `format_table` fd is created with `memfd_create(2)` — a Linux system call that creates an anonymous file backed entirely by RAM. It has no path in the filesystem and no backing on disk. The name given to `memfd_create` (e.g., `"linux-dmabuf-feedback"`) appears in `/proc/<pid>/fd/` for debugging only; it does not create a filesystem entry. The compositor writes the table into the memfd, then sends the fd to the client over the Wayland socket via `SCM_RIGHTS`. The client calls `mmap(2)` on the fd to read the table directly from shared RAM. When both sides close their fds the kernel frees the memory. Nothing persists beyond the lifetime of the open file descriptors.
+
+```c
+/* Compositor side (pseudocode) — creating and populating the format table */
+int fd = memfd_create("linux-dmabuf-feedback", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+ftruncate(fd, n_pairs * sizeof(struct dmabuf_feedback_format));
+struct dmabuf_feedback_format *table =
+    mmap(NULL, n_pairs * sizeof(*table), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+for (int i = 0; i < n_pairs; i++) {
+    table[i].format   = formats[i].drm_format;  /* e.g. DRM_FORMAT_ARGB8888 */
+    table[i].pad      = 0;
+    table[i].modifier = formats[i].modifier;     /* e.g. I915_FORMAT_MOD_X_TILED */
+}
+munmap(table, n_pairs * sizeof(*table));
+/* fd is then sent to the client via the Wayland protocol SCM_RIGHTS path */
+```
+
+[Source: `wayland-protocols/stable/linux-dmabuf/linux-dmabuf-v1.xml` — `zwp_linux_dmabuf_feedback_v1`](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/stable/linux-dmabuf/linux-dmabuf-v1.xml)
 
 ```mermaid
 graph TD
