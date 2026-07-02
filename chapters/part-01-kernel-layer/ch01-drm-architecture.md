@@ -908,7 +908,62 @@ cat /sys/kernel/debug/dri/0/vblank_count
 ls /sys/kernel/debug/dri/0/
 ```
 
-**udev and hotplug.** DRM connectors generate `drm` uevents on hotplug. A display manager or compositor detects monitor arrival and departure by monitoring these events via a `udev_monitor` listening on the `drm` subsystem. The `DEVTYPE=drm_minor` and `HOTPLUG=1` properties in the uevent identify the affected device. Chapter 2 covers connector hotplug handling in the KMS context.
+**udev and hotplug.** DRM connectors generate `drm` uevents on hotplug. A display manager or compositor detects monitor arrival and departure by monitoring these events via a `udev_monitor` listening on the `drm` subsystem. The `DEVTYPE=drm_minor` and `HOTPLUG=1` properties in the uevent identify the affected device.
+
+`udev_monitor` is a libudev object that subscribes to the kernel's uevent stream — the same events the `udevd` daemon receives when hardware changes state. Internally it wraps a `NETLINK_KOBJECT_UEVENT` netlink socket. The caller gets back a poll-able fd it can integrate into any event loop alongside the Wayland socket and the DRM fd.
+
+There are two netlink sources: `"udev"` delivers events that have already been processed by udevd and had rules applied — preferred by compositors because events are stable and filtered; `"kernel"` delivers raw kernel events before udevd runs — faster but noisier, used by udevd itself.
+
+```c
+/* Source: libudev — udev_monitor hotplug pattern used by compositors
+   (wlroots: backend/drm/drm.c  mutter: backends/native/meta-udev.c) */
+#include <libudev.h>
+#include <poll.h>
+
+struct udev         *udev = udev_new();
+struct udev_monitor *mon  =
+    udev_monitor_new_from_netlink(udev, "udev");  /* or "kernel" for raw events */
+
+/* Subscribe only to DRM subsystem — avoids wakeups for USB, input, etc. */
+udev_monitor_filter_add_match_subsystem_devtype(mon, "drm", NULL);
+udev_monitor_enable_receiving(mon);
+
+int fd = udev_monitor_get_fd(mon);   /* integrate into compositor event loop */
+
+struct pollfd pfd = { .fd = fd, .events = POLLIN };
+while (poll(&pfd, 1, -1) > 0) {
+    struct udev_device *dev = udev_monitor_receive_device(mon);
+    if (!dev) continue;
+
+    /* DRM uses ACTION=change (not add/remove) for connector state changes:
+       the /dev/dri/cardN node itself is not added or removed, only the
+       connector's connected/disconnected status changes. */
+    const char *action  = udev_device_get_action(dev);       /* "change" */
+    const char *devnode = udev_device_get_devnode(dev);      /* "/dev/dri/card0" */
+    const char *hotplug = udev_device_get_property_value(dev, "HOTPLUG"); /* "1" */
+
+    if (hotplug && strcmp(hotplug, "1") == 0) {
+        /* Re-enumerate: call drmModeGetResources() + drmModeGetConnector()
+           to discover new or removed outputs, then update compositor state */
+        handle_drm_hotplug(devnode);
+    }
+    udev_device_unref(dev);
+}
+udev_monitor_unref(mon);
+udev_unref(udev);
+```
+
+Key uevent properties on a DRM hotplug event:
+
+| Property | Value | Meaning |
+|---|---|---|
+| `ACTION` | `change` | Connector state changed (not device added/removed) |
+| `SUBSYSTEM` | `drm` | DRM subsystem event |
+| `DEVTYPE` | `drm_minor` | Identifies this as a DRM card device |
+| `HOTPLUG` | `1` | Signals a connector plug/unplug specifically |
+| `CONNECTOR` | `84` | KMS connector object ID (kernel 6.3+) |
+
+Chapter 2 covers connector hotplug handling in the KMS context in detail.
 
 ---
 
