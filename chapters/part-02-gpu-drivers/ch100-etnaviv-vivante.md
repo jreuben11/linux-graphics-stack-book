@@ -14,6 +14,7 @@
 6. [Mesa etnaviv Gallium Driver](#6-mesa-etnaviv-gallium-driver)
 7. [Shader Compiler: NIR to Vivante ISA](#7-shader-compiler-nir-to-vivante-isa)
 8. [GC7000, OpenCL, and the Vulkan Horizon](#8-gc7000-opencl-and-the-vulkan-horizon)
+- [8b. PowerVR and the Imagination Technologies `pvr` Driver](#8b-powervr-and-the-imagination-technologies-pvr-driver)
 9. [Real-World Platforms](#9-real-world-platforms)
 10. [Debugging and Contributing](#10-debugging-and-contributing)
 11. [Integrations](#11-integrations)
@@ -630,6 +631,102 @@ etnaviv runs in Mesa's CI on actual hardware via **LAVA** (Linaro Automated Vali
 
 ---
 
+## 8b. PowerVR and the Imagination Technologies `pvr` Driver
+
+### What is PowerVR?
+
+**PowerVR** is a family of GPU IP cores designed by **Imagination Technologies** (formerly known as Imagination Technologies Group, formerly IMGTEC). The name "PowerVR" stands for Power Virtual Reality, reflecting the product's origins in hardware-accelerated 3D for consumer devices in the mid-1990s. PowerVR GPUs are licensed IP: Imagination sells the design to SoC vendors who embed the core in their chips. Notable historical deployments include:
+
+- **Apple A-series** (A4 through A11) — every iPhone and iPad from the original iPhone through the iPhone X used a PowerVR GPU. Apple switched to their own GPU design (AGX) with the A12.
+- **Intel Atom** SoCs — the Medfield, Clover Trail, and Bay Trail Atom chips (2012–2014) used PowerVR SGX 544/545 cores (Intel's "GMA" on Atom).
+- **Texas Instruments OMAP** — OMAP3/4/5 SoCs (used in the original BeagleBone, Pandaboard, and many industrial boards) used PowerVR SGX530/540/544.
+- **NXP / Freescale i.MX6** — earlier i.MX6 variants used a PowerVR GPU (though later i.MX6 and i.MX8 switched to Vivante GC-series — the subject of this chapter).
+- **Renesas R-Car** automotive SoCs — several R-Car H- and V-series SoCs use PowerVR Rogue cores.
+- **Texas Instruments TDA4VM / J721E** — automotive ADAS SoCs used in NVIDIA DRIVE-competitive platforms.
+- **StarFive JH7110** — the RISC-V SoC used in the VisionFive 2 single-board computer.
+
+**Two eras, two driver situations:**
+
+| Era | Architecture | Nodes | Driver status |
+|---|---|---|---|
+| PowerVR SGX (Series 5) | Fixed-function + programmable | SGX530–SGX545 | No open driver; `pvrsrvkm` proprietary blob only; hardware effectively end-of-life |
+| PowerVR Rogue (Series 6+) | Fully programmable shader cores | GX6250, BXS-4-64, AXE-1-16M | Upstream open driver (`pvr`) since Linux 6.6; Mesa Vulkan driver |
+
+### The Upstream `pvr` Driver (`drivers/gpu/drm/imagination/`)
+
+In 2023, Imagination Technologies made a significant strategic shift: they submitted an open-source DRM driver for **PowerVR Rogue** (Series 6 and later) GPUs to the upstream Linux kernel. This driver — called simply `pvr` — was merged into `drivers/gpu/drm/imagination/` in **Linux 6.6** (released November 2023). [Source: Phoronix, PowerVR DRM Driver Merged For Linux 6.6](https://www.phoronix.com/news/PowerVR-DRM-Driver-Linux-6.6)
+
+This is a notable departure from Imagination's historical approach: the previous proprietary `pvrsrvkm` kernel module was deeply entangled with vendor kernel trees and shipped as source-available but not upstream-mergeable code. The new `pvr` driver is MIT-licensed, written to upstream DRM standards, and co-developed with the kernel community.
+
+**Architecture of the `pvr` driver:**
+
+```
+drivers/gpu/drm/imagination/
+├── pvr_drv.c          # DRM driver entry, platform probe
+├── pvr_device.c       # Device initialisation, power management
+├── pvr_fw.c           # Firmware loading and boot (pvr_fw_mips.c for MIPS FW core)
+├── pvr_gem.c          # GEM buffer objects (shmem-backed)
+├── pvr_vm.c           # GPU virtual memory management (pvr_gpuvm)
+├── pvr_queue.c        # Work queue submission to firmware
+├── pvr_job.c          # Job encoding and submission
+├── pvr_context.c      # Per-context render/compute/transfer contexts
+├── pvr_mmu.c          # GPU page table management (2-level, 4 KiB pages)
+├── pvr_sync.c         # DRM sync objects and dma-fence integration
+└── pvr_rogue_fwif.h   # Firmware interface structures (Rogue FWIF ABI)
+```
+
+Like Panthor, `pvr` is a **firmware-mediated** driver. The Rogue GPU contains a small MIPS-based microcontroller (`rgx_fw_signed.bin`) that manages command scheduling, power gating, and hardware context switching. The kernel driver communicates with the firmware via shared-memory structures defined in `pvr_rogue_fwif.h` — a header that is essentially the public firmware ABI. The firmware binary is provided in the `linux-firmware` repository.
+
+**Key driver components:**
+
+- **GEM/VM**: Buffer objects are `drm_gem_shmem_object`-backed. GPU virtual memory uses a two-level page table (Level 1: 4 GB regions, Level 2: 4 KiB pages). The `pvr_vm_*` functions manage GPU VA allocation and IOMMU mapping, using the kernel's `iommu_domain` infrastructure.
+- **Firmware contexts**: Render, compute, and transfer contexts are separate firmware objects. The kernel encodes job descriptors (pixel, geometry, compute) into shared memory and signals the firmware via a doorbell write; the firmware handles scheduling across hardware pipelines.
+- **Sync**: Uses `drm_syncobj` binary and timeline points for cross-job synchronisation, with dma-fence integration for inter-driver synchronisation (DMA-BUF import/export, `linux-drm-syncobj-v1` Wayland protocol).
+
+**Supported hardware**: As of Linux 6.10+, the `pvr` driver supports:
+- PowerVR BXS-4-64 (found in StarFive JH7110 / VisionFive 2)
+- PowerVR AXE-1-16M (found in TI TDA4AL-Q1 automotive SoC)
+- Earlier Rogue series (GX6250 and similar)
+
+### Mesa `pvr` Vulkan Driver
+
+Alongside the kernel driver, Imagination contributed a **Mesa Vulkan driver** for PowerVR Rogue at `src/imagination/vulkan/` (Mesa 23.1+). The driver targets **Vulkan 1.0** conformance on Rogue hardware.
+
+```
+src/imagination/vulkan/
+├── pvr_private.h          # pvr_device, pvr_cmd_buffer, pvr_pipeline structs
+├── pvr_device.c           # VkDevice / VkPhysicalDevice implementation
+├── pvr_cmd_buffer.c       # VkCommandBuffer encoding
+├── pvr_pipeline.c         # VkPipeline compilation and caching
+├── pvr_descriptor_set.c   # Descriptor set layout and binding
+├── pvr_shader.c           # SPIR-V → Rogue ISA (via SPIRV-Cross + pvr compiler)
+├── pvr_wsi.c              # WSI (window system integration via vulkan/wsi/)
+└── pvr_csb.c              # Control Stream Builder — encodes GPU job descriptors
+```
+
+The shader compiler path goes: SPIR-V → Mesa NIR → `pvr_nir_lower_*` passes → Rogue ISA binary. Imagination provides the Rogue ISA backend in `src/imagination/rogue/`. This ISA was partially reverse-engineered and partially documented by Imagination when they open-sourced the driver.
+
+The Mesa `pvr` driver integrates with the shared Vulkan WSI infrastructure (`src/vulkan/wsi/`) and works with the **Kopper** WSI layer, enabling Vulkan on Wayland surfaces through the standard `zwp_linux_dmabuf_v1` path (see Ch1 §5b).
+
+**Conformance status (mid-2026):** Vulkan 1.0 conformance is the target; CTS pass rates are actively improving. The driver is functional for real workloads on VisionFive 2 (JH7110 + BXS-4-64). The `pvr` driver also enables **Zink** (OpenGL over Vulkan, Ch103) for OpenGL ES applications on PowerVR hardware that lack a dedicated Gallium driver. [Source: Mesa GitLab, `src/imagination/`](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/imagination)
+
+### Comparison with etnaviv
+
+Both etnaviv (Vivante) and `pvr` (PowerVR Rogue) are open-source drivers for embedded GPU IP from vendors that historically shipped only proprietary blobs. The key structural differences:
+
+| Aspect | etnaviv (Vivante GC-series) | pvr (PowerVR Rogue) |
+|---|---|---|
+| Driver origin | Community reverse-engineering (no vendor involvement) | Vendor-submitted (Imagination opened the driver) |
+| Firmware | No firmware required (GC2000/GC7000) | Mandatory firmware (`rgx_fw_signed.bin`) |
+| Userspace | Gallium3D (OpenGL ES 2.0/3.x) | Vulkan (Mesa `pvr`) |
+| Kernel entry | `drivers/gpu/drm/etnaviv/` (Linux 4.5+) | `drivers/gpu/drm/imagination/` (Linux 6.6+) |
+| Key SoCs | NXP i.MX6/i.MX8, Amlogic, Marvell | StarFive JH7110, TI TDA4x, Renesas R-Car |
+| ISA docs | None public; fully reverse-engineered | Partially documented by Imagination |
+
+The PowerVR SGX (Series 5) situation remains bleak for open-source: hardware such as the TI OMAP3/4 (BeagleBone Black original), the original BeagleBone, and the Raspberry Pi's VideoCore-adjacent SGX core on older boards has no viable open driver. The `pvrsrvkm` proprietary module for SGX requires vendor kernel trees too old to run modern software, and the SGX ISA has not been reverse-engineered to a usable degree. For practical purposes, SGX-based hardware is a dead end for open-source Linux graphics.
+
+---
+
 ## 9. Real-World Platforms
 
 ### NXP i.MX8MQ — Librem 5
@@ -846,6 +943,8 @@ This chapter connects to several other parts of the book:
 **Chapter 90 — Open ARM GPU Drivers (Panfrost/Panthor/Lima)**: The reverse-engineering methodology for etnaviv is directly comparable to Lima and Panfrost. Key similarities: no public ISA documentation, command-stream interception for register tracing, rnndb-style register XML databases, NIR-based Mesa compiler. Key differences: etnaviv's unified shader ISA (one compiler for VS and FS) versus Lima's separate GP/PP compilers; etnaviv's absence of a firmware layer (unlike Panthor's mandatory CSF firmware); etnaviv's tile-based TBDR rendering via the RS resolve module versus Panfrost's per-tile fragment shading model. The Librem 5 — cited in both chapters — is a point of comparison: it uses etnaviv for 3D (Vivante GC7000Lite) alongside the same Phosh/Wayland stack discussed in the embedded compositor chapters.
 
 **Chapter 99 — Automotive and Embedded Graphics**: NXP i.MX6 and i.MX8 are dominant SoC families in automotive instrument clusters and human-machine interfaces. etnaviv is the production open-source graphics driver for these platforms. The i.MX8M Plus (GC7000UL) is used in ADAS coprocessor boards, gateway ECUs, and infotainment systems. The discussion of Yocto integration and real-world board bring-up in this chapter complements the automotive Linux graphics stack discussion there.
+
+**§8b — PowerVR / Imagination Technologies `pvr`**: The PowerVR section in this chapter (§8b) connects to Chapter 103 (Zink — OpenGL over Vulkan), which enables GLES applications on the `pvr` Vulkan driver without a dedicated Gallium path; to Chapter 1 (DRM Architecture) for the shared GEM/sync/PRIME primitives the `pvr` kernel driver uses; and to Chapter 14 (NIR) for the SPIR-V → NIR → Rogue ISA compiler pipeline in `src/imagination/rogue/`. The StarFive JH7110 (VisionFive 2) is the primary open-hardware RISC-V platform for PowerVR Rogue, making `pvr` the first upstream open GPU driver on a RISC-V production board.
 
 ---
 

@@ -384,6 +384,8 @@ As of June 2026, Mesa's development tree received **KRAID**, the first Rust-writ
 
 ## 5. Panthor: Valhall and the CSF Model
 
+**What is Panthor?** Panthor is the upstream Linux DRM kernel driver for **ARM Mali Valhall and later GPU generations** — specifically those using the **Command Stream Frontend (CSF)** submission model, which was introduced with third-generation Valhall (v10) hardware. It is the successor to Panfrost for newer Mali silicon. Panthor targets Mali-G310, G510, G610, G710, G720, G925 and Immortalis-G715 cores, which are found in mid-range and flagship SoCs (Rockchip RK3588 / Orange Pi 5, MediaTek Dimensity 9000-series, Samsung Exynos 2200). The driver was mainlined in **Linux 6.10** (mid-2024). Unlike Panfrost — which programs GPU job descriptors directly — Panthor communicates with a firmware microcontroller (`mali_csffw.bin`) that mediates all GPU work submission, making the firmware blob a hard runtime requirement. The Mesa userspace counterpart is **PanVK** (`src/panfrost/vulkan/`), which targets Vulkan on Bifrost through fifth-generation Valhall.
+
 ### Why a New Driver?
 
 Starting with third-generation Valhall (v10) hardware such as the Mali-G310, G510, G610, and G710, ARM changed the GPU's submission model fundamentally. Earlier generations used a *Job Manager* (JM): the kernel driver wrote job-chain head pointers into hardware registers, and the GPU's internal job manager fetched and executed descriptors directly from GPU-accessible memory. This approach required the kernel to deeply understand GPU descriptor formats.
