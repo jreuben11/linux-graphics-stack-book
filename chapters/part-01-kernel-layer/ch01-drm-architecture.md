@@ -497,13 +497,11 @@ The last check is the render-node gate: an ioctl that does not carry `DRM_RENDER
 
 ---
 
-## 5. DRI3: Buffer Passing via File Descriptors
+## 5. Buffer Sharing via File Descriptors
 
-DRI3 is the mechanism that enables zero-copy buffer sharing between GPU drivers and the X server. To understand why it was needed, it helps to trace what DRI2 actually did. Under DRI2, when an application finished rendering a frame, the rendered pixels lived in a GPU buffer. The X server needed to display those pixels. DRI2 transferred them via shared memory (SHM) pixmaps: the application wrote pixels into a CPU-accessible buffer, the X server read those pixels and composited them onto the screen. This required at least one CPU copy, involved the CPU in every frame transfer, and prevented any zero-copy path from GPU output to display scanout.
+Both X and Wayland solve zero-copy buffer sharing the same way at the kernel level: a GEM buffer is exported as a DMA-BUF file descriptor, which is passed to the display server over a Unix socket using `SCM_RIGHTS`. The receiving process imports the fd and gains a reference to the same physical pages — no pixel copy ever occurs. Only the wire protocol and object model differ between the two paths.
 
-DRI3's core insight was that the X server does not need to read pixel data at all if the buffer can be passed by file descriptor. Under DRI3, the application renders into a GEM buffer on the GPU. It exports that buffer as a DMA-BUF file descriptor using `DRM_IOCTL_PRIME_HANDLE_TO_FD`. It passes that fd to the X server over the X socket using the `DRI3PixmapFromBuffer` protocol request, which transmits the fd via the standard Unix `SCM_RIGHTS` ancillary data mechanism. The X server calls `DRM_IOCTL_PRIME_FD_TO_HANDLE` to import the buffer into its own DRM context and creates an X pixmap backed by it. At no point does any process touch the pixel data; the GPU buffer is shared by kernel file descriptor reference.
-
-The kernel ioctls at the heart of PRIME:
+The kernel ioctls at the heart of both paths are identical:
 
 ```c
 /* Source: include/uapi/drm/drm.h — PRIME ioctl structures */
@@ -515,7 +513,13 @@ struct drm_prime_handle {
 /* ioctls: DRM_IOCTL_PRIME_HANDLE_TO_FD, DRM_IOCTL_PRIME_FD_TO_HANDLE */
 ```
 
-At the kernel level, a GEM handle is an integer in a per-`drm_file` namespace that refers to a `struct drm_gem_object`. A DMA-BUF fd is a file descriptor wrapping a `struct dma_buf`, which is a kernel object that can be shared across device contexts and processes. When `prime_handle_to_fd` runs, it calls `dma_buf_export()` to wrap the underlying GEM object's memory in a `dma_buf` and returns a file descriptor for it. When `prime_fd_to_handle` runs in the receiving process, it calls `dma_buf_get()` on the fd, then calls the driver's `gem_prime_import()` callback to create a local GEM handle representing that same physical memory. The two GEM handles in two different processes refer to the same underlying physical pages, with no copy.
+At the kernel level, a GEM handle is an integer in a per-`drm_file` namespace referring to a `struct drm_gem_object`. A DMA-BUF fd wraps a `struct dma_buf` — a kernel object shareable across device contexts and processes. `dma_buf_export()` creates the fd; `dma_buf_get()` + `gem_prime_import()` imports it. The two GEM handles in two different processes refer to the same underlying physical pages, with no copy.
+
+### 5a. The X Path: DRI3
+
+DRI3 is the X11 extension that carries DMA-BUF fds from a GPU client to the X server. To understand why it was needed, it helps to trace DRI2: under DRI2, rendered pixels were transferred via shared memory (SHM) pixmaps — the application wrote pixels into a CPU-accessible buffer, the X server read and composited them. This required at least one CPU copy and prevented any zero-copy path from GPU output to display scanout.
+
+DRI3's core insight: the X server does not need to read pixel data at all if the buffer is passed by file descriptor. The application renders into a GEM buffer, exports it with `DRM_IOCTL_PRIME_HANDLE_TO_FD`, and passes the fd to the X server via the `DRI3PixmapFromBuffer` protocol request over the X socket using `SCM_RIGHTS`. The X server calls `DRM_IOCTL_PRIME_FD_TO_HANDLE` to import it and creates an X pixmap backed by it.
 
 The three categories of DRI3 protocol messages map directly to kernel operations. `DRI3Open` causes the X server to open the GPU device and return its fd to the client — this is how the client learns which `/dev/dri/renderDN` to open. `DRI3PixmapFromBuffer` / `DRI3BufferFromPixmap` pass DMA-BUF fds to create or retrieve X pixmaps without copying pixels. `DRI3FenceFromFD` / `DRI3FDFromFence` pass Linux sync file fds for synchronisation: before the X server displays a buffer the application must signal the fence that marks it as fully rendered, and the kernel enforces this through the `dma-fence` mechanism.
 
@@ -535,17 +539,13 @@ graph LR
 
 The security model of PRIME/DRI3 is important: because DMA-BUF fds are passed via `SCM_RIGHTS`, the receiving process gains a kernel reference to the buffer but cannot forge a handle or escalate privileges. The fd is opaque; its integer value in one process is meaningless in another. An application cannot pass an arbitrary integer and cause the X server to access unrelated GPU memory, as was possible with the global name mechanism (`GEM_FLINK`) that DRI2 inherited from DRI1.
 
-On the Wayland side, the `linux-dmabuf` protocol serves exactly the same role as DRI3 but over the Wayland socket. A Wayland client exports a rendered buffer as a DMA-BUF fd and passes it to the compositor, which imports it. The mechanism is kernel-identical; only the wire protocol differs. DRI3 exists today primarily to support the X11 compatibility path through XWayland: XWayland acts as an X server that receives DRI3 buffer fds from X clients and forwards them to the Wayland compositor as `linux-dmabuf` buffers. The GEM/DMA-BUF layer in the kernel is the common language.
+### 5b. The Wayland Path: linux-dmabuf, dmabuf-feedback, and linux-drm-syncobj
 
----
-
-## 5b. The Wayland Equivalent: linux-dmabuf, dmabuf-feedback, and linux-drm-syncobj
-
-Wayland has no concept of a global pixmap namespace or an X atom table — every resource is created through protocol objects bound per-client. Buffer sharing consequently works through a dedicated protocol: `zwp_linux_dmabuf_v1` (stable since Wayland Protocols 1.24). The protocol achieves the same kernel path as DRI3/PRIME — DMA-BUF fd via `SCM_RIGHTS` over the Unix socket — while fitting naturally into Wayland's stateful object model.
+Wayland has no concept of a global pixmap namespace or an X atom table — every resource is created through protocol objects bound per-client. Buffer sharing works through a dedicated protocol: `zwp_linux_dmabuf_v1` (stable since Wayland Protocols 1.24). The kernel path is identical to DRI3 — DMA-BUF fd via `SCM_RIGHTS` over the Unix socket — but the wire protocol fits Wayland's stateful object model.
 
 **`zwp_linux_dmabuf_v1`: the Wayland parallel to `DRI3PixmapFromBuffer`.** A Wayland client that finishes rendering into a GEM object:
 
-1. Exports the GEM object to a DMA-BUF fd with `DRM_IOCTL_PRIME_HANDLE_TO_FD` (same as the X path).
+1. Exports the GEM object to a DMA-BUF fd with `DRM_IOCTL_PRIME_HANDLE_TO_FD` (same kernel ioctl as the X path).
 2. Creates a `zwp_linux_buffer_params_v1` object from the `zwp_linux_dmabuf_v1` global.
 3. Calls `zwp_linux_buffer_params_v1.add()` to add the fd, plane index, offset, stride, and DRM format modifier.
 4. Calls `zwp_linux_buffer_params_v1.create_immed()` (or the asynchronous `.create()`) to obtain a `wl_buffer`.
@@ -638,9 +638,13 @@ KMS / Display
 
 ---
 
-## 6. The Present Extension: Synchronised Frame Delivery
+## 6. Synchronised Frame Delivery
 
-The DRI3 mechanism (and its Wayland parallel `zwp_linux_dmabuf_v1`, covered in §5b) answers the question of how to share a rendered buffer with the display system. The Present extension answers the complementary question: when should that buffer appear on screen, and how does the application learn that the display has moved on to the next frame? Without explicit timing, an application must either block waiting for vsync (wasting CPU), submit frames as fast as possible and accept tearing, or guess the timing and hope for the best. Present provides a principled, explicit timing model built on top of DRM VBLANK events.
+Buffer sharing (§5) answers *how* a rendered buffer reaches the display system. The synchronisation question is separate: *when* should that buffer appear on screen, and how does the application learn that the display has consumed the frame and is ready for the next? Without explicit timing, an application must either block waiting for vsync (wasting CPU), submit frames as fast as possible and accept tearing, or guess the timing and hope for the best. Both X and Wayland solve this with DRM VBLANK events from the kernel — they just expose the timing to applications differently.
+
+### 6a. The X Path: The Present Extension
+
+The Present extension (X.Org 1.18, 2015) provides a principled, explicit timing model for X clients built on top of DRM VBLANK events.
 
 **The MSC/UST model.** Every DRM CRTC (display output) maintains a counter called the MSC (Media Stream Counter), which increments by one at each display refresh. The UST (Unadjusted System Time) is the kernel's monotonic clock timestamp at which the most recent vblank occurred. Together, MSC and UST give an application a precise timeline of display events. The application learns the current MSC/UST pair by calling `DRM_IOCTL_WAIT_VBLANK` with the `DRM_VBLANK_RELATIVE` flag set to zero and the sequence set to zero (a non-blocking query).
 
@@ -667,7 +671,38 @@ graph TD
 
 **Present vs. SwapBuffers.** The `SwapBuffers` call familiar from GLX and EGL hides all of this machinery. Under the covers, Mesa's EGL/GLX swap chain implementation on X11 uses the Present extension to submit the rendered back buffer. The present-swap path in Mesa constructs a `PresentPixmap` request with a target MSC computed from the application's swap interval, submits it, and waits for `PresentCompleteNotify` before returning `SwapBuffers` to the caller. The advantage of using Present directly (without going through Mesa's swap chain) is that an application can queue multiple frames ahead, specifying distinct target MSCs, without blocking — this is the basis of low-latency frame pipelining used in game engines.
 
-**The Wayland analogue.** The `linux-dmabuf` protocol (§5b) handles the buffer-sharing half for Wayland clients. The timing half — the equivalent of Present's MSC/UST model — is provided by `wp_presentation`. A client attaches a DMA-BUF buffer to a surface and commits it; the compositor, after displaying the buffer, sends a `wp_presentation_feedback.presented` event carrying the VBLANK timestamp (`tv_sec`/`tv_nsec`), the CRTC refresh interval (`refresh` in nanoseconds), and a 64-bit MSC-equivalent sequence counter. The compositor derives all of these from DRM VBLANK events via the same kernel path as the X server. Unlike Present, Wayland has no explicit "target MSC" submission — the client double-buffers and relies on the compositor's frame callback (`wl_callback` from `wl_surface.frame()`) to know when to render the next frame. Chapter 20 examines `wp_presentation` in detail.
+### 6b. The Wayland Path: wp_presentation and wl_surface.frame
+
+The `linux-dmabuf` protocol (§5b) handles buffer sharing for Wayland clients. The timing equivalent of Present's MSC/UST model is provided by two complementary mechanisms: `wl_surface.frame` for pacing rendering, and `wp_presentation` for precise delivery timestamps.
+
+**`wl_surface.frame`: the render pacing callback.** A Wayland client registers for a frame callback by calling `wl_surface.frame()`, which returns a `wl_callback` object. When the compositor has displayed the current surface contents and is ready for the client to render the next frame, it fires the callback with a timestamp. This replaces Present's `PresentIdleNotify` + target-MSC model: rather than specifying a future MSC to hit, the client simply waits for the compositor's signal before starting work on the next frame. This is a pull model — the compositor controls pacing. Double-buffering is the norm: the client renders into buffer B while the compositor is displaying buffer A, and swaps on the callback.
+
+**`wp_presentation`: precise delivery timestamps.** `wl_surface.frame` tells the client *when to render next* but not *when the last frame actually appeared on screen*. `wp_presentation` fills this gap. A client that wants delivery receipts calls `wp_presentation.feedback(surface)` when committing a buffer; the compositor, after the buffer is shown, sends a `wp_presentation_feedback.presented` event carrying:
+
+- `tv_sec` / `tv_nsec` — the VBLANK timestamp (from `clock_gettime(CLOCK_MONOTONIC)` at the kernel interrupt)
+- `refresh` — the CRTC refresh interval in nanoseconds (the nominal frame period)
+- `seq_hi` / `seq_lo` — a 64-bit MSC-equivalent counter, the same DRM CRTC MSC value
+
+The compositor derives all three from DRM VBLANK events via the same `DRM_IOCTL_WAIT_VBLANK` / `drm_event_vblank` kernel path as the X server. The difference from Present: Wayland has no explicit "target MSC" submission. The client double-buffers and uses `wl_surface.frame` for pacing; `wp_presentation` is purely observational — it delivers receipts, not schedule requests.
+
+```mermaid
+graph TD
+    Client["Wayland Client"]
+    Compositor["Wayland Compositor"]
+    DRMDriver["DRM Driver\n(VBLANK interrupt handler)"]
+    CRTC["CRTC\n(MSC / refresh)"]
+
+    Client -- "wl_surface.attach(buffer)\nwp_presentation.feedback(surface)\nwl_surface.commit()" --> Compositor
+    Compositor -- "DRM_IOCTL_WAIT_VBLANK\n(DRM_VBLANK_EVENT)" --> DRMDriver
+    DRMDriver -- "VBLANK fires" --> CRTC
+    DRMDriver -- "drm_event_vblank\non DRM fd" --> Compositor
+    Compositor -- "drmModeAtomicCommit\n(page flip)" --> DRMDriver
+    DRMDriver -- "flip complete event" --> Compositor
+    Compositor -- "wp_presentation_feedback.presented\n(tv_sec/tv_nsec, refresh, seq)" --> Client
+    Compositor -- "wl_callback.done\n(frame ready)" --> Client
+```
+
+**Wayland EGL / `eglSwapBuffers`.** Mesa's EGL implementation for Wayland wraps all of this. `eglSwapBuffers` on a Wayland surface submits the rendered back buffer as a `zwp_linux_dmabuf_v1` buffer, attaches a `wl_surface.frame` callback to pace the next frame, and optionally attaches a `wp_presentation` feedback object if the application requested swap interval or timestamp information. Chapter 20 examines the compositor side of `wp_presentation` in detail. Chapter 12 covers Mesa's EGL Wayland backend implementation.
 
 ---
 
