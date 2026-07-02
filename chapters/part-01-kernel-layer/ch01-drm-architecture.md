@@ -818,7 +818,72 @@ In practice, libdrm's `drmHandleEvent()` wraps this loop and dispatches to regis
 
 The DRM subsystem provides two complementary inspection mechanisms that are invaluable for understanding a live system: the `drm_info` userspace tool and the kernel's debugfs tree under `/sys/kernel/debug/dri/`.
 
-**drm_info.** The `drm_info` tool (https://github.com/emersion/drm-info) is an open-source utility written by Simon Ser that enumerates the complete KMS object tree of every DRM device. Running it on a typical desktop produces a formatted dump of every connector (with EDID, status, and supported modes), every CRTC (with current mode, vblank state), every plane (with supported formats and format modifiers, IN_FENCE_FD capability), and every property on every object. `drm_info` is both a practical diagnostic tool and a readable example of correct libdrm enumeration code. Its source demonstrates the pattern of calling `drmModeGetResources`, iterating KMS objects, and using `drmModeObjectGetProperties` to walk property lists — the same pattern that compositor KMS backends use. The tool also queries format modifiers via `DRM_CAP_ADDFB2_MODIFIERS` and prints them in human-readable form, making it the fastest way to determine whether a GPU+driver combination supports a particular tiled buffer format.
+**drm_info.** The [`drm_info`](https://gitlab.freedesktop.org/emersion/drm_info) tool (v2.10.0, MIT licence) is an open-source utility written by Simon Ser that enumerates the complete KMS object tree of every DRM device. Running it on a typical desktop produces a formatted dump of every connector (with EDID, status, and supported modes), every CRTC (with current mode, vblank state), every plane (with supported formats and format modifiers, IN_FENCE_FD capability), and every property on every object. `drm_info` is both a practical diagnostic tool and a readable example of correct libdrm enumeration code. Its source demonstrates the pattern of calling `drmModeGetResources`, iterating KMS objects, and using `drmModeObjectGetProperties` to walk property lists — the same pattern that compositor KMS backends use. The tool also queries format modifiers via `DRM_CAP_ADDFB2_MODIFIERS` and prints them in human-readable form, making it the fastest way to determine whether a GPU+driver combination supports a particular tiled buffer format.
+
+**drm_info usage.** Install via your distro (`apt install drm-info`, `dnf install drm_info`) or build from source with `meson setup build/ && ninja -C build/`. The basic invocation with no arguments scans all `/dev/dri/card*` devices; pass a specific device path to target one:
+
+```bash
+# Dump all DRM devices (pretty-printed)
+drm_info
+
+# Target a specific device
+drm_info /dev/dri/card0
+
+# JSON output (machine-readable; used by the drmdb database)
+drm_info -j
+
+# Upload your GPU's info to the drmdb community database
+drm_info -j | curl -d @- https://drmdb.emersion.fr/submit
+```
+
+The pretty-printed output is structured by device, then by KMS object type. An abbreviated example from an Intel integrated GPU (i915 driver):
+
+```
+/dev/dri/card0 (i915)
+├─ Connectors
+│  ├─ Connector 73 "eDP-1"
+│  │  ├─ Status: connected
+│  │  ├─ Physical size: 290×190 mm
+│  │  ├─ Subpixel: horizontal RGB
+│  │  ├─ Modes
+│  │  │  ├─ 2560×1600@60.00 (preferred)
+│  │  │  └─ 1920×1200@60.00
+│  │  └─ Properties
+│  │     ├─ EDID (blob, id 74)
+│  │     ├─ DPMS: On
+│  │     ├─ link-status: Good
+│  │     └─ Content Protection: Undesired
+│  └─ Connector 84 "HDMI-A-1"
+│     └─ Status: disconnected
+├─ CRTCs
+│  └─ CRTC 52
+│     ├─ Mode: 2560×1600@60.00
+│     ├─ Active: yes
+│     └─ Properties
+│        ├─ ACTIVE: 1
+│        ├─ MODE_ID (blob, id 75)
+│        └─ OUT_FENCE_PTR: 0
+├─ Planes
+│  ├─ Plane 31 (primary, CRTC 52)
+│  │  ├─ Formats
+│  │  │  ├─ XR24 (LINEAR, X_TILED, Y_TILED, Yf_TILED, Ys_TILED)
+│  │  │  ├─ AR24 (LINEAR, X_TILED)
+│  │  │  └─ XB24 (LINEAR)
+│  │  └─ Properties
+│  │     ├─ IN_FENCE_FD: -1
+│  │     ├─ FB_ID: 76
+│  │     └─ IN_FORMATS (blob — format+modifier table)
+│  └─ Plane 44 (cursor, CRTC 52)
+│     └─ Formats: AR24 (LINEAR)
+└─ Driver capabilities
+   ├─ DUMB_BUFFER: yes
+   ├─ PRIME: import+export
+   ├─ TIMESTAMP_MONOTONIC: yes
+   ├─ ASYNC_PAGE_FLIP: yes
+   └─ ADDFB2_MODIFIERS: yes
+```
+
+Key things to read from this output: `ADDFB2_MODIFIERS: yes` confirms the driver supports format modifiers (required for `linux-dmabuf-feedback` direct scanout); the `IN_FORMATS` blob on the primary plane lists the exact `(format, modifier)` pairs the display engine can scanout (this is what compositors query to build the `zwp_linux_dmabuf_feedback_v1` format table); `IN_FENCE_FD` on a plane means it accepts explicit acquire fences on atomic commits; and the `PRIME: import+export` capability line confirms the device can act as both source and sink in cross-device buffer sharing.
 
 **The debugfs tree.** Every DRM device registers a debugfs subtree at `/sys/kernel/debug/dri/N/` where N is the minor number. This tree is populated by the DRM core and extended by each driver. The core provides files such as `clients` (list of open file handles with process names and PIDs), `gem_names` (global GEM name table), and `vblank_count`. Driver-private files vary enormously: i915 provides `i915_gem_objects` (per-object size, binding, and active state), `i915_gem_fence_regs`, `i915_frequency_info`, and `i915_ppgtt_info`; amdgpu provides `amdgpu_fence_info`, `amdgpu_gpu_recover`, and per-ring job submission statistics; nouveau provides `nouveau_fifo_context` and channel allocation details.
 
@@ -1233,7 +1298,7 @@ As a decision rule: if the symptom appears in `/sys/kernel/debug/dri/`, `dmesg`,
 
 18. [libdrm source repository](https://gitlab.freedesktop.org/mesa/drm) — Authoritative source for `xf86drm.h`, `xf86drmMode.h`, and per-driver sub-libraries (`amdgpu`, `intel`, `nouveau`, `radeon`).
 
-19. [drm_info source](https://github.com/emersion/drm-info) — Practical libdrm consumer tool; readable example of correct KMS object enumeration and format modifier querying.
+19. [drm_info source](https://gitlab.freedesktop.org/emersion/drm_info) — Practical libdrm consumer tool (v2.10.0); readable example of correct KMS object enumeration and format modifier querying. See also [drmdb](https://drmdb.emersion.fr) for a community database of GPU dumps.
 
 20. [freedesktop drm-misc git tree](https://gitlab.freedesktop.org/drm/drm) — The upstream DRM kernel subsystem tree; the destination for most DRM driver patches before merging to Linus's tree.
 
