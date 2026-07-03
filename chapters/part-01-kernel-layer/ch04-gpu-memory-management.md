@@ -185,6 +185,25 @@ The Translation Table Manager (TTM) addresses a fundamental challenge that simpl
 
 ### Memory Types and Placement
 
+> **GPU DRAM technologies: HBM vs GDDR vs LPDDR**
+>
+> `TTM_PL_VRAM` is an abstract placement tier — the physical DRAM technology underneath it varies by GPU class and has a direct bearing on bandwidth, capacity, and CPU coherency:
+>
+> | | **HBM3** | **GDDR6X** | **LPDDR5X** |
+> |---|---|---|---|
+> | **Architecture** | 3D-stacked dies on-package or interposer | Discrete chips on PCB, wide trace bus | Mobile DRAM, same chips as CPU system RAM |
+> | **Bus width** | 1024–2048 bit per stack | 128–384 bit | 32–64 bit per channel (shared) |
+> | **Peak bandwidth** | ~819 GB/s (MI300X, 8 stacks) | ~1008 GB/s (RTX 4090, 384-bit bus) | ~85 GB/s (shared CPU + GPU) |
+> | **Typical capacity** | 24–192 GB | 8–48 GB | 16–192 GB (fully shared) |
+> | **CPU coherency** | No — discrete package | No — discrete package | Yes — physically the same chips |
+> | **Power** | Low (short on-package traces) | Moderate (longer PCB traces) | Very low |
+> | **Cost per GB** | Very high | Moderate | Low (commodity) |
+> | **Typical deployment** | Datacenter accelerators (MI300X, H100, Gaudi) | Consumer/workstation GPU (RTX, Radeon RX) | Mobile SoC, integrated GPU (Adreno, Apple M, AMD iGPU) |
+>
+> **TTM implications.** On discrete GDDR/HBM GPUs, `TTM_PL_VRAM` maps to the dedicated pool; `TTM_PL_TT` is GART-mapped system RAM used as a slower overflow tier. On integrated/mobile SoCs backed by LPDDR, `TTM_PL_VRAM` is often absent — buffers live in `TTM_PL_SYSTEM` with the CPU and GPU sharing the same physical pages, making the `begin_cpu_access`/`end_cpu_access` coherency dance unnecessary (the memory is already coherent). This is also why `drm_gem_shmem_object` (system RAM backed) suffices for many SoC display drivers while discrete GPU drivers require the full TTM placement machinery.
+>
+> **Bandwidth context.** At 60 fps with a 4K framebuffer (3840 × 2160 × 4 bytes × 2 for double-buffer), scanout alone consumes ~4 GB/s. A GPU rendering a complex scene with texture sampling, render target writes, and shader uniforms can saturate 200–400 GB/s. HBM's bandwidth advantage matters most for compute workloads (matrix multiply, LLM attention); GDDR6X's wider bus per die makes it the bandwidth-per-dollar winner for consumer rendering.
+
 TTM models memory as a set of memory types, each managed by a `ttm_resource_manager`. The canonical types are:
 
 - `TTM_PL_SYSTEM` (0): CPU-side system RAM, before any GPU mapping or IOMMU translation.
