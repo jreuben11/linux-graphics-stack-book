@@ -225,6 +225,55 @@ If `atomic_check` fails, no hardware registers have been written; the display co
 
 Debugging atomic commits is aided by the `drm.debug=0x1f` kernel module parameter, which enables verbose logging of every atomic state transition. Combined with `drm_atomic_state_print()` (which dumps a human-readable representation of an atomic state to the kernel log), this produces a detailed trace of what was attempted and why it failed. The `drm_info` tool from the freedesktop.org repository (see References) provides a static snapshot of all current KMS object states.
 
+### Commit Timing and Frames Per Second
+
+**How fast is a commit?** The four phases themselves are fast — microseconds of CPU time for a typical page-flip-only commit on modern hardware. The bottleneck is not the commit path itself but the VBLANK boundary it must hit.
+
+**The VBLANK constraint.** The display controller's scanout engine reads the framebuffer line-by-line at a rate determined by the pixel clock and the mode timing. After it finishes scanning the last active line, it enters the *vertical blanking interval* (VBLANK) — a brief period during which no pixels are being sent and the beam (historically) returned to the top. The hardware register that selects which framebuffer to scan — the *flip latch* — can only be safely updated during this blanking period, because writing it mid-scan would tear the image. The atomic commit's Phase 3 arms the flip; the actual register update happens when the VBLANK interrupt fires. This means **one atomic commit produces at most one frame on screen**, and it lands on the VBLANK boundary after Phase 3 completes.
+
+**Commit-to-frame arithmetic.** The refresh rate set in `MODE_ID` determines how often VBLANK occurs:
+
+| Display mode | VBLANK period | Maximum frames per second |
+|---|---|---|
+| 60 Hz | 16.67 ms | 60 fps |
+| 75 Hz | 13.33 ms | 75 fps |
+| 120 Hz | 8.33 ms | 120 fps |
+| 144 Hz | 6.94 ms | 144 fps |
+| 240 Hz | 4.17 ms | 240 fps |
+| 360 Hz | 2.78 ms | 360 fps |
+
+A compositor that issues one `DRM_IOCTL_MODE_ATOMIC` call per VBLANK period, hitting every VBLANK, achieves the display's full refresh rate. Miss a VBLANK and the frame is delayed to the next one — at 60 Hz, a single missed VBLANK drops the effective rate to 30 fps (every other VBLANK). This is why frame timing discipline in compositors is critical.
+
+**Where does the commit time go?** For a non-blocking (`DRM_MODE_ATOMIC_NONBLOCK`) page-flip-only commit on a modern driver:
+
+- **Phase 1 (check)** — typically 10–50 µs; mostly driver `atomic_check` logic, bandwidth validation, format compatibility checks. AMD DC's `amdgpu_dm_atomic_check` with DML validation can push this to 200–500 µs for complex multi-display configurations.
+- **Phase 2 (prepare)** — typically 5–20 µs for a page-flip-only commit where the framebuffer is already pinned; longer if a new GEM BO needs to be pinned and IOMMU-mapped.
+- **ioctl return** — the ioctl returns here under `NONBLOCK`; total kernel time in the ioctl is typically 50–200 µs.
+- **Phase 3 (commit)** — runs asynchronously on the per-CRTC workqueue; waits until just before the VBLANK deadline, programs registers, exits.
+- **Hardware flip** — happens at the VBLANK interrupt; display controller latches new framebuffer pointer atomically.
+- **Phase 4 (cleanup)** — immediately after flip completes; unpins old framebuffer.
+
+The entire ioctl path from userspace submission to hardware flip therefore takes: (time to next VBLANK) + a few microseconds of interrupt latency. At 60 Hz, worst case (just missed a VBLANK) this is 16.67 ms; best case (submitted just before VBLANK) it is near-zero. **The effective latency is therefore dominated by where in the VBLANK cycle the commit arrives, not by the four-phase processing time itself.**
+
+**Non-blocking commits and pipelining.** Because `NONBLOCK` returns in ~100–200 µs, a compositor can issue a commit and immediately begin rendering the *next* frame while the display controller is still waiting to flip the previous one. This double-buffered pipeline is what allows a compositor to sustain full refresh rate without stalling:
+
+```
+Compositor timeline (60 Hz, 16.67 ms per frame):
+  t=0.0 ms  VBLANK — frame N appears on screen
+  t=0.1 ms  Compositor woken by VBLANK event, begins rendering frame N+1
+  t=14.0 ms GPU finishes rendering frame N+1
+  t=14.1 ms Atomic commit (NONBLOCK) for frame N+1 — ioctl returns in ~0.15 ms
+  t=16.67 ms VBLANK — frame N+1 appears on screen
+  t=16.7 ms Compositor woken, begins rendering frame N+2
+  ...
+```
+
+If GPU rendering takes longer than one frame period (> 16.67 ms at 60 Hz), the compositor misses the VBLANK and the next commit lands on the VBLANK after that — halving the frame rate to 30 fps. This is the fundamental frame-pacing constraint that VRR (Variable Refresh Rate, `VRR_ENABLED` CRTC property) addresses: it stretches the VBLANK period to match the GPU's actual render time, avoiding the 30/60 fps cliff.
+
+**Modeset commits are slower.** A commit with `DRM_MODE_ATOMIC_ALLOW_MODESET` — changing the display mode, resolution, or CRTC active state — is substantially more expensive because it involves: disabling the CRTC (Phase 3 calls `atomic_disable`), reprogramming PLLs (tens to hundreds of milliseconds for the PLL to lock), link training (DisplayPort: ~10–50 ms per link-rate negotiation round-trip), and re-enabling the CRTC. During this period the display is blank. Compositors avoid modeset commits during normal operation; they are reserved for initial setup and explicit user-triggered resolution changes.
+
+**Observing commit timing.** The `wp_presentation_feedback.presented` event (§6b of Ch1) delivers the actual VBLANK timestamp and MSC counter, allowing compositors to measure frame-to-frame jitter. `ftrace` with the `drm:drm_vblank_event` tracepoint records per-VBLANK timing at kernel level. MangoHUD and `present_timing` tooling (referenced in the Ch93 §13 latency budget addition in plan.md) instrument the full compositor→GPU→KMS→display path.
+
 ---
 
 ## 4. Properties: The Configuration Language of KMS
