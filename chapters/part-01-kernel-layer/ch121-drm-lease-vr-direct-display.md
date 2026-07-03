@@ -13,6 +13,7 @@
 - [4. Monado OpenXR Runtime](#4-monado-openxr-runtime)
 - [5. wp_drm_lease_device_v1 Wayland Protocol](#5-wp_drm_lease_device_v1-wayland-protocol)
 - [6. SteamVR on Linux](#6-steamvr-on-linux)
+- [6b. ALVR: Wireless PC VR Streaming via DRM Lease](#6b-alvr-wireless-pc-vr-streaming-via-drm-lease)
 - [7. Direct-to-Display Vulkan Swapchain](#7-direct-to-display-vulkan-swapchain)
 - [8. Timing and Synchronisation for VR](#8-timing-and-synchronisation-for-vr)
 - [9. Practical: Setting Up VR on Linux](#9-practical-setting-up-vr-on-linux)
@@ -413,6 +414,138 @@ The **Monado migration path** is increasingly viable: users wanting a fully open
 ### Known Issues
 
 A recurring issue (as of 2024–2025) affects GNOME 47 + Mutter 47.x combinations: SteamVR reports "Error 498: Failed to lease display" because GNOME 47 introduced DRM lease support but with early implementation bugs around connector advertisement timing. The upstream fix was backported to Mutter 47.2+. Users on older Mutter versions can work around the issue by running the X11 session or switching to a wlroots-based compositor. [Source](https://github.com/ValveSoftware/SteamVR-for-Linux/issues/753)
+
+---
+
+## 6b. ALVR: Wireless PC VR Streaming via DRM Lease
+
+ALVR (Air Light VR) is an open-source streaming VR runtime ([github.com/alvr-org/ALVR](https://github.com/alvr-org/ALVR)) that turns a standalone Wi-Fi headset — Meta Quest 2/3/Pro, Pico 4, or any OpenXR-capable standalone device — into a wireless PC VR display. On Linux, DRM lease is the mechanism that makes this possible: ALVR's SteamVR driver requests a lease for a virtual display output so that SteamVR sees a standard KMS-driven "monitor" with VR-appropriate VBLANK timing, without ALVR needing to own the entire DRM master.
+
+### Architecture
+
+ALVR splits into two components:
+
+```
+PC (Linux)                              Headset (Android/AOSP)
+┌────────────────────────────┐          ┌────────────────────────────┐
+│ SteamVR / OpenXR game      │          │  ALVR Client (sideloaded)  │
+│         │ OpenXR API       │          │         │                  │
+│  ALVR SteamVR Driver       │  Wi-Fi   │  Video decoder (MediaCodec)│
+│  (OpenVR plugin .so)       │◄────────►│  ATW reprojection          │
+│         │                  │  H.264/  │  Head pose → PC (UDP)      │
+│  alvr_server (Rust)        │  HEVC/   │                            │
+│  ├─ Encode: NVENC/AMF/VAAPI│  AV1     └────────────────────────────┘
+│  ├─ DRM virtual display    │
+│  ├─ Pose prediction        │
+│  └─ Audio capture (PipeWire│
+└────────────────────────────┘
+```
+
+`alvr_server` is a Rust daemon that:
+1. Registers a **virtual display** with the system so SteamVR sees a connected HMD
+2. Receives **head pose packets** from the headset over UDP (tracked at 120 Hz)
+3. Captures the rendered stereo frame and **encodes** it via NVENC (NVIDIA), AMF (AMD), or VA-API (Intel/AMD open-source)
+4. **Streams** the encoded frames to the headset over Wi-Fi (ideally Wi-Fi 6 at 5 GHz, dedicated AP)
+5. **Receives** the headset's decoded display confirmations for frame pacing
+
+### DRM Lease Integration on Linux
+
+The virtual display that SteamVR drives is not a real connector. ALVR uses one of two approaches depending on the system configuration:
+
+**Approach 1 — `wp_drm_lease_device_v1` with a dummy connector.** On Wayland compositors that support DRM lease, ALVR requests a lease for a dedicated dummy connector (created by the `drm_vkms` or `evdi` virtual KMS driver). SteamVR then drives this connector as if it were a real HMD, and ALVR intercepts the framebuffer presented to that connector.
+
+**Approach 2 — `evdi` (Extensible Virtual Display Interface).** ALVR uses the [`evdi`](https://github.com/DisplayLink/evdi) kernel module (developed by DisplayLink, also used by the EVDI chapter of this book) to create a virtual `/dev/dri/cardN` device that exports framebuffers to userspace via `EVDI_GRAB_PIXELS`. SteamVR modesetting calls on this device are intercepted by the ALVR server:
+
+```c
+/* evdi userspace API — alvr_server captures frames from the virtual display */
+evdi_handle display = evdi_open(evdi_find_available());
+evdi_connect(display, &edid_data, edid_size, pixel_area);
+
+struct evdi_buffer buf = {
+    .id     = 0,
+    .buffer = malloc(width * height * 4),
+    .width  = width, .height = height, .stride = width * 4,
+    .rects  = damage_rects, .rect_count = MAX_RECTS,
+};
+evdi_register_buffer(display, buf);
+
+/* Main capture loop */
+while (running) {
+    evdi_handle_events(display, &event_ctx); /* fires update_ready_handler */
+    evdi_grab_pixels(display, damage_rects, &rect_count);
+    encode_and_stream(buf.buffer, width, height);
+}
+```
+
+### Video Encoding and Latency Pipeline
+
+ALVR's latency budget from render-complete to photons at the headset's panel:
+
+| Stage | Typical latency | Notes |
+|---|---|---|
+| Frame capture from virtual display | 0.5–1 ms | `evdi_grab_pixels` or DRM lease framebuffer readback |
+| Hardware encode (NVENC/AMF) | 2–5 ms | P-frame with low-latency preset; NVENC `NV_ENC_PRESET_P1` |
+| Network transmission (Wi-Fi 6) | 2–6 ms | 1080p×2 at 150 Mbps; jitter is the main variable |
+| Hardware decode (MediaCodec) | 2–4 ms | Android MediaCodec H.264/HEVC/AV1 on headset SoC |
+| ATW reprojection on headset | 1–2 ms | Applied using latest pose, not the render-time pose |
+| **Total motion-to-photon** | **~20–40 ms** | Native wired VR targets 11–15 ms; wireless adds ~10–20 ms |
+
+The **pose prediction** pipeline is critical: by the time a frame reaches the headset display, 20–40 ms have elapsed since the GPU started rendering it. ALVR predicts the head pose at display time using a Kalman filter over the IMU data stream. SteamVR's ATW then applies a final correction using the most recent pose received just before display.
+
+### Codec Comparison on Linux
+
+| Codec | Encoder | Quality at 150 Mbps | Linux driver |
+|---|---|---|---|
+| H.264 | NVENC / AMF / VA-API | Good; universally supported on headsets | All major GPUs |
+| HEVC (H.265) | NVENC / AMF / VA-API | Better quality per bit; Quest 2 requires sideload unlock | Most GPUs, see ch50 |
+| AV1 | NVENC (RTX 4000+) / AMF (RX 7000+) | Best quality; lowest bitrate for same visual quality | RTX 4000+ / RX 7000+ |
+
+AV1 encoding is the recommended choice on supported hardware: at 150 Mbps it delivers visibly better image quality than HEVC, and with hardware AV1 decoders on Quest 3 and Pico 4, the decode latency is equivalent to HEVC.
+
+### Audio Routing
+
+ALVR captures audio from the Linux system using PipeWire (see ch37). `alvr_server` creates a PipeWire sink node; ALVR registers it as the default audio output, so game audio flows into ALVR's encoder and is streamed alongside video as an AAC or Opus audio track to the headset's speakers or 3.5 mm jack.
+
+```bash
+# ALVR's PipeWire sink appears as a normal audio device
+pw-cli list-objects | grep -A3 "alvr"
+# id 45, type PipeWire:Interface:Node
+#   node.name = "alvr_audio_sink"
+#   media.class = "Audio/Sink"
+```
+
+### Linux-Specific Setup Notes
+
+```bash
+# Install ALVR server AppImage (from GitHub releases)
+chmod +x ALVR_Launcher.AppImage && ./ALVR_Launcher.AppImage
+
+# Ensure the user is in the video/render groups for DRM access
+sudo usermod -aG video,render $USER
+
+# For evdi-based virtual display:
+sudo modprobe evdi initial_device_count=1
+# ALVR will claim /dev/dri/card1 (or whichever evdi creates)
+
+# Check encoding capability
+vainfo 2>/dev/null | grep -i "h264\|hevc\|av1"      # VA-API (Intel/AMD open)
+nvidia-smi | grep -i enc                              # NVENC availability
+```
+
+**Firewall note:** ALVR uses UDP port 9944 (control) and TCP port 9944 (streaming). On systems with `nftables`/`firewalld`, these must be opened on the Wi-Fi interface for the headset's IP.
+
+### Relationship to Wired VR (SteamVR + Monado)
+
+| | ALVR (wireless) | SteamVR direct (wired) | Monado (wired) |
+|---|---|---|---|
+| **Latency** | 20–40 ms total | 11–15 ms | 11–15 ms |
+| **HMD connection** | Wi-Fi | USB-C / DisplayPort | USB-C / DisplayPort |
+| **DRM lease usage** | Virtual connector via evdi | Real HMD connector | Real HMD connector |
+| **Open source** | Yes (ALVR, Apache 2.0) | No (SteamVR proprietary) | Yes (Monado, BSL-1.0) |
+| **OpenXR runtime** | SteamVR (via ALVR plugin) | SteamVR | Monado |
+| **Supported HMDs** | Quest 2/3/Pro, Pico 4 | Index, Vive, Pimax | Index, Vive, WMR, Quest |
+
+ALVR is the dominant choice for users who own a standalone headset and want PC VR on Linux without a USB tether. For wired setups, Monado (§4) is the preferred open-source path. SteamVR remains necessary for titles that use SteamVR-specific extensions not yet covered by Monado's OpenXR implementation.
 
 ---
 
