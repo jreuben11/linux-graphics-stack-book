@@ -16,6 +16,12 @@
 - [7. DRM Format Modifiers: Tiling, Compression, and Cross-Driver Negotiation](#7-drm-format-modifiers-tiling-compression-and-cross-driver-negotiation)
 - [8. The Integrated View: A Buffer's Journey](#8-the-integrated-view-a-buffers-journey)
 - [9. Multi-GPU Topologies: NVLink, xGMI, and Peer-to-Peer DMA](#9-multi-gpu-topologies-nvlink-xgmi-and-peer-to-peer-dma)
+  - [AMD xGMI / Infinity Fabric](#amd-xgmi--infinity-fabric)
+  - [NVLink](#nvlink)
+  - [NVLink vs. xGMI / Infinity Fabric: Comparison](#nvlink-vs-xgmi--infinity-fabric-comparison)
+  - [Linux p2pdma Infrastructure](#linux-p2pdma-infrastructure)
+  - [CXL: Compute Express Link Memory Expansion](#cxl-compute-express-link-memory-expansion)
+  - [drm_gpuvm: Generic GPU Virtual Address Space Manager](#drm_gpuvm-generic-gpu-virtual-address-space-manager)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -892,6 +898,71 @@ void pci_p2pdma_unmap_sg(struct device *dev, struct scatterlist *sg,
 `pci_p2pdma_distance` queries the PCIe topology and returns a distance metric: 0 if the devices share a direct PCIe switch that supports peer transactions, or an error (`-ENODEV`) if p2p must route through the host bridge (CPU memory). An important topology caveat: commodity PC motherboard PCIe switches often do not implement peer transactions. AMD EPYC and Intel Xeon server platforms with known p2p-capable PCIe switches are the typical deployment environments. `pci_p2pdma_distance` may return a large positive distance even when two GPUs are on the same physical PCIe switch, depending on the switch model's capabilities.
 
 P2PDMA is the foundation for GPU-direct storage (NVMe-to-GPU DMA) and GPU-direct RDMA (InfiniBand-to-GPU DMA), both of which bypass system RAM and move data between storage/network and GPU VRAM directly.
+
+### CXL: Compute Express Link Memory Expansion
+
+CXL (Compute Express Link) is a cache-coherent interconnect standard built on top of the PCIe physical layer. Where PCIe is a request/completion protocol, CXL adds three protocols layered on the same lanes:
+
+- **CXL.io** — standard PCIe config/MMIO traffic; all CXL devices implement this
+- **CXL.mem** — host-managed device memory (HDM); the CPU can load/store directly into device DRAM at cache-line granularity
+- **CXL.cache** — device-side cache coherency; the device can cache host memory and participate in the MESI coherency protocol
+
+**Device types.** CXL defines three device classes relevant to GPU memory management:
+
+| Type | Protocols | Description | GPU relevance |
+|---|---|---|---|
+| Type 1 | CXL.io + CXL.cache | Device with its own memory that caches host RAM (e.g., SmartNIC) | Low |
+| Type 2 | CXL.io + CXL.cache + CXL.mem | Device with its own memory that is both host-accessible and caches host RAM | **High** — future GPUs |
+| Type 3 | CXL.io + CXL.mem | Memory expander: adds DRAM capacity to the host memory map with no compute | **High** — HBM weight servers |
+
+Type 3 devices (HBM3 or DDR5 expanders from Samsung, Micron, SK Hynix) are the near-term deployment: a server slots in a CXL memory blade and the host OS sees additional NUMA nodes in `/sys/devices/system/node/`. For LLM inference, this enables terabytes of bandwidth-dense HBM3 at ~400 GB/s per module without GPU VRAM expansion.
+
+**Linux CXL subsystem.** The kernel CXL driver lives in `drivers/cxl/` (merged in Linux 5.12, substantially expanded through 6.x). Key components:
+
+```
+drivers/cxl/
+├── core/           — topology enumeration, HDM decoder programming
+│   ├── memdev.c    — /dev/mem0, /dev/mem1 … character devices per CXL memory device
+│   ├── region.c    — software-defined CXL regions (interleave sets)
+│   └── port.c      — CXL port/switch enumeration
+├── cxl_pci.c       — PCIe → CXL endpoint driver (attaches to Type 1/2/3 devices)
+├── cxl_acpi.c      — ACPI CEDT table parsing (platform topology)
+└── mem.c           — DAX device registration → /dev/daxN.M
+```
+
+The HDM decoder is a hardware block in each CXL device and switch that maps host physical address ranges to device DRAM. The kernel programs decoders via MMIO registers to establish an interleaved address range spanning multiple CXL devices. Once programmed, the CPU can `mmap(2)` the resulting DAX device or the kernel's NUMA balancing daemon migrates pages into/out of CXL memory automatically using the memory tiering subsystem (`mm/memory-tiers.c`, merged Linux 6.1).
+
+```bash
+# Enumerate CXL devices
+ls /sys/bus/cxl/devices/
+# mem0 mem1 port0 port1 root0
+
+# See NUMA node assignment for a CXL memory device
+cat /sys/bus/cxl/devices/mem0/numa_node
+# 2
+
+# Check memory tiering (node 2 is CXL, node 0/1 are local DRAM)
+numactl --hardware
+# node 2 cpus: (none)   size: 512000 MB   free: 498000 MB
+```
+
+**CXL and GPU memory management: current state.** As of Linux 6.10 / mid-2026, CXL memory and GPU VRAM are managed by independent subsystems with no direct integration:
+
+- TTM manages GPU VRAM and GTT as placement tiers (`TTM_PL_VRAM`, `TTM_PL_TT`)
+- The CXL subsystem exposes device memory as NUMA nodes via DAX/kmem
+- A GPU driver can allocate a GEM buffer in system RAM that happens to reside on a CXL NUMA node — but only because the kernel's page allocator placed it there via NUMA policy, not through any TTM-aware CXL path
+
+The `p2pdma` infrastructure does not yet enumerate CXL Type 3 device BARs as p2p-capable peers. A DMA from GPU VRAM to CXL memory must currently route through the CPU memory controller, not directly over the PCIe/CXL fabric.
+
+**Integration roadmap.** Three active kernel development areas will close this gap:
+
+1. **TTM CXL placement tier** — adding `TTM_PL_CXL` as a placement domain so amdgpu/i915/nouveau can allocate GEM BOs directly in CXL-attached HBM, with eviction ordering VRAM > CXL > GTT > system. RFC patches from AMD and Intel have circulated on dri-devel; not yet upstream as of mid-2026.
+
+2. **p2pdma for CXL Type 3** — extending `pci_p2pdma_distance` to return a valid distance for CXL-connected peers and registering CXL device BAR windows as p2p-capable memory providers. This enables direct GPU↔CXL DMA without host CPU involvement. Depends on CXL switch firmware advertising peer transaction capability.
+
+3. **Unified memory tiering across GPU VRAM, CXL, and DRAM** — the kernel's `mm/memory-tiers.c` tiering infrastructure (DEMOTION_TARGET sysfs, `node_demotion[]` array) currently operates on DRAM+CXL but is unaware of GPU VRAM. Long-term, DRM drivers would register GPU VRAM as a memory tier above CXL above local DRAM above remote DRAM, and the NUMA balancing daemon would migrate hot GPU-accessible data up the hierarchy automatically. This is the architectural vision expressed in AMD's MI300A APU — CPU and GPU dies sharing HBM3 in a single package — extended to rack-scale via CXL fabric.
+
+For LLM inference specifically (ch124), CXL 3.0 memory expansion modules provide 1–8 TB of HBM3 at 200–400 GB/s per module. At those capacities, model weights for a 70B–400B parameter model fit without quantisation, and the GPU streams weights from CXL memory into VRAM on demand — a weight-streaming inference pattern that trades latency for memory capacity. This path requires the TTM CXL tier integration above; without it, the streaming must be orchestrated explicitly in userspace via `mmap` of `/dev/daxN.M`.
 
 ### drm_gpuvm: Generic GPU Virtual Address Space Manager
 
