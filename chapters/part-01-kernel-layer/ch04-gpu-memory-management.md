@@ -847,6 +847,27 @@ if (can_access) {
 }
 ```
 
+### NVLink vs. xGMI / Infinity Fabric: Comparison
+
+| Dimension | NVIDIA NVLink | AMD xGMI / Infinity Fabric |
+|---|---|---|
+| **Current generation** | NVLink 4.0 (Hopper H100/H200) | xGMI 3.0 (CDNA3 MI300X) |
+| **Peak bandwidth (per GPU)** | 900 GB/s bidirectional (H100, 18 links) | 896 GB/s bidirectional (MI300X, 7 links × 128 GB/s) |
+| **Cache coherency** | No — each GPU has independent L2; coherency managed in software | Yes — Infinity Fabric is fully cache-coherent; remote VRAM appears as a CPU NUMA node |
+| **Switch fabric** | NVSwitch (dedicated ASIC, DGX H100 has 4); all-to-all up to 256 GPUs | Infinity Fabric on-die; MI300X has 3 dies with internal fabric; no external switch chip |
+| **Topology** | Star via NVSwitch, or point-to-point (NVLink Bridge for 2-GPU desktop) | Mesh (hive); all members in one `hive_id`; MI300 multi-die is coherent APU |
+| **Max GPUs per domain** | 256 (NVSwitch DGX SuperPOD) | 8 (MI200 4-node OAM), 3 dies in-package (MI300X) |
+| **Kernel driver** | `nvidia` / `nvidia-open`; `nv_p2p_get_pages` API | `amdgpu`; `amdgpu_xgmi_get_hive_id`, peer VRAM mapped via xGMI aperture |
+| **Open-source driver support** | Not supported in Nouveau; requires `nvidia-open` or proprietary | Fully open in `amdgpu` upstream; hive code in `amdgpu/amdgpu_xgmi.c` |
+| **Compute API** | CUDA `cudaDeviceEnablePeerAccess`, NCCL over NVLink | ROCm/HIP `hipDeviceEnablePeerAccess`, RCCL over xGMI |
+| **GPUDirect RDMA** | `nv_p2p_get_pages` registers NVLink VRAM pages with RDMA HCA | `amdkfd` + HMM pinning; `amdgpu_amdkfd_gpuvm_pin_pages` for RDMA path |
+| **Address space model** | Separate; explicit `cudaMemcpyPeer` or UVM managed migration | Shared unified addressing on xGMI; pointer on GPU 0 is valid on GPU 1 without copy |
+| **Observability** | `nvidia-smi nvlink --status`, `nvidia-smi topo --matrix` | `rocm-smi --showtopo`, `amdgpu_top`, `/sys/class/drm/card0/device/xgmi_hive_info` |
+| **Primary workloads** | LLM tensor parallel (NCCL AllReduce), multi-GPU training | LLM inference (MI300X 192 GB HBM3), scientific HPC, BLAS on unified VRAM |
+| **Desktop/workstation SKU** | NVLink Bridge: RTX 4000/5000 Ada (2-GPU, 112 GB/s) | Radeon Pro W7900 (no xGMI on workstation discrete; xGMI is Instinct/CDNA only) |
+
+**Key design philosophy difference.** NVLink is a high-bandwidth *non-coherent* interconnect: GPUs maintain separate L2 caches and programmers use explicit transfers or NVIDIA's Unified Virtual Memory (UVM) driver to manage coherency. xGMI / Infinity Fabric is *cache-coherent* by design — the same principle that connects CPU and GPU dies in AMD APUs scales up to multi-GPU server nodes. This makes xGMI more transparent to HPC codes written with OpenMP or MPI that assume shared-memory semantics, at the cost of coherency traffic overhead on small random accesses.
+
 ### Linux p2pdma Infrastructure
 
 The `drivers/pci/p2pdma.c` subsystem (merged in Linux 4.20, matured through 5.x) provides a generic kernel facility for DMA between two PCIe devices without routing data through system RAM. The key API:
