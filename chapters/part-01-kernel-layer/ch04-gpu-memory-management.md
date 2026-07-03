@@ -807,6 +807,22 @@ graph TD
 
 PRIME (Section 5) enables buffer sharing between discrete GPUs but, on most hardware, routes data through system RAM. A rendered buffer on discrete GPU A must be copied to system RAM, then DMA-transferred to discrete GPU B's VRAM. For workstation and server computing applications — scientific simulation, machine learning, rendering farms — this copy overhead is unacceptable. True zero-copy multi-GPU computing requires a physical interconnect visible to both devices simultaneously.
 
+> **What does "cache coherent" mean — and why does it matter?**
+>
+> Every processor (CPU core, GPU shader core) has private caches (L1/L2) that hold copies of recently accessed memory. *Cache coherency* is a hardware guarantee that when two processors both cache the same memory location, any write by one is immediately visible to the other — the hardware keeps the copies in sync via a protocol such as MESI (Modified/Exclusive/Shared/Invalid), invalidating stale copies automatically.
+>
+> Without coherency, software must issue explicit flush/invalidate operations before handing a buffer from one processor to another. This is why `dma_buf_ops::begin_cpu_access` / `end_cpu_access` exist — on non-coherent SoCs, those calls issue the cache maintenance instructions that coherent interconnects would perform in hardware.
+>
+> | | Coherent | Non-coherent |
+> |---|---|---|
+> | **Pointer portability** | A `float *p` valid on the CPU is valid on the GPU without copying | Pointer is only safe after an explicit buffer hand-off |
+> | **Programming model** | Shared-memory semantics; OpenMP/MPI work unmodified | Requires explicit `memcpy`-equivalent or fence protocol |
+> | **Bandwidth cost** | Every write invalidates remote cache lines (snoop traffic) | No snoop traffic; full bandwidth available for bulk transfers |
+> | **Latency on cache miss** | Cross-interconnect cache-to-cache transfer (~100–400 ns at CXL/PCIe speeds) | Local VRAM fill from memory controller (~10–50 ns) |
+> | **Hardware complexity** | Coherency directory scales poorly with thousands of GPU shader cores | Each GPU manages its own L2 independently |
+>
+> **The practical trade-off:** Coherency wins for pointer-heavy HPC codes and CPU↔GPU data hand-offs (AMD MI300A APU, CXL.cache). Non-coherency wins for bulk data movement — the whole point of NVLink AllReduce in LLM training is to move gigabytes as fast as possible, and snoop traffic would waste bandwidth. The NVLink vs. xGMI design split below reflects exactly this choice.
+
 ### AMD xGMI / Infinity Fabric
 
 AMD's xGMI (inter-GPU Memory Interface, part of the Infinity Fabric) is a high-bandwidth, cache-coherent link available on workstation GPUs (Radeon Pro W6000/W7000 series) and server accelerators (Instinct MI100, MI200, MI300). On a four-GPU MI200 node, xGMI provides 800 GB/s aggregate bandwidth between any two GPUs, compared to PCIe 4.0 x16's ~32 GB/s.
