@@ -863,7 +863,7 @@ if (can_access) {
 | **GPUDirect RDMA** | `nv_p2p_get_pages` registers NVLink VRAM pages with RDMA HCA | `amdkfd` + HMM pinning; `amdgpu_amdkfd_gpuvm_pin_pages` for RDMA path |
 | **Address space model** | Separate; explicit `cudaMemcpyPeer` or UVM managed migration | Shared unified addressing on xGMI; pointer on GPU 0 is valid on GPU 1 without copy |
 | **Observability** | `nvidia-smi nvlink --status`, `nvidia-smi topo --matrix` | `rocm-smi --showtopo`, `amdgpu_top`, `/sys/class/drm/card0/device/xgmi_hive_info` |
-| **Primary workloads** | LLM tensor parallel (NCCL AllReduce), multi-GPU training | LLM inference (MI300X 192 GB HBM3), scientific HPC, BLAS on unified VRAM |
+| **Primary workloads** | LLM tensor parallel (NCCL AllReduce), multi-GPU training | LLM inference (MI300X 192 GB HBM3), scientific HPC (RCCL AllReduce over xGMI), BLAS on unified VRAM |
 | **Desktop/workstation SKU** | NVLink Bridge: RTX 4000/5000 Ada (2-GPU, 112 GB/s) | Radeon Pro W7900 (no xGMI on workstation discrete; xGMI is Instinct/CDNA only) |
 
 **Key design philosophy difference.** NVLink is a high-bandwidth *non-coherent* interconnect: GPUs maintain separate L2 caches and programmers use explicit transfers or NVIDIA's Unified Virtual Memory (UVM) driver to manage coherency. xGMI / Infinity Fabric is *cache-coherent* by design — the same principle that connects CPU and GPU dies in AMD APUs scales up to multi-GPU server nodes. This makes xGMI more transparent to HPC codes written with OpenMP or MPI that assume shared-memory semantics, at the cost of coherency traffic overhead on small random accesses.
