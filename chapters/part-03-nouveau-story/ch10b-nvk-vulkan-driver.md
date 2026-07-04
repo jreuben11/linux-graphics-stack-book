@@ -231,6 +231,397 @@ Register allocation in NAK uses a variant of linear scan allocation. The NVIDIA 
 
 One architecturally important feature of NVIDIA SASS that NAK must handle is the control code mechanism. On Maxwell and later architectures, the instruction stream contains scheduling control codes interspersed between groups of executable instructions. These control codes encode warp scheduling hints — stall counts, yield flags, read/write barriers — that the warp scheduler uses to determine when a warp can issue the next instruction without stalling. Correct control code generation is essential for both correctness (avoiding WAR/RAW hazards) and performance (maximising warp-level instruction-level parallelism). NAK generates conservative control codes that are correct but not maximally optimised compared to NVIDIA's proprietary compiler, which has access to detailed pipeline timing models.
 
+### Worked Example: Tracing a Shader Through Each Compilation Stage
+
+The following traces the simplest meaningful compute shader — single-precision floating-point vector addition — through every stage of the NVK compilation pipeline. The shader reads two input arrays from storage buffers and writes their element-wise sum to a third. Each stage is labelled with the tool or Mesa function that produces it.
+
+> **Note on LLVM**: NAK deliberately avoids LLVM. LLVM's GPU backends target PTX, which still requires NVIDIA's proprietary `ptxas` to produce SASS — defeating the purpose of an open-source compiler. NAK generates SASS directly from NIR, in Rust, with no LLVM dependency. A pipeline using LLVM would describe the CUDA or old nv50-LLVM path, not NVK.
+
+#### Stage 0: HLSL Compute Shader Source
+
+HLSL compiled to SPIR-V via **DXC** (`dxc -T cs_6_0 -spirv`) is a first-class Vulkan shader path. `StructuredBuffer<T>` maps to a read-only SSBO; `RWStructuredBuffer<T>` to a read-write SSBO. The `[numthreads]` attribute emits `OpExecutionMode LocalSize` in SPIR-V.
+
+```hlsl
+// vadd.hlsl
+// Compile: dxc -T cs_6_0 -E main -spirv -fvk-use-dx-layout vadd.hlsl -Fo vadd.spv
+
+StructuredBuffer<float>   SrcA : register(t0, space0);  // set=0 binding=0 (SRV)
+StructuredBuffer<float>   SrcB : register(t1, space0);  // set=0 binding=1
+RWStructuredBuffer<float> Dst  : register(u0, space1);  // set=1 binding=0 (UAV)
+
+[numthreads(64, 1, 1)]
+void main(uint3 DTid : SV_DispatchThreadID)
+{
+    uint i = DTid.x;
+    Dst[i] = SrcA[i] + SrcB[i];
+}
+```
+
+The corresponding Vulkan application creates the compute pipeline in two calls. `vkCreateShaderModule` stores the SPIR-V verbatim; NAK compilation is deferred to `vkCreateComputePipeline`.
+
+```cpp
+// vadd.cpp — minimal Vulkan compute pipeline setup
+std::vector<uint32_t> spirv = readFile("vadd.spv");
+
+VkShaderModuleCreateInfo modCI{
+    .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+    .codeSize = spirv.size() * sizeof(uint32_t),
+    .pCode    = spirv.data(),
+};
+VkShaderModule shaderMod;
+vkCreateShaderModule(device, &modCI, nullptr, &shaderMod);
+// NVK: stores SPIR-V verbatim; no compilation yet
+
+// Descriptor set layout: set=0 has two read-only SSBOs; set=1 has one RW SSBO
+// (VkDescriptorSetLayoutCreateInfo omitted for brevity)
+
+VkComputePipelineCreateInfo pipeCI{
+    .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+    .stage  = {
+        .sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
+        .module = shaderMod,
+        .pName  = "main",
+    },
+    .layout = pipelineLayout,
+};
+VkPipeline pipeline;
+vkCreateComputePipeline(device, VK_NULL_HANDLE, 1, &pipeCI, nullptr, &pipeline);
+// NVK: spirv_to_nir → nir_opt_* → nvk_lower_nir → nak_compile_shader → SASS upload
+```
+
+#### Stage 1: SPIR-V Assembly (`spirv-dis vadd.spv`)
+
+DXC's SPIR-V differs from glslangValidator's in three important ways: it uses the `StorageBuffer` storage class (not the legacy `Uniform`+`BufferBlock` approach); it decorates each buffer struct with `Block` rather than `BufferBlock`; and it wraps runtime arrays in a named struct per HLSL type (`type.StructuredBuffer.float`, `type.RWStructuredBuffer.float`). Mesa's `spirv_to_nir` handles both conventions and produces identical NIR.
+
+```spirv
+; SPIR-V  Version: 1.0   Generator: DXC; Bound: 38; Schema: 0
+               OpCapability Shader
+               OpExtension "SPV_KHR_storage_buffer_storage_class"
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %sv_dispatchthreadid
+               OpExecutionMode %main LocalSize 64 1 1
+
+               ; DXC emits HLSL type names as debug info
+               OpName %main                            "main"
+               OpName %type_StructuredBuffer_float     "type.StructuredBuffer.float"
+               OpName %type_RWStructuredBuffer_float   "type.RWStructuredBuffer.float"
+               OpName %SrcA "SrcA"
+               OpName %SrcB "SrcB"
+               OpName %Dst  "Dst"
+
+               ; Descriptor bindings from HLSL register() annotations
+               OpDecorate %SrcA DescriptorSet 0
+               OpDecorate %SrcA Binding 0
+               OpDecorate %SrcB DescriptorSet 0
+               OpDecorate %SrcB Binding 1
+               OpDecorate %Dst  DescriptorSet 1
+               OpDecorate %Dst  Binding 0
+
+               ; DXC: StorageBuffer storage class uses Block (not BufferBlock)
+               OpDecorate %type_StructuredBuffer_float   Block
+               OpDecorate %type_RWStructuredBuffer_float Block
+               OpMemberDecorate %type_StructuredBuffer_float   0 Offset 0
+               OpMemberDecorate %type_RWStructuredBuffer_float 0 Offset 0
+               OpDecorate %_runtimearr_float ArrayStride 4
+               OpDecorate %sv_dispatchthreadid BuiltIn GlobalInvocationId
+
+               ; Type declarations
+      %void = OpTypeVoid
+    %fn_void = OpTypeFunction %void
+     %float  = OpTypeFloat 32
+      %uint  = OpTypeInt 32 0
+     %v3uint = OpTypeVector %uint 3
+       %int  = OpTypeInt 32 1
+%_runtimearr_float = OpTypeRuntimeArray %float
+
+               ; DXC wraps each StructuredBuffer as struct { float[] } — unlike GLSL
+%type_StructuredBuffer_float   = OpTypeStruct %_runtimearr_float
+%type_RWStructuredBuffer_float = OpTypeStruct %_runtimearr_float
+
+%_ptr_SB_SrcType = OpTypePointer StorageBuffer %type_StructuredBuffer_float
+%_ptr_SB_DstType = OpTypePointer StorageBuffer %type_RWStructuredBuffer_float
+%_ptr_SB_float   = OpTypePointer StorageBuffer %float
+%_ptr_In_v3uint  = OpTypePointer Input %v3uint
+%_ptr_In_uint    = OpTypePointer Input %uint
+
+%SrcA = OpVariable %_ptr_SB_SrcType StorageBuffer   ; set=0 binding=0
+%SrcB = OpVariable %_ptr_SB_SrcType StorageBuffer   ; set=0 binding=1
+%Dst  = OpVariable %_ptr_SB_DstType StorageBuffer   ; set=1 binding=0
+%sv_dispatchthreadid = OpVariable %_ptr_In_v3uint Input
+
+    %int_0  = OpConstant %int 0
+    %uint_0 = OpConstant %uint 0
+
+               ; main() — single basic block
+      %main = OpFunction %void None %fn_void
+       %bb0 = OpLabel
+    %dtid_p = OpAccessChain %_ptr_In_uint %sv_dispatchthreadid %uint_0
+       %i   = OpLoad %uint %dtid_p                           ; i = DTid.x
+
+    %aptr   = OpAccessChain %_ptr_SB_float %SrcA %int_0 %i  ; &SrcA[i]  (struct member 0, index i)
+    %a_val  = OpLoad %float %aptr
+
+    %bptr   = OpAccessChain %_ptr_SB_float %SrcB %int_0 %i  ; &SrcB[i]
+    %b_val  = OpLoad %float %bptr
+
+    %sum    = OpFAdd %float %a_val %b_val
+
+    %cptr   = OpAccessChain %_ptr_SB_float %Dst %int_0 %i   ; &Dst[i]
+              OpStore %cptr %sum
+              OpReturn
+              OpFunctionEnd
+```
+
+The `%int_0` in `OpAccessChain` navigates member 0 of the DXC-generated wrapper struct; the second index `%i` is the runtime array element. `spirv_to_nir` strips both layers, producing a flat `(binding, byte_offset)` pair in NIR.
+
+#### Stage 2: NIR After `spirv_to_nir()` (Unoptimised)
+
+`spirv_to_nir()` translates both `StorageBuffer`+`Block` (DXC) and `Uniform`+`BufferBlock` (older GLSL) SPIR-V conventions into `load_ssbo`/`store_ssbo` NIR intrinsics. Enable with `NIR_DEBUG=print` in the environment (Mesa debug build) to capture this dump.
+
+```text
+; NIR text dump — nir_print_shader() after spirv_to_nir(), before any opt passes
+; Produced by: src/compiler/spirv/spirv_to_nir.c
+
+shader: MESA_SHADER_COMPUTE
+name: main
+workgroup_size: 64, 1, 1
+shared_size: 0
+
+decl_var ssbo INTERP_MODE_NONE float[] SrcA (set=0, binding=0, offset=0)
+decl_var ssbo INTERP_MODE_NONE float[] SrcB (set=0, binding=1, offset=0)
+decl_var ssbo INTERP_MODE_NONE float[] Dst  (set=1, binding=0, offset=0)
+
+impl main {
+    block b0:
+    /* preds: */
+
+    ; SV_DispatchThreadID == gl_GlobalInvocationID for Vulkan compute
+    vec3 32 ssa_0 = intrinsic load_global_invocation_id () ()
+
+    ; DTid.x (our index i)
+    vec1 32 ssa_1 = mov ssa_0.x
+
+    ; Widen i to 64-bit for pointer arithmetic
+    vec1 64 ssa_2 = u2u64 ssa_1
+
+    ; Byte offset: i * sizeof(float) == i * 4  (from OpDecorate ArrayStride 4)
+    vec1 32 ssa_3 = load_const (0x00000004 = 4)
+    vec1 64 ssa_4 = imul ssa_2, ssa_3
+
+    ; Binding constants (NVK flattens descriptor sets to a single binding namespace)
+    vec1 32 ssa_5 = load_const (0x00000000 = 0)   ; SrcA binding
+    vec1 32 ssa_6 = load_const (0x00000001 = 1)   ; SrcB binding
+    vec1 32 ssa_7 = load_const (0x00000002 = 2)   ; Dst binding (set 1 → flattened)
+
+    ; Load SrcA[i] from storage buffer — will become LDG in SASS
+    vec1 32 ssa_8 = intrinsic load_ssbo (ssa_5 /*binding*/, ssa_4 /*byte offset*/) \
+                        (access=READ, align_mul=4, align_offset=0)
+
+    ; Load SrcB[i]
+    vec1 32 ssa_9 = intrinsic load_ssbo (ssa_6, ssa_4) \
+                        (access=READ, align_mul=4, align_offset=0)
+
+    ; Float add — maps directly to FADD in SASS
+    vec1 32 ssa_10 = fadd ssa_8, ssa_9
+
+    ; Store result to Dst[i] — will become STG in SASS
+    intrinsic store_ssbo (ssa_10 /*value*/, ssa_7 /*binding*/, ssa_4 /*offset*/) \
+                        (write_mask=0x1, access=WRITE, align_mul=4, align_offset=0)
+
+    /* succs: */
+}
+```
+
+The SPIR-V struct-wrapper layers (`OpAccessChain … %int_0 %i`) are gone; `spirv_to_nir` flattened them into a single `(binding, byte_offset)` pair per access. No hardware-specific lowering has occurred.
+
+#### Stage 3: NIR After Optimisation Passes (`nir_opt_*`)
+
+The optimisation loop runs `nir_lower_vars_to_ssa`, `nir_opt_copy_propagate`, `nir_opt_constant_folding`, `nir_opt_algebraic`, and `nir_opt_dead_cf` to a fixed point (typically 2–3 iterations for this shader). Changes relative to the unoptimised form are annotated.
+
+```text
+; NIR after nir_opt_* — changes annotated with <OPT>
+shader: MESA_SHADER_COMPUTE
+name: main
+workgroup_size: 64, 1, 1
+
+impl main {
+    block b0:
+    vec3 32 ssa_0 = intrinsic load_global_invocation_id () ()
+
+    ; <OPT: copy_propagate> mov ssa_1 = mov ssa_0.x eliminated — .x used directly
+    vec1 64 ssa_1 = u2u64 ssa_0.x
+
+    ; <OPT: algebraic> imul ssa_1, 4  →  ishl ssa_1, 2  (multiply by 2^2 = shift)
+    ; <OPT: constant_fold> load_const(4) inlined into shift amount; ssa_3 dead and removed
+    vec1 64 ssa_2 = ishl ssa_1, load_const(0x2)
+
+    ; <OPT: constant_fold> binding indices inlined at use sites; ssa_5/6/7 defs removed
+    vec1 32 ssa_3 = intrinsic load_ssbo (load_const(0) /*binding 0*/, ssa_2) \
+                        (access=READ, align_mul=4, align_offset=0)
+    vec1 32 ssa_4 = intrinsic load_ssbo (load_const(1) /*binding 1*/, ssa_2) \
+                        (access=READ, align_mul=4, align_offset=0)
+
+    ; <OPT: copy_prop> ssa_2 (byte offset) shared between both loads — computed once
+    vec1 32 ssa_5 = fadd ssa_3, ssa_4
+
+    intrinsic store_ssbo (ssa_5, load_const(2) /*binding 2*/, ssa_2) \
+                        (write_mask=0x1, access=WRITE, align_mul=4, align_offset=0)
+}
+```
+
+For more complex shaders `nir_opt_dead_cf` prunes unreachable branches, `nir_opt_loop_unroll` unrolls bounded loops, and `nir_opt_if` canonicalises conditionals. This shader has none, so those passes are no-ops here.
+
+#### Stage 4: NIR After `nvk_lower_nir()` (NVK-Specific Lowering)
+
+`nvk_lower_nir()` in `src/nouveau/vulkan/nvk_pipeline.c` translates `load_ssbo(binding, offset)` into an explicit two-step sequence: (1) load the buffer's 64-bit GPU virtual address from NVK's constant-buffer descriptor table, (2) add the element byte offset, (3) issue a raw `load_global` / `store_global` on the resulting pointer. After this pass no binding-index abstraction remains — only raw GPU virtual addresses.
+
+```text
+; NIR after nvk_lower_nir() — all SSBOs lowered to raw 64-bit pointer ops
+shader: MESA_SHADER_COMPUTE
+name: main
+workgroup_size: 64, 1, 1
+
+impl main {
+    block b0:
+    vec3 32 ssa_0 = intrinsic load_global_invocation_id () ()
+    vec1 64 ssa_1 = u2u64 ssa_0.x
+    vec1 64 ssa_2 = ishl ssa_1, load_const(0x2)      ; byte offset
+
+    ; --- nvk SSBO lowering: load 64-bit buffer base addresses from cbuf 0 ---
+    ; NVK stores each binding's GPU vaddr in constant buffer 0 at 8-byte aligned slots.
+    vec1 64 ssa_3 = intrinsic load_ubo (load_const(0) /*cbuf 0*/,
+                        load_const(0x00) /*SrcA addr slot*/) (align_mul=8, align_offset=0)
+    vec1 64 ssa_4 = intrinsic load_ubo (load_const(0),
+                        load_const(0x08) /*SrcB addr slot*/) (align_mul=8, align_offset=0)
+
+    ; 64-bit pointer arithmetic: ptr = base_addr + byte_offset
+    vec1 64 ssa_5 = iadd64 ssa_3, ssa_2   ; ptr_a = &SrcA[i]
+    vec1 64 ssa_6 = iadd64 ssa_4, ssa_2   ; ptr_b = &SrcB[i]
+
+    ; Raw global memory loads — will emit LDG.E in SASS
+    vec1 32 ssa_7 = intrinsic load_global (ssa_5) (access=READ, align_mul=4, align_offset=0)
+    vec1 32 ssa_8 = intrinsic load_global (ssa_6) (access=READ, align_mul=4, align_offset=0)
+
+    vec1 32 ssa_9 = fadd ssa_7, ssa_8
+
+    vec1 64 ssa_10 = intrinsic load_ubo (load_const(0),
+                        load_const(0x10) /*Dst addr slot*/)  (align_mul=8, align_offset=0)
+    vec1 64 ssa_11 = iadd64 ssa_10, ssa_2  ; ptr_c = &Dst[i]
+
+    ; Raw global memory store — will emit STG.E in SASS
+    intrinsic store_global (ssa_9, ssa_11) (write_mask=0x1, access=WRITE, align_mul=4, align_offset=0)
+}
+```
+
+The `load_ubo` intrinsics accessing `cbuf 0` will become `LD.C` (constant-buffer load) instructions in SASS, issued through the GPU's dedicated constant cache rather than the global L2 — an important performance distinction on NVIDIA hardware.
+
+#### Stage 5: NAK IR — After Instruction Selection and Register Allocation
+
+`nak_compile_shader()` in `src/nouveau/compiler/nak/lib.rs` translates the lowered NIR into NAK's explicit-register IR, runs copy propagation and DCE on that IR, allocates hardware registers, and encodes the result. After register allocation (SM75 / Turing target, 8 GPRs allocated), the NAK IR reads approximately as follows.
+
+```text
+; NAK IR — after instruction selection + register allocation (SM75, Mesa 24.x style)
+; R0–R254: 32-bit GPRs; 64-bit values use aligned pairs Rn:R(n+1); P0–P6: predicate regs
+; 8 GPRs allocated total — this determines warp occupancy recorded in the QMD
+
+fn main() -> void {
+  block @entry {
+    ; Read hardware special registers
+    R0 = S2R SR_TID_X       ; thread ID within block (0–63 for workgroup_size=64)
+    R2 = S2R SR_CTAID_X     ; block (CTA = Cooperative Thread Array) ID
+
+    ; globalInvocationID.x = blockID * blockDim.x + threadID.x
+    ; c[0][0] holds blockDim.x, placed there by NVK at launch setup
+    R0 = IMAD  R2, c[0][0], R0
+
+    ; byte offset = i << 2  (i * 4, from ishl in optimised NIR)
+    R1 = SHL   R0, 0x2
+
+    ; Load SrcA base GPU virtual address (64-bit) from constant buffer slot 0
+    R4 = MOV   c[0][0x160]           ; addr bits [31:0]
+    R5 = MOV   c[0][0x164]           ; addr bits [63:32]
+    ; 64-bit pointer add: R4:R5 += R1 (zero-extended)
+    R4, R5 = IMAD.WIDE.U32  R1, 1, R4
+
+    ; Load SrcA[i] from global memory
+    R4 = LDG.E  [R4:R5]
+
+    ; Load SrcB base address and compute pointer
+    R6 = MOV   c[0][0x168]
+    R7 = MOV   c[0][0x16c]
+    R6, R7 = IMAD.WIDE.U32  R1, 1, R6
+    R5 = LDG.E  [R6:R7]              ; R5 = SrcB[i]  (R4 = SrcA[i] still live)
+
+    ; Float add
+    R4 = FADD  R4, R5                ; R4 = SrcA[i] + SrcB[i]
+
+    ; Load Dst base address and store result
+    R5 = MOV   c[0][0x170]
+    R6 = MOV   c[0][0x174]
+    R5, R6 = IMAD.WIDE.U32  R1, 1, R5
+    STG.E  [R5:R6], R4
+
+    EXIT
+  }
+}
+```
+
+#### Stage 6: NVIDIA SASS Binary (`nvdisasm` output)
+
+NAK encodes the NAK IR into the NVIDIA SASS binary using hardware class definitions from `open-gpu-doc`. On Turing (SM75) each instruction is 128 bits (16 bytes); every group of four instructions is preceded by a 64-bit control word encoding stall counts and scheduling flags. `nvdisasm` from the CUDA toolkit can disassemble NVK-produced SASS binaries.
+
+```sass
+; nvdisasm output — SM75 (Turing) SASS for vadd compute shader
+; Source: nak_compile_shader() in src/nouveau/compiler/nak/, uploaded via nvk_heap
+; QMD field SHI_REGISTERS=8  (8 GPRs → warp occupancy = floor(65536 / 8 / 32) warps/SM)
+
+.section .text.main, "ax"
+.sectioninfo @"SHI_REGISTERS=8"
+.align 128
+
+main:
+        /*0000*/           MOV R1, c[0x0][0x28] ;          /* stack ptr — ABI requirement */
+        /*0010*/           S2R R0, SR_TID.X ;               /* R0 = thread ID within block */
+        /*0020*/           S2R R2, SR_CTAID.X ;             /* R2 = CTA (block) ID */
+        /*0030*/           IMAD R0, R2, c[0x0][0x0], R0 ;  /* R0 = blockID*blockDim.x + threadID */
+        /*0040*/           SHL R0, R0, 0x2 ;                /* R0 = globalInvocationID.x * 4 */
+        /*0050*/           MOV R4, c[0x0][0x160] ;          /* SrcA base addr bits [31:0] */
+        /*0060*/           MOV R5, c[0x0][0x164] ;          /* SrcA base addr bits [63:32] */
+        /*0070*/           IMAD.WIDE.U32 R4, R0, 0x1, R4 ; /* R4:R5 = &SrcA[i] (64-bit add) */
+        /*0080*/           LDG.E R4, [R4] ;                 /* R4 = SrcA[i] */
+        /*0090*/           MOV R6, c[0x0][0x168] ;          /* SrcB base addr bits [31:0] */
+        /*00a0*/           MOV R7, c[0x0][0x16c] ;          /* SrcB base addr bits [63:32] */
+        /*00b0*/           IMAD.WIDE.U32 R6, R0, 0x1, R6 ; /* R6:R7 = &SrcB[i] */
+        /*00c0*/           LDG.E R5, [R6] ;                 /* R5 = SrcB[i] */
+        /*00d0*/           FADD R4, R4, R5 ;                /* R4 = SrcA[i] + SrcB[i] */
+        /*00e0*/           MOV R5, c[0x0][0x170] ;          /* Dst base addr bits [31:0] */
+        /*00f0*/           MOV R6, c[0x0][0x174] ;          /* Dst base addr bits [63:32] */
+        /*0100*/           IMAD.WIDE.U32 R5, R0, 0x1, R5 ; /* R5:R6 = &Dst[i] */
+        /*0110*/           STG.E [R5], R4 ;                 /* Dst[i] = SrcA[i] + SrcB[i] */
+        /*0120*/           EXIT ;
+```
+
+**Instruction-to-stage mapping**:
+
+| SASS instruction | Origin stage | Meaning |
+|---|---|---|
+| `S2R R0, SR_TID.X` | `load_global_invocation_id` (NIR) | Thread-within-block ID from SM special register |
+| `S2R R2, SR_CTAID.X` | `load_global_invocation_id` (NIR) | Block ID from SM special register |
+| `IMAD R0, R2, c[0x0][0x0], R0` | NIR int arithmetic | `globalID.x = blockID * blockDim.x + threadID` |
+| `SHL R0, R0, 0x2` | `nir_opt_algebraic` → `ishl` | `i * 4`; algebraic optimisation preserved through NAK |
+| `MOV R4, c[0x0][0x160]` | `load_ubo` (nvk_lower_nir) | SrcA base vaddr low 32 bits from NVK descriptor cbuf |
+| `IMAD.WIDE.U32 R4, R0, 0x1, R4` | `iadd64` (nvk_lower_nir) | 64-bit pointer: `R4:R5 = R4:R5 + R0` |
+| `LDG.E R4, [R4]` | `load_global` (nvk_lower_nir) | Float load from GPU virtual address |
+| `FADD R4, R4, R5` | `fadd` (NIR) | Single-precision float add |
+| `STG.E [R5], R4` | `store_global` (nvk_lower_nir) | Float store to GPU virtual address |
+| `EXIT` | NAK block terminator | Warp terminates; SM scheduler picks the next warp |
+
+The SASS binary for this shader is 304 bytes (19 instructions × 16 bytes). NVK allocates space in a `nvk_heap` VRAM slab (flagged executable), records the GPU virtual address, and constructs the QMD with `register_count=8` and `shared_size=0` before storing both in the `nvk_compute_pipeline` object for use at `vkCmdDispatch` time.
+
+---
+
 ### Shader Binary Upload and the QMD
 
 After NAK produces the SASS binary, NVK must upload it to VRAM and make it accessible to the GPU. Shader binaries are allocated from the `nvk_heap` suballocator in a region of VRAM flagged as executable. The virtual address of the binary is recorded in the pipeline object and referenced in the pipeline's push buffer methods at dispatch time.
