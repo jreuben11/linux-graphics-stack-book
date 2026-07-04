@@ -23,6 +23,7 @@
   - [CXL: Compute Express Link Memory Expansion](#cxl-compute-express-link-memory-expansion)
   - [drm_gpuvm: Generic GPU Virtual Address Space Manager](#drm_gpuvm-generic-gpu-virtual-address-space-manager)
 - [10. GPUDirect RDMA: gdrcopy and GPU-to-GPU Memory Copy](#10-gpudirect-rdma-gdrcopy-and-gpu-to-gpu-memory-copy)
+  - [nvidia-peermem: GPUDirect RDMA Companion Module](#nvidia-peermem-gpudirect-rdma-companion-module)
 - [11. GPUDirect Storage: Direct GPU–NVMe I/O](#11-gpudirect-storage-direct-gpunvme-io)
 - [12. Heterogeneous Memory Management (HMM): Transparent CPU/GPU Paging](#12-heterogeneous-memory-management-hmm-transparent-cpugpu-paging)
 - [Integrations](#integrations)
@@ -1171,6 +1172,129 @@ ls /dev/gdrdrv        # verify
 
 [Source: NVIDIA gdrcopy GitHub](https://github.com/NVIDIA/gdrcopy)
 [Source: GPUDirect RDMA documentation](https://docs.nvidia.com/cuda/gpudirect-rdma/)
+
+### nvidia-peermem: GPUDirect RDMA Companion Module
+
+`nvidia-peermem.ko` is the kernel module that exposes NVIDIA GPU VRAM to the Linux peer memory framework (`include/linux/peer_memory.h`), which is the interface that the RDMA subsystem (specifically `ib_core`) uses to register and DMA-map memory belonging to another device. Without `nvidia-peermem`, InfiniBand and RoCE network adapters cannot locate and pin GPU VRAM pages for direct DMA transfers — all RDMA verbs would require a CPU bounce buffer through system RAM.
+
+**What nvidia-peermem provides:**
+
+The peer memory interface is a callback-based registration API. `nvidia-peermem` implements these callbacks to translate a GPU virtual address range into a set of physical GPU BAR pages that the RDMA HCA can program into its DMA engine directly:
+
+```c
+/* peer_memory_client ops registered by nvidia-peermem */
+static struct peer_memory_client nv_mem_client = {
+    .name            = "nv_mem",
+    .version         = "1.2",
+    .acquire         = nv_mem_acquire,      /* pin GPU pages via nvidia-open */
+    .get_pages       = nv_mem_get_pages,    /* fill sg_table with GPU BAR pfns */
+    .dma_map         = nv_mem_dma_map,      /* program IOMMU for HCA */
+    .dma_unmap       = nv_mem_dma_unmap,
+    .put_pages       = nv_mem_put_pages,    /* unpin GPU pages */
+    .release         = nv_mem_release,
+};
+```
+
+The module is included in the NVIDIA open kernel modules source tree as `kernel-open/nvidia-peermem/` ([source](https://github.com/NVIDIA/open-gpu-kernel-modules/tree/main/kernel-open/nvidia-peermem)) and ships as a companion module alongside `nvidia.ko` in most Linux distributions.
+
+**Loading and verifying nvidia-peermem:**
+
+```bash
+# Load nvidia-peermem (requires nvidia.ko already loaded):
+sudo modprobe nvidia-peermem
+
+# Verify it registered with the peer memory framework:
+dmesg | grep -i peermem
+# [ 5.234] nvidia_peermem: module loaded
+# [ 5.235] nvidia_peermem: peer memory client registered
+
+# Check that ib_core sees the peer memory client:
+cat /sys/kernel/debug/ib_core/peer_mem/list 2>/dev/null || \
+  dmesg | grep "peer_mem\|nv_mem"
+
+# Make loading automatic alongside the NVIDIA driver:
+# /etc/modules-load.d/nvidia.conf
+# nvidia-peermem
+```
+
+**nvidia-open vs proprietary differences:**
+
+| Aspect | nvidia-open | Proprietary nvidia.ko |
+|--------|-------------|----------------------|
+| Module location | `kernel-open/nvidia-peermem/` (MIT/GPLv2) | Closed binary blob |
+| First supported release | R515 | R418 |
+| GPLv2 symbols accessible | Yes — uses `ib_register_peer_memory_client` directly | No — required a shim |
+| Blackwell support | Yes (R570+) | No (deprecated for Blackwell) |
+| Audit / inspection | Full source visible | None |
+
+Because nvidia-peermem in nvidia-open is GPLv2 licensed, it can call GPL-only kernel symbols directly — specifically `ib_register_peer_memory_client` from `ib_core`. The proprietary version required an additional wrapper module (`nv_peer_mem`) to bridge the GPL boundary, which is no longer needed.
+
+**GPUDirect RDMA with InfiniBand: end-to-end path**
+
+With `nvidia-peermem` loaded, GPUDirect RDMA allows an InfiniBand or RoCE HCA to DMA data directly between remote system RAM and local GPU VRAM using standard RDMA verbs:
+
+```c
+#include <infiniband/verbs.h>
+#include <cuda_runtime.h>
+
+/* Allocate GPU buffer */
+void *gpu_ptr;
+cudaMalloc(&gpu_ptr, transfer_size);
+
+/* Register the GPU buffer with the RDMA verbs layer.
+ * libibverbs calls into ib_core → nvidia-peermem → nvidia-open
+ * to pin and DMA-map the GPU pages. */
+struct ibv_mr *mr = ibv_reg_mr(
+    pd,
+    gpu_ptr,
+    transfer_size,
+    IBV_ACCESS_LOCAL_WRITE |
+    IBV_ACCESS_REMOTE_WRITE |
+    IBV_ACCESS_REMOTE_READ
+);
+if (!mr) {
+    perror("ibv_reg_mr on GPU memory failed");
+    /* nvidia-peermem not loaded, or GPU BAR not accessible */
+}
+
+/* Post an RDMA RECV with the GPU-backed memory region */
+struct ibv_sge sge = {
+    .addr   = (uint64_t)gpu_ptr,
+    .length = transfer_size,
+    .lkey   = mr->lkey,
+};
+struct ibv_recv_wr wr = {
+    .wr_id   = 0,
+    .sg_list = &sge,
+    .num_sge = 1,
+};
+struct ibv_recv_wr *bad_wr;
+ibv_post_recv(qp, &wr, &bad_wr);
+
+/* After RDMA completes: data is directly in GPU VRAM, no CPU involved */
+```
+
+The same path works for RDMA SEND/WRITE operations from a remote node. The HCA's DMA engine writes directly to the GPU BAR address provided by `nvidia-peermem`'s `get_pages` callback.
+
+**Topology requirements:**
+
+GPUDirect RDMA requires that the GPU and the InfiniBand/RoCE HCA share the same PCIe root complex, or are connected through a PCIe switch that supports peer-to-peer DMA (P2P). BIOS-enforced ACS (Access Control Services) settings that block P2P transfers will silently fall back to a CPU-bounced path. Verify P2P capability:
+
+```bash
+# Check that p2pdma distance between GPU and HCA is acceptable:
+# (Linux 4.20+ p2pdma infrastructure)
+cat /sys/bus/pci/devices/$(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader | head -1 \
+  | tr '[:upper:]' '[:lower:]' | sed 's/0000:/0000:/').../p2p_stats 2>/dev/null
+
+# Alternatively, use the perftest suite to verify GPUDirect is active:
+ib_write_bw --use_cuda=0 --report_gbits -d mlx5_0
+# If GPUDirect is active, bandwidth approaches PCIe line rate
+# If it falls back to CPU, bandwidth drops ~3-5x
+```
+
+[Source: NVIDIA open-gpu-kernel-modules nvidia-peermem source](https://github.com/NVIDIA/open-gpu-kernel-modules/tree/main/kernel-open/nvidia-peermem)
+[Source: GPUDirect RDMA developer guide](https://docs.nvidia.com/cuda/gpudirect-rdma/)
+[Source: Linux peer memory interface](https://github.com/torvalds/linux/blob/master/include/rdma/peer_mem.h)
 
 ---
 

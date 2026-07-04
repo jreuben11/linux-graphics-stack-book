@@ -576,9 +576,130 @@ RTD3 requires:
 - Intel Coffeelake or newer platform (for ACPI `_PR0`/`_PR3` support)
 - Linux kernel 4.18+ with `CONFIG_PM=y`
 
-### 4.5 nvidia-open Power Differences
+### 4.5 nvidia-open Power Differences and GSP-RM P-State Transitions
 
 The open-kernel-module driver (`nvidia-open`, shipping since 2022) historically lagged the proprietary driver in power management support. As of driver version 610 and later, RTD3 is fully supported and enabled by default on qualifying configurations. Earlier versions of nvidia-open had incomplete RTD3 support, and some users reported that `--power-limit` was not honoured on certain laptop configurations. [Source: Unable to change power limit with nvidia-smi #483](https://github.com/NVIDIA/open-gpu-kernel-modules/issues/483)
+
+#### GSP-RM P-State Transition Mechanism
+
+The most architecturally significant change nvidia-open introduces in power management is the complete delegation of performance state (P-state) transitions to the GSP-RM firmware, replacing the direct hardware register access that the pre-open proprietary driver used for Turing and later GPUs.
+
+**P-state definitions:**
+
+NVIDIA P-states encode a combination of GPU core clock, memory clock, and voltage rail targets. The states visible to userspace via `nvidia-smi` are a subset of the full hardware table:
+
+| P-state | Typical use | Core clock range | Memory state |
+|---------|-------------|------------------|--------------|
+| P0 | Maximum 3D/compute | Boost clock (e.g. 2505 MHz on RTX 4090) | Maximum (e.g. 10501 MHz GDDR6X effective) |
+| P1 | High performance / partial boost | Base to boost range | Maximum |
+| P2 | Medium load (video decode, light compute) | Mid-range | Mid-range |
+| P8 | Desktop idle / display active | Minimum (e.g. 210 MHz) | Minimum (e.g. 405 MHz) |
+| P12 | Display idle, no active GPU client | ~105 MHz | Minimum |
+
+The exact clock values are determined per-GPU by the VBIOS power table and GSP-RM firmware, not by fixed kernel constants.
+
+**Pre-Turing direct-register path (legacy):**
+
+On Kepler, Maxwell, and Pascal, the proprietary driver performed P-state transitions by writing directly to GPU PLL configuration registers (`NV_PMC_ENABLE`, `NV_PCLK_*`, `NV_PVID_*`) from the CPU-side driver. This required the driver to:
+
+1. Read the current clock state from PLL status registers
+2. Compute new PLL multiplier/divider values
+3. Sequence voltage rail changes via I²C SMBus accesses to the GPU's voltage controller (VRM)
+4. Write PLL configuration and wait for PLL lock
+5. Update clock domain gating registers
+
+This approach was fragile — PLL sequencing errors could hang the GPU — and required NVIDIA to reverse-engineer or document the exact voltage-clock interdependencies for every GPU variant.
+
+**Turing+ GSP-RM path:**
+
+From Turing onwards, the CPU-side driver does not touch PLL registers directly. Instead, it sends a single RPC message to the GSP firmware requesting a P-state change:
+
+```c
+/* Simplified: the actual RPC is NV2080_CTRL_CMD_PERF_SET_AUX_POWER_STATE
+ * or NV0000_CTRL_CMD_PERF_GET_CURRENT_PSTATE in the nvidia-open RPC layer */
+
+/* In kernel-open/nvidia/nv-pmu.c (nvidia-open source): */
+static NV_STATUS pmuPerfStateChange(
+    OBJGPU *pGpu,
+    NvU32   newPstate
+)
+{
+    RM_API *pRmApi = GPU_GET_PHYSICAL_RMAPI(pGpu);
+    NV2080_CTRL_PERF_SET_AUX_POWER_STATE_PARAMS params = {0};
+
+    params.powerState = newPstate;
+    return pRmApi->Control(
+        pRmApi,
+        pGpu->hInternalClient,
+        pGpu->hInternalSubdevice,
+        NV2080_CTRL_CMD_PERF_SET_AUX_POWER_STATE,
+        &params,
+        sizeof(params)
+    );
+}
+```
+
+The GSP firmware (running on the Cortex-M7 / RISC-V microcontroller embedded in the GPU) then:
+
+1. Validates the requested P-state against the GPU's thermal and power budget
+2. Adjusts voltage rails via internal I²C/PMBus controllers that are not accessible to the CPU
+3. Sequences PLL changes with hardware interlocks enforced in firmware
+4. Confirms clock stability via hardware lock detection circuits
+5. Returns an RPC reply with the achieved clocks
+
+This firmware-mediated path is fundamentally more reliable than direct register access because the GSP has hardware-level access to voltage sequencing circuits that are physically separated from the PCIe BAR space the CPU driver can reach.
+
+**Monitoring GSP-RM P-state transitions:**
+
+```bash
+# Current P-state and clock speeds:
+nvidia-smi -q -d PERFORMANCE
+
+# Example output during idle:
+# Performance State         : P8
+# Clocks
+#     Graphics              : 210 MHz
+#     SM                    : 210 MHz
+#     Memory                : 405 MHz
+#     Video                 : 585 MHz
+# Clocks Throttle Reasons
+#     Idle                  : Active
+
+# Watch P-state transitions in real time (1 Hz):
+watch -n 1 'nvidia-smi --query-gpu=pstate,clocks.gr,clocks.mem,power.draw \
+  --format=csv,noheader,nounits'
+
+# Log P-state transitions during a benchmark run:
+nvidia-smi dmon -s pcut -d 1 -o TD | tee pstate_log.txt
+
+# Check for clock throttle reasons (thermal, power limit, voltage swing, etc.):
+nvidia-smi -q -d PERFORMANCE | grep -A 20 "Clocks Throttle"
+```
+
+Common throttle reasons reported by nvidia-smi on nvidia-open:
+- `SW Power Cap: Active` — `--power-limit` cap reached
+- `HW Slowdown: Active` — GPU temperature exceeded thermal throttle threshold
+- `HW Thermal Slowdown: Active` — same as HW Slowdown; terminology varies by driver version
+- `SW Thermal Slowdown: Active` — GSP-RM firmware thermal policy engaging
+
+**RTD3 vs P8 — the difference:**
+
+P8 is a performance state: the GPU is powered up and clocks are minimised, but the display engine remains active and the driver can respond in microseconds. RTD3 (PCIe D3hot or D3cold) powers down the GPU entirely; resuming from RTD3 requires a full GSP firmware re-initialisation sequence (100–300 ms). The two are independent:
+
+```bash
+# Check current D-state (PCIe power state):
+cat /sys/bus/pci/devices/0000:01:00.0/power_state
+# D0   — powered on
+# D3hot — in RTD3 (powered down, PCIe link maintained)
+
+# Check whether BACO/D3cold is being used:
+cat /sys/bus/pci/devices/0000:01:00.0/power/runtime_status
+# active   — GPU is running
+# suspended — RTD3 power-gate engaged
+```
+
+[Source: NVIDIA open-gpu-kernel-modules RPC layer](https://github.com/NVIDIA/open-gpu-kernel-modules/tree/main/src/nvidia/src/kernel/rmapi)
+[Source: nvidia-open power management README](https://github.com/NVIDIA/open-gpu-kernel-modules/blob/main/README.md#power-management)
 
 ---
 

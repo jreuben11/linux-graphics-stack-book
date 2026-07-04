@@ -13,6 +13,7 @@
 - [4. Feature Parity and What GSP-RM Unlocks](#4-feature-parity-and-what-gsp-rm-unlocks)
 - [5. Security Implications and the Trust Model](#5-security-implications-and-the-trust-model)
 - [6. The Path Toward a Fully Open NVIDIA Stack](#6-the-path-toward-a-fully-open-nvidia-stack)
+- [7. Operating nvidia-open Day-to-Day: Configuration, Monitoring, and Wayland Setup](#7-operating-nvidia-open-day-to-day-configuration-monitoring-and-wayland-setup)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -384,6 +385,272 @@ Contributing to Nouveau's GSP-RM support has a different character from contribu
 The most concrete answer yet to the question of an open GSP-RM client is **Nova** — a clean-sheet Rust kernel driver introduced in Linux 6.10 and expanded through Linux 7.2. Where Nouveau retrofitted GSP-RM support into nvkm's existing engine model, Nova was designed from the ground up for Turing+ GPUs that have only ever known GSP-RM. The driver is split into `nova-core` (a platform driver that boots the GSP and manages the command queue) and `nova-drm` (a DRM driver in `drivers/gpu/drm/nova/`). Linux 7.2 added Turing GSP bringup, an immediate-mode GPUVM abstraction, and DebugFS access to GSP-RM log buffers. Nova demonstrates that the GSP-RM RPC interface — documented in `open-gpu-doc` and implemented via the same command queue described in this chapter — is sufficient to build a fully mainlined, Rust-safe driver without reverse-engineering hardware registers. Chapter 10 covers Nova's architecture in full.
 
 The unanswered question for the decade ahead is whether the GSP-RM architecture represents a permanent equilibrium — open kernel interface, closed management firmware, open userspace Vulkan via NVK, closed CUDA — or whether competitive and regulatory pressures will push the remaining closed components toward openness. The trajectory of the stack since 2022 has been consistently positive, but the core firmware trust requirement has not budged.
+
+---
+
+## 7. Operating nvidia-open Day-to-Day: Configuration, Monitoring, and Wayland Setup
+
+This section is a practical reference for systems and distribution engineers who have deployed nvidia-open and want to configure it correctly, monitor its runtime behaviour, and verify that the Wayland explicit synchronisation path is active. It complements the architectural coverage in Sections 1–6 with operational detail.
+
+### 7.1 NVreg_* Module Parameters
+
+nvidia-open exposes its runtime configuration through kernel module parameters, conventionally written to `/etc/modprobe.d/` as `options nvidia NVreg_Foo=Value`. The full list is declared in the open-module source at `kernel-open/nvidia/nv-reg.h` ([source](https://github.com/NVIDIA/open-gpu-kernel-modules/blob/main/kernel-open/nvidia/nv-reg.h)). The table below covers the parameters most relevant to desktop and workstation deployments.
+
+| Parameter | Values | Default | Effect |
+|-----------|--------|---------|--------|
+| `NVreg_DynamicPowerManagement` | `0x00` – `0x03` | `0x02` (laptop) / `0x00` (desktop) | Controls RTD3 behaviour: `0x00` = always on, `0x01` = coarse-grained, `0x02` = fine-grained (powers down between ops), `0x03` = enable on all system types |
+| `NVreg_PreserveVideoMemoryAllocations` | `0` / `1` | `0` | `1` = preserve VRAM contents across suspend/resume; requires matching `nvidia-hibernate` and `nvidia-resume` systemd units; strongly recommended if RTD3 is enabled |
+| `NVreg_TemporaryFilePath` | path string | `/tmp` | Location for driver-managed tmpfs pages when preserving VRAM; set to a tmpfs with enough space (VRAM size) |
+| `NVreg_EnableGpuFirmware` | `0` / `1` | `1` (Turing+) | `0` disables GSP firmware path; falls back to CPU-driven RM (limited functionality, no reclocking); useful only for debugging |
+| `NVreg_OpenRmEnableUnsupportedGpus` | `0` / `1` | `0` | `1` enables nvidia-open on Kepler/Maxwell/Pascal GPUs that NVIDIA has not officially validated; community-supported only, may be unstable |
+| `NVreg_UsePageAttributeTable` | `0` / `1` | auto | Controls use of x86 PAT for WC (write-combining) BAR mappings; normally auto-detected |
+| `NVreg_InitializeSystemMemoryAllocations` | `0` / `1` | `1` | Zero-fill system memory allocations for security; `0` disables for marginal performance gain in malloc-heavy CUDA workloads |
+| `NVreg_ModifyDeviceFiles` | `0` / `1` | `1` | Allow the driver to manage `/dev/nvidia*` device file permissions |
+| `NVreg_DeviceFileUID` / `NVreg_DeviceFileGID` | UID/GID | `0` / `0` | Owner of `/dev/nvidia*` device files |
+| `NVreg_EnableResizableBar` | `0` / `1` | auto | Force enable or disable PCIe Resizable BAR (ReBAR); auto-detects BIOS capability |
+
+A minimal workstation configuration enabling fine-grained RTD3 with VRAM preservation:
+
+```bash
+# /etc/modprobe.d/nvidia.conf
+options nvidia NVreg_DynamicPowerManagement=0x02
+options nvidia NVreg_PreserveVideoMemoryAllocations=1
+options nvidia NVreg_TemporaryFilePath=/var/tmp
+```
+
+Enable the associated systemd units so the driver can serialise VRAM before hibernate:
+
+```bash
+sudo systemctl enable nvidia-hibernate.service nvidia-resume.service nvidia-suspend.service
+```
+
+Verify the active parameter values at runtime via `/proc/driver/nvidia/params`:
+
+```bash
+cat /proc/driver/nvidia/params | grep -E "DynamicPower|PreserveVideo|EnableGpuFirmware"
+# DynamicPowerManagement: 2
+# PreserveVideoMemoryAllocations: 1
+# EnableGpuFirmware: 1
+```
+
+[Source: NVIDIA Open GPU Kernel Modules README](https://github.com/NVIDIA/open-gpu-kernel-modules/blob/main/README.md)
+[Source: nvidia-open NVreg parameters](https://github.com/NVIDIA/open-gpu-kernel-modules/blob/main/kernel-open/nvidia/nv-reg.h)
+
+### 7.2 nvidia-smi Monitoring for nvidia-open
+
+`nvidia-smi` uses the same ioctl interface regardless of whether the kernel module is nvidia-open or the proprietary binary — the userspace library (`libnvidia-ml.so`) is identical in both cases. The following commands are specifically useful for verifying that nvidia-open's GSP-RM path is performing as expected.
+
+**Verify GSP firmware is active and loaded:**
+
+```bash
+# Check the firmware version reported by GSP-RM:
+nvidia-smi -q | grep -E "VBIOS|Firmware Version|GSP"
+
+# Confirm the open module is loaded:
+modinfo nvidia | grep -E "^filename|^version|^license"
+# filename: /lib/modules/.../updates/dkms/nvidia.ko
+# version:  575.57.08
+# license:  MIT
+```
+
+**Monitor P-state (performance state) transitions:**
+
+```bash
+# One-shot query showing current P-state and clocks:
+nvidia-smi -q -d PERFORMANCE
+
+# Continuous 1-second sampling (useful during GPU load):
+nvidia-smi dmon -s pcut -d 1
+
+# Loop showing P-state + power draw:
+watch -n 1 'nvidia-smi --query-gpu=pstate,power.draw,clocks.gr,clocks.mem \
+  --format=csv,noheader,nounits'
+```
+
+Expected output during an idle desktop session:
+```
+P8, 8.12, 210, 405
+```
+P8 is the lowest-power idle state (minimum clocks). Under GPU load, this transitions to P2 or P0:
+```
+P0, 285.40, 2505, 10501
+```
+
+**Clock and power summary during a benchmark:**
+
+```bash
+# Capture 60 seconds of telemetry at 500ms intervals to a CSV:
+nvidia-smi --query-gpu=timestamp,pstate,power.draw,clocks.gr,clocks.mem,temperature.gpu,fan.speed \
+  --format=csv -l 1 > nvidia_telemetry.csv &
+sleep 60
+kill %1
+```
+
+**Check RTD3 power gate status:**
+
+```bash
+# If the GPU has been powered down by RTD3, the device will report as unavailable:
+cat /proc/driver/nvidia/gpus/*/power
+# On a powered-up card: PowerState: D0
+# After RTD3 power-gate: PowerState: D3
+```
+
+**nvidia-smi fan speed and thermal:**
+
+```bash
+# Current fan speed and target temperature:
+nvidia-smi -q -d FAN,TEMPERATURE
+
+# Fan policy (auto vs manual):
+nvidia-settings -q GPUFanControlState
+# Attribute 'GPUFanControlState' (hostname:0[gpu:0]): 0   (0=auto, 1=manual)
+```
+
+[Source: nvidia-smi documentation](https://developer.nvidia.com/nvidia-system-management-interface)
+
+### 7.3 Fan Control
+
+nvidia-open uses the same nvidia-settings and sysfs fan control interfaces as the proprietary module. Fan management on nvidia-open goes through a GSP-RM RPC call (`NV2080_CTRL_CMD_THERM_FANS_GET_STATUS` / `NV2080_CTRL_CMD_THERM_FANS_SET_CONTROL`) rather than direct thermal engine register writes, which means that older workarounds using direct hardware access are no longer applicable on Turing+.
+
+**Using nvidia-settings for manual fan control:**
+
+```bash
+# Set manual fan control:
+nvidia-settings -a GPUFanControlState=1
+
+# Set fan speed to 60%:
+nvidia-settings -a GPUTargetFanSpeed=60
+
+# Return to auto:
+nvidia-settings -a GPUFanControlState=0
+```
+
+These settings are runtime-only and reset on reboot or when the display server restarts. For persistent fan curves, the community `nvfancurve` or `GreenWithEnvy` tools wrap these calls.
+
+**hwmon sysfs interface (alternative to nvidia-settings):**
+
+The driver exposes a hwmon device under `/sys/class/hwmon/`:
+
+```bash
+# Find the NVIDIA hwmon node:
+for h in /sys/class/hwmon/hwmon*; do
+  if grep -q "nvidia" "$h/name" 2>/dev/null; then echo "$h"; fi
+done
+
+# Read current fan RPM:
+cat /sys/class/hwmon/hwmon4/fan1_input
+# 1200
+
+# Read GPU temperature (millidegrees Celsius):
+cat /sys/class/hwmon/hwmon4/temp1_input
+# 42000  (= 42°C)
+
+# Enable manual fan control (if supported by card):
+echo 1 > /sys/class/hwmon/hwmon4/pwm1_enable   # 0=off, 1=manual, 2=auto
+echo 153 > /sys/class/hwmon/hwmon4/pwm1         # 0-255; 153 ≈ 60%
+```
+
+Note: Not all NVIDIA cards expose fan PWM control through hwmon — enterprise GPUs (A100, H100) use passive or liquid cooling with fixed-speed fans. Consumer cards with active cooling (RTX series) generally do expose `pwm1`.
+
+### 7.4 Wayland Explicit Synchronisation: Verification
+
+One of the most significant practical improvements in nvidia-open (versus the historical proprietary module) is reliable Wayland explicit synchronisation via the `linux-drm-syncobj-v1` Wayland protocol (Ch3). Without explicit sync, Wayland compositors relying on implicit fences — which the binary nvidia driver did not fully expose through `dma_resv` — experienced rendering races visible as torn frames and incorrect frame ordering. nvidia-open's GPLv2 licensing allows direct use of kernel `drm_syncobj` APIs, resolving this at the kernel driver level.
+
+**Kernel driver prerequisite — drm_syncobj support:**
+
+```bash
+# Verify DRM syncobj capability is exposed by the nvidia-open driver:
+cat /sys/kernel/debug/dri/0/clients  # requires root; substitute card index if needed
+
+# Check that timeline syncobjs are supported:
+# Look for DRIVER_SYNCOBJ_TIMELINE in driver capabilities:
+cat /sys/kernel/debug/dri/0/gem_names 2>/dev/null || \
+  drminfo -d /dev/dri/card0 2>/dev/null | grep -i syncobj
+```
+
+For a direct check, the `drm_info` utility reports driver capabilities cleanly:
+
+```bash
+drm_info /dev/dri/card0 | grep -i syncobj
+# "DRIVER_SYNCOBJ": true
+# "DRIVER_SYNCOBJ_TIMELINE": true
+```
+
+Both flags should be `true` on nvidia-open ≥ 515.
+
+**GBM backend — confirming EGLStreams is not in use:**
+
+nvidia-open uses the GBM (Generic Buffer Manager) backend for buffer allocation and sharing with Wayland compositors. The historical EGLStreams path (required by the pre-open proprietary module) has been deprecated and removed from GNOME (as of GNOME 47, 2025). Verify that GBM is the active backend:
+
+```bash
+# For GNOME/Mutter on X11 or Wayland:
+MUTTER_DEBUG_ENABLE_ATOMIC_KMS=1 MUTTER_DEBUG_NUM_DUMMY_MODES=0 gnome-shell --replace &
+journalctl -u gdm -f | grep -i "gbm\|eglstreams\|backend"
+# Expected: "Using GBM backend"
+
+# For KDE Plasma / KWin:
+journalctl --user -u plasma-kwin_wayland --since today | grep -i "gbm\|eglstreams"
+# Expected: "GBM: using GBM"
+# If you see EGLStreams, set:
+# KWIN_DRM_USE_EGL_STREAMS=0 in /etc/environment (or /etc/profile.d/kwin.sh)
+```
+
+**Confirming wp_linux_drm_syncobj_v1 negotiation:**
+
+The Wayland `linux-drm-syncobj-v1` protocol is negotiated between the compositor and client at connection time. Its presence in the compositor's protocol list confirms that explicit sync is available:
+
+```bash
+# List all Wayland protocols advertised by the running compositor:
+wayland-info | grep syncobj
+# Expected output:
+# linux_drm_syncobj_manager_v1  version 1
+
+# Alternative using weston-info or wl-info:
+wl-info 2>/dev/null | grep syncobj
+```
+
+If `linux_drm_syncobj_manager_v1` is absent, the compositor is not exposing explicit sync. On GNOME with nvidia-open ≥ 545 and kernel ≥ 6.6, this protocol should be present automatically.
+
+**Per-compositor verification:**
+
+_GNOME/Mutter_ (GNOME 46+): explicit sync is enabled by default when the driver reports `DRIVER_SYNCOBJ_TIMELINE`. No extra configuration is needed.
+
+```bash
+# Confirm GNOME session type and compositor mode:
+echo $XDG_SESSION_TYPE      # should print "wayland"
+loginctl show-session $XDG_SESSION_ID | grep Type
+# Type=wayland
+```
+
+_KDE Plasma / KWin_ (Plasma 6.1+): explicit sync via `linux-drm-syncobj-v1` is enabled by default for Wayland sessions. Disable the EGLStreams fallback:
+
+```bash
+# Add to /etc/environment or ~/.config/plasma-workspace/env/kwin.sh:
+export KWIN_DRM_USE_EGL_STREAMS=0
+
+# Verify KWin is using the DRM/GBM backend:
+journalctl --user -u plasma-kwin_wayland | grep -i "drm\|gbm" | tail -5
+```
+
+_Weston_: Weston supports `linux-drm-syncobj-v1` since Weston 14.0.0. Enabled automatically when the compositor detects `DRIVER_SYNCOBJ_TIMELINE`.
+
+_sway/wlroots_ (wlroots ≥ 0.18): Explicit sync via `linux-drm-syncobj-v1` is implemented in wlroots 0.18. Verify with `wl-info` as above.
+
+**End-to-end test — confirm no tearing under load:**
+
+A quick workload test to verify that explicit sync is preventing visible artifacts:
+
+```bash
+# Run a GPU-heavy application and check for explicit sync faults in dmesg:
+dmesg -w | grep -i "syncobj\|fence\|timeout" &
+vkcube &   # or glxgears, or a Vulkan benchmark
+```
+
+Absence of `drm_syncobj` timeout messages and absence of visible tearing in the application window confirms that the explicit sync path is active.
+
+[Source: NVIDIA Wayland Explicit Sync announcement, driver 545](https://developer.nvidia.com/blog/nvidia-ray-tracing-in-vulkan/)
+[Source: linux-drm-syncobj-v1 Wayland protocol](https://wayland.app/protocols/linux-drm-syncobj-v1)
+[Source: KWin explicit sync implementation](https://invent.kde.org/plasma/kwin/-/merge_requests/5063)
 
 ---
 
