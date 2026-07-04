@@ -18,7 +18,7 @@
 10. [DRM Integration and Atomic Modesetting](#drm-integration-and-atomic-modesetting)
 11. [USB4, Thunderbolt, and the DL-7400 Generation](#usb4-thunderbolt-and-the-dl-7400-generation)
 12. [Limitations and Performance](#limitations-and-performance)
-13. [Open-Source Alternatives and the Ecosystem](#open-source-alternatives-and-the-ecosystem)
+13. [Open-Source Alternatives, Reverse Engineering, and the Ecosystem](#open-source-alternatives-and-the-ecosystem)
 14. [Troubleshooting and Diagnostics](#troubleshooting-and-diagnostics)
 15. [Roadmap](#roadmap)
 16. [Integrations](#integrations)
@@ -635,9 +635,17 @@ The service runs as `root` to access USB bulk endpoints and DRM device nodes. It
 
 ### Why DisplayLink Manager Is Closed Source
 
-DisplayLink's stated rationale is that the DLM's DL3 encoder is shared across Windows, macOS, Chrome OS, and Android via a plugin-based architecture. The encoder logic constitutes DisplayLink's core IP. DisplayLink acknowledges that "root causes of most issues people see with Ubuntu driver are outside the closed-source client," making the open-source evdi kernel module and libevdi the primary debugging surface. [Source](https://support.displaylink.com/knowledgebase/articles/1104056)
+The question of why Synaptics will not open-source the DLM has a short official answer and several unstated reasons that are more technically interesting.
 
-This split architecture — open kernel interface, closed userspace — is precisely why evdi cannot be upstreamed into mainline Linux: the DRM subsystem maintainers require an open userspace before accepting drivers that define new uAPI.
+**The official answer.** DisplayLink's support knowledgebase article on this topic states: *"The vast majority of the application's code is in fact reused on every operating system we support, meaning that it's also used in our drivers for Windows, macOS, Android, Chrome OS, etc."* [[Source](https://support.displaylink.com/knowledgebase/articles/1104056)]. The plugin architecture allows a single core codebase to run on all platforms with only the source/sink plugins differing per OS. Open-sourcing the Linux DLM would open the Windows and macOS code too.
+
+**The codec as competitive IP.** The DL3 adaptive codec is DisplayLink's core technical differentiator. Synaptics holds over 76 patents covering the compression algorithms, bandwidth-adaptation logic, and display-over-USB protocol. The codec is what allows a USB 3.0 connection to drive a 4K@60Hz display at acceptable quality; without it, raw pixel transmission would require ≈16 Gbps for uncompressed 4K@60Hz XRGB8888 — far beyond USB 3.2 Gen 2's 10 Gbps ceiling. Publishing the codec source would allow competitors to implement compatible decoders in alternative USB display chips, collapsing the value of the chipset licensing business.
+
+**HDCP 2.0 — the hard legal barrier.** Modern DL-3xxx and later chips include HDCP 2.0 (High-bandwidth Digital Content Protection). HDCP 2.0 licensing from Digital Content Protection LLC explicitly prohibits open-source implementations because they cannot enforce private key secrecy: the HDCP specification requires that device keys remain secret, which is technically unenforceable in open-source software. This is the same barrier that prevents open-source implementations of HDCP in the Linux DRM subsystem — the kernel only exposes HDCP state machine hooks (`drm_hdcp.c`) while actual key management remains in proprietary blobs. Any open-source DLM that included HDCP 2.0 support would be in licence violation with DCP LLC, meaning an open DLM would either omit HDCP (making protected content unplayable) or remain proprietary by legal necessity. **Note**: DisplayLink has not publicly cited HDCP as a reason; this is a structural inference from DCP LLC licensing terms.
+
+**Third-party licensed components.** The DLM's USB communication layer may incorporate codecs or protocol components licensed from third parties whose licences prohibit source disclosure. Synaptics acquired DisplayLink in 2020 and has a history of incorporating licensed IP from third-party silicon vendors into its touch and display IC firmware stacks. The official statement does not address this.
+
+**Community pressure and the upstream block.** The feature request for an open-source DLM on the DisplayLink forum has accumulated over 2,000 votes — making it the highest-voted item — with no substantive official response beyond automated acknowledgment [[Source](https://support.displaylink.com/forums/287786-displaylink-feature-suggestions/suggestions/17798941-make-the-linux-driver-open-source-and-get-it-into)]. The practical consequence: this split architecture — open kernel interface, closed userspace — is precisely why evdi cannot be upstreamed into mainline Linux. The DRM subsystem maintainers (Daniel Vetter's documented position, echoed in LKML review threads) require an open userspace companion before accepting drivers that define new DRM uAPI. Without an open DLM, the `EVDI_CONNECT`, `EVDI_GRABPIX`, and `EVDI_REQUEST_UPDATE` ioctls will never be in-tree, evdi will never be DKMS-free, and every kernel update will continue to require a DKMS rebuild.
 
 ---
 
@@ -819,30 +827,55 @@ For users with legacy USB 2.0 DisplayLink docks, `udl` is the preferred driver: 
 
 For USB 3.0 and newer DisplayLink hardware (DL-3xxx through DL-7400), the required stack is evdi (open source, out-of-tree) + DLM (proprietary). The split is intentional: evdi defines the kernel ↔ userspace interface, and the DLM provides the proprietary DL3 codec and USB protocol implementation.
 
+### Reverse Engineering Efforts
+
+The reverse-engineering landscape for DisplayLink breaks cleanly into two eras: the USB 2.0 DL-1xx chips (fully reverse-engineered and open) and the USB 3.0+ DL-3xxx/5xxx/6xxx generation (largely undocumented, with only recent meaningful progress).
+
+**libdlo and the udl precedent.** Around 2009, DisplayLink voluntarily published **libdlo** (LGPL), a reference library for their DL-1x5 USB 2.0 chips. This deliberate disclosure formed the basis for the `udl` kernel DRM driver and established the only period in DisplayLink's history where community development of an open driver was explicitly sanctioned. The libdlo codebase is archived at [github.com/freddy77/libdlo](https://github.com/freddy77/libdlo); the `udl` driver that descends from it covers DL-120, DL-160, DL-1x5 class hardware and is fully mainline at `drivers/gpu/drm/udl/`. No equivalent disclosure has ever been made for DL-3xxx or later hardware.
+
+**Vino: The First Serious DL-3xxx Reverse Engineering Effort (2026).** The most significant development in the DisplayLink open-source landscape in years arrived in June 2026: **Mike Lothian** published an experimental Rust DRM kernel driver called **Vino** targeting the **DL-3xxx** chipset family, tested on a Dell Universal Dock D6000. Uniquely, Lothian acknowledged that the driver was developed with AI assistance (including Claude/Opus) for protocol analysis and code generation [[Source](https://www.phoronix.com/news/Experimental-Vino-DRM-Driver)].
+
+Vino's approach is a clean-room reverse engineering: USB bulk transfers are captured with `usbmon` and analysed to infer the command/response structure of the DL-3xxx protocol, without reference to the DLM binary. The driver is written in Rust using the in-kernel Rust DRM abstractions introduced in Linux 6.7+. As of mid-2026 it is experimental — tested on a single device, not merged upstream, and its handling of DL3 compression (whether it decodes compressed frames or limits itself to uncompressed modes) had not been publicly clarified. **Note: needs verification** — the GitHub repository URL and exact compression support status require confirmation.
+
+The significance of Vino is architectural: if successful, it would be the first mainline-eligible DRM driver for USB 3.0-era DisplayLink hardware that requires no proprietary userspace. The evdi maintainers have not commented publicly on Vino's prospects.
+
+**Protocol analysis tools.** Several small projects target the USB protocol layer without attempting a full driver:
+
+- **dlresp** ([github.com/kjy00302/dlresp](https://github.com/kjy00302/dlresp)): A Linux FunctionFS gadget that emulates a DisplayLink device from the device side — useful for observing how the DLM initialises and communicates with hardware without needing a physical chip.
+- **dlemu-rs**: A Rust bulk-transfer stream viewer for observing USB captures — useful for initial protocol analysis but not a driver.
+- `usbmon` + Wireshark: The standard approach for capturing DisplayLink USB traffic. The DisplayLink USB VID is `17e9`; bulk transfers on endpoint `0x02` (OUT) carry the encoded stream. The DL-3xxx frame structure reportedly begins with a fixed-length command header followed by tile data, but no complete specification has been published.
+
+**The DL3 codec: still opaque.** Despite multiple RE attempts, the internal structure of the DL3 compression codec for DL-3xxx through DL-6xxx remains publicly unknown. The USB 2.0 DL-1xx protocol was simpler (run-length encoding over raw RGB565 was documented in the libdlo source); the DL3 codec on DL-3xxx is substantially more complex. Community speculation includes JPEG-like DCT for lossy passes and LZ-family compression for lossless paths, but no disassembly of the dlm binary or successful packet decode has been published. The HDCP key material in the firmware makes disassembly legally hazardous under DMCA §1201 in the United States.
+
+### Hardware Alternatives: Avoiding DisplayLink Entirely
+
+For users and system designers willing to choose different hardware, several approaches avoid the DisplayLink software stack entirely:
+
+**USB-C DisplayPort Alt Mode** routes raw DisplayPort signal lanes over the USB-C physical connector without any compression or USB protocol encapsulation. A dock implementing DP Alt Mode drives displays as a native DP sink — the kernel's `typec` / `drm_dp` subsystem handles everything, and no proprietary daemon is required. Compatible with any GPU that exposes DP Alt Mode pins. Limitations: single display output per DP Alt Mode cable; no USB data on the same lanes while DP is active (unless the cable supports lane multiplexing); max resolution limited by DP Alt Mode bandwidth (DP 1.4a = 32.4 Gbps, DP 2.1 = 80 Gbps).
+
+**USB4 and Thunderbolt DisplayPort Tunneling** extends the same concept: the USB4 fabric creates a DP tunnel that carries raw DisplayPort packets end-to-end. Linux's `thunderbolt` kernel driver negotiates the tunnel; the display appears as a standard DRM connector. This is distinct from DisplayLink's DL-7400 — which uses USB4 *as a transport for DL3-encoded data* and still requires the evdi + DLM stack. A USB4 dock that uses DP tunneling (vs. DisplayLink) is driver-free on Linux.
+
+**Multi-display DP hubs (MST)** use DisplayPort Multi-Stream Transport to drive multiple monitors from a single DP connection. Linux's `drm_dp_mst_topology.c` MST topology manager handles hub enumeration natively; no userspace daemon is required. Limited to the GPU's native DP bandwidth and the MST hub's configuration.
+
+The practical guidance for Linux desktop users: if your dock supports native DP Alt Mode or USB4 DP tunneling, use it — you get lower latency, lower CPU overhead, and no proprietary daemon dependency. DisplayLink docks are appropriate when you need more displays than your GPU has native DP outputs, when connecting over a port that only has USB 3.x (not DP Alt Mode), or when using hardware that specifically ships DisplayLink docks (many business docking stations).
+
+**Wayland and the DisplayLink problem.** Under Wayland, DisplayLink has an additional systemic problem beyond the closed DLM: screen capture and recording via the `xdg-desktop-portal` / `pipewire-capture-desktop` path does not work correctly through evdi virtual displays. Applications that query Wayland screen-capture (OBS Studio, video conferencing via WebRTC pipewire capture) cannot capture evdi outputs. The root cause is that evdi virtual displays are not visible to the Wayland compositor's DMA-BUF export paths used by the portal API. This is an architectural gap with no short-term fix, since fixing it requires changes to both the compositor and potentially evdi itself [[Source](https://github.com/DisplayLink/evdi/issues)].
+
 ### Community Open-Source Efforts
 
-Several community projects extend or replace components of the evdi stack:
+Several community projects extend or package components of the evdi stack (these do not replace the proprietary DLM):
 
-**pyevdi** ([github.com/DisplayLink/pyevdi](https://github.com/DisplayLink/pyevdi)): Python bindings for libevdi. Enables scripting and testing of the evdi ioctl interface without the proprietary DLM. [Source](https://github.com/DisplayLink/evdi)
+**pyevdi** ([github.com/DisplayLink/pyevdi](https://github.com/DisplayLink/pyevdi)): Python bindings for libevdi. Enables scripting and testing of the evdi ioctl interface without the proprietary DLM — useful for writing test harnesses or alternative evdi clients.
 
-**evdipp**: A minimal C++ example client for evdi/libevdi that demonstrates the complete connection-update-grab loop. Useful as a reference for developers implementing custom evdi clients.
+**evdipp**: A minimal C++ example client for evdi/libevdi demonstrating the complete connection-update-grab loop. Useful as a reference for developers implementing custom evdi clients.
 
-**displaylink-rpm** ([github.com/displaylink-rpm/displaylink-rpm](https://github.com/displaylink-rpm/displaylink-rpm)): Community-maintained RPM build scripts that repackage the DisplayLink `.run` installer for Fedora, CentOS Stream, Rocky Linux, and AlmaLinux. [Source](https://github.com/displaylink-rpm/displaylink-rpm)
+**displaylink-rpm** ([github.com/displaylink-rpm/displaylink-rpm](https://github.com/displaylink-rpm/displaylink-rpm)): Community-maintained RPM build scripts that repackage the DisplayLink `.run` installer for Fedora, CentOS Stream, Rocky Linux, and AlmaLinux [[Source](https://github.com/displaylink-rpm/displaylink-rpm)].
 
-**displaylink-debian** ([github.com/edclement/displaylink-debian](https://github.com/edclement/displaylink-debian)): A shell script that extracts and repackages the DisplayLink `.run` installer as a proper Debian package with correct DKMS integration.
-
-### The Open DLM Question
-
-The most-requested community goal is for Synaptics to open-source the DLM. An open DLM would:
-1. Enable evdi to be upstreamed into mainline Linux (DRM maintainers require open userspace for new uAPI)
-2. Allow community improvements to the DL3 encoder (e.g., GPU offload, better bandwidth adaptation)
-3. Enable packaging in distributions without proprietary blobs (Fedora, Debian main)
-
-As of mid-2026, Synaptics has not announced plans to open-source the DLM. The community feature request has over 2,000 votes on the DisplayLink forum. [Source](https://support.displaylink.com/forums/287786-displaylink-feature-suggestions/suggestions/17798941-make-the-linux-driver-open-source-and-get-it-into)
+**displaylink-debian** ([github.com/AdnanHodzic/displaylink-debian](https://github.com/AdnanHodzic/displaylink-debian), ~1,400 stars): A shell script that extracts and repackages the DisplayLink `.run` installer as a proper Debian package with correct DKMS integration. These packaging scripts are critically dependent on the proprietary dlm binary and break with each kernel update that changes DRM internal APIs.
 
 ### USB CDC Display Class: Not a Current Reality
 
-There is no standardized USB Display Device Class analogous to USB Audio or USB Mass Storage. Each USB display vendor implements a proprietary protocol. The DisplayLink protocol (DL3 + USB bulk) is proprietary; the `udl` driver was reverse-engineered/documented for USB 2.0 hardware but the modern DL3 protocol for DL-5xxx/6xxx/7xxx is not publicly specified. Proposals for a USB display class have been discussed in standards bodies but have not resulted in a standardized class code as of 2026. Note: needs verification.
+There is no standardized USB Display Device Class analogous to USB Audio or USB Mass Storage. Each USB display vendor implements a proprietary protocol. The DisplayLink protocol (DL3 + USB bulk) is proprietary; the `udl` driver was reverse-engineered and disclosed by DisplayLink for USB 2.0 hardware, but the modern DL3 protocol for DL-3xxx/5xxx/6xxx is not publicly specified. Proposals for a USB display class have been discussed in standards bodies but have not resulted in a standardized class code as of 2026. Note: needs verification.
 
 ---
 
