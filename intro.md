@@ -223,6 +223,8 @@ The data to fill this timeline exists today in `ftrace` (DRM scheduler events), 
 
 **Concrete value.** Valve's gamescope compositor and Google's ChromeOS team both have internal latency monitoring infrastructure, but neither publishes a reusable cross-layer tool. The game industry regularly ships latency-sensitive titles that target 4ms GPU-to-display budgets on Linux; the absence of this tool means those budgets are measured with hardware frame latency analysers rather than software introspection.
 
+**Demand and current landscape.** Demand is high and commercially proven: NVIDIA Reflex (Windows-only) is widely adopted across hundreds of titles precisely because it solves the latency attribution problem at the NVIDIA driver layer. AMD Anti-Lag is the AMD equivalent, also Windows-only. On Android, Google's Perfetto tracing system provides full-stack frame correlation from kernel DRM events through SurfaceFlinger to Chrome's GPU process — because Google owns and instruments the entire stack. The Linux desktop equivalent does not exist. Valve almost certainly has internal per-frame telemetry inside gamescope for Steam Deck QA, but it is not published or reusable. The `wp_commit_timing_v1` Wayland staging protocol (proposed by Simon Ser, 2024) addresses the client-to-compositor seam — allowing clients to declare frame timing constraints — but does not span the compositor-to-kernel or browser-to-compositor boundaries that this tracer would close. A well-funded open-source project here would likely attract Valve, AMD (for ROG Ally / handheld gaming), and Intel (for Arc laptop gaming) as sponsors.
+
 ### 2. Zero-Copy Pipeline Validator
 
 **The gap.** The Linux graphics stack's zero-copy design guarantee — that a GPU-rendered buffer travels from `vkQueueSubmit` to display scanout without ever being read or written by a CPU — is well-understood in principle and routinely violated in practice without anyone noticing. A missed format modifier negotiation silently downgrades a scanout-tiled buffer to a linear copy. A compositor that does not implement `zwp_linux_dmabuf_feedback_v1` correctly inserts a CPU blit. An application that allocates with `GBM_BO_USE_RENDERING` but not `GBM_BO_USE_SCANOUT` forces a copy at KMS submission time.
@@ -239,6 +241,8 @@ The data to fill this timeline exists today in `ftrace` (DRM scheduler events), 
 The mechanism exists: `dma_buf_begin_cpu_access` is auditable from userspace via LD_PRELOAD interception of `mmap`, and format modifier negotiation leaves a complete audit trail in the DRM UAPI call sequence. The missing piece is a tool that connects the GBM allocation decision to the final KMS `DRM_IOCTL_MODE_ADDFB2` call and validates that no copy was inserted between them.
 
 **Why it requires cross-stack knowledge.** The validator must understand GBM modifier semantics (Part I/VI), the `zwp_linux_dmabuf_feedback_v1` negotiation protocol (Part VI), the KMS `IN_FORMATS` blob and `DRM_MODE_FB_MODIFIERS` flag (Part I), and when `dma_buf_begin_cpu_access` is legitimately called for cache coherency vs. when it indicates an unintended CPU copy. These concepts span four separate specifications maintained by three separate communities.
+
+**Demand and current landscape.** Demand is concentrated but real: every Linux distribution that ships a Wayland compositor needs this, as does every GPU driver team that regularly breaks modifier negotiation during refactors. The existing tools — `drm_info` (shows modifier support per plane statically), IGT's `kms_plane` tests (validates modifier paths in test conditions) — are not runtime validators for production frame pipelines. No equivalent of Vulkan's `VK_LAYER_KHRONOS_validation` exists for the GBM-to-KMS path. Given that Red Hat, Canonical, and Collabora all invest significantly in Wayland driver quality, a well-scoped validator library (LD_PRELOAD + structured JSON output) is a plausible open-source project; the barrier is primarily the cross-layer design knowledge rather than implementation difficulty.
 
 ### 3. Cross-Layer Power and Latency Co-Optimiser
 
@@ -262,6 +266,8 @@ This pattern is not hypothetical: Android's `ADPF` (Android Dynamic Performance 
 
 **Measurable impact.** For frame-rate-limited workloads where the GPU is idle between frames — the common case in composited desktops — this optimisation eliminates the P-state ramp-up latency from the frame critical path, potentially recovering 10–20% of the per-frame budget currently consumed by reactive frequency scaling. On battery-powered devices, it also enables more aggressive idle power-gating between frames because the driver gains advance notice of when it must be ready.
 
+**Demand and current landscape.** Demand is very high. Linux laptop battery life versus Windows on identical hardware is a persistent, documented, commercially damaging gap that Framework, System76, and Valve have all acknowledged. The partial solutions that exist operate at the wrong granularity: GameMode (Feral Interactive) sets CPU governor and GPU performance profile per-process but is not frame-aware; `wp_fifo_v1` (Wayland, 2024) provides buffer backpressure but not forward deadline hints; AMD's internal handheld-gaming power work for the ROG Ally and Steam Deck targets specific hardware without a general protocol. Android's ADPF (`APerformanceHintManager`, shipping since Android 12) proves the concept works: apps that adopt ADPF report 10–15% battery life improvement at equivalent performance on the same hardware. The absence of a Linux Wayland equivalent is entirely an integration gap — all the kernel primitives exist — and it represents a fundable project for any company shipping a Linux laptop or handheld gaming device.
+
 ### 4. Cross-Vendor GPU Shader Performance Model
 
 **The gap.** Every GPU vendor ships a profiler — AMD's Radeon GPU Profiler, NVIDIA's Nsight, Intel's GPU Analyzer — that can explain why a shader performs the way it does on that vendor's hardware. None of them can explain why the same SPIR-V shader performs 3× differently between an RTX 4090 and an RX 7900 XTX, in terms of the compilation decisions each driver made and the hardware architectural differences those decisions expose.
@@ -278,6 +284,8 @@ This matters for two categories of developer. First, game and rendering engineer
 The NIR layer is the key enabler. Because every Mesa driver compiles through NIR, inserting logging at each NIR pass and correlating with final ISA output would reveal exactly where `nir_lower_idiv` or `nir_opt_algebraic` produced different results for different hardware targets. This instrumentation does not currently exist in a form usable outside the per-driver compilation process.
 
 **Why it requires cross-stack knowledge.** Building this tool requires understanding ACO's VGPR pressure model (Part IV/V), NAK's register allocator (Part III), BRW/ELK's EU thread dispatch (Part XVI), and the NIR optimisation pipeline that feeds all three (Part IV). The ISA disassemblers that would produce the listings are already present in the Mesa tree — one per driver — but are not packageable as libraries because they embed driver-private assumptions. Designing the abstraction layer requires knowing all three ISA representations simultaneously.
+
+**Demand and current landscape.** Demand is medium-high and well-defined: every game studio that ships multi-vendor PC titles has a shader performance engineer whose job is roughly this problem — manually, using per-vendor tools and spreadsheets. Compiler Explorer (godbolt.org) has emerged as a widely used partial solution: it now supports SPIR-V input and can show AMD ISA output via Mesa's RADV disassembler and Intel output via Intel's GPU Assembler. Shader Playground (shader-playground.timjones.io) adds backend comparison across DXC, glslang, and SPIRV-Cross but stops at the SPIR-V level rather than ISA. Arseny Kapoulkine (Roblox) regularly publishes manual cross-vendor shader performance comparisons that have high readership in the game development community, pointing to unsatisfied demand for an automated version. The specialist consulting firm Traverse Research does cross-vendor GPU compiler analysis commercially. The piece genuinely missing — NIR pass-level instrumentation correlating IR decisions to final ISA divergence — requires being simultaneously a Mesa compiler developer and a tooling developer, which is rare enough that no one has built it as an open tool.
 
 ### 5. GPU Stack Security Audit Framework
 
@@ -301,6 +309,8 @@ Each of these has been audited in isolation, by different teams, at different ti
 The audit framework would automate parts of this analysis using a combination of `libFuzzer`-based corpus generation for the DRM ioctl interface and `spirv-fuzz` for the shader parsing path, unified under a coverage reporting harness.
 
 **Why it requires cross-stack knowledge.** The threat model spans the Wayland protocol (Part VI), DRM UAPI security model (Part I), Mesa's SPIR-V parser (Part IV), Chrome's seccomp sandbox allowlist (Part X), and GSP-RM's firmware trust boundary (Part III). Each of those chapters was written by different people with different threat assumptions. Producing a unified model requires someone who has read all five.
+
+**Demand and current landscape.** Demand is very high, funded, and growing. Cloud service providers (AWS, Google Cloud, Azure) run NVIDIA GPUs in multi-tenant configurations and have strong security incentives. Academic research on GPU side channels has been active and alarming: the **GPU.zip** attack (2023) demonstrated cross-origin pixel stealing in Chrome via GPU data compression side channels, affecting all major GPU vendors; subsequent work extended the technique to GPU DRAM timing. The kernel security team uses **syzkaller** to fuzz DRM ioctls and has found real bugs in `drm_gem`, `drm_syncobj`, and several driver-specific paths — but syzkaller's fuzzing is within a single driver's ioctl surface, not cross-layer. Chrome's security team maintains the seccomp-BPF GPU ioctl allowlist but does not model the full kernel driver attack surface from that allowlist. NVIDIA's confidential computing infrastructure (H100 Hopper CC mode, Blackwell TEE) is the vendor's answer for the most extreme multi-tenant case, but it addresses hardware-level attestation rather than software-stack threat modelling. The cross-layer STRIDE model described above does not exist in any public form, and given that GPU-based side-channel attacks are now a demonstrated class of web security vulnerability, this is a fundable security research project for any CSP or browser vendor.
 
 ### 6. Adaptive Data Path Selector for GPU ML Pipelines
 
@@ -326,6 +336,8 @@ This is not a fundamentally new idea — NVIDIA's `nccl` (NCCL collective commun
 
 **Why it requires cross-stack knowledge.** The implementation requires simultaneously understanding the `p2pdma` PCIe peer-to-peer distance API (Part I), HMM page table integration for CPU-GPU unified addressing (Part I), `nvidia-peermem.ko`'s peer memory client interface (Part I/III), GPUDirect Storage's `nvidia-fs` io_uring path (Part I), and RDMA verb registration semantics (Part I). These are all documented in separate kernel subsystem references and GPU vendor developer guides. Nobody has built a system that views them as a routing problem over a unified topology graph, because nobody has previously had reason to read all of them.
 
+**Demand and current landscape.** Demand is extreme and actively funded. Every hyperscaler running large-scale GPU training clusters has an internal team working on data pipeline throughput. The closest public work is NVIDIA's **NCCL** (topology-aware collective operations for distributed training — all-reduce, broadcast), **UCX** (OpenMPI's transport-layer router covering RDMA, shared memory, and TCP but not GPU-specific paths like gdrcopy or GPUDirect Storage), and **PyTorch's `pin_memory`** (coarse CPU→GPU optimisation via page-locked memory). None of these address the single-node multi-path routing problem. IBM Research and Meta's infrastructure teams have published on topology-aware data movement for ML (2023–2024) but have not open-sourced general routing libraries. The AI training infrastructure market — where NVIDIA H100 nodes rent for $2–4/hour and data loading bottlenecks directly increase training cost — means that a 20% improvement in data path throughput translates immediately to measurable dollar savings. This is arguably the highest commercial-value item on this list, and the fact that it remains unsolved reflects the rarity of engineers who know both the GPU kernel data path interfaces and the ML training infrastructure stack simultaneously.
+
 ### The Common Architecture
 
 Every system above has the same structural characteristic: it requires a protocol or abstraction that spans a layer boundary that is currently a **seam of ignorance** — a point where the people who know the layer above do not know the layer below, and vice versa. The seams are:
@@ -337,6 +349,21 @@ Every system above has the same structural characteristic: it requires a protoco
 | Userspace ↔ Firmware | DRM ioctl / Mesa driver call | GSP-RM RPC / GuC command submission |
 | Storage ↔ GPU | cuFile / `io_uring` | `p2pdma` / `nvidia-peermem` peer memory |
 | Shader IR ↔ ISA | NIR optimisation pass | ACO/NAK/BRW register allocator |
+
+### Market Reality
+
+The absence of these systems is not a sign that they are not needed. It is a sign of how rare cross-layer knowledge is.
+
+| System | Demand | Closest existing work | Who would fund it |
+|--------|--------|-----------------------|-------------------|
+| Frame latency tracer | High — gaming, interactive apps | Perfetto (Android only); Reflex (NVIDIA Windows only) | Valve, AMD handheld, Intel Arc |
+| Zero-copy validator | Medium — distros, driver teams | `drm_info`, IGT tests (static, not runtime) | Red Hat, Collabora, Canonical |
+| Power co-optimiser | Very high — laptops, handhelds | ADPF (Android); GameMode (coarse, not frame-aware) | Framework, Valve, System76, AMD |
+| Cross-vendor shader model | Medium-high — game studios, Mesa devs | Compiler Explorer (ISA only, no perf model); Traverse Research (commercial) | Game studios, GPU vendors |
+| Security audit framework | Very high — cloud multi-tenant | syzkaller (per-driver); GPU.zip research (academic) | AWS, Google Cloud, Azure, browser vendors |
+| ML data path selector | Extreme — AI training infra | NCCL (collectives only); UCX (no GPU-specific paths) | Meta, Google, Microsoft, NVIDIA |
+
+In each case, the partial work that exists was built by engineers who knew one or two layers. The cross-layer integration — the part that would make each of these genuinely useful — requires the map that this book provides.
 
 The book you are reading maps all of these seams explicitly. That mapping is the prerequisite for any engineer who wants to build across them.
 
