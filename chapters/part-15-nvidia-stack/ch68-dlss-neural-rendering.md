@@ -18,8 +18,9 @@
 8. [3D Gaussian Splatting and Neural Scene Representations](#8-3d-gaussian-splatting-and-neural-scene-representations)
 9. [OpenUSD and MaterialX in Neural Rendering](#9-openusd-and-materialx-in-neural-rendering)
 10. [DLSS on Linux](#10-dlss-on-linux)
-11. [Integrations](#11-integrations)
-12. [References](#12-references)
+11. [TensorRT: Inference Optimisation for Neural Rendering](#11-tensorrt-inference-optimisation-for-neural-rendering)
+11b. [Optical Flow: Hardware-Accelerated Motion Estimation](#11b-optical-flow-hardware-accelerated-motion-estimation)
+12. [Integrations](#12-integrations)
 
 ---
 
@@ -997,6 +998,131 @@ config->setInt8Calibrator(new DenoiserCalibrator(calibrationFrames));
 ```
 
 For a typical denoiser (NRD-equivalent quality, 1080p), calibration requires 100–500 representative frames covering different lighting conditions. The calibration cache (`timing.cache`) should be regenerated whenever the model architecture or training data distribution changes.
+
+## 11b. Optical Flow: Hardware-Accelerated Motion Estimation
+
+**Optical flow** is the per-pixel estimation of 2D motion vectors between two consecutive frames — where did each pixel move? It is a foundation technology for frame generation, video compression, video stabilisation, and computer vision on the GPU stack.
+
+### NVIDIA Optical Flow SDK (NVOF)
+
+NVIDIA GPUs from Turing (RTX 20xx) onward include dedicated **Optical Flow Accelerator (OFA)** hardware — a fixed-function engine distinct from shader cores and Tensor Cores. The OFA computes dense motion vector fields at a fraction of the power and latency of a shader-based optical flow implementation.
+
+The **NVIDIA Optical Flow SDK** ([developer.nvidia.com/opticalflow-sdk](https://developer.nvidia.com/opticalflow-sdk)) exposes the OFA to applications via a C API:
+
+```c
+#include <nvOpticalFlowCommon.h>
+#include <nvOpticalFlowCuda.h>
+
+NV_OF_CUDA_API_FUNCTION_LIST ofAPI;
+NvOFCudaAPI_CreateInstanceFromList(cudaCtx, &ofAPI);
+
+NvOFHandle hOF;
+ofAPI.nvCreateOpticalFlowCuda(cudaCtx, &hOF);
+
+NV_OF_INIT_PARAMS initParams = {
+    .width           = 1920,
+    .height          = 1080,
+    .outGridSize     = NV_OF_OUTPUT_VECTOR_GRID_SIZE_4,  /* 1 vector per 4×4 block */
+    .hintGridSize    = NV_OF_HINT_VECTOR_GRID_SIZE_NONE,
+    .mode            = NV_OF_MODE_OPTICALFLOW,
+    .perfLevel       = NV_OF_PERF_LEVEL_SLOW,            /* SLOW=highest quality */
+    .enableTemporalHints = NV_OF_FALSE,
+};
+ofAPI.nvOFInit(hOF, &initParams);
+
+/* Submit two CUDA device buffers (previous frame, current frame) */
+NV_OF_EXECUTE_INPUT_PARAMS execIn  = { .inputFrame = prevBuf, .referenceFrame = currBuf };
+NV_OF_EXECUTE_OUTPUT_PARAMS execOut = { .outputBuffer = flowBuf };
+ofAPI.nvOFExecute(hOF, &execIn, &execOut);
+/* flowBuf now contains (dx, dy) int16 vectors, one per 4×4 pixel block */
+```
+
+Output grid sizes: 1×1, 2×2, or 4×4 pixels per vector. The 4×4 grid is the OFA's native resolution; sub-grid accuracy requires bilinear upsampling.
+
+### VK_NV_optical_flow
+
+`VK_NV_optical_flow` ([Khronos spec](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_optical_flow.html), available since driver R520+) exposes the same OFA hardware through the Vulkan API, enabling tight integration with Vulkan frame graphs without a CUDA context:
+
+```c
+/* Query optical flow properties */
+VkPhysicalDeviceOpticalFlowPropertiesNV ofProps = {
+    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPTICAL_FLOW_PROPERTIES_NV
+};
+/* Supported grid sizes, formats, hint capability reported in ofProps */
+
+/* Create optical flow session */
+VkOpticalFlowSessionCreateInfoNV sessionInfo = {
+    .sType       = VK_STRUCTURE_TYPE_OPTICAL_FLOW_SESSION_CREATE_INFO_NV,
+    .width       = 1920, .height = 1080,
+    .imageFormat = VK_FORMAT_R8_UNORM,           /* luma input */
+    .flowVectorFormat = VK_FORMAT_R16G16_S10_5_NV, /* int16 fixed-point vectors */
+    .outputGridSize   = VK_OPTICAL_FLOW_GRID_SIZE_4_BIT_NV,
+    .performanceLevel = VK_OPTICAL_FLOW_PERFORMANCE_LEVEL_SLOW_NV,
+};
+VkOpticalFlowSessionNV session;
+vkCreateOpticalFlowSessionNV(device, &sessionInfo, NULL, &session);
+
+/* Bind input/output images to session slots */
+vkBindOpticalFlowSessionImageNV(device, session,
+    VK_OPTICAL_FLOW_SESSION_BINDING_POINT_INPUT_NV, prevImageView, VK_IMAGE_LAYOUT_GENERAL);
+vkBindOpticalFlowSessionImageNV(device, session,
+    VK_OPTICAL_FLOW_SESSION_BINDING_POINT_REFERENCE_NV, currImageView, VK_IMAGE_LAYOUT_GENERAL);
+vkBindOpticalFlowSessionImageNV(device, session,
+    VK_OPTICAL_FLOW_SESSION_BINDING_POINT_FLOW_VECTOR_NV, flowImageView, VK_IMAGE_LAYOUT_GENERAL);
+
+/* Dispatch — recorded into a command buffer, synchronised via pipeline barriers */
+vkCmdOpticalFlowExecuteNV(cmdBuf, session, &executeInfo);
+```
+
+The Vulkan path is preferred for new code: no CUDA context needed, synchronisation via standard `VkSemaphore`/pipeline barriers, and the flow vectors live in a `VkImage` directly usable as a shader input in the next frame graph node.
+
+### DLSS 3 Frame Generation and Optical Flow
+
+DLSS 3 (Ada Lovelace, RTX 40xx) introduced **Frame Generation**: synthesising an entire interpolated frame between two rendered frames, effectively doubling the frame rate without doubling GPU render time. Optical flow is the backbone:
+
+```
+Frame N (rendered) ──┐
+                     ├──► OFA optical flow ──► flow field ──► Frame N+0.5 (synthesised)
+Frame N+1 (rendered) ┘                          │
+                                                └──► NGX DLSS-G warp + inpaint shader
+```
+
+1. The OFA computes the dense flow field between frames N and N+1 (backward and forward)
+2. The NGX DLSS-G shader warps pixels from both frames to the intermediate time point
+3. A neural inpainting network fills disoccluded regions (areas visible in N+1 but occluded in N)
+4. The Reflex low-latency system schedules the synthesised frame into the display queue
+
+On Linux, DLSS Frame Generation requires the NVIDIA proprietary driver (R535+) and `libnvidia-ngx.so`. It does not yet function through NVK or any open-source path. The `VK_NV_optical_flow` extension is available independently of DLSS and works on RADV/ANV (though AMD/Intel GPUs lack OFA hardware and would fall back to a shader implementation).
+
+### AMD FSR 3 Frame Generation
+
+AMD's equivalent — **FSR 3 Frame Generation** (`VK_AMD_anti_lag` + FSR 3 SDK) — does not use dedicated optical flow hardware (RDNA GPUs lack an OFA equivalent as of RDNA 4). Instead, FSR 3's motion estimation runs as a compute shader dispatch:
+
+```c
+/* FSR 3 optical flow in compute — part of ffxFsr3DispatchFrameGeneration() */
+FfxFsr3FrameGenerationDispatchDescription dispatchDesc = {
+    .commandList        = ffxGetCommandListVK(cmdBuf),
+    .presentColor       = prevColorResource,
+    .depth              = depthResource,
+    .motionVectors      = mvResource,           /* from the game's G-buffer */
+    .frameGenerationEnabled = true,
+    .frameID            = frameIndex,
+};
+ffxFsr3ContextDispatchFrameGeneration(&fsr3Context, &dispatchDesc);
+```
+
+FSR 3 uses the game's existing motion vector G-buffer output (rasterisation-derived, not optical flow) rather than computing optical flow from scratch. This is faster but less accurate for disocclusion — the game's MVs don't cover pixels that were off-screen in the previous frame.
+
+### Comparison
+
+| | NVIDIA OFA (DLSS 3 FG) | AMD FSR 3 FG | Software optical flow (OpenCV) |
+|---|---|---|---|
+| **Hardware** | Dedicated OFA unit (Turing+) | No dedicated HW; compute shader | Any GPU or CPU |
+| **Linux API** | `VK_NV_optical_flow` / NVOF SDK | FSR 3 SDK (compute dispatch) | `cv::cuda::calcOpticalFlowPyrLK` |
+| **Latency** | ~0.5 ms (hardware) | ~2–4 ms (compute) | 5–20 ms depending on resolution |
+| **Quality** | Dense, sub-pixel accurate | Game MV dependent | High (Farnebäck) or sparse (PyrLK) |
+| **Open source** | Extension open, NGX DLSS-G closed | FSR 3 SDK open (MIT) | OpenCV CUDA fully open |
+| **Use in frame gen** | Yes (DLSS 3) | Yes (FSR 3) | Research / custom pipelines |
 
 ## 12. Integrations
 

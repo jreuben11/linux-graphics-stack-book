@@ -20,7 +20,8 @@
 10. [Building OpenCV from Source with GPU Backends](#10-building-opencv-from-source-with-gpu-backends)
 11. [Production Patterns: VAAPI + OpenCL Zero-Copy Pipeline](#11-production-patterns-vaapi--opencl-zero-copy-pipeline)
 12. [OpenCV 5 GPU Architecture Changes](#12-opencv-5-gpu-architecture-changes)
-13. [Integrations](#13-integrations)
+13. [Scene Analysis: Depth Estimation, Optical Flow, and Semantic Segmentation](#13-scene-analysis-depth-estimation-optical-flow-and-semantic-segmentation)
+14. [Integrations](#13-integrations)
 
 ---
 
@@ -1234,6 +1235,161 @@ Key breaking changes for GPU code in OpenCV 5:
 | `CV_8U`, `CV_32F` type constants | Same values; `CV_16F`, `CV_16BF` added |
 
 [Source: OpenCV 5 OE-5 Wiki](https://github.com/opencv/opencv/wiki/OE-5.-OpenCV-5)
+
+---
+
+## 13. Scene Analysis: Depth Estimation, Optical Flow, and Semantic Segmentation
+
+Modern computer vision workloads go beyond classical OpenCV operations — they use large neural networks for **scene understanding**: estimating 3D structure, segmenting objects, and tracking motion. These workloads run on the same Linux GPU stack as rendering, and OpenCV's DNN module is often the integration point.
+
+### Monocular Depth Estimation
+
+**Depth Anything v2** ([github.com/DepthAnything/Depth-Anything-V2](https://github.com/DepthAnything/Depth-Anything-V2)) is the current state-of-the-art monocular depth estimator — a Vision Transformer (ViT) fine-tuned on a mixture of labelled and unlabelled data, producing relative depth maps from a single RGB image. Running it via OpenCV's DNN module:
+
+```python
+import cv2
+import numpy as np
+
+# Load the ONNX export of Depth Anything V2 (Small variant, 24M params)
+net = cv2.dnn.readNetFromONNX("depth_anything_v2_vits.onnx")
+net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+
+img = cv2.imread("scene.jpg")
+blob = cv2.dnn.blobFromImage(img, scalefactor=1/255.0,
+                              size=(518, 518),
+                              mean=(0.485, 0.456, 0.406),
+                              swapRB=True, crop=False)
+# Normalise with ImageNet std (applied post-mean-subtraction)
+blob[0] /= np.array([0.229, 0.224, 0.225]).reshape(3,1,1)
+
+net.setInput(blob)
+depth = net.forward()          # shape: (1, 1, 518, 518), relative depth
+depth = cv2.resize(depth[0,0], (img.shape[1], img.shape[0]))
+depth_vis = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+depth_colour = cv2.applyColorMap(depth_vis, cv2.COLORMAP_INFERNO)
+```
+
+For **metric depth** (absolute distances in metres), **ZoeDepth** and **Depth Pro** (Apple, 2024) provide calibrated outputs. These require the model to know the camera's intrinsics or include a focal-length estimation head.
+
+**GPU memory note**: The ViT-Large Depth Anything v2 variant (335M params) requires ~1.4 GB VRAM in FP32 or ~700 MB in FP16. The Small variant (24M params) fits in under 200 MB. On systems with LPDDR-backed iGPUs (AMD Ryzen, Intel Iris), the model competes for shared DRAM bandwidth with display scanout — prefer the Small variant or use OpenCL backend.
+
+### Optical Flow (CPU/GPU)
+
+OpenCV provides two GPU-accelerated optical flow algorithms in `cv::cuda`:
+
+```cpp
+// Sparse Lucas-Kanade (feature point tracking)
+cv::Ptr<cv::cuda::SparsePyrLKOpticalFlow> lk =
+    cv::cuda::SparsePyrLKOpticalFlow::create(cv::Size(21,21), 3, 30);
+
+cv::cuda::GpuMat prevGray, currGray, prevPts, nextPts, status;
+lk->calc(prevGray, currGray, prevPts, nextPts, status);
+
+// Dense Farnebäck (per-pixel flow field)
+cv::Ptr<cv::cuda::FarnebackOpticalFlow> fb =
+    cv::cuda::FarnebackOpticalFlow::create(5, 0.5, false, 15, 3, 5, 1.2, 0);
+cv::cuda::GpuMat flow;  // 2-channel CV_32FC2: (dx, dy) per pixel
+fb->calc(prevGray, currGray, flow);
+
+// Extract and visualise flow magnitude
+std::vector<cv::cuda::GpuMat> channels(2);
+cv::cuda::split(flow, channels);
+cv::cuda::GpuMat magnitude, angle;
+cv::cuda::cartToPolar(channels[0], channels[1], magnitude, angle);
+```
+
+For hardware-accelerated optical flow on NVIDIA GPUs, see the `VK_NV_optical_flow` / NVOF SDK treatment in ch68 §11b. OpenCV's `cv::cuda` flow is a software compute implementation and runs 5–10× slower than the OFA hardware unit, but is cross-vendor and fully open-source.
+
+**NVIDIA OF integration via GpuMat**: The NVOF SDK can output flow vectors into a CUDA device pointer that wraps as a `cv::cuda::GpuMat` for downstream OpenCV processing:
+
+```cpp
+// After nvOFExecute, wrap the CUDA output buffer
+cv::cuda::GpuMat flowMat(height/4, width/4, CV_16SC2,
+                          (void*)nvofOutputDevPtr, nvofPitch);
+// Upscale 4×4 grid to full resolution
+cv::cuda::GpuMat flowFull;
+cv::cuda::resize(flowMat, flowFull, cv::Size(width, height),
+                 0, 0, cv::INTER_LINEAR);
+```
+
+### Semantic Segmentation: SAM 2
+
+**SAM 2** (Segment Anything Model 2, Meta, 2024) is a promptable segmentation model that runs on a single GPU and handles both images and video. It accepts point, box, or mask prompts and produces pixel-accurate object masks. Integration on Linux:
+
+```python
+import torch
+from sam2.build_sam import build_sam2
+from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+# Load model onto GPU (requires CUDA; ROCm via PyTorch ROCm wheels also works)
+sam2 = build_sam2("sam2_hiera_large.yaml", "sam2_hiera_large.pt",
+                  device="cuda")
+predictor = SAM2ImagePredictor(sam2)
+
+# Set image (BGR OpenCV → RGB)
+predictor.set_image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+# Prompt with a point (x, y) and label (1=foreground, 0=background)
+masks, scores, logits = predictor.predict(
+    point_coords=np.array([[512, 384]]),
+    point_labels=np.array([1]),
+    multimask_output=True,
+)
+# masks: (3, H, W) bool arrays; scores: (3,) confidence
+
+# Use OpenCV to apply mask as overlay
+mask_overlay = frame.copy()
+mask_overlay[masks[0]] = (0, 255, 0)  # green overlay on best mask
+```
+
+For video segmentation, SAM 2's memory-conditioned architecture propagates masks across frames without re-prompting. This is relevant for tracking objects through a scene for XR applications (ch27) and AR overlays (ch87).
+
+**ROCm note**: SAM 2 uses FlashAttention internally. On ROCm, use `torch.backends.cuda.enable_flash_sdp(False)` if FlashAttention CUDA kernels are unavailable and fall back to `torch.nn.functional.scaled_dot_product_attention` with `attn_implementation="sdpa"`.
+
+### Scene Graph and 3D Reconstruction Pipeline
+
+A complete scene analysis pipeline for robotics or XR combines:
+
+```
+RGB frames  →  Depth Anything v2  →  metric depth map
+     │                                      │
+     └──────────► SAM 2 masks ──────────────┤
+                                            ▼
+                               Point cloud (Open3D / PCL)
+                                            │
+                               ICP registration / SLAM
+                                            │
+                               3D scene graph (objects + poses)
+```
+
+Key Linux libraries:
+- **Open3D** (`pip install open3d`) — point cloud registration, TSDF fusion, ICP, PointNet++ — CUDA backend
+- **PCL** (Point Cloud Library) — VTK-based, OpenCL backend for nearest-neighbour search
+- **ORB-SLAM3** — GPU-accelerated keypoint extraction (`cv::cuda::ORB`), CPU-side map management
+
+```cpp
+// Convert depth + RGB into coloured point cloud using OpenCV + Open3D
+cv::Mat depth_f32; depth.convertTo(depth_f32, CV_32F, 1.0/1000.0); // mm → m
+open3d::geometry::Image o3d_depth, o3d_color;
+// ... copy cv::Mat data into Open3D Image ...
+auto rgbd = open3d::geometry::RGBDImage::CreateFromColorAndDepth(
+    o3d_color, o3d_depth, /*depth_scale=*/1.0, /*depth_trunc=*/3.0);
+auto pcd = open3d::geometry::PointCloud::CreateFromRGBDImage(
+    *rgbd, open3d::camera::PinholeCameraIntrinsic(
+        open3d::camera::PinholeCameraIntrinsicParameters::PrimeSenseDefault));
+```
+
+### Performance Summary
+
+| Model / Algorithm | Input | GPU memory | Latency (RTX 4070) | Open source |
+|---|---|---|---|---|
+| Depth Anything V2-S | 518×518 RGB | 200 MB | ~8 ms | Yes (Apache 2.0) |
+| Depth Anything V2-L | 518×518 RGB | 1.4 GB | ~25 ms | Yes |
+| SAM 2 Hiera-Large | any resolution | 3.2 GB | ~50 ms/frame | Yes (Apache 2.0) |
+| NVOF (OFA hardware) | 1080p | < 50 MB | ~0.5 ms | SDK closed, ext open |
+| Farnebäck (CUDA) | 1080p | ~50 MB | ~8 ms | Yes (OpenCV BSD) |
+| ORB-SLAM3 (GPU KPs) | 640×480 | ~300 MB | ~15 ms/frame | Yes (GPLv3) |
 
 ---
 

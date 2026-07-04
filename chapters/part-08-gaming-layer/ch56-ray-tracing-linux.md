@@ -15,7 +15,8 @@ This chapter targets **systems and driver developers** who need to understand ho
 7. [NVK Ray Tracing](#7-nvk-ray-tracing)
 8. [DXR via VKD3D-Proton](#8-dxr-via-vkd3d-proton)
 9. [Blender Cycles](#9-blender-cycles)
-10. [Integrations](#integrations)
+10. [Ray Marching and Signed Distance Field Rendering](#10-ray-marching-and-signed-distance-field-rendering)
+11. [Integrations](#integrations)
 
 ---
 
@@ -863,6 +864,115 @@ Blender Cycles has a work-in-progress Vulkan backend. The compute pipeline porti
 The Vulkan Cycles backend targets a cross-vendor path that runs on AMD (RADV), Intel (ANV), and NVIDIA (proprietary). It does not yet reach parity with OptiX or HIP-RT performance but provides a functional open-standards alternative.
 
 The Cycles GLSL/SPIR-V kernels call `rayQueryInitializeEXT` and `rayQueryProceedEXT` in compute shaders dispatched by the wavefront integrator. Each wavefront kernel processes a batch of in-flight paths simultaneously, and the ray query for each path proceeds inline in that compute shader invocation. This contrasts with path tracers that use the full `VK_KHR_ray_tracing_pipeline` model (raygen → closest-hit → miss recursion), which would require significant architectural changes to Cycles' explicit wavefront loop. The ray query approach preserves Cycles' existing path state management while gaining hardware BVH acceleration. [Source: Khronos — Vulkan Ray Tracing Best Practices for Hybrid Rendering](https://www.khronos.org/blog/vulkan-ray-tracing-best-practices-for-hybrid-rendering)
+
+---
+
+## 10. Ray Marching and Signed Distance Field Rendering
+
+Hardware ray tracing (BVH traversal via RT cores) is the dominant technique in this chapter, but a complementary GPU rendering approach — **ray marching** — operates entirely in compute or fragment shaders without hardware acceleration or mesh geometry. Understanding when to use each, and how they interact on the Linux GPU stack, rounds out the picture.
+
+### What is Ray Marching?
+
+Ray marching (also called **sphere marching**) is a technique for rendering implicit surfaces defined by **Signed Distance Functions (SDFs)**. Instead of a mesh, geometry is described by a function `f(p) → ℝ` that returns the signed distance from point `p` to the nearest surface (negative inside, positive outside, zero on the surface).
+
+The rendering loop advances a ray from the camera, stepping forward by `f(p)` at each step — the sphere marching insight: if the SDF returns 2.0, it's safe to advance 2.0 units before checking again, guaranteeing no surface is skipped:
+
+```glsl
+/* GLSL fragment shader — basic sphere marching */
+float map(vec3 p) {
+    /* SDF for a unit sphere at origin */
+    return length(p) - 1.0;
+}
+
+vec3 march(vec3 ro, vec3 rd) {
+    float t = 0.0;
+    for (int i = 0; i < 128; i++) {
+        vec3  p = ro + rd * t;
+        float d = map(p);
+        if (d < 0.001) return p;          /* hit */
+        if (t > 100.0) break;             /* miss */
+        t += d;                           /* safe step */
+    }
+    return vec3(0.0);                     /* background */
+}
+
+/* Surface normal from gradient of SDF */
+vec3 normal(vec3 p) {
+    vec2 e = vec2(0.001, 0.0);
+    return normalize(vec3(
+        map(p + e.xyy) - map(p - e.xyy),
+        map(p + e.yxy) - map(p - e.yxy),
+        map(p + e.yyx) - map(p - e.yyx)
+    ));
+}
+```
+
+### SDF Primitives and CSG Operations
+
+The power of SDFs is composability via **Constructive Solid Geometry (CSG)** operations that combine primitives mathematically:
+
+```glsl
+/* Primitive SDFs */
+float sdSphere(vec3 p, float r)          { return length(p) - r; }
+float sdBox(vec3 p, vec3 b)              { vec3 q = abs(p) - b; return length(max(q,0.)) + min(max(q.x,max(q.y,q.z)),0.); }
+float sdTorus(vec3 p, vec2 t)            { return length(vec2(length(p.xz)-t.x,p.y))-t.y; }
+float sdCapsule(vec3 p, vec3 a, vec3 b, float r) { vec3 pa=p-a,ba=b-a; float h=clamp(dot(pa,ba)/dot(ba,ba),0.,1.); return length(pa-ba*h)-r; }
+
+/* CSG operations */
+float opUnion    (float d1, float d2) { return min(d1, d2); }
+float opSubtract (float d1, float d2) { return max(-d1, d2); }
+float opIntersect(float d1, float d2) { return max(d1, d2); }
+float opSmoothUnion(float d1, float d2, float k) {
+    float h = clamp(0.5 + 0.5*(d2-d1)/k, 0., 1.);
+    return mix(d2, d1, h) - k*h*(1.-h); /* smooth blend radius k */
+}
+```
+
+`opSmoothUnion` (k > 0) creates organic blending between shapes — impossible with polygon meshes without remeshing.
+
+### When Ray Marching Beats Hardware RT
+
+| Use case | Ray marching | Hardware RT (BVH) |
+|---|---|---|
+| **Procedural/fractal geometry** | Ideal — no mesh needed, infinite detail | Poor — mesh must be pre-built; fractals have infinite faces |
+| **Smooth morphing surfaces** | Trivial — interpolate SDF params | Expensive — BLAS rebuild every frame |
+| **Volumetric effects** (fog, fire, clouds) | Natural — step through volume density | Awkward — requires custom intersection shaders |
+| **True reflections/shadows in SDF scene** | Self-contained — one shader | Requires RT pipeline + SBT |
+| **Large polygon scenes** (games, CAD) | Poor — no mesh = no triangle rasterisation | Ideal — BVH accelerates millions of triangles |
+| **Denoising** | Must use TAA or custom filter | DLSS-RR, NRD, OptiX denoiser |
+
+### Linux GPU Performance Characteristics
+
+Ray marching is a **wavefront-hostile** workload: divergent step counts between rays cause SIMD lane underutilisation. On AMD RDNA hardware (wave32), divergence across 32 lanes in the same wavefront means some lanes idle while others complete their march. Mitigation strategies:
+
+- **Maximum step budget** (`if (i > 128) break`) bounds worst-case divergence
+- **Texture-based SDF lookup** for complex scenes: precompute SDF into a 3D volume texture (`GL_R32F` / `VK_FORMAT_R32_SFLOAT`) and ray march through it using trilinear filtering — converts procedural divergence to memory-bandwidth-bound execution
+- **Compute over fragment**: a compute shader dispatching one thread per pixel with `gl_LocalInvocationID`-based early exit gives better GPU utilisation than fragment shaders (which cannot early-exit a draw call)
+
+### ShaderToy and the Linux Development Environment
+
+[ShaderToy](https://www.shadertoy.com) is the de facto research and demo platform for ray marching. Its GLSL fragment shader environment maps directly to Vulkan fragment shaders via GLSL → SPIR-V compilation. Porting a ShaderToy shader to a standalone Linux Vulkan application:
+
+```bash
+# Compile ShaderToy-style GLSL to SPIR-V (add Vulkan built-ins header)
+glslc --target-env=vulkan1.3 -fshader-stage=frag shadertoy_port.glsl -o frag.spv
+
+# Or via glslangValidator with ShaderToy compatibility defines
+glslangValidator -V -DSHADERTOY_COMPAT shadertoy_port.glsl -o frag.spv
+```
+
+The main adaptation required: replace `iResolution`, `iTime`, `iMouse` uniforms with a Vulkan push-constant or UBO block.
+
+### Combining Ray Marching with Hardware RT
+
+Modern effects pipelines can **hybrid** the two techniques in a single frame:
+
+1. Rasterise opaque polygon meshes normally (GBuffer pass)
+2. Ray march SDF volumetrics (smoke, clouds) as a fullscreen compute pass reading the GBuffer depth
+3. Hardware RT for sharp reflections/shadows on the polygon geometry
+4. Composite: SDF volume result × (1 − opacity) + RT reflections
+
+This approach is used in Unreal Engine 5's Lumen (software ray marching for distant GI, hardware RT for near-field) and in custom Vulkan demos via `VK_KHR_ray_query` inline queries from the same compute shader that does the SDF march.
 
 ---
 
