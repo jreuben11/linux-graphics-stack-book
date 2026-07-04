@@ -187,6 +187,161 @@ Despite the stack's depth and maturity, several focused gaps remain where a smal
 
 **`mesa-capstone`.** A GPU disassembler library in the style of the Capstone multi-architecture CPU disassembler, covering RADV/ACO ISA, NAK's NVIDIA SASS encoding, and Intel EU ISA. All per-driver disassemblers already exist in the Mesa tree but are not usable as libraries by external profiling or debugging tools. Extracting and packaging them would enable a generation of GPU tooling.
 
+## What the Full Stack Makes Possible: Unsolved Problems at Layer Boundaries
+
+The preceding section lists small, well-scoped tools that any competent engineer could build given the right documentation. This section is different. It identifies systems that are structurally absent — not because they are hard to implement once specified, but because specifying them requires holding multiple layers of the stack in mind simultaneously. No one currently does.
+
+The central observation is that the Linux graphics stack's layers were designed and are maintained by specialists who, with rare exceptions, know their layer and the interface above and below it. A kernel DRM engineer understands `dma_fence` and the KMS atomic commit path; they do not typically understand Dawn's `DawnWire` serialisation protocol or KWin's frame pacing algorithm. A browser GPU engineer understands Chrome's command buffer ring and its Ozone Wayland backend; they do not typically understand how `drm_gpu_scheduler` arbitrates between competing processes or how GSP-RM P-state transitions are triggered. The result is a set of problems that everyone who works on the stack has felt — missed latency budgets, silent zero-copy regressions, power inefficiency, opaque security surfaces — but that nobody has been positioned to solve end-to-end.
+
+The items below are not incremental improvements to existing tools. They are new categories, each of which requires simultaneously understanding at least three layers that currently have no one person or team spanning them.
+
+### 1. End-to-End Frame Latency Tracer
+
+**The gap.** Every layer of the stack that a frame traverses has its own tracing infrastructure: Chrome's `gpu_trace` via `base::trace_event`, Mesa's `MESA_LOADER_DRIVER_OVERRIDE`-visible debug output, the DRM scheduler's `drm_gpu_scheduler_entity` tracepoints, KMS page-flip events via `drm_vblank_event`, and the Wayland `wp_presentation` timestamp feedback. Each is excellent in isolation. None of them speak to each other.
+
+**Why it matters.** When a Wayland frame arrives at the compositor 2ms late and misses the vblank window, causing a dropped frame visible to the user, the cause could be in any of: the application's render loop, Chrome's command buffer batching, Dawn's buffer upload path, Mesa's command stream encoding, the DRM scheduler's virtual-runtime fairness algorithm, the GSP-RM P-state being wrong for the workload, or KWin's compositor scheduling. Currently diagnosing this requires running five separate tools from five different teams and mentally correlating timestamps across them.
+
+**What it would look like.** A unified frame tracer that instruments the following boundaries with a common monotonic timestamp and a per-frame correlation token:
+
+```
+[Chrome/application]
+  gl.drawArrays() → DawnWire serialise → GPU process receive
+                                               ↓
+[Mesa / Vulkan driver]
+  vkQueueSubmit → drm_syncobj signal → DRM scheduler enqueue
+                                               ↓
+[Kernel DRM scheduler]
+  drm_sched_entity_push_job → GPU job run → completion fence signal
+                                               ↓
+[KMS / compositor]
+  drm_atomic_commit IN_FENCE_FD wait → CRTC flip → wp_presentation timestamp
+```
+
+The data to fill this timeline exists today in `ftrace` (DRM scheduler events), `perf` (KMS page flip events), Chrome's `trace_event`, and the Wayland `wp_presentation` protocol feedback path. The missing piece is a correlator that stitches the `dma_fence` seqno visible in the kernel to the `DawnWire` command buffer ID visible in the browser process to the `wl_surface.commit` serial visible in the compositor.
+
+**Why it requires cross-stack knowledge.** The correlation key — the `dma_fence` completion timestamp — is a kernel primitive. The GPU job identifier that a browser GPU process emits is a Chrome-internal concept. The `wp_presentation` feedback is a Wayland protocol extension. Nobody currently spans kernel fencing, Chrome GPU process internals, and Wayland compositor protocol semantics in a single codebase. Building this tracer requires knowing all three simultaneously in order to design the correlation protocol.
+
+**Concrete value.** Valve's gamescope compositor and Google's ChromeOS team both have internal latency monitoring infrastructure, but neither publishes a reusable cross-layer tool. The game industry regularly ships latency-sensitive titles that target 4ms GPU-to-display budgets on Linux; the absence of this tool means those budgets are measured with hardware frame latency analysers rather than software introspection.
+
+### 2. Zero-Copy Pipeline Validator
+
+**The gap.** The Linux graphics stack's zero-copy design guarantee — that a GPU-rendered buffer travels from `vkQueueSubmit` to display scanout without ever being read or written by a CPU — is well-understood in principle and routinely violated in practice without anyone noticing. A missed format modifier negotiation silently downgrades a scanout-tiled buffer to a linear copy. A compositor that does not implement `zwp_linux_dmabuf_feedback_v1` correctly inserts a CPU blit. An application that allocates with `GBM_BO_USE_RENDERING` but not `GBM_BO_USE_SCANOUT` forces a copy at KMS submission time.
+
+**Why it matters.** On a high-refresh-rate display or under constrained power budgets (laptops, mobile, Steam Deck), unexpected CPU copies in the frame path consume memory bandwidth that raises power draw, increases frame time, and can cause thermal throttling. These copies are invisible to the application developer and invisible to the compositor developer because each sees only their own layer.
+
+**What it would look like.** A runtime validator — structured like `VK_LAYER_KHRONOS_validation` but spanning the kernel-to-compositor path — that:
+
+1. Intercepts `gbm_bo_create_with_modifiers2` calls and records which (format, modifier) pairs are requested and granted
+2. Tracks `DRM_IOCTL_PRIME_HANDLE_TO_FD` and `DRM_IOCTL_MODE_ADDFB2` calls to determine whether the buffer reaching KMS carries the same modifier as the one allocated
+3. Hooks `dma_buf_mmap` and `begin_cpu_access` to detect any CPU access between GPU render completion and KMS flip
+4. Emits a structured report: "frame N: CPU copy inserted at [GBM allocation / compositor import / KMS submission] because [modifier mismatch / missing SCANOUT flag / compositor fallback]"
+
+The mechanism exists: `dma_buf_begin_cpu_access` is auditable from userspace via LD_PRELOAD interception of `mmap`, and format modifier negotiation leaves a complete audit trail in the DRM UAPI call sequence. The missing piece is a tool that connects the GBM allocation decision to the final KMS `DRM_IOCTL_MODE_ADDFB2` call and validates that no copy was inserted between them.
+
+**Why it requires cross-stack knowledge.** The validator must understand GBM modifier semantics (Part I/VI), the `zwp_linux_dmabuf_feedback_v1` negotiation protocol (Part VI), the KMS `IN_FORMATS` blob and `DRM_MODE_FB_MODIFIERS` flag (Part I), and when `dma_buf_begin_cpu_access` is legitimately called for cache coherency vs. when it indicates an unintended CPU copy. These concepts span four separate specifications maintained by three separate communities.
+
+### 3. Cross-Layer Power and Latency Co-Optimiser
+
+**The gap.** GPU P-state transitions on nvidia-open and amdgpu happen reactively: the driver raises the performance state after it observes a workload submission. On a 60 Hz display, the GPU has 16.67ms per frame. If P-state ramp-up takes 2–4ms — which is typical for a cold GSP-RM RPC round trip initiating a P0 transition from P8 idle — then roughly 15–25% of the frame budget is consumed before the GPU is running at full speed.
+
+The compositor knows, 16ms in advance, that a frame is about to be submitted: the `wp_presentation` feedback timestamp tells it exactly when the last frame was presented, and its own frame pacing algorithm tells it when the next `wl_surface.commit` will arrive. The GPU driver does not know this. The two subsystems do not talk to each other.
+
+**What it would look like.** A Wayland protocol extension — call it `wp_gpu_scheduler_hint_v1` — that allows a compositor to signal the expected next frame deadline to the GPU driver. The compositor, having received `wp_presentation` feedback confirming the previous frame presented at time T, sends a hint:
+
+```
+wp_gpu_scheduler_hint.set_next_frame_deadline(
+    deadline_us: T + frame_interval_us - render_budget_us
+)
+```
+
+The GPU driver receives this via a DRM ioctl — `DRM_IOCTL_SCHED_FRAME_DEADLINE` — and pre-emptively initiates a P-state boost RPC to GSP-RM (or an amdgpu power profile change) before the application's `vkQueueSubmit` arrives. The effect is that the GPU is already at P0 when the first command buffer arrives, rather than ramping up in response to it.
+
+This pattern is not hypothetical: Android's `ADPF` (Android Dynamic Performance Framework) provides a similar hint via `APerformanceHintManager`, and NVIDIA's Reflex implements the low-latency end of it via the NGX SDK. Neither exists on Linux Wayland. The building blocks — `wp_presentation` timestamps, DRM scheduler deadlines, GSP-RM P-state RPCs — all exist and are documented in this book. The integration layer does not.
+
+**Why it requires cross-stack knowledge.** Designing the protocol requires simultaneously understanding the Wayland `wp_presentation` extension (Part VI), the DRM gpu scheduler's `drm_sched_entity` deadline model (Part I), GSP-RM's P-state RPC interface (Part III), and amdgpu's `pp_power_profile_mode` sysfs interface (Part II). These are four distinct specifications maintained by four distinct communities; nobody currently has a reason to read all four.
+
+**Measurable impact.** For frame-rate-limited workloads where the GPU is idle between frames — the common case in composited desktops — this optimisation eliminates the P-state ramp-up latency from the frame critical path, potentially recovering 10–20% of the per-frame budget currently consumed by reactive frequency scaling. On battery-powered devices, it also enables more aggressive idle power-gating between frames because the driver gains advance notice of when it must be ready.
+
+### 4. Cross-Vendor GPU Shader Performance Model
+
+**The gap.** Every GPU vendor ships a profiler — AMD's Radeon GPU Profiler, NVIDIA's Nsight, Intel's GPU Analyzer — that can explain why a shader performs the way it does on that vendor's hardware. None of them can explain why the same SPIR-V shader performs 3× differently between an RTX 4090 and an RX 7900 XTX, in terms of the compilation decisions each driver made and the hardware architectural differences those decisions expose.
+
+This matters for two categories of developer. First, game and rendering engineers who ship cross-platform titles and need to understand vendor-specific performance cliffs well enough to write shader code that avoids them on all targets. Second, Mesa driver developers — particularly ACO (RADV), NAK (NVK), and ANV developers — who want to compare their compiler's output quality against each other on the same SPIR-V input.
+
+**What it would look like.** A unified cross-vendor shader analysis tool that accepts a SPIR-V module and produces, for each target driver/hardware pair:
+
+1. The compiled ISA listing (from Mesa's existing per-driver disassemblers, packaged as the `mesa-capstone` library described in the previous section)
+2. Key occupancy metrics: VGPR/SGPR count for ACO, thread group occupancy for NAK, EU thread count for BRW
+3. Static performance estimates: instruction mix (ALU/memory/branch), estimated memory access latency from cache hierarchy models
+4. A diff between two targets showing which ISA instructions diverge and at which NIR optimisation pass the divergence was introduced
+
+The NIR layer is the key enabler. Because every Mesa driver compiles through NIR, inserting logging at each NIR pass and correlating with final ISA output would reveal exactly where `nir_lower_idiv` or `nir_opt_algebraic` produced different results for different hardware targets. This instrumentation does not currently exist in a form usable outside the per-driver compilation process.
+
+**Why it requires cross-stack knowledge.** Building this tool requires understanding ACO's VGPR pressure model (Part IV/V), NAK's register allocator (Part III), BRW/ELK's EU thread dispatch (Part XVI), and the NIR optimisation pipeline that feeds all three (Part IV). The ISA disassemblers that would produce the listings are already present in the Mesa tree — one per driver — but are not packageable as libraries because they embed driver-private assumptions. Designing the abstraction layer requires knowing all three ISA representations simultaneously.
+
+### 5. GPU Stack Security Audit Framework
+
+**The gap.** The Linux GPU stack is one of the largest attack surfaces in the Linux kernel that has not been systematically threat-modelled. The attack surface includes:
+
+- DRM ioctls reachable from unprivileged processes via `/dev/dri/renderD128` (the render node, which requires no authentication)
+- Mesa's SPIR-V parser (`spirv_to_nir()`) processing untrusted shader bytecode from Vulkan applications
+- Chrome's GPU process, which is sandboxed via seccomp-BPF but still has access to a large DRM ioctl allowlist
+- The Wayland compositor protocol, which accepts arbitrary integer and fd payloads from any connected client
+- GSP-RM firmware RPC channels, which accept protocol messages from the CPU-side nvidia-open kernel module
+
+Each of these has been audited in isolation, by different teams, at different times. No comprehensive model exists that traces the full privilege escalation surface: from a malicious `vkCreateShaderModule()` call in a sandboxed browser tab, through Dawn's WGSL compilation, through Mesa's SPIR-V parser, through a DRM ioctl, into the kernel driver, and potentially into GSP-RM firmware.
+
+**What it would look like.** A structured threat model in the style of Microsoft's STRIDE analysis, applied to the full GPU stack:
+
+- **Spoofing**: Can a process without a DRM authentication token forge another process's GPU context? (Answer: no — render nodes use per-fd handle namespaces. But: DMA-BUF fds passed via SCM_RIGHTS carry no identity; their misuse is not prevented by the kernel.)
+- **Tampering**: Can a process corrupt a DMA-BUF shared with a compositor? (Answer: yes, if the buffer was allocated without IOMMU protection and the compositor did not use `DRM_IOCTL_PRIME_FD_TO_HANDLE` on a separate DRM fd. The attack is not theoretical; it was demonstrated in the `virgl` virtual GPU context.)
+- **Information disclosure**: Can a shader read GPU memory allocated by another process? (Answer: on most drivers, no — GPU VA spaces are per-context. Exceptions: some GPUs with shared L2 caches have side-channel vulnerabilities; Nouveau on pre-GSP hardware does not reliably clear VRAM between contexts.)
+- **Elevation of privilege**: Can a malformed SPIR-V module cause the kernel driver to execute attacker-controlled code? (Answer: no known public exploits; but `spirv_to_nir()` is a C parser processing untrusted bytecode, and its fuzzing coverage is incomplete.)
+
+The audit framework would automate parts of this analysis using a combination of `libFuzzer`-based corpus generation for the DRM ioctl interface and `spirv-fuzz` for the shader parsing path, unified under a coverage reporting harness.
+
+**Why it requires cross-stack knowledge.** The threat model spans the Wayland protocol (Part VI), DRM UAPI security model (Part I), Mesa's SPIR-V parser (Part IV), Chrome's seccomp sandbox allowlist (Part X), and GSP-RM's firmware trust boundary (Part III). Each of those chapters was written by different people with different threat assumptions. Producing a unified model requires someone who has read all five.
+
+### 6. Adaptive Data Path Selector for GPU ML Pipelines
+
+**The gap.** A modern GPU ML pipeline moves data between CPU RAM, GPU VRAM, NVMe storage, and remote GPU VRAM via RDMA fabric. There are at least five distinct kernel-level data paths available:
+
+| Transfer type | Fastest path | Kernel mechanism |
+|--------------|-------------|-----------------|
+| NVMe → GPU VRAM | GPUDirect Storage (cuFile) | `nvidia-fs.ko` + io_uring |
+| CPU RAM → GPU VRAM (small) | gdrcopy BAR mmap | `gdrdrv.ko` + write-combining |
+| CPU RAM → GPU VRAM (large) | cudaMemcpy DMA | CUDA driver + PCIe DMA engine |
+| GPU VRAM → GPU VRAM (same node) | NVLink P2P | `nv_p2p_get_pages` |
+| GPU VRAM ↔ Remote GPU VRAM | GPUDirect RDMA | `nvidia-peermem.ko` + RDMA verbs |
+
+The correct choice depends on: transfer size (gdrcopy beats cudaMemcpy for < 64 KB), PCIe topology (RDMA requires P2P-capable root complex without ACS blocking), IOMMU configuration (affects whether `nvidia-fs` can bypass the CPU DMA path), and NUMA distance between the GPU and the NIC (affects RDMA throughput). None of these parameters are visible to a PyTorch `DataLoader` or a CUDA kernel launch.
+
+**What it would look like.** A runtime data path selector that:
+
+1. At startup, probes the system topology using `pci_p2pdma_distance()` (Linux `p2pdma` API), `numactl --hardware`, and `nvidia-smi topo --matrix` to build a capability matrix of which paths are available between each (GPU, NIC, NVMe) pair
+2. For each `cuMemcpy`, `ibv_post_send`, or `cuFileRead` call intercepted via LD_PRELOAD, selects the optimal path from the capability matrix based on transfer size and source/destination device identities
+3. Exposes a profiling mode that logs path selections and measured throughput, allowing workload-specific tuning
+
+This is not a fundamentally new idea — NVIDIA's `nccl` (NCCL collective communications library) performs topology-aware path selection for collective operations in distributed training. What does not exist is a general-purpose single-node data path selector that integrates NVMe-direct (GPUDirect Storage), BAR-mmap (gdrcopy), and RDMA paths under a single routing decision framework available outside of CUDA-only workloads.
+
+**Why it requires cross-stack knowledge.** The implementation requires simultaneously understanding the `p2pdma` PCIe peer-to-peer distance API (Part I), HMM page table integration for CPU-GPU unified addressing (Part I), `nvidia-peermem.ko`'s peer memory client interface (Part I/III), GPUDirect Storage's `nvidia-fs` io_uring path (Part I), and RDMA verb registration semantics (Part I). These are all documented in separate kernel subsystem references and GPU vendor developer guides. Nobody has built a system that views them as a routing problem over a unified topology graph, because nobody has previously had reason to read all of them.
+
+### The Common Architecture
+
+Every system above has the same structural characteristic: it requires a protocol or abstraction that spans a layer boundary that is currently a **seam of ignorance** — a point where the people who know the layer above do not know the layer below, and vice versa. The seams are:
+
+| Seam | Above | Below |
+|------|-------|-------|
+| Browser ↔ Wayland | Chrome command buffer / DawnWire | `wl_surface.commit` / `wp_presentation` |
+| Compositor ↔ DRM | KMS atomic commit / explicit sync | `drm_gpu_scheduler` / fence timeline |
+| Userspace ↔ Firmware | DRM ioctl / Mesa driver call | GSP-RM RPC / GuC command submission |
+| Storage ↔ GPU | cuFile / `io_uring` | `p2pdma` / `nvidia-peermem` peer memory |
+| Shader IR ↔ ISA | NIR optimisation pass | ACO/NAK/BRW register allocator |
+
+The book you are reading maps all of these seams explicitly. That mapping is the prerequisite for any engineer who wants to build across them.
+
+---
+
 ## How Chapters Are Structured
 
 Each chapter opens with a scope paragraph identifying which of the four audiences it primarily addresses, followed by a local table of contents with heading anchors. Code blocks carry language labels (`c`, `rust`, `bash`, `glsl`, `spirv`) and enough context — file path, function name, kernel version or Mesa tag — that readers can locate the upstream source. Every non-trivial technical claim carries an inline reference linking to the relevant kernel.org, freedesktop.org, or GitHub source. Where a feature landed in a specific kernel or Mesa version, that version is cited inline. Chapters close with an **Integrations** section listing cross-references to related chapters by number, making it practical to follow a concept across the stack rather than reading linearly.
