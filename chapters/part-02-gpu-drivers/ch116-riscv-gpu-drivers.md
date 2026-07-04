@@ -16,6 +16,15 @@
   - [1.4 ESWIN EIC7700 / SiFive HiFive Premier P550](#14-eswin-eic7700--sifive-hifive-premier-p550)
   - [1.5 Sophgo SG2042 / Milk-V Pioneer — PCIe GPUs Only](#15-sophgo-sg2042--milk-v-pioneer--pcie-gpus-only)
   - [1.6 Allwinner D1 / T-Head C906 — No GPU](#16-allwinner-d1--t-head-c906--no-gpu)
+  - [1.7 Imagination GPU IP Portfolio: A-Series, B-Series, C-Series, and D-Series](#17-imagination-gpu-ip-portfolio-a-series-b-series-c-series-and-d-series)
+  - [1.8 Imagination's Strategic Position in the RISC-V Ecosystem](#18-imaginations-strategic-position-in-the-risc-v-ecosystem)
+- [Imagination's Commercial Software Stack: DDK, SDK, and Developer Tooling](#imaginations-commercial-software-stack-ddk-sdk-and-developer-tooling)
+  - [pvrsrvkm vs drm/imagination: When to Use Which](#pvrsrvkm-vs-drimagination-when-to-use-which)
+  - [PowerVR SDK and Native_SDK](#powervr-sdk-and-native_sdk)
+  - [PVRTune: GPU Performance Profiler](#pvrtune-gpu-performance-profiler)
+  - [PVRCarbon: API Capture and Replay](#pvrcarbon-api-capture-and-replay)
+  - [OpenCL via the Proprietary DDK](#opencl-via-the-proprietary-ddk)
+  - [Neural Compute SDK and E-Series AI Integration](#neural-compute-sdk-and-e-series-ai-integration)
 - [2. The `drm/imagination` Driver — History, Architecture, and Upstreaming](#2-the-drimagination-driver--history-architecture-and-upstreaming)
   - [2.1 From Proprietary pvrsrvkm to Open drm/imagination](#21-from-proprietary-pvrsrvkm-to-open-drimagination)
   - [2.2 Source Tree and Module Structure](#22-source-tree-and-module-structure)
@@ -165,6 +174,50 @@ The Sophgo SG2042 is a 64-core RISC-V server SoC (16 clusters × 4 RV64GC cores,
 
 The D1 (using the T-HEAD C906 core) has **no GPU whatsoever**. It is notable as one of the first mass-produced Linux-capable RISC-V SoCs and receives software rendering via llvmpipe/lavapipe. Graphics output uses a basic framebuffer or DRM panel driver for its display output — there is no 3D acceleration path.
 
+### 1.7 Imagination GPU IP Portfolio: A-Series, B-Series, C-Series, and D-Series
+
+The GPU IP that appears in every RISC-V SoC discussed in this chapter belongs to a generational hierarchy. Understanding how Imagination's product families relate to each other clarifies which driver paths are available, what Vulkan/OpenCL API levels are achievable, and what architectural features (tile-based deferred rendering, ray tracing, ML inference) are present in a given design.
+
+**Naming convention.** Each GPU SKU encodes its tier: the letter prefix (A/B/C/D/E) is the series generation; X indicates a unified shader architecture (all modern Imagination GPUs); a second letter (E = Entry, M = Mainstream, S = Safety-automotive, T = Top/flagship) denotes performance tier within the generation; the two numbers that follow are the pixel-fill rate (pixels per clock) and the ALU configuration index respectively. A **BXM-4-64** is therefore: B-Series, unified, Mainstream, 4 ALU per USC cluster, 64 pixels per clock. The **BVNC 4-tuple** (Branch.Version.Number_of_clusters.Config) is the driver-level identifier; product marketing names map 1:1 to BVNC values in `pvr_device_info.c`.
+
+| Series | Released | Representative SKUs | Key differentiators | RISC-V use |
+|--------|----------|---------------------|---------------------|------------|
+| **A-Series** | 2019–2021 | AXE-1-16M, AXM-8-256, AXT | IoT/industrial footprint; BVNC 33.x | AXE: TI AM62 (ARM64); AXM: ESWIN EIC7700X |
+| **B-Series** | 2020–2022 | BXE-4-32, BXM-4-64, BXS-4-64, BXT | Mainstream mobile/embedded; ISO 26262 via BXS; 1–6 TFLOPS (BXT) | BXM: TH1520, SpacemiT K3; BXE: JH7110 (no open driver) |
+| **C-Series** | 2022–2023 | CXE, CXM, CXT | ~50% perf/mm² gain over B; HDR UI support; CXT adds **PowerVR Photon** ray tracing | No RISC-V design wins yet |
+| **D-Series** | 2023–2024 | DXS (ASIL-B), DXT | ISO 26262 ASIL-B certified (DXS, SGS-TÜV Saar, Nov 2024); DXT extends Photon RT | Automotive RISC-V future |
+| **E-Series** | 2025+ | EXT | Embeds Neural Cores + Burst Processors; up to 200 TOPS AI; replaces standalone NNA | Announced; first silicon expected late 2025 |
+
+**Photon ray tracing.** The CXT and DXT implement **PowerVR Photon**, Imagination's hardware ray-tracing engine rated at RTLS (Ray Tracing Level Specification) Level 4 — the highest commercially shipped classification as of 2025. A CXT at 9 TFLOPS FP32 rasterised delivers approximately 7.8 GRays/s, with claimed 2.5× power efficiency over Level 2/3 solutions. Photon is entirely absent from the A- and B-Series parts in current RISC-V SoCs; it becomes relevant only when C/D-Series GPU IP is adopted in RISC-V automotive or premium mobile designs.
+
+**Functional safety.** The **DXS** is the first independently certified ASIL-B GPU IP in the Imagination portfolio (certified November 2024 by SGS-TÜV Saar). It uses a "Safety Pairs" technique — rather than full-chip lockstep (which halves throughput or doubles area), DXS runs safety-relevant operations through paired execution paths with hardware comparison, achieving >90% diagnostic coverage while retaining 1.5× the performance of its predecessor. The **BXS** is marketed as ISO 26262-capable up to ASIL-B but is not independently certified in the same sense as DXS [Source: https://www.imaginationtech.com/news/dxs-gpu-officially-certified-as-asil-b-compliant/].
+
+**E-Series and the end of the standalone NNA.** Beginning with the E-Series, Imagination retired the separate IMG NNA (Neural Network Accelerator) IP product, which had existed as an independent licensable block (used as Series3NX NNA in the TH1520 alongside the BXM-4-64 GPU). The E-Series GPU instead embeds Neural Cores and Burst Processors directly into the GPU die, eliminating the inter-block data-movement overhead that accompanied a GPU+NNA pairing. ESWIN's EIC7700X — which pairs a SiFive P550 CPU with an AXM-8-256 GPU plus ESWIN's own in-house NPU — is already a transitional design: ESWIN replaced the IMG NNA with its own neural accelerator rather than waiting for E-Series [Source: https://www.phoronix.com/news/ESWIN-EIC7700-HiFive].
+
+**Full GPU product pages**: [https://www.imaginationtech.com/products/gpu/]
+
+### 1.8 Imagination's Strategic Position in the RISC-V Ecosystem
+
+**The Arm lock-out.** Arm's GPU IP (Mali, Immortalis) is licensed under terms that are tightly coupled to the Arm CPU architecture licence. SoC vendors choosing RISC-V cores are, by definition, operating entirely outside Arm's licensing relationship — which means Mali is both commercially and diplomatically unavailable to them. Imagination, by contrast, is explicitly **ISA-agnostic**: its GPU IP documentation describes integration with any CPU architecture, and Imagination does not require that a licensee also use an Arm CPU core. This is the structural reason why every RISC-V SoC with an integrated GPU in the table above (§1.1–§1.4) uses Imagination IP.
+
+In January 2025, Imagination exited the RISC-V CPU market entirely, discontinuing its own RISC-V CPU IP (the APXM/OAC series) to refocus exclusively on GPU and AI accelerator IP [Source: https://www.cnx-software.com/2025/01/16/imagination-exits-the-risc-v-cpu-market/]. This decision concentrates the company's resources on its competitive moat: GPU IP for ecosystems where Arm cannot compete.
+
+**Market sizing.** Imagination's own market analysis, published at their developer portal [https://developer.imaginationtech.com/solutions/], cites analyst projections of **22.3% of all SoCs including a RISC-V CPU by 2030**, representing **$92.7 billion in revenues**. The implication is direct: if even a fraction of those SoC designs adopt integrated GPU IP, and if Imagination retains its current de facto position as the only viable licensed GPU IP vendor for RISC-V SoC vendors, the addressable market for Imagination's licensing revenue is structurally tied to the RISC-V adoption curve.
+
+**Current RISC-V design wins.** The known shipped and announced Imagination GPU × RISC-V pairings as of mid-2026:
+
+| SoC | CPU | Imagination GPU | Open driver | Notable |
+|-----|-----|-----------------|-------------|---------|
+| T-HEAD TH1520 | Xuantie C910 ×4 | BXM-4-64 (BVNC 36.52.104.182) | ✓ Linux 6.18 | Mainline milestone; LicheePi 4A |
+| StarFive JH7110 | SiFive U74 ×4 | BXE-4-32 (BVNC 36.50.54.182) | ✗ | VisionFive 2; pvrsrvkm DDK only |
+| ESWIN EIC7700X | SiFive P550 ×4 | AXM-8-256 | Pending | SiFive HiFive Premier P550; + ESWIN NPU |
+| SpacemiT K1 | X60 ×8 | PowerVR (BXE class) | ✗ | DDK 24.2; BPI-F3 |
+| SpacemiT K3 | X100 ×8 + A100 ×8 | BXM-4-64-MC1 | Planned | Vulkan 1.3, OpenCL 3.0, GLES 3.2; 60 TOPS |
+
+The SpacemiT K3 is notable: its BXM-4-64-MC1 is the same GPU IP tier as the TH1520 milestone, and its announced software stack includes Vulkan 1.3 and OpenCL 3.0 via the proprietary DDK — meaning that when the K3 ships, it will be the first RISC-V consumer product with OpenCL GPU compute [Source: https://blog.imaginationtech.com/risc-v-and-gpu-synergy-in-practice-a-path-towards-high-performance-socs-from-spacemit-k3].
+
+**The upstreaming dividend.** Imagination's decision to support `drm/imagination` as an upstream kernel driver (rather than keeping all RISC-V SoC vendors on the proprietary pvrsrvkm DDK path) creates a long-term ecosystem effect: each new RISC-V SoC design win that adopts a supported GPU BVNC can reach the mainline kernel with weeks of device-tree work rather than years of DDK porting. This is a structurally different position from the one ARM Mali occupies with Panfrost — where Arm provides no upstream driver and community engineers reverse-engineer the hardware — or from the situation that prevailed for Imagination itself before the drm/imagination rewrite.
+
 ---
 
 ## 2. The `drm/imagination` Driver — History, Architecture, and Upstreaming
@@ -247,6 +300,135 @@ As of Linux 6.18 and Mesa 25.3 [Source: https://docs.mesa3d.org/drivers/powervr.
 | GE7800, GE8300 | — | Series 8XE | Rogue | Not supported |
 
 The stark contrast between BXM-4-64 (the mainline RISC-V milestone) and BXE-4-32 (the widely deployed JH7110 GPU with no upstream driver) reflects a vendor licensing decision, not a fundamental technical barrier. The `pvr_device_info.c` data tables that define per-BVNC quirks and feature sets are keyed directly on the BVNC 4-tuple — adding BXE-4-32 support would require entries in those tables plus Imagination's blessing to include the associated firmware.
+
+---
+
+## Imagination's Commercial Software Stack: DDK, SDK, and Developer Tooling
+
+The `drm/imagination` + Mesa path described in §2 and §5 is the open-source route. Imagination also maintains a full proprietary software stack — the DDK — targeting Android, embedded Linux, and Windows deployments where vendor support contracts, higher API version coverage, and commercial SDKs are required. Understanding both paths is essential for anyone making GPU driver decisions for a RISC-V product.
+
+### pvrsrvkm vs drm/imagination: When to Use Which
+
+The proprietary kernel module is **pvrsrvkm** (PowerVR Services Kernel Module), the core of the Imagination DDK. It has operated as a closed, out-of-tree module since the earliest PowerVR Linux ports; it taints the kernel, ships with a vendor-signed firmware package, and exposes a private ioctl surface that changes between DDK releases.
+
+| Dimension | `drm/imagination` (open) | `pvrsrvkm` DDK (proprietary) |
+|-----------|--------------------------|------------------------------|
+| Kernel integration | Mainline Linux 6.8+; RISC-V 6.18+ | Out-of-tree; vendor kernel |
+| Vulkan version | 1.0 conformant (1.2 submission planned) | Up to 1.4 (DDK 25.x on Android 16) |
+| OpenGL ES | Via Zink (Vulkan translation layer) | Native ICD up to GLES 3.2 |
+| OpenCL | **Not supported** | OpenCL 3.0 + imgBLAS/imgNN/imgFFT |
+| Android deployment | Not applicable | Required for Play certification |
+| Vendor support | Community / Imagination upstream | Commercial DDK support contract |
+| Firmware | Shared binary package | Same firmware; DDK may ship newer |
+| License | GPL-2.0 (kernel) + MIT (Mesa) | Proprietary EULA |
+
+The Mesa userspace driver is **dual-compatible**: it can link against either a `drm/imagination`-exposed DRM node or a pvrsrvkm-provided node via the same `pvr_drm.h` ioctl interface. This means a BSP can ship the open kernel module while using Mesa for Vulkan, then migrate to DDK pvrsrvkm for OpenCL access without changing the Mesa layer.
+
+For RISC-V products shipping to end consumers (where a fully upstream kernel and community-maintained drivers are preferred), `drm/imagination` is the correct choice. For embedded deployments requiring OpenCL compute (robotics inference, image processing pipelines, video analytics) or Android baseline compliance, the proprietary DDK remains the only complete option until the Mesa OpenCL path adds PowerVR support.
+
+### PowerVR SDK and Native_SDK
+
+Imagination provides the **PowerVR SDK** as an open-source collection of cross-platform Vulkan and OpenGL ES examples, helper libraries, and asset pipeline tools. The core SDK — **Native_SDK** — is available at [https://github.com/powervr-graphics/Native_SDK] under an MIT-style licence.
+
+The Native_SDK is structured as a CMake project targeting Linux, Android, Windows, and macOS. For RISC-V development the Linux path is directly applicable:
+
+```bash
+git clone https://github.com/powervr-graphics/Native_SDK.git
+cd Native_SDK
+cmake -S . -B build-riscv \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain/linux_riscv64.cmake \
+  -DPVR_WINDOW_SYSTEM=Wayland \
+  -DPVR_ENABLE_EXAMPLE_RECOMMENDED_SETTINGS=ON
+cmake --build build-riscv --parallel $(nproc)
+```
+
+The SDK includes:
+- **PVRUtils**: EGL context setup, Wayland window creation, swapchain management
+- **PVRVk**: C++ wrappers over the raw Vulkan API (analogous to `vk::` in vulkan.hpp)
+- **PVRCamera**: Camera feed capture for CV/AR pipelines
+- **PVRAssets**: POD (PowerVR Object Data) mesh format loader and texture management
+
+Demos under `examples/Vulkan/` and `examples/OpenGLES/` cover shadow mapping, deferred shading, bloom post-processing, and compute-based particle systems — all runnable on TH1520 via `drm/imagination` + Mesa once a Wayland compositor is available. The SDK targets the same Khronos API surface as any Vulkan-capable device; its real value on RISC-V is as a correctness baseline and as a profiling target for PVRTune (see below).
+
+**PVRTexTool** compresses textures into PVRTC (PowerVR Texture Compression) and ETC2/ASTC formats, outputting `.pvr` containers. It runs on x86 host systems during build time; the compressed textures are consumed identically by the hardware on any PowerVR target including RISC-V. A command-line version ships alongside the GUI tool [Source: https://developer.imaginationtech.com/tools/].
+
+**PVRVFrame** is a lightweight OpenGL ES and EGL software emulator for x86 host development: it allows developers to iterate on shader code and render logic on a desktop Linux machine before cross-compiling for the RISC-V target. PVRVFrame is particularly useful in CI pipelines where a physical TH1520 board is unavailable.
+
+### PVRTune: GPU Performance Profiler
+
+**PVRTune** is Imagination's GPU-side performance analysis tool — conceptually equivalent to AMD Radeon GPU Profiler (RGP) or NVIDIA Nsight Graphics, but targeting PowerVR hardware performance counters. It connects to a target device running a pvrsrvkm-backed DDK via the **PVRScope** runtime library, which exposes hardware counter data over a network socket.
+
+On a DDK-enabled device (e.g., SpacemiT K1 or K3 running the proprietary stack), PVRTune collects:
+
+- Per-USC cycle counts, ALU utilisation, and texture unit hit rates
+- TBDR geometry and fragment phase timing — identifying whether bottlenecks are in the geometry tiler or the fragment pipeline
+- Render target bandwidth: bytes read/written per tile, free-list growth events
+- Clock frequency and thermal state over the frame timeline
+
+The PVRTune GUI runs on the host machine (Linux/Windows) and streams data from PVRScope via TCP. The tool generates timeline views — analogous to RenderDoc's frame timeline — that show geometry/fragment phase interleaving per render pass and flag common TBDR pathologies such as mid-frame free-list exhaustion or excessive render target store/load bandwidth.
+
+**Important limitation**: PVRTune requires the **proprietary DDK** (`pvrsrvkm`) on the device. The open `drm/imagination` driver does not implement the PVRScope wire protocol. Linux perf (`perf stat`) and DRM-level tracing (`drm_sched` ftrace events) remain available for coarse profiling on open-driver deployments, but per-USC hardware counter access requires the DDK path.
+
+The PVRTune download and documentation are accessible at [https://developer.imaginationtech.com/tools/pvrtune/].
+
+### PVRCarbon: API Capture and Replay
+
+**PVRCarbon** captures Vulkan, OpenGL ES, and OpenCL API call traces from a running application and produces binary `.pvcr` files that can be replayed deterministically on any compatible PowerVR device. Its role is analogous to RenderDoc (Vulkan/GL capture/replay) or NVIDIA Nsight's frame debugger, but it integrates Imagination-specific features:
+
+- **Trimmed capture**: isolate a single frame from a multi-minute application run, producing a minimal standalone replay
+- **OpenCL capture**: records kernel enqueue calls, buffer contents, and synchronisation events — a capability absent from RenderDoc
+- **Cross-device replay**: a trace captured on a TH1520 (BXM-4-64) can be replayed on a TI AM62 (AXE-1-16M) to identify GPU-variant-specific rendering differences
+- **Counterfactual analysis**: disable draw calls, swap shaders, or alter buffer contents to isolate rendering artefacts
+
+For RISC-V BSP engineers, PVRCarbon's cross-device replay is particularly valuable during bring-up: a known-good trace from an ARM64 reference board can be replayed on a new RISC-V target immediately after the kernel driver probe succeeds, confirming that the hardware executes correctly before userspace applications are ported. As with PVRTune, PVRCarbon requires the proprietary DDK on the capture device (replay-only mode may work with the open driver — **Note: needs verification**).
+
+Documentation and download: [https://developer.imaginationtech.com/tools/pvrcarbon/].
+
+### OpenCL via the Proprietary DDK
+
+OpenCL is the most consequential capability gap between the open and proprietary driver paths for RISC-V. The DDK ships **OpenCL 3.0** conformance alongside three low-level compute libraries:
+
+- **imgBLAS**: BLAS routines (SGEMM, DGEMM, SAXPY, SDOT) implemented as optimised OpenCL kernels for the USC architecture. Targets scientific computing and classical ML workloads.
+- **imgNN**: Neural network inference library (conv2d, depthwise conv, pooling, activation, normalization), targeting image classification and object detection pipelines without requiring a separate NPU.
+- **imgFFT**: Radix-2/radix-4 FFT implemented as OpenCL kernels, targeting signal processing and frequency-domain CNN layers.
+
+The OpenCL ICD (`libOpenCL.so`) links against `pvrsrvkm` via a thin user-kernel interface. An application using standard OpenCL API calls can run unchanged on the Imagination GPU through this path:
+
+```c
+/* Enumerate platform and device */
+cl_platform_id platform;
+clGetPlatformIDs(1, &platform, NULL);
+
+cl_device_id device;
+clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+
+cl_context ctx = clCreateContext(NULL, 1, &device, NULL, NULL, NULL);
+cl_command_queue queue = clCreateCommandQueueWithProperties(ctx, device, NULL, NULL);
+
+/* Compile and run a kernel */
+const char *src = "__kernel void saxpy(float alpha,"
+                  " __global const float *x, __global float *y) {"
+                  "  int i = get_global_id(0);"
+                  "  y[i] += alpha * x[i]; }";
+cl_program prog = clCreateProgramWithSource(ctx, 1, &src, NULL, NULL);
+clBuildProgram(prog, 1, &device, "-cl-std=CL3.0", NULL, NULL);
+cl_kernel k = clCreateKernel(prog, "saxpy", NULL);
+/* ... set args, enqueue, sync ... */
+```
+
+The kernel above compiles to USC USSE binary via the same USC compiler library used by Mesa's shader compiler path — the proprietary DDK is the only mechanism that exposes OpenCL to C/C++ programs. Projects targeting RISC-V AI inference should factor this constraint into their stack selection: if OpenCL is required, the device must run pvrsrvkm; if open-kernel-module policy is required, OpenCL is unavailable and inference must run on a separate NPU (as in the EIC7700X design) or via CPU SIMD (RVV 1.0).
+
+### Neural Compute SDK and E-Series AI Integration
+
+Alongside the GPU DDK, Imagination offers the **Neural Compute SDK** [https://developer.imaginationtech.com/tools/], which provides:
+
+- A model conversion pipeline (ONNX → Imagination internal format)
+- Runtime inference API for deploying converted models on IMG NNA hardware
+- Integration with TensorFlow Lite and PyTorch via custom delegates
+
+The IMG NNA series (Series3NX used in TH1520, Series4) is a **separate licensable IP block** from the GPU. Its Linux kernel driver is not part of `drm/imagination`; it appears in-tree as a vendor-specific driver (e.g., `drivers/misc/img-nna/` on vendor kernels). Upstreaming of NNA drivers has not followed the same trajectory as the GPU driver — as of mid-2026 there is no mainline IMG NNA kernel driver [Source: **needs verification**].
+
+The strategic shift in the **E-Series** (announced 2025) eliminates the NNA as a separate product. E-Series embeds Neural Cores and Burst Processors directly into the GPU die, targeting up to **200 TOPS** of AI inference throughput within the GPU's compute architecture. The unified approach eliminates the DMA penalty of copying activations between a GPU (running the non-neural portions of an inference pipeline, e.g., preprocessing, NMS) and a separate NNA. For RISC-V SoC designers evaluating IP in 2026–2027, the E-Series GPU + RISC-V CPU combination would be the first opportunity to avoid the multi-IP integration complexity that current designs like TH1520 face [Source: https://www.jonpeddie.com/news/imagination-introduces-its-new-e-series-gpu/].
 
 ---
 
