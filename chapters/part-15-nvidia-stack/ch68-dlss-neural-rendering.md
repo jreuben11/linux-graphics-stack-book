@@ -20,7 +20,9 @@
 10. [DLSS on Linux](#10-dlss-on-linux)
 11. [TensorRT: Inference Optimisation for Neural Rendering](#11-tensorrt-inference-optimisation-for-neural-rendering)
 11b. [Optical Flow: Hardware-Accelerated Motion Estimation](#11b-optical-flow-hardware-accelerated-motion-estimation)
-12. [Integrations](#12-integrations)
+12. [Model-Optimizer: Quantization and Pruning for TensorRT](#12-model-optimizer-quantization-and-pruning-for-tensorrt)
+13. [TensorRT-RTX: Client-Side Inference for RTX PCs](#13-tensorrt-rtx-client-side-inference-for-rtx-pcs)
+14. [Integrations](#14-integrations)
 
 ---
 
@@ -1124,7 +1126,147 @@ FSR 3 uses the game's existing motion vector G-buffer output (rasterisation-deri
 | **Open source** | Extension open, NGX DLSS-G closed | FSR 3 SDK open (MIT) | OpenCV CUDA fully open |
 | **Use in frame gen** | Yes (DLSS 3) | Yes (FSR 3) | Research / custom pipelines |
 
-## 12. Integrations
+## 12. Model-Optimizer: Quantization and Pruning for TensorRT
+
+**NVIDIA Model-Optimizer** ([github.com/NVIDIA/TensorRT-Model-Optimizer](https://github.com/NVIDIA/TensorRT-Model-Optimizer), 3100+ stars) is a PyTorch/ONNX library for post-training quantization, structured pruning, and knowledge distillation, targeting TensorRT deployment. For neural rendering workloads — DLSS-replacement inference, NeRF/Gaussian splatting accelerators, denoiser networks — Model-Optimizer compresses models to INT8 or FP8 with calibration-based accuracy, then exports to ONNX or TensorRT engine files.
+
+### Quantization Pipeline
+
+```python
+import modelopt.torch.quantize as mtq
+import modelopt.torch.export as mtex
+import torch
+
+model = load_denoiser_model("denoiser.pth").cuda().eval()
+
+def calibration_loop(model):
+    for noisy, _ in calibration_dataset:
+        model(noisy.cuda())
+
+# Apply PTQ INT8 quantization with calibration
+config = mtq.INT8_DEFAULT_CFG  # or FP8_DEFAULT_CFG, INT4_AWQ_CFG
+mtq.quantize(model, config, forward_loop=calibration_loop)
+mtq.print_quant_summary(model)
+
+# Export to ONNX for TensorRT compilation
+mtex.export_to_onnx(model,
+                    dummy_input=torch.randn(1, 3, 1080, 1920).cuda(),
+                    onnx_path="denoiser_int8.onnx")
+```
+
+```bash
+# Compile to TensorRT engine
+trtexec --onnx=denoiser_int8.onnx \
+        --saveEngine=denoiser_int8.trt \
+        --fp16 --int8 \
+        --minShapes=input:1x3x540x960 \
+        --optShapes=input:1x3x1080x1920 \
+        --maxShapes=input:1x3x2160x3840
+```
+
+### INT4 Weight-Only Quantization (AWQ)
+
+For large network layers where activation quantization hurts quality, INT4 AWQ reduces model size by 4× while preserving accuracy:
+
+```python
+# INT4 AWQ: weights in INT4, activations in FP16
+config = mtq.INT4_AWQ_CFG
+mtq.quantize(model, config, forward_loop=calibration_loop)
+
+import torch_tensorrt
+trt_model = torch_tensorrt.compile(model,
+    inputs=[torch_tensorrt.Input(shape=[1, 3, 1080, 1920])],
+    enabled_precisions={torch.float16, torch.int8})
+```
+
+### 2:4 Structured Sparsity
+
+```python
+import modelopt.torch.sparsity as mts
+
+# 2:4 sparsity — Ampere+ tensor cores execute sparse matmul natively
+mts.sparsify(model, mode="sparsegpt",
+             data_loader=calibration_dataset, num_samples=128)
+trainer.train(model, dataset, epochs=3)  # optional fine-tune
+mtex.export_to_onnx(model, dummy_input, "denoiser_sparse.onnx")
+```
+
+| Quantization mode | Size reduction | TensorRT speedup vs FP32 | Accuracy loss (SSIM) |
+|-------------------|---------------|--------------------------|----------------------|
+| FP16 | 2× | 1.5–2× | Negligible |
+| INT8 PTQ | 4× | 2–4× | < 0.5% |
+| FP8 PTQ | 4× | 2–4× | < 0.3% |
+| INT4 AWQ | 8× | 3–6× (weight-bound) | < 1% |
+| 2:4 sparse + INT8 | 8× | 4–8× | < 1% |
+
+[Source: NVIDIA TensorRT Model-Optimizer GitHub](https://github.com/NVIDIA/TensorRT-Model-Optimizer)
+[Source: Model-Optimizer documentation](https://nvidia.github.io/TensorRT-Model-Optimizer/)
+
+---
+
+## 13. TensorRT-RTX: Client-Side Inference for RTX PCs
+
+**TensorRT-RTX** ([github.com/NVIDIA/TensorRT-RTX](https://github.com/NVIDIA/TensorRT-RTX), 102 stars) is an RTX-PC-specific inference SDK that enables running TensorRT-compiled neural network engines on consumer RTX GPUs without requiring the full CUDA Toolkit installation. Where server-side TensorRT (§11) targets data-centre GPU deployment, TensorRT-RTX targets interactive client applications — game mods, creative tools, neural rendering pipelines — running on RTX 3000+ hardware.
+
+TensorRT-RTX ships a self-contained runtime library (`libnvinfer_rtx.so`) plus a deployment helper SDK, designed to be bundled with applications similar to how the NGX SDK is bundled for DLSS. It uses the TensorRT engine format (`.trt`) with an RTX-specific optimisation profile that favours Tensor Core utilisation on Ada/Blackwell without requiring the developer to install CUDA separately.
+
+### C++ API
+
+```cpp
+#include <NvInferRTX.h>
+
+/* 1. Load a pre-compiled TensorRT engine */
+nvinfer1::IRuntime *runtime = nvinfer1::createInferRuntime(logger);
+std::ifstream engine_file("denoiser.trt", std::ios::binary);
+std::vector<char> engine_data{std::istreambuf_iterator<char>(engine_file), {}};
+nvinfer1::ICudaEngine *engine = runtime->deserializeCudaEngine(
+    engine_data.data(), engine_data.size());
+
+/* 2. Create execution context */
+nvinfer1::IExecutionContext *ctx = engine->createExecutionContext();
+
+/* 3. Set I/O tensor addresses (TensorRT 10 API — GPU pointers) */
+ctx->setInputTensorAddress("input",  d_noisy_frame);
+ctx->setOutputTensorAddress("output", d_clean_frame);
+
+/* 4. Enqueue inference */
+cudaStream_t stream;
+cudaStreamCreate(&stream);
+ctx->enqueueV3(stream);
+cudaStreamSynchronize(stream);
+```
+
+### Use Case: In-Game Neural Denoiser
+
+```cpp
+/* Startup: load engine once */
+TensorRTX::Engine denoiser("path_tracer_denoiser.trt");
+denoiser.allocateBuffers();
+
+/* Per-frame: denoise G-buffer */
+denoiser.setInput("noisy_color", d_noisy,  {1, 3, H, W});
+denoiser.setInput("albedo",      d_albedo, {1, 3, H, W});
+denoiser.setInput("normal",      d_normal, {1, 3, H, W});
+denoiser.run(stream);
+float *d_clean = denoiser.getOutput("clean_color");
+```
+
+### TensorRT-RTX vs. TensorRT (Full SDK)
+
+| Feature | TensorRT (full SDK) | TensorRT-RTX |
+|---------|---------------------|--------------|
+| Target | Data centre / workstation | Consumer RTX PCs |
+| Installation | Full CUDA Toolkit + TRT | Bundled runtime only |
+| CUDA Toolkit at runtime | Required | Not required |
+| INT8 calibration | Full calibration suite | Pre-calibrated engines |
+| Linux support | Full | Beta (mid-2026) |
+
+[Source: TensorRT-RTX GitHub](https://github.com/NVIDIA/TensorRT-RTX)
+[Source: TensorRT documentation](https://docs.nvidia.com/deeplearning/tensorrt/)
+
+---
+
+## 14. Integrations
 
 **Part III (nvidia-open and proprietary driver)**: All NGX features require either the proprietary NVIDIA driver or the `nvidia-open` kernel module (R550+). Chapter 9 covers the `nvidia-open` driver architecture; Chapter 10 covers NVK. The signature verification in `libnvidia-ngx.so` binds NGX tightly to the official driver stack.
 

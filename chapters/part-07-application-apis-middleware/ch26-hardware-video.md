@@ -40,8 +40,9 @@ Section 10 covers **Vulkan Video** as the strategic forward hardware video API: 
 8. [Practical: Hardware-Accelerated Transcoding Pipeline](#8-practical-hardware-accelerated-transcoding-pipeline)
 9. [libcamera: Modern Camera Stack for Linux](#9-libcamera-modern-camera-stack-for-linux)
 10. [Vulkan Video: The Strategic Hardware Video API](#10-vulkan-video-the-strategic-hardware-video-api)
-11. [Integrations](#integrations)
-12. [References](#references)
+11. [NVENC Native Encode: Video Codec SDK](#11-nvenc-native-encode-video-codec-sdk)
+12. [Integrations](#integrations)
+13. [References](#references)
 
 ---
 
@@ -1074,6 +1075,124 @@ NVIDIA's proprietary Vulkan driver exposes `VK_KHR_video_decode_h264`, `VK_KHR_v
 The GStreamer `vkvideo` plugin in `gst-plugins-bad` provides `vkh264dec`, `vkh265dec`, and `vkav1dec` elements backed by Vulkan Video. These elements are in active development in the GStreamer main branch but were not in a stable release as of GStreamer 1.24 (March 2024); they are targeted for GStreamer 1.26. The encode extensions (`VK_KHR_video_encode_h264`, `VK_KHR_video_encode_h265`, `VK_KHR_video_encode_av1`) follow the same architecture and are the primary blocker for a complete GStreamer Vulkan Video pipeline replacement.
 
 The transition from VA-API GStreamer elements to Vulkan Video elements is gated on driver completeness. RADV's VA-API path via `radeonsi_drv_video.so` is more broadly tested today; the `vkvideo` elements are expected to become the default on Mesa/RADV once Vulkan Video encode reaches parity.
+
+---
+
+## 11. NVENC Native Encode: Video Codec SDK
+
+The NVIDIA Video Codec SDK ([developer.nvidia.com/video-codec-sdk](https://developer.nvidia.com/video-codec-sdk)) exposes NVENC (NVIDIA's hardware H.264/HEVC/AV1 encoder) through a C++ API independent of VA-API. As noted in §2, `nvidia-vaapi-driver` does not support encode because NVENC has no VA-API-compatible encode interface — applications requiring NVIDIA GPU-accelerated encode on Linux must use the Video Codec SDK directly, or go through FFmpeg's NVENC backend. NVENC is a fixed-function hardware engine on every NVIDIA discrete GPU since Kepler; it operates independently of shader cores, so encoding a 4K H.264 stream consumes near-zero shader utilisation.
+
+### NVENC Architecture
+
+```text
+Application (Video Codec SDK C++)
+         │
+         ▼
+  libnvidia-encode.so
+         │
+         ▼
+  nvidia kernel module (NVENC hardware engine)
+         │
+         ▼
+  NVENC Hardware (Maxwell / Pascal / Turing / Ampere / Ada / Blackwell)
+```
+
+### NvEncoder C++ API
+
+The SDK ships a helper class `NvEncoderCuda` wrapping the low-level `NV_ENC_*` NVAPI calls. The pattern is: create encoder → configure parameters → get input buffers → fill → encode → query output bitstream.
+
+```cpp
+#include "NvEncoder/NvEncoderCuda.h"
+
+/* 1. Create CUDA context and encoder instance */
+CUcontext cuCtx;
+cuCtxCreate(&cuCtx, 0, cuDevice);
+
+auto *encoder = new NvEncoderCuda(cuCtx,
+                                   3840, 2160,           /* width, height */
+                                   NV_ENC_BUFFER_FORMAT_ARGB);
+
+/* 2. Configure encode parameters */
+NV_ENC_INITIALIZE_PARAMS encodeParams = { NV_ENC_INITIALIZE_PARAMS_VER };
+NV_ENC_CONFIG             encodeConfig = { NV_ENC_CONFIG_VER };
+encoder->CreateDefaultEncoderParams(&encodeParams,
+                                     NV_ENC_CODEC_H264_GUID,
+                                     NV_ENC_PRESET_P4_GUID,
+                                     NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY);
+encodeParams.encodeConfig = &encodeConfig;
+
+/* Rate control: CBR at 20 Mbps */
+encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
+encodeConfig.rcParams.averageBitRate  = 20'000'000;
+encodeConfig.rcParams.vbvBufferSize   = encodeConfig.rcParams.averageBitRate / 60;
+
+encoder->CreateEncoder(&encodeParams);
+
+/* 3. Encode loop */
+std::vector<std::vector<uint8_t>> packets;
+for (int frame = 0; frame < total_frames; ++frame) {
+    const NvEncInputFrame *inputFrame = encoder->GetNextInputFrame();
+    NvEncoderCuda::CopyToDeviceFrame(cuCtx,
+                                      raw_frame_ptr,
+                                      0,                            /* src pitch */
+                                      (CUdeviceptr)inputFrame->inputPtr,
+                                      (int)inputFrame->pitch,
+                                      encoder->GetEncodeWidth(),
+                                      encoder->GetEncodeHeight(),
+                                      CU_MEMORYTYPE_HOST,
+                                      inputFrame->bufferFormat,
+                                      inputFrame->chromaOffsets,
+                                      inputFrame->numChromaPlanes);
+    encoder->EncodeFrame(packets);
+    for (auto &pkt : packets)
+        fwrite(pkt.data(), 1, pkt.size(), output_file);
+}
+
+encoder->EndEncode(packets);  /* flush remaining frames */
+for (auto &pkt : packets)
+    fwrite(pkt.data(), 1, pkt.size(), output_file);
+
+delete encoder;
+```
+
+### AV1 Encode (Ada Lovelace+)
+
+```cpp
+/* Switch codec GUID for AV1; requires RTX 4000 (Ada) or newer */
+encodeParams.encodeGUID  = NV_ENC_CODEC_AV1_GUID;
+encodeParams.presetGUID  = NV_ENC_PRESET_P4_GUID;
+encodeConfig.profileGUID = NV_ENC_AV1_PROFILE_MAIN_GUID;
+/* Tile columns for parallel encode */
+encodeConfig.encodeCodecConfig.av1Config.numTileColumns = 2;
+encodeConfig.encodeCodecConfig.av1Config.numTileRows    = 1;
+```
+
+### FFmpeg NVENC Integration
+
+For applications already using FFmpeg, NVENC is accessible without the SDK:
+
+```bash
+# H.264 NVENC encode
+ffmpeg -i input.mp4 -c:v h264_nvenc -preset p4 -rc cbr -b:v 20M output.mp4
+
+# GPU decode → GPU encode (zero CPU copy)
+ffmpeg -hwaccel cuda -hwaccel_output_format cuda \
+       -i input.mp4 \
+       -vf scale_cuda=3840:2160 \
+       -c:v h264_nvenc -preset p4 -b:v 20M output.mp4
+
+# AV1 NVENC encode (Ada Lovelace+ only)
+ffmpeg -i input.mp4 -c:v av1_nvenc -preset p4 -b:v 10M output.mp4
+```
+
+| Codec | Min GPU | Max resolution | Max fps | AV1 dual engine |
+|-------|---------|----------------|---------|-----------------|
+| H.264 | Kepler (GTX 600) | 4096×4096 | 240 | No |
+| HEVC | Maxwell (GTX 900) | 8192×8192 | 120 | No |
+| AV1 | Ada (RTX 4000) | 8192×4352 | 60 | Yes (Ada all SKUs) |
+
+[Source: NVIDIA Video Codec SDK documentation](https://developer.nvidia.com/video-codec-sdk)
+[Source: NVIDIA video-sdk-samples GitHub](https://github.com/NVIDIA/video-sdk-samples)
 
 ---
 

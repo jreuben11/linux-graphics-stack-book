@@ -12,6 +12,7 @@
 - [4. i915: Intel's Integrated and Discrete Driver](#4-i915-intels-integrated-and-discrete-driver)
 - [5. The Xe Driver: Intel's Clean-Slate Replacement](#5-the-xe-driver-intels-clean-slate-replacement)
 - [6. nouveau and nvidia-open: NVIDIA Kernel Drivers Overview](#6-nouveau-and-nvidia-open-nvidia-kernel-drivers-overview)
+  - [NVIDIA Driver Landscape: Feature and Performance Comparison](#nvidia-driver-landscape-feature-and-performance-comparison)
 - [7. The GPU Scheduler: drm_gpu_scheduler](#7-the-gpu-scheduler-drm_gpu_scheduler)
 - [8. Format Modifiers and Cross-Driver Buffer Sharing](#8-format-modifiers-and-cross-driver-buffer-sharing)
 - [9. GPU Firmware Loading: request_firmware and the linux-firmware Package](#9-gpu-firmware-loading-request_firmware-and-the-linux-firmware-package)
@@ -487,6 +488,51 @@ The driver follows a two-component design:
 Nova's Rust implementation brings compile-time safety guarantees that C cannot provide: `drm::gem::Object<T>` wraps GEM buffer lifetimes in Rust's `Arc` type (no missing `drm_gem_object_put()` calls on error paths), and Higher-Ranked Lifetime Types (HRT) in the GPUVM bindings prevent VA handles from outliving their parent VM. Linux 7.2 added Turing-specific firmware parsing, GPUVM immediate-mode support, and DebugFS access to GSP-RM logs.
 
 Nova is expected to replace nouveau for Turing+ users once it reaches KMS (display) feature parity, likely in the 2027–2028 timeframe. It does not target pre-Turing hardware. Chapter 10 covers Nova's architecture in full detail.
+
+### NVIDIA Driver Landscape: Feature and Performance Comparison
+
+Understanding which driver to use — and why the choice matters — requires comparing the four options across kernel, userspace, and operational dimensions. The table below treats **Proprietary** as NVIDIA's binary-only `nvidia.ko` (the driver for Pascal and older, and historically the only option), **nvidia-open** as NVIDIA's MIT/GPLv2 open kernel module (required for Blackwell, preferred for Turing+), and **Nouveau** as the community reverse-engineered driver. **Nova** is included as a forward reference; it is not yet production-ready.
+
+| Dimension | Nouveau | nvidia-open | Proprietary (binary) | Nova |
+|---|---|---|---|---|
+| **Kernel module** | `nouveau.ko` (in-tree) | `nvidia.ko` (open source) | `nvidia.ko` (binary blob) | `nova-core.ko` + `nova-drm.ko` |
+| **Supported GPU range** | NV04 – Ada Lovelace | Turing (SM 7.5) – Blackwell | Pascal – Ada Lovelace (no Blackwell) | Turing+ (Turing baseline, Ampere in progress) |
+| **License** | GPL-2.0 | MIT / GPLv2 dual | NVIDIA Proprietary | GPL-2.0 (Rust) |
+| **Source availability** | Full in-tree kernel source | Kernel module source; userspace closed | Closed | Full in-tree Rust source |
+| **GPU clock management** | Boot clocks only on Maxwell+ (< 20% rated perf); dynamic reclock on Fermi/Kepler only | Full dynamic freq/voltage via GSP-RM | Full (GSP-RM on Turing+; direct register on Pascal/Volta) | Inherits GSP-RM; full perf once implemented |
+| **Render performance** | Pascal: ~15–25% of rated; Maxwell–Turing: boot-clock speed; Fermi/Kepler: near-native | Full rated performance | Full rated performance | Full (inherits GSP-RM perf path) |
+| **Wayland explicit sync** | Not supported — no `dma_resv` fence exposure from nvkm | Supported since driver 545 / Linux 6.6 (`wp_linux_drm_syncobj_v1`) | Supported since driver 545 / Linux 6.6 | Planned; blocked on KMS implementation |
+| **EGLStreams** | Never supported | Not required; GBM path used | Deprecated; GNOME 51 (2025) removed it | N/A |
+| **KMS / display output** | Supported via nvkm display engine (some panels limited) | Supported via `nvidia-drm.ko` (shares nvidia-open as base) | Supported via `nvidia-drm.ko` | Planned (blocking Nova production readiness) |
+| **GBM backend** | `gbm_create_device` works; modifiers limited | Full GBM + `DRM_FORMAT_MOD_NVIDIA_BLOCK_LINEAR_2D` | Full GBM (same as nvidia-open on Turing+) | Planned |
+| **Vulkan ICD** | **NVK** (Mesa, open; Turing+ production quality via RADV-architecture) | Proprietary NVIDIA Vulkan ICD (`libvulkan_nvidia.so`) | Proprietary NVIDIA Vulkan ICD | Will use NVK (same Mesa driver, different kernel backend) |
+| **OpenGL ICD** | Zink (NVK→OpenGL via Gallium) or legacy NVC0 Gallium | Proprietary NVIDIA libGL | Proprietary NVIDIA libGL | Will use Zink / NVC0 via nova-drm |
+| **OpenGL version** | 4.6 via NVK+Zink (Turing+); 4.5 via NVC0 (older) | 4.6 full (proprietary ICD) | 4.6 full | Will match NVK ceiling |
+| **Vulkan Ray Tracing** | Supported on Ada via NVK | Supported (proprietary ICD) | Supported | Future |
+| **CUDA support** | None — no CUDA kernel interfaces exposed | Yes — proprietary CUDA toolkit works with open kernel module; `nvidia-uvm.ko` accompanies | Yes (full CUDA stack) | Planned (requires nvidia-uvm.ko integration) |
+| **NVENC (hardware encode)** | None | Yes — kernel exposes NVENC engines; FFmpeg `h264_nvenc/hevc_nvenc/av1_nvenc` work | Yes | Planned |
+| **NVDEC / VA-API decode** | None | Yes — NVDEC accessible; `nvidia-vaapi-driver` provides VA-API bridge | Yes | Planned |
+| **NVLink peer-to-peer** | Not supported | Supported via `nv_p2p_get_pages` API; NCCL AllReduce works | Supported | Not yet |
+| **GPUDirect RDMA** | Not supported | Supported (`nvidia-peermem.ko`) | Supported | Not yet |
+| **GPUDirect Storage** | Not supported | Supported (`nvidia-fs.ko`) | Supported | Not yet |
+| **HMM / SVM** | Partial (amdgpu-style HMM not implemented) | Yes — `nvidia-uvm.ko` integrates with Linux HMM; `VM_BIND`-based in CUDA 12.2+ | Yes | Planned |
+| **Power management** | Read-only hwmon sensors on Maxwell+; no frequency scaling; basic PM on Fermi/Kepler | Full: dynamic P-states, fan control, power cap via GSP-RM; BACO-equivalent suspend | Full (GSP-RM on Turing+; direct on Pascal) | Inherits GSP-RM power path |
+| **Confidential computing** | Not supported | Supported on H100 (Hopper CC mode via GSP-RM) | Supported | Not yet |
+| **Installation** | Zero install — in Linux kernel tree | DKMS package (`nvidia-open-dkms`) or distro-packaged; replaces binary `nvidia.ko` | DKMS installer (`nvidia-dkms`) or distro `.run` | In-tree (Linux 6.10+); no package needed |
+| **Kernel signing / Secure Boot** | Signed by distro kernel build | Supported — open source enables distro signing and kmod signing | Requires distro MOK enrollment or `--no-secureboot` | Signed by distro kernel build |
+| **Blackwell (SM 10.x)** | No | **Only option** — NVIDIA deprecated binary `nvidia.ko` for Blackwell | Not available | Planned (after Ampere) |
+| **Production readiness** | Display and compositing only; no compute or video hardware acceleration on Maxwell+ | Production-grade on Turing+; single-chip flagship NVIDIA deployment path | Production-grade on Pascal–Ada Lovelace | Not yet production; Turing display target ~2027 |
+| **Future trajectory** | Maintained; superseded by Nova on Turing+ | **Primary path going forward**; Blackwell mandates it | Legacy path (Pascal/Volta support only new hardware won't gain it) | Intended long-term replacement for both Nouveau and nvidia-open |
+
+**Key takeaways for deployment decisions:**
+
+- **Nouveau** is the correct choice when the GPU must run completely open-source with zero proprietary components — typically Fermi/Kepler-era hardware or situations where CUDA and video acceleration are not needed. On Maxwell through Ada, the boot-clock performance penalty makes it unsuitable for graphics-intensive or compute workloads.
+
+- **nvidia-open** is NVIDIA's official supported kernel driver for Turing and newer. It is not a complete open-source stack: the userspace (CUDA, OpenGL, Vulkan) remains proprietary, and GSP-RM firmware is a closed blob. But the kernel module being open enables distro signing, proper `dma_resv` fence semantics, and meaningful integration with the Linux graphics stack. This is the correct deployment choice for Turing+ desktops and servers.
+
+- **Proprietary (binary nvidia.ko)** is the only option for Pascal (GTX 1000 series) and Volta (Titan V, V100) GPUs where nvidia-open is not available. On Turing+ hardware, nvidia-open has reached feature parity and is preferred; the binary module receives no new architecture support.
+
+- **NVK** (Mesa Vulkan driver for nouveau) changes the Vulkan calculus for open-source users on Turing and newer. It runs on top of nouveau (or will run on Nova) and provides a conformant Vulkan 1.3 implementation without any proprietary ICD. Application developers who need an auditable Vulkan path on NVIDIA hardware should evaluate NVK first; proprietary ICD performance leads exist but are narrowing.
 
 ---
 

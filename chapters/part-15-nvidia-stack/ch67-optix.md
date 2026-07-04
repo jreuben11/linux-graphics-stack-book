@@ -32,8 +32,9 @@
 15. [Blender Cycles and OptiX on Linux](#15-blender-cycles-and-optix-on-linux)
 16. [Linux Build and Development Workflow](#16-linux-build-and-development-workflow)
 17. [Deprecations and Migration Notes (OptiX 9.x)](#17-deprecations-and-migration-notes-optix-9x)
-18. [Integrations](#18-integrations)
-19. [References](#19-references)
+18. [ANARI: Khronos Abstract Rendering Interface](#18-anari-khronos-abstract-rendering-interface)
+19. [Integrations](#19-integrations)
+20. [References](#20-references)
 
 ---
 
@@ -1289,7 +1290,155 @@ Applications migrating from OptiX 7.x or 8.x to OptiX 9.x should address the fol
 
 ---
 
-## 18. Integrations
+## 18. ANARI: Khronos Abstract Rendering Interface
+
+**ANARI** (Analytic Rendering Interface) is a Khronos standard ([khronos.org/anari](https://www.khronos.org/anari/), finalised 1.0 in 2023) that provides a vendor-neutral C API for physically-based rendering aimed at scientific visualisation. Where Vulkan and OpenGL target real-time rasterisation, ANARI abstracts path tracers and ray tracers behind a consistent object model — making it possible to swap between CPU, GPU, and cloud renderers without application code changes.
+
+NVIDIA contributes two ANARI implementations: **VisRTX** ([github.com/NVIDIA/VisRTX](https://github.com/NVIDIA/VisRTX), 277 stars) — a full-featured OptiX-backed path tracer — and **barney** ([github.com/ingowald/barney](https://github.com/ingowald/barney), 33 stars) — a multi-GPU/multi-node path tracer using distributed data structures.
+
+### ANARI Object Model
+
+An ANARI scene is built from factory objects via an opaque `ANARIDevice` handle:
+
+- **ANARIWorld** — top-level scene container (instances, volumes, lights)
+- **ANARIInstance** — scene object at a transform (analogous to a Vulkan TLAS instance)
+- **ANARISurface** — geometry + material pair
+- **ANARIGeometry** — triangle mesh, quad mesh, sphere, cylinder, curve
+- **ANARIMaterial** — PBR properties (base color, metallic, roughness, emission)
+- **ANARILight** — point, directional, quad, HDRI environment
+- **ANARICamera** — perspective or orthographic camera
+- **ANARIFrame** — output frame with color + depth + albedo + normal AOVs
+- **ANARIRenderer** — selects the rendering algorithm (path tracer, ambient occlusion, etc.)
+
+### Basic ANARI C API
+
+```c
+#include <anari/anari.h>
+
+/* 1. Load the VisRTX backend */
+ANARILibrary lib = anariLoadLibrary("visrtx", NULL, NULL);
+ANARIDevice  dev = anariNewDevice(lib, "default");
+anariCommitParameters(dev, dev);
+
+/* 2. Create triangle mesh geometry */
+ANARIGeometry geom = anariNewGeometry(dev, "triangle");
+ANARIArray1D verts   = anariNewArray1D(dev, vertices,  NULL, NULL,
+                                        ANARI_FLOAT32_VEC3, vertex_count);
+ANARIArray1D indices = anariNewArray1D(dev, triangles, NULL, NULL,
+                                        ANARI_UINT32_VEC3, tri_count);
+anariSetParameter(dev, geom, "vertex.position", ANARI_ARRAY1D, &verts);
+anariSetParameter(dev, geom, "primitive.index",  ANARI_ARRAY1D, &indices);
+anariCommitParameters(dev, geom);
+
+/* 3. PBR material */
+ANARIMaterial mat = anariNewMaterial(dev, "physicallyBased");
+float base_color[3] = {0.7f, 0.3f, 0.1f};
+float metallic = 0.0f, roughness = 0.4f;
+anariSetParameter(dev, mat, "baseColor",  ANARI_FLOAT32_VEC3, base_color);
+anariSetParameter(dev, mat, "metallic",   ANARI_FLOAT32, &metallic);
+anariSetParameter(dev, mat, "roughness",  ANARI_FLOAT32, &roughness);
+anariCommitParameters(dev, mat);
+
+/* 4. Surface = geometry + material */
+ANARISurface surf = anariNewSurface(dev);
+anariSetParameter(dev, surf, "geometry", ANARI_GEOMETRY, &geom);
+anariSetParameter(dev, surf, "material", ANARI_MATERIAL, &mat);
+anariCommitParameters(dev, surf);
+
+/* 5. Group → Instance → World */
+ANARIGroup group = anariNewGroup(dev);
+anariSetParameterArray1D(dev, group, "surface", ANARI_SURFACE, &surf, 1);
+anariCommitParameters(dev, group);
+
+ANARIInstance inst = anariNewInstance(dev, "transform");
+anariSetParameter(dev, inst, "group", ANARI_GROUP, &group);
+float xfm[12] = {1,0,0, 0,1,0, 0,0,1, 0,0,0};  /* 3×4 column-major identity */
+anariSetParameter(dev, inst, "transform", ANARI_FLOAT32_MAT3x4, xfm);
+anariCommitParameters(dev, inst);
+
+ANARIWorld world = anariNewWorld(dev);
+anariSetParameterArray1D(dev, world, "instance", ANARI_INSTANCE, &inst, 1);
+anariCommitParameters(dev, world);
+
+/* 6. Camera */
+ANARICamera cam = anariNewCamera(dev, "perspective");
+float pos[3] = {0,1,5}, dir[3] = {0,-0.2f,-1}, up[3] = {0,1,0};
+float fov = 60.0f * M_PI / 180.0f;
+anariSetParameter(dev, cam, "position",  ANARI_FLOAT32_VEC3, pos);
+anariSetParameter(dev, cam, "direction", ANARI_FLOAT32_VEC3, dir);
+anariSetParameter(dev, cam, "up",        ANARI_FLOAT32_VEC3, up);
+anariSetParameter(dev, cam, "fovy",      ANARI_FLOAT32, &fov);
+anariCommitParameters(dev, cam);
+
+/* 7. Renderer: 64-spp path tracer */
+ANARIRenderer rend = anariNewRenderer(dev, "pathtracer");
+int spp = 64;
+anariSetParameter(dev, rend, "pixelSamples", ANARI_INT32, &spp);
+anariCommitParameters(dev, rend);
+
+/* 8. Frame: 1920×1080 RGBA */
+ANARIFrame frame = anariNewFrame(dev);
+anariSetParameter(dev, frame, "size",          ANARI_UINT32_VEC2,
+                  (uint32_t[]){1920, 1080});
+ANARIDataType fmt = ANARI_UFIXED8_RGBA_SRGB;
+anariSetParameter(dev, frame, "channel.color", ANARI_DATA_TYPE, &fmt);
+anariSetParameter(dev, frame, "renderer",      ANARI_RENDERER,  &rend);
+anariSetParameter(dev, frame, "camera",        ANARI_CAMERA,    &cam);
+anariSetParameter(dev, frame, "world",         ANARI_WORLD,     &world);
+anariCommitParameters(dev, frame);
+
+/* 9. Render (blocking) */
+anariRenderFrame(dev, frame);
+anariFrameReady(dev, frame, ANARI_WAIT);
+
+/* 10. Map result pixels */
+uint32_t fb_w, fb_h; ANARIDataType fb_type;
+const uint8_t *pixels = anariMapFrame(dev, frame, "channel.color",
+                                       &fb_w, &fb_h, &fb_type);
+/* ... write pixels ... */
+anariUnmapFrame(dev, frame, "channel.color");
+
+anariRelease(dev, frame);
+anariRelease(dev, world);
+anariRelease(dev, dev);
+anariUnloadLibrary(lib);
+```
+
+### VisRTX Renderer Types
+
+VisRTX extends ANARI with NVIDIA-specific renderer variants:
+- `"pathtracer"` — full Monte Carlo path tracing via OptiX
+- `"raycast"` — single-bounce ray cast with shading (fast preview)
+- `"ao"` — ambient occlusion
+- `"debug"` — geometry / normal / texcoord visualisation
+
+Volume rendering is supported through `ANARIVolume` with structured regular grids and unstructured volumes, backed by OptiX's volume intersector.
+
+### Build
+
+```bash
+git clone https://github.com/NVIDIA/VisRTX
+cmake -Bbuild -S. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DOptiX_ROOT=/opt/optix-9.0 \
+    -DANARI_SDK_DIR=/path/to/anari-sdk
+cmake --build build -j$(nproc)
+./build/viewer/anariViewer --library visrtx --scene test_scene
+```
+
+| Feature | VisRTX | barney |
+|---------|--------|--------|
+| Backend | OptiX (NVIDIA GPU) | OSPRay-style multi-GPU |
+| Multi-GPU | Single GPU | Yes (MPI + distributed data) |
+| Volume types | Structured + unstructured | Structured |
+| License | BSD-3-Clause | Apache-2.0 |
+
+[Source: ANARI specification — Khronos](https://www.khronos.org/anari/)
+[Source: VisRTX GitHub](https://github.com/NVIDIA/VisRTX)
+
+---
+
+## 19. Integrations
 
 **Chapter 56 — Vulkan KHR Ray Tracing Pipeline:** OptiX's BVH semantics (GAS/IAS) are directly comparable to `VK_KHR_acceleration_structure` (BLAS/TLAS). Both map to the same RT-core hardware. The shader stages (raygen, intersection, any-hit, closest-hit, miss, callable) are identical in concept. Developers comfortable with one API can transfer mental models to the other.
 
@@ -1307,7 +1456,7 @@ Applications migrating from OptiX 7.x or 8.x to OptiX 9.x should address the fol
 
 ---
 
-## 19. References
+## 20. References
 
 1. [NVIDIA OptiX 9.0 Release — NVIDIA Developer Forum](https://forums.developer.nvidia.com/t/optix-9-0-release/322842)
 2. [NVIDIA OptiX 9.1 Release Notes — gamegpu.com](https://en.gamegpu.com/news/zhelezo/nvidia-optix-9-1-dostupna-dlya-zagruzki-podderzhka-arm-shader-execution-reordering-i-novye-api)

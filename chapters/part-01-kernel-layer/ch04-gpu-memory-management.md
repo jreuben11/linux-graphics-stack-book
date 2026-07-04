@@ -22,6 +22,9 @@
   - [Linux p2pdma Infrastructure](#linux-p2pdma-infrastructure)
   - [CXL: Compute Express Link Memory Expansion](#cxl-compute-express-link-memory-expansion)
   - [drm_gpuvm: Generic GPU Virtual Address Space Manager](#drm_gpuvm-generic-gpu-virtual-address-space-manager)
+- [10. GPUDirect RDMA: gdrcopy and GPU-to-GPU Memory Copy](#10-gpudirect-rdma-gdrcopy-and-gpu-to-gpu-memory-copy)
+- [11. GPUDirect Storage: Direct GPU–NVMe I/O](#11-gpudirect-storage-direct-gpunvme-io)
+- [12. Heterogeneous Memory Management (HMM): Transparent CPU/GPU Paging](#12-heterogeneous-memory-management-hmm-transparent-cpugpu-paging)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -1090,6 +1093,192 @@ Topology discovery tools:
 - `rocm-smi --showtopo`: reports AMD xGMI link type and bandwidth matrix.
 - `nvidia-smi topo --matrix`: reports NVLink topology annotated as NV1/NV2/NV4 (number of NVLink connections).
 - `/sys/bus/pci/devices/<BDF>/p2pmem/`: sysfs entries created by p2pdma for p2p-capable BAR regions.
+
+---
+
+## 10. GPUDirect RDMA: gdrcopy and GPU-to-GPU Memory Copy
+
+GPUDirect RDMA enables third-party devices — network cards, storage controllers, other GPUs — to access NVIDIA GPU memory directly over PCIe without routing data through the CPU or system DRAM. The kernel-level mechanism is exposed through NVIDIA's `nvidia-peermem` kernel module (included in the open kernel modules since R515), which registers GPU BAR memory with the kernel's memory management layer so the InfiniBand/RDMA subsystem can pin and DMA it.
+
+**gdrcopy** ([github.com/NVIDIA/gdrcopy](https://github.com/NVIDIA/gdrcopy), MIT license, 1400+ stars) builds on top of `nvidia-peermem` to provide a fast CPU-mediated path for small GPU buffer copies that bypasses the CUDA memcpy engine entirely. For small transfers (< 64 KB), gdrcopy typically beats `cudaMemcpy` by 2–5× in latency because it maps the GPU BAR directly into the CPU's virtual address space through the `gdrdrv` kernel module.
+
+### Architecture
+
+```text
+Application
+    │
+    ├─ gdr_open()              → opens /dev/gdrdrv
+    ├─ gdr_pin_buffer()        → pins cuMemAlloc buffer via nvidia-peermem
+    ├─ gdr_map()               → mmap GPU BAR into CPU VA space
+    ├─ gdr_copy_to_mapping()   → CPU writes → GPU VRAM (WC path)
+    └─ gdr_copy_from_mapping() → CPU reads from GPU VRAM
+```
+
+### C API
+
+```c
+#include <gdrcopy/gdrapi.h>
+
+/* Open the gdrdrv kernel module handle */
+gdr_t g = gdr_open();
+
+/* Pin a CUDA device allocation (must be cuMemAlloc, not cudaMalloc!) */
+CUdeviceptr d_ptr;
+cuMemAlloc(&d_ptr, size);
+
+gdr_mh_t mh;
+gdr_pin_buffer(g, d_ptr, size, 0, 0, &mh);
+
+/* Map the pinned buffer into CPU address space via mmap on /dev/gdrdrv */
+void *cpu_ptr;
+gdr_map(g, mh, &cpu_ptr, size);
+
+gdr_info_t info;
+gdr_get_info(g, mh, &info);
+char *map_ptr = (char *)cpu_ptr + (info.va - d_ptr);
+
+/* CPU-side write INTO GPU VRAM (write-combining path, ~8 GB/s on PCIe 4.0 x16) */
+gdr_copy_to_mapping(mh, map_ptr, host_src, size);
+
+/* CPU-side read FROM GPU VRAM (uncached; prefer cudaMemcpy for large reads) */
+gdr_copy_from_mapping(mh, host_dst, map_ptr, size);
+
+gdr_unmap(g, mh, cpu_ptr, size);
+gdr_unpin_buffer(g, mh);
+gdr_close(g);
+```
+
+### Build and Install
+
+```bash
+git clone https://github.com/NVIDIA/gdrcopy
+cd gdrcopy
+make prefix=/usr/local
+sudo make install     # installs gdrdrv.ko and libgdrapi.so
+sudo modprobe gdrdrv
+ls /dev/gdrdrv        # verify
+```
+
+### When to Use gdrcopy vs cuMemcpy
+
+| Transfer | Best tool | Reason |
+|----------|-----------|--------|
+| < 64 KB GPU→CPU | `gdr_copy_from_mapping` | Avoids CUDA memcpy engine setup overhead |
+| < 64 KB CPU→GPU | `gdr_copy_to_mapping` | WC writes bypass CPU cache, land in VRAM |
+| > 1 MB any direction | `cudaMemcpy` | DMA engine delivers full PCIe bandwidth |
+| GPU→GPU same node | `cudaMemcpyPeer` / NVLink | Peer-to-peer DMA |
+| GPU→GPU across RDMA fabric | `nv_peer_mem` + RDMA verb | GPUDirect RDMA with InfiniBand/RoCE |
+
+[Source: NVIDIA gdrcopy GitHub](https://github.com/NVIDIA/gdrcopy)
+[Source: GPUDirect RDMA documentation](https://docs.nvidia.com/cuda/gpudirect-rdma/)
+
+---
+
+## 11. GPUDirect Storage: Direct GPU–NVMe I/O
+
+GPUDirect Storage (GDS) extends GPUDirect RDMA to the storage path: data moves directly from NVMe SSDs (or parallel filesystems like Lustre and GPFS) into GPU VRAM, bypassing the CPU bounce buffer that `read()`/`pread()` would use. For ML workloads that load large checkpoint files or stream training datasets, GDS reduces effective load time by 40–60% by saturating NVMe bandwidth without involving CPU memory bandwidth.
+
+The kernel component is `nvidia-fs` — shipped in the NVIDIA open kernel modules ([github.com/NVIDIA/gds-nvidia-fs](https://github.com/NVIDIA/gds-nvidia-fs)) — which hooks into the Linux block I/O path to redirect DMA destinations to GPU VRAM pages registered with `nvidia-peermem`.
+
+### cuFile API
+
+```c
+#include <cufile.h>
+
+/* 1. Initialise the cuFile driver */
+CUfileError_t err = cuFileDriverOpen();
+
+/* 2. Open file with O_DIRECT (required for GDS) */
+int fd = open("checkpoint.bin", O_RDONLY | O_DIRECT);
+CUfileHandle_t fh;
+CUfileDescr_t descr = { .handle.fd = fd, .type = CU_FILE_HANDLE_TYPE_OPAQUE_FD };
+cuFileHandleRegister(&fh, &descr);
+
+/* 3. Allocate GPU buffer and register it with the cuFile driver */
+CUdeviceptr d_buf;
+cuMemAlloc(&d_buf, BUFFER_SIZE);
+cuFileBufRegister((void *)d_buf, BUFFER_SIZE, 0);
+
+/* 4. Read directly NVMe → GPU VRAM — no CPU memory involved */
+ssize_t bytes_read = cuFileRead(fh, (void *)d_buf, BUFFER_SIZE,
+                                 file_offset, /* file offset */
+                                 0);          /* GPU buffer offset */
+
+/* 5. GPU kernel processes d_buf immediately — no cudaMemcpy needed */
+
+cuFileBufDeregister((void *)d_buf);
+cuFileHandleDeregister(fh);
+close(fd);
+cuFileDriverClose();
+```
+
+### System Requirements
+
+```bash
+sudo modprobe nvidia-fs          # ships with NVIDIA driver 460+
+lspci -tv | grep -E "NVMe|NVIDIA"  # verify peer-capable PCIe topology
+
+# GDS is transparent to ffmpeg/cuFile-aware apps; check support:
+nvidia-smi | grep -i "GPUDirect"
+```
+
+| Path | CPU memory used | Filesystem | Min driver |
+|------|-----------------|------------|------------|
+| `pread()` + `cudaMemcpy` | Yes | Universal | Any |
+| `cuFileRead` (GDS) | No | ext4, xfs, Lustre, GPFS, WekaFS | NVIDIA 460+ |
+
+[Source: NVIDIA GPUDirect Storage documentation](https://docs.nvidia.com/gpudirect-storage/)
+[Source: gds-nvidia-fs GitHub](https://github.com/NVIDIA/gds-nvidia-fs)
+
+---
+
+## 12. Heterogeneous Memory Management (HMM): Transparent CPU/GPU Paging
+
+HMM (Heterogeneous Memory Management), merged into Linux 4.14 and substantially improved through 5.15, enables CPU and GPU to share a single virtual address space using the CPU's page table as the canonical mapping. CUDA 12.2 (driver 535+) added production HMM support via `VM_BIND` ioctls and the `nvidia-uvm` module's integration with `mmu_notifier`, replacing the older `cudaMallocManaged` Unified Memory implementation for systems with HMM-capable kernels.
+
+### HMM vs. Unified Memory (pre-HMM)
+
+| Aspect | Unified Memory (pre-HMM) | HMM (Linux 4.14+ / CUDA 12.2+) |
+|--------|--------------------------|---------------------------------|
+| Page fault handler | CUDA UVM driver only | Linux kernel page fault + UVM |
+| CPU page table | Duplicated separately | Single canonical page table |
+| `mmap` compatibility | No | Yes — CPU can mmap any GPU allocation |
+| `fork()` behaviour | Undefined / broken | Defined via `mmu_notifier` invalidation |
+| Access counter migration | Software heuristic | Hardware counters (Ampere+) |
+
+### Practical HMM Code (CUDA 12.2+)
+
+```c
+#include <cuda.h>
+
+/* Allocate pinned host memory; with HMM, GPU can access without copy */
+void *host_ptr;
+cuMemAllocHost(&host_ptr, SIZE);
+my_kernel<<<grid, block>>>(host_ptr);  /* GPU pages fault in on demand */
+
+/* Allocate GPU memory, then advise CPU access — pages migrate on fault */
+CUdeviceptr dev_ptr;
+cuMemAlloc(&dev_ptr, SIZE);
+cuMemAdvise(dev_ptr, SIZE, CU_MEM_ADVISE_SET_ACCESSED_BY, CU_DEVICE_CPU);
+float *cpu_view = (float *)dev_ptr;    /* CPU dereference triggers migration */
+```
+
+### mmu_notifier Integration
+
+The `nvidia-uvm` driver registers an `mmu_notifier` with the CPU's page table. When the CPU's MMU invalidates a page (munmap, fork, mremap), `mmu_notifier_invalidate_range_start` fires and the GPU's page table entry is atomically cleared before the CPU page table change, preventing stale GPU TLB entries.
+
+```bash
+# Verify HMM is active
+cat /proc/driver/nvidia-uvm/status | grep -i HMM
+
+# CUDA 12.2 HMM sample
+git clone https://github.com/NVIDIA/HMM_sample_code
+cd HMM_sample_code && make
+./hmm_sample --size 128M --iterations 100
+```
+
+[Source: NVIDIA HMM sample code](https://github.com/NVIDIA/HMM_sample_code)
+[Source: Linux kernel HMM documentation](https://www.kernel.org/doc/html/latest/mm/hmm.html)
 
 ---
 

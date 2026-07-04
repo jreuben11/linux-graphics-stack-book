@@ -18,8 +18,11 @@
 8. [Multi-Process Service (MPS) and MIG Partitioning](#7-multi-process-service-mps-and-mig-partitioning)
 9. [NVML: GPU Monitoring API](#8-nvml-gpu-monitoring-api)
 10. [CUDA on Linux: Kernel Interfaces and Diagnostic Paths](#9-cuda-on-linux-kernel-interfaces-and-diagnostic-paths)
-11. [Integrations](#integrations)
-12. [References](#references)
+10. [CCCL: CUDA Core Compute Libraries](#10-cccl-cuda-core-compute-libraries)
+11. [Tile-Based CUDA: cuda-tile and Tilus](#11-tile-based-cuda-cuda-tile-and-tilus)
+12. [NVSHMEM: GPU-Side One-Sided Communication](#12-nvshmem-gpu-side-one-sided-communication)
+13. [Integrations](#integrations)
+14. [References](#references)
 
 ---
 
@@ -997,6 +1000,216 @@ ls /sys/kernel/debug/nvidia/
 > **Note: needs verification** — The specific subdirectory names and file paths within `/sys/kernel/debug/nvidia/` are not documented in the public NVIDIA driver release notes or in the procfs interface documentation ([Source: NVIDIA /proc Interface Documentation][18]). The entries that exist depend on the driver version (proprietary vs. Open Kernel Modules), the kernel configuration, and which subsystems are active. Key areas to explore include per-GPU PCI device directories (named by PCI address), and the `nvidia-uvm` module's subtree which is known to contain Unified Memory page-fault accounting data useful for diagnosing `cudaMallocManaged` performance pathologies — but exact paths should be verified against the running driver by inspection. Do not rely on any path documented in third-party guides; always `ls` the live tree on the target system before scripting against it.
 
 The `/proc/driver/nvidia/` paths described in Section 9.2 are the NVIDIA-documented stable diagnostic interface; prefer those over debugfs for any production monitoring or automated tooling.
+
+---
+
+## 10. CCCL: CUDA Core Compute Libraries
+
+CCCL (CUDA Core Compute Libraries, [github.com/NVIDIA/cccl](https://github.com/NVIDIA/cccl), 2400+ stars) is NVIDIA's 2024 unification of three previously separate header-only libraries — **Thrust** (GPU algorithm library), **CUB** (low-level CUDA block/warp primitives), and **libcu++** (CUDA C++ standard library) — into a single repository and versioning scheme. Starting with CUDA 12.4, CCCL ships as the canonical source for all three.
+
+### Thrust: GPU Algorithm Library
+
+Thrust provides STL-style algorithms that dispatch to CUDA automatically. All algorithms accept execution policies (`thrust::device`, `thrust::host`, `thrust::cuda::par_on(stream)`) and work with raw CUDA pointers or `thrust::device_vector`.
+
+```cpp
+#include <thrust/device_vector.h>
+#include <thrust/sort.h>
+#include <thrust/reduce.h>
+#include <thrust/transform_reduce.h>
+#include <thrust/functional.h>
+
+thrust::device_vector<float> d_data(1 << 24);
+thrust::fill(d_data.begin(), d_data.end(), 1.0f);
+
+/* Parallel sort on the default CUDA stream */
+thrust::sort(thrust::device, d_data.begin(), d_data.end());
+
+/* Parallel reduce (sum) */
+float total = thrust::reduce(thrust::device, d_data.begin(), d_data.end(),
+                              0.0f, thrust::plus<float>());
+
+/* transform_reduce: compute L2 norm */
+float l2 = std::sqrt(
+    thrust::transform_reduce(thrust::device,
+                              d_data.begin(), d_data.end(),
+                              [] __device__ (float x) { return x * x; },
+                              0.0f, thrust::plus<float>()));
+
+/* Execute on a specific CUDA stream */
+cudaStream_t stream;
+cudaStreamCreate(&stream);
+thrust::sort(thrust::cuda::par_on(stream), d_data.begin(), d_data.end());
+```
+
+### CUB: Block and Warp Primitives
+
+CUB provides the lowest-level GPU primitives — block-wide and warp-wide collectives — that Thrust is built on. These are the building blocks for custom GPU kernels requiring scan, reduce, or sort within a thread block.
+
+```cpp
+#include <cub/cub.cuh>
+
+/* Block-wide inclusive prefix sum */
+__global__ void block_scan_kernel(float *data, float *out, int n) {
+    typedef cub::BlockScan<float, 256> BlockScan;
+    __shared__ typename BlockScan::TempStorage temp;
+
+    int   tid = threadIdx.x + blockIdx.x * blockDim.x;
+    float val = (tid < n) ? data[tid] : 0.0f;
+
+    float prefix;
+    BlockScan(temp).InclusiveSum(val, prefix);
+    if (tid < n) out[tid] = prefix;
+}
+
+/* Device-wide radix sort */
+void *d_temp = nullptr;
+size_t temp_bytes = 0;
+cub::DeviceRadixSort::SortKeys(d_temp, temp_bytes, d_keys_in, d_keys_out, N);
+cudaMalloc(&d_temp, temp_bytes);
+cub::DeviceRadixSort::SortKeys(d_temp, temp_bytes, d_keys_in, d_keys_out, N);
+```
+
+### libcu++: CUDA C++ Standard Library
+
+libcu++ provides C++17 standard library types usable from both device and host code: `cuda::atomic`, `cuda::mutex`, `cuda::pipeline`, `cuda::mdspan`.
+
+```cpp
+#include <cuda/atomic>
+#include <cuda/std/mdspan>
+
+/* Atomic operations with memory ordering (works in device kernels) */
+__global__ void atomic_kernel(cuda::atomic<int, cuda::thread_scope_device> *counter) {
+    counter->fetch_add(1, cuda::memory_order_relaxed);
+}
+
+/* mdspan: non-owning multidimensional array view (C++23 backport) */
+cuda::std::mdspan<float, cuda::std::dextents<int, 2>> mat(d_ptr, rows, cols);
+```
+
+```bash
+/* CCCL is header-only; included in CUDA 12.4+ */
+git clone --recursive https://github.com/NVIDIA/cccl
+# Headers available at $CUDA_HOME/include/thrust, cub, cuda/
+```
+
+[Source: CCCL GitHub](https://github.com/NVIDIA/cccl)
+[Source: CCCL documentation](https://nvidia.github.io/cccl/)
+
+---
+
+## 11. Tile-Based CUDA: cuda-tile and Tilus
+
+**cuda-tile** ([github.com/NVIDIA/cuda-tile](https://github.com/NVIDIA/cuda-tile), 990+ stars) and **Tilus** ([github.com/NVIDIA/tilus](https://github.com/NVIDIA/tilus), 488+ stars) represent NVIDIA's research into next-generation GPU programming abstractions above the CUDA thread/warp/block model. Both are built around the concept of a **tile** — a 2D or higher-dimensional data block operated on collectively by tensor-core-equipped threads.
+
+### cuda-tile: MLIR-Based Tile IR
+
+cuda-tile is an MLIR dialect that compiles high-level tile-level operations directly to PTX/SASS, eliminating the manual warp-cooperative matrix instructions (`wmma`, `mma.sync`, `wgmma`) that developers must write today for tensor core access.
+
+```python
+import cutile
+
+@cutile.kernel
+def matmul(A: cutile.Tile[128, 64, cutile.f16],
+           B: cutile.Tile[64, 128, cutile.f16],
+           C: cutile.Tile[128, 128, cutile.f32]):
+    # Lowered to wgmma.mma_async (Hopper) or wmma (Ampere) automatically
+    C += A @ B
+
+matmul.launch(grid=(M//128, N//128), A=d_A, B=d_B, C=d_C)
+```
+
+### Tilus: Tile-Level Kernel Language
+
+Tilus expresses GPU kernels at the tile abstraction level (similar in intent to Triton, but integrated with NVIDIA's compiler stack):
+
+```python
+import tilus
+
+@tilus.kernel
+def attention_tile(Q: tilus.Tile[SEQ, HEAD_DIM],
+                   K: tilus.Tile[SEQ, HEAD_DIM],
+                   V: tilus.Tile[SEQ, HEAD_DIM],
+                   out: tilus.Tile[SEQ, HEAD_DIM]):
+    scale   = 1.0 / tilus.sqrt(HEAD_DIM)
+    scores  = Q @ K.T * scale       # Tensor-core MMA
+    weights = tilus.softmax(scores)  # Warp-level softmax
+    out[:]  = weights @ V            # Tensor-core MMA
+```
+
+| Feature | CUTLASS | Triton | cuda-tile / Tilus |
+|---------|---------|--------|--------------------|
+| Abstraction level | C++ template library | Python tile language | MLIR tile IR + language |
+| Compiler | nvcc template instantiation | LLVM Triton backend | MLIR → LLVM → PTX |
+| Tensor core access | Manual `mma.sync` templates | Auto via tile ops | Auto via tile IR |
+| Status | Stable (NVIDIA) | Stable (OpenAI) | Research (NVIDIA) |
+
+[Source: cuda-tile GitHub](https://github.com/NVIDIA/cuda-tile)
+[Source: Tilus GitHub](https://github.com/NVIDIA/tilus)
+
+---
+
+## 12. NVSHMEM: GPU-Side One-Sided Communication
+
+**NVSHMEM** ([developer.nvidia.com/nvshmem](https://developer.nvidia.com/nvshmem), 550+ stars) implements the OpenSHMEM programming model for NVIDIA GPUs, enabling GPU kernels to perform one-sided `put`/`get` operations into the memory of remote GPUs — on the same node (via NVLink or PCIe p2p) or across nodes (via InfiniBand with GPUDirect RDMA) — without returning to the CPU.
+
+This is distinct from NCCL (collective communication) and MPI (CPU-mediated point-to-point): NVSHMEM allows a single CUDA thread within a kernel to push data to another GPU's symmetric memory without synchronising the entire warp or launching a separate transfer kernel.
+
+### Symmetric Heap and API
+
+NVSHMEM allocates a **symmetric heap** — a memory region mapped at the same virtual address on all participating GPUs. Each PE (processing element / GPU) can address any other PE's symmetric heap using offset arithmetic (local p2p access) or through put/get operations (remote nodes).
+
+```cpp
+#include <nvshmem.h>
+#include <nvshmemx.h>
+
+int main() {
+    nvshmem_init();
+    int my_pe = nvshmem_my_pe();
+    int n_pes  = nvshmem_n_pes();
+
+    /* Allocate symmetric heap memory (same VA on all PEs) */
+    float *sym_buf = (float *)nvshmem_malloc(N * sizeof(float));
+
+    my_nvshmem_kernel<<<grid, block>>>(sym_buf, my_pe, n_pes);
+    cudaDeviceSynchronize();
+
+    nvshmem_free(sym_buf);
+    nvshmem_finalize();
+}
+```
+
+```cpp
+/* CUDA kernel using NVSHMEM put/get from within GPU threads */
+__global__ void my_nvshmem_kernel(float *buf, int my_pe, int n_pes) {
+    int tid     = blockIdx.x * blockDim.x + threadIdx.x;
+    int next_pe = (my_pe + 1) % n_pes;
+
+    /* One-sided put: write local element into next PE's symmetric buffer */
+    nvshmem_float_put(&buf[tid], &buf[tid], 1, next_pe);
+
+    /* Barrier: wait for all puts to complete */
+    nvshmem_barrier_all();
+
+    /* One-sided get: read from previous PE */
+    int prev_pe = (my_pe - 1 + n_pes) % n_pes;
+    float remote_val;
+    nvshmem_float_get(&remote_val, &buf[tid], 1, prev_pe);
+}
+```
+
+### NVSHMEM vs. NCCL
+
+| Feature | NCCL | NVSHMEM |
+|---------|------|---------|
+| Initiator | CPU launches collective | GPU thread calls put/get |
+| Granularity | Full-warp / all-reduce | Per-thread one-sided |
+| Pattern | Collective (all PEs participate) | Point-to-point (any two PEs) |
+| Topology | NVLink, IB, RoCE | NVLink, PCIe p2p, IB |
+| Use case | DNN gradient sync | Stencil, BLAS panel algorithms |
+| Latency | ~2–5 μs per collective | < 1 μs (on-node NVLink) |
+
+[Source: NVSHMEM developer documentation](https://developer.nvidia.com/nvshmem)
+[Source: NVSHMEM GitHub](https://github.com/NVIDIA/nvshmem)
 
 ---
 

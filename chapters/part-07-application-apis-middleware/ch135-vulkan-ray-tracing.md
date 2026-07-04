@@ -10,6 +10,7 @@
 2. [Ray Tracing Pipeline and Shader Stages](#ray-tracing-pipeline-and-shader-stages)
 3. [Acceleration Structures: BLAS and TLAS](#acceleration-structures-blas-and-tlas)
 4. [BVH Construction Algorithms](#bvh-construction-algorithms)
+   - [Self-Intersection Avoidance](#self-intersection-avoidance)
 5. [Shader Binding Table](#shader-binding-table)
 6. [RADV: RDNA2+ Ray Tracing](#radv-rdna2-ray-tracing)
 7. [ANV: Intel Xe-HPG Ray Tracing](#anv-intel-xe-hpg-ray-tracing)
@@ -318,6 +319,59 @@ while (vkDeferredOperationJoinKHR(device, deferredOp) == VK_THREAD_IDLE_KHR) {
     // more work available — other threads may call join too
 }
 ```
+
+---
+
+### Self-Intersection Avoidance
+
+A persistent practical problem in any ray tracer is **self-intersection**: a shadow or reflection ray originating from a surface hits the same triangle that generated it, producing false occlusion (surface acne) or incorrect self-shadowing. This happens because floating-point arithmetic places the ray origin slightly inside the surface.
+
+NVIDIA Research published reference GLSL/HLSL code ([github.com/NVIDIA/self-intersection-avoidance](https://github.com/NVIDIA/self-intersection-avoidance)) for a geometrically correct offset method that pushes the origin along the surface normal by an amount proportional to the geometric error at that point — adaptive rather than a fixed epsilon, which either clips geometry at grazing angles or fails at large-distance geometry.
+
+```glsl
+/* Self-intersection avoidance — GLSL adaptation of NVIDIA's reference code.
+   Source: github.com/NVIDIA/self-intersection-avoidance                    */
+
+/* Offset a position along a normal to avoid self-intersection.
+   p: hit position (object space), n: geometric normal (object space),
+   Returns safe ray origin for reflection / shadow rays.                    */
+vec3 offsetPositionAlongNormal(vec3 p, vec3 n) {
+    /* The integer offset technique avoids FP cancellation error. */
+    const float origin      = 1.0 / 32.0;
+    const float float_scale = 1.0 / 65536.0;
+    const float int_scale   = 256.0;
+
+    ivec3 of_i = ivec3(int_scale * n.x, int_scale * n.y, int_scale * n.z);
+    vec3 p_i = vec3(
+        intBitsToFloat(floatBitsToInt(p.x) + ((p.x < 0) ? -of_i.x : of_i.x)),
+        intBitsToFloat(floatBitsToInt(p.y) + ((p.y < 0) ? -of_i.y : of_i.y)),
+        intBitsToFloat(floatBitsToInt(p.z) + ((p.z < 0) ? -of_i.z : of_i.z)));
+
+    return vec3(
+        abs(p.x) < origin ? p.x + float_scale * n.x : p_i.x,
+        abs(p.y) < origin ? p.y + float_scale * n.y : p_i.y,
+        abs(p.z) < origin ? p.z + float_scale * n.z : p_i.z);
+}
+
+/* Usage in a closest-hit shader: */
+layout(location = 0) rayPayloadInEXT Payload payload;
+
+void main() {
+    vec3 P = gl_WorldRayOriginEXT + gl_HitTEXT * gl_WorldRayDirectionEXT;
+    vec3 N = /* interpolated geometric normal at hit */;
+
+    /* Shadow ray: offset origin to avoid self-shadowing */
+    vec3 shadowOrigin = offsetPositionAlongNormal(P, N);
+    traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT,
+                0xFF, 0, 0, 0,
+                shadowOrigin, 0.001, lightDir, 1e6, 1 /* shadow payload */);
+}
+```
+
+The key insight is using integer arithmetic on the float representation: adding an integer offset to the mantissa/exponent of a float is equivalent to shifting by a number of ULPs (Units in the Last Place) proportional to the float's magnitude — inherently adaptive to the scale of the geometry.
+
+[Source: NVIDIA self-intersection-avoidance GitHub](https://github.com/NVIDIA/self-intersection-avoidance)
+[Source: NVIDIA blog — A Fast and Robust Method for Avoiding Self-Intersection](https://developer.nvidia.com/blog/solving-self-intersection-artifacts-in-directx-raytracing/)
 
 ---
 

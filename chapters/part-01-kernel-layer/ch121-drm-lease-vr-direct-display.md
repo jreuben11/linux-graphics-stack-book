@@ -14,9 +14,11 @@
 - [5. wp_drm_lease_device_v1 Wayland Protocol](#5-wp_drm_lease_device_v1-wayland-protocol)
 - [6. SteamVR on Linux](#6-steamvr-on-linux)
 - [6b. ALVR: Wireless PC VR Streaming via DRM Lease](#6b-alvr-wireless-pc-vr-streaming-via-drm-lease)
+- [6c. NvPipe: Zero-Latency NVENC-Based Remoting](#6c-nvpipe-zero-latency-nvenc-based-remoting)
 - [7. Direct-to-Display Vulkan Swapchain](#7-direct-to-display-vulkan-swapchain)
 - [8. Timing and Synchronisation for VR](#8-timing-and-synchronisation-for-vr)
 - [9. Practical: Setting Up VR on Linux](#9-practical-setting-up-vr-on-linux)
+- [10. CloudXR: Cloud AR/VR Streaming](#10-cloudxr-cloud-arvr-streaming)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -549,6 +551,63 @@ ALVR is the dominant choice for users who own a standalone headset and want PC V
 
 ---
 
+## 6c. NvPipe: Zero-Latency NVENC-Based Remoting
+
+**NvPipe** ([github.com/NVIDIA/NvPipe](https://github.com/NVIDIA/NvPipe), 394 stars) is NVIDIA's open-source library for interactive video remoting that wraps NVENC encode and NVDEC decode behind a minimal C API optimised for latency rather than throughput. It targets the VR/AR streaming use case (frame encode → transmit → decode → display), where encode latency matters more than compression efficiency.
+
+NvPipe is the encode/decode component that early versions of ALVR were built on (before ALVR migrated to FFmpeg-NVENC); it remains relevant for custom VR streaming implementations and interactive visualisation remoting.
+
+### C API
+
+```c
+#include "NvPipe.h"
+
+/* Encoder side (PC with NVIDIA GPU running the VR application) */
+NvPipe *encoder = NvPipe_CreateEncoder(
+    NVPIPE_RGBA32,        /* input format */
+    NVPIPE_H264,          /* codec: NVPIPE_H264 or NVPIPE_HEVC */
+    NVPIPE_LOSSY,         /* mode */
+    20 * 1000 * 1000,     /* bitrate: 20 Mbps */
+    90,                   /* target fps */
+    1920, 1080);          /* resolution */
+
+/* Encode a CUDA device pointer (GPU VRAM — no CPU copy) */
+uint8_t encoded[1 << 20];
+uint64_t encoded_size = NvPipe_Encode(encoder,
+                                       d_frame_rgba,  /* CUdeviceptr or host ptr */
+                                       1920 * 4,      /* pitch */
+                                       encoded,
+                                       sizeof(encoded),
+                                       1920, 1080,
+                                       false          /* forceIFrame */);
+/* Send encoded[] over UDP/WebRTC to headset */
+
+NvPipe_Destroy(encoder);
+
+/* Decoder side (headset or Linux client) */
+NvPipe *decoder = NvPipe_CreateDecoder(NVPIPE_RGBA32, NVPIPE_H264, 1920, 1080);
+uint8_t *decoded_frame = malloc(1920 * 1080 * 4);
+uint64_t decoded_size = NvPipe_Decode(decoder,
+                                       received_encoded, received_size,
+                                       decoded_frame, 1920, 1080);
+NvPipe_Destroy(decoder);
+```
+
+### Comparison with FFmpeg NVENC
+
+| Feature | NvPipe | FFmpeg NVENC |
+|---------|--------|-------------|
+| API complexity | Minimal (3 calls) | Full pipeline setup |
+| GPU input | Yes (CUdeviceptr) | Yes (`cuda` hwaccel) |
+| Latency optimisation | VR-specific (`ultra_low_latency`) | General |
+| B-frames | No (VR: all-intra or I+P) | Configurable |
+| Container | Raw NAL units | Any format |
+| License | BSD-3-Clause | LGPL/GPL |
+
+[Source: NvPipe GitHub](https://github.com/NVIDIA/NvPipe)
+
+---
+
 ## 7. Direct-to-Display Vulkan Swapchain
 
 ### VK_KHR_display: Vulkan's Window-System-Free Path
@@ -854,6 +913,104 @@ dmesg | grep -i "mst\|multi-stream"
 # List MST connectors
 drm_info | grep -i "mst"
 ```
+
+---
+
+## 10. CloudXR: Cloud AR/VR Streaming
+
+**NVIDIA CloudXR** ([developer.nvidia.com/cloudxr-sdk](https://developer.nvidia.com/cloudxr-sdk), [github.com/NVIDIA/CloudXR](https://github.com/NVIDIA/CloudXR)) is NVIDIA's SDK for streaming OpenXR/SteamVR applications from a server GPU to a thin-client XR device over a network. Where ALVR (§6b) streams a rendered PC game to a standalone headset over Wi-Fi, CloudXR moves the entire XR session — including head-tracking, controller input, and frame rendering — to a data centre GPU, with only video + haptic streams returned to the client device.
+
+### Architecture
+
+```text
+Server (data centre GPU — RTX 4090 / H100)
+    ├─ SteamVR runtime (or OpenXR runtime)
+    ├─ CloudXR server SDK (libcloudxr-server.so)
+    │       ├─ Receives pose/controller data from client (< 1 ms UDP path)
+    │       ├─ Renders frame via normal GPU pipeline
+    │       ├─ NVENC encodes H.265 4K@120fps (adaptive bitrate)
+    │       └─ Streams over 5G/Wi-Fi 6 / wired ethernet
+    │
+Network (5G mmWave / Wi-Fi 6E, target < 20 ms RTT)
+    │
+Client (Android standalone HMD / PC thin client)
+    ├─ CloudXR client SDK (Android lib / Windows/Linux exe)
+    ├─ NVDEC hardware decode (or software decode on client)
+    ├─ Reprojection (client-side ATW — asynchronous timewarp)
+    └─ Display output to HMD
+```
+
+### Server-Side Integration (C API)
+
+```c
+#include "CloudXR/CloudXRServer.h"
+
+/* Initialise CloudXR server with OpenXR session parameters */
+cxrServerHandle server;
+cxrGraphicsContext gfx_ctx = {
+    .type        = cxrGraphicsContext_Vulkan,
+    .vk.instance = vk_instance,
+    .vk.device   = vk_device,
+    .vk.physDev  = vk_physical_device
+};
+
+cxrServerDesc desc = {
+    .requestedVersion  = CLOUDXR_VERSION_DWORD,
+    .stereoWidth       = 2160,
+    .stereoHeight      = 2160,
+    .fps               = 90,
+    .bitrate           = 50000,   /* kbps */
+    .receiveAudio      = true,
+    .sendAudio         = true,
+    .posePollFrequency = 1
+};
+cxrCreateServer(&desc, &gfx_ctx, &server);
+
+/* Per-frame: get the latest client pose before rendering */
+cxrFramesLatched latched;
+cxrLatchFrame(server, &latched, cxrFrameMask_All, 100 /* timeout ms */);
+
+cxrMatrix34 head_pose = latched.poseMatrix;
+/* Use head_pose to compute view matrices for left/right eye render */
+
+/* After rendering: blit L+R eye images into CloudXR frame buffer */
+cxrBlitFrame(server, &latched, cxrFrameMask_All);
+
+/* Release frame for encode and transmission */
+cxrReleaseFrame(server, &latched);
+```
+
+### Linux Server Deployment
+
+```bash
+# CloudXR server runs on Linux with NVIDIA driver 525+ and SteamVR
+# Install SteamVR (Proton/native) and CloudXR server package
+dpkg -i cloudxr-server_4.0_amd64.deb
+
+# Start the CloudXR streaming server
+/opt/nvidia/cloudxr/bin/CloudXRServer \
+    --codec H265 \
+    --bitrate 50000 \
+    --port 48010
+
+# Monitor streaming stats
+/opt/nvidia/cloudxr/bin/CloudXRStats --server localhost
+```
+
+### CloudXR vs. ALVR
+
+| Feature | ALVR | CloudXR |
+|---------|------|---------|
+| Rendering location | Local PC | Data centre GPU |
+| Client type | Meta Quest / Android | Any OpenXR device |
+| Open source | Yes | SDK (binary) |
+| Codec | H.264 / H.265 / AV1 | H.265 |
+| Pose prediction | Client-side | Server + client |
+| Min RTT | Wi-Fi: ~10 ms | 5G: ~15–20 ms |
+| License | MIT | NVIDIA Proprietary |
+
+[Source: NVIDIA CloudXR documentation](https://developer.nvidia.com/cloudxr-sdk)
+[Source: CloudXR GitHub](https://github.com/NVIDIA/CloudXR)
 
 ---
 

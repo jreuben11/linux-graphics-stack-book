@@ -22,7 +22,8 @@
 12. [Production Deployment: Docker, Multi-GPU, and Distributed Training](#12-production-deployment)
 13. [Dynamic and Temporal Gaussian Splatting (4DGS)](#13-dynamic-and-temporal-gaussian-splatting-4dgs)
 14. [Python Differentiable Rendering: nvdiffrast, PyTorch3D, and Kaolin](#14-python-differentiable-rendering-nvdiffrast-pytorch3d-and-kaolin)
-15. [Integrations](#15-integrations)
+15. [GVDB Sparse Voxels: GPU Volume Compute and Rendering](#15-gvdb-sparse-voxels-gpu-volume-compute-and-rendering)
+16. [Integrations](#16-integrations)
 
 ---
 
@@ -1519,7 +1520,116 @@ occupancy = kal.ops.spc.query_spc(spc, query_points)
 
 ---
 
-## 15. Integrations
+## 15. GVDB Sparse Voxels: GPU Volume Compute and Rendering
+
+**GVDB** (GPU Voxel Database, [github.com/NVIDIA/gvdb-voxels](https://github.com/NVIDIA/gvdb-voxels), 717 stars) is NVIDIA's library for GPU-resident sparse volumetric data structures and rendering, targeting fire, smoke, water, and cloud simulation. Unlike 3D Gaussian Splatting (which represents scenes as explicit Gaussian primitives) or NeRF (which uses an implicit MLP), GVDB uses a sparse VDB tree — a hierarchical voxel grid where only occupied regions are stored — enabling both GPU compute (physics simulation) and high-quality rendering in a single data structure.
+
+### Architecture
+
+GVDB is built on NanoVDB (OpenVDB's GPU-portable format) and extends it with:
+- **CUDA-native sparse tree** — the VDB hierarchy is stored entirely in GPU VRAM
+- **Tri-linear interpolation** on the GPU for smooth rendering
+- **Marching cubes** for surface extraction
+- **Volume rendering** via ray marching with emission/absorption models
+- **Particle-to-voxel** splat for simulation data ingestion
+
+```text
+Simulation particles (positions, velocities)
+    │
+    ▼  gvdb.Resample()
+GVDB sparse tree (GPU VRAM)
+    │                   │
+    ▼                   ▼
+gvdb.Render()     gvdb.SurfaceVDB()
+(volume raycast)  (marching cubes → mesh)
+```
+
+### GVDB C++ API
+
+```cpp
+#include "gvdb.h"
+
+VolumeGVDB gvdb;
+gvdb.SetCudaDevice(GVDB_DEV_FIRST);   /* select GPU */
+gvdb.Initialize();
+
+/* 1. Configure the sparse VDB tree topology (4 levels: root→2→2→leaf) */
+gvdb.Configure(3,                      /* number of levels */
+               {4, 4, 4},              /* log2 branching factor per level */
+               {0, 0, 0});             /* origin */
+
+/* 2. Add voxel channels: density (float) + temperature (float) */
+gvdb.AddChannel(0, T_FLOAT, 2);       /* channel 0: density */
+gvdb.AddChannel(1, T_FLOAT, 2);       /* channel 1: temperature */
+
+/* 3. Load simulation data from particle positions */
+DataPtr particles;
+gvdb.AllocData(particles, num_particles, sizeof(Vector3DF), false);
+gvdb.CommitData(particles, num_particles, positions_host, 0, sizeof(Vector3DF));
+
+/* Splat particles into density channel with Gaussian kernel */
+gvdb.Resample(0 /* dest channel */, particles, RESAMPLE_ADDITIVE,
+              Vector3DF(0, 0, 0), Vector3DF(0.5f, 0.5f, 0.5f));
+
+/* 4. Configure camera for volume rendering */
+Camera3D camera;
+camera.setOrbit(Vector3DF(45, 30, 0), Vector3DF(0, 0, 0), 200.0f, 1.0f);
+gvdb.getScene()->SetCamera(&camera);
+
+/* 5. Configure transfer function: density → color/opacity */
+gvdb.getScene()->SetVolumeRange(0.1f, 1.0f, -1.0f);
+gvdb.getScene()->SetExtinct(-1.0f, 1.5f, 0.0f);  /* absorption, scattering */
+
+/* 6. Render — outputs to a CUDA surface */
+gvdb.Render(SHADE_VOLUME, 0 /* density channel */, -1);
+
+/* 7. Retrieve pixel buffer for display */
+gvdb.ReadRenderBuf(0, (uchar *)rgba_buffer);
+```
+
+### Simulation Integration
+
+GVDB integrates with PhysX particle simulation for fire/smoke:
+
+```cpp
+/* After PhysX particle step: write positions to GVDB */
+PxVec3 *particle_positions = /* from PhysX particle buffer */;
+gvdb.SetPoints(particle_positions, num_particles);
+gvdb.Resample(0, /* density channel update */);
+
+/* Per-frame render */
+gvdb.Render(SHADE_VOLUME, 0, -1);
+```
+
+### GVDB vs. NeRF vs. 3DGS vs. NanoVDB
+
+| Property | NeRF | 3DGS | GVDB | NanoVDB |
+|----------|------|------|------|---------|
+| Representation | Implicit MLP | Explicit Gaussians | Sparse VDB tree | Sparse VDB (CPU+GPU) |
+| GPU resident | Partially | Yes | Yes | Optional |
+| Real-time render | No (slow) | Yes | Yes (volume) | No |
+| Simulation coupling | No | Limited | Yes (particles) | No |
+| Physics deformation | No | Limited | Yes | No |
+| Best for | Novel view synthesis | Scene capture | Dynamic volumes | Data exchange |
+
+### Build
+
+```bash
+git clone https://github.com/NVIDIA/gvdb-voxels
+cd gvdb-voxels
+cmake -Bbuild -S. -DCMAKE_BUILD_TYPE=Release \
+      -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
+cmake --build build -j$(nproc)
+# Run the smoke simulation demo:
+./build/bin/g3DPrint
+```
+
+[Source: GVDB GitHub](https://github.com/NVIDIA/gvdb-voxels)
+[Source: NanoVDB documentation](https://developer.nvidia.com/blog/accelerating-openvdb-on-gpus-with-nanovdb/)
+
+---
+
+## 16. Integrations
 
 This chapter connects to the following parts of the Linux graphics stack:
 

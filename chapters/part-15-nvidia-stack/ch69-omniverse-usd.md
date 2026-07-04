@@ -53,8 +53,12 @@
     - 10.4 [Omniverse Nucleus Architecture](#omniverse-nucleus-architecture)
     - 10.5 [Profiling with Nsight Graphics](#profiling-with-nsight-graphics)
 11. [USD in Linux Graphics Pipelines Beyond Omniverse](#usd-in-linux-graphics-pipelines-beyond-omniverse)
-12. [Integrations](#integrations)
-13. [References](#references)
+12. [PhysX 5 and NVIDIA Warp: GPU Simulation for Rendering](#12-physx-5-and-nvidia-warp-gpu-simulation-for-rendering)
+    - 12.3 [warp-nn: Neural Networks in Warp](#123-warp-nn-neural-networks-in-warp)
+13. [Audio2Face-3D: Neural Facial Animation](#13-audio2face-3d-neural-facial-animation)
+14. [MDL-SDK: Standalone C++ API for Material Compilation](#mdl-sdk-standalone-c-api-for-material-compilation)
+15. [Integrations](#integrations)
+16. [References](#references)
 
 ---
 
@@ -1687,9 +1691,242 @@ wp.launch(my_deformer_kernel, dim=len(positions_wp), inputs=[positions_wp])
 
 This zero-copy path — Warp kernel writes directly into Fabric-backed GPU memory, RTX Renderer reads that memory in the same frame — is the production pattern for high-frequency simulation-driven geometry updates in Omniverse.
 
+### 12.3 warp-nn: Neural Networks in Warp
+
+**warp-nn** ([github.com/NVIDIA/warp-nn](https://github.com/NVIDIA/warp-nn)) extends NVIDIA Warp with neural network primitives that are natively compatible with Warp's JIT compilation and `wp.Tape` automatic differentiation. This enables neural networks to be called from within Warp simulation kernels and differentiated end-to-end alongside the physics simulation — directly useful for physics-informed neural rendering and differentiable simulation.
+
+```python
+import warp as wp
+import warp.nn as wpnn
+
+# Define a small MLP inside a Warp kernel
+@wp.kernel
+def neural_deformer(
+    positions: wp.array(dtype=wp.vec3),
+    time: float,
+    net_weights: wpnn.LinearWeights,
+    out_positions: wp.array(dtype=wp.vec3)
+):
+    tid = wp.tid()
+    p = positions[tid]
+
+    # Evaluate 2-layer MLP: input = (x, y, z, t), output = displacement (dx, dy, dz)
+    x = wp.vec4(p[0], p[1], p[2], time)
+    h = wpnn.linear(net_weights, 0, x)   # first layer
+    h = wpnn.relu(h)
+    d = wpnn.linear(net_weights, 1, h)   # second layer (displacement)
+
+    out_positions[tid] = p + wp.vec3(d[0], d[1], d[2])
+
+# Differentiable: gradients flow through the MLP and into net_weights
+tape = wp.Tape()
+with tape:
+    wp.launch(neural_deformer, dim=N,
+              inputs=[positions, time, weights, out_positions])
+    loss = photometric_loss(out_positions, target_image)
+tape.backward(loss)
+# weights.grad now contains parameter gradients
+optimizer.step(weights, weights.grad)
+```
+
+[Source: warp-nn GitHub](https://github.com/NVIDIA/warp-nn)
+[Source: NVIDIA Warp documentation](https://nvidia.github.io/warp/)
+
 ---
 
-## 13. Integrations
+## 13. Audio2Face-3D: Neural Facial Animation
+
+**Audio2Face-3D** is part of NVIDIA ACE (Avatar Cloud Engine), a suite of microservices for real-time digital human animation. Audio2Face-3D converts a single audio waveform into a sequence of 3D facial blendshape coefficients that drive a photorealistic facial rig — enabling lip-sync, facial expression, and emotional response without per-character re-training.
+
+### Architecture
+
+Audio2Face-3D uses a transformer-based audio encoder paired with a facial motion decoder:
+
+```text
+Audio PCM (16 kHz mono)
+    │
+    ▼
+Audio Encoder (transformer, trained on thousands of hours of speech)
+    │
+    ▼
+Latent audio embedding (per-frame, ~30 fps)
+    │
+    ▼
+Facial Motion Decoder (MLP, conditioned on audio embedding + emotion label)
+    │
+    ▼
+52 ARKIT blendshape weights (per frame)
+    │
+    ▼
+Character Rig (USD SkelAnimation schema / NVIDIA Omniverse)
+```
+
+### Python Inference API (NVIDIA ACE SDK)
+
+```python
+from nvidia_ace.audio2face import Audio2Face3D
+
+# Load the pre-trained Audio2Face-3D model
+a2f = Audio2Face3D.from_pretrained("nvidia/audio2face-3d-v2")
+
+# Process audio file → blendshape coefficients
+audio_path = "dialogue_take_01.wav"
+result = a2f.infer(
+    audio_path=audio_path,
+    emotion="neutral",      # or "happy", "sad", "angry", "fearful", "surprised"
+    fps=30
+)
+
+# result.blendshapes: numpy array [T, 52] — one row per frame, 52 ARKit weights
+print(f"Generated {len(result.blendshapes)} frames of facial animation")
+
+# Write as USD SkelAnimation for Omniverse
+a2f.export_usd(result, output_path="facial_anim.usda",
+               character_rig="digital_human.usd")
+```
+
+### Integration with Omniverse RTX
+
+Once exported as a USD SkelAnimation, Audio2Face-3D output integrates into the Omniverse RTX Renderer via the standard USD animation pipeline:
+
+```python
+from pxr import Usd, UsdSkel
+
+stage = Usd.Stage.Open("digital_human.usd")
+skel_anim = UsdSkel.Animation.Get(stage, "/World/Character/FacialAnim")
+
+# The RTX renderer picks up blendshape weights from UsdSkelAnimation
+# automatically on each Kit frame update — no custom shader code needed
+```
+
+### Deployment: NVIDIA NIM Microservice
+
+For real-time applications, Audio2Face-3D is packaged as an NVIDIA NIM (NVIDIA Inference Microservice) container:
+
+```bash
+# Pull and run the Audio2Face-3D NIM (requires NVIDIA NGC API key)
+docker run --gpus all \
+    -e NGC_API_KEY=$NGC_API_KEY \
+    -p 50051:50051 \
+    nvcr.io/nvidia/ace/audio2face-3d:2.0
+
+# gRPC client sends audio, receives blendshape streams in real-time
+python a2f_client.py --audio stream_audio.pcm --host localhost:50051
+```
+
+| Feature | Audio2Face-3D |
+|---------|--------------|
+| Input | PCM audio (16 kHz mono) |
+| Output | 52 ARKit blendshape weights @ 30 fps |
+| Latency (NIM) | < 50 ms for 1-second audio chunks |
+| Emotion control | 7 discrete + continuous interpolation |
+| Character dependency | None — rig-agnostic output |
+| USD integration | UsdSkelAnimation schema |
+
+[Source: NVIDIA ACE Audio2Face-3D documentation](https://developer.nvidia.com/ace/audio2face)
+[Source: Audio2Face-3D GitHub](https://github.com/NVIDIA/Audio2Face-3D-Samples)
+
+---
+
+## 14. MDL-SDK: Standalone C++ API for Material Compilation
+
+The MDL-SDK ([github.com/NVIDIA/MDL-SDK](https://github.com/NVIDIA/MDL-SDK), 528 stars) is NVIDIA's open-source C++ library for loading, compiling, and executing MDL (Material Definition Language) materials outside of Omniverse. Applications — offline renderers, standalone path tracers, Blender plugins — use it to compile MDL source into GPU-executable BSDF evaluation functions compatible with OptiX callable programs or CUDA kernels.
+
+### C++ API
+
+```cpp
+#include <mi/mdl_sdk.h>
+
+/* 1. Load the MDL compiler via neuray factory */
+mi::base::Handle<mi::neuraylib::INeuray> neuray(
+    mi_factory<mi::neuraylib::INeuray>(mi_neuray_factory));
+neuray->start();
+
+mi::base::Handle<mi::neuraylib::IMdl_compiler> compiler(
+    neuray->get_api_component<mi::neuraylib::IMdl_compiler>());
+
+/* 2. Add MDL search paths (where .mdl files live) */
+compiler->add_module_path("/usr/local/share/mdl");
+compiler->add_module_path("/opt/omniverse/kit/exts/.../mdl");
+
+/* 3. Load MDL transaction and compile a module */
+mi::base::Handle<mi::neuraylib::IDatabase> database(
+    neuray->get_api_component<mi::neuraylib::IDatabase>());
+mi::base::Handle<mi::neuraylib::IScope> scope(database->get_global_scope());
+mi::base::Handle<mi::neuraylib::ITransaction> transaction(scope->create_transaction());
+
+mi::base::Handle<mi::neuraylib::IMdl_factory> mdl_factory(
+    neuray->get_api_component<mi::neuraylib::IMdl_factory>());
+
+/* Load OmniPBR module */
+compiler->load_module(transaction.get(), "::nvidia::core_definitions");
+compiler->load_module(transaction.get(), "::OmniPBR");
+
+/* 4. Create a material instance */
+mi::base::Handle<const mi::neuraylib::IFunction_definition> mat_def(
+    transaction->access<mi::neuraylib::IFunction_definition>(
+        "mdl::OmniPBR(color,float,float,float,...)"));
+mi::Sint32 result;
+mi::base::Handle<mi::neuraylib::IFunction_call> mat_instance(
+    mat_def->create_function_call(nullptr, &result));
+
+/* Set base_color parameter */
+mi::base::Handle<mi::neuraylib::IValue_color> base_color(
+    mdl_factory->create_value_color(0.8f, 0.3f, 0.1f));
+mi::base::Handle<mi::neuraylib::IExpression_constant> expr(
+    mdl_factory->create_expression_constant(base_color.get()));
+mi::base::Handle<mi::neuraylib::IExpression_list> args(mat_instance->get_arguments());
+args->set_expression("base_color", expr.get());
+transaction->store(mat_instance.get(), "my_material_instance");
+
+/* 5. Compile to GPU-executable target code (OptiX callable) */
+mi::base::Handle<mi::neuraylib::IMdl_backend> backend(
+    compiler->get_backend(mi::neuraylib::IMdl_compiler::MB_CUDA_PTX));
+backend->set_option("sm_version", "86");   /* sm_86 for Ampere */
+backend->set_option("tex_lookup_call_mode", "direct_call");
+
+mi::base::Handle<mi::neuraylib::ICompiled_material> compiled(
+    mat_def->create_compiled_material(mat_instance.get(), nullptr, nullptr));
+
+mi::base::Handle<const mi::neuraylib::ITarget_code> target_code(
+    backend->translate_material_expression(
+        transaction.get(), compiled.get(), "surface.scattering", "bsdf_eval"));
+
+/* 6. The target_code contains PTX callable programs for BSDF evaluation */
+const char *ptx = target_code->get_code();
+size_t ptx_size  = target_code->get_code_size();
+
+/* Load ptx into OptiX module as callable program for __direct_callable__bsdf_eval */
+
+transaction->commit();
+neuray->shutdown();
+```
+
+### Target Backends
+
+| Backend constant | Output | Use case |
+|-----------------|--------|----------|
+| `MB_CUDA_PTX` | PTX (string) | OptiX callable programs, CUDA kernels |
+| `MB_GLSL` | GLSL source | OpenGL/Vulkan renderers |
+| `MB_HLSL` | HLSL source | DirectX renderers |
+| `MB_LLVM_IR` | LLVM IR bitcode | Custom CPU backends |
+
+### Build
+
+```bash
+git clone https://github.com/NVIDIA/MDL-SDK
+cmake -Bbuild -S. -DCMAKE_BUILD_TYPE=Release \
+      -DMDL_BUILD_EXAMPLES=ON
+cmake --build build -j$(nproc)
+# Examples: ./build/examples/mdl_sdk/compilation/compilation
+```
+
+[Source: MDL-SDK GitHub](https://github.com/NVIDIA/MDL-SDK)
+[Source: MDL-SDK documentation](https://developer.nvidia.com/rendering-technologies/mdl-sdk)
+
+---
+
+## 15. Integrations
 
 This chapter sits at the intersection of several threads developed throughout the book:
 
@@ -1711,7 +1948,7 @@ This chapter sits at the intersection of several threads developed throughout th
 
 ---
 
-## 13. References
+## 16. References
 
 1. [UsdStage API Reference — openusd.org](https://openusd.org/release/api/class_usd_stage.html)
 2. [UsdPrim API Reference — openusd.org](https://openusd.org/release/api/class_usd_prim.html)

@@ -15,7 +15,8 @@
 7. [EGL Sync Objects and Fencing](#egl-sync-objects-and-fencing)
 8. [EGL in Mesa: Driver Dispatch and Internals](#egl-in-mesa-driver-dispatch-and-internals)
 9. [Practical Patterns and Pitfalls](#practical-patterns-and-pitfalls)
-10. [Integrations](#integrations)
+10. [NVIDIA EGL External Platform Architecture](#nvidia-egl-external-platform-architecture)
+11. [Integrations](#integrations)
 
 ---
 
@@ -636,6 +637,107 @@ flowchart LR
 **Path 4** omits the display entirely. `EGL_EXT_platform_device` (or `EGL_MESA_platform_surfaceless`) creates a context backed by a render node without any display output. The rendered result is consumed via `glReadPixels` or exported as a DMA-BUF for a downstream consumer (V4L2 encoder, file, network stream). This is the correct path for headless CI, server-side rendering, and GPU-accelerated video transcoding.
 
 **Path 5** bypasses the compositor entirely. `VK_EXT_acquire_drm_display` lets a Vulkan application take exclusive ownership of a DRM display connector, then presents frames directly via `VK_KHR_display` swapchain and KMS atomic commits. This eliminates compositor latency and is used by VR runtimes (Monado, SteamVR), kiosk displays, and other latency-critical single-application deployments.
+
+---
+
+## NVIDIA EGL External Platform Architecture
+
+Mesa's EGL implementation (described in §8) is designed exclusively for open-source drivers that use GBM or Wayland platform interfaces. NVIDIA's proprietary driver cannot use Mesa's EGL; instead it ships its own `libEGL_nvidia.so` which plugs into the EGL ICD dispatch mechanism and loads display-backend plugins through the **EGL External Platform** interface.
+
+**eglexternalplatform** ([github.com/NVIDIA/eglexternalplatform](https://github.com/NVIDIA/eglexternalplatform), 70 stars) defines the plug-in ABI: a shared library exporting `loadEGLExternalPlatform()` and `unloadEGLExternalPlatform()` that returns a `EGLExtPlatformData` struct of function pointers. NVIDIA's EGL driver scans `/usr/share/egl/egl_external_platform.d/*.json` at startup to discover installed platform backends, similar to how Vulkan layers are loaded.
+
+### EGLStream Model vs. DMA-buf Model
+
+Two generations of NVIDIA Wayland EGL backend exist:
+
+**egl-wayland** ([github.com/NVIDIA/egl-wayland](https://github.com/NVIDIA/egl-wayland), 329 stars) — the original backend, using NVIDIA's proprietary `EGLStream` mechanism. A Wayland compositor that supports the `wl_eglstream` Wayland extension (e.g., older GNOME under X11) receives rendered frames via an EGLStream consumer. This path is now considered legacy.
+
+**egl-wayland2** ([github.com/NVIDIA/egl-wayland2](https://github.com/NVIDIA/egl-wayland2), 42 stars) — the current backend, using DMA-buf. Replaces EGLStream with the standard `zwp_linux_dmabuf_v1` Wayland protocol, allowing NVIDIA frames to interoperate with any standards-compliant compositor (KWin, Mutter, wlroots). This is what enables NVIDIA Wayland support on modern desktop environments without proprietary compositor extensions.
+
+**egl-gbm** ([github.com/NVIDIA/egl-gbm](https://github.com/NVIDIA/egl-gbm), 27 stars) — EGL platform for GBM-backed surfaces. Used for headless rendering via a DRM/KMS device without a Wayland compositor.
+
+**egl-x11** ([github.com/NVIDIA/egl-x11](https://github.com/NVIDIA/egl-x11), 27 stars) — EGL platform for X11 windows, replacing the older GLX-only path.
+
+### Plugin Architecture
+
+```text
+Application calls eglGetDisplay(EGL_PLATFORM_WAYLAND_KHR, wl_display, NULL)
+         │
+         ▼
+libEGL_nvidia.so (NVIDIA EGL ICD)
+         │  scans /usr/share/egl/egl_external_platform.d/*.json
+         │
+         ├─ loads 10_nvidia_wayland2.json  → libnvidia-egl-wayland2.so
+         │      ↓ egl-wayland2 plugin: uses zwp_linux_dmabuf_v1
+         │      ↓ creates wl_surface, negotiates DMA-buf modifiers
+         │      ↓ imports NVIDIA VRAM as DMA-buf for compositor
+         │
+         ├─ loads 15_nvidia_gbm.json       → libnvidia-egl-gbm.so
+         │      ↓ egl-gbm plugin: allocates GBM buffers via libgbm
+         │
+         └─ loads 20_nvidia_x11.json       → libnvidia-egl-x11.so
+                ↓ egl-x11 plugin: creates X11 pixmaps / windows
+```
+
+### egl-wayland2 Internals
+
+The egl-wayland2 plugin's key operation is negotiating DMA-buf format + modifier support between the NVIDIA EGL driver and the Wayland compositor:
+
+```c
+/* Pseudocode: how egl-wayland2 establishes a DMA-buf surface */
+
+/* 1. Bind zwp_linux_dmabuf_v1 from the Wayland registry */
+struct zwp_linux_dmabuf_v1 *dmabuf = wl_registry_bind(...);
+
+/* 2. Query supported formats and modifiers from compositor */
+zwp_linux_dmabuf_v1_add_listener(dmabuf, &dmabuf_listener, NULL);
+wl_display_roundtrip(display);
+
+/* 3. For each frame: export NVIDIA VRAM as DMA-buf */
+int dma_fd = nvidia_export_dmabuf(egl_surface);  /* via EGL_MESA_image_dma_buf_export equivalent */
+uint64_t modifier = nvidia_get_modifier(egl_surface);
+
+/* 4. Create wl_buffer from DMA-buf fd + modifier */
+struct zwp_linux_buffer_params_v1 *params =
+    zwp_linux_dmabuf_v1_create_params(dmabuf);
+zwp_linux_buffer_params_v1_add(params, dma_fd, 0 /*plane*/, 0 /*offset*/,
+                                stride, modifier >> 32, modifier & 0xffffffff);
+struct wl_buffer *wl_buf =
+    zwp_linux_buffer_params_v1_create_immed(params, width, height,
+                                             DRM_FORMAT_XRGB8888, 0);
+
+/* 5. Attach and commit — compositor imports the VRAM DMA-buf directly */
+wl_surface_attach(wl_surface, wl_buf, 0, 0);
+wl_surface_commit(wl_surface);
+```
+
+### Installation
+
+```bash
+# Ubuntu: NVIDIA driver packages install egl-wayland2 automatically since 525+
+dpkg -l | grep libnvidia-egl
+# libnvidia-egl-wayland1   (legacy egl-wayland)
+# libnvidia-egl-wayland2   (current DMA-buf backend)
+# libnvidia-egl-gbm1
+
+# Verify platform discovery
+cat /usr/share/egl/egl_external_platform.d/10_nvidia_wayland2.json
+
+# Force egl-wayland2 for a Wayland app
+EGL_PLATFORM=wayland GBM_BACKEND=nvidia-drm __NV_PRIME_RENDER_OFFLOAD=1 \
+    __GLX_VENDOR_LIBRARY_NAME=nvidia glmark2-es2-wayland
+```
+
+| Backend | Wayland protocol | Status | Stars |
+|---------|-----------------|--------|-------|
+| egl-wayland (EGLStream) | `wl_eglstream` (proprietary) | Legacy | 329 |
+| egl-wayland2 (DMA-buf) | `zwp_linux_dmabuf_v1` (standard) | Current | 42 |
+| egl-gbm | DRM/GBM, no Wayland | Headless | 27 |
+| egl-x11 | X11 Pixmap | X11 sessions | 27 |
+
+[Source: eglexternalplatform GitHub](https://github.com/NVIDIA/eglexternalplatform)
+[Source: egl-wayland GitHub](https://github.com/NVIDIA/egl-wayland)
+[Source: egl-wayland2 GitHub](https://github.com/NVIDIA/egl-wayland2)
 
 ---
 
