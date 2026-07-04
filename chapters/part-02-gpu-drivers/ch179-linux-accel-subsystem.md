@@ -22,7 +22,8 @@
 14. [Security Model and Access Control](#security)
 15. [Userspace Integration: Runtimes and Inference Engines](#userspace)
 16. [When to Use `/dev/accel` vs `/dev/dri/renderD*` vs `/dev/kfd`](#device-choice)
-17. [Integrations](#integrations)
+17. [The Major Vendor Question: AMD, NVIDIA, and Arm in the Accel Landscape](#the-major-vendor-question-amd-nvidia-and-arm-in-the-accel-landscape)
+18. [Integrations](#integrations)
 
 ---
 
@@ -934,6 +935,87 @@ AMD Phoenix/Hawk Point has:
 - An XDNA NPU managed by `amdxdna` → `/dev/accel/accel0`
 
 Inference engines must select between these based on model type and latency requirements. INT8 transformer inference at low batch size is often more efficient on the NPU (lower power); FP16 or BF16 inference at higher batch size may be faster on the GPU. OpenVINO, ONNX Runtime, and ROCm's Vitis AI inference stack each provide profiling tools to guide this selection.
+
+---
+
+## The Major Vendor Question: AMD, NVIDIA, and Arm in the Accel Landscape
+
+The observation that AMD, NVIDIA, and Arm's flagship GPU drivers are absent from `drivers/accel/` is correct, but the reason is architectural necessity rather than indifference. Understanding which products from each vendor use `accel` — and which cannot — clarifies both the design of the subsystem and its practical limits.
+
+### The Structural Rule
+
+The kernel enforces a hard constraint: `DRIVER_COMPUTE_ACCEL` is **mutually exclusive** with `DRIVER_RENDER` and `DRIVER_MODESET` at registration time. Any hardware that exposes a GPU rendering pipeline and drives a display *must* use `DRIVER_RENDER`, and therefore *cannot* use the accel path — regardless of how much GPU compute the vendor emphasises in their marketing. This is not a policy preference; it is checked at `drm_dev_register()` time:
+
+```c
+/* drm_drv.c — enforced at registration */
+if (driver->driver_features & DRIVER_COMPUTE_ACCEL &&
+    driver->driver_features & (DRIVER_RENDER | DRIVER_MODESET)) {
+    DRM_ERROR("DRIVER_COMPUTE_ACCEL is mutually exclusive with"
+              " DRIVER_RENDER and DRIVER_MODESET\n");
+    return -EINVAL;
+}
+```
+
+The consequence: if your silicon can render a triangle and drive an HDMI output, it registers as a DRM GPU driver and cannot be an accel driver — full stop.
+
+### AMD: Correct Split, Not Avoidance
+
+AMD's strategy maps cleanly onto the constraint. Every AMD GPU (Radeon RX 6xxx/7xxx RDNA2/3, Instinct MI300 CDNA3) is a unified graphics+compute device; `amdgpu` carries `DRIVER_RENDER | DRIVER_MODESET` and cannot touch `DRIVER_COMPUTE_ACCEL`. The ROCm/KFD compute stack lives inside `amdgpu` as a sub-driver precisely because it shares silicon with the display and 3D pipeline. Moving `amdkfd` to `drivers/accel/` would be architecturally incorrect — and AMD's engineers have never proposed it.
+
+AMD's Ryzen AI XDNA NPU, by contrast, is a physically separate IP block on the same die as the GPU. It has no render pipeline, no display engine, no `DRIVER_RENDER`. AMD was *first* among major chip vendors to submit an accel driver for a non-Intel part: `amdxdna` landed in **Linux 6.14** (January 2025). AMD correctly uses accel where the hardware fits the model, and correctly avoids it where it does not.
+
+### NVIDIA: Genuinely Absent
+
+NVIDIA has no driver — proprietary or open-source — in `drivers/accel/`, and the reasons are layered:
+
+**GPU drivers stay in DRM.** `nouveau` (`drivers/gpu/drm/nouveau/`) carries `DRIVER_GEM | DRIVER_RENDER | DRIVER_MODESET`. The new Rust DRM driver **Nova** (`drivers/gpu/drm/nova/`, merged as a skeleton in Linux 6.13) targets Hopper and Blackwell via GSP firmware — it is also in `drivers/gpu/drm/`, not `drivers/accel/`. These drivers are correctly placed: NVIDIA GPUs are full graphics devices.
+
+**CUDA uses proprietary character devices.** The `libcuda.so` stack talks to `/dev/nvidiactl`, `/dev/nvidia0`, and `/dev/nvidia-uvm` — a proprietary kernel ABI that predates DRM by years and is entirely outside both `drivers/gpu/drm/` and `drivers/accel/`. NVIDIA has no incentive to migrate this to `accel`; the proprietary stack already serves their compute userspace.
+
+**NVDLA was proposed and rejected.** In April 2022, NVIDIA submitted patches for a DRM driver for NVDLA (the Deep Learning Accelerator on Jetson), running to ~13,000 lines. Reviewers raised concerns about the closed firmware ABI. The patches were never merged — neither into DRM nor into what became the `accel` subsystem. The [out-of-tree nvdla/sw repository](https://github.com/nvdla/sw) remains the reference. No NVIDIA engineer has posted follow-up patches to `drivers/accel/` for NVDLA or any other product.
+
+**NVIDIA's sceptical public stance.** When Oded Gabbay proposed the accel subsystem on LKML in August 2022, **Jason Gunthorpe** (NVIDIA kernel engineer) posted a cautionary comment warning the subsystem should not become "a back door for abuse of kernel APIs" — expressing concern that the relaxed userspace requirement would attract drivers with poor kernel hygiene. This is not a rejection of `accel` for NVIDIA's own hardware, but it signals a sceptical posture toward the framework rather than active engagement.
+
+**The practical path for NVIDIA compute.** For ML inference on NVIDIA hardware under Linux, the path remains proprietary: `nvidia.ko` + CUDA libraries for GPU workloads; `libnvjitlink.so` and TensorRT for inference; and on Jetson, the proprietary NVDLA userspace. There is no open, mainline kernel path for NVIDIA AI accelerator blocks.
+
+### Arm: Partial Adoption, Deliberate Gap
+
+Arm's position is split across three product lines with different upstreaming outcomes:
+
+**Ethos-U (§9 in this chapter): uses accel — fully mainline.** Rob Herring (Arm) submitted the `ethosu` driver (`drivers/accel/ethosu/`) targeting Ethos-U65 and Ethos-U85 edge NPUs. After multiple revision rounds it was accepted into `drm-misc-next` for **Linux 6.19**. The driver is Arm's own code and represents a deliberate commitment to the accel path for microcontroller-class inference hardware. A Mesa Teflon Gallium frontend provides an open userspace layer.
+
+**Ethos-N (production server inference engine): out-of-tree, no submission.** The Arm-maintained `ethos-n-driver-stack` ([github.com/ARM-software/ethos-n-driver-stack](https://github.com/ARM-software/ethos-n-driver-stack)) has had 23+ releases as of mid-2026 and supports Ethos-N78 production SoCs (Samsung Exynos, others). Despite being open-source and GPLv2, **no upstreaming submission has ever been made**. The driver uses a proprietary firmware interface that may make it difficult to satisfy the DRM/accel subsystem's ABI stability requirements. This is the clearest case of a vendor choosing indefinite DKMS-and-staging over the upstreaming investment.
+
+**Mali GPUs (Panfrost, Panthor, tyr): correctly in DRM.** Panfrost, Panthor (`drivers/gpu/drm/panthor/`, merged Linux 6.10), and the new Rust-language Arm Mali CSF driver `tyr` (merged ~Linux 6.18) all set `DRIVER_RENDER` — because Mali is a GPU with a 3D render pipeline and display output. Placing them in `drivers/accel/` would violate the mutual-exclusivity rule. Their absence from `drivers/accel/` is correct by design.
+
+**Arm China Zhouyi NPU: pending.** Arm China posted a mailing-list discussion in March 2024 about upstreaming their Zhouyi/Compass NPU driver into `drivers/accel/`. DRM maintainer feedback established that it must fit within standard accel interfaces. No formal patch series has been accepted as of mid-2026; the out-of-tree `zhouyi-accel` driver serves production deployments in the interim.
+
+### The 2022 Controversy: Were Standards Being Lowered?
+
+The subsystem's creation was not uncontested. **Dave Airlie** (Red Hat, DRM co-maintainer) was the most vocal critic, arguing in the LKML thread that DRM already had mature GEM/fencing/DMA-BUF infrastructure and that creating a parallel subsystem would fragment kernel expert attention. His specific concern: vendors might use `accel` as a back door to reach mainline with closed firmware and no open userspace — side-stepping the DRM subsystem's de-facto requirement that an open-source userspace consumer exist before a new driver is accepted.
+
+**Oded Gabbay** countered that DRM's userspace requirement was precisely the blocker for inference accelerator vendors: most NPU/AI ASICs ship closed compiler stacks, and demanding full open-source toolchain upstreaming would keep production hardware out of mainline indefinitely. The `accel` path allows drivers with a narrow, stable firmware ABI to reach mainline without solving the full compiler-open-source problem.
+
+**The compromise**, reached at Linux Plumbers Conference 2022 and summarised by Airlie in a [blog post](https://airlied.blogspot.com/2022/09/accelerators-bof-outcomes-summary.html), was:
+- `accel` reuses DRM code (GEM, scheduler, DMA-BUF, debugfs) and lives under DRM maintainership
+- A separate `drivers/accel/` tree and `/dev/accel/` major number prevent Mesa and libdrm from probing accelerators as GPUs
+- `DRIVER_COMPUTE_ACCEL` is mutually exclusive with `DRIVER_RENDER` / `DRIVER_MODESET`
+- The framework does **not** lower the bar for kernel code quality — only for userspace openness
+
+Airlie accepted this framing and performed the merge commit himself on November 22, 2022. The `rocket` Rockchip driver (fully open, reverse-engineered by Tomeu Vizoso/Collabora, with Mesa userspace) and `amdxdna` (AMD-submitted) subsequently demonstrated that high-quality upstream accel drivers with open userspace are achievable — vindicating both sides of the debate.
+
+### The Remaining Fragmentation
+
+Despite the subsystem's maturity, the Linux AI accelerator device node landscape remains fragmented across four distinct namespaces:
+
+| Device nodes | Vendor stack | Kernel subsystem |
+|---|---|---|
+| `/dev/nvidia*`, `/dev/nvidia-uvm` | NVIDIA CUDA | Proprietary char devices |
+| `/dev/kfd` | AMD ROCm/HIP | `amdkfd` inside `drivers/gpu/drm/amd/` |
+| `/dev/dri/renderD*` | Vulkan/OpenCL/GPU compute (all vendors) | `drivers/gpu/drm/` |
+| `/dev/accel/accelN` | NPU/AI inference (Intel, AMD XDNA, Qualcomm, Rockchip, Arm) | `drivers/accel/` |
+
+The `/dev/accel/` namespace is the only one governed by a coherent, maintainer-enforced kernel subsystem with consistent GEM/DMA-BUF/scheduler semantics. The NVIDIA and AMD ROCm stacks live in separate worlds that pre-date the framework; the `accel` subsystem is unlikely to displace them. Its practical impact is on the long tail of AI accelerator vendors — where it has succeeded in establishing a default pattern — rather than on the established GPU compute stacks of the two largest GPU vendors.
 
 ---
 
