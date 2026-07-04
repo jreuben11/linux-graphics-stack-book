@@ -15,7 +15,8 @@
 7. [ANV: Intel Xe-HPG Ray Tracing](#anv-intel-xe-hpg-ray-tracing)
 8. [VK_KHR_ray_query and Inline Ray Tracing](#vk_khr_ray_query-and-inline-ray-tracing)
 9. [Practical Usage on Linux](#practical-usage-on-linux)
-10. [Integrations](#integrations)
+10. [SVGF: Spatiotemporal Variance-Guided Filtering](#svgf-spatiotemporal-variance-guided-filtering)
+11. [Integrations](#integrations)
 
 ---
 
@@ -600,6 +601,121 @@ On RDNA2 (RX 6700 XT):
 - Compare NVIDIA RTX 3070: ~12–15 Grays/s
 
 Compaction reduces BLAS memory 40–50%; critical for complex scenes. Use `PREFER_FAST_TRACE` for static geometry, `PREFER_FAST_BUILD` + `ALLOW_UPDATE` for skinned meshes.
+
+---
+
+## SVGF: Spatiotemporal Variance-Guided Filtering
+
+**SVGF** (Schied et al. 2017, [arxiv.org/abs/1812.09904](https://arxiv.org/abs/1812.09904)) is the canonical open-source GPU denoiser for single-sample-per-pixel ray tracing. It combines temporal accumulation with spatial à-trous wavelet filtering guided by estimated per-pixel variance. NRD's REBLUR algorithm (Ch70 §5) is a direct descendant. The reference implementation is at [github.com/christoph-schied/spatiotemporal-variance-guided-filtering](https://github.com/christoph-schied/spatiotemporal-variance-guided-filtering).
+
+NRD (Ch70 §5) is production-quality but NVIDIA-hosted. Intel OIDN is open-source but CPU/Xe-oriented. SVGF fills the gap: a fully open, GPU-native, Vulkan-implementable denoiser that runs on any hardware with ray tracing support at 1–2 ms per frame at 1080p.
+
+### Stage 1: Temporal Accumulation
+
+Each frame, the previous denoised frame is reprojected using motion vectors. Moments (luminance M1 = E[x] and M2 = E[x²]) are accumulated in a separate buffer to estimate per-pixel variance:
+
+```glsl
+// SVGF temporal accumulation — compute shader
+layout(binding = 0) uniform sampler2D uInput;       // noisy 1spp input
+layout(binding = 1) uniform sampler2D uPrevColor;   // denoised previous frame
+layout(binding = 2) uniform sampler2D uPrevMoments; // xy = M1,M2; z = history length
+layout(binding = 3) uniform sampler2D uVelocity;    // screen-space UV offset
+layout(binding = 4) uniform sampler2D uDepth;
+layout(binding = 5) uniform sampler2D uPrevDepth;
+layout(binding = 6) uniform sampler2D uNormal;
+layout(binding = 7) uniform sampler2D uPrevNormal;
+
+const float ALPHA_C = 0.2;    // blend weight for current frame colour
+const float ALPHA_M = 0.1;    // blend weight for moments
+
+void main() {
+    vec2 vel    = texture(uVelocity, texCoord).xy;
+    vec2 prevUV = texCoord - vel;
+
+    vec3  cur   = texture(uInput, texCoord).rgb;
+    float curL  = dot(cur, vec3(0.2126, 0.7152, 0.0722));
+
+    // Depth + normal consistency tests reject invalid history
+    float z     = texture(uDepth,     texCoord).r;
+    float pz    = texture(uPrevDepth, prevUV).r;
+    vec3  n     = texture(uNormal,    texCoord).xyz;
+    vec3  pn    = texture(uPrevNormal,prevUV).xyz;
+    bool  valid = all(greaterThan(prevUV,vec2(0))) && all(lessThan(prevUV,vec2(1)))
+               && (abs(z-pz) < 0.1*z) && (dot(n,pn) > 0.95);
+
+    float hist  = valid ? texture(uPrevMoments,prevUV).z + 1.0 : 1.0;
+    float ac    = valid ? max(ALPHA_C, 1.0/hist) : 1.0;
+    float am    = valid ? max(ALPHA_M, 1.0/hist) : 1.0;
+
+    outColor    = mix(texture(uPrevColor,prevUV).rgb, cur, ac);
+    float m1    = mix(texture(uPrevMoments,prevUV).x, curL,    am);
+    float m2    = mix(texture(uPrevMoments,prevUV).y, curL*curL, am);
+    outMoments  = vec3(m1, m2, hist);  // variance = m2 - m1*m1
+}
+```
+
+### Stage 2: Spatial À-Trous Wavelet Filtering
+
+Five iterations of a B3-spline à-trous wavelet double the step size each pass (1, 2, 4, 8, 16 pixels), covering a 65×65 footprint from a 5-tap kernel. Three **edge-stopping weights** prevent blurring across depth discontinuities, geometry edges, and high-variance regions:
+
+```glsl
+// SVGF à-trous wavelet pass — one of 5 iterations
+layout(push_constant) uniform PC { int stepWidth; };  // 1,2,4,8,16
+
+const float h[3] = float[](3.0/8.0, 1.0/4.0, 1.0/16.0);  // B3 spline weights
+const float SIGMA_Z = 1.0;    // depth sensitivity
+const float SIGMA_N = 128.0;  // normal sensitivity (exponent)
+
+void main() {
+    vec3  cCol = texture(uInput,    texCoord).rgb;
+    float cL   = dot(cCol, vec3(0.2126, 0.7152, 0.0722));
+    float cZ   = texture(uDepth,   texCoord).r;
+    vec3  cN   = texture(uNormal,  texCoord).xyz;
+    float var  = texture(uVariance,texCoord).r;
+    float sigL = 4.0 * sqrt(max(0.0, var));  // luminance sensitivity from variance
+
+    vec3 sumC = vec3(0); float sumW = 0.0;
+
+    for (int i = -2; i <= 2; ++i) {
+        vec2  uv  = texCoord + vec2(i,0)*float(stepWidth)*texelSize;  // horizontal
+        vec3  sC  = texture(uInput,   uv).rgb;
+        float sL  = dot(sC, vec3(0.2126,0.7152,0.0722));
+        float sZ  = texture(uDepth,  uv).r;
+        vec3  sN  = texture(uNormal, uv).xyz;
+
+        float wZ  = exp(-abs(cZ-sZ) / (SIGMA_Z * abs(float(i)*dFdx(cZ)) + 1e-4));
+        float wN  = pow(max(0.0, dot(cN,sN)), SIGMA_N);
+        float wL  = exp(-abs(cL-sL) / (sigL + 1e-4));
+
+        float w   = h[abs(i)] * wZ * wN * wL;
+        sumC += sC * w;  sumW += w;
+    }
+    outColor = sumC / max(sumW, 1e-4);
+}
+// Repeat with vertical offsets for the separable vertical pass each iteration
+```
+
+After 5 iterations (horizontal + vertical each), the filter has an effective support of 65×65 pixels. Variance is re-estimated from the accumulated moments after each pass to adaptively scale `sigL`.
+
+### SVGF vs NRD vs Intel OIDN
+
+| Feature | SVGF | NRD v4.17 (RELAX) | Intel OIDN 2.x |
+|---------|------|-------------------|----------------|
+| Algorithm | Variance-guided à-trous wavelet | Adaptive bilateral + temporal | Regression CNN |
+| G-buffer | Normal, depth, velocity | Normal, depth, velocity, albedo, hit-dist | Normal, albedo (optional) |
+| Open source | Yes (BSD) | Yes (MIT) | Yes (Apache 2.0) |
+| Latency 1080p | 1–2 ms | 1.5–3 ms | <2 ms (Xe GPU), 5–20 ms CPU |
+| Quality | Good | Very good | Excellent |
+| GPU requirement | Any Vulkan compute | Any Vulkan compute | Intel Xe or any CUDA/CPU |
+| ReSTIR inputs | Manual tuning | RELAX mode (dedicated) | N/A |
+
+```bash
+# Build and run the SVGF reference renderer (Vulkan + GLFW)
+git clone https://github.com/christoph-schied/spatiotemporal-variance-guided-filtering
+cd spatiotemporal-variance-guided-filtering
+cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)
+./build/svgf --scene data/cornell_box.obj   # 1spp path tracer + SVGF denoiser
+```
 
 ---
 

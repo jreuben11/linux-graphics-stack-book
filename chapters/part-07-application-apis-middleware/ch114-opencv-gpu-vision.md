@@ -21,7 +21,8 @@
 11. [Production Patterns: VAAPI + OpenCL Zero-Copy Pipeline](#11-production-patterns-vaapi--opencl-zero-copy-pipeline)
 12. [OpenCV 5 GPU Architecture Changes](#12-opencv-5-gpu-architecture-changes)
 13. [Scene Analysis: Depth Estimation, Optical Flow, and Semantic Segmentation](#13-scene-analysis-depth-estimation-optical-flow-and-semantic-segmentation)
-14. [Integrations](#13-integrations)
+14. [GPU-Accelerated SLAM: ORB-SLAM3, DROID-SLAM, and MonoGS](#14-gpu-accelerated-slam-orb-slam3-droid-slam-and-monoGS)
+15. [Integrations](#15-integrations)
 
 ---
 
@@ -1393,6 +1394,167 @@ auto pcd = open3d::geometry::PointCloud::CreateFromRGBDImage(
 
 ---
 
+## 14. GPU-Accelerated SLAM: ORB-SLAM3, DROID-SLAM, and MonoGS
+
+Simultaneous Localisation and Mapping (SLAM) jointly estimates a camera trajectory and a map of the scene from a live sensor stream. GPU acceleration is critical for real-time operation: feature extraction, bundle adjustment, and neural inference are all GPU-bound. This section covers three frameworks spanning classical, deep-learning, and Gaussian-splatting approaches, all running on Linux with CUDA or ROCm.
+
+### 14.1 ORB-SLAM3
+
+ORB-SLAM3 ([arxiv.org/abs/2007.11898](https://arxiv.org/abs/2007.11898), GPLv3) is the dominant classical SLAM system. It uses ORB (Oriented FAST and Rotated BRIEF) features for place recognition and visual-inertial odometry. GPU acceleration is applied to the front-end feature extraction step via an unofficial CUDA ORB extractor:
+
+```cpp
+// ORB feature extraction — CUDA accelerated (unofficial, ORB-SLAM3 community patch)
+// Requires opencv_contrib CUDA ORB: cv::cuda::ORB
+#include <opencv2/cudafeatures2d.hpp>
+
+cv::Ptr<cv::cuda::ORB> orbDetector = cv::cuda::ORB::create(
+    /* nfeatures */ 1000,
+    /* scaleFactor*/ 1.2f,
+    /* nlevels */    8
+);
+
+cv::cuda::GpuMat gpuFrame, gpuMask;
+gpuFrame.upload(grayFrame);               // CPU → GPU (zero-copy if pinned)
+
+std::vector<cv::KeyPoint> keypoints;
+cv::cuda::GpuMat descriptors;
+orbDetector->detectAndComputeAsync(gpuFrame, gpuMask,
+                                    keypoints, descriptors,
+                                    /* useProvidedKeypoints */ false,
+                                    stream);
+stream.waitForCompletion();
+```
+
+The SLAM back-end (local bundle adjustment, loop closure via DBoW2 bag-of-words) runs on CPU in ORB-SLAM3's threading model, but the per-frame feature extraction — the bottleneck at 30+ Hz — is GPU-accelerated. Multi-map support and IMU preintegration (VIO mode) are available for indoor RGB-D and monocular configurations.
+
+**Building ORB-SLAM3 on Linux:**
+
+```bash
+git clone https://github.com/UZ-SLAMLab/ORB_SLAM3 && cd ORB_SLAM3
+# Requires: OpenCV 4.x (with CUDA), Eigen3, Pangolin, DBoW2, g2o
+./build.sh    # builds all examples with CUDA ORB if opencv_contrib CUDA is found
+
+# Run on a TUM RGB-D sequence
+./Examples/RGB-D/rgbd_tum \
+    Vocabulary/ORBvoc.txt \
+    Examples/RGB-D/TUM1.yaml \
+    /data/rgbd_dataset_freiburg1_xyz \
+    Examples/RGB-D/associations/fr1_xyz.txt
+```
+
+[Source: ORB-SLAM3, github.com/UZ-SLAMLab/ORB_SLAM3](https://github.com/UZ-SLAMLab/ORB_SLAM3)
+
+### 14.2 DROID-SLAM
+
+DROID-SLAM (Teed & Deng 2021, NeurIPS, [arxiv.org/abs/2108.10869](https://arxiv.org/abs/2108.10869)) replaces classical feature matching with a **differentiable Dense Bundle Adjustment (DBA)** layer executed entirely on GPU. A ResNet encoder extracts per-pixel feature maps; a correlation volume is built between frame pairs; and a flow-update network iteratively refines optical flow. The final step — computing camera poses from the refined flow — is expressed as a **Gauss-Newton iteration** implemented in CUDA via the `lietorch` SE3/Sim3 GPU ops library.
+
+```python
+# DROID-SLAM inference loop (Python, CUDA)
+import torch
+from droid import Droid
+
+droid = Droid(weights="droid.pth")
+
+for t, (image, intrinsics) in enumerate(video_stream):
+    # image: (1, 3, H, W) float32 tensor on GPU
+    # intrinsics: (fx, fy, cx, cy)
+    droid.track(t, image, intrinsics=intrinsics)
+
+# After stream ends: global bundle adjustment
+droid.terminate()
+
+# Retrieve estimated trajectory
+trajectory = droid.video.poses[:droid.video.counter.value]  # (N, 7) SE3 quaternion
+point_cloud = droid.video.disps_up                          # (N, H, W) disparity map
+```
+
+**CUDA custom ops.** DROID-SLAM depends on two CUDA libraries:
+- `alt_cuda_corr` — an efficient correlation volume computation that avoids materialising the full 4D H×W×H×W volume
+- `lietorch` — SO3/SE3/Sim3 operations (exponential map, logarithm, adjoint) implemented as CUDA custom ops registered into PyTorch autograd
+
+```bash
+# Build DROID-SLAM custom CUDA ops (requires CUDA 11.8+, PyTorch 2.x)
+git clone https://github.com/princeton-vl/DROID-SLAM && cd DROID-SLAM
+pip install -r requirements.txt
+python setup.py install     # compiles alt_cuda_corr + lietorch with nvcc
+python demo.py --imagedir=data/office --calib=calib/office.txt
+```
+
+[Source: DROID-SLAM, github.com/princeton-vl/DROID-SLAM](https://github.com/princeton-vl/DROID-SLAM)
+
+### 14.3 MonoGS: Gaussian Splatting SLAM
+
+MonoGS (Matsuki et al., ICRA 2024, [arxiv.org/abs/2312.06741](https://arxiv.org/abs/2312.06741)) uses 3D Gaussian Splatting as the scene map inside a SLAM system, with both camera tracking and map construction driven by photometric loss through the differentiable tile rasterizer (Ch115 §7).
+
+**Architecture:**
+- **Front-end (tracking):** Given the current 3DGS map, camera pose for the new frame is estimated by minimising the L1 photometric loss between the rendered Gaussian map and the observed RGB (+ optional depth). Gradient-based optimisation via Adam takes ~50 iterations per frame.
+- **Back-end (mapping):** New Gaussians are seeded at unobserved pixels (using back-projected depth), and the active keyframe window is jointly optimised. Stale Gaussians are pruned by opacity thresholding.
+
+```python
+# MonoGS inference (simplified)
+from monoGS import GaussianSLAM
+
+slam = GaussianSLAM(config="configs/mono_gaussian.yaml",
+                    device="cuda:0")
+
+for t, (rgb, depth) in enumerate(camera_stream):
+    # rgb: (H, W, 3) uint8; depth: (H, W) float32 in metres (None for monocular)
+    if t == 0:
+        slam.initialize(rgb, depth)     # seed first Gaussians from depth prior
+    else:
+        pose_se3 = slam.track(rgb)      # minimise photometric loss → camera pose
+        slam.map_update(rgb, pose_se3)  # add/prune Gaussians for this keyframe
+
+    if slam.should_visualise():
+        slam.render_and_display()       # real-time Gaussian rasterizer preview
+
+slam.save("output/scene.ply")          # export final Gaussian map as PLY
+```
+
+**ROCm/HIP.** MonoGS requires the `diff-gaussian-rasterization` CUDA extension. AMD support depends on `hipify-clang` conversion of the tile rasterizer kernel (Ch115 §10 for ROCm status on gsplat).
+
+[Source: MonoGS, github.com/muskie82/MonoGS](https://github.com/muskie82/MonoGS)
+
+### 14.4 ROS2 Integration
+
+All three systems can publish to ROS2 topics for robot integration:
+
+```python
+# ROS2 publisher for SLAM output (Python, rclpy)
+import rclpy
+from rclpy.node import Node
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import PointCloud2
+import sensor_msgs_py.point_cloud2 as pc2
+
+class SLAMPublisher(Node):
+    def __init__(self):
+        super().__init__("slam_publisher")
+        self.odom_pub = self.create_publisher(Odometry, "/slam/odometry", 10)
+        self.map_pub  = self.create_publisher(PointCloud2, "/slam/map", 10)
+
+    def publish(self, pose_se3, points_xyz):
+        odom = Odometry()
+        odom.header.frame_id = "map"
+        odom.pose.pose.position.x = pose_se3[0]
+        # ... fill quaternion from pose_se3[3:7]
+        self.odom_pub.publish(odom)
+
+        cloud = pc2.create_cloud_xyz32(odom.header, points_xyz.tolist())
+        self.map_pub.publish(cloud)
+```
+
+### 14.5 Comparison
+
+| System | Approach | GPU ops | Map type | Handles dynamics | Loop closure | ROCm |
+|--------|----------|---------|----------|-----------------|-------------|------|
+| ORB-SLAM3 | Feature-based VIO | CUDA ORB (optional) | Sparse keypoints | RANSAC rejection | Yes (DBoW2) | Partial |
+| DROID-SLAM | Deep BA | CUDA alt_cuda_corr + lietorch | Dense disparity | Via flow estimation | Yes (global BA) | No |
+| MonoGS | Gaussian SLAM | CUDA gsplat tile raster | 3DGS Gaussians | No (assumed static) | No (work in progress) | Partial |
+| ElasticFusion | Dense surfels | CUDA (TSDF) | Surfel map | Partial (deformation) | Yes (SDF ICP) | No |
+
+---
+
 ## Roadmap
 
 ### Near-term (6–12 months)
@@ -1418,7 +1580,7 @@ auto pcd = open3d::geometry::PointCloud::CreateFromRGBDImage(
 
 ---
 
-## 13. Integrations
+## 15. Integrations
 
 This chapter connects to the following chapters across the book:
 

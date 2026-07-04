@@ -20,7 +20,9 @@
 10. [ROCm/HIP Portability: AMD GPU Status](#10-rocm-hip-portability)
 11. [Vulkan-Based Real-Time Splat Renderers](#11-vulkan-based-real-time-splat-renderers)
 12. [Production Deployment: Docker, Multi-GPU, and Distributed Training](#12-production-deployment)
-13. [Integrations](#13-integrations)
+13. [Dynamic and Temporal Gaussian Splatting (4DGS)](#13-dynamic-and-temporal-gaussian-splatting-4dgs)
+14. [Python Differentiable Rendering: nvdiffrast, PyTorch3D, and Kaolin](#14-python-differentiable-rendering-nvdiffrast-pytorch3d-and-kaolin)
+15. [Integrations](#15-integrations)
 
 ---
 
@@ -1245,7 +1247,279 @@ From `pyproject.toml` (main branch, pinned to nerfstudio ≥1.1) [Source](https:
 
 ---
 
-## 13. Integrations
+## 13. Dynamic and Temporal Gaussian Splatting (4DGS)
+
+Static 3DGS — covered in §6–7 — represents a single, frozen moment in time. Four extensions handle moving scenes: **Deformable 3DGS**, **4DGS**, **GaussianFlow**, and **Dynamic 3DGS** (tracking). All share the same NeRFStudio data pipeline (COLMAP poses from video frames) but add a time dimension to the Gaussian parameters.
+
+### 13.1 Deformable 3DGS
+
+Deformable 3DGS (Wu et al. 2023, [arxiv.org/abs/2309.13101](https://arxiv.org/abs/2309.13101)) augments the canonical 3DGS point cloud with a **deformation field MLP** that maps `(Gaussian ID embedding + time t) → (Δposition, Δrotation, Δscale)`:
+
+```
+canonical Gaussians  →  deformation MLP(t)  →  deformed Gaussians  →  tile rasterizer
+     (static)             Δx, Δq, Δs                 (at time t)
+```
+
+At inference time, the MLP is evaluated for the target timestamp and the offsets are added to each Gaussian's canonical parameters before the tile sort and alpha blend.
+
+```python
+# Deformable 3DGS: deformation MLP structure (PyTorch)
+import torch
+import torch.nn as nn
+
+class DeformationField(nn.Module):
+    def __init__(self, n_gaussians: int, hidden: int = 256):
+        super().__init__()
+        self.embed = nn.Embedding(n_gaussians, 32)   # per-Gaussian latent
+        self.net = nn.Sequential(
+            nn.Linear(32 + 1, hidden), nn.ReLU(),    # latent + time scalar
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, 3 + 4 + 3),            # Δpos + Δquat + Δscale
+        )
+
+    def forward(self, ids: torch.Tensor, t: float) -> tuple:
+        z = self.embed(ids)                          # (N, 32)
+        t_vec = torch.full((z.shape[0], 1), t,
+                           device=z.device)
+        delta = self.net(torch.cat([z, t_vec], dim=-1))
+        dpos, dquat, dscale = delta.split([3, 4, 3], dim=-1)
+        return dpos, dquat, dscale
+```
+
+[Source: Wu et al., "4D Gaussian Splatting for Real-Time Dynamic Scene Rendering", CVPR 2024 (deformable variant)](https://arxiv.org/abs/2309.13101)
+
+### 13.2 4D Gaussian Splatting
+
+4DGS proper (Wu et al., CVPR 2024, [arxiv.org/abs/2310.08528](https://arxiv.org/abs/2310.08528)) treats each primitive as a **4D Gaussian** with a full space-time covariance matrix Σ_4D ∈ ℝ^{4×4}. Rendering is a **temporal slice** through the 4D volume: the Gaussian's spatial covariance and opacity at time t are derived by marginalising out the temporal dimension.
+
+```
+Σ_4D → marginalise time → Σ_3D(t), α(t)   # opacity fades away from Gaussian centre in time
+```
+
+**Training setup (reference implementation):**
+
+```bash
+# Clone the 4DGS reference implementation
+git clone https://github.com/hustvl/4DGaussians && cd 4DGaussians
+
+# Install dependencies (CUDA 11.8+, PyTorch 2.x)
+pip install -r requirements.txt
+pip install submodules/diff-gaussian-rasterization
+pip install submodules/simple-knn
+
+# Process video: extract frames + run COLMAP for per-frame camera poses
+python scripts/video2poses.py --video scene.mp4 --outdir data/scene
+
+# Train 4DGS (100k iterations, ~4h on RTX 4090)
+python train.py \
+    --source_path data/scene \
+    --model_path output/scene \
+    --gs_type 4dgs \
+    --iterations 100000 \
+    --num_pts 200000   # initial Gaussian count
+
+# Render a novel trajectory at 30 fps
+python render.py \
+    --model_path output/scene \
+    --skip_train --skip_test \
+    --render_path spiral \
+    --start_time 0.0 --end_time 1.0
+```
+
+[Source: 4D Gaussian Splatting reference, github.com/hustvl/4DGaussians](https://github.com/hustvl/4DGaussians)
+
+### 13.3 GaussianFlow
+
+GaussianFlow (NeurIPS 2024, [arxiv.org/abs/2403.12365](https://arxiv.org/abs/2403.12365)) represents motion as a **scene flow field** estimated per Gaussian. Rather than a global deformation MLP, each Gaussian stores a compact motion spline (Catmull-Rom control points over time) that is evaluated per-frame. This enables extrapolation beyond the training window and supports **video generation** — synthesising plausible future frames — because the motion splines can be sampled at timestamps not seen during training.
+
+### 13.4 Dynamic 3DGS (Tracking)
+
+Dynamic 3DGS (Luiten et al., CVPR 2024, [arxiv.org/abs/2308.09713](https://arxiv.org/abs/2308.09713)) takes a different approach: instead of deforming a canonical set of Gaussians, it **tracks individual Gaussians** across consecutive frames as independent rigid objects. This suits scenes with multiple independently moving rigid objects (cars, people) better than a global deformation field.
+
+### 13.5 MonoGS: Gaussian Splatting SLAM
+
+MonoGS (Matsuki et al., ICRA 2024, [arxiv.org/abs/2312.06741](https://arxiv.org/abs/2312.06741)) uses 3DGS as the underlying scene representation inside a **Simultaneous Localisation and Mapping (SLAM)** system. Instead of using a pre-captured video with known camera poses, MonoGS estimates camera pose and builds the Gaussian map **online** from a live camera stream.
+
+**Front-end (tracking):** Given the current 3DGS map, camera pose for the new frame is estimated by minimising photometric loss between the rendered map and the observed image — a gradient-based optimisation using the differentiable tile rasterizer.
+
+**Back-end (mapping):** New Gaussians are initialised for unobserved regions (using depth from predicted Gaussians), and the map is densified/pruned as in standard 3DGS training.
+
+```python
+# MonoGS inference loop (simplified)
+from monoGS import GaussianSLAM, Frame
+
+slam = GaussianSLAM(config="configs/mono.yaml")
+
+for frame_idx, (rgb, depth) in enumerate(camera_stream):
+    frame = Frame(rgb, depth, idx=frame_idx)
+
+    if frame_idx == 0:
+        slam.initialize(frame)          # seed first Gaussians from depth
+    else:
+        pose = slam.track(frame)        # minimise photometric loss → camera pose
+        slam.map_update(frame, pose)    # add new Gaussians, prune stale ones
+
+    rendered = slam.render(pose)        # render current map for visualisation
+```
+
+[Source: MonoGS, github.com/muskie82/MonoGS](https://github.com/muskie82/MonoGS)
+
+### 13.6 Comparison
+
+| Method | Scene type | Time cost vs 3DGS | Novel view | Video extrapolation | SLAM capable |
+|--------|------------|------------------|------------|---------------------|-------------|
+| Static 3DGS | Frozen | Baseline | Yes | No | No |
+| Deformable 3DGS | Non-rigid | +deformation MLP (10%) | Yes | Limited | No |
+| 4DGS | Any dynamic | +4D covariance (~20%) | Yes | No | No |
+| GaussianFlow | Structured motion | +spline eval (<10%) | Yes | Yes | No |
+| Dynamic 3DGS | Multi-rigid-body | +tracking overhead | Yes | No | No |
+| MonoGS | Live stream | Online (no offline) | Map-only | No | Yes |
+
+---
+
+## 14. Python Differentiable Rendering: nvdiffrast, PyTorch3D, and Kaolin
+
+Chapter 117 covers Slang's shader-level automatic differentiation for writing differentiable path tracers in HLSL/SPIR-V. This section covers the complementary **Python-facing ecosystem** — libraries that make differentiable rendering accessible from PyTorch training loops without custom shader authoring.
+
+### 14.1 nvdiffrast
+
+**nvdiffrast** (Laine et al. 2020, [arxiv.org/abs/2011.03277](https://arxiv.org/abs/2011.03277)) is NVIDIA's differentiable rasterizer implemented as a CUDA custom op registered into PyTorch's autograd graph. It provides gradients through rasterization, texture sampling, and antialiasing.
+
+**Four core operations:**
+
+```python
+import torch
+import nvdiffrast.torch as dr
+
+# Create OpenGL or CUDA rendering context
+glctx = dr.RasterizeGLContext()   # or dr.RasterizeCudaContext()
+
+# 1. Rasterize: project mesh, return rasterization output (triangle IDs, barycentrics)
+# pos: (N, 4) clip-space positions; tri: (T, 3) triangle indices
+rast_out, rast_out_db = dr.rasterize(glctx, pos, tri, resolution=(H, W))
+
+# 2. Interpolate: produce per-pixel attribute values from per-vertex attributes
+# attr: (N, C) vertex attributes (normals, UVs, colours, …)
+interp_out, interp_db = dr.interpolate(attr, rast_out, tri,
+                                        rast_db=rast_out_db,
+                                        diff_attrs='all')
+
+# 3. Texture: differentiable bilinear/trilinear texture sampling
+# tex: (1, H_tex, W_tex, C) or mip levels; uv: (1, H, W, 2) texture coordinates
+tex_out = dr.texture(tex, interp_out[..., :2], filter_mode='linear-mipmap-linear')
+
+# 4. Antialias: differentiable edge supersampling (silhouette gradients)
+color_aa = dr.antialias(tex_out, rast_out, pos, tri)
+
+# Gradients flow back through all four ops
+loss = ((color_aa - target_image) ** 2).mean()
+loss.backward()   # dL/d(pos), dL/d(attr), dL/d(tex) all computed
+```
+
+**Edge gradients** are the hard part of differentiable rasterization: standard rasterization has zero gradient at silhouette edges (covered/uncovered pixels). nvdiffrast's `antialias()` detects silhouette edges in the rasterization output and applies a sub-pixel coverage estimate to propagate gradient across the boundary.
+
+[Source: nvdiffrast GitHub, github.com/NVlabs/nvdiffrast](https://github.com/NVlabs/nvdiffrast)
+
+### 14.2 PyTorch3D
+
+**PyTorch3D** (Meta, BSD 2-Clause, [github.com/facebookresearch/pytorch3d](https://github.com/facebookresearch/pytorch3d)) provides a full 3D deep learning library including differentiable renderers, mesh operations, and implicit function utilities.
+
+**Differentiable mesh rendering:**
+
+```python
+from pytorch3d.structures import Meshes
+from pytorch3d.renderer import (
+    FoVPerspectiveCameras, RasterizationSettings, MeshRasterizer,
+    MeshRenderer, SoftPhongShader, PointLights,
+)
+
+# Create a batched mesh (supports non-uniform triangle counts)
+meshes = Meshes(verts=[verts_tensor], faces=[faces_tensor])  # (B, V, 3), (B, F, 3)
+
+# Camera + rasterizer
+cameras = FoVPerspectiveCameras(fov=60.0, device=device)
+raster_settings = RasterizationSettings(
+    image_size=256,
+    blur_radius=0.0,
+    faces_per_pixel=1,
+)
+renderer = MeshRenderer(
+    rasterizer=MeshRasterizer(cameras=cameras,
+                               raster_settings=raster_settings),
+    shader=SoftPhongShader(device=device, cameras=cameras,
+                            lights=PointLights(device=device)),
+)
+images = renderer(meshes)   # (B, H, W, 4) RGBA, differentiable w.r.t. verts
+
+# Optimise mesh vertices to match a target image
+optimizer = torch.optim.Adam([verts_tensor], lr=1e-3)
+for step in range(200):
+    optimizer.zero_grad()
+    images = renderer(Meshes(verts=[verts_tensor], faces=[faces_tensor]))
+    loss   = ((images[..., :3] - target_rgb) ** 2).mean()
+    loss.backward()
+    optimizer.step()
+```
+
+**SoftRasterizer** uses a fuzzy rasterization formulation (Sigmoid coverage) that gives non-zero gradient everywhere, at the cost of some blurring. For most inverse rendering tasks, the hard rasterizer + `antialias` is preferred.
+
+[Source: PyTorch3D, github.com/facebookresearch/pytorch3d](https://github.com/facebookresearch/pytorch3d)
+
+### 14.3 Kaolin
+
+**Kaolin** (NVIDIA, Apache 2.0, [github.com/NVIDIAGameWorks/kaolin](https://github.com/NVIDIAGameWorks/kaolin)) is a 3D deep learning library focused on 3D shape representation, differentiable rendering, and USD I/O.
+
+**DIBRenderer (Differentiable Interpolation-Based Renderer):**
+
+```python
+import kaolin as kal
+import torch
+
+# Load a mesh
+vertices, faces = kal.io.obj.import_mesh("model.obj")
+vertices = vertices.unsqueeze(0).cuda()  # (1, V, 3)
+faces    = faces.cuda()                 # (F, 3)
+
+# DIBRenderer: sphere-gradient differentiable rasterizer
+renderer = kal.render.mesh.DIBRasterizer(height=256, width=256,
+                                          rast_backend='cuda')
+# Project vertices to image space
+proj_verts = kal.render.camera.perspective_camera(vertices, camera_mat)
+# Rasterize
+rast, mask = renderer(proj_verts, faces)
+
+# kaolin.ops.mesh — mesh processing ops with gradients
+smoothed = kal.ops.mesh.laplacian_smoothing(vertices, faces, n_iters=3)
+edge_loss = kal.metrics.pointcloud.sided_distance(vertices[0], target_pts)[0].mean()
+```
+
+**Sparse Point Cloud (SPC):** Kaolin's SPC provides an efficient voxel representation for neural implicit functions, enabling differentiable occupancy prediction via CUDA AABB traversal.
+
+```python
+# Kaolin SPC from point cloud
+octree = kal.ops.spc.points_to_octree(points, level=8)
+spc    = kal.ops.spc.Spc(octree, lengths=lengths)
+
+# Query occupancy at arbitrary 3D points (differentiable)
+occupancy = kal.ops.spc.query_spc(spc, query_points)
+```
+
+[Source: Kaolin, github.com/NVIDIAGameWorks/kaolin](https://github.com/NVIDIAGameWorks/kaolin)
+
+### 14.4 Comparison
+
+| Library | Rasterizer type | Silhouette grad | Mesh grad | Point cloud | USD I/O | License | GPU |
+|---------|----------------|----------------|-----------|-------------|---------|---------|-----|
+| nvdiffrast | Hard + antialias | Yes (edge detection) | Yes | No | No | MIT | NVIDIA/any CUDA |
+| PyTorch3D | Hard + soft | Hard: antialias; Soft: Sigmoid | Yes | Yes | No | BSD 2-Clause | CUDA |
+| Kaolin | DIBRenderer | Sphere-gradient approx | Yes | Yes (SPC) | Yes (USD) | Apache 2.0 | CUDA |
+| Slang autodiff (Ch117) | Path tracing | Full (random walk) | Yes | No | No | Apache 2.0 | SPIR-V/CUDA/PTX |
+
+**AMD/ROCm note.** nvdiffrast requires CUDA. PyTorch3D and Kaolin both have experimental ROCm/HIP paths via `hipify-clang` but are not officially supported on ROCm as of mid-2026. The Slang autodiff path (Ch117) is the most portable differentiable renderer on Linux across NVIDIA/AMD/Intel.
+
+---
+
+## 15. Integrations
 
 This chapter connects to the following parts of the Linux graphics stack:
 

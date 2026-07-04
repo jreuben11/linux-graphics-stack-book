@@ -18,6 +18,7 @@
    - 4.1 [SHaRC: Spatially Hashed Radiance Cache](#41-sharc-spatially-hashed-radiance-cache)
    - 4.2 [NRC: Neural Radiance Cache](#42-nrc-neural-radiance-cache)
    - 4.3 [RTXGI Integration](#43-rtxgi-integration)
+   - 4.4 [DDGI: Probe-Based Dynamic Diffuse GI](#44-ddgi-probe-based-dynamic-diffuse-gi)
 5. [NRD v4.17: NVIDIA Real-time Denoisers](#5-nrd-v417-nvidia-real-time-denoisers)
    - 5.1 [Denoiser Selection: REBLUR vs. RELAX vs. SIGMA](#51-denoiser-selection-reblur-vs-relax-vs-sigma)
    - 5.2 [Required G-Buffer Inputs](#52-required-g-buffer-inputs)
@@ -316,6 +317,116 @@ graph LR
     CacheHit --> Radiance
     CacheMiss --> Radiance
 ```
+
+### 4.4 DDGI: Probe-Based Dynamic Diffuse GI
+
+**Dynamic Diffuse Global Illumination (DDGI)** (McGuire et al. 2019) is a probe-based indirect illumination algorithm that pre-dates SHaRC and NRC but remains widely used in game engines because of its simplicity, deterministic memory usage, and compatibility with any ray tracing backend. RTXGI 1.x shipped a reference DDGI implementation; RTXGI 2.0 superseded it with SHaRC/NRC, but DDGI is independently available and is the basis of AMD's **Brixelizer GI** (FidelityFX).
+
+**Algorithm.** A regular grid of **irradiance probes** is placed over the scene:
+
+```
+Probe grid: 16 × 8 × 16 = 2,048 probes
+Each probe: two oct-encoded octahedral textures
+  - Irradiance map:  8×8  texels (RGB16F)  — incoming radiance
+  - Visibility map: 16×16 texels (RG16F)  — mean + mean² hit distance
+```
+
+Each frame, every probe casts N rays (typically 64–256 rays) in pseudo-random directions and samples scene radiance. The ray is cast as a Vulkan `vkCmdTraceRaysKHR` dispatch with one ray per probe per sample direction. The accumulated radiance is blended with exponential hysteresis (α ≈ 0.97 — probes converge in ~30 frames after scene change):
+
+```c
+// DDGI probe update pseudocode — ray generation shader
+for (uint probeIdx : launchID) {
+    uint rayIdx  = launchID.y;           // one ray per dispatch row
+    vec3 probePos = probeGrid[probeIdx]; // world-space probe centre
+
+    // Pseudo-random direction from Fibonacci sphere distribution
+    vec3 dir = fibonacciDir(rayIdx, totalRays);
+
+    // Trace ray against scene TLAS
+    traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0,
+                probePos, 0.01f, dir, 1000.0f, 0);
+
+    // payload.radiance written by closest-hit shader
+    probeRays[probeIdx * totalRays + rayIdx] = payload;
+}
+```
+
+**Probe lookup in a surface shader.** Given a surface world position and normal, the three nearest probes (in the probe grid) are tri-linearly interpolated:
+
+```glsl
+// DDGI irradiance fetch — fragment/rchit shader
+layout(binding = 3) uniform sampler2DArray uProbeIrradiance;  // atlas of probe oct-maps
+layout(binding = 4) uniform sampler2DArray uProbeVisibility;  // atlas of visibility maps
+
+vec3 fetchDDGIIrradiance(vec3 surfPos, vec3 surfNormal) {
+    // Find enclosing probe cell
+    vec3  gridCoord  = (surfPos - probeGrid.origin) / probeGrid.spacing;
+    ivec3 baseProbe  = ivec3(gridCoord);
+
+    vec3 irradiance  = vec3(0.0);
+    float totalW     = 0.0;
+
+    // Tri-linear blend over 8 corner probes
+    for (int i = 0; i < 8; ++i) {
+        ivec3 offset = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
+        ivec3 probe  = clamp(baseProbe + offset, ivec3(0), probeGrid.count - 1);
+        int   pIdx   = probe.x + probe.y * probeGrid.count.x
+                               + probe.z * probeGrid.count.x * probeGrid.count.y;
+
+        // Oct-encode surface normal for probe irradiance lookup
+        vec2  octUV  = octEncode(surfNormal) * 0.5 + 0.5;
+        vec3  probeL = texture(uProbeIrradiance,
+                               vec3(octUV, pIdx)).rgb;
+
+        // Tri-linear weight + backface probe exclusion
+        vec3 probePos = probeGrid.origin + vec3(probe) * probeGrid.spacing;
+        float w      = trilinearWeight(gridCoord, offset);
+        w            = max(0.001, w * dot(normalize(probePos - surfPos),
+                                         surfNormal));
+        irradiance   += probeL * w;
+        totalW       += w;
+    }
+    return irradiance / totalW;
+}
+```
+
+[Source: McGuire et al., "Dynamic Diffuse Global Illumination with Ray-Traced Irradiance Fields", JCGT 2019](https://jcgt.org/published/0008/02/01/)
+
+**RTXGI 1.x vs RTXGI 2.0 vs AMD Brixelizer GI:**
+
+| Feature | RTXGI 1.x DDGI | RTXGI 2.0 SHaRC/NRC | AMD Brixelizer GI (FidelityFX) |
+|---------|---------------|---------------------|-------------------------------|
+| Representation | Probe grid (irradiance maps) | Hash map / tiny MLP | Sparse voxel bricks (BVH) |
+| Update method | Ray cast per probe per frame | Ray cast → hash/MLP update | SDF ray march against voxel grid |
+| Memory (1080p) | ~32 MB for 2K probes | ~16 MB SHaRC / ~8 MB NRC | ~50–100 MB voxel cache |
+| Dynamic objects | Re-trace affected probes | Hash invalidation | Brick invalidation |
+| GPU requirement | Any RT-capable | Any RT-capable | Any RT-capable (MIT) |
+| Open source | Yes (MIT, github.com/NVIDIA-RTX/RTXGI-DDGI) | Yes (MIT, ch70 §4) | Yes (MIT, FidelityFX-SDK) |
+| Vendor | NVIDIA (no longer primary) | NVIDIA (RTXGI 2.0) | AMD |
+
+**AMD Brixelizer GI** (FidelityFX SDK) uses a sparse voxel representation: the scene is voxelised at runtime into a **cascade of BVH-accelerated brick grids**, and GI is computed by ray marching into the SDF-encoded voxels rather than tracing against the full TLAS. This reduces per-frame ray cost at the expense of lower geometric detail.
+
+```c
+// Brixelizer GI — FidelityFX SDK integration (Vulkan)
+FfxBrixelizerGIContextDescription giDesc = {
+    .flags          = FFX_BRIXELIZER_GI_FLAG_DEPTH_INVERTED,
+    .internalResolution = { renderW, renderH },
+    .displaySize    = { outputW, outputH },
+    .backendInterface = &vulkanFfxInterface,
+};
+ffxBrixelizerGIContextCreate(&brixGICtx, &giDesc);
+
+// Per frame: update Brixelizer scene then dispatch GI
+FfxBrixelizerGIDispatchDescription dispatch = {
+    .view             = viewMat,
+    .projection       = projMat,
+    .outputDiffuseGI  = outputDiffuseSRV,
+    .outputSpecularGI = outputSpecularSRV,
+};
+ffxBrixelizerGIContextDispatch(&brixGICtx, &brixCtx, &dispatch, cmdBuf);
+```
+
+[Source: AMD FidelityFX SDK — Brixelizer GI, github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK)
 
 ---
 

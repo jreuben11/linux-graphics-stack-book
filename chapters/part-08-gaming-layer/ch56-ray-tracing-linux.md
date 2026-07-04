@@ -16,7 +16,9 @@ This chapter targets **systems and driver developers** who need to understand ho
 8. [DXR via VKD3D-Proton](#8-dxr-via-vkd3d-proton)
 9. [Blender Cycles](#9-blender-cycles)
 10. [Ray Marching and Signed Distance Field Rendering](#10-ray-marching-and-signed-distance-field-rendering)
-11. [Integrations](#integrations)
+11. [Temporal Anti-Aliasing, DLAA, and the Upsampling Ecosystem](#11-temporal-anti-aliasing-dlaa-and-the-upsampling-ecosystem)
+12. [Subsurface Scattering on the GPU](#12-subsurface-scattering-on-the-gpu)
+13. [Integrations](#integrations)
 
 ---
 
@@ -973,6 +975,251 @@ Modern effects pipelines can **hybrid** the two techniques in a single frame:
 4. Composite: SDF volume result × (1 − opacity) + RT reflections
 
 This approach is used in Unreal Engine 5's Lumen (software ray marching for distant GI, hardware RT for near-field) and in custom Vulkan demos via `VK_KHR_ray_query` inline queries from the same compute shader that does the SDF march.
+
+---
+
+## 11. Temporal Anti-Aliasing, DLAA, and the Upsampling Ecosystem
+
+Ray-traced images are inherently noisy — even after hardware denoising (Ch70), the final frame needs temporally stable, alias-free output. The temporal anti-aliasing family solves this by accumulating information across frames via a history buffer. This section covers the TAA algorithm, NVIDIA's neural DLAA extension, Intel XeSS, and AMD's FSR Native AA.
+
+### 11.1 Temporal Anti-Aliasing (TAA): Algorithm
+
+TAA jitters the camera's projection matrix each frame by a sub-pixel offset drawn from a Halton(2,3) low-discrepancy sequence. Over 8–16 frames, jittered samples reconstruct a band-limited estimate of the scene signal. A velocity buffer (screen-space motion vectors written by geometry shaders) enables reprojecting each pixel back to its position in the previous frame.
+
+**Reprojection and blend:**
+
+```glsl
+// TAA resolve — fragment shader
+layout(binding = 0) uniform sampler2D uCurrent;   // jittered current frame
+layout(binding = 1) uniform sampler2D uHistory;   // previous resolved frame
+layout(binding = 2) uniform sampler2D uVelocity;  // screen-space motion (UV offset)
+
+const float BLEND_ALPHA = 0.1;  // weight for current sample
+
+void main() {
+    vec2 velocity  = texture(uVelocity, texCoord).xy;
+    vec2 histCoord = texCoord - velocity;       // reproject to previous frame
+
+    vec3 current = texture(uCurrent, texCoord).rgb;
+    vec3 history = texture(uHistory, histCoord).rgb;
+
+    // Variance clipping: constrain history to 3×3 neighbourhood AABB
+    vec3 minC = vec3(1.0), maxC = vec3(0.0);
+    for (int i = -1; i <= 1; ++i)
+        for (int j = -1; j <= 1; ++j) {
+            vec3 s = texture(uCurrent, texCoord + vec2(i,j) * texelSize).rgb;
+            minC = min(minC, s); maxC = max(maxC, s);
+        }
+    history = clamp(history, minC, maxC);       // kills ghosting on moving edges
+
+    fragColor = vec4(mix(history, current, BLEND_ALPHA), 1.0);
+}
+```
+
+**Velocity buffer generation:**
+
+```glsl
+// Velocity write — vertex shader: outputs UV-space motion offset
+vec4 currClip = uMVP_current * worldPos;
+vec4 prevClip = uMVP_previous * worldPos;
+vec2 currNDC  = currClip.xy / currClip.w;
+vec2 prevNDC  = prevClip.xy / prevClip.w;
+vVelocity     = (currNDC - prevNDC) * 0.5;  // NDC delta → UV delta
+```
+
+[Source: Brian Karis, "High Quality Temporal Supersampling", SIGGRAPH 2014 Advances in Real-Time Rendering](https://de45xmedrsdbp.cloudfront.net/resources/files/TemporalAA_small-1009853114.pdf)
+
+**Known failure modes:**
+
+| Failure | Cause | Mitigation |
+|---------|-------|-----------|
+| Ghosting on fast objects | Stale history outside valid colour region | Variance clipping or neighbourhood rejection |
+| Thin feature smearing | Sub-pixel jitter displaces thin edges | Sharpening pass (bicubic + CAS) after TAA resolve |
+| Disocclusion artifacts | History sampled from behind newly visible surface | Depth-based rejection: discard history if depth delta > threshold |
+| Transparent geometry | Velocity buffer undefined for particles | Separate accumulation buffer for alpha-blended objects |
+
+### 11.2 DLAA (NVIDIA Deep Learning Anti-Aliasing)
+
+DLAA uses the same NGX SDK infrastructure as DLSS (Ch68 §3) but runs at **native resolution** — it produces stable, alias-free output without upscaling. The neural network has been trained on a wide corpus of rendering scenarios, and empirically reduces ghosting under fast motion compared to variance-clipped TAA.
+
+**Requirements:** NVIDIA Turing or later GPU; NVIDIA driver ≥ 520 on Linux; NGX SDK ≥ 3.x.
+
+**Enabling DLAA in Vulkan:** Pass `NVSDK_NGX_PerfQuality_Value_DLAA` (= 5 in NGX 3.x) with equal input and output resolution:
+
+```c
+// NGX DLAA initialisation — same NVSDK_NGX_Feature_DLSS, different quality value
+NVSDK_NGX_Parameter_SetUI(params,
+    NVSDK_NGX_Parameter_Width,  renderWidth);   // input == output dimensions
+NVSDK_NGX_Parameter_SetUI(params,
+    NVSDK_NGX_Parameter_Height, renderHeight);
+NVSDK_NGX_Parameter_SetUI(params,
+    NVSDK_NGX_Parameter_PerfQualityValue,
+    NVSDK_NGX_PerfQuality_Value_DLAA);          // value 5 = DLAA mode
+
+NVSDK_NGX_VULKAN_CreateFeature(cmdBuf, NVSDK_NGX_Feature_DLSS,
+                                params, &featureHandle);
+```
+
+Per-frame execution is identical to DLSS SR — pass current colour, depth, motion vectors, jitter offsets, and retrieve the resolved output. [Source: NVIDIA NGX Programming Guide, developer.nvidia.com/dlss-getting-started](https://developer.nvidia.com/dlss-getting-started)
+
+### 11.3 Intel XeSS 2.x
+
+XeSS 2 (MIT, [github.com/GameTechDev/XeSS](https://github.com/GameTechDev/XeSS)) provides two hardware paths: **XMX mode** (Intel Arc, using native Xe Matrix Extensions) and **DP4a mode** (all GPUs, using `int8` dot-product instructions). A native-resolution AA mode (`XESS_QUALITY_SETTING_AA`) was added in XeSS 2.0.
+
+**Vulkan integration:**
+
+```c
+// XeSS 2.x Vulkan — initialise context
+xess_context_handle_t ctx;
+xessVkCreateContext(device, physicalDevice, &ctx);
+
+xess_vk_init_params_t init = {
+    .sType           = XESS_STRUCTURE_TYPE_VK_INIT_PARAMS,
+    .qualitySettings = XESS_QUALITY_SETTING_AA,   // native AA (no upscale)
+    .outputResolution= { outputW, outputH },
+    .initFlags       = XESS_INIT_FLAG_INVERTED_DEPTH |
+                       XESS_INIT_FLAG_JITTERED_MV,
+};
+xessVkInit(ctx, &init);
+
+// Per-frame execute
+xess_vk_execute_params_t exec = {
+    .pColorTexture   = inputColorView,
+    .pOutputTexture  = outputView,
+    .pMotionTexture  = velocityView,
+    .pDepthTexture   = depthView,
+    .jitterOffsetX   = haltonX,
+    .jitterOffsetY   = haltonY,
+};
+xessVkExecute(ctx, cmdBuf, &exec);
+```
+
+[Source: XeSS 2 Programming Guide, github.com/GameTechDev/XeSS/blob/main/doc/](https://github.com/GameTechDev/XeSS)
+
+### 11.4 AMD FSR 3 Native AA
+
+FidelityFX Super Resolution 3 (MIT, [github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK)) at `FFX_FSR3_QUALITY_MODE_NATIVEAA` runs at 1:1 input:output with temporal accumulation equivalent to TAA but with AMD's jitter-cancellation and sharpening filter applied.
+
+```c
+FfxFsr3ContextDescription desc = {
+    .qualityMode   = FFX_FSR3_QUALITY_MODE_NATIVEAA,
+    .displaySize   = { outputW, outputH },
+    .maxRenderSize = { outputW, outputH },
+    .flags         = FFX_FSR3_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION |
+                     FFX_FSR3_ENABLE_DEPTH_INVERTED,
+    .backendInterface = &vulkanInterface,
+};
+ffxFsr3ContextCreate(&fsr3Context, &desc);
+```
+
+### 11.5 Comparison
+
+| Feature | Manual TAA | DLAA | XeSS 2 (DP4a) | FSR3 Native AA |
+|---------|-----------|------|----------------|----------------|
+| GPU requirement | Any | NVIDIA Turing+ | Any discrete | Any |
+| Open source | Yes (DIY) | No (NGX) | Yes (MIT) | Yes (MIT) |
+| Ghost reduction | Medium | Best | Very good | Good |
+| Sharpness | Needs CAS | Excellent | Excellent | Good |
+| AMD ROCm support | Yes | No | DP4a path | Yes |
+| Linux Vulkan path | Native | NGX SDK required | `xessVkExecute` | FFX SDK |
+
+---
+
+## 12. Subsurface Scattering on the GPU
+
+Subsurface scattering (SSS) describes light that penetrates a translucent surface, scatters inside the medium, and exits at a different point — the dominant appearance mechanism for human skin, marble, wax, and plant leaves. Three GPU techniques span the accuracy–cost tradeoff.
+
+### 12.1 Screen-Space Subsurface Scattering (SSSS)
+
+Jimenez et al.'s separable SSS (EGSR 2015) approximates SSS in screen space with a separable bilateral blur applied to the diffuse lighting buffer. The blur kernel encodes a **Burley diffusion profile** — a two-lobe sum of Gaussians fitted to measured skin reflectance data.
+
+**Algorithm:**
+1. Render deferred diffuse lighting into `SSSS_INPUT` with stencil marking SSS pixels
+2. **Horizontal pass**: bilateral blur along rows using depth-aware weights
+3. **Vertical pass**: bilateral blur along columns
+
+```glsl
+// SSSS horizontal scatter — fragment shader
+layout(binding = 0) uniform sampler2D uDiffuse;
+layout(binding = 1) uniform sampler2D uDepth;
+uniform float sssWidth;   // world-space scatter radius in UV space (tune per material)
+
+// 6-tap Burley-profile kernel (fitted to caucasian skin, scattering in mm)
+const int   NTAPS = 6;
+const float kw[6] = float[](0.006, 0.061, 0.242, 0.383, 0.242, 0.061);
+const float kr[6] = float[](2.0,   1.33,  0.67,  0.0,  -0.67, -1.33);
+
+void main() {
+    float depth = texture(uDepth, texCoord).r;
+    vec3 accum  = vec3(0.0);
+
+    for (int i = 0; i < NTAPS; ++i) {
+        vec2 uv    = texCoord + vec2(kr[i] * sssWidth, 0.0) * texelSize;
+        vec3 col   = texture(uDiffuse, uv).rgb;
+        float sd   = texture(uDepth, uv).r;
+        float depW = exp(-abs(depth - sd) * 50.0);  // depth-discontinuity rejection
+        accum += col * kw[i] * depW;
+    }
+    fragColor = vec4(accum, 1.0);
+}
+// Repeat with kr[] rotated 90° for the vertical pass
+```
+
+[Source: Jimenez et al., "Separable Subsurface Scattering", EGSR 2015, iryoku.com/separable-sse/](https://iryoku.com/separable-sse/)
+
+### 12.2 Pre-Integrated Skin Shading
+
+Pre-integrated skin shading (Penner & Mitchell 2011) bakes the SSS response into a 2D LUT indexed by `NdotL` and surface curvature. A single texture lookup at runtime replaces the bilateral blur pass — ideal for deferred renderers with many SSS-enabled characters.
+
+```glsl
+// Pre-integrated skin LUT — fragment shader (deferred lighting pass)
+layout(binding = 2) uniform sampler2D uSkinLUT;  // 512×512 precomputed LUT
+
+// Curvature approximated from screen-space normal derivatives
+float curvature = clamp(length(vec2(dFdx(worldNormal.x),
+                                   dFdy(worldNormal.y))) * curvScale, 0.0, 1.0);
+float ndotl     = dot(N, L) * 0.5 + 0.5;  // remap [-1,1] → [0,1] for LUT indexing
+
+vec3 sssColor = texture(uSkinLUT, vec2(ndotl, curvature)).rgb;
+vec3 diffuse  = albedo * sssColor;
+```
+
+The LUT is precomputed offline by numerically integrating the Burley normalised diffusion profile for three spectral channels (R σ_d ≈ 3.67 mm, G σ_d ≈ 1.37 mm, B σ_d ≈ 0.68 mm for unit-scale geometry). [Source: Penner & Mitchell, "Pre-Integrated Skin Shading", GPU Pro 2, 2011](https://advances.realtimerendering.com/s2011/)
+
+### 12.3 Path-Traced Volumetric SSS
+
+For path tracing pipelines (`VK_KHR_ray_tracing_pipeline`), SSS is handled as a **volumetric random walk** inside any-hit shaders. Rays entering the medium scatter according to the Henyey-Greenstein phase function and are absorbed according to σ_a:
+
+```glsl
+// Any-hit shader — volumetric SSS random walk (simplified)
+// sigmaT = sigmaS + sigmaA (total extinction)
+float freePath   = -log(1.0 - rng()) / sigmaT;  // Beer-Lambert free path length
+float actualDist = min(freePath, hitT);
+
+if (freePath < hitT) {
+    // Scatter inside medium: sample new direction via Henyey-Greenstein
+    float cosTheta  = sampleHenyeyGreenstein(g_anisotropy, rng());
+    float phi       = 2.0 * PI * rng();
+    vec3  scattered = localToWorld(cosTheta, phi, incomingDir);
+
+    // Continue tracing from scatter point
+    payload.origin    = hitPos + scattered * 0.001;
+    payload.direction = scattered;
+    ignoreIntersectionEXT();  // mark current surface as transparent to this ray
+}
+// If freePath >= hitT, ray exits the volume without scatter — shade normally
+```
+
+Path-traced SSS produces the most physically accurate results but requires 3–10× more rays per pixel than opaque surface shading. NRD RELAX (Ch70 §5.1) is the recommended denoiser — its separate diffuse/specular history buffers handle the correlated sub-surface exit distribution well.
+
+### 12.4 Technique Comparison
+
+| Technique | Quality | GPU cost | When to use |
+|-----------|---------|----------|-------------|
+| SSSS (screen-space blur) | Medium | ~0.5 ms 1080p (2 passes) | Real-time games, character skin |
+| Pre-integrated LUT | Medium-low | ~0.1 ms | Deferred, mobile, many SSS characters |
+| Path-traced random walk | High | 3–10× spp overhead | Hybrid ray-traced renderers |
+| Dipole/BSSRDF (CPU) | Reference | Offline | Blender Cycles CPU, VFX offline |
 
 ---
 
