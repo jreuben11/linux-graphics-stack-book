@@ -1069,6 +1069,107 @@ graph TD
     PushDesc -- "writes descriptors into" --> PushBuf
 ```
 
+### Push Constants, UBOs, and Specialization Constants in NVK
+
+#### Push Constants: Inline cbuf0 Segment
+
+Push constants are the fastest path for passing small, frequently-changing scalar data to shaders. NVK supports up to 128 bytes (the minimum required by the Vulkan spec; NVIDIA hardware permits more but NVK caps it at 128 for compatibility). On NVIDIA hardware, push constants are implemented by reserving a fixed range at the start of the per-dispatch constant buffer (cbuf 0) and flushing the current push constant values into that range at draw/dispatch time.
+
+NVK stores the live push constant state in `nvk_cmd_buffer.push_data[]` — a CPU-side byte array in the command buffer object. `vkCmdPushConstants` is a pure CPU operation at record time:
+
+```c
+/* src/nouveau/vulkan/nvk_cmd_buffer.c — vkCmdPushConstants (simplified)
+ * Source: https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/nouveau/vulkan/nvk_cmd_buffer.c */
+void
+nvk_CmdPushConstants(VkCommandBuffer commandBuffer,
+                     VkPipelineLayout layout,
+                     VkShaderStageFlags stageFlags,
+                     uint32_t offset, uint32_t size,
+                     const void *pValues)
+{
+    struct nvk_cmd_buffer *cmd = ...;
+    /* No GPU methods written here — only a CPU memcpy into cmd-buffer state */
+    memcpy(cmd->state.push_data + offset, pValues, size);
+    cmd->state.dirty |= NVK_DIRTY_PUSH_CONSTANTS;
+}
+```
+
+At the next draw or dispatch, NVK flushes the push constant buffer into the GPU constant cache via `LOAD_CONSTANT_BUFFER` push buffer methods. The push constants occupy bytes `[0, push_size)` of cbuf 0; the NVK descriptor table follows at higher offsets. This is why `nvk_lower_nir()` emits `load_ubo(cbuf=0, offset)` for both push constants and descriptor table entries — they occupy different ranges of the same hardware constant buffer.
+
+```c
+/* Push constant flush at draw time — push buffer writes */
+static void
+nvk_flush_push_constants(struct nvk_cmd_buffer *cmd, struct push_buffer *push)
+{
+    if (!(cmd->state.dirty & NVK_DIRTY_PUSH_CONSTANTS))
+        return;
+    uint32_t size = cmd->state.layout->push_constant_size; /* declared in VkPipelineLayoutCreateInfo */
+
+    /* LOAD_CONSTANT_BUFFER writes the push constant data inline into cbuf 0 slot 0.
+     * The GPU reads this as constant cache hits for any LDC [c0][0..size) instruction. */
+    P_MTHD(push, NVC3C0, LOAD_CONSTANT_BUFFER_OFFSET);
+    P_NVC3C0_LOAD_CONSTANT_BUFFER_OFFSET(push, 0);
+    for (uint32_t i = 0; i < size / 4; i++)
+        P_NVC3C0_LOAD_CONSTANT_BUFFER(push, ((const uint32_t *)cmd->state.push_data)[i]);
+
+    cmd->state.dirty &= ~NVK_DIRTY_PUSH_CONSTANTS;
+}
+```
+
+The total cost of a push constant update is: one `memcpy` at record time + N scalar push buffer method writes at submit time (where N = push_size / 4). There is no VRAM allocation, no descriptor pool, no `vkUpdateDescriptorSets`. Push constants are the correct choice for any per-draw scalar that changes every frame: animation time, per-draw object index, transformation matrix override.
+
+#### UBOs: NVIDIA Constant Buffer (cbuf) Hardware
+
+`VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER` bindings map to NVIDIA's **constant buffer** (cbuf) hardware. This is a distinct cache tier from L1/L2: the constant cache is smaller (typically 4–8 KB per SM) but supports **broadcast reads** — when all 32 threads in a warp read the same constant buffer offset, the hardware services the entire warp in a single cache transaction. This makes per-frame matrices, lighting parameters, and material constants dramatically faster than equivalent SSBO reads.
+
+At descriptor update time (`vkUpdateDescriptorSets` with `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER`), NVK writes the UBO's GPU virtual address and size into the global descriptor buffer. At bind time (`vkCmdBindDescriptorSets`), the shader accesses this entry via the descriptor table path in cbuf 0. The lowered NIR `load_ubo(cbuf=0, desc_table_offset)` reads the 64-bit UBO base address from the descriptor table, then emits an `LDC` instruction — Load Constant — which goes through the constant cache rather than the global L2.
+
+The performance contrast:
+
+| Access type | NAK instruction | Cache path | Warp latency |
+|---|---|---|---|
+| `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER` | `LDC [cN][offset]` | Constant cache → broadcast | ~10 cycles |
+| `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER` | `LDG [R_addr]` | L1 → L2 → VRAM | ~200–400 cycles (cache cold) |
+| Push constants | `LDC [c0][offset]` | Constant cache → broadcast | ~10 cycles |
+
+Applications should prefer UBOs over SSBOs whenever data is read-only, accessed at the same offset by all threads in a warp, and fits within `maxUniformBufferRange` (at least 64 KB on NVK-supported hardware). Use SSBOs for write access, per-element varying access patterns, or data exceeding the UBO size limit.
+
+#### Specialization Constants: Compile-Time Folding by NAK
+
+Vulkan specialization constants (`VkSpecializationInfo` in `VkPipelineShaderStageCreateInfo`) supply concrete values for shader constants at pipeline creation time, before NAK runs. NVK implements them entirely in the compilation frontend with zero runtime cost.
+
+`spirv_to_nir()` accepts the `VkSpecializationInfo` map and substitutes each specialization constant ID with a `load_const` NIR node at the point where `OpSpecConstant` appeared. This happens before any of the `nir_opt_*` passes. Then `nir_opt_constant_folding` propagates the constants through all dependent expressions, and `nir_opt_dead_cf` prunes branches whose condition became a compile-time constant (`if (WG_SIZE == 64)` → taken branch, not-taken branch eliminated). By the time NAK receives the NIR, no specialization constant variable remains — only concrete values.
+
+```c
+/* Specialization constant substitution — inside spirv_to_nir() call in nvk_pipeline.c */
+const struct spirv_to_nir_options spirv_opts = {
+    .spec_constants = {
+        /* Each entry: { .id = VkSpecializationMapEntry.constantID,
+         *               .value = *(uint32_t*)(pData + entry.offset) } */
+        [0] = { .u32 = 64  },   /* WG_SIZE = 64 for this pipeline variant */
+    },
+    /* ... capability flags ... */
+};
+nir_shader *nir = spirv_to_nir(spirv, spirv_size, &spirv_opts, ...);
+/* After this call: any OpSpecConstant %id=0 in the SPIR-V has become load_const(64) in NIR.
+ * nir_opt_constant_folding then folds it through all dependent expressions.
+ * nir_opt_dead_cf eliminates branches that became compile-time reachable/unreachable. */
+```
+
+Practical example: a compute shader parameterised over workgroup size. Without specialization, one pipeline handles all sizes via a runtime variable. With specialization, each variant produces a SASS binary that NAK can fully optimise for the specific size — including pipelining, register allocation, and the QMD `CTA_THREAD_DIMENSION0` field being a known constant rather than a runtime value:
+
+```cpp
+// One pipeline per workgroup size — zero runtime overhead per dispatch
+uint32_t wg_size = 64;
+VkSpecializationMapEntry spec_entry{ .constantID = 0, .offset = 0, .size = 4 };
+VkSpecializationInfo spec_info{
+    .mapEntryCount = 1, .pMapEntries = &spec_entry,
+    .dataSize = 4, .pData = &wg_size,
+};
+// vkCreateComputePipeline with spec_info → NAK produces QMD with CTA_THREAD_DIMENSION0=64
+// A second call with wg_size=128 → separate SASS binary with CTA_THREAD_DIMENSION0=128
+```
+
 ### Graphics Pipeline State
 
 The `nvk_graphics_pipeline` object stores the compiled shader binaries for all active stages, the hardware state register values for fixed-function pipeline stages (rasteriser, depth/stencil test, blend state), and the set of dynamic state flags indicating which state will be set at draw time rather than pipeline bind time.

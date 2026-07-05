@@ -19,6 +19,7 @@ After reading this chapter, the reader will understand how to select the right V
 
 1. [Vulkan Instance and Device Initialisation on Linux](#1-vulkan-instance-and-device-initialisation-on-linux)
 2. [Vulkan Memory Management on AMD, Intel, and NVIDIA](#2-vulkan-memory-management-on-amd-intel-and-nvidia)
+2.5 [Shader Parameter Update Mechanisms](#25-shader-parameter-update-mechanisms-push-constants-ubos-and-specialization-constants)
 3. [EGL: Display, Context, and Surface Creation](#3-egl-display-context-and-surface-creation)
 4. [GBM-Backed EGL Surfaces and KMS-Direct Rendering](#4-gbm-backed-egl-surfaces-and-kms-direct-rendering)
 5. [Swapchains on Wayland: VK_KHR_wayland_surface and Present Modes](#5-swapchains-on-wayland-vk_khr_wayland_surface-and-present-modes)
@@ -192,6 +193,183 @@ For large allocations — render targets, swapchain images, dedicated textures �
 The Vulkan Memory Allocator (VMA) library from AMD GPUOpen encapsulates the full memory management layer including staging, defragmentation, and budget-aware allocation. Its `VMA_MEMORY_USAGE_AUTO` usage flag, combined with `VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT` or `VMA_ALLOCATION_CREATE_PREFER_HOST_MEMORY_BIT`, lets VMA select the optimal memory type for upload or readback traffic and fall back gracefully when VRAM headroom is tight. For most applications, VMA is the correct choice over rolling a custom suballocator.
 
 Buffer-image granularity is a hardware constraint on certain older devices: a linear resource (buffer) and a non-linear resource (optimal-tiled image) may not share the same VkDeviceMemory page if their byte ranges would overlap within a `bufferImageGranularity`-sized window. Modern AMD, Intel, and NVIDIA hardware reports `bufferImageGranularity = 1`, meaning the constraint does not apply, but any code targeting mobile or older hardware must check `VkPhysicalDeviceLimits.bufferImageGranularity` and align suballocations accordingly.
+
+---
+
+## 2.5 Shader Parameter Update Mechanisms: Push Constants, UBOs, and Specialization Constants
+
+Getting data from the CPU to a shader is not a single decision — Vulkan provides three fundamentally different mechanisms that trade off update frequency, data size, and compile-time vs runtime cost. Choosing the wrong one is a common source of unnecessary CPU overhead, GPU stalls, and missed driver optimisations.
+
+### Push Constants: Per-Draw Scalars with Zero Allocation Overhead
+
+Push constants are small values (up to `VkPhysicalDeviceLimits::maxPushConstantsSize` — 128 bytes on NVIDIA/NVK and most AMD hardware, 256 bytes permitted by the spec) that are written directly into the command buffer stream at record time. There is no `VkBuffer`, no `VkDescriptorSet`, and no `vkUpdateDescriptorSets` call. The GPU reads them from a hardware constant cache alongside other per-draw state.
+
+**Typical uses**: animation time, per-draw object index, per-instance transform override, debug flags, render pass selector.
+
+**API pattern** — passing a per-frame timer and a per-draw index to a vertex shader:
+
+```cpp
+// At pipeline layout creation — declare the push constant range
+VkPushConstantRange pcRange{
+    .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+    .offset     = 0,
+    .size       = 8,    // two float32 values: [0]=time, [1]=objectIndex (as float)
+};
+VkPipelineLayoutCreateInfo layoutCI{
+    .pushConstantRangeCount = 1,
+    .pPushConstantRanges    = &pcRange,
+    /* ... descriptor set layouts ... */
+};
+vkCreatePipelineLayout(device, &layoutCI, nullptr, &pipelineLayout);
+
+// HLSL shader side (DXC -spirv)
+struct PushConstants {
+    float time;
+    float objectIndex;
+};
+[[vk::push_constant]] PushConstants pc;
+
+[numthreads(64,1,1)]
+void VSMain(uint3 DTid : SV_DispatchThreadID) {
+    float wave = sin(pc.time + DTid.x * 0.1);
+    /* ... */
+}
+
+// Per-frame CPU update — called inside vkBeginCommandBuffer / vkEndCommandBuffer
+struct { float time; float objectIndex; } pushData;
+pushData.time        = currentTimeSeconds;
+pushData.objectIndex = (float)drawIndex;
+
+vkCmdPushConstants(
+    commandBuffer,
+    pipelineLayout,
+    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+    0,              /* offset into push constant range */
+    8,              /* bytes to update */
+    &pushData
+);
+vkCmdDraw(commandBuffer, vertexCount, 1, 0, 0);
+// Next draw with different objectIndex: just call vkCmdPushConstants again — no sync needed
+```
+
+Push constants require no synchronisation between the CPU write and the GPU read because `vkCmdPushConstants` is recorded into the command buffer before submission, not written to a GPU-visible buffer. They are the lowest-latency path available for per-draw data.
+
+**Limits**: 128 bytes is enough for a 4×4 float matrix (64 bytes) plus a handful of scalars. For anything larger, use a UBO.
+
+### Uniform Buffer Objects: Per-Frame and Per-Pass Data
+
+`VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER` bindings hold data that is constant for the duration of a draw call but may change between frames. The GPU accesses UBOs through the hardware constant cache — a separate, broadcast-optimised cache tier that efficiently serves all threads in a warp that read the same offset simultaneously. This makes UBOs significantly faster than storage buffers for read-only, uniformly-accessed data such as view-projection matrices, lighting parameters, and material properties.
+
+**When to use a UBO over a push constant**: the data is larger than 128 bytes, or it is shared between many draw calls and should be written once per frame rather than once per draw.
+
+**Per-frame UBO pattern** — a view-projection matrix and the same animation timer, CPU-mapped for zero-copy update:
+
+```cpp
+// Allocate a host-visible, persistently-mapped UBO using VMA
+struct FrameConstants {
+    float viewProj[16];   // 64 bytes: 4×4 float matrix
+    float time;           // 4 bytes
+    float padding[3];     // 12 bytes (std140 alignment)
+};  // total: 80 bytes, well under maxUniformBufferRange
+
+VmaAllocationCreateInfo allocCI{
+    .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
+             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+    .usage = VMA_MEMORY_USAGE_AUTO,
+};
+VkBufferCreateInfo bufCI{
+    .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+    .size  = sizeof(FrameConstants),
+    .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+};
+VkBuffer ubo;  VmaAllocation uboAlloc;
+VmaAllocationInfo allocInfo;
+vmaCreateBuffer(allocator, &bufCI, &allocCI, &ubo, &uboAlloc, &allocInfo);
+FrameConstants *mapped = (FrameConstants *)allocInfo.pMappedData;
+// mapped is valid for the lifetime of ubo — no vkMapMemory / vkUnmapMemory needed
+
+// Per-frame CPU update (host-coherent memory — no explicit flush needed on AMD/NVIDIA/Intel)
+mapped->time = currentTimeSeconds;
+memcpy(mapped->viewProj, camera.viewProjectionMatrix().data(), 64);
+
+// Barrier: ensure CPU write is visible before vertex stage reads the UBO.
+// On host-coherent memory (HOST_COHERENT_BIT), the barrier is sufficient without
+// explicit cache flush. Without the barrier, the GPU may read stale values.
+VkBufferMemoryBarrier2 barrier{
+    .sType         = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+    .srcStageMask  = VK_PIPELINE_STAGE_2_HOST_BIT,
+    .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT,
+    .dstStageMask  = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+    .dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT,
+    .buffer = ubo, .offset = 0, .size = sizeof(FrameConstants),
+};
+VkDependencyInfo depInfo{ .bufferMemoryBarrierCount=1, .pBufferMemoryBarriers=&barrier };
+vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+// Now safe to issue draw calls that read from `ubo`
+```
+
+On **ReBAR-enabled NVIDIA** (the `DEVICE_LOCAL | HOST_VISIBLE` memory type described in §2), the mapped pointer writes directly to VRAM over PCIe and `HOST_COHERENT_BIT` is set, so no `vkFlushMappedMemoryRanges` is needed. On systems without ReBAR (the `HOST_VISIBLE` GART heap), the same pattern applies — the CPU write goes to system RAM that the GPU reads over PCIe.
+
+On **AMD RADV**, the device-local host-visible heap (the 256 MB or full-VRAM-size `DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT` type) gives the same zero-copy access pattern.
+
+### Specialization Constants: Compile-Time Shader Variants
+
+Specialization constants are values that are fixed at `vkCreateGraphicsPipeline` / `vkCreateComputePipeline` time but can differ between pipeline objects. The key distinction from both push constants and UBOs: they are not runtime values at all — the driver compiles them away into the shader binary, and branches conditioned on them are dead-code-eliminated.
+
+**When to use**: enabling or disabling a shader feature (shadow mapping, skinning, bloom), hard-coding an iteration count the compiler can use for loop unrolling, parameterising a workgroup size that affects register allocation.
+
+**When not to use**: any value that changes between draw calls or frames. Specialization requires recreating the pipeline — that involves running the shader compiler, which is expensive. Pre-warm all pipeline variants at application startup.
+
+```cpp
+// Shader with two specialization constants: shadow map on/off, and PCF sample count
+// HLSL:
+//   [[vk::constant_id(0)]] bool  ENABLE_SHADOWS = true;
+//   [[vk::constant_id(1)]] uint  PCF_SAMPLES    = 4;
+//   if (ENABLE_SHADOWS) { /* shadow lookup loop, unrolled by compiler to PCF_SAMPLES iters */ }
+
+// Create pipeline variant A: shadows enabled, 4 PCF samples
+struct VariantA { uint32_t enableShadows = 1; uint32_t pcfSamples = 4; } varA;
+VkSpecializationMapEntry entries[2]{
+    { .constantID = 0, .offset = 0, .size = 4 },   // ENABLE_SHADOWS
+    { .constantID = 1, .offset = 4, .size = 4 },   // PCF_SAMPLES
+};
+VkSpecializationInfo specA{
+    .mapEntryCount = 2, .pMapEntries = entries,
+    .dataSize = 8,      .pData = &varA,
+};
+// Pipeline A: the shadow lookup branch is compiled in; loop unrolled 4× by NAK/ACO
+VkPipeline pipelineWithShadows;
+createGraphicsPipeline(/* ... stage.pSpecializationInfo = &specA ... */, &pipelineWithShadows);
+
+// Create pipeline variant B: shadows off — branch eliminated, no PCF code in binary
+struct VariantB { uint32_t enableShadows = 0; uint32_t pcfSamples = 0; } varB;
+VkSpecializationInfo specB{ /* ... .pData = &varB ... */ };
+VkPipeline pipelineNoShadows;
+createGraphicsPipeline(/* ... .pSpecializationInfo = &specB ... */, &pipelineNoShadows);
+
+// At render time: select the pre-compiled pipeline, no compiler invocation
+bool shadowsEnabled = settings.shadowQuality > 0;
+vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                  shadowsEnabled ? pipelineWithShadows : pipelineNoShadows);
+```
+
+The shader compiler (NAK for NVK, ACO for RADV) receives NIR where `ENABLE_SHADOWS` is already a compile-time `true` or `false`. Dead-code elimination removes the entire shadow branch in the `pipelineNoShadows` variant. The resulting SASS / GCN binary is shorter and uses fewer registers than an equivalent dynamic branch would, which improves warp occupancy.
+
+### Decision Guide: Which Mechanism to Use
+
+| Criterion | Push Constants | UBO | Specialization Constants |
+|---|---|---|---|
+| Update frequency | Per draw call | Per frame / per pass | Pipeline creation time only |
+| Size limit | 128–256 bytes | Up to `maxUniformBufferRange` (≥64 KB) | Per-constant (typically 4 bytes each) |
+| Requires `VkDescriptorSet` | No | Yes | No |
+| Requires `VkBuffer` | No | Yes | No |
+| Requires CPU→GPU barrier | No | Yes (pipeline barrier) | No |
+| GPU access cost | ~10 cycles (constant cache) | ~10 cycles (constant cache) | Zero (compiled away) |
+| Enables dead-code elimination | No | No | Yes |
+| Can change value at runtime | Yes (per command buffer) | Yes (map + memcpy) | No (new pipeline required) |
+| Example use | Frame time, per-draw index | View-projection matrix, lighting | Shadow enable/disable, workgroup size |
+
+In practice, most applications use all three: specialization constants for shader feature variants compiled at startup, a UBO for per-frame camera and lighting data, and push constants for the per-draw-call scalars that change every draw (object ID, material index, alpha threshold). The three mechanisms are complementary rather than competing.
 
 ---
 
