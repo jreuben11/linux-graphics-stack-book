@@ -784,6 +784,256 @@ nvk_CmdDispatch(VkCommandBuffer commandBuffer,
 
 When the GPU receives the `SEND_SIGNALING_PCAS2_B` method, the Partition-level Compute Arbiter Scheduler (PCAS) reads the QMD from `qmd_addr`, verifies that the requested `REGISTER_COUNT_V` (8) and `SHARED_MEMORY_SIZE` (0) fit within the SM's resource budget, partitions the `groupCountX × groupCountY × groupCountZ` CTA grid across the available SMs, and begins scheduling 32-thread warps. For `vadd` dispatched over 16,384 workgroups of 64 threads each, that is 32,768 warps total — the PCAS distributes these across all active SMs, two warps per CTA block.
 
+### Graphics Shaders: Per-Stage Push Buffer Methods
+
+Unlike compute — where a single 64-byte QMD in VRAM fully describes all shader resource requirements — the graphics pipeline on NVIDIA hardware has no equivalent monolithic descriptor. Each shader stage (vertex, geometry, tessellation, fragment) is configured via inline push buffer method writes to the 3D hardware class (`NV9097` on Maxwell through Ada). The GPU reads these methods from the push buffer ring in order, exactly as it reads any other state-setting command.
+
+The stage index constants used by NVK are: `VERTEX_A=0`, `VERTEX_B=1` (dual-vertex path, rarely used), `TESS_CTRL=2`, `TESS_EVAL=3`, `GEOMETRY=4`, `FRAGMENT=5`. For a simple triangle pipeline with no tessellation or geometry shader, NVK configures stages 0 and 5 and explicitly disables the others.
+
+#### Example: Passthrough Vertex + Solid-Colour Fragment Shader
+
+```hlsl
+// triangle.hlsl — minimal graphics pipeline
+// dxc -T vs_6_0 -E VSMain -spirv triangle.hlsl -Fo triangle_vs.spv
+// dxc -T ps_6_0 -E PSMain -spirv triangle.hlsl -Fo triangle_ps.spv
+
+struct VSIn  { float4 position : POSITION; };
+struct VSOut { float4 sv_pos   : SV_Position; };
+
+VSOut VSMain(VSIn v) {
+    VSOut o;
+    o.sv_pos = v.position;          // passthrough: vertex position → clip-space output
+    return o;
+}
+
+float4 PSMain(VSOut i) : SV_Target0 {
+    return float4(1.0, 0.0, 0.0, 1.0);  // solid red; ignores all interpolated inputs
+}
+```
+
+**NIR after `spirv_to_nir()` — vertex stage**:
+
+```text
+; MESA_SHADER_VERTEX — after spirv_to_nir()
+; load_input / store_output replace the compute-specific load_global_invocation_id
+
+shader: MESA_SHADER_VERTEX
+name: VSMain
+
+decl_var shader_in  INTERP_MODE_NONE vec4 POSITION  (VARYING_SLOT_VAR0,  location=0)
+decl_var shader_out INTERP_MODE_NONE vec4 SV_Position (VARYING_SLOT_POS, builtin)
+
+impl VSMain {
+    block b0:
+    vec4 32 ssa_0 = intrinsic load_input (load_const(0) /*location 0*/) ()
+    ; ^ reads POSITION from the hardware vertex attribute fetcher
+    ; → becomes ALD (Attribute Load) instructions in vertex SASS
+
+    intrinsic store_output (ssa_0, load_const(0) /*VARYING_SLOT_POS*/) ()
+    ; ^ writes gl_Position (SV_Position) to the VS output attribute space
+    ; → becomes AST (Attribute Store) instructions in vertex SASS
+}
+```
+
+**NIR after `spirv_to_nir()` — fragment stage**:
+
+```text
+; MESA_SHADER_FRAGMENT — after spirv_to_nir()
+shader: MESA_SHADER_FRAGMENT
+name: PSMain
+
+decl_var shader_out INTERP_MODE_NONE vec4 SV_Target0 (FRAG_RESULT_DATA0, location=0)
+
+impl PSMain {
+    block b0:
+    vec4 32 ssa_0 = load_const (0x3f800000, 0x00000000, 0x00000000, 0x3f800000)
+    ; ^ (1.0f, 0.0f, 0.0f, 1.0f) — four IEEE 754 float constants
+    intrinsic store_output (ssa_0, load_const(0) /*RT0*/) ()
+    ; ^ writes RGBA to render target 0 output registers
+    ; → MOV R0–R3, constants + EXIT in fragment SASS
+}
+```
+
+**Vertex SASS** (SM75, `nvdisasm` style):
+
+```sass
+; Vertex shader — passthrough float4
+; ALD = Attribute Load from hardware vertex attribute table
+; AST = Attribute Store to VS output interpolant registers
+
+main_vs:
+        /*0000*/           ALD R0, a[0x80] ;   /* load POSITION.x from attr slot 0 */
+        /*0010*/           ALD R1, a[0x84] ;   /* load POSITION.y */
+        /*0020*/           ALD R2, a[0x88] ;   /* load POSITION.z */
+        /*0030*/           ALD R3, a[0x8c] ;   /* load POSITION.w */
+        /*0040*/           AST a[0x80], R0 ;   /* export SV_Position.x to rasteriser */
+        /*0050*/           AST a[0x84], R1 ;
+        /*0060*/           AST a[0x88], R2 ;
+        /*0070*/           AST a[0x8c], R3 ;
+        /*0080*/           EXIT ;
+```
+
+**Fragment SASS** (SM75):
+
+```sass
+; Fragment shader — solid red, constant output
+; R0–R3 are the output registers for RT0 (RGBA); EXIT triggers the ROP write
+
+main_ps:
+        /*0000*/           MOV R0, 0x3f800000 ;   /* R0 = 1.0f  (red)   */
+        /*0010*/           MOV R1, RZ ;            /* R1 = 0.0f  (green) — RZ = register zero */
+        /*0020*/           MOV R2, RZ ;            /* R2 = 0.0f  (blue)  */
+        /*0030*/           MOV R3, 0x3f800000 ;   /* R3 = 1.0f  (alpha) */
+        /*0040*/           EXIT ;
+        ; On EXIT: the ROP reads R0–R3 and writes to render target 0
+```
+
+For the fragment shader, NAK allocates just 4 GPRs (`SHI_REGISTERS=4`) — one per output component. The constant folding pass eliminates intermediate values entirely; the shader is four MOVs and EXIT.
+
+#### Per-Stage Push Buffer Configuration
+
+The graphics shader state methods are emitted into the command buffer push buffer at `vkCmdBindPipeline` time (for static state) or deferred to draw time (for dynamic state). All stages share the same pattern — `SET_PIPELINE_SHADER` (type + enable), `SET_PIPELINE_PROGRAM_ADDRESS_A/B` (64-bit shader binary address), `SET_PIPELINE_REGISTER_COUNT` — but each uses the stage's hardware index.
+
+```c
+/* src/nouveau/vulkan/nvk_cmd_graphics.c — per-stage shader state emission
+ * Called from nvk_flush_gfx_state() before each draw call.
+ * 3D class NV9097 replaces compute class NVC3C0.
+ * Source: https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/nouveau/vulkan/nvk_cmd_graphics.c */
+
+static void
+nvk_emit_graphics_shader_state(struct nvk_cmd_buffer *cmd,
+                                struct push_buffer    *push)
+{
+    const struct nvk_graphics_pipeline *pipeline = cmd->state.gfx.pipeline;
+
+    for (gl_shader_stage stage = MESA_SHADER_VERTEX;
+         stage <= MESA_SHADER_FRAGMENT; stage++) {
+
+        const struct nvk_shader *sh = pipeline->shaders[stage];
+
+        if (!sh) {
+            /* Disable tessellation / geometry for our simple triangle */
+            P_IMMD(push, NV9097, SET_PIPELINE_SHADER(stage),
+                   NVDEF(NV9097, SET_PIPELINE_SHADER, ENABLE, FALSE));
+            continue;
+        }
+
+        /* Enable stage and declare hardware type */
+        P_MTHD(push, NV9097, SET_PIPELINE_SHADER(stage));
+        P_NV9097_SET_PIPELINE_SHADER(push, stage,
+            NVDEF(NV9097, SET_PIPELINE_SHADER, ENABLE, TRUE) |
+            NVVAL(NV9097, SET_PIPELINE_SHADER, TYPE,
+                  nvk_pipeline_shader_type(stage)));
+        /* shader type constants: VERTEX=1, TESS_CTRL=2, TESS_EVAL=3,
+         *                        GEOMETRY=4, PIXEL=5                  */
+
+        /* 64-bit SASS binary address from nvk_heap allocation —
+         * identical mechanism to compute; different register namespace */
+        P_MTHD(push, NV9097, SET_PIPELINE_PROGRAM_ADDRESS_A(stage));
+        P_NV9097_SET_PIPELINE_PROGRAM_ADDRESS_A(push, stage,
+                                                 sh->addr >> 32);
+        P_NV9097_SET_PIPELINE_PROGRAM_ADDRESS_B(push, stage,
+                                                 sh->addr & 0xffffffff);
+
+        /* Register count from NAK:
+         *   vertex passthrough → ~4 GPRs (one float4 in, one float4 out)
+         *   fragment constant  → ~4 GPRs (four output channel registers)   */
+        P_IMMD(push, NV9097, SET_PIPELINE_REGISTER_COUNT(stage),
+               sh->info.num_gprs);
+
+        /* Constant buffer 0 per stage — NVK descriptor table address.
+         * Each stage gets its own cbuf 0; compute used a single NVC3C0 cbuf.  */
+        P_MTHD(push, NV9097, BIND_GROUP_CONSTANT_BUFFER(stage));
+        P_NV9097_BIND_GROUP_CONSTANT_BUFFER(push, stage,
+            NVVAL(NV9097, BIND_GROUP_CONSTANT_BUFFER, VALID,            1) |
+            NVVAL(NV9097, BIND_GROUP_CONSTANT_BUFFER, SHADER_SLOT,      0) |
+            NVVAL(NV9097, BIND_GROUP_CONSTANT_BUFFER, ADDRESS_UPPER_4,
+                  pipeline->cbuf_addr[stage] >> 32) |
+            NVVAL(NV9097, BIND_GROUP_CONSTANT_BUFFER, SIZE_SHIFTED_4,
+                  DIV_ROUND_UP(pipeline->cbuf_size[stage], 16)));
+    }
+}
+```
+
+#### Vertex Input: Attribute Array Configuration
+
+Vertex shaders require two additional pieces of hardware state that compute shaders never need: the vertex attribute format description (how to fetch vertex data from the bound vertex buffer) and the VS→FS varyings linkage (how vertex outputs are routed to fragment inputs by the rasteriser's interpolation hardware).
+
+The vertex attribute array maps `VkVertexInputAttributeDescription` entries to hardware attribute slots. For our single `float4 POSITION` attribute at location 0:
+
+```c
+/* Vertex attribute format — emitted at draw time alongside vertex buffer addresses.
+ * VkVertexInputAttributeDescription { location=0, binding=0, format=R32G32B32A32_SFLOAT, offset=0 } */
+
+P_MTHD(push, NV9097, SET_VERTEX_ATTRIBUTE_A(0 /*attribute index*/));
+P_NV9097_SET_VERTEX_ATTRIBUTE_A(push, 0,
+    NVVAL(NV9097, SET_VERTEX_ATTRIBUTE_A, STREAM,               0) |
+    NVVAL(NV9097, SET_VERTEX_ATTRIBUTE_A, OFFSET,               0) |
+    NVDEF(NV9097, SET_VERTEX_ATTRIBUTE_A, COMPONENT_BIT_WIDTHS, R32_G32_B32_A32) |
+    NVDEF(NV9097, SET_VERTEX_ATTRIBUTE_A, NUMERICAL_TYPE,       FLOAT) |
+    NVDEF(NV9097, SET_VERTEX_ATTRIBUTE_A, SWAP_R_AND_B,         FALSE));
+
+/* Vertex buffer stride and address for binding 0 (vkCmdBindVertexBuffers) */
+P_MTHD(push, NV9097, SET_VERTEX_STREAM_A_FORMAT(0));
+P_NV9097_SET_VERTEX_STREAM_A_FORMAT(push, 0,
+    NVVAL(NV9097, SET_VERTEX_STREAM_A_FORMAT, STRIDE,    16) |   /* sizeof(float4) */
+    NVDEF(NV9097, SET_VERTEX_STREAM_A_FORMAT, ENABLE,    TRUE) |
+    NVDEF(NV9097, SET_VERTEX_STREAM_A_FORMAT, FREQUENCY, PER_VERTEX));
+
+P_MTHD(push, NV9097, SET_VERTEX_STREAM_A_LOCATION_A(0));
+P_NV9097_SET_VERTEX_STREAM_A_LOCATION_A(push, 0, vtx_buf_addr >> 32);
+P_NV9097_SET_VERTEX_STREAM_A_LOCATION_B(push, 0, vtx_buf_addr & 0xffffffff);
+```
+
+#### Shader I/O Linkage: VS Outputs to FS Inputs
+
+NVIDIA's rasteriser interpolates vertex outputs using a per-slot table. For each user-defined varying, NVK emits one `SET_PIPELINE_ATTRIB` method that declares the interpolation mode (perspective-correct, linear, flat, or screen-linear). `SV_Position` is a hardware built-in and does not appear in this table.
+
+NVK determines the per-slot assignments by running `nir_assign_io_var_locations()` at pipeline creation time, which gives each VS output and FS input an identical location index. At runtime, for pipelines that carry user varyings (e.g., a UV coordinate from VS to FS), the push buffer carries:
+
+```c
+/* Varying linkage — one method per active VS output / FS input pair.
+ * Our triangle has no user varyings (only SV_Position, a hardware built-in).
+ * Shown here for a hypothetical float2 UV at location 1: */
+P_IMMD(push, NV9097, SET_PIPELINE_ATTRIB(1 /*location*/),
+    NVDEF(NV9097, SET_PIPELINE_ATTRIB, ATTR,          ACTIVE)        |
+    NVDEF(NV9097, SET_PIPELINE_ATTRIB, INTERPOLATION, PERSPECTIVE)   |
+    NVVAL(NV9097, SET_PIPELINE_ATTRIB, COMPONENT_4,   UV_INDEX));
+```
+
+#### Draw Trigger vs. Compute Dispatch Trigger
+
+After all state is flushed, `vkCmdDraw` or `vkCmdDrawIndexed` writes a single draw-trigger method to the push buffer. For a non-indexed triangle draw:
+
+```c
+/* nvk_CmdDraw() — push buffer draw trigger (compare with NVC3C0 SEND_SIGNALING_PCAS2_B) */
+P_IMMD(push, NV9097, DRAW_VERTEX_ARRAY_BEGIN_END_INSTANCE_FIRST,
+    NVVAL(NV9097, DRAW_VERTEX_ARRAY_BEGIN_END_INSTANCE_FIRST, START_VERTEX,    0)  |
+    NVVAL(NV9097, DRAW_VERTEX_ARRAY_BEGIN_END_INSTANCE_FIRST, VERTEX_COUNT,    3)  |
+    NVVAL(NV9097, DRAW_VERTEX_ARRAY_BEGIN_END_INSTANCE_FIRST, INSTANCE_COUNT,  1)  |
+    NVDEF(NV9097, DRAW_VERTEX_ARRAY_BEGIN_END_INSTANCE_FIRST, TOPOLOGY,        TRIANGLES));
+/* GPU: vertex fetch → VS (ALD/AST) → rasterise → interpolate → FS (MOV + EXIT) → ROP */
+```
+
+#### Comparison: Compute QMD vs. Graphics Push Methods
+
+| Aspect | Compute (QMD in VRAM) | Graphics (inline push methods) |
+|---|---|---|
+| Descriptor location | 64-byte struct at `nvk_heap` vaddr | Inline in push buffer ring; no separate VRAM struct |
+| Shader binary address | `PROGRAM_ADDRESS_LOWER/UPPER` in QMD | `SET_PIPELINE_PROGRAM_ADDRESS_A/B` per stage |
+| Register count | `REGISTER_COUNT_V` in QMD | `SET_PIPELINE_REGISTER_COUNT` per stage |
+| Shared memory | `SHARED_MEMORY_SIZE` in QMD | Not applicable (no shared memory in graphics) |
+| Thread dimensions | `CTA_THREAD_DIMENSION0/1/2` in QMD | Fixed by rasteriser (one thread per covered fragment) |
+| Descriptor cbuf | `CONSTANT_BUFFER_0_ADDR_*` in QMD | `BIND_GROUP_CONSTANT_BUFFER` per stage |
+| Vertex input | Not applicable | `SET_VERTEX_ATTRIBUTE_A`, `SET_VERTEX_STREAM_A_FORMAT/LOCATION` |
+| I/O linkage | Not applicable | `SET_PIPELINE_ATTRIB` per varying slot |
+| Dispatch trigger | `SEND_SIGNALING_PCAS2_B` (PCAS scheduler) | `DRAW_VERTEX_ARRAY_BEGIN_END_INSTANCE_FIRST` (rasteriser) |
+| Who reads the descriptor | GPU PCAS scheduler, reads VRAM QMD | GPU 3D engine, reads push buffer methods directly |
+
+The architectural reason for the asymmetry is that compute dispatch is self-contained — the QMD holds everything the PCAS needs to schedule warps independently, without reference to any other push buffer state — whereas graphics dispatch is pipelined through fixed-function stages (vertex fetcher, rasteriser, interpolator, ROP) whose configuration must be co-ordinated with the shader state and therefore belongs in the same sequential push buffer stream.
+
+---
+
 ### The Disk Shader Cache
 
 NVK integrates with Mesa's `vk_pipeline_cache` from the Vulkan common layer. The cache maps a shader key — computed as the hash of the NIR shader after all frontend passes, combined with the driver version, hardware generation, and any driver-specific compilation flags — to the compiled SASS binary plus metadata (register count, QMD parameters). On a cache hit, the NAK compilation stage is skipped entirely, reducing pipeline creation latency by roughly the time of the NIR-to-binary compilation. Disk cache hit rates are high for repeated application runs with unchanged shaders, and the key includes enough hardware specificity that a cached binary for Turing is not incorrectly used on Ampere.
