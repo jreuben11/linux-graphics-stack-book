@@ -626,7 +626,163 @@ The SASS binary for this shader is 304 bytes (19 instructions × 16 bytes). NVK 
 
 After NAK produces the SASS binary, NVK must upload it to VRAM and make it accessible to the GPU. Shader binaries are allocated from the `nvk_heap` suballocator in a region of VRAM flagged as executable. The virtual address of the binary is recorded in the pipeline object and referenced in the pipeline's push buffer methods at dispatch time.
 
-For compute shaders, NVK must also construct a QMD (Queue MetaData) descriptor: a 64-byte hardware structure that describes the compute shader's resource requirements to the GPU's compute dispatch engine. The QMD encodes the thread block dimensions, the number of registers per thread (from NAK's register allocation result), the shared memory size (from NIR's shared memory declarations), and the virtual address of the shader binary. The GPU's compute engine reads the QMD to set up warp state before launching the first thread block. Graphics shaders use an analogous descriptor format specific to each shader stage (vertex, tessellation, geometry, fragment).
+For compute shaders, NVK must also construct a **QMD (Queue MetaData)** descriptor: a 64-byte (16 × uint32_t) hardware structure that the GPU's compute dispatch engine reads before launching any warps. The QMD encodes the thread block dimensions, the number of GPRs per thread (from NAK's register allocation result), the shared memory size (from NIR's `shared_size`), the per-thread local memory spill area size, the number of barriers, and the 64-bit GPU virtual address of the SASS binary. Graphics shaders use a different per-stage descriptor format; the QMD is compute-specific.
+
+The QMD format is generation-specific. Turing uses **QMD version 2.03** (`NVC3C0_QMDV02_03`), Ampere version 3.00 (`NVA0C0_QMDV03_00`), and so on. NVK selects the right format at physical device initialisation time and uses the corresponding macro set from the `open-gpu-doc` class headers in `src/nouveau/headers/`.
+
+```mermaid
+graph LR
+    NAK["nak_compile_shader()\n→ SASS binary\n→ register_count = 8\n→ smem_size = 0"]
+    heap["nvk_heap\n(VRAM, executable)\nshader_addr = 0x..."]
+    QMD["QMD (64 bytes in VRAM)\nPROGRAM_ADDRESS_LOWER/UPPER\nCTA_THREAD_DIMENSION0 = 64\nREGISTER_COUNT_V = 8\nSHARED_MEMORY_SIZE = 0\nCONSTANT_BUFFER_0_ADDR_*"]
+    pbuf["Push buffer\nNVC3C0_LAUNCH_DMA\n+ GRID_LAUNCH"]
+    GPU["GPU compute engine\nreads QMD → sets up warps\nlaunches 64-thread blocks"]
+
+    NAK --> heap
+    NAK -- "num_gprs, smem_size\nnum_barriers" --> QMD
+    heap -- "shader_addr" --> QMD
+    QMD --> pbuf
+    pbuf --> GPU
+```
+
+#### QMD Construction for the `vadd` Shader
+
+Continuing the worked example from the previous section: after NAK allocates 8 GPRs and produces the SASS binary at some GPU virtual address `shader_addr`, NVK fills the QMD as follows. The field names come from `src/nouveau/headers/nvidia/classes/clc3c0qmd.h` (Turing), which is part of the `open-gpu-doc` material NVK imports.
+
+```c
+/* src/nouveau/vulkan/nvk_compute_pipeline.c — QMD construction (Turing / NVC3C0)
+ * Called from nvk_compute_pipeline_create() after nak_compile_shader() returns.
+ * Source: https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/nouveau/vulkan/nvk_compute_pipeline.c */
+
+static void
+nvk_fill_compute_qmd_turing(struct nvk_device *dev,
+                             const struct nvk_shader *shader,
+                             uint64_t shader_addr,   /* GPU vaddr from nvk_heap */
+                             uint64_t cbuf_addr,     /* descriptor constant buffer vaddr */
+                             uint32_t cbuf_size,     /* size of cbuf in bytes */
+                             uint32_t qmd[16])       /* 64-byte output */
+{
+    memset(qmd, 0, 64);
+
+    /* QMD version selects the hardware format */
+    NVC3C0_QMDV02_03_DEF_SET(qmd, QMD_TYPE,    COMPUTE);
+    NVC3C0_QMDV02_03_DEF_SET(qmd, QMD_VERSION, V02_03);
+
+    /* Thread block (CTA) dimensions from HLSL [numthreads(64,1,1)]
+     * which became OpExecutionMode LocalSize 64 1 1 in SPIR-V
+     * and is carried through NIR as shader->info.cs.local_size[] */
+    NVC3C0_QMDV02_03_VAL_SET(qmd, CTA_THREAD_DIMENSION0,
+                              shader->info.cs.local_size[0]);  /* 64 */
+    NVC3C0_QMDV02_03_VAL_SET(qmd, CTA_THREAD_DIMENSION1,
+                              shader->info.cs.local_size[1]);  /* 1  */
+    NVC3C0_QMDV02_03_VAL_SET(qmd, CTA_THREAD_DIMENSION2,
+                              shader->info.cs.local_size[2]);  /* 1  */
+
+    /* Register count from NAK register allocation.
+     * vadd shader: 8 GPRs → warp occupancy = floor(65536 / (8 * 32)) = 256 warps/SM.
+     * A shader allocating 32 GPRs would halve this to 64 warps/SM. */
+    NVC3C0_QMDV02_03_VAL_SET(qmd, REGISTER_COUNT_V,
+                              shader->info.num_gprs);          /* 8 */
+
+    /* Shared memory (groupshared in HLSL) declared in the shader.
+     * vadd uses no groupshared → 0. Non-zero for reduction kernels etc.
+     * Hardware rounds up to 256-byte granularity. */
+    NVC3C0_QMDV02_03_VAL_SET(qmd, SHARED_MEMORY_SIZE,
+                              ALIGN(shader->info.cs.smem_size, 256)); /* 0 */
+
+    /* Per-thread local memory — register spill area on SM75.
+     * Non-zero only when NAK could not fit the shader into REGISTER_COUNT_V GPRs
+     * and spilled some values to per-thread VRAM. vadd does not spill. */
+    NVC3C0_QMDV02_03_VAL_SET(qmd, SHADER_LOCAL_MEMORY_LOW_SIZE,
+                              ALIGN(shader->info.slm_size, 0x10));    /* 0 */
+
+    /* Barrier count: GroupMemoryBarrierWithGroupSync() calls in HLSL → __syncthreads() in CUDA.
+     * vadd has no synchronisation → 0. */
+    NVC3C0_QMDV02_03_VAL_SET(qmd, BARRIER_COUNT,
+                              shader->info.num_barriers);      /* 0 */
+
+    /* SASS binary GPU virtual address — split into two 32-bit halves.
+     * Points into the nvk_heap slab allocated earlier. */
+    NVC3C0_QMDV02_03_VAL_SET(qmd, PROGRAM_ADDRESS_LOWER,
+                              (uint32_t)(shader_addr & 0xffffffff));
+    NVC3C0_QMDV02_03_VAL_SET(qmd, PROGRAM_ADDRESS_UPPER,
+                              (uint32_t)(shader_addr >> 32));
+
+    /* Constant buffer 0 — NVK's descriptor table, holding the three 64-bit buffer
+     * addresses that nvk_lower_nir() emitted load_ubo intrinsics for.
+     * cbuf 0 is the NVK convention for the descriptor table cbuf. */
+    NVC3C0_QMDV02_03_VAL_SET(qmd, CONSTANT_BUFFER_VALID, 1u << 0);
+    NVC3C0_QMDV02_03_VAL_SET(qmd, CONSTANT_BUFFER_0_ADDR_LOWER,
+                              (uint32_t)(cbuf_addr & 0xffffffff));
+    NVC3C0_QMDV02_03_VAL_SET(qmd, CONSTANT_BUFFER_0_ADDR_UPPER,
+                              (uint32_t)(cbuf_addr >> 32));
+    NVC3C0_QMDV02_03_VAL_SET(qmd, CONSTANT_BUFFER_0_SIZE_SHIFTED_4,
+                              DIV_ROUND_UP(cbuf_size, 16));
+    /* cbuf_size for vadd: 3 descriptors × 8 bytes = 24 bytes → SIZE_SHIFTED_4 = 2 */
+}
+```
+
+The filled QMD for the `vadd` shader (pseudo-hexdump of the 64-byte layout):
+
+```text
+; QMD word layout for vadd on Turing (NVC3C0_QMDV02_03)
+; Each row = one uint32_t word; bit fields shown symbolically
+
+Word  0: [ QMD_VERSION=2 | QMD_TYPE=COMPUTE | ... ]
+Word  1: [ CTA_THREAD_DIMENSION0=64 | CTA_THREAD_DIMENSION1=1 ]
+Word  2: [ CTA_THREAD_DIMENSION2=1  | REGISTER_COUNT_V=8 | BARRIER_COUNT=0 ]
+Word  3: [ SHARED_MEMORY_SIZE=0 | SHADER_LOCAL_MEMORY_LOW_SIZE=0 ]
+Word  4: [ PROGRAM_ADDRESS_LOWER = shader_addr[31:0]  ]
+Word  5: [ PROGRAM_ADDRESS_UPPER = shader_addr[63:32] ]
+Word  6: [ CONSTANT_BUFFER_VALID = 0x1 (cbuf 0 active) ]
+Word  7: [ CONSTANT_BUFFER_0_ADDR_LOWER = cbuf_addr[31:0]  ]
+Word  8: [ CONSTANT_BUFFER_0_ADDR_UPPER = cbuf_addr[63:32] ]
+Word  9: [ CONSTANT_BUFFER_0_SIZE_SHIFTED_4 = 2 (= 24 bytes / 16, rounded up) ]
+Words 10–15: [ reserved / zero ]
+```
+
+#### Dispatch: Writing the QMD Address to the Push Buffer
+
+The QMD itself lives in a `nvk_heap` VRAM allocation. At `vkCmdDispatch(commandBuffer, groupCountX, groupCountY, groupCountZ)` time, NVK writes a sequence of GPU methods into the command buffer's push buffer that (1) sets the QMD GPU virtual address on the compute class, (2) encodes the dispatch grid dimensions, and (3) triggers the launch. On Turing the compute class is `NVC3C0`:
+
+```c
+/* src/nouveau/vulkan/nvk_cmd_compute.c — vkCmdDispatch implementation (Turing)
+ * push buffer method writes that trigger the compute dispatch */
+
+void
+nvk_CmdDispatch(VkCommandBuffer commandBuffer,
+                uint32_t groupCountX,
+                uint32_t groupCountY,
+                uint32_t groupCountZ)
+{
+    struct nvk_cmd_buffer *cmd = ...;
+    struct nvk_compute_pipeline *pipeline = cmd->state.cs.pipeline;
+    uint64_t qmd_addr = pipeline->qmd_addr;   /* GPU vaddr of the filled QMD */
+
+    /* Set the QMD address on the compute engine.
+     * The GPU reads the full 64-byte QMD from this address before launching. */
+    P_MTHD(push, NVC3C0, SET_OBJECT);
+        P_NVC3C0_SET_OBJECT(push, pipeline->compute_class); /* NVC3C0 for Turing */
+
+    P_MTHD(push, NVC3C0, LAUNCH_DESC_ADDRESS_UPPER);
+        P_NVC3C0_LAUNCH_DESC_ADDRESS_UPPER(push, qmd_addr >> 32);
+        P_NVC3C0_LAUNCH_DESC_ADDRESS_LOWER(push, qmd_addr & ~0xffULL);
+
+    /* Encode the dispatch grid dimensions inline in the push buffer.
+     * For vkCmdDispatch(16384, 1, 1) with workgroup_size=64:
+     *   total threads = 16384 * 64 = 1,048,576  */
+    P_MTHD(push, NVC3C0, SEND_PCAS_A);
+        P_NVC3C0_SEND_PCAS_A(push, qmd_addr >> 8); /* QMD addr, 256-byte aligned */
+
+    P_IMMD(push, NVC3C0, SEND_SIGNALING_PCAS2_B,
+           NVDEF(NVC3C0, SEND_SIGNALING_PCAS2_B, INVALIDATE, TRUE) |
+           NVDEF(NVC3C0, SEND_SIGNALING_PCAS2_B, SCHEDULE, TRUE));
+    /* ^ The GPU scheduler is now signalled: it reads the QMD, validates register
+     *   count and shared memory against SM resources, and begins issuing warps. */
+}
+```
+
+When the GPU receives the `SEND_SIGNALING_PCAS2_B` method, the Partition-level Compute Arbiter Scheduler (PCAS) reads the QMD from `qmd_addr`, verifies that the requested `REGISTER_COUNT_V` (8) and `SHARED_MEMORY_SIZE` (0) fit within the SM's resource budget, partitions the `groupCountX × groupCountY × groupCountZ` CTA grid across the available SMs, and begins scheduling 32-thread warps. For `vadd` dispatched over 16,384 workgroups of 64 threads each, that is 32,768 warps total — the PCAS distributes these across all active SMs, two warps per CTA block.
 
 ### The Disk Shader Cache
 
