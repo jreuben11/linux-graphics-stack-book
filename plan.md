@@ -203,6 +203,7 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 152: The Rust GPU Ecosystem: ash, wgpu, naga, and Bevy](#chapter-152-the-rust-gpu-ecosystem-ash-wgpu-naga-and-bevy) *(Part VII)*
   - [Chapter 153: OBS Studio GPU Pipeline: Capture, Encode, and Stream](#chapter-153-obs-studio-gpu-pipeline-capture-encode-and-stream) *(Part IX)*
   - [Chapter 154: GPU-Driven Rendering: Indirect Draw, Culling, and Mesh Shaders](#chapter-154-gpu-driven-rendering-indirect-draw-culling-and-mesh-shaders) *(Part VII)*
+  - [Chapter 192: GPU-Generated Commands — VK\_EXT\_device\_generated\_commands and Work Graphs](#chapter-192-gpu-generated-commands--vk_ext_device_generated_commands-and-work-graphs) *(Part VII)*
   - [Chapter 155: USB DisplayLink and the evdi Virtual DRM Driver](#chapter-155-usb-displaylink-and-the-evdi-virtual-drm-driver) *(Part II)*
   - [Chapter 156: Mesa Nine: The Direct3D 9 State Tracker for Gallium](#chapter-156-mesa-nine-the-direct3d-9-state-tracker-for-gallium) *(Part IV)*
   - [Chapter 157: Vulkan Descriptor Binding: Sets, Push Descriptors, and Descriptor Buffers](#chapter-157-vulkan-descriptor-binding-sets-push-descriptors-and-descriptor-buffers) *(Part VII)*
@@ -466,6 +467,21 @@ Chapters signal which perspective is emphasised where they diverge.
 - Use cases: CI without GPU hardware, CI conformance, Wayland compositor fallback, driver bringup
 - Performance characteristics and known limitations of each
 - **Integrations**: llvmpipe and Lavapipe consume NIR via LLVM (Ch14); they are primary targets for dEQP and piglit in headless CI (Ch31); Wayland compositors (Ch21, Ch22) fall back to llvmpipe when no GPU KMS backend is available; Zink sits above the Vulkan driver layer (Ch18) and beneath the Gallium OpenGL state tracker (Ch13)
+
+### Chapter 192: GPU-Generated Commands — VK_EXT_device_generated_commands and Work Graphs *(Part VII)*
+- History: from `VK_NV_device_generated_commands` (NVIDIA-only) to the multi-vendor EXT; design goals (remove last CPU bottleneck in GPU-driven scenes)
+- `VkIndirectCommandsLayoutEXT`: token sequence design, token types, `indirectStride`, dispatch-token constraint
+- `VkIndirectExecutionSetEXT`: pipeline-mode and shader-object-mode IES; GPU-side pipeline/shader selection by index; update functions
+- All `VK_INDIRECT_COMMANDS_TOKEN_TYPE_*` values: EXECUTION_SET, PUSH_CONSTANT, INDEX_BUFFER, VERTEX_BUFFER, DRAW_INDEXED, DRAW_MESH_TASKS, DISPATCH, TRACE_RAYS2
+- `VkIndirectCommandsInputModeFlagBitsEXT`: VULKAN vs DXGI index buffer format (VKD3D-Proton binary-compat path)
+- Scratch memory: `vkGetGeneratedCommandsMemoryRequirementsEXT`, `VK_BUFFER_USAGE_2_PREPROCESS_BIT_EXT`, 32-bit address constraint on AMD
+- Two-phase model: inline execution vs explicit preprocess; `stateCommandBuffer` argument; async compute overlap; `COMMAND_PREPROCESS_BIT_EXT` barrier stage
+- Complete worked example: 64,000-instance GPU-driven multi-material scene, GPU culling compute → DGC sequence records → `vkCmdExecuteGeneratedCommandsEXT`
+- RADV implementation (`src/amd/vulkan/radv_dgc.c`): JIT NIR compute shader `meta_dgc_prepare`; scratch buffer sub-region layout; IB chaining for >65536 sequences; ACE parallel stream for mesh/task
+- VKD3D-Proton: `ExecuteIndirect` batching (four DGC modes, v3.0.1 coalescing); Halo Infinite/Starfield/Crimson Desert gains; Work Graphs level-by-level emulation without `VK_AMDX_shader_enqueue`
+- `VK_AMDX_shader_enqueue`: GPU-native work graphs, `OpEnqueueNodePayloadsAMDX`, `vkCreateExecutionGraphPipelinesAMDX`; comparison with DGC; `VK_KHR_work_graphs` standardisation status
+- Performance guide: when DGC wins (deep material diversity, variable-count draws, preprocessing overlap) and when it doesn't (few pipelines, stable draw lists, compute-only)
+- **Integrations**: Ch154 (GPU-driven rendering — the motivating pattern), Ch173 (`VK_EXT_shader_object` + IES shader mode), Ch127 (mesh shaders + DRAW_MESH_TASKS token), Ch157 (descriptor heap co-design), Ch104 (VKD3D-Proton ExecuteIndirect), Ch143 (RADV internals — `radv_dgc.c`), Ch135 (ray tracing — TRACE_RAYS2 token), Ch28 (D3D12 Work Graphs status), Ch31 (dEQP-VK.device_generated_commands.*)
 
 ### Chapter 159: The Vulkan–Mesa–DRM Stack: A Full Vertical Slice
 - Vulkan loader: ICD discovery via JSON manifests, dispatch table construction, implicit/explicit layers
