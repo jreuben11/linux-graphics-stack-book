@@ -21,6 +21,7 @@
 - [9. Rust in Mesa: FFI Boundaries, Bindgen, and Meson](#9-rust-in-mesa-ffi-boundaries-bindgen-and-meson)
 - [10. NVK Integration: nak\_compile\_shader() in the Pipeline Path](#10-nvk-integration-nak_compile_shader-in-the-pipeline-path)
 - [11. Current Status and Roadmap](#11-current-status-and-roadmap)
+- [12. NAK and KRAID: Rust Mesa Backend Comparison](#12-nak-and-kraid-rust-mesa-backend-comparison)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -934,6 +935,103 @@ Whether Rust will expand beyond NAK inside Mesa is not yet settled, but the evid
 - **Rust compiler backend as Mesa standard pattern**: With NAK (NVK) and KRAID (Mali) both established, new Mesa driver backends for future GPU architectures may default to Rust rather than C++. The design patterns NAK established — SSA-throughout IR, `Src` enum operands, NIR as the sole input, `bindgen`-generated FFI boundary — are expected to become de facto norms for Mesa compiler backends. [Source](https://www.phoronix.com/news/Mesa-Arm-Mali-KRAID)
 - **NAK-based CUDA path without proprietary toolchain**: The Tinygrad precedent opens a longer-term possibility of a more general CUDA-compatible compute path using NAK as the backend, bypassing NVPTX and the CUDA SDK entirely. This would require significant NAK extension to cover PTX semantics not currently reachable from NIR. Note: needs verification as a formally stated project goal.
 - **Cooperative matrix and tensor core performance parity**: NAK's cooperative matrix support reached within 90% of the proprietary compiler on sm86/sm89 at XDC 2025. Long-term work aims to close the remaining gap through improved warp-level scheduling, better WGMMA layout optimization, and potential NVIDIA-provided documentation improvements. [Source](https://indico.freedesktop.org/event/10/contributions/401/attachments/264/352/2025-09-29%20-%20XDC%202025%20-%20Nouveau%20NVK%20Update.pdf)
+
+---
+
+## 12. NAK and KRAID: Rust Mesa Backend Comparison
+
+NAK and KRAID are the two production Rust GPU compiler backends in Mesa as of mid-2026. NAK targets NVIDIA GPUs (sm50–sm100+) from the NVK Vulkan driver. KRAID targets ARM Mali v9+ (Valhall and 5th-generation architectures) from the Panfrost Gallium and PanVK Vulkan drivers. Both are NIR-consuming backends written in Rust with bindgen FFI boundaries to Mesa's C infrastructure. Beyond that, they share architectural decisions but not code — understanding what is shared and what diverges reveals which parts of a Rust Mesa compiler backend are truly universal and which are ISA-specific.
+
+### The Template Relationship
+
+KRAID explicitly modeled its architecture on NAK. The Phoronix announcement described KRAID as "developed in a similar fashion to NAK." [Source](https://www.phoronix.com/news/Mesa-Arm-Mali-KRAID) The key decisions NAK established that KRAID adopted verbatim:
+
+**NIR as sole IR input.** Both compilers accept NIR and nothing else. Neither has a TGSI path, neither accepts SPIR-V directly, and neither has a legacy IR compatibility shim. This constraint eliminates an entire category of maintenance burden: there is no two-path divergence between "SPIR-V-originated shaders" and "legacy-API shaders" inside the compiler. The NIR optimization passes run once, on both paths, before either backend sees anything.
+
+**Read-only bindgen FFI boundary.** Both compilers generate their Rust bindings via `bindgen` from NIR C headers at build time. Both treat the resulting bindings as read-only: the Rust compiler reads NIR structs but does not write back to them. NIR lowering and mutation happens entirely in C before the hand-off. This is the design choice that keeps the FFI surface minimal and prevents the borrow checker from needing to model C mutation aliasing.
+
+**SSA-throughout until register allocation.** Both compilers maintain SSA form from the entry point to the register allocator. Instructions reference `SSAValue` operands (or KRAID's equivalent), and phi functions at control flow join points are explicit in the IR. The register allocator is the sole SSA-exit point. This is in contrast to legacy backends like `nv50_ir` that left SSA form mid-pipeline.
+
+**Src enum operand model.** Both compilers use a Rust enum to represent instruction source operands, where each variant captures a distinct operand source type:
+
+```rust
+// NAK (src/nouveau/compiler/nak/ir.rs)
+pub enum SrcRef {
+    Zero,
+    True,
+    False,
+    Imm32(u32),
+    CBuf(CBufRef),
+    SSA(SSARef),
+    Reg(RegRef),
+}
+
+// KRAID (src/panfrost/compiler/kraid/ir.rs — structural equivalent)
+pub enum Src {
+    SSA(SSAValue),
+    Reg(Register),
+    Imm(ImmValue),
+    Uniform(UniformRef),
+}
+```
+
+The specific variants differ (NAK has `CBuf` for NVIDIA's constant buffer; KRAID has `Uniform` for Mali's uniform registers; KRAID lacks `Zero`/`True`/`False` as dedicated NAK variants because Valhall encodes those differently), but the structural choice — a discriminated union that makes operand type errors a compile-time failure — is identical.
+
+**Meson Rust build system integration.** Both compilers integrate as Meson subprojects using `rust.static_library()` targets, `bindgen` invocations in `meson.build`, `proc-macro` subprojects for derive macros, and `rust-version` enforcement in `Cargo.toml`. The Meson integration pattern for a Rust GPU compiler in Mesa was established by NAK and reproduced by KRAID without significant variation.
+
+**dEQP CTS as the correctness gate.** Both compilers use `deqp-runner` against `dEQP-VK` (and for KRAID, `dEQP-GLES` for the Panfrost Gallium path) as their primary correctness validation. NAK's XDC 2023 status presentation used raw dEQP pass/fail counts as its progress metric; KRAID's merge was gated on the same criterion.
+
+### What Is Not Shared
+
+Despite the architectural commonality, NAK and KRAID share zero production code. Every IR type, every ISA encoder, every register allocator implementation is written independently. The reasons are ISA-specific constraints that prevent code reuse at the concrete type level:
+
+**Instruction encoding.** NAK emits NVIDIA SASS (Streaming ASSembly). For sm50–sm70, SASS uses 64-bit instruction words; for sm70+, it uses 128-bit words (64-bit instruction + 64-bit scheduling control inline). Valhall uses a fixed 64-bit instruction word format with a distinct field layout from any NVIDIA encoding. There is no abstraction layer at which a single `encode()` function could handle both ISAs; the bit layouts share no structure.
+
+**Register file model.** NVIDIA's register file (from Turing onward) has two distinct sub-files: GPRs (general-purpose, warp-divergent) and UGPRs (uniform GPRs, warp-convergent, UR0–UR62). NAK's register allocator must distinguish between these two classes and choose allocation targets based on divergence analysis results. Valhall does not have an analogous uniform register file concept; its scalar pipeline works differently, and KRAID's allocator has no `Uniform` register class concept that maps to UGPR allocation.
+
+**NIR preconditions.** The C-side NIR passes required before each backend differ. NAK requires `nir_lower_phis_to_scalar` (all vectors to 32-bit scalars), `nir_lower_bool_to_int32` (no i1 types), `nir_lower_vars_to_ssa` (no variable storage nodes), `nir_convert_to_lcssa` (loop-closed SSA for uniform instruction analysis), and `nir_lower_io` (I/O variables to load_input/store_output intrinsics). KRAID requires a different set matching Valhall's I/O model, native 16-bit type support (Valhall has hardware fp16/int16 arithmetic that NAK's NVIDIA targets do not uniformly have), and Valhall's distinct memory access model.
+
+**Native 16-bit types.** Valhall has first-class fp16 and int16 arithmetic in its execution units. NAK's NVIDIA targets are more heterogeneous: Maxwell/Pascal have fp16 via `HADD2`/`HMUL2` packed instructions; Turing+ have independent fp16 datapath; Hopper has further tensor-core specialization. This means KRAID does not require `nir_lower_fp16_to_fp32` as a precondition for most Valhall targets, while NAK applies it selectively based on SM version.
+
+The following table summarises the comparison:
+
+| Dimension | NAK | KRAID |
+|-----------|-----|-------|
+| ISA target | NVIDIA SASS (sm50–sm100+) | ARM Valhall v9+ |
+| Instruction word width | 64-bit (pre-sm70) / 128-bit (sm70+) | 64-bit |
+| Register file model | GPR + UGPR (Turing+) | Valhall scalar pipeline |
+| Native 16-bit types | Heterogeneous by SM | First-class fp16/int16 |
+| NIR preconditions | Scalar, no-bool, LCSSA, lower-io | Different set, 16-bit-aware |
+| SSA-throughout | Yes | Yes |
+| Src enum operand model | Yes (SrcRef) | Yes (structural equivalent) |
+| Bindgen FFI | Yes, read-only | Yes, read-only |
+| NIR-only input | Yes | Yes |
+| Meson Rust integration | Yes | Yes |
+| Shared production code | None | None |
+
+### The Case for a Shared Infrastructure Crate
+
+Given that NAK and KRAID share design patterns but no code, the natural next step is factoring the shared patterns into a common Rust crate. The Mesa roadmap (§11 above) identifies this as a medium-term work item: "shared Rust infrastructure — register allocator abstractions, NIR lowering helpers, Meson build patterns — is expected to be factored into a common crate." [Source](https://www.phoronix.com/news/Mesa-Arm-Mali-KRAID)
+
+The candidate shared crate would cover:
+
+```
+mesa_compiler_rs/           (proposed crate — not yet landed, mid-2026)
+├── src/
+│   ├── nir_bindings/       bindgen NIR type bindings (shared between NAK/KRAID)
+│   ├── ssa/                SSAValue, phi placement utilities
+│   ├── liveness/           liveness analysis algorithms, register pressure calc
+│   ├── live_range/         live range representation (split, merge, interference graph)
+│   └── build/              shared meson.build fragments, bindgen helpers
+```
+
+This is architecturally straightforward because neither NAK nor KRAID's IR types would live in the shared crate — only the algorithms that operate on abstract SSA and liveness representations. The boundary is clean: anything that references a specific instruction or register type stays in the per-backend crate; anything that operates on `dyn SSAValue + Ord + Hash` or similar abstract traits could live in the shared crate.
+
+As of mid-2026 this crate does not exist. The two compilers duplicate their liveness analysis and register pressure estimation independently. With a third Rust Mesa compiler backend — or significant growth in the current two — the duplication cost would likely motivate the consolidation.
+
+### Why the Pattern Will Replicate
+
+NAK and KRAID together constitute a demonstration that the NIR-only, read-only-FFI, SSA-throughout design is not NVIDIA-specific. Valhall is a different ISA family, a different vendor, a different driver team. The architectural choices that made NAK work for NVIDIA transfer cleanly to ARM. The Mesa community now has two data points — three if the Asahi AGX Rust compiler is counted, which shares the same broad design — that validate the pattern independently. For the next Mesa GPU compiler backend (whatever GPU architecture that targets), the choice of starting point is clear: the NAK/KRAID template is the standard, not an NVIDIA-specific quirk.
 
 ---
 
