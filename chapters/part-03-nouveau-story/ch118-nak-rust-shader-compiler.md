@@ -270,13 +270,99 @@ The NIR library (`src/compiler/nir/`) is consumed by every Mesa driver: RADV, AN
 **4. The C passes establish hard preconditions for NAK's IR.**
 NAK's IR has non-negotiable invariants that `from_nir.rs` relies on unconditionally. If any of these were violated on entry, `from_nir.rs` would either crash or require defensive code that would complicate every path through the translator:
 
-| C pass | NAK IR invariant it enforces |
-|---|---|
-| `nir_lower_phis_to_scalar` | Every `SSAValue` is exactly 32 bits. Vector phi nodes have no representation in NAK. |
-| `nir_lower_bool_to_int32` | NVIDIA hardware has no 1-bit register file. An `i1` NIR value has no valid NAK type. |
-| `nir_lower_vars_to_ssa` | NAK has no concept of variable storage — only SSA values and memory intrinsics. Variable-access NIR instructions are unhandled in `from_nir.rs`. |
-| `nir_convert_to_lcssa` | `opt_uniform_instrs` requires Loop-Closed SSA form. It is a structural precondition, not an optimization that can gracefully degrade. |
-| `nir_lower_io` | I/O variables must already be lowered to `load_input`/`store_output` intrinsics; `from_nir.rs` does not handle `nir_var_shader_in`/`nir_var_shader_out` variable accesses directly. |
+**`nir_lower_phis_to_scalar`** — NAK's `SSAValue` is always exactly 32 bits, matching NVIDIA's physical GPR granularity. NIR can represent vec2/vec3/vec4 phi nodes; NAK has no such type.
+
+```nir
+; BEFORE nir_lower_phis_to_scalar — vec2 phi (illegal for NAK)
+%res = phi vec2 [ %a, %loop_body ], [ vec2(0.0, 0.0), %entry ]
+fadd vec2 %out, %res, vec2(1.0, 1.0)
+
+; AFTER nir_lower_phis_to_scalar — two scalar phis (NAK-legal)
+%res.x = phi float [ %a.x, %loop_body ], [ 0.0, %entry ]
+%res.y = phi float [ %a.y, %loop_body ], [ 0.0, %entry ]
+fadd float %out.x, %res.x, 1.0
+fadd float %out.y, %res.y, 1.0
+```
+
+`from_nir.rs` maps each 32-bit scalar phi source to one `SSAValue`. A vec2 phi would require emitting two `SSAValue`s for a single `nir_phi_instr` source — the translator has no such path.
+
+---
+
+**`nir_lower_bool_to_int32`** — NVIDIA's register file has no 1-bit type. The NIR `i1` (boolean) type arises from comparisons (`nir_op_flt`, `nir_op_ieq`) and logical operations.
+
+```nir
+; BEFORE nir_lower_bool_to_int32 — i1 result, i1 phi
+%cond  = flt  i1  %a, %b          ; produces 1-bit boolean
+%mask  = iand i1  %cond, %flag
+%sel   = phi  i1  [ %mask, %bb1 ], [ false, %entry ]
+
+; AFTER nir_lower_bool_to_int32 — all i32
+%cond  = flt  i32  %a, %b         ; NVIDIA FSETP → 0x00000000 or 0xFFFFFFFF
+%mask  = iand i32  %cond, %flag32
+%sel   = phi  i32  [ %mask, %bb1 ], [ 0, %entry ]
+```
+
+On NVIDIA hardware, FSETP and ISETP write a 1-bit predicate register (`PR`), not a GPR. NAK handles predicate-register allocation separately in `assign_regs.rs`; booleans that survive to phi nodes must be widened to GPR-representable `i32` first so they can cross basic block boundaries through the standard phi mechanism.
+
+---
+
+**`nir_lower_vars_to_ssa`** — NAK has no concept of addressable variable storage. NIR variables (`nir_variable`) with `nir_var_function_temp` storage class are used like stack slots in TGSI-era code: written with `nir_intrinsic_store_var`, read with `nir_intrinsic_load_var`.
+
+```nir
+; BEFORE nir_lower_vars_to_ssa — variable accesses
+decl_var temp float %tmp
+store_var %tmp, %computed_value     ; nir_intrinsic_store_var
+...
+%result = load_var %tmp             ; nir_intrinsic_load_var
+
+; AFTER nir_lower_vars_to_ssa — SSA def/use, no storage
+; (variable eliminated; uses replaced with def directly)
+%result = ... %computed_value ...   ; phi inserted at join points if needed
+```
+
+`from_nir.rs` handles `nir_instr_type_intrinsic` by matching on `nir_intrinsic_op`. `load_var` and `store_var` are not in its match table — they are not reachable after `nir_lower_vars_to_ssa` runs, and NAK does not need to handle them.
+
+---
+
+**`nir_convert_to_lcssa`** — Loop-Closed SSA form requires that every value defined inside a loop and used outside it is mediated by a phi node at the loop exit. This is not about correctness of code generation — it is a precondition for NAK's `opt_uniform_instrs` pass (sm75+), which promotes uniform values from the per-thread GPR file to the per-warp uniform register file (UGPR).
+
+```nir
+; BEFORE nir_convert_to_lcssa — value %v escapes loop without phi
+loop {
+  %v = fadd %acc, 1.0     ; defined inside loop
+}
+%result = fmul %v, 2.0    ; used outside: no phi at exit
+
+; AFTER nir_convert_to_lcssa — exit phi inserted
+loop {
+  %v = fadd %acc, 1.0
+}
+%v_lcssa = phi [ %v, %loop_exit ]  ; LCSSA phi at loop exit
+%result  = fmul %v_lcssa, 2.0
+```
+
+`opt_uniform_instrs` analyses which values are uniform across an entire warp (i.e., all 32 threads compute the same value). A value defined inside a loop may be uniform across the loop iteration but diverge across loop iterations. LCSSA form makes loop-exit values explicitly visible as phi nodes, allowing the uniformity analysis to reason about them without tracing back into the loop body.
+
+---
+
+**`nir_lower_io`** — Shader I/O (vertex attributes, varying outputs, fragment inputs) is represented in NIR as variable loads and stores on `nir_var_shader_in`/`nir_var_shader_out` variables. `nir_lower_io` replaces these with explicit `load_input`/`store_output` intrinsics carrying a driver-determined base offset and component index.
+
+```nir
+; BEFORE nir_lower_io — I/O variable access
+decl_var shader_in  vec4 %gl_Position   @location(0)
+decl_var shader_out vec4 %fragColour    @location(0)
+%pos = load_var %gl_Position            ; nir_intrinsic_load_var
+store_var %fragColour, %colour_value
+
+; AFTER nir_lower_io — intrinsic with explicit slot/component
+%pos.x = load_input float  base=0 component=0   ; ALD in SASS
+%pos.y = load_input float  base=0 component=1
+store_output float base=0 component=0, %colour_value.r  ; AST in SASS
+```
+
+`from_nir.rs` maps `load_input` to NAK's `Instr::Ld` with `MemSpace::Attr` and `store_output` to `Instr::St` with `MemSpace::Attr`. The NVIDIA hardware instructions are `ALD` (Attribute Load) for vertex/fragment inputs and `AST` (Attribute Store) for vertex outputs. The slot and component numbers in the `load_input`/`store_output` intrinsics map directly to the `ALD`/`AST` operand encoding. Variable-mode I/O has no such mapping.
+
+---
 
 The passes are therefore split along a clear architectural line: **C normalises NIR into the specific subset that NAK's IR can represent; Rust compiles that subset to SASS**. Any blurring of this line — running NIR mutations in Rust, or doing NVIDIA-specific instruction selection in C — would either fork shared infrastructure or break the read-only FFI contract that keeps NAK memory-safe.
 
