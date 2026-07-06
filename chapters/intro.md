@@ -60,7 +60,7 @@ graph TD
 
 **Part II — GPU Drivers** shows how the DRM contracts defined in Part I are implemented for real silicon. The architectural patterns — IP block decomposition, ring-buffer command submission, firmware authentication via PSP or GuC, per-process GPU VA spaces, DEVFREQ thermal scaling, ARM SMMU integration — recur across every driver family despite wildly different hardware. This part covers x86 discrete GPUs (amdgpu, i915, Xe), ARM and embedded drivers (Lima, Panfrost, Panthor, freedreno/MSM), the reverse-engineered Apple Silicon AGX driver written in Rust, the Raspberry Pi V3D/VideoCore driver, the Vivante etnaviv driver for NXP i.MX SoCs, automotive Linux graphics, and multi-GPU PRIME offload. Each driver is examined both as a concrete implementation and as an instance of the common patterns.
 
-**Part III — The Open NVIDIA Stack** is a case study in what happens when hardware documentation is withheld and then partially released. Seventeen years of systematic reverse engineering via mmiotrace and Envytools produced the Nouveau kernel driver, which could never fully reclock GPUs without signed PMU firmware. NVIDIA's 2022 GSP-RM open-source release partially lifted that constraint; the Nova clean-sheet Rust kernel driver built on that foundation represents the forward architecture. NVK, written by Faith Ekstrand at Collabora, is the Mesa Vulkan driver that became possible once the information gap narrowed — it is also the cleanest example in the Mesa tree of how to use the Vulkan common infrastructure from scratch.
+**Part III — The Open NVIDIA Stack** is a case study in what happens when hardware documentation is withheld and then partially released. Seventeen years of systematic reverse engineering via mmiotrace and Envytools produced the Nouveau kernel driver, which could never fully reclock GPUs without signed PMU firmware. NVIDIA's 2022 GSP-RM open-source release partially lifted that constraint; the Nova clean-sheet Rust kernel driver built on that foundation represents the forward architecture. NVK, developed at Collabora, is the Mesa Vulkan driver that became possible once the information gap narrowed — it is also the cleanest example in the Mesa tree of how to use the Vulkan common infrastructure from scratch.
 
 **Part IV — Mesa Architecture** covers the shared infrastructure that all Mesa drivers inherit: the EGL platform layer and DRI/GLVND loader dispatch, the **Gallium3D** pipe interface that separates API frontends from GPU backends, **NIR** (New Intermediate Representation) as the universal SSA-form shader IR that connects every language frontend to every ISA backend, the **ACO** AMD shader compiler with its VGPR/SGPR register pressure model and GCN/RDNA instruction selection, and the Mesa Vulkan common layer that provides `vk_object_base`, pipeline cache, and descriptor set infrastructure shared by RADV, ANV, NVK, Turnip, and V3DV. Part IV is the conceptual centre of the book: every subsequent chapter that mentions a shader, a descriptor set, or a Vulkan pipeline object is building on the foundations laid here.
 
@@ -153,7 +153,7 @@ The Linux graphics stack is one of the most complex multi-organisation open-sour
 | **AMD** | amdgpu, RDNA open hardware docs, RADV maintenance, ROCm, HIP |
 | **Google** | Dawn/WebGPU, ANGLE, Chromium GPU compositor, Android GPU stack, Mesa contractor funding |
 | **Red Hat** | Mesa (many core developers on payroll), Wayland, kernel DRM, Fedora/RHEL graphics |
-| **Collabora** | NVK (Faith Ekstrand), NAK Rust shader compiler, wlroots, kernel bring-up work |
+| **Collabora** | NVK, NAK Rust shader compiler, wlroots, kernel bring-up work |
 | **Igalia** | WebKit GPU, Chromium contributors, Mesa embedded driver contributions |
 | **Qualcomm** | freedreno/Turnip (Adreno open driver), kernel MSM driver |
 | **Raspberry Pi Foundation** | vc4/V3D driver, libcamera pipeline handler |
@@ -166,6 +166,22 @@ The Linux graphics stack is one of the most complex multi-organisation open-sour
 Three structural patterns emerge. **Hardware companies** (Intel, AMD, Qualcomm, Raspberry Pi Foundation) fund drivers for their own silicon because upstream kernel and Mesa support reduces their long-term maintenance burden and enables a Linux software ecosystem on their hardware. **Platform companies** (Google, Valve) fund portability and performance work across the whole stack because their products — Chrome, Android, Steam — run on it and depend on its quality. **Specialist consulting firms** (Collabora, Igalia) do the difficult upstream integration work that hardware and platform vendors want completed but do not staff with permanent employees.
 
 The consequence of this funding structure is predictable: components with a clear commercial stakeholder (amdgpu, ANV, Dawn, Proton) tend to be mature and well-maintained; components without one (software rasterisers on new ISAs, HDR compositor infrastructure, cross-vendor profiling tools) accumulate technical debt or simply do not exist.
+
+### Scale of the Ecosystem
+
+The following estimates are based on git contributor statistics and publicly known company team sizes, counting engineers with meaningful commits in the preceding twelve months. Individual contributors span multiple projects; the total number of unique engineers across all projects combined is approximately **600–900 worldwide**.
+
+| Project | Active engineers (est.) | Primary employers |
+|---|---|---|
+| **Mesa** | 350–500 | AMD, Intel, Collabora, Valve, Google, Qualcomm, ARM, Broadcom, Igalia, Red Hat |
+| **Linux DRM** (kernel) | 150–250 | AMD, Intel, Qualcomm, ARM, Broadcom, Red Hat — heavy overlap with Mesa |
+| **Vulkan spec + CTS** | 60–100 | ~20 Khronos member companies; spec writers and working group participants |
+| **Wayland ecosystem** | 100–180 | Red Hat (Mutter/GNOME Shell), KDE e.V. (KWin), wlroots community, Collabora |
+| **Dawn** (WebGPU) | 40–70 | Google (Chromium team) primarily; some external contributors |
+| **wgpu** | 25–50 | Community/volunteer-heavy; some Mozilla, Apple, Rust GPU project contributors |
+| **Nova** (NVIDIA Rust kernel driver) | 8–15 | Red Hat, Collabora; project began 2024, pre-production |
+
+**Notes on scope.** Mesa dwarfs every other project: it encompasses approximately fifteen distinct GPU drivers, three shader compiler backends (ACO for AMD, BRW/ELK for Intel, NAK for NVIDIA), NIR, Gallium3D, and the Vulkan common infrastructure. A single engineer employed to work on one Mesa driver (e.g., RADV) will often commit to NIR, the Vulkan common layer, and the DRM kernel driver for the same GPU in the same week. Nova is the smallest project by design: it is a greenfield Rust kernel driver for NVIDIA hardware with a deliberately constrained initial scope. The Wayland ecosystem number includes compositor teams (Mutter, KWin, Sway, Hyprland) and protocol extension authors, which collectively dwarf the Wayland protocol core team itself. The Linux kernel as a whole receives contributions from approximately 1,700 engineers per release cycle; DRM is a large subsystem but a fraction of that total.
 
 ## Open Problems: Small Projects That Could Close Real Gaps
 
