@@ -17,6 +17,7 @@
 - [8. SPIR-V as the Cross-Compiler Target](#8-spir-v-as-the-cross-compiler-target)
 - [9. Cooperative Matrix and Tensor Core Access](#9-cooperative-matrix-and-tensor-core-access)
 - [10. The Mesa Connection: SPIR-V to NIR to ISA](#10-the-mesa-connection-spir-v-to-nir-to-isa)
+- [11. Why MLIR Stops at SPIR-V: The ISA Boundary](#11-why-mlir-stops-at-spir-v-the-isa-boundary)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -835,6 +836,77 @@ When an IREE workload runs on a Linux system with RADV or ANV, the interaction i
 4. IREE's HAL records `hal.command_buffer.dispatch` operations that become `vkCmdDispatch` calls submitted to the AMD or Intel GPU kernel driver.
 
 From Mesa's perspective, IREE is just another Vulkan application. The SPIR-V it submits is held to exactly the same validation constraints as any other Vulkan shader, which is why IREE's offline compilation pipeline runs `spirv-val` and the Vulkan validation layers during testing.
+
+---
+
+## 11. Why MLIR Stops at SPIR-V: The ISA Boundary
+
+MLIR is a meta-compiler: infrastructure for building compilers, not a compiler itself. Its dialects model GPU computation at the level of tiles, vector operations, thread hierarchy, and memory abstractions. None of those concepts have a direct mapping to machine instructions — the gap between `gpu.thread_id` and a SASS `S2R SR_TID.X` instruction is not one lowering pass but a chain of ISA-specific decisions about register class, instruction encoding width, scheduling control bits, and occupancy constraints. This section explains precisely where MLIR's responsibility ends, why the handoff occurs at SPIR-V, and why the ISA-level compilers below that boundary (NAK for NVIDIA, ACO for AMD, the Intel compiler for Xe) are structured the way they are rather than being implemented as MLIR backends.
+
+### The Three-Layer Model
+
+GPU compilation below the ML framework divides into three distinct concerns:
+
+```
+Layer 1: Tile / tensor abstraction     ← MLIR's domain
+  (linalg, vector, gpu dialects)
+         │
+         │  progressive lowering
+         ▼
+Layer 2: Portable instruction set      ← SPIR-V's domain
+  (typed SSA, explicit control flow,
+   standardised intrinsics, no hardware assumptions)
+         │
+         │  spirv_to_nir() / driver compilation
+         ▼
+Layer 3: ISA-level compilation         ← NAK / ACO / Intel compiler's domain
+  (register allocation, instruction
+   scheduling, binary encoding, occupancy)
+```
+
+SPIR-V sits at the contract boundary between layers 2 and 3. It is ISA-neutral by construction: it has no concept of register banks, warp occupancy, instruction latency, or dual-issue. Everything below SPIR-V requires hardware-specific knowledge that is deliberately excluded from the SPIR-V specification.
+
+### Why MLIR Cannot Reach the ISA Directly
+
+**Occupancy-aware register allocation.** GPU register allocation is not a pure minimization problem. The NVIDIA SM allocates registers to *all warps in a thread block simultaneously* — if a shader uses 33 GPRs, the SM may schedule 50% fewer warps than if the shader used 32 GPRs, destroying parallelism that hides memory latency. The allocator must model this occupancy cliff. MLIR has no representation for "this ISA allocates N warps per SM as a function of register count" — that information lives in hardware documentation (or reverse-engineered tables) specific to each SM generation. NAK's allocator encodes this per-SM-generation as a lookup table; MLIR has no equivalent abstraction point.
+
+**Instruction encoding width changes across generations.** NVIDIA SASS changed from 64-bit instruction words (Maxwell, Pascal) to 128-bit words (Volta, Turing, Ampere, Ada, Blackwell). The 64-bit extra word in 128-bit encoding is scheduling control: stall counts, yield bits, and read/write barrier indices. These control bits are what the instruction scheduler produces. There is no MLIR dialect that models stall counts or barrier indices — they are intrinsically tied to the specific pipeline latency model of a single GPU microarchitecture. An MLIR backend targeting NVIDIA would need to re-implement NAK's scheduler in terms of MLIR's infrastructure, gaining nothing.
+
+**Uniform register files.** NVIDIA Turing (sm75) introduced a second register file: UR0–UR62, 63 scalar registers that hold values provably uniform across a warp. Accessing a constant buffer via a UGPR instruction costs one cycle; via a GPR plus `LDSM` costs many. NAK's compiler uses divergence analysis to promote values to UGPR; this is a GPU-microarchitecture-specific optimization with no MLIR analogue. The `nvgpu` dialect has warp-level MMA operations but no UGPR concept.
+
+**ARM Valhall and non-NVIDIA architectures.** KRAID (Chapter 118) compiles to ARM Mali Valhall ISA. Valhall has native 16-bit arithmetic paths, a different memory model, and no concept analogous to UGPR. A single MLIR GPU dialect lowering to "GPU ISA" would require per-vendor forks at every decision point that involves ISA-specific concepts — which is to say, at nearly every decision below register pressure estimation. This is precisely the problem SPIR-V solves: it standardises the language at a level above ISA so each vendor's compiler can handle ISA-specific lowering independently.
+
+### Why LLVM NVPTX Is Not the Answer
+
+LLVM has `lib/Target/NVPTX`, which compiles LLVM IR to PTX. This is the path Triton uses for its NVIDIA backend (via the `nvvm` dialect → LLVM IR → PTX). PTX is then compiled to SASS by `ptxas` — NVIDIA's proprietary assembler. The LLVM/PTX/ptxas path has three structural problems for an open-source Linux driver:
+
+1. **`ptxas` is proprietary.** It ships in the CUDA toolkit. An open-source NVIDIA driver using this path has a mandatory proprietary dependency at the terminal compilation step. NAK exists precisely to eliminate `ptxas`: it emits SASS directly, making the entire path from Vulkan shader to GPU binary open-source.
+
+2. **ptxas controls occupancy.** The register allocation and scheduling decisions that determine occupancy are made inside `ptxas`, not in LLVM. An open-source driver using LLVM+NVPTX cedes control of the most latency-sensitive decisions to a component it cannot inspect or modify.
+
+3. **Compile latency.** LLVM's pass pipeline has fixed overhead that is disproportionate for short shaders. ACO was built because LLVM AMDGPU was 3–4× slower than ACO at shader compile time for the per-draw compilation pattern GPU drivers use. The same argument applies to LLVM NVPTX for NAK's use case.
+
+### NIR as MLIR's Peer at the Driver Layer
+
+NIR (Chapter 14) and MLIR's `gpu` dialect occupy analogous positions in their respective layers — both are hardware-neutral SSA IRs with explicit control flow and typed values — but they serve different masters. The `gpu` dialect models *launch semantics* (thread blocks, grid dimensions, workgroup memory) at the framework layer. NIR models *lowered shader semantics* (I/O variables already resolved to `load_input`/`store_output`, memory access already in terms of SSBO offsets, cooperative matrix ops already expressed as NIR intrinsics). NIR sits closer to the ISA; the `gpu` dialect sits closer to the algorithm.
+
+Crucially, NIR is much smaller. Its core type system is fixed-width integer and float scalars and small vectors. It has no tile abstraction, no layout annotation, no `affine_map`. This narrowness is intentional: the ISA-level compiler needs a precisely defined, small-surface IR so that every pass has a clear precondition and postcondition. MLIR's extensibility — the property that makes it useful as a meta-compiler — would be a liability inside NAK, where the register allocator must have complete knowledge of every value in the function.
+
+```
+MLIR gpu dialect     NIR
+─────────────────    ─────────────────────────────
+Tile/vector ops      Scalar SSA values (32-bit)
+Thread hierarchy     Workgroup ID intrinsics
+Layout attributes    I/O already lowered to load/store
+Extensible types     Fixed int/float types only
+Framework-facing     ISA-facing
+```
+
+### The Long-Term Convergence Direction
+
+The Roadmap (below) notes a long-term goal: MLIR as a direct Mesa input, bypassing the SPIR-V serialization/deserialization round-trip. This would mean Mesa accepting an MLIR module directly from an ML runtime and running its own MLIR passes before calling `spirv_to_nir` — or replacing `spirv_to_nir` with an MLIR→NIR lowering. This is architecturally appealing: it would eliminate SPIR-V validation overhead, preserve higher-level information (tile sizes, layout annotations) that SPIR-V cannot carry, and enable joint optimization across the framework and driver layers.
+
+The reason it remains long-term is the same reason the current division exists: SPIR-V is a *stable contract*. Every MLIR-based ML tool (IREE, Triton, XLA) targets it. Every Mesa driver consumes it. The interface is versioned, validated, and maintained by Khronos. Replacing it with a direct MLIR interface would require all producers and all consumers to coordinate on a new contract — a coordination cost that the existing SPIR-V ecosystem absorbs. Until the overhead of SPIR-V serialization is demonstrably the bottleneck, and until a stable MLIR ABI for this purpose is defined, the layer boundary remains at SPIR-V.
 
 ---
 
