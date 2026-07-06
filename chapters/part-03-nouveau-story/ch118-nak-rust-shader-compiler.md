@@ -893,7 +893,67 @@ Blackwell (sm100+) required the most significant NAK changes since Turing: the r
 
 ### Tinygrad and the Free Software NVIDIA Compute Path
 
-In October 2025, Tinygrad's Mesa NIR backend was merged (Tinygrad 0.12, released January 2026). [Source](https://github.com/tinygrad/tinygrad/pull/12089) This backend emits NIR directly from Tinygrad's tensor IR, feeding it to NAK for compilation to NVIDIA SASS without requiring the CUDA toolchain, NVPTX, or any proprietary components. This makes NAK the critical enabler for a fully free-software NVIDIA GPU compute path for machine learning workloads.
+**Tinygrad** is a deep learning framework built around a minimal lazy tensor IR. Operations on tensors do not execute immediately; instead they build an AST of deferred operations. When a result is materialized — via `.realize()`, `.numpy()`, or a backward pass — the lazy graph is lowered through a scheduler and linearizer into concrete GPU kernels, which are then compiled and dispatched to hardware in a single shot. The entire framework, including autodiff, is designed to fit in a few thousand lines of core Python. [Source](https://github.com/tinygrad/tinygrad)
+
+The execution pipeline has five layers:
+
+```
+Python Tensor API      (tensor.py — lazy operations, autodiff)
+        ↓
+LazyBuffer AST         (UnaryOps, BinaryOps, ReduceOps, TernaryOps)
+        ↓
+Scheduler / Linearizer (kernel fusion, loop nest ordering, shape analysis)
+        ↓
+Codegen backend        (CUDA/PTX, HIP, OpenCL, Metal, LLVM, WebGPU, NIR ← new)
+        ↓
+Runtime                (buffer allocation, kernel enqueue, synchronization)
+```
+
+The scheduler performs automatic kernel fusion: adjacent elementwise ops are merged into a single GPU kernel without programmer intervention. A sequence `.relu().mul(scale).add(bias)` compiles to one kernel, not three. Fusion decisions are driven by the linearizer's symbolic shape analysis — the same linearizer produces correct loop nests for every backend from a single representation.
+
+**The Mesa NIR backend.** In October 2025 a new Tinygrad codegen backend was merged that emits NIR directly from the linearizer's loop representation rather than CUDA PTX or OpenCL C. The backend was released in Tinygrad 0.12 (January 2026). [Source](https://github.com/tinygrad/tinygrad/pull/12089) The compilation path becomes:
+
+```
+Tinygrad lazy graph
+        ↓
+Tinygrad NIR emitter   (tinygrad/runtime/ops_nir.py)
+        ↓
+Mesa NIR               (shared IR — same structs NVK uses for graphics)
+        ↓
+NAK (nak_compile_shader())
+        ↓
+NVIDIA SASS binary     (loaded via DRM_NOUVEAU_EXEC)
+```
+
+Every step is open-source. The CUDA SDK, `nvcc`, `ptxas`, and the NVPTX LLVM backend are bypassed entirely. The resulting SASS binary is dispatched to the GPU by the NVK/Nouveau kernel path, not by `libcuda.so`.
+
+**Why NIR as the target.** NIR is an SSA-form IR with explicit control flow, typed scalar and vector values, and a rich set of intrinsics covering arithmetic, memory access, image sampling, and atomics. It is the same representation NAK already consumes for graphics shaders. Targeting NIR from Tinygrad avoids a custom GPU IR: the linearizer's loop nest maps naturally to NIR's control flow constructs, scalar arithmetic maps to NIR's typed SSA values, and memory access maps to NIR's `load_global`/`store_global` intrinsics. The Tinygrad NIR emitter is therefore substantially simpler than a CUDA PTX or LLVM IR emitter would be for the same workloads.
+
+A simplified illustration of the NIR the Tinygrad emitter produces for a fused relu+scale kernel:
+
+```nir
+; tinygrad fused kernel: relu(x) * scale
+shader: compute   local_size: [256, 1, 1]
+
+decl_var ssbo float[] %input  @binding(0)
+decl_var ssbo float[] %output @binding(1)
+decl_var push_const float %scale @offset(0)
+
+block block_0:
+  %tid    = load_global_invocation_id.x
+  %in_val = load_ssbo %input[%tid]
+  %zero   = flt float %in_val, 0.0
+  %relu   = bcsel float %zero, 0.0, %in_val   ; relu
+  %scale  = load_push_constant float @offset(0)
+  %out    = fmul float %relu, %scale
+            store_ssbo %output[%tid], %out
+```
+
+NAK receives this NIR and applies its standard lowering path: NIR precondition passes in C, `from_nir.rs` translation, NAK optimization passes, register allocation, and SASS encoding. For elementwise kernels with no loop-carried dependencies the result is near-optimal SASS — these are precisely the cases where NAK's SSA-throughout design performs well, since the register allocator sees the full def-use chain without any spill pressure from cross-iteration live ranges.
+
+**Limitations versus the proprietary stack.** Tinygrad's NIR/NAK path does not invoke `libcublas` or `libcudnn`. For operations those libraries cover — large GEMM, convolution with cuDNN autotuning, NCCL collective communication — the proprietary path is faster. Tinygrad compensates with an autotuner that benchmarks multiple kernel tiling configurations at runtime and selects the fastest, but on large GEMM sizes the vendor-tuned kernels remain ahead. The NIR path is competitive on elementwise fusion chains, reductions, and workloads that are memory-bandwidth-bound rather than FLOP-bound.
+
+This makes NAK the critical enabler for a fully free-software NVIDIA GPU compute path: the linearizer, scheduler, and NIR emitter are open-source Python; the NIR-to-SASS compiler is open-source Rust (NAK); the kernel loader is the open-source nouveau/NVK DRM stack. For inference workloads where the bottleneck is memory bandwidth and kernel fusion quality rather than peak GEMM throughput, the gap versus the proprietary stack is within measurement error for many real models. [Source](https://github.com/tinygrad/tinygrad/pull/12089)
 
 ### CTS Conformance Trajectory
 
