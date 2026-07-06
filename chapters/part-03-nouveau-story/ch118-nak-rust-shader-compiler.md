@@ -10,6 +10,9 @@
 - [1. Why a New Compiler: The Case Against nv50\_ir](#1-why-a-new-compiler-the-case-against-nv50_ir)
 - [2. NAK IR Design: SSA, Instructions, and Register Classes](#2-nak-ir-design-ssa-instructions-and-register-classes)
 - [3. NIR to NAK: The Lowering Handoff](#3-nir-to-nak-the-lowering-handoff)
+   - [NIR Passes Required Before Hand-off](#nir-passes-required-before-hand-off)
+   - [Why C, Not Rust?](#why-c-not-rust)
+   - [from\_nir.rs: The Translation](#from_nirrs-the-translation)
 - [4. Optimization Passes in NAK](#4-optimization-passes-in-nak)
 - [5. Register Allocation: Liveness, Spilling, and Bank Conflicts](#5-register-allocation-liveness-spilling-and-bank-conflicts)
 - [6. Instruction Scheduling: Latency Hiding and Dual-Issue](#6-instruction-scheduling-latency-hiding-and-dual-issue)
@@ -250,6 +253,32 @@ if (nak->sm >= 70)
 The `nir_lower_phis_to_scalar` pass is critical: NAK's `SSAValue` is always exactly 32 bits, matching NVIDIA's physical register granularity. NIR can represent vector phi nodes; NAK cannot. The scalarization must happen before `from_nir.rs` sees any phi nodes.
 
 `nir_convert_to_lcssa` converts the shader to Loop-Closed SSA form, where all values defined inside a loop and used outside it are mediated by phi nodes at the loop exit. This is a precondition for NAK's `opt_uniform_instrs` pass (sm75+), which must be able to distinguish values that are uniform across an entire loop from values that vary per-iteration.
+
+### Why C, Not Rust?
+
+A natural question is why these passes run in C at all, rather than being implemented in Rust inside NAK. There are four interlocking reasons.
+
+**1. NIR is shared infrastructure — not NAK's to own.**
+The NIR library (`src/compiler/nir/`) is consumed by every Mesa driver: RADV, ANV, Turnip, V3DV, iris, radeonsi. `nir_opt_algebraic`, `nir_opt_dce`, and their siblings are battle-tested C functions applied to C data structures and maintained for the whole ecosystem. Re-implementing them in Rust inside NAK would fork shared infrastructure: a bug fixed in NAK's Rust copy would not reach RADV; a new NIR optimization added for RADV would not benefit NAK. The value of NIR is precisely that all drivers share one well-tested optimization library for free.
+
+**2. The FFI is intentionally read-only from Rust.**
+`from_nir.rs` accesses `nir_shader *` through **read-only** Rust wrappers (see §9). NAK reads NIR and constructs its own Rust IR — it never mutates NIR data structures. If NAK attempted to run a pass such as `nir_lower_phis_to_scalar` internally, it would need write access to NIR's C structs via `unsafe` FFI pointer manipulation. That would undermine the memory-safety guarantee that justified writing NAK in Rust. The design decision — keep the FFI boundary read-only — means all mutations of NIR must happen in C before the handoff. This is a feature, not a limitation.
+
+**3. Driver-specific lowerings require NVK C context.**
+`nvk_lower_nir()` — particularly `nvk_nir_lower_descriptors()` — needs device state that lives in NVK's C structs: the descriptor table base address, constant-buffer slot assignments, hardware capability flags from `nvk_physical_device`. Threading this context into NAK would require exposing it through the 7-function FFI boundary, widening it substantially and coupling the Rust compiler to NVK's internal layout. Keeping driver-specific lowerings in C preserves the clean separation between "compiler" (NAK) and "driver" (NVK).
+
+**4. The C passes establish hard preconditions for NAK's IR.**
+NAK's IR has non-negotiable invariants that `from_nir.rs` relies on unconditionally. If any of these were violated on entry, `from_nir.rs` would either crash or require defensive code that would complicate every path through the translator:
+
+| C pass | NAK IR invariant it enforces |
+|---|---|
+| `nir_lower_phis_to_scalar` | Every `SSAValue` is exactly 32 bits. Vector phi nodes have no representation in NAK. |
+| `nir_lower_bool_to_int32` | NVIDIA hardware has no 1-bit register file. An `i1` NIR value has no valid NAK type. |
+| `nir_lower_vars_to_ssa` | NAK has no concept of variable storage — only SSA values and memory intrinsics. Variable-access NIR instructions are unhandled in `from_nir.rs`. |
+| `nir_convert_to_lcssa` | `opt_uniform_instrs` requires Loop-Closed SSA form. It is a structural precondition, not an optimization that can gracefully degrade. |
+| `nir_lower_io` | I/O variables must already be lowered to `load_input`/`store_output` intrinsics; `from_nir.rs` does not handle `nir_var_shader_in`/`nir_var_shader_out` variable accesses directly. |
+
+The passes are therefore split along a clear architectural line: **C normalises NIR into the specific subset that NAK's IR can represent; Rust compiles that subset to SASS**. Any blurring of this line — running NIR mutations in Rust, or doing NVIDIA-specific instruction selection in C — would either fork shared infrastructure or break the read-only FFI contract that keeps NAK memory-safe.
 
 ### from\_nir.rs: The Translation
 
