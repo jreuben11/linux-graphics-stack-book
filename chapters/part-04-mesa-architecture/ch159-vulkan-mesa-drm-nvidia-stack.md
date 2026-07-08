@@ -1183,84 +1183,57 @@ For driver developers, `NIR_PASS` runs can be individually enabled/disabled at c
 
 Mesa and Wayland are often described as adjacent layers in the graphics stack, but the relationship is more precisely bidirectional and operates at multiple specific protocol and library seams. Neither subsystem contains the other: `libwayland-server` and `libwayland-client` have zero dependency on Mesa, while Mesa's WSI and EGL backends depend on `libwayland-client` and the `wayland-protocols` XML files. Understanding the exact touch-points prevents common misconceptions — for example, that Wayland "provides GPU access" (it does not; DRM does) or that Mesa "implements the Wayland protocol" (it implements a Wayland client and uses compositor-facing protocol extensions, but does not implement the compositor server side).
 
-The diagram below shows all interaction paths simultaneously. Read the arrows: solid lines are control/data flow; annotations name the specific API or protocol mechanism at each boundary.
+The two directions of the relationship are labelled explicitly in the diagram: arrow ① is Mesa acting as a Wayland **client** (sending frames out); arrow ② is the compositor calling into Mesa as a **library** (receiving rendering services). They flow in opposite directions across the same Mesa/Wayland boundary.
 
-```
-┌────────────────────────────────────────────────────────────────────────────┐
-│  APPLICATION PROCESS                                                        │
-│  Vulkan / OpenGL / EGL draw calls                                          │
-└──────────────────────────────┬─────────────────────────────────────────────┘
-                               │
-                               ▼
-┌────────────────────────────────────────────────────────────────────────────┐
-│  MESA  (in application process)                                             │
-│                                                                             │
-│  ┌──────────────────────────────┐   ┌───────────────────────────────────┐  │
-│  │  ICD / shader compiler       │   │  WSI  (wsi_common_wayland.c)      │  │
-│  │  NAK · ACO · Intel compiler  │   │  EGL Wayland platform             │  │
-│  │  → GPU command stream        │   │  GBM swapchain image allocation   │  │
-│  └──────────────┬───────────────┘   └──────────────────┬────────────────┘  │
-└─────────────────┼───────────────────────────────────────┼──────────────────┘
-                  │ GPU cmds                              │ Wayland protocol
-                  │ (DRM render node ioctl)               │
-                  │                                       │  zwp_linux_dmabuf_v1
-                  │                                       │  ├─ modifier feedback
-                  │                                       │  └─ buffer params
-                  │                                       │  wl_surface.attach
-                  │                                       │  wl_surface.commit
-                  │                                       │  wp_linux_drm_syncobj_mgr_v1
-                  │                                       │  └─ acquire/release fences
-                  │                                       │
-                  │                           DMA-BUF fd ─┘
-                  │                           + modifier
-                  │                           + syncobj timeline points
-                  │                                       │
-                  ▼                                       ▼
-┌─────────────────────────┐   ┌─────────────────────────────────────────────┐
-│  DRM render node        │   │  COMPOSITOR PROCESS                          │
-│  /dev/dri/renderD128    │   │                                              │
-│  (app GPU submit)       │   │  ┌──────────────────────────────────────┐   │
-└─────────────────────────┘   │  │  libwayland-server (protocol recv)   │   │
-                              │  └───────────┬──────────────────────────┘   │
-                              │              │                                │
-                              │    ┌─────────▼──────────┐                   │
-                              │    │  libgbm             │                   │
-                              │    │  gbm_bo_import()    │◄── DMA-BUF fd     │
-                              │    │  (client buf import)│    from client    │
-                              │    └────────────┬────────┘                   │
-                              │                 │ GBM BO → EGLImage          │
-                              │                 ▼                             │
-                              │    ┌────────────────────────────────────┐    │
-                              │    │  Mesa EGL / Vulkan ICD             │    │
-                              │    │  (compositor own rendering)        │    │
-                              │    │  Mutter/Cogl · KWin · wlr_renderer│    │
-                              │    └────────────┬───────────────────────┘    │
-                              │                 │ GPU cmds                    │
-                              │    ┌────────────┴──────────────────────┐     │
-                              │    │  libdrm  drmModeAtomicCommit()    │     │
-                              │    │  ← NOT through Mesa               │     │
-                              │    └────────────┬──────────────────────┘     │
-                              └────────────────┬┼────────────────────────────┘
-                                               ││
-                   ┌───────────────────────────▼▼───────────────────────────┐
-                   │  KERNEL / DRM                                           │
-                   │                                                         │
-                   │  /dev/dri/renderD128 (render)  /dev/dri/card0 (KMS)   │
-                   │         │                              │                │
-                   │         ▼                              ▼                │
-                   │  ┌─────────────────────┐   ┌───────────────────────┐  │
-                   │  │  GPU                │   │  Display engine       │  │
-                   │  │  app shaders +      │   │  KMS atomic: CRTC,   │  │
-                   │  │  compositor shaders │   │  planes, scanout BO  │  │
-                   │  └─────────────────────┘   └───────────────────────┘  │
-                   └─────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph APP["Application Process"]
+        A_CODE["App — Vulkan / EGL draw calls"]
+        A_ICD["Mesa ICD + shader compiler\nNAK · ACO · Intel"]
+        A_WSI["Mesa WSI  wsi_common_wayland.c\nGBM swapchain allocation"]
+    end
 
-  ─────  Key
-  Mesa acts as Wayland CLIENT for the app (WSI buffer commit path)
-  Mesa acts as a LIBRARY for the compositor (GBM import + EGL/Vulkan rendering)
-  KMS atomic commit goes libdrm → kernel directly — Mesa is NOT in this path
-  The GPU render node is shared; both app and compositor submit via the same ioctl
+    subgraph COMP["Compositor Process — Mutter · KWin · wlroots"]
+        C_WL["libwayland-server\nprotocol dispatch"]
+        C_GBM["libgbm  gbm_bo_import()\nclient DMA-BUF → GBM BO → EGLImage"]
+        C_MESA["Mesa EGL / Vulkan\nCogl · KWin renderer · wlr_renderer"]
+        C_KMS["libdrm  drmModeAtomicCommit()\n⚠ bypasses Mesa — direct to kernel"]
+    end
+
+    subgraph KERNEL["Linux Kernel / DRM"]
+        K_RENDER["/dev/dri/renderD128  render node\napp + compositor GPU submits"]
+        K_KMS["/dev/dri/card0  KMS primary node"]
+        K_GPU["GPU"]
+        K_DISP["Display Engine — CRTC · planes · scanout"]
+    end
+
+    A_CODE --> A_ICD & A_WSI
+    A_ICD -->|"GPU cmds ioctl"| K_RENDER
+
+    A_WSI -->|"① Mesa → Wayland  Mesa acts as Wayland CLIENT\nzwp_linux_dmabuf_v1 modifier negotiation\nwl_surface.attach + commit\nwp_linux_drm_syncobj_mgr_v1 fences\nDMA-BUF fd + modifier + syncobj"| C_WL
+
+    C_WL -->|"② Wayland → Mesa  compositor uses Mesa as LIBRARY\nDMA-BUF fd import"| C_GBM
+    C_GBM -->|"GBM BO → EGLImage"| C_MESA
+    C_WL -->|"compositor rendering calls"| C_MESA
+    C_WL --> C_KMS
+
+    C_MESA -->|"GPU cmds ioctl"| K_RENDER
+    C_KMS -->|"KMS atomic commit"| K_KMS
+
+    K_RENDER --> K_GPU
+    K_KMS --> K_DISP
+
+    style A_WSI fill:#dbeafe,stroke:#2563eb
+    style C_WL fill:#dbeafe,stroke:#2563eb
+    style C_GBM fill:#dcfce7,stroke:#16a34a
+    style C_MESA fill:#dcfce7,stroke:#16a34a
+    style C_KMS fill:#fef9c3,stroke:#ca8a04
+    style K_KMS fill:#fef9c3,stroke:#ca8a04
 ```
+
+Blue nodes: the Mesa-as-Wayland-client path (WSI → protocol → compositor receive).
+Green nodes: the compositor-uses-Mesa-as-library path (GBM import + EGL/Vulkan rendering).
+Yellow nodes: the KMS path that bypasses Mesa entirely.
 
 ### 13.1 Apps Presenting Frames: Mesa WSI as a Wayland Client
 
