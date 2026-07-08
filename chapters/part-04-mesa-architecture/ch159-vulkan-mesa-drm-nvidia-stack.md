@@ -1183,57 +1183,53 @@ For driver developers, `NIR_PASS` runs can be individually enabled/disabled at c
 
 Mesa and Wayland are often described as adjacent layers in the graphics stack, but the relationship is more precisely bidirectional and operates at multiple specific protocol and library seams. Neither subsystem contains the other: `libwayland-server` and `libwayland-client` have zero dependency on Mesa, while Mesa's WSI and EGL backends depend on `libwayland-client` and the `wayland-protocols` XML files. Understanding the exact touch-points prevents common misconceptions — for example, that Wayland "provides GPU access" (it does not; DRM does) or that Mesa "implements the Wayland protocol" (it implements a Wayland client and uses compositor-facing protocol extensions, but does not implement the compositor server side).
 
-The two directions of the relationship are labelled explicitly in the diagram: arrow ① is Mesa acting as a Wayland **client** (sending frames out); arrow ② is the compositor calling into Mesa as a **library** (receiving rendering services). They flow in opposite directions across the same Mesa/Wayland boundary.
+Arrow ① shows Mesa pushing frames **to** the compositor (Mesa as Wayland client). Arrow ② shows the compositor calling **back into** Mesa for its own rendering (Mesa as library). Both arrows cross between the same two containers in opposite directions.
 
 ```mermaid
-graph TD
-    subgraph APP["Application Process"]
-        A_CODE["App — Vulkan / EGL draw calls"]
-        A_ICD["Mesa ICD + shader compiler\nNAK · ACO · Intel"]
-        A_WSI["Mesa WSI  wsi_common_wayland.c\nGBM swapchain allocation"]
+graph LR
+    APP["Application\nVulkan / EGL draw calls"]
+
+    subgraph MESA["Mesa"]
+        M_ICD["ICD + shader compiler\nNAK · ACO · Intel"]
+        M_WSI["WSI  wsi_common_wayland.c\nGBM swapchain allocation"]
+        M_GBM["libgbm  gbm_bo_import()"]
+        M_EGL["EGL / Vulkan ICD"]
     end
 
-    subgraph COMP["Compositor Process — Mutter · KWin · wlroots"]
+    subgraph COMPOSITOR["Compositor — Mutter · KWin · wlroots"]
         C_WL["libwayland-server\nprotocol dispatch"]
-        C_GBM["libgbm  gbm_bo_import()\nclient DMA-BUF → GBM BO → EGLImage"]
-        C_MESA["Mesa EGL / Vulkan\nCogl · KWin renderer · wlr_renderer"]
-        C_KMS["libdrm  drmModeAtomicCommit()\n⚠ bypasses Mesa — direct to kernel"]
+        C_KMS["libdrm  drmModeAtomicCommit\n⚠ NOT through Mesa"]
     end
 
     subgraph KERNEL["Linux Kernel / DRM"]
-        K_RENDER["/dev/dri/renderD128  render node\napp + compositor GPU submits"]
-        K_KMS["/dev/dri/card0  KMS primary node"]
+        K_RENDER["/dev/dri/renderD128  render node"]
+        K_KMS["/dev/dri/card0  KMS"]
         K_GPU["GPU"]
-        K_DISP["Display Engine — CRTC · planes · scanout"]
+        K_DISP["Display Engine"]
     end
 
-    A_CODE --> A_ICD & A_WSI
-    A_ICD -->|"GPU cmds ioctl"| K_RENDER
+    APP --> M_ICD & M_WSI
 
-    A_WSI -->|"① Mesa → Wayland  Mesa acts as Wayland CLIENT\nzwp_linux_dmabuf_v1 modifier negotiation\nwl_surface.attach + commit\nwp_linux_drm_syncobj_mgr_v1 fences\nDMA-BUF fd + modifier + syncobj"| C_WL
+    M_WSI -- "① Mesa → Compositor\nMesa as Wayland CLIENT\nzwp_linux_dmabuf_v1\nwl_surface.commit\nwp_linux_drm_syncobj_mgr_v1\nDMA-BUF fd + modifier + syncobj" --> C_WL
 
-    C_WL -->|"② Wayland → Mesa  compositor uses Mesa as LIBRARY\nDMA-BUF fd import"| C_GBM
-    C_GBM -->|"GBM BO → EGLImage"| C_MESA
-    C_WL -->|"compositor rendering calls"| C_MESA
+    C_WL -- "② Compositor → Mesa\ncompositor uses Mesa as LIBRARY\ngbm_bo_import · EGL · Vulkan" --> M_GBM & M_EGL
+
+    M_ICD -->|GPU cmds| K_RENDER
+    M_EGL -->|GPU cmds| K_RENDER
     C_WL --> C_KMS
-
-    C_MESA -->|"GPU cmds ioctl"| K_RENDER
-    C_KMS -->|"KMS atomic commit"| K_KMS
-
+    C_KMS -->|KMS atomic commit| K_KMS
     K_RENDER --> K_GPU
     K_KMS --> K_DISP
 
-    style A_WSI fill:#dbeafe,stroke:#2563eb
+    style M_WSI fill:#dbeafe,stroke:#2563eb
     style C_WL fill:#dbeafe,stroke:#2563eb
-    style C_GBM fill:#dcfce7,stroke:#16a34a
-    style C_MESA fill:#dcfce7,stroke:#16a34a
+    style M_GBM fill:#dcfce7,stroke:#16a34a
+    style M_EGL fill:#dcfce7,stroke:#16a34a
     style C_KMS fill:#fef9c3,stroke:#ca8a04
     style K_KMS fill:#fef9c3,stroke:#ca8a04
 ```
 
-Blue nodes: the Mesa-as-Wayland-client path (WSI → protocol → compositor receive).
-Green nodes: the compositor-uses-Mesa-as-library path (GBM import + EGL/Vulkan rendering).
-Yellow nodes: the KMS path that bypasses Mesa entirely.
+Blue: the frame-submission path (Mesa WSI → compositor). Green: the compositor-calls-Mesa path (GBM import + EGL/Vulkan). Yellow: the KMS path that bypasses Mesa entirely.
 
 ### 13.1 Apps Presenting Frames: Mesa WSI as a Wayland Client
 
