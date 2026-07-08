@@ -1186,24 +1186,24 @@ Mesa and Wayland are often described as adjacent layers in the graphics stack, b
 Arrow ① shows Mesa pushing frames **to** the compositor (Mesa as Wayland client). Arrow ② shows the compositor calling **back into** Mesa for its own rendering (Mesa as library). Both arrows cross between the same two containers in opposite directions.
 
 ```mermaid
-%%{init: {"flowchart": {"rankSpacing": 200, "nodeSpacing": 40}}}%%
+%%{init: {"flowchart": {"rankSpacing": 300, "nodeSpacing": 50}}}%%
 graph LR
-    APP["Application\nVulkan / EGL draw calls"]
+    APP["Application\nVulkan / EGL"]
 
     subgraph MESA["Mesa"]
-        M_ICD["ICD + shader compiler\nNAK · ACO · Intel"]
+        M_ICD["ICD + compiler\nNAK · ACO · Intel"]
         M_WSI["WSI  wsi_common_wayland.c\nGBM swapchain allocation"]
-        M_GBM["libgbm  gbm_bo_import()"]
+        M_GBM["libgbm\ngbm_bo_import()"]
         M_EGL["EGL / Vulkan ICD"]
     end
 
-    subgraph COMPOSITOR["Compositor — Mutter · KWin · wlroots"]
+    subgraph COMPOSITOR["Compositor\nMutter · KWin · wlroots"]
         C_WL["libwayland-server\nprotocol dispatch"]
         C_KMS["libdrm  drmModeAtomicCommit\n⚠ NOT through Mesa"]
     end
 
     subgraph KERNEL["Linux Kernel / DRM"]
-        K_RENDER["/dev/dri/renderD128  render node"]
+        K_RENDER["/dev/dri/renderD128\nrender node"]
         K_KMS["/dev/dri/card0  KMS"]
         K_GPU["GPU"]
         K_DISP["Display Engine"]
@@ -1211,9 +1211,10 @@ graph LR
 
     APP --> M_ICD & M_WSI
 
-    M_WSI -- "① Mesa → Compositor\nMesa as Wayland CLIENT\nzwp_linux_dmabuf_v1\nwl_surface.commit\nwp_linux_drm_syncobj_mgr_v1\nDMA-BUF fd + modifier + syncobj" --> C_WL
+    M_WSI -->|"① Mesa → Compositor\nMesa as Wayland CLIENT\nDMA-BUF fd + modifier + syncobj"| C_WL
 
-    C_WL -- "② Compositor → Mesa\ncompositor uses Mesa as LIBRARY\ngbm_bo_import · EGL · Vulkan" --> M_GBM & M_EGL
+    C_WL -->|"② Compositor → Mesa\nMesa as LIBRARY\ngbm_bo_import · EGL · Vulkan"| M_GBM
+    C_WL --> M_EGL
 
     M_ICD -->|GPU cmds| K_RENDER
     M_EGL -->|GPU cmds| K_RENDER
