@@ -53,18 +53,69 @@ The Input Assembler reads index and vertex buffers, expands index lists, and gen
 
 GPU-driven rendering via indirect draws alleviates the CPU side but does not help the IA: every triangle still passes through the fixed fetch pipeline whether it is visible or not.
 
-### 2.3 Geometry Shader Limitations
+### 2.3 Geometry Shaders: Use Cases and Limitations
 
-The Geometry Shader stage, while nominally programmable, is notoriously difficult to use efficiently. Limitations include:
+The Geometry Shader (GS) stage sits between the vertex/tessellation stages and the rasterizer, running once per input primitive and emitting zero or more output primitives. Despite its reputation as a performance trap, it enables several effects that are awkward to express any other way.
 
-- **Non-amplifying by default**: GS can only expand up to 1024 components, making it unsuitable for true geometry amplification at scale.
-- **Sequential invocation semantics**: the hardware guarantees in-order output, which forces serialisation even when invocations are logically independent.
-- **High register pressure**: GS typically executes fewer simultaneous wavefronts than VS or FS due to large per-invocation state.
-- **Output buffering**: GS output must be staged into a temporary ring buffer before reaching the rasterizer, creating memory bandwidth pressure.
+**Legitimate use cases.** The historically compelling reason to reach for a GS was **layered rendering in a single pass**: a GS can route each emitted primitive to a different framebuffer layer by writing `gl_Layer`, so one draw can populate all six faces of a cubemap shadow map, or all cascades of a cascaded shadow map, without re-submitting geometry per layer. This was long the *killer* use case, though `VK_KHR_multiview` now covers most layered-rendering needs more efficiently and portably. A GS is also natural for **billboard and point expansion** — taking a single input point and emitting a camera-facing quad — which drives particle systems, GPU sprites, and impostor rendering. It supports **debug visualization** by emitting line primitives from surface data: per-vertex normal and tangent lines, or wireframe overlays generated from triangle edges. Finally, because a GS has access to a primitive's full set of vertices with adjacency, it can perform **silhouette detection** — comparing face normals across shared edges to find silhouette edges — which underlies toon outline rendering and shadow-volume/fin extrusion techniques.
 
-Tessellation avoids some GS problems by using dedicated fixed-function units (Hull, Fixed Tessellator, Domain stages), but it is constrained to a fixed LOD model and cannot implement per-cluster frustum culling.
+**Performance traps.** These capabilities come at a steep cost:
 
-### 2.4 GPU-Driven Rendering: Indirect Draws and Their Remaining Limits
+- **Output buffering forces a ring-buffer round-trip**: because a GS emits a variable number of primitives, hardware must stage GS output into a temporary ring buffer in memory before it reaches the rasterizer, creating substantial memory bandwidth pressure that scales with amplification.
+- **In-order output serialisation**: the API guarantees that GS output primitives appear in input-primitive order, which forces the hardware to serialise the reassembly of logically independent invocations.
+- **High register pressure, low occupancy**: large per-invocation state (the buffered output vertices) means a GS typically launches far fewer simultaneous wavefronts than a VS or FS, throttling occupancy.
+- **Limited amplification**: a GS may emit at most 1024 total output components per invocation, capping true geometry amplification well below what modern GPU-driven pipelines demand.
+
+**Mobile and MoltenVK caveat.** Geometry shaders are not universally available. Many mobile Vulkan implementations expose no GS support at all, and MoltenVK on Apple hardware (which has no native geometry-shader stage) likewise omits it — in both cases `VkPhysicalDeviceLimits.maxGeometryOutputVertices == 0` and `VkPhysicalDeviceFeatures.geometryShader` is `VK_FALSE`. Any renderer that must run on those targets cannot depend on the GS stage, making it a poor foundation for portable engines.
+
+For general geometry amplification, culling, and per-cluster LOD, mesh shaders (§3) replace the geometry shader entirely, discarding the ring-buffer staging and in-order constraints that make the GS slow.
+
+### 2.4 Tessellation Shaders: Use Cases and Limitations
+
+Where the geometry shader amplifies primitives in a general but slow way, the tessellation pipeline amplifies geometry through **dedicated fixed-function silicon**, subdividing a coarse control mesh into a fine one on the fly.
+
+**The three sub-stages.** Tessellation inserts three sub-stages between the vertex shader and the rasterizer:
+
+1. The **Tessellation Control Shader** (TCS; the *hull shader* in D3D) runs once per control-point patch. Beyond optionally transforming control points, its job is to write the per-edge and interior subdivision factors into the built-ins `gl_TessLevelOuter[4]` and `gl_TessLevelInner[2]`.
+2. A **fixed-function tessellator** subdivides an abstract patch domain — triangles, quads, or isolines — according to those factors. It produces a mesh of domain-space vertices but knows nothing of world-space geometry.
+3. The **Tessellation Evaluation Shader** (TES; the *domain shader* in D3D) runs once per generated vertex. It receives `gl_TessCoord` (barycentric coordinates for the triangle domain, or UV coordinates for quads/isolines) and interpolates the control points to compute the final vertex position.
+
+**Vulkan API.** A tessellation pipeline sets `VkPipelineTessellationStateCreateInfo` with `patchControlPoints` giving the number of control points per patch, and the input topology must be `VK_PRIMITIVE_TOPOLOGY_PATCH_LIST`. The TCS and TES appear as ordinary `VkPipelineShaderStageCreateInfo` entries (stages `VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT` and `VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT`), with tessellation factors written from the TCS via the GLSL built-ins above. `VkTessellationDomainOriginStateCreateInfoKHR` selects the domain-origin convention (upper-left vs. lower-left) to match a given source API.
+
+**Use cases.**
+
+1. **Terrain with adaptive LOD** — the classic application. The TCS computes each patch edge's tessellation factor from that edge's screen-space projected length or its distance to the camera: nearby terrain is subdivided into many triangles while distant terrain stays coarse. The critical constraint is **crack-free joins** — two patches sharing an edge must be handed *identical* factors for that edge, which is achieved by deriving the factor from a symmetric function of the shared edge's endpoints so both patches compute the same value.
+2. **Displacement mapping** — tessellate a flat or low-poly base mesh, then in the TES sample a heightmap and push each generated vertex along the interpolated surface normal. This is the standard technique for rock surfaces, ocean waves, fine terrain detail, and snow deformation.
+3. **Smooth curved surfaces** — evaluate Bézier or B-spline patches, or PN-triangle approximations, in the TES so that characters and CAD models stay smooth at any zoom level. Because the hardware tessellator only understands abstract quad/triangle/isoline domains, each NURBS patch must first be converted to Bézier form (offline or in a compute pass) before it can be evaluated.
+4. **Hair, fur, and grass** — tessellate guide curves in the isolines domain into many strand instances, with per-strand variation seeded in the TCS.
+5. **Projected-grid water** — build a radial or screen-space grid whose vertex density follows the camera, then displace it by a wave function in the TES.
+
+The following TCS computes distance-based tessellation factors for a quad terrain patch:
+
+```glsl
+// TCS: adaptive terrain tessellation
+layout(vertices = 4) out;
+uniform vec3 uCameraPos;
+
+void main() {
+    gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;
+    if (gl_InvocationID == 0) {
+        float d = distance(uCameraPos, (gl_in[0].gl_Position.xyz + gl_in[2].gl_Position.xyz) * 0.5);
+        float lod = clamp(64.0 / (d * 0.1), 1.0, 64.0);
+        gl_TessLevelOuter[0] = gl_TessLevelOuter[1] =
+        gl_TessLevelOuter[2] = gl_TessLevelOuter[3] = lod;
+        gl_TessLevelInner[0] = gl_TessLevelInner[1] = lod;
+    }
+}
+```
+
+**Performance characteristics.** The fixed-function tessellator is more efficient than a geometry shader — dedicated silicon subdivides the domain with no ring-buffer staging — but it has its own pitfalls. Efficiency is poor at low tessellation factors: a factor of 1 still incurs tessellator setup overhead relative to a plain vertex-shader draw, so tessellating patches that stay coarse wastes throughput. The control shader also runs per control point (up to 32), adding invocation overhead proportional to patch complexity.
+
+**Portability.** Most desktop Vulkan drivers support tessellation, but it is absent on many mobile implementations (Mali prior to Valhall, Adreno prior to the 730 generation). An application must query `VkPhysicalDeviceFeatures.tessellationShader` before creating a tessellation pipeline.
+
+**Modern alternatives.** Mesh shaders with per-meshlet LOD selection (§3) replace adaptive tessellation for general geometry, and compute-driven displacement writing directly into vertex buffers replaces TES displacement. Tessellation nonetheless remains a viable, well-supported choice for terrain and displacement on hardware that lacks mesh-shader support.
+
+### 2.5 GPU-Driven Rendering: Indirect Draws and Their Remaining Limits
 
 `vkCmdDrawIndexedIndirect` ([spec](https://registry.khronos.org/vulkan/specs/latest/man/html/vkCmdDrawIndexedIndirect.html)) allows a GPU-resident buffer to supply draw parameters:
 
@@ -86,7 +137,7 @@ However, fundamental IA constraints remain:
 - The `firstVertex` model requires the application to allocate vertex ranges in advance; dynamic per-cluster deduplication is impossible.
 - Sub-pixel micro-triangles still reach the rasterizer and generate coverage tests, wasting fixed-function hardware on invisible geometry.
 
-### 2.5 Why Nanite Required Mesh Shaders
+### 2.6 Why Nanite Required Mesh Shaders
 
 Unreal Engine 5's Nanite system renders scenes containing billions of source triangles by maintaining a hierarchical cluster DAG and selecting, per-frame, which clusters at which LOD to render. In a traditional pipeline:
 
