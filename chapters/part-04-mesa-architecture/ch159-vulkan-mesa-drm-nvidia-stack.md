@@ -1186,6 +1186,7 @@ Mesa and Wayland are often described as adjacent layers in the graphics stack, b
 Arrow ① shows Mesa pushing frames **to** the compositor (Mesa as Wayland client). Arrow ② shows the compositor calling **back into** Mesa for its own rendering (Mesa as library). Both arrows cross between the same two containers in opposite directions.
 
 ```mermaid
+%%{init: {"flowchart": {"rankSpacing": 200, "nodeSpacing": 40}}}%%
 graph LR
     APP["Application\nVulkan / EGL draw calls"]
 
