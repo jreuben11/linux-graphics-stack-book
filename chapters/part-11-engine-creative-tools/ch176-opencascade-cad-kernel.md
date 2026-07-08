@@ -39,6 +39,7 @@
    - 9.2 [Distribution Packages](#92-distribution-packages)
    - 9.3 [Linking](#93-linking)
 10. [Pipeline Comparison Diagram](#10-pipeline-comparison-diagram)
+- [GPU-Accelerated Shape Analysis](#gpu-accelerated-shape-analysis)
 11. [Integrations](#11-integrations)
 
 ---
@@ -874,6 +875,77 @@ flowchart TD
     Shape2 --> Render
     Shape2 --> Export
 ```
+
+---
+
+## GPU-Accelerated Shape Analysis
+
+OCCT provides CPU-side geometric analysis through its `BRepGProp` (global properties — volume, surface area, inertia), `BRepExtrema` (distance and proximity queries), and `ShapeAnalysis` (topology and geometry validation) modules. These operate on the exact BRep representation and are authoritative, but they are sequential and can be slow on large assemblies. For large assemblies, point clouds, or real-time inspection workflows, many of these computations can be moved to the GPU. The algorithms below operate on the tessellated mesh output of `BRepMesh_IncrementalMesh` (§4.4) or on point clouds derived from scanned geometry, using Vulkan compute shaders or CUDA. They trade the exactness of the BRep kernel for interactive throughput and dense per-vertex feedback.
+
+### Per-Vertex Curvature on GPU
+
+Principal curvatures, mean curvature, and Gaussian curvature at each vertex can be computed in a compute shader using the cotangent-weight discrete Laplace–Beltrami operator. For each vertex `v`, the mean curvature normal is:
+
+```
+H(v) = (1 / 2A) · Σ (cot αᵢⱼ + cot βᵢⱼ)(vⱼ − v)
+```
+
+where `A` is the Voronoi area, `αᵢⱼ` and `βᵢⱼ` are the angles opposite the shared edge in the two adjacent triangles, and the sum is over one-ring neighbors. Each vertex's one-ring neighbors are stored in a CSR adjacency buffer (a flat neighbor-index array plus a per-vertex offset table) in a storage buffer. A compute dispatch with one workgroup per vertex evaluates this formula in parallel. Output is a per-vertex `float2` (mean, Gaussian) or `float4` (two principal curvatures plus principal directions) buffer, visualized as a false-color overlay in the AIS display.
+
+```glsl
+// Mean-curvature normal accumulation over the one-ring (Vulkan compute)
+uint v = gl_GlobalInvocationID.x;
+vec3 Hn = vec3(0.0);
+float area = 0.0;
+for (uint e = offset[v]; e < offset[v + 1u]; ++e) {
+    uint j = nbr[e];
+    float w = cotAlpha[e] + cotBeta[e];       // precomputed cotangent weights
+    Hn   += 0.5 * w * (pos[j].xyz - pos[v].xyz);
+    area += voronoiArea[e];
+}
+curvature[v] = vec2(length(Hn) / area, gaussianFromAngleDeficit[v]);
+```
+
+The Gaussian term derives from the angle deficit `(2π − Σθ) / A` accumulated in the same pass. This per-vertex curvature is the core operation for wall-thickness heat maps, draft-angle visualization, and curvature-guided mesh simplification.
+
+### Heat Method for Geodesic Distance
+
+Geodesic distance from a source vertex set to all other vertices on a mesh is a key primitive for shape analysis, parameterization, and segmentation. The heat method reduces it to two GPU-friendly sparse linear solves:
+
+1. **Heat step:** solve `(M − t·L) u = u₀` for heat flow `u`, where `M` is the mass matrix, `L` is the cotangent Laplacian, `t` is a time step (typically the squared mean edge length), and `u₀` is 1 at source vertices and 0 elsewhere.
+2. **Divergence + Poisson:** normalize the gradient of `u` to obtain a unit vector field `X`, then solve `L·φ = ∇·X` for the distance function `φ`.
+
+Both solves are sparse symmetric positive-definite (SPD) systems. On the GPU they map to conjugate-gradient (CG) iterations, with sparse matrix–vector products computed in a compute shader over the same CSR adjacency structure used for curvature. The CSR matrix for a typical mesh of 100k triangles fits comfortably in GPU memory. Convergence typically requires 50–200 CG iterations. Because both solves reuse the factored or preconditioned Laplacian, changing the source set only re-runs the cheap right-hand-side assembly, making interactive "distance-from-picked-point" queries practical.
+
+### GPU-Accelerated RANSAC for Primitive Segmentation
+
+Point clouds or dense mesh samples can be segmented into analytic primitives (planes, cylinders, spheres, cones) using GPU RANSAC. The algorithm has three stages:
+
+1. **Hypothesis generation:** each GPU thread samples a minimal point set (3 points for a plane, 5 for a cylinder), fits a primitive hypothesis, and stores it in a shared buffer.
+2. **Inlier scoring:** a second pass scores each hypothesis against all points in parallel — each thread checks whether its assigned point lies within distance `ε` of the hypothesis and atomically increments that hypothesis's inlier count.
+3. **Selection and refinement:** the hypothesis with the most inliers is selected, and a least-squares refinement over its inliers produces the final primitive parameters.
+
+Stage 2 is embarrassingly parallel and constitutes over 90% of runtime; the GPU executes thousands of hypothesis scores simultaneously. A single Vulkan compute dispatch over `(num_hypotheses × num_points / 64)` workgroups completes in milliseconds for a 500k-point cloud. This is the core of reverse-engineering pipelines: scan a machined part → RANSAC → labeled planar/cylindrical faces → reconstruct BRep topology in OCCT via `BRepBuilderAPI` from the fitted analytic surfaces.
+
+### BVH Ray Queries for Inspection Analysis
+
+With `VK_KHR_ray_query`, any Vulkan compute shader can trace rays against a `VkAccelerationStructureKHR` built over the tessellated OCCT mesh. This enables several inspection primitives, each a single compute dispatch:
+
+- **Wall thickness:** from each surface point, cast a ray along the inward normal; the hit distance is the local wall thickness. A thickness heat map is a single compute dispatch.
+- **Draft-angle check:** cast rays along the mold-pull direction; the angle between the hit normal and the pull direction is the local draft angle. Faces below the minimum draft threshold are flagged.
+- **Accessibility analysis:** cast rays from candidate tool positions to surface points to identify regions that cannot be reached by a cutting tool of a given radius.
+- **Inside/outside classification:** for point clouds, cast multiple rays per point in random directions; the parity of intersection counts determines interior versus exterior.
+
+```glsl
+// Wall thickness via ray query (Vulkan compute)
+rayQueryEXT rq;
+rayQueryInitializeEXT(rq, accelStruct, gl_RayFlagsOpaqueEXT,
+    0xFF, origin, 0.001, -normal, maxDist);
+rayQueryProceedEXT(rq);
+float thickness = rayQueryGetIntersectionTEXT(rq, true);
+```
+
+These GPU analysis stages complement OCCT's CPU-side `BRepGProp` and `ShapeAnalysis` modules: OCCT provides exact geometric results on the BRep, while the GPU stages provide real-time approximate analysis on tessellated or point-cloud representations, with visual feedback suitable for interactive inspection workflows.
 
 ---
 
