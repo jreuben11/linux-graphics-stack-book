@@ -57,30 +57,78 @@ graph TD
     subgraph "Custom DRM/KMS Backend"
         Mutter["Mutter\n(GNOME Shell)"]
         KWin["KWin\n(KDE Plasma)"]
-        gamescope["gamescope\n(Valve)"]
+        gamescope["gamescope\n(Valve / Steam Deck)"]
     end
     subgraph "wlroots-based"
         Sway["Sway\n(tiling, i3-compatible)"]
-        Hyprland["Hyprland\n(animated dynamic tiling)"]
+        Wayfire["Wayfire\n(plugin-extensible, Pi OS)"]
+        labwc["labwc\n(openbox-compat stacking)"]
     end
-    wlroots["wlroots\n(shared compositor toolkit)"] --> Sway
-    wlroots --> Hyprland
+    subgraph "Own Backend"
+        Hyprland["Hyprland\n(Aquamarine backend, 2024+)"]
+    end
+    subgraph "Smithay / Rust"
+        cosmic["cosmic-comp\n(COSMIC DE, Pop!_OS)"]
+    end
+    wlroots["wlroots\n(shared compositor toolkit, ch21)"] --> Sway
+    wlroots --> Wayfire
+    wlroots --> labwc
+    aquamarine["Aquamarine\n(Hyprland's own backend)"] --> Hyprland
+    smithay["Smithay\n(Rust compositor library, ch21)"] --> cosmic
     DRM["DRM/KMS\n(kernel)"] --> Mutter
     DRM --> KWin
     DRM --> gamescope
     DRM --> wlroots
+    DRM --> aquamarine
+    DRM --> smithay
 ```
 
-The six compositors covered in this chapter span a wide range of architectural choices, target audiences, and protocol ambitions. The table below provides a bird's-eye comparison across the dimensions that matter most to graphics developers: the underlying toolkit, implementation language, primary use case, session model, Wayland protocol coverage, GPU API, and the single most distinctive technical characteristic of each compositor. These dimensions are unpacked in detail in the sections that follow.
+The eight compositors covered in this chapter span a wide range of architectural choices, target audiences, and protocol ambitions. The table below provides a bird's-eye comparison across the dimensions that matter most to graphics developers: the underlying toolkit, implementation language, primary use case, session model, Wayland protocol coverage, GPU API, and the single most distinctive technical characteristic of each compositor. These dimensions are unpacked in detail in the sections that follow.
 
 | Compositor | Foundation | Language | Primary DE / use case | Session type | Protocol tier | GPU API | Notable differentiator |
 |---|---|---|---|---|---|---|---|
-| Mutter | Clutter/Cogl → native Wayland | C | GNOME Shell | Wayland + X11 (XWayland) | Extensive (xdg-shell, KMS overlay, HDR) | OpenGL/Vulkan (cogl) | GTK/GNOME integration; WebRender-style damage tracking in 2025+ |
-| KWin | KWayland (custom) | C++/QML | KDE Plasma | Wayland + X11 (XWayland) | Extensive (xdg-shell, KMS overlay, HDR) | OpenGL/Vulkan (KWin scene) | Qt/QML scene graph; most protocol coverage of any desktop compositor |
-| Sway | wlroots | C | tiling WM (i3 replacement) | Wayland-only | Core (xdg-shell, layer-shell) | OpenGL (wlr_renderer) | i3-compatible config; minimal, scriptable |
-| Hyprland | wlroots / own scene-graph | C++ | Tiling + animation enthusiasts | Wayland-only | Core + extensions | OpenGL (custom renderer) | Bezier animations; plugin API; highly extensible |
-| gamescope | wlroots / KMS direct | C++ | Gaming / Steam Deck | Nested Wayland or KMS-direct | Gaming-focused (VRR, HDR, latency) | Vulkan (direct KMS overlay) | Steam Deck display stack; FSR/NIS integration; direct scanout |
-| COSMIC Compositor | Smithay (Rust) | Rust | COSMIC DE (System76) | Wayland-only | Growing | Vulkan (smithay/wgpu) | First major Rust-native compositor; safe concurrency model |
+| Mutter | Custom (MetaBackendNative) | C | GNOME Shell | Wayland + X11 (XWayland) | Extensive (xdg-shell, KMS overlay, HDR) | OpenGL (NGL renderer) | GTK/GNOME integration; Clutter scene graph; MetaPlugin/GJS scripting |
+| KWin | Custom (DrmBackend) | C++/QML | KDE Plasma | Wayland + X11 (XWayland) | Extensive (xdg-shell, KMS overlay, HDR, explicit sync) | OpenGL + software (ScenePainter) | Qt/QML scene graph; most complete protocol coverage of any desktop compositor |
+| Sway | wlroots | C | Tiling WM (i3 replacement) | Wayland-only | Core (xdg-shell, layer-shell) | GLES2 (wlr_renderer) | i3-compatible config; minimal, scriptable via IPC |
+| Hyprland | Aquamarine (own backend, 2024+) | C++ | Dynamic tiling + animation | Wayland-only | Core + Hyprland extensions | GLES2 (custom renderer) | Bezier animations; hyprpm plugin API; Aquamarine rendering-API-agnostic backend |
+| Wayfire | wlroots | C++ | Plugin-extensible stacking (Pi OS default) | Wayland-only | Core + extensions | GLES2 (wlr_renderer + wf::OpenGL) | Runtime plugin system (dlopen); default compositor on Raspberry Pi OS Bookworm |
+| labwc | wlroots | C | Minimal stacking (openbox-compatible) | Wayland-only | Core (12 protocols) | GLES2 (wlr_renderer) | openbox rc.xml config; adopted by LXQt; minimal footprint |
+| gamescope | Vulkan (custom) + libvulkan | C++ | Gaming / Steam Deck | Nested Wayland or KMS-direct | Gaming-focused (VRR, HDR, latency) | Vulkan | FSR/NIS upscaling as Vulkan compute; libliftoff plane assignment; Steam Deck display stack |
+| COSMIC Compositor | Smithay (Rust) | Rust | COSMIC DE (System76) | Wayland-only | Growing | GLES2 + multi-GPU (GlMultiRenderer) | First major Rust-native production compositor; safe ownership model via Smithay |
+
+### Feature Matrix: Compositors vs. Toolkit Libraries (ch21 ↔ ch22)
+
+The table below zooms in on feature support and maps each production compositor back to the toolkit libraries from Chapter 21 that supply — or don't supply — those features. The first two rows (wlroots and Smithay) are included as library baselines, not compositors. Features marked *via lib* mean the compositor inherits the capability from its upstream toolkit library rather than implementing it directly; this matters because it tells you which capabilities land in multiple wlroots-based compositors simultaneously when the library is updated.
+
+**Columns:**
+- **VRR**: Variable-refresh-rate via `VRR_ENABLED` KMS connector property
+- **HDR**: High dynamic range output — colour metadata via `HDR_OUTPUT_METADATA` KMS blob or ICC profile pipeline
+- **Direct scanout**: Promoting a client buffer directly to a KMS overlay plane, bypassing the compositor render pass
+- **Explicit sync**: `wp_linux_drm_syncobj_v1` — GPU timeline fence synchronisation between client and compositor (see Chapter 20 §8)
+- **Multi-GPU**: Rendering across two or more GPUs with cross-device DMA-BUF handoff
+- **XWayland**: Running X11 clients inside the Wayland session
+- **Plugin/ext API**: A stable extension point for third-party code (shared library plugins or scripted effect APIs)
+
+| | Type | Lang | DRM backend | Renderer(s) | Scene graph | XWayland | VRR | HDR | Direct scanout | Explicit sync¹ | Multi-GPU | Plugin API |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **wlroots** (ch21 §1–10) | Library | C | drm, wayland, headless, X11 | GLES2, Vulkan, pixman | `wlr_scene` | yes (`wlr_xwayland`) | yes | Vulkan path only (partial) | yes (`wlr_scene` hw planes) | yes (0.18+) | partial | N/A — library |
+| **Smithay** (ch21 §11) | Library | Rust | DRM, wayland, winit | GlesRenderer, PixmanRenderer, GlMultiRenderer | `smithay::desktop::space` | yes | yes | no (0.7.0) | yes (`DrmCompositor`) | no (0.7.0) | yes (GlMultiRenderer) | N/A — library |
+| **Mutter** | Compositor lib | C | Custom (`MetaBackendNative`) | OpenGL (NGL), Cogl legacy | `ClutterStage` / `ClutterActor` | yes (`MetaXWaylandManager`) | yes (GNOME 45+) | yes (colord ICC, GNOME 47+) | yes (`MetaKmsPlane`) | yes (GNOME 48+) | yes | yes (`MetaPlugin` via GJS) |
+| **KWin** | Compositor | C++ | Custom (`DrmBackend`, `DrmGpu`) | OpenGL (`SceneOpenGL`), software (`ScenePainter`) | KWin `SceneFrame` / `WindowItem` | yes | yes | yes (Plasma 6.0) | yes (`tryDirectScanout`) | yes (Plasma 6.1) | yes | yes (Effects API, QML scripting) |
+| **Sway** | Compositor | C | via wlroots | GLES2 (via wlroots) | `wlr_scene` (via wlroots) | yes (optional build flag) | yes (*via lib*) | no | yes (*via lib*) | yes (*via lib*, wlroots 0.18+) | limited | no (IPC + config scripting) |
+| **Hyprland** | Compositor | C++ | Aquamarine (own) | GLES2 (own renderer) | Own scene graph | yes (optional) | yes | experimental | yes | yes | yes (`DrmCompositor`-style) | yes (hyprpm C++ `.so` plugins) |
+| **Wayfire** | Compositor | C++ | via wlroots | GLES2 (`wlr_renderer` + `wf::OpenGL`) | `wf::scene` (extends `wlr_scene`) | yes (optional) | yes (*via lib*) | no | partial (*via lib*) | yes (*via lib*, wlroots 0.18+) | limited | yes (`wf::plugin_interface_t` dlopen) |
+| **labwc** | Compositor | C | via wlroots | GLES2 (via wlroots) | `wlr_scene` (via wlroots) | yes | yes (*via lib*) | no | yes (*via lib*) | yes (*via lib*, wlroots 0.18+) | limited | no |
+| **gamescope** | Micro-compositor | C++ | Vulkan + direct KMS (`libvulkan`, `libdrm`) | Vulkan (`rendervulkan.cpp`) | Simple plane list (`steamcompmgr`) | yes (required — hosts Xwayland game) | yes | yes (own HDR pipeline, no colord) | yes (`libliftoff` plane assignment) | yes | yes | no |
+| **cosmic-comp** | Compositor | Rust | via Smithay (`DrmDevice`) | GLES2 + multi-GPU (via Smithay) | `smithay::desktop::space` (via Smithay) | yes (via Smithay) | yes (*via lib*) | no | yes (*via lib*, `DrmCompositor`) | no (*lib* limitation, Smithay 0.7.0) | yes (*via lib*, `GlMultiRenderer`) | no |
+
+¹ `wp_linux_drm_syncobj_v1` — requires kernel DRM syncobj support and a client that advertises `linux_drm_syncobj_surface_v1`.
+
+**Reading the table.** The *via lib* annotation is the key insight: wlroots-based compositors (Sway, Wayfire, labwc) and Smithay-based compositors (cosmic-comp) inherit capability additions automatically when the upstream library gains them. When wlroots 0.18 shipped `wp_linux_drm_syncobj_v1` support in 2024, all three wlroots-based compositors gained explicit sync in the same release cycle. Conversely, if a feature requires compositor-level policy (HDR tone-mapping decisions, plugin isolation, layout logic) it cannot come from the library alone — each compositor must implement it independently. The HDR column illustrates this: wlroots has partial Vulkan-path HDR, but no wlroots-based compositor has shipped a complete user-visible HDR pipeline as of 2026, while Mutter, KWin, and gamescope — all with custom backends — have done so.
+
+Hyprland's migration to Aquamarine (§5) gives it the autonomy of the custom-backend compositors without the legacy C codebase: it can ship VRR, direct scanout, multi-GPU, and its own explicit-sync implementation on its own schedule, independent of wlroots releases. The cost is full ownership of the backend stack.
+
+gamescope stands apart from every other row: it is the only compositor that makes Vulkan the *primary* rendering API rather than a secondary renderer, and the only one where XWayland is a *hard dependency* (it hosts the game's X11 window) rather than an optional legacy bridge. Its HDR pipeline bypasses both `colord` and `wp_color_management_v1` in favour of direct `HDR_OUTPUT_METADATA` KMS blob writes, giving it lower latency at the cost of compositing-stack portability.
 
 ---
 
