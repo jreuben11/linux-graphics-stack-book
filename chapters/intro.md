@@ -54,6 +54,22 @@ graph TD
     P21["Part XXI\nLegacy & History\nX11 · XWayland · DRI · Design Philosophy"] -.->|"contextualizes"| P01
 ```
 
+## Scale of the Stack
+
+The Linux graphics stack is one of the largest collaborative software systems in existence. The table below frames the chapters that follow — each row is a major subsystem covered in depth in one or more parts of this book.
+
+| Component | Language | Approx. LOC (end 2025) | Covered in |
+|---|---|---|---|
+| **Mesa** (GPU drivers + compilers) | C / C++ / Rust | **~5.9 million** | Parts IV, V |
+| **Linux kernel DRM subsystem** | C | ~350k | Part I |
+| **KWin** (KDE Wayland compositor) | C++ | ~290k | Part VI |
+| **Mutter** (GNOME Wayland compositor) | C | ~280–300k | Part VI |
+| **wlroots** (compositor library) | C | ~52k | Part VI |
+| **libwayland** (protocol library) | C | ~35k | Part VI |
+| **wayland-protocols** (protocol XML) | XML | ~12k | Part VI |
+
+Mesa at ~5.9 million lines is roughly **170× the size of libwayland** and **110× the size of wlroots**. It adds approximately one million lines per year as new GPU hardware generations and driver families land. The asymmetry is structural: the Wayland protocol defines a stable wire interface (small, slow-changing); Mesa contains the actual GPU command-stream encoders, shader compilers, and memory allocators for fifteen hardware families (enormous, fast-moving). Understanding both ends of this scale gap — and why they are both necessary — is one of the goals of this book. [[Source: Phoronix Mesa 2025 git statistics]](https://www.phoronix.com/news/Mesa-Git-Stats-2025)
+
 ## The Twenty-One Parts at a Glance
 
 **Part I — The Kernel Layer** is the mandatory foundation for every other part. It establishes the **Direct Rendering Manager** (**DRM**) subsystem: how GPU kernel modules register via `struct drm_driver`, how `/dev/dri/cardN` primary nodes and `/dev/dri/renderDN` render nodes provide split privilege levels, how **GEM** buffer objects are allocated and reference-counted, how **DMA-BUF** file descriptors cross process boundaries without copies, how **KMS** atomic commits deliver frames from framebuffer to photon via the CRTC/plane/connector/encoder pipeline, and how the **drm_gpu_scheduler** arbitrates fair GPU time across competing processes using a CFS-inspired virtual-runtime algorithm. Part I also covers advanced display features — VRR, HDR, explicit sync via drm_syncobj — and GPU power management through the Linux runtime PM framework.

@@ -25,6 +25,21 @@ The compositor receives these buffer fds from potentially hundreds of clients si
 
 The short definition: **a compositor owns the display hardware, arbitrates all surface presentation, and arbitrates all input routing.** It is not just a "window manager" in the X11 sense — on Wayland, the compositor and the display server are the same process.
 
+## Scale of the Wayland Ecosystem
+
+The Wayland ecosystem is deliberately layered, and codebase sizes reflect the separation of concerns: the core protocol is small and stable; complexity accumulates in the compositors that implement it.
+
+| Component | Language | Approx. LOC | Role |
+|---|---|---|---|
+| **libwayland** | C | ~35k | Protocol marshalling, Unix socket transport, object model |
+| **wayland-protocols** | XML | ~12k | Protocol definitions (XML only; generated C code is separate) |
+| **wlroots** | C | ~52k | Compositor library: DRM backend, scene graph, protocol implementations |
+| **Sway** | C | ~22k | Tiling compositor built on wlroots |
+| **Mutter** (GNOME) | C | ~280–300k | Production compositor for GNOME Shell; includes the Clutter scene graph |
+| **KWin** (KDE) | C++ | ~290k | Production compositor for KDE Plasma; includes its own effects engine |
+
+For comparison, **Mesa** — the GPU driver layer that every compositor depends on for rendering — stands at approximately **5.9 million lines** (end 2025) and grows by ~1 million lines per year. The Wayland protocol itself is thin by design; the complexity in this part of the stack lives in the compositors above it and the GPU drivers beneath it.
+
 ## VBLANK: The Display Timing Heartbeat
 
 **VBLANK** (Vertical Blanking Interval) is the period between the end of one video frame's scanout and the start of the next. During scanout, the display controller reads pixels row by row from the framebuffer and sends them to the display panel at a rate determined by the pixel clock. After the last row of a frame is sent, there is a short gap — the blanking interval — before the controller begins reading the next frame. This gap is the VBLANK period.
