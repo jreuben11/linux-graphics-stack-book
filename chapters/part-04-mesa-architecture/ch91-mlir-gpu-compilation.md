@@ -15,6 +15,7 @@
 - [5. Triton FlashAttention and Kernel Performance](#5-triton-flashattention-and-kernel-performance)
 - [6. IREE: MLIR-Based Inference for Vulkan](#6-iree-mlir-based-inference-for-vulkan)
 - [7. XLA: Accelerated Linear Algebra](#7-xla-accelerated-linear-algebra)
+  - [7.0 OpenXLA, HLO, MHLO, StableHLO, CHLO, and IREE: The Ecosystem Map](#70-openxla-hlo-mhlo-stablehlo-chlo-and-iree-the-ecosystem-map)
 - [8. SPIR-V as the Cross-Compiler Target](#8-spir-v-as-the-cross-compiler-target)
 - [9. Cooperative Matrix and Tensor Core Access](#9-cooperative-matrix-and-tensor-core-access)
 - [10. The Mesa Connection: SPIR-V to NIR to ISA](#10-the-mesa-connection-spir-v-to-nir-to-isa)
@@ -563,7 +564,83 @@ IREE's Vulkan path is used for on-device inference on Android because Vulkan is 
 
 ## 7. XLA: Accelerated Linear Algebra
 
-XLA is the deep learning compiler originally developed by Google for TPUs and subsequently extended to GPU and CPU [Reference: https://openxla.org/xla]. It is the compilation back-end for JAX (`jax.jit`), TensorFlow (via `tf.function`), and PyTorch XLA. Its primary representation is **StableHLO** — a stable, versioned set of approximately 100 statically-shaped operations that are a stabilised subset of XLA's original HLO IR. [Source: OpenXLA StableHLO GitHub](https://github.com/openxla/stablehlo)
+XLA is the deep learning compiler originally developed by Google for TPUs and subsequently extended to GPU and CPU [Reference: https://openxla.org/xla]. It is the compilation back-end for JAX (`jax.jit`), TensorFlow (via `tf.function`), and PyTorch XLA.
+
+### 7.0 OpenXLA, HLO, MHLO, StableHLO, CHLO, and IREE: The Ecosystem Map
+
+These five names refer to distinct layers of a single compilation ecosystem. Understanding how they relate is prerequisite to reading any of the following sections clearly.
+
+**OpenXLA** is the open-source project umbrella announced by Google in October 2022, hosted at [openxla.org](https://openxla.org). It governs three formerly-separate projects as sibling sub-projects under one governance roof:
+
+| Sub-project | Repository | Role |
+|-------------|-----------|------|
+| XLA | `github.com/openxla/xla` | The compiler: graph optimisation + code generation |
+| StableHLO | `github.com/openxla/stablehlo` | The stable IR interchange format |
+| IREE | `github.com/openxla/iree` | Alternative runtime + codegen for inference |
+
+Before OpenXLA, IREE was a separate Google research project. Moving it under the same umbrella formalised StableHLO as the handoff contract between XLA-style frontends and IREE's codegen pipeline.
+
+**The HLO lineage** evolved in three stages:
+
+```
+HLO  (2016–present)
+ ├─ XLA's original, monolithic C++ IR
+ ├─ HloInstruction / HloComputation / HloModule objects
+ ├─ Not MLIR-based; no textual dialect; no serialization guarantee
+ └─ Still the internal IR XLA optimises (fusion, layout, sharding)
+
+MHLO  (2019–present, internal)
+ ├─ MLIR-dialect translation of HLO ops ("Meta HLO" / "ML HLO")
+ ├─ Lives in the mlir-hlo repo (github.com/tensorflow/mlir-hlo)
+ ├─ Enables MLIR passes (canonicalisation, CSE) on HLO graphs
+ ├─ Not stable: op signatures change with XLA internals
+ └─ Bridge dialect — not a public API
+
+StableHLO  (2022–present, public)
+ ├─ Stable, versioned subset of MHLO (~105 ops as of v1.0)
+ ├─ Backward and forward compatibility guarantees across versions
+ ├─ Designed as the public serialization format for ML models
+ ├─ Producer: JAX, TF, PyTorch XLA (via jax.export / tf.SavedModel)
+ └─ Consumer: XLA itself, IREE, third-party runtimes
+```
+
+**CHLO** (Client HLO, `github.com/tensorflow/mlir-hlo/tree/master/mhlo/transforms/chlo`) sits one level *above* StableHLO. It contains higher-level ops corresponding to client-facing math operations — complex numbers, special functions (`chlo.bessel_i1e`, `chlo.erf`), broadcasting semantics — that do not map 1:1 to hardware primitives. The CHLO→StableHLO lowering (`-chlo-legalize-to-hlo`) decomposes these composite ops into the ~105 primitive StableHLO ops before serialisation.
+
+**The handoff contract.** StableHLO's design rationale is the separation of concerns between XLA as a *training-optimised compiler* and IREE (or any third party) as an *inference-optimised runtime*:
+
+```
+JAX / TF / PyTorch XLA
+    │
+    │  [trace → jaxpr / TF graph → MHLO → StableHLO]
+    ▼
+StableHLO  ←── the stable public boundary ───────────────┐
+    │                                                     │
+    ├─ XLA path                        ├─ IREE path       │
+    │  StableHLO → MHLO → HLO          │  StableHLO →     │
+    │  → fusion/layout/sharding         │  Flow → Stream → │
+    │  → cuBLAS/Triton/LLVM IR          │  HAL → SPIR-V /  │
+    │  → PTX / AMDGCN / XLA CPU         │  PTX / CPU       │
+    │                                   │                  │
+    └───── both are OpenXLA siblings ───┘                  │
+                                                           │
+    Third-party runtimes (ORT, TFLite, custom) ────────────┘
+    can also consume StableHLO without tracking XLA internals
+```
+
+This separation means an inference runtime can be validated against a frozen StableHLO model artifact without tracking XLA's internal MHLO evolution. The `jax.export` API (JAX ≥ 0.4.27) serialises a JIT-compiled function directly to a StableHLO `.mlirbc` (MLIR bytecode) file, which IREE can then compile independently. [Source: JAX export docs](https://jax.readthedocs.io/en/latest/export/export.html) [Source: OpenXLA StableHLO compatibility](https://github.com/openxla/stablehlo/blob/main/docs/compatibility.md)
+
+**Summary table:**
+
+| Name | Layer | MLIR? | Stable? | Who produces | Who consumes |
+|------|-------|--------|---------|--------------|--------------|
+| HLO | XLA internal graph IR | No | No | XLA tracing | XLA codegen |
+| CHLO | Client ops above StableHLO | Yes | No | JAX/TF frontend | CHLO→HLO lowering |
+| MHLO | MLIR dialect of HLO | Yes | No | XLA internals | XLA MLIR passes |
+| StableHLO | Public interchange IR | Yes | **Yes** | JAX, TF, PyTorch XLA | XLA, IREE, 3rd parties |
+| OpenXLA | Project umbrella | — | — | Google + community | — |
+| IREE | Runtime + codegen | Yes (via dialects) | — | StableHLO input | SPIR-V / PTX / CPU |
+
+[Source: OpenXLA announcement](https://opensource.googleblog.com/2022/11/introducing-openxla-project.html) [Source: StableHLO spec](https://github.com/openxla/stablehlo/blob/main/docs/spec.md) [Source: MHLO → StableHLO migration](https://github.com/openxla/stablehlo/blob/main/docs/status.md)
 
 ### 7.1 HLO and Compilation Pipeline
 
