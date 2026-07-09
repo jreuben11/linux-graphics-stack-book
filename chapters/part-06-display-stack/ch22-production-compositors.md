@@ -1215,20 +1215,27 @@ Beyond the shared repository, each compositor maintains its own extensions. KDE 
 
 ### Extension Support Matrix
 
-The following table summarises protocol availability across the five compositors as of 2025–2026. "Yes" means the compositor implements the server side; "No" means it does not; "Partial" means implementation is in progress or only partially complete.
+The following table summarises protocol availability across all eight compositors as of 2025–2026. "Yes" means the compositor implements the server side; "No" means it does not; "Partial" means implementation is in progress or only partially complete. Entries annotated *(wlroots)* or *(Smithay)* indicate the capability is inherited from the upstream toolkit library rather than implemented directly by the compositor — these will advance in lockstep with the library.
 
-| Protocol | Mutter (GNOME 48) | KWin (Plasma 6.1) | Sway | Hyprland | gamescope |
-|---|---|---|---|---|---|
-| `xdg-shell` | Yes | Yes | Yes | Yes | Yes |
-| `wp_presentation` | Yes | Yes | Yes | Yes | Yes |
-| `linux-dmabuf-v1` | Yes | Yes | Yes | Yes | Yes |
-| `wp_linux_drm_syncobj_v1` | Partial | Yes | Yes (wlroots) | Yes (wlroots) | No |
-| `wp_color_management_v1` | Yes (GNOME 48) | Yes | Partial | Partial | No |
-| `wp_fifo_v1` | Partial | Yes | Yes (wlroots) | Yes (wlroots) | No |
-| `zwlr_layer_shell_v1` | No | No | Yes | Yes | No |
-| `zwlr_screencopy_manager_v1` | No | No | Yes | Yes | Partial |
-| `ext_session_lock_v1` | No | No | Yes | Yes | No |
-| `xdg_decoration` | Yes | Yes | Yes | Yes | No |
+| Protocol | Mutter (GNOME 48) | KWin (Plasma 6.1) | Sway | Hyprland | Wayfire | labwc | gamescope | cosmic-comp |
+|---|---|---|---|---|---|---|---|---|
+| `xdg-shell` | Yes | Yes | Yes | Yes | Yes *(wlroots)* | Yes *(wlroots)* | Yes | Yes *(Smithay)* |
+| `wp_presentation` | Yes | Yes | Yes *(wlroots)* | Yes | Yes *(wlroots)* | Yes *(wlroots)* | Yes | Yes *(Smithay)* |
+| `linux-dmabuf-v1` | Yes | Yes | Yes *(wlroots)* | Yes | Yes *(wlroots)* | Yes *(wlroots)* | Yes | Yes *(Smithay)* |
+| `wp_linux_drm_syncobj_v1` | Yes (GNOME 48) | Yes (Plasma 6.1) | Yes *(wlroots 0.18)* | Yes (Aquamarine) | Yes *(wlroots 0.18)* | Yes *(wlroots 0.18)* | No | No *(Smithay 0.7.0)* |
+| `wp_color_management_v1` | Yes (GNOME 48) | Yes (Plasma 6.2) | Partial *(wlroots)* | Partial | Partial *(wlroots)* | Partial *(wlroots)* | No | No |
+| `wp_fifo_v1` | Partial | Yes | Yes *(wlroots)* | Yes | Yes *(wlroots)* | Yes *(wlroots)* | No | Partial |
+| `zwlr_layer_shell_v1` | No | No | Yes *(wlroots)* | Yes | Yes *(wlroots)* | Yes *(wlroots)* | No | Yes *(Smithay)* |
+| `zwlr_screencopy_manager_v1` | No | No | Yes *(wlroots)* | Yes | Yes *(wlroots)* | Yes *(wlroots)* | Partial | Yes *(Smithay)* |
+| `ext_session_lock_v1` | No | No | Yes *(wlroots)* | Yes | Yes *(wlroots)* | Yes *(wlroots)* | No | Yes *(Smithay)* |
+| `xdg_decoration` | Yes | Yes | Yes *(wlroots)* | Yes | Yes *(wlroots)* | Yes *(wlroots)* | No | Yes *(Smithay)* |
+
+**Notes on selected entries:**
+- `wp_linux_drm_syncobj_v1` for Mutter was upgraded to "Yes" in GNOME 48 (2025); earlier GNOME versions had a partial/experimental implementation.
+- Hyprland's `wp_linux_drm_syncobj_v1` is implemented in Aquamarine, not inherited from wlroots — the compositor migrated away from wlroots in 2024–2025.
+- cosmic-comp lacks `wp_linux_drm_syncobj_v1` because Smithay 0.7.0 does not yet expose it; this will be resolved when smithay gains the protocol.
+- Mutter and KWin do not implement `zwlr_layer_shell_v1` because GNOME and KDE use their own (more tightly integrated) mechanisms for panel and dock placement.
+- gamescope's `zwlr_screencopy_manager_v1` support is partial — it supports DMA-BUF export from the nested Wayland mode but not the full screencopy API in KMS-direct mode.
 
 ### Portability Strategies
 
