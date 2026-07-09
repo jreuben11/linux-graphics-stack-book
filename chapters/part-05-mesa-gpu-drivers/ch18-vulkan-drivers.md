@@ -139,6 +139,35 @@ Mesa's Vulkan ecosystem has grown well beyond the three drivers that dominate Li
 | Honeykrisp | Apple AGX (M1, M2, M3, M4 series) | NIR → AGX ISA (Rust backend) | No | No | No | Vulkan 1.4 (conformant as of 2025) | Production on Apple Silicon (Asahi Linux) |
 | v3dv | Broadcom VideoCore VI/VII (Raspberry Pi 4/5) | NIR → QPU binary | No | No | No | Vulkan 1.3 | Production on RPi 4/5 |
 
+### NVIDIA: Two Vulkan ICDs on Linux
+
+On Linux, NVIDIA hardware can expose **two distinct Vulkan ICDs** that coexist via the Vulkan loader's ICD discovery mechanism:
+
+| ICD | Library | Source | Kernel dependency | Notes |
+|-----|---------|--------|-------------------|-------|
+| NVK | `libvulkan_nouveau.so` | Open (Mesa) | `nouveau` + GSP-RM firmware | Covered in Ch10b, Ch177 |
+| Proprietary | `libGLX_nvidia.so` / `libvulkan_nvidia.so` | Closed (NVIDIA) | `nvidia.ko` proprietary module | Ships with NVIDIA driver package |
+
+Both ICDs register their JSON manifests under `/usr/share/vulkan/icd.d/` (NVK: `nouveau_icd.x86_64.json`; proprietary: `nvidia_icd.json`). When both driver packages are installed, the Vulkan loader enumerates **both physical devices** from `vkEnumeratePhysicalDevices` — one per ICD.
+
+**Selecting between the two** is done via environment variables:
+
+```bash
+# Force NVK (open Mesa driver) — by ICD filename
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nouveau_icd.x86_64.json vulkaninfo
+
+# Force proprietary NVIDIA driver
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json vulkaninfo
+
+# Let the loader enumerate both and let the application choose by deviceName
+# (no env var — default behaviour when both ICDs are present)
+
+# PRIME / Optimus: force discrete GPU with proprietary driver
+__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia vkcube
+```
+
+The proprietary ICD supports features not yet available in NVK as of mid-2026: full ray tracing (`VK_KHR_ray_tracing_pipeline` on Turing+), video encode (`VK_KHR_video_encode_queue`), and CUDA–Vulkan interop (`VK_NV_external_memory` / `cudaImportExternalMemory`). NVK's advantage is full open-source auditability, integration with Mesa's WSI layer, and compatibility with open kernel modules. For most Vulkan rendering workloads on Turing+ hardware, NVK has reached parity; for CUDA interop or video encode, the proprietary ICD remains necessary.
+
 ---
 
 ## 2. RADV: AMD Vulkan in Mesa
