@@ -28,8 +28,9 @@
 17. [cuFFT: GPU Fast Fourier Transform](#17-cufft-gpu-fast-fourier-transform)
 18. [NCCL: GPU Collective Communications](#18-nccl-gpu-collective-communications)
 19. [cuRAND: GPU Random Number Generation](#19-curand-gpu-random-number-generation)
-20. [Integrations](#integrations)
-21. [References](#references)
+20. [cuSolver: GPU Linear Solvers](#20-cusolver-gpu-linear-solvers)
+21. [Integrations](#integrations)
+22. [References](#references)
 
 ---
 
@@ -2209,6 +2210,168 @@ AMD's **rocRAND** ([github.com/ROCm/rocRAND](https://github.com/ROCm/rocRAND)) i
 | `curand_uniform` | `rocrand_uniform` | Device API function |
 
 [Source: cuRAND 10.x API reference](https://docs.nvidia.com/cuda/curand/index.html) [Source: rocRAND GitHub](https://github.com/ROCm/rocRAND)
+
+---
+
+## 20. cuSolver: GPU Linear Solvers
+
+cuSolver (`libcusolver.so`) provides GPU-accelerated dense and sparse linear algebra solvers: LU, QR, Cholesky, and SVD factorisation on dense matrices (cusolverDN); sparse direct solvers (cusolverSP); and sparse matrix refactorisation for iteratively-changing systems (cusolverRF). Use cases include physics simulation (implicit time integration, finite element assembly), PCA and least-squares in ML, and camera pose estimation in photogrammetry. [Source: cuSolver documentation](https://docs.nvidia.com/cuda/cusolver/index.html)
+
+### 20.1 Three Sub-Libraries
+
+| Sub-library | Header | Use case |
+|------------|--------|----------|
+| cusolverDN | `cusolverDn.h` | Dense LU, QR, Cholesky, SVD, eigendecomposition |
+| cusolverSP | `cusolverSp.h` | Sparse direct solve (QR, Cholesky via cuSPARSE CSR) |
+| cusolverRF | `cusolverRf.h` | Sparse refactorisation — same sparsity pattern, changing values |
+
+All three share a single handle type (`cusolverDnHandle_t`, `cusolverSpHandle_t`, `cusolverRfHandle_t`) bound to a CUDA stream via `cusolverDnSetStream`.
+
+### 20.2 cusolverDN: Dense Factorisation
+
+The dense sub-library follows a consistent three-step pattern for every factorisation: query workspace size, allocate workspace, execute.
+
+**LU factorisation and solve** (`cusolverDnSgetrf` / `cusolverDnSgetrs`):
+
+```c
+// file: cusolver_lu_solve.c — cuSolver 11.x dense API
+#include <cusolverDn.h>
+
+cusolverDnHandle_t handle;
+cusolverDnCreate(&handle);
+cusolverDnSetStream(handle, stream);
+
+// A is M×M, b is M×NRHS (column-major, in-place factorisation)
+int M = 1024, NRHS = 1;
+
+// Step 1: query workspace
+int lwork;
+cusolverDnSgetrf_bufferSize(handle, M, M, d_A, M, &lwork);
+
+// Step 2: allocate workspace and pivot array
+float *d_workspace;
+int   *d_pivot, *d_info;
+cudaMalloc(&d_workspace, lwork * sizeof(float));
+cudaMalloc(&d_pivot, M * sizeof(int));
+cudaMalloc(&d_info, sizeof(int));
+
+// Step 3: LU factorisation — d_A overwritten with L and U factors
+cusolverDnSgetrf(handle, M, M, d_A, M, d_workspace, d_pivot, d_info);
+
+// Step 4: solve A*x = b using the computed L,U factors
+// d_b overwritten with solution x
+cusolverDnSgetrs(handle, CUBLAS_OP_N, M, NRHS, d_A, M, d_pivot, d_b, M, d_info);
+
+cusolverDnDestroy(handle);
+```
+
+**SVD** (`cusolverDnSgesvd`) — used for PCA, pseudoinverse, rank estimation:
+
+```c
+// Compute A = U * S * V^T  for M×N matrix A
+signed char jobu = 'A';   // compute all M columns of U
+signed char jobvt = 'A';  // compute all N rows of V^T
+
+int lwork_svd;
+cusolverDnSgesvd_bufferSize(handle, M, N, &lwork_svd);
+cudaMalloc(&d_workspace, lwork_svd * sizeof(float));
+
+// d_S: min(M,N) singular values (descending)
+// d_U: M×M left singular vectors
+// d_VT: N×N right singular vectors (transposed)
+cusolverDnSgesvd(handle, jobu, jobvt, M, N,
+    d_A, M,           // input matrix (overwritten)
+    d_S,              // singular values
+    d_U, M,           // left singular vectors
+    d_VT, N,          // right singular vectors (transposed)
+    d_workspace, lwork_svd,
+    NULL,             // rwork (only needed for complex)
+    d_info);
+```
+
+**Cholesky factorisation** (`cusolverDnSpotrf`) — for symmetric positive definite systems (normal equations, covariance matrices):
+
+```c
+// A must be symmetric positive definite; CUBLAS_FILL_MODE_LOWER reads lower triangle
+cusolverDnSpotrf_bufferSize(handle, CUBLAS_FILL_MODE_LOWER, N, d_A, N, &lwork);
+cudaMalloc(&d_workspace, lwork * sizeof(float));
+cusolverDnSpotrf(handle, CUBLAS_FILL_MODE_LOWER, N, d_A, N, d_workspace, lwork, d_info);
+// Solve A*x = b
+cusolverDnSpotrs(handle, CUBLAS_FILL_MODE_LOWER, N, NRHS, d_A, N, d_b, N, d_info);
+```
+
+### 20.3 cusolverDN Generic API (CUDA 11+)
+
+The generic (`Dn`) API (CUDA 11+) adds 64-bit index support, mixed precision, and a unified interface for all factorisations:
+
+```c
+// Generic LU via cusolverDnXgetrf (64-bit indices, FP64)
+cusolverDnParams_t params;
+cusolverDnCreateParams(&params);
+
+size_t workspaceInBytesOnDevice, workspaceInBytesOnHost;
+cusolverDnXgetrf_bufferSize(handle, params, M, M,
+    CUDA_R_64F, d_A, M, CUDA_R_64F,
+    &workspaceInBytesOnDevice, &workspaceInBytesOnHost);
+
+void *d_work, *h_work;
+cudaMalloc(&d_work, workspaceInBytesOnDevice);
+h_work = malloc(workspaceInBytesOnHost);
+
+cusolverDnXgetrf(handle, params, M, M,
+    CUDA_R_64F, d_A, M, d_pivot,
+    CUDA_R_64F, d_work, workspaceInBytesOnDevice,
+    h_work, workspaceInBytesOnHost, d_info);
+```
+
+### 20.4 cusolverSP: Sparse Direct Solve
+
+The sparse sub-library solves `A*x = b` where A is in CSR format — useful when the system matrix is large but sparse (FEM stiffness matrices, graph Laplacians):
+
+```c
+// file: cusolver_sparse_qr.c — cuSolverSP sparse QR solve
+#include <cusolverSp.h>
+
+cusolverSpHandle_t spHandle;
+cusolverSpCreate(&spHandle);
+
+cusparseMatDescr_t descr;
+cusparseCreateMatDescr(&descr);
+cusparseSetMatType(descr, CUSPARSE_MATRIX_TYPE_GENERAL);
+cusparseSetMatIndexBase(descr, CUSPARSE_INDEX_BASE_ZERO);
+
+int singularity;  // -1 if non-singular, otherwise index of first zero pivot
+
+// Least-squares solve: min ||A*x - b||_2  for overdetermined A (M > N)
+// Uses QR decomposition of CSR sparse matrix
+cusolverSpScsrlsqvqrHost(spHandle,
+    M, N, nnz,
+    descr,
+    h_csrValues, h_csrRowPtr, h_csrColInd,  // CSR on host (SP works on host)
+    h_b,          // right-hand side
+    1e-6f,        // tolerance for rank detection
+    &rankA,       // computed rank
+    h_x,          // solution
+    h_p,          // row/column permutation
+    &min_norm);   // ||A*x - b||
+```
+
+Note: cusolverSP operates on **host memory** (the `Host` suffix) for most operations — it uses the CPU for symbolic analysis and GPU for numeric factorisation.
+
+### 20.5 cuSolver vs. AMD rocSOLVER
+
+AMD's **rocSOLVER** ([github.com/ROCm/rocSOLVER](https://github.com/ROCm/rocSOLVER)) provides the dense factorisation API:
+
+| cuSolver | rocSOLVER | Notes |
+|----------|----------|-------|
+| `cusolverDnSgetrf` | `rocsolver_sgetrf` | LU factorisation |
+| `cusolverDnSgesvd` | `rocsolver_sgesvd` | SVD |
+| `cusolverDnSpotrf` | `rocsolver_spotrf` | Cholesky |
+| `cusolverDnSgetrs` | `rocsolver_sgetrs` | Triangular solve after LU |
+| cusolverSP (sparse) | rocSOLVER + rocSPARSE | No unified sparse solver API |
+| cusolverRF (refactor) | Not available | rocSOLVER gap as of ROCm 6.x |
+
+[Source: cuSolver 11.x API reference](https://docs.nvidia.com/cuda/cusolver/index.html) [Source: rocSOLVER documentation](https://rocm.docs.amd.com/projects/rocSOLVER/)
 
 ---
 
