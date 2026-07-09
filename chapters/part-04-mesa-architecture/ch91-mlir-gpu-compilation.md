@@ -283,7 +283,36 @@ This metadata is what tells `ptxas` to emit a `.entry` directive rather than a `
 
 **Why Triton uses `nvvm` rather than going through SPIR-V.** Triton's NVIDIA backend targets `nvvm` (not `spirv`) because several performance-critical Triton primitives — warp shuffles, async copies, `wgmma` descriptors — have no standardised SPIR-V equivalent. The SPIR-V path is available (`-convert-gpu-to-spirv`) but loses these low-level primitives and is therefore the fallback for Vulkan compute (§4.4), not the primary NVIDIA path.
 
-[Source: MLIR NVVM dialect docs](https://mlir.llvm.org/docs/Dialects/NVVMDialect/) [Source: LLVM NVPTX target](https://llvm.org/docs/NVPTXUsage.html)
+**NVCC does not use MLIR.** Despite sharing the name "NVVM", NVIDIA's `nvcc` compiler driver and the MLIR `nvvm` dialect are independent tools that share an IR format but have no pipeline relationship.
+
+`nvcc` splits `.cu` source into host C++ (compiled by the system gcc or clang) and device code, which travels through its own pipeline entirely within LLVM:
+
+```
+CUDA C++ device code
+    └─ nvcc front-end (CUDA language extensions → LLVM IR)
+         └─ libNVVM  (NVIDIA's LLVM-based device compiler library)
+              └─ LLVM NVPTX backend
+                   └─ PTX assembly
+                        └─ ptxas  (NVIDIA proprietary assembler)
+                             └─ SASS cubin
+```
+
+`libNVVM` is NVIDIA's closed-source device compiler library that accepts NVVM IR (a documented LLVM IR subset) and emits PTX. It predates MLIR by several years and has no MLIR layer inside it. The MLIR `nvvm` dialect is an independent representation that happens to target the same NVVM IR format as its output — but it reaches that output through open MLIR→LLVM→NVPTX lowering rather than through `libNVVM`.
+
+The MLIR-based path (Triton, XLA, IREE) and the `nvcc` path therefore converge at PTX but diverge in every step before it:
+
+| Stage | nvcc path | MLIR path (Triton/XLA) |
+|-------|-----------|------------------------|
+| Source language | CUDA C++ | Python / StableHLO / JAX |
+| Front-end | nvcc CUDA parser | Triton JIT / XLA tracer |
+| Mid-level IR | LLVM IR via libNVVM | MLIR `nvvm` dialect |
+| Backend | LLVM NVPTX (via libNVVM) | LLVM NVPTX (open) |
+| Assembler | ptxas (proprietary) | ptxas (proprietary) |
+| Output | SASS cubin | SASS cubin |
+
+Both paths share only the last two steps. For Mesa's purposes — which targets open-source Vulkan/NIR rather than CUDA — neither `nvcc` nor `libNVVM` appears in the stack at all.
+
+[Source: MLIR NVVM dialect docs](https://mlir.llvm.org/docs/Dialects/NVVMDialect/) [Source: LLVM NVPTX target](https://llvm.org/docs/NVPTXUsage.html) [Source: NVVM IR specification](https://docs.nvidia.com/cuda/nvvm-ir-spec/index.html)
 
 ### 3.4 IREE's Use of the GPU Dialect
 
