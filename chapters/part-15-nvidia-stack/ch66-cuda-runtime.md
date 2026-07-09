@@ -27,8 +27,9 @@
 16. [cuSPARSE and cuSPARSELt: Sparse Linear Algebra](#16-cusparse-and-cusparselt-sparse-linear-algebra)
 17. [cuFFT: GPU Fast Fourier Transform](#17-cufft-gpu-fast-fourier-transform)
 18. [NCCL: GPU Collective Communications](#18-nccl-gpu-collective-communications)
-19. [Integrations](#integrations)
-20. [References](#references)
+19. [cuRAND: GPU Random Number Generation](#19-curand-gpu-random-number-generation)
+20. [Integrations](#integrations)
+21. [References](#references)
 
 ---
 
@@ -2092,6 +2093,122 @@ AMD's **RCCL** (ROCm Communication Collectives Library, [github.com/ROCm/rccl](h
 | `NCCL_DEBUG` | `NCCL_DEBUG` | Same env vars |
 
 [Source: NCCL 2.x user guide](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/) [Source: RCCL GitHub](https://github.com/ROCm/rccl)
+
+---
+
+## 19. cuRAND: GPU Random Number Generation
+
+cuRAND (`libcurand.so`) generates pseudo-random and quasi-random numbers directly on the GPU, avoiding the CPU→GPU transfer that host-side RNG requires. It is used for Monte Carlo sampling (path tracing, financial simulation), dropout mask generation during training, stochastic rounding in quantisation-aware training, and data augmentation kernels. [Source: cuRAND documentation](https://docs.nvidia.com/cuda/curand/index.html)
+
+### 19.1 Host API: Generator Lifecycle and Output
+
+The host API creates a generator object, seeds it, and fills device buffers:
+
+```c
+// file: curand_host_api.c — cuRAND 10.x host API
+#include <curand.h>
+
+curandGenerator_t gen;
+
+// XORWOW: fast, good statistical quality, default choice
+curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_XORWOW);
+curandSetPseudoRandomGeneratorSeed(gen, 42ULL);
+curandSetStream(gen, stream);  // all generation on this stream
+
+// Fill device buffer with uniform floats in (0, 1]
+float *d_uniform;
+cudaMalloc(&d_uniform, N * sizeof(float));
+curandGenerateUniform(gen, d_uniform, N);
+
+// Fill with standard normal (mean=0, stddev=1) via Box-Muller
+float *d_normal;
+cudaMalloc(&d_normal, N * sizeof(float));
+curandGenerateNormal(gen, d_normal, N, 0.0f /*mean*/, 1.0f /*stddev*/);
+
+// Log-normal: exp(mean + stddev * normal)
+curandGenerateLogNormal(gen, d_normal, N, 0.0f, 1.0f);
+
+// 32-bit integers (raw random bits)
+unsigned int *d_bits;
+cudaMalloc(&d_bits, N * sizeof(unsigned int));
+curandGenerate(gen, d_bits, N);
+
+curandDestroyGenerator(gen);
+```
+
+### 19.2 Generator Types
+
+cuRAND provides both pseudo-random (statistically uniform, reproducible from a seed) and quasi-random (low-discrepancy, better coverage of sample space) generators:
+
+| Generator constant | Type | Algorithm | Use case |
+|-------------------|------|-----------|----------|
+| `CURAND_RNG_PSEUDO_XORWOW` | Pseudo | XORWOW | Default; fast, period 2^190 |
+| `CURAND_RNG_PSEUDO_MRG32K3A` | Pseudo | MRG32k3a | Longer period, multiple independent streams |
+| `CURAND_RNG_PSEUDO_PHILOX4_32_10` | Pseudo | Philox 4×32-10 | Counter-based; parallel-friendly, no state |
+| `CURAND_RNG_PSEUDO_MT19937` | Pseudo | Mersenne Twister | Long period 2^19937; slower |
+| `CURAND_RNG_QUASI_SOBOL32` | Quasi | Sobol | Low-discrepancy; Monte Carlo variance reduction |
+| `CURAND_RNG_QUASI_SCRAMBLED_SOBOL32` | Quasi | Scrambled Sobol | Sobol with randomisation for unbiasedness |
+
+**Philox** is the preferred choice for ML training workloads: it is a counter-based generator with no per-thread state, making it trivially parallelisable across warp lanes and reproducible given (seed, counter) — exactly what dropout and stochastic rounding require.
+
+### 19.3 Device API: In-Kernel Generation
+
+The device API allows each CUDA thread to generate random numbers independently inside a kernel, avoiding the intermediate buffer allocation of the host API:
+
+```c
+// file: curand_device_dropout.cu — cuRAND device API
+#include <curand_kernel.h>
+
+__global__ void dropout_kernel(
+    const float *__restrict__ input,
+    float       *__restrict__ output,
+    float        keep_prob,
+    unsigned long long seed,
+    int          N)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= N) return;
+
+    // Each thread initialises its own Philox state from (seed, sequence, offset)
+    curandStatePhilox4_32_10_t state;
+    curand_init(seed,
+                idx,    // sequence: unique per thread → independent streams
+                0,      // offset within sequence
+                &state);
+
+    // Generate a uniform float and apply dropout mask
+    float u = curand_uniform(&state);
+    output[idx] = (u < keep_prob) ? (input[idx] / keep_prob) : 0.0f;
+}
+
+// Launch: one thread per element
+dropout_kernel<<<(N+255)/256, 256>>>(d_in, d_out, 0.8f, seed, N);
+```
+
+Device API state types and their trade-offs:
+
+| State type | Size (bytes) | Speed | Notes |
+|-----------|-------------|-------|-------|
+| `curandStatePhilox4_32_10_t` | 48 | Fastest | Counter-based, generates 4 values/call |
+| `curandStateXORWOW_t` | 48 | Fast | XORWOW, same as host default |
+| `curandStateMRG32k3a_t` | 72 | Moderate | Multiple independent sub-streams |
+| `curandStateSobol32_t` | 16 | Fast | Quasi-random, per-dimension |
+
+The per-thread `curand_init` cost is significant — it is amortised by generating many samples per thread or by storing/restoring state across kernel launches for iterative workloads (e.g., storing `curandStatePhilox4_32_10_t` arrays in device memory across training steps).
+
+### 19.4 cuRAND vs. AMD rocRAND
+
+AMD's **rocRAND** ([github.com/ROCm/rocRAND](https://github.com/ROCm/rocRAND)) is an API-identical replacement:
+
+| cuRAND | rocRAND | Notes |
+|--------|---------|-------|
+| `libcurand.so` | `librocrand.so` | Drop-in compatible |
+| `curandCreateGenerator` | `rocrand_create_generator` | Same generator constants |
+| `CURAND_RNG_PSEUDO_PHILOX4_32_10` | `ROCRAND_RNG_PSEUDO_PHILOX4_32_10` | Same algorithm |
+| `curandStatePhilox4_32_10_t` | `rocrand_state_philox4_32_10` | Device state type |
+| `curand_uniform` | `rocrand_uniform` | Device API function |
+
+[Source: cuRAND 10.x API reference](https://docs.nvidia.com/cuda/curand/index.html) [Source: rocRAND GitHub](https://github.com/ROCm/rocRAND)
 
 ---
 
