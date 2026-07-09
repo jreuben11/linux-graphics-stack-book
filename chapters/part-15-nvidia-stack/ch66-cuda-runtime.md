@@ -26,8 +26,9 @@
 15. [CUTLASS: C++ Template GEMM Library](#15-cutlass-c-template-gemm-library)
 16. [cuSPARSE and cuSPARSELt: Sparse Linear Algebra](#16-cusparse-and-cusparselt-sparse-linear-algebra)
 17. [cuFFT: GPU Fast Fourier Transform](#17-cufft-gpu-fast-fourier-transform)
-18. [Integrations](#integrations)
-19. [References](#references)
+18. [NCCL: GPU Collective Communications](#18-nccl-gpu-collective-communications)
+19. [Integrations](#integrations)
+20. [References](#references)
 
 ---
 
@@ -1940,6 +1941,157 @@ cufftExecC2C(plan, d_spectrum, d_convolved, CUFFT_INVERSE);
 **vkFFT** ([github.com/DTolm/VkFFT](https://github.com/DTolm/VkFFT)) is a cross-vendor alternative that targets Vulkan compute shaders, CUDA, HIP, and OpenCL from a single implementation — relevant for the open-source Linux graphics stack since it requires no proprietary CUDA libraries.
 
 [Source: cuFFT 11.x API reference](https://docs.nvidia.com/cuda/cufft/index.html) [Source: rocFFT documentation](https://rocm.docs.amd.com/projects/rocFFT/) [Source: vkFFT GitHub](https://github.com/DTolm/VkFFT)
+
+---
+
+## 18. NCCL: GPU Collective Communications
+
+NCCL (NVIDIA Collective Communications Library, pronounced "Nickel") is the multi-GPU and multi-node communication library underpinning distributed deep learning training on CUDA. Every `torch.distributed` all-reduce in PyTorch and `tf.distribute.Strategy` in TensorFlow ultimately calls NCCL on NVIDIA hardware. It ships as `libnccl.so` and is MIT-licensed. [Source: NCCL GitHub](https://github.com/NVIDIA/nccl) [Source: NCCL documentation](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/index.html)
+
+### 18.1 Communicator Initialization
+
+A **communicator** (`ncclComm_t`) represents a group of GPUs participating in collective operations. Each GPU in the group has a rank (0 to nranks-1). There are two initialization paths: single-process (all GPUs in one process) and multi-process (one process per GPU, coordinated via an out-of-band mechanism).
+
+```c
+// file: nccl_init_single_process.c — NCCL 2.x API
+#include <nccl.h>
+
+int nGPUs = 4;
+ncclComm_t comms[4];
+int devs[4] = {0, 1, 2, 3};
+
+// Single-process: initialize all communicators at once
+ncclCommInitAll(comms, nGPUs, devs);
+
+// Multi-process (one MPI rank per GPU):
+// Step 1: rank 0 generates a unique ID and broadcasts it out-of-band (via MPI)
+ncclUniqueId id;
+if (myRank == 0) ncclGetUniqueId(&id);
+MPI_Bcast(&id, sizeof(id), MPI_BYTE, 0, MPI_COMM_WORLD);
+
+// Step 2: each rank creates its communicator
+ncclComm_t comm;
+cudaSetDevice(myRank);
+ncclCommInitRank(&comm, nRanks, id, myRank);
+```
+
+The `ncclUniqueId` acts as a rendezvous token — all ranks that share an ID join the same communicator. In practice, PyTorch's `torch.distributed.init_process_group(backend='nccl')` handles ID exchange internally via its `Store` abstraction (TCP, file, or etcd).
+
+### 18.2 Collective Operations
+
+NCCL implements the standard collective communication primitives. All operations are **non-blocking**: they enqueue work onto a CUDA stream and return immediately. Multiple collectives on the same stream execute in order; collectives on different streams can overlap.
+
+```c
+// All operations share the same signature pattern:
+// nccl<Op>(sendbuf, recvbuf, count, datatype, [op/root], comm, stream)
+
+float *d_send, *d_recv;
+size_t count = 1024 * 1024;  // 1M float32 elements per GPU
+
+// AllReduce: sum across all GPUs, result on all GPUs
+// Canonical use: gradient synchronization in data-parallel training
+ncclAllReduce(d_send, d_recv, count, ncclFloat, ncclSum, comm, stream);
+
+// Broadcast: rank 0 sends its buffer to all other ranks
+ncclBroadcast(d_send, d_recv, count, ncclFloat, 0 /*root*/, comm, stream);
+
+// Reduce: all ranks contribute, result only on root rank
+ncclReduce(d_send, d_recv, count, ncclFloat, ncclSum, 0 /*root*/, comm, stream);
+
+// AllGather: each rank contributes count elements, all receive nranks*count
+// recvbuf must be nranks*count elements; rank r's data lands at recvbuf[r*count]
+ncclAllGather(d_send, d_recv, count, ncclFloat, comm, stream);
+
+// ReduceScatter: reduce across ranks, scatter result (ZeRO optimizer stage 2/3)
+// Each rank receives 1/nranks of the reduced result
+ncclReduceScatter(d_send, d_recv, count/nranks, ncclFloat, ncclSum, comm, stream);
+```
+
+Supported reduction operations: `ncclSum`, `ncclProd`, `ncclMax`, `ncclMin`, `ncclAvg`.
+Supported data types: `ncclFloat16`, `ncclBFloat16`, `ncclFloat`, `ncclDouble`, `ncclInt32`, `ncclInt64`, `ncclUint8`.
+
+### 18.3 Ring-AllReduce Algorithm
+
+NCCL's default AllReduce for large tensors uses the **ring-allreduce** algorithm, which achieves near-optimal bandwidth utilization regardless of the number of GPUs:
+
+```
+4-GPU ring topology (NVLink or PCIe):
+  GPU0 → GPU1 → GPU2 → GPU3 → GPU0
+
+Phase 1 — ReduceScatter (nGPUs-1 steps):
+  Each GPU sends 1/nGPUs of its buffer to the next GPU in the ring,
+  accumulating partial sums. After nGPUs-1 steps, each GPU holds
+  the fully reduced result for 1/nGPUs of the tensor.
+
+Phase 2 — AllGather (nGPUs-1 steps):
+  Each GPU forwards its fully-reduced chunk around the ring.
+  After nGPUs-1 steps, all GPUs have the complete reduced tensor.
+
+Total data sent per GPU: 2 × (nGPUs-1)/nGPUs × tensor_size ≈ 2 × tensor_size
+Bus bandwidth utilization: (nGPUs-1)/nGPUs → approaches 100% for large nGPUs
+```
+
+For small tensors (< ~1 MB), NCCL switches to a **tree-allreduce** algorithm that minimises latency at the cost of bandwidth efficiency. NCCL selects the algorithm automatically based on tensor size and topology.
+
+### 18.4 Transport Selection: NVLink, PCIe, InfiniBand
+
+NCCL probes the GPU interconnect topology at communicator init time and selects the fastest available transport:
+
+| Transport | Mechanism | Bandwidth (H100 SXM) |
+|-----------|-----------|---------------------|
+| NVLink 4.0 (intra-node) | Direct GPU memory access | 900 GB/s bidirectional |
+| NVLink 5.0 (GB200 NVL72) | NVSwitch fabric | 1800 GB/s bidirectional |
+| PCIe p2p (intra-node) | GPU peer-to-peer DMA | ~64 GB/s bidirectional |
+| InfiniBand + GPUDirect RDMA | NIC DMA directly from GPU VRAM | ~400 Gb/s (NDR) |
+| Ethernet (fallback) | TCP/IP via CPU copy | ~100 Gb/s |
+
+NCCL environment variables for topology control and debugging:
+
+```bash
+# Show NCCL's topology detection and algorithm selection
+NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,GRAPH ./train.py
+
+# Disable NVLink (force PCIe, useful for testing)
+NCCL_P2P_DISABLE=1 ./train.py
+
+# Set GPUDirect RDMA level (0=disabled, 3=full intra-node + inter-node)
+NCCL_NET_GDR_LEVEL=3 ./train.py
+
+# Pin NCCL to specific network interface
+NCCL_SOCKET_IFNAME=ib0 ./train.py
+
+# Override protocol selection (LL=low-latency, LL128, Simple)
+NCCL_PROTO=Simple ./train.py
+```
+
+### 18.5 NCCL Groups: Fusing Multiple Collectives
+
+`ncclGroupStart` / `ncclGroupEnd` fuse multiple independent collectives into a single kernel launch, eliminating per-collective synchronization overhead. This is essential for large model parallelism where tensor-parallel AllReduces run on disjoint communicators simultaneously:
+
+```c
+// Fuse two independent AllReduces (e.g., two tensor-parallel shards)
+// Without grouping: two separate kernel launches with implicit barrier between
+// With grouping: single fused launch, both proceed concurrently
+ncclGroupStart();
+ncclAllReduce(d_buf0, d_buf0, count, ncclFloat, ncclSum, comm0, stream0);
+ncclAllReduce(d_buf1, d_buf1, count, ncclFloat, ncclSum, comm1, stream1);
+ncclGroupEnd();
+```
+
+### 18.6 RCCL: AMD's Drop-In Replacement
+
+AMD's **RCCL** (ROCm Communication Collectives Library, [github.com/ROCm/rccl](https://github.com/ROCm/rccl)) provides an API-identical replacement for NCCL targeting AMD GPUs via HIP. PyTorch uses `backend='nccl'` on both CUDA and ROCm — the dispatch is transparent.
+
+| NCCL | RCCL | Notes |
+|------|------|-------|
+| `libnccl.so` | `librccl.so` | Drop-in ABI compatible |
+| NVLink transport | Infinity Fabric / xGMI | CDNA3: 896 GB/s MI300X |
+| `ncclCommInitRank` | `ncclCommInitRank` | Identical API |
+| `ncclAllReduce` | `ncclAllReduce` | Identical API |
+| GPUDirect RDMA | ROCm-aware MPI / RDMA | Via `HSA_ENABLE_SDMA` |
+| `NCCL_DEBUG` | `NCCL_DEBUG` | Same env vars |
+
+[Source: NCCL 2.x user guide](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/) [Source: RCCL GitHub](https://github.com/ROCm/rccl)
 
 ---
 
