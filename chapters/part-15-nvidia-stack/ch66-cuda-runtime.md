@@ -22,8 +22,10 @@
 11. [Tile-Based CUDA: cuda-tile and Tilus](#11-tile-based-cuda-cuda-tile-and-tilus)
 12. [NVSHMEM: GPU-Side One-Sided Communication](#12-nvshmem-gpu-side-one-sided-communication)
 13. [cuDNN: Deep Learning Primitives](#13-cudnn-deep-learning-primitives)
-14. [Integrations](#integrations)
-14. [References](#references)
+14. [cuBLAS: GPU BLAS and cublasLt](#14-cublas-gpu-blas-and-cublaslt)
+15. [CUTLASS: C++ Template GEMM Library](#15-cutlass-c-template-gemm-library)
+16. [Integrations](#integrations)
+17. [References](#references)
 
 ---
 
@@ -1402,6 +1404,306 @@ AMD's [MIOpen](https://github.com/ROCm/MIOpen) (`libMIOpen.so`) provides the sam
 | Flash Attention fused | `miopenFusedFlashAttention` (ROCm 6.2+) | CDNA3 MI300X only at launch |
 
 [Source: cuDNN 9.6 API docs](https://docs.nvidia.com/deeplearning/cudnn/latest/) [Source: MIOpen GitHub](https://github.com/ROCm/MIOpen)
+
+---
+
+## 14. cuBLAS: GPU BLAS and cublasLt
+
+cuBLAS (`libcublas.so`) is NVIDIA's GPU-accelerated implementation of the Basic Linear Algebra Subprograms (BLAS) standard. It is the primary GEMM backend for PyTorch, TensorFlow, and JAX on CUDA: a `torch.nn.Linear` forward pass on CUDA ultimately calls `cublasGemmEx` or `cublasLtMatmul`. [Source: cuBLAS documentation](https://docs.nvidia.com/cuda/cublas/index.html)
+
+### 14.1 Handle Lifecycle and Level-3 BLAS
+
+```c
+// file: cublas_sgemm_example.c — cuBLAS 12.x API
+#include <cublas_v2.h>
+
+cublasHandle_t handle;
+cublasCreate(&handle);
+cublasSetStream(handle, stream);  // all calls execute on this stream
+
+// C = alpha * A*B + beta * C  (column-major; cuBLAS follows Fortran convention)
+// For row-major A[M×K] * B[K×N]: swap A/B and M/N (transpose trick)
+float alpha = 1.0f, beta = 0.0f;
+cublasSgemm(handle,
+    CUBLAS_OP_N, CUBLAS_OP_N,  // no transpose
+    N, M, K,                    // note: swapped for row-major
+    &alpha,
+    d_B, N,    // "A" in column-major = B in row-major
+    d_A, K,    // "B" in column-major = A in row-major
+    &beta,
+    d_C, N);   // output
+
+cublasDestroy(handle);
+```
+
+### 14.2 cublasGemmEx: Mixed-Precision and Tensor Core Control
+
+`cublasGemmEx` extends `cublasSgemm` with explicit type arguments, enabling mixed-precision GEMM (FP16 inputs, FP32 accumulation) and Tensor Core acceleration:
+
+```c
+// file: cublas_gemmex_example.c — cuBLAS 12.x
+// FP16 inputs, FP32 accumulation, TF32 Tensor Cores (Ampere+)
+cublasGemmEx(handle,
+    CUBLAS_OP_N, CUBLAS_OP_N,
+    N, M, K,
+    &alpha,
+    d_B, CUDA_R_16F, N,        // B matrix in FP16
+    d_A, CUDA_R_16F, K,        // A matrix in FP16
+    &beta,
+    d_C, CUDA_R_32F, N,        // C (output) in FP32
+    CUBLAS_COMPUTE_32F,        // accumulate in FP32
+    CUBLAS_GEMM_DEFAULT_TENSOR_OP);  // use Tensor Cores
+
+// FP8 inputs (Hopper H100/H200 — Ada limited support)
+// Requires CUDA 12.0+ and sm_90+ target
+cublasGemmEx(handle,
+    CUBLAS_OP_N, CUBLAS_OP_N,
+    N, M, K,
+    &alpha,
+    d_B, CUDA_R_8F_E4M3, N,   // B in FP8 E4M3 format
+    d_A, CUDA_R_8F_E4M3, K,   // A in FP8 E4M3 format
+    &beta,
+    d_C, CUDA_R_32F, N,
+    CUBLAS_COMPUTE_32F,
+    CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+```
+
+Compute type options and their Tensor Core behaviour:
+
+| `CUBLAS_COMPUTE_*` | Accumulator | Tensor Core mode |
+|--------------------|-------------|-----------------|
+| `32F` | FP32 | None (CUDA cores) |
+| `32F_FAST_TF32` | TF32 (10-bit mantissa) | Ampere+ wmma |
+| `16F` | FP16 | Volta+ hmma |
+| `32F` with FP16 inputs | FP32 | Volta+ hmma, FP32 accumulate |
+| `32F` with FP8 inputs | FP32 | Hopper wgmma |
+
+### 14.3 cublasLt: Lightweight API with Custom Epilogues
+
+cublasLt (`libcublasLt.so`, header `cublasLt.h`) is the modern replacement for the legacy Level-3 API. Its key advantage is **epilogue fusion**: bias addition, activation functions (ReLU, GELU, sigmoid), and auxiliary outputs (drelu mask for backward pass) are fused into the final GEMM output write, eliminating separate kernel launches.
+
+```c
+// file: cublaslt_matmul_bias_relu.c — cuBLAS 12.x cublasLt API
+#include <cublasLt.h>
+
+cublasLtHandle_t ltHandle;
+cublasLtCreate(&ltHandle);
+
+// Matmul operation descriptor
+cublasLtMatmulDesc_t operationDesc;
+cublasLtMatmulDescCreate(&operationDesc, CUBLAS_COMPUTE_32F, CUDA_R_32F);
+
+// Fuse bias + ReLU into the GEMM epilogue
+cublasLtEpilogue_t epilogue = CUBLASLT_EPILOGUE_RELU_BIAS;
+cublasLtMatmulDescSetAttribute(operationDesc,
+    CUBLASLT_MATMUL_DESC_EPILOGUE, &epilogue, sizeof(epilogue));
+// Bias vector pointer (length = N, applied per output column)
+cublasLtMatmulDescSetAttribute(operationDesc,
+    CUBLASLT_MATMUL_DESC_BIAS_POINTER, &d_bias, sizeof(d_bias));
+
+// Matrix layout descriptors (row-major = CUBLASLT_ORDER_ROW)
+cublasLtMatrixLayout_t layoutA, layoutB, layoutC;
+cublasLtMatrixLayoutCreate(&layoutA, CUDA_R_16F, M, K, K);  // A: M×K FP16
+cublasLtMatrixLayoutCreate(&layoutB, CUDA_R_16F, K, N, N);  // B: K×N FP16
+cublasLtMatrixLayoutCreate(&layoutC, CUDA_R_32F, M, N, N);  // C: M×N FP32
+
+// Algorithm selection: heuristic picks fastest for this shape
+cublasLtMatmulHeuristicResult_t heuristicResult;
+cublasLtMatmulAlgoGetHeuristic(ltHandle, operationDesc,
+    layoutA, layoutB, layoutC, layoutC,
+    &preference, 1, &heuristicResult, &returnedResults);
+
+// Execute
+cublasLtMatmul(ltHandle, operationDesc,
+    &alpha, d_A, layoutA, d_B, layoutB,
+    &beta,  d_C, layoutC, d_C, layoutC,
+    &heuristicResult.algo,
+    workspace, workspaceSize, stream);
+
+cublasLtMatrixLayoutDestroy(layoutA);
+cublasLtMatrixLayoutDestroy(layoutB);
+cublasLtMatrixLayoutDestroy(layoutC);
+cublasLtMatmulDescDestroy(operationDesc);
+cublasLtDestroy(ltHandle);
+```
+
+Available epilogue fusions in cuBLAS 12.x:
+
+| Epilogue flag | Operation | Use case |
+|---------------|-----------|----------|
+| `CUBLASLT_EPILOGUE_DEFAULT` | C = α·A·B + β·C | Standard GEMM |
+| `CUBLASLT_EPILOGUE_BIAS` | + bias vector | Linear layer bias |
+| `CUBLASLT_EPILOGUE_RELU` | max(0, C) | Conv + ReLU |
+| `CUBLASLT_EPILOGUE_RELU_BIAS` | max(0, C + bias) | Linear + ReLU |
+| `CUBLASLT_EPILOGUE_GELU` | GELU(C) | Transformer FFN |
+| `CUBLASLT_EPILOGUE_GELU_BIAS` | GELU(C + bias) | Transformer FFN |
+| `CUBLASLT_EPILOGUE_DRELU` | ReLU backward mask | Training backward |
+| `CUBLASLT_EPILOGUE_BGRADA` | Gradient w.r.t. A | Training backward |
+
+### 14.4 Batched GEMM
+
+For transformer attention heads (multiple independent GEMMs of the same shape), `cublasGemmStridedBatchedEx` executes them in a single API call:
+
+```c
+// batchCount attention heads: each Q[SEQ × D_HEAD] * K^T[D_HEAD × SEQ]
+cublasGemmStridedBatchedEx(handle,
+    CUBLAS_OP_T, CUBLAS_OP_N,
+    SEQ, SEQ, D_HEAD,
+    &scale,
+    d_K, CUDA_R_16F, D_HEAD, SEQ * D_HEAD,  // K, stride per batch
+    d_Q, CUDA_R_16F, D_HEAD, SEQ * D_HEAD,  // Q, stride per batch
+    &beta,
+    d_scores, CUDA_R_32F, SEQ, SEQ * SEQ,   // output scores
+    CUBLAS_COMPUTE_32F,
+    CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+    NUM_HEADS);                               // batch count
+```
+
+### 14.5 cuBLAS vs. AMD rocBLAS / hipBLASLt
+
+AMD's ROCm BLAS libraries are the functional counterparts:
+
+| cuBLAS | AMD equivalent | Notes |
+|--------|---------------|-------|
+| `libcublas.so` | `librocblas.so` | Same Level-1/2/3 BLAS API shape |
+| `cublasGemmEx` | `rocblas_gemm_ex` | Identical signature structure |
+| `libcublasLt.so` | `libhipblaslt.so` | hipBLASLt: epilogue fusion, FP8 on MI300X |
+| `CUBLASLT_EPILOGUE_*` | `HIPBLASLT_EPILOGUE_*` | Same epilogue enum names |
+| `cublasGemmStridedBatchedEx` | `rocblas_gemm_strided_batched_ex` | Same batched pattern |
+| Tensor Cores (wmma/wgmma) | MFMA / WMMA on CDNA/RDNA | Architecture-specific |
+
+[Source: cuBLAS 12.x API reference](https://docs.nvidia.com/cuda/cublas/index.html) [Source: rocBLAS documentation](https://rocblas.readthedocs.io/)
+
+---
+
+## 15. CUTLASS: C++ Template GEMM Library
+
+CUTLASS (CUDA Templates for Linear Algebra Subroutines and Solvers, [github.com/NVIDIA/cutlass](https://github.com/NVIDIA/cutlass)) is NVIDIA's open-source C++ template library implementing high-performance GEMM and convolution directly in CUDA device code. Unlike cuBLAS (a black-box library), CUTLASS exposes the full tiling hierarchy so that custom epilogues, non-standard data layouts, and novel accumulation strategies can be composed without leaving the template framework. cuBLAS internally uses CUTLASS kernels for many of its implementations. [Source: CUTLASS GitHub](https://github.com/NVIDIA/cutlass)
+
+### 15.1 Architecture: CUTLASS 3.x and CuTe
+
+CUTLASS 3.0 (2023) introduced **CuTe** — a sub-library for expressing GPU tensor layouts and copy/MMA operations as composable algebraic types. CuTe replaces CUTLASS 2.x's ad-hoc `TensorRef` and `Layout` structs with a unified `Layout<Shape, Stride>` type that the compiler can reason about statically.
+
+```
+CUTLASS 3.x layer hierarchy:
+  Device API (cutlass::gemm::device::GemmUniversalAdapter)
+    └─ Kernel layer (cutlass::gemm::kernel::GemmUniversal)
+         ├─ CollectiveMainloop   ← tiled MMA + shared memory pipeline
+         └─ CollectiveEpilogue   ← output write + bias/activation fusion
+              └─ ThreadEpilogue  ← per-thread output computation
+
+CuTe primitives:
+  Layout<Shape, Stride>  — describes how a logical tensor maps to memory
+  Tensor<Engine, Layout> — a typed view over a pointer + layout
+  Copy_Atom<Op, T>       — one ldmatrix / stmatrix / async copy operation
+  MMA_Atom<Op, T>        — one wmma / mma.sync / wgmma operation
+```
+
+**CuTe layout algebra** enables statically-checked tiling. A 128×64 tile of FP16 with NHWC stride is expressed and manipulated entirely at compile time:
+
+```cpp
+// file: cute_layout_example.cpp — CUTLASS 3.5 / CuTe API
+#include <cute/tensor.hpp>
+using namespace cute;
+
+// Layout: shape (128, 64), stride (64, 1) — row-major
+auto layout = make_layout(make_shape(Int<128>{}, Int<64>{}),
+                          make_stride(Int<64>{}, Int<1>{}));
+
+// Tile into 16×8 sub-tiles (matches wgmma atom on Hopper)
+auto tiled = tiled_divide(layout, make_tile(Int<16>{}, Int<8>{}));
+// tiled: shape ((8, 8), (16, 8)) — 8×8 tiles of 16×8 each
+```
+
+### 15.2 CUTLASS 3.x GEMM: CollectiveMainloop and Epilogue
+
+A complete CUTLASS 3.x GEMM kernel is built by composing a `CollectiveMainloop` (the tiled MMA loop) with a `CollectiveEpilogue` (the output write, with optional fusions), then wrapping both in `GemmUniversal`:
+
+```cpp
+// file: cutlass3_gemm_fp16_bias.cpp — CUTLASS 3.5, sm_90a (Hopper)
+#include <cutlass/gemm/device/gemm_universal_adapter.h>
+#include <cutlass/gemm/collective/collective_builder.hpp>
+#include <cutlass/epilogue/collective/collective_builder.hpp>
+
+using ElementA = cutlass::half_t;       // FP16
+using ElementB = cutlass::half_t;       // FP16
+using ElementC = float;                 // FP32 output
+using ElementAccumulator = float;       // FP32 accumulation
+
+// Mainloop: Hopper wgmma, 128×128×64 tile, 2-stage pipeline
+using CollectiveMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
+    cutlass::arch::Sm90,                    // target architecture
+    cutlass::arch::OpClassTensorOp,         // wgmma tensor op
+    ElementA, cutlass::layout::RowMajor,
+    ElementB, cutlass::layout::ColumnMajor,
+    ElementAccumulator,
+    cutlass::gemm::collective::StageCountAutoCarveout<sizeof(SharedStorage)>,
+    cutlass::gemm::collective::KernelScheduleAuto
+>::CollectiveOp;
+
+// Epilogue: bias + ReLU fusion
+using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
+    cutlass::arch::Sm90,
+    cutlass::arch::OpClassTensorOp,
+    cutlass::gemm::GemmShape<128, 128, 64>,
+    cutlass::epilogue::thread::LinearCombinationRelu<
+        ElementC,
+        128 / cutlass::sizeof_bits<ElementC>::value,
+        ElementAccumulator, ElementAccumulator>
+>::CollectiveOp;
+
+// Compose into a kernel
+using GemmKernel = cutlass::gemm::kernel::GemmUniversal<
+    cutlass::gemm::ArrayProblemShape<ElementA, ElementB, ElementC, ElementC>,
+    CollectiveMainloop,
+    CollectiveEpilogue>;
+
+using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
+
+// Launch
+Gemm gemm_op;
+Gemm::Arguments args{
+    cutlass::gemm::GemmUniversalMode::kGemm,
+    {M, N, K},
+    {d_A, lda, d_B, ldb},
+    {{alpha, beta}, d_C, ldc, d_D, ldd}
+};
+gemm_op.initialize(args, workspace);
+gemm_op.run(stream);
+```
+
+### 15.3 StreamK Work Decomposition
+
+CUTLASS 3.x introduces **StreamK**, an alternative to the standard data-parallel tile assignment. Standard GEMM assigns each output tile to exactly one threadblock; StreamK allows threadblocks to collaboratively compute across multiple output tiles, achieving near-perfect GPU utilisation even for shapes where the number of tiles is not a multiple of the SM count.
+
+```cpp
+// Enable StreamK: replace GemmUniversalMode::kGemm with kStreamK
+Gemm::Arguments args{
+    cutlass::gemm::GemmUniversalMode::kStreamK,  // ← StreamK
+    {M, N, K},
+    ...
+};
+```
+
+StreamK is particularly valuable for inference batch sizes where M is small (1–32), causing standard tiling to leave many SMs idle. For training (large M), data-parallel tiling is generally faster.
+
+### 15.4 CUTLASS vs. cuBLAS vs. Triton
+
+| | cuBLAS / cublasLt | CUTLASS 3.x | Triton |
+|---|---|---|---|
+| Interface | C API, opaque kernels | C++ templates, composable | Python DSL |
+| Custom epilogues | Yes (fixed set) | Yes (arbitrary C++ lambda) | Yes (Python) |
+| Custom data types | No | Yes (define `ElementA/B/C`) | Partial (via tl.load) |
+| Algorithm selection | Heuristic / exhaustive search | Compile-time template | Auto-tune at runtime |
+| Non-standard layouts | Limited | Yes (CuTe Layout algebra) | Limited |
+| StreamK | No | Yes | No |
+| AMD support | rocBLAS / hipBLASLt | Partial (CK library) | Yes (Triton-ROCm) |
+| Compile time | Seconds (library call) | Minutes (template instantiation) | Seconds (JIT) |
+| Typical use | Inference, production | Custom kernels, research | Fused attention, activations |
+
+cuBLAS uses CUTLASS kernels internally for many shapes — particularly Hopper `wgmma`-based tiles — so the distinction is primarily about whether the programmer needs to customise the kernel body. For standard GEMM, cuBLAS is simpler; for custom epilogues or non-standard types, CUTLASS is the right tool.
+
+[Source: CUTLASS 3.5 documentation](https://github.com/NVIDIA/cutlass/blob/main/media/docs/cute/00_quickstart.md) [Source: CUTLASS StreamK](https://github.com/NVIDIA/cutlass/blob/main/examples/47_ampere_gemm_universal_streamk/)
 
 ---
 
