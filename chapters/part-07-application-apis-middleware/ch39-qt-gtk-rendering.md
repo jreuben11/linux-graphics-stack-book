@@ -10,6 +10,7 @@
 - [1. Qt6 Rendering Architecture: QRhi and Scene Graph](#1-qt6-rendering-architecture-qrhi-and-scene-graph)
 - [2. Qt Wayland Integration and Swapchain](#2-qt-wayland-integration-and-swapchain)
 - [3. Qt Shader Pipeline: qsb and SPIR-V](#3-qt-shader-pipeline-qsb-and-spir-v)
+- [3.5 The Qt Meta-Object System](#35-the-qt-meta-object-system)
 - [4. GTK4 Rendering Architecture: GskRenderer](#4-gtk4-rendering-architecture-gskrenderer)
 - [4.6 Gdk-Pixbuf and GLib: Supporting Infrastructure](#46-gdk-pixbuf-and-glib-supporting-infrastructure)
 - [4.7 The GObject Type System](#47-the-gobject-type-system)
@@ -391,6 +392,137 @@ graph LR
     H -->|Vulkan| I[vkCreateShaderModule]
     H -->|OpenGL| J[glCompileShader]
 ```
+
+---
+
+## 3.5 The Qt Meta-Object System
+
+Every Qt type in the rendering pipeline — `QRhi`, `QSGRenderLoop`, `QSGMaterial`, `QWaylandWindow`, `QSGDistanceFieldGlyphCache` — is a `QObject` subclass. Qt's meta-object system is the runtime backbone behind signals and slots, property bindings, and the QML engine that drives Qt Quick. Understanding it is necessary for reading Qt and KWin internals or writing custom `QObject` subclasses that plug into the rendering stack — custom `QSGMaterial` implementations, `QWaylandClientExtension` bindings, KWin `Effect` plugins.
+
+### `QObject` and `Q_OBJECT`
+
+`QObject` is Qt's base class for any object participating in signals, slots, or properties. The `Q_OBJECT` macro, placed in the class declaration, marks the class for processing by `moc`, the Meta-Object Compiler. Unlike GObject (§4.7), where the type system registration happens at runtime via `G_DEFINE_TYPE` and `g_signal_new`, Qt's meta-object data is generated at compile time from the class header:
+
+```cpp
+/* A QSGMaterial subclass participating in the Qt rendering pipeline */
+class WaterMaterial : public QSGMaterial
+{
+    Q_OBJECT
+    Q_PROPERTY(float time READ time WRITE setTime NOTIFY timeChanged)
+public:
+    explicit WaterMaterial(QObject *parent = nullptr);
+    QSGMaterialType *type() const override;
+    QSGMaterialShader *createShader(QSGRendererInterface::RenderMode) const override;
+
+    float time() const { return m_time; }
+    void setTime(float t);
+
+Q_SIGNALS:
+    void timeChanged(float time);
+
+private:
+    float m_time = 0.0f;
+};
+```
+
+### `moc` — the Meta-Object Compiler
+
+`moc` reads class headers containing `Q_OBJECT` and generates a corresponding `moc_<classname>.cpp` file that contains:
+
+- A static `qt_static_metacall()` function — the vtable for signal emission, slot invocation, and property access.
+- A `QMetaObject` literal — an in-process table of the class's methods, signals, properties, and enumerators with their types and names encoded as UTF-8 string data.
+- Implementations of `metaObject()`, `qt_metacast()`, and `qt_metacall()` — the three virtual functions that `QObject` declares and that `moc` fills in per class.
+
+Because `moc` output is fully resolved at compile time into static data, signal/slot connections using the pointer-to-member syntax are type-checked at compile time:
+
+```cpp
+/* Source: Qt signals/slots documentation (qt6/doc/qtcore/signalsandslots.html)
+ * Pointer-to-member connect() is checked at compile time:
+ * if signal and slot signatures are incompatible the build fails.
+ */
+connect(renderLoop, &QSGRenderLoop::sceneGraphInitialized,
+        rhi, &QRhi::beginFrame);               /* type-safe, compile-time */
+
+/* Qt 4 string-based syntax — still supported, but errors are runtime */
+connect(renderLoop, SIGNAL(sceneGraphInitialized()),
+        rhi, SLOT(beginFrame()));               /* dynamic, no type check */
+```
+
+This is the key distinction from GObject signals (§4.7): `g_signal_new()` registers signal metadata at runtime and `G_CALLBACK()` silences type mismatches with a cast macro — errors in signal connection only surface when the code executes. Qt's compile-time path catches them during the build.
+
+### `QMetaObject` and Runtime Introspection
+
+Every `QObject` subclass has a `staticMetaObject` member and a virtual `metaObject()` accessor. `QMetaObject` provides runtime inspection of a class's methods, properties, and signals — analogous to GObject Introspection typelibs (§4.7), but encoded directly in the process image. `QMetaObject::invokeMethod()` calls any slot or invokable method by name at runtime, which is the mechanism by which the QML engine calls C++ methods from script code:
+
+```cpp
+/* Source: Qt6 QMetaObject documentation
+ * Used internally by QQmlEngine to call C++ methods from QML bindings
+ * without the caller needing to know the class at compile time.
+ */
+QMetaObject::invokeMethod(compositorObject, "startFrame",
+                          Qt::QueuedConnection,
+                          Q_ARG(int, frameNumber));
+```
+
+### `Q_PROPERTY` and `QProperty<T>`
+
+`Q_PROPERTY` declarations expose named, typed properties to the QML engine and to `QObject::property()` / `setProperty()` — Qt's equivalent of `g_object_get`/`g_object_set`. Qt 6 added `QProperty<T>` and `QBindable<T>`, a C++20-based property binding system that enables declarative dependencies — when one property changes, all dependent properties update automatically without explicit signal connections:
+
+```cpp
+/* Qt 6 QProperty: declarative binding without signal boilerplate
+ * Source: Qt6 QProperty documentation (qt6/doc/qtcore/qproperty.html)
+ */
+class OutputState : public QObject
+{
+    Q_OBJECT
+public:
+    QProperty<int>  nominalRate{60};
+    QProperty<bool> vrrEnabled{false};
+    /* effectiveRate auto-recalculates when nominalRate or vrrEnabled changes */
+    QProperty<int>  effectiveRate{[this] {
+        return vrrEnabled ? 144 : nominalRate;
+    }};
+};
+```
+
+KWin uses `Q_PROPERTY` extensively on `KWin::Window` (Chapter 22 §3) — the properties `active`, `minimized`, `fullScreen`, `frameGeometry`, and `desktops` are all `Q_PROPERTY` declarations, which is how the QML scripting layer accesses them as `window.active`, `window.frameGeometry`, and so on, with QML's property binding engine subscribing to `NOTIFY` signals automatically.
+
+### `QQmlEngine` and the QML Runtime
+
+The QML engine is a JavaScript interpreter — the V4 engine, a custom ECMAScript 5.1 / partial ES6 implementation — embedded in Qt Quick. `QQmlEngine` is a `QObject` subclass that owns the global `QQmlContext`, manages QML component compilation and bytecode caching, and evaluates property bindings reactively. QML files (`.qml`) are compiled to V4 bytecode; Qt 6 optionally ahead-of-time compiles them to C++ via `qmlcachegen` for embedded targets.
+
+```cpp
+/* Loading a QML effect component at runtime — the model used by KWin
+ * for QML-based window effects and the Plasma Shell desktop.
+ */
+QQmlEngine *engine = new QQmlEngine(this);
+engine->addImportPath(QStringLiteral("/usr/lib/qt6/qml"));
+
+QQmlComponent component(engine,
+    QUrl::fromLocalFile("/usr/share/kwin/effects/overview/main.qml"));
+QObject *effect = component.create();
+/* QML property bindings on Window objects update automatically:
+ *   Item { opacity: window.minimized ? 0 : 1 }
+ * The engine subscribes to Window::minimizedChanged and re-evaluates.
+ */
+```
+
+KWin loads QML-based effects through `KPackage`; within each package a `main.qml` declares a QML component that KWin instantiates in its embedded `QQmlEngine`. The `org.kde.kwin` QML module (a `QQmlExtensionPlugin`) exposes compositor state — `KWin.clientList()`, `KWin.readConfig()`, `KWin.activeScreen` — as QML-accessible properties. The Overview effect, the desktop grid, and screen-edge triggers are all QML applications running inside the compositor process. The JavaScript scripting API (`KWin.registerShortcut`, window rule scripts) runs in a `QJSEngine` — a lighter-weight interpreter without the full QML runtime overhead, used for rule evaluation and keybinding callbacks.
+
+### Comparison with GObject
+
+The contrast with GObject (§4.7) is instructive for readers coming from the GTK side:
+
+| | Qt meta-object (`moc`) | GObject |
+|---|---|---|
+| Type registration | Compile time (`moc`-generated `.cpp`) | Runtime (`G_DEFINE_TYPE`, `g_type_register_*`) |
+| Signal/slot type check | Compile time (pointer-to-member `connect`) | Runtime (marshaller validation at emission) |
+| Introspection | In-process `QMetaObject` literal | Separate `.gir`/`.typelib` file (GObject Introspection) |
+| Scripting bridge | `QQmlEngine` (V4 JS) / `QJSEngine` with QML bindings | GJS (SpiderMonkey) with GIR typelib |
+| Property binding | `QProperty<T>` / `QBindable<T>` (C++20 reactive) | No first-class binding; `notify` signals + re-query |
+| Language bindings | QML, Python (PyQt6/PySide6), Rust (`qmetaobject-rs`) | Python (PyGObject), JavaScript (GJS), Rust (`gtk-rs`) |
+
+The compile-time approach means `moc` errors surface during the build rather than at runtime, at the cost of a mandatory preprocessor step in the build system. GObject's runtime registration is more dynamic — signals can be added to existing types at runtime, properties can be added to instances via `g_object_class_install_property` in a subclass — but errors in signal connection (wrong argument count, wrong type) appear only when the code executes. §4.7 contains a more detailed comparison of the two systems; readers building application code that spans both toolkits should read both sections together.
 
 ---
 

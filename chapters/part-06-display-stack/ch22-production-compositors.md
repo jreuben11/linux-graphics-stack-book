@@ -257,7 +257,9 @@ The removal is safe because all current NVIDIA configurations on Wayland use GBM
 
 ### Architecture Overview
 
-KWin is simultaneously an X11 window manager and a Wayland compositor. In an X11 session it uses the X Composite extension to obtain off-screen redirects of all windows and composites them using OpenGL or QPainter. In a Wayland session it is the DRM/KMS owner and composites Wayland surfaces directly. The `KWin::Compositor` class hierarchy handles both modes; the Wayland path is routed through `KWin::WaylandCompositor`, which owns the `DrmBackend`.
+KWin is a C++/Qt application — not a library — that is simultaneously an X11 window manager and a Wayland compositor. This distinguishes it structurally from Mutter, which is a library loaded by GNOME Shell (§2). KWin embeds a `QQmlEngine` for its own effect and scripting system; the Plasma Shell (desktop widgets, panels, system tray) runs as a separate `plasmashell` process and communicates with KWin via the `org_kde_plasma_shell` Wayland protocol. KDE Frameworks 6 (KF6) at version 6.27+ forms the middleware layer between Qt 6.10 and KWin: `KConfig` provides settings persistence, `KDecoration3` supplies the decoration plugin API for Qt Quick-based window themes, `KWindowSystem` provides cross-desktop window management abstractions, `KGlobalAccel` handles global keyboard shortcuts, and `KPackage` loads QML effect bundles from disk. [Source: `kwin/CMakeLists.txt`](https://invent.kde.org/plasma/kwin/-/blob/master/CMakeLists.txt)
+
+In an X11 session KWin uses the X Composite extension to obtain off-screen redirects of all windows and composites them using OpenGL or QPainter. In a Wayland session it is the DRM/KMS owner and composites Wayland surfaces directly. The `KWin::Compositor` class hierarchy handles both modes; the Wayland path is routed through `KWin::WaylandCompositor`, which owns the `DrmBackend`. KWin registers itself on D-Bus as `org.kde.KWin` at startup — this is the interface used by `kscreen` for display configuration, by the lock screen to verify the compositor's liveness, and by scripts invoking `qdbus org.kde.KWin`.
 
 ### The Rendering Scene
 
@@ -351,6 +353,105 @@ commit.commit();
 ### VRR and Scripting
 
 KWin implements per-output VRR (Variable Refresh Rate / adaptive sync) through `DrmOutput::setVrrPolicy`. Applications can request VRR via the `wp_fifo_v1` protocol or via KWin's own game detection heuristics. The scripting API allows users to write JavaScript rules that are evaluated for every window (`KWin.readConfig`, `registerShortcut`, the `org.kde.kwin.qml` QML context), enabling custom window management policies without writing a KWin plugin.
+
+### Window and Workspace Model
+
+KWin's window management centres on a small set of `QObject` subclasses. `KWin::Workspace` is a process-level singleton that owns all managed windows and outputs. `KWin::Window` is the abstract `QObject` base class for every manageable surface; its concrete subclasses include `X11Window` (manages an X11 client via XCB), `WaylandWindow` (manages a Wayland `xdg_toplevel`, `xdg_popup`, or layer-shell surface), and `InternalWindow` (KWin's own pop-up surfaces such as effect overlays and drag-and-drop windows). [Source: `kwin/src/window.h`, `kwin/src/x11window.h`, `kwin/src/waylandwindow.h`](https://invent.kde.org/plasma/kwin/-/tree/master/src)
+
+```cpp
+/* Source: kwin/src/window.h (simplified)
+ * Window is the abstract base for all manageable surfaces.
+ * X11Window, WaylandWindow, and InternalWindow override virtual methods
+ * to provide protocol-specific implementations.
+ */
+class KWIN_EXPORT Window : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(bool active       READ isActive       NOTIFY activeChanged)
+    Q_PROPERTY(bool minimized    READ isMinimized    NOTIFY minimizedChanged)
+    Q_PROPERTY(bool fullScreen   READ isFullScreen   NOTIFY fullScreenChanged)
+    Q_PROPERTY(QRectF frameGeometry READ frameGeometry NOTIFY frameGeometryChanged)
+public:
+    virtual bool acceptsFocus() const = 0;
+    virtual bool isClient() const;
+    virtual void closeWindow() = 0;
+    virtual WindowType windowType() const = 0;
+Q_SIGNALS:
+    void activeChanged();
+    void frameGeometryChanged();
+    void minimizedChanged();
+    void desktopsChanged();
+};
+```
+
+`KWin::Workspace` exposes the policy layer: `findWindow()`, `activateWindow()`, `raiseWindow()`, `sendWindowToDesktops()`, `setShowingDesktop()`. All window lifecycle events emit Qt signals — `windowAdded(Window *)`, `windowRemoved(Window *)`, `windowActivated(Window *)`, `stackingOrderChanged()`, `outputOrderChanged()` — that the effect system and QML scripting layer connect to. `VirtualDesktopManager` tracks the virtual desktop set; each `Window` carries a `QList<VirtualDesktop *>` accessible via `desktops()`.
+
+```mermaid
+graph TD
+    Workspace["KWin::Workspace\n(QObject singleton)"]
+    Window["KWin::Window\n(QObject, abstract)"]
+    X11Window["X11Window\n(XCB client)"]
+    WaylandWindow["WaylandWindow\n(xdg_toplevel / layer-shell)"]
+    InternalWindow["InternalWindow\n(KWin's own surfaces)"]
+    VDM["VirtualDesktopManager\n(virtual desktop set)"]
+
+    Workspace -->|"m_windows"| Window
+    Workspace --> VDM
+    Window --> X11Window
+    Window --> WaylandWindow
+    Window --> InternalWindow
+```
+
+From QML and JavaScript scripts, the `KWin.clientList()` function (exposed via the `org.kde.kwin` QML module) returns an array of `Window` objects whose `Q_PROPERTY` values — `active`, `minimized`, `fullScreen`, `frameGeometry`, `caption`, `desktops` — are accessible as plain QML property references. A script can bind `item.opacity = window.minimized ? 0 : 1` and the QML engine re-evaluates the binding whenever `minimizedChanged` fires, with no boilerplate signal connection in the script code.
+
+### KDE Frameworks Integration
+
+KDE Frameworks 6 (KF6) at version 6.27+ forms the middleware layer between Qt 6 and KWin. The frameworks used directly by KWin include:
+
+| Framework | Purpose in KWin |
+|---|---|
+| `KConfig` | Reading and writing user settings (compositor options, per-effect configuration) |
+| `KWindowSystem` | Cross-desktop window management abstraction; taskbar/pager integration |
+| `KDecoration3` | Decoration plugin API — the interface that lets Qt Quick-based themes render title bars |
+| `KGlobalAccel` | Global keyboard shortcut registration and dispatch |
+| `KPackage` | Loading packaged QML/JavaScript effect bundles from the file system |
+| `KCrash` | Crash handler that generates backtraces and optionally restarts the compositor |
+| `KAuth` | PolicyKit-based privilege escalation for display configuration |
+| `KDBusAddons` | D-Bus service registration; KWin registers `org.kde.KWin` at startup |
+
+**`KDecoration3`** is the most renderer-visible of these. Window decorations in KDE Plasma are not drawn by KWin directly — they are Qt Quick applications loaded as `KDecoration3::Decoration` plugins. Each plugin renders its decoration into a `QImage` or a Qt Quick `Item`, which KWin composites around the window frame. Changing the KDE window theme installs a different `KDecoration3` plugin; no compositor code changes are required. The decoration API declares virtual methods `paint()`, `init()`, `resize()`, and `settings()` that each theme implements, with `KDecoration3::DecoratedClient` providing the window state (caption, active state, button list) that the theme reads for rendering.
+
+**Plasma Shell** is the most architecturally significant Wayland client of KWin. The `plasmashell` process (part of `plasma-workspace`) connects to KWin as a Wayland client and uses the `org_kde_plasma_shell` protocol (see below) to declare surface roles — panel, desktop, on-screen display — to the compositor. The desktop widgets, notification popups, task manager, and system tray are all QML `Item` objects rendered by Plasma Shell's own `QQmlEngine` and composited by KWin as plasma-shell or layer-shell surfaces. This mirrors the GNOME Shell / Mutter relationship (§2), with the difference that GNOME Shell loads Mutter as a library and runs in the same process, while Plasma Shell is a fully separate process communicating via Wayland.
+
+### KDE-Specific Wayland Protocols
+
+KWin implements a suite of KDE-private Wayland protocols that extend the standard `wayland-protocols` and `xdg-shell` interfaces. These live in `kwin/src/wayland/` as XML protocol files compiled to C++ stubs by `wayland-scanner`. [Source: `kwin/src/wayland/CMakeLists.txt`](https://invent.kde.org/plasma/kwin/-/blob/master/src/wayland/CMakeLists.txt)
+
+| Protocol XML | Interface prefix | Purpose |
+|---|---|---|
+| `shadow.xml` | `org_kde_kwin_shadow` | Clients request drop shadows composited by KWin |
+| `blur.xml` | `org_kde_kwin_blur` | Clients request background blur beneath transparent regions |
+| `slide.xml` | `org_kde_kwin_slide` | Clients declare slide-in direction for map/unmap animations |
+| `server-decoration.xml` | `org_kde_kwin_server_decoration` | Negotiate client-side vs server-side (`KDecoration3`) window borders |
+| `plasma-shell.xml` | `org_kde_plasma_shell` | Plasma Shell declares surface roles: panel, desktop, on-screen display |
+| `plasma-window-management.xml` | `org_kde_plasma_window_management` | Taskbar/pager integration: window list, thumbnails, close/minimize/activate |
+| `kde-output-management-v2.xml` | `kde_output_management_v2` | `kscreen` daemon sends display layout changes (resolution, position, rotation) |
+| `kde-output-order-v1.xml` | `kde_output_order_v1` | Compositor declares the primary output ordering used by KScreen |
+| `org-kde-plasma-virtual-desktop.xml` | `org_kde_plasma_virtual_desktop` | Taskbar queries and modifies the virtual desktop set |
+| `dpms.xml` | `org_kde_kwin_dpms` | Remote power-management: blank/unblank individual outputs |
+| `zkde-screencast-unstable-v1.xml` | `zkde_kwin_screencast_unstable_v1` | Screen recording via PipeWire — used by Spectacle and OBS |
+
+`org_kde_kwin_blur` and `org_kde_kwin_shadow` are consumed entirely inside the compositor: a window that binds these interfaces attaches a blur or shadow object to its `wl_surface`; KWin reads the attachment during its compositing pass and includes the corresponding effect in that surface's render item. No round-trip to another process is required — the protocol is a direct hint from the client surface to the in-process renderer.
+
+`kde_output_management_v2` demonstrates a different pattern: the external `kscreen` daemon (part of Plasma) uses this protocol to instruct KWin to apply display layout changes atomically. This separates display configuration policy (in `kscreen`) from mechanism (in KWin), analogous to how `colord` separates ICC profile management from Mutter's `MetaColorManager` (§2).
+
+`zkde_kwin_screencast_unstable_v1` underpins all screen recording and screencasting on KDE Plasma. When a client requests a stream, KWin allocates a DMA-BUF-backed PipeWire stream, feeds it rendered frames, and returns the PipeWire node ID to the client. Spectacle (the screenshot tool), KDE Connect's screen mirroring, and OBS on Wayland all consume this stream.
+
+### XWayland in KWin
+
+KWin's XWayland integration follows the same structural pattern as Mutter's `MetaXWaylandManager` (§2) but is implemented in C++/Qt style in `kwin/src/xwayland/`. When KWin starts a Wayland session it creates an `Xwayland` object that manages the lifecycle of the `Xwayland` process, opens the listening socket, and emits a Qt signal `started()` when XWayland reports its `DISPLAY` number. `KWin::X11Window` objects are created for each XWayland client as it maps windows; they inherit from `KWin::Window` and participate in the same focus, stacking-order, and virtual-desktop machinery as `WaylandWindow` objects. Because `X11Window` satisfies the same `Window` interface, effects and scripting that operate on the window list work transparently across Wayland and XWayland clients.
+
+Override-redirect X11 windows — tooltips, popup menus, drag-and-drop windows — are handled as `X11Window` instances with `overrideRedirect()` returning true; KWin composites them above the normal stacking order without applying window management policy (no decorations, no virtual desktop placement). This is architecturally equivalent to Mutter's `META_WINDOW_OVERRIDE_REDIRECT` path described in §2. For the full XWayland protocol architecture, rootful vs rootless modes, and security boundaries, see Chapter 23.
 
 ---
 
