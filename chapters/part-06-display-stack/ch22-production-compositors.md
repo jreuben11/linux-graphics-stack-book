@@ -362,7 +362,7 @@ Sway's rendering path does not include a custom effects pipeline. Window transit
 
 ### Design Philosophy
 
-Hyprland occupies a position between Sway's minimalism and KWin's full-featured complexity. It is wlroots-based like Sway, but has invested heavily in a custom rendering layer, a first-class animation system, and an extensible plugin API — features that Sway deliberately excludes. The result is a compositor that offers animated workspace transitions, rounded window corners, per-window blur, and drop shadows while still operating within the wlroots abstraction layer.
+Hyprland occupies a position between Sway's minimalism and KWin's full-featured complexity. It has invested heavily in a custom rendering layer, a first-class animation system, and an extensible plugin API — features that Sway deliberately excludes. The result is a compositor that offers animated workspace transitions, rounded window corners, per-window blur, and drop shadows. Hyprland was originally built on wlroots, but completed a migration to its own **Aquamarine** backend library in 2024–2025, replacing wlroots entirely. [Source: Hyprland dev blog](https://blog.vaxry.net/articles/2024-wlrootsRewrite)
 
 This rapid evolution comes with a trade-off: Hyprland's internal APIs change frequently between versions. The discussion here focuses on stable, documented concepts rather than internal function signatures that may change in a minor release.
 
@@ -374,7 +374,7 @@ The bezier curve system is user-configurable via the `hypr-animations.conf` DSL:
 
 ### Custom Rendering Pipeline
 
-Hyprland wraps the wlroots GLES2 renderer through a `CRenderer` class that adds additional rendering passes. Rounded window corners are implemented by rendering each window to an offscreen buffer, then sampling that buffer through a GLSL fragment shader that discards fragments outside a rounded rectangle mask. Window blur is a separate multi-pass operation: Hyprland captures the area behind a transparent window, applies iterative downscaling and upscaling blur passes, and composites the result as a background before drawing the window itself.
+Hyprland implements its own `CRenderer` class — post-Aquamarine migration, rendering no longer goes through the wlroots GLES2 renderer — which adds additional rendering passes on top of the EGL/GLES2 context that Aquamarine provides. Rounded window corners are implemented by rendering each window to an offscreen buffer, then sampling that buffer through a GLSL fragment shader that discards fragments outside a rounded rectangle mask. Window blur is a separate multi-pass operation: Hyprland captures the area behind a transparent window, applies iterative downscaling and upscaling blur passes, and composites the result as a background before drawing the window itself.
 
 Window animation during close uses `renderSnapshot` — a mechanism that captures a window's last rendered state into a texture and continues animating that texture even after the underlying Wayland surface has been destroyed. This is architecturally similar to how other compositors handle close animations but implemented independently in Hyprland's rendering layer.
 
@@ -409,6 +409,85 @@ The `hyprspace` overview plugin is a widely-used example: it implements a GNOME-
 Hyprland defines several compositor-specific Wayland protocols: `hyprland_global_shortcuts_manager_v1` allows applications to register global keybindings; `hyprland_toplevel_export_manager_v1` enables per-window screenshots without going through the full `zwlr_screencopy_manager_v1` path; `hyprland_focus_grab_v1` provides a session-modal focus grab mechanism. These protocols are only available on Hyprland; applications using them must detect availability via `wl_registry` and implement fallback behaviour for other compositors.
 
 Hyprland's IPC protocol is its own JSON socket format, not i3-compatible. The `hyprctl` command-line tool covers most administrative use cases; the socket protocol supports event subscription for window, monitor, and keyboard events.
+
+### Aquamarine Backend
+
+Aquamarine (`github.com/hyprwm/aquamarine`) is the backend library Hyprland developed to replace wlroots as its DRM/KMS and input abstraction layer. The migration was completed across 2024–2025; as of Aquamarine v0.12.1 the library is the sole backend dependency for Hyprland's hardware access layer. [Source: hyprwm/aquamarine](https://github.com/hyprwm/aquamarine)
+
+The motivations for the migration, documented in the Hyprland dev blog, were: wlroots' lack of documentation making debugging difficult; a lengthy protocol approval process (a tearing implementation waited nine months despite being ready); and the wish to have direct control over the codebase governing Hyprland's DRM and input paths. Aquamarine is written in C++ (as Hyprland itself is), eliminating the C–C++ impedance mismatch that existed when wrapping wlroots.
+
+Aquamarine describes itself as "a very light linux rendering backend library" that is rendering-API-agnostic — it provides hardware access but does not mandate OpenGL or Vulkan, leaving the rendering context to the compositor. It supports four backend types:
+
+| Backend | Purpose |
+|---|---|
+| DRM | Direct hardware access — full KMS atomic commit, multi-CRTC, cursor planes |
+| Wayland nested | Runs Hyprland as a Wayland client inside another compositor |
+| Headless | Virtual outputs for CI, VNC, screencasting without a display |
+| Null | No-op implementation for testing |
+
+The public API is defined by three principal C++ abstract classes in `include/aquamarine/`:
+
+**`CBackend`** — the top-level factory and event pump:
+
+```cpp
+/* Source: hyprwm/aquamarine include/aquamarine/backend/Backend.hpp */
+class CBackend {
+  public:
+    static SP<CBackend> create(
+        const std::vector<AQ_BACKEND_TYPE>& backends,
+        SP<CBackendImplementationOptions> options);
+
+    bool start();                     /* initialise all selected backends */
+    std::vector<SPollFD> getPollFDs();/* fds for the compositor's event loop */
+    void dispatchEvents();            /* process pending backend events */
+    int  drmFD();                     /* primary DRM device fd */
+    int  drmRenderNodeFD();           /* render-only DRM node fd */
+
+    struct {
+        CSignal<SP<IOutput>>        newOutput;
+        CSignal<SP<IKeyboard>>      newKeyboard;
+        CSignal<SP<IPointer>>       newPointer;
+        CSignal<SP<ITouch>>         newTouch;
+        CSignal<SP<ISwitch>>        newSwitch;
+        CSignal<SP<ITablet>>        newTablet;
+    } events;
+
+    SP<IAllocator> primaryAllocator;
+};
+```
+
+`CBackend::create()` accepts a prioritised list of backend types; it attempts each in order and returns the first that initialises successfully. The compositor integrates the returned poll fds into its event loop (`epoll`) and calls `dispatchEvents()` on readability.
+
+**`IOutput`** — one logical display connector:
+
+```cpp
+/* Source: hyprwm/aquamarine include/aquamarine/output/Output.hpp */
+class IOutput {
+  public:
+    bool commit();        /* submit pending state (atomic KMS commit) */
+    bool test();          /* validate state without applying (TEST_ONLY) */
+    void scheduleFrame(); /* request a new frame callback */
+    void setCursor(SP<IBuffer> buffer, const Vector2D& hotspot);
+    void moveCursor(const Vector2D& pos);
+
+    std::vector<SP<SOutputMode>> modes;
+    SP<SOutputMode> preferredMode();
+    std::vector<uint32_t> getRenderFormats();
+
+    struct {
+        CSignal<>         frame;      /* vblank — render now */
+        CSignal<>         present;    /* frame successfully displayed */
+        CSignal<>         destroy;
+        CSignal<bool>     state;      /* connector connect/disconnect */
+    } events;
+};
+```
+
+`IOutput::test()` maps directly to a `DRM_IOCTL_ATOMIC_COMMIT` with `DRM_MODE_ATOMIC_TEST_ONLY`; `commit()` is the real commit. This gives Hyprland the same test-before-commit pattern used by gamescope and wlroots.
+
+**Input device hierarchy** — `IKeyboard`, `IPointer`, `ITouch`, `ISwitch`, `ITablet`, `ITabletTool`, `ITabletPad` — each emits typed event signals (e.g., `IKeyboard::events.key` carries an `SKeyEvent` with timestamp, keycode, and modifier state; `IPointer::events.motion` carries a `SMotionEvent` with delta and unaccelerated delta).
+
+Hyprland's compositor loop calls `getPollFDs()` at startup and adds each fd to its `epoll` set. On readability, it calls `dispatchEvents()`, which emits the appropriate backend signals. Hyprland's signal handlers update the compositor state (map new outputs, route input to the focused surface) identically to how it previously handled wlroots listener callbacks — the external behaviour from a Wayland client's perspective is unchanged.
 
 ---
 

@@ -19,6 +19,7 @@
 - [8. XWayland Integration](#8-xwayland-integration)
 - [9. Walkthrough: A Minimal Compositor](#9-walkthrough-a-minimal-compositor)
 - [10. Screencopy and PipeWire Integration](#10-screencopy-and-pipewire-integration)
+- [11. Smithay: The Rust Alternative to wlroots](#11-smithay-the-rust-alternative-to-wlroots)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -26,7 +27,7 @@
 
 ## Overview
 
-**wlroots** is the dominant library for building **Wayland** compositors on Linux. Where **Weston** is a monolithic reference compositor, **wlroots** is a modular toolkit: it provides backend abstraction over **DRM/KMS**, nested **Wayland**, **X11**, and headless outputs; a rendering infrastructure supporting **GLES2**, **Vulkan**, and **CPU**-based **pixman**; a scene graph with damage tracking; input handling via **libinput**; and a rich set of **Wayland** protocol implementations — all as loosely coupled components that a compositor author can assemble into a complete compositor. **Sway**, **Hyprland**, **Wayfire**, **labwc**, and dozens of smaller compositors are built on **wlroots**. Understanding **wlroots** means understanding how the entire output path from client commit to pixel works in practice.
+**wlroots** is the dominant library for building **Wayland** compositors on Linux. Where **Weston** is a monolithic reference compositor, **wlroots** is a modular toolkit: it provides backend abstraction over **DRM/KMS**, nested **Wayland**, **X11**, and headless outputs; a rendering infrastructure supporting **GLES2**, **Vulkan**, and **CPU**-based **pixman**; a scene graph with damage tracking; input handling via **libinput**; and a rich set of **Wayland** protocol implementations — all as loosely coupled components that a compositor author can assemble into a complete compositor. **Sway**, **Wayfire**, **labwc**, and dozens of smaller compositors are built on **wlroots**. (Hyprland was wlroots-based until 2024, when it migrated to its own **Aquamarine** backend library — see Chapter 22 §5.) Understanding **wlroots** means understanding how the entire output path from client commit to pixel works in practice.
 
 The chapter opens with the **wlroots** architecture and source-tree layout (`backend/`, `render/`, `types/`, `xwayland/`, `interfaces/`), covering the **"bring your own event loop"** design built on **`wl_event_loop`** and the **ABI instability** policy. The backend abstraction layer is examined in depth: the **`wlr_backend`** / **`wlr_backend_impl`** vtable model; the **DRM** backend's connector enumeration via **`drmModeGetResources`**, hotplug via **udev**, atomic modesetting using **`drmModeAtomicCommit`** / **`drmModeAtomicAlloc`**, hardware cursor and overlay plane assignment, page flip events via **`DRM_EVENT_FLIP_COMPLETE`**, and scanout buffer allocation with **GBM** (**`gbm_bo_create_with_modifiers2`**). The nested **Wayland** backend, **headless** backend, and **multi-backend** composed by **`wlr_backend_autocreate`** are also covered.
 
@@ -1178,6 +1179,137 @@ OBS Studio, Microsoft Teams, and most video conferencing applications use this p
 `wlr_screencopy_manager_v1` requires compositor permission. While wlroots does not itself implement a permission model (by design), compositors are expected to use `xdg-desktop-portal` as the mediation layer, which prompts the user for consent before granting screen capture access. Compositors should also consider implementing `wp_security_context_v1` to gate access from sandboxed clients to sensitive globals like screencopy.
 
 The `with_damage` throttle flag (`zwlr_screencopy_frame_v1.copy_with_damage`) is important for efficiency: without it, the capture loop fires on every frame even for a static desktop. With damage tracking, the compositor only delivers a new frame to the screencopy client when the output has actually changed, drastically reducing CPU and GPU overhead for screencasting an idle desktop.
+
+---
+
+## 11. Smithay: The Rust Alternative to wlroots
+
+**smithay** (`github.com/smithay/smithay`, v0.7.0, June 2025) is a Rust library providing the building blocks for Wayland compositors. Its relationship to the compositor you build is analogous to wlroots: it handles DRM/KMS, input, buffer allocation, and protocol dispatch, leaving window management and rendering logic to the compositor author. Where wlroots is a C library with a callback/listener architecture, smithay models compositor state in Rust's ownership system, using the type checker rather than runtime convention to enforce correct resource lifetime. [Source: smithay/smithay](https://github.com/smithay/smithay)
+
+Production compositors built on smithay include **cosmic-comp** (System76's COSMIC desktop, shipped in Pop!_OS 24.04 — see §9), **niri** (a scrollable-tiling compositor), **MagmaWM**, and **Pinnacle**.
+
+### Architecture: State Struct and Delegate Macros
+
+The central architectural choice in smithay is that all mutable compositor state lives in a single user-defined struct. Protocol handlers, backend callbacks, and input events all receive a `&mut State` reference. Because Rust's borrow checker enforces exclusive access, the event loop can pass mutable state into any callback without mutex locks — a callback can never alias another active callback's state. This eliminates entire categories of wlroots bugs caused by dangling listener pointers or re-entrant callback invocations.
+
+smithay uses the **`calloop`** event loop crate. `calloop` dispatches events sequentially; there is no thread pool and callbacks are never concurrent. This is deliberate: the goal is "centralized mutable state without synchronization" — fewer `Arc<Mutex<T>>` wrappers, simpler reasoning.
+
+Protocol handling is structured as three cooperating components:
+
+1. **`*State` storage struct**: each protocol module (e.g., `CompositorState`, `XdgShellState`) holds the protocol-specific Wayland globals and object registries. These are embedded in the compositor's top-level `State` struct.
+
+2. **Handler trait**: the compositor implements a module-specific trait on its `State` (e.g., `CompositorHandler`, `XdgShellHandler`) with methods that contain the application-specific logic — what to do when a surface commits, when a toplevel is created.
+
+3. **`delegate_*!` macros**: these macros generate the `wayland_server` trait implementations that wire the Wayland protocol dispatch machinery to the `*State` and the handler trait. They are called once in the compositor's module, never in hot paths.
+
+A minimal example binding the `wl_compositor` global:
+
+```rust
+// Source: smithay compositor example (simplified)
+// The delegate_compositor! macro generates the required wayland_server
+// dispatch impl, connecting wl_compositor requests to CompositorHandler.
+use smithay::{
+    delegate_compositor,
+    wayland::compositor::{CompositorHandler, CompositorState, SurfaceData},
+};
+
+pub struct State {
+    pub compositor_state: CompositorState,
+    // ... other protocol states
+}
+
+impl CompositorHandler for State {
+    fn compositor_state(&mut self) -> &mut CompositorState {
+        &mut self.compositor_state
+    }
+    fn commit(&mut self, _dh: &DisplayHandle, surface: &WlSurface) {
+        // application-specific surface commit logic
+        on_commit_buffer_handler::<Self>(surface);
+    }
+}
+
+delegate_compositor!(State);  // generates wayland_server impls
+```
+
+Smithay ships over 40 such `delegate_*!` macros, covering `xdg_shell`, `layer_shell`, `linux_dmabuf`, `wp_linux_drm_syncobj` (explicit sync), `wp_presentation_time`, `xdg_activation`, `data_device`, `primary_selection`, `virtual_keyboard`, `input_method`, `session_lock`, and more.
+
+### Backend Modules
+
+**`backend::drm`** wraps libdrm and provides:
+
+- `DrmDevice` — wraps a DRM file descriptor, discovers connectors, encoders, CRTCs, and planes
+- `DrmSurface` — manages a fixed CRTC/plane assignment for double-buffered rendering
+- `DrmCompositor` — the high-level composition path: manages triple-buffer swap chains, waits for page-flip events, handles modeset recovery, and supports direct scanout (`queue_frame()` with `ScanoutError` fallback for frames that pass the hardware plane test)
+
+```rust
+// Source: smithay docs, backend::drm
+// DrmCompositor wraps DrmSurface with a full triple-buffer + atomic-commit pipeline.
+// queue_frame() attempts direct scanout; if the plane TEST_ONLY commit fails,
+// it falls back to rendering the frame through GlesRenderer.
+compositor.queue_frame(
+    None,           // dmabuf damage (None = full-frame)
+    None,           // color transform
+    |renderer| {
+        // render_frame() draws client surfaces into the output buffer
+        render_frame::<_, _, GlesTexture>(renderer, &elements, clear_color)
+    },
+)?;
+compositor.frame_submitted()?;  // called after page-flip event
+```
+
+**`backend::renderer`** provides:
+
+| Renderer | Description |
+|---|---|
+| `GlesRenderer` | OpenGL ES 2 via EGL — primary production renderer |
+| `PixmanRenderer` | Software rendering via libpixman — no GPU required |
+| `GlMultiRenderer` | Multi-GPU compositor: routes each output to its local GPU context |
+
+A Vulkan renderer is not yet available in smithay's `backend::renderer` module as of v0.7.0; the `backend::vulkan` module provides Vulkan instance/device/surface helpers for compositors that want to build their own Vulkan path, but there is no ready-to-use `VulkanRenderer` equivalent to `GlesRenderer`.
+
+**`backend::session`** handles seat/session management: TTY VT switching, logind D-Bus session, and libseat integration — the same mechanisms wlroots abstracts via `wlr_session`.
+
+**`backend::udev`** handles hotplug: it watches udev events, discovers DRM and input devices, and connects them to the compositor's event loop via calloop.
+
+**`backend::libinput`** wraps libinput, translating hardware events into smithay's `InputEvent` enum that the compositor's `InputHandler` processes.
+
+### DMA-BUF Feedback
+
+smithay's `wayland::dmabuf` module implements the `zwp_linux_dmabuf_v1` protocol including the v4 feedback extension. The feedback system communicates per-surface optimal buffer parameters to clients, allowing a client to allocate buffers in the exact format/modifier pair the compositor can scanout directly, avoiding format conversion copies:
+
+```rust
+// Source: smithay backend::drm + wayland::dmabuf
+// DmabufFeedbackBuilder constructs a feedback object from the DRM device's
+// supported format/modifier pairs. TrancheFlags::Scanout signals that buffers
+// in this tranche can go directly to KMS without GPU blit.
+let feedback = DmabufFeedbackBuilder::new(drm.dev_id(), formats)
+    .add_preference_tranche(
+        drm.dev_id(),
+        Some(TrancheFlags::Scanout),
+        scanout_formats.clone(),
+    )
+    .build()?;
+dmabuf_state.create_global_with_default_feedback::<State>(&dh, &feedback);
+```
+
+### Comparison with wlroots
+
+| Dimension | wlroots | smithay |
+|---|---|---|
+| Language | C | Rust |
+| Version (mid-2026) | 0.20 | 0.7.0 |
+| Compositor lifecycle | C pointers + listener callbacks | `State` struct + `delegate_*!` macros |
+| Event loop | wl_event_loop (libwayland) | calloop |
+| DRM backend | `wlr_drm` / `wlr_backend` | `DrmDevice` / `DrmCompositor` |
+| Renderer | GLES2 (stable), Vulkan (landing) | `GlesRenderer`, `PixmanRenderer`; Vulkan allocator only |
+| Multi-GPU | `wlr_multi_backend` | `GlMultiRenderer` |
+| Dmabuf feedback | `wlr_linux_dmabuf_v1` | `DmabufFeedbackBuilder` |
+| Protocol count | ~45 implementations | ~40 `delegate_*!` macros |
+| ABI stability | Intentionally unstable | Semver (crates.io) |
+| Memory safety | Manual (address sanitiser in CI) | Guaranteed by borrow checker |
+| Production compositors | Sway, Wayfire, labwc, River, … | cosmic-comp, niri, MagmaWM, Pinnacle |
+
+The key architectural tradeoff: wlroots gives compositor authors a full working framework they can use directly (the tinywl example is ~700 lines); smithay gives compositors more explicit control but requires more assembly. smithay's ownership model makes it impossible to accidentally hold a dangling listener pointer across a DRM hotplug event — the type system enforces the contract that wlroots enforces only by convention.
 
 ---
 
