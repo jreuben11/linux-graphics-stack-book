@@ -10,6 +10,7 @@
 - [1. Introduction: The Modern GPU Compilation Stack](#1-introduction-the-modern-gpu-compilation-stack)
 - [2. MLIR Architecture for GPU Compilation](#2-mlir-architecture-for-gpu-compilation)
 - [3. The GPU Dialect](#3-the-gpu-dialect)
+  - [3.3 The NVVM Dialect](#33-the-nvvm-dialect)
 - [4. OpenAI Triton: Python to GPU Compiler](#4-openai-triton-python-to-gpu-compiler)
 - [5. Triton FlashAttention and Kernel Performance](#5-triton-flashattention-and-kernel-performance)
 - [6. IREE: MLIR-Based Inference for Vulkan](#6-iree-mlir-based-inference-for-vulkan)
@@ -195,7 +196,95 @@ The `-convert-gpu-to-spirv` pass (also called `GpuToSpirvPass` in the MLIR C++ A
 
 The pass `-gpu-module-to-binary` is the modern (post-MLIR 17) approach: it invokes the registered serialiser for each attached target attribute, producing a binary blob rather than requiring an external `mlir-translate` invocation.
 
-### 3.3 IREE's Use of the GPU Dialect
+### 3.3 The NVVM Dialect
+
+The `nvvm` dialect ([reference](https://mlir.llvm.org/docs/Dialects/NVVMDialect/)) is MLIR's typed representation of **NVIDIA's NVVM IR** — an LLVM IR subset extended with NVIDIA-specific intrinsics. When `-convert-gpu-to-nvvm` runs, every `gpu` dialect op is replaced by its `nvvm` equivalent; the result is valid LLVM IR that the LLVM NVPTX backend (`lib/Target/NVPTX`) can lower to PTX. The full NVIDIA lowering chain is:
+
+```
+gpu dialect
+  └─ -convert-gpu-to-nvvm
+       └─ nvvm dialect (LLVM IR + nvidia intrinsics)
+            └─ mlir-translate --mlir-to-llvmir
+                 └─ LLVM NVPTX backend
+                      └─ PTX assembly
+                           └─ ptxas  (proprietary NVIDIA assembler)
+                                └─ SASS (binary cubin)
+```
+
+**Thread indexing.** The `-convert-gpu-to-nvvm` pass maps each `gpu.*` indexing op to the corresponding NVVM special-register read:
+
+| `gpu` dialect | `nvvm` intrinsic | PTX equivalent |
+|---------------|-----------------|----------------|
+| `gpu.thread_id x` | `nvvm.read.ptx.sreg.tid.x` | `mov.u32 %r, %tid.x` |
+| `gpu.block_id x` | `nvvm.read.ptx.sreg.ctaid.x` | `mov.u32 %r, %ctaid.x` |
+| `gpu.block_dim x` | `nvvm.read.ptx.sreg.ntid.x` | `mov.u32 %r, %ntid.x` |
+| `gpu.barrier` | `nvvm.barrier0` | `bar.sync 0` |
+| `gpu.lane_id` | `nvvm.read.ptx.sreg.laneid` | `mov.u32 %r, %laneid` |
+
+**Warp intrinsics.** The `nvvm` dialect exposes cooperative warp-level primitives that have no equivalent in the hardware-neutral `gpu` dialect:
+
+```mlir
+// Warp-level shuffle: broadcast lane 0's value to all lanes
+%shuffled = nvvm.shfl.sync bfly %mask, %val, %delta, %c31 : i32
+
+// Warp vote: any thread in warp satisfies predicate
+%any = nvvm.vote.any.sync %mask, %pred : i1
+
+// Active mask: bitmask of currently-executing lanes
+%active = nvvm.activemask : i32
+```
+
+These intrinsics are used directly by Triton's NVIDIA backend after the `ttgpu` → `nvvm` lowering stage; they correspond to PTX `shfl.sync`, `vote.any.sync`, and `activemask` instructions.
+
+**Asynchronous memory and tensor core ops.** For Ampere and later architectures, the `nvvm` dialect includes:
+
+```mlir
+// Ampere async copy: shared memory ← global without register staging
+nvvm.cp.async.shared.global %dst, %src, 16 : !llvm.ptr<3>, !llvm.ptr<1>
+nvvm.cp.async.commit.group
+nvvm.cp.async.wait.group 0
+
+// Warp-level matrix multiply-accumulate (pre-Hopper, WMMA API)
+// D = A * B + C  for 16x16x16 f16 tiles
+%d0, %d1, %d2, %d3, %d4, %d5, %d6, %d7 =
+  nvvm.wmma.mma %a0, %a1, %a2, %a3, %a4, %a5, %a6, %a7,
+                %c0, %c1, %c2, %c3, %c4, %c5, %c6, %c7
+  {layout_a = #nvvm.mma_layout<row>,
+   layout_b = #nvvm.mma_layout<col>,
+   shape = #nvvm.shape<m = 16, n = 16, k = 16>,
+   type_a = f16, type_b = f16, type_d = f32} : ...
+
+// Hopper wgmma (warp-group MMA, replaces WMMA)
+nvvm.wgmma.mma_async %desc_a, %desc_b, %accum
+  {shape = #nvvm.shape<m = 64, n = 128, k = 16>,
+   type_a = f16, type_b = f16, type_d = f32} : ...
+```
+
+**NVVM metadata conventions.** NVVM IR uses LLVM metadata to communicate kernel identity and launch constraints to `ptxas`. The `-convert-gpu-to-nvvm` pass attaches `nvvm.annotations` to mark functions as kernels and optionally set maximum thread counts:
+
+```llvm
+; Generated LLVM IR (after mlir-translate)
+define void @vector_add(ptr %a, ptr %b, ptr %c) {
+  ...
+}
+
+!nvvm.annotations = !{
+  !0,               ; kernel entry point marker
+  !1                ; optional maxntidx hint
+}
+!0 = !{ptr @vector_add, !"kernel", i32 1}
+!1 = !{ptr @vector_add, !"maxntidx", i32 256}
+```
+
+This metadata is what tells `ptxas` to emit a `.entry` directive rather than a `.func` directive in the PTX output, and to respect any occupancy hints.
+
+**NVVM vs ROCDL.** The AMD equivalent is the `rocdl` dialect (`-convert-gpu-to-rocdl`), which maps to LLVM AMDGPU backend intrinsics. The structural parallel is exact: `nvvm.read.ptx.sreg.tid.x` ↔ `rocdl.workitem.id.x`, `nvvm.barrier0` ↔ `rocdl.barrier`, `nvvm.wmma.*` ↔ `rocdl.mfma.*`. Both dialects are designed to be thin wrappers over their respective LLVM target intrinsics rather than portable abstractions — portability is the `gpu` dialect's job.
+
+**Why Triton uses `nvvm` rather than going through SPIR-V.** Triton's NVIDIA backend targets `nvvm` (not `spirv`) because several performance-critical Triton primitives — warp shuffles, async copies, `wgmma` descriptors — have no standardised SPIR-V equivalent. The SPIR-V path is available (`-convert-gpu-to-spirv`) but loses these low-level primitives and is therefore the fallback for Vulkan compute (§4.4), not the primary NVIDIA path.
+
+[Source: MLIR NVVM dialect docs](https://mlir.llvm.org/docs/Dialects/NVVMDialect/) [Source: LLVM NVPTX target](https://llvm.org/docs/NVPTXUsage.html)
+
+### 3.4 IREE's Use of the GPU Dialect
 
 IREE (Section 6) uses the `gpu` dialect as its primary GPU representation after lowering from the `flow` and `stream` dialects. IREE's CodeGen pipeline for Vulkan produces `gpu.launch_func` + `spirv.module` pairs, which are then serialised to SPIR-V and embedded in the compiled `.vmfb` (VM FlatBuffer) binary. [Source: IREE developer overview](https://iree.dev/developers/general/developer-overview/)
 
