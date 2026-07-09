@@ -21,14 +21,15 @@
 10. [CCCL: CUDA Core Compute Libraries](#10-cccl-cuda-core-compute-libraries)
 11. [Tile-Based CUDA: cuda-tile and Tilus](#11-tile-based-cuda-cuda-tile-and-tilus)
 12. [NVSHMEM: GPU-Side One-Sided Communication](#12-nvshmem-gpu-side-one-sided-communication)
-13. [Integrations](#integrations)
+13. [cuDNN: Deep Learning Primitives](#13-cudnn-deep-learning-primitives)
+14. [Integrations](#integrations)
 14. [References](#references)
 
 ---
 
 ## Overview
 
-This chapter examines the **CUDA** software stack as it operates on Linux: from the layered shared libraries that expose the **Driver API** and **Runtime API**, through streams and events as the fundamental concurrency and synchronization primitives, to **NVRTC** for runtime kernel compilation and **CUDA Graphs** for eliminating CPU dispatch overhead in iterative workloads. It then covers the operational concerns that matter most on production Linux systems — **MPS** and **MIG** for multi-tenant GPU sharing, **NVML** for monitoring, and the **procfs**/**debugfs** interfaces exposed by the **nvidia** kernel modules.
+This chapter examines the **CUDA** software stack as it operates on Linux: from the layered shared libraries that expose the **Driver API** and **Runtime API**, through streams and events as the fundamental concurrency and synchronization primitives, to **NVRTC** for runtime kernel compilation and **CUDA Graphs** for eliminating CPU dispatch overhead in iterative workloads. It then covers the operational concerns that matter most on production Linux systems — **MPS** and **MIG** for multi-tenant GPU sharing, **NVML** for monitoring, and the **procfs**/**debugfs** interfaces exposed by the **nvidia** kernel modules. Section 13 covers **cuDNN** — the deep learning primitives library used by every major ML framework — including handle/descriptor lifecycle, convolution algorithm search, the cuDNN v9 Graph API and its fused Flash Attention op, and a comparison with AMD's **MIOpen**.
 
 Section 1 maps the library layering: **`libcuda.so`** (the **Driver API**, installed with the graphics driver) versus **`libcudart.so`** (the **Runtime API**, part of the **CUDA Toolkit**), how version compatibility is enforced, and the error **`CUDA_ERROR_INVALID_PTX`** that arises when the **PTX ISA** level emitted by **nvcc** exceeds what the installed driver's JIT understands. It covers loading **PTX** and **CUBIN** objects at runtime via **`cuModuleLoadData()`** and the newer context-independent **`CUlibrary`** API (**`cuLibraryLoadData()`**), as well as the primary context model (**`cuDevicePrimaryCtxRetain()`**) and the **Green Contexts** intra-process SM-partitioning alternative introduced in **CUDA 12.4**.
 
@@ -1210,6 +1211,197 @@ __global__ void my_nvshmem_kernel(float *buf, int my_pe, int n_pes) {
 
 [Source: NVSHMEM developer documentation](https://developer.nvidia.com/nvshmem)
 [Source: NVSHMEM GitHub](https://github.com/NVIDIA/nvshmem)
+
+---
+
+## 13. cuDNN: Deep Learning Primitives
+
+cuDNN (CUDA Deep Neural Network library) is NVIDIA's closed-source library of GPU-accelerated primitives for deep learning: convolution, pooling, normalization, activation, softmax, attention, and RNN cells. It ships as `libcudnn.so` and `libcudnn_ops.so` / `libcudnn_cnn.so` / `libcudnn_adv.so` (split into sub-libraries since cuDNN 8). PyTorch, TensorFlow, JAX (via XLA), and ONNX Runtime all call cuDNN for their compute-intensive operations rather than hand-writing GPU kernels. [Source: cuDNN documentation](https://docs.nvidia.com/deeplearning/cudnn/latest/)
+
+### 13.1 Handle and Tensor Descriptors
+
+Every cuDNN call requires a `cudnnHandle_t` bound to a CUDA stream. Tensor shapes and layouts are expressed as `cudnnTensorDescriptor_t` objects.
+
+```c
+// file: cudnn_handle_setup.c — cuDNN 9.x API (confirmed against cuDNN 9.6 docs)
+#include <cudnn.h>
+
+cudnnHandle_t handle;
+cudnnCreate(&handle);
+cudnnSetStream(handle, stream);  // bind to a non-default stream
+
+// 4D tensor: NCHW layout — batch=1, channels=64, H=56, W=56
+cudnnTensorDescriptor_t xDesc;
+cudnnCreateTensorDescriptor(&xDesc);
+cudnnSetTensor4dDescriptor(
+    xDesc,
+    CUDNN_TENSOR_NCHW,   // layout
+    CUDNN_DATA_FLOAT,    // data type
+    1, 64, 56, 56        // N, C, H, W
+);
+
+// ... use xDesc in conv/pool/norm calls ...
+
+cudnnDestroyTensorDescriptor(xDesc);
+cudnnDestroy(handle);
+```
+
+The handle carries CUDA context state and an internal workspace allocator. One handle per CUDA stream is the standard pattern; sharing a handle across threads requires external locking.
+
+### 13.2 Convolution: Descriptor, Algorithm Search, Execution
+
+Convolution in cuDNN involves four descriptors (input tensor, filter, convolution parameters, output tensor) and an explicit algorithm selection step that benchmarks candidate implementations.
+
+```c
+// file: cudnn_conv_example.c — cuDNN 9.x (v9 frontend equivalent shown in §13.4)
+cudnnFilterDescriptor_t wDesc;
+cudnnCreateFilterDescriptor(&wDesc);
+// Filter: 128 output channels, 64 input channels, 3×3 kernel, NCHW
+cudnnSetFilter4dDescriptor(wDesc, CUDNN_DATA_FLOAT, CUDNN_TENSOR_NCHW,
+                            128, 64, 3, 3);
+
+cudnnConvolutionDescriptor_t convDesc;
+cudnnCreateConvolutionDescriptor(&convDesc);
+// padding=1, stride=1, dilation=1, cross-correlation (not convolution)
+cudnnSetConvolution2dDescriptor(convDesc,
+    1, 1,   // pad_h, pad_w
+    1, 1,   // stride_h, stride_w
+    1, 1,   // dilation_h, dilation_w
+    CUDNN_CROSS_CORRELATION,
+    CUDNN_DATA_FLOAT);
+// Enable Tensor Core math (TF32 on Ampere, FP16 accumulation on Volta+)
+cudnnSetConvolutionMathType(convDesc, CUDNN_TENSOR_OP_MATH);
+
+// Output tensor descriptor — cudnnGetConvolution2dForwardOutputDim fills N,C,H,W
+cudnnTensorDescriptor_t yDesc;
+cudnnCreateTensorDescriptor(&yDesc);
+int n, c, h, w;
+cudnnGetConvolution2dForwardOutputDim(convDesc, xDesc, wDesc, &n, &c, &h, &w);
+cudnnSetTensor4dDescriptor(yDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, n,c,h,w);
+
+// Algorithm search: HEURISTIC is fast; EXHAUSTIVE benchmarks all candidates
+int returnedAlgoCount;
+cudnnConvolutionFwdAlgoPerf_t perfResults[8];
+cudnnFindConvolutionForwardAlgorithm(
+    handle, xDesc, wDesc, convDesc, yDesc,
+    8,                      // requested algo count
+    &returnedAlgoCount,
+    perfResults);           // sorted by time; [0] is fastest
+cudnnConvolutionFwdAlgo_t algo = perfResults[0].algo;
+
+// Workspace: cuDNN may need temporary GPU memory for the chosen algorithm
+size_t workspaceBytes;
+cudnnGetConvolutionForwardWorkspaceSize(
+    handle, xDesc, wDesc, convDesc, yDesc, algo, &workspaceBytes);
+void *workspace;
+cudaMalloc(&workspace, workspaceBytes);
+
+float alpha = 1.0f, beta = 0.0f;
+cudnnConvolutionForward(
+    handle, &alpha,
+    xDesc, x_gpu,      // input
+    wDesc, w_gpu,      // filter weights
+    convDesc, algo,
+    workspace, workspaceBytes,
+    &beta,
+    yDesc, y_gpu);     // output
+```
+
+`CUDNN_TENSOR_OP_MATH` enables Tensor Core acceleration. On Ampere and later, cuDNN uses TF32 (10-bit mantissa) for FP32 inputs by default when Tensor Core math is enabled; `CUDNN_DEFAULT_MATH` falls back to IEEE FP32 CUDA cores.
+
+### 13.3 Batch Normalization, Pooling, and Activation
+
+```c
+// Batch normalization — per-channel scale/bias learned parameters
+cudnnBatchNormalizationForwardTraining(
+    handle,
+    CUDNN_BATCHNORM_SPATIAL,    // mode: per-channel (spatial) or per-activation
+    &alpha, &beta,
+    xDesc, x_gpu,               // input
+    xDesc, y_gpu,               // output (same shape)
+    bnScaleBiasMeanVarDesc,     // 1×C×1×1 descriptor for scale/bias/mean/var
+    bnScale_gpu, bnBias_gpu,
+    0.1,                        // exponential average factor for running stats
+    runningMean_gpu, runningVar_gpu,
+    1e-5,                       // epsilon for numerical stability
+    savedMean_gpu, savedInvVariance_gpu);  // saved for backward pass
+
+// Max pooling — 2×2 kernel, stride 2
+cudnnPoolingDescriptor_t poolDesc;
+cudnnCreatePoolingDescriptor(&poolDesc);
+cudnnSetPooling2dDescriptor(poolDesc, CUDNN_POOLING_MAX, CUDNN_NOT_PROPAGATE_NAN,
+                             2, 2, 0, 0, 2, 2);  // window, padding, stride
+cudnnPoolingForward(handle, poolDesc, &alpha, xDesc, x_gpu, &beta, yDesc, y_gpu);
+
+// Activation — fused ReLU (avoids a separate kernel launch)
+cudnnActivationDescriptor_t actDesc;
+cudnnCreateActivationDescriptor(&actDesc);
+cudnnSetActivationDescriptor(actDesc, CUDNN_ACTIVATION_RELU, CUDNN_NOT_PROPAGATE_NAN, 0.0);
+cudnnActivationForward(handle, actDesc, &alpha, xDesc, x_gpu, &beta, xDesc, y_gpu);
+```
+
+In practice, PyTorch and TensorFlow fuse convolution + bias-add + activation into a single cuDNN call via `cudnnConvolutionBiasActivationForward`, avoiding three separate kernel launches.
+
+### 13.4 cuDNN v9 Graph API
+
+cuDNN 9 introduced a declarative graph frontend (`cudnnGraph_t`) that replaces the per-operation imperative API with a computation graph that cuDNN can optimise holistically — fusing operations, selecting layouts, and caching compiled engines across calls with the same graph topology. This is the preferred API for new code.
+
+```c
+// file: cudnn_graph_flash_attention.c — cuDNN 9.x Graph API (paraphrased)
+// Source: https://docs.nvidia.com/deeplearning/cudnn/latest/api/cudnn-graph-library.html
+
+cudnnHandle_t handle;
+cudnnCreate(&handle);
+
+// Build a graph for Flash Attention: Q*K^T / sqrt(d) → softmax → *V
+cudnn_frontend::graph::Graph graph;
+graph.set_io_data_type(cudnn_frontend::DataType_t::HALF)
+     .set_intermediate_data_type(cudnn_frontend::DataType_t::FLOAT)
+     .set_compute_data_type(cudnn_frontend::DataType_t::FLOAT);
+
+// Add Q, K, V as virtual tensors (layout: [batch, heads, seq, d_head])
+auto Q = graph.tensor(cudnn_frontend::graph::Tensor_attributes()
+    .set_name("Q").set_dim({B, H, S, D}).set_stride({H*S*D, S*D, D, 1}));
+auto K = graph.tensor(...);
+auto V = graph.tensor(...);
+
+// SDPA (Scaled Dot Product Attention) fused op
+auto [O, softmax_stats] = graph.scaled_dot_product_flash_attention(
+    Q, K, V,
+    cudnn_frontend::graph::SDPA_attributes()
+        .set_name("flash_attention")
+        .set_is_inference(true)   // false = training, saves softmax_stats for bwd
+        .set_attn_scale(1.0f / sqrtf(D)));
+
+O->set_output(true).set_dim({B, H, S, D});
+
+// Validate graph, select kernel, build execution plan
+graph.validate();
+graph.build_operation_graph(handle);
+graph.create_execution_plans({cudnn_frontend::HeurMode_t::A});
+graph.build_plans(handle, cudnn_frontend::BuildPlanPolicy_t::HEURISTICS_CHOICE);
+
+// Execute (workspace allocated once per graph)
+graph.execute(handle, variant_pack, workspace_ptr);
+```
+
+The Flash Attention fused op (`scaled_dot_product_flash_attention`) is the cuDNN 9 equivalent of the manually-blocked FlashAttention-2 algorithm: it performs the full QKV attention in a single kernel without materialising the full S×S attention matrix, matching FlashAttention-3 performance on Hopper.
+
+### 13.5 cuDNN vs. MIOpen (AMD)
+
+AMD's [MIOpen](https://github.com/ROCm/MIOpen) (`libMIOpen.so`) provides the same primitive set as cuDNN and is used by PyTorch-ROCm and TensorFlow-ROCm as a drop-in functional replacement. The API is structurally parallel but not binary-compatible:
+
+| cuDNN | MIOpen | Notes |
+|-------|--------|-------|
+| `cudnnHandle_t` | `miopenHandle_t` | Stream-bound handle |
+| `cudnnTensorDescriptor_t` | `miopenTensorDescriptor_t` | Same NCHW/NHWC layouts |
+| `cudnnConvolutionForward` | `miopenConvolutionForward` | Same descriptor pattern |
+| `cudnnFindConvolutionForwardAlgorithm` | `miopenFindConvolutionForwardAlgorithm` | Benchmarks Winograd, FFT, direct |
+| `CUDNN_TENSOR_OP_MATH` | automatic on CDNA2+ | MIOpen uses MFMA implicitly |
+| cuDNN Graph API | not yet available | MIOpen has no graph frontend (2026) |
+| Flash Attention fused | `miopenFusedFlashAttention` (ROCm 6.2+) | CDNA3 MI300X only at launch |
+
+[Source: cuDNN 9.6 API docs](https://docs.nvidia.com/deeplearning/cudnn/latest/) [Source: MIOpen GitHub](https://github.com/ROCm/MIOpen)
 
 ---
 
