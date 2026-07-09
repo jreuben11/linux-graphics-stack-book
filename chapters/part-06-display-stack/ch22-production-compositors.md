@@ -456,7 +456,132 @@ The `hyprspace` overview plugin is a widely-used example: it implements a GNOME-
 
 Hyprland defines several compositor-specific Wayland protocols: `hyprland_global_shortcuts_manager_v1` allows applications to register global keybindings; `hyprland_toplevel_export_manager_v1` enables per-window screenshots without going through the full `zwlr_screencopy_manager_v1` path; `hyprland_focus_grab_v1` provides a session-modal focus grab mechanism. These protocols are only available on Hyprland; applications using them must detect availability via `wl_registry` and implement fallback behaviour for other compositors.
 
-Hyprland's IPC protocol is its own JSON socket format, not i3-compatible. The `hyprctl` command-line tool covers most administrative use cases; the socket protocol supports event subscription for window, monitor, and keyboard events.
+### IPC Protocol and hyprctl
+
+Hyprland's IPC system is not compatible with i3 or Sway's protocol. It exposes two Unix domain sockets per running instance, identified by `$HYPRLAND_INSTANCE_SIGNATURE` — a unique string generated at compositor startup that prevents conflicts when multiple Hyprland instances run simultaneously (common during compositor development). Since Hyprland v0.40.0, the sockets live under `$XDG_RUNTIME_DIR` rather than `/tmp`:
+
+```
+$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock   # command/query
+$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock  # event stream
+```
+
+**`.socket.sock` — request/response.** Commands are sent as UTF-8 strings over `AF_UNIX`/`SOCK_STREAM`. The response is either a human-readable string or a JSON document, selected by an optional `j/` prefix on the command:
+
+```bash
+# Send a raw command over the socket (no hyprctl required):
+echo -n "j/clients" | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock
+```
+
+Without the `j/` prefix the compositor returns human-readable text; with it, the response is a JSON array or object. There is no binary framing, no length header — the connection is closed by the compositor after each response, signalling EOF to the reader. [Source: `src/debug/HyprCtl.cpp`, hyprwm/Hyprland](https://github.com/hyprwm/Hyprland/blob/main/src/debug/HyprCtl.cpp)
+
+**`hyprctl`** is the official command-line client. It wraps the socket protocol with ergonomic flags:
+
+| Flag | Effect |
+|------|--------|
+| `-j` | Request JSON output (sends `j/` prefix on the socket) |
+| `-i <sig>` | Target a specific Hyprland instance by its signature |
+| `--batch 'cmd1; cmd2; ...'` | Send multiple commands in one invocation |
+
+**Query commands** (read-only, all support `-j`):
+
+| Command | Returns |
+|---------|---------|
+| `hyprctl monitors` | Per-monitor: name, geometry, refresh rate, active workspace, VRR status, DPMS state |
+| `hyprctl clients` | All mapped windows: hex address, class, title, geometry, floating/fullscreen/pinned flags, PID, workspace |
+| `hyprctl workspaces` | All workspaces and their window counts |
+| `hyprctl activeworkspace` | The currently focused workspace |
+| `hyprctl activewindow` | The currently focused window (same fields as `clients`) |
+| `hyprctl layers` | Layer surfaces per monitor (background, bottom, top, overlay) |
+| `hyprctl devices` | Keyboards, mice, tablets, touch devices — name, driver, libinput config |
+| `hyprctl binds` | All registered keybindings with modifier mask and action |
+| `hyprctl animations` | Active animation curves and their bezier parameters |
+| `hyprctl version` | Compositor version string and build flags |
+| `hyprctl systeminfo` | Mesa/GPU info, kernel version, environment variables |
+| `hyprctl globalshortcuts` | Shortcuts registered via `hyprland_global_shortcuts_manager_v1` |
+| `hyprctl workspacerules` | Persistent per-workspace layout rules |
+| `hyprctl configerrors` | Parse errors from the last config reload |
+| `hyprctl rollinglog` | Last N lines of the compositor log (useful for debugging) |
+
+**Dispatcher commands** — `hyprctl dispatch <name> [args]` — fire window management and workspace actions. Selected dispatchers:
+
+| Dispatcher | Args | Effect |
+|------------|------|--------|
+| `exec` | `<cmd>` | Launch a program |
+| `workspace` | `<N\|name\|prev\|next\|last>` | Switch workspace |
+| `movetoworkspace` | `<ws>[,<window>]` | Move focused (or specified) window to workspace |
+| `togglefloating` | `[<window>]` | Toggle floating mode |
+| `fullscreen` | `<0\|1\|2>` | 0=real fullscreen, 1=maximize, 2=fullscreen without bar |
+| `killactive` | — | Close focused window |
+| `focuswindow` | `<window>` | Focus window by class, title, or address |
+| `movefocus` | `<l\|r\|u\|d>` | Move keyboard focus in direction |
+| `movewindow` | `<l\|r\|u\|d>` | Move tiled window in direction |
+| `resizeactive` | `<dx> <dy>` | Resize focused window by pixel delta |
+| `splitratio` | `<float>` | Adjust tiling split ratio |
+| `pseudo` | — | Toggle pseudo-tiling (tiled position, floating size) |
+| `pin` | — | Pin window (visible on all workspaces) |
+| `layoutmsg` | `<msg>` | Send message to the active layout plugin |
+| `movecurrentworkspacetomonitor` | `<monitor>` | Move workspace to a different monitor |
+| `swapactiveworkspaces` | `<mon1> <mon2>` | Swap workspaces between two monitors |
+| `submap` | `<name\|reset>` | Enter/exit a named keybind submap |
+
+**Runtime configuration.** Two additional commands bypass the config file entirely:
+
+```bash
+# Change a config keyword at runtime (survives until next reload):
+hyprctl keyword general:gaps_in 4
+hyprctl keyword decoration:rounding 8
+hyprctl keyword input:touchpad:natural_scroll true
+
+# Set a per-window property by address:
+hyprctl setprop address:0x... rounding 0
+hyprctl setprop address:0x... forcenoblur 1
+hyprctl setprop address:0x... animationstyle slide
+
+# Force a config file reload:
+hyprctl reload
+```
+
+`keyword` is particularly useful in scripting: a startup script can apply per-application overrides after querying `hyprctl clients` to find a window's address, without touching `hyprland.conf`.
+
+**`.socket2.sock` — event stream.** Clients connect and then read newline-delimited events emitted by the compositor. Each event follows the format `eventname>>data1,data2,...\n`:
+
+```
+workspace>>2
+activewindow>>kitty,zsh
+openwindow>>0x5641f3c2a0,2,kitty,kitty
+closewindow>>0x5641f3c2a0
+movewindow>>0x5641f3c2a0,3
+submap>>resize
+submap>>
+fullscreen>>1
+monitoradded>>HDMI-A-1
+screencast>>1,1
+```
+
+Selected events and their data fields:
+
+| Event | Data | Meaning |
+|-------|------|---------|
+| `workspace` | `<id>` | Active workspace changed |
+| `workspacev2` | `<id>,<name>` | Active workspace changed (with name) |
+| `focusedmon` | `<monitor>,<workspace>` | Focused monitor changed |
+| `activewindow` | `<class>,<title>` | Focused window changed |
+| `activewindowv2` | `<address>` | Focused window (hex address) |
+| `openwindow` | `<addr>,<ws>,<class>,<title>` | Window mapped |
+| `closewindow` | `<address>` | Window unmapped/destroyed |
+| `movewindow` | `<addr>,<ws>` | Window moved to a different workspace |
+| `windowtitlev2` | `<addr>,<title>` | Window title updated |
+| `fullscreen` | `<0\|1>` | Fullscreen state toggled |
+| `monitoradded` | `<name>` | Output connected |
+| `monitorremoved` | `<name>` | Output disconnected |
+| `createworkspace` | `<name>` | New workspace created |
+| `destroyworkspace` | `<name>` | Workspace destroyed |
+| `submap` | `<name>` | Keybind submap entered (empty = returned to default) |
+| `changefloatingmode` | `<addr>,<0\|1>` | Window floating state changed |
+| `screencast` | `<state>,<owner>` | Screen-share session started (1) or stopped (0) |
+| `urgent` | `<address>` | Window raised urgency hint |
+
+Status bar programs (waybar, ags, eww) typically open `.socket2.sock`, parse the event stream, and re-query `.socket.sock` with `j/activewindow` or `j/workspaces` on relevant events to update workspace indicators, window title displays, and tray widgets. The socket protocol has language bindings for Rust (`hyprland-rs`), Python (`hyprpy`), and Go, all following the same two-socket pattern.
 
 ### Aquamarine Backend
 
