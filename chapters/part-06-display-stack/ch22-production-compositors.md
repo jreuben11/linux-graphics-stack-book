@@ -12,11 +12,13 @@
 - [3. KWin: KDE Plasma's Compositor](#3-kwin-kde-plasmas-compositor)
 - [4. Sway: Tiling with wlroots](#4-sway-tiling-with-wlroots)
 - [5. Hyprland: Animations and Extensibility](#5-hyprland-animations-and-extensibility)
-- [6. gamescope: Valve's Micro-Compositor](#6-gamescope-valves-micro-compositor)
-- [7. COSMIC Compositor: Smithay and Rust-Native Wayland](#7-cosmic-compositor-smithay-and-rust-native-wayland)
-- [8. Protocol Extension Landscape and Compositor Compatibility](#8-protocol-extension-landscape-and-compositor-compatibility)
-- [9. Common Compositor Debugging Techniques](#9-common-compositor-debugging-techniques)
-- [10. Measuring Compositor Latency and Frame Pacing](#10-measuring-compositor-latency-and-frame-pacing)
+- [6. Wayfire: Plugin-Extensible Composition](#6-wayfire-plugin-extensible-composition)
+- [7. labwc: Lightweight Stacking Compositor](#7-labwc-lightweight-stacking-compositor)
+- [8. gamescope: Valve's Micro-Compositor](#8-gamescope-valves-micro-compositor)
+- [9. COSMIC Compositor: Smithay and Rust-Native Wayland](#9-cosmic-compositor-smithay-and-rust-native-wayland)
+- [10. Protocol Extension Landscape and Compositor Compatibility](#10-protocol-extension-landscape-and-compositor-compatibility)
+- [11. Common Compositor Debugging Techniques](#11-common-compositor-debugging-techniques)
+- [12. Measuring Compositor Latency and Frame Pacing](#12-measuring-compositor-latency-and-frame-pacing)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -24,7 +26,7 @@
 
 ## Overview
 
-Five production **Wayland** compositors collectively define the Linux desktop experience in 2026: **Mutter** powers **GNOME Shell**, **KWin** powers **KDE Plasma**, **Sway** provides **i3**-compatible tiling on Wayland, **Hyprland** delivers animated dynamic tiling with an extensible plugin system, and **gamescope** is Valve's game-focused micro-compositor that serves as the session compositor on **Steam Deck**. A sixth compositor — **cosmic-comp**, developed by System76 for their **COSMIC** desktop environment on **Pop!_OS** — represents a new approach built entirely in **Rust** on the **smithay** Wayland server library. Each compositor has made architectural trade-offs that reflect its design goals, and those trade-offs propagate into every corner of the graphics stack — from which **DRM/KMS** features get exposed to applications, to which Wayland protocol extensions developers can safely target.
+Seven production **Wayland** compositors define the Linux desktop experience in 2026: **Mutter** powers **GNOME Shell**, **KWin** powers **KDE Plasma**, **Sway** provides **i3**-compatible tiling on Wayland, **Hyprland** delivers animated dynamic tiling with an extensible plugin system, **Wayfire** offers a plugin-extensible compositor built on **wlroots** and is the default compositor for **Raspberry Pi OS Bookworm**, and **labwc** provides a minimal stacking compositor with **openbox**-compatible configuration. A seventh compositor — **cosmic-comp**, developed by System76 for their **COSMIC** desktop environment on **Pop!_OS** — represents a new approach built entirely in **Rust** on the **smithay** Wayland server library. **gamescope** is Valve's game-focused micro-compositor that serves as the session compositor on **Steam Deck**. Each compositor has made architectural trade-offs that reflect its design goals, and those trade-offs propagate into every corner of the graphics stack — from which **DRM/KMS** features get exposed to applications, to which Wayland protocol extensions developers can safely target.
 
 This chapter examines each compositor's architecture from the perspective of graphics developers and systems programmers: how they drive **KMS**, how they structure their rendering pipeline, how they handle multi-GPU configurations, and which protocol extensions they support. The material builds directly on Chapter 20 (Wayland Fundamentals) and Chapter 21 (wlroots), and connects forward to Chapter 23 (XWayland), Chapter 26 (hardware video), and Chapter 28 (Windows compatibility via Proton). The goal is not to document user-facing configuration but to explain the internal mechanisms that matter when you are writing clients, drivers, or compositor extensions.
 
@@ -40,11 +42,11 @@ After reading this chapter you will understand why Mutter offloads all KMS ioctl
 
 ## 1. Compositor Landscape Overview
 
-The Linux compositor ecosystem can be characterised along several axes. The first is backend provenance: Sway and Hyprland are built on wlroots, the shared compositor toolkit described in Chapter 21, while Mutter, KWin, and gamescope each maintain a custom DRM/KMS backend. This distinction matters because wlroots-based compositors inherit the same rendering abstractions and protocol implementations from a shared library, while custom-backend compositors are free to optimise — or specialise — their entire display path. gamescope takes this the furthest, implementing a Vulkan-first compositor where wlroots would be entirely the wrong abstraction.
+The Linux compositor ecosystem can be characterised along several axes. The first is backend provenance: Sway, Hyprland, Wayfire, and labwc are built on wlroots, the shared compositor toolkit described in Chapter 21, while Mutter, KWin, and gamescope each maintain a custom DRM/KMS backend. This distinction matters because wlroots-based compositors inherit the same rendering abstractions and protocol implementations from a shared library, while custom-backend compositors are free to optimise — or specialise — their entire display path. gamescope takes this the furthest, implementing a Vulkan-first compositor where wlroots would be entirely the wrong abstraction. cosmic-comp takes the opposite approach: it builds on the smithay Rust library, achieving memory-safety guarantees across the entire compositor stack.
 
-The second axis is purpose. Mutter and KWin are full desktop compositors deeply integrated with their respective desktop environments; they manage the session, handle input, run window management logic, and provide a rich effects pipeline. Sway and Hyprland are standalone compositors with no desktop shell dependency — they implement just enough infrastructure for a productive tiling workflow. gamescope is a micro-compositor: it hosts a single application (or a small cluster of applications forming a game plus overlays) and presents the result to a display with the lowest possible latency.
+The second axis is purpose. Mutter and KWin are full desktop compositors deeply integrated with their respective desktop environments; they manage the session, handle input, run window management logic, and provide a rich effects pipeline. Sway, Hyprland, Wayfire, and labwc are standalone compositors with no desktop shell dependency — each implements a different productivity model. gamescope is a micro-compositor: it hosts a single application (or a small cluster of applications forming a game plus overlays) and presents the result to a display with the lowest possible latency.
 
-The third axis is layout philosophy. KWin and Mutter both support floating and tiling window arrangements (the latter via GNOME's overview mode and KDE's Window Tiling feature). Sway implements strict tree-based tiling in the style of i3. Hyprland implements dynamic tiling with first-class animation support. gamescope does not implement window management in the traditional sense at all: it gives the game the full display.
+The third axis is layout philosophy. KWin and Mutter both support floating and tiling window arrangements (the latter via GNOME's overview mode and KDE's Window Tiling feature). Sway implements strict tree-based tiling in the style of i3. Hyprland implements dynamic tiling with first-class animation support. Wayfire implements stacking window management extended by a runtime plugin system — its built-in cube and expo plugins provide workspace navigation, while the wobbly and fire plugins provide effects. labwc is a minimalist stacking compositor in the openbox tradition: windows float freely, focus follows the keyboard, and configuration is expressed in an XML file format directly compatible with openbox's rc.xml. gamescope does not implement window management in the traditional sense at all: it gives the game the full display.
 
 Looking at protocol extension support, KWin leads the field: it was the first desktop compositor to ship `wp_linux_drm_syncobj_v1` (explicit sync, Plasma 6.1), and it has the most complete implementation of HDR output management via `HDR_OUTPUT_METADATA` KMS properties (Plasma 6.0). Mutter added `wp_color_management_v1` server support in GNOME 48 (2025). gamescope implements its own HDR pipeline independently of the standardised protocols, bypassing the compositor protocol layer entirely when running in direct KMS mode. Sway and Hyprland, being wlroots-based, inherit new protocol implementations as wlroots adds them, which means they tend to lag the custom-backend compositors on cutting-edge features but gain those features without compositor-specific engineering effort.
 
@@ -410,7 +412,314 @@ Hyprland's IPC protocol is its own JSON socket format, not i3-compatible. The `h
 
 ---
 
-## 6. gamescope: Valve's Micro-Compositor
+## 6. Wayfire: Plugin-Extensible Composition
+
+### Architecture and Design Goals
+
+Wayfire is a wlroots-based Wayland compositor whose defining characteristic is its runtime plugin system. Where Hyprland exposes a plugin API as a power-user feature, Wayfire's entire feature set is structured as a collection of plugins layered over a minimal core: window decorations, workspace management, animations, input gestures, and visual effects are all plugins that the compositor loads at startup. This makes Wayfire highly configurable without source modification and allows the core to remain small.
+
+Wayfire became the default Wayland compositor for **Raspberry Pi OS Bookworm** (released October 2023), replacing the Mutter-based session that proved too slow on the hardware. On Raspberry Pi 4 and 5, Wayfire runs on top of the **V3D** Mesa driver (OpenGL ES 3.1) and the **V3DV** Vulkan driver. On Pi 5 the RP1 south bridge handles display output via the `vc4` KMS driver, and Wayfire drives it through the standard wlroots DRM backend. [Source: Raspberry Pi blog, October 2023](https://www.raspberrypi.com/news/bookworm-the-new-version-of-raspberry-pi-os/)
+
+Wayfire inherits wlroots for DRM/KMS, input device management, buffer allocation (GBM), and the core Wayland protocol implementations (`xdg_shell`, `zwlr_layer_shell_v1`, `xdg_output_manager_v1`, `zwlr_foreign_toplevel_management_v1`). Wayfire's own code adds the scene graph, the plugin loader, the configuration system, and the set of built-in plugins.
+
+### Scene Graph
+
+Wayfire represents the visual hierarchy via `wf::scene::node_t`, an abstract base class for objects that contribute geometry to the compositor output. Concrete node types include `wf::scene::view_node_t` (a Wayland toplevel or layer-surface), `wf::scene::output_layout_node_t` (the root node holding all outputs), and plugin-defined nodes that overlay or transform content. Scene nodes participate in damage tracking: when a node marks itself dirty, Wayfire repaints only the damaged region of the output, reducing GPU bandwidth for static scenes.
+
+Rendering is performed via wlroots' `wlr_renderer` interface, backed by GLES2. Per-node rendering is dispatched in `wf::output_t::render_frame()`, which traverses the scene tree and calls `wf::scene::node_t::gen_render_instances()` to collect the list of `wf::scene::render_instance_t` objects that contribute to the current frame. Plugins can insert custom render instances to draw effects — the blur plugin injects blur passes between the node's back-to-front traversal order.
+
+### The Plugin API
+
+Every Wayfire capability — including core desktop functions like window movement and workspace switching — is implemented as a plugin. Plugins are shared libraries (`.so` files) compiled against the Wayfire API headers and listed in `[core]plugins` in `wayfire.ini`. Wayfire loads them with `dlopen` at startup.
+
+The plugin base class is `wf::plugin_interface_t`, defined in `src/api/wayfire/plugin.hpp`:
+
+```cpp
+/* Source: WayfireWM/wayfire src/api/wayfire/plugin.hpp */
+class plugin_interface_t
+{
+  public:
+    virtual void init() = 0;          /* called once after dlopen */
+    virtual void fini();              /* called before dlclose */
+    virtual bool is_unloadable() { return true; }
+    virtual int  get_order_hint() const { return 0; }
+    virtual ~plugin_interface_t() = default;
+};
+```
+
+A plugin's `init()` method uses `wf::get_core()` to obtain a reference to `wf::compositor_core_t`, from which it accesses outputs, the seat, the view list, and the signal provider. The signal system uses a typed connection template:
+
+```cpp
+/* Source: WayfireWM/wayfire src/api/wayfire/signal-provider.hpp */
+template<class SignalType>
+class connection_t {
+  public:
+    connection_t() = default;
+    connection_t(std::function<void(SignalType*)> callback);
+    void disconnect();
+    /* RAII: disconnects automatically when destroyed */
+};
+```
+
+Signal connections are RAII objects: when a `connection_t<T>` goes out of scope or is destroyed, it automatically disconnects from the provider. Plugins store connections as member variables so they are live for the plugin's lifetime. The source of a signal — an output, a view, the core object — calls `provider_t::emit(SignalType *data)` to broadcast to all registered connections.
+
+A minimal plugin that reacts to every newly mapped view looks like this:
+
+```cpp
+/* Example Wayfire plugin skeleton */
+#include <wayfire/plugin.hpp>
+#include <wayfire/signal-definitions.hpp>
+#include <wayfire/view.hpp>
+#include <wayfire/core.hpp>
+
+class my_plugin_t : public wf::plugin_interface_t {
+    wf::signal::connection_t<wf::view_mapped_signal> on_mapped;
+
+  public:
+    void init() override {
+        on_mapped = [this](wf::view_mapped_signal *ev) {
+            /* ev->view is the newly mapped wf::view_t */
+            LOGD("view mapped: ", ev->view->get_title());
+        };
+        wf::get_core().connect(&on_mapped);
+    }
+
+    void fini() override {
+        /* on_mapped destructor disconnects automatically */
+    }
+};
+
+DECLARE_WAYFIRE_PLUGIN(my_plugin_t)
+```
+
+The `DECLARE_WAYFIRE_PLUGIN` macro expands to the extern-C factory function that Wayfire calls after `dlopen`.
+
+### Configuration
+
+Wayfire reads `~/.config/wayfire.ini` (or the path from `WAYFIRE_CONFIG_FILE`). The `[core]` section lists active plugins by name; each plugin reads its own named section:
+
+```ini
+[core]
+plugins = expo cube wobbly fire blur move resize
+
+[expo]
+# key to enter workspace grid overview
+toggle = <super> KEY_E
+
+[wobbly]
+# spring constant for window wobble on drag
+spring_k = 8.0
+friction = 3.0
+
+[cube]
+# cycle through workspaces arranged as faces of a cube
+activate = <ctrl><super> KEY_RIGHT
+
+[blur]
+# Kawase two-pass blur radius for transparent windows
+blur_type = kawase
+kawase_passes = 2
+kawase_denoize = 1
+```
+
+Plugin options are declared in C++ via `wf::option_sptr_t<T>` and read with `wf::option_sptr_t<T> opt = wf::get_option_wrapper<T>(name)`. The option system supports live reload: when `wayfire.ini` changes on disk, each plugin's option objects update without restarting the compositor. **wcm** (Wayfire Config Manager) provides a GTK3 GUI for editing these options and managing the active plugin list; it queries plugin metadata from a JSON descriptor file each plugin ships alongside its `.so`.
+
+### IPC
+
+Wayfire exposes a socket-based IPC allowing clients to query and modify compositor state at runtime. The `wf-msg` command-line tool is the primary interface:
+
+```bash
+# list all open views with their titles and geometry
+wf-msg get-view-info
+
+# move the focused view to workspace column 2, row 1
+wf-msg -m set-view-workspace 2 1
+
+# invoke the expo plugin to open the workspace overview
+wf-msg -p expo toggle
+```
+
+The IPC protocol is JSON over a Unix domain socket at the path given by `WAYFIRE_SOCKET`. Wayfire plugins can expose additional IPC commands by registering handlers with `wf::get_core().ipc_server`.
+
+### Embedded and Single-Board Computer Use
+
+Wayfire's low overhead relative to GNOME Shell or KDE Plasma makes it suitable for constrained environments. On Raspberry Pi OS Bookworm the `raspi-config` tool switches between X11 and Wayland sessions, with Wayfire as the Wayland option. The Wayfire session on Raspberry Pi uses the `vc4` KMS driver for the display path and the V3D Mesa OpenGL ES driver for rendering. On Pi 5 the V3DV Vulkan driver is also available, but Wayfire's rendering path uses GLES2 via wlroots and does not require Vulkan.
+
+The Wayfire project also targets embedded and IoT use cases via the **wf-shell** companion package, which provides a minimal panel and background application built using the `zwlr_layer_shell_v1` protocol.
+
+---
+
+## 7. labwc: Lightweight Stacking Compositor
+
+### Design Philosophy
+
+labwc is a stacking Wayland compositor built on wlroots with a deliberate design constraint: be as close to openbox as is reasonable on Wayland. Windows float freely on screen, focus and raise are triggered by clicking, and all configuration is expressed in XML files using openbox's established schema. labwc adds no tiling, no built-in animations, and no scripting language — its scope is the minimum necessary to host a functional desktop environment where the window management behaviour is predictable.
+
+This design makes labwc well-suited to two contexts. First, for users migrating from X11 desktops built around openbox, it preserves existing `rc.xml` configuration files and mental models. Second, for environment integrators building embedded desktops (kiosk panels, industrial HMIs, lightweight session managers), labwc offers a predictable, dependency-minimal wlroots compositor that supports the full set of `zwlr_layer_shell_v1` clients needed to build a desktop shell without requiring a full GNOME or KDE stack. **LXQt** adopted labwc as its primary Wayland compositor.
+
+### Configuration Files
+
+labwc reads four configuration files from `~/.config/labwc/` (or the XDG path equivalents):
+
+- **`rc.xml`**: the primary configuration file — keybindings, mouse bindings, window rules, theme selection, and output configuration
+- **`menu.xml`**: the right-click desktop menu definition (openbox menu format)
+- **`autostart`**: a shell script executed after compositor startup
+- **`environment`**: environment variable assignments exported to child processes
+
+The `rc.xml` schema is a subset of openbox's XML format. A representative excerpt:
+
+```xml
+<!-- Source: labwc documentation, labwc-config(5)
+     File: ~/.config/labwc/rc.xml -->
+<labwc_config>
+  <core>
+    <gap>8</gap>           <!-- gap between windows and screen edges (px) -->
+    <adaptiveSync>yes</adaptiveSync>
+  </core>
+
+  <theme>
+    <name>Clearlooks-3.4</name>   <!-- openbox-3 themerc format -->
+    <cornerRadius>6</cornerRadius>
+    <font place="ActiveWindow">
+      <name>Sans</name>
+      <size>10</size>
+    </font>
+  </theme>
+
+  <keyboard>
+    <!-- super+return: open terminal -->
+    <keybind key="W-Return">
+      <action name="Execute">
+        <command>foot</command>
+      </action>
+    </keybind>
+
+    <!-- alt+F4: close focused window -->
+    <keybind key="A-F4">
+      <action name="Close"/>
+    </keybind>
+
+    <!-- super+arrow: snap window to screen edge -->
+    <keybind key="W-Left">
+      <action name="SnapToEdge"><direction>left</direction></action>
+    </keybind>
+    <keybind key="W-Up">
+      <action name="ToggleMaximize"/>
+    </keybind>
+
+    <!-- super+shift+arrow: send window to adjacent workspace -->
+    <keybind key="W-S-Right">
+      <action name="GoToDesktop"><to>right</to><wrap>yes</wrap></action>
+    </keybind>
+  </keyboard>
+
+  <mouse>
+    <context name="Titlebar">
+      <mousebind button="Left" action="Press">
+        <action name="Raise"/>
+        <action name="Focus"/>
+      </mousebind>
+      <mousebind button="Left" action="Drag">
+        <action name="Move"/>
+      </mousebind>
+      <mousebind button="Double" action="DoubleClick">
+        <action name="ToggleMaximize"/>
+      </mousebind>
+    </context>
+    <context name="Root">
+      <mousebind button="Right" action="Press">
+        <action name="ShowMenu"><menu>root-menu</menu></action>
+      </mousebind>
+    </context>
+  </mouse>
+
+  <windowRules>
+    <!-- open terminal windows without decoration -->
+    <windowRule identifier="foot">
+      <serverDecoration>no</serverDecoration>
+    </windowRule>
+  </windowRules>
+</labwc_config>
+```
+
+Key modifiers in labwc's keybind syntax: `S` (Shift), `C` (Control), `A`/`Mod1` (Alt), `W`/`Mod4` (Super/Meta), `H`/`Mod3` (Hyper). Action names include `Execute`, `Close`, `Move`, `Resize`, `ResizeRelative`, `SnapToEdge`, `SnapToRegion`, `MoveToEdge`, `ToggleMaximize`, `ToggleDecorations`, `GoToDesktop`, `SendToDesktop`, `ZoomIn`, `ZoomOut`. [Source: labwc/labwc docs/labwc-config.5.scd](https://github.com/labwc/labwc/blob/main/docs/labwc-config.5.scd)
+
+### Themes
+
+labwc uses the **openbox-3** theme format. A theme directory lives at `~/.themes/<name>/openbox-3/themerc` and contains dimension and colour variables:
+
+```
+# Sample openbox-3 themerc excerpt (labwc-compatible)
+border.width: 1
+window.active.title.bg: Solid Flat
+window.active.title.bg.color: #3d5e73
+window.active.label.text.color: #f2f2f2
+window.inactive.title.bg: Solid Flat
+window.inactive.title.bg.color: #2a2a2a
+window.active.button.unpressed.image.color: #f2f2f2
+padding.width: 4
+padding.height: 4
+```
+
+The `cornerRadius` property in `rc.xml` adds rounded corners to window decorations, rendered by labwc's server-side decoration path. labwc uses server-side decorations (SSD) by default via the `xdg_decoration_manager_v1` protocol; clients that request client-side decorations (CSD) are accommodated, but the compositor does not mandate CSD as Sway and Hyprland do.
+
+### Window Management
+
+labwc implements stacking window management: windows overlap freely, the Z-order is determined by focus history and explicit raise/lower actions, and there is no automatic tiling. Snap-to-edge (`SnapToEdge` action) places a window against a screen edge or into a screen quadrant; `SnapToRegion` allows administrator-defined snap regions in `rc.xml`:
+
+```xml
+<regions>
+  <region name="left-half">
+    <x>0%</x><y>0%</y><width>50%</width><height>100%</height>
+  </region>
+  <region name="right-half">
+    <x>50%</x><y>0%</y><width>50%</width><height>100%</height>
+  </region>
+</regions>
+```
+
+Window rules (`<windowRules>`) match windows by `appId`, `title`, or `identifier` and can set initial geometry, workspace, maximisation state, fullscreen, decoration mode, and whether the window is fixed in place.
+
+### Protocol Support
+
+labwc implements the following protocol set (as of labwc 0.8.x):
+
+| Protocol | Status |
+|---|---|
+| `xdg-shell` (stable) | Full |
+| `zwlr_layer_shell_v1` | Full |
+| `xdg_output_manager_v1` | Full |
+| `xdg_activation_v1` | Full |
+| `xdg_decoration_manager_v1` | Full (prefers SSD) |
+| `xwayland` | Full |
+| `wlr_output_management_v1` | Full (compatible with `wlr-randr`, `kanshi`) |
+| `wlr_foreign_toplevel_management_v1` | Full |
+| `ext_session_lock_v1` | Full |
+| `zwp_input_method_v2` | Full |
+| `zwp_virtual_keyboard_v1` | Full |
+| `ext_idle_notify_v1` | Full |
+| `wp_cursor_shape_v1` | Full |
+
+The `wlr_output_management_v1` support means labwc is compatible with `kanshi` for persistent multi-monitor profiles and `wlr-randr` for ad-hoc display configuration — the same tools used with Sway and other wlroots-based compositors. The `zwp_input_method_v2` implementation enables Fcitx5 and other IMEs that use the native Wayland input method protocol (see Chapter 151).
+
+### Ecosystem and Deployment
+
+labwc integrates cleanly with the wlroots ecosystem of clients:
+
+- **Bars**: `waybar`, `sfwbar`, `yambar` — all use `zwlr_layer_shell_v1`
+- **Launchers**: `fuzzel`, `wofi`, `bemenu` — use layer-shell or xdg-shell
+- **Session management**: `wlogout` for the session-end menu
+- **Output configuration**: `kanshi` for multi-monitor profiles, `wlr-randr` for manual control
+- **Screen locking**: `swaylock` (extended-compatible via `ext_session_lock_v1`), `waylock`
+- **Notifications**: `mako`, `dunst` — use `zwlr_layer_shell_v1`
+
+For desktop menu generation, `labwc-menu-generator` scans XDG application directories and produces a `menu.xml` compatible with labwc's format, enabling an application menu without manual XML editing.
+
+labwc's IPC uses a socket at `$LABWC_SOCKET`. The `labwc-client` tool (and the lower-level socket protocol) supports reconfiguring the compositor at runtime — reloading `rc.xml`, reconfiguring outputs, and querying the window list. The format is line-oriented text rather than JSON, consistent with labwc's philosophy of minimal dependencies.
+
+---
+
+## 8. gamescope: Valve's Micro-Compositor
 
 ### Design Goals and Architecture
 
@@ -550,7 +859,7 @@ On Steam Deck, gamescope runs as the session compositor via `gamescope-session`.
 
 ---
 
-## 7. COSMIC Compositor: Smithay and Rust-Native Wayland
+## 9. COSMIC Compositor: Smithay and Rust-Native Wayland
 
 System76's COSMIC desktop, introduced with Pop!_OS 24.04, ships **cosmic-comp** — a Wayland compositor written entirely in Rust using the **smithay** Wayland server library. cosmic-comp represents the most production-capable implementation of the smithay stack as of 2025, and its architecture offers a sharply different perspective from the C-centric wlroots ecosystem.
 
@@ -644,7 +953,7 @@ The use of `wlr-layer-shell-v1` rather than a COSMIC-specific protocol means pan
 
 ---
 
-## 8. Protocol Extension Landscape and Compositor Compatibility
+## 10. Protocol Extension Landscape and Compositor Compatibility
 
 ### The Extension Stability Ladder
 
@@ -722,7 +1031,7 @@ graph TD
 
 ---
 
-## 9. Common Compositor Debugging Techniques
+## 11. Common Compositor Debugging Techniques
 
 ### Protocol-Level Debugging
 
@@ -755,7 +1064,7 @@ For GPU hang situations — which manifest as DRM error messages and a frozen di
 
 ---
 
-## 10. Measuring Compositor Latency and Frame Pacing
+## 12. Measuring Compositor Latency and Frame Pacing
 
 ### Measurement Concepts
 
