@@ -24,8 +24,10 @@
 13. [cuDNN: Deep Learning Primitives](#13-cudnn-deep-learning-primitives)
 14. [cuBLAS: GPU BLAS and cublasLt](#14-cublas-gpu-blas-and-cublaslt)
 15. [CUTLASS: C++ Template GEMM Library](#15-cutlass-c-template-gemm-library)
-16. [Integrations](#integrations)
-17. [References](#references)
+16. [cuSPARSE and cuSPARSELt: Sparse Linear Algebra](#16-cusparse-and-cusparselt-sparse-linear-algebra)
+17. [cuFFT: GPU Fast Fourier Transform](#17-cufft-gpu-fast-fourier-transform)
+18. [Integrations](#integrations)
+19. [References](#references)
 
 ---
 
@@ -1704,6 +1706,240 @@ StreamK is particularly valuable for inference batch sizes where M is small (1�
 cuBLAS uses CUTLASS kernels internally for many shapes — particularly Hopper `wgmma`-based tiles — so the distinction is primarily about whether the programmer needs to customise the kernel body. For standard GEMM, cuBLAS is simpler; for custom epilogues or non-standard types, CUTLASS is the right tool.
 
 [Source: CUTLASS 3.5 documentation](https://github.com/NVIDIA/cutlass/blob/main/media/docs/cute/00_quickstart.md) [Source: CUTLASS StreamK](https://github.com/NVIDIA/cutlass/blob/main/examples/47_ampere_gemm_universal_streamk/)
+
+---
+
+## 16. cuSPARSE and cuSPARSELt: Sparse Linear Algebra
+
+cuSPARSE (`libcusparse.so`) provides GPU-accelerated sparse linear algebra: sparse-dense matrix multiply (SpMM), sparse-sparse multiply (SpGEMM), triangular solve, and format conversion. cuSPARSELt (`libcusparseLt.so`) is a separate library targeting **2:4 structured sparsity** — NVIDIA's hardware-accelerated sparse format on Ampere and later. [Source: cuSPARSE documentation](https://docs.nvidia.com/cuda/cusparse/index.html) [Source: cuSPARSELt documentation](https://docs.nvidia.com/cuda/cusparselt/index.html)
+
+### 16.1 Sparse Matrix Formats
+
+cuSPARSE operates on three primary storage formats:
+
+| Format | Description | Best for |
+|--------|-------------|----------|
+| CSR (Compressed Sparse Row) | row pointers + column indices + values | SpMM, SpGEMM, triangular solve |
+| COO (Coordinate) | (row, col, value) triples | Format conversion, input ingestion |
+| BSR (Block Sparse Row) | CSR of dense sub-blocks | Structured sparsity, register blocking |
+| CSC (Compressed Sparse Column) | column-major CSR | Column-access patterns |
+
+### 16.2 SpMM: Sparse-Dense Matrix Multiply
+
+The generic SpMM API (`cusparseSpMM`) uses opaque descriptor objects and dispatches to the best algorithm for the given sparsity pattern and GPU architecture:
+
+```c
+// file: cusparse_spmm_example.c — cuSPARSE 12.x generic API
+#include <cusparse.h>
+
+cusparseHandle_t handle;
+cusparseCreate(&handle);
+cusparseSetStream(handle, stream);
+
+// Create sparse matrix descriptor (CSR format)
+cusparseSpMatDescr_t matA;
+cusparseCreateCsr(
+    &matA,
+    M, K, nnz,               // rows, cols, non-zero count
+    d_csrRowPtr,             // row offsets (length M+1, int32)
+    d_csrColInd,             // column indices (length nnz, int32)
+    d_csrValues,             // values (length nnz, float)
+    CUSPARSE_INDEX_32I,      // row pointer type
+    CUSPARSE_INDEX_32I,      // column index type
+    CUSPARSE_INDEX_BASE_ZERO,
+    CUDA_R_32F);             // value type
+
+// Dense B and C descriptors (row-major)
+cusparseDnMatDescr_t matB, matC;
+cusparseCreateDnMat(&matB, K, N, N, d_B, CUDA_R_32F, CUSPARSE_ORDER_ROW);
+cusparseCreateDnMat(&matC, M, N, N, d_C, CUDA_R_32F, CUSPARSE_ORDER_ROW);
+
+// Query workspace size, then execute: C = alpha*A*B + beta*C
+size_t bufferSize;
+cusparseSpMM_bufferSize(handle,
+    CUSPARSE_OPERATION_NON_TRANSPOSE,
+    CUSPARSE_OPERATION_NON_TRANSPOSE,
+    &alpha, matA, matB, &beta, matC,
+    CUDA_R_32F, CUSPARSE_SPMM_ALG_DEFAULT, &bufferSize);
+
+void *buffer;
+cudaMalloc(&buffer, bufferSize);
+
+cusparseSpMM(handle,
+    CUSPARSE_OPERATION_NON_TRANSPOSE,
+    CUSPARSE_OPERATION_NON_TRANSPOSE,
+    &alpha, matA, matB, &beta, matC,
+    CUDA_R_32F, CUSPARSE_SPMM_ALG_DEFAULT, buffer);
+
+cusparseDestroySpMat(matA);
+cusparseDestroyDnMat(matB);
+cusparseDestroyDnMat(matC);
+cusparseDestroy(handle);
+```
+
+### 16.3 cuSPARSELt: 2:4 Structured Sparsity
+
+2:4 structured sparsity enforces that **at most 2 of every 4 consecutive values** in each row are non-zero. The Ampere Sparse Tensor Core executes such matrices at **2× the throughput** of a dense GEMM of the same shape, by compressing the weight matrix to 50% of its original size and using dedicated hardware to decompress during the MMA operation.
+
+This is the hardware basis for NVIDIA's pruned LLM inference: a transformer weight matrix pruned to 2:4 sparsity executes at the same latency as a dense matrix of half the parameter count.
+
+```c
+// file: cusparselt_matmul.c — cuSPARSELt 0.6 API
+#include <cusparseLt.h>
+
+cusparseLtHandle_t handle;
+cusparseLtInit(&handle);
+
+// Describe the sparse weight matrix A (M×K, FP16, 2:4 structured)
+cusparseLtMatDescriptor_t matA, matB, matC;
+cusparseLtStructuredDescriptorInit(&handle, &matA, M, K, K,
+    16,                          // alignment in elements
+    CUDA_R_16F,
+    CUSPARSE_ORDER_ROW,
+    CUSPARSELT_SPARSITY_50_PERCENT);  // 2:4 sparsity
+
+cusparseLtDenseDescriptorInit(&handle, &matB, K, N, N, 16, CUDA_R_16F,
+    CUSPARSE_ORDER_ROW);
+cusparseLtDenseDescriptorInit(&handle, &matC, M, N, N, 16, CUDA_R_16F,
+    CUSPARSE_ORDER_ROW);
+
+// Matmul plan
+cusparseLtMatmulDescriptor_t matmulDesc;
+cusparseLtMatmulDescriptorInit(&handle, &matmulDesc,
+    CUSPARSE_OPERATION_NON_TRANSPOSE,
+    CUSPARSE_OPERATION_NON_TRANSPOSE,
+    &matA, &matB, &matC, &matC,
+    CUSPARSE_COMPUTE_16F);
+
+// Prune A to 2:4 pattern (offline, done once after training)
+cusparseLtSpMMAPrune(&handle, &matmulDesc, d_A, d_A_pruned,
+    CUSPARSELT_PRUNE_SPMMA_TILE, stream);
+
+// Compress pruned A → sparse representation (50% smaller)
+size_t compressedSize;
+cusparseLtSpMMACompressedSize(&handle, &matmulDesc, &compressedSize);
+cudaMalloc(&d_A_compressed, compressedSize);
+cusparseLtSpMMACompress(&handle, &matmulDesc, d_A_pruned,
+    d_A_compressed, stream);
+
+// Algorithm selection
+cusparseLtMatmulAlgSelectionInit(&handle, &algSel, &matmulDesc,
+    CUSPARSELT_MATMUL_ALG_DEFAULT);
+
+// Plan and execute
+cusparseLtMatmulPlanInit(&handle, &plan, &matmulDesc, &algSel);
+cusparseLtMatmul(&handle, &plan, &alpha, d_A_compressed, d_B,
+    &beta, d_C, d_C, workspace, &stream, 1);
+```
+
+The pruning step (`cusparseLtSpMMAPrune`) is performed once after training and the compressed representation stored. At inference time, only the compressed form and the index metadata are loaded, halving weight memory bandwidth.
+
+### 16.4 cuSPARSE vs. AMD rocSPARSE / hipSPARSELt
+
+| cuSPARSE | AMD equivalent | Notes |
+|----------|---------------|-------|
+| `libcusparse.so` | `librocspase.so` | CSR/COO/BSR SpMM, SpGEMM |
+| `cusparseSpMM` | `rocsparse_spmm` | Generic descriptor API |
+| `libcusparseLt.so` | `libhipsparselt.so` | 2:4 sparsity on CDNA3 (MI300X) |
+| `CUSPARSELT_SPARSITY_50_PERCENT` | `HIPSPARSELT_SPARSITY_50_PERCENT` | Same 2:4 hardware model |
+
+[Source: cuSPARSE 12.x API reference](https://docs.nvidia.com/cuda/cusparse/index.html) [Source: rocSPARSE documentation](https://rocm.docs.amd.com/projects/rocSPARSE/)
+
+---
+
+## 17. cuFFT: GPU Fast Fourier Transform
+
+cuFFT (`libcufft.so`) computes 1D, 2D, and 3D discrete Fourier transforms (DFT) and their inverses on the GPU. It is used for convolution via the convolution theorem (multiply in frequency domain, avoiding O(N²) spatial convolution), spectral analysis, PDE solvers, and signal processing workloads. [Source: cuFFT documentation](https://docs.nvidia.com/cuda/cufft/index.html)
+
+### 17.1 Plan Creation and Execution
+
+cuFFT uses a **plan** object that captures the transform dimensions and selects the optimal internal algorithm (Cooley-Tukey radix-2/4/8, Bluestein for non-power-of-2 sizes, mixed-radix). Plans are expensive to create and should be cached and reused.
+
+```c
+// file: cufft_1d_c2c_example.c — cuFFT 11.x API
+#include <cufft.h>
+
+int N = 1024;
+
+// Create a 1D complex-to-complex plan
+cufftHandle plan;
+cufftPlan1d(&plan, N, CUFFT_C2C, 1);  // size, transform type, batch
+
+// Bind to a stream (all execution goes through this stream)
+cufftSetStream(plan, stream);
+
+// Forward FFT: CUFFT_FORWARD = -1, CUFFT_INVERSE = +1
+cufftExecC2C(plan, d_signal, d_spectrum, CUFFT_FORWARD);
+
+// Inverse FFT (result is un-normalized: divide by N after)
+cufftExecC2C(plan, d_spectrum, d_signal_out, CUFFT_INVERSE);
+// Scale: signal_out[i] /= N  (cuFFT does not normalize automatically)
+
+cufftDestroy(plan);
+```
+
+### 17.2 Transform Types
+
+| cuFFT type | Input → Output | Use case |
+|------------|----------------|----------|
+| `CUFFT_C2C` | complex → complex | General DFT / IDFT |
+| `CUFFT_R2C` | real → complex | Real signal forward FFT (output is N/2+1 complex values) |
+| `CUFFT_C2R` | complex → real | Inverse of R2C (input is N/2+1 complex) |
+| `CUFFT_Z2Z` | double complex → double complex | Double-precision DFT |
+| `CUFFT_D2Z` | double real → double complex | Double-precision R2C |
+| `CUFFT_Z2D` | double complex → double real | Double-precision C2R |
+
+`R2C`/`C2R` exploit Hermitian symmetry to halve storage and roughly halve compute vs `C2C`.
+
+### 17.3 Batched and Multi-Dimensional FFT
+
+`cufftPlanMany` handles batched 1D/2D/3D transforms with arbitrary stride and embed parameters — essential for processing multiple signals or image channels independently:
+
+```c
+// file: cufft_batched_r2c.c — batch of 32 independent R2C FFTs
+int rank = 1;            // 1D transform
+int n[] = {1024};        // transform size
+int inembed[] = {1024};  // input storage dimensions
+int onembed[] = {513};   // output storage (N/2+1 complex values)
+int istride = 1, idist = 1024;   // input: contiguous, stride 1024 between batches
+int ostride = 1, odist = 513;    // output: contiguous, stride 513 between batches
+int batchSize = 32;
+
+cufftHandle plan;
+cufftPlanMany(&plan, rank, n,
+    inembed, istride, idist,
+    onembed, ostride, odist,
+    CUFFT_R2C, batchSize);
+
+cufftSetStream(plan, stream);
+cufftExecR2C(plan, d_real_input, d_complex_output);
+```
+
+For 2D FFT of images (e.g., convolution in frequency domain):
+
+```c
+// 2D FFT of an H×W image batch
+cufftPlan2d(&plan, H, W, CUFFT_C2C);
+cufftExecC2C(plan, d_image, d_spectrum, CUFFT_FORWARD);
+// pointwise multiply with filter spectrum: d_spectrum[i] *= d_filter[i]
+cufftExecC2C(plan, d_spectrum, d_convolved, CUFFT_INVERSE);
+// normalize: divide by H*W
+```
+
+### 17.4 cuFFT vs. AMD rocFFT
+
+| cuFFT | AMD rocFFT | Notes |
+|-------|-----------|-------|
+| `libcufft.so` | `librocfft.so` | 1D/2D/3D, R2C/C2C/C2R |
+| `cufftPlan1d` | `rocfft_plan_create` | rocFFT uses explicit description objects |
+| `cufftPlanMany` | `rocfft_plan_create` + strides | Same batched capability |
+| `cufftSetStream` | `rocfft_execution_info_set_stream` | Stream association |
+| Auto radix selection | Auto radix selection | Both handle non-power-of-2 via Bluestein |
+| `vkFFT` (third-party) | `vkFFT` (third-party) | Vulkan/HIP/CUDA portable FFT library |
+
+**vkFFT** ([github.com/DTolm/VkFFT](https://github.com/DTolm/VkFFT)) is a cross-vendor alternative that targets Vulkan compute shaders, CUDA, HIP, and OpenCL from a single implementation — relevant for the open-source Linux graphics stack since it requires no proprietary CUDA libraries.
+
+[Source: cuFFT 11.x API reference](https://docs.nvidia.com/cuda/cufft/index.html) [Source: rocFFT documentation](https://rocm.docs.amd.com/projects/rocFFT/) [Source: vkFFT GitHub](https://github.com/DTolm/VkFFT)
 
 ---
 
