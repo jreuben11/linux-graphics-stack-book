@@ -2433,3 +2433,882 @@ W3C WebGPU Candidate Recommendation (June 2026) API reference covering the JavaS
 **Ch93 §13: End-to-End Frame Delivery Latency** *(Part IX — added June 2026)*: per-hop latency budget table (CPU → vkQueueSubmit → DRM scheduler → GPU render → wl_surface.commit → compositor → KMS → vblank → panel); `wp_presentation_feedback` for per-frame scanout timestamps; MangoHUD `present_timing`; `ftrace drm:drm_vblank_event` for vblank jitter; motion-to-photon budget at 144 Hz; optimisation per hop (VRR, direct scanout, MPRT).
 
 ### Section additions to existing chapters (cross-chapter content — Part XXV)
+
+---
+
+## Chapter Body Entries — Previously Unregistered Chapters (July 2026)
+
+The following chapters existed as `.md` files but had no body entry in plan.md.
+Entries are generated from the chapter content and sorted by chapter number within each Part.
+
+### Part I — The Kernel Layer
+
+### Chapter 162: Framebuffer Compression: AFBC, DCC, CCS, and UBWC *(Part I — Kernel Layer)*
+
+- Bandwidth motivation: 4K@60 XRGB8888 consumes ~1920 MB/s uncompressed; hardware compression targets 3-4x reduction to fit within LPDDR5 budgets, also improving cache efficiency via denser cache-line packing
+- AFBC (ARM Frame Buffer Compression): 16x16 superblock layout with 16-byte header + variable body; exploits solid-colour sub-blocks and intra-frame prediction; modifiers include AFBC_FORMAT_MOD_BLOCK_SIZE_16x16, YTR, SPARSE, TILED; supported on Mali Bifrost/Valhall and ARM DPU (RK3399, RK3588)
+- AMD DCC (Delta Colour Compression): per-256-byte micro-tile delta encoding with DCC key (0x00=constant, 0x55=compressible, 0xFF=uncompressed); AMD_FMT_MOD_DCC, DCC_RETILE, DCC_PIPE_ALIGN modifiers; direct scanout via AMD Display Core decompressor; radv_use_dcc_for_image_late() in radv_image.c
+- Intel CCS (Colour Control Surface): 2-bit tag per 8x8 tile (00=uncompressed, 01=clear-colour, 10=partial, 11=unresolvable); modifiers I915_FORMAT_MOD_Y_TILED_CCS through I915_FORMAT_MOD_4_TILED_BMG_CCS spanning Gen9 to Xe2 (Lunar Lake/Battlemage)
+- ANV CCS integration: anv_image planes array with aux_usage = ISL_AUX_USAGE_CCS_E; isl_format_supports_ccs_e() gating; ISL (Intel Surface Layout) abstracts tiling and CCS placement
+- Qualcomm UBWC (Universal Bandwidth Compression): 4x4 micro-tiles with 1-byte metadata per tile (fast-clear, compression levels, uncompressed); DRM_FORMAT_MOD_QCOM_COMPRESSED and QCOM_TILED modifiers; enabled on all A5xx+ in Turnip and Freedreno
+- DRM format modifier structure: 64-bit value with upper 8 bits for vendor (ARM=0x08, AMD=0x02, INTEL=0x03, QCOM=0x05); DRM_FORMAT_MOD_LINEAR=0, DRM_FORMAT_MOD_INVALID=-1; drm_format_modifier_blob struct and IN_FORMATS plane property for advertising supported modifier/format pairs
+- IN_FORMATS blob API: drmModeObjectGetProperties + drmModeGetPropertyBlob to retrieve drm_format_modifier_blob; iterate count_formats and count_modifiers to enumerate plane-supported compressed formats
+- EGL modifier negotiation: eglQueryDmaBufModifiersEXT queries per-format supported modifiers with external_only flag; eglCreateImageKHR with modifier attributes for compressed buffer import via EGL_LINUX_DMA_BUF_EXT
+- zwp_linux_dmabuf_feedback_v1 Wayland protocol: compositor sends format+modifier table via dmabuf_feedback_format_table and dmabuf_feedback_tranche_formats callbacks; enables zero-copy scanout by having clients allocate in compositor-preferred compressed format
+- Debugging tools: WAYLAND_DEBUG=1, drm-info IN_FORMATS, AMD_DEBUG=nodcc, INTEL_DEBUG=noccs, apitrace for modifier inspection; GALLIUM_HUD=dcc-compressed,dcc-uncompressed for AMD compression ratio counters; /sys/kernel/debug/dri/0/state for ARM AFBC plane modifiers
+- Roadmap near-term: AMD DCC for multi-plane/video on RDNA4 (Mesa 25.1), RADV DCC fast-clears on RDNA3 (8bpp/16bpp), Intel CCS restoration for Xe2 via SR-IOV in Linux 6.18, UBWC gralloc detection fixes in Turnip/Freedreno, AFBC for Rockchip RK3588 and MediaTek DPU
+- Roadmap long-term: cross-vendor compressed buffer import/export, lossy compression tiers (ARM Fixed-Rate Compression) via modifier quality field, transparent compression below DRM at SMMU/IOMMU level, standardised dma_buf sidecar for compression metadata
+- **Integrations**: Ch4 (DRM Framebuffers: drmModeAddFB2WithModifiers), Ch6 (KMS Atomic: IN_FORMATS plane property), Ch11 (DMA-BUF: modifier as metadata with EGL_LINUX_DMA_BUF_EXT and zwp_linux_dmabuf_v1), Ch150 (EGL/DMA-BUF: eglQueryDmaBufModifiersEXT and eglCreateImageKHR), Ch22 (RADV: DCC management and fast-clear elimination), Ch23 (ANV: CCS via ISL Intel Surface Layout), Ch159 (Panfrost: AFBC on Mali hardware for RK3588 zero-copy scanout)
+
+
+### Chapter 163: VKMS and Virtual Display Drivers for Testing *(Part I — Kernel Layer)*
+
+- VKMS overview (Linux 4.14+): software DRM driver in drivers/gpu/drm/vkms/ implementing full atomic KMS (CRTC, encoder, connector, planes) without hardware; module params enable_cursor, enable_overlay, enable_writeback, enable_plane_pipeline
+- drm_driver flags: DRIVER_MODESET | DRIVER_ATOMIC | DRIVER_GEM with DRM_GEM_SHMEM_DRIVER_OPS for system-RAM framebuffer allocation via drm_gem_shmem_helper
+- hrtimer-based vblank simulation: vkms_vblank_simulate() fires at vrefresh period (~16.67ms at 60Hz), calls drm_crtc_handle_vblank() and enqueues composition work via alloc_ordered_workqueue
+- Software composition engine: line-by-line scanline compositing using pixel_argb_u16 (4x16-bit channels), premultiplied-alpha blend via pre_mul_alpha_blend(), zpos-sorted plane stack; per-format pixel_read_line_t / pixel_write_line_t callbacks in vkms_formats.c
+- DRM Color Pipeline API (vkms_colorop.c): VKMS is the in-tree reference driver for DRM_COLOROP_1D_CURVE (sRGB/PQ EOTF), DRM_COLOROP_CTM_3X4, DRM_COLOROP_MULTIPLIER, DRM_COLOROP_3D_LUT (17^3 tetrahedral LUT); apply_colorop() runs post-composition before writeback/CRC
+- EDID emulation: drm_edid_build_fake() exposes 1920x1080@60Hz preferred mode; configfs runtime EDID injection and HPD trigger via /config/vkms/<dev>/connectors/conn0/edid and status attributes
+- VKMS writeback connector: DRM_MODE_CONNECTOR_WRITEBACK backed by drm_writeback_connector / drm_writeback_job; WRITEBACK_FB_ID + WRITEBACK_OUT_FENCE_PTR (DMA-fence sync_file) allow pixel-exact frame capture; drm_writeback_signal_completion() signals fence after last scanline
+- CRC testing infrastructure: crc32_le() over pixel_argb_u16 output buffer per frame; drm_crtc_add_crc_entry() feeds /sys/kernel/debug/dri/0/crtc-0/crc/data; IGT igt_pipe_crc_t API; kms_cursor_crc and kms_plane_multiple tests via IGT_FORCE_DRIVER=vkms
+- KUnit tests (drivers/gpu/drm/vkms/tests/): get_lut_index, lerp_u16, format round-trip tests; CONFIG_DRM_VKMS_KUNIT_TEST; run via kunit.py without hardware on x86-64/arm64/RISC-V
+- VKMS + Mesa CI stack: VKMS + LLVMpipe/lavapipe + sway/weston for headless Wayland CI; WLR_BACKENDS=drm, LIBGL_ALWAYS_SOFTWARE=1; deqp-runner parallelises VK-GL-CTS against lavapipe; Weston uses virtme (QEMU wrapper) for DRM-backend testing
+- Configfs runtime reconfiguration (Linux 6.13): /config/vkms/<name>/{planes,crtcs,encoders,connectors} directories with symlink-based pipeline wiring; create_default_dev=0 enables multi-instance management; hot-plug simulation via status attribute
+- Headless backend comparison: VKMS (full DRM/KMS+CRC, no GPU), Xvfb (X11 only, no DRM), GBM offscreen (rendering only, no display), virtio-gpu/virgl (VM-based, approximate GPU), Xvnc (network VNC)
+- DRM lease API for VR direct mode: drmModeCreateLease() delegates CRTC/connector/plane subset to VR runtime fd; drmModeRevokeLease(); Monado OpenXR uses leases for direct-to-HMD rendering bypassing compositor
+- GPU testing with LLVMpipe/lavapipe: LIBGL_ALWAYS_SOFTWARE=1 for OpenGL 4.5; VK_ICD_FILENAMES=lvp_icd.x86_64.json for Vulkan 1.3 CTS conformance testing without GPU
+- **Integrations**: Ch01 (DRM Architecture), Ch02 (KMS Display Pipeline), Ch34 (Wayland), Ch121 (DRM Lease/VR Direct Display), Ch125 (RenderDoc), Ch139 (DRM Hardware Planes), Ch147 (VA-API Video Decode), Ch155 (evdi/DisplayLink)
+
+
+### Part II — GPU Drivers
+
+### Chapter 73: Asahi Linux and the Apple Silicon AGX Driver *(Part II — GPU Drivers)*
+
+- AGX GPU family (G13/G14 generations): TBDR architecture; SoC mapping T8103 (M1) through T6022 (M2 Ultra); gpu_generation/num_clusters exposed via DRM_IOCTL_ASAHI_GET_PARAMS returning struct drm_asahi_params_global
+- TBDR pipeline: VDM (Vertex Data Master) → PPP (Primitive Processing Pipeline) → TVB (Tiled Vertex Buffer) for TA pass; ISP (Image Synthesis Processor) + on-chip tilebuffer + BG/EoT programs for fragment pass; partial render handling
+- Reverse engineering methodology: m1n1 bare-metal hypervisor for MMIO peripherals; DYLD_INSERT_LIBRARIES / IOKit interception for GPU command buffers; wrap library and agxdecode tool in Mesa; G13G ISA documented by iterative shader binary diffing
+- drm/asahi Rust kernel driver: first Rust driver in DRM subsystem; 70+ firmware ABI packed struct types in fw/ directory; module structure: driver.rs, gpu.rs, mmu.rs, gem.rs, channel.rs, microseq.rs, crashdump.rs, hw/t8103.rs etc.
+- UAT (Unified Address Translator) GPU MMU: ARM64-compatible page tables with 16 KiB pages; 40-bit output address space; 64 VM contexts (TTBAT); CPU-firmware page table handoff via atomic flush state flags
+- ASC co-processor communication: RTKit channel ring buffers in channel.rs; firmware microsequence VM instructions in microseq.rs; no hardware register writes for work submission; crash recovery via crashdump.rs
+- Asahi UAPI (merged into mainline without driver): DRM_IOCTL_ASAHI_VM_CREATE, GEM_CREATE (WRITEBACK flag), VM_BIND (BIND_SINGLE_PAGE for sparse), QUEUE_CREATE (usc_exec_base), SUBMIT with explicit DRM syncobj; struct drm_asahi_cmd_render carries vdm_ctrl_stream_base, bg/eot tile programs, tile dimensions, drm_asahi_timestamps
+- Mesa Asahi Gallium driver (src/gallium/drivers/asahi/): agx_context / agx_draw_vbo state tracker; NIR compiler backend with varying lowering to st_var/ldcf/iter, uniform register file (256 entries), image layout selection (strided/GPU-tiled/twiddled); geometry shaders and TF lowered to compute dispatches
+- OpenGL 4.6 conformance on AGX: buffer robustness via unsigned-minimum clamping; image robustness via forced out-of-bounds texture coordinates; clip control via vertex shader epilogue remapping clip-space Z
+- Honeykrisp Vulkan driver (src/asahi/vulkan/): forked from NVK (Mesa NVIDIA Vulkan driver); Vulkan render pass load/store ops mapped to synthesised BG/EoT USC programs in struct drm_asahi_bg_eot; prolog/epilog shader split for dynamic state; VK_EXT_image_drm_format_modifier for zero-copy WSI; Vulkan 1.3 conformance June 2024, Vulkan 1.4 late 2024; sparse binding in Mesa 25.1 enabling VKD3D-Proton DX12_0
+- DCP (Display Control Processor): embedded ARM64 ASC core running RTKit RTOS; layered protocol: apple-mailbox (96-bit messages) → apple-rtkit → EPIC service calls; drm/apple KMS driver implements atomic DRM/KMS on top; VRR requires full modeset; USB-C external display via fairydust branch (DCP + DPXBAR + ATCPHY + ACE)
+- UMA implications: no VRAM/GTT split; all GEM BOs in shared LPDDR5/LPDDR5X; cache-coherent CPU-GPU without drm_clflush_sg; DMA-BUF zero-copy via drm_gem_prime_import; DRM_ASAHI_BIND_SINGLE_PAGE + DRM_ASAHI_FEATURE_SOFT_FAULTS for Vulkan sparse binding
+- Conformance and status: OpenGL 4.6, OpenGL ES 3.2, OpenCL 3.0, Vulkan 1.4 certified; UAPI in mainline; Gallium and Honeykrisp fully upstream in Mesa 24.3+; drm/asahi kernel driver (~21,000 lines) out-of-tree; M3/M4 (G15/G16) GPU acceleration awaits reverse engineering of hardware ray tracing and Dynamic Caching
+- **Integrations**: Ch1 (DRM Architecture), Ch4 (GPU Memory Management / GEM), Ch6 (ARM & Embedded GPU Drivers), Ch7 (Reverse Engineering / Nouveau), Ch10 (NVK — Honeykrisp forked from NVK), Ch14 (NIR — AGX compiler backend), Ch16 (Mesa Vulkan Common Infrastructure), Ch18 (Vulkan Drivers landscape), Ch75 (Explicit GPU Sync)
+
+
+### Chapter 155: USB DisplayLink and the evdi Kernel Module *(Part II — GPU Drivers)*
+
+- DisplayLink architecture: software-defined display pipeline where host CPU encodes frames via DL3 codec and sends over USB bulk transfers to a decoder-only DisplayLink chip (DL-3xxx/5xxx/6xxx/7400)
+- evdi (Extensible Virtual Display Interface): out-of-tree DKMS DRM driver creating virtual /dev/dri/cardN devices with DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC; custom ioctl table (EVDI_CONNECT, EVDI_REQUEST_UPDATE, EVDI_GRABPIX, EVDI_DDCCI_RESPONSE, EVDI_ENABLE_CURSOR_EVENTS)
+- evdi kernel module structure: evdi_drm_drv.c, evdi_painter.c, evdi_gem.c, evdi_fb.c, evdi_modeset.c, evdi_cursor.c, evdi_sysfs.c, evdi_i2c.c; sysfs-triggered device lifecycle via /sys/bus/platform/driver/evdi/add
+- evdi GEM memory model: evdi_gem_object wraps drm_gem_object with shmem-backed pages; lazy page allocation; drm_clflush_pages() for cache coherency; VM_MIXEDMAP mmap flag to enable struct-page access for CLFLUSH on x86
+- evdi painter damage tracking: evdi_painter struct with MAX_DIRTS=16 dirty_rects ring; evdi_painter_mark_dirty() merges/collapses overflow via bounding-box; drm_atomic_helper_dirtyfb + FB_DAMAGE_CLIPS plane property; DRM_EVDI_EVENT_UPDATE_READY notification via poll()/read()
+- EVDI_GRABPIX pixel delivery: struct drm_evdi_grabpix carries dirty rects and client buffer pointer; copy_primary_pixels() performs CPU memcpy from GEM pages to DLM buffer; fundamental bottleneck: ~8 MB copy for 1080p at 1-5 ms latency
+- Cursor emulation: default software cursor compositing via evdi_cursor_compose_and_copy() with per-pixel alpha blend; opt-in cursor event mode (EVDI_ENABLE_CURSOR_EVENTS) delivers DRM_EVDI_EVENT_CURSOR_SET/MOVE instead of compositing into framebuffer
+- libevdi userspace API: evdi_open(), evdi_connect(), evdi_register_buffer(), evdi_handle_events() with callback-based event model; evdi_connect2() adds pixel_area_limit and pixel_per_second_limit bandwidth constraints; request-notify-grab render loop
+- DisplayLink Manager (DLM): proprietary daemon with plugin pipeline (source/transform/sink); udev rules (74-displaylink.rules, VID 17e9); systemd displaylink-driver.service; DKMS-bundled installer; closed-source due to DL3 codec IP, HDCP 2.0 DCP LLC licensing barrier, and cross-platform code reuse
+- DRM integration and atomic modesetting: compositor commits via drmModeAtomicCommit() with FB_DAMAGE_CLIPS; double CPU copy path (GPU DMA-BUF -> evdi GEM shmem -> DLM buffer); single primary plane only; NVIDIA proprietary driver incompatibility
+- USB4 and DL-7400: quad 4K@120Hz / dual 8K@60Hz HDR10; DisplayPort 2.1 Alt Mode; USB4 Gen 3x2 (40 Gbps); distinction between DisplayLink-over-USB4 (requires evdi+DLM) vs. native USB4 DP tunneling (kernel thunderbolt/typec subsystem, no daemon needed)
+- Performance limitations: 10-35 ms end-to-end latency; 25-40% CPU for 1080p video; gaming impractical due to variable DL3 encode time and no hardware overlays; Wayland xdg-desktop-portal screen capture broken for evdi virtual displays
+- Open-source ecosystem: udl (mainline, USB 2.0 DL-1xx only); udlfb (legacy fbdev with fb_defio, considered deprecated); Vino (experimental Rust DRM driver for DL-3xxx via usbmon reverse engineering, 2026); pyevdi, displaylink-debian, displaylink-rpm community packaging
+- Upstreaming blocker: DRM maintainers require open userspace before accepting drivers defining new DRM uAPI; closed DLM prevents evdi mainlining; open DLM community request exceeds 2,000 votes on DisplayLink forum with no substantive response
+- **Integrations**: Ch01 (DRM Architecture), Ch04 (Framebuffer and Planes), Ch06 (KMS Atomic Modesetting), Ch11 (DMA-BUF), Ch49 (Multi-GPU), Ch139 (DRM Hardware Planes), Ch147 (VA-API and Video Decode), Ch172 (eGPU / Thunderbolt / USB4)
+
+
+### Chapter 160: Freedreno and Turnip: Open-Source Qualcomm Adreno Driver *(Part II — GPU Drivers)*
+
+- Adreno GPU families (A3xx–A8xx): SIMT warp-based architecture with SP, UCHE L2, TP, RB, CP, VSC hardware blocks; wave128 on A6xx, wave64 on A7xx
+- TBDR binning pass and VSC (Visibility Stream Compressor): vertex-only binning emits per-tile primitive bitmasks into 16 (A6xx) or 32 (A7xx) VSC pipes; tu6_emit_binning_pass in tu_cmd_buffer.c
+- LRZ (Low Resolution Z): 1/8th-resolution hierarchical Z-buffer for early fragment rejection; tu_lrz.c tracks per-draw enable/disable conditions; A7xx adds early-LRZ-late-depth mode
+- GMU (Graphics Management Unit): ARM Cortex-M3 coprocessor handling GPU power/clock; ACTIVE/IFPC/SLUMBER states; a6xx_gmu_set_oob() OOB handshake; HFI shared-memory circular queues (H2F/F2H)
+- Freedreno Gallium3D driver: fd6_gmem.c GMEM/binning pass; autotune algorithm selects GMEM vs SYSMEM mode; TU_AUTOTUNE_ALGO env var
+- Turnip Vulkan driver (A6xx+): Vulkan 1.3, tu_renderpass.c GMEM-aware render pass, tu_pick_gmem_layout(), VK_EXT_physical_device_drm for DRM node correlation
+- UBWC (Universal Bandwidth Compression): lossless render target compression with 4-byte metadata per 256-byte tile; DRM_FORMAT_MOD_QCOM_COMPRESSED; VK_EXT_image_drm_format_modifier for zero-copy compositor integration
+- AFBC on Adreno: import-only (DPU scan-out of codec/ISP AFBC buffers); GPU shader units do not write AFBC; DRM_FORMAT_MOD_ARM_AFBC_* modifiers via zwp_linux_dmabuf_v1
+- A7xx/A8xx new features: concurrent binning (BR/BV split), 2 MB GMEM, 32 VSC pipes, ray tracing (VK_KHR_ray_query merged Mesa 25.0 for A740+), VK_EXT_mesh_shader; A8xx VRS pending
+- ir3 compiler pipeline: GLSL/SPIR-V -> NIR -> ir3 IR -> register allocation -> a6xx binary; 64-bit RISC ISA with (sy)/(ss) sync markers; fp16 at 2x throughput; IR3_SHADER_DEBUG flags
+- msm_drm kernel driver: a6xx_gpu.c, a6xx_gmu.c, a6xx_ringbuffer.c (CP_INDIRECT_BUFFER_PFE ring submission); msm_gem.c GEM BO management; SMMU/IOMMU IOVA mapping
+- Debugging and profiling tools: fdperf (ncurses hardware counter monitor), cffdump/.rd command stream capture/decode, rddecompiler, replay, TU_BREADCRUMBS UDP hang debugging, Perfetto GPU counter tracing
+- Freedreno vs Turnip vs Zink: Freedreno for legacy A3xx-A5xx; Turnip as primary for A6xx+ Vulkan; Zink-on-Turnip for OpenGL 4.6 (used by Steam Frame VR); driver selection matrix by workload
+- Snapdragon X Elite Linux status (kernel 6.19, Mesa 26.0): Adreno 830 Vulkan 1.3 working; iris V4L2 video decoder (Linux 6.15); suspend/resume in progress; A8xx Gen 8 merged Mesa 26.0
+- **Integrations**: Ch1 (DRM Architecture), Ch11 (DMA-BUF), Ch14 (Gallium3D), Ch15 (NIR), Ch19 (Vulkan), Ch20/21 (Wayland/wlroots), Ch159 (Panfrost/Mali), Ch169 (Snapdragon X Elite Linux)
+
+
+### Chapter 169: Snapdragon X Elite on Linux: Adreno X1-85, freedreno, and the Arm Laptop Era *(Part II — GPU Drivers)*
+
+- Adreno X1-85 hardware (X185 / ADRENO_7XX_GEN2): 1,536 FP32 ALUs, 3 MB GMEM, 256 GB GPU VA, 4.6 TFLOPS peak; LPDDR5X unified memory shared with Oryon CPU
+- DRM/MSM kernel driver (drivers/gpu/drm/msm/): X185 catalog entry landed targeting Linux 6.11; gmxc.lvl power rail, gen70500_sqe.fw / gen70500_gmu.bin / gen70500_zap.mbn firmware; GPU node disabled by default pending firmware extraction
+- ACPI + Device Tree overlay boot model: UEFI-based X Elite uses DTB via EFI stub alongside ACPI; per-OEM per-laptop .dts files in arch/arm64/boot/dts/qcom/ for ThinkPad T14s Gen 6, Dell XPS 13 9345, ASUS Vivobook S 15, HP OmniBook X 14, etc.
+- GMU ring submission (a6xx_gpu.c): CP_INDIRECT_BUFFER_PFE PM4 packets, OUT_PKT7/OUT_RING macros, msm_fence signalling; IFPC (Inter-Frame Power Collapse) and speedbin support added in kernel 6.17
+- Mesa Turnip Vulkan driver (src/freedreno/vulkan/): SPIR-V → NIR → IR3 → CP_LOAD_STATE7; Vulkan 1.3 on X1-85; VK_KHR_ray_query merged Mesa 25.0; Turnip added to default AArch64 Mesa build in Mesa 25.1
+- freedreno Gallium3D (src/gallium/drivers/freedreno/): A7xx OpenGL paths in Mesa 24.3; Zink (OpenGL→Vulkan translation via MESA_LOADER_DRIVER_OVERRIDE=zink) as fallback path on Turnip; Adreno X2-85 (Gen 8) support in Mesa 26.0
+- msm_dpu display pipeline (dpu_9_2_x1e80100.h): 4 VIG + 6 DMA planes, 6 layer mixers, 4 DSPP, 4 DSC encoders, max_line_width 5120, has_src_split/has_3d_merge/has_idle_pc; eDP Panel Self-Refresh (PSR) for battery life
+- UBWC (Universal Bandwidth Compression): Qualcomm proprietary tiled memory layout; DMA-BUF modifier negotiation with Wayland compositor via zwp_linux_dmabuf_v1; gbm_bo_create_with_modifiers(); zero-copy import from V4L2/camera; UBWC config consolidated in kernel 6.17
+- IRIS V4L2 video decoder (drivers/media/platform/qcom/iris/): stateful V4L2 M2M decoder, H.264 decode upstreamed in Linux 6.15; H.265/AV1/VP9 decode in development; no upstream VA-API backend for IRIS; GStreamer v4l2h264dec / FFmpeg v4l2m2m as direct V4L2 paths
+- Hexagon NPU / CDSP (remoteproc/qcom_*.c): no open upstream compute driver; accel/qda RFC patch series (2026) unmerged; SNPE/QNN not available on Linux; Qualcomm declined to open-source DSP headers; distinct from qaic (Cloud AI 100 PCIe card)
+- Firmware distribution: gen70500 blobs (sqe.fw, gmu.bin, zap.mbn) via linux-firmware-qcom package or Windows-partition extraction using qcom-firmware-extract; Lenovo ThinkPad T14s Gen 6 only model with blobs in linux-firmware.git
+- Kernel version timeline: 6.8/6.9 core SoC infra; 6.11 GPU+DPU targeted; 6.14 functional GPU bring-up (with Mesa 25.0); 6.15 IRIS H.264; 6.17 IFPC speedbin UBWC cleanup; recommended stack: kernel 6.17 + Mesa 25.1 + Ubuntu 25.04
+- **Integrations**: Ch6 (ARM/Embedded GPU Drivers — msm DRM, remoteproc, SMMU, DT vs. ACPI), Ch88 (NPU and AI Accelerators — Hexagon gap vs. Intel IVPU/qaic), Ch160 (freedreno/Turnip/Adreno — A6xx/A7xx architecture, IR3 compiler, UBWC), Ch168 (WebNN — Hexagon NPU backend blocked; fallback to WebGPU/Turnip or XNNPACK)
+
+
+### Chapter 172: eGPU on Linux — Thunderbolt, USB4, and PCIe Hot-Plug *(Part II — GPU Drivers)*
+
+- Thunderbolt/USB4 PCIe tunneling architecture: bandwidth comparison across TB3/TB4/USB4 Gen2x2/USB4 v2 (TB5); security levels (none/user/secure/dponly/usbonly/nopcie) via /sys/bus/thunderbolt/devices/domainX/security
+- bolt daemon (boltd): freedesktop.org D-Bus service for Thunderbolt device enrollment; boltctl commands (list, authorize, enroll, forget, monitor); sysfs authorized attribute and udev rule auto-authorization
+- Linux kernel Thunderbolt/USB4 subsystem (drivers/thunderbolt/): CONFIG_USB4; key files nhi.c, tb.c, switch.c, tunnel.c, usb4.c; Firmware vs Software connection manager models
+- PCIe tunnel creation via tb_tunnel_alloc_pci() in tunnel.c: bandwidth allocation, adapter register config, upstream/downstream PCIe path activation triggering pciehp enumeration
+- DRM PCIe hot-plug lifecycle: drm_dev_register() on probe creating /dev/dri/cardN nodes; drm_dev_unplug() for surprise removal returning ENODEV; drm_dev_enter()/drm_dev_exit() guards for hardware access serialization
+- amdgpu hot-unplug support (Linux 5.14+): drm_dev_unplug() in amdgpu_pci_remove(); drm_gpu_scheduler job draining; TTM BO eviction on backing store disappearance; Runtime PM D3cold over TB link
+- PRIME reverse offload: DRM_IOCTL_PRIME_HANDLE_TO_FD / PRIME_FD_TO_HANDLE for eGPU-to-iGPU DMA-BUF sharing; bandwidth math (~16 Gbps for 4K@60Hz consuming ~70% of TB3 PCIe budget)
+- Wayland eGPU integration: DRI_PRIME env var (index or pci-XXXX path); wlroots udev-based GPU hot-plug (PR #2423); all-ways-egpu script (WLR_DRM_DEVICES, MUTTER_DEBUG_FORCE_KMS_MODE, KWIN_DRM_DEVICES)
+- NVIDIA eGPU: AllowExternalGpus Xorg option; proprietary driver lifecycle vs drm_dev_unplug; RTX 5080 TB5 CUDA hard-lock bug (#979); Nova Rust driver (DRM-next, kernel 6.15 era) unverified for eGPU
+- Comparative external GPU technologies: OCuLink (raw PCIe ×4, no encapsulation, 0.5m); M.2 PCIe adapters (ADT-Link R43SG); NVLink/Infinity Fabric (GPU-to-GPU, not eGPU); InfiniBand GPU-Direct RDMA (HPC)
+- USB4 v2 / Thunderbolt 5: 80 Gbps (120 Gbps Bandwidth Boost asymmetric); ~64 Gbps PCIe equiv to PCIe 4.0 ×4; kernel USB4 v2 support added in ~6.4-6.5 via Westerberg 20-patch series; usb4.c extended encapsulation
+- Thunderclap DMA attack surface (NDSS 2019): pre-authorization device is no DMA master; mitigations via iommu_dma_protection sysfs, bolt secure mode cryptographic challenge, per-device iommu policy
+- Practical setup workflow: lspci/lsmod Thunderbolt verification; boltctl enroll; PCIe device visibility; kernel boot params (pci=assign-busses,hpmmioprefsize=16G pcie_ports=native); lstbt topology tool from thunderbolt-utils
+- **Integrations**: Ch4 (GPU Memory Management / DMA-BUF PRIME), Ch5 (x86 GPU Drivers / amdgpu & xe probe/remove), Ch49 (Multi-GPU and PRIME Render Offload), Ch51 (GPU Power Management and Thermal), Ch80 (GPU Security)
+
+
+### Chapter 179: The Linux `accel` Subsystem: NPU and AI Accelerator Drivers *(Part II — GPU Drivers)*
+
+- Motivation and Linux 6.2 origin: separate `/dev/accel/` subsystem created to avoid mis-fitting NPU/AI accelerator drivers into DRM or misc char devices; merged February 2023 via drm-next
+- DRM foundation and DRIVER_COMPUTE_ACCEL flag: accel reuses struct drm_device, GEM, DRM scheduler, DMA-BUF, debugfs; DRIVER_COMPUTE_ACCEL is mutually exclusive with DRIVER_RENDER and DRIVER_MODESET
+- Core machinery: ACCEL_MAJOR=261, ACCEL_MAX_MINORS=256, accel_open(), DEFINE_DRM_ACCEL_FOPS macro, accel_minors_xa xarray, /dev/accel/accelN device nodes, accel_class sysfs
+- Intel ivpu driver (Meteor/Arrow/Lunar/Panther Lake): struct ivpu_device embedding drm_device, ivpu_fw_info firmware loading via request_firmware(), ivpu_cmdq/ivpu_job submission model with doorbell registers, per-context MMU SSID isolation, DRM_IOCTL_IVPU_SUBMIT
+- HabanaLabs Gaudi driver: hl_device, DRM_IOCTL_HL_CS with hl_cs_chunk/hl_cs_in, staged submission flags (HL_CS_FLAGS_STAGED_SUBMISSION), TPC/MME/NIC engines, hlthunk userspace library, PyTorch Habana integration
+- Qualcomm Cloud AI 100 qaic driver: MHI (Modem Host Interface) control plane + DMA Bridge Channels (DBC) data plane, struct qaic_device/qaic_drm_device, DRM_IOCTL_QAIC_CREATE_BO/ATTACH_SLICE_BO/EXECUTE_BO/WAIT_BO
+- AMD XDNA driver (Linux 6.10+): AIE2 tile-mesh architecture, struct amdxdna_dev with IOMMU SVA via iommu_sva_bind_device(), SR-IOV for multi-tenant cloud, XRT (Xilinx Runtime) userspace
+- ARM Ethos-U (ethosu) and Rockchip rocket drivers: ethosu targets Cortex-M embedded NPUs without GEM/PCI; rocket targets RK3588 RKNPU, uses DRM_GEM_SHMEM_HELPER + DRM_SCHED, Mesa3D rocket Gallium userspace
+- Writing an accel driver: devm_drm_dev_alloc() + drm_dev_register(), per-fd context management with IOMMU SSID, GEM BO IOCTLs (create/mmap/info/wait), job submission with drm_sched_job, firmware loading via request_firmware()
+- GEM memory management without display: struct ivpu_bo extending drm_gem_shmem_object with vpu_addr; struct qaic_bo with sg_table and DBC association; DMA-BUF (PRIME) for zero-copy camera-to-NPU and GPU-to-NPU interop
+- DRM GPU scheduler integration: drm_sched_job/drm_sched_entity for per-context job queuing; run_job callback rings hardware doorbell; dma_fence signals completion; used by ivpu and rocket
+- Security model: /dev/accel/accel0 mode 0600 with udev TAG+=uaccess; DRM_RENDER_ALLOW for IOCTLs; per-context IOMMU domain isolation (ivpu SSID, amdxdna PASID, qaic per-DBC locking); cgroup v2 device controller for container deployments
+- Device node selection: /dev/dri/renderD* for GPU compute (Vulkan/OpenCL/CUDA); /dev/kfd for AMD ROCm/HIP; /dev/accel/accelN for dedicated NPU inference (OpenVINO, hlthunk, qaicrt, XRT); comparison table vs CUDA and ROCm paths
+- Vendor landscape: AMD amdxdna correctly uses accel; NVIDIA absent (GPUs use DRIVER_RENDER; proprietary /dev/nvidia* for CUDA; NVDLA driver rejected); Arm split between mainlined ethosu and out-of-tree Ethos-N; 2022 LKML controversy over firmware-ABI standards resolved at Linux Plumbers Conference
+- **Integrations**: Ch5 (x86 GPU Drivers / Intel i915/Xe and ivpu on Meteor Lake), Ch25 (GPU Compute / DRM render nodes, GEM, DMA-BUF, DRM scheduler), Ch48 (ROCm and ML on Linux GPUs / amdkfd vs amdxdna), Ch55 (GPU Containers and Cloud Compute / cgroup v2, CDI, Kubernetes device plugins for /dev/accel/), Ch88 (NPU and AI Accelerator Integration on Linux / OpenVINO, ONNX Runtime EP selection, userspace stack above accel), Ch108 (ROCm and HIP: AMD GPU Compute Stack / amdgpu vs amdxdna on same APU), Ch124 (Local LLM Inference on Linux GPUs / llama.cpp, Ollama, OpenVINO NPU backend device selection)
+
+
+### Part IV — Mesa Architecture
+
+### Chapter 77: Shader Source-to-ISA: The Complete Compilation Toolchain *(Part IV — Mesa Architecture)*
+
+- Two-stage portable model: SPIR-V as the application/driver boundary IR; front ends (glslang, DXC, Slang, Tint) vs. vendor back ends (ACO, BRW, NAK); naga/wgpu as a Rust-native WGSL/SPIR-V compiler
+- glslang GLSL→SPIR-V: TShader/TProgram/TIntermediate AST; GlslangToSpv() C++ API; glslangValidator CLI; -V/--target-env flags; Shader Model 5 HLSL limit vs. DXC
+- DXC HLSL→SPIR-V: LLVM/Clang fork; -spirv flag; IDxcCompiler3 COM API; -fvk-use-scalar-layout/-fvk-b-shift flags; DXVK and vkd3d-Proton usage; vkd3d-shader DXIL→SPIR-V converter
+- SPIRV-Tools validation and optimization: spvValidateBinary() C API; spirv-val SSA dominance/capability checks; spirv-opt passes (ADCE, CCP, loop-unroll, loop-fission, loop-fusion, --inline-entry-points-exhaustive); MESA_DEBUG=spirv_val; MESA_SPIRV_DUMP_PATH
+- spirv-cross cross-compilation and reflection: CompilerGLSL/CompilerHLSL/CompilerMSL class hierarchy; ShaderResources API (uniform_buffers, push_constant_buffers, sampled_images); MoltenVK MSL target; ANGLE integration in src/compiler/translator/spirv/
+- spirv_to_nir() Mesa SPIR-V→NIR translation: spirv_to_nir_options capability bits; OpDecorate→nir_variable properties; StorageClass→nir_var_shader_in/out/nir_var_mem_ssbo; OpLoad/OpStore→nir_intrinsic_load_deref/store_deref; vtn_variables.c built-in lookup table; vtn_glsl450.c OpExtInst handling
+- ACO AMD compiler (RADV): 12-stage pipeline — instruction selection with divergence analysis, value numbering (CSE), optimization (VFMA3 combining), live-variable analysis, spilling, scheduling, linear-scan register allocation (SGPR/VGPR), HW lowering, s_waitcnt insertion, NOP hazard resolution, assembly emission; targets GCN/RDNA ISA
+- BRW Intel EU compiler (ANV/iris): brw_compile_vs/fs/cs/gs() entry points; brw_from_nir() NIR→fs_inst/vec4_instruction IR; predicated execution BRW_OPCODE_IF/ENDIF; SEND messages for memory/texture; register regioning; vec4 backend removed in Mesa 24.x
+- NAK NVIDIA Rust compiler (NVK): first Rust GPU compiler in Mesa (merged 24.0); targets Turing SM75+ (Ampere, Ada, Blackwell); emits SASS directly bypassing PTX; reverse-engineered encodings via Envytools; cbindgen C header integration; ir.rs SSA-based IR
+- Mesa disk_cache API: disk_cache_create/put/get/compute_key(); SHA-1 cache_key = SHA-1(SPIR-V XOR driver UUID); XDG_CACHE_HOME/mesa_shader_cache/ default; MESA_SHADER_CACHE_DIR/MESA_SHADER_CACHE_DISABLE env vars; single-file mesa_shader_cache_db backend (Mesa 24.x)
+- VkPipelineCache and Fossilize: vkCreateGraphicsPipeline() disk cache integration; Fossilize .foz archive format serializing VkShaderModule/VkDescriptorSetLayout/VkPipelineLayout/VkRenderPass/VkSampler/VkPipeline; fossilize-replay offline pre-compilation; VK_LAYER_fossilize capture layer
+- shader-db regression testing: real-world GLSL/SPIR-V shader collection; instruction count/VGPR/SGPR/code-size metrics; si-report.py (RDNA/GCN) and anv-report-fossil.py (ANV); Mesa GitLab CI jobs shader-db:radv and shader-db:anv on bare-metal hardware
+- Slang differentiable shading language: HLSL superset with module system (.slang import); pre-checked generics and interfaces (ILight pattern); [ForwardDifferentiable]/[BackwardDifferentiable] auto-differentiation; slangc targets (SPIR-V, DXIL, HLSL, GLSL, CUDA, Metal); used in RTX Kit (NRC, NeuralVDB), Falcor, slangtorch
+- **Integrations**: Ch14 (NIR IR), Ch15 (ACO compiler), Ch16 (Mesa Vulkan common), Ch17 (llvmpipe/lavapipe), Ch18 (Vulkan drivers: RADV/ANV/NVK), Ch28 (DXVK/vkd3d-Proton), Ch61 (SPIR-V ecosystem), Ch70 (RTX Kit/neural rendering), Ch71 (Intel graphics stack), Ch76 (modern Vulkan extensions)
+
+
+### Chapter 156: Mesa Nine: Direct3D 9 State Tracker *(Part IV — Mesa Architecture)*
+
+- Mesa Nine (Gallium Nine) overview: Direct3D 9 state tracker in Mesa 10.x–25.1 (src/gallium/frontends/nine/); ~25 KLOC COM-based Gallium frontend removed in Mesa 25.2
+- WineD3D vs Nine translation chains: D3D9→OpenGL→Gallium (WineD3D) vs D3D9→Gallium directly (Nine); eliminates OpenGL layer, double validation, and GLSL shader compilation pass
+- NineDevice9 struct: pipe_context, pipe_context (worker thread), pipe_screen, nine_state, cso_context, nine_queue_pool ring buffer; IDirect3DDevice9 COM implementation
+- NINE_STATE_* dirty bitmask system: 20 coarse state categories (FB, RASTERIZER, BLEND, DSA, VS/PS, TEXTURE, SAMPLER, VDECL, VS_CONST, PS_CONST, etc.); nine_update_state() dispatch before each draw
+- D3D9→Gallium type mapping: nine_pipe.c d3d9_to_pipe_format_checked(); D3DFMT_A8R8G8B8→PIPE_FORMAT_B8G8R8A8_UNORM; BGRA ordering; rasterizer, blend, DSA state translation via cso_set_* calls
+- IDirect3DStateBlock9 (stateblock9.c): Capture()/Apply() with mask-based selective copy; nine_range linked lists tracking dirty float4 register spans [bgn,end) for VS/PS constant upload
+- nine_context.c command queue: worker thread + lock-free ring buffer (nine_queue_pool: 32 nine_cmdbuf slots, ~131 KB each); csmt_cmd_* structs encoded by app thread, decoded by worker calling pipe->draw_vbo()
+- Shader translation (nine_shader.c): D3D9 SM1.1–SM3.0 bytecode→TGSI/NIR via ureg_program; static opcode dispatch table (_OPI macros); nine_translate_shader() entry point; vertex declaration D3DDECLUSAGE→TGSI_SEMANTIC mapping
+- Constant buffer performance: nine_range dirty-range lists for SetVertexShaderConstantF; nine_buffer_upload.c sub-allocated slab pool with PIPE_MAP_PERSISTENT|PIPE_MAP_COHERENT; avoids re-uploading unchanged float4 registers
+- Fixed-function pipeline emulation (nine_ff.c ~2000 lines): nine_ff_build_vs() generates TGSI VS on-the-fly for T&L (world/view/projection matrix, up to 8 D3D9 lights, texgen); nine_ff_ps_key encodes D3DTSS_* texture stage cascade (up to 8 stages, ~20 D3DTOP_* ops)
+- SwapChain9 and Present(): flush command queue → MSAA resolve via pipe_context::blit() → XPresentPixmap via DRI3 → rotate backbuffers; triple-buffering via PresentWaitMSC for frame pacing
+- DRI3 and DMA-BUF texture path: DRI3PixmapFromBuffers shares GEM buffer between Gallium and X server (zero-copy); DRI2 legacy fallback; XWayland adds compositing hop (+1 frame latency); render node access via DRI3Open
+- Performance and deprecation: Nine 30–80% faster than WineD3D (CPU-bound D3D9); competitive with DXVK; removed Mesa 25.2 due to DXVK dominance, X11-only DRI3/Present restriction, and maintenance burden; wine-nine-standalone archived
+- **Integrations**: Ch14 (Gallium3D pipe_context/pipe_screen interface), Ch15 (TGSI and NIR shader IR), Ch16 (RadeonSI Gallium driver), Ch17 (Iris Gallium driver), Ch66 (Wine/Proton D3D, WineD3D, DXVK), Ch152 (Rust GPU / wgpu)
+
+
+### Part V — Mesa GPU Drivers
+
+### Chapter 177: NVK — NVIDIA Vulkan in Mesa *(Part V — Mesa GPU Drivers)*
+
+- Driver lineage and milestones: NVK clean-slate Mesa Vulkan driver (not a Gallium wrapper); merged Mesa 23.3; stable Vulkan 1.3 in 24.1; Vulkan 1.4 conformant in 25.0; Maxwell/Pascal/Volta enabled in 25.1; Kepler/Blackwell in 25.2
+- NVKMD abstraction layer: nvkmd_ops vtable in nvkmd/nvkmd.h decouples NVK from DRM ioctls; covers bo_alloc/bo_free/bo_map, vm_bind/vm_unbind, queue_submit; one live backend (nouveau/), Nova backend reserved
+- Source tree layout: src/nouveau/{compiler/nak, headers/, vulkan/, winsys/}; nvkmd/ inside vulkan/; class headers in headers/ (cl9097.h, clc597.h per generation)
+- Memory architecture: GEM/TTM relationship; VRAM (DEVICE_LOCAL), BAR1/ReBAR (DEVICE_LOCAL|HOST_VISIBLE), GART coherent/cached; nvk_heap suballocator (nvk_heap.c) using util_vma_heap for driver-internal allocations; no libdrm_amdgpu equivalent
+- Push buffer encoding: NVIDIA channel/subchannel model; method/data pairs; open-gpu-doc class headers (NV9097, NVC597, NVC3C0, NVC5B5); nv_push API (nv_push.h) with P_MTHD/P_IMMD macros; nv_push_dump disassembler tool
+- NAK integration (NIR to SASS): nak_compile_shader() C-callable Rust FFI; nak_compiler per SM version (SM75/80/86/89/90/100/120); returns nak_shader_bin with SASS binary, num_gprs, nak_qmd; disk cache at $XDG_CACHE_HOME/mesa_shader_cache/
+- GSP-RM firmware interaction: Turing+ only; NVK->NVKMD->DRM ioctls->nouveau kernel->GSP-RM RPC->GPU; pre-Turing hardware stuck at boot clocks; reclocking, display, and NVDEC video decode require GSP-RM
+- WSI and Kopper: Mesa shared WSI layer (src/vulkan/wsi/); nvk_wsi.c device callbacks; DMA-BUF export via DRM_IOCTL_PRIME_HANDLE_TO_FD; zwp_linux_dmabuf_feedback_v1 format/modifier negotiation; Kopper bridges Zink/OpenGL to NVK swapchain since Mesa 25.1
+- Wayland explicit sync: wp_linux_drm_syncobj_v1 protocol (Mesa 24.1); NVK exports drm_syncobj timeline point per frame; DRM_IOCTL_SYNCOBJ_EXPORT_SYNC_FILE to compositor KMS path
+- Timeline semaphores and DRM_IOCTL_NOUVEAU_EXEC: drm_nouveau_exec_push[] (va+va_len), drm_nouveau_sync with DRM_NOUVEAU_SYNC_TIMELINE_SYNCOBJ; maps VkFence/binary VkSemaphore/timeline VkSemaphore directly to syncobj handles; pipeline barriers use NV9097_INVALIDATE_TEXTURE_DATA_CACHE
+- Conformance table: Turing/Ampere/Ada/Blackwell/Volta/Pascal/Maxwell at Vulkan 1.4; Kepler capped at Vulkan 1.2 (lacks vulkanMemoryModel); missing VK_KHR_ray_tracing_pipeline, VK_KHR_acceleration_structure, stable VK_KHR_video_decode_queue; DXVK/VKD3D-Proton compatible from Mesa 24.1
+- Building and debugging: meson -Dvulkan-drivers=nouveau; Linux 6.6+ required; NAK MSRV Rust 1.82.0; NVK_DEBUG flags (push, push_sync, zero_memory, gart); NAK_DEBUG flags (print, serial, spill); NVK_I_WANT_A_BROKEN_VULKAN_DRIVER for experimental hardware
+- dEQP-VK testing: deqp-runner with per-generation caselist/skips/baseline in src/nouveau/ci/; VK_ICD_FILENAMES to select local build; freedesktop.org CI runs full suite on real hardware per merge request
+- Roadmap: ray tracing stabilisation (RT Core command stream reverse engineering); Vulkan video decode promotion; Nova NVKMD backend once DRM uAPIs stable; pre-GSP reclocking via PMU firmware; Rusticl via NVK compute
+- **Integrations**: Ch7 (reverse engineering NVIDIA/envytools), Ch8 (nouveau kernel driver/nvkm, DRM_IOCTL_NOUVEAU_EXEC), Ch9 (GSP-RM firmware), Ch10a (Nova Rust kernel driver), Ch10b (NVK: Building a Vulkan Driver from Scratch), Ch11 (display, reclocking, power management), Ch16 (Mesa Vulkan common infrastructure), Ch18 (Vulkan drivers: RADV, ANV comparison), Ch118 (NAK Rust shader compiler)
+
+
+### Part VI — The Display Stack
+
+### Chapter 74: HDR and Wide Color Gamut on Linux *(Part VI — Display Stack)*
+
+- HDR fundamentals: OETF/EOTF/OOTF transfer functions; PQ (SMPTE ST 2084) absolute-luminance curve 0–10,000 nits; HLG (ITU-R BT.2100) scene-referred backward-compatible broadcast HDR; BT.2020/DCI-P3/sRGB wide-color-gamut primaries and colour volume
+- HDR metadata standards: SMPTE ST 2086 / CTA-861-H static metadata (MaxCLL, MaxFALL, mastering primaries); HDR10+ dynamic metadata (SMPTE ST 2094-40); HDR_OUTPUT_METADATA DRM connector property blob; drm_hdmi_infoframe_set_hdr_metadata() in drm_hdmi_state_helper.c
+- KMS classic color pipeline: DEGAMMA_LUT / CTM / GAMMA_LUT three-stage CRTC model; drm_crtc_enable_color_mgmt(); drm_color_lut struct; drm_color_ctm / drm_color_ctm_3x4 with S31.32 sign-magnitude fixed-point; BT.2020→BT.709 gamut conversion via drmModeAtomicCommit()
+- DRM Color Pipeline API (Linux 6.19+): drm_colorop object model for per-plane pre-blending hardware transforms; COLOR_PIPELINE enumeration property on drm_plane; AMD DCN 3.x eight-stage pipeline (degamma, multiplier, 3x4 matrix, blend gamma, 3D LUT 17³, shaper LUT, inverse gamma, post-blending GAMMA_LUT); NVIDIA preview support
+- Mutter HDR pipeline: GNOME 46–48 incremental delivery; hdr_output_metadata UAPI struct; libdisplay-info / di_info_get_hdr_static_metadata(); linear BT.2020 intermediate framebuffer; 203-nit SDR reference white (ITU-R BT.2408); gdctl --color-mode bt2100
+- KWin HDR pipeline: Plasma 6.0–6.6 series; ICtCp-domain brightness-remapping tone mapping; per-DRM-plane COLOR_PIPELINE colorop support (Plasma 6.6, MR !6600); night-light chromatic adaptation in ICtCp; VkColorSpaceKHR / VkHdrMetadataEXT integration; DRM property table for HDR10 (HDR_OUTPUT_METADATA, Colorspace, CTM, GAMMA_LUT)
+- wp_color_management_v1 Wayland protocol: merged wayland-protocols 1.41 (Feb 2025); wp_color_manager_v1 singleton; wp_image_description_v1; wp_image_description_creator_icc_v1 / wp_image_description_creator_params_v1; named TFs (st2084_pq, hlg, srgb, ext_srgb, bt1886); named primaries (bt2020, dcip3, displayp3); xx_color_manager_v4 experimental predecessor; GTK 4 GdkColorState; adoption by KWin/Mutter/SDL3/Qt6/wlroots 0.18
+- color-representation-v1 Wayland protocol (wayland-protocols 1.44): wp_color_representation_surface_v1 for YCbCr-to-RGB conversion parameters on hardware-decoded video buffers; coefficients (bt2020, bt709, ictcp) and range (limited/full); complement to color-management-v1 for VA-API P010 planes
+- Vulkan and HDR: VK_EXT_swapchain_colorspace — VK_COLOR_SPACE_HDR10_ST2084_EXT, VK_COLOR_SPACE_HDR10_HLG_EXT, VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT; VK_EXT_hdr_metadata / VkHdrMetadataEXT; swapchain format selection VK_FORMAT_A2B10G10R10_UNORM_PACK32 / VK_FORMAT_R16G16B16A16_SFLOAT; VK_EXT_surface_maintenance1 present-mode compatibility
+- Tone mapping: Reinhard / Hable filmic / ACES operators; KWin ICtCp-domain per-channel brightness remapping; Mutter linear BT.2020 SDR luminance adaptation; Gamescope --hdr-itm-enable inverse tone mapping, 3D LUT looks, mura compensation (Steam Deck OLED); scRGB / EGL_EXT_gl_colorspace_scrgb_linear intermediate representation
+- HDR video passthrough: VA-API VAProfileHEVCMain10, VA_FOURCC_P010, VAHdrMetaDataHDR10; dma-buf import to DRM overlay plane (DRM_FORMAT_P010); per-plane colorop chain (degamma PQ → matrix → HDR_OUTPUT_METADATA); DisplayPort 1.4 DSC and HDMI 2.1 VRR HDR transport; Vulkan Video VK_KHR_video_decode_h265 / VK_KHR_video_decode_av1; HDMI AVI InfoFrame and DP MSA/HDRIF colour-space signalling
+- **Integrations**: Ch2 (KMS Display Pipeline), Ch3 (Advanced Display Features), Ch20 (Wayland Protocol Fundamentals), Ch22 (Production Compositors), Ch26 (Hardware Video Acceleration), Ch46 (Wayland Protocol Ecosystem), Ch53 (Display Calibration), Ch63 (KTX2 and Texture Compression), Ch75 (Explicit GPU Sync), Ch101 (Color Science Theory), Ch158 (HDR Signaling Metadata)
+
+
+### Chapter 75: Explicit GPU Synchronization *(Part VI — Display Stack)*
+
+- DMA-BUF implicit fences (dma_fence, dma_resv): struct dma_fence (one-shot pending/signalled), struct dma_resv with ww_mutex wound-wait deadlock prevention, DMA_BUF_IOCTL_EXPORT/IMPORT_SYNC_FILE conversion shim (Linux 5.19)
+- drm_syncobj kernel primitive: binary drm_syncobj (DRM_IOCTL_SYNCOBJ_CREATE/WAIT/RESET/SIGNAL/DESTROY) vs. timeline drm_syncobj (64-bit seqno, DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT/SIGNAL/TRANSFER/QUERY, wait-before-signal semantics)
+- drm_syncobj cross-process sharing: DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD / FD_TO_HANDLE for fd export/import, DRM_IOCTL_SYNCOBJ_EVENTFD (Linux 6.6) for non-blocking event-loop fence notification
+- drm_syncobj internal architecture: drm_syncobj_add_point(), drm_syncobj_replace_fence(), wait_queue_head_t state transitions; sparse (timeline_point → dma_fence) mapping array
+- Vulkan timeline semaphores: VkSemaphoreTypeCreateInfo / VK_SEMAPHORE_TYPE_TIMELINE (Vulkan 1.2 core), VkTimelineSemaphoreSubmitInfo, vkWaitSemaphores, vkSignalSemaphore; RADV/ANV/NVK all use shared Mesa vk_drm_syncobj.c backend
+- Vulkan external semaphore export: vkGetSemaphoreFdKHR with OPAQUE_FD produces drm_syncobj fd for compositor import; SYNC_FD only valid for binary semaphores
+- linux-drm-syncobj-v1 Wayland protocol (wayland-protocols 1.34, 2024): wp_linux_drm_syncobj_manager_v1, wp_linux_drm_syncobj_timeline_v1, wp_linux_drm_syncobj_surface_v1; set_acquire_point / set_release_point semantics
+- Compositor explicit sync adoption timeline: Mutter (GNOME 46.1, March 2024), KWin (KDE Plasma 6.1 + NVIDIA 555.58, June 2024), wlroots 0.18 (July 2024), Sway and Hyprland; XWayland DRI3/Present XSyncFence path (April 2024)
+- EGL sync objects: EGL_KHR_fence_sync (eglCreateSyncKHR, eglClientWaitSyncKHR), EGL_ANDROID_native_fence_sync (eglDupNativeFenceFDANDROID); Mesa platform_wayland.c uses both for implicit-path shim and explicit-path acquire point
+- Implicit-to-explicit migration: NVIDIA flickering root cause (no implicit fences on DMA-BUFs), Linux 5.19 conversion shim, chronological 2019–2026 migration timeline, NVIDIA 555.58 end-to-end explicit sync fix
+- KMS explicit sync: IN_FENCE_FD / OUT_FENCE_PTR atomic properties for GPU-side fence waits; DRM_MODE_ATOMIC_NONBLOCK with out_fence_ptr lower-latency than DRM_IOCTL_WAIT_VBLANK
+- Performance: GPU-side vs. CPU-side fence waits (vkWaitSemaphores vs. pWaitSemaphores); pitfalls — premature release point signalling, unnecessary CPU flushes, multi-source fence merge via DRM_IOCTL_SYNCOBJ_TRANSFER; RCU-protected dma_resv_list GC
+- io_uring unified event loop: sync_file as pollable fence (sync_file_poll, EPOLLIN on dma_fence signal); IORING_OP_POLL_ADD on sync_file; DRM_IOCTL_SYNCOBJ_EVENTFD + io_uring for non-blocking acquire-point waiting; limitations — DRM uring_cmd not yet implemented
+- **Integrations**: Ch1 (DRM Architecture), Ch2 (KMS Display Pipeline), Ch4 (GPU Memory Management), Ch20 (Wayland Protocol Fundamentals), Ch21 (Building Compositors with wlroots), Ch22 (Production Compositors), Ch24 (Vulkan and EGL for Application Developers), Ch46 (Wayland Protocol Ecosystem), Ch50 (Vulkan Video), Ch74 (HDR Display), Appendix G (Synchronisation Primitives Reference)
+
+
+### Chapter 151: Wayland Text Input and IME Protocols *(Part VI — Display Stack)*
+
+- zwp_text_input_v3 (application-side protocol): enable/disable, set_cursor_rectangle, set_surrounding_text, commit requests; preedit_string, commit_string, delete_surrounding_text, done(serial) events; serial/done double-buffering to prevent focus-race conditions
+- zwp_input_method_v2 (IME-side protocol): activate/deactivate, surrounding_text, content_type, done events from compositor; commit_string, set_preedit_string, delete_surrounding_text, commit requests from IME; get_input_popup_surface and grab_keyboard requests
+- zwp_virtual_keyboard_v1 (on-screen keyboards): keymap (fd), key, modifiers requests; privileged protocol requiring compositor permission to prevent keylogger abuse
+- zwp_input_method_keyboard_grab_v2: IME intercepts hardware key events before the focused app; keymap, key, modifiers, repeat_info events; unconsumed keys forwarded back via zwp_virtual_keyboard_v1
+- Compositor implementations: wlroots wlr_text_input_v3 / wlr_input_method_v2 structs (Sway, Hyprland, labwc); GNOME Mutter routes via D-Bus to IBus rather than zwp_input_method_v2; KDE KWin supports both fcitx5 (v2 protocol) and IBus (D-Bus)
+- GTK4 text input: GdkWaylandInputContext / GdkWaylandSeat wraps zwp_text_input_v3; Pango attribute lists for preedit underline; GTK_IM_MODULE ignored on Wayland — text-input-v3 path is built into GDK directly
+- Qt6 text input: QWaylandTextInputV3 in qtbase wayland plugin; QInputMethod abstract class; QWaylandTextInputMethod updates cursor rectangle, surrounding text, content type; QInputMethodEvent for preedit and commit delivery; QT_IM_MODULES ordered fallback (Qt 6.7+)
+- fcitx5 Wayland architecture: WaylandIMServerV2 / WaylandIMInputContextV2 in src/frontend/waylandim/; D-Bus org.fcitx.Fcitx5; grab_keyboard on activate; evdev key+8 XKB offset; updatePreeditImpl / commitStringImpl; candidate window via zwp_input_popup_surface_v2, xdg_popup, or XWayland fallback
+- IBus Wayland support: versions 1.5.26 (GNOME D-Bus only) → 1.5.29 (v1) → 1.5.32+ (v2); GNOME D-Bus bridge architecture (Mutter ↔ ibus-daemon); ibus-wayland direct v2 mode; known gaps: preedit styling, GTK4 GTK_IM_MODULE conflict, Qt6 <6.7 limitations
+- XWayland XIM bridge: X11 app XIM client → XWayland built-in XIM server → zwp_text_input_v3 → compositor → IME; XMODIFIERS=@im=fcitx5/_XIM_SERVERS root property; XFilterEvent loop; XOpenIM / XCreateIC / Xutf8LookupString; four conditions required for XIM to work under XWayland
+- zwp_input_popup_surface_v2 positioning model: get_input_popup_surface() assigns popup role to wl_surface; compositor delivers text_input_rectangle in global coordinates; IME renders with Cairo/Pango into wl_shm buffer; contrast with xdg_popup / xdg_positioner for client-side input panel
+- Emoji and Unicode via commit_string: multi-codepoint ZWJ sequences delivered as single atomic UTF-8 string; skin-tone modifiers, flag regional-indicator pairs, keycap variation-selector sequences; HarfBuzz grapheme-cluster iteration required in text widgets; GNOME Characters uses zwp_virtual_keyboard_v1 paste simulation
+- Protocol roadmap: ext_text_input_v1 stabilisation (blocking: cursor-rectangle semantics); preedit style hints (MR !234); text-input-unstable-v4 Qt proposal; GNOME Mutter alignment on zwp_input_method_v2; XIM deprecation as Xorg-free distributions ship (Ubuntu 26.04 LTS)
+- **Integrations**: Ch34 (Wayland Core), Ch35 (Compositors: Mutter/KWin), Ch36 (wlroots), Ch39 (Wayland Input), Ch123 (XWayland)
+
+
+### Chapter 158: HDR Display Hardware and Signaling on Linux *(Part VI — Display Stack)*
+
+- HDR fundamentals and standards: PQ (SMPTE ST 2084), HLG (ITU-R BT.2100), HDR10 (SMPTE ST 2086 / CTA-861-H), Dolby Vision; luminance encoding unit mismatches across hdr_metadata_infoframe, VkHdrMetadataEXT, VAHdrMetaDataHDR10
+- HDMI HDR InfoFrames: AVI InfoFrame (type 0x82, BT.2020 colourimetry), DRM InfoFrame (type 0x87, SMPTE ST 2086 mastering metadata); hdmi_drm_infoframe struct; hdmi_eotf enum; drm_hdmi_infoframe_set_hdr_metadata() helper
+- HDMI 2.0 SCDC and scrambling: Status and Control Data Channel over DDC pins; drm_scdc_set_scrambling(), drm_scdc_set_high_tmds_clock_ratio(); prerequisite for 4K/60Hz HDR10 via high TMDS clock
+- DisplayPort VSC SDP HDR signaling: DP_SDP_VSC; DB4 pixel encoding/colorimetry, DB16 EOTF, DB17 static metadata ID, DB18-DB27 HDR primaries/luminance; amdgpu set_vsc_sdp_colorimetry(); DPCD EDP_GENERAL_CAP3 for eDP backlight HDR
+- libdisplay-info EDID parsing: di_info_create_from_edid(), di_info_get_hdr_static_metadata(), di_hdr_static_metadata struct (pq/hlg/type1 flags, desired_content_max_luminance); low-level CTA extension traversal via di_edid_cta_get_data_blocks()
+- CTA-861 HDR Static Metadata Data Block (Extended Tag 0x06): EOTF support bitmap (bits 0-3 = SDR/HDR/PQ/HLG), desired content max luminance encoding (50 × 2^(code/32)); kernel parse_hdr_metadata_common() in drm_edid.c populating drm_connector.hdr_sink_metadata
+- OLED and MiniLED local dimming: ABM (Adaptive Backlight Modulation) DRM connector property; Intel DMC Panel Replay with Local Dimming on Meteor Lake/Lunar Lake; intel_dp_aux_backlight.c INTEL_EDP_HDR_CONTENT_LUMINANCE DPCD register; /sys/class/drm/card0-eDP-1/panel_power_savings
+- drm_hdr_output_metadata UAPI structure: hdr_output_metadata and hdr_metadata_infoframe in include/uapi/drm/drm_mode.h; HDMI_EOTF_SMPTE_ST2084; CIE xy primaries scaled ×50000; min_display_mastering_luminance in 0.0001 cd/m² units; drm_connector_attach_hdr_output_metadata_property()
+- Compositor-to-KMS HDR metadata flow: HDR capability discovery via libdisplay-info, constructing hdr_output_metadata blob via drmModeCreatePropertyBlob/drmModeAtomicAddProperty, atomic commit coordination with DEGAMMA_LUT/CTM/GAMMA_LUT/COLOR_PIPELINE, wp_color_management_v1 MaxCLL/MaxFALL population
+- VESA DisplayHDR certification tiers (v1.2): DisplayHDR 400/500/600/1000/1400 and True Black 400/500/600; peak luminance, black level, local dimming (1D/2D/OLED pixel) and DCI-P3 gamut requirements; drmdb and edid-query tooling for compliance verification
+- HDR roadmap: HDMI 2.1 FRL (Linux 7.2), DRM Color Pipeline CSC colorop (Linux 6.19+), NVIDIA per-plane Color Pipeline API, VK_EXT_hdr_metadata on Wayland (NVIDIA 580.94.11 driver), HDR10+ SMPTE ST 2094-40 dynamic metadata HF-VSIF (not yet upstream), DisplayID 2.1 capability reporting
+- **Integrations**: Ch2 (KMS Display Pipeline), Ch3 (Advanced Display Features), Ch20 (Wayland Protocol Fundamentals), Ch22 (Production Compositors), Ch26 (Hardware Video Acceleration), Ch36 (Gamescope), Ch53 (Display Calibration), Ch74 (HDR and Wide Color Gamut), Ch75 (Explicit GPU Sync), Ch101 (Color Science)
+
+
+### Chapter 175: Linux Compositor Accessibility — AT-SPI2, Screen Readers, and the Wayland Accessibility Gap *(Part VI — The Display Stack)*
+
+- AT-SPI2 D-Bus architecture: separate accessibility bus via at-spi-bus-launcher; org.a11y.Bus.GetAddress; at-spi-registryd claims org.a11y.atspi.Registry; Embed/RegisterEvent flow
+- Core AT-SPI2 D-Bus interfaces: org.a11y.atspi.Accessible (Name, Role, State, GetChildren), Cache (GetItems bulk transfer, AddAccessible/RemoveAccessible signals), Text, Action, Component, Table, EditableText
+- GTK4 accessibility stack: GTK4 removes ATK intermediary; GtkATContext/GtkAtSpiContext (gtk/a11y/gtkatspicontext.c); GTK_ACCESSIBLE_ROLE_*, GTK_ACCESSIBLE_STATE_*, GTK_ACCESSIBLE_RELATION_LABELLED_BY; GtkAccessibleText added in GTK 4.14; AccessKit backend in GTK 4.18
+- Qt6 AT-SPI2 bridge: QSpiAccessibleBridge plugin in qtbase src/gui/accessible/linux/qspiaccessiblebridge.cpp; QAccessibleInterface subclassing; QAccessible::installFactory pattern
+- X11 vs Wayland accessibility gap: XGrabKey global grabs and XQueryTree cross-window inspection removed in Wayland; keyboard events only to focused surface; keyboard-shortcuts-inhibit-unstable-v1 insufficient for screen readers
+- GNOME 48 / KDE 6.4 keyboard interception fix: compositor-specific D-Bus interface for Orca to register global shortcuts; hardcoded service-name authorization; not a general Wayland protocol
+- xdg-desktop-portal AT.Shortcuts proposal: org.freedesktop.portal.AT.Shortcuts (issue #1046); one-time consent prompt; {sa(sa{sv})} D-Bus structure for bulk shortcut maps; wayland-protocols issue #65 for native protocol
+- Orca screen reader architecture: pyatspi2/libatspi -> Orca core (Python) -> Speech Dispatcher -> eSpeak-NG/Festival/Piper; BrlAPI/BRLTTY for braille; ROLE_HEADING tree navigation via getRole()/queryText()
+- GNOME Shell magnifier: magnifier.js inside compositor process; Clutter scene-graph actor cloning with affine scale transform; org.gnome.desktop.a11y.magnifier GSettings; prevents GPU power gating
+- Terminal accessibility: VTE exposes screen buffer via org.a11y.atspi.Text (flat review, TextChanged signals, caret tracking); GPU-rendered terminals (Ghostty, Alacritty, WezTerm) lack widget trees; TUI semantic gap — raw text vs structured widget model
+- Newton project: three-layer architecture — Wayland protocol (app pushes tree to Mutter, frame-synchronised), D-Bus protocol (Mutter to Orca, with key interception), AccessKit cross-platform abstraction; funded by GNOME STF 2024
+- COSMIC compositor cosmic-atspi-unstable-v1: push-based Wayland accessibility protocol extension; AccessKit Rust AT-SPI2 adapter for non-GTK Rust apps (Alacritty, Ghostty); Newton long-term goal to replace AT-SPI2 on Wayland
+- Developer testing tools: Accerciser AT-SPI2 inspector (Interface Viewer, Event Monitor plugins); dbus-monitor via org.a11y.Bus.GetAddress address; orca --debug verbose logging; pyatspi2/dogtail for automated accessible-tree testing
+- **Integrations**: Ch20 (Wayland Protocol Fundamentals — security model creating accessibility gap, keyboard-shortcuts-inhibit-unstable-v1), Ch21 (wlroots compositors — no built-in screen-reader support, zwlr_input_inhibit_manager_v1), Ch22 (Mutter and KWin — GNOME 48 / KDE 6.4 D-Bus keyboard interception interfaces), Ch39 (Qt and GTK GPU Rendering — GtkATContext and QSpiAccessibleBridge within toolkit rendering pipeline), Ch132 (Wayland Security — cross-client pixel access and global keyboard grab restrictions)
+
+
+### Chapter 194: Cross-Stack Integration — Protocols, Synchronisation, and the Coordination Layer *(Part VI — The Display Stack)*
+
+- Fragmentation costs: five concrete deficiencies — pipeline latency, redundant memcpy copies, color-space blindness, implicit sync hazards, and debuggability gaps across six independent stack layers
+- Wayland protocol extensions as coordination bus: wayland-protocols repository stable/staging/unstable tiers; protocol ratification as multi-party contract mechanism for buffer, sync, color, and timing contracts
+- xdg-desktop-portal: D-Bus three-party coordination (app/portal/compositor) for screen capture, file picker, camera; hides compositor-specific backends (xdg-desktop-portal-gnome, xdg-desktop-portal-wlr) behind stable API
+- DMA-BUF zero-copy buffer transport (Linux 3.3): gbm_bo_get_fd / drmPrimeHandleToFD / eglCreateImageKHR(EGL_LINUX_DMA_BUF_EXT); fd-based reference counting across process and subsystem boundaries
+- DRM format modifiers (Linux 4.10): drm_fourcc.h DRM_FORMAT_MOD_* constants; AMD_FMT_MOD_DCC, I915_FORMAT_MOD_Yf_TILED_CCS, AFBC_FORMAT_MOD_BLOCK_SIZE_16x16; negotiation via zwp_linux_dmabuf_v1 / VK_EXT_drm_format_modifier
+- GBM (libgbm): gbm_bo_create_with_modifiers2() allocates DRM GEM buffers in compositor-negotiated tiled formats; bridges format modifier negotiation to buffer allocation
+- Explicit GPU sync — wp_linux_drm_syncobj_v1: DRM_IOCTL_SYNCOBJ_CREATE timeline syncobj; Mesa EGL/Vulkan WSI exports fence; protocol carries acquire/release points; landed Mesa 24.1, KWin 6.1, Mutter 46
+- Color management end-to-end — wp_color_management_v1 (ratified 2025): surface-level color description (primaries, transfer function, ICC profile); compositor tonemap; KMS drm_hdr_output_metadata / DRM_PROP_DEGAMMA / DRM_PROP_CTM for display EOTF
+- Frame pacing — wp_fifo_v1: set_barrier / wait_barrier primitives enforce FIFO ordered frame delivery; prevents compositor frame-skipping for video players and smooth playback applications
+- Tearing control — wp_tearing_control_v1: PRESENTATION_HINT_ASYNC opt-in for minimal-latency mid-frame scanout; wp_presentation feedback_presented event with ZERO_COPY / HW_CLOCK flags and KMS vblank timestamps
+- Overlay plane promotion and zero-copy scanout: KMS DRM_PLANE_TYPE_OVERLAY; GskSubsurfaceNode (GTK4) promotes wl_subsurface to KMS atomic plane via TEST_ONLY commit; ext_image_copy_capture_v1 unifies screen capture
+- Mesa NIR (introduced Mesa 10.5): single SSA IR shared across all drivers; ~80 shared optimisation passes (nir_opt_algebraic, nir_opt_dead_cf, nir_lower_vars_to_ssa); backends ACO/BRW/NAK/Panfrost/Turnip all start from same NIR
+- SPIR-V + spirv_to_nir() as universal entry point: GLSL/Vulkan/OpenCL/DXVK/VKD3D all funnel through SPIR-V into NIR; enables DXVK, VKD3D-Proton, and zink without per-driver porting
+- Cross-stack debugging: WAYLAND_DEBUG, MESA_DEBUG, drm debugfs state; RenderDoc via VK_LAYER_RENDERDOC_Capture; drm_monitor pageflip timestamps; trace-cmd with amdgpu/i915 ftrace tracepoints for GPU scheduler correlation
+- **Integrations**: Ch2 (KMS/DRM atomic API and overlay planes), Ch14 (NIR shader IR), Ch16 (Mesa Vulkan common / WSI explicit sync), Ch20 (Wayland protocol fundamentals), Ch39 (Qt/GTK GPU rendering, GskSubsurfaceNode, GdkFrameClock), Ch45 (Terminal compositor integration, DMA-BUF subsurfaces), Ch46 (Wayland protocol ecosystem and ratification process), Ch74 (HDR and wide color gamut), Ch75 (Explicit GPU synchronisation), Ch104 (DXVK and VKD3D-Proton, spirv_to_nir)
+
+
+### Chapter 198: D-Bus, dbus-broker, and Modern Linux IPC: Varlink, zbus, hyprwire, and BUS1 *(Part VI — Display Stack)*
+
+- Linux IPC primitives: pipes, Unix domain sockets, POSIX shared memory, socketpair, memfd+splice, io_uring — throughput and latency benchmarks for each, plus which is used by D-Bus, Wayland, PipeWire, and Binder
+- D-Bus wire protocol: three buses (system/session/activation), object model (bus name, object path, interface, member), message types (METHOD_CALL, METHOD_RETURN, ERROR, SIGNAL), binary type system with a{sv} dict-of-variants, XML introspection via org.freedesktop.DBus.Introspectable, UID+SO_PEERCRED security model
+- dbus-daemon vs dbus-broker: dbus-broker 37 two-process architecture (broker + launcher), per-peer resource accounting (match rule limits, reply quotas, memory quotas), Linux audit integration, distribution adoption; busctl commands for list/introspect/call/monitor/capture
+- sd-bus (C): sd_bus_open_system/user, sd_bus_call_method, sd_bus_match_signal, sd_bus_add_object_vtable; worked examples of org.freedesktop.login1.Session.TakeDevice and PauseDevice/ResumeDevice signal subscription
+- GLib/GIO gdbus-codegen: GDBusConnection, GDBusProxy, GDBusInterfaceSkeleton; code generation from D-Bus introspection XML; async method call pattern with g_dbus_proxy_call; colord signal subscription; gdbus and busctl CLI tools
+- Python D-Bus: dbus-python classic binding vs dasbus (class-based, PyGObject-backed, annotation-driven) vs python-sdbus (sd-bus FFI with asyncio); comparison table of maintenance status and API style
+- zbus (Rust): pure-Rust, no libdbus dependency, async-native, runtime-agnostic; #[proxy] and #[interface] proc-macros; zvariant/serde wire format; full TakeDevice/PauseDevice example with OwnedFd and SignalStream; zbus vs the older dbus FFI crate
+- Qt QDBusInterface, QDBusReply, QDBusAbstractAdaptor, qdbusxml2cpp code generation; KDE usage patterns: KWin D-Bus API, KScreen, Plasma Wayland session services
+- Varlink: point-to-point JSON-over-Unix-socket IPC, NUL framing, IDL syntax; io.systemd.* production interfaces (20+ in systemd 261); varlinkctl tool; zlink Rust crate; C direct-socket implementation; architectural limitation: no broadcast signals; comparison to D-Bus for compositor seat management
+- Android Binder: kernel-mediated IPC via /dev/binder, /dev/hwbinder, /dev/vndbinder; AIDL and Stable AIDL (Android 11+); ISurfaceComposer, IGraphicBufferProducer, IAllocator; libbinder_ndk C++ API; Rust binder crate; binder-trace and dumpsys SurfaceFlinger
+- hyprwire and hyprtavern: Vaxry's D-Bus critique; hyprwire binary protocol (strict, Wayland-inspired); hyprtavern session bus with built-in capability permission model; hyprctl Unix socket protocol (.socket.sock command socket, .socket2.sock event socket); hyprland-rs crate
+- BUS1 in-kernel IPC: KDBUS history, 2026 Rust revival by David Rheinsberg; capability-based kernel-mediated message passing without userspace daemon; potential graphics relevance for seat management, colour management, DMA-BUF fd sharing
+- PipeWire native protocol: spa_pod binary type-tagged messages over Unix socket; pw_core, pw_registry, pw_node, pw_stream objects; SPA_DATA_DmaBuf zero-copy screen capture path via eglCreateImageKHR; D-Bus role limited to activation and org.freedesktop.ReserveDevice1; wireplumber Lua session policy
+- eBPF and io_uring for IPC acceleration: bpftrace D-Bus tracing, BPF LSM socket-level policy enforcement, uprobe+BPF map for Varlink method counting; IORING_OP_READ_MULTISHOT for Wayland/D-Bus sockets, IORING_OP_SEND_ZC, IORING_OP_SPLICE for PipeWire DMA-BUF handoff, SQPOLL zero-syscall compositor loop; D-Bus vs Wayland protocol decision matrix; libzmq and Jupyter kernel protocol with five ZMQ sockets (shell/iopub/stdin/control/hb)
+- **Integrations**: Ch21 (wlroots seat management / TakeDevice), Ch23 (xdg-desktop-portal ScreenCast/RemoteDesktop), Ch38 (PipeWire activation and ReserveDevice1), Ch53 (colord ColorManager), Ch78 (GameMode), Ch87 (ARCore Android Camera HAL / ICameraProvider), Ch111 (Flatpak graphics / portal sandbox), Ch132 (Wayland security / uaccess), Ch164 (Android NDK / libbinder_ndk)
+
+
+### Part VII — Application APIs & Middleware
+
+### Chapter 76: Modern Vulkan Extensions *(Part VII — Application APIs and Middleware)*
+
+- Extension model taxonomy: VK_KHR_ (Khronos-ratified), VK_EXT_ (multi-vendor), VK_NV_/VK_AMD_ (single-vendor); promotion path from vendor → EXT → KHR → Vulkan core; vkEnumerateDeviceExtensionProperties + VkPhysicalDeviceFeatures2 pNext-chain query/enable pattern
+- VK_KHR_dynamic_rendering (Vulkan 1.3): abolishes VkRenderPass/VkFramebuffer; VkRenderingInfo + VkRenderingAttachmentInfo; explicit vkCmdPipelineBarrier2 layout transitions; VkPipelineRenderingCreateInfo in pNext; frame-loop diagram from acquire to present
+- TBDR tile-memory implications: ARM Mali, Qualcomm Adreno, Imagination PowerVR require VK_KHR_dynamic_rendering_local_read (Vulkan 1.4) for intra-pass read-back; vkCmdSetRenderingAttachmentLocationsKHR + vkCmdSetRenderingInputAttachmentIndicesKHR; VK_IMAGE_LAYOUT_RENDERING_LOCAL_READ_KHR
+- Descriptor indexing / bindless (VK_EXT_descriptor_indexing, Vulkan 1.2 core): VkPhysicalDeviceDescriptorIndexingFeatures; runtimeDescriptorArray, descriptorBindingPartiallyBound, descriptorBindingUpdateAfterBind; VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT; GL_EXT_nonuniform_qualifier + nonuniformEXT GLSL qualifier; adoption in Doom Eternal, UE5 Nanite/Lumen, Godot 4
+- Mesh shaders (VK_EXT_mesh_shader): replaces vertex/tessellation/geometry pipeline; task shaders via vkCmdDrawMeshTasksEXT + EmitMeshTasksEXT; mesh shaders via SetMeshOutputsEXT; taskPayloadSharedEXT broadcast channel; two-phase Hi-Z occlusion culling with imageAtomicMin depth pyramid; indirect dispatch via VkDrawMeshTasksIndirectCommandEXT; RDNA2/3 wave32 compute mapping; NVIDIA Turing SM tensor/primitive-export
+- Cooperative matrices (VK_KHR_cooperative_matrix): SPIR-V OpCooperativeMatrixMulAddKHR mapping to NVIDIA tensor cores, Intel Xe matrix engines, AMD RDNA4 AI accelerators; vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR + VkCooperativeMatrixPropertiesKHR; coopMatMulAdd GLSL; RADV v_wmma_* GFX11 ISA (Mesa 23.3+); NVK NAK Rust backend (Mesa 24.0); VKD3D-Proton 3.0 FSR4 FP8 via VK_EXT_shader_float8; VK_NV_cooperative_matrix2 per-element and reduce-redistribute ops
+- Shader objects (VK_EXT_shader_object): abolishes VkPipeline for graphics; VkShaderEXT compiled via vkCreateShadersEXT with VkShaderCreateInfoEXT; VK_SHADER_CODE_TYPE_SPIRV_EXT and VK_SHADER_CODE_TYPE_BINARY_EXT; vkCmdBindShadersEXT at draw time; RADV fast-link ISA caching (default Mesa 24.1); ANV deferred linking for Intel EU ISA (Mesa 25.x)
+- Graphics pipeline libraries (VK_EXT_graphics_pipeline_library / GPL): four segments — Vertex Input Interface, Pre-rasterisation Shaders, Fragment Shader, Fragment Output Interface; VkPipelineLibraryCreateInfoKHR linking; graphicsPipelineLibraryFastLinking property; VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT background LTO; adoption in DXVK 2.0 and VKD3D-Proton for shader-stutter elimination
+- Extended dynamic state 3 (VK_EXT_extended_dynamic_state3 / EDS3): ~33 additional dynamic states beyond Vulkan 1.3 core; vkCmdSetPolygonModeEXT, vkCmdSetRasterizationSamplesEXT, vkCmdSetColorBlendEnableEXT/EquationEXT/WriteMaskEXT, conservative rasterisation, NVIDIA-specific states; RADV radv_dynamic_state tracking; ANV Xe-HPG 3D-state packets; implicitly required by VK_EXT_shader_object
+- Driver adoption matrix (Mesa 25.x–26.x): RADV, ANV, NVK, NVIDIA proprietary, AMDVLK coverage per extension; Vulkan CTS conformance notes; AMDGPU gang-submit kernel requirement for mesh-shader task-payload correctness; Mesa 25.0 Vulkan 1.4 conformance; Mesa 26.0 VK_KHR_maintenance10 and ray-tracing improvements
+- Real-world engine adoption: DXVK (GPL + descriptor indexing + shader objects); VKD3D-Proton 3.0 (cooperative matrix FSR4, mesh shaders for Alan Wake 2); Bevy 0.14 (meshlet rendering via draw_indirect, no VK_EXT_mesh_shader); Godot 4 (dynamic rendering + batched descriptor sets); Unreal Engine 5.3+ (bindless resource tables for Nanite/Lumen; mesh shaders in UE5.4+)
+- Roadmap: Vulkan Roadmap 2026 Milestone (VK_KHR_fragment_shading_rate, VK_EXT_host_image_copy); VK_EXT_descriptor_heap flat CPU/GPU heap (Vulkan 1.4.340); Mesa 26.1 NIR/URB mesh-shader unification; VK_EXT_mesh_shader and VK_KHR_cooperative_matrix promotion consideration for Vulkan 1.5; VK_NV_cooperative_matrix2 FP8/INT4 type extension
+- **Integrations**: Ch16 (Mesa Vulkan Common Infrastructure), Ch18 (Vulkan GPU Drivers: RADV, ANV, NVK), Ch24 (Vulkan and EGL for Application Developers), Ch25 (GPU Compute), Ch28 (Windows Compatibility: DXVK, VKD3D-Proton), Ch56 (Ray Tracing on Linux), Ch61 (SPIR-V and Shader IR), Ch70 (RTX Neural Shading), Ch71 (Intel ANV Vulkan Driver), Ch75 (Explicit GPU Synchronisation), Ch77 (Shader Toolchain: glslang, DXC, Tint, SPIRV-Cross)
+
+
+### Chapter 150: EGL Architecture and DMA-BUF Integration *(Part VII — Application APIs and Middleware)*
+
+- EGL core objects: EGLDisplay, EGLSurface, EGLContext; eglGetPlatformDisplay, eglChooseConfig, eglCreateWindowSurface, eglMakeCurrent initialisation sequence
+- EGL platform extension model: EGL_EXT_platform_x11, EGL_EXT_platform_wayland, EGL_EXT_platform_gbm, EGL_KHR_surfaceless_context; eglGetPlatformDisplay dispatch
+- GBM/DRM platform: gbm_create_device, gbm_surface_create, gbm_surface_lock_front_buffer, drmModeAddFB, drmModeSetCrtc for compositor rendering directly to KMS
+- Wayland platform: wl_egl_window, eglCreatePlatformWindowSurface; eglSwapBuffers transparently posts wl_buffer via zwp_linux_dmabuf_v1
+- EGLImage zero-copy sharing (EGL_KHR_image_base): eglCreateImageKHR(EGL_LINUX_DMA_BUF_EXT); glEGLImageTargetTexture2DOES; GL_TEXTURE_EXTERNAL_OES for YUV hardware conversion (NV12/YUV420)
+- EGL_MESA_image_dma_buf_export: eglExportDMABUFImageQueryMESA / eglExportDMABUFImageMESA for texture-to-DMA-BUF export to KMS or V4L2 encoders
+- DMA-BUF import extension chain: EGL_EXT_image_dma_buf_import (basic) + EGL_EXT_image_dma_buf_import_modifiers; eglQueryDmaBufFormatsEXT / eglQueryDmaBufModifiersEXT for format/modifier negotiation
+- zwp_linux_dmabuf_v1 vs legacy wl_drm: wl_drm's insecure GEM name sharing replaced by DMA-BUF FD path; cross-GPU PRIME transfer via drm_prime_handle_to_fd/fd_to_handle
+- EGL sync objects: EGL_KHR_fence_sync (eglCreateSync, eglClientWaitSync); EGL_ANDROID_native_fence_sync producing DRM sync_file FDs for explicit synchronisation; EGL_KHR_wait_sync for server-side GPU waits
+- Mesa EGL internals: src/egl/{main,drivers/dri2}; dri2_initialize_wayland, dri2_swap_buffers call chain through platform_wayland.c; dri2_add_config for EGLConfig-to-format/modifier mapping
+- Five WSI pipeline paths: Vulkan+Wayland WSI, OpenGL+EGL/GBM, OpenGL+GLX via XWayland, EGL headless/offscreen (EGL_EXT_platform_device), Vulkan direct KMS (VK_EXT_acquire_drm_display)
+- NVIDIA EGL external platform architecture: eglexternalplatform plugin ABI (loadEGLExternalPlatform); egl-wayland (EGLStream, legacy), egl-wayland2 (DMA-BUF, current), egl-gbm, egl-x11; JSON discovery in /usr/share/egl/egl_external_platform.d/
+- Practical pitfalls: EGL_NO_DISPLAY for client extension queries, multi-plane DMA-BUF (NV12/P010) attribute layout, EGL_BAD_MATCH causes, implicit sync stalls and avoidance via explicit fence FDs
+- **Integrations**: Ch4 (GPU Memory Management), Ch12 (Mesa Loader), Ch20 (Wayland), Ch24 (Vulkan/EGL), Ch26 (Hardware Video), Ch39 (Qt/GTK), Ch75 (Explicit Sync), Ch139 (Hardware Planes)
+
+
+### Chapter 152: Rust GPU Ecosystem: wgpu, ash, and naga *(Part VII — Application APIs and Middleware)*
+
+- ash: raw zero-cost Vulkan bindings in Rust; runtime function loading via vkGetInstanceProcAddr/vkGetDeviceProcAddr; strongly typed extension loader pattern (khr::surface, khr::wayland_surface, khr::swapchain)
+- gpu-allocator: TLSF sub-allocation crate pairing with ash; MemoryLocation::GpuOnly/CpuToGpu/GpuToCpu; analogous to VMA in C++
+- wgpu architecture: safe WebGPU-standard Rust API over wgpu-hal backend trait (Vulkan, GLES, Metal, DX12, WebGPU/WASM); Device, Queue, Buffer, Texture, RenderPipeline abstractions
+- wgpu-hal: unsafe backend abstraction trait (Api, Device, Queue, CommandEncoder); Vulkan backend in wgpu-hal/src/vulkan/ using ash; key files: instance.rs, adapter.rs, device.rs, command.rs, conv.rs
+- naga: shader compiler with WGSL/GLSL/SPIR-V front-ends and typed SSA IR; back-ends emit SPIR-V, GLSL, HLSL, MSL; Arena<T> handle-indexed IR allocator; merged into wgpu monorepo 2023
+- WGSL: WebGPU Shading Language; @vertex/@fragment/@compute entry points; @group/@binding resource declarations; @workgroup_size; std140/std430 alignment rules
+- cuTile-rs: NVIDIA Rust library for Tensor Core tile programming; Tile<T,ROWS,COLS> generic type; #[kernel] macro; maps to PTX wgmma/wmma cooperative matrix instructions; TileGym benchmark suite
+- cudarc: safe Rust wrappers for CUDA Driver API, cuBLAS, cuDNN, NVRTC; CudaContext/CudaStream/CudaSlice<T> types; load_module/load_function PTX loading; LaunchConfig for kernel dispatch
+- vulkano: compile-time safe Vulkan via Rust type system; vulkano_shaders::shader! macro compiles GLSL at build time; Subbuffer<T>; task-graph RecordingCommandBuffer replacing AutoCommandBufferBuilder
+- rust-gpu: compiles Rust to SPIR-V via rustc_codegen_spirv; spirv-builder in build.rs targets spirv-unknown-vulkan1.2; spirv-std provides Image2d, Sampler, arch:: intrinsics; no dyn Trait, no recursion, no heap alloc
+- blade: minimal GPU library collapsing wgpu-hal indirection; single blade-graphics crate; compile-time backend selection via #[cfg]; hard resource limits (8 resources/bind group, 256 bytes plain data)
+- vello: compute-based 2D vector renderer using WGSL compute shaders on wgpu; four GPU stages: coarse rasterisation, path encoding (Euler-spiral flatten), fine rasterisation, composite; Scene CPU encoding model
+- burn: Rust ML framework with pluggable Backend trait; burn-wgpu (WGSL/naga), burn-cuda (cudarc/PTX), burn-ndarray (CPU); CubeCL GPU DSL compiles to WGSL or PTX; #[derive(Module)] for parameter serialisation
+- encase + bytemuck: GPU buffer layout crates; encase ShaderType derive enforces std140/std430 padding; bytemuck Pod/Zeroable enables zero-copy cast_slice for #[repr(C)] vertex data; naga_oil Composer adds #import/#define_import_path and virtual function override to WGSL
+- **Integrations**: Ch19 (Vulkan Architecture), Ch20 (SPIR-V), Ch22 (RADV), Ch23 (ANV), Ch25 (GPU Compute), Ch35 (Dawn/WebGPU), Ch40 (Bevy/wgpu), Ch57 (WebGPU in Chromium), Ch134 (Asahi/Apple GPU), Ch141 (Cooperative Matrices), Ch15 (ACO — AMD Shader Compiler), Ch177 (NVK — NVIDIA Vulkan)
+
+
+### Chapter 154: GPU-Driven Rendering: Indirect Draw, Meshlets, and GPU Culling *(Part VII — Application APIs and Middleware)*
+
+- CPU-GPU bottleneck: per-draw CPU overhead (vkCmdDrawIndexed, descriptor sets, push constants) replaced by one compute dispatch + vkCmdDrawIndexedIndirectCount per frame
+- Indirect draw commands: VkDrawIndexedIndirectCommand struct layout; VkDrawIndexedIndirect and VK_KHR_draw_indirect_count (Vulkan 1.2 core drawIndirectCount feature)
+- GPU frustum culling compute shader: ObjectData/DrawCommand structs; cull.comp with frustum_cull() sphere test, atomicAdd draw_count, VkMemoryBarrier2 synchronisation between cull and draw
+- Two-phase occlusion culling: depth pyramid (Hi-Z) used in cull.comp to test projected bounding sphere against conservative mip-level depth sample from previous frame
+- Meshlets: Meshlet struct with vertex_offset, triangle_offset, bounds_sphere, cone fields; meshoptimizer API (meshopt_buildMeshlets, meshopt_buildMeshletsBound) for cluster generation
+- Task and mesh shader pipeline (VK_EXT_mesh_shader): task shader per-meshlet culling with taskPayloadSharedEXT + EmitMeshTasksEXT; mesh shader primitive output via SetMeshOutputsEXT + gl_PrimitiveTriangleIndicesEXT; vkCmdDrawMeshTasksIndirectCountEXT
+- Persistent GPU scene representation: GPUScene buffer (ObjectData, MeshData, MaterialData arrays); streaming updates via staging buffer + vkCmdCopyBuffer; single shared vertex/index buffers avoiding binding changes
+- Bindless resources: VK_EXT_descriptor_indexing (runtimeDescriptorArray, nonUniformIndexing, partiallyBound, updateAfterBind); VK_KHR_buffer_device_address 64-bit GPU pointers; gl_DrawID for per-object data fetch
+- Hierarchical Z-Buffer (Hi-Z) pyramid: min-reduction compute shader (hiz_reduce.comp) with non-power-of-two edge handling; per-mip VkImageMemoryBarrier2; reversed-Z depth considerations
+- Visibility buffer / deferred texturing: Pass 1 writes uvec2(gl_DrawID, gl_PrimitiveID) to R32G32_UINT target; Pass 2 full-screen shading with gl_BaryCoordEXT (VK_KHR_fragment_shader_barycentric) for UV interpolation via BDA scene buffers
+- Cone culling in mesh shaders: meshopt_computeMeshletBounds() cone_apex/cone_axis/cone_cutoff; combined frustum + backface cone cull in task shader (task_cull.task.glsl)
+- Cluster LOD hierarchy (Nanite-style DAG): self_error/parent_error per cluster; meshopt_simplify() for iterative reduction; GPU LOD selection in task shader with projected_error() screen-space threshold test
+- VK_AMDX_shader_enqueue (Vulkan Workgraphs): VkExecutionGraphPipelineCreateInfoAMDX; nodePayloadAMDX/EnqueueNodePayloadsAMDX; two-node cull->draw graph replacing dispatch+barrier+indirect-draw; vkCmdDispatchGraphAMDX; RDNA3 + RADV only
+- Pipeline statistics queries: VK_QUERY_TYPE_PIPELINE_STATISTICS with clipping invocations/primitives and fragment invocations; VkQueryPool creation, vkCmdBeginQuery/EndQuery, vkGetQueryPoolResults; cull efficiency metric
+- **Integrations**: Ch19 (Vulkan Architecture), Ch20 (SPIR-V), Ch22 (RADV), Ch23 (ANV), Ch97 (UE5 Nanite), Ch127 (Mesh Shaders/VRS), Ch133 (Vulkan Compute Queues), Ch135 (Ray Tracing TLAS), Ch145 (GPU Profiling), Ch152 (Rust GPU), Ch157 (Descriptor Binding/Bindless/BDA)
+
+
+### Chapter 157: Vulkan Descriptor Binding in Depth *(Part VII — Application APIs and Middleware)*
+
+- Descriptor fundamentals: hardware records mapping UNIFORM_BUFFER, STORAGE_BUFFER, SAMPLED_IMAGE, STORAGE_IMAGE, SAMPLER, COMBINED_IMAGE_SAMPLER, ACCELERATION_STRUCTURE_KHR to GPU VAs; AMD 32-byte T# / Intel 32-byte surface state
+- VkDescriptorSetLayout and VkDescriptorPool: binding slot declaration, pool sizing, VK_ERROR_OUT_OF_POOL_MEMORY, FREE_DESCRIPTOR_SET_BIT vs vkResetDescriptorPool
+- Descriptor updates: vkUpdateDescriptorSets with VkWriteDescriptorSet; VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT for updating descriptors while GPU is in-use
+- Push descriptors (VK_KHR_push_descriptor): vkCmdPushDescriptorSetKHR embeds descriptors directly into command buffer, eliminating pool/set lifecycle
+- VK_EXT_descriptor_indexing (bindless): runtimeDescriptorArray, PARTIALLY_BOUND, VARIABLE_DESCRIPTOR_COUNT; nonuniformEXT maps to SPIR-V NonUniform decoration; ACO waterfall loop
+- VK_EXT_descriptor_buffer (GPU-side): vkGetDescriptorEXT writes raw bytes to application-managed VkBuffer; vkCmdBindDescriptorBuffersEXT + vkCmdSetDescriptorBufferOffsetsEXT
+- Push constants vs descriptor sets: push constants live in SGPRs (best for <=128 bytes); comparison table of all binding strategies by cost and use-case
+- RADV and ANV driver implementation: RADV 32-byte T# image / 16-byte V# buffer descriptors in BO; ANV surface state heap; NonUniform handled via ACO waterfall loop
+- VkDescriptorUpdateTemplate (Vulkan 1.1 core): pre-baked offset/stride mapping; vkUpdateDescriptorSetWithTemplate used by DXVK for all per-draw descriptor updates
+- VK_EXT_mutable_descriptor_type: VkMutableDescriptorTypeListEXT; one slot holds SRV/UAV/CBV; used by DXVK and VKD3D-Proton to emulate D3D12 volatile descriptor heaps
+- VK_EXT_inline_uniform_block (Vulkan 1.3 core): descriptorCount equals byte size; VkWriteDescriptorSetInlineUniformBlock embeds uniform data directly in pool BO
+- Frame-in-flight descriptor management: N pool+set+fence slots; vkResetDescriptorPool O(1) vs FREE_DESCRIPTOR_SET_BIT free-list overhead; timeline semaphore alternative
+- Null descriptors (VK_EXT_robustness2): nullDescriptor feature enables VK_NULL_HANDLE in slots with zero-return semantics; used by DXVK, VKD3D-Proton, and sparse texture streaming
+- NVK descriptor implementation: nvkmd_mem GPU-visible slab + util_vma_heap sub-allocator; nvk_descriptor_writer dirty-range sync; TLAS and AS descriptors stored as 64-bit GPU VA
+- **Integrations**: Ch19 (Vulkan Architecture), Ch20 (SPIR-V), Ch22 (RADV), Ch23 (ANV), Ch104 (DXVK/VKD3D-Proton), Ch16 (Mesa Vulkan Common), Ch154 (GPU-Driven Rendering), Ch135 (Vulkan Ray Tracing)
+
+
+### Chapter 165: Vulkan Video Encode *(Part VII — Application APIs and Middleware)*
+
+- VK_KHR_video_encode_queue architecture: encode vs decode differences — reversed input/output (VkImage src, VkBuffer dst), encoder-owned DPB/reference management, quality levels, VK_QUERY_TYPE_VIDEO_ENCODE_FEEDBACK_KHR, vkCmdEncodeVideoKHR
+- Encode session setup: VkVideoEncodeCapabilitiesKHR, encodeInputPictureGranularity alignment, VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR / VIDEO_ENCODE_SRC_BIT_KHR, VkVideoSessionCreateInfoKHR with encode profile
+- H.264 encode (VK_KHR_video_encode_h264, Dec 2023): StdVideoH264SequenceParameterSet/PictureParameterSet in VkVideoSessionParametersKHR; VkVideoEncodeH264PictureInfoKHR; IDR insertion via IdrPicFlag; B-frame and slice control
+- H.265/HEVC encode (VK_KHR_video_encode_h265, Dec 2023): VPS/SPS/PPS three-parameter-set model; CTU structure up to 64x64; tile encoding with maxTiles and VK_VIDEO_ENCODE_H265_CAPABILITY_MULTIPLE_TILES_PER_SLICE_BIT_KHR; half-bitrate vs H.264
+- AV1 encode (VK_KHR_video_encode_av1, Nov 2024, Vulkan 1.3.302): StdVideoAV1SequenceHeader; VkVideoEncodeAV1PredictionModeKHR (INTRA_ONLY, SINGLE_REFERENCE, UNIDIRECTIONAL/BIDIRECTIONAL_COMPOUND); referenceNameSlotIndices; OBU output; superblock sizes 64/128; per-tile quantisation
+- Rate control (VkVideoEncodeRateControlInfoKHR): four modes — DEFAULT, DISABLED/CQP, CBR (virtualBufferSizeInMs VBV), VBR; per-layer temporal scalability (SVC-T) with layerCount/pLayers; AMD VCN firmware PID controller; Intel VDENC BRC PAK statistics feedback
+- Mesa RADV encode: src/amd/vulkan/radv_video.c + ac_vcn_enc.c; AMDGPU_HW_IP_VCN_ENC ring; IB commands RENCODE_IB_OP_INITIALIZE/ENCODE; AV1 OBU construction in ac_vcn_enc_av1.c; H.264/H.265 default on VCN 2.x/3.x since Mesa 25.0; AV1 encode merged Mesa 25.2 (VCN 4.x)
+- Mesa ANV encode: src/intel/vulkan/anv_video.c; VDENC_PIPE_MODE_SELECT, MFX_AVC_IMG_STATE, VDENC_WALKER_STATE, MFX_PAK_OBJECT; temporarily disabled in Mesa 25.3.5 pending correctness fix
+- FFmpeg Vulkan encode (FFmpeg 7.1): h264_vulkan / hevc_vulkan / av1_vulkan encoders; AVVulkanDeviceContext / AVHWFramesContext; AV_PIX_FMT_VULKAN zero-copy decode-to-encode transcode; VK_QUERY_TYPE_VIDEO_ENCODE_FEEDBACK_KHR for byte-count readback
+- GStreamer Vulkan encode (gst-plugins-bad): vulkah264enc (1.24+), vulkanh265enc (1.26+), vulkav1enc (1.28+); GstVulkanEncoder base class managing session lifecycle, DPB pool, command buffer submission, encode feedback; zero-copy vulkah264dec→vulkah265enc transcode
+- Latency-optimised streaming encode: zero B-frames, CBR with small VBV (50–200 ms), application-triggered IDR on scene cut, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR→VIDEO_ENCODE_SRC layout transition for OBS Vulkan capture
+- ALVR/WiVRn wireless VR streaming: Vulkan WSI layer intercepts vkQueuePresentKHR; encode on same VkDevice as VR renderer; H.264/H.265, zero B-frames, CBR ~100–200 Mbit/s Wi-Fi 6, forced IDR every 1–2 s; 20–40 ms total encode-network-decode budget
+- **Integrations**: Ch50 (Vulkan Video Decode), Ch26 (VA-API Encode), Ch57 (FFmpeg), Ch58 (GStreamer Encode Pipeline), Ch79 (Remote Display and Streaming), Ch153 (OBS Studio GPU Pipeline)
+
+
+### Chapter 173: VK_EXT_shader_object: Pipeline-Free Shader Binding in Vulkan *(Part VII — Application APIs and Middleware)*
+
+- VkPipeline compilation problem: combinatorial explosion of pipeline variants causes per-frame stutter; prior mitigations (VkPipelineCache, deferred creation, VK_EXT_graphics_pipeline_library) only partially address root cause
+- VK_EXT_shader_object overview: introduced in Vulkan 1.3.246 (March 2023); VkShaderEXT opaque handle replaces VkPipeline; per-stage compilation collapses N*M*K variant space to N+M+K
+- VkShaderCreateInfoEXT and vkCreateShadersEXT: batch creation API; VK_SHADER_CODE_TYPE_SPIRV_EXT and VK_SHADER_CODE_TYPE_BINARY_EXT; VK_SHADER_CREATE_LINK_STAGE_BIT_EXT for linked shaders
+- vkCmdBindShadersEXT and binary round-trip: vkGetShaderBinaryDataEXT retrieves device-specific compiled binary; VK_INCOMPATIBLE_SHADER_BINARY_EXT success code for graceful fallback; binary keyed by pipelineCacheUUID + driver version
+- Dynamic state contract: when shaderObject feature enabled, all pipeline state becomes dynamic; VK_EXT_extended_dynamic_state{1,2,3} and VK_EXT_vertex_input_dynamic_state commands available implicitly; vkCmdSetCullMode, vkCmdSetPolygonModeEXT, vkCmdSetColorBlendEquationEXT etc.
+- VK_KHR_dynamic_rendering dependency: shader objects require vkCmdBeginRendering (not vkCmdBeginRenderPass); VkRenderingInfo replaces VkRenderPassBeginInfo/VkFramebuffer; VkRenderingAttachmentInfo specifies attachments inline
+- Linked vs. unlinked shaders: linked shaders (VK_SHADER_CREATE_LINK_STAGE_BIT_EXT) created together enabling cross-stage NIR I/O optimisation; unlinked shaders compile fully independently for maximum mix-and-match flexibility
+- RADV implementation: src/amd/vulkan/radv_shader_object.c; enabled by default in Mesa 24.1; ACO compiler backend compiles per-stage NIR; binary blob contains AMD GFX ISA (RDNA/GCN) + driver metadata
+- ANV (Intel) implementation: landed in Mesa 25.3-devel; SPIR-V -> NIR -> Intel EU/Xe ISA via src/intel/compiler/; last of three major Mesa drivers to reach parity
+- NVK (NVIDIA) implementation: February 2024; NAK Rust-written compiler (src/nouveau/compiler/) handles per-stage NIR->NVIDIA ISA; contributed common Mesa Vulkan runtime framework in src/vulkan/runtime/ benefiting all Mesa Vulkan drivers
+- VK_LAYER_KHRONOS_shader_object software fallback: translates shader object API calls into pipeline create/bind internally; requires VK_KHR_dynamic_rendering + VK_KHR_maintenance2; auto-disables when driver natively exposes extension
+- Performance guarantees: draw with shader objects <= 150% CPU time of static pipeline draws; <= 120% of maximally-dynamic pipeline draws; binary creation <= 150% of equivalent data copy cost; GPU-side delta-tracking moves from driver to application
+- Migration guide: VkPhysicalDeviceShaderObjectFeaturesEXT feature detection via pNext chain; VkPipelineLayout still required via pSetLayouts in VkShaderCreateInfoEXT; ray-tracing stages explicitly excluded; mixing pipelines and shader objects per-draw permitted
+- **Integrations**: Ch24 (Vulkan/EGL for Application Developers), Ch148 (Vulkan Synchronisation), Ch154 (GPU-Driven Rendering), Ch157 (Vulkan Descriptor Binding), Ch143 (RADV Internals/ACO compiler)
+
+
+### Part VIII — Gaming Layer
+
+### Chapter 78: Gamescope and the Steam Deck: A Complete Gaming Graphics Stack *(Part VIII — Gaming Layer)*
+
+- Van Gogh APU (AMD Custom GPU 0405): TSMC 7nm, 4x Zen 2 cores + 8 RDNA 2 CUs, DCN 3.0 display engine, 16 GB LPDDR5 unified memory; zero-copy DMA-BUF framebuffer path via TTM
+- SteamOS 3 architecture: immutable Arch Linux root, A/B OTA partitions, Desktop Mode (KDE Plasma/KWin on Wayland) vs Game Mode (Gamescope as session compositor with Steam Big Picture)
+- Gamescope session architecture: wlserver_init(), embedded XWayland, custom Wayland extensions (gamescope_action_binding, wp_linux_drm_syncobj_v1, gamescope_input_method), DRM/SDL/Wayland/headless backend abstraction
+- steamcompmgr and libliftoff plane assignment: per-vblank decision to direct-scanout via drmModeAtomicCommit() or Vulkan compute composite; DRM_MODE_ATOMIC_TEST_ONLY hardware plane tests
+- DCN 3.0 hardware planes: DPP (Display Pipe and Plane) per-plane CSC/tone-mapping, MPC (Multiple Pipe/Plane Combined) alpha blending, VSTARTUP/VUPDATE/VREADY atomic sync signals
+- FSR upscaling pipeline: FSR 1 two-pass EASU/RCAS spatial compute shaders, FSR 2 temporal with motion vectors, NIS (NVIDIA Image Scaling) spatial fallback, integer scaling for pixel art
+- VRR and frame pacing: VRR_ENABLED CRTC property, CVBlankTimer with timerfd_settime() rolling draw-time prediction, 40 fps/40 Hz battery sweet spot, DRM_MODE_PAGE_FLIP_ASYNC immediate flips
+- HDR pipeline: VK_COLOR_SPACE_HDR10_ST2084_EXT Vulkan swapchain, HDR_OUTPUT_METADATA KMS property, inverse tone mapping (ITM) for SDR content, frog_color_management_v1 Wayland protocol for HDR games via Proton
+- Mura compensation (SteamOS 3.6): per-pixel 2D LUT in VkImage applied as Vulkan compute pass after upscaling; factory-calibrated per-panel luminance non-uniformity correction for OLED
+- MangoHUD Vulkan implicit layer: intercepts vkQueuePresentKHR and vkGetDeviceProcAddr; AMDGPU sysfs metrics (gpu_busy_percent, mem_info_vram_used, hwmon temps, AMD RAPL power); LD_PRELOAD for OpenGL via glXSwapBuffers/eglSwapBuffers
+- mangoapp architecture: separate Wayland client rendering overlay at native panel resolution as wl_surface; metrics delivered from MangoHUD in-process via shared memory/socket to avoid upscaling of overlay text
+- Input-to-photon latency pipeline: USB/BT HID -> evdev/libinput -> SDL2 -> XWayland -> Gamescope -> KMS flip -> OLED; SCHED_FIFO real-time scheduling via CAP_SYS_NICE; Wayland latency marker extension for flip timing
+- Docking and external display: DisplayPort Alt Mode over USB-C, drmModeGetResources() hotplug re-enumeration, EDID-driven mode negotiation, HDR_OUTPUT_METADATA on external HDR monitors, PipeWire for HDMI/DP audio switching
+- **Integrations**: Ch2 (KMS Display Pipeline), Ch3 (Advanced Display Features: VRR/HDR), Ch5 (AMDGPU driver: TTM, sysfs power metrics), Ch21 (wlroots compositor patterns), Ch22 (Production Compositors), Ch24 (Vulkan Swapchains and WSI), Ch25 (Vulkan Compute Shaders), Ch28 (Windows Compatibility: Proton/DXVK), Ch29 (Upscaling/Effects/Overlays), Ch30 (Debugging and RenderDoc), Ch72 (AMD FidelityFX/FSR), Ch74 (HDR on Linux), Ch75 (Explicit GPU Synchronisation)
+
+
+### Chapter 167: NTSYNC: NT Synchronization Primitives in the Linux Kernel *(Part VIII — Gaming Layer)*
+
+- NT synchronization problem: NtWaitForMultipleObjects wait-all atomicity — vectored, multi-typed, state-mutating atomic wait with no POSIX equivalent; wineserver RPC bottleneck for multi-threaded D3D12 games
+- esync (eventfd-based sync): EFD_SEMAPHORE eventfd per object, epoll for multi-wait, WINEESYNC=1; fd exhaustion requiring DefaultLimitNOFILE=1048576; no true atomic wait-all semantics
+- fsync (futex-based sync): shared-memory futexes, out-of-tree FUTEX_WAIT_MULTIPLE; futex_waitv() merged Linux 5.16 enabling wait-any without custom kernel; still no atomic wait-all
+- Out-of-tree patchwork ecosystem: wine-staging, Frogging-Family wine-tkg-git, GE-Proton, winesync DKMS module (kernels 6.6–6.13 vs upstream ntsync API)
+- ntsync kernel module (Linux 6.14): /dev/ntsync misc char device; per-open-fd instance isolation; ntsync_device with wait_all_lock, ntsync_obj with per-object spinlock and all_hint atomic
+- UAPI object types: NTSYNC_TYPE_SEM (count/max), NTSYNC_TYPE_MUTEX (owner TID/recursion count, EOWNERDEAD abandoned detection), NTSYNC_TYPE_EVENT (signaled/manual flags for auto-reset vs manual-reset)
+- UAPI header include/uapi/linux/ntsync.h: ntsync_sem_args, ntsync_mutex_args, ntsync_event_args, ntsync_wait_args; ioctls NTSYNC_IOC_CREATE_SEM/MUTEX/EVENT, NTSYNC_IOC_WAIT_ANY/ALL, NTSYNC_IOC_PULSE_EVENT, NTSYNC_IOC_KILL_OWNER; NTSYNC_MAX_WAIT_COUNT=64
+- NTSYNC_IOC_WAIT_ALL atomicity: device-wide wait_all_lock mutex; try_wake_all() acquires all per-object spinlocks under device mutex; atomic_try_cmpxchg(); all_hint counter optimizes wait-any fast path (per-object spinlock only when all_hint==0)
+- NtPulseEvent correctness: walks waiter list under per-object spinlock at signal time, wakes only already-sleeping threads, resets state atomically — impossible in esync/fsync userspace
+- Wine integration: inproc_sync struct with per-object fd; dlls/ntdll/unix/sync.c linux_wait_objs(); Wine 11.0 (Jan 2026) auto-detects /dev/ntsync; server-bound objects handed fd via wineserver request; WINEESYNC/WINEFSYNC env vars for legacy paths
+- Proton integration: GE-Proton 10-9 first shipped ntsync, GE-Proton 10-10 enables by default; PROTON_USE_NTSYNC=1 launch option; Steam Deck SteamOS kernel lag behind mainline; ls /dev/ntsync to verify availability
+- Performance benchmarks (ntsync v6 cover letter): Dirt 3 +678% FPS vs vanilla Wine wineserver; Resident Evil 2 +196%; fsync-to-ntsync gains typically 10–40% FPS with greater frame-time consistency; eliminates stutter from wait-all retry-loop races
+- CONFIG_NTSYNC Kconfig (drivers/misc): tristate module or built-in; udev rule MODE=0666 for non-root access; distro support: Fedora 42, Arch linux/linux-zen, Ubuntu 25.04, Debian Forky/Sid; kernel selftests tools/testing/selftests/drivers/ntsync/
+- Security model: cross-instance fd yields EINVAL; POSIX fd lifetime/refcount cleanup; Flatpak sandbox needs explicit /dev/ntsync device access; trust model analogous to memfd_create, userfaultfd, eventfd — software-only state, no hardware/DMA access
+- **Integrations**: Ch28 (Wine and Proton: wineserver architecture, NT emulation, DXVK, Proton stack), Ch104 (DXVK and VKD3D-Proton: D3D12 fence/ID3D12Fence to Vulkan timeline semaphore translation, command queue CPU-side NT event signaling), Ch171 (Linux Anti-Cheat: fd enumeration of /dev/ntsync fds, anti-cheat compatibility with ntsync-dispatched synchronization)
+
+
+### Chapter 171: Linux Gaming Anti-Cheat — EasyAntiCheat, BattlEye, and the Ring-0 Problem *(Part VIII — Gaming Layer)*
+
+- Anti-cheat ecosystem overview: EAC (Epic/EOS), BattlEye, Riot Vanguard, XIGNCODE3, nProtect GameGuard, and VAC — their Linux support status as of mid-2026
+- Windows kernel-mode driver model: KMDF/WDFDriver at ring 0, ObRegisterCallbacks for handle stripping, PsSetLoadImageNotifyRoutine, PatchGuard, EV certificate signing, TPM 2.0 measured-boot attestation
+- Why ring-0 anti-cheat cannot work on Wine: no ntoskrnl.exe, no ring-0 kernel object manager, Linux ptrace/proc/PID/mem openness vs. Windows PPL protected-process model, absence of CONFIG_MODULE_SIG_FORCE enforcement
+- EasyAntiCheat Linux architecture: native ELF easyanticheat_x64.so from EOS SDK, two generations (Kamu v1 standalone vs. EOS v2), EOS Developer Portal opt-in, depot deployment steps
+- EAC compatibility case studies: Apex Legends EOS migration breaking Linux (November 2024), EA 30% cheat reduction claim, Fortnite active block, Halo/Dead by Daylight working
+- BattlEye Linux support: native BattlEye.so, PROTON_BATTLEYE_RUNTIME env var, email-based server-side opt-in with no SDK/depot changes required; GTA V case (BattlEye added September 2024, Linux not enabled)
+- Steam Linux Runtime containers: pressure-vessel with scout/soldier/sniper rootfs generations; Proton EasyAntiCheat Runtime and Proton BattlEye Runtime as separate Steam tools (App IDs 1826330 and 1161040); PROTON_EAC_RUNTIME / PROTON_BATTLEYE_RUNTIME env vars
+- Proton version and anti-cheat compatibility: EAC bootstrapper v1.6.0 regression under Proton 8.x (Proton issue #6740); ntsync (Linux 6.14) anti-cheat testing
+- Riot Vanguard: vgk.sys kernel driver, boot-state attestation via UEFI Secure Boot + TPM, kernel module verification failure on Linux; XIGNCODE3 and nProtect GameGuard as rootkit-style ring-0 systems incompatible with Wine
+- VAC as user-space counter-example: in-process memory scanning + server-side VACnet ML behavioural analysis; fully Linux-compatible without modification
+- Remaining user-space gap: process_vm_readv/proc/PID/mem interception impossible without ObRegisterCallbacks; PR_SET_DUMPABLE as limited mitigation; /proc/modules hideable by kernel-level cheats
+- Linux IMA and hypothetical kernel anti-cheat: IMA TPM PCR extension, CONFIG_MODULE_SIG_FORCE, UEFI Secure Boot chain — theoretically viable but practically incompatible with consumer Linux and DKMS GPU drivers
+- Server-side mitigation as the viable Linux defence: movement/damage validation, VACnet-style ML behavioural telemetry — platform-agnostic and the recommended architecture for new Linux-friendly titles
+- Developer guidance: EOS portal Linux toggle, libeasyanticheat.so rename/deploy procedure, PROTON_LOG=1 / WINEDEBUG=+loaddll debugging, EAC log paths in Wine prefix, Steam Deck Verified/Playable criteria
+- **Integrations**: Ch28 (Wine/Proton compatibility layer), Ch78 (Gamescope/Steam Deck compositor), Ch80 (GPU security and Linux process model), Ch104 (DXVK and VKD3D-Proton), Ch167 (NTSYNC/ntsync kernel driver)
+
+
+### Part IX — Tooling & Contributing
+
+### Chapter 79: Remote Display, Screen Casting, and GPU-Accelerated Game Streaming *(Part IX — Tooling and Contributing)*
+
+- Remote graphics landscape: three categories — screen casting (PipeWire + DMA-BUF), remote desktop (RDP/VNC, VA-API encode), and game streaming (Sunshine/Moonlight, sub-20 ms latency, RTSP+RTP)
+- PipeWire pw_stream API: struct spa_video_info_raw, SPA_PARAM_EnumFormat/Buffers negotiation, SPA_DATA_DmaBuf PROCESS callback, pw_stream_connect with PW_STREAM_FLAG_MAP_BUFFERS
+- Zero-copy DMA-BUF pipeline: GBM alloc → DMA-BUF fd → PipeWire shared-memory metadata → EGL_LINUX_DMA_BUF_EXT / VkImportMemoryFdInfoKHR / vaCreateSurfaces VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2
+- xdg-desktop-portal ScreenCast: org.freedesktop.portal.ScreenCast D-Bus interface (CreateSession, SelectSources, Start, OpenPipeWireRemote), portal backends (xdg-desktop-portal-gnome/wlr/kde), pw_context_connect_fd()
+- FreeRDP and GNOME Remote Desktop: libfreerdp-server3, RDPGFX AVC444/AVC420, VA-API H.264 encode, libei for Wayland input emulation replacing XTest, Mutter Remote Desktop D-Bus API
+- OBS Studio PipeWire plugin: plugins/linux-pipewire/ DMA-BUF EGL import, VA-API/NVENC/AMF encode, OBS 31 explicit sync via SPA_META_SyncTimeline + drm_syncobj_wait() eliminating glFinish() stalls
+- Sunshine game streaming server: capture backend priority (KMS DRM_IOCTL_MODE_GETFB2 → wlr-screencopy-unstable-v1 → portal → NvFBC → XShm), encode via VA-API VAEntrypointEncSliceLP, CUDA+NVENC, or Vulkan Video (h264/hevc/av1_vulkan)
+- Sunshine session handshake: four phases — AES-GCM pairing, RTSP/JSON serverinfo capability negotiation, RTSP/SDP stream setup, UDP streaming (video 47998, control 47999, audio 48000) with Reference Frame Invalidation (RFI)
+- NvFBC (NVIDIA Framebuffer Capture): NvFBCCreateInstance() function-pointer table, NVFBC_CAPTURE_TO_SYS (~1.8 ms) vs NVFBC_CAPTURE_SHARED_CUDA (~50 µs CUdeviceptr), requires NVIDIA driver ≥ 515.57, no Wayland support
+- Moonlight client: FFmpegVideoDecoder with avcodec_send_packet/avcodec_receive_frame, Pacer subsystem, VA-API (Intel/AMD) / NVDEC (NVIDIA Wayland) / VDPAU (NVIDIA X11) renderer hierarchy, RTCP-driven adaptive bitrate
+- Virtual displays and headless GPU: VKMS (CONFIG_DRM_VKMS, kernel v4.19, Configfs), nvidia-drm modeset=1 + EDID injection (drm.edid_firmware), virtio-gpu paravirtualized KMS, VFIO GPU passthrough, Sway/Cage headless Wayland
+- Latency analysis: full frame chain GPU render → KMS capture (1–3 ms) → RGB→NV12 color convert (0.1–0.5 ms) → NVENC/VA-API encode (1–3 ms) → UDP → decode (1–3 ms) → present; 8–25 ms GPU-accelerated vs 25–60 ms software; measurement via pw-top, perf+eBPF on drm_vblank_event/vaBeginPicture/vaEndPicture
+- **Integrations**: Ch2 (KMS Display Pipeline), Ch20 (Wayland Protocol Fundamentals), Ch22 (Production Compositors), Ch23 (Legacy and Sandboxed App Support), Ch26 (Hardware Video Acceleration VA-API/VDPAU), Ch38 (PipeWire), Ch55 (GPU Containers and Cloud), Ch57 (FFmpeg), Ch58 (GStreamer), Ch60b (Streaming Protocols), Ch66 (CUDA), Ch74 (HDR on Linux)
+
+
+### Chapter 80: GPU Security: Isolation, Content Protection, and Confidential Computing *(Part IX — Tooling and Contributing)*
+
+- GPU attack surface overview: process isolation failures, DMA attacks, content protection bypass, firmware supply-chain trust, side-channel attacks, confidential computing, and driver hardening
+- GPU process isolation via DRM_GPUVM framework: per-process GPUVA spaces, drm_gem_object gpuva list, context teardown sequence, and VRAM scrubbing on process exit
+- AMDGPU cleaner shader (CDNA2/GFX9.4.2+, GFX11.5): clears LDS, VGPRs, SGPRs after each job; sysfs enforce_isolation and run_cleaner_shader interfaces
+- IOMMU and DMA attack mitigation: Intel VT-d, AMD-Vi, ARM SMMU; iommu_paging_domain_alloc_flags(), IOMMU groups, ACS (Access Control Services), VFIO for GPU passthrough
+- HDCP 2.2 content protection: AKE/LC/SKE three-phase protocol; HDCP_STREAM_TYPE0/TYPE1; drm_connector_attach_content_protection_property(); DRM_MODE_CONTENT_PROTECTION_DESIRED/ENABLED; Intel GSC/MEI implementation; CVE-2024-53050
+- Secure display path: Intel PXP (Protected Xe Path) on Gen12+ for encrypted GPU-to-panel pipeline; Wayland zwp_linux_content_type_manager_v1 / zwp_content_type_v1 protocol extension
+- GPU firmware signing and secure boot: NVIDIA nvkm_firmware_get() with PKC signatures, ACR/Falcon HS/LS/WPR model; Intel GuC/HuC via intel_uc_fw_fetch() with CSS headers; AMD PSP (ARMv7 Cortex-A5) with ARK->ASK->CEK signing chain; CONFIG_MODULE_SIG_FORCE and MOK enrollment
+- AMD SEV-SNP and GPU confidential computing: encrypted VM DMA buffers (C=0 pages), HSMP and SMI Transfer interfaces, ongoing AMD GPU trust-domain extension work
+- NVIDIA H100 confidential computing: CC-Off/CC-On/CC-DevTools modes; CPR (Compute Protected Region) in HBM2e; AES-GCM encrypted bounce buffers; SPDM attestation with ECC-384 device key; NRAS and nvtrust open-source tooling
+- GPU side-channel attacks: cache Prime+Probe/Flush+Reload timing attacks; GPUHammer Rowhammer on GDDR6 (USENIX Security 2025, NVIDIA A6000, AI model degradation); power side channels via nvmlDeviceGetPowerUsage() / rsmi_dev_power_ave_get(); mitigations: perf_event_paranoid, amdgpu_perfcnt_ioctl, OA counters, ECC on A100/H100/MI300
+- DRM ioctl permission model: DRM_AUTH, DRM_MASTER, DRM_ROOT_ONLY, DRM_RENDER_ALLOW flags; render nodes (/dev/dri/renderD*) vs primary nodes (/dev/dri/card*); drm_ioctl() dispatch in drm_ioctl.c; syzkaller fuzzing; amdgpu CVE history in VCN and KFD paths
+- eBPF for GPU access control: BPF LSM lsm/file_open hook (kernel 5.7+) for cgroup-based render-node access control; seccomp-BPF to allowlist DRM ioctl numbers and block modesetting range (0xA0+); DMA-BUF export tracing via dma_buf:dma_buf_fd tracepoint; kprobe-based crypto-jacking detection on amdgpu_cs_ioctl; audit trail via kprobes on drm_mode_setcrtc and drm_mode_addfb2
+- **Integrations**: Ch1 (DRM Architecture), Ch4 (GPU Memory Management), Ch5 (x86 GPU Drivers / i915/Xe), Ch9 (GSP-RM Firmware), Ch22 (Production Compositors), Ch25 (GPU Compute), Ch30 (Debugging and Profiling), Ch32 (Contributing), Ch55 (GPU Containers and Cloud), Ch66 (CUDA), Ch71 (Intel Xe), Ch72 (AMD Radeon Tools)
+
+
+### Chapter 153: OBS Studio GPU Pipeline on Linux *(Part IX — Tooling and Contributing)*
+
+- libobs framework: modular C framework abstracting Sources, Filters, Transitions, Outputs, Encoders, Services; OpenGL (EGL/GLX) and experimental Vulkan rendering backends
+- PipeWire DMA-BUF screen capture: xdg-desktop-portal ScreenCast → PipeWire stream → pw_stream_dequeue_buffer with SPA_DATA_DmaBuf; zero-copy path via gs_texture_create_from_dmabuf
+- EGL DMA-BUF import: eglCreateImageKHR(EGL_LINUX_DMA_BUF_EXT) + glEGLImageTargetTexture2DOES for zero-copy GPU texture from PipeWire frame
+- obs-vkcapture Vulkan game capture: VK_LAYER_OBS_vkcapture injects into game, intercepts vkQueuePresentKHR, exports swapchain image as DMA-BUF to OBS bypassing compositor
+- OBS scene graph composition: GPU textures composited via OpenGL FBO with glBlendFunc; HLSL-like .effect shaders compiled to GLSL via gs_effect_create and Mesa GLSL compiler
+- Hardware video encoding comparison: VA-API (Intel/AMD, DRM Prime DMA-BUF zero-copy), NVENC (NVIDIA, CUDA GL interop via NvEncRegisterResource/cuGraphicsGLRegisterImage), AMF (AMD, Vulkan interop via AMFSurface::InteropInitFrom(VkImage))
+- Multi-GPU routing: DRI_PRIME=1, MESA_VK_DEVICE_SELECT for Mesa; __NV_PRIME_RENDER_OFFLOAD for NVIDIA; cross-GPU DMA-BUF via EGL_EXT_image_dma_buf_import with PCIe transfer; P2P on RDNA3/Ampere+
+- v4l2loopback virtual camera: OBS OpenGL FBO → glReadPixels (CPU) → YUV convert → /dev/video10; V4L2 webcam source via VIDIOC_DQBUF with MJPEG/H.264 VA-API decode
+- Browser source via CEF: Chromium Embedded Framework renders offscreen with Dawn/WebGPU or ANGLE/WebGL, shares framebuffer with OBS via shared memory or DMA-BUF
+- libobs plugin API: obs_source_info with video_render callback; obs_encoder_info for custom hardware encoders; obs_enter_graphics/obs_leave_graphics for shared OpenGL context access
+- Performance diagnostics: OBS Stats dock (render lag, frame time, skipped/dropped frames); intel_gpu_top/radeontop/nvidia-smi dmon; LIBVA_MESSAGING_LEVEL for VA-API debug
+- Roadmap: Vulkan Video encode (VK_KHR_video_encode_queue) in RADV/ANV to replace VA-API; explicit sync via linux-drm-syncobj-v1 (landed OBS 31.1); AV1 NVENC via nvEncodeAPI for Ada Lovelace+
+- **Integrations**: Ch38 (PipeWire), Ch123 (Screen Capture / xdg-desktop-portal), Ch26 (Hardware Video / VA-API), Ch142 (EGL and DMA-BUF), Ch49 (Multi-GPU PRIME), Ch55 (GPU Containers), Ch80 (GPU Security), Ch135 (Vulkan Ray Tracing / obs-vkcapture)
+
+
+### Chapter 180: GPU Reverse Engineering: Tools, Methodology, and Case Studies *(Part IX — Tooling and Contributing)*
+
+- RE-derived driver landscape: Nouveau (NVIDIA), Panfrost/Panthor (ARM Mali), etnaviv (Vivante GC), freedreno/turnip (Adreno), agx/Asahi (Apple AGX) — all built via command-stream and firmware tracing
+- GPU RE layers: MMIO register space (PCI BAR0), command-stream format (pushbuffer/IB/command list), shader ISA (proprietary VLIW/RISC), and firmware protocol (ARM Cortex-M or Falcon shared-memory mailboxes)
+- envytools nva tools: nvalist, nvapeek, nvapoke, nvafuzz, nvawatch, nvascan, nvagetbios, nvafakebios, nvadownload/nvaupload, nvafucstart — direct BAR0 MMIO access via nva.ko character device
+- rnndb rules-ng-ng XML register database: headergen2 generates C headers consumed by Nouveau (nvkm_rd32/nvkm_wr32); demmt decodes valgrind-mmt traces against rnndb; demmio decodes mmiotrace output
+- envydis/envyas ISA targets: nv50, gf100, gk110, gm107, falcon — multi-target disassembler/assembler for NVIDIA shader ISAs and Falcon microcontroller firmware
+- valgrind-mmt + demmt pipeline: mmt tool intercepts mmap() pushbuffer writes and ioctl() calls to /dev/nvidiaX; demmt decodes method-value pairs, correlates DMA addresses, calls envydis inline
+- MMIO probing methodology: /sys/bus/pci/devices/BDF/resource for BAR0 base; baseline nvapeek snapshot; trigger known GPU op; nvapoke candidate values; cross-reference VBIOS via nvbios; commit rnndb XML entry
+- Command-stream capture per driver: Nouveau mmiotrace+valgrind-mmt; freedreno libwrap.so LD_PRELOAD + cffdump + .rd binary format + /sys/kernel/debug/dri/0/rd; etnaviv viv_interpose.so + libvivhook feature-bit overrides + dump_cmdstream.py; Mesa u_trace generic GPU timestamp tracing
+- ISA RE: nvdisasm (CUDA SDK, SM50–SM100); llvm-objdump AMDGPU target; spirv-dis (SPIRV-Tools); intel_aubdump GEM execbuffer2 → AUB files; freedreno qrisc-disasm for SQE firmware
+- Firmware RE: Ghidra for ARM Cortex-M (Mali CSF, Adreno GMU, NVIDIA PMU) and Falcon; radiff2/bindiff differential firmware analysis between consecutive versions
+- Case studies: Nouveau/envytools G80 six-phase pipeline; Panfrost panwrap/panloader Mali job descriptor and Bifrost ISA; Asahi m1n1 hypervisor tracing of Apple AGX ASC with ~1000-field init structure; etnaviv viv_interpose + libvivhook + rnndb-format XML for Vivante GC
+- Legal framework: DMCA 1201(f) interoperability exception; EU Directive 2009/24/EC Art. 6; clean-room methodology; GPL compatibility of RE-derived drivers; Asahi clean-specification procedural separation model
+- **Integrations**: Ch7 (NVIDIA RE history and Nouveau), Ch8 (Nouveau kernel driver, nvhw/ headers from rnndb), Ch73 (Asahi Linux and Apple Silicon AGX), Ch90 (Panfrost, Panthor, and Lima), Ch160 (freedreno and turnip: Adreno on Linux)
+
+
+### Part X — The Browser Rendering Stack
+
+### Chapter 168: WebNN — The Web Neural Network API *(Part X — The Browser Rendering Stack)*
+
+- WebNN API surface: navigator.ml, MLContextOptions (accelerated, powerPreference), createContext() overloads; deviceType removed from web-facing API in favour of accelerated/powerPreference pair
+- MLGraphBuilder DAG model: MLOperand composition, builder.build() async compilation, immutable MLGraph; 95 operators across matmul, conv2d, relu, softmax, layerNormalization, gru, lstm, and more
+- MLTensor buffer management: context.createTensor(), writeTensor(), readTensor(), destroy(); opaque device-side allocations replacing per-inference ArrayBuffer copies
+- dispatch() execution timeline: replaces compute(); fire-and-forget enqueuing on context GPU timeline; pipelined multi-dispatch; MLContext.lost Promise for context-loss events
+- WebGPU interoperability: createContext(GPUDevice) binding; exportableToGPU MLTensor; exportToGPU() zero-copy GPUBuffer sharing; gpu::SharedImage mailbox path in Chromium
+- Chromium process layout: Blink third_party/blink/renderer/modules/ml/ (JS bindings), services/webnn/ (GPU-process backend), services/webnn/public/mojom/ (15 Mojo interface definitions)
+- Chromium backend selection: webnn_context_provider_impl.cc; Windows→ORT/DirectML, macOS→CoreML, Android→NNAPI, Linux/ChromeOS→TFLite/XNNPACK CPU; kFallbackToInProcess sandboxed renderer path
+- TFLite/XNNPACK Linux CPU backend: graph_builder_tflite.cc (quantised op fusion, FlatBuffer compilation), graph_impl_tflite.cc (Interpreter.Invoke), XNNPACK AVX2/AVX-512 SIMD kernels; no GPU delegate wired on Linux desktop
+- Mojo IPC path: renderer→WebNNContextProviderImpl→WebNNContextImpl→WebNNGraphBuilderImpl→TFLite FlatBuffer→WebNNGraphImpl→XNNPACK inference; Mojo Data Pipe vs BigBuffer tensor transfer
+- Linux GPU inference gap: accelerated:true maps to XNNPACK CPU regardless of powerPreference; no DirectML/CoreML/TensorRT-RTX equivalent; NVIDIA WebNN path Windows-only via TensorRT-RTX + Windows ML KB5096142
+- Firefox WebNN: no production Gecko implementation; rustnn Rust project (3-layer: graph→ONNX/CoreML converters→executors) covering all 95 operators; content-process security gap not yet resolved; wgpu/Vulkan path envisioned
+- NPU backend and Linux: Chromium internal mojom::Device::kNpu maps low-power preference; Intel intel_vpu + OpenVINO, AMD amdxdna + Peano LLVM, Qualcomm SNPE all lack services/webnn/ Linux backend; all fall back to CPU
+- WebNN vs WebGPU for ML: operator fusion and SIMD CPU advantage for CNN/transformers; WebGPU preferred for large LLMs (FlashAttention-style, KV-cache); combined pipeline pattern: WebGPU preprocess → WebNN inference → WebGPU postprocess
+- Developer workflow: navigator.ml feature detection, context.opSupportLimits() for operator/dtype capabilities, ONNX Runtime Web WebNN EP (ort-wasm-simd-threaded.jsep.wasm), Transformers.js v3+ device:'webnn', @webnn/polyfill, chrome://flags #web-machine-learning-neural-network, origin trial Chrome 146
+- **Integrations**: Ch33 (Chromium GPU Architecture — WebNN runs in same GPU process as WebGPU/command-buffer/Viz, shares Mojo sandbox model), Ch35 (Dawn and WebGPU — createContext(GPUDevice) shares Dawn VkDevice; no Dawn WebNN backend), Ch36 (Chromium Compositor and Viz — gpu::SharedImage mailbox backing for interop MLTensor), Ch52 (Firefox and WebRender — wgpu GPUDevice interop path for future Firefox WebNN), Ch88 (NPU and AI Accelerator Integration — intel_vpu/amdxdna kernel drivers and OpenVINO/XDNA user-space runtimes a future Linux WebNN NPU backend would use), Ch98 (WebAssembly and WebGPU as Deployment Target — WASM+WebGPU vs WebNN execution provider comparison in ONNX Runtime Web)
+
+
+### Chapter 193: Tauri — Rust-Native Desktop Applications via WebKitGTK *(Part X — Browser Rendering Stack)*
+
+- Tauri vs. Electron architecture: system WebView (WebKitGTK, ~0 MB bundled engine) vs. bundled Chromium (~120 MB); GTK3 window management vs. Chrome GPU process; OpenGL ES vs. ANGLE/Vulkan rendering path
+- Process model: Application Process (GTK3 + Tao EventLoop + Wry) → WebKit Web Content Process (WebCore + JavaScriptCore + GL compositor) → UI-side compositor (wl_surface::commit); DMA-BUF GPU buffer sharing between processes
+- Tao crate: winit fork with GTK3 Linux backend; ApplicationWindow + gtk_init(); required deps: libgtk-3-dev, libwebkit2gtk-4.1-dev; GTK3 (not GTK4) — no GSK scene graph
+- Wry crate: cross-platform WebView abstraction; WebViewBuilder, WebViewBuilderExtUnix, WebContext; custom URI scheme via webkit_web_context_register_uri_scheme(); tauri://localhost asset serving without a network socket
+- Backend substitution: tauri-runtime-wry (WebKitGTK, production) vs. tauri-runtime-verso (Verso/Servo, experimental, NLnet-funded); compile-time Cargo.toml choice; WPE embedded backend planned; CEF discussed; no runtime engine swap
+- WebKitGTK rendering: WebKitWebView GObject widget; WebKitSettings hardware acceleration policy; webkit_web_view_get_user_content_manager(); EGL context on DRM render node (/dev/dri/renderD128); OpenGL ES 3.0 via Mesa GLES state tracker
+- Linux rendering path: WebCore layout → WebKit threaded compositor → OpenGL ES 3.0 → Mesa NIR → DRM GEM → DMA-BUF fd → zwp_linux_dmabuf_v1 → wl_surface::commit → KMS atomic commit
+- IPC system: #[tauri::command] proc macro + serde_json; window.webkit.messageHandlers.__TAURI_IPC__.postMessage(); WebKit Unix socket IPC crossing; evaluate_javascript() response; Channel<T> API for streaming via custom URI scheme
+- Security: Tauri 2.0 capabilities system (JSON capability files, default-deny, compile-time permission table); CSP with SHA-256 hash injection at build time via tauri-build; Isolation Pattern (sandboxed iframe + AES-GCM key) for untrusted third-party content
+- Plugin system: tauri-plugin-fs (path glob scopes), tauri-plugin-dialog (GtkFileChooserDialog), tauri-plugin-notification (zbus → org.freedesktop.Notifications D-Bus), tauri-plugin-updater (AppImage/deb + ed25519 signature verification)
+- Distribution: AppImage (FUSE-mountable, 70-100 MB with bundled WebKitGTK); .deb (2-10 MB binary + system libwebkit2gtk-4.1-37 dependency); .rpm (via Rust rpm crate, webkit2gtk4.1 dep on Fedora/RHEL)
+- Platform strategy: WebKitGTK required because it is the only production system WebView on Linux; GTK required because WebKitWebView is a GtkWidget subclass; WPE escape hatch for embedded/kiosk (GBM/DMA-BUF, no GTK); Servo/Verso not yet production-ready
+- Roadmap: GTK4/webkitgtk-6.0 migration (GSK Vulkan renderer for window chrome, tracking issues #12561/#12563); WebKit WebGPU via wgpu (Vulkan path for web content); Servo WebRender→wgpu migration for tauri-runtime-verso Vulkan compositor; native DMA-BUF wl_subsurface zero-copy path
+- **Integrations**: Ch4 (GBM and DMA-BUF), Ch20 (Wayland Protocol Fundamentals), Ch34 (ANGLE and WebGL), Ch39 (GTK4 and GNOME Application Stack), Ch45 (Terminal Integration with the Compositor Stack), Ch52 (Firefox and WebRender), Ch192 (Ratatui TUI Framework)
+
+
+### Part XI — Engines & Creative Tools
+
+### Chapter 190: VTK — Scientific Visualization on the Linux Graphics Stack *(Part XI — Engine and Creative Tools)*
+
+- VTK pipeline architecture: demand-driven vtkAlgorithm/vtkDataObject model; vtkRenderWindow + vtkRenderer + vtkActor scene graph; vtkPolyDataMapper for GPU upload; Python >> operator (VTK 9.4+)
+- VTK data model: vtkPolyData, vtkUnstructuredGrid, vtkImageData, vtkHyperTreeGrid, vtkMultiBlockDataSet; vtkCellArray with 64-bit offsets; vtkImplicitArray zero-copy virtual arrays; vtkCellGrid for discontinuous Galerkin FEM
+- Rendering backends on Linux: vtkXOpenGLRenderWindow (GLX), vtkEGLRenderWindow (GPU headless via EGL_NO_SURFACE), vtkOSOpenGLRenderWindow (libOSMesa software); runtime glad symbol loading (VTK 9.4+); Wayland via VTK_USE_WAYLAND_OPENGL+EGL
+- GPU volume rendering: vtkGPUVolumeRayCastMapper ray casting via GL_TEXTURE_3D, entry/exit FBOs, vtkVolumeShaderComposer dynamic GLSL; vtkSmartVolumeMapper auto-selects GPU/CPU/OSPRay; vtkColorTransferFunction + vtkPiecewiseFunction; vtkMultiVolume for co-registered CT/PET
+- WebGPU backend (vtkRenderingWebGPU): Dawn → Vulkan on Linux desktop; compute shaders for frustum culling and billion-point point cloud rendering; experimental in VTK 9.3-9.6; no volume rendering yet
+- ANARI backend (vtkRenderingANARI, VTK 9.4+): Khronos ANARI 1.0 portable rendering API; vtkAnariPass; backends: Intel OSPRay (CPU/GPU), NVIDIA VisRTX (OptiX RTX), AMD RadeonProRender; ANARI_LIBRARY env var selects implementation
+- VTK-m GPU-accelerated filters: ArrayHandle control/execution split; WorkletMapField/MapTopology/ReduceByKey; device adapters: Serial, OpenMP, TBB, CUDA (nvcc), HIP (hipcc), Kokkos; Contour (Marching Cubes), Gradient, Threshold, Streamline (RK4), Triangulate; VTK_ENABLE_VTKM_OVERRIDES intercepts vtkContourFilter
+- Scientific I/O formats: legacy .vtk, VTK XML (.vtp/.vtu/.vti/.pvtu), VTKHDF (HDF5 + MPI-IO, VTK 9.1+), ADIOS2 BP4/BP5 via vtkADIOS2VTXReader, DICOM via vtkDICOMImageReader/vtk-dicom, Exodus II (FEM/SEACAS), NetCDF CF-convention, EnSight Gold binary
+- ParaView client-server: pvserver (MPI + EGL/OSMesa), paraview Qt GUI, remote render with JPEG/LZ4 image compression; IceT binary-swap sort-last depth compositing for parallel rendering; pvpython/pvbatch for headless/Slurm batch
+- Catalyst 2.0 in-situ: libcatalyst.so stub + dlopen catalyst-paraview.so implementation; catalyst_execute(conduit_node_t*) with Conduit Mesh Blueprint; decouples simulation from visualization backend at deploy time; ADIOS2 SST streaming
+- Headless and container deployments: OSMesa (no GPU), EGL (GPU without display), VTK_DEFAULT_EGL_DEVICE_INDEX for multi-GPU; kitware/vtk Docker images; NVIDIA Container Toolkit + EGL ICD injection for Kubernetes GPU pods
+- Scientific ecosystem integrations: numpy_to_vtk/vtk_to_numpy zero-copy; dataset_adapter NumPy-style field access; itkwidgets for Jupyter; 3D Slicer MRML scene graph + VTK-ITK bridge; trame Python web framework for remote/local rendering via vtk.js; vtk.js WebGL/WebGPU browser client
+- **Integrations**: Ch12 (Mesa Loader), Ch17 (Software Renderers/OSMesa), Ch24 (Vulkan and EGL), Ch25 (GPU Compute), Ch42 (Blender GPU/Cycles), Ch48 (ROCm), Ch55 (GPU Containers), Ch107 (Headless Rendering), Ch176 (OpenCASCADE)
+
+
+### Part XII — Terminal Graphics
+
+### Chapter 174: WezTerm and Alacritty — GPU Terminal Rendering Architectures *(Part XII — Terminal Graphics)*
+
+- WezTerm crate structure: 35-crate Cargo workspace; key crates wezterm-gui (RenderContext, GlyphCache), wezterm-font (HarfBuzz shaping), termwiz (standalone terminal surface library), mux (Window/Tab/Pane hierarchy)
+- WezTerm dual-renderer: FrontEndSelection enum (OpenGL via glium default, WebGpu opt-in, Software); RenderContext enum dispatches allocate_texture_atlas / vertex buffers to Glium or WebGpu backends
+- WezTerm wgpu initialisation: WebGpuState::new_impl() — wgpu Instance → Surface (wl_surface via VK_KHR_wayland_surface) → Adapter (RADV/ANV/NVK) → Device; PresentMode::Fifo; CompositeAlphaMode::PostMultiplied
+- WezTerm glyph atlas: GlyphCache with guillotiere rectangle packing; CachedGlyph carries Sprite UV refs; LfuCache for pixel-graphics image data; atlas-full triggers full GlyphCache rebuild; custom box-drawing via tiny_skia PolyCommand paths
+- WezTerm font shaping: HarfBuzz via FFI in wezterm-font/src/shaper/harfbuzz.rs; GlyphInfo carries hb_position_t units (1/64 px); GSUB/GPOS for ligatures and emoji ZWJ clusters; FreeType rasterisation with FT_LOAD_TARGET_LCD/LIGHT/MONO
+- WezTerm rendering pipeline: TripleLayerQuadAllocator (background/text/cursor layers); ShaderUniform (foreground HSB, milliseconds, projection matrix); WGSL shaders compiled by naga → SPIR-V → vkCreateShaderModule → Mesa NIR → ACO/LLVM-IR; single RenderPass draw_indexed()
+- WezTerm Wayland/IME: winit Wayland backend; wp_fractional_scale_v1 (Issue #5149); zwp_text_input_v3 IME (Issue #1772); DMA-BUF submission handled transparently by Mesa Vulkan WSI; zwp_linux_drm_syncobj_v1 explicit-sync roadmap
+- WezTerm built-in multiplexer: Mux singleton; Domain abstraction (LocalDomain, RemoteSshDomain, ClientDomain, ExecDomain); PDU protocol with LEB128 framing and bincode; dirty-tracking via pane.get_changed_since(seqno)
+- WezTerm pixel graphics protocols: Sixel (experimental, termwiz ImageData), Kitty Graphics Protocol (enable_kitty_graphics, cell-mapping caveat Issue #986), iTerm2; image_cache LfuCache keyed by 32-byte hash; LFU eviction; animated frame pacing via min_frame_duration
+- Alacritty crate structure: 4-crate workspace (alacritty, alacritty_terminal, alacritty_config, alacritty_config_derive); alacritty_terminal is reusable VT library used by zellij; no HarfBuzz, no ligatures, no pixel graphics protocols by design
+- Alacritty OpenGL context: Display owns glutin + winit state; Gles2Renderer (ES 2.0) vs Glsl3Renderer (GL 3.3 GLSL 330); EGL path — eglGetPlatformDisplay(EGL_PLATFORM_WAYLAND_KHR) → Mesa EGL → DRI render node /dev/dri/renderD128; eglSwapBuffers → zwp_linux_dmabuf_v1 via Mesa EGL
+- Alacritty instanced rendering: glDrawElementsInstanced with BATCH_MAX=65536; static index buffer for unit quad; vbo_instance (STREAM_DRAW) re-uploaded per frame; dual-source blending gl::SRC1_COLOR / gl::ONE_MINUS_SRC1_COLOR for subpixel AA; DamageTracker skips frames with no changes
+- Alacritty glyph cache and atlas: GlyphCache HashMap with ahash; Atlas uses hand-written shelf bin-packing (ATLAS_SIZE=1024); appends new Atlas on full (vs WezTerm's full-cache rebuild); crossfont wraps FreeType on Linux; BitmapBuffer RGB/RGBA; no HarfBuzz shaping (per-codepoint only)
+- Linux graphics stack paths: WezTerm wgpu → ash → libvulkan.so → RADV/ANV/NVK → Mesa NIR → ACO/LLVM-IR → kernel DRM; Alacritty glutin → EGL → Mesa GL state tracker → Gallium3D (radeonsi/iris/nouveau) → kernel DRM
+- **Integrations**: Ch43 (Terminal Pixel Protocols), Ch44 (Kitty and Ghostty GPU Rendering), Ch45 (Terminal Integration with Compositor Stack), Ch14 (Mesa Shader Compiler: NIR/ACO/LLVM), Ch18 (Mesa Vulkan Drivers: RADV/ANV/NVK), Ch19 (Mesa OpenGL), Ch40 (Bevy and wgpu), Ch152 (Rust GPU Ecosystem: ash/wgpu/naga)
+
+
+### Chapter 178: The PTY/TTY Kernel Layer and Line Disciplines *(Part XII — Terminal Graphics)*
+
+- TTY subsystem architecture: layered stack (tty_io.c core → line discipline → TTY driver → hardware/virtual device); device nodes /dev/tty, /dev/console, /dev/ttyS*, /dev/ptmx, /dev/pts/N
+- TTY device types: UART (8250/PL011), USB serial (ftdi_sio/pl2303/cp210x), CDC-ACM (cdc_acm), JTAG dual-channel probe, Bluetooth HCI bridge (N_HCI line discipline via hci_uart.c), pseudo-terminal (pty.c)
+- tty_struct, tty_driver, tty_operations: key kernel structs including tty->link for PTY master/slave pairing; tty_alloc_driver(), tty_register_driver(), mandatory open/write callbacks
+- PTY architecture (pty.c): UNIX 98 /dev/ptmx + /dev/pts/N vs BSD legacy; pty_write() via tty->link and tty_insert_flip_string_and_push_tail(); ptm_unix98_ops vs pty_unix98_ops
+- devpts filesystem and PTY lifecycle: posix_openpt(), grantpt(), unlockpt(), ptsname(); ptmx_open() allocates tty_struct pair; TTY_PTY_LOCK/TIOCSPTLCK; grantpt() no-op since glibc 2.33
+- N_TTY line discipline internals: struct n_tty_data, N_TTY_BUF_SIZE=4096, flip buffer (tty_bufhead/tty_buffer), canonical mode (ICANON, line editing, canon_head), echo processing (echo_buf, ECHO/ECHOE/ECHOCTL), raw mode (VMIN/VTIME), signal delivery via isig() and kill_pgrp()
+- termios interface: struct ktermios/termios with c_iflag/c_oflag/c_cflag/c_lflag/c_cc[]; tcgetattr()/tcsetattr() with TCSANOW/TCSADRAIN/TCSAFLUSH; cfmakeraw() clears all processing flags
+- TIOCSWINSZ and SIGWINCH chain: struct winsize (ws_row/col/xpixel/ypixel); compositor → emulator → TIOCSWINSZ → kernel stores winsize → kill_pgrp(SIGWINCH) → shell COLUMNS/LINES update; pixel dimension contract for Kitty protocol
+- Terminal emulator I/O architecture: poll()+read() read thread with 64 KiB buffer; VT DFA state machine (Ground/Escape/CSI/OSC/DCS states); Ghostty SIMD AVX2/NEON parser sustaining >100 MB/s; libghostty-vt standalone library
+- PTY performance: N_TTY_BUF_SIZE 4 KiB bottleneck causing write blocking; PTY vs pipe throughput (10–50 MB/s vs hundreds MB/s); large master read buffers, O_NONBLOCK, render budget (max bytes-per-frame) for GPU terminal vsync pacing
+- Sessions, process groups, controlling terminal: setsid() creates session leader; slave opened without O_NOCTTY acquires controlling terminal; tcsetpgrp() sets foreground process group in tty->pgrp; ^C → byte 0x03 → VINTR → isig() → SIGINT to pgrp (not emulator)
+- openpty()/forkpty() lifecycle: <pty.h>; forkpty() = openpty() + fork() + setsid() + slave as stdin/stdout/stderr; portable-pty crate (WezTerm), nix crate; security: TIOCSTI disabled for non-privileged callers (Linux 6.2), devpts newinstance isolation
+- Terminal multiplexers PTY chaining: tmux client-server daemon (libevent, struct grid/screen VT state machine, allow-passthrough DCS envelope, TIOCSWINSZ cascade per pane); zellij (Rust/tokio, Wasmtime WASM plugins, KDL layouts, APC passthrough without opt-in)
+- io_uring PTY I/O (Linux 5.1+): SQ/CQ ring buffers; io_uring_prep_read() with registered fds; IORING_OP_READ_MULTISHOT with provided buffer rings (Linux 6.1+); IORING_OP_SPLICE for zero-copy bridging; Ghostty uses io_uring with epoll fallback; Wayland compositor-native multiplexing via foot --server vs tmux PTY chaining
+- **Integrations**: Ch43 (Terminal Pixel Protocols — Sixel/Kitty/iTerm2), Ch44 (Terminal GPU Rendering Architectures), Ch45 (Terminal Integration with Compositor Stack), Ch174 (WezTerm and Alacritty Architecture), Ch20 (Wayland EGL clients), Ch22 (Wayland window management)
+
+
+### Part XIII — Video Streaming on Linux
+
+### Chapter 189: VLC Media Player — Architecture, GPU Acceleration, and the Linux Graphics Stack *(Part XIII — Video Streaming on Linux)*
+
+- VLC plugin-based architecture: vlc_object_t hierarchy, module bank with dlopen/vlc_entry, score-based capability selection (vlc_module_begin/end macros, set_capability score), input_thread_t / vout_thread_t / aout_instance_t
+- libVLC embedding API: libvlc_instance_t, libvlc_media_t, libvlc_media_player_t; autotools/Meson build; libvlccore/libvlc packaging split
+- Demux and input layer: access modules (file/http/rtp/v4l2), vlc_tick_t clock, es_out_t interface (es_out_Add/Send/SetPCR), block_t struct (i_pts/i_dts/i_flags), adaptive ABR demux with bandwidth estimator
+- VA-API hardware decode path: modules/hw/vaapi/ + modules/codec/avcodec/vaapi.c; vaCreateConfig/Context/BeginPicture/RenderPicture/EndPicture; VASurface pool recycling; VADRMPRIMESurfaceDescriptor zero-copy DMA-BUF export via VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2
+- Embedded hardware decode: V4L2 M2M stateless (rkvdec/hantro, V4L2_CID_STATELESS_H264_SPS/PPS/SLICE_PARAMS) vs stateful (bcm2835-codec/Venus); MMAL path for Raspberry Pi (modules/hw/mmal/); NVDEC path (modules/hw/nvdec/); per-platform coverage table
+- Wayland zero-copy video output: modules/video_output/wayland/; zwp_linux_dmabuf_v1 import of DMA-BUF fds as wl_buffer; wp_viewporter for GPU-side scaling; xdg_toplevel window; linux-drm-syncobj-v1 explicit sync (VLC 4.0 master)
+- Vulkan renderer (VLC 4.0 master): modules/video_output/vulkan/; VK_KHR_wayland_surface swapchain; VASurface import via VK_EXT_external_memory_dma_buf + VK_EXT_image_drm_format_modifier; libplacebo HDR tone mapping, debanding, upscaling, AV1 film grain on GPU
+- OpenGL/EGL renderer (VLC 3.x stable): modules/video_output/opengl/; interop_vaapi.c EGLImage import via EGL_EXT_image_dma_buf_import; GLSL YUV-to-RGB fragment shader (NV12/I420/P010); GBM/KMS direct rendering via egl_display_gbm.c + gbm_surface + drmModePageFlip
+- Audio output stack: ALSA (snd_pcm_open/writei, IEC 958 SPDIF passthrough); PipeWire preferred on GNOME/KDE Wayland (pw_stream_new_simple, spa_audio_info_raw); PulseAudio fallback; AV sync via audio clock master and PCR from TS demux
+- Stream output transcoding (--sout): chain syntax #transcode{vcodec,venc}:sink; VA-API hardware H.264/HEVC encode; zero-copy decode-to-encode sharing VADisplay; HTTP streaming server; mosaic bridge filter
+- VLC 4.0 roadmap: Qt6 native Wayland UI; Vulkan/libplacebo as default renderer replacing OpenGL; libplacebo Dolby Vision Profile 5 (IPT-PQ) SoC 2026; linux-drm-syncobj-v1 eliminating vaSyncSurface CPU stalls; Vulkan Video (VK_KHR_video_decode_queue) future native decode path
+- Comparison table — VLC vs GStreamer vs FFmpeg: plugin auto-selection vs explicit graph wiring vs static codec registry; Wayland zero-copy paths; VA-API and Vulkan renderer status; audio session management
+- **Integrations**: Ch20 (Wayland: zwp_linux_dmabuf_v1, xdg_toplevel, wp_viewporter, linux-drm-syncobj-v1), Ch24 (Vulkan: VK_EXT_external_memory_dma_buf, VK_EXT_image_drm_format_modifier, VK_KHR_wayland_surface), Ch26 (VA-API hardware decode), Ch38 (PipeWire audio), Ch57 (FFmpeg avcodec/avformat), Ch58 (GStreamer pipeline comparison), Ch140 (HDMI audio passthrough via ALSA/PipeWire), Ch142 (V4L2 media subsystem), Ch158 (HDR display, libplacebo PQ-to-SDR), Ch186 (NV12/P010 pixel formats and DRM format modifiers)
+
+
+### Part XVII — AMD Developer Ecosystem
+
+### Chapter 170: AMDVLK vs. RADV — AMD's Two Open Vulkan Drivers *(Part XVII — AMD Developer Ecosystem)*
+
+- AMDVLK architecture: five repos (xgl, pal, llpc, gpurt, llvm-fork); XGL Vulkan front-end translates vkCreate* calls to PAL API calls; no shader compilation in XGL
+- PAL (Platform Abstraction Layer): cross-platform GPU abstraction shared with Windows DX12 and ROCm; submits via raw DRM_IOCTL_AMDGPU_CS without libdrm; PM4 command buffer encoding, VRAM heap selection, PAL ELF ABI
+- LLPC pipeline compiler: SPIR-V -> LLVM IR (lgc.call.* metadata) -> LGC middle-end (BuilderReplayer, LS-HS/NGG shader merging, SGPR/VGPR setup) -> LLVM AMDGPU backend -> PAL ABI ELF; amdllpc offline tool
+- GPURT ray tracing library: BVH construction/traversal for VkAccelerationStructureKHR; HLSL traversal shader via DirectXShaderCompiler; shared with DX12 path; archived September 2025
+- ICD discovery: amdvlk64.so + /etc/vulkan/icd.d/amd_icd64.json; VK_ICD_FILENAMES and VK_DRIVER_FILES for ICD selection; AMD_VULKAN_ICD=AMDVLK|RADV Arch convention
+- RADV architecture: Mesa src/amd/vulkan/; NIR-centric via spirv_to_nir() and radv_optimize_nir(); kernel submission via libdrm_amdgpu through radeon_winsys abstraction
+- ACO custom compiler backend (Mesa 20.1): NIR -> ACO IR via aco::select_program(); linear-scan register allocator for GCN/RDNA banked register file; direct ISA binary emission; RADV_DEBUG=llvm selects LLVM fallback
+- Compiler pipeline comparison: AMDVLK LLPC uses full LLVM opt pipeline (high quality, slow compile); RADV ACO purpose-built for latency (fast compile, competitive quality); both support Wave32/Wave64
+- Pipeline cache and VK_EXT_graphics_pipeline_library: RADV stores ACO blobs in mesa_shader_cache_sf (MESA_SHADER_CACHE_DIR); LLPC uses partial pipeline hash split; RADV GPL enabled by default Mesa 23.1
+- Extension history: VK_AMD_rasterization_order, VK_AMD_gcn_shader, VK_AMD_shader_ballot, VK_AMD_shader_info, VK_AMD_anti_lag (1.3.291), VK_AMDX_shader_enqueue (work graphs experimental); Vulkan 1.4 conformance both drivers
+- Distribution defaults: RADV default on all major distros (mesa-vulkan-drivers / vulkan-radeon); Steam Deck ships RADV exclusively; Radeon Software 25.20 dropped AMDVLK in favour of Mesa RADV
+- Performance: RADV wins majority of gaming benchmarks (ACO compile speed, VK_EXT_graphics_pipeline_library, Valve tuning); Mesa 26.0 Wave32 ray tracing closes RT gap 50-75%; RADV ahead on llama.cpp Vulkan compute (1097 vs 777 tokens/s on Strix Halo)
+- AMDVLK discontinuation: final release v-2025.Q2.1 (April 2025); AMD archival announcement September 15 2025; XGL/PAL/GPURT repos archived; RDNA4 (GFX12) was last supported generation; LLPC survives as ROCm amdllpc tool
+- VkPhysicalDeviceDriverProperties detection: VK_DRIVER_ID_MESA_RADV vs VK_DRIVER_ID_AMD_OPEN_SOURCE; driverName 'radv' vs 'AMD open-source driver'; RADV_DEBUG flags: errors, shaders, spirv, nir, aco, nodcc, nomemorycache
+- **Integrations**: Ch9 (Mesa Architecture), Ch15 (ACO Compiler), Ch31/Ch5 (amdgpu kernel driver), Ch35 (VA-API on AMD), Ch72 (AMD FidelityFX SDK), Ch143 (RADV Internals)
+
+
+### Part XXVII — Display Hardware, Connectors, and Signal Standards
+
+### Chapter 181: Modern Display Interface Standards *(Part XXVII — Display Hardware and Connectors)*
+
+- DisplayPort evolution (DP 1.1–2.1): 8b/10b vs 128b/132b encoding, link rate table (RBR through UHBR20), DPCD AUX channel, MST (DP 1.2), DSC/FEC/PSR2 (DP 1.4), 77.37 Gbps ceiling at UHBR20
+- Panel Replay (DP 2.1): replaces PSR2, VSC SDP revision 0x07, DP_PANEL_REPLAY_CAP DPCD register, TRANS_DP2_CTL on Meteor Lake, intel_psr.c; 99% bandwidth reduction during static frames
+- Forward Error Correction: Reed-Solomon RS(254,250), 2.4% overhead, drm_dp_get_fec_ready_flag() in drm_dp_helper.c, mandatory prerequisite for DSC activation
+- HDMI evolution (1.0–2.1b): TMDS 8b/10b → Fixed Rate Link (FRL) 16b/18b, seven FRL levels (FRL0–FRL6) from TMDS to 48 Gbps raw, dedicated link-training protocol replacing clock lane
+- HDMI 2.1 feature suite: eARC (37 Mbps return channel for lossless audio), ALLM (Game Mode signalling), HDMI Forum VRR (VS-IF negotiation), QFT (Quick Frame Transport), QMS (seamless refresh-rate switching)
+- HDMI 2.1a/2.1b: Source-Based Tone Mapping (SBTM) via extended Dynamic HDR InfoFrame (2.1a); explicit 4K/144Hz profiling for VRR/ALLM/QFT (2.1b)
+- USB4 display tunnelling: v1 (40 Gbps) vs v2 (80 Gbps symmetric, 120 Gbps asymmetric Bandwidth Boost); DP tunnel carries Main Link + AUX + HPD as logical sub-channels via DP Bandwidth Allocation (DPB) protocol
+- Thunderbolt 3/4/5: TBT3 = 40 Gbps dual DP 1.2; TBT4 = mandatory DP 2.0, two 4K/60 displays, IOMMU DMA protection; TBT5 = 120 Gbps Bandwidth Boost, DP 2.1 UHBR20, 240W USB-PD, dual 8K/60
+- HDBaseT 2.0: 5PLAY feature set over Cat-6 at 100m, 18 Gbps matching HDMI 2.0, no upstream KMS driver (transparent HDMI/DP bridge); HDBaseT 3.0 targeting 100 Gbps for commercial AV
+- VESA AdaptiveSync Display 1.1a: 144Hz minimum, 60Hz VRR floor, 9x9 GtG test matrix, Dual-Mode certification; MediaSync for 24/48Hz film content; DPCD DP_EDP_CONFIGURATION_SET register
+- DisplayHDR certification tiers (v1.2): LCD tiers HDR400–HDR1400 (local dimming requirements per tier); OLED/MicroLED True Black 400/500/600; kernel only signals hdr_output_metadata, does not drive panel algorithms
+- Linux kernel UHBR support (i915): intel_dp_is_uhbr(), intel_dp_set_dpcd_sink_rates(), intel_dp_128b132b_intra_hop(); MTL=UHBR20, BMG=UHBR13.5; CONFIG_DRM_I915, CONFIG_THUNDERBOLT, CONFIG_USB4
+- HDMI 2.1 FRL in amdgpu: patch series targeting Linux 7.2, disabled by default (amdgpu.dc_feature_mask=0x400 to enable), DCN 3.x integration, DSC over HDMI FRL; TB_TUNNEL_DP abstraction for USB4 DP tunnel bandwidth arbitration
+- Bandwidth arithmetic worked examples: 4K/144Hz needs DSC on DP 1.4 (28.66 Gbps > 25.92 Gbps effective) but fits UHBR10 uncompressed; 8K/60 10-bit 4:4:4 only fits DP 2.1 UHBR20 (77.37 Gbps) uncompressed; DSC 3:1 on UHBR20 reaches 232 Gbps equivalent headroom; drm_dsc_compute_rc_parameters() in drm_dsc_helper.c
+- **Integrations**: Ch2 (KMS Display Pipeline: drm_connector/drm_encoder/drm_crtc, hdr_output_metadata property), Ch128 (DisplayPort MST and Multi-Monitor Topology), Ch140 (HDMI and DisplayPort Audio: eARC, ACR, ALSA/ASoC), Ch172 (eGPU on Linux: Thunderbolt/USB4/PCIe Hot-Plug bandwidth partitioning), Ch182 (Connectors and Physical Layer: USB-C, DP80/HDMI Ultra-High-Speed cable certification), Ch183 (EDID and DisplayID: capability reporting for DSC/FRL/HDR), Ch184 (eDP: laptop-internal DP variant, eDP 1.5 UHBR, Panel Replay), Ch186 (Pixel Formats and Signal Encoding: per-format bandwidth costs)
+
+
+### Chapter 182: Digital Display Connectors and the Physical Layer *(Part XXVII — Display Hardware and Connectors)*
+
+- USB-C DisplayPort Alt Mode entry sequence: PD VDM Discover Identity/SVIDs/Modes/Enter_Mode over CC line at 300 kbps, SID 0xFF01, DP_Configure; kernel drivers/usb/typec/altmodes/displayport.c
+- USB-C DP pin assignments: typec_dp_pin_assignment enum (C/D/E active); assignment D = 2-lane DP + USB3 SS multi-function mode; SBU1/SBU2 carry AUX CH differential pair
+- TCPM Linux kernel state machine: drivers/usb/typec/tcpm/tcpm.c; FOREACH_STATE macro; pd_mode_data struct; tcpm_cc_is_sink()/tcpm_cc_is_source() CC line voltage helpers
+- Thunderbolt 3/4 and USB4: ICM firmware security levels (none/user/secure/dponly) via sysfs /sys/bus/thunderbolt; drivers/thunderbolt/ (tb.c, icm.c, switch.c, dp_tunnel.c); struct tb_switch, struct tb_port with cap_usb4
+- HDMI connector variants: Type A (19-pin, 13.9mm), Mini-C, Micro-D, Automotive-E; HDMI 2.1 Fixed Rate Link (FRL) replacing TMDS with 16b/18b encoding, 3-4 lanes up to 12 Gbps/lane (FRL6=48 Gbps raw)
+- DVI variants and TMDS compatibility: DVI-D Single/Dual Link, DVI-I (analogue+digital), DVI-A; passive DVI-D to HDMI valid for video (same TMDS); dual-link DVI to HDMI requires active converter
+- HPD electrical signalling: per-connector voltage levels (HDMI pin19 5V, DP pin18 3.3V); DP short/long pulse multiplexing (>2ms connect, 0.5-1ms MST topology/IRQ_HPD); drm_kms_helper_hotplug_event() firing uevents
+- DDC I2C bus: EDID at address 0x50, extension segments at 0x30; drm_get_edid() in drm_edid.c; DP uses I2C-over-AUX via struct drm_dp_aux with drm_dp_aux_register(); DDC/CI monitor control at address 0x37 using VCP codes via ddcutil
+- DRM connector state machine: enum drm_connector_status (connected/disconnected/unknown); drm_connector_list_iter safe iteration; DRM_CONNECTOR_POLL_CONNECT/DISCONNECT/HPD flags; sysfs at /sys/class/drm/card0-HDMI-A-1/{status,modes,edid}
+- Signal integrity at HBR3: DP_TRAIN_VOLTAGE_SWING_LEVEL_0-3 (200-800mV) and DP_TRAIN_PRE_EMPH_LEVEL_0-3 (0-9.5dB) in drm_dp.h; drm_dp_link_train_clock_recovery_delay() and channel_eq_delay() helpers; spread-spectrum clocking via DPCD DP_DOWNSPREAD_CTRL 0x0107
+- Active vs passive adapters: DP++ dual-mode for passive DP-to-HDMI 1.4; active DP-to-HDMI 2.0 contains TMDS encoder chip; DP-to-HDMI 2.1 adapters use UHBR10 input with FRL output; DPCD Branch Device OUI at 0x0500-0x0505 for adapter identification
+- Standard DP connector variants: full-size DP (16.1mm, 20-pin), Mini DisplayPort (7.5mm), Micro DisplayPort (4.6mm); all share same electrical specs; TVS ESD diode capacitance must be under 0.5pF at HBR3
+- **Integrations**: Ch1 (DRM Driver Architecture), Ch2 (KMS Display Pipeline), Ch128 (DisplayPort MST), Ch140 (HDMI and DisplayPort Audio), Ch172 (eGPU over Thunderbolt), Ch181 (Display Interface Standards), Ch183 (EDID and Display Capability Negotiation)
+
+
+### Chapter 183: EDID and DisplayID: How Linux Discovers Display Capabilities *(Part 27 — Display Hardware and Connectors)*
+
+- EDID base block (128-byte structure): manufacturer PNP ID, DTD timings, chromaticity coordinates, established/standard timings; E-EDID 1.4 adds bit-depth field and CVT support
+- CEA-861/CTA-861 extension block: Data Block Collection format (tag+length headers), Video Data Block with VIC codes, Audio Data Block with Short Audio Descriptors (SADs), HDMI VSDB (OUI 0x000C03) with deep-color flags and CEC SPA
+- HDR and WCG signalling: HDR Static Metadata Block (extended tag 0x06) with EOTF bitmap and MaxCLL/MaxFALL; Colorimetry Data Block (extended tag 0x05) for BT.2020RGB/DCI-P3; Video Capability Data Block (extended tag 0x00) for quantization range
+- DisplayID 2.0 block architecture: variable-length typed blocks (Product ID 0x20, Display Parameters 0x21, Type VII Timing 0x22, Tiled Display Topology 0x28, Container ID 0x29); iterator API displayid_iter_edid_begin/next/end in drm_edid.c
+- Linux EDID parsing (drm_edid.c): drm_edid_read(), drm_edid_read_ddc(), drm_edid_read_dp(); opaque struct drm_edid wrapper (since 5.19); checksum validation via edid_block_valid(); drm_edid_connector_update() triggering drm_parse_cea_ext() pipeline
+- drm_display_info struct: accumulates bpc, is_hdmi, has_audio, color_formats, hdmi_colorimetry, hdr_sink_metadata from parsed EDID/CEA data; drm_edid_connector_add_modes() builds drm_display_mode list from DTDs, SVDs, standard timings, DMT modes
+- EDID quirks database (edid_quirk_list[]): enum drm_edid_internal_quirk flags including EDID_QUIRK_PREFER_LARGE_60, EDID_QUIRK_FORCE_8BPC, EDID_QUIRK_NON_DESKTOP (VR headsets); EDID_QUIRK macro keyed by 3-letter PNP code and product ID
+- EDID override and firmware injection: drm.edid_firmware kernel parameter; /lib/firmware/edid/ pre-built binaries; drm_load_edid_firmware() in drm_edid_load.c; drm_connector_override_edid() for runtime override; use cases: headless servers, broken monitors, IGT CI testing
+- DDC/CI monitor control with ddcutil: VCP code space (MCCS); I2C address 0x37 for HDMI/DVI vs /dev/drm_dp_auxN for DisplayPort; VCP codes for brightness (0x10), contrast (0x12), input select (0x60), power mode (0xD6); libddcutil C API
+- HDCP sink capability discovery: HDCP 1.4 capability via Bksv read from DDC 0x74/DPCD 0x68000 (not in EDID); HDCP 2.3 signalled in DPCD 0x006A or HDMI Forum VSDB; DRM HDCP framework (drm_hdcp.c): Content Protection property with UNDESIRED/DESIRED/ENABLED states
+- Practical debugging: edid-decode tool for parsing EDID blobs from /sys/class/drm/card0-HDMI-A-1/edid; drm.debug=0x7f for kernel DRM debug log; common failures (wrong resolution, missing audio, no HDR, wrong DPI) mapped to EDID causes and remedies
+- **Integrations**: Ch2 (KMS Connector Modes), Ch128 (DisplayPort MST), Ch140 (HDMI/DP Audio ELD), Ch158 (HDR on Linux), Ch181 (Display Standards), Ch182 (DDC I2C Channel), Ch184 (Embedded DisplayPort eDP), Ch187 (CEC Consumer Electronics Control)
+
+
+### Chapter 184: Embedded DisplayPort (eDP) and Laptop Panel Management *(Part 27 — Display Hardware and Connectors)*
+
+- eDP vs. external DisplayPort: reduced 400 mV PHY swing, ZIF connector, no hotplug (HPD repurposed for PSR IRQ), eDP version history 1.0–1.5 feature table
+- DPCD register space and AUX channel protocol: 1 MB flat address map, key register table (0x000–0x1B0), half-duplex 1 Mbps AUX transactions, drm_dp_dpcd_read/write helpers, intel_dp_aux_xfer()
+- PSR1 (Panel Self-Refresh, eDP 1.2): TCON local frame buffer, link standby vs. main-link off, intel_psr.c functions (intel_psr_enable/disable/invalidate/flush), frontbuffer tracking, AMD amdgpu_dm_psr.c
+- PSR2 Selective Update (eDP 1.4): 64-px × 4-line SU granularity, VSC SDP dirty region encoding, PSR2 Selective Fetch (Gen12+), known HW quirks (Wa_16014451276, ADL-P SU region bug, DC6 exit instability)
+- Panel Replay (eDP 1.5 / DP 2.1): CRC-gated activation via VSC SDP, DP_PANEL_REPLAY_CAP registers (0x1B0–0x1B2), fast-wake link re-establishment (<1 ms), Linux 6.3 support in intel_psr.c
+- DRRS Dynamic Refresh Rate Switching (eDP 1.3): seamless vs. non-seamless modes, DPCD link-rate table (0x010–0x01F), intel_drrs.c delayed_work mechanism, pipeconf register vs. M/N divisor methods, VRR mutual exclusion
+- Backlight control methods: PWM via pwm_backlight/pwm_bl.c, I2C controller ICs (TI LP8557, LM3630A), eDP AUX backlight (DPCD 0x720–0x723, intel_dp_aux_backlight.c, i915.enable_dpcd_backlight), ACPI video _BCM/_BCL fallback, IIO ALS integration
+- DSC on eDP (eDP 1.4b+): bandwidth math for 4K@120 Hz, slice/bpp/chunk-size parameters, PPS negotiation via DSC SDP, intel_dsc.c (intel_dsc_compute_params), AMD dc_dsc_compute_config(), DSC-in-compressed-domain CRC for Panel Replay
+- Panel power sequencing T1–T12: VDD-rise to backlight-on timing table, 500 ms mandatory T12 cycle, intel_pps.c (intel_pps_init/enable/disable/wait_panel_power_cycle), BIOS PP_ON_DELAYS/PP_OFF_DELAYS registers, Device Tree panel-edp.yaml bindings
+- drm_panel subsystem: drm_panel_funcs (prepare/enable/disable/unprepare/get_modes), panel-simple.c for DT-described panels, drm_panel_bridge mapping bridge callbacks to panel lifecycle in atomic commits
+- Bridge chips: TI SN65DSI86 DSI-to-eDP (ti-sn65dsi86.c, drm_bridge_funcs, EDID proxying via AUX master), Toshiba TC358775 DSI-to-LVDS; touch controllers via I2C HID (i2c-hid, ACPI _HID)
+- Debugging tools: i915_edp_psr_status debugfs (PSR entry/exit counts, deepest sleep), intel_dp_dpcd (intel-gpu-tools), /sys/class/backlight/ brightness sysfs, drm.debug=0x1f kernel parameter, DPCD Panel Replay capability detection
+- **Integrations**: Ch2 (KMS Atomic Modesetting), Ch3 (PSR2/Panel Replay as KMS features), Ch51 (GPU Power Management / RC6 / DC states), Ch126 (Hybrid Graphics Laptop Power Management), Ch181 (DisplayPort 2.1 Link Rates / UHBR), Ch183 (EDID over I2C-over-AUX), Ch188 (Display Power States — DC State Hierarchy)
+
+
+### Chapter 185: Wireless Display Technologies on Linux *(Part 27 — Display Hardware and Connectors)*
+
+- Wireless display paradigms overview: Miracast/Wi-Fi Direct (50-100ms, ~25Mbps), WiGig 60GHz (< 5ms, 7Gbps), and network streaming (VNC/RDP/WebRTC/Chromecast) — latency/bandwidth/range trade-offs table
+- Miracast/WFD standard: Wi-Fi Direct P2P Group Owner negotiation, GO Intent values (0-15), WPS PBC/PIN provisioning, DHCP on 192.168.49.0/24
+- RTSP M1-M16 control plane: capability negotiation (wfd_video_formats bitmask, wfd_audio_codecs, wfd_client_rtp_ports), SETUP/PLAY/UIBC back-channel messages on TCP port 7236
+- Data plane: H.264/MPEG-TS/RTP over UDP; 188-byte MPEG-TS packets, RFC 2250 payload type 33, mtu=1316 (7xMPEG-TS per RTP), CEA resolution table up to 1920x1080p60
+- MiracleCast architecture: miracle-wifid, miracle-sinkctl, miracle-gst, miracle-userctl daemons; wpa_supplicant P2P D-Bus API (fi.w1.wpa_supplicant1.Interface.P2PDevice), exclusive interface ownership constraint
+- wpa_supplicant P2P depth: GO Negotiation Action frames, 802.11 P2P IE (OUI 50:6F:9A), persistent groups with Invitation Request/Response, wpa_ctrl C library for programmatic control
+- WiGig IEEE 802.11ad/802.11ay: 60GHz mmWave (57-71GHz), GCMP cipher, mandatory SLS beamforming, 4x2.16GHz channels; wil6210 kernel driver at drivers/net/wireless/ath/wil6210/ for Qualcomm Sparrow/Talyn chipsets
+- WiGig Display Extension (WDE) status: absent from Linux ecosystem as of 2026; wil6210 uses cfg80211 (not mac80211) with WMI firmware messages; requires wil6210.brd and wil6210.fw blobs
+- VNC/RDP network display: wayvnc via wlr-export-dmabuf-v1/wlr-screencopy-v1; Weston RDP backend using FreeRDP; xrdp; GNOME Remote Desktop; KRdp for KDE Plasma 6; RDP RemoteFX AVC444 (H.264)
+- Chromecast: CASTV2 protobuf protocol over TLS (port 8009), mDNS _googlecast._tcp discovery via Avahi, CastMessage namespaces, App ID 0F5096E8; mkchromecast with ffmpeg x11grab or PipeWire capture
+- XDG ScreenCast portal: org.freedesktop.portal.ScreenCast D-Bus API, CreateSession/SelectSources/Start/OpenPipeWireRemote call sequence, pipewire-serial (v6) for stable stream identification, pipewiresrc GStreamer element
+- GStreamer webrtcbin pipeline: ICE/DTLS-SRTP/RTCP-NACK, rtph264pay config-interval=1, vaapih264enc/vaav1enc, webrtcsink with built-in WHIP/WHEP signalling server on ports 8080/8443
+- VA-API zero-copy DMA-BUF pipeline: DRM_IOCTL_PRIME_HANDLE_TO_FD export, vaCreateSurfaces with VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2/VADRMPRIMESurfaceDescriptor, vaapih264enc key properties (rate-control=cbr, max-bframes=0, quality-level)
+- Latency budget analysis: VA-API HW encode 5-10ms vs x264 ultrafast 30-80ms; total ~36-46ms (VA-API) vs ~61-116ms (software); x264 tune=zerolatency disables lookahead and enables slice-level encoding
+- **Integrations**: Ch22 (Wayland Compositors), Ch26 (VA-API Hardware Video Encode), Ch38 (PipeWire Video Pipeline), Ch57 (FFmpeg), Ch58 (GStreamer), Ch79 (Remote Display and Screen Casting), Ch123 (Screen Capture and Remote Desktop), Ch146 (WebCodecs and Browser Hardware Acceleration)
+
+
+### Chapter 186: Video Pixel Formats and Display Signal Encoding *(Part XXVII — Display Hardware and Connectors)*
+
+- Color space fundamentals — RGB vs YCbCr: BT.601/BT.709/BT.2020 luma coefficients, transfer functions (sRGB gamma, SMPTE ST 2084 PQ, ARIB STD-B67 HLG), four-component color space specification (primaries, white point, EOTF, YCbCr matrix)
+- Chroma subsampling — 4:4:4 / 4:2:2 / 4:2:0 / 4:1:1 notation; NV12 semi-planar memory layout for 1920x1080; chroma siting conventions (MPEG-2 cosited vs JPEG interstitial) and DRM_FORMAT_MOD_CHROMASITING_COSITED
+- Bit depth — 8-bit sRGB (DRM_FORMAT_XRGB8888, NV12), 10-bit HDR consumer via P010 (MSB-aligned 16-bit words), 12-bit Dolby Vision via DRM_FORMAT_P012/P016, True 10-bit vs 8-bit+FRC detection via edid-decode and DRM 'max bpc' connector property
+- Quantization range — full (0-255) vs limited/studio swing (luma 16-235, chroma 16-240); mismatch symptoms (washed-out or crushed image); i915 'Broadcast RGB' connector property; amdgpu hdmi_avi_infoframe_set_quantization_range() with hardware quantization scaler
+- DRM fourcc pixel format taxonomy — fourcc_code() macro in drm_fourcc.h; RGB formats (XRGB8888, ARGB8888, XRGB2101010, XBGR2101010); YUV packed (YUYV, UYVY, YVYU); planar/semi-planar (YUV420, NV12, NV21, P010, P016); drmModeGetPlane() enumeration and IN_FORMATS plane property blob
+- V4L2 pixel formats and multiplanar API — v4l2_pix_format_mplane struct with colorspace/ycbcr_enc/quantization/xfer_func fields; v4l2_plane_pix_format per-plane stride/size; VIDIOC_ENUM_FMT / VIDIOC_TRY_FMT / VIDIOC_S_FMT three-step negotiation idiom for V4L2_PIX_FMT_NV12 and V4L2_PIX_FMT_P010
+- HDR metadata — SMPTE ST 2086 static metadata fields (display_primaries, white_point, max_cll, max_fall); HDMI Dynamic Range and Mastering InfoFrame (type 0x87); DP HDR Metadata SDP (type 0x04); DRM hdr_output_metadata / hdr_metadata_infoframe UAPI structs; drmModeCreatePropertyBlob + drmModeAtomicCommit to set HDR connector property
+- AVI InfoFrame color encoding — CTA-861-G type 0x82 v2 13-byte structure; Y1:Y0 colorspace bits (RGB/YUV422/YUV444/YUV420); C1:C0 colorimetry and EC2:EC0 extended colorimetry (BT.2020=100); Q1:Q0 RGB quantization; VIC codes; struct hdmi_avi_infoframe in include/linux/hdmi.h; hdmi_avi_infoframe_pack()
+- Format negotiation pipeline — VA-API/V4L2 decoder DMA-BUF export → zwp_linux_dmabuf_v1 wl_buffer import → compositor IN_FORMATS overlay plane check → DRM_MODE_ATOMIC_TEST_ONLY commit → real scanout or GPU blit fallback; zwp_linux_dmabuf_feedback_v1 (protocol v4) (format,modifier) advertisement
+- Display engine CSC and EOTF — amdgpu DPP unit: AMD_FMT_MOD deswizzle, BT.2020 YCbCr-to-RGB CSC matrix, inverse PQ EOTF in OGAM/DEGAM block, linear-light blending, output re-encoding; GPU blit fallback path for failed overlay atomic commits
+- Worked example — 4K HDR10 HEVC decode: VA-API VCN/Quick Sync P010+AMD_FMT_MOD export → zwp_linux_buffer_params_v1_add() two-plane DMA-BUF import → atomic commit with hdr_output_metadata blob + DRM_MODE_COLORIMETRY_BT2020_YCC → amdgpu AVI InfoFrame (VIC 97, YUV420, BT.2020 ext colorimetry) + HDR InfoFrame 0x87 → DPP CSC/OGAM processing → panel tone mapping
+- **Integrations**: Ch2 (KMS Planes), Ch3 (HDR KMS Properties), Ch26 (VA-API), Ch60 (Codec Compression), Ch74 (HDR Wide Color Gamut), Ch101 (Color Science / ICC Profiles), Ch142 (V4L2 Format Negotiation API), Ch158 (HDR Display Color Management), Ch162 (AFBC/DCC/CCS/UBWC Modifiers)
+
+
+### Chapter 187: HDMI CEC and the Linux CEC Subsystem *(Part 27 — Display Hardware and Connectors)*
+
+- CEC Protocol Fundamentals: single-wire open-drain serial bus on HDMI pin 13, 400 baud, pulse-width-modulated bit encoding (0.6 ms / 1.5 ms low pulses), 16-byte max frame with header, EOM, and ACK bits
+- Physical and Logical Addresses: physical address extracted from EDID HDMI VSDB (OUI 0x000C03, dotted A.B.C.D notation); logical addresses 0–15 dynamically claimed by polling; 0xFFFF = invalid/unknown
+- CEC Message Categories: One Touch Play (0x04 Image View On, 0x82 Active Source), Standby (0x36), Routing Control (0x80, 0x85, 0x86), Remote Control Pass-Through (0x44/0x45 User Control), System Audio (0x70–0x72), OSD and Device Discovery (0x46, 0x64, 0x83, 0x84, 0x8F/0x90)
+- Linux Kernel CEC Subsystem: drivers/media/cec/core/ (cec-adap.c, cec-api.c, cec-core.c, cec-notifier.c, cec-pin.c); struct cec_adapter with transmit_queue/wait_queue; struct cec_adap_ops with adap_enable, adap_transmit, adap_log_addr, received callbacks; mainlined in Linux 4.8
+- Core Driver API: cec_allocate_adapter(), cec_register_adapter(), cec_received_msg(), cec_transmit_done(), cec_s_phys_addr(), cec_s_phys_addr_from_edid(); CEC_CAP_* flags (PHYS_ADDR, LOG_ADDRS, TRANSMIT, MONITOR_ALL, RC)
+- Hardware Driver Implementations: VC4 (Raspberry Pi 4, vc4_hdmi_cec.c, Linux 5.13); Amlogic Meson AO-CEC in always-on power domain (ao-cec.c, wake-from-standby); Rockchip RK3288 with Designware HDMI IP; common probe pattern with devm_request_threaded_irq and cec_notifier_cec_adap_register
+- CEC Notifier Mechanism: cec-notifier.c bridges DRM subsystem (EDID owner) and media subsystem (CEC adapter); cec_notifier_conn_register() / cec_notifier_cec_adap_register() loosely couple drivers; cec_notifier_set_phys_addr_from_edid() parses CTA-861 HDMI VSDB; address replayed on late-probe
+- Userspace API /dev/cecN: struct cec_msg (tx_ts, rx_ts, msg[16], reply, tx_status, tx_arb_lost_cnt); ioctls CEC_ADAP_G_CAPS, CEC_ADAP_S_LOG_ADDRS, CEC_TRANSMIT, CEC_RECEIVE, CEC_DQEVENT, CEC_S_MODE; mode flags INITIATOR, FOLLOWER, MONITOR, MONITOR_ALL
+- cec-ctl and v4l-utils Tooling: cec-ctl --playback/--tv/--monitor-all/--monitor-pin; cec-compliance for spec conformance testing; cec-follower for device simulation; systemd unit for One Touch Play on system resume
+- libcec Userspace Abstraction: Pulse-Eight cross-platform C++ ICECAdapter API over /dev/cecN, VideoCore firmware, USB dongles, I2C controllers; Kodi CEC peripheral plugin (PeripheralCecAdapter.cpp) sends Image View On, Active Source, Standby, translates 0x44 to Kodi remote events
+- CEC Pin Framework and GPIO: cec-pin.c software bit-bang via hrtimer at ~0.6/1.5/3.7 ms boundaries; struct cec_pin_ops (read, low, high, enable_irq); cec-gpio platform driver wraps GPIO descriptor; DRM connector property CEC_PIN_IS_HIGH for register-readable CEC pins
+- DisplayPort CEC Tunnelling: drm_dp_cec.c implements VESA DP CEC-Tunneling-over-AUX; DPCD registers 0x3000–0x301F (DP_CEC_TUNNELING_CONTROL, TX/RX_MESSAGE_BUFFER, LOGICAL_ADDRESS_MASK); drm_dp_cec_set_edid() / drm_dp_cec_unset_edid(); used by i915, Nouveau, AMDGPU; single-HDMI-device limitation
+- Practical Automation and Troubleshooting: Home Assistant pycec integration via /dev/cecN; bus arbitration loss tracking (tx_arb_lost_cnt) with automatic retry; 0xFFFF diagnosis via edid-decode HDMI VSDB check and dmesg CEC notifier messages; HDMI switch EDID-rewriting requirements; CEC vs ARC/eARC pin coexistence (pin 13 vs pin 37)
+- **Integrations**: Ch2 (KMS/DRM Connector Model — CEC_PIN_IS_HIGH property, EDID hotplug triggers notifier), Ch140 (HDMI ARC/eARC — System Audio Mode opcodes 0x70/0x72 coordination), Ch142 (V4L2 and Media Subsystem — /dev/cecN device node conventions, cec-compliance/v4l-utils shared infrastructure), Ch182 (HDMI Connector Physical Layer — pin 13 electrical spec, HPD pin 19 triggering EDID reads), Ch183 (EDID and DisplayID — CEC physical address in HDMI VSDB OUI 0x000C03, cec_get_edid_phys_addr())
+
+
+### Chapter 188: Display Power States — DPMS, Panel Self-Refresh, and Display Idle Management *(Part XXVII — Display Hardware and Connectors)*
+
+- Display power problem space: component power budget (backlight 2–4 W, controller 0.3–1 W, DRAM reads 0.1–0.5 W); five-level power reduction hierarchy from brightness dimming to CRTC disable
+- VESA DPMS legacy: DRM_MODE_DPMS_ON/STANDBY/SUSPEND/OFF constants in drm_mode.h; drm_connector_funcs.dpms() callback; obsolete for digital panels, replaced by atomic CRTC active property
+- KMS CRTC active boolean: drm_crtc_state.active; drmModeAtomicAddProperty() blank/unblank pattern; wlroots DRM backend drm_connector_set_dpms() in backend/drm/drm.c
+- Intel Display C-states: DC_STATE_EN_DC3CO / DC5 / DC6 / DC9 constants in intel_display_power.c; DMC firmware; intel_display_power_get/put() power well reference counting; i915.enable_dc module parameter
+- Intel DC5/DC6 preconditions and debugging: is_dc5_dc6_blocked(); PSR required for DC state entry; debugfs paths i915_display_info, i915_power_domain_info, i915_edp_psr_status; intel_gpu_top
+- AMD DCN display power: DCCG/DISPCLK/DCFCLK/SOCCLK clock hierarchy; Display Mode Library (DML) in dc/dml/; SMU voltage rail coordination via amdgpu_dm.c; amdgpu.pg_mask / amdgpu.dcfeaturemask module parameters
+- AMD MALL and SubVP: Memory Attached Last Level cache (32–64 MB); SubVP pre-fetches scanout into MALL enabling DRAM self-refresh; dc_debug_options flags force_disable_subvp / force_subvp_mclk_switch; DMUB firmware trace groups
+- PSR as DC-state enabler: intel_psr_notify_dc5_dc6() / is_dc5_dc6_blocked() in intel_psr.c; PSR1 enables DC6; PSR2 Selective Update requires DRAM access so limits to DC5; Panel Replay CRC-gated activation and ALPM pairing
+- Backlight and ALS: /sys/class/backlight/ sysfs interface; ACPI video _BCL/_BCM/_BQC vs. native GPU backlight; iio-sensor-proxy net.hadess.SensorProxy D-Bus interface; GNOME mutter backlight control (GNOME 49); OLED burn-in pixel shift
+- power-profiles-daemon display integration: net.hadess.PowerProfiles D-Bus; platform_profile sysfs; power-saver triggers AMDGPU panel power savings and DPM clock reduction; DRRS/PSR idle timeout per profile; TLP conflict
+- Compositor idle management: ext-idle-notify-v1 Wayland protocol; wlr_idle_notifier_v1 / wlr_idle_notification_v1_create(); staged dim→blank sequence; zwp_idle_inhibit_manager_v1 and systemd inhibitor locks; swayidle, GNOME IdleMonitor, KDE PowerDevil
+- ACPI S0ix Modern Standby: s2idle vs. deep (S3) via /sys/power/mem_sleep; display shutdown prerequisite for S0ix entry; DC9 (Intel) / DMUB suspend (AMD) in GPU .runtime_suspend() path; S0ix resume sequence; pmc_core/slp_s0_residency_usec debugging
+- **Integrations**: Ch2 (KMS/DRM Architecture), Ch3 (Atomic Modesetting), Ch21 (wlroots Compositor Internals), Ch22 (KDE Plasma and GNOME Shell), Ch51 (GPU Power Management and Runtime PM), Ch126 (Hybrid Graphics and Optimus), Ch184 (Embedded DisplayPort and Laptop Panel Management)
+
