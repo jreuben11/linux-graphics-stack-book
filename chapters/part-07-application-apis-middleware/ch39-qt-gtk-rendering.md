@@ -12,6 +12,7 @@
 - [3. Qt Shader Pipeline: qsb and SPIR-V](#3-qt-shader-pipeline-qsb-and-spir-v)
 - [4. GTK4 Rendering Architecture: GskRenderer](#4-gtk4-rendering-architecture-gskrenderer)
 - [4.6 Gdk-Pixbuf and GLib: Supporting Infrastructure](#46-gdk-pixbuf-and-glib-supporting-infrastructure)
+- [4.7 The GObject Type System](#47-the-gobject-type-system)
 - [5. GTK4 Wayland Integration and Explicit Sync](#5-gtk4-wayland-integration-and-explicit-sync)
 - [6. GTK4 Shader Pipeline and CSS GPU Effects](#6-gtk4-shader-pipeline-and-css-gpu-effects)
 - [7. Font and Text Rendering: FreeType, HarfBuzz, and Glyph Atlases](#7-font-and-text-rendering-freetype-harfbuzz-and-glyph-atlases)
@@ -573,6 +574,108 @@ wl_surface_commit()
 ```
 
 This loop gives GTK frame pacing without busy-waiting: the render thread sleeps in `g_main_context_iteration()` (or `epoll_wait` at the kernel level) until the compositor acknowledges the previous frame, then wakes to render the next one. The `GdkFrameTimings` API exposes presentation timestamps from the `wp_presentation` protocol for latency-sensitive applications.
+
+---
+
+### 4.7 The GObject Type System
+
+Every GTK4 type involved in the rendering pipeline — `GskRenderer`, `GskRenderNode`, `GdkTexture`, `GdkFrameClock`, `GskGpuDevice` — is a GObject subclass. GObject is GLib's runtime type system: it supplies single inheritance, interfaces, a property mechanism, and a signal system for C, without a preprocessor step. Understanding it is necessary for reading GTK4 and GDK internals or writing custom GObject subclasses that plug into the rendering stack (custom `GskRenderNode` subclasses, custom `GdkContentSerializer` implementations, Mutter `MetaPlugin` subclasses).
+
+**GType and `G_DEFINE_TYPE`.** Every type has a `GType` identifier — a `gsize` — obtained at first use by calling `*_get_type()`. The `G_DEFINE_TYPE` macro generates that function plus class-init and instance-init stubs:
+
+```c
+/* gsk/gpu/gskgpudevice.c — simplified */
+G_DEFINE_TYPE(GskGpuDevice, gsk_gpu_device, G_TYPE_OBJECT)
+
+static void
+gsk_gpu_device_class_init(GskGpuDeviceClass *klass)
+{
+    GObjectClass *object_class = G_OBJECT_CLASS(klass);
+    object_class->dispose    = gsk_gpu_device_dispose;
+    object_class->finalize   = gsk_gpu_device_finalize;
+    object_class->get_property = gsk_gpu_device_get_property;
+    object_class->set_property = gsk_gpu_device_set_property;
+    /* install properties ... */
+}
+
+static void
+gsk_gpu_device_init(GskGpuDevice *self)
+{
+    /* zero-initialise instance fields */
+}
+```
+
+The Vulkan renderer extends this with `G_DEFINE_TYPE(GskVulkanDevice, gsk_vulkan_device, GSK_TYPE_GPU_DEVICE)`, making `GskVulkanDevice` a concrete leaf subclass of `GskGpuDevice`. [Source: `gsk/gpu/gskgpudevice.c`, GTK 4.16](https://gitlab.gnome.org/GNOME/gtk/-/blob/main/gsk/gpu/gskgpudevice.c)
+
+**`GObjectClass` vtable.** The class struct (e.g. `GskGpuDeviceClass`) overlays `GObjectClass` at offset zero, giving every subclass access to four critical virtual slots:
+
+| Slot | When called | Rendering use |
+|------|-------------|---------------|
+| `dispose` | `g_object_unref` when refcount hits zero; may run multiple times | Release `VkDevice`, free command pools, drop EGL context |
+| `finalize` | After `dispose`; runs exactly once | Free `self`-owned C memory (`g_free`, `g_slice_free`) |
+| `get_property` | `g_object_get(obj, "prop", &val, NULL)` | Expose renderer capabilities to CSS engine |
+| `set_property` | `g_object_set(obj, "prop", val, NULL)` | Accept scale-factor or display-colorspace updates |
+
+Releasing GPU resources in `dispose` (not `finalize`) matters because another object may briefly `g_object_ref` the device during teardown — `dispose` handles that; `finalize` must not.
+
+**Properties and `GParamSpec`.** Properties are named, typed, introspectable slots declared in `class_init` via `g_object_class_install_property()`:
+
+```c
+static GParamSpec *props[N_PROPS];
+
+props[PROP_SCALE_FACTOR] =
+    g_param_spec_int("scale-factor", NULL, NULL,
+                     1, 4, 1,
+                     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS);
+
+g_object_class_install_properties(object_class, N_PROPS, props);
+```
+
+`GParamSpec` records the property's `GType`, default value, valid range, and flags. GTK4's CSS animation engine resolves animated values through `g_object_get`/`g_object_set` on widget properties — property notifications (`g_object_notify`) trigger a re-snapshot and a fresh `GskRenderNode` tree.
+
+**Signals.** GObject signals are typed, named hooks on which arbitrary handlers can be connected. `GdkFrameClock` (§4.6) registers its render-loop signals in `class_init`:
+
+```c
+/* gdk/gdkframeclock.c */
+signals[UPDATE] =
+    g_signal_new("update",
+                 G_TYPE_FROM_CLASS(klass),
+                 G_SIGNAL_RUN_LAST,
+                 0, NULL, NULL,
+                 NULL,            /* marshaller — NULL uses generic va_list path */
+                 G_TYPE_NONE, 0); /* return type, n_params */
+
+signals[PAINT] =
+    g_signal_new("paint", G_TYPE_FROM_CLASS(klass),
+                 G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 0);
+```
+
+`g_signal_emit(clock, signals[UPDATE], 0)` runs all connected handlers in registration order. `G_CALLBACK()` is a cast macro that silences the type mismatch between a concrete handler signature and `GCallback` (`void (*)(void)`). Unlike Qt signals, GObject signal connections are dynamic runtime registrations; there is no compile-time type checking, but the marshaller validates argument counts and types at emission.
+
+**Reference counting and floating references.** All GObject instances are heap-allocated and reference-counted. `g_object_ref`/`g_object_unref` manage the count; reaching zero invokes `dispose` then `finalize`. `GskRenderNode` uses `GInitiallyUnowned` — a subclass that begins life with a *floating* reference. The first `g_object_ref_sink()` call claims ownership; subsequent calls increment normally. This allows render node constructors to return without the caller immediately calling `ref`:
+
+```c
+GskRenderNode *node = gsk_color_node_new(&color, &bounds);
+/* node is floating — no ref needed yet */
+gsk_render_node_ref_sink(node);  /* now we own it; refcount == 1 */
+/* ... */
+gsk_render_node_unref(node);     /* frees */
+```
+
+[Source: `gsk/gskrendernode.h`](https://gitlab.gnome.org/GNOME/gtk/-/blob/main/gsk/gskrendernode.h)
+
+**Interfaces.** GObject supports multiple interfaces via `G_IMPLEMENT_INTERFACE`. `GdkPaintable` is the canonical rendering interface — it is implemented by `GdkTexture`, `GdkPixbuf` wrappers, and custom paintable types, all through:
+
+```c
+G_DEFINE_TYPE_WITH_CODE(GdkMemoryTexture, gdk_memory_texture, GDK_TYPE_TEXTURE,
+    G_IMPLEMENT_INTERFACE(GDK_TYPE_PAINTABLE, gdk_memory_texture_paintable_init))
+```
+
+The `_paintable_init` function fills in the `GdkPaintableInterface` vtable with snapshot and flag implementations.
+
+**Comparison with Qt's QObject.** Qt achieves a similar feature set through `moc`, a compile-time preprocessor that generates `Q_OBJECT` metaclass data. The result is stronger compile-time type checking for signal/slot connections (`connect(&sender, &Sender::signal, &receiver, &Receiver::slot)`), but requires the moc step in the build. GObject's registration is entirely at runtime, making it more dynamic (signals can be installed on existing types, property sets can be extended) but with errors surfacing only at runtime rather than at compile time. Both systems achieve language-binding generation: GObject via GObject Introspection (GIR/typelib files), Qt via its own Qt meta-object protocol.
+
+**GObject Introspection.** The `g-ir-scanner` tool processes GTK4 headers and emits `.gir` XML files, which are compiled to binary `.typelib` files. GNOME Shell loads these at startup so that its GJS (JavaScript) runtime can invoke `Meta.Plugin`, `Clutter.Actor`, and `St.Widget` APIs directly — enabling the CSS-animated workspace transitions and notification pop-ups to be scripted in JavaScript without a separate IPC layer. The typelib path is the mechanism by which GNOME Shell's `js/` tree calls down into the same Mutter/Clutter C renderer described in Chapter 22 §2. [Source: `https://gi.readthedocs.io/en/latest/`]
 
 ---
 
