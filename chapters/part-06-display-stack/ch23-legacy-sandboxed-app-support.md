@@ -15,10 +15,11 @@
 7. [xdg-desktop-portal: Architecture](#7-xdg-desktop-portal-architecture)
 8. [Portal: Screen Cast and Remote Desktop](#8-portal-screen-cast-and-remote-desktop)
 9. [Portal: GPU Surface Sharing with Sandboxed Apps](#9-portal-gpu-surface-sharing-with-sandboxed-apps)
-10. [Running X11 Applications on Wayland: Practical Guide](#10-running-x11-applications-on-wayland-practical-guide)
-11. [Flatpak GPU Access: Security Model and Current Limitations](#11-flatpak-gpu-access-security-model-and-current-limitations)
-12. [Integrations](#12-integrations)
-13. [References](#13-references)
+10. [xdg-desktop-portal: Full Interface Reference](#10-xdg-desktop-portal-full-interface-reference)
+11. [Running X11 Applications on Wayland: Practical Guide](#11-running-x11-applications-on-wayland-practical-guide)
+12. [Flatpak GPU Access: Security Model and Current Limitations](#12-flatpak-gpu-access-security-model-and-current-limitations)
+13. [Integrations](#13-integrations)
+14. [References](#14-references)
 
 ---
 
@@ -641,7 +642,242 @@ As of 2025, no complete GPU portal implementation exists in `xdg-desktop-portal`
 
 ---
 
-## 10. Running X11 Applications on Wayland: Practical Guide
+## 10. xdg-desktop-portal: Full Interface Reference
+
+Sections §7–§9 cover the architectural model, screen cast, and GPU surface sharing. This section provides the remaining portal interfaces: the complete portal catalog, the `libportal` C convenience library, the permission store, the `GlobalShortcuts` portal, the `Camera` portal, the `FileChooser` and utility portals, and a summary of portal additions from 1.12 through 1.21.
+
+### Complete Portal Interface Catalog
+
+As of xdg-desktop-portal 1.22, the project exposes more than twenty portal interfaces covering the full range of system resources that sandboxed applications may need to access. Version numbers below refer to the xdg-desktop-portal *package version* in which the interface was introduced, not the per-interface `version` D-Bus property (which tracks revisions to a single interface independently of the package release).
+
+| D-Bus Interface | Introduced | Purpose |
+|---|---|---|
+| `org.freedesktop.portal.FileChooser` | 0.1 | File open/save dialogs via compositor native chooser |
+| `org.freedesktop.portal.Print` | 0.1 | Printing via the system print dialog |
+| `org.freedesktop.portal.OpenURI` | 0.1 | Open URIs or files with the default handler |
+| `org.freedesktop.portal.Screenshot` | 0.1 | Single-frame screen capture |
+| `org.freedesktop.portal.Inhibit` | 0.1 | Inhibit suspend, idle screensaver, or session logout |
+| `org.freedesktop.portal.Notification` | 0.1 | Desktop notification delivery |
+| `org.freedesktop.portal.NetworkMonitor` | 0.1 | Network connectivity state |
+| `org.freedesktop.portal.Email` | 0.6 | Compose email via system mailer |
+| `org.freedesktop.portal.Account` | 0.5 | User account info (name, avatar URI) |
+| `org.freedesktop.portal.ScreenCast` | 0.10.0 | Screen and window capture (§8) |
+| `org.freedesktop.portal.RemoteDesktop` | 0.10.0 | Synthetic pointer/keyboard input (§8) |
+| `org.freedesktop.portal.Settings` | 1.1.0 | Desktop settings (color-scheme, accent-color) |
+| `org.freedesktop.portal.Location` | 1.1.0 | Geolocation access |
+| `org.freedesktop.portal.Camera` | 1.4.0 | Camera access via PipeWire |
+| `org.freedesktop.portal.Background` | 1.4.0 | Background execution permission |
+| `org.freedesktop.portal.Realtime` | 1.12.0 | Real-time scheduling priority for audio/video pipelines |
+| `org.freedesktop.portal.DynamicLauncher` | 1.14.0 | Install/remove app launcher icons |
+| `org.freedesktop.portal.GlobalShortcuts` | 1.16.0 | Global keyboard shortcuts (XGrabKey replacement) |
+| `org.freedesktop.portal.InputCapture` | 1.17.0 | Full pointer+keyboard capture for remote-desktop client tools |
+| `org.freedesktop.portal.Clipboard` | 1.17.0 | Clipboard access for sandboxed apps without direct Wayland socket |
+| `org.freedesktop.portal.USB` | 1.19.1 | USB device access — enumerate and claim by VID/PID/class |
+
+[Source: xdg-desktop-portal releases](https://github.com/flatpak/xdg-desktop-portal/releases)
+
+Not every backend implements every interface. `xdg-desktop-portal-wlr` (for wlroots compositors) covers `ScreenCast`, `Screenshot`, `Inhibit`, and `OpenURI`; the remainder require the GNOME or KDE backend. `xdg-desktop-portal-hyprland` extends `xdg-desktop-portal-wlr` with window-aware screen capture on Hyprland. The `xdg-desktop-portal-gnome` and `xdg-desktop-portal-kde` backends implement the full interface set.
+
+Each portal interface carries a `version` D-Bus property tracking revisions to that interface independently of the package version. For example, `ScreenCast` is at interface version 6 (the `pipewire-serial` property was added in xdg-desktop-portal 1.21.2); older compositors may implement only version 3 or 4. Callers should query `version` before using features from later interface revisions.
+
+### libportal: The C Convenience Library
+
+The raw D-Bus portal API requires assembling `GVariant` options dictionaries, pre-registering signal handlers on `Request` object paths before the method call returns, and managing session lifecycles manually. `libportal` ([github.com/flatpak/libportal](https://github.com/flatpak/libportal)) provides a typed, GLib/GObject-based C API that wraps this machinery.
+
+The central object is `XdpPortal`, created once and shared:
+
+```c
+/* libportal — typed async wrappers around portal D-Bus calls */
+#include <libportal/portal.h>
+#include <libportal/screencast.h>
+
+static void
+on_session_created(GObject *source, GAsyncResult *res, gpointer data)
+{
+    XdpPortal *portal = XDP_PORTAL(source);
+    GError *error = NULL;
+    XdpSession *session =
+        xdp_portal_create_screencast_session_finish(portal, res, &error);
+    if (error) { g_warning("failed: %s", error->message); return; }
+
+    int pw_fd = xdp_session_open_pipewire_remote(session, NULL, &error);
+    /* → pw_context_connect_fd(ctx, pw_fd, NULL, 0) */
+}
+
+int main(void)
+{
+    XdpPortal *portal = xdp_portal_new();
+    xdp_portal_create_screencast_session(
+        portal,
+        XDP_OUTPUT_MONITOR | XDP_OUTPUT_WINDOW,
+        XDP_SCREENCAST_FLAG_NONE,
+        XDP_CURSOR_MODE_EMBEDDED,
+        XDP_PERSIST_MODE_TRANSIENT,
+        NULL,   /* restore_token — NULL = no persistence */
+        NULL,   /* GCancellable */
+        on_session_created,
+        NULL);  /* user_data */
+}
+```
+
+`libportal` handles `Request` object path registration, `SessionClosed` signal forwarding, and the mandatory `SelectSources`/`Start` sequencing. GTK4 uses `libportal` for its Wayland backend's screen capture; WebKitGTK uses it for camera and screen sharing in web calls.
+
+`libportal-gtk4` and `libportal-qt6` provide toolkit-specific parent-window handles (`XdpParent`). The `parent_window` argument allows the compositor to display the portal dialog as a transient child of the calling application's window. Without a valid parent handle, the compositor may place the dialog on an unrelated monitor with no visual link to the requester, or refuse to show it on stricter compositors.
+
+### Permission Store
+
+The portal frontend persists per-app, per-portal access decisions in `~/.local/share/xdg-desktop-portal/permissions.db` so that the user is not re-prompted each session. The store is exposed as the `org.freedesktop.impl.portal.PermissionStore` D-Bus service (interface version 2). Portal backends call `SetPermission(table, modal, id, app_id, permissions)` after a user grants or denies a request; the frontend queries `GetPermission(table, id, app_id)` at session start to check for an existing grant before presenting a dialog.
+
+From the command line:
+
+```bash
+# List all apps with any portal permission
+flatpak permissions
+
+# Show every permission granted to OBS Studio
+flatpak permission-show com.obsproject.Studio
+
+# Revoke the ScreenCast permission for OBS Studio
+flatpak permission-reset com.obsproject.Studio screencast
+
+# Remove all permission grants for an app
+flatpak permission-reset com.obsproject.Studio
+```
+
+The `persist_mode` option in `ScreenCast.SelectSources` maps directly to the permission store: `0` (transient) grants this session only with nothing written to the store; `1` (persistent until revoked) writes a grant entry and returns a `restore_token` the application can pass in future sessions to restore the same source selection without showing a dialog; `2` (persistent while app is running) degrades to `1` in current implementations.
+
+### GlobalShortcuts Portal
+
+`org.freedesktop.portal.GlobalShortcuts` (introduced in xdg-desktop-portal 1.16.0, December 2022) provides sandboxed applications with a compositor-mediated mechanism for global keyboard shortcuts — the Wayland replacement for X11's `XGrabKey`, which has no equivalent accessible to untrusted Wayland clients.
+
+The workflow has three stages:
+
+**1. Create a session**: `GlobalShortcuts.CreateSession(options: a{sv}) → handle: o`. The `Response` signal delivers a `session_handle` object path.
+
+**2. Bind shortcuts**:
+
+```
+org.freedesktop.portal.GlobalShortcuts.BindShortcuts(
+    IN  session_handle: o,
+    IN  shortcuts: a(sa{sv}),     — [(id, {description, preferred_trigger})]
+    IN  parent_window: s,
+    IN  options: a{sv},
+    OUT request_handle: o
+)
+```
+
+Each element of `shortcuts` is a `(id_string, options_dict)` pair. The options dict may include `description` (user-visible name for the shortcut configurator dialog) and `preferred_trigger` (e.g., `"SUPER+P"` as a hint; the user may override in the compositor UI). The compositor backend displays a shortcut assignment dialog. Assignments are stored in the permission store under the `globalshortcuts` table and survive application restarts.
+
+**3. Listen for activation signals**:
+
+```
+org.freedesktop.portal.GlobalShortcuts.Activated(
+    session_handle: o, shortcut_id: s, timestamp: t, options: a{sv})
+org.freedesktop.portal.GlobalShortcuts.Deactivated(
+    session_handle: o, shortcut_id: s, timestamp: t, options: a{sv})
+```
+
+`ListShortcuts(session_handle: o, options: a{sv}) → handle: o` returns the currently bound shortcuts without invoking any UI. `ConfigureShortcuts(session_handle: o, parent_window: s, options: a{sv})` (added in 1.21.0) opens the compositor's native shortcut configuration UI — equivalent to the "Global Shortcuts" entry in KDE's System Settings or GNOME's Keyboard panel — without re-running the full `BindShortcuts` flow.
+
+[Source: GlobalShortcuts portal reference](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.GlobalShortcuts.html)
+
+Both `xdg-desktop-portal-gnome` (GNOME 47+) and `xdg-desktop-portal-kde` (Plasma 6.0+) implement the backend. For sandboxed applications, this is the only standard mechanism to receive keyboard events while not in the foreground. The alternative — `zwp_keyboard_shortcuts_inhibit_manager_v1` — inhibits compositor shortcuts for a *focused* surface but delivers no events to background applications.
+
+### Camera Portal
+
+`org.freedesktop.portal.Camera` (introduced in 1.4.0, May 2019) exposes camera devices as PipeWire streams, following the same transport model as the ScreenCast portal.
+
+**Checking availability**: The `IsCameraPresent` boolean D-Bus property signals whether a camera device is available. Applications may watch this property with `g_dbus_proxy_connect_object` to detect USB camera plug/unplug.
+
+**Requesting access**: `AccessCamera(options: a{sv}) → handle: o`. The `Response` signal carries `response=0` (granted), `1` (user cancelled), or `2` (error).
+
+**Opening the PipeWire remote**: `OpenPipeWireRemote(options: a{sv}) → fd: h`. The returned file descriptor is passed to `pw_context_connect_fd()`:
+
+```c
+#include <pipewire/pipewire.h>
+#include <spa/param/video/format-utils.h>
+
+pw_init(NULL, NULL);
+struct pw_main_loop *loop = pw_main_loop_new(NULL);
+struct pw_context *ctx = pw_context_new(pw_main_loop_get_loop(loop), NULL, 0);
+
+/* camera_fd from Camera portal OpenPipeWireRemote */
+struct pw_core *core = pw_context_connect_fd(ctx, camera_fd, NULL, 0);
+
+struct pw_stream *stream = pw_stream_new(core, "camera-consumer",
+    pw_properties_new(
+        PW_KEY_MEDIA_TYPE,     "Video",
+        PW_KEY_MEDIA_CATEGORY, "Capture",
+        PW_KEY_MEDIA_CLASS,    "Video/Source",
+        NULL));
+
+uint8_t buf[1024];
+struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
+const struct spa_pod *params[1];
+params[0] = spa_format_video_raw_build(&b, SPA_PARAM_EnumFormat,
+    &SPA_VIDEO_INFO_RAW_INIT(
+        .format    = SPA_VIDEO_FORMAT_NV12,
+        .size      = SPA_RECTANGLE(1280, 720),
+        .framerate = SPA_FRACTION(30, 1)));
+
+pw_stream_connect(stream, PW_DIRECTION_INPUT, PW_ID_ANY,
+    PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS,
+    params, 1);
+```
+
+[Source: Camera portal reference](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Camera.html)
+
+Camera frames arrive as `SPA_DATA_DmaBuf` when the V4L2 driver supports DMA-BUF export (`VIDIOC_EXPBUF`), or `SPA_DATA_MemFd` as a memory-mapped fallback. The DMA-BUF path avoids a CPU copy for consumers (such as WebRTC pipelines) that import frames directly into EGL textures via `eglCreateImageKHR(EGL_LINUX_DMA_BUF_EXT)`.
+
+### FileChooser, OpenURI, and Settings Portals
+
+**`org.freedesktop.portal.FileChooser`** is the most widely exercised portal: any sandboxed application that opens or saves a file needs it. The backend displays the compositor's native file-chooser dialog (GTK's file chooser under GNOME, KDE's dialog under Plasma), avoiding the need for sandboxed apps to embed their own filesystem navigator.
+
+```c
+/* org.freedesktop.portal.FileChooser.OpenFile(parent, title, options)
+   Response signal delivers: uris: as (array of file:// URIs) */
+GVariantBuilder opt;
+g_variant_builder_init(&opt, G_VARIANT_TYPE_VARDICT);
+g_variant_builder_add(&opt, "{sv}", "title",
+                      g_variant_new_string("Open Project"));
+g_variant_builder_add(&opt, "{sv}", "accept_label",
+                      g_variant_new_string("Open"));
+
+/* filters: a(sa(us)) — label + [(filter_type, pattern)]
+   filter_type 0 = glob, 1 = MIME type */
+g_variant_builder_add(&opt, "{sv}", "filters",
+    g_variant_new_parsed(
+        "[('Source Files', [(0, '*.c'), (0, '*.h'), (1, 'text/x-csrc')])]"));
+
+/* current_folder: ay — NUL-terminated byte string */
+g_variant_builder_add(&opt, "{sv}", "current_folder",
+    g_variant_new_bytestring("/home/user/projects"));
+```
+
+`SaveFiles(parent_window, title, options) → handle: o` (added in 1.17.0) presents a directory picker and accepts an array of filenames, returning one target path per filename — used for "export all" operations in image editors and IDEs.
+
+**`org.freedesktop.portal.OpenURI`** opens a file or URI with the user's default handler — the sandboxed equivalent of `xdg-open`. The `OpenFile(parent_window, fd: h, options)` variant accepts a file descriptor rather than a path string, so the sandboxed application can hand off an open fd without the portal needing to traverse the sandbox's filesystem namespace. The `activation_token` option supplies an `xdg_activation_v1` token so the newly launched handler can focus its window.
+
+**`org.freedesktop.portal.Settings`** is the most widely used read-only portal. Applications query it for the user's color-scheme preference (`color-scheme`: `0`=no preference, `1`=dark, `2`=light) and accent colour. GTK4 reads this automatically when running under a sandbox; Qt 6.5+ queries it via `QStyleHints::colorScheme()`. The portal normalises compositor-specific backends (GNOME gsettings `org.gnome.desktop.interface`, KDE `kdeglobals`) into a common D-Bus API so applications need not branch on desktop environment.
+
+### Portal Version History: 1.12–1.21
+
+| Version | Key additions |
+|---|---|
+| **1.12.0** (Dec 2021) | `Realtime` portal — RT scheduling priority for audio/video pipelines |
+| **1.14.0** (Mar 2022) | `DynamicLauncher` portal — install/remove desktop launcher icons |
+| **1.16.0** (Dec 2022) | `GlobalShortcuts` portal — compositor-mediated global keyboard shortcuts |
+| **1.17.0** (Aug 2023) | `InputCapture` portal (full pointer+keyboard capture via EIS); `Clipboard` portal; `FileChooser.SaveFiles`; `OpenURI.OpenDirectory` |
+| **1.18.0** | `Email` v4 activation-token parameter; `InputCapture` EIS event-transport improvements; `ScreenCast` session persistence improvements |
+| **1.19.1** (Dec 2024) | `USB` portal stable — enumerate and claim USB devices by VID/PID/class |
+| **1.20.x** | `GlobalShortcuts` interface version 2 enhancements; `ScreenCast` `VIRTUAL` source type (virtual monitor output) |
+| **1.21.x** | `GlobalShortcuts.ConfigureShortcuts()` — open compositor shortcut UI; `ScreenCast` `pipewire-serial` property (interface v6); `RemoteDesktop` clipboard support and session persistence |
+
+[Source: xdg-desktop-portal releases](https://github.com/flatpak/xdg-desktop-portal/releases)
+
+---
+
+## 11. Running X11 Applications on Wayland: Practical Guide
 
 ### Toolkit Backend Selection
 
@@ -708,7 +944,7 @@ bool is_xwayland(xcb_connection_t *conn) {
 
 ---
 
-## 11. Flatpak GPU Access: Security Model and Current Limitations
+## 12. Flatpak GPU Access: Security Model and Current Limitations
 
 ### `--device=dri`: Security Implications
 
@@ -821,7 +1057,7 @@ finish-args:
 
 ---
 
-## 12. Integrations
+## 13. Integrations
 
 **Chapter 1 (DRM Architecture)**: DRI3 is the X11 protocol that allows X11 applications to allocate GPU buffers directly. XWayland uses DRI3 to accept client-allocated GPU buffers (from Mesa's GLX driver) and present them to the compositor. Render nodes (`/dev/dri/renderDN`) are the device nodes DRI3 clients open. The security model of render nodes — designed to be world-readable/writable for unprivileged GPU compute — is why Flatpak's `--device=dri` represents a significant sandbox escape for GPU capabilities.
 
@@ -845,7 +1081,7 @@ finish-args:
 
 ---
 
-## 13. References
+## 14. References
 
 1. **XWayland source code** — `xserver/hw/xwayland/`:
    https://gitlab.freedesktop.org/xorg/xserver
