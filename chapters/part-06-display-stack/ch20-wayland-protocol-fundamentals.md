@@ -536,6 +536,8 @@ An HDR Vulkan application workflow looks like this:
 
 The compositor's responsibility is to apply the colour-space conversion from the surface's image description to the display's native description. For KMS-capable hardware, this conversion can be implemented in the display pipeline itself using the CRTC `DEGAMMA_LUT`, `CTM`, and `GAMMA_LUT` properties (see Chapter 3). Gamescope, Valve's compositing engine, implements its HDR path using `wp_color_management_v1` with KMS LUT programming. GNOME's Mutter merged `wp_color_management_v1` support ahead of GNOME 48, and KWin has had HDR support via its own colour management path since Plasma 6.
 
+**Driver support caveat — NVIDIA proprietary driver:** As of mid-2026, NVIDIA's proprietary Linux driver does not implement `wp_color_management_v1`. Mesa 25.1 (released May 2025) added protocol support for all open-source Mesa Vulkan drivers (ANV/Intel, RADV/AMD, NVK/Nouveau). NVIDIA's driver exposes neither the `wp_color_manager_v1` global nor the `DEGAMMA_LUT`, `CTM`, or `GAMMA_LUT` KMS connector properties that compositors use for the colour transform. Applications using the workflow above — including HDR Vulkan surfaces submitted via `ST2084_PQ` image descriptions — receive no tone-mapping on NVIDIA proprietary Wayland sessions regardless of display capability. NVIDIA has not published a support timeline for this protocol as of mid-2026. [[Source]](https://forums.developer.nvidia.com/t/wayland-color-management-protocol-not-yet-supported-by-nvidia-driver/338444)
+
 ---
 
 ## 10. The Wayland Security Model
@@ -598,6 +600,8 @@ Secondary use cases include kiosk and digital signage deployments, where a dedic
 The security implications are significant: a leased DRM fd gives the receiving process full KMS authority over the leased objects. The compositor is responsible for ensuring that the requesting client is trusted before granting a lease. In practice, most compositors require the client to be running in the same user session and not in a restricted sandbox. `wp_security_context_v1` metadata can inform this decision. The `wp_drm_lease_connector_v1.withdrawn` event allows the compositor to revoke a connector advertisement (e.g. when the compositor itself needs to use it for display), and the `wp_drm_lease_v1.finished` event allows the compositor to revoke an active lease at any time.
 
 Compositor support as of 2025: KWin (KDE Plasma 5.25 and later) and Weston implement `wp_drm_lease_v1`. Mutter/GNOME Shell does not implement the protocol, which means direct-mode VR on GNOME Wayland sessions requires either a compositor switch or a helper process that acquires DRM master outside the Wayland session. This is a known friction point for the OpenXR ecosystem on GNOME.
+
+**Driver support caveat — NVIDIA proprietary driver:** `wp_drm_lease_v1` is unreliable on NVIDIA's proprietary driver as of 2025–2026. Driver series 565 introduced a regression in which the DRM backend stopped advertising the HMD connector as a non-desktop output, causing the `wp_drm_lease_device_v1` object to enumerate zero leasable connectors ("Unable to find non-desktop output"). Even where a lease is successfully established, NVIDIA's DRM presentation path introduces substantial frame-delivery latency compared to AMD or Intel backends, making VR frame timing impractical for headsets that require deterministic sub-millisecond scanout. Monado's compatibility with NVIDIA on Wayland is driver-version-dependent and variable; SteamVR direct-mode on Wayland with NVIDIA is similarly inconsistent. These issues are specific to the proprietary driver; NVK (the open-source Mesa Nouveau Vulkan driver, Ch18) uses the same DRM infrastructure as AMD and Intel and does not share these constraints, though NVK's compute and ray-tracing coverage is still maturing. [[Source]](https://forums.developer.nvidia.com/t/565-57-01-gnome-wayland-47-1-drm-lease-not-working-anymore-unable-to-find-non-desktop-output/312472) [[Source]](https://forums.developer.nvidia.com/t/substantial-drm-lease-presentation-latency-resulting-in-unusable-vr-hmd-experience/332386)
 
 ---
 
@@ -702,6 +706,31 @@ The following table consolidates the status of each gap as of early 2026:
 | Capability discovery | `XQueryExtension` | Per-global `wl_registry` probing | No unified capability query |
 
 These limitations are real, but it is worth stating their context explicitly: most are gaps in the ecosystem surrounding Wayland rather than flaws in the core protocol design. The Wayland protocol itself is sound. The gaps are in the pace at which compositor implementors, toolkit authors, and wayland-protocols contributors have converged on the protocols needed to cover every X11 use case. That convergence is actively happening — the table above looks substantially better than the equivalent table from 2020 — but it has been slower than early Wayland advocates predicted.
+
+### NVIDIA Proprietary Driver: Remaining Wayland Gaps (mid-2026)
+
+The general Wayland ecosystem gaps above apply to all GPU vendors. NVIDIA's proprietary driver carries an additional set of Wayland-specific limitations beyond those of open-source Mesa drivers. The explicit sync issue — the most disruptive pre-2024 problem (flickering, black frames) — was resolved with driver 555 via `wp_linux_drm_syncobj_v1` (see §8). The remaining gaps as of mid-2026 are:
+
+| Feature | Status | Notes |
+|---|---|---|
+| `wp_color_management_v1` (HDR surfaces) | **Not implemented** | No timeline announced; Mesa 25.1 has it for ANV/RADV/NVK |
+| `DEGAMMA_LUT` / `CTM` / `GAMMA_LUT` connector props | **Not supported** in nvidia-drm | Blocks compositor-side colour pipeline |
+| `wp_drm_lease_v1` (VR direct-mode) | **Unreliable** | Regression in 565; latency issues persist in 575 |
+| VDPAU on Wayland (native or Xwayland) | **Not supported** | In planned backlog since driver 515 |
+| NvFBC desktop capture | **Not supported** | Doesn't work on Wayland or Xwayland |
+| Display multiplexer (MUX) for Optimus laptops | **Not supported** | Compositor ecosystem also lacks protocol support |
+| `wp_presentation` timing via nvidia-drm | **Not exposed** | Per-frame vblank timestamps not available from driver |
+| vGPU on Wayland sessions | **Not supported** | Listed as planned |
+| `nvidia-drm modeset=1` as default | **Not yet** | Still requires manual `options nvidia_drm modeset=1` |
+| Stereo rendering (GLX/EGL/Vulkan) | **Won't be supported** | Permanent; NVIDIA redirects to `VK_KHR_display` |
+| Implicit SLI Mosaic | **Won't be supported** | Permanent; architectural incompatibility |
+
+The `COLOR_ENCODING` and `COLOR_RANGE` DRM **plane** properties (distinct from the connector-level `CTM`/`GAMMA_LUT`) were added in driver 575. Basic VRR/G-SYNC on Wayland desktops works as of driver 525 for standard refresh-rate switching, though edge cases around display compatibility exist. GLX front-buffer rendering on Xwayland was added in driver 575.
+
+For developers targeting NVIDIA on Wayland: GBM-based buffer allocation (linux-dmabuf, §6) works correctly; explicit sync (§8) works correctly with driver 555+; the colour management and DRM lease paths (§9, §11) do not. Applications requiring HDR or VR on NVIDIA Wayland should document the driver version requirements and test against the open-source NVK path as an alternative where the required features are implemented.
+
+[[Source: NVIDIA Wayland plans — 575 release series]](https://forums.developer.nvidia.com/t/wayland-support-for-the-575-release-series/333827)
+[[Source: NVIDIA Wayland Known Issues — driver 565 README]](https://download.nvidia.com/XFree86/Linux-x86_64/565.57.01/README/wayland-issues.html)
 
 ---
 
