@@ -1,6 +1,6 @@
-# Part VI — The Display Stack
+# Part VI-A — Wayland Protocol and Compositor Architecture
 
-Parts I–V establish the substrate: kernel memory management, DRM/KMS atomic modesetting, Mesa, and the Vulkan driver stack. Part VI is where that substrate becomes visible. It covers every layer between a rendered DMA-BUF and the photons leaving the display panel: the Wayland compositor protocol, compositor toolkits and production compositor implementations, backward compatibility for X11 applications, the input pathway from kernel interrupt to Wayland event, colour science and calibration, the advanced synchronisation and colour-management protocols that define the state of the art in 2026, font rendering and text layout, variable-refresh-rate display technology, and privacy-respecting screen capture and remote desktop. The compositor is the conductor of this stack — it orchestrates KMS, GPU buffers, input, colour management, and adaptive timing into a coherent user experience. Nothing that reaches a screen passes outside this part's scope.
+Parts I–V establish the substrate: kernel memory management, DRM/KMS atomic modesetting, Mesa, and the Vulkan driver stack. Part VI-A is where that substrate acquires its coordination layer. It covers the Wayland wire protocol, the compositor as the privileged process that owns display hardware and arbitrates all surface presentation, the compositor toolkits and production compositor implementations that practitioners deploy, the XWayland compatibility bridge for legacy X11 applications, the extension mechanisms by which the protocol ecosystem evolves, the security model that enforces client isolation, fractional scaling for HiDPI displays, the text-input and IME protocols that enable complex-script input, and the accessibility infrastructure that exposes the compositor's surface tree to screen readers. Chapters covering the display services that run above the compositor — input processing, colour calibration, HDR, font rendering, VRR, and screen capture — appear in Part VI-B; Part VI-A focuses on the compositor itself and the Wayland protocol layer it implements.
 
 ## What a Compositor Is and Does
 
@@ -146,35 +146,7 @@ The compositor delivers its rendered output to the display through a **DRM atomi
 
 **Tearing** is the visual artifact produced when a buffer swap happens mid-scanout: two frames appear split across the panel. KMS VBLANK synchronisation prevents this in the standard compositor path. For low-latency gaming scenarios, `DRM_MODE_PAGE_FLIP_ASYNC` allows an immediate (tearing) flip; Vulkan applications can request the same via `VK_PRESENT_MODE_IMMEDIATE_KHR`. Gamescope and KWin expose tearing-allowed modes for competitive gaming use cases.
 
-**Fractional scaling** (`wp_fractional_scale_v1`) allows clients to render at non-integer scale factors such as 1.25×, 1.5×, or 1.75× for HiDPI displays where 1× is too small and 2× wastes pixels. The client renders at the correspondingly higher resolution; the compositor downscales to the output. Subpixel alignment and font rendering quality under fractional scaling are ongoing challenges compared to X11's integer-scaling approach.
-
-## The Input Stack: From Interrupt to Wayland Event
-
-The **evdev model** is the kernel's universal input abstraction. Every keyboard, mouse, touchpad, and gamepad produces `struct input_event` records — each carrying a `type` (EV_KEY, EV_REL, EV_ABS, EV_SYN), a `code`, and a `value` — on a `/dev/input/event*` node ([kernel docs](https://www.kernel.org/doc/html/latest/input/input.html)). Applications and compositors never read evdev directly; instead, **libinput** ([source](https://gitlab.freedesktop.org/libinput/libinput)) provides device normalisation: pointer acceleration curves (flat, adaptive, none), touchpad gesture recognition (pinch, swipe, rotate), and a quirks database that corrects device-specific misbehaviours. The full chain is: kernel interrupt → evdev node → libinput → Wayland compositor → `wl_pointer`/`wl_keyboard` events to the client.
-
-**Wacom** tablet support in libinput uses `libwacom` to identify stylus devices by USB/Bluetooth ID, providing pressure, tilt, and rotation axes. These are delivered to Wayland clients via the `wp_tablet` protocol; Krita and GIMP rely on this path for pressure-sensitive drawing on Wayland.
-
-**HID and SDL2** cover the gaming controller layer. The kernel's HID subsystem (`hid-xbox`, `hid-sony`, `hid-nintendo`) normalises gamepad hardware to evdev ABS/KEY events. SDL2 abstracts these further via `SDL_GameController`, with a Wayland backend that routes events through the compositor's seat model. Steam Input adds a virtual controller layer via `uinput` that allows remapping regardless of the physical device.
-
-## Colour, Calibration, and HDR
-
-Display calibration begins with measuring the physical display and producing an **ICC profile** — a binary standard format containing the display's colour primaries, white point, tone response curve, and per-channel gamma ramps ([ICC specification](https://www.color.org/specification/ICC.1-2022-05.pdf)). The **colord** D-Bus daemon ([source](https://www.freedesktop.org/software/colord/)) manages device–profile associations: it exposes `CdDevice` and `CdProfile` objects on `org.freedesktop.ColorManager` and notifies compositors when the active profile changes. ICC profiles contain a **VCGT (Video Card Gamma Table)** tag — a per-channel lookup table for display hardware calibration. The `colord-session` service extracts the VCGT at login and programs it into the KMS **`GAMMA_LUT`** CRTC property via `drmModeAtomicCommit()`. `GAMMA_LUT` is a `drm_color_lut` array applied to the output signal before the DAC, giving the compositor per-channel colour correction without touching application-level rendering ([KMS colour pipeline docs](https://www.kernel.org/doc/html/latest/gpu/drm-kms.html#color-management-properties)).
-
-**HDR and Wide Color Gamut** extend the compositor's colour pipeline from the sRGB/BT.709 baseline to BT.2020 primaries and the **PQ (Perceptual Quantizer)** transfer function ([SMPTE ST 2084](https://ieeexplore.ieee.org/document/7291452)) used by HDR10 content. The compositor receives HDR static metadata (MaxCLL, MaxFALL, SMPTE ST 2086 mastering display data) from clients via `wp_color_management_v1` (wayland-protocols staging, v3 in 1.45) and passes it to the display via the KMS `HDR_OUTPUT_METADATA` connector property and the per-plane DRM Colour Pipeline API (merged Linux 6.9). For SDR displays, the compositor performs **tone mapping** — algorithms such as Reinhard, ACES filmic, or Hable compress the wider HDR luminance range into the SDR gamut. For **HDR video passthrough**, the compositor bypasses tone mapping entirely and lets the application's image description flow through to the display unmodified; MPV uses this path for direct HDR playback via VA-API surfaces.
-
-**Screen-cast** on Wayland is architecturally more constrained than on X11, where any application could screenshot any window. The compositor is the only party with access to all surfaces. `wlr-screencopy` (wlroots-specific) and the cross-compositor `ext-image-copy-capture-v1` (wayland-protocols staging) allow authorised capture; the `org.freedesktop.portal.ScreenCast` D-Bus interface in **xdg-desktop-portal** routes these requests through PipeWire, delivering DMA-BUF frames to consumers such as OBS and WebRTC stacks without granting broad window access.
-
-## Font Rendering and the Text Pipeline
-
-Every visible string on a Linux desktop passes through a stack of libraries that collectively transform Unicode codepoints into antialiased glyph bitmaps blended onto a GPU surface. **fontconfig** discovers and matches fonts by family, weight, and style attributes using a rules engine that consults `/etc/fonts/fonts.conf` and per-user overrides. **FreeType2** loads the matched font file, interprets its outline geometry (TrueType quadratic splines or OpenType cubic Béziers), and rasterizes each glyph at the requested pixel size with hinting adjustments that align strokes to the pixel grid — trading mathematical fidelity for on-screen sharpness. **HarfBuzz** handles the difficult problem that precedes rasterization: given a run of Unicode text in a given script, which glyph sequence does the font's OpenType GSUB and GPOS tables specify, and at what advance widths and kerning offsets? HarfBuzz turns a codepoint sequence into a positioned glyph sequence. **Pango** orchestrates paragraph layout above HarfBuzz: it performs Unicode bidirectional analysis (UAX #9), segments a paragraph into script-homogeneous runs, shapes each run via HarfBuzz, and wraps lines. **Cairo** composites the resulting glyph bitmaps onto a surface, blending the antialiased coverage values against the background. GPU-accelerated text pipelines (used in Chromium, Firefox, Alacritty, and GNOME's GTK4) bypass the CPU compositing path and render glyph bitmaps directly into texture atlases on the GPU. Subpixel rendering — exploiting the RGB stripe geometry of LCD panels — provides additional horizontal resolution at the cost of colour fringing on non-matching backgrounds, a trade-off that fractional-scale HiDPI displays handle differently than integer-scale ones.
-
-## Variable Refresh Rate and Frame Pacing
-
-Fixed-rate display refreshes and variable-rate GPU rendering are fundamentally in tension: the display expects a new frame every 16.67 ms at 60 Hz, but GPU frame time varies with scene complexity and thermal state. **Variable Refresh Rate (VRR)** — implemented as AMD FreeSync (an open VESA Adaptive Sync standard) and NVIDIA G-Sync on Linux — resolves this by letting the compositor instruct the display to hold the current frame until the next rendered frame is ready, within a supported refresh-rate window (typically 48–144 Hz). At the kernel level, VRR is controlled via the KMS `VRR_ENABLED` connector property; at the Wayland level, `wp_presentation` feedback timestamps allow compositors and games to measure per-frame presentation latency and adjust pacing dynamically. Gamescope implements a VRR-aware frame scheduler that uses `WP_PRESENTATION_FEEDBACK_KIND_HW_CLOCK` timestamps to decide when to submit frames. Both Mutter and KWin expose per-output VRR toggles in their compositor settings and honour per-application VRR opt-in via the `VK_EXT_present_mode_fifo_latest_ready` and tearing swap chain extensions. Frame pacing strategies — pacing to a fixed target, pacing to predicted VBLANK, pacing with the FIFO barrier protocol — are deeply intertwined with the VRR window: a frame submitted too late falls below the minimum refresh, causing a visible stutter even with VRR enabled.
-
-## Screen Capture and Remote Desktop
-
-Wayland's strict client isolation — no client may read another client's surfaces — demands a new architecture for screen capture. The compositor is the only process with access to all surfaces and the KMS scanout buffer. Two capture protocols address this: **`wlr-screencopy`** (wlroots-ecosystem, implemented by Sway and Hyprland) and the cross-compositor **`ext-image-copy-capture-v1`** (wayland-protocols staging), which supersedes the older protocol and adds damage-region reporting so a capturer only copies changed pixels. Above these protocols, **PipeWire** acts as the media bus: the compositor connects to PipeWire as a stream producer, advertising screen-cast sessions as video sources. The **`org.freedesktop.portal.ScreenCast`** xdg-desktop-portal interface gates access behind a user consent dialog and routes the DMA-BUF frames to consumers such as OBS Studio (via the PipeWire camera input), WebRTC stacks in Chromium and Firefox (via the `GetDisplayMedia` portal path), and remote desktop clients. For **remote desktop**, the same capture path provides the pixel stream; input injection uses the **`org.freedesktop.portal.RemoteDesktop`** portal, which creates a `uinput` virtual device the portal daemon controls on the client's behalf. RDP and VNC servers (FreeRDP, KasmVNC) integrate with these portals and with KMS writeback connectors that allow directly capturing the scanout buffer to a CPU-accessible buffer without a compositor round-trip, enabling lower-latency streaming for thin-client scenarios.
+**Fractional scaling** (`wp_fractional_scale_v1`) allows clients to render at non-integer scale factors such as 1.25×, 1.5×, or 1.75× for HiDPI displays where 1× is too small and 2× wastes pixels. The client renders at the correspondingly higher resolution; the compositor downscales to the output. Subpixel alignment and font rendering quality under fractional scaling are ongoing challenges compared to X11's integer-scaling approach; Chapter 138 covers the protocol and compositor implementation in depth.
 
 ## Dependency Map
 
@@ -187,97 +159,64 @@ graph TD
     CH22[Ch 22 — Production Compositors]
     CH23[Ch 23 — Legacy & Sandboxed App Support]
     CH46[Ch 46 — Wayland Protocol Ecosystem]
-    CH53[Ch 53 — Display Calibration / colord]
-    CH54[Ch 54 — Linux Input Stack]
-    CH74[Ch 74 — HDR & Wide Color Gamut]
-    CH75[Ch 75 — Explicit GPU Sync]
-    CH101[Ch 101 — Color Science & ICC]
-    CH105[Ch 105 — Font Rendering & Text Layout]
-    CH112[Ch 112 — VRR, FreeSync & Frame Pacing]
-    CH123[Ch 123 — Screen Capture & Remote Desktop]
+    CH130[Ch 130 — Writing Custom Wayland Extensions]
+    CH132[Ch 132 — Wayland Security Model]
+    CH138[Ch 138 — Wayland Fractional Scaling]
+    CH145[Ch 145 — XWayland Architecture]
+    CH151[Ch 151 — Wayland Text Input and IME]
+    CH175[Ch 175 — Compositor Accessibility: AT-SPI2]
 
     CH20 --> CH21
     CH20 --> CH23
     CH20 --> CH46
-    CH20 --> CH54
-    CH20 --> CH105
-    CH20 --> CH123
-    CH21 --> CH22
-    CH21 --> CH75
-    CH21 --> CH112
-    CH21 --> CH123
-    CH46 --> CH74
-    CH46 --> CH75
-    CH46 --> CH123
-    CH53 --> CH74
-    CH101 --> CH74
-    CH74 --> CH105
-    CH75 --> CH112
-    CH175[Ch 175 — Accessibility AT-SPI2]
-
+    CH20 --> CH132
+    CH20 --> CH145
+    CH20 --> CH151
     CH20 --> CH175
-    CH22 --> CH112
-    CH22 --> CH123
-    CH194[Ch 194 — Cross-Stack Integration]
-    CH20 --> CH194
-    CH46 --> CH194
-    CH74 --> CH194
-    CH75 --> CH194
+    CH21 --> CH22
+    CH21 --> CH138
+    CH46 --> CH130
+    CH132 --> CH138
+    CH23 --> CH145
 ```
 
-The diagram reveals two independent tributaries that merge at the advanced chapters. The **protocol tributary** runs CH20 → CH21 → CH22 → CH46, then fans out to CH74, CH75, CH112, and CH123. The **colour tributary** runs CH53 → CH101 → CH74, converging with the protocol work at the HDR chapter. Font rendering (CH105) sits downstream of both the protocol layer (CH20) and the HDR colour pipeline (CH74), since colour-managed text requires both correct Wayland surface semantics and an understanding of output colour spaces. VRR (CH112) depends on compositor internals (CH21, CH22), presentation timing (CH46 via `wp_presentation`), and explicit sync (CH75), because VRR flips must be gated behind the same GPU fence mechanism as ordinary atomic commits. Screen capture (CH123) is the most protocol-interconnected chapter: it draws on the Wayland isolation model (CH20), compositor implementation details (CH21, CH22), the staging capture protocols (CH46), and explicit sync (CH75), since captured frames must be GPU-fence-complete before they are valid for encoding or transmission.
+The protocol fundamentals chapter (CH20) is the single root of the dependency tree. Every other chapter in this sub-part depends on it, directly or transitively. The core progression runs CH20 → CH21 → CH22, establishing the protocol, the compositor library layer, and the production implementations. CH46 branches off from CH20 to cover the evolving staging protocol ecosystem; its output (the staging protocol landscape) is a prerequisite for CH130 (writing your own extensions, which requires understanding the lifecycle). CH132 (security model) depends on CH20 (protocol isolation model) and feeds into CH138 (fractional scaling requires understanding the security context of scale negotiation). CH145 (XWayland deep dive) benefits from CH23 (which introduces XWayland at a higher level). CH151 (text input) and CH175 (accessibility) are independent leaf nodes that each require only CH20.
 
 ## Chapter Progression
 
-The chapters in this part form a deliberate progression from protocol foundations to high-level compositor features:
+The chapters in this part form a deliberate progression from protocol foundations to specialised compositor features:
 
-- **Chapter 20 — Wayland Protocol Fundamentals** is the prerequisite for the entire part. It explains the wire protocol, the Unix socket IPC model, `zwp_linux_dmabuf_v1` for DMA-BUF submission, `wp_presentation` for frame timing, and the security model. Read this first.
-- **Chapter 21 — Building Compositors with wlroots** moves to the compositor side, covering the DRM/KMS backend, GBM allocation, scene graph with damage tracking and hardware-plane promotion, and the libinput seat model. Systems developers should read this second.
-- **Chapter 22 — Production Compositors** examines Mutter (GNOME), KWin (KDE), Sway, Hyprland, gamescope, and cosmic-comp through the lens of their KMS backends, rendering pipelines, and protocol-extension support matrices.
-- **Chapter 23 — Legacy and Sandboxed App Support** covers XWayland (rootless mode, Glamor, HiDPI, explicit sync) and xdg-desktop-portal (screen-cast, Flatpak GPU access).
-- **Chapter 46 — The Evolving Wayland Protocol Ecosystem** documents the 2024–2026 staging protocols: `wp_linux_drm_syncobj_v1`, `wp_color_management_v1`, `ext-image-copy-capture-v1`, and `wp_fifo_v1`.
-- **Chapter 53 — Display Calibration and colord** covers the full ICC profiling and VCGT→GAMMA_LUT pipeline.
-- **Chapter 54 — The Linux Input Stack** traces the vertical path from evdev interrupt to Wayland client event in depth.
-- **Chapters 74, 75, and 101** go deeper on HDR/WCG, explicit GPU synchronisation, and colour science respectively, building on the foundations laid in Chapters 20 and 46.
-- **Chapter 105 — Font Rendering and Text Layout** covers the complete fontconfig → FreeType2 → HarfBuzz → Pango → Cairo → GPU atlas pipeline. It connects to the HDR and colour chapters because correct text rendering on wide-gamut and HDR displays requires understanding the output colour space that the compositor programs into KMS. Application developers and browser engineers should read it after Chapter 20 and the colour chapters.
-- **Chapter 112 — VRR, FreeSync, and Frame Pacing** covers the KMS `VRR_ENABLED` property, FreeSync/G-Sync hardware requirements, `wp_presentation` feedback-driven frame scheduling, and the interaction between VRR and explicit sync fences. Game developers targeting Steam Deck and desktop Linux should read it after Chapters 21, 22, and 75.
-- **Chapter 123 — Screen Capture and Remote Desktop on Wayland** covers the `wlr-screencopy` and `ext-image-copy-capture-v1` protocols, PipeWire screen-cast session management, the xdg-desktop-portal ScreenCast and RemoteDesktop D-Bus interfaces, OBS Studio and WebRTC integration, and KMS writeback connectors for low-latency streaming. Streaming engineers and compositor authors should read it after Chapters 20–23 and 46.
+- **Chapter 20 — Wayland Protocol Fundamentals** is the prerequisite for the entire sub-part. It explains the wire protocol, the Unix socket IPC model, `zwp_linux_dmabuf_v1` for DMA-BUF submission, `wp_presentation` for frame timing, and the security model that prevents cross-client surface inspection. Read this first.
+- **Chapter 21 — Building Compositors with wlroots** moves to the compositor side, covering the DRM/KMS backend, GBM allocation, the `wlr_scene` scene graph with damage tracking and hardware-plane promotion, and the libinput seat model. Systems developers and compositor authors should read this second.
+- **Chapter 22 — Production Compositors** examines Mutter (GNOME Shell), KWin (KDE Plasma), Sway, Hyprland, gamescope, and cosmic-comp through the lens of their KMS backends, rendering pipelines, and protocol-extension support matrices. It is the reference chapter for understanding the production ecosystem.
+- **Chapter 23 — Legacy and Sandboxed App Support** covers XWayland (rootless mode, Glamor GPU acceleration, HiDPI, explicit sync) and xdg-desktop-portal (screen-cast gating, Flatpak GPU access). Application developers moving from X11 should read this before Chapter 145.
+- **Chapter 46 — The Evolving Wayland Protocol Ecosystem** documents the 2024–2026 staging protocols: `wp_linux_drm_syncobj_v1`, `wp_color_management_v1`, `ext-image-copy-capture-v1`, `wp_fifo_v1`, and `wp_tearing_control_v1`. It is the reference for the protocol landscape as of wayland-protocols 1.45–1.48.
+- **Chapter 130 — Wayland Protocol Development: Writing Custom Extensions** explains the wayland-scanner toolchain, the unstable→staging→stable lifecycle, XML schema conventions, and a worked example implementing a private compositor protocol extension end-to-end. Read after Chapter 46.
+- **Chapter 132 — Wayland Security Model and Protocol Sandboxing** examines how Wayland's client-isolation design prevents cross-client surface access, how xdg-desktop-portal gates privileged operations (screen capture, input injection), and how compositor authors implement capability-based access control for sensitive protocol extensions.
+- **Chapter 138 — Wayland Fractional Scaling** documents the `wp_fractional_scale_v1` protocol, compositor-side downscaling implementation, per-output scale factors, subpixel positioning challenges under fractional scale, and font rendering quality considerations compared to integer-scale HiDPI.
+- **Chapter 145 — XWayland Architecture and Compatibility** provides a dedicated deep-dive into the rootless XWayland server: how it runs as a Wayland client, how it implements DRI3 and Present over the Wayland connection, how Glamor accelerates X11 rendering via OpenGL ES, HiDPI and fractional scale support, and the explicit sync (`xwayland-explicit-synchronization`) implementation that resolved NVIDIA compatibility issues. Read after Chapter 23.
+- **Chapter 151 — Wayland Text Input and IME** covers the `zwp_text_input_v3` and `zwp_input_method_v2` protocols, input method editor (IME) integration for CJK and complex scripts, on-screen keyboard compositor support, and how toolkits (GTK4, Qt6) bridge the Wayland text-input protocol to their internal input method APIs.
+- **Chapter 175 — Linux Compositor Accessibility: AT-SPI2, Screen Readers, and the Wayland Gap** covers the full Linux accessibility stack from the AT-SPI2 D-Bus protocol through GTK4's `GtkATContext`/`GtkAtSpiContext` and Qt6's `QAccessible` AT-SPI2 bridge to the Orca screen reader (speech via `libspeech-dispatcher`, braille via `brlapi`). It explains the Wayland security gap — Wayland's client isolation prevents global keyboard hooks and cross-client window inspection that Orca relied on under X11 — and examines the GNOME/KDE solutions, the Newton three-layer accessibility protocol proposal, and terminal emulator accessibility coverage.
 
-Readers should arrive here having read Parts I–IV: familiarity with `drmModeAtomicCommit()`, `gbm_bo_create_with_modifiers2()`, DMA-BUF file descriptors, EGLImage, and `VkSemaphore` is assumed throughout. Parts VII and VIII (Application APIs and the Gaming Layer) depend heavily on this part's coverage of compositor protocol extensions, explicit sync, and the HDR pipeline.
+Readers should arrive here having read Parts I–IV: familiarity with `drmModeAtomicCommit()`, `gbm_bo_create_with_modifiers2()`, DMA-BUF file descriptors, EGLImage, and `VkSemaphore` is assumed throughout. Part VI-B (Display Services, Input, and Color) builds on this sub-part's compositor and protocol coverage; Part VII-A (GPU APIs and Extended Reality) depends on the compositor protocol extensions and explicit sync foundations laid here.
 
 ## Additional Chapters in This Part
 
-**Chapter 74 — HDR and Wide Color Gamut on Linux** examines how the display stack delivers high dynamic range and wide-gamut colour end to end: from `wp_color_management_v1` surface metadata through KMS `HDR_OUTPUT_METADATA` and `COLORSPACE` connector properties, `drm_color_lut` LUT programming, Mutter and KWin tone-mapping implementations, and application-level colour space declaration in Vulkan (`VkSwapchainCreateInfoKHR` colour space fields) and EGL (`EGL_EXT_gl_colorspace`). The chapter covers BT.2100 PQ and HLG transfer functions, scRGB extended-range framebuffers for HDR10 and Dolby Vision content on supported panels, and practical measurement with `colorimeter` and `colord` to verify pipeline accuracy.
-
-**Chapter 75 — Explicit GPU Synchronisation: Timeline Semaphores and sync_file** covers the evolution from implicit `dma_resv` fences to explicit synchronisation across API and process boundaries. It explains the kernel `sync_file` / `sw_sync` model, `drm_syncobj` timeline semaphores, `VK_KHR_timeline_semaphore`, the `wp_linux_drm_syncobj_v1` Wayland protocol, and how compositors use explicit sync to eliminate GPU flicker when a client frame is not yet ready. Readers learn how to import and export `VkSemaphore` objects as `sync_file` FDs, how `dma_resv` wait/signal points map to Vulkan timeline values, and the NVIDIA explicit-sync path that resolved frame-tearing on XWayland.
-
-**Chapter 101 — Colour Science and ICC Profiles on Linux** provides the theoretical and practical foundation for the colour chapters in this part. It covers the CIE XYZ and Lab colour models, the ICC Profile Specification (v4), `lcms2` as the Linux reference colour-management engine, the colord D-Bus interface for device calibration, and how compositors apply per-output ICC profiles via `drm_color_lut` and the KMS `DEGAMMA_LUT` / `CTM` / `GAMMA_LUT` pipeline. The chapter also addresses colour-managed rendering in GTK4 (`GdkColorSpace`), the relationship between ICC gamut mapping and `wp_color_management_v1` primaries, and profiling hardware with ArgyllCMS and DisplayCAL.
-
-**Chapter 128 — DisplayPort MST: Multi-Stream Transport and Daisy-Chain Displays** covers the `drm_dp_mst_topology_*` API for managing multi-monitor DP daisy chains: topology discovery, virtual channel allocation, DSC bandwidth negotiation, and the compositor changes needed to drive MST hubs from a single connector.
-
-**Chapter 130 — Wayland Protocol Development: Writing Custom Extensions** explains the wayland-scanner toolchain, the unstable→staging→stable lifecycle, xml schema conventions, and a worked example of implementing a private compositor protocol extension from spec through kernel KMS property to client library.
-
-**Chapter 131 — Touch and Tablet Input on Wayland** covers `wp_tablet_v2`, `wl_touch`, libinput's pressure and tilt axis normalisation, Wacom device detection via libwacom, and how drawing applications such as Krita and Inkscape consume high-resolution tablet events delivered through the Wayland seat model.
+**Chapter 130 — Wayland Protocol Development: Writing Custom Extensions** explains the wayland-scanner toolchain, the unstable→staging→stable protocol lifecycle, XML schema conventions, and a worked example of implementing a private compositor protocol extension from spec through kernel KMS property to client library.
 
 **Chapter 132 — Wayland Security Model and Protocol Sandboxing** examines how Wayland's client-isolation design prevents cross-client surface access, how xdg-desktop-portal gates privileged operations (screen capture, input injection), and how compositor authors implement capability-based access control for sensitive protocol extensions.
 
 **Chapter 138 — Wayland Fractional Scaling** documents the `wp_fractional_scale_v1` protocol, compositor-side downscaling implementation, per-output scale factors, subpixel positioning challenges under fractional scale, and font rendering quality considerations compared to integer-scale HiDPI.
 
-**Chapter 140 — HDMI and DisplayPort Audio: DRM Audio Integration** covers how the kernel's ALSA HDA driver and the DRM connector audio infrastructure co-operate to deliver audio over HDMI and DisplayPort, including ELD (EDID-Like Data) for audio capability negotiation, the `drm_audio_component` ops, and audio-video synchronisation at the compositor level.
-
 **Chapter 145 — XWayland Architecture and Compatibility** provides a dedicated treatment of the rootless XWayland server: how it runs as a Wayland client, how it implements DRI3 and Present over the Wayland connection, how Glamor accelerates X11 rendering via OpenGL ES, HiDPI and fractional scale support, and the explicit sync (`xwayland-explicit-synchronization`) patch that resolved NVIDIA compatibility issues.
 
 **Chapter 151 — Wayland Text Input and IME** covers the `zwp_text_input_v3` and `zwp_input_method_v2` protocols, input method editor (IME) integration for CJK and complex scripts, on-screen keyboard compositor support, and how toolkits (GTK4, Qt6) bridge the Wayland text-input protocol to their internal input method APIs.
-
-**Chapter 158 — HDR on the Linux Desktop: End-to-End Pipeline** is an integration chapter tracing the complete HDR pipeline from application color space declaration through `wp_color_management_v1`, compositor tone mapping, KMS `HDR_OUTPUT_METADATA` connector property, and display EOTF selection, with per-compositor implementation status for Mutter, KWin, and gamescope.
-
-**Chapter 194 — Cross-Stack Integration: Protocols, Synchronisation, and the Coordination Layer** examines the systemic costs of the Linux graphics stack's modular architecture — latency stalls, redundant copies, colour-space blindness, implicit sync hazards, and debuggability gaps — and the cross-component mechanisms the community has developed to address them. The chapter treats the Wayland protocol ecosystem as the stack's coordination bus, covering DMA-BUF and format modifiers (zero-copy buffer transport), `wp_linux_drm_syncobj_v1` (explicit GPU sync, summarised here with full treatment in Ch75), `wp_color_management_v1` (end-to-end colour management, full treatment in Ch74), `wp_fifo_v1` and `wp_tearing_control_v1` (frame pacing and tearing), KMS overlay plane promotion, Mesa NIR as the cross-driver shader IR unification mechanism, and cross-stack debugging tools. The chapter is intended as a synthesis read after the individual protocol and renderer chapters.
 
 **Chapter 175 — Linux Compositor Accessibility: AT-SPI2, Screen Readers, and the Wayland Gap** covers the full Linux accessibility stack from the AT-SPI2 D-Bus protocol (`org.a11y.atspi.Accessible`, `org.a11y.atspi.Text`, `org.a11y.atspi.Registry`) through GTK4's `GtkATContext`/`GtkAtSpiContext` and Qt6's `QAccessible` AT-SPI2 bridge to the **Orca** screen reader (speech via `libspeech-dispatcher`, braille via `brlapi`). The chapter explains the Wayland security gap: Wayland's client isolation prevents global keyboard hooks and cross-client window inspection that Orca relied on under X11, and examines the GNOME/KDE solutions (toolkit-side AT-SPI2, compositor D-Bus keyboard interfaces), the **Newton** three-layer accessibility protocol proposal, and terminal emulator accessibility coverage. Readers building accessible Wayland applications will find the GTK4 `GtkAccessibleText` vfunc reference and the `accerciser`/`dbus-monitor` testing workflow.
 
 ---
 
-*Part VI spans Chapters 20–23, 46, 53, 54, 74, 75, 101, 105, 112, 123, 128, 130, 131, 132, 138, 140, 145, 151, 158, 175, and 194. Chapter 20 is the entry point; begin there.*
+*Part VI-A spans Chapters 20–23, 46, 130, 132, 138, 145, 151, and 175. Chapter 20 is the entry point; begin there.*
 
 ---
 
@@ -287,34 +226,25 @@ Readers should arrive here having read Parts I–IV: familiarity with `drmModeAt
 
 ### Near-term (6–12 months)
 
-**Colour management reaching the ecosystem.** `wp_color_management_v1` stabilised in wayland-protocols 1.47 (December 2025) and is now in active roll-out: KWin already exposes it by default, Mutter added server-side support in GNOME 48, and wlroots 0.20 shipped `color-representation-v1`. Chromium, GStreamer, mpv, and SDL3 are completing their client-side integrations. colord gains HDR profiling APIs. NVIDIA's preview DRM Color Pipeline API support (April 2026) and RADV/ANV stabilisation in Mesa 25.1 close the dGPU gap; Intel Xe coverage follows.
+**X11 session retirement.** KDE Plasma 6.8 (late 2026) drops the X11 login session entirely, following GNOME's earlier Wayland-only transition. XWayland hardens in response: explicit sync via `linux-drm-syncobj-v1` is completing across all major compositors, `xwayland-satellite` proliferates as a compositor-decoupled XWM (allowing XWayland to run without being embedded in any specific compositor), and RHEL 10 ships without the standalone Xorg server. The remaining X11 surface is XWayland for legacy games and ISV software. These changes directly affect Chapters 23 and 145.
 
-**X11 session retirement.** KDE Plasma 6.8 (late 2026) drops the X11 login session entirely, following GNOME's earlier Wayland-only transition. XWayland hardens in response: explicit sync via `linux-drm-syncobj-v1` is completing across all major compositors, `xwayland-satellite` proliferates as a compositor-decoupled XWM, and RHEL 10 ships without the standalone Xorg server. The remaining X11 surface is XWayland for legacy games and ISV software.
+**Protocol ecosystem housekeeping.** `xdg-session-management-v1` and `xx-keyboard-filter-v1` enter the experimental namespace (wayland-protocols 1.48). `ext-tray-v1` enters staging. `zwp_input_timestamps_v1` is a candidate for stable promotion. The `ext-image-copy-capture-v1` standard capture protocol supersedes `wlr-screencopy-unstable-v1` in wlroots-family compositors. Newton Wayland accessibility protocol ships its first GNOME-integrated prototype, directly relevant to Chapter 175 and Chapter 46.
 
-**Display hardware protocol expansion.** AMD's HDMI 2.1 FRL patches target Linux 7.2, unlocking 4K/240Hz and associated high-bandwidth audio (Dolby Atmos, DTS:X). VRR hardware support extends to Arm Komeda SoCs and improves HDMI VRR blanking-glitch handling (`freesync_on_desktop`). DisplayPort MST gains DP 2.0 support in AMDGPU, Qualcomm MSM, and Rockchip SoCs. Intel Adaptive Sync SDP improvements land for Panel Replay.
-
-**Protocol ecosystem housekeeping.** `xdg-session-management-v1` and `xx-keyboard-filter-v1` enter the experimental namespace (wayland-protocols 1.48). `ext-tray-v1` enters staging. `zwp_input_timestamps_v1` is a candidate for stable promotion. The `ext-image-copy-capture-v1` standard capture protocol supersedes `wlr-screencopy-unstable-v1` in wlroots-family compositors. Newton Wayland accessibility protocol ships its first GNOME-integrated prototype.
-
-**Input and GPU synchronisation.** `udev-hid-bpf` matures as the canonical per-device input quirk path, displacing many libinput quirks-database entries. libinput 1.31–1.32 stabilises the Lua plugin ABI for tablet quirks. `wlroots` and downstream compositors complete `linux-drm-syncobj-v1` edge-case fixes for multi-GPU and NVIDIA configurations.
+**Input and compositor synchronisation.** `udev-hid-bpf` matures as the canonical per-device input quirk path, displacing many libinput quirks-database entries. libinput 1.31–1.32 stabilises the Lua plugin ABI for tablet quirks. `wlroots` and downstream compositors complete `linux-drm-syncobj-v1` edge-case fixes for multi-GPU and NVIDIA configurations.
 
 ### Medium-term (1–3 years)
 
-**Colour pipeline deepens in hardware and software.** `wp_color_management_v1` graduates from staging to stable once Mutter, KWin, and wlroots implementations converge. Per-plane KMS colour management (`drm_colorop` chain, including CSC objects merged in Linux 6.19) enables hardware-accelerated BT.2020→sRGB gamut conversion and per-surface ICC transforms without compositor GPU shaders. iccMAX (ICC v5 / iccDEV) parser support reaches colord and lcms2, enabling scene-referred HDR workflows. Intel Xe adds DRM colorop support.
+**Wayland protocol governance.** The `ext-workspace-v1`, `wp_security_context_v1`, and input-related unstable protocols converge across Mutter, KWin, and wlroots through the two-compositor governance rule. A formal clipboard isolation protocol enters staging. Snap sandbox integration with `wp_security_context_v1` follows Flatpak. XWayland privilege separation (restricted namespace with limited GPU access) is prototyped. DP 2.1 UHBR MST support is architected in `drm_dp_mst_topology` to handle the 64-slot allocation model (affects compositor connector management in Chapter 22).
 
-**Explicit sync and GPU timeline evolution.** `linux-drm-syncobj-v1` graduates to stable and implicit sync shim paths in Mesa are deprecated for RADV/ANV. `io_uring IORING_OP_URING_CMD` for timeline fence waits unifies GPU and I/O event handling. Cross-device fence export for hybrid GPU (dGPU + iGPU) setups gains protocol support. NVK (Nouveau Vulkan) closes the gap with ANV/RADV on timeline semaphore optimisations.
+**Accessibility and input method protocols.** `ext_text_input_v1` and `ext_input_method_v1` stable protocols replace the decade-old `zwp_text_input_v3`/`zwp_input_method_v2` unstable interfaces (directly affects Chapter 151). Newton accessibility sub-tree delegation for web content is designed. A standardised cross-compositor Wayland accessibility protocol enters the wayland-protocols repository. GPU-accelerated terminals (Ghostty, Alacritty, WezTerm) adopt AccessKit's AT-SPI2 Rust adapter (Chapter 175).
 
-**VRR and frame pacing mature.** `wp_fifo_v1` and `wp_tearing_control_v1` see wider compositor adoption including COSMIC. Atomic async page flip (`DRM_MODE_PAGE_FLIP_ASYNC`) progresses toward mainline. VRR and HDR state transitions are unified into the same atomic commit. A kernel VRR floor property is designed for OLED burn-in mitigation. `xx-fractional-scale-v2` (KDE Plasma 6.7) becomes the new baseline, eventually deprecating `wp_fractional_scale_v1`.
-
-**Wayland protocol governance.** The `ext-workspace-v1`, `wp_security_context_v1`, and input-related unstable protocols converge across Mutter, KWin, and wlroots through the two-compositor governance rule. A formal clipboard isolation protocol enters staging. Snap sandbox integration with `wp_security_context_v1` follows Flatpak. XWayland privilege separation (restricted namespace with limited GPU access) is prototyped. DP 2.1 UHBR MST support is architected in `drm_dp_mst_topology` to handle the 64-slot allocation model.
-
-**Accessibility and input method protocols.** `ext_text_input_v1` and `ext_input_method_v1` stable protocols replace the decade-old `zwp_text_input_v3`/`zwp_input_method_v2` unstable interfaces. Newton accessibility sub-tree delegation for web content is designed. A standardised cross-compositor Wayland accessibility protocol enters the wayland-protocols repository. GPU-accelerated terminals (Ghostty, Alacritty, WezTerm) adopt AccessKit's AT-SPI2 Rust adapter.
+**Compositor implementation evolution.** COSMIC compositor (cosmic-comp) matures as the third major wlroots-alternative compositor codebase. Gamescope adopts `wp_linux_drm_syncobj_v1` and explicit sync fences for all clients. The `wlr_scene` plane promotion algorithm in wlroots gains multi-plane assignment support. Mutter's KMS backend completes migration to fully atomic plane state with per-CRTC color pipeline integration.
 
 ### Long-term
 
 - **Full X11 elimination.** The native X11 session disappears from all major distributions; XWayland becomes an optional, user-initiated compatibility shim for Proton/Wine games and legacy ISV software. `xwayland-satellite`'s XWM-decoupled model may become the standard, removing per-compositor XWM code entirely. `dma_resv`-based implicit GPU sync is deprecated kernel-wide once the ecosystem completes migration to explicit sync.
-- **Unified display and colour hardware abstraction.** A vendor-agnostic `drm_colorop` chain expresses the full HDR pipeline across AMD DCN, Intel Xe, and NVIDIA display hardware. Per-display ICC profile enforcement moves toward the KMS layer. AV1 HDR10+ dynamic metadata integrates with the per-plane colorop pipeline. Hardware-accelerated 3D LUT tone mapping in the DRM colorop API eliminates compositor GPU shader overhead for tone mapping on mobile platforms.
 - **Newton replaces AT-SPI2 as the Wayland accessibility foundation.** Once GTK, Qt, Electron, and web engines ship Newton-native providers, AT-SPI2 becomes a legacy compatibility shim. A standardised compositor-level screen capture protocol replaces privileged shell-plugin framebuffer access for magnifiers and accessibility tools.
-- **Spatial and XR input, and ML-assisted display.** Monado's hand-tracking and eye-gaze input are reconciled with the Wayland seat model. Compositor-side ML models predict stylus trajectories and pointer positions to reduce motion-to-photon latency. AI-assisted codec adaptation (VMAF-based bitrate control) enters game streaming servers. Kernel-level frame timing APIs surface per-frame GPU completion and VRR period measurements to compositors without userspace-only instrumentation.
+- **Spatial and XR compositor integration.** Monado's hand-tracking and eye-gaze input are reconciled with the Wayland seat model. Compositor-side ML models predict stylus trajectories and pointer positions to reduce motion-to-photon latency. The long-term proposal of a unified compositor handling both desktop Wayland windows and XR layers in a single process would eliminate the DRM-lease handoff to separate XR runtimes entirely.
 
 ---
 
