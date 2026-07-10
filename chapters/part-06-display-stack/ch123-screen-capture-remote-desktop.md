@@ -16,6 +16,13 @@
 8. [OBS Studio on Wayland](#8-obs-studio-on-wayland)
 9. [WebRTC Screen Sharing](#9-webrtc-screen-sharing)
 10. [Remote Desktop: RDP, VNC, and Game Streaming](#10-remote-desktop-rdp-vnc-and-game-streaming)
+    - [Sunshine](#sunshine-gpu-accelerated-game-streaming)
+    - [Moonlight](#moonlight-the-game-streaming-client)
+    - [Steam Remote Play](#steam-remote-play)
+    - [Parsec](#parsec)
+    - [Chiaki: PlayStation Remote Play](#chiaki-playstation-remote-play-for-linux)
+    - [Looking Glass](#looking-glass-near-zero-latency-gpu-passthrough-display)
+    - [Comparison table](#comparing-remote-desktop-and-game-streaming-approaches)
 11. [Integrations](#11-integrations)
 
 ---
@@ -765,6 +772,128 @@ Sunshine v2026.413 introduced Vulkan Video encode support (`VK_KHR_video_encode_
 
 LAN game streaming can approach the same perceived latency as local play when GPU and network conditions cooperate.
 
+### Moonlight: The Game Streaming Client
+
+**Moonlight** ([https://github.com/moonlight-stream/moonlight-qt](https://github.com/moonlight-stream/moonlight-qt)) is the open-source client side of the Sunshine/GameStream ecosystem. The Qt/QML-based `moonlight-qt` binary runs natively on Wayland via Qt's Wayland QPA, X11, Windows, macOS, Android, iOS, tvOS, and Raspberry Pi.
+
+**Decode pipeline on Linux**: Moonlight-qt wraps FFmpeg for all video decode and selects the hardware backend by probing in priority order:
+
+| Backend | Hardware | Codecs |
+|---|---|---|
+| NVDEC (`h264_nvdec`, `hevc_nvdec`, `av1_nvdec`) | NVIDIA | H.264, HEVC, AV1 |
+| VA-API (`h264_vaapi`, `hevc_vaapi`, `av1_vaapi`) | AMD, Intel | H.264, HEVC, AV1 |
+| VDPAU (`h264_vdpau`) | Legacy NVIDIA (X11 only) | H.264 |
+| Software (`h264`, `hevc`, `av1`) | CPU | H.264, HEVC, AV1 |
+
+The decoded frame arrives as a `AVFrame` with `hw_frames_ctx` attached. Moonlight maps it to an EGL image via `eglCreateImageKHR(EGL_LINUX_DMA_BUF_EXT)` for zero-copy presentation, avoiding a GPU→CPU→GPU round-trip.
+
+**Protocol**: The GameStream / NVIDIA HomeStream protocol uses DTLS 1.2 for the control and input channel and RTP over UDP for the video and audio streams. Moonlight negotiates resolution, codec, bitrate cap, and frame-rate cap during the RTSP handshake with Sunshine. Dynamic bitrate adaptation probes available bandwidth using RTCP receiver reports and backs off on packet loss.
+
+**HDR path**: When the Sunshine server encodes in H.265 Main 10 or AV1 with HDR metadata, Moonlight-qt selects `VK_COLOR_SPACE_HDR10_ST2084_EXT` on the Vulkan swapchain (if the display supports it) and passes `VkHdrMetadataEXT` MaxCLL/MaxFALL values sourced from the RTP HDR SEI NAL unit.
+
+**Input**: Moonlight injects input via Sunshine's custom `INPUT_DATA` control-channel messages (keyboard scancodes, absolute mouse, gamepad axis/button state). On the client side, SDL2 polls gamepad events; SDL haptic rumble maps to Sunshine's `RUMBLE_DATA` packets for DualShock/DualSense via the Sunshine host driver.
+
+### Steam Remote Play
+
+**Steam Remote Play** ([https://store.steampowered.com/remoteplay](https://store.steampowered.com/remoteplay)) is Valve's built-in game streaming system. No separate server install is needed — any Steam installation acts as a host when another device connects.
+
+**Server capture on Linux (SteamOS/Steam on Wayland)**: The Steam client on SteamOS 3 captures via `wlr-screencopy-unstable-v1` when running under Gamescope, or via the xdg-desktop-portal ScreenCast path on desktop compositors. Captured frames are handed to the encode pipeline without an intermediate CPU copy when the compositor returns a DMA-BUF buffer.
+
+**Encode**: Steam uses an internal encoder abstraction that selects NVENC (NVIDIA), AMF/VCE (AMD), QuickSync (Intel), or software x264/x265. On Linux the VA-API path is used for AMD and Intel GPUs; on SteamOS the AMD AMF path is available via ROCm. The default codec is H.264; HEVC is offered when both endpoints advertise support.
+
+**Clients**: The **Steam Link app** (Android, iOS, Samsung TV, Raspberry Pi) and **Steam itself** running on another PC. The original Steam Link hardware dongle (discontinued 2018) also supports the protocol. The Steam Link app on Android uses MediaCodec for hardware H.264/HEVC decode.
+
+**Network transport**: Steam Remote Play uses the Valve Data Protocol (VDP) over UDP with Steam's relay infrastructure for NAT traversal. Unlike Sunshine/Moonlight which requires port-forwarding for internet play, Steam's relay servers negotiate the connection automatically using the same peer-to-peer infrastructure as Steam Voice.
+
+**Remote Play Together**: A per-game feature that allows a host to share their local multiplayer game with online friends. Steam injects virtual gamepad and keyboard inputs from remote players as if they were seated locally — implemented via uinput virtual device creation on Linux.
+
+### Parsec
+
+**Parsec** ([https://parsec.app](https://parsec.app)) is a proprietary low-latency remote desktop and game streaming client with a free personal tier and paid Teams/Warp tiers. The Parsec client for Linux (`parsec-bin` in AUR) connects to Windows or macOS hosts; **there is no Linux server** — Parsec does not support hosting a stream from a Linux machine.
+
+**Protocol**: Parsec uses a custom UDP protocol called BUD (Binary UDP) with aggressive forward error correction, designed to sustain sub-20 ms glass-to-glass latency on a good internet connection. The control channel uses TLS 1.3 via Parsec's relay infrastructure; the video stream is direct peer-to-peer when NAT allows.
+
+**Client decode on Linux**: The Linux client uses NVDEC (NVIDIA), VA-API (AMD/Intel), or software FFmpeg for H.264/HEVC decode. Frames are presented via OpenGL or Vulkan depending on the client version.
+
+**Warp (cloud gaming)**: Parsec Warp is a cloud gaming tier that provisions on-demand GPU instances (NVIDIA A10G on AWS) rather than streaming from a local machine. The Linux client connects identically; the difference is the server location.
+
+**Limitations on Linux**: Because Parsec has no Linux server implementation, it cannot be used to stream games running on a Linux host. It is useful primarily for connecting a Linux desktop to a Windows gaming PC.
+
+### Chiaki: PlayStation Remote Play for Linux
+
+**Chiaki** ([https://git.sr.ht/~thestr4ng3r/chiaki](https://git.sr.ht/~thestr4ng3r/chiaki)) and its maintained fork **chiaki-ng** reverse-engineer Sony's Remote Play protocol to provide a native Linux client for PS4 and PS5 streaming. The **chiaki4deck** variant targets Steam Deck with a touch-friendly UI and controller mapping optimised for the built-in controls.
+
+**Protocol internals**: Sony's Remote Play uses a proprietary binary protocol called TAKION carried over SRTP (Secure Real-Time Protocol). The TLS handshake uses a device-specific PSK derived from the console's AccountID and a one-time Registration PIN entered on the console. Once authenticated, the stream negotiates codec, resolution, and frame rate via a custom SDP-like exchange.
+
+**Video decode**:
+- PS4: H.264 at up to 1080p@60
+- PS5: H.265/HEVC at up to 1080p@60 (4K@60 on PS5 Pro with supported client)
+- Chiaki uses FFmpeg with VA-API (hardware), CUDA (NVDEC), or software fallback
+
+**Audio**: Opus codec, decoded by libopus, output via SDL2 or PipeWire on Linux.
+
+**Input**: SDL2 polls DualShock 4 / DualSense inputs; the Linux kernel's `hid-playstation` driver exposes the DualSense as a `js*` + `event*` pair with haptic access via the force-feedback uapi. Chiaki maps SDL haptic to the TAKION haptic feedback packets for PS5 rumble (basic intensity only — adaptive triggers require the proprietary HID vendor report path currently unsupported on Linux).
+
+**Registration**: Requires a PSN account's `AccountID` (64-bit, readable via `chiaki-ng --psn-account-id`) and a Remote Play PIN generated on the console's Settings menu. After registration, the session token is stored locally and LAN streaming works without PSN connectivity. Internet streaming routes via Sony's relay servers (requires PSN sign-in).
+
+### Looking Glass: Near-Zero-Latency GPU-Passthrough Display
+
+**Looking Glass** ([https://looking-glass.io](https://looking-glass.io)) is not a network streaming tool — it is a shared-memory framebuffer relay for VFIO GPU-passthrough virtual machines. It allows a Windows guest VM with a dedicated GPU to render at full speed while the host Linux desktop displays the guest's output in a window with ~1 ms additional latency.
+
+**Architecture**:
+
+```
+┌─────────────────────────────────────┐
+│ Host Linux (KVM/QEMU)               │
+│  ┌─────────────┐  IVSHMEM (PCIe)   │
+│  │ looking-    │◄──────────────────┐│
+│  │ glass-client│                   ││
+│  │ (EGL/Vulkan)│                   ││
+│  └─────────────┘                   ││
+└────────────────────────────────────┼┘
+                                     │ shared memory
+┌────────────────────────────────────┼┐
+│ Windows Guest VM                   ││
+│  ┌─────────────┐  DXGI capture     ││
+│  │ kvmfr.dll   │──────────────────►││
+│  │ (host driver│   frame + cursor  ││
+│  │  in guest)  │                   ││
+│  └─────────────┘                   ││
+└─────────────────────────────────────┘
+```
+
+**KVMFR kernel module**: The host loads `kvmfr.ko` which creates a `/dev/kvmfr0` character device backed by a contiguous memory region. QEMU exposes this region to the guest as an IVSHMEM PCI device. The guest's `kvmfr.dll` DXGI capture hook writes compressed frames into the shared region; the host `looking-glass-client` reads them directly from mapped memory — no DMA, no network, no encode/decode.
+
+**Frame format**: Looking Glass B6 (2024) transmits raw BGRA or compressed frames. The host client renders via an EGL path (using `eglCreateImageKHR` on a client-side `EGL_LINUX_DMA_BUF_EXT` for zero-copy GPU upload) or a Vulkan path with `VK_KHR_external_memory_fd`. HDR passthrough is supported when the host display and guest GPU both support `VK_COLOR_SPACE_HDR10_ST2084_EXT`.
+
+**Input**: Mouse and keyboard are injected into the guest via SPICE's `vdagent` or via a dedicated Looking Glass input channel. The host client captures mouse input using `wl_pointer.set_cursor(NULL)` for cursor confinement on Wayland.
+
+**Requirements**: Two physical GPUs (one for host desktop, one passed to guest via VFIO/IOMMU); an IOMMU-capable CPU+motherboard; a QEMU/KVM setup with `ivshmem-plain` device. This rules it out for laptops or systems with a single GPU.
+
+**Latency**: Because there is no encode/decode and no network hop, the added latency is limited to the shared-memory write/read cycle (~0.1 ms) plus the host display pipeline. Total glass-to-glass latency is typically 2–5 ms above native, compared to 15–40 ms for Sunshine/Moonlight over LAN.
+
+### Comparing Remote Desktop and Game Streaming Approaches
+
+| Solution | Server OS | Client OS | Protocol | Capture path | Encode | Latency (LAN) | Linux server |
+|---|---|---|---|---|---|---|---|
+| gnome-remote-desktop | Linux | Any (RDP) | RDP + VNC | Portal → PipeWire | H.264 VA-API | 20–50 ms | Yes |
+| xrdp | Linux (X11) | Any (RDP) | RDP | X11 framebuffer | RemoteFX / bitmaps | 20–80 ms | Yes (X11 only) |
+| wayvnc | Linux | Any (VNC) | VNC | wlr-screencopy / ext | Tight / zlib | 10–30 ms | Yes |
+| RustDesk | Any | Any | Proprietary | Portal ScreenCast | VP9 / H.264 | 20–60 ms | Yes |
+| **Sunshine** | Linux/Win/macOS | Moonlight clients | GameStream (RTSP/RTP) | KMS DRM / portal | H.264/HEVC/AV1 NVENC or VA-API | 15–40 ms | Yes |
+| **Moonlight** | — (client only) | Linux/Win/macOS/Android/iOS | GameStream | — | VA-API / NVDEC decode | — | — |
+| **Steam Remote Play** | Linux/Win/macOS | Steam Link / Steam | Valve VDP (UDP) | wlr-screencopy / portal | H.264/HEVC NVENC/AMF/VA-API | 15–40 ms | Yes |
+| **Parsec** | Windows/macOS only | Linux/Win/macOS/Android | BUD (UDP) | DXGI / CoreGraphics | H.264/HEVC NVENC/AMF | 10–25 ms | No |
+| **Chiaki / chiaki-ng** | PS4 / PS5 | Linux/Win/macOS/Android | TAKION (SRTP) | Console GPU | H.264 (PS4), HEVC (PS5) | 20–50 ms | N/A (console) |
+| **Looking Glass** | Windows VM (KVM) | Host Linux only | Shared memory | DXGI → IVSHMEM | None (raw frames) | ~2–5 ms | VFIO only |
+
+**Key trade-offs**:
+- **Lowest latency self-hosted**: Looking Glass (~2–5 ms, no encode) if you have a VFIO setup; otherwise Sunshine + Moonlight (~15–40 ms LAN)
+- **Easiest setup**: Steam Remote Play (zero config if Steam is already installed on both ends)
+- **Best internet performance**: Parsec (BUD protocol with aggressive FEC) or Sunshine with AV1
+- **Console access from Linux**: Chiaki/chiaki-ng is the only option for PS4/PS5
+- **No Linux server**: Parsec — Linux users can connect *to* Windows/macOS hosts but cannot *host* from Linux
+
 ### Input Injection in Remote Desktop
 
 All Wayland-native remote desktop solutions must inject input events through the compositor's input path. The options are:
@@ -778,16 +907,6 @@ All Wayland-native remote desktop solutions must inject input events through the
 **wayvnc** ([https://github.com/any1/wayvnc](https://github.com/any1/wayvnc)) is a VNC server for Wayland that uses `ext-image-copy-capture-v1` (or `wlr-screencopy` as fallback) for capture and `zwlr_virtual_keyboard_v1` / `zwlr_virtual_pointer_v1` for input. It demonstrates the minimal viable Wayland remote desktop stack without the complexity of RDP or the overhead of a portal.
 
 wayvnc's encoding path supports tight, zlib, and raw VNC encodings. It does not use hardware-accelerated video encoding; the resulting bitrate is much higher than RDP/H.264 but the implementation is simpler and latency is lower for LAN connections without network constraints.
-
-### Comparing Remote Desktop Approaches
-
-| Solution | Protocol | Capture path | Encoding | Wayland-native |
-|---|---|---|---|---|
-| gnome-remote-desktop | RDP + VNC | Portal ScreenCast → PipeWire | H.264 via VA-API | Yes |
-| xrdp | RDP | X11 framebuffer (xorgxrdp) | RemoteFX / raw bitmaps | No (X11 only) |
-| wayvnc | VNC | wlr-screencopy / ext-image-copy | Tight / zlib | Yes |
-| Sunshine | GameStream (RTSP/RTP) | KMS DRM / portal | H.264/HEVC/AV1 NVENC or VA-API | Yes (partial) |
-| RustDesk | proprietary | Portal ScreenCast | VP9 / H.264 | Yes |
 
 ### Capture Latency and Encode Budget
 
