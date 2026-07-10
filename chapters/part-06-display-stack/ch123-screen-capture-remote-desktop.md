@@ -1345,6 +1345,29 @@ docker run \
 
 The container's Mesa stack (installed in the image) uses the host kernel's DRM driver via the render node. No special toolkit is needed — the `--device` flag is sufficient for open-source drivers.
 
+**Vulkan ICD discovery in containers**: The Vulkan loader (`libvulkan.so`) finds drivers via ICD JSON manifests in `/usr/share/vulkan/icd.d/` or via `VK_ICD_FILENAMES`. For NVIDIA containers, the toolkit injects `nvidia_icd.json` alongside the NVIDIA Vulkan library from the host:
+
+```bash
+# NVIDIA Vulkan works automatically inside --gpus containers
+docker run --gpus all nvidia/cuda:12.3-base-ubuntu22.04 \
+  vulkaninfo --summary 2>/dev/null | grep "GPU id"
+# GPU id  : 0 (NVIDIA GeForce RTX 4090)
+```
+
+For AMD/Intel, the Mesa Vulkan drivers (RADV, ANV) are part of the container image (`mesa-vulkan-drivers` package). Their ICD manifests live in `/usr/share/vulkan/icd.d/radeon_icd.x86_64.json` and `intel_icd.x86_64.json` respectively — no host injection needed, but the container image must include them:
+
+```bash
+docker run \
+  --device /dev/dri/renderD128 \
+  ubuntu:22.04 \
+  bash -c "apt-get install -y mesa-vulkan-drivers vulkan-tools && \
+           VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.x86_64.json \
+           vulkaninfo --summary 2>/dev/null | grep 'GPU id'"
+# GPU id  : 0 (AMD Radeon RX 7900 XTX)
+```
+
+`VK_ICD_FILENAMES` can enumerate multiple ICDs: `VK_ICD_FILENAMES=/path/a.json:/path/b.json`. The loader queries each in order and the application selects via `VkPhysicalDevice` enumeration.
+
 *VirtualGL (VGL)*: VirtualGL ([https://www.virtualgl.org](https://www.virtualgl.org)) is used when a container needs OpenGL but running a full X server or granting `/dev/dri` access is undesirable. VGL intercepts `glX*` calls via `LD_PRELOAD=libvglfaker.so`, redirects OpenGL rendering to the host GPU (via a local X connection to `:0` or a `renderD*` device), reads back the rendered pixels via `glReadPixels` or `DRI3`, and blits them into the container's virtual framebuffer display. This adds 5–15 ms readback latency but provides a clean abstraction:
 
 ```dockerfile
@@ -1447,6 +1470,46 @@ qemu-system-x86_64 \
 ```
 
 `virtio-vga-gl` is the VirtIO-GPU device with OpenGL passthrough via virglrenderer. `-display sdl,gl=on` tells QEMU to render its display output using the host's OpenGL (enabling virgl). Without `gl=on`, virgl is unavailable.
+
+**VK_MESA_venus: Vulkan over VirtIO-GPU**: The virgl protocol (`VIRGL_CCMD_*`) is a Gallium/OpenGL-level transport — it does not carry Vulkan commands. Vulkan passthrough in a VM requires a separate protocol: **Venus** (`VK_MESA_venus`). Venus is a Vulkan command serialisation protocol that runs over the VirtIO-GPU transport alongside virgl, implemented in both Mesa and `virglrenderer`. [Source](https://gitlab.freedesktop.org/virgl/virglrenderer/-/blob/main/docs/venus.md)
+
+```
+Guest: Mesa Venus Vulkan driver (src/vulkan/runtime/ + src/venus/)
+  → serialises vkCreateBuffer, vkCmdDraw, vkQueueSubmit, ...
+  → VirtIO-GPU virtqueue (VK_MESA_venus feature bit set)
+  → QEMU virtio-gpu device
+  → virglrenderer (host): venus protocol decoder
+  → host Vulkan driver (RADV, ANV, NVIDIA) executes commands
+  → result returned via virtqueue response ring
+```
+
+Venus preserves the full Vulkan object model across the VM boundary: the guest allocates `VkBuffer` objects which are backed by host Vulkan memory, command buffers are serialised and replayed on the host, and GPU execution happens on the host GPU. From the guest application's perspective, Venus is indistinguishable from a native Vulkan driver.
+
+Enabling Venus in QEMU requires virglrenderer built with `--enable-venus` and the `venus` feature exposed in the VirtIO-GPU device:
+
+```bash
+qemu-system-x86_64 \
+  -machine q35,accel=kvm \
+  -device virtio-vga-gl,xres=1920,yres=1080 \
+  -display sdl,gl=on \
+  -object memory-backend-memfd,id=mem,size=4G,share=on \
+  -machine memory-backend=mem
+# Inside guest: check Venus Vulkan availability
+vulkaninfo --summary 2>/dev/null | grep "GPU id"
+# GPU id  : 0 (virtio-gpu-venus — host RADV AMD Radeon RX 7900 XTX)
+```
+
+Venus supports Vulkan 1.3 including `VK_KHR_synchronization2`, `VK_KHR_dynamic_rendering`, and sparse binding (as of virglrenderer 1.0). `VK_KHR_ray_tracing_pipeline` is not forwarded — ray tracing is not supported in Venus. Performance overhead from serialisation is approximately 5–15% compared to native Vulkan on the host GPU, depending on command buffer complexity.
+
+**Lavapipe (software Vulkan)**: When no GPU is available in the VM — VirtIO-GPU without virgl/venus, or a cloud VM with only VirtIO-VGA — Mesa's `lavapipe` driver (`src/gallium/frontends/lavapipe/`) provides a fully-conformant software Vulkan 1.3 implementation using LLVM JIT. It is automatically selected by the Vulkan loader when no hardware Vulkan driver is present:
+
+```bash
+# Force lavapipe (useful for CI and test containers with no GPU)
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json vulkaninfo --summary
+# GPU id  : 0 (llvmpipe (LLVM 17.0.6, 256 bits))
+```
+
+Lavapipe is Vulkan 1.3 conformant and passes the Khronos CTS. Performance is CPU-bound (~1/10th of a mid-range GPU) but sufficient for CI render tests, unit tests of Vulkan application logic, and development environments where GPU access is unavailable.
 
 **GPU-accelerated cloud VM instances**: Cloud instances with attached GPUs bypass VirtIO-GPU entirely. The physical GPU is passed to the guest via VFIO (or AWS/Azure/GCP proprietary hypervisors), and the guest NVIDIA/AMD driver talks to it directly over PCIe:
 
@@ -1569,6 +1632,51 @@ VirtualGL's readback step (`glReadPixels` from GPU VRAM to CPU RAM) costs 1–3 
 3. Mounts the NVIDIA userspace libraries (libcuda, libGL, libEGL, libvulkan) from the host into `/usr/local/nvidia/lib64/` inside the container and sets `LD_LIBRARY_PATH` via an `ldconfig` wrapper
 
 This means the NVIDIA userspace libraries are **always from the host**, not from the container image — container images do not need to bundle NVIDIA drivers, only the CUDA/OpenGL application code. This is intentional: the userspace libraries must match the host kernel driver version.
+
+**Headless Vulkan (no window system required)**: Unlike OpenGL, Vulkan has no fundamental dependency on a window system. `VkInstance`, `VkPhysicalDevice`, and `VkDevice` can all be created without any display server connection. Only swapchain creation (`VkSwapchainKHR`) requires a surface — and for headless workloads no swapchain is needed at all:
+
+```c
+/* Headless Vulkan compute — no VkSurface, no display server */
+VkInstance instance;
+vkCreateInstance(&(VkInstanceCreateInfo){
+    .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+    /* No VK_KHR_surface, no VK_KHR_xcb_surface — not needed */
+}, NULL, &instance);
+
+VkPhysicalDevice phys_dev;
+uint32_t count = 1;
+vkEnumeratePhysicalDevices(instance, &count, &phys_dev);
+
+VkDevice device;
+vkCreateDevice(phys_dev, &(VkDeviceCreateInfo){
+    .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+    /* compute queue only — no present queue */
+    .queueCreateInfoCount = 1,
+    .pQueueCreateInfos = &(VkDeviceQueueCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .queueFamilyIndex = compute_queue_family,
+        .queueCount = 1,
+        .pQueuePriorities = &(float){1.0f},
+    },
+}, NULL, &device);
+/* No DISPLAY, no WAYLAND_DISPLAY, no EGL initialisation needed */
+```
+
+For cases where a Vulkan application requires a swapchain (e.g. rendering to an offscreen target using the WSI presentation path), `VK_EXT_headless_surface` provides a null surface that accepts presentation without displaying anything:
+
+```c
+/* VK_EXT_headless_surface: fake WSI surface for headless rendering */
+VkSurfaceKHR surface;
+vkCreateHeadlessSurfaceEXT(instance,
+    &(VkHeadlessSurfaceCreateInfoEXT){
+        .sType = VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT,
+    }, NULL, &surface);
+
+/* Swapchain creation proceeds normally; presentMode = FIFO or MAILBOX */
+/* Present calls succeed; images are discarded */
+```
+
+`VK_EXT_headless_surface` is supported by Mesa RADV, ANV, and the NVIDIA driver. It is particularly useful for testing Vulkan rendering pipelines in CI containers without any window system.
 
 #### Capture from a Containerised Wayland Compositor
 
