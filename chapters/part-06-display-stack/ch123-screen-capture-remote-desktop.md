@@ -22,6 +22,7 @@
     - [Parsec](#parsec)
     - [Chiaki: PlayStation Remote Play](#chiaki-playstation-remote-play-for-linux)
     - [Looking Glass](#looking-glass-near-zero-latency-gpu-passthrough-display)
+    - [VNC vs RDP: Protocol Comparison](#vnc-vs-rdp-protocol-comparison)
     - [Comparison table](#comparing-remote-desktop-and-game-streaming-approaches)
 11. [Integrations](#11-integrations)
 
@@ -907,6 +908,50 @@ All Wayland-native remote desktop solutions must inject input events through the
 **wayvnc** ([https://github.com/any1/wayvnc](https://github.com/any1/wayvnc)) is a VNC server for Wayland that uses `ext-image-copy-capture-v1` (or `wlr-screencopy` as fallback) for capture and `zwlr_virtual_keyboard_v1` / `zwlr_virtual_pointer_v1` for input. It demonstrates the minimal viable Wayland remote desktop stack without the complexity of RDP or the overhead of a portal.
 
 wayvnc's encoding path supports tight, zlib, and raw VNC encodings. It does not use hardware-accelerated video encoding; the resulting bitrate is much higher than RDP/H.264 but the implementation is simpler and latency is lower for LAN connections without network constraints.
+
+### VNC vs RDP: Protocol Comparison
+
+VNC and RDP solve the same problem — remote display access — but from fundamentally different design philosophies: VNC ships pixels, RDP ships a display model.
+
+**VNC (Virtual Network Computing)** uses the RFB (Remote Framebuffer) protocol, an open standard originally from AT&T Labs Cambridge (1998). The server captures a framebuffer region and transmits changed rectangles to the client using a negotiated encoding:
+
+- **Raw**: literal RGBA pixels — maximum compatibility, worst bandwidth
+- **CopyRect**: signals a rect has moved from another screen position — zero bytes for scrolling
+- **Tight**: JPEG for photo content, zlib for flat areas — good compression, CPU-intensive
+- **ZRLE**: run-length encoded zlib — fast for desktop content
+- **H.264** (TigerVNC extension, non-standard): hardware-accelerated encode bolt-on
+
+The RFB protocol has no concept of audio, USB redirection, or clipboard beyond text/images. Security is a bolt-on — VNC passwords are notoriously weak (8-character max in the original spec); production deployments tunnel over SSH or TLS.
+
+**RDP (Remote Desktop Protocol)** is Microsoft's protocol, based on the ITU T.128 standard, extended heavily. Rather than shipping pixels, RDP transmits drawing commands and resources:
+
+- **Virtual channels**: independent named channels multiplex audio redirection, clipboard (CF_HDROP file transfer), USB redirection (RDPUSB), smartcard, printer spooling, and dynamic channel plugins over a single TLS/TCP connection
+- **RemoteFX** (RDP 7.1): H.264-based codec for the graphics surface, enabling hardware-accelerated encode (VA-API/NVENC on Linux via FreeRDP/gnome-remote-desktop) — not to be confused with Microsoft's software RemoteFX vGPU
+- **GFX AVC420/AVC444** (RDP 8.0+): H.264 4:2:0 or 4:4:4 encode for the entire desktop surface, with progressive decode support; this is what gnome-remote-desktop uses via VA-API
+- **UDP transport** (RDP 8.0+): parallel UDP channel for video, falling back to TCP for control — reduces latency under packet loss compared to pure TCP VNC
+
+| Dimension | VNC (RFB) | RDP |
+|---|---|---|
+| Origin | AT&T Labs Cambridge, 1998 (open standard) | Microsoft, 1996 (ITU T.128 base) |
+| Transport | TCP | TCP + optional UDP (RDP 8.0+) |
+| Pixel encoding | Raw / Tight / ZRLE / CopyRect | RemoteFX, GFX AVC420/AVC444 (H.264) |
+| GPU acceleration | No (CPU blit only) | Yes (VA-API, NVENC via FreeRDP/gnome-remote-desktop) |
+| Audio | Not in base protocol | First-class (RDPSND channel, Opus/AAC) |
+| Clipboard | Text + images | Full (file transfer via CLIPRDR channel) |
+| USB/device redirection | No | Yes (RDPUSB, printers, smartcards) |
+| Multi-monitor | Limited | Native (independent virtual screens per session) |
+| Authentication | VNC password (historically weak) | NLA (Network Level Auth), Kerberos, TLS certificates |
+| Bandwidth at 1080p | 5–50 Mbps (raw/Tight) | 2–10 Mbps (H.264 hardware encode) |
+| Latency (LAN) | 10–30 ms | 20–50 ms (codec pipeline overhead) |
+| Linux server | tigervnc, wayvnc, libvncserver | gnome-remote-desktop, xrdp, krdp |
+| Linux client | tigervnc-viewer, Remmina, KRDC | Remmina (FreeRDP), `xfreerdp`, Vinagre |
+| Wayland-native server | wayvnc (`ext-image-copy-capture-v1`) | gnome-remote-desktop (portal), krdp |
+
+**When to use VNC**: LAN administration, headless server access, simple setups where audio and GPU acceleration are unnecessary. VNC's simplicity makes it easy to implement and debug — `wayvnc` is ~4,000 lines of C.
+
+**When to use RDP**: Remote work over internet connections, GPU workstation access (hardware H.264 encode dramatically reduces bandwidth), Windows VM access, or where audio/USB/clipboard redirection matters. gnome-remote-desktop and FreeRDP bring near-parity with Windows RDP on the Linux side.
+
+**The Linux gap**: RDP on Linux still lags Windows Terminal Services in two areas: multi-session hosting (one RDP session per compositor instance, no shared kernel session) and GPU passthrough for 3D applications inside the RDP session (Microsoft's RemoteFX vGPU has no Linux equivalent). Both are long-term roadmap items noted in the Roadmap section below.
 
 ### Capture Latency and Encode Budget
 
