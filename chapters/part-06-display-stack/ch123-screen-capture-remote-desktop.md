@@ -1145,6 +1145,38 @@ The relay daemon model avoids re-establishing the SSH connection per application
 
 **Use cases**: Remote development on a powerful workstation (compile + run a GUI debugger remotely, display locally); running Wayland-native apps on HPC clusters where only SSH access is available; forwarding a single app from a headless server to a local compositor without setting up a full remote desktop stack.
 
+**Waypipe and Docker containers**: Waypipe interoperates with containerised apps the same way it does with bare-metal processes — via socket exposure — but containers do not require Waypipe for local display access. Two patterns apply:
+
+*Pattern 1 — local container with direct socket bind-mount* (no Waypipe needed): Mount the host compositor's `WAYLAND_DISPLAY` socket into the container. The containerised app speaks Wayland directly to the host compositor with no forwarding layer:
+
+```bash
+docker run --rm \
+  -v $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY:/run/user/1000/wayland-0 \
+  -e WAYLAND_DISPLAY=wayland-0 \
+  -e XDG_RUNTIME_DIR=/run/user/1000 \
+  --device /dev/dri/renderD128 \
+  myimage gtk4-demo
+```
+
+`--device /dev/dri/renderD128` exposes the render node so Mesa can use GPU acceleration inside the container. No Waypipe, no encoding, no latency beyond the socket IPC.
+
+*Pattern 2 — remote container accessed over SSH*: Waypipe runs **on the SSH host** (not inside the container). The container's Wayland socket is bind-mounted to a path on the host; Waypipe intercepts it and forwards it over SSH to the local compositor. The container itself needs no knowledge of Waypipe:
+
+```bash
+# On remote host: start container with socket exposed on host path
+docker run -d \
+  -v /tmp/app-wayland.sock:/run/wayland-0 \
+  -e WAYLAND_DISPLAY=wayland-0 \
+  myimage long-running-app
+
+# From local machine: waypipe proxies the host socket over SSH
+waypipe --socket /tmp/waypipe.sock server &
+ssh -R /tmp/remote.sock:/tmp/app-wayland.sock user@remotehost \
+  WAYLAND_DISPLAY=/tmp/remote.sock waypipe client
+```
+
+The DMA-BUF linearisation cost applies here as it does in any Waypipe session: GPU-rendered surfaces from inside the container must be blitted to CPU-accessible memory before they can be compressed and forwarded. For streaming-heavy containerised workloads this overhead makes purpose-built solutions (KasmVNC, Xpra, Guacamole) preferable to Waypipe.
+
 ### FreeRDP: The Open RDP Implementation
 
 **FreeRDP** ([https://www.freerdp.com](https://www.freerdp.com)) is the dominant open-source RDP implementation on Linux, providing both a client library (`libfreerdp`) and a server library (`libfreerdp-server`). It underpins `xfreerdp` (CLI client), Remmina's RDP plugin, gnome-remote-desktop's RDP server, and `xrdp`'s RDP frontend. Understanding FreeRDP's architecture is prerequisite to understanding how Linux RDP actually works.
