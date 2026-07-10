@@ -1310,61 +1310,314 @@ The server sends JPEG or WebP tiles for changed screen regions (damage-driven, s
 
 ### Container and VDI Desktop Streaming
 
-Running a full Linux desktop inside a container or VM and streaming it to a browser or thin client is a common pattern for cloud development environments, VDI deployments, and secure isolated workspaces. The graphics stack challenge is delivering GPU-accelerated display output from a containerised or virtualised context with acceptable latency.
+Running a full Linux desktop inside a container or VM and streaming it to a browser or thin client is a common pattern for cloud development environments, VDI deployments, and secure isolated workspaces. The graphics stack challenge is delivering GPU-accelerated display output from a containerised or virtualised context with acceptable latency. The solutions span three tiers: per-container display streaming (Kasm, Xpra), cloud-VM display protocols (NICE DCV, Chrome Remote Desktop), and enterprise GPU partitioning for multi-user VDI (NVIDIA vGPU, Intel SR-IOV, AMD MxGPU).
 
-**Kasm Workspaces**: Kasm ([https://www.kasmweb.com](https://www.kasmweb.com)) is the leading open-core containerised desktop streaming platform. Each workspace is a Docker container running a full Linux desktop (Ubuntu/Debian + XFCE/KDE). Display is delivered via KasmVNC (its own fork, covered above) over WebRTC or WebSocket to the browser.
+#### Kasm Workspaces
 
-GPU acceleration inside Kasm containers requires:
-1. **NVIDIA**: `--gpus all` Docker flag + NVIDIA Container Toolkit; the container runs with `/dev/nvidia*` devices; Mesa EGL or CUDA available; KasmVNC captures via VirtualGL or direct framebuffer
-2. **AMD/Intel**: `--device /dev/dri/renderD128` to expose the render node; Mesa software compose path or `virgl` for 3D
-3. **VirtualGL**: intercepts GLX calls in the container, renders on the host GPU, reads back pixels for VNC/Kasm delivery — adds ~5–15 ms latency but enables full OpenGL in an otherwise headless container
+Kasm ([https://www.kasmweb.com](https://www.kasmweb.com)) is the leading open-core containerised desktop streaming platform. Each *workspace* is a Docker container running a full Linux desktop (Ubuntu/Debian with XFCE or KDE). Display is delivered via KasmVNC — Kasm's H.264/VP9/AV1/WebRTC fork of TigerVNC — over WebSocket or WebRTC to any browser. The platform layer on top of Docker handles workspace lifecycle (start, pause, resume, per-user quota), session recording, file sharing via a virtual drive mount, and LDAP/SAML integration.
+
+**KasmVNC as display backend**: Inside each container, an Xvfb or Xwayland virtual framebuffer backs a lightweight window manager (typically Openbox). KasmVNC's server connects to this X display, captures damaged regions via the X Damage extension, and encodes them. When H.264 hardware encoding is available (via VA-API or NVENC), KasmVNC routes dirty rectangles through a hardware encoder and delivers them as H.264 NAL units over WebSocket. The browser-side decoder uses the WebCodecs API (`VideoDecoder`, added Chrome 94) for GPU-accelerated H.264 decode. This avoids the double-encode penalty of Guacamole because KasmVNC's browser client speaks H.264 natively.
+
+**GPU acceleration paths inside containers**: The three main paths differ in how GPU work is routed:
+
+*NVIDIA Container Toolkit*: The toolkit ([https://github.com/NVIDIA/nvidia-container-toolkit](https://github.com/NVIDIA/nvidia-container-toolkit)) injects a container-runtime hook that mounts `/dev/nvidia*`, `/dev/nvidiactl`, and `/dev/nvidia-uvm` into the container and sets `LD_PRELOAD` to redirect CUDA library calls. With `--gpus all` (or `--gpus '"device=0"'` for a specific GPU), Mesa EGL, CUDA, and OpenGL are all available:
+
+```bash
+docker run --gpus all \
+  -e DISPLAY=:1 \
+  -v /tmp/.X11-unix:/tmp/.X11-unix \
+  kasmweb/ubuntu-jammy-desktop:1.15.0 \
+  glxinfo | grep "OpenGL renderer"
+# OpenGL renderer string: NVIDIA GeForce RTX 4090/PCIe/SSE2
+```
+
+*AMD/Intel render node passthrough*: Expose the DRM render node:
+
+```bash
+docker run \
+  --device /dev/dri/card0 \
+  --device /dev/dri/renderD128 \
+  -e DISPLAY=:1 \
+  kasmweb/ubuntu-jammy-desktop:1.15.0 \
+  glxinfo | grep renderer
+# OpenGL renderer string: AMD Radeon RX 7900 XTX (radeonsi, navi31, ...)
+```
+
+The container's Mesa stack (installed in the image) uses the host kernel's DRM driver via the render node. No special toolkit is needed — the `--device` flag is sufficient for open-source drivers.
+
+*VirtualGL (VGL)*: VirtualGL ([https://www.virtualgl.org](https://www.virtualgl.org)) is used when a container needs OpenGL but running a full X server or granting `/dev/dri` access is undesirable. VGL intercepts `glX*` calls via `LD_PRELOAD=libvglfaker.so`, redirects OpenGL rendering to the host GPU (via a local X connection to `:0` or a `renderD*` device), reads back the rendered pixels via `glReadPixels` or `DRI3`, and blits them into the container's virtual framebuffer display. This adds 5–15 ms readback latency but provides a clean abstraction:
 
 ```dockerfile
 FROM kasmweb/ubuntu-jammy-desktop:1.15.0
-# GPU-capable Kasm workspace
 ENV KASM_VNC_PORT=6901
-ENV VGL_DISPLAY=:0
+ENV VGL_DISPLAY=egl        # use EGL renderD128 instead of X :0
 RUN apt-get install -y virtualgl
+# Launch: vglrun glxgears — VirtualGL handles GPU routing
 ```
 
-**Xpra**: ([https://xpra.org](https://xpra.org)) is a "screen-less" X11/Wayland server that persists sessions across connections — like `tmux` for GUI applications. It supports H.264, VP8, VP9 video encoding, audio forwarding, clipboard, file transfer, and a browser HTML5 client. On Linux the server runs a headless Xvfb or Xwayland, captures via X11 composite, and streams encoded frames. It is widely used for persistent remote application sessions on HPC clusters.
+`VGL_DISPLAY=egl` selects EGL device-platform rendering (no display server on the host required), using the DRM render node directly. This is the preferred headless GPU path on Kasm servers where the host has no compositor.
+
+**Workspace isolation and networking**: Each Kasm container gets its own network namespace. Inter-workspace communication is blocked by default. The Kasm API server (`kasm_api`) manages container start/stop, injects per-session credentials (VNC password derived from session token), and proxies the WebSocket stream through the Kasm nginx layer with TLS termination.
+
+#### Xpra: Persistent Rootless Sessions
+
+Xpra ([https://xpra.org](https://xpra.org)) is a *rootless* remote display server — it forwards individual application windows rather than a full desktop session. Unlike VNC or RDP (which present a virtual desktop), Xpra forwards each top-level window as a native window on the client, managed by the client's own window manager. Sessions persist across disconnects and reconnects, analogous to `tmux` for terminal sessions.
+
+**Display capture**: On Linux, Xpra's server process runs either:
+- A headless Xvfb display, capturing via the X Composite extension (`XCompositeNameWindowPixmap`) to get per-window pixmaps
+- An Xwayland display, capturing via Wayland's wlr-screencopy or xdg-output (less common — native Wayland support is experimental as of Xpra 6.x)
+
+For each top-level window, Xpra reads the composited pixmap, diffs it against the previous frame, and encodes only damaged regions. The encoder pipeline supports:
+
+| Encoding | Codec | Hardware path | Use case |
+|---|---|---|---|
+| `h264` | H.264 via x264 | VA-API (`h264_vaapi`), NVENC | Video, moving content |
+| `vp8` / `vp9` | VP8/VP9 via libvpx | VA-API | Lower-latency with smaller segments |
+| `av1` | AV1 via libaom | VA-API (limited) | Best quality at low bitrate |
+| `png` | Lossless PNG | CPU | Text, UI elements (lossless mode) |
+| `rgb` | Raw RGB | CPU | LAN, ultra-low latency |
+| `webp` | WebP | CPU (libwebp) | Mixed content, good compression |
+
+Xpra switches encoders per-window based on content type: text/UI areas get lossless PNG, video/OpenGL areas get H.264. This *content-adaptive encoding* is similar to what RDP's GFX pipeline does, but implemented entirely in userspace.
 
 ```bash
-# Start persistent Xpra session with H.264 encode
-xpra start :100 --bind-tcp=0.0.0.0:10000 \
-     --encoding=h264 --video-encoders=x264 \
-     --html=on --daemon=yes
+# Start persistent Xpra session: H.264 with VA-API, audio, HTML5 client
+xpra start :100 \
+  --bind-tcp=0.0.0.0:14500 \
+  --encoding=h264 \
+  --video-encoders=vaapi \
+  --speaker=pulseaudio \
+  --clipboard=yes \
+  --file-transfer=yes \
+  --html=on \
+  --daemon=yes \
+  --start=firefox
 
-# Attach from another machine
-xpra attach tcp://user@host:10000/100
+# Attach from a remote machine (native client)
+xpra attach tcp://user@host:14500/100
+
+# Attach via browser (HTML5 client — no install needed)
+# Navigate to: https://host:14500/
 ```
 
-**VirtIO-GPU in cloud VMs**: Cloud VM instances (AWS EC2, GCP, Azure) expose VirtIO-GPU (or virtio-vga) as the display device. Without a real GPU attached, 3D applications fall back to `llvmpipe` software rasterisation through the `virgl` path. For GPU-accelerated cloud desktops, the pattern is:
-- **AWS**: EC2 G4dn/G5 instances with NVIDIA GPU; NICE DCV or Sunshine/Moonlight for streaming; the GPU is bare-metal, not virtualised
-- **GCP**: A2/G2 instances with NVIDIA; NICE DCV or Chrome Remote Desktop agent
-- **Azure NV-series**: NVIDIA Tesla M60/T4; Azure Virtual Desktop (AVD) with GPU-accelerated RemoteFX
+**Audio and clipboard**: Xpra forwards PulseAudio output via a network sink: the server creates a `module-null-sink` in the container's PulseAudio instance, encodes the sink monitor as Opus or Vorbis, and streams it alongside video. On the client, PulseAudio plays the decoded audio through the local sink. Clipboard is forwarded as plain text and image content via Xpra's own clipboard protocol layered on the connection.
 
-**GPU passthrough for VDI (VFIO SR-IOV)**: Enterprise VDI uses GPU SR-IOV (Single Root I/O Virtualisation) to partition a physical GPU among multiple VMs. Each VM receives a virtual function (VF) that the guest driver treats as a real GPU:
+**Shadow sessions**: `xpra shadow :0` attaches to an existing running X display (rather than starting a headless one), capturing and forwarding its output. This is equivalent to VNC "shadow mode" — multiple observers can view the same session. Unlike VNC, each Xpra shadow client gets its own window in their local WM rather than a full-screen remote desktop view.
 
-- **NVIDIA vGPU** (NVIDIA Virtual GPU): proprietary GRID driver; each vGPU gets a fixed VRAM slice; supports CUDA, OpenGL, Vulkan inside VM; requires GRID licence
-- **Intel GVT-g / SR-IOV** (Xe and Arc): `i915-sriov-dkms`; VF exposed as a standard Intel GPU; open-source, no licence; supports display and compute via host i915 driver
-- **AMD MxGPU** (MI-series, some RDNA): SRIOV-based; requires ROCm inside VM; not consumer GPUs
-
-The VF appears to the guest as a real PCIe GPU; the guest Mesa driver (RADV, ANV, or NVIDIA proprietary) talks to it directly. The display output is captured by the hypervisor and streamed via RDP, SPICE, or NICE DCV to the thin client.
-
-**Headless GPU containers** (ML/rendering workloads without display): For GPU compute containers that need a virtual display for OpenGL initialisation (e.g. simulator training environments), the pattern is:
-- `Xvfb :99 -screen 0 1920x1080x24` — software framebuffer, no GPU
-- `Xvfb` + VirtualGL — GPU render, software framebuffer capture
-- EGL surfaceless context (`EGL_EXT_platform_device`, `eglGetPlatformDisplayEXT(EGL_PLATFORM_DEVICE_EXT, ...)`) — no display server needed at all; preferred for headless GPU ML workloads (covered in Ch107)
+**HPC cluster usage**: On HPC systems where only SSH access is available and X11 forwarding over SSH is too slow for GUI apps, Xpra is the standard solution. The server runs on the compute node (started via a job scheduler like SLURM), and the user attaches from their workstation. The session persists if the SSH connection drops:
 
 ```bash
-# Headless GPU rendering via EGL device platform (no display server)
-export EGL_PLATFORM=device
-glxinfo -B   # fails — use eglinfo instead
-eglinfo       # shows EGL_PLATFORM_DEVICE_EXT adapters
+# On compute node (via salloc/srun)
+xpra start :10 --daemon=yes --bind-tcp=0.0.0.0:10010 --encoding=h264
+# From workstation
+xpra attach tcp://compute-node-01:10010/10
+# Disconnect and reconnect freely — session persists
 ```
 
-**Capture from containerised compositor**: When the containerised desktop runs a Wayland compositor (e.g. `weston --backend=headless`), screen capture follows the same protocols as physical hosts — `ext-image-copy-capture-v1` or wlr-screencopy — but the captured frames are forwarded via KasmVNC, Xpra, or a custom WebRTC pipeline rather than presented on a physical display. This is the architecture of cloud IDE products (GitHub Codespaces desktop, Google Cloud Workstations) that offer browser-accessible Linux GUIs.
+#### VirtIO-GPU and Cloud VM Display
+
+Cloud VM instances expose a virtual GPU device to the guest OS. The display path depends heavily on whether a physical GPU is attached to the host.
+
+**VirtIO-GPU without physical GPU (software rendering)**: Most general-purpose cloud VMs (AWS t3, GCP e2, Azure B-series) provide only VirtIO-GPU backed by the host CPU. The guest driver (`drivers/gpu/drm/virtio/`) exposes a `/dev/dri/card0` device. Mesa's `llvmpipe` or `softpipe` drivers handle OpenGL/Vulkan rendering in software. Performance is acceptable for 2D desktop work but insufficient for 3D applications.
+
+The display output is captured by the hypervisor from the VirtIO-GPU framebuffer and forwarded to the cloud console (AWS EC2 Instance Connect console, GCP Serial Console visual display, etc.) — this path has high latency (1–5 s refresh) and is intended only for emergency access. For actual remote desktop access, a separate protocol agent (NICE DCV, Chrome Remote Desktop, xrdp) is installed in the VM.
+
+**VirtIO-GPU with virgl (3D acceleration)**: When the QEMU/KVM host has a GPU and `virglrenderer` is installed, VirtIO-GPU exposes a `virgl` 3D context to the guest. The guest Mesa stack (specifically the `virgl` Gallium driver, `src/gallium/drivers/virgl/`) translates OpenGL/Vulkan commands to `VIRGL_CCMD_*` opcodes sent over the VirtIO-GPU virtqueue:
+
+```
+Guest Mesa virgl Gallium driver
+  → VIRGL_CCMD_DRAW_VBO, VIRGL_CCMD_SET_FRAMEBUFFER_STATE, …
+  → VirtIO-GPU virtqueue (shared memory ring)
+  → QEMU virtio-gpu device emulation
+  → virglrenderer (host library)
+  → host Mesa/GL (executes commands on host GPU)
+  → framebuffer → display / SPICE / VNC
+```
+
+The QEMU launch flags for virgl-enabled VirtIO-GPU:
+
+```bash
+qemu-system-x86_64 \
+  -machine q35,accel=kvm \
+  -device virtio-vga-gl,xres=1920,yres=1080 \
+  -display sdl,gl=on \
+  -device virtio-serial \
+  -chardev spicevmc,id=vdagent,name=vdagent \
+  -device virtserialport,chardev=vdagent,name=com.redhat.spice.0
+```
+
+`virtio-vga-gl` is the VirtIO-GPU device with OpenGL passthrough via virglrenderer. `-display sdl,gl=on` tells QEMU to render its display output using the host's OpenGL (enabling virgl). Without `gl=on`, virgl is unavailable.
+
+**GPU-accelerated cloud VM instances**: Cloud instances with attached GPUs bypass VirtIO-GPU entirely. The physical GPU is passed to the guest via VFIO (or AWS/Azure/GCP proprietary hypervisors), and the guest NVIDIA/AMD driver talks to it directly over PCIe:
+
+| Cloud | Instance family | GPU | Recommended display protocol |
+|---|---|---|---|
+| AWS | G4dn (T4), G5 (A10G), P3 (V100) | NVIDIA | NICE DCV (free on EC2) |
+| GCP | A2 (A100), G2 (L4) | NVIDIA | Chrome Remote Desktop or NICE DCV |
+| Azure | NV-series (M60/T4), NC-series | NVIDIA | Azure Virtual Desktop (AVD) |
+| AWS | Inf1/Trn1 | Inferentia/Trainium | No display (ML only) |
+
+**NICE DCV** (NICE Desktop Cloud Visualisation, formerly NICE EnginFrame) is Amazon's proprietary protocol for cloud workstation access. On Linux GPU instances, it captures frames via the NVIDIA capture API or DRM/KMS, encodes with NVENC (H.264 or HEVC), and delivers via its own UDP/TCP protocol with a web client. NICE DCV is free when running on EC2; a licence is required for on-premises deployment. Key advantage over SPICE: the capture path is GPU-native (no CPU readback), giving ~16 ms total pipeline latency on a co-located client.
+
+#### GPU Partitioning for VDI (SR-IOV and vGPU)
+
+Enterprise VDI allocates a physical GPU among multiple concurrent VM sessions. The partitioning mechanism is GPU-model-specific:
+
+**NVIDIA vGPU (GRID/vCS)**: NVIDIA's proprietary vGPU technology partitions a physical GPU into virtual GPU instances, each presented to a VM as a PCIe VF with its own VRAM slice. The partition sizes are fixed per GPU profile:
+
+```
+Physical GPU: NVIDIA A16 (64 GB GDDR6, 4 GPUs on one card)
+  vGPU profiles per A16 GPU:
+    A16-1Q  — 1 GB VRAM,  16 instances per GPU
+    A16-4Q  — 4 GB VRAM,   4 instances per GPU
+    A16-8Q  — 8 GB VRAM,   2 instances per GPU
+    A16-16Q — 16 GB VRAM,  1 instance  per GPU
+```
+
+Each VM installs the standard NVIDIA Linux driver, which binds to the VF as if it were a physical GPU. CUDA, OpenGL, and Vulkan all work. The host runs the NVIDIA vGPU manager kernel module (`nvidia-vgpu-mgr`) which schedules time-multiplexed access to the physical GPU across VFs. This requires a GRID vApps or vPC licence (subscription, per-user or per-concurrent-session).
+
+The display output is captured via the NVIDIA capture API in the VM guest and streamed via NICE DCV, Citrix HDX, or VMware Blast Extreme to the thin client. SPICE is not an option — it requires QXL or VirtIO-GPU, not a passed-through NVIDIA VF.
+
+**Intel SR-IOV (Xe and Arc GPUs)**: Intel Xe-generation GPUs (Tiger Lake integrated, Alder Lake, Arc discrete) support SR-IOV natively. On Linux, the host enables VFs via sysfs:
+
+```bash
+# Enable 4 VFs on Intel Arc A770
+echo 4 > /sys/bus/pci/devices/0000:03:00.0/sriov_numvfs
+
+# VFs appear as separate PCI devices
+lspci | grep -i "intel.*graphics"
+# 03:00.0 VGA compatible controller: Intel Corporation Arc A770 (Physical Function)
+# 03:00.1 VGA compatible controller: Intel Corporation Arc A770 (Virtual Function)
+# 03:00.2 VGA compatible controller: Intel Corporation Arc A770 (Virtual Function)
+```
+
+Each VF is passed to a VM via VFIO (`vfio-pci` driver on host). The guest `i915` driver or `xe` driver binds to the VF and exposes a full DRM device. Unlike NVIDIA vGPU, no proprietary licence is required — Intel SR-IOV is open-source in both the host kernel driver and the guest driver. The VRAM allocation is managed by the host `i915`/`xe` driver's global GTT (Graphics Translation Table).
+
+```bash
+# QEMU: pass Intel VF to VM via VFIO
+qemu-system-x86_64 \
+  -device vfio-pci,host=03:00.1 \
+  -device virtio-serial \
+  -spice port=5900,disable-ticketing=on
+```
+
+Display capture in the guest follows the normal DRM/KMS path: the VM's compositor (KWin, Mutter, or weston) outputs to the VF's display engine, and SPICE (via QXL's sibling port, not the VF itself) or RDP/NICE DCV captures and streams the output.
+
+**AMD MxGPU (SRIOV)**: AMD's SR-IOV implementation (`amdgpu` host driver, `amdgpu` guest driver) is available on RDNA 2/3 server SKUs (Radeon PRO W6000/W7000 series) and CDNA (MI200/MI300). The mechanism is analogous to Intel SR-IOV: enable VFs via sysfs, bind host VFs with `amdgpu_sriov_vf=1`, pass to VM. The guest driver uses ROCm for compute or the standard Mesa RadeonSI/RADV for OpenGL/Vulkan. AMD MxGPU is available in Citrix XenServer, VMware ESXi, and KVM configurations, though the open-source KVM path requires out-of-tree patches on some kernel versions.
+
+**SR-IOV display output capture**: A VF typically does not have its own display output connector — the physical GPU's display engine is retained by the PF (Physical Function, host). The VM's display output is virtualised: the guest writes to a VirtIO-GPU display plane or a special VF scanout buffer, which the hypervisor reads and forwards to the streaming protocol. This is why enterprise VDI still requires SPICE, NICE DCV, or Citrix HDX even with SR-IOV GPU partitioning — there is no physical cable to plug into the VF.
+
+#### Headless GPU Containers
+
+For containers that need GPU compute or rendering without an attached display (ML training pipelines, CI rendering tests, simulation environments), the display initialisation path determines whether OpenGL is available at all.
+
+**The OpenGL display dependency problem**: Most OpenGL implementations historically required a window system connection (`Display*` on X11, `EGLDisplay` on EGL) before any rendering context could be created. This made headless GPU rendering awkward — containers needed a fake X server or Xvfb even when no display output was required.
+
+**EGL surfaceless and device platform** (preferred modern path): EGL 1.5 added `EGL_EXT_platform_device`, which allows creating an `EGLDisplay` directly from a DRM device without any window system:
+
+```c
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+
+/* Enumerate EGL device platform adapters (no display server needed) */
+PFNEGLQUERYDEVICESEXTPROC eglQueryDevicesEXT =
+    (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
+PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT =
+    (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+
+EGLDeviceEXT devices[8];
+EGLint num_devices;
+eglQueryDevicesEXT(8, devices, &num_devices);   /* finds /dev/dri/renderD128 etc. */
+
+EGLDisplay dpy = eglGetPlatformDisplayEXT(EGL_PLATFORM_DEVICE_EXT,
+                                           devices[0], NULL);
+eglInitialize(dpy, NULL, NULL);
+
+/* Create surfaceless context — no window, no Xvfb, no Wayland compositor */
+EGLContext ctx = eglCreateContext(dpy, config, EGL_NO_CONTEXT, ctx_attribs);
+eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx);
+
+/* Render to an FBO, read pixels back via glReadPixels or export DMA-BUF */
+```
+
+This path is natively supported by Mesa (all drivers via `src/egl/drivers/dri2/platform_device.c`) and by the NVIDIA proprietary EGL implementation. No display server, no `DISPLAY` variable, no `WAYLAND_DISPLAY`. This is the recommended approach for all headless GPU workloads (ML model training that uses CUDA + OpenGL interop, CI rendering tests, offline GPU benchmark suites).
+
+```bash
+# Verify EGL device platform availability
+docker run --gpus all nvcr.io/nvidia/cuda:12.3-devel-ubuntu22.04 \
+  bash -c "apt-get install -y libegl1 && eglinfo | grep -A2 'Device platform'"
+# EGL client APIs: OpenGL OpenGL_ES
+# EGL_PLATFORM_DEVICE_EXT: /dev/nvidia0
+```
+
+**Xvfb (legacy software framebuffer path)**: For applications that hardcode X11 and cannot be modified to use EGL device platform, `Xvfb` provides a software-backed X display. With VirtualGL (`vglrun`), OpenGL calls are intercepted and redirected to the GPU:
+
+```bash
+Xvfb :99 -screen 0 1920x1080x24 &
+export DISPLAY=:99
+# Without VirtualGL: OpenGL falls back to software (Mesa llvmpipe/softpipe)
+glxgears -display :99    # CPU rendering, ~300 FPS
+# With VirtualGL: OpenGL executes on GPU, result read back for Xvfb
+vglrun glxgears           # GPU rendering, ~60,000+ FPS
+```
+
+VirtualGL's readback step (`glReadPixels` from GPU VRAM to CPU RAM) costs 1–3 ms per frame at 1080p and is the dominant overhead. For render-and-save workloads (offline raytracing, CI screenshot tests) this is acceptable; for interactive display it is superseded by native Wayland/EGL paths.
+
+**NVIDIA Container Toolkit hooks**: When a container is launched with `--gpus`, the toolkit inserts an OCI prestart hook (`nvidia-container-runtime-hook`) that:
+1. Resolves which GPU devices to expose based on `NVIDIA_VISIBLE_DEVICES`
+2. Bind-mounts `/dev/nvidia*` device nodes and `/proc/driver/nvidia/` into the container
+3. Mounts the NVIDIA userspace libraries (libcuda, libGL, libEGL, libvulkan) from the host into `/usr/local/nvidia/lib64/` inside the container and sets `LD_LIBRARY_PATH` via an `ldconfig` wrapper
+
+This means the NVIDIA userspace libraries are **always from the host**, not from the container image — container images do not need to bundle NVIDIA drivers, only the CUDA/OpenGL application code. This is intentional: the userspace libraries must match the host kernel driver version.
+
+#### Capture from a Containerised Wayland Compositor
+
+When a containerised desktop runs a Wayland compositor in headless mode, screen capture uses the same Wayland protocols as physical hosts. The compositor renders to an offscreen buffer (DMA-BUF or shared memory), and capture protocols drain that buffer for encoding and streaming.
+
+**Headless Weston**: Weston's `headless` backend (`--backend=headless-backend.so`) runs a full Wayland compositor without a physical display or DRM device. It allocates shared memory buffers for output scanout and supports `wlr-screencopy-unstable-v1` for capture:
+
+```bash
+# Run headless Weston inside a container
+docker run -d \
+  --name kiosk \
+  -e WAYLAND_DISPLAY=wayland-1 \
+  -v /tmp/weston-runtime:/run \
+  myimage \
+  weston --backend=headless-backend.so \
+         --width=1920 --height=1080 \
+         --socket=wayland-1
+```
+
+A capture agent (KasmVNC server, wf-recorder, or a custom process) connects to `wayland-1` and uses `wlr_screencopy_manager_v1` to receive frame callbacks:
+
+```c
+/* wlr-screencopy capture loop (pseudocode) */
+struct zwlr_screencopy_manager_v1 *mgr = ...;
+struct zwlr_screencopy_frame_v1 *frame =
+    zwlr_screencopy_manager_v1_capture_output(mgr, 0, wl_output);
+
+zwlr_screencopy_frame_v1_add_listener(frame, &frame_listener, NULL);
+// listener.buffer_done → allocate wl_shm buffer
+// listener.ready → frame is in buffer → encode → stream
+```
+
+**GPU-backed headless compositor**: For GPU-accelerated rendering inside a container, `weston --backend=drm-backend.so` with `--drm-device=renderD128` uses the render node (no display connector needed) and allocates DMA-BUF outputs. Capture via `wlr-screencopy` on a DMA-BUF output copies from GPU VRAM to a shared memory buffer — the same linearisation cost as Waypipe's DMA-BUF path.
+
+**Cloud IDE architecture (GitHub Codespaces, Google Cloud Workstations)**: These products follow a consistent pattern:
+
+```
+Container (per-user, per-repo)
+  ├── Linux desktop (XFCE/KDE + Xwayland)
+  ├── VS Code server / JetBrains Gateway
+  ├── Headless Xvfb or Wayland compositor
+  └── VNC/WebRTC streaming agent (KasmVNC, noVNC, or proprietary)
+                                   │ WebSocket / WebRTC
+                          Reverse proxy (Nginx + TLS)
+                                   │
+                          Browser (HTML5 client)
+```
+
+The capture-encode-stream pipeline runs entirely inside the container. GPU access is via NVIDIA Container Toolkit or DRI render node passthrough. The VNC/WebRTC agent captures the virtual display, H.264-encodes dirty regions, and pushes frames to the browser via the platform's WebSocket relay. Total added latency from compositor to browser: 20–60 ms on a co-located server, dominated by encode time at typical 1080p/30fps settings.
 
 The fundamental latency floor for any remote desktop system is determined by two factors: the capture interval (time from frame composition to buffer readiness) and the encode time (time to compress the captured frame into a transmittable bitstream).
 
