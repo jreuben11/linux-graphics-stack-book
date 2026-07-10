@@ -23,6 +23,8 @@
     - [Chiaki: PlayStation Remote Play](#chiaki-playstation-remote-play-for-linux)
     - [Looking Glass](#looking-glass-near-zero-latency-gpu-passthrough-display)
     - [VNC vs RDP: Protocol Comparison](#vnc-vs-rdp-protocol-comparison)
+    - [Efforts to Bring VNC to RDP Parity](#efforts-to-bring-vnc-to-rdp-parity)
+    - [Beyond VNC and RDP: The Broader Landscape](#beyond-vnc-and-rdp-the-broader-remote-display-landscape)
     - [Comparison table](#comparing-remote-desktop-and-game-streaming-approaches)
 11. [Integrations](#11-integrations)
 
@@ -952,6 +954,50 @@ The RFB protocol has no concept of audio, USB redirection, or clipboard beyond t
 **When to use RDP**: Remote work over internet connections, GPU workstation access (hardware H.264 encode dramatically reduces bandwidth), Windows VM access, or where audio/USB/clipboard redirection matters. gnome-remote-desktop and FreeRDP bring near-parity with Windows RDP on the Linux side.
 
 **The Linux gap**: RDP on Linux still lags Windows Terminal Services in two areas: multi-session hosting (one RDP session per compositor instance, no shared kernel session) and GPU passthrough for 3D applications inside the RDP session (Microsoft's RemoteFX vGPU has no Linux equivalent). Both are long-term roadmap items noted in the Roadmap section below.
+
+### Efforts to Bring VNC to RDP Parity
+
+The fundamental obstacle for VNC parity is architectural: RFB is a pull model (the client polls for frame updates) with no concept of virtual channels. Adding audio, USB redirection, and multi-monitor as first-class features requires protocol extensions that break compatibility with standard VNC clients — at which point the result is effectively a new protocol.
+
+**KasmVNC** ([https://github.com/kasmtech/KasmVNC](https://github.com/kasmtech/KasmVNC)) is the most serious parity attempt. It is a TigerVNC fork that adds:
+
+- H.264, VP9, and AV1 video encode via `x264`/`libvpx`/hardware paths — dramatically reducing bandwidth versus Tight/ZRLE
+- Opus audio streaming over a WebSocket sidecar channel
+- A WebRTC transport option for browser-native clients (no VNC viewer install required)
+- HTTP Basic / token authentication replacing VNC's historically weak password scheme
+- Server-side frame-rate cap and quality control API
+
+KasmVNC is widely deployed as the display backend in containerised desktop environments (Kasm Workspaces). It remains incompatible with standard VNC clients when H.264 or WebRTC modes are active. USB redirection and virtual channels are absent — the protocol ceiling persists.
+
+**RFB protocol evolution** is largely stalled. TigerVNC, LibVNCServer, and UltraVNC have each published proprietary encoding extensions (H.264 in TigerVNC, ZSTD compression in LibVNCServer, audio in UltraVNC), but there is no coordinated RFB 4.0 effort and the extensions do not interoperate across implementations. [Source](https://github.com/rfbproto/rfbproto)
+
+### Beyond VNC and RDP: The Broader Remote Display Landscape
+
+Several protocols and tools occupy the space between VNC and RDP or target specific use cases (VM display, WAN-optimised forwarding, enterprise GPU workstations):
+
+| Protocol / Tool | Model | Audio | USB redir | GPU accel | Linux server | Primary use case |
+|---|---|---|---|---|---|---|
+| **SPICE** | VM display (QXL/VirtIO) | Yes (Opus) | Yes (USB/IP) | Yes (QXL, VirtIO-GPU) | QEMU/KVM only | KVM virtual machines (oVirt, virt-manager, libvirt) |
+| **Waypipe** | Wayland protocol forward | No | No | Partial (client GPU renders) | Yes (any Wayland compositor) | SSH-forwarded Wayland apps; like X11 forwarding for Wayland |
+| **KasmVNC** | RFB + H.264/WebRTC | Yes (Opus) | No | Yes (H.264 SW/HW) | Yes | Containerised desktops, browser-native VNC clients |
+| **X2Go** | NX protocol (X11) | Yes (PulseAudio) | No | No | Yes (X11 only) | Efficient X11 session; Wayland unsupported |
+| **Apache Guacamole** | Browser proxy gateway | Via backend | Via RDP backend | Via RDP backend | Yes (proxy) | Clientless browser access; proxies RDP, VNC, SSH |
+| **NoMachine NX** | NX4 hybrid | Yes | Yes | Yes | Yes (free personal tier) | High-latency WAN links; proprietary but free tier |
+| **NICE DCV** | Proprietary (Amazon) | Yes | Yes | Yes (NVIDIA/AMD) | Yes | AWS EC2 GPU workstations, HPC visualisation |
+| **PCoIP** | Proprietary (HP/Teradici) | Yes | Yes | Yes | Yes (agent) | Enterprise/healthcare; UDP-based; hardware zero-clients |
+| **Citrix ICA/HDX** | Proprietary (Citrix) | Yes | Yes | Yes (HDX 3D Pro) | Yes (agent) | Enterprise VDI standard; HDX 3D Pro for GPU |
+| **RustDesk** | Open source relay | Yes | Partial | VP9 / H.264 | Yes | Self-hostable TeamViewer alternative |
+
+**SPICE** deserves elaboration for Linux graphics engineers: it is the standard VM display protocol for QEMU/KVM, used by oVirt, Red Hat Virtualization, and `virt-manager`. The server-side `qxl` DRM/KMS driver in the Linux kernel provides a paravirtualised GPU; `spice-vdagent` in the guest handles clipboard, audio, and USB/IP device forwarding. VirtIO-GPU (the modern successor to QXL) offers 3D acceleration via the `virgl` Mesa driver — a Gallium3D state tracker that serialises GL commands over the VirtIO transport and replays them on the host Mesa driver. [Source](https://www.spice-space.org/spice-user-manual.html)
+
+**Waypipe** ([https://gitlab.freedesktop.org/mstoeckl/waypipe](https://gitlab.freedesktop.org/mstoeckl/waypipe)) takes a fundamentally different approach: instead of capturing and transmitting frames, it forwards the Wayland protocol messages themselves over an SSH connection. Remote Wayland applications run on the server but believe they are speaking to a local compositor; Waypipe intercepts `wl_buffer` attachments, compresses the pixel data (lz4 or zstd), and relays them to a local stub compositor. Client-side GPU renders the final pixels. For applications that issue few large buffer updates (document editors, terminals), the result is lower total data transmission than frame capture; for video or rapidly updating content it is worse. There is no full-desktop remoting — individual application windows only.
+
+```bash
+# Launch a remote GTK application via Waypipe over SSH
+waypipe ssh user@remotehost gtk4-demo
+```
+
+**NICE DCV** (formerly NICE EnginFrame Display Client) is Amazon's proprietary high-performance remote display protocol, used on AWS EC2 GPU instances. It supports H.264/HEVC/AV1 hardware encode via NVIDIA NVENC or AMD AMF, delivers USB redirection, and has a web client. For Linux GPU workstation access (CAD, ML, HPC visualisation) without the complexity of PCoIP hardware, DCV is the enterprise answer. The server agent runs on Linux and is free on EC2. [Source](https://aws.amazon.com/hpc/dcv/)
 
 ### Capture Latency and Encode Budget
 
