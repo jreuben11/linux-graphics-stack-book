@@ -25,6 +25,8 @@
     - [VNC vs RDP: Protocol Comparison](#vnc-vs-rdp-protocol-comparison)
     - [Efforts to Bring VNC to RDP Parity](#efforts-to-bring-vnc-to-rdp-parity)
     - [Beyond VNC and RDP: The Broader Landscape](#beyond-vnc-and-rdp-the-broader-remote-display-landscape)
+    - [SPICE: VM Display Protocol](#spice-vm-display-protocol)
+    - [Waypipe: Wayland Protocol Forwarding](#waypipe-wayland-protocol-forwarding-over-ssh)
     - [Comparison table](#comparing-remote-desktop-and-game-streaming-approaches)
 11. [Integrations](#11-integrations)
 
@@ -988,16 +990,160 @@ Several protocols and tools occupy the space between VNC and RDP or target speci
 | **Citrix ICA/HDX** | Proprietary (Citrix) | Yes | Yes | Yes (HDX 3D Pro) | Yes (agent) | Enterprise VDI standard; HDX 3D Pro for GPU |
 | **RustDesk** | Open source relay | Yes | Partial | VP9 / H.264 | Yes | Self-hostable TeamViewer alternative |
 
-**SPICE** deserves elaboration for Linux graphics engineers: it is the standard VM display protocol for QEMU/KVM, used by oVirt, Red Hat Virtualization, and `virt-manager`. The server-side `qxl` DRM/KMS driver in the Linux kernel provides a paravirtualised GPU; `spice-vdagent` in the guest handles clipboard, audio, and USB/IP device forwarding. VirtIO-GPU (the modern successor to QXL) offers 3D acceleration via the `virgl` Mesa driver — a Gallium3D state tracker that serialises GL commands over the VirtIO transport and replays them on the host Mesa driver. [Source](https://www.spice-space.org/spice-user-manual.html)
+See the dedicated subsections below for SPICE and Waypipe. **NICE DCV** (formerly NICE EnginFrame Display Client) is Amazon's proprietary high-performance remote display protocol, used on AWS EC2 GPU instances. It supports H.264/HEVC/AV1 hardware encode via NVIDIA NVENC or AMD AMF, delivers USB redirection, and has a web client. For Linux GPU workstation access (CAD, ML, HPC visualisation) without the complexity of PCoIP hardware, DCV is the enterprise answer. The server agent runs on Linux and is free on EC2. [Source](https://aws.amazon.com/hpc/dcv/)
 
-**Waypipe** ([https://gitlab.freedesktop.org/mstoeckl/waypipe](https://gitlab.freedesktop.org/mstoeckl/waypipe)) takes a fundamentally different approach: instead of capturing and transmitting frames, it forwards the Wayland protocol messages themselves over an SSH connection. Remote Wayland applications run on the server but believe they are speaking to a local compositor; Waypipe intercepts `wl_buffer` attachments, compresses the pixel data (lz4 or zstd), and relays them to a local stub compositor. Client-side GPU renders the final pixels. For applications that issue few large buffer updates (document editors, terminals), the result is lower total data transmission than frame capture; for video or rapidly updating content it is worse. There is no full-desktop remoting — individual application windows only.
+### SPICE: VM Display Protocol
 
-```bash
-# Launch a remote GTK application via Waypipe over SSH
-waypipe ssh user@remotehost gtk4-demo
+**SPICE** (Simple Protocol for Independent Computing Environments, [https://www.spice-space.org](https://www.spice-space.org)) is Red Hat's open remote display protocol designed specifically for KVM virtual machines. Unlike RDP or VNC — which treat the server as a physical desktop — SPICE integrates deeply with the QEMU/KVM hypervisor to provide near-native VM display performance with full audio, USB, and clipboard redirection.
+
+**Protocol channel architecture**: SPICE multiplexes independent named channels over a single TLS/TCP connection (or Unix socket for local VMs). Each channel handles one concern:
+
+| Channel | Purpose |
+|---|---|
+| `main` | Session control, VM migration, agent communication |
+| `display` | Frame updates, surface management, video streaming |
+| `inputs` | Keyboard scancodes, relative/absolute mouse, tablet |
+| `cursor` | Hardware cursor shape and position (avoids compositing cost) |
+| `playback` | Audio from guest to client (Opus/CELT/raw PCM) |
+| `record` | Microphone from client to guest |
+| `usbredir` | USB device forwarding via usbredir protocol |
+| `smartcard` | Smart card reader forwarding |
+
+The `display` channel transmits drawing commands (SPICE drawing primitives: `SpiceMsgDisplayDrawFill`, `SpiceMsgDisplayCopy`, `SpiceMsgDisplayVideo`) when using the QXL driver, or raw JPEG/LZ4-compressed framebuffer regions when using VirtIO-GPU in non-3D mode.
+
+**QXL: the paravirtualised GPU**: The `qxl` kernel module implements a DRM/KMS driver for the QXL paravirtualised GPU exposed by QEMU. Rather than emulating real GPU registers, QXL exposes a ring buffer of drawing commands that `spice-server` (the server-side library embedded in QEMU) processes:
+
+```c
+/* qxl_ring_push — push a drawing command into the QXL command ring
+ * (drivers/gpu/drm/qxl/qxl_cmd.c) */
+void qxl_ring_push(struct qxl_ring *ring, const void *new_elt)
+{
+    struct qxl_ring_header *header = ring->header;
+    uint32_t prod = le32_to_cpu(header->prod) & ring->prod_mask;
+    memcpy((uint8_t *)ring->start + prod * ring->element_size,
+           new_elt, ring->element_size);
+    smp_wmb();
+    header->prod = cpu_to_le32(le32_to_cpu(header->prod) + 1);
+    /* notify QEMU via ioeventfd */
+    write(ring->notify_fd, &(uint64_t){1}, sizeof(uint64_t));
+}
 ```
 
-**NICE DCV** (formerly NICE EnginFrame Display Client) is Amazon's proprietary high-performance remote display protocol, used on AWS EC2 GPU instances. It supports H.264/HEVC/AV1 hardware encode via NVIDIA NVENC or AMD AMF, delivers USB redirection, and has a web client. For Linux GPU workstation access (CAD, ML, HPC visualisation) without the complexity of PCoIP hardware, DCV is the enterprise answer. The server agent runs on Linux and is free on EC2. [Source](https://aws.amazon.com/hpc/dcv/)
+`spice-server` reads these commands, rasterises vector operations server-side, compresses resulting bitmaps using LZ, GLZ (global LZ across frames — strong inter-frame compression for desktop content), or JPEG, and streams them over the `display` channel. For video regions, SPICE auto-detects motion and switches to a streaming codec (MJPEG or VP8) transparently.
+
+**VirtIO-GPU and virgl: 3D acceleration**: QXL is 2D-only. For OpenGL/Vulkan in a VM, the modern path is VirtIO-GPU with `virgl` (Virtual GL):
+
+```
+Guest: Mesa virgl Gallium driver
+       → serialises GL commands into a virgl command buffer
+       → writes to VirtIO-GPU virtqueue
+
+Host QEMU virglrenderer library:
+       → deserialises GL commands
+       → replays against host Mesa (any GPU driver)
+       → result in host GBM/EGL surface
+       → SPICE display channel streams the framebuffer
+```
+
+The guest Mesa `virgl` driver (`src/gallium/drivers/virgl/`) implements the Gallium3D state tracker and emits `VIRGL_CCMD_*` commands into a `PIPE_BUFFER` that QEMU's `virglrenderer` library (`https://gitlab.freedesktop.org/virgl/virglrenderer`) replays on the host OpenGL context. OpenGL 4.6 and OpenGL ES 3.2 are supported; Vulkan passthrough is handled by the separate `VK_MESA_venus` extension (`venus` protocol in `virglrenderer`). [Source](https://gitlab.freedesktop.org/virgl/virglrenderer)
+
+**spice-vdagent**: A small daemon running inside the guest (`spice-vdagent`, [https://gitlab.freedesktop.org/spice/linux/vd_agent](https://gitlab.freedesktop.org/spice/linux/vd_agent)) communicates with the host via the SPICE `main` channel's agent sub-protocol. It handles:
+- **Clipboard**: bidirectional copy-paste between guest and host (text, images, file references)
+- **Display configuration**: responds to host resize events by calling `xrandr` (X11) or emitting a `wl_output` geometry change
+- **File transfer**: drag-and-drop from host file manager into the VM window (via `virtio-serial` device)
+- **Audio**: the `playback`/`record` channels deliver audio independently of `vdagent`
+
+**Client**: `virt-viewer` and `virt-manager` use `spice-gtk` ([https://gitlab.freedesktop.org/spice/spice-gtk](https://gitlab.freedesktop.org/spice/spice-gtk)), a GTK widget that embeds a full SPICE client. The widget handles display channel rendering into a `GtkDrawingArea`, input forwarding, USB redirection via `usbredir`, and smart card forwarding via `libcacard`. Remote Viewer (`remote-viewer spice://localhost:5900`) is the standalone client.
+
+**USB redirection** uses the `usbredir` protocol: the client captures a USB device via `libusb`, wraps it in `usbredir` packets, and sends them over the `usbredir` SPICE channel. The VM sees the device as a native USB device attached via `qemu-xhci`. This is how a USB smartcard, webcam, or audio interface can be transparently forwarded to a KVM guest. [Source](https://www.spice-space.org/usbredir.html)
+
+**Deployment**: In `virt-manager`, adding a `Spice Server` display device and a `QXL` or `VirtIO` video device is sufficient. For headless QEMU:
+
+```bash
+qemu-system-x86_64 \
+  -device virtio-vga-gl,xres=1920,yres=1080 \
+  -display sdl,gl=on \
+  -device virtio-serial \
+  -chardev spicevmc,id=vdagent,debug=0,name=vdagent \
+  -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 \
+  -spice port=5900,disable-ticketing=on
+```
+
+The `-device virtio-vga-gl` + `-display sdl,gl=on` combination enables VirtIO-GPU with host OpenGL acceleration via virglrenderer.
+
+### Waypipe: Wayland Protocol Forwarding over SSH
+
+**Waypipe** ([https://gitlab.freedesktop.org/mstoeckl/waypipe](https://gitlab.freedesktop.org/mstoeckl/waypipe)) forwards individual Wayland application windows over an SSH connection, analogous to `ssh -X` for X11 but for native Wayland clients. Unlike every other tool in this chapter, Waypipe does not capture or encode frames — it forwards the Wayland protocol messages themselves, letting the client-side compositor render the final pixels using the client's own GPU.
+
+**Conceptual model**:
+
+```
+Remote server                          Local client machine
+─────────────────────────────────────  ──────────────────────────────────
+gtk4-demo                              Wayland compositor (e.g. Sway)
+  │ Wayland protocol                     │
+  ▼                                      ▼
+waypipe server                         waypipe client
+  │ (intercepts wl_buffer commits)       │ (stub compositor socket)
+  │                                      │
+  └──── SSH tunnel (compressed) ────────►│
+         lz4 / zstd / uncompressed        renders via host GPU
+```
+
+The remote `waypipe server` process interposes between the remote Wayland app and a stub compositor socket. When the app commits a `wl_buffer`, Waypipe intercepts the buffer, compresses its pixel data, and forwards it over the SSH tunnel. The local `waypipe client` presents a stub compositor socket to the local Wayland compositor, which receives the buffer and composites it as a normal client window.
+
+**Buffer handling — wl_shm vs DMA-BUF**: Wayland apps use one of two buffer types:
+
+- **`wl_shm`** (shared memory): The app writes ARGB pixels into a `memfd`/`shm_open` region. Waypipe reads these pixels, compresses them (lz4 by default, zstd for better ratio), and sends them. On the client side, a new `wl_shm` buffer is created and the decompressed pixels written in.
+
+- **`dmabuf`** (GPU memory, `zwp_linux_dmabuf_v1`): Waypipe must linearise the DMA-BUF to CPU-accessible memory before it can compress and send it. It does this by `mmap()`-ing the DMA-BUF (if the driver allows linear mapping) or by issuing a GPU blit to a `wl_shm` staging buffer. This adds latency compared to CPU-side `wl_shm` buffers, and means GPU-composited surfaces are slower to forward than software-rendered ones.
+
+**Compression**: Waypipe supports three modes selectable at connection time:
+
+```bash
+waypipe --compress lz4    ssh user@host gtk4-demo   # fast, lower ratio
+waypipe --compress zstd   ssh user@host gtk4-demo   # slower, better ratio
+waypipe --compress none   ssh user@host gtk4-demo   # LAN / loopback
+```
+
+For delta compression (only sending changed pixels), Waypipe tracks the previous frame and XORs changed regions before compression — similar to VNC's damage-tracking model but applied at the Wayland buffer level rather than the framebuffer level.
+
+**SSH integration**: The `waypipe ssh` subcommand wraps `ssh`, setting `WAYLAND_DISPLAY` to the forwarded socket on the remote side:
+
+```bash
+# Single remote app
+waypipe ssh user@remotehost firefox
+
+# Persistent relay daemon (reuse for multiple apps)
+waypipe --socket /tmp/waypipe.sock server &
+ssh -R /tmp/remote-waypipe.sock:/tmp/waypipe.sock user@remotehost
+# On remote:
+WAYLAND_DISPLAY=/tmp/remote-waypipe.sock gtk4-demo
+```
+
+The relay daemon model avoids re-establishing the SSH connection per application, which matters on high-latency links.
+
+**Comparison with SSH X11 forwarding**: X11 forwarding (`ssh -X`) intercepts X11 protocol messages and forwards them over SSH. Waypipe does the same for Wayland. The key difference is that X11 forwarding sends *drawing commands* (XDrawString, XCopyArea) — which are compact but require a full X11 client/server implementation on both ends. Waypipe sends *pixel buffers* — which are larger but require only that both ends speak Wayland, with no GPU-side protocol at all.
+
+| | SSH X11 Forwarding | Waypipe |
+|---|---|---|
+| Protocol forwarded | X11 drawing commands | Wayland buffer commits |
+| Bandwidth (document/terminal) | Very low (compact commands) | Low-medium (compressed pixels) |
+| Bandwidth (GPU-rendered app) | Low (hardware accel on server) | Medium (must linearise DMA-BUF) |
+| Audio | No | No |
+| Full desktop | No | No |
+| Security | Weak (X11 has no ACL) | SSH-grade (forwarded over SSH) |
+| Wayland-native apps | No (requires XWayland) | Yes |
+| HiDPI / fractional scale | Poor | Good (protocol-level) |
+
+**Limitations**:
+- No full-desktop remoting — individual app windows only, not an entire compositor session
+- No audio forwarding (must use PulseAudio/PipeWire network sink separately)
+- DMA-BUF linearisation overhead for GPU-rendered surfaces
+- No input method (IME) protocol forwarding — text input in remote apps is limited
+- Wayland protocol version negotiation can fail if server and client compositor versions differ significantly
+
+**Use cases**: Remote development on a powerful workstation (compile + run a GUI debugger remotely, display locally); running Wayland-native apps on HPC clusters where only SSH access is available; forwarding a single app from a headless server to a local compositor without setting up a full remote desktop stack.
 
 ### Capture Latency and Encode Budget
 
