@@ -40,6 +40,12 @@ The unifying mechanism throughout this part is **DMA-BUF**: every major data flo
 
 **Chapter 173 — VK\_EXT\_shader\_object: Pipeline-Free Shader Binding in Vulkan** covers the `VkShaderEXT` object introduced by `VK_EXT_shader_object` (ratified EXT, revision 1, 2023): how shaders are compiled independently of pipeline state via `vkCreateShadersEXT`, bound per-stage with `vkCmdBindShadersEXT`, and serialised for instant reload via `vkGetShaderBinaryDataEXT`. The chapter explains why the extension requires extensive dynamic state (`VK_EXT_extended_dynamic_state` family) and must be used inside `VkRenderingInfo` (i.e. requires `VK_KHR_dynamic_rendering`). Driver implementation status is documented: RADV enabled by default in Mesa 24.1 (`src/amd/vulkan/radv_shader_object.c`), NVK added support in February 2024, ANV landed in Mesa 25.3-devel. The chapter includes a complete before/after migration example converting a static graphics pipeline to shader objects, and performance guidance from the spec's conformance floor (≤150% CPU cost vs. fully-static pipelines).
 
+**Chapter 200 — Vulkan Memory Allocation and Resource Management** covers the practical side of GPU memory that Chapter 106's formal model does not: `VkPhysicalDeviceMemoryProperties` heap and type topology, `VK_EXT_memory_budget` for pressure monitoring, the **Vulkan Memory Allocator (VMA)** suballocation library (`VmaAllocator`, pool strategies, defragmentation), buffer device address (`VK_KHR_buffer_device_address`, core since Vulkan 1.2) for GPU-side pointer traversal, sparse resource binding (`vkQueueBindSparse`, virtual texturing), and the `VK_EXT_host_image_copy` (Vulkan 1.4 core) path that eliminates staging buffers for texture upload. The chapter also covers memory aliasing for transient attachment savings and per-driver allocator internals (RADV `radv_alloc_memory`, ANV `anv_device_alloc_bo`).
+
+**Chapter 201 — Vulkan Debugging, Validation, and Profiling** is the "how do you actually develop with Vulkan" chapter. It covers `VK_LAYER_KHRONOS_validation` sub-layers (core validation, thread safety, best practices, GPU-Assisted Validation, synchronization validation, debug printf), `VK_EXT_debug_utils` (object naming, command buffer label regions, messenger callbacks), `VK_EXT_device_fault` for post-hang crash diagnostics, **RenderDoc** (frame capture mechanism, resource inspector, pipeline state viewer, GPU counter integration), **AMD Radeon GPU Profiler** (SQTT wave occupancy, barrier stall visualization), **Intel GPA** (Xe EU occupancy, L3 cache metrics), and **NVIDIA Nsight Graphics** (shader debugger, NV counter sets). The chapter closes with a practical debugging workflow and the `vkconfig` Vulkan Configurator tool from the Vulkan SDK.
+
+**Chapter 202 — Vulkan WSI Deep Dive** provides a comprehensive treatment of the Vulkan window-system integration layer beyond the survey in Chapter 24. It covers the **Wayland WSI path** (`wsi_common_wayland.c`, linux-dmabuf modifier negotiation, `wp_linux_drm_syncobj_v1` integration), the **X11/XCB path** (DRI3 Present, redirect vs direct mode), **present mode trade-offs** (FIFO/MAILBOX/IMMEDIATE/FIFO_RELAXED) with per-driver support matrices, **`VK_EXT_swapchain_maintenance1`** (safe recreation without `vkDeviceWaitIdle`, per-present mode switching), **`VK_EXT_present_timing`** (sub-frame latency targeting, just merged in Mesa 26.1), **direct display** (`VK_KHR_display`, `VK_EXT_acquire_drm_display`), **headless WSI** (`VK_EXT_headless_surface`), **HDR swapchain color spaces** (scRGB, HDR10 ST2084, BT.2020), and the Mesa `wsi_common.c` shared infrastructure.
+
 **Chapter 192 — GPU-Generated Commands: VK\_EXT\_device\_generated\_commands and Work Graphs** covers `VK_EXT_device_generated_commands` (ratified EXT, successor to the NVIDIA-specific `VK_NV_device_generated_commands`): the `VkIndirectCommandsLayout` token stream that allows the GPU to record its own draw, dispatch, pipeline-bind, and push-constant operations into a pre-processed execution buffer via `vkCmdExecuteGeneratedCommandsEXT`. The chapter covers DGC token types (`VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_INDEXED_EXT`, `VK_INDIRECT_COMMANDS_TOKEN_TYPE_SHADER_GROUP_EXT`), Indirect Execution Sets for bindless shader switching, pre-processing passes, and integration with `VK_AMDX_shader_enqueue` work graphs (GPU-side task scheduling with mesh nodes). Production status: RADV and NVK have initial support; ANV is in bring-up. VKD3D-Proton is an early consumer driving cross-vendor DGC demand.
 
 ## How the Chapters Interrelate
@@ -84,6 +90,9 @@ graph TD
     Ch165["Ch165: Vulkan Video\n(H.264 / H.265 / AV1 encode & decode)"]
     Ch173["Ch173: VK_EXT_shader_object\n(pipeline-free shader binding)"]
     Ch192["Ch192: GPU-Generated Commands\n(VK_EXT_device_generated_commands / work graphs)"]
+    Ch200["Ch200: Vulkan Memory Allocation\n(VkDeviceMemory / VMA / BDA / sparse)"]
+    Ch201["Ch201: Vulkan Debugging & Profiling\n(validation layers / RenderDoc / VK_EXT_device_fault)"]
+    Ch202["Ch202: Vulkan WSI Deep Dive\n(swapchain / present modes / direct display / HDR)"]
 
     Ch24 --> Ch25
     Ch24 --> Ch26
@@ -95,6 +104,9 @@ graph TD
     Ch24 --> Ch150
     Ch24 --> Ch152
     Ch24 --> Ch157
+    Ch24 --> Ch200
+    Ch24 --> Ch201
+    Ch24 --> Ch202
     Ch25 --> Ch133
     Ch25 --> Ch141
     Ch26 --> Ch165
@@ -103,11 +115,14 @@ graph TD
     Ch76 --> Ch154
     Ch76 --> Ch157
     Ch76 --> Ch173
+    Ch106 --> Ch200
     Ch127 --> Ch154
     Ch133 --> Ch141
     Ch148 --> Ch106
+    Ch148 --> Ch201
     Ch154 --> Ch192
     Ch76 --> Ch192
+    Ch150 --> Ch202
 ```
 
 ## Prerequisites and What Comes Next
