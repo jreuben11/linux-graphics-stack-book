@@ -1145,7 +1145,194 @@ The relay daemon model avoids re-establishing the SSH connection per application
 
 **Use cases**: Remote development on a powerful workstation (compile + run a GUI debugger remotely, display locally); running Wayland-native apps on HPC clusters where only SSH access is available; forwarding a single app from a headless server to a local compositor without setting up a full remote desktop stack.
 
-### Capture Latency and Encode Budget
+### FreeRDP: The Open RDP Implementation
+
+**FreeRDP** ([https://www.freerdp.com](https://www.freerdp.com)) is the dominant open-source RDP implementation on Linux, providing both a client library (`libfreerdp`) and a server library (`libfreerdp-server`). It underpins `xfreerdp` (CLI client), Remmina's RDP plugin, gnome-remote-desktop's RDP server, and `xrdp`'s RDP frontend. Understanding FreeRDP's architecture is prerequisite to understanding how Linux RDP actually works.
+
+**Library architecture**: FreeRDP is structured as layered libraries:
+
+```
+libfreerdp-client     — high-level client context (rdp_client_entry_points)
+libfreerdp            — core RDP protocol (PDU parsing, channels, codec)
+libfreerdp-server     — server-side PDU generation and channel hosting
+winpr                 — Windows Portability Runtime (SSPI auth, registry, streams)
+```
+
+`winpr` abstracts Windows-specific APIs (SSPI for NLA authentication, registry access, synchronisation primitives) so that the RDP protocol implementation can share code with the Windows reference. It is a non-trivial abstraction layer — FreeRDP would not exist without it.
+
+**Virtual channel plugin architecture**: RDP's extensibility lives in virtual channels. FreeRDP loads channel plugins dynamically via `FreeRDPLoadChannelAddinEntry()`. Each channel plugin implements the `IWTSPlugin` or `FreeRDP_VirtualChannel` interface:
+
+| Channel plugin | Function | Library |
+|---|---|---|
+| `rdpgfx` | GFX pipeline (H.264 AVC420/AVC444, RFX Progressive) | `channels/rdpgfx/` |
+| `cliprdr` | Clipboard redirection (text, image, file transfer) | `channels/cliprdr/` |
+| `rdpsnd` / `audin` | Audio output / input (AAC, Opus, PCMA) | `channels/rdpsnd/` |
+| `drive` | Drive redirection (host filesystem mounts in session) | `channels/drive/` |
+| `drdynvc` | Dynamic virtual channel multiplexer | `channels/drdynvc/` |
+| `rdpei` | Extended input (multitouch, pen) | `channels/rdpei/` |
+| `urbdrc` | USB device redirection (via usb-redirector) | `channels/urbdrc/` |
+| `disp` | Display control (resolution changes in-session) | `channels/disp/` |
+| `rdpecam` | Camera redirection (webcam forwarding) | `channels/rdpecam/` |
+
+**GFX pipeline and H.264**: The `rdpgfx` channel implements the RDP Graphics Pipeline Extension (MS-RDPEGFX). When the server negotiates `RDPGFX_CAPSET_VERSION10` or later, it sends compressed surfaces using:
+
+- **AVC420** (`RDPGFX_CODECID_AVC420`): H.264 4:2:0, full surface encode. On Linux servers (gnome-remote-desktop), encoded via VA-API `h264_vaapi` or software `libx264`. On the client, decoded via VA-API, NVDEC, or FFmpeg software.
+- **AVC444** (`RDPGFX_CODECID_AVC444`): H.264 4:4:4 chroma — sharper text rendering; encodes luma and chroma planes separately. Higher CPU/encode cost but visibly better for desktop content.
+- **RFX Progressive** (`RDPGFX_CODECID_RFXPROGRESSIVE`): RemoteFX wavelet codec with progressive quality refinement — good for slow networks where partial-quality frames are preferable to dropped frames.
+
+```c
+/* FreeRDP client: handle incoming GFX surface update
+ * (libfreerdp/core/graphics.c, simplified) */
+static UINT gfx_recv_surface_cmd(RdpgfxClientContext *ctx,
+                                  const RDPGFX_SURFACE_COMMAND *cmd)
+{
+    switch (cmd->codecId) {
+    case RDPGFX_CODECID_AVC420:
+        return gfx_decode_avc420(ctx, cmd);   /* → FFmpeg/VA-API */
+    case RDPGFX_CODECID_AVC444:
+        return gfx_decode_avc444(ctx, cmd);
+    case RDPGFX_CODECID_UNCOMPRESSED:
+        return gfx_blit_raw(ctx, cmd);
+    }
+}
+```
+
+**NLA authentication**: FreeRDP implements Network Level Authentication via `winpr`'s SSPI layer. NLA uses CredSSP (MS-CSSP) over TLS — the client proves its identity *before* the RDP session is established, preventing unauthenticated desktop exposure. On Linux, NLA credentials are supplied via `xfreerdp /u:user /p:pass` or via a credential manager; Kerberos (`/sec:nla /k`) is supported for AD-joined Linux clients.
+
+```bash
+# Connect with NLA, H.264 GFX, dynamic display resize, drive redirection
+xfreerdp /v:server.example.com /u:alice /sec:nla \
+  /gfx:avc444 /bpp:32 /dynamic-resolution \
+  /drive:home,/home/alice \
+  /sound:sys:pulse /microphone:sys:pulse \
+  +clipboard
+```
+
+**Server-side: libfreerdp-server**: The server library is used by gnome-remote-desktop (`grd-rdp-*.c`) and xrdp. It handles PDU generation, channel negotiation, and surface command encoding. gnome-remote-desktop's RDP path is:
+
+```
+PipeWire ScreenCast frame
+  → GBM DMA-BUF
+  → VA-API h264_vaapi encode (RDPGFX_CODECID_AVC420/444)
+  → libfreerdp-server: wrap in RDPGFX_SURFACE_COMMAND PDU
+  → TLS/TCP to client
+```
+
+**RemoteFX (legacy)**: The original RemoteFX codec (MS-RDPRFX, distinct from RFX Progressive) uses a discrete wavelet transform and was the first GPU-accelerated RDP codec. It is deprecated in favour of GFX AVC444 but still supported in FreeRDP for compatibility with Windows Server 2008 R2 SP1 and older xrdp servers.
+
+**xfreerdp CLI reference** for Linux graphics engineers:
+
+```bash
+# Benchmark: measure frame rate and latency
+xfreerdp /v:host /u:user /p:pass /gfx /fps-limit:0 /timer /log-level:DEBUG 2>&1 | grep fps
+
+# Force software decode (disable VA-API)
+xfreerdp /v:host /u:user /gfx:avc420 /rfx /no-avc /codec-cache:nsc
+
+# Inspect negotiated codec
+FREERDP_LOG_LEVEL=DEBUG xfreerdp /v:host /u:user 2>&1 | grep -i "codec\|gfx\|avc"
+```
+
+### Apache Guacamole: Clientless Remote Desktop Gateway
+
+**Apache Guacamole** ([https://guacamole.apache.org](https://guacamole.apache.org)) is a clientless remote desktop gateway: users access RDP, VNC, SSH, and Kubernetes pod terminals through a standard web browser with no client-side plugin. It is widely deployed for corporate jump-host access, Kubernetes-native development environments, and secure bastion-host patterns.
+
+**Architecture**: Guacamole decouples the protocol implementation from the browser UI with a three-tier design:
+
+```
+Browser (HTML5 + JavaScript)
+  │  Guacamole protocol (WebSocket or HTTP tunnel)
+  ▼
+guacamole-client (Java web application, Tomcat/Jetty)
+  │  Guacamole protocol (Unix socket or TCP)
+  ▼
+guacd  (native proxy daemon, C)
+  │  RDP (FreeRDP), VNC (libvncclient), SSH (libssh2), Kubernetes exec
+  ▼
+Remote desktop server (Linux RDP, VNC, SSH host, K8s pod)
+```
+
+**guacd — the proxy daemon**: `guacd` is the C-language proxy process that speaks native remote desktop protocols on one side and the Guacamole wire protocol on the other. It links against `libfreerdp` for RDP, `libvncclient` for VNC, and `libssh2` for SSH. Each connection spawns a `guacd` plugin (`libguac-client-rdp.so`, `libguac-client-vnc.so`, `libguac-client-ssh.so`) loaded via `dlopen()`.
+
+**Guacamole wire protocol**: The browser and `guacamole-client` communicate using a compact text protocol over WebSocket (or HTTP long-poll as fallback). Instructions are comma-separated: `opcode,arg1,arg2,...;`. The display model is a set of *layers* (composited client-side in a `<canvas>`):
+
+```
+# Guacamole instruction examples (wire format)
+4.size,1.0,4.1920,4.1080;          # set layer 0 size to 1920×1080
+4.jpeg,1.0,1.0,3.100,1.0,1.0,…;   # draw JPEG tile at (0,0) on layer 0
+3.key,1.65,1.1;                     # key press: 'A' (keysym 65), pressed
+4.sync,13.1718000000000;            # sync timestamp
+```
+
+The server sends JPEG or WebP tiles for changed screen regions (damage-driven, similar to VNC Tight encoding), PNG for UI elements and transparent regions, and audio as base64-encoded Ogg Vorbis packets.
+
+**RDP path via FreeRDP**: When `guacd` connects to an RDP server, it uses `libfreerdp` internally. Decoded frames (H.264 AVC420 or raw bitmap) are re-encoded as JPEG/WebP tiles by `guacd` and sent to the browser as Guacamole draw instructions. This double-encode (RDP H.264 decode → JPEG re-encode) adds CPU cost and quality loss, but is unavoidable given the browser-canvas delivery model.
+
+**Clipboard and file transfer**: Guacamole supports bidirectional clipboard via its own `clipboard` instruction and file upload/download via a virtual drive channel exposed to the remote desktop session. File transfer goes: browser → WebSocket `file` instruction → guacamole-client → Guacamole protocol → guacd → RDP drive channel → remote filesystem.
+
+**Kubernetes integration**: `guacamole-client` supports `kubernetes` connections that exec into a running pod via the Kubernetes API (`/api/v1/namespaces/{ns}/pods/{pod}/exec` WebSocket). This is a terminal-only connection (no display), but makes Guacamole a common choice for browser-based kubectl access without exposing SSH.
+
+**Authentication and session recording**: Guacamole supports LDAP, SAML, TOTP, and RADIUS authentication extensions. Session recording stores the Guacamole protocol stream as a `.guac` file, which can be replayed in the browser or converted to video via `guacenc`. This provides a full audit trail of every keypress and screen change without recording raw video.
+
+**Deployment**: Typically Dockerised (`guacamole/guacd` + `guacamole/guacamole` containers) behind an NGINX/Traefik reverse proxy with TLS termination. `guacd` and `guacamole-client` communicate via TCP (default port 4822) or Unix socket.
+
+### Container and VDI Desktop Streaming
+
+Running a full Linux desktop inside a container or VM and streaming it to a browser or thin client is a common pattern for cloud development environments, VDI deployments, and secure isolated workspaces. The graphics stack challenge is delivering GPU-accelerated display output from a containerised or virtualised context with acceptable latency.
+
+**Kasm Workspaces**: Kasm ([https://www.kasmweb.com](https://www.kasmweb.com)) is the leading open-core containerised desktop streaming platform. Each workspace is a Docker container running a full Linux desktop (Ubuntu/Debian + XFCE/KDE). Display is delivered via KasmVNC (its own fork, covered above) over WebRTC or WebSocket to the browser.
+
+GPU acceleration inside Kasm containers requires:
+1. **NVIDIA**: `--gpus all` Docker flag + NVIDIA Container Toolkit; the container runs with `/dev/nvidia*` devices; Mesa EGL or CUDA available; KasmVNC captures via VirtualGL or direct framebuffer
+2. **AMD/Intel**: `--device /dev/dri/renderD128` to expose the render node; Mesa software compose path or `virgl` for 3D
+3. **VirtualGL**: intercepts GLX calls in the container, renders on the host GPU, reads back pixels for VNC/Kasm delivery — adds ~5–15 ms latency but enables full OpenGL in an otherwise headless container
+
+```dockerfile
+FROM kasmweb/ubuntu-jammy-desktop:1.15.0
+# GPU-capable Kasm workspace
+ENV KASM_VNC_PORT=6901
+ENV VGL_DISPLAY=:0
+RUN apt-get install -y virtualgl
+```
+
+**Xpra**: ([https://xpra.org](https://xpra.org)) is a "screen-less" X11/Wayland server that persists sessions across connections — like `tmux` for GUI applications. It supports H.264, VP8, VP9 video encoding, audio forwarding, clipboard, file transfer, and a browser HTML5 client. On Linux the server runs a headless Xvfb or Xwayland, captures via X11 composite, and streams encoded frames. It is widely used for persistent remote application sessions on HPC clusters.
+
+```bash
+# Start persistent Xpra session with H.264 encode
+xpra start :100 --bind-tcp=0.0.0.0:10000 \
+     --encoding=h264 --video-encoders=x264 \
+     --html=on --daemon=yes
+
+# Attach from another machine
+xpra attach tcp://user@host:10000/100
+```
+
+**VirtIO-GPU in cloud VMs**: Cloud VM instances (AWS EC2, GCP, Azure) expose VirtIO-GPU (or virtio-vga) as the display device. Without a real GPU attached, 3D applications fall back to `llvmpipe` software rasterisation through the `virgl` path. For GPU-accelerated cloud desktops, the pattern is:
+- **AWS**: EC2 G4dn/G5 instances with NVIDIA GPU; NICE DCV or Sunshine/Moonlight for streaming; the GPU is bare-metal, not virtualised
+- **GCP**: A2/G2 instances with NVIDIA; NICE DCV or Chrome Remote Desktop agent
+- **Azure NV-series**: NVIDIA Tesla M60/T4; Azure Virtual Desktop (AVD) with GPU-accelerated RemoteFX
+
+**GPU passthrough for VDI (VFIO SR-IOV)**: Enterprise VDI uses GPU SR-IOV (Single Root I/O Virtualisation) to partition a physical GPU among multiple VMs. Each VM receives a virtual function (VF) that the guest driver treats as a real GPU:
+
+- **NVIDIA vGPU** (NVIDIA Virtual GPU): proprietary GRID driver; each vGPU gets a fixed VRAM slice; supports CUDA, OpenGL, Vulkan inside VM; requires GRID licence
+- **Intel GVT-g / SR-IOV** (Xe and Arc): `i915-sriov-dkms`; VF exposed as a standard Intel GPU; open-source, no licence; supports display and compute via host i915 driver
+- **AMD MxGPU** (MI-series, some RDNA): SRIOV-based; requires ROCm inside VM; not consumer GPUs
+
+The VF appears to the guest as a real PCIe GPU; the guest Mesa driver (RADV, ANV, or NVIDIA proprietary) talks to it directly. The display output is captured by the hypervisor and streamed via RDP, SPICE, or NICE DCV to the thin client.
+
+**Headless GPU containers** (ML/rendering workloads without display): For GPU compute containers that need a virtual display for OpenGL initialisation (e.g. simulator training environments), the pattern is:
+- `Xvfb :99 -screen 0 1920x1080x24` — software framebuffer, no GPU
+- `Xvfb` + VirtualGL — GPU render, software framebuffer capture
+- EGL surfaceless context (`EGL_EXT_platform_device`, `eglGetPlatformDisplayEXT(EGL_PLATFORM_DEVICE_EXT, ...)`) — no display server needed at all; preferred for headless GPU ML workloads (covered in Ch107)
+
+```bash
+# Headless GPU rendering via EGL device platform (no display server)
+export EGL_PLATFORM=device
+glxinfo -B   # fails — use eglinfo instead
+eglinfo       # shows EGL_PLATFORM_DEVICE_EXT adapters
+```
+
+**Capture from containerised compositor**: When the containerised desktop runs a Wayland compositor (e.g. `weston --backend=headless`), screen capture follows the same protocols as physical hosts — `ext-image-copy-capture-v1` or wlr-screencopy — but the captured frames are forwarded via KasmVNC, Xpra, or a custom WebRTC pipeline rather than presented on a physical display. This is the architecture of cloud IDE products (GitHub Codespaces desktop, Google Cloud Workstations) that offer browser-accessible Linux GUIs.
 
 The fundamental latency floor for any remote desktop system is determined by two factors: the capture interval (time from frame composition to buffer readiness) and the encode time (time to compress the captured frame into a transmittable bitstream).
 
