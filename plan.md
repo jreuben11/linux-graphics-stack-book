@@ -42,23 +42,26 @@ Chapters signal which perspective is emphasised where they diverge.
 - **Part V — Mesa GPU Drivers**
   - [Chapter 18: Vulkan Drivers](#chapter-18-vulkan-drivers)
   - [Chapter 19: OpenGL and Compatibility Drivers](#chapter-19-opengl-and-compatibility-drivers)
-- **Part VI — The Display Stack**
+- **Part VI-A — Wayland Protocol and Compositor Architecture**
   - [Chapter 20: Wayland Protocol Fundamentals](#chapter-20-wayland-protocol-fundamentals)
   - [Chapter 21: Building Compositors with wlroots](#chapter-21-building-compositors-with-wlroots)
   - [Chapter 22: Production Compositors](#chapter-22-production-compositors)
   - [Chapter 23: Legacy and Sandboxed App Support](#chapter-23-legacy-and-sandboxed-app-support)
   - [Chapter 46: The Evolving Wayland Protocol Ecosystem](#chapter-46-the-evolving-wayland-protocol-ecosystem)
+- **Part VI-B — Display Services, Input, and Color**
   - [Chapter 53: Display Calibration and colord](#chapter-53-display-calibration-and-colord)
   - [Chapter 54: The Linux Input Stack](#chapter-54-the-linux-input-stack)
   - [Chapter 105: Font Rendering — FreeType2, HarfBuzz, and the Text Pipeline](#chapter-105-font-rendering--freetype2-harfbuzz-and-the-text-pipeline)
   - [Chapter 112: Variable Refresh Rate — FreeSync, G-Sync, and Frame Pacing](#chapter-112-variable-refresh-rate--freesync-g-sync-and-frame-pacing)
   - [Chapter 194: Cross-Stack Integration — Protocols, Synchronisation, and the Coordination Layer](#chapter-194-cross-stack-integration--protocols-synchronisation-and-the-coordination-layer)
-- **Part VII — Application APIs & Middleware**
+- **Part VII-A — GPU APIs and Extended Reality**
   - [Chapter 24: Vulkan and EGL for Application Developers](#chapter-24-vulkan-and-egl-for-application-developers)
   - [Chapter 25: GPU Compute](#chapter-25-gpu-compute)
   - [Chapter 26: Hardware Video](#chapter-26-hardware-video)
   - [Chapter 27: VR & AR](#chapter-27-vr--ar)
+- **Part VII-B — Multimedia Frameworks and Desktop Integration**
   - [Chapter 38: PipeWire and the Video Session Layer](#chapter-38-pipewire-and-the-video-session-layer)
+  - [Chapter 38b: ALSA — The Linux Audio Subsystem](#chapter-38b-alsa--the-linux-audio-subsystem)
   - [Chapter 39: Qt and GTK GPU Rendering](#chapter-39-qt-and-gtk-gpu-rendering)
   - [Chapter 47: Font and Text Rendering Pipeline](#chapter-47-font-and-text-rendering-pipeline)
   - [Chapter 50: Vulkan Video Extensions](#chapter-50-vulkan-video-extensions)
@@ -116,9 +119,9 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 72: AMD FidelityFX SDK and Radeon Developer Tools](#chapter-72-amd-fidelityfx-sdk-and-radeon-developer-tools)
 - **Part XVI/XVII additions to existing parts**
   - [Chapter 73: Asahi Linux and the Apple Silicon AGX Driver](#chapter-73-asahi-linux-and-the-apple-silicon-agx-driver) *(Part II)*
-  - [Chapter 74: HDR and Wide Color Gamut on Linux](#chapter-74-hdr-and-wide-color-gamut-on-linux) *(Part VI)*
-  - [Chapter 75: Explicit GPU Synchronisation](#chapter-75-explicit-gpu-synchronisation) *(Part VI)*
-  - [Chapter 76: Modern Vulkan Extensions](#chapter-76-modern-vulkan-extensions) *(Part VII)*
+  - [Chapter 74: HDR and Wide Color Gamut on Linux](#chapter-74-hdr-and-wide-color-gamut-on-linux) *(Part VI-B — Display Services)*
+  - [Chapter 75: Explicit GPU Synchronisation](#chapter-75-explicit-gpu-synchronisation) *(Part VI-B — Display Services)*
+  - [Chapter 76: Modern Vulkan Extensions](#chapter-76-modern-vulkan-extensions) *(Part VII-A — GPU APIs)*
   - [Chapter 77: Shader Source-to-ISA: The Complete Compilation Toolchain](#chapter-77-shader-source-to-isa-the-complete-compilation-toolchain) *(Part IV)*
   - [Chapter 78: Gamescope and the Steam Deck: A Complete Gaming Graphics Stack](#chapter-78-gamescope-and-the-steam-deck-a-complete-gaming-graphics-stack) *(Part VIII)*
   - [Chapter 79: Remote Display, Screen Casting, and GPU-Accelerated Game Streaming](#chapter-79-remote-display-screen-casting-and-gpu-accelerated-game-streaming) *(Part IX)*
@@ -153,12 +156,12 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 103: The Linux Graphics Stack: History and Design Philosophy](#chapter-103-the-linux-graphics-stack-history-and-design-philosophy)
   - [Chapter 197: The Linux Graphics Stack in Context — Comparison with Windows and macOS](#chapter-197-the-linux-graphics-stack-in-context--comparison-with-windows-and-macos)
 - **Part XXI additions to existing parts**
-  - [Chapter 96: libcamera and the Linux Camera Stack](#chapter-96-libcamera-and-the-linux-camera-stack) *(Part VII)*
+  - [Chapter 96: libcamera and the Linux Camera Stack](#chapter-96-libcamera-and-the-linux-camera-stack) *(Part VII-B — Multimedia Frameworks)*
   - [Chapter 97: Unreal Engine 5 on Linux](#chapter-97-unreal-engine-5-on-linux) *(Part XI)*
   - [Chapter 98: WebAssembly and WebGPU as a Deployment Target](#chapter-98-webassembly-and-webgpu-as-a-deployment-target) *(Part X)*
   - [Chapter 99: Automotive and Embedded Linux Graphics](#chapter-99-automotive-and-embedded-linux-graphics) *(Part II)*
   - [Chapter 100: etnaviv: The Vivante GPU Open Driver](#chapter-100-etnaviv-the-vivante-gpu-open-driver) *(Part II)*
-  - [Chapter 101: Color Science and the ICC Profile Pipeline](#chapter-101-color-science-and-the-icc-profile-pipeline) *(Part VI)*
+  - [Chapter 101: Color Science and the ICC Profile Pipeline](#chapter-101-color-science-and-the-icc-profile-pipeline) *(Part VI-B — Display Services)*
   - [Chapter 102: The DRM GPU Scheduler and Multi-Process Fairness](#chapter-102-the-drm-gpu-scheduler-and-multi-process-fairness) *(Part I)*
 - **Part XXII — Additional Chapters**
   - [Chapter 116: RISC-V GPU Drivers](#chapter-116-risc-v-gpu-drivers) *(Part II)*
@@ -168,50 +171,50 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 120: GPU Memory Management Internals — TTM, GEM, and BAR](#chapter-120-gpu-memory-management-internals--ttm-gem-and-bar) *(Part I)*
   - [Chapter 121: DRM Lease and VR Direct Display](#chapter-121-drm-lease-and-vr-direct-display) *(Part I)*
   - [Chapter 122: DKMS and Out-of-Tree GPU Kernel Modules](#chapter-122-dkms-and-out-of-tree-gpu-kernel-modules) *(Part IX)*
-  - [Chapter 123: Screen Capture and Remote Desktop on Linux](#chapter-123-screen-capture-and-remote-desktop-on-linux) *(Part VI)*
+  - [Chapter 123: Screen Capture and Remote Desktop on Linux](#chapter-123-screen-capture-and-remote-desktop-on-linux) *(Part VI-B — Display Services)*
   - [Chapter 134: OpenCL on Linux](#chapter-134-opencl-on-linux) *(Part XIV)*
   - [Chapter 125: RenderDoc on Linux](#chapter-125-renderdoc-on-linux) *(Part IX)*
   - [Chapter 126: Hybrid Graphics and Laptop Power Management](#chapter-126-hybrid-graphics-and-laptop-power-management) *(Part II)*
-  - [Chapter 127: Mesh Shaders and Variable Rate Shading](#chapter-127-mesh-shaders-and-variable-rate-shading) *(Part VII)*
-  - [Chapter 128: DisplayPort MST and Multi-Monitor Topology](#chapter-128-displayport-mst-and-multi-monitor-topology) *(Part VI)*
+  - [Chapter 127: Mesh Shaders and Variable Rate Shading](#chapter-127-mesh-shaders-and-variable-rate-shading) *(Part VII-A — GPU APIs)*
+  - [Chapter 128: DisplayPort MST and Multi-Monitor Topology](#chapter-128-displayport-mst-and-multi-monitor-topology) *(Part VI-B — Display Services)*
   - [Chapter 129: GPU Firmware Deep Dive](#chapter-129-gpu-firmware-deep-dive) *(Part I)*
-  - [Chapter 130: Wayland Protocol Extension Development](#chapter-130-wayland-protocol-extension-development) *(Part VI)*
-  - [Chapter 131: Touch, Stylus, and Tablet Input on Wayland](#chapter-131-touch-stylus-and-tablet-input-on-wayland) *(Part VI)*
-  - [Chapter 132: Wayland Security](#chapter-132-wayland-security) *(Part VI)*
-  - [Chapter 133: Vulkan Compute Queues and Task Graphs](#chapter-133-vulkan-compute-queues-and-task-graphs) *(Part VII)*
+  - [Chapter 130: Wayland Protocol Extension Development](#chapter-130-wayland-protocol-extension-development) *(Part VI-A — Wayland Compositor)*
+  - [Chapter 131: Touch, Stylus, and Tablet Input on Wayland](#chapter-131-touch-stylus-and-tablet-input-on-wayland) *(Part VI-B — Display Services)*
+  - [Chapter 132: Wayland Security](#chapter-132-wayland-security) *(Part VI-A — Wayland Compositor)*
+  - [Chapter 133: Vulkan Compute Queues and Task Graphs](#chapter-133-vulkan-compute-queues-and-task-graphs) *(Part VII-A — GPU APIs)*
 - **Part XXIII — Additional Chapters (set 2)**
-  - [Chapter 135: Vulkan Ray Tracing on Linux](#chapter-135-vulkan-ray-tracing-on-linux) *(Part VII)*
+  - [Chapter 135: Vulkan Ray Tracing on Linux](#chapter-135-vulkan-ray-tracing-on-linux) *(Part VII-A — GPU APIs)*
   - [Chapter 136: WSL2 Linux Graphics — dxgkrnl and Mesa D3D12](#chapter-136-wsl2-linux-graphics--dxgkrnl-and-mesa-d3d12) *(Part IX)*
   - [Chapter 137: GPU Performance Profiling — RGP, GPA, and VK_EXT_performance_query](#chapter-137-gpu-performance-profiling--rgp-gpa-and-vk_ext_performance_query) *(Part IX)*
-  - [Chapter 138: Wayland Fractional Scaling and HiDPI](#chapter-138-wayland-fractional-scaling-and-hidpi) *(Part VI)*
+  - [Chapter 138: Wayland Fractional Scaling and HiDPI](#chapter-138-wayland-fractional-scaling-and-hidpi) *(Part VI-A — Wayland Compositor)*
   - [Chapter 139: DRM Hardware Overlay Planes and Composition Bypass](#chapter-139-drm-hardware-overlay-planes-and-composition-bypass) *(Part I)*
-  - [Chapter 140: HDMI and DisplayPort Audio on Linux](#chapter-140-hdmi-and-displayport-audio-on-linux) *(Part VI)*
-  - [Chapter 141: Vulkan Cooperative Matrices and GPU ML Acceleration](#chapter-141-vulkan-cooperative-matrices-and-gpu-ml-acceleration) *(Part VII)*
+  - [Chapter 140: HDMI and DisplayPort Audio on Linux](#chapter-140-hdmi-and-displayport-audio-on-linux) *(Part VI-B — Display Services)*
+  - [Chapter 141: Vulkan Cooperative Matrices and GPU ML Acceleration](#chapter-141-vulkan-cooperative-matrices-and-gpu-ml-acceleration) *(Part VII-A — GPU APIs)*
 - **Part XXIV — Critical Gap Chapters**
   - [Chapter 142: V4L2 and the Linux Media Subsystem](#chapter-142-v4l2-and-the-linux-media-subsystem) *(Part XIII)*
   - [Chapter 143: RADV Internals: The Mesa AMD Vulkan Driver](#chapter-143-radv-internals-the-mesa-amd-vulkan-driver) *(Part XVII)*
   - [Chapter 144: Boot Graphics Pipeline: From Firmware to KMS Handoff](#chapter-144-boot-graphics-pipeline-from-firmware-to-kms-handoff) *(Part I)*
-  - [Chapter 145: XWayland: Architecture and the X11-to-Wayland Bridge](#chapter-145-xwayland-architecture-and-the-x11-to-wayland-bridge) *(Part VI)*
+  - [Chapter 145: XWayland: Architecture and the X11-to-Wayland Bridge](#chapter-145-xwayland-architecture-and-the-x11-to-wayland-bridge) *(Part VI-A — Wayland Compositor)*
   - [Chapter 146: WebCodecs and Browser Hardware Acceleration](#chapter-146-webcodecs-and-browser-hardware-acceleration) *(Part X)*
   - [Chapter 147: Chrome and Firefox Hardware Video Decode via VA-API](#chapter-147-chrome-and-firefox-hardware-video-decode-via-va-api) *(Part X)*
-  - [Chapter 148: Vulkan Synchronisation: A Complete Developer Reference](#chapter-148-vulkan-synchronisation-a-complete-developer-reference) *(Part VII)*
+  - [Chapter 148: Vulkan Synchronisation: A Complete Developer Reference](#chapter-148-vulkan-synchronisation-a-complete-developer-reference) *(Part VII-A — GPU APIs)*
 - **Part XXV — Advanced Topics and Gap-Fill**
-  - [Chapter 106: The Vulkan Memory Model — Formal Execution and Memory Ordering](#chapter-106-the-vulkan-memory-model--formal-execution-and-memory-ordering) *(Part VII)*
+  - [Chapter 106: The Vulkan Memory Model — Formal Execution and Memory Ordering](#chapter-106-the-vulkan-memory-model--formal-execution-and-memory-ordering) *(Part VII-A — GPU APIs)*
   - [Chapter 149: GPU Hang Detection and Recovery — TDR, Scheduling Timeouts, and Reset Sequences](#chapter-149-gpu-hang-detection-and-recovery--tdr-scheduling-timeouts-and-reset-sequences) *(Part I)*
-  - [Chapter 150: EGL Architecture and DMA-BUF Integration](#chapter-150-egl-architecture-and-dmabuf-integration) *(Part VII)*
-  - [Chapter 151: Wayland Text Input and Input Method Editors](#chapter-151-wayland-text-input-and-input-method-editors) *(Part VI)*
-  - [Chapter 152: The Rust GPU Ecosystem: ash, wgpu, naga, and Bevy](#chapter-152-the-rust-gpu-ecosystem-ash-wgpu-naga-and-bevy) *(Part VII)*
+  - [Chapter 150: EGL Architecture and DMA-BUF Integration](#chapter-150-egl-architecture-and-dmabuf-integration) *(Part VII-A — GPU APIs)*
+  - [Chapter 151: Wayland Text Input and Input Method Editors](#chapter-151-wayland-text-input-and-input-method-editors) *(Part VI-A — Wayland Compositor)*
+  - [Chapter 152: The Rust GPU Ecosystem: ash, wgpu, naga, and Bevy](#chapter-152-the-rust-gpu-ecosystem-ash-wgpu-naga-and-bevy) *(Part VII-A — GPU APIs)*
   - [Chapter 153: OBS Studio GPU Pipeline: Capture, Encode, and Stream](#chapter-153-obs-studio-gpu-pipeline-capture-encode-and-stream) *(Part IX)*
-  - [Chapter 154: GPU-Driven Rendering: Indirect Draw, Culling, and Mesh Shaders](#chapter-154-gpu-driven-rendering-indirect-draw-culling-and-mesh-shaders) *(Part VII)*
-  - [Chapter 192: GPU-Generated Commands — VK\_EXT\_device\_generated\_commands and Work Graphs](#chapter-192-gpu-generated-commands--vk_ext_device_generated_commands-and-work-graphs) *(Part VII)*
+  - [Chapter 154: GPU-Driven Rendering: Indirect Draw, Culling, and Mesh Shaders](#chapter-154-gpu-driven-rendering-indirect-draw-culling-and-mesh-shaders) *(Part VII-A — GPU APIs)*
+  - [Chapter 192: GPU-Generated Commands — VK\_EXT\_device\_generated\_commands and Work Graphs](#chapter-192-gpu-generated-commands--vk_ext_device_generated_commands-and-work-graphs) *(Part VII-A — GPU APIs)*
   - [Chapter 155: USB DisplayLink and the evdi Virtual DRM Driver](#chapter-155-usb-displaylink-and-the-evdi-virtual-drm-driver) *(Part II)*
   - [Chapter 156: Mesa Nine: The Direct3D 9 State Tracker for Gallium](#chapter-156-mesa-nine-the-direct3d-9-state-tracker-for-gallium) *(Part IV)*
-  - [Chapter 157: Vulkan Descriptor Binding: Sets, Push Descriptors, and Descriptor Buffers](#chapter-157-vulkan-descriptor-binding-sets-push-descriptors-and-descriptor-buffers) *(Part VII)*
-  - [Chapter 158: HDR and Display Color Management on Linux](#chapter-158-hdr-and-display-color-management-on-linux) *(Part VI)*
+  - [Chapter 157: Vulkan Descriptor Binding: Sets, Push Descriptors, and Descriptor Buffers](#chapter-157-vulkan-descriptor-binding-sets-push-descriptors-and-descriptor-buffers) *(Part VII-A — GPU APIs)*
+  - [Chapter 158: HDR and Display Color Management on Linux](#chapter-158-hdr-and-display-color-management-on-linux) *(Part VI-B — Display Services)*
   - [Chapter 160: Freedreno, Turnip, and the Qualcomm Adreno Driver](#chapter-160-freedreno-turnip-and-the-qualcomm-adreno-driver) *(Part II)*
   - [Chapter 162: Framebuffer Compression: AFBC, DCC, CCS, and UBWC](#chapter-162-framebuffer-compression-afbc-dcc-ccs-and-ubwc) *(Part I)*
   - [Chapter 163: VKMS and Virtual Display Drivers for Testing](#chapter-163-vkms-and-virtual-display-drivers-for-testing) *(Part I)*
-  - [Chapter 165: Vulkan Video: Hardware Decode and Encode via the Vulkan API](#chapter-165-vulkan-video-hardware-decode-and-encode-via-the-vulkan-api) *(Part VII)*
+  - [Chapter 165: Vulkan Video: Hardware Decode and Encode via the Vulkan API](#chapter-165-vulkan-video-hardware-decode-and-encode-via-the-vulkan-api) *(Part VII-A — GPU APIs)*
 - **Part XXVI — New Chapters: Gap Analysis Fill**
   - [Chapter 167: NTSYNC — NT Synchronization Primitives in the Linux Kernel](#chapter-167-ntsync--nt-synchronization-primitives-in-the-linux-kernel) *(Part VIII)*
   - [Chapter 168: WebNN — The Web Neural Network API](#chapter-168-webnn--the-web-neural-network-api) *(Part X)*
@@ -219,9 +222,9 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 170: AMDVLK vs. RADV — AMD's Two Open Vulkan Drivers](#chapter-170-amdvlk-vs-radv--amds-two-open-vulkan-drivers) *(Part XVII)*
   - [Chapter 171: Linux Gaming Anti-Cheat — EasyAntiCheat, BattlEye, and the Ring-0 Problem](#chapter-171-linux-gaming-anti-cheat--easyanticheat-battleye-and-the-ring-0-problem) *(Part VIII)*
   - [Chapter 172: eGPU on Linux — Thunderbolt, USB4, and PCIe Hot-Plug](#chapter-172-egpu-on-linux--thunderbolt-usb4-and-pcie-hot-plug) *(Part II)*
-  - [Chapter 173: VK\_EXT\_shader\_object — Pipeline-Free Shader Binding in Vulkan](#chapter-173-vk_ext_shader_object--pipeline-free-shader-binding-in-vulkan) *(Part VII)*
+  - [Chapter 173: VK\_EXT\_shader\_object — Pipeline-Free Shader Binding in Vulkan](#chapter-173-vk_ext_shader_object--pipeline-free-shader-binding-in-vulkan) *(Part VII-A — GPU APIs)*
   - [Chapter 174: WezTerm and Alacritty — GPU Terminal Rendering Architectures](#chapter-174-wezterm-and-alacritty--gpu-terminal-rendering-architectures) *(Part XII)*
-  - [Chapter 175: Linux Compositor Accessibility — AT-SPI2, Screen Readers, and the Wayland Gap](#chapter-175-linux-compositor-accessibility--at-spi2-screen-readers-and-the-wayland-gap) *(Part VI)*
+  - [Chapter 175: Linux Compositor Accessibility — AT-SPI2, Screen Readers, and the Wayland Gap](#chapter-175-linux-compositor-accessibility--at-spi2-screen-readers-and-the-wayland-gap) *(Part VI-A — Wayland Compositor)*
   - [Chapter 176: OpenCASCADE Technology — The BRep Kernel and 3D Visualization Stack](#chapter-176-opencascade-technology--the-brep-kernel-and-3d-visualization-stack) *(Part XI)*
   - [Chapter 177: NVK — NVIDIA Vulkan in Mesa: Architecture, WSI, and Conformance](#chapter-177-nvk--nvidia-vulkan-in-mesa-architecture-wsi-and-conformance) *(Part V)*
   - [Chapter 178: The PTY/TTY Kernel Layer and Line Disciplines](#chapter-178-the-ptytty-kernel-layer-and-line-disciplines) *(Part XII)*
@@ -468,7 +471,7 @@ Chapters signal which perspective is emphasised where they diverge.
 - Performance characteristics and known limitations of each
 - **Integrations**: llvmpipe and Lavapipe consume NIR via LLVM (Ch14); they are primary targets for dEQP and piglit in headless CI (Ch31); Wayland compositors (Ch21, Ch22) fall back to llvmpipe when no GPU KMS backend is available; Zink sits above the Vulkan driver layer (Ch18) and beneath the Gallium OpenGL state tracker (Ch13)
 
-### Chapter 192: GPU-Generated Commands — VK_EXT_device_generated_commands and Work Graphs *(Part VII)*
+### Chapter 192: GPU-Generated Commands — VK_EXT_device_generated_commands and Work Graphs *(Part VII-A — GPU APIs)*
 - History: from `VK_NV_device_generated_commands` (NVIDIA-only) to the multi-vendor EXT; design goals (remove last CPU bottleneck in GPU-driven scenes)
 - `VkIndirectCommandsLayoutEXT`: token sequence design, token types, `indirectStride`, dispatch-token constraint
 - `VkIndirectExecutionSetEXT`: pipeline-mode and shader-object-mode IES; GPU-side pipeline/shader selection by index; update functions
@@ -526,7 +529,7 @@ Chapters signal which perspective is emphasised where they diverge.
 
 ---
 
-## Part VI — The Display Stack
+## Part VI-A — Wayland Protocol and Compositor Architecture
 
 ### Chapter 20: Wayland Protocol Fundamentals
 - The Wayland object model, wire protocol, and event loop
@@ -613,6 +616,10 @@ This chapter covers the wave of staging protocols that reached compositor implem
 
 - **Integrations**: `wp_linux_drm_syncobj_v1` is the Wayland surface of the DRM sync object infrastructure (Ch3, Ch4); its Mesa implementation is in `src/egl/drivers/dri2/platform_wayland.c` (Ch12); `wp_color_management_v1` programs the KMS colour pipeline (Ch3) through the compositor's KMS backend (Ch21, Ch22); `ext-image-copy-capture-v1` feeds DMA-BUF frames into PipeWire (Ch38) for screen recording and portal screen cast; `wp_fifo_v1` is a counterpart to `wp_presentation` (Ch20 §7) and interacts with VRR KMS properties (Ch3); the portal evolution closes the gaps identified in Ch20 §13 and extends Ch23's coverage of `xdg-desktop-portal`; `wp_security_context_v1` is the Wayland-layer complement to Flatpak's seccomp/namespace sandbox (Ch23)
 
+---
+
+## Part VI-B — Display Services, Input, and Color
+
 ### Chapter 53: Display Calibration and colord
 - The calibration problem: why uncalibrated displays produce incorrect colours; the ICC profile as a device characterisation standard; matrix vs. LUT profile types
 - `colord` daemon: architecture; `ColorDevice` and `ColorProfile` D-Bus objects (`org.freedesktop.ColorManager`); automatic profile assignment via udev device rules; ICC database at `/var/lib/colord/`; the `cd-create-profile` tool
@@ -635,7 +642,7 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - Input latency: the evdev kernel ring buffer; libinput's batching model; Wayland compositor frame-aligned input delivery; how `wp_input_timestamps_v1` enables sub-frame input latency measurement; game input latency via MangoHud (Ch29)
 - **Integrations**: libinput feeds Wayland compositors (Ch21, Ch22) via `wlr_input_device` and Mutter's `MetaSeatNative`; pointer constraint protocols build on the input stack described here (Ch46); gaming controller events reach games via SDL2 which straddles evdev and Wayland; Monado (Ch27) consumes libinput tracking data; the InputCapture portal (Ch46) injects synthetic events back into this stack
 
-### Chapter 105: Font Rendering — FreeType2, HarfBuzz, and the Text Pipeline *(Part VI)*
+### Chapter 105: Font Rendering — FreeType2, HarfBuzz, and the Text Pipeline *(Part VI-B)*
 
 - FreeType2 rendering pipeline: glyph rasterisation at the pixel level; hinting modes (autohinter, bytecode interpreter, no-hinting, light); subpixel LCD rendering (`FT_RENDER_MODE_LCD`); the patent history and `FT_Library_SetLcdFilter`; gamma-correct linear blending; FreeType 2.13 variable font support; `FT_Face`, `FT_GlyphSlot`, `FT_Bitmap` API lifecycle; source at https://freetype.org/
 - HarfBuzz text shaping: the OpenType shaping engine; `hb_buffer_t` Unicode codepoint input; `hb_font_t` backed by FreeType or native; `hb_shape()` — GSUB ligature substitution, GPOS mark positioning, kerning; complex script support: Arabic contextual forms, Devanagari vowel signs, Hangul jamo composition; cluster model for cursor and selection; BiDi text via `hb_unicode_funcs_t`; source at https://harfbuzz.github.io/
@@ -645,7 +652,7 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - Variable fonts and colour emoji: OpenType variable axes (wght, wdth, ital, slnt); FreeType 2.7+ variable instance rendering; HarfBuzz `hb_variation_t`; colour emoji via OpenType CBDT/CBLC (bitmap) and COLRv1 (vector); `FT_Load_Glyph` with `FT_LOAD_COLOR` flag
 - **Integrations**: FreeType/HarfBuzz are consumed by Qt (Ch39), GTK4 (Ch39), Skia (Ch37), terminal emulators (Ch44, Ch47); `wl_output.subpixel` comes from the Wayland compositor output model (Ch20); KMS colour pipeline (Ch3) and HDR (Ch74) affect how gamma-corrected glyphs appear on HDR displays; Ch47 covers Pango/Cairo as higher-level text layout consumers of this chapter's primitives
 
-### Chapter 112: Variable Refresh Rate — FreeSync, G-Sync, and Frame Pacing *(Part VI)*
+### Chapter 112: Variable Refresh Rate — FreeSync, G-Sync, and Frame Pacing *(Part VI-B)*
 
 - VRR fundamentals: why fixed-refresh-rate displays cause frame pacing artefacts; the display panel's variable-blanking-interval mechanism; VESA Adaptive-Sync (DisplayPort 1.2a) and HDMI 2.1 VRR as the hardware standards; FreeSync (AMD open spec) vs G-Sync Compatible (NVIDIA validation) vs G-Sync module (proprietary scaler) — what differs at the panel hardware level
 - DRM/KMS VRR support: `VRR_ENABLED` atomic property on CRTC; `DRM_CAP_ADDFB2_MODIFIERS`; drm connector `VRR_CAPABLE` property; `vrr_min_hz` and `vrr_max_hz` from EDID; kernel amdgpu VRR implementation (`amdgpu_dm_crtc_vrr_active()`); i915/Xe VRR for Intel Arc panels; nouveau VRR status
@@ -657,7 +664,7 @@ This chapter covers the wave of staging protocols that reached compositor implem
 
 ---
 
-## Part VII — Application APIs & Middleware
+## Part VII-A — GPU APIs and Extended Reality
 
 ### Chapter 24: Vulkan and EGL for Application Developers
 - Vulkan on Linux: instance extensions, physical device selection, queue families
@@ -702,6 +709,10 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - Hand tracking and extended interaction: `XR_EXT_hand_tracking` — hardware that supports it on Linux (Quest via SteamVR Link, Ultraleap); `XR_EXT_eye_gaze_interaction` — Tobii and VIVE Pro Eye on Linux; `XR_FB_passthrough`-equivalent for camera AR on open hardware; how these extensions layer on top of the session and frame loop described in the Monado section
 - **Integrations**: Monado drives the headset display via DRM direct mode (Ch2) and allocates swapchain images via GBM/Vulkan (Ch4, Ch24); reprojection shaders compile through the same NIR/Mesa pipeline (Ch14); OpenXR applications use the same Vulkan queues and synchronisation primitives as desktop apps (Ch24); tracking data from V4L2 cameras (Ch26) feeds Monado's SLAM pipeline; SteamVR on Linux uses the same Mesa Vulkan drivers (Ch18) and, for the Wayland path, the same linux-dmabuf swapchain (Ch20)
 
+---
+
+## Part VII-B — Multimedia Frameworks and Desktop Integration
+
 ### Chapter 38: PipeWire and the Video Session Layer
 - PipeWire architecture: the graph model (`pw_node`, `pw_port`, `pw_link`); the event loop and `pw_loop`; SPA (Simple Plugin API) as the low-level buffer negotiation layer; the `pw_stream` abstraction for producers and consumers
 - Session management: PipeWire as a replacement for PulseAudio and JACK; `wireplumber` session manager; policy engine; device enumeration via udev/ALSA/V4L2; routing rules and metadata
@@ -710,6 +721,20 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - Remote desktop: `xdg-desktop-portal` remote-desktop interface; PipeWire streaming to RDP/VNC backends; DMA-BUF→CPU copy when the remote encoder needs raw pixels
 - Buffer formats and GPU interop: `SPA_VIDEO_FORMAT_*` and DRM format mapping; DMA-BUF import into Vulkan `VkImage` (Ch24); explicit sync (`DRM_FORMAT_MOD_INVALID` path vs. explicit fence passing); GPU-accelerated encode handoff to VA-API (Ch26)
 - **Integrations**: PipeWire consumes libcamera DMA-BUF frames (Ch26) and compositor screencopy buffers (Ch21, Ch22); its DMA-BUF negotiation relies on GEM/DMA-BUF infrastructure (Ch4); GPU consumers import PipeWire buffers via the same Vulkan external memory path used by ANGLE (Ch34) and Dawn (Ch35); `xdg-desktop-portal` routes screen capture from wlroots (Ch21) and Mutter (Ch22) through PipeWire to OBS and browser tab capture (Ch33)
+
+### Chapter 38b: ALSA — The Linux Audio Subsystem *(Part VII-B)*
+- ALSA kernel architecture: `snd_card`, `snd_pcm_ops` vtable, the `sound/core/`, `sound/pci/`, `sound/soc/` source tree; character device layout (`/dev/snd/pcmC0D0p`, `/dev/snd/controlC0`, `/dev/snd/seq`); replaced OSS in Linux 2.6
+- `libasound` PCM API: `snd_pcm_open()`, `snd_pcm_hw_params` negotiation (rate, format, channels, period size, buffer size); the interrupt-driven ring buffer model; xrun recovery (`snd_pcm_recover()`); full compilable playback example
+- Hardware params negotiation: `snd_pcm_hw_params_set_rate_near()`, `snd_pcm_hw_params_set_period_size_near()`, `snd_pcm_hw_params_set_buffer_size_near()`; the period/buffer size relationship; latency calculation; MMAP mode vs. read/write mode
+- ALSA mixer API: `snd_mixer_open()`, `snd_mixer_attach()`, `snd_mixer_selem_*` for volume/mute control; the simple element interface vs. raw control interface; `amixer`/`alsamixer` as reference implementations
+- `asound.conf` plugin system: the PCM plugin chain (`plug`, `dmix`, `dsnoop`, `softvol`, `rate`, `asym`); `/etc/asound.conf` vs. `~/.asoundrc`; how PipeWire installs its virtual PCM plugin to intercept `libasound` calls (cross-ref Ch38)
+- UCM2 (Use Case Manager): `snd_use_case_mgr_open()`, the `HiFi.conf` verb/device/modifier hierarchy; how systemd/PipeWire/PulseAudio use UCM2 for routing on embedded platforms; `alsaucm` debugging tool
+- ASoC (ALSA System-on-Chip): the machine/codec/platform triad; `snd_soc_card`, `snd_soc_dai_link`, `snd_soc_component_driver`; DAPM (Dynamic Audio Power Management) — widgets, routes, and the graph-based power algorithm; registering a machine driver; practical I²S + codec example
+- HDA (High Definition Audio): the Intel HDA controller (`snd_hda_intel`); CORB (Command Output Ring Buffer) and RIRB (Response Input Ring Buffer); HDA verb round-trip; codec patching with `snd_hda_patch_t`; `hdajackretask` for pin reconfiguration; the DisplayPort/HDMI audio widget chain (cross-ref Ch140)
+- ALSA sequencer and MIDI: `snd_seq_open()`, `snd_seq_port_subscribe_t`; the sequencer graph and MIDI routing; `aseqdump`, `aplaymidi`; the relationship between ALSA MIDI and PipeWire MIDI (Ch38)
+- Debugging and tuning: `cat /proc/asound/cards`, `aplay -l`, `alsactl`, `alsa-info.sh`; underrun/overrun diagnosis; `latency_test`; `ALSA_DEBUG=1`; PCM probing with `aplay --dump-hw-params`
+- Post-2021 deployment: PipeWire as the ALSA owner on modern desktops; direct `libasound` use on embedded/headless; when to use ALSA directly vs. PipeWire API; the `pw-jack` JACK compatibility shim (Ch38)
+- **Integrations**: Ch38 (PipeWire — owns ALSA devices on modern desktops; ALSA PCM plugin routes libasound calls into PipeWire graph), Ch140 (HDMI/DisplayPort Audio — HDA codec widget chain for HDMI audio), Ch39 (Qt Multimedia and GStreamer-GTK audio capture use ALSA or PipeWire-ALSA bridge), Ch57/Ch58 (FFmpeg/GStreamer ALSA source/sink elements), Ch26 (VA-API video decode outputs PCM via ALSA or PipeWire)
 
 ### Chapter 39: Qt and GTK GPU Rendering
 - Qt6 rendering architecture: the `QRhi` (Qt Rendering Hardware Interface) abstraction; backends — Vulkan, OpenGL, Metal, D3D12; `QSGRenderNode` and the scene graph; `QQuickRenderControl` for off-screen rendering
@@ -743,7 +768,7 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - Comparison with VA-API: API complexity trade-offs; zero-copy display path; hardware support matrix; migration strategy for applications
 - **Integrations**: Vulkan Video uses the same `VkDevice` (Ch18) and `VkImage`/`VkDeviceMemory` (Ch24) as graphics; decoded frames are `VkImage` objects importable via linux-dmabuf (Ch20) for zero-copy display; PipeWire (Ch38) can receive Vulkan Video decoded frames as DMA-BUF; VA-API (Ch26) remains the more widely supported alternative for applications targeting older hardware
 
-### Chapter 111: Flatpak Graphics — GPU Access in Sandboxed Applications *(Part VII)*
+### Chapter 111: Flatpak Graphics — GPU Access in Sandboxed Applications *(Part VII-B)*
 
 - Flatpak sandbox model: Linux namespaces (user, mount, network, PID); seccomp filter; D-Bus policy; the `/run/host` and `/run/flatpak` bind mounts; how Flatpak differs from a container runtime (no kernel isolation of GPU, only file system and syscall restrictions)
 - GPU device access in Flatpak: the `--device=dri` finish-arg granting access to `/dev/dri/renderDN` and `/dev/dri/cardN`; why DRM render nodes do not require DRM master privilege; GPU driver library injection via `LD_LIBRARY_PATH` and the Mesa ICD discovery path; `org.freedesktop.platform` runtime providing Mesa shared libraries
@@ -753,7 +778,7 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - Application GPU performance inside Flatpak: shader cache (`~/.cache/mesa_shader_cache` inside the sandbox; `XDG_CACHE_HOME` respects the portal); disk shader cache invalidation on Mesa version update; `LIBGL_DEBUG=verbose` from inside the sandbox; `flatpak run --env=MESA_DEBUG=1`
 - **Integrations**: Ch1 (DRM render nodes — the access mechanism), Ch23 (xdg-desktop-portal — screen capture and camera portals), Ch46 (wp_security_context_v1 — compositor-side Flatpak tagging), Ch55 (GPU containers — contrast with container GPU access), Ch25 (Vulkan/OpenCL compute from sandbox), Ch88 (NPU accel node access from sandbox)
 
-### Chapter 114: OpenCV and GPU-Accelerated Computer Vision on Linux *(Part VII)*
+### Chapter 114: OpenCV and GPU-Accelerated Computer Vision on Linux *(Part VII-B)*
 
 - OpenCV architecture on Linux: `cv::Mat` and `cv::UMat` (unified transparent API); build configuration: `cmake -DWITH_OPENCL=ON -DWITH_CUDA=ON -DWITH_VA=ON -DWITH_VA_INTEL=ON`; module structure (`core`, `imgproc`, `dnn`, `videoio`, `calib3d`, `features2d`); source at https://github.com/opencv/opencv
 - OpenCL T-API (Transparent API): `cv::UMat` keeps data on GPU via OpenCL; `cv::ocl::Context` initialisation; automatic fallback to CPU when no OpenCL device; `OPENCV_OPENCL_DEVICE` environment variable; rusticl (Ch25) as the Mesa OpenCL backend for AMD/Intel on Linux
@@ -1622,7 +1647,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 
 ## Part XX — AI/ML Inference on Linux
 
-> **Note:** Chapter 48 (ROCm and Machine Learning on Linux GPUs) was originally part of Part VII (Application APIs & Middleware) and has been moved here as it is more naturally an AI/ML infrastructure chapter than a general middleware chapter.
+> **Note:** Chapter 48 (ROCm and Machine Learning on Linux GPUs) was originally part of Part VII-A (GPU APIs & Extended Reality) and has been moved here as it is more naturally an AI/ML infrastructure chapter than a general middleware chapter.
 
 ### Chapter 199: Jupyter Internals — Architecture, Python Runtime, Multi-Kernel Support, and GPU Computing
 
@@ -1643,7 +1668,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 
 ### Chapter 48: ROCm and Machine Learning on Linux GPUs
 
-*(Moved from Part VII to Part XX — AI/ML infrastructure chapter)*
+*(Moved from Part VII-A to Part XX — AI/ML infrastructure chapter)*
 - ROCm stack overview: the KFD (Kernel Fusion Driver) at `/dev/kfd`; `amdkfd` kernel module and its relation to `amdgpu` DRM (Ch5); the HSA (Heterogeneous System Architecture) memory model; ROCm hardware support matrix (CDNA vs. RDNA generations)
 - HIP runtime: `hipMalloc` / `hipMemcpy` / `hipLaunchKernelGGL`; HIP as a CUDA-portable API; `hipcc` compiler driver; `hipify-perl` and `hipify-clang` for CUDA→HIP porting
 - ROCm compilation pipeline: HIP C++ → Clang/LLVM → AMDGPU LLVM backend → GCN/CDNA ISA; `amdgcn-amd-amdhsa` target triple; `--offload-arch=gfx942` for MI300X; comparison with Mesa's ACO (Ch15) — ACO is for graphics command streams, LLVM is for compute
@@ -1795,7 +1820,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 
 - **Integrations**: Ch1 (DRM kernel driver model), Ch2 (KMS on Apple display), Ch14 (Mesa driver architecture), Ch24 (Vulkan via Honeykrisp), Ch77 (SPIR-V → NIR → AGX ISA), Ch119 (Zink path for OpenGL)
 
-### Chapter 135: Vulkan Ray Tracing on Linux *(Part VII)*
+### Chapter 135: Vulkan Ray Tracing on Linux *(Part VII-A — GPU APIs)*
 
 - Ray tracing hardware: RDNA2+ BVH traversal (`image_bvh_intersect_ray`); Intel Xe-HPG RT unit; NVIDIA RTX Tensor/RT Cores; architectural comparison
 - Extensions: `VK_KHR_ray_tracing_pipeline`, `VK_KHR_acceleration_structure`, `VK_KHR_ray_query`, `VK_KHR_deferred_host_operations`; feature query pattern
@@ -1832,7 +1857,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Frame time budget: 16.7 ms at 60 Hz; GPU hang vs CPU stall; `vkWaitForFences` CPU-wait debugging; back-pressure analysis
 - **Integrations**: Ch24 (Vulkan timestamps), Ch93 (GPU performance methodology), Ch133 (async compute queue profiling), Ch137 self-referential: profiling the entire stack
 
-### Chapter 138: Wayland Fractional Scaling and HiDPI *(Part VI)*
+### Chapter 138: Wayland Fractional Scaling and HiDPI *(Part VI-A — Wayland Compositor)*
 
 - HiDPI problem: PPI formula; 4K/15" ≈ 282 PPI; device pixel ratio (DPR); integer 2× wastes logical space; need for 1.25–1.75× fractional scales
 - `wl_output.scale`: integer-only (Wayland 1.9); `wl_surface.set_buffer_scale(2)`; `GDK_SCALE=2`; limitations — too coarse for 14-inch QHD panels
@@ -1858,7 +1883,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Debugging: `cat /sys/kernel/debug/dri/0/state`; Intel `i915_display_info`; AMD `amdgpu_dm_visual_confirm`; `modetest -P plane_id@crtc_id:WxH+X+Y:format`; `WLR_DRM_DEBUG=1`
 - **Integrations**: Ch2 (KMS — planes are first-class KMS objects), Ch3 (HDR planes, P010 format), Ch4 (DMA-BUF — plane surfaces), Ch20 (compositor direct scanout), Ch21 (wlroots plane allocation), Ch22 (Mutter/KWin plane allocation), Ch38 (VA-API NV12 to plane), Ch74 (HDR10 video overlay), Ch123 (writeback connector captures all planes)
 
-### Chapter 140: HDMI and DisplayPort Audio on Linux *(Part VI)*
+### Chapter 140: HDMI and DisplayPort Audio on Linux *(Part VI-B — Display Services)*
 
 - HDMI audio protocol: Audio Sample Packets in TMDS blanking; LPCM (8ch/192kHz/24-bit), AC-3, DTS, DTS-HD, Dolby TrueHD/Atmos, DTS:X; ACR: `f_audio = 128 × f_TMDS × (N/CTS)`; HDMI 2.1 eARC (full TrueHD/DTS-HD pass-through, 37 Mbps)
 - EDID CEA-861: Short Audio Descriptors (SAD, 3 bytes each): format code, max channels, sample rates, bit depths/bitrate; ELD (84 bytes): `monitor_name_length`, `sad_count`, `conn_type`, SAD array; `drm_edid_to_eld(connector, drm_edid)`; `cat /proc/asound/card*/eld*`
@@ -1870,7 +1895,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - CEC: single-wire bidirectional on HDMI pin 13; `drivers/media/cec/`; `/dev/cec0`; `cec-ctl`; `CEC_MSG_ACTIVE_SOURCE`, `STANDBY`, `SET_STREAM_PATH`; `drm_dp_cec.c` for DP CEC-over-AUX; `libcec`; Kodi CEC integration
 - **Integrations**: Ch2 (KMS connector/EDID), Ch3 (ARC/eARC for HDR audio), Ch38 (PipeWire HDMI routing), Ch128 (DP MST per-port audio), Ch139 (plane mode change triggers audio ACR recalc)
 
-### Chapter 141: Vulkan Cooperative Matrices and GPU ML Acceleration *(Part VII)*
+### Chapter 141: Vulkan Cooperative Matrices and GPU ML Acceleration *(Part VII-A — GPU APIs)*
 
 - MMA hardware: NVIDIA Tensor Cores (Volta+); AMD Matrix Cores (CDNA MFMA, RDNA3 WMMA); Intel XMX/DPAS (Xe-HPG+); peak ML TFLOPS; `C[M×N] += A[M×K] × B[K×N]` tile decomposition
 - `VK_KHR_cooperative_matrix`: `VkCooperativeMatrixPropertiesKHR` (M/N/K/AType/BType/CType/ResultType/scope); `vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR`; `VK_SCOPE_SUBGROUP_KHR`; subgroup-cooperative tile fragments
@@ -1959,7 +1984,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 
 ---
 
-### Chapter 96: libcamera and the Linux Camera Stack *(Part VII)*
+### Chapter 96: libcamera and the Linux Camera Stack *(Part VII-B — Multimedia Frameworks)*
 
 - libcamera's place: the unified camera abstraction above V4L2 and platform-specific ISPs; https://libcamera.org/; replaces the fragmented vendor HAL approach
 - V4L2 media controller framework: `media_device`, media graph (entities, pads, links); `media-ctl --print-topology`; `MEDIA_IOC_SETUP_LINK`; pipeline configuration; sensor → CSI-2 receiver → ISP → memory entities
@@ -2028,7 +2053,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Contributing: `dri-devel@lists.freedesktop.org`; Lucas Stach at Pengutronix as main maintainer; CI via Lava with i.MX6Q board; `ETNA_MESA_DEBUG=msgs,dump,compiler`
 - **Integrations**: Ch1 (DRM), Ch5 (Mesa Gallium3D), Ch14 (NIR — etnaviv compiles via NIR), Ch90 (Panfrost/Lima — similar open embedded driver story), Ch99 (Automotive/Embedded — i.MX8 is the reference automotive SoC)
 
-### Chapter 101: Color Science and the ICC Profile Pipeline *(Part VI)*
+### Chapter 101: Color Science and the ICC Profile Pipeline *(Part VI-B — Display Services)*
 
 - Why color science matters: the journey from `(r,g,b)` values in a shader to photons of a specific spectral power distribution leaving a display; each device encodes color differently
 - CIE color spaces: XYZ (device-independent); Lab (perceptually uniform); xy chromaticity diagram; the sRGB primaries and D65 white point; the difference between sRGB and linear sRGB (gamma 2.2 encoding)
@@ -2059,7 +2084,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 
 ## Part XXII — Additional Chapters
 
-### Chapter 123: Screen Capture and Remote Desktop on Linux *(Part VI)*
+### Chapter 123: Screen Capture and Remote Desktop on Linux *(Part VI-B — Display Services)*
 
 - X11 screen capture: `XGetImage`, `XShmGetImage`, XComposite `NameWindowPixmap`, the security problem (any client can capture any window)
 - KMS writeback connectors: `DRM_MODE_CONNECTOR_WRITEBACK`, `drm_writeback_job`; supported by Mali-DP, Arm Komeda, VC4 TXP, AMDGPU, R-Car DU, Qualcomm DPU, VKMS
@@ -2189,7 +2214,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Diagnostics: `powertop --auto-tune`; `turbostat`; `/sys/bus/pci/*/power/runtime_status`; D3cold verification; `upower -i`
 - **Integrations**: Ch5 (amdgpu), Ch49 (PRIME), Ch51 (GPU Power Management), Ch106 (Multi-GPU PRIME), Ch122 (DKMS — NVIDIA module install)
 
-### Chapter 127: Mesh Shaders and Variable Rate Shading *(Part VII)*
+### Chapter 127: Mesh Shaders and Variable Rate Shading *(Part VII-A — GPU APIs)*
 
 - Traditional pipeline limits: IA bottleneck; GS limitations; indirect draw (`vkCmdDrawIndexedIndirect`) limits; why Nanite needed mesh shaders
 - `VK_EXT_mesh_shader`: Task shader (`EmitMeshTasksEXT`) → Mesh shader (`SetMeshOutputsEXT`) → Rasterizer; `perprimitiveEXT`; `taskPayloadSharedEXT`; 256v/256p per workgroup
@@ -2201,7 +2226,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Combined mesh + VRS: per-primitive rate via `perprimitiveEXT gl_PrimitiveShadingRateEXT`; cluster LOD + VRS rate selection; Nanite-style Vulkan
 - **Integrations**: Ch18 (RADV), Ch19 (ANV), Ch24 (Vulkan), Ch77 (Shader compilation), Ch97 (UE5/Nanite), Ch110 (SPIR-V opcodes), Ch112 (VRR + VRS for VR)
 
-### Chapter 128: DisplayPort MST and Multi-Monitor Topology *(Part VI)*
+### Chapter 128: DisplayPort MST and Multi-Monitor Topology *(Part VI-B — Display Services)*
 
 - DP physical/link layer: HBR/HBR2/HBR3/UHBR10/UHBR20; AUX channel; DPCD; link training; DSC; VESA DP 2.1
 - SST vs MST: VC payload slots (64 per link); time slot allocation; sideband messages (`LINK_ADDRESS`, `ALLOCATE_PAYLOAD`, `ENUM_PATH_RESOURCES`); branch/sink topology
@@ -2224,7 +2249,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Debugging: `dmesg | grep firmware`; `amdgpu_firmware_info` debugfs; `i915_guc_info`; `i915.enable_guc=0` fallback; `amdgpu.fw_load_type=2`; version mismatch handling
 - **Integrations**: Ch1 (DRM probe), Ch2 (DMC display gating), Ch5 (AMDGPU firmware init), Ch6 (i915/Xe GuC), Ch8 (Nouveau Falcon), Ch10 (Nova/GSP), Ch26 (VCN video decode), Ch51 (power states), Ch122 (DKMS firmware dependency)
 
-### Chapter 130: Wayland Protocol Extension Development *(Part VI)*
+### Chapter 130: Wayland Protocol Extension Development *(Part VI-A — Wayland Compositor)*
 
 - Wire protocol: 32-bit object IDs; message layout `[object_id][size_opcode][args]`; type system (uint/int/fixed/string/object/new_id/array/fd); SCM_RIGHTS FD passing; version negotiation via `wl_registry.bind`
 - XML grammar: `<protocol>`/`<interface version="N">`/`<request type="destructor">`/`<event>`/`<arg type="...">`; `since`; `allow-null`; `enum`; `description`; `ext_notification_manager_v1` worked example
@@ -2236,7 +2261,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Testing: `WAYLAND_DEBUG=1`; `wayland-debug`; `wayland-info`; `wlcs` conformance; Weston headless; version negotiation tests
 - **Integrations**: Ch20 (core Wayland protocol), Ch21 (wlroots zwlr_*), Ch22 (compositors), Ch46 (protocol governance), Ch75 (linux-drm-syncobj-v1), Ch121 (wp_drm_lease_device_v1), Ch132 (security in protocol design)
 
-### Chapter 131: Touch, Stylus, and Tablet Input on Wayland *(Part VI)*
+### Chapter 131: Touch, Stylus, and Tablet Input on Wayland *(Part VI-B — Display Services)*
 
 - Kernel HID drivers: `wacom.ko` (`wacom_wac.c` + `wacom_sys.c`); `hid-uclogic.ko` (Huion/XP-Pen); `EV_ABS`; `ABS_MT_*` multi-touch type B; `BTN_TOOL_PEN`; `ABS_PRESSURE`/`ABS_TILT_X`/`ABS_TILT_Y`; `evtest`; `ID_INPUT_TABLET`
 - libinput tablet: `LIBINPUT_EVENT_TABLET_TOOL_*`; `get_pressure()` / `get_tilt_x()` / `get_tilt_y()`; `LIBINPUT_TABLET_TOOL_TYPE_*`; pad events (button/ring/strip); touch: `TOUCH_DOWN/UP/MOTION/FRAME/CANCEL`
@@ -2248,7 +2273,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Calibration/mapping: tablet area → screen area; multi-monitor assignment; `gnome-control-center wacom`; `input-remapper`; `iio-sensor-proxy` auto-rotate; HiDPI `GDK_SCALE`
 - **Integrations**: Ch54 (Linux input stack), Ch20 (wl_touch in wl_seat), Ch21 (wlroots zwp_tablet), Ch22 (compositors), Ch39 (Qt/GTK), Ch130 (protocol development — tablet as case study)
 
-### Chapter 132: Wayland Security *(Part VI)*
+### Chapter 132: Wayland Security *(Part VI-A — Wayland Compositor)*
 
 - X11 security problems: `XGetImage`; `XSendEvent`; `XGrabKeyboard`; `XQueryKeymap` keylogger; `xauth` weaknesses; CVE-2024/2025 Xwayland vulns
 - Wayland isolation: per-client `wl_resource` scoping; `wl_keyboard` focus routing; `SO_PEERCRED` verification; `$XDG_RUNTIME_DIR` mode 0700; no shared framebuffer
@@ -2261,7 +2286,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Hardening: screencopy restriction code; `--unshare=ipc`; portal D-Bus over direct `zwlr_`; `wp_security_context_v1` adoption roadmap
 - **Integrations**: Ch20 (Wayland protocol isolation), Ch21 (wlroots protocol exposure), Ch22 (Mutter/KWin ACLs), Ch38 (PipeWire screencast), Ch111 (Flatpak), Ch123 (Screen Capture), Ch130 (protocol security by design)
 
-### Chapter 133: Vulkan Compute Queues and Task Graphs *(Part VII)*
+### Chapter 133: Vulkan Compute Queues and Task Graphs *(Part VII-A — GPU APIs)*
 
 - GPU hardware queues: AMD RDNA3/4 (GFX/ACE/SDMA); Intel Xe2 (render/compute/copy/video); NVIDIA Ampere (unified + copy engines); hardware preemption at kernel level
 - Queue families: `vkGetPhysicalDeviceQueueFamilyProperties`; `VkQueueFamilyProperties` flags; RADV (3 families)/ANV (1+video)/NVK layouts; `VkDeviceQueueCreateInfo`; priority floats
@@ -2320,7 +2345,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Debugging: `drm.debug=0x4`; `plymouth --debug`; `/sys/kernel/debug/dri/0/state`
 - **Integrations**: Ch1 (DRM driver model), Ch2 (KMS), Ch5 (x86 GPU drivers), Ch92 (Raspberry Pi VC4/simpledrm)
 
-### Chapter 145: XWayland: Architecture and the X11-to-Wayland Bridge *(Part VI)*
+### Chapter 145: XWayland: Architecture and the X11-to-Wayland Bridge *(Part VI-A — Wayland Compositor)*
 
 - XWayland role: X server as Wayland client; rootless (default) vs full-screen; compositor-launched
 - Wayland client side: `wl_surface`/`xdg_toplevel` per X11 window; `xwayland-shell-v1`
@@ -2361,7 +2386,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Practical: `LIBVA_DRIVER_NAME`; Flatpak `--device=dri`; `vainfo`; `LIBVA_TRACE`
 - **Integrations**: Ch26 (VA-API), Ch33 (Chrome GPU process), Ch36 (WebRTC), Ch37 (PipeWire DMA-BUF), Ch146 (WebCodecs same backend)
 
-### Chapter 148: Vulkan Synchronisation: A Complete Developer Reference *(Part VII)*
+### Chapter 148: Vulkan Synchronisation: A Complete Developer Reference *(Part VII-A — GPU APIs)*
 
 - Why hard: no implicit hazard tracking; explicit CPU-GPU and GPU-GPU ordering required; wrong sync = UB
 - Three primitives: Fence (CPU waits GPU), Semaphore (GPU→GPU across queues), Event (within queue / CPU→GPU)
@@ -2382,7 +2407,7 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 
 ## Part XXV — Advanced Topics and Gap-Fill
 
-### Chapter 106: The Vulkan Memory Model — Formal Execution and Memory Ordering *(Part VII)*
+### Chapter 106: The Vulkan Memory Model — Formal Execution and Memory Ordering *(Part VII-A — GPU APIs)*
 - The problem: GPU parallelism with no global sequential consistency; why undefined behaviour is real
 - Vulkan Memory Model spec (`VK_KHR_vulkan_memory_model`, core in 1.2): execution scope, storage class, memory domain
 - Execution scopes: `Invocation`, `Subgroup`, `Workgroup`, `QueueFamily`, `Device`; which barrier stages correspond to which scope
@@ -2665,9 +2690,9 @@ Entries are generated from the chapter content and sorted by chapter number with
 - **Integrations**: Ch7 (reverse engineering NVIDIA/envytools), Ch8 (nouveau kernel driver/nvkm, DRM_IOCTL_NOUVEAU_EXEC), Ch9 (GSP-RM firmware), Ch10a (Nova Rust kernel driver), Ch10b (NVK: Building a Vulkan Driver from Scratch), Ch11 (display, reclocking, power management), Ch16 (Mesa Vulkan common infrastructure), Ch18 (Vulkan drivers: RADV, ANV comparison), Ch118 (NAK Rust shader compiler)
 
 
-### Part VI — The Display Stack
+### Part VI-A / VI-B — Display Stack Additional Chapters
 
-### Chapter 74: HDR and Wide Color Gamut on Linux *(Part VI — Display Stack)*
+### Chapter 74: HDR and Wide Color Gamut on Linux *(Part VI-B — Display Services)*
 
 - HDR fundamentals: OETF/EOTF/OOTF transfer functions; PQ (SMPTE ST 2084) absolute-luminance curve 0–10,000 nits; HLG (ITU-R BT.2100) scene-referred backward-compatible broadcast HDR; BT.2020/DCI-P3/sRGB wide-color-gamut primaries and colour volume
 - HDR metadata standards: SMPTE ST 2086 / CTA-861-H static metadata (MaxCLL, MaxFALL, mastering primaries); HDR10+ dynamic metadata (SMPTE ST 2094-40); HDR_OUTPUT_METADATA DRM connector property blob; drm_hdmi_infoframe_set_hdr_metadata() in drm_hdmi_state_helper.c
@@ -2683,7 +2708,7 @@ Entries are generated from the chapter content and sorted by chapter number with
 - **Integrations**: Ch2 (KMS Display Pipeline), Ch3 (Advanced Display Features), Ch20 (Wayland Protocol Fundamentals), Ch22 (Production Compositors), Ch26 (Hardware Video Acceleration), Ch46 (Wayland Protocol Ecosystem), Ch53 (Display Calibration), Ch63 (KTX2 and Texture Compression), Ch75 (Explicit GPU Sync), Ch101 (Color Science Theory), Ch158 (HDR Signaling Metadata)
 
 
-### Chapter 75: Explicit GPU Synchronization *(Part VI — Display Stack)*
+### Chapter 75: Explicit GPU Synchronization *(Part VI-B — Display Services)*
 
 - DMA-BUF implicit fences (dma_fence, dma_resv): struct dma_fence (one-shot pending/signalled), struct dma_resv with ww_mutex wound-wait deadlock prevention, DMA_BUF_IOCTL_EXPORT/IMPORT_SYNC_FILE conversion shim (Linux 5.19)
 - drm_syncobj kernel primitive: binary drm_syncobj (DRM_IOCTL_SYNCOBJ_CREATE/WAIT/RESET/SIGNAL/DESTROY) vs. timeline drm_syncobj (64-bit seqno, DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT/SIGNAL/TRANSFER/QUERY, wait-before-signal semantics)
@@ -2701,7 +2726,7 @@ Entries are generated from the chapter content and sorted by chapter number with
 - **Integrations**: Ch1 (DRM Architecture), Ch2 (KMS Display Pipeline), Ch4 (GPU Memory Management), Ch20 (Wayland Protocol Fundamentals), Ch21 (Building Compositors with wlroots), Ch22 (Production Compositors), Ch24 (Vulkan and EGL for Application Developers), Ch46 (Wayland Protocol Ecosystem), Ch50 (Vulkan Video), Ch74 (HDR Display), Appendix G (Synchronisation Primitives Reference)
 
 
-### Chapter 151: Wayland Text Input and IME Protocols *(Part VI — Display Stack)*
+### Chapter 151: Wayland Text Input and IME Protocols *(Part VI-A — Wayland Compositor)*
 
 - zwp_text_input_v3 (application-side protocol): enable/disable, set_cursor_rectangle, set_surrounding_text, commit requests; preedit_string, commit_string, delete_surrounding_text, done(serial) events; serial/done double-buffering to prevent focus-race conditions
 - zwp_input_method_v2 (IME-side protocol): activate/deactivate, surrounding_text, content_type, done events from compositor; commit_string, set_preedit_string, delete_surrounding_text, commit requests from IME; get_input_popup_surface and grab_keyboard requests
@@ -2719,7 +2744,7 @@ Entries are generated from the chapter content and sorted by chapter number with
 - **Integrations**: Ch34 (Wayland Core), Ch35 (Compositors: Mutter/KWin), Ch36 (wlroots), Ch39 (Wayland Input), Ch123 (XWayland)
 
 
-### Chapter 158: HDR Display Hardware and Signaling on Linux *(Part VI — Display Stack)*
+### Chapter 158: HDR Display Hardware and Signaling on Linux *(Part VI-B — Display Services)*
 
 - HDR fundamentals and standards: PQ (SMPTE ST 2084), HLG (ITU-R BT.2100), HDR10 (SMPTE ST 2086 / CTA-861-H), Dolby Vision; luminance encoding unit mismatches across hdr_metadata_infoframe, VkHdrMetadataEXT, VAHdrMetaDataHDR10
 - HDMI HDR InfoFrames: AVI InfoFrame (type 0x82, BT.2020 colourimetry), DRM InfoFrame (type 0x87, SMPTE ST 2086 mastering metadata); hdmi_drm_infoframe struct; hdmi_eotf enum; drm_hdmi_infoframe_set_hdr_metadata() helper
@@ -2735,7 +2760,7 @@ Entries are generated from the chapter content and sorted by chapter number with
 - **Integrations**: Ch2 (KMS Display Pipeline), Ch3 (Advanced Display Features), Ch20 (Wayland Protocol Fundamentals), Ch22 (Production Compositors), Ch26 (Hardware Video Acceleration), Ch36 (Gamescope), Ch53 (Display Calibration), Ch74 (HDR and Wide Color Gamut), Ch75 (Explicit GPU Sync), Ch101 (Color Science)
 
 
-### Chapter 175: Linux Compositor Accessibility — AT-SPI2, Screen Readers, and the Wayland Accessibility Gap *(Part VI — The Display Stack)*
+### Chapter 175: Linux Compositor Accessibility — AT-SPI2, Screen Readers, and the Wayland Accessibility Gap *(Part VI-A — Wayland Compositor)*
 
 - AT-SPI2 D-Bus architecture: separate accessibility bus via at-spi-bus-launcher; org.a11y.Bus.GetAddress; at-spi-registryd claims org.a11y.atspi.Registry; Embed/RegisterEvent flow
 - Core AT-SPI2 D-Bus interfaces: org.a11y.atspi.Accessible (Name, Role, State, GetChildren), Cache (GetItems bulk transfer, AddAccessible/RemoveAccessible signals), Text, Action, Component, Table, EditableText
@@ -2753,7 +2778,7 @@ Entries are generated from the chapter content and sorted by chapter number with
 - **Integrations**: Ch20 (Wayland Protocol Fundamentals — security model creating accessibility gap, keyboard-shortcuts-inhibit-unstable-v1), Ch21 (wlroots compositors — no built-in screen-reader support, zwlr_input_inhibit_manager_v1), Ch22 (Mutter and KWin — GNOME 48 / KDE 6.4 D-Bus keyboard interception interfaces), Ch39 (Qt and GTK GPU Rendering — GtkATContext and QSpiAccessibleBridge within toolkit rendering pipeline), Ch132 (Wayland Security — cross-client pixel access and global keyboard grab restrictions)
 
 
-### Chapter 194: Cross-Stack Integration — Protocols, Synchronisation, and the Coordination Layer *(Part VI — The Display Stack)*
+### Chapter 194: Cross-Stack Integration — Protocols, Synchronisation, and the Coordination Layer *(Part VI-B — Display Services)*
 
 - Fragmentation costs: five concrete deficiencies — pipeline latency, redundant memcpy copies, color-space blindness, implicit sync hazards, and debuggability gaps across six independent stack layers
 - Wayland protocol extensions as coordination bus: wayland-protocols repository stable/staging/unstable tiers; protocol ratification as multi-party contract mechanism for buffer, sync, color, and timing contracts
@@ -2772,7 +2797,7 @@ Entries are generated from the chapter content and sorted by chapter number with
 - **Integrations**: Ch2 (KMS/DRM atomic API and overlay planes), Ch14 (NIR shader IR), Ch16 (Mesa Vulkan common / WSI explicit sync), Ch20 (Wayland protocol fundamentals), Ch39 (Qt/GTK GPU rendering, GskSubsurfaceNode, GdkFrameClock), Ch45 (Terminal compositor integration, DMA-BUF subsurfaces), Ch46 (Wayland protocol ecosystem and ratification process), Ch74 (HDR and wide color gamut), Ch75 (Explicit GPU synchronisation), Ch104 (DXVK and VKD3D-Proton, spirv_to_nir)
 
 
-### Chapter 198: D-Bus, dbus-broker, and Modern Linux IPC: Varlink, zbus, hyprwire, and BUS1 *(Part VI — Display Stack)*
+### Chapter 198: D-Bus, dbus-broker, and Modern Linux IPC: Varlink, zbus, hyprwire, and BUS1 *(Part VI-B — Display Services)*
 
 - Linux IPC primitives: pipes, Unix domain sockets, POSIX shared memory, socketpair, memfd+splice, io_uring — throughput and latency benchmarks for each, plus which is used by D-Bus, Wayland, PipeWire, and Binder
 - D-Bus wire protocol: three buses (system/session/activation), object model (bus name, object path, interface, member), message types (METHOD_CALL, METHOD_RETURN, ERROR, SIGNAL), binary type system with a{sv} dict-of-variants, XML introspection via org.freedesktop.DBus.Introspectable, UID+SO_PEERCRED security model
@@ -2791,9 +2816,9 @@ Entries are generated from the chapter content and sorted by chapter number with
 - **Integrations**: Ch21 (wlroots seat management / TakeDevice), Ch23 (xdg-desktop-portal ScreenCast/RemoteDesktop), Ch38 (PipeWire activation and ReserveDevice1), Ch53 (colord ColorManager), Ch78 (GameMode), Ch87 (ARCore Android Camera HAL / ICameraProvider), Ch111 (Flatpak graphics / portal sandbox), Ch132 (Wayland security / uaccess), Ch164 (Android NDK / libbinder_ndk)
 
 
-### Part VII — Application APIs & Middleware
+### Part VII-A — GPU APIs and Extended Reality (Additional Chapters)
 
-### Chapter 76: Modern Vulkan Extensions *(Part VII — Application APIs and Middleware)*
+### Chapter 76: Modern Vulkan Extensions *(Part VII-A — GPU APIs)*
 
 - Extension model taxonomy: VK_KHR_ (Khronos-ratified), VK_EXT_ (multi-vendor), VK_NV_/VK_AMD_ (single-vendor); promotion path from vendor → EXT → KHR → Vulkan core; vkEnumerateDeviceExtensionProperties + VkPhysicalDeviceFeatures2 pNext-chain query/enable pattern
 - VK_KHR_dynamic_rendering (Vulkan 1.3): abolishes VkRenderPass/VkFramebuffer; VkRenderingInfo + VkRenderingAttachmentInfo; explicit vkCmdPipelineBarrier2 layout transitions; VkPipelineRenderingCreateInfo in pNext; frame-loop diagram from acquire to present
@@ -2810,7 +2835,7 @@ Entries are generated from the chapter content and sorted by chapter number with
 - **Integrations**: Ch16 (Mesa Vulkan Common Infrastructure), Ch18 (Vulkan GPU Drivers: RADV, ANV, NVK), Ch24 (Vulkan and EGL for Application Developers), Ch25 (GPU Compute), Ch28 (Windows Compatibility: DXVK, VKD3D-Proton), Ch56 (Ray Tracing on Linux), Ch61 (SPIR-V and Shader IR), Ch70 (RTX Neural Shading), Ch71 (Intel ANV Vulkan Driver), Ch75 (Explicit GPU Synchronisation), Ch77 (Shader Toolchain: glslang, DXC, Tint, SPIRV-Cross)
 
 
-### Chapter 150: EGL Architecture and DMA-BUF Integration *(Part VII — Application APIs and Middleware)*
+### Chapter 150: EGL Architecture and DMA-BUF Integration *(Part VII-A — GPU APIs)*
 
 - EGL core objects: EGLDisplay, EGLSurface, EGLContext; eglGetPlatformDisplay, eglChooseConfig, eglCreateWindowSurface, eglMakeCurrent initialisation sequence
 - EGL platform extension model: EGL_EXT_platform_x11, EGL_EXT_platform_wayland, EGL_EXT_platform_gbm, EGL_KHR_surfaceless_context; eglGetPlatformDisplay dispatch
@@ -2828,7 +2853,7 @@ Entries are generated from the chapter content and sorted by chapter number with
 - **Integrations**: Ch4 (GPU Memory Management), Ch12 (Mesa Loader), Ch20 (Wayland), Ch24 (Vulkan/EGL), Ch26 (Hardware Video), Ch39 (Qt/GTK), Ch75 (Explicit Sync), Ch139 (Hardware Planes)
 
 
-### Chapter 152: Rust GPU Ecosystem: wgpu, ash, and naga *(Part VII — Application APIs and Middleware)*
+### Chapter 152: Rust GPU Ecosystem: wgpu, ash, and naga *(Part VII-A — GPU APIs)*
 
 - ash: raw zero-cost Vulkan bindings in Rust; runtime function loading via vkGetInstanceProcAddr/vkGetDeviceProcAddr; strongly typed extension loader pattern (khr::surface, khr::wayland_surface, khr::swapchain)
 - gpu-allocator: TLSF sub-allocation crate pairing with ash; MemoryLocation::GpuOnly/CpuToGpu/GpuToCpu; analogous to VMA in C++
@@ -2847,7 +2872,7 @@ Entries are generated from the chapter content and sorted by chapter number with
 - **Integrations**: Ch19 (Vulkan Architecture), Ch20 (SPIR-V), Ch22 (RADV), Ch23 (ANV), Ch25 (GPU Compute), Ch35 (Dawn/WebGPU), Ch40 (Bevy/wgpu), Ch57 (WebGPU in Chromium), Ch134 (Asahi/Apple GPU), Ch141 (Cooperative Matrices), Ch15 (ACO — AMD Shader Compiler), Ch177 (NVK — NVIDIA Vulkan)
 
 
-### Chapter 154: GPU-Driven Rendering: Indirect Draw, Meshlets, and GPU Culling *(Part VII — Application APIs and Middleware)*
+### Chapter 154: GPU-Driven Rendering: Indirect Draw, Meshlets, and GPU Culling *(Part VII-A — GPU APIs)*
 
 - CPU-GPU bottleneck: per-draw CPU overhead (vkCmdDrawIndexed, descriptor sets, push constants) replaced by one compute dispatch + vkCmdDrawIndexedIndirectCount per frame
 - Indirect draw commands: VkDrawIndexedIndirectCommand struct layout; VkDrawIndexedIndirect and VK_KHR_draw_indirect_count (Vulkan 1.2 core drawIndirectCount feature)
@@ -2866,7 +2891,7 @@ Entries are generated from the chapter content and sorted by chapter number with
 - **Integrations**: Ch19 (Vulkan Architecture), Ch20 (SPIR-V), Ch22 (RADV), Ch23 (ANV), Ch97 (UE5 Nanite), Ch127 (Mesh Shaders/VRS), Ch133 (Vulkan Compute Queues), Ch135 (Ray Tracing TLAS), Ch145 (GPU Profiling), Ch152 (Rust GPU), Ch157 (Descriptor Binding/Bindless/BDA)
 
 
-### Chapter 157: Vulkan Descriptor Binding in Depth *(Part VII — Application APIs and Middleware)*
+### Chapter 157: Vulkan Descriptor Binding in Depth *(Part VII-A — GPU APIs)*
 
 - Descriptor fundamentals: hardware records mapping UNIFORM_BUFFER, STORAGE_BUFFER, SAMPLED_IMAGE, STORAGE_IMAGE, SAMPLER, COMBINED_IMAGE_SAMPLER, ACCELERATION_STRUCTURE_KHR to GPU VAs; AMD 32-byte T# / Intel 32-byte surface state
 - VkDescriptorSetLayout and VkDescriptorPool: binding slot declaration, pool sizing, VK_ERROR_OUT_OF_POOL_MEMORY, FREE_DESCRIPTOR_SET_BIT vs vkResetDescriptorPool
@@ -2885,7 +2910,7 @@ Entries are generated from the chapter content and sorted by chapter number with
 - **Integrations**: Ch19 (Vulkan Architecture), Ch20 (SPIR-V), Ch22 (RADV), Ch23 (ANV), Ch104 (DXVK/VKD3D-Proton), Ch16 (Mesa Vulkan Common), Ch154 (GPU-Driven Rendering), Ch135 (Vulkan Ray Tracing)
 
 
-### Chapter 165: Vulkan Video Encode *(Part VII — Application APIs and Middleware)*
+### Chapter 165: Vulkan Video Encode *(Part VII-A — GPU APIs)*
 
 - VK_KHR_video_encode_queue architecture: encode vs decode differences — reversed input/output (VkImage src, VkBuffer dst), encoder-owned DPB/reference management, quality levels, VK_QUERY_TYPE_VIDEO_ENCODE_FEEDBACK_KHR, vkCmdEncodeVideoKHR
 - Encode session setup: VkVideoEncodeCapabilitiesKHR, encodeInputPictureGranularity alignment, VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR / VIDEO_ENCODE_SRC_BIT_KHR, VkVideoSessionCreateInfoKHR with encode profile
@@ -2902,7 +2927,7 @@ Entries are generated from the chapter content and sorted by chapter number with
 - **Integrations**: Ch50 (Vulkan Video Decode), Ch26 (VA-API Encode), Ch57 (FFmpeg), Ch58 (GStreamer Encode Pipeline), Ch79 (Remote Display and Streaming), Ch153 (OBS Studio GPU Pipeline)
 
 
-### Chapter 173: VK_EXT_shader_object: Pipeline-Free Shader Binding in Vulkan *(Part VII — Application APIs and Middleware)*
+### Chapter 173: VK_EXT_shader_object: Pipeline-Free Shader Binding in Vulkan *(Part VII-A — GPU APIs)*
 
 - VkPipeline compilation problem: combinatorial explosion of pipeline variants causes per-frame stutter; prior mitigations (VkPipelineCache, deferred creation, VK_EXT_graphics_pipeline_library) only partially address root cause
 - VK_EXT_shader_object overview: introduced in Vulkan 1.3.246 (March 2023); VkShaderEXT opaque handle replaces VkPipeline; per-stage compilation collapses N*M*K variant space to N+M+K
