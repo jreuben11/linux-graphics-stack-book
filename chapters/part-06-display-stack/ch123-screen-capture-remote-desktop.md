@@ -27,8 +27,18 @@
     - [Beyond VNC and RDP: The Broader Landscape](#beyond-vnc-and-rdp-the-broader-remote-display-landscape)
     - [SPICE: VM Display Protocol](#spice-vm-display-protocol)
     - [Waypipe: Wayland Protocol Forwarding](#waypipe-wayland-protocol-forwarding-over-ssh)
+    - [FreeRDP: The Open RDP Implementation](#freerdp-the-open-rdp-implementation)
+    - [Apache Guacamole: Clientless Remote Desktop Gateway](#apache-guacamole-clientless-remote-desktop-gateway)
     - [Comparison table](#comparing-remote-desktop-and-game-streaming-approaches)
-11. [Integrations](#11-integrations)
+11. [Container and VDI Desktop Streaming](#11-container-and-vdi-desktop-streaming)
+    - [Kasm Workspaces](#kasm-workspaces)
+    - [Xpra: Persistent Rootless Sessions](#xpra-persistent-rootless-sessions)
+    - [VirtIO-GPU and Cloud VM Display](#virtio-gpu-and-cloud-vm-display)
+    - [GPU Partitioning for VDI (SR-IOV and vGPU)](#gpu-partitioning-for-vdi-sr-iov-and-vgpu)
+    - [Headless GPU Containers](#headless-gpu-containers)
+    - [Capture from a Containerised Wayland Compositor](#capture-from-a-containerised-wayland-compositor)
+    - [Comparison and Recommendations](#container-vdi-comparison-and-recommendations)
+12. [Integrations](#12-integrations)
 
 ---
 
@@ -1308,11 +1318,11 @@ The server sends JPEG or WebP tiles for changed screen regions (damage-driven, s
 
 **Deployment**: Typically Dockerised (`guacamole/guacd` + `guacamole/guacamole` containers) behind an NGINX/Traefik reverse proxy with TLS termination. `guacd` and `guacamole-client` communicate via TCP (default port 4822) or Unix socket.
 
-### Container and VDI Desktop Streaming
+## 11. Container and VDI Desktop Streaming
 
 Running a full Linux desktop inside a container or VM and streaming it to a browser or thin client is a common pattern for cloud development environments, VDI deployments, and secure isolated workspaces. The graphics stack challenge is delivering GPU-accelerated display output from a containerised or virtualised context with acceptable latency. The solutions span three tiers: per-container display streaming (Kasm, Xpra), cloud-VM display protocols (NICE DCV, Chrome Remote Desktop), and enterprise GPU partitioning for multi-user VDI (NVIDIA vGPU, Intel SR-IOV, AMD MxGPU).
 
-#### Kasm Workspaces
+### Kasm Workspaces
 
 Kasm ([https://www.kasmweb.com](https://www.kasmweb.com)) is the leading open-core containerised desktop streaming platform. Each *workspace* is a Docker container running a full Linux desktop (Ubuntu/Debian with XFCE or KDE). Display is delivered via KasmVNC — Kasm's H.264/VP9/AV1/WebRTC fork of TigerVNC — over WebSocket or WebRTC to any browser. The platform layer on top of Docker handles workspace lifecycle (start, pause, resume, per-user quota), session recording, file sharing via a virtual drive mount, and LDAP/SAML integration.
 
@@ -1382,7 +1392,7 @@ RUN apt-get install -y virtualgl
 
 **Workspace isolation and networking**: Each Kasm container gets its own network namespace. Inter-workspace communication is blocked by default. The Kasm API server (`kasm_api`) manages container start/stop, injects per-session credentials (VNC password derived from session token), and proxies the WebSocket stream through the Kasm nginx layer with TLS termination.
 
-#### Xpra: Persistent Rootless Sessions
+### Xpra: Persistent Rootless Sessions
 
 Xpra ([https://xpra.org](https://xpra.org)) is a *rootless* remote display server — it forwards individual application windows rather than a full desktop session. Unlike VNC or RDP (which present a virtual desktop), Xpra forwards each top-level window as a native window on the client, managed by the client's own window manager. Sessions persist across disconnects and reconnects, analogous to `tmux` for terminal sessions.
 
@@ -1437,7 +1447,7 @@ xpra attach tcp://compute-node-01:10010/10
 # Disconnect and reconnect freely — session persists
 ```
 
-#### VirtIO-GPU and Cloud VM Display
+### VirtIO-GPU and Cloud VM Display
 
 Cloud VM instances expose a virtual GPU device to the guest OS. The display path depends heavily on whether a physical GPU is attached to the host.
 
@@ -1522,7 +1532,7 @@ Lavapipe is Vulkan 1.3 conformant and passes the Khronos CTS. Performance is CPU
 
 **NICE DCV** (NICE Desktop Cloud Visualisation, formerly NICE EnginFrame) is Amazon's proprietary protocol for cloud workstation access. On Linux GPU instances, it captures frames via the NVIDIA capture API or DRM/KMS, encodes with NVENC (H.264 or HEVC), and delivers via its own UDP/TCP protocol with a web client. NICE DCV is free when running on EC2; a licence is required for on-premises deployment. Key advantage over SPICE: the capture path is GPU-native (no CPU readback), giving ~16 ms total pipeline latency on a co-located client.
 
-#### GPU Partitioning for VDI (SR-IOV and vGPU)
+### GPU Partitioning for VDI (SR-IOV and vGPU)
 
 Enterprise VDI allocates a physical GPU among multiple concurrent VM sessions. The partitioning mechanism is GPU-model-specific:
 
@@ -1570,7 +1580,7 @@ Display capture in the guest follows the normal DRM/KMS path: the VM's composito
 
 **SR-IOV display output capture**: A VF typically does not have its own display output connector — the physical GPU's display engine is retained by the PF (Physical Function, host). The VM's display output is virtualised: the guest writes to a VirtIO-GPU display plane or a special VF scanout buffer, which the hypervisor reads and forwards to the streaming protocol. This is why enterprise VDI still requires SPICE, NICE DCV, or Citrix HDX even with SR-IOV GPU partitioning — there is no physical cable to plug into the VF.
 
-#### Headless GPU Containers
+### Headless GPU Containers
 
 For containers that need GPU compute or rendering without an attached display (ML training pipelines, CI rendering tests, simulation environments), the display initialisation path determines whether OpenGL is available at all.
 
@@ -1678,7 +1688,7 @@ vkCreateHeadlessSurfaceEXT(instance,
 
 `VK_EXT_headless_surface` is supported by Mesa RADV, ANV, and the NVIDIA driver. It is particularly useful for testing Vulkan rendering pipelines in CI containers without any window system.
 
-#### Capture from a Containerised Wayland Compositor
+### Capture from a Containerised Wayland Compositor
 
 When a containerised desktop runs a Wayland compositor in headless mode, screen capture uses the same Wayland protocols as physical hosts. The compositor renders to an offscreen buffer (DMA-BUF or shared memory), and capture protocols drain that buffer for encoding and streaming.
 
@@ -1727,6 +1737,36 @@ Container (per-user, per-repo)
 
 The capture-encode-stream pipeline runs entirely inside the container. GPU access is via NVIDIA Container Toolkit or DRI render node passthrough. The VNC/WebRTC agent captures the virtual display, H.264-encodes dirty regions, and pushes frames to the browser via the platform's WebSocket relay. Total added latency from compositor to browser: 20–60 ms on a co-located server, dominated by encode time at typical 1080p/30fps settings.
 
+### Container/VDI Comparison and Recommendations
+
+The right technology depends on the isolation unit (container vs VM), who controls the client, and whether GPU acceleration is required.
+
+| Approach | Isolation unit | Display transport | GPU acceleration | Client requirement | Best for |
+|---|---|---|---|---|---|
+| **Kasm Workspaces** | Docker container | KasmVNC → H.264/WebRTC | NVIDIA CT, AMD/Intel DRI node | Browser | Per-user containerised desktop; cloud dev environments; browser-native kiosk apps |
+| **Xpra** | Process / container | Custom (H.264/VP9/PNG per-window) | VA-API, NVENC via render node | xpra client or browser HTML5 | Persistent app sessions on HPC; rootless per-window forwarding with session persistence |
+| **Apache Guacamole** | Any (wraps RDP/VNC/SSH) | Guacamole protocol → WebSocket | Via RDP AVC444 or VNC H.264 | Browser only | Clientless jump-host access; full audit trail; Kubernetes pod terminal access |
+| **NICE DCV** | Bare-metal / VM (EC2) | Proprietary UDP/TCP | NVIDIA NVENC, DRM/KMS | DCV client or browser | GPU workstation access on AWS; ML/HPC visualisation |
+| **SPICE + VirtIO-GPU** | QEMU/KVM VM | SPICE channels | virgl (OpenGL 4.6), Venus (Vulkan 1.3) | virt-viewer / remote-viewer | On-premises KVM VMs; oVirt/libvirt; full VM isolation with 3D |
+| **NVIDIA vGPU (GRID)** | VM (any hypervisor) | NICE DCV / Citrix HDX | NVIDIA VF (full CUDA/Vulkan/GL) | DCV/Citrix client | Enterprise multi-user VDI; CAD/DCC workloads; GPU density |
+| **Intel SR-IOV** | VM (KVM/XenServer) | SPICE or RDP | Intel ANV Vulkan, Mesa GL | Standard RDP/SPICE client | Open-source multi-tenant GPU VDI; no licence required |
+| **Waypipe** | Process / container | Wayland protocol over SSH | GPU on client (renders locally) | waypipe + local compositor | Single Wayland-native app over SSH; HPC; no VNC infrastructure |
+| **Headless EGL / Venus** | Container / VM | None — offscreen compute only | Full GPU (EGL device, Venus Vulkan) | None | ML training, CI render tests, offline benchmark; no display overhead |
+
+**Recommendations by use case**:
+
+*Cloud development environment (browser access, per-user isolation)*: **Kasm Workspaces** is the primary choice. KasmVNC's H.264/WebCodecs browser client avoids double-encode overhead; Docker isolation is operationally well understood; NVIDIA Container Toolkit and DRI render node passthrough cover both GPU vendors without special driver configuration. Where existing RDP/VNC server infrastructure is already in place (enterprise RDS farms, VDI pools), **Guacamole** adds a clientless browser gateway without replacing that infrastructure.
+
+*Remote application sessions on HPC/research clusters*: **Xpra** for persistent sessions — its per-window content-adaptive encoding (lossless PNG for text/UI, H.264 for OpenGL regions) and session-survives-SSH-disconnect model are unmatched. **Waypipe** is preferable for Wayland-native applications on low-latency links: it eliminates all encode overhead by rendering on the local GPU, forwarding only Wayland buffer commits over SSH.
+
+*On-premises KVM virtual machines*: **SPICE + VirtIO-GPU** for standard desktops; add `virglrenderer --features=venus` for Vulkan 1.3 support inside VMs (`VK_MESA_venus`). For single-user high-performance workloads (3D CAD, ML inference requiring CUDA), full GPU passthrough via VFIO is the fallback — Venus's ~10% serialisation overhead and absence of ray-tracing extension support make it unsuitable for those workloads.
+
+*Enterprise multi-user VDI (NVIDIA GPUs)*: **NVIDIA vGPU (GRID)** with NICE DCV or Citrix HDX. The fixed-VRAM-slice partition model is the only solution providing full CUDA, Vulkan, and OpenGL to multiple simultaneous users from one physical GPU. Intel SR-IOV (`i915-sriov-dkms`) is the open-source alternative for workloads that do not require CUDA — no licence cost, Vulkan via ANV, limited to Intel Xe/Arc hardware.
+
+*CI and headless GPU rendering*: **EGL `EGL_PLATFORM_DEVICE_EXT`** (surfaceless) for OpenGL; native `VkDevice` without a surface for Vulkan compute. Both eliminate the display server entirely. For Vulkan CI tests that need a swapchain, `VK_EXT_headless_surface` provides a null presentation target. Lavapipe (`lvp_icd.json`) covers Vulkan CTS-conformant software rendering when no GPU is available.
+
+*Security-conscious clientless remote access with audit trail*: **Guacamole** with LDAP/SAML auth and `.guac` session recording (replayable via `guacenc` to video). The guacd/guacamole-client separation keeps native protocol parsing in an isolated C daemon, reducing the web-tier attack surface. Clipboard and file transfer go through Guacamole's own channel — no raw RDP clipboard exposure to the browser.
+
 The fundamental latency floor for any remote desktop system is determined by two factors: the capture interval (time from frame composition to buffer readiness) and the encode time (time to compress the captured frame into a transmittable bitstream).
 
 **Capture interval**: With `ext-image-copy-capture-v1`, the compositor signals `ready` as soon as the framebuffer write completes — typically within 1–3 ms of the VBLANK that presented the frame. With `wlr-screencopy copy_with_damage`, capture only triggers when the compositor detects damage, which can save power but doesn't change the latency for actively changing content.
@@ -1772,7 +1812,7 @@ The fundamental latency floor for any remote desktop system is determined by two
 
 ---
 
-## 11. Integrations
+## 12. Integrations
 
 **Ch2 (KMS: The Display Pipeline)**: The KMS writeback connector (Section 3) is a first-class DRM object — a `drm_connector` with `DRM_MODE_CONNECTOR_WRITEBACK` type. It participates in atomic commits alongside CRTCs and planes, and its framebuffer output is a GEM buffer object in the DRM memory management system. Understanding KMS atomic modesetting is prerequisite to implementing writeback capture.
 
