@@ -686,7 +686,7 @@ The Raspberry Pi graphics stack touches nearly every layer described in this boo
 
 - **[Ch14 (NIR: Mesa's Common IR)](../part-04-mesa-architecture/ch14-nir.md)**: The v3d compiler is entirely NIR-based. NIR lowering passes (`v3d_nir_lower_io`, `v3d_nir_lower_txf_ms`, `nir_opt_sink`) adapt the common IR to V3D hardware constraints before VIR emission.
 
-- **[Ch21 (wlroots and the Wayland Compositor Stack)](../part-06-display-stack/ch21-wlroots.md)**: Both labwc (current Pi OS default) and cage (kiosk deployments) are wlroots-based. wlroots's DRM backend uses the vc4/v3d DRM driver for atomic modeset and the v3d GBM backend for EGL surface allocation.
+- **[Ch21 (wlroots and the Wayland Compositor Stack)](../part-06a-wayland-compositor/ch21-wlroots.md)**: Both labwc (current Pi OS default) and cage (kiosk deployments) are wlroots-based. wlroots's DRM backend uses the vc4/v3d DRM driver for atomic modeset and the v3d GBM backend for EGL surface allocation.
 
 - **[Ch42 (Terminal Graphics: Sixel and Kitty)](../part-12-terminal-graphics/ch42-sixel-kitty.md)**: Terminal pixel graphics protocols (Sixel, Kitty Graphics Protocol) are increasingly used on Pi-based interactive kiosk and educational setups. The rendering path terminates at an OpenGL ES texture blit through the v3d driver.
 

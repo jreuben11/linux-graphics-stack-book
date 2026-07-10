@@ -1163,11 +1163,11 @@ This chapter sits at the intersection of Mesa's compiler infrastructure and the 
 
 **Parallel tracks:**
 
-- **Chapter 24 — Vulkan and EGL for Application Developers** (`chapters/part-07-application-apis-middleware/ch24-vulkan-egl-application-developers.md`): The Vulkan compute pipeline API that IREE uses to submit SPIR-V compute shaders.
+- **Chapter 24 — Vulkan and EGL for Application Developers** (`chapters/part-07a-gpu-apis/ch24-vulkan-egl-application-developers.md`): The Vulkan compute pipeline API that IREE uses to submit SPIR-V compute shaders.
 
-- **Chapter 25 — GPU Compute** (`chapters/part-07-application-apis-middleware/ch25-gpu-compute.md`): OpenCL, ROCm HIP, and Vulkan compute as the three Linux GPU compute APIs. IREE and XLA target all three; this chapter provides the API-level context for what IREE submits.
+- **Chapter 25 — GPU Compute** (`chapters/part-07a-gpu-apis/ch25-gpu-compute.md`): OpenCL, ROCm HIP, and Vulkan compute as the three Linux GPU compute APIs. IREE and XLA target all three; this chapter provides the API-level context for what IREE submits.
 
-- **Chapter 48 — ROCm and ML on Linux** (`chapters/part-07-application-apis-middleware/ch48-rocm-ml-linux.md`): The AMD ROCm stack, including HIP and the AMDGPU kernel driver. XLA's AMD path (`jax[rocm]`) and Triton-ROCm both target this stack at the ISA level.
+- **Chapter 48 — ROCm and ML on Linux** (`chapters/part-07a-gpu-apis/ch48-rocm-ml-linux.md`): The AMD ROCm stack, including HIP and the AMDGPU kernel driver. XLA's AMD path (`jax[rocm]`) and Triton-ROCm both target this stack at the ISA level.
 
 **Chapters using the results of this chapter:**
 

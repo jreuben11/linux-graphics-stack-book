@@ -1858,7 +1858,7 @@ Chrome DevTools (as of Chrome 120+) does not have a dedicated WebCodecs panel, b
 
 ### Chapter 26: VA-API Architecture
 
-The WebCodecs hardware acceleration path on Linux desktop is built entirely on VA-API. [Chapter 26](../part-07-application-apis-middleware/) covers the full VA-API architecture: `vaInitialize()`, `vaCreateConfig()`, `vaCreateContext()`, surface management, profile enumeration, and the libva driver model. This chapter focuses on the Chromium-specific wrapping in `VaapiWrapper` and `VaapiVideoDecoder` — the layer between Chrome's media stack and the libva API described in Chapter 26. For `vaExportSurfaceHandle()` internals, the VA-API 1.1.0 specification, and the iHD vs i965 driver distinction at the libva level, see Chapter 26.
+The WebCodecs hardware acceleration path on Linux desktop is built entirely on VA-API. [Chapter 26](../part-07a-gpu-apis/) covers the full VA-API architecture: `vaInitialize()`, `vaCreateConfig()`, `vaCreateContext()`, surface management, profile enumeration, and the libva driver model. This chapter focuses on the Chromium-specific wrapping in `VaapiWrapper` and `VaapiVideoDecoder` — the layer between Chrome's media stack and the libva API described in Chapter 26. For `vaExportSurfaceHandle()` internals, the VA-API 1.1.0 specification, and the iHD vs i965 driver distinction at the libva level, see Chapter 26.
 
 ### Chapter 33: Chrome GPU Process Architecture
 

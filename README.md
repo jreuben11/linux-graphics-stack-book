@@ -1,6 +1,6 @@
 # The Linux Graphics Stack: From Kernel to Compositor, Browser, and Terminal
 
-An expert-level technical reference (~1,100 pages, 167 chapters) tracing every layer of the Linux graphics stack — from the DRM kernel subsystem and GPU memory management through Mesa's shader compilers, Wayland compositors, application APIs, the browser rendering pipeline, game compatibility layers, terminal pixel protocols, GPU-accelerated video streaming, AI inference, and both open and proprietary GPU ecosystems. Each chapter is written for practitioners: code snippets reference real upstream source at specific commits or releases, API signatures are verified against current kernel and Mesa trees, and architectural claims cite primary sources.
+An expert-level technical reference (~1,100 pages, 168 chapters) tracing every layer of the Linux graphics stack — from the DRM kernel subsystem and GPU memory management through Mesa's shader compilers, Wayland compositors, application APIs, the browser rendering pipeline, game compatibility layers, terminal pixel protocols, GPU-accelerated video streaming, AI inference, and both open and proprietary GPU ecosystems. Each chapter is written for practitioners: code snippets reference real upstream source at specific commits or releases, API signatures are verified against current kernel and Mesa trees, and architectural claims cite primary sources.
 
 By the final chapter the reader holds a continuous mental model from a `DRM_IOCTL_MODE_ATOMIC` kernel call all the way to a photon leaving a display panel, and from a WebGPU `drawIndexed` call in JavaScript all the way to the same panel.
 
@@ -100,66 +100,84 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 
 ---
 
-### Part VI — The Display Stack
+### Part VI-A — Wayland Protocol and Compositor Architecture
 
-*From rendered DMA-BUF buffers to photons on screen: Wayland compositor architecture, KMS atomic modesetting, colour management, explicit synchronisation, font rendering, and variable refresh rate. The compositor is the conductor orchestrating this stack.*
+*The Wayland wire protocol, compositor implementation with wlroots, production compositors (Mutter, KWin, Sway, Hyprland), XWayland, and the wave of staging protocols reaching stability in 2024–2026: explicit sync, colour management, screen capture, frame scheduling, and portal evolution.*
 
-- [Part Overview](chapters/part-06-display-stack/part-intro.md)
-- [Ch 20: Wayland Protocol Fundamentals](chapters/part-06-display-stack/ch20-wayland-protocol-fundamentals.md)
-- [Ch 21: Building Compositors with wlroots](chapters/part-06-display-stack/ch21-building-compositors-wlroots.md)
-- [Ch 22: Production Compositors](chapters/part-06-display-stack/ch22-production-compositors.md)
-- [Ch 23: Legacy and Sandboxed App Support](chapters/part-06-display-stack/ch23-legacy-sandboxed-app-support.md)
-- [Ch 46: The Evolving Wayland Protocol Ecosystem](chapters/part-06-display-stack/ch46-wayland-protocol-ecosystem.md)
-- [Ch 53: Display Calibration and colord](chapters/part-06-display-stack/ch53-display-calibration-colord.md)
-- [Ch 54: The Linux Input Stack](chapters/part-06-display-stack/ch54-linux-input-stack.md)
-- [Ch 74: HDR and Wide Color Gamut on Linux](chapters/part-06-display-stack/ch74-hdr-wide-color-gamut.md)
-- [Ch 75: Explicit GPU Synchronisation](chapters/part-06-display-stack/ch75-explicit-gpu-sync.md)
-- [Ch 101: Color Science and the ICC Profile Pipeline](chapters/part-06-display-stack/ch101-color-science-icc.md)
-- [Ch 105: Font Rendering — FreeType2, HarfBuzz, and the Text Pipeline](chapters/part-06-display-stack/ch105-font-rendering.md)
-- [Ch 112: Variable Refresh Rate — FreeSync, G-Sync, and Frame Pacing](chapters/part-06-display-stack/ch112-vrr-freesync-frame-pacing.md)
-- [Ch 123: Screen Capture and Remote Desktop on Linux](chapters/part-06-display-stack/ch123-screen-capture-remote-desktop.md)
-- [Ch 128: DisplayPort MST and Multi-Monitor Topology](chapters/part-06-display-stack/ch128-displayport-mst.md)
-- [Ch 130: Wayland Protocol Extension Development](chapters/part-06-display-stack/ch130-wayland-protocol-dev.md)
-- [Ch 131: Touch, Stylus, and Tablet Input on Wayland](chapters/part-06-display-stack/ch131-touch-tablet-wayland.md)
-- [Ch 132: Wayland Security](chapters/part-06-display-stack/ch132-wayland-security.md)
-- [Ch 138: Wayland Fractional Scaling and HiDPI](chapters/part-06-display-stack/ch138-wayland-fractional-scaling.md)
-- [Ch 140: HDMI and DisplayPort Audio on Linux](chapters/part-06-display-stack/ch140-hdmi-dp-audio.md)
-- [Ch 145: XWayland: Architecture and the X11-to-Wayland Bridge](chapters/part-06-display-stack/ch145-xwayland-architecture.md)
-- [Ch 151: Wayland Text Input and Input Method Editors](chapters/part-06-display-stack/ch151-wayland-text-input-ime.md)
-- [Ch 158: HDR and Display Color Management on Linux](chapters/part-06-display-stack/ch158-hdr-linux-display.md)
-- [Ch 175: Linux Compositor Accessibility: AT-SPI2, Screen Readers, and the Wayland Gap](chapters/part-06-display-stack/ch175-atspie2-compositor-accessibility.md)
-- [Ch 194: Cross-Stack Integration — Protocols, Synchronisation, and the Coordination Layer](chapters/part-06-display-stack/ch194-cross-stack-integration.md)
+- [Part Overview](chapters/part-06a-wayland-compositor/part-intro.md)
+- [Ch 20: Wayland Protocol Fundamentals](chapters/part-06a-wayland-compositor/ch20-wayland-protocol-fundamentals.md)
+- [Ch 21: Building Compositors with wlroots](chapters/part-06a-wayland-compositor/ch21-building-compositors-wlroots.md)
+- [Ch 22: Production Compositors](chapters/part-06a-wayland-compositor/ch22-production-compositors.md)
+- [Ch 23: Legacy and Sandboxed App Support](chapters/part-06a-wayland-compositor/ch23-legacy-sandboxed-app-support.md)
+- [Ch 46: The Evolving Wayland Protocol Ecosystem](chapters/part-06a-wayland-compositor/ch46-wayland-protocol-ecosystem.md)
+- [Ch 130: Wayland Protocol Extension Development](chapters/part-06a-wayland-compositor/ch130-wayland-protocol-dev.md)
+- [Ch 132: Wayland Security](chapters/part-06a-wayland-compositor/ch132-wayland-security.md)
+- [Ch 138: Wayland Fractional Scaling and HiDPI](chapters/part-06a-wayland-compositor/ch138-wayland-fractional-scaling.md)
+- [Ch 145: XWayland: Architecture and the X11-to-Wayland Bridge](chapters/part-06a-wayland-compositor/ch145-xwayland-architecture.md)
+- [Ch 151: Wayland Text Input and Input Method Editors](chapters/part-06a-wayland-compositor/ch151-wayland-text-input-ime.md)
+- [Ch 175: Linux Compositor Accessibility: AT-SPI2, Screen Readers, and the Wayland Gap](chapters/part-06a-wayland-compositor/ch175-atspie2-compositor-accessibility.md)
 
 ---
 
-### Part VII — Application APIs & Middleware
+### Part VI-B — Display Services, Input, and Color
 
-*Where application-facing APIs—Vulkan, EGL, OpenCL, VA-API, OpenXR, PipeWire—are consumed by real software. The unifying mechanism is DMA-BUF, enabling zero-copy buffer sharing across all subsystem boundaries.*
+*The layer between compositor and application: calibration, HDR and wide colour gamut, colour science and ICC profiles, the Linux input stack, touch and stylus input, VRR, font rendering, screen capture, remote desktop, HDMI audio, DisplayPort MST, and desktop IPC.*
 
-- [Part Overview](chapters/part-07-application-apis-middleware/part-intro.md)
-- [Ch 24: Vulkan and EGL for Application Developers](chapters/part-07-application-apis-middleware/ch24-vulkan-egl-application-developers.md)
-- [Ch 25: GPU Compute](chapters/part-07-application-apis-middleware/ch25-gpu-compute.md)
-- [Ch 26: Hardware Video](chapters/part-07-application-apis-middleware/ch26-hardware-video.md)
-- [Ch 27: VR & AR](chapters/part-07-application-apis-middleware/ch27-vr-ar.md)
-- [Ch 38: PipeWire and the Video Session Layer](chapters/part-07-application-apis-middleware/ch38-pipewire.md)
-- [Ch 39: Qt and GTK GPU Rendering](chapters/part-07-application-apis-middleware/ch39-qt-gtk-rendering.md)
-- [Ch 47: Font and Text Rendering Pipeline](chapters/part-07-application-apis-middleware/ch47-font-text-rendering.md)
-- [Ch 50: Vulkan Video Extensions](chapters/part-07-application-apis-middleware/ch50-vulkan-video.md)
-- [Ch 76: Modern Vulkan Extensions](chapters/part-07-application-apis-middleware/ch76-modern-vulkan-extensions.md)
-- [Ch 96: libcamera and the Linux Camera Stack](chapters/part-07-application-apis-middleware/ch96-libcamera.md)
-- [Ch 106: The Vulkan Memory Model — Formal Execution and Memory Ordering](chapters/part-07-application-apis-middleware/ch106-vulkan-memory-model.md)
-- [Ch 111: Flatpak Graphics — GPU Access in Sandboxed Applications](chapters/part-07-application-apis-middleware/ch111-flatpak-graphics.md)
-- [Ch 114: OpenCV and GPU-Accelerated Computer Vision on Linux](chapters/part-07-application-apis-middleware/ch114-opencv-gpu-vision.md)
-- [Ch 127: Mesh Shaders and Variable Rate Shading](chapters/part-07-application-apis-middleware/ch127-mesh-shaders-vrs.md)
-- [Ch 133: Vulkan Compute Queues and Task Graphs](chapters/part-07-application-apis-middleware/ch133-vulkan-compute-queues.md)
-- [Ch 135: Vulkan Ray Tracing on Linux](chapters/part-07-application-apis-middleware/ch135-vulkan-ray-tracing.md)
-- [Ch 141: Vulkan Cooperative Matrices and GPU ML Acceleration](chapters/part-07-application-apis-middleware/ch141-vulkan-cooperative-matrices.md)
-- [Ch 148: Vulkan Synchronisation: A Complete Developer Reference](chapters/part-07-application-apis-middleware/ch148-vulkan-synchronisation.md)
-- [Ch 150: EGL Architecture and DMA-BUF Integration](chapters/part-07-application-apis-middleware/ch150-egl-architecture-dmabuf.md)
-- [Ch 152: The Rust GPU Ecosystem: ash, wgpu, naga, and Bevy](chapters/part-07-application-apis-middleware/ch152-rust-gpu-ecosystem.md)
-- [Ch 154: GPU-Driven Rendering: Indirect Draw, Culling, and Mesh Shaders](chapters/part-07-application-apis-middleware/ch154-gpu-driven-rendering.md)
-- [Ch 157: Vulkan Descriptor Binding: Sets, Push Descriptors, and Descriptor Buffers](chapters/part-07-application-apis-middleware/ch157-vulkan-descriptor-binding.md)
-- [Ch 165: Vulkan Video: Hardware Decode and Encode via the Vulkan API](chapters/part-07-application-apis-middleware/ch165-vulkan-video.md)
+- [Ch 53: Display Calibration and colord](chapters/part-06b-display-services/ch53-display-calibration-colord.md)
+- [Ch 54: The Linux Input Stack](chapters/part-06b-display-services/ch54-linux-input-stack.md)
+- [Ch 74: HDR and Wide Color Gamut on Linux](chapters/part-06b-display-services/ch74-hdr-wide-color-gamut.md)
+- [Ch 75: Explicit GPU Synchronisation](chapters/part-06b-display-services/ch75-explicit-gpu-sync.md)
+- [Ch 101: Color Science and the ICC Profile Pipeline](chapters/part-06b-display-services/ch101-color-science-icc.md)
+- [Ch 105: Font Rendering — FreeType2, HarfBuzz, and the Text Pipeline](chapters/part-06b-display-services/ch105-font-rendering.md)
+- [Ch 112: Variable Refresh Rate — FreeSync, G-Sync, and Frame Pacing](chapters/part-06b-display-services/ch112-vrr-freesync-frame-pacing.md)
+- [Ch 123: Screen Capture and Remote Desktop on Linux](chapters/part-06b-display-services/ch123-screen-capture-remote-desktop.md)
+- [Ch 128: DisplayPort MST and Multi-Monitor Topology](chapters/part-06b-display-services/ch128-displayport-mst.md)
+- [Ch 131: Touch, Stylus, and Tablet Input on Wayland](chapters/part-06b-display-services/ch131-touch-tablet-wayland.md)
+- [Ch 140: HDMI and DisplayPort Audio on Linux](chapters/part-06b-display-services/ch140-hdmi-dp-audio.md)
+- [Ch 158: HDR and Display Color Management on Linux](chapters/part-06b-display-services/ch158-hdr-linux-display.md)
+- [Ch 194: Cross-Stack Integration — Protocols, Synchronisation, and the Coordination Layer](chapters/part-06b-display-services/ch194-cross-stack-integration.md)
+- [Ch 198: D-Bus, dbus-broker, and Modern Linux IPC](chapters/part-06b-display-services/ch198-dbus-modern-linux-ipc.md)
+
+---
+
+### Part VII-A — GPU APIs and Extended Reality
+
+*The Vulkan API in depth for application developers — EGL, swapchains, compute, video decode/encode, ray tracing, mesh shaders, cooperative matrices, descriptor binding, GPU-driven rendering, shader objects, and the full Vulkan extension ecosystem. Also covers VA-API hardware video and OpenXR/Monado for VR and AR.*
+
+- [Part Overview](chapters/part-07a-gpu-apis/part-intro.md)
+- [Ch 24: Vulkan and EGL for Application Developers](chapters/part-07a-gpu-apis/ch24-vulkan-egl-application-developers.md)
+- [Ch 25: GPU Compute](chapters/part-07a-gpu-apis/ch25-gpu-compute.md)
+- [Ch 26: Hardware Video](chapters/part-07a-gpu-apis/ch26-hardware-video.md)
+- [Ch 27: VR & AR](chapters/part-07a-gpu-apis/ch27-vr-ar.md)
+- [Ch 76: Modern Vulkan Extensions](chapters/part-07a-gpu-apis/ch76-modern-vulkan-extensions.md)
+- [Ch 106: The Vulkan Memory Model — Formal Execution and Memory Ordering](chapters/part-07a-gpu-apis/ch106-vulkan-memory-model.md)
+- [Ch 127: Mesh Shaders and Variable Rate Shading](chapters/part-07a-gpu-apis/ch127-mesh-shaders-vrs.md)
+- [Ch 133: Vulkan Compute Queues and Task Graphs](chapters/part-07a-gpu-apis/ch133-vulkan-compute-queues.md)
+- [Ch 135: Vulkan Ray Tracing on Linux](chapters/part-07a-gpu-apis/ch135-vulkan-ray-tracing.md)
+- [Ch 141: Vulkan Cooperative Matrices and GPU ML Acceleration](chapters/part-07a-gpu-apis/ch141-vulkan-cooperative-matrices.md)
+- [Ch 148: Vulkan Synchronisation: A Complete Developer Reference](chapters/part-07a-gpu-apis/ch148-vulkan-synchronisation.md)
+- [Ch 150: EGL Architecture and DMA-BUF Integration](chapters/part-07a-gpu-apis/ch150-egl-architecture-dmabuf.md)
+- [Ch 152: The Rust GPU Ecosystem: ash, wgpu, naga, and Bevy](chapters/part-07a-gpu-apis/ch152-rust-gpu-ecosystem.md)
+- [Ch 154: GPU-Driven Rendering: Indirect Draw, Culling, and Mesh Shaders](chapters/part-07a-gpu-apis/ch154-gpu-driven-rendering.md)
+- [Ch 157: Vulkan Descriptor Binding: Sets, Push Descriptors, and Descriptor Buffers](chapters/part-07a-gpu-apis/ch157-vulkan-descriptor-binding.md)
+- [Ch 165: Vulkan Video: Hardware Decode and Encode via the Vulkan API](chapters/part-07a-gpu-apis/ch165-vulkan-video.md)
+- [Ch 173: VK_EXT_shader_object — Pipeline-Free Shader Binding in Vulkan](chapters/part-07a-gpu-apis/ch173-vk-ext-shader-object.md)
+- [Ch 192: GPU-Generated Commands — VK_EXT_device_generated_commands and Work Graphs](chapters/part-07a-gpu-apis/ch192-vk-ext-device-generated-commands.md)
+
+---
+
+### Part VII-B — Multimedia Frameworks and Desktop Integration
+
+*Where GPU resources meet application-layer multimedia: PipeWire's graph model and session management, ALSA's kernel architecture and libasound API, Qt/GTK GPU rendering, font and text layout, Vulkan Video extensions, libcamera, Flatpak GPU access, and OpenCV GPU acceleration.*
+
+- [Ch 38: PipeWire and the Video Session Layer](chapters/part-07b-multimedia-frameworks/ch38-pipewire.md)
+- [Ch 38b: ALSA — The Linux Audio Subsystem](chapters/part-07b-multimedia-frameworks/ch38b-alsa-linux-audio-subsystem.md)
+- [Ch 39: Qt and GTK GPU Rendering](chapters/part-07b-multimedia-frameworks/ch39-qt-gtk-rendering.md)
+- [Ch 47: Font and Text Rendering Pipeline](chapters/part-07b-multimedia-frameworks/ch47-font-text-rendering.md)
+- [Ch 50: Vulkan Video Extensions](chapters/part-07b-multimedia-frameworks/ch50-vulkan-video.md)
+- [Ch 96: libcamera and the Linux Camera Stack](chapters/part-07b-multimedia-frameworks/ch96-libcamera.md)
+- [Ch 111: Flatpak Graphics — GPU Access in Sandboxed Applications](chapters/part-07b-multimedia-frameworks/ch111-flatpak-graphics.md)
+- [Ch 114: OpenCV and GPU-Accelerated Computer Vision on Linux](chapters/part-07b-multimedia-frameworks/ch114-opencv-gpu-vision.md)
 
 ---
 
@@ -391,7 +409,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Appendix L: Shader Toolchain Matrix](chapters/appendices/appendix-l-shader-toolchain-matrix.md)
 - [Appendix M: Kernel Configuration Reference](chapters/appendices/appendix-m-kernel-config-reference.md)
 
-**Total: 167 chapters + 13 appendices**
+**Total: 168 chapters + 13 appendices**
 
 ## Repository Structure
 
@@ -453,12 +471,19 @@ chapters/
   part-05-mesa-gpu-drivers/
     ch18-vulkan-drivers.md
     ch19-opengl-compatibility-drivers.md
-  part-06-display-stack/
+  part-06a-wayland-compositor/
     ch20-wayland-protocol-fundamentals.md
     ch21-building-compositors-wlroots.md
     ch22-production-compositors.md
     ch23-legacy-sandboxed-app-support.md
     ch46-wayland-protocol-ecosystem.md
+    ch130-wayland-protocol-dev.md
+    ch132-wayland-security.md
+    ch138-wayland-fractional-scaling.md
+    ch145-xwayland-architecture.md
+    ch151-wayland-text-input-ime.md
+    ch175-atspie2-compositor-accessibility.md
+  part-06b-display-services/
     ch53-display-calibration-colord.md
     ch54-linux-input-stack.md
     ch74-hdr-wide-color-gamut.md
@@ -468,28 +493,18 @@ chapters/
     ch112-vrr-freesync-frame-pacing.md
     ch123-screen-capture-remote-desktop.md
     ch128-displayport-mst.md
-    ch130-wayland-protocol-dev.md
     ch131-touch-tablet-wayland.md
-    ch132-wayland-security.md
-    ch138-wayland-fractional-scaling.md
     ch140-hdmi-dp-audio.md
-    ch145-xwayland-architecture.md
-    ch151-wayland-text-input-ime.md
     ch158-hdr-linux-display.md
-  part-07-application-apis-middleware/
+    ch194-cross-stack-integration.md
+    ch198-dbus-modern-linux-ipc.md
+  part-07a-gpu-apis/
     ch24-vulkan-egl-application-developers.md
     ch25-gpu-compute.md
     ch26-hardware-video.md
     ch27-vr-ar.md
-    ch38-pipewire.md
-    ch39-qt-gtk-rendering.md
-    ch47-font-text-rendering.md
-    ch50-vulkan-video.md
     ch76-modern-vulkan-extensions.md
-    ch96-libcamera.md
     ch106-vulkan-memory-model.md
-    ch111-flatpak-graphics.md
-    ch114-opencv-gpu-vision.md
     ch127-mesh-shaders-vrs.md
     ch133-vulkan-compute-queues.md
     ch135-vulkan-ray-tracing.md
@@ -500,6 +515,17 @@ chapters/
     ch154-gpu-driven-rendering.md
     ch157-vulkan-descriptor-binding.md
     ch165-vulkan-video.md
+    ch173-vk-ext-shader-object.md
+    ch192-vk-ext-device-generated-commands.md
+  part-07b-multimedia-frameworks/
+    ch38-pipewire.md
+    ch38b-alsa-linux-audio-subsystem.md
+    ch39-qt-gtk-rendering.md
+    ch47-font-text-rendering.md
+    ch50-vulkan-video.md
+    ch96-libcamera.md
+    ch111-flatpak-graphics.md
+    ch114-opencv-gpu-vision.md
   part-08-gaming-layer/
     ch28-windows-compatibility.md
     ch29-upscaling-effects-overlays.md
@@ -615,11 +641,11 @@ Start with [intro.md](intro.md) for curated reading paths by audience. Each part
 
 Suggested paths:
 - **Kernel/driver developer:** Parts I → II → III → IV → V
-- **Vulkan/compute developer:** Parts IV → V → VII → XIV → XVIII
-- **Browser engineer:** Parts IV → VI → X
-- **Gaming/compatibility:** Parts VII → VIII → XI → XV
-- **Terminal developer:** Parts VI → XII
-- **AI/ML practitioner:** Parts VII → XV → XX
+- **Vulkan/compute developer:** Parts IV → V → VII-A → XIV → XVIII
+- **Browser engineer:** Parts IV → VI-A → X
+- **Gaming/compatibility:** Parts VII-A → VIII → XI → XV
+- **Terminal developer:** Parts VI-A → XII
+- **AI/ML practitioner:** Parts VII-A → XV → XX
 
 ## Writing Standards
 
