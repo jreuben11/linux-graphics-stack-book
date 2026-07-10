@@ -977,6 +977,164 @@ For HTTPS signalling endpoints (Janus HTTP transport, mediasoup application HTTP
 
 ---
 
+## WebRTC Audio: VoIP Patterns and Opus on Linux
+
+WebRTC's audio stack is used independently of video in voice conferencing, audio bridges, SIP-to-WebRTC gateways, and push-to-talk systems. The server-side patterns differ from video SFU work: audio typically requires mixing (MCU model) rather than forwarding (SFU model), and the latency budget is tighter — human perception of audio delay becomes noticeable above 150 ms and distracting above 250 ms.
+
+### Opus: The WebRTC Audio Codec
+
+All WebRTC implementations mandate **Opus** ([RFC 6716](https://datatracker.ietf.org/doc/html/rfc6716)) as the required audio codec. Opus is a lossy codec combining SILK (speech) and CELT (music/wideband) modes, switching automatically based on content. RTP payload type 111 is conventionally assigned to Opus in SDP, with a 48,000 Hz clock rate and 2 channels by default:
+
+```
+a=rtpmap:111 opus/48000/2
+a=fmtp:111 minptime=10;useinbandfec=1;usedtx=1
+```
+
+Key `fmtp` parameters:
+
+| Parameter | Effect |
+|---|---|
+| `minptime=10` | Minimum packetisation interval (10 ms → 20 ms default frame) |
+| `useinbandfec=1` | Enable in-band FEC: duplicate coded audio embedded in next packet for loss recovery |
+| `usedtx=1` | Discontinuous Transmission: silence suppression — encoder sends comfort noise packets instead of silent frames, reducing bandwidth ~50% during silence |
+| `maxaveragebitrate=32000` | Cap bitrate at 32 kbps (narrowband voice) |
+| `stereo=1` | Request stereo encoding; `sprop-stereo=1` signals the sender sends stereo |
+
+Opus bitrate modes (set via `libopus` `opus_encoder_ctl`):
+
+```c
+#include <opus/opus.h>
+
+OpusEncoder *enc;
+int error;
+enc = opus_encoder_create(48000, 1, OPUS_APPLICATION_VOIP, &error);
+
+/* Constant bitrate — consistent delay, predictable bandwidth */
+opus_encoder_ctl(enc, OPUS_SET_BITRATE(16000));   /* 16 kbps narrowband voice */
+opus_encoder_ctl(enc, OPUS_SET_VBR(0));            /* CBR */
+
+/* Variable bitrate — better quality at same average bitrate */
+opus_encoder_ctl(enc, OPUS_SET_VBR(1));
+opus_encoder_ctl(enc, OPUS_SET_VBR_CONSTRAINT(0)); /* unconstrained VBR */
+
+/* In-band FEC — redundant lower-quality copy in next packet */
+opus_encoder_ctl(enc, OPUS_SET_INBAND_FEC(1));
+opus_encoder_ctl(enc, OPUS_SET_PACKET_LOSS_PERC(5)); /* 5% expected loss */
+
+/* DTX — silence suppression */
+opus_encoder_ctl(enc, OPUS_SET_DTX(1));
+```
+
+Bandwidth modes — Opus selects automatically but can be forced:
+
+| Mode | Bandwidth | Sample rate | Typical bitrate |
+|---|---|---|---|
+| `OPUS_BANDWIDTH_NARROWBAND` | 4 kHz | 8 kHz | 6–12 kbps |
+| `OPUS_BANDWIDTH_MEDIUMBAND` | 6 kHz | 12 kHz | 8–16 kbps |
+| `OPUS_BANDWIDTH_WIDEBAND` | 8 kHz | 16 kHz | 12–24 kbps |
+| `OPUS_BANDWIDTH_SUPERWIDEBAND` | 12 kHz | 24 kHz | 20–32 kbps |
+| `OPUS_BANDWIDTH_FULLBAND` | 20 kHz | 48 kHz | 28–512 kbps |
+
+For voice conferencing, `OPUS_BANDWIDTH_WIDEBAND` at 24 kbps with `useinbandfec=1` and `usedtx=1` gives good quality at modest bandwidth. Music or high-fidelity audio requires `OPUS_BANDWIDTH_FULLBAND` at 64–128 kbps.
+
+### Audio Level RTP Header Extension
+
+WebRTC uses the **audio level extension** ([RFC 6464](https://datatracker.ietf.org/doc/html/rfc6464)) to carry per-packet voice activity and volume in the RTP header, avoiding a separate signalling channel for speaker detection:
+
+```
+a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level
+```
+
+Each RTP packet carries a 1-byte extension: bit 7 is the Voice Activity Detection (VAD) flag; bits 0–6 encode the audio level as `−dBov` (0 = full scale, 127 = silence). SFUs read these values to implement *active speaker detection* — switching the video layout to show the loudest participant — without decoding the audio.
+
+### DTMF (Telephone Events)
+
+SIP-to-WebRTC gateways must forward DTMF tones. WebRTC uses **RFC 4733** telephone-event RTP packets (payload type 101) rather than in-band audio tones:
+
+```
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-16
+```
+
+A DTMF digit is encoded as three or more RTP packets with the same timestamp, carrying `{event, E, R, duration}` fields. Janus's SIP plugin and FreeSWITCH's `mod_verto` both translate SIP INFO DTMF → RFC 4733 telephone-event packets when bridging to WebRTC.
+
+### Server-Side Audio Mixing: Janus AudioBridge
+
+Video SFUs forward individual participant streams without decoding. Audio conferencing typically requires **mixing** (MCU model) because forwarding N streams to each of N participants wastes downstream bandwidth and requires the browser to mix N audio streams in JavaScript — poorly scalable beyond 6–8 participants.
+
+Janus's **AudioBridge** plugin decodes all participant Opus streams on the server, mixes the PCM samples, re-encodes to Opus, and sends each participant a single mixed stream (their own voice excluded). The mixing loop runs at the configured sample rate (typically 16 kHz or 48 kHz) with a 20 ms frame interval:
+
+```
+Participant A (Opus RTP) ──┐
+Participant B (Opus RTP) ──┤→ Opus decode → PCM mix → Opus encode → one stream per participant
+Participant C (Opus RTP) ──┘
+```
+
+AudioBridge REST/WebSocket signalling to create a room and join:
+
+```json
+{ "janus": "message", "body": { "request": "create", "room": 1234,
+  "sampling_rate": 16000, "audiolevel_ext": true, "audiolevel_event": true,
+  "audio_active_packets": 100, "audio_level_average": 25 } }
+
+{ "janus": "message", "body": { "request": "join", "room": 1234,
+  "display": "Alice", "muted": false } }
+```
+
+`audiolevel_ext: true` enables RFC 6464 audio level parsing; `audiolevel_event: true` makes Janus emit `talking`/`stopped-talking` events when VAD transitions are detected, used for active speaker UI updates.
+
+### SIP–WebRTC Gateway Patterns
+
+Many real-world deployments must bridge legacy SIP infrastructure (PBX, PSTN) to WebRTC clients. Two common Linux approaches:
+
+**Janus SIP plugin**: Janus acts as a SIP User Agent, registering with a SIP proxy (Asterisk, Kamailio, FreeSWITCH) and bridging audio between a SIP call and a WebRTC PeerConnection. The plugin handles SDP re-negotiation between SIP (G.711/G.722 codecs) and WebRTC (Opus), performing codec transcoding when needed. This is a single-gateway architecture — Janus bridges one SIP call to one WebRTC session.
+
+**FreeSWITCH mod_verto**: FreeSWITCH's `mod_verto` module exposes a WebSocket-based signalling protocol (Verto) to WebRTC clients, while FreeSWITCH's core handles SIP/PSTN interconnect. Verto encodes WebRTC SDP in JSON over WebSocket; FreeSWITCH transcodes Opus↔G.711 and handles DTMF translation. This enables browser-based softphone clients to call SIP extensions and PSTN numbers through the FreeSWITCH dialplan.
+
+### Linux Audio Capture for WebRTC Publishing
+
+For server-side audio capture (e.g. streaming a radio broadcast or audio feed into a WebRTC room), the Linux source path is PipeWire → GStreamer → WHIP:
+
+```bash
+# Capture the default PipeWire audio source and publish via WHIP
+gst-launch-1.0 \
+  pipewiresrc do-timestamp=true \
+  ! audio/x-raw,rate=48000,channels=2,format=F32LE \
+  ! audioconvert \
+  ! opusenc bitrate=64000 inband-fec=true dtx=true \
+  ! rtpopuspay pt=111 \
+  ! whipclientsink signaller::whip-endpoint="https://sfu.example.com/whip/audio-room"
+```
+
+For low-latency capture from ALSA hardware directly (bypassing PipeWire, for embedded systems or dedicated audio appliances):
+
+```bash
+# ALSA → Opus → RTP → WHIP (audio-only, no PipeWire dependency)
+gst-launch-1.0 \
+  alsasrc device=hw:0,0 ! audio/x-raw,rate=48000,channels=2 \
+  ! audioconvert ! audioresample \
+  ! opusenc bitrate=32000 inband-fec=true \
+  ! rtpopuspay \
+  ! whipclientsink signaller::whip-endpoint="https://sfu.example.com/whip/broadcast"
+```
+
+### PipeWire Latency Tuning for Audio
+
+PipeWire's graph cycle quantum (`default.clock.quantum`) determines audio buffer size and therefore add-to-playback latency. For VoIP, smaller quanta reduce latency at the cost of more scheduling overhead:
+
+```ini
+# /etc/pipewire/pipewire.conf.d/99-voip-latency.conf
+context.properties = {
+    default.clock.rate     = 48000   # Hz
+    default.clock.quantum  = 480     # 10 ms at 48 kHz (vs 1024 default = ~21 ms)
+    default.clock.min-quantum = 32   # absolute floor
+}
+```
+
+The quantum must be consistent across all nodes in the graph; WirePlumber enforces the minimum based on the most demanding node. For real-time performance, PipeWire grants `SCHED_FIFO` priority to the data thread via `module-rt` (using `RLIMIT_RTPRIO` or the RTKit D-Bus service), preventing audio glitches under system load. The `RLIMIT_RTTIME` cap (default 200 ms) kills the real-time thread if it runs too long, protecting the system from a runaway audio plugin.
+
+---
+
 ## Integrations
 
 - **Ch60b — WebRTC Protocol Stack**: This chapter builds directly on Ch60b's coverage of SDP offer/answer, ICE candidate gathering, DTLS-SRTP key derivation, RTP/RTCP header formats, GoogCC bandwidth estimation, and GStreamer `webrtcbin`. The server infrastructure here assumes those mechanisms; revisit Ch60b for protocol-layer details on ICE states, SRTP cipher suites, and RTCP feedback message formats.
