@@ -86,6 +86,7 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 36: The Chromium Compositor — CC and Viz](#chapter-36-the-chromium-compositor--cc-and-viz)
   - [Chapter 37: Skia and 2D Rendering](#chapter-37-skia-and-2d-rendering)
   - [Chapter 52: Firefox and WebRender](#chapter-52-firefox-and-webrender)
+  - [Chapter 203: WebXR — Browser-Based Immersive Experiences on Linux](#chapter-203-webxr--browser-based-immersive-experiences-on-linux)
 - **Part XI — Engines & Creative Tools**
   - [Chapter 40: Bevy and wgpu](#chapter-40-bevy-and-wgpu)
   - [Chapter 41: Godot 4 RenderingDevice](#chapter-41-godot-4-renderingdevice)
@@ -975,6 +976,20 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - `ImageDecoder` API (WebCodecs): frame-level access, `VideoFrame` output, GPU import via `importExternalTexture`
 - Format comparison table and decision guide
 - **Integrations**: AVIF/JXL HDR metadata connects to the KMS HDR output pipeline (Ch74) and `wp_color_management_v1` (Ch194 §5); `ImageDecoder` output as `VideoFrame` is the same type WebCodecs produces (Ch146); all raster decode uses `SkCodec` inside Skia (Ch37); decoded textures become `viz::TextureDrawQuad` references in the Viz compositor (Ch36); AVIF hardware decode would use the same VA-API / Vulkan Video path as Ch147
+
+### Chapter 203: WebXR — Browser-Based Immersive Experiences on Linux
+
+- WebXR session types: `inline` (Magic Window), `immersive-vr`, `immersive-ar`; feature negotiation via `requiredFeatures`/`optionalFeatures` mapping onto OpenXR extension availability
+- The JS frame loop: `XRSession.requestAnimationFrame` at device native rate; `XRFrame`, `XRViewerPose`, `XRView` (projectionMatrix, transform, eye); frame object lifetime constraints
+- Reference spaces: `viewer`, `local`, `local-floor`, `bounded-floor`, `unbounded` and their `XrReferenceSpaceType` OpenXR equivalents
+- Input sources: `XRInputSource` (targetRayMode, gripSpace, Gamepad), interaction profile strings → OpenXR profile paths (`GetOpenXrInputProfilesMap`); `XRHand` — 25 named `XRJointSpace` entries, `fillJointRadii`, `fillPoses` batch APIs
+- Rendering: `XRWebGLLayer` (UA-managed framebuffer, `framebufferScaleFactor`, `gl.makeXRCompatible()`); WebXR Layers API — `XRWebGLBinding`, `XRProjectionLayer`, `getViewSubImage`, `texture-array` for single-pass stereo
+- Chromium multi-process model: renderer → browser → `isolated_xr_device` service; Mojo interfaces `VRService`, `XRDevice`, `XRFrameDataProvider`, `XRPresentationProvider`; `XRFrameData` struct carrying pose, views, input, hand joints, planes, anchors, depth
+- OpenXR backend class hierarchy: `OpenXrDevice` → `OpenXrRenderLoop` → `OpenXrApiWrapper`; `OpenXrExtensionHelper`; `OpenXrInputHelper` with action sets and interaction profiles; `OpenXrHandTracker` for `XR_EXT_hand_tracking`
+- Linux status: officially unsupported (only D3D11 and OpenGLES graphics bindings exist); community `webxr-linux` patch adds `OpenXrGraphicsBindingVulkan` (`XR_KHR_vulkan_enable2`) sharing swapchain images via `VkExternalMemoryImageCreateInfo`; feature compatibility table with Monado and SteamVR
+- Firefox WebXR via `wgpu`: Vulkan backend creates `XrGraphicsBindingVulkanKHR` naturally; `immersive-vr` works on Linux with SteamVR/Monado; `dom.webxr.hands.enabled` flag
+- WebXR vs. native OpenXR tradeoffs: Mojo IPC latency overhead (~1–2 ms/frame), no raw camera access, restricted extension surface; `XRProjectionLayer` reduces copy overhead; forthcoming WebGPU `GPULayer` via Dawn
+- **Integrations**: OpenXR runtime (Ch27) — `XrSession` in Monado/SteamVR is the common substrate; ANGLE (Ch34) is the WebGL backend for `XRWebGLLayer`; Dawn (Ch35) will back the forthcoming `XRWebGPUBinding`; Chromium compositor (Ch36) shares `gpu::SharedImage` mailboxes with the XR swapchain; Firefox/WebRender (Ch52) shares `wgpu` Vulkan device with the XR frame loop; Android ARCore WebXR (Ch87); WebNN (Ch168) for in-browser ML inference augmenting XR tracking
 
 ---
 
