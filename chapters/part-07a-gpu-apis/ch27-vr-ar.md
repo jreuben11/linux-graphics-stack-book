@@ -12,6 +12,7 @@
 4. [Display Backend: Direct Mode and the DRM Path](#4-display-backend-direct-mode-and-the-drm-path)
 5. [Reprojection, Timewarp, and Latency](#5-reprojection-timewarp-and-latency)
 6. [Tracking Systems: IMU, V4L2 Cameras, and SLAM](#6-tracking-systems-imu-v4l2-cameras-and-slam)
+6b. [AI Computer Vision in Monado: Hand Tracking, Depth, and Scene Understanding](#6b-ai-computer-vision-in-monado-hand-tracking-depth-and-scene-understanding)
 7. [Wayland and OpenXR Integration](#7-wayland-and-openxr-integration)
 8. [Practical: Writing a Minimal OpenXR Vulkan Application on Linux](#8-practical-writing-a-minimal-openxr-vulkan-application-on-linux)
 9. [Integrations](#9-integrations)
@@ -717,6 +718,8 @@ ASW extends ATW by synthesising an entirely new frame rather than warping the pr
 
 ASW requires the application to submit depth information (via `XR_KHR_composition_layer_depth`) for highest quality, enabling 3D reprojection rather than 2D extrapolation at depth discontinuities. Monado has a compute-shader-based implementation that is functional but less sophisticated than Valve's or Meta's ML-accelerated approaches. The `XR_KHR_composition_layer_depth` extension is fully supported in Monado since 2022, making it straightforward for applications to submit depth.
 
+**Neural optical flow for ASW**: Meta's and Valve's production runtimes replace the classical per-pixel block-matching optical flow with a lightweight neural network — variants of RAFT (Recurrent All-Pairs Field Transforms) or similar architectures at 1–3 million parameters. The network takes two consecutive eye frames as input and produces a dense flow field; the warp uses this field rather than a global homography. On a modern discrete GPU the inference completes in 1–2 ms, comfortably within the reprojection budget. The key advantage over classical optical flow is robustness at depth discontinuities and fine-detail edges where block-matching fails. When `XR_KHR_composition_layer_depth` depth is available, the network uses it as a conditioning channel, enabling 3D-aware disocclusion handling: pixels that become visible as the viewpoint shifts (previously occluded geometry) are inpainted from the depth-guided warp rather than smeared. Monado's roadmap targets a SPIR-V optical flow compute shader in `comp_compute.c` as the first step toward this path; the GPU compute infrastructure from Chapter 25 (Vulkan compute queues, specialisation constants, push constants for frame dimensions) applies directly. [Source: Collabora — Monado reprojection roadmap](https://www.collabora.com/news-and-blog/news-and-events/openxr-and-monado-recent-progress-and-whats-to-come.html)
+
 ### Frame Pacing
 
 Monado paces application rendering using `xrWaitFrame` as a throttle. When called, if the application is early (the previous frame is still being displayed), Monado blocks the application thread until the render window opens. When called late (application missed a deadline), Monado returns immediately so the application can catch up. Under consistent load, the application runs at exactly the HMD refresh rate.
@@ -818,6 +821,219 @@ Valve's Lighthouse tracking takes an entirely different approach. The HMD and co
 `XR_EXT_hand_tracking` exposes 26 joint poses per hand (wrist, metacarpals, proximal/intermediate/distal phalanges, fingertips). Monado implements hand tracking via camera-based ML inference. The camera stream (from the same V4L2 pipeline) feeds into a hand keypoint detection model; the joint positions are fitted from the 2D keypoint predictions.
 
 The quality of Monado's hand tracking varies by backend. A MediaPipe-based implementation processes frames on the CPU and provides reasonable accuracy for development. GPU-accelerated inference via TensorFlow Lite or ONNX Runtime on a Vulkan compute backend is in development; this path would use the Vulkan compute infrastructure described in Chapter 25 for the inference pass.
+
+---
+
+## 6b. AI Computer Vision in Monado: Hand Tracking, Depth, and Scene Understanding
+
+This section covers the end-to-end path from camera pixels to the pose and geometry data that OpenXR extensions expose to applications. Three subsystems rely on neural-network inference running on the same GPU pipeline described in Chapter 25: hand joint estimation, monocular depth for passthrough AR, and scene understanding for spatial anchors and plane detection.
+
+### GPU Inference Pipeline: DMA-BUF to Joint Poses
+
+The hand tracking path brings together V4L2 capture (Chapter 26), Vulkan external memory (Chapter 25), and ONNX Runtime to feed `XR_EXT_hand_tracking` without a CPU round-trip for the frame data. The full pipeline:
+
+```
+V4L2 /dev/video0  (GREY8, 640×480, DMA-BUF exported via VIDIOC_EXPBUF)
+  │
+  │  fd = dma_buf_fd from VIDIOC_EXPBUF
+  │
+  ▼
+vkImportMemoryFdInfoKHR                (VK_EXT_external_memory_dma_buf)
+  → VkDeviceMemory bound to VkImage    (VK_FORMAT_R8_UNORM, 640×480)
+  → image layout transition:           UNDEFINED → SHADER_READ_ONLY_OPTIMAL
+  │
+  │  No copy — the camera DMA-BUF is the Vulkan image backing store
+  │
+  ▼
+ONNX Runtime Vulkan EP  (OrtSessionOptionsAppendExecutionProvider_Vulkan)
+  → hand keypoint detection model      (MediaPipe Hands architecture,
+  │                                     MobileNetV2 backbone + heatmap head)
+  → output tensor [2, 21, 3]           (two hands, 21 keypoints, x/y/confidence)
+  │
+  ▼
+stereo triangulation                   (calibrated extrinsics from headset EEPROM)
+  → 3D joint positions in camera frame
+  │
+  ▼
+xrt_hand_joint_set                     (src/xrt/include/xrt/xrt_defines.h)
+  → xrt_device::get_hand_tracking()
+  → XrHandJointLocationEXT[26]         exposed via xrLocateHandJointsEXT()
+```
+
+The DMA-BUF import step is the critical zero-copy link. After `VIDIOC_EXPBUF`, the camera frame's physical pages are the Vulkan image's backing memory; the GPU reads them directly without an intervening `memcpy`. The same `VK_EXT_external_memory_dma_buf` mechanism is used by VA-API video decode (Chapter 26) to pass decoded frames into Vulkan for post-processing.
+
+```c
+// Illustrative: importing a V4L2 DMA-BUF fd into Vulkan for inference
+// Based on Monado tracking driver patterns
+
+VkImportMemoryFdInfoKHR import_info = {
+    .sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+    .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+    .fd         = dmabuf_fd,   // from VIDIOC_EXPBUF
+};
+
+VkMemoryAllocateInfo alloc_info = {
+    .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+    .pNext           = &import_info,
+    .allocationSize  = frame_size,   // width * height for GREY8
+    .memoryTypeIndex = device_local_index,
+};
+
+VkDeviceMemory camera_mem;
+vkAllocateMemory(device, &alloc_info, NULL, &camera_mem);
+vkBindImageMemory(device, camera_image, camera_mem, 0);
+
+// ONNX Runtime Vulkan EP — session configured to use the active VkDevice
+OrtSessionOptions *opts;
+g_ort->CreateSessionOptions(&opts);
+OrtVulkanProviderOptions vk_opts = {
+    .device     = (void *)device,
+    .queue      = (void *)compute_queue,
+};
+OrtSessionOptionsAppendExecutionProvider_Vulkan(opts, &vk_opts);
+// Session runs inference entirely on-GPU; output tensor mapped back to CPU
+// only for the final joint coordinate readback (~21 floats per hand)
+```
+
+The ONNX Runtime Vulkan Execution Provider (added in ORT 1.18) dispatches the model as a sequence of Vulkan compute pipelines, using `vkCmdDispatch` for each layer. The compute queue used for inference is separate from the graphics queue that renders the scene, so both run concurrently without stalling the frame loop. [Source: ONNX Runtime — Vulkan EP](https://onnxruntime.ai/docs/execution-providers/Vulkan-ExecutionProvider.html)
+
+**2D-to-3D lifting requires stereo.** A single camera provides pixel-space keypoints but no depth. Headsets with two cameras (WMR, most inside-out designs) solve depth by stereo triangulation: the same keypoint detected in both left and right images, with known camera extrinsics (baseline, rotation, translation from factory calibration stored in headset EEPROM), gives a 3D ray intersection. For single-camera or depth-ambiguous cases, a separate depth channel (see next subsection) or a learned lifting network (predicting depth from appearance) is required.
+
+**Latency budget.** At 90 Hz the total per-frame budget is ~11 ms. Hand tracking inference must complete within ~3–4 ms to leave margin for joint-set writeback and the application's `xrLocateHandJointsEXT` call. A MobileNetV2-backbone keypoint model at 224×224 input runs in ~1.5 ms on an RDNA3 GPU and ~1.0 ms on an RTX 40-series, comfortably meeting this budget. Larger models (EfficientDet, ViT-based) exceed the budget and are not viable at 90 Hz on current consumer hardware without quantisation to INT8 or FP16.
+
+### Monocular Depth Estimation for Passthrough AR
+
+Headsets with no active depth sensor (structured light projector or Time-of-Flight) — which includes most tethered PC VR headsets — rely on a neural monocular depth network to produce a dense depth map from the passthrough camera frame. This depth map serves two purposes: it feeds `XR_KHR_composition_layer_depth` alongside the passthrough colour layer so the compositor can correctly occlude virtual objects behind real geometry, and it provides surface normals for spatial anchor placement.
+
+The dominant model class for this workload is MiDaS / Depth Anything v2, a transformer-encoder + CNN-decoder architecture that produces a relative depth map (metric scale requires additional calibration). At inference:
+
+- Input: passthrough frame (RGB or GREY8), typically 256×256 or 320×240 after resize
+- Output: single-channel FP16 depth tensor, same spatial resolution
+- Runtime: ~2–4 ms on a discrete GPU at INT8 quantisation; ~6–10 ms at FP32
+
+The depth tensor is converted to a `VkImage` with format `VK_FORMAT_D32_SFLOAT` and attached to the composition layer:
+
+```c
+// Application submitting passthrough colour + neural depth to compositor
+XrCompositionLayerPassthroughFB passthrough_layer = { ... };
+
+XrCompositionLayerDepthInfoKHR depth_info = {
+    .type             = XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR,
+    .subImage         = {
+        .swapchain    = depth_swapchain,   // backed by VK_FORMAT_D32_SFLOAT
+        .imageRect    = { {0,0}, {width,height} },
+    },
+    .minDepth         = 0.0f,
+    .maxDepth         = 1.0f,
+    .nearZ            = 0.1f,
+    .farZ             = 100.0f,
+};
+// depth_info chained into the passthrough layer via pNext
+passthrough_layer.next = &depth_info;
+```
+
+The runtime (Monado or SteamVR) uses this depth buffer to perform per-pixel occlusion testing: virtual objects whose rendered depth is greater than the neural depth at that pixel are masked, making them appear behind real-world surfaces. Without the depth channel the compositor falls back to a fixed depth plane, causing all virtual objects to appear either always in front of or always behind real geometry.
+
+The same depth tensor can feed the SLAM pipeline as a pseudo-structured-light measurement, improving VIO accuracy in textureless environments where the visual feature tracker finds few trackable points (blank walls, uniform floors). This integration is under active development in the `basalt-monado` fork. [Source: Depth Anything v2 — arxiv.org/abs/2406.09414](https://arxiv.org/abs/2406.09414)
+
+### Scene Understanding: Plane Detection and Spatial Anchors
+
+Scene understanding exposes semantic geometry — floors, walls, tables, ceilings — as typed polygons and persistent anchors that virtual objects can attach to. The Khronos OpenXR Spatial Entities extension suite, released in late 2024, standardises the API surface that was previously fragmented across `XR_FB_spatial_entity`, ARCore, and ARKit. [Source: Khronos — OpenXR Spatial Entities](https://www.khronos.org/blog/openxr-spatial-entities-extensions-released-for-developer-feedback)
+
+**Plane detection** (`XR_EXT_plane_detection`): the runtime continuously analyses the SLAM point cloud and camera frames to fit planar surfaces. The API is asynchronous via `XR_EXT_future`:
+
+```c
+// Query plane detector — OpenXR Spatial Entities API
+XrPlaneDetectorCreateInfoEXT create_info = {
+    .type            = XR_TYPE_PLANE_DETECTOR_CREATE_INFO_EXT,
+    .flags           = XR_PLANE_DETECTOR_ENABLE_CONTOUR_BIT_EXT,
+};
+XrPlaneDetectorEXT detector;
+xrCreatePlaneDetectorEXT(session, &create_info, &detector);
+
+// Begin async detection (returns immediately; result ready when future completes)
+XrPlaneDetectorBeginInfoEXT begin_info = {
+    .type              = XR_TYPE_PLANE_DETECTOR_BEGIN_INFO_EXT,
+    .baseSpace         = stage_space,
+    .time              = predicted_display_time,
+    .orientationCount  = 2,
+    .orientations      = (XrPlaneDetectorOrientationEXT[]){
+        XR_PLANE_DETECTOR_ORIENTATION_HORIZONTAL_UPWARD_EXT,
+        XR_PLANE_DETECTOR_ORIENTATION_VERTICAL_EXT,
+    },
+    .maxPlanes         = 32,
+    .minArea           = 0.25f,   // square metres
+};
+XrFutureEXT future;
+xrBeginPlaneDetectionEXT(detector, &begin_info, &future);
+
+// Poll future completion, then retrieve results
+XrFuturePollResultEXT poll = { .type = XR_TYPE_FUTURE_POLL_RESULT_EXT };
+xrPollFutureEXT(instance, &(XrFuturePollInfoEXT){
+    .type   = XR_TYPE_FUTURE_POLL_INFO_EXT,
+    .future = future,
+}, &poll);
+
+if (poll.state == XR_FUTURE_STATE_READY_EXT) {
+    XrPlaneDetectorGetInfoEXT get_info = {
+        .type      = XR_TYPE_PLANE_DETECTOR_GET_INFO_EXT,
+        .baseSpace = stage_space,
+        .time      = predicted_display_time,
+    };
+    XrPlaneDetectorLocationsEXT locations = {
+        .type          = XR_TYPE_PLANE_DETECTOR_LOCATIONS_EXT,
+        .planeCapacity = 32,
+        .planes        = plane_array,
+    };
+    xrGetPlaneDetectionsEXT(detector, &get_info, &locations);
+    // locations.planes[i].pose gives the plane centre in stage space
+    // locations.planes[i].orientation is HORIZONTAL_UPWARD, VERTICAL, etc.
+}
+```
+
+**The ML role in plane detection.** Pure geometric SLAM gives a sparse point cloud of tracked visual features. Plane fitting from a sparse point cloud (RANSAC on point normals) works in well-textured environments but degrades on white walls and uniform floors — exactly the surfaces most important to detect. The production approach adds a segmentation network that labels each incoming camera frame's pixels as floor/wall/ceiling/object. The labelled pixels are back-projected into 3D using the current depth estimate and added to a labelled voxel grid; plane fitting operates on semantically filtered subsets of the voxel grid, dramatically improving robustness on textureless surfaces. The segmentation network (typically a lightweight DeepLabV3 or MobileNetV3 semantic segmentation model at 512×512, ~5 ms per frame on GPU) runs as a second Vulkan compute dispatch in parallel with the hand tracking inference, sharing the same `VkDevice` and compute queue family. [Source: Monado spatial entities progress](https://www.collabora.com/news-and-blog/news-and-events/openxr-and-monado-recent-progress-and-whats-to-come.html)
+
+**Spatial anchors** (`XR_EXT_spatial_anchor`): a spatial anchor is a persistent `XrSpace` whose pose is maintained by the runtime across sessions using the saved SLAM map. The application creates an anchor at a pose (e.g., the centre of a detected plane):
+
+```c
+XrSpatialAnchorCreateInfoEXT anchor_info = {
+    .type      = XR_TYPE_SPATIAL_ANCHOR_CREATE_INFO_EXT,
+    .space     = stage_space,
+    .pose      = table_centre_pose,
+    .time      = predicted_display_time,
+};
+XrFutureEXT anchor_future;
+xrCreateSpatialAnchorAsyncEXT(session, &anchor_info, &anchor_future);
+// On completion: xrCreateSpatialAnchorCompleteEXT() returns XrSpace handle
+// Save UUID via XR_MSFT_spatial_anchor_persistence (or equivalent) for reload
+```
+
+On the next session, the runtime re-localises the SLAM map (matching current camera frames against saved keyframes), retrieves the anchor's stored pose, and updates the anchor `XrSpace` to reflect any map refinement. Virtual objects attached to that anchor appear at the correct real-world position even after the headset has been removed and replaced. Monado's Basalt fork (`vit_interface`) is adding the persistent map save/load path that makes this viable. [Source: Persistent SLAM in Monado](https://www.collabora.com/news-and-blog/news-and-events/openxr-and-monado-recent-progress-and-whats-to-come.html)
+
+**GPU pipeline overview for scene understanding:**
+
+```mermaid
+graph TD
+    V4L2["V4L2 cameras\n(DMA-BUF export)"]
+    VKImg["VkImage\n(imported via VK_EXT_external_memory_dma_buf)"]
+    Seg["Semantic segmentation\n(DeepLabV3 / MobileNetV3 ONNX,\nVulkan EP, ~5ms)"]
+    Depth["Monocular depth\n(Depth Anything v2,\nVulkan EP, ~3ms)"]
+    SLAM["Basalt VIO\n(labelled voxel grid update)"]
+    Plane["Plane fitting\n(RANSAC on semantic subsets)"]
+    Anchor["XrSpace anchors\n(persistent across sessions)"]
+    App["Application\nxrGetPlaneDetectionsEXT\nxrLocateSpace(anchor)"]
+
+    V4L2 --> VKImg
+    VKImg --> Seg
+    VKImg --> Depth
+    Seg --> SLAM
+    Depth --> SLAM
+    SLAM --> Plane
+    Plane --> Anchor
+    Anchor --> App
+```
+
+Both the segmentation and depth inference dispatches run on the GPU's async compute queue concurrently with scene rendering, using `VkSemaphore` timeline points to signal completion to the SLAM tracking thread. This is the same async compute queue architecture used by Monado's ATW/ASW reprojection passes (Section 5).
 
 ---
 
@@ -1154,9 +1370,13 @@ xrCreateSwapchain(session, &(XrSwapchainCreateInfo){
 
 **Chapter 24 (Vulkan and EGL)**: OpenXR swapchain management builds on the Vulkan memory and synchronisation primitives described in Chapter 24. Monado uses timeline semaphores (`VK_KHR_timeline_semaphore`) for compositor-application synchronisation, enabling the compositor to signal image availability without polling.
 
-**Chapter 25 (GPU Compute)**: Monado's ATW and ASW reprojection passes run as Vulkan compute shaders. Future GPU-accelerated hand tracking ML inference would use the Vulkan compute infrastructure for ONNX/TFLite inference.
+**Chapter 25 (GPU Compute)**: Monado's ATW and ASW reprojection passes run as Vulkan compute shaders. The Section 6b GPU inference pipeline for hand tracking, monocular depth, and scene segmentation uses the same Vulkan compute infrastructure — `VkComputePipeline`, async compute queues, and `VkSemaphore` timeline synchronisation — described there.
 
-**Chapter 26 (Hardware Video Decode — VA-API and V4L2)**: V4L2 camera capture in Monado shares the subsystem with hardware video decode. DMA-BUF export from V4L2 for SLAM tracking uses the same kernel interface as DMA-BUF export from V4L2M2M video decoders.
+**Chapter 26 (Hardware Video Decode — VA-API and V4L2)**: V4L2 camera capture in Monado shares the subsystem with hardware video decode. DMA-BUF export from V4L2 for SLAM tracking uses the same kernel interface as DMA-BUF export from V4L2M2M video decoders. The zero-copy `VK_EXT_external_memory_dma_buf` import used in Section 6b is the same technique VA-API uses to share decoded frames with Vulkan post-processing.
+
+**Chapter 88 (NPU and AI Accelerator Integration)**: On ARM SoC headsets (Qualcomm XR2/XR3, Snapdragon Spaces), the hand tracking and scene segmentation inference dispatched to Vulkan on a PC-class GPU instead routes to the on-chip Hexagon DSP/NPU via ONNX Runtime's QNN Execution Provider. The DRM/accel subsystem path described in Chapter 88 is the kernel interface; the `xrt_device` driver abstraction in Monado hides whether inference runs on GPU or NPU from the rest of the stack.
+
+**Chapter 115 (NeRFStudio and 3D Gaussian Splatting)**: Neural scene representations are an emerging alternative to mesh-based scene understanding. NeRF-based or 3DGS world models trained on headset camera streams provide continuous geometry for spatial anchor placement rather than discrete SLAM point clouds, and may replace or augment the voxel-grid approach described in Section 6b as GPU inference throughput increases.
 
 **Chapter 28 (Windows Compatibility — Wine, DXVK, Proton)**: SteamVR games running under Proton can target OpenXR through SteamVR's OpenXR runtime or, with `XR_RUNTIME_JSON` override, through Monado. VR games originally using OpenVR (SteamVR's proprietary API) can use OpenComposite as a compatibility shim that translates OpenVR calls to OpenXR, enabling them to run on Monado.
 
