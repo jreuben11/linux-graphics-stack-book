@@ -16,6 +16,7 @@
 - [4.7 The GObject Type System](#47-the-gobject-type-system)
 - [5. GTK4 Wayland Integration and Explicit Sync](#5-gtk4-wayland-integration-and-explicit-sync)
 - [6. GTK4 Shader Pipeline and CSS GPU Effects](#6-gtk4-shader-pipeline-and-css-gpu-effects)
+- [6.5 libadwaita — GNOME HIG Adaptive Widgets](#65-libadwaita--gnome-hig-adaptive-widgets)
 - [7. Font and Text Rendering: FreeType, HarfBuzz, and Glyph Atlases](#7-font-and-text-rendering-freetype-harfbuzz-and-glyph-atlases)
 - [8. WebKitGTK: Embedding Web Content in GTK Applications](#8-webkitgtk-embedding-web-content-in-gtk-applications)
 - [Integrations](#integrations)
@@ -943,6 +944,202 @@ When GTK4 is using the Vulkan renderer, `GtkGLArea` still uses OpenGL; the resul
 
 ---
 
+## 6.5 libadwaita — GNOME HIG Adaptive Widgets
+
+**libadwaita** (`libadwaita-1`, pkg-config name `libadwaita-1`) is the official implementation of the GNOME Human Interface Guidelines on top of GTK4. Where GTK4 provides the generic rendering engine (`GskRenderer`, `GtkSnapshot`, `GdkFrameClock`), libadwaita contributes HIG-conformant widgets, a colour-scheme system, a physics-based animation framework, and an adaptive layout system. All libadwaita types are `GObject` subclasses; all widget types subclass `GtkWidget` and render through GTK4's normal `GtkSnapshot` → `GskRenderNode` → `GskRenderer` pipeline described in Sections 4–6. [Source](https://gnome.pages.gitlab.gnome.org/libadwaita/) [Source](https://gitlab.gnome.org/GNOME/libadwaita)
+
+### 6.5.1 AdwApplication and AdwWindow
+
+The entry point for a libadwaita application is `AdwApplication`, a subclass of `GtkApplication`. Calling `adw_init()` — invoked automatically by `AdwApplication` — registers the libadwaita `GObject` types, installs the libadwaita `GtkCssProvider` into the default display's style cascade, and connects to the `org.freedesktop.appearance.color-scheme` portal for system colour-scheme tracking:
+
+```c
+#include <adwaita.h>
+
+static void on_activate(GtkApplication *app) {
+    AdwApplicationWindow *win = ADW_APPLICATION_WINDOW(
+        adw_application_window_new(app));
+
+    /* AdwToolbarView: composites a header bar, scrollable content,
+     * and an optional bottom toolbar — all as GtkWidget children */
+    AdwToolbarView *toolbar_view = ADW_TOOLBAR_VIEW(adw_toolbar_view_new());
+    adw_toolbar_view_add_top_bar(toolbar_view,
+        GTK_WIDGET(adw_header_bar_new()));
+    adw_toolbar_view_set_content(toolbar_view, content_widget);
+
+    gtk_window_set_child(GTK_WINDOW(win), GTK_WIDGET(toolbar_view));
+    gtk_window_present(GTK_WINDOW(win));
+}
+
+int main(int argc, char **argv) {
+    AdwApplication *app = adw_application_new("com.example.MyApp",
+                                              G_APPLICATION_DEFAULT_FLAGS);
+    g_signal_connect(app, "activate", G_CALLBACK(on_activate), NULL);
+    return g_application_run(G_APPLICATION(app), argc, argv);
+}
+```
+
+`AdwApplicationWindow` and `AdwWindow` differ from their GTK4 counterparts in one rendering-relevant way: they handle the window titlebar via libadwaita's CSS theme rather than the GTK default, so the header bar chrome participates in the libadwaita colour-scheme system described next.
+
+### 6.5.2 AdwStyleManager and CSS Custom Properties
+
+`AdwStyleManager` is the per-display singleton that controls the application colour scheme. It connects the system-level `org.freedesktop.appearance.color-scheme` preference — delivered from GNOME Settings via the `xdg-desktop-portal` — to GTK4's CSS cascade:
+
+```c
+AdwStyleManager *mgr = adw_style_manager_get_default();
+
+/* Follow the system preference (default) */
+adw_style_manager_set_color_scheme(mgr, ADW_COLOR_SCHEME_DEFAULT);
+
+/* Force dark mode regardless of system setting */
+adw_style_manager_set_color_scheme(mgr, ADW_COLOR_SCHEME_FORCE_DARK);
+
+/* Query the current effective state */
+gboolean dark = adw_style_manager_get_dark(mgr);
+```
+
+libadwaita's `GtkCssProvider` defines a set of CSS custom properties (named colours) that propagate through GTK4's CSS cascade into the `GskRenderNode` tree:
+
+| CSS variable | Semantic role |
+|---|---|
+| `@accent_color` | Text/icon colour on interactive elements |
+| `@accent_bg_color` | Fill for buttons, toggles, selected items |
+| `@accent_fg_color` | Foreground on top of `@accent_bg_color` |
+| `@window_bg_color` | Application window background |
+| `@window_fg_color` | Primary text colour |
+| `@headerbar_bg_color` | Header bar background |
+| `@sidebar_bg_color` | Navigation sidebar background |
+| `@card_bg_color` | Preference-row and card fills |
+| `@destructive_bg_color` | Danger / delete action fill |
+
+These variables are resolved by GTK4's CSS engine at style-computation time. The resolved concrete colours appear in the `GskRenderNode` tree as `GskColorNode` fills, `GskLinearGradientNode` decorations, and `GskTextNode` foreground colours — all of which the `GskVulkanRenderer` or `GskNglRenderer` issues to the GPU without any libadwaita-specific rendering code. Switching from light to dark invalidates the entire CSS cascade, which causes GTK4 to re-snapshot all visible widgets and rebuild the render-node tree on the next `GdkFrameClock` tick.
+
+GNOME 47+ supports system-wide **accent colour** selection: the user's choice is stored in `org.gnome.desktop.interface.accent-color` and exposed via the portal. libadwaita reads this key, updates its CSS provider with the resolved accent value, and the change propagates through the cascade to the GPU node tree without requiring any application code.
+
+```mermaid
+graph TD
+    Settings["GNOME Settings\n(accent colour, dark mode)"]
+    Portal["xdg-desktop-portal\norg.freedesktop.appearance"]
+    StyleMgr["AdwStyleManager\n(per-display singleton)"]
+    CSSProvider["GtkCssProvider\n(libadwaita theme CSS)"]
+    CSSEngine["GTK4 CSS Engine\n(cascade resolution)"]
+    NodeTree["GskRenderNode tree\n(GskColorNode, GskTextNode...)"]
+    Renderer["GskVulkanRenderer / GskNglRenderer\n(GPU draw calls)"]
+
+    Settings --> Portal --> StyleMgr
+    StyleMgr --> CSSProvider --> CSSEngine --> NodeTree --> Renderer
+```
+
+### 6.5.3 AdwAnimation: Spring and Timed Animations
+
+libadwaita's animation subsystem drives GPU repaint cycles via `GdkFrameClock`. Both concrete types subclass `AdwAnimation` and tick through the same `GdkFrameClock::update` → `gtk_widget_snapshot()` → `GskRenderNode` rebuild cycle described in Section 4.6.
+
+**`AdwTimedAnimation`** — curve-based animation over a fixed wall-clock duration:
+
+```c
+/* Fade a widget from 0 to 1 opacity over 300 ms with ease-out-cubic */
+AdwAnimationTarget *target =
+    adw_property_animation_target_new(G_OBJECT(widget), "opacity");
+
+AdwTimedAnimation *anim = ADW_TIMED_ANIMATION(
+    adw_timed_animation_new(widget,
+        0.0,          /* start value */
+        1.0,          /* end value */
+        300,          /* duration ms */
+        target));
+adw_timed_animation_set_easing(anim, ADW_EASING_EASE_OUT_CUBIC);
+adw_animation_play(ADW_ANIMATION(anim));
+```
+
+Available easing functions include `ADW_EASING_LINEAR`, `ADW_EASING_EASE_IN_OUT_CUBIC`, `ADW_EASING_EASE_IN_EXPO`, and `ADW_EASING_EASE_OUT_BOUNCE`.
+
+**`AdwSpringAnimation`** — physics-based spring animation governed by a damping ratio, mass, and stiffness:
+
+```c
+/* Spring-driven position animation — natural deceleration without explicit duration */
+AdwSpringParams *spring = adw_spring_params_new(
+    0.8,    /* damping ratio: < 1 underdamped (overshoot), 1 critically damped */
+    1.0,    /* mass */
+    500.0   /* stiffness */
+);
+AdwAnimationTarget *target =
+    adw_property_animation_target_new(G_OBJECT(widget), "margin-start");
+
+AdwSpringAnimation *spring_anim = ADW_SPRING_ANIMATION(
+    adw_spring_animation_new(widget, 0.0, 240.0, spring, target));
+adw_animation_play(ADW_ANIMATION(spring_anim));
+adw_spring_params_unref(spring);
+```
+
+Both animation types register with the widget's `GdkFrameClock` via `gdk_frame_clock_begin_updating()`. Each tick computes the interpolated (or spring-integrated) value, writes it to the target property, and calls `gtk_widget_queue_draw()`. The resulting `GskOpacityNode` or `GskTransformNode` is rebuilt each frame and submitted to `GskRenderer` — achieving smooth GPU-composited animation with no libadwaita-specific GPU code.
+
+### 6.5.4 Adaptive Layout: AdwBreakpoint
+
+The adaptive layout system allows a single widget tree to reflow at different available widths, implementing the GNOME approach to responsive design without separate "mobile" and "desktop" code paths:
+
+```c
+AdwBreakpointBin *bin = ADW_BREAKPOINT_BIN(adw_breakpoint_bin_new());
+adw_breakpoint_bin_set_child(bin, GTK_WIDGET(split_view));
+
+/* Collapse the navigation split view when width drops below 500px */
+AdwBreakpoint *bp = adw_breakpoint_new(
+    adw_breakpoint_condition_parse("max-width: 500px"));
+
+GValue collapsed = G_VALUE_INIT;
+g_value_init(&collapsed, G_TYPE_BOOLEAN);
+g_value_set_boolean(&collapsed, TRUE);
+adw_breakpoint_add_setter(bp, G_OBJECT(split_view), "collapsed", &collapsed);
+adw_breakpoint_bin_add_breakpoint(bin, bp);
+```
+
+`AdwNavigationSplitView` and `AdwOverlaySplitView` use breakpoints to switch between a dual-pane sidebar layout (large widths) and a single-pane navigation stack (narrow widths). From a rendering perspective, the breakpoint transition is a GTK4 property change — the sidebar column's `visible` state changes, causing the widget snapshot to produce a structurally different `GskRenderNode` tree rooted at the split-view widget. No special GPU path is needed.
+
+### 6.5.5 Key Rendering-Relevant Widgets
+
+Several libadwaita widgets are architecturally notable from a rendering perspective:
+
+**`AdwAvatar`** clips a circular user-picture texture by calling `gtk_snapshot_push_rounded_clip()` followed by `gtk_snapshot_append_texture()` in its `snapshot` vfunc. The resulting node tree is `GskRoundedClipNode → GskTextureNode`. The rounded clip is resolved entirely in the GPU's `GskVulkanRenderer` ubershader — no CPU-side pixmap masking.
+
+**`AdwSpinner`** is implemented as a CSS `@keyframes` animation rotating a shaped fill. The rotation transform — a `GskTransformNode` — is stepped each frame by GTK4's CSS animation engine connected to `GdkFrameClock::update`, not by any custom `GtkWidget::snapshot` override. This demonstrates that libadwaita can delegate animated effects entirely to GTK4's CSS GPU pipeline.
+
+**`AdwToast`** places a rounded notification overlay widget inside `AdwToastOverlay`. It drives its fade-in and fade-out via `AdwTimedAnimation` on the widget's `opacity` property, producing a `GskOpacityNode` each frame that `GskRenderer` blends over the window content.
+
+**`AdwDialog`** (libadwaita 1.5+) replaces `GtkDialog` for GNOME applications. On Wayland it requests the `xdg-dialog` role via the `xdg-toplevel-dialog` protocol extension, asking the compositor to manage the dialog's surface as a child of its parent window — correct window-management semantics (modal blocking, centering) without requiring a separate `wl_surface` stack from the application:
+
+```c
+AdwAlertDialog *dialog = ADW_ALERT_DIALOG(
+    adw_alert_dialog_new("Delete File?",
+                         "This action cannot be undone."));
+adw_alert_dialog_add_response(dialog, "cancel",  "Cancel");
+adw_alert_dialog_add_response(dialog, "delete",  "Delete");
+adw_alert_dialog_set_response_appearance(dialog,
+    "delete", ADW_RESPONSE_DESTRUCTIVE);
+
+/* Response uses @destructive_bg_color from the CSS cascade */
+g_signal_connect(dialog, "response", G_CALLBACK(on_response), NULL);
+adw_dialog_present(ADW_DIALOG(dialog), GTK_WIDGET(parent_window));
+```
+
+**`AdwNavigationView`** and **`AdwNavigationPage`** implement a push/pop navigation stack with a slide animation between pages. The slide is an `AdwSpringAnimation` on a `GskTransformNode` (X-axis translation), composited in the normal GSK render tree alongside the rest of the application window — no offscreen FBO or separate compositing context.
+
+```mermaid
+graph TD
+    App["AdwApplication\n(adw_init → CSS provider installed)"]
+    Win["AdwApplicationWindow\n(AdwWindow subclass)"]
+    TBV["AdwToolbarView\n(GtkWidget: header + content layout)"]
+    HBar["AdwHeaderBar\n(GskRenderNode: title, buttons)"]
+    Content["Application content\n(GtkWidget tree)"]
+    StyleMgr["AdwStyleManager\n(colour scheme → CSS cascade)"]
+    GskRenderer["GskRenderer\n(GskVulkanRenderer / GskNglRenderer)"]
+
+    App --> Win --> TBV
+    TBV --> HBar
+    TBV --> Content
+    StyleMgr -->|"CSS variables\n@accent_color etc."| GskRenderer
+    Win -->|"gtk_widget_snapshot"| GskRenderer
+```
+
+---
+
 ## 7. Font and Text Rendering: FreeType, HarfBuzz, and Glyph Atlases
 
 ### 7.1 The Shared Text Rendering Stack
@@ -1378,6 +1575,8 @@ This chapter is part of a broader narrative about how GPU work flows from applic
 
 - **Chapter 61 (SPIR-V Ecosystem)**: The `qsb` tool's SPIR-V output, Qt's use of `glslang` and `SPIRV-Cross`, and GTK's offline SPIR-V compilation for the Vulkan renderer are all part of the SPIR-V toolchain ecosystem described in Chapter 61.
 
+- **libadwaita and GNOME Shell**: `AdwStyleManager`'s colour-scheme system reads from the same `org.freedesktop.appearance.color-scheme` portal key that GNOME Shell exposes via `xdg-desktop-portal-gnome`. GNOME Shell's own compositor (Mutter, Ch22) also uses the `GskRenderer` pipeline for Clutter actors, and the `@accent_color` CSS variables introduced in GNOME 47 flow through the same GDK CSS cascade path described in Section 6.5.
+
 - **Chapter 193 (Tauri and WebKitGTK Desktop Applications)**: Section 8 of this chapter describes WebKitGTK as embedded widget technology. Chapter 193 covers the next layer up: the Tauri application framework, which uses `webkit2gtk-4.1` via the Wry and Tao crates to build cross-platform Rust desktop applications with a WebKit-rendered frontend and a native Rust backend connected via a JavaScript IPC bridge.
 
 ---
@@ -1404,6 +1603,12 @@ This chapter is part of a broader narrative about how GPU work flows from applic
 - HarfBuzz documentation: [https://harfbuzz.github.io](https://harfbuzz.github.io)
 - GTK graphics architecture (Pango): [https://www.gtk.org/docs/architecture/pango](https://www.gtk.org/docs/architecture/pango)
 - GSK API reference: [https://docs.gtk.org/gsk4/](https://docs.gtk.org/gsk4/)
+- libadwaita API reference (main branch): [https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/](https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/)
+- libadwaita source — GNOME GitLab: [https://gitlab.gnome.org/GNOME/libadwaita](https://gitlab.gnome.org/GNOME/libadwaita)
+- libadwaita 1.5 release notes (AdwDialog, breakpoint improvements): [https://blogs.gnome.org/alexm/2024/03/18/libadwaita-1-5/](https://blogs.gnome.org/alexm/2024/03/18/libadwaita-1-5/)
+- GNOME 47 accent colour design initiative: [https://blogs.gnome.org/aday/2024/09/19/accent-colors-in-gnome-47/](https://blogs.gnome.org/aday/2024/09/19/accent-colors-in-gnome-47/)
+- AdwStyleManager documentation: [https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/class.StyleManager.html](https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/class.StyleManager.html)
+- AdwAnimation documentation: [https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/class.Animation.html](https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/class.Animation.html)
 
 ---
 

@@ -960,6 +960,337 @@ Magnum is distinctive in that it is modular: you can use only the math library, 
 
 [Source: Magnum graphics features](https://magnum.graphics/features/)
 
+### 10.5 GLFW — Lightweight Windowing and Input
+
+[GLFW](https://www.glfw.org/) (3.4, released 2024) is a C library that handles window creation, OpenGL/Vulkan context setup, and input events across Linux (X11 and Wayland), Windows, and macOS. It provides no GPU abstraction — all rendering happens through whatever API the application uses — but it is the de-facto standard for standalone OpenGL and Vulkan samples, tutorials, and tools that want windowing without the scope of SDL.
+
+On Linux, GLFW 3.4 supports both the X11 and Wayland backends, selectable at runtime via the `GLFW_PLATFORM` init hint:
+
+```c
+glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);  // or GLFW_PLATFORM_X11, GLFW_PLATFORM_AUTO
+glfwInit();
+
+GLFWwindow *win = glfwCreateWindow(1280, 720, "Demo", NULL, NULL);
+
+// Vulkan integration
+uint32_t count;
+const char **exts = glfwGetRequiredInstanceExtensions(&count);
+// On Wayland: {"VK_KHR_surface", "VK_KHR_wayland_surface"}
+// On X11:     {"VK_KHR_surface", "VK_KHR_xlib_surface"}
+
+// After vkCreateInstance:
+VkSurfaceKHR surface;
+glfwCreateWindowSurface(instance, win, NULL, &surface);
+```
+
+The Wayland backend in GLFW 3.4 uses `libdecor` for client-side window decorations (the `GLFW_WAYLAND_LIBDECOR` hint controls this); without a compositor that provides server-side decorations, GLFW requires `libdecor-0` at runtime. `glfwGetPhysicalDevicePresentationSupport(instance, physicalDevice, queueFamily)` queries whether a given Vulkan queue family can present to the GLFW window's surface, which is equivalent to calling `vkGetPhysicalDeviceWaylandPresentationSupportKHR` or `vkGetPhysicalDeviceXlibPresentationSupportKHR` depending on the active platform.
+
+For OpenGL, `glfwCreateWindow` with `glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API)` creates an EGL or GLX context automatically. GLFW is incompatible with `VK_KHR_display` (direct display) — it only targets windowed rendering.
+
+[Source: GLFW Vulkan guide](https://www.glfw.org/docs/latest/vulkan_guide.html)
+
+### 10.6 sokol — Single-Header Cross-Platform Suite
+
+[sokol](https://github.com/floooh/sokol) (by Andre Weissflog) is a family of single-header C99 libraries that together cover the same scope as SDL: windowing, GPU rendering, audio, and input — but designed as independent, composable units with zero cross-header dependencies. Each header is self-contained and can be vendored as a single file.
+
+The primary headers:
+
+| Header | Purpose |
+|---|---|
+| `sokol_app.h` | Event loop, window creation, input callbacks |
+| `sokol_gfx.h` | GPU resource creation and command encoding |
+| `sokol_gl.h` | Immediate-mode OpenGL 1.x emulation on top of `sokol_gfx` |
+| `sokol_audio.h` | Cross-platform audio callback |
+| `sokol_time.h` | High-resolution timer |
+
+`sokol_gfx.h` exposes a descriptor-style API modelled loosely on Metal and WebGPU. Resources are created via typed `*_desc` structs and returned as opaque handles:
+
+```c
+#define SOKOL_GLCORE33   // backend selection at compile time; also SOKOL_METAL, SOKOL_D3D11, SOKOL_WGPU
+#include "sokol_gfx.h"
+#include "sokol_app.h"
+
+static sg_pipeline pip;
+static sg_bindings bind;
+
+static void init(void) {
+    sg_setup(&(sg_desc){ .context = sapp_sgcontext() });
+
+    // Vertex buffer
+    float verts[] = { /* ... */ };
+    bind.vertex_buffers[0] = sg_make_buffer(&(sg_buffer_desc){
+        .data = SG_RANGE(verts),
+        .label = "triangle-verts"
+    });
+
+    // Pipeline state (shaders inline via sokol-shdc or raw SPIR-V)
+    pip = sg_make_pipeline(&(sg_pipeline_desc){
+        .shader = sg_make_shader(triangle_shader_desc(sg_query_backend())),
+        .layout.attrs[0].format = SG_VERTEXFORMAT_FLOAT3,
+        .label = "triangle-pipeline"
+    });
+}
+
+static void frame(void) {
+    sg_begin_default_pass(&(sg_pass_action){
+        .colors[0] = { .load_action = SG_LOADACTION_CLEAR,
+                       .clear_value = { 0.0f, 0.0f, 0.0f, 1.0f } }
+    }, sapp_width(), sapp_height());
+    sg_apply_pipeline(pip);
+    sg_apply_bindings(&bind);
+    sg_draw(0, 3, 1);
+    sg_end_pass();
+    sg_commit();
+}
+
+sapp_desc sokol_main(int argc, char *argv[]) {
+    return (sapp_desc){ .init_cb = init, .frame_cb = frame,
+                        .width = 800, .height = 600, .window_title = "sokol" };
+}
+```
+
+On Linux, `sokol_gfx.h` defaults to the OpenGL 3.3 backend (`SOKOL_GLCORE33`). A Vulkan backend is available for `sokol_gfx` via the community [sokol-zig](https://github.com/floooh/sokol-zig) bindings but is not part of the upstream C headers as of 2025 — the OpenGL backend is stable and well-tested on Mesa. `sokol_app.h` uses GLFW or a native X11/Wayland backend depending on compile flags; on Wayland it calls `wl_display_connect`, creates `xdg_surface`, and manages `wl_callback` for frame pacing.
+
+[Source: sokol repository README](https://github.com/floooh/sokol)
+
+### 10.7 raylib — Game-Oriented C Framework
+
+[raylib](https://www.raylib.com/) is a C game programming library aimed at beginners, educators, and game-jam participants. Its API is deliberately simple and immediate-mode: a single `BeginDrawing()`/`EndDrawing()` block replaces explicit command buffer recording. Under the hood raylib uses GLFW for windowing and input on Linux desktop, and drives OpenGL 3.3 core through its own thin abstraction layer `rlgl.h`.
+
+```c
+#include "raylib.h"
+
+int main(void) {
+    InitWindow(800, 450, "raylib example");
+    SetTargetFPS(60);
+
+    Camera3D cam = { .position = {4,4,4}, .target = {0,0,0},
+                     .up = {0,1,0}, .fovy = 45.0f,
+                     .projection = CAMERA_PERSPECTIVE };
+    Model model = LoadModel("mesh.obj");
+
+    while (!WindowShouldClose()) {
+        BeginDrawing();
+            ClearBackground(RAYWHITE);
+            BeginMode3D(cam);
+                DrawModel(model, Vector3Zero(), 1.0f, WHITE);
+            EndMode3D();
+            DrawFPS(10, 10);
+        EndDrawing();
+    }
+    UnloadModel(model);
+    CloseWindow();
+}
+```
+
+`rlgl.h` translates raylib draw calls to OpenGL 3.3 core profile calls. There is no Vulkan backend in raylib itself; the library is explicitly designed to hide GPU API complexity. For Linux the Mesa OpenGL driver handles the OpenGL 3.3 context created by GLFW, so the full Mesa stack (GLSL compiler, NIR, driver backend) is in use beneath raylib's abstraction. raylib is not intended for production 3D engines — it targets prototyping, education, and 2D/simple 3D games.
+
+[Source: raylib cheatsheet](https://www.raylib.com/cheatsheet/cheatsheet.html)
+
+### 10.8 SFML — C++ Multimedia Layer
+
+[SFML](https://www.sfml-dev.org/) (Simple and Fast Multimedia Library) is a C++ library organised into five modules: System, Window, Graphics, Audio, and Network. SFML 3 (released 2024) modernised the API with move semantics, `std::optional`, and stronger type safety.
+
+SFML's rendering model is OpenGL-backed: `sf::RenderWindow` creates an OpenGL context (via GLX on X11 or EGL on Wayland — SFML 3 adds experimental Wayland support); `sf::Texture` uploads pixels to an `GL_TEXTURE_2D`; `sf::Shader` wraps GLSL shaders via `glCreateProgram`. For 2D rendering, `sf::Sprite`, `sf::Shape`, and `sf::Text` emit batched vertex arrays to OpenGL's immediate pipeline.
+
+```cpp
+#include <SFML/Graphics.hpp>
+
+int main() {
+    sf::RenderWindow window(sf::VideoMode({800u, 600u}), "SFML 3");
+    sf::Texture tex;
+    tex.loadFromFile("sprite.png");
+    sf::Sprite sprite(tex);
+
+    while (window.isOpen()) {
+        while (const auto event = window.pollEvent()) {
+            if (event->is<sf::Event::Closed>()) window.close();
+        }
+        window.clear(sf::Color::Black);
+        window.draw(sprite);
+        window.display();
+    }
+}
+```
+
+SFML does not expose a command buffer API and provides no Vulkan backend. It is appropriate for 2D games, audio applications, and tools that need a self-contained C++ library with no OpenGL state machine exposure. SFML's Network module (TCP/UDP sockets, HTTP) is the feature that most clearly differentiates it from raylib.
+
+[Source: SFML 3 migration guide](https://www.sfml-dev.org/tutorials/3.0/getting-started/migrate/)
+
+### 10.9 Allegro 5 — Classic Game Toolkit
+
+[Allegro 5](https://liballeg.org/) is a mature C game programming library with an add-on architecture. The core library provides display creation, event queues, timers, and file I/O; add-ons (`allegro_image`, `allegro_font`, `allegro_audio`, `allegro_primitives`) are loaded independently. Allegro 5 targets OpenGL on Linux via the `ALLEGRO_OPENGL` display flag, and X11/GLX for windowing.
+
+```c
+#include <allegro5/allegro.h>
+#include <allegro5/allegro_image.h>
+
+int main(void) {
+    al_init();
+    al_init_image_addon();
+
+    ALLEGRO_DISPLAY *display = al_create_display(800, 600);
+    ALLEGRO_EVENT_QUEUE *queue = al_create_event_queue();
+    al_register_event_source(queue, al_get_display_event_source(display));
+
+    ALLEGRO_BITMAP *bmp = al_load_bitmap("sprite.png");
+
+    bool running = true;
+    while (running) {
+        ALLEGRO_EVENT ev;
+        while (al_get_next_event(queue, &ev))
+            if (ev.type == ALLEGRO_EVENT_DISPLAY_CLOSE) running = false;
+
+        al_clear_to_color(al_map_rgb(0, 0, 0));
+        al_draw_bitmap(bmp, 100, 100, 0);
+        al_flip_display();  // swaps OpenGL buffers via GLX/EGL
+    }
+    al_destroy_bitmap(bmp);
+    al_destroy_display(display);
+}
+```
+
+Allegro has no Vulkan backend and does not expose shader programming through its API. Its `ALLEGRO_OPENGL` flag enables raw OpenGL access alongside Allegro draw calls via `al_get_opengl_texture()`. Allegro 5 remains in active maintenance and is used in several indie games and tools where its permissive licence (zlib) and stable ABI are important.
+
+[Source: Allegro 5 documentation](https://liballeg.org/a5docs/5.2.9/)
+
+### 10.10 LÖVE — Lua Game Framework
+
+[LÖVE](https://love2d.org/) (commonly written LOVE2D) is a Lua game framework that exposes a `love.*` module system: `love.graphics`, `love.audio`, `love.physics` (Box2D), `love.keyboard`, and `love.window`. The engine is written in C++ and uses OpenGL 3.3 (desktop) or OpenGL ES 3 (mobile) as its renderer. On Linux, LOVE uses SDL2 (migrating to SDL3 in LOVE 12.x) for windowing and input.
+
+```lua
+-- main.lua
+function love.load()
+    img = love.graphics.newImage("sprite.png")
+    x, y = 100, 100
+end
+
+function love.update(dt)
+    x = x + 100 * dt   -- move right at 100 px/s
+end
+
+function love.draw()
+    love.graphics.clear(0, 0, 0, 1)
+    love.graphics.draw(img, x, y)
+    love.graphics.print(string.format("FPS: %d", love.timer.getFPS()), 10, 10)
+end
+```
+
+Internally, `love.graphics.draw()` issues textured quad draw calls through LOVE's SpriteBatch system, which batches consecutive draws into a single `glDrawElements` call with a shared VAO. `love.graphics.newShader()` accepts GLSL 3.30 core vertex and fragment sources directly. A Vulkan backend is in development for LOVE 12.x but not yet released; the current Linux rendering path is entirely OpenGL through Mesa.
+
+LOVE is aimed at rapid game prototyping in Lua, game jams, and educational use. It is the standard framework for the itch.io Lua-game ecosystem.
+
+[Source: LOVE wiki — Getting Started](https://love2d.org/wiki/Getting_Started)
+
+### 10.11 nvrhi — NVIDIA Rendering Hardware Interface
+
+[nvrhi](https://github.com/NVIDIAGameWorks/nvrhi) (NVIDIA Rendering Hardware Interface) is a C++ rendering abstraction layer developed by NVIDIA and used internally across Falcor (Ch117), Donut (the NVIDIA sample framework), and RTX Remix. It is Apache 2.0 licensed and ships as an independent open-source library. nvrhi provides Vulkan, Direct3D 11, and Direct3D 12 backends behind a unified object model.
+
+The central object is `nvrhi::IDevice`, created by wrapping an existing `VkInstance` and `VkDevice` — nvrhi does not own the Vulkan initialisation and composes with vk-bootstrap or any other bootstrap path:
+
+```cpp
+#include <nvrhi/vulkan.h>
+
+nvrhi::vulkan::DeviceDesc deviceDesc;
+deviceDesc.instance           = vkInstance;
+deviceDesc.physicalDevice     = vkPhysicalDevice;
+deviceDesc.device             = vkDevice;
+deviceDesc.graphicsQueue      = graphicsQueue;
+deviceDesc.graphicsQueueIndex = graphicsQueueFamily;
+
+nvrhi::DeviceHandle device = nvrhi::vulkan::createDevice(deviceDesc);
+
+// Texture creation
+nvrhi::TextureDesc texDesc;
+texDesc.width       = 1920;
+texDesc.height      = 1080;
+texDesc.format      = nvrhi::Format::RGBA8_UNORM;
+texDesc.isRenderTarget = true;
+texDesc.debugName   = "ColorBuffer";
+nvrhi::TextureHandle colorBuffer = device->createTexture(texDesc);
+
+// Command list recording
+nvrhi::CommandListHandle cmdList = device->createCommandList();
+cmdList->open();
+nvrhi::utils::ClearColorAttachment(cmdList, framebuffer, 0, nvrhi::Color(0.f));
+cmdList->close();
+device->executeCommandList(cmdList);
+```
+
+nvrhi's descriptor model centres on `IBindingLayout` (the schema — which slots, what types) and `IBindingSet` (the concrete bindings — which textures, buffers, samplers fill those slots). This maps directly onto Vulkan descriptor set layouts and descriptor sets, but with automatic layout-compatibility tracking:
+
+```cpp
+// Layout: slot 0 = texture SRV, slot 1 = sampler
+nvrhi::BindingLayoutDesc layoutDesc;
+layoutDesc.visibility = nvrhi::ShaderType::Pixel;
+layoutDesc.bindings = {
+    nvrhi::BindingLayoutItem::Texture_SRV(0),
+    nvrhi::BindingLayoutItem::Sampler(1),
+};
+nvrhi::BindingLayoutHandle layout = device->createBindingLayout(layoutDesc);
+
+// Set: bind the actual resources
+nvrhi::BindingSetDesc setDesc;
+setDesc.bindings = {
+    nvrhi::BindingSetItem::Texture_SRV(0, colorBuffer),
+    nvrhi::BindingSetItem::Sampler(1, sampler),
+};
+nvrhi::BindingSetHandle bindingSet = device->createBindingSet(setDesc, layout);
+```
+
+Ray-tracing acceleration structures are first-class: `nvrhi::IAccelStruct` wraps `VkAccelerationStructureKHR`, and `IRayTracingPipeline` composes shader groups from `IShader` handles. nvrhi issues Vulkan barriers automatically at `executeCommandList` time based on declared resource usage, similar in philosophy to Diligent Engine's `RESOURCE_STATE_TRANSITION_MODE_TRANSITION`.
+
+On Linux, nvrhi's Vulkan backend targets Vulkan 1.2+ and requires `VK_KHR_dynamic_rendering`, `VK_KHR_synchronization2`, and `VK_KHR_buffer_device_address`. RADV and ANV both satisfy these requirements from Mesa 22.2 onward.
+
+[Source: nvrhi repository](https://github.com/NVIDIAGameWorks/nvrhi)
+
+### 10.12 magma — Idiomatic C++ Vulkan
+
+[magma](https://github.com/vcoda/magma) is a C++17 Vulkan wrapper library that covers the full API surface with RAII objects, fluent command buffer recording, and zero-overhead abstractions. It is distinct from `vulkan.hpp` (Section 10, Ch82) in that it provides opinionated higher-level constructs — pipeline builders, render pass helpers, descriptor set update templates — rather than a thin mechanical translation of the C API.
+
+Every Vulkan object has a corresponding magma class in the `magma::` namespace:
+
+```cpp
+#include <magma/magma.h>
+
+auto instance = std::make_shared<magma::Instance>(
+    "App", 1, VK_API_VERSION_1_3,
+    std::vector<const char*>{"VK_KHR_surface", "VK_KHR_wayland_surface"});
+
+auto physicalDevice = instance->enumeratePhysicalDevices().front();
+auto device = std::make_shared<magma::Device>(
+    physicalDevice,
+    std::vector<magma::DeviceQueueDescriptor>{
+        {physicalDevice, VK_QUEUE_GRAPHICS_BIT, {1.0f}}},
+    std::vector<const char*>{"VK_KHR_swapchain"});
+
+// Buffers and images are created via factory methods on the device
+auto vertexBuffer = std::make_shared<magma::VertexBuffer>(
+    device, vertices.data(), vertices.size() * sizeof(Vertex));
+
+auto colorImage = std::make_shared<magma::ColorAttachment>(
+    device, VK_FORMAT_R8G8B8A8_UNORM, VkExtent2D{1280, 720});
+```
+
+Command buffer recording uses a fluent interface that mirrors Vulkan's state machine but enforces render-pass scope at the C++ type level — methods valid only inside a render pass are only available on the `magma::RenderPassRecording` sub-object returned by `beginRenderPass()`:
+
+```cpp
+auto cmdBuffer = std::make_shared<magma::PrimaryCommandBuffer>(commandPool);
+cmdBuffer->begin();
+cmdBuffer->beginRenderPass(renderPass, framebuffer, {clearValue});
+    cmdBuffer->bindPipeline(graphicsPipeline);
+    cmdBuffer->bindVertexBuffer(0, vertexBuffer);
+    cmdBuffer->draw(3, 1, 0, 0);
+cmdBuffer->endRenderPass();
+cmdBuffer->end();
+```
+
+magma provides a `magma::GraphicsPipeline::Builder` that accumulates shader stages, vertex input state, rasterisation state, and blend state through setter calls, culminating in a `build()` call that issues `vkCreateGraphicsPipelines`. The builder validates that required stages (at minimum a vertex shader) are set before building. Descriptor sets are managed via `magma::DescriptorSet` and the `magma::descriptors::` namespace, which provides typed binding helpers (`UniformBuffer<T>`, `CombinedImageSampler`, `StorageImage`) that encapsulate `VkWriteDescriptorSet` construction.
+
+magma is best suited for C++ projects that want the full Vulkan feature surface with idiomatic ownership semantics, but without the mechanical verbosity of `vulkan.hpp`'s generated interface. It is notably used in vcoda's open-source Vulkan sample collection.
+
+[Source: magma repository — vcoda/magma](https://github.com/vcoda/magma)
+
 ---
 
 ## 11. Choosing the Right Level
@@ -999,6 +1330,50 @@ The ecosystem described in this chapter and its neighbours provides genuine opti
 - A system that needs precise GPU barrier and memory aliasing control
 - An async-compute pipeline where render graph dependency tracking enables multi-queue scheduling
 
+**GLFW** (Section 10.5) when you need:
+- A minimal windowing and input layer for an existing Vulkan or OpenGL application
+- The lightest possible dependency — GLFW adds no GPU abstraction overhead
+- Compatibility with the vast body of Vulkan tutorials and OpenGL sample code that assumes GLFW
+- Not needed: audio, asset loading, GPU resource management
+
+**sokol** (Section 10.6) when you need:
+- SDL-like scope (windowing + GPU + audio) in vendored single-header form with no external dependencies
+- OpenGL 3.3 or WebGPU backends via the same API (C99 compile-time selection)
+- Tight integration with web deployment via Emscripten (sokol's primary use case alongside desktop)
+- Not needed: Vulkan directly on Linux (sokol's Linux GPU backend is OpenGL)
+
+**raylib** (Section 10.7) when you need:
+- The simplest possible path to a windowed game or interactive demo in C
+- An educational or game-jam project where API simplicity matters more than GPU control
+- Not needed: command buffers, explicit GPU resources, shader compilation pipelines
+
+**SFML** (Section 10.8) when you need:
+- A self-contained C++ library with 2D rendering, audio, and networking in one package
+- Sprite-based 2D games with OpenGL shaders optionally exposed
+- Not needed: 3D rendering, Vulkan, explicit GPU control
+
+**Allegro 5** (Section 10.9) when you need:
+- A permissive-licensed (zlib) C library with a stable, long-maintained ABI
+- Mixed Allegro draw calls and raw OpenGL in the same window
+- Not needed: Vulkan, modern GPU abstractions
+
+**nvrhi** (Section 10.11) when you need:
+- A thin Vulkan/D3D11/D3D12 abstraction that composes with an existing bootstrap (vk-bootstrap, SDL3, GLFW) rather than owning initialisation
+- Automatic barrier tracking without a full frame graph
+- Ray-tracing acceleration structures (`IAccelStruct`) and ray-tracing pipelines as first-class objects
+- Alignment with NVIDIA's Falcor and Donut sample ecosystem
+
+**magma** (Section 10.12) when you need:
+- Full Vulkan API coverage with idiomatic C++17 RAII, beyond what vulkan.hpp's generated interface provides
+- Fluent command buffer recording with C++ type enforcement of render-pass scope
+- A pipeline builder API that validates shader stage completeness at `build()` time
+- Not needed: cross-API portability (magma is Vulkan-only)
+
+**LÖVE** (Section 10.10) when you need:
+- Rapid prototyping or game jamming in Lua with built-in physics, audio, and 2D drawing
+- A scripted game loop with zero C compilation
+- Not needed: low-level GPU control, Vulkan, 3D pipelines
+
 The decision is rarely permanent. Many studios adopt bgfx for prototyping and migrate to a custom Vulkan renderer with a frame graph when performance profiling reveals that bgfx's abstraction overhead or feature ceiling is a constraint.
 
 ---
@@ -1030,6 +1405,10 @@ This chapter connects directly to the following chapters in the book:
 **Ch82 — Vulkan Memory Allocator (VMA):** The transient resource allocator patterns described in Section 9 of this chapter rely directly on VMA's `LINEAR_ALGORITHM_BIT` pool, virtual block API, and `vmaCreateAliasingImage`. Ch82 covers VMA's pool types, defragmentation, and the recommended usage patterns that underpin all frame graph implementations.
 
 **Ch83 — Filament and the PBR Pipeline:** Filament's `FrameGraph` class is the reference open-source implementation of the frame graph pattern covered in Sections 7–9 of this chapter. Ch83 covers Filament's material system and PBR pipeline; this chapter covers the frame graph infrastructure that schedules and executes those passes.
+
+**Ch82 §10 — vulkan.hpp.** nvrhi (§10.11) and magma (§10.12) both depend on `vulkan.hpp` types for their generated handle and struct definitions. Ch82's Section 10 covers the `vk::raii::` RAII API and `vk::StructureChain<>` feature-chain pattern that magma and nvrhi use internally.
+
+**Ch117 — Slang and Falcor.** nvrhi (§10.11) is the rendering hardware abstraction layer inside Falcor. Ch117 covers Falcor's Slang-based shader pipeline; nvrhi is the Vulkan/D3D substrate that executes those compiled shaders via `ICommandList` and `IAccelStruct`.
 
 ## Roadmap
 

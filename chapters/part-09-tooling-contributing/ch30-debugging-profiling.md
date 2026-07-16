@@ -20,8 +20,9 @@
 8. [Profiling the CPU Side: Frame Pacing and Driver Overhead](#8-profiling-the-cpu-side-frame-pacing-and-driver-overhead)
 9. [SPIR-V Shader Debugging Toolchain](#9-spir-v-shader-debugging-toolchain)
 10. [eBPF and bpftrace for Graphics Stack Debugging](#10-ebpf-and-bpftrace-for-graphics-stack-debugging)
-11. [Integrations](#integrations)
-12. [References](#references)
+11. [LunarG Vulkan SDK](#11-lunarg-vulkan-sdk)
+12. [Integrations](#integrations)
+13. [References](#references)
 
 ---
 
@@ -1404,6 +1405,170 @@ The combination of the rolling ioctl history with the `dmesg` ring timeout messa
 
 ---
 
+## 11. LunarG Vulkan SDK
+
+The [LunarG Vulkan SDK](https://vulkan.lunarg.com/sdk/home) is a versioned bundle of the Khronos-maintained Vulkan toolchain, packaged for distribution on Linux, Windows, and macOS. Every tool described in this chapter that is not part of the Mesa or kernel source tree — the Validation Layers, the SPIR-V toolkit, GFXReconstruct, the Vulkan Configurator — is available via the SDK. The SDK tracks the Vulkan specification revision number: SDK 1.4.309, 1.4.321, and 1.4.341 each correspond to a `vk.xml` revision and ship the Validation Layers and SPIR-V tools built against that revision's headers.
+
+On Linux, the SDK is available via three paths:
+
+```bash
+# Option 1: LunarG apt repository (Ubuntu 22.04 / 24.04)
+wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan.list \
+    https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list    # or noble
+sudo apt update && sudo apt install vulkan-sdk
+
+# Option 2: Tarball from vulkan.lunarg.com/sdk/home
+tar xf vulkansdk-linux-x86_64-1.4.309.0.tar.xz
+source 1.4.309.0/setup-env.sh   # sets VULKAN_SDK, PATH, VK_LAYER_PATH, LD_LIBRARY_PATH
+
+# Option 3: Distro packages (individual components, not always latest)
+sudo apt install vulkan-tools spirv-tools glslang-tools libvulkan-dev
+```
+
+The tarball path is preferred when the distro's packaged versions lag behind the current SDK revision, which is common for the Validation Layers and GFXReconstruct. The `setup-env.sh` script exports:
+
+```bash
+export VULKAN_SDK=/path/to/1.4.309.0/x86_64
+export PATH=$VULKAN_SDK/bin:$PATH
+export LD_LIBRARY_PATH=$VULKAN_SDK/lib:$LD_LIBRARY_PATH
+export VK_LAYER_PATH=$VULKAN_SDK/etc/vulkan/explicit_layer.d
+```
+
+`VK_LAYER_PATH` points the Vulkan loader to the SDK's layer manifests (`VkLayer_khronos_validation.json`, `VkLayer_LUNARG_gfxreconstruct.json`, etc.), overriding any system-installed layer manifests. This is essential when testing a newer SDK version than the one in `/usr/share/vulkan/`.
+
+### 11.1 SDK Components
+
+| Binary / Library | Package | Purpose |
+|---|---|---|
+| `vulkaninfo` | `vulkan-tools` | Enumerate physical devices, extensions, limits, formats |
+| `vkconfig` | `vulkan-configurator` | GUI layer configuration and settings persistence |
+| `VkLayer_khronos_validation` | `vulkan-validationlayers` | All validation sub-layers (Section 3) |
+| `glslang` / `glslangValidator` | `glslang` | GLSL / HLSL → SPIR-V compiler |
+| `glslc` | `shaderc` | GLSL/HLSL → SPIR-V, Clang-style CLI |
+| `spirv-opt` | `spirv-tools` | SPIR-V optimiser (Section 9) |
+| `spirv-val` | `spirv-tools` | SPIR-V validator |
+| `spirv-dis` / `spirv-as` | `spirv-tools` | SPIR-V disassembler / assembler |
+| `spirv-cross` | `spirv-cross` | SPIR-V → GLSL/MSL/HLSL cross-compiler |
+| `spirv-reflect` | `spirv-reflect` | Shader reflection (descriptor layout extraction) |
+| `gfxrecon-capture.py` | `gfxreconstruct` | Vulkan frame capture script |
+| `gfxrecon-replay` | `gfxreconstruct` | Vulkan frame replay |
+| `VkLayer_LUNARG_gfxreconstruct` | `gfxreconstruct` | GFXReconstruct implicit layer |
+| `vulkan-profiles` | `vulkan-profiles` | Profile support queries and simulation |
+
+`vulkaninfo` is the first tool to run on a new system: `vulkaninfo --summary` prints GPU name, Vulkan version, and extension count in a few lines; `vulkaninfo --json` dumps the full feature/property/limit tree to JSON, which can be submitted to the [Vulkan Database](https://vulkan.gpuinfo.org/) for device comparison.
+
+### 11.2 vkconfig: The Vulkan Configurator
+
+`vkconfig` is a Qt-based GUI that provides persistent layer configuration without environment variables. It writes `VkLayerSettings.txt` to `~/.local/share/vulkan/settings.d/` and can install implicit layer manifests to `~/.local/share/vulkan/implicit_layer.d/`, which the Vulkan loader scans on every application launch.
+
+Key use cases:
+
+**Per-application layer override.** vkconfig profiles bind a layer configuration to a specific executable path. Validation Layers can be enabled for `myapp` but disabled for `weston`, all without env-var scripts.
+
+**Validation Layer fine-tuning.** The GUI exposes every per-sub-layer toggle documented in Section 3's sub-layer table: GPU-Assisted Validation on/off, `printf` buffer size, syncval enable, best-practices warning filter. Settings are written as a `VkLayerSettings.txt` file consumed by the layer at load time:
+
+```ini
+# ~/.local/share/vulkan/settings.d/vk_layer_settings.txt
+khronos_validation.validate_sync = true
+khronos_validation.gpuav_enable = true
+khronos_validation.gpuav_buffer_oob = true
+khronos_validation.message_id_filter = 0x12345678,0xABCDEF01
+```
+
+The `message_id_filter` line suppresses specific message IDs — the same filtering that `VK_INSTANCE_LAYERS` plus `VK_LAYER_ENABLES` achieves via env vars, but stored persistently between runs.
+
+**Shader printf output redirection.** When `VK_EXT_debug_printf` / `VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF` is active, vkconfig routes shader `debugPrintfEXT()` output to a visible console pane rather than requiring `VK_DBG_LAYER_ACTION=log_msg` and log-file redirection.
+
+### 11.3 GFXReconstruct
+
+[GFXReconstruct](https://github.com/LunarG/gfxreconstruct) (GFXR) records the complete Vulkan API call stream to a `.gfxr` binary trace file and replays it deterministically. Unlike RenderDoc (Section 2), GFXR does not require the application to be relinked against a capture library; it operates as an implicit Vulkan layer.
+
+**Capture:**
+
+```bash
+# Method 1: wrapper script (sets VK_INSTANCE_LAYERS automatically)
+gfxrecon-capture.py -o trace.gfxr ./myapp
+
+# Method 2: env var (useful for Wayland compositors that fork children)
+VK_INSTANCE_LAYERS=VK_LAYER_LUNARG_gfxreconstruct \
+GFXRECON_CAPTURE_FILE=trace.gfxr ./myapp
+
+# Trim capture: record only frames 100–200 to reduce file size
+gfxrecon-capture.py --capture-frames 100-200 -o trim.gfxr ./myapp
+```
+
+The `.gfxr` format stores serialised Vulkan calls with all buffer, image, and pipeline creation data, plus memory snapshots of GPU resources at the start of the capture window. GFXR uses a separate compression step (`gfxrecon-compress`) to reduce trace size for large textures.
+
+**Replay:**
+
+```bash
+gfxrecon-replay trace.gfxr
+
+# Replay on a different GPU or Mesa version (useful for regression testing)
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.x86_64.json \
+gfxrecon-replay trace.gfxr
+
+# Replay with validation layers enabled
+gfxrecon-replay --validate trace.gfxr
+```
+
+GFXR replay replaces the original application with a headless player that feeds the recorded API stream to the current driver. This enables:
+
+- **Driver regression testing** — capture a frame on driver N, replay on driver N+1, compare output
+- **Cross-machine debugging** — capture on a developer machine, replay on a CI server
+- **Application-agnostic profiling** — replay through RenderDoc (`gfxrecon-replay` is a regular Vulkan app and can itself be captured)
+
+GFXR is distinct from `apitrace` (Section 8) in that it targets Vulkan exclusively, handles complex cases like sparse resources and ray-tracing acceleration structures, and produces portable cross-device traces. `apitrace` targets OpenGL and is not maintained for modern Vulkan workloads.
+
+### 11.4 Vulkan Profiles
+
+The [Vulkan Profiles](https://github.com/KhronosGroup/Vulkan-Profiles) toolset, also distributed via the SDK, provides a standardised mechanism for defining and querying capability baselines. A profile is a JSON file that enumerates minimum required features, properties, formats, and extensions:
+
+```json
+{
+    "VP_KHR_roadmap_2022": {
+        "versions": [{
+            "version": 1,
+            "api-version": "1.3.204",
+            "capabilities": {
+                "device": {
+                    "features": {
+                        "VkPhysicalDeviceVulkan13Features": {
+                            "synchronization2": true,
+                            "dynamicRendering": true,
+                            "maintenance4": true
+                        }
+                    }
+                }
+            }
+        }]
+    }
+}
+```
+
+The SDK ships `VP_KHR_roadmap_2022`, `VP_KHR_roadmap_2024`, and vendor-specific profiles. The `vpGetPhysicalDeviceProfileSupport()` function from `vulkan_profiles.h` queries whether a physical device meets a profile's requirements:
+
+```c
+#include <vulkan/vulkan_profiles.h>
+
+VpProfileProperties profile = {
+    .profileName = VP_KHR_ROADMAP_2022_NAME,
+    .specVersion = VP_KHR_ROADMAP_2022_SPEC_VERSION
+};
+VkBool32 supported;
+vpGetPhysicalDeviceProfileSupport(instance, physDev, &profile, &supported);
+```
+
+The `vkconfig` GUI exposes a **Profile Simulator** mode that forces `vkGetPhysicalDeviceFeatures2` to report only the features defined by a profile, even on capable hardware. This lets developers test profile-constrained code paths without owning the lower-capability hardware the profile targets.
+
+[Source: LunarG Vulkan SDK home](https://vulkan.lunarg.com/sdk/home)
+[Source: GFXReconstruct repository](https://github.com/LunarG/gfxreconstruct)
+[Source: Vulkan Profiles repository](https://github.com/KhronosGroup/Vulkan-Profiles)
+[Source: vkconfig documentation](https://vulkan.lunarg.com/doc/view/latest/linux/vkconfig.html)
+
+---
+
 ## Roadmap
 
 ### Near-term (6–12 months)
@@ -1486,6 +1651,11 @@ The combination of the rolling ioctl history with the `dmesg` ring timeout messa
 26. kernelshark documentation: [https://kernelshark.org/](https://kernelshark.org/)
 27. Maister's blog — Hardcore Vulkan debugging on Linux + AMDGPU (2023): [https://themaister.net/blog/2023/08/20/hardcore-vulkan-debugging-digging-deep-on-linux-amdgpu/](https://themaister.net/blog/2023/08/20/hardcore-vulkan-debugging-digging-deep-on-linux-amdgpu/)
 28. Vulkan timestamp queries documentation: [https://docs.vulkan.org/samples/latest/samples/api/timestamp_queries/README.html](https://docs.vulkan.org/samples/latest/samples/api/timestamp_queries/README.html)
+29. LunarG Vulkan SDK download and release notes: [https://vulkan.lunarg.com/sdk/home](https://vulkan.lunarg.com/sdk/home)
+30. vkconfig Vulkan Configurator documentation: [https://vulkan.lunarg.com/doc/view/latest/linux/vkconfig.html](https://vulkan.lunarg.com/doc/view/latest/linux/vkconfig.html)
+31. GFXReconstruct repository: [https://github.com/LunarG/gfxreconstruct](https://github.com/LunarG/gfxreconstruct) — `.gfxr` format, layer manifest, capture/replay CLI
+32. Vulkan Profiles repository: [https://github.com/KhronosGroup/Vulkan-Profiles](https://github.com/KhronosGroup/Vulkan-Profiles) — profile JSON schema, `vpGetPhysicalDeviceProfileSupport()`
+33. LunarG apt repository setup: [https://vulkan.lunarg.com/doc/view/latest/linux/getting_started_ubuntu.html](https://vulkan.lunarg.com/doc/view/latest/linux/getting_started_ubuntu.html)
 29. drm_info tool: [https://github.com/emersion/drm_info](https://github.com/emersion/drm_info)
 30. FlameGraph scripts: [https://github.com/brendangregg/FlameGraph](https://github.com/brendangregg/FlameGraph)
 31. bpftrace GitHub repository and reference guide: [https://github.com/bpftrace/bpftrace/blob/master/docs/reference_guide.md](https://github.com/bpftrace/bpftrace/blob/master/docs/reference_guide.md)

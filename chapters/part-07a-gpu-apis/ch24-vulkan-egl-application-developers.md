@@ -7,9 +7,11 @@
 
 ## Scope
 
-This chapter teaches application developers how to initialise and drive Vulkan and EGL correctly on Linux, with an emphasis on understanding the stack beneath the API rather than repeating tutorial introductions available elsewhere. The reader is assumed to know what a Vulkan render pass is; this chapter explains what happens below `vkCreateSwapchainKHR` — which kernel ioctls fire, which Mesa paths execute, and how a rendered frame reaches the display.
+This chapter teaches application developers how to initialise and drive Vulkan and EGL correctly on Linux, with an emphasis on understanding the stack beneath the API rather than repeating tutorial introductions available elsewhere. It explains what happens below `vkCreateSwapchainKHR` — which kernel ioctls fire, which Mesa paths execute, and how a rendered frame reaches the display.
 
-The Wayland-centric presentation model differs meaningfully from Win32 or Android: buffer negotiation proceeds via `linux-dmabuf`, present-mode semantics are tied to the compositor's own pace, and an explicit synchronisation handshake spans the application, Mesa, and the compositor's KMS backend. EGL is treated not as a deprecated relic but as the primary way non-Vulkan code (OpenGL ES, VA-API interop, GBM surfaces) creates GPU contexts on Linux. Developers who skip EGL entirely typically hit gaps when they need camera feeds, video decode output, or GBM-backed offscreen rendering.
+**Vulkan render passes** — `VkRenderPass` in Vulkan 1.0–1.2, or the streamlined `VkRenderingInfo` / `vkCmdBeginRendering` path introduced by `VK_KHR_dynamic_rendering` and promoted to Vulkan 1.3 core — describe the structure of a rendering operation: which image attachments the GPU reads and writes, whether each attachment is cleared or its prior contents loaded at the start, and whether results are stored or discarded at the end. A subpass within a render pass expresses intra-pass dependencies; tile-based mobile GPUs use these to avoid flushing intermediate results to DRAM, but on desktop discrete GPUs a render pass typically contains a single subpass. The dynamic rendering path (`vkCmdBeginRendering`) expresses the same attachment layout inline in the command buffer rather than through a pre-allocated `VkRenderPass` object, making it the preferred style for new Vulkan 1.3+ code. This chapter covers the presentation, memory, and synchronisation stack that underlies both styles.
+
+The Wayland-centric presentation model differs meaningfully from Win32 or Android: buffer negotiation proceeds via `linux-dmabuf`, present-mode semantics are tied to the compositor's own pace, and an explicit synchronisation handshake spans the application, Mesa, and the compositor's KMS backend. EGL is the older windowing-system integration layer — it predates Vulkan WSI and was originally designed to bind OpenGL ES to platform window systems. For new Vulkan applications on Linux, `VK_KHR_wayland_surface` and the Vulkan WSI extensions (Sections 5–6) are the primary presentation path. EGL remains the right tool for three specific scenarios covered in this chapter: OpenGL ES applications (Sections 3–4), zero-copy import of VA-API-decoded video frames into GPU textures (Section 4), and headless rendering contexts on infrastructure where Vulkan is unavailable (Section 8). The long-term trajectory is a gradual narrowing of EGL's role as Vulkan WSI matures and `VK_KHR_video_queue` reduces the need for VA-API as an intermediary.
 
 After reading this chapter, the reader will understand how to select the right Vulkan memory type for a given workload on AMD, Intel, and NVIDIA hardware; how Wayland swapchains interact with compositor pacing mechanisms; how to integrate EGL into a GBM-based context for headless or KMS-direct rendering; and how timeline semaphores map onto the kernel-level DRM sync object mechanism, closing the explicit sync loop all the way from GPU to display.
 
@@ -200,6 +202,18 @@ Buffer-image granularity is a hardware constraint on certain older devices: a li
 
 Getting data from the CPU to a shader is not a single decision — Vulkan provides three fundamentally different mechanisms that trade off update frequency, data size, and compile-time vs runtime cost. Choosing the wrong one is a common source of unnecessary CPU overhead, GPU stalls, and missed driver optimisations.
 
+| | Push Constants | Uniform Buffer Object | Specialization Constants |
+|---|---|---|---|
+| **Update granularity** | Per draw call | Per frame / per pass | Pipeline creation only |
+| **Size limit** | 128–256 bytes | Up to `maxUniformBufferRange` (≥ 64 KB) | 4 bytes per constant (typical) |
+| **Requires `VkBuffer` / `VkDescriptorSet`** | No | Yes (both) | No |
+| **CPU→GPU barrier needed** | No | Yes (pipeline barrier) | No |
+| **GPU cost** | Hardware constant cache | Hardware constant cache | Zero — compiled away |
+| **Enables dead-code elimination** | No | No | Yes |
+| **Typical use** | Object index, frame time, per-draw alpha | View-projection matrix, lighting params | Feature toggles, workgroup size |
+
+The detailed rationale for each mechanism follows; the full decision flowchart is in the **Decision Guide** subsection below.
+
 ### Push Constants: Per-Draw Scalars with Zero Allocation Overhead
 
 Push constants are small values (up to `VkPhysicalDeviceLimits::maxPushConstantsSize` — 128 bytes on NVIDIA/NVK and most AMD hardware, 256 bytes permitted by the spec) that are written directly into the command buffer stream at record time. There is no `VkBuffer`, no `VkDescriptorSet`, and no `vkUpdateDescriptorSets` call. The GPU reads them from a hardware constant cache alongside other per-draw state.
@@ -375,7 +389,7 @@ In practice, most applications use all three: specialization constants for shade
 
 ## 3. EGL: Display, Context, and Surface Creation
 
-EGL is the platform-neutral binding layer that connects a rendering API (OpenGL, OpenGL ES, or rarely Vulkan via `EGL_KHR_vulkan_image`) to a native windowing or display system. On Linux the EGL implementation lives in Mesa's `libEGL.so`, which dispatches to platform-specific backends under `src/egl/drivers/dri2/`. The entry point for modern EGL code is `eglGetPlatformDisplayEXT` (or `eglGetPlatformDisplay` from EGL 1.5), not the legacy `eglGetDisplay`. The platform token selects the backend, and the `native_display` argument is an opaque pointer whose type is determined by the platform.
+EGL is the platform-neutral binding layer that connects a rendering API (OpenGL, OpenGL ES, or rarely Vulkan via `EGL_KHR_vulkan_image`) to a native windowing or display system. It was standardised before Vulkan WSI existed, and remains the standard context-creation API for OpenGL ES. New Vulkan applications use `VK_KHR_wayland_surface` (Section 5) rather than EGL for window presentation; the EGL paths in this section are relevant when working with OpenGL ES, importing VA-API video frames, or creating headless contexts for offscreen rendering. On Linux the EGL implementation lives in Mesa's `libEGL.so`, which dispatches to platform-specific backends under `src/egl/drivers/dri2/`. The entry point for modern EGL code is `eglGetPlatformDisplayEXT` (or `eglGetPlatformDisplay` from EGL 1.5), not the legacy `eglGetDisplay`. The platform token selects the backend, and the `native_display` argument is an opaque pointer whose type is determined by the platform.
 
 ```mermaid
 graph TD
@@ -736,7 +750,25 @@ On **XWayland** (X11 application running inside a Wayland session), the DRI3 pat
 
 ### 6.3 Present Modes on Wayland: Why IMMEDIATE Is Impossible Without DRM Lease
 
-Wayland's architectural principle — that the compositor owns the display and all client buffers pass through it — has direct consequences for Vulkan present mode semantics.
+A **present mode** (`VkPresentModeKHR`) controls the relationship between `vkQueuePresentKHR` submissions and the display's physical vblank signal — the hardware interrupt that fires once per refresh cycle when the display controller finishes scanning out the previous frame. The choice determines three properties of the swapchain: whether tearing is possible, how many frames of latency the pipeline introduces, and how buffer slots are reused when the application renders faster than the display refreshes.
+
+The Vulkan spec defines four modes; only the first is universally required:
+
+| Mode | Tearing | Latency | Buffer reuse | Availability |
+|---|---|---|---|---|
+| `FIFO` | Never | 1 frame (queue drain) | FIFO — oldest frame always shown | Guaranteed on all platforms |
+| `FIFO_RELAXED` | On underrun only | 1 frame typical | FIFO, but skips vblank if queue empty | Optional; rarely used |
+| `MAILBOX` | Never | Sub-frame (latest wins) | Only newest queued frame is shown | Optional; Wayland approximation |
+| `IMMEDIATE` | Permitted | Minimum (sub-vblank) | Frames may be skipped | Optional; requires `wp_tearing_control_v1` on Wayland |
+
+**Which mode to use:**
+
+- **`FIFO`** — the safe default for all desktop applications: GUI tools, productivity software, video playback. Tearing-free, compositor-paced, correct latency for content that does not need to beat the vblank.
+- **`MAILBOX`** — request it for games and interactive 3D applications to reduce input latency. On Wayland the gain is limited (see below), but on X11 and Windows true mailbox semantics apply.
+- **`IMMEDIATE`** — games and benchmarks where tearing is acceptable in exchange for the lowest possible input-to-display latency. Only available on Wayland when both compositor and Mesa support `wp_tearing_control_v1`.
+- **`FIFO_RELAXED`** — media players or any content that cannot always deliver frames before the vblank deadline; allows a late frame to scan out immediately rather than waiting an entire extra vblank cycle.
+
+Wayland's architectural principle — that the compositor owns the display and all client buffers pass through it — has direct consequences for how these modes behave in practice.
 
 **`VK_PRESENT_MODE_FIFO_KHR`** is the only mode the Vulkan spec requires to be available on any platform. On Wayland, it maps to the natural compositor pacing model: the application submits frames via `wl_surface.commit`, and the compositor presents one buffer per vblank cycle. The compositor's KMS backend drives the vblank timing; the application does not observe the vblank directly. This is synchronised, tearing-free, and latency-stable.
 

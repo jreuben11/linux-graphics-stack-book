@@ -26,6 +26,8 @@ Section 9 covers **libcamera** as the modern Linux camera stack: the **V4L2 Medi
 
 Section 10 covers **Vulkan Video** as the strategic forward hardware video API: the motivation relative to **VA-API**'s under-specification, the formal **VkVideoSessionKHR** / **VkVideoSessionParametersKHR** / **DPB** **VkImage** pool object model, video command buffer recording with **vkCmdBeginVideoCodingKHR** and **vkCmdDecodeVideoKHR** submitted to a **VK_QUEUE_VIDEO_DECODE_BIT_KHR** queue, the **RADV** implementation in **src/amd/vulkan/radv_video.c** targeting **RDNA1**+ for **H.264**/**H.265** and **RDNA2**+ for **AV1**, **Intel ANV** driver development for **Tigerlake**+, **NVIDIA**'s proprietary support for **VK_KHR_video_decode_h264**, **VK_KHR_video_decode_h265**, and **VK_KHR_video_decode_av1**, and the **GStreamer** **vkvideo** plugin (**vkh264dec**, **vkh265dec**, **vkav1dec**) in **gst-plugins-bad**.
 
+Section 12 covers **NVDEC**, NVIDIA's fixed-function hardware decode engine, accessed via the Video Codec SDK's **`nvcuvid.h`** C API and **`libnvcuvid.so`**: the **`CUvideoparser`** / **`CUvideodecoder`** two-object model, the **`cuvidParseVideoData`** → **`cuvidDecodePicture`** → **`cuvidMapVideoFrame`** decode flow returning a **`CUdeviceptr`** to GPU-resident **NV12** frames with no CPU copy, the **`NvDecoder`** C++ helper class, the zero-copy **NVDEC → CUDA → NVENC** transcode pattern used by **DeepStream**, FFmpeg's **`h264_cuvid`** / **`hevc_cuvid`** / **`av1_cuvid`** decoder names and **`-hwaccel nvdec`** flag, per-generation codec support (VP9 from Pascal, AV1 from Ampere GA10x), and a comparison of the NVDEC, VA-API, and Vulkan Video paths on NVIDIA hardware.
+
 ---
 
 ## Table of Contents
@@ -41,8 +43,9 @@ Section 10 covers **Vulkan Video** as the strategic forward hardware video API: 
 9. [libcamera: Modern Camera Stack for Linux](#9-libcamera-modern-camera-stack-for-linux)
 10. [Vulkan Video: The Strategic Hardware Video API](#10-vulkan-video-the-strategic-hardware-video-api)
 11. [NVENC Native Encode: Video Codec SDK](#11-nvenc-native-encode-video-codec-sdk)
-12. [Integrations](#integrations)
-13. [References](#references)
+12. [NVDEC: Hardware Video Decode SDK](#12-nvdec-hardware-video-decode-sdk)
+13. [Integrations](#integrations)
+14. [References](#references)
 
 ---
 
@@ -1193,6 +1196,245 @@ ffmpeg -i input.mp4 -c:v av1_nvenc -preset p4 -b:v 10M output.mp4
 
 [Source: NVIDIA Video Codec SDK documentation](https://developer.nvidia.com/video-codec-sdk)
 [Source: NVIDIA video-sdk-samples GitHub](https://github.com/NVIDIA/video-sdk-samples)
+
+---
+
+## 12. NVDEC: Hardware Video Decode SDK
+
+NVDEC is NVIDIA's fixed-function hardware video decode engine, present on Maxwell-generation (GTX 900) and later discrete GPUs and Jetson SoCs. It runs entirely independently of shader cores: a 4K H.264 decode consumes near-zero CUDA shader utilisation. The Video Codec SDK exposes NVDEC through `nvcuvid.h` (CUVID — CUDA Video Decoder), a C API distinct from the CUDA runtime but built on top of it. The companion shared library on Linux is `libnvcuvid.so`, shipped with the proprietary NVIDIA driver.
+
+```text
+Application (Video Codec SDK C / NvDecoder C++)
+         │
+         ▼
+  libnvcuvid.so
+         │
+         ▼
+  nvidia kernel module (NVDEC engine channel)
+         │
+         ▼
+  NVDEC Hardware  ─────────► CUDA device memory (decoded NV12/P016 frames)
+```
+
+### 12.1 Per-Generation Codec Support
+
+| GPU generation | Arch (example) | H.264 | HEVC | VP9 | AV1 | Max simultaneous sessions |
+|---|---|---|---|---|---|---|
+| Maxwell | GTX 980 | Yes | Yes | No | No | 2 |
+| Pascal | GTX 1080 | Yes | Yes | Yes | No | 3 |
+| Turing | RTX 2080 | Yes | Yes | Yes | No | 3 |
+| Ampere GA10x | RTX 3060 | Yes | Yes | Yes | Yes | 5 |
+| Ada Lovelace | RTX 4090 | Yes | Yes | Yes | Yes | 8 |
+| Blackwell | RTX 5090 | Yes | Yes | Yes | Yes | 8 |
+
+Note: Ampere GA102 (RTX 3080, 3090) does **not** have AV1 decode — only GA10x dies (RTX 3060, 3070) added it. [Source: NVIDIA NVDEC capability matrix](https://developer.nvidia.com/video-encode-and-decode-gpu-support-matrix-new)
+
+### 12.2 `nvcuvid.h` C API
+
+NVDEC decoding follows a two-object model: a **`CUvideoparser`** that parses an Annex-B / IVF bitstream and fires callbacks into the application, and a **`CUvideodecoder`** that decodes individual pictures into GPU-resident surfaces.
+
+```c
+/* nvcuvid.h — CUVID low-level C API (simplified) */
+#include <nvcuvid.h>
+
+/* --- 1. Create decoder --- */
+CUVIDDECODECREATEINFO dci = {};
+dci.CodecType        = cudaVideoCodec_H264;
+dci.ChromaFormat     = cudaVideoChromaFormat_420;
+dci.OutputFormat     = cudaVideoSurfaceFormat_NV12;
+dci.DeinterlaceMode  = cudaVideoDeinterlaceMode_Weave;
+dci.ulNumDecodeSurfaces = 8;    /* DPB size */
+dci.ulNumOutputSurfaces = 2;    /* display queue depth */
+dci.ulWidth          = 3840;
+dci.ulHeight         = 2160;
+dci.ulTargetWidth    = 3840;
+dci.ulTargetHeight   = 2160;
+
+CUvideodecoder decoder;
+cuvidCreateDecoder(&decoder, &dci);
+
+/* --- 2. Create parser with callbacks --- */
+CUVIDPARSERPARAMS pparams = {};
+pparams.CodecType              = cudaVideoCodec_H264;
+pparams.ulMaxNumDecodeSurfaces = 8;
+pparams.ulMaxDisplayDelay      = 1;   /* 0=low latency, 1=allow reorder */
+pparams.pUserData              = decoder;
+pparams.pfnSequenceCallback    = handle_video_sequence;  /* resolution change */
+pparams.pfnDecodePicture       = handle_decode_picture;  /* submit to NVDEC */
+pparams.pfnDisplayPicture      = handle_display_picture; /* frame ready */
+
+CUvideoparser parser;
+cuvidCreateVideoParser(&parser, &pparams);
+
+/* --- 3. Feed bitstream packets --- */
+CUVIDSOURCEDATAPACKET pkt = {};
+pkt.payload      = bitstream_data;
+pkt.payload_size = bitstream_size;
+pkt.flags        = CUVID_PKT_TIMESTAMP;
+pkt.timestamp    = pts;
+cuvidParseVideoData(parser, &pkt);   /* fires callbacks synchronously */
+
+/* --- Callback: submit picture to NVDEC hardware --- */
+int handle_decode_picture(void *user_data, CUVIDPICPARAMS *pic_params) {
+    CUvideodecoder dec = (CUvideodecoder)user_data;
+    cuvidDecodePicture(dec, pic_params);   /* async: NVDEC executes on its engine */
+    return 1;
+}
+
+/* --- Callback: map decoded frame into CUDA address space --- */
+int handle_display_picture(void *user_data, CUVIDPARSERDISPINFO *disp_info) {
+    CUvideodecoder dec = (CUvideodecoder)user_data;
+    CUVIDPROCPARAMS vpp = {};
+    vpp.progressive_frame = disp_info->progressive_frame;
+    vpp.second_field      = 0;
+
+    CUdeviceptr frame_ptr;
+    unsigned int frame_pitch;
+    cuvidMapVideoFrame(dec, disp_info->picture_index,
+                       &frame_ptr, &frame_pitch, &vpp);
+
+    /* frame_ptr: GPU-resident NV12 frame — pass directly to CUDA kernel or NVENC */
+    process_frame(frame_ptr, frame_pitch);
+
+    cuvidUnmapVideoFrame(dec, frame_ptr);
+    return 1;
+}
+```
+
+The key property: `cuvidMapVideoFrame` returns a `CUdeviceptr` pointing into **NVDEC's output surface pool in CUDA device memory**. No CPU copy is needed. The decoded NV12 frame is immediately accessible to CUDA kernels for inference, colour conversion, or scaling — or can be passed directly to `NvEncoderCuda` for a zero-copy transcode path.
+
+### 12.3 `NvDecoder` C++ Helper Class
+
+The SDK ships `NvDecoder.h`/`NvDecoder.cpp` as a higher-level wrapper that manages the parser, decoder, and surface pool internally:
+
+```cpp
+#include "NvDecoder/NvDecoder.h"
+
+CUcontext cuCtx;
+cuCtxCreate(&cuCtx, 0, cuDevice);
+
+/* Construct: codec type, low-latency flag, output format */
+NvDecoder dec(cuCtx,
+              false,                          /* bUseDeviceFrame */
+              cudaVideoCodec_H264,
+              true,                           /* bLowLatency */
+              false,                          /* bDeviceFramePitched */
+              nullptr, nullptr,
+              0, 0, 1000,
+              false);
+
+/* Decode a chunk of bitstream — returns array of decoded frame pointers */
+uint8_t **ppFrame;
+int64_t  *pTimestamp;
+int       nFrameReturned = 0;
+
+dec.Decode(bitstream_chunk, chunk_size, &ppFrame, &nFrameReturned,
+           CUVID_PKT_TIMESTAMP, pts, cuStream);
+
+for (int i = 0; i < nFrameReturned; i++) {
+    /* ppFrame[i] is a CUdeviceptr to a decoded NV12 frame */
+    uint8_t *d_frame = ppFrame[i];
+    int      width   = dec.GetWidth();
+    int      height  = dec.GetHeight();
+    int      pitch   = dec.GetDeviceFramePitch();
+    /* hand off to CUDA processing or NVENC */
+}
+```
+
+`NvDecoder` internally calls `cuvidParseVideoData` → `cuvidDecodePicture` → `cuvidMapVideoFrame`, hiding the callback structure. It also handles mid-stream resolution changes via the `handle_video_sequence` callback, reallocating the decoder when the parser signals a new sequence header.
+
+### 12.4 Zero-Copy Transcode: NVDEC → CUDA → NVENC
+
+The primary use case for the direct SDK API over FFmpeg is a zero-copy transcode or ML-inference pipeline where all stages stay on the GPU:
+
+```cpp
+/* Zero-copy H.264 → HEVC transcode using NVDEC + NvEncoderCuda */
+NvDecoder  decoder(cuCtx, false, cudaVideoCodec_H264);
+NvEncoderCuda encoder(cuCtx, width, height, NV_ENC_BUFFER_FORMAT_NV12);
+
+NV_ENC_INITIALIZE_PARAMS encParams = { NV_ENC_INITIALIZE_PARAMS_VER };
+NV_ENC_CONFIG             encCfg   = { NV_ENC_CONFIG_VER };
+encoder.CreateDefaultEncoderParams(&encParams,
+                                    NV_ENC_CODEC_HEVC_GUID,
+                                    NV_ENC_PRESET_P4_GUID,
+                                    NV_ENC_TUNING_INFO_HIGH_QUALITY);
+encoder.CreateEncoder(&encParams);
+
+while (read_chunk(input_file, chunk, &chunk_size)) {
+    uint8_t **frames;
+    int       n;
+    decoder.Decode(chunk, chunk_size, &frames, &n);
+
+    std::vector<std::vector<uint8_t>> packets;
+    for (int i = 0; i < n; i++) {
+        /* frames[i] is NVDEC device memory — copy directly into NVENC input */
+        const NvEncInputFrame *encInput = encoder.GetNextInputFrame();
+        NvEncoderCuda::CopyToDeviceFrame(cuCtx,
+                                          frames[i],
+                                          decoder.GetDeviceFramePitch(),
+                                          (CUdeviceptr)encInput->inputPtr,
+                                          encInput->pitch,
+                                          width, height,
+                                          CU_MEMORYTYPE_DEVICE,
+                                          NV_ENC_BUFFER_FORMAT_NV12,
+                                          encInput->chromaOffsets,
+                                          encInput->numChromaPlanes);
+        encoder.EncodeFrame(packets);
+    }
+    write_packets(output_file, packets);
+}
+encoder.EndEncode(packets);
+```
+
+In this pipeline, `CU_MEMORYTYPE_DEVICE` tells the copy helper that the source is already in CUDA device memory (NVDEC output), not a CPU buffer. The GPU-to-GPU copy uses a CUDA kernel internally; no data leaves the GPU between the demuxer and the encoded bitstream output. This is the pattern used by NVIDIA DeepStream for camera → NVDEC → TensorRT inference → NVENC recording pipelines.
+
+### 12.5 FFmpeg NVDEC / CUVID Integration
+
+For applications already using FFmpeg, NVDEC is accessible via two hwaccel names:
+
+```bash
+# -hwaccel nvdec: decode on NVDEC, frames stay in CUDA device memory
+ffmpeg -hwaccel nvdec -hwaccel_output_format cuda \
+       -i input.mp4 \
+       -vf scale_cuda=1920:1080 \
+       -c:v h264_nvenc -preset p4 -b:v 8M output.mp4
+
+# -hwaccel cuvid: older alias; codec-specific decoder names
+ffmpeg -vcodec h264_cuvid -i input.mp4 -c:v hevc_nvenc output.mp4
+
+# HEVC decode on NVDEC
+ffmpeg -hwaccel nvdec -c:v hevc_cuvid -i input.hevc -c:v copy output.mkv
+
+# AV1 decode (Ampere GA10x+ / Ada+) — note: requires driver ≥ 520
+ffmpeg -hwaccel nvdec -c:v av1_cuvid -i input.av1 -c:v av1_nvenc output.mp4
+```
+
+| FFmpeg decoder name | Codec | Notes |
+|---|---|---|
+| `h264_cuvid` | H.264 | Maxwell+ |
+| `hevc_cuvid` | H.265/HEVC | Maxwell+ |
+| `vp9_cuvid` | VP9 | Pascal+ |
+| `av1_cuvid` | AV1 | Ampere GA10x+ / Ada+ |
+| `mpeg2_cuvid` | MPEG-2 | Maxwell+ (legacy) |
+| `vc1_cuvid` | VC-1 | Maxwell+ (legacy) |
+
+The `-hwaccel_output_format cuda` flag keeps decoded frames in CUDA device memory rather than copying them back to the CPU. Downstream FFmpeg filters that support CUDA frames (`scale_cuda`, `hwdownload`, `format`) operate on the `CUdeviceptr` directly. [Source: FFmpeg hwaccel documentation](https://trac.ffmpeg.org/wiki/HWAccelIntro)
+
+### 12.6 NVDEC vs. VA-API and Vulkan Video on NVIDIA
+
+On NVIDIA hardware, three decode paths coexist:
+
+| Path | API | Linux support | Zero-copy to CUDA | Zero-copy to Vulkan |
+|---|---|---|---|---|
+| NVDEC (Video Codec SDK) | `nvcuvid.h` / `libnvcuvid.so` | Official (proprietary driver) | Native (`CUdeviceptr`) | Via CUDA-Vulkan interop (`VK_NV_external_memory`) |
+| VA-API | `libva` + `nvidia-vaapi-driver` | Community wrapper | No (VA-API surface → copy) | No |
+| Vulkan Video | `VK_KHR_video_decode_h264/h265` | Experimental (NVK, Linux 6.12+) | No (NVK only, no CUDA) | Native (`VkImage` DPB) |
+
+The NVDEC SDK path is the only one with zero-copy to CUDA compute (DeepStream, TensorRT inference on decoded video). The Vulkan Video path via NVK is the only one that keeps frames as native `VkImage` objects usable without interop overhead. VA-API via `nvidia-vaapi-driver` is the compatibility shim for applications that require VA-API (Firefox, GStreamer `vaapi*` elements) but do not need CUDA interop.
+
+[Source: NVIDIA Video Codec SDK documentation](https://developer.nvidia.com/video-codec-sdk)
+[Source: video-sdk-samples GitHub](https://github.com/NVIDIA/video-sdk-samples)
+[Source: nvidia-vaapi-driver GitHub](https://github.com/elFarto/nvidia-vaapi-driver)
 
 ---
 

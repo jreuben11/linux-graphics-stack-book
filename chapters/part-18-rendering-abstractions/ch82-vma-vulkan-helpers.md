@@ -15,8 +15,9 @@ This chapter targets **graphics application developers** writing raw Vulkan C/C+
 7. [Dear ImGui with Vulkan Backend](#7-dear-imgui-with-vulkan-backend)
 8. [Shader Hot-Reload Pattern](#8-shader-hot-reload-pattern)
 9. [Tracy GPU Profiler Integration](#9-tracy-gpu-profiler-integration)
-10. [Putting It Together — A Minimal Vulkan Application Stack](#10-putting-it-together--a-minimal-vulkan-application-stack)
-11. [Integrations](#11-integrations)
+10. [vulkan.hpp — C++ RAII Bindings](#10-vulkanhpp--c-raii-bindings)
+11. [Putting It Together — A Minimal Vulkan Application Stack](#11-putting-it-together--a-minimal-vulkan-application-stack)
+12. [Integrations](#12-integrations)
 
 ---
 
@@ -1077,7 +1078,88 @@ Tracy validates this internally and disables GPU profiling gracefully if the que
 
 ---
 
-## 10. Putting It Together — A Minimal Vulkan Application Stack
+## 10. vulkan.hpp — C++ RAII Bindings
+
+[vulkan.hpp](https://github.com/KhronosGroup/Vulkan-Headers/blob/main/include/vulkan/vulkan.hpp) is the official Khronos C++ binding for Vulkan, generated from `vk.xml` by `cppgenerator.py` (Ch16 §8). It ships inside `vulkan-headers` and is a zero-cost abstraction: every type in `vk::` wraps its C counterpart with no added indirection at runtime when `VULKAN_HPP_DISPATCH_LOADER_DYNAMIC` is used with volk.
+
+The header exposes two distinct APIs that can be mixed in the same codebase:
+
+**The thin `vk::` API** wraps C types in named C++ structs and provides method-call syntax on handles. Return values become `vk::ResultValue<T>` structured bindings rather than out-parameters:
+
+```cpp
+#define VULKAN_HPP_NO_EXCEPTIONS          // return vk::Result; no throws
+#define VULKAN_HPP_DISPATCH_LOADER_DYNAMIC 1
+#include <vulkan/vulkan.hpp>
+
+VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
+
+// Structured binding unpacks [result, value]
+auto [result, physDevices] = instance.enumeratePhysicalDevices();
+auto [r2, device] = physDev.createDevice(deviceCreateInfo);
+
+// ArrayProxy<T> accepts initializer_list, std::vector, std::span, C array
+vk::ClearValue clears[] = { vk::ClearColorValue{0.0f, 0.0f, 0.0f, 1.0f} };
+cmd.beginRenderPass(beginInfo, vk::SubpassContents::eInline);
+```
+
+**The `vk::raii::` RAII API** wraps every handle in a C++ object whose destructor calls the matching `vkDestroy*` / `vkFree*` function automatically. A `vk::raii::Context` owns the library-load lifetime; every subsequent object holds a non-owning reference to the one above it in the hierarchy:
+
+```cpp
+#include <vulkan/vulkan_raii.hpp>
+
+vk::raii::Context  ctx;                           // loads vulkan-loader
+vk::raii::Instance instance{ctx, instanceCI};     // destroyed in ~Instance()
+vk::raii::PhysicalDevices physDevices{instance};  // enumeration wrapper
+vk::raii::Device   device{physDevices[0], deviceCI};
+vk::raii::Queue    graphicsQueue{device, queueFamily, 0};
+
+// Buffer: no manual vkDestroyBuffer needed
+vk::raii::Buffer buf{device, vk::BufferCreateInfo{
+    {}, 1024, vk::BufferUsageFlagBits::eVertexBuffer}};
+vk::raii::DeviceMemory mem{device,
+    vk::MemoryAllocateInfo{memReqs.size, memTypeIdx}};
+device.bindBufferMemory(*buf, *mem, 0);           // * dereferences to VkBuffer
+```
+
+**`vk::StructureChain<>`** eliminates manual `pNext` pointer chaining for feature and property queries. The chain is a variadic template that allocates all structs contiguously and wires `pNext` at construction:
+
+```cpp
+auto chain = vk::StructureChain<
+    vk::PhysicalDeviceFeatures2,
+    vk::PhysicalDeviceVulkan13Features,
+    vk::PhysicalDeviceDescriptorIndexingFeatures>{};
+
+physDev.getFeatures2(&chain.get<vk::PhysicalDeviceFeatures2>());
+
+bool hasDynRendering =
+    chain.get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering;
+bool hasBindless =
+    chain.get<vk::PhysicalDeviceDescriptorIndexingFeatures>()
+        .descriptorBindingPartiallyBound;
+```
+
+**Dispatch loader integration with volk.** `vk::DispatchLoaderDynamic` is vulkan.hpp's dispatch mechanism; it holds one function pointer per Vulkan command and is populated via `vkGetInstanceProcAddr` / `vkGetDeviceProcAddr`. When volk is also in use, initialise the dispatch loader from volk's pre-loaded table to avoid duplicate `dlopen` overhead:
+
+```cpp
+volkInitialize();
+// Populate vulkan.hpp's default dispatch loader from volk's table:
+VULKAN_HPP_DEFAULT_DISPATCHER.init(vkGetInstanceProcAddr);
+// After instance creation:
+VULKAN_HPP_DEFAULT_DISPATCHER.init(instance);
+// After device creation:
+VULKAN_HPP_DEFAULT_DISPATCHER.init(device);
+```
+
+`VULKAN_HPP_NO_EXCEPTIONS` mode is the standard choice for games and performance-critical code: every function that would throw instead returns a `vk::Result`, and `vk::resultCheck()` provides a single assertion site. This is compatible with `-fno-exceptions` builds. The RAII API works in no-exceptions mode; failed constructors call `std::terminate` rather than throwing `vk::SystemError`.
+
+vulkan.hpp is updated alongside `vk.xml` in every `vulkan-headers` release, meaning new extension types and commands appear in `vk::` automatically the day the extension is finalised — no manual FFI work is needed.
+
+[Source: vulkan.hpp — KhronosGroup/Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers/blob/main/include/vulkan/vulkan.hpp)
+[Source: vulkan_raii.hpp](https://github.com/KhronosGroup/Vulkan-Headers/blob/main/include/vulkan/vulkan_raii.hpp)
+
+---
+
+## 11. Putting It Together — A Minimal Vulkan Application Stack
 
 The following illustrates the complete initialization stack combining all the libraries covered in this chapter. Annotations mark where each library contributes.
 
@@ -1274,7 +1356,7 @@ volkFinalize();
 
 This skeleton (~200 lines with cleanup) is structurally equivalent to what a raw Vulkan application would require in 1,500–2,000 lines. The Vulkan object model is fully exposed — every `VkInstance`, `VkDevice`, `VkBuffer`, `VkSwapchainKHR`, `VkCommandBuffer` is a real Vulkan handle. None of these libraries wrap or proxy the underlying API; they generate the correct Vulkan calls and hand the handles back.
 
-### 10.1 Raw Vulkan Equivalent Cost
+### 11.1 Raw Vulkan Equivalent Cost
 
 For comparison, here is a partial enumeration of what the raw implementation must include:
 
@@ -1293,7 +1375,7 @@ The helper libraries do not change the concepts — they mechanize the repetitiv
 
 ---
 
-## 11. Integrations
+## 12. Integrations
 
 The libraries in this chapter form the base layer of almost every production Vulkan application. They connect to the broader stack in the following ways:
 
@@ -1318,6 +1400,10 @@ The libraries in this chapter form the base layer of almost every production Vul
 **Ch77 — Shader Toolchain.** shaderc is the runtime face of the offline compilation pipeline described in that chapter. The same `libshaderc` API is used by Dawn (WebGPU), ANGLE, and Mesa's Zink driver for runtime GLSL/HLSL compilation.
 
 **Ch81 — SDL3 GPU API.** SDL3's `SDL_GPU` API (see Ch81) internalises all of the functionality described in this chapter — VMA-equivalent allocation, device selection, swapchain management, and shader loading. SDL_GPU is the right choice when the GPU model need not be exposed; the raw Vulkan + helper library stack is the right choice when it does.
+
+**Ch16 §8 — vulkan.hpp codegen.** The `vulkan.hpp` binding added in Section 10 of this chapter is generated from `vk.xml` by `cppgenerator.py`; Ch16 §8 explains the registry schema and generation toolchain that keeps `vk::` in sync with every new Vulkan extension automatically.
+
+**Ch84 §10 — nvrhi and magma.** nvrhi (Ch84 §10.11) and magma (Ch84 §10.12) are two higher-level C++ Vulkan abstractions that sit above the helper libraries in this chapter: nvrhi wraps a `VkDevice` built by vk-bootstrap and uses VMA patterns internally; magma provides its own RAII surface over raw Vulkan handles. vulkan.hpp is the common substrate both libraries use for their generated type definitions.
 
 ---
 

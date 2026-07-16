@@ -10,6 +10,7 @@
 - [1. The Compilation Landscape](#1-the-compilation-landscape)
 - [2. glslang: Reference GLSL→SPIR-V Compiler](#2-glslang-reference-glslspir-v-compiler)
 - [3. DXC — DirectX Shader Compiler (HLSL→SPIR-V)](#3-dxc--directx-shader-compiler-hlslspir-v)
+- [3.5 GLSL or HLSL for Vulkan? Making the Choice](#35-glsl-or-hlsl-for-vulkan-making-the-choice)
 - [4. SPIRV-Tools: Optimizer and Validator](#4-spirv-tools-optimizer-and-validator)
 - [5. spirv-cross: Cross-Compilation and Reflection](#5-spirv-cross-cross-compilation-and-reflection)
 - [6. Mesa's SPIR-V→NIR Translation](#6-mesas-spir-vnir-translation)
@@ -394,6 +395,149 @@ VkShaderModuleCreateInfo smci = {
 ### 3.4 How DXVK and vkd3d-Proton Use DXC
 
 DXVK translates Direct3D 9 and 11 HLSL to SPIR-V, but historically did so through its own built-in GLSL emitter. Since DXVK 2.0, DXVK has primarily used its internal SPIR-V code generation for D3D9/11. vkd3d-Proton, the D3D12 layer used in Proton (Valve's Wine-based compatibility layer), uses DXC as an external library for compiling D3D12 HLSL shaders (DXIL → SPIR-V path): vkd3d-Proton also implements its own DXIL-to-SPIR-V converter called `vkd3d-shader`, which translates DXIL bitcode directly without recompiling HLSL. Both approaches share the same `-spirv` output destination.
+
+---
+
+## 3.5 GLSL or HLSL for Vulkan? Making the Choice
+
+Both GLSL (via glslang/shaderc) and HLSL (via DXC) compile to SPIR-V and are fully supported by Mesa's `spirv_to_nir()` translator. From the driver's perspective the two are equivalent: the same ACO, BRW, and NAK backends consume the resulting SPIR-V without distinguishing its origin. The choice is therefore made entirely at the application-developer level, driven by toolchain maturity, language ergonomics, team background, and specific feature requirements.
+
+### 3.5.1 Feature Coverage Matrix
+
+| Feature | GLSL 4.60 (glslang) | HLSL SM 6.6 (DXC) |
+|---|---|---|
+| Vulkan push constants | `layout(push_constant)` | `[[vk::push_constant]]` |
+| Specialization constants | `layout(constant_id=N)` | `[[vk::constant_id(N)]]` |
+| Descriptor set + binding | `layout(set=S, binding=B)` | `[[vk::binding(B,S)]]` |
+| Wave/subgroup intrinsics | `subgroupBallot()` etc. (GLSL_EXT_shader_subgroup_basic) | `WaveActiveBallot()` etc. (SM 6.0+) |
+| Mesh + amplification shaders | `GL_EXT_mesh_shader` | `ms_6_5` / `as_6_5` target profiles |
+| Ray tracing (DXR/GLSL RT) | `GL_EXT_ray_tracing` | `lib_6_3` target with DXR intrinsics |
+| Cooperative matrix (MMA) | `GL_KHR_cooperative_matrix` | `[[vk::ext_extension(...)]]` + manual SPIR-V decoration |
+| Integer 64-bit atomics | `GL_EXT_shader_atomic_int64` | `InterlockedAdd64` (SM 6.6) |
+| HLSL 2021 generics / templates | Not applicable | Native |
+| Module system | `#include` only | `#include` only (Slang adds modules) |
+| `printf` debugging | `debugPrintfEXT` (VK_EXT_debug_printf) | `printf` (DXC maps to same extension) |
+| Scalar block layout | `scalar` qualifier (GL_EXT_scalar_block_layout) | `-fvk-use-scalar-layout` flag |
+| Row-major matrices | Column-major default; `row_major` qualifier | Row-major **default**; `column_major` qualifier |
+| Half-precision (`float16`) | `float16_t` (GL_EXT_shader_explicit_arithmetic_types) | `half` / `min16float` (SM 6.2+) |
+| Toolchain status (2026) | Maintained; HLSL front end **deprecated** April 2026 | Actively developed; SM 6.7 in progress |
+
+### 3.5.2 Language Syntax Comparison — Vulkan Compute Shader
+
+The same compute shader written in both languages illustrates the mapping between concepts:
+
+```glsl
+// GLSL — image convolution kernel
+// File: convolution.comp  (compiled with: glslangValidator -V --target-env vulkan1.3)
+#version 460
+#extension GL_KHR_shader_subgroup_basic : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(push_constant) uniform Params {
+    uint  width;
+    uint  height;
+    float scale;
+} params;
+
+layout(set = 0, binding = 0, rgba8) uniform readonly  image2D srcImage;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D dstImage;
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= int(params.width) || coord.y >= int(params.height)) return;
+
+    vec4 accum = vec4(0.0);
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            accum += imageLoad(srcImage, coord + ivec2(dx, dy));
+        }
+    }
+    imageStore(dstImage, coord, accum * (params.scale / 9.0));
+}
+```
+
+```hlsl
+// HLSL — equivalent convolution kernel
+// File: convolution.hlsl  (compiled with: dxc -spirv -T cs_6_6 -E CSMain)
+
+[[vk::push_constant]]
+struct Params {
+    uint  width;
+    uint  height;
+    float scale;
+} params;
+
+[[vk::binding(0, 0)]] Texture2D<float4>   srcImage : register(t0);
+[[vk::binding(1, 0)]] RWTexture2D<float4> dstImage : register(u1);
+
+[numthreads(8, 8, 1)]
+void CSMain(uint3 dispatchID : SV_DispatchThreadID) {
+    uint2 coord = dispatchID.xy;
+    if (coord.x >= params.width || coord.y >= params.height) return;
+
+    float4 accum = float4(0, 0, 0, 0);
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            accum += srcImage[int2(coord) + int2(dx, dy)];
+        }
+    }
+    dstImage[coord] = accum * (params.scale / 9.0);
+}
+```
+
+Key differences visible in the side-by-side:
+
+- **Matrix default order**: GLSL is column-major throughout; HLSL is row-major by default. Any `mat4`/`float4x4` passed in a uniform buffer has opposite memory layout by default — mismatching this silently produces wrong transforms. Use `layout(row_major)` in GLSL or `-fvk-use-scalar-layout` / explicit `column_major` in HLSL to align them.
+- **Resource binding syntax**: GLSL uses `layout(set=S, binding=B)` decorations; HLSL uses register slots (`t`, `u`, `b`, `s`) with optional `[[vk::binding(B,S)]]` annotations. Without the `[[vk::binding]]` annotation, DXC auto-assigns descriptor set 0, which may conflict with multi-set layouts.
+- **Image vs. Texture types**: GLSL `image2D` and HLSL `RWTexture2D` map to the same `OpTypeImage` with `Dim=2D, Sampled=2`, but the GLSL form requires a format qualifier (`rgba8`); the HLSL form infers it from the template argument (`float4`).
+- **Entry point naming**: GLSL entry points are always named `main`; HLSL supports arbitrary entry point names selected via `-E` at compile time.
+- **`gl_GlobalInvocationID` vs. `SV_DispatchThreadID`**: These are equivalent built-ins, mapped to `BuiltIn GlobalInvocationId` in SPIR-V. Appendix Q §5 lists the full built-in mapping table.
+
+### 3.5.3 Decision Guide
+
+**Choose GLSL when:**
+
+- Your project already uses a GLSL shader library (many open-source Vulkan demos, Sascha Willems samples, LearnOpenGL material are all GLSL).
+- You are targeting OpenGL alongside Vulkan — GLSL is the only common source language between them.
+- You want the smallest possible toolchain dependency: glslang ships in every major Linux distribution's package repositories (`apt install glslang-tools`).
+- Your shaders are primarily graphics pipeline stages (vertex, fragment, geometry) where GLSL's `in`/`out` qualifier model is idiomatic.
+- Your team has OpenGL background and wants familiar syntax.
+
+**Choose HLSL (via DXC) when:**
+
+- You are porting an existing Direct3D codebase (game, engine, rendering research) to Vulkan. Rewriting shaders to GLSL is often more work than switching the compile flag.
+- You need **Shader Model 6.x features**: wave intrinsics (`WaveActiveBallot`, `WaveActiveMax`), mesh/amplification shaders, DXR ray tracing (`TraceRayInline`), Shader Model 6.6 integer 64-bit atomics, or Shader Model 6.7 helpers.
+- You target **multiple APIs**: DXC can emit DXIL (D3D12), SPIR-V (Vulkan), and optionally GLSL/MSL (via spirv-cross downstream). One source compiles everywhere.
+- Your team comes from a Direct3D background where HLSL syntax is familiar.
+- You use **Slang** (Chapter 117): Slang is a strict superset of HLSL, so HLSL shaders compile through `slangc` unchanged, gaining Slang's module system and autodiff on top.
+
+**Do not use glslang's HLSL frontend.** As of April 2026, the glslang HLSL parser is officially deprecated. It handled SM 5 only, with numerous known gaps in preprocessor behaviour and template semantics. Any HLSL source should go through DXC. [Source: KhronosGroup/glslang PR #3793](https://github.com/KhronosGroup/glslang/pull/3793)
+
+**Consider Slang (§10) when:**
+
+- You want a single source language that covers GLSL and HLSL features, adds a module system, and supports automatic differentiation for ML-adjacent rendering work.
+- See Chapter 117 for Slang in depth.
+
+### 3.5.4 Vulkan-Specific Gotchas
+
+**Push constants**: In GLSL, each push constant block must be declared `layout(push_constant)`; only one push constant block is allowed per pipeline. In HLSL, `[[vk::push_constant]]` on any `struct` achieves the same, but DXC allows the annotation on a function parameter rather than a global, which can simplify API usage in modular shader code.
+
+**Specialization constants**: GLSL uses `layout(constant_id=N) const T name = default_value;` at global scope. HLSL uses `[[vk::constant_id(N)]] const T name = default_value;`. Both lower to `OpSpecConstant` in SPIR-V, which `spirv_to_nir()` handles identically. [Source: SPIR-V spec §3.32.7, OpSpecConstant](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html)
+
+**Descriptor indexing** (`VK_EXT_descriptor_indexing`, core in Vulkan 1.2): GLSL requires `#extension GL_EXT_nonuniform_qualifier : require` and the `nonuniformEXT()` qualifier on dynamically indexed arrays. HLSL simply indexes `Texture2D textures[] : register(t0, space0)` with an integer; DXC emits `NonUniform` decoration when the index is provably non-uniform. The GLSL path makes the non-uniformity explicit; the HLSL path is more concise but the compiler may miss cases where `NonUniform` is needed.
+
+**Scalar block layout**: GLSL with `GL_EXT_scalar_block_layout` allows `layout(scalar, set=0, binding=0) buffer` blocks that pack struct members without std140/std430 alignment padding. The equivalent DXC flag is `-fvk-use-scalar-layout`. Mismatching layout rules between the application's C++ struct and the shader buffer definition is a common source of silent corruption; always verify with `spirv-cross --reflect` that offsets match.
+
+```bash
+# Verify GLSL buffer layout
+glslangValidator -V --target-env vulkan1.3 shader.comp -o shader.spv
+spirv-cross --reflect shader.spv | python3 -m json.tool | grep -A4 '"members"'
+
+# Verify HLSL buffer layout compiled by DXC
+dxc -spirv -T cs_6_6 -E main shader.hlsl -Fo shader.spv
+spirv-cross --reflect shader.spv | python3 -m json.tool | grep -A4 '"members"'
+```
 
 ---
 

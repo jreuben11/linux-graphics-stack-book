@@ -13,6 +13,7 @@
 - [5. Pipeline Cache: Serialisation and Cross-Driver Portability](#5-pipeline-cache-serialisation-and-cross-driver-portability)
 - [6. Extensions Implemented in Common](#6-extensions-implemented-in-common)
 - [7. The Dispatch Table and Driver Override Mechanism](#7-the-dispatch-table-and-driver-override-mechanism)
+- [8. The Vulkan Registry and Code Generation Pipeline](#8-the-vulkan-registry-and-code-generation-pipeline)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -542,6 +543,182 @@ The physical device and instance levels have analogous dispatch table structures
 
 ---
 
+## 8. The Vulkan Registry and Code Generation Pipeline
+
+Every C struct, enum value, bitmask bit, and function signature in `vulkan.h` is derived mechanically from a single XML file: `vk.xml`, maintained in the [KhronosGroup/Vulkan-Docs](https://github.com/KhronosGroup/Vulkan-Docs/blob/main/xml/vk.xml) repository alongside the human-readable specification prose. The schema that governs `vk.xml` is documented at `https://registry.khronos.org/vulkan/specs/latest/registry.html`. Understanding this schema is the prerequisite for reading Mesa's dispatch table generator, the `ash` Rust binding crate, `vulkan.hpp`, and any other tool that consumes or extends the Vulkan API surface.
+
+### 8.1 The vk.xml Schema
+
+The root element `<registry>` contains a fixed set of child elements, each defining a different dimension of the API:
+
+**`<types>`** — every C-level type used by the API. The `category` attribute classifies each entry:
+
+```xml
+<!-- Base type alias -->
+<type requires="stdint.h" name="uint32_t"/>
+
+<!-- Opaque dispatchable handle -->
+<type category="handle" objtypeenum="VK_OBJECT_TYPE_BUFFER">
+    <type>VK_DEFINE_NON_DISPATCHABLE_HANDLE</type>(<name>VkBuffer</name>)
+</type>
+
+<!-- Struct with annotated members -->
+<type category="struct" name="VkBufferCreateInfo">
+    <member values="VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO">
+        <type>VkStructureType</type> <name>sType</name>
+    </member>
+    <member optional="true"><type>void</type>* <name>pNext</name></member>
+    <member optional="true"><type>VkBufferCreateFlags</type> <name>flags</name></member>
+    <member><type>VkDeviceSize</type> <name>size</name></member>
+    <member><type>VkBufferUsageFlags</type> <name>usage</name></member>
+    <member><type>VkSharingMode</type> <name>sharingMode</name></member>
+    <!-- len= encodes the array-size parameter for pointer members -->
+    <member optional="true" len="queueFamilyIndexCount">
+        const <type>uint32_t</type>* <name>pQueueFamilyIndices</name>
+    </member>
+</type>
+```
+
+The `optional="true"` attribute on a `<member>` tells validation-layer generators that the pointer may be NULL; the `len=` attribute on an array pointer names the sibling member that carries the element count. These annotations drive the validation layer's automatic pointer-validity checks without any hand-written per-struct code.
+
+**`<enums>`** — named value sets and bitmasks:
+
+```xml
+<enums name="VkBufferUsageFlagBits" type="bitmask">
+    <enum value="0x00000001" name="VK_BUFFER_USAGE_TRANSFER_SRC_BIT"/>
+    <enum value="0x00000002" name="VK_BUFFER_USAGE_TRANSFER_DST_BIT"/>
+    <enum value="0x00000020" name="VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT"/>
+    <!-- Extensions add values here via <require> blocks in <extensions> -->
+</enums>
+```
+
+**`<commands>`** — function signatures with parameter annotations:
+
+```xml
+<command successcodes="VK_SUCCESS" errorcodes="VK_ERROR_OUT_OF_HOST_MEMORY,...">
+    <proto><type>VkResult</type> <name>vkCreateBuffer</name></proto>
+    <param><type>VkDevice</type> <name>device</name></param>
+    <param>const <type>VkBufferCreateInfo</type>* <name>pCreateInfo</name></param>
+    <param optional="true">const <type>VkAllocationCallbacks</type>*
+        <name>pAllocator</name></param>
+    <param><type>VkBuffer</type>* <name>pBuffer</name></param>
+</command>
+```
+
+The `successcodes` and `errorcodes` attributes enumerate the valid return codes; validation-layer generators use these to flag unexpected returns without maintaining a separate per-command table.
+
+**`<feature>`** — the contents of each core Vulkan version:
+
+```xml
+<feature api="vulkan" name="VK_VERSION_1_3" number="1.3">
+    <require>
+        <command name="vkCmdPipelineBarrier2"/>
+        <command name="vkCmdBeginRendering"/>
+        <type name="VkRenderingInfo"/>
+        <!-- ... all 1.3 core types and commands -->
+    </require>
+</feature>
+```
+
+**`<extensions>`** — every `KHR_`, `EXT_`, and vendor extension, with `promotedto` linking an extension to the core version that absorbed it:
+
+```xml
+<extension name="VK_KHR_synchronization2" number="315" type="device"
+           supported="vulkan" promotedto="VK_VERSION_1_3">
+    <require>
+        <command name="vkCmdPipelineBarrier2KHR"/>
+        <enum extends="VkStructureType"
+              name="VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR"
+              alias="VK_STRUCTURE_TYPE_DEPENDENCY_INFO"/>
+    </require>
+</extension>
+```
+
+When an extension is promoted, the promoted command (`vkCmdPipelineBarrier2`) is added to the `<feature>` block, and the extension command becomes an alias:
+
+```xml
+<command name="vkCmdPipelineBarrier2KHR" alias="vkCmdPipelineBarrier2"/>
+```
+
+This alias mechanism is what Section 7 described as "union members pointing to the same function pointer slot" in the dispatch table: the generator sees both the canonical name and its aliases, and emits a `union` so that querying either name returns the same pointer.
+
+**`<formats>`** — every `VkFormat` value with plane layout, block dimensions, and component descriptions. Used by `VK_KHR_format_feature_flags2` tooling and by image-copy validation.
+
+**`<spirvcapabilities>` / `<spirvextensions>`** — mapping between SPIR-V capability names and the Vulkan extensions that enable them. Used by the validation layer to verify that a shader's SPIR-V capability declarations are covered by the device's enabled extensions.
+
+**`<sync>`** — pipeline stage flags and access flags for `VK_KHR_synchronization2`. The generator uses these to produce the `VkPipelineStageFlags2` bitmask and the stage–access compatibility table used by `syncval`.
+
+### 8.2 The Khronos Header Generator
+
+The upstream generator lives in `Vulkan-Docs/xml/` as a set of Python scripts:
+
+- `reg.py` — parses `vk.xml` into an in-memory object graph
+- `generator.py` — abstract base class for output generators
+- `cgenerator.py` — C header generator; produces `vulkan.h`, `vulkan_core.h`, platform headers (`vulkan_wayland.h`, `vulkan_xlib.h`, etc.)
+- `cppgenerator.py` — produces `vulkan.hpp` (C++20 bindings with RAII wrappers and `ResultValue<T>`)
+
+Running `python3 genvk.py -registry vk.xml vulkan.h` instantiates `COutputGenerator`, walks the feature and extension require blocks in version order, and emits the type definitions and command prototypes in the order mandated by C's single-pass compilation model. The resulting `vulkan.h` is what every Vulkan application includes; it is a generated file, not a hand-written one.
+
+The `vulkan-headers` [GitHub repository](https://github.com/KhronosGroup/Vulkan-Headers) packages the generator output — the `.h` files — for downstream distribution via package managers (`libvulkan-dev` on Debian/Ubuntu). `vk.xml` is also shipped in `vulkan-headers` so that projects can run their own code generators against it.
+
+### 8.3 Mesa's Dispatch Table Generator
+
+Mesa's codegen lives at `src/vulkan/dispatch_table/` and consumes `vk.xml` via the Khronos `reg.py` module. The primary script, `vk_dispatch_table_gen.py`, generates:
+
+- `vk_dispatch_table.h` — C structs (`vk_instance_dispatch_table`, `vk_physical_device_dispatch_table`, `vk_device_dispatch_table`) with one `PFN_vk*` function pointer per command, at the correct dispatch level (instance, physical device, or device)
+- `vk_dispatch_table.c` — `vk_*_dispatch_table_load()` implementations that call `vkGet*ProcAddr` for every pointer
+- `vk_entrypoints.h` — per-table enum of entry point indices used by `vkGetDeviceProcAddr`'s name-to-index hash
+
+For aliased commands, the generator emits a `union` member in the dispatch table struct:
+
+```c
+/* Generated by vk_dispatch_table_gen.py — do not edit */
+struct vk_device_dispatch_table {
+    /* ... */
+    union {
+        PFN_vkCmdPipelineBarrier2    CmdPipelineBarrier2;
+        PFN_vkCmdPipelineBarrier2KHR CmdPipelineBarrier2KHR;
+    };
+    /* ... */
+};
+```
+
+Both names map to the same memory location. `vk_device_dispatch_table_get_if_supported()` returns a pointer only if the queried command is listed in the device's enabled API version or enabled extension set, enforcing the loader contract that `vkGetDeviceProcAddr` returns NULL for unsupported commands.
+
+Per-driver entrypoint tables — `radv_device_entrypoints`, `anv_device_entrypoints`, `nvk_device_entrypoints` — are generated from Mesa-specific Python scripts that annotate `vk.xml` entries with the driver's implementation status. A driver entry point annotated `driver="true"` in these scripts generates a typed function pointer in the driver's entrypoint table; an unannotated entry falls through to the common layer default at `vk_device_init()` time.
+
+### 8.4 Language Binding Generators
+
+`vk.xml` is the source for every language's Vulkan binding:
+
+| Binding | Language | Generator |
+|---|---|---|
+| `ash` | Rust | [`ash-rs/generator`](https://github.com/ash-rs/ash/tree/main/ash-generator) — emits `unsafe` `extern "C"` fn pointers via `quote!` macro |
+| `vulkan4j` | Java | [`KhronosGroup/vulkan4j`](https://github.com/KhronosGroup/vulkan4j) — emits Panama foreign-function interface stubs |
+| `vulkan-go` | Go | `vulkan-go/vulkan` — CGo bindings generated from `vk.xml` |
+| `pyVulkan` / `vulkan` | Python | `KhronosGroup/Vulkan-Hpp`-derived ctypes stubs |
+| `vulkan.hpp` | C++20 | Khronos upstream `cppgenerator.py` — RAII wrappers, `vk::raii::Buffer`, `ResultValue<T>` |
+
+The `ash` generator is the most relevant on Linux. It reads `vk.xml` and emits one Rust module per dispatch level (`instance.rs`, `device.rs`) containing typed function pointer structs loaded via `vkGetInstanceProcAddr` / `vkGetDeviceProcAddr`. Every new Vulkan extension lands in `ash` automatically when `vk.xml` is updated — no manual FFI work is needed. Bevy's wgpu Vulkan backend (Ch40) and Monado (Ch27) both depend on `ash` for this reason.
+
+### 8.5 Reading vk.xml for Extension Research
+
+`vk.xml` is the fastest way to look up which core version or extension introduced a command, what its valid-usage annotations are, and what aliases exist. Given a command name like `vkGetMemoryFdKHR`:
+
+```bash
+# In a local clone of Vulkan-Docs:
+grep -A6 'name="vkGetMemoryFdKHR"' xml/vk.xml
+# Reveals: defined in VK_KHR_external_memory_fd, no promotedto → still extension-only
+```
+
+The `<extension>` block for `VK_KHR_external_memory_fd` shows its number (74), its required instance extensions, and the struct types it introduces. Cross-referencing with the `<feature>` blocks immediately shows whether a command is available in core Vulkan 1.x or only via an extension, which is the first question any application developer or driver implementor must answer.
+
+[Source: Vulkan Registry schema — KhronosGroup/Vulkan-Docs xml/](https://github.com/KhronosGroup/Vulkan-Docs/tree/main/xml)
+[Source: Mesa dispatch table generator](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/vulkan/dispatch_table)
+[Source: ash Rust Vulkan bindings generator](https://github.com/ash-rs/ash/tree/main/ash-generator)
+
+---
+
 ## Roadmap
 
 ### Near-term (6–12 months)
@@ -604,6 +781,11 @@ The physical device and instance levels have analogous dispatch table structures
 12. [Mesa Vulkan common pipeline cache merge request (!13184)](https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/13184) — Original common pipeline cache implementation
 13. [Vulkan specification — VK_KHR_dynamic_rendering](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_KHR_dynamic_rendering.html) — The extension that makes render pass lowering possible
 14. [Vulkan specification — VK_KHR_synchronization2](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_KHR_synchronization2.html) — The synchronisation model implemented in the common layer
+15. [Vulkan Registry schema documentation](https://registry.khronos.org/vulkan/specs/latest/registry.html) — The XML grammar for vk.xml: type, command, feature, extension, format, and sync elements
+16. [vk.xml — KhronosGroup/Vulkan-Docs](https://github.com/KhronosGroup/Vulkan-Docs/blob/main/xml/vk.xml) — The canonical machine-readable Vulkan API definition
+17. [Mesa dispatch table generator source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/vulkan/dispatch_table) — Python scripts that parse vk.xml and emit vk_dispatch_table.h
+18. [ash Vulkan Rust bindings generator](https://github.com/ash-rs/ash/tree/main/ash-generator) — Rust binding generator driven by vk.xml; used by wgpu and Monado
+19. [vulkan-headers — KhronosGroup](https://github.com/KhronosGroup/Vulkan-Headers) — Packages generated vulkan.h, vulkan.hpp, and vk.xml for downstream consumers
 15. [Mesa dispatch table generator source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/vulkan/dispatch_table) — Code generator for dispatch table structs from vk.xml
 16. [RADV source tree](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/amd/vulkan) — AMD Vulkan driver demonstrating common layer usage with driver-specific extensions
 17. [NVK source tree](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/nouveau/vulkan) — NVIDIA Vulkan driver as a clean-slate common-layer consumer
