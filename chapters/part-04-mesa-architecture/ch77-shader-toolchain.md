@@ -25,6 +25,19 @@
 
 ## Overview
 
+- **glslang** — Khronos reference GLSL→SPIR-V compiler; exposes a `glslangValidator` CLI and a C++ runtime API (`glslang::TShader` / `GlslangToSpv()`); HLSL front end deprecated April 2026 — use DXC for HLSL.
+- **DXC** — LLVM-based HLSL→SPIR-V (and DXIL) compiler; the sole correct choice for SM 6.x wave intrinsics, mesh shaders, and DXR; used by DXVK and vkd3d-Proton at runtime via `IDxcCompiler3`.
+- **shaderc** — build-system integration wrapper around glslang (and DXC for HLSL); not a replacement for either compiler's native API.
+- **SPIRV-Tools** (`spirv-val` / `spirv-opt`) — Khronos SPIR-V validator and optimizer; Mesa uses it to validate ingested SPIR-V and to legalize HLSL-originated SPIR-V before `spirv_to_nir()`.
+- **spirv-cross** — SPIR-V *decompiler* (the reverse of glslang/DXC); emits GLSL, HLSL, or MSL; used by MoltenVK (SPIR-V→Metal) and ANGLE; not a substitute for a front-end compiler.
+- **`spirv_to_nir()`** — Mesa's SPIR-V→NIR translator; the single driver-facing entry point for all Vulkan shaders, regardless of source language or front-end tool.
+- **ACO** (AMD) — custom 12-stage NIR→RDNA/GCN ISA compiler bypassing LLVM; used by RADV; lower per-compile overhead and better divergence analysis than the LLVM AMDGPU backend.
+- **BRW** (Intel) — NIR→Intel EU ISA compiler used by ANV and iris; being superseded by the Rust-based Jay compiler on Xe-class hardware.
+- **NAK** (NVIDIA) — Rust-written NIR→Turing/Ada/Blackwell SASS compiler for NVK; emits SASS directly without going through PTX.
+- **Mesa `disk_cache` + `VkPipelineCache`** — SHA-1-keyed ISA binary store; layered beneath Fossilize for offline Steam pre-compilation to eliminate first-play stutter.
+- **shader-db** — real-world shader regression suite; CI-integrated on bare metal to prevent instruction-count regressions in ACO, BRW, and NAK.
+- **Slang** — HLSL superset with a module system and automatic differentiation; `slangc` emits SPIR-V, DXIL, GLSL, CUDA, and Metal; used by NVIDIA RTX Kit for neural/differentiable rendering.
+
 A shader written in **GLSL** or **HLSL** by an application developer travels through a surprisingly long chain of compilers, validators, linkers, and code generators before it becomes the binary that the GPU actually executes. No single compiler performs all of this work. Instead, the industry has settled on a layered model in which each compiler stage has a well-defined input and output contract, making it possible to swap components, add optimization layers, and share infrastructure across GPU vendors. Section 1 maps this landscape and explains why the split between portable front ends and vendor back ends — separated by the **SPIR-V** binary **IR** — is the right design.
 
 The source-language front ends are covered in Sections 2 and 3. **glslang** is the **Khronos** reference implementation for **GLSL**-to-**SPIR-V** compilation. It exposes both the **`glslangValidator`** command-line tool for offline shader compilation and a **C++** library **API** (via **`glslang::TShader`**, **`glslang::TProgram`**, and **`glslang::GlslangToSpv()`**) for runtime compilation inside Vulkan engines. Its **HLSL** support covers **Shader Model 5** but lacks **Shader Model 6.x** features such as wave intrinsics, mesh shaders, and **DXR** ray-tracing. For production **HLSL**, **DXC** (the **DirectX Shader Compiler**, forked from **LLVM**/**Clang**) is the correct choice: it emits both **DXIL** (for **Direct3D 12**) and **SPIR-V** via its **`-spirv`** flag. DXC exposes the **`IDxcCompiler3`** **COM** interface for runtime compilation, which is used by translation layers such as **DXVK** and **vkd3d-Proton** to compile game **HLSL** shaders into **SPIR-V** at launch.
@@ -107,6 +120,10 @@ The front-end compiler landscape has grown substantially beyond the original Khr
 | shaderc | GLSL, HLSL (via glslang/DXC) | SPIR-V | Passes through glslang/DXC | No | Apache 2.0 | Build-system integration; Vulkan SDK |
 | Slang | Slang (HLSL superset) | SPIR-V, HLSL, GLSL, WGSL, CUDA, Metal | Full (Slang IR) | Yes (automatic differentiation) | Apache 2.0 | ML shaders, research, multi-backend deployment |
 | naga (wgpu/Firefox) | WGSL, GLSL, SPIR-V (import) | SPIR-V, WGSL, GLSL, MSL, HLSL | Moderate (Rust-native) | No | MIT/Apache 2.0 | Firefox WebGPU (wgpu-core); Bevy engine |
+
+> **shaderc vs. glslang C++ API**: shaderc (`libshaderc`) is a thin build-system wrapper around glslang (for GLSL) and optionally DXC (for HLSL). It does not add optimisation or validation beyond what those underlying tools provide; it simply bundles them behind a stable C API suitable for CMake `find_package` integration. If you are using glslang's C++ runtime API (`glslang::TShader`, `GlslangToSpv()`) in an engine, adding shaderc as well is redundant — use one or the other. shaderc's primary advantage is that it is versioned alongside the Vulkan SDK, giving a single dependency that tracks Khronos releases.
+>
+> **Slang vs. DXC for HLSL→SPIR-V**: Both Slang (`slangc -target spirv`) and DXC (`dxc -spirv`) accept HLSL and emit SPIR-V — they are genuinely competing tools for the same source language. Choose DXC when you need SM 6.x features (wave intrinsics, DXR, SM 6.6 atomics) without Slang's additional abstractions; choose Slang when you want its module system, pre-checked generics, or automatic differentiation. Using both in the same shader library for plain HLSL sources is unnecessary duplication — pick one HLSL→SPIR-V path and standardise on it.
 
 ### 1.2 End-to-End Compilation Paths
 
@@ -647,6 +664,8 @@ spirv-cross performs the inverse of glslang/DXC: it takes SPIR-V binary as input
 - **ANGLE**: translates Vulkan SPIR-V back to GLSL ES for WebGL and non-Vulkan backends
 - **Reflection**: extracting descriptor binding layouts, push constant offsets, and interface variable names from SPIR-V without running a full compiler
 
+> **Direction note:** spirv-cross is a *decompiler*, not a compiler — its data flow runs opposite to glslang and DXC. It is not a substitute for either and is never part of the forward GLSL/HLSL→SPIR-V→GPU compilation chain on Linux. Its role is portability across non-Vulkan backends (Metal, GLSL ES) and offline reflection. Compiling GLSL to SPIR-V with glslang and then immediately decompiling back to GLSL with spirv-cross would be circular; the round-trip is lossy and exists only as an explicit portability step in tools like MoltenVK and ANGLE.
+
 ### 5.2 Compiler Classes
 
 spirv-cross exposes a class hierarchy of compilers:
@@ -902,6 +921,8 @@ After register allocation, the abstract temporaries are replaced with physical `
 
 **ACO vs. LLVM parity**: As of Mesa 24.x, ACO is used by default for all RDNA and GCN GPU generations in RADV. RadeonSI (the OpenGL driver) also switched to using ACO by default for pre-RDNA GPUs as of Mesa 24.1. LLVM remains available via `RADV_DEBUG=llvm` for comparison.
 
+> **ACO vs. LLVM:** ACO and the LLVM AMDGPU backend are alternative AMD ISA compilers — not complementary components. ACO is Mesa's primary choice because it has lower per-compile latency (no LLVM IR construction overhead), better divergence analysis, and is faster to iterate within the Mesa release cadence. LLVM's AMDGPU backend still exists in Mesa as a fallback and comparison tool; it occasionally generates better code for specific shader patterns (e.g., complex loop nests that LLVM's loop vectoriser handles better). RADV never uses both simultaneously: `RADV_DEBUG=llvm` is a debugging and A/B comparison switch, not a production configuration.
+
 ### 7.2 BRW: Intel EU Compiler (ANV, iris)
 
 The BRW compiler handles compilation for Intel's EU (Execution Unit) architecture, from Broadwell through current Xe. [Source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/intel/compiler). It is used by both the ANV Vulkan driver and the iris OpenGL driver.
@@ -1073,6 +1094,8 @@ fossilize-replay \
 ```
 
 This nearly eliminates first-play shader stuttering on Linux by ensuring all GPU-specific compilation happens before the player enters the game.
+
+> **VkPipelineCache vs. Fossilize:** These two caching mechanisms are layered, not competing. `VkPipelineCache` is an application-managed runtime cache: it stores compiled ISA binaries keyed by pipeline state hash, persisted to disk by the application across runs. Fossilize sits *above* `VkPipelineCache` in the stack: it serialises the full set of Vulkan creation-info structures (shader modules, descriptor set layouts, render passes) needed to recreate a pipeline from scratch, enabling offline pre-compilation on a different machine before the application is ever launched. Steam's pre-compilation workflow uses `fossilize-replay` to drive `vkCreateGraphicsPipelines` calls against a driver, which internally fills the `VkPipelineCache`. The Fossilize archive is the input; the populated `VkPipelineCache` on disk is the output; both are present and non-redundant in a fully optimised deployment.
 
 **The `VK_LAYER_fossilize` capture layer**: For developers capturing a game's shader state, Fossilize provides a Vulkan layer that intercepts `vkCreate*` calls and silently records the creation parameters to a `.foz` database:
 
