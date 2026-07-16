@@ -928,6 +928,16 @@ The VK_EXT_shader_object extension implicitly requires all EDS3 state to be dyna
 
 The Vulkan API has evolved dramatically since its 2016 debut. Code written for Vulkan 1.0–1.1 works correctly on modern drivers, but it often leaves significant performance and ergonomics on the table — and in some cases introduces correctness hazards that the older patterns masked. This section catalogues the most common legacy idioms, the modern replacements introduced in Sections 2–8, and concrete migration guidance. The table at the end of this section provides a concise reference.
 
+- **`VkRenderPass` / `VkFramebuffer`** — replace with `vkCmdBeginRendering` (`VK_KHR_dynamic_rendering`, Vulkan 1.3 core).
+- **Binary semaphores + `VkFence`** — replace with timeline semaphores (`VK_KHR_timeline_semaphore`, Vulkan 1.2 core) for unified CPU/GPU sync.
+- **Per-draw `vkUpdateDescriptorSets` / `vkCmdBindDescriptorSets`** — replace with a global bindless descriptor array (`VK_EXT_descriptor_indexing`) and push constants; use `VK_KHR_push_descriptor` for lightweight per-draw overrides.
+- **`vkAllocateMemory` per resource** — replace with a suballocator (VMA) to stay within the `maxMemoryAllocationCount` limit.
+- **Overbroad `vkCmdPipelineBarrier` with `ALL_GRAPHICS_BIT`** — replace with precise `vkCmdPipelineBarrier2` (`VK_KHR_synchronization2`, Vulkan 1.3 core) using 64-bit stage and access masks.
+- **Geometry shaders for amplification / culling** — replace with `VK_EXT_mesh_shader` task + mesh stages; use instancing + `gl_Layer` for layer rendering.
+- **Vertex input assembly in GPU-driven pipelines** — replace with `VK_KHR_buffer_device_address` SSBO vertex fetch via `GL_EXT_buffer_reference`.
+- **Monolithic pipeline compilation at load time** — replace with `VK_EXT_graphics_pipeline_library` staged compilation or `VK_EXT_shader_object` to eliminate `VkPipeline` entirely.
+- **Hardcoded subgroup size** — replace with `VK_EXT_subgroup_size_control` runtime query; mandatory for correct cooperative-matrix and wave-reduction shaders.
+
 ### 9.1 Render Pass Objects (VkRenderPass / VkFramebuffer)
 
 **Avoid:** Creating `VkRenderPass` and `VkFramebuffer` objects for single-subpass rendering.
