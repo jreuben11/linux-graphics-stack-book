@@ -1214,6 +1214,8 @@ void main() {
 
 This pattern is required for mesh shaders and eliminates the vertex-input pipeline stage entirely. Pipelines using this approach set `VkPipelineVertexInputStateCreateInfo.vertexBindingDescriptionCount = 0`.
 
+> **Scope note:** This advice applies to mesh-shader pipelines and fully GPU-driven renderers. Traditional vertex-shader pipelines drawing indexed geometry from a static mesh library can continue to use vertex input attributes without penalty — the fixed-function assembler is well-optimised on all IHVs for that workload. The tension with `VK_EXT_graphics_pipeline_library` is real: GPL's Vertex Input Interface segment explicitly encodes `VkVertexInputAttributeDescription` entries. If you adopt buffer-device-address vertex fetch, that GPL segment becomes a trivial zero-binding stub and should be treated as such.
+
 [Source: Vulkan Documentation — VK_KHR_buffer_device_address](https://docs.vulkan.org/refpages/latest/refpages/source/VkBufferDeviceAddressInfo.html)
 
 ### 9.8 Monolithic Pipeline Compilation at Load Time
@@ -1231,11 +1233,15 @@ for (auto& material : allMaterials) {
 
 Monolithic pipeline compilation couples shader-stage ISA generation to every piece of fixed state (vertex layout, blend mode, depth format). A game with 500 material variants × 4 shadow/depth permutations compiles 2,000 pipelines at startup; on the first play-through of new content the GPU stalls when an uncached permutation is encountered at draw time.
 
-**Prefer** two complementary strategies (see Sections 6–7):
+**Prefer** one of two alternative strategies (see Sections 6–7) — choose one architecture for your renderer; mixing them in the same draw path is not meaningful:
 
-1. **`VK_EXT_graphics_pipeline_library`** — compile each shader stage independently at material load time; link the four segments at draw time using `VkPipelineLibraryCreateInfoKHR`. Background LTO recompile (`VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT`) produces a high-throughput executable without blocking the render loop.
+1. **`VK_EXT_graphics_pipeline_library`** — compile each shader stage independently at material load time; link the four segments at draw time using `VkPipelineLibraryCreateInfoKHR`. Background LTO recompile (`VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT`) produces a high-throughput executable without blocking the render loop. Still creates `VkPipeline` objects — just decomposed and linked cheaply.
 
-2. **`VK_EXT_shader_object`** — compile individual `VkShaderEXT` objects; set all formerly baked state dynamically. No linking step at all; driver binary export (`VK_SHADER_CODE_TYPE_BINARY_EXT`) provides warm-start equivalent to a pipeline cache.
+2. **`VK_EXT_shader_object`** — compile individual `VkShaderEXT` objects; set all formerly baked state dynamically. No `VkPipeline` objects at all; driver binary export (`VK_SHADER_CODE_TYPE_BINARY_EXT`) provides warm-start equivalent to a pipeline cache.
+
+> **Architectural tension:** GPL and shader objects solve the same problem — stutter from monolithic pipeline compilation — but are incompatible models. GPL preserves the `VkPipeline` concept and is the approach taken by DXVK and VKD3D-Proton, where D3D pipeline-state-object semantics map naturally onto the four-segment decomposition. Shader objects abandon `VkPipeline` entirely and suit engines with fully dynamic state (translation layers targeting D3D11's immediate-mode API, or renderers that generate draw calls from a GPU compute pre-pass). Pick the model that matches your rendering architecture; do not adopt both and expect them to interoperate within a single pipeline.
+>
+> A secondary tension exists between `VK_KHR_dynamic_rendering` and GPL's Fragment Output Interface segment. Dynamic rendering defers attachment format specification to `VkRenderingInfo` at draw time, but GPL's Fragment Output Interface library bakes those same formats in at segment-creation time (via `VkPipelineRenderingCreateInfo` in the segment's `pNext`). Using both together is correct and supported, but it means attachment formats must be known when compiling the Fragment Output Interface library — dynamic rendering does not eliminate all format-baking, it only eliminates the `VkRenderPass`/`VkFramebuffer` objects.
 
 Pipeline caches (`VkPipelineCache`) remain valid for read-back of previously compiled pipelines and should be persisted across application runs regardless of which approach is used.
 
