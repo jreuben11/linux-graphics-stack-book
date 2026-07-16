@@ -14,8 +14,9 @@
 6. [Shader Objects (VK_EXT_shader_object)](#6-shader-objects-vk_ext_shader_object)
 7. [Graphics Pipeline Libraries (VK_EXT_graphics_pipeline_library)](#7-graphics-pipeline-libraries-vk_ext_graphics_pipeline_library)
 8. [Extended Dynamic State 3 (VK_EXT_extended_dynamic_state3)](#8-extended-dynamic-state-3-vk_ext_extended_dynamic_state3)
-9. [Driver Adoption Status](#9-driver-adoption-status)
-10. [Integrations](#10-integrations)
+9. [Legacy Patterns and What to Avoid in Modern Vulkan](#9-legacy-patterns-and-what-to-avoid-in-modern-vulkan)
+10. [Driver Adoption Status](#10-driver-adoption-status)
+11. [Integrations](#11-integrations)
 
 ---
 
@@ -915,7 +916,370 @@ The VK_EXT_shader_object extension implicitly requires all EDS3 state to be dyna
 
 ---
 
-## 9. Driver Adoption Status
+## 9. Legacy Patterns and What to Avoid in Modern Vulkan
+
+The Vulkan API has evolved dramatically since its 2016 debut. Code written for Vulkan 1.0–1.1 works correctly on modern drivers, but it often leaves significant performance and ergonomics on the table — and in some cases introduces correctness hazards that the older patterns masked. This section catalogues the most common legacy idioms, the modern replacements introduced in Sections 2–8, and concrete migration guidance. The table at the end of this section provides a concise reference.
+
+### 9.1 Render Pass Objects (VkRenderPass / VkFramebuffer)
+
+**Avoid:** Creating `VkRenderPass` and `VkFramebuffer` objects for single-subpass rendering.
+
+```c
+// LEGACY — do not write new code this way
+VkAttachmentDescription colorAttachment = {
+    .format         = swapchainFormat,
+    .samples        = VK_SAMPLE_COUNT_1_BIT,
+    .loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR,
+    .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
+    .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
+    .finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+};
+VkSubpassDescription subpass = {
+    .pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS,
+    .colorAttachmentCount = 1,
+    .pColorAttachments    = &colorRef,
+};
+VkRenderPassCreateInfo rpCI = { /* ... */ };
+vkCreateRenderPass(device, &rpCI, NULL, &renderPass);
+
+// Also creates a VkFramebuffer per swapchain image — fragile when format changes
+VkFramebufferCreateInfo fbCI = { .renderPass = renderPass, /* ... */ };
+vkCreateFramebuffer(device, &fbCI, NULL, &framebuffers[i]);
+```
+
+The `VkRenderPass`/`VkFramebuffer` pair encodes attachment formats, load/store ops, and subpass structure at creation time. Any format change (HDR toggle, MSAA level change, render target resize) requires destroying and recreating both objects — a common source of resize-related stutter.
+
+**Prefer:** `VK_KHR_dynamic_rendering` (Vulkan 1.3 core) with `vkCmdBeginRendering`. Attachment information is specified per-frame, not at object-creation time (see Section 2).
+
+**Exception:** On tile-based deferred renderers (Mali, Adreno, PowerVR), multi-subpass G-buffer techniques that exploit on-chip tile memory still benefit from explicit `VkSubpassDescription` and `VkSubpassDependency` entries — or, on Vulkan 1.4, `VK_KHR_dynamic_rendering_local_read`. Use explicit render passes on mobile *only* for multi-subpass algorithms; single-subpass rendering on TBDR hardware performs equivalently with dynamic rendering.
+
+[Source: Khronos Vulkan dynamic rendering best practices](https://www.khronos.org/blog/streamlining-render-passes)
+
+### 9.2 Binary Semaphores for CPU–GPU and Inter-Queue Synchronisation
+
+**Avoid:** Using `VkSemaphore` (binary) for CPU-wait and for ordering multiple queue submissions.
+
+```c
+// LEGACY — binary semaphores require paired signal/wait; N-frame-in-flight schemes
+// require semaphore arrays and careful index tracking
+VkSemaphoreCreateInfo sCI = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+vkCreateSemaphore(device, &sCI, NULL, &imageAvailableSemaphores[i]);
+vkCreateSemaphore(device, &sCI, NULL, &renderFinishedSemaphores[i]);
+vkCreateFence(device, &fCI, NULL, &inFlightFences[i]);   // separate fence for CPU wait
+
+// Per-frame: manual index tracking, fence polling, semaphore recycling
+vkWaitForFences(device, 1, &inFlightFences[frameIndex], VK_TRUE, UINT64_MAX);
+vkResetFences(device, 1, &inFlightFences[frameIndex]);
+```
+
+Binary semaphores have no counter — they are either signalled or not — requiring one semaphore per in-flight frame per dependency edge. Cross-queue dependencies (graphics → compute → present) compound the semaphore count. CPU waiting requires a separate `VkFence` mechanism.
+
+**Prefer:** Timeline semaphores (`VK_KHR_timeline_semaphore`, Vulkan 1.2 core). A single timeline semaphore carries a monotonically increasing counter. The GPU signals `frameCounter` after submission N; the next submission waits for `frameCounter - latency`. The CPU can wait with `vkWaitSemaphoresKHR`:
+
+```c
+// MODERN — one timeline semaphore per queue covers all synchronisation needs
+VkSemaphoreTypeCreateInfo timelineCI = {
+    .sType         = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+    .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+    .initialValue  = 0,
+};
+VkSemaphoreCreateInfo sCI = {
+    .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+    .pNext = &timelineCI,
+};
+vkCreateSemaphore(device, &sCI, NULL, &timelineSemaphore);
+
+// Submit: signal counter N
+uint64_t signalValue = ++frameCounter;
+VkTimelineSemaphoreSubmitInfo tlSubmit = {
+    .sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+    .signalSemaphoreValueCount = 1,
+    .pSignalSemaphoreValues    = &signalValue,
+};
+// Wait on CPU for frame N-maxFramesInFlight to complete
+uint64_t waitValue = frameCounter > MAX_FRAMES_IN_FLIGHT
+                     ? frameCounter - MAX_FRAMES_IN_FLIGHT : 0;
+VkSemaphoreWaitInfo waitInfo = {
+    .sType          = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+    .semaphoreCount = 1,
+    .pSemaphores    = &timelineSemaphore,
+    .pValues        = &waitValue,
+};
+vkWaitSemaphores(device, &waitInfo, UINT64_MAX);
+```
+
+[Source: Vulkan Documentation — VK_KHR_timeline_semaphore](https://docs.vulkan.org/features/latest/features/proposals/VK_KHR_timeline_semaphore.html)
+
+### 9.3 Per-Draw vkUpdateDescriptorSets and vkCmdBindDescriptorSets
+
+**Avoid:** Calling `vkUpdateDescriptorSets` and `vkCmdBindDescriptorSets` for each draw call or each material.
+
+```c
+// LEGACY — one descriptor set per material, rebind before each draw
+for (auto& draw : drawList) {
+    vkUpdateDescriptorSets(device, write_count, writes, 0, NULL);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            layout, 0, 1, &draw.descriptorSet, 0, NULL);
+    vkCmdDraw(cmd, draw.vertexCount, 1, 0, 0);
+}
+```
+
+Each `vkUpdateDescriptorSets` is a CPU-side write to driver-managed memory; each `vkCmdBindDescriptorSets` emits a state change into the command buffer. On GPU-heavy workloads with thousands of materials, these operations become a CPU bottleneck and prevent GPU-driven rendering entirely.
+
+**Prefer:** Two complementary modern patterns:
+
+1. **Bindless global descriptor array** (`VK_EXT_descriptor_indexing`, Vulkan 1.2 core): Populate a single large descriptor set once; pass a material/texture index via push constants (Section 3).
+
+2. **Push descriptors** (`VK_KHR_push_descriptor`): For lightweight per-draw overrides that cannot be preloaded into a global array, embed descriptor data directly in the command buffer instead of maintaining a descriptor pool:
+
+```c
+// VK_KHR_push_descriptor — write descriptor state directly into command buffer
+// No VkDescriptorPool or VkDescriptorSet management required
+VkDescriptorImageInfo imgInfo = {
+    .sampler     = sampler,
+    .imageView   = frameTexture,
+    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+};
+VkWriteDescriptorSet push = {
+    .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+    .dstBinding      = 0,
+    .descriptorCount = 1,
+    .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+    .pImageInfo      = &imgInfo,
+};
+vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           layout, 0, 1, &push);
+vkCmdDraw(cmd, ...);
+```
+
+[Source: Vulkan Documentation — VK_KHR_push_descriptor](https://docs.vulkan.org/refpages/latest/refpages/source/VkDescriptorUpdateTemplateCreateInfo.html)
+
+### 9.4 vkAllocateMemory Per Resource
+
+**Avoid:** Calling `vkAllocateMemory` directly for every buffer and image.
+
+```c
+// LEGACY — one VkDeviceMemory allocation per resource
+VkMemoryAllocateInfo allocInfo = {
+    .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+    .allocationSize  = memReqs.size,
+    .memoryTypeIndex = findMemoryType(memReqs.memoryTypeBits, properties),
+};
+vkAllocateMemory(device, &allocInfo, NULL, &bufferMemory);
+vkBindBufferMemory(device, buffer, bufferMemory, 0);
+```
+
+Most Vulkan implementations cap `maxMemoryAllocationCount` at 4,096 distinct allocations. Applications that allocate one `VkDeviceMemory` per resource exhaust this limit in large scenes and receive `VK_ERROR_OUT_OF_DEVICE_MEMORY` at runtime — a failure mode that can be difficult to reproduce in development but appears in production.
+
+**Prefer:** Suballocate from a small number of large `VkDeviceMemory` blocks using [VulkanMemoryAllocator (VMA)](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) or an equivalent suballocator. VMA handles alignment, memory type selection, block coalescing, and the `VK_EXT_memory_priority` / `VK_EXT_memory_budget` extensions for coordinated eviction under memory pressure:
+
+```c
+// MODERN — VMA handles suballocation, alignment, and memory type selection
+VmaAllocationCreateInfo vmaCI = {
+    .usage = VMA_MEMORY_USAGE_GPU_ONLY,
+};
+VkBufferCreateInfo bufferCI = { /* ... */ };
+VmaAllocation allocation;
+vmaCreateBuffer(allocator, &bufferCI, &vmaCI, &buffer, &allocation, NULL);
+// VMA internally suballocates from a pooled VkDeviceMemory block
+```
+
+[Source: VulkanMemoryAllocator — GPUOpen](https://gpuopen.com/vulkan-memory-allocator/)
+
+### 9.5 Overbroad Pipeline Barriers (vkCmdPipelineBarrier)
+
+**Avoid:** Using the original `vkCmdPipelineBarrier` API with catch-all stage flags.
+
+```c
+// LEGACY — overbroad barrier stalls the entire graphics pipe
+vkCmdPipelineBarrier(cmd,
+    VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,      // srcStageMask — too broad
+    VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,      // dstStageMask — too broad
+    0, 0, NULL, 0, NULL, 1, &imageBarrier);
+```
+
+`VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT` as either `srcStageMask` or `dstStageMask` forces the driver to wait for every active graphics stage, preventing pipelining between unrelated work. The original `VkPipelineStageFlags` bitmask is 32 bits; post-1.2 stages (acceleration structure build, video decode, optical flow) do not fit and require the `KHR_synchronization2` 64-bit flags.
+
+**Prefer:** `VK_KHR_synchronization2` (Vulkan 1.3 core). The new API uses `VkPipelineStageFlags2` (64-bit) and `VkAccessFlags2` (64-bit), provides `vkCmdPipelineBarrier2` with a `VkDependencyInfo` container, and allows finer-grained stage specification:
+
+```c
+// MODERN — precise stage and access masks avoid unnecessary stalls
+VkImageMemoryBarrier2 barrier = {
+    .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+    // Transition occurs after the fragment shader finished writing
+    .srcStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+    .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+    // Next use is a compute shader read
+    .dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+    .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
+    .oldLayout     = VK_IMAGE_LAYOUT_GENERAL,
+    .newLayout     = VK_IMAGE_LAYOUT_GENERAL,
+    .image         = storageImage,
+    .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+};
+VkDependencyInfo dep = {
+    .sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+    .imageMemoryBarrierCount = 1,
+    .pImageMemoryBarriers    = &barrier,
+};
+vkCmdPipelineBarrier2(cmd, &dep);
+```
+
+The new split-barrier commands `vkCmdSetEvent2` / `vkCmdWaitEvents2` allow the producer and consumer halves of a synchronisation point to be recorded independently, enabling the GPU to overlap unrelated work between them.
+
+[Source: Vulkan Documentation — VK_KHR_synchronization2 proposal](https://docs.vulkan.org/features/latest/features/proposals/VK_KHR_synchronization2.html)
+
+### 9.6 Geometry Shaders for GPU-Driven Work
+
+**Avoid:** Geometry shaders for amplification, culling, or per-primitive data generation.
+
+```c
+// LEGACY pipeline with geometry shader stage
+VkPipelineShaderStageCreateInfo stages[] = {
+    { .stage = VK_SHADER_STAGE_VERTEX_BIT,   .module = vertModule, },
+    { .stage = VK_SHADER_STAGE_GEOMETRY_BIT, .module = geomModule, },  // avoid
+    { .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fragModule, },
+};
+```
+
+Geometry shaders were introduced in D3D10/OpenGL 3.2 for triangle expansion (shadow volumes, cubemap layers, particle billboarding). On modern GPU microarchitectures they are implemented via intermediate variable-length buffer stages that cannot be pipelined with fixed-size rasterisation input — producing memory pressure and serialisation that makes them consistently slower than alternatives. On AMD GCN/RDNA and NVIDIA Fermi/Kepler through to current hardware, a geometry shader performing one-to-six triangle expansion is measurably slower than an instanced draw that produces the same geometry from the vertex shader.
+
+**Prefer:**
+- **For geometry amplification / culling:** `VK_EXT_mesh_shader` task + mesh stages (Section 4).
+- **For cubemap / shadow cascade rendering:** instancing with `VkDrawIndirectCommand::instanceCount` and `gl_Layer` set from the vertex shader (requires `VK_EXT_shader_viewport_index_layer`, promoted to Vulkan 1.2 core as `shaderOutputLayer`).
+- **For particle billboarding:** compute pre-pass writing to an SSBO, followed by an instanced draw that reads billboard quads directly.
+
+Tessellation control + evaluation shaders remain valid for smooth subdivision surfaces and terrain LOD — they do not carry the same serialisation penalty as geometry shaders because their output is fixed-size per input patch.
+
+### 9.7 Vertex Input Declarations for GPU-Driven Pipelines
+
+**Avoid:** `VkVertexInputAttributeDescription` and `vkCmdBindVertexBuffers` in GPU-driven or mesh-shader pipelines.
+
+```c
+// LEGACY — declares per-attribute fetch via fixed-function vertex input assembler
+VkVertexInputAttributeDescription attrs[] = {
+    { .location = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 0  },  // pos
+    { .location = 1, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = 12 },  // uv
+};
+VkVertexInputBindingDescription binding = {
+    .stride    = sizeof(Vertex),
+    .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+};
+// Bind before each draw call
+vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer, &offset);
+```
+
+The fixed-function vertex input assembler is incompatible with mesh shaders (which produce vertices programmatically) and with fully GPU-driven workflows where vertex buffers are not known until draw time. It also prevents multi-draw-indirect batching across meshes with different vertex layouts.
+
+**Prefer:** Buffer device addresses (`VK_KHR_buffer_device_address`, Vulkan 1.2 core) with GLSL `GL_EXT_buffer_reference`. Vertex data is fetched from SSBOs using a pointer embedded in a push constant or a per-draw data structure, with no vertex input state whatsoever:
+
+```glsl
+// MODERN — vertex fetch via SSBO pointer; no VkVertexInputAttributeDescription
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+
+layout(buffer_reference, scalar) readonly buffer VertexBuffer {
+    vec3 position;
+    vec2 uv;
+};
+
+layout(push_constant) uniform PC {
+    VertexBuffer vertices;   // GPU pointer embedded in push constant
+    uint instanceID;
+};
+
+void main() {
+    VertexBuffer v = vertices;                   // dereference the device address
+    gl_Position = mvp * vec4(v[gl_VertexIndex].position, 1.0);
+}
+```
+
+This pattern is required for mesh shaders and eliminates the vertex-input pipeline stage entirely. Pipelines using this approach set `VkPipelineVertexInputStateCreateInfo.vertexBindingDescriptionCount = 0`.
+
+[Source: Vulkan Documentation — VK_KHR_buffer_device_address](https://docs.vulkan.org/refpages/latest/refpages/source/VkBufferDeviceAddressInfo.html)
+
+### 9.8 Monolithic Pipeline Compilation at Load Time
+
+**Avoid:** Compiling every graphics pipeline at application startup or material load time when the full state permutation space is large.
+
+```c
+// LEGACY — compile all pipeline permutations upfront; causes seconds-long hitches
+for (auto& material : allMaterials) {
+    VkGraphicsPipelineCreateInfo gpCI = { /* all state baked in */ };
+    vkCreateGraphicsPipelines(device, pipelineCache, 1, &gpCI, NULL,
+                              &material.pipeline);   // can take 200–500 ms each
+}
+```
+
+Monolithic pipeline compilation couples shader-stage ISA generation to every piece of fixed state (vertex layout, blend mode, depth format). A game with 500 material variants × 4 shadow/depth permutations compiles 2,000 pipelines at startup; on the first play-through of new content the GPU stalls when an uncached permutation is encountered at draw time.
+
+**Prefer** two complementary strategies (see Sections 6–7):
+
+1. **`VK_EXT_graphics_pipeline_library`** — compile each shader stage independently at material load time; link the four segments at draw time using `VkPipelineLibraryCreateInfoKHR`. Background LTO recompile (`VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT`) produces a high-throughput executable without blocking the render loop.
+
+2. **`VK_EXT_shader_object`** — compile individual `VkShaderEXT` objects; set all formerly baked state dynamically. No linking step at all; driver binary export (`VK_SHADER_CODE_TYPE_BINARY_EXT`) provides warm-start equivalent to a pipeline cache.
+
+Pipeline caches (`VkPipelineCache`) remain valid for read-back of previously compiled pipelines and should be persisted across application runs regardless of which approach is used.
+
+### 9.9 Hardcoded Subgroup Sizes
+
+**Avoid:** Assuming a fixed subgroup size (e.g., `#define SUBGROUP_SIZE 32` or `64`) in compute shaders.
+
+```glsl
+// LEGACY — hardcoded wave size assumes NVIDIA (32) or AMD (64)
+layout(local_size_x = 64) in;   // breaks if subgroupSize < 64 (e.g., NVIDIA)
+
+shared float sharedData[64];     // silent correctness hazard if subgroupSize == 32
+```
+
+A compute shader that operates on `sharedData[gl_SubgroupInvocationID]` with `local_size_x = 64` assumes all 64 invocations form a single subgroup. On NVIDIA hardware (subgroupSize = 32 by default), two subgroups are spawned per workgroup — prefix-sum and reduce operations span only half the intended range, producing silently wrong results.
+
+**Prefer:** `VK_EXT_subgroup_size_control` (Vulkan 1.3 core) to query and optionally clamp the subgroup size:
+
+```c
+// Query supported subgroup sizes
+VkPhysicalDeviceSubgroupSizeControlProperties subgroupProps = {
+    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES,
+};
+VkPhysicalDeviceProperties2 props2 = {
+    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+    .pNext = &subgroupProps,
+};
+vkGetPhysicalDeviceProperties2(physDevice, &props2);
+// subgroupProps.minSubgroupSize / maxSubgroupSize
+
+// Optionally, require a specific size at pipeline / shader creation:
+VkPipelineShaderStageRequiredSubgroupSizeCreateInfo subgroupSizeCI = {
+    .sType            = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+    .requiredSubgroupSize = 32,   // driver must use this size for this stage
+};
+```
+
+For cooperative matrices the subgroup size must match the `scope` field returned by `vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR`; hardcoded sizes silently produce driver-defined (undefined) behaviour.
+
+[Source: Vulkan Documentation — VK_EXT_subgroup_size_control](https://docs.vulkan.org/refpages/latest/refpages/source/VkPipelineShaderStageRequiredSubgroupSizeCreateInfo.html)
+
+### 9.10 Summary Table
+
+The following table distils the eight anti-patterns above into a concise migration reference.
+
+| Legacy Pattern | Introduced | Modern Replacement | Since |
+|---|---|---|---|
+| `VkRenderPass` / `VkFramebuffer` | Vulkan 1.0 | `VK_KHR_dynamic_rendering` (`vkCmdBeginRendering`) | Vulkan 1.3 core |
+| Binary semaphores + `VkFence` for CPU wait | Vulkan 1.0 | Timeline semaphores (`VK_KHR_timeline_semaphore`) | Vulkan 1.2 core |
+| Per-draw `vkUpdateDescriptorSets` / bind | Vulkan 1.0 | Bindless arrays (`VK_EXT_descriptor_indexing`) + `VK_KHR_push_descriptor` | Vulkan 1.2 core |
+| `vkAllocateMemory` per resource | Vulkan 1.0 | Suballocator (VMA) + `VK_EXT_memory_budget` | Any version |
+| Overbroad `vkCmdPipelineBarrier` | Vulkan 1.0 | `VK_KHR_synchronization2` (`vkCmdPipelineBarrier2`) | Vulkan 1.3 core |
+| Geometry shaders for amplification/culling | Vulkan 1.0 | `VK_EXT_mesh_shader` task + mesh stages | EXT multi-vendor |
+| Vertex input assembly in GPU-driven pipelines | Vulkan 1.0 | `VK_KHR_buffer_device_address` + SSBO vertex fetch | Vulkan 1.2 core |
+| Monolithic pipeline compilation at startup | Vulkan 1.0 | `VK_EXT_graphics_pipeline_library` + `VK_EXT_shader_object` | EXT multi-vendor |
+| Hardcoded subgroup size | Vulkan 1.0 | `VK_EXT_subgroup_size_control` + runtime query | Vulkan 1.3 core |
+
+The Vulkan Working Group's [Best Practices Guide](https://docs.vulkan.org/guide/latest/best_practices.html) and the Khronos Vulkan Guide's [Synchronisation chapter](https://github.com/KhronosGroup/Vulkan-Guide/blob/main/chapters/synchronization.adoc) are authoritative references for additional anti-pattern detection. The Vulkan validation layers (`VK_LAYER_KHRONOS_validation`) include a "best practices" sub-layer (`VK_EXT_validation_features` with `VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT`) that flags several of the patterns in this section at runtime during development.
+
+---
+
+## 10. Driver Adoption Status
 
 The following table summarises the open-source Mesa driver status as of Mesa 25.x–26.x and the proprietary driver situation as of early 2026. **Note: extension support changes rapidly with driver releases; consult [vulkan.gpuinfo.org](https://vulkan.gpuinfo.org/) for current statistics.**
 
@@ -995,7 +1359,7 @@ The Vulkan ecosystem continues to evolve rapidly, with the Khronos Vulkan Workin
 
 ---
 
-## 10. Integrations
+## 11. Integrations
 
 This chapter connects to the following chapters across the book:
 
