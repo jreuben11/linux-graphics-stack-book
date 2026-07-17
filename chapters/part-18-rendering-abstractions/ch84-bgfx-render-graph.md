@@ -43,6 +43,10 @@ Section 6 covers multi-threaded encoding. The `bgfx::Encoder` class allows multi
 
 **Filament** (see Ch83) provides a complete physically-based rendering pipeline as a library — shadow maps, **IBL**, bloom, **TAA** — while still running on a **Vulkan** backend on Linux. Applications use a materials system rather than raw shaders.
 
+**IGL** (Meta's Intermediate Graphics Library, §10.13) is a production cross-platform HAL targeting **Vulkan 1.2**, Metal, and OpenGL from a single API, open-sourced by Meta and used in Quest XR and Instagram. It sits between bgfx and Filament: more explicit than bgfx's view model (render passes are visible to the application), but unopinionated about materials, lighting, or scene structure. IGL's Vulkan backend targets long-tail Android compatibility while the Metal backend serves Apple XR.
+
+**LightweightVK** (§10.14) began as a fork of IGL's Vulkan backend, then underwent a complete API redesign targeting **Vulkan 1.3 only**. It replaces traditional descriptor sets with a fully bindless resource model, replaces `VkRenderPass` with dynamic rendering, and carries no STL containers in its public headers. It is the companion library to Sergey Kosarevsky's *3D Graphics Rendering Cookbook* and serves as a compact reference implementation of modern Vulkan 1.3 idioms: `VK_KHR_dynamic_rendering`, `VK_KHR_synchronization2`, and `VK_EXT_descriptor_indexing` are used by default rather than as optional extensions.
+
 **Full engines** (**Bevy**, **Godot**, **Unity**, **Unreal**) provide the complete stack from scene graph to asset pipeline, at the cost of yielding architectural control to the engine's conventions.
 
 The appropriate choice depends on what you actually need:
@@ -51,10 +55,45 @@ The appropriate choice depends on what you actually need:
 |------|------------------|
 | Ray tracing, mesh shaders, Vulkan extensions | Raw Vulkan |
 | Raw Vulkan + sane memory management | VMA + helpers |
+| Vulkan 1.3 bindless prototyping, cookbook learning | LightweightVK |
 | Cross-platform game / tool, no bleeding-edge features | bgfx |
 | Maximum portability, minimal learning curve | SDL3 GPU |
+| Cross-platform XR / mobile with explicit pass control | IGL |
 | PBR rendering without writing shaders | Filament |
 | Complete game framework | Bevy / Godot / Unreal |
+
+### 1.1 The Full Competitive Landscape
+
+The table below maps every library covered in this chapter and its neighbours against the axes that matter most when choosing: Vulkan support, additional backends, abstraction level, and primary target audience.
+
+| Library | Vulkan | Other backends | Level | Primary audience |
+|---------|--------|----------------|-------|-----------------|
+| **volk** | 1.x (loader bypass) | — | Thin — dispatch only | Raw Vulkan C/C++ devs |
+| **VMA** | 1.x | — | Thin — memory only | Any Vulkan app |
+| **vk-bootstrap** | 1.x | — | Thin — init only | Vulkan setup ceremony |
+| **LightweightVK** | 1.3 only | — | Mid — bindless, dynamic rendering | Prototyping, cookbook learning |
+| **Granite** | 1.x only | — | Mid — render graph + bindless + async-compute first-class | Engine researchers, driver engineers |
+| **magma** | 1.x only | — | Mid — idiomatic C++17 RAII | Full Vulkan with ownership |
+| **LLGL** | 1.x | D3D11/12, Metal, GL | Mid-thin HAL | Vulkan-fidelity with GL fallback |
+| **nvrhi** | 1.2+ | D3D11, D3D12 | Mid HAL | NVIDIA RTX / Falcor ecosystem |
+| **sokol_gfx** | via community port | D3D11, Metal, GL3, WebGPU | Mid — single-header | Web + desktop small apps |
+| **SDL3 GPU** | 1.x | D3D12, Metal | Mid — SDL3-integrated | Cross-platform games, minimal API |
+| **bgfx** | 1.x | D3D9/11/12, Metal, GL, WebGPU | Mid — view model | Multi-backend games / tools |
+| **Diligent Engine** | 1.x | D3D11/12, Metal, GL | Mid–full HAL | Engine development |
+| **IGL** | 1.2 | Metal 2+, GL/ES, WebGL2 | Full HAL | XR / mobile cross-platform |
+| **The Forge** | 1.x | D3D12, Metal, GNM (PS4/5) | Full HAL | AAA game studios |
+| **Filament** | 1.x | Metal, D3D11, WebGL2, WebGPU | Full HAL + PBR | Mobile / web 3D |
+| **wgpu** | 1.x | Metal, D3D12, D3D11, GL, WebGPU | Full HAL — WebGPU API | Rust / WASM / Firefox |
+| **raylib** | — | OpenGL 3.3 only | High-level C API | Education, game jams |
+| **SFML** | — | OpenGL only | High-level C++ | 2D + audio + networking |
+| **LOVE2D** | — | OpenGL 3.3 / ES3 | High-level Lua | Lua game jams |
+| **Allegro 5** | — | OpenGL | High-level C | Legacy / simple 2D |
+
+**Abstraction-level axis** (thin → full HAL): volk / VMA / vk-bootstrap → LightweightVK / magma / nvrhi → SDL3 GPU / bgfx / Diligent / IGL → Filament / The Forge / wgpu → Bevy / Godot / Unreal.
+
+**Backend breadth axis** (Vulkan-exclusive → everything): LightweightVK / magma / Granite → nvrhi → SDL3 GPU / bgfx → IGL → The Forge / wgpu / Filament.
+
+The fork relationship between IGL and LightweightVK illustrates a recurring tension in this space: IGL prioritises multi-backend production compatibility (long-tail Android, Quest hardware) at the cost of conservative Vulkan targeting (1.2, traditional descriptor sets); LightweightVK discards that goal entirely to pursue Vulkan 1.3 bindless purity and a minimal surface area for prototyping. Neither approach is universally superior — the choice reflects the project's device matrix and feature requirements.
 
 The frame graph pattern described in the second half of this chapter is not specific to any level: it is a design pattern for managing inter-pass resource lifetimes and synchronisation that is used in **Filament**, Unreal's **Render Dependency Graph** (**RDG**), **Bevy**'s **RenderGraph**, and **Firefox WebRender**. It solves a structural problem that arises whenever rendering is split into multiple passes with shared intermediate resources. Section 7 introduces the problem — ownership ambiguity, redundant resource allocation, manual barrier management, and feature coupling — and the core concepts: passes with setup/execute phases, virtual resources, transient vs. imported resources, pass culling, memory aliasing, and automatic barrier insertion. Section 8 provides an implementation deep-dive using **Filament**'s **FrameGraph** as the reference: the builder pattern with `FrameGraph::Builder`, `FrameGraphId<FrameGraphTexture>`, and setup/execute lambdas; resource versioning via write-edge new-version semantics forming a **DAG**; and the five-step compilation phase (topological sort via Kahn's algorithm, culling, lifetime scan, aliasing, barrier insertion via `VkImageMemoryBarrier` batched into `vkCmdPipelineBarrier`), followed by the execution phase where transient resources are devirtualised to real `VkImage` handles. Section 9 covers transient resource allocators: the **VMA** `VMA_POOL_CREATE_LINEAR_ALGORITHM_BIT` pool for O(1) per-frame allocation, the **VMA** virtual block API (`VmaVirtualBlock`, `vmaVirtualAllocate()`) for offset-only management over a pre-allocated `VkDeviceMemory`, and `vmaCreateAliasingImage()` for binding multiple `VkImage` objects to the same `VmaAllocation` when their lifetimes do not overlap — a technique that routinely achieves 40–50% transient **VRAM** savings in production deferred pipelines. Section 10 surveys other notable abstractions in the cross-platform rendering space: **Diligent Engine** with its modern-API-shaped interface, automatic resource state tracking, and `IRenderDevice` / `IDeviceContext` model; **The Forge** (Confetti FX) with its **FSL** (Forge Shading Language) cross-compilation pipeline and shipped titles including *Call of Duty: Warzone Mobile*; **LLGL** (Low Level Graphics Library) as a thin **C++11** abstraction maximising fidelity to **Vulkan** and **Metal** semantics; and **Magnum** as a modular, composable toolkit suited to scientific visualisation. Section 11 provides a practical decision guide summarising when to choose each level, from raw **Vulkan** extensions (`VK_KHR_ray_tracing_pipeline`, `VK_EXT_mesh_shader`) through **bgfx**, **SDL3 GPU**, **Filament**, full engines, and a custom frame graph over **Vulkan** for async-compute pipelines.
 
@@ -658,6 +697,7 @@ The frame graph pattern, introduced publicly in Yuriy O'Donnell's GDC 2017 talk 
 | Frostbite (EA) | FrameGraph | Origin; O'Donnell GDC 2017 |
 | Unreal Engine 5 | Render Dependency Graph (RDG) | Full async-compute integration |
 | Filament (Google) | FrameGraph | Open-source, Vulkan backend on Linux |
+| Granite (Arntzen) | RenderGraph | Open-source, Vulkan-only; subpass merging for tile GPUs; see §10.15 |
 | Bevy | RenderGraph | Node + edge model; uses wgpu |
 | Firefox WebRender | RenderTask graph | Similar concept, 2D rendering |
 | bgfx | *Not implemented* | Views approximate the concept manually |
@@ -1291,6 +1331,283 @@ magma is best suited for C++ projects that want the full Vulkan feature surface 
 
 [Source: magma repository — vcoda/magma](https://github.com/vcoda/magma)
 
+### 10.13 IGL — Meta's Intermediate Graphics Library
+
+[IGL](https://github.com/facebook/igl) (Intermediate Graphics Library) is a production-grade cross-platform GPU abstraction layer open-sourced by Meta in 2023 under the MIT licence. It underpins rendering in Meta Quest XR applications, Instagram, and other Meta products. IGL wraps Vulkan 1.2, Metal 2+, OpenGL 2.x/3.x/ES 2.0/3.x, and WebGL 2.0 behind a single command-buffer API.
+
+**Design philosophy.** IGL's API mirrors Vulkan and Metal mental models — explicit render passes, explicit command buffers, explicit pipeline state objects — rather than OpenGL's implicit state machine. Unlike bgfx's view abstraction, render passes are visible to the application. Unlike Filament, IGL provides no material system or PBR pipeline; it is a pure GPU-submission library. The result is a HAL that composes with any rendering algorithm while providing portability across the Vulkan, Metal, and OpenGL ecosystems.
+
+**Vulkan 1.2 backend.** On Linux the Vulkan backend (`src/igl/vulkan/`) creates `VkInstance`, `VkPhysicalDevice`, and `VkDevice`, then manages a descriptor pool cache, a staging ring buffer for texture uploads, and a timeline-semaphore fence model for frame pacing. Descriptor sets are traditional (not bindless): each `IGL::RenderPipelineState` corresponds to a `VkPipelineLayout` + `VkDescriptorSetLayout` pair cached by signature hash.
+
+```cpp
+#include <igl/vulkan/Device.h>
+#include <igl/vulkan/VulkanContext.h>
+
+// --- Context creation (Vulkan backend) ---
+igl::vulkan::VulkanContextConfig cfg;
+cfg.maxTextures       = 512;
+cfg.maxSamplers       = 128;
+cfg.enableValidation  = true;
+
+// nativeWindow is a platform-specific handle (ANativeWindow*, HWND, etc.)
+auto vkCtx = igl::vulkan::VulkanContext::create(cfg, nativeWindow, nullptr);
+auto device = igl::vulkan::Device::create(std::move(vkCtx), nullptr);
+
+// --- Shader stages ---
+auto shaders = device->createShaderStages(
+    vertGLSLSource, "main",   // vertex GLSL
+    fragGLSLSource, "main",   // fragment GLSL
+    nullptr);
+
+// --- Render pipeline ---
+igl::RenderPipelineDesc pipelineDesc;
+pipelineDesc.shaderStages = shaders;
+pipelineDesc.targetDesc.colorAttachments.resize(1);
+pipelineDesc.targetDesc.colorAttachments[0].textureFormat =
+    igl::TextureFormat::BGRA_UNorm8;
+pipelineDesc.targetDesc.depthAttachmentFormat =
+    igl::TextureFormat::Z_UNorm24;
+auto pipeline = device->createRenderPipeline(pipelineDesc, nullptr);
+
+// --- Vertex buffer ---
+igl::BufferDesc vbDesc;
+vbDesc.type   = igl::BufferDesc::BufferTypeBits::Vertex;
+vbDesc.data   = vertices;
+vbDesc.length = sizeof(vertices);
+auto vertexBuffer = device->createBuffer(vbDesc, nullptr);
+
+// --- Command buffer and render pass ---
+auto cmdBuf = device->createCommandBuffer({}, nullptr);
+
+igl::RenderPassDesc passDesc;
+passDesc.colorAttachments[0].loadAction  = igl::LoadAction::Clear;
+passDesc.colorAttachments[0].clearColor  = {0.0f, 0.0f, 0.0f, 1.0f};
+passDesc.depthAttachment.loadAction      = igl::LoadAction::Clear;
+passDesc.depthAttachment.clearDepth      = 1.0f;
+
+auto encoder = cmdBuf->createRenderCommandEncoder(passDesc, framebuffer);
+encoder->bindRenderPipelineState(pipeline);
+encoder->bindBuffer(0, vertexBuffer, 0);
+encoder->drawIndexed(igl::PrimitiveType::Triangle, indexCount,
+                     igl::IndexFormat::UInt32, *indexBuffer, 0);
+encoder->endEncoding();
+
+device->submit(*cmdBuf, igl::CommandQueueType::Graphics);
+```
+
+[Source: IGL repository — facebook/igl](https://github.com/facebook/igl)
+
+**Relationship to LightweightVK.** LightweightVK (§10.14) was originally forked from IGL's Vulkan backend (circa 2022–2023) before being completely redesigned. They share no current synchronisation. The architectural split illustrates the IGL vs. LightweightVK tradeoff precisely: IGL keeps traditional descriptor sets and Vulkan 1.2 to serve long-tail Android and Quest hardware; LightweightVK discards that compatibility envelope to target Vulkan 1.3 bindless-only rendering.
+
+**Ecosystem and activity.** IGL is actively maintained by Meta engineers (3,200+ stars, commits ongoing as of 2026). It ships in production in Meta Quest XR titles, making it a credible reference for how production XR rendering composes with Vulkan on Android. The XR-adjacent use case connects it to Monado (Ch131) and OpenXR swapchain management — IGL's framebuffer model maps naturally onto `XrSwapchainImage` arrays.
+
+### 10.14 LightweightVK — Vulkan 1.3 Bindless Prototyping
+
+[LightweightVK](https://github.com/corporateshark/lightweightvk) is a Vulkan 1.3-exclusive rapid-prototyping framework by Sergey Kosarevsky, companion to *3D Graphics Rendering Cookbook* (Packt, 2nd ed.). It began as a fork of IGL's Vulkan backend and underwent a full API redesign with no intention of multi-backend compatibility or backward compatibility with Vulkan 1.2.
+
+**Vulkan 1.3 first-class features.** LightweightVK adopts three Vulkan 1.3 promoted extensions as non-optional requirements:
+
+- **Dynamic rendering** (`VK_KHR_dynamic_rendering`): no `VkRenderPass` or `VkFramebuffer` objects exist. Render targets are specified inline at `cmdBeginRendering()` time, eliminating the render pass compilation overhead and attachment format constraints that traditional render passes impose.
+- **Synchronization2** (`VK_KHR_synchronization2`): `vkCmdPipelineBarrier2` and `vkQueueSubmit2` replace their Vulkan 1.0 equivalents. Stage and access flags use the expanded `VkPipelineStageFlags2` type, eliminating the aliased `BOTTOM_OF_PIPE` / `TOP_OF_PIPE` workarounds required in Vulkan 1.x.
+- **Bindless descriptors** via `VK_EXT_descriptor_indexing` and `VK_KHR_buffer_device_address`: all textures and samplers are registered into a global descriptor array at creation time and addressed by index in shaders. Per-draw `vkCmdBindDescriptorSets` calls are absent from the hot path.
+
+**No STL in the public API.** Public headers avoid `std::vector`, `std::unordered_map`, and `std::string` in function signatures. This enables use in codebases with custom allocators, WASM targets (where STL overhead matters), or strict ABI boundaries.
+
+**Shader support.** LightweightVK accepts GLSL (compiled via glslang to SPIR-V at runtime or offline), Slang (see Ch117), and precompiled SPIR-V binary. The bindless model is expressed in GLSL via `layout(set=0, binding=0) uniform texture2D textures[]` and in Slang via `Texture2D textures[]`.
+
+```cpp
+#include <lvk/LVK.h>
+
+// --- Context and swapchain (wraps vkb::InstanceBuilder + VMA internally) ---
+std::unique_ptr<lvk::IContext> ctx = lvk::createVulkanContextWithSwapchain(
+    window, width, height,
+    {.enableValidation = true});
+
+// --- Vertex buffer ---
+const float verts[] = { -0.5f,-0.5f, 0.5f,-0.5f, 0.0f,0.5f };
+lvk::Holder<lvk::BufferHandle> vb = ctx->createBuffer({
+    .usage     = lvk::BufferUsageBits_Vertex,
+    .storage   = lvk::StorageType_Device,
+    .size      = sizeof(verts),
+    .data      = verts,
+    .debugName = "VertexBuffer",
+});
+
+// --- Texture (registered into bindless descriptor array automatically) ---
+lvk::Holder<lvk::TextureHandle> tex = ctx->createTexture({
+    .type       = lvk::TextureType_2D,
+    .format     = lvk::Format_RGBA_UN8,
+    .dimensions = {512, 512, 1},
+    .usage      = lvk::TextureUsageBits_Sampled,
+    .data       = pixelData,
+    .debugName  = "Albedo",
+});
+
+// --- Render pipeline ---
+lvk::Holder<lvk::RenderPipelineHandle> pipeline = ctx->createRenderPipeline({
+    .smVert   = ctx->createShaderModule({vertGLSL, lvk::Stage_Vert, "main"}),
+    .smFrag   = ctx->createShaderModule({fragGLSL, lvk::Stage_Frag, "main"}),
+    .color    = {{.format = ctx->getSwapchainFormat()}},
+    .debugName = "TrianglePipeline",
+});
+
+// --- Render pass via dynamic rendering (no VkRenderPass object) ---
+lvk::ICommandBuffer& cmd = ctx->acquireCommandBuffer();
+
+cmd.cmdBeginRendering(
+    lvk::RenderPass{
+        .color = {{.loadOp      = lvk::LoadOp_Clear,
+                   .clearColor  = {0.0f, 0.0f, 0.0f, 1.0f}}}},
+    lvk::Framebuffer{
+        .color = {{.texture = ctx->getCurrentSwapchainTexture()}}});
+
+cmd.cmdBindRenderPipeline(pipeline);
+cmd.cmdBindVertexBuffer(0, vb);
+// Texture accessed by bindless index in shader — no descriptor bind call here
+cmd.cmdDraw(3);
+cmd.cmdEndRendering();
+
+ctx->submit(cmd, ctx->getCurrentSwapchainTexture());
+```
+
+In the fragment shader the texture is accessed via the global bindless table:
+
+```glsl
+// Fragment shader — bindless texture access
+layout(set = 0, binding = 0) uniform sampler2D textures[];
+
+layout(push_constant) uniform PC {
+    uint texIdx;  // index into bindless table, passed per-draw
+} pc;
+
+void main() {
+    outColor = texture(textures[nonuniformEXT(pc.texIdx)], vTexCoord);
+}
+```
+
+[Source: LightweightVK repository — corporateshark/lightweightvk](https://github.com/corporateshark/lightweightvk)
+
+**Optional extensions.** Ray tracing (`VK_KHR_ray_tracing_pipeline`, `VK_KHR_acceleration_structure`), mesh shaders (`VK_EXT_mesh_shader`), and OpenXR 1.1 (Windows only) are available as opt-in compile-time flags. The bindless foundation composes cleanly with ray tracing — shader binding tables are buffers addressed via `VkDeviceAddress`, fitting the buffer-device-address model already required for bindless descriptors.
+
+**Intended scope.** LightweightVK is explicitly not intended for production shipping. It prioritises clarity and modern idiom coverage over robustness, recovery, and backward compatibility. As a teaching tool it is effective precisely because it is not burdened by the compatibility surface of IGL or bgfx: every Vulkan 1.3 feature is used without an `#ifdef` fallback.
+
+### 10.15 Granite — Driver-Expert Vulkan Renderer
+
+[Granite](https://github.com/Themaister/Granite) is a personal Vulkan renderer by Hans-Kristian Arntzen (Themaister), a Valve engineer who also authors SPIRV-Cross (Ch61), Fossilize (pipeline state serialisation), and co-leads vkd3d-proton (Ch104). He is a primary contributor to RADV, Mesa's AMD Vulkan driver. Granite is MIT-licensed, described explicitly as a personal/educational project, and actively maintained (SDL3 integration and `KHR_display` work as of mid-2026).
+
+Its significance for this book is not that it is a shipping SDK — it is not — but that its design choices reflect unusually deep knowledge of how Vulkan hardware and drivers actually behave. No other framework in this chapter's survey was built by someone who simultaneously develops the GPU driver that executes it.
+
+**Abstraction level.** Granite sits between raw Vulkan and a full engine. Its README states it targets "between 'perfect' Vulkan and OpenGL/D3D11 w.r.t. CPU overhead." Unlike bgfx or IGL it is Vulkan-only; unlike LightweightVK it provides a complete render graph, async-compute queue management, and presentation infrastructure, not just a resource API.
+
+#### Render Graph
+
+The render graph is Granite's defining feature. Passes declare inputs and outputs declaratively; the graph is compiled (baked) in nine sequential steps before execution: validate → dependency traversal → pass reordering → logical-to-physical resource assignment → **subpass merging** → transient attachment marking → `VkRenderPassCreateInfo` construction → barrier emission → temporal aliasing. Ch133 §8.4 covers the barrier and async-compute aspects in detail; the distinctive step here is subpass merging.
+
+**Subpass merging for tile-based GPUs.** If two adjacent passes share the same attachments and their attachment-read dependency qualifies for `VK_DEPENDENCY_BY_REGION_BIT` (per-tile rather than full image), the compiler merges them into a single Vulkan render pass with two subpasses. On Mali and Adreno tile-based GPUs this keeps intermediate data (e.g., G-buffer colour and G-buffer depth read by a lighting subpass) on-chip in the tile buffer, eliminating round-trips to main DRAM. No other framework in this chapter's survey implements this optimisation at the abstraction layer level.
+
+```cpp
+#include "renderer/render_graph.hpp"
+#include "vulkan/device.hpp"
+
+// --- Device setup ---
+Vulkan::Context ctx;
+ctx.init_instance_and_device(nullptr, 0, nullptr, 0);
+Vulkan::Device device;
+device.set_context(ctx);
+
+// --- Render graph construction ---
+RenderGraph graph;
+graph.set_device(&device);
+
+// G-buffer pass — outputs albedo + depth
+AttachmentInfo albedo_info, depth_info;
+albedo_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+albedo_info.size_x = 1.0f;  // fraction of swapchain dimensions
+albedo_info.size_y = 1.0f;
+depth_info.format  = VK_FORMAT_D32_SFLOAT;
+
+auto &gbuffer_pass = graph.add_pass("GBuffer", RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+auto &albedo_res   = gbuffer_pass.add_color_output("albedo", albedo_info);
+auto &depth_res    = gbuffer_pass.add_depth_stencil_output("depth", depth_info);
+gbuffer_pass.set_build_render_pass([&](Vulkan::CommandBuffer &cmd) {
+    // scene geometry draw calls
+    cmd.draw(vertexCount, 1, 0, 0);
+});
+
+// Lighting pass reads GBuffer outputs — compiler may merge into one VkRenderPass
+auto &lighting_pass = graph.add_pass("Lighting", RENDER_GRAPH_QUEUE_GRAPHICS_BIT);
+lighting_pass.add_texture_input("albedo");
+lighting_pass.add_texture_input("depth");
+auto &hdr_out = lighting_pass.add_color_output("hdr",
+    {.format = VK_FORMAT_R16G16B16A16_SFLOAT, .size_x = 1.0f, .size_y = 1.0f});
+lighting_pass.set_build_render_pass([&](Vulkan::CommandBuffer &cmd) {
+    // deferred lighting fullscreen pass
+});
+
+// Async compute pass on dedicated compute queue
+auto &ssao_pass = graph.add_pass("SSAO", RENDER_GRAPH_QUEUE_ASYNC_COMPUTE_BIT);
+ssao_pass.add_texture_input("depth");
+auto &ssao_out  = ssao_pass.add_storage_texture_output("ssao",
+    {.format = VK_FORMAT_R8_UNORM, .size_x = 0.5f, .size_y = 0.5f});
+ssao_pass.set_build_compute_pass([&](Vulkan::CommandBuffer &cmd) {
+    cmd.dispatch(width/8, height/8, 1);
+});
+
+// Compile and execute
+graph.set_backbuffer_source("hdr");
+graph.bake();       // nine compilation steps including subpass merge
+graph.log();        // print compiled pass/barrier schedule to stdout
+graph.reset_buffers();
+
+// Per-frame execution
+graph.setup_attachments(device, &device.get_swapchain_view());
+graph.enqueue_render_passes(device, cmd);
+```
+
+[Source: Granite render_graph.hpp — https://github.com/Themaister/Granite/blob/master/renderer/render_graph.hpp](https://github.com/Themaister/Granite/blob/master/renderer/render_graph.hpp)
+
+#### Descriptor Management — Hybrid Traditional and Bindless
+
+Granite maintains three coexisting descriptor layers:
+
+1. **`DescriptorSetAllocator`** — per-layout hash-keyed pool with per-thread, per-frame sub-pools. Thread locality avoids allocation lock contention on multi-core frame recording. Immutable samplers are baked into pipeline layouts to reduce pipeline variant count.
+
+2. **`BindlessDescriptorPool`** — a modern bindless path using `VK_EXT_descriptor_buffer`. Allocations return a GPU buffer offset; shader access goes through a global buffer of `VkDescriptorImageInfo` arrays. No `vkCmdBindDescriptorSets` on the hot path for bindless resources.
+
+3. **Immutable samplers in pipeline layout** — common sampler states (bilinear, trilinear, shadow compare) are embedded in the pipeline layout's `pImmutableSamplers`, avoiding sampler descriptor writes for the majority of texture binds.
+
+This hybrid strategy is notable: it allows Granite to run on older hardware via path 1 while fully exploiting `VK_EXT_descriptor_buffer` on drivers that expose it (RADV since Mesa 23.1, ANV since Mesa 23.3), without forking the renderer.
+
+#### Command Buffer Model
+
+Command buffers are acquired via `device.request_command_buffer(Vulkan::CommandBuffer::Type::Generic)` and returned to the device at submit time. Thread-local command pools avoid synchronisation on allocation. "Borrowed" command buffers allow external Vulkan code to integrate with Granite's lifecycle tracking. Submission is deferred: work accumulates and is batched into a single `VkSubmitInfo2` per queue per frame, coalescing semaphore waits and reducing queue submission overhead.
+
+#### Synchronization — Binary and Timeline Semaphores
+
+Granite uses both binary semaphores (for swap chain image acquisition) and timeline semaphores (for cross-queue and cross-frame dependencies). The `Helper::BatchComposer` aggregates cross-queue submissions. Implicit sync (`emit_implicit_sync_to_queues`) handles async compute hand-off without explicit application-side semaphore management. Per-frame `PerFrame` contexts provide triple-buffering fencing with stall detection — if the frame index wraps before the oldest frame has completed, the device blocks and logs a warning rather than corrupting in-flight resources.
+
+#### Fossilize Integration
+
+Pipeline state is serialised via [Fossilize](https://github.com/ValveSoftware/Fossilize) (also authored by Arntzen), enabling offline pipeline precompilation, pipeline state replay for shader pre-warming, and reproducible pipeline databases across driver versions. This is absent from every other framework in this chapter's survey. On Linux, RADV and ANV both support Fossilize replay via the VK_LAYER_FOSSILIZE Vulkan layer; the Steam runtime ships Fossilize databases for many shipped games. Granite is the only open-source renderer that natively generates and validates Fossilize databases as part of its development workflow.
+
+#### WSI and Low-Latency Extensions
+
+`WSIPlatform` is an abstract base with backends for Xlib, Wayland, headless (offscreen/CI), and DXGI on Windows. Granite integrates low-latency presentation extensions directly:
+
+- `VK_NV_low_latency2` — NVIDIA Reflex integration, reducing GPU-CPU latency by delaying CPU work until shortly before the GPU needs it
+- `VK_AMD_anti_lag` — AMD Anti-Lag, equivalent mechanism for AMD hardware
+- `VK_KHR_present_wait` — blocks the CPU until the presented frame is actually displayed, enabling precise frame-pacing without sleep-polling
+- Calibrated GPU/CPU timestamp correlation (`VK_EXT_calibrated_timestamps`) for accurate frame timing across clock domains
+- Android pre-rotation transform support for portrait/landscape handling without driver-side blit
+
+This level of presentation engineering — directly authoring the code that will run on Valve's shipping hardware — is only found in Granite among the frameworks covered in this chapter.
+
+#### Shader System
+
+Runtime GLSL compilation via `shaderc`. Hot-reload is supported on Linux and Android via filesystem watchers: shader source changes take effect on the next frame without restarting the application, which is Granite's primary developer-experience differentiator over Fossilize-precompiled workflows. No HLSL path; no Slang integration. Shader variants are managed through the pipeline cache rather than a macro permutation system.
+
+[Source: Granite repository](https://github.com/Themaister/Granite)
+
 ---
 
 ## 11. Choosing the Right Level
@@ -1369,6 +1686,28 @@ The ecosystem described in this chapter and its neighbours provides genuine opti
 - A pipeline builder API that validates shader stage completeness at `build()` time
 - Not needed: cross-API portability (magma is Vulkan-only)
 
+**Granite** (Section 10.15) when you need:
+- A Vulkan-only renderer that treats the render graph, async compute, and tile-GPU subpass merging as first-class concerns, not bolt-ons
+- Hybrid traditional + bindless descriptor management that spans both old and new hardware without forking
+- Fossilize pipeline serialisation for shader pre-warming and reproducible pipeline databases
+- A reference implementation of low-latency presentation extensions (`VK_NV_low_latency2`, `VK_AMD_anti_lag`, `VK_KHR_present_wait`)
+- Hot-reload GLSL shader development workflow with automatic filesystem watching
+- Not needed: multi-backend portability, production SDK stability guarantees, non-Vulkan targets
+
+**IGL** (Section 10.13) when you need:
+- A production cross-platform HAL used in real XR and mobile shipping titles
+- Vulkan 1.2 + Metal + OpenGL/ES from a single explicit API, without a material system
+- Android long-tail device compatibility (OpenGL ES 2 / ES 3 fallback paths)
+- A HAL that composes naturally with OpenXR swapchain images (`XrSwapchainImage`)
+- Not needed: Vulkan 1.3 features, bindless rendering, prototyping speed
+
+**LightweightVK** (Section 10.14) when you need:
+- A minimal, modern Vulkan 1.3 framework for renderer prototyping or cookbook learning
+- Bindless-only resource access without traditional per-draw descriptor set binding
+- Dynamic rendering (no `VkRenderPass` / `VkFramebuffer` boilerplate)
+- GLSL + Slang + SPIR-V shader support in one framework
+- Not needed: multi-backend portability, production robustness, long-tail device support
+
 **LÖVE** (Section 10.10) when you need:
 - Rapid prototyping or game jamming in Lua with built-in physics, audio, and 2D drawing
 - A scripted game loop with zero C compilation
@@ -1408,7 +1747,17 @@ This chapter connects directly to the following chapters in the book:
 
 **Ch82 §10 — vulkan.hpp.** nvrhi (§10.11) and magma (§10.12) both depend on `vulkan.hpp` types for their generated handle and struct definitions. Ch82's Section 10 covers the `vk::raii::` RAII API and `vk::StructureChain<>` feature-chain pattern that magma and nvrhi use internally.
 
-**Ch117 — Slang and Falcor.** nvrhi (§10.11) is the rendering hardware abstraction layer inside Falcor. Ch117 covers Falcor's Slang-based shader pipeline; nvrhi is the Vulkan/D3D substrate that executes those compiled shaders via `ICommandList` and `IAccelStruct`.
+**Ch117 — Slang and Falcor.** nvrhi (§10.11) is the rendering hardware abstraction layer inside Falcor. Ch117 covers Falcor's Slang-based shader pipeline; nvrhi is the Vulkan/D3D substrate that executes those compiled shaders via `ICommandList` and `IAccelStruct`. LightweightVK (§10.14) also accepts Slang shaders directly, making it a lightweight alternative to Falcor/nvrhi for Slang-based rendering research on Linux.
+
+**Ch133 — Vulkan Async Compute Queues.** Granite's render graph (§10.15) is the reference implementation covered in Ch133 §8.4 for multi-queue scheduling, `VkEvent` vs `VkSemaphore` strategy, and cross-queue resource ownership transfers. The subpass-merging step in Granite's `bake()` phase is the mechanism that allows a G-buffer pass and deferred lighting pass to share a single `vkCmdBeginRenderPass` / `vkCmdEndRenderPass` on tile-based hardware — a Vulkan subpass dependency pattern that Ch133 introduces for async compute scheduling.
+
+**Ch61 — SPIR-V and SPIRV-Cross.** Hans-Kristian Arntzen (Granite's author) is also the primary author of SPIRV-Cross. Granite's shader compilation pipeline (runtime GLSL → `shaderc` → SPIR-V) feeds directly into the SPIRV-Cross reflection that Granite uses to auto-generate pipeline layout descriptors. Ch61's coverage of SPIR-V binary layout and SPIRV-Cross's cross-compilation is the foundation of Granite's shader system.
+
+**Ch104 — vkd3d-proton and DXVK.** Granite's Fossilize integration (§10.15) is used in the same Steam runtime ecosystem that ships Fossilize databases for DXVK and vkd3d-proton titles. Ch104 covers how D3D12/D3D11 calls are translated to Vulkan; Fossilize pipeline replay is the mechanism that allows those translated pipelines to be pre-compiled before the game runs, eliminating stutter.
+
+**Ch131 — OpenXR and Monado.** IGL (§10.13) is used in production in Meta Quest XR titles. Its framebuffer model maps onto `XrSwapchainImage` arrays from Monado's OpenXR runtime — each IGL framebuffer wraps a swapchain-provided `VkImage` obtained from `xrAcquireSwapchainImage`. Ch131's coverage of the OpenXR swapchain lifecycle is the runtime context in which IGL's Vulkan backend operates on Android.
+
+**Ch18 — Vulkan Drivers (RADV, ANV, NVK).** LightweightVK (§10.14) requires Vulkan 1.3 with `VK_KHR_dynamic_rendering` and `VK_KHR_synchronization2`. RADV supports Vulkan 1.3 from Mesa 22.0 onward; ANV from Mesa 22.3; NVK from Mesa 24.0. Any Linux system running Mesa 22.3+ with RADV or ANV satisfies LightweightVK's requirements. IGL targets Vulkan 1.2, which all three Mesa Vulkan drivers have supported since Mesa 21.x.
 
 ## Roadmap
 
