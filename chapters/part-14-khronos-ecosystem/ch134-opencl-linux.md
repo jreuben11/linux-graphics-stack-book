@@ -2,7 +2,22 @@
 
 ## Scope
 
-This chapter targets GPU compute developers, image processing engineers, ML practitioners who need vendor-neutral GPU acceleration, and Mesa contributors working on OpenCL support. It covers the full OpenCL ecosystem on Linux: the ICD dispatch architecture, Mesa's rusticl Gallium frontend, Intel's NEO compute runtime, AMD's ROCm CLR OpenCL stack, the pocl CPU/multi-target implementation, the OpenCL programming model including SVM and USM, OpenCL–OpenGL/Vulkan interoperability via DMA-BUF, real-world applications, and debugging and profiling tools.
+This chapter targets:
+- **GPU compute developers** — implementing OpenCL kernels for cross-vendor GPU acceleration
+- **Image processing engineers** — using OpenCL for camera, video, and photo processing pipelines
+- **ML practitioners** — needing vendor-neutral GPU acceleration across AMD, Intel, and NVIDIA hardware
+- **Mesa contributors** — working on OpenCL support through the rusticl Gallium frontend
+
+It covers the full OpenCL ecosystem on Linux:
+- **ICD dispatch architecture** — the Installable Client Driver loader model and platform enumeration
+- **Mesa's rusticl Gallium frontend** — OpenCL 3.0 via Gallium, replacing the legacy Clover implementation
+- **Intel's NEO compute runtime** — the open-source OpenCL ICD for Intel GPUs from Gen8 through Xe3P
+- **AMD's ROCm CLR OpenCL stack** — Compute Language Runtime providing OpenCL 2.0 on RDNA/CDNA hardware
+- **pocl CPU/multi-target implementation** — portable OpenCL 3.0 via LLVM for CPU, CUDA, and Level Zero targets
+- **OpenCL programming model** — including SVM, USM, NDRange dispatch, and SPIR-V ingestion
+- **OpenCL–OpenGL/Vulkan interoperability via DMA-BUF** — zero-copy cross-API pipelines using `cl_khr_external_memory`
+- **Real-world applications** — Darktable, hashcat, FFmpeg, BOINC, and vkFFT usage patterns
+- **Debugging and profiling tools** — oclgrind, clpeak, `clGetEventProfilingInfo`, and vendor-specific profilers
 
 ## Table of Contents
 

@@ -24,13 +24,23 @@
 
 ## Overview
 
-This chapter targets three overlapping audiences. **Systems and driver developers** will find a precise treatment of how NVK's NVKMD abstraction layer, push buffer encoding, and synchronisation model differ from AMD's RADV and Intel's ANV — the two other major production Mesa Vulkan drivers covered in Chapter 18. **Graphics application developers** will learn which GPU generations support which Vulkan versions, how the GSP-RM firmware dependency shapes runtime performance, and how to configure and test NVK for their workloads. **Contributors to NVK** will find the chapter a structured entry point to the source tree, covering the NVKMD function-pointer interface, the nv_push encoding layer, the NAK compiler handoff, and the dEQP testing workflow.
+This chapter targets three overlapping audiences:
+
+- **Systems and driver developers** — a precise treatment of how NVK's NVKMD abstraction layer, push buffer encoding, and synchronisation model differ from AMD's RADV and Intel's ANV — the two other major production Mesa Vulkan drivers covered in Chapter 18.
+- **Graphics application developers** — which GPU generations support which Vulkan versions, how the GSP-RM firmware dependency shapes runtime performance, and how to configure and test NVK for their workloads.
+- **Contributors to NVK** — a structured entry point to the source tree, covering the NVKMD function-pointer interface, the nv_push encoding layer, the NAK compiler handoff, and the dEQP testing workflow.
 
 **NVK** is NVIDIA's open-source Vulkan driver in Mesa, located at `src/nouveau/vulkan/` in the Mesa repository. [Source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/nouveau/vulkan) It is a clean-slate Mesa Vulkan driver — not a wrapper over the legacy Gallium nouveau driver, not a shim over NVIDIA's proprietary stack — designed from the ground up using Mesa's modern Vulkan common infrastructure. NVK provides a conformant Vulkan 1.4 implementation for all supported GPU generations, from Maxwell (GeForce GTX 750, 2014) through Blackwell (GeForce RTX 5090, 2025), with Kepler (GeForce GTX 660, 2012) providing conformant Vulkan 1.2.
 
 Chapter 10b ("NVK: Building a Vulkan Driver from Scratch") tells the origin story of NVK — why Faith Ekstrand chose a clean-sheet design over extending the legacy Gallium nouveau driver, how the object model, memory heaps, NIR lowering, push buffer encoding, and synchronisation primitives are implemented, and what lessons the project holds for future Mesa Vulkan driver authors. Readers who have not yet read Chapter 10b should do so before this chapter, because ch177 builds on that foundation rather than repeating it.
 
-This chapter's contribution relative to Chapter 10b is threefold: a detailed examination of the **NVKMD abstraction layer** that decouples NVK from any specific kernel ABI; a focused treatment of **WSI integration** via the Kopper layer, DMA-BUF, and the Wayland explicit sync protocol; and a complete **conformance and deployment history** tracking NVK from its Mesa 23.3 landing through Maxwell/Pascal/Volta and Kepler/Blackwell enablement in Mesa 25.x and 26.x. The chapter closes with a practical guide to building, debugging, and running dEQP conformance tests against NVK.
+This chapter's contribution relative to Chapter 10b is threefold:
+
+- **NVKMD abstraction layer** — a detailed examination of the interface that decouples NVK from any specific kernel ABI
+- **WSI integration** — a focused treatment via the Kopper layer, DMA-BUF, and the Wayland explicit sync protocol
+- **Conformance and deployment history** — tracking NVK from its Mesa 23.3 landing through Maxwell/Pascal/Volta and Kepler/Blackwell enablement in Mesa 25.x and 26.x
+
+The chapter closes with a practical guide to building, debugging, and running dEQP conformance tests against NVK.
 
 ---
 

@@ -34,19 +34,49 @@ graph LR
     GPU --> CMP["Compositing\n(Wayland compositor)"]
 ```
 
-Section 1 covers the **FreeType 2** glyph rasterisation pipeline in detail: the **FT_Load_Glyph()** / **FT_Render_Glyph()** call sequence, the full set of **FT_LOAD_** flag values, and the three hinting modes — the **bytecode interpreter (BCI)** (including the v35, v38, and v40 interpreter generations), the **autohinter**, and unhinted rendering. It also covers subpixel rendering via **FT_RENDER_MODE_LCD** and **FT_RENDER_MODE_LCD_V**, the **FT_LCD_FILTER_DEFAULT** FIR filter and its companion **FT_Library_SetLcdFilterWeights()**, the patent history of **Microsoft ClearType** (which delayed **FT_CONFIG_OPTION_SUBPIXEL_RENDERING** until patents expired in 2019), and the gamma-correction blending that must be applied by the rendering layer since **FreeType** rasterises in linear light.
+Section 1 covers the **FreeType 2** glyph rasterisation pipeline in detail:
+- **FT_Load_Glyph()** / **FT_Render_Glyph()** — call sequence
+- **FT_LOAD_** flags — full set of flag values
+- Three hinting modes — the **bytecode interpreter (BCI)** (v35, v38, and v40 generations), the **autohinter**, and unhinted rendering
+- **FT_RENDER_MODE_LCD** / **FT_RENDER_MODE_LCD_V** — subpixel rendering modes
+- **FT_LCD_FILTER_DEFAULT** FIR filter and **FT_Library_SetLcdFilterWeights()** — LCD filter configuration
+- **Microsoft ClearType** patent history — delayed **FT_CONFIG_OPTION_SUBPIXEL_RENDERING** until patents expired in 2019
+- Gamma-correction blending — must be applied by the rendering layer since **FreeType** rasterises in linear light
 
-Section 2 covers **HarfBuzz**, the **OpenType** shaping engine. It explains the core data types — **hb_buffer_t**, **hb_font_t**, **hb_glyph_info_t**, and **hb_glyph_position_t** — and the **hb_shape()** call that processes **GSUB** (glyph substitution, including Arabic positional forms and ligatures) and **GPOS** (glyph positioning, including kerning and mark attachment). It describes the **Unicode Bidirectional Algorithm (UBA)** as it relates to shaping-run segmentation, the per-script shapers for Arabic, Indic scripts (**Devanagari**, **Bengali**, etc.), **Hangul**, and **Myanmar**, and the cluster model in **hb_glyph_info_t.cluster** that supports cursor positioning and hit-testing.
+Section 2 covers **HarfBuzz**, the **OpenType** shaping engine:
+- **hb_buffer_t**, **hb_font_t**, **hb_glyph_info_t**, **hb_glyph_position_t** — core data types
+- **hb_shape()** — processes **GSUB** (glyph substitution: Arabic positional forms, ligatures) and **GPOS** (glyph positioning: kerning, mark attachment)
+- **Unicode Bidirectional Algorithm (UBA)** — shaping-run segmentation
+- Per-script shapers — Arabic, Indic scripts (**Devanagari**, **Bengali**, etc.), **Hangul**, **Myanmar**
+- **hb_glyph_info_t.cluster** — cluster model supporting cursor positioning and hit-testing
 
-Section 3 covers **fontconfig**, the system-level font discovery and matching library. It describes the **FcPattern** pattern language (properties: `family`, `weight`, `slant`, `lang`, `charset`, and others), font family alias chains (`sans-serif` → **DejaVu Sans** → **Arial**), per-application overrides via **fonts.conf** (`$XDG_CONFIG_HOME/fontconfig/fonts.conf`), and the binary font cache maintained by **fc-cache** with command-line tools **fc-list**, **fc-match**, and **fc-scan**.
+Section 3 covers **fontconfig**, the system-level font discovery and matching library:
+- **FcPattern** pattern language — properties: `family`, `weight`, `slant`, `lang`, `charset`, and others
+- Font family alias chains — e.g. `sans-serif` → **DejaVu Sans** → **Arial**
+- Per-application overrides — **fonts.conf** (`$XDG_CONFIG_HOME/fontconfig/fonts.conf`)
+- Binary font cache — **fc-cache**, with command-line tools **fc-list**, **fc-match**, and **fc-scan**
 
-Section 4 covers **Cairo**, the **PostScript**-inspired 2D compositing library used by **GTK3/GTK2** and **Pango**. It describes the three-layer painting model (source, mask, **CAIRO_OPERATOR_OVER**), the available surface backends (**cairo_image_surface_t**, **XCB**, **PDF**, and the **EGL**/**OpenGL** surface via **cairo_egl_device_create()**), and text rendering via **cairo_show_glyphs()** with pre-shaped glyph arrays from **HarfBuzz**.
+Section 4 covers **Cairo**, the **PostScript**-inspired 2D compositing library used by **GTK3/GTK2** and **Pango**:
+- Three-layer painting model — source, mask, **CAIRO_OPERATOR_OVER**
+- Surface backends — **cairo_image_surface_t**, **XCB**, **PDF**, and the **EGL**/**OpenGL** surface via **cairo_egl_device_create()**
+- **cairo_show_glyphs()** — text rendering with pre-shaped glyph arrays from **HarfBuzz**
 
-Section 5 covers **Pango**, the full text layout engine for the **GNOME/GTK** ecosystem, which integrates **fontconfig**, **FreeType**, **HarfBuzz**, and **Cairo**. It describes **PangoContext**, **PangoFontDescription**, the **PangoLayout** paragraph layout pipeline (Unicode segmentation, **BiDi** analysis, script itemisation, font matching, **HarfBuzz** shaping, and **UAX #14** line-breaking), **PangoLayoutLine** iteration, and bidirectional text reordering.
+Section 5 covers **Pango**, the full text layout engine for the **GNOME/GTK** ecosystem, integrating **fontconfig**, **FreeType**, **HarfBuzz**, and **Cairo**:
+- **PangoContext** / **PangoFontDescription** — context and font description objects
+- **PangoLayout** paragraph layout pipeline — Unicode segmentation, **BiDi** analysis, script itemisation, font matching, **HarfBuzz** shaping, and **UAX #14** line-breaking
+- **PangoLayoutLine** iteration and bidirectional text reordering
 
-Section 6 covers glyph atlas management across four toolkits: **Qt**'s **QFontEngineFT** and shelf-packing **QSGRhiAtlasTexture**; **GTK4**'s **GSK** Vulkan renderer with its **VkImage**-backed atlas and **PangoCairoFcFontMap**; **Skia**'s layered **SkStrikeCache** / **GrTextBlobRedrawCoordinator** / **GrAtlasManager** system with bitmap, path, and **SDF (Signed Distance Field)** glyph strategies; and **WebRender** (Firefox's Rust-based renderer) with its **GpuCacheTexture** and separate sub-atlases for grayscale and colour emoji glyphs.
+Section 6 covers glyph atlas management across four toolkits:
+- **Qt** — **QFontEngineFT** and shelf-packing **QSGRhiAtlasTexture**
+- **GTK4** — **GSK** Vulkan renderer with **VkImage**-backed atlas and **PangoCairoFcFontMap**
+- **Skia** — layered **SkStrikeCache** / **GrTextBlobRedrawCoordinator** / **GrAtlasManager** with bitmap, path, and **SDF (Signed Distance Field)** glyph strategies
+- **WebRender** (Firefox's Rust-based renderer) — **GpuCacheTexture** with separate sub-atlases for grayscale and colour emoji glyphs
 
-The chapter also covers two important cross-cutting concerns: why the transition from **X11** to **Wayland** broke the **LCD** subpixel rendering that made fonts look sharp on **RGB** stripe panels (including the **wl_output.subpixel** hint and why **GTK4**, **Qt6**, and **foot** still default to grayscale), and how **OpenType** variable fonts are handled at both the **FreeType** (**FT_Set_Var_Design_Coordinates()**, **FT_MM_Var**, **gvar**/**CFF2** delta tables) and **HarfBuzz** (**hb_font_set_variations()**) layers, including the variation-axis cache-key challenge for glyph atlases. Readers from the terminal and TUI world will find the atlas management and **Wayland** subpixel sections directly applicable to how GPU-accelerated terminal emulators like **Ghostty**, **WezTerm**, and **foot** manage their glyph caches.
+The chapter also covers two important cross-cutting concerns:
+- **LCD subpixel rendering on Wayland** — why the transition from **X11** to **Wayland** broke subpixel rendering on **RGB** stripe panels; the **wl_output.subpixel** hint and why **GTK4**, **Qt6**, and **foot** still default to grayscale
+- **OpenType variable fonts** — handled at the **FreeType** layer (**FT_Set_Var_Design_Coordinates()**, **FT_MM_Var**, **gvar**/**CFF2** delta tables) and **HarfBuzz** layer (**hb_font_set_variations()**), including the variation-axis cache-key challenge for glyph atlases
+
+Readers from the terminal and TUI world will find the atlas management and **Wayland** subpixel sections directly applicable to how GPU-accelerated terminal emulators like **Ghostty**, **WezTerm**, and **foot** manage their glyph caches.
 
 ---
 

@@ -1,6 +1,12 @@
 # Chapter 173 — VK_EXT_shader_object: Pipeline-Free Shader Binding in Vulkan
 
-This chapter targets three overlapping audiences: **Vulkan graphics application developers** who want to eliminate pipeline compilation stutter in their applications; **Mesa driver contributors** implementing or maintaining `VK_EXT_shader_object` support in RADV, ANV, and NVK; and **game engine developers** evaluating a migration path away from the `VkPipeline` object model. Readers should be comfortable with core Vulkan concepts — command buffers, descriptor sets, render passes — before proceeding.
+This chapter targets three overlapping audiences:
+
+- **Vulkan graphics application developers** — who want to eliminate pipeline compilation stutter in their applications
+- **Mesa driver contributors** — implementing or maintaining `VK_EXT_shader_object` support in RADV, ANV, and NVK
+- **Game engine developers** — evaluating a migration path away from the `VkPipeline` object model
+
+Readers should be comfortable with core Vulkan concepts — command buffers, descriptor sets, render passes — before proceeding.
 
 ---
 

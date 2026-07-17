@@ -63,9 +63,27 @@
 
 ## 1. Overview
 
-Video4Linux version 2 (V4L2) is the Linux kernel subsystem that exposes camera sensors, video capture hardware, hardware video codecs, image signal processors (ISPs), and a growing class of compute-on-frame devices to userspace. It is not a single monolithic API but a layered system: a generic capture/output ioctl API sitting on top of a buffer-management framework (videobuf2, vb2), unified by the media controller graph that describes how physical hardware blocks connect.
+Video4Linux version 2 (V4L2) is the Linux kernel subsystem that exposes the following hardware classes to userspace:
 
-This chapter targets two audiences. **Systems and driver developers** will find architectural walkthroughs of the key kernel subsystems — the media controller entity-pad-link model, the vb2 buffer state machine, the subdev format negotiation protocol, and the request API for per-frame parameter delivery. **Application developers** will find concrete ioctl sequences, the DMABUF zero-copy patterns that bridge V4L2 frames to EGL, Vulkan, and GStreamer, and the stateless codec programming model required for Raspberry Pi, Allwinner Cedrus, and Rockchip RKVDEC devices.
+- **Camera sensors** — raw image data from MIPI CSI-2 and parallel-bus sensors
+- **Video capture hardware** — frame grabbers, CSI-2 receivers, and HDMI-in devices
+- **Hardware video codecs** — stateful and stateless H.264/H.265/VP8/VP9/AV1 engines
+- **Image signal processors (ISPs)** — on-SoC pipeline stages for demosaic, AWB, and noise reduction
+- **Compute-on-frame devices** — an expanding class combining capture and in-line processing
+
+It is not a single monolithic API but a layered system: a generic capture/output ioctl API sitting on top of a buffer-management framework (videobuf2, vb2), unified by the media controller graph that describes how physical hardware blocks connect.
+
+This chapter targets two audiences. **Systems and driver developers** will find architectural walkthroughs of the key kernel subsystems:
+
+- **Media controller entity-pad-link model** — graph representation of hardware topology
+- **vb2 buffer state machine** — videobuf2 lifecycle from allocation through dequeue
+- **Subdev format negotiation protocol** — pad-level format propagation across pipeline stages
+- **Request API** — per-frame parameter delivery and atomicity across multiple drivers
+
+**Application developers** will find concrete ioctl sequences and integration patterns:
+
+- **DMABUF zero-copy patterns** — bridging V4L2 frames to EGL, Vulkan, and GStreamer without CPU copies
+- **Stateless codec programming model** — required for Raspberry Pi, Allwinner Cedrus, and Rockchip RKVDEC devices
 
 Where the kernel subsystem is well-documented but companion APIs are in flux (notably fence-based per-buffer synchronisation), this chapter explicitly distinguishes what is upstream and stable from what is a long-standing out-of-tree proposal.
 

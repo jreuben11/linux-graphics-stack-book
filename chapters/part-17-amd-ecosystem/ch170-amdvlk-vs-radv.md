@@ -75,12 +75,17 @@ AMDVLK in favour of full investment in RADV. Understanding what distinguished th
 why AMD eventually consolidated — remains practically and historically relevant to anyone writing
 Vulkan software targeting AMD hardware on Linux.
 
-This chapter covers the architecture of both drivers (Sections 2–3), their diverging compiler
-strategies (Section 4), their extension and feature support matrices (Section 5), how distributions
-package and users select between them (Section 6), the performance picture that led AMD to
-consolidate (Section 7), the consolidation story itself (Section 8), and practical guidance for
-anyone still maintaining or migrating code (Sections 9–10). Code examples focus on ICD selection,
-driver identification, and cache management.
+This chapter covers:
+
+- **Architecture of both drivers** — AMDVLK and RADV design, components, and kernel interfaces (Sections 2–3)
+- **Diverging compiler strategies** — SPIR-V → LLPC → LLVM → ISA versus SPIR-V → NIR → ACO → ISA (Section 4)
+- **Extension and feature support matrices** — Vulkan conformance level, VK_AMD_* extensions, ray tracing, mesh shaders, and video decode (Section 5)
+- **Distribution packaging and driver selection** — how distributions package and users select between the two ICDs (Section 6)
+- **Performance picture** — gaming, ray tracing, and compute benchmarks that led AMD to consolidate (Section 7)
+- **Consolidation story** — AMD's 2025 decision to discontinue AMDVLK and fully support RADV (Section 8)
+- **Practical guidance** — stability, bug report paths, CTS status, and migration advice for anyone still maintaining or migrating code (Sections 9–10)
+
+Code examples focus on ICD selection, driver identification, and cache management.
 
 ---
 

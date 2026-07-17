@@ -2,9 +2,27 @@
 
 **Part VII — Application APIs and Middleware**
 
-**Audiences targeted**: Graphics and multimedia application developers integrating hardware video encode into Vulkan pipelines; driver developers implementing `VK_KHR_video_encode_h264`, `VK_KHR_video_encode_h265`, and `VK_KHR_video_encode_av1`; and engineers building zero-copy transcode pipelines, game-capture stacks, and low-latency VR streaming systems.
+**Audiences targeted**:
 
-This chapter is the encode counterpart to **Chapter 50 (Vulkan Video Decode)**. Ch50 covers the shared `VK_KHR_video_queue` infrastructure, decode session lifecycle, H.264/H.265/AV1 decode extensions, DPB management, and FFmpeg decode integration. This chapter focuses exclusively on the encode side: `VK_KHR_video_encode_queue` and the codec-specific encode extensions, rate control, Mesa driver implementations, FFmpeg and GStreamer encode integration, and latency-optimised streaming use cases.
+- Graphics and multimedia application developers integrating hardware video encode into Vulkan pipelines
+- Driver developers implementing `VK_KHR_video_encode_h264`, `VK_KHR_video_encode_h265`, and `VK_KHR_video_encode_av1`
+- Engineers building zero-copy transcode pipelines, game-capture stacks, and low-latency VR streaming systems
+
+This chapter is the encode counterpart to **Chapter 50 (Vulkan Video Decode)**. Ch50 covers the shared decode infrastructure:
+
+- **`VK_KHR_video_queue` infrastructure**
+- Decode session lifecycle
+- H.264/H.265/AV1 decode extensions
+- DPB management
+- FFmpeg decode integration
+
+This chapter focuses exclusively on the encode side:
+
+- **`VK_KHR_video_encode_queue`** and the codec-specific encode extensions
+- Rate control
+- Mesa driver implementations
+- FFmpeg and GStreamer encode integration
+- Latency-optimised streaming use cases
 
 ---
 

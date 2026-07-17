@@ -31,7 +31,14 @@ DisplayLink is a USB-to-display technology by Synaptics that lets a USB 3.0 or U
 
 The architecture is unusual: evdi is a DRM driver whose "GPU" is actually a userspace daemon that compresses the framebuffer and sends it over USB. This makes it a valuable case study in virtual DRM devices and the boundary between kernel DRM and userspace display processing.
 
-Understanding evdi requires decomposing it into four distinct layers: the kernel module that presents a standard DRM interface to compositors; the GEM memory model backing framebuffers with shmem-allocated pages; the painter subsystem that tracks dirty regions and delivers pixel data to userspace; and the libevdi wrapper that mediates between the kernel module and the proprietary DLM daemon. Each layer interacts with upstream DRM infrastructure in ways that illuminate the broader Linux graphics stack.
+Understanding evdi requires decomposing it into four distinct layers:
+
+- **kernel module** — presents a standard DRM interface to compositors
+- **GEM memory model** — backs framebuffers with shmem-allocated pages
+- **painter subsystem** — tracks dirty regions and delivers pixel data to userspace
+- **libevdi wrapper** — mediates between the kernel module and the proprietary DLM daemon
+
+Each layer interacts with upstream DRM infrastructure in ways that illuminate the broader Linux graphics stack.
 
 Sources: [evdi on GitHub](https://github.com/DisplayLink/evdi) | [DisplayLink Linux driver](https://www.synaptics.com/products/displaylink-graphics/downloads/ubuntu)
 

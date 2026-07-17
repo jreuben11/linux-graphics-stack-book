@@ -1,6 +1,12 @@
 # Chapter 51: GPU Power Management and Thermal
 
-This chapter targets two audiences: **systems and driver developers** who need to understand how the Linux kernel arbitrates power states across GPU subsystems, and **graphics application developers** — particularly those working in laptop, embedded, or battery-constrained environments — who must reason about performance throttling, power caps, and profile selection. The chapter covers the DRM runtime PM framework, per-vendor power management architectures, the Linux thermal subsystem, userspace profile daemons, and the monitoring tools that expose all of this to operators and developers.
+This chapter targets two audiences: **systems and driver developers** who need to understand how the Linux kernel arbitrates power states across GPU subsystems, and **graphics application developers** — particularly those working in laptop, embedded, or battery-constrained environments — who must reason about performance throttling, power caps, and profile selection. The chapter covers:
+
+- **DRM runtime PM framework**
+- **per-vendor power management architectures**
+- **Linux thermal subsystem**
+- **userspace profile daemons**
+- **monitoring tools** that expose all of this to operators and developers
 
 ---
 

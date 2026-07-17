@@ -6,27 +6,87 @@
 
 Hardware-accelerated video is one of the oldest and least-understood segments of the Linux graphics stack. Despite **VA-API**'s introduction in 2009, the user-facing APIs remain inconsistent, the zero-copy pipeline connecting decode to display is underused, and the **V4L2** stateless codec interface has brought a new generation of **SoC** hardware support that intersects in non-obvious ways with the older **VA-API** model. This chapter maps the entire pipeline from camera capture or media container to pixels on screen, with emphasis on the **DMA-BUF** exchange points that connect each subsystem. The zero-copy imperative is a recurring thread: at every API boundary we examine whether GPU memory crosses a CPU copy and how to avoid that cost.
 
-Section 1 covers the **VA-API** architecture and surface model in depth: the **ICD**-style dispatch layer in **libva.so**, driver plugin selection via **LIBVA_DRIVER_NAME**, capability discovery through **vaQueryConfigProfiles** and **vaQueryConfigEntrypoints**, the **VASurface** GPU-resident frame buffer model, the **VAConfig**/**VAContext** pipeline object hierarchy, the **VABuffer** decode submission loop (**vaBeginPicture**, **vaRenderPicture**, **vaEndPicture**, **vaSyncSurface**), and the **vaExportSurfaceHandle** **DMA-BUF** export path via **VADRMPRIMESurfaceDescriptor** that connects **VA-API** to the rest of the graphics stack.
+Section 1 covers the **VA-API** architecture and surface model in depth:
+- **ICD-style dispatch layer** — in `libva.so`
+- **LIBVA_DRIVER_NAME** — driver plugin selection
+- **vaQueryConfigProfiles** / **vaQueryConfigEntrypoints** — capability discovery
+- **VASurface** — GPU-resident frame buffer model
+- **VAConfig** / **VAContext** — pipeline object hierarchy
+- **VABuffer** decode submission loop — **vaBeginPicture**, **vaRenderPicture**, **vaEndPicture**, **vaSyncSurface**
+- **vaExportSurfaceHandle** — **DMA-BUF** export path via **VADRMPRIMESurfaceDescriptor** connecting **VA-API** to the rest of the graphics stack
 
-Section 2 examines **VA-API** driver implementations: the **Mesa** Gallium **VA-API** state tracker in **src/gallium/frontends/va/** and its **pipe_video_codec** interface; the **radeonsi** Gallium driver mapping to **VCN** (**Video Core Next**) hardware across **VCN 1.0** through **VCN 4.0** (**RDNA3**); Intel's **iHD_drv_video.so** (**intel-media-driver**) and legacy **i965_drv_video.so** covering **Broadwell** through **Intel Arc**; the open-source **nvidia-vaapi-driver** wrapper that translates **VA-API** to **NVDEC**; and **NVIDIA**'s strategic forward path via **Vulkan Video** extensions.
+Section 2 examines **VA-API** driver implementations:
+- **Mesa Gallium VA-API state tracker** — in `src/gallium/frontends/va/` with `pipe_video_codec` interface
+- **radeonsi** — Gallium driver mapping to **VCN** (**Video Core Next**) hardware across **VCN 1.0** through **VCN 4.0** (**RDNA3**)
+- **iHD_drv_video.so** (**intel-media-driver**) and legacy **i965_drv_video.so** — covering **Broadwell** through **Intel Arc**
+- **nvidia-vaapi-driver** — open-source wrapper translating **VA-API** to **NVDEC**
+- **NVIDIA** Vulkan Video extensions — strategic forward path
 
-Section 3 details the **VA-API** encode pipeline: **VAEntrypointEncSlice** and **VAEntrypointEncSliceLP** (low-power encode), rate control modes (**VA_RC_CBR**, **VA_RC_VBR**, **VA_RC_CQP**) via **VAEncMiscParameterBuffer**, reference frame management through codec-specific parameter buffers such as **VAEncPictureParameterBufferH264**, **AV1** hardware encode on **VCN 4.0** and **Intel Arc**, and the **VACodedBuffer** mechanism for retrieving encoded bitstream data.
+Section 3 details the **VA-API** encode pipeline:
+- **VAEntrypointEncSlice** / **VAEntrypointEncSliceLP** — full and low-power encode entrypoints
+- **VA_RC_CBR**, **VA_RC_VBR**, **VA_RC_CQP** — rate control modes via **VAEncMiscParameterBuffer**
+- **VAEncPictureParameterBufferH264** — reference frame management via codec-specific parameter buffers
+- **AV1** hardware encode — on **VCN 4.0** and **Intel Arc**
+- **VACodedBuffer** — mechanism for retrieving encoded bitstream data
 
-Section 4 covers **VDPAU** (**Video Decode and Presentation API for Unix**): its display-centric object model (**VdpDevice**, **VdpDecoder**, **VdpVideoSurface**, **VdpOutputSurface**, **VdpPresentationQueue**), **VdpVideoMixer** GPU post-processing, the fundamental **X11**-only limitation and lack of native **Wayland** backend, the **libvdpau-va-gl** fallback wrapper, and **OpenGL** interop via **VdpauInitNV** and **vdpauMapSurfacesNV**.
+Section 4 covers **VDPAU** (**Video Decode and Presentation API for Unix**):
+- Display-centric object model — **VdpDevice**, **VdpDecoder**, **VdpVideoSurface**, **VdpOutputSurface**, **VdpPresentationQueue**
+- **VdpVideoMixer** — GPU post-processing
+- **X11**-only limitation — no native **Wayland** backend
+- **libvdpau-va-gl** — fallback wrapper
+- **VdpauInitNV** / **vdpauMapSurfacesNV** — **OpenGL** interop
 
-Section 5 covers the **V4L2** kernel subsystem for video capture and codec offload: the **DMA-BUF** buffer model (**V4L2_MEMORY_MMAP**, **V4L2_MEMORY_DMABUF**) with **VIDIOC_REQBUFS**, **VIDIOC_QBUF**, **VIDIOC_DQBUF**, and **VIDIOC_EXPBUF**; the architectural contrast between stateful codec drivers (internalised state machine, as on **Samsung Exynos MFC** and **Mediatek Vcodec**) and stateless codec drivers (thin hardware submission using **VIDIOC_S_EXT_CTRLS**, as on **Rockchip RKVDEC**, **Allwinner Cedrus**, **Hantro**, and **Broadcom** Raspberry Pi); the **V4L2 Request API** (**MEDIA_IOC_REQUEST_ALLOC**, **MEDIA_REQUEST_IOC_QUEUE**) that makes stateless codecs work; a complete worked example using the **Rockchip RKVDEC** driver on **RK3399**/**RK3588** with **V4L2_PIX_FMT_H264_SLICE** and **NV12** **DMA-BUF** capture; and integration with the **GStreamer** **v4l2codecs** plugin elements (**v4l2slh264dec**, **v4l2slhevcdec**, **v4l2slvp9dec**, **v4l2slav1dec**).
+Section 5 covers the **V4L2** kernel subsystem for video capture and codec offload:
+- **DMA-BUF buffer model** — **V4L2_MEMORY_MMAP** / **V4L2_MEMORY_DMABUF** with **VIDIOC_REQBUFS**, **VIDIOC_QBUF**, **VIDIOC_DQBUF**, and **VIDIOC_EXPBUF**
+- **Stateful codec drivers** — internalized state machine, as on **Samsung Exynos MFC** and **Mediatek Vcodec**
+- **Stateless codec drivers** — thin hardware submission via **VIDIOC_S_EXT_CTRLS**, as on **Rockchip RKVDEC**, **Allwinner Cedrus**, **Hantro**, and **Broadcom** Raspberry Pi
+- **V4L2 Request API** — **MEDIA_IOC_REQUEST_ALLOC** / **MEDIA_REQUEST_IOC_QUEUE** enabling stateless codec operation
+- **Rockchip RKVDEC** worked example — **RK3399**/**RK3588** with **V4L2_PIX_FMT_H264_SLICE** and **NV12** **DMA-BUF** capture
+- **GStreamer v4l2codecs** plugin — **v4l2slh264dec**, **v4l2slhevcdec**, **v4l2slvp9dec**, **v4l2slav1dec** elements
 
-Section 6 covers **GStreamer** pipeline construction and zero-copy video: **VA-API** decoder and post-processing elements (**vaapih264dec**, **vaapih265dec**, **vaapipostproc**, **vaapisink**), the three zero-copy mechanisms (**GstDmaBufAllocator**, the **memory:DMABuf** caps feature, and **GstDrmFormatModifierMeta**), and screen recording via **pipewiresrc** combined with **vaapih264enc**.
+Section 6 covers **GStreamer** pipeline construction and zero-copy video:
+- **VA-API** elements — **vaapih264dec**, **vaapih265dec**, **vaapipostproc**, **vaapisink** decoder and post-processing elements
+- Zero-copy mechanisms — **GstDmaBufAllocator**, **memory:DMABuf** caps feature, and **GstDrmFormatModifierMeta**
+- **pipewiresrc** + **vaapih264enc** — screen recording pipeline
 
-Section 7 covers **PipeWire** as the Linux multimedia session manager: the graph model of nodes, ports, and links managed by **wireplumber**; the **SPA** (**Simple Plugin API**) plugin architecture with **spa_node_process()** and **spa_pod** format negotiation; the **pw_stream** API for screen capture and camera consumers including **DMA-BUF** modifier negotiation via **SPA_FORMAT_VIDEO_modifier**; **wireplumber** session and policy management via **Lua** scripts; and the complete **xdg-desktop-portal** screen capture flow through **org.freedesktop.portal.ScreenCast**, the **zwlr_screencopy_manager_v1** compositor protocol, and **PipeWire** **SPA_DATA_DmaBuf** frame delivery.
+Section 7 covers **PipeWire** as the Linux multimedia session manager:
+- Graph model — nodes, ports, and links managed by **wireplumber**
+- **SPA** (**Simple Plugin API**) — plugin architecture with **spa_node_process()** and **spa_pod** format negotiation
+- **pw_stream** API — screen capture and camera consumers with **DMA-BUF** modifier negotiation via **SPA_FORMAT_VIDEO_modifier**
+- **wireplumber** — session and policy management via Lua scripts
+- **xdg-desktop-portal** screen capture flow — **org.freedesktop.portal.ScreenCast**, **zwlr_screencopy_manager_v1** compositor protocol, and **SPA_DATA_DmaBuf** frame delivery
 
-Section 8 presents a practical hardware-accelerated transcoding pipeline: **H.264** 4K to **AV1** encode on **AMD** or **Intel** GPU using both the **ffmpeg** **VA-API** path (**-hwaccel vaapi**, **av1_vaapi**, **scale_vaapi**) and the equivalent **GStreamer** pipeline with **vaapih264dec** and **vaapiav1enc**, plus guidance on identifying encode bottlenecks and common error codes such as **VA_STATUS_ERROR_UNSUPPORTED_PROFILE**.
+Section 8 presents a practical hardware-accelerated transcoding pipeline:
+- **ffmpeg VA-API** path — **-hwaccel vaapi**, **av1_vaapi**, **scale_vaapi** for H.264 4K to **AV1** on **AMD** or **Intel** GPU
+- **GStreamer** pipeline — **vaapih264dec** + **vaapiav1enc** equivalent
+- Error diagnosis — identifying encode bottlenecks and common error codes such as **VA_STATUS_ERROR_UNSUPPORTED_PROFILE**
 
-Section 9 covers **libcamera** as the modern Linux camera stack: the **V4L2 Media Controller** problem for multi-block **ISP** (**Image Signal Processor**) pipelines, the **Media Controller API** (**MEDIA_IOC_G_TOPOLOGY**, **MEDIA_IOC_SETUP_LINK**, **VIDIOC_SUBDEV_S_FMT**) with **media-ctl** tooling, **libcamera**'s pipeline handler architecture (**rkisp1**, **ipu3**, **rpi/vc4**, **simple**, **qcom_camss**), the **FrameBuffer**/**FrameBufferAllocator** buffer model producing **DMA-BUF** fds, **IPA** (**Image Processing Algorithm**) sandboxed plugins for per-sensor **3A** and lens shading correction, platform-specific details for **Raspberry Pi** (**Unicam** CSI-2, **VideoCore IV**), **Rockchip RKISP1**/**RKISP2**, and **Intel IPU3**, and zero-copy import of camera frames into **Vulkan** via **VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT** and **VkImageDrmFormatModifierExplicitCreateInfoEXT**.
+Section 9 covers **libcamera** as the modern Linux camera stack:
+- **V4L2 Media Controller** — problem statement for multi-block **ISP** (**Image Signal Processor**) pipelines
+- **Media Controller API** — **MEDIA_IOC_G_TOPOLOGY**, **MEDIA_IOC_SETUP_LINK**, **VIDIOC_SUBDEV_S_FMT** with **media-ctl** tooling
+- **libcamera** pipeline handlers — **rkisp1**, **ipu3**, **rpi/vc4**, **simple**, **qcom_camss**
+- **FrameBuffer** / **FrameBufferAllocator** — buffer model producing **DMA-BUF** fds
+- **IPA** (**Image Processing Algorithm**) — sandboxed plugins for per-sensor **3A** and lens shading correction
+- Platform support — **Raspberry Pi** (**Unicam** CSI-2, **VideoCore IV**), **Rockchip RKISP1**/**RKISP2**, **Intel IPU3**
+- **Vulkan** zero-copy import — via **VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT** and **VkImageDrmFormatModifierExplicitCreateInfoEXT**
 
-Section 10 covers **Vulkan Video** as the strategic forward hardware video API: the motivation relative to **VA-API**'s under-specification, the formal **VkVideoSessionKHR** / **VkVideoSessionParametersKHR** / **DPB** **VkImage** pool object model, video command buffer recording with **vkCmdBeginVideoCodingKHR** and **vkCmdDecodeVideoKHR** submitted to a **VK_QUEUE_VIDEO_DECODE_BIT_KHR** queue, the **RADV** implementation in **src/amd/vulkan/radv_video.c** targeting **RDNA1**+ for **H.264**/**H.265** and **RDNA2**+ for **AV1**, **Intel ANV** driver development for **Tigerlake**+, **NVIDIA**'s proprietary support for **VK_KHR_video_decode_h264**, **VK_KHR_video_decode_h265**, and **VK_KHR_video_decode_av1**, and the **GStreamer** **vkvideo** plugin (**vkh264dec**, **vkh265dec**, **vkav1dec**) in **gst-plugins-bad**.
+Section 10 covers **Vulkan Video** as the strategic forward hardware video API:
+- Motivation — limitations of **VA-API**'s under-specification
+- Object model — **VkVideoSessionKHR** / **VkVideoSessionParametersKHR** / **DPB** **VkImage** pool
+- Command recording — **vkCmdBeginVideoCodingKHR** / **vkCmdDecodeVideoKHR** to **VK_QUEUE_VIDEO_DECODE_BIT_KHR** queue
+- **RADV** implementation — `src/amd/vulkan/radv_video.c`, **RDNA1**+ for **H.264**/**H.265**, **RDNA2**+ for **AV1**
+- **Intel ANV** — driver development for **Tigerlake**+
+- **NVIDIA** proprietary — **VK_KHR_video_decode_h264**, **VK_KHR_video_decode_h265**, **VK_KHR_video_decode_av1**
+- **GStreamer vkvideo** plugin — **vkh264dec**, **vkh265dec**, **vkav1dec** in **gst-plugins-bad**
 
-Section 12 covers **NVDEC**, NVIDIA's fixed-function hardware decode engine, accessed via the Video Codec SDK's **`nvcuvid.h`** C API and **`libnvcuvid.so`**: the **`CUvideoparser`** / **`CUvideodecoder`** two-object model, the **`cuvidParseVideoData`** → **`cuvidDecodePicture`** → **`cuvidMapVideoFrame`** decode flow returning a **`CUdeviceptr`** to GPU-resident **NV12** frames with no CPU copy, the **`NvDecoder`** C++ helper class, the zero-copy **NVDEC → CUDA → NVENC** transcode pattern used by **DeepStream**, FFmpeg's **`h264_cuvid`** / **`hevc_cuvid`** / **`av1_cuvid`** decoder names and **`-hwaccel nvdec`** flag, per-generation codec support (VP9 from Pascal, AV1 from Ampere GA10x), and a comparison of the NVDEC, VA-API, and Vulkan Video paths on NVIDIA hardware.
+Section 12 covers **NVDEC**, NVIDIA's fixed-function hardware decode engine, accessed via the Video Codec SDK's **`nvcuvid.h`** C API and **`libnvcuvid.so`**:
+- **`CUvideoparser`** / **`CUvideodecoder`** — two-object model
+- Decode flow — **`cuvidParseVideoData`** → **`cuvidDecodePicture`** → **`cuvidMapVideoFrame`** returning **`CUdeviceptr`** to GPU-resident **NV12** frames with no CPU copy
+- **`NvDecoder`** — C++ helper class
+- **NVDEC → CUDA → NVENC** — zero-copy transcode pattern used by **DeepStream**
+- **FFmpeg** decoders — **`h264_cuvid`** / **`hevc_cuvid`** / **`av1_cuvid`** with **`-hwaccel nvdec`** flag
+- Per-generation codec support — VP9 from Pascal, AV1 from Ampere GA10x
+- Comparison — NVDEC, VA-API, and Vulkan Video paths on NVIDIA hardware
 
 ---
 

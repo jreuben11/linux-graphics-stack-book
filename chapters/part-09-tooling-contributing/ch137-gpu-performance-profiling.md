@@ -1,8 +1,23 @@
 # Chapter 137: GPU Performance Profiling Ecosystem on Linux
 
-This chapter targets **graphics performance engineers**, **game developers optimizing GPU workloads**, **Mesa driver developers**, and **systems engineers** conducting GPU profiling and tuning. It covers every layer of the Linux GPU profiling stack — from hardware performance counters exposed through the kernel's `perf` subsystem, through driver-level instrumentation in Mesa, to vendor-specific frame profilers and Vulkan API-level queries — and shows how these tools compose into a systematic optimization workflow.
+This chapter targets the following practitioners conducting GPU profiling and tuning:
 
-> **Scope:** Ch137 surveys the **Linux GPU profiling tool ecosystem** — MangoHud, RenderDoc frame analysis, Mesa shader-db, vendor profilers (AMD RGP, Intel GPA, NVIDIA Nsight), Perfetto GPU timeline, and the Linux `perf` GPU counter path. **Ch30** covers development-time debugging (validation layers, gdb, Mesa debug environment variables). **Ch93** covers performance analysis methodology (investigation structure, counter interpretation, bottleneck root-cause analysis). Readers who want to know *what tool to use* are in the right place; readers who want to know *how to interpret the results* should also read Ch93.
+- **Graphics performance engineers**
+- **Game developers** optimizing GPU workloads
+- **Mesa driver developers**
+- **Systems engineers**
+
+It covers every layer of the Linux GPU profiling stack — from hardware performance counters exposed through the kernel's `perf` subsystem, through driver-level instrumentation in Mesa, to vendor-specific frame profilers and Vulkan API-level queries — and shows how these tools compose into a systematic optimization workflow.
+
+> **Scope:** Ch137 surveys the **Linux GPU profiling tool ecosystem**:
+> - **MangoHud**
+> - **RenderDoc** frame analysis
+> - **Mesa shader-db**
+> - Vendor profilers: **AMD RGP**, **Intel GPA**, **NVIDIA Nsight**
+> - **Perfetto** GPU timeline
+> - Linux **`perf`** GPU counter path
+>
+> **Ch30** covers development-time debugging (validation layers, gdb, Mesa debug environment variables). **Ch93** covers performance analysis methodology (investigation structure, counter interpretation, bottleneck root-cause analysis). Readers who want to know *what tool to use* are in the right place; readers who want to know *how to interpret the results* should also read Ch93.
 
 ---
 

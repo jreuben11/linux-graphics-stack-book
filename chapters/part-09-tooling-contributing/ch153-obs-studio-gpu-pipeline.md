@@ -21,9 +21,21 @@
 
 ## Introduction
 
-OBS Studio is the dominant open-source tool for video recording and live streaming. On Linux, OBS sits at the intersection of nearly every GPU subsystem covered in this book: it captures screen content via PipeWire and DMA-BUF, composes scenes with OpenGL or Vulkan, and encodes the output with VA-API (Intel/AMD), NVENC (NVIDIA), or AMF (AMD). When things go wrong — dropped frames, encoding lag, capture failure — the fault usually lies somewhere in this chain.
+OBS Studio is the dominant open-source tool for video recording and live streaming. On Linux, OBS sits at the intersection of nearly every GPU subsystem covered in this book:
 
-This chapter traces the complete Linux OBS GPU pipeline from screen capture to encoded output, explaining the kernel and Mesa infrastructure that each step relies on. It is also a case-study in how a complex application ties together the xdg-desktop-portal, PipeWire, DMA-BUF, EGLImage, and hardware video encoding in a single coherent pipeline.
+- **Screen capture** — via PipeWire and DMA-BUF
+- **Scene composition** — with OpenGL or Vulkan
+- **Output encoding** — with VA-API (Intel/AMD), NVENC (NVIDIA), or AMF (AMD)
+
+When things go wrong — dropped frames, encoding lag, capture failure — the fault usually lies somewhere in this chain.
+
+This chapter traces the complete Linux OBS GPU pipeline from screen capture to encoded output, explaining the kernel and Mesa infrastructure that each step relies on. It is also a case-study in how a complex application ties together in a single coherent pipeline:
+
+- **xdg-desktop-portal** — screen capture permission and PipeWire stream negotiation
+- **PipeWire** — DMA-BUF frame transport from compositor to OBS
+- **DMA-BUF** — zero-copy buffer sharing across subsystems
+- **EGLImage** — GPU texture import from DMA-BUF file descriptors
+- **hardware video encoding** — VA-API, NVENC, or AMF for the final encode step
 
 [OBS Studio source](https://github.com/obsproject/obs-studio) | [obs-vkcapture](https://github.com/nowrep/obs-vkcapture)
 

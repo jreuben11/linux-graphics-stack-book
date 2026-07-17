@@ -28,7 +28,11 @@
 
 ## 1. Overview
 
-OpenCV (Open Source Computer Vision Library) is the de facto standard for computer vision on Linux. While it began as a CPU-only library, GPU acceleration has been a first-class concern since OpenCV 3.0, driven by three distinct hardware paths that map directly onto the Linux graphics stack described in this book: OpenCL via the Transparent API (T-API), NVIDIA CUDA via the `opencv_contrib` CUDA modules, and hardware video decode via VA-API and NVDEC.
+OpenCV (Open Source Computer Vision Library) is the de facto standard for computer vision on Linux. While it began as a CPU-only library, GPU acceleration has been a first-class concern since OpenCV 3.0, driven by three distinct hardware paths that map directly onto the Linux graphics stack described in this book:
+
+- **OpenCL** — via the Transparent API (T-API)
+- **NVIDIA CUDA** — via the `opencv_contrib` CUDA modules
+- **Hardware video decode** — via VA-API and NVDEC
 
 ### Audiences
 

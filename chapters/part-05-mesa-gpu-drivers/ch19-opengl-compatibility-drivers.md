@@ -2,7 +2,21 @@
 
 **Part V — Mesa GPU Drivers**
 
-OpenGL is thirty years old, yet it remains the rendering API for a substantial fraction of GPU workloads on Linux: native OpenGL games (including many titles from the Steam back catalogue), Wine's D3D8/D3D9 path, scientific and engineering applications, embedded and automotive displays, and X11 applications accelerated through Glamor inside XWayland. This chapter covers the three Mesa components that keep OpenGL alive and performant on modern AMD and Intel hardware: **radeonsi** (AMD's OpenGL/ES Gallium driver), **iris** (Intel's modern Gallium driver for Gen8+), and **Zink** (Mesa's Vulkan-backed OpenGL implementation). Together they represent the concrete realisation of the Gallium3D abstractions introduced in Chapter 13, now running against real hardware through the amdgpu and i915/xe kernel drivers described in Chapter 5.
+OpenGL is thirty years old, yet it remains the rendering API for a substantial fraction of GPU workloads on Linux:
+
+- **native OpenGL games** — including many titles from the Steam back catalogue
+- **Wine's D3D8/D3D9 path**
+- **scientific and engineering applications**
+- **embedded and automotive displays**
+- **X11 applications** — accelerated through Glamor inside XWayland
+
+This chapter covers the three Mesa components that keep OpenGL alive and performant on modern AMD and Intel hardware:
+
+- **radeonsi** — AMD's OpenGL/ES Gallium driver
+- **iris** — Intel's modern Gallium driver for Gen8+
+- **Zink** — Mesa's Vulkan-backed OpenGL implementation
+
+Together they represent the concrete realisation of the Gallium3D abstractions introduced in Chapter 13, now running against real hardware through the amdgpu and i915/xe kernel drivers described in Chapter 5.
 
 ---
 

@@ -24,7 +24,12 @@
 
 EGL (Embedded-system Graphics Library) is the binding layer between Khronos rendering APIs (OpenGL ES, OpenGL, OpenVG, Vulkan) and the native windowing system. On Linux, EGL sits between Mesa's driver implementations and the display subsystem — DRM, Wayland, and X11. Every GTK4 application, every Qt6 window, every Electron browser, and every Wayland compositor that uses OpenGL goes through EGL.
 
-Despite its ubiquity, EGL is often treated as boilerplate. This chapter examines it in depth: the display, surface, and context model; the platform extension mechanism that allows EGL to work natively on DRM/KMS, Wayland, and X11; the `EGLImage` mechanism that enables zero-copy buffer sharing between GPU, V4L2 decoders, and the display engine; and the `EGL_EXT_image_dma_buf_import` extension chain that is the foundation of all DMA-BUF-based workflows on Linux.
+Despite its ubiquity, EGL is often treated as boilerplate. This chapter examines it in depth:
+
+- **Display, surface, and context model** — EGL's three core object types and their initialization lifecycle
+- **Platform extension mechanism** — enables EGL to work natively on DRM/KMS, Wayland, and X11 via `eglGetPlatformDisplay`
+- **`EGLImage`** — zero-copy buffer sharing between GPU, V4L2 decoders, and the display engine
+- **`EGL_EXT_image_dma_buf_import` extension chain** — the foundation of all DMA-BUF-based workflows on Linux
 
 [EGL specification](https://registry.khronos.org/EGL/specs/eglspec.1.5.pdf) | [Mesa EGL source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/egl)
 

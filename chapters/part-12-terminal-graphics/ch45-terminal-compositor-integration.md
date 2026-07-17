@@ -30,11 +30,33 @@
 
 ## Overview
 
-A GPU-accelerated terminal emulator is, from the perspective of the **Wayland** compositor, an ordinary client: it allocates a **wl_surface**, renders into GPU memory, submits that memory as a **DMA-BUF**-backed **wl_buffer**, and waits for release. The machinery it relies upon — **GBM** surface allocation, **EGL** context setup, **DRM** format modifier negotiation, explicit synchronisation timelines via **wp_linux_drm_syncobj_manager_v1**, **KMS** plane promotion, and presentation-feedback timing via **wp_presentation** — is the same machinery used by any other **Wayland** client, from a game engine to a **Vulkan** widget toolkit. What makes terminal integration interesting is the combination of constraints that distinguish terminals from those other clients: they are text-heavy with small, irregular damage rectangles; they host decoded pixel images from **Sixel**, **Kitty**, and **iTerm2** protocols that arrive asynchronously and have no natural GPU lifetime; they must behave correctly under sandboxing with restricted device access; and they are often the first client visible on screen after the compositor starts, making latency and reliability paramount.
+A GPU-accelerated terminal emulator is, from the perspective of the **Wayland** compositor, an ordinary client: it allocates a **wl_surface**, renders into GPU memory, submits that memory as a **DMA-BUF**-backed **wl_buffer**, and waits for release. The machinery it relies upon is the same machinery used by any other **Wayland** client, from a game engine to a **Vulkan** widget toolkit:
+
+- **GBM surface allocation** — creates GPU-native buffer objects with tiling modifiers negotiated for the target display
+- **EGL context setup** — initialises the GPU rendering context via the Mesa Wayland EGL platform
+- **DRM format modifier negotiation** — selects the buffer memory layout compatible with compositor scan-out
+- **Explicit synchronisation timelines** (`wp_linux_drm_syncobj_manager_v1`) — coordinates GPU write/read ordering between the terminal and the compositor
+- **KMS plane promotion** — direct assignment of the terminal's buffer to a display engine plane, bypassing intermediate compositing
+- **Presentation-feedback timing** (`wp_presentation`) — measures per-frame display timestamps for smooth-scroll pacing
+
+What makes terminal integration interesting is the combination of constraints that distinguish terminals from those other clients:
+
+- text-heavy with small, irregular damage rectangles
+- host decoded pixel images from **Sixel**, **Kitty**, and **iTerm2** protocols that arrive asynchronously and have no natural GPU lifetime
+- must behave correctly under sandboxing with restricted device access
+- are often the first client visible on screen after the compositor starts, making latency and reliability paramount
 
 This chapter traces the full path of a frame of terminal output from the GPU render call down to the display engine's scanout, grounding each protocol and kernel mechanism in the concrete implementation choices that modern terminals make. The first four sections cover the Wayland client lifecycle and GPU buffer submission path. Section 5 covers the CPU-path alternative used by foot. Section 6 addresses explicit synchronisation. Sections 7–8 cover the compositor and KMS sides. Sections 9–13 expand into the five topics most critical for practical terminal implementation: precise damage reporting, presentation timing for smooth scrolling, fractional HiDPI scaling, Kitty graphics multiplexer passthrough, and GPU glyph atlas management. Sections 14–15 address colour space and the security model.
 
-The reader is assumed to have completed Parts I–VI: the **DRM** subsystem and **KMS** pipeline (Chapters 1–2), **GBM** and **DMA-BUF** memory management (Chapter 4), **Wayland** protocol fundamentals and the **linux-dmabuf** and explicit-sync extensions (Chapter 20), compositor internals (Chapters 21–22), and terminal GPU rendering architectures (Chapter 44). This chapter does not re-explain those foundations; it shows how they compose.
+The reader is assumed to have completed Parts I–VI:
+
+- **DRM subsystem and KMS pipeline** (Chapters 1–2)
+- **GBM and DMA-BUF memory management** (Chapter 4)
+- **Wayland protocol fundamentals and the linux-dmabuf and explicit-sync extensions** (Chapter 20)
+- **Compositor internals** (Chapters 21–22)
+- **Terminal GPU rendering architectures** (Chapter 44)
+
+This chapter does not re-explain those foundations; it shows how they compose.
 
 ---
 

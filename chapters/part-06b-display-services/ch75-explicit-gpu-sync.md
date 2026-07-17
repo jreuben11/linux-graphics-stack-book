@@ -1,6 +1,11 @@
 # Chapter 75: Explicit GPU Synchronization
 
-**Audiences targeted**: Systems and driver developers who work on DRM, Mesa, or compositor internals; graphics application developers who need to reason about fence objects and Vulkan semaphore lifecycles; browser and web platform engineers who encounter synchronization boundaries in Chrome's Viz compositor. Terminal and TUI developers may find Sections 2 and 5 useful context for understanding why their compositor behaves differently under NVIDIA versus AMD/Intel.
+**Audiences targeted**:
+
+- **Systems and driver developers** — who work on DRM, Mesa, or compositor internals
+- **Graphics application developers** — who need to reason about fence objects and Vulkan semaphore lifecycles
+- **Browser and web platform engineers** — who encounter synchronization boundaries in Chrome's Viz compositor
+- **Terminal and TUI developers** — may find Sections 2 and 5 useful context for understanding why their compositor behaves differently under NVIDIA versus AMD/Intel
 
 ---
 

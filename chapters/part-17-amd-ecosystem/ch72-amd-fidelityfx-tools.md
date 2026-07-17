@@ -48,15 +48,13 @@ Additionally, **RenderDoc** — while technically cross-vendor and independent �
 Baldur Karlsson with significant AMD engagement and is the de-facto open-source frame debugger
 for **Vulkan**, **Direct3D**, and **OpenGL** on Linux. [Source](https://renderdoc.org)
 
-The chapter opens with the **FidelityFX SDK** architecture: the `sdk/`, `ffx-api/`, and
-`sdk/src/backends/` repository layout, the **`FfxInterface`** abstraction that decouples
-effects from graphics APIs via a function-pointer table (**`fpCreatePipeline`**,
-**`fpScheduleGpuJob`**, etc.), the **Vulkan** backend initialisation sequence
-(**`ffxGetInterfaceVK`**, **`ffxGetScratchMemorySizeVK`**), and the **SDK 2.x Upgradable API**
-(`ffx-api/`) with its **`amd_fidelityfx_loader`** shim for driver-level model-weight upgrades.
-The **FidelityFX Shader Compiler (FFX-SC)** compiles all **HLSL** and **GLSL** shader
-permutations offline into **SPIR-V** / **DXIL** blobs, eliminating runtime shader compilation
-overhead.
+The chapter opens with the **FidelityFX SDK** architecture:
+
+- **Repository layout** — `sdk/`, `ffx-api/`, and `sdk/src/backends/` directory structure
+- **`FfxInterface` abstraction** — decouples effects from graphics APIs via a function-pointer table (`fpCreatePipeline`, `fpScheduleGpuJob`, etc.)
+- **Vulkan backend initialisation** — `ffxGetInterfaceVK` / `ffxGetScratchMemorySizeVK` sequence
+- **SDK 2.x Upgradable API** — `ffx-api/` layer with `amd_fidelityfx_loader` shim for driver-level model-weight upgrades
+- **FidelityFX Shader Compiler (FFX-SC)** — compiles all **HLSL** and **GLSL** shader permutations offline into **SPIR-V** / **DXIL** blobs, eliminating runtime shader compilation overhead
 
 Section 3 covers **FSR 4** — AMD's neural upscaling technology for **RDNA 4** hardware. It
 traces the evolution from **FSR 1**'s spatial **EASU**/**RCAS** algorithm, through **FSR 2/3**

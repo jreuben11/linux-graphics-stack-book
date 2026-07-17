@@ -27,7 +27,13 @@
 
 The **Direct Rendering Manager** (**DRM**) subsystem is the kernel's unified abstraction layer for **GPU** hardware. What began in the late 1990s as a narrow privilege-gating mechanism — a way for multiple X clients to share a graphics card without routing every pixel operation through a single server process — has matured over two decades into the comprehensive kernel framework that underpins everything from the framebuffer on a Raspberry Pi to the multi-die AI accelerators in modern datacentre nodes. Understanding **DRM** architecture is a prerequisite for understanding every other layer of the Linux graphics stack. The chapters that follow this one all presuppose the foundation laid here.
 
-The subsystem lives in **drivers/gpu/drm/** within the kernel source tree, alongside per-hardware driver subdirectories such as **amd/**, **i915/**, **nouveau/**, **msm/**, and **xe/**. **UAPI** headers in **include/uapi/drm/** — including **drm.h**, **amdgpu_drm.h**, and **i915_drm.h** — define the interface visible to userspace. Below **DRM** in the kernel dependency graph sit **dma-buf** (shared buffer objects passed across device and process boundaries), **dma-fence** (synchronisation primitives that signal buffer readiness), and **TTM** (Translation Table Manager, the **VRAM** heap allocator for discrete GPUs). Above **DRM**, userspace reaches the subsystem through **libdrm**, the thin **C** wrapper library that converts raw ioctls into a stable, versioned **API**. **Mesa** sits above **libdrm** and translates **OpenGL**, **Vulkan**, and **OpenCL** workloads into driver-specific **GPU** commands; **Wayland** compositors such as **wlroots**, **mutter**, and **kwin** call **libdrm** directly for **KMS** operations, bypassing **Mesa** entirely for the display path.
+The subsystem lives in **drivers/gpu/drm/** within the kernel source tree, alongside per-hardware driver subdirectories such as **amd/**, **i915/**, **nouveau/**, **msm/**, and **xe/**. **UAPI** headers in **include/uapi/drm/** — including **drm.h**, **amdgpu_drm.h**, and **i915_drm.h** — define the interface visible to userspace. Below **DRM** in the kernel dependency graph sit three foundational subsystems:
+
+- **dma-buf** — shared buffer objects passed across device and process boundaries
+- **dma-fence** — synchronisation primitives that signal buffer readiness
+- **TTM** — Translation Table Manager, the **VRAM** heap allocator for discrete GPUs
+
+Above **DRM**, userspace reaches the subsystem through **libdrm**, the thin **C** wrapper library that converts raw ioctls into a stable, versioned **API**. **Mesa** sits above **libdrm** and translates **OpenGL**, **Vulkan**, and **OpenCL** workloads into driver-specific **GPU** commands; **Wayland** compositors such as **wlroots**, **mutter**, and **kwin** call **libdrm** directly for **KMS** operations, bypassing **Mesa** entirely for the display path.
 
 A common misconception among beginners is that **DRM** is synonymous with the 3D rendering path. In reality **DRM** has two architecturally distinct halves: the display half, known as **KMS** (**Kernel Mode Setting**), which owns the pipeline from **GPU** output through display encoder to monitor; and the **GPU** execution half, which encompasses the **GEM** buffer manager, command submission queues, and scheduling. Both halves are exposed through the same character device and the same **struct drm_driver** registration, but they serve different consumers and operate on different hardware blocks. This chapter addresses both halves at the architectural level.
 
@@ -39,7 +45,25 @@ Buffer sharing between **GPU** clients uses two complementary mechanisms. **DRI3
 
 The **DRM** ioctl interface — dispatched through **drm_ioctl()** in **drm_ioctl.c** with access control enforced by **drm_ioctl_permit()** — is the sole channel for userspace communication. Capability negotiation via **DRM_IOCTL_GET_CAP** (returning constants such as **DRM_CAP_ADDFB2_MODIFIERS**, **DRM_CAP_SYNCOBJ**, and **DRM_CAP_SYNCOBJ_TIMELINE**) and client opt-ins via **DRM_IOCTL_SET_CLIENT_CAP** (flags **DRM_CLIENT_CAP_ATOMIC** and **DRM_CLIENT_CAP_UNIVERSAL_PLANES**) allow new features to be added while preserving strict **UAPI** **ABI** stability. Driver-private ioctls are declared with **DRM_IOCTL_DEF_DRV** in a range reserved below **DRM_COMMAND_END**.
 
-Two inspection mechanisms let developers explore a live system: the **drm_info** userspace tool enumerates the complete **KMS** object tree, format modifiers, and connector **EDID** data; and the kernel's **debugfs** tree under **/sys/kernel/debug/dri/** exposes per-driver files such as **i915_gem_objects**, **amdgpu_fence_info**, and **vblank_count**. **libdrm** functions — **drmGetDevices2()**, **drmModeGetResources()**, **drmModeAtomicCommit()**, **drmPrimeHandleToFD()**, and **drmModeAddFB2WithModifiers()** — are the correct userspace entry points for all of these operations; per-driver sub-libraries **libdrm_amdgpu**, **libdrm_intel**, **libdrm_nouveau**, and **libdrm_radeon** wrap driver-private ioctls for **Mesa** and **VA-API** consumers.
+Two inspection mechanisms let developers explore a live system:
+
+- **drm_info** — userspace tool that enumerates the complete **KMS** object tree, format modifiers, and connector **EDID** data
+- **debugfs** — kernel tree under **/sys/kernel/debug/dri/** exposing per-driver files such as **i915_gem_objects**, **amdgpu_fence_info**, and **vblank_count**
+
+The correct userspace entry points for all of these operations are the **libdrm** functions:
+
+- **drmGetDevices2()**
+- **drmModeGetResources()**
+- **drmModeAtomicCommit()**
+- **drmPrimeHandleToFD()**
+- **drmModeAddFB2WithModifiers()**
+
+Per-driver sub-libraries wrap driver-private ioctls for **Mesa** and **VA-API** consumers:
+
+- **libdrm_amdgpu**
+- **libdrm_intel**
+- **libdrm_nouveau**
+- **libdrm_radeon**
 
 Finally, the **fbdev** emulation layer (**CONFIG_DRM_FBDEV_EMULATION**) bridges the legacy **/dev/fbN** interface — required by **Plymouth**, **fbcon**, and older tooling — by synthesising a linear dumb buffer framebuffer from the **DRM** device via **drm_fbdev_generic_setup()**. New driver code should treat this as a compatibility shim rather than permanent infrastructure.
 

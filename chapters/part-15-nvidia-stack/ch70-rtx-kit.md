@@ -53,9 +53,37 @@ The five components address distinct problems in the real-time ray tracing pipel
 | **RTXNS** | Running **MLP** inference inside any shader stage | **VK_NV_cooperative_vector** + **Slang** **MLP** authoring |
 | **RTXNTC** | **VRAM** pressure from high-resolution **BC7** texture atlases | Neural texture compression — **MLP**-encoded textures decoded on-chip |
 
-These SDKs are not optional additions to the NVIDIA stack — they are the actual implementation layer used in production titles. Cyberpunk 2077's path tracing mode integrates **RTXDI** for direct light sampling and **NRD** for denoising. Unreal Engine 5's Lumen integrates **NRD**. Alan Wake 2 (Remedy Entertainment) uses **RTXDI**, **NRD**, and **RTXGI** in combination. The open-source reference is NVIDIA's own `NRD Sample` and `SHARC Sample` on GitHub.
+These SDKs are not optional additions to the NVIDIA stack — they are the actual implementation layer used in production titles:
+- **Cyberpunk 2077** — path tracing mode integrates **RTXDI** for direct light sampling and **NRD** for denoising
+- **Unreal Engine 5 Lumen** — integrates **NRD**
+- **Alan Wake 2** (Remedy Entertainment) — uses **RTXDI**, **NRD**, and **RTXGI** in combination
 
-Section 2 describes how the five SDKs compose into a coherent pipeline, building from scene geometry through to the tonemapper. Section 3 covers **RTXDI v3.0** in depth: **ReSTIR DI** (§3.1) introduces the reservoir data structure and the multi-stage candidate sampling, temporal reuse, and spatial reuse pipeline; **ReSTIR PT** (§3.2) extends reservoir resampling to full path suffixes via reconnection shift mapping; and the **RTXDI** API integration (§3.3) shows how to wire `rtxdi::Context`, `rtxdi::LightBufferParameters`, and the companion **HLSL**/**Slang** shader includes (`ResamplingFunctions.hlsli`, `LightShading.hlsli`) into a **Vulkan** renderer on Linux. Section 4 covers **RTXGI 2.0**: **SHaRC** (§4.1) stores per-voxel radiance in a GPU-resident hash map using `uint64_t` keys and `float4` values; **NRC** (§4.2) replaces the hash map with a tiny online-trained **MLP** using multi-resolution hash encoding; and §4.3 describes how to choose between the two based on scene characteristics and how to toggle them via the shared **RTXGI** API surface. Section 5 covers **NRD v4.17**: §5.1 compares the three primary algorithms — **REBLUR**, **RELAX**, and **SIGMA** — and explains when to use each; §5.2 details the required **G-buffer** inputs (`IN_MV`, `IN_NORMAL_ROUGHNESS`, `IN_VIEWZ`, `IN_DIFF_RADIANCE_HITDIST`, `IN_SPEC_RADIANCE_HITDIST`) and the pre-divided albedo encoding convention; §5.3 demonstrates the **NrdIntegration** helper layer (`NRDIntegration.hpp`) that manages all internal transient textures and history buffers; and §5.4 explains the **Vulkan** and **CUDA** backends, including the multi-pass dispatch structure (`vkCmdDispatch` pre-pass, history fix, blur, post-blur, split). Section 6 covers **RTXNS v1.3**: §6.1 introduces **VK_NV_cooperative_vector** and the `coopVecMatMulNV` **SPIR-V** instruction that maps to tensor core **MMA** hardware; §6.2 covers network weight layout and quantisation via `rtxns::NetworkLayout`, including **FP16**, **E4M3** **FP8**, and **INT8** formats; §6.3 shows how to author **MLP** shaders in **Slang** using the `NeuralNetwork<>` template type compiled by `slangc`; and §6.4 lists the Linux driver and hardware requirements (**NVIDIA** driver ≥ 572.16, **Ada Lovelace** or **Blackwell** GPU). Section 7 covers **RTXNTC v0.5**: §7.1 describes the compression architecture — a 3–4-layer **MLP** with multi-resolution **UV** hash encoding stored in a `.ntc` file; §7.2 walks through the offline encoding workflow using `rtxntc-encode` with **CUDA** training; and §7.3 shows the runtime inference path via **CoopVec** and the `rtxntc::SampleTexture` shader call. Section 8 assembles all five SDKs into a complete annotated rendering frame, with measured per-SDK GPU time budgets on **RTX 4080** at 1080p.
+The open-source reference is NVIDIA's own `NRD Sample` and `SHARC Sample` on GitHub.
+
+- **Section 2** — describes how the five SDKs compose into a coherent pipeline, building from scene geometry through to the tonemapper.
+- **Section 3 (RTXDI v3.0)** — covers in depth:
+  - **ReSTIR DI** (§3.1): introduces the reservoir data structure and the multi-stage candidate sampling, temporal reuse, and spatial reuse pipeline
+  - **ReSTIR PT** (§3.2): extends reservoir resampling to full path suffixes via reconnection shift mapping
+  - **RTXDI API integration** (§3.3): shows how to wire `rtxdi::Context`, `rtxdi::LightBufferParameters`, and the companion **HLSL**/**Slang** shader includes (`ResamplingFunctions.hlsli`, `LightShading.hlsli`) into a **Vulkan** renderer on Linux
+- **Section 4 (RTXGI 2.0)** — covers:
+  - **SHaRC** (§4.1): stores per-voxel radiance in a GPU-resident hash map using `uint64_t` keys and `float4` values
+  - **NRC** (§4.2): replaces the hash map with a tiny online-trained **MLP** using multi-resolution hash encoding
+  - §4.3: describes how to choose between the two based on scene characteristics and how to toggle them via the shared **RTXGI** API surface
+- **Section 5 (NRD v4.17)** — covers:
+  - §5.1: compares the three primary algorithms — **REBLUR**, **RELAX**, and **SIGMA** — and explains when to use each
+  - §5.2: details the required **G-buffer** inputs (`IN_MV`, `IN_NORMAL_ROUGHNESS`, `IN_VIEWZ`, `IN_DIFF_RADIANCE_HITDIST`, `IN_SPEC_RADIANCE_HITDIST`) and the pre-divided albedo encoding convention
+  - §5.3: demonstrates the **NrdIntegration** helper layer (`NRDIntegration.hpp`) that manages all internal transient textures and history buffers
+  - §5.4: explains the **Vulkan** and **CUDA** backends, including the multi-pass dispatch structure (`vkCmdDispatch` pre-pass, history fix, blur, post-blur, split)
+- **Section 6 (RTXNS v1.3)** — covers:
+  - §6.1: introduces **VK_NV_cooperative_vector** and the `coopVecMatMulNV` **SPIR-V** instruction that maps to tensor core **MMA** hardware
+  - §6.2: covers network weight layout and quantisation via `rtxns::NetworkLayout`, including **FP16**, **E4M3** **FP8**, and **INT8** formats
+  - §6.3: shows how to author **MLP** shaders in **Slang** using the `NeuralNetwork<>` template type compiled by `slangc`
+  - §6.4: lists the Linux driver and hardware requirements (**NVIDIA** driver ≥ 572.16, **Ada Lovelace** or **Blackwell** GPU)
+- **Section 7 (RTXNTC v0.5)** — covers:
+  - §7.1: describes the compression architecture — a 3–4-layer **MLP** with multi-resolution **UV** hash encoding stored in a `.ntc` file
+  - §7.2: walks through the offline encoding workflow using `rtxntc-encode` with **CUDA** training
+  - §7.3: shows the runtime inference path via **CoopVec** and the `rtxntc::SampleTexture` shader call
+- **Section 8** — assembles all five SDKs into a complete annotated rendering frame, with measured per-SDK GPU time budgets on **RTX 4080** at 1080p.
 
 This chapter targets developers integrating these SDKs into a custom **Vulkan** renderer or evaluating them for an existing engine. A working **Vulkan** renderer with ray tracing support (Ch56 prerequisite) is assumed. **CUDA** knowledge is useful but not required — all five SDKs have primary **Vulkan** paths on Linux.
 

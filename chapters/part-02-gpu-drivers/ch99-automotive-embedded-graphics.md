@@ -24,11 +24,22 @@
 
 ## Overview
 
-This chapter targets four overlapping audiences: embedded Linux engineers who port and maintain BSPs (Board Support Packages) for automotive-grade SoCs; automotive software developers building IVI (In-Vehicle Infotainment), digital instrument clusters, and ADAS HMI; IoT/kiosk developers deploying locked-down single-application displays in retail, industrial, and signage contexts; and SoC bring-up engineers who must get a GPU and display pipeline running on new silicon with nothing more than a device-tree binding and a datasheet.
+This chapter targets four overlapping audiences:
+
+- **Embedded Linux engineers** — port and maintain BSPs (Board Support Packages) for automotive-grade SoCs
+- **Automotive software developers** — building IVI (In-Vehicle Infotainment), digital instrument clusters, and ADAS HMI
+- **IoT/kiosk developers** — deploying locked-down single-application displays in retail, industrial, and signage contexts
+- **SoC bring-up engineers** — must get a GPU and display pipeline running on new silicon with nothing more than a device-tree binding and a datasheet
 
 The Linux graphics stack on embedded and automotive platforms is simultaneously simpler and more constrained than on the desktop. There is often a single display, a fixed resolution, no window manager in the traditional sense, and a hard real-time rendering budget dictated by display refresh. At the same time, the regulatory context is uniquely demanding: ISO 26262 functional safety governs HMI in safety-critical path (ASIL A through ASIL D), while ASPICE (Automotive SPICE) frames the software development process. GPU drivers must either achieve or be partitioned away from those safety integrity levels.
 
-This chapter traces the complete embedded graphics path: from the SoC GPU and its Linux DRM driver through the Wayland compositor (AGL's agl-compositor, standalone Weston, or the cage kiosk compositor) to the application toolkit (Qt Automotive Suite), the build system integration (Yocto, Buildroot), and the networking layer that ships rendered frames to secondary displays across automotive cabin Ethernet.
+This chapter traces the complete embedded graphics path:
+
+- **SoC GPU and Linux DRM driver** — hardware compute and display pipeline
+- **Wayland compositor** — AGL's agl-compositor, standalone Weston, or the cage kiosk compositor
+- **Application toolkit** — Qt Automotive Suite
+- **Build system integration** — Yocto, Buildroot
+- **Networking layer** — ships rendered frames to secondary displays across automotive cabin Ethernet
 
 ---
 

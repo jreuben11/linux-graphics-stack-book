@@ -1,6 +1,13 @@
 # Chapter 131: Touch, Stylus, and Tablet Input on Wayland
 
-This chapter targets **Wayland compositor developers** building tablet and touchscreen protocol support, **creative application developers** working with GIMP, Krita, and Inkscape on Wayland, **embedded touchscreen engineers** integrating capacitive or resistive touchscreens into Wayland-based products, and **input stack engineers** diagnosing or extending the pipeline from kernel driver to application event. The chapter traces the full input chain — hardware → kernel HID driver → evdev → libinput → Wayland compositor → Wayland protocol → application — for both multi-touch surfaces and professional drawing tablets with stylus, eraser, and physical pad controls.
+This chapter targets:
+
+- **Wayland compositor developers** — building tablet and touchscreen protocol support
+- **creative application developers** — working with GIMP, Krita, and Inkscape on Wayland
+- **embedded touchscreen engineers** — integrating capacitive or resistive touchscreens into Wayland-based products
+- **input stack engineers** — diagnosing or extending the pipeline from kernel driver to application event
+
+The chapter traces the full input chain — hardware → kernel HID driver → evdev → libinput → Wayland compositor → Wayland protocol → application — for both multi-touch surfaces and professional drawing tablets with stylus, eraser, and physical pad controls.
 
 ---
 

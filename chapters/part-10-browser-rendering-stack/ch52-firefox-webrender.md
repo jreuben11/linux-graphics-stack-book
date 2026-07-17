@@ -1,6 +1,14 @@
 # Chapter 52: Firefox and WebRender
 
-This chapter targets **browser and web platform engineers** who need to understand how Firefox renders web content using its GPU-accelerated WebRender engine, and **graphics application developers** who want to understand how a production Rust graphics stack integrates OpenGL, Wayland, and WebGPU on Linux. It covers the full pipeline from CSS computed styles through display list serialization, render-graph execution, picture caching, software fallback, Wayland native-layer compositing, and Gecko's wgpu-based WebGPU implementation.
+This chapter targets **browser and web platform engineers** who need to understand how Firefox renders web content using its GPU-accelerated WebRender engine, and **graphics application developers** who want to understand how a production Rust graphics stack integrates OpenGL, Wayland, and WebGPU on Linux. It covers the full pipeline across:
+
+- CSS computed styles
+- display list serialization
+- render-graph execution
+- picture caching
+- software fallback
+- Wayland native-layer compositing
+- Gecko's wgpu-based WebGPU implementation
 
 ## Table of Contents
 

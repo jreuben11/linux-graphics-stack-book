@@ -30,7 +30,14 @@ Virtual reality headsets impose display requirements that are fundamentally inco
 
 **DRM lease** is the kernel mechanism that solves this. Introduced in Linux 4.15 (kernel commit 62884cd386b8, merged in January 2018), DRM lease allows the KMS master — typically the desktop compositor — to delegate exclusive ownership of specific display objects (CRTCs, connectors, and planes) to another process via a new file descriptor. The lessee obtains full KMS modesetting authority over those objects, drives them directly without involving the desktop compositor in the rendering critical path, and returns them when the VR session ends.
 
-This chapter covers the DRM lease kernel API, how VR runtimes discover and identify HMD connectors, the Monado OpenXR runtime's use of the lease mechanism, the `wp_drm_lease_device_v1` Wayland protocol that allows unprivileged clients to request a lease, the direct-to-display Vulkan swapchain path via `VK_EXT_acquire_drm_display`, and the frame timing machinery that VR runtimes use to hit their display's VBLANK with microsecond precision.
+This chapter covers:
+
+- **DRM lease kernel API** — the ioctl interface for delegating exclusive KMS object ownership to another process
+- **HMD connector discovery** — how VR runtimes identify head-mounted display connectors among regular monitor outputs
+- **Monado OpenXR runtime** — the open-source runtime's use of the DRM lease mechanism for direct HMD display access
+- **`wp_drm_lease_device_v1`** — the Wayland protocol that allows unprivileged clients to request a lease from the compositor
+- **`VK_EXT_acquire_drm_display`** — the direct-to-display Vulkan swapchain path bridging a DRM lease fd to a `VkDisplayKHR`
+- **Frame timing machinery** — how VR runtimes schedule presents to hit the display's VBLANK with microsecond precision
 
 ---
 

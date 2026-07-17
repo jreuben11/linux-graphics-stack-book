@@ -25,7 +25,17 @@ HDMI and DisplayPort carry audio alongside video in the same cable. From a Linux
 
 When you plug an HDMI cable into a TV or AV receiver, the following must happen: the GPU driver reads the TV's EDID to discover supported audio formats (PCM channels, compressed audio, sample rates), creates a compact summary called the ELD (EDID-Like Data), notifies the ALSA HDA codec driver, which creates PCM device entries in `/dev/snd/`. The user can then play audio through the TV via ALSA, PulseAudio, or PipeWire.
 
-This chapter covers the complete chain: HDMI audio packet protocol, EDID Short Audio Descriptors, the ELD format and how DRM generates it, the `drm_audio_component` vtable that bridges DRM and ALSA, the `snd_hda_codec_hdmi` driver, PipeWire routing, hotplug handling, DisplayPort audio specificities, and HDMI CEC for device control.
+This chapter covers the complete chain:
+
+- **HDMI audio packet protocol**
+- **EDID Short Audio Descriptors**
+- **ELD format** — how DRM generates it
+- **`drm_audio_component` vtable** — bridges DRM and ALSA
+- **`snd_hda_codec_hdmi` driver**
+- **PipeWire routing**
+- **hotplug handling**
+- **DisplayPort audio specificities**
+- **HDMI CEC** — for device control
 
 [Linux kernel audio documentation](https://www.kernel.org/doc/html/latest/sound/hd-audio/index.html)
 

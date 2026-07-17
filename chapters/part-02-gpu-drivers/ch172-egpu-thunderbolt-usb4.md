@@ -1,6 +1,18 @@
 # Chapter 172: eGPU on Linux — Thunderbolt, USB4, and PCIe Hot-Plug
 
-This chapter targets three overlapping audiences: **systems and driver developers** who need to understand how DRM handles PCIe device arrival and removal at runtime; **laptop users and creative professionals** connecting external GPU enclosures to gain desktop-class graphics performance; and **kernel contributors** working on PCIe hot-plug, Thunderbolt authorization, or GPU driver unplug paths. Understanding eGPU support exercises nearly every layer of the Linux graphics stack simultaneously — the Thunderbolt/USB4 kernel subsystem, PCIe resource allocation, DRM device lifecycle, PRIME DMA-BUF sharing, and Wayland compositor hot-plug recovery.
+This chapter targets three overlapping audiences:
+
+- **Systems and driver developers** — need to understand how DRM handles PCIe device arrival and removal at runtime
+- **Laptop users and creative professionals** — connecting external GPU enclosures to gain desktop-class graphics performance
+- **Kernel contributors** — working on PCIe hot-plug, Thunderbolt authorization, or GPU driver unplug paths
+
+Understanding eGPU support exercises nearly every layer of the Linux graphics stack simultaneously:
+
+- **Thunderbolt/USB4 kernel subsystem**
+- **PCIe resource allocation**
+- **DRM device lifecycle**
+- **PRIME DMA-BUF sharing**
+- **Wayland compositor hot-plug recovery**
 
 ---
 

@@ -26,15 +26,56 @@
 
 ## Overview
 
-Seven production **Wayland** compositors define the Linux desktop experience in 2026: **Mutter** powers **GNOME Shell**, **KWin** powers **KDE Plasma**, **Sway** provides **i3**-compatible tiling on Wayland, **Hyprland** delivers animated dynamic tiling with an extensible plugin system, **Wayfire** offers a plugin-extensible compositor built on **wlroots** and is the default compositor for **Raspberry Pi OS Bookworm**, and **labwc** provides a minimal stacking compositor with **openbox**-compatible configuration. A seventh compositor — **cosmic-comp**, developed by System76 for their **COSMIC** desktop environment on **Pop!_OS** — represents a new approach built entirely in **Rust** on the **smithay** Wayland server library. **gamescope** is Valve's game-focused micro-compositor that serves as the session compositor on **Steam Deck**. Each compositor has made architectural trade-offs that reflect its design goals, and those trade-offs propagate into every corner of the graphics stack — from which **DRM/KMS** features get exposed to applications, to which Wayland protocol extensions developers can safely target.
+Seven production **Wayland** compositors define the Linux desktop experience in 2026:
+
+- **Mutter** — powers **GNOME Shell**
+- **KWin** — powers **KDE Plasma**
+- **Sway** — provides **i3**-compatible tiling on Wayland
+- **Hyprland** — delivers animated dynamic tiling with an extensible plugin system
+- **Wayfire** — plugin-extensible compositor built on **wlroots**; default compositor for **Raspberry Pi OS Bookworm**
+- **labwc** — minimal stacking compositor with **openbox**-compatible configuration
+- **cosmic-comp** — developed by System76 for their **COSMIC** desktop environment on **Pop!_OS**; built entirely in **Rust** on the **smithay** Wayland server library
+- **gamescope** — Valve's game-focused micro-compositor; session compositor on **Steam Deck**
+
+Each compositor has made architectural trade-offs that reflect its design goals, and those trade-offs propagate into every corner of the graphics stack — from which **DRM/KMS** features get exposed to applications, to which Wayland protocol extensions developers can safely target.
 
 This chapter examines each compositor's architecture from the perspective of graphics developers and systems programmers: how they drive **KMS**, how they structure their rendering pipeline, how they handle multi-GPU configurations, and which protocol extensions they support. The material builds directly on Chapter 20 (Wayland Fundamentals) and Chapter 21 (wlroots), and connects forward to Chapter 23 (XWayland), Chapter 26 (hardware video), and Chapter 28 (Windows compatibility via Proton). The goal is not to document user-facing configuration but to explain the internal mechanisms that matter when you are writing clients, drivers, or compositor extensions.
 
-**Mutter**'s architecture centres on **MetaBackendNative** as its **DRM/KMS** backend, a **ClutterActor**/**ClutterStage** scene graph for compositing, a **MetaKmsUpdate** abstraction that dispatches all **DRM_IOCTL_ATOMIC_COMMIT** calls from a dedicated **KMS thread**, window effects via the **MetaPlugin** interface, colour management through **MetaColorManager** and **colord** ICC profiles, **XWayland** supervision via **MetaXWaylandManager**, and the removal of the legacy **EGLStreams** buffer-sharing path in GNOME 51 in favour of **GBM**/**linux-dmabuf**. **KWin** offers the most complete feature set of any Linux desktop compositor: a **SceneOpenGL** renderer using KWin's own **OpenGL**/**GLES2** wrapper, a **ScenePainter** software fallback, a rich effect system (`Effect` base class with Kawase blur, Wobbly Windows, and Overview effects), a **DRM/KMS** backend (`DrmBackend`/`DrmGpu`/`DrmAtomicCommit`), **direct scanout** via `DrmOutput::tryDirectScanout`, **HDR** support via `HDR_OUTPUT_METADATA` and `COLORSPACE` **KMS** properties (Plasma 6.0), **explicit synchronisation** via **`wp_linux_drm_syncobj_v1`** (Plasma 6.1), **VRR** (variable refresh rate) via `DrmOutput::setVrrPolicy`, and a **JavaScript** scripting API for window management rules. **Sway** implements a rooted-tree layout (`sway_container`) compatible with **i3** configuration syntax, exposes an **IPC** socket protocol via **`swaymsg`**, and uses **`zwlr_layer_shell_v1`** for system UI and **`ext_session_lock_v1`** for secure lock screens. **Hyprland** adds a full animation system (`CHyprAnimationManager`/`CAnimatedVariable`) with bezier-curve easing, a custom **GLES2** rendering pipeline with rounded corners and per-window blur, a third-party plugin API managed via **hyprpm**, and compositor-specific protocols including **`hyprland_global_shortcuts_manager_v1`** and **`hyprland_toplevel_export_manager_v1`**. **gamescope** is built around a **Vulkan**-first compositing pipeline in `steamcompmgr.cpp` and `rendervulkan.cpp`, importing game frame buffers via **`VK_EXT_image_drm_format_modifier`** as **DMA-BUF** objects, applying **FSR** (FidelityFX Super Resolution) upscaling as **Vulkan** compute shaders, compositing overlays including **MangoHud** and the **Steam** overlay, supporting both nested mode and direct **KMS** mode, and managing hardware plane assignment via the **libliftoff** library. **cosmic-comp** uses **smithay**'s `DrmDevice`/`GbmAllocator`/`GlMultiRenderer` backend stack with Rust's ownership model for compositor safety, and exposes a **`wlr-layer-shell-v1`**-compatible surface for **COSMIC** panel and dock components.
+Per-compositor architectural highlights:
 
-The chapter then addresses the broader **Wayland** protocol ecosystem: the stability ladder from `stable` to `staging` to `unstable` extensions, a cross-compositor support matrix covering **`xdg-shell`**, **`wp_presentation`**, **`linux-dmabuf-v1`**, **`wp_linux_drm_syncobj_v1`**, **`wp_color_management_v1`** (staging, version 2, as of 2025), **`zwlr_layer_shell_v1`**, **`zwlr_screencopy_manager_v1`**, and **`ext_session_lock_v1`**, portability strategies using the **`wl_registry`** bind pattern, and the **xdg-desktop-portal** **D-Bus** layer (backends: **xdg-desktop-portal-gnome**, **xdg-desktop-portal-kde**, **xdg-desktop-portal-wlr**) as a compositor-agnostic abstraction for screen capture and file access.
+- **Mutter** — architecture centres on **MetaBackendNative** as its **DRM/KMS** backend; **ClutterActor**/**ClutterStage** scene graph for compositing; **MetaKmsUpdate** abstraction dispatching all **DRM_IOCTL_ATOMIC_COMMIT** calls from a dedicated **KMS thread**; window effects via the **MetaPlugin** interface; colour management through **MetaColorManager** and **colord** ICC profiles; **XWayland** supervision via **MetaXWaylandManager**; legacy **EGLStreams** buffer-sharing path removed in GNOME 51 in favour of **GBM**/**linux-dmabuf**
+- **KWin** — **SceneOpenGL** renderer using KWin's own **OpenGL**/**GLES2** wrapper; **ScenePainter** software fallback; rich effect system (`Effect` base class with Kawase blur, Wobbly Windows, and Overview effects); **DRM/KMS** backend (`DrmBackend`/`DrmGpu`/`DrmAtomicCommit`); **direct scanout** via `DrmOutput::tryDirectScanout`; **HDR** support via `HDR_OUTPUT_METADATA` and `COLORSPACE` **KMS** properties (Plasma 6.0); **explicit synchronisation** via **`wp_linux_drm_syncobj_v1`** (Plasma 6.1); **VRR** (variable refresh rate) via `DrmOutput::setVrrPolicy`; **JavaScript** scripting API for window management rules
+- **Sway** — rooted-tree layout (`sway_container`) compatible with **i3** configuration syntax; **IPC** socket protocol via **`swaymsg`**; **`zwlr_layer_shell_v1`** for system UI; **`ext_session_lock_v1`** for secure lock screens
+- **Hyprland** — full animation system (`CHyprAnimationManager`/`CAnimatedVariable`) with bezier-curve easing; custom **GLES2** rendering pipeline with rounded corners and per-window blur; third-party plugin API managed via **hyprpm**; compositor-specific protocols including **`hyprland_global_shortcuts_manager_v1`** and **`hyprland_toplevel_export_manager_v1`**
+- **gamescope** — **Vulkan**-first compositing pipeline in `steamcompmgr.cpp` and `rendervulkan.cpp`; imports game frame buffers via **`VK_EXT_image_drm_format_modifier`** as **DMA-BUF** objects; **FSR** (FidelityFX Super Resolution) upscaling as **Vulkan** compute shaders; composites overlays including **MangoHud** and the **Steam** overlay; supports nested mode and direct **KMS** mode; hardware plane assignment via **libliftoff**
+- **cosmic-comp** — uses **smithay**'s `DrmDevice`/`GbmAllocator`/`GlMultiRenderer` backend stack; Rust's ownership model for compositor safety; exposes **`wlr-layer-shell-v1`**-compatible surface for **COSMIC** panel and dock components
 
-Debugging coverage spans **`WAYLAND_DEBUG`** protocol-level tracing, compositor-specific variables such as **`MUTTER_DEBUG_REDRAWS`** and **`KWIN_DRM_USE_MODIFIERS`**, kernel **`drm.debug`** module parameters, **`LIBDRM_DEBUG`**, **`drm:drm_vblank_event`** **ftrace** events via **`trace-cmd`**, and the **`wayland-info`** globals enumerator. Latency and frame-pacing measurement is covered through the concepts of motion-to-photon latency and frame pacing consistency, the **`wp_presentation`** feedback protocol (**`VSYNC`**/**`HW_CLOCK`**/**`ZERO_COPY`** flags), hardware ground-truth methods (capture cards, high-speed cameras), compositor scheduling models (**KWin**'s `RenderLoop::estimatedVBlankTime()`, **Mutter**'s **`ClutterFrameClock`**, **gamescope**'s **`POLLPRI`**-driven loop), and tools including **MangoHud** CSV logging, **ftrace** **KMS** events, **IGT GPU Tools** (`kms_flip`, `kms_atomic_interruptible`), and **vkBasalt** (`VK_LAYER_vkbasalt_post_processing`) for Vulkan present-path timing.
+The chapter then addresses the broader **Wayland** protocol ecosystem:
+
+- **Protocol stability ladder** — `stable`, `staging`, and `unstable` extension tiers
+- **Cross-compositor support matrix** covering **`xdg-shell`**, **`wp_presentation`**, **`linux-dmabuf-v1`**, **`wp_linux_drm_syncobj_v1`**, **`wp_color_management_v1`** (staging, version 2, as of 2025), **`zwlr_layer_shell_v1`**, **`zwlr_screencopy_manager_v1`**, and **`ext_session_lock_v1`**
+- **Portability strategies** using the **`wl_registry`** bind pattern
+- **xdg-desktop-portal** **D-Bus** layer — compositor-agnostic abstraction for screen capture and file access, with backends: **xdg-desktop-portal-gnome**, **xdg-desktop-portal-kde**, **xdg-desktop-portal-wlr**
+
+Debugging coverage spans:
+
+- **`WAYLAND_DEBUG`** — protocol-level tracing
+- **`MUTTER_DEBUG_REDRAWS`** and **`KWIN_DRM_USE_MODIFIERS`** — compositor-specific debug variables
+- **`drm.debug`** — kernel module parameter
+- **`LIBDRM_DEBUG`** — libdrm debug variable
+- **`drm:drm_vblank_event`** — **ftrace** event captured via **`trace-cmd`**
+- **`wayland-info`** — globals enumerator
+
+Latency and frame-pacing measurement is covered through:
+
+- **Motion-to-photon latency** and **frame pacing consistency** — conceptual foundations
+- **`wp_presentation`** feedback protocol — **`VSYNC`**/**`HW_CLOCK`**/**`ZERO_COPY`** flags for precise timing data
+- **Hardware ground-truth methods** — capture cards, high-speed cameras
+- **Compositor scheduling models** — **KWin**'s `RenderLoop::estimatedVBlankTime()`, **Mutter**'s **`ClutterFrameClock`**, **gamescope**'s **`POLLPRI`**-driven loop
+- **MangoHud** — CSV logging for frame timing
+- **ftrace KMS events** — kernel-level frame timing
+- **IGT GPU Tools** — `kms_flip`, `kms_atomic_interruptible`
+- **vkBasalt** (`VK_LAYER_vkbasalt_post_processing`) — Vulkan present-path timing
 
 After reading this chapter you will understand why Mutter offloads all KMS ioctls to a dedicated thread, why KWin was able to implement HDR and explicit synchronisation ahead of every other desktop compositor, what makes gamescope uniquely suited to gaming workloads, and how to approach the problem of writing portable Wayland applications when protocol support varies across compositors.
 

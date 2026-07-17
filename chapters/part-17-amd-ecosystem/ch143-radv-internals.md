@@ -4,8 +4,14 @@ This chapter targets **systems and driver developers** who want to understand ho
 driver (RADV) is structured, how it maps the Vulkan API onto AMD GCN and RDNA hardware, and how its
 compiler pipeline — from SPIR-V through NIR to the ACO backend — produces high-quality GPU machine
 code at interactive compile times. **Graphics application developers** targeting AMD hardware on Linux
-will also benefit from the sections on pipeline caching, descriptor handling, ray tracing, and the
-debugging environment. RADV is the reference implementation for anyone studying an open-source Vulkan
+will also benefit from the sections on:
+
+- **Pipeline caching**
+- **Descriptor handling**
+- **Ray tracing**
+- **Debugging environment**
+
+RADV is the reference implementation for anyone studying an open-source Vulkan
 ICD built directly on the Mesa Vulkan common infrastructure without a Gallium3D intermediary.
 
 ---

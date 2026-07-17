@@ -1,6 +1,12 @@
 # Chapter 56: Ray Tracing on Linux
 
-This chapter targets **systems and driver developers** who need to understand how ray tracing hardware is exposed through the Linux graphics stack, and **graphics application developers** who want to use Vulkan's ray tracing extensions efficiently on AMD, Intel, and NVIDIA hardware. It covers the full path from silicon — BVH-traversal accelerators inside the GPU — through Vulkan's four KHR extensions, into the RADV, ANV, and NVK Mesa drivers, and out to real-world workloads such as Proton/VKD3D-Proton game compatibility and Blender Cycles rendering.
+This chapter targets **systems and driver developers** who need to understand how ray tracing hardware is exposed through the Linux graphics stack, and **graphics application developers** who want to use Vulkan's ray tracing extensions efficiently on AMD, Intel, and NVIDIA hardware. It covers the full path from silicon to real-world workloads:
+
+- **BVH-traversal accelerators** — dedicated hardware inside the GPU (the silicon layer)
+- **Vulkan's four KHR extensions** — the ray tracing API layer
+- **RADV, ANV, and NVK Mesa drivers** — open-source Vulkan drivers for AMD, Intel, and NVIDIA
+- **Proton/VKD3D-Proton** — game compatibility workloads
+- **Blender Cycles** — production rendering workloads
 
 ---
 

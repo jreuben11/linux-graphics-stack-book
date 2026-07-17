@@ -2,7 +2,12 @@
 
 ## Scope
 
-This chapter targets four audiences. **Vulkan application developers** seeking to move beyond single-queue rendering will learn how to discover, select, and synchronize multiple queue families. **Game engine developers** will find a concrete multi-queue frame structure and the rationale behind the "frame graph" / "task graph" abstraction. **GPU compute engineers** will see how Vulkan's queue model maps to real AMD, Intel, and NVIDIA hardware engines and how to measure overlap with GPU timestamps. **Graphics architects** designing multi-queue workloads will learn how timeline semaphores, synchronization2 barriers, and render graph compilers compose into a coherent system.
+This chapter targets four audiences:
+
+- **Vulkan application developers** — learn how to discover, select, and synchronize multiple queue families, moving beyond single-queue rendering.
+- **Game engine developers** — find a concrete multi-queue frame structure and the rationale behind the "frame graph" / "task graph" abstraction.
+- **GPU compute engineers** — see how Vulkan's queue model maps to real AMD, Intel, and NVIDIA hardware engines and how to measure overlap with GPU timestamps.
+- **Graphics architects** — designing multi-queue workloads, learn how timeline semaphores, synchronization2 barriers, and render graph compilers compose into a coherent system.
 
 ---
 

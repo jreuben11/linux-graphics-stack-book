@@ -24,19 +24,66 @@
 
 **Gallium3D** is the structural spine of **Mesa**'s userspace graphics stack. Introduced in **Mesa** 7.1 around 2008 to replace an increasingly fragmented collection of per-driver implementations, it imposes a principled separation between API-level state management — the "state tracker" or, in modern parlance, the "frontend" — and the hardware-specific rendering code that actually talks to the GPU, the "pipe driver" or "backend." That separation has proved extraordinarily durable: it is what allows a single **OpenGL** implementation to run correctly on a Raspberry Pi, a Radeon RX 7900, an Intel Arc GPU, and a software **JIT** renderer, all without the frontend code knowing anything about the GPU's command encoding or shader **ISA**.
 
-This chapter dissects **Gallium3D** from the interface contract outward. We begin with the historical problem that motivated the design and the goals Whitwell and Rusin set in 2008, then move through the two central objects — **`pipe_screen`** (the per-device capability oracle and resource factory) and **`pipe_context`** (the per-thread command recorder) — and the mechanisms that make them fast in practice: the **CSO** (Constant State Object) cache. We then examine how the **OpenGL** and **OpenGL ES** frontends drive those interfaces, how utility libraries like **`u_blitter`** and **`u_transfer_helper`** paper over hardware limitations, and what a new backend driver must actually implement. The chapter closes with an architectural tour of the two most interesting non-OpenGL **Gallium** frontends: **rusticl** (an **OpenCL** 3.0 implementation written in **Rust**) and **Zink** (a backend that translates Gallium calls to **Vulkan**).
+This chapter dissects **Gallium3D** from the interface contract outward, covering:
 
-For **`pipe_screen`**, the chapter covers the complete lifecycle from the **`pipe_driver_create()`** entry point through **`pipe_reference`** counting, the **`pipe_cap`** and **`pipe_shader_cap`** capability query enumerations exposed via **`get_param()`**, **`get_shader_param()`**, and **`get_paramf()`**, the **`pipe_resource`** struct and the **`resource_create()`** and **`resource_create_with_modifiers()`** allocation paths with their **`PIPE_BIND_*`** and **`PIPE_USAGE_*`** flags, the **`is_format_supported()`** format query interface, and the thread-safety contract that allows multiple **`pipe_context`** objects to share a single **`pipe_screen`**.
+- **Historical context and design goals** — the problem that motivated the design and the goals set in 2008
+- **`pipe_screen`** — the per-device capability oracle and resource factory
+- **`pipe_context`** — the per-thread command recorder
+- **CSO (Constant State Object) cache** — the mechanisms that make `pipe_screen` and `pipe_context` fast in practice
+- **OpenGL and OpenGL ES frontends** — how they drive those interfaces
+- **`u_blitter`** and **`u_transfer_helper`** — utility libraries that paper over hardware limitations
+- **Backend driver requirements** — what a new backend driver must actually implement
+- **`rusticl`** — an OpenCL 3.0 implementation written in Rust
+- **`Zink`** — a backend that translates Gallium pipe calls to Vulkan
 
-For **`pipe_context`**, the chapter traces state binding through the **CSO** model — shaders bound via **`bind_vs_state()`**, **`bind_fs_state()`**, **`bind_gs_state()`**, **`bind_tcs_state()`**, **`bind_tes_state()`**, and **`bind_cs_state()`**; fixed-function state via **`bind_rasterizer_state()`**, **`bind_depth_stencil_alpha_state()`**, and **`bind_blend_state()`**; textures via **`bind_sampler_states()`** and **`set_sampler_views()`** with **`pipe_sampler_view`** objects — then draw dispatch through **`draw_vbo()`** with **`pipe_draw_info`** and the fast-path **`draw_vertex_state()`** and **`multi_draw()`** entry points, framebuffer binding via **`set_framebuffer_state()`** with **`pipe_surface`** and **`pipe_framebuffer_state`**, viewport and scissor setup via **`set_viewport_states()`** and **`set_scissor_states()`**, CPU–GPU data movement through **`buffer_map()`**, **`texture_map()`**, and **`PIPE_MAP_*`** flags including the buffer-orphaning **`PIPE_MAP_DISCARD_RANGE`** and **`PIPE_MAP_DISCARD_WHOLE_RESOURCE`** flags, submission and synchronisation via **`flush()`** and **`pipe_fence_handle`**, and compute dispatch via **`launch_grid()`** with **`pipe_grid_info`**.
+For **`pipe_screen`**, the chapter covers:
 
-For the **CSO** mechanism, the chapter explains the **`create_*_state()`** / **`bind_*_state()`** / **`delete_*_state()`** triplet, the **`cso_context`** hash-map cache in **`src/gallium/auxiliary/cso_cache/`** that eliminates redundant state compilation, and the two-level shader cache formed by the session-level **`cso_context`** combined with the persistent **`disk_cache`** in **`src/util/disk_cache.h`**.
+- The complete lifecycle from the **`pipe_driver_create()`** entry point through **`pipe_reference`** counting
+- The **`pipe_cap`** and **`pipe_shader_cap`** capability query enumerations exposed via **`get_param()`**, **`get_shader_param()`**, and **`get_paramf()`**
+- The **`pipe_resource`** struct and the **`resource_create()`** and **`resource_create_with_modifiers()`** allocation paths with their **`PIPE_BIND_*`** and **`PIPE_USAGE_*`** flags
+- The **`is_format_supported()`** format query interface
+- The thread-safety contract that allows multiple **`pipe_context`** objects to share a single **`pipe_screen`**
 
-For the **OpenGL** and **OpenGL ES** frontends in **`src/mesa/state_tracker/`**, the chapter walks through **`st_create_context()`** context creation bridging **`gl_context`** to **`pipe_context`** via **`st_context`**, the canonical **`glDrawArrays`** → **`_mesa_DrawArrays()`** → **`st_draw_vbo()`** → **`st_validate_state()`** → **`pipe_context::draw_vbo()`** draw call path, **`MESA_FORMAT_*`** to **`pipe_format`** translation via **`st_mesa_format_to_pipe_format()`**, texture upload through **`st_texture_object`** and **`pipe_context::texture_subdata()`**, framebuffer object management via **`st_framebuffer`** and **`st_update_framebuffer()`**, shader compilation through the **GLSL** front end and **`glsl_to_nir()`** producing **NIR** in a **`pipe_shader_state`** passed to **`create_fs_state()`**, and the **OpenGL ES** 2.0/3.x profile handled through the same state tracker via **`src/mapi/es2api/`**.
+For **`pipe_context`**, the chapter traces state binding through the **CSO** model:
 
-For the utility libraries, the chapter describes how **`u_blitter`** (in **`src/gallium/auxiliary/util/u_blitter.c`**) implements generic **`util_blitter_copy_texture()`**, **`util_blitter_clear()`**, **`util_blitter_fill_texture()`**, and **`util_blitter_blit()`** operations by driving the driver's own **`draw_vbo()`** path with a state save/restore cycle, and how **`u_transfer_helper`** (in **`src/gallium/auxiliary/util/u_transfer_helper.c`**) intercepts **`buffer_map()`** and **`texture_map()`** to perform CPU-side depth-stencil deinterleave, **RGBX**-to-**RGBA** expansion, and **YUV** planar format conversion.
+- Shader binding via **`bind_vs_state()`**, **`bind_fs_state()`**, **`bind_gs_state()`**, **`bind_tcs_state()`**, **`bind_tes_state()`**, and **`bind_cs_state()`**
+- Fixed-function state via **`bind_rasterizer_state()`**, **`bind_depth_stencil_alpha_state()`**, and **`bind_blend_state()`**
+- Texture binding via **`bind_sampler_states()`** and **`set_sampler_views()`** with **`pipe_sampler_view`** objects
+- Draw dispatch through **`draw_vbo()`** with **`pipe_draw_info`** and the fast-path **`draw_vertex_state()`** and **`multi_draw()`** entry points
+- Framebuffer binding via **`set_framebuffer_state()`** with **`pipe_surface`** and **`pipe_framebuffer_state`**
+- Viewport and scissor setup via **`set_viewport_states()`** and **`set_scissor_states()`**
+- CPU–GPU data movement through **`buffer_map()`**, **`texture_map()`**, and **`PIPE_MAP_*`** flags including the buffer-orphaning **`PIPE_MAP_DISCARD_RANGE`** and **`PIPE_MAP_DISCARD_WHOLE_RESOURCE`** flags
+- Submission and synchronisation via **`flush()`** and **`pipe_fence_handle`**
+- Compute dispatch via **`launch_grid()`** with **`pipe_grid_info`**
 
-For Gallium backend implementation, the chapter defines the minimum viable function-pointer set across **`pipe_screen`** and **`pipe_context`**, explains conservative **`PIPE_CAP`** reporting as the correct bringup strategy, covers **NIR**-to-**ISA** compilation and **`disk_cache`** integration, describes the winsys layer in **`src/gallium/winsys/`** and its use of **`libdrm`**, **GEM** buffer object allocation via **`DRM_IOCTL_*_GEM_CREATE`**, **DMA-BUF** interop, and command submission ioctls such as **`DRM_IOCTL_AMDGPU_CS`** and **`DRM_IOCTL_I915_GEM_EXECBUFFER2`**, and surveys the three reference implementations: **`llvmpipe`** (in **`src/gallium/drivers/llvmpipe/`**), **`softpipe`** (in **`src/gallium/drivers/softpipe/`**), and **`freedreno`** (in **`src/gallium/drivers/freedreno/`**).
+For the **CSO** mechanism, the chapter explains:
+
+- The **`create_*_state()`** / **`bind_*_state()`** / **`delete_*_state()`** triplet
+- The **`cso_context`** hash-map cache in **`src/gallium/auxiliary/cso_cache/`** that eliminates redundant state compilation
+- The two-level shader cache formed by the session-level **`cso_context`** combined with the persistent **`disk_cache`** in **`src/util/disk_cache.h`**
+
+For the **OpenGL** and **OpenGL ES** frontends in **`src/mesa/state_tracker/`**, the chapter walks through:
+
+- **`st_create_context()`** — context creation bridging **`gl_context`** to **`pipe_context`** via **`st_context`**
+- The canonical draw call path: **`glDrawArrays`** → **`_mesa_DrawArrays()`** → **`st_draw_vbo()`** → **`st_validate_state()`** → **`pipe_context::draw_vbo()`**
+- **`MESA_FORMAT_*`** to **`pipe_format`** translation via **`st_mesa_format_to_pipe_format()`**
+- Texture upload through **`st_texture_object`** and **`pipe_context::texture_subdata()`**
+- Framebuffer object management via **`st_framebuffer`** and **`st_update_framebuffer()`**
+- Shader compilation through the **GLSL** front end and **`glsl_to_nir()`** producing **NIR** in a **`pipe_shader_state`** passed to **`create_fs_state()`**
+- The **OpenGL ES** 2.0/3.x profile handled through the same state tracker via **`src/mapi/es2api/`**
+
+For the utility libraries, the chapter describes:
+
+- **`u_blitter`** (in **`src/gallium/auxiliary/util/u_blitter.c`**) — implements **`util_blitter_copy_texture()`**, **`util_blitter_clear()`**, **`util_blitter_fill_texture()`**, and **`util_blitter_blit()`** by driving the driver's own **`draw_vbo()`** path with a state save/restore cycle
+- **`u_transfer_helper`** (in **`src/gallium/auxiliary/util/u_transfer_helper.c`**) — intercepts **`buffer_map()`** and **`texture_map()`** to perform CPU-side depth-stencil deinterleave, **RGBX**-to-**RGBA** expansion, and **YUV** planar format conversion
+
+For Gallium backend implementation, the chapter covers:
+
+- The minimum viable function-pointer set across **`pipe_screen`** and **`pipe_context`**
+- Conservative **`PIPE_CAP`** reporting as the correct bringup strategy
+- **NIR**-to-**ISA** compilation and **`disk_cache`** integration
+- The winsys layer in **`src/gallium/winsys/`** and its use of **`libdrm`**, **GEM** buffer object allocation via **`DRM_IOCTL_*_GEM_CREATE`**, **DMA-BUF** interop, and command submission ioctls such as **`DRM_IOCTL_AMDGPU_CS`** and **`DRM_IOCTL_I915_GEM_EXECBUFFER2`**
+- Three reference implementations: **`llvmpipe`** (in **`src/gallium/drivers/llvmpipe/`**), **`softpipe`** (in **`src/gallium/drivers/softpipe/`**), and **`freedreno`** (in **`src/gallium/drivers/freedreno/`**)
 
 After reading this chapter you will understand how a single **`glDrawArrays`** call decomposes into a sequence of **Gallium** pipe interface calls, what data structures cross the frontend/backend boundary, and what a new hardware backend must implement to support **OpenGL**, **OpenGL ES**, or **OpenCL** through the **Gallium** interface. The companion chapters on **NIR** (Chapter 14), **radeonsi** and **iris** (Chapter 19), **llvmpipe** (Chapter 17), and **rusticl** (Chapter 25) each pick up one thread that this chapter introduces.
 

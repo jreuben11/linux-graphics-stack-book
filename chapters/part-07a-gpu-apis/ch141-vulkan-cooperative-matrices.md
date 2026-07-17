@@ -26,7 +26,14 @@ Modern GPUs contain dedicated matrix multiply-accumulate (MMA) hardware units: N
 
 `VK_KHR_cooperative_matrix` (promoted to KHR status in 2023) exposes these units through the Vulkan API, enabling ML inference and linear algebra acceleration without CUDA, ROCm/HIP, or SYCL. On Linux, RADV (AMD RDNA3, RX 7000 series) and ANV (Intel DG2/Arc and later) implement this extension. This portability means an LLM inference engine or stable diffusion compute shader can run on AMD, Intel, and NVIDIA GPUs through the same code path.
 
-This chapter covers the cooperative matrix programming model — where a subgroup of shader invocations cooperates to compute a small matrix tile — the Vulkan and GLSL API, the hardware ISA instructions that back it (AMD WMMA, Intel DPAS), the RADV and ANV Mesa implementations, quantization support, and real-world usage in LLM inference tools on Linux.
+This chapter covers:
+
+- **Cooperative matrix programming model** — where a subgroup of shader invocations cooperates to compute a small matrix tile
+- **Vulkan and GLSL API** — the extension's host and shader interfaces
+- **Hardware ISA instructions** — AMD WMMA and Intel DPAS, which back the extension
+- **RADV and ANV Mesa implementations** — driver-level implementation on AMD RDNA3 and Intel Xe-HPG
+- **Quantization support** — INT8, mixed precision, FP8, BF16, and block quantization
+- **Real-world usage in LLM inference tools on Linux** — practical examples including llama.cpp and stable-diffusion.cpp
 
 [VK_KHR_cooperative_matrix specification](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_KHR_cooperative_matrix.html)
 

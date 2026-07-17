@@ -82,9 +82,40 @@ The chapter assumes familiarity with **VA-API** (Chapter 26), **Vulkan** (Chapte
 
 The seven libraries — **libavutil**, **libavcodec**, **libavformat**, **libavdevice**, **libavfilter**, **libswscale**, and **libswresample** — form a layered dependency graph with defined versioning and **API** stability guarantees. Their **MAJOR.MINOR.MICRO** version scheme, the `FF_API_*` deprecation guards, and the breaking changes introduced in **FFmpeg** 7.0 and 8.0 are covered in the library architecture section.
 
-Readers will learn: how the seven **FFmpeg** libraries relate to each other and to the hardware acceleration stack; the **AVFormatContext** → **AVStream** → **AVCodecContext** → **AVFrame** lifecycle, including the **AVPacket** and **AVFrame** reference-counted buffer model (**AVBufferRef**) with correct `av_frame_ref()` / `av_packet_unref()` discipline; the six-step demux pipeline anchored by `av_read_frame()` and the send/receive API (`avcodec_send_packet()` / `avcodec_receive_frame()`, `avcodec_send_frame()` / `avcodec_receive_packet()`); how to enable **VAAPI** and **Vulkan** hwaccel paths through **AVHWDeviceContext** and **AVHWFramesContext** with zero-copy **DMA-BUF** frame sharing, including the per-frame **AVVkFrame** structure and its timeline-semaphore synchronisation protocol; the legacy **VDPAU** path for **NVIDIA** hardware; how **libavfilter** builds a directed graph of **AVFilterContext** nodes connected by **AVFilterLink** edges, including **GPU**-resident filter chains for **CUDA**, **VAAPI**, and **Vulkan** compute backends versus **CPU** filters with `hwupload` / `hwdownload` transitions; how to configure encoder rate control modes (**CRF**, **CBR**, **VBR**, **CQP**) and **GOP** structure including **B-frame** distance for both live streaming and **VoD**; the hardware encoder matrix covering `h264_vaapi`, `hevc_nvenc`, `av1_amf`, `h264_vulkan`, and others; direct **NVIDIA Video Codec SDK** access via **NVENC** (`nvEncodeAPI.h`) and **NVDEC** (`cuviddec.h`) for sub-frame-latency pipelines; how to implement a minimal in-tree codec (the **FFCodec** struct in `libavcodec/codec_internal.h`) or a custom **lavfi** filter (the **AVFilter** descriptor with `query_formats`, `init`, and `activate` callbacks), and why out-of-tree extensions require forking or an external framework such as **GStreamer**; **FFmpeg**'s within-codec threading model (**FF_THREAD_SLICE**, **FF_THREAD_FRAME**) and the CLI-level **Scheduler** pipeline introduced in **FFmpeg** 7.0; **libavdevice** Linux device sources — **V4L2**, **ALSA**, **X11Grab**, **KMSGrab**, and **PipeWire** — plus the custom **AVIOContext** callback interface for in-memory or network I/O; and how to package encoded streams into **HLS**, **MPEG-DASH**, **RTMP**, **SRT**, and **RTSP** using open streaming servers such as **SRS** and **mediamtx**.
+Readers will learn:
 
-The chapter closes with a comprehensive **FFmpeg** CLI usage reference covering **ffprobe** inspection, container remuxing (`-c copy`), software and hardware-accelerated transcoding recipes (**H.264**/**x264**, **HEVC**/**x265**, **AV1**/**SVT-AV1**/**libaom**, **VP9**), two-pass encoding with **VBV** buffer constraints, **VAAPI**/**NVENC**/**QSV**/**AMF** CLI flags, audio handling (**AAC**, **Opus**, **FLAC**, `loudnorm`), **lavfi** video filter recipes, complex `filter_complex` graph patterns, frame extraction and thumbnail generation, concatenation and splitting (concat demuxer, `segment` muxer), Linux screen and desktop recording (**x11grab**, **kmsgrab**, **PipeWire**), subtitle handling (**SRT**, **ASS**, **PGS**), metadata and cover art embedding, adaptive bitrate streaming output, batch processing patterns, and common pitfalls with diagnostic commands.
+- how the seven **FFmpeg** libraries relate to each other and to the hardware acceleration stack
+- the **AVFormatContext** → **AVStream** → **AVCodecContext** → **AVFrame** lifecycle, including the **AVPacket** and **AVFrame** reference-counted buffer model (**AVBufferRef**) with correct `av_frame_ref()` / `av_packet_unref()` discipline
+- the six-step demux pipeline anchored by `av_read_frame()` and the send/receive API (`avcodec_send_packet()` / `avcodec_receive_frame()`, `avcodec_send_frame()` / `avcodec_receive_packet()`)
+- how to enable **VAAPI** and **Vulkan** hwaccel paths through **AVHWDeviceContext** and **AVHWFramesContext** with zero-copy **DMA-BUF** frame sharing, including the per-frame **AVVkFrame** structure and its timeline-semaphore synchronisation protocol
+- the legacy **VDPAU** path for **NVIDIA** hardware
+- how **libavfilter** builds a directed graph of **AVFilterContext** nodes connected by **AVFilterLink** edges, including **GPU**-resident filter chains for **CUDA**, **VAAPI**, and **Vulkan** compute backends versus **CPU** filters with `hwupload` / `hwdownload` transitions
+- how to configure encoder rate control modes (**CRF**, **CBR**, **VBR**, **CQP**) and **GOP** structure including **B-frame** distance for both live streaming and **VoD**
+- the hardware encoder matrix covering `h264_vaapi`, `hevc_nvenc`, `av1_amf`, `h264_vulkan`, and others
+- direct **NVIDIA Video Codec SDK** access via **NVENC** (`nvEncodeAPI.h`) and **NVDEC** (`cuviddec.h`) for sub-frame-latency pipelines
+- how to implement a minimal in-tree codec (the **FFCodec** struct in `libavcodec/codec_internal.h`) or a custom **lavfi** filter (the **AVFilter** descriptor with `query_formats`, `init`, and `activate` callbacks), and why out-of-tree extensions require forking or an external framework such as **GStreamer**
+- **FFmpeg**'s within-codec threading model (**FF_THREAD_SLICE**, **FF_THREAD_FRAME**) and the CLI-level **Scheduler** pipeline introduced in **FFmpeg** 7.0
+- **libavdevice** Linux device sources — **V4L2**, **ALSA**, **X11Grab**, **KMSGrab**, and **PipeWire** — plus the custom **AVIOContext** callback interface for in-memory or network I/O
+- how to package encoded streams into **HLS**, **MPEG-DASH**, **RTMP**, **SRT**, and **RTSP** using open streaming servers such as **SRS** and **mediamtx**
+
+The chapter closes with a comprehensive **FFmpeg** CLI usage reference covering:
+
+- **ffprobe** inspection
+- container remuxing (`-c copy`)
+- software and hardware-accelerated transcoding recipes (**H.264**/**x264**, **HEVC**/**x265**, **AV1**/**SVT-AV1**/**libaom**, **VP9**)
+- two-pass encoding with **VBV** buffer constraints
+- **VAAPI**/**NVENC**/**QSV**/**AMF** CLI flags
+- audio handling (**AAC**, **Opus**, **FLAC**, `loudnorm`)
+- **lavfi** video filter recipes
+- complex `filter_complex` graph patterns
+- frame extraction and thumbnail generation
+- concatenation and splitting (concat demuxer, `segment` muxer)
+- Linux screen and desktop recording (**x11grab**, **kmsgrab**, **PipeWire**)
+- subtitle handling (**SRT**, **ASS**, **PGS**)
+- metadata and cover art embedding
+- adaptive bitrate streaming output
+- batch processing patterns
+- common pitfalls with diagnostic commands
 
 Versions covered: **FFmpeg** 7.0 "Dijkstra" (April 2024), 7.1 **LTS** (September 2024), and 8.0 "Huffman" (August 2025). The 8.0 release is the largest in project history and introduces **Vulkan** compute codecs (**FFv1**, **ProRes RAW**, **VP9**, **AV1**) that run on any **Vulkan** 1.3 implementation without hardware-specific video decode queues.
 

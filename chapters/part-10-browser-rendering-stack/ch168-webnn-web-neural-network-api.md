@@ -2,7 +2,11 @@
 
 **Part X — The Browser Rendering Stack**
 
-**Audiences targeted:** Browser and web platform engineers who need to understand how machine-learning inference is plumbed through Chrome's multi-process architecture; ML and AI application developers building models that run in the browser without a native runtime; Chromium and Firefox contributors interested in the service-layer implementation; and Linux graphics stack engineers curious about how the same Mesa/Vulkan drivers used for WebGPU relate to on-device inference.
+**Audiences targeted:**
+- **Browser and web platform engineers** — need to understand how machine-learning inference is plumbed through Chrome's multi-process architecture
+- **ML and AI application developers** — building models that run in the browser without a native runtime
+- **Chromium and Firefox contributors** — interested in the service-layer implementation
+- **Linux graphics stack engineers** — curious about how the same Mesa/Vulkan drivers used for WebGPU relate to on-device inference
 
 ---
 

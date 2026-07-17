@@ -28,15 +28,59 @@ Modern laptops routinely ship with two GPUs: a power-efficient integrated GPU (*
 
 This chapter covers the full vertical slice from hardware topology to application API. It begins with the physical design of hybrid graphics: the PCIe topology between the **iGPU** (driven by **i915**, **xe**, or **amdgpu**) and the **dGPU** (driven by **amdgpu**, **nouveau**, or **nvidia**), and how hardware display multiplexer (**MUX**) chips route **eDP** signals in muxed designs versus the buffer-copy constraints imposed by muxless laptops. The **vga_switcheroo** subsystem manages muxed-laptop GPU switching and dGPU power-rail control, while premium gaming laptops from ASUS ROG, Razer, and MSI have reintroduced software-controllable MUX hardware exposed through vendor tools.
 
-The chapter then descends into the kernel **PRIME** infrastructure, which enables cross-device buffer sharing via **DMA-BUF** file descriptors. The two public userspace ioctls—**DRM_IOCTL_PRIME_HANDLE_TO_FD** and **DRM_IOCTL_PRIME_FD_TO_HANDLE**—together with the kernel-side **drm_gem_prime_export()** and **drm_gem_prime_import()** callbacks and the **dma_resv** reservation-object fence-sharing mechanism are examined in depth. Cross-device **IOMMU** topology constraints that determine whether a DMA mapping succeeds or falls back to a CPU bounce copy are also covered.
+The chapter then descends into the kernel **PRIME** infrastructure, which enables cross-device buffer sharing via **DMA-BUF** file descriptors. Key elements examined include:
 
-On the Mesa and Vulkan side, the chapter covers the **DRI_PRIME** environment variable and the **DRI_PRIME_DEBUG** companion, the **VK_LAYER_MESA_device_select** implicit Vulkan layer and the **MESA_VK_DEVICE_SELECT** variable, and the **prime-run** shell wrapper that assembles the correct set of environment variables. For **NVIDIA**'s proprietary driver, the **__NV_PRIME_RENDER_OFFLOAD**, **__GLX_VENDOR_LIBRARY_NAME**, and **__VK_LAYER_NV_optimus** variables are explained alongside the **GLVND** dispatch architecture and the **modesetting** DDX GLX offload sink model. Reverse **PRIME**—routing dGPU output through the iGPU's **KMS** display engine—is covered through the **RandR 1.4** provider model (**xrandr --setprovideroutputsource**), the CPU blit versus direct **DMA-BUF** import blit paths, and how **Wayland** compositors handle the same task with **gbm_bo_import()**.
+- **DRM_IOCTL_PRIME_HANDLE_TO_FD** / **DRM_IOCTL_PRIME_FD_TO_HANDLE** — the two public userspace ioctls for cross-device buffer export and import
+- **drm_gem_prime_export()** / **drm_gem_prime_import()** — kernel-side driver callbacks implementing GEM object sharing
+- **dma_resv** — reservation-object fence-sharing mechanism for cross-device GPU synchronisation
+- Cross-device **IOMMU** topology constraints — determining whether a DMA mapping succeeds or falls back to a CPU bounce copy
 
-For explicit GPU selection in **Vulkan**, the chapter covers **VkPhysicalDeviceGroupProperties**, **vkEnumeratePhysicalDeviceGroups()**, **VkDeviceGroupDeviceCreateInfo**, **vkCreateDevice()**, **VkDeviceGroupSubmitInfo**, device masks, and the practical Linux limitations that make multi-device groups rarely useful without a high-speed interconnect.
+On the Mesa and Vulkan side, the chapter covers:
 
-On the hardware-policy side, **AMD SmartShift**'s kernel **sysfs** interface (**smartshift_apu_power**, **smartshift_dgpu_power**, **smartshift_bias**), the underlying **STAPM** (Skin Temperature Aware Power Management) budget, **ACPI** **_DSM** methods, and the **ryzenadj** userspace tool are examined. Vendor GPU switching tools are then covered: the **supergfxctl** daemon (**supergfxd**) and its **D-Bus** interface for ASUS laptops, and **system76-power**'s **com.system76.PowerDaemon** D-Bus service for System76 / **Pop!_OS** machines.
+- **DRI_PRIME** — environment variable for OpenGL device selection, with **DRI_PRIME_DEBUG** as a debug companion
+- **VK_LAYER_MESA_device_select** — implicit Vulkan layer for device selection, controlled via **MESA_VK_DEVICE_SELECT**
+- **prime-run** — shell wrapper that assembles the correct environment variables for dGPU offload
 
-Finally, the chapter surveys multi-GPU rendering from **SLI** (Alternate Frame Rendering/**AFR**, Split Frame Rendering/**SFR**) and **CrossFire** history through **Vulkan** device groups with **VkDeviceGroupSwapchainCreateInfoKHR** and **VkDeviceGroupPresentInfoKHR**. The kernel **p2pdma** framework (**pci_p2pdma_add_resource()**, **pci_p2pdma_distance_many()**, **pci_alloc_p2pmem()**) is explained alongside **NVIDIA NVLink** (NVLink 2.0 through 5.0) and **nvidia_p2p_get_pages()**, **AMD Infinity Fabric** and **CDNA** multi-die topology, **GPU NUMA** topology with **Heterogeneous Memory Management** (**HMM**), and the ML multi-GPU implications for all-reduce collectives via **NCCL** and **RCCL**.
+For **NVIDIA**'s proprietary driver, the chapter covers:
+
+- **__NV_PRIME_RENDER_OFFLOAD**, **__GLX_VENDOR_LIBRARY_NAME**, **__VK_LAYER_NV_optimus** — environment variables enabling NVIDIA PRIME render offload
+- **GLVND** dispatch architecture and the **modesetting** DDX GLX offload sink model
+
+Reverse **PRIME**—routing dGPU output through the iGPU's **KMS** display engine—is covered through:
+
+- **RandR 1.4** provider model (**xrandr --setprovideroutputsource**) — X11 mechanism for cross-GPU display routing
+- CPU blit versus direct **DMA-BUF** import blit paths — the two transfer strategies for cross-device frame delivery
+- **gbm_bo_import()** — how Wayland compositors handle the same task without an X server intermediary
+
+For explicit GPU selection in **Vulkan**, the chapter covers:
+
+- **VkPhysicalDeviceGroupProperties** — structure describing multi-GPU group topology at the instance level
+- **vkEnumeratePhysicalDeviceGroups()** — API for querying available device groups
+- **VkDeviceGroupDeviceCreateInfo** — extension structure for creating a logical device spanning multiple physical devices
+- **vkCreateDevice()** — extended with device group info to create a multi-GPU logical device
+- **VkDeviceGroupSubmitInfo** and device masks — directing command buffer execution to specific physical devices
+- Practical Linux limitations that make multi-device groups rarely useful without a high-speed interconnect
+
+On the hardware-policy side, the chapter examines:
+
+- **AMD SmartShift** sysfs interface — **smartshift_apu_power**, **smartshift_dgpu_power**, and **smartshift_bias** attributes for monitoring and controlling CPU+GPU TDP redistribution
+- **STAPM** (Skin Temperature Aware Power Management) — the underlying power budget managed by AMD's SMU firmware
+- **ACPI** **_DSM** methods — BIOS-side controls for SmartShift parameter overrides
+- **ryzenadj** — userspace tool for STAPM limit adjustment
+
+Vendor GPU switching tools covered include:
+
+- **supergfxctl** (**supergfxd** daemon) — D-Bus interface for ASUS laptop hardware MUX switching and PRIME mode control
+- **system76-power** (**com.system76.PowerDaemon** D-Bus service) — graphics mode management for System76 / **Pop!_OS** machines
+
+Finally, the chapter surveys:
+
+- **SLI** (AFR/SFR) and **CrossFire** — history of consumer multi-GPU rendering, and **Vulkan** device groups (**VkDeviceGroupSwapchainCreateInfoKHR**, **VkDeviceGroupPresentInfoKHR**) as the standards-track successor
+- **p2pdma** framework — kernel peer-to-peer DMA infrastructure (**pci_p2pdma_add_resource()**, **pci_p2pdma_distance_many()**, **pci_alloc_p2pmem()**)
+- **NVIDIA NVLink** (NVLink 2.0 through 5.0) and **nvidia_p2p_get_pages()** — proprietary high-bandwidth GPU interconnect and peer-memory API
+- **AMD Infinity Fabric** and **CDNA** multi-die topology — AMD's cache-coherent inter-die fabric for data-center GPU products
+- **GPU NUMA** topology with **Heterogeneous Memory Management** (**HMM**) — exposing GPU memory nodes in the Linux NUMA hierarchy
+- **NCCL** and **RCCL** — multi-GPU all-reduce collective libraries for ML training workloads
 
 ---
 

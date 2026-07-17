@@ -1,6 +1,9 @@
 # Chapter 180 — GPU Reverse Engineering: Tools, Methodology, and Case Studies
 
-**Target audiences:** Systems and driver developers working on open-source GPU drivers for undocumented hardware; contributors to Nouveau, Panfrost, etnaviv, Asahi, freedreno/turnip, and other reverse-engineered drivers; kernel hackers who want to understand how register maps, command-stream formats, and ISAs are discovered from scratch.
+**Target audiences:**
+- **Systems and driver developers** — working on open-source GPU drivers for undocumented hardware
+- **Driver contributors** — to Nouveau, Panfrost, etnaviv, Asahi, freedreno/turnip, and other reverse-engineered drivers
+- **Kernel hackers** — who want to understand how register maps, command-stream formats, and ISAs are discovered from scratch
 
 ---
 

@@ -31,7 +31,19 @@
 
 Text input on Wayland is significantly more complex than on X11, where XIM (X Input Method) was a well-established if imperfect solution. Wayland's security model — no global input snooping — means the input method (IME) and the application communicate only through the compositor, which mediates all focus and event routing.
 
-This chapter covers the two Wayland unstable protocols that implement text input: `zwp_text_input_v3` (the application side) and `zwp_input_method_v2` (the IME side), plus the virtual keyboard protocol for on-screen keyboards. It then traces how GTK4, Qt6, fcitx5, and IBus implement these protocols, and how XWayland bridges them back to X11 apps.
+This chapter covers the two Wayland unstable protocols that implement text input:
+
+- **`zwp_text_input_v3`** — the application side
+- **`zwp_input_method_v2`** — the IME side
+- **virtual keyboard protocol** — for on-screen keyboards
+
+It then traces how the following implement these protocols:
+
+- **GTK4** — Wayland text input integration
+- **Qt6** — Wayland text input integration
+- **fcitx5** — native IME via `zwp_input_method_v2`
+- **IBus** — IME with Wayland and D-Bus bridge support
+- **XWayland** — bridges text input back to X11 apps
 
 Key upstream specifications live in [wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols).
 

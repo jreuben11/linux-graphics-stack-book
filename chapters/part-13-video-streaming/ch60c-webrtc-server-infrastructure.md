@@ -1,6 +1,11 @@
 # Chapter 60c: WebRTC Server Infrastructure on Linux
 
-**Target audiences:** Backend infrastructure engineers building real-time media platforms; streaming platform developers integrating SFU/MCU components; application developers designing multi-party video systems on Linux. This chapter assumes familiarity with the WebRTC protocol stack — SDP negotiation, ICE, DTLS-SRTP, RTP/RTCP, and GoogCC bandwidth estimation — all covered in Ch60b. The focus here is the server-side infrastructure that makes WebRTC scale beyond peer-to-peer: TURN relay, selective forwarding, recording, and production deployment on Linux.
+**Target audiences:** Backend infrastructure engineers building real-time media platforms; streaming platform developers integrating SFU/MCU components; application developers designing multi-party video systems on Linux. This chapter assumes familiarity with the WebRTC protocol stack — SDP negotiation, ICE, DTLS-SRTP, RTP/RTCP, and GoogCC bandwidth estimation — all covered in Ch60b. The focus here is the server-side infrastructure that makes WebRTC scale beyond peer-to-peer:
+
+- **TURN relay** — RFC 5766 relay servers for connectivity when NAT traversal and ICE fail
+- **Selective forwarding** — SFU architecture for scalable multi-party media routing without server-side decoding
+- **Recording** — server-side pipelines for capturing WebRTC sessions to container files
+- **Production deployment** — Linux operational patterns, capacity planning, and monitoring for WebRTC infrastructure
 
 ## Table of Contents
 

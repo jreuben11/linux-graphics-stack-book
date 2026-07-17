@@ -2,7 +2,14 @@
 
 **Part VI — The Display Stack**
 
-**Audiences**: *Security engineers* who need a rigorous threat-model analysis of the Wayland stack; *Wayland compositor authors* who must decide which protocols to expose and with what access controls; *application sandboxing engineers* who need to understand what Flatpak's `--socket=wayland` permission actually grants; and anyone evaluating Wayland against X11 from a security perspective. The chapter assumes familiarity with core Wayland concepts (surfaces, seats, the object model); see Chapter 20 for that background.
+**Audiences:**
+
+- **Security engineers** — need a rigorous threat-model analysis of the Wayland stack
+- **Wayland compositor authors** — must decide which protocols to expose and with what access controls
+- **Application sandboxing engineers** — need to understand what Flatpak's `--socket=wayland` permission actually grants
+- Anyone evaluating Wayland against X11 from a security perspective
+
+The chapter assumes familiarity with core Wayland concepts (surfaces, seats, the object model); see Chapter 20 for that background.
 
 ---
 

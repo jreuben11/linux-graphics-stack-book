@@ -2,7 +2,19 @@
 
 **Part IX — Tooling and Contributing**
 
-**Audiences**: Mesa contributors, GPU driver developers, CI/CD engineers, and graphics conformance engineers. This chapter is the operational companion to [Chapter 31: Conformance and Regression Testing](ch31-conformance-regression-testing.md), which covers the theory of conformance certification and the test suite architectures. Chapter 109 focuses on how Mesa's testing infrastructure actually works day-to-day: the tools contributors run locally, the CI pipeline that gates every merge request, the hardware farms that execute tests on real GPUs, and the workflows for writing, submitting, and maintaining tests.
+**Audiences**:
+
+- **Mesa contributors**
+- **GPU driver developers**
+- **CI/CD engineers**
+- **Graphics conformance engineers**
+
+This chapter is the operational companion to [Chapter 31: Conformance and Regression Testing](ch31-conformance-regression-testing.md), which covers the theory of conformance certification and the test suite architectures. Chapter 109 focuses on how Mesa's testing infrastructure actually works day-to-day:
+
+- the tools contributors run locally
+- the CI pipeline that gates every merge request
+- the hardware farms that execute tests on real GPUs
+- the workflows for writing, submitting, and maintaining tests
 
 ---
 

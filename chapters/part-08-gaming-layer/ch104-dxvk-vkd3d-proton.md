@@ -25,7 +25,18 @@
 
 ## Overview
 
-DXVK and VKD3D-Proton are the two translation layers that allow the overwhelming majority of Windows PC games to run on Linux without modification. Together they implement the full Direct3D 9, 10, 11, and 12 API surfaces in terms of Vulkan, making them the most widely used Vulkan consumers on the Linux platform — more than any game engine or application framework. This chapter examines their internal architecture, the shader translation pipeline from DirectX bytecode to SPIR-V, the synchronisation challenges inherent in bridging D3D's implicit resource tracking model to Vulkan's explicit model, and the Proton integration that packages them for Steam. It targets three overlapping audiences: Linux gaming developers who ship Proton-compatible titles, Proton and Mesa contributors who tune the translation layers themselves, and graphics engineers who want to understand how a production-scale D3D-to-Vulkan translation layer works as a reference for their own API bridging work.
+DXVK and VKD3D-Proton are the two translation layers that allow the overwhelming majority of Windows PC games to run on Linux without modification. Together they implement the full Direct3D 9, 10, 11, and 12 API surfaces in terms of Vulkan, making them the most widely used Vulkan consumers on the Linux platform — more than any game engine or application framework. This chapter examines:
+
+- **Internal architecture** — how DXVK and VKD3D-Proton are structured internally
+- **Shader translation pipeline** — from DirectX bytecode to SPIR-V
+- **Synchronisation challenges** — bridging D3D's implicit resource tracking model to Vulkan's explicit model
+- **Proton integration** — how the translation layers are packaged for Steam
+
+It targets three overlapping audiences:
+
+- **Linux gaming developers** — who ship Proton-compatible titles
+- **Proton and Mesa contributors** — who tune the translation layers themselves
+- **Graphics engineers** — who want to understand how a production-scale D3D-to-Vulkan translation layer works as a reference for their own API bridging work
 
 ---
 

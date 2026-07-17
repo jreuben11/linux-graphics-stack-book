@@ -1,6 +1,10 @@
 # Chapter 112: Variable Refresh Rate — FreeSync, G-Sync, and Frame Pacing
 
-**Target audiences:** Game developers targeting Linux and Steam Deck, compositor authors integrating VRR into display pipelines, display engineers validating adaptive sync hardware, and application developers who need to understand present mode selection, frame pacing, and the interaction between Vulkan swapchains and kernel KMS properties.
+**Target audiences:**
+- **Game developers** — targeting Linux and Steam Deck
+- **Compositor authors** — integrating VRR into display pipelines
+- **Display engineers** — validating adaptive sync hardware
+- **Application developers** — understanding present mode selection, frame pacing, and the interaction between Vulkan swapchains and kernel KMS properties
 
 ---
 

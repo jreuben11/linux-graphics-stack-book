@@ -27,25 +27,98 @@
 
 ## Overview
 
-**wlroots** is the dominant library for building **Wayland** compositors on Linux. Where **Weston** is a monolithic reference compositor, **wlroots** is a modular toolkit: it provides backend abstraction over **DRM/KMS**, nested **Wayland**, **X11**, and headless outputs; a rendering infrastructure supporting **GLES2**, **Vulkan**, and **CPU**-based **pixman**; a scene graph with damage tracking; input handling via **libinput**; and a rich set of **Wayland** protocol implementations — all as loosely coupled components that a compositor author can assemble into a complete compositor. **Sway**, **Wayfire**, **labwc**, and dozens of smaller compositors are built on **wlroots**. (Hyprland was wlroots-based until 2024, when it migrated to its own **Aquamarine** backend library — see Chapter 22 §5.) Understanding **wlroots** means understanding how the entire output path from client commit to pixel works in practice.
+**wlroots** is the dominant library for building **Wayland** compositors on Linux. Where **Weston** is a monolithic reference compositor, **wlroots** is a modular toolkit providing loosely coupled components that a compositor author can assemble into a complete compositor:
 
-The chapter opens with the **wlroots** architecture and source-tree layout (`backend/`, `render/`, `types/`, `xwayland/`, `interfaces/`), covering the **"bring your own event loop"** design built on **`wl_event_loop`** and the **ABI instability** policy. The backend abstraction layer is examined in depth: the **`wlr_backend`** / **`wlr_backend_impl`** vtable model; the **DRM** backend's connector enumeration via **`drmModeGetResources`**, hotplug via **udev**, atomic modesetting using **`drmModeAtomicCommit`** / **`drmModeAtomicAlloc`**, hardware cursor and overlay plane assignment, page flip events via **`DRM_EVENT_FLIP_COMPLETE`**, and scanout buffer allocation with **GBM** (**`gbm_bo_create_with_modifiers2`**). The nested **Wayland** backend, **headless** backend, and **multi-backend** composed by **`wlr_backend_autocreate`** are also covered.
+- **Backend abstraction** — over **DRM/KMS**, nested **Wayland**, **X11**, and headless outputs
+- **Rendering infrastructure** — supporting **GLES2**, **Vulkan**, and **CPU**-based **pixman**
+- **Scene graph** — with damage tracking
+- **Input handling** — via **libinput**
+- **Wayland protocol implementations** — a rich, extensible set
 
-Output and mode management explores **`wlr_output`** fields (name, physical dimensions, modes), the transactional **`wlr_output_state`** pending-state model and **`wlr_output_commit_state`**, adaptive sync via the **`VRR_ENABLED`** **KMS** connector property, gamma correction via **`GAMMA_LUT`**, output transforms and **HiDPI** scaling, and multi-monitor layout with **`wlr_output_layout`**.
+**Sway**, **Wayfire**, **labwc**, and dozens of smaller compositors are built on **wlroots**. (Hyprland was wlroots-based until 2024, when it migrated to its own **Aquamarine** backend library — see Chapter 22 §5.) Understanding **wlroots** means understanding how the entire output path from client commit to pixel works in practice.
 
-The renderer abstraction section covers the **`wlr_renderer`** vtable, the **`wlr_texture`** / **`wlr_buffer`** lifecycle, **DMA-BUF** import using **`EGL_EXT_image_dma_buf_import`** in the **GLES2** renderer and **`VK_EXT_external_memory_dma_buf`** in the **Vulkan** renderer, the **GLSL** shader set in **`render/gles2/`**, **HDR** compositing via **`VK_EXT_swapchain_colorspace`** in **`render/vulkan/`**, the **pixman** software renderer, and **`wlr_allocator`** with its **GBM** and shared-memory backends.
+The chapter opens with the **wlroots** architecture and source-tree layout, covering the **"bring your own event loop"** design built on **`wl_event_loop`** and the **ABI instability** policy. Source-tree modules:
 
-The scene graph section explains why damage tracking matters, then details the **`wlr_scene`** / **`wlr_scene_tree`** / **`wlr_scene_buffer`** / **`wlr_scene_rect`** node hierarchy, surface integration via **`wlr_scene_surface_create`** and **`wlr_scene_xdg_surface_create`**, output binding through **`wlr_scene_output`** and **`wlr_scene_output_commit`**, double-buffered damage accumulation using **`pixman_region32_union`**, hardware plane promotion to **KMS** overlay planes, and layer ordering with **`wlr_layer_shell_v1`**.
+- **`backend/`** — hardware abstraction
+- **`render/`** — rendering backends
+- **`types/`** — server-side Wayland protocol object implementations
+- **`xwayland/`** — XWayland integration
+- **`interfaces/`** — C vtable definitions
 
-Input handling is treated at three levels: the Linux **evdev** protocol and **`/dev/input/eventN`** character devices enumerated via **libudev**; **libinput** normalisation (palm detection, pointer acceleration, gesture recognition, multitouch slot tracking, tablet stylus events); and the **wlroots** seat layer — **`wlr_seat`**, **`wlr_cursor`**, **`wlr_xcursor_manager`**, hardware cursor via **`wlr_output_cursor`**, and the **`zwp_pointer_gestures_v1`**, **`zwp_pointer_constraints_v1`**, **`zwp_tablet_v2`**, **`zwp_text_input_v3`**, and **`zwp_input_method_v2`** protocol implementations. **XKB** keymap serialisation via **`memfd_create`** and software key-repeat via **`wl_event_source_timer_create`** are also explained.
+The backend abstraction layer is examined in depth:
 
-The protocol implementations section surveys the full set of **`wlr_*`** protocol managers: **`wlr_xdg_shell`** (configure/ack/commit cycle), **`wlr_layer_shell_v1`** (exclusive zones and anchor), **`wlr_data_device_manager`** (clipboard and **drag-and-drop**), **`wlr_output_management_v1`**, **`wlr_screencopy_manager_v1`**, **`wlr_export_dmabuf_manager_v1`**, **`wlr_gamma_control_manager_v1`**, **`wlr_foreign_toplevel_management_v1`**, and the relationship between **wlr-protocols** (**`zwlr_*`**) and the upstream **wayland-protocols** standardisation process.
+- **`wlr_backend`** / **`wlr_backend_impl`** — vtable model
+- **DRM backend** — connector enumeration via **`drmModeGetResources`**, hotplug via **udev**, atomic modesetting using **`drmModeAtomicCommit`** / **`drmModeAtomicAlloc`**, hardware cursor and overlay plane assignment, page flip events via **`DRM_EVENT_FLIP_COMPLETE`**, and scanout buffer allocation with **GBM** (**`gbm_bo_create_with_modifiers2`**)
+- **Nested Wayland backend**, **headless backend**, and **multi-backend** — composed by **`wlr_backend_autocreate`**
 
-**XWayland** integration covers **`wlr_xwayland_create`** process management, lazy startup, the **`wlr_xwayland_surface`** object (configure requests, override-redirect windows, stacking via **`wlr_xwayland_surface_restack`**), **HiDPI** **`Xft.dpi`** configuration, and explicit sync via the **DRI3/Present** extension.
+Output and mode management explores:
 
-The practical walkthrough builds a minimal compositor following **`tinywl.c`**, covering the full initialisation sequence (**`wl_display_create`**, **`wlr_backend_autocreate`**, **`wlr_renderer_autocreate`**, **`wlr_allocator_autocreate`**, **`wlr_scene_create`**, **`wlr_xdg_shell_create`**, **`wlr_seat_create`**), the output configuration handler (**`wlr_output_commit_state`**, **`wlr_scene_output_create`**), the **XDG** surface handler (**`wlr_scene_xdg_surface_create`**), keyboard and pointer input routing via **`wlr_seat_keyboard_notify_enter`** and **`wlr_scene_node_at`** hit-testing, and common pitfalls (missing **`ack_configure`**, coordinate system mismatches, **`wl_display_flush_clients`**, transform/scale propagation).
+- **`wlr_output`** — fields (name, physical dimensions, modes)
+- **`wlr_output_state`** / **`wlr_output_commit_state`** — transactional pending-state model
+- **`VRR_ENABLED`** — adaptive sync via the **KMS** connector property
+- **`GAMMA_LUT`** — gamma correction
+- Output transforms and **HiDPI** scaling
+- **`wlr_output_layout`** — multi-monitor layout
 
-Finally, screencopy and **PipeWire** integration details the **`zwlr_screencopy_v1`** frame-capture protocol, the **`zwlr_export_dmabuf_v1`** zero-copy **GPU**-to-**GPU** export path, the **`xdg-desktop-portal-wlr`** **D-Bus** bridge that feeds captured frames into a **PipeWire** `video/raw` stream consumed by **OBS Studio**, video conferencing tools, and remote desktop clients, and the security considerations around **`wp_security_context_v1`** and compositor-side permission gating.
+The renderer abstraction section covers:
+
+- **`wlr_renderer`** — vtable abstraction
+- **`wlr_texture`** / **`wlr_buffer`** — lifecycle management
+- **`EGL_EXT_image_dma_buf_import`** — **DMA-BUF** import in the **GLES2** renderer
+- **`VK_EXT_external_memory_dma_buf`** — **DMA-BUF** import in the **Vulkan** renderer
+- **GLSL** shader set — in **`render/gles2/`**
+- **`VK_EXT_swapchain_colorspace`** — **HDR** compositing in **`render/vulkan/`**
+- **Pixman** software renderer
+- **`wlr_allocator`** — with **GBM** and shared-memory backends
+
+The scene graph section explains why damage tracking matters, then details:
+
+- **`wlr_scene`** / **`wlr_scene_tree`** / **`wlr_scene_buffer`** / **`wlr_scene_rect`** — node hierarchy
+- **`wlr_scene_surface_create`** and **`wlr_scene_xdg_surface_create`** — surface integration
+- **`wlr_scene_output`** and **`wlr_scene_output_commit`** — output binding
+- **`pixman_region32_union`** — double-buffered damage accumulation
+- Hardware plane promotion to **KMS** overlay planes
+- **`wlr_layer_shell_v1`** — layer ordering
+
+Input handling is treated at three levels:
+
+- **Linux evdev** — the **`/dev/input/eventN`** character devices enumerated via **libudev**
+- **libinput** — palm detection, pointer acceleration, gesture recognition, multitouch slot tracking, tablet stylus events
+- **wlroots seat layer** — **`wlr_seat`**, **`wlr_cursor`**, **`wlr_xcursor_manager`**, hardware cursor via **`wlr_output_cursor`**; protocol implementations: **`zwp_pointer_gestures_v1`**, **`zwp_pointer_constraints_v1`**, **`zwp_tablet_v2`**, **`zwp_text_input_v3`**, **`zwp_input_method_v2`**; **XKB** keymap serialisation via **`memfd_create`** and software key-repeat via **`wl_event_source_timer_create`**
+
+The protocol implementations section surveys the full set of **`wlr_*`** protocol managers:
+
+- **`wlr_xdg_shell`** — configure/ack/commit cycle
+- **`wlr_layer_shell_v1`** — exclusive zones and anchor
+- **`wlr_data_device_manager`** — clipboard and **drag-and-drop**
+- **`wlr_output_management_v1`** — output configuration
+- **`wlr_screencopy_manager_v1`** — screen capture
+- **`wlr_export_dmabuf_manager_v1`** — DMA-BUF frame export
+- **`wlr_gamma_control_manager_v1`** — gamma control
+- **`wlr_foreign_toplevel_management_v1`** — toplevel management
+- **wlr-protocols** (**`zwlr_*`**) — relationship to upstream **wayland-protocols** standardisation process
+
+**XWayland** integration covers:
+
+- **`wlr_xwayland_create`** — process management and lazy startup
+- **`wlr_xwayland_surface`** — configure requests, override-redirect windows, stacking via **`wlr_xwayland_surface_restack`**
+- **HiDPI** **`Xft.dpi`** configuration
+- Explicit sync via the **DRI3/Present** extension
+
+The practical walkthrough builds a minimal compositor following **`tinywl.c`**:
+
+- **Initialisation sequence** — **`wl_display_create`**, **`wlr_backend_autocreate`**, **`wlr_renderer_autocreate`**, **`wlr_allocator_autocreate`**, **`wlr_scene_create`**, **`wlr_xdg_shell_create`**, **`wlr_seat_create`**
+- **Output configuration handler** — **`wlr_output_commit_state`**, **`wlr_scene_output_create`**
+- **XDG surface handler** — **`wlr_scene_xdg_surface_create`**
+- **Keyboard and pointer input routing** — **`wlr_seat_keyboard_notify_enter`** and **`wlr_scene_node_at`** hit-testing
+- **Common pitfalls** — missing **`ack_configure`**, coordinate system mismatches, **`wl_display_flush_clients`**, transform/scale propagation
+
+Finally, screencopy and **PipeWire** integration details:
+
+- **`zwlr_screencopy_v1`** — frame-capture protocol
+- **`zwlr_export_dmabuf_v1`** — zero-copy **GPU**-to-**GPU** export path
+- **`xdg-desktop-portal-wlr`** — **D-Bus** bridge feeding captured frames into a **PipeWire** `video/raw` stream consumed by **OBS Studio**, video conferencing tools, and remote desktop clients
+- **`wp_security_context_v1`** — compositor-side permission gating and security considerations
 
 After reading this chapter, a systems developer will be able to write a functional **Wayland** compositor from scratch, understand how every line in the **wlroots** **DRM** backend maps to the **KMS** concepts from Chapter 2, and understand the design trade-offs that distinguish **wlroots**-based compositors from those with custom backends like **Mutter** and **KWin**.
 

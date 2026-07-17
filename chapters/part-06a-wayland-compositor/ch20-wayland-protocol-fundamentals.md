@@ -2,7 +2,13 @@
 
 **Part VI — The Display Stack**
 
-**Audiences**: *Systems and driver developers* who need to understand the wire protocol, security internals, and GPU buffer-sharing primitives at the protocol layer; and *graphics application developers* who need the surface and buffer model to write correct Wayland-native code. Both audiences will encounter the extension protocols — xdg-shell, linux-dmabuf, wp_presentation, explicit sync, colour management — that make Wayland production-capable in 2025.
+**Audiences**: *Systems and driver developers* who need to understand the wire protocol, security internals, and GPU buffer-sharing primitives at the protocol layer; and *graphics application developers* who need the surface and buffer model to write correct Wayland-native code. Both audiences will encounter the extension protocols that make Wayland production-capable in 2025:
+
+- **xdg-shell**
+- **linux-dmabuf**
+- **wp_presentation**
+- **explicit sync**
+- **colour management**
 
 ---
 

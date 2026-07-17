@@ -3,9 +3,25 @@
 **Part**: X — The Browser Rendering Stack  
 **Primary audience**: Browser and web platform engineers who need to understand how Chrome and Firefox offload video decoding to the GPU via VA-API on Linux; systems and driver developers debugging VA-API integration, sandbox policies, or zero-copy NV12 compositing failures in browser environments.
 
-> **Relationship to Chapter 146.** This chapter covers the **browser implementation side** of hardware video acceleration: the C++ internals of Chrome's `VaapiVideoDecoder` / `VaapiWrapper`, codec-specific delegates, `OzoneImageBacking` zero-copy compositing, the Out-of-Process Video Decode (OOP-VD) sandbox, Firefox's `FFmpegVideoDecoder`, `DMABufSurface`, and the RDD process — plus NVIDIA-specific quirks (§11) and per-codec deep-dives (§10).
+> **Relationship to Chapter 146.** This chapter covers the **browser implementation side** of hardware video acceleration:
 >
-> **Chapter 146** covers the **API and specification side**: the W3C WebCodecs JavaScript API (`VideoDecoder`, `VideoEncoder`, `VideoFrame`), how decoded frames reach WebGPU and Canvas, querying hardware support via `isConfigSupported()` and `MediaCapabilities`, and background on all the related formats and protocols (MSE, DASH, HLS, EBML, DRM, codecs). Chapter 146 §4 gives a developer-facing overview of the same VA-API path that this chapter dissects in depth — read both chapters together for the complete picture from JavaScript call to kernel DRM driver.
+> - **`VaapiVideoDecoder` / `VaapiWrapper`** — C++ internals of Chrome's hardware decode layer
+> - **Codec-specific delegates** — per-codec bitstream parsing and VA-API buffer construction
+> - **`OzoneImageBacking` zero-copy compositing** — decoded NV12 surface import into Chrome's compositor pipeline
+> - **Out-of-Process Video Decode (OOP-VD) sandbox** — Chrome's isolated video utility process
+> - **Firefox's `FFmpegVideoDecoder`** — FFmpeg-backed VA-API path in Firefox
+> - **`DMABufSurface`** — Firefox's DMA-BUF abstraction for decoded video frames
+> - **RDD process** — Firefox's Remote Data Decoder isolation process
+> - **NVIDIA-specific quirks** (§11) and **per-codec deep-dives** (§10)
+>
+> **Chapter 146** covers the **API and specification side**:
+>
+> - **W3C WebCodecs JavaScript API** (`VideoDecoder`, `VideoEncoder`, `VideoFrame`) — the JavaScript-facing decode/encode interface
+> - How decoded frames reach WebGPU and Canvas
+> - Hardware support querying via `isConfigSupported()` and `MediaCapabilities`
+> - Background on all the related formats and protocols (MSE, DASH, HLS, EBML, DRM, codecs)
+>
+> Chapter 146 §4 gives a developer-facing overview of the same VA-API path that this chapter dissects in depth — read both chapters together for the complete picture from JavaScript call to kernel DRM driver.
 
 ---
 

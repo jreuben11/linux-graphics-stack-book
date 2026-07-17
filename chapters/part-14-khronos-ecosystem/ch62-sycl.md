@@ -58,7 +58,14 @@ This chapter targets graphics application developers who need portable heterogen
 
 **SYCL 2020** is the current **Khronos**-ratified standard (Revision 11) for single-source, heterogeneous **C++17** programming. Unlike **OpenCL**'s split-source model — where kernel code lives in a separate string or `.cl` file — **SYCL** embeds device kernels directly in host C++ as lambda expressions. The compiler then extracts and compiles these lambdas for the target device while the host sees only the surrounding C++ types. The result is a programming model that integrates naturally with C++ templates, standard algorithms, and existing build systems while delivering close-to-native performance on diverse GPU architectures.
 
-Readers of this chapter should be familiar with: **LLVM** compilation pipelines (relevant sections appear in Chapter 61 on **SPIR-V** tools), the **AMDGPU** **LLVM** backend (Chapter 48 on **ROCm**/**HIP**), Intel's **Level Zero** runtime (Chapter 25 on compute APIs), and the **DRM** GPU scheduler (Chapter 4). This chapter focuses on the **SYCL**-specific layer that sits above those runtimes.
+Readers of this chapter should be familiar with:
+
+- **LLVM compilation pipelines** — relevant sections appear in Chapter 61 on **SPIR-V** tools
+- **AMDGPU LLVM backend** — Chapter 48 on **ROCm**/**HIP**
+- **Intel's Level Zero runtime** — Chapter 25 on compute APIs
+- **DRM GPU scheduler** — Chapter 4
+
+This chapter focuses on the **SYCL**-specific layer that sits above those runtimes.
 
 What you will learn:
 

@@ -36,7 +36,28 @@
 
 ## Overview
 
-This chapter examines the **CUDA** software stack as it operates on Linux: from the layered shared libraries that expose the **Driver API** and **Runtime API**, through streams and events as the fundamental concurrency and synchronization primitives, to **NVRTC** for runtime kernel compilation and **CUDA Graphs** for eliminating CPU dispatch overhead in iterative workloads. It then covers the operational concerns that matter most on production Linux systems — **MPS** and **MIG** for multi-tenant GPU sharing, **NVML** for monitoring, and the **procfs**/**debugfs** interfaces exposed by the **nvidia** kernel modules. Sections 10–12 cover higher-level CUDA programming models: **CCCL** (Thrust, CUB, libcu++), tile-based CUDA abstractions (**cuda-tile**, **Tilus**), and **NVSHMEM** for GPU-side one-sided communication. Sections 13–20 cover the major CUDA compute libraries that every ML and scientific computing stack depends on: **cuDNN**, **cuBLAS**, **CUTLASS**, **cuSPARSE**/**cuSPARSELt**, **cuFFT**, **NCCL**, **cuRAND**, and **cuSolver**.
+This chapter examines the **CUDA** software stack as it operates on Linux: from the layered shared libraries that expose the **Driver API** and **Runtime API**, through streams and events as the fundamental concurrency and synchronization primitives, to **NVRTC** for runtime kernel compilation and **CUDA Graphs** for eliminating CPU dispatch overhead in iterative workloads. It then covers the operational concerns that matter most on production Linux systems:
+
+- **MPS** and **MIG** — multi-tenant GPU sharing
+- **NVML** — GPU monitoring
+- **procfs**/**debugfs** — runtime diagnostic interfaces exposed by the **nvidia** kernel modules
+
+Sections 10–12 cover higher-level CUDA programming models:
+
+- **CCCL** (Thrust, CUB, libcu++) — unified CUDA core compute libraries
+- **cuda-tile** / **Tilus** — tile-based CUDA abstractions
+- **NVSHMEM** — GPU-side one-sided communication
+
+Sections 13–20 cover the major CUDA compute libraries that every ML and scientific computing stack depends on:
+
+- **cuDNN** — deep learning primitives
+- **cuBLAS** — GPU BLAS and cublasLt
+- **CUTLASS** — C++ template GEMM library
+- **cuSPARSE**/**cuSPARSELt** — sparse linear algebra
+- **cuFFT** — GPU Fast Fourier Transform
+- **NCCL** — GPU collective communications
+- **cuRAND** — GPU random number generation
+- **cuSolver** — GPU linear solvers
 
 Section 1 maps the library layering: **`libcuda.so`** (the **Driver API**, installed with the graphics driver) versus **`libcudart.so`** (the **Runtime API**, part of the **CUDA Toolkit**), how version compatibility is enforced, and the error **`CUDA_ERROR_INVALID_PTX`** that arises when the **PTX ISA** level emitted by **nvcc** exceeds what the installed driver's JIT understands. It covers loading **PTX** and **CUBIN** objects at runtime via **`cuModuleLoadData()`** and the newer context-independent **`CUlibrary`** API (**`cuLibraryLoadData()`**), as well as the primary context model (**`cuDevicePrimaryCtxRetain()`**) and the **Green Contexts** intra-process SM-partitioning alternative introduced in **CUDA 12.4**. Section 1.5 covers **ptxas** — NVIDIA's proprietary PTX-to-SASS assembler — including CLI flags (`--gpu-name`, `--maxrregcount`, `--opt-level`), `--verbose` per-kernel register/shared-memory accounting, occupancy analysis, and **`cuobjdump`**/**`nvdisasm`** for inspecting generated SASS output.
 

@@ -2,7 +2,16 @@
 
 **Target audiences**: System administrators deploying GPU drivers; kernel and driver developers maintaining out-of-tree or downstream kernel trees; Linux distribution packagers managing GPU driver packages.
 
-GPU kernel modules sit at the most turbulent intersection of hardware and software: they must be recompiled for every kernel the system runs, yet the hardware they drive is proprietary, complex, and changes slowly compared to kernel internals. This chapter explains why that problem exists, how DKMS solves it operationally, and how different GPU vendors — NVIDIA, AMD, and Intel — have each chosen a different point on the spectrum between fully proprietary and fully upstream. It covers the kernel module ABI problem, DKMS mechanics and configuration, NVIDIA's two module flavours (proprietary and open), AMD's upstream-first philosophy, Intel's firmware loading model, out-of-tree driver lifecycle, module signing under Secure Boot, and distribution packaging strategies.
+GPU kernel modules sit at the most turbulent intersection of hardware and software: they must be recompiled for every kernel the system runs, yet the hardware they drive is proprietary, complex, and changes slowly compared to kernel internals. This chapter explains why that problem exists, how DKMS solves it operationally, and how different GPU vendors — NVIDIA, AMD, and Intel — have each chosen a different point on the spectrum between fully proprietary and fully upstream. It covers:
+
+- **Kernel module ABI problem** — version magic, CRC checksums, and `EXPORT_SYMBOL_GPL` restrictions
+- **DKMS mechanics and configuration** — `dkms.conf` format, build lifecycle, and distribution hooks
+- **NVIDIA's two module flavours** — proprietary (closed binary stub) and open (MIT/GPL dual-licensed)
+- **AMD's upstream-first philosophy** — why `amdgpu` requires no DKMS for normal use
+- **Intel's firmware loading model** — GuC, HuC, and DMC firmware via `linux-firmware`
+- **Out-of-tree driver lifecycle** — development, RFC posting, staging, and mainline inclusion
+- **Module signing under Secure Boot** — MOK enrollment and DKMS automatic signing
+- **Distribution packaging strategies** — Ubuntu, Fedora, Arch, NixOS, and Gentoo approaches
 
 ---
 

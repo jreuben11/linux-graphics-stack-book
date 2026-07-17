@@ -24,7 +24,12 @@
 
 ## Scope
 
-This chapter traces the complete Linux graphics stack on Raspberry Pi hardware, from the QPU instruction set of the original VideoCore IV through the V3D kernel driver and Mesa Gallium/Vulkan drivers that power modern Pi boards. Embedded Linux developers will find the kernel driver internals (vc4, v3d, HVS, V4L2 M2M codecs) covered in depth. Hobbyist hardware hackers will appreciate the history of reverse engineering that preceded the open-source drivers. IoT and kiosk developers will find the production deployment section — Weston, cage, labwc, Chromium on Wayland — directly actionable. Education platform developers targeting Raspberry Pi as a Vulkan or OpenGL ES platform will find the conformance history and GLES capability per generation clearly laid out.
+This chapter traces the complete Linux graphics stack on Raspberry Pi hardware, from the QPU instruction set of the original VideoCore IV through the V3D kernel driver and Mesa Gallium/Vulkan drivers that power modern Pi boards.
+
+- **Embedded Linux developers** will find the kernel driver internals — vc4, v3d, HVS, V4L2 M2M codecs — covered in depth.
+- **Hobbyist hardware hackers** will appreciate the history of reverse engineering that preceded the open-source drivers.
+- **IoT and kiosk developers** will find the production deployment section — Weston, cage, labwc, Chromium on Wayland — directly actionable.
+- **Education platform developers** targeting Raspberry Pi as a Vulkan or OpenGL ES platform will find the conformance history and GLES capability per generation clearly laid out.
 
 ---
 

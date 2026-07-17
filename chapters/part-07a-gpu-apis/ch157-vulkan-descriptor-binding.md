@@ -31,7 +31,13 @@
 
 Descriptors are Vulkan's mechanism for binding resources (buffers, images, samplers) to shaders. Understanding the descriptor system at depth — from layout to pool to update to GPU register mapping — is essential for writing high-performance Vulkan code and for avoiding the common pitfalls of descriptor set management.
 
-This chapter covers: the descriptor set lifecycle, the performance properties of different update strategies (write-after-bind, push descriptors, descriptor buffers), the `VK_EXT_descriptor_indexing` extension that enables bindless rendering (covered briefly in Ch154 from an application perspective), and `VK_EXT_descriptor_buffer` which moves descriptor management entirely to GPU-visible memory. It concludes with how RADV and ANV implement descriptors in hardware.
+This chapter covers:
+
+- **Descriptor set lifecycle** — layout creation, pool allocation, set updates, and command-buffer binding
+- **Update strategies** — performance properties of write-after-bind, push descriptors, and descriptor buffers
+- **`VK_EXT_descriptor_indexing`** — enables bindless rendering (covered briefly in Ch154 from an application perspective)
+- **`VK_EXT_descriptor_buffer`** — moves descriptor management entirely to GPU-visible memory
+- **RADV and ANV implementation** — how these drivers implement descriptors in hardware
 
 ---
 

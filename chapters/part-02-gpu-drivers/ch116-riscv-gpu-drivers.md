@@ -73,7 +73,13 @@
 
 RISC-V has crossed a threshold that few predicted would arrive before the end of this decade: in Linux 6.18, a RISC-V system-on-chip received **fully mainline, hardware-accelerated 3D graphics**. The platform in question is Alibaba/T-HEAD's TH1520 SoC, and the enabling technology is the open `drm/imagination` kernel driver paired with Mesa's PowerVR Vulkan implementation. This development is not merely a curiosity — it establishes the template that future RISC-V SoC vendors must follow, and it exposes the multi-layered complexity of bringing a GPU subsystem to a new ISA without the decades of x86 and ARM scaffolding that most driver work takes for granted.
 
-This chapter covers the graphics stack from the SoC silicon up to the Wayland compositor, targeting three overlapping groups: **embedded Linux engineers** responsible for BSP bring-up on RISC-V boards, **systems developers** studying how the `drm/imagination` driver was adapted for RISC-V's platform model and power management constraints, and **open hardware developers** interested in what is possible with the Vortex research GPU and emerging RISC-V GPU ISA proposals. The chapter situates RISC-V graphics within the broader open-source GPU driver landscape — the ARM Mali parallels in Chapter 6 and Chapter 90 are close companions — while documenting the specific pitfalls and milestones that are unique to the RISC-V architecture.
+This chapter covers the graphics stack from the SoC silicon up to the Wayland compositor, targeting three overlapping groups:
+
+- **Embedded Linux engineers** — responsible for BSP bring-up on RISC-V boards
+- **Systems developers** — studying how the `drm/imagination` driver was adapted for RISC-V's platform model and power management constraints
+- **Open hardware developers** — interested in what is possible with the Vortex research GPU and emerging RISC-V GPU ISA proposals
+
+The chapter situates RISC-V graphics within the broader open-source GPU driver landscape — the ARM Mali parallels in Chapter 6 and Chapter 90 are close companions — while documenting the specific pitfalls and milestones that are unique to the RISC-V architecture.
 
 ```mermaid
 graph TD

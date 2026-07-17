@@ -27,7 +27,11 @@
 
 ## Scope
 
-This chapter is aimed at three overlapping audiences. **Compiler engineers** will find a detailed account of MLIR's dialect hierarchy, the progressive lowering philosophy, and how each stage maps onto real GPU hardware concepts. **ML framework developers** who use PyTorch, JAX, or similar tools will gain a clear picture of what happens between their `@torch.compile` or `jax.jit` call and the GPU executing instructions — a journey that increasingly passes through MLIR, Triton, or XLA. **GPU driver developers** will find an explanation of how MLIR-generated SPIR-V feeds into Mesa's existing `spirv_to_nir` pipeline and what constraints that places on the upstream compilers.
+This chapter is aimed at three overlapping audiences:
+
+- **Compiler engineers** — a detailed account of MLIR's dialect hierarchy, the progressive lowering philosophy, and how each stage maps onto real GPU hardware concepts.
+- **ML framework developers** who use PyTorch, JAX, or similar tools — a clear picture of what happens between their `@torch.compile` or `jax.jit` call and the GPU executing instructions; a journey that increasingly passes through MLIR, Triton, or XLA.
+- **GPU driver developers** — an explanation of how MLIR-generated SPIR-V feeds into Mesa's existing `spirv_to_nir` pipeline and what constraints that places on the upstream compilers.
 
 The chapter sits logically at the top of the Mesa architecture part because MLIR and its associated tools occupy a layer *above* Mesa: they produce SPIR-V, PTX, or AMD GCN assembly that Mesa or vendor drivers then consume. Understanding this layer is increasingly important for anyone working on the Linux graphics stack as ML workloads become first-class citizens on GPU hardware.
 

@@ -1,6 +1,12 @@
 # Chapter 106: The Vulkan Memory Model — Formal Execution and Memory Ordering
 
-This chapter targets three audiences: **Vulkan application developers** writing compute shaders and multi-queue applications who need to understand what correctness guarantees they are actually getting from barriers and atomics; **shader compiler engineers** implementing memory model lowering in NIR and ACO who must translate abstract semantics into hardware wait states; and **graphics researchers** studying GPU memory consistency who need the formal definitions underlying the model. Readers are expected to be familiar with basic Vulkan command buffer recording and the SPIR-V binary format, but the memory model is treated from first principles because it differs substantially from C++ and from most concurrent-programming models developers encounter elsewhere.
+This chapter targets three audiences:
+
+- **Vulkan application developers** — writing compute shaders and multi-queue applications who need to understand what correctness guarantees they are actually getting from barriers and atomics
+- **shader compiler engineers** — implementing memory model lowering in NIR and ACO who must translate abstract semantics into hardware wait states
+- **graphics researchers** — studying GPU memory consistency who need the formal definitions underlying the model
+
+Readers are expected to be familiar with basic Vulkan command buffer recording and the SPIR-V binary format, but the memory model is treated from first principles because it differs substantially from C++ and from most concurrent-programming models developers encounter elsewhere.
 
 ---
 

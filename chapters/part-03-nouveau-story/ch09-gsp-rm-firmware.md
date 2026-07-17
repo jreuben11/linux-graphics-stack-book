@@ -27,15 +27,46 @@ This chapter is about what those two events mean technically. The **GPU System P
 
 When **Nouveau** loads and boots this firmware, it stops being a pure reverse-engineered driver on **Turing** and later hardware and becomes, instead, a kernel-space front-end that communicates with NVIDIA's own management logic via a message-queue **RPC** interface. The practical consequences are substantial: reclocking works for the first time on these GPU generations, **Ampere** (**RTX 30** series) and **Ada Lovelace** (**RTX 40** series) gain real hardware acceleration support, and fan control and thermal management become reliable. The philosophical consequences are equally real and deserve honest examination.
 
-Section 2 examines the **nvidia-open** kernel module released on May 19, 2022: what the open module exposes — **`nvidia.ko`**, **`nvidia-modeset.ko`**, **`nvidia-drm.ko`**, and **`nvidia-uvm.ko`** — including the **`drm_syncobj`** integration that unblocked **Wayland** explicit synchronisation, what remains closed (the **GSP-RM** firmware blobs, **`nv-kernel.o_binary`**, and the entire proprietary userspace including **`libGL`**, **`libVulkan`**, **`libcuda`**, **`libnvoptix`**, and **NVENC**/**NVDEC** libraries), the transitional nature of **`nv-kernel.o_binary`** for **Turing**-generation targets, and the implications of all this for distributions and for **Nouveau**'s separate development trajectory.
+Section 2 examines the **nvidia-open** kernel module released on May 19, 2022:
 
-Section 3 covers **Nouveau**'s **GSP-RM** support as it is architecturally structured in the kernel source, including the **`nvkm_gsp`** subdevice hierarchy under **`drivers/gpu/drm/nouveau/nvkm/subdev/gsp/`**, the **`nouveau.config=NvGspRm=1`** activation parameter and the automatic enablement path for **Ada Lovelace** hardware, the multi-stage boot sequence through **`nvkm_gsp_load_fw()`**, **`tu102_gsp_wpr_meta_init()`**, the **`GspFwWprMeta`** structure, and **`tu102_gsp_booter_load()`**, the **RPC message queue protocol** using dual **256 KB** circular queues in GPU memory with the **`rpc_message_header_v`** structure, the split of ownership between **GSP-RM** (hardware init, clocks, thermals) and **Nouveau**'s CPU-side code (**TTM**/**GEM**, **KMS**, **`drm_sched`**, **`drm_syncobj`**, **`DRM_NOUVEAU_EXEC`**, **`DRM_NOUVEAU_VM_BIND`**), and the role of the **`open-gpu-doc`** repository in providing the class definitions and method encodings needed to implement the **RPC** protocol.
+- **What the open module exposes** — **`nvidia.ko`**, **`nvidia-modeset.ko`**, **`nvidia-drm.ko`**, and **`nvidia-uvm.ko`**, including the **`drm_syncobj`** integration that unblocked **Wayland** explicit synchronisation
+- **What remains closed** — the **GSP-RM** firmware blobs, **`nv-kernel.o_binary`**, and the entire proprietary userspace including **`libGL`**, **`libVulkan`**, **`libcuda`**, **`libnvoptix`**, and **NVENC**/**NVDEC** libraries
+- **`nv-kernel.o_binary` transitional nature** — the compatibility shim for **Turing**-generation targets and its planned elimination as the codebase is refactored
+- **Implications for distributions and Nouveau** — how the open module bifurcates the NVIDIA Linux driver landscape from **Nouveau**'s separate development trajectory
 
-Section 4 covers feature parity: the pre-**GSP-RM** situation on **Turing** and **Ampere** where fixed low-power clocks delivered roughly 20% of rated performance, and what **GSP-RM** unlocks — working reclocking via **P-state** transitions, proper **Ampere** (**GA102**) support, initial **Ada Lovelace** (**AD102**) hardware acceleration, and the distribution packaging considerations for the large firmware blobs. It also documents the remaining gaps: ray tracing acceleration, **DisplayPort 2.0** bandwidth, **NVENC**/**NVDEC** codec access, and **CUDA** (which continues to require the proprietary userspace regardless of kernel driver).
+Section 3 covers **Nouveau**'s **GSP-RM** support as it is architecturally structured in the kernel source:
 
-Section 5 examines the security implications and trust model: the **IOMMU**-mediated DMA access the **GSP** processor has to system memory, the Spectre-class threat surface, a comparison with **AMD**'s **PSP** and **SMU** firmware and Intel's **GuC**/**HuC** firmware as structural analogues, the hardware-enforced signing that prevents running community-built firmware even if source were published, the **Debian** and **Fedora** distribution policies on the blobs, and **vGPU** attestation and licensing checks enforced through **GSP-RM**.
+- **`nvkm_gsp` subdevice hierarchy** — located under **`drivers/gpu/drm/nouveau/nvkm/subdev/gsp/`**
+- **Activation and configuration** — the **`nouveau.config=NvGspRm=1`** parameter and the automatic enablement path for **Ada Lovelace** hardware
+- **Multi-stage boot sequence** — through **`nvkm_gsp_load_fw()`**, **`tu102_gsp_wpr_meta_init()`**, the **`GspFwWprMeta`** structure, and **`tu102_gsp_booter_load()`**
+- **RPC message queue protocol** — dual **256 KB** circular queues in GPU memory with the **`rpc_message_header_v`** structure
+- **Ownership split** — **GSP-RM** owns hardware init, clocks, and thermals; **Nouveau**'s CPU-side code owns **TTM**/**GEM**, **KMS**, **`drm_sched`**, **`drm_syncobj`**, **`DRM_NOUVEAU_EXEC`**, and **`DRM_NOUVEAU_VM_BIND`**
+- **`open-gpu-doc` repository** — provides the class definitions and method encodings needed to implement the **RPC** protocol
 
-Section 6 addresses the path toward a fully open NVIDIA stack: what has changed (the **nvidia-open** release, the **`open-gpu-doc`** publication, NVIDIA's upstream engagement with **Wayland** explicit sync), what remains closed (the **GSP-RM** firmware source, **Turing+** clock tree and power-domain documentation, the **CUDA** and proprietary **Vulkan** userspace), the architectural reasons why **Nouveau** and **nvidia-open** are unlikely to converge (**nvkm** vs. **NvRmApi**/**NvPort** abstraction layers), and the contribution landscape for **GSP-RM** — including the **Nova** Rust kernel driver introduced in **Linux 6.10** as a clean-sheet **GSP-RM** client split into **`nova-core`** and **`nova-drm`** under **`drivers/gpu/drm/nova/`**.
+Section 4 covers feature parity, documenting what **GSP-RM** unlocks and what gaps remain:
+
+- **Pre-GSP-RM baseline** — fixed low-power clocks on **Turing** and **Ampere** delivering roughly 20% of rated performance
+- **Working reclocking** — via **P-state** transitions, enabled for the first time on these GPU generations
+- **Proper Ampere support** — full **GA102** (RTX 30 series) hardware acceleration
+- **Initial Ada Lovelace support** — **AD102** hardware acceleration, the only supported path on RTX 40 hardware
+- **Firmware blob packaging** — distribution considerations for the large per-family blobs
+- **Remaining gaps** — ray tracing acceleration, **DisplayPort 2.0** bandwidth, **NVENC**/**NVDEC** codec access, and **CUDA** (which continues to require the proprietary userspace regardless of kernel driver)
+
+Section 5 examines the security implications and trust model:
+
+- **IOMMU-mediated DMA access** — the threat surface created by the **GSP** processor's direct access to system memory
+- **Spectre-class threat surface** — speculative execution channels between the **GSP** and CPU
+- **Firmware analogues** — a comparison with **AMD**'s **PSP** and **SMU** firmware and Intel's **GuC**/**HuC** firmware as structural counterparts
+- **Hardware-enforced signing** — prevents running community-built firmware even if source were published
+- **Distribution policies** — **Debian** and **Fedora** approaches to the firmware blobs
+- **vGPU attestation and licensing** — checks enforced through **GSP-RM**
+
+Section 6 addresses the path toward a fully open NVIDIA stack:
+
+- **What has changed** — the **nvidia-open** release, the **`open-gpu-doc`** publication, and NVIDIA's upstream engagement with **Wayland** explicit sync
+- **What remains closed** — the **GSP-RM** firmware source, **Turing+** clock tree and power-domain documentation, and the **CUDA** and proprietary **Vulkan** userspace
+- **Nouveau vs. nvidia-open convergence** — architectural reasons why the two are unlikely to converge (**nvkm** vs. **NvRmApi**/**NvPort** abstraction layers)
+- **Nova Rust kernel driver** — introduced in **Linux 6.10** as a clean-sheet **GSP-RM** client split into **`nova-core`** and **`nova-drm`** under **`drivers/gpu/drm/nova/`**
 
 ---
 

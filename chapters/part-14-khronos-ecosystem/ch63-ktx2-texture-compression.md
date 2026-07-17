@@ -57,7 +57,12 @@
 
 ## Overview
 
-This chapter is targeted at **graphics application developers** building production asset pipelines on **Linux**. It covers the full texture-compression stack: the hardware block-compression format families exposed via **VkFormat**, the **Basis Universal** supercompression system that provides a single intermediate codec transcoding to all of them, the **KTX2** container format that wraps everything in a portable file format with embedded metadata, and the **libktx** C API that drives the entire load-transcode-upload sequence from a handful of function calls.
+This chapter is targeted at **graphics application developers** building production asset pipelines on **Linux**. It covers the full texture-compression stack:
+
+- **Hardware block-compression format families** — BC1–BC7, ETC1/ETC2/EAC, and ASTC formats exposed via **VkFormat** on desktop and mobile GPUs
+- **Basis Universal** — supercompression system providing a single intermediate codec that transcodes to any native GPU block format at runtime
+- **KTX2** — container format wrapping textures in a portable file format with embedded metadata
+- **libktx** C API — drives the entire load-transcode-upload sequence from a handful of function calls
 
 Section 2 explains why **GPU** texture compression exists at all — how fixed-ratio block formats enable hardware **TMU** decode, random-access sampling, and dramatically reduced **VRAM** and bandwidth pressure compared to CPU codecs like **JPEG** or **PNG**. Section 3 surveys the three block-compression format families: **BC1**–**BC7** (**S3TC**/**RGTC**/**BPTC**, desktop **NVIDIA**/**AMD**/**Intel**), **ETC1**/**ETC2**/**EAC** (the mandatory mobile baseline on all **Vulkan** **OpenGL ES 3.0** devices), and **ASTC** (**Adaptive Scalable Texture Compression**, variable block footprints from 4×4 to 12×12). It includes a hardware support matrix covering **Mesa** drivers (**radv**, **anv**, **nvk**, **panfrost**, **freedreno**, **etnaviv**) and shows how to query native hardware decode support at runtime via **vkGetPhysicalDeviceFormatProperties** and **VkPhysicalDeviceFeatures** rather than relying on feature bits alone. The offline **ETC2** encoder **etc2comp** and the reference **ASTC** encoder **astcenc** are also covered.
 

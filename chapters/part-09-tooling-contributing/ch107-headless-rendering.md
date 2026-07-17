@@ -2,7 +2,15 @@
 
 **Target audiences**: CI/CD engineers, cloud rendering developers, server-side GPU users, test infrastructure engineers.
 
-This chapter explains how to render with GPUs — or without them — on Linux systems that have no physical display connected and no desktop compositor running. Headless rendering is the backbone of screenshot CI pipelines, server-side PDF and image generation, cloud gaming back-ends, GPU-accelerated video transcoding on bare-metal servers, and automated regression tests that compare rendered frames against golden images. Every section of the standard EGL/Wayland/X11 path assumes a connected display and a running compositor; headless mode systematically removes those assumptions and replaces them with kernel-level primitives, software rasterizers, and virtual output abstractions.
+This chapter explains how to render with GPUs — or without them — on Linux systems that have no physical display connected and no desktop compositor running. Headless rendering is the backbone of:
+
+- **Screenshot CI pipelines**
+- **Server-side PDF and image generation**
+- **Cloud gaming back-ends**
+- **GPU-accelerated video transcoding on bare-metal servers**
+- **Automated regression tests** — compare rendered frames against golden images
+
+Every section of the standard EGL/Wayland/X11 path assumes a connected display and a running compositor; headless mode systematically removes those assumptions and replaces them with kernel-level primitives, software rasterizers, and virtual output abstractions.
 
 ---
 

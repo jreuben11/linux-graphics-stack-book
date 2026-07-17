@@ -2,7 +2,15 @@
 
 **Target audiences:** Systems and driver developers; graphics application developers; browser and web platform engineers.
 
-This chapter covers the wave of staging protocols that reached compositor implementation in 2024–2026, directly addressing the limitation gaps catalogued in Chapter 20 §13. These protocols resolve long-standing deficiencies: GPU-fence–based explicit synchronisation for NVIDIA, cross-compositor HDR colour management, standardised screen capture, application-paced frame scheduling, and an expanded portal surface for sandboxed applications. Readers should treat version references as tied to the mid-2026 snapshot (Mutter 50.x, KWin 6.7.x, wlroots 0.18.x, xdg-desktop-portal 1.22.x); the graduation trajectory to "stable" status is clearly signalled where known.
+This chapter covers the wave of staging protocols that reached compositor implementation in 2024–2026, directly addressing the limitation gaps catalogued in Chapter 20 §13. These protocols resolve long-standing deficiencies:
+
+- GPU-fence–based explicit synchronisation for NVIDIA
+- cross-compositor HDR colour management
+- standardised screen capture
+- application-paced frame scheduling
+- an expanded portal surface for sandboxed applications
+
+Readers should treat version references as tied to the mid-2026 snapshot (Mutter 50.x, KWin 6.7.x, wlroots 0.18.x, xdg-desktop-portal 1.22.x); the graduation trajectory to "stable" status is clearly signalled where known.
 
 ---
 

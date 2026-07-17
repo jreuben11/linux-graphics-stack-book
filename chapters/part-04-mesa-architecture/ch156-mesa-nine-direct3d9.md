@@ -29,7 +29,14 @@
 
 **Mesa Nine** (also called "Gallium Nine") is a Direct3D 9 state tracker that was built directly into Mesa from approximately 2013 through Mesa 25.1 (early 2025). Instead of translating D3D9 API calls to OpenGL (as Wine's WineD3D does), Nine translated D3D9 calls directly to Gallium3D `pipe_context` calls, eliminating the entire OpenGL layer and dramatically improving performance for D3D9 games running under Wine.
 
-Nine was available in Mesa's `src/gallium/frontends/nine/` and required a Gallium driver — RadeonSI (AMD), Iris (Intel), Nouveau (Nvidia), or LLVMpipe for software rendering. It did not work with Zink (which sits above a Vulkan driver) or with native Vulkan drivers such as RADV or ANV.
+Nine was available in Mesa's `src/gallium/frontends/nine/` and required a Gallium driver:
+
+- **RadeonSI** — AMD
+- **Iris** — Intel
+- **Nouveau** — Nvidia
+- **LLVMpipe** — software rendering
+
+It did not work with Zink (which sits above a Vulkan driver) or with native Vulkan drivers such as RADV or ANV.
 
 The concept was pioneered by Axel Davy and others; it became a viable Wine integration via the `d3dadapter9` native module loaded by Wine's D3D9 stub. The project is now archived following removal in Mesa 25.2, but the design remains instructive as a near-minimal Gallium frontend: approximately 25 KLOC that cleanly maps a COM-based API to a pipe-level state machine.
 

@@ -2,7 +2,11 @@
 
 **Part VII — Application APIs and Middleware**
 
-**Audiences targeted**: Embedded Linux developers building camera-enabled products; video conferencing application developers who need to understand the path from sensor to WebRTC; robotics and computer vision engineers consuming camera frames in real time; IoT developers integrating ISP-equipped SoCs.
+**Audiences targeted**:
+- Embedded Linux developers building camera-enabled products
+- Video conferencing application developers who need to understand the path from sensor to WebRTC
+- Robotics and computer vision engineers consuming camera frames in real time
+- IoT developers integrating ISP-equipped SoCs
 
 The Linux camera subsystem has historically been one of the most fragmented areas of the platform. Unlike audio — where ALSA provided a single kernel ABI and PipeWire a unified userspace session layer — cameras on Linux accumulated a decade of SoC-specific proprietary HALs, divergent V4L2 extension usage, and undocumented ISP firmware blobs. libcamera, started in 2019 by the kernel community, solved this by moving complex ISP control from firmware into auditable userspace, providing a single C++ API above a per-platform *PipelineHandler* layer and a sandboxed *Image Processing Algorithms* (IPA) module system. Today libcamera underpins camera access on Raspberry Pi 4 and 5, Intel laptops with CIO2-attached sensors, Rockchip RK3399/RK3588 SBCs, and a wide range of USB webcams — all exposed through PipeWire's camera portal so that WebRTC, GStreamer, and OBS acquire frames through a single security-conscious gate. [Source](https://libcamera.org/)
 

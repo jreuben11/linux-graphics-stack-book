@@ -31,7 +31,13 @@ High-density displays — 4K at 15 inches (≈293 PPI), 5K at 27 inches (≈218 
 
 Fractional scaling at 1.25×, 1.5×, or 1.75× threads the needle: comfortable UI element sizes with more logical pixels than 2× integer scaling. Wayland's original `wl_output.scale` supports only integers. The `wp_fractional_scale_v1` protocol (introduced in wayland-protocols 1.31, 2022; stabilised 2023) provides a standardised mechanism for compositors to inform surfaces of their preferred fractional scale, and for clients to render appropriately.
 
-This chapter covers the full HiDPI story on Wayland: the underlying problem, the integer scaling baseline, the `wp_fractional_scale_v1` protocol mechanics, compositor and toolkit implementations, and the practical challenges of mixed-DPI multi-monitor setups.
+This chapter covers the full HiDPI story on Wayland:
+
+- the underlying problem
+- the integer scaling baseline
+- `wp_fractional_scale_v1` protocol mechanics
+- compositor and toolkit implementations
+- the practical challenges of mixed-DPI multi-monitor setups
 
 [wayland-protocols fractional-scale](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/staging/fractional-scale/fractional-scale-v1.xml)
 

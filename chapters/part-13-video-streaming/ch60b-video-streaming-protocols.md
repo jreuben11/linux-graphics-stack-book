@@ -51,7 +51,11 @@
 
 This chapter focuses on the protocol layer and adaptation algorithms that sit above the codec layer (Chapter 60) and the hardware acceleration paths (Chapters 26, 50). Chapter 57 (**FFmpeg**) touches on streaming protocols from a library-integration perspective — how to write an **HLS** muxer invocation or open an **RTMP** URL. This chapter goes deeper: what the protocols themselves specify, how adaptive bitrate algorithms decide which quality level to request next, and how low-latency variants (**LL-HLS**, **LL-DASH**, **MOQT**) reduce glass-to-glass latency from tens of seconds to sub-second.
 
-The chapter targets engineers who need to design or debug a streaming delivery system on Linux — packaging live content from **FFmpeg** or **GStreamer** into **HLS**/**DASH**, tuning **ABR** for low-latency live sports, building **WebRTC**-based low-latency paths, or evaluating whether **SRT** or **QUIC** is the right transport for a broadcast ingest link.
+The chapter targets engineers who need to design or debug a streaming delivery system on Linux:
+- packaging live content from **FFmpeg** or **GStreamer** into **HLS**/**DASH**
+- tuning **ABR** for low-latency live sports
+- building **WebRTC**-based low-latency paths
+- evaluating whether **SRT** or **QUIC** is the right transport for a broadcast ingest link
 
 **HLS** (**HTTP Live Streaming**, **RFC 8216**) is covered first: its two-tier playlist grammar (**master playlist** and **media playlist** in **M3U8** format), the choice of segment containers (**MPEG-2 TS** vs. **fMP4**/**CMAF**), the **LL-HLS** extension that uses sub-segment **parts** and **`#EXT-X-PRELOAD-HINT`** to reach 2–4 second latency, and practical packaging using the **FFmpeg** `hls` muxer with `-hls_segment_type fmp4`.
 

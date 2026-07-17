@@ -6,7 +6,12 @@
 
 This chapter provides a deep architectural study of two GPU-accelerated terminal emulators written in Rust: **WezTerm** and **Alacritty**. Both sit squarely on the Linux graphics stack documented throughout this book — Mesa Vulkan drivers, EGL, Wayland protocols — but they take dramatically different design philosophies. WezTerm is a feature-rich multi-backend terminal with a built-in multiplexer, support for all three major pixel graphics protocols, and an opt-in **wgpu** (WebGPU) rendering path that traverses the same Mesa Vulkan path used by game engines and Bevy. Alacritty is deliberately minimal: an **OpenGL** renderer emphasising low latency and correctness over feature breadth, with no built-in multiplexer and intentionally absent graphics protocol support. Understanding both designs illuminates complementary points in the design space of GPU terminal rendering.
 
-Chapter 44 covers Kitty and Ghostty in depth; readers of that chapter will already understand glyph atlas fundamentals and the general shape of a GPU terminal render loop. This chapter assumes that foundation and focuses on architecture-level differences: how WezTerm's `RenderContext` abstraction mediates between two renderer backends, how the wgpu WebGPU path hands off WGSL shaders to Mesa via `naga` → SPIR-V → NIR, how Alacritty's `glutin`+`winit` stack constructs an EGL context on Wayland and calls into Mesa via the `gl` crate's raw function pointers, and how each terminal integrates with the Linux-specific protocols (DMA-BUF, `zwp_text_input_v3`, fractional scale) described in Part VIII.
+Chapter 44 covers Kitty and Ghostty in depth; readers of that chapter will already understand glyph atlas fundamentals and the general shape of a GPU terminal render loop. This chapter assumes that foundation and focuses on architecture-level differences:
+
+- **`RenderContext` abstraction** — how WezTerm's central abstraction mediates between its two renderer backends (OpenGL/glium and wgpu)
+- **wgpu WebGPU path** — how WGSL shaders are handed off to Mesa via `naga` → SPIR-V → NIR
+- **Alacritty's `glutin`+`winit` stack** — how it constructs an EGL context on Wayland and calls into Mesa via the `gl` crate's raw function pointers
+- **Linux-specific protocol integration** — how each terminal integrates with DMA-BUF, `zwp_text_input_v3`, and fractional scale (Part VIII)
 
 ---
 

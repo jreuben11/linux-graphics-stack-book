@@ -32,7 +32,12 @@ The key extension set consists of:
 - `VK_KHR_ray_query` — inline ray intersection queries from any shader stage
 - `VK_KHR_deferred_host_operations` — parallelised CPU-side BVH construction
 
-Unlike CUDA/OptiX, which are NVIDIA-only, Vulkan ray tracing runs on all three GPU vendors on Linux. This chapter covers the hardware architecture of ray traversal units, the complete Vulkan API for building acceleration structures and ray tracing pipelines, the GLSL/SPIR-V shader model, and the RADV and ANV driver implementations.
+Unlike CUDA/OptiX, which are NVIDIA-only, Vulkan ray tracing runs on all three GPU vendors on Linux. This chapter covers:
+
+- **hardware architecture of ray traversal units**
+- **complete Vulkan API** — building acceleration structures and ray tracing pipelines
+- **GLSL/SPIR-V shader model**
+- **RADV and ANV driver implementations**
 
 [Vulkan Ray Tracing specification](https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#ray-tracing)
 

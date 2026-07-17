@@ -1,6 +1,12 @@
 # Chapter 119: Zink — OpenGL on Vulkan
 
-This chapter targets three audiences: **Mesa contributors** studying how a full OpenGL state tracker is built atop Vulkan; **application developers** who need OpenGL on Vulkan-only drivers (NVK, v3dv, PowerVR, Turnip); and **graphics engineers** interested in the architectural impedance mismatch between OpenGL's implicit-state model and Vulkan's explicit design. Readers should be comfortable with both the Gallium3D driver interface (Chapter 13) and core Vulkan concepts (Chapter 24).
+This chapter targets three audiences:
+
+- **Mesa contributors** — studying how a full OpenGL state tracker is built atop Vulkan
+- **Application developers** — who need OpenGL on Vulkan-only drivers (NVK, v3dv, PowerVR, Turnip)
+- **Graphics engineers** — interested in the architectural impedance mismatch between OpenGL's implicit-state model and Vulkan's explicit design
+
+Readers should be comfortable with both the Gallium3D driver interface (Chapter 13) and core Vulkan concepts (Chapter 24).
 
 ---
 

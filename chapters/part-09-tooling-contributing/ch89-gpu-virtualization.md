@@ -1,6 +1,13 @@
 # Chapter 89: GPU Virtualization in Depth
 
-This chapter targets **systems developers** building or integrating virtualization stacks, **cloud infrastructure engineers** designing multi-tenant GPU services, **VM and hypervisor developers** implementing GPU sharing, and **DevOps practitioners** deploying GPU-accelerated workloads inside containers and virtual machines. Readers are assumed to be comfortable with Linux kernel internals, PCI architecture, and basic Vulkan/OpenGL concepts.
+This chapter targets:
+
+- **Systems developers** — building or integrating virtualization stacks
+- **Cloud infrastructure engineers** — designing multi-tenant GPU services
+- **VM and hypervisor developers** — implementing GPU sharing
+- **DevOps practitioners** — deploying GPU-accelerated workloads inside containers and virtual machines
+
+Readers are assumed to be comfortable with Linux kernel internals, PCI architecture, and basic Vulkan/OpenGL concepts.
 
 ---
 

@@ -1,6 +1,13 @@
 # Chapter 128: DisplayPort MST and Multi-Monitor Topology
 
-This chapter targets **kernel display driver developers** implementing or debugging DisplayPort Multi-Stream Transport (MST) support, **system integrators** connecting multiple monitors through docking stations or daisy-chained displays, **docking station engineers** needing to understand how Linux enumerates and manages MST branch devices, and **embedded display engineers** who must configure bandwidth allocation across multiple streams in constrained-bandwidth environments. It assumes familiarity with the KMS atomic modesetting framework (Chapter 2) and the DRM connector model.
+This chapter targets:
+
+- **kernel display driver developers** — implementing or debugging DisplayPort Multi-Stream Transport (MST) support
+- **system integrators** — connecting multiple monitors through docking stations or daisy-chained displays
+- **docking station engineers** — needing to understand how Linux enumerates and manages MST branch devices
+- **embedded display engineers** — who must configure bandwidth allocation across multiple streams in constrained-bandwidth environments
+
+It assumes familiarity with the KMS atomic modesetting framework (Chapter 2) and the DRM connector model.
 
 ---
 

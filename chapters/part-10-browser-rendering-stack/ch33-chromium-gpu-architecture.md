@@ -22,7 +22,15 @@
 
 ## 1. The Multi-Process Architecture and the GPU Process
 
-Every tab in a modern Chrome installation runs in a sandboxed process that is deliberately and aggressively prevented from touching hardware. Yet those tabs render **WebGL** particle systems, decode H.264 video through **VA-API**, and execute **WebGPU** compute shaders at full hardware speed. The architecture that achieves this is built around a single, long-lived **GPU process** that holds the actual hardware context and accepts serialised rendering commands from every renderer process over a typed **IPC** channel built on **Mojo**. The subsequent sections of this chapter examine each layer of that architecture in depth: the **Mojo IPC** typed pipe framework (Section 2), the **GPU command buffer** ring-buffer protocol (Section 3), the **Ozone** platform abstraction layer (Section 4), GPU feature detection and rendering-backend selection (Section 5), the **OOP-D** out-of-process display compositor and the **Viz** service (Section 6), the GPU process lifecycle covering startup, **EGL** context creation, and crash recovery (Section 7), and the **seccomp-BPF** sandbox security model for the GPU process on Linux (Section 8).
+Every tab in a modern Chrome installation runs in a sandboxed process that is deliberately and aggressively prevented from touching hardware. Yet those tabs render **WebGL** particle systems, decode H.264 video through **VA-API**, and execute **WebGPU** compute shaders at full hardware speed. The architecture that achieves this is built around a single, long-lived **GPU process** that holds the actual hardware context and accepts serialised rendering commands from every renderer process over a typed **IPC** channel built on **Mojo**. The subsequent sections of this chapter examine each layer of that architecture in depth:
+
+- **Mojo IPC** — typed pipe framework (Section 2)
+- **GPU command buffer** — ring-buffer protocol (Section 3)
+- **Ozone** — platform abstraction layer (Section 4)
+- **GPU feature detection** — rendering-backend selection on Linux (Section 5)
+- **OOP-D** — out-of-process display compositor and the **Viz** service (Section 6)
+- **GPU process lifecycle** — startup, **EGL** context creation, and crash recovery (Section 7)
+- **seccomp-BPF sandbox** — security model for the GPU process on Linux (Section 8)
 
 Chrome's process model separates concerns across four principal process types. The **browser process** is a singleton that coordinates everything: it manages the window, handles top-level navigation, spawns child processes, and holds the privileged file descriptors to **DRM** device nodes and the **Wayland** compositor connection. **Renderer processes** contain **Blink** (the HTML/CSS/JavaScript engine) and execute one or more site origins; they are the highest-risk processes because they parse attacker-controlled HTML, JavaScript, and media, so they run inside the most restrictive sandbox. **Utility processes** handle specific tasks such as network service or audio. The **GPU process** is the subject of this chapter: a single process that owns all hardware GPU contexts and through which all rendering from all renderers is funnelled.
 

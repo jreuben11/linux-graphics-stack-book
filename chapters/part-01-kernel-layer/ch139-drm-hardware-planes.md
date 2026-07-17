@@ -29,7 +29,13 @@ This hardware blending is significant for three reasons:
 2. **Latency**: cursor movement can be reflected in the next frame without a GPU render pass
 3. **Quality**: video content can be displayed at its native YUV format without GPU colour space conversion
 
-The Linux Kernel Mode Setting (KMS) API exposes hardware planes as `drm_plane` objects. The atomic KMS commit API allows compositors to test and set plane configurations atomically. This chapter covers the KMS plane object model, the atomic API for plane configuration, DRM format and modifier negotiation, composition bypass (direct scanout), and how Wayland compositors allocate planes.
+The Linux Kernel Mode Setting (KMS) API exposes hardware planes as `drm_plane` objects. The atomic KMS commit API allows compositors to test and set plane configurations atomically. This chapter covers:
+
+- **KMS plane object model** — `drm_plane` objects, plane types, and the property system
+- **Atomic API for plane configuration** — testing and setting plane configurations atomically via `drmModeAtomicCommit`
+- **DRM format and modifier negotiation** — FourCC pixel formats and 64-bit modifier support via the `IN_FORMATS` blob
+- **Composition bypass (direct scanout)** — placing client surfaces directly on hardware planes, bypassing GPU compositing
+- **Wayland compositor plane allocation** — strategies for assigning surfaces to hardware planes
 
 [Linux kernel DRM plane documentation](https://www.kernel.org/doc/html/latest/gpu/drm-kms.html#plane-abstraction)
 

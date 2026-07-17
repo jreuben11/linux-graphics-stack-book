@@ -32,7 +32,17 @@ Traditional rendering architectures are CPU-driven: the CPU iterates over scene 
 
 GPU-driven rendering inverts this: the GPU holds a persistent scene representation, runs its own culling in a compute shader, and generates the draw commands itself via `vkCmdDrawIndexedIndirectCount`. The CPU submits one compute dispatch and one indirect draw call per frame regardless of scene size.
 
-This chapter covers the Vulkan API for indirect drawing, the GPU culling pipeline, and the mesh shader (task + mesh) model for meshlet-based rendering — a hardware feature on NVIDIA Turing+, AMD RDNA2+, and Intel Xe. Key implementations studied: `vkguide.dev` GPU-driven tutorial, Niagara (Arseny Kapoulkine), Bevy's GPU culling pass.
+This chapter covers:
+
+- **Vulkan API for indirect drawing** — `vkCmdDrawIndexedIndirect`, `vkCmdDrawIndexedIndirectCount`, and the `VkDrawIndexedIndirectCommand` buffer layout
+- **GPU culling pipeline** — compute-shader frustum and occlusion culling, Hi-Z pyramid construction, and atomic draw-count generation
+- **Mesh shader (task + mesh) model** — meshlet-based rendering, a hardware feature on NVIDIA Turing+, AMD RDNA2+, and Intel Xe
+
+Key implementations studied:
+
+- **`vkguide.dev` GPU-driven tutorial** — step-by-step indirect draw and GPU culling walkthrough
+- **Niagara** — high-performance meshlet renderer by Arseny Kapoulkine
+- **Bevy's GPU culling pass** — open-source Rust game engine GPU-driven pipeline
 
 ---
 

@@ -4,7 +4,14 @@
 > **Audience**: Graphics application developers — Blender add-on developers, technical artists, and rendering engineers who want to understand Blender's GPU rendering internals; systems developers interested in how a major open-source creative suite interacts with Mesa, ROCm, and the Linux compute ecosystem
 > **Status**: First draft — 2026-06-06
 
-Blender is unique among the tools examined in this part: it is the only major open-source 3D creation suite, and its GPU rendering story encompasses more of the Linux stack than any other application in the book. EEVEE Next — the Vulkan-based rewrite that shipped as the production renderer in Blender 4.2 LTS and reached stable parity with the OpenGL path in Blender 4.5 LTS — is a full deferred PBR renderer that exercises Mesa's Vulkan drivers directly. The Cycles path tracer provides a multi-backend compute story spanning HIP (AMD/ROCm), CUDA/OptiX (NVIDIA), oneAPI (Intel Arc), and an experimental Vulkan compute path. Readers who have worked through the kernel driver chapters (Parts I–III), the Mesa internals (Parts IV–V), and the GPU compute chapter (Chapter 25) will find Blender an unusually instructive integration point where those layers converge in a production workload.
+Blender is unique among the tools examined in this part: it is the only major open-source 3D creation suite, and its GPU rendering story encompasses more of the Linux stack than any other application in the book. EEVEE Next — the Vulkan-based rewrite that shipped as the production renderer in Blender 4.2 LTS and reached stable parity with the OpenGL path in Blender 4.5 LTS — is a full deferred PBR renderer that exercises Mesa's Vulkan drivers directly. The Cycles path tracer provides a multi-backend compute story spanning:
+
+- **HIP** — AMD/ROCm
+- **CUDA/OptiX** — NVIDIA
+- **oneAPI** — Intel Arc
+- **Vulkan compute** — experimental portable backend
+
+Readers who have worked through the kernel driver chapters (Parts I–III), the Mesa internals (Parts IV–V), and the GPU compute chapter (Chapter 25) will find Blender an unusually instructive integration point where those layers converge in a production workload.
 
 ---
 

@@ -33,7 +33,11 @@ This chapter targets compiler engineers, GPU architecture researchers, and syste
 
 **NAK** (the **N**vidia **A**wesome **K**ompiler) is the NVIDIA GPU shader compiler backend written in Rust and merged into Mesa 24.0 in February 2024. It replaced the legacy `nv50_ir` C++ compiler backend for the NVK Vulkan driver and extended the open-source NVIDIA stack's reach to Turing (sm75) and beyond — GPU generations that the old codegen could not support correctly. NAK ingests NIR (Mesa's common shader intermediate representation), applies NVIDIA-specific optimization and lowering, allocates registers, schedules instructions, and emits binary SASS (Streaming ASSembly) ready to be loaded by the GPU's command processor.
 
-NAK is significant for three reasons beyond NVK itself. First, it is Mesa's first GPU compiler backend written in Rust, directly influencing KRAID (merged June 2026, ARM Mali Valhall) and the broader trajectory of Rust adoption in Mesa. Second, its clean SSA-throughout design and principled NIR handoff make it a model for new backend authors. Third, its support for NVIDIA's uniform register file (Turing+) and its post-release work on instruction scheduling bring the open-source stack to within measurement error of NVIDIA's proprietary compiler on compute-heavy workloads.
+NAK is significant for three reasons beyond NVK itself:
+
+- It is Mesa's first GPU compiler backend written in Rust, directly influencing KRAID (merged June 2026, ARM Mali Valhall) and the broader trajectory of Rust adoption in Mesa.
+- Its clean SSA-throughout design and principled NIR handoff make it a model for new backend authors.
+- Its support for NVIDIA's uniform register file (Turing+) and its post-release work on instruction scheduling bring the open-source stack to within measurement error of NVIDIA's proprietary compiler on compute-heavy workloads.
 
 The chapter traces NAK from its motivation through its IR design, register allocator, ISA encoders, and NVK integration, grounding each claim in Mesa source locations and upstream presentations.
 

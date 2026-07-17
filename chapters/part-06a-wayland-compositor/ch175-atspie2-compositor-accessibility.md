@@ -2,7 +2,12 @@
 
 **Part VI — The Display Stack**
 
-**Audiences**: *Compositor developers* adding accessibility support to wlroots-based or custom compositors; *TUI and terminal application developers* who need to understand how terminal content is (or is not) exposed to screen readers; *platform engineers* at GNOME and KDE who are navigating the transition from X11-based accessibility to Wayland-native approaches. The chapter assumes familiarity with Wayland's core security model (Chapter 20) and basic D-Bus concepts; knowledge of GTK or Qt internals is helpful but not required.
+**Audiences**:
+- **Compositor developers** — adding accessibility support to wlroots-based or custom compositors
+- **TUI and terminal application developers** — who need to understand how terminal content is (or is not) exposed to screen readers
+- **Platform engineers at GNOME and KDE** — navigating the transition from X11-based accessibility to Wayland-native approaches
+
+The chapter assumes familiarity with Wayland's core security model (Chapter 20) and basic D-Bus concepts; knowledge of GTK or Qt internals is helpful but not required.
 
 ---
 

@@ -1,6 +1,9 @@
 # Chapter 149: GPU Hang Detection and Recovery — TDR, Scheduling Timeouts, and Reset Sequences
 
-**Target audiences:** Kernel DRM driver developers implementing hang detection and reset sequences; GPU application developers diagnosing and handling `VK_ERROR_DEVICE_LOST`; CI/QA engineers debugging intermittent GPU hangs in test pipelines.
+**Target audiences:**
+- **Kernel DRM driver developers** — implementing hang detection and reset sequences
+- **GPU application developers** — diagnosing and handling `VK_ERROR_DEVICE_LOST`
+- **CI/QA engineers** — debugging intermittent GPU hangs in test pipelines
 
 ---
 

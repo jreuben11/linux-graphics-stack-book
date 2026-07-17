@@ -2,7 +2,15 @@
 
 **Target audiences**: Display engineers and driver developers integrating HDR metadata signaling via HDMI/DisplayPort; compositor developers who need to understand how display hardware HDR capability is discovered and programmed; systems engineers building end-to-end HDR pipelines from display detection through to wire signaling.
 
-> **Scope:** This chapter focuses exclusively on **HDR display hardware signaling** — HDMI/DisplayPort wire protocols, EDID capability parsing via `libdisplay-info`, the `drm_hdr_output_metadata` kernel structure, local dimming hardware, and VESA DisplayHDR certification. **Ch74** is the authoritative chapter for the end-to-end KMS software color pipeline (`DEGAMMA_LUT`, `CTM`, `GAMMA_LUT`, per-plane `drm_colorop` chains, `wp_color_management_v1`, tone-mapping algorithms, and compositor HDR architecture). **Ch101** covers ICC profile internals and color science theory. This chapter bridges the gap between software pipeline decisions (ch74) and what actually travels on the display cable.
+> **Scope:** This chapter focuses exclusively on **HDR display hardware signaling**:
+>
+> - **HDMI/DisplayPort wire protocols** — HDR DRM InfoFrames and VSC SDP packet construction and transmission
+> - **EDID capability parsing via `libdisplay-info`** — discovering display HDR support via CTA-861 extension blocks
+> - **`drm_hdr_output_metadata` kernel structure** — carries mastering display metadata from compositor to driver
+> - **Local dimming hardware** — OLED and MiniLED backlight control interfaces in the kernel
+> - **VESA DisplayHDR certification** — hardware performance tiers and guarantees for driver developers
+>
+> **Ch74** is the authoritative chapter for the end-to-end KMS software color pipeline (`DEGAMMA_LUT`, `CTM`, `GAMMA_LUT`, per-plane `drm_colorop` chains, `wp_color_management_v1`, tone-mapping algorithms, and compositor HDR architecture). **Ch101** covers ICC profile internals and color science theory. This chapter bridges the gap between software pipeline decisions (ch74) and what actually travels on the display cable.
 
 ---
 

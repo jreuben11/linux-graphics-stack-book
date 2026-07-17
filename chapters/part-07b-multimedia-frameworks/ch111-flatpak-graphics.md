@@ -8,7 +8,17 @@
 
 ## Scope
 
-This chapter is for application developers who need real GPU acceleration inside a Flatpak sandbox, portal implementers who mediate that access, and desktop engineers who must reason about the security trade-offs. It explains, with technical precision, why GPU driver access is hard to sandbox correctly: Mesa DRI drivers are architecture-specific shared objects that must version-match the kernel driver, but bubblewrap establishes a separate mount namespace in which host library paths are absent by default. The chapter traces the complete data path from a Flatpak manifest's `finish-args` section through the bubblewrap namespace, the GL extension mounting mechanism, ICD discovery for both OpenGL and Vulkan, the xdg-desktop-portal for screen capture and camera access, VA-API video decode, and Electron/Chromium nesting under Flatpak. Packaging best practices and a comparison with Snap and AppImage close the chapter.
+This chapter is for application developers who need real GPU acceleration inside a Flatpak sandbox, portal implementers who mediate that access, and desktop engineers who must reason about the security trade-offs. It explains, with technical precision, why GPU driver access is hard to sandbox correctly: Mesa DRI drivers are architecture-specific shared objects that must version-match the kernel driver, but bubblewrap establishes a separate mount namespace in which host library paths are absent by default. The chapter traces the complete data path through:
+
+- **`finish-args` section** — Flatpak manifest declarations governing device and socket access
+- **bubblewrap namespace** — the mount namespace providing filesystem isolation
+- **GL extension mounting mechanism** — versioned Mesa DRI driver bundles merged into the sandbox runtime
+- **ICD discovery for both OpenGL and Vulkan** — how vendor ICDs are located inside the sandbox
+- **xdg-desktop-portal** — mediated access for screen capture and camera
+- **VA-API video decode** — hardware video decode inside the sandbox
+- **Electron/Chromium nesting under Flatpak** — nested sandbox handling and packaging patterns
+
+Packaging best practices and a comparison with Snap and AppImage close the chapter.
 
 Readers who need the underlying Vulkan ICD mechanics (loader, JSON manifests, RADV/ANV/NVK) should see **Ch24**; PipeWire's node graph, DMA-BUF negotiation, and the ScreenCast portal implementation are covered in **Ch38**.
 

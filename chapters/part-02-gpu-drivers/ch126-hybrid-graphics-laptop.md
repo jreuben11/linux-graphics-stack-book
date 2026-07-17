@@ -26,7 +26,14 @@
 
 Hybrid graphics—shipping two GPUs in a single laptop—is now ubiquitous, but the Linux software stack to manage them spans the ACPI firmware layer, multiple kernel subsystems, several competing user-space tools, and non-trivial interactions with display servers. This chapter is a vertical tour from the PCIe topology and ACPI power methods down through the `vga_switcheroo` kernel subsystem and PRIME DMA-BUF buffer-sharing framework, up to user-space tools such as `envycontrol`, TLP, and `power-profiles-daemon`. Each layer is examined with real sysfs paths, module parameters, and environment variables so that both driver developers and system integrators can understand why the laptop's battery drains, why the dGPU does not spin down, or why a game ignores the NVIDIA card.
 
-The chapter is organized from hardware upward. Section 2 grounds the discussion in ACPI power methods and the critical distinction between MUX and MUX-less display routing. Sections 3 and 4 cover the two historical kernel-side power control mechanisms (`vga_switcheroo` and `bbswitch`). Section 5 explains PRIME render offload and the Mesa `DRI_PRIME`/`MESA_VK_DEVICE_SELECT` environment variables in detail, including how the Mesa loader matches a GPU by sysfs bus address. Sections 6 and 7 cover NVIDIA's proprietary RTD3 runtime PM path and the `envycontrol` tool that automates it. Sections 8 and 9 turn to system-wide power management policy via TLP and `power-profiles-daemon`, and to AMD's open-stack hybrid approach with SmartShift. Section 10 is a practical diagnostics reference.
+The chapter is organized from hardware upward:
+
+- **Section 2** — grounds the discussion in ACPI power methods and the critical distinction between MUX and MUX-less display routing.
+- **Sections 3 and 4** — cover the two historical kernel-side power control mechanisms (`vga_switcheroo` and `bbswitch`).
+- **Section 5** — explains PRIME render offload and the Mesa `DRI_PRIME`/`MESA_VK_DEVICE_SELECT` environment variables in detail, including how the Mesa loader matches a GPU by sysfs bus address.
+- **Sections 6 and 7** — cover NVIDIA's proprietary RTD3 runtime PM path and the `envycontrol` tool that automates it.
+- **Sections 8 and 9** — turn to system-wide power management policy via TLP and `power-profiles-daemon`, and to AMD's open-stack hybrid approach with SmartShift.
+- **Section 10** — is a practical diagnostics reference.
 
 ---
 

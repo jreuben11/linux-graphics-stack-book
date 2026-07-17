@@ -1,6 +1,18 @@
 # Chapter 127: Mesh Shaders and Variable Rate Shading
 
-This chapter targets **Vulkan application developers**, **game engine developers**, **GPU hardware architects**, and **shader programmers** who want to understand and apply the two most significant programmable pipeline extensions of the RDNA2/Ampere era: mesh shaders (`VK_EXT_mesh_shader`) and variable rate shading (`VK_KHR_fragment_shading_rate`). It examines each extension's API surface, the hardware execution model that backs it, Linux driver support in RADV, ANV, and NVK, and how the two extensions interoperate to achieve Nanite-style rendering densities without sacrificing GPU throughput.
+This chapter covers the two most significant programmable pipeline extensions of the RDNA2/Ampere era — mesh shaders (`VK_EXT_mesh_shader`) and variable rate shading (`VK_KHR_fragment_shading_rate`) — targeting:
+
+- **Vulkan application developers**
+- **Game engine developers**
+- **GPU hardware architects**
+- **Shader programmers**
+
+It examines:
+
+- **API surface** — each extension's API contracts and usage patterns
+- **Hardware execution model** — the GPU execution model backing each extension
+- **Linux driver support** — implementation coverage in RADV, ANV, and NVK
+- **Interoperation** — how the two extensions combine to achieve Nanite-style rendering densities without sacrificing GPU throughput
 
 ---
 

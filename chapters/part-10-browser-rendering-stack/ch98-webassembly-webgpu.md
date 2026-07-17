@@ -1,6 +1,10 @@
 # Chapter 98: WebAssembly and WebGPU as a Deployment Target
 
-**Target audiences**: Application developers building portable GPU software, Rust/C++ graphics developers, browser engineers, and wgpu users who want to understand the full stack from native Linux Vulkan through to in-browser WebGPU execution.
+**Target audiences**:
+- Application developers building portable GPU software
+- Rust/C++ graphics developers
+- Browser engineers
+- wgpu users who want to understand the full stack from native Linux Vulkan through to in-browser WebGPU execution
 
 ---
 

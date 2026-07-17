@@ -1,6 +1,9 @@
 # Chapter 76: Modern Vulkan Extensions
 
-**Audiences:** Graphics application developers writing Vulkan-native code or translation layers; systems developers optimizing driver implementations in RADV, ANV, or NVK; browser and game-engine engineers integrating Vulkan with DXVK, VKD3D-Proton, Bevy, or Godot 4.
+**Audiences:**
+- **Graphics application developers** — writing Vulkan-native code or translation layers
+- **Systems developers** — optimizing driver implementations in RADV, ANV, or NVK
+- **Browser and game-engine engineers** — integrating Vulkan with DXVK, VKD3D-Proton, Bevy, or Godot 4
 
 ---
 

@@ -36,7 +36,22 @@ The Linux kernel provides two competing frameworks for managing these domains. *
 
 Layered on top of TTM, two newer subsystems have emerged. **drm_buddy** (later generalised into the `gpu_buddy` allocator at `drivers/gpu/buddy.c`, Linux 5.15+) is a power-of-two buddy allocator for VRAM address space. **drm_gpuvm** (Linux 6.7) provides a generic framework for tracking GPU virtual address space mappings, replacing per-driver implementations like `amdgpu_vm_bo_map`.
 
-Chapter 4 of this book covers the GEM object lifecycle, DMA-BUF, dma_resv implicit fencing, PRIME multi-GPU sharing, GBM, and format modifiers. This chapter goes deeper into internals that Ch4 only sketches: the TTM placement and eviction machinery, the buddy allocator's internals, the drm_gpuvm/drm_exec locking protocol, the Resizable BAR upgrade path, and the debugging interfaces that let you observe GPU memory state in production.
+Chapter 4 of this book covers:
+
+- **GEM object lifecycle**
+- **DMA-BUF**
+- **dma_resv implicit fencing**
+- **PRIME multi-GPU sharing**
+- **GBM**
+- **format modifiers**
+
+This chapter goes deeper into internals that Ch4 only sketches:
+
+- **TTM placement and eviction machinery**
+- **buddy allocator's internals**
+- **drm_gpuvm/drm_exec locking protocol**
+- **Resizable BAR upgrade path**
+- **debugging interfaces** — let you observe GPU memory state in production
 
 ---
 

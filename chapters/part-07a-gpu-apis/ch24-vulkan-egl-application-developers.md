@@ -11,9 +11,20 @@ This chapter teaches application developers how to initialise and drive Vulkan a
 
 **Vulkan render passes** — `VkRenderPass` in Vulkan 1.0–1.2, or the streamlined `VkRenderingInfo` / `vkCmdBeginRendering` path introduced by `VK_KHR_dynamic_rendering` and promoted to Vulkan 1.3 core — describe the structure of a rendering operation: which image attachments the GPU reads and writes, whether each attachment is cleared or its prior contents loaded at the start, and whether results are stored or discarded at the end. A subpass within a render pass expresses intra-pass dependencies; tile-based mobile GPUs use these to avoid flushing intermediate results to DRAM, but on desktop discrete GPUs a render pass typically contains a single subpass. The dynamic rendering path (`vkCmdBeginRendering`) expresses the same attachment layout inline in the command buffer rather than through a pre-allocated `VkRenderPass` object, making it the preferred style for new Vulkan 1.3+ code. This chapter covers the presentation, memory, and synchronisation stack that underlies both styles.
 
-The Wayland-centric presentation model differs meaningfully from Win32 or Android: buffer negotiation proceeds via `linux-dmabuf`, present-mode semantics are tied to the compositor's own pace, and an explicit synchronisation handshake spans the application, Mesa, and the compositor's KMS backend. EGL is the older windowing-system integration layer — it predates Vulkan WSI and was originally designed to bind OpenGL ES to platform window systems. For new Vulkan applications on Linux, `VK_KHR_wayland_surface` and the Vulkan WSI extensions (Sections 5–6) are the primary presentation path. EGL remains the right tool for three specific scenarios covered in this chapter: OpenGL ES applications (Sections 3–4), zero-copy import of VA-API-decoded video frames into GPU textures (Section 4), and headless rendering contexts on infrastructure where Vulkan is unavailable (Section 8). The long-term trajectory is a gradual narrowing of EGL's role as Vulkan WSI matures and `VK_KHR_video_queue` reduces the need for VA-API as an intermediary.
+The Wayland-centric presentation model differs meaningfully from Win32 or Android: buffer negotiation proceeds via `linux-dmabuf`, present-mode semantics are tied to the compositor's own pace, and an explicit synchronisation handshake spans the application, Mesa, and the compositor's KMS backend. EGL is the older windowing-system integration layer — it predates Vulkan WSI and was originally designed to bind OpenGL ES to platform window systems. For new Vulkan applications on Linux, `VK_KHR_wayland_surface` and the Vulkan WSI extensions (Sections 5–6) are the primary presentation path. EGL remains the right tool for three specific scenarios covered in this chapter:
 
-After reading this chapter, the reader will understand how to select the right Vulkan memory type for a given workload on AMD, Intel, and NVIDIA hardware; how Wayland swapchains interact with compositor pacing mechanisms; how to integrate EGL into a GBM-based context for headless or KMS-direct rendering; and how timeline semaphores map onto the kernel-level DRM sync object mechanism, closing the explicit sync loop all the way from GPU to display.
+- **OpenGL ES applications** — (Sections 3–4)
+- **VA-API video import** — zero-copy import of VA-API-decoded video frames into GPU textures (Section 4)
+- **Headless rendering** — contexts on infrastructure where Vulkan is unavailable (Section 8)
+
+The long-term trajectory is a gradual narrowing of EGL's role as Vulkan WSI matures and `VK_KHR_video_queue` reduces the need for VA-API as an intermediary.
+
+After reading this chapter, the reader will understand:
+
+- how to select the right Vulkan memory type for a given workload on AMD, Intel, and NVIDIA hardware
+- how Wayland swapchains interact with compositor pacing mechanisms
+- how to integrate EGL into a GBM-based context for headless or KMS-direct rendering
+- how timeline semaphores map onto the kernel-level DRM sync object mechanism, closing the explicit sync loop all the way from GPU to display
 
 ---
 

@@ -2,7 +2,17 @@
 
 **Target audiences:** Graphics application developers; systems and driver developers.
 
-This chapter covers display colour calibration on Linux: why uncalibrated panels produce incorrect colours, how the ICC profile standard characterises display behaviour, and how the `colord` daemon manages the calibration pipeline from hardware measurement through to compositor and KMS. It is relevant to graphics application developers who need consistent colour rendering across diverse displays, and to systems developers integrating calibration into compositors and desktop sessions. The chapter bridges the KMS colour pipeline (Ch3), the `wp_color_management_v1` Wayland protocol (Ch46), and the compositor layer (Ch22).
+This chapter covers display colour calibration on Linux:
+
+- why uncalibrated panels produce incorrect colours
+- how the ICC profile standard characterises display behaviour
+- how the `colord` daemon manages the calibration pipeline from hardware measurement through to compositor and KMS
+
+It is relevant to graphics application developers who need consistent colour rendering across diverse displays, and to systems developers integrating calibration into compositors and desktop sessions. The chapter bridges:
+
+- **KMS colour pipeline** (Ch3)
+- **`wp_color_management_v1` Wayland protocol** (Ch46)
+- **compositor layer** (Ch22)
 
 ---
 

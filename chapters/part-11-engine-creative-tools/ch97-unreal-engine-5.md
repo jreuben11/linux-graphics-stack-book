@@ -24,7 +24,14 @@
 
 ## Overview
 
-Unreal Engine 5 (UE5) is the most technically ambitious game engine currently available on Linux, combining a Vulkan-based Rendering Hardware Interface (RHI), the Nanite virtualized geometry system, the Lumen global illumination system, and the Niagara GPU particle system into a single runtime. This chapter treats UE5 as what it is from the Linux graphics stack's perspective: a complex, production-scale Vulkan client whose internal architecture illuminates how AAA-quality rendering maps onto Mesa drivers, kernel DRM, and Wayland compositors.
+Unreal Engine 5 (UE5) is the most technically ambitious game engine currently available on Linux, combining four major subsystems into a single runtime:
+
+- **Rendering Hardware Interface (RHI)** — Vulkan-based rendering abstraction layer
+- **Nanite** — virtualized geometry system
+- **Lumen** — global illumination system
+- **Niagara** — GPU particle system
+
+This chapter treats UE5 as what it is from the Linux graphics stack's perspective: a complex, production-scale Vulkan client whose internal architecture illuminates how AAA-quality rendering maps onto Mesa drivers, kernel DRM, and Wayland compositors.
 
 The chapter targets three overlapping audiences. Game developers building or shipping for Linux and the Steam Deck will find the packaging, Steam Deck integration, and performance tuning sections most directly actionable. Rendering engineers who want to understand how UE5 structures GPU work — command lists, pipeline caches, descriptor management — will find Sections 2 and 3 most useful. Graphics programmers implementing or evaluating Nanite-style virtualized geometry or Lumen-style global illumination on Linux will find Sections 4 and 5 the most technically dense.
 

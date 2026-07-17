@@ -1,6 +1,12 @@
 # Chapter 148: Vulkan Synchronisation: A Complete Developer Reference
 
-This chapter targets **graphics application developers** writing Vulkan renderers and **systems developers** diagnosing GPU hangs, corruption, and race conditions caused by synchronisation errors. It assumes familiarity with the Vulkan object model and command buffer recording but treats synchronisation from first principles, because the Vulkan synchronisation model is fundamentally different from OpenGL and from most concurrent-programming models that developers encounter elsewhere. Incorrect synchronisation is not slow — it is undefined behaviour: pixels may be corrupt, the GPU may hang, or results may appear correct on one vendor's driver while crashing on another. This chapter covers every synchronisation primitive from `VkFence` to timeline semaphores, every barrier type from `vkCmdPipelineBarrier2` to render pass subpass dependencies, kernel-level `drm_syncobj` infrastructure, Wayland explicit sync, and the Vulkan Validation Layer's synchronisation mode.
+This chapter targets **graphics application developers** writing Vulkan renderers and **systems developers** diagnosing GPU hangs, corruption, and race conditions caused by synchronisation errors. It assumes familiarity with the Vulkan object model and command buffer recording but treats synchronisation from first principles, because the Vulkan synchronisation model is fundamentally different from OpenGL and from most concurrent-programming models that developers encounter elsewhere. Incorrect synchronisation is not slow — it is undefined behaviour: pixels may be corrupt, the GPU may hang, or results may appear correct on one vendor's driver while crashing on another. This chapter covers:
+
+- **Synchronisation primitives** — every primitive from `VkFence` to timeline semaphores
+- **Barrier types** — every barrier type from `vkCmdPipelineBarrier2` to render pass subpass dependencies
+- **Kernel-level `drm_syncobj` infrastructure** — the Linux kernel's sync object primitive used by Vulkan drivers
+- **Wayland explicit sync** — synchronisation across the compositor boundary
+- **Vulkan Validation Layer synchronisation mode** — tooling for detecting sync errors at runtime
 
 ---
 

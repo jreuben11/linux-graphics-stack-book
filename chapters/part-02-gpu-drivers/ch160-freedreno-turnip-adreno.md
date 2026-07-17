@@ -38,7 +38,14 @@ Qualcomm Adreno GPUs power the dominant Android platform (Snapdragon SoCs) and, 
 
 Turnip is particularly impressive: it supports Vulkan 1.3, ray tracing on A7xx (Adreno 700 series), mesh shaders, and competitive Vulkan performance versus the proprietary Qualcomm driver on Android. It is used in production on postmarketOS, Arch Linux ARM, and Qualcomm's own reference Linux images.
 
-This chapter covers the complete open-source Adreno stack in depth: the Tile-Based Deferred Rendering (TBDR) architecture with its binning pass, the Graphics Management Unit (GMU) power firmware, bandwidth compression via UBWC, newer A7xx/A8xx generation support, the choice between Freedreno/Turnip/Zink, and the tooling for profiling and debugging Adreno hardware on Linux.
+This chapter covers the complete open-source Adreno stack in depth:
+
+- **TBDR** — Tile-Based Deferred Rendering architecture with its binning pass
+- **GMU** — Graphics Management Unit power firmware
+- **UBWC** — bandwidth compression via UBWC
+- **A7xx/A8xx** — newer Adreno generation support
+- **Freedreno/Turnip/Zink** — the choice between the three driver paths
+- **Profiling and debugging tools** — tooling for profiling and debugging Adreno hardware on Linux
 
 Sources: [freedreno/turnip Mesa source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/freedreno) | [msm_drm kernel](https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/msm)
 

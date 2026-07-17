@@ -26,7 +26,14 @@
 
 ## Overview
 
-ALSA (Advanced Linux Sound Architecture) is the Linux kernel's primary audio subsystem, present in the mainline kernel since 2.6.6 (2004) where it replaced the older OSS (Open Sound System) interface. ALSA is not a single monolithic driver but a layered framework: the kernel provides the PCM engine, mixer controls, sequencer, and hardware abstraction; userspace applications interact through `libasound` (the ALSA library) or through character devices under `/dev/snd/`.
+ALSA (Advanced Linux Sound Architecture) is the Linux kernel's primary audio subsystem, present in the mainline kernel since 2.6.6 (2004) where it replaced the older OSS (Open Sound System) interface. ALSA is not a single monolithic driver but a layered framework — the kernel provides:
+
+- **PCM engine** — real-time audio stream capture and playback
+- **Mixer controls** — hardware volume, mute, and routing controls
+- **Sequencer** — MIDI event routing and timer-driven scheduling
+- **Hardware abstraction** — uniform interface across diverse audio hardware
+
+Userspace applications interact through `libasound` (the ALSA library) or through character devices under `/dev/snd/`.
 
 On modern desktop Linux systems, PipeWire owns the ALSA hardware devices and applications connect through PipeWire's compatibility layers. Direct `libasound` use remains prevalent for embedded and headless systems, for professional low-latency applications that pre-date PipeWire, and for legacy applications that access `hw:` devices directly. The `pipewire-alsa` PCM plugin makes this transparent: when installed, `snd_pcm_open("default", ...)` routes through PipeWire without application changes. See Ch38 for PipeWire internals.
 

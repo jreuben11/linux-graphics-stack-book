@@ -23,11 +23,29 @@
 
 ## Overview
 
-The Linux graphics stack is structurally the opposite of a monolith. A rendered frame traverses a minimum of six independent software layers — kernel DRM/KMS, userspace Mesa, EGL or Vulkan WSI, the Wayland protocol, the compositor, and the application toolkit — each maintained by a separate community, each carrying its own abstractions and release cadence, and each largely unaware of the others' internal state. On top of this, hardware introduces GPU drivers (open and proprietary), display controller firmware, panel timing, and connector hardware as additional independently-specified pieces.
+The Linux graphics stack is structurally the opposite of a monolith. A rendered frame traverses a minimum of six independent software layers — each maintained by a separate community, each carrying its own abstractions and release cadence, and each largely unaware of the others' internal state:
+
+- **kernel DRM/KMS**
+- **userspace Mesa**
+- **EGL or Vulkan WSI**
+- **the Wayland protocol**
+- **the compositor**
+- **the application toolkit**
+
+On top of this, hardware introduces additional independently-specified pieces:
+
+- GPU drivers (open and proprietary)
+- display controller firmware
+- panel timing
+- connector hardware
 
 This structure is not accidental: the separation of concerns that makes the Linux graphics stack easy to extend and replace (swap Mesa for a proprietary driver; swap KWin for Sway; swap GTK for Qt) is also what creates the deficiencies. When two layers cannot agree on buffer lifetime, synchronisation point, color profile, or frame timing without explicit negotiation, that negotiation must happen somewhere, and the places where it historically did not happen are exactly where bugs, inefficiency, and incompatibility have concentrated.
 
-This chapter examines the deficiency landscape and the mechanisms the Linux graphics community has developed to address it — primarily through the Wayland protocol ecosystem, which has emerged as the coordination bus that lets independent layers negotiate the contracts they need to cooperate correctly. It also covers Mesa NIR (which solves a parallel intra-stack fragmentation problem at the shader compilation layer), DMA-BUF (the zero-copy buffer transport primitive), and the cross-stack debugging tools that let developers trace a frame across all layers.
+This chapter examines the deficiency landscape and the mechanisms the Linux graphics community has developed to address it — primarily through the Wayland protocol ecosystem, which has emerged as the coordination bus that lets independent layers negotiate the contracts they need to cooperate correctly. It also covers:
+
+- **Mesa NIR** — solves a parallel intra-stack fragmentation problem at the shader compilation layer
+- **DMA-BUF** — the zero-copy buffer transport primitive
+- **cross-stack debugging tools** — let developers trace a frame across all layers
 
 Chapters 74 and 75 cover HDR/wide color gamut and explicit GPU synchronisation in depth; this chapter treats those topics at the integration level — how each fits into the broader coordination story — and cross-references accordingly.
 

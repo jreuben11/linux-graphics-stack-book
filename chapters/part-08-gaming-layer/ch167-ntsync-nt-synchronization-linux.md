@@ -1,6 +1,10 @@
 # Chapter 167 — NTSYNC: NT Synchronization Primitives in the Linux Kernel
 
-This chapter targets three audiences: **Linux gaming and Wine/Proton developers** who need to understand how ntsync affects game compatibility and performance; **kernel developers** interested in the design decisions behind a new misc character device that implements non-POSIX semantics; and **systems engineers** diagnosing Wine performance bottlenecks who want to understand the full history from wineserver round-trips through esync, fsync, and into the kernel-native solution.
+This chapter targets three audiences:
+
+- **Linux gaming and Wine/Proton developers** — need to understand how ntsync affects game compatibility and performance
+- **kernel developers** — interested in the design decisions behind a new misc character device that implements non-POSIX semantics
+- **systems engineers** — diagnosing Wine performance bottlenecks who want to understand the full history from wineserver round-trips through esync, fsync, and into the kernel-native solution
 
 ---
 
