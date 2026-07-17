@@ -46,7 +46,14 @@ What makes terminal integration interesting is the combination of constraints th
 - must behave correctly under sandboxing with restricted device access
 - are often the first client visible on screen after the compositor starts, making latency and reliability paramount
 
-This chapter traces the full path of a frame of terminal output from the GPU render call down to the display engine's scanout, grounding each protocol and kernel mechanism in the concrete implementation choices that modern terminals make. The first four sections cover the Wayland client lifecycle and GPU buffer submission path. Section 5 covers the CPU-path alternative used by foot. Section 6 addresses explicit synchronisation. Sections 7–8 cover the compositor and KMS sides. Sections 9–13 expand into the five topics most critical for practical terminal implementation: precise damage reporting, presentation timing for smooth scrolling, fractional HiDPI scaling, Kitty graphics multiplexer passthrough, and GPU glyph atlas management. Sections 14–15 address colour space and the security model.
+This chapter traces the full path of a frame of terminal output from the GPU render call down to the display engine's scanout, grounding each protocol and kernel mechanism in the concrete implementation choices that modern terminals make.
+
+- **Sections 1–4** — Wayland client lifecycle and GPU buffer submission path
+- **Section 5** — CPU-path alternative used by foot
+- **Section 6** — explicit synchronisation
+- **Sections 7–8** — compositor and KMS sides
+- **Sections 9–13** — five topics most critical for practical terminal implementation: precise damage reporting, presentation timing for smooth scrolling, fractional HiDPI scaling, Kitty graphics multiplexer passthrough, and GPU glyph atlas management
+- **Sections 14–15** — colour space and the security model
 
 The reader is assumed to have completed Parts I–VI:
 

@@ -48,25 +48,86 @@ amdgpu DRM driver (Ch5) — GPU initialization, VRAM management, GEM objects
 
 The critical design point is that **amdkfd** is a sub-driver of **amdgpu**: it reuses the **DRM** driver's already-initialized hardware context. Compute and graphics contexts coexist on the same GPU through this shared kernel driver. [Source: AMD KFD design](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/amd/amdkfd/kfd_device.c)
 
-The chapter proceeds through the following topics. The **KFD** (**Kernel Fusion Driver**) section covers the **`/dev/kfd`** character device architecture, the **`kfd_ioctl.h`** **UAPI** interface (including **`kfd_ioctl_create_queue_args`** and **`kfd_ioctl_alloc_memory_of_gpu_args`**), queue dispatch internals via **MQD** (Memory Queue Descriptor) and **HQD** (Hardware Queue Descriptor) with the **AQL** (Architected Queuing Language) packet format, and topology discovery through the **sysfs** tree consumed by **`libhsakmt.so`**.
+The chapter proceeds through the following topics.
 
-The **HSA** memory model section explains the distinction between fine-grained and coarse-grained memory, covering **`hsa_amd_memory_pool_allocate()`** and how the **MI300X** Unified Memory Architecture partially collapses the coherency boundary.
+The **KFD** (**Kernel Fusion Driver**) section covers:
+- **`/dev/kfd`** — character device architecture
+- **`kfd_ioctl.h`** UAPI interface — including **`kfd_ioctl_create_queue_args`** and **`kfd_ioctl_alloc_memory_of_gpu_args`**
+- **MQD** (Memory Queue Descriptor) and **HQD** (Hardware Queue Descriptor) — queue dispatch internals with the **AQL** (Architected Queuing Language) packet format
+- Topology discovery — via the **sysfs** tree consumed by **`libhsakmt.so`**
 
-The hardware support matrix documents **ROCm**'s two-tier support model across **CDNA4** (**gfx950**), **CDNA3** (**gfx942**), **CDNA2** (**gfx90a**), **CDNA1** (**gfx908**), **RDNA4** (**gfx1200/gfx1201**), **RDNA3** (**gfx1100/gfx1101**), and **RDNA2** (**gfx1030**) targets, while the version history traces **ROCm** from its 2016 launch through **ROCm 7.2**.
+The **HSA** memory model section covers:
+- Fine-grained vs coarse-grained memory — the core coherency distinction
+- **`hsa_amd_memory_pool_allocate()`** — the HSA pool allocation API
+- **MI300X** Unified Memory Architecture — partially collapses the coherency boundary
 
-The **HIP** (Heterogeneous-compute Interface for Portability) runtime section covers its **CUDA**-mirroring design philosophy, the core API including **`hipLaunchKernelGGL()`**, **`hipMalloc()`**, **`hipMemcpy()`**, **`hipMemcpyAsync()`**, **`hipHostMalloc()`**, and **`hipMallocManaged()`**, the **`hipcc`** / **`amdclang++`** compiler driver, and the **`hipify-perl`** and **`hipify-clang`** porting tools.
+The hardware support matrix documents **ROCm**'s two-tier support model across:
+- **CDNA4** (**gfx950**)
+- **CDNA3** (**gfx942**)
+- **CDNA2** (**gfx90a**)
+- **CDNA1** (**gfx908**)
+- **RDNA4** (**gfx1200/gfx1201**)
+- **RDNA3** (**gfx1100/gfx1101**)
+- **RDNA2** (**gfx1030**)
 
-The compilation pipeline section traces **HIP** C++ source through **`amdclang++`**, the **LLVM AMDGPU** backend, **ROCm-Device-Libs** bitcode linking (**`ocml.bc`**, **`ockl.bc`**), **`lld`** ELF linking, and **`clang-offload-bundler`** fat binary packaging. It also covers the **`amdgcn-amd-amdhsa`** target triple, **`--offload-arch`** flags, **Relocatable Device Code** (**`-fgpu-rdc`**) mode, and a comparison with **Mesa**'s **ACO** compiler.
+The version history traces **ROCm** from its 2016 launch through **ROCm 7.2**.
 
-The ML frameworks section covers **PyTorch**'s **ROCm** backend (mapping **`at::cuda`** to **`at::hip`**, **cuBLAS** to **rocBLAS**, **cuDNN** to **MIOpen**), **TensorFlow-ROCm** with **XLA** support, **JAX** on **ROCm** via **`jax-rocm`** packages, **`hipBLASLt`** as a **cublasLt** replacement with **FP8** epilogue fusion, and **MIOpen** as a **cuDNN** replacement providing convolution, batch normalisation, and attention primitives.
+The **HIP** (Heterogeneous-compute Interface for Portability) runtime section covers:
+- **CUDA**-mirroring design philosophy
+- Core API — **`hipLaunchKernelGGL()`**, **`hipMalloc()`**, **`hipMemcpy()`**, **`hipMemcpyAsync()`**, **`hipHostMalloc()`**, and **`hipMallocManaged()`**
+- **`hipcc`** / **`amdclang++`** — the compiler driver
+- **`hipify-perl`** and **`hipify-clang`** — CUDA-to-HIP porting tools
 
-The math library ecosystem section details **`rocBLAS`**, **`rocFFT`**, **`rocRAND`**, **`hipSPARSE`**, **`hipSPARSELt`** (2:4 structured sparsity), **RCCL** (collective communications via **XGMI** and **InfiniBand**), and the **Tensile** assembly kernel autotuner. GPU monitoring via **`rocm-smi`** and **`amd-smi`** is also covered.
+The compilation pipeline section traces **HIP** C++ source through:
+- **`amdclang++`** — front-end and compiler driver
+- **LLVM AMDGPU** backend
+- **ROCm-Device-Libs** bitcode linking — **`ocml.bc`**, **`ockl.bc`**
+- **`lld`** — ELF linker
+- **`clang-offload-bundler`** — fat binary packaging
+- **`amdgcn-amd-amdhsa`** — target triple
+- **`--offload-arch`** flags and **Relocatable Device Code** (**`-fgpu-rdc`**) mode
+- Comparison with **Mesa**'s **ACO** compiler
 
-The **AMD CDNA3** / **MI300X** section examines the MCM die architecture (**XCD** and **MCD** chiplets), performance peaks across **FP64**, **FP32**, **BF16**, and **FP8** precisions, the **`v_mfma_f32_*_fp8_fp8`** **MFMA** instruction family, the **HSA** Unified Memory Architecture, **XGMI Infinity Fabric** multi-GPU topology, performance tuning with **`PYTORCH_TUNABLEOP_ENABLED`** and **`MIOPEN_FIND_ENFORCE`** environment variables, and **FP8** (**E4M3**/**E5M2** OCP **MX** formats) inference with tools such as **vLLM**.
+The ML frameworks section covers:
+- **PyTorch** ROCm backend — maps **`at::cuda`** → **`at::hip`**, cuBLAS → rocBLAS, cuDNN → MIOpen
+- **TensorFlow-ROCm** — with **XLA** support
+- **JAX** on **ROCm** — via **`jax-rocm`** packages
+- **`hipBLASLt`** — **cublasLt** replacement with **FP8** epilogue fusion
+- **MIOpen** — **cuDNN** replacement providing convolution, batch normalisation, and attention primitives
 
-The **Intel oneAPI** section covers the **Level Zero** low-level API, **`intel-compute-runtime`** (**NEO** runtime, **IGC** — Intel Graphics Compiler), **SYCL**/**DPC++** compilation to **SPIR-V**, **`intel_gpu_top`** monitoring via the **`i915`** / **`xe`** **perf** **PMU**, **`intel-opencl-icd`** installation, and the portability story between **oneAPI** and **ROCm** via **`AdaptiveCpp`** and **Intel Extension for PyTorch** (**IPEX**). Target GPU families covered include **Xe2** and Arc B-Series.
+The math library ecosystem section details:
+- **`rocBLAS`** — BLAS implementation
+- **`rocFFT`** — FFT library
+- **`rocRAND`** — random number generation
+- **`hipSPARSE`** — sparse linear algebra
+- **`hipSPARSELt`** — 2:4 structured sparsity
+- **RCCL** — collective communications via **XGMI** and **InfiniBand**
+- **Tensile** — assembly kernel autotuner
+- **`rocm-smi`** and **`amd-smi`** — GPU monitoring
 
-Finally, the containers and cloud section explains **Docker** passthrough of **`/dev/kfd`** and **`/dev/dri/renderD*`** devices, the **`k8s-device-plugin`** Kubernetes device plugin registering the **`amd.com/gpu`** extended resource, **`amdgpu-install`** host setup with **`amdgpu-dkms`**, and cloud deployment options on **AWS** and **Azure** using official **`rocm/pytorch`** and **`rocm/tensorflow`** container images.
+The **AMD CDNA3** / **MI300X** section examines:
+- MCM die architecture — **XCD** and **MCD** chiplets
+- Performance peaks — **FP64**, **FP32**, **BF16**, and **FP8** precisions
+- **`v_mfma_f32_*_fp8_fp8`** — the **MFMA** instruction family for FP8
+- **HSA** Unified Memory Architecture
+- **XGMI Infinity Fabric** — multi-GPU topology
+- Performance tuning — **`PYTORCH_TUNABLEOP_ENABLED`** and **`MIOPEN_FIND_ENFORCE`** environment variables
+- **FP8** (**E4M3**/**E5M2** OCP **MX** formats) — inference with tools such as **vLLM**
+
+The **Intel oneAPI** section covers:
+- **Level Zero** — low-level direct-to-metal API
+- **`intel-compute-runtime`** — **NEO** runtime and **IGC** (Intel Graphics Compiler)
+- **SYCL**/**DPC++** — compilation to **SPIR-V**
+- **`intel_gpu_top`** — monitoring via the **`i915`** / **`xe`** **perf** PMU
+- **`intel-opencl-icd`** — installation
+- Portability story — **oneAPI** and **ROCm** via **`AdaptiveCpp`** and **Intel Extension for PyTorch** (**IPEX**)
+- Target GPU families: **Xe2** and Arc B-Series
+
+The containers and cloud section explains:
+- **Docker** — passthrough of **`/dev/kfd`** and **`/dev/dri/renderD*`** devices
+- **`k8s-device-plugin`** — Kubernetes device plugin registering the **`amd.com/gpu`** extended resource
+- **`amdgpu-install`** — host setup with **`amdgpu-dkms`**
+- Cloud deployment on **AWS** and **Azure** — using official **`rocm/pytorch`** and **`rocm/tensorflow`** container images
 
 ```mermaid
 graph TD

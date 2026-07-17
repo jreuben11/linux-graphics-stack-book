@@ -1,6 +1,9 @@
 # Chapter 164: Android Runtime and Native Interop: ART, JNI, and the NDK
 
-**Target audiences:** Systems and driver developers who need to understand how Android's managed runtime interacts with native code; graphics application developers writing Vulkan or OpenGL ES apps that cross the Java/native boundary; browser and web platform engineers understanding how Chrome, WebView, and ANGLE fit into Android's runtime model.
+**Target audiences:**
+- **Systems and driver developers** — need to understand how Android's managed runtime interacts with native code
+- **Graphics application developers** — writing Vulkan or OpenGL ES apps that cross the Java/native boundary
+- **Browser and web platform engineers** — understanding how Chrome, WebView, and ANGLE fit into Android's runtime model
 
 ## Table of Contents
 

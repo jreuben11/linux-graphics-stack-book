@@ -24,9 +24,20 @@
 
 ## Overview
 
-This chapter covers the end-to-end journey of a video pixel from codec decoder to display panel: the color space models the pixel lives in, the chroma subsampling that compresses it, the bit depth that quantizes it, the DRM fourcc code that names its format, the V4L2 structure that describes it in a decoder buffer, the HDR metadata that accompanies it over HDMI or DisplayPort, the AVI InfoFrame that declares its colorimetry, and the format-negotiation path that determines whether a compositor can hand it to a KMS overlay plane for direct scanout.
+This chapter covers the end-to-end journey of a video pixel from codec decoder to display panel:
 
-**Graphics application developers** will find the treatment of DRM fourcc codes, quantization range mismatches, and the zwp_linux_dmabuf_v1 format/modifier negotiation protocol directly actionable when writing video playback paths or GPU compositors. **Kernel driver authors** will find detailed coverage of `drm_fourcc.h` format enumerations, the `IN_FORMATS` plane property, the `hdr_output_metadata` blob, and how amdgpu and i915 drive the HDMI AVI InfoFrame. **Multimedia engineers** will find the VA-API → DMA-BUF → DRM overlay pipeline, V4L2 multiplanar format negotiation, and the worked 4K HDR10 example covering the whole stack from decoder buffer to signal wire.
+- **Color space model** — the YCbCr or RGB space the pixel lives in, governed by BT.601, BT.709, or BT.2020 matrix coefficients
+- **Chroma subsampling** — the spatial compression applied to chroma components
+- **Bit depth** — the quantization depth of each component
+- **DRM fourcc code** — the kernel format identifier used in plane configuration
+- **V4L2 structure** — the descriptor for decoder buffer formats in the multiplanar API
+- **HDR metadata** — the static or dynamic metadata accompanying the signal over HDMI or DisplayPort
+- **AVI InfoFrame** — the colorimetry declaration embedded in the HDMI data island
+- **Format-negotiation path** — the pipeline determining whether a compositor can hand the buffer to a KMS overlay plane for direct scanout
+
+- **Graphics application developers** — DRM fourcc codes, quantization range mismatches, and the `zwp_linux_dmabuf_v1` format/modifier negotiation protocol, directly actionable when writing video playback paths or GPU compositors
+- **Kernel driver authors** — `drm_fourcc.h` format enumerations, the `IN_FORMATS` plane property, the `hdr_output_metadata` blob, and how amdgpu and i915 drive the HDMI AVI InfoFrame
+- **Multimedia engineers** — the VA-API → DMA-BUF → DRM overlay pipeline, V4L2 multiplanar format negotiation, and the worked 4K HDR10 example covering the whole stack from decoder buffer to signal wire
 
 ---
 

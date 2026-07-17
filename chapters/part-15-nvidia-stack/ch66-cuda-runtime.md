@@ -99,7 +99,14 @@ Section 19 covers **cuRAND**: CUDA's GPU random number generation library. The h
 
 Section 20 covers **cuSolver**: NVIDIA's GPU dense and sparse linear solver library. The three sub-libraries are mapped: **cusolverDN** (dense factorisation — LU, SVD, Cholesky — via the three-step bufferSize→malloc→execute pattern), the **64-bit generic DN API** (`cusolverDnXgetrf`/`cusolverDnXgetrs`, CUDA 11+, avoiding 32-bit integer overflow for large matrices), **cusolverSP** (sparse direct solve via QR factorisation on host-memory CSR matrices), and **cusolverRF** (refactorisation for sequences of matrices with fixed sparsity pattern). **rocSOLVER** (AMD) gaps (no sparse or refactorisation sub-libraries) are noted.
 
-Readers of this chapter should already be comfortable with the Linux graphics stack at the depth covered in earlier parts: **DRM** scheduling (Ch4), the **nvidia** kernel module and **open-gpu-kernel-modules** (Ch9), **Vulkan** queue and synchronization model (Ch25), and container-level **CUDA** device exposure (Ch55). The goal here is not a **CUDA** tutorial but a precise map of how the **CUDA** programming model is realized in the Linux kernel driver and userspace libraries, with emphasis on the interfaces, version constraints, and Linux-specific behaviours that trap experienced practitioners.
+Readers of this chapter should already be comfortable with the Linux graphics stack at the depth covered in earlier parts:
+
+- **DRM scheduling** — Ch4
+- **nvidia kernel module and open-gpu-kernel-modules** — Ch9
+- **Vulkan queue and synchronization model** — Ch25
+- **container-level CUDA device exposure** — Ch55
+
+The goal here is not a **CUDA** tutorial but a precise map of how the **CUDA** programming model is realized in the Linux kernel driver and userspace libraries, with emphasis on the interfaces, version constraints, and Linux-specific behaviours that trap experienced practitioners.
 
 ---
 

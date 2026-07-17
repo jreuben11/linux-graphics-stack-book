@@ -31,9 +31,23 @@ Filament is emphatically not a game engine. It is a rendering library meant to b
 
 The design philosophy is **minimal footprint, maximum physical accuracy**. The engine targets mobile hardware first, which forces disciplined trade-offs: every shader variant is pre-compiled offline by the **matc** tool into self-contained **FILAMAT** binary packages containing **SPIR-V** (for **Vulkan**), **MSL** (for Metal), **GLSL** (for OpenGL), and **WGSL** (for WebGPU) — the runtime never runs a **GLSL** compiler. The GPU upload path is explicitly managed through **BufferDescriptor** callbacks that transfer buffer ownership. On Linux, the preferred backend is **Vulkan**, though **OpenGL 4.1+** remains supported via the **bluegl** dynamic loader.
 
-The chapter covers Filament's layered architecture — the **filament::Engine** resource factory, **filament::Scene** entity container, and **filament::Renderer** frame submission loop — together with the **clustered forward renderer** and **froxelisation**-based light culling, and the **filament::backend::Driver** abstraction layer that routes GPU calls to **Vulkan**, **OpenGL/ES**, Metal, or **WebGPU** backends. Engine initialisation on Linux involves creating a **VkInstance** and **VkDevice** via **bluevk** (Filament's own Vulkan function loader), and constructing a **SwapChain** from a native window handle obtained via **SDL2**, **X11** (**VK_KHR_xlib_surface** / **VK_KHR_xcb_surface**), or **Wayland** (**VK_KHR_wayland_surface**).
+The chapter covers Filament's layered architecture:
 
-Scene population uses a lightweight **entity-component system** (**ECS**) built on opaque **utils::Entity** handles and three managers: **RenderableManager** (geometry, materials, bounding boxes), **LightManager** (directional, point, and spot lights with physically based intensity in lux or lumens), and **TransformManager** (hierarchical position/rotation/scale). Geometry is submitted via **VertexBuffer** and **IndexBuffer** objects, with data transferred asynchronously using **BufferDescriptor** ownership-transfer callbacks.
+- **filament::Engine** — resource factory managing all GPU resource lifetimes
+- **filament::Scene** — entity container for ECS-managed renderables, lights, and transforms
+- **filament::Renderer** — frame submission loop (`beginFrame` / `render` / `endFrame`)
+- **Clustered forward renderer** — froxelisation-based light culling for large dynamic light counts
+- **filament::backend::Driver** — abstraction layer routing GPU calls to **Vulkan**, **OpenGL/ES**, Metal, or **WebGPU** backends
+
+Engine initialisation on Linux involves creating a **VkInstance** and **VkDevice** via **bluevk** (Filament's own Vulkan function loader), and constructing a **SwapChain** from a native window handle obtained via **SDL2**, **X11** (**VK_KHR_xlib_surface** / **VK_KHR_xcb_surface**), or **Wayland** (**VK_KHR_wayland_surface**).
+
+Scene population uses a lightweight **entity-component system** (**ECS**) built on opaque **utils::Entity** handles and three managers:
+
+- **RenderableManager** — geometry, materials, and bounding boxes
+- **LightManager** — directional, point, and spot lights with physically based intensity in lux or lumens
+- **TransformManager** — hierarchical position/rotation/scale
+
+Geometry is submitted via **VertexBuffer** and **IndexBuffer** objects, with data transferred asynchronously using **BufferDescriptor** ownership-transfer callbacks.
 
 The **FILAMAT** material system is fully offline: surface shaders are written in a domain-specific **.mat** format with a **shadingModel** directive selecting the shading model (**lit** Cook-Torrance **PBR**, **specularGlossiness**, **subsurface**, **cloth**, or **unlit**), then compiled by **matc** through a **glslang** → **spirv-opt** → **spirv-cross** pipeline into a chunked binary container. At runtime, a **Material** object parsed from the **.filamat** package spawns lightweight **MaterialInstance** objects per scene object.
 
@@ -41,11 +55,25 @@ The **PBR** implementation follows the rendering equation with a **Cook-Torrance
 
 **Image-based lighting** (**IBL**) relies on pre-filtered environment maps produced offline by **cmgen** (outputting **KTX1** specular cubemaps and **spherical harmonics** (**SH**) coefficients for diffuse irradiance), loaded at runtime via **IndirectLight**. The specular IBL integral is evaluated using the split-sum approximation with a pre-filtered cubemap and a baked **BRDF** integration map (**DFG** texture).
 
-Shadow rendering is managed by **ShadowMapManager** and supports **Cascaded Shadow Maps** (**CSM**) for directional/sun lights, single perspective maps for spot lights, and cubemap faces for point lights. Shadow filtering options configurable per **View** include **PCF**, **DPCF** (contact-hardening simulation), **VSM** (Variance Shadow Maps), and **PCSS** (Percentage Closer Soft Shadows). Screen-space contact shadows are available as an additional layer.
+Shadow rendering is managed by **ShadowMapManager** and supports **Cascaded Shadow Maps** (**CSM**) for directional/sun lights, single perspective maps for spot lights, and cubemap faces for point lights. Shadow filtering options configurable per **View**:
+
+- **PCF** — Percentage-Closer Filtering; default, fast, moderate quality
+- **DPCF** — PCF with contact-hardening simulation
+- **VSM** — Variance Shadow Maps; pre-filterable for large scenes
+- **PCSS** — Percentage Closer Soft Shadows; true penumbra from light source size
+
+Screen-space contact shadows are available as an additional layer.
 
 The internal **FrameGraph** (**fg/**) is a directed acyclic graph of render passes and virtual resources, compiled each frame to perform pass culling, physical memory aliasing, compatible-pass merging (critical for **TBDR** GPUs such as **Adreno** and **Mali**), and automatic **VkImageMemoryBarrier** insertion. Applications do not write FrameGraph passes directly; they are authored internally by **PostProcessManager** and **ShadowMapManager**.
 
-The post-processing pipeline exposes **tone mapping** and colour grading via **ColorGrading** (with **ACESToneMapper**, **FilmicToneMapper**, and **LinearToneMapper**), physically accurate **bloom** using a dual-Kawase pyramid, **depth of field** (**DoF**) with a scatter-as-gather circle-of-confusion approach, spatial anti-aliasing via **FXAA**, temporal anti-aliasing via **TAA** with Halton-jittered reprojection, and **Screen-Space Ambient Occlusion** (**SSAO**) via **SAO** (Scalable Ambient Obscurance) or **GTAO** (Ground Truth AO).
+The post-processing pipeline exposes:
+
+- **ColorGrading** — tone mapping and colour grading (with **ACESToneMapper**, **FilmicToneMapper**, and **LinearToneMapper**)
+- **Bloom** — physically accurate; dual-Kawase pyramid
+- **Depth of Field (DoF)** — scatter-as-gather circle-of-confusion approach
+- **FXAA** — spatial anti-aliasing
+- **TAA** — temporal anti-aliasing with Halton-jittered reprojection
+- **SSAO** — Screen-Space Ambient Occlusion via **SAO** (Scalable Ambient Obscurance) or **GTAO** (Ground Truth AO)
 
 Filament supports fully headless rendering via a dimension-based **SwapChain** overload (no native window) with **CONFIG_READABLE** for CPU pixel readback using **PixelBufferDescriptor**, and off-screen multi-pass compositing via **RenderTarget**. This mode powers Linux **CI** screenshot regression testing, using **Swiftshader** when no GPU is available.
 

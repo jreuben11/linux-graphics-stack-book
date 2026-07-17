@@ -29,23 +29,97 @@
 
 Readers who have worked through the earlier chapters already understand the **DRM/KMS** display stack (Chapter 5), **VA-API** hardware decode (Chapter 26), **PipeWire**'s **SPA** graph model (Chapter 38), and **Vulkan Video** decode queues (Chapter 50). This chapter shows how **GStreamer** glues those components together — from the **GstBuffer** memory model and **DMABuf** zero-copy paths, through the **`va`** plugin that replaced **gstreamer-vaapi** in **GStreamer 1.28**, to writing custom plugin elements in C or Rust.
 
-The chapter opens with the **GStreamer** object model: the **GLib**/**GObject** type system underpins every framework type, with **GstObject** adding names, parent pointers, and locking, while the lightweight **GstMiniObject** base (not **GObject**-derived) provides atomic reference counting and copy-on-write semantics for high-frequency data-plane types. Built on these foundations are **GstElement** (the atom of pipeline computation, with its four-state machine), **GstPad** (typed connection points carrying source or sink roles), **GstCaps** (negotiated format descriptors built from **GstStructure** sets and **GstCapsFeatures** annotations), **GstPipeline** (a specialised **GstBin** managing a shared clock), and **GstBus** (the asynchronous message channel back to the application).
+The chapter opens with the **GStreamer** object model, built on the following core types:
 
-Pipeline construction is covered via two complementary APIs — **`gst_element_factory_make()`** for programmatic builds and **`gst_parse_launch()`** / **`gst-launch-1.0`** for string-based prototyping — together with the **`pad-added`** signal pattern for demuxers such as **`qtdemux`** and **`matroskademux`** that create output pads dynamically. High-level autoplugging elements **`decodebin3`**, **`parsebin`**, and **`uridecodebin3`** handle format detection and stream switching without manual decoder wiring. The **`capsfilter`** element enforces capability pinning between neighbouring elements.
+- **GLib/GObject** — the type system underpinning every framework type
+- **GstObject** — extends GObject with names, parent pointers, and locking
+- **GstMiniObject** — a lightweight base (not GObject-derived) providing atomic reference counting and copy-on-write semantics for high-frequency data-plane types
+- **GstElement** — the atom of pipeline computation, with its four-state machine
+- **GstPad** — typed connection points carrying source or sink roles
+- **GstCaps** — negotiated format descriptors built from **GstStructure** sets and **GstCapsFeatures** annotations
+- **GstPipeline** — a specialised **GstBin** managing a shared clock
+- **GstBus** — the asynchronous message channel back to the application
 
-The **GstBuffer** memory model covers the full allocation hierarchy: **GstBuffer** (carrying **`pts`**, **`dts`**, **`duration`**, and a list of **GstMemory** blocks) flows through the copy-on-write gate **`gst_buffer_make_writable()`**; **GstMemory** blocks are created by a **GstAllocator** — either the built-in **`SystemMemory`** allocator or **GstDmaBufAllocator** wrapping **DMA-buf** file descriptors. **GstBufferPool** recycles buffers to eliminate per-frame allocation overhead; the **`GST_QUERY_ALLOCATION`** mechanism lets sinks propose pools upstream for true zero-copy. **GstVideoMeta** encodes per-plane strides and offsets for multi-planar formats such as **NV12**, allowing **Wayland** sinks and **EGL** importers to consume **DMABuf** frames without any **CPU** touch. **GstVideoInfoDmaDrm** (added in GStreamer 1.24) pairs a **GstVideoInfo** with a **DRM** fourcc and modifier for **DRM-modifier**-aware negotiation.
+Pipeline construction is covered via the following APIs and elements:
 
-The **VA-API** elements section documents the removal of **gstreamer-vaapi** (deprecated in GStreamer 1.26, fully removed in 1.28) and the complete migration to the **`va`** plugin in **gst-plugins-bad**. The shared **`libgstva-1.0`** library provides **GstVaDisplay** (with **GstVaDisplayDRM** and **GstVaDisplayWrapped** specialisations), **GstVaSurfaceAllocator**, and **GstVaDmabufAllocator**; multiple elements share a single display instance via **GstContext** negotiation. Available **`va`** plugin elements include decoders (**`vah264dec`**, **`vah265dec`**, **`vaav1dec`**, **`vavp9dec`**, **`vah266dec`**), encoders (**`vah264enc`**, **`vah265enc`**, **`vaav1enc`**), and post-processing elements (**`vapostproc`**, **`vadeinterlace`**, **`vacompositor`**).
+- **`gst_element_factory_make()`** — programmatic pipeline building, safe for production
+- **`gst_parse_launch()`** / **`gst-launch-1.0`** — string-based prototyping using the same element-description language
+- **`pad-added` signal pattern** — for demuxers such as **`qtdemux`** and **`matroskademux`** that create output pads dynamically
+- **`decodebin3`**, **`parsebin`**, and **`uridecodebin3`** — high-level autoplugging elements handling format detection and stream switching without manual decoder wiring
+- **`capsfilter`** — enforces capability pinning between neighbouring elements
 
-The **V4L2** elements section covers **`v4l2src`** for camera capture with its **`dmabuf-export`** and **`mmap`** **`io-mode`** options; the **`v4l2codecs`** plugin for **Linux** stateless hardware decoders (**`v4l2slh264dec`**, **`v4l2slh265dec`**, **`v4l2slav1dec`**, and the new stateful **`v4l2av1dec`**); **`v4l2convert`** for **M2M**-accelerated format conversion; and **`libcamerasrc`** from **gst-plugins-libcamera** for cameras managed by the **libcamera** stack. Adaptive streaming is handled by the redesigned **AdaptiveDemux2** architecture powering **`dashdemux2`**, **`hlsdemux2`**, and **`mssdemux2`**, with **libsoup** handling HTTP fragment download.
+The **GstBuffer** memory model covers the full allocation hierarchy:
 
-Clock and synchronisation covers **GStreamer**'s three time domains — **clock time**, **running time**, and **stream time** (mapped through **GstSegment**) — buffer timestamp fields **`pts`**/**`dts`**/**`duration`**, clock election policy (favouring audio sink clocks for file playback), **live source** semantics with **`min-latency`** reporting via **`GST_QUERY_LATENCY`**, and elastic buffering with **`queue2`**.
+- **`GstBuffer`** — carries **`pts`**, **`dts`**, **`duration`**, and a list of **GstMemory** blocks; the copy-on-write gate is **`gst_buffer_make_writable()`**
+- **`GstMemory`** — blocks created by a **GstAllocator**: either the built-in **`SystemMemory`** allocator or **GstDmaBufAllocator** wrapping **DMA-buf** file descriptors
+- **`GstBufferPool`** — recycles buffers to eliminate per-frame allocation overhead
+- **`GST_QUERY_ALLOCATION`** — lets sinks propose pools upstream for true zero-copy
+- **`GstVideoMeta`** — encodes per-plane strides and offsets for multi-planar formats such as **NV12**, allowing **Wayland** sinks and **EGL** importers to consume **DMABuf** frames without any **CPU** touch
+- **`GstVideoInfoDmaDrm`** — added in GStreamer 1.24; pairs a **GstVideoInfo** with a **DRM** fourcc and modifier for **DRM-modifier**-aware negotiation
 
-Inter-process pipeline patterns include **GstNet** (**`GstNetTimeProvider`** / **`GstNetClientClock`**) for **PTP**-like network clock distribution; **`fdsrc`** / **`fdsink`** for Unix file descriptor byte streams; **`ipcpipelinesrc`** / **`ipcpipelinesink`** for full **GStreamer** protocol forwarding across process boundaries; and **`pipewiresrc`** / **`pipewiresink`** for integration with the **PipeWire** session graph (honouring **Flatpak** portal access control).
+The **VA-API** elements section documents the removal of **gstreamer-vaapi** (deprecated in GStreamer 1.26, fully removed in 1.28) and the complete migration to the **`va`** plugin in **gst-plugins-bad**. The shared **`libgstva-1.0`** library provides:
 
-Plugin authoring is anchored on three base classes from **`libgstreamer-base-1.0`**: **`GstBaseSrc`** for source elements (state machine, live timing, push/pull scheduling), **`GstBaseTransform`** for filter elements (caps negotiation, passthrough, in-place, and separate-buffer transform modes), and **`GstBaseParser`** for byte-stream framers (used by **`h264parse`**, **`h265parse`**, **`av1parse`**). The preferred build system is **Meson** using the **`gst-plugin`** helper. Safe **Rust** bindings are provided by the **`gstreamer-rs`** crate (v0.25) with the **`BaseTransformImpl`** trait and **`glib::object_subclass`** macro; production **Rust** plugins ship in **`gst-plugins-rs`**. **`AppSrc`** and **`AppSink`** bridge arbitrary application data into and out of a running pipeline.
+- **`GstVaDisplay`** — abstract base for VA display connections, with **GstVaDisplayDRM** and **GstVaDisplayWrapped** specialisations
+- **`GstVaSurfaceAllocator`** — wraps `VASurfaceID`; keeps decoded surfaces in GPU memory
+- **`GstVaDmabufAllocator`** — exports VA surfaces as DMA-buf file descriptors for cross-element sharing
 
-Debugging and profiling tools covered include the **`GST_DEBUG`** environment variable (category/level filtering), **`GST_DEBUG_CATEGORY_STATIC`** for per-plugin categories, **`gst-inspect-1.0`** for element introspection, **`gst-launch-1.0`** verbose negotiation output, **`GST_DEBUG_DUMP_DOT_DIR`** and **`GST_DEBUG_BIN_TO_DOT_FILE()`** for pipeline graph export, the **`dots`** tracer with **`gst-dots-viewer`** (introduced in GStreamer 1.26), structured **`GST_TRACERS`** probes (**`latency`**, **`leaks`**, **`rusage`**), and the **GstShark** extension writing **CTF** trace data readable by **Babeltrace** and **TraceCompass**. The chapter closes with GStreamer 1.28 changes most relevant to Linux graphics developers, including the new **AMD HIP** plugin (**`hipupload`**, **`hipdownload`**, **`hipconvert`**), the **`udmabuf`** zero-copy uploader path, and **Vulkan Video** AV1/VP9 decode and H.264 encode improvements.
+Multiple elements share a single display instance via **GstContext** negotiation. Available **`va`** plugin elements include:
+
+- **Decoders**: **`vah264dec`**, **`vah265dec`**, **`vaav1dec`**, **`vavp9dec`**, **`vah266dec`**
+- **Encoders**: **`vah264enc`**, **`vah265enc`**, **`vaav1enc`**
+- **Post-processing**: **`vapostproc`**, **`vadeinterlace`**, **`vacompositor`**
+
+The **V4L2** elements section covers:
+
+- **`v4l2src`** — camera capture element with **`dmabuf-export`** and **`mmap`** `io-mode` options
+- **`v4l2codecs`** plugin — Linux stateless hardware decoders: **`v4l2slh264dec`**, **`v4l2slh265dec`**, **`v4l2slav1dec`**, and the new stateful **`v4l2av1dec`**
+- **`v4l2convert`** — **M2M**-accelerated format conversion
+- **`libcamerasrc`** — from **gst-plugins-libcamera**; for cameras managed by the **libcamera** stack
+- **`AdaptiveDemux2`** — redesigned adaptive streaming architecture powering **`dashdemux2`**, **`hlsdemux2`**, and **`mssdemux2`**, with **libsoup** handling HTTP fragment download
+
+Clock and synchronisation covers:
+
+- **clock time**, **running time**, and **stream time** — GStreamer's three time domains, with stream time mapped through **GstSegment**
+- Buffer timestamp fields **`pts`**/**`dts`**/**`duration`** and their roles in AV sync
+- Clock election policy, favouring audio sink clocks for file playback
+- **Live source** semantics with **`min-latency`** reporting via **`GST_QUERY_LATENCY`**
+- Elastic buffering with **`queue2`**
+
+Inter-process pipeline patterns include:
+
+- **GstNet** (**`GstNetTimeProvider`** / **`GstNetClientClock`**) — **PTP**-like network clock distribution
+- **`fdsrc`** / **`fdsink`** — Unix file descriptor byte streams
+- **`ipcpipelinesrc`** / **`ipcpipelinesink`** — full **GStreamer** protocol forwarding across process boundaries
+- **`pipewiresrc`** / **`pipewiresink`** — integration with the **PipeWire** session graph, honouring **Flatpak** portal access control
+
+Plugin authoring is anchored on three base classes from **`libgstreamer-base-1.0`**:
+
+- **`GstBaseSrc`** — for source elements; handles state machine, live timing, and push/pull scheduling
+- **`GstBaseTransform`** — for filter elements; provides caps negotiation, passthrough, in-place, and separate-buffer transform modes
+- **`GstBaseParser`** — for byte-stream framers (used by **`h264parse`**, **`h265parse`**, **`av1parse`**)
+
+Additional tooling and language bindings:
+
+- **Meson** with the **`gst-plugin`** helper — the preferred build system
+- **`gstreamer-rs`** crate (v0.25) — safe Rust bindings with the **`BaseTransformImpl`** trait and **`glib::object_subclass`** macro; production Rust plugins ship in **`gst-plugins-rs`**
+- **`AppSrc`** and **`AppSink`** — bridge arbitrary application data into and out of a running pipeline
+
+Debugging and profiling tools covered include:
+
+- **`GST_DEBUG`** — environment variable for category/level filtering
+- **`GST_DEBUG_CATEGORY_STATIC`** — per-plugin debug categories
+- **`gst-inspect-1.0`** — element introspection
+- **`gst-launch-1.0`** — verbose negotiation output for pipeline debugging
+- **`GST_DEBUG_DUMP_DOT_DIR`** and **`GST_DEBUG_BIN_TO_DOT_FILE()`** — pipeline graph export
+- **`dots`** tracer with **`gst-dots-viewer`** — introduced in GStreamer 1.26
+- **`GST_TRACERS`** probes — structured tracing with **`latency`**, **`leaks`**, and **`rusage`** built-ins
+- **GstShark** — extension writing **CTF** trace data readable by **Babeltrace** and **TraceCompass**
+
+The chapter closes with GStreamer 1.28 changes most relevant to Linux graphics developers:
+
+- **AMD HIP** plugin — **`hipupload`**, **`hipdownload`**, **`hipconvert`** elements
+- **`udmabuf`** zero-copy uploader path
+- **Vulkan Video** AV1/VP9 decode and H.264 encode improvements
 
 By the end of this chapter you will be able to:
 

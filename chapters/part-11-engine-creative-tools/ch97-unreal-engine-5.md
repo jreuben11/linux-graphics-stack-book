@@ -33,7 +33,11 @@ Unreal Engine 5 (UE5) is the most technically ambitious game engine currently av
 
 This chapter treats UE5 as what it is from the Linux graphics stack's perspective: a complex, production-scale Vulkan client whose internal architecture illuminates how AAA-quality rendering maps onto Mesa drivers, kernel DRM, and Wayland compositors.
 
-The chapter targets three overlapping audiences. Game developers building or shipping for Linux and the Steam Deck will find the packaging, Steam Deck integration, and performance tuning sections most directly actionable. Rendering engineers who want to understand how UE5 structures GPU work — command lists, pipeline caches, descriptor management — will find Sections 2 and 3 most useful. Graphics programmers implementing or evaluating Nanite-style virtualized geometry or Lumen-style global illumination on Linux will find Sections 4 and 5 the most technically dense.
+The chapter targets three overlapping audiences:
+
+- **Game developers** — building or shipping for Linux and the Steam Deck; the packaging, Steam Deck integration, and performance tuning sections are most directly actionable.
+- **Rendering engineers** — wanting to understand how UE5 structures GPU work (command lists, pipeline caches, descriptor management); Sections 2 and 3 are most useful.
+- **Graphics programmers** — implementing or evaluating Nanite-style virtualized geometry or Lumen-style global illumination on Linux; Sections 4 and 5 are the most technically dense.
 
 A note on source access: the UE5 source tree is available to registered GitHub users under Epic's EULA. The internal class names and data-flow descriptions in this chapter derive from public documentation, Epic's conference talks (GDC, SIGGRAPH), the EULA-restricted source repository, and community analysis. Where a specific claim about internal implementation cannot be confirmed from public sources, it is marked with a **Note: needs verification** callout. The closed-source nature of UE5's internals means that some architectural details remain opaque; unlike Bevy (Chapter 40), Godot (Chapter 41), or Blender (Chapter 42), UE5's code cannot be freely examined at every layer.
 

@@ -2,7 +2,11 @@
 
 ## Scope
 
-This chapter targets three audiences. **Systems and driver developers** will find detailed coverage of how DisplayPort 2.1, HDMI 2.1, USB4, and Thunderbolt 5 are plumbed into the Linux DRM/KMS subsystem, including which kernel config options gate each feature and which upstream commits introduced UHBR and FRL support. **Hardware engineers** will find the complete link-rate tables, encoding-overhead analysis, and bandwidth comparisons they need to select the right interface for a given resolution and refresh-rate target. **Application developers** will find the bandwidth arithmetic worked examples that show precisely where each interface hits its limit, and what Display Stream Compression (DSC) buys in practice.
+This chapter targets three audiences:
+
+- **Systems and driver developers** — detailed coverage of how DisplayPort 2.1, HDMI 2.1, USB4, and Thunderbolt 5 are plumbed into the Linux DRM/KMS subsystem, including which kernel config options gate each feature and which upstream commits introduced UHBR and FRL support.
+- **Hardware engineers** — the complete link-rate tables, encoding-overhead analysis, and bandwidth comparisons they need to select the right interface for a given resolution and refresh-rate target.
+- **Application developers** — the bandwidth arithmetic worked examples that show precisely where each interface hits its limit, and what Display Stream Compression (DSC) buys in practice.
 
 ---
 

@@ -44,7 +44,12 @@
 
 This chapter places the Linux graphics stack in direct comparison with Windows (via WDDM/DirectX) and macOS (via Metal/CoreAnimation). It is written for engineers who work across platforms, product teams evaluating Linux as a deployment target, and developers building cross-platform graphics applications who need to understand where platform differences originate and how deep they run.
 
-The comparison is structured along four axes: **innovations** (what each platform invented or consistently does best), **areas of lag** (where Linux is behind and what the community is doing about it), **reverse flow** (where Windows and macOS are catching up to Linux concepts), and **velocity** (how quickly each stack moves and why).
+The comparison is structured along four axes:
+
+- **innovations** — what each platform invented or consistently does best
+- **areas of lag** — where Linux is behind and what the community is doing about it
+- **reverse flow** — where Windows and macOS are catching up to Linux concepts
+- **velocity** — how quickly each stack moves and why
 
 Throughout, the emphasis is on the *structural reasons* for each platform's characteristics — not just the current state, but why it came to be that way. Understanding structure explains which gaps are likely to close and which are architectural invariants.
 

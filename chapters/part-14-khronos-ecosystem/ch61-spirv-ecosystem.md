@@ -57,21 +57,115 @@
 
 **SPIR-V** is the intermediate shader language that connects every high-level shading language — **GLSL**, **HLSL**, **WGSL**, **OpenCL C**, and **Slang** — to every **GPU** driver back end on Linux. Since **Vulkan**'s 2016 launch it has served as the mandatory binary format for **Vulkan** shader modules; it is also the exchange format between **Mesa** front ends and **Mesa**'s internal **NIR** compiler **IR**. This chapter dissects the **SPIR-V** ecosystem from first principles.
 
-The chapter opens with the binary module structure (Section 1): a **SPIR-V** module is a flat stream of 32-bit words beginning with a five-word fixed header encoding a magic number, version, generator magic, ID bound, and reserved schema field. Each instruction packs its opcode and word count into a single 32-bit word (bits 15:0 and 31:16 respectively), making the binary walkable without an opcode table. The module's rich static type system is declared via **OpType\*** instructions — scalars (**OpTypeInt**, **OpTypeFloat**, **OpTypeBool**), composites (**OpTypeVector**, **OpTypeMatrix**, **OpTypeArray**, **OpTypeRuntimeArray**, **OpTypeStruct**), image and sampler types (**OpTypeImage**, **OpTypeSampler**, **OpTypeSampledImage**), pointer types (**OpTypePointer**), and function types (**OpTypeFunction**) — all assigned result IDs in a module-global flat ID namespace. The **SPIR-V** specification mandates a strict section ordering: **OpCapability** declarations, **OpExtension** strings, **OpExtInstImport** imports, **OpMemoryModel**, **OpEntryPoint**, **OpExecutionMode**, debug instructions, name instructions, **OpModuleProcessed**, annotation instructions, type/constant/global-variable declarations, and finally function definitions.
+The chapter opens with the binary module structure (Section 1): a **SPIR-V** module is a flat stream of 32-bit words beginning with a five-word fixed header encoding a magic number, version, generator magic, ID bound, and reserved schema field. Each instruction packs its opcode and word count into a single 32-bit word (bits 15:0 and 31:16 respectively), making the binary walkable without an opcode table. The module's static type system is declared via **OpType\*** instructions, all assigned result IDs in a module-global flat ID namespace:
 
-Section 2 covers the capability and extension mechanism. **OpCapability** declarations gate every instruction, built-in variable, decoration, and storage class behind named capabilities such as **Shader**, **Geometry**, **Tessellation**, **Float16**, **Float64**, **PhysicalStorageBufferAddresses**, **VulkanMemoryModel**, **RayTracingKHR**, **MeshShadingEXT**, and **CooperativeMatrixKHR**. **OpExtension** declarations gate additional **SPIR-V** extensions such as **SPV_KHR_non_semantic_info**, **SPV_KHR_physical_storage_buffer**, **SPV_EXT_shader_atomic_float_add**, and **SPV_KHR_ray_tracing**. **OpExtInstImport** imports extended instruction sets — most importantly **GLSL.std.450** (the standard math library providing `Sin`, `Cos`, `Sqrt`, `Normalize`, and 65 more instructions) and **OpenCL.std** for the Kernel execution model. The **NonSemantic** extended instruction set family, introduced by **SPV_KHR_non_semantic_info**, allows tools to embed ignorable metadata: **NonSemantic.Shader.DebugInfo.100** carries source-level debug information (covered in Section 7), and **NonSemantic.DebugPrintf** provides a standardized `printf`-like shader debugging mechanism.
+- **Scalar types** — **OpTypeInt**, **OpTypeFloat**, **OpTypeBool**
+- **Composite types** — **OpTypeVector**, **OpTypeMatrix**, **OpTypeArray**, **OpTypeRuntimeArray**, **OpTypeStruct**
+- **Image and sampler types** — **OpTypeImage**, **OpTypeSampler**, **OpTypeSampledImage**
+- **Pointer types** — **OpTypePointer**
+- **Function types** — **OpTypeFunction**
 
-Section 3 surveys the front ends that produce **SPIR-V**. **glslang** (`glslangValidator`) is the reference **GLSL** front end; the **shaderc** wrapper `glslc` adds a GCC-style interface. **DXC** (DirectXShaderCompiler) compiles **HLSL** to **SPIR-V** via its **SPIR-V** backend based on **Clang** and **LLVM**; this path is consumed by **DXVK** and **VKD3D-Proton**. **Tint** (**Dawn**'s shader compiler) and **naga** (**wgpu**'s Rust shader compiler) compile **WGSL** to **SPIR-V**; **naga** is also used by **Bevy** through its **wgpu** dependency. For **OpenCL C**, **Clang** targets `spirv64-unknown-unknown` directly since **LLVM** 15, and the older **SPIRV-LLVM-Translator** (`llvm-spirv`) path remains important for Intel's **compute-runtime**. Mesa's **SPIR-V** consumer lives in `src/compiler/spirv/` with **spirv_to_nir()** as the entry point; it performs capability mapping against **spirv_to_nir_options**, translates **OpType\*** to **glsl_type** objects, maps **SPIR-V** structured control flow (**OpSelectionMerge**, **OpLoopMerge**) to **nir_if** and **nir_loop** nodes, and folds **OpSpecConstant** values from the **nir_spirv_specialization** array into **nir_load_const_instr** nodes.
+The **SPIR-V** specification mandates a strict section ordering: **OpCapability** declarations, **OpExtension** strings, **OpExtInstImport** imports, **OpMemoryModel**, **OpEntryPoint**, **OpExecutionMode**, debug instructions, name instructions, **OpModuleProcessed**, annotation instructions, type/constant/global-variable declarations, and finally function definitions.
 
-Section 4 covers **SPIRV-Tools** in depth. The command-line toolkit includes **spirv-as** (text to binary), **spirv-dis** (binary to text), **spirv-val** (validation), **spirv-opt** (optimization), **spirv-link** (linking separately compiled modules), **spirv-cfg** (GraphViz control-flow graph export), and **spirv-reduce** (minimal reproduction case reducer). The C API (header `libspirv.h`) exposes **spvContextCreate()**, **spvTextToBinary()**, **spvBinaryToText()**, **spvValidateBinary()**, and the zero-copy callback-based **spvBinaryParse()**. The C++ API provides the **spvtools::Optimizer** class (with **RegisterPerformancePasses()**, **RegisterSizePasses()**, and **RegisterLegalizationPasses()** presets), the **spvtools::Linker** class, and the **spvtools::Context** class.
+Section 2 covers the capability and extension mechanism. **OpCapability** declarations gate every instruction, built-in variable, decoration, and storage class behind named capabilities:
 
-Section 5 analyses **spirv-opt** passes in depth: inlining (**--inline-entry-points-exhaustive**), **SSA** rewrite (**--ssa-rewrite**), dead code elimination (**--eliminate-dead-code-aggressive**, **--eliminate-dead-branches**, **--eliminate-dead-functions**), loop optimization (**--loop-unroll**, **--loop-invariant-code-motion**, **--loop-peeling**), scalar replacement (**--scalar-replacement**), specialization constant folding (**--freeze-spec-const**, **--fold-spec-const-op-composite**), and memory model upgrade (**--upgrade-memory-model**). It also maps each pass to its **NIR** equivalent in **Mesa** (e.g., **nir_opt_dce()**, **nir_lower_vars_to_ssa()**, **nir_inline_functions()**) to identify which passes are redundant when the consumer is **RADV** or another Mesa **Vulkan** driver, and benchmarks **spirv-opt** preprocessing against **ACO** compile time.
+- **Shader**, **Geometry**, **Tessellation** — core pipeline stage capabilities
+- **Float16**, **Float64** — extended precision arithmetic
+- **PhysicalStorageBufferAddresses** — raw GPU buffer device address access
+- **VulkanMemoryModel** — explicit memory ordering semantics
+- **RayTracingKHR** — hardware ray tracing
+- **MeshShadingEXT** — mesh and task shader stages
+- **CooperativeMatrixKHR** — cooperative matrix operations for ML workloads
 
-Section 6 covers **SPIRV-Cross**, which parses **SPIR-V** and cross-compiles it to **GLSL** (desktop and ES), **HLSL** (SM 5.0–6.6), **MSL** (Metal Shading Language), and JSON reflection. The class hierarchy is **spirv_cross::Parser** → **spirv_cross::Compiler** (base reflection API) → **CompilerGLSL**, **CompilerHLSL**, **CompilerMSL**, **CompilerReflect**. The reflection API (via **get_shader_resources()**, **get_decoration()**, **get_type()**, **build_combined_image_samplers()**) enables runtime descriptor layout discovery. **SPIRV-Cross** is used by **ANGLE** for its **SPIR-V** → **GLSL** cross-compilation path, by **DXVK** for extracting binding metadata from **DXC**-generated **SPIR-V**, and by **MoltenVK** as its sole shader translation layer to **MSL**.
+**OpExtension** declarations gate additional **SPIR-V** extensions:
 
-Section 7 covers **SPIR-V** debugging: **NonSemantic.Shader.DebugInfo.100** embeds **DWARF**-compatible source locations via instructions such as **DebugSource**, **DebugCompilationUnit**, **DebugFunction**, **DebugLine**, **DebugLocalVariable**, and **DebugValue**; **NonSemantic.DebugPrintf** provides `printf`-style output intercepted by **VK_EXT_debug_printf** and routed through the **VK_EXT_debug_utils** messenger; **OpLine** provides core source correlation consumed by tools such as **RenderDoc**; and **spirv-val**'s error taxonomy covers structural/layout errors, capability and extension errors, semantic errors, and **CFG** errors.
+- **SPV_KHR_non_semantic_info** — ignorable metadata embedding
+- **SPV_KHR_physical_storage_buffer** — buffer device address support
+- **SPV_EXT_shader_atomic_float_add** — atomic floating-point add operations
+- **SPV_KHR_ray_tracing** — ray tracing instructions
 
-Section 8 addresses shader compilation pipeline performance: the trade-offs between offline compilation (build-time **GLSL**/HLSL → **SPIR-V** with **spirv-opt**, zero runtime cost) and online compilation (runtime **shaderc** / **libshaderc** calls with 10–500 ms latency); **specialization constants** (**OpSpecConstant**, **VkSpecializationInfo**) for producing optimally specialized pipeline variants; **VkPipelineCache** (backed by **Mesa**'s disk cache at `~/.cache/mesa_shader_cache/`, keyed by **BLAKE3** hash of pipeline state) for eliminating repeated **SPIR-V** → **ISA** compilation; and **VK_EXT_graphics_pipeline_library** (**GPL**) for splitting a pipeline into four independently compiled library stages to reduce first-use compile stalls — a technique adopted by **DXVK** 2.0 and supported through **RADV**'s **ACO** backend.
+**OpExtInstImport** imports extended instruction sets:
+
+- **GLSL.std.450** — the standard math library (`Sin`, `Cos`, `Sqrt`, `Normalize`, and 65 more instructions) for the Graphics execution model
+- **OpenCL.std** — the standard math library for the Kernel execution model
+
+The **NonSemantic** extended instruction set family, introduced by **SPV_KHR_non_semantic_info**, allows tools to embed ignorable metadata:
+
+- **NonSemantic.Shader.DebugInfo.100** — source-level debug information (covered in Section 7)
+- **NonSemantic.DebugPrintf** — standardized `printf`-like shader debugging mechanism
+
+Section 3 surveys the front ends that produce **SPIR-V**:
+
+- **glslang** (`glslangValidator`) — the reference **GLSL** front end; the **shaderc** wrapper `glslc` adds a GCC-style interface
+- **DXC** (DirectXShaderCompiler) — compiles **HLSL** to **SPIR-V** via its **SPIR-V** backend based on **Clang** and **LLVM**; consumed by **DXVK** and **VKD3D-Proton**
+- **Tint** (**Dawn**'s shader compiler) — compiles **WGSL** to **SPIR-V**
+- **naga** (**wgpu**'s Rust shader compiler) — compiles **WGSL** to **SPIR-V**; also used by **Bevy** through its **wgpu** dependency
+- **Clang** targeting `spirv64-unknown-unknown` — compiles **OpenCL C** to **SPIR-V** directly since **LLVM** 15; the older **SPIRV-LLVM-Translator** (`llvm-spirv`) path remains important for Intel's **compute-runtime**
+
+Mesa's **SPIR-V** consumer lives in `src/compiler/spirv/` with **spirv_to_nir()** as the entry point; it performs capability mapping against **spirv_to_nir_options**, translates **OpType\*** to **glsl_type** objects, maps **SPIR-V** structured control flow (**OpSelectionMerge**, **OpLoopMerge**) to **nir_if** and **nir_loop** nodes, and folds **OpSpecConstant** values from the **nir_spirv_specialization** array into **nir_load_const_instr** nodes.
+
+Section 4 covers **SPIRV-Tools** in depth. The command-line toolkit includes:
+
+- **spirv-as** — assembles text-format SPIR-V to binary
+- **spirv-dis** — disassembles binary SPIR-V to text
+- **spirv-val** — validates a SPIR-V module
+- **spirv-opt** — applies optimization passes
+- **spirv-link** — links separately compiled modules
+- **spirv-cfg** — exports a GraphViz control-flow graph
+- **spirv-reduce** — produces a minimal reproduction case
+
+The C API (header `libspirv.h`) exposes:
+
+- **spvContextCreate()** — creates a validation/processing context
+- **spvTextToBinary()** — assembles text to binary
+- **spvBinaryToText()** — disassembles binary to text
+- **spvValidateBinary()** — validates a binary module
+- **spvBinaryParse()** — zero-copy callback-based binary walker
+
+The C++ API provides:
+
+- **spvtools::Optimizer** — with **RegisterPerformancePasses()**, **RegisterSizePasses()**, and **RegisterLegalizationPasses()** presets
+- **spvtools::Linker** — links separately compiled modules
+- **spvtools::Context** — owns the SPIR-V target environment
+
+Section 5 analyses **spirv-opt** passes in depth:
+
+- **Inlining** — `--inline-entry-points-exhaustive` (cf. **nir_inline_functions()**)
+- **SSA rewrite** — `--ssa-rewrite` (cf. **nir_lower_vars_to_ssa()**)
+- **Dead code elimination** — `--eliminate-dead-code-aggressive`, `--eliminate-dead-branches`, `--eliminate-dead-functions` (cf. **nir_opt_dce()**)
+- **Loop optimization** — `--loop-unroll`, `--loop-invariant-code-motion`, `--loop-peeling`
+- **Scalar replacement** — `--scalar-replacement`
+- **Specialization constant folding** — `--freeze-spec-const`, `--fold-spec-const-op-composite`
+- **Memory model upgrade** — `--upgrade-memory-model`
+
+The section maps each pass to its **NIR** equivalent in **Mesa** to identify which passes are redundant when the consumer is **RADV** or another Mesa **Vulkan** driver, and benchmarks **spirv-opt** preprocessing against **ACO** compile time.
+
+Section 6 covers **SPIRV-Cross**, which parses **SPIR-V** and cross-compiles it to:
+
+- **GLSL** (desktop and ES)
+- **HLSL** (SM 5.0–6.6)
+- **MSL** (Metal Shading Language)
+- **JSON reflection**
+
+The class hierarchy is **spirv_cross::Parser** → **spirv_cross::Compiler** (base reflection API) → **CompilerGLSL**, **CompilerHLSL**, **CompilerMSL**, **CompilerReflect**. The reflection API (via **get_shader_resources()**, **get_decoration()**, **get_type()**, **build_combined_image_samplers()**) enables runtime descriptor layout discovery. **SPIRV-Cross** is used by:
+
+- **ANGLE** — for its **SPIR-V** → **GLSL** cross-compilation path
+- **DXVK** — for extracting binding metadata from **DXC**-generated **SPIR-V**
+- **MoltenVK** — as its sole shader translation layer to **MSL**
+
+Section 7 covers **SPIR-V** debugging:
+
+- **NonSemantic.Shader.DebugInfo.100** — embeds **DWARF**-compatible source locations via **DebugSource**, **DebugCompilationUnit**, **DebugFunction**, **DebugLine**, **DebugLocalVariable**, and **DebugValue**
+- **NonSemantic.DebugPrintf** — provides `printf`-style output intercepted by **VK_EXT_debug_printf** and routed through the **VK_EXT_debug_utils** messenger
+- **OpLine** — provides core source correlation consumed by tools such as **RenderDoc**
+- **spirv-val error taxonomy** — covers structural/layout errors, capability and extension errors, semantic errors, and **CFG** errors
+
+Section 8 addresses shader compilation pipeline performance:
+
+- **Offline vs. online compilation** — trade-offs between build-time **GLSL**/HLSL → **SPIR-V** with **spirv-opt** (zero runtime cost) and online compilation via **shaderc** / **libshaderc** (10–500 ms latency)
+- **Specialization constants** (**OpSpecConstant**, **VkSpecializationInfo**) — for producing optimally specialized pipeline variants
+- **VkPipelineCache** — backed by **Mesa**'s disk cache at `~/.cache/mesa_shader_cache/`, keyed by **BLAKE3** hash of pipeline state, for eliminating repeated **SPIR-V** → **ISA** compilation
+- **VK_EXT_graphics_pipeline_library** (**GPL**) — splits a pipeline into four independently compiled library stages to reduce first-use compile stalls; adopted by **DXVK** 2.0 and supported through **RADV**'s **ACO** backend
 
 Readers who have worked through earlier chapters on **Mesa** **NIR** (Chapter 14) and **ACO** (Chapter 15) will recognise many of the data structures described here from the inside; this chapter provides the complementary view from the producer side. Graphics application developers who use **Vulkan** will learn enough about **SPIR-V** internals to interpret validator errors, apply the right optimizer passes, and make informed decisions about offline vs. online compilation. Browser and compute platform engineers who consume **SPIR-V** from **Tint** (Chapter 35) or **naga** (Chapter 40) will understand how those producers' output interacts with downstream tooling.
 

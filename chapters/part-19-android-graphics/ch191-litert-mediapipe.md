@@ -1,6 +1,9 @@
 # Chapter 191 — LiteRT and MediaPipe: On-Device ML Inference on the Android Graphics Stack
 
-> **Audiences:** Graphics and GPU developers who want to understand how ML inference shares `AHardwareBuffer` and GPU compute infrastructure with the Android rendering pipeline; Android application developers integrating on-device ML with camera and display workflows; and systems engineers bridging the ML and GPU subsystems on Android, including those evaluating how the delegate and hardware-accelerator model maps onto the kernel DRM/DMA-BUF and HAL abstractions described in earlier parts of this book.
+> **Audiences:**
+> - **Graphics and GPU developers** — want to understand how ML inference shares `AHardwareBuffer` and GPU compute infrastructure with the Android rendering pipeline
+> - **Android application developers** — integrating on-device ML with camera and display workflows
+> - **Systems engineers** — bridging the ML and GPU subsystems on Android, including those evaluating how the delegate and hardware-accelerator model maps onto the kernel DRM/DMA-BUF and HAL abstractions described in earlier parts of this book
 
 ---
 

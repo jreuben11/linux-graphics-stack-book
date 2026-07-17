@@ -28,7 +28,15 @@
 
 ## 1. Overview
 
-This chapter covers the **NVIDIA** AI-rendering stack as it stood at mid-2026, treating it as an engineering topic rather than a marketing one. The stack has five interlocking pieces: super-resolution (**DLSS SR**), frame generation (**DLSS-G** / **MFG**), AI denoising (**Ray Reconstruction**), low-latency pipelining (**Reflex**), and neural scene representations (**3D Gaussian Splatting** and its variants). All five share a common runtime substrate — the **NGX SDK** — and are relevant to any **Vulkan** application developer working with **NVIDIA** hardware on Linux.
+This chapter covers the **NVIDIA** AI-rendering stack as it stood at mid-2026, treating it as an engineering topic rather than a marketing one. The stack has five interlocking pieces:
+
+- **DLSS SR** — super-resolution
+- **DLSS-G** / **MFG** — frame generation
+- **Ray Reconstruction** — AI denoising
+- **Reflex** — low-latency pipelining
+- **3D Gaussian Splatting** and its variants — neural scene representations
+
+All five share a common runtime substrate — the **NGX SDK** — and are relevant to any **Vulkan** application developer working with **NVIDIA** hardware on Linux.
 
 The chapter assumes you are comfortable with the **Vulkan** memory model and synchronisation primitives (Chapter 24), with the open-source **NVIDIA** kernel driver and **NVK** **Mesa** driver (Chapters 9–10), and with **CUDA** compute concepts (Chapter 66). It does not duplicate the **OptiX 9** Cooperative Vectors material found in Chapter 67. The **NGX SDK** ships as part of the binary **NVIDIA** driver; **NVK** users will find the landscape more restricted and are pointed to the relevant limitations in Section 10.
 
@@ -47,25 +55,81 @@ graph TD
     NGX --> GSplat
 ```
 
-Section 2 traces the architecture evolution from **DLSS 1.0**'s game-specific **CNN** through **DLSS 2**'s temporal accumulation network to **DLSS 4**'s vision transformer (**ViT**) model running in **FP8** on **Tensor Cores**, and covers the second-generation **DLSS 4.5** transformer announced at Computex 2026 with its linear-colour-space inference and **Dynamic MFG** 6× mode.
+Section 2 traces the architecture evolution across four generations:
 
-Section 3 details **DLSS SR** internals: the temporal history buffer and self-attention mechanism that jointly evaluates all spatial positions across frames, **motion vector** integration via `NVSDK_NGX_Parameter_MotionVectorsTexture`, ghosting and artefact suppression through selective temporal attention, and the **`NVSDK_NGX_PerfQuality_Value`** quality mode preset enum that maps render-resolution scaling ratios for **DLAA**, Quality, Balanced, and Ultra Performance modes.
+- **DLSS 1.0** — game-specific **CNN** (Turing)
+- **DLSS 2** — generalised temporal accumulation network
+- **DLSS 4** — vision transformer (**ViT**) model running in **FP8** on **Tensor Cores**
+- **DLSS 4.5** — second-generation transformer announced at Computex 2026, with linear-colour-space inference and **Dynamic MFG** 6× mode
 
-Section 4 covers **Multi Frame Generation** (**MFG**): the split-network design with a heavy **Component A** network amortised across generated frames and a lighter **Component B** network per generated output, the **AI optical flow** model that replaces the hardware **Optical Flow Accelerator** of **Ada Lovelace**, **Blackwell**-specific hardware requirements (**Hardware Flip Metering** and fifth-generation **Tensor Cores** with **FP4** support), the **Dynamic MFG** 6× mode of **DLSS 4.5**, and the **compositing pass** that handles **HUD** reinjection via `NVSDK_NGX_Parameter_HUDLessColor` and temporal blend stabilisation.
+Section 3 details **DLSS SR** internals:
 
-Section 5 covers **Ray Reconstruction** (**DLSS-RR**): the unified AI denoiser architecture that replaces the hand-tuned **REBLUR**, **RELAX**, and **SIGMA** denoiser stack with a single transformer network delivering denoised output at display resolution; the eight **G-buffer** input resources including `RESOURCE_COLOR_IN`, `RESOURCE_DIFFUSE_ALBEDO`, `RESOURCE_SPECULAR_ALBEDO`, `RESOURCE_NORMALROUGHNESS`, and `RESOURCE_SPECULAR_HITDISTANCE`; non-obvious integration requirements such as mandatory **HDR** input, **Primary Surface Replacement** (**PSR**) flag handling, and sky motion vector conventions; debugging with the `VK_NVX_raytracing_validation` extension; and the Linux delivery via `libnvidia-ngx-dlssd.so` with its driver version dependencies.
+- **Temporal history buffer** and self-attention mechanism that jointly evaluates all spatial positions across frames
+- **Motion vector** integration via `NVSDK_NGX_Parameter_MotionVectorsTexture`
+- Ghosting and artefact suppression through selective temporal attention
+- **`NVSDK_NGX_PerfQuality_Value`** quality mode preset enum mapping render-resolution scaling ratios for **DLAA**, Quality, Balanced, and Ultra Performance modes
 
-Section 6 describes the **NGX SDK** **API**: the Linux plugin model under **`libnvidia-ngx.so`** with **`.nvsig`** ELF section cryptographic verification gating `libnvidia-ngx-dlss.so`, `libnvidia-ngx-dlssd.so`, and `libnvidia-ngx-dlssg.so`; the **`__NGX_CONF_FILE`** environment variable and model file search paths under `/usr/share/nvidia/ngx`; **Vulkan** initialisation via `NVSDK_NGX_VULKAN_Init_with_ProjectID` and the `nvsdk_ngx_vk.h` entry points; feature creation with `NVSDK_NGX_VULKAN_CreateFeature1` and evaluation with `NVSDK_NGX_VULKAN_EvaluateFeature`; **`NVSDK_NGX_Resource_VK`** and **`NVSDK_NGX_ImageViewInfo_VK`** resource descriptors; and the higher-level **Streamline** open-source **C++** wrapper with `slSetTagForFrame`, `slDLSSGSetOptions`, and `slEvaluateFeature`.
+Section 4 covers **Multi Frame Generation** (**MFG**):
 
-Section 7 covers **NVIDIA Reflex** and **LatencyFleX**: the **CPU** render-ahead latency problem and how **Reflex** inserts a just-in-time **CPU** sleep keyed to GPU completion; the **`VK_NV_low_latency2`** **Vulkan** extension with `vkLatencySleepNV`, `vkSetLatencyMarkerNV`, and `vkGetLatencyTimingsNV`; **Reflex Frame Warp** on **RTX 50 Series** that late-stage reprojects frames to the true camera pose using an AI inpainting network; and **LatencyFleX** (Apache 2.0) as the open Linux alternative operating via the `VK_GOOGLE_display_timing` extension, **DXVK-NVAPI** translation under **Proton**, and the `low_latency_layer` vendor-agnostic **Vulkan** layer.
+- **Split-network design** — heavy **Component A** network amortised across generated frames and lighter **Component B** network per generated output
+- **AI optical flow** model replacing the hardware **Optical Flow Accelerator** of **Ada Lovelace**
+- **Blackwell**-specific hardware requirements (**Hardware Flip Metering** and fifth-generation **Tensor Cores** with **FP4** support)
+- **Dynamic MFG** 6× mode of **DLSS 4.5**
+- **Compositing pass** handling **HUD** reinjection via `NVSDK_NGX_Parameter_HUDLessColor` and temporal blend stabilisation
 
-Section 8 covers **3D Gaussian Splatting** (**3DGS**) and neural scene representations: the differentiable Gaussian rasterisation algorithm with **EWA** splatting, tile-based alpha compositing, and **spherical harmonic** (**SH**) view-dependent colour; the **`gsplat`** **CUDA**-accelerated Python library with the `rasterization` API, low-level **CUDA** kernels (`fully_fused_projection`, `rasterize_to_pixels`, `isect_tiles`), and the `SelectiveAdam` fused optimiser; **3DGUT** (the **3D Gaussian Unscented Transform**, repository `nv-tlabs/3dgrut`) for non-pinhole camera models including fisheye, rolling-shutter, and f-theta optics; the `nvpro-samples/vk_gaussian_splatting` Vulkan sample with **VK3DGSR**, **VK3DGRT**, **VK3DGUT**, and **VK3DGHR** rendering pipelines written in **Slang**; and the challenges of integrating **3DGS** into real-time rasterisation engines — absence of a standard **G-buffer**, mesh depth-buffer occlusion, shadow casting, and analytic **LOD**.
+Section 5 covers **Ray Reconstruction** (**DLSS-RR**):
 
-Section 9 covers **OpenUSD** and **MaterialX** in neural rendering: the **HgiVulkan** backend that makes **Vulkan** a first-class rendering path for the **USD Storm** renderer; the **`UsdVolParticleField3DGaussianSplat`** schema introduced in **OpenUSD** 26.03 with its `positions`, `orientations`, `scales`, `opacities`, and `radiance:sphericalHarmonicsCoefficients` attributes; and **MaterialX** 1.39 with the **OpenPBR** shading model and **NVIDIA MDL** (**Material Definition Language**) integration for spectral **RTX** rendering of **`UsdShadeMaterial`**-bound scene geometry.
+- **Unified AI denoiser** architecture replacing the hand-tuned **REBLUR**, **RELAX**, and **SIGMA** denoiser stack with a single transformer network delivering denoised output at display resolution
+- **Eight G-buffer input resources** including `RESOURCE_COLOR_IN`, `RESOURCE_DIFFUSE_ALBEDO`, `RESOURCE_SPECULAR_ALBEDO`, `RESOURCE_NORMALROUGHNESS`, and `RESOURCE_SPECULAR_HITDISTANCE`
+- Non-obvious integration requirements: mandatory **HDR** input, **Primary Surface Replacement** (**PSR**) flag handling, and sky motion vector conventions
+- Debugging with the `VK_NVX_raytracing_validation` extension
+- Linux delivery via `libnvidia-ngx-dlssd.so` with its driver version dependencies
 
-Section 10 covers **DLSS on Linux**: driver requirements for the proprietary **NVIDIA** driver or **`nvidia-open`** kernel module (**R550+**); feature availability diagnostics via `NVSDK_NGX_VULKAN_GetCapabilityParameters` and the `NVSDK_NGX_Result_FAIL_FeatureNotSupported` return code; **Proton** and **VKD3D-Proton** 3.0 status (including the absence of **DLSS 4 MFG** and the **DLSS Updater** workaround); experimental **NVK** **DLSS** support via `VK_NVX_binary_import` and `VK_NVX_image_view_handle`; the **DLSS2FSR** shim for **AMD** and **Intel** GPU users; and a full Linux feature support matrix.
+Section 6 describes the **NGX SDK API**:
 
-Section 11 covers **TensorRT** inference optimisation for neural rendering: the build-then-deploy model separating offline engine building from runtime inference; the `trtexec` command-line tool and the **C++** **`IBuilder`** / **`INetworkDefinition`** / `nvonnxparser::IParser` API for converting **ONNX** models to GPU-architecture-specific **`.trt`** engine plans; runtime inference via **`ICudaEngine`**, **`IExecutionContext`**, and `enqueueV3` with **`VK_KHR_external_memory`** interop for **Vulkan** buffer sharing; and **INT8** calibration using **`IInt8EntropyCalibrator2`** for 2–4× latency reduction in denoising and upscaling networks.
+- **Linux plugin model** under **`libnvidia-ngx.so`** with **`.nvsig`** ELF section cryptographic verification gating `libnvidia-ngx-dlss.so`, `libnvidia-ngx-dlssd.so`, and `libnvidia-ngx-dlssg.so`
+- **`__NGX_CONF_FILE`** environment variable and model file search paths under `/usr/share/nvidia/ngx`
+- **Vulkan initialisation** via `NVSDK_NGX_VULKAN_Init_with_ProjectID` and the `nvsdk_ngx_vk.h` entry points
+- **Feature creation** with `NVSDK_NGX_VULKAN_CreateFeature1` and evaluation with `NVSDK_NGX_VULKAN_EvaluateFeature`
+- **`NVSDK_NGX_Resource_VK`** and **`NVSDK_NGX_ImageViewInfo_VK`** resource descriptors
+- Higher-level **Streamline** open-source **C++** wrapper with `slSetTagForFrame`, `slDLSSGSetOptions`, and `slEvaluateFeature`
+
+Section 7 covers **NVIDIA Reflex** and **LatencyFleX**:
+
+- **CPU render-ahead latency** — how **Reflex** inserts a just-in-time **CPU** sleep keyed to GPU completion
+- **`VK_NV_low_latency2`** Vulkan extension with `vkLatencySleepNV`, `vkSetLatencyMarkerNV`, and `vkGetLatencyTimingsNV`
+- **Reflex Frame Warp** on **RTX 50 Series** — late-stage reprojection to the true camera pose using an AI inpainting network
+- **LatencyFleX** (Apache 2.0) — open Linux alternative operating via `VK_GOOGLE_display_timing`, **DXVK-NVAPI** translation under **Proton**, and the `low_latency_layer` vendor-agnostic **Vulkan** layer
+
+Section 8 covers **3D Gaussian Splatting** (**3DGS**) and neural scene representations:
+
+- **Differentiable Gaussian rasterisation** algorithm with **EWA** splatting, tile-based alpha compositing, and **spherical harmonic** (**SH**) view-dependent colour
+- **`gsplat`** CUDA-accelerated Python library with the `rasterization` API, low-level CUDA kernels (`fully_fused_projection`, `rasterize_to_pixels`, `isect_tiles`), and the `SelectiveAdam` fused optimiser
+- **3DGUT** (3D Gaussian Unscented Transform, `nv-tlabs/3dgrut`) — non-pinhole camera models including fisheye, rolling-shutter, and f-theta optics
+- **`nvpro-samples/vk_gaussian_splatting`** Vulkan sample with **VK3DGSR**, **VK3DGRT**, **VK3DGUT**, and **VK3DGHR** rendering pipelines written in **Slang**
+- Integration challenges — absence of a standard **G-buffer**, mesh depth-buffer occlusion, shadow casting, and analytic **LOD**
+
+Section 9 covers **OpenUSD** and **MaterialX** in neural rendering:
+
+- **HgiVulkan** backend making **Vulkan** a first-class rendering path for the **USD Storm** renderer
+- **`UsdVolParticleField3DGaussianSplat`** schema introduced in **OpenUSD** 26.03 with `positions`, `orientations`, `scales`, `opacities`, and `radiance:sphericalHarmonicsCoefficients` attributes
+- **MaterialX** 1.39 with the **OpenPBR** shading model and **NVIDIA MDL** (**Material Definition Language**) integration for spectral **RTX** rendering of **`UsdShadeMaterial`**-bound scene geometry
+
+Section 10 covers **DLSS on Linux**:
+
+- Driver requirements for the proprietary **NVIDIA** driver or **`nvidia-open`** kernel module (**R550+**)
+- Feature availability diagnostics via `NVSDK_NGX_VULKAN_GetCapabilityParameters` and the `NVSDK_NGX_Result_FAIL_FeatureNotSupported` return code
+- **Proton** and **VKD3D-Proton** 3.0 status (including the absence of **DLSS 4 MFG** and the **DLSS Updater** workaround)
+- Experimental **NVK** **DLSS** support via `VK_NVX_binary_import` and `VK_NVX_image_view_handle`
+- **DLSS2FSR** shim for **AMD** and **Intel** GPU users
+- Full Linux feature support matrix
+
+Section 11 covers **TensorRT** inference optimisation for neural rendering:
+
+- **Build-then-deploy model** separating offline engine building from runtime inference
+- **`trtexec`** command-line tool and the C++ **`IBuilder`** / **`INetworkDefinition`** / `nvonnxparser::IParser` API for converting **ONNX** models to GPU-architecture-specific **`.trt`** engine plans
+- Runtime inference via **`ICudaEngine`**, **`IExecutionContext`**, and `enqueueV3` with **`VK_KHR_external_memory`** interop for **Vulkan** buffer sharing
+- **INT8** calibration using **`IInt8EntropyCalibrator2`** for 2–4× latency reduction in denoising and upscaling networks
 
 ---
 

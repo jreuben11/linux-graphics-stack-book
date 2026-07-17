@@ -66,25 +66,101 @@
 
 **Universal Scene Description** (**USD**) began as Pixar's internal scene graph format for feature animation production. **NVIDIA**'s **Omniverse** platform elevated it into a real-time collaboration and simulation substrate, making **USD** the lingua franca for 3D data interchange across robotics, architecture, visual effects, and game development pipelines. The **Alliance for OpenUSD** (**AOUSD**), operating under the **Linux Foundation**, published **Core Specification 1.0** in December 2025, cementing **USD** as a cross-industry open standard.
 
-This chapter examines the full technical stack from **USD**'s composition algebra through **NVIDIA**'s **RTX Renderer** and the **Kit SDK** extension framework, targeting graphics application developers and systems engineers who need to build, consume, or extend **USD**-based pipelines on Linux. Readers are assumed to be comfortable with **C++** template metaprogramming, **GPU** memory models (see Ch4), **Vulkan** rendering (see Ch18), and the **NVIDIA** proprietary driver architecture described in Ch66 and Ch67.
+This chapter examines the full technical stack from **USD**'s composition algebra through **NVIDIA**'s **RTX Renderer** and the **Kit SDK** extension framework, targeting graphics application developers and systems engineers who need to build, consume, or extend **USD**-based pipelines on Linux. Readers are assumed to be comfortable with:
+- **C++** template metaprogramming
+- **GPU** memory models (see Ch4)
+- **Vulkan** rendering (see Ch18)
+- The **NVIDIA** proprietary driver architecture described in Ch66 and Ch67
 
-The chapter opens with **OpenUSD**'s core abstractions: **UsdStage** (the outermost scene container), **UsdPrim** (the primary scenegraph object), **UsdAttribute**, **UsdRelationship**, and the **SdfLayer** authoring model. Geometry is encoded via **UsdGeomMesh** for polygonal and subdivision surfaces, alongside schema classes for cameras (**UsdGeomCamera**), lights (**UsdLuxSphereLight**, **UsdLuxDomeLight**), materials (**UsdShadeMaterial**, **UsdShadeShader**, **UsdPreviewSurface**), and physics (**UsdPhysicsRigidBodyAPI**, **UsdPhysicsCollisionAPI**). Composition is governed by the **LIVERPS** strength ordering — **L**ocal sublayers, **I**nherits, **V**ariants, R**e**locates, **R**eferences, **P**ayloads, and **S**pecializes — together with **scenegraph instancing** via prototype hierarchies. The **AOUSD Core Specification 1.0** standardisation process and the **OpenUSD SDK 25.02** release timeline are covered, including the quarterly cadence of features such as **WASM** support, **Hydra 2** scene index enablement, and the **UsdVolParticleField3DGaussianSplat** schema.
+The chapter opens with **OpenUSD**'s core abstractions:
+- **UsdStage** — the outermost scene container
+- **UsdPrim** — the primary scenegraph object
+- **UsdAttribute** — typed, time-sampled prim properties
+- **UsdRelationship** — directed, typed connections between prims
+- **SdfLayer** — the authoring model unit; raw, unresolved opinions resolved by **LIVERPS** precedence
 
-**Hydra**'s rendering delegate architecture decouples **USD** from backends: **HdRenderDelegate** defines the abstract interface implemented by **HdStorm** (OpenGL), **HdPrman** (**RenderMan**), the **omni.hydra.rtx** delegate, and custom **Vulkan** backends. **Hydra 2.0** replaces the pull-based **HdSceneDelegate** with a composable push-based **scene index** pipeline (**UsdImagingStageSceneIndex**, **HdFlatteningSceneIndex**, **HdMergingSceneIndex**) enabling O(1) dirty-locator invalidation. The **HdEngine::Execute** render loop — **HdTask::Sync**, **HdTask::Prepare**, **HdTask::Execute**, **HdRenderDelegate::CommitResources** — drives **GPU** command submission, including **optixLaunch()** for path tracing and **glDrawElementsIndirect** for rasterisation. The chapter also details how to implement a custom **Vulkan** **HdRenderDelegate**.
+Geometry is encoded via **UsdGeomMesh** for polygonal and subdivision surfaces, alongside schema classes for:
+- Cameras: **UsdGeomCamera**
+- Lights: **UsdLuxSphereLight**, **UsdLuxDomeLight**
+- Materials: **UsdShadeMaterial**, **UsdShadeShader**, **UsdPreviewSurface**
+- Physics: **UsdPhysicsRigidBodyAPI**, **UsdPhysicsCollisionAPI**
 
-The **Omniverse RTX Renderer** exposes three rendering modes: **RTX Real-Time 2.0** (physically based path tracing accelerated by **DLSS Ray Reconstruction**, **DLSS Super Resolution**, and **DLSS Frame Generation**), **RTX Interactive** (progressive **Monte Carlo** path tracing with the **OptiX Denoiser** and adaptive sampling), and **RTX Minimal Mode** (rasterisation-only for **ML** training data generation at maximum throughput). A **GPU** architecture support matrix covers **Blackwell**, **Ada Lovelace**, **Ampere**, and **Turing** SM generations. **Project Zorah** demonstrates the full **RTX** path-tracing stack in practice, combining **MDL** **OmniHair** and **OmniSurface** materials, **NVIDIA** Strand Hair via **OptiX** cubic B-spline curve primitives, **PhysX 5** cloth simulation, and **DLSS 3** for real-time 4K delivery.
+Composition is governed by the **LIVERPS** strength ordering — **L**ocal sublayers, **I**nherits, **V**ariants, R**e**locates, **R**eferences, **P**ayloads, and **S**pecializes — together with **scenegraph instancing** via prototype hierarchies. The **AOUSD Core Specification 1.0** standardisation process and the **OpenUSD SDK 25.02** release timeline are covered, including the quarterly cadence of features such as **WASM** support, **Hydra 2** scene index enablement, and the **UsdVolParticleField3DGaussianSplat** schema.
 
-**Slang** is an open shading language governed by the **Khronos Group** under the **Slang Initiative**, compiling to **SPIR-V**, **HLSL**, **GLSL**, **WGSL**, **Metal Shading Language**, **CUDA**/**OptiX PTX**, and CPU **C++**. Its most distinctive feature is **first-class automatic differentiation** (**AD**) — unique among GPU shading languages — enabling differentiable renderers and inverse rendering via `[Differentiable]` annotations, `fwd_diff`/`bwd_diff` operators, and the **DifferentialPair\<T\>** type. **SlangPy** provides **Python** and **PyTorch** integration, allowing **PyTorch** tensors to pass directly into **Slang** kernels with gradient flow. **Cooperative vectors** (**CoopVec\<T,N\>**) map small neural-network weight-matrix multiplications onto hardware tensor cores, supporting inline neural inference inside path-tracing shaders. A comparison with **GLSL**/**HLSL** in **Mesa** pipelines shows how **Slang**'s **SPIR-V** output enables use with **RADV** and **ANV** drivers. The **Falcor** research rendering framework is built on **Slang** and provides reference implementations of **ReSTIR** and neural rendering techniques.
+**Hydra**'s rendering delegate architecture decouples **USD** from backends via **HdRenderDelegate**, the abstract interface implemented by:
+- **HdStorm** — OpenGL delegate
+- **HdPrman** — RenderMan delegate
+- **omni.hydra.rtx** — RTX Renderer delegate
+- Custom **Vulkan** backends
+
+**Hydra 2.0** replaces the pull-based **HdSceneDelegate** with a composable push-based **scene index** pipeline enabling O(1) dirty-locator invalidation:
+- **UsdImagingStageSceneIndex** — translates the USD stage into a scene index
+- **HdFlatteningSceneIndex** — resolves inherited transform matrices
+- **HdMergingSceneIndex** — fuses multiple scene index trees
+
+The **HdEngine::Execute** render loop drives **GPU** command submission through:
+- **HdTask::Sync** — pull dirty state from scene delegate or scene index
+- **HdTask::Prepare** — allocate GPU resources
+- **HdTask::Execute** — submit GPU commands (including **optixLaunch()** for path tracing and **glDrawElementsIndirect** for rasterisation)
+- **HdRenderDelegate::CommitResources** — flush upload queue
+
+The chapter also details how to implement a custom **Vulkan** **HdRenderDelegate**.
+
+The **Omniverse RTX Renderer** exposes three rendering modes:
+- **RTX Real-Time 2.0** — physically based path tracing accelerated by **DLSS Ray Reconstruction**, **DLSS Super Resolution**, and **DLSS Frame Generation**
+- **RTX Interactive** — progressive **Monte Carlo** path tracing with the **OptiX Denoiser** and adaptive sampling
+- **RTX Minimal Mode** — rasterisation-only for **ML** training data generation at maximum throughput
+
+A **GPU** architecture support matrix covers **Blackwell**, **Ada Lovelace**, **Ampere**, and **Turing** SM generations. **Project Zorah** demonstrates the full **RTX** path-tracing stack in practice, combining:
+- **MDL** **OmniHair** and **OmniSurface** materials
+- **NVIDIA** Strand Hair via **OptiX** cubic B-spline curve primitives
+- **PhysX 5** cloth simulation
+- **DLSS 3** for real-time 4K delivery
+
+**Slang** is an open shading language governed by the **Khronos Group** under the **Slang Initiative**, compiling to:
+- **SPIR-V** (Vulkan)
+- **HLSL** (D3D)
+- **GLSL** (OpenGL)
+- **WGSL** (WebGPU)
+- **Metal Shading Language**
+- **CUDA**/**OptiX PTX**
+- CPU **C++**
+
+Its most distinctive feature is **first-class automatic differentiation** (**AD**) — unique among GPU shading languages — enabling differentiable renderers and inverse rendering via `[Differentiable]` annotations, `fwd_diff`/`bwd_diff` operators, and the **DifferentialPair\<T\>** type. **SlangPy** provides **Python** and **PyTorch** integration, allowing **PyTorch** tensors to pass directly into **Slang** kernels with gradient flow. **Cooperative vectors** (**CoopVec\<T,N\>**) map small neural-network weight-matrix multiplications onto hardware tensor cores, supporting inline neural inference inside path-tracing shaders. A comparison with **GLSL**/**HLSL** in **Mesa** pipelines shows how **Slang**'s **SPIR-V** output enables use with **RADV** and **ANV** drivers. The **Falcor** research rendering framework is built on **Slang** and provides reference implementations of **ReSTIR** and neural rendering techniques.
 
 **Multi-GPU** rendering distributes image bands across up to 16 **RTX GPUs** via spatial frame subdivision, using **NVLink** or **PCIe** peer-to-peer **DMA** transfers managed by the **omni.gpu_foundation** extension.
 
-The **Kit SDK** architecture is covered in depth: the **Extension System** (dependency resolution, hot-reload, **extension.toml** manifests, **omni.ext.IExt** lifecycle), the **Event System**, the per-frame **Update Loop**, the **Python USD API** (`pxr` namespace via **omni.usd**), **Carbonite** native **C++** plugins, and **application manifests** (`.kit` files). **USDRT** and the **Fabric Scene Delegate** (**FSD**) bypass **USD** composition overhead for high-frequency physics and animation writes via a **GPU**-accessible columnar store with O(1) prim lookup. **MDL** (**Material Definition Language**) materials embed in **USD** via **UsdShadeShader** with **OmniPBR**, **OmniGlass**, **OmniSurface**, and **OmniHair** built-in templates, compiled at load time to **OptiX** callable programs via **MDL Core**. **MaterialX 1.39** introduces direct **USD** embedding, the **UsdMtlx** schema library, **HdMtlxConvertMaterialDocument**, and a dedicated **Slang** shader generator (**MaterialXGenSlang**).
+The **Kit SDK** architecture is covered in depth:
+- **Extension System** — dependency resolution, hot-reload, `extension.toml` manifests, `omni.ext.IExt` lifecycle
+- **Event System** — asynchronous inter-component messaging
+- **Update Loop** — per-frame synchronisation of all active extensions
+- **Python USD API** — `pxr` namespace via **omni.usd**
+- **Carbonite** — native **C++** plugins
+- **Application manifests** — `.kit` files composing extensions into a runnable application
 
-On-Linux deployment covers **Ubuntu 22.04 LTS** and **Ubuntu 24.04 LTS** platform requirements (driver **570.124.06**, **CUDA 12.8**, **Vulkan 1.3**, `VK_KHR_ray_tracing_pipeline`), headless rendering via **DRM** render-only nodes (`/dev/dri/renderD128`) or **Xvfb**, container-based deployment via **NGC** (**NVIDIA GPU Cloud**) images using the **NVIDIA Container Toolkit**, the **Omniverse Nucleus** collaboration server architecture (`.live` layers, **Port 3009** **HTTP/WebSocket**, **Port 3333** discovery), and profiling with **Nsight Graphics** and **Nsight Compute**.
+**USDRT** and the **Fabric Scene Delegate** (**FSD**) bypass **USD** composition overhead for high-frequency physics and animation writes via a **GPU**-accessible columnar store with O(1) prim lookup. **MDL** (**Material Definition Language**) materials embed in **USD** via **UsdShadeShader** with built-in templates — **OmniPBR**, **OmniGlass**, **OmniSurface**, and **OmniHair** — compiled at load time to **OptiX** callable programs via **MDL Core**. **MaterialX 1.39** introduces:
+- Direct **USD** embedding
+- The **UsdMtlx** schema library
+- **HdMtlxConvertMaterialDocument**
+- A dedicated **Slang** shader generator (**MaterialXGenSlang**)
 
-**USD** adoption beyond **Omniverse** is covered through **Blender 4.x**'s **USD** import/export (**UsdPreviewSurface** ↔ Principled **BSDF**), **Godot 4.x**'s in-development **USD** import, and CLI tooling: **usdview** (backed by **HdStorm**), **usdchecker**, **usdcat**, and **usd-cli** (Remedy Entertainment).
+On-Linux deployment covers:
+- **Ubuntu 22.04 LTS** and **Ubuntu 24.04 LTS** platform requirements (driver **570.124.06**, **CUDA 12.8**, **Vulkan 1.3**, `VK_KHR_ray_tracing_pipeline`)
+- Headless rendering via **DRM** render-only nodes (`/dev/dri/renderD128`) or **Xvfb**
+- Container-based deployment via **NGC** (**NVIDIA GPU Cloud**) images using the **NVIDIA Container Toolkit**
+- The **Omniverse Nucleus** collaboration server architecture (`.live` layers, **Port 3009** **HTTP/WebSocket**, **Port 3333** discovery)
+- Profiling with **Nsight Graphics** and **Nsight Compute**
 
-Finally, the chapter covers **GPU** simulation frameworks that feed geometry into the **RTX Renderer**: **PhysX 5** (**PxRigidDynamic**, **PxSoftBody**, **PxPBDParticleSystem** for cloth and fluid, **PxArticulationReducedCoordinate** for robot kinematics) and **NVIDIA Warp** (Python **GPU** computing with **JIT**-compiled kernels and differentiable `wp.Tape`), both integrated with **USD** via the **Fabric Scene Delegate** zero-copy **DLPack** path.
+**USD** adoption beyond **Omniverse** is covered through:
+- **Blender 4.x** — **USD** import/export (**UsdPreviewSurface** ↔ Principled **BSDF**)
+- **Godot 4.x** — in-development **USD** import
+- CLI tooling: **usdview** (backed by **HdStorm**), **usdchecker**, **usdcat**, and **usd-cli** (Remedy Entertainment)
+
+Finally, the chapter covers **GPU** simulation frameworks that feed geometry into the **RTX Renderer**:
+- **PhysX 5** — `PxRigidDynamic`, `PxSoftBody`, `PxPBDParticleSystem` for cloth and fluid, `PxArticulationReducedCoordinate` for robot kinematics
+- **NVIDIA Warp** — Python **GPU** computing with **JIT**-compiled kernels and differentiable `wp.Tape`
+
+Both are integrated with **USD** via the **Fabric Scene Delegate** zero-copy **DLPack** path.
 
 By the end of this chapter, readers will understand:
 - How **USD** composes scene description from multiple layers via **LIVERPS** arcs, from **UsdStage** factory methods through **SdfLayer** opinions

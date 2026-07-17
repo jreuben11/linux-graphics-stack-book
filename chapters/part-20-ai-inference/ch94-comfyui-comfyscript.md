@@ -1,10 +1,9 @@
 # Chapter 94 — ComfyUI and ComfyScript: Node-Graph AI Image Generation on Linux GPUs
 
-**Audiences:** Graphics application developers and ML engineers who want to understand how ComfyUI
-orchestrates diffusion model inference on Linux GPU infrastructure; Python developers who want to
-author ComfyUI workflows programmatically using the ComfyScript typed frontend; systems developers
-interested in how iterative denoising workloads are scheduled across CUDA, ROCm, and MPS GPU
-backends via PyTorch.
+**Audiences:**
+- **Graphics application developers and ML engineers** — want to understand how ComfyUI orchestrates diffusion model inference on Linux GPU infrastructure
+- **Python developers** — want to author ComfyUI workflows programmatically using the ComfyScript typed frontend
+- **Systems developers** — interested in how iterative denoising workloads are scheduled across CUDA, ROCm, and MPS GPU backends via PyTorch
 
 ---
 

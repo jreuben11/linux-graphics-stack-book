@@ -30,9 +30,32 @@
 
 This chapter covers the **NVIDIA DeepStream SDK** — a production **GStreamer** plugin framework that accelerates multi-stream video analytics using **CUDA**, **TensorRT**, and NVIDIA-proprietary **GStreamer** elements. **DeepStream** occupies a specific architectural position in the Linux graphics stack: it sits above the **GStreamer** pipeline model (Chapter 58), depends on **TensorRT** for inference acceleration (Chapter 66), and uses the **DMA-BUF** buffer sharing mechanism (Chapter 25) to pass **CUDA**-allocated frames between pipeline stages without **PCIe** round-trips.
 
-Section 1 surveys the **DeepStream** architecture and version landscape — from the **pyds** Python bindings of versions 6.x and 7.x (deprecated in **DeepStream** 9.0) through the **MaskTracker** (**SAM2**) and **MV3DT** 3-D tracker additions in 8.0, to the oriented bounding box (**OBB**), **VLM** support via **nvvllmvlm**, **Cosmos Reason 2**, and **OpenTelemetry**/**Prometheus** exporter in 9.0. The four foundation elements of the core plugin set — **Gst-NvInfer** (**nvinfer**), **Gst-NvStreammux** (**nvstreammux**), **Gst-NvDsPostProcess** (**nvdspostprocess**), and **Gst-NvVideoConvert** (**nvvideoconvert**) — are introduced, along with published performance figures (e.g. 68 concurrent **H.265** streams at 30 fps on a **T4** with a **YOLOv8** primary detector).
+Section 1 surveys the **DeepStream** architecture and version landscape — from the **pyds** Python bindings of versions 6.x and 7.x (deprecated in **DeepStream** 9.0) through the **MaskTracker** (**SAM2**) and **MV3DT** 3-D tracker additions in 8.0, to the oriented bounding box (**OBB**), **VLM** support via **nvvllmvlm**, **Cosmos Reason 2**, and **OpenTelemetry**/**Prometheus** exporter in 9.0. The four foundation elements of the core plugin set are introduced:
 
-Section 2 covers **NvBufSurface**: **DeepStream**'s unified GPU buffer abstraction. The **NvBufSurface** struct wraps a batch of frames, the **NvBufSurfaceMemType** enum selects between **CUDA** device memory, pinned host memory (**NVBUF_MEM_CUDA_PINNED**), unified memory (**NVBUF_MEM_CUDA_UNIFIED**), and Jetson-specific **NVMM** surface arrays. Core API functions — **NvBufSurfaceCreate()**, **NvBufSurfaceAllocate()**, **NvBufSurfaceDestroy()**, **NvBufSurfaceMap()**, **NvBufSurfaceSyncForCpu()**, **NvBufSurfaceCopy()** — manage the buffer lifecycle. The **NvBufSurfaceCreateParams** struct controls colour format (**NVBUF_COLOR_FORMAT_NV12**, **NVBUF_COLOR_FORMAT_RGBA**) and layout (**NVBUF_LAYOUT_PITCH**, **NVBUF_LAYOUT_BLOCK_LINEAR**). **DMA-BUF**, **EGL**, and **Vulkan** interop is achieved via **NvBufSurfaceFromFd()**, **NvBufSurfaceMapEglImage()**, and the **VkImportMemoryFdInfoKHR** import path; zero-copy inter-process transfer uses the **nvunixfdsink** / **nvunixfdsrc** element pair.
+- **Gst-NvInfer** (`nvinfer`) — batched TensorRT inference on frames or object crops
+- **Gst-NvStreammux** (`nvstreammux`) — multi-stream aggregation and resolution alignment
+- **Gst-NvDsPostProcess** (`nvdspostprocess`) — custom post-processing after inference, before NMS/thresholding
+- **Gst-NvVideoConvert** (`nvvideoconvert`) — GPU-accelerated format conversion and scaling between NvBufSurface colour formats
+
+Published performance figures include 68 concurrent **H.265** streams at 30 fps on a **T4** with a **YOLOv8** primary detector.
+
+Section 2 covers **NvBufSurface**: **DeepStream**'s unified GPU buffer abstraction. The **NvBufSurface** struct wraps a batch of frames; the **NvBufSurfaceMemType** enum selects the memory allocation type:
+
+- **CUDA device memory** (`NVBUF_MEM_CUDA_DEVICE`) — default on dGPU
+- **Pinned host memory** (`NVBUF_MEM_CUDA_PINNED`) — `cudaHostAlloc`-backed, CPU/GPU accessible
+- **Unified memory** (`NVBUF_MEM_CUDA_UNIFIED`) — accessible from both CPU and GPU
+- **NVMM surface arrays** (`NVBUF_MEM_SURFACE_ARRAY`) — Jetson-specific carveout accessible by ISP, encoder, and display
+
+Core API functions manage the buffer lifecycle:
+
+- **NvBufSurfaceCreate()** — allocate a batch surface with legacy create params
+- **NvBufSurfaceAllocate()** — allocate with extended params (preferred from DS 7.0+)
+- **NvBufSurfaceDestroy()** — free a surface and all underlying memory
+- **NvBufSurfaceMap()** — map surface planes to CPU-accessible addresses
+- **NvBufSurfaceSyncForCpu()** — cache-coherent synchronisation between GPU and CPU
+- **NvBufSurfaceCopy()** — GPU-to-GPU copy between surfaces
+
+The **NvBufSurfaceCreateParams** struct controls colour format (**NVBUF_COLOR_FORMAT_NV12**, **NVBUF_COLOR_FORMAT_RGBA**) and layout (**NVBUF_LAYOUT_PITCH**, **NVBUF_LAYOUT_BLOCK_LINEAR**). **DMA-BUF**, **EGL**, and **Vulkan** interop is achieved via **NvBufSurfaceFromFd()**, **NvBufSurfaceMapEglImage()**, and the **VkImportMemoryFdInfoKHR** import path; zero-copy inter-process transfer uses the **nvunixfdsink** / **nvunixfdsrc** element pair.
 
 Section 3 describes **NvDsBatchMeta**: the four-level metadata hierarchy attached to every **GStreamer** buffer via **gst_buffer_get_nvds_batch_meta()**. The hierarchy comprises **NvDsBatchMeta** → **NvDsFrameMeta** (carrying **buf_pts**, **ntp_timestamp**, and **source_id**) → **NvDsObjectMeta** (carrying **detector_bbox_info**, **tracker_bbox_info**, **NvDsMaskParams**, and **object_id**) → **NvDsClassifierMeta** → **NvDsLabelInfo**, plus **NvDsDisplayMeta** for rendering overlays. Pool allocation via **nvds_acquire_obj_meta_from_pool()** and **nvds_add_obj_meta_to_frame()** is mandatory to avoid heap fragmentation.
 
@@ -40,19 +63,69 @@ Section 4 covers **Gst-nvinfer** (**nvinfer**): the core inference element. The 
 
 Section 5 covers **nvstreammux** and **nvstreamdemux** for multi-stream batching. The legacy **nvstreammux** properties (`batch-size`, `batched-push-timeout`, `live-source`) are contrasted with **nvstreammux2** (introduced in **DeepStream** 7.0, enabled via `USE_NEW_NVSTREAMMUX=yes`) which supports adaptive batching at native per-stream resolution. Timestamp synchronisation aligns **buf_pts** (pipeline clock) with **ntp_timestamp** (wall-clock from **RTCP NTP** extensions on **RTSP** sources). **nvstreamdemux** splits the annotated batch back into per-source streams, routing **NvDsFrameMeta** and **NvDsObjectMeta** on separate `src_%u` pads for per-stream encoding or display.
 
-Section 6 covers the tracker elements. The **nvtracker** **GStreamer** element shell loads a low-level tracker library at runtime via `ll-lib-file` and calls the six-function **NvMOT API** (**NvMOT_Query()**, **NvMOT_Init()**, **NvMOT_Process()**, **NvMOT_RetrieveMiscData()**, **NvMOT_RemoveStreams()**, **NvMOT_DeInit()**). The reference library **libnvds_nvmultiobjecttracker.so** implements five built-in algorithms: **IOU**, **NvSORT** (SORT + Kalman filter), **NvDeepSORT** (SORT + cosine-metric **ReID** re-identification), **NvDCF** (Discriminative Correlation Filter with optional **VPI** backend on Jetson), and **MaskTracker** (**SAM2** instance segmentation). Cascaded data association (three-stage Hungarian matching) and shadow tracking with trajectory projection for re-association after occlusion are described. **YAML** configuration for **NvDCF** controls **StateEstimator** type, **DataAssociator** weights, and **ReID** gallery depth. Custom trackers such as **ByteTrack** can be integrated by wrapping their frame-level **API** inside **NvMOT_Process()**.
+Section 6 covers the tracker elements. The **nvtracker** **GStreamer** element shell loads a low-level tracker library at runtime via `ll-lib-file` and calls the six-function **NvMOT API**:
 
-Section 7 covers **NvMsgBroker**: the **nvmsgconv** → **nvmsgbroker** element pair that serialises **NvDsEventMsgMeta** into **JSON** or **Protobuf** payloads and dispatches them via protocol adapter shared libraries to **Apache Kafka** (**libnvds_kafka_proto.so** / **librdkafka**), **MQTT** (**libnvds_mqtt_proto.so** / **libmosquitto**), **AMQP** (**libnvds_amqp_proto.so** / **rabbitmq-c**), **Azure IoT Hub** (**libnvds_azure_proto.so**), and **Redis** (**libnvds_redis_proto.so** / **hiredis**). The **NvMsgBroker C API** (**nv_msgbroker_connect()**, **nv_msgbroker_send_async()**, **nv_msgbroker_subscribe()**) and the nine-function **nvds_msgapi.h** custom adapter interface are described.
+- **NvMOT_Query()** — query library capabilities before initialisation
+- **NvMOT_Init()** — initialise a tracking context for a set of streams
+- **NvMOT_Process()** — process one batch, consuming detections and producing track IDs
+- **NvMOT_RetrieveMiscData()** — retrieve optional trajectory and ReID vector data
+- **NvMOT_RemoveStreams()** — remove streams and free per-stream resources
+- **NvMOT_DeInit()** — destroy the context and release all resources
 
-Section 8 covers custom **CUDA** elements. The **gst-dsexample** reference plugin (**gstdsexample.cpp**) demonstrates the complete pattern: inheriting from **GstBaseTransform**, using **NvBufSurfTransform** for hardware-accelerated resize and **NV12**→**RGBA** conversion (**NvBufSurfTransformSetSessionParams()**, **NvBufSurfTransform()**), mapping to **CPU** via **NvBufSurfaceMap()**, and attaching results as new **NvDsObjectMeta**. The **EGL** interop path on **Jetson** aarch64 (**NvBufSurfaceMapEglImage()**, **cuGraphicsEGLRegisterImage**) is explained for **NVMM** surfaces that **CUDA** cannot map directly. The higher-level **nvdsvideotemplate** ABI (**SetInitParams()**, **ProcessBuffer()**, **HandleEvent()**, **GetCompatibleCaps()**) avoids **GObject** boilerplate. **nvdspreprocess** provides **ROI**-level spatial batching before inference via a **CustomLibraryInterface::execute()** hook.
+The reference library **libnvds_nvmultiobjecttracker.so** implements five built-in tracker algorithms:
 
-Section 9 covers the **Service Maker** **API** — the primary high-level development interface in **DeepStream** 9.0. The **C++** **Pipeline** builder API (**ds_service_maker.h**), the **Python** **Pipeline** API (**pyservicemaker**) that replaces the deprecated **pyds** bindings, the higher-level **Flow** **API** for common analytics patterns, class-based metadata probes via **BatchMetadataOperator**, and **YAML**-driven pipeline configuration (enabling configuration-driven deployment without recompilation) are all covered. The **Triton Inference Server** integration via **Gst-nvinferserver** (**nvinferserver**) is detailed, including remote **gRPC** mode and local in-process mode, and the **protobuf** text format (**pbtxt**) config file for **GstNvInferServer::InferenceConfig**.
+- **IOU** — IoU-based frame-to-frame association
+- **NvSORT** — SORT with cascaded data association and Kalman filter
+- **NvDeepSORT** — SORT augmented with cosine-metric **ReID** re-identification
+- **NvDCF** — Discriminative Correlation Filter with optional **VPI** backend on Jetson
+- **MaskTracker** — **SAM2** instance segmentation for pixel-level mask tracking
+
+Cascaded data association (three-stage Hungarian matching) and shadow tracking with trajectory projection for re-association after occlusion are described. **YAML** configuration for **NvDCF** controls **StateEstimator** type, **DataAssociator** weights, and **ReID** gallery depth. Custom trackers such as **ByteTrack** can be integrated by wrapping their frame-level **API** inside **NvMOT_Process()**.
+
+Section 7 covers **NvMsgBroker**: the **nvmsgconv** → **nvmsgbroker** element pair that serialises **NvDsEventMsgMeta** into **JSON** or **Protobuf** payloads and dispatches them via protocol adapter shared libraries to the following backends:
+
+- **Apache Kafka** — `libnvds_kafka_proto.so` / **librdkafka**
+- **MQTT** — `libnvds_mqtt_proto.so` / **libmosquitto**
+- **AMQP** — `libnvds_amqp_proto.so` / **rabbitmq-c**
+- **Azure IoT Hub** — `libnvds_azure_proto.so`
+- **Redis** — `libnvds_redis_proto.so` / **hiredis**
+
+The **NvMsgBroker C API** (**nv_msgbroker_connect()**, **nv_msgbroker_send_async()**, **nv_msgbroker_subscribe()**) and the nine-function **nvds_msgapi.h** custom adapter interface are described.
+
+Section 8 covers custom **CUDA** elements. The **gst-dsexample** reference plugin (**gstdsexample.cpp**) demonstrates the complete pattern for building a custom element:
+
+- Inheriting from **GstBaseTransform** and operating in in-place (`transform_ip`) mode
+- Using **NvBufSurfTransform** for hardware-accelerated resize and **NV12**→**RGBA** conversion via **NvBufSurfTransformSetSessionParams()** and **NvBufSurfTransform()**
+- Mapping to **CPU** via **NvBufSurfaceMap()** for algorithm processing
+- Attaching results as new **NvDsObjectMeta** entries on the frame
+
+The **EGL** interop path on **Jetson** aarch64 (**NvBufSurfaceMapEglImage()**, **cuGraphicsEGLRegisterImage**) is explained for **NVMM** surfaces that **CUDA** cannot map directly. The higher-level **nvdsvideotemplate** ABI (**SetInitParams()**, **ProcessBuffer()**, **HandleEvent()**, **GetCompatibleCaps()**) avoids **GObject** boilerplate. **nvdspreprocess** provides **ROI**-level spatial batching before inference via a **CustomLibraryInterface::execute()** hook.
+
+Section 9 covers the **Service Maker** **API** — the primary high-level development interface in **DeepStream** 9.0. The following components are covered:
+
+- **C++ Pipeline API** (`ds_service_maker.h`) — builder pattern for constructing and linking GStreamer elements
+- **Python Pipeline API** (`pyservicemaker`) — replaces the deprecated **pyds** bindings
+- **Flow API** — higher-level abstraction for common analytics patterns (capture → infer → track → render)
+- **BatchMetadataOperator** — class-based metadata probes replacing raw GstPad probe callbacks
+- **YAML-driven pipeline configuration** — enables configuration-driven deployment without recompilation
+
+The **Triton Inference Server** integration via **Gst-nvinferserver** (**nvinferserver**) is detailed, including remote **gRPC** mode and local in-process mode, and the **protobuf** text format (**pbtxt**) config file for **GstNvInferServer::InferenceConfig**.
 
 Section 10 covers spatial analytics. **nvdsanalytics** implements line-crossing detection (virtual tripwires that populate **NvDsAnalyticFrameMeta.lc_curr_cnt** and **lc_cum_cnt**), **ROI** filtering (polygon-defined keep/suppress regions), and overcrowding detection (threshold-based **NvDsAnalyticFrameMeta.ocHist** flag) without running neural network inference. **nvdsosd** (**NvOSD**) renders bounding boxes, text labels, and segmentation masks using **CUDA** or **VIC** (Jetson); **DeepStream** 9.0 added a blur-mask mode that applies a Gaussian blur inside **NvDsMaskParams**-defined regions for privacy-preserving face and license-plate blurring.
 
-Section 11 covers production deployment. The **TAO Toolkit** training-to-deployment path produces `tlt-encoded` model files consumed by **nvinfer** (with `tlt-model-key` decryption) or **ONNX** exports built into **INT8** **TensorRT** engines via **trtexec** with calibration tables. The **REST API** (built on **libmicrohttpd**, enabled in the `[application]` config section) supports live **RTSP** source add/remove and property modification without pipeline teardown. **OpenTelemetry** and **Prometheus** metrics — including `deepstream.fps`, `deepstream.inference.latency`, `deepstream.tracker.active_targets`, and `deepstream.msgbroker.send_errors` — are exported via the native **OpenTelemetry** exporter to standard **Grafana** dashboards.
+Section 11 covers production deployment. The **TAO Toolkit** training-to-deployment path produces `tlt-encoded` model files consumed by **nvinfer** (with `tlt-model-key` decryption) or **ONNX** exports built into **INT8** **TensorRT** engines via **trtexec** with calibration tables. The **REST API** (built on **libmicrohttpd**, enabled in the `[application]` config section) supports live **RTSP** source add/remove and property modification without pipeline teardown. **OpenTelemetry** and **Prometheus** metrics exported via the native **OpenTelemetry** exporter to standard **Grafana** dashboards include:
 
-Section 12 compares **DeepStream** to open-source alternatives: **Intel DL Streamer** (**dlstreamer**, **VA-API** decode + **OpenVINO** inference), **Triton Inference Server** with **GStreamer** (multi-vendor **CUDA**/**ROCm**/**OpenVINO** backends), **OpenCV DNN** with `cv::dnn::readNetFromONNX()` and **DNN_TARGET_OPENCL**, and **MediaPipe** (CPU/**OpenCL**/Coral **Edge TPU**), identifying the performance crossover points where each is appropriate.
+- `deepstream.fps`
+- `deepstream.inference.latency`
+- `deepstream.tracker.active_targets`
+- `deepstream.msgbroker.send_errors`
+
+Section 12 compares **DeepStream** to open-source alternatives, identifying the performance crossover points where each is appropriate:
+
+- **Intel DL Streamer** (`dlstreamer`) — **VA-API** decode + **OpenVINO** inference
+- **Triton Inference Server** with **GStreamer** — multi-vendor **CUDA**/**ROCm**/**OpenVINO** backends
+- **OpenCV DNN** — `cv::dnn::readNetFromONNX()` with **DNN_TARGET_OPENCL**
+- **MediaPipe** — CPU/**OpenCL**/Coral **Edge TPU** targets
 
 The chapter assumes familiarity with the **GStreamer** element model and pad negotiation (Chapter 58), **CUDA** programming and **DMA-BUF** interop (Chapter 25), and **TensorRT** engine concepts introduced in Chapter 66. It does not repeat **GStreamer** fundamentals.
 

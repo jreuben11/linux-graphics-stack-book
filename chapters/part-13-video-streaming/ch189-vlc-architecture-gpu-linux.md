@@ -25,7 +25,17 @@
 
 ## VLC Architecture Overview
 
-VLC is a plugin-based multimedia player and framework developed by VideoLAN. Every major functional component — input access, demuxer, packetiser, decoder, audio output, video output, and user interface — is implemented as a dynamically loaded plugin, registered in a central **module bank** at startup. This design makes VLC highly portable: the same core ships on Linux, Windows, macOS, Android, and iOS by swapping plugins without changing the core pipeline engine.
+VLC is a plugin-based multimedia player and framework developed by VideoLAN. Every major functional component is implemented as a dynamically loaded plugin, registered in a central **module bank** at startup:
+
+- **input access**
+- **demuxer**
+- **packetiser**
+- **decoder**
+- **audio output**
+- **video output**
+- **user interface**
+
+This design makes VLC highly portable: the same core ships on Linux, Windows, macOS, Android, and iOS by swapping plugins without changing the core pipeline engine.
 
 [Source: VideoLAN VLC source root](https://github.com/videolan/vlc)
 

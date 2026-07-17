@@ -72,15 +72,49 @@ All shaders are compiled offline by a vendor **Pipeline Cache Compiler** (**PCC*
 
 Fault handling is mandatory and pre-allocated: **VkFaultCallbackInfo** registered in **VkDeviceCreateInfo** delivers real-time fault notifications through **PFN_vkFaultCallbackFunction** using caller-supplied **VkFaultData** storage (no dynamic allocation in the callback path). **VK_EXT_device_fault** — mandatory in **Vulkan SC** — provides structured post-mortem diagnostics after **VK_ERROR_DEVICE_LOST**, including GPU program counter, access type, and a vendor binary blob. **VK_EXT_robustness2** and **VK_EXT_pipeline_robustness** provide formal out-of-bounds access guarantees (**robustBufferAccess2**, **robustImageAccess2**, **nullDescriptor**), and **VK_KHR_object_refresh** protects against single-event upsets (**SEU**) in avionics and space applications by restoring device objects from **VK_MEMORY_HEAP_SEU_SAFE_BIT** redundant copies via **vkCmdRefreshObjectsKHR**.
 
-The **Vulkan SC SDK** on Linux (maintained by **Khronos** and **RasterGrid**) includes **VulkanSC-Headers**, **VulkanSC-Loader**, **VulkanSC-ValidationLayers** (Stateless, Core, Thread, Object, Sync), and **VulkanSC-Tools** (including **vulkanscinfo** and the **Device Simulation Layer**). The **VulkanSC-Emulation** package provides **libvksconvk.so**, an emulation **ICD** that translates **Vulkan SC** calls to standard **Vulkan 1.2** for desktop Linux development. Conformant and in-development **Vulkan SC** implementations include **CoreAVI VkCore SC** (targeting **Imagination PowerVR** and **Arm Mali-G78AE** at **DO-178C DAL A**), **NVIDIA DRIVE OS 6.0+** (targeting **ISO 26262 ASIL D** on **ga10b**/**gv11b**), **NXP i.MX 9**, and **Qualcomm SA8195P** (**Adreno 685**). Conformance is verified by the **VkSC-CTS** — a fork of the standard **Vulkan CTS** adapted for **Vulkan SC** feature sets and resource-reservation semantics.
+The **Vulkan SC SDK** on Linux (maintained by **Khronos** and **RasterGrid**) includes:
+
+- **VulkanSC-Headers**
+- **VulkanSC-Loader**
+- **VulkanSC-ValidationLayers** — Stateless, Core, Thread, Object, Sync
+- **VulkanSC-Tools** — **vulkanscinfo** and the **Device Simulation Layer**
+- **VulkanSC-Emulation** — **libvksconvk.so**, an emulation **ICD** that translates **Vulkan SC** calls to standard **Vulkan 1.2** for desktop Linux development
+
+Conformant and in-development **Vulkan SC** implementations include:
+
+- **CoreAVI VkCore SC** — targeting **Imagination PowerVR** and **Arm Mali-G78AE** at **DO-178C DAL A**
+- **NVIDIA DRIVE OS 6.0+** — targeting **ISO 26262 ASIL D** on **ga10b**/**gv11b**
+- **NXP i.MX 9**
+- **Qualcomm SA8195P** (**Adreno 685**)
+
+Conformance is verified by the **VkSC-CTS** — a fork of the standard **Vulkan CTS** adapted for **Vulkan SC** feature sets and resource-reservation semantics.
 
 **OpenVX** provides a graph-based compute model for classical computer vision — **VX_KERNEL_SOBEL_3x3** gradients, **VX_KERNEL_GAUSSIAN_PYRAMID**, **VX_KERNEL_HARRIS_CORNERS**, **VX_KERNEL_OPTICAL_FLOW_PYR_LK** — on heterogeneous hardware without requiring the application developer to manage GPU command buffers directly. It occupies a niche between **OpenCL** compute dispatches (too low level for vision pipelines) and deep learning inference frameworks (too neural-network-specific for classical algorithms). The core graph **API** centres on **vxCreateGraph**, **vxVerifyGraph** (the optimisation and memory-sizing point), **vxProcessGraph** (synchronous), and **vxScheduleGraph**/**vxWaitGraph** (asynchronous). Data objects include **vx_image** (concrete or virtual), **vx_tensor** (N-dimensional, with Q-format fixed-point support for **INT8**/**INT16**), and arrays. Over 60 built-in vision kernels are available, from **VX_KERNEL_CANNY_EDGE_DETECTOR** and **VX_KERNEL_FAST_CORNERS** to **VX_KERNEL_HOG_CELLS** and **VX_KERNEL_REMAP** for lens-distortion correction.
 
-The **OpenVX Neural Network Extension** (**vx_khr_nn** 1.3) adds layer-oriented tensor nodes — **vxConvolutionLayer**, **vxFullyConnectedLayer**, **vxPoolingLayer**, **vxActivationLayer**, **vxSoftmaxLayer**, and **vxNormalizationLayer** — enabling mixed classical/neural pipelines in a single **vx_graph**. The **NNEF** 1.0 (**Neural Network Exchange Format**, current stable **1.0.4**) provides portable model serialisation complementary to **ONNX**; models are imported into **OpenVX** via **vxImportKernelFromURL** using the **vx_khr_import_kernel** extension. The **NNEF-Tools** repository supports conversion from **TensorFlow**, **ONNX**, and **TensorFlow Lite**. The AMD **OpenVX Model Compiler** converts **NNEF**/**ONNX**/**Caffe** models through **AMD NNIR** to C source calling **OpenVX** directly, and **amd_migraphx** wraps **MIGraphX** as an **OpenVX** kernel.
+The **OpenVX Neural Network Extension** (**vx_khr_nn** 1.3) adds layer-oriented tensor nodes enabling mixed classical/neural pipelines in a single **vx_graph**:
 
-Linux **OpenVX** implementations covered include **AMD MIVisionX** (built on **ROCm**, **MIOpen**, **HIP**, **OpenCL**, and **AMD VCN** video hardware), **Texas Instruments TIOVX** (routing nodes to heterogeneous **TDA4x** targets including **C7x DSP**/**MMA**, **VPAC**, **DMPAC**, and **Arm Cortex-A72**), the **KhronosGroup/OpenVX-sample-impl** CPU reference implementation, **PyVX** Python bindings for prototyping, and the **Arm Compute Library** (**ACL**) providing **Mali** GPU acceleration via **OpenCL** with **NEON** intrinsics.
+- **vxConvolutionLayer**
+- **vxFullyConnectedLayer**
+- **vxPoolingLayer**
+- **vxActivationLayer**
+- **vxSoftmaxLayer**
+- **vxNormalizationLayer** The **NNEF** 1.0 (**Neural Network Exchange Format**, current stable **1.0.4**) provides portable model serialisation complementary to **ONNX**; models are imported into **OpenVX** via **vxImportKernelFromURL** using the **vx_khr_import_kernel** extension. The **NNEF-Tools** repository supports conversion from **TensorFlow**, **ONNX**, and **TensorFlow Lite**. The AMD **OpenVX Model Compiler** converts **NNEF**/**ONNX**/**Caffe** models through **AMD NNIR** to C source calling **OpenVX** directly, and **amd_migraphx** wraps **MIGraphX** as an **OpenVX** kernel.
 
-**ANARI** occupies the scientific visualisation niche: a high-level scene-description-based rendering **API** that lets **VTK**, **ParaView**, and custom scientific applications submit geometry, volume fields, and lights to physically based renderers (**Intel OSPRay**, **NVIDIA VisRTX**, **Blender Cycles**) without writing a single shader. The object hierarchy (ANARILibrary → **ANARIDevice** → **ANARIWorld** → **ANARIInstance**/**ANARIGroup**/**ANARISurface**/**ANARIVolume**/**ANARILight** plus **ANARICamera**, **ANARIRenderer**, **ANARIFrame**) is manipulated through a uniform **anariSetParameter**/**anariCommitParameters** interface, with frames rendered via **anariRenderFrame** and read back via **anariMapFrame**. Geometry types include triangles, quads, spheres, cylinders, and curves; **ANARI 1.1** adds **NanoVDB** volume support and the **KHR_GEOMETRY_ISOSURFACE** extension. Backends selectable via the **ANARI_LIBRARY** environment variable include the reference **helide** (CPU **Embree**), **ospray** (CPU **AVX-512** path tracing), **visrtx** (**OptiX**/**CUDA** GPU path tracing), **barney** (multi-GPU distributed), and **cycles** (**Blender Cycles**). The **ANARI SDK** (v0.11.0) includes the **helium** Device Implementation Library for backend authors, a validation/debug layer, and the **hdAnari** **OpenUSD Hydra** render delegate enabling **UsdView**, **Houdini**, and the **vtkAnariRenderingPlugin** in **ParaView** to use any **ANARI** backend for path-traced scientific rendering.
+Linux **OpenVX** implementations covered include:
+
+- **AMD MIVisionX** — built on **ROCm**, **MIOpen**, **HIP**, **OpenCL**, and **AMD VCN** video hardware
+- **Texas Instruments TIOVX** — routes nodes to heterogeneous **TDA4x** targets including **C7x DSP**/**MMA**, **VPAC**, **DMPAC**, and **Arm Cortex-A72**
+- **KhronosGroup/OpenVX-sample-impl** — CPU reference implementation
+- **PyVX** — Python bindings for prototyping
+- **Arm Compute Library (ACL)** — **Mali** GPU acceleration via **OpenCL** with **NEON** intrinsics
+
+**ANARI** occupies the scientific visualisation niche: a high-level scene-description-based rendering **API** that lets **VTK**, **ParaView**, and custom scientific applications submit geometry, volume fields, and lights to physically based renderers (**Intel OSPRay**, **NVIDIA VisRTX**, **Blender Cycles**) without writing a single shader. The object hierarchy (ANARILibrary → **ANARIDevice** → **ANARIWorld** → **ANARIInstance**/**ANARIGroup**/**ANARISurface**/**ANARIVolume**/**ANARILight** plus **ANARICamera**, **ANARIRenderer**, **ANARIFrame**) is manipulated through a uniform **anariSetParameter**/**anariCommitParameters** interface, with frames rendered via **anariRenderFrame** and read back via **anariMapFrame**. Geometry types include triangles, quads, spheres, cylinders, and curves; **ANARI 1.1** adds **NanoVDB** volume support and the **KHR_GEOMETRY_ISOSURFACE** extension. Backends selectable via the **ANARI_LIBRARY** environment variable include:
+
+- **helide** — reference backend (CPU **Embree**)
+- **ospray** — CPU **AVX-512** path tracing
+- **visrtx** — **OptiX**/**CUDA** GPU path tracing
+- **barney** — multi-GPU distributed
+- **cycles** — **Blender Cycles** The **ANARI SDK** (v0.11.0) includes the **helium** Device Implementation Library for backend authors, a validation/debug layer, and the **hdAnari** **OpenUSD Hydra** render delegate enabling **UsdView**, **Houdini**, and the **vtkAnariRenderingPlugin** in **ParaView** to use any **ANARI** backend for path-traced scientific rendering.
 
 Readers should be familiar with **Vulkan 1.2**/**1.3** concepts (pipelines, render passes, descriptor sets, **SPIR-V**) from Chapters 24–25, **SPIRV-Tools** from Chapter 61, and the **Vulkan CTS** from Chapter 31.
 

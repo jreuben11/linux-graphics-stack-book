@@ -27,7 +27,11 @@
 
 ## Scope
 
-This chapter examines Android's compositor and buffer-sharing stack for three audiences. **Systems and driver developers** will learn how Android maps the Linux DRM/KMS kernel layer onto its own HAL and framework compositors — a concrete case study in building a production compositor on top of the same primitives used by Wayland desktops. **Graphics application developers** targeting Android will find the complete AHardwareBuffer and ASurfaceControl NDK surface, the producer-consumer BufferQueue model, and how EGL and Vulkan bind to native buffers. **Browser engineers** will see how Chromium/Chrome's Android path uses the same SurfaceFlinger and HWComposer subsystems that every other Android app traverses, and how Android's fence model underpins zero-copy video and WebGL rendering.
+This chapter examines Android's compositor and buffer-sharing stack for three audiences.
+
+- **Systems and driver developers** — learn how Android maps the Linux DRM/KMS kernel layer onto its own HAL and framework compositors — a concrete case study in building a production compositor on top of the same primitives used by Wayland desktops.
+- **Graphics application developers** — find the complete AHardwareBuffer and ASurfaceControl NDK surface, the producer-consumer BufferQueue model, and how EGL and Vulkan bind to native buffers.
+- **Browser engineers** — see how Chromium/Chrome's Android path uses the same SurfaceFlinger and HWComposer subsystems that every other Android app traverses, and how Android's fence model underpins zero-copy video and WebGL rendering.
 
 ---
 

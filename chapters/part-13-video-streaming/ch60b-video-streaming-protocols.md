@@ -57,21 +57,62 @@ The chapter targets engineers who need to design or debug a streaming delivery s
 - building **WebRTC**-based low-latency paths
 - evaluating whether **SRT** or **QUIC** is the right transport for a broadcast ingest link
 
-**HLS** (**HTTP Live Streaming**, **RFC 8216**) is covered first: its two-tier playlist grammar (**master playlist** and **media playlist** in **M3U8** format), the choice of segment containers (**MPEG-2 TS** vs. **fMP4**/**CMAF**), the **LL-HLS** extension that uses sub-segment **parts** and **`#EXT-X-PRELOAD-HINT`** to reach 2–4 second latency, and practical packaging using the **FFmpeg** `hls` muxer with `-hls_segment_type fmp4`.
+**HLS** (**HTTP Live Streaming**, **RFC 8216**) is covered first:
+- **Two-tier playlist grammar** — master playlist and media playlist in **M3U8** format
+- **Segment containers** — **MPEG-2 TS** vs. **fMP4**/**CMAF**
+- **LL-HLS extension** — uses sub-segment **parts** and **`#EXT-X-PRELOAD-HINT`** to reach 2–4 second latency
+- **FFmpeg `hls` muxer** — practical packaging with `-hls_segment_type fmp4`
 
-**MPEG-DASH** (**ISO/IEC 23009-1**) follows: the **MPD** (**Media Presentation Description**) XML hierarchy of `Period`, `AdaptationSet`, `Representation`, and `SegmentTemplate`; the three segment addressing modes (`$Number$`-based, `$Time$`-based with **`SegmentTimeline`**, and **`SegmentList`**); **CMAF** (**Common Media Application Format**, **ISO 23000-19**) chunked transfer for **Low-Latency DASH**; and **DASH-IF** interoperability points including **CENC** (**Common Encryption**) and live profile constraints.
+**MPEG-DASH** (**ISO/IEC 23009-1**) follows:
+- **MPD** (**Media Presentation Description**) — XML hierarchy of `Period`, `AdaptationSet`, `Representation`, and `SegmentTemplate`
+- **Segment addressing modes** — `$Number$`-based, `$Time$`-based with **`SegmentTimeline`**, and **`SegmentList`**
+- **CMAF** (**Common Media Application Format**, **ISO 23000-19**) — chunked transfer for **Low-Latency DASH**
+- **DASH-IF interoperability points** — including **CENC** (**Common Encryption**) and live profile constraints
 
-**WebRTC** (**RFC 8825**) provides sub-second peer-to-peer and SFU-routed delivery. The chapter covers the full signaling stack: **SDP** (**Session Description Protocol**, **RFC 8866**) offer/answer exchange; **ICE** (**Interactive Connectivity Establishment**, **RFC 8445**) candidate gathering using **STUN** (**RFC 8489**) and **TURN** (**RFC 8656**); the **DTLS-SRTP** media plane (**RFC 5764**, **RFC 9147**) for key derivation; **RTP**/**RTCP** (**RFC 3550**) transport with **PLI**, **NACK**, **REMB**, and **Transport-CC** feedback; and Linux integration via **GStreamer** `webrtcbin` (`gst-plugins-bad`) together with **Pion** and **mediasoup** **SFU** implementations.
+**WebRTC** (**RFC 8825**) provides sub-second peer-to-peer and SFU-routed delivery. The chapter covers the full signaling stack:
+- **SDP** (**Session Description Protocol**, **RFC 8866**) — offer/answer exchange
+- **ICE** (**Interactive Connectivity Establishment**, **RFC 8445**) — candidate gathering using **STUN** (**RFC 8489**) and **TURN** (**RFC 8656**)
+- **DTLS-SRTP** media plane (**RFC 5764**, **RFC 9147**) — key derivation
+- **RTP**/**RTCP** (**RFC 3550**) — transport with **PLI**, **NACK**, **REMB**, and **Transport-CC** feedback
+- **Linux integration** — **GStreamer** `webrtcbin` (`gst-plugins-bad`) together with **Pion** and **mediasoup** **SFU** implementations
 
-**SRT** (**Secure Reliable Transport**), developed by **Haivision** and hosted at `github.com/Haivision/srt`, targets broadcast contribution links. Covered topics include its **UDT**-derived protocol architecture and four-way handshake (`HSREQ`/`HSRSP`/`KMREQ`/`KMRSP`), **ARQ** (**Automatic Repeat reQuest**) with a configurable `SRTO_LATENCY` budget, **AES-128/256** encryption, and deployment using **libsrt** (`libsrt-dev`) with **FFmpeg** (`--enable-libsrt`), **GStreamer** `srtsrc`/`srtsink`, and **MediaMTX**.
+**SRT** (**Secure Reliable Transport**), developed by **Haivision** and hosted at `github.com/Haivision/srt`, targets broadcast contribution links. Covered topics include:
+- **Protocol architecture** — **UDT**-derived design with four-way handshake (`HSREQ`/`HSRSP`/`KMREQ`/`KMRSP`)
+- **ARQ** (**Automatic Repeat reQuest**) — configurable `SRTO_LATENCY` budget
+- **AES-128/256 encryption**
+- **Deployment** — **libsrt** (`libsrt-dev`) with **FFmpeg** (`--enable-libsrt`), **GStreamer** `srtsrc`/`srtsink`, and **MediaMTX**
 
-**QUIC**-based media transport (**RFC 9000**) encompasses two emerging standards: **WebTransport** (W3C/IETF), which exposes **QUIC** streams and datagrams to browser **JavaScript** for low-latency **fMP4**/**CMAF** chunk delivery; and **MOQT** (**Media Over QUIC Transport**, `draft-ietf-moq-transport`) for CDN-scalable live streaming with a **Track**/**Group**/**Object** data model using reliable **QUIC** streams or unreliable **QUIC** datagrams. Linux **QUIC** libraries include **quiche** (Cloudflare), **msquic** (Microsoft), and **aioquic** (Python).
+**QUIC**-based media transport (**RFC 9000**) encompasses two emerging standards:
+- **WebTransport** (W3C/IETF) — exposes **QUIC** streams and datagrams to browser **JavaScript** for low-latency **fMP4**/**CMAF** chunk delivery
+- **MOQT** (**Media Over QUIC Transport**, `draft-ietf-moq-transport`) — CDN-scalable live streaming with a **Track**/**Group**/**Object** data model using reliable **QUIC** streams or unreliable **QUIC** datagrams
 
-**RTSP** (**RFC 7826**) and **RTMP** (Adobe) are covered as legacy and ingest protocols: **RTSP**/**RTP** for **IP** cameras and **NVR** equipment (implemented in **GStreamer** via `gst-rtsp-server` and in **FFmpeg**), and **RTMP**/**RTMPS** as the dominant live ingest protocol used by **OBS**, **FFmpeg**, and hardware encoders feeding platforms such as YouTube Live and Twitch, with **SRS**, **nginx-rtmp**, and **MediaMTX** as primary Linux implementations.
+Linux **QUIC** libraries include **quiche** (Cloudflare), **msquic** (Microsoft), and **aioquic** (Python).
 
-The **adaptive bitrate** (**ABR**) section surveys the five major algorithm families implemented in players today: throughput-based estimation using **EWMA** (**Exponentially Weighted Moving Average**); buffer-based rate adaptation (**BBA**); **BOLA** (**Buffer Occupancy based Lyapunov Algorithm**), implemented in **dash.js** and **Shaka Player**; **MPC** (**Model Predictive Control**) with harmonic-mean throughput prediction; and **Pensieve**, a reinforcement-learning policy network trained to maximise **QoE** (**Quality of Experience**).
+**RTSP** (**RFC 7826**) and **RTMP** (Adobe) are covered as legacy and ingest protocols:
+- **RTSP**/**RTP** — for **IP** cameras and **NVR** equipment; implemented in **GStreamer** via `gst-rtsp-server` and in **FFmpeg**
+- **RTMP**/**RTMPS** — dominant live ingest protocol used by **OBS**, **FFmpeg**, and hardware encoders feeding platforms such as YouTube Live and Twitch; primary Linux implementations: **SRS**, **nginx-rtmp**, and **MediaMTX**
 
-Segment packaging digs into the **CMAF** box structure — `ftyp`, `moov`, `moof`, `mdat`, `tfdt`, `trun` — and explains how **HTTP/1.1** chunked transfer encoding (**`Transfer-Encoding: chunked`**) is used in **LL-DASH** to stream `moof`+`mdat` pairs to the **CDN** edge before a segment closes. CDN delivery strategy covers segment cache headers, origin shielding, manifest rewriting for multi-CDN failover, **HTTP/3** (**QUIC**) at the edge, and **`sidx`**-box-based byte-range seeking. The chapter closes with a survey of the Linux streaming server landscape: **SRS**, **MediaMTX**, **nginx-rtmp**, **OvenMediaEngine**, **Wowza**, and **Ant Media Server**, including the emerging **WHIP**/**WHEP** (**RFC 9725**) standard for **HTTP**-based **WebRTC** ingest and egress signaling.
+The **adaptive bitrate** (**ABR**) section surveys the five major algorithm families implemented in players today:
+- **EWMA** (**Exponentially Weighted Moving Average**) — throughput-based estimation
+- **BBA** — buffer-based rate adaptation
+- **BOLA** (**Buffer Occupancy based Lyapunov Algorithm**) — implemented in **dash.js** and **Shaka Player**
+- **MPC** (**Model Predictive Control**) — harmonic-mean throughput prediction
+- **Pensieve** — reinforcement-learning policy network trained to maximise **QoE** (**Quality of Experience**)
+
+Segment packaging digs into the **CMAF** box structure — `ftyp`, `moov`, `moof`, `mdat`, `tfdt`, `trun` — and explains how **HTTP/1.1** chunked transfer encoding (**`Transfer-Encoding: chunked`**) is used in **LL-DASH** to stream `moof`+`mdat` pairs to the **CDN** edge before a segment closes. CDN delivery strategy covers:
+- Segment cache headers
+- Origin shielding
+- Manifest rewriting for multi-CDN failover
+- **HTTP/3** (**QUIC**) at the edge
+- **`sidx`**-box-based byte-range seeking
+
+The chapter closes with a survey of the Linux streaming server landscape, including the emerging **WHIP**/**WHEP** (**RFC 9725**) standard for **HTTP**-based **WebRTC** ingest and egress signaling:
+- **SRS**
+- **MediaMTX**
+- **nginx-rtmp**
+- **OvenMediaEngine**
+- **Wowza**
+- **Ant Media Server**
 
 **Scope boundaries**: codec internals (Ch60), hardware decode (Ch26, Ch50), **GStreamer** plugin architecture (Ch58), **FFmpeg** library API (Ch57), and **PipeWire** screen capture (Ch38) are out of scope here. This chapter treats encoded bitstreams as opaque input.
 

@@ -1,6 +1,16 @@
 # Chapter 82 — Vulkan Ecosystem Toolkit: VMA, volk, vk-bootstrap, and Friends
 
-This chapter targets **graphics application developers** writing raw Vulkan C/C++. Every serious Vulkan application confronts the same bootstrapping and memory management ceremonies before a single triangle can appear on screen. The ecosystem of open-source helper libraries surveyed here — VMA, volk, vk-bootstrap, SPIRV-Reflect, Dear ImGui, shaderc, and Tracy — do not abstract away the GPU model; they eliminate boilerplate while leaving you in complete control of the Vulkan object graph. Understanding these libraries is a prerequisite for reading any production Vulkan codebase, including DXVK, Godot, Bevy's wgpu backend, and the Khronos official Vulkan samples.
+This chapter targets **graphics application developers** writing raw Vulkan C/C++. Every serious Vulkan application confronts the same bootstrapping and memory management ceremonies before a single triangle can appear on screen. The open-source helper libraries surveyed here do not abstract away the GPU model; they eliminate boilerplate while leaving you in complete control of the Vulkan object graph:
+
+- **VMA** — Vulkan Memory Allocator, AMD's single-header C library for memory management
+- **volk** — Vulkan function pointer meta-loader
+- **vk-bootstrap** — instance, device, and swapchain initialization builder
+- **SPIRV-Reflect** — runtime SPIR-V shader introspection
+- **Dear ImGui** — immediate-mode GUI with Vulkan backend
+- **shaderc** — runtime GLSL-to-SPIR-V compilation
+- **Tracy** — GPU frame profiler with Vulkan timestamp zone support
+
+Understanding these libraries is a prerequisite for reading any production Vulkan codebase, including DXVK, Godot, Bevy's wgpu backend, and the Khronos official Vulkan samples.
 
 ---
 

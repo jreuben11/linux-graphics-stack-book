@@ -60,64 +60,59 @@ Section 3 covers **FSR 4** — AMD's neural upscaling technology for **RDNA 4** 
 traces the evolution from **FSR 1**'s spatial **EASU**/**RCAS** algorithm, through **FSR 2/3**
 temporal reprojection with motion vectors and reactive masks, to **FSR 4**'s inference on
 **RDNA 4**'s 3rd-generation **Matrix Cores** via **WMMA**
-(`__builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12`) ISA instructions. Input requirements
-(color buffer, depth, **RG16_FLOAT** motion vectors, jitter from a **Halton(2,3)** sequence via
-**`ffxQueryDescUpscaleGetJitterOffset`**), the **`ffxCreateContextDescUpscale`** /
-**`ffxDispatchDescUpscale`** API, measured performance characteristics (≈352 µs at 1080p on
-**RX 9070 XT**), and correct placement in the frame pipeline (after screen-space effects,
-before tonemapping) are all detailed.
+(`__builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12`) ISA instructions. Topics detailed include:
 
-Section 4 surveys four additional **FidelityFX SDK** 1.1.x effects: **CAS** (Contrast
-Adaptive Sharpening — per-pixel sharpening weight from local contrast, single compute dispatch,
-with optional lightweight 1.5× upscale via **`ffxCasContextDispatch`**); **SPD** (Single Pass
-Downsampler — generates up to 12 mip levels in one dispatch using **LDS** intra-tile reduction
-and a GPU-wide atomic counter, with **`FFX_SPD_MATH_PACKED`** wave-op acceleration); **SSSR**
-(Stochastic Screen Space Reflections — hierarchical depth-buffer ray traversal, blue-noise
-sampling, and temporal denoising without hardware ray tracing); and **Brixelizer GI** (sparse
-voxel **SDF** cascade global illumination via a two-layer architecture of **Brixelizer** and
-**Brixelizer GI**, outputting denoised indirect diffuse and specular at render resolution).
+- **Input requirements** — color buffer, depth, **RG16_FLOAT** motion vectors, jitter from a **Halton(2,3)** sequence via **`ffxQueryDescUpscaleGetJitterOffset`**
+- **API** — **`ffxCreateContextDescUpscale`** / **`ffxDispatchDescUpscale`**
+- **Performance characteristics** — ≈352 µs at 1080p on **RX 9070 XT**
+- **Frame pipeline placement** — after screen-space effects, before tonemapping
+
+Section 4 surveys four additional **FidelityFX SDK** 1.1.x effects:
+
+- **CAS** (Contrast Adaptive Sharpening) — per-pixel sharpening weight from local contrast, single compute dispatch, with optional lightweight 1.5× upscale via **`ffxCasContextDispatch`**
+- **SPD** (Single Pass Downsampler) — generates up to 12 mip levels in one dispatch using **LDS** intra-tile reduction and a GPU-wide atomic counter, with **`FFX_SPD_MATH_PACKED`** wave-op acceleration
+- **SSSR** (Stochastic Screen Space Reflections) — hierarchical depth-buffer ray traversal, blue-noise sampling, and temporal denoising without hardware ray tracing
+- **Brixelizer GI** — sparse voxel **SDF** cascade global illumination via a two-layer architecture of **Brixelizer** and **Brixelizer GI**, outputting denoised indirect diffuse and specular at render resolution
 
 Section 5 examines **AMF** (**Advanced Media Framework**). It covers the Linux history: the
 legacy proprietary **amf-amdgpu-pro** path, the transition in driver 25.20 to recommending
 **VA-API** via **Mesa**'s **radeonsi_drv_video.so** and **VCN** hardware. The **AMF** core
-architecture uses a **COM**-like factory/component model — **`AMFFactory`**, **`AMFContext`**,
-**`AMFComponent`** (e.g., **`AMFVideoEncoderHW_HEVC`**), **`AMFSurface`** (**`AMF_MEMORY_VULKAN`**),
-**`AMFBuffer`** — loaded via **`dlopen`** of **libamfrt64.so**. A comparison table contrasts
-**AMF** (Windows), **VA-API**/**Mesa** (Linux), and **NVENC**.
+architecture uses a **COM**-like factory/component model loaded via **`dlopen`** of **libamfrt64.so**:
 
-Section 6 covers the **Radeon GPU Profiler (RGP)**: its two-component architecture (**Radeon
-Developer Service (RDS)** daemon plus **RGP** GUI), **SQTT** (Shader Queue Thread Trace)
-token streams captured via the **`VK_AMD_gpa_interface`** Vulkan extension and
-**`VkGpaSqThreadTraceCreateInfoAMD`**, the proprietary **`.rgp`** file format (SQTT data
-chunks, performance counter blocks for **CPF**, **SPI**, **SQ**, **CB**, **DB**, event
-timing, barrier information), barrier and pipeline stall analysis (**VALU**/**VMEM** stall
-tokens, **Wavefront Occupancy** pane), and the Linux capture workflow using
-**`AMDGPU_ENABLE_RGP`** and **Radeon Developer Panel**.
+- **`AMFFactory`**
+- **`AMFContext`**
+- **`AMFComponent`** (e.g., **`AMFVideoEncoderHW_HEVC`**)
+- **`AMFSurface`** (**`AMF_MEMORY_VULKAN`**)
+- **`AMFBuffer`**
 
-Section 7 covers the **Radeon Memory Visualizer (RMV)**: its **RDS**-based capture of
-**`ALLOCATION_CREATE`** / **`RESOURCE_BIND`** / **`RESOURCE_EVICT`** events into **`.rmv`**
-trace files; analysis views including the Virtual Memory Heap Timeline, Resource Usage
-Timeline, Snapshots (for locating memory leaks), and VRAM Fragmentation Analysis
-(**VulkanMemoryAllocator** recommendations); and profiling **SAM** (Smart Access Memory /
-**Resizable BAR** / **`VK_AMD_device_coherent_memory`**) to verify direct CPU→VRAM placement.
+A comparison table contrasts **AMF** (Windows), **VA-API**/**Mesa** (Linux), and **NVENC**.
 
-Section 8 covers **RenderDoc**: its **`VK_LAYER_RENDERDOC_Capture`** in-process capture layer
-(injected via **`LD_PRELOAD`**), which intercepts **`vkQueueSubmit`**, **`vkQueuePresentKHR`**,
-and **`vkAllocateMemory`** calls to serialise frames into **`.rdc`** chunk-based files; the
-programmatic **`RENDERDOC_API_1_1_2`** C API (loaded via **`dlopen`** of **librenderdoc.so**,
-with **`StartFrameCapture`** / **`EndFrameCapture`** / **`TriggerMultiFrameCapture`**); and
-the **Python** replay API (**`renderdoc`** module, **`ReplayController`**,
-**`GetRootActions`**, **`GetPipelineState`**, **`GetTextureData`**) for headless automated
-analysis of **`.rdc`** captures.
+Section 6 covers the **Radeon GPU Profiler (RGP)**:
 
-Section 9 covers integration with the open-source stack: **FidelityFX** **SPIR-V** blobs
-processed by **RADV**'s **`nir_from_spirv()`** and **ACO** shader compiler; **RGP**'s **SQTT**
-dependency on the **amdgpu** kernel driver's performance counter interface in
-**`amdgpu_pm.c`** and the **`perf_event_paranoid`** sysctl; **RMV**'s interception at the
-**libdrm** / **UMD** boundary (**`amdgpu_bo_alloc()`**, **`DRM_AMDGPU_GEM_CREATE`** ioctl)
-covering **RADV**, **radeonsi**, and **ROCm**/**HIP** workloads; and **RenderDoc**'s deep
-integration with **RADV** via **`VK_EXT_debug_utils`**, **`VK_AMD_buffer_marker`**, and
-**`RADV_DEBUG=nocache`** for deterministic replay.
+- **Architecture** — two-component design: **Radeon Developer Service (RDS)** daemon plus **RGP** GUI
+- **SQTT** (Shader Queue Thread Trace) — token streams captured via the **`VK_AMD_gpa_interface`** Vulkan extension and **`VkGpaSqThreadTraceCreateInfoAMD`**
+- **`.rgp` file format** — SQTT data chunks, performance counter blocks for **CPF**, **SPI**, **SQ**, **CB**, **DB**, event timing, barrier information
+- **Barrier and pipeline stall analysis** — **VALU**/**VMEM** stall tokens, **Wavefront Occupancy** pane
+- **Linux capture workflow** — **`AMDGPU_ENABLE_RGP`** environment variable and **Radeon Developer Panel**
+
+Section 7 covers the **Radeon Memory Visualizer (RMV)**:
+
+- **RDS-based capture** — **`ALLOCATION_CREATE`** / **`RESOURCE_BIND`** / **`RESOURCE_EVICT`** events recorded into **`.rmv`** trace files
+- **Analysis views** — Virtual Memory Heap Timeline, Resource Usage Timeline, Snapshots (for locating memory leaks), and VRAM Fragmentation Analysis (**VulkanMemoryAllocator** recommendations)
+- **SAM profiling** — verifying direct CPU→VRAM placement via **SAM** (Smart Access Memory / **Resizable BAR** / **`VK_AMD_device_coherent_memory`**)
+
+Section 8 covers **RenderDoc**:
+
+- **`VK_LAYER_RENDERDOC_Capture`** — in-process capture layer injected via **`LD_PRELOAD`**, intercepting **`vkQueueSubmit`**, **`vkQueuePresentKHR`**, and **`vkAllocateMemory`** calls to serialise frames into **`.rdc`** chunk-based files
+- **`RENDERDOC_API_1_1_2`** C API — loaded via **`dlopen`** of **librenderdoc.so**, with **`StartFrameCapture`** / **`EndFrameCapture`** / **`TriggerMultiFrameCapture`**
+- **Python replay API** — **`renderdoc`** module with **`ReplayController`**, **`GetRootActions`**, **`GetPipelineState`**, **`GetTextureData`** for headless automated analysis of **`.rdc`** captures
+
+Section 9 covers integration with the open-source stack:
+
+- **FidelityFX on RADV** — **SPIR-V** blobs processed by **RADV**'s **`nir_from_spirv()`** and **ACO** shader compiler
+- **RGP SQTT** — dependency on the **amdgpu** kernel driver's performance counter interface in **`amdgpu_pm.c`** and the **`perf_event_paranoid`** sysctl
+- **RMV** — interception at the **libdrm** / **UMD** boundary (**`amdgpu_bo_alloc()`**, **`DRM_AMDGPU_GEM_CREATE`** ioctl) covering **RADV**, **radeonsi**, and **ROCm**/**HIP** workloads
+- **RenderDoc on RADV** — deep integration via **`VK_EXT_debug_utils`**, **`VK_AMD_buffer_marker`**, and **`RADV_DEBUG=nocache`** for deterministic replay
 
 This chapter covers the public APIs and internal architecture of each of these tools, placing
 them in the context of the **Mesa**/**RADV** driver stack described in Ch15 (**ACO**) and

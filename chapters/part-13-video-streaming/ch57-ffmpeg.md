@@ -80,7 +80,17 @@
 
 The chapter assumes familiarity with **VA-API** (Chapter 26), **Vulkan** (Chapter 24 — Vulkan and EGL for Application Developers), and **Vulkan Video** (Chapter 50) — those APIs appear here as hwaccel back ends without re-explanation of their internals. Codec algorithms (**DCT**, motion estimation, **AV1** superblocks) are the subject of Chapter 60; this chapter treats codecs as black boxes accessed through the **libavcodec** API. **GStreamer** (Chapter 58) wraps **FFmpeg** codecs via the **gst-libav** plugin and is covered separately.
 
-The seven libraries — **libavutil**, **libavcodec**, **libavformat**, **libavdevice**, **libavfilter**, **libswscale**, and **libswresample** — form a layered dependency graph with defined versioning and **API** stability guarantees. Their **MAJOR.MINOR.MICRO** version scheme, the `FF_API_*` deprecation guards, and the breaking changes introduced in **FFmpeg** 7.0 and 8.0 are covered in the library architecture section.
+The seven libraries form a layered dependency graph with defined versioning and **API** stability guarantees:
+
+- **libavutil**
+- **libavcodec**
+- **libavformat**
+- **libavdevice**
+- **libavfilter**
+- **libswscale**
+- **libswresample**
+
+Their **MAJOR.MINOR.MICRO** version scheme, the `FF_API_*` deprecation guards, and the breaking changes introduced in **FFmpeg** 7.0 and 8.0 are covered in the library architecture section.
 
 Readers will learn:
 

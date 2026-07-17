@@ -1,6 +1,11 @@
 # Chapter 187: HDMI CEC and the Linux CEC Subsystem
 
-**Target audiences:** Embedded Linux developers implementing CEC for TV boxes and set-top devices; home theater automation engineers integrating Linux systems with HDMI networks; Raspberry Pi and Amlogic/Rockchip platform developers; kernel CEC subsystem contributors writing hardware drivers; Kodi and media center application developers needing CEC control of displays and AV receivers.
+**Target audiences:**
+- **Embedded Linux developers** — implementing CEC for TV boxes and set-top devices
+- **Home theater automation engineers** — integrating Linux systems with HDMI networks
+- **Raspberry Pi and Amlogic/Rockchip platform developers**
+- **Kernel CEC subsystem contributors** — writing hardware drivers
+- **Kodi and media center application developers** — needing CEC control of displays and AV receivers
 
 ---
 

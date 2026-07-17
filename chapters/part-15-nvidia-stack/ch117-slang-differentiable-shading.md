@@ -45,21 +45,40 @@
     - 11.2 [Differentiable BC7 Compression Case Study](#112-differentiable-bc7-compression-case-study)
 12. [NeuralVDB, Omniverse, and NVIDIA Production Use](#12-neuralvdb-omniverse-and-nvidia-production-use)
 13. [SlangPy: Python and PyTorch Integration](#13-slangpy-python-and-pytorch-integration)
-14. [Comparison with GLSL, WGSL, HLSL, and MDL](#14-comparison-with-glsl-wgsl-hlsl-and-mdl)
-15. [Building Slang from Source on Linux](#15-building-slang-from-source-on-linux)
-    - 15.1 [Prerequisites and Source Checkout](#151-prerequisites-and-source-checkout)
-    - 15.2 [CMake Configuration and Build](#152-cmake-configuration-and-build)
-    - 15.3 [CMake Integration in Downstream Projects](#153-cmake-integration-in-downstream-projects)
-    - 15.4 [Distribution Packages and Vulkan SDK](#154-distribution-packages-and-vulkan-sdk)
-16. [Integrations](#16-integrations)
+14. [Slang + Vulkan as a Substrate for Differentiable World Model Rendering](#14-slang--vulkan-as-a-substrate-for-differentiable-world-model-rendering)
+    - 14.1 [The World Model Training Pipeline](#141-the-world-model-training-pipeline)
+    - 14.2 [The Differentiable Visual Decoder in Slang](#142-the-differentiable-visual-decoder-in-slang)
+    - 14.3 [The SlangPy Training Loop](#143-the-slangpy-training-loop)
+    - 14.4 [Inference on Vulkan: Real-Time World Model Rollout](#144-inference-on-vulkan-real-time-world-model-rollout)
+    - 14.5 [NVIDIA Cosmos: A Production World Model on the Slang Stack](#145-nvidia-cosmos-a-production-world-model-on-the-slang-stack)
+15. [Comparison with GLSL, WGSL, HLSL, and MDL](#15-comparison-with-glsl-wgsl-hlsl-and-mdl)
+16. [Building Slang from Source on Linux](#16-building-slang-from-source-on-linux)
+    - 16.1 [Prerequisites and Source Checkout](#161-prerequisites-and-source-checkout)
+    - 16.2 [CMake Configuration and Build](#162-cmake-configuration-and-build)
+    - 16.3 [CMake Integration in Downstream Projects](#163-cmake-integration-in-downstream-projects)
+    - 16.4 [Distribution Packages and Vulkan SDK](#164-distribution-packages-and-vulkan-sdk)
+17. [Integrations](#17-integrations)
 
 ---
 
 ## 1. Overview
 
-Slang is an open-source shading language and compiler that extends HLSL with three capabilities absent from every other GPU shading language in active use: a real generics and interface system, a structured module system for separate compilation, and first-class automatic differentiation (AD). The last of these is what makes Slang unusual enough to warrant a dedicated chapter: the ability to annotate an existing shader function with `[Differentiable]`, then call `bwd_diff(fn)` to obtain a GPU kernel that computes the gradient of that function with respect to all its differentiable inputs — without writing the backward pass by hand.
+Slang is an open-source shading language and compiler that extends HLSL with three capabilities absent from every other GPU shading language in active use:
 
-This capability unlocks a class of workloads previously requiring specialised frameworks: inverse rendering (recovering scene parameters from observed images), differentiable texture encoding (optimising compressed texture parameters against rendered output), neural BRDF fitting (learning material reflectance from measured data), and on-device training of neural radiance fields. All of these use the same forward-rendering shaders that already exist in a production renderer, augmented with autodiff annotations.
+- **Generics and interface system** — a real, fully type-checked generic and interface system operating on Slang IR
+- **Module system** — a structured module system for separate compilation using `import` and pre-compiled `.slang-module` binaries
+- **Automatic differentiation (AD)** — first-class autodiff support for computing gradients through shader functions
+
+The last of these is what makes Slang unusual enough to warrant a dedicated chapter: the ability to annotate an existing shader function with `[Differentiable]`, then call `bwd_diff(fn)` to obtain a GPU kernel that computes the gradient of that function with respect to all its differentiable inputs — without writing the backward pass by hand.
+
+This capability unlocks a class of workloads previously requiring specialised frameworks:
+
+- **Inverse rendering** — recovering scene parameters from observed images
+- **Differentiable texture encoding** — optimising compressed texture parameters against rendered output
+- **Neural BRDF fitting** — learning material reflectance from measured data
+- **On-device training of neural radiance fields**
+
+All of these use the same forward-rendering shaders that already exist in a production renderer, augmented with autodiff annotations.
 
 **Governance.** Slang originated in NVIDIA Research (2017–2018), grew through Falcor and the SLANG.D differentiable extension (SIGGRAPH Asia 2023), and transferred to multi-vendor governance under the **Khronos Slang Initiative** on 21 November 2024. [Source](https://www.khronos.org/news/press/khronos-group-launches-slang-initiative-hosting-open-source-compiler-contributed-by-nvidia) The project is Apache 2.0 licensed at [`github.com/shader-slang/slang`](https://github.com/shader-slang/slang). Supporting members at the governance launch included Adobe, Autodesk, id Software, Igalia, and Valve. In January 2026, the Academy Software Foundation announced that MaterialX added a dedicated Slang shader generator (MaterialXGenSlang), bringing Slang into the USD/MaterialX pipeline used at Pixar and Lucasfilm. [Source](https://www.aswf.io/blog/materialx-adds-support-for-slang-shader-generation/)
 
@@ -68,7 +87,11 @@ This capability unlocks a class of workloads previously requiring specialised fr
 - Graphics application developers adding differentiable rendering to a Vulkan renderer
 - Research engineers training neural rendering models that run partly on the GPU shader side
 
-**Relationship to other chapters.** Chapter 69 §7 introduced Slang briefly in the context of the Omniverse RTX Renderer and SlangPy. Chapter 70 §6 showed the `NeuralNetwork<>` template and `VK_NV_cooperative_vector` through the RTXNS SDK lens. This chapter covers the Slang language, compiler, and autodiff semantics in depth. Readers are assumed to be familiar with SPIR-V (Chapter 24), Vulkan pipeline objects (Chapters 24–25), and the basics of CUDA streams (Chapter 66).
+**Relationship to other chapters.** Chapter 69 §7 introduced Slang briefly in the context of the Omniverse RTX Renderer and SlangPy. Chapter 70 §6 showed the `NeuralNetwork<>` template and `VK_NV_cooperative_vector` through the RTXNS SDK lens. This chapter covers the Slang language, compiler, and autodiff semantics in depth. Readers are assumed to be familiar with:
+
+- **SPIR-V** (Chapter 24)
+- **Vulkan pipeline objects** (Chapters 24–25)
+- **CUDA streams** (Chapter 66)
 
 ---
 
@@ -1477,7 +1500,208 @@ The predecessor `slang-torch` library ([github.com/shader-slang/slang-torch](htt
 
 ---
 
-## 14. Comparison with GLSL, WGSL, HLSL, and MDL
+## 14. Slang + Vulkan as a Substrate for Differentiable World Model Rendering
+
+**World models** are AI systems that learn a probabilistic model of how an environment evolves over time — given a current visual observation and an action, the model predicts what the agent will observe next. Recent systems include:
+
+- **GAIA-1** (Wayve, 2023) — video generation world model for autonomous driving trained on dashcam footage
+- **DreamerV3** — latent recurrent state-space model with a differentiable pixel decoder, achieving human-level play across 150 tasks
+- **DIAMOND** (ICLR 2024) — diffusion world model playing Atari from pixels; rendering IS the world model forward pass
+- **Genie 2** (Google DeepMind, 2024) — interactive 3D environment generation from a single image
+- **Cosmos** (NVIDIA, January 2025) — world foundation model for physical AI (robotics, autonomous vehicles), trained on video token sequences
+
+The Linux graphics stack is directly relevant because world models that use **neural radiance field** or **3D Gaussian splatting** decoders — or that render predicted future states into image space to compute a visual training loss — require a differentiable rendering path. Slang's autodiff (§6–7) provides that path; Vulkan provides the GPU-portable runtime substrate for both training and inference.
+
+### 14.1 The World Model Training Pipeline
+
+A world model with a visual rendering component has two interleaved phases:
+
+**Training** (offline, requires gradients):
+1. Encode observations (video frames) into a latent representation **z**.
+2. Advance the latent state through the dynamics core (RNN, transformer, or diffusion model): **z_{t+1} = f(z_t, a_t)**.
+3. Decode the predicted latent back into pixel space using a **differentiable renderer**.
+4. Compute a pixel-space or perceptual loss against ground-truth future frames.
+5. Backpropagate gradients through all steps — including through the renderer into **z** and into the dynamics model weights.
+
+**Inference** (real-time, no gradients):
+1. Encode the current observation.
+2. Step the dynamics model.
+3. Render the predicted next frame — fast, deterministic, no gradient tracking.
+
+Slang addresses step 3 of training (the differentiable renderer) and step 3 of inference (the lean forward-only GPU renderer). Vulkan's compute queues and `VK_KHR_timeline_semaphore` (Chapter 148) coordinate the two phases without CPU synchronisation in the hot path.
+
+### 14.2 The Differentiable Visual Decoder in Slang
+
+The visual decoder maps a latent vector **z** into image space. In a NeRF-based world model this is a volumetric ray-march whose density and colour fields are conditioned on **z**. The forward pass follows the pattern from §9.2, with one addition: gradients must flow back through **z** into the dynamics model:
+
+```slang
+// File: world_model_decoder.slang
+// Differentiable visual decoder: latent z → rendered pixel colour.
+// Gradients flow through z back to the dynamics model; through netWeights
+// to the decoder MLP via the custom backward pattern from §7.5.
+
+[Differentiable]
+float3 decodeLatentToColor(
+    no_diff float3              rayOrigin,
+    no_diff float3              rayDir,
+    no_diff int                 nSamples,
+    float[]                     z,           // latent state — differentiable
+    RWStructuredBuffer<float>   netWeights,  // decoder MLP weights (custom bwd)
+    RWStructuredBuffer<float>   netGrads)    // gradient accumulation buffer
+{
+    float3 accColor      = float3(0, 0, 0);
+    float  transmittance = 1.0f;
+
+    [MaxIters(128)]
+    for (int i = 0; i < nSamples; i++) {
+        float  t   = 0.1f + float(i) * (4.0f / float(nSamples));
+        float3 pt  = rayOrigin + t * rayDir;
+
+        // MLP conditioned on spatial position + latent z
+        float4 rgba  = queryConditionedMLP(pt, z, netWeights, netGrads);
+        float  alpha = 1.0f - exp(-max(rgba.w, 0.0f) * (4.0f / float(nSamples)));
+
+        accColor      += transmittance * alpha * rgba.xyz;
+        transmittance *= (1.0f - alpha);
+    }
+    return accColor;
+}
+
+[Differentiable]
+float worldModelPixelLoss(
+    no_diff float3              rayOrigin,
+    no_diff float3              rayDir,
+    no_diff int                 nSamples,
+    float[]                     z,
+    RWStructuredBuffer<float>   netWeights,
+    RWStructuredBuffer<float>   netGrads,
+    no_diff float3              gtColor)     // ground-truth future frame pixel
+{
+    float3 pred = decodeLatentToColor(rayOrigin, rayDir, nSamples, z, netWeights, netGrads);
+    float3 diff = pred - gtColor;
+    return dot(diff, diff);
+}
+```
+
+The backward pass via `bwd_diff(worldModelPixelLoss)` produces two gradient signals simultaneously:
+- **`dL/dz`** — gradient of pixel loss w.r.t. the latent state, flowing back through the dynamics model optimizer
+- **`dL/d(netWeights)`** — gradient w.r.t. decoder MLP weights, written atomically into `netGrads` via the §7.5 custom backward pattern
+
+This dual gradient flow — from pixel loss back into both the scene representation network and the temporal dynamics model — is what makes differentiable rendering essential for end-to-end world model training.
+
+### 14.3 The SlangPy Training Loop
+
+In practice the dynamics model (RNN, transformer, or diffusion) is a PyTorch module, while the differentiable renderer is a Slang kernel invoked via SlangPy. The two interact through the latent tensor `z_pred`:
+
+```python
+# File: world_model_train.py
+# Training loop for a world model with a Slang differentiable visual decoder.
+
+import torch
+import slangpy
+
+slang_device = slangpy.create_device(type=slangpy.DeviceType.Vulkan)
+module       = slang_device.load_module("shaders/world_model_decoder.slang")
+decode_fn    = module["worldModelPixelLoss"]
+
+dynamics_model = WorldModelDynamics(latent_dim=256).cuda()
+optimizer      = torch.optim.Adam(dynamics_model.parameters(), lr=1e-4)
+
+for batch in dataloader:
+    obs, actions, future_frames = batch   # all on GPU
+
+    # 1. Encode observations → initial latent (PyTorch)
+    z = dynamics_model.encode(obs)           # [B, 256], requires_grad=True
+
+    # 2. Step dynamics model forward (PyTorch autograd graph)
+    z_pred = dynamics_model.step(z, actions) # [B, 256]
+
+    # 3. Differentiable rendering via Slang.
+    #    SlangPy maps z_pred (a CUDA/Vulkan tensor) into the Slang kernel.
+    #    bwd_diff(worldModelPixelLoss) runs on GPU, writing dL/dz into
+    #    z_pred.grad and dL/dWeights into net_grads_buf — no CPU round-trip.
+    ray_origins, ray_dirs = generate_rays(B, device="cuda")
+    loss = decode_fn(ray_origins, ray_dirs, 64, z_pred,
+                     net_weights_buf, net_grads_buf, future_frames)
+
+    # 4. Backward: PyTorch handles the dynamics; Slang handles the renderer.
+    #    Gradients join at z_pred — seamless cross-boundary gradient flow.
+    loss.sum().backward()
+    optimizer.step()
+    optimizer.zero_grad()
+```
+
+The critical property is that `z_pred.grad` is populated by the Slang backward kernel without a GPU→CPU→GPU round-trip. PyTorch's autograd continues the backward pass through `dynamics_model.step()` using `z_pred.grad` as the upstream gradient — the boundary between the PyTorch graph and the Slang autodiff graph is invisible to the training loop.
+
+### 14.4 Inference on Vulkan: Real-Time World Model Rollout
+
+During inference (game playing, autonomous driving simulation, real-time robotics), the world model predicts future frames at interactive rates. The Slang decoder runs as a plain Vulkan compute dispatch — no gradient tracking, no PyTorch dependency:
+
+```
+┌─────────────────────┐   VkSubmitInfo      ┌───────────────────────────────┐
+│  Dynamics model     │ ──────────────────► │  Vulkan compute               │
+│  (PyTorch / ONNX /  │  timeline semaphore │  vkCmdDispatch(               │
+│   TensorRT)         │  signals step N     │    world_model_decoder.spv)   │
+└─────────────────────┘                     │  Forward-only — bwd_diff NOT  │
+         ▲                                  │  called in inference path     │
+         │  z_{t+1}                         └───────────────────────────────┘
+         └──────────────────────────────────────────────────────────────────┘
+```
+
+The same Slang source compiles to two SPIR-V binaries via a specialisation constant:
+
+```slang
+// Compile-time switch: training builds include gradient code,
+// inference builds dead-code-eliminate it entirely.
+[vk::constant_id(0)]
+const bool kTrainingMode = false;
+
+[Differentiable]
+float4 queryConditionedMLP(float3 pt, float[] z,
+                           RWStructuredBuffer<float> weights,
+                           RWStructuredBuffer<float> grads) {
+    float4 result = evalMLP(pt, z, weights);
+
+    // In inference mode (kTrainingMode == false), the compiler removes all
+    // code paths reachable only through bwd_diff — the grads buffer is
+    // neither declared as an output nor written, and the shader is lean.
+    return result;
+}
+```
+
+Build system:
+
+```bash
+# Training variant — autodiff code included
+slangc world_model_decoder.slang -target spirv -profile spirv_1_5  \
+    -entry worldModelPixelLoss -stage compute                        \
+    -DKTRAINING_MODE=1 -O2 -o world_model_train.spv
+
+# Inference variant — gradient paths dead-code-eliminated
+slangc world_model_decoder.slang -target spirv -profile spirv_1_5  \
+    -entry decodeLatentToColor -stage compute                        \
+    -DKTRAINING_MODE=0 -O3 -o world_model_infer.spv
+```
+
+The inference SPIR-V is typically 30–50% smaller than the training SPIR-V because the adjoint computation, intermediate buffer writes, and `[MaxIters]` stack allocations are absent. This makes inference deployment on embedded GPU hardware (Jetson Orin, Intel Meteor Lake integrated GPU) practical.
+
+### 14.5 NVIDIA Cosmos: A Production World Model on the Slang Stack
+
+NVIDIA Cosmos (announced January 2025, arXiv:2501.12392) is a world foundation model for physical AI — autonomous vehicles, robotics, and industrial digital twins. [Source](https://github.com/NVIDIA/Cosmos) Its architecture:
+
+- **Video tokeniser** — spatial-temporal autoencoder compressing raw video into discrete tokens
+- **World model transformer** — predicts future token sequences conditioned on text or action embeddings
+- **Decoder** — maps predicted tokens back to pixel space via a learned upsampling network
+
+The decoder's visual loss during training is computed through a differentiable rendering pipeline. NVIDIA's production stack for Cosmos uses Slang for shader-side components of the visual loss, cooperative matrix operations (equivalent to `VK_KHR_cooperative_matrix` but via CUDA) for the MLP layers inside the decoder, and NCCL for gradient synchronisation across thousands of A100/H100 GPUs.
+
+**Vulkan deployment path.** For inference on Linux without CUDA — robotics simulators, edge deployment, non-NVIDIA hardware — the Cosmos decoder can target the Vulkan compute path. The same Slang decoder source compiles to SPIR-V with `VK_KHR_cooperative_matrix` for MLP inference (replacing the CUDA cooperative matrix intrinsics), making Cosmos inference accessible on AMD RDNA 3 (`radeonsi`/RADV) and Intel Xe2 (ANV) via the standard Mesa Vulkan drivers.
+
+**Architectural tension.** Cosmos's training loop is tightly coupled to CUDA and PyTorch's `torch.distributed`; the Slang/Vulkan path covers only the inference decoder, not the full training pipeline. This mirrors a general pattern: world model training infrastructure is CUDA-first; Vulkan is the portability layer that makes trained model inference run anywhere a Vulkan 1.3 + `VK_KHR_cooperative_matrix` driver is available.
+
+---
+
+## 15. Comparison with GLSL, WGSL, HLSL, and MDL
 
 | Feature | Slang | GLSL | HLSL | WGSL | MDL |
 |---|---|---|---|---|---|
@@ -1502,9 +1726,9 @@ The predecessor `slang-torch` library ([github.com/shader-slang/slang-torch](htt
 
 ---
 
-## 15. Building Slang from Source on Linux
+## 16. Building Slang from Source on Linux
 
-### 15.1 Prerequisites and Source Checkout
+### 16.1 Prerequisites and Source Checkout
 
 ```bash
 # System requirements:
@@ -1532,7 +1756,7 @@ The submodule tree includes:
 - `external/glslang`: glslang (for the `-emit-spirv-via-glsl` path)
 - `external/lz4`, `external/miniz`: required for static linking
 
-### 15.2 CMake Configuration and Build
+### 16.2 CMake Configuration and Build
 
 The fastest path is the bundled workflow preset:
 
@@ -1586,7 +1810,7 @@ libslang-compiler.a  libcompiler-core.a  libcore.a  miniz.a  lz4.a
 ```
 Static builds are appropriate for self-contained Slang-as-compiler-plugin use cases (e.g., embedding `slangc` in a build system plugin). For runtime shader compilation in a game engine, the shared library is preferred.
 
-### 15.3 CMake Integration in Downstream Projects
+### 16.3 CMake Integration in Downstream Projects
 
 After `cmake --install`, Slang generates a `SlangConfig.cmake` that makes `find_package(slang)` work:
 
@@ -1626,7 +1850,7 @@ add_custom_target(shaders ALL
 add_dependencies(neural_renderer shaders)
 ```
 
-### 15.4 Distribution Packages and Vulkan SDK
+### 16.4 Distribution Packages and Vulkan SDK
 
 Slang is available without a source build via several distribution mechanisms:
 
@@ -1644,7 +1868,7 @@ The Vulkan SDK distribution is the lowest-friction path for teams already using 
 
 ---
 
-## 16. Integrations
+## 17. Integrations
 
 **Chapter 24 — SPIR-V and the Vulkan Shader Interface.** Slang's primary production output is SPIR-V. All SPIR-V Vulkan decorations discussed in Chapter 24 (`OpDecorate Binding`, `OpDecorate Location`, `OpDecorate DescriptorSet`, `OpExecutionMode LocalSize`) are generated by `slangc` from the corresponding Slang annotations (`[[vk::binding]]`, `[[vk::location]]`, `[numthreads]`). The SPIR-V capabilities used by Slang's cooperative vector backend (`SPV_NV_cooperative_vector`) are a superset of the capabilities discussed in Chapter 24.
 

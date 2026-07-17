@@ -24,9 +24,24 @@
 
 ## Introduction
 
-The Embedded DisplayPort (eDP) specification is a sibling to DisplayPort designed for the internal link between a laptop's GPU and its built-in LCD panel. While eDP reuses the DisplayPort PHY, link layer, and AUX channel, it adds a significant set of laptop-specific extensions: dedicated power-sequencing handshakes, backlight control registers, panel self-refresh with local frame buffering, selective update for partial-region refresh, and dynamic refresh rate switching. These extensions collectively account for a large fraction of a laptop's display subsystem power budget.
+The Embedded DisplayPort (eDP) specification is a sibling to DisplayPort designed for the internal link between a laptop's GPU and its built-in LCD panel. While eDP reuses the DisplayPort PHY, link layer, and AUX channel, it adds a significant set of laptop-specific extensions:
 
-This chapter is a field guide to every eDP-specific mechanism that appears in the Linux DRM kernel stack, from DPCD register layouts and AUX transaction mechanics to the Intel `intel_psr.c` and `intel_pps.c` implementations and the AMD display core's `amdgpu_dm_psr.c`. It also covers the `drm_panel` subsystem, bridge chips used in Chromebook and embedded designs, and the full complement of sysfs and debugfs interfaces available to diagnose display power issues on shipping laptops.
+- **Power-sequencing handshakes** — dedicated T1–T12 timing controls for panel power-on/off
+- **Backlight control registers** — DPCD-based AUX brightness control, eliminating the PWM signal line
+- **Panel self-refresh (PSR)** — local frame buffering in the panel TCON for GPU idle power savings
+- **Selective update (PSR2)** — partial-region refresh reducing retransmission bandwidth
+- **Dynamic refresh rate switching (DRRS)** — stepping down refresh rate during display inactivity
+
+These extensions collectively account for a large fraction of a laptop's display subsystem power budget.
+
+This chapter is a field guide to every eDP-specific mechanism that appears in the Linux DRM kernel stack, covering:
+
+- **DPCD register layouts and AUX transaction mechanics** — the foundational eDP register space and half-duplex communication protocol
+- **Intel `intel_psr.c` and `intel_pps.c` implementations** — Intel's PSR and panel power sequencing code paths
+- **AMD display core's `amdgpu_dm_psr.c`** — AMD's PSR implementation for Raven Ridge/Renoir/Rembrandt APUs
+- **`drm_panel` subsystem** — panel abstraction layer used on embedded platforms and Chromebooks
+- **Bridge chips** — DSI-to-eDP conversion chips used in Chromebook and embedded designs
+- **sysfs and debugfs interfaces** — the full complement of diagnostic tools for display power issues on shipping laptops
 
 ---
 

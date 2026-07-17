@@ -1,6 +1,10 @@
 # Chapter 199: Jupyter Internals: Architecture, Python Runtime, Multi-Kernel Support, and GPU Computing
 
-**Target audiences**: GPU compute developers using Jupyter for CUDA/ROCm/JAX workflows who want to understand what actually happens between pressing Shift+Enter and seeing a result; Python and IPython framework developers extending the kernel or building new language backends; data scientists who want to debug memory leaks, slow startups, or widget failures; browser and web platform engineers interested in JupyterLab's TypeScript rendering pipeline and how it maps onto MIME types and WebSocket protocol.
+**Target audiences**:
+- **GPU compute developers** — using Jupyter for CUDA/ROCm/JAX workflows who want to understand what actually happens between pressing Shift+Enter and seeing a result
+- **Python and IPython framework developers** — extending the kernel or building new language backends
+- **Data scientists** — who want to debug memory leaks, slow startups, or widget failures
+- **Browser and web platform engineers** — interested in JupyterLab's TypeScript rendering pipeline and how it maps onto MIME types and WebSocket protocol
 
 ---
 
