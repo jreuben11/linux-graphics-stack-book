@@ -23,6 +23,9 @@
   - [3.5 GPU Developer Tooling: PIX and the Ecosystem](#35-gpu-developer-tooling-pix-and-the-ecosystem)
   - [3.6 Gaming Ecosystem and AAA Title Coverage](#36-gaming-ecosystem-and-aaa-title-coverage)
   - [3.7 ML Integration: DirectML, DLSS, and Upscaling](#37-ml-integration-directml-dlss-and-upscaling)
+  - [3.8 Sampler Feedback: GPU-Generated Mip Access Telemetry](#38-sampler-feedback-gpu-generated-mip-access-telemetry)
+  - [3.9 HLSL Shader Model 6.x: Features That Arrived in DXIL Before SPIR-V](#39-hlsl-shader-model-6x-features-that-arrived-in-dxil-before-spirv)
+  - [3.10 MetaCommands: Opaque IHV ML Acceleration](#310-metacommands-opaque-ihv-ml-acceleration)
 - [4. Areas Where macOS Leads — and Linux's Response](#4-areas-where-macos-leads--and-linuxs-response)
   - [4.1 Unified Memory Architecture](#41-unified-memory-architecture)
   - [4.2 API Ergonomics: Metal vs. Vulkan](#42-api-ergonomics-metal-vs-vulkan)
@@ -367,6 +370,123 @@ FSR 3 (FidelityFX Super Resolution) is open-source (MIT) and ships via a Vulkan 
 
 DLSS works on Linux via the NVIDIA proprietary driver — the shared library is the same across platforms. FSR runs on Linux via gamescope or as a Vulkan layer. The gap is DirectML's deep integration with D3D12 execution graphs and the Windows AI Platform (Copilot+ NPU features) which have no Linux equivalent as of 2026.
 
+### 3.8 Sampler Feedback: GPU-Generated Mip Access Telemetry
+
+**Windows's lead.** D3D12 Sampler Feedback (SM6.5, part of DirectX 12 Ultimate) allows GPU shaders to record which mip regions a texture sampler accessed during rendering, writing this metadata into a *feedback map* alongside the texture. Two feedback map types exist:
+
+- **MinMip**: each texel region records the finest mip level that was actually requested — ideal for texture streaming systems that need to know which mip to fetch next
+- **MipRegionUsed**: a boolean per-region-per-mip recording whether a given mip tile was touched — used for texture-space shading to identify regions that need full shading
+
+The D3D12 surface is:
+- `ID3D12Device8::CreateSamplerFeedbackUnorderedAccessView()` — binds a feedback map UAV to a paired texture
+- HLSL intrinsics (SM6.5): `WriteSamplerFeedback()`, `WriteSamplerFeedbackBias()`, `WriteSamplerFeedbackGrad()`, `WriteSamplerFeedbackLevel()`
+- `ID3D12GraphicsCommandList1::ResolveSubresourceRegion()` with `D3D12_RESOLVE_MODE_ENCODE_SAMPLER_FEEDBACK` / `D3D12_RESOLVE_MODE_DECODE_SAMPLER_FEEDBACK` to transcode between the opaque GPU feedback format and a CPU-readable layout
+
+```hlsl
+// HLSL (SM6.5) — MinMip sampler feedback in a pixel shader
+Texture2D<float4> g_AlbedoTex : register(t0);
+FeedbackTexture2D<SAMPLER_FEEDBACK_MIN_MIP> g_FeedbackMap : register(u1);
+SamplerState g_Sampler : register(s0);
+
+float4 PSMain(float2 uv : TEXCOORD) : SV_Target
+{
+    // Records the mip level requested at `uv` into g_FeedbackMap,
+    // enabling a streaming system to fetch exactly the right mip tile
+    // after this frame completes — without any CPU heuristic.
+    g_FeedbackMap.WriteSamplerFeedback(g_AlbedoTex, g_Sampler, uv);
+    return g_AlbedoTex.Sample(g_Sampler, uv);
+}
+```
+
+The result: a texture streaming system reads the feedback map after each frame to determine exactly which mip tiles to stream in, replacing heuristic prefetching with a GPU-authoritative record. Halo Infinite and Forza Horizon 5 use sampler feedback for their texture streaming systems.
+
+**Vulkan's response.** The only Vulkan mechanism is `VK_NV_shader_image_footprint` (NVIDIA vendor-only, extension 204), which adds `textureFootprint*NV()` GLSL intrinsics to query the texel set accessed by a lookup. The vkd3d-proton developers confirmed it lacks the filter modes required to pass the D3D12 sampler feedback conformance tests ([dxil-spirv #157](https://github.com/HansKristian-Work/dxil-spirv/issues/157)). VKD3D-Proton emulates D3D12 sampler feedback using 64-bit atomics — correct but with higher shader cost than a dedicated hardware path. The existing parity-table entry `VK_EXT_sampler_filter_minmax` is unrelated: that extension adds min/max reduction filtering modes, not mip-access telemetry.
+
+**Vulkan roadmap.** Khronos issue [#1773](https://github.com/KhronosGroup/Vulkan-Docs/issues/1773) ("Cross-vendor version of VK_NV_shader_image_footprint") has been open since 2021, with last activity in April 2026. No proposal document, no PR, and no Khronos commitment exists. This is the most stalled of the three structural D3D12 gaps; closure before 2028 is unlikely.
+
+---
+
+### 3.9 HLSL Shader Model 6.x: Features That Arrived in DXIL Before SPIR-V
+
+DirectX's Shader Model versioning has consistently delivered new GPU capabilities through DXIL/DXC before equivalent SPIR-V extensions are ratified. The table below maps SM level to Vulkan equivalents:
+
+| SM Level | Feature | Vulkan / SPIR-V Equivalent | Status |
+|----------|---------|---------------------------|--------|
+| SM6.6 | Payload Access Qualifiers (PAQs) | None | DXIL-exclusive |
+| SM6.6 | `[WaveSize(n)]` compute attribute | `VK_EXT_subgroup_size_control` | Vulkan 1.3 core |
+| SM6.6 | `ResourceDescriptorHeap[i]` dynamic indexing | `VK_EXT_descriptor_indexing` | Vulkan 1.2 core |
+| SM6.7 | `GatherRaw()` / `RWTexture2DMS` writable MSAA | None | DXIL-exclusive |
+| SM6.7 | `QuadAny()` / `QuadAll()` | `SPV_KHR_quad_control` + `SPV_KHR_maximal_reconvergence` | KHR-ratified (2024) |
+| SM6.8 | Work Graphs (`[Shader("node")]`) | `VK_AMDX_shader_enqueue` | AMD vendor-only (provisional) |
+| SM6.9 | Long Vectors (`vector<T,N>`, N ≤ 1,024) | None | DXIL-exclusive |
+| SM6.9 | Opacity Micromaps | `VK_EXT_opacity_micromap` | Ratified EXT |
+| SM6.9 | Shader Execution Reordering (`MaybeReorderThread`, `HitObject`) | `VK_NV_ray_tracing_invocation_reorder` | NVIDIA vendor-only |
+| SM6.9 preview | Cooperative Vectors (`Mul<T>`, `MulAdd<T>`, `VectorAccumulate`) | `VK_NV_cooperative_vector` | NVIDIA vendor-only |
+
+**SM6.6: Payload Access Qualifiers.** PAQs annotate individual fields in DXR ray payload structs with per-field read/write access hints, allowing the driver to minimize register spilling across shader invocations:
+
+```hlsl
+// HLSL SM6.6 — per-field payload access qualifiers
+struct [raypayload] Payload {
+    float3 color    : read(closesthit, miss) : write(raygen, closesthit, miss);
+    float  distance : read(raygen)           : write(closesthit, miss);
+    bool   hit      : read(raygen)           : write(closesthit, miss);
+};
+```
+
+There is no SPIR-V equivalent; `OpRayPayloadKHR` storage does not carry per-field access information. Drivers that translate DXIL to SPIR-V (vkd3d-proton) must discard PAQ metadata, leaving register pressure optimization to the receiving driver's backend.
+
+**SM6.7: Advanced Texture Ops.** `GatherRaw()` returns raw texel values as typed integers (`uint16_t4`, `uint32_t4`, `uint64_t4`) without format conversion — useful for reinterpreting packed data without UAV type aliasing. `RWTexture2DMS<T,N>` adds UAV write access to MSAA render targets. Neither has a SPIR-V equivalent; the closest approximation uses storage images or manual unpack compute shaders. Note: `QuadSwap` is not a real HLSL intrinsic; cross-lane quad reads (`QuadReadAcrossX`, `QuadReadAcrossY`, `QuadReadAcrossDiagonal`) date from SM6.0; SM6.7 added only `QuadAny`/`QuadAll` quad-scope boolean reductions, which do have SPIR-V equivalents via `SPV_KHR_quad_control`.
+
+**SM6.8: Work Graphs.** Covered in depth in Ch. 192 (GPU-Generated Commands). `VK_AMDX_shader_enqueue` is the Vulkan analogue, currently AMD-vendor-only with no KHR promotion timeline.
+
+**SM6.9: Long Vectors.** `vector<T,N>` with N up to 1,024 exposes vector register files for ML inference operations — a natural fit for MLP evaluation where each lane processes one weight-vector product. No SPIR-V equivalent exists; Vulkan ML workloads instead split across invocations using `VK_KHR_cooperative_matrix` or tiled compute shaders.
+
+**SM6.9 preview: Cooperative Vectors.** Cooperative vectors expose per-invocation inference operations — `Mul<T>()` for matrix-vector products, `MulAdd<T>()` for fused multiply-accumulate, `VectorAccumulate()` for outer-product accumulation. These are currently *preview only* in Agility SDK 1.717.1-preview and are being superseded by the SM6.10 Linear Algebra Matrix spec. The Vulkan equivalent is `VK_NV_cooperative_vector` (ratified NVIDIA vendor extension), which adds `coopVecMatMulAddNV()`, `coopVecLoadNV()`, and `coopVecStoreNV()` alongside the companion `VK_NV_cooperative_matrix_decode_vector` for quantized weight unpacking (landed Vulkan 1.4.352, June 2026). A cross-vendor `VK_KHR_cooperative_vector` is the expected next step — following the precedent of `VK_NV_cooperative_matrix` → `VK_KHR_cooperative_matrix` — and is plausible by 2027.
+
+**Vulkan roadmap.** The Khronos Vulkan Roadmap 2026 and SIGGRAPH 2025 updates signal active ML investment: `VK_KHR_cooperative_matrix` adoption in llama.cpp, `VK_KHR_shader_bfloat16`, and `VK_EXT_shader_float8` ([Khronos blog, SIGGRAPH 2025](https://www.khronos.org/blog/vulkan-continuing-to-forge-ahead-siggraph-2025)). The convergence path for `VK_KHR_cooperative_vector` is well-precedented. The outlook for PAQs and `GatherRaw`/`RWTexture2DMS` is bleaker — these are rendering-pipeline features with narrower cross-vendor demand and no proposals in progress.
+
+**Design comparison: D3D12 Placed Resources vs. Vulkan memory aliasing.** A commonly-cited D3D12 advantage — `CreatePlacedResource()` placing a resource at an explicit offset in an `ID3D12Heap` — is a *design difference* rather than a capability gap. Vulkan's `vkBindBufferMemory()` / `vkBindImageMemory()` with overlapping `memoryOffset` and `VK_IMAGE_CREATE_ALIAS_BIT` provides the same semantics: multiple resources sharing overlapping memory, an aliasing barrier to switch between them, and a re-initialization requirement. Vulkan is arguably more explicit: `VK_IMAGE_CREATE_ALIAS_BIT` must be declared at image creation time, making aliasing intent visible to the driver before any memory is bound, whereas D3D12 allows any two placed resources in the same heap region to alias without advance declaration.
+
+---
+
+### 3.10 MetaCommands: Opaque IHV ML Acceleration
+
+**Windows's lead.** D3D12 MetaCommands (`ID3D12MetaCommand`) are opaque objects identified by GUID that wrap IHV-accelerated algorithms — typically ML operators — inside the D3D12 command list model. The driver supplies the implementation; the application calls generic lifecycle APIs:
+
+- `ID3D12Device5::EnumerateMetaCommands()` — queries which algorithm GUIDs the driver supports and what parameters each takes
+- `ID3D12Device5::CreateMetaCommand(REFGUID, nodeMask, pCreationParametersData, ...)` — instantiates a specific algorithm
+- `ID3D12GraphicsCommandList4::InitializeMetaCommand()` — one-time setup (weight preprocessing, workspace allocation)
+- `ID3D12GraphicsCommandList4::ExecuteMetaCommand()` — per-inference dispatch
+
+DirectML uses MetaCommands internally: GEMM, convolution, and batch normalization operators dispatch to IHV-optimized GUID implementations when the hardware reports support, falling back to hand-authored HLSL compute shaders otherwise. This allows NVIDIA, AMD, and Intel to ship fused-operator kernels through a uniform API surface without exposing proprietary ISA to the application layer.
+
+```cpp
+// D3D12 MetaCommand lifecycle (simplified)
+IID gemm_guid = /* vendor-disclosed GUID for GEMM */;
+ID3D12MetaCommand* mc;
+device5->CreateMetaCommand(gemm_guid, 0,
+    &creation_params, sizeof(creation_params), IID_PPV_ARGS(&mc));
+
+// One-time weight prepack on the command list
+cmd_list4->InitializeMetaCommand(mc, &init_params, sizeof(init_params));
+
+// Per-inference dispatch — no HLSL visible; driver owns the kernel
+cmd_list4->ExecuteMetaCommand(mc, &exec_params, sizeof(exec_params));
+```
+
+The MetaCommand specification is not fully public: GUIDs and parameter schemas are disclosed to IHVs separately under NDA ([DirectX-Specs issue #176](https://github.com/microsoft/DirectX-Specs/issues/176)). The practical consequence is that DirectML operator throughput on Windows can exceed what a well-tuned Vulkan compute shader achieves on the same hardware, because the IHV kernel uses internal hardware features — tensor cores in fused quantized mode, custom memory access patterns — not expressible in SPIR-V.
+
+**Vulkan's response.** There is no Vulkan equivalent. Vulkan ML acceleration runs through separate paths that do not embed opaque IHV kernels in the command buffer:
+
+- `VK_KHR_cooperative_matrix` — cross-vendor tiled GEMM in compute shaders; portable but not fused with quantization or activation in hardware
+- Vendor compute extensions (`VK_NV_cooperative_vector`, `VK_KHR_shader_bfloat16`) — ML-typed arithmetic in shaders, visible to the compiler
+- External API interop (CUDA via `VK_NV_external_memory`, ROCm HIP) — bypass Vulkan for training workloads entirely
+
+Two mobile-centric proposals indicate Khronos interest in graph-level ML dispatch: `VK_ARM_tensors` (ARM neural processor integration) and `VK_QCOM_data_graph_model` (Qualcomm HTP graph scheduling) offer analogous opaque-acceleration concepts for mobile SoCs. Neither targets discrete GPU parity with MetaCommands. The fundamental architectural difference is that Vulkan's design philosophy pushes IHV optimization into the driver (which may select its own MetaCommand equivalent internally when it sees a GEMM dispatch pattern), rather than exposing it as an explicit API contract. This keeps Vulkan portable at the cost of making IHV-specific optimization invisible to the application.
+
+**Vulkan roadmap.** No MetaCommand-equivalent mechanism is being standardized. The gap is unlikely to close in the same form: the D3D12 MetaCommand model is a Windows-ecosystem driver ABI concept tightly bound to WDDM's IHV NDA relationship. The Vulkan ML story is evolving through transparent shader-level primitives (`VK_KHR_cooperative_matrix`, `VK_KHR_cooperative_vector` anticipated) rather than opaque dispatch.
+
 ---
 
 ## 4. Areas Where macOS Leads — and Linux's Response
@@ -583,6 +703,11 @@ Mesa's quarterly release cadence (e.g., Mesa 24.0 → 24.1 → 24.2 → 24.3 ove
 | AV1 hardware encode | ✓ (RADV VCN5, ANV) | ✓ | ✓ (M3+) |
 | DirectStorage / zero-copy NVMe | ✗ (no shipping implementation) | ✓ | Partial |
 | Per-process GPU fault isolation | In progress | ✓ (WDDM 3.0) | ✓ |
+| Sampler feedback (mip telemetry) | ✗ (`VK_NV_shader_image_footprint` only) | ✓ (SM6.5 / DX12 Ultimate) | ✗ |
+| Work Graphs | ✗ (`VK_AMDX_shader_enqueue`, AMD only) | ✓ (SM6.8 / Agility SDK) | ✗ |
+| Cooperative Vectors (inference) | NVIDIA only (`VK_NV_cooperative_vector`) | Preview (SM6.9 / Agility SDK) | ✗ |
+| Opaque IHV ML kernels (MetaCommands) | ✗ | ✓ (DirectML internal path) | Limited (Core ML) |
+| Ray payload access qualifiers (PAQs) | ✗ | ✓ (SM6.6) | ✗ |
 
 ---
 
