@@ -33,7 +33,13 @@ It covers the full OpenCL ecosystem on Linux:
 8. [OpenCL–OpenGL Interop and DMA-BUF](#8-openclopengl-interop-and-dma-buf)
 9. [Real-World Applications](#9-real-world-applications)
 10. [Debugging and Profiling](#10-debugging-and-profiling)
-11. [Integrations](#11-integrations)
+11. [OpenCL's Strategic Trajectory: Strongholds, Pressure, and the Path Forward](#11-opencls-strategic-trajectory-strongholds-pressure-and-the-path-forward)
+    - 11.1 [Where OpenCL Has Lost Ground](#111-where-opencl-has-lost-ground)
+    - 11.2 [OpenCL 3.0's Voluntary Extension Model: A Strategic Retreat](#112-opencl-30s-voluntary-extension-model-a-strategic-retreat)
+    - 11.3 [Remaining Strongholds](#113-remaining-strongholds)
+    - 11.4 [The SYCL and Vulkan Pressure](#114-the-sycl-and-vulkan-pressure)
+    - 11.5 [OpenCL's Future: Convergence or Maintenance Mode?](#115-opencls-future-convergence-or-maintenance-mode)
+12. [Integrations](#12-integrations)
 
 ---
 
@@ -1060,7 +1066,82 @@ Implementations seeking Khronos conformance must pass all mandatory tests and re
 
 ---
 
-## 11. Integrations
+## 11. OpenCL's Strategic Trajectory: Strongholds, Pressure, and the Path Forward
+
+OpenCL was ratified in 2008 as the cross-vendor answer to CUDA's growing NVIDIA lock-in. It delivered on the portability promise: a single program runs on Intel GPUs, AMD GPUs, NVIDIA GPUs, ARM Mali, and CPU implementations like pocl. Yet by the mid-2010s, the ML and HPC communities had moved decisively to CUDA, and by 2026 OpenCL has clearly lost its ambition to be the universal GPU compute API. Understanding why — and what it remains good for — requires distinguishing the domains where it genuinely lost from the niches where it remains the best available option.
+
+### 11.1 Where OpenCL Has Lost Ground
+
+**Machine learning and deep learning.** The window in which OpenCL could have become the ML compute substrate was 2012–2016. During this period, cuDNN v1 (2014) locked PyTorch, Caffe, and TensorFlow into CUDA by providing fused convolution kernels that no OpenCL implementation could match. AMD's attempt to build a competitive OpenCL ML stack (clDNN → OpenVINO) never achieved parity with cuDNN throughput on AMD's own hardware. By 2018, PyTorch had no production OpenCL backend; TensorFlow's OpenCL backend (contributed by Codeplay) was experimental and is no longer maintained. In 2026 there is no production ML training framework with an OpenCL path.
+
+**High-performance computing (HPC).** OpenCL was the standard of choice for FPGA-accelerated HPC and heterogeneous supercomputing (2010–2016). The OpenCL on FPGA path (Intel HLS + Altera SDK, Xilinx SDAccel) was a genuine advantage. But SYCL's HPC adoption — Aurora at Argonne, JUPITER at Forschungszentrum Jülich — has absorbed the "portable, high-level, non-CUDA HPC" use case that OpenCL previously served. The CERN ACTS tracking framework, GROMACS, and NAMD all added SYCL backends and are not adding new OpenCL backends.
+
+**Apple's deprecation.** Apple co-authored the OpenCL 1.0 specification in 2008. In macOS Mojave (2018), Apple deprecated both OpenCL and OpenGL in favour of Metal. macOS 15 still ships OpenCL for legacy compatibility, but no Apple-developed application uses it, and the implementation has not been updated to OpenCL 1.2+. This removed one of the three largest desktop OS platforms from the OpenCL ecosystem.
+
+**NVIDIA de-prioritisation.** NVIDIA ships an OpenCL 3.0-capable implementation with every driver, but it is not a strategic focus. NVIDIA's OpenCL implementation does not expose CUDA-specific features (tensor cores, NVLink topology, cooperative groups) through OpenCL extensions. NVIDIA publishes no roadmap for OpenCL improvements, and the implementation has had no architectural changes since 2019.
+
+### 11.2 OpenCL 3.0's Voluntary Extension Model: A Strategic Retreat
+
+OpenCL 3.0 (2020) made a revealing design choice: it reduced the mandatory baseline to OpenCL 1.2 and declared all OpenCL 2.x features — device-side enqueue, pipes, fine-grain SVM, shared virtual memory — *optional*. An implementation is OpenCL 3.0 conformant if it passes the CTS with no optional features enabled.
+
+This was a practical response to fragmentation: many OpenCL 2.0 features (device-side enqueue in particular) were difficult to implement on GPUs that use a WDDM/WGSL command model, and most real applications did not use them. But the signal it sent to the ecosystem was significant: rather than defining where OpenCL was going, Khronos was acknowledging where implementations actually were. The mandatory baseline of OpenCL 3.0 is functionally equivalent to OpenCL 1.2, a specification from 2011.
+
+```bash
+# What "OpenCL 3.0" actually guarantees on a given device:
+clinfo | grep -E "OpenCL C|SVM capabilities|Device-side"
+# OpenCL C version: OpenCL C 1.2                  ← mandatory minimum
+# SVM capabilities: (n/a)                          ← fine-grain SVM is optional
+# Device-side Enqueue: false                       ← optional and often absent
+```
+
+The consequence: application code targeting OpenCL 3.0 optional features (SVM, device enqueue) is not portable across OpenCL 3.0 implementations. Developers who need those features must either query capabilities at runtime and fall back, or target specific implementations known to support them (Intel NEO, rusticl on Mesa 25+). This undermines the portability argument that was OpenCL's primary value proposition.
+
+Contrast with Vulkan's approach: Vulkan 1.3 has a mandatory feature set (dynamic rendering, synchronization2, maintenance4) that every conformant driver must support. A Vulkan 1.3 application targeting only core features has genuine portability guarantees that OpenCL 3.0 cannot match.
+
+### 11.3 Remaining Strongholds
+
+OpenCL remains the best or only portable compute option in three specific contexts.
+
+**Embedded and automotive Linux.** ARM Mali GPUs (Bifrost, Valhall), Qualcomm Adreno, Vivante GC (used in automotive i.MX8), and Imagination PowerVR all ship OpenCL implementations. For these targets — dashboards, ADAS systems, industrial vision — Vulkan compute is often absent or incomplete, CUDA is unavailable, and SYCL has no implementation. OpenCL 1.2 is the universal embedded compute API. The AUTOSAR and GENIVI standards reference OpenCL for accelerated ADAS workloads. This market is not glamorous but is substantial and not going away.
+
+**Image processing pipelines and legacy applications.** Darktable's pixel pipeline (tone mapping, lens correction, demosaicing) runs in OpenCL across AMD, Intel, and NVIDIA hardware without requiring CUDA or ROCm. hashcat (password auditing), BOINC (distributed scientific computing), and several medical imaging applications (3D Slicer plugins, OsiriX filters) depend on OpenCL portability. These applications would require significant porting effort to migrate to Vulkan compute or SYCL, and the portability payoff would be smaller (they already run on all target hardware via OpenCL).
+
+**FPGA compute.** Intel's oneAPI for FPGAs and Xilinx/AMD Vitis still expose an OpenCL programming model (with vendor-specific extensions) for FPGA kernel compilation. The FPGA toolchains use OpenCL as the high-level abstraction and compile to FPGA bitstream. SYCL is being adopted for new FPGA work, but the existing OpenCL FPGA ecosystem — millions of lines of IP library code — is not being rewritten.
+
+**The open-source stack.** rusticl gives every Mesa Gallium driver (radeonsi, iris, softpipe, llvmpipe) an OpenCL interface for free. This means OpenCL works out-of-the-box on any Linux system with Mesa — no proprietary runtime required. For open-source compute on hardware where ROCm is unavailable (older AMD hardware, Intel without NEO), rusticl is the only option. This makes OpenCL the universal fallback for open-source GPU compute on Linux.
+
+### 11.4 The SYCL and Vulkan Pressure
+
+The two Khronos standards that most directly pressure OpenCL's remaining use cases are SYCL and Vulkan compute — both of which share the SPIR-V intermediate representation with OpenCL 3.0.
+
+**SYCL as the intended evolution.** Khronos's own messaging positions SYCL 2020 as the next-generation API for new portable compute development. Where OpenCL uses C99-derived kernel syntax with explicit `__kernel`, `__global`, and `__local` qualifiers, SYCL provides modern C++17 with templates, lambdas, and type-safe accessors. Intel's investment in DPC++/SYCL and AMD's support via AdaptiveCpp make SYCL the forward-looking choice for HPC portability. New projects that would have used OpenCL in 2015 now use SYCL in 2026.
+
+**Vulkan compute for graphics-adjacent workloads.** Applications that are already Vulkan-based (game engines, compositors, video processors) can dispatch compute work from the same command buffer as their graphics work, sharing memory allocations, pipeline barriers, and synchronisation primitives. Adding OpenCL to such a pipeline would require the full ICD loader overhead, separate memory management, and cross-API synchronisation via `cl_khr_external_semaphore`. Vulkan compute, by contrast, has zero overhead — it is the same queue.
+
+**The SPIR-V convergence that reduces the distinction.** OpenCL 3.0's `clCreateProgramWithIL` and Vulkan's `vkCreateShaderModule` both ingest SPIR-V. At the IR level, an OpenCL kernel compiled to SPIR-V and a Vulkan compute shader compiled to SPIR-V are structurally similar; Mesa's `spirv_to_nir()` handles both. This convergence means that in the long term, the distinction between OpenCL and Vulkan compute becomes a question of the host API (verbose C vs verbose C) and the memory model (buffer/accessor vs descriptor sets), not the hardware path or the IR.
+
+### 11.5 OpenCL's Future: Convergence or Maintenance Mode?
+
+The honest answer is that OpenCL occupies different trajectories in different segments:
+
+| Segment | Trajectory | Reason |
+|---|---|---|
+| ML / deep learning training | Dead | CUDA/ROCm won; no framework support |
+| HPC on Intel-adjacent clusters | Declining → SYCL | SYCL supersedes with better C++ model |
+| Embedded / automotive | Stable | No viable alternative on target hardware |
+| Legacy image processing apps | Stable | Working code; no incentive to port |
+| FPGA compute | Slow decline → SYCL | oneAPI for FPGAs evolving toward SYCL |
+| Open-source Linux stack | Growing | rusticl enables OpenCL on all Mesa drivers |
+
+OpenCL 3.1, currently in draft, adds work-graph extensions and tighter SPIR-V 1.7 alignment. This suggests Khronos is not abandoning the specification — the OpenCL working group remains active. But the scope of OpenCL's ambition has narrowed: from universal GPU compute (2008) to a portable embedded/legacy API with a viable open-source implementation on Linux (2026).
+
+The most likely long-term outcome is not death but *convergence with SPIR-V*: OpenCL C kernels become one of several SPIR-V source languages (alongside GLSL, HLSL via DXC, WGSL, and SYCL kernels), and `clCreateProgramWithIL` becomes the ingestion point for pre-compiled SPIR-V regardless of source language. In this model, OpenCL's ICD loader and host API remain as a compatibility layer while the actual compute machinery is shared with Vulkan at the SPIR-V and driver level — which is already exactly how rusticl works in Mesa today.
+
+For new projects in 2026: prefer SYCL if cross-vendor HPC portability is needed; prefer Vulkan compute if the project is already Vulkan-based; use OpenCL if targeting embedded hardware without Vulkan or maintaining existing OpenCL code. Do not start new ML training work in OpenCL.
+
+---
+
+## 12. Integrations
 
 - **Ch14 (NIR)**: rusticl compiles OpenCL C through SPIR-V into NIR — the same IR used by all Mesa Gallium drivers for graphics and Vulkan workloads. The `spirv_to_nir()` function in Mesa is the shared entry point.
 
