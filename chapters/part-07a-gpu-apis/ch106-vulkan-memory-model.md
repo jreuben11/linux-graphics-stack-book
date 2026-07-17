@@ -795,45 +795,6 @@ uint v = atomicLoad(data.value, gl_ScopeDevice, gl_StorageSemanticsBuffer,
                     gl_SemanticsAcquire | gl_SemanticsMakeVisible);
 ```
 
-**Slang equivalent** — `RWStructuredBuffer<Atomic<uint>>` encodes atomicity in the buffer element type so the compiler rejects any plain read or write, and `.store()`/`.load()` with named `MemoryOrder` parameters replace the six-argument GLSL forms; device scope is implicit in all `Atomic<T>` operations, and `MemoryOrder.Release` on an atomic store is sufficient to perform the availability operation without a separate `gl_SemanticsMakeAvailable` flag.
-
-```slang
-// File: producer_consumer_atomic.slang
-// Slang improvements:
-// - RWStructuredBuffer<Atomic<uint>> makes atomicity a type-level property; the compiler
-//   rejects non-atomic access, preventing the Bug 5 class of error at compile time
-// - .store(v, MemoryOrder.Release) and .load(MemoryOrder.Acquire) replace the 6-parameter
-//   GLSL atomicStore/atomicLoad forms; device scope is implicit in all Atomic<T> operations
-// - For atomic operations under the Vulkan memory model, Release semantics on a store
-//   perform the availability operation; Acquire semantics on a load perform the visibility
-//   operation — no separate gl_SemanticsMakeAvailable / gl_SemanticsMakeVisible needed
-
-[require(vk_mem_model)]
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void producer(
-    [[vk::binding(0, 0)]] RWStructuredBuffer<Atomic<uint>> dataValue,
-    [[vk::binding(1, 0)]] RWStructuredBuffer<Atomic<uint>> readyFlag)
-{
-    // Release: makes the data write available before the flag is observable.
-    dataValue[0].store(42u, MemoryOrder.Release);
-    readyFlag[0].store(1u,  MemoryOrder.Release);
-}
-
-[require(vk_mem_model)]
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void consumer(
-    [[vk::binding(0, 0)]] RWStructuredBuffer<Atomic<uint>> dataValue,
-    [[vk::binding(1, 0)]] RWStructuredBuffer<Atomic<uint>> readyFlag)
-{
-    // Acquire: establishes happens-before with the producer's Release on readyFlag.
-    // Once the flag is observed as 1, dataValue[0] is visible without a second barrier.
-    while (readyFlag[0].load(MemoryOrder.Acquire) == 0u) {}
-    uint v = dataValue[0].load(MemoryOrder.Acquire);
-}
-```
-
 ---
 
 ## Real-World Patterns
@@ -979,6 +940,52 @@ void main() {
                               gl_StorageSemanticsBuffer,
                               gl_SemanticsAcquireRelease);
         out_cmds[slot] = cmd;
+    }
+}
+```
+
+**Slang equivalent** — `RWStructuredBuffer<Atomic<uint>>` encodes atomicity in the counter element type while `StructuredBuffer<DrawCommand>` and `RWStructuredBuffer<DrawCommand>` remain plain typed-struct buffers; `.add(1u, MemoryOrder.AcquireRelease)` replaces the five-argument `atomicAdd` call and is a faithful translation because this block uses `gl_SemanticsAcquireRelease` with no `Make*` operands — a pattern where `Atomic<T>` fully captures the intent.
+
+```slang
+// File: culling.slang
+// Slang improvements:
+// - RWStructuredBuffer<Atomic<uint>> for drawCount makes counter atomicity a compile-time
+//   type property; StructuredBuffer<DrawCommand>/RWStructuredBuffer<DrawCommand> stay non-atomic
+//   because cross-dispatch visibility of the command payload is the host barrier's responsibility
+// - drawCount[0].add(1u, MemoryOrder.AcquireRelease) replaces the 5-argument atomicAdd form;
+//   device scope is implicit in all Atomic<T> operations; the translation is faithful because the
+//   original uses gl_SemanticsAcquireRelease with no Make* operands that Atomic<T> cannot express
+// - [require(vk_mem_model)] replaces '#extension GL_KHR_memory_scope_semantics : enable'
+// - outCmds[slot] = cmd is deliberately non-atomic; cross-stage visibility to the indirect-draw
+//   stage is provided by a vkCmdPipelineBarrier2 (SHADER_STORAGE_WRITE -> INDIRECT_COMMAND_READ)
+
+struct DrawCommand {
+    uint indexCount; uint instanceCount;
+    uint firstIndex; int  vertexOffset; uint firstInstance;
+};
+struct CullingParams { row_major float4x4 viewProj; uint totalCmds; };
+
+bool is_visible(DrawCommand cmd) { return true; }  // ... frustum test against cmd.bounds ...
+
+[require(vk_mem_model)]
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void main(
+    [[vk::binding(0, 0)]] StructuredBuffer<DrawCommand>    inCmds,
+    [[vk::binding(1, 0)]] RWStructuredBuffer<Atomic<uint>> drawCount,
+    [[vk::binding(2, 0)]] RWStructuredBuffer<DrawCommand>  outCmds,
+    [[vk::binding(3, 0)]] ConstantBuffer<CullingParams>    params,
+    uint3 dispatchID : SV_DispatchThreadID)
+{
+    uint id = dispatchID.x;
+    if (id >= params.totalCmds) return;
+
+    DrawCommand cmd = inCmds[id];
+    if (is_visible(cmd)) {
+        // AcquireRelease: prior writes made available; claimed slot visible to any later acquire.
+        // outCmds[slot] is non-atomic — cross-dispatch visibility is the host barrier's job.
+        uint slot = drawCount[0].add(1u, MemoryOrder.AcquireRelease);
+        outCmds[slot] = cmd;
     }
 }
 ```
