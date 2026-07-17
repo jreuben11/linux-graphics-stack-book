@@ -47,6 +47,9 @@
     - 10.2 [CUDA-to-SYCL Programming Model Mapping](#102-cuda-to-sycl-programming-model-mapping)
     - 10.3 [Productivity Cost vs. Portability Gain](#103-productivity-cost-vs-portability-gain)
 11. [Strategic Outlook: SYCL's Position in the GPU Compute Landscape](#11-strategic-outlook-sycls-position-in-the-gpu-compute-landscape)
+    - 11.1 [Structural Barriers: Technical Blockers](#111-structural-barriers-technical-blockers)
+    - 11.2 [Structural Barriers: Political and Ecosystem Blockers](#112-structural-barriers-political-and-ecosystem-blockers)
+    - 11.3 [Where Convergence Is Happening](#113-where-convergence-is-happening)
 12. [Integrations](#12-integrations)
 13. [References](#13-references)
 
@@ -1279,6 +1282,59 @@ The GPU compute API landscape in 2026 is structurally dominated by CUDA: NVIDIA 
 **The fragmentation risk.** SYCL's portability claim is weakened by implementation divergence. Intel DPC++ (`icpx` / `intel/llvm`) is the most complete implementation but is Intel-primary in testing. AdaptiveCpp (formerly hipSYCL) independently implements the spec and uses a different compilation model (SSCP vs. DPC++'s SMCP), with different extension namespaces, different JIT caching semantics, and slightly different conformance coverage on edge cases. Codeplay's ComputeCpp (now maintenance-only, superseded by DPC++ CUDA/HIP adapters) and the research-grade triSYCL further fragment the ecosystem. Differences in `sycl_ext_oneapi_*` extension support across implementations mean that code using experimental features must be conditionally compiled per implementation, partially defeating the portability goal. The SYCL conformance test suite (CTS) exists and is mandatory for Khronos conformance claims, but implementation-specific behaviour in areas such as sub-group sizes and USM shared allocation coherence guarantees is observable in production code.
 
 **Realistic outlook.** SYCL will remain a niche compute API in the Linux ecosystem through the near and medium term. It occupies a defensible position in two contexts: Intel Xe HPC workloads, where it is the primary programming model with genuine upstream support from IGC, Level Zero, and oneAPI libraries; and CUDA migration tooling, where SYCLomatic/`dpct` provides a credible automated path for organisations evaluating non-NVIDIA infrastructure. It is not a challenger to CUDA dominance in ML, and it is not a replacement for Vulkan compute shaders in graphics-adjacent workloads where the tooling, pipeline integration, and driver maturity strongly favour staying in the Vulkan command buffer model. The strategic value of SYCL is real but bounded: it matters most where Intel-sponsored HPC deployments make it the default, and it provides migration optionality for codebases that need to escape CUDA lock-in — provided they are willing to absorb the library ecosystem gap and accept that performance parity on non-Intel hardware requires ongoing implementation work.
+
+### 11.1 Structural Barriers: Technical Blockers
+
+Five technical gaps prevent SYCL and Vulkan compute from reaching feature and performance parity with CUDA on the workloads that matter most.
+
+**The SPIR-V and SYCL IR ceiling.** SPIR-V can only express what the Khronos specification defines. Each new GPU generation ships hardware capabilities in CUDA PTX or DXIL first — NVIDIA tensor core matrix operations (`ldmatrix`, `mma.sync`), vendor-specific atomic semantics, fused quantized GEMM modes — and the cross-vendor SPIR-V extension arrives 12–24 months later, if it arrives at all. CUDA PTX, by contrast, exposes NVIDIA's ISA directly; kernels compiled to PTX can use any instruction the chip supports without waiting for a Khronos vote. The result is that a new NVIDIA hardware generation (e.g., Blackwell B200) ships with tensor core capabilities exploitable by CUDA immediately, while the equivalent Vulkan extension (`VK_KHR_cooperative_matrix` generalisations, `VK_NV_cooperative_vector`) arrives later and requires all major vendors to implement before it becomes a KHR. Slang (Ch. 117) partially mitigates this by compiling to SPIR-V *and* PTX from one source, but only one-directionally: the SPIR-V target remains limited by the spec.
+
+**No device-side kernel launch.** CUDA dynamic parallelism lets a running GPU kernel call `cudaDeviceSynchronize()`, launch child grids, and recurse — enabling adaptive octree subdivision, streaming BVH construction, and neural network layer scheduling that branches based on activations. ROCm HIP supports the equivalent via `hipLaunchKernel` from device code. SYCL 2020 has no `queue::submit` from device code; the programming model is strictly host-initiates, device-executes. Vulkan Work Graphs (`VK_AMDX_shader_enqueue`) is the beginning of an answer — GPU-initiated dispatch of subsequent work items — but it is AMD-vendor-only as of mid-2026 and uses a fundamentally different graph-node model rather than arbitrary recursion.
+
+**Library ecosystem gap.** cuDNN, cuBLAS, NCCL, cuFFT, and cuSPARSE have 15+ years of IHV-tuned fused kernels. The CUDA ecosystem has dedicated engineering teams at NVIDIA optimising for every new architecture. The portable equivalents are thin: oneMKL provides BLAS/FFT on Intel hardware and partially on NVIDIA/AMD, but throughput on non-Intel hardware lags vendor-native libraries in compute-bound benchmarks. There is no portable Vulkan equivalent of cuDNN's fused attention, quantized convolution, or graph-level kernel fusion. Projects like llama.cpp's Vulkan backend demonstrate what is achievable with a volunteer effort; the performance gap relative to cuBLAS on NVIDIA hardware ranges from 20% for bandwidth-bound operations to 3–5× for compute-bound fused kernels.
+
+**Training frameworks are CUDA-locked by design.** PyTorch, TensorFlow, and JAX are CUDA-first. The mechanisms that matter for training — CUDA Graphs (pre-recorded launch sequences replayed with zero CPU overhead), NCCL ring-allreduce over NVLink/InfiniBand, and PyTorch's caching allocator which reuses CUDA stream-ordered allocations — are tightly coupled to the CUDA runtime ABI. SYCL kernels can express the same algorithms, but there is no SYCL-based NCCL, no SYCL CUDA Graphs equivalent in production use, and no JAX SYCL backend. ROCm provides a viable second path for training (PyTorch XPU for Intel, PyTorch ROCm for AMD), but SYCL is not a training platform.
+
+**SYCL performance on non-Intel hardware.** AdaptiveCpp and DPC++ translate SYCL to CUDA via the LLVM NVPTX backend, then submit to the NVIDIA driver. This path skips NVIDIA's NVCC register allocator tuning and cannot access CUDA intrinsics (`nvcuda::cooperative_groups`, `wmma::mma_sync`) that cuDNN uses internally. Measured on common ML kernels (attention, GEMM at ≥4096 dimensions), SYCL on NVIDIA hardware runs 15–40% slower than native CUDA. The gap exists because the SYCL→CUDA translation path does not produce the same memory-access and warp-scheduling patterns that NVCC generates for the same algorithm.
+
+---
+
+### 11.2 Structural Barriers: Political and Ecosystem Blockers
+
+The technical gaps above are real but potentially closeable. The political and ecosystem blockers are structurally harder.
+
+**NVIDIA's CUDA moat is intentional.** CUDA is NVIDIA's primary competitive differentiator in the AI accelerator market. NVIDIA controls the hardware ISA documentation (no public specification of H100/B200 tensor core ISA), the compiler toolchain (NVCC/NVRTC), and the runtime libraries (cuDNN, NCCL). Exposing full tensor core capability via Vulkan or SYCL extensions would commoditize the hardware and allow AMD, Intel, or a future competitor to match NVIDIA's software ecosystem without matching NVIDIA's engineering investment. This explains why `VK_KHR_cooperative_matrix` — ratified in 2023 — exposes a useful but deliberately limited subset of tensor core operations compared to what `cublasGemmEx` uses internally.
+
+**The Khronos consensus process is slow by design.** Promoting a feature from vendor proposal to ratified KHR requires all major implementors — NVIDIA, AMD, Intel, ARM, Qualcomm, Imagination — to agree on semantics and implement the extension. This is a multi-year process for complex features. `VK_AMDX_shader_enqueue` (Work Graphs) has been experimental since 2023 with no KHR timeline. `VK_NV_shader_image_footprint` (sampler feedback) has a Khronos issue open since 2021 with no proposal document. The Khronos process is correct for standards that need multi-decade stability, but it structurally cannot match the 6-month release cadence of new CUDA hardware capabilities.
+
+**Intel's strategic interest limits cross-vendor SYCL investment.** oneAPI/DPC++/SYCL is Intel's answer to the question "how do Intel Xe GPUs compete with NVIDIA for HPC workloads?" Intel's investment in SYCL portability on NVIDIA hardware is real but secondary: it exists to demonstrate the portability story and enable CUDA-to-SYCL migration workflows that land workloads on Intel hardware, not to optimize SYCL performance on a competitor's GPU. NVIDIA has no incentive to contribute SYCL optimizations for their own hardware; AMD's equivalent investment goes into ROCm/HIP rather than SYCL. The result is that the SYCL implementation that performs best on each vendor's hardware is that vendor's own non-SYCL stack.
+
+**The training vs. inference split is structural.** The GPU compute market bifurcates cleanly:
+
+| Workload class | CUDA moat | Vulkan/SYCL competitiveness |
+|---|---|---|
+| Training (large model, multi-GPU) | Very strong (NCCL, CUDA Graphs, cuDNN) | Near zero in production |
+| Fine-tuning / PEFT | Strong (CUDA memory efficiency features) | Weak |
+| Single-device inference | Moderate (cuDNN still faster) | Growing (llama.cpp Vulkan, IREE) |
+| Consumer-device inference | Weak (many devices lack CUDA) | Strong (Vulkan runs everywhere) |
+
+This bifurcation is not accidental. Training is capital-intensive and performed on NVIDIA datacenter hardware where CUDA is the only reasonable choice. Inference increasingly runs on consumer devices — desktops, laptops, phones — where Vulkan is universal and CUDA is unavailable. The addressable market for Vulkan/SYCL compute grows precisely where CUDA cannot reach.
+
+---
+
+### 11.3 Where Convergence Is Happening
+
+Despite the barriers, convergence is real in specific segments.
+
+**Inference on consumer hardware is consolidating on Vulkan.** llama.cpp's Vulkan backend ([llama.cpp PR #1359 and successors](https://github.com/ggerganov/llama.cpp)), GGML's Vulkan compute, and Ollama's Vulkan path run on any Vulkan 1.3 device — NVIDIA, AMD, Intel, Qualcomm, and Mali GPUs on Android. This means a quantized LLM runs on a Raspberry Pi 5 with VideoCore VII, a Steam Deck, a ThinkPad with Arc iGPU, and a data-centre RDNA card from the same binary. CUDA cannot offer this breadth. The performance gap on NVIDIA hardware (20–30% for quantized inference) is acceptable for consumer use cases; on non-NVIDIA hardware, Vulkan is the only viable path.
+
+**`VK_KHR_cooperative_matrix` in production.** Since its Vulkan 1.4 inclusion, `VK_KHR_cooperative_matrix` has been adopted in llama.cpp's Q4_K_M kernels, IREE's ML inference backend, and experimental paths in ggml. This is a cross-vendor ML primitive that works identically on RADV (AMD), ANV (Intel), and NVK (NVIDIA open-source driver). It is not a cuBLAS replacement, but it narrows the performance floor for matrix-bound inference.
+
+**Slang as the cross-target shading language.** Slang (Ch. 117) compiles a single source to SPIR-V, CUDA PTX, Metal, HLSL, and CPU C++, with automatic differentiation for neural rendering. For research workloads — NeRF training, 3D Gaussian splatting, differentiable rendering — Slang allows a single kernel to run on any backend without maintaining separate CUDA and GLSL/SPIR-V codebases. It does not close the library ecosystem gap, but it closes the *authoring* gap for shader-level code.
+
+**SYCL 3.0 cooperative groups.** The SYCL 3.0 roadmap includes cooperative-groups semantics (`sycl::grid_group`, multi-work-group reductions and barriers), which closes the primary algorithmic gap that requires restructuring during CUDA→SYCL migration. Once landed, iterative solvers and attention kernels that use `__syncthreads()` at grid scope will port without algorithmic changes.
+
+**WebGPU as the universal compute story — with an intentional ceiling.** WebGPU (Ch. 35) is the actual universal cross-platform compute substrate for browser workloads: the same WGSL compute shader runs on Vulkan (Linux), Metal (macOS), and D3D12 (Windows) from a single source. But WebGPU's capability ceiling is intentional — no cross-workgroup raw atomics, no dynamic parallelism, no cooperative groups — because the browser security model requires that GPU compute cannot be used for timing attacks or memory exploitation. WebGPU shows the trade-off clearly: portability is achievable, but peak capability requires accepting a spec-defined ceiling.
 
 ---
 

@@ -61,8 +61,9 @@ The chapter deliberately avoids GPU algorithm design and parallel programming th
 9. [Practical: GPU-Accelerated Image Processing with Vulkan Compute](#9-practical-gpu-accelerated-image-processing-with-vulkan-compute)
 10. [io_uring and Async GPU Command Submission](#10-io_uring-and-async-gpu-command-submission)
 11. [API Performance Comparison: OpenCL vs ROCm vs CUDA vs SYCL vs Vulkan](#11-api-performance-comparison-opencl-vs-rocm-vs-cuda-vs-sycl-vs-vulkan)
-12. [Integrations](#12-integrations)
-13. [References](#13-references)
+12. [Structural Barriers: Why Vulkan Compute Cannot Yet Replace CUDA](#12-structural-barriers-why-vulkan-compute-cannot-yet-replace-cuda)
+13. [Integrations](#13-integrations)
+14. [References](#14-references)
 
 ---
 
@@ -1613,6 +1614,82 @@ The performance gap between APIs is largest for **compute-bound workloads** (GEM
 
 ---
 
+## 12. Structural Barriers: Why Vulkan Compute Cannot Yet Replace CUDA
+
+Vulkan 1.3+ has broad vendor support across every major GPU driver — RADV, ANV, NVK, Turnip, Panfrost, and proprietary IHV drivers. SPIR-V is the universal shader IR. Yet Vulkan compute is not a drop-in replacement for CUDA, and several structural gaps explain why.
+
+### 12.1 The SPIR-V IR Ceiling
+
+SPIR-V can only represent what the Khronos specification defines. NVIDIA's hardware tensor core ISA — the `ldmatrix`, `mma.sync`, and `stmatrix` PTX instructions that underpin cuBLAS and cuDNN — is not representable in SPIR-V. `VK_KHR_cooperative_matrix` provides a portable abstraction over matrix-multiply-accumulate, but it is a higher-level interface: the driver translates cooperative matrix operations to its internal tensor core ISA at compile time, hiding vendor-specific tile sizes and scheduling from the shader. The consequence is that a Vulkan cooperative matrix shader cannot exploit architecture-specific tuning — Blackwell's new 4th-generation tensor cores, H100's FP8 mode with per-block scale factors — until a new SPIR-V extension is ratified and all major vendors implement it. CUDA PTX exposes the full ISA surface immediately when hardware ships.
+
+The feature arrival timeline (covered in detail in Ch. 197 §3.9) shows the pattern concretely: SM6.6 Payload Access Qualifiers, SM6.7 `GatherRaw`, and SM6.9 Long Vectors have no SPIR-V equivalents. SM6.8 Work Graphs have only an AMD-vendor SPIR-V extension. Each hardware generation creates a new 12–24 month window where CUDA can exploit capabilities Vulkan cannot express.
+
+### 12.2 No Device-Side Kernel Launch
+
+CUDA dynamic parallelism allows device-side `cudaDeviceSynchronize()` and child kernel launch — enabling algorithms where the GPU decides its own next computation: adaptive mesh refinement, neural network architectures that branch based on activations, streaming BVH construction from live sensor data. The pattern:
+
+```cuda
+// CUDA dynamic parallelism — child kernel launched from device
+__global__ void refine_octree(OctreeNode* nodes, int depth) {
+    if (needs_refinement(nodes[blockIdx.x]) && depth < MAX_DEPTH) {
+        int children = subdivide(nodes[blockIdx.x]);
+        refine_octree<<<children, 64>>>(nodes[blockIdx.x].children, depth + 1);
+    }
+}
+```
+
+Vulkan has no equivalent. All dispatch commands (`vkCmdDispatch`, `vkCmdDispatchIndirect`) originate from the host command buffer. `VK_AMDX_shader_enqueue` is the first step toward GPU-initiated work dispatch in Vulkan — a shader can enqueue work items for subsequent graph nodes — but it is AMD-vendor-only, uses a node-graph model rather than arbitrary recursion, and has no KHR promotion timeline as of mid-2026. For algorithms that depend on GPU-side branching of the compute workload, Vulkan currently requires restructuring into a host-driven iterative loop, with measurable CPU overhead per iteration.
+
+### 12.3 No Portable High-Performance ML Library
+
+The CUDA ML library stack — cuBLAS, cuDNN, cuSPARSE, cuFFT, NCCL — represents decades of architecture-specific optimisation. cuDNN's fused attention kernel for transformer inference, for instance, fuses QKV projection, scaled dot-product attention, softmax, and output projection into a single kernel with shared-memory tiling tuned per GPU generation. There is no Vulkan equivalent of this kernel: assembling equivalent functionality from `VK_KHR_cooperative_matrix` + SPIR-V compute shaders requires either writing the fused kernel from scratch (a significant engineering effort) or accepting unfused execution with higher memory bandwidth consumption.
+
+The gap on compute-bound workloads is measurable. On NVIDIA A100, llama.cpp's Vulkan backend achieves approximately 60–80% of the throughput of the CUDA backend for Q4_K_M inference, with the gap widest on matrix-multiply-dominated layers. On AMD RDNA 3, the Vulkan backend is competitive with ROCm because RADV's `VK_KHR_cooperative_matrix` implementation directly targets the same WMMA hardware as rocBLAS.
+
+```glsl
+// Vulkan compute with cooperative matrices (VK_KHR_cooperative_matrix)
+#extension GL_KHR_cooperative_matrix : enable
+
+layout(local_size_x = 32, local_size_y = 4, local_size_z = 1) in;
+
+coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> matA;
+coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> matB;
+coopmat<float32_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> matC;
+
+void main() {
+    coopMatLoad(matA, bufA, offset_a, stride_a, gl_CooperativeMatrixLayoutRowMajor);
+    coopMatLoad(matB, bufB, offset_b, stride_b, gl_CooperativeMatrixLayoutColumnMajor);
+    matC = coopMatMulAdd(matA, matB, matC);
+    coopMatStore(matC, bufC, offset_c, stride_c, gl_CooperativeMatrixLayoutRowMajor);
+}
+```
+
+This expresses tiled GEMM portably. It does not express fused attention, quantized GEMM with per-block scales, or mixed-precision accumulation strategies that cuDNN and Flash Attention 2 employ.
+
+### 12.4 Training Ecosystem Lock-In
+
+PyTorch and JAX are CUDA-first at the framework level. The mechanisms that matter for training throughput are tightly coupled to CUDA:
+
+- **CUDA Graphs**: a training loop compiled as a static graph and replayed with `cudaGraphLaunch()`, eliminating per-step CPU overhead. The Vulkan equivalent is `vkCmdExecuteCommands` on a pre-recorded secondary command buffer, which captures a single pass but does not capture the host-side framework logic (optimizer step, gradient accumulation, learning rate schedule). There is no Vulkan equivalent of PyTorch's `torch.cuda.CUDAGraph` context manager.
+- **NCCL**: ring-allreduce over NVLink and InfiniBand for distributed training. NCCL uses CUDA peer-to-peer memory access, NVLink memory fabric topology queries, and sharp network offload (collective communication directly in network hardware). There is no Vulkan multi-device collective communication library.
+- **Triton**: OpenAI's GPU kernel language compiles Python-defined kernels to optimised PTX; Triton kernels express flash attention, quantized GEMM, and custom activations at a higher abstraction level than CUDA C. A Vulkan-targeting Triton backend exists in experimental form (via SPIR-V emission) but is not production-ready as of 2026.
+
+### 12.5 Profiling Depth Gap
+
+`VK_EXT_performance_query` exposes hardware performance counters through the Vulkan API — pipeline statistics (invocation counts, cache hits) and GPU cycle counts. AMD RGP and Intel GPA use this on their respective hardware. The gap versus NVIDIA Nsight Compute is qualitative: Nsight Compute provides register-level occupancy analysis, per-SM warp stall breakdown, memory access pattern heat maps, and roofline model placement — all correlated to source-level shader lines. Vulkan performance query surfaces counters but not the semantic analysis layer. A developer optimising a Vulkan compute kernel for NVIDIA hardware uses both `vkGetQueryPoolResults` for counters and Nsight Compute (which intercepts the Vulkan API and annotates SPIR-V→SASS mappings) — but the latter is NVIDIA-proprietary and not part of the open Vulkan toolchain.
+
+### 12.6 The Path to Parity
+
+The gaps above are not permanent. The trajectory:
+
+- **Inference parity is achievable near-term.** For single-device inference of quantized models, the Vulkan backend in llama.cpp is within 20–30% of CUDA on NVIDIA hardware and competitive on AMD/Intel. `VK_KHR_cooperative_matrix` and the anticipated `VK_KHR_cooperative_vector` (following `VK_NV_cooperative_vector`) will narrow the matrix-multiply gap further. Consumer-device inference — the workload running on the largest number of devices globally — will likely standardise on Vulkan before 2028.
+- **Device-side dispatch will arrive on more vendors.** Once `VK_KHR_work_graphs` is ratified (AMD has committed to standardisation without a timeline), GPU-initiated work dispatch becomes cross-vendor. This closes the dynamic parallelism gap for graph-structured algorithms.
+- **The training gap is structural and long-horizon.** Closing the training gap requires a Vulkan-native collective communication library, CUDA Graph equivalents at the framework level, and PyTorch/JAX backends that treat Vulkan as a first-class training target — a 3–5 year horizon if it happens at all, dependent on commercial incentives that currently favour NVIDIA.
+
+Cross-reference: Ch. 62 §11 analyzes these same barriers from the SYCL portability perspective; Ch. 117 covers Slang as a cross-target kernel language that separates algorithm from backend; Ch. 197 §3.9 documents the SM6.x→SPIR-V feature arrival timeline.
+
+---
+
 ## Roadmap
 
 ### Near-term (6–12 months)
@@ -1639,7 +1716,7 @@ The performance gap between APIs is largest for **compute-bound workloads** (GEM
 
 ---
 
-## 12. Integrations
+## 13. Integrations
 
 This chapter connects to several other chapters in the book:
 
@@ -1665,7 +1742,7 @@ This chapter connects to several other chapters in the book:
 
 ---
 
-## 13. References
+## 14. References
 
 1. Vulkan specification — compute pipelines: [https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#pipelines-compute](https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#pipelines-compute)
 
