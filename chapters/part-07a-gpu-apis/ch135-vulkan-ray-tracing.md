@@ -7,6 +7,11 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [What Ray Tracing Is](#what-ray-tracing-is)
+   - [The Rendering Equation and Path Tracing](#the-rendering-equation-and-path-tracing)
+   - [Ray Marching and SDF Tracing](#ray-marching-and-sdf-tracing)
+   - [Other Light Transport Algorithms](#other-light-transport-algorithms)
+   - [Why Hardware Acceleration](#why-hardware-acceleration)
 2. [Ray Tracing Pipeline and Shader Stages](#ray-tracing-pipeline-and-shader-stages)
 3. [Acceleration Structures: BLAS and TLAS](#acceleration-structures-blas-and-tlas)
 4. [BVH Construction Algorithms](#bvh-construction-algorithms)
@@ -22,6 +27,181 @@
 ---
 
 ## Introduction
+
+### What Ray Tracing Is
+
+Ray tracing is a rendering algorithm that simulates how light physically travels through a scene. The core insight — first articulated for computer graphics by Turner Whitted in his landmark 1980 paper *"An Improved Illumination Model for Shaded Display"* — is to reverse the direction of light propagation: instead of tracing photons from light sources (almost all of which would miss the camera), trace rays *backwards* from the camera through each pixel into the scene.
+
+**The recursive ray model.** A primary ray is fired from the camera origin through a pixel. When it intersects scene geometry, the renderer evaluates the surface material and spawns secondary rays:
+
+- **Shadow rays** — fired toward each light source to determine visibility (hard shadows are trivially correct; no shadow map biasing is needed)
+- **Reflection rays** — the specularly reflected direction, for mirror-like surfaces
+- **Refraction rays** — computed via Snell's law, for transparent materials
+- **Diffuse (indirect) rays** — randomly sampled over the hemisphere for ambient lighting
+
+Whitted-style ray tracing handles mirror reflections, refraction, and sharp shadows exactly. It does not handle diffuse inter-reflection (color bleeding, soft global illumination) — those require path tracing.
+
+**Why rasterization cannot easily replace it.** Rasterization projects geometry onto the screen and evaluates shading per-fragment. It has no native notion of "what other geometry exists in direction D from this point." Achieving effects that require global scene knowledge — soft shadows, reflections that contain off-screen objects, ambient occlusion, caustics — requires indirect approximations: shadow maps, reflection probes, screen-space ray marching, precomputed lightmaps. Each approximation has visible failure cases. Ray tracing eliminates the approximations by querying the actual scene geometry.
+
+---
+
+### The Rendering Equation and Path Tracing
+
+Kajiya (1986) formalized the problem in *"The Rendering Equation"*:
+
+$$
+L_o(x, \omega_o) = L_e(x, \omega_o) + \int_\Omega f_r(x, \omega_i, \omega_o)\, L_i(x, \omega_i)\, (\omega_i \cdot n)\, d\omega_i
+$$
+
+where $L_o$ is outgoing radiance, $L_e$ is emitted radiance, $f_r$ is the BRDF, and the integral is over the hemisphere. The integral has no closed form for complex scenes — Kajiya's solution was **path tracing**: Monte Carlo integration. At each hit point, randomly sample one or more directions according to the BRDF, trace a ray in each sampled direction, and recursively evaluate the integral. Average many samples per pixel until the estimator converges.
+
+Path tracing is the basis of every physically-based renderer: PBRT, Cycles (Blender), LuxCoreRender, and the path tracer inside Unreal Engine 5's Lumen at maximum quality. It is unbiased — given enough samples, the result converges to ground truth.
+
+**The convergence problem.** The estimator's variance (noise) decreases as $1/\sqrt{N}$ where $N$ is sample count. Achieving acceptably low noise at interactive frame rates requires either very fast ray traversal (hardware RT units) or sophisticated denoisers that use spatial and temporal information to infer a clean image from a noisy low-sample estimate. This is the motivation for SVGF (§10) and AI denoisers (OptiX AI Denoiser, ReLAX, DLSS Ray Reconstruction).
+
+**Variants:**
+
+| Algorithm | Description | Use case |
+|-----------|-------------|----------|
+| Whitted RT | Recursive, specular-only secondaries | Offline, educational |
+| Path tracing | MC integration, one random bounce per hit | Production offline (Cycles, PBRT) |
+| Bidirectional PT (BDPT) | Combines camera and light sub-paths | Scenes with complex indirect lighting |
+| Metropolis Light Transport (MLT) | Importance-samples path space via mutations | Very dark scenes, caustics |
+| Photon mapping | Forward emission pass + gather | Caustics in offline renderers |
+| VCM / SPPM | Photon mapping + BDPT hybrid | State-of-the-art offline |
+| ReSTIR | Resampled Importance Sampling across pixels and frames | Real-time GI (RTX 30/40 series) |
+
+In real-time rendering, "ray tracing" usually means **hybrid rendering**: rasterize primary visibility (G-buffer) and trace one or two rays per pixel for specific effects (shadows, reflections, ambient occlusion), then denoise. Full path tracing at interactive rates became viable on high-end GPUs around 2022–2023.
+
+---
+
+### Ray Marching and SDF Tracing
+
+Ray marching is a fundamentally different technique that does not require explicit triangle geometry. Instead of computing an analytical intersection, the algorithm steps along a ray in fixed or adaptive increments and evaluates a function at each step.
+
+**Sphere marching with Signed Distance Fields (SDFs).** An SDF is a function $d(p)$ that returns the signed distance from point $p$ to the nearest surface: positive outside, negative inside, zero on the surface. Given an SDF, the optimal step size at any point is exactly $d(p)$ — the ray cannot intersect the surface within that distance. This gives the sphere marching algorithm:
+
+```glsl
+// GLSL compute shader — sphere marching a procedural SDF scene
+// No acceleration structure, no triangle geometry, no VK_KHR_ray_tracing_pipeline
+float sdf_sphere(vec3 p, vec3 center, float r) { return length(p - center) - r; }
+float sdf_box(vec3 p, vec3 b) {
+    vec3 q = abs(p) - b;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+// Smooth minimum — blends two SDFs into an organic union
+float smin(float a, float b, float k) {
+    float h = max(k - abs(a - b), 0.0) / k;
+    return min(a, b) - h * h * k * 0.25;
+}
+float scene_sdf(vec3 p) {
+    float sphere = sdf_sphere(p, vec3(0.0, 0.5, 0.0), 0.5);
+    float box    = sdf_box(p - vec3(0.0, -0.1, 0.0), vec3(0.8, 0.1, 0.8));
+    return smin(sphere, box, 0.3);  // organic blend
+}
+
+vec3 sdf_normal(vec3 p) {
+    // Tetrahedron technique — 4 samples, no central difference needed
+    const vec2 e = vec2(0.001, -0.001);
+    return normalize(
+        e.xyy * scene_sdf(p + e.xyy) + e.yyx * scene_sdf(p + e.yyx) +
+        e.yxy * scene_sdf(p + e.yxy) + e.xxx * scene_sdf(p + e.xxx));
+}
+
+// Returns hit distance or -1
+float sphere_march(vec3 ro, vec3 rd) {
+    float t = 0.0;
+    for (int i = 0; i < 128; i++) {
+        float d = scene_sdf(ro + rd * t);
+        if (d < 0.001) return t;   // hit
+        if (t > 200.0) return -1.0; // miss
+        t += d;                    // advance by safe step size
+    }
+    return -1.0;
+}
+```
+
+This runs entirely inside a compute or fragment shader — no BVH, no acceleration structure, no `VK_KHR_ray_tracing_pipeline`. It is the technique behind the [Shadertoy](https://www.shadertoy.com/) ecosystem, where complex animated scenes with soft shadows, ambient occlusion, and subsurface scattering are produced in a single fragment shader.
+
+**Soft shadows and AO via ray marching.** Because the SDF value at intermediate march steps encodes "how close to a surface am I?", both ambient occlusion and penumbra soft shadows can be estimated cheaply without spawning new rays:
+
+```glsl
+// Soft shadow: tracks minimum normalized distance to occluder along the shadow ray
+float soft_shadow(vec3 ro, vec3 rd, float mint, float maxt, float k) {
+    float res = 1.0;
+    for (float t = mint; t < maxt; ) {
+        float h = scene_sdf(ro + rd * t);
+        if (h < 0.001) return 0.0;         // fully occluded
+        res = min(res, k * h / t);          // penumbra factor
+        t += h;
+    }
+    return res;
+}
+
+// Ambient occlusion: how quickly does the scene SDF decrease along the normal?
+float calc_ao(vec3 p, vec3 n) {
+    float occ = 0.0, sca = 1.0;
+    for (int i = 0; i < 5; i++) {
+        float h = 0.01 + 0.12 * float(i) / 4.0;
+        occ += (h - scene_sdf(p + n * h)) * sca;
+        sca *= 0.95;
+    }
+    return clamp(1.0 - 3.0 * occ, 0.0, 1.0);
+}
+```
+
+**Where SDF ray marching is used in production:**
+
+- **Shadertoy / demo scene** — procedural scenes with no geometry budget (demoscene 64 KB intros)
+- **Font rendering** — multi-channel SDF (MSDF) fonts render at any scale without aliasing; used in game engines and Qt text rendering
+- **Lumen (Unreal Engine 5)** — software ray marching through a sparse voxel distance field for diffuse GI on hardware that lacks RT units; hardware RT is used in parallel for reflections on capable GPUs
+- **Volume rendering** — ray marching through a 3D density field (clouds, smoke, medical CT); the SDF is replaced by a volumetric density/emission sample
+- **GPU particle lighting** — SDF shadow probes for local particle transparency
+
+**Limitations vs hardware ray tracing.** Ray marching over procedural SDFs cannot handle arbitrary triangle meshes efficiently (converting a triangle mesh to a watertight SDF is expensive and lossy). Hardware ray tracing (`VK_KHR_ray_tracing_pipeline`) is designed specifically for triangle-mesh scenes where the BVH encodes explicit geometry. The two techniques are complementary: SDF marching for procedural volumes and global distance fields, hardware RT for scene geometry.
+
+---
+
+### Other Light Transport Algorithms
+
+**Voxel cone tracing (VXGI).** The scene is voxelized into a sparse 3D texture (mipmapped). Indirect lighting is approximated by "cone tracing" — casting a cone (not a ray) through the voxel grid and integrating the weighted voxel radiance along the path. NVIDIA's VXGI technique (used in some UE4 versions) implements this. It provides cheap, if low-frequency, diffuse GI without hardware RT. Voxel resolution limits fidelity; dynamic scenes require per-frame revoxelization.
+
+**Screen-space techniques.** A family of approximations that "trace rays" through the depth buffer rather than against scene geometry. No hardware RT is required; they run as post-process passes.
+
+| Technique | Rays traced | Quality limitation |
+|-----------|-------------|-------------------|
+| SSAO (Screen-Space Ambient Occlusion) | Short hemisphere samples | Missing off-screen occluders |
+| HBAO / GTAO (Horizon-Based AO) | Horizon-angle samples in screen-space | Still screen-space only |
+| SSR (Screen-Space Reflections) | Ray march in depth buffer | Missing off-screen reflections, breaks at grazing angles |
+| SSGI (Screen-Space GI) | Short rays through depth buffer | Low frequency, fails at disocclusions |
+
+All screen-space techniques share the same fundamental limit: the depth buffer only encodes the closest visible surface. Geometry behind the camera, below the horizon, or in shadow has no depth entry to sample.
+
+**Radiosity.** A classic algorithm (Cohen & Greenberg, 1985) that solves diffuse inter-reflection by discretising the scene into surface patches and computing form factors (how much light patch A receives from patch B). The form-factor matrix is solved iteratively. Results are view-independent, which allowed radiosity to be precomputed for static scenes in early game engines (Quake's lightmaps use a simplified radiosity-like approach). It handles only perfectly diffuse (Lambertian) surfaces and does not scale to dynamic geometry.
+
+**Photon mapping (Jensen, 1996).** A two-pass algorithm: (1) emit photons from light sources, trace them through the scene (reflections and refractions), and store hit points in a photon map (a k-d tree); (2) at render time, gather nearby photons at each surface hit to estimate indirect radiance. Photon mapping handles caustics (focused light through glass) well — a case where path tracing converges very slowly. Used in offline renderers (LuxCoreRender, PBRT) but not in real-time pipelines.
+
+**ReSTIR (Resampled Importance Sampling).** A technique introduced by Bitterli et al. (2020) and shipped in production on NVIDIA RTX 30 series. Instead of drawing new samples from the BRDF, ReSTIR maintains a reservoir of past samples per pixel, resamples from neighbours (spatial reuse) and from previous frames (temporal reuse), and biases the estimator toward high-contribution samples. The result is a much lower-variance estimate for direct and indirect illumination with the same ray budget. ReSTIR GI and ReSTIR DI are implemented in NVIDIA Falcor and are the basis for RTXGI 2.0. Vulkan RT is the underlying hardware layer.
+
+**Hardware RT vs software RT: the Lumen example.** Unreal Engine 5's Lumen global illumination system illustrates the hybrid approach clearly:
+
+- **Software RT** (compute shader, no hardware extension): Marches rays through a precomputed distance field (per-mesh SDF + global SDF). Covers the full scene at low resolution, handles dynamic objects. Runs on any Vulkan 1.0 GPU.
+- **Hardware RT** (VK_KHR_ray_tracing_pipeline / ray query): Traces rays against the actual BVH for high-quality reflections and direct lighting. Only on RT-capable GPUs (RDNA2+, Xe-HPG+, Turing+).
+- **Screen-space GI**: Short-range fill for the gaps between software and hardware RT passes.
+
+All three run simultaneously on capable hardware, blended by distance and effect type. This layered architecture is increasingly common in production engines.
+
+---
+
+### Why Hardware Acceleration
+
+Classic software ray tracers (POV-Ray, PBRT on CPU) require minutes to hours per frame because ray-scene intersection is $O(\log N)$ per ray via BVH traversal, but the constant factor is large and the workload is incoherent (each ray tests a different path through the BVH). GPUs accelerate this through two mechanisms:
+
+1. **Fixed-function traversal units.** AMD's Ray Accelerators (RDNA2+), NVIDIA's RT Cores (Turing+), and Intel's Ray Tracing Units (Xe-HPG+) implement BVH traversal and ray-AABB / ray-triangle intersection in dedicated silicon. The BVH traversal stack is maintained in hardware, freeing shader registers. RT Cores on NVIDIA A100 perform ~80 billion rays/second — roughly 10× faster than shader-only traversal.
+
+2. **Massive parallelism.** A 1920×1080 frame has ~2M pixels. At 1 ray per pixel per frame at 60 fps, the GPU must trace 120M rays/second minimum. A GPU with 5000 shader processors can issue many ray tests per cycle in parallel, amortizing the latency of memory fetches through warp switching.
+
+Vulkan's `VK_KHR_ray_tracing_pipeline` and `VK_KHR_ray_query` expose both mechanisms without requiring driver-specific extensions. On AMD and Intel, Mesa's RADV and ANV drivers lower these extensions to the hardware's native ray traversal ISA.
 
 Vulkan ray tracing, finalised as a set of KHR extensions in 2020, provides portable API-level access to hardware ray traversal units that are now standard on discrete GPUs released since 2020–2021. On Linux, two open-source Mesa drivers fully implement the Vulkan KHR ray tracing stack: **RADV** (for AMD RDNA2 and later, i.e. RX 6000 series and above) and **ANV** (for Intel DG2/Arc Alchemist and later Xe-HPG hardware). NVIDIA's proprietary driver also supports these extensions on Linux via `vulkan-nvidia`.
 
