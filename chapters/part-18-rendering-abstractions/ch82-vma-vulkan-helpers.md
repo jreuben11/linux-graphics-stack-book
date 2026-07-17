@@ -27,7 +27,11 @@ Understanding these libraries is a prerequisite for reading any production Vulka
 9. [Tracy GPU Profiler Integration](#9-tracy-gpu-profiler-integration)
 10. [vulkan.hpp — C++ RAII Bindings](#10-vulkanhpp--c-raii-bindings)
 11. [Putting It Together — A Minimal Vulkan Application Stack](#11-putting-it-together--a-minimal-vulkan-application-stack)
-12. [Integrations](#12-integrations)
+12. [GLFW, GLM, and STB: The Application Developer's Foundation Layer](#12-glfw-glm-and-stb-the-application-developers-foundation-layer)
+    - 12.1 [GLFW: Window, Surface, and Input](#121-glfw-window-surface-and-input)
+    - 12.2 [GLM: Mathematics for GPU Programmers](#122-glm-mathematics-for-gpu-programmers)
+    - 12.3 [STB: Single-Header Asset Pipeline](#123-stb-single-header-asset-pipeline)
+13. [Integrations](#13-integrations)
 
 ---
 
@@ -1385,7 +1389,287 @@ The helper libraries do not change the concepts — they mechanize the repetitiv
 
 ---
 
-## 12. Integrations
+## 12. GLFW, GLM, and STB: The Application Developer's Foundation Layer
+
+VMA, volk, and vk-bootstrap handle the Vulkan API surface. The three libraries below handle the layer above it: creating a window with a presentable surface, expressing GPU mathematics, and loading assets from disk. Together they form the de-facto C/C++ foundation stack for standalone Vulkan applications and tutorials — every Vulkan-Tutorial.com example, every Vulkan Samples from Khronos, and most open-source renderers use at least two of the three.
+
+### 12.1 GLFW: Window, Surface, and Input
+
+[GLFW](https://www.glfw.org/) (3.4, 2024) is a minimal C library that creates an OS window, sets up a Vulkan-presentable surface, and delivers input events. It explicitly does not provide GPU abstraction, audio, networking, or UI widgets — the narrow scope is deliberate: GLFW is the lightest viable windowing layer for applications that own their rendering loop.
+
+**Platform model (GLFW 3.4+).** GLFW detects the active display server at init time and selects the appropriate WSI backend. The selection can be overridden:
+
+```c
+// Force Wayland; falls back to X11 if unavailable
+glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
+// Or let GLFW auto-detect (prefers Wayland when WAYLAND_DISPLAY is set)
+glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_AUTO);
+glfwInit();
+```
+
+On Wayland, GLFW 3.4 uses `libdecor` for client-side window decorations. Without a compositor that provides server-side decorations (KWin does; wlroots compositors typically do not), `libdecor-0` must be present at runtime. The `GLFW_WAYLAND_LIBDECOR` init hint can disable it for headless or compositor-controlled decoration scenarios.
+
+**Vulkan surface creation.** For Vulkan, the window must be created with no client API context — GLFW must not create an EGL or GLX context:
+
+```c
+glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);  // no OpenGL/EGL context
+glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+GLFWwindow *window = glfwCreateWindow(1280, 720, "Vulkan App", NULL, NULL);
+
+// Query which Vulkan instance extensions GLFW needs (platform-specific)
+uint32_t count;
+const char **exts = glfwGetRequiredInstanceExtensions(&count);
+// On Wayland: {"VK_KHR_surface", "VK_KHR_wayland_surface"}
+// On X11:     {"VK_KHR_surface", "VK_KHR_xcb_surface"}
+
+// After VkInstance creation:
+VkSurfaceKHR surface;
+glfwCreateWindowSurface(instance, window, NULL, &surface);
+```
+
+`glfwGetRequiredInstanceExtensions` is a thin wrapper: it calls `vkGetPhysicalDeviceWaylandPresentationSupportKHR` or `vkGetPhysicalDeviceXlibPresentationSupportKHR` depending on the detected platform. The resulting `VkSurfaceKHR` is exactly what `vkb::SwapchainBuilder` (§5) and any other swapchain setup code expects.
+
+**Presentation support query.** Before selecting a queue family for presentation, verify the surface is compatible:
+
+```c
+// Equivalent to vkGetPhysicalDeviceWaylandPresentationSupportKHR
+// or vkGetPhysicalDeviceXlibPresentationSupportKHR — GLFW abstracts the platform
+VkBool32 ok = glfwGetPhysicalDevicePresentationSupport(
+    instance, physicalDevice, queueFamilyIndex);
+```
+
+**Input model.** GLFW delivers input through registered callbacks (event-driven) or via polling queries. For a rendering loop that runs unconditionally, the polling model is more natural:
+
+```c
+glfwSetKeyCallback(window, [](GLFWwindow *w, int key, int, int action, int) {
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
+        glfwSetWindowShouldClose(w, GLFW_TRUE);
+});
+
+while (!glfwWindowShouldClose(window)) {
+    glfwPollEvents();   // dispatch pending events to callbacks; non-blocking
+    draw_frame();
+}
+```
+
+**Framebuffer resize handling.** On Wayland, window resize can occur between frames without explicit user action (compositor-driven). The standard pattern attaches a framebuffer size callback and sets a dirty flag:
+
+```c
+bool framebuffer_resized = false;
+glfwSetFramebufferSizeCallback(window, [](GLFWwindow *, int, int) {
+    framebuffer_resized = true;
+});
+// In draw_frame(): check framebuffer_resized, call vkDeviceWaitIdle(),
+// rebuild the swapchain, reset framebuffer_resized = false.
+```
+
+**GLFW vs SDL3.** SDL3 covers audio, game controller input, networking sockets, and higher-level surface/context management. For graphics-only applications that do not need those subsystems, GLFW's smaller dependency footprint and cleaner Vulkan surface creation API make it the preferred choice. Both are viable; the §11 minimal stack example uses SDL3 because its ImGui backend (`imgui_impl_sdl3`) is more commonly used in production applications.
+
+---
+
+### 12.2 GLM: Mathematics for GPU Programmers
+
+[GLM](https://github.com/g-truc/glm) (OpenGL Mathematics, header-only C++) provides vector and matrix types that mirror GLSL's built-in types: `glm::vec2` maps to `vec2`, `glm::mat4` to `mat4`, `glm::quat` to `quat`. Since GLM was designed alongside OpenGL, using it with Vulkan requires two configuration flags that correct for differences in clip-space conventions.
+
+**Critical Vulkan configuration.** Set these before including any GLM header:
+
+```cpp
+// Vulkan clip space: depth in [0, 1] not [-1, 1]
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+// Vulkan NDC: Y axis points downward (screen-space origin is top-left)
+// GLM_FORCE_LEFT_HANDED flips the Y in glm::perspective and glm::lookAt
+// to match Vulkan's coordinate system. Alternatively, negate the Y scale
+// in the projection matrix manually.
+#define GLM_FORCE_LEFT_HANDED
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>  // glm::perspective, lookAt, rotate
+#include <glm/gtc/type_ptr.hpp>          // glm::value_ptr, glm::make_vec3
+```
+
+Without `GLM_FORCE_DEPTH_ZERO_TO_ONE`, `glm::perspective` generates a projection matrix with depth in `[-1, 1]`, which clips half the scene when submitted to a Vulkan pipeline using `VkPipelineDepthStencilStateCreateInfo` with `depthCompareOp = VK_COMPARE_OP_LESS`.
+
+**MVP matrix construction.** The typical per-frame uniform buffer object:
+
+```cpp
+struct UniformBufferObject {
+    alignas(16) glm::mat4 model;
+    alignas(16) glm::mat4 view;
+    alignas(16) glm::mat4 proj;
+};
+
+UniformBufferObject build_matrices(float aspect, float elapsed_s) {
+    UniformBufferObject ubo{};
+    ubo.model = glm::rotate(glm::mat4(1.0f),
+                            elapsed_s * glm::radians(90.0f),
+                            glm::vec3(0.0f, 0.0f, 1.0f));
+    ubo.view  = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f),  // eye
+                            glm::vec3(0.0f, 0.0f, 0.0f),  // center
+                            glm::vec3(0.0f, 0.0f, 1.0f)); // up
+    ubo.proj  = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 100.0f);
+    // With GLM_FORCE_LEFT_HANDED the Y flip is automatic; without it:
+    // ubo.proj[1][1] *= -1;
+    return ubo;
+}
+
+// Upload to VkBuffer mapped via VMA:
+memcpy(mapped_ptr, &ubo, sizeof(ubo));
+```
+
+**Memory layout and alignment.** GLSL's `std140` and `std430` uniform block layout rules require vectors and matrices to be 16-byte aligned. `alignas(16)` on each `glm::mat4` field ensures the struct matches the UBO layout the shader expects. For a struct with mixed types, prefer the `glm::aligned_vec4` alias (from `<glm/gtc/type_aligned.hpp>`) over relying on implicit padding:
+
+```cpp
+// Explicit alignment — safe for std140 UBOs
+#include <glm/gtc/type_aligned.hpp>
+struct PushConstants {
+    glm::aligned_vec4 base_color;   // 16 bytes, 16-byte aligned
+    glm::aligned_vec4 emissive;
+    float roughness;                // 4 bytes
+    float metallic;                 // 4 bytes
+    // 8 bytes padding implicit — check with static_assert(sizeof == expected)
+};
+```
+
+**Interfacing with raw float arrays.** Asset loaders (tinygltf, cgltf, stb) return raw `float *` data. GLM's `<glm/gtc/type_ptr.hpp>` bridges the gap:
+
+```cpp
+// glm::make_vec3 copies 3 floats into a glm::vec3
+glm::vec3 position = glm::make_vec3(&raw_floats[vertex_index * 3]);
+
+// glm::value_ptr returns a const float* pointing into a mat4/vec
+vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT,
+                   0, sizeof(glm::mat4), glm::value_ptr(model));
+```
+
+**Quaternions for rotation.** `glm::quat` and the `<glm/gtc/quaternion.hpp>` header handle slerp (smooth rotation interpolation) and conversion to/from matrices — used in glTF animation channel interpolation (Ch. 64):
+
+```cpp
+glm::quat q = glm::slerp(q_start, q_end, t);       // smooth interpolation
+glm::mat4 rot = glm::mat4_cast(q);                  // quaternion → mat4
+glm::mat4 trs = glm::translate(glm::mat4(1.0f), translation)
+              * rot
+              * glm::scale(glm::mat4(1.0f), scale);
+```
+
+---
+
+### 12.3 STB: Single-Header Asset Pipeline
+
+[STB](https://github.com/nothings/stb) is a collection of public-domain, single-header C/C++ libraries. Each is self-contained: one `#include` provides the declarations; adding `#define STB_*_IMPLEMENTATION` in exactly one translation unit provides the definitions. The four most relevant for Vulkan application developers:
+
+| Header | Purpose | Key functions |
+|--------|---------|---------------|
+| `stb_image.h` | Decode JPEG, PNG, BMP, TGA, GIF, HDR, PNM | `stbi_load`, `stbi_loadf`, `stbi_load_from_memory`, `stbi_image_free` |
+| `stb_image_write.h` | Encode PNG, JPEG, BMP, TGA, HDR | `stbi_write_png`, `stbi_write_jpg`, `stbi_write_hdr` |
+| `stb_image_resize2.h` | High-quality image resampling | `stbir_resize`, `stbir_resize_float_linear` |
+| `stb_truetype.h` | TrueType font rasterization | `stbtt_BakeFontBitmap`, `stbtt_GetBakedQuad`, `stbtt_PackBegin` |
+
+**Loading a texture into a VkImage.** The canonical path: `stbi_load` → CPU buffer → VMA staging buffer → `vkCmdCopyBufferToImage` → device-local `VkImage`:
+
+```cpp
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
+VkImage load_texture(const char *path, VmaAllocator allocator,
+                     VkDevice device, VkCommandBuffer cmd,
+                     VkBuffer *staging_out, VmaAllocation *staging_alloc_out) {
+    int width, height, channels;
+    // Force 4-channel RGBA regardless of source format
+    stbi_uc *pixels = stbi_load(path, &width, &height, &channels, STBI_rgb_alpha);
+    assert(pixels);
+    VkDeviceSize size = (VkDeviceSize)width * height * 4;
+
+    // Staging buffer (CPU-visible, sequentially written)
+    VkBufferCreateInfo staging_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    staging_ci.size = size;
+    staging_ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    VmaAllocationCreateInfo staging_aci = {};
+    staging_aci.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+    vmaCreateBuffer(allocator, &staging_ci, &staging_aci,
+                    staging_out, staging_alloc_out, NULL);
+
+    void *mapped;
+    vmaMapMemory(allocator, *staging_alloc_out, &mapped);
+    memcpy(mapped, pixels, size);
+    vmaUnmapMemory(allocator, *staging_alloc_out);
+    stbi_image_free(pixels);
+
+    // Device-local image
+    VkImageCreateInfo img_ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    img_ci.imageType = VK_IMAGE_TYPE_2D;
+    img_ci.format    = VK_FORMAT_R8G8B8A8_SRGB;
+    img_ci.extent    = {(uint32_t)width, (uint32_t)height, 1};
+    img_ci.mipLevels = 1; // see stb_image_resize2 for mip generation
+    img_ci.arrayLayers = 1;
+    img_ci.samples   = VK_SAMPLE_COUNT_1_BIT;
+    img_ci.usage     = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VmaAllocationCreateInfo img_aci = {};
+    img_aci.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    VkImage image; VmaAllocation alloc;
+    vmaCreateImage(allocator, &img_ci, &img_aci, &image, &alloc, NULL);
+
+    // ... transition layout, record vkCmdCopyBufferToImage, transition to
+    //     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL via image memory barriers
+    return image;
+}
+```
+
+**HDR textures.** `stbi_loadf` returns `float *` (one float per channel) instead of `uint8_t *`. The corresponding Vulkan format is `VK_FORMAT_R32G32B32A32_SFLOAT` (or `R16G16B16A16_SFLOAT` after manual quantization with `stb_image_resize2`):
+
+```cpp
+int w, h, c;
+float *hdr = stbi_loadf("environment.hdr", &w, &h, &c, STBI_rgb_alpha);
+// hdr is float[w * h * 4]; upload as VK_FORMAT_R32G32B32A32_SFLOAT
+```
+
+**Mip generation with stb_image_resize2.** `stb_image_resize2.h` (the 2023 rewrite of `stb_image_resize.h`) provides a clean API for generating mip levels on the CPU before upload — useful when `VK_FORMAT_FEATURE_BLIT_SRC_BIT` is not available for a given format:
+
+```cpp
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include "stb_image_resize2.h"
+
+// Generate mip level n from mip level n-1
+stbir_resize(src_pixels, src_w, src_h, 0,
+             dst_pixels, dst_w, dst_h, 0,
+             STBIR_TYPE_UINT8, 4 /*channels*/,
+             STBIR_ALPHA_CHANNEL_NONE, 0,
+             STBIR_EDGE_CLAMP, STBIR_EDGE_CLAMP,
+             STBIR_FILTER_BOX, STBIR_FILTER_BOX,
+             STBIR_COLORSPACE_SRGB, NULL);
+```
+
+**Font atlas with stb_truetype.** `stbtt_PackBegin` / `stbtt_PackFontRange` / `stbtt_PackEnd` rasterize a TrueType font into a greyscale atlas bitmap ready to upload as `VK_FORMAT_R8_UNORM`:
+
+```cpp
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "stb_truetype.h"
+
+uint8_t atlas[512 * 512];
+stbtt_bakedchar cdata[96]; // ASCII 32–127
+stbtt_BakeFontBitmap(ttf_data, 0,      // font data, font offset
+                     18.0f,            // pixel height
+                     atlas, 512, 512,  // bitmap output
+                     32, 96, cdata);   // first char, num chars, baked char data
+// Upload atlas to VK_FORMAT_R8_UNORM VkImage; use cdata for UV lookup per glyph
+```
+
+**Size-reduction defines.** STB decodes many formats by default. Unused decoders add binary size with no benefit; disable them explicitly:
+
+```cpp
+#define STBI_NO_BMP
+#define STBI_NO_PSD
+#define STBI_NO_GIF
+#define STBI_NO_PIC
+#define STBI_ONLY_PNG
+#define STBI_ONLY_JPEG
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+```
+
+**The one-translation-unit rule.** The `_IMPLEMENTATION` define must appear in exactly one `.cpp` file. In a CMake project the standard pattern is a dedicated `stb.cpp` (or `stb_impl.cpp`) that contains only the implementation defines and includes, with all other files including the headers without the define.
+
+---
+
+## 13. Integrations
 
 The libraries in this chapter form the base layer of almost every production Vulkan application. They connect to the broader stack in the following ways:
 
