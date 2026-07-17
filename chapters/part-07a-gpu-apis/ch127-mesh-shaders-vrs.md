@@ -391,6 +391,68 @@ void main() {
 }
 ```
 
+**Slang equivalent** — `groupshared TaskPayload` lowers to `taskPayloadSharedEXT` in SPIR-V automatically; `DispatchMesh()` passes it type-safely to `in payload` in the mesh stage, and `[require(GL_EXT_mesh_shader)]` documents the cross-vendor capability requirement directly in code.
+
+```slang
+// File: meshlet_task.slang
+// Amplification (task) shader: per-workgroup frustum + backface-cone culling
+// Slang improvements:
+//   - [shader("amplification")] / [numthreads(32,1,1)] replace GLSL layout qualifiers
+//   - groupshared TaskPayload is lowered to taskPayloadSharedEXT; no separate qualifier needed
+//   - [require(GL_EXT_mesh_shader)] documents the cross-vendor capability at the call site
+
+struct MeshletBounds {
+    float3 center;     float radius;
+    float3 cone_axis;  float cone_cutoff;
+    float3 cone_apex;  float _pad;
+};
+
+struct TaskPayload {
+    uint baseMeshlet;
+    uint visibleMeshlets[32];
+};
+
+struct DrawData { uint meshletCount; float4x4 viewProj; float3 cameraPos; };
+
+[[vk::binding(0, 0)]] StructuredBuffer<MeshletBounds> gBounds;
+[[vk::binding(1, 0)]] ConstantBuffer<DrawData>        gDraw;    // UBO; original GLSL uses SSBO
+[[vk::binding(2, 0)]] StructuredBuffer<float4>        gFrustumPlanes; // 6 clip planes
+
+groupshared TaskPayload s_payload;    // compiled to taskPayloadSharedEXT in SPIR-V
+groupshared uint        s_visibleCount;
+
+bool sphereInFrustum(float3 c, float r) {
+    [ForceUnroll] for (int i = 0; i < 6; i++)
+        if (dot(gFrustumPlanes[i].xyz, c) + gFrustumPlanes[i].w < -r) return false;
+    return true;
+}
+
+bool coneBackface(MeshletBounds b) {
+    return dot(normalize(gDraw.cameraPos - b.cone_apex), b.cone_axis) >= b.cone_cutoff;
+}
+
+[shader("amplification")]
+[numthreads(32, 1, 1)]
+[require(GL_EXT_mesh_shader)]
+void ampMain(uint tid : SV_GroupIndex, uint3 gid : SV_GroupID)
+{
+    if (tid == 0) { s_visibleCount = 0; s_payload.baseMeshlet = gid.x * 32; }
+    GroupMemoryBarrierWithGroupSync();
+
+    uint idx = gid.x * 32 + tid;
+    if (idx < gDraw.meshletCount) {
+        MeshletBounds b = gBounds[idx];
+        if (sphereInFrustum(b.center, b.radius) && !coneBackface(b)) {
+            uint slot; InterlockedAdd(s_visibleCount, 1u, slot);
+            s_payload.visibleMeshlets[slot] = tid;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    DispatchMesh(s_visibleCount, 1, 1, s_payload); // type checked against mesh shader input
+}
+```
+
 > **Note**: This example omits Hi-Z occlusion culling (two-phase approach) and subgroup-wave compaction that a production implementation would use. The Themaister Granite renderer demonstrates a production-quality approach ([Modernizing Granite's mesh rendering, January 2024](https://themaister.net/blog/2024/01/17/modernizing-granites-mesh-rendering/)).
 
 ### 4.4 Mesh Shader: Emitting Geometry
@@ -449,6 +511,65 @@ void main() {
             tri_buf[base + 1],
             tri_buf[base + 2]);
         primMaterialID[tid] = meshlet_id & 0xFFFF;  // example per-primitive data
+    }
+}
+```
+
+**Slang equivalent** — `OutputVertices<T, N>`, `OutputIndices<uint3, N>`, and `OutputPrimitives<T, N>` are compile-time size-bounded typed containers that replace GLSL's untyped `gl_MeshVerticesEXT[]` built-ins; the `in payload TaskPayload` parameter links to the amplification stage explicitly without a separate `taskPayloadSharedEXT` global.
+
+```slang
+// File: meshlet_mesh.slang
+// Mesh shader: emit meshlet geometry via Slang's typed output containers
+// Slang improvements:
+//   - OutputVertices/OutputIndices/OutputPrimitives enforce element counts at compile time
+//   - in payload TaskPayload replaces the GLSL taskPayloadSharedEXT global declaration
+//   - [[vk::push_constant]] on a named struct replaces GLSL layout(push_constant) uniform
+
+struct TaskPayload { uint baseMeshlet; uint visibleMeshlets[32]; };
+struct Meshlet     { uint vertexOffset, triangleOffset, vertexCount, triangleCount; };
+struct VertexOut   { float4 pos : SV_Position; };
+struct PrimOut     { bool cull : SV_CullPrimitive; uint materialID : PRIMID; };
+
+[[vk::binding(3, 0)]] StructuredBuffer<Meshlet>  gMeshlets;
+[[vk::binding(4, 0)]] StructuredBuffer<uint>     gVtxIndices;
+[[vk::binding(5, 0)]] ByteAddressBuffer          gTriBuffer;  // 3 packed bytes per triangle
+[[vk::binding(6, 0)]] StructuredBuffer<float4>   gPositions;
+
+struct PC { float4x4 mvp; };
+[[vk::push_constant]] PC gPC;
+
+[shader("mesh")]
+[numthreads(128, 1, 1)]
+[outputtopology("triangle")]
+[require(GL_EXT_mesh_shader)]
+void meshMain(
+    uint  tid : SV_GroupIndex,
+    uint3 gid : SV_GroupID,
+    in payload TaskPayload payload,
+    OutputVertices<VertexOut, 64>  verts,
+    OutputIndices<uint3,      124> tris,
+    OutputPrimitives<PrimOut, 124> prims)
+{
+    uint meshletID = payload.baseMeshlet + payload.visibleMeshlets[gid.x];
+    Meshlet m      = gMeshlets[meshletID];
+
+    SetMeshOutputCounts(m.vertexCount, m.triangleCount);
+
+    if (tid < m.vertexCount) {
+        uint vi        = gVtxIndices[m.vertexOffset + tid];
+        verts[tid].pos = mul(gPC.mvp, gPositions[vi]);
+    }
+
+    if (tid < m.triangleCount) {
+        // 4-byte aligned load; simplified — add second-word read when (base & 3u) == 3
+        uint base  = m.triangleOffset * 3 + tid * 3;
+        uint word  = gTriBuffer.Load(base & ~3u);
+        uint shift = (base & 3u) * 8;
+        tris[tid]             = uint3((word >> shift)        & 0xFF,
+                                      (word >> (shift +  8)) & 0xFF,
+                                      (word >> (shift + 16)) & 0xFF);
+        prims[tid].materialID = meshletID & 0xFFFFu;
+        prims[tid].cull       = false;
     }
 }
 ```
@@ -731,6 +852,49 @@ void main() {
     else                       rate = 0x0A; // 4×4
 
     imageStore(vrs_output, coord, uvec4(rate, 0, 0, 0));
+}
+```
+
+**Slang equivalent** — `RWTexture2D<uint>` and `Texture2D<float4>` with a decoupled `SamplerState` replace GLSL's monolithic `uimage2D`/`sampler2D` qualifiers; explicit finite differences replace `dFdx`/`dFdy`, which are undefined in compute shaders.
+
+```slang
+// File: vrs_generate.slang
+// Compute shader: generate per-tile VRS image from previous-frame luminance variance
+// Slang improvements:
+//   - RWTexture2D<uint> / Texture2D<float4> + SamplerState are fully typed (vs GLSL uimage2D)
+//   - SamplerState decoupled from Texture2D enables sampler reuse across multiple passes
+//   - Explicit finite differences: portable and correct in compute; dFdx/dFdy are undefined there
+
+[[vk::binding(0, 0)]] RWTexture2D<uint>  gVrsOutput;
+[[vk::binding(1, 0)]] Texture2D<float4>  gLumaPrev;
+[[vk::binding(2, 0)]] SamplerState       gLinear;
+
+// Encoded VRS rates: (log2(width) << 2) | log2(height)
+static const uint VRS_1x1 = 0x00u;  // full rate  (1×1 pixel per invocation)
+static const uint VRS_2x2 = 0x05u;  // 1/4  rate  (2×2 pixels per invocation)
+static const uint VRS_4x4 = 0x0Au;  // 1/16 rate  (4×4 pixels per invocation)
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void csMain(uint3 tid : SV_DispatchThreadID)
+{
+    uint2 dims;
+    gVrsOutput.GetDimensions(dims.x, dims.y);
+    if (any(tid.xy >= dims)) return;
+
+    float2 uv    = (float2(tid.xy) + 0.5f) / float2(dims);
+    float2 texel = 1.0f / float2(dims);
+
+    // Explicit finite differences — dFdx/dFdy are fragment-only and undefined here
+    float lx = gLumaPrev.SampleLevel(gLinear, uv - float2(texel.x, 0.0f), 0).r;
+    float rx = gLumaPrev.SampleLevel(gLinear, uv + float2(texel.x, 0.0f), 0).r;
+    float ly = gLumaPrev.SampleLevel(gLinear, uv - float2(0.0f, texel.y), 0).r;
+    float ry = gLumaPrev.SampleLevel(gLinear, uv + float2(0.0f, texel.y), 0).r;
+    float variance = (rx - lx) * (rx - lx) + (ry - ly) * (ry - ly);
+
+    uint rate = (variance > 0.02f)  ? VRS_1x1 :
+                (variance > 0.005f) ? VRS_2x2 : VRS_4x4;
+    gVrsOutput[tid.xy] = rate;
 }
 ```
 

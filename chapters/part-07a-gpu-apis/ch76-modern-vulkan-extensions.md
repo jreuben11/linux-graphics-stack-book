@@ -392,6 +392,40 @@ void main() {
 }
 ```
 
+**Slang equivalent** — `ParameterBlock<SceneTextures>` groups all bindless descriptors into a single auto-allocated Vulkan descriptor set without manual `layout(set = N, binding = M)` declarations; `NonUniformResourceIndex()` replaces the `nonuniformEXT` qualifier and portably emits the `NonUniform` SPIR-V decoration across Vulkan, D3D12, and Metal.
+
+```slang
+// File: bindless_material.slang
+// Slang improvements:
+// - No #extension GL_EXT_nonuniform_qualifier required; Slang emits the NonUniform
+//   SPIR-V decoration automatically when NonUniformResourceIndex() is used
+// - ParameterBlock<SceneTextures> allocates a dedicated Vulkan descriptor set
+//   without manual layout(set = N, binding = M) on every resource
+// - NonUniformResourceIndex() is portable to D3D12 and Metal with no source changes
+
+struct SceneTextures {
+    Sampler2D textures[];          // runtime-sized bindless array; occupies binding 0
+};
+
+ParameterBlock<SceneTextures> gScene; // Slang auto-assigns a fresh descriptor set number
+
+[[vk::push_constant]]
+struct PC {
+    uint textureIndex;
+    uint materialIndex;
+} pushConst;
+
+[shader("fragment")]
+float4 fragmentMain([[vk::location(0)]] float2 texCoord : TEXCOORD0) : SV_Target
+{
+    // NonUniformResourceIndex() marks the index as potentially divergent across
+    // invocations, emitting the SPIR-V NonUniform decoration — the portable,
+    // explicit equivalent of GLSL's nonuniformEXT qualifier.
+    return gScene.textures[NonUniformResourceIndex(pushConst.textureIndex)]
+               .Sample(texCoord);
+}
+```
+
 The `nonuniformEXT` qualifier (mapped to SPIR-V `NonUniform` decoration) is mandatory when the index is not guaranteed to be the same across all active invocations in a subgroup; omitting it is a spec violation that manifests as corruption on many IHV implementations.
 
 ### Bindless Adoption in Practice
@@ -479,6 +513,47 @@ void main() {
 }
 ```
 
+**Slang equivalent** — `[shader("amplification")]` replaces the GLSL stage declaration and `#extension GL_EXT_mesh_shader`; the payload is a plain struct passed directly to `DispatchMesh()`, eliminating the `taskPayloadSharedEXT` storage-class annotation and the two-step payload-write followed by `EmitMeshTasksEXT` pattern.
+
+```slang
+// File: mesh_task_cull.slang
+// Slang improvements:
+// - [shader("amplification")] + [numthreads] replace #extension GL_EXT_mesh_shader
+//   and layout(local_size_x = N); Slang emits SPV_EXT_mesh_shader automatically
+// - Payload is a plain local struct; DispatchMesh() handles the taskPayloadSharedEXT
+//   storage class and OpEmitMeshTasksEXT SPIR-V emission internally
+// - All invocations must still reach DispatchMesh() in uniform control flow —
+//   the same semantic requirement as EmitMeshTasksEXT applies here
+
+struct MeshPayload {
+    uint meshletBase;
+    uint meshletCount;
+    uint instanceID;
+};
+
+[shader("amplification")]
+[numthreads(32, 1, 1)]
+void taskMain(in uint3 groupID : SV_GroupID)
+{
+    uint clusterId = groupID.x;
+
+    // Coarse frustum cull: result must be uniform across the workgroup so that
+    // DispatchMesh is reached by every invocation (uniform control flow requirement).
+    bool visible = frustumCull(clusterId);
+
+    // Populate payload as a plain local struct — no taskPayloadSharedEXT annotation.
+    MeshPayload payload;
+    payload.meshletBase  = clusterId * MESHLETS_PER_CLUSTER;
+    payload.meshletCount = visible ? MESHLETS_PER_CLUSTER : 0;
+    payload.instanceID   = instanceID;
+
+    // DispatchMesh combines payload broadcast and mesh workgroup dispatch in one call.
+    // Slang lowers it to taskPayloadSharedEXT writes + OpEmitMeshTasksEXT in SPIR-V.
+    uint meshCount = visible ? MESHLETS_PER_CLUSTER : 0u;
+    DispatchMesh(meshCount, 1, 1, payload);
+}
+```
+
 The `TaskPayloadWorkgroupEXT` storage class makes the payload writable in the task shader and read-only in mesh shaders launched by it — functioning as a hardware-accelerated broadcast channel between the two stages.
 
 [Source: Vulkan Documentation — VK_EXT_mesh_shader proposal](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_mesh_shader.html)
@@ -523,6 +598,64 @@ void main() {
         gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationIndex] =
             fetchMeshletTriangle(meshletID, gl_LocalInvocationIndex);
         outMeshletID[gl_LocalInvocationIndex] = meshletID;
+    }
+}
+```
+
+**Slang equivalent** — `OutputVertices<T,N>`, `OutputIndices<uint3,N>`, and `OutputPrimitives<T,N>` replace the GLSL built-in arrays `gl_MeshVerticesEXT`, `gl_PrimitiveTriangleIndicesEXT`, and `perprimitiveEXT` outputs with strongly typed containers; `in payload MeshPayload` receives the task broadcast without a storage-class annotation.
+
+```slang
+// File: mesh_raster.slang
+// Slang improvements:
+// - OutputVertices<T,N>, OutputIndices<uint3,N>, OutputPrimitives<T,N> are strongly
+//   typed; Slang maps them to the correct SPIR-V Position/Index/PerPrimitive arrays
+// - in payload MeshPayload receives the taskPayloadSharedEXT broadcast without an
+//   explicit storage-class annotation; read-only semantics are enforced by the type
+// - [outputtopology("triangle")] + [shader("mesh")] replace layout(triangles, ...) out
+//   and the #extension directive; compiler emits SPV_EXT_mesh_shader automatically
+
+struct MeshPayload {
+    uint meshletBase;
+    uint meshletCount;
+    uint instanceID;
+};
+
+struct MeshVertex {
+    float4 position : SV_Position;
+    [[vk::location(0)]] float2 uv;
+};
+
+struct MeshPrimitive {
+    [[vk::location(1)]] uint meshletID;   // perprimitiveEXT per-primitive output
+};
+
+[shader("mesh")]
+[numthreads(64, 1, 1)]
+[outputtopology("triangle")]
+void meshMain(
+    in uint  localIndex : SV_GroupIndex,
+    in uint3 groupID    : SV_GroupID,
+    in payload MeshPayload payload,              // read-only task-shader broadcast
+    OutputVertices<MeshVertex,   64>    verts,
+    OutputIndices<uint3,         124>   triangles,
+    OutputPrimitives<MeshPrimitive, 124> primitives)
+{
+    uint meshletID = payload.meshletBase + groupID.x;
+    Meshlet m = meshlets[meshletID];
+
+    SetMeshOutputCounts(m.vertexCount, m.triangleCount);
+
+    // Emit vertices into the strongly typed OutputVertices container
+    if (localIndex < m.vertexCount) {
+        uint vi = meshletVertices[m.vertexOffset + localIndex];
+        verts[localIndex].position = mvpMatrix * float4(vertices[vi].position, 1.0);
+        verts[localIndex].uv       = vertices[vi].uv;
+    }
+
+    // Emit triangle indices and per-primitive meshlet IDs
+    if (localIndex < m.triangleCount) {
+        triangles[localIndex]            = fetchMeshletTriangle(meshletID, localIndex);
+        primitives[localIndex].meshletID = meshletID;
     }
 }
 ```
@@ -643,6 +776,51 @@ void main() {
     }
 
     coopMatStore(matC, c, tileRow * M * totalN + tileCol * N, N, gl_CooperativeMatrixLayoutRowMajor);
+}
+```
+
+**Slang equivalent** — `CoopMat<T, MemoryScope.Subgroup, M, N, Use>` from the `linalg` namespace maps to `OpCooperativeMatrixMulAddKHR` without `#extension GL_KHR_cooperative_matrix`; the row/column-major layout is a compile-time generic parameter on `Load` and `Store`, catching mismatches at compile time.
+
+```slang
+// File: gemm_tile.slang
+// Slang improvements:
+// - CoopMat<T, MemoryScope, M, N, Use> from linalg namespace replaces GLSL coopmat<>
+//   type aliases; no #extension GL_KHR_cooperative_matrix or explicit arithmetic
+//   type extension required — compiler emits VK_KHR_cooperative_matrix SPIR-V ops
+// - Load<Layout> and Store<Layout> carry the memory layout as a compile-time generic
+//   parameter, catching row/column-major mismatches at compile time
+// - coopMatMulAdd<AccumType, saturating>() exposes the KHR saturation mode operand
+//   explicitly, matching OpCooperativeMatrixMulAddKHR's SaturatingAccumulation operand
+
+[shader("compute")]
+[numthreads(32, 1, 1)]
+void gemmTile(uint3 wgID : SV_GroupID)
+{
+    using namespace linalg;
+
+    // Type aliases for the three KHR cooperative matrix roles (M=16, K=16, N=16)
+    typealias MatA     = CoopMat<float16_t, MemoryScope.Subgroup, 16, 16, CoopMatMatrixUse.MatrixA>;
+    typealias MatB     = CoopMat<float16_t, MemoryScope.Subgroup, 16, 16, CoopMatMatrixUse.MatrixB>;
+    typealias MatAccum = CoopMat<float,     MemoryScope.Subgroup, 16, 16, CoopMatMatrixUse.MatrixAccumulator>;
+
+    uint tileRow = wgID.y;
+    uint tileCol = wgID.x;
+
+    MatAccum matC = MatAccum(0.0);   // fill constructor — zero-initialises the accumulator
+
+    for (uint k = 0; k < totalK; k += 16) {
+        // Load<Layout>(buffer, byteOffset, stride) — layout is a compile-time param
+        MatA matA = MatA.Load<CoopMatMatrixLayout::RowMajor>(
+            a, (tileRow * 16 * totalK + k) * sizeof(float16_t), totalK);
+        MatB matB = MatB.Load<CoopMatMatrixLayout::RowMajor>(
+            b, (k * totalN + tileCol * 16) * sizeof(float16_t), totalN);
+
+        // coopMatMulAdd<AccumType, saturating>: lowers to OpCooperativeMatrixMulAddKHR
+        matC = coopMatMulAdd<float, false>(matA, matB, matC);
+    }
+
+    matC.Store<CoopMatMatrixLayout::RowMajor>(
+        c, (tileRow * 16 * totalN + tileCol * 16) * sizeof(float), totalN);
 }
 ```
 

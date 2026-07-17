@@ -199,6 +199,34 @@ void main() {
 }
 ```
 
+**Slang equivalent** — `globallycoherent RWStructuredBuffer<uint>` replaces the `coherent buffer` block declaration, automatically emitting `NonPrivatePointerKHR` on every access; `[require(vk_mem_model)]` on the entry point triggers `OpCapability VulkanMemoryModel` without a manual `#extension GL_KHR_memory_scope_semantics : enable`.
+
+```slang
+// File: ssbo_cross_invocation.slang
+// Slang improvements:
+// - globallycoherent RWStructuredBuffer<uint> replaces 'coherent buffer DataBlock { uint data[]; }'
+//   and causes Slang to emit NonPrivatePointerKHR on every load/store to this binding
+// - [require(vk_mem_model)] on the entry point declares the SPV_KHR_vulkan_memory_model
+//   extension requirement in source; replaces '#extension GL_KHR_memory_scope_semantics : enable'
+// - DeviceMemoryBarrier() maps to OpMemoryBarrier Device AcquireRelease|StorageBuffer,
+//   matching the semantics of GLSL memoryBarrierBuffer() exactly
+
+[require(vk_mem_model)]
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void main(
+    [[vk::binding(0, 0)]] globallycoherent RWStructuredBuffer<uint> data,
+    uint3 globalID : SV_DispatchThreadID)
+{
+    uint id = globalID.x;
+    // globallycoherent marks all accesses NonPrivate — cross-invocation stores
+    // are guaranteed visible after the barrier below, without any 'coherent' qualifier.
+    uint val = data[id ^ 1u];  // read neighbour's slot
+    DeviceMemoryBarrier();      // Release (availability) + Acquire (visibility) at Device scope
+    data[id] = val + 1u;
+}
+```
+
 In the corresponding SPIR-V, each `OpLoad` and `OpStore` touching the coherent buffer will carry the `NonPrivatePointer` memory operand. Without the `coherent` qualifier (or the explicit `NonPrivatePointer` flag in hand-written SPIR-V), the memory model does not guarantee that the load observes the value written by the neighbouring invocation.
 
 ---
@@ -767,6 +795,45 @@ uint v = atomicLoad(data.value, gl_ScopeDevice, gl_StorageSemanticsBuffer,
                     gl_SemanticsAcquire | gl_SemanticsMakeVisible);
 ```
 
+**Slang equivalent** — `RWStructuredBuffer<Atomic<uint>>` encodes atomicity in the buffer element type so the compiler rejects any plain read or write, and `.store()`/`.load()` with named `MemoryOrder` parameters replace the six-argument GLSL forms; device scope is implicit in all `Atomic<T>` operations, and `MemoryOrder.Release` on an atomic store is sufficient to perform the availability operation without a separate `gl_SemanticsMakeAvailable` flag.
+
+```slang
+// File: producer_consumer_atomic.slang
+// Slang improvements:
+// - RWStructuredBuffer<Atomic<uint>> makes atomicity a type-level property; the compiler
+//   rejects non-atomic access, preventing the Bug 5 class of error at compile time
+// - .store(v, MemoryOrder.Release) and .load(MemoryOrder.Acquire) replace the 6-parameter
+//   GLSL atomicStore/atomicLoad forms; device scope is implicit in all Atomic<T> operations
+// - For atomic operations under the Vulkan memory model, Release semantics on a store
+//   perform the availability operation; Acquire semantics on a load perform the visibility
+//   operation — no separate gl_SemanticsMakeAvailable / gl_SemanticsMakeVisible needed
+
+[require(vk_mem_model)]
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void producer(
+    [[vk::binding(0, 0)]] RWStructuredBuffer<Atomic<uint>> dataValue,
+    [[vk::binding(1, 0)]] RWStructuredBuffer<Atomic<uint>> readyFlag)
+{
+    // Release: makes the data write available before the flag is observable.
+    dataValue[0].store(42u, MemoryOrder.Release);
+    readyFlag[0].store(1u,  MemoryOrder.Release);
+}
+
+[require(vk_mem_model)]
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void consumer(
+    [[vk::binding(0, 0)]] RWStructuredBuffer<Atomic<uint>> dataValue,
+    [[vk::binding(1, 0)]] RWStructuredBuffer<Atomic<uint>> readyFlag)
+{
+    // Acquire: establishes happens-before with the producer's Release on readyFlag.
+    // Once the flag is observed as 1, dataValue[0] is visible without a second barrier.
+    while (readyFlag[0].load(MemoryOrder.Acquire) == 0u) {}
+    uint v = dataValue[0].load(MemoryOrder.Acquire);
+}
+```
+
 ---
 
 ## Real-World Patterns
@@ -835,6 +902,42 @@ void main() {
         // atomicAdd ensures items[idx] is visible.
         uint item_data = wq.items[idx];
         results[idx] = item_data * item_data;
+    }
+}
+```
+
+**Slang equivalent** — `RWStructuredBuffer<Atomic<uint>>` for the queue head makes the counter's atomicity part of the type; `.add(1u, MemoryOrder.Acquire)` replaces the five-argument `atomicAdd` call and preserves identical acquire semantics at device scope without listing `gl_ScopeDevice` or `gl_StorageSemanticsBuffer` explicitly.
+
+```slang
+// File: work_queue_drain.slang
+// Slang improvements:
+// - RWStructuredBuffer<Atomic<uint>> for wqHead binds atomicity to the element type;
+//   the counter can only be accessed through Atomic<T> methods, preventing accidental
+//   non-atomic reads that would introduce the Bug 5 data race silently
+// - wqHead[0].add(1u, MemoryOrder.Acquire) directly replaces atomicAdd(wq.head, 1u,
+//   gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsAcquire); device scope
+//   is implicit in all Atomic<T> operations
+// - [require(vk_mem_model)] replaces '#extension GL_KHR_memory_scope_semantics : enable'
+
+[require(vk_mem_model)]
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void main(
+    [[vk::binding(0, 0)]] RWStructuredBuffer<Atomic<uint>> wqHead,
+    [[vk::binding(1, 0)]] RWStructuredBuffer<uint>         wqTotalItems,
+    [[vk::binding(2, 0)]] RWStructuredBuffer<uint>         items,
+    [[vk::binding(3, 0)]] RWStructuredBuffer<uint>         results)
+{
+    while (true) {
+        // Acquire: after this fetch-add, items[idx] written by a prior dispatch
+        // or the host is guaranteed visible. Device scope is implicit.
+        uint idx = wqHead[0].add(1u, MemoryOrder.Acquire);
+        if (idx >= wqTotalItems[0])
+            break;
+
+        // No additional barrier needed: Acquire on the atomic covers this read.
+        uint itemData = items[idx];
+        results[idx] = itemData * itemData;
     }
 }
 ```

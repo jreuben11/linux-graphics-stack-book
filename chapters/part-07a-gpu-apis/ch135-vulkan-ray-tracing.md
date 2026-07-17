@@ -99,6 +99,49 @@ void main() {
 }
 ```
 
+**Slang equivalent** — `RaytracingAccelerationStructure` and `TraceRay()` are first-class language constructs; `RayDesc` and a typed payload struct replace implicit `rayPayloadEXT` location slots and raw integer flag literals.
+
+```slang
+// File: raygen.slang
+// Slang improvements:
+// - [shader("raygen")] replaces stage-file extension (.rgen) convention
+// - RaytracingAccelerationStructure is a built-in type; no #extension directives needed
+// - Payload is a typed struct passed as inout — no rayPayloadEXT location slot required
+
+struct RayPayload {
+    float3 hitColor;
+};
+
+[[vk::binding(0, 0)]] RaytracingAccelerationStructure topLevelAS;
+[[vk::binding(1, 0)]] RWTexture2D<float4>             outputImage;
+
+[shader("raygen")]
+[require(GL_EXT_ray_tracing)]
+void rayGenMain() {
+    uint2  pixel = DispatchRaysIndex().xy;
+    uint2  dims  = DispatchRaysDimensions().xy;
+    float2 uv    = (float2(pixel) + 0.5f) / float2(dims);
+
+    RayDesc ray;
+    ray.Origin    = float3(uv * 2.0f - 1.0f, -1.0f);
+    ray.Direction = float3(0.0f, 0.0f, 1.0f);
+    ray.TMin      = 0.001f;
+    ray.TMax      = 10000.0f;
+
+    RayPayload payload = {};
+    TraceRay(
+        topLevelAS,
+        RAY_FLAG_FORCE_OPAQUE, // typed flag constant, not raw integer 0x1
+        0xFF,                  // cull mask
+        0, 0, 0,               // sbt record offset, sbt record stride, miss index
+        ray,
+        payload
+    );
+
+    outputImage[pixel] = float4(payload.hitColor, 1.0f);
+}
+```
+
 ### Closest Hit Shader (GLSL)
 
 ```glsl
@@ -113,6 +156,29 @@ void main() {
     // gl_HitTEXT is the distance, gl_PrimitiveID the triangle index
     vec3 bary = vec3(1.0 - baryCoord.x - baryCoord.y, baryCoord.x, baryCoord.y);
     hitColor = bary; // visualise barycentric coordinates
+}
+```
+
+**Slang equivalent** — `[shader("closesthit")]` takes payload and hit attributes as explicit typed parameters, eliminating `rayPayloadInEXT`/`hitAttributeEXT` storage qualifiers and implicit location numbers.
+
+```slang
+// File: closesthit.slang
+// Slang improvements:
+// - Payload and attributes are typed function parameters, not global storage qualifiers
+// - BuiltInTriangleIntersectionAttributes provides .barycentrics as a named field
+// - No separate rayPayloadInEXT / hitAttributeEXT declarations required
+
+struct RayPayload {
+    float3 hitColor;
+};
+
+[shader("closesthit")]
+[require(GL_EXT_ray_tracing)]
+void closestHitMain(inout RayPayload payload,
+                    in BuiltInTriangleIntersectionAttributes attr) {
+    float2 b    = attr.barycentrics;
+    float3 bary = float3(1.0f - b.x - b.y, b.x, b.y);
+    payload.hitColor = bary; // visualise barycentric coordinates
 }
 ```
 
@@ -373,6 +439,54 @@ void main() {
 }
 ```
 
+**Slang equivalent** — `asfloat()`/`asint()` and vector `select()` replace GLSL's `intBitsToFloat()`/`floatBitsToInt()` and per-component ternary expansion, making the ULP-offset logic cleaner and avoiding accidental scalar promotion.
+
+```slang
+// File: closesthit_shadow.slang
+// Slang improvements:
+// - asfloat() / asint() are standard intrinsics that accept int3/float3 directly
+// - select(cond, a, b) applies component-wise on vectors, no manual x/y/z expansion
+// - [[vk::push_constant]] on a named struct avoids anonymous-struct parse ambiguity
+
+struct RayPayload    { float3 hitColor; };
+struct ShadowPayload { bool   shadowed; };
+struct PushConstants { float3 lightDir; };
+
+[[vk::binding(0, 0)]] RaytracingAccelerationStructure topLevelAS;
+[[vk::push_constant]] PushConstants pc;
+
+float3 offsetPositionAlongNormal(float3 p, float3 n) {
+    const float origin      = 1.0f / 32.0f;
+    const float float_scale = 1.0f / 65536.0f;
+    const float int_scale   = 256.0f;
+
+    int3 of_i = int3(int_scale * n);
+    // Add ULP offset to the float bit-pattern — adapts automatically to float magnitude
+    int3   ix  = asint(p) + select(p < 0.0f, -of_i, of_i);
+    float3 p_i = asfloat(ix);
+
+    return select(abs(p) < origin, p + float_scale * n, p_i);
+}
+
+[shader("closesthit")]
+[require(GL_EXT_ray_tracing)]
+void closestHitShadow(inout RayPayload payload,
+                      in BuiltInTriangleIntersectionAttributes attr) {
+    float3 P = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
+    float3 N = /* interpolated geometric normal at hit */;
+
+    RayDesc shadowRay;
+    shadowRay.Origin    = offsetPositionAlongNormal(P, N);
+    shadowRay.Direction = pc.lightDir;
+    shadowRay.TMin      = 0.001f;
+    shadowRay.TMax      = 1e6f;
+
+    ShadowPayload sp = { false };
+    TraceRay(topLevelAS, RAY_FLAG_FORCE_OPAQUE, 0xFF, 0, 0, 1, shadowRay, sp);
+    payload.hitColor = sp.shadowed ? float3(0.0f) : float3(1.0f);
+}
+```
+
 The key insight is using integer arithmetic on the float representation: adding an integer offset to the mantissa/exponent of a float is equivalent to shifting by a number of ULPs (Units in the Last Place) proportional to the float's magnitude — inherently adaptive to the scale of the geometry.
 
 [Source: NVIDIA self-intersection-avoidance GitHub](https://github.com/NVIDIA/self-intersection-avoidance)
@@ -556,6 +670,44 @@ float traceAO(vec3 pos, vec3 normal) {
 
     return (rayQueryGetIntersectionTypeEXT(query, true)
             == gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
+}
+```
+
+**Slang equivalent** — `RayQuery<Flags>` encodes ray flags as a compile-time generic parameter for type safety; `[require(GL_EXT_ray_query)]` on the entry point replaces `#extension GL_EXT_ray_query : require` and participates in Slang's module capability system.
+
+```slang
+// File: ao_fragment.slang
+// Slang improvements:
+// - RayQuery<RAY_FLAG_TERMINATE_ON_FIRST_HIT | RAY_FLAG_FORCE_OPAQUE> — flags are
+//   a compile-time generic, not a runtime integer; mismatched flags are a type error
+// - COMMITTED_NOTHING / COMMITTED_TRIANGLE_HIT are typed enum values, not integers
+// - Helper function traceAO() callable from any stage once the capability is declared
+
+[[vk::binding(0, 0)]] RaytracingAccelerationStructure topLevelAS;
+
+float traceAO(float3 pos, float3 normal) {
+    RayDesc ray;
+    ray.Origin    = pos + normal * 0.001f;
+    ray.Direction = normal;  // fire along geometric normal for hemisphere AO
+    ray.TMin      = 0.001f;
+    ray.TMax      = 1.0f;
+
+    RayQuery<RAY_FLAG_TERMINATE_ON_FIRST_HIT | RAY_FLAG_FORCE_OPAQUE> q;
+    q.TraceRayInline(topLevelAS, RAY_FLAG_NONE, 0xFF, ray);
+
+    // FORCE_OPAQUE: all candidates auto-committed; loop body never executes.
+    // TERMINATE_ON_FIRST_HIT: traversal stops after the first committed hit.
+    while (q.Proceed()) {}
+
+    return (q.CommittedStatus() == COMMITTED_NOTHING) ? 1.0f : 0.0f;
+}
+
+[shader("fragment")]
+[require(GL_EXT_ray_query)]
+float4 aoFragmentMain(float3 worldPos    : TEXCOORD0,
+                      float3 worldNormal : TEXCOORD1) : SV_Target {
+    float ao = traceAO(worldPos, normalize(worldNormal));
+    return float4(float3(ao), 1.0f);
 }
 ```
 

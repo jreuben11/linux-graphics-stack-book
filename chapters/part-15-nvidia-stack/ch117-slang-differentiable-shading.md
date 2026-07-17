@@ -1133,7 +1133,84 @@ Falcor's BC7 texture encoder, written in this style, achieves **400 4K textures 
 
 A differentiable path tracer trains a NeRF-style implicit representation by comparing rendered pixels to ground-truth images. The volumetric rendering integral is approximated by ray marching; the density and colour at each sample point come from a neural network (or multi-resolution hash encoding). The entire forward pass must be differentiable with respect to the network weights.
 
-The training loop pattern in Slang:
+Without autodiff, a GLSL compute shader implements only the forward render; the backward pass requires a separate hand-written companion shader of comparable size, kept manually in sync with every architecture change:
+
+```glsl
+// File: nerf_forward.comp
+// GLSL forward-only volumetric ray march.
+// Without GLSL autodiff, training requires a separate backward.comp
+// that manually implements the adjoint of every operation below.
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly  buffer WeightBuf { float weights[]; };
+layout(set = 0, binding = 1, std430) writeonly buffer PixelBuf  { vec4  pixels[];  };
+
+layout(push_constant) uniform PC {
+    uint  imageWidth;
+    uint  imageHeight;
+    int   nSamples;
+    float tMin;
+    float tMax;
+} pc;
+
+// Tiny MLP: 4 inputs (xyz + bias) -> 4 outputs; 4 fully-connected layers.
+// Production NeRF networks use 256-unit hidden layers with positional encoding;
+// the weight-indexing pattern scales identically.
+vec4 queryMLP(vec3 pos) {
+    float h[4];
+    h[0] = pos.x;  h[1] = pos.y;  h[2] = pos.z;  h[3] = 1.0;
+    for (int l = 0; l < 4; l++) {
+        float acc[4];
+        for (int o = 0; o < 4; o++) {
+            acc[o] = 0.0;
+            for (int i = 0; i < 4; i++)
+                acc[o] += weights[l * 20 + o * 4 + i] * h[i];
+            acc[o] += weights[l * 20 + 16 + o];  // bias term
+            acc[o]  = max(acc[o], 0.0);           // ReLU activation
+        }
+        h[0] = acc[0];  h[1] = acc[1];  h[2] = acc[2];  h[3] = acc[3];
+    }
+    return vec4(h[0], h[1], h[2], max(h[3], 0.0));  // (rgb, sigma)
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.imageWidth * pc.imageHeight) return;
+
+    // Reconstruct ray from pixel index (pinhole camera)
+    vec3 rayOrigin = vec3(0.0, 0.0, 3.0);
+    vec3 rayDir    = normalize(vec3(
+        float(idx % pc.imageWidth)  / float(pc.imageWidth)  - 0.5,
+        float(idx / pc.imageWidth)  / float(pc.imageHeight) - 0.5,
+        -1.0));
+
+    // Forward-only volume render — no gradient tracking possible in GLSL
+    vec3  color         = vec3(0.0);
+    float transmittance = 1.0;
+    float stepSize      = (pc.tMax - pc.tMin) / float(pc.nSamples);
+
+    for (int i = 0; i < pc.nSamples; i++) {
+        float t    = pc.tMin + float(i) * stepSize;
+        vec3  pt   = rayOrigin + t * rayDir;
+        vec4  rgba = queryMLP(pt);
+        float alpha = 1.0 - exp(-rgba.w * stepSize);
+        color         += transmittance * alpha * rgba.xyz;
+        transmittance *= (1.0 - alpha);
+    }
+
+    pixels[idx] = vec4(color, 1.0);
+    // Training: a separate backward.comp must mirror every loop above in
+    // adjoint form, computing d(MSE)/d(weights[i]) for each parameter.
+    // Any change to queryMLP (depth, activation, encoding) must also be
+    // replicated by hand in the backward shader to keep gradients correct.
+}
+```
+
+**GLSL→Slang:** In GLSL, computing weight gradients requires a separate backward compute shader that manually derives and implements the adjoint of every `queryMLP` loop — a hand-written artifact of comparable size that must stay in sync with the forward shader across every architecture change. In the Slang version below, `queryNeRF` abstracts the same MLP body; adding `[Differentiable]` to `renderRay` and `pixelLoss`, then calling `bwd_diff(pixelLoss)`, generates the full backward pass automatically, so any change to network depth, activation, or encoding propagates to the gradient computation for free.
+
+The equivalent differentiable training loop in Slang:
 
 ```slang
 // File: nerf_train.slang  (simplified conceptual example)

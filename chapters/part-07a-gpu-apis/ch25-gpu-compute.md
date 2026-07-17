@@ -1053,6 +1053,70 @@ void main() {
 }
 ```
 
+**Slang equivalent** — generic type parameter `T` eliminates duplicate float4/half4 shader files, and the same source compiles to SPIR-V, CUDA PTX, or CPU from a single `slangc -target` flag change.
+
+```slang
+// File: gaussian_h.slang
+// Horizontal Gaussian blur pass
+// Slang improvements:
+// - Generic <T : __BuiltinFloatingPointType> produces float4 and half4 variants from one
+//   source; GLSL requires a separate .comp file for each precision.
+// - [[vk::binding(N,M)]], [[vk::push_constant]], [vk::constant_id(N)] annotations survive
+//   slangc -target cuda and -target cpp unchanged — no backend-specific rewrites.
+// - [unroll] loop attribute combined with a specialised RADIUS constant lets the driver
+//   eliminate the loop entirely when the radius is known at pipeline-creation time.
+
+[vk::constant_id(0)]
+static const uint RADIUS = 4u;
+
+struct GaussianPC {
+    uint  width;
+    uint  height;
+    float weights[17];   // weights[0..RADIUS], symmetric
+};
+
+[[vk::push_constant]] GaussianPC pc;
+
+[[vk::binding(0, 0)]] RWTexture2D<float4> src_image;   // readonly storage image
+[[vk::binding(1, 0)]] RWTexture2D<float4> dst_image;   // writeonly storage image
+
+// -------------------------------------------------------------------
+// Generic blur body: T can be float (full precision) or half
+// (bandwidth-saving). T(x) converts the float weight stored in the
+// push-constant block to the working precision at compile time.
+// -------------------------------------------------------------------
+void blurHBody<T : __BuiltinFloatingPointType>(
+    int2                      coord,
+    RWTexture2D<vector<T, 4>> src,
+    RWTexture2D<vector<T, 4>> dst)
+{
+    if (coord.x >= (int)pc.width || coord.y >= (int)pc.height) return;
+
+    vector<T, 4> result = src[coord] * T(pc.weights[0]);
+    [unroll]
+    for (uint r = 1u; r <= RADIUS; r++) {
+        int2 left  = int2(max(coord.x - (int)r, 0),                  coord.y);
+        int2 right = int2(min(coord.x + (int)r, (int)pc.width - 1),  coord.y);
+        result += (src[left] + src[right]) * T(pc.weights[r]);
+    }
+    dst[coord] = result;
+}
+
+// Full-precision float4 entry point.
+// Compile to SPIR-V:    slangc gaussian_h.slang -target spirv -entry main -o gaussian_h.spv
+// Compile to CUDA PTX:  slangc gaussian_h.slang -target cuda  -entry main -o gaussian_h.cu
+[shader("compute")]
+[numthreads(16, 8, 1)]
+void main(uint3 globalID : SV_DispatchThreadID)
+{
+    blurHBody<float>(int2(globalID.xy), src_image, dst_image);
+}
+
+// Half4 entry point (reduced bandwidth): declare separate RWTexture2D<half4> bindings
+// at the same binding slots and add a main_half entry that calls blurHBody<half>(...).
+// The generic body compiles unchanged; only the binding type and entry name differ.
+```
+
 The vertical pass is identical with the offset direction transposed (vary `y` instead of `x`).
 
 **Two-pass dispatch with specialisation constants:**

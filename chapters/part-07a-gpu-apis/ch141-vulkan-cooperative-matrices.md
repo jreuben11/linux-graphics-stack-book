@@ -223,6 +223,57 @@ void main() {
 }
 ```
 
+**Slang equivalent** — `typealias` names each tile type once (eliminating repeated `coopmat<T,scope,M,N,use>` arguments), `[[vk::binding]]` moves SSBO layout metadata to function parameters instead of global blocks, and the method-syntax `.fill()` / `.load()` / `.store()` replaces the GLSL free-function calls for a more self-documenting tiling loop.
+
+```slang
+// File: gemm.slang
+// Tiled FP16×FP16→FP32 GEMM using Vulkan cooperative matrices
+// Slang improvements:
+//   - typealias TileA/TileB/TileAcc — CoopMatrix type arguments written once, reused everywhere
+//   - [[vk::binding]] / [[vk::push_constant]] on parameters — no global layout blocks
+//   - .fill() / .load() / .store() method syntax — load layout enum is scoped, not a bare integer
+
+static const uint TILE_M = 16;
+static const uint TILE_N = 16;
+static const uint TILE_K = 16;
+
+struct Dims { uint M, N, K; }
+
+typealias TileA   = CoopMatrix<float16_t, CoopMatrixScope.Subgroup, TILE_M, TILE_K, CoopMatrixUse.A>;
+typealias TileB   = CoopMatrix<float16_t, CoopMatrixScope.Subgroup, TILE_K, TILE_N, CoopMatrixUse.B>;
+typealias TileAcc = CoopMatrix<float,     CoopMatrixScope.Subgroup, TILE_M, TILE_N, CoopMatrixUse.Accumulator>;
+
+[numthreads(32, 1, 1)]
+[shader("compute")]
+void main(
+    uint3                                           wgID  : SV_GroupID,
+    [[vk::binding(0, 0)]] StructuredBuffer<float16_t>   A,
+    [[vk::binding(1, 0)]] StructuredBuffer<float16_t>   B,
+    [[vk::binding(2, 0)]] RWStructuredBuffer<float>     C,
+    [[vk::push_constant]]  ConstantBuffer<Dims>          dims)
+{
+    uint base_m = wgID.y * TILE_M;
+    uint base_n = wgID.x * TILE_N;
+
+    // Single call fills all per-invocation accumulator registers with zero
+    TileAcc acc;
+    acc.fill(0.0f);
+
+    for (uint k = 0; k < dims.K; k += TILE_K) {
+        // Static method on the tile type — layout enum is scoped, not a bare gl_ constant
+        TileA tileA = TileA.load(A, base_m * dims.K + k, dims.K,
+                                 CoopMatrixLayout.RowMajor);
+        TileB tileB = TileB.load(B, k * dims.N + base_n,  dims.N,
+                                 CoopMatrixLayout.RowMajor);
+        // coopMatMulAdd maps to the same OpCooperativeMatrixMulAddKHR SPIR-V opcode
+        acc = coopMatMulAdd(tileA, tileB, acc);
+    }
+
+    // Method-syntax store — no need to repeat the type name or layout enum prefix
+    acc.store(C, base_m * dims.N + base_n, dims.N, CoopMatrixLayout.RowMajor);
+}
+```
+
 Compile with:
 
 ```bash
@@ -450,6 +501,94 @@ coopMatLoad(tileB_i8, quantB, offset_b, stride_b,
             gl_CooperativeMatrixLayoutColumnMajor);
 acc_i32 = coopMatMulAdd(tileA_i8, tileB_i8, acc_i32);
 /* Then scale by quantization factors and convert to FP16 for output */
+```
+
+**Slang equivalent** — a single `IMatrixPrecision` interface with associated `ElementType`/`AccumType` types lets one generic `tiled_gemm<P>()` helper cover both FP16→FP32 and INT8→INT32 without duplicating the tiling loop; the compiler generates separate SPIR-V entry points for each concrete specialisation.
+
+```slang
+// File: gemm_mixed_precision.slang
+// Generic GEMM demonstrating Slang interface generics for mixed-precision variants
+// Slang improvements:
+//   - IMatrixPrecision interface: associated ElementType + AccumType unify FP16 and INT8 paths
+//   - Single tiled_gemm<P>() helper — the K-loop is written once; both HW WMMA variants generated
+//   - Concrete entry points gemm_fp16 / gemm_int8 carry correct [[vk::binding]] types
+
+static const uint TILE_M = 16, TILE_N = 16, TILE_K = 16;
+
+struct Dims { uint M, N, K; }
+
+// ── Precision interface ───────────────────────────────────────────────────
+interface IMatrixPrecision {
+    associatedtype ElementType;   // e.g. float16_t or int8_t
+    associatedtype AccumType;     // e.g. float or int
+    static AccumType zero();      // typed zero for acc.fill()
+}
+
+struct FP16Precision : IMatrixPrecision {
+    typedef float16_t ElementType;
+    typedef float     AccumType;
+    static float zero() { return 0.0f; }
+}
+
+struct INT8Precision : IMatrixPrecision {
+    typedef int8_t  ElementType;
+    typedef int     AccumType;
+    static int zero() { return 0; }
+}
+
+// ── Generic tiling loop — NOT an entry point ──────────────────────────────
+void tiled_gemm<P : IMatrixPrecision>(
+    uint3                           wgID,
+    StructuredBuffer<P.ElementType> A,
+    StructuredBuffer<P.ElementType> B,
+    RWStructuredBuffer<P.AccumType> C,
+    Dims                            dims)
+{
+    // typealias inside a generic function — rows/cols fixed; element/accum types flow from P
+    typealias TileA   = CoopMatrix<P.ElementType, CoopMatrixScope.Subgroup, TILE_M, TILE_K, CoopMatrixUse.A>;
+    typealias TileB   = CoopMatrix<P.ElementType, CoopMatrixScope.Subgroup, TILE_K, TILE_N, CoopMatrixUse.B>;
+    typealias TileAcc = CoopMatrix<P.AccumType,   CoopMatrixScope.Subgroup, TILE_M, TILE_N, CoopMatrixUse.Accumulator>;
+
+    uint base_m = wgID.y * TILE_M;
+    uint base_n = wgID.x * TILE_N;
+
+    TileAcc acc;
+    acc.fill(P.zero());   // P.zero() resolves to 0.0f (FP16) or 0 (INT8) at compile time
+
+    for (uint k = 0; k < dims.K; k += TILE_K) {
+        TileA tileA = TileA.load(A, base_m * dims.K + k, dims.K, CoopMatrixLayout.RowMajor);
+        TileB tileB = TileB.load(B, k * dims.N + base_n,  dims.N, CoopMatrixLayout.ColumnMajor);
+        acc = coopMatMulAdd(tileA, tileB, acc);
+    }
+    // Scale and type-convert after the loop (caller or a follow-on shader)
+    acc.store(C, base_m * dims.N + base_n, dims.N, CoopMatrixLayout.RowMajor);
+}
+
+// ── Concrete FP16 → FP32 entry point ─────────────────────────────────────
+[numthreads(32, 1, 1)]
+[shader("compute")]
+void gemm_fp16(
+    uint3                                           wgID  : SV_GroupID,
+    [[vk::binding(0, 0)]] StructuredBuffer<float16_t>   A,
+    [[vk::binding(1, 0)]] StructuredBuffer<float16_t>   B,
+    [[vk::binding(2, 0)]] RWStructuredBuffer<float>     C,
+    [[vk::push_constant]]  ConstantBuffer<Dims>          dims)
+{
+    tiled_gemm<FP16Precision>(wgID, A, B, C, dims);
+}
+
+// ── Concrete INT8 → INT32 entry point ────────────────────────────────────
+[numthreads(32, 1, 1)]
+[shader("compute")]
+void gemm_int8(
+    uint3                                          wgID  : SV_GroupID,
+    [[vk::binding(0, 0)]] StructuredBuffer<int8_t>    A,
+    [[vk::binding(1, 0)]] StructuredBuffer<int8_t>    B,
+    [[vk::binding(2, 0)]] RWStructuredBuffer<int>     C,
+    [[vk::push_constant]]  ConstantBuffer<Dims>        dims)
+{
+    tiled_gemm<INT8Precision>(wgID, A, B, C, dims);
+}
 ```
 
 ### Saturating Accumulation

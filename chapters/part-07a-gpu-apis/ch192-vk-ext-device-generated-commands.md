@@ -418,6 +418,114 @@ void main() {
 }
 ```
 
+**Slang equivalent** — A shared `dgc_types` module gives both the cull shader and any future DGC consumers a single `SequenceRecord` definition with named fields instead of raw SSBO offset arithmetic, while `[vk::constant_id]` specialisation constants produce a zero-cost frustum-skip variant (e.g. for a depth prepass) without a preprocessor macro.
+
+```slang
+// File: dgc_types.slang
+// Shared DGC payload types — import from the cull shader and any future DGC-consuming shaders
+// Slang improvements:
+//   - Named struct fields replace raw per-binding offset arithmetic; a single definition
+//     serves both producer (cull) and consumer (vertex) shaders without duplication
+//   - uint-pair address avoids 8-byte alignment padding at offset 12, keeping the
+//     48-byte stride exact (matches indirectStride in VkIndirectCommandsLayoutCreateInfoEXT)
+//   - [vk::constant_id] specialisation constants bake variant flags at pipeline-compile time
+
+module dgc_types;
+
+// Mirror of VkBindIndexBufferIndirectCommandEXT packed as four uint32s.
+// Using two uints for the 64-bit device address avoids alignment padding at offset 12
+// (a uint64_t would require 8-byte alignment, inserting 4 bytes of implicit padding).
+struct BindIndexBufferCmd {
+    uint bufferAddrLo;  // low 32 bits of VkDeviceAddress
+    uint bufferAddrHi;  // high 32 bits of VkDeviceAddress
+    uint size;          // byte size of index buffer region
+    uint indexType;     // 0 = VK_INDEX_TYPE_UINT16, 1 = VK_INDEX_TYPE_UINT32
+};                      // 16 bytes; sits at token offset 12 with no padding
+
+// Mirror of VkDrawIndexedIndirectCommand (20 bytes)
+struct DrawIndexedCmd {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int  vertexOffset;
+    uint firstInstance;
+};
+
+// 48-byte sequence record matching VkIndirectCommandsLayoutCreateInfoEXT token offsets:
+//   offset  0: pipeline_index  (EXECUTION_SET_EXT token)
+//   offset  4: mesh_index      (PUSH_CONSTANT_EXT token [0])
+//   offset  8: material_index  (PUSH_CONSTANT_EXT token [1])
+//   offset 12: ib              (INDEX_BUFFER_EXT  token, 16 bytes)
+//   offset 28: draw            (DRAW_INDEXED_EXT  token, 20 bytes)
+//   4 + 4 + 4 + 16 + 20 = 48 bytes
+struct SequenceRecord {
+    uint               pipeline_index;
+    uint               mesh_index;
+    uint               material_index;
+    BindIndexBufferCmd ib;
+    DrawIndexedCmd     draw;
+};
+
+struct InstanceData {
+    uint64_t index_buffer_bda;        // Vulkan device address of this mesh's index buffer
+    uint     index_buffer_bytes;
+    uint     index_count;
+    uint     mesh_index;
+    uint     material_index;
+    uint     material_pipeline_index;
+    float4   bounds;                  // xyz = sphere centre, w = sphere radius
+};
+
+bool frustum_cull(float4 bounds);     // declared here; defined in scene_geometry module
+
+// ---- File: cull_and_build_sequences.slang ----
+
+import dgc_types;  // SequenceRecord, InstanceData, frustum_cull
+
+// Specialisation constants: baked at pipeline-compile time, not loaded as uniforms at runtime.
+// TOTAL_INSTANCE_COUNT avoids an extra SGPR/UBO fetch inside the hot loop.
+[vk::constant_id(0)] const uint TOTAL_INSTANCE_COUNT = 65536;
+// ENABLE_FRUSTUM_CULL = false compiles a separate depth-prepass variant where the compiler
+// eliminates the cull branch entirely — no runtime overhead, no preprocessor required.
+[vk::constant_id(1)] const bool ENABLE_FRUSTUM_CULL  = true;
+
+[[vk::binding(0, 0)]] StructuredBuffer<InstanceData>     instances;
+[[vk::binding(1, 0)]] RWStructuredBuffer<SequenceRecord> records;
+[[vk::binding(2, 0)]] RWStructuredBuffer<uint>           visible_count;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void main(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    uint id = dispatchThreadID.x;
+    if (id >= TOTAL_INSTANCE_COUNT) return;
+
+    InstanceData inst = instances[id];
+    if (ENABLE_FRUSTUM_CULL && !frustum_cull(inst.bounds)) return;
+
+    uint seq;
+    InterlockedAdd(visible_count[0], 1u, seq);
+
+    // Construct SequenceRecord with named fields — misaligned or missing assignments
+    // are compile errors rather than silent silent stride mismatches at runtime.
+    SequenceRecord rec;
+    rec.pipeline_index     = inst.material_pipeline_index;
+    rec.mesh_index         = inst.mesh_index;
+    rec.material_index     = inst.material_index;
+    // Split 64-bit BDA into two uint32s matching BindIndexBufferCmd layout at offset 12
+    rec.ib.bufferAddrLo    = uint(inst.index_buffer_bda & 0xFFFFFFFFu);
+    rec.ib.bufferAddrHi    = uint(inst.index_buffer_bda >> 32);
+    rec.ib.size            = inst.index_buffer_bytes;
+    rec.ib.indexType       = 1u;  // VK_INDEX_TYPE_UINT32
+    rec.draw.indexCount    = inst.index_count;
+    rec.draw.instanceCount = 1u;
+    rec.draw.firstIndex    = 0u;
+    rec.draw.vertexOffset  = 0;
+    rec.draw.firstInstance = seq;
+    records[seq] = rec;
+}
+```
+
 **Graphics command buffer recording:**
 
 ```c

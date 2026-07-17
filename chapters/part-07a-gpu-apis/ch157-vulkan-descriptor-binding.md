@@ -305,6 +305,30 @@ void main() {
 }
 ```
 
+**Slang equivalent** — `[[vk::binding(N,M)]]` makes the set/binding assignment explicit and compiler-verified; `NonUniformResourceIndex()` replaces the `nonuniformEXT` qualifier without requiring any GLSL extension declaration.
+
+```slang
+// File: bindless_texture_array.slang
+// Slang improvements:
+// - [[vk::binding(0,0)]] pins set and binding at the declaration site; no implicit numbering
+// - NonUniformResourceIndex() is a built-in; no GL_EXT_nonuniform_qualifier extension needed
+// - nointerpolation on the uint attribute explicitly marks flat interpolation, matching GLSL flat
+
+[[vk::binding(0, 0)]]
+Sampler2D textures[];                          // runtime-sized bindless array (set 0, binding 0)
+
+[shader("fragment")]
+float4 main(
+    [[vk::location(0)]] nointerpolation uint  tex_id : TEXCOORD0,
+    [[vk::location(1)]]              float2   uv     : TEXCOORD1
+) : SV_Target
+{
+    // NonUniformResourceIndex signals wave-divergent access to the compiler;
+    // equivalent to nonuniformEXT but is a language built-in, not an extension toggle
+    return textures[NonUniformResourceIndex(tex_id)].Sample(uv);
+}
+```
+
 `nonuniformEXT` instructs the compiler to emit a scalar or SIMD-divergent texture fetch (e.g. AMD's `image_sample_nsa` or Intel's per-channel send), which avoids incorrect results when lane divergence causes different lanes to access different descriptors.
 
 ---
@@ -730,6 +754,42 @@ void main() {
 }
 ```
 
+**Slang equivalent** — `ParameterBlock<T>` groups the material constants and the bindless texture array into a single typed descriptor set without any manual `layout(set=N, binding=M)` annotations; the inline-uniform-block distinction disappears because ordinary struct fields auto-pack into a generated constant buffer at binding 0.
+
+```slang
+// File: material_bindless_paramblock.slang
+// Slang improvements:
+// - ParameterBlock<MaterialSet> owns its own descriptor set; Slang assigns set and binding
+//   indices automatically — no hand-written layout() qualifiers required
+// - Ordinary data fields (roughness, metallic, tex_id) collapse into an auto-generated
+//   ConstantBuffer at binding 0, replacing the inline uniform block concept entirely
+// - Resource fields (textures[]) follow at binding 1; unbounded array must be the last field
+
+struct MaterialParams {
+    float roughness;
+    float metallic;
+    uint  tex_id;
+};
+
+struct MaterialSet {
+    MaterialParams material;   // auto-packed into ConstantBuffer at binding 0
+    Sampler2D      textures[]; // bindless array at binding 1; must be last field in set
+};
+
+// Slang assigns a descriptor set number; no explicit set index needed
+ParameterBlock<MaterialSet> gMaterial;
+
+[shader("fragment")]
+float4 main([[vk::location(0)]] float2 uv : TEXCOORD0) : SV_Target
+{
+    MaterialParams mat = gMaterial.material;
+    // NonUniformResourceIndex handles divergent lane access without extension declarations
+    float4 col = gMaterial.textures[NonUniformResourceIndex(mat.tex_id)].Sample(uv);
+    // Apply PBR using mat.roughness and mat.metallic …
+    return col;
+}
+```
+
 On RADV, inline uniform block data is stored directly in the pool's BO at the set's memory offset, adjacent to other descriptor data. The driver maps the binding's byte range directly into GPU-accessible memory, meaning no buffer object, no VMA allocation, and no device-address resolution at bind time.
 
 ---
@@ -1007,6 +1067,64 @@ void main() {
     );
 
     imageStore(result_image, ivec2(gl_LaunchIDEXT.xy), vec4(hit_value, 1.0));
+}
+```
+
+**Slang equivalent** — `[shader("raygen")]` replaces the `#extension GL_EXT_ray_tracing` entry-point convention; the ray payload becomes a typed local struct passed directly to `TraceRay<>`, eliminating the fragile `layout(location=N) rayPayloadEXT` numbering scheme.
+
+```slang
+// File: raygen.slang
+// Slang improvements:
+// - [shader("raygen")] is a first-class entry-point annotation; no extension pragmas needed
+// - RaytracingAccelerationStructure is a built-in Slang type bound with [[vk::binding]]
+// - Payload is a typed struct local to TraceRay<>; no rayPayloadEXT location aliasing risk
+[require(spirv_1_4)]  // ray tracing requires SPIR-V 1.4 minimum
+
+struct CameraUBO {
+    float4x4 inv_view;
+    float4x4 inv_proj;
+};
+
+struct Payload {
+    float3 hit_value;
+};
+
+[[vk::binding(0, 0)]] RaytracingAccelerationStructure topLevelAS;
+[[vk::binding(1, 0)]] RWTexture2D<float4>             result_image;
+[[vk::binding(2, 0)]] ConstantBuffer<CameraUBO>        camera;
+
+[shader("raygen")]
+void main()
+{
+    uint2 pixel = DispatchRaysIndex().xy;           // gl_LaunchIDEXT equivalent
+    uint2 size  = DispatchRaysDimensions().xy;      // gl_LaunchSizeEXT equivalent
+
+    float2 uv  = (float2(pixel) + 0.5f) / float2(size);
+    float2 ndc = uv * 2.0f - 1.0f;
+
+    // Note: mul(M, v) in Slang row-major convention matches GLSL column-major M*v
+    // when the application fills the UBO with a transposed matrix, as is standard practice
+    float4 origin    = mul(camera.inv_view, float4(0, 0, 0, 1));
+    float4 target    = mul(camera.inv_proj, float4(ndc.x, ndc.y, 1, 1));
+    float4 direction = mul(camera.inv_view, float4(normalize(target.xyz), 0));
+
+    RayDesc ray;
+    ray.Origin    = origin.xyz;
+    ray.TMin      = 0.001f;
+    ray.Direction = direction.xyz;
+    ray.TMax      = 1000.0f;
+
+    Payload payload = {};
+    TraceRay(
+        topLevelAS,
+        RAY_FLAG_FORCE_OPAQUE,  // gl_RayFlagsOpaqueEXT equivalent
+        0xFF,                   // cull mask
+        0, 1, 0,                // hit-group offset, geometry-contribution multiplier, miss index
+        ray,
+        payload                 // typed inout struct; no rayPayloadEXT location integer
+    );
+
+    result_image[pixel] = float4(payload.hit_value, 1.0f);
 }
 ```
 

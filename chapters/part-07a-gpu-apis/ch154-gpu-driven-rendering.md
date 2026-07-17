@@ -244,6 +244,73 @@ void main() {
 }
 ```
 
+**Slang equivalent** — `ParameterBlock<SceneBindings>` groups all scene SSBOs into a typed, reflection-visible block, and `[Differentiable]` on `frustum_cull()` enables `bwd_diff()` to compute gradients through the frustum-sphere signed distance for differentiable rendering losses.
+
+```slang
+// File: cull.slang
+// GPU frustum culling compute shader — matches cull.comp
+// Slang improvements:
+//   - ParameterBlock<SceneBindings> groups scene SSBOs into a typed, reflection-visible block
+//     eliminating manual set/binding bookkeeping across CPU and shader
+//   - [Differentiable] on frustum_cull() enables bwd_diff() for gradient-based cull tuning
+//     (e.g. differentiating a soft-culling loss w.r.t. learned frustum plane parameters)
+//   - [[vk::push_constant]] replaces layout(push_constant) uniform; struct is first-class
+
+import scene_types;  // shared ObjectData / DrawCommand definitions
+
+struct SceneBindings {
+    StructuredBuffer<ObjectData>    objects;
+    RWStructuredBuffer<DrawCommand> draws;
+    RWStructuredBuffer<uint>        draw_count;
+};
+
+struct CullPushConstants {
+    float4x4 view_proj;
+    float4   frustum_planes[6];
+    uint     object_count;
+};
+
+ParameterBlock<SceneBindings>      scene;
+[[vk::push_constant]] CullPushConstants g_cull;
+
+// [Differentiable]: Slang auto-generates the backward pass for this predicate,
+// allowing gradient flow through the per-plane signed-distance expression used in
+// soft culling losses during neural scene representation training.
+[Differentiable]
+bool frustum_cull(float4 sphere, float4 frustum_planes[6]) {
+    [ForceUnroll]
+    for (int i = 0; i < 6; i++) {
+        if (dot(frustum_planes[i], float4(sphere.xyz, 1.0)) < -sphere.w)
+            return false;
+    }
+    return true;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) {
+    uint idx = dispatch_id.x;
+    if (idx >= g_cull.object_count) return;
+
+    ObjectData obj = scene.objects[idx];
+
+    // Transform bounding sphere into world space
+    float3 world_center = mul(obj.transform, float4(obj.bounds_sphere.xyz, 1.0)).xyz;
+    float  scale = max(length(obj.transform[0].xyz),
+                   max(length(obj.transform[1].xyz), length(obj.transform[2].xyz)));
+    float4 world_sphere = float4(world_center, obj.bounds_sphere.w * scale);
+
+    if (!frustum_cull(world_sphere, g_cull.frustum_planes)) return;
+
+    uint draw_idx;
+    InterlockedAdd(scene.draw_count[0], 1u, draw_idx);
+
+    DrawCommand cmd = { obj.index_count, 1u, obj.first_index,
+                        obj.vertex_offset, draw_idx };
+    scene.draws[draw_idx] = cmd;
+}
+```
+
 ### Synchronisation Between Cull and Draw
 
 ```c
@@ -650,6 +717,77 @@ void main() {
 }
 ```
 
+**Slang equivalent** — a `generic<let USE_MAX : bool>` compile-time parameter unifies the standard (min) and reversed-Z (max) depth reduction paths into one shader body, selected via a Vulkan specialisation constant rather than a preprocessor permutation or two separate shader objects.
+
+```slang
+// File: hiz_reduce.slang
+// Hi-Z pyramid single-mip depth reduction — matches hiz_reduce.comp
+// Slang improvements:
+//   - generic<let USE_MAX : bool> eliminates a preprocessor #define permutation for
+//     reversed-Z (max) vs. standard (min) depth without any runtime branch on the hot path
+//   - [vk::constant_id(0)] selects the depth convention at pipeline-creation time;
+//     no shader recompile needed when switching cameras between depth conventions
+//   - Texture2D<float>/RWTexture2D<float> express the r32f format intent explicitly;
+//     Load() replaces texelFetch for consistent HLSL/Slang syntax
+
+[[vk::binding(0, 0)]] Texture2D<float>   g_src;
+[[vk::binding(1, 0)]] RWTexture2D<float> g_dst;
+
+struct HiZPC { int2 src_size; int2 dst_size; };
+[[vk::push_constant]] HiZPC g_pc;
+
+// Compile-time reduction operator — no runtime branch on the critical inner loop
+generic<let USE_MAX : bool>
+float depth_reduce(float a, float b) { return USE_MAX ? max(a, b) : min(a, b); }
+
+generic<let USE_MAX : bool>
+float sample_clamped(Texture2D<float> tex, int2 coord, int2 bound) {
+    return tex.Load(int3(clamp(coord, int2(0), bound - int2(1)), 0));
+}
+
+generic<let USE_MAX : bool>
+void hiz_reduce_impl(uint3 id) {
+    int2 dst   = int2(id.xy);
+    if (any(dst >= g_pc.dst_size)) return;
+
+    int2 base  = dst * 2;
+    int2 bound = g_pc.src_size;
+
+    float d00 = sample_clamped<USE_MAX>(g_src, base + int2(0,0), bound);
+    float d10 = sample_clamped<USE_MAX>(g_src, base + int2(1,0), bound);
+    float d01 = sample_clamped<USE_MAX>(g_src, base + int2(0,1), bound);
+    float d11 = sample_clamped<USE_MAX>(g_src, base + int2(1,1), bound);
+
+    float result = depth_reduce<USE_MAX>(depth_reduce<USE_MAX>(d00, d10),
+                                         depth_reduce<USE_MAX>(d01, d11));
+
+    // Non-power-of-two source: widen footprint at odd column/row boundary
+    if ((g_pc.src_size.x & 1) != 0) {
+        float dx0 = sample_clamped<USE_MAX>(g_src, base + int2(2,0), bound);
+        float dx1 = sample_clamped<USE_MAX>(g_src, base + int2(2,1), bound);
+        result = depth_reduce<USE_MAX>(result, depth_reduce<USE_MAX>(dx0, dx1));
+    }
+    if ((g_pc.src_size.y & 1) != 0) {
+        float dy0 = sample_clamped<USE_MAX>(g_src, base + int2(0,2), bound);
+        float dy1 = sample_clamped<USE_MAX>(g_src, base + int2(1,2), bound);
+        result = depth_reduce<USE_MAX>(result, depth_reduce<USE_MAX>(dy0, dy1));
+    }
+
+    g_dst[dst] = result;
+}
+
+// Specialisation constant: 0 = standard depth (min), 1 = reversed-Z (max).
+// The host picks the variant at VkPipeline creation; no separate shader object required.
+[vk::constant_id(0)] const bool kReversedZ = false;
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    if (kReversedZ) hiz_reduce_impl<true>(id);
+    else            hiz_reduce_impl<false>(id);
+}
+```
+
 ### C Dispatch Loop
 
 Building the full pyramid requires one dispatch per mip level, with an image memory barrier between each pass to ensure the previous write is visible to the next read:
@@ -801,6 +939,82 @@ void main() {
 }
 ```
 
+**Slang equivalent** — `[[vk::buffer_reference]]` structs are first-class Slang types with generic and reflection support, `ParameterBlock<BindlessScene>` unifies the bindless texture array and visibility buffer in one typed block, and `SV_Barycentrics` exposes hardware barycentric weights portably across Vulkan (`VK_KHR_fragment_shader_barycentric`) and D3D12 SM 6.1 without a manual extension pragma.
+
+```slang
+// File: shade.slang
+// Visibility-buffer full-screen deferred texturing — matches shade.frag
+// Slang improvements:
+//   - [[vk::buffer_reference]] structs are typed, generic-compatible, and IDE-navigable,
+//     unlike GLSL's opaque buffer_reference layout qualifier
+//   - ParameterBlock<BindlessScene> groups the bindless texture array, shared sampler,
+//     and visibility buffer into a single type-checked descriptor set binding
+//   - SV_Barycentrics: Slang emits BuiltIn BaryCoordKHR in SPIR-V automatically;
+//     NonUniformResourceIndex() replaces nonuniformEXT() with portable semantics
+
+// --- Buffer device address types (64-bit GPU pointers) ---
+[[vk::buffer_reference, vk::buffer_reference_align(4)]]
+struct IndexBufRef    { uint   idx[]; };
+[[vk::buffer_reference, vk::buffer_reference_align(4)]]
+struct PositionBufRef { float3 pos[]; };
+[[vk::buffer_reference, vk::buffer_reference_align(4)]]
+struct UVBufRef       { float2 uv[];  };
+
+[[vk::buffer_reference, vk::buffer_reference_align(8)]]
+struct DrawData {
+    IndexBufRef    indices;
+    PositionBufRef positions;
+    UVBufRef       uvs;
+    uint           material_id;
+};
+
+// Array of per-draw BDA structs, accessed via 64-bit base address
+[[vk::buffer_reference, vk::buffer_reference_align(8)]]
+struct DrawDataArray { DrawData draws[]; };
+
+struct PushConstants {
+    DrawDataArray draws;        // 64-bit GPU address of per-draw data array
+    uint64_t      material_buf; // MaterialData[] BDA (omitted for brevity)
+};
+
+struct BindlessScene {
+    Texture2D<float4>  textures[];  // runtime-size bindless texture array
+    SamplerState       sampler;
+    Texture2D<uint2>   vis_buf;     // R32G32_UINT visibility buffer from Pass 1
+};
+
+[[vk::push_constant]]         PushConstants    g_pc;
+ParameterBlock<BindlessScene> scene;
+
+[shader("fragment")]
+float4 main(float4 frag_coord : SV_Position,
+            float3 bary       : SV_Barycentrics) : SV_Target {
+    int2  coord = int2(frag_coord.xy);
+    uint2 vis   = scene.vis_buf.Load(int3(coord, 0));
+
+    uint draw_id = vis.x;
+    uint prim_id = vis.y;
+
+    // BDA pointer arithmetic — fully type-checked by the Slang compiler
+    DrawData draw = g_pc.draws.draws[draw_id];
+
+    uint i0 = draw.indices.idx[prim_id * 3 + 0];
+    uint i1 = draw.indices.idx[prim_id * 3 + 1];
+    uint i2 = draw.indices.idx[prim_id * 3 + 2];
+
+    // SV_Barycentrics: Slang requests VK_KHR_fragment_shader_barycentric
+    // automatically and emits BuiltIn BaryCoordKHR in the SPIR-V output
+    float2 uv = bary.x * draw.uvs.uv[i0]
+              + bary.y * draw.uvs.uv[i1]
+              + bary.z * draw.uvs.uv[i2];
+
+    // NonUniformResourceIndex(): Slang emits OpNonUniform decoration automatically
+    // (equivalent to GLSL nonuniformEXT) — no explicit extension pragma required
+    uint albedo_id = draw.material_id;  // real code chases BDA to MaterialData
+    return scene.textures[NonUniformResourceIndex(albedo_id)].Sample(scene.sampler, uv);
+}
+```
+
 The key advantage over a G-buffer: only pixels that survive the final depth test are shaded. On scenes where many triangles overlap (e.g., dense foliage, crowds), this dramatically reduces fragment shader invocations and memory bandwidth. [Source](http://filmicworlds.com/blog/visibility-buffer-rendering-with-material-graphs/)
 
 ---
@@ -915,6 +1129,99 @@ void main() {
     if (tid == 0) payload.count = visible_count;
 
     EmitMeshTasksEXT(payload.count, 1, 1);
+}
+```
+
+**Slang equivalent** — `[shader("amplification")]` replaces the GLSL `GL_EXT_mesh_shader` extension pragma; `ParameterBlock<MeshletScene>` gives type-safe, reflection-visible access to the meshlet bounds buffer; and `[Differentiable]` on `cone_cull()` makes the cone cutoff angle a differentiable parameter learnable via `bwd_diff()`.
+
+```slang
+// File: task_cull.slang
+// Task (amplification) shader: frustum + cone culling — matches task_cull.task.glsl
+// Slang improvements:
+//   - [shader("amplification")] is the standard Slang entry-point attribute; no
+//     extension pragma or #extension directive needed
+//   - ParameterBlock<MeshletScene> provides type-safe, reflection-friendly scene binding
+//     usable with Slang's automatic descriptor set layout generation
+//   - [Differentiable] on cone_cull() enables bwd_diff() to compute gradients w.r.t.
+//     the cone_cutoff parameter for learning per-cluster visibility classifiers
+
+struct MeshletBounds {
+    float3 bounds_center;
+    float  bounds_radius;
+    float3 cone_apex;
+    float3 cone_axis;
+    float  cone_cutoff;  // -1.0 = degenerate (always visible)
+};
+
+struct MeshletScene {
+    StructuredBuffer<MeshletBounds> bounds;
+};
+
+struct CullPC {
+    float4x4 view_proj;
+    float4   frustum_planes[6];
+    float3   camera_pos;
+    uint     meshlet_count;
+};
+
+struct TaskPayload {
+    uint meshlet_indices[32];
+    uint count;
+};
+
+ParameterBlock<MeshletScene>    scene;
+[[vk::push_constant]] CullPC   g_pc;
+
+bool frustum_cull_sphere(float3 center, float radius) {
+    [ForceUnroll]
+    for (int i = 0; i < 6; i++) {
+        if (dot(g_pc.frustum_planes[i], float4(center, 1.0)) < -radius)
+            return false;
+    }
+    return true;
+}
+
+// [Differentiable]: enables bwd_diff(cone_cull) to propagate gradients through
+// the dot-product comparison w.r.t. cone_cutoff — useful when tuning meshlet
+// bounds offline for a given camera distribution.
+[Differentiable]
+bool cone_cull(MeshletBounds b, float3 camera_pos) {
+    if (b.cone_cutoff < -0.999f) return false;          // degenerate: always visible
+    float3 to_camera = normalize(camera_pos - b.cone_apex);
+    return dot(to_camera, b.cone_axis) >= b.cone_cutoff; // true → all faces back, cull
+}
+
+groupshared uint gs_visible_count;
+
+[shader("amplification")]
+[numthreads(32, 1, 1)]
+void main(uint3 group_id : SV_GroupID,
+          uint  local_id : SV_GroupIndex,
+          out TaskPayload payload) {
+    uint meshlet_id = group_id.x * 32 + local_id;
+
+    if (local_id == 0) gs_visible_count = 0;
+    GroupMemoryBarrierWithGroupSync();
+
+    if (meshlet_id < g_pc.meshlet_count) {
+        MeshletBounds b = scene.bounds[meshlet_id];
+
+        bool visible = frustum_cull_sphere(b.bounds_center, b.bounds_radius);
+        if (visible) visible = !cone_cull(b, g_pc.camera_pos);
+
+        if (visible) {
+            uint slot;
+            InterlockedAdd(gs_visible_count, 1u, slot);
+            payload.meshlet_indices[slot] = meshlet_id;
+        }
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+    if (local_id == 0) payload.count = gs_visible_count;
+
+    // DispatchMesh: Slang's equivalent of EmitMeshTasksEXT; emits the payload
+    // and launches exactly gs_visible_count mesh shader workgroups
+    DispatchMesh(gs_visible_count, 1, 1, payload);
 }
 ```
 
