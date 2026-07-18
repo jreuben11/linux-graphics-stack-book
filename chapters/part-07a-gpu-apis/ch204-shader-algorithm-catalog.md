@@ -4,6 +4,20 @@
 
 This chapter is a **no-code reference catalog**. Every entry follows the same structure: what the algorithm computes (one sentence), when to use it, key named variants worth knowing, limitations and costs, and a primary reference link. For implementation details, follow the reference. For theoretical background, see Ch135 (ray tracing and the rendering equation) and Ch154 (GPU-driven rendering).
 
+### Why the catalog is weighted toward fragment and compute shaders
+
+The distribution of sections in this catalog mirrors the actual distribution of algorithmic work across the GPU pipeline, not an editorial gap.
+
+**Fragment shaders dominate because that is where visual variety lives.** Every "what colour is this pixel?" decision — lighting, shadowing, material evaluation, post-processing — executes at the per-pixel stage. The combinatorial space of visual effects is effectively unbounded: each new shading model, shadow technique, or post-process is another fragment shader recipe. No other stage has an equivalent explosion of algorithmic variety.
+
+**Compute shaders dominate because they are the general escape hatch from the rasterisation pipeline.** Any algorithm that does not fit the vertex→primitive→rasterise→fragment model — physics, path tracing, neural inference, prefix sums, FFTs, image processing — is expressed as a compute dispatch. The breadth of compute algorithms matches the breadth of GPU computing itself.
+
+**Vertex shaders have narrow algorithmic variety by design.** Their job is fundamentally fixed: transform a position from object space to clip space and pass along interpolated attributes. The entire recipe space reduces to matrix math variants (MVP, skinning, morph targets, instancing). All meaningful vertex shader patterns fit on roughly one page; fragment shaders would fill a book.
+
+**Task and mesh shaders have few recipes because the problem domain is deliberately narrow.** Task shaders do one thing: cull meshlets and emit survivors, with optional LOD selection. Mesh shaders emit meshlet vertices and primitives, with some procedural geometry as a secondary use. The stage was introduced to solve a specific GPU-driven rendering bottleneck, not to express general algorithmic variety. These patterns are covered with full depth in Ch154 (GPU-Driven Rendering), where the architectural context justifies the detail.
+
+**Tessellation (TCS/TES)** is similarly bounded: adaptive LOD, PN triangles, displacement mapping. Three patterns, well-understood, rarely evolving since the fixed-function era.
+
 ---
 
 ## Table of Contents
