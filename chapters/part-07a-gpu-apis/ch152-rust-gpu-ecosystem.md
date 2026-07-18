@@ -32,9 +32,10 @@
 24. [Shader Hot-Reloading](#shader-hot-reloading)
 25. [pixels: Simple wgpu Framebuffer](#pixels-simple-wgpu-framebuffer)
 26. [rspirv: SPIR-V IR in Rust](#rspirv-spir-v-ir-in-rust)
-27. [Contributing to wgpu-core, wgpu-hal, and naga](#contributing-to-wgpu-core-wgpu-hal-and-naga)
-28. [Roadmap](#roadmap)
-29. [Integrations](#integrations)
+27. [Rust Ownership vs the GPU Memory Model](#rust-ownership-vs-the-gpu-memory-model)
+28. [Contributing to wgpu-core, wgpu-hal, and naga](#contributing-to-wgpu-core-wgpu-hal-and-naga)
+29. [Roadmap](#roadmap)
+30. [Integrations](#integrations)
 
 ---
 
@@ -1940,6 +1941,187 @@ let spirv_words: Vec<u32> = b.module().assemble();
 **Relationship to naga.** naga (§5) is the higher-level path: it ingests WGSL/GLSL/SPIR-V and emits SPIR-V with full type-system understanding, validation, and optimisation passes. `rspirv` operates one level lower — it manipulates the raw SPIR-V instruction stream. Use naga when you want to translate or validate shaders; use rspirv when you want to instrument, analyse, or generate SPIR-V from a custom IR.
 
 [Source: rspirv](https://github.com/gfx-rs/rspirv)
+
+---
+
+## Rust Ownership vs the GPU Memory Model
+
+This is the central conceptual question every Rust developer faces when moving to GPU programming: Rust's borrow checker guarantees that at any point in time, a value is either exclusively mutably borrowed (`&mut T`) or shared-read-only (`&T`) — never both. A GPU workgroup has 64 (or 256, or 1024) threads simultaneously writing to the same block of shared memory. These two models do not reconcile cleanly. Understanding where Rust's guarantees end and where GPU discipline begins is essential for writing correct GPU code in Rust.
+
+### The Fundamental Incompatibility
+
+Rust's memory model is designed around the **aliasing XOR mutability** invariant: the compiler can assume that if two references (`&T`, `&mut T`) to the same location exist, they follow strict non-overlapping access rules. This enables LLVM to generate code without defensive memory fences or volatile loads.
+
+A GPU's execution model is inherently the opposite. Consider a WGSL reduce operation:
+
+```wgsl
+var<workgroup> tile: array<f32, 64>;  // 64 threads share this
+
+@compute @workgroup_size(64)
+fn reduce(@builtin(local_invocation_index) lid: u32) {
+    tile[lid] = load_element(lid);     // all 64 threads write simultaneously
+    workgroupBarrier();                // <- programmer-inserted synchronisation
+    
+    var stride = 32u;
+    while stride > 0u {
+        if lid < stride {
+            tile[lid] += tile[lid + stride]; // reads and writes overlap across threads
+        }
+        workgroupBarrier();
+        stride >>= 1u;
+    }
+}
+```
+
+In Rust terms, `tile` would be `Arc<UnsafeCell<[f32; 64]>>` and every access would require `unsafe`. But on the GPU this is the normal, correct, high-performance pattern — not an exception. The `workgroupBarrier()` plays the role of a mutex, but it is not a mutex: it does not prevent concurrent access, it sequences it in time across threads.
+
+---
+
+### The Four Boundaries
+
+The incompatibility manifests differently at four distinct boundaries in the GPU stack:
+
+#### 1. CPU ↔ GPU Resource Handoff
+
+When you call `queue.submit([cmd_buf])`, the encoded GPU work takes "logical ownership" of every buffer, texture, and pipeline referenced inside it. Rust's borrow checker cannot track this — a `wgpu::Buffer` is an `Arc`-counted opaque handle, not a value the compiler can reason about.
+
+**wgpu enforces this at runtime.** Trying to map a buffer while it is in-flight on the GPU produces an error, not a compile error:
+
+```rust
+// Schedule GPU work that reads from `buf`
+let cmd = device.create_command_encoder(&Default::default());
+// ... record commands using buf ...
+queue.submit([cmd.finish()]);
+
+// Attempting to read buf immediately is a runtime error (not compile error):
+// "Buffer is not mappable" or "Buffer is in use by the GPU"
+let slice = buf.slice(..);
+slice.map_async(wgpu::MapMode::Read, |r| assert!(r.is_ok()));
+device.poll(wgpu::Maintain::Wait);  // must wait for GPU to finish first
+let data: &[u8] = slice.get_mapped_range().deref();
+```
+
+There is no way to express "this buffer is currently owned by the submitted GPU work" in Rust's type system without affine types (linear types) — something Rust does not have. wgpu, ash, and vulkano all handle this through runtime tracking, not compile-time proof.
+
+**ash** does not even track it: if you map a `VkBuffer` while a command buffer that reads it is executing, you get a GPU fault or undefined behaviour. The contract is entirely the programmer's responsibility.
+
+**Vulkano's task graph** goes furthest toward compile-time enforcement: declared resource accesses in the task graph builder determine what barriers are inserted before execution, and you cannot record a draw that writes to a resource that is simultaneously declared as input-only. But this is still expressed through runtime-checked API calls, not Rust type-level proofs.
+
+#### 2. Shader Code Written as Text (WGSL, GLSL, HLSL)
+
+For shaders compiled by naga or glslc from text strings embedded in your Rust source, the borrow checker has zero jurisdiction over the GPU code. The shader is a string; Rust sees only:
+
+```rust
+device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+    ..Default::default()
+})
+```
+
+Everything inside `shader.wgsl` — workgroup shared memory, atomic operations, barrier synchronisation — is invisible to the borrow checker. Naga validates types and binding compatibility but does not enforce aliasing rules. Safety is entirely the shader author's discipline: insert `workgroupBarrier()` before reading values written by other threads, use `atomic<T>` for fine-grained concurrent mutation.
+
+**WGSL's type system does enforce one rule**: you cannot use a plain `f32` storage buffer for concurrent writes — you must declare it as `atomic<u32>` or `atomic<i32>`, and atomic types only support the `atomicAdd`, `atomicMin`, `atomicMax`, etc. operations. This is analogous to Rust's `Atomic*` types, but it is enforced by WGSL's validator, not by Rust's borrow checker.
+
+```wgsl
+// Wrong — concurrent writes to plain f32 are UB:
+@group(0) @binding(0) var<storage, read_write> counter: f32;  // naga rejects atomicAdd on this
+
+// Correct — atomic<u32> wrapper enables safe concurrent mutation:
+@group(0) @binding(0) var<storage, read_write> counter: atomic<u32>;
+// shader code:
+atomicAdd(&counter, 1u);  // safe: hardware atomic
+```
+
+#### 3. Rust Shaders Compiled via rust-gpu (Rust → SPIR-V)
+
+This is the most interesting boundary: rust-gpu compiles actual Rust code to SPIR-V, so the borrow checker does run on the shader source. But GPU execution semantics require patterns that violate Rust's safety rules, so they are marked `unsafe`.
+
+**Workgroup shared memory** cannot be expressed as a safe Rust abstraction. In rust-gpu it uses `unsafe static mut` — the same opt-out used for global mutable state on the CPU:
+
+```rust
+// rust-gpu shader — workgroup shared memory
+#![no_std]
+use spirv_std::spirv;
+use spirv_std::arch;
+
+// SAFETY: GPU workgroup barrier synchronises all accesses
+static mut TILE: [f32; 64] = [0.0; 64];
+
+#[spirv(compute(threads(64)))]
+pub unsafe fn reduce(
+    #[spirv(local_invocation_index)] lid: u32,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] input: &[f32],
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] output: &mut [f32],
+) {
+    // unsafe: concurrent write — all threads write simultaneously
+    TILE[lid as usize] = input[lid as usize];
+    arch::workgroup_memory_barrier();   // unsafe: GPU-specific side effect
+
+    let mut stride = 32u32;
+    while stride > 0 {
+        if lid < stride {
+            // unsafe: concurrent read-modify-write across threads
+            TILE[lid as usize] += TILE[(lid + stride) as usize];
+        }
+        arch::workgroup_memory_barrier();
+        stride >>= 1;
+    }
+
+    if lid == 0 {
+        output[0] = TILE[0];
+    }
+}
+```
+
+Every GPU-specific operation that violates Rust's memory model is `unsafe`:
+- Entry point functions are `pub unsafe fn` — not because they're inherently dangerous to call (the GPU calls them, not Rust code), but because GPU calling conventions and built-in register semantics (`gl_LocalInvocationIndex`, `gl_GlobalInvocationID`) cannot be expressed as safe Rust function arguments.
+- `spirv_std::arch::workgroup_memory_barrier()` is `unsafe` — it has sequenced side effects across hardware threads, invisible to Rust's aliasing model.
+- `static mut` shared memory is `unsafe` — it is shared mutable state without a lock, relying on the programmer to insert barriers correctly.
+
+The borrow checker *does* catch genuine CPU-level bugs: if you try to borrow `TILE` both mutably and immutably in the same expression, rustc rejects it (though on the GPU, separate threads would have separate register windows, so the borrow checker's diagnosis would be wrong). This is an area where rust-gpu's CPU↔GPU semantic mismatch is most visible: the borrow checker runs on a single-threaded sequential model; the shader runs on thousands of threads simultaneously.
+
+#### 4. GPU-Side Buffer Aliasing and Descriptor Indexing
+
+Vulkan allows two `VkBuffer` handles to point to overlapping ranges of the same `VkDeviceMemory` — memory aliasing for transient resources (see Ch. 82, VMA). From Rust's perspective, two `&[u8]` pointing to overlapping GPU memory would be immediate undefined behaviour. wgpu's safe API prevents you from creating aliasing buffer mappings on the CPU side; it does not prevent the GPU from accessing aliased regions via descriptors, because that aliasing is invisible to the host-side type system.
+
+This is why `unsafe` is the boundary in `wgpu-hal`: the HAL's `unsafe fn create_buffer` and the descriptor-binding operations below the safe `wgpu::Device` API can legally create aliasing resource views that the borrow checker cannot reason about.
+
+---
+
+### How Each Library Positions on This Spectrum
+
+| Library | Host-side GPU lifetime | Shader-side memory safety | GPU-specific ops |
+|---------|----------------------|--------------------------|-----------------|
+| **ash** | `unsafe`, manual | Text (GLSL/HLSL/WGSL) — none | Programmer's responsibility |
+| **wgpu** | Safe, runtime-validated | WGSL type-safe, no aliasing rules | Programmer's discipline |
+| **wgpu-hal** | `unsafe` trait | WGSL/SPIR-V — external | Programmer's responsibility |
+| **vulkano** | Type-states + task graph | GLSL — compile-time stage errors only | Runtime-checked |
+| **rust-gpu** | N/A — GPU code | Borrow checker runs; GPU ops are `unsafe` | `unsafe` + `static mut` |
+| **cudarc** | Safe `CudaSlice<T>` | PTX binary — none | Programmer's responsibility |
+| **cuTile-rs** | Rust kernel + borrow checker | Rust borrow checker + cooperative `unsafe` | `unsafe` Tile ops |
+
+**Vulkano is the most aggressive** about encoding GPU invariants in Rust's type system. Its phantom-type command buffer builder (`OutsideRenderPass` / `InsideRenderPass`) makes it a compile error to issue a draw call outside a render pass. Its task graph encodes declared resource accesses so barriers can be inserted automatically. But it stops at render-pass bracketing — it cannot encode image layout transitions, per-subresource memory dependency chains, or concurrent shader access patterns in the type system, because those would require linear or dependent types.
+
+**rust-gpu's `unsafe` is honest** about the fundamental mismatch: it runs the borrow checker on shader Rust code, catching real bugs (type errors, out-of-bounds on statically-sized arrays), while explicitly acknowledging — via `unsafe` — the patterns where CPU and GPU semantics diverge.
+
+---
+
+### Why True Compile-Time GPU Memory Safety Is a Research Problem
+
+Fully encoding the GPU memory model in Rust's type system would require:
+
+1. **Affine / linear types** — to express "this buffer is consumed by GPU submit, unavailable CPU-side until the fence signals". Rust does not have linear types; `Arc` is the pragmatic substitute.
+
+2. **Dependent types** — to express "a `workgroupBarrier()` here ensures that all writes by threads in group `g` to addresses in range `[base, base+stride)` before this point are visible to all reads after this point." Rust's type system cannot express this; it would require a verification framework like Dafny, Lean, or Coq applied to the shader IR.
+
+3. **Session types or effect systems** — to track what GPU pipeline stage a command is executing in, ensuring barriers are inserted between dependent operations. This is an active area of PL research.
+
+The pragmatic consensus in the Rust GPU ecosystem is:
+- **Host side**: safe wrappers (`wgpu::Device`, `wgpu::Buffer`) backed by runtime validation are sufficient for the CPU-GPU handoff. The cost of a runtime check on `map_async` is negligible compared to GPU work.
+- **Shader side**: rely on the shader language's type system (WGSL's `atomic<T>`, stage-specific type rules) plus programmer discipline for barrier placement. Naga's validator catches type errors; correct barrier ordering remains the programmer's responsibility.
+- **Rust shaders (rust-gpu)**: use `unsafe` to explicitly delineate the boundary. The borrow checker's coverage of GPU code is useful but partial; `unsafe` is the honest acknowledgment of what it cannot verify.
+
+The long-term roadmap section (§29) mentions the open goal of "encoding Vulkan synchronisation and resource lifetimes as Rust types without hiding API concepts" — this remains a research-level aspiration rather than a solved problem.
 
 ---
 
