@@ -14,11 +14,17 @@
 6. [Rendering: XRWebGLLayer and the WebXR Layers API](#6-rendering-xrwebgllayer-and-the-webxr-layers-api)
 7. [Chromium's WebXR Implementation: Process Model and Mojo](#7-chromiums-webxr-implementation-process-model-and-mojo)
 8. [The OpenXR Backend: OpenXrDevice to XrSession](#8-the-openxr-backend-openxrdevice-to-xrsession)
-9. [WebXR on Linux: Status, Gaps, and the Community Path](#9-webxr-on-linux-status-gaps-and-the-community-path)
-10. [Firefox WebXR via wgpu](#10-firefox-webxr-via-wgpu)
-11. [WebXR vs. Native OpenXR: Tradeoffs](#11-webxr-vs-native-openxr-tradeoffs)
-12. [Integrations](#12-integrations)
-13. [References](#13-references)
+9. [High-Level WebXR Frameworks: A-Frame and Babylon.js](#9-high-level-webxr-frameworks-a-frame-and-babylonjs)
+    - [A-Frame: Declarative WebXR with an Entity-Component System](#a-frame-declarative-webxr-with-an-entity-component-system)
+    - [A-Frame's Rendering Pipeline and the Linux Stack](#a-frames-rendering-pipeline-and-the-linux-stack)
+    - [Babylon.js XR: Imperative High-Performance WebXR](#babylonjs-xr-imperative-high-performance-webxr)
+    - [Three.js VRButton / ARButton](#threejs-vrbutton--arbutton)
+    - [Framework Comparison and Linux Considerations](#framework-comparison-and-linux-considerations)
+10. [WebXR on Linux: Status, Gaps, and the Community Path](#10-webxr-on-linux-status-gaps-and-the-community-path)
+11. [Firefox WebXR via wgpu](#11-firefox-webxr-via-wgpu)
+12. [WebXR vs. Native OpenXR: Tradeoffs](#12-webxr-vs-native-openxr-tradeoffs)
+13. [Integrations](#13-integrations)
+14. [References](#14-references)
 
 ---
 
@@ -384,7 +390,132 @@ Each frame, `xrSyncActions` processes all bound actions, and `xrGetActionStatePo
 
 ---
 
-## 9. WebXR on Linux: Status, Gaps, and the Community Path
+## 9. High-Level WebXR Frameworks: A-Frame and Babylon.js
+
+The raw WebXR Device API provides spatial poses, projection matrices, and a framebuffer — it intentionally says nothing about scene graphs, asset loading, physics, or animation. In practice, the vast majority of WebXR content is built on one of three JavaScript frameworks that absorb this complexity: **A-Frame** (declarative, entity-component, Mozilla-originated), **Babylon.js** (imperative, full engine, Microsoft-backed), and **Three.js** (minimal scene graph, the substrate both A-Frame and many Babylon.js projects also rely on). Understanding how these frameworks sit on the WebXR Device API — and how that chain maps onto the Linux graphics stack — is essential context for diagnosing performance and compatibility issues on Linux.
+
+### A-Frame: Declarative WebXR with an Entity-Component System
+
+**A-Frame** ([https://aframe.io](https://aframe.io), source at [https://github.com/aframevr/aframe](https://github.com/aframevr/aframe)) is a web framework for building VR and AR experiences using HTML-like custom elements. An entire VR scene can be authored as a single HTML file:
+
+```html
+<!DOCTYPE html>
+<html>
+  <head><script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script></head>
+  <body>
+    <a-scene>
+      <a-box position="-1 0.5 -3" rotation="0 45 0" color="#4CC3D9" shadow></a-box>
+      <a-sphere position="0 1.25 -5" radius="1.25" color="#EF2D5E" shadow></a-sphere>
+      <a-plane position="0 0 -4" rotation="-90 0 0" width="4" height="4" color="#7BC8A4" shadow></a-plane>
+      <a-sky color="#ECECEC"></a-sky>
+    </a-scene>
+  </body>
+</html>
+```
+
+Clicking the VR headset icon in the A-Frame UI calls `navigator.xr.requestSession('immersive-vr')` and transitions the scene into an `XRSession`. A-Frame handles all WebXR session management, reference space acquisition, and per-frame pose retrieval internally.
+
+**Entity-Component System (ECS).** A-Frame's architecture is a browser-native ECS:
+
+- **Entity** (`<a-entity>`) — a DOM element with no inherent behaviour; the unit of composition
+- **Component** — a reusable JavaScript object attached via HTML attribute (e.g. `position`, `rotation`, `material`, `geometry`, `shadow`, `laser-controls`); holds data and per-frame `tick()` logic
+- **System** — a scene-level singleton that manages shared state across all instances of a component type
+
+```javascript
+// Registering a custom A-Frame component
+AFRAME.registerComponent('spin', {
+  schema: { speed: { type: 'number', default: 1 } },
+  tick(time, delta) {
+    this.el.object3D.rotation.y += this.data.speed * delta * 0.001;
+  }
+});
+```
+
+This ECS maps cleanly onto Three.js's `Object3D` hierarchy: each `<a-entity>`'s underlying `object3D` is a `THREE.Object3D` node in the scene graph, and A-Frame delegates all rendering to Three.js's `WebGLRenderer`. [Source: A-Frame architecture docs](https://aframe.io/docs/1.6.0/introduction/entity-component-system.html)
+
+**Input handling.** A-Frame wraps WebXR input sources via the `tracked-controls`, `laser-controls`, and `hand-controls` components. These poll `XRFrame.getInputSourceArray()` each tick and synthesise A-Frame events (`triggerdown`, `thumbstickmoved`, `pinchstarted`) from `XRInputSource.gamepad` state. On Linux with Monado, this chain works identically to Windows provided the OpenXR input action bindings are present.
+
+### A-Frame's Rendering Pipeline and the Linux Stack
+
+The full rendering call chain from A-Frame JavaScript down to the Linux kernel is:
+
+```
+A-Frame scene.tick()
+  └─ THREE.WebGLRenderer.render(scene, camera)          // Three.js r168+
+       └─ WebGL2RenderingContext.drawElements()          // Browser WebGL2 API
+            └─ ANGLE (Vulkan backend, libEGL/libGLESv2)  // Ch34: OpenGL ES → VkCmdDraw
+                 └─ Mesa Vulkan driver (RADV / ANV / NVK) // Ch18: vkQueueSubmit
+                      └─ amdgpu / i915 / nouveau DRM KMS  // Ch2: mode-set, scanout
+```
+
+When in an immersive WebXR session, Three.js's `WebGLRenderer` uses its `WebXRManager` to:
+1. Call `session.requestAnimationFrame()` instead of `window.requestAnimationFrame()`
+2. Retrieve `XRFrame.getViewerPose(referenceSpace)` to get per-eye `XRView` objects
+3. Set `gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer)` to render into the XR compositor's framebuffer
+4. Issue two viewport-separated draw calls (one per eye) using `XRView.projectionMatrix` and `XRView.transform.inverse.matrix`
+
+The framebuffer at step 3 is backed by an ANGLE `FramebufferVk` whose `VkImage` is shared with the OpenXR swapchain (on the community-patched Chromium path) or with Firefox's `wgpu` device (on the Firefox path). The pixel data flows from Mesa's Vulkan driver into the OpenXR runtime's compositor without a CPU copy when `XR_KHR_vulkan_enable2` is used. [Source: Three.js WebXRManager](https://github.com/mrdoob/three.js/blob/dev/src/renderers/webxr/WebXRManager.js)
+
+**A-Frame version compatibility.** A-Frame 1.5+ requires Three.js r155+, which in turn requires `WebGL2RenderingContext` (no WebGL 1 fallback). On Linux, ANGLE's Vulkan backend provides WebGL2; the path through ANGLE → Mesa Vulkan → RADV/ANV is the same as described in Chapter 34. A-Frame's `renderer` component allows setting `antialias`, `colorManagement`, and `logarithmicDepthBuffer` properties that map to corresponding Three.js `WebGLRenderer` options and ultimately to MSAA sample counts and depth format selection in ANGLE's `FramebufferVk`.
+
+### Babylon.js XR: Imperative High-Performance WebXR
+
+**Babylon.js** ([https://www.babylonjs.com](https://www.babylonjs.com), source at [https://github.com/BabylonJS/Babylon.js](https://github.com/BabylonJS/Babylon.js)) is a full 3D engine with a more imperative API than A-Frame. Its WebXR support is encapsulated in `WebXRExperienceHelper`, which manages session lifecycle, and `WebXRDefaultExperience`, a higher-level helper that wires up teleportation locomotion, controller models, and UI:
+
+```typescript
+// Babylon.js WebXR session init
+const xr = await scene.createDefaultXRExperienceAsync({
+  floorMeshes: [ground],
+  optionalFeatures: ['hand-tracking', 'layers'],
+});
+// xr.baseExperience.sessionManager holds the XRSession
+// xr.baseExperience.camera is a WebXRCamera (stereo)
+```
+
+Babylon.js renders via its own abstraction over WebGL2 (`ThinEngine` → `WebGLHardwareTexture`, `WebGLRenderTargetWrapper`), not Three.js. The path through ANGLE to Mesa Vulkan is identical — Babylon.js calls the same `WebGL2RenderingContext` methods — but Babylon.js manages its own material system, PBR shader generation, and occlusion culling independently of Three.js. For WebXR the key class is `WebXRCamera`, which overrides `getTransformationMatrix()` with per-eye `XRView.projectionMatrix` values each frame. [Source: Babylon.js WebXR docs](https://doc.babylonjs.com/features/featuresDeepDive/webXR/introToWebXR)
+
+Babylon.js also supports WebGPU via `WebGPUEngine` (backed by Dawn on Chrome), which replaces the WebGL2 backend while keeping the same scene graph API. On Linux, `WebGPUEngine` follows the Dawn → Mesa Vulkan path described in Chapter 35 rather than the ANGLE path. The dual-backend design (`WebGLEngine` / `WebGPUEngine`) mirrors `wgpu`'s multi-backend model (Chapter 40) but at the framework level rather than the driver abstraction level.
+
+### Three.js VRButton / ARButton
+
+**Three.js** itself provides minimal WebXR scaffolding in its `examples/jsm/webxr/` directory — `VRButton.js` and `ARButton.js` — which are thin wrappers that call `navigator.xr.requestSession()` and wire the session into a `THREE.WebGLRenderer`:
+
+```javascript
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+
+renderer.xr.enabled = true;
+document.body.appendChild(VRButton.createButton(renderer));
+// VRButton calls renderer.xr.setSession(session) on user gesture
+```
+
+`renderer.xr` is a `WebXRManager` instance that handles `requestAnimationFrame` delegation to `XRSession`, viewer pose retrieval, and per-eye viewport setup. A-Frame's internal rendering path is a superset of this — A-Frame creates a `THREE.WebGLRenderer` with `xr.enabled = true` and drives it through its ECS tick loop rather than a hand-written animation loop.
+
+### Framework Comparison and Linux Considerations
+
+| Dimension | A-Frame 1.6 | Babylon.js 7.x | Three.js r168 (raw) |
+|---|---|---|---|
+| **API style** | Declarative HTML / ECS | Imperative TypeScript engine | Minimal scene graph; user drives loop |
+| **WebXR integration** | `XRSession` managed internally; `laser-controls`, `hand-controls` components | `WebXRExperienceHelper`; feature modules (locomotion, UI, hand-tracking) | `WebXRManager`; user wires session into renderer |
+| **Renderer** | Three.js `WebGLRenderer` | Babylon.js `ThinEngine` (WebGL2 or WebGPU) | `WebGLRenderer` (WebGL2) or `WebGPURenderer` (experimental) |
+| **WebGPU support** | Experimental (Three.js `WebGPURenderer` opt-in) | Stable `WebGPUEngine` | Experimental `WebGPURenderer` |
+| **Linux path (WebGL)** | A-Frame → Three.js → ANGLE Vulkan → Mesa → DRM | Babylon.js → ANGLE Vulkan → Mesa → DRM | Three.js → ANGLE Vulkan → Mesa → DRM |
+| **Linux path (WebGPU)** | Three.js `WebGPURenderer` → Dawn Vulkan → Mesa → DRM | `WebGPUEngine` → Dawn Vulkan → Mesa → DRM | `WebGPURenderer` → Dawn Vulkan → Mesa → DRM |
+| **Hand tracking** | `hand-controls` + `XR_EXT_hand_tracking` | `WebXRHandTracking` feature module | Manual; `XRHand` polling |
+| **Asset loading** | `<a-asset-item>`, glTF via Three.js `GLTFLoader` | Babylon.js `SceneLoader` (glTF, OBJ, etc.) | User-managed loaders |
+| **Physics** | `aframe-physics-system` (Cannon.js / Rapier) | Havok Physics (WASM), Cannon.js, Ammo.js | User-supplied |
+| **Typical bundle size** | ~1 MB minified (A-Frame includes Three.js) | ~2–4 MB (full engine) | ~600 KB (core only) |
+
+**Linux-specific considerations.** All three frameworks share the same WebXR session availability constraint: on stock Chromium, `isSessionSupported('immersive-vr')` returns `false` on Linux (§10). A-Frame's `<a-scene>` will gracefully degrade to flat rendering in this case. Framework-level debugging on Linux is most productive via `chrome://webxr-internals` (Chromium) or `about:debugging` → WebXR (Firefox), which show whether `XrSession` creation succeeded and which OpenXR features were negotiated.
+
+For performance profiling of A-Frame or Babylon.js scenes on Linux, the relevant measurement points are:
+- **JavaScript frame budget**: Chrome DevTools Performance panel; look for `tick()` / `render()` cost
+- **ANGLE draw call overhead**: `chrome://tracing` with `gpu` category; look for `ANGLE::drawElements` and `CommandBufferProxy::Flush`
+- **Mesa Vulkan submission**: `VK_INSTANCE_LAYERS=VK_LAYER_MESA_overlay` renders a GPU utilisation HUD
+- **OpenXR runtime timing**: Monado's `XRT_PRINT_PERFORMANCE=1` env var prints per-frame compositor latency
+
+---
+
+## 10. WebXR on Linux: Status, Gaps, and the Community Path
 
 ### Official Status
 
@@ -440,7 +571,7 @@ The `chrome://flags/#webxr-runtime` flag (available on Windows builds) selects b
 
 ---
 
-## 10. Firefox WebXR via wgpu
+## 11. Firefox WebXR via wgpu
 
 Firefox's WebXR implementation uses a different architecture. Rather than an isolated XR device process, Firefox runs the OpenXR session within the compositor process (`RDD` — Remote Data Decoder, or the GPU process) using the `wgpu` Rust library as the GPU abstraction.
 
@@ -473,7 +604,7 @@ WebRender's GPU pipeline (Chapter 52) and the WebXR frame loop share the same `w
 
 ---
 
-## 11. WebXR vs. Native OpenXR: Tradeoffs
+## 12. WebXR vs. Native OpenXR: Tradeoffs
 
 | Dimension | WebXR | Native OpenXR (Monado) |
 |---|---|---|
@@ -494,7 +625,7 @@ The key architectural difference is the copy at frame submission: native OpenXR 
 
 ---
 
-## 12. Integrations
+## 13. Integrations
 
 **Chapter 27 (VR, AR, and OpenXR)**: WebXR is the browser-facing surface above the same Monado/SteamVR OpenXR runtimes described there. `XR_RUNTIME_JSON` discovery, DRM leasing for direct-mode output, and the Basalt VIO tracking pipeline all sit below both the native OpenXR and WebXR paths. The OpenXR session created by Chromium's `OpenXrApiWrapper` is an `XrSession` in the same Monado `monado-service` daemon that native apps use.
 
@@ -512,7 +643,7 @@ The key architectural difference is the copy at frame submission: native OpenXR 
 
 ---
 
-## 13. References
+## 14. References
 
 1. **W3C WebXR Device API** — Living Standard, June 2026. [https://www.w3.org/TR/webxr/](https://www.w3.org/TR/webxr/)
 2. **WebXR Explainer** — Immersive Web Working Group. [https://immersive-web.github.io/webxr/explainer.html](https://immersive-web.github.io/webxr/explainer.html)

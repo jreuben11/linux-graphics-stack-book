@@ -16,6 +16,7 @@
 6. [Memory Management and Buffer Mapping](#6-memory-management-and-buffer-mapping)
 7. [WebGPU Canvas Presentation](#7-webgpu-canvas-presentation)
 8. [Adapter Enumeration and Feature Detection on Linux](#8-adapter-enumeration-and-feature-detection-on-linux)
+    - [WebGPU vs Vulkan: Capability Comparison Matrix](#webgpu-vs-vulkan-capability-comparison-matrix)
 9. [WebGPU Level 2: Subgroups, Bindless, and GPU-Driven Rendering](#9-webgpu-level-2-subgroups-bindless-and-gpu-driven-rendering)
 10. [Integrations](#10-integrations)
 11. [References](#11-references)
@@ -468,6 +469,91 @@ If any `requiredFeature` is not available, `requestDevice()` rejects with a `Typ
 On a system with both integrated and discrete GPU, Dawn creates two adapters. `navigator.gpu.requestAdapter({powerPreference: "low-power"})` returns the integrated adapter; `{powerPreference: "high-performance"}` returns the discrete. If a script calls `requestAdapter()` twice with different preferences, it may receive two `GPUDevice` objects backed by different `VkDevice`s on different physical devices. Sharing resources between them requires the `VK_KHR_external_memory_fd` path, which Dawn supports for canvas texture sharing but not yet for general cross-device buffer sharing in the WebGPU API.
 
 Chrome's GPU process lifetime is per-renderer-process (in some configurations) or shared across renderers (in others); device loss on one renderer's WebGPU device does not automatically propagate to another renderer using a different adapter.
+
+### WebGPU vs Vulkan: Capability Comparison Matrix
+
+WebGPU's design is explicitly positioned as a portable, safe subset of the modern explicit GPU APIs. It is not a thin wrapper over Vulkan — it deliberately omits features whose safety or portability properties are unclear in a multi-tenant, sandboxed, cross-platform context. The table below maps WebGPU capabilities and intentional omissions to their Vulkan counterparts, organised by domain. The "WebGPU status" column reflects the W3C WebGPU Candidate Recommendation (June 2026) and Dawn's implementation on Linux.
+
+#### Device and Adapter
+
+| Capability | Vulkan | WebGPU | Notes |
+|---|---|---|---|
+| Adapter enumeration | `vkEnumeratePhysicalDevices` — full list, all properties | `navigator.gpu.requestAdapter()` — single adapter, hint via `powerPreference` | WebGPU coarsens adapter selection to prevent cross-origin fingerprinting |
+| Device limits | Full raw limits via `VkPhysicalDeviceLimits` (e.g. `maxImageDimension2D` up to 65536) | Clamped to `WebGPUMaximum` (e.g. `maxTextureDimension2D = 32768`) via `GPUSupportedLimits` | Clamping prevents using limit values as a GPU model fingerprint |
+| Adapter info | Full vendor/device IDs, driver version string | Coarsened `GPUAdapterInfo` (`"intel"`, `"amd"`; family string, not model) | `GPUAdapterInfo` requires permissions policy opt-in |
+| Multi-GPU | Explicit multi-device via `VkDevice` per physical device; cross-device sharing via `VK_KHR_external_memory` | Two adapters created; sharing between them not exposed in the API | `VK_KHR_external_memory_fd` used internally for canvas, not for general cross-device buffers |
+| Device extensions | Per-device extension enumeration; app opts into any available extension | Curated `GPUFeatureName` set; extensions not exposed | Extensions with unclear portability or security properties are deferred or omitted |
+| Memory heaps | `vkGetPhysicalDeviceMemoryProperties` — full heap/type topology; app controls which heap to allocate from | Not exposed; VMA manages heap selection internally | Explicit heap selection is unnecessary for portability and is an information leak |
+
+#### Shaders and Shader Compilation
+
+| Capability | Vulkan | WebGPU | Notes |
+|---|---|---|---|
+| Shader input format | SPIR-V binary directly via `vkCreateShaderModule` | WGSL source string; compiled to SPIR-V by Tint in GPU process | Raw SPIR-V rejected as a security boundary — untrusted shader binary could exploit driver bugs |
+| Shader language | GLSL/HLSL/WGSL → SPIR-V offline; any front-end | WGSL only (`GPUShaderModule` source); Tint enforces syntactic and semantic safety | WGSL is memory-safe by design: no raw pointers, no undefined behaviour in out-of-bounds access |
+| Specialisation constants | `VkSpecializationInfo` at pipeline creation | Not exposed in v1; WGSL `override` declarations serve a similar role | `override` evaluated at pipeline compilation; semantically equivalent but without the SPIR-V wire format |
+| Push constants | `vkCmdPushConstants` — low-latency per-draw constants via dedicated driver path | Not exposed; use uniform buffer with `writeBuffer` instead | Uniform buffer path adds IPC serialisation cost; push-constant equivalent is a known gap |
+| Geometry shaders | `VK_SHADER_STAGE_GEOMETRY_BIT` | Not supported | Geometry shaders have non-portable performance characteristics; dropped from the portable model |
+| Tessellation | `VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT` / `_EVALUATION_BIT` | Not supported | Same portability rationale; mesh shaders (Level 2 candidate) are the long-term replacement |
+| Mesh shaders | `VK_EXT_mesh_shader` | Under investigation for Level 2+ | Security analysis of task/amplification shader memory access ongoing |
+| Subgroup intrinsics | `VK_KHR_shader_subgroup` (core 1.1); full subgroup ops | `"subgroups"` feature (Level 2, Chrome 147+ partial) | Narrow subset of Vulkan subgroup ops; shuffle, reduction, ballot |
+| Subgroup matrices | `VK_KHR_cooperative_matrix` | `"subgroup-matrix"` (in design, Level 2+) | WMMA/tensor core access via a portable tiled-matrix abstraction |
+| Integer 64-bit | `VK_KHR_shader_int64` | `"shader-int64"` (experimental) | Used in ML inference workloads; portability gaps on some mobile GPUs |
+| Ray tracing | `VK_KHR_ray_tracing_pipeline`, `VK_KHR_acceleration_structure` | Not supported; blocked on bindless landing first | Hardware AS pointer safety in sandboxed context requires security analysis; earliest 2027–2028 |
+
+#### Pipelines and State
+
+| Capability | Vulkan | WebGPU | Notes |
+|---|---|---|---|
+| Pipeline compilation | `vkCreateGraphicsPipelines` / `vkCreateComputePipelines` — synchronous or via pipeline cache | `createRenderPipeline()` (sync) / `createRenderPipelineAsync()` (async, preferred) | Async creation avoids blocking the JavaScript event loop during SPIR-V compilation |
+| Pipeline cache | `VkPipelineCache` — explicit binary, app-managed serialisation | `GPUPipelineLayout` / implicit Tint shader caching; no explicit cache object | Dawn uses a `VkPipelineCache` internally but does not expose it; explicit serialisation is absent from the API |
+| Dynamic state | `VkDynamicState` list in pipeline; wide range of per-draw overrides | Subset: viewport, scissor, blend constant, stencil reference | WebGPU reduces dynamic state surface to what is portable and safe across backends |
+| Render passes | Explicit `VkRenderPass` / `VkFramebuffer` or `VK_KHR_dynamic_rendering` | `GPURenderPassDescriptor` — always dynamic-rendering style; no `VkRenderPass` objects | Dawn maps to `VK_KHR_dynamic_rendering` on capable drivers; uses `RenderPassCache` on older ones |
+| Secondary command buffers | `VkCommandBuffer` hierarchy; secondaries recorded concurrently | `GPURenderBundle` — pre-recorded draw sequence, replayable across passes | RenderBundles are more restricted than secondaries; no resource binding state inheritance |
+| Indirect draw | `vkCmdDrawIndirect` / `vkCmdDrawIndexedIndirect` | `drawIndirect()` / `drawIndexedIndirect()` — single draw | Multi-draw indirect (`vkCmdDrawIndirectCount`) added in Level 2 as `"multi-draw-indirect"` |
+| Occlusion queries | `VK_QUERY_TYPE_OCCLUSION` | `GPUQuerySet` occlusion (binary only in v1) | Precise occlusion count requires `"occlusion-query-set"` feature; conservative (binary) is baseline |
+| Timestamp queries | `VK_QUERY_TYPE_TIMESTAMP` — always available if `timestampComputeAndGraphics == VK_TRUE` | `"timestamp-query"` optional feature; gated on driver support and allow-list | Fingerprinting risk from precise GPU timing; gated for privacy |
+
+#### Memory and Resources
+
+| Capability | Vulkan | WebGPU | Notes |
+|---|---|---|---|
+| Buffer mapping | Explicit memory type selection; `vkMapMemory` synchronous | `GPUBuffer.mapAsync()` asynchronous; usage flags (`MAP_READ`, `MAP_WRITE`) | Async mapping avoids blocking the renderer thread; GPU process serialises the actual map |
+| Sparse resources | `VK_SPARSE_BINDING_BIT` / `VkSparseMemoryBind` / virtual texturing | Not supported | Safety analysis of sparse binding residency in a cross-origin context is unresolved |
+| Sub-allocator control | App controls `VkMemoryAllocateInfo` per allocation; custom allocators | Implicit; VMA manages all sub-allocation | Exposing heap selection is an information leak and unnecessary for portability |
+| Buffer-texture copies | `vkCmdCopyBufferToImage` / `vkCmdCopyImageToBuffer` | `copyBufferToTexture()` / `copyTextureToBuffer()` | Direct equivalents; row pitch must be a multiple of `GPUDevice.limits.minStorageBufferOffsetAlignment` |
+| Bindless descriptors | `VK_EXT_descriptor_indexing`; unbounded arrays, `UPDATE_AFTER_BIND` | `binding_array<T>` (Level 2, under API design) | Bindless is the largest capability gap in v1; critical for GPU-driven rendering and ML inference |
+| Storage textures | `VK_IMAGE_USAGE_STORAGE_BIT`; read-write in compute | Read-only in v1 passes; read-write (`"rw-storage-texture"`) stable in Chrome 144+ | Write-only storage textures are baseline; read-write added as a stable Level 2 feature |
+| External memory | `VK_KHR_external_memory_fd` / `VK_KHR_external_semaphore_fd` | Not exposed to JavaScript; used internally for canvas DMA-BUF sharing | Exposing file-descriptor handles to untrusted JS would break the sandbox model |
+
+#### Synchronisation
+
+| Capability | Vulkan | WebGPU | Notes |
+|---|---|---|---|
+| Synchronisation model | Explicit: pipeline barriers (`vkCmdPipelineBarrier2`), semaphores, fences | Implicit: Dawn tracks resource usage and inserts barriers automatically | Automatic sync is the primary ergonomic win over Vulkan; has measurable overhead on barrier-heavy workloads |
+| Timeline semaphores | `VK_KHR_timeline_semaphore` (core 1.2) | Used internally for queue submission; not exposed | Dawn requires timeline semaphore support (Mesa ≥ 20.3 + kernel ≥ 5.10); older drivers blocked by allow-list |
+| Explicit fences | `VkFence` / `vkWaitForFences` | `GPUQueue.onSubmittedWorkDone()` Promise | Promise-based; no blocking wait API |
+| Presentation sync | `VkSwapchainKHR` + `vkAcquireNextImageKHR` / `vkQueuePresentKHR`; app controls vsync mode | Browser controls canvas presentation; `getCurrentTexture()` / `present()` | Presentation timing via `requestAnimationFrame` + `wp_presentation` feedback; app cannot set vsync mode directly |
+
+#### Compute
+
+| Capability | Vulkan | WebGPU | Notes |
+|---|---|---|---|
+| Compute pipelines | `vkCreateComputePipelines`; any workgroup size within `maxComputeWorkGroupSize` | `GPUComputePipeline`; workgroup size in WGSL `@workgroup_size` | Direct equivalent; workgroup limits clamped at `GPUSupportedLimits` |
+| Async compute queues | Separate compute queue family; overlap with graphics queue | Single universal queue in v1; async overlap not directly controllable | Dawn uses one queue; overlap happens at the Mesa/kernel scheduler level, not at the API |
+| Shared memory | `layout(shared)` workgroup memory up to `maxComputeSharedMemorySize` | `var<workgroup>` up to `maxComputeWorkgroupStorageSize` (limit clamped) | Direct equivalent; zero-initialisation of workgroup memory is mandatory in WebGPU (security) |
+| Indirect dispatch | `vkCmdDispatchIndirect` | `dispatchWorkgroupsIndirect()` | Direct equivalent; added with the initial WebGPU v1 spec |
+
+#### Safety, Security, and Performance
+
+| Capability | Vulkan | WebGPU | Notes |
+|---|---|---|---|
+| Bounds checking | Optional; `VK_EXT_robustness2` for explicit OOB guarantees | Mandatory; Tint's Robustness transform inserts bounds checks on every array/buffer access | Security boundary: prevents shader-based GPU memory reads across origins; adds ~5–15% shader ALU cost |
+| Validation | Optional `VK_LAYER_KHRONOS_validation`; disabled in production | Two-layer validation: `WireClient` (renderer) + `dawn::native` (GPU process) always active | Always-on validation increases CPU overhead but is required for security |
+| Performance overhead | Zero; direct driver API | ~5–15% vs native Vulkan (Dawn translation + DawnWire IPC + V8 JIT overhead) | Overhead is workload-dependent; compute-heavy workloads near zero; IPC-heavy workloads higher |
+| Driver bug workarounds | App responsible; no built-in mechanism | `gpu_driver_bug_list.json` in Chrome; per-driver/version workarounds applied automatically | Centralised allowlist/blocklist maintained by Chrome team |
+
+This matrix documents WebGPU v1 (W3C Candidate Recommendation, June 2026) against Vulkan 1.3 as supported by Mesa on Linux (RADV/ANV/NVK). Features marked "Level 2" are under standardisation; see §9 for implementation detail.
 
 ---
 
