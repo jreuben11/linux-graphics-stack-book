@@ -16,10 +16,11 @@
 6. [H.265/HEVC: CTU Hierarchy, CABAC, and Loop Filters](#h265-hevc)
 7. [AV1: Superblocks, ANS, and In-Loop Filters](#av1)
 8. [VVC/H.266: Affine Motion, SBT, GPM, and VVdeC](#vvc-h266)
-9. [GPU Acceleration: Wavefront Decode and Film Grain Synthesis](#gpu-acceleration)
-10. [Rate Control: CBR, VBR, CRF, and Hardware Encoders](#rate-control)
-11. [Integrations](#integrations)
-12. [References](#references)
+9. [EVC and LC-EVC: MPEG-5 Next-Generation Codecs](#evc-lcevc)
+10. [GPU Acceleration: Wavefront Decode and Film Grain Synthesis](#gpu-acceleration)
+11. [Rate Control: CBR, VBR, CRF, and Hardware Encoders](#rate-control)
+12. [Integrations](#integrations)
+13. [References](#references)
 
 ---
 
@@ -76,6 +77,8 @@ Before reading the algorithmic detail, the table below answers the practical que
 | **HDR / 4K streaming (Netflix, YouTube)** | AV1 (preferred) or H.265 | Both support 10-bit, HDR10, Dolby Vision; YouTube uses VP9/AV1; Netflix uses H.265/AV1 |
 | **Screen content / UI recording** | AV1 | Palette mode and screen content tools give 2–4× better quality on flat UI regions than H.264/H.265 |
 | **Cutting-edge quality, decode hardware available** | VVC/H.266 | ~40% better than HEVC, ~20% better than AV1 at equal quality; hardware decode limited to Snapdragon 8 Gen 3+ as of 2026 |
+| **Royalty-free, no AV1 hardware, embedded/broadcast** | EVC Baseline | Only pre-2000 patents; ~10–15% better than H.264; software decode via `libxevd` / FFmpeg; no hardware decode on Linux yet |
+| **Upgrade resolution of existing streams, low decoder power** | LC-EVC | Enhancement layer over any base codec; base layer backward-compatible with existing decoders; open-source decoder (V-Nova LCEVC_DEC) |
 | **GPU pipeline, zero-copy encode** | AV1 or H.265 via Vulkan Video | Keep encode inside the same `VkDevice` as rendering; RTX 40xx has dual AV1 NVENC engines |
 | **Mobile / embedded, power-constrained** | H.264 Baseline or H.265 Main | Broadest SoC hardware decode acceleration; AV1 decode power-efficient on hardware (not software) |
 | **Software-only encode (no GPU)** | SVT-AV1 or x265 | SVT-AV1 is the fastest software AV1 encoder; x265 is faster than libaom at comparable quality |
@@ -765,6 +768,216 @@ vvdecapp -b output.vvc -o decoded.yuv
 
 ---
 
+## EVC and LC-EVC: MPEG-5 Next-Generation Codecs {#evc-lcevc}
+
+**MPEG-5** (ISO/IEC 23094) is a family of two distinct video coding standards developed by MPEG in parallel with VVC, each addressing a different market problem that VVC does not solve:
+
+- **Part 1 — EVC (Essential Video Coding)**: a next-generation intra/inter codec with a royalty-free Baseline profile and a higher-efficiency Main profile
+- **Part 2 — LC-EVC (Low Complexity Enhancement Video Coding)**: an enhancement layer that improves the quality or resolution of *any* base codec at very low decoder complexity
+
+### EVC: Essential Video Coding (MPEG-5 Part 1)
+
+EVC was standardised in 2020 (ISO/IEC 23094-1). Its defining feature is a two-tier profile architecture that separates royalty-free tools from patent-encumbered ones:
+
+#### Baseline Profile
+
+The Baseline profile is restricted exclusively to coding tools whose underlying patents expired before 2000. This makes it effectively royalty-free under any commercial use: no MPEG-LA pool, no per-unit fee, no submarine patent risk. [Source: ISO/IEC 23094-1 Baseline Profile](https://www.iso.org/standard/81527.html)
+
+Tools included:
+
+| Tool | Description |
+|---|---|
+| 4:2:0 block coding | 64×64 maximum CU size, quadtree partitioning |
+| Intra prediction | DC, planar, and 4 directional modes only |
+| Inter prediction | Translational motion vectors, single reference |
+| Transform | Integer DCT (4×4, 8×8, 16×16, 32×32) |
+| In-loop filter | Deblocking only |
+| Entropy coding | CABAC (pre-2000 variant) |
+
+Compression efficiency of EVC Baseline is roughly comparable to H.264 High Profile — not a dramatic improvement — but the licensing position is its differentiator. For deployments where H.264 royalties are a concern and AV1 hardware decode is not yet available (embedded, IoT, broadcast infrastructure), EVC Baseline is the pragmatic choice.
+
+#### Main Profile
+
+The Main profile adds modern coding tools that bring efficiency close to HEVC (approximately 25–30% bitrate reduction over H.264 at equal quality, vs. HEVC's 40–50%). These tools carry newer patents, but MPEG structured EVC to have a cleaner, more limited patent pool than HEVC — fewer patent holders, clearer licensing terms. [Source: MPEG EVC Overview](https://mpeg.chiariglione.org/standards/mpeg-5/essential-video-coding)
+
+Additional Main profile tools:
+
+| Tool | Description |
+|---|---|
+| AMVR (Adaptive Motion Vector Resolution) | Integer / half / quarter / 1/8-pixel MV resolution switching |
+| Affine motion | 4-parameter affine for rotation/zoom/shear |
+| DMVR (Decoder-side MV Refinement) | Bilateral matching to refine MVs in the decoder |
+| BDOF (Bi-Directional Optical Flow) | Sub-block optical flow for B-frame prediction refinement |
+| ATM (Adaptive Transform Mode) | DST-7 and DCT-8 in addition to DCT-2 |
+| IBC (Intra Block Copy) | Screen content coding tool (copy from already-decoded region) |
+| ADDB (Adaptive Deblocking) | Stronger deblocking than Baseline |
+| SAO | Sample Adaptive Offset (same as HEVC) |
+| ALF (Adaptive Loop Filter) | Wiener filter, same class as AV1 Loop Restoration |
+
+#### Compression Efficiency Comparison
+
+| Codec | BD-Rate vs. H.264 | BD-Rate vs. HEVC | Royalty model |
+|---|---|---|---|
+| H.264/AVC | — | +53% | MPEG-LA pool (AVC) |
+| EVC Baseline | ~−10–15% | +35–40% | **Royalty-free** (pre-2000 patents) |
+| EVC Main | ~−25–30% | +15–20% | Limited pool, simpler than HEVC |
+| H.265/HEVC | ~−40–50% | — | Three competing pools (MPEG-LA, Via, Access) |
+| AV1 | ~−55–65% | ~−15% | **Royalty-free** (Alliance for Open Media) |
+| VVC/H.266 | ~−70–78% | ~−40% | MFI consolidated pool (royalty-bearing) |
+
+[Source: Fraunhofer HHI EVC overview](https://www.hhi.fraunhofer.de/en/departments/vca/technologies-and-solutions/h266-vvc.html)
+
+#### Open-Source Implementations: xeve and xevd
+
+The reference open-source EVC encoder and decoder are **xeve** and **xevd**, maintained by the MPEG-5 EVC working group on GitHub under the BSD 3-Clause licence. [Source: xeve encoder](https://github.com/mpeg5/xeve) [Source: xevd decoder](https://github.com/mpeg5/xevd)
+
+```bash
+# Build xevd (decoder)
+git clone https://github.com/mpeg5/xevd.git
+cd xevd && mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+
+# Build xeve (encoder)
+git clone https://github.com/mpeg5/xeve.git
+cd xeve && mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+
+# Encode with xeve (Main profile, CRF-equivalent quality mode)
+xeve_app -i input.yuv -w 1920 -h 1080 -z 30 \
+         --profile main --preset medium --crf 30 \
+         -o output.evc
+
+# Decode with xevd
+xevd_app -i output.evc -o decoded.yuv
+```
+
+#### FFmpeg EVC Integration
+
+FFmpeg 7.0 added EVC decode support via the `libxevd` external library:
+
+```bash
+# Configure FFmpeg with xevd support
+./configure --enable-libxevd --enable-decoder=evc
+
+# Decode an EVC stream
+ffmpeg -i input.evc -c:v rawvideo output.yuv
+
+# Encode via xeve (FFmpeg 7.1+, requires --enable-libxeve)
+ffmpeg -i input.mp4 -c:v libxeve -profile:v main -crf 30 output.evc
+```
+
+FFmpeg's EVC muxer uses the `evc` container (raw annex-B bytestream, similar to H.264's raw NAL unit format). MP4/ISOBMFF encapsulation of EVC follows ISO/IEC 14496-15.
+
+#### Hardware Decode Status on Linux (mid-2026)
+
+EVC hardware decode is not yet available in any shipping VA-API or Vulkan Video driver on Linux desktop. Intel's VA-API roadmap includes EVC decode support for future Xe GPU generations. The VA-API EVC decode extension (`VAProfileEVC`) is under active specification. For now, EVC decode on Linux is software-only via `libxevd`.
+
+---
+
+### LC-EVC: Low Complexity Enhancement Video Coding (MPEG-5 Part 2)
+
+LC-EVC (ISO/IEC 23094-2, standardised 2020) takes a fundamentally different approach from every other codec described in this chapter: rather than replacing the base codec, it **enhances it**. LC-EVC wraps any base video codec with a lightweight enhancement layer that adds resolution and quality at dramatically lower decoder complexity than encoding the higher resolution directly. [Source: ISO/IEC 23094-2](https://www.iso.org/standard/81528.html)
+
+#### Architecture: Base Layer + Enhancement Layer
+
+An LC-EVC stream consists of:
+
+1. **Base layer**: any conventional codec stream (H.264, H.265, AV1, EVC) encoding the video at a lower resolution (typically ½ or ¼ of target)
+2. **Enhancement layer**: a compact residual bitstream encoding the difference between the upscaled base layer and the full-resolution signal
+
+The decoder pipeline:
+
+```
+LC-EVC bitstream
+  ├─ Base layer → existing hardware decoder (H.264/H.265/AV1 etc.)
+  │                     ↓ decoded low-res frame
+  ├─ Upscale (bilinear or learned 2-tap filter, integer arithmetic)
+  │                     ↓ upscaled frame
+  └─ Enhancement layer residuals → add to upscaled frame
+                        ↓ full-resolution output
+```
+
+The enhancement layer decoder is intentionally simple: the upscale filter uses only integer arithmetic (no floating point), and residual application is a simple addition. V-Nova, the company that developed LC-EVC and contributed it to MPEG, reports enhancement layer decode complexity of approximately **3–5% of the total decode compute** on a CPU. [Source: V-Nova LC-EVC technical overview](https://www.v-nova.com/lcevc/)
+
+#### Why LC-EVC?
+
+The key benefits over encoding the full resolution directly:
+
+| Dimension | Direct encode at full res | LC-EVC (base ½-res + enhancement) |
+|---|---|---|
+| **Encoder compute** | Full resolution, all coding tools | Base: ¼ pixels to process; enhancement: lightweight residual coding |
+| **Decoder complexity** | Full resolution hardware decode | Base: ¼-res hardware decode + trivial upscale + add |
+| **Latency** | Normal codec latency | Lower: fewer B-frames in base, simpler enhancement |
+| **Backward compatibility** | Not applicable | Base layer alone is a valid, decodable stream on any existing decoder |
+| **Quality at equal bitrate** | Codec-dependent | Roughly equivalent to one codec generation step improvement |
+| **Power consumption (mobile)** | Full decode power | Significantly lower: hardware decoding a ¼-size stream |
+
+The backward compatibility property is particularly valuable for broadcast: operators can send a single LC-EVC stream where legacy decoders receive and display the base layer (lower resolution), while LC-EVC-capable devices decode the enhancement layer and display full resolution. No separate encode or separate stream delivery is required.
+
+#### Use Cases
+
+- **Broadcast uplift**: upgrade a 1080p H.264 channel to 4K output for capable receivers without re-encoding the base layer; legacy STBs continue displaying 1080p
+- **Mobile streaming at power budget**: decode a ½-resolution H.265 stream in hardware, apply the trivially cheap enhancement layer in software; net power lower than hardware-decoding full resolution
+- **Low-latency conferencing**: the simpler base layer allows fewer reference frames and shorter GOP structures without the quality cost of encoding at full resolution with those constraints
+- **CDN cost reduction**: the base layer bitrate is lower (smaller resolution); the enhancement layer is a small overhead; overall bitrate competitive with a direct full-resolution encode
+
+#### Open-Source Implementation: LCEVC_DEC
+
+V-Nova has open-sourced the LC-EVC decoder under the BSD 3-Clause licence: [github.com/v-nova-org/LCEVC_DEC](https://github.com/v-nova-org/LCEVC_DEC)
+
+```bash
+git clone https://github.com/v-nova-org/LCEVC_DEC.git
+cd LCEVC_DEC && mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DVNOVA_UNIT_TESTS=OFF
+make -j$(nproc)
+```
+
+The library exposes a C API (`LCEVC_DecoderHandle`, `LCEVC_SendDecoderBase`, `LCEVC_ReceiveDecoderPicture`) that wraps any base decoder. FFmpeg integration is available via a filter (`lcevc`) that splices the enhancement layer onto a hardware-decoded base stream.
+
+#### GStreamer Integration
+
+GStreamer's `lcevc` plugin (part of `gst-plugins-bad`) provides `lcevcdec` and `lcevcenc` elements. A typical pipeline:
+
+```bash
+# Decode LC-EVC stream (H.264 base + enhancement layer)
+gst-launch-1.0 filesrc location=stream.mp4 ! \
+  qtdemux ! h264parse ! avdec_h264 ! \
+  lcevcdec ! videoconvert ! autovideosink
+```
+
+#### LC-EVC Encoding Workflow
+
+Encoding an LC-EVC stream:
+
+1. Downscale input to ½ resolution
+2. Encode downscaled input with any base codec (e.g. `x264`, `libx265`, `libaom-av1`)
+3. Decode the base bitstream
+4. Upscale the decoded base to full resolution
+5. Compute residuals: `residual = original − upscaled`
+6. Encode residuals with the LC-EVC enhancement encoder (V-Nova encoder SDK, not yet open-source)
+7. Mux base + enhancement into ISO/IEC 14496-15 MP4 or MPEG-2 TS
+
+The enhancement encoder is the proprietary component; the decoder is open. This asymmetry (open decoder, commercial encoder) is the same model used by most broadcast codec deployments.
+
+#### Deployment Status on Linux
+
+| Component | Status |
+|---|---|
+| `xevd` EVC software decoder | Open-source, BSD, builds on Linux |
+| `xeve` EVC software encoder | Open-source, BSD, builds on Linux |
+| FFmpeg `libxevd` decode | Available (FFmpeg 7.0+, `--enable-libxevd`) |
+| FFmpeg `libxeve` encode | Available (FFmpeg 7.1+, `--enable-libxeve`) |
+| VA-API EVC hardware decode | Not yet shipped; under specification |
+| Vulkan Video EVC extension | Not yet proposed |
+| V-Nova LCEVC_DEC decoder | Open-source, BSD, builds on Linux |
+| GStreamer `lcevcdec` element | `gst-plugins-bad`, available |
+| V-Nova LC-EVC encoder SDK | Commercial; Linux build available under licence |
+| FFmpeg `lcevc` filter | Experimental; requires V-Nova decoder library |
+
+---
+
 ## GPU Acceleration: Wavefront Decode and Film Grain Synthesis {#gpu-acceleration}
 
 ### Tile and Wavefront Parallelism Models
@@ -1025,6 +1238,14 @@ The algorithms described in this chapter are the mathematical substrate of every
 49. ForaSoft — Rate control CBR/VBR/CRF: https://www.forasoft.com/learn/video-encoding/articles/rate-control-cbr-vbr-crf
 50. Silent Aperture — x264 psychovisual settings guide: https://silentaperture.gitlab.io/mdbook-guide/encoding/x264.html
 51. Springer — libaom encoding complexity analysis: https://link.springer.com/article/10.1007/s11554-023-01308-5
+52. ISO/IEC 23094-1 — Essential Video Coding (EVC) standard: https://www.iso.org/standard/81527.html
+53. ISO/IEC 23094-2 — Low Complexity Enhancement Video Coding (LC-EVC) standard: https://www.iso.org/standard/81528.html
+54. xeve — MPEG-5 EVC open-source encoder (BSD 3-Clause): https://github.com/mpeg5/xeve
+55. xevd — MPEG-5 EVC open-source decoder (BSD 3-Clause): https://github.com/mpeg5/xevd
+56. V-Nova LCEVC_DEC — open-source LC-EVC decoder library (BSD 3-Clause): https://github.com/v-nova-org/LCEVC_DEC
+57. V-Nova — LC-EVC technical overview and use cases: https://www.v-nova.com/lcevc/
+58. Fraunhofer HHI — EVC compression efficiency overview: https://www.hhi.fraunhofer.de/en/departments/vca/technologies-and-solutions/h266-vvc.html
+59. MPEG EVC standardisation overview: https://mpeg.chiariglione.org/standards/mpeg-5/essential-video-coding
 
 ## Roadmap
 
@@ -1035,7 +1256,7 @@ The algorithms described in this chapter are the mathematical substrate of every
 - NVIDIA Blackwell (RTX 50xx) and AMD RDNA4 GPUs are shipping with expanded AV1 encode quality modes; FFmpeg and GStreamer hardware encoder plugins are being updated to expose new rate-control capabilities and 10-bit HDR encode paths via NVENC and AMF.
 
 ### Medium-term (1–3 years)
-- EVC (Essential Video Coding, MPEG-5 Part 1) and LC-EVC (Low Complexity Enhancement Video Coding, MPEG-5 Part 2) are gaining traction in broadcast and streaming deployments where VVC licensing complexity is a barrier; VA-API EVC decode support is expected to arrive in Intel and AMD Mesa drivers within this window.
+- VA-API EVC hardware decode (`VAProfileEVC`) is under active specification; Intel and AMD Mesa driver support is expected within this window, following FFmpeg's existing software `libxevd` integration (covered in §9 of this chapter).
 - AV2, the Alliance for Open Media's successor to AV1, is in early specification work; architectural decisions around neural-network-based in-loop filters and learned entropy coding are being evaluated alongside the traditional block-transform pipeline, with reference encoder experiments published via the AOM research codebase.
 - Hardware VVC decode is expected to become mainstream on desktop discrete GPUs (AMD, Intel, NVIDIA) as the standardisation and patent licensing situation settles; VVdeC and VVenC will gain SIMD paths for ARM SVE2 and RISC-V Vector extension, broadening server and edge deployment.
 - Vulkan Video AV1 encode (currently in progress in the Khronos extension registry) is expected to reach final extension status, enabling fully cross-vendor GPU encode pipelines without vendor-specific APIs.
