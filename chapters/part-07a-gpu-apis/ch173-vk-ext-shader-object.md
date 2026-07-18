@@ -64,6 +64,49 @@ Applications adopted hash-and-cache patterns that effectively moved driver compl
 
 **The extension was not promoted into Vulkan 1.4 core.** The Vulkan 1.4 specification, released in early 2024, promoted a different set of extensions — including `VK_EXT_host_image_copy`, `VK_KHR_push_descriptor`, `VK_KHR_maintenance5/6`, and several shader utility extensions — but `VK_EXT_shader_object` was not among them. [Source — Vulkan 1.4 features document](https://docs.vulkan.org/features/latest/features/proposals/VK_VERSION_1_4.html) It remains a ratified `EXT` extension at revision 1, requiring explicit enumeration and enablement. The normative reference for the extension is at [`registry.khronos.org/vulkan/specs/latest/man/html/VK_EXT_shader_object.html`](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_EXT_shader_object.html).
 
+#### Why VK_EXT_shader_object Was Not Promoted to Vulkan 1.4 Core
+
+Four distinct reasons combined to keep the extension out of the 1.4 core set.
+
+**1. VK_EXT_extended_dynamic_state3 was itself not promotable**
+
+`VK_EXT_shader_object` has a structural dependency on the full command set of `VK_EXT_extended_dynamic_state3` (EDS3): when `shaderObject` is enabled, every EDS3 command becomes available without EDS3 being separately enabled. This means promoting shader_object to core would implicitly mandate EDS3's entire state set on every conformant Vulkan implementation — including embedded, automotive, and low-end mobile GPUs.
+
+EDS3 was not promoted to Vulkan 1.4 core for exactly this reason: it contains dynamic state commands that are architecturally expensive or unsafe on tile-based deferred rendering (TBDR) GPUs. Commands like `vkCmdSetColorBlendEquationEXT`, `vkCmdSetColorWriteMaskEXT`, and `vkCmdSetSampleLocationsEXT` set state that TBDR drivers need to know before the render pass begins — not per draw call — in order to schedule tile operations correctly. Mandating them as per-draw commands forces TBDR implementations to flush tiles, break pipelining, or carry speculative redundant state, all of which cost bandwidth on hardware where bandwidth is the primary performance constraint. ARM Mali, Imagination PowerVR, and Qualcomm Adreno are affected; together they represent the majority of mobile Vulkan implementations. [Source — VK_EXT_extended_dynamic_state3 known issues, Khronos Registry](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_EXT_extended_dynamic_state3.html)
+
+**2. TBDR architecture conflict with fully dynamic pipeline state**
+
+The pipeline object's design rationale is not solely about pre-compiling shader code: it also serves as a contract that lets TBDR hardware schedule work efficiently. A `VkGraphicsPipeline` tells the driver at creation time whether the draw is opaque (enabling full Hidden Surface Removal), whether it writes depth (affecting tile memory allocation), and what blend mode applies (determining whether the colour attachment must be loaded into the tile before the draw or can be discarded). With fully dynamic state, the TBDR driver can only determine these facts immediately before each draw — too late for tile-level scheduling decisions that must be made when the render pass begins.
+
+This is not a software limitation that more clever driver code can resolve: it reflects the physical tile memory architecture. On a Mali GPU the on-chip tile store is sized at render-pass start; on an Imagination GPU the HSR unit decides at render-pass start which draw calls can be culled. `VK_EXT_shader_object`'s model, where all state is late-bound, is fundamentally mismatched to this class of hardware.
+
+The extension's authors were aware of this: the spec explicitly allows implementations to "pre-compile shader combinations at bind time" — i.e., an implementation may observe the full bound state at `vkCmdBindShadersEXT` / `vkCmdSet*` time and defer actual GPU work until it has enough information to optimise. This permits TBDR drivers to implement shader objects without losing all tile optimisations, but at the cost of inserting a driver-internal compilation or state-resolution step at draw time. For high-throughput mobile workloads this is unacceptable without further spec refinement.
+
+**3. Implementation completeness gap at the time of Vulkan 1.4 finalisation**
+
+Khronos' standard promotion criterion for core inclusion is broad, stable, cross-vendor implementation. At the time Vulkan 1.4 was finalised (late 2023):
+
+| Implementation | Status |
+|---|---|
+| RADV (AMD, Mesa) | Shipped: Mesa 23.1 (May 2023) |
+| NVK (NVIDIA open-source, Mesa) | Shipped: Mesa 24.x |
+| Proprietary NVIDIA driver | Shipped |
+| Proprietary AMD driver | Shipped |
+| ANV (Intel, Mesa) | **Not yet shipped** — only reached Mesa 25.3-devel (late 2025) |
+| ARM Mali (proprietary) | Partial / not fully conformant |
+| Imagination PowerVR | Limited implementation |
+| MoltenVK (Vulkan on Metal) | Architectural gap: Metal's `MTLRenderPipelineState` is fundamentally compiled at creation time; full dynamic state emulation is expensive |
+
+With Intel's Mesa driver absent and mobile implementations incomplete, the Khronos threshold for core promotion was not met. Specifically, ANV shipping over a year after the extension's ratification, and only six months before this book went to press, is the single most concrete data point: a major desktop GPU vendor's open-source driver did not yet have a production-quality implementation.
+
+**4. Unresolved interaction with VK_KHR_pipeline_binary**
+
+`VK_KHR_pipeline_binary`, which *was* ratified for Vulkan 1.4, provides a standardised binary caching mechanism for compiled pipeline code — versioned, driver-stamped blobs that can be stored to disk and reloaded. `VK_EXT_shader_object` has its own binary mechanism (`vkGetShaderBinaryDataEXT` / `VK_SHADER_CODE_TYPE_BINARY_EXT`) that predates `VK_KHR_pipeline_binary`. The two mechanisms address the same problem — avoiding re-compilation across runs — but with different APIs, different lifetime semantics, and different portability guarantees. Promoting shader_object to core while `VK_KHR_pipeline_binary` was also entering core would have created two competing, potentially inconsistent, binary caching APIs in the same core specification. The working group chose to ratify `VK_KHR_pipeline_binary` for 1.4 and leave shader_object's binary API unaligned until the two can be reconciled. [Source — VK_KHR_pipeline_binary proposal](https://docs.vulkan.org/features/latest/features/proposals/VK_KHR_pipeline_binary.html)
+
+**The Vulkan Roadmap 2026 compromise**
+
+Rather than promoting to core — which would mandate support from every conformant Vulkan implementation, including embedded MCUs, automotive displays, and decade-old mobile SoCs — Khronos placed `VK_EXT_shader_object` in the **Vulkan Roadmap 2026** profile. This profile targets high-capability devices (desktop GPUs, modern mobile SoCs) and requires shader_object support for any device claiming Roadmap 2026 conformance. The profile model separates "must be supported on capable hardware" from "must be supported by all conformant Vulkan implementations", which is exactly the distinction that allows the extension to be widely available without forcing every TBDR implementation to solve the dynamic-state scheduling problem. [Source — Vulkan Roadmap 2026, Khronos Blog](https://www.khronos.org/blog/vulkan-introduces-roadmap-2026-and-new-descriptor-heap-extension)
+
 ### 2.2 The Conceptual Shift: Shaders as First-Class Objects
 
 The extension takes the most radical of three candidate approaches considered by the Khronos working group: rather than extending the pipeline model further, it abandons it. As the proposal states: "Abandon pipelines entirely and introduce new functionality to compile and bind shaders directly."
