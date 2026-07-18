@@ -573,37 +573,47 @@ WGPU_BACKEND=gl cargo run       # OpenGL fallback
 
 The central idea is *tile programs, not threads*: a kernel is written as a single-threaded program that operates on typed data tiles, and the compiler (backed by CUDA Tile IR) maps those operations onto warps, thread-blocks, and Tensor Cores automatically. The programmer never manually manages shared memory, warp-level synchronisation, or `wmma` instruction selection.
 
-The core abstraction is a `Tile<T, ROWS, COLS>` generic type representing a 2-D partition of an array held cooperatively by a group of threads. On NVIDIA hardware this maps to the PTX cooperative matrix family — `wmma.load`, `wmma.mma.sync`, and `wmma.store` for older architectures, and the newer `wgmma` (Warp-Group Matrix Multiply Accumulate) on Hopper/Ada — giving Tensor Core throughput with a safe Rust API. [PTX reference](https://docs.nvidia.com/cuda/parallel-thread-execution/)
+The core abstraction is a `Tensor<T, Shape>` generic type (with compile-time shape notation such as `Tensor<f32, { [M, N] }>`) representing a block of data held cooperatively by a group of threads. On NVIDIA hardware, CUDA Tile IR maps tile operations to the PTX cooperative matrix family — `wmma.load`, `wmma.mma.sync`, and `wmma.store` for Ampere and Ada Lovelace, and the newer `wgmma` (Warp-Group Matrix Multiply Accumulate, sm_90+) for Hopper — giving Tensor Core throughput behind a safe Rust API. [PTX reference](https://docs.nvidia.com/cuda/parallel-thread-execution/)
 
-### GEMM Kernel Pattern
+### Kernel Pattern
+
+Kernels are defined inside a `#[cutile::module]` block. Each kernel function is annotated with `#[cutile::entry()]`. Shape dimensions are compile-time generics in const-expression notation:
 
 ```rust
-// Illustrative cuTile-rs GEMM pattern (refer to nvlabs/cutile-rs examples for
-// the exact API version targeting your CUDA toolkit).
 use cutile::prelude::*;
 
-#[kernel]
-pub fn gemm_kernel(
-    a: &Tensor2D<f16>,
-    b: &Tensor2D<f16>,
-    c: &mut Tensor2D<f32>,
-) {
-    // Partition the output space into tiles matching the cooperative group size.
-    let output_tile = c.partition_like_output();
+// The #[cutile::module] macro processes this mod block at build time,
+// JIT-compiling kernel functions through CUDA Tile IR to cubin.
+#[cutile::module]
+mod kernels {
+    use cutile::core::*;
 
-    // Load input tiles in shapes that match the output partition.
-    let a_tile = a.load_tile_like(&output_tile);
-    let b_tile = b.load_tile_like(&output_tile);
-
-    // Tensor Core multiply-accumulate: maps to wgmma.mma_async on Hopper.
-    let acc = Tile::mma(&a_tile, &b_tile);
-
-    // Write the accumulated result back.
-    output_tile.store(&acc);
+    // Element-wise addition kernel — illustrates the core API.
+    // For GEMM/matmul, CUDA Tile IR selects the appropriate Tensor Core
+    // instructions (wmma/wgmma) automatically based on the target GPU.
+    #[cutile::entry()]
+    fn tile_add<const N: i32>(
+        z: &mut Tensor<f32, { [N] }>,
+        x: &Tensor<f32, { [-1] }>,  // -1 = dynamic size inferred from partition
+        y: &Tensor<f32, { [-1] }>,
+    ) {
+        // load_tile_like: free function; loads x and y shaped to match z
+        let tx = load_tile_like(x, z);
+        let ty = load_tile_like(y, z);
+        // store: writes the tile expression result back to z
+        z.store(tx + ty);
+    }
 }
 ```
 
-The `#[kernel]` procedural macro wraps the Rust function into a CUDA kernel entry point, while `Tile::mma` is lowered by the CUDA Tile IR backend to the appropriate PTX cooperative matrix instructions for the target architecture. On B200 hardware this approach reaches 96 % of cuBLAS GEMM throughput. [Source](https://nvlabs.github.io/cutile-rs/main/)
+Key API points:
+- **`#[cutile::module]`** on the `mod` block (not `#[kernel]` on individual functions)
+- **`#[cutile::entry()]`** on each kernel function
+- **`Tensor<T, Shape>`** with const-expression shape (not `Tensor2D<T>`)
+- **`load_tile_like(src, template)`** — free function, not a method; loads `src` partitioned to match `template`'s shape
+- **`z.store(expr)`** — writes a tile expression result to the output tensor
+
+On the host side, tiles are partitioned and launched via cuTile-rs's own `cuda-core` / `cuda-bindings` crates, which wrap the CUDA Driver API independently of cudarc. On B200 hardware, cuTile-rs GEMM kernels reach 96.4% of cuBLAS throughput. [Source](https://nvlabs.github.io/cutile-rs/main/)
 
 ### Why NVIDIA Is Investing
 
@@ -641,9 +651,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut output: cudarc::driver::CudaSlice<f32> =
         stream.alloc_zeros::<f32>(1024)?;
 
-    // Allocate and copy from host slice.
+    // Allocate and copy from host slice (htod = host-to-device).
     let input_data: Vec<f32> = (0..1024).map(|x| x as f32).collect();
-    let input = stream.memcpy_stoh(&input_data)?;
+    let input = stream.clone_htod(&input_data)?;
 
     Ok(())
 }
@@ -670,7 +680,7 @@ fn launch_ptx_kernel() -> Result<(), Box<dyn std::error::Error>> {
     let add_fn = module.load_function("add_kernel")?;
 
     let mut out = stream.alloc_zeros::<f32>(1024)?;
-    let inp     = stream.memcpy_stoh(&vec![1.0f32; 1024])?;
+    let inp     = stream.clone_htod(&vec![1.0f32; 1024])?;
 
     // Type-checked builder: args must match the PTX parameter list order.
     let mut builder = stream.launch_builder(&add_fn);
@@ -678,7 +688,8 @@ fn launch_ptx_kernel() -> Result<(), Box<dyn std::error::Error>> {
     builder.arg(&inp);
     unsafe { builder.launch(LaunchConfig::for_num_elems(1024)) }?;
 
-    let result = stream.memcpy_dtoh(&out)?;
+    // clone_dtoh allocates a new Vec<T> from device memory (device-to-host)
+    let result: Vec<f32> = stream.clone_dtoh(&out)?;
     println!("result[0] = {}", result[0]);   // 1.0
     Ok(())
 }
@@ -686,11 +697,17 @@ fn launch_ptx_kernel() -> Result<(), Box<dyn std::error::Error>> {
 
 `LaunchConfig::for_num_elems(n)` selects a sensible block/grid split automatically. For hand-tuned configurations supply `LaunchConfig { block_dim: (256,1,1), grid_dim: (n/256, 1, 1), shared_mem_bytes: 0 }`. The PTX can also be compiled at run time via the bundled `cudarc::nvrtc::compile_ptx` wrapper, which invokes NVRTC in-process from a CUDA C source string — useful for JIT compilation of generated kernels. [Source](https://docs.rs/cudarc/latest/cudarc/driver/safe/struct.CudaContext.html)
 
-### Pairing with cuTile-rs
+### cuTile-rs vs cudarc: Independent CUDA Stacks
 
-The typical workflow combines both crates: cuTile-rs compiles Rust kernel code to PTX via the CUDA Tile IR backend, and cudarc loads that PTX and manages host-side data movement. cuTile-rs owns the *what* (tile computation) and cudarc owns the *how* (driver interaction, memory, streams).
+cuTile-rs and cudarc are **independent** libraries with separate CUDA integration paths — they do not pair in a producer/consumer relationship.
 
-From a build-system perspective, a project typically has three crates: a `kernel` crate (Rust code annotated with `#[kernel]`, compiled to PTX by the cuTile-rs procedural macro), a `host` crate (the application, which depends on `cudarc` and embeds the compiled PTX via `include_bytes!`), and a `build.rs` that invokes the cuTile-rs toolchain. This mirrors the rust-gpu / spirv-builder split exactly, but targeting CUDA rather than Vulkan. The practical benefit over raw CUDA C++ is that kernel bugs involving out-of-bounds tile accesses or race conditions on shared state are caught by rustc's borrow checker rather than discovered at run time under CUDA-MEMCHECK. For ML framework authors building custom attention kernels or quantised GEMMs, this shifts a class of subtle correctness bugs from production inference to the compile step. [Source](https://github.com/coreylowman/cudarc)
+**cuTile-rs** includes its own `cuda-core` and `cuda-bindings` crates. When a `#[cutile::module]` block is processed, cuTile-rs JIT-compiles the kernel AST through CUDA Tile IR directly to a **cubin** (binary). It uses its own CUDA Driver API wrappers to load and launch that cubin. It does not produce PTX for another crate to load.
+
+**cudarc** is a general-purpose safe Rust wrapper around the CUDA Driver API — for loading PTX kernels, wrapping cuBLAS/cuDNN/cuRAND, and managing memory. It is independent of cuTile-rs.
+
+A project *can* use both crates simultaneously — cuTile-rs for tiled Tensor Core kernels and cudarc for cuBLAS calls or custom PTX kernels — because both ultimately wrap the same CUDA Driver API. But they do not integrate: cuTile-rs kernels are launched through cuTile-rs APIs; cudarc kernels are launched through cudarc APIs. There is no workflow where cuTile-rs emits PTX that cudarc loads.
+
+The build-system analogy with rust-gpu/spirv-builder is apt at a conceptual level (both separate kernel compilation from host code) but the mechanism differs: rust-gpu emits SPIR-V consumed by wgpu; cuTile-rs emits cubin consumed by its own runtime. [Source: cuTile-rs](https://github.com/NVlabs/cutile-rs) | [cudarc](https://github.com/coreylowman/cudarc)
 
 ---
 
@@ -1030,7 +1047,7 @@ Every burn operation is generic over `B: Backend`. Backends are pluggable:
 - **`burn-wgpu`** — WGSL compute shaders compiled by naga, runs on any wgpu backend (Vulkan, Metal, DX12, WebGPU).
 - **`burn-cuda`** — kernel generation and launch via cudarc, targets NVIDIA CUDA.
 - **`burn-ndarray`** — CPU fallback using ndarray, useful for testing.
-- **`burn-candle`** — thin wrapper over the Candle ML framework.
+- **`burn-candle`** — thin wrapper over the Candle ML framework. **Deprecated** as of 2024; use `burn-cuda` (via CubeCL) instead for CUDA targets.
 
 The compute language unifying `burn-wgpu` and `burn-cuda` is **CubeCL**, burn's own GPU DSL that compiles to WGSL or PTX depending on the backend. [Source](https://github.com/tracel-ai/burn)
 
