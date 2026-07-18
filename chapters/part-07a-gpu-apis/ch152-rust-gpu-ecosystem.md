@@ -24,9 +24,17 @@
 16. [burn: Rust ML Framework](#burn-rust-ml-framework)
 17. [encase and bytemuck: GPU Buffer Layout](#encase-and-bytemuck-gpu-buffer-layout)
 18. [naga_oil: Shader Module Composition](#naga_oil-shader-module-composition)
-19. [Contributing to wgpu-core, wgpu-hal, and naga](#contributing-to-wgpu-core-wgpu-hal-and-naga)
-20. [Roadmap](#roadmap)
-21. [Integrations](#integrations)
+19. [winit and raw-window-handle: Window and GPU Surface](#winit-and-raw-window-handle-window-and-gpu-surface)
+20. [glam: Mathematics for Rust GPU](#glam-mathematics-for-rust-gpu)
+21. [egui: Immediate-Mode GUI on wgpu](#egui-immediate-mode-gui-on-wgpu)
+22. [candle: Rust ML Inference](#candle-rust-ml-inference)
+23. [wgpu-profiler: GPU Timestamp Profiling](#wgpu-profiler-gpu-timestamp-profiling)
+24. [Shader Hot-Reloading](#shader-hot-reloading)
+25. [pixels: Simple wgpu Framebuffer](#pixels-simple-wgpu-framebuffer)
+26. [rspirv: SPIR-V IR in Rust](#rspirv-spir-v-ir-in-rust)
+27. [Contributing to wgpu-core, wgpu-hal, and naga](#contributing-to-wgpu-core-wgpu-hal-and-naga)
+28. [Roadmap](#roadmap)
+29. [Integrations](#integrations)
 
 ---
 
@@ -484,11 +492,13 @@ output.present();
 
 ### erupt: Alternative Raw Vulkan Bindings
 
-`erupt` is an alternative to `ash`, auto-generated from Vulkan XML with slightly different ergonomics:
+> **Maintenance status:** erupt's last meaningful release was 0.23 (2022). The crate is effectively unmaintained; new Vulkan extensions added after 2022 are not reflected in it. For new projects, use `ash` instead.
+
+`erupt` is an auto-generated alternative to `ash` with slightly different ergonomics: it exposes a flat module namespace and uses `vk1_0`, `vk1_1`, `vk1_2` feature flags to control API version. For projects already using it, the API remains functional for core Vulkan 1.2 and earlier extension set.
 
 ```toml
 [dependencies]
-erupt = "0.23"
+erupt = "0.23"  # unmaintained; prefer ash for new work
 ```
 
 ### vulkano: Safe Vulkan Abstraction
@@ -1245,6 +1255,694 @@ naga_oil's composition model has performance implications to be aware of. Each c
 
 ---
 
+## winit and raw-window-handle: Window and GPU Surface
+
+Every real wgpu and ash application needs a window and an OS-presentable GPU surface. Two crates form the bridge: `winit` for cross-platform window creation and event dispatch, and `raw-window-handle` for the type-safe handle that wgpu, ash-window, and other GPU crates accept.
+
+### winit 0.30 and the App Trait
+
+`winit` 0.30 introduced an `ApplicationHandler` trait that replaces the older closure-based event loop:
+
+```toml
+[dependencies]
+winit   = "0.30"
+wgpu    = "22"
+```
+
+```rust
+use winit::{
+    application::ApplicationHandler,
+    event::WindowEvent,
+    event_loop::{ActiveEventLoop, EventLoop},
+    window::{Window, WindowAttributes},
+};
+
+struct App {
+    window: Option<Arc<Window>>,
+    // wgpu state, surface, device, queue…
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // Window must be created here (not in new()) for Android/web compat
+        let window = Arc::new(
+            event_loop.create_window(WindowAttributes::default()
+                .with_title("wgpu app")
+                .with_inner_size(winit::dpi::LogicalSize::new(1280, 720)))
+            .unwrap()
+        );
+        // Create wgpu surface from the window — see below
+        self.window = Some(window);
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop,
+                    _id: WindowId, event: WindowEvent) {
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::RedrawRequested => {
+                // render frame here
+                self.window.as_ref().unwrap().request_redraw();
+            }
+            WindowEvent::Resized(new_size) => {
+                // rebuild swapchain / reconfigure surface
+                let _ = new_size;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn main() {
+    let event_loop = EventLoop::new().unwrap();
+    let mut app = App { window: None };
+    event_loop.run_app(&mut app).unwrap();
+}
+```
+
+**Platform selection.** On Linux, winit auto-detects the display server: Wayland when `WAYLAND_DISPLAY` is set, X11 otherwise. The `WINIT_UNIX_BACKEND=wayland` or `=x11` environment variable overrides detection. The `wayland` and `x11` Cargo features must be enabled (they are by default).
+
+---
+
+### raw-window-handle and wgpu Surface Creation
+
+`raw-window-handle` 0.6 defines two traits — `HasWindowHandle` and `HasDisplayHandle` — that expose OS-level handles (Wayland `wl_surface` + `wl_display`, X11 `xcb_window_t`, etc.) in a type-safe enum. `wgpu::Instance::create_surface` accepts any type implementing both traits:
+
+```rust
+use wgpu::SurfaceTarget;
+
+// Inside App::resumed(), after creating `window`:
+let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    backends: wgpu::Backends::VULKAN,  // or PRIMARY for auto-select
+    ..Default::default()
+});
+
+// wgpu accepts the Arc<Window> directly — it implements HasWindowHandle
+let surface = instance.create_surface(window.clone()).unwrap();
+
+// Request an adapter compatible with this surface
+let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
+    power_preference:       wgpu::PowerPreference::HighPerformance,
+    compatible_surface:     Some(&surface),
+    force_fallback_adapter: false,
+}).await.unwrap();
+
+let (device, queue) = adapter.request_device(
+    &wgpu::DeviceDescriptor::default(), None).await.unwrap();
+
+// Configure the surface (replaces swapchain setup)
+let caps   = surface.get_capabilities(&adapter);
+let format = caps.formats[0]; // first is usually Bgra8UnormSrgb on Vulkan/Linux
+surface.configure(&device, &wgpu::SurfaceConfiguration {
+    usage:        wgpu::TextureUsages::RENDER_ATTACHMENT,
+    format,
+    width:        window.inner_size().width,
+    height:       window.inner_size().height,
+    present_mode: wgpu::PresentMode::Fifo,
+    alpha_mode:   caps.alpha_modes[0],
+    view_formats: vec![],
+    desired_maximum_frame_latency: 2,
+});
+```
+
+**Frame loop.** Inside `WindowEvent::RedrawRequested`:
+
+```rust
+let output  = surface.get_current_texture().unwrap();
+let view    = output.texture.create_view(&Default::default());
+let mut enc = device.create_command_encoder(&Default::default());
+{
+    let mut rpass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load:  wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        ..Default::default()
+    });
+    rpass.set_pipeline(&render_pipeline);
+    rpass.draw(0..3, 0..1);
+}
+queue.submit([enc.finish()]);
+output.present();
+```
+
+---
+
+### ash-window: Vulkan Surface from winit
+
+For ash (raw Vulkan), `ash-window` converts a `raw-window-handle` handle into a `VkSurfaceKHR`:
+
+```toml
+[dependencies]
+ash        = "0.38"
+ash-window = "0.13"
+raw-window-handle = "0.6"
+```
+
+```rust
+use ash_window;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+
+unsafe fn create_surface(
+    entry:    &ash::Entry,
+    instance: &ash::Instance,
+    window:   &impl HasWindowHandle + HasDisplayHandle,
+) -> vk::SurfaceKHR {
+    ash_window::create_surface(
+        entry,
+        instance,
+        window.display_handle().unwrap().as_raw(),
+        window.window_handle().unwrap().as_raw(),
+        None,
+    ).unwrap()
+}
+```
+
+`ash-window` calls the correct platform extension under the hood:
+- Wayland → `vkCreateWaylandSurfaceKHR` (`VK_KHR_wayland_surface`)
+- X11/XCB → `vkCreateXcbSurfaceKHR` (`VK_KHR_xcb_surface`)
+
+The required instance extensions to enable are returned by `ash_window::enumerate_required_extensions(display_handle)`.
+
+[Source: winit](https://github.com/rust-windowing/winit) | [ash-window](https://github.com/ash-rs/ash/tree/main/ash-window) | [raw-window-handle](https://github.com/rust-windowing/raw-window-handle)
+
+---
+
+## glam: Mathematics for Rust GPU
+
+[glam](https://github.com/bitshifter/glam-rs) is the standard math library for Rust GPU development, used by Bevy, vello, wgpu tutorials, burn, and spirv-std (rust-gpu's GPU standard library). It provides SIMD-accelerated `Vec2`, `Vec3`, `Vec4`, `Mat4`, `Quat`, and related types with a clean, ergonomic API.
+
+```toml
+[dependencies]
+glam = "0.29"   # SIMD on x86_64 (SSE2), aarch64 (NEON), WASM (simd128)
+```
+
+**Vulkan-correct by default.** Unlike GLM (which needs `GLM_FORCE_DEPTH_ZERO_TO_ONE`), glam's perspective functions already use the correct conventions for Vulkan and wgpu:
+
+```rust
+use glam::{Mat4, Vec3, f32::*};
+
+let aspect = width as f32 / height as f32;
+
+// perspective_rh: right-handed, depth in [0, 1] — correct for Vulkan/wgpu
+let proj = Mat4::perspective_rh(
+    45_f32.to_radians(), // vertical FoV
+    aspect,
+    0.1,                 // near
+    1000.0,              // far
+);
+
+// look_at_rh: right-handed camera — correct for Vulkan NDC
+let view = Mat4::look_at_rh(
+    Vec3::new(3.0, 3.0, 3.0), // eye
+    Vec3::ZERO,                // target
+    Vec3::Y,                   // up
+);
+
+let model = Mat4::from_rotation_y(elapsed_s * 1.0_f32.to_radians())
+          * Mat4::from_scale(Vec3::splat(1.0));
+
+let mvp = proj * view * model;
+```
+
+**bytemuck integration.** glam types implement `bytemuck::Pod` and `bytemuck::Zeroable`, enabling zero-copy uploads to GPU buffers:
+
+```rust
+use bytemuck::cast_slice;
+
+// Mat4 is [f32; 16] under the hood — cast_slice gives &[u8]
+queue.write_buffer(&uniform_buf, 0, cast_slice(&[mvp]));
+```
+
+**Quaternion animation.** Slerp-based smooth rotation, used in glTF animation channel evaluation:
+
+```rust
+use glam::Quat;
+
+let q_start = Quat::from_rotation_y(0.0);
+let q_end   = Quat::from_rotation_y(std::f32::consts::PI);
+let q       = Quat::slerp(q_start, q_end, t); // t in [0, 1]
+let rot_mat = Mat4::from_quat(q);
+```
+
+**In rust-gpu shaders.** `spirv-std` re-exports glam as `spirv_std::glam`, making the same `Vec4`, `Mat4` types available in GPU shader code:
+
+```rust
+// Vertex shader with rust-gpu
+#![no_std]
+use spirv_std::glam::{vec4, Mat4, Vec4};
+use spirv_std::spirv;
+
+#[spirv(vertex)]
+pub fn vs_main(
+    position: Vec4,
+    #[spirv(push_constant)] mvp: &Mat4,
+    #[spirv(position)] out: &mut Vec4,
+) {
+    *out = *mvp * position;
+}
+```
+
+`glam` is not WGSL-compatible directly — WGSL uses its own `vec4<f32>` / `mat4x4<f32>` types — but it serves as the CPU-side math layer that produces the `[f32; 16]` data uploaded to uniform buffers consumed by WGSL shaders.
+
+[Source: glam-rs](https://github.com/bitshifter/glam-rs)
+
+---
+
+## egui: Immediate-Mode GUI on wgpu
+
+[egui](https://github.com/emilk/egui) is the dominant Rust immediate-mode GUI library: stateless, re-described each frame from a closure, no retained widget tree. On wgpu it runs via the `egui-wgpu` integration crate; `egui-winit` handles input translation from winit events.
+
+```toml
+[dependencies]
+egui        = "0.29"
+egui-wgpu   = "0.29"
+egui-winit  = "0.29"
+```
+
+**Integration pattern.** Three objects coordinate the integration:
+
+| Object | Crate | Role |
+|--------|-------|------|
+| `egui::Context` | `egui` | Retains GUI state across frames (fonts, animations, memory) |
+| `egui_winit::State` | `egui-winit` | Translates winit events → egui input; tracks screen scale |
+| `egui_wgpu::Renderer` | `egui-wgpu` | Holds wgpu buffers/textures/pipeline; renders egui paint jobs |
+
+```rust
+use egui_wgpu::Renderer;
+use egui_winit::State;
+
+struct EguiState {
+    ctx:      egui::Context,
+    winit:    State,
+    renderer: Renderer,
+}
+
+impl EguiState {
+    fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat,
+           window: &Window) -> Self {
+        let ctx      = egui::Context::default();
+        let winit    = State::new(ctx.clone(), ctx.viewport_id(),
+                                  window, None, None, None);
+        let renderer = Renderer::new(device, surface_format, None, 1, false);
+        Self { ctx, winit, renderer }
+    }
+
+    // Call once per frame before rendering
+    fn run(&mut self, window: &Window, queue: &wgpu::Queue,
+           device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder,
+           view: &wgpu::TextureView,
+           ui_fn: impl FnOnce(&egui::Context))
+    {
+        // 1. Collect input (call egui_winit::State::on_window_event for each event)
+        let raw_input = self.winit.take_egui_input(window);
+
+        // 2. Run the UI description closure
+        let full_output = self.ctx.run(raw_input, ui_fn);
+
+        // 3. Handle platform output (copy text, cursor changes)
+        self.winit.handle_platform_output(window, full_output.platform_output);
+
+        // 4. Tessellate and upload
+        let tris = self.ctx.tessellate(full_output.shapes,
+                                        full_output.pixels_per_point);
+        for (id, delta) in &full_output.textures_delta.set {
+            self.renderer.update_texture(device, queue, *id, delta);
+        }
+        let screen_desc = egui_wgpu::ScreenDescriptor {
+            size_in_pixels:  [window.inner_size().width,
+                               window.inner_size().height],
+            pixels_per_point: full_output.pixels_per_point,
+        };
+        self.renderer.update_buffers(device, queue, encoder, &tris, &screen_desc);
+
+        // 5. Render into the surface texture
+        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view, resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,  // draw on top of scene
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        self.renderer.render(&mut rpass, &tris, &screen_desc);
+
+        // 6. Free textures no longer referenced
+        for id in &full_output.textures_delta.free {
+            self.renderer.free_texture(id);
+        }
+    }
+}
+```
+
+**Usage** — the `ui_fn` closure describes the UI declaratively:
+
+```rust
+egui_state.run(&window, &queue, &device, &mut encoder, &view, |ctx| {
+    egui::Window::new("Debug").show(ctx, |ui| {
+        ui.label(format!("FPS: {fps:.1}"));
+        ui.add(egui::Slider::new(&mut roughness, 0.0..=1.0).text("Roughness"));
+        ui.add(egui::Slider::new(&mut metallic,  0.0..=1.0).text("Metallic"));
+        if ui.button("Reload shader").clicked() {
+            // trigger hot-reload (see §24)
+        }
+    });
+    egui::plot::Plot::new("timing").show(ctx, |plot| {
+        plot.line(egui::plot::Line::new(gpu_times.clone()));
+    });
+});
+```
+
+egui is the standard choice for in-application debug panels, material editors, and profiler overlays in Rust wgpu applications. [Source: egui](https://github.com/emilk/egui)
+
+---
+
+## candle: Rust ML Inference
+
+[candle](https://github.com/huggingface/candle) is Hugging Face's Rust ML framework, optimised for inference workloads. Unlike burn (which targets training + inference with pluggable wgpu/CUDA backends), candle is explicitly inference-focused, minimal-dependency, and has first-class Safetensors support for loading production model weights directly.
+
+```toml
+[dependencies]
+candle-core         = "0.9"
+candle-nn           = "0.9"
+candle-transformers = "0.9"   # prebuilt LLM architectures
+
+[features]
+cuda   = ["candle-core/cuda"]   # CUDA via cudarc
+metal  = ["candle-core/metal"]  # Metal for macOS/Apple Silicon
+```
+
+**Device selection and tensor operations:**
+
+```rust
+use candle_core::{Device, Tensor, DType};
+
+// Selects CUDA:0 if compiled with --features cuda, else CPU
+let device = Device::cuda_if_available(0)?;  // or Device::Cpu, Device::Metal(0)
+
+let a = Tensor::randn(0f32, 1f32, (512, 512), &device)?;
+let b = Tensor::randn(0f32, 1f32, (512, 512), &device)?;
+
+// Matrix multiply — runs on CUDA/Metal/CPU transparently
+let c = a.matmul(&b)?;
+
+// Element-wise ops, reductions
+let mean = c.mean_all()?;
+let relu = c.relu()?;
+```
+
+**Loading a real LLM.** Candle ships prebuilt transformer implementations in `candle-transformers`. The pattern is load weights from Safetensors, build the model, run generation:
+
+```rust
+use candle_core::{Device, DType};
+use candle_transformers::models::mistral::{Config, Model};
+use candle_nn::VarBuilder;
+
+let device = Device::cuda_if_available(0)?;
+
+// Load weights from Safetensors shards (standard HF model format)
+let weights = candle_core::safetensors::load_many(
+    &["model-00001-of-00003.safetensors",
+      "model-00002-of-00003.safetensors",
+      "model-00003-of-00003.safetensors"],
+    &device)?;
+let vb = VarBuilder::from_tensors(weights, DType::BF16, &device);
+
+let config = Config::config_7b_v0_1(false); // flash-attention=false for CPU compat
+let mut model = Model::new(&config, vb)?;
+
+// Tokenise (via tokenizers crate), run forward pass, sample
+let input_ids = Tensor::new(&[1u32, 1234, 567, 89], &device)?.unsqueeze(0)?;
+let logits = model.forward(&input_ids, 0)?;
+```
+
+**candle vs burn.** Both are Rust ML frameworks; the key differences:
+
+| | candle | burn |
+|--|--------|------|
+| Primary focus | Inference | Training + inference |
+| wgpu backend | No | Yes (`burn-wgpu`) |
+| CUDA backend | Yes (cudarc) | Yes (`burn-cuda` / CubeCL) |
+| Autograd | Partial (via `candle-core`) | Full (`burn` module system) |
+| Model zoo | Large (HF ecosystem) | Growing |
+| Dependency weight | Minimal | Moderate |
+| Safetensors | First-class | Via conversion |
+
+For production LLM inference on Linux (load a HF checkpoint, run generation), candle is the simpler path. For training custom models or using Vulkan/wgpu compute, burn is more appropriate.
+
+[Source: candle](https://github.com/huggingface/candle)
+
+---
+
+## wgpu-profiler: GPU Timestamp Profiling
+
+[wgpu-profiler](https://github.com/Wumpf/wgpu-profiler) wraps wgpu's timestamp query API into an ergonomic scope-based profiler. It requires `wgpu::Features::TIMESTAMP_QUERY` on the device.
+
+```toml
+[dependencies]
+wgpu-profiler = "0.20"
+```
+
+**Setup.** Request the timestamp query feature at device creation:
+
+```rust
+let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
+    required_features: wgpu::Features::TIMESTAMP_QUERY
+                     | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS,
+    ..Default::default()
+}, None).await.unwrap();
+
+use wgpu_profiler::{GpuProfiler, GpuProfilerSettings};
+let mut profiler = GpuProfiler::new(GpuProfilerSettings::default()).unwrap();
+```
+
+**Per-frame profiling with RAII scopes:**
+
+```rust
+// Wraps the CommandEncoder; each scope inserts begin/end timestamp queries
+let mut enc = device.create_command_encoder(&Default::default());
+
+{
+    let mut scope = profiler.scope("shadow pass", &mut enc, &device);
+    // record shadow map draw calls into scope.encoder()…
+    {
+        let mut inner = scope.scope("depth clear", &device);
+        // sub-scopes produce nested timing entries
+    }
+}
+
+{
+    let mut scope = profiler.scope("main pass", &mut enc, &device);
+    // record G-buffer / forward pass…
+}
+
+// Must resolve timestamp queries into a readable buffer before submit
+profiler.resolve_queries(&mut enc);
+queue.submit([enc.finish()]);
+
+// End frame; results appear 1-2 frames later (GPU latency)
+profiler.end_frame().unwrap();
+
+// Poll for completed results each frame
+if let Some(results) = profiler.process_finished_frame(queue.get_timestamp_period()) {
+    for scope in &results {
+        println!("{}: {:.3} ms", scope.label,
+                 (scope.time.end - scope.time.start) * 1000.0);
+    }
+}
+```
+
+**Tracy integration.** With the `tracy` Cargo feature, `wgpu-profiler` forwards GPU timing data to [Tracy](https://github.com/wolfpld/tracy) so GPU and CPU timelines appear in the same profiler view — the same workflow as the C++ `TracyVkCtx` integration, but from pure Rust.
+
+`wgpu-profiler` is the standard GPU profiling layer for wgpu applications; Bevy uses it internally via `bevy_render::diagnostic::RenderDiagnosticsPlugin`.
+
+---
+
+## Shader Hot-Reloading
+
+Shader hot-reloading — detecting that a `.wgsl` (or `.glsl`, `.slang`) file changed on disk and recompiling the pipeline without restarting the application — dramatically accelerates GPU shader development iteration. In wgpu, pipelines are Rust objects; hot-reloading means recreating them at runtime.
+
+**The notify + channel pattern:**
+
+```toml
+[dependencies]
+notify         = "6"    # cross-platform file system events
+notify-debouncer-mini = "0.4"
+```
+
+```rust
+use notify::{Watcher, RecommendedWatcher, RecursiveMode};
+use notify_debouncer_mini::new_debouncer;
+use std::sync::mpsc;
+use std::time::Duration;
+
+// Spawn a watcher thread; send reload events over a channel
+fn watch_shaders(tx: mpsc::Sender<()>) {
+    let (mut debouncer, mut rx) = new_debouncer(
+        Duration::from_millis(200), None).unwrap();
+    debouncer.watcher()
+        .watch(Path::new("shaders/"), RecursiveMode::Recursive).unwrap();
+    for result in rx.iter() {
+        if result.is_ok() {
+            let _ = tx.send(());  // notify main thread
+        }
+    }
+}
+
+// In the main render thread, poll the channel each frame:
+fn try_reload(rx: &mpsc::Receiver<()>, device: &wgpu::Device,
+              pipeline: &mut wgpu::RenderPipeline,
+              layout: &wgpu::PipelineLayout,
+              format: wgpu::TextureFormat)
+{
+    if rx.try_recv().is_ok() {
+        let src = std::fs::read_to_string("shaders/main.wgsl").unwrap();
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("reloaded"),
+            source: wgpu::ShaderSource::Wgsl(src.into()),
+        });
+        // Rebuild the pipeline with the new module
+        *pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            layout:  Some(layout),
+            vertex:  wgpu::VertexState { module: &module, entry_point: Some("vs_main"), .. Default::default() },
+            fragment: Some(wgpu::FragmentState {
+                module:  &module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(format.into())],
+            }),
+            ..Default::default()
+        });
+        eprintln!("shader reloaded");
+    }
+}
+```
+
+**naga_oil hot-reloading.** When using `naga_oil`'s `Composer`, modules must be explicitly removed and re-added — the `Composer` holds per-module naga IR:
+
+```rust
+// On file change for "shaders/lighting.wgsl":
+composer.remove_composable_module("bevy_pbr::lighting");
+composer.add_composable_module(ComposableModuleDescriptor {
+    source:          &std::fs::read_to_string("shaders/lighting.wgsl")?,
+    file_path:       "shaders/lighting.wgsl",
+    as_name:         Some("bevy_pbr::lighting".into()),
+    ..Default::default()
+})?;
+// Recreate all downstream pipelines that import this module
+```
+
+Bevy's `hot_reload` feature gate (`BEVY_ASSET_PROCESSOR=1 cargo run --features bevy/file_watcher`) automates this for all registered shader assets.
+
+**Thread safety note.** wgpu `Device` is `Send + Sync`, but pipeline creation must happen on a thread that has access to it. The common pattern is: watcher thread sends an event over a channel, main render thread polls the channel once per frame before recording commands, and recreates the pipeline if signalled.
+
+---
+
+## pixels: Simple wgpu Framebuffer
+
+[pixels](https://github.com/parasyte/pixels) provides a simple CPU-writable pixel buffer that is rendered to the screen via wgpu. It is the right choice for software rasterizers, cellular automata, retro game emulators, and any application that wants direct pixel manipulation without managing wgpu pipelines manually.
+
+```toml
+[dependencies]
+pixels = "0.14"
+winit  = "0.30"
+```
+
+```rust
+use pixels::{Pixels, SurfaceTexture};
+
+// Create pixel buffer (width × height RGBA u8 pixels)
+let surface_texture = SurfaceTexture::new(
+    window_width, window_height, &window);
+let mut pixels = Pixels::builder(320, 240, surface_texture)
+    .build()?;
+
+// In the render loop:
+let frame = pixels.frame_mut(); // &mut [u8], length = 320 * 240 * 4
+for (i, pixel) in frame.chunks_exact_mut(4).enumerate() {
+    let x = (i % 320) as u8;
+    let y = (i / 320) as u8;
+    pixel.copy_from_slice(&[x, y, 128, 255]); // RGBA gradient
+}
+pixels.render()?;  // uploads frame buffer to GPU, presents to screen
+```
+
+**Resize handling:**
+
+```rust
+WindowEvent::Resized(new_size) => {
+    pixels.resize_surface(new_size.width, new_size.height)?;
+}
+```
+
+`pixels` uses wgpu internally with a simple scaling shader, so the pixel buffer (e.g. 320×240) can be presented at any window resolution with nearest-neighbour or bilinear scaling. Custom post-processing passes can be appended to the wgpu render pipeline via `pixels.render_with(|encoder, render_target, context| { ... })`.
+
+---
+
+## rspirv: SPIR-V IR in Rust
+
+[rspirv](https://github.com/gfx-rs/rspirv) is a Rust library for reading, building, and manipulating SPIR-V binary modules. It is used internally by rust-gpu's `rustc_codegen_spirv` and is useful for any tool that needs to inspect or construct SPIR-V programmatically — custom code generators, instrumentation passes, or analysis tools.
+
+```toml
+[dependencies]
+rspirv = "0.12"
+spirv  = "0.3"  # SPIR-V opcode enum
+```
+
+**Reading and inspecting SPIR-V:**
+
+```rust
+use rspirv::dr::load_bytes;
+
+let spirv_bytes: Vec<u8> = std::fs::read("shader.spv")?;
+let module = load_bytes(&spirv_bytes).unwrap();
+
+// Walk all instructions in the module
+for inst in module.all_inst_iter() {
+    println!("{:?}", inst.class.opname);
+}
+
+// List all OpEntryPoint declarations
+for entry in &module.entry_points {
+    println!("Entry: {:?}", entry.operands[1]); // name operand
+}
+```
+
+**Building SPIR-V programmatically:**
+
+```rust
+use rspirv::dr::Builder;
+use rspirv::binary::Assemble;
+use spirv::{AddressingModel, ExecutionModel, MemoryModel};
+
+let mut b = Builder::new();
+b.set_version(1, 5);
+b.capability(spirv::Capability::Shader);
+b.memory_model(AddressingModel::Logical, MemoryModel::GLSL450);
+
+let void     = b.type_void();
+let voidf    = b.type_function(void, vec![]);
+let entry_fn = b.begin_function(void, None,
+    spirv::FunctionControl::NONE, voidf).unwrap();
+b.begin_block(None).unwrap();
+b.ret().unwrap();
+b.end_function().unwrap();
+b.entry_point(ExecutionModel::Vertex, entry_fn, "main", vec![]);
+
+// Assemble to Vec<u32> — pass to vkCreateShaderModule or wgpu
+let spirv_words: Vec<u32> = b.module().assemble();
+```
+
+**Relationship to naga.** naga (§5) is the higher-level path: it ingests WGSL/GLSL/SPIR-V and emits SPIR-V with full type-system understanding, validation, and optimisation passes. `rspirv` operates one level lower — it manipulates the raw SPIR-V instruction stream. Use naga when you want to translate or validate shaders; use rspirv when you want to instrument, analyse, or generate SPIR-V from a custom IR.
+
+[Source: rspirv](https://github.com/gfx-rs/rspirv)
+
+---
+
 ## Contributing to wgpu-core, wgpu-hal, and naga
 
 The wgpu ecosystem lives in a single monorepo at [github.com/gfx-rs/wgpu](https://github.com/gfx-rs/wgpu). The four crates most relevant to Linux Vulkan development are:
@@ -1494,6 +2192,11 @@ The most impactful areas for contributors who want their work to benefit Firefox
 - **Ch40 (Bevy/wgpu)** — Bevy's entire renderer is built on wgpu; naga_oil's `Composer` powers Bevy's modular PBR shader system; vello is the planned 2-D rendering layer for Bevy UI
 - **Ch177 (NVK — NVIDIA Vulkan)** — cuTile-rs and cudarc target the CUDA path; on Linux with NVK (open-source NVIDIA Vulkan), wgpu and ash speak to the same hardware through the Vulkan layer instead
 - **Ch15 (ACO — AMD Shader Compiler)** — naga-compiled WGSL from wgpu, vello, and burn-wgpu all enter the Mesa shader pipeline (ACO on RADV) as SPIR-V; ACO's instruction scheduling is the final stage before the GPU executes shaders that began as Rust or WGSL source
+- **Ch24 (Vulkan WSI / EGL)** — winit + ash-window create `VkSurfaceKHR` via `VK_KHR_wayland_surface` or `VK_KHR_xcb_surface`; wgpu's surface creation calls the same WSI extensions under the hood
+- **Ch82 (VMA / Vulkan Helpers)** — glam's `Mat4` / `Vec4` types fill the same role in Rust that GLM fills in C++; both upload via aligned uniform buffers to the same GPU memory managed by VMA / gpu-allocator
+- **Ch84 (bgfx / Filament / IGL)** — egui provides a comparable immediate-mode overlay to Dear ImGui; the egui-wgpu backend is architecturally parallel to imgui_impl_vulkan
+- **Ch25 (GPU Compute)** — candle's CUDA backend uses cudarc (§11); its inference throughput on NVIDIA hardware is comparable to burn-cuda; both are Rust alternatives to Python/PyTorch for on-device LLM inference
+- **Ch30 (Debugging and Profiling)** — wgpu-profiler timestamps feed the same Tracy timeline as CPU profiling; the GPU scope names appear as GPU zones in the Tracy UI
 
 ---
 
