@@ -590,6 +590,52 @@ vkCmdCopyBuffer(cmd, staging_buf, scene_buf, 1, &copy);
 
 GPU-driven rendering requires bindless access to textures and buffers — the draw shader doesn't know which texture each object uses until it reads the material index at runtime.
 
+### Pros and Cons
+
+Bindless is not a strict improvement over traditional descriptor binding — it makes a deliberate tradeoff: eliminate CPU-side descriptor state changes at the cost of GPU-side non-uniform access complexity and programmer-managed resource hazards.
+
+#### Advantages
+
+**Enables GPU-driven rendering.** This is the primary motivation. When the GPU generates draw calls via `vkCmdDrawIndexedIndirectCount`, the CPU does not know which objects will survive culling or in what order. The shader must look up the material at runtime using the draw's material index. A traditional per-material descriptor set cannot be bound ahead of time because the draw list is unknown until after the GPU culling pass completes.
+
+**Eliminates per-draw descriptor bind overhead.** Traditional pipelines call `vkCmdBindDescriptorSets` for every draw that changes texture set, flushing the GPU's descriptor cache and serialising submission. With a single global bindless descriptor set bound once per frame, this cost disappears. At 100k+ draws per frame (typical for open-world scenes), this can be the difference between a CPU-bound and GPU-bound renderer.
+
+**Reduces pipeline state explosion.** Each unique combination of bound resources can require a separate pipeline if resource counts vary. Bindless collapses all material variants to a single runtime-indexed array, enabling the uber-shader / megashader pattern: one pipeline handles every material type by branching on the material data.
+
+**Supports texture streaming and virtual texturing.** `VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT` allows slots to be unoccupied — unstreamed texture slots need not be valid descriptors. `VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT` lets the streaming system insert new texture descriptors after the descriptor set has been submitted to a command buffer (provided the GPU has not yet executed the commands that reference those slots).
+
+**Mandatory for ray tracing.** In a ray tracing pass, any-hit and closest-hit shaders may execute on any surface in the scene. There is no equivalent to per-draw descriptor binding; the shader must dynamically select the material from a global table. Bindless is architecturally required.
+
+**Buffer device address removes descriptors for buffers entirely.** `VK_KHR_buffer_device_address` (Vulkan 1.2 core) gives shaders raw 64-bit GPU pointers, enabling pointer-based GPU data structures (BVH nodes, linked lists, sparse voxel octrees) with zero descriptor overhead.
+
+#### Disadvantages and Costs
+
+**Non-uniform indexing serialises wave execution.** When different invocations within a subgroup access different textures, the hardware must handle each unique index separately — effectively serialising what would otherwise be parallel texture fetches within the wave. The `nonuniformEXT` qualifier (`GL_EXT_nonuniform_qualifier`) is required to tell the driver this is happening; omitting it is undefined behaviour. On modern Turing+ and RDNA 2+ hardware the cost is low due to improved texture unit scheduling, but it remains a real concern on older hardware and at very high material diversity per wave.
+
+**Implicit LOD / mip selection breaks at material boundaries.** `texture()` computes implicit LOD from texture coordinate derivatives across a 2×2 pixel quad. If adjacent pixels in the quad sample *different* textures (nonuniform access), the derivative is still computed but applies to coordinates whose texture indices may differ — mip selection can be incorrect at hard material transitions. The fix is to use `textureGrad()` with explicit derivatives or `textureLod()` with pre-computed LOD, at additional ALU cost.
+
+**Resource hazard tracking becomes the programmer's responsibility.** Vulkan validation can verify that a bound descriptor refers to an image in the correct layout — but only when the image is bound explicitly. With a partially-bound bindless array, the driver cannot know at command recording time which slots the shader will access. All textures that might be referenced must be transitioned to `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL` before any draw that uses the bindless set. Missing a transition is silently undefined behaviour; validation layers cannot catch it.
+
+**Debugging is harder.** RenderDoc can display which descriptor was accessed at a given draw, but correlating a runtime texture index (e.g. `material_id = 4712`) back to the source asset requires either debug tooling that maps indices to asset names, or careful instrumentation in the material streaming layer. GPU-based validation (`VK_EXT_device_address_binding_report`) provides some coverage but not the same per-draw clarity as traditional descriptor binding.
+
+**All resident textures must be memory-backed (absent sparse/virtual texturing).** In a traditional renderer, only the textures for currently-visible objects need VRAM. With a fully populated bindless array, all textures in the scene must be resident or you must implement a streaming/eviction system with slot management. Without virtual textures (`VK_EXT_image_drm_format_modifier` + sparse binding), VRAM pressure scales with scene size rather than visible-object count.
+
+**Feature requirements limit portability.** The full bindless feature set (`runtimeDescriptorArray`, `shaderSampledImageArrayNonUniformIndexing`, `descriptorBindingPartiallyBound`, `descriptorBindingUpdateAfterBind`) requires `VK_EXT_descriptor_indexing` (promoted to Vulkan 1.2 core). WebGPU does not currently expose bindless descriptor arrays; OpenGL exposes `ARB_bindless_texture` but with a different model. Portability to older Android or embedded Vulkan devices requires fallback paths.
+
+**Summary table:**
+
+| Dimension | Traditional binding | Bindless |
+|-----------|--------------------|-|
+| Per-draw CPU cost | `vkCmdBindDescriptorSets` per state change | Zero — bind once per frame |
+| GPU-driven rendering | Not possible (CPU must know draw order) | Required capability |
+| Non-uniform texture access | Impossible by design | Supported; wave serialisation cost |
+| Implicit mip / LOD | Correct (uniform access) | May need explicit `textureGrad`/`textureLod` |
+| Resource hazard tracking | Driver/validation assisted | Programmer responsibility |
+| Partial occupancy | Impossible | `PARTIALLY_BOUND` flag |
+| Texture streaming | Per-draw descriptor update | `UPDATE_AFTER_BIND` slot management |
+| Debugging | Per-draw visibility in RenderDoc | Requires index→asset mapping tooling |
+| Vulkan minimum | 1.0 | 1.2 (or `VK_EXT_descriptor_indexing`) |
+
 ### VK_EXT_descriptor_indexing
 
 ```c
