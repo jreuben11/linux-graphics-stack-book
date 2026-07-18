@@ -67,6 +67,7 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 50: Vulkan Video Extensions](#chapter-50-vulkan-video-extensions)
   - [Chapter 111: Flatpak Graphics — GPU Access in Sandboxed Applications](#chapter-111-flatpak-graphics--gpu-access-in-sandboxed-applications)
   - [Chapter 114: OpenCV and GPU-Accelerated Computer Vision on Linux](#chapter-114-opencv-and-gpu-accelerated-computer-vision-on-linux)
+  - [Chapter 206: SDL3 — Cross-Platform Multimedia Integration on Linux](#chapter-206-sdl3--cross-platform-multimedia-integration-on-linux)
 - **Part VIII — Gaming Layer**
   - [Chapter 28: Windows Compatibility](#chapter-28-windows-compatibility)
   - [Chapter 29: Upscaling, Effects & Overlays](#chapter-29-upscaling-effects--overlays)
@@ -792,6 +793,25 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - VA-API integration: `cv::VideoCapture` with VA-API decode (`CAP_PROP_HW_ACCELERATION`, `VIDEO_ACCELERATION_VAAPI`); `cv::VideoWriter` VA-API encode; `cv::UMat` ↔ `VASurface` interop via the `va_intel` module; zero-copy DMA-BUF path from decode to processing to encode
 - Practical pipeline: camera capture (V4L2 / libcamera via `cv::VideoCapture`) → GPU resize/colour-convert → DNN inference → annotate → VA-API encode → GStreamer sink; latency analysis
 - **Integrations**: Ch25 (OpenCL compute — T-API uses rusticl/ROCm OpenCL), Ch26 (VA-API — hardware decode/encode interop), Ch59 (NVIDIA DeepStream — contrast with OpenCV DNN for GPU inference pipelines), Ch88 (NPU — OpenVINO backend for Intel NPU), Ch96 (libcamera — camera source feeding OpenCV pipeline)
+
+### Chapter 206: SDL3 — Cross-Platform Multimedia Integration on Linux *(Part VII-B)*
+
+- SDL history and SDL2 → SDL3 transition: SDL 3.2.0 stable (January 2025); SDL2 maintenance-mode since June 2023; sdl2-compat ABI shim on SDL3; motivation for the rewrite (consistent API, float coordinates, stream-centric audio)
+- Subsystem model: `SDL_Init(SDL_InitFlags)`, reference-counted `SDL_InitSubSystem`/`SDL_QuitSubSystem`; all flags (`SDL_INIT_AUDIO`, `SDL_INIT_VIDEO`, `SDL_INIT_GAMEPAD`, `SDL_INIT_CAMERA`, etc.); the hint system (`SDL_SetHint`, `SDL_SetHintWithPriority`; `SDL_HINT_OVERRIDE` for env vars)
+- SDL on the Linux stack: what each subsystem wraps — Wayland xdg-shell / libdecor / X11 for windows; EGL (Wayland) or GLX (X11) for OpenGL; PipeWire → PulseAudio → ALSA → JACK probe order for audio; HIDAPI + evdev for gamepads; V4L2 for camera; xdg-desktop-portal for file dialogs
+- Video backend on Linux: `SDL_CreateWindow` with `SDL_WINDOW_RESIZABLE`, `SDL_WINDOW_HIGH_PIXEL_DENSITY`, `SDL_WINDOW_VULKAN`; Wayland vs. X11 backend selection (`SDL_HINT_VIDEO_DRIVER=wayland,x11`); xdg-toplevel and libdecor for CSD on GNOME; fullscreen — borderless vs. exclusive via `SDL_SetWindowFullscreenMode`
+- HiDPI and fractional scaling: `wp_fractional_scale_v1` + `wp_viewporter`; `SDL_GetWindowDisplayScale()`, `SDL_GetWindowSizeInPixels()`, `SDL_GetWindowPixelDensity()`; converting mouse events to render coordinates with `SDL_RenderCoordinatesFromWindow()`
+- OpenGL context creation: `SDL_GL_SetAttribute`, `SDL_GL_CreateContext`, EGL on Wayland / GLX on X11; `SDL_GL_SetSwapInterval` (adaptive vsync = −1)
+- Vulkan surface creation: `SDL_Vulkan_GetInstanceExtensions()` returns `VK_KHR_surface` + platform extension; `SDL_Vulkan_CreateSurface()`; backend-agnostic across Wayland and X11
+- Audio on Linux: PipeWire-preferred probe order (SDL3); `SDL_AudioStream` as the unified API — `SDL_OpenAudioDeviceStream()`, `SDL_PutAudioStreamData()`, `SDL_GetAudioStreamData()`; `SDL_AudioSpec` simplified to `{format, channels, freq}`; audio format constants (`SDL_AUDIO_F32`, `SDL_AUDIO_S16`, etc.); gain and pitch ratio; post-mix callback; device enumeration; recording
+- Input subsystem: event loop (`SDL_PollEvent`); SDL3 event naming (`SDL_EVENT_*`); keyboard state polling with `SDL_Scancode`; mouse float coordinates; `SDL_SetWindowRelativeMouseMode()` (per-window in SDL3, uses `zwp_relative_pointer_v1`); text input with `SDL_StartTextInput(window)` and `SDL_EVENT_TEXT_EDITING` / `SDL_EVENT_TEXT_INPUT` (IME via `zwp_text_input_v3`)
+- Gamepad and joystick: `SDL_GetGamepads()` / `SDL_OpenGamepad()`; positional button naming (`SDL_GAMEPAD_BUTTON_SOUTH` etc.); HIDAPI vs. evdev on Linux; udev hotplug (`SDL_EVENT_GAMEPAD_ADDED/REMOVED`); `SDL_RumbleGamepad()`, `SDL_RumbleGamepadTriggers()`, `SDL_SetGamepadLED()`; sensor data (gyro/accel from DualSense/Switch via HIDAPI)
+- SDL_Renderer 2D API: `SDL_Surface` (CPU, `SDL_PIXELFORMAT_XRGB8888`) vs. `SDL_Texture` (GPU, `SDL_TEXTUREACCESS_STREAMING/TARGET`); `SDL_CreateRenderer()` backends (opengl, vulkan, opengles2, software); SDL3 renamed calls — `SDL_RenderTexture()`, `SDL_RenderTextureRotated()`, `SDL_RenderGeometry()`; `SDL_SetRenderLogicalPresentation()` for resolution independence
+- Satellite libraries: SDL3_image (`IMG_Load`, `IMG_LoadTexture`, `IMG_LoadAnimation`); SDL3_mixer (channel-based, `Mix_PlayMusic`, `Mix_PlayChannel`, `Mix_RegisterEffect`); SDL3_ttf (rendering modes Solid/Shaded/Blended/LCD/SDF; Text Engine API: `TTF_CreateRendererTextEngine`, `TTF_CreateGPUTextEngine`)
+- SDL3 new APIs: Camera (`SDL_OpenCamera`, V4L2 / PipeWire camera portal); Dialog (`SDL_ShowOpenFileDialog` via xdg-desktop-portal); Properties system (`SDL_GetRendererProperties`, `SDL_GetTextureProperties`); Main Callbacks (`SDL_AppInit/Iterate/Event/Quit`) for cross-platform event-loop inversion; Process, Pen APIs
+- SDL2 → SDL3 migration: `bool` init return; `SDL_EVENT_*` constants; flat window events; `SDL_Keysym` removed; float mouse coords; audio stream model; pixel format renames; env var renames; `SDL_INIT_EVERYTHING` removed; sdl2-compat shim for binaries
+- Building and packaging: CMake config, Wayland/PipeWire/HIDAPI/Vulkan build flags; `find_package(SDL3)` in CMake; `pkg-config sdl3`; `SDL_VIDEO_DRIVER=offscreen` for headless CI; `SDL_VIDEO_DRIVER=kmsdrm` for embedded kiosk
+- **Integrations**: Ch38 (PipeWire — SDL3's preferred audio backend, SDL_AudioStream maps to PipeWire graph nodes), Ch38b (ALSA — direct fallback when PipeWire absent), Ch39 (Qt/GTK — SDL's toolkit counterpart on Linux; all share EGL/Vulkan drivers), Ch20 (Wayland protocols — xdg-shell, relative-pointer, text-input-v3, fractional-scale that SDL3 implements), Ch18 (Mesa Vulkan — SDL_Vulkan_CreateSurface delivers surfaces to ANV/RADV/NVK), Ch24 (EGL/Vulkan for application developers — EGL context SDL uses on Wayland), Ch81 (SDL3 GPU API — the modern compute/graphics API above SDL_Renderer), Ch111 (Flatpak — SDL3 apps in sandbox use `--device=dri` and xdg-desktop-portal for dialogs/camera)
 
 ---
 
