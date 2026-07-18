@@ -2915,28 +2915,75 @@ The most impactful areas for contributors who want their work to benefit Firefox
 
 ## Roadmap
 
-### Near-term (6–12 months)
+The Rust GPU ecosystem moved fast in 2025–2026. Several items that would have appeared as "near-term" in earlier editions have since shipped: naga merged into the wgpu monorepo (2023), rust-gpu transitioned from Embark to community governance (August 2024, archived October 2025), Rust 1.97 raised the nvptx64 baseline to SM 7.0+/PTX 7.0+ (July 2026), cuda-oxide v0.1/v0.2 opened as an NVlabs research project (May–June 2026), and the "Fearless Concurrency on the GPU" paper (arXiv:2606.15991) formalised NVIDIA's Rust-for-GPU position. The roadmap below focuses on what is still in motion.
 
-- **wgpu stable API consolidation**: The gfx-rs project is working toward a stable 1.0 release of wgpu, with focus on API stability guarantees and reduced breaking changes across minor versions. [Source](https://wgpu.rs/)
-- **naga repository consolidation**: Following the RFC to merge naga into the wgpu monorepo ([Source](https://github.com/gfx-rs/wgpu/issues/4231)), naga continues development as an integrated but separately publishable crate within `gfx-rs/wgpu`, with improved WGSL validation and SPIR-V round-trip fidelity.
-- **rust-gpu community stewardship**: After Embark Studios handed off the project to community governance under the `Rust-GPU` GitHub organization ([Source](https://rust-gpu.github.io/blog/transition-announcement/)), the near-term priority is stabilising the rustc SPIR-V backend and expanding test coverage for Vulkan compute shaders.
-- **wgpu WebGPU spec compliance**: As the WebGPU specification stabilises in browsers, wgpu's `wgpu-core` (used as Firefox's WebGPU implementation) is tracking spec changes to keep browser and native backends in sync. Note: needs verification of specific milestone.
-- **gpu-allocator TLSF improvements**: Ongoing refinements to the TLSF sub-allocator to reduce fragmentation and add D3D12 backend support alongside the existing Vulkan/Metal paths. [Source](https://github.com/Traverse-Research/gpu-allocator)
+### Near-term (active / 2026–2027)
 
-### Medium-term (1–3 years)
+**Official Rust project items** (tracked via Rust Project Goals mechanism):
 
-- **wgpu bindless and ray-tracing extensions**: There is active discussion in the gfx-rs community about exposing `VK_KHR_ray_tracing_pipeline` and bindless resource models via opt-in `wgpu::Features` flags, analogous to how mesh-shader support (`POLYGON_MODE_LINE`, `MULTI_DRAW_INDIRECT`) was progressively added. Note: no merged implementation confirmed at time of writing.
-- **rust-gpu DXIL and WGSL targets**: The community rust-gpu roadmap lists potential support for DXIL (Direct3D shader bytecode) and WGSL as additional compiler output targets beyond the current SPIR-V backend, enabling Rust shaders on non-Vulkan platforms. [Source](https://github.com/EmbarkStudios/rust-gpu/issues/47)
-- **naga GLSL front-end stability**: naga's GLSL ingestion path is considered less mature than WGSL/SPIR-V; medium-term work targets full GLSL 4.5/4.6 coverage so existing shader assets can be translated without hand-editing.
-- **vulkano 1.0 type-system hardening**: The vulkano project aims to encode additional Vulkan validity constraints (pipeline compatibility, render-pass compatibility) in Rust's type system to eliminate a remaining class of runtime panics. Note: needs verification of current milestone status.
-- **Bevy renderer rewrite (Bevy 0.16+)**: Bevy's render architecture is undergoing modularisation (retained render world, async pipeline compilation) that feeds back into wgpu feature requests around pipeline caching and async GPU resource uploads. [Source](https://bevyengine.org/)
+- **`std::offload` and `std::autodiff` reaching nightly stability**: The 2025H2 Project Goal ([rust-lang.github.io/rust-project-goals/2025h2/offload.html](https://rust-lang.github.io/rust-project-goals/2025h2/offload.html)) targets nightly-stable `#[offload]` on NVIDIA, AMD, and Intel GPUs, with `#[autodiff]` for automatic differentiation. As of mid-2026, `#[autodiff]` is on nightly; `#[offload]` is in progress. Results presented at EuroLLVM 2026.
 
-### Long-term
+- **`extern "gpu-kernel"` ABI stabilisation**: Tracking issue #135467 (opened January 2025) for a unified cross-vendor GPU kernel entry-point ABI. Partially merged behind a nightly feature gate as of mid-2026; no stable Rust timeline yet. Once stable, this replaces the separate `extern "ptx-kernel"` and `extern "amdgpu-kernel"` ABIs. [[Issue](https://github.com/rust-lang/rust/issues/135467)]
 
-- **Safe Rust Vulkan abstractions at zero cost**: The broader ecosystem goal is to close the ergonomics and performance gap between `ash` (fully unsafe, zero-overhead) and `wgpu` (safe but abstracted), potentially via a mid-level crate that encodes Vulkan synchronisation and resource lifetimes as Rust types without hiding API concepts.
-- **Rust shaders in production engines**: As rust-gpu matures, a long-term goal is first-class shader authoring in Rust for production game engines (Bevy being the leading candidate), removing the impedance mismatch of writing game logic in Rust and shaders in WGSL/GLSL.
-- **WebGPU on Linux without a browser**: wgpu's native Vulkan backend could serve as the WebGPU implementation layer for Linux desktop applications, allowing the same WGSL shaders to target both the browser (via `wasm32`) and a native Linux Vulkan driver without any code change.
-- **Cooperative matrix and ML inference in wgpu**: Long-term, extensions such as `VK_KHR_cooperative_matrix` and `VK_NV_cooperative_matrix2` may be exposed through wgpu's feature flag system, enabling GEMM-optimised shaders for ML inference workloads written in safe Rust. Note: no timeline confirmed.
+- **GPU Working Group charter**: The proposal at [rust-lang/leadership-council#155](https://github.com/rust-lang/leadership-council/issues/155) (opened February 2025 by Christian Legnitto) to establish an official Rust GPU Working Group remains open. If chartered, it would be the first official Rust governance body with a GPU mandate — enabling GPU topics to be published on the official Rust blog and providing a coordination point for GPU/AI company contributors.
+
+- **nvptx64 Tier-2 ongoing curation**: Following the Rust 1.97 baseline raise, the compiler team is focused on correctness and performance for SM 7.0+. No further baseline changes announced; ongoing CI maintenance.
+
+**cuda-oxide (NVlabs, alpha)**:
+
+- **Intra-kernel cuTile↔SIMT interop** (issue #96): v0.2 added inter-kernel interop (two separate kernels sharing arrays on the same stream). The more ambitious intra-kernel variant — a cuTile kernel calling a cuda-oxide SIMT device function inline — is tracked and planned but not yet implemented.
+- **crates.io publication**: cuda-oxide is currently git-only with a pinned `nightly-2026-04-03` toolchain. A crates.io release requires first tracking a semi-stable nightly API surface, which depends on `rustc_public` stabilisation progress.
+- **Windows / macOS support**: The v0.2 release is Linux-only (Ubuntu 24.04 tested). Cross-platform support is a stated goal but not yet scheduled.
+- **`#[launch_contract]` safe launch API**: The safe `PreparedLaunch` path (verifying grid/block dimensions statically or dynamically before the `unsafe` launch) is partially implemented; broader adoption is a near-term hardening priority.
+
+**Rust-GPU community (SPIR-V path)**:
+
+- **"Rust on every GPU" milestone**: The community-led [rust-gpu.github.io/blog/2025/07/25/rust-on-every-gpu/](https://rust-gpu.github.io/blog/2025/07/25/rust-on-every-gpu/) post (July 2025) demonstrated a single Rust codebase compiled to CUDA, SPIR-V/Vulkan, Metal, DX12, WebGPU, and CPU. Near-term: hardening the compute/GPGPU path and improving coverage of Vulkan compute shader patterns.
+- **Rust-CUDA reboot**: The `Rust-GPU` org is rebooting `Rust-CUDA` ([github.com/Rust-GPU/Rust-CUDA](https://github.com/Rust-GPU/Rust-CUDA)) as a community-maintained PTX path alongside the SPIR-V backend.
+
+**wgpu**:
+
+- **wgpu 1.0 API stability**: The gfx-rs project is working toward stable API guarantees to reduce breaking changes across minor versions, a prerequisite for broad adoption in production games and applications. [[wgpu.rs](https://wgpu.rs/)]
+- **WebGPU spec compliance**: `wgpu-core` (Firefox's WebGPU implementation) continues tracking the W3C WebGPU specification (Candidate Recommendation) as it stabilises toward full Recommendation status.
+
+### Medium-term (2027–2028)
+
+**Official Rust project items**:
+
+- **High-Level ML Optimizations** (2026 Rust Project Goal): MLIR backend for Rust, enabling whole-model ML training (matmul, convolution, attention) targeting NVIDIA, AMD, Intel, TPU, Trainium, and Qualcomm LPU — all from Rust ownership without a Python runtime. Lang champion TC; compiler champion Oli Scherer. This is the most ambitious item in the official Rust GPU roadmap.
+
+- **`nvptx64` in `std`**: Longer-term, the nvptx64 target may gain limited `std` support (allocator, panicking, possibly thread-local storage) as the LLVM NVPTX backend matures and `rustc_public` stabilises. No RFC; speculative.
+
+**cuda-oxide**:
+
+- **Stable toolchain requirement removal**: As `rustc_public` progresses toward stabilisation, cuda-oxide may be able to drop the pinned nightly requirement — the key open question is when the Stable MIR bridge is stable enough to ship on a stable Rust channel.
+- **Blackwell Tensor Core (tcgen05) hardening**: The v0.2 `tcgen05` example demonstrates Blackwell tensor core access; production-quality `dialect-nvvm` lowering for tcgen05 patterns requires additional compiler work.
+- **Performance gap vs. cuBLAS closure**: The v0.2 GEMM benchmarks at 58% of cuBLAS SoL on B200 (vs. cuTile-rs at 96%). Closing this gap requires register allocation, scheduling, and LLVM NVPTX backend improvements.
+
+**wgpu and naga**:
+
+- **Bindless resources and ray tracing in wgpu**: Active discussion in gfx-rs about exposing `VK_KHR_ray_tracing_pipeline` and bindless descriptor models via `wgpu::Features` opt-in flags, following the precedent of mesh shader and multi-draw-indirect support. No merged implementation confirmed.
+- **Cooperative matrix in wgpu** (`VK_KHR_cooperative_matrix`): Would enable GEMM-optimised compute shaders for ML inference from safe Rust/WGSL. Currently requires `ash` or `wgpu-hal` directly; the feature flag path is on the wishlist.
+- **naga GLSL 4.5/4.6 front-end completeness**: naga's GLSL ingestion is less mature than WGSL/SPIR-V; full GLSL 4.5/4.6 coverage would allow existing C++ shader assets to be translated without hand-editing.
+
+**Ecosystem**:
+
+- **Bevy renderer maturation**: Bevy's retained render world and async pipeline compilation (ongoing in Bevy 0.16+) feed back into wgpu feature requests around pipeline caching and async GPU uploads. As Bevy's renderer matures, it becomes the dominant real-world driver of wgpu's feature roadmap. [[bevyengine.org](https://bevyengine.org/)]
+- **burn CubeCL backend broadening**: burn's CubeCL compute backend targets CUDA, ROCm, and WebGPU. Medium-term work expands precision (fp8, int4 quantisation) and operator coverage for training, not just inference.
+
+### Long-term (research-level aspirations)
+
+- **Safe Rust Vulkan abstractions at zero cost**: The open goal is a mid-level crate that encodes Vulkan synchronisation and resource lifetimes as Rust types without hiding API concepts — closing the gap between `ash` (zero-overhead, fully `unsafe`) and `wgpu` (safe, abstracted). This requires solving the aliasing/linear-type problem discussed in §28.
+
+- **GPU memory model in the Rust type system**: Fully encoding GPU shared memory safety (barriers, aliasing, pipeline stages) requires affine/linear types and dependent types not currently in the Rust language and with no active RFC. `std::offload` deliberately avoids this problem (LLVM handles GPU memory at kernel scope); solving it type-theoretically remains a research problem.
+
+- **Rust shaders in production engines**: First-class shader authoring in Rust for production game engines (Bevy being the primary candidate) would remove the Rust/WGSL impedance mismatch. Requires rust-gpu stability, naga integration with the rust-gpu SPIR-V output, and editor tooling (SPIR-V reflection, hot reload).
+
+- **WebGPU on Linux without a browser**: wgpu's native Vulkan backend as the WebGPU layer for Linux desktop applications — same WGSL shaders targeting both `wasm32` browser and native Linux Vulkan without code changes. The wgpu architecture already supports this path; it needs distribution packaging and driver certification work.
+
+- **Official SPIR-V Rust target**: A Tier-3 or Tier-2 `spirv-unknown-vulkan` target in the official Rust target tier policy would make rust-gpu's output path an official compiler concern rather than an external codegen backend. No RFC or governance discussion open as of mid-2026.
+
+- **`amdgcn` Tier-2 promotion**: Raising `amdgcn-amd-amdhsa` from Tier 3 (community-maintained) to Tier 2 (compiler-team–maintained, CI-tested) would give AMD GPUs the same official support level as NVIDIA's nvptx64 target. Requires sustained maintainer commitment and expanded ROCm CI infrastructure.
 
 ---
 
@@ -2949,7 +2996,7 @@ The most impactful areas for contributors who want their work to benefit Firefox
 - **Ch57 (WebGPU in Chromium)** — Firefox's WebGPU implementation (`wgpu-core`) is the production wgpu implementation
 - **Ch141 (Cooperative Matrices)** — wgpu does not yet expose `VK_KHR_cooperative_matrix`; that requires `ash` or raw Vulkan; blade's Vulkan backend uses `khr::cooperative_matrix` directly
 - **Ch134 (Asahi/Apple GPU)** — wgpu's Metal backend is used by the Asahi Linux WebGPU stack
-- **Ch25 (GPU Compute)** — cudarc and cuTile-rs cover CUDA-path GPU compute; burn's `burn-wgpu` backend uses wgpu storage buffers for the same compute patterns on open drivers
+- **Ch25 (GPU Compute)** — cudarc, cuTile-rs, and cuda-oxide cover CUDA-path GPU compute at three abstraction levels (host management, tile programming, SIMT kernel authoring); burn's `burn-wgpu` backend uses wgpu storage buffers for the same compute patterns on open drivers
 - **Ch35 (Dawn/WebGPU)** — Dawn is Chrome's WebGPU implementation; wgpu (Firefox) and Dawn share the WGSL/naga shader layer and both consume SPIR-V from rust-gpu or `vulkano_shaders`
 - **Ch40 (Bevy/wgpu)** — Bevy's entire renderer is built on wgpu; naga_oil's `Composer` powers Bevy's modular PBR shader system; vello is the planned 2-D rendering layer for Bevy UI
 - **Ch177 (NVK — NVIDIA Vulkan)** — cuTile-rs and cudarc target the CUDA path; on Linux with NVK (open-source NVIDIA Vulkan), wgpu and ash speak to the same hardware through the Vulkan layer instead
