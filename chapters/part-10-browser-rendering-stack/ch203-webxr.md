@@ -23,8 +23,9 @@
 10. [WebXR on Linux: Status, Gaps, and the Community Path](#10-webxr-on-linux-status-gaps-and-the-community-path)
 11. [Firefox WebXR via wgpu](#11-firefox-webxr-via-wgpu)
 12. [WebXR vs. Native OpenXR: Tradeoffs](#12-webxr-vs-native-openxr-tradeoffs)
-13. [Integrations](#13-integrations)
-14. [References](#14-references)
+13. [Roadmap: WebXR Specification and Implementation Trajectory](#13-roadmap-webxr-specification-and-implementation-trajectory)
+14. [Integrations](#14-integrations)
+15. [References](#15-references)
 
 ---
 
@@ -625,7 +626,63 @@ The key architectural difference is the copy at frame submission: native OpenXR 
 
 ---
 
-## 13. Integrations
+## 13. Roadmap: WebXR Specification and Implementation Trajectory
+
+### Near-Term (2026–2027): Spec Stabilisation and the WebGPU Rendering Path
+
+**XRWebGPUBinding (WebXR for WebGPU)** is the single most consequential in-progress item. The `XRWebGPUBinding` interface will allow projection layers backed directly by `GPUTexture` objects wrapping the OpenXR swapchain's `VkImage`, eliminating the ANGLE intermediate copy that the `XRWebGLLayer` path requires today. The Immersive Web Working Group [tracks this at GitHub](https://github.com/immersive-web/WebXR-WebGPU-Binding). Dawn's `WGPUTexture` external memory path (`WGPUSharedTextureMemoryVkImageDescriptor`) already provides the mechanism; the remaining work is the JS binding and the Chromium `gpu::SharedImage` integration. Expect an experimental flag in Chromium and Firefox within 2026.
+
+**WebXR Depth Sensing Module** is at Working Draft stage. The API exposes per-frame depth buffers (CPU or GPU access) from devices that expose `XR_EXT_hand_tracking` depth or from platform depth APIs (ARCore, LiDAR on Apple hardware). On Linux / Monado the depth output from the tracking camera is not yet surfaced to the WebXR layer. Monado's roadmap includes `XR_EXT_hand_tracking_data_source` and depth support; when that lands the Chromium/Firefox OpenXR backend can forward it.
+
+**WebXR Hand Input Level 1** (hand-tracking module) is advancing toward Candidate Recommendation. The `XRHand` interface and `fillJointRadii`/`fillPoses` bulk-fill methods are stable in both Chrome (behind `webxr-hand-input` flag) and Firefox 126. The Level 2 draft adds gesture recognition events and joint velocity data.
+
+**WebXR Hit Test Module Level 1** reached Candidate Recommendation in 2025. It allows a web application to cast a ray from a controller or screen position into the real-world plane geometry and receive intersection poses — the building block for AR object placement. On Linux, hit-test requires the OpenXR runtime to expose `XR_EXT_plane_detection`; Monado's Hydra scene understanding plugin is the path toward this.
+
+**WebXR Anchors Module** stabilises the `XRAnchor` interface for persisting AR reference points across sessions. At Working Draft stage as of mid-2026; Monado's `XR_MSFT_spatial_anchor` implementation is the Linux-side dependency.
+
+**Chromium upstream Vulkan binding for Linux**: The `webxr-linux` community patch adds `OpenXrGraphicsBindingVulkan` using `XR_KHR_vulkan_enable2`. Upstreaming this patch into the Chromium codebase has been discussed in the `crbug.com` tracker. The primary blocker is test coverage (Chromium CI has no Linux XR hardware) and the lack of an official Linux SteamVR/Monado testing environment in the project's infra. The patch is a small and well-scoped addition; upstreaming is realistic within this timeframe.
+
+### Medium-Term (2027–2028): XRWebGPUBinding as Primary Path, Scene Understanding, Eye Tracking
+
+**XRWebGPUBinding ship**: Once the experimental flag stabilises and interop tests pass, the expectation is that `XRWebGPUBinding` becomes the primary rendering path for new WebXR applications. `XRWebGLLayer` will remain for compatibility. The performance improvement on Linux is significant: the current community-patch path copies or imports swapchain images through ANGLE/Vulkan external memory; a native `GPUTexture` path eliminates that indirection.
+
+**WebXR Lighting Estimation** exposes the real-world illumination estimate (spherical harmonics + HDR image) from AR runtimes (ARCore, ARKit, Monado's future lighting extension) to JS as an `XRLightEstimate`. The API is in the Immersive Web Community Group spec; Chromium's ARCore backend already exposes a prototype. On Linux the dependency is an OpenXR lighting extension in Monado, which has no shipping implementation as of mid-2026.
+
+**WebXR Eye Tracking Module** exposes per-eye gaze direction from `XR_EXT_eye_gaze_interaction`. The spec is at Community Group stage; privacy constraints (gaze is considered sensitive biometric data) require a dedicated permission prompt distinct from the base `immersive-vr` permission. Valve Index (SteamVR) exposes `XR_EXT_eye_gaze_interaction`; Monado has a driver stub. The open question is W3C Privacy Interest Group sign-off on the permission model.
+
+**WebXR Mesh Detection Module** will expose the reconstructed surface mesh from devices with spatial mapping (Quest Pro, Apple Vision Pro, and Monado-backed SLAM runtimes). Monado's integration with Kimera-VIO and ILLIXR scene graph targets this capability. The `XRMesh` interface design is under active discussion in the Immersive Web WG.
+
+**WebXR + WebNN integration**: Hand tracking, body pose estimation, and scene understanding in AR can be augmented or fully replaced by in-browser ML inference via WebNN (Chapter 168). The pattern: `XRFrame.getJointPose()` provides hardware tracking; a WebNN model refines or corrects it with additional camera data (once raw camera access is available). The `WebXR Camera Access Module` (a separate Community Group proposal) would expose raw luminance frames for this purpose — subject to strong privacy mitigations.
+
+### Long-Term (2028+): Platform Integration, Passthrough Standardisation, Neural Rendering
+
+**Passthrough standardisation across vendors**: The `XRCompositionLayerPassthrough` API is currently runtime-dependent, with behaviour varying across Quest, SteamVR, Monado, and ARCore backends. A standardised passthrough layer format (blend mode, edge rendering, occlusion depth) tied to the WebXR Layers API Level 2 spec is the goal. This requires alignment across OpenXR extension promotions (`XR_FB_passthrough` → `XR_META_passthrough` → proposed core promotion).
+
+**Native platform WebXR runtimes**: On macOS/visionOS (Apple Vision Pro) and Windows (Mixed Reality, upcoming), platform-native WebXR runtimes would bypass the need for OpenXR. Safari's WebXR implementation targets visionOS; Chrome on Windows already integrates directly. The long-term vision is that every major platform has a first-party WebXR runtime, reducing the OpenXR + community-patch chain that Linux currently requires.
+
+**WebXR for streaming / cloud XR**: Rendering on a server and streaming frames to a thin client (as in NVIDIA CloudXR or PlayStation Remote Play) requires the WebXR API to express video-plane composition layers. `XRMediaBinding` (Layers API extension) provides the hook; coupling it with `WebCodecs` for low-latency decode is the path. This is particularly relevant for Linux XR clients where the local GPU may not support the full application workload.
+
+**Neural rendering integration**: Compressed neural radiance field (NeRF / 3DGS) representations of real scenes could be streamed and rendered via WebGPU compute shaders within a WebXR session, providing photorealistic passthrough without requiring a depth camera. The `WebNN` inference path would run the decoding neural network; `XRWebGPUBinding` would composite the output into the XR frame. This is a research-to-production trajectory rather than a standards deliverable; implementations are expected in research previews by 2028.
+
+### Specification Milestone Summary
+
+| Module | Status (mid-2026) | Expected Milestone |
+|---|---|---|
+| WebXR Device API | Living Standard (stable) | Continues as living standard |
+| WebXR Layers API | CR (Candidate Recommendation) | W3C Recommendation 2026 |
+| WebXR Hit Test | CR | W3C Recommendation 2026 |
+| WebXR Hand Input Level 1 | Working Draft → CR | CR 2026/2027 |
+| WebXR Depth Sensing | Working Draft | CR 2027 |
+| WebXR Anchors | Working Draft | CR 2027 |
+| WebXR Lighting Estimation | CG Note | WG adoption 2027 |
+| XRWebGPUBinding | CG Proposal / experimental | WG adoption 2027 |
+| WebXR Eye Tracking | CG Proposal | WG adoption 2028 |
+| WebXR Mesh Detection | Editor's Draft | CR 2028 |
+| WebXR Camera Access | CG Proposal | Pending privacy review |
+
+---
+
+## 14. Integrations
 
 **Chapter 27 (VR, AR, and OpenXR)**: WebXR is the browser-facing surface above the same Monado/SteamVR OpenXR runtimes described there. `XR_RUNTIME_JSON` discovery, DRM leasing for direct-mode output, and the Basalt VIO tracking pipeline all sit below both the native OpenXR and WebXR paths. The OpenXR session created by Chromium's `OpenXrApiWrapper` is an `XrSession` in the same Monado `monado-service` daemon that native apps use.
 
@@ -643,7 +700,7 @@ The key architectural difference is the copy at frame submission: native OpenXR 
 
 ---
 
-## 14. References
+## 15. References
 
 1. **W3C WebXR Device API** — Living Standard, June 2026. [https://www.w3.org/TR/webxr/](https://www.w3.org/TR/webxr/)
 2. **WebXR Explainer** — Immersive Web Working Group. [https://immersive-web.github.io/webxr/explainer.html](https://immersive-web.github.io/webxr/explainer.html)
