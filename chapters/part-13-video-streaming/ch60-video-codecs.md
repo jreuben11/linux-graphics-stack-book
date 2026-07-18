@@ -60,6 +60,32 @@ The rate control section covers:
 
 These sections ground the discussion in what **AMD AMF** and **Intel Quick Sync** actually implement in silicon, and connect to the **NVENC** and **AMF** deep-dives in Chapters 66 and 68.
 
+### Codec Selection Guide
+
+Before reading the algorithmic detail, the table below answers the practical question: **which codec should I choose for a given use case?**
+
+| Use case | Recommended codec | Rationale |
+|---|---|---|
+| **Maximum compatibility** (legacy devices, CDN, unknown player) | H.264 | Universal hardware decode support; every device, browser, and streaming platform since 2008 |
+| **Broadcast / live streaming to mixed audiences** | H.264 (primary) + H.265 (HLS alt) | H.264 for broad reach; H.265 HLS track for Apple devices with hardware decode |
+| **VOD at scale, bandwidth is expensive** | AV1 | ~35% smaller files than H.264 at same quality; royalty-free; hardware decode on RTX 30xx+, AMD RX 6000+, Intel Arc, and all modern mobile SoCs |
+| **High-quality archival / mastering** | H.265 or AV1 | Both far exceed H.264 quality-per-bit; H.265 has faster software encoding; AV1 has better long-term royalty position |
+| **Low-latency live encode (OBS, streaming)** | H.264 (hardware) | Fastest hardware encode path on all GPUs; AV1 hardware encode (NVENC/RDNA3+) is viable for RTX 40xx/RX 7000+ |
+| **Videoconferencing / WebRTC** | H.264 + VP8/VP9 fallback | Both are universally supported in browsers; AV1 in WebRTC is maturing (Chrome 113+, Firefox 113+) |
+| **Browser video (web delivery)** | AV1 + H.264 fallback | AV1 supported in Chrome, Firefox, Edge, Safari 17+; H.264 as `<source>` fallback |
+| **HDR / 4K streaming (Netflix, YouTube)** | AV1 (preferred) or H.265 | Both support 10-bit, HDR10, Dolby Vision; YouTube uses VP9/AV1; Netflix uses H.265/AV1 |
+| **Screen content / UI recording** | AV1 | Palette mode and screen content tools give 2–4× better quality on flat UI regions than H.264/H.265 |
+| **Cutting-edge quality, decode hardware available** | VVC/H.266 | ~40% better than HEVC, ~20% better than AV1 at equal quality; hardware decode limited to Snapdragon 8 Gen 3+ as of 2026 |
+| **GPU pipeline, zero-copy encode** | AV1 or H.265 via Vulkan Video | Keep encode inside the same `VkDevice` as rendering; RTX 40xx has dual AV1 NVENC engines |
+| **Mobile / embedded, power-constrained** | H.264 Baseline or H.265 Main | Broadest SoC hardware decode acceleration; AV1 decode power-efficient on hardware (not software) |
+| **Software-only encode (no GPU)** | SVT-AV1 or x265 | SVT-AV1 is the fastest software AV1 encoder; x265 is faster than libaom at comparable quality |
+
+**Key trade-offs in brief:**
+- **Compatibility vs. efficiency**: H.264 wins compatibility; AV1 wins efficiency. H.265 sits in the middle but carries patent licensing concerns for software encoders.
+- **Encoding speed**: H.264 >> H.265 > VP9 ≈ AV1 (hardware); software AV1 (libaom) is 5–10× slower than x265. SVT-AV1 narrows the gap significantly.
+- **Royalties**: AV1, VP9, and VVC (under the MFI pool) are royalty-free for most uses; H.264 and H.265 carry MPEG-LA patent pools that affect commercial software encoders.
+- **Hardware decode coverage** (desktop Linux, mid-2026): H.264 = universal; H.265 = near-universal (Mesa 23+, all NVIDIA, Intel); AV1 = RTX 30xx+/RDNA2+/Arc/Tiger Lake+; VVC = no desktop GPU support yet.
+
 ---
 
 ## The Compression Duality: Intra vs. Inter Redundancy and Quality Metrics {#the-compression-duality}
