@@ -19,6 +19,12 @@
 - [6.5 libadwaita — GNOME HIG Adaptive Widgets](#65-libadwaita--gnome-hig-adaptive-widgets)
 - [7. Font and Text Rendering: FreeType, HarfBuzz, and Glyph Atlases](#7-font-and-text-rendering-freetype-harfbuzz-and-glyph-atlases)
 - [8. WebKitGTK: Embedding Web Content in GTK Applications](#8-webkitgtk-embedding-web-content-in-gtk-applications)
+- [9. iced and libcosmic: A wgpu-Native Linux Desktop Toolkit](#9-iced-and-libcosmic-a-wgpu-native-linux-desktop-toolkit)
+  - [9.1 iced Architecture: Elm Model, Retained Primitives, and the wgpu Compositor](#91-iced-architecture-elm-model-retained-primitives-and-the-wgpu-compositor)
+  - [9.2 libcosmic: Widget Library and Design Token Theming](#92-libcosmic-widget-library-and-design-token-theming)
+  - [9.3 Wayland Integration: iced_sctk and Layer Shell Surfaces](#93-wayland-integration-iced_sctk-and-layer-shell-surfaces)
+  - [9.4 Custom GPU Shaders in iced](#94-custom-gpu-shaders-in-iced)
+  - [9.5 Rendering Architecture Comparison: Qt QRhi vs GTK GskRenderer vs iced wgpu](#95-rendering-architecture-comparison-qt-qrhi-vs-gtk-gskrenderer-vs-iced-wgpu)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -1545,6 +1551,292 @@ WPE is targeted at:
 From a graphics stack perspective WPE is simpler than WebKitGTK: there is no GTK rendering pipeline, no GSK compositor, no `GdkWaylandSurface` — just WebKit's own GL compositor writing to a GBM buffer and handing it directly to the display system. This makes WPE architecturally closer to a standalone browser process (like Chrome's GPU process) than to an embeddable widget.
 
 For desktop application developers, WPE is generally not the right choice — it provides no window management, no native dialogs, and no system tray. The Tauri project tracks a WPE backend for Wry as a long-term goal for embedded Linux targets (Ch193 §13).
+
+---
+
+## 9. iced and libcosmic: A wgpu-Native Linux Desktop Toolkit
+
+**Target audiences**: Systems developers evaluating a third GUI toolkit alternative to Qt and GTK; graphics application developers who want a Rust-native rendering pipeline without a C dependency chain; COSMIC desktop application developers.
+
+iced and libcosmic represent a third approach to Linux desktop GUI, alongside Qt and GTK. Where Qt uses QRhi as an API-agnostic rendering hardware interface and GTK uses the GskRenderer scene graph, iced builds directly on `wgpu` — the same Rust GPU abstraction used by Bevy (Ch40) and Firefox's WebRender (Ch52). There is no C layer; the full stack from widget to Vulkan command buffer is Rust. System76 builds the COSMIC desktop entirely on this foundation: `cosmic-comp` (the compositor, using Smithay) and every first-party COSMIC application (Settings, Files, Store, Terminal) use libcosmic as their widget toolkit. [Source: libcosmic GitHub](https://github.com/pop-os/libcosmic)
+
+### 9.1 iced Architecture: Elm Model, Retained Primitives, and the wgpu Compositor
+
+iced follows the **Elm Architecture** (also called Model-View-Update or MVU): application state is a plain data struct, updates arrive as typed `Message` values processed by an `update()` method, and the `view()` method produces a tree of `Element` values that describe the desired UI. The framework diffs this tree and drives the renderer — no manual invalidation.
+
+```rust
+use iced::{Application, Command, Element, Settings, Theme};
+
+struct Counter { value: i32 }
+
+#[derive(Debug, Clone)]
+enum Message { Increment, Decrement }
+
+impl Application for Counter {
+    type Executor = iced::executor::Default;
+    type Flags    = ();
+    type Message  = Message;
+    type Theme    = Theme;
+
+    fn new(_: ()) -> (Self, Command<Message>) {
+        (Counter { value: 0 }, Command::none())
+    }
+    fn title(&self) -> String { "Counter".into() }
+
+    fn update(&mut self, msg: Message) -> Command<Message> {
+        match msg {
+            Message::Increment => self.value += 1,
+            Message::Decrement => self.value -= 1,
+        }
+        Command::none()
+    }
+
+    fn view(&self) -> Element<Message> {
+        iced::widget::column![
+            iced::widget::button("+").on_press(Message::Increment),
+            iced::widget::text(self.value.to_string()),
+            iced::widget::button("-").on_press(Message::Decrement),
+        ].into()
+    }
+}
+
+fn main() -> iced::Result {
+    Counter::run(Settings::default())
+}
+```
+
+**Crate structure.** The iced workspace is split into focused crates:
+
+| Crate | Role |
+|---|---|
+| `iced_core` | `Widget`, `Element`, `Color`, `Rectangle`, `Length` types; renderer trait |
+| `iced_runtime` | async executor integration; `Command` and `Subscription` machinery |
+| `iced_graphics` | `Compositor` trait; `Primitive` enum; `Viewport`; backend-agnostic primitives |
+| `iced_wgpu` | wgpu `Compositor` and `Renderer` implementations; `Engine` resource manager |
+| `iced_tiny_skia` | CPU software renderer via tiny-skia (software fallback) |
+| `iced_winit` | winit platform integration: window creation, event loop, cursor handling |
+| `iced` | top-level re-export crate; feature flags select the backend |
+
+**`iced_wgpu::Engine`.** The `Engine` is the core resource container: it holds the `wgpu::Device`, `wgpu::Queue`, and all shared render pipelines (`quad::Pipeline`, `triangle::Pipeline`, `text::Pipeline`, `image::Pipeline`). The `Engine` is shared across multiple windows in multi-window applications — GPU resources are not duplicated per window. Each window gets its own `iced_wgpu::window::Compositor` which manages the `wgpu::Surface`, swap chain, and per-frame render targets, but borrows the `Engine` for draw calls. [Source: iced_wgpu Compositor docs](https://docs.iced.rs/iced_wgpu/window/compositor/struct.Compositor.html)
+
+**Render loop.** Each frame, the `Compositor` calls:
+1. `renderer.prepare()` — uploads primitives (quads, text glyphs, images) into GPU buffers
+2. `renderer.render()` — records a `wgpu::RenderPass` drawing the prepared primitives
+3. `surface.present()` — presents the frame via the platform swap chain
+
+On Linux, `wgpu` resolves to the Vulkan backend via `ash` bindings against Mesa drivers — the same path as Bevy and Firefox WebRender. The `wgpu::Surface` is created from a `wl_surface` / EGL window on Wayland (via `wgpu::SurfaceTarget::Window` wrapping a `winit::Window`).
+
+**Software fallback.** `iced_tiny_skia` provides a CPU renderer using tiny-skia and softbuffer for platforms without GPU support or for CI environments. The `fallback::Renderer<A, B>` enum composes both backends: it attempts GPU initialisation and falls back to software if the `wgpu::Adapter` query fails. [Source: iced rendering architecture — DeepWiki](https://deepwiki.com/iced-rs/iced/4.1-wgpu-renderer)
+
+### 9.2 libcosmic: Widget Library and Design Token Theming
+
+libcosmic is System76's widget layer on top of iced. It provides the `cosmic::Application` trait (a superset of `iced::Application`), a rich widget set following COSMIC's design language, and integration with the COSMIC settings daemon for live theme changes. [Source: COSMIC Toolkit Book](https://pop-os.github.io/libcosmic-book/introduction.html)
+
+**`cosmic::Application` trait.** A libcosmic application implements:
+
+```rust
+use cosmic::app::{Core, Settings};
+use cosmic::{Application, ApplicationExt, Command, Element};
+
+struct MyApp { core: Core }
+
+impl Application for MyApp {
+    type Executor = cosmic::executor::Default;
+    type Flags    = ();
+    type Message  = ();
+    const APP_ID: &'static str = "com.example.MyApp";
+
+    fn core(&self)     -> &Core     { &self.core }
+    fn core_mut(&mut self) -> &mut Core { &mut self.core }
+
+    fn init(core: Core, _flags: ()) -> (Self, Command<cosmic::app::Message<()>>) {
+        (MyApp { core }, Command::none())
+    }
+
+    fn view(&self) -> Element<()> {
+        cosmic::widget::text("Hello, COSMIC!").into()
+    }
+}
+
+fn main() -> cosmic::iced::Result {
+    let settings = Settings::default().size((1024, 768).into());
+    MyApp::run(settings)
+}
+```
+
+The `Core` struct holds framework state: the current `CosmicTheme`, window geometry, nav model, and context drawer state.
+
+**Widget set.** `cosmic::widget` extends `iced::widget` with COSMIC-specific components:
+
+| Widget | Role |
+|---|---|
+| `header_bar()` | GNOME HIG-style title bar with start/center/end slots |
+| `nav_bar()` / `nav_button()` | Sidebar navigation |
+| `context_drawer()` | Slide-in panel for secondary content |
+| `dialog()` | Modal dialog with action buttons |
+| `segmented_button()` | Radio-button-style tab bar |
+| `search()` | Styled search entry |
+| `settings::section()` | Settings page layout container |
+| `list_column()` / `list_item()` | List view with separators |
+| `spin_button()` | Numeric stepper |
+
+**Theming system.** libcosmic uses a **design token** model: all colours, corner radii, and spacing values are stored in `CosmicTheme`, derived from a base accent colour and a light/dark mode flag. Applications receive theme updates via a `Subscription` to `cosmic::theme::subscription()`, which watches the `cosmic-settings-daemon` D-Bus interface for live theme changes. Applications do not hardcode colours; they reference semantic tokens (`theme.accent`, `theme.bg_component`, `theme.on_bg`) that the engine resolves at render time.
+
+```rust
+// Listen for live theme changes from cosmic-settings-daemon:
+fn subscription(&self) -> cosmic::iced::Subscription<Self::Message> {
+    cosmic::theme::subscription(0).map(|theme_update| {
+        MyMessage::ThemeChanged(theme_update)
+    })
+}
+```
+
+**Applets.** COSMIC panel applets are a distinct target from full applications. They implement a lighter `cosmic::applet::CosmicAppletHelper` interface, run as layer shell surfaces (see §9.3), and communicate with `cosmic-panel` via a custom Wayland protocol for sizing and popup management. Applet processes are sandboxed with limited capabilities compared to full desktop applications.
+
+### 9.3 Wayland Integration: iced_sctk and Layer Shell Surfaces
+
+iced's Wayland integration uses `iced_sctk` — a platform backend built on **smithay-client-toolkit** (SCTK), the same Rust Wayland client library that underpins `cosmic-comp` on the server side. libcosmic extends this with `cosmic-client-toolkit` for COSMIC-specific protocols.
+
+**iced_sctk.** Replaces `iced_winit` on Wayland. Rather than going through winit's abstraction, `iced_sctk` creates `wl_surface` objects and Wayland role objects directly via SCTK:
+
+- `xdg_surface` + `xdg_toplevel` for regular application windows
+- `zwlr_layer_surface_v1` for panel applets and notification popups
+- `xdg_popup` for context menus and tooltips
+
+The `wgpu::Surface` is created from the raw `wl_surface` via `wgpu::SurfaceTarget::from_raw()`, then presented with `wgpu::PresentMode::Mailbox` or `Fifo` depending on compositor VSync availability.
+
+**Layer shell surfaces.** COSMIC uses `zwlr_layer_shell_v1` extensively:
+
+| Surface | Layer | Anchor |
+|---|---|---|
+| `cosmic-panel` | Top | Top edge, full width |
+| `cosmic-dock` | Bottom | Bottom edge, centred |
+| `cosmic-notifications` | Overlay | Top-right corner |
+| Applet popups | Top | Anchored to parent applet |
+
+Layer shell placement is handled by `iced_sctk` with configuration from `cosmic-client-toolkit`, which negotiates panel sizing with `cosmic-panel` via a bespoke IPC protocol over `wl_output`.
+
+**Clipboard, drag-and-drop, and activation.** `iced_sctk` implements `wl_data_device` for clipboard and DnD, and `xdg_activation_v1` for focus stealing prevention — the same protocols Qt and GTK use. Applications receiving an activation token pass it to `xdg_activation_v1::activate()` before raising a window.
+
+**DMA-BUF path.** When the wgpu Vulkan backend presents a frame, the swap chain image is a `VkImage` allocated from a `wgpu::Surface` backed by a `wl_surface`. On Mesa drivers this uses `VK_KHR_swapchain` with DMA-BUF modifier negotiation via `linux-dmabuf-v1`, the same path as Qt and GTK Wayland Vulkan surfaces (§2.2 and §5.3). The compositor (cosmic-comp or any other Wayland compositor) imports the buffer for scan-out without a copy.
+
+### 9.4 Custom GPU Shaders in iced
+
+iced exposes custom wgpu render pipelines as first-class widgets via `iced::widget::shader`. Any widget can contain a fully custom wgpu render pass, composited with the rest of the iced scene by the `Engine`. [Source: iced::widget::shader docs](https://docs.rs/iced/latest/iced/widget/shader/index.html)
+
+**The `Program` trait.** Custom shader widgets implement `iced::widget::shader::Program`:
+
+```rust
+use iced::widget::shader::{self, wgpu, Storage, Viewport};
+
+struct MyPrimitive { color: [f32; 4], rect: iced::Rectangle }
+
+struct MyPipeline {
+    render_pipeline: wgpu::RenderPipeline,
+    uniform_buf:     wgpu::Buffer,
+    bind_group:      wgpu::BindGroup,
+}
+
+impl shader::Program<MyMessage> for MyShaderProgram {
+    type State     = ();
+    type Primitive = MyPrimitive;
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        _cursor: iced::mouse::Cursor,
+        bounds: iced::Rectangle,
+    ) -> Self::Primitive {
+        MyPrimitive { color: [1.0, 0.5, 0.0, 1.0], rect: bounds }
+    }
+}
+
+impl shader::Primitive for MyPrimitive {
+    fn prepare(
+        &self,
+        device:    &wgpu::Device,
+        queue:     &wgpu::Queue,
+        _format:   wgpu::TextureFormat,
+        storage:   &mut Storage,
+        _bounds:   &iced::Rectangle,
+        _viewport: &Viewport,
+    ) {
+        // Upload uniforms, create pipeline on first call (stored in Storage).
+        if storage.get::<MyPipeline>().is_none() {
+            let pipeline = build_pipeline(device, queue, _format);
+            storage.store(pipeline);
+        }
+        let pipeline = storage.get::<MyPipeline>().unwrap();
+        queue.write_buffer(&pipeline.uniform_buf, 0,
+            bytemuck::cast_slice(&self.color));
+    }
+
+    fn render(
+        &self,
+        encoder:  &mut wgpu::CommandEncoder,
+        storage:  &Storage,
+        target:   &wgpu::TextureView,
+        clip_bounds: &iced::Rectangle<u32>,
+    ) {
+        let pipeline = storage.get::<MyPipeline>().unwrap();
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Load, // composite over iced scene
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&pipeline.render_pipeline);
+        pass.set_bind_group(0, &pipeline.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+}
+```
+
+**Compositing model.** The `Storage` struct persists pipeline state across frames; it is owned by the `Engine` and lives for the lifetime of the window. Custom shader widgets use `wgpu::LoadOp::Load` to composite over the iced scene background — the iced `Engine` records its own render pass first, then invokes each custom shader primitive's `render()` in widget tree order. Clip bounds from the iced layout engine are passed as scissor rectangles on the render pass.
+
+**Use cases in COSMIC and iced applications:**
+
+- GPU-accelerated data visualisation (charts, spectrum analysers) embedded in settings pages
+- Custom terminal emulator viewports (the COSMIC Terminal uses a custom wgpu shader widget for glyph rendering)
+- Real-time audio waveform displays in media applications
+- Map tiles or canvas surfaces inside a hybrid native/GPU UI
+
+### 9.5 Rendering Architecture Comparison: Qt QRhi vs GTK GskRenderer vs iced wgpu
+
+| Property | Qt 6 (QRhi) | GTK 4 (GskRenderer) | iced (wgpu) |
+|---|---|---|---|
+| **Language** | C++ (Rust bindings: `qt-rs`, `cxx-qt`) | C (Rust: `gtk4-rs`) | Rust (native) |
+| **Rendering model** | Retained scene graph (Qt Quick) + immediate (Qt Widgets) | Retained render node tree (GskRenderNode) | Retained element tree → primitive batches |
+| **GPU abstraction** | QRhi (Vulkan / Metal / D3D12 / OpenGL) | GskVulkanRenderer / GskGLRenderer | wgpu (Vulkan / Metal / DX12 / WebGPU) |
+| **Vulkan backend** | `QRhiVulkan` — Mesa RADV/ANV/NVK | `GskVulkanRenderer` — Mesa via libvulkan | `iced_wgpu` via `ash` — Mesa RADV/ANV/NVK |
+| **Shader pipeline** | qsb (GLSL → SPIR-V → cross-compiled) | GSK ubershader (GLSL → SPIR-V) | wgpu WGSL → naga → SPIR-V |
+| **Custom GPU shaders** | `QSGMaterial` / `QRhiGraphicsPipeline` | `GtkGLArea` (OpenGL only) | `iced::widget::shader::Program` (wgpu, any stage) |
+| **Wayland backend** | `QWaylandWindow` / QtWayland plugin | `GdkWaylandSurface` / `gdkwayland` | `iced_sctk` (smithay-client-toolkit) |
+| **Layer shell** | Via third-party `layer-shell-qt` | Not built-in | Native in `iced_sctk` |
+| **Explicit sync** | `wp_linux_drm_syncobj_v1` (Qt 6.9+) | `wp_linux_drm_syncobj_v1` (GTK 4.14+) | Via SCTK (smithay-client-toolkit) |
+| **Software fallback** | `QRhi` null backend / `llvmpipe` | `GskCairoRenderer` | `iced_tiny_skia` + softbuffer |
+| **Widget library** | Qt Widgets + Qt Quick Controls | `libadwaita` (GNOME HIG) | `libcosmic` (COSMIC HIG) |
+| **Primary desktop** | KDE Plasma (Qt-native) | GNOME (GTK-native) | COSMIC (iced-native) |
+| **C dependency** | Qt runtime (libQt6*) | GTK4 + GLib + Pango + Cairo | None (pure Rust) |
+| **Multi-window** | Native | Native | `multi-window` feature flag |
+| **WebKit embedding** | QtWebEngine | WebKitGTK | Not available |
+
+**When to choose iced/libcosmic:**
+- The application targets the COSMIC desktop and needs native shell integration (layer shell, COSMIC theming, applet model)
+- The team is Rust-only and does not want C FFI dependencies in the rendering path
+- Custom wgpu rendering (3D viewports, GPU compute visualisation) is a first-class requirement
+- Bundle size and cold-start latency matter (no GTK or Qt runtime to load)
+
+**When to choose Qt or GTK instead:**
+- WebKit embedding is required (use GTK + WebKitGTK, or Qt + QtWebEngine)
+- The application targets KDE Plasma (Qt) or GNOME (GTK) specifically and needs ecosystem widgets (KIO, Kirigami, libadwaita)
+- Cross-platform support (Windows, macOS) is required without a separate port (Qt and GTK have mature non-Linux backends; iced's `iced_winit` covers the basics but libcosmic is Linux-first)
+- An existing C/C++ codebase is being extended (Qt and GTK have stable C/C++ APIs; iced's API is Rust-only)
 
 ---
 
