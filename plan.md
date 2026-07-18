@@ -91,6 +91,7 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 40: Bevy and wgpu](#chapter-40-bevy-and-wgpu)
   - [Chapter 41: Godot 4 RenderingDevice](#chapter-41-godot-4-renderingdevice)
   - [Chapter 42: Blender GPU — Cycles and EEVEE](#chapter-42-blender-gpu--cycles-and-eevee)
+  - [Chapter 205: Blender AI and MCP — Claude Code, Generative 3D, and the Web Export Pipeline](#chapter-205-blender-ai-and-mcp--claude-code-generative-3d-and-the-web-export-pipeline)
 - **Part XII — Terminal Graphics**
   - [Chapter 43: Terminal Pixel Protocols — Sixel, Kitty, and iTerm2](#chapter-43-terminal-pixel-protocols--sixel-kitty-and-iterm2)
   - [Chapter 44: Terminal GPU Rendering Architectures](#chapter-44-terminal-gpu-rendering-architectures)
@@ -3198,6 +3199,23 @@ Entries are generated from the chapter content and sorted by chapter number with
 - Headless and container deployments: OSMesa (no GPU), EGL (GPU without display), VTK_DEFAULT_EGL_DEVICE_INDEX for multi-GPU; kitware/vtk Docker images; NVIDIA Container Toolkit + EGL ICD injection for Kubernetes GPU pods
 - Scientific ecosystem integrations: numpy_to_vtk/vtk_to_numpy zero-copy; dataset_adapter NumPy-style field access; itkwidgets for Jupyter; 3D Slicer MRML scene graph + VTK-ITK bridge; trame Python web framework for remote/local rendering via vtk.js; vtk.js WebGL/WebGPU browser client
 - **Integrations**: Ch12 (Mesa Loader), Ch17 (Software Renderers/OSMesa), Ch24 (Vulkan and EGL), Ch25 (GPU Compute), Ch42 (Blender GPU/Cycles), Ch48 (ROCm), Ch55 (GPU Containers), Ch107 (Headless Rendering), Ch176 (OpenCASCADE)
+
+
+### Chapter 205: Blender AI and MCP — Claude Code, Generative 3D, and the Web Export Pipeline *(Part XI — Engines & Creative Tools)*
+
+- Model Context Protocol architecture for Blender: the two-component bridge (addon.py TCP server on :9876 inside Blender; server.py FastMCP process speaking MCP to the AI client); thread-safety via `bpy.app.timers` main-thread dispatch queue; JSON-RPC wire format (modelcontextprotocol.io)
+- The ahujasid/blender-mcp community server and the official Blender Lab MCP server (v1.0.0, April 2026, Blender Extension format, Blender 5.1+, Auto Start preference): MCP tool surface — scene inspection, object info, viewport screenshot (vision feedback loop), arbitrary `execute_blender_code`, PolyHaven/Sketchfab/Hyper3D Rodin tool groups
+- Claude Code integration: `~/.claude/settings.json` mcpServers block with `uvx blender-mcp`; inspect-act-verify loop; offline script generation mode vs. live MCP mode; Info editor generalisation workflow
+- Blender Python API (bpy) in depth: `bpy.ops`, `bpy.data`, `bpy.context`, `bpy.types`, `bpy.props`, `bpy.utils`, `bpy.app`, `bpy.path`; C extension modules (`mathutils`, `bmesh`, `gpu`, `imbuf`); Python version pinning per Blender release; standalone `bpy` PyPI package for server-side use
+- RNA/DNA bridge: DNA C structs (`source/blender/makesdna/`), RNA metadata layer (`makesrna`, `BPy_StructRNA`), `bpy_rna.c` Python bridge; live C memory access; `makesrna` compile-time codegen
+- Add-on and Extension authoring: classic `bl_info` + Operator/Panel/PropertyGroup registration lifecycle; Blender 4.2+ `blender_manifest.toml` Extensions system with bundled wheels and explicit permissions; shader node graph authoring via `mat.node_tree`
+- Generative AI 3D ecosystem: Meshy AI (text-to-3D two-step preview/refine REST API, `/openapi/v2/text-to-3d`, PBR texture maps, meshy-5/6/Smart Topology); Hyper3D Rodin (fal.ai proxy, quality tiers); Tripo3D, CSM.ai, Sloyd; open-source models (Point-E Dec 2022, Shap-E May 2023 INR output, TRELLIS sparse voxel + Rectified Flow, Stable Fast 3D <1 s, InstantMesh multi-view LRM)
+- AI texturing and denoising: Dream Textures (Stable Diffusion inside Blender, `diffusers` subprocess backend, depth/img2img); AI Render (Automatic1111 backend); Intel OIDN 2.0 (open-source, SYCL/CUDA/HIP GPU acceleration, Cycles `OPENIMAGEDENOISE` denoiser + Denoise compositor node); NVIDIA OptiX denoiser (RT Core hardware, Turing+)
+- Headless Blender on Linux: `--background` / `-b` flags; virtual display (Xvfb) for EEVEE/Vulkan; OIDN/Cycles headless without display; standalone `bpy` for CI asset pipelines; MCP limitations in headless mode (event loop suppressed)
+- Practical limits: operator `poll()` context requirements and fixes; API gaps (sculpting, physics simulation debugging, Geometry Nodes version fragility); visual feedback loop latency; animation/rigging verbosity; `bpy.context.temp_override` pattern
+- Prompt toolkit: scene audit, PBR/toon material creation, three-point and HDRI lighting rigs, batch export, procedural city-block geometry, turntable animation render, multi-camera output, asset import and organisation, Info editor generalisation, debugging prompts
+- Blender glTF export pipeline for Three.js / React Three Fiber: `bpy.ops.export_scene.gltf()` parameters (GLB/GLTF_SEPARATE, Draco compression, WebP textures, Y-up conversion, morph targets, `KHR_lights_punctual`); KHR extension coverage table; Principled BSDF → `pbrMetallicRoughness` channel mapping (ORM packing); post-processing with `@gltf-transform/cli` (Draco, meshopt, KTX2/WebP); CI validation via `gltf-validator`; Three.js `GLTFLoader` + `DRACOLoader` + `KTX2Loader` wiring; React Three Fiber `useGLTF` / `useAnimations`; `gltfjsx` GLB → typed TSX component generator; coordinate system and unapplied-scale pitfalls
+- **Integrations**: Ch42 (Blender GPU — Cycles and EEVEE, the rendering stack this chapter's scripts operate on top of); Ch64 (glTF 2.0 Asset Pipeline Standard — wire format and PBR material schema underlying §17); Ch94 (ComfyUI and ComfyScript — alternative diffusion-based texturing workflow); Ch115 (NeRF/3DGS — 3D reconstruction models underpinning Shap-E and open-source generative tools); Ch124 (Local LLM Inference — model serving infrastructure for offline MCP without cloud AI); Ch25 (GPU Compute — CUDA/HIP/oneAPI stack for Cycles and OIDN GPU acceleration); Ch20 (Wayland Protocol — GHOST_SystemWayland event loop relationship to bpy.app.timers in interactive vs. headless modes)
 
 
 ### Part XII — Terminal Graphics
