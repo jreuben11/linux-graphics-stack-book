@@ -55,6 +55,7 @@ The chapter deliberately avoids GPU algorithm design and parallel programming th
 3. [ROCm: AMD's Compute Stack](#3-rocm-amds-compute-stack)
 4. [Intel Level Zero, oneAPI, and the Intel Compute Runtime](#4-intel-level-zero-oneapi-and-the-intel-compute-runtime)
 5. [Vulkan Compute Pipelines](#5-vulkan-compute-pipelines)
+   - [5.7 Compute Shader Performance Limits and When to Prefer Fragment Shaders](#57-compute-shader-performance-limits-and-when-to-prefer-fragment-shaders)
 6. [CUDA–Vulkan Interoperability](#6-cudavulkan-interoperability)
 7. [DMA-BUF Interop: Sharing Buffers Across Compute and Graphics Pipelines](#7-dma-buf-interop-sharing-buffers-across-compute-and-graphics-pipelines)
 8. [Unified Memory and HMM in GPU Compute](#8-unified-memory-and-hmm-in-gpu-compute)
@@ -554,6 +555,47 @@ double ns = (timestamps[1] - timestamps[0]) *
 ```
 
 The `timestampPeriod` field converts raw timestamp ticks to nanoseconds; it is device-specific and must be read from `VkPhysicalDeviceLimits`.
+
+### 5.7 Compute Shader Performance Limits and When to Prefer Fragment Shaders
+
+Compute shaders are general but not free. Understanding their structural limits is essential for making correct algorithm placement decisions.
+
+**No fixed-function pipeline access.** Compute cannot write directly to the framebuffer, use the rasteriser, perform depth testing, or interpolate vertex attributes. Any output that needs to be rendered requires a separate render pass that consumes the compute output as a buffer or storage image, adding a round-trip latency penalty. Per-pixel work that fits the rasterisation model is almost always cheaper in a fragment shader, which gets depth test, blending, and early-Z for free.
+
+**No automatic partial derivatives.** `dFdx()` / `dFdy()` are undefined in compute because there is no implicit 2×2 quad of co-executing invocations. All texture sampling that requires automatic mip selection must use `textureLod()` with an explicitly computed LOD, or `textureGrad()` with manually computed gradients. This is a correctness issue, not just a performance concern.
+
+**Occupancy vs. register pressure tradeoff.** The GPU schedules multiple waves/warps concurrently per compute unit to hide memory latency. More registers consumed per thread → fewer active waves → less latency hiding → lower effective throughput. The occupancy cliff is hardware-specific: on RDNA 3, a kernel using >128 VGPRs per thread drops from 8 to 4 waves per SIMD32, halving theoretical occupancy. Profile with vendor tools (`radeon_gpu_profiler`, NSight Compute) before optimising register count manually.
+
+**Workgroup size is not portable.** Wave/warp width is 32 on NVIDIA (all architectures), 64 on AMD GCN/RDNA, 32 on Intel Arc, and 4–16 on mobile (Mali, Adreno). A `local_size_x = 64` kernel that saturates an AMD CU leaves every other thread idle on NVIDIA. Use `GL_KHR_shader_subgroup` or `VK_EXT_subgroup_size_control` to query `subgroupSize` at runtime and choose dispatch dimensions accordingly.
+
+```glsl
+// Portable workgroup size: query subgroupSize, dispatch as multiple of it.
+// In shader: use gl_SubgroupSize instead of hard-coding 32 or 64.
+layout(local_size_x_id = 0) in;  // specialisation constant set by host
+```
+
+**Shared memory (LDS) scarcity.** On-chip shared memory is a small, fast scratchpad — typically 32–64 KB per compute unit — shared across all concurrently active workgroups. Declaring more shared memory per workgroup reduces the number of workgroups that can run simultaneously, directly trading LDS use against occupancy. Exceeding the hardware limit silently forces the compiler to spill to global memory, eliminating the performance benefit entirely.
+
+**Synchronisation is coarse.** Pipeline barriers between compute dispatches (`vkCmdPipelineBarrier2` with `VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT`) stall all in-flight work before the barrier can be retired. There is no way to express "only these buffer bytes need synchronisation" at sub-dispatch granularity. Between dispatch calls, always prefer structured algorithms that avoid barriers (e.g., double-buffered ping-pong passes) over fine-grained barrier insertion.
+
+Within a workgroup, `barrier()` + `memoryBarrierShared()` must appear on every control-flow path that could reach the barrier; placing them inside conditionals taken by only some invocations is undefined behaviour under the SPIR-V memory model. The Vulkan validation layers (`VK_LAYER_KHRONOS_validation` with synchronisation validation enabled) will catch most barrier ordering errors.
+
+**Divergence reduces effective SIMD width.** The SIMT execution model runs all invocations in a wave in lockstep. When threads take different branches, the wave executes both paths with the inactive lanes masked. Heavy data-dependent branching (irregular graph traversal, variable-length loops, per-texel format switches) can reduce effective throughput to a fraction of peak FLOP/s. Restructure algorithms to maximise wave uniformity, or use wave intrinsics (`subgroupAll`, `subgroupBallot`) to take uniform fast-paths.
+
+**Mobile asymmetry.** Tile-based deferred rendering (TBDR) GPUs — ARM Mali, Qualcomm Adreno, Imagination PowerVR — have narrower compute throughput relative to their rasterisation hardware than desktop GPUs. Compute algorithms that win on desktop (SSAO in compute, HDR tone-mapping as a compute pass) can be slower than an equivalent fragment pass on mobile, because the fragment path benefits from tile memory elimination of off-chip bandwidth. Always measure on the target GPU family before committing to a compute-based implementation in a mobile path.
+
+**When to prefer a fragment shader instead:**
+
+| Condition | Prefer |
+|---|---|
+| Per-pixel work with depth test or blending | Fragment shader |
+| Texture sampling with automatic mip (no known LOD) | Fragment shader |
+| Output directly to the swapchain or render target | Fragment shader |
+| Target is a mobile TBDR GPU and bandwidth is the limit | Fragment shader |
+| Cross-pixel communication required (prefix scan, histogram) | Compute shader |
+| No rasterisation mapping (physics, ML inference, FFT) | Compute shader |
+| Output is a buffer consumed by a later compute pass | Compute shader |
+| Need wave-level intrinsics across arbitrary thread groups | Compute shader |
 
 ---
 
