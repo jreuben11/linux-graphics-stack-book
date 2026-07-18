@@ -19,27 +19,28 @@
 8. [Rendering Pipelines with wgpu](#rendering-pipelines-with-wgpu)
 9. [Ecosystem: erupt, vulkano, gpu-allocator](#ecosystem-erupt-vulkano-gpu-allocator)
 10. [cuTile-rs: NVIDIA Tile Abstraction in Rust](#cutile-rs-nvidia-tile-abstraction-in-rust)
-11. [cudarc: Rust CUDA Driver API](#cudarc-rust-cuda-driver-api)
-12. [Vulkano: Compile-Time Safe Vulkan](#vulkano-compile-time-safe-vulkan)
-13. [rust-gpu: Rust as a Shading Language](#rust-gpu-rust-as-a-shading-language)
-14. [blade: Minimal GPU Library](#blade-minimal-gpu-library)
-15. [vello: Compute-Based 2D Vector Rendering](#vello-compute-based-2d-vector-rendering)
-16. [burn: Rust ML Framework](#burn-rust-ml-framework)
-17. [encase and bytemuck: GPU Buffer Layout](#encase-and-bytemuck-gpu-buffer-layout)
-18. [naga_oil: Shader Module Composition](#naga_oil-shader-module-composition)
-19. [winit and raw-window-handle: Window and GPU Surface](#winit-and-raw-window-handle-window-and-gpu-surface)
-20. [glam: Mathematics for Rust GPU](#glam-mathematics-for-rust-gpu)
-21. [egui: Immediate-Mode GUI on wgpu](#egui-immediate-mode-gui-on-wgpu)
-22. [candle: Rust ML Inference](#candle-rust-ml-inference)
-23. [wgpu-profiler: GPU Timestamp Profiling](#wgpu-profiler-gpu-timestamp-profiling)
-24. [Shader Hot-Reloading](#shader-hot-reloading)
-25. [pixels: Simple wgpu Framebuffer](#pixels-simple-wgpu-framebuffer)
-26. [rspirv: SPIR-V IR in Rust](#rspirv-spir-v-ir-in-rust)
-27. [Rust Ownership vs the GPU Memory Model](#rust-ownership-vs-the-gpu-memory-model)
+11. [cuda-oxide: NVIDIA's Stable-MIR Rust-to-PTX Compiler](#cuda-oxide-nvidias-stable-mir-rust-to-ptx-compiler)
+12. [cudarc: Rust CUDA Driver API](#cudarc-rust-cuda-driver-api)
+13. [Vulkano: Compile-Time Safe Vulkan](#vulkano-compile-time-safe-vulkan)
+14. [rust-gpu: Rust as a Shading Language](#rust-gpu-rust-as-a-shading-language)
+15. [blade: Minimal GPU Library](#blade-minimal-gpu-library)
+16. [vello: Compute-Based 2D Vector Rendering](#vello-compute-based-2d-vector-rendering)
+17. [burn: Rust ML Framework](#burn-rust-ml-framework)
+18. [encase and bytemuck: GPU Buffer Layout](#encase-and-bytemuck-gpu-buffer-layout)
+19. [naga_oil: Shader Module Composition](#naga_oil-shader-module-composition)
+20. [winit and raw-window-handle: Window and GPU Surface](#winit-and-raw-window-handle-window-and-gpu-surface)
+21. [glam: Mathematics for Rust GPU](#glam-mathematics-for-rust-gpu)
+22. [egui: Immediate-Mode GUI on wgpu](#egui-immediate-mode-gui-on-wgpu)
+23. [candle: Rust ML Inference](#candle-rust-ml-inference)
+24. [wgpu-profiler: GPU Timestamp Profiling](#wgpu-profiler-gpu-timestamp-profiling)
+25. [Shader Hot-Reloading](#shader-hot-reloading)
+26. [pixels: Simple wgpu Framebuffer](#pixels-simple-wgpu-framebuffer)
+27. [rspirv: SPIR-V IR in Rust](#rspirv-spir-v-ir-in-rust)
+28. [Rust Ownership vs the GPU Memory Model](#rust-ownership-vs-the-gpu-memory-model)
     - [Rust's Official Strategic Direction for GPU](#rusts-official-strategic-direction-for-gpu)
-28. [Contributing to wgpu-core, wgpu-hal, and naga](#contributing-to-wgpu-core-wgpu-hal-and-naga)
-29. [Roadmap](#roadmap)
-30. [Integrations](#integrations)
+29. [Contributing to wgpu-core, wgpu-hal, and naga](#contributing-to-wgpu-core-wgpu-hal-and-naga)
+30. [Roadmap](#roadmap)
+31. [Integrations](#integrations)
 
 ---
 
@@ -735,6 +736,347 @@ Performance from the paper (NVIDIA B200 hardware):
 The tile abstraction also decouples algorithmic intent from microarchitecture. A GEMM that today targets Hopper's `wgmma` instructions can retarget Blackwell's next-generation matrix engine by recompiling; the kernel source stays unchanged. This composability is exactly what custom training loop authors need when they want to experiment with quantised data types (fp8, int4) or non-standard accumulation orders without rewriting schedule logic. The companion `TileGym` benchmark suite tests these kernels against cuBLAS baselines. [Source](https://nvlabs.github.io/cutile-rs/main/)
 
 cuTile-rs targets research teams and framework authors (e.g., cuDNN successor kernels) rather than end-application developers. It is an NVlabs research project — NVIDIA's position is that Rust ownership can be extended to GPU kernels at the tile level, achieving safety without sacrificing Tensor Core performance. [Source](https://github.com/nvlabs/cutile-rs)
+
+---
+
+## cuda-oxide: NVIDIA's Stable-MIR Rust-to-PTX Compiler
+
+[cuda-oxide](https://github.com/NVlabs/cuda-oxide) (NVlabs, Apache-2.0, opened May 2026) is a **custom `rustc` codegen backend** that compiles standard Rust to NVIDIA PTX without requiring a separate CUDA C++ toolchain for kernel authoring. It is SIMT-level (individual thread semantics), in contrast to cuTile-rs's tile-level abstraction, and includes its own host-side runtime (`cuda-core`, `cuda-async`) rather than depending on cudarc.
+
+The project homepage at [nvlabs.github.io/cuda-oxide](https://nvlabs.github.io/cuda-oxide/) includes a multi-chapter book covering execution model, memory, safety, async, compiler architecture, and an ecosystem comparison. As of v0.2 (June 2026) it is alpha-stage, not on crates.io, and requires a pinned nightly Rust toolchain. [Source](https://github.com/NVlabs/cuda-oxide)
+
+### Compilation Architecture: Stable MIR → Pliron → PTX
+
+The full compilation pipeline for kernel functions:
+
+```
+Rust source (kernel + host coexist in one file)
+  │
+  ├─ #[cuda_module] proc macro: stamps kernel functions with
+  │   reserved naming prefix cuda_oxide_kernel_<hash>_*
+  │
+  └─ rustc frontend (parse / typecheck / borrow-check / monomorphize / MIR optimize)
+       │
+       ├─ HOST functions → rustc_codegen_llvm (standard LLVM backend → .o)
+       │
+       └─ DEVICE functions (detected by naming prefix)
+            │
+            └─ rustc_public (Stable MIR) — versioned, public API over rustc internals
+                 │
+                 ├─ mir-importer → dialect-mir (pliron)
+                 │    Alloca + load/store model of Rust MIR
+                 │
+                 ├─ mem2reg pass → SSA form
+                 │
+                 ├─ loop-unroll pass (mir-transforms)
+                 │
+                 ├─ dialect-mir → dialect-nvvm (pliron)
+                 │    NVIDIA-specific intrinsics: thread IDs, barriers,
+                 │    TMA, wgmma (Hopper), tcgen05 (Blackwell), mbarrier,
+                 │    thread-block clusters
+                 │
+                 ├─ LLVM dialect (pliron-llvm) → LLVM IR (.ll, inspectable)
+                 │
+                 └─ llc (LLVM static compiler, v21+) → PTX
+```
+
+**Pliron** ([github.com/pliron-org/pliron](https://github.com/pliron-org/pliron)) is an MLIR-inspired IR framework written entirely in Rust. cuda-oxide defines two custom dialects: `dialect-mir` (Rust MIR semantics: places, rvalues, terminators) and `dialect-nvvm` (GPU intrinsics). Because Pliron is pure Rust, the entire compiler is buildable with `cargo` — no C++, no CMake, no tablegen — except the final `llc` binary.
+
+**Why Stable MIR instead of the nvptx64 target**: The built-in `nvptx64-nvidia-cuda` target routes directly through rustc's internal MIR types, which change with every nightly. `rustc_public` provides a versioned, intentionally-stable view — the mir-importer does not need to track every rustc refactor. Even so, `rustc_public` requires `#![feature(rustc_private)]` and a pinned nightly; it is stable *relative* to rustc internals, not stable Rust. The payoff is that cuda-oxide can also layer `dialect-nvvm` passes that inject Hopper/Blackwell-specific intrinsics (TMA, wgmma, tcgen05) which the raw LLVM NVPTX backend does not expose at the Rust API level.
+
+### Writing Kernels
+
+All device code lives inside a `#[cuda_module]` block. Kernel entry points are marked `#[kernel]`. Host and device code coexist in one file.
+
+#### Basic kernel — vector map with closure
+
+```rust
+use cuda_device::{cuda_module, kernel, thread, DisjointSlice};
+use cuda_core::{CudaContext, DeviceBuffer, LaunchConfig};
+
+#[cuda_module]
+mod kernels {
+    use super::*;
+
+    // Generics and closure bounds are supported.
+    // rustc monomorphizes to concrete types before device codegen sees MIR.
+    #[kernel]
+    pub fn map<T: Copy, F: Fn(T) -> T + Copy>(
+        f: F,
+        input: &[T],
+        mut out: DisjointSlice<T>,
+    ) {
+        let idx = thread::index_1d();
+        if let Some(out_elem) = out.get_mut(idx) {
+            *out_elem = f(input[idx.get()]);
+        }
+    }
+}
+```
+
+Key API elements:
+- **`thread::index_1d()`** — returns a typed `ThreadIndex` (equivalent to `blockIdx.x * blockDim.x + threadIdx.x`), not a raw `usize`. Used as the key to `get_mut` for bounds checking.
+- **`DisjointSlice<T>`** — the mutable output parameter type (see §Safety below). Replaces raw `*mut T` or `&mut [T]`, both of which would violate aliasing rules in SIMT.
+- **`&[T]`** — read-only shared slice; multiple threads reading the same input safely.
+- Closures `F: Fn(T) -> T + Copy` — supported because rustc monomorphizes them before device codegen. Captures are scalarized and passed as kernel parameters automatically.
+
+#### Shared memory
+
+```rust
+use cuda_device::{DisjointSlice, SharedArray, kernel, thread, cuda_module};
+
+#[cuda_module]
+mod shared_kernels {
+    use super::*;
+
+    #[kernel]
+    pub fn rotate_tile(data: &[f32], mut out: DisjointSlice<f32>) {
+        // static mut SharedArray: on-chip shared memory, sized at compile time.
+        // SharedArray::UNINIT is the required sentinel for uninitialized storage.
+        static mut TILE: SharedArray<f32, 256> = SharedArray::UNINIT;
+
+        let tid = thread::threadIdx_x() as usize;
+        let gid = thread::index_1d();
+
+        // Unsafe: threads alias TILE — caller must manage barrier ordering.
+        unsafe { TILE[tid] = data[gid.get()]; }
+
+        // __syncthreads() — all writes to TILE visible after this call.
+        thread::sync_threads();
+
+        let neighbor = (tid + 1) % 256;
+        unsafe {
+            if let Some(e) = out.get_mut(gid) {
+                *e = TILE[neighbor];
+            }
+        }
+    }
+}
+```
+
+`SharedArray<T, N>` is a const-sized on-chip shared memory array. Access requires `unsafe` because all threads in the block alias the same storage. `thread::sync_threads()` maps to `__syncthreads()`.
+
+#### Warp primitives — butterfly reduction
+
+```rust
+use cuda_device::{DisjointSlice, kernel, thread, warp, cuda_module};
+
+#[cuda_module]
+mod warp_kernels {
+    use super::*;
+
+    #[kernel]
+    pub fn warp_reduce_sum(data: &[f32], mut out: DisjointSlice<f32>) {
+        let gid = thread::index_1d();
+        let lane = warp::lane_id();
+
+        let mut val = if gid.in_bounds(out.len() * 32) { data[gid.get()] } else { 0.0 };
+
+        // Butterfly reduction: each step halves the active lane distance.
+        val += warp::shuffle_xor_f32(val, 16);
+        val += warp::shuffle_xor_f32(val, 8);
+        val += warp::shuffle_xor_f32(val, 4);
+        val += warp::shuffle_xor_f32(val, 2);
+        val += warp::shuffle_xor_f32(val, 1);
+
+        if lane == 0 {
+            let warp_idx = gid.get() / 32;
+            // Unsafe: caller guarantees warp_idx is in bounds.
+            unsafe { *out.get_unchecked_mut(warp_idx) = val; }
+        }
+    }
+}
+```
+
+The `warp` module provides: `lane_id()`, `shuffle_xor_f32`, `shuffle_down_f32`, `shuffle_f32` (broadcast), `active_mask()`.
+
+#### Constant memory
+
+```rust
+use cuda_device::{ConstantMemory, DisjointSlice, constant, cuda_module, kernel, thread};
+
+#[cuda_module]
+mod const_kernels {
+    use super::*;
+
+    // #[constant] → CUDA constant memory (.const section in PTX).
+    // The macro generates a typed setter on the module handle.
+    #[constant]
+    static SCALE: ConstantMemory<f32> = ConstantMemory::UNINIT;
+
+    #[kernel]
+    pub fn multiply(mut out: DisjointSlice<f32>) {
+        let s = SCALE.get();
+        let idx = thread::index_1d();
+        if let Some(e) = out.get_mut(idx) {
+            *e = (idx.get() as f32) * s;
+        }
+    }
+}
+```
+
+### Host-Side Launch
+
+The `#[cuda_module]` proc macro generates a `kernels::load(&ctx)` function that embeds the compiled PTX into the host binary (since v0.2, a single self-contained executable — no separate PTX file required). It also generates a typed launch method for each `#[kernel]` with the exact Rust signature mirrored.
+
+```rust
+fn main() -> anyhow::Result<()> {
+    let ctx = CudaContext::new(0)?;          // RAII CUDA context for device 0
+    let stream = ctx.default_stream();
+
+    // Host-to-device transfer
+    let data: Vec<f32> = (0..1024).map(|i| i as f32).collect();
+    let input  = DeviceBuffer::from_host(&stream, &data)?;
+    let mut output = DeviceBuffer::<f32>::zeroed(&stream, 1024)?;
+
+    // Load the PTX module (embedded in the binary at link time)
+    let module = kernels::load(&ctx)?;
+
+    let factor = 2.5f32;
+    // Launch is unsafe: caller must prove dimensions match index_1d() usage.
+    unsafe {
+        module.map::<f32, _>(
+            &stream,
+            LaunchConfig::for_num_elems(1024),   // (grid, block) computed automatically
+            move |x: f32| x * factor,             // closure — monomorphized and serialized
+            &input,
+            &mut output,
+        )?;
+    }
+
+    let result = output.to_host_vec(&stream)?;
+    println!("result[1] = {}", result[1]);  // 2.5
+    Ok(())
+}
+```
+
+**Constant memory host side**:
+```rust
+let module = const_kernels::load(&ctx)?;
+module.set_scale(&stream, &3.0)?;        // generated typed setter for `SCALE`
+unsafe {
+    module.multiply(&stream, LaunchConfig::for_num_elems(8), &mut out)?;
+}
+```
+
+**Async / graph execution**:
+```rust
+use cuda_async::device_operation::DeviceOperation;
+
+let op = unsafe {
+    module.map_async::<f32, _>(
+        LaunchConfig::for_num_elems(1024),
+        move |x: f32| x * factor,
+        &input,
+        &mut output,
+    )?
+};
+op.sync()?;          // flush: submits to stream and blocks
+// or: op.await?     // inside an async fn — non-blocking submission
+```
+
+`_async` variants return a `DeviceOperation` — a lazy handle. Multiple operations can be composed into a graph before any are submitted to the stream.
+
+### Safety Model: `DisjointSlice` and the GPU Aliasing Problem
+
+CUDA's SIMT execution model means all threads in a warp see identical kernel parameter values. A raw `*mut T` or `&mut [T]` mutable slice would be aliased across threads — immediate UB in Rust's memory model.
+
+**`DisjointSlice<T>`** solves this by encoding "each thread writes only to its own index range" in the type. The API surface:
+
+| Method | Safety | Semantics |
+|--------|--------|-----------|
+| `get_mut(idx: ThreadIndex)` | Safe | Bounds-checked; returns `Option<&mut T>` |
+| `get_unchecked_mut(i: usize)` | `unsafe` | No bounds check; caller asserts in-bounds |
+| slice indexing (`&self[i]`) | Safe read | Immutable reference; many threads may read |
+
+**`SharedArray<T, N>`** is `unsafe` to access because all threads in the block alias the same on-chip array. The invariant — "a `sync_threads()` separates all writes from all reads" — cannot be expressed in Rust's type system; it remains the programmer's responsibility.
+
+**`LaunchConfig`** is `unsafe` to use because the caller must prove that grid and block dimensions are consistent with `thread::index_1d()` usage inside the kernel. A safe `PreparedLaunch` API (generated via `#[launch_contract(...)]` annotation) lets callers statically or dynamically verify dimensions, but it is not yet fully stabilised.
+
+The overall safety posture: cuda-oxide eliminates the most common GPU Rust bugs (buffer overruns via bounds-checked indexing, type errors via monomorphization, data-race on read-only inputs) while making the irreducible unsafe surface visible via `unsafe` markers. The project self-describes as "safe(ish)."
+
+### NVIDIA-Specific Hardware Features
+
+The `dialect-nvvm` pass layer exposes Hopper and Blackwell intrinsics not available through the standard LLVM NVPTX backend or the nvptx64 Rust target:
+
+| Feature | Targets | Example crate/module |
+|---------|---------|----------------------|
+| `wgmma` — warp-group matrix multiply-accumulate | Hopper (sm_90+) | `cuda_device::wgmma` |
+| `tcgen05` — next-gen tensor core (Blackwell) | Blackwell (sm_100+) | `cuda_device::tcgen05` |
+| TMA — tensor memory accelerator (async bulk transfers) | Hopper+ | `cuda_device::tma` |
+| Thread-block clusters (cooperative groups across SMs) | Hopper+ | `cuda_device::cluster` |
+| mbarrier — memory barrier for pipeline stages | Hopper+ | `cuda_device::mbarrier` |
+| Warp shuffles | Volta+ | `cuda_device::warp` |
+
+Example set in the repo: `wgmma`, `tcgen05`, `tma_copy`, `cluster`, `async_mlp`. The Blackwell GEMM example (`gemm_sol_final`) benchmarks at 868 TFLOPS / 58% of cuBLAS SoL on NVIDIA B200 — reflecting the alpha state of the compiler rather than a fundamental ceiling.
+
+**CCCL interop** — `device_ffi_test` demonstrates calling NVIDIA's CUDA C++ Cooperative Algorithms Library (CCCL) warp reductions from Rust kernel code via LTOIR (LTO IR), enabling reuse of hand-optimised C++ primitives from safe Rust kernels.
+
+### Relationship to cuTile-rs
+
+cuTile-rs and cuda-oxide represent two different abstraction levels over the same NVIDIA hardware:
+
+| Dimension | cuda-oxide | cuTile-rs |
+|-----------|-----------|-----------|
+| **Abstraction** | SIMT (thread-index programming) | Tile (tile-program, thread-invisible) |
+| **Kernel model** | One thread = one logical task | One tile = a cooperative group operation |
+| **Shared memory** | Explicit `SharedArray` + `sync_threads()` | Implicit — tile runtime manages |
+| **Tensor cores** | `wgmma`/`tcgen05` intrinsics, manual | Automatic via CUDA Tile IR |
+| **Target** | PTX via Stable MIR | cubin via CUDA Tile IR JIT |
+| **Host runtime** | `cuda-core` / `cuda-async` | Own `cuda-core` / `cuda-bindings` |
+| **Safety claim** | "safe(ish)" — typed DisjointSlice | Ownership-based partition safety |
+| **arXiv paper** | None | arXiv:2606.15991 (June 2026) |
+
+The two are **complementary, not competing**: cuda-oxide SIMT kernels can participate as the SIMT participant in cuTile tile-to-SIMT interop. A tile kernel can call a cuda-oxide SIMT device function (inter-kernel, on the same stream, via shared arrays — experimental support in v0.2). Intra-kernel call (inline tile↔SIMT) is tracked in issue #96 and is a work in progress.
+
+### How cuda-oxide Differs from Other Rust GPU Crates
+
+| Project | Kernel language | Target ISA | Mechanism | Host side | Key difference |
+|---------|----------------|-----------|-----------|-----------|----------------|
+| **cuda-oxide** | Rust (standard) | PTX | Custom codegen backend, Stable MIR → Pliron → LLVM → PTX | `cuda-core` included | SIMT-level, all std Rust features, Hopper/Blackwell intrinsics |
+| **rust-gpu** | Rust (standard) | SPIR-V | Custom codegen backend (SPIR-V) | wgpu / ash | Cross-vendor (Vulkan/Metal/DX12/WebGPU); no CUDA semantics |
+| **cudarc** | N/A (host only) | — | CUDA Driver API bindings | cudarc IS host | No kernel compilation; loads PTX from nvcc/NVRTC |
+| **nvptx64 target** | Rust (standard) | PTX | Built-in LLVM NVPTX backend | None included | No GPU-specific types; breaks on rustc updates |
+| **cuTile-rs** | Rust (tile DSL) | cubin (JIT) | CUDA Tile IR | Own runtime | Tile abstraction; higher level than SIMT |
+| **CubeCL** | Embedded DSL | CUDA/ROCm/WebGPU | JIT, cross-vendor | CubeCL runtime | Cross-vendor; lower raw control |
+
+**cuda-oxide vs cudarc**: cudarc is host-only — it provides safe Rust wrappers to launch PTX compiled externally (e.g., by `nvcc`). cuda-oxide is the *compiler side* and includes its own host layer. They are designed to be compatible (a project can use cudarc alongside cuda-oxide) but do not integrate: cuda-oxide's host runtime uses its own `cuda-core` crate.
+
+**cuda-oxide vs nvptx64 target**: The `nvptx64-nvidia-cuda` Tier-2 target routes through rustc's internal types directly and requires `no_std`. cuda-oxide adds the Pliron IR layer with `dialect-nvvm` passes for Hopper/Blackwell intrinsics, performs device call graph analysis (only functions reachable from `#[kernel]` are compiled to PTX), and provides GPU-specific safety types (`DisjointSlice`, `SharedArray`). It also embeds PTX into the host binary automatically.
+
+### Status and Requirements
+
+| Requirement | Version |
+|-------------|---------|
+| Rust toolchain | `nightly-2026-04-03` (pinned in `rust-toolchain.toml`) |
+| Components | `rust-src`, `rustc-dev`, `rust-analyzer`, `clippy`, `llvm-tools` |
+| CUDA Toolkit | 12.x+ (`nvcc` + `cuda.h` in PATH) |
+| LLVM | 21+ (`llc-21` minimum; `llc-22` preferred) |
+| Clang | `clang-21` / `libclang-common-21-dev` (for `bindgen`) |
+| GPU | Ampere (sm_80) or newer |
+| CUDA driver | 545+ recommended |
+| OS | Linux only (Ubuntu 24.04 tested) |
+| crates.io | Not published — install from git |
+
+```bash
+# Install the cargo-oxide helper tool
+cargo +nightly-2026-04-03 install \
+    --git https://github.com/NVlabs/cuda-oxide.git \
+    cargo-oxide
+
+# Verify setup
+cargo oxide doctor
+
+# Run a built-in example
+cargo oxide run vecadd
+
+# Bootstrap a new project
+nix run github:NVlabs/cuda-oxide#new my-gpu-project   # via Nix
+```
+
+**v0.2 (June 2026)** shipped 37 PRs from 23 community contributors, including: static PTX embedding (single-binary deployment), `#[constant]` annotation, math functions via `libdevice`, pinned host buffers, stream-ordered transfers, `DeviceCopy` safety contracts, `cargo oxide` respecting `RUSTFLAGS`, and experimental CUDA Tile interop.
+
+Documentation: [nvlabs.github.io/cuda-oxide](https://nvlabs.github.io/cuda-oxide) — full mdBook covering execution model, memory, async, compiler architecture, and ecosystem comparisons. No arXiv paper; the "Fearless Concurrency on the GPU" paper (arXiv:2606.15991) covers cuTile-rs, not cuda-oxide.
 
 ---
 
@@ -1742,7 +2084,7 @@ egui_state.run(&window, &queue, &device, &mut encoder, &view, |ctx| {
         ui.add(egui::Slider::new(&mut roughness, 0.0..=1.0).text("Roughness"));
         ui.add(egui::Slider::new(&mut metallic,  0.0..=1.0).text("Metallic"));
         if ui.button("Reload shader").clicked() {
-            // trigger hot-reload (see §24)
+            // trigger hot-reload (see §25)
         }
     });
     egui::plot::Plot::new("timing").show(ctx, |plot| {
@@ -2253,7 +2595,7 @@ The pragmatic consensus in the Rust GPU ecosystem is:
 - **Shader side**: rely on the shader language's type system (WGSL's `atomic<T>`, stage-specific type rules) plus programmer discipline for barrier placement. Naga's validator catches type errors; correct barrier ordering remains the programmer's responsibility.
 - **Rust shaders (rust-gpu)**: use `unsafe` to explicitly delineate the boundary. The borrow checker's coverage of GPU code is useful but partial; `unsafe` is the honest acknowledgment of what it cannot verify.
 
-The long-term roadmap section (§29) mentions the open goal of "encoding Vulkan synchronisation and resource lifetimes as Rust types without hiding API concepts" — this remains a research-level aspiration rather than a solved problem.
+The long-term roadmap section (§30) mentions the open goal of "encoding Vulkan synchronisation and resource lifetimes as Rust types without hiding API concepts" — this remains a research-level aspiration rather than a solved problem.
 
 ---
 
@@ -2334,7 +2676,7 @@ Several GPU Rust projects are influential but not part of the official Rust Proj
 |---------|--------|--------|
 | **rust-gpu** (`rustc_codegen_spirv`) | Embark Studios → community org (Rust-GPU) | Transition announced Aug 12, 2024; EmbarkStudios fork archived Oct 31, 2025; community org now actively maintained with compute/AI focus [[blog](https://rust-gpu.github.io/blog/transition-announcement/)] |
 | **cuTile-rs** | NVlabs (NVIDIA Research) | NVlabs research project; formal paper "Fearless Concurrency on the GPU" arXiv:2606.15991 (June 2026); tile-level ownership model, not a Rust compiler extension |
-| **cuda-oxide** | NVlabs (NVIDIA Research) | Compiles Rust to PTX via Stable MIR / `rustc_public`; separate from cuTile-rs |
+| **cuda-oxide** | NVlabs (NVIDIA Research) | Custom rustc codegen backend (Stable MIR → Pliron → PTX); SIMT-level safety types; Hopper/Blackwell intrinsics; see §11 for full coverage |
 | **VectorWare Rust-std-on-GPU** | VectorWare startup | Experimental; uses CUDA hostcall to run Rust std on GPU; considering upstreaming |
 | **WGSL** | W3C WebGPU WG | Rust-influenced syntax, separate language; W3C Candidate Recommendation March 2026; **not affiliated with the Rust Project** |
 | **wgpu** | gfx-rs / Mozilla lineage | Cross-platform GPU abstraction; **not affiliated with Google** (Dawn/Tint are Google's C++ WebGPU implementation; wgpu is an independent community project) |
@@ -2615,7 +2957,7 @@ The most impactful areas for contributors who want their work to benefit Firefox
 - **Ch24 (Vulkan WSI / EGL)** — winit + ash-window create `VkSurfaceKHR` via `VK_KHR_wayland_surface` or `VK_KHR_xcb_surface`; wgpu's surface creation calls the same WSI extensions under the hood
 - **Ch82 (VMA / Vulkan Helpers)** — glam's `Mat4` / `Vec4` types fill the same role in Rust that GLM fills in C++; both upload via aligned uniform buffers to the same GPU memory managed by VMA / gpu-allocator
 - **Ch84 (bgfx / Filament / IGL)** — egui provides a comparable immediate-mode overlay to Dear ImGui; the egui-wgpu backend is architecturally parallel to imgui_impl_vulkan
-- **Ch25 (GPU Compute)** — candle's CUDA backend uses cudarc (§11); its inference throughput on NVIDIA hardware is comparable to burn-cuda; both are Rust alternatives to Python/PyTorch for on-device LLM inference
+- **Ch25 (GPU Compute)** — candle's CUDA backend uses cudarc (§12); its inference throughput on NVIDIA hardware is comparable to burn-cuda; both are Rust alternatives to Python/PyTorch for on-device LLM inference
 - **Ch30 (Debugging and Profiling)** — wgpu-profiler timestamps feed the same Tracy timeline as CPU profiling; the GPU scope names appear as GPU zones in the Tracy UI
 
 ---
