@@ -16,8 +16,12 @@
 - [7. The Wayland Story: 2008–2024](#7-the-wayland-story-20082024)
 - [8. AMD's Open-Source Pivot: 2012–2020](#8-amds-open-source-pivot-20122020)
 - [9. ARM GPU Reverse Engineering: 2012–2024](#9-arm-gpu-reverse-engineering-20122024)
-- [10. Recurring Design Themes](#10-recurring-design-themes)
-- [11. The Road Ahead: 2026 and Beyond](#11-the-road-ahead-2026-and-beyond)
+- [10. The 3D API Wars: Glide, OpenGL, Fahrenheit, Mantle, and Vulkan](#10-the-3d-api-wars-glide-opengl-fahrenheit-mantle-and-vulkan)
+- [11. Desktop Toolkit Origins: Qt, GTK, and the Linux Desktop Wars](#11-desktop-toolkit-origins-qt-gtk-and-the-linux-desktop-wars)
+- [12. Blender: Open-Source 3D's Long March to GPU-First Rendering](#12-blender-open-source-3ds-long-march-to-gpu-first-rendering)
+- [13. The Web's 3D History: VRML, Flash, WebGL, and WebGPU](#13-the-webs-3d-history-vrml-flash-webgl-and-webgpu)
+- [14. Recurring Design Themes](#14-recurring-design-themes)
+- [15. The Road Ahead: 2026 and Beyond](#15-the-road-ahead-2026-and-beyond)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -301,7 +305,197 @@ The ARM and Apple Silicon reverse-engineering efforts raise the same question as
 
 ---
 
-## 10. Recurring Design Themes
+## 10. The 3D API Wars: Glide, OpenGL, Fahrenheit, Mantle, and Vulkan
+
+The graphics API landscape of the 1990s was genuinely competitive in a way the 2020s are not. Understanding how it resolved — and why it resolved the way it did — explains the architectural choices baked into Vulkan, Mesa, and the Khronos standards process.
+
+### OpenGL's SGI Origins
+
+OpenGL's lineage begins at Silicon Graphics in 1982, where Jim Clark and colleagues built the first hardware geometry pipeline in a workstation product — the IRIS. The software interface to that hardware, IrisGL, became the internal standard for SGI's graphics programming. By the early 1990s SGI was licensing IrisGL to other hardware vendors, but the API carried SGI-specific extensions and dependencies that made portability difficult.
+
+In 1992, SGI open-standardised IrisGL as **OpenGL 1.0**, handing governance to an Architecture Review Board (ARB) composed of SGI, DEC, IBM, Intel, and Microsoft. The goal was a cross-platform, cross-hardware 3D API that could run on anything from a workstation to a PC accelerator board. OpenGL 1.0 described a fixed-function pipeline: geometry transformation, lighting, texture mapping, rasterisation, and blending were all defined by a state machine rather than programmable shaders. [Source: OpenGL ARB charter, 1992](https://www.opengl.org/archives/about/arb/)
+
+On Linux, OpenGL arrived via Mesa in 1993 (§4), initially as a software renderer. Real hardware acceleration required the DRI project (§3), which did not produce working results until 1998–2001 for the first generation of PC accelerator hardware.
+
+### 3Dfx and Glide: The First Consumer 3D API
+
+While OpenGL was an ARB standard, it was designed for workstations. Consumer PC 3D gaming in 1995–1996 was a different problem: you needed maximum performance on cheap hardware with a fixed memory budget, and you were willing to sacrifice portability for speed. **3Dfx Interactive** solved this with the Voodoo Graphics chipset (1996) and its proprietary API, **Glide**.
+
+Glide was a thin hardware abstraction layer — almost a direct hardware interface. It bypassed the OpenGL state machine entirely, exposed the Voodoo's rendering pipeline directly, and ran at a fraction of the CPU overhead. The first generation of PC 3D games — *Quake* (1996), *Tomb Raider*, *Quake II* (1997), *GLQuake* — ran dramatically faster on Glide than on any other API available at the time. At its peak, 3Dfx had captured roughly 80% of the consumer 3D accelerator market.
+
+Glide never ran on Linux in a supported form; 3Dfx released a partially functional Linux driver in 1998 but it lagged behind the Windows release and was never fully maintained. The Linux gaming community of 1997–1999 effectively had no 3D acceleration while Windows users ran Glide-accelerated games at full speed — a gap that motivated much of the early Linux DRI work.
+
+### The OpenGL vs. Direct3D Split
+
+Microsoft's **Direct3D 1.0** shipped in 1995 as part of DirectX, one year before 3Dfx's Glide. It was widely criticized as poorly designed — id Software's John Carmack published a widely-read open letter in 1996 advocating OpenGL over Direct3D and used OpenGL (via GLX and later WGL) exclusively in Quake. Microsoft's response was to rapidly iterate: Direct3D 5 (1997) was substantially more usable, and Direct3D 7 (1999) matched OpenGL's fixed-function feature set for gaming purposes.
+
+The split that emerged — OpenGL as the professional/scientific visualization standard, Direct3D as the game standard — was not technically driven. It was organizational: Microsoft controlled the Windows game developer ecosystem and could mandate DirectX adoption; SGI controlled the CAD, film, and scientific visualization ecosystem and had first-mover advantage in OpenGL. Linux and OpenGL became natural allies by exclusion: Linux had no DirectX, so Linux graphics development was synonymous with OpenGL development for two decades.
+
+### Fahrenheit: The Failed Merger (1997–1999)
+
+In 1997, Microsoft and SGI announced **Fahrenheit** — an ambitious joint project to merge OpenGL and Direct3D into a single unified 3D API. Fahrenheit would have a low-level layer (compatible with both APIs) and a high-level scene graph layer. The announcement was credible: both companies had strong incentives to end the API fragmentation, and SGI had the graphics expertise Microsoft lacked.
+
+Fahrenheit died in 1999 without producing a product. The reasons were structural: SGI's financial position was deteriorating (the workstation market was being eroded by commodity PC hardware), Microsoft's internal priorities shifted toward Direct3D 8 development, and the engineering effort required to genuinely merge two large, deeply different APIs proved larger than either company had estimated. The SGI that had co-founded OpenGL ceased to exist as an independent entity by 2006.
+
+For Linux, Fahrenheit's failure was irrelevant — it would never have been available on Linux anyway. But the episode illustrates the degree to which the 3D API landscape of the late 1990s was shaped by corporate interests as much as technical merit.
+
+### OpenGL's Programmable Shader Era: 2001–2008
+
+The fixed-function pipeline that OpenGL 1.x described became obsolete when NVIDIA's GeForce 3 (2001) introduced the first programmable vertex shader in consumer hardware, and ATI's Radeon 9700 (2002) added programmable fragment shaders. OpenGL responded with the **GLSL** (OpenGL Shading Language) specification in OpenGL 2.0 (2004), providing a C-like language for vertex and fragment programs.
+
+Mesa's implementation of OpenGL 2.0 lagged significantly behind NVIDIA and ATI's proprietary drivers — by 2006, Mesa's software renderer was years behind the hardware capabilities of even mid-range GPUs. The DRI drivers (r300, i915) were catching up but required sustained community engineering effort to track each new hardware generation. This gap between hardware capability and open-source driver support was the dominant constraint on Linux graphics quality throughout the 2000s.
+
+### OpenGL 3.0 and the "Longs Peak" Disaster (2008)
+
+By 2006, the OpenGL ARB was working on a major overhaul codenamed **Longs Peak** that would clean up the accumulated state machine cruft of fifteen years and provide a more modern, object-oriented API. It was to be the definitive answer to Direct3D 10's clean-slate redesign.
+
+**Longs Peak was cancelled.** The ARB member companies could not agree on the API design. What shipped as OpenGL 3.0 in 2008 was a substantially more conservative revision: the deprecated fixed-function pipeline was not actually removed (it was merely marked deprecated), and the promised core profile that would have made OpenGL 3.0 a clean break from OpenGL 1.x was delayed. Apple, in particular, shipped OpenGL 3.0 on OS X years after the specification was published.
+
+The OpenGL 3.0 debacle was the moment the graphics community began to seriously question whether the ARB process was capable of modernising OpenGL. The answer, ultimately, was no — and that failure is what created the conditions for Mantle and Vulkan.
+
+### AMD Mantle: The Catalyst (2013–2015)
+
+At GDC 2013, AMD announced **Mantle** — a proprietary low-level GPU API for AMD hardware, designed by AMD in collaboration with DICE (EA's internal studio, makers of the Frostbite engine). Mantle's design premise was explicit: OpenGL and Direct3D 11 both had CPU overhead that was unacceptable at scale. The draw call overhead alone — the CPU cycles consumed setting state before each `glDrawElements` call — was becoming a GPU utilisation bottleneck on games with tens of thousands of draw calls per frame.
+
+Mantle reduced this overhead by giving the application direct access to the GPU command buffer, moving state validation from the driver to the application, and making explicit what OpenGL made implicit (memory barriers, render pass begin/end, pipeline state objects). The price was complexity: Mantle applications were responsible for GPU resource lifetime, synchronisation, and pipeline configuration in a way OpenGL applications never were.
+
+Mantle shipped in December 2013 in *Battlefield 4*. The performance results were real: 45% CPU time reduction in CPU-bound scenarios. But Mantle was AMD-only, and AMD had neither the market share nor the developer ecosystem momentum to make a proprietary API stick.
+
+Mantle's real contribution was not its own adoption — it was forcing the industry to acknowledge that the implicit-state-machine model of OpenGL and Direct3D 11 was architecturally expensive and that a lower-level alternative was both technically feasible and commercially valuable. Microsoft responded with **Direct3D 12** (announced 2014, shipped Windows 10 2015). Apple responded with **Metal** (announced WWDC 2014, shipped iOS 8 and OS X Yosemite 2014). Khronos assembled a working group.
+
+### Vulkan 1.0: February 2016
+
+**Vulkan** was announced at GDC 2015 and released as a 1.0 specification on 16 February 2016. It took Mantle's explicit model, generalised it across all GPU vendors, and placed it under Khronos governance. The design team included engineers from AMD (who contributed Mantle as the starting point), NVIDIA, Intel, ARM, Imagination Technologies, and Google.
+
+Vulkan's architectural choices were explicit responses to specific OpenGL failures:
+
+- **Explicit synchronisation**: no hidden driver fences; the application declares all memory barriers
+- **No global state machine**: all state is local to a pipeline object or command buffer
+- **Multithreaded command recording**: multiple threads can record to different command buffers simultaneously, with no global lock
+- **Pre-compiled shader modules**: SPIR-V binary shaders validated offline, not compiled on-the-fly in the driver
+- **Explicit memory allocation**: the application manages GPU memory pools, not the driver
+
+On Linux, Vulkan arrived in Mesa first via RADV (community AMD Vulkan driver, 2016), then ANV (Intel, already started in 2015 alongside the spec), and NVK (NVIDIA open-source, functional by 2023). OpenGL remains maintained in Mesa but receives no new feature development; the investment is in Vulkan. [Source: Vulkan 1.0 release — Khronos, Feb 2016](https://www.khronos.org/news/press/khronos-releases-vulkan-1-0-specification)
+
+---
+
+## 11. Desktop Toolkit Origins: Qt, GTK, and the Linux Desktop Wars
+
+The two dominant Linux GUI toolkits — Qt and GTK — were both founded as reactions to inadequate alternatives, both became central to the Linux desktop wars of the late 1990s, and both have since migrated through two complete rendering architecture revolutions. The history of their GPU rendering evolution closely tracks the history of Mesa and DRI.
+
+### Qt: Trolltech and the Commercial/Open Tension (1991–2000)
+
+Qt was created by Haavard Nord and Eirik Chambe-Eng, two Norwegian programmers, beginning in 1991. Their company, **Trolltech**, released Qt 1.0 in 1995. Qt was a C++ widget toolkit with a cross-platform abstraction layer covering Windows, OS X, and X11/Linux. Its most influential architectural decision was the **meta-object system**: the `QObject` base class, the `moc` meta-object compiler, and the signals-and-slots mechanism that allowed type-safe, loosely-coupled event handling without C++ virtual function overhead in hot paths.
+
+**KDE 1.0** shipped in 1998 built entirely on Qt. KDE's goal — a complete, polished desktop environment for Linux — was technically ambitious and the result was impressive. But Qt had a licensing problem: Qt 1.x was not open-source in the modern sense. It was free for non-commercial use on Unix/Linux but required a commercial licence for commercial use. Critically, it was not licensed under the GPL, which meant that KDE — a project built on Qt — was in a grey zone with respect to Linux distributions that had GPL-purity policies.
+
+The Qt licence controversy directly created GNOME.
+
+### GTK: GIMP's Accidental Toolkit (1997–1999)
+
+The **GIMP Toolkit** (GTK) was created by Peter Mattis and Spencer Kimball in 1996–1997 as the widget library for the GIMP image editor. It was written in C, used the **GLib** library for fundamental types and the event loop, and was GPL-licensed from its first release. GTK's type system, GObject, provided C-language object orientation with reference counting, signals, and properties — a non-trivial engineering effort that reflected the GIMP developers' need for a real GUI framework without Qt's licensing issues.
+
+**Miguel de Icaza and Federico Mena** chose GTK as the foundation for **GNOME** (GNU Network Object Model Environment), announced in August 1997, explicitly as a GPL-licensed alternative to KDE. GNOME 1.0 shipped in March 1999. The GNOME vs. KDE split was primarily ideological — both toolkits were technically competent — and it created a fragmentation in the Linux desktop ecosystem that persisted for over a decade, with distributions forced to choose which set of dependencies to ship and which to treat as optional.
+
+Trolltech resolved the licensing controversy in 2000 by releasing Qt under the **QPL** and in 2009 — after Nokia acquired Trolltech in 2008 — under the **LGPL**, finally making Qt fully usable for open-source projects without GPL complications. Qt's corporate ownership has since passed from Nokia to **Digia** (2012) to **The Qt Company** (2014).
+
+### The GPU Rendering Revolution: GTK3/Qt5 → GTK4/Qt6
+
+For most of their history, both toolkits rendered via **Cairo** — a 2D vector graphics library that targets CPU rasterisation as its primary path, with GPU acceleration as an optional and incomplete layer. Cairo's model is fundamentally CPU-centric: the application builds a path, Cairo rasterises it to a pixel buffer, and that buffer is composited. This was acceptable when GPU accelerated compositing was not expected, but became a bottleneck as desktop compositors began using GPU-accelerated rendering for everything.
+
+**GTK3** (2011) introduced a Wayland backend and began the transition to GPU rendering via the Clutter scene graph and later a custom Cairo-GL path, neither of which fully delivered the performance benefits expected. The real transition came with **GTK4** (2020), which replaced Cairo as the primary rendering substrate with **GskRenderer** — a scene graph of `GskRenderNode` objects that can be traversed by either a Vulkan or a GL renderer, with Cairo retained only as a software fallback. GTK4's NGL renderer (2022) and later Vulkan renderer directly target Mesa's driver stack.
+
+**Qt5** (2012) introduced **Qt Quick 2** with a fully GPU-accelerated scene graph, replacing the CPU-rendered Qt Quick 1.x. Qt5's scene graph renderer used OpenGL directly. **Qt6** (2020) replaced the OpenGL dependency with **QRhi** — the Rendering Hardware Interface — a portability layer supporting Vulkan, Metal, Direct3D 12, and OpenGL ES. QRhi is now the only rendering path for Qt Quick; all Qt Widgets rendering also flows through QRhi in Qt 6.x.
+
+Both transitions — from Cairo to GskRenderer and from direct OpenGL to QRhi — were driven by the same force: the move to Wayland compositing, which required DMA-BUF buffer sharing and explicit GPU synchronisation that the old CPU-based paths could not efficiently support. The history of toolkit GPU rendering is the history of adapting to Wayland's zero-copy buffer model.
+
+---
+
+## 12. Blender: Open-Source 3D's Long March to GPU-First Rendering
+
+Blender is the most significant open-source 3D application in existence and a case study in GPU API evolution: from OpenGL fixed-function in the 1990s, through GLSL custom shaders, to a hybrid OpenGL/Vulkan rendering architecture in 2024.
+
+### NaN and the Near-Death (1998–2002)
+
+Blender began as an in-house tool at **NeoGeo**, a Dutch animation studio, created by **Ton Roosendaal** starting around 1994. Roosendaal co-founded **Not a Number Technologies (NaN)** in 1998 to commercialise Blender, releasing it as a free download for non-commercial use while selling a professional version.
+
+NaN's business model failed. In 2002, NaN's investors shut down the company. Blender, at that point a proprietary application with a large and loyal user community, faced permanent discontinuation. Roosendaal proposed an alternative: the community would raise €100,000 to buy the Blender source code from NaN's creditors and release it as open source. The community raised the money in seven weeks. On **13 October 2002**, Blender 2.25 was released under the GNU GPL. The **Blender Foundation** was established as a non-profit to steward the project.
+
+This fundraising event was unprecedented in open-source history and established the model — community-funded, foundation-governed, fully open — that Blender has maintained ever since.
+
+### The Rewrite: Blender 2.5 (2009–2011)
+
+The Blender that was open-sourced in 2002 had significant technical debt: a custom Python API that was unstable between releases, a UI system that could not be reskinned or extended, and a C codebase that mixed UI, logic, and rendering in ways that made modularisation difficult.
+
+**Blender 2.5** (released as stable in 2011 after two years of development) was a near-complete rewrite. The event system, RNA (RNA data model — Blender's internal object graph), the Python API, and the UI system were all replaced. Blender 2.5 remained an OpenGL 2.1 application for rendering, but the internal architecture was now maintainable enough to evolve further. RNA provided the data model that subsequent GPU rendering work would build on.
+
+### Cycles and the GPU Raytracer (2011)
+
+**Cycles** was contributed to Blender in 2011 by Brecht Van Lommel. It was a path-tracing renderer targeting GPU acceleration via CUDA (NVIDIA), OpenCL (AMD and others), and CPU. Cycles was Blender's first serious engagement with GPU compute: shaders were written as OSL (Open Shading Language) or Cycles' own GLSL-derived language and compiled to PTX for NVIDIA or to OpenCL kernels for AMD.
+
+GPU-accelerated rendering in Cycles brought Blender into contact with the full complexity of the GPU compute stack — kernel compilation, memory management, synchronisation between CPU and GPU — that was previously invisible to an OpenGL windowing application. This experience shaped how Blender's developers thought about GPU APIs for the EEVEE renderer that followed.
+
+### EEVEE and the Move to a Real-Time Renderer (2018)
+
+**EEVEE** (Extra Easy Virtual Environment Engine) shipped in **Blender 2.8** (2018) as Blender's real-time PBR renderer, replacing the old OpenGL viewport with a production-quality physically-based renderer capable of global illumination approximation, screen-space reflections, and bloom — all running interactively in the viewport. EEVEE was built on OpenGL 3.3+ (or OpenGL 4.3 for some features) using GLSL shaders and UBOs.
+
+Blender 2.8 also introduced a completely new UI — dark theme, industry-standard keymap option — that further expanded the user base. **Cycles X** (Blender 3.0, 2021) replaced the Cycles rendering kernel with a fully rewritten architecture optimised for GPU execution, using CUDA, HIP (AMD ROCm), Metal, and OptiX for hardware ray tracing.
+
+### EEVEE Next and Vulkan (2024–)
+
+**EEVEE Next**, shipping in **Blender 4.2** (2024), is a ground-up rewrite of EEVEE targeting modern rendering techniques: a deferred rendering pipeline, raytraced shadows and reflections via hardware ray tracing, and a GPU-side scene representation. Architecturally, EEVEE Next replaced EEVEE's OpenGL state machine with Blender's own **DrawManager** GPU abstraction layer, which supports both OpenGL and Vulkan backends.
+
+The Vulkan backend for Blender — developed by **Clément Foucault** and contributors — targets Mesa's Vulkan drivers (RADV for AMD, ANV for Intel) on Linux and is the primary new rendering investment. OpenGL remains supported but receives no new rendering features. Blender on Linux is now, in practice, a Vulkan consumer — a client of the same Mesa driver infrastructure described in this book. The Blender Foundation's partnership with Mesa developers to fix and extend RADV/ANV for EEVEE Next use cases has been a significant source of Mesa bug reports and improvements. [Source: Blender 4.2 Release Notes](https://wiki.blender.org/wiki/Reference/Release_Notes/4.2)
+
+---
+
+## 13. The Web's 3D History: VRML, Flash, WebGL, and WebGPU
+
+The web's relationship with 3D graphics spans thirty years and three complete technology cycles. Each cycle started with optimism, hit structural barriers, and was replaced by something that learned from the previous failure. WebGPU, the current cycle, is the first to be grounded in the same modern GPU API design principles as Vulkan and Metal.
+
+### VRML: The First Attempt (1994–1999)
+
+**VRML** (Virtual Reality Modeling Language) was proposed by Mark Pesce and Tony Parisi in 1994, inspired by Neal Stephenson's *Snow Crash* and its concept of a shared virtual Metaverse. The first VRML 1.0 specification was published in 1995, based on SGI's Open Inventor scene graph format. VRML 2.0 (1997) added animation, scripting, and user interaction, and was adopted as the **ISO/IEC 14772** international standard.
+
+VRML required a browser plugin and a 3D accelerator. In 1995–1999, 3D accelerators were not universal consumer hardware — Voodoo-class cards were a gaming peripheral, not a general-purpose component. VRML worlds were slow, downloaded large amounts of geometry over modem-speed connections, and required plugin installation that most users refused to do. The technology never achieved mainstream adoption. Cosmosware, the primary VRML plugin maker, was acquired and discontinued by 2001.
+
+**X3D** (Extensible 3D Graphics), the ISO-standardised XML successor to VRML, was published in 2004. X3D solved VRML's technical limitations but not its adoption problem — requiring a plugin and 3D hardware remained barriers. X3D survives today as a niche standard for military simulation, healthcare, and engineering visualization, not for general web use.
+
+### Flash, Shockwave, and the Plugin Era (1996–2010)
+
+**Macromedia Flash** (1996) and **Shockwave** (1995) took a different approach: instead of 3D, target 2D animation and interactivity, where software rendering on 1990s CPUs was fast enough. Flash dominated web animation throughout the 2000s — by 2005, the Flash Player was installed on over 90% of web-capable PCs. Flash offered a complete development environment: ActionScript for programming, a vector animation timeline, video playback via h.264, and a binary distribution format (SWF).
+
+**Shockwave** (now Flash-based but originally a Director plugin) did offer 3D via Director's built-in 3D engine, powered by OpenGL or Direct3D underneath. Games like *Myst Online* used Shockwave 3D. But Shockwave 3D never achieved the Flash-level of ubiquity.
+
+The Flash era's relevance to GPU history is negative: Flash's dominance displaced investment in open web 3D standards for a decade. The HTML5 movement — led by Apple (which refused Flash on iOS starting 2007) and Google — created the conditions for an open alternative, but that alternative required exposing GPU capabilities to JavaScript, which Flash had never done.
+
+Adobe announced the end-of-life of Flash Player in July 2017; all browsers blocked Flash by January 1, 2021.
+
+### WebGL: OpenGL in the Browser (2011–2023)
+
+**WebGL 1.0** was released by Khronos in March 2011. It exposed an API based on **OpenGL ES 2.0** — the mobile OpenGL subset — accessible from JavaScript via the HTML5 `<canvas>` element, with no plugin required. For the first time, a web application could issue GPU draw calls that executed on the user's GPU through the browser's OpenGL context, with Mesa on Linux as the underlying implementation.
+
+WebGL was genuinely revolutionary. It made real-time 3D interactive in a browser possible for the first time with no installation. The `<canvas>` context's design was deliberately minimal — effectively `gl.drawArrays()` and `gl.drawElements()` with shader programs — which kept the surface area manageable while enabling complex applications.
+
+**Three.js** (first release 2010, before WebGL was final) became the dominant high-level abstraction over WebGL, abstracting scenes, cameras, lights, and materials over the raw WebGL API. Three.js's adoption was what made WebGL practical for most web developers; writing raw WebGL is comparable in difficulty to writing raw Vulkan.
+
+**WebGL 2.0** (2017) brought the feature set to **OpenGL ES 3.0**: transform feedback, multiple render targets, 3D textures, GLSL ES 3.00 shaders, and integer texture formats. Browser adoption was uneven — Safari did not enable WebGL 2 by default until 2021, the same year Flash died — which limited WebGL 2's practical impact.
+
+WebGL's structural limitations were architectural, not feature gaps: the API inherited the OpenGL state machine's implicit synchronisation and CPU overhead model. Large WebGL applications (game engines, CAD tools) hit the same CPU draw call bottleneck that drove the GPU industry toward Mantle and Vulkan on the native side. WebGL also ran in the browser's GPU process with sandboxed access to the driver, adding overhead that native OpenGL did not have.
+
+### WebGPU: The Modern GPU API for the Web (2019–)
+
+**WebGPU** was proposed in 2017 by the W3C GPU for the Web Community Group, with Apple, Google, Mozilla, and Microsoft all participating. Its design premise was explicit: do not expose OpenGL ES to the web again. Expose the programming model of **Vulkan, Metal, and Direct3D 12** — explicit pipelines, explicit synchronisation, compute shaders — in a form that is safe to run in a browser sandbox.
+
+WebGPU reached **Candidate Recommendation** status at the W3C in June 2023. Chrome shipped WebGPU enabled by default in Chrome 113 (April 2023). Firefox shipped it behind a flag. Safari shipped an initial implementation in 2023.
+
+On Linux, WebGPU in Chrome is backed by **Dawn** (Ch35), Google's C++ WebGPU implementation, which uses Mesa's Vulkan drivers via Vulkan as the backend. Firefox uses **wgpu** (Ch40, Ch152), the Rust WebGPU implementation, also using Mesa Vulkan. The same SPIR-V → NIR path that compiles Blender's EEVEE Next shaders and Vulkan game shaders also compiles **WGSL** (WebGPU Shading Language) shaders submitted from a web page.
+
+The historical arc is complete: VRML failed because hardware was not ubiquitous and the plugin model was too fragile. Flash succeeded at 2D but never exposed the GPU. WebGL exposed the GPU but inherited OpenGL's architectural limitations. WebGPU exposes the GPU with a modern, explicit API, and the browser's GPU process sandbox is now thin enough — thanks to Mesa's Vulkan driver quality on Linux — that the performance gap between WebGPU and native Vulkan is measured in single-digit percentages for most workloads. [Source: WebGPU W3C Candidate Recommendation, 2023](https://www.w3.org/TR/webgpu/)
+
+---
+
+## 14. Recurring Design Themes
 
 Reading the history above, certain design themes appear repeatedly, across different eras and different engineering teams. They are not coincidences. They are responses to the same underlying forces.
 
@@ -355,7 +549,7 @@ The failures in the Linux graphics stack's history can often be traced to violat
 
 ---
 
-## 11. The Road Ahead: 2026 and Beyond
+## 15. The Road Ahead: 2026 and Beyond
 
 ### Rust in the Kernel and Mesa
 
