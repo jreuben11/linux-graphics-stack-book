@@ -716,11 +716,25 @@ Key API points:
 
 On the host side, tiles are partitioned and launched via cuTile-rs's own `cuda-core` / `cuda-bindings` crates, which wrap the CUDA Driver API independently of cudarc. On B200 hardware, cuTile-rs GEMM kernels reach 96.4% of cuBLAS throughput. [Source](https://nvlabs.github.io/cutile-rs/main/)
 
-### Why NVIDIA Is Investing
+### Why NVIDIA Is Investing: "Fearless Concurrency on the GPU"
 
-NVIDIA's rationale follows the broader industry pattern: Rust eliminates buffer overruns and data races in device code, and the ownership model can statically encode GPU memory hazards (concurrent read/write aliasing) that CUDA C++ can only catch at run time via the sanitizer. cuTile-rs targets research teams and framework authors (e.g., cuDNN successor kernels) rather than end-application developers. [Source](https://github.com/nvlabs/cutile-rs)
+NVIDIA's formal case is made in a research paper:
 
-The tile abstraction also decouples algorithmic intent from microarchitecture. A GEMM that today targets Hopper's `wgmma` instructions can retarget Blackwell's next-generation matrix engine by recompiling; the kernel source stays unchanged. This composability is exactly what custom training loop authors need when they want to experiment with quantised data types (fp8, int4) or non-standard accumulation orders without rewriting schedule logic. The companion `TileGym` benchmark suite tests these kernels against cuBLAS baselines, measuring how close the safe Rust path gets to hand-tuned assembly across GPU generations. [Source](https://nvlabs.github.io/cutile-rs/main/)
+> **"Fearless Concurrency on the GPU"** — Melih Elibol, Jared Roesch, Isaac Gelado, Eric Buehler, Michael Garland (NVIDIA Research); arXiv:2606.15991, June 2026. [[arxiv.org](https://arxiv.org/abs/2606.15991)]
+
+The paper's thesis, verbatim from the abstract: *"Rust has made safe systems programming practical on the CPU, but writing custom GPU kernels in Rust still forces programmers outside the language's ownership guarantees. We present cuTile Rust, a tile-based system for safe, idiomatic GPU kernel authoring in Rust... Our evaluation shows that these abstractions can preserve performance on high-end GPUs."*
+
+The central claim: Rust ownership, extended to tiles at the GPU kernel level, statically encodes GPU memory hazards — concurrent read/write aliasing — that CUDA C++ can only catch at runtime via the compute sanitizer. cuTile-rs partitions mutable tensors into disjoint pieces before launch (ownership ≈ exclusive access) and shares immutable tensors across threads (read-only ≈ shared reference). This directly mirrors the borrow checker's aliasing XOR mutability rule, applied at the tile granularity.
+
+Performance from the paper (NVIDIA B200 hardware):
+- Element-wise operations: **7 TB/s**
+- Safe Rust GEMM (persistent kernel, f16, M=N=K=8192): **2.07 PFlop/s** — 92% of B200 peak, within 0.3% of low-level Tile IR
+- cuBLAS comparison: **96.4% of cuBLAS throughput** for GEMM
+- Inference engine "Grout" (built on cuTile-rs): **171 tok/s** Qwen3-4B on RTX 5090; **82 tok/s** Qwen3-32B on B200 — competitive with vLLM and SGLang
+
+The tile abstraction also decouples algorithmic intent from microarchitecture. A GEMM that today targets Hopper's `wgmma` instructions can retarget Blackwell's next-generation matrix engine by recompiling; the kernel source stays unchanged. This composability is exactly what custom training loop authors need when they want to experiment with quantised data types (fp8, int4) or non-standard accumulation orders without rewriting schedule logic. The companion `TileGym` benchmark suite tests these kernels against cuBLAS baselines. [Source](https://nvlabs.github.io/cutile-rs/main/)
+
+cuTile-rs targets research teams and framework authors (e.g., cuDNN successor kernels) rather than end-application developers. It is an NVlabs research project — NVIDIA's position is that Rust ownership can be extended to GPU kernels at the tile level, achieving safety without sacrificing Tensor Core performance. [Source](https://github.com/nvlabs/cutile-rs)
 
 ---
 
@@ -2247,11 +2261,17 @@ The long-term roadmap section (§29) mentions the open goal of "encoding Vulkan 
 
 The Rust Project is pursuing GPU support through concrete, officially tracked initiatives — but the strategy is deliberately pragmatic rather than type-theoretic. Understanding what is and is not official clarifies where the ecosystem is heading.
 
+#### Governance: The GPU Working Group Proposal
+
+Before examining technical initiatives, there is a governance signal worth noting. In February 2025, Christian Legnitto (maintainer of rust-gpu and rust-cuda) opened [rust-lang/leadership-council#155](https://github.com/rust-lang/leadership-council/issues/155) proposing an **official Rust GPU Working Group**. The motivation: GPU and AI companies need an obvious entry point into Rust language governance; an official working group can publish on the Rust blog and convene cross-company input.
+
+The proposal covers both AI/compute and graphics GPU use cases. It remains unresolved as of mid-2026, in part because the Rust project has been phasing out classic domain working groups. If chartered, this would be the first official Rust governance body with a GPU mandate. For now, GPU work proceeds through the Project Goals mechanism and individual contributor tracks — without a chartered team.
+
 #### Official GPU Targets
 
 Two GPU targets are part of the Rust standard target tier policy:
 
-- **`nvptx64-nvidia-cuda`** — **Tier 2** (officially supported, tested in CI). As of Rust 1.97 (July 2026), the baseline was raised to SM 7.0+ / PTX 7.0+, dropping support for pre-Turing NVIDIA hardware. This is the only GPU target with compiler team commitment to not break. [[Source: rustc platform support](https://doc.rust-lang.org/nightly/rustc/platform-support/nvptx64-nvidia-cuda.html)]
+- **`nvptx64-nvidia-cuda`** — **Tier 2** (officially supported, tested in CI). As of Rust 1.97 (released July 9, 2026), the baseline was raised to SM 7.0+ / PTX 7.0+, dropping pre-Turing hardware (Maxwell, Pascal) and requiring CUDA 11+ drivers. The Rust blog frames this as maintenance curation, not commitment expansion: "Maintaining support for these architectures would require substantial effort. These removals let us focus development efforts on improving correctness and performance for currently supported hardware." [[Source: blog.rust-lang.org/2026/05/01/nvptx-baseline-update](https://blog.rust-lang.org/2026/05/01/nvptx-baseline-update/)]
 
 - **`amdgcn-amd-amdhsa`** — **Tier 3** (builds in CI but not guaranteed to work; community-maintained by `@Flakebi`). This covers AMD ROCm / HIP kernel compilation.
 
@@ -2312,13 +2332,16 @@ Several GPU Rust projects are influential but not part of the official Rust Proj
 
 | Project | Origin | Status |
 |---------|--------|--------|
-| **rust-gpu** (`rustc_codegen_spirv`) | Embark Studios → community org (Rust-GPU) | Open-source, externally maintained; Embark archived their fork Oct 2025 |
-| **cuda-oxide** | NVlabs (NVIDIA Research) | Open-source, not affiliated with Rust Project; compiles Rust to PTX via Stable MIR / `rustc_public` |
+| **rust-gpu** (`rustc_codegen_spirv`) | Embark Studios → community org (Rust-GPU) | Transition announced Aug 12, 2024; EmbarkStudios fork archived Oct 31, 2025; community org now actively maintained with compute/AI focus [[blog](https://rust-gpu.github.io/blog/transition-announcement/)] |
+| **cuTile-rs** | NVlabs (NVIDIA Research) | NVlabs research project; formal paper "Fearless Concurrency on the GPU" arXiv:2606.15991 (June 2026); tile-level ownership model, not a Rust compiler extension |
+| **cuda-oxide** | NVlabs (NVIDIA Research) | Compiles Rust to PTX via Stable MIR / `rustc_public`; separate from cuTile-rs |
 | **VectorWare Rust-std-on-GPU** | VectorWare startup | Experimental; uses CUDA hostcall to run Rust std on GPU; considering upstreaming |
-| **cuTile-rs** | NVIDIA | Internal CUDA tile abstraction; Rust bindings, not a Rust compiler extension |
-| **WGSL** | W3C WebGPU WG | Rust-influenced syntax, separate language; W3C Candidate Recommendation March 2026 |
+| **WGSL** | W3C WebGPU WG | Rust-influenced syntax, separate language; W3C Candidate Recommendation March 2026; **not affiliated with the Rust Project** |
+| **wgpu** | gfx-rs / Mozilla lineage | Cross-platform GPU abstraction; **not affiliated with Google** (Dawn/Tint are Google's C++ WebGPU implementation; wgpu is an independent community project) |
 
-No RFC for GPU-specific linear types, affine types, or dependent types exists as of mid-2026. The Unsafe Code Guidelines (UCG) working group has no active GPU memory model work. SPIR-V is not on the official target tier roadmap.
+No RFC for GPU-specific linear types, affine types, or dependent types exists as of mid-2026. The Unsafe Code Guidelines (UCG) working group has no active GPU memory model work — Stacked Borrows and Tree Borrows are CPU-only aliasing models; the GPU/SPIR-V memory model is a separate specification domain. SPIR-V is not on the official target tier roadmap.
+
+The **Rust effects system initiative** (formerly "keyword generics"; see [rust-lang/effects-initiative](https://github.com/rust-lang/rust/issues/102090)) covers `async`, `const`, `try`, `unsafe`, and generators as tracked effects. GPU execution is not proposed as an effect and is not mentioned anywhere in the initiative. Any framing of "GPU offload as a Rust effect" is speculative inference, not an upstream position.
 
 #### The Strategic Picture
 
@@ -2332,7 +2355,11 @@ The Rust Project's GPU strategy can be summarised as:
 
 4. **ML optimisations**: MLIR backend for 2026 enables high-performance training in Rust without a Python runtime.
 
+5. **Governance**: GPU Working Group proposal (leadership-council#155) signals intent to establish an official forum, though it remains unchartered.
+
 The strategy is deliberately *not* to solve the fundamental incompatibility between Rust's aliasing XOR mutability and GPU shared memory by extending the type system. That remains a research problem. The official approach accepts runtime validation at the host boundary, LLVM/MLIR for the GPU numerical path, and `unsafe` for low-level kernel code — the same pragmatic layering that the rest of the Rust unsafe ecosystem uses.
+
+**Industry alignment**: NVIDIA is the only major GPU vendor with a formal, published position on Rust for GPU kernels — the cuTile-rs NVlabs project and the "Fearless Concurrency on the GPU" paper (arXiv:2606.15991, 2026). Google's GPU implementation stack (Dawn, Tint) is C++; Rust appears in the WebGPU ecosystem only through the independent wgpu community project, not Google. AMD and Intel have compatible GPU backends (SPIR-V via Vulkan) but no stated Rust GPU strategy. The Rust-GPU community project — now maintained at the [Rust-GPU org](https://github.com/Rust-GPU/rust-gpu) after Embark's 2024 transition — represents the SPIR-V path independently of all four vendors.
 
 ---
 
