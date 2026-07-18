@@ -16,6 +16,7 @@
 8. [Shader Compilation on Android](#8-shader-compilation-on-android)
 9. [Memory Management on Mobile](#9-memory-management-on-mobile)
 10. [Mobile GPU Architecture — Tile-Based Deferred Rendering](#10-mobile-gpu-architecture--tile-based-deferred-rendering)
+    - [10b. Tile Shaders: Exposing TBDR Tile Memory to Shaders](#10b-tile-shaders-exposing-tbdr-tile-memory-to-shaders)
 11. [Android GPU Performance Tools](#11-android-gpu-performance-tools)
 12. [Chrome and Chromium on Android](#12-chrome-and-chromium-on-android)
 13. [The Language-Runtime Bridge: JNI, NDK, and ART](#13-the-language-runtime-bridge-jni-ndk-and-art)
@@ -985,6 +986,83 @@ This extension simplifies MSAA setup for TBDR hardware. Instead of explicitly cr
 - The application never explicitly allocates MSAA memory.
 
 When available (`VkPhysicalDeviceMultisampledRenderToSingleSampledFeaturesEXT.multisampledRenderToSingleSampled == VK_TRUE`), this is the recommended MSAA path. [Source: VK_EXT_multisampled_render_to_single_sampled](https://docs.vulkan.org/refpages/latest/refpages/source/VK_EXT_multisampled_render_to_single_sampled.html)
+
+---
+
+## 10b. Tile Shaders: Exposing TBDR Tile Memory to Shaders
+
+Apple Metal has had tile shaders since Metal 2 (A11 Bionic, 2017): compute shaders that execute within the TBDR tile pass, reading and writing the current tile's colour, depth, and stencil attachments directly from tile SRAM without DRAM round-trips. Vulkan is catching up through two complementary extensions.
+
+### VK_EXT_shader_tile_image
+
+`VK_EXT_shader_tile_image` (promoted to Vulkan 1.3+ as an extension, targeted at dynamic rendering contexts) exposes **framebuffer fetch** semantics: a fragment shader can read the current framebuffer pixel's existing colour/depth/stencil value at the current sample position. This enables single-pass deferred lighting without subpass input attachments:
+
+```glsl
+#extension GL_EXT_shader_tile_image : require
+
+// Declare tile image variables for each attachment.
+// The driver routes reads through tile SRAM, not DRAM.
+layout(location = 0) tileImageEXT highp sampler2D gbuf_albedo;
+layout(location = 1) tileImageEXT highp sampler2D gbuf_normal;
+layout(location = 0) out vec4 frag_color;
+
+void main() {
+    vec3 albedo  = colorAttachmentReadEXT(gbuf_albedo,  gl_SampleID).rgb;
+    vec3 normal  = colorAttachmentReadEXT(gbuf_normal,  gl_SampleID).rgb;
+    frag_color   = vec4(shade(albedo, normal), 1.0);
+}
+```
+
+The `colorAttachmentReadEXT` / `depthAttachmentReadEXT` / `stencilAttachmentReadEXT` builtins are only valid inside a `VkRenderingInfo` dynamic rendering pass where the attachment was written by a prior draw in the same pass. No explicit subpass dependency is required; the driver infers tile ordering from the pipeline stage. [Source](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_shader_tile_image.html)
+
+Feature query:
+
+```c
+VkPhysicalDeviceShaderTileImageFeaturesEXT tile_features = {
+    .sType                          = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_TILE_IMAGE_FEATURES_EXT,
+    .shaderTileImageColorReadAccess = VK_TRUE,
+    .shaderTileImageDepthReadAccess = VK_TRUE,
+};
+```
+
+### VK_QCOM_tile_shading
+
+Qualcomm's `VK_QCOM_tile_shading` goes further: it introduces compute dispatches that are automatically sized to the hardware tile and execute within the tile pass, with full read/write access to colour and depth/stencil tile attachments. This is the closest Vulkan equivalent to Metal's per-tile compute functions. [Source](https://docs.vulkan.org/features/latest/features/proposals/VK_QCOM_tile_shading.html)
+
+New built-in variables provided to the compute shader:
+- `gl_TileOffsetQCOM` — pixel coordinate of the top-left corner of the current tile.
+- `gl_TileDimensionQCOM` — width and height of the current tile in pixels.
+- `gl_TileApronQCOM` — apron region around the tile (for filters that need neighbouring tile data).
+
+The tile dispatch command `vkCmdDispatchTileQCOM` automatically calculates workgroup counts from the tile size — the application does not need to know the tile dimensions at pipeline build time.
+
+```glsl
+#extension GL_QCOM_tile_shading : require
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Tile attachment declared as a tile image — reads from tile SRAM.
+layout(set = 0, binding = 0, rgba8) uniform tileImageEXT image2D color_tile;
+
+void main() {
+    ivec2 tile_coord = ivec2(gl_LocalInvocationID.xy);
+    vec4  pixel      = imageLoad(color_tile, tile_coord);
+    // Tone-map in place, entirely within tile SRAM — zero DRAM cost.
+    imageStore(color_tile, tile_coord, vec4(aces_filmic(pixel.rgb), pixel.a));
+}
+```
+
+### Comparison with Metal Tile Shaders and Subpasses
+
+| Feature | Metal tile shaders | VK_EXT_shader_tile_image | VK_QCOM_tile_shading |
+|---|---|---|---|
+| Compute in tile pass | Yes | No (fragment only) | Yes |
+| Fragment read tile memory | Yes | Yes | Yes |
+| Explicit tile dimensions | Yes | No (opaque) | Yes (built-ins) |
+| Vendor | Apple | Cross-vendor EXT | Qualcomm only |
+| Replaces subpasses | Yes | Partially | Yes |
+| Vulkan 1.3+ required | — | Yes | No (separate) |
+
+For maximum portability, prefer `VK_EXT_shader_tile_image` when the workload fits fragment shaders. Use `VK_QCOM_tile_shading` on Adreno hardware when a compute dispatch inside the tile pass is required (e.g., a post-process that must run after all draws in the pass but before DRAM writeback). A cross-vendor `VK_EXT_tile_shading` or `VK_KHR_tile_shading` standardisation has not been announced as of mid-2026.
 
 ---
 

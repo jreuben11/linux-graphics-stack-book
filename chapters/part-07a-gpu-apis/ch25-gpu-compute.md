@@ -63,6 +63,7 @@ The chapter deliberately avoids GPU algorithm design and parallel programming th
 10. [io_uring and Async GPU Command Submission](#10-io_uring-and-async-gpu-command-submission)
 11. [API Performance Comparison: OpenCL vs ROCm vs CUDA vs SYCL vs Vulkan](#11-api-performance-comparison-opencl-vs-rocm-vs-cuda-vs-sycl-vs-vulkan)
 12. [Structural Barriers: Why Vulkan Compute Cannot Yet Replace CUDA](#12-structural-barriers-why-vulkan-compute-cannot-yet-replace-cuda)
+    - [12.7 Cooperative Vectors: Neural Inference in Any Shader Stage](#127-cooperative-vectors-neural-inference-in-any-shader-stage)
 13. [Integrations](#13-integrations)
 14. [References](#14-references)
 
@@ -1729,6 +1730,46 @@ The gaps above are not permanent. The trajectory:
 - **The training gap is structural and long-horizon.** Closing the training gap requires a Vulkan-native collective communication library, CUDA Graph equivalents at the framework level, and PyTorch/JAX backends that treat Vulkan as a first-class training target — a 3–5 year horizon if it happens at all, dependent on commercial incentives that currently favour NVIDIA.
 
 Cross-reference: Ch. 62 §11 analyzes these same barriers from the SYCL portability perspective; Ch. 117 covers Slang as a cross-target kernel language that separates algorithm from backend; Ch. 197 §3.9 documents the SM6.x→SPIR-V feature arrival timeline.
+
+### 12.7 Cooperative Vectors: Neural Inference in Any Shader Stage
+
+`VK_NV_cooperative_vector` (NVIDIA, 2024) is the most significant compute-shader capability addition since cooperative matrices. Where cooperative matrices (`VK_KHR_cooperative_matrix`) require a full subgroup to cooperate synchronously on a matrix multiply — needing uniform control flow and full wave occupancy — cooperative vectors relax both constraints: each invocation performs its own independent forward pass through a small neural network, and the GPU cooperates *behind the scenes* to map the sequence of matrix-vector multiplications onto Tensor Core hardware. [Source](https://docs.vulkan.org/features/latest/features/proposals/VK_NV_cooperative_vector.html)
+
+#### What It Enables
+
+The primary use case is **neural shaders**: BRDF models, material classifiers, and implicit surface representations (NeRF-style) encoded as small multi-layer perceptrons (MLPs) and evaluated per shading invocation. A 3-layer MLP with 64-wide hidden layers runs in a few hundred microseconds per million invocations on Ada hardware — fast enough to replace traditional analytic BRDFs in path tracers.
+
+```glsl
+#extension GL_NV_cooperative_vector : require
+
+// Declare the MLP weight matrices as cooperative vector types.
+// The GPU maps matrix-vector multiplies to Tensor Cores automatically.
+coopvecNV<float16_t, 64> hidden0;
+coopvecNV<float16_t, 64> hidden1;
+
+// Inference: a fully-connected layer with ReLU activation.
+hidden0 = coopvecMatMulNV(input, weight0, bias0);  // Tensor Core GEMV
+hidden0 = max(hidden0, coopvecNV<float16_t, 64>(0.0f)); // ReLU
+hidden1 = coopvecMatMulNV(hidden0, weight1, bias1);
+```
+
+Weights are stored in a `VkBuffer` as quantised FP8, INT8, or FP16, loaded at shader start. The `coopvecMatMulNV` intrinsic maps to `OpCooperativeVectorMatMulNV` in SPIR-V.
+
+#### Key Differences from Cooperative Matrices
+
+| Property | `VK_KHR_cooperative_matrix` | `VK_NV_cooperative_vector` |
+|---|---|---|
+| Granularity | Full subgroup must cooperate | Per-invocation; cooperation is implicit |
+| Control flow | Must be subgroup-uniform | No restriction |
+| Network width | Multiples of wave size (32/64) | Arbitrary (padded internally) |
+| Primary use | Large GEMM (training, large inference) | Small per-invocation MLP (neural shaders) |
+| Shader stages | Compute only | Any stage (vertex, fragment, ray gen) |
+
+#### Standardisation Trajectory
+
+`VK_NV_cooperative_vector` is currently NVIDIA-only. Khronos §12.6 above already anticipated `VK_KHR_cooperative_vector` as the follow-on; AMD and Intel participation in the working group discussion is confirmed but a ratified KHR extension has not been announced as of mid-2026. [Source](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_NV_cooperative_vector.html)
+
+On the application side, NVIDIA RTX Neural Texture Compression (RTXNTC) already ships cooperative-vector-accelerated BC7/BC6H decompression as a Vulkan compute shader, demonstrating the latency characteristics achievable in production workloads. [Source](https://github.com/NVIDIA-RTX/RTXNTC)
 
 ---
 

@@ -22,7 +22,8 @@
 8. [VK_KHR_ray_query and Inline Ray Tracing](#vk_khr_ray_query-and-inline-ray-tracing)
 9. [Practical Usage on Linux](#practical-usage-on-linux)
 10. [SVGF: Spatiotemporal Variance-Guided Filtering](#svgf-spatiotemporal-variance-guided-filtering)
-11. [Integrations](#integrations)
+11. [Shader Execution Reordering (SER)](#shader-execution-reordering-ser)
+12. [Integrations](#integrations)
 
 ---
 
@@ -1107,6 +1108,63 @@ cd spatiotemporal-variance-guided-filtering
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)
 ./build/svgf --scene data/cornell_box.obj   # 1spp path tracer + SVGF denoiser
 ```
+
+---
+
+## Shader Execution Reordering (SER)
+
+Ray tracing pipelines suffer from a fundamental coherence problem: after a ray hits a surface, the shader invocations within a wave diverge to execute different material shaders (glass, metal, diffuse, emissive) depending on the hit result. The SIMT execution model serialises this divergence — all threads in the wave execute each material path in sequence, with inactive lanes masked. On a complex scene with hundreds of materials, effective SIMD utilisation can fall to single digits.
+
+**Shader Execution Reordering** allows the GPU to reorder shader invocations across the wavefront — regrouping threads that hit similar materials together — before committing to any-hit or closest-hit shader execution. The GPU inserts a *reorder hint* at the point where the hit object is known, then freely reschedules threads for maximum coherence.
+
+The feature graduated from `VK_NV_ray_tracing_invocation_reorder` (NVIDIA-only) to the multi-vendor `VK_EXT_ray_tracing_invocation_reorder` in November 2025, with matching support in D3D12 Shader Model 6.9. [Source](https://www.khronos.org/blog/boosting-ray-tracing-performance-with-shader-execution-reordering-introducing-vk-ext-ray-tracing-invocation-reorder)
+
+### API and GLSL Interface
+
+SER adds two GLSL built-ins (via `GL_EXT_ray_tracing_position_fetch` or the SER extension):
+
+```glsl
+#extension GL_EXT_ray_tracing_invocation_reorder : require
+
+// In a ray generation or closest-hit shader — after TraceRay/rayQuery:
+hitObjectNV hit;
+hitObjectTraceRayNV(hit, tlas, rayFlags, cullMask, 0, 0, 0,
+                    rayOrigin, tMin, rayDir, tMax, 0);
+
+// Reorder: threads with similar hit-object state are grouped together.
+// The hint is an application-supplied integer (e.g. material index).
+reorderThreadWithHintNV(hitObjectGetShaderRecordBufferHandleNV(hit), 4);
+
+// After reorder: invoke the closest-hit shader with full coherence.
+hitObjectExecuteShaderNV(hit, payload);
+```
+
+The `reorderThreadWithHintNV()` call is a *hint*, not a guarantee — the driver is free to ignore it on hardware that does not support it, making the extension safe to use unconditionally once the feature bit is queried.
+
+The C-side feature query:
+
+```c
+VkPhysicalDeviceRayTracingInvocationReorderFeaturesEXT ser_features = {
+    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_INVOCATION_REORDER_FEATURES_EXT,
+    .rayTracingInvocationReorder = VK_TRUE,
+};
+// Chain into VkPhysicalDeviceFeatures2 and call vkGetPhysicalDeviceFeatures2.
+// Also check VkPhysicalDeviceRayTracingInvocationReorderPropertiesEXT.
+// rayTracingInvocationReorderReorderingHint indicates hardware reorder support
+// vs. software emulation.
+```
+
+### Performance Characteristics
+
+On a Vulkan glTF path tracer with a heterogeneous material scene (50+ BSDF types), SER delivered up to **47% throughput improvement** on NVIDIA Ada hardware. The gain is scene-dependent: scenes dominated by a single material type (e.g., purely diffuse) gain nothing; scenes with high material diversity gain most. [Source](https://www.khronos.org/blog/boosting-ray-tracing-performance-with-shader-execution-reordering-introducing-vk-ext-ray-tracing-invocation-reorder)
+
+The `rayTracingInvocationReorderReorderingHint` property distinguishes:
+- `VK_RAY_TRACING_INVOCATION_REORDER_REORDERING_HINT_REORDER_EXT` — hardware reordering supported; full gain expected.
+- `VK_RAY_TRACING_INVOCATION_REORDER_REORDERING_HINT_NO_REORDER_EXT` — extension present but reordering is emulated or absent; API compiles cleanly but no performance benefit.
+
+### Integration with Hit Object Shaders
+
+The `VK_NV_shader_invocation_reorder` (earlier name) introduced **hit object shaders** (`hitObjectNV`) as a separate concept: a deferred material evaluation that decouples ray traversal from shader execution. SER builds on this by reordering invocations between the traversal phase and the shader execution phase. Applications that already use hit object shaders (for occlusion, shadow rays, or deferred shading) can add SER with minimal code change.
 
 ---
 
