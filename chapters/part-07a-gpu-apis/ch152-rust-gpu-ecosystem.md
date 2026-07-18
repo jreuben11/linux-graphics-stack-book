@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [Stack Layer Taxonomy: What Each Library Actually Does](#stack-layer-taxonomy-what-each-library-actually-does)
+   - [The Two Full-Stack Paths](#the-two-full-stack-paths)
+   - [Detailed Path Comparison](#detailed-path-comparison)
 2. [ash: Raw Vulkan Bindings in Rust](#ash-raw-vulkan-bindings-in-rust)
 3. [wgpu: The Cross-Platform GPU Abstraction](#wgpu-the-cross-platform-gpu-abstraction)
 4. [wgpu-hal: The Backend Abstraction Layer](#wgpu-hal-the-backend-abstraction-layer)
@@ -119,6 +122,33 @@ Rust host code
 Use when: portability across GPU vendors is required, Vulkan graphics + compute are combined, or open-source driver stack (RADV/ANV) matters.
 
 `rust-gpu` belongs exclusively to the Vulkan path. `cudarc` belongs exclusively to the CUDA path. They are not alternatives; an application that needs both NVIDIA CUDA (for cuDNN) and Vulkan compute (for cross-vendor compatibility) would use both independently.
+
+### Detailed Path Comparison
+
+The table below covers every axis that matters when choosing between the two paths for a new Rust GPU project:
+
+| Property | CUDA path (cudarc + nvcc) | Vulkan path (wgpu + rust-gpu / WGSL) |
+|----------|--------------------------|--------------------------------------|
+| **GPU vendors** | NVIDIA only | AMD, Intel, NVIDIA, Apple Silicon |
+| **Open-source drivers** | No (proprietary CUDA driver) | Yes (RADV, ANV, NVK, Asahi) |
+| **Host API crate** | `cudarc` | `wgpu` (safe) or `ash` (unsafe) |
+| **Kernel/shader language** | PTX / CUDA C++ (text/binary) | WGSL (text) or Rust via `rust-gpu` |
+| **Kernel compiled by** | nvcc, NVRTC, cuTile-rs | naga (WGSL→SPIR-V), rustc_codegen_spirv (rust-gpu) |
+| **GPU code is Rust** | No — kernel is CUDA C / PTX | Optional — rust-gpu compiles Rust to SPIR-V |
+| **Borrow checker on GPU code** | No | Partial — rust-gpu runs it; WGSL does not |
+| **cuBLAS / cuDNN / NCCL** | Yes (via cudarc feature flags) | No — no Vulkan equivalent for cuDNN/NCCL |
+| **Tensor Core access** | Native (cuTile-rs, cuBLAS) | `VK_KHR_cooperative_matrix` (limited vendor support) |
+| **ML throughput (NVIDIA A100)** | Baseline (cuBLAS reference) | ~60–80% of cuBLAS for GEMM via llama.cpp / burn-wgpu |
+| **WebAssembly target** | No | Yes — wgpu targets WebGPU in WASM; WGSL shaders unchanged |
+| **Graphics + compute** | Separate (CUDA interop required) | Unified — same wgpu device for rendering and compute |
+| **Windows / macOS** | Windows only; macOS dropped CUDA in 10.14 | Yes — Metal backend via wgpu |
+| **Compile-time safety** | Host only (cudarc types); kernel is runtime | Host: wgpu safe API; shader: WGSL type-checked by naga |
+| **Ecosystem maturity** | Very high (CUDA since 2007) | Growing (wgpu stable, rust-gpu experimental) |
+| **When to choose** | NVIDIA-only, ML training, cuDNN required | Portability, graphics, open-source stack, WASM |
+
+**Combining both paths** is legitimate but uncommon. A typical scenario: a Linux desktop application uses `wgpu` + WGSL for real-time Vulkan rendering (cross-vendor) and also links `cudarc` for an NVIDIA-specific AI inference pass (cuDNN/TensorRT). The two subsystems share no code and communicate only through CPU buffers or CUDA–Vulkan interop (`VK_KHR_external_memory`).
+
+**rust-gpu's position within the Vulkan path** is as an alternative shader authoring language — not a different runtime. If you are already using `wgpu`, you can switch from WGSL to rust-gpu shaders without changing any host code: the SPIR-V module that `wgpu::Device::create_shader_module` receives looks identical to naga's WGSL-compiled output. The choice is purely about whether you want to write shader logic in Rust (with `#[spirv]` attributes and `spirv-builder` in `build.rs`) or in WGSL (with `include_str!` or `wgpu::ShaderSource::Wgsl`).
 
 ---
 
