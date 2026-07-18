@@ -4,9 +4,23 @@
 
 **Audiences targeted**:
 
-- Graphics and multimedia application developers integrating hardware video encode into Vulkan pipelines
-- Driver developers implementing `VK_KHR_video_encode_h264`, `VK_KHR_video_encode_h265`, and `VK_KHR_video_encode_av1`
-- Engineers building zero-copy transcode pipelines, game-capture stacks, and low-latency VR streaming systems
+- Driver developers implementing `VK_KHR_video_encode_h264`, `VK_KHR_video_encode_h265`, and `VK_KHR_video_encode_av1` in Mesa (RADV, ANV, NVK)
+- Multimedia framework contributors extending FFmpeg's `vulkan_encode.c` or GStreamer's `GstVulkanEncoder` backend
+- Engineers building zero-copy transcode pipelines, game-capture stacks, and low-latency VR streaming systems where a `VkImage` is already in-flight
+
+> **Application developers do not call Vulkan Video APIs directly.** The API is low-level by design: callers manage the Decoded Picture Buffer (DPB) manually, supply raw SPS/PPS/VPS session parameters, handle per-slice encoding parameters, and issue all Vulkan synchronisation barriers. This is driver-implementer and multimedia-framework territory.
+>
+> If you want hardware video encode from an application, the correct entry point is one abstraction layer up:
+>
+> | Goal | Use instead |
+> |---|---|
+> | Transcode a file | FFmpeg `h264_vulkan` / `hevc_vulkan` / `h264_vaapi` / `h264_nvenc` |
+> | Media pipeline | GStreamer `vulkah264enc` / `vaapih264enc` / `nvv4l2h264enc` |
+> | Game capture / streaming | OBS (wraps FFmpeg or VA-API internally) |
+> | In-engine video playback or record | Engine media plugin → FFmpeg |
+> | Wireless VR streaming | ALVR / WiVRn (use Vulkan or VA-API encode under the hood) |
+>
+> Read this chapter to understand what those abstractions are doing — for debugging, performance analysis, driver development, or contributing to FFmpeg/GStreamer's Vulkan backend. See **Chapter 26 (VA-API)** and **Chapter 57 (FFmpeg)** for the application-level encode APIs.
 
 This chapter is the encode counterpart to **Chapter 50 (Vulkan Video Decode)**. Ch50 covers the shared decode infrastructure:
 
