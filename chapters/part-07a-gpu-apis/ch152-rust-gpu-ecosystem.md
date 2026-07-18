@@ -50,6 +50,76 @@ On Linux, `wgpu` targets Vulkan (via `wgpu-hal/vulkan`) and OpenGL (via `wgpu-ha
 
 Sources: [wgpu](https://github.com/gfx-rs/wgpu) | [ash](https://github.com/ash-rs/ash) | [naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga)
 
+### Stack Layer Taxonomy: What Each Library Actually Does
+
+A recurring point of confusion is treating libraries as alternatives when they operate at different layers. The chapter covers libraries at three distinct positions in the GPU stack — understanding which layer a library occupies is the prerequisite for any meaningful comparison.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     APPLICATION / ALGORITHM LAYER                    │
+│   burn (ML)  ·  vello (2D)  ·  bevy (engine)  ·  candle (inference) │
+└────────────────────────┬────────────────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────────────────┐
+│                  HOST MANAGEMENT LAYER  (CPU-side)                   │
+│  wgpu ─── manages Vulkan/Metal/DX12 device, queue, buffers           │
+│  ash  ─── raw Vulkan C API bindings                                  │
+│  cudarc ── CUDA Driver API: contexts, streams, CudaSlice<T>          │
+│  cuTile-rs ─ CUDA Tile IR host runtime + kernel launch               │
+└────────────────────────┬────────────────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────────────────┐
+│                  SHADER / KERNEL AUTHORING LAYER (GPU-side code)     │
+│  rust-gpu  ── Rust → SPIR-V (via rustc_codegen_spirv)               │
+│  WGSL      ── WebGPU Shading Language (text, compiled by naga)       │
+│  GLSL/HLSL ── traditional shader languages (text, compiled by glslc) │
+│  PTX/CUDA C ─ NVIDIA kernel language (compiled by nvcc / NVRTC)      │
+└────────────────────────┬────────────────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────────────────┐
+│                     RUNTIME / DRIVER LAYER                           │
+│  Vulkan (RADV, ANV, NVK) ·  CUDA Driver  ·  Metal  ·  DX12          │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**cudarc vs rust-gpu** is therefore not an apples-to-apples comparison:
+
+- `cudarc` is a **host management** library. It does for CUDA what `wgpu` does for Vulkan: manages device contexts, allocates GPU memory (`CudaSlice<T>`), and launches kernels. The kernels themselves are PTX or CUDA cubin compiled by nvcc or NVRTC — cudarc does not author GPU code.
+- `rust-gpu` is a **shader authoring** compiler. It takes Rust source annotated with `#[spirv(compute)]` and compiles it to SPIR-V via a custom `rustc` backend. The resulting SPIR-V is consumed by `wgpu` or `ash` — rust-gpu does not manage GPU memory or device state.
+
+The closer comparisons are:
+
+| Comparison | Left | Right | Axis |
+|-----------|------|-------|------|
+| Host management | `cudarc` | `wgpu` / `ash` | CUDA vs Vulkan |
+| Shader authoring | `rust-gpu` | WGSL / GLSL | Rust vs DSL |
+| Full compute stack | `cudarc` + nvcc/NVRTC | `wgpu` + `rust-gpu` | CUDA path vs Vulkan path |
+| NVIDIA ML compute | `cudarc` + cuTile-rs | `wgpu` + `burn-wgpu` | CUDA tensor cores vs Vulkan compute |
+
+### The Two Full-Stack Paths
+
+For GPU compute in Rust, the ecosystem splits into two end-to-end paths:
+
+**CUDA path** — NVIDIA-exclusive, highest ML/HPC throughput:
+```
+Rust host code
+  → cudarc (CudaContext, CudaSlice<T>, launch_builder)
+  → PTX kernel (from nvcc / NVRTC / cuTile-rs)
+  → CUDA Driver API → NVIDIA hardware only
+```
+Use when: NVIDIA hardware is guaranteed, cuBLAS/cuDNN/NCCL access is required, maximising throughput for ML training/inference.
+
+**Vulkan path** — cross-vendor, runs on AMD (RADV), Intel (ANV), NVIDIA (NVK or proprietary), Apple (Metal via wgpu):
+```
+Rust host code
+  → wgpu (Device, Queue, Buffer, ComputePipeline)
+  → SPIR-V shader (from WGSL text or rust-gpu Rust source via naga)
+  → Vulkan Driver → any GPU vendor
+```
+Use when: portability across GPU vendors is required, Vulkan graphics + compute are combined, or open-source driver stack (RADV/ANV) matters.
+
+`rust-gpu` belongs exclusively to the Vulkan path. `cudarc` belongs exclusively to the CUDA path. They are not alternatives; an application that needs both NVIDIA CUDA (for cuDNN) and Vulkan compute (for cross-vendor compatibility) would use both independently.
+
 ---
 
 ## ash: Raw Vulkan Bindings in Rust
