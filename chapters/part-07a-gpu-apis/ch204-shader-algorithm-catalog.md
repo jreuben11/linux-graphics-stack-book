@@ -32,6 +32,10 @@ This chapter is a **no-code reference catalog**. Every entry follows the same st
 
 ## Procedural Generation and Noise
 
+Noise functions are the foundation of procedural content generation: they produce spatially coherent, pseudo-random fields that can stand in for any natural phenomenon without storing a texture. The taxonomy runs from simple lattice-interpolation schemes (Value, Gradient/Perlin) through simplex and cellular variants to compositional techniques (FBM, domain warping) that layer primitives into complex organic results. The practical starting point for most work is Gradient noise + FBM; swap in Voronoi or blue noise when the application specifically needs cellular structure or low-discrepancy sampling. Hash functions belong here too — they underpin every noise implementation and should be chosen carefully to avoid aliasing.
+
+**Shader stage**: All noise functions in this section are pure mathematical functions callable from any shader stage. In practice they appear most often in the **fragment shader** (procedural texture evaluation per-pixel) and **compute shader** (texture generation offline or per-frame). Vertex shader use is less common due to the lack of automatic partial derivatives for mip selection.
+
 #### Value Noise
 Interpolates random values at integer lattice points using smooth cubic or quintic blending. Produces smooth, low-frequency random fields with visible grid artifacts at high lacunarity.
 
@@ -107,6 +111,10 @@ Integer-to-float hash functions that replace `fract(sin(dot()))` (which aliases 
 
 ## Signed Distance Functions and Sphere Marching
 
+A signed distance function (SDF) returns the distance from any point in space to the nearest surface, with negative values inside and positive outside. This representation makes it trivial to march a ray through a scene without missing surfaces (sphere marching), to combine geometry with Boolean operations, and to compute accurate normals and soft shadows analytically — all without a triangle mesh. The trade-off is that complex scenes require many SDF evaluations per ray, making performance highly dependent on step count and SDF complexity. SDFs are the native language of Shadertoy-style GPU raytracing and are increasingly used in game engines for collision, font rendering, and procedural modelling.
+
+**Shader stage**: Entirely **fragment shader** (or **compute shader** for offline baking). The sphere marching loop, SDF evaluation, normal estimation, and lighting all run per-pixel in the fragment stage — there is no geometry; the "scene" is described purely as a mathematical function.
+
 #### Sphere Marching Loop
 Iteratively advances a ray by the value of a signed distance function at the current position, guaranteeing no surface intersection is missed while taking the largest safe step.
 
@@ -164,6 +172,10 @@ Constructs 3D SDFs from 2D SDFs by extruding along an axis or revolving around a
 ---
 
 ## Physically Based Shading — BRDF Models
+
+A BRDF (Bidirectional Reflectance Distribution Function) describes how a surface scatters light as a function of incoming and outgoing direction. Modern real-time PBR pipelines build the shading equation from three independently swappable components: the normal distribution function (NDF, which governs highlight shape), the masking-shadowing term (G, which prevents energy from dark grazing angles), and the Fresnel term (F, which controls the view-angle reflectance balance). GGX + Smith + Schlick is the de facto standard combination, wrapped in the Disney "Principled" parameterisation for artist friendliness. The entries below move from the simplest building blocks (Lambertian, Cook-Torrance) through the individual NDF/G/F components to specialised models for cloth, iridescence, and anisotropy.
+
+**Shader stage**: All BRDF evaluation happens in the **fragment shader** (rasterisation) or in the **ray generation / closest-hit shader** (ray tracing). The BRDF function itself is a pure mathematical evaluation with no geometry dependency; the same GLSL/HLSL/WGSL function body is portable across stages.
 
 #### Lambertian Diffuse
 Models perfectly matte diffuse reflection as albedo × max(0, N·L) / π, with no view-dependence.
@@ -248,6 +260,10 @@ Models wavelength-dependent phase-shift Fresnel effects from sub-wavelength-thin
 
 ## Shadow Rendering Techniques
 
+Shadows are the primary visual cue for spatial relationships between objects. The field divides into two concerns: correctness (does a fragment lie in shadow?) and softness (how wide is the penumbra?). Shadow mapping answers the correctness question by depth-testing from the light's viewpoint; every technique that follows is an elaboration of this idea — PCF and PCSS add softness, VSM/MSM add filterability, CSM adds resolution scalability for directional lights, and Virtual Shadow Maps add on-demand paging for scenes with many local lights. Ray-traced shadows are the ground truth but require a denoiser for acceptable sample counts.
+
+**Shader stage**: Shadow map generation is a **vertex shader** + depth-only pass (no fragment shader needed for depth-only). Shadow lookup and PCF filtering happen in the **fragment shader** of the main lighting pass. VSM/MSM blur passes run as **compute shaders** or full-screen **fragment shaders**. PCSS blockers search also runs in the **fragment shader**. Ray-traced shadows use the **ray generation** and **miss shaders**.
+
 #### Shadow Mapping
 Renders the scene depth from the light's perspective into a depth texture; in the main pass, compares each fragment's light-space depth against the stored value.
 
@@ -304,6 +320,10 @@ Implements a massive-resolution clipmap (e.g. 16k×16k) backed by on-demand phys
 
 ## Ambient Occlusion
 
+Ambient occlusion approximates how much of the sky hemisphere is blocked by surrounding geometry at each surface point, darkening crevices and contact zones where indirect light cannot reach. It is not physically exact — true AO integrates over all light directions — but it is perceptually powerful: the human visual system strongly associates darkened concavities with spatial depth. The progression in this section runs from the cheapest screen-space approximations (SSAO, HBAO) through physically motivated formulations (GTAO, which also produces bent normals for correct IBL lookup) to the reference-quality ray-traced path (RTAO). Bent normals, produced as a byproduct of GTAO, feed back into §7 (Image-Based Lighting) to improve diffuse IBL accuracy.
+
+**Shader stage**: All screen-space AO techniques (SSAO, HBAO, GTAO) run as full-screen **compute shaders** or full-screen **fragment shaders** reading from the depth buffer and G-buffer normals. RTAO uses the **ray generation shader** to cast hemisphere rays and the **miss shader** (no hit = unoccluded). A separate **compute shader** blur/denoise pass is always required after the raw AO signal.
+
 #### SSAO (Screen-Space Ambient Occlusion)
 Estimates local occlusion from nearby geometry by sampling the depth buffer in a hemisphere around each fragment and counting how many samples fall inside geometry.
 
@@ -342,6 +362,10 @@ The average direction of unoccluded sky hemisphere, computed per fragment as a b
 ---
 
 ## Global Illumination
+
+Global illumination (GI) accounts for light that has bounced at least once before reaching the camera — the soft fill light in a sunlit room, colour bleeding from a red wall onto adjacent objects, and the brightening of surfaces that face other bright surfaces. The fundamental trade-off is between temporal stability and dynamic scene support: pre-baked probes are stable but require re-baking when geometry changes; dynamic probe methods (DDGI, Radiance Cascades) update every frame but cost GPU time and require filtering. The entries progress from the most-deployed technique (irradiance probes + SH) through increasingly dynamic and ray-traced approaches, ending with neural radiance caching, which trades probe cost for neural network inference cost.
+
+**Shader stage**: GI is multi-stage. Probe update passes run in **compute shaders** (casting rays, accumulating radiance). The final GI contribution is evaluated in the **fragment shader** (probe interpolation, SH evaluation, or screenspace probe lookup). DDGI and ReSTIR GI use **ray generation / closest-hit / miss shaders** for the probe ray cast. Radiance Cascades merging runs in **compute shaders**.
 
 #### Irradiance Probes / Light Probes
 Pre-baked or real-time probes placed in the scene that capture the incoming radiance from all directions (as a low-order spherical harmonic or small cubemap) and are blended at runtime based on interpolation weights.
@@ -396,6 +420,10 @@ Trains a compact MLP online per frame to predict incoming radiance at query poin
 
 ## Image-Based Lighting
 
+Image-based lighting (IBL) uses a captured or procedurally generated HDR environment map as an omnidirectional light source, replacing dozens of analytical lights with a single high-frequency representation of the full lighting environment. The PBR split-sum approximation (Epic, 2013) separates the irradiance integral into two pre-integrated lookups — a prefiltered specular mip chain (one per roughness level) and a 2D BRDF LUT — plus a diffuse irradiance convolution (or SH projection), making real-time IBL feasible with two texture samples per fragment. These three artefacts together constitute the "IBL bake" present in every modern game, archviz tool, and glTF viewer.
+
+**Shader stage**: The IBL precomputation (irradiance convolution, prefiltered mip generation, BRDF LUT bake) runs in **compute shaders** offline or at load time. At runtime, the IBL contribution is evaluated in the **fragment shader**: a `textureLod()` call into the prefiltered cubemap plus a `texture()` call into the BRDF LUT, combined per the split-sum formula.
+
 #### Diffuse Irradiance Convolution
 Integrates incoming radiance from an HDR environment map over the hemisphere to produce a blurred irradiance map (or SH coefficients) used for diffuse IBL.
 
@@ -424,6 +452,10 @@ Adjusts the IBL fetch direction to account for the finite distance of the local 
 ---
 
 ## Volumetric Rendering and Participating Media
+
+Participating media — fog, smoke, fire, clouds, underwater haze — scatter and absorb light along a ray rather than only at surfaces. The physics are governed by three coefficients: absorption (σ_a), scattering (σ_s), and extinction (σ_t = σ_a + σ_s). In real-time rendering, the full volume rendering equation is approximated either analytically (Beer-Lambert for homogeneous media) or by ray-marching a 3D density field with in-scattering accumulation. The froxel (frustum-aligned voxel grid) technique amortises this cost by pre-computing scattering into a 3D texture, reducing per-pixel cost to a single texture fetch. Clouds and atmosphere occupy the high end of cost and quality in this section.
+
+**Shader stage**: Froxel scattering accumulation runs in a **compute shader** (fills a 3D texture). Per-pixel volumetric fog lookup runs in the **fragment shader** (single 3D texture sample). Raymarched volumes (clouds, atmosphere) run in the **fragment shader** or as a dedicated full-screen **compute shader** writing to a half-resolution render target that is then upscaled and composited. Atmospheric precomputation (Bruneton) runs entirely in **compute shaders** offline.
 
 #### Beer-Lambert Extinction
 Computes transmittance along a ray through a homogeneous participating medium as exp(−σ_t × d), where σ_t is the extinction coefficient and d is path length.
@@ -459,6 +491,10 @@ Pre-computes Rayleigh (molecular, blue sky) and Mie (aerosol, haze) scattering i
 ---
 
 ## Post-Processing and Image Effects
+
+Post-processing runs after the main scene is rendered, operating on the completed colour buffer (and optionally depth and motion vectors) as a sequence of full-screen passes. These passes are responsible for the final "look" of the image: tone mapping brings HDR linear-light values into display range; bloom, depth of field, and motion blur add photographic character; colour grading via 3D LUT decouples art direction from shader code. Sharpening (CAS) counteracts the blur introduced by TAA (§16). The order of these passes matters — tone mapping must occur after bloom to preserve HDR highlight bloom, and LUT grading must occur after tone mapping.
+
+**Shader stage**: All post-processing passes are full-screen **compute shaders** (preferred, better occupancy for read-modify-write) or full-screen **fragment shaders** (a fullscreen triangle bound to a framebuffer attachment). Bloom's separable blur is almost universally implemented as two **compute shader** dispatches (horizontal then vertical). CAS is a single **compute shader** dispatch.
 
 #### Tone Mapping
 Maps HDR scene luminance (linear light) to the display's SDR range [0,1] or PQ/HLG for HDR displays, applying a characteristic S-curve that compresses highlights while preserving shadow detail.
@@ -516,6 +552,10 @@ An AMD FidelityFX compute pass that detects locally low-contrast regions and app
 
 ## Screen-Space Techniques
 
+Screen-space techniques exploit the depth buffer and G-buffer data already produced by the main render pass to approximate effects that would otherwise require expensive ray casts or multi-pass rendering. Their defining characteristic — and their fundamental limitation — is that they can only see what is on screen: any occluder or reflector that has been culled or is off-screen is invisible to them. Used correctly, they deliver high-quality reflections (SSR), contact shadows, and subsurface scattering at a fraction of the cost of ray-traced equivalents. Used incorrectly, they produce distracting edge cutoffs and artefacts that immediately signal "screen-space" to an experienced viewer.
+
+**Shader stage**: SSR and contact shadows run as full-screen **compute shaders** reading from depth and G-buffer. Screen-space SSS runs as a full-screen **fragment shader** or **compute shader** blur pass on the deferred lighting buffer, masked by a skin stencil. All of these are post-geometry, post-deferred-lighting passes; they have no access to geometry or vertex attributes directly.
+
 #### SSR (Screen-Space Reflections)
 Marches rays in screen space (along the Hi-Z pyramid) to find intersections with existing screen-space geometry, producing plausible reflections that are dynamically consistent with the scene.
 
@@ -540,6 +580,10 @@ Applies a separable 2D Gaussian blur in screen space to a skin cluster mask, app
 ---
 
 ## Texture Mapping and Surface Detail
+
+These techniques add geometric and material detail to surfaces without increasing mesh polygon count. Normal mapping is the universal baseline; parallax occlusion mapping adds view-dependent depth at the cost of more texture samples; triplanar and stochastic tiling solve the UV parameterisation and repetition problems that arise at scale. At the other end of specificity, MSDF font rendering and decal projection solve narrower problems (scalable text, dynamic surface markings) that appear across many engine systems. The common thread is that all of these techniques manipulate UV coordinates, surface normals, or both — they do not change actual geometry.
+
+**Shader stage**: Normal mapping, POM, triplanar, stochastic tiling, and MSDF rendering all execute in the **fragment shader** — they are per-pixel operations that sample textures and compute a modified normal or alpha. Deferred decals write modified albedo/normal/roughness values into the **G-buffer** in a dedicated **fragment shader** pass drawn after the main geometry pass.
 
 #### Normal Mapping
 Encodes surface microgeometry as a per-texel normal vector in tangent space (stored in an RGB texture), which is transformed to world space at runtime to perturb lighting calculations without adding geometry.
@@ -584,6 +628,10 @@ Clips a decal quad to the underlying geometry by testing against a depth buffer 
 
 ## Water, Ocean, and Fluid Surface
 
+Water surface rendering spans a wide quality range depending on scale and fidelity requirements. Gerstner waves are the analytic minimum — cheap, art-directable, no FFT — and are sufficient for stylised or background water. FFT ocean (Tessendorf) produces statistically correct open-ocean surfaces and is the standard in AAA nautical and simulation titles. Both approaches feed into the same shading model: Fresnel-blended transmission (refraction of the underwater scene) and reflection (SSR or IBL), with a chromatic offset for realism. Caustics and foam are typically separate passes composited on top.
+
+**Shader stage**: Gerstner wave displacement runs in the **vertex shader** (displaces mesh vertices per-frame). FFT ocean spectrum evolution and IFFT run in **compute shaders** producing displacement/normal map textures; a standard **vertex shader** then samples these textures to displace the water mesh, and the **fragment shader** handles the Fresnel/refraction/reflection shading. The water Fresnel and refraction logic is entirely **fragment shader**.
+
 #### Gerstner Waves
 An analytic trochoidal wave model that displaces surface vertices along circular orbits rather than vertically, producing the characteristic peaked crests and flat troughs of ocean surface waves.
 
@@ -608,6 +656,10 @@ Blends transmitted (refracted, chromatic-offset underwater scene) and reflected 
 ---
 
 ## Terrain, Vegetation, and Foliage
+
+Large-scale natural environments present a distinct set of rendering problems: terrain must remain detailed near the camera and degrade gracefully at distance (LOD), foliage must be instanced at counts impossible to process on the CPU, and wind animation must be cheap enough to run per-vertex for millions of blades or leaves simultaneously. These techniques are tightly coupled to the GPU-driven rendering pipeline described in Ch154: terrain LOD decisions (CDLOD), grass instance culling, and draw-call generation all happen in compute shaders, with the results consumed by mesh or vertex shaders for final rendering.
+
+**Shader stage**: Terrain heightmap tessellation uses the **tessellation control shader** (TCS) to set tessellation factors and the **tessellation evaluation shader** (TES) to displace vertices from the heightmap. CDLOD quadtree LOD selection runs in a **compute shader**; final rendering uses a standard **vertex + fragment** pair. GPU grass generation uses a **task shader** (culling) + **mesh shader** (blade geometry emit) + **fragment shader** (blade shading). Wind animation runs entirely in the **vertex shader**.
 
 #### Heightmap Tessellation with Displacement
 Tessellates a coarse terrain mesh and displaces vertices along the normal by a heightmap, producing smooth terrain with LOD-driven tessellation factor based on view distance and screen error.
@@ -636,6 +688,10 @@ Displaces foliage vertices by a time-varying wind force sampled from a scrolling
 ---
 
 ## Skin, Hair, and Character Rendering
+
+Human characters demand the highest fidelity in most applications, because viewers are exquisitely sensitive to subtle errors in skin tone, hair light transport, and eye gaze. Skin requires subsurface scattering (light enters the surface, scatters through the dermis, and exits at a different point) — the techniques here span cheap pre-integrated LUT approaches to full separable screen-space filters. Hair requires a BSDF that models the cylindrical fibre geometry (Kajiya-Kay for games, Marschner for film). Eyes combine multiple distinct shading regions — sclera, iris, cornea, pupil — each with different optical behaviour. These algorithms are high-cost and high-reward: they are where the "uncanny valley" crossing happens.
+
+**Shader stage**: Pre-integrated skin SSS is a pure **fragment shader** computation (LUT lookup keyed by NdotL and curvature). Separable SSS runs as one or more full-screen **compute shader** or **fragment shader** blur passes on the skin cluster's diffuse buffer. Hair BSDF (Kajiya-Kay, Marschner) evaluates in the **fragment shader** (or **closest-hit shader** for ray-traced hair). Eye rendering is entirely **fragment shader**. All character shading consumes geometry produced by the **vertex shader**.
 
 #### Pre-Integrated Skin SSS (Penner)
 Stores the diffuse subsurface scattering profile as a 2D LUT indexed by NdotL and surface curvature (estimated from derivative of world-space normal), producing plausible skin SSS at very low cost.
@@ -673,6 +729,10 @@ Combines sclera diffuse (+ limbus ring darkening), cornea specular (clear coat o
 
 ## Non-Photorealistic Rendering (NPR)
 
+NPR deliberately departs from photorealism to achieve stylised, illustrative, or expressive looks — hand-drawn animation, ink lines, painterly abstraction, or technical illustration. Unlike PBR, there is no single correct model: the "right" NPR shader is defined by the target aesthetic, not by physics. Most NPR effects operate on the final image (post-process) rather than during shading, because they need global image context (edge detection, local colour statistics) that per-fragment shading cannot access. The practical challenge is making NPR techniques view-consistent and temporally stable — cel edges that flicker or Kuwahara patterns that shimmer under camera motion break the stylised illusion.
+
+**Shader stage**: Cel/toon shading ramp evaluation runs in the **fragment shader**. Silhouette edge detection via back-face shell extrusion runs in the **vertex shader** (expand normals outward); edge detection on G-buffer normals/depth runs as a **compute shader** or **fragment shader** post-process. Kuwahara and hatching filters are full-screen **compute shaders** or **fragment shaders** operating on the final colour buffer.
+
 #### Cel / Toon Shading
 Quantises the diffuse NdotL ramp to discrete steps (typically 2–4) using a 1D ramp texture lookup, producing the flat-shaded appearance of hand-drawn animation.
 
@@ -703,6 +763,10 @@ Renders tonal variation via procedurally or pre-baked stroke textures (lines, cr
 ---
 
 ## Anti-Aliasing, TAA, and ML Upscaling
+
+Aliasing arises wherever a continuous signal (geometry edges, specular highlights, fine texture) is sampled at discrete pixel positions. The solutions in this section operate at different levels: MSAA and SMAA work on geometric edges during or immediately after rasterisation; TAA accumulates sub-pixel samples across time and is the current industry standard for both geometric and shader aliasing; ML upscalers (DLSS, FSR, XeSS) extend TAA by rendering at a fraction of display resolution and reconstructing the full image with a neural network or spatial filter. Upscaling and anti-aliasing have converged: every modern upscaler includes temporal accumulation, and every modern TAA implementation includes a sharpening step to counteract its inherent blur.
+
+**Shader stage**: MSAA is a fixed-function rasterisation setting; the resolve is a **fragment shader** or **compute shader** pass. FXAA and SMAA run as **fragment shaders** or **compute shaders** on the resolved colour buffer. TAA history accumulation and reprojection run as **compute shaders**. DLSS, FSR, and XeSS all run as one or more **compute shader** dispatches taking colour + depth + motion vectors as inputs.
 
 #### MSAA (Multisample Anti-Aliasing)
 Rasterises each pixel at multiple sub-pixel sample positions and averages coverage, reducing geometric edge aliasing without increasing the shading rate (using shading at centroid or one sample per pixel).
@@ -754,6 +818,10 @@ ML-based upscaler that uses XMX matrix units on Intel Arc GPUs for highest quali
 
 ## Geometry and Mesh Shader Patterns
 
+These are shader-stage patterns rather than shading algorithms: techniques that operate on geometry topology, vertex attributes, or the amplification/culling of primitives before they reach the fragment stage. Mesh shaders (task + mesh) have replaced geometry shaders for most new work, offering better GPU occupancy and explicit meshlet-level culling. The entries here span debug visualisation (wireframe, face normals), tessellation and subdivision, instanced geometry (fur shells), and the mesh shader cluster culling pattern that underpins GPU-driven rendering. Many of these patterns are described in more detail in Ch154 (GPU-Driven Rendering); this section gives a catalog-level summary for quick reference.
+
+**Shader stage**: This section is explicitly about shader stages — each entry names its own stage. Summary: wireframe barycentric overlay → **fragment shader**; mesh shader culling → **task shader** (amplification) + **mesh shader**; PN triangles → **tessellation control** (TCS) + **tessellation evaluation** (TES); fur shells → **vertex shader** (shell offset) or legacy **geometry shader** (shell emit); face normals → **fragment shader** (`dFdx`/`dFdy`).
+
 #### Wireframe Overlay via Barycentric Coordinates
 Passes barycentric coordinates as a vertex attribute and uses their minimum value in the fragment shader to draw lines along triangle edges without geometry duplication or a second render pass.
 
@@ -787,6 +855,8 @@ Computes a flat face normal in the fragment shader as the cross product of `dFdx
 ---
 
 ## GPU Compute Algorithm Primitives
+
+These are the fundamental data-parallel algorithms that underpin GPU-driven rendering, simulation, and post-processing — not visual effects, but computational building blocks. Parallel prefix sum (scan) enables stream compaction; radix sort enables depth-sorted transparency and BVH construction; histogram enables auto-exposure; Hi-Z generation enables occlusion culling. They are invoked from compute shaders (`layout(local_size_x = N) in`) and operate on structured buffers rather than render targets. Correctness requires careful attention to wave-level synchronisation (`barrier()`, `memoryBarrierBuffer()`) and the distinction between wave-uniform and non-uniform execution paths.
 
 #### Parallel Prefix Sum (Scan)
 Computes the running sum of an array in O(log N) parallel steps using an up-sweep and down-sweep tree reduction, making every thread's output depend on all prior elements.
