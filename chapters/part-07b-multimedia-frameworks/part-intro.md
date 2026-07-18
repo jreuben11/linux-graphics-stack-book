@@ -1,6 +1,6 @@
 # Part VII-B — Multimedia Frameworks and Desktop Integration
 
-Part VII-A treated the GPU-facing APIs — **Vulkan**, **EGL**, **OpenCL**, **VA-API**, **OpenXR** — as the raw material an application programmer works with. This sub-part is the middleware layer that sits between those APIs and the software users actually run: the multimedia session bus that routes audio and video streams, the GUI toolkits that turn scene graphs into GPU submissions, the font engines that rasterise every glyph on screen, the hardware video codec stack, the camera abstraction that feeds sensor frames into the graph, the sandbox runtime that packages all of it for distribution, and the computer-vision framework that consumes the entire pipeline. These are the components a desktop, an embedded appliance, a WebRTC endpoint, or a robotics platform is built from. The chapters here do not re-derive the kernel or Mesa internals of Parts I–VI; they explain which of those interfaces each middleware layer calls, and where a buffer crosses a subsystem boundary with — or without — a CPU copy.
+Part VII-A treated the GPU-facing APIs — **Vulkan**, **EGL**, **OpenCL**, **VA-API**, **OpenXR** — as the raw material an application programmer works with. This sub-part is the middleware layer that sits between those APIs and the software users actually run: the multimedia session bus that routes audio and video streams, the GUI toolkits that turn scene graphs into GPU submissions, the cross-platform multimedia integration framework (**SDL3**) that bridges audio, input, windowing, and GPU access in a single portable API, the font engines that rasterise every glyph on screen, the hardware video codec stack, the camera abstraction that feeds sensor frames into the graph, the sandbox runtime that packages all of it for distribution, and the computer-vision framework that consumes the entire pipeline. These are the components a desktop, an embedded appliance, a WebRTC endpoint, or a robotics platform is built from. The chapters here do not re-derive the kernel or Mesa internals of Parts I–VI; they explain which of those interfaces each middleware layer calls, and where a buffer crosses a subsystem boundary with — or without — a CPU copy.
 
 The unifying mechanism throughout this sub-part is **DMA-BUF**. A camera frame produced by **libcamera**, a decoded video surface from **Vulkan Video** or **VA-API**, a GPU render target from **Qt** or **GTK**, a **PipeWire** screen-capture buffer, and an **OpenCL** intermediate in an **OpenCV** pipeline are all, at bottom, the same object: a `dma_buf` file descriptor carrying a 64-bit **DRM format modifier** that describes its tiling and compression layout. Every chapter in this part is, in part, a study of how that descriptor is allocated, negotiated, exported across a process or namespace boundary, and imported by the next consumer. When negotiation fails — mismatched modifiers, a driver that cannot import a foreign tiling, a sandbox that cannot see the render node — the pipeline falls back to a shared memory buffer and a CPU copy, and the zero-copy promise breaks. Knowing exactly where those fallbacks occur is the practical skill this part conveys.
 
@@ -25,6 +25,20 @@ Every desktop application reaches the GPU through a toolkit, and on Linux the tw
 **GTK4** took the same step with **GskRenderer**, a unified GPU renderer that replaced GTK3's Cairo-on-CPU default. GskRenderer has two GPU paths — **GskVulkanRenderer** and **GskNglRenderer** (OpenGL) — chosen at startup based on driver capability, plus a Cairo fallback for software-only environments. GTK's render model is a tree of **render nodes** (a rounded rectangle, a texture, a blur, a colour matrix), which the renderer lowers into GPU draw calls and shader invocations.
 
 The subtle cross-cutting concern for both toolkits is **explicit GPU synchronisation on Wayland**. When a toolkit submits a frame to the compositor as a DMA-BUF, the compositor must know when the GPU has finished rendering into that buffer before it scans it out. On most drivers, implicit fences carried in the kernel's `dma_resv` reservation object handle this invisibly. On **NVIDIA**, the historical absence of implicit sync caused flicker and tearing, and the fix is the `wp_linux_drm_syncobj_v1` Wayland protocol: the toolkit exports a **DRM sync object** timeline point alongside the buffer, and the compositor waits on that explicit fence before compositing. Both Qt6 and GTK4 now wire this protocol into their Wayland backends, which is what made NVIDIA a first-class Wayland target. Both toolkits also carry the entry point to the font pipeline — glyph shaping, rasterisation, and atlas management — which Chapter 39 introduces and Chapter 47 dissects.
+
+## Cross-Platform Multimedia Integration: SDL3
+
+Where Qt and GTK are widget toolkits that own a desktop object model, **SDL3** (Simple DirectMedia Layer 3) is a lower-level integration library: it exposes unified C APIs for windowing, audio output and capture, keyboard/mouse/gamepad input, camera access, and 2D rendering without providing a widget hierarchy. Games, multimedia tools, and emulators use it because the API surface is small and the mapping to platform primitives is direct.
+
+SDL3.2.0, the first stable ABI-frozen release of the SDL 3 series, shipped in January 2025. SDL2, the predecessor, is now in maintenance mode. On Linux, SDL3 sits above the same platform primitives as Qt and GTK — the same Wayland protocols, the same EGL and Vulkan surface paths, the same Mesa drivers — but exposes them at a coarser granularity and prioritises portability over access to platform-specific extensions.
+
+**The video backend** selects between Wayland (the SDL3 default on Linux) and X11 at startup. On Wayland, SDL3 implements `xdg_toplevel` window management, `libdecor` for client-side decoration on GNOME, `wp_fractional_scale_v1` + `wp_viewporter` for HiDPI, and `wp_security_context_v1` for compositor-side sandbox tagging. For OpenGL, SDL3 creates an EGL context (not GLX) when the Wayland backend is active. For Vulkan, `SDL_Vulkan_CreateSurface` returns a `VkSurfaceKHR` backed by `vkCreateWaylandSurfaceKHR` or `vkCreateXlibSurfaceKHR` transparently.
+
+**The audio backend** probe order on modern Linux is PipeWire → PulseAudio → ALSA → JACK. The PipeWire driver — added to SDL2 in 2021 and the preferred backend in SDL3 — uses `libpipewire-0.3` directly, submitting SDL `SDL_AudioStream` buffers as PipeWire graph nodes. The `SDL_AudioStream` model in SDL3 replaces the SDL2 callback model with a push/pull queue that performs format conversion, resampling, channel remapping, gain, and pitch adjustment transparently, feeding whichever audio session layer is active below.
+
+**The input backend** distinguishes two paths for gamepads. For known controllers — PlayStation, Xbox, Nintendo Switch, Steam — SDL3 uses **HIDAPI** (`/dev/hidraw*`), gaining access to features the generic kernel evdev interface does not expose: DualSense adaptive triggers, gyroscope/accelerometer, LED colour, touchpad, and battery state. For unrecognised controllers, SDL3 falls back to evdev (`/dev/input/event*`) with udev hotplug. Text input and IME are mediated through `zwp_text_input_v3` on Wayland; relative mouse motion through `zwp_relative_pointer_manager_v1` + `zwp_pointer_constraints_v1`.
+
+The **satellite libraries** — **SDL3_image** (multi-format surface loading), **SDL3_mixer** (channel-based audio mixing), and **SDL3_ttf** (FreeType + HarfBuzz text rendering with a GPU-backed Text Engine API) — extend SDL3 without adding framework overhead, making it straightforward to build a multimedia application that loads compressed assets, mixes sound effects over background music, and renders HarfBuzz-shaped text, all through a single coherent API.
 
 ## The Font and Text Pipeline
 
@@ -81,14 +95,18 @@ graph TD
     Ch96["Ch96: libcamera\n(PipelineHandler / IPA / ISP)"]
     Ch111["Ch111: Flatpak Graphics\n(sandbox / GL ext / portals)"]
     Ch114["Ch114: OpenCV GPU Vision\n(T-API / UMat / cv::dnn)"]
+    Ch206["Ch206: SDL3\n(multimedia integration)"]
 
     Ch38b --> Ch38
+    Ch38b --> Ch206
     Ch38 --> Ch96
     Ch38 --> Ch111
+    Ch38 --> Ch206
     Ch39 --> Ch47
     Ch26VIIA -.alternative/successor.-> Ch50
     Ch24VIIA --> Ch111
     Ch24VIIA --> Ch114
+    Ch24VIIA --> Ch206
     Ch38 --> Ch114
     Ch96 --> Ch114
     Ch50 --> Ch114
@@ -96,7 +114,7 @@ graph TD
     Ch26VIIA --> Ch114
 ```
 
-The graph has a clear shape. **ALSA (Ch38b)** is the substrate beneath **PipeWire (Ch38)**, which is in turn the hub of the part: the camera stack (Ch96) reaches applications through PipeWire's camera portal, the sandbox chapter (Ch111) depends on PipeWire's portal model, and PipeWire delivers camera frames into the synthesis chapter (Ch114). **Vulkan Video (Ch50)** sits as an alternative and successor path to the **VA-API** coverage that lives in Part VII-A's Chapter 26 (the dashed edge), and both feed OpenCV. **Qt/GTK (Ch39)** introduces the text pipeline that **font rendering (Ch47)** dissects — a self-contained pair on the toolkit side, independent of the media path. **OpenCV (Ch114)** is the terminal sink of the part: it draws on PipeWire (Ch38) for camera delivery, libcamera (Ch96) for the sensor stack, Vulkan Video (Ch50) and VA-API (Ch26) for decode, Flatpak (Ch111) for packaging, and the Vulkan/EGL foundations (Ch24) from Part VII-A. Two Part VII-A chapters — **Ch24** (the Vulkan ICD loader and EGL/GBM context model) and **Ch26** (VA-API decode) — are prerequisites carried into this part rather than chapters within it.
+The graph has a clear shape. **ALSA (Ch38b)** is the substrate beneath **PipeWire (Ch38)**, which is in turn the hub of the part: the camera stack (Ch96) reaches applications through PipeWire's camera portal, the sandbox chapter (Ch111) depends on PipeWire's portal model, and PipeWire delivers camera frames into the synthesis chapter (Ch114). **SDL3 (Ch206)** draws on both ALSA and PipeWire as its audio backends, and on the EGL/Vulkan foundations from Part VII-A (Ch24) for its windowing and GPU surface paths — it sits beside Qt/GTK as a peer multimedia integration layer. **Vulkan Video (Ch50)** sits as an alternative and successor path to the **VA-API** coverage that lives in Part VII-A's Chapter 26 (the dashed edge), and both feed OpenCV. **Qt/GTK (Ch39)** introduces the text pipeline that **font rendering (Ch47)** dissects — a self-contained pair on the toolkit side, independent of the media path. **OpenCV (Ch114)** is the terminal sink of the part: it draws on PipeWire (Ch38) for camera delivery, libcamera (Ch96) for the sensor stack, Vulkan Video (Ch50) and VA-API (Ch26) for decode, Flatpak (Ch111) for packaging, and the Vulkan/EGL foundations (Ch24) from Part VII-A. Two Part VII-A chapters — **Ch24** (the Vulkan ICD loader and EGL/GBM context model) and **Ch26** (VA-API decode) — are prerequisites carried into this part rather than chapters within it.
 
 ## Chapter Progression
 
@@ -108,6 +126,8 @@ The chapters form a deliberate progression from the media session substrate up t
 
 - **Chapter 39 — Qt and GTK Rendering Pipelines** covers how the two dominant Linux GUI toolkits map their scene graphs onto **Vulkan** and **OpenGL ES**: **Qt6**'s **QRhi** and the Qt Quick scene-graph render loop with the **qsb** shader baker, **GTK4**'s **GskRenderer** with its **GskVulkanRenderer** and **GskNglRenderer** paths, and how both add explicit sync via `wp_linux_drm_syncobj_v1` for **NVIDIA** compatibility. It introduces the font pipeline that the next chapter expands.
 
+- **Chapter 206 — SDL3: Cross-Platform Multimedia Integration on Linux** covers the complete SDL3 API surface from a Linux systems perspective: the subsystem and hint model, video backend selection (Wayland-default with xdg-toplevel/libdecor/EGL, X11 fallback), HiDPI via `wp_fractional_scale_v1`, Vulkan surface creation, the `SDL_AudioStream` push/pull model with PipeWire/ALSA backend probe order, input (keyboard/mouse/gamepad/haptic/sensor), Wayland-specific limitations (no global mouse position, no window placement), the `SDL_Renderer` 2D pipeline (`SDL_Surface` vs `SDL_Texture`; `SDL_RenderTexture`), the satellite library trio (SDL3_image/mixer/ttf), and SDL3-only APIs — camera via V4L2/PipeWire, file dialogs via xdg-desktop-portal, the properties system, and main-callbacks. Closes with a full SDL2 → SDL3 migration table. Read alongside Chapter 39 for a complete view of Linux multimedia integration options.
+
 - **Chapter 47 — Font and Text Rendering Pipeline** is the deep dive on the text path introduced in Chapter 39. It covers **FreeType 2** hinting, **HarfBuzz** OpenType shaping for complex scripts, **fontconfig** matching, **Cairo** compositing, **Pango** layout, and glyph-atlas strategies across **Qt**, **GTK4**, **Skia**, and **WebRender** — including why LCD subpixel rendering is disabled on composited Wayland and how **OpenType variable fonts** challenge atlas cache-key design. Browser and terminal developers should read Chapters 39 and 47 as a pair.
 
 - **Chapter 50 — Vulkan Video Extensions** covers the `VK_KHR_video_queue`, `VK_KHR_video_decode_queue`, and `VK_KHR_video_encode_queue` family plus the H.264/H.265/AV1 codec extensions, from specification rationale through **RADV** and **ANV** implementation in Mesa to **FFmpeg** `hwaccel` integration, with an explicit comparison against **VA-API** for API selection. Read it after any Part VII-A exposure to VA-API (Chapter 26), which it positions itself against.
@@ -118,7 +138,7 @@ The chapters form a deliberate progression from the media session substrate up t
 
 - **Chapter 114 — OpenCV and GPU-Accelerated Computer Vision on Linux** is the synthesis chapter. It covers the **cv::UMat** / **Transparent API** dispatch to **OpenCL** (via **rusticl**, **intel-compute-runtime**, or **pocl**), the **cv::cuda::GpuMat**/**Stream** model for NVIDIA, **VA-API** decode for zero-copy camera-to-inference, the full libcamera/V4L2 → DMA-BUF → OpenCL → EGL pipeline, the **cv::dnn** backend selector with **ONNX**, and the **GStreamer** `VideoCapture` backend. It draws on Chapters 38, 96, 50, and 111 here plus Chapters 24, 25, and 26 in Part VII-A, and should be read last.
 
-Readers should arrive here having read Part VII-A — specifically Chapter 24 (Vulkan device model, EGL/GBM, `linux-dmabuf` modifier negotiation, DRM sync objects) and Chapter 26 (VA-API surface model and V4L2 Media Controller basics) — and Parts I–III for the DRM/KMS, Mesa, and Wayland substrate. Parts VIII–X build on this part: the browser chapters rely on the PipeWire, Vulkan Video, and font foundations laid here, and any later robotics or embedded-vision material assumes Chapter 114's pipeline patterns.
+Readers should arrive here having read Part VII-A — specifically Chapter 24 (Vulkan device model, EGL/GBM, `linux-dmabuf` modifier negotiation, DRM sync objects) and Chapter 26 (VA-API surface model and V4L2 Media Controller basics) — and Parts I–III for the DRM/KMS, Mesa, and Wayland substrate. Parts VIII–X build on this part: the browser chapters rely on the PipeWire, Vulkan Video, and font foundations laid here; the gaming chapters (Part VIII) build on the Wayland and Vulkan surface model that SDL3 exercises; and any later robotics or embedded-vision material assumes Chapter 114's pipeline patterns.
 
 ## Part Roadmap Summary
 
@@ -135,6 +155,8 @@ Readers should arrive here having read Part VII-A — specifically Chapter 24 (V
 - **libcamera 0.7.x.** Multi-threaded software-ISP debayering and GPU-ISP (GLES 2.0) offload are landing, reducing the CPU-copy cost on hardware without a dedicated ISP. The PipeWire camera portal continues to gain richer control negotiation.
 
 - **Flatpak and OpenCV updates.** Flatpak nested-sandbox improvements (Electron/CEF under Flatpak) continue, and **OpenCV 5.x** is ramping up GPU inference in its new graph DNN engine, with T-API dispatch and Vulkan compute DNN operator coverage expanding.
+
+- **SDL3 ecosystem stabilisation.** SDL3 is filling in its satellite library matrix (SDL3_image, SDL3_mixer, SDL3_ttf all tracking the SDL3 API), hardening the PipeWire audio backend, completing the `SDL_GPUDevice` API introduced in SDL3 (Chapter 81), and expanding camera portal support. The sdl2-compat shim will continue to service the SDL2 installed base while the SDL2-to-SDL3 migration of major game engines and emulators progresses.
 
 ### Medium-term (1–3 years)
 
@@ -156,6 +178,6 @@ Readers should arrive here having read Part VII-A — specifically Chapter 24 (V
 
 ---
 
-*Part VII-B spans Chapters 38, 38b, 39, 47, 50, 96, 111, and 114. Chapter 38 (PipeWire) is the recommended entry point; Chapter 38b (ALSA) provides the audio substrate for readers who need it.*
+*Part VII-B spans Chapters 38, 38b, 39, 47, 50, 96, 111, 114, and 206. Chapter 38 (PipeWire) is the recommended entry point; Chapter 38b (ALSA) provides the audio substrate for readers who need it; Chapter 206 (SDL3) covers the portable multimedia integration layer that sits atop both.*
 
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
