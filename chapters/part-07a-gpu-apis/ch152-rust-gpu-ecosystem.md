@@ -36,6 +36,7 @@
 25. [pixels: Simple wgpu Framebuffer](#pixels-simple-wgpu-framebuffer)
 26. [rspirv: SPIR-V IR in Rust](#rspirv-spir-v-ir-in-rust)
 27. [Rust Ownership vs the GPU Memory Model](#rust-ownership-vs-the-gpu-memory-model)
+    - [Rust's Official Strategic Direction for GPU](#rusts-official-strategic-direction-for-gpu)
 28. [Contributing to wgpu-core, wgpu-hal, and naga](#contributing-to-wgpu-core-wgpu-hal-and-naga)
 29. [Roadmap](#roadmap)
 30. [Integrations](#integrations)
@@ -2239,6 +2240,99 @@ The pragmatic consensus in the Rust GPU ecosystem is:
 - **Rust shaders (rust-gpu)**: use `unsafe` to explicitly delineate the boundary. The borrow checker's coverage of GPU code is useful but partial; `unsafe` is the honest acknowledgment of what it cannot verify.
 
 The long-term roadmap section (§29) mentions the open goal of "encoding Vulkan synchronisation and resource lifetimes as Rust types without hiding API concepts" — this remains a research-level aspiration rather than a solved problem.
+
+---
+
+### Rust's Official Strategic Direction for GPU
+
+The Rust Project is pursuing GPU support through concrete, officially tracked initiatives — but the strategy is deliberately pragmatic rather than type-theoretic. Understanding what is and is not official clarifies where the ecosystem is heading.
+
+#### Official GPU Targets
+
+Two GPU targets are part of the Rust standard target tier policy:
+
+- **`nvptx64-nvidia-cuda`** — **Tier 2** (officially supported, tested in CI). As of Rust 1.97 (July 2026), the baseline was raised to SM 7.0+ / PTX 7.0+, dropping support for pre-Turing NVIDIA hardware. This is the only GPU target with compiler team commitment to not break. [[Source: rustc platform support](https://doc.rust-lang.org/nightly/rustc/platform-support/nvptx64-nvidia-cuda.html)]
+
+- **`amdgcn-amd-amdhsa`** — **Tier 3** (builds in CI but not guaranteed to work; community-maintained by `@Flakebi`). This covers AMD ROCm / HIP kernel compilation.
+
+Neither target includes the Rust standard library in any meaningful form — `no_std` is the only viable option. There is no official SPIR-V target; the Khronos SPIR-V path is entirely community-driven via the rust-gpu project (see §§4–6).
+
+#### `extern "gpu-kernel"` ABI Unification
+
+[Tracking issue #135467](https://github.com/rust-lang/rust/issues/135467) (opened January 2025) proposes a unified `extern "gpu-kernel"` calling convention that would replace the separate `extern "ptx-kernel"` (NVIDIA) and `extern "amdgpu-kernel"` (AMD) ABIs currently required to write GPU entry points. The motivation is cross-vendor portability: a single attribute declares "this function is a GPU kernel entry point" without binding to a specific vendor's ABI name. The feature is partially implemented behind a nightly gate as of mid-2026; it is not yet stable.
+
+```rust
+// Proposed syntax (nightly, feature-gated)
+#[no_mangle]
+pub extern "gpu-kernel" fn add_vectors(
+    a: *const f32,
+    b: *const f32,
+    out: *mut f32,
+    n: u32,
+) {
+    // kernel body — targets both nvptx64 and amdgcn
+}
+```
+
+This is a language-level change, not a library. It does not extend the borrow checker's reach into GPU shared memory; it only standardises the function ABI for the host-to-device call boundary.
+
+#### `std::offload` and `std::autodiff` — The Official High-Level Strategy
+
+The closest thing to an official Rust GPU memory model strategy is the **`std::offload` project goal**, part of the 2025H1 and 2025H2 Rust Project Goal slate, sponsored by Manuel Drehwald (Lawrence Livermore National Laboratory / MIT):
+
+- **`#[offload]`** — a macro that marks a Rust function for GPU execution. The compiler (via LLVM's GPU offloading infrastructure, which supports NVIDIA, AMD, and Intel) generates a GPU kernel and the host-side dispatch code. Ownership is used to determine which data must be transferred to the device before the call and retrieved afterward.
+
+- **`#[autodiff]`** — automatic differentiation at the Rust IR level, enabling ML training workloads without a Python layer. This was the first piece shipped (nightly unstable as of late 2025).
+
+- **`#[batching]`** — vectorised batch execution of the offloaded function.
+
+[[Source: Rust Project Goals 2025H2 — "GPU offloading"](https://rust-lang.github.io/rust-project-goals/2025h2/offload.html)]
+
+The critical design choice in `std::offload` is **not** to run the borrow checker inside the GPU kernel. The kernel body is compiled through LLVM's GPU backend (same path as Clang's GPU offloading); Rust ownership governs the host↔device data movement boundary, but the GPU-side memory model is LLVM's. This is an explicit architectural decision: solve the problem LLVM can already solve, rather than extending Rust's type system into territory that requires linear or dependent types.
+
+```rust
+// Hypothetical std::offload usage (nightly, in-progress as of 2026)
+#[offload(target = "nvptx64")]
+fn vector_add(a: &[f32], b: &[f32], out: &mut [f32]) {
+    // Rust ownership tracks that `a`, `b` → device (read-only)
+    // and `out` → device (write) + returned to host after kernel
+    // The borrow checker enforces this at the *call site*, not inside
+    // the kernel body
+    for i in 0..a.len() {
+        out[i] = a[i] + b[i];
+    }
+}
+```
+
+The 2026 project goal, **"High-Level ML Optimizations"** (lang champion `@TC`, compiler champion Oli Scherer), extends this with an MLIR backend — enabling whole-model ML training (matmul, convolution, attention) through Rust's ownership model while delegating the numerical backend to MLIR's GPU dialects. The targets include NVIDIA, AMD, Intel, TPU, Trainium, and Qualcomm LPU.
+
+#### What Is Not Official Rust
+
+Several GPU Rust projects are influential but not part of the official Rust Project:
+
+| Project | Origin | Status |
+|---------|--------|--------|
+| **rust-gpu** (`rustc_codegen_spirv`) | Embark Studios → community org (Rust-GPU) | Open-source, externally maintained; Embark archived their fork Oct 2025 |
+| **cuda-oxide** | NVlabs (NVIDIA Research) | Open-source, not affiliated with Rust Project; compiles Rust to PTX via Stable MIR / `rustc_public` |
+| **VectorWare Rust-std-on-GPU** | VectorWare startup | Experimental; uses CUDA hostcall to run Rust std on GPU; considering upstreaming |
+| **cuTile-rs** | NVIDIA | Internal CUDA tile abstraction; Rust bindings, not a Rust compiler extension |
+| **WGSL** | W3C WebGPU WG | Rust-influenced syntax, separate language; W3C Candidate Recommendation March 2026 |
+
+No RFC for GPU-specific linear types, affine types, or dependent types exists as of mid-2026. The Unsafe Code Guidelines (UCG) working group has no active GPU memory model work. SPIR-V is not on the official target tier roadmap.
+
+#### The Strategic Picture
+
+The Rust Project's GPU strategy can be summarised as:
+
+1. **Targets**: Tier 2 (nvptx64) and Tier 3 (amdgcn) targets give Rust compilation to GPU ISAs without solving the memory safety problem.
+
+2. **ABI**: `extern "gpu-kernel"` unifies the entry-point convention cross-vendor without extending the type system.
+
+3. **High-level offload**: `std::offload` uses LLVM's existing GPU infrastructure and Rust ownership to manage the boundary. This avoids requiring new type theory while delivering practical GPU integration.
+
+4. **ML optimisations**: MLIR backend for 2026 enables high-performance training in Rust without a Python runtime.
+
+The strategy is deliberately *not* to solve the fundamental incompatibility between Rust's aliasing XOR mutability and GPU shared memory by extending the type system. That remains a research problem. The official approach accepts runtime validation at the host boundary, LLVM/MLIR for the GPU numerical path, and `unsafe` for low-level kernel code — the same pragmatic layering that the rest of the Rust unsafe ecosystem uses.
 
 ---
 
