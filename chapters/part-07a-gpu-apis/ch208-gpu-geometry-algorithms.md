@@ -17,6 +17,7 @@
    - 2.1 [Cox-de Boor Recursion and De Boor's Algorithm](#21-cox-de-boor-recursion-and-de-boors-algorithm)
    - 2.2 [GPU Tessellation of Bézier Patches (TCS/TES)](#22-gpu-tessellation-of-bézier-patches-tcstes)
    - 2.3 [OpenCASCADE NURBS Tessellation for GPU Upload](#23-opencascade-nurbs-tessellation-for-gpu-upload)
+   - 2.4 [Displacement Mapping on Tessellated Surfaces](#24-displacement-mapping-on-tessellated-surfaces)
 3. [Metaballs and Implicit Surfaces](#3-metaballs-and-implicit-surfaces)
    - 3.1 [Field Functions](#31-field-functions)
    - 3.2 [Marching Cubes on the GPU](#32-marching-cubes-on-the-gpu)
@@ -24,11 +25,14 @@
    - 3.4 [SDF Construction: Jump Flooding on the GPU](#34-sdf-construction-jump-flooding-on-the-gpu)
    - 3.5 [Procedural Noise Density Fields](#35-procedural-noise-density-fields)
    - 3.6 [NanoVDB: Sparse GPU Volumes](#36-nanovdb-sparse-gpu-volumes)
+   - 3.7 [SDF CSG Operations](#37-sdf-csg-operations)
 4. [Skeletal Animation: Skinning](#4-skeletal-animation-skinning)
-   - 4.1 [Linear Blend Skinning (LBS)](#41-linear-blend-skinning-lbs)
-   - 4.2 [Dual Quaternion Skinning (DQS)](#42-dual-quaternion-skinning-dqs)
-   - 4.3 [GPU Compute Skinning Pre-Pass](#43-gpu-compute-skinning-pre-pass)
-   - 4.4 [Blend Shapes (Morph Targets)](#44-blend-shapes-morph-targets)
+   - 4.1 [Forward Kinematics on GPU](#41-forward-kinematics-on-gpu)
+   - 4.2 [Linear Blend Skinning (LBS)](#42-linear-blend-skinning-lbs)
+   - 4.3 [Dual Quaternion Skinning (DQS)](#43-dual-quaternion-skinning-dqs)
+   - 4.4 [GPU Compute Skinning Pre-Pass](#44-gpu-compute-skinning-pre-pass)
+   - 4.5 [Blend Shapes (Morph Targets)](#45-blend-shapes-morph-targets)
+   - 4.6 [PBD Cloth and Soft-Body Simulation](#46-pbd-cloth-and-soft-body-simulation)
 5. [Inverse Kinematics on the GPU](#5-inverse-kinematics-on-the-gpu)
    - 5.1 [CCD: Cyclic Coordinate Descent](#51-ccd-cyclic-coordinate-descent)
    - 5.2 [FABRIK: Forward and Backward Reaching IK](#52-fabrik-forward-and-backward-reaching-ik)
@@ -43,6 +47,8 @@
    - 7.2 [meshoptimizer](#72-meshoptimizer)
    - 7.3 [Vertex Clustering on GPU](#73-vertex-clustering-on-gpu)
    - 7.4 [LOD Selection in Mesh Shaders](#74-lod-selection-in-mesh-shaders)
+   - 7.5 [Smooth Normals Post-Pass](#75-smooth-normals-post-pass)
+   - 7.6 [Procedural GPU Instancing: Grass, Hair, Fur](#76-procedural-gpu-instancing-grass-hair-fur)
 8. [GPU BVH Construction](#8-gpu-bvh-construction)
    - 8.1 [Morton Codes and LBVH](#81-morton-codes-and-lbvh)
    - 8.2 [LBVH Tree Construction (Karras 2012)](#82-lbvh-tree-construction-karras-2012)
@@ -564,6 +570,70 @@ for (; faceExp.More(); faceExp.Next()) {
 
 [Source: OCCT `src/ModelingAlgorithms/TKMesh/BRepMesh/BRepMesh_IncrementalMesh.cxx`]
 
+### 2.4 Displacement Mapping on Tessellated Surfaces
+
+The §2.2 TCS/TES pipeline produces a smooth mathematical surface. In practice, hardware tessellation is almost always paired with a displacement map that pushes each tessellated vertex outward along its normal, adding high-frequency geometric detail without increasing base-mesh complexity.
+
+**T-junction and crack prevention.** Before applying displacement, the TCS must ensure adjacent patches share identical outer tessellation levels on their shared edges. If patch A sets `gl_TessLevelOuter[1] = 12` and its neighbor sets `gl_TessLevelOuter[3] = 8` for the shared edge, a T-junction crack opens. The fix: store per-patch LOD values in a shared SSBO, and in the TCS read the neighbor's level for each shared edge and take the minimum:
+
+```glsl
+// In TCS, before writing gl_TessLevelOuter:
+float myLevel    = computeScreenSpaceLOD(patchCenter);
+float neighborL  = patchLOD[neighborPatchID_left];
+float neighborR  = patchLOD[neighborPatchID_right];
+gl_TessLevelOuter[0] = min(myLevel, neighborL);
+gl_TessLevelOuter[2] = min(myLevel, neighborR);
+gl_TessLevelOuter[1] = gl_TessLevelOuter[3] = myLevel;
+gl_TessLevelInner[0] = gl_TessLevelInner[1]  = myLevel;
+```
+
+Use `fractional_even_spacing` in the TES `layout()` declaration to smooth visual popping when levels change between frames; this does not eliminate cracks on its own but makes the remaining visual transitions less abrupt.
+
+**Displacement in the TES.** After computing the smooth surface position `pos` and normal `te_normal`, sample a heightmap and push the vertex:
+
+```glsl
+// Extended TES from §2.2, with displacement
+layout(set=0, binding=1) uniform sampler2D displacementMap;
+layout(push_constant) uniform PC {
+    mat4  view_proj;
+    mat4  model;
+    float dispScale;
+    float dispBias;    // negative for inward displacement
+};
+
+void main() {
+    float u = gl_TessCoord.x, v = gl_TessCoord.y;
+
+    // Smooth patch position and normal (as in §2.2)
+    vec4 Bu = bernstein3(u), Bv = bernstein3(v);
+    vec3 pos   = bilerp_patch(Bu, Bv);
+    vec3 dpdu  = bilerp_patch(bernstein3_deriv(u), Bv);
+    vec3 dpdv  = bilerp_patch(Bu, bernstein3_deriv(v));
+    vec3 N_geo = normalize(cross(dpdu, dpdv));
+
+    // UV from a bilinear blend of corner UVs passed via a second patch array
+    vec2 uv    = mix(mix(tc_uv[0], tc_uv[3], u),
+                     mix(tc_uv[12], tc_uv[15], u), v);
+
+    // Sample and apply displacement
+    float disp    = texture(displacementMap, uv).r * dispScale + dispBias;
+    vec3  displaced = pos + disp * N_geo;
+
+    // Recompute shading normal from displaced neighbours (central difference)
+    float eps  = 0.001;
+    float du_p = texture(displacementMap, uv + vec2(eps, 0)).r * dispScale + dispBias;
+    float dv_p = texture(displacementMap, uv + vec2(0, eps)).r * dispScale + dispBias;
+    vec3  dPos_du = dpdu + (du_p - disp) / eps * N_geo;
+    vec3  dPos_dv = dpdv + (dv_p - disp) / eps * N_geo;
+    te_normal     = normalize(cross(dPos_du, dPos_dv));
+
+    te_pos_world = (model * vec4(displaced, 1.0)).xyz;
+    gl_Position  = view_proj * vec4(te_pos_world, 1.0);
+}
+```
+
+In production, a precomputed tangent-space normal map (baked from a high-poly mesh) in the fragment shader replaces the real-time TES normal derivation. The TES provides the coarse displaced position; the normal map provides the per-pixel shading normal. This combination — hardware tessellation + displacement + tangent-space normals — is the standard terrain pipeline in Unreal Engine's Landscape system, Godot's `ShaderMaterial` terrain nodes, and id Tech 7's surface subdivision.
+
 ---
 
 ## 3. Metaballs and Implicit Surfaces
@@ -936,11 +1006,199 @@ Use `VK_EXT_scalar_block_layout` (or `std430`) to match NanoVDB's internal memor
 
 ---
 
+### 3.7 SDF CSG Operations
+
+Signed distance functions compose algebraically without topology overhead. The core Boolean operators are:
+
+```glsl
+float sdfUnion(float a, float b)     { return min(a, b); }
+float sdfIntersect(float a, float b) { return max(a, b); }
+float sdfSubtract(float a, float b)  { return max(a, -b); }
+```
+
+These are exact for convex primitives and approximate (but visually correct) for concave shapes. Inigo Quilez's **polynomial smooth union** blends a region of width `k` around the join seam:
+
+```glsl
+float smin(float a, float b, float k) {
+    float h = max(k - abs(a - b), 0.0) / k;
+    return min(a, b) - h * h * h * k * (1.0 / 6.0);
+}
+float smax(float a, float b, float k) {
+    return -smin(-a, -b, k);
+}
+```
+
+`smin` is C¹-continuous at the join boundary; for C²-continuity use the cubic or quartic variants from [Quilez 2018 SDF operations](https://iquilezles.org/articles/sdfops/).
+
+**Primitive SDFs:**
+
+```glsl
+float sdSphere(vec3 p, float r)          { return length(p) - r; }
+float sdBox(vec3 p, vec3 b)              { vec3 q = abs(p) - b; return length(max(q,0.)) + min(max(q.x,max(q.y,q.z)),0.); }
+float sdCapsule(vec3 p, vec3 a, vec3 b, float r) {
+    vec3 ab = b-a, ap = p-a;
+    float t = clamp(dot(ap,ab)/dot(ab,ab), 0., 1.);
+    return length(ap - t*ab) - r;
+}
+float sdTorus(vec3 p, vec2 t)            { vec2 q = vec2(length(p.xz)-t.x, p.y); return length(q)-t.y; }
+```
+
+**Domain operations** transform the query point `p` before evaluation, effectively deforming the shape without changing the SDF function:
+
+```glsl
+vec3 opRepeat(vec3 p, vec3 c) { return mod(p + 0.5*c, c) - 0.5*c; }
+vec3 opRepeatLimited(vec3 p, float c, vec3 l) {
+    return p - c * clamp(round(p/c), -l, l);
+}
+vec3 opTwist(vec3 p, float k) {
+    float c = cos(k * p.y), s = sin(k * p.y);
+    return vec3(c*p.x - s*p.z, p.y, s*p.x + c*p.z);
+}
+vec3 opBend(vec3 p, float k) {
+    float c = cos(k * p.x), s = sin(k * p.x);
+    return vec3(c*p.x - s*p.y, s*p.x + c*p.y, p.z);
+}
+```
+
+**CSG scene function and sphere tracer:**
+
+```glsl
+float sceneSDF(vec3 p) {
+    // A box with a cylindrical hole, smoothly unioned with a sphere
+    float box      = sdBox(p - vec3(0,0,0), vec3(1.0));
+    vec3  cylP     = p;
+    float cyl      = sdCapsule(cylP, vec3(0,-2,0), vec3(0,2,0), 0.4);
+    float hollowed = sdfSubtract(box, cyl);      // punch hole in box
+    float ball     = sdSphere(p - vec3(2,0,0), 0.8);
+    return smin(hollowed, ball, 0.3);            // smooth union with sphere
+}
+
+vec3 calcNormal(vec3 p) {                        // central difference gradient
+    const float e = 0.001;
+    return normalize(vec3(
+        sceneSDF(p + vec3(e,0,0)) - sceneSDF(p - vec3(e,0,0)),
+        sceneSDF(p + vec3(0,e,0)) - sceneSDF(p - vec3(0,e,0)),
+        sceneSDF(p + vec3(0,0,e)) - sceneSDF(p - vec3(0,0,e))));
+}
+
+// Fragment shader sphere trace (ray origin ro, direction rd)
+vec3 sphereTrace(vec3 ro, vec3 rd) {
+    float t = 0.0;
+    for (int i = 0; i < 128; ++i) {
+        float d = sceneSDF(ro + rd * t);
+        if (d < 0.001) return ro + rd * t;       // hit
+        t += d;
+        if (t > 100.0) break;                    // miss
+    }
+    return vec3(1e10);                           // sentinel
+}
+```
+
+The sphere-trace loop converges in O(log(1/ε)) steps for well-formed SDFs. The dominant cost is `sceneSDF` evaluations — each primitive call is a handful of ALU instructions, so deeply nested CSG trees with 20–30 primitives run at 60 fps in a fragment shader at 1080p on modern GPUs.
+
+**Compute-shader SDF grid baking.** For scenes with many or expensive primitives, bake the SDF into a 3D texture:
+
+```glsl
+// bake_sdf.comp  — one thread per voxel
+layout(local_size_x=8, local_size_y=8, local_size_z=8) in;
+layout(set=0, binding=0, r32f) uniform image3D sdfVolume;
+layout(push_constant) uniform PC { vec3 origin; vec3 cellSize; };
+
+void main() {
+    ivec3 id   = ivec3(gl_GlobalInvocationID);
+    vec3  pos  = origin + vec3(id) * cellSize;
+    float dist = sceneSDF(pos);
+    imageStore(sdfVolume, id, vec4(dist));
+}
+```
+
+The baked volume is then sphere-traced via a 3D texture lookup at runtime with trilinear interpolation — much faster than re-evaluating the full scene function per frame, at the cost of discretization error proportional to `cellSize`.
+
+---
+
 ## 4. Skeletal Animation: Skinning
 
-### 4.1 Linear Blend Skinning (LBS)
+### 4.1 Forward Kinematics on GPU
 
-Linear Blend Skinning blends vertex positions across bone influences:
+A skeleton is a directed tree of joints; each joint's world transform depends on its parent's. Forward kinematics (FK) computes every joint's global transform by traversing the tree root-to-leaf. On the CPU this is a serial depth-first walk; on the GPU, the tree is processed one depth level per compute dispatch, so all joints at the same depth execute in parallel.
+
+**Data layout.** Pack the skeleton into three SSBOs: parent indices, local transforms (as quaternion + translation, 8 floats per joint), and output global transforms (mat4, 16 floats per joint).
+
+```glsl
+// fk_level.comp  — one thread per joint at a given depth level
+layout(local_size_x=64) in;
+
+struct Joint { vec4 rot; vec3 trans; uint parentIdx; };  // 8 floats + 1 uint
+
+layout(set=0, binding=0) readonly  buffer Joints  { Joint joints[]; };
+layout(set=0, binding=1) readonly  buffer LocalXF { mat4 localXF[];  };   // local transform per joint
+layout(set=0, binding=2) writeonly buffer GlobalXF{ mat4 globalXF[]; };   // written this dispatch
+layout(push_constant)    uniform PC { uint jointCount; };
+
+mat4 quatToMat4(vec4 q, vec3 t) {
+    float x=q.x, y=q.y, z=q.z, w=q.w;
+    return mat4(
+        1-2*(y*y+z*z),   2*(x*y+w*z),   2*(x*z-w*y), 0,
+          2*(x*y-w*z), 1-2*(x*x+z*z),   2*(y*z+w*x), 0,
+          2*(x*z+w*y),   2*(y*z-w*x), 1-2*(x*x+y*y), 0,
+        t.x,             t.y,             t.z,         1
+    );
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= jointCount) return;
+
+    mat4 local  = quatToMat4(joints[idx].rot, joints[idx].trans);
+    uint parent = joints[idx].parentIdx;
+    // Parent's global transform was written by the previous dispatch
+    mat4 global = (parent == 0xFFFFFFFF) ? local : globalXF[parent] * local;
+    globalXF[idx] = global;
+}
+```
+
+The host dispatches once per depth level, inserting a `VkMemoryBarrier` (`srcAccess = SHADER_WRITE`, `dstAccess = SHADER_READ`) between dispatches so each level reads fully-committed parent transforms:
+
+```c
+for (uint32_t d = 0; d <= maxDepth; ++d) {
+    // push level's joint list via a per-level indirect dispatch buffer
+    vkCmdDispatch(cmd, (levelJointCounts[d] + 63) / 64, 1, 1);
+    if (d < maxDepth) {
+        VkMemoryBarrier bar = { VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT };
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 1, &bar, 0, NULL, 0, NULL);
+    }
+}
+```
+
+**Animation blending (NLerp).** To blend between two animation clips, NLerp the per-joint quaternions on the GPU before the FK dispatch:
+
+```glsl
+// nlerp_blend.comp
+layout(set=0, binding=0) readonly  buffer ClipA { vec4 rotA[]; };
+layout(set=0, binding=1) readonly  buffer ClipB { vec4 rotB[]; };
+layout(set=0, binding=2) writeonly buffer BlendedRot { vec4 blended[]; };
+layout(push_constant) uniform PC { float t; uint jointCount; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= jointCount) return;
+    vec4 qa = rotA[i], qb = rotB[i];
+    // Antipodality correction: ensure shorter-arc interpolation
+    if (dot(qa, qb) < 0.0) qb = -qb;
+    blended[i] = normalize(mix(qa, qb, t));
+}
+```
+
+NLerp is not constant-speed (unlike SLerp) but runs with no transcendental instructions and is indistinguishable from SLerp for blending weights below 0.5 angular distance. For game characters with 50–200 joints, both the NLerp blend and the FK dispatch complete in well under 0.1 ms on discrete GPUs, making full GPU skeletal pipelines practical. [Source: ARM Mali GPU Best Practices, skeletal animation chapter; CDLOD2 paper §5.2 for level-of-detail FK scheduling]
+
+### 4.2 Linear Blend Skinning (LBS)
+
+Linear Blend Skinning blends vertex positions across bone influences: 
 
 ```
 v' = Σᵢ wᵢ · Mᵢ · v
@@ -990,7 +1248,7 @@ void main() {
 
 LBS suffers from the "candy-wrapper" artifact at high-twist rotations (the mesh collapses toward the bone axis). Dual Quaternion Skinning corrects this.
 
-### 4.2 Dual Quaternion Skinning (DQS)
+### 4.3 Dual Quaternion Skinning (DQS)
 
 A dual quaternion encodes rotation and translation as `DQ = q_r + ε·q_d` where `ε² = 0` and `q_d = 0.5·t̂·q_r` (t̂ = translation as pure quaternion).
 
@@ -1039,7 +1297,7 @@ vec3 dqs_apply(uvec4 joints, vec4 weights, vec3 pos) {
 
 [Source: Kavan et al. (2007), "Skinning with Dual Quaternions", I3D. DOI: 10.1145/1230100.1230107]
 
-### 4.3 GPU Compute Skinning Pre-Pass
+### 4.4 GPU Compute Skinning Pre-Pass
 
 Computing skinning in a compute pass and writing to a pre-skinned vertex buffer allows all subsequent rendering passes (opaque, shadow, reflections) to reuse the result without re-executing the vertex shader skinning math:
 
@@ -1088,7 +1346,7 @@ jointMatrix[i] = globalNodeTransform(skin.joints[i]) × inverseBindMatrix[i]
 where `inverseBindMatrix[i]` is stored as accessor type `MAT4` in the glTF binary.
 [Source: https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#skins]
 
-### 4.4 Blend Shapes (Morph Targets)
+### 4.5 Blend Shapes (Morph Targets)
 
 Morph targets store per-vertex position deltas from the base mesh. The vertex shader interpolates among targets using weight values animated on the CPU:
 
@@ -1109,6 +1367,95 @@ void main() {
 ```
 
 For large numbers of targets (100+ FACS blend shapes for facial animation), store deltas as a 2D texture atlas indexed by vertex and target index, and evaluate in a compute pre-pass analogous to the skinning pre-pass above.
+
+### 4.6 PBD Cloth and Soft-Body Simulation
+
+Position-Based Dynamics (Müller et al. 2007, Macklin et al. 2016 XPBD) simulates cloth by iteratively projecting constraint violations rather than solving forces. Every vertex carries position `p`, predicted position `p̃`, and velocity `v`. A GPU PBD frame consists of:
+
+1. **Integration pass** — apply external forces (gravity, wind), predict new positions
+2. **Constraint projection** — iteratively correct positions to satisfy distance and bending constraints
+3. **Velocity update** — derive velocity from position delta; apply damping
+
+**Integration pass (`pbd_integrate.comp`):**
+
+```glsl
+layout(local_size_x=64) in;
+layout(set=0, binding=0) buffer Pos      { vec4 pos[];  };   // xyz=position, w=invMass
+layout(set=0, binding=1) buffer PosOld   { vec4 posOld[];};
+layout(push_constant) uniform PC { float dt; vec3 gravity; float damping; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    vec4  p   = pos[i];
+    float w   = p.w;
+    if (w == 0.0) return;  // pinned vertex
+
+    vec3  v   = (p.xyz - posOld[i].xyz) / dt;  // Verlet velocity
+    v        += gravity * dt;
+    v        *= pow(damping, dt);               // velocity damping
+    posOld[i] = p;
+    pos[i].xyz = p.xyz + v * dt;
+}
+```
+
+**Stretch constraint projection (`pbd_stretch.comp`).** Each constraint is an edge (i, j) with rest length `d0`. For parallel GPU evaluation, edges are graph-colored into independent sets; each dispatch processes one color class:
+
+```glsl
+layout(local_size_x=64) in;
+layout(set=0, binding=0) buffer Pos       { vec4 pos[]; };
+layout(set=0, binding=1) readonly buffer Edges {
+    uint   edgeA[];    // vertex index A
+    uint   edgeB[];    // vertex index B
+    float  restLen[];  // rest length d0
+};
+layout(push_constant) uniform PC { uint edgeCount; float stiffness; };
+
+void main() {
+    uint e = gl_GlobalInvocationID.x;
+    if (e >= edgeCount) return;
+
+    uint  i  = edgeA[e], j = edgeB[e];
+    vec3  pi = pos[i].xyz, pj = pos[j].xyz;
+    float wi = pos[i].w,   wj = pos[j].w;
+    float d  = length(pi - pj);
+    float C  = d - restLen[e];                  // constraint violation
+    if (abs(C) < 1e-6) return;
+
+    vec3  n  = (pi - pj) / (d + 1e-10);
+    float s  = -C / (wi + wj) * stiffness;      // XPBD: include compliance term here
+    pos[i].xyz += s * wi * n;
+    pos[j].xyz -= s * wj * n;
+}
+```
+
+Graph coloring (Welsh-Powell or Jones-Plassman on GPU via independent-set stripping) groups edges so no two edges in a color class share a vertex, making the per-color dispatch race-free.
+
+**Dihedral bending constraint.** A bending constraint acts on a quad formed by two adjacent triangles sharing edge (p1, p2), with tips at p0 and p3. The constraint is `C = θ − θ₀` where `θ` is the current dihedral angle. The gradient computation follows Müller 2007 Appendix A:
+
+```glsl
+// Simplified dihedral bend for one shared edge
+float dihedralConstraint(vec3 p0, vec3 p1, vec3 p2, vec3 p3, float theta0) {
+    vec3 n1 = normalize(cross(p1-p0, p2-p0));
+    vec3 n2 = normalize(cross(p1-p0, p3-p0));
+    float cosTheta = clamp(dot(n1, n2), -1.0, 1.0);
+    return acos(cosTheta) - theta0;
+}
+```
+
+**Capsule collision.** For character cloth–body interaction, resolve each vertex against a set of capsules (a simplified body collider) in a post-projection pass:
+
+```glsl
+vec3 capsuleConstraint(vec3 p, vec3 capA, vec3 capB, float r) {
+    vec3 ab = capB - capA, ap = p - capA;
+    float t  = clamp(dot(ap, ab) / dot(ab, ab), 0.0, 1.0);
+    vec3 closest = capA + t * ab;
+    float dist = length(p - closest);
+    if (dist < r) return closest + normalize(p - closest) * r;
+    return p;
+}
+```
+
+**Iteration count and stiffness.** PBD convergence improves with more solver iterations (typically 4–16 per frame). XPBD (Macklin 2016) introduces a compliance parameter `α = 1/(k·dt²)` that makes stiffness iteration-count-independent, allowing coarser iteration schedules with physically meaningful material parameters. [Source: Müller et al. "Position Based Dynamics", VRIPHYS 2007; Macklin et al. "XPBD", MIG 2016]
 
 ---
 
@@ -1607,6 +1954,160 @@ void main() {
 This pattern (per-cluster LOD in the amplification shader) is the basis of Unreal Engine's Nanite virtual geometry system and Mesa's experimental Vulkan mesh-shader LOD pass.
 
 [Source: Garland & Heckbert (1997), "Surface Simplification Using Quadric Error Metrics", SIGGRAPH; https://github.com/zeux/meshoptimizer]
+
+### 7.5 Smooth Normals Post-Pass
+
+Meshes imported from CAD or sculpting tools may have per-face normals, producing faceted shading. Recomputing angle-weighted per-vertex smooth normals on the GPU requires atomic accumulation — each triangle contributes its face normal (scaled by vertex angle) to all three of its vertices' accumulators, then a normalize pass finalizes.
+
+Direct float atomicAdd is available via `VK_EXT_shader_atomic_float`; without that extension, accumulate into scaled integers and divide in the normalize pass:
+
+```glsl
+// normal_accum.comp — one thread per triangle
+layout(local_size_x=64) in;
+layout(set=0, binding=0) readonly  buffer Positions { vec3 positions[]; };
+layout(set=0, binding=1) readonly  buffer Indices   { uint indices[];   };
+layout(set=0, binding=2) coherent  buffer NormAccum { int accum[];      };
+// accum is 3 ints (x,y,z) per vertex, scaled by SCALE
+
+const float SCALE = 1e6;
+
+void main() {
+    uint tri = gl_GlobalInvocationID.x;
+    uint i0  = indices[tri*3+0], i1 = indices[tri*3+1], i2 = indices[tri*3+2];
+
+    vec3 p0  = positions[i0], p1 = positions[i1], p2 = positions[i2];
+    vec3 e01 = p1-p0, e02 = p2-p0;
+    vec3 faceN = cross(e01, e02);   // magnitude = 2 * triangle area (area weighting)
+
+    // Angle-weighted contribution: compute angle at each vertex
+    vec3 an0 = faceN * acos(clamp(dot(normalize(e01), normalize(e02)), -1., 1.));
+    vec3 an1 = faceN * acos(clamp(dot(normalize(p0-p1), normalize(p2-p1)), -1., 1.));
+    vec3 an2 = faceN * acos(clamp(dot(normalize(p0-p2), normalize(p1-p2)), -1., 1.));
+
+    atomicAdd(accum[i0*3+0], int(an0.x*SCALE));
+    atomicAdd(accum[i0*3+1], int(an0.y*SCALE));
+    atomicAdd(accum[i0*3+2], int(an0.z*SCALE));
+    atomicAdd(accum[i1*3+0], int(an1.x*SCALE));
+    atomicAdd(accum[i1*3+1], int(an1.y*SCALE));
+    atomicAdd(accum[i1*3+2], int(an1.z*SCALE));
+    atomicAdd(accum[i2*3+0], int(an2.x*SCALE));
+    atomicAdd(accum[i2*3+1], int(an2.y*SCALE));
+    atomicAdd(accum[i2*3+2], int(an2.z*SCALE));
+}
+```
+
+```glsl
+// normal_normalize.comp — one thread per vertex
+layout(local_size_x=64) in;
+layout(set=0, binding=0) readonly buffer NormAccum { int accum[]; };
+layout(set=0, binding=1) writeonly buffer Normals  { vec4 normals[]; };
+
+const float SCALE = 1e6;
+
+void main() {
+    uint i  = gl_GlobalInvocationID.x;
+    vec3 n  = vec3(accum[i*3+0], accum[i*3+1], accum[i*3+2]) / SCALE;
+    normals[i] = vec4(normalize(n), 0.0);
+}
+```
+
+With `VK_EXT_shader_atomic_float`, replace the integer accum buffer with a `float` SSBO and use `atomicAdd` on `float` directly (declared with `layout(buffer_reference, std430)` or just standard SSBO binding). The integer-scaled approach runs on all Vulkan 1.2+ hardware without extensions.
+
+### 7.6 Procedural GPU Instancing: Grass, Hair, Fur
+
+Dense surface detail (grass fields, fur, hair cards) cannot be stored as conventional meshes — a 100m² grass field at 64 blades/m² is 6.4 million blades. Mesh shaders solve this by generating geometry on-chip from a compact procedural description, with the amplification (task) shader culling and LOD-selecting clusters before the mesh shader emits blade geometry.
+
+**Amplification/Task shader (`grass_task.glsl`):**
+
+```glsl
+// grass_task.glsl  — EXT_mesh_shader task shader
+layout(local_size_x=32) in;
+
+layout(set=0, binding=0) uniform sampler2D densityMap;   // grass density 0..1
+layout(set=0, binding=1) uniform sampler2D heightMap;
+layout(push_constant) uniform PC {
+    mat4  viewProj;
+    vec3  cameraPos;
+    float patchSize;    // world-space size of one cluster patch
+    uint  patchesX;
+    uint  patchesZ;
+};
+
+taskPayloadSharedEXT struct GrassPayload {
+    uint patchIDs[32];
+    uint count;
+} payload;
+
+void main() {
+    uint id     = gl_GlobalInvocationID.x;
+    uint pX     = id % patchesX, pZ = id / patchesX;
+    vec2 uv     = vec2(pX, pZ) / vec2(patchesX, patchesZ);
+    float dens  = texture(densityMap, uv).r;
+
+    // Frustum + density cull
+    vec3 patchCenter = vec3(pX * patchSize, 0, pZ * patchSize);
+    patchCenter.y    = texture(heightMap, uv).r;
+    float dist       = length(cameraPos - patchCenter);
+    bool  visible    = (dens > 0.05) && (dist < 200.0);
+
+    if (visible) {
+        uint slot = atomicAdd(payload.count, 1u);
+        if (slot < 32) payload.patchIDs[slot] = id;
+    }
+
+    barrier();
+    if (gl_LocalInvocationID.x == 0)
+        EmitMeshTasksEXT(payload.count, 1, 1);
+}
+```
+
+**Mesh shader (`grass_mesh.glsl`)** emits one tapered grass blade (5 vertices, 3 triangles) per invocation:
+
+```glsl
+// grass_mesh.glsl  — EXT_mesh_shader
+layout(local_size_x=32) in;
+layout(triangles, max_vertices=160, max_primitives=96) out;  // 5 verts × 32 blades, 3 tris × 32
+
+taskPayloadSharedEXT struct GrassPayload { uint patchIDs[32]; uint count; } payload;
+layout(location=0) out vec3 fragNormal[];
+layout(location=1) out vec2 fragUV[];
+
+// Pseudo-random from uint seed
+float rng(uint s) { s ^= s<<13; s ^= s>>7; s ^= s<<17; return float(s) / float(0xFFFFFFFFu); }
+
+void main() {
+    uint blade    = gl_LocalInvocationID.x;
+    uint patchID  = payload.patchIDs[gl_WorkGroupID.x];
+    // Derive blade root position from patchID + blade index
+    uint seed     = patchID * 1237 + blade;
+    float bx      = rng(seed)   * patchSize;
+    float bz      = rng(seed+1) * patchSize;
+    // ... (read height, compute world position, Hermite-style bend by wind)
+
+    float height  = 0.4 + rng(seed+2) * 0.4;
+    float lean    = rng(seed+3) * 0.3;             // lean angle
+    float windSway = sin(time * 1.8 + bx * 0.5) * 0.12;
+
+    // 5 control points: root → tip with Hermite bend
+    vec3 root = worldBase + vec3(bx, 0, bz);
+    vec3 ctrl = root + vec3(lean + windSway, height * 0.6, 0);
+    vec3 tip  = root + vec3(lean * 2.0 + windSway * 1.5, height, 0);
+
+    // Emit 5 vertices (3-segment blade: 4 quads collapsed at tip)
+    uint vBase = blade * 5;
+    // ... (set gl_MeshVerticesEXT[vBase..vBase+4].gl_Position)
+
+    uint pBase = blade * 3;
+    SetMeshOutputsEXT(160, 96);
+    gl_PrimitiveTriangleIndicesEXT[pBase+0] = uvec3(vBase+0, vBase+2, vBase+1);
+    gl_PrimitiveTriangleIndicesEXT[pBase+1] = uvec3(vBase+1, vBase+2, vBase+3);
+    gl_PrimitiveTriangleIndicesEXT[pBase+2] = uvec3(vBase+2, vBase+4, vBase+3);
+}
+```
+
+**LOD.** The task shader can switch to a billboard card (2 triangles per blade) beyond ~50m and suppress blades entirely past ~150m. For hair, replace the 5-vertex blade with a 10–16 vertex strand following a Catmull-Rom spline through simulation control points output by a PBD pass (§4.6). Fur uses a shorter, denser strand with a random length distribution driven by a density-map alpha channel.
+
+[Source: Acton (2021) "Procedural Grass in 'Ghost of Tsushima'" GDC; Epic Games "UE5 Nanite Foliage" tech blog]
 
 ---
 
