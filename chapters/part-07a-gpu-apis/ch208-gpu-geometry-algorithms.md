@@ -31,6 +31,7 @@
    - 3.9 [GPU Delaunay Triangulation and Voronoi](#39-gpu-delaunay-triangulation-and-voronoi)
    - 3.10 [Marching Tetrahedra](#310-marching-tetrahedra)
    - 3.11 [Constrained Delaunay and Terrain-Quality Meshes](#311-constrained-delaunay-and-terrain-quality-meshes)
+   - 3.12 [Poisson Surface Reconstruction](#312-poisson-surface-reconstruction)
 4. [Skeletal Animation: Skinning](#4-skeletal-animation-skinning)
    - 4.1 [Forward Kinematics on GPU](#41-forward-kinematics-on-gpu)
    - 4.2 [Linear Blend Skinning (LBS)](#42-linear-blend-skinning-lbs)
@@ -61,6 +62,8 @@
    - 7.11 [Mesh Boolean Operations: Polygon Clipping on GPU](#711-mesh-boolean-operations-polygon-clipping-on-gpu)
    - 7.12 [Harmonic and LSCM UV Parameterization](#712-harmonic-and-lscm-uv-parameterization)
    - 7.13 [GPU Parametric Texture Baking](#713-gpu-parametric-texture-baking)
+   - 7.14 [GPU Mesh Repair](#714-gpu-mesh-repair)
+   - 7.15 [Sphere Packing and Farthest-Point Sampling](#715-sphere-packing-and-farthest-point-sampling)
 8. [GPU BVH Construction](#8-gpu-bvh-construction)
    - 8.1 [Morton Codes and LBVH](#81-morton-codes-and-lbvh)
    - 8.2 [LBVH Tree Construction (Karras 2012)](#82-lbvh-tree-construction-karras-2012)
@@ -1440,6 +1443,82 @@ void main() {
 The circumcentre of each bad triangle is computed and inserted as a new vertex, respecting constraint segments (discard insertions that would violate a constraint). Ruppert's algorithm terminates for minimum angles ≤ 20.7° with no input angle sharper than 60°.
 
 **Applications.** Constrained Delaunay + Ruppert refinement is the standard meshing pipeline for: FEM terrain simulation (seismic, hydrology), game terrain LOD transition zones, road/river network embedding into height-field meshes. The `Triangle` library (Shewchuk, public domain) provides the CPU CDT/Ruppert reference; libigl wraps it. For fully GPU terrain meshing pipelines, the CDT step typically runs on CPU for constraint insertion (milliseconds for road networks) while the refinement iterations run on GPU. [Source: Shewchuk "Triangle: Engineering a 2D Quality Mesh Generator and Delaunay Triangulator", WACG 1996; Ruppert "A Delaunay Refinement Algorithm for Quality 2-Dimensional Mesh Generation", J. Algorithms 1995]
+
+### 3.12 Poisson Surface Reconstruction
+
+Poisson surface reconstruction (Kazhdan & Hoppe 2013, "Screened Poisson Surface Reconstruction") converts an oriented point cloud — positions plus normals — into a watertight triangle mesh. It is the standard algorithm for reconstructing meshes from LiDAR scans, photogrammetry point clouds, SPH simulation particles (§3.8), and SDF-sampled surfaces.
+
+**The core insight.** Define an indicator function χ that is 1 inside the surface and 0 outside. The gradient ∇χ equals the inward surface normal field (zero everywhere except at the surface). Given a set of oriented points `{(pᵢ, nᵢ)}`, construct a vector field **V** that approximates ∇χ, then solve the Poisson equation ∇²χ = ∇·**V** for χ. Extract the isosurface at χ = 0.5.
+
+**GPU-accelerable Poisson pipeline:**
+
+1. **Octree construction** — build an adaptive octree over the point cloud; deeper cells near high-point-density regions. One approach: Morton-sort points (§8.1 pattern), then split cells that exceed a count threshold.
+
+2. **Vector field splatting (`poisson_splat.comp`)** — splat each oriented point's normal into the octree's function values at surrounding nodes:
+
+```glsl
+// poisson_splat.comp — scatter point normals into function grid
+layout(local_size_x=64) in;
+layout(set=0,binding=0) readonly  buffer Points { vec4 ptNorm[]; };  // xyz=pos, w unused
+layout(set=0,binding=1) readonly  buffer Normals{ vec4 ptN[];    };  // xyz=normal
+layout(set=0,binding=2) coherent  buffer VField { vec4 vfield[]; }; // 3D grid, xyz=V
+layout(push_constant) uniform PC { vec3 origin; float cellSize; uint gridDim; };
+
+// Trilinear splat of normal into surrounding 8 grid nodes
+void main() {
+    uint pi   = gl_GlobalInvocationID.x;
+    vec3 p    = ptNorm[pi].xyz;
+    vec3 n    = ptN[pi].xyz;
+    vec3 lp   = (p - origin) / cellSize;   // local grid coords
+    ivec3 c   = ivec3(floor(lp));
+    vec3  f   = fract(lp);
+
+    for (int dz=0; dz<2; ++dz)
+    for (int dy=0; dy<2; ++dy)
+    for (int dx=0; dx<2; ++dx) {
+        float w  = (dx==0?(1-f.x):f.x) * (dy==0?(1-f.y):f.y) * (dz==0?(1-f.z):f.z);
+        uint  gi = (c.x+dx) + (c.y+dy)*gridDim + (c.z+dz)*gridDim*gridDim;
+        atomicAdd(vfield[gi].x, w * n.x);  // requires VK_EXT_shader_atomic_float
+        atomicAdd(vfield[gi].y, w * n.y);
+        atomicAdd(vfield[gi].z, w * n.z);
+    }
+}
+```
+
+3. **Divergence computation** — compute ∇·**V** at each grid node via central differences:
+
+```glsl
+// divergence.comp — one thread per grid node
+layout(local_size_x=8, local_size_y=8, local_size_z=8) in;
+layout(set=0,binding=0) readonly  buffer VField { vec4 vfield[]; };
+layout(set=0,binding=1) writeonly buffer Div    { float div[];   };
+
+void main() {
+    ivec3 id = ivec3(gl_GlobalInvocationID);
+    uint  N  = gridDim;
+    uint  gi = id.x + id.y*N + id.z*N*N;
+
+    float dvx = (vfield[gi+1].x    - vfield[gi-1].x)   / (2.0*cellSize);
+    float dvy = (vfield[gi+N].y    - vfield[gi-N].y)    / (2.0*cellSize);
+    float dvz = (vfield[gi+N*N].z  - vfield[gi-N*N].z)  / (2.0*cellSize);
+    div[gi]   = dvx + dvy + dvz;
+}
+```
+
+4. **Poisson solve** — solve ∇²χ = div on the grid. On GPU, a Conjugate Gradient solver (same pattern as §7.12 CG step) handles the sparse 7-point stencil Laplacian. For large grids (256³+), a multigrid V-cycle reduces iteration count from O(N²) to O(N log N):
+
+```glsl
+// poisson_jacobi.comp — one Jacobi relaxation step (simpler than CG, more iterations)
+layout(local_size_x=8, local_size_y=8, local_size_z=8) in;
+// Read chi from pingBuffer, write to pongBuffer
+// chi[i,j,k] = (chi[i±1] + chi[j±1] + chi[k±1] - h²*div[i,j,k]) / 6.0
+```
+
+5. **Isosurface extraction** — once χ converges, run the two-pass Marching Cubes pipeline from §3.2 on the χ grid with isolevel 0.5.
+
+**Screened Poisson.** The 2013 "screened" variant adds a data-fitting term that pulls the solution toward the original point positions (not just their normals), improving reconstruction accuracy near sparse regions and at open boundaries. The screening modifies the linear system: `(L + αI)χ = b - α·w` where `w` is a point-value constraint vector and α controls the screening weight.
+
+**Library.** The reference implementation `PoissonRecon` (Kazhdan, MIT) runs on CPU in 10–60 s for 1M-point clouds; the GPU-accelerated steps (splat, divergence, CG solve, MC extract) reduce this to 1–5 s. CloudCompare and MeshLab expose PoissonRecon as a plugin. [Source: Kazhdan & Hoppe "Screened Poisson Surface Reconstruction", TOG 2013; Kazhdan et al. "Poisson Surface Reconstruction", SGP 2006]
 
 ---
 
@@ -2851,6 +2930,145 @@ void main() {
 ```
 
 Production bakers: xNormal (GPU-accelerated), Marmoset Toolbag (GPU), Blender Cycles bake (GPU compute via HLBVH). xatlas handles the UV layout step preceding bake. [Source: Cignoni et al. "Metro: Measuring Error on Simplified Surfaces", Eurographics 1998; xNormal v3 GPU baking whitepaper]
+
+### 7.14 GPU Mesh Repair
+
+Meshes from external sources — CAD exports, photogrammetry reconstruction, physics simulation output, format converters — routinely contain: degenerate triangles (zero-area, collinear vertices), T-junctions (a vertex of one triangle lying on the edge of another without a shared vertex), non-manifold edges (three or more triangles sharing one edge), and holes (boundary edge loops). GPU compute can detect and partially repair these at asset-load time.
+
+**Degenerate triangle removal.** A triangle is degenerate if its area falls below a threshold. Classify and compact in a two-pass GPU pipeline:
+
+```glsl
+// degen_classify.comp — one thread per triangle
+layout(local_size_x=64) in;
+layout(set=0,binding=0) readonly  buffer Positions{ vec3 pos[];   };
+layout(set=0,binding=1) readonly  buffer Indices  { uvec3 tris[]; };
+layout(set=0,binding=2) writeonly buffer Keep     { uint keep[];  };  // 1=valid, 0=degen
+layout(push_constant) uniform PC { uint triCount; float areaEps; };
+
+void main() {
+    uint ti   = gl_GlobalInvocationID.x;
+    if (ti >= triCount) return;
+    uvec3 t   = tris[ti];
+    vec3  e01 = pos[t.y] - pos[t.x];
+    vec3  e02 = pos[t.z] - pos[t.x];
+    float area = 0.5 * length(cross(e01, e02));
+    keep[ti]  = (area > areaEps) ? 1u : 0u;
+}
+```
+
+Prefix-scan the `keep` array, then scatter surviving triangles into a compacted index buffer — the standard two-pass GPU stream-compaction pattern used in Marching Cubes (§3.2).
+
+**T-junction detection.** A T-junction exists when a vertex `v` lies on an edge `(a, b)` of another triangle (within tolerance ε) but there is no triangle that shares the pair `(a, v)` or `(v, b)`. Detect via a GPU hash: for each edge, insert into a hash map keyed by the two vertex indices; for each vertex, check if it lies on any stored edge:
+
+```glsl
+// tjunction_detect.comp — one thread per vertex
+// For each vertex, test against nearby edges from the BVH edge structure
+// If dot(v - a, b - a) in [eps, len-eps] and dist(v, line(a,b)) < eps: T-junction
+float t   = dot(v - a, b - a) / dot(b - a, b - a);
+float dist = length(v - (a + clamp(t,0.,1.)*(b-a)));
+bool isTJ = (t > EPS && t < 1.0-EPS) && (dist < WELD_EPS);
+```
+
+T-junction repair inserts the T-vertex into the edge by splitting the adjacent triangle `(a, b, c)` into two triangles `(a, v, c)` and `(v, b, c)`. This is straightforward when done per-T-junction but requires a variable-length output (number of new triangles = number of T-junctions per edge); use `atomicAdd` into an output triangle list.
+
+**Non-manifold edge detection.** An edge is non-manifold if it is shared by ≠ 2 triangles (boundary = 1 triangle, manifold interior = 2 triangles, non-manifold = 3+). Count edge-to-triangle incidences via a GPU hash map or by sorting edges:
+
+```glsl
+// edge_valence.comp — count triangle-per-edge incidence
+// Each thread processes one triangle, emits 3 half-edges sorted by (min,max) vertex
+// After sort+groupBy, count group sizes: 1=boundary, 2=manifold, 3+=non-manifold
+uint eKey = min(t.x,t.y)*maxV + max(t.x,t.y);   // canonical undirected edge key
+atomicAdd(edgeCount[eKey], 1u);
+```
+
+Non-manifold edges require human-guided repair (split vertex, fill hole, or delete); the GPU pass only detects and emits a list.
+
+**Hole filling (advancing front).** For each boundary loop (a cycle of boundary edges), an advancing-front pass fills the hole by triangulating inward. A simple fan triangulation from the loop centroid works for convex holes; for concave holes, use Ear Clipping on the boundary polygon, parallelized across multiple holes:
+
+```glsl
+// hole_fill.comp — one workgroup per boundary loop
+// Ear clipping: repeatedly remove the vertex whose triangle has smallest area
+// and is entirely inside the polygon (no other boundary vertex inside)
+// Emit one triangle per removed ear into output triangle buffer
+```
+
+Production mesh repair tools: MeshFix (Attene 2010, C++), Open3D `mesh.remove_degenerate_triangles()` (CPU), Blender's `Clean Up` operators. The GPU pipeline above handles the detection and simple repairs; complex topology repair (genus changes, overlapping shells) remains a CPU task. [Source: Attene "A lightweight approach to repairing digitized polygon meshes", VC 2010; Ju "Fixing Geometric Errors on Polygonal Models", JCAM 2009]
+
+### 7.15 Sphere Packing and Farthest-Point Sampling
+
+**Farthest-point sampling (FPS)** selects a subset of N points from a larger set M such that each selected point is as far as possible from all previously selected points. It produces a well-distributed, coverage-maximizing sample set — ideal for: light probe placement (maximize coverage of the scene), LOD seed selection (§7.1 QEM clustering), impostor view-direction sampling (§7.7), and point-cloud downsampling before Poisson reconstruction (§3.12).
+
+**Sequential FPS is inherently serial** (each new point depends on all previously selected). The GPU-parallel approximation maintains a per-point `minDist` buffer — the distance from each unselected point to its nearest already-selected point — and performs a reduce-max to find the next sample:
+
+```glsl
+// fps_update.comp — after selecting point s, update minDist for all remaining points
+layout(local_size_x=64) in;
+layout(set=0,binding=0) readonly  buffer Points  { vec3 pts[];     };
+layout(set=0,binding=1) buffer    MinDist        { float minD[];   };  // +inf initially
+layout(set=0,binding=2) readonly  buffer Selected{ uint selected;  };  // index of s
+layout(push_constant) uniform PC { uint ptCount; };
+
+void main() {
+    uint i  = gl_GlobalInvocationID.x;
+    if (i >= ptCount) return;
+    vec3  s = pts[selected];
+    float d = length(pts[i] - s);
+    if (d < minD[i]) minD[i] = d;
+}
+```
+
+Then a parallel reduce-max over `minD` (using the prefix-scan pattern from §3.2) finds the next farthest point. For M=100k points and N=1k samples, the N × O(M/W) GPU work equals ~1.6M threads total, completing in ~5 ms on a midrange GPU — 50× faster than CPU FPS on the same data.
+
+**Poisson-disk sampling.** For uniform surface coverage with a guaranteed minimum inter-sample distance `r` (Poisson-disk property), use a GPU dart-throwing approach:
+
+```glsl
+// poisson_disk.comp — parallel dart throwing with spatial hash rejection
+layout(local_size_x=64) in;
+layout(set=0,binding=0) readonly  buffer Candidates{ vec3 cands[];   };
+layout(set=0,binding=1) coherent  buffer Accepted  { vec3 accepted[];};
+layout(set=0,binding=2) buffer    Counter          { uint count;     };
+layout(set=0,binding=3) readonly  buffer SpatialHash{ uint hashGrid[];};
+layout(push_constant) uniform PC { float minDist; uint candCount; };
+
+void main() {
+    uint ci   = gl_GlobalInvocationID.x;
+    if (ci >= candCount) return;
+    vec3  c   = cands[ci];
+
+    // Check spatial hash for any accepted point within minDist
+    ivec3 cell = ivec3(floor(c / minDist));
+    bool  ok   = true;
+    for (int dz=-2; dz<=2 && ok; ++dz)
+    for (int dy=-2; dy<=2 && ok; ++dy)
+    for (int dx=-2; dx<=2 && ok; ++dx) {
+        uint h = hashCell(cell + ivec3(dx,dy,dz));
+        // Check all points in that hash bucket
+        for (uint k=hashStart[h]; k<hashEnd[h]; ++k)
+            if (length(accepted[k] - c) < minDist) { ok=false; break; }
+    }
+    if (ok) {
+        uint slot = atomicAdd(count, 1u);
+        accepted[slot] = c;
+        // Update spatial hash (requires a separate synchronization pass)
+    }
+}
+```
+
+Parallel dart throwing has race conditions (two threads may both accept points that are too close). The mitigation is to process candidates in waves with a barrier between each wave, or to use a conflict-detection post-pass that removes any accepted pair with `dist < minDist`.
+
+**Sphere packing.** For 3D space-filling sphere placement (used for light probe grids and particle initial conditions), maintain a set of non-overlapping spheres of radius `r`. The GPU Poisson-disk pass generalizes directly to 3D: replace surface sampling with volumetric candidate generation (random points inside the volume) and apply the same spatial-hash rejection.
+
+**Applications summary:**
+
+| Use case | Algorithm | Typical N | GPU time |
+|---|---|---|---|
+| Light probe placement (scene) | FPS on surface samples | 64–256 | <1 ms |
+| QEM cluster seeds | Poisson-disk on vertices | 1k–10k | ~5 ms |
+| Impostor view directions | FPS on hemisphere | 16–64 | <0.1 ms |
+| Point cloud downsampling | FPS before PoissonRecon | 10k–100k | 5–20 ms |
+| SPH initial conditions | Poisson-disk 3D | 10k–100k | 10–50 ms |
+
+[Source: Eldar et al. "The Farthest Point Strategy for Progressive Image Sampling", IEEE IP 1997; Bridson "Fast Poisson Disk Sampling in Arbitrary Dimensions", SIGGRAPH 2007]
 
 ---
 
