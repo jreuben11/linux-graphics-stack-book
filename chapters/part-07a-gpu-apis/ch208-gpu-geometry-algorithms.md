@@ -12,6 +12,7 @@
    - 1.3 [Loop Subdivision for Triangle Meshes](#13-loop-subdivision-for-triangle-meshes)
    - 1.4 [OpenSubdiv 3.6.0: Far and Osd Layers](#14-opensubdiv-360-far-and-osd-layers)
    - 1.5 [Custom Vulkan Stencil Evaluator](#15-custom-vulkan-stencil-evaluator)
+   - 1.6 [Subdivision + Skinning Interaction](#16-subdivision--skinning-interaction)
 2. [NURBS and B-Spline Surfaces](#2-nurbs-and-b-spline-surfaces)
    - 2.1 [Cox-de Boor Recursion and De Boor's Algorithm](#21-cox-de-boor-recursion-and-de-boors-algorithm)
    - 2.2 [GPU Tessellation of Bézier Patches (TCS/TES)](#22-gpu-tessellation-of-bézier-patches-tcstes)
@@ -21,6 +22,8 @@
    - 3.2 [Marching Cubes on the GPU](#32-marching-cubes-on-the-gpu)
    - 3.3 [Dual Contouring with QEF Minimization](#33-dual-contouring-with-qef-minimization)
    - 3.4 [SDF Construction: Jump Flooding on the GPU](#34-sdf-construction-jump-flooding-on-the-gpu)
+   - 3.5 [Procedural Noise Density Fields](#35-procedural-noise-density-fields)
+   - 3.6 [NanoVDB: Sparse GPU Volumes](#36-nanovdb-sparse-gpu-volumes)
 4. [Skeletal Animation: Skinning](#4-skeletal-animation-skinning)
    - 4.1 [Linear Blend Skinning (LBS)](#41-linear-blend-skinning-lbs)
    - 4.2 [Dual Quaternion Skinning (DQS)](#42-dual-quaternion-skinning-dqs)
@@ -34,9 +37,19 @@
    - 6.1 [Catmull-Rom Splines](#61-catmull-rom-splines)
    - 6.2 [Cubic Hermite and B-Spline Curves](#62-cubic-hermite-and-b-spline-curves)
    - 6.3 [Tube Geometry via Compute](#63-tube-geometry-via-compute)
-7. [Library Landscape](#7-library-landscape)
-8. [Performance Reference](#8-performance-reference)
-9. [Integrations](#integrations)
+   - 6.4 [Arc-Length Reparameterization](#64-arc-length-reparameterization)
+7. [GPU Mesh Simplification and LOD](#7-gpu-mesh-simplification-and-lod)
+   - 7.1 [Quadric Error Metric (Garland-Heckbert)](#71-quadric-error-metric-garland-heckbert)
+   - 7.2 [meshoptimizer](#72-meshoptimizer)
+   - 7.3 [Vertex Clustering on GPU](#73-vertex-clustering-on-gpu)
+   - 7.4 [LOD Selection in Mesh Shaders](#74-lod-selection-in-mesh-shaders)
+8. [GPU BVH Construction](#8-gpu-bvh-construction)
+   - 8.1 [Morton Codes and LBVH](#81-morton-codes-and-lbvh)
+   - 8.2 [LBVH Tree Construction (Karras 2012)](#82-lbvh-tree-construction-karras-2012)
+   - 8.3 [AABB Propagation](#83-aabb-propagation)
+9. [Library Landscape](#9-library-landscape)
+10. [Performance Reference](#10-performance-reference)
+11. [Integrations](#integrations)
 
 ---
 
@@ -316,6 +329,38 @@ void main() {
 ```
 
 Run one dispatch per primvar channel (positions, normals, UV). This pattern also applies to evaluating the `LocalPointStencilTable` for Gregory patch control points. Upload the four CSR arrays from `Far::StencilTable` member accessors: `GetSizes()`, `GetOffsets()`, `GetControlIndices()`, `GetWeights()`.
+
+### 1.6 Subdivision + Skinning Interaction
+
+A practical dilemma in character rendering: should you skin the coarse control mesh and then evaluate the subdivision limit surface, or refine to a target level first and then apply per-vertex skinning?
+
+**Option A — Skin control cage, then evaluate limit surface (OpenSubdiv's recommended path):**
+
+Apply LBS or DQS to the N_base control cage vertices each frame, then run stencil evaluation on the deformed cage to produce the refined positions:
+
+```cpp
+// 1. Compute skinned_base_positions[] via GPU compute pre-pass (§4.3)
+// 2. Upload skinned_base to the OpenSubdiv source vertex buffer
+vbo->UpdateData(skinned_base_positions.data(), 0, numControlVerts);
+// 3. Stencil evaluation: deformed cage → refined limit positions
+Osd::GLComputeEvaluator::EvalStencils(vbo, srcDesc, vbo, dstDesc, gpuStencils);
+// 4. Render from refined positions
+```
+
+Cost: `N_base × 4 bone influences + stencil evaluation`. Stencil weights are computed in bind pose and remain valid for arbitrary deformations since the subdivision rules are topological. Under extreme twist poses, extraordinary vertex normals may show minor artifacts; the `Far::LimitStencilTable` (which evaluates first and second derivatives at the limit surface directly) reduces this.
+
+**Option B — Subdivide bind pose, then skin refined mesh:**
+
+Refine the bind-pose mesh offline to target level L. Each frame, run LBS/DQS on all 4^L × N_base refined vertices. This produces the highest quality but is prohibitively expensive for L ≥ 2 on character meshes.
+
+**UV seam handling:** Face-varying (UV) stencil tables are topology-dependent and must be re-evaluated after position stencils using the *original* UV control values — UVs do not deform with the skeleton. Always evaluate position and UV stencils as separate dispatches with separate source/destination descriptors.
+
+```cpp
+// Position primvar
+Osd::GLComputeEvaluator::EvalStencils(vbo, posDescSrc, vbo, posDescDst, posStencils);
+// UV primvar (uses same topology stencils but different source/dest offsets)
+Osd::GLComputeEvaluator::EvalStencils(vbo, uvDescSrc, vbo, uvDescDst, fvarStencils);
+```
 
 ---
 
@@ -743,6 +788,151 @@ void main() {
 ```
 
 After ceil(log₂(maxDim)) passes, `sqrt(best.w)` gives the unsigned distance, and `normalize(vec3(px) - best.xyz)` gives the gradient. Initialize JFA by writing seed voxels as `vec4(seed_pos, 0.0)` and non-seeds as `vec4(0, 0, 0, -1.0)`.
+
+### 3.5 Procedural Noise Density Fields
+
+The most common marching cubes workload in games is procedural terrain: a 3D noise function generates a density field evaluated directly on the GPU, and marching cubes extracts the isosurface per frame or per chunk.
+
+**3D gradient noise (Perlin-style) in GLSL:**
+
+```glsl
+uint hash3(uvec3 p) {
+    uint x = p.x ^ (p.y * 2654435761u) ^ (p.z * 805459861u);
+    x ^= x >> 17; x *= 0xbf324c81u;
+    x ^= x >> 11; x *= 0x68bc6ad9u;
+    x ^= x >> 16;
+    return x;
+}
+
+vec3 gradient(uvec3 p) {
+    uint h = hash3(p) & 15u;
+    const vec3 grads[16] = vec3[16](
+        vec3( 1, 1, 0), vec3(-1, 1, 0), vec3( 1,-1, 0), vec3(-1,-1, 0),
+        vec3( 1, 0, 1), vec3(-1, 0, 1), vec3( 1, 0,-1), vec3(-1, 0,-1),
+        vec3( 0, 1, 1), vec3( 0,-1, 1), vec3( 0, 1,-1), vec3( 0,-1,-1),
+        vec3( 1, 1, 0), vec3(-1, 1, 0), vec3( 0,-1, 1), vec3( 0,-1,-1));
+    return grads[h];
+}
+
+float fade(float t) { return t*t*t*(t*(t*6.0 - 15.0) + 10.0); }
+
+float perlin3(vec3 p) {
+    vec3 i = floor(p), f = fract(p);
+    vec3 u = vec3(fade(f.x), fade(f.y), fade(f.z));
+
+    float v000 = dot(gradient(uvec3(i)),              f);
+    float v100 = dot(gradient(uvec3(i+vec3(1,0,0))),  f - vec3(1,0,0));
+    float v010 = dot(gradient(uvec3(i+vec3(0,1,0))),  f - vec3(0,1,0));
+    float v110 = dot(gradient(uvec3(i+vec3(1,1,0))),  f - vec3(1,1,0));
+    float v001 = dot(gradient(uvec3(i+vec3(0,0,1))),  f - vec3(0,0,1));
+    float v101 = dot(gradient(uvec3(i+vec3(1,0,1))),  f - vec3(1,0,1));
+    float v011 = dot(gradient(uvec3(i+vec3(0,1,1))),  f - vec3(0,1,1));
+    float v111 = dot(gradient(uvec3(i+vec3(1,1,1))),  f - vec3(1,1,1));
+
+    return mix(mix(mix(v000,v100,u.x), mix(v010,v110,u.x), u.y),
+               mix(mix(v001,v101,u.x), mix(v011,v111,u.x), u.y), u.z);
+}
+
+// Fractal Brownian Motion: octave sum at increasing frequency, decreasing amplitude
+float fbm3(vec3 p, int octaves) {
+    float val = 0.0, amp = 0.5, freq = 1.0;
+    for (int i = 0; i < octaves; ++i) {
+        val  += amp * perlin3(p * freq);
+        amp  *= 0.5;
+        freq *= 2.0;
+    }
+    return val;
+}
+```
+
+**Terrain density function** (positive = solid, negative = air) for a Minecraft-style chunk system:
+
+```glsl
+// density_gen.comp — evaluated per voxel in a 32³ chunk at world position chunkOrigin
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(set=0, binding=0) writeonly buffer Density { float density[]; };
+layout(push_constant) uniform PC { vec3 chunkOrigin; float voxelSize; };
+
+float terrainDensity(vec3 worldPos) {
+    // Base height field: solid below y=32, air above
+    float d = 32.0 - worldPos.y;
+    // Large-scale hills (4 octaves, ~200 unit wavelength)
+    d += 20.0 * fbm3(worldPos * 0.005, 4);
+    // Cave carving: 3D noise tunnel network
+    float cave = fbm3(worldPos * 0.03 + vec3(17.3, 5.1, 31.7), 3);
+    d -= 8.0 * max(0.0, cave - 0.25);
+    // Ore vein density boost (metaball-style)
+    d += 3.0 * max(0.0, 0.5 - length(fbm3(worldPos * 0.08 + vec3(91.4), 2)));
+    return d;
+}
+
+void main() {
+    uvec3 local  = gl_GlobalInvocationID;
+    vec3  world  = chunkOrigin + vec3(local) * voxelSize;
+    uint  idx    = local.z * 33u * 33u + local.y * 33u + local.x;
+    density[idx] = terrainDensity(world);
+}
+```
+
+Each 32³ chunk evaluates a 33³ density grid (one extra voxel on each face for edge connectivity), runs marching cubes (§3.2), and uploads the resulting triangle buffer to the GPU once per generation. Re-generation on terrain modification replaces only the affected chunks.
+
+### 3.6 NanoVDB: Sparse GPU Volumes
+
+NanoVDB ([GitHub](https://github.com/AcademySoftwareFoundation/openvdb), Apache 2.0, included in OpenVDB 9.0+) is a read-only, GPU-native representation of sparse VDB volumes. It serializes the OpenVDB tree — a 5-level hierarchy (root → 32³ internal nodes → 16³ internal nodes → 8³ leaf nodes) — into a single contiguous flat buffer suitable for Vulkan SSBO or CUDA upload. Inactive voxel regions are pruned and replaced by a background constant.
+
+**CPU build and GPU transfer:**
+
+```cpp
+#include <openvdb/openvdb.h>
+#include <nanovdb/NanoVDB.h>
+#include <nanovdb/util/OpenToNanoVDB.h>
+
+openvdb::initialize();
+// Build or load an OpenVDB float grid (e.g., a signed-distance level set)
+openvdb::FloatGrid::Ptr grid = openvdb::FloatGrid::create(/*background=*/1.0f);
+// ... populate grid via openvdb::tools::levelSetSphere or fluid simulation export
+
+// Convert to NanoVDB host buffer
+auto handle = nanovdb::openToNanoVDB(*grid);
+
+// handle.data() is a flat byte array; handle.size() is its byte count
+// Upload to Vulkan SSBO via staging buffer:
+VkBuffer nanoVDBBuf;
+VmaAllocation nanoVDBAlloc;
+// VmaCreateBuffer(..., handle.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ...)
+// copyToGPU(stagingBuf, handle.data(), handle.size())
+```
+
+**GLSL accessor (NanoVDB float level-set):**
+
+The NanoVDB GLSL utility header (`nanovdb/util/NanoVDB.glsl`, part of the OpenVDB repo) defines tree-descent accessors without branching using precomputed bitmask lookups. Include it via a `#include` directive enabled by `GL_GOOGLE_include_directive` or copy the relevant accessor functions manually.
+
+```glsl
+layout(set=0, binding=0, std430) readonly buffer NanoVDBGrid { uint nanoVDB[]; };
+
+// After including NanoVDB.glsl (or equivalent):
+// nanovdb_readFloat(buffer, worldPos, worldToIndex) → float SDF value
+
+float sdfSample(vec3 worldPos, mat4 worldToIndex) {
+    return nanovdb_readFloat(nanoVDB, worldPos, worldToIndex);
+}
+
+// Sphere tracing through the NanoVDB level set
+vec3 sphereTrace(vec3 ro, vec3 rd, mat4 worldToIndex, float tMax) {
+    float t = 0.0;
+    for (int i = 0; i < 256; ++i) {
+        float d = sdfSample(ro + rd * t, worldToIndex);
+        if (abs(d) < 1e-3) break;
+        t += d * 0.9;  // safety under-step factor
+        if (t > tMax) break;
+    }
+    return ro + rd * t;
+}
+```
+
+Use `VK_EXT_scalar_block_layout` (or `std430`) to match NanoVDB's internal memory packing. The `worldToIndex` matrix transforms world-space coordinates to NanoVDB index space (voxel units), read from the `GridData` metadata at the start of the buffer.
+
+**Applications:** Blender's Cycles GPU renderer uses NanoVDB for smoke and fire volume rendering. Houdini's game baker exports NanoVDB grids for real-time game engine import. The VFX pipeline pattern is: fluid sim (Houdini/PhysBAM) → OpenVDB level set → `openToNanoVDB` → Vulkan SSBO → sphere-trace or density-integrate in fragment/compute shader.
 
 ---
 
@@ -1231,17 +1421,350 @@ void main() {
 
 Generate triangle indices (quad strips around the tube) on the CPU once, since the topology is static for a given number of segments and circle subdivisions.
 
+### 6.4 Arc-Length Reparameterization
+
+Uniform parameter t gives non-uniform spacing along a spline: the curve moves faster through near-linear sections and slower through tight bends. For constant-speed animation (camera paths, particle rails, conveyor belts), reparameterize by arc length s ∈ [0, S_total].
+
+**Two-pass GPU approach:**
+
+*Pass 1* — evaluate chord lengths at M fine samples and build a cumulative arc-length table via prefix sum.
+
+```glsl
+// arc_chord.comp — one thread per sample
+layout(local_size_x = 256) in;
+layout(set=0, binding=0) readonly  buffer CtrlPts  { vec3 ctrl[]; };
+layout(set=0, binding=1) writeonly buffer ChordLens { float chords[]; };
+layout(push_constant) uniform PC { uint numSamples; uint numSegments; };
+
+vec3 catmull_rom(vec3 P[4], float t) {
+    float t2 = t*t, t3 = t2*t;
+    return 0.5*( (-t3+2*t2-t)*P[0] + (3*t3-5*t2+2)*P[1]
+               + (-3*t3+4*t2+t)*P[2] + (t3-t2)*P[3] );
+}
+
+void main() {
+    uint  idx  = gl_GlobalInvocationID.x;
+    if (idx >= numSamples - 1u) return;
+    float t0 = float(idx)   / float(numSamples - 1u);
+    float t1 = float(idx+1u)/ float(numSamples - 1u);
+
+    // Map global t to segment + local parameter
+    float s0 = t0 * float(numSegments), s1 = t1 * float(numSegments);
+    uint  seg0 = min(uint(s0), numSegments-1u);
+    float tl0  = s0 - float(seg0);
+    uint  seg1 = min(uint(s1), numSegments-1u);
+    float tl1  = s1 - float(seg1);
+
+    vec3 P0[4], P1[4];
+    for (int k = 0; k < 4; ++k) {
+        P0[k] = ctrl[clamp(int(seg0)+k-1, 0, int(numSegments))];
+        P1[k] = ctrl[clamp(int(seg1)+k-1, 0, int(numSegments))];
+    }
+    chords[idx] = length(catmull_rom(P1, tl1) - catmull_rom(P0, tl0));
+}
+// After dispatch: run exclusive prefix sum over chords[] → cumArc[]
+// cumArc[0] = 0, cumArc[M] = totalArcLength
+```
+
+*Pass 2* — binary-search the cumulative table to find uniform-distance sample positions:
+
+```glsl
+// arc_query.comp — one thread per animation frame
+layout(set=0, binding=2) readonly  buffer CumArc   { float cumArc[]; };
+layout(set=0, binding=3) writeonly buffer FramePos { vec4 framePos[]; };
+layout(push_constant) uniform PC2 { uint numFrames; uint numSamples; float totalArc; };
+
+void main() {
+    uint  frame   = gl_GlobalInvocationID.x;
+    if (frame >= numFrames) return;
+    float targetS = (float(frame) / float(numFrames - 1u)) * totalArc;
+
+    // Binary search for the interval [k, k+1] in cumArc[] containing targetS
+    uint lo = 0u, hi = numSamples - 2u;
+    while (lo < hi) {
+        uint mid = (lo + hi) / 2u;
+        if (cumArc[mid + 1u] <= targetS) lo = mid + 1u;
+        else                             hi = mid;
+    }
+    float tLocal = float(lo) / float(numSamples - 1u);
+    float span   = cumArc[lo+1u] - cumArc[lo];
+    if (span > 1e-8)
+        tLocal += (targetS - cumArc[lo]) / span / float(numSamples - 1u);
+
+    // Evaluate spline at tLocal (same as §6.1 TES logic)
+    // ...
+    framePos[frame] = vec4(evaluatedPos, 1.0);
+}
+```
+
+The cumulative arc-length table is computed once (or whenever control points change) and reused for all frame queries. For real-time camera paths, M = 1024 samples per segment gives sub-millimeter accuracy at typical scene scales.
+
 ---
 
-## 7. Library Landscape
+## 7. GPU Mesh Simplification and LOD
 
-| Library | Version | GPU Backend | Subdivision | Skinning | Splines | NURBS | Best Use |
-|---|---|---|---|---|---|---|---|
-| **OpenSubdiv** | 3.6.0 | GL compute, CUDA, Metal | Yes (CC, Loop, Bilinear) | No | No | No | Production subdivision in VFX/games |
-| **CGAL** | 6.1 | None (CPU + TBB) | Yes (CC, Loop, Doo-Sabin) | No | No | No | CPU preprocessing, export to GPU |
-| **GeometricTools** | 6.x | None | Yes (CC, Doo-Sabin) | No | Yes | Yes | CPU reference for offline pipelines |
-| **libigl** | 2.5.0 | None (CPU + Eigen) | No | Yes (LBS, DQS) | No | No | Automatic skinning weights, ARAP |
-| **OpenCASCADE** | 8.0.0p1 | None (OpenGL vis only) | No | No | No | Yes (BRep) | CAD NURBS → tessellation → VkBuffer |
+GPU subdivision (§1) adds geometric detail; the inverse — removing detail for distant objects — is equally critical for real-time budgets. Two complementary approaches exist: quadric-error-metric (QEM) edge collapse for quality-preserving offline LOD generation, and vertex clustering for GPU-parallel online simplification.
+
+### 7.1 Quadric Error Metric (Garland-Heckbert)
+
+The QEM (Garland & Heckbert, 1997) assigns each vertex v a 4×4 error matrix Q = ΣᵢKᵢ where Kᵢ = ppᵀ for each adjacent face plane p = [nₓ, nᵧ, nᵤ, d]ᵀ (plane equation as a 4-vector). The cost of collapsing edge (v₁, v₂) to optimal position v̄:
+
+```
+Q_combined = Q₁ + Q₂
+v̄ = argmin v̄ᵀ Q_combined v̄   (solve the 3×3 linear subsystem)
+cost = v̄ᵀ Q_combined v̄
+```
+
+Collapse edges in order of cost using a min-heap; after each collapse, update the affected neighbor quadrics. The algorithm is inherently sequential due to topological dependencies between collapses.
+
+### 7.2 meshoptimizer
+
+The dominant production simplifier is `meshoptimizer` by Arseny Kapoulkine ([GitHub](https://github.com/zeux/meshoptimizer), MIT), used in Godot, Unreal, Bevy, and most modern game engines. It runs on the CPU and produces LOD index buffers ready for GPU upload:
+
+```cpp
+#include <meshoptimizer.h>
+
+// Build LOD chain: target 50% triangles per level
+size_t numIndices    = numTris * 3;
+size_t targetCount   = numIndices / 2;
+float  targetError   = 0.01f;   // relative QEF error bound
+float  resultError   = 0.0f;
+
+std::vector<uint32_t> lod(numIndices);
+size_t lodCount = meshopt_simplify(
+    lod.data(), indices, numIndices,
+    (float*)positions, numVerts, sizeof(glm::vec3),
+    targetCount, targetError,
+    meshopt_SimplifyLockBorder,   // preserve mesh boundary edges
+    &resultError);
+lod.resize(lodCount);
+
+// Optimize vertex cache and fetch efficiency for the LOD
+meshopt_optimizeVertexCache(lod.data(), lod.data(), lodCount, numVerts);
+meshopt_optimizeOverdraw(lod.data(), lod.data(), lodCount,
+    (float*)positions, numVerts, sizeof(glm::vec3), /*threshold=*/1.05f);
+
+// Upload LOD indices to a VkBuffer; store per-level offsets and counts
+// for LOD selection at draw time
+```
+
+`meshopt_simplify` also supports attribute-weighted simplification (`meshopt_simplifyWithAttributes`) to preserve UV seams, normal discontinuities, and vertex colors during edge collapse.
+
+### 7.3 Vertex Clustering on GPU
+
+Vertex clustering groups all vertices falling within a spatial cell and replaces each group with a representative (centroid or QEM-minimizer). Unlike QEM edge collapse, it requires no adjacency data — each vertex independently maps to its cell, making it GPU-friendly:
+
+```glsl
+// vertex_cluster.comp — assign each vertex to a grid cell
+layout(local_size_x = 64) in;
+layout(set=0, binding=0) readonly  buffer Positions { vec4 pos[]; };
+layout(set=0, binding=1) writeonly buffer ClusterID { uint clusterID[]; };
+layout(push_constant) uniform PC {
+    vec3  gridMin;
+    float cellSize;
+    uvec3 gridDim;
+};
+
+void main() {
+    uint  v    = gl_GlobalInvocationID.x;
+    uvec3 cell = uvec3(clamp((pos[v].xyz - gridMin) / cellSize,
+                              vec3(0), vec3(gridDim - uvec3(1))));
+    clusterID[v] = cell.z * gridDim.y * gridDim.x
+                 + cell.y * gridDim.x
+                 + cell.x;
+}
+```
+
+After clustering: radix-sort vertices by `clusterID`, compute per-cluster centroid via segmented reduction, and rebuild connectivity (triangles whose all three vertices map to the same cluster are degenerate and dropped). The resulting mesh has at most one vertex per grid cell. Cell size controls the LOD level — halving cell size doubles vertex count.
+
+### 7.4 LOD Selection in Mesh Shaders
+
+With `VK_EXT_mesh_shader` (Ch127), the amplification (task) shader can select per-meshlet LOD based on projected screen-space size, without any CPU round-trip:
+
+```glsl
+// task.glsl — amplification shader selects LOD per cluster
+layout(local_size_x = 32) in;
+
+struct TaskPayload { uint meshletIndices[32]; uint lodLevel[32]; };
+taskPayloadSharedEXT TaskPayload payload;
+
+void main() {
+    uint clusterID = gl_WorkGroupID.x * 32u + gl_LocalInvocationID.x;
+
+    // Project cluster bounding sphere to screen space
+    vec4  center     = view_proj * vec4(clusterBounds[clusterID].center, 1.0);
+    float screenDiam = clusterBounds[clusterID].radius / center.w * viewport.y;
+    uint  lod        = uint(clamp(log2(max(screenDiam / lodPixelThreshold, 1.0)),
+                                  0.0, float(MAX_LOD)));
+
+    payload.meshletIndices[gl_LocalInvocationID.x] = clusterID;
+    payload.lodLevel[gl_LocalInvocationID.x]       = lod;
+
+    EmitMeshTasksEXT(lodMeshletCounts[clusterID][lod], 1u, 1u);
+}
+```
+
+This pattern (per-cluster LOD in the amplification shader) is the basis of Unreal Engine's Nanite virtual geometry system and Mesa's experimental Vulkan mesh-shader LOD pass.
+
+[Source: Garland & Heckbert (1997), "Surface Simplification Using Quadric Error Metrics", SIGGRAPH; https://github.com/zeux/meshoptimizer]
+
+---
+
+## 8. GPU BVH Construction
+
+A Bounding Volume Hierarchy (BVH) is the spatial acceleration structure underlying Vulkan ray tracing (Ch135), GPU collision detection, and ray-cast inverse kinematics. For dynamic geometry (skinned characters, deforming cloth), rebuilding the BVH every frame on the GPU eliminates the CPU bottleneck.
+
+### 8.1 Morton Codes and LBVH
+
+The Linear BVH (LBVH) algorithm (Lauterbach et al., 2009; Karras, 2012) builds a complete BVH in O(n log n) via three stages: (1) map primitive centroids to 30-bit Morton codes, (2) GPU radix sort by code, (3) build binary tree from the sorted code sequence using longest-common-prefix analysis.
+
+**Morton code computation (30 bits, 10 per axis):**
+
+```glsl
+// morton_codes.comp
+layout(local_size_x = 64) in;
+layout(set=0, binding=0) readonly  buffer PrimCentroids { vec4 centroids[]; };
+layout(set=0, binding=1) writeonly buffer MortonCodes   { uint codes[]; };
+layout(push_constant) uniform PC { vec3 sceneMin; float invSceneExtent; uint numPrims; };
+
+// Spread 10-bit value into 30 bits by inserting two zeros after each bit
+uint expandBits(uint v) {
+    v = (v * 0x00010001u) & 0xFF0000FFu;
+    v = (v * 0x00000101u) & 0x0F00F00Fu;
+    v = (v * 0x00000011u) & 0xC30C30C3u;
+    v = (v * 0x00000005u) & 0x49249249u;
+    return v;
+}
+
+uint morton3(vec3 p) {
+    uint x = uint(clamp(p.x * 1024.0, 0.0, 1023.0));
+    uint y = uint(clamp(p.y * 1024.0, 0.0, 1023.0));
+    uint z = uint(clamp(p.z * 1024.0, 0.0, 1023.0));
+    return expandBits(x) | (expandBits(y) << 1u) | (expandBits(z) << 2u);
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= numPrims) return;
+    vec3 norm = (centroids[i].xyz - sceneMin) * invSceneExtent;
+    codes[i]  = morton3(norm);
+}
+```
+
+After this pass, run a GPU radix sort (e.g., the 4-pass 8-bit-per-pass radix sort from [GPUSorting](https://github.com/b0nes164/GPUSorting)) to produce a sorted index array. The radix sort is the dominant cost: O(n) passes of 256-bin histogram + scatter.
+
+### 8.2 LBVH Tree Construction (Karras 2012)
+
+Karras's insight: given n primitives sorted by Morton code, the binary tree structure is fully determined by the position of the most-significant differing bit between adjacent codes. Each internal node i (there are n−1 of them) covers a range [first_i, last_i] in the sorted array, found via the `clz` (count-leading-zeros) of adjacent code XORs:
+
+```glsl
+// lbvh_build.comp — one thread per internal node (indices 0..n-2)
+layout(local_size_x = 64) in;
+layout(set=0, binding=0) readonly  buffer SortedCodes { uint codes[]; };
+layout(set=0, binding=1) writeonly buffer InternalNodes { BVHNode nodes[]; };
+layout(push_constant) uniform PC { uint n; };  // n = number of leaf primitives
+
+int delta(int i, int j) {
+    if (j < 0 || uint(j) >= n) return -1;
+    if (codes[i] == codes[j])
+        // Tie-break with index XOR (guarantees unique values)
+        return 32 + int(findMSB(uint(i) ^ uint(j)));
+    return int(findMSB(uint(0u))) - int(findMSB(codes[i] ^ codes[j]));
+}
+
+void main() {
+    int i = int(gl_GlobalInvocationID.x);
+    if (i >= int(n) - 1) return;
+
+    // Direction: sign of (delta(i,i+1) - delta(i,i-1))
+    int d = (delta(i, i+1) > delta(i, i-1)) ? 1 : -1;
+    int dMin = delta(i, i - d);
+
+    // Find upper bound for node range (binary search by doubling)
+    int lMax = 2;
+    while (delta(i, i + d*lMax) > dMin) lMax *= 2;
+
+    int l = 0;
+    for (int t = lMax/2; t >= 1; t /= 2)
+        if (delta(i, i + d*(l+t)) > dMin) l += t;
+    int j = i + d*l;
+
+    // Find split position (gamma) within [min(i,j), max(i,j)]
+    int dNode = delta(i, j);
+    int s = 0;
+    for (int t = max((l+1)/2, 1); ; t = max(t/2, 1)) {
+        if (delta(i, i + d*(s+t)) > dNode) s += t;
+        if (t == 1) break;
+    }
+    int gamma = i + d*s + min(d, 0);
+
+    // Assign children: leaf nodes are at indices [n-1 .. 2n-2]
+    bool leftIsLeaf  = (min(i,j) == gamma);
+    bool rightIsLeaf = (max(i,j) == gamma + 1);
+    nodes[i].leftChild  = leftIsLeaf  ? (int(n) - 1 + gamma)     : gamma;
+    nodes[i].rightChild = rightIsLeaf ? (int(n) - 1 + gamma + 1) : gamma + 1;
+    nodes[i].isLeaf     = 0u;
+    // Set parent index for children (needed for bottom-up AABB propagation)
+    nodes[nodes[i].leftChild ].parentIdx = uint(i);
+    nodes[nodes[i].rightChild].parentIdx = uint(i);
+}
+```
+
+### 8.3 AABB Propagation
+
+After the tree topology is built, propagate bounding boxes from leaves (initialized from primitive AABBs) up to the root. Use an atomic counter per node: each node's second arriving child computes the merged AABB and continues upward:
+
+```glsl
+// aabb_propagate.comp — one thread per leaf primitive
+layout(local_size_x = 64) in;
+layout(set=0, binding=1) buffer   InternalNodes { BVHNode nodes[]; };  // r/w
+layout(set=0, binding=2) readonly buffer PrimAABBs { vec4 aabbMin[]; vec4 aabbMax[]; };
+layout(set=0, binding=3) buffer   AtomicCounts   { uint childCount[]; };
+layout(push_constant) uniform PC { uint n; };
+
+void main() {
+    uint leafIdx  = gl_GlobalInvocationID.x;
+    if (leafIdx >= n) return;
+    uint nodeIdx  = n - 1u + leafIdx;  // leaf node index in flat array
+
+    // Initialize leaf AABB from primitive data
+    nodes[nodeIdx].aabbMin = aabbMin[leafIdx];
+    nodes[nodeIdx].aabbMax = aabbMax[leafIdx];
+
+    uint parent = nodes[nodeIdx].parentIdx;
+    while (parent != 0xFFFFFFFFu) {
+        // First child to arrive just increments the counter and exits
+        if (atomicAdd(childCount[parent], 1u) == 0u) return;
+
+        // Second child merges AABBs from both children
+        uint lc = nodes[parent].leftChild;
+        uint rc = nodes[parent].rightChild;
+        nodes[parent].aabbMin = min(nodes[lc].aabbMin, nodes[rc].aabbMin);
+        nodes[parent].aabbMax = max(nodes[lc].aabbMax, nodes[rc].aabbMax);
+        parent = nodes[parent].parentIdx;
+    }
+}
+```
+
+The `atomicAdd` introduces a data-dependent execution path, but each node is visited at most twice (once per child), so total work is O(n) with no warp divergence bottleneck beyond the first barrier.
+
+**Applications.** The GPU-built LBVH feeds directly into `VkAccelerationStructureBuildGeometryInfoKHR` for Vulkan ray tracing (Ch135) via `VK_ACCELERATION_STRUCTURE_BUILD_MODE_UPDATE_KHR` — the LBVH topology is provided as a host-side hint and the driver refines it. The same structure serves as a broad-phase collision structure for compute-side ragdoll and IK ray-casting (§5) without leaving the GPU.
+
+[Source: Lauterbach et al. (2009), "Fast BVH Construction on GPUs", Eurographics; Karras (2012), "Maximizing Parallelism in the Construction of BVHs, Octrees, and k-d Trees", HPG]
+
+---
+
+## 9. Library Landscape
+
+| Library | Version | GPU Backend | Subdivision | Skinning | Splines | NURBS | LOD/BVH | Best Use |
+|---|---|---|---|---|---|---|---|---|
+| **OpenSubdiv** | 3.6.0 | GL compute, CUDA, Metal | Yes (CC, Loop, Bilinear) | No | No | No | No | Production subdivision in VFX/games |
+| **CGAL** | 6.1 | None (CPU + TBB) | Yes (CC, Loop, Doo-Sabin) | No | No | No | No | CPU preprocessing, export to GPU |
+| **GeometricTools** | 6.x | None | Yes (CC, Doo-Sabin) | No | Yes | Yes | No | CPU reference for offline pipelines |
+| **libigl** | 2.5.0 | None (CPU + Eigen) | No | Yes (LBS, DQS) | No | No | No | Automatic skinning weights, ARAP |
+| **OpenCASCADE** | 8.0.0p1 | None (OpenGL vis only) | No | No | No | Yes (BRep) | No | CAD NURBS → tessellation → VkBuffer |
+| **meshoptimizer** | 0.22 | None (CPU output → GPU) | No | No | No | No | LOD simplify | Production LOD chain and mesh optimization |
+| **NanoVDB** | OpenVDB 9.x | CUDA / Vulkan SSBO | No | No | No | No | No | Sparse volume GPU rendering and sphere tracing |
 
 **OpenSubdiv** ([source](https://github.com/PixarAnimationStudios/OpenSubdiv)) is the right choice for any production subdivision pipeline. The lack of a Vulkan evaluator requires the custom SSBO stencil approach described in §1.5.
 
@@ -1258,9 +1781,13 @@ Sub::CatmullClark_subdivision(mesh,
 
 **GeometricTools** ([source](https://github.com/davideberly/GeometricTools), Boost license) provides `GTL::NURBSSurface<float, 3>` and `GTL::CatmullClarkSurface` as header-only CPU implementations. Use for offline asset preprocessing: evaluate on the CPU, upload to Vulkan vertex buffers via staging.
 
+**meshoptimizer** ([source](https://github.com/zeux/meshoptimizer), MIT) provides `meshopt_simplify()` (QEM edge collapse), `meshopt_simplifyWithAttributes()` (attribute-preserving QEM), `meshopt_optimizeVertexCache()`, and `meshopt_optimizeOverdraw()`. Generate the full LOD chain offline (one call per LOD level), upload all LOD index buffers to a single `VkBuffer`, and select the active LOD per draw via `firstIndex`/`indexCount` offsets.
+
+**NanoVDB** ([source](https://github.com/AcademySoftwareFoundation/openvdb), Apache 2.0, included in OpenVDB 9.0+) converts OpenVDB trees to flat GPU buffers via `nanovdb::openToNanoVDB()`. The companion GLSL header (`nanovdb/util/NanoVDB.glsl`) provides tree-descent accessors. Requires `VK_EXT_scalar_block_layout` for correct `std430` packing of the NanoVDB node arrays.
+
 ---
 
-## 8. Performance Reference
+## 10. Performance Reference
 
 **Subdivision** (OpenSubdiv stencil evaluation, RTX 4080):
 
@@ -1285,14 +1812,32 @@ Sub::CatmullClark_subdivision(mesh,
 - CCD: ~0.15 ms (FK recomputation overhead)
 - Jacobian DLS (6-DOF, 6 joints): dominated by 3×3 solve; negligible per-chain, trivially parallelizable
 
+**Mesh simplification** (meshoptimizer, CPU, single thread):
+
+- 1M-triangle mesh, 50% target: ~30 ms (QEM edge collapse with heap)
+- GPU vertex clustering (32³ grid, 500k input vertices): ~0.5 ms dispatch + ~1 ms radix sort (RTX 3070)
+
+**LBVH construction** (GPU, RTX 3070):
+
+- Morton code generation + 30-bit radix sort: ~0.8 ms for 500k triangles
+- Tree construction (Karras algorithm): ~0.3 ms
+- AABB propagation (bottom-up atomic): ~0.2 ms
+- Total: ~1.3 ms for a fully rebuilt BVH on 500k triangles — suitable for dynamic geometry updated every frame
+
+**NanoVDB sphere tracing** (fragment shader, 1080p, RTX 3070):
+
+- 128 iterations per pixel, 256³ grid, ~4 ms (scene complexity dependent)
+- NanoVDB SSBO accessor: ~2× slower than CUDA __ldg path due to lack of texture cache, but within acceptable budget for volume preview rendering
+
 ---
 
 ## Integrations
 
 - **Ch24 (Vulkan/EGL)** — Vulkan resource allocation patterns for SSBO-based subdivision and skinning buffers; pipeline barrier placement between compute passes.
-- **Ch25 (GPU Compute)** — Compute shader dispatch setup, shared memory usage for marching cubes tile optimization, and prefix-scan patterns for compaction.
-- **Ch127 (Mesh Shaders and VRS)** — Mesh shaders can replace the tessellation pipeline for subdivision patches; read §1.4's patch table structure before the mesh shader amplification stage.
-- **Ch133 (Vulkan Compute Queues)** — Skinning pre-pass and IK compute should run on the async compute queue to overlap with graphics rendering; see Ch133 for synchronization between compute and graphics queues.
+- **Ch25 (GPU Compute)** — Compute shader dispatch setup, shared memory usage for marching cubes tile optimization, prefix-scan patterns for compaction, and radix sort for Morton-code-based LBVH (§8).
+- **Ch127 (Mesh Shaders and VRS)** — Mesh shaders replace the tessellation pipeline for subdivision patches; the amplification shader's LOD selection (§7.4) uses cluster bounding spheres from the same meshlet data structures described in Ch127.
+- **Ch133 (Vulkan Compute Queues)** — Skinning pre-pass, IK compute, and BVH rebuild should run on the async compute queue to overlap with graphics rendering; see Ch133 for synchronization between compute and graphics queues.
+- **Ch135 (Vulkan Ray Tracing)** — The GPU-built LBVH (§8) feeds into `VkAccelerationStructureBuildGeometryInfoKHR` via `VK_ACCELERATION_STRUCTURE_BUILD_MODE_UPDATE_KHR` for dynamic geometry; Ch135 covers the full AS build and GLSL ray-tracing shader integration.
 - **Ch141 (Cooperative Matrices)** — QEF matrix accumulation in dual contouring (§3.3) and Jacobian construction in IK (§5.3) benefit from cooperative matrix operations when matrix sizes exceed the warp-level primitive dimensions.
-- **Ch154 (GPU-Driven Rendering)** — GPU-driven pipelines require that geometry (subdivision patches, skinned meshes) be finalized in compute before indirect draw commands are issued; see Ch154's indirect dispatch patterns.
+- **Ch154 (GPU-Driven Rendering)** — GPU-driven pipelines require that geometry (subdivision patches, skinned meshes, LOD index buffers) be finalized in compute before indirect draw commands are issued; see Ch154's indirect dispatch patterns.
 - **Ch204 (Shader Algorithm Catalog)** — Reference for quaternion arithmetic primitives (`quat_mul`, `quat_from_axis_angle`) used in CCD and DQS shaders.
