@@ -230,6 +230,7 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 200: Vulkan Memory Allocation and Resource Management](#chapter-200-vulkan-memory-allocation-and-resource-management) *(Part VII-A — GPU APIs)*
   - [Chapter 201: Vulkan Debugging, Validation, and Profiling](#chapter-201-vulkan-debugging-validation-and-profiling) *(Part VII-A — GPU APIs)*
   - [Chapter 202: Vulkan WSI Deep Dive](#chapter-202-vulkan-wsi-deep-dive) *(Part VII-A — GPU APIs)*
+  - [Chapter 208: GPU Geometry Algorithms — Subdivision, Implicit Surfaces, Skinning, and IK](#chapter-208-gpu-geometry-algorithms--subdivision-implicit-surfaces-skinning-and-ik) *(Part VII-A — GPU APIs)*
   - [Chapter 174: WezTerm and Alacritty — GPU Terminal Rendering Architectures](#chapter-174-wezterm-and-alacritty--gpu-terminal-rendering-architectures) *(Part XII)*
   - [Chapter 175: Linux Compositor Accessibility — AT-SPI2, Screen Readers, and the Wayland Gap](#chapter-175-linux-compositor-accessibility--at-spi2-screen-readers-and-the-wayland-gap) *(Part VI-A — Wayland Compositor)*
   - [Chapter 176: OpenCASCADE Technology — The BRep Kernel and 3D Visualization Stack](#chapter-176-opencascade-technology--the-brep-kernel-and-3d-visualization-stack) *(Part XI)*
@@ -3054,6 +3055,28 @@ Entries are generated from the chapter content and sorted by chapter number with
 - HDR swapchain: `VkSwapchainCreateInfoKHR` with `VK_COLOR_SPACE_HDR10_ST2084_EXT`, `VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT` (scRGB), `VK_COLOR_SPACE_BT2020_LINEAR_EXT`; wide-gamut surface workflow; compositor-side `wp_color_management_v1` surface image description coordination
 - Mesa WSI common layer architecture: `src/vulkan/wsi/wsi_common.c` shared infrastructure; per-backend files `wsi_common_wayland.c`, `wsi_common_x11.c`, `wsi_common_drm.c`; swapchain image allocation via GBM (`gbm_bo_create_with_modifiers2`); modifier selection negotiation with compositor or display engine
 - **Integrations**: Ch24 (Vulkan/EGL — WSI basics and linux-dmabuf introduction), Ch150 (EGL Architecture and DMA-BUF Interop — the EGL side of the same presentation path), Ch20 (Wayland protocol fundamentals — `wl_surface` and `zwp_linux_dmabuf_v1`), Ch74 (HDR and WCG — HDR swapchain color space), Ch75 (Explicit GPU Sync — `wp_linux_drm_syncobj_v1` integration with WSI acquire/present fences), Ch112 (VRR and frame pacing — `VK_EXT_present_timing` and FIFO strategies)
+
+
+### Chapter 208: GPU Geometry Algorithms — Subdivision, Implicit Surfaces, Skinning, and IK *(Part VII-A — GPU APIs)*
+
+- Catmull-Clark subdivision on the GPU: face/edge/vertex point rules; boundary vertex and semi-sharp crease handling; three-pass Vulkan compute pipeline (face points, edge points, vertex points); CSR adjacency layout; `VkMemoryBarrier` placement between passes; memory growth at 4^level
+- Loop subdivision for triangle meshes: interior edge midpoint rule; Warren's β formula (n > 3: β = 3/8n; n = 3: β = 3/16); updated vertex rule; boundary vertex handling
+- OpenSubdiv 3.6.0 (Pixar, Apache 2.0): Far layer — `TopologyDescriptor`, `TopologyRefiner::AdaptiveOptions`, `StencilTableFactory`, `PatchTableFactory` with `ENDCAP_GREGORY_BASIS`; local point stencils for Gregory patches; Osd layer — `GLComputeEvaluator::EvalStencils()`, `GLVertexBuffer`, `GLPatchTable`; no `VkComputeEvaluator` in 3.6.0; available evaluators: Cpu, GLCompute, GLXFB, CUDA, CL, MTL
+- Custom Vulkan stencil evaluator: serialising `Far::StencilTable` (sizes, offsets, indices, weights) to SSBOs; one compute dispatch per primvar channel (positions, normals, UVs); Vulkan compute shader implementation
+- NURBS and B-splines: Cox-de Boor recursion; De Boor's algorithm in GLSL; rational NURBS with homogeneous coordinates; TCS/TES for bicubic Bézier patch with screen-space adaptive LOD; Bézier extraction from NURBS; OpenCASCADE `BRepMesh_IncrementalMesh` tessellation → VkBuffer upload pattern
+- Metaballs and implicit surfaces: Wyvill soft objects (C²-continuous, compact support); Blinn metaballs; total field superposition; Marching Cubes two-pass GPU approach — count pass with `atomicAdd`, prefix scan, triangle emit pass; shared-memory 10³ tile optimisation; `VkMemoryBarrier` between passes
+- Dual contouring: QEF minimisation with Hermite data (intersection point + normal); accumulating AᵀA (6 floats, upper triangle) and Aᵀb (3 floats); 3×3 SPD solve via `inverse()` with mass-point fallback; gradient requirements vs. marching cubes
+- SDF construction: Jump Flooding Algorithm (JFA) in 3D Vulkan compute; ceil(log₂(maxDim)) passes with halving step size; seed initialisation; distance and gradient extraction
+- Skeletal animation — Linear Blend Skinning: blending formula; joint matrix `= globalTransform × inverseBindMatrix`; GLSL vertex shader for 4 bone influences; glTF 2.0 JOINTS_0/WEIGHTS_0 layout; candy-wrapper artifact
+- Dual Quaternion Skinning (DQS): dual quaternion encoding of rotation+translation; antipodality correction in GLSL; position transform formula without explicit quaternion multiply expansion; Kavan et al. 2007
+- GPU compute skinning pre-pass: writing to pre-skinned VBO for reuse across opaque, shadow, and reflection passes; mat3x4 packing to reduce SSBO bandwidth; Unreal GPU Skin Cache pattern
+- Blend shapes (morph targets): delta approach in vertex shader; texture-atlas strategy for 100+ FACS targets; morph-then-skin ordering
+- Inverse kinematics on GPU: CCD — serial FK + joint rotation loop, one workgroup per chain; FABRIK — forward/backward position passes, shared memory per chain, position-to-rotation conversion; Jacobian DLS — 3×3 `JJᵀ` solve for position IK, 6×6 for pose IK; PBD soft IK via distance constraints
+- Spline curves: Catmull-Rom blending matrix and centripetal variant (α=0.5); domain shader for isoline tessellation; Cubic Hermite tangent relationship to Catmull-Rom; uniform cubic B-spline blending matrix; OpenSubdiv B-spline patch evaluation (from `glslPatchBSpline.glsl`)
+- Tube geometry generation via compute: Catmull-Rom tangent evaluation; parallel-transport frame (avoids Frenet-Serret inflection singularities); per-sample circle vertex emission
+- Library landscape: OpenSubdiv 3.6.0 (GPU: GL/CUDA/Metal — subdivision only); CGAL 6.1 (CPU: CC, Loop, Doo-Sabin); GeometricTools 6.x (CPU: CC, NURBS, splines); libigl 2.5.0 (CPU: LBS, DQS, BBW); OpenCASCADE 8.0.0p1 (CPU: NURBS BRep → tessellation)
+- Performance reference: OpenSubdiv 400k verts ~0.3 ms (RTX 4080); MC 256³ grid ~2 ms total (RTX 3070); GPU skinning 100k verts ~0.1 ms; 1000 FABRIK chains ~0.1 ms (RTX 4070)
+- **Integrations**: Ch24 (Vulkan resource allocation for SSBO-based subdivision and skinning), Ch25 (compute dispatch, shared memory, prefix-scan patterns), Ch127 (mesh shaders as alternative to hardware tessellation for subdivision patches), Ch133 (async compute queue for skinning pre-pass overlapping graphics), Ch141 (cooperative matrices for QEF accumulation and Jacobian construction), Ch154 (GPU-driven rendering — geometry must be finalised in compute before indirect draw), Ch204 (quaternion arithmetic primitives for CCD and DQS)
 
 
 ### Part VIII — Gaming Layer
