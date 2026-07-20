@@ -892,6 +892,14 @@ The Vulkan Memory Allocator (VMA, Ch82) handles the `LAZILY_ALLOCATED_BIT` type 
 
 ## 10. Mobile GPU Architecture — Tile-Based Deferred Rendering
 
+**TBDR defined.** Desktop GPUs (RDNA, Arc, NVIDIA) use **Immediate Mode Rendering (IMR)**: each draw call's primitives are rasterised immediately, with fragment results written to a framebuffer in DRAM as they are produced. Every intermediate value — depth, MSAA samples, G-Buffer attachments — occupies DRAM bandwidth for both the write and the subsequent read.
+
+**Tile-Based Deferred Rendering (TBDR)** is the alternative architecture used universally by mobile GPUs (Qualcomm Adreno, ARM Mali, Imagination PowerVR, Apple AGX). The GPU divides the framebuffer into fixed-size tiles — typically 16×16 or 32×32 pixels — and renders one tile at a time, entirely within a small block of fast on-chip SRAM. Only the final resolved pixel colour is written to DRAM; all intermediate data (depth, MSAA samples, G-Buffer attachments, subpass outputs) lives in tile SRAM at zero DRAM bandwidth cost.
+
+The "deferred" in TBDR refers to **deferring rasterisation** until the GPU knows which triangles cover each tile — it is a hardware scheduling concept, not the deferred *lighting* technique discussed in ch84 §7.0. A deferred lighting renderer running on TBDR hardware and a forward renderer running on TBDR hardware both benefit from tile SRAM; the GPU architecture is independent of the application's rendering algorithm.
+
+The Vulkan implication is direct: `loadOp` and `storeOp` declarations on render pass attachments map to DRAM accesses. `LOAD_OP_CLEAR` and `STORE_OP_DONT_CARE` on transient attachments (G-Buffer layers, MSAA resolve targets) tell the driver those attachments never need to leave tile SRAM, eliminating their DRAM cost entirely. Getting these flags wrong — using `STORE_OP_STORE` on a G-Buffer attachment that is only consumed within the same render pass — is the single most common source of avoidable mobile GPU bandwidth waste.
+
 Desktop GPUs (RDNA, Arc, NVIDIA) follow an Immediate Mode Rendering (IMR) model: each draw call's primitives are rasterised immediately and results written to a framebuffer in DRAM. Mobile GPUs from Qualcomm (Adreno), ARM (Mali), and Imagination (PowerVR) universally use Tile-Based Deferred Rendering (TBDR), which has profound implications for how Vulkan render passes should be structured.
 
 ### TBDR architecture

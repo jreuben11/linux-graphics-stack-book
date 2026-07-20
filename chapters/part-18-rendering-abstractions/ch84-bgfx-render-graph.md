@@ -663,6 +663,15 @@ The bgfx approach is simpler but defers all GPU work to the render thread. With 
 
 ### 7.0 Deferred Rendering and the G-Buffer
 
+**Terms used in this section**
+
+| Term | Full name | One-line definition |
+|---|---|---|
+| **BRDF** | Bidirectional Reflectance Distribution Function | Mathematical function that describes how a surface reflects light: given an incoming light direction and an outgoing view direction, returns how much energy reaches the viewer. The Cook-Torrance GGX model is the standard PBR BRDF. |
+| **MSAA** | Multisample Anti-Aliasing | Renders each pixel at multiple sub-pixel sample positions and averages them. The depth/stencil test runs per-sample; shading runs once per pixel. Cost is extra VRAM (one attribute set per sample), not extra shader work. |
+| **TAA** | Temporal Anti-Aliasing | Accumulates sub-pixel jitter samples across frames, blending the current frame with a motion-vector-reprojected history buffer. Achieves similar edge quality to 4× MSAA at the cost of one history texture rather than 4× VRAM. Preferred with deferred rendering because it is compatible with a fixed-size G-Buffer. |
+| **TBDR** | Tile-Based Deferred Rendering | Mobile GPU execution model (Adreno, Mali, PowerVR, Apple AGX) in which the screen is divided into tiles; a binning pass records triangle-to-tile coverage, then each tile is rasterised entirely within fast on-chip SRAM before only the resolved result is written to DRAM. The "deferred" refers to deferring rasterisation until tile coverage is known — it is a hardware scheduling concept independent of the deferred *lighting* technique this section describes. |
+
 The canonical example used throughout this section is **deferred rendering** — the technique whose data dependencies most directly motivated the frame graph abstraction. Understanding the G-Buffer makes the frame graph's design choices immediately legible.
 
 **Forward rendering** computes lighting for every fragment as it is drawn: geometry is submitted, the fragment shader reads material properties and evaluates the full lighting equation — shadow maps, IBL, AO — in a single pass. This is correct but scales poorly. If a scene has *n* light sources and *f* visible fragments, the lighting loop runs *n × f* times, including for fragments later overdrawn by closer geometry.
