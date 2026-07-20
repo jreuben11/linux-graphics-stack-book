@@ -29,6 +29,8 @@
    - 3.7 [SDF CSG Operations](#37-sdf-csg-operations)
    - 3.8 [SPH Particle Fluid Surface Extraction](#38-sph-particle-fluid-surface-extraction)
    - 3.9 [GPU Delaunay Triangulation and Voronoi](#39-gpu-delaunay-triangulation-and-voronoi)
+   - 3.10 [Marching Tetrahedra](#310-marching-tetrahedra)
+   - 3.11 [Constrained Delaunay and Terrain-Quality Meshes](#311-constrained-delaunay-and-terrain-quality-meshes)
 4. [Skeletal Animation: Skinning](#4-skeletal-animation-skinning)
    - 4.1 [Forward Kinematics on GPU](#41-forward-kinematics-on-gpu)
    - 4.2 [Linear Blend Skinning (LBS)](#42-linear-blend-skinning-lbs)
@@ -55,14 +57,23 @@
    - 7.7 [Billboard and Impostor LOD Atlases](#77-billboard-and-impostor-lod-atlases)
    - 7.8 [Bent Normals Precomputation](#78-bent-normals-precomputation)
    - 7.9 [Geometry Compression and Quantization](#79-geometry-compression-and-quantization)
+   - 7.10 [Mesh Stitching and Seam Welding](#710-mesh-stitching-and-seam-welding)
+   - 7.11 [Mesh Boolean Operations: Polygon Clipping on GPU](#711-mesh-boolean-operations-polygon-clipping-on-gpu)
+   - 7.12 [Harmonic and LSCM UV Parameterization](#712-harmonic-and-lscm-uv-parameterization)
+   - 7.13 [GPU Parametric Texture Baking](#713-gpu-parametric-texture-baking)
 8. [GPU BVH Construction](#8-gpu-bvh-construction)
    - 8.1 [Morton Codes and LBVH](#81-morton-codes-and-lbvh)
    - 8.2 [LBVH Tree Construction (Karras 2012)](#82-lbvh-tree-construction-karras-2012)
    - 8.3 [AABB Propagation](#83-aabb-propagation)
    - 8.4 [GPU Narrow-Phase Collision: SAT and GJK](#84-gpu-narrow-phase-collision-sat-and-gjk)
-9. [Library Landscape](#9-library-landscape)
-10. [Performance Reference](#10-performance-reference)
-11. [Integrations](#integrations)
+   - 8.5 [Convex Hull Generation on GPU](#85-convex-hull-generation-on-gpu)
+9. [Screen-Space Geometry Techniques](#9-screen-space-geometry-techniques)
+   - 9.1 [Screen-Space Tessellation and Dynamic LOD](#91-screen-space-tessellation-and-dynamic-lod)
+   - 9.2 [Parallax Occlusion Mapping](#92-parallax-occlusion-mapping)
+   - 9.3 [Temporal Geometry Reprojection](#93-temporal-geometry-reprojection)
+10. [Library Landscape](#10-library-landscape)
+11. [Performance Reference](#11-performance-reference)
+12. [Integrations](#integrations)
 
 ---
 
@@ -1307,6 +1318,129 @@ The rasterized Voronoi approach runs in O(N) GPU time for N seeds, producing the
 
 **Applications.** GPU Voronoi/Delaunay is used in: procedural biome generation (each Voronoi cell = one biome with coherent terrain parameters), fluid mesh reconstruction (Poisson surface reconstruction seeds from SPH particles), and GPU-side LOD meshing where scattered high-frequency samples (from adaptive tessellation) need triangulation before mesh simplification (§7.1). [Source: Hoff et al. "Fast Computation of Generalized Voronoi Diagrams Using Graphics Hardware", SIGGRAPH 1999; Rong & Tan "Jump Flooding in GPU with Applications to Voronoi Diagram and Distance Transform", I3D 2006]
 
+### 3.10 Marching Tetrahedra
+
+Marching Cubes (§3.2) decomposes each cell ambiguously when two diagonally opposite corners have different signs — 256 case configurations reduce to 15 canonical patterns, but 6 of those patterns have two valid interpretations that can produce topological inconsistencies (holes or T-junctions) at cell boundaries. **Marching Tetrahedra** eliminates all ambiguity by subdividing each cube into 5 or 6 tetrahedra, each with only 2⁴ = 16 unambiguous sign configurations producing at most one triangle.
+
+**Tetrahedral decomposition of a cube.** A unit cube can be subdivided into 5 tetrahedra (asymmetric) or 6 tetrahedra (symmetric, preferred for consistent orientation):
+
+```glsl
+// 6-tetrahedra decomposition: cube vertices v0..v7
+// Each tet listed as 4 corner indices into the cube
+const ivec4 TET_TABLE[6] = ivec4[6](
+    ivec4(0, 1, 3, 7),
+    ivec4(0, 1, 5, 7),
+    ivec4(0, 2, 3, 7),
+    ivec4(0, 4, 5, 7),
+    ivec4(0, 2, 6, 7),
+    ivec4(0, 4, 6, 7)
+);
+```
+
+**Triangle extraction.** Each tetrahedron has 4 vertices; with sign assignments `{-,-,-,+}` through `{+,+,+,-}`, exactly 1 or 2 triangles are produced per configuration. The 16 cases reduce to 3 distinct topologies (0 triangles: all same sign; 1 triangle: one corner differs; 2 triangles: two corners differ):
+
+```glsl
+// mt_emit.comp — one thread per tetrahedron
+layout(local_size_x=64) in;
+layout(set=0, binding=0, r32f) uniform image3D field;       // scalar field
+layout(set=0, binding=1) buffer TriOut { vec3 triVerts[]; };// output triangle soup
+layout(set=0, binding=2) buffer Counter{ uint count; };
+layout(push_constant) uniform PC { vec3 origin; float cellSize; float isoLevel; };
+
+// Interpolate edge crossing
+vec3 edgeLerp(vec3 p0, float v0, vec3 p1, float v1, float iso) {
+    float t = (iso - v0) / (v1 - v0);
+    return mix(p0, p1, t);
+}
+
+void main() {
+    uint cellIdx = gl_GlobalInvocationID.x;
+    ivec3 c = ivec3(cellIdx % 64, (cellIdx/64) % 64, cellIdx/4096);
+
+    // Load 8 cube-corner field values
+    float val[8];
+    vec3  pos[8];
+    for (int k=0; k<8; ++k) {
+        ivec3 off = ivec3(k&1, (k>>1)&1, (k>>2)&1);
+        val[k] = imageLoad(field, c + off).r;
+        pos[k] = origin + vec3(c + off) * cellSize;
+    }
+
+    // Iterate over 6 tetrahedra per cell
+    for (int t = 0; t < 6; ++t) {
+        ivec4 tet  = TET_TABLE[t];
+        uint  mask = 0u;
+        for (int v=0; v<4; ++v)
+            if (val[tet[v]] < isoLevel) mask |= (1u << v);
+
+        if (mask == 0u || mask == 15u) continue; // all inside or all outside
+
+        // 1-triangle cases: single vertex on minority side
+        int flip = (mask == 1||mask==2||mask==4||mask==8) ? 0 : 1;
+        // (emit triangle by finding the 3 or 6 edge crossings for 1 or 2 tris)
+        // ... (full case table elided for brevity; 14 non-trivial cases)
+        uint slot = atomicAdd(count, 3u);
+        // triVerts[slot..slot+2] = computed edge crossings
+    }
+}
+```
+
+**Quality comparison with Marching Cubes:**
+
+| Property | Marching Cubes | Marching Tetrahedra |
+|---|---|---|
+| Topological consistency | No (6 ambiguous cases) | Yes (unambiguous) |
+| Triangle count | Lower (~2 tris/cell) | Higher (~3–4 tris/cell) |
+| Triangle quality | Moderate | Moderate |
+| Manifold output | Not guaranteed | Guaranteed for closed surfaces |
+| GPU implementation | Simpler (15 cases) | Moderate (16 cases × 6 tets) |
+
+Marching Tetrahedra is preferred in medical imaging (CT/MRI segmentation) and any application requiring a guaranteed manifold mesh — e.g., as input to a Laplacian smoothing pass or a mesh repair pipeline. Libraries: libigl `igl::marching_tets` (CPU reference), TetWild for quality tetrahedral mesh generation from triangle soups. [Source: Shirley & Tuchman "A Polygonal Approximation to Find the Isosurface in Implicit Surfaces", SIGGRAPH 1990; Bloomenthal "Polygonization of Implicit Surfaces", CAGD 1988]
+
+### 3.11 Constrained Delaunay and Terrain-Quality Meshes
+
+The unconstrained Delaunay triangulation from §3.9 maximizes minimum angles but ignores hard boundary edges (cliff edges, coastlines, road borders) that must appear exactly in the output mesh. **Constrained Delaunay Triangulation** (CDT) inserts edges that must be preserved, then re-triangulates the interior to remain as Delaunay as possible while respecting those constraints.
+
+**Practical GPU approach.** Full CDT construction is difficult to parallelize. The practical GPU pipeline is:
+
+1. **Seed placement** — scatter seeds from a heightmap or point cloud; high-curvature regions (detected via second derivative of height) receive denser seeds via a compute adaptive sampling pass.
+2. **Voronoi/Delaunay** (§3.9) — build the unconstrained triangulation on GPU.
+3. **Constraint insertion** (CPU, fast for 1000s of segments) — insert road/coastline/cliff polylines into the CDT using the Shewchuk CDT algorithm (Triangle library).
+4. **Ruppert refinement** — insert Steiner points to bound minimum angle ≥ 20°; iterate until no more violations. On GPU this is a parallel edge-flip + point-insertion loop.
+
+**GPU Ruppert refinement pass.** Identify all triangles with minimum angle < threshold via a compute classify pass, insert circumcentres as new vertices in a parallel scatter pass, then flip non-Delaunay edges:
+
+```glsl
+// ruppert_classify.comp — one thread per triangle
+layout(local_size_x=64) in;
+layout(set=0, binding=0) readonly  buffer Triangles { uvec3 tris[]; };
+layout(set=0, binding=1) readonly  buffer Vertices  { vec2 verts[]; };
+layout(set=0, binding=2) writeonly buffer BadTris   { uint bad[]; };
+layout(set=0, binding=3) buffer    Counter          { uint badCount; };
+layout(push_constant) uniform PC { float minAngleCos; };  // cos(20°) = 0.940
+
+void main() {
+    uint tid = gl_GlobalInvocationID.x;
+    uvec3 t  = tris[tid];
+    vec2 a=verts[t.x], b=verts[t.y], c=verts[t.z];
+
+    // Compute all three angles via dot products
+    float cosA = dot(normalize(b-a), normalize(c-a));
+    float cosB = dot(normalize(a-b), normalize(c-b));
+    float cosC = dot(normalize(a-c), normalize(b-c));
+    float minCos = max(max(cosA, cosB), cosC);  // largest cos = smallest angle
+
+    if (minCos > minAngleCos) {                 // minimum angle < threshold
+        uint slot = atomicAdd(badCount, 1u);
+        bad[slot] = tid;
+    }
+}
+```
+
+The circumcentre of each bad triangle is computed and inserted as a new vertex, respecting constraint segments (discard insertions that would violate a constraint). Ruppert's algorithm terminates for minimum angles ≤ 20.7° with no input angle sharper than 60°.
+
+**Applications.** Constrained Delaunay + Ruppert refinement is the standard meshing pipeline for: FEM terrain simulation (seismic, hydrology), game terrain LOD transition zones, road/river network embedding into height-field meshes. The `Triangle` library (Shewchuk, public domain) provides the CPU CDT/Ruppert reference; libigl wraps it. For fully GPU terrain meshing pipelines, the CDT step typically runs on CPU for constraint insertion (milliseconds for road networks) while the refinement iterations run on GPU. [Source: Shewchuk "Triangle: Engineering a 2D Quality Mesh Generator and Delaunay Triangulator", WACG 1996; Ruppert "A Delaunay Refinement Algorithm for Quality 2-Dimensional Mesh Generation", J. Algorithms 1995]
+
 ---
 
 ## 4. Skeletal Animation: Skinning
@@ -2497,6 +2631,227 @@ meshopt_decodeIndexBuffer(indices, indexCount, sizeof(uint32_t),
 
 [Source: Kapoulkine "meshoptimizer: Mesh Optimization Library", GitHub README; Meyer et al. "Octahedral Normal Vector Encoding", ShaderX3]
 
+### 7.10 Mesh Stitching and Seam Welding
+
+DCC tools and glTF exporters produce meshes with split vertices at UV seams, hard-normal boundaries, and part joints — positions that are geometrically coincident but stored as separate vertices with different attributes. This produces visual cracks in subdivision (§1), incorrect smooth normals (§7.5), and doubles the vertex count along every seam. GPU-side stitching merges these before any geometry processing.
+
+**Vertex deduplication with `meshopt_generateVertexRemap`.** meshoptimizer's remap pass compares vertices by a caller-supplied equality predicate and produces a remap table:
+
+```cpp
+// Define per-vertex equality (merge on position only, ignore UV/normal)
+struct PositionVertex { float x, y, z; };
+
+std::vector<uint32_t> remap(vertexCount);
+size_t uniqueCount = meshopt_generateVertexRemap(
+    remap.data(),
+    nullptr, vertexCount,              // no index buffer: dense input
+    positionData, vertexCount, sizeof(PositionVertex));
+
+// Apply remap to all streams: positions, normals, UVs, joint indices, etc.
+meshopt_remapVertexBuffer(outPos,   inPos,   vertexCount, sizeof(PositionVertex), remap.data());
+meshopt_remapVertexBuffer(outNorm,  inNorm,  vertexCount, sizeof(glm::vec3),      remap.data());
+meshopt_remapVertexBuffer(outUV,    inUV,    vertexCount, sizeof(glm::vec2),      remap.data());
+meshopt_remapIndexBuffer( outIdx,   inIdx,   indexCount,  remap.data());
+
+// Result: uniqueCount vertices, seams closed for position-only identity
+```
+
+For tolerance-based welding (merge vertices within ε of each other), sort vertices by a spatial hash bucket, then merge within each bucket — a two-pass GPU pipeline:
+
+```glsl
+// weld_hash.comp — one thread per vertex: assign spatial hash bucket
+layout(local_size_x=64) in;
+layout(set=0,binding=0) readonly  buffer Positions{ vec3 pos[]; };
+layout(set=0,binding=1) writeonly buffer Buckets  { uint bucket[]; };
+layout(push_constant) uniform PC { float cellSize; uint vertCount; };
+
+uint spatialHash(ivec3 c) { return uint(c.x*73856093 ^ c.y*19349663 ^ c.z*83492791); }
+
+void main() {
+    uint i  = gl_GlobalInvocationID.x;
+    if (i >= vertCount) return;
+    ivec3 c = ivec3(floor(pos[i] / cellSize));
+    bucket[i] = spatialHash(c);
+}
+```
+
+After GPU sort-by-bucket, a merge pass within each bucket identifies canonical representatives and writes the remap array, which then feeds `meshopt_remapIndexBuffer` or a custom index rewrite.
+
+**Seam handling for UV/normal attributes.** Welding on position alone discards UV and normal discontinuities needed for correct texturing. The standard approach: weld to a per-vertex record `{position, roundedNormal, roundedUV}` where the normal and UV are rounded to a tolerance that preserves hard edges (angle > 30°) while merging smooth neighbours. `meshopt_generateVertexRemapMulti` accepts multiple streams and per-stream equality tolerances. [Source: meshoptimizer `generateVertexRemap` API documentation; Turk "Re-Tiling Polygonal Surfaces", SIGGRAPH 1992]
+
+### 7.11 Mesh Boolean Operations: Polygon Clipping on GPU
+
+SDF Boolean operations (§3.7) approximate the result via a distance field. **Polygon clipping** produces exact Boolean operations on triangle meshes by clipping each triangle of mesh A against each triangle of mesh B at their intersection contour, then classifying and keeping the desired inside/outside fragments.
+
+**Sutherland-Hodgman polygon clipping on GPU.** For each candidate pair of triangles (A_i, B_j) from the BVH broad-phase (§8.1–8.3), clip triangle A_i against the plane of B_j:
+
+```glsl
+// clip_tri_against_plane.glsl — called per candidate pair
+// Returns clipped polygon (0–6 vertices) into shared memory output
+
+int clipPolygon(vec3 poly[], int n, vec3 planeN, float planeD, vec3 out[]) {
+    int outN = 0;
+    for (int i = 0; i < n; ++i) {
+        vec3 a = poly[i], b = poly[(i+1)%n];
+        float da = dot(a, planeN) - planeD;
+        float db = dot(b, planeN) - planeD;
+        if (da >= 0.0) out[outN++] = a;              // a inside
+        if ((da > 0.0) != (db > 0.0)) {              // edge crosses
+            float t = da / (da - db);
+            out[outN++] = mix(a, b, t);              // intersection point
+        }
+    }
+    return outN;
+}
+
+// Boolean union: keep polys outside B, and B polys outside A, plus boundary
+// Boolean subtract: keep A polys outside B, inverted B polys inside A
+// Boolean intersect: keep only polys inside both A and B
+```
+
+**GPU pipeline for mesh Boolean:**
+
+1. **BVH broad-phase** — find all (A_i, B_j) AABB pairs that overlap (§8.1–8.3)
+2. **Triangle-triangle intersection** (compute) — for each pair, compute the intersection line segment; discard non-intersecting pairs
+3. **Sutherland-Hodgman clipping** (compute) — clip each intersecting triangle against the other's plane; emit sub-triangles into output buffer
+4. **Inside/outside classification** — ray-cast from each sub-triangle centroid to classify interior/exterior using the opposite mesh's BVH
+5. **Triangle soup assembly** — merge kept sub-triangles from both meshes into output index buffer
+
+Full mesh Boolean on GPU is an active research area. Production tools (Blender's `bmesh`, OpenCASCADE `BRepAlgoAPI`) run on CPU, but GPU broad-phase acceleration can reduce step 1–2 from minutes to seconds for complex meshes. The GPU pipeline above handles the intersection kernel; CPU coordinates the global classification. [Source: Greiner & Hormann "Efficient Clipping of Arbitrary Polygons", TOG 1998; Bernstein & Fussell "Fast, Exact, Linear Booleans", SGP 2009]
+
+### 7.12 Harmonic and LSCM UV Parameterization
+
+UV parameterization maps a 3D mesh surface to a 2D texture domain with minimal distortion. Two methods dominate production use: **Harmonic maps** (minimize Dirichlet energy, angle-preserving near boundaries) and **Least Squares Conformal Maps** (LSCM, Lévy 2002 — minimizes angle distortion globally, requires only 2 pinned vertices).
+
+**Laplacian system setup.** Both methods solve a sparse linear system `L · u = b` where `L` is the cotangent-weight Laplacian. Each interior vertex `i` with neighbours `j₁..jₙ` contributes:
+
+```
+L[i,i] = Σⱼ cot(αᵢⱼ) + cot(βᵢⱼ)    (sum of cotangent weights)
+L[i,j] = -(cot(αᵢⱼ) + cot(βᵢⱼ))    (negative weight for each neighbour)
+```
+
+where αᵢⱼ and βᵢⱼ are the angles opposite edge (i,j) in the two adjacent triangles. The cotangent weights ensure the solution is angle-preserving at interior vertices.
+
+**GPU Laplacian assembly (`uv_laplacian.comp`):**
+
+```glsl
+// uv_laplacian.comp — one thread per triangle, atomic scatter into sparse L
+layout(local_size_x=64) in;
+layout(set=0,binding=0) readonly  buffer Positions{ vec3 pos[]; };
+layout(set=0,binding=1) readonly  buffer Indices  { uvec3 tris[]; };
+layout(set=0,binding=2) coherent  buffer LValues  { float lval[]; }; // CSR values
+layout(set=0,binding=3) readonly  buffer LOffsets { uint loff[]; };  // CSR row offsets
+
+void main() {
+    uint ti  = gl_GlobalInvocationID.x;
+    uvec3 t  = tris[ti];
+    vec3  p0=pos[t.x], p1=pos[t.y], p2=pos[t.z];
+
+    // Cotangent weights for the three edges
+    float w01 = 0.5 * dot(p2-p0, p2-p1) / length(cross(p2-p0, p2-p1));  // cot at p2
+    float w12 = 0.5 * dot(p0-p1, p0-p2) / length(cross(p0-p1, p0-p2));  // cot at p0
+    float w20 = 0.5 * dot(p1-p2, p1-p0) / length(cross(p1-p2, p1-p0));  // cot at p1
+
+    // Scatter-add into CSR (each thread needs to find the CSR column entries)
+    // atomicAdd into lval at the pre-computed CSR positions for (t.x,t.y), etc.
+    // (CSR structure pre-built from mesh topology on CPU)
+    atomicAdd(lval[findEntry(loff, t.x, t.y)], -w01);
+    atomicAdd(lval[findEntry(loff, t.y, t.x)], -w01);
+    atomicAdd(lval[findEntry(loff, t.x, t.x)],  w01);
+    atomicAdd(lval[findEntry(loff, t.y, t.y)],  w01);
+    // ... repeat for (t.y,t.z) with w12 and (t.z,t.x) with w20
+}
+```
+
+**Solving on GPU.** The assembled `L` is a sparse symmetric positive semi-definite matrix. Solve with Conjugate Gradient:
+
+```glsl
+// cg_step.comp — one CG iteration (sparse matrix-vector product + update)
+// x: current UV solution, r: residual, p: search direction, Ap: L*p
+// Standard CG: α = (r·r)/(p·Ap), x += α*p, r -= α*Ap, β = (r·r)/rr_old, p = r + β*p
+```
+
+For LSCM specifically, pin two boundary vertices (e.g., the two vertices of the longest boundary edge) and solve the 2×2 block system simultaneously for u and v coordinates. LSCM minimizes the complex Dirichlet energy `‖∂f/∂z̄‖²` which is equivalent to conformal (angle-preserving) mapping.
+
+**Practical output.** For a 100k-triangle mesh, GPU Laplacian assembly takes ~5 ms; CG convergence (50–200 iterations) takes ~10–50 ms. The result feeds directly into the baking pipeline (§7.13). Production tools: xatlas (MIT, CPU-only) for automatic atlas layout with seam optimization; libigl `igl::lscm` + `igl::harmonic` (CPU); uvatlas (DirectX SDK, CPU). [Source: Lévy et al. "Least Squares Conformal Maps for Automatic Texture Atlas Generation", SIGGRAPH 2002; Desbrun et al. "Intrinsic Parameterizations of Surface Meshes", Eurographics 2002]
+
+### 7.13 GPU Parametric Texture Baking
+
+Texture baking transfers high-frequency surface detail from a high-poly mesh to a low-poly mesh via UV projection. The GPU pipeline renders the high-poly mesh once per baked channel (normal, AO, curvature, thickness, albedo) using the low-poly UV layout as the render target coordinate system.
+
+**Cage projection pipeline.** For each texel in the low-poly UV atlas:
+1. Compute the 3D position on the low-poly surface corresponding to this texel's UV
+2. Cast a ray from this position along the low-poly surface normal (or inward-offset cage normal)
+3. Find the first intersection with the high-poly mesh
+4. Sample whatever attribute is being baked at that intersection point
+
+```glsl
+// bake_normal.comp — one thread per texel in the UV atlas
+layout(local_size_x=16, local_size_y=16) in;
+layout(set=0,binding=0, rgba8snorm) uniform image2D normalMap;   // output
+layout(set=0,binding=1) readonly buffer LowPolyPos { vec3 lpPos[]; };
+layout(set=0,binding=2) readonly buffer LowPolyUV  { vec2 lpUV[];  };
+layout(set=0,binding=3) readonly buffer LowPolyIdx { uvec3 lpTri[];};
+layout(set=0,binding=4) readonly buffer HiPolyBVH  { /* LBVH §8 */ };
+layout(set=0,binding=5) readonly buffer HiPolyNorm { vec3 hpNorm[];};
+layout(push_constant) uniform PC { ivec2 atlasSize; uint triCount; float cageOffset; };
+
+void main() {
+    ivec2 texel  = ivec2(gl_GlobalInvocationID.xy);
+    vec2  uv     = (vec2(texel) + 0.5) / vec2(atlasSize);
+
+    // Find which low-poly triangle owns this texel (UV rasterization)
+    // (pre-rasterized coverage map can accelerate this)
+    uint  triID  = findTriangleForUV(uv, lpUV, lpTri, triCount);
+    if (triID == 0xFFFFFFFF) { imageStore(normalMap, texel, vec4(0)); return; }
+
+    // Compute 3D position + normal on the low-poly surface at this UV
+    uvec3 t      = lpTri[triID];
+    vec3  bary   = uvToBarycentric(uv, lpUV[t.x], lpUV[t.y], lpUV[t.z]);
+    vec3  surfPos= bary.x*lpPos[t.x] + bary.y*lpPos[t.y] + bary.z*lpPos[t.z];
+    vec3  surfN  = ...; // interpolated low-poly normal
+
+    // Ray-cast against high-poly BVH from cage offset position
+    vec3  rayO   = surfPos + surfN * cageOffset;   // start outside cage
+    vec3  rayD   = -surfN;                         // shoot inward
+    float tHit;  uint hitTri;
+    if (!bvh_intersect(rayO, rayD, HiPolyBVH, tHit, hitTri)) {
+        imageStore(normalMap, texel, vec4(0,0,1,0)); // fallback: surface normal
+        return;
+    }
+
+    // Sample high-poly normal at hit point, transform to tangent space
+    vec3  hiN    = interpolateNormal(hitTri, rayO + tHit*rayD, HiPolyNorm);
+    vec3  tsN    = worldToTangentSpace(hiN, surfN, surfPos); // TBN matrix
+    imageStore(normalMap, texel, vec4(tsN * 0.5 + 0.5, 1.0));
+}
+```
+
+**Baked channels.** The same pipeline handles:
+- **Normal map** — high-poly surface normal in low-poly tangent space
+- **AO / bent normals** — §7.8 bent normal bake using BVH ray casting
+- **Curvature** — mean curvature `H = ½ tr(shape operator)` at the hit point; sign indicates convex/concave; used for edge highlights and cavity shading
+- **Thickness** — bidirectional ray: shoot forward and backward along normal, record total distance inside the mesh; used for subsurface scattering approximation
+- **Albedo transfer** — sample the high-poly diffuse texture at the hit UV
+
+**Atlas dilation.** After baking, texels at UV island boundaries have no valid low-poly coverage. A post-pass dilates island pixels into the gutter (2–4 texels outward) by JFA (§3.4) or a simple push-fill pass, preventing seam artifacts from bilinear filtering:
+
+```glsl
+// dilate.comp — flood valid texels outward into empty gutter regions
+layout(local_size_x=16, local_size_y=16) in;
+layout(set=0,binding=0) uniform sampler2D input;   // baked atlas with holes
+layout(set=0,binding=1, rgba8) uniform image2D output;
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    vec4  c = texelFetch(input, p, 0);
+    if (c.a > 0.5) { imageStore(output, p, c); return; }  // already filled
+    // Sample 4 neighbours; fill from first valid one
+    for each neighbour n: if texelFetch(input, n).a > 0.5: imageStore(output, p, texelFetch(n)); return;
+}
+```
+
+Production bakers: xNormal (GPU-accelerated), Marmoset Toolbag (GPU), Blender Cycles bake (GPU compute via HLBVH). xatlas handles the UV layout step preceding bake. [Source: Cignoni et al. "Metro: Measuring Error on Simplified Surfaces", Eurographics 1998; xNormal v3 GPU baking whitepaper]
+
 ---
 
 ## 8. GPU BVH Construction
@@ -2746,9 +3101,184 @@ bool gjk(vec3[] hullA, uint nA, vec3[] hullB, uint nB, out float dist) {
 
 [Source: Gilbert, Johnson, Keerthi "A Fast Procedure for Computing the Distance Between Complex Objects in Three-Dimensional Space", IEEE RA 1988; van den Bergen "Collision Detection in Interactive 3D Environments", 2003]
 
+### 8.5 Convex Hull Generation on GPU
+
+A convex hull is the tightest convex polytope enclosing a point set. It is required as: (a) a preprocessing step before GJK (§8.4) — GJK requires convex inputs; (b) the physics collider for rigid bodies before VHACD convex decomposition; (c) the initial seed polytope for EPA (Expanding Polytope Algorithm) penetration depth computation.
+
+**GPU QuickHull.** The classic QuickHull algorithm adapts to GPU with a wave-front parallelism model:
+
+1. **Extreme points** — reduce to find the 6 axis-aligned extremes (min/max X, Y, Z) in O(N/W) parallel reductions to form the initial simplex.
+2. **Point-face assignment** — for each unprocessed point, test against all current horizon faces and assign to the furthest face it can see (positive dot product with face normal).
+3. **Horizon ridge finding** — for each face's assigned point set, find the furthest point; mark visible faces from this point.
+4. **Face update** — remove visible faces, emit new faces from the horizon ridges to the furthest point.
+
+Steps 2–4 iterate until no points remain outside. The GPU-parallel bottleneck is step 2 (assign N points to F faces, O(NF) work) and step 4 (variable-length output):
+
+```glsl
+// hull_assign.comp — assign points to faces
+layout(local_size_x=64) in;
+layout(set=0,binding=0) readonly  buffer Points   { vec3 pts[]; };
+layout(set=0,binding=1) readonly  buffer Faces    { vec4 planes[];  };  // (normal, d)
+layout(set=0,binding=2) writeonly buffer Assignment{ uint faceID[]; };  // per point
+layout(set=0,binding=3) writeonly buffer MaxDist  { float maxD[];   };  // per point
+layout(push_constant) uniform PC { uint ptCount; uint faceCount; };
+
+void main() {
+    uint pi  = gl_GlobalInvocationID.x;
+    if (pi >= ptCount) return;
+    vec3 p   = pts[pi];
+    uint best = 0xFFFFFFFF; float bestD = 0.0;
+    for (uint fi = 0; fi < faceCount; ++fi) {
+        vec4 pl  = planes[fi];
+        float d  = dot(pl.xyz, p) + pl.w;    // signed distance to face
+        if (d > bestD) { bestD = d; best = fi; }
+    }
+    faceID[pi] = best;
+    maxD[pi]   = bestD;
+}
+```
+
+A per-face reduction (atomic max over `maxD` within each face's assigned points) identifies the furthest point per face, then a serial CPU step updates the face list (or a GPU indirect dispatch handles this for fully GPU-resident hulls). Convergence is typically 5–20 iterations for smooth point clouds.
+
+**VHACD (V-HACD 4.0) — Convex Decomposition.** Non-convex meshes require decomposition into a union of convex pieces before GJK. V-HACD (Volumetric Hierarchical Approximate Convex Decomposition) is the de-facto standard:
+
+```cpp
+// CPU: V-HACD decomposes a mesh into convex hulls for physics
+VHACD::IVHACD::Parameters params;
+params.m_maxNumVerticesPerCH = 64;
+params.m_maxConvexHulls      = 32;
+params.m_resolution          = 100000;   // voxel resolution
+
+auto* vhacd = VHACD::CreateVHACD();
+vhacd->Compute(vertices, vertCount, indices, triCount, params);
+
+for (uint32_t i = 0; i < vhacd->GetNConvexHulls(); ++i) {
+    VHACD::IVHACD::ConvexHull ch;
+    vhacd->GetConvexHull(i, ch);
+    // Upload ch.m_points as the convex hull vertex set for GJK §8.4
+}
+```
+
+V-HACD runs on CPU in 0.1–2 s depending on resolution; the resulting convex pieces are uploaded once as static SSBOs for GJK dispatch at runtime. [Source: Mamou & Ghazali "A Simple and Efficient Approach for 3D Mesh Approximate Convex Decomposition", ICIP 2009; V-HACD v4.0 GitHub https://github.com/kmammou/v-hacd]
+
 ---
 
-## 9. Library Landscape
+## 9. Screen-Space Geometry Techniques
+
+Screen-space methods approximate geometry operations using the depth buffer, G-buffer, or reprojected history — achieving results close to full geometric solutions at a fraction of the cost by operating in the 2D screen domain rather than the 3D object domain.
+
+### 9.1 Screen-Space Tessellation and Dynamic LOD
+
+Screen-space tessellation drives triangle subdivision level from the current depth buffer rather than a pre-authored LOD chain. Each frame, a compute pass reads the depth buffer, estimates the projected edge length (in pixels) for each triangle edge, and emits a variable-resolution mesh via a mesh shader.
+
+**Depth-buffer LOD estimation:**
+
+```glsl
+// ss_tess_lod.glsl — in amplification/task shader
+float screenEdgeLength(vec3 posA, vec3 posB, mat4 viewProj, vec2 screenSize) {
+    vec4 cA = viewProj * vec4(posA, 1.0);
+    vec4 cB = viewProj * vec4(posB, 1.0);
+    vec2 sA = (cA.xy / cA.w * 0.5 + 0.5) * screenSize;
+    vec2 sB = (cB.xy / cB.w * 0.5 + 0.5) * screenSize;
+    return length(sA - sB);
+}
+
+// Target: ~8 pixels per edge segment
+float tessLevel = clamp(screenEdgeLength(p0, p1, viewProj, screenSize) / 8.0,
+                        1.0, 64.0);
+gl_TessLevelOuter[0] = tessLevel;
+```
+
+**Screen-space crack prevention.** Adjacent patches at different screen depths use different tessellation levels. The shared-SSBO neighbour-level approach from §2.4 applies here too — read neighbour tessellation level and take the minimum on shared edges. Alternatively, use `fractional_odd_spacing` + level-match SSBO for seamless cracks at any level combination.
+
+**Depth-based displacement.** A depth pre-pass in the vertex shader outputs only depth; a subsequent pass reads the depth buffer to estimate per-vertex curvature (depth Laplacian in screen space) and applies proportional tessellation — high curvature areas receive more triangles. This is the algorithm behind Unreal Engine's "Runtime Virtual Texture" terrain tessellation and Godot's terrain LOD shader.
+
+### 9.2 Parallax Occlusion Mapping
+
+Parallax Occlusion Mapping (POM) simulates geometric displacement entirely in the fragment shader by ray-marching through a heightmap, producing self-shadowing, depth-correct silhouettes, and contact hardening — without any tessellated geometry.
+
+**POM fragment shader:**
+
+```glsl
+// pom_fragment.glsl
+uniform sampler2D heightMap;
+uniform float     heightScale;   // e.g. 0.05 (5 cm)
+uniform int       numSteps;      // 16..64 depending on distance
+
+vec2 parallaxOcclusionMapping(vec2 uv, vec3 viewDirTS, float heightScale) {
+    float stepSize   = 1.0 / float(numSteps);
+    float curHeight  = 0.0;
+    vec2  dtex       = viewDirTS.xy / viewDirTS.z * heightScale * stepSize;
+
+    // Linear ray march
+    float prevH = 0.0, curSample = 1.0;
+    vec2  prevUV = uv;
+    for (int i = 0; i < numSteps; ++i) {
+        curHeight  += stepSize;
+        uv         -= dtex;
+        curSample   = texture(heightMap, uv).r;
+        if (curSample >= curHeight) {
+            // Binary search refinement between prevUV and uv
+            float weight = (curSample - curHeight) /
+                           (curSample - prevH + stepSize);
+            return mix(uv, prevUV, weight);
+        }
+        prevH = curSample; prevUV = uv;
+    }
+    return uv;
+}
+
+// In main():
+vec3  viewDirTS = normalize(TBN_inverse * (cameraPos - fragPos));
+vec2  displaced = parallaxOcclusionMapping(texCoord, viewDirTS, heightScale);
+vec3  normal    = texture(normalMap, displaced).rgb * 2.0 - 1.0;
+// ... rest of PBR shading
+```
+
+**Self-shadowing.** March from the displaced UV back toward the light direction in tangent space; if any heightmap sample occludes the light ray before it exits, apply a shadow factor. This produces soft contact shadows at geometry-height transitions at near-zero additional GPU cost.
+
+**POM vs. tessellation displacement.** POM works entirely in the fragment shader (no geometry overhead) and is effective for viewing angles <60° from the normal. At grazing angles, the silhouette reveals the flat underlying geometry — tessellated displacement (§2.4) is required for correct silhouettes. The standard production hybrid: POM for mid-range surfaces, tessellation+displacement for hero assets at <5m camera distance.
+
+### 9.3 Temporal Geometry Reprojection
+
+Temporal reprojection caches per-pixel geometry computations from previous frames and reprojects them into the current frame using per-pixel motion vectors (from a dedicated motion vector pass or velocity G-buffer). This amortizes expensive per-frame geometry costs across multiple frames.
+
+**Motion vector pass (`motion_vectors.glsl`):**
+
+```glsl
+// In vertex shader: output current and previous clip-space positions
+layout(location=4) out vec4 curClip;
+layout(location=5) out vec4 prevClip;
+
+void main() {
+    vec4 curr = viewProj     * model     * vec4(pos, 1.0);
+    vec4 prev = prevViewProj * prevModel * vec4(pos, 1.0);
+    curClip   = curr;
+    prevClip  = prev;
+    gl_Position = curr;
+}
+
+// In fragment shader: write motion vector
+vec2 curNDC  = curClip.xy  / curClip.w;
+vec2 prevNDC = prevClip.xy / prevClip.w;
+outMotionVec = (curNDC - prevNDC) * 0.5;   // in [0,1] UV space delta
+```
+
+**Geometry reprojection for bent normals / AO.** Progressive bakes (§7.8) use temporal reprojection to accumulate AO samples across frames: each frame adds N new ray samples per vertex; the EMA blend `result = mix(cached, newSample, alpha)` converges to the full-sample result over 1/alpha frames. Motion vectors from the motion-vector pass reproject the cached AO from last frame's vertex positions:
+
+```glsl
+// reproject_ao.comp — one thread per vertex
+vec2  prevUV    = uv + texture(motionVectors, uv).rg;   // reprojected UV
+float cachedAO  = texture(prevAOMap, prevUV).r;
+float newAO     = computeAOSample(pos, normal, bvh);    // N rays this frame
+outAO[i]        = mix(cachedAO, newAO, 1.0/16.0);      // 16-frame EMA
+```
+
+**Temporal geometry caching.** For static environment geometry, cached G-buffer attributes (normals, albedo, depth) from the previous frame can fill pixels that were occluded this frame but visible last frame (disocclusion holes from camera movement). The reprojection confidence is weighted by motion-vector magnitude and depth difference — discard cache hits where the depth delta exceeds a threshold (indicating a different surface is now visible). This is the basis of Unreal Engine's Lumen global illumination cache and DXR "Restir" temporal reuse for ray-traced shadows. [Source: Karis "High Quality Temporal Supersampling", SIGGRAPH 2014; Schied et al. "Spatiotemporal Variance-Guided Filtering", HPG 2017]
+
+---
+
+## 10. Library Landscape
 
 | Library | Version | GPU Backend | Subdivision | Skinning | Splines | NURBS | LOD/BVH | Best Use |
 |---|---|---|---|---|---|---|---|---|
@@ -2781,7 +3311,7 @@ Sub::CatmullClark_subdivision(mesh,
 
 ---
 
-## 10. Performance Reference
+## 11. Performance Reference
 
 **Subdivision** (OpenSubdiv stencil evaluation, RTX 4080):
 
@@ -2825,7 +3355,7 @@ Sub::CatmullClark_subdivision(mesh,
 
 ---
 
-## Integrations
+## 12. Integrations
 
 - **Ch24 (Vulkan/EGL)** — Vulkan resource allocation patterns for SSBO-based subdivision and skinning buffers; pipeline barrier placement between compute passes.
 - **Ch25 (GPU Compute)** — Compute shader dispatch setup, shared memory usage for marching cubes tile optimization, prefix-scan patterns for compaction, and radix sort for Morton-code-based LBVH (§8).
