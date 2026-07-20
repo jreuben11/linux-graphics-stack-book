@@ -41,7 +41,16 @@ The distribution of sections in this catalog mirrors the actual distribution of 
 17. [Anti-Aliasing, TAA, and ML Upscaling](#anti-aliasing-taa-and-ml-upscaling)
 18. [Geometry and Mesh Shader Patterns](#geometry-and-mesh-shader-patterns)
 19. [GPU Compute Algorithm Primitives](#gpu-compute-algorithm-primitives)
-20. [References](#references)
+20. [Order-Independent Transparency](#order-independent-transparency)
+21. [Visibility Buffer and Deferred Texturing](#visibility-buffer-and-deferred-texturing)
+22. [Ray Tracing Shader Patterns](#ray-tracing-shader-patterns)
+23. [Skeletal Animation and Vertex Skinning](#skeletal-animation-and-vertex-skinning)
+24. [GPU Particle Systems](#gpu-particle-systems)
+25. [Decal Rendering](#decal-rendering)
+26. [Lightmapping and Baked GI](#lightmapping-and-baked-gi)
+27. [Foveated and Multiview Rendering](#foveated-and-multiview-rendering)
+28. [Outline and Selection Rendering](#outline-and-selection-rendering)
+29. [References](#references)
 
 ---
 
@@ -632,6 +641,19 @@ Pre-computes Rayleigh (molecular, blue sky) and Mie (aerosol, haze) scattering i
 **Use cases** — physically correct sky rendering in games and simulations; runs in real time after precomputation.  
 **Reference** — [Bruneton & Neyret: Precomputed Atmospheric Scattering (EGSR 2008)](https://inria.hal.science/inria-00288758/)
 
+#### Procedural Star Field
+Generates a night sky by hashing screen-space or view-space directions to determine star presence, brightness, and colour temperature, with a superimposed procedural Milky Way band (elongated noise field in galactic coordinates).
+
+**Use cases** — night skies in open-world games, space simulations; runs at negligible cost as a full-screen fragment or sky-dome shader.  
+**Key variants** — animated twinkling via time-varying hash perturbation; Milky Way density from a precomputed spherical texture; moon disc via signed distance from the moon direction vector.  
+**Reference** — [Shadertoy: Procedural Stars (many implementations)](https://www.shadertoy.com/results?query=stars)
+
+#### Procedural Aurora
+Simulates aurora borealis / australis as undulating luminous curtains using layered domain-warped noise in clip space, with emission colour ramp driven by curtain height.
+
+**Use cases** — arctic/antarctic environments, space games; pure fragment shader, no geometry.  
+**Reference** — [Shadertoy: Aurora (Iq)](https://www.shadertoy.com/view/XtGGRt)
+
 ---
 
 ## Post-Processing and Image Effects
@@ -828,6 +850,13 @@ Displaces foliage vertices by a time-varying wind force sampled from a scrolling
 
 **Use cases** — trees, bushes, grass, cloth; the standard approach in SpeedTree and game engine foliage shaders.  
 **Reference** — [GPU Gems 3 Ch16: Vegetation Procedural Animation and Shading](https://developer.nvidia.com/gpugems/gpugems3/part-iii-rendering/chapter-16-vegetation-procedural-animation-and-shading)
+
+#### Octahedral Impostor
+Bakes N×M orthographic views of a 3D object distributed over an octahedral sphere into an atlas texture. At runtime, selects the two nearest baked views based on the view direction and blends between them, producing a convincing representation of the 3D object at a fraction of its polygon cost.
+
+**Use cases** — distant trees, rocks, and complex props where full LOD geometry is too expensive; the technique behind SpeedTree and UE5 Nanite foliage impostors.  
+**Key variants** — alpha-clipped 8-frame impostors (cheap, coarse); full octahedral 64-frame impostors (smooth, higher memory); animated impostors (multiple frames baked per octant for e.g. water).  
+**Reference** — [Shaderbits: Octahedral Impostors (2018)](https://shaderbits.com/blog/octahedral-impostors)
 
 ---
 
@@ -1044,6 +1073,432 @@ Builds a mip chain of the depth buffer where each mip stores the maximum (farthe
 
 **Use cases** — two-phase GPU occlusion culling (Ch154); SSR Hi-Z ray march; software occlusion queries.  
 **Reference** — [Andersson: Parallel Graphics in Frostbite (SIGGRAPH 2009)](https://advances.realtimerendering.com/s2009/)
+
+---
+
+## Order-Independent Transparency
+
+Alpha-blended transparency requires back-to-front draw order — the Porter-Duff OVER operator is not commutative. Sorting transparent objects on the CPU is expensive and incorrect for intersecting or overlapping geometry. OIT techniques eliminate the sort requirement entirely at the cost of additional memory or rendering passes.
+
+**Shader stage**: The accumulation pass runs in the **fragment shader** writing to special render targets or SSBOs. The resolve pass runs as a full-screen **fragment** or **compute shader**.
+
+#### Weighted Blended OIT (McGuire & Bavoil)
+Accumulates alpha-weighted colour into one RGBA16F render target and alpha coverage into one R16F target in a single forward pass, then resolves by dividing. Approximates correct transparency for most scenes without a sort.
+
+**Use cases** — the industry-standard OIT technique; used in Filament, Godot 4, Three.js. Correct for light-to-medium transparency overlap; breaks down for high-opacity stacked surfaces.  
+**Limitations** — an approximation: very opaque or deep transparency stacks produce incorrect results; colour bleeding at object boundaries.  
+**Reference** — [McGuire & Bavoil: Weighted Blended OIT (I3D 2013)](http://jcgt.org/published/0002/02/09/)
+
+#### Per-Pixel Linked Lists (A-Buffer)
+Each fragment atomically appends its depth, colour, and alpha to a per-pixel linked list in an SSBO, with a head pointer per pixel stored in an image. A resolve pass reads and sorts each pixel's list back-to-front and blends in correct order.
+
+**Use cases** — exact OIT for any scene; used when WBOIT approximation is unacceptable (glass, coloured liquids).  
+**Limitations** — unbounded SSBO memory (must over-provision); fragment atomic contention on hot pixels; resolve sort cost scales with overdraw depth.  
+**Reference** — [Yang et al.: Real-Time Concurrent Linked List Construction on the GPU (EGSR 2010)](https://doi.org/10.1111/j.1467-8659.2010.01725.x)
+
+#### Moment-Based OIT
+Stores the first four power moments of the depth distribution per pixel (encoded compactly into two RGBA16F targets), then reconstructs a transmittance curve at resolve time using moment inversion — a principled approximation between WBOIT and per-pixel linked lists in both cost and accuracy.
+
+**Use cases** — high-quality transparency where WBOIT fails but per-pixel linked lists are too expensive; hair rendering.  
+**Reference** — [Münstermann et al.: Moment-Based OIT (I3D 2018)](http://jcgt.org/published/0007/03/02/)
+
+---
+
+## Visibility Buffer and Deferred Texturing
+
+The G-Buffer's geometry pass writes 4–8 full-resolution render targets. The visibility buffer replaces this with a single 64-bit render target: high bits = draw call / material ID, low bits = primitive ID. A subsequent compute pass reconstructs every material attribute on demand by looking up the mesh and sampling textures. Unreal Engine 5's Nanite uses this approach.
+
+**Shader stage**: The triangle ID pass uses a standard **vertex + fragment** pair with a single integer MRT. The material evaluation pass uses a **compute shader** dispatched over the framebuffer.
+
+#### Triangle ID Pass
+Writes a packed `uvec2` per pixel: `x` = draw ID (encodes material and mesh), `y` = primitive ID within that draw. No texture sampling, no interpolated attributes beyond position.
+
+```glsl
+// Visibility buffer write — fragment shader
+layout(location = 0) out uvec2 vis_buf;  // single R32G32_UINT render target
+
+layout(location = 0) flat in uint v_draw_id;
+
+void main() {
+    vis_buf = uvec2(v_draw_id, gl_PrimitiveID);
+}
+```
+
+**Use cases** — first pass of a visibility buffer renderer; ~4–8× lower geometry pass bandwidth than a full G-Buffer; enables heterogeneous material sets without a fixed G-Buffer schema.  
+**Reference** — [Burns & Hunt: The Visibility Buffer: A Cache-Friendly Approach to Deferred Shading (JCGT 2013)](http://jcgt.org/published/0002/02/04/)
+
+#### Barycentric Attribute Reconstruction
+Given a primitive ID, fetches the three vertex positions from the index buffer and vertex buffer, computes screen-space partial derivatives, and derives correct perspective-correct barycentric coordinates — enabling any per-vertex attribute (UV, normal, colour) to be reconstructed in compute.
+
+**Use cases** — material evaluation pass in a visibility buffer renderer; correct UV derivatives (`ddx`/`ddy` equivalents) from compute without rasterizer interpolation.  
+**Reference** — [Wihlidal: Optimising the Graphics Pipeline with Compute (GDC 2016)](https://frostbite-wp-prd.s3.amazonaws.com/wp-content/uploads/2016/03/29204330/GDC_2016_Compute.pdf)
+
+#### Deferred Texturing Compute Pass
+One compute thread per pixel reads the visibility buffer, looks up the draw and primitive records from GPU-side mesh and material data, reconstructs UVs via barycentric interpolation, samples material textures, and writes the fully shaded result — or writes a surrogate G-Buffer for a standard lighting pass.
+
+**Use cases** — complete visibility buffer pipeline; enables arbitrary material diversity at constant geometry pass cost; required for Nanite-style micro-polygon rendering.  
+**Reference** — [UE5 Nanite: A Deep Dive (SIGGRAPH 2021)](https://advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf)
+
+---
+
+## Ray Tracing Shader Patterns
+
+Vulkan ray tracing (`VK_KHR_ray_tracing_pipeline`) introduces five shader stages: **ray generation** (rgen), **intersection** (rint), **any-hit** (rahit), **closest-hit** (rchit), and **miss** (rmiss). These are not standalone programs — they communicate through the **Shader Binding Table (SBT)** and through payload structs passed by reference. The patterns below describe how to wire these stages together for the most common rendering tasks.
+
+**Shader stage**: `vkCmdTraceRaysKHR` dispatches a 2D grid of **ray generation** invocations. Each call to `traceRayEXT()` invokes intersection, any-hit, closest-hit, or miss shaders. The entire pipeline is asynchronous with respect to the rasterization pipeline; results are written to storage images or SSBOs.
+
+#### RT Shadow Ray
+Traces a shadow ray from a G-Buffer world position toward a light, returning a binary occlusion value. The any-hit shader terminates immediately on any opaque intersection; alpha-tested geometry calls `ignoreIntersectionEXT()` probabilistically.
+
+```glsl
+// Ray generation shader — one shadow ray per pixel per light
+layout(set=0, binding=0) uniform accelerationStructureEXT tlas;
+layout(set=0, binding=1, rgba16f) uniform image2D shadow_map;
+layout(set=0, binding=2) uniform sampler2D g_depth;
+
+layout(location=0) rayPayloadEXT bool shadow_hit;
+
+void main() {
+    ivec2 px   = ivec2(gl_LaunchIDEXT.xy);
+    vec3  P    = reconstruct_position(px);   // from depth
+    vec3  L    = normalize(light_pos - P);
+    float dist = length(light_pos - P) - 0.01;
+
+    shadow_hit = true;  // assume hit; any-hit clears to false if transparent
+    traceRayEXT(tlas,
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
+        0xFF, 0, 0, 0,   // mask, SBT offsets
+        P, 0.001,        // origin, tmin
+        L, dist,         // direction, tmax
+        0);              // payload location
+    imageStore(shadow_map, px, vec4(shadow_hit ? 0.0 : 1.0));
+}
+```
+
+**Use cases** — soft shadow rays (trace multiple jittered rays, average); contact shadows; area light penumbra.  
+**Reference** — [Vulkan Ray Tracing Best Practices (NVIDIA)](https://developer.nvidia.com/blog/best-practices-using-nvidia-rtx-ray-tracing/)
+
+#### RT Ambient Occlusion (RTAO)
+Traces N hemisphere rays per pixel using a cosine-weighted sample distribution; counts the fraction that miss all geometry within a maximum distance. Replaces SSAO entirely for scene-correct occlusion without screen-space limitations.
+
+**Use cases** — interior occlusion, contact darkening; often combined with denoising (SVGF or OIDN) to reduce ray count to 1–4 per pixel.  
+**Limitations** — requires denoising; 1 ray/pixel at 1080p = 2M rays/frame, ~0.3–1ms on modern hardware.  
+**Reference** — [NVIDIA RTXAO sample](https://github.com/NVIDIAGameWorks/RTXAO)
+
+#### RT Reflection Ray
+Traces a specular reflection ray from the G-Buffer surface position along the reflection vector, evaluating full material shading at the hit point via the closest-hit shader. Replaces SSR for off-screen and high-roughness reflections.
+
+**Use cases** — glass, polished floors, water; hybrid: use SSR for on-screen reflections (free), RTRT for off-screen misses.  
+**Key variants** — stochastic roughness: importance-sample the GGX NDF to generate a perturbed reflection ray; use a small sample count + temporal accumulation.  
+**Reference** — [Stachowiak: Stochastic Screen-Space Reflections (SIGGRAPH 2015)](https://advances.realtimerendering.com/s2015/)
+
+#### Any-Hit Alpha Masking
+The any-hit shader samples the material's opacity texture at the ray hit UV and calls `ignoreIntersectionEXT()` if the texel is below the alpha threshold, making the ray pass through alpha-tested foliage transparently.
+
+**Use cases** — ray traversal through foliage, fences, alpha-tested decals; prevents hard occlusion on alpha-tested geometry.  
+**Reference** — [Vulkan Ray Tracing Specification — Any-Hit Shader](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkRayTracingShaderGroupCreateInfoKHR.html)
+
+#### Hybrid Rasterization + RT
+Rasterizes the primary visibility (G-Buffer), then traces rays from G-Buffer surface positions for secondary effects: RT shadows, RTAO, RT reflections, RT global illumination one bounce. Avoids the ray generation cost for primary visibility where rasterization is faster.
+
+**Use cases** — the standard production hybrid pipeline in all AAA engines using ray tracing (Cyberpunk 2077, Control, Metro Exodus).  
+**Reference** — [Moreau et al.: Combining Rasterization and Ray Tracing (SIGGRAPH 2020)](https://advances.realtimerendering.com/s2020/)
+
+---
+
+## Skeletal Animation and Vertex Skinning
+
+Character animation deforms meshes by blending a set of bone transforms, each weighted per vertex. The geometry is stored in a bind-pose reference frame; each vertex stores up to 4 (bone index, weight) pairs. At render time, the skinning shader transforms each vertex into world space by computing a weighted sum of the influencing bone transforms.
+
+**Shader stage**: LBS and DQS run in the **vertex shader** when the mesh is rendered once (e.g., shadow-only or single view). A **compute skinning pre-pass** is preferred when the mesh is visible to multiple cameras simultaneously (shadow cascades, reflection probes) — skin once, draw N times from the resulting vertex buffer.
+
+#### Linear Blend Skinning (LBS)
+Transforms each vertex position and normal by a weighted sum of up to 4 bone matrices, stored as a per-frame SSBO of `mat4` bone transforms (joint matrices = inverse bind matrix × world bone matrix).
+
+```glsl
+// Vertex shader skinning — LBS
+layout(set=1, binding=0) readonly buffer BoneSSBO { mat4 bones[]; };
+
+layout(location=0) in vec3  in_pos;
+layout(location=1) in vec3  in_normal;
+layout(location=2) in uvec4 in_joints;
+layout(location=3) in vec4  in_weights;
+
+void main() {
+    mat4 skin =
+        in_weights.x * bones[in_joints.x] +
+        in_weights.y * bones[in_joints.y] +
+        in_weights.z * bones[in_joints.z] +
+        in_weights.w * bones[in_joints.w];
+
+    vec4 world_pos = skin * vec4(in_pos, 1.0);
+    vec3 world_nrm = normalize(mat3(skin) * in_normal);
+    gl_Position    = view_proj * world_pos;
+}
+```
+
+**Use cases** — the universal baseline; glTF 2.0 mandates LBS support. Fast, broadly correct, collapses under high-twist rotations (candy-wrapper artifact at shoulders, wrists).  
+**Reference** — [glTF 2.0 Specification: Skinning](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#skins)
+
+#### Dual Quaternion Skinning (DQS)
+Converts bone matrices to dual quaternions, blends in dual quaternion space (normalised linear blend), then converts back to a matrix. Eliminates the candy-wrapper artifact at the cost of a more complex vertex shader.
+
+**Use cases** — characters with expressive limb twists (shoulders, wrists, spine); glTF extension `KHR_mesh_quantization` + DQS is the current best practice for high-fidelity characters.  
+**Limitations** — slightly more expensive than LBS; blending non-antipodal dual quaternions produces bulging artifacts (requires shortest-path selection).  
+**Reference** — [Kavan et al.: Skinning with Dual Quaternions (I3D 2007)](https://doi.org/10.1145/1230100.1230107)
+
+#### Morph Targets (Blend Shapes)
+Each morph target is a per-vertex delta (position, normal, tangent) stored as a texture or SSBO. The vertex shader accumulates weighted deltas onto the base mesh. Used for facial animation (phoneme shapes, FACS targets), secondary body shapes, and corrective shapes.
+
+**Use cases** — facial animation in real-time characters; shape keys in Blender/glTF; corrective blend shapes for LBS artifacts.  
+**Reference** — [glTF 2.0: Morph Targets](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#morph-targets)
+
+#### Compute Skinning Pre-Pass
+A compute shader skins the mesh once per frame into a `VkBuffer` acting as a vertex buffer, which is then bound for all subsequent draw calls (direct, shadow, reflection). Avoids redundant per-vertex skinning work when a character appears in multiple views.
+
+**Use cases** — characters casting shadows into multiple cascade levels; characters visible in both main view and planar reflections; any mesh drawn N > 1 times per frame.  
+**Reference** — [UE4 GPU Skin Cache](https://docs.unrealengine.com/en-US/gpu-skinning-cache/)
+
+---
+
+## GPU Particle Systems
+
+CPU particle systems bottleneck at ~100k particles per emitter. GPU particle systems maintain the particle pool in SSBOs with atomic counters, run spawn and update in compute shaders, and submit draw calls via `vkCmdDrawIndirect` without CPU readback.
+
+**Shader stage**: Spawn and update run in **compute shaders**. A **vertex shader** expands particle IDs to screen-space quads. A **fragment shader** applies texture and alpha. Depth sorting (for correct alpha compositing) uses the radix sort from §19 (GPU Compute Algorithm Primitives).
+
+#### Particle Pool with Dead/Alive Lists
+Maintains two SSBOs — a dead list and an alive list — each with an atomic counter. Spawn: pop from dead list, push to alive list. Death: pop from alive list, push to dead list. The alive list is passed as the indirect draw argument source.
+
+```glsl
+// Particle spawn compute shader — one thread per new particle
+layout(set=0, binding=0) buffer DeadList  { uint dead_ids[]; };
+layout(set=0, binding=1) buffer AliveList { uint alive_ids[]; };
+layout(set=0, binding=2) buffer DeadCount { uint dead_count; };
+layout(set=0, binding=3) buffer AliveCount{ uint alive_count; };
+layout(set=0, binding=4) buffer Particles { Particle particles[]; };
+
+layout(local_size_x=64) in;
+void main() {
+    if (gl_GlobalInvocationID.x >= spawn_count) return;
+    uint dead_idx = atomicAdd(dead_count, uint(-1)) - 1;
+    uint id       = dead_ids[dead_idx];
+    uint alive_idx= atomicAdd(alive_count, 1u);
+    alive_ids[alive_idx] = id;
+    // initialise particle at id...
+    particles[id].pos      = emitter_pos;
+    particles[id].vel      = random_hemisphere_dir(id) * spawn_speed;
+    particles[id].lifetime = max_lifetime;
+}
+```
+
+**Reference** — [GPU Pro 6: GPU-Based Particle Systems](https://gpupro.blogspot.com/)
+
+#### Particle Update (Integration + Death)
+Each compute thread integrates one particle: applies velocity, gravity, drag; decrements lifetime; on death, moves the particle from alive to dead list via atomic operations. Alive count after update becomes the `instanceCount` for the indirect draw command.
+
+**Use cases** — physics-simulated particles (fire, sparks, rain, snow, explosion debris); any simulation that would stall the CPU.
+
+#### Billboard Expansion (Vertex Shader)
+A vertex shader receives a particle instance ID, reads position/size/colour/rotation from the particle SSBO, and expands a unit quad (4 vertices) to the correct screen-aligned or velocity-aligned orientation.
+
+**Use cases** — all sprite-based particle rendering; soft particles (fade by comparing particle depth to scene depth).  
+**Reference** — [GPU Gems 3 Ch23: High-Speed, Off-Screen Particles](https://developer.nvidia.com/gpugems/gpugems3/part-iv-image-effects/chapter-23-high-speed-screen-space-occlusion-ambient)
+
+---
+
+## Decal Rendering
+
+Decals project textures onto existing geometry without modifying meshes — bullet holes, dirt, scorch marks, puddles, graffiti. The two main implementations differ in when they interact with the G-Buffer and how they handle depth testing.
+
+**Shader stage**: Screen-space and deferred decals use a **fragment shader** drawing an oriented bounding box mesh. Clustered decals are evaluated within the deferred **lighting fragment or compute shader** without additional draw calls.
+
+#### Screen-Space Decals
+Draw a decal-volume OBB after the geometry pass. The fragment shader reconstructs world position from the depth buffer, projects into decal UV space, discards fragments outside the volume, and blends the decal colour over the existing framebuffer.
+
+```glsl
+// Screen-space decal fragment shader
+layout(set=0, binding=0) uniform sampler2D scene_depth;
+layout(set=0, binding=1) uniform sampler2D decal_albedo;
+layout(set=0, binding=2) uniform DecalUB {
+    mat4 inv_decal_model;   // world → decal local space
+    mat4 inv_proj_view;
+};
+
+layout(location=0) in vec4 v_clip_pos;
+layout(location=0) out vec4 frag_color;
+
+void main() {
+    vec2 screen_uv = (v_clip_pos.xy / v_clip_pos.w) * 0.5 + 0.5;
+    float depth    = texture(scene_depth, screen_uv).r;
+    vec4  world_p  = inv_proj_view * vec4(screen_uv * 2.0 - 1.0, depth, 1.0);
+    world_p       /= world_p.w;
+    vec3  local_p  = (inv_decal_model * world_p).xyz;
+
+    if (any(greaterThan(abs(local_p), vec3(0.5)))) discard; // outside OBB
+    vec2 decal_uv  = local_p.xz + 0.5;
+    frag_color     = texture(decal_albedo, decal_uv);
+}
+```
+
+**Use cases** — impact decals, paint marks; simple to implement; artifacts at steep surface angles (decal stretches along the view vector).  
+**Reference** — [Sousa: CryEngine Deferred Decals (GDC 2010)](https://advances.realtimerendering.com/s2010/)
+
+#### Deferred Decals
+Draw decal OBBs after the geometry pass but before the lighting pass, writing modified albedo/normal/roughness into G-Buffer MRTs. Requires a stencil mask or depth-bias to prevent writing over decal-volume backfaces.
+
+**Use cases** — decals that must affect normal mapping (puddles on rough concrete, bullet holes with displaced normals); correct deferred shading interaction.  
+**Limitations** — requires access to G-Buffer as both input (depth for world position) and output (albedo/normal MRTs); requires a depth-write pass or deferred decal render pass.
+
+#### Clustered Decals
+Assign decals to frustum clusters (same as clustered lights), then evaluate all decals in the lighting compute pass by iterating the per-cluster decal list. No extra OBB draw calls; decal count scales with clustering budget.
+
+**Use cases** — high decal counts (dozens to hundreds simultaneously) where OBB draw call overhead is prohibitive.  
+**Reference** — [Schulz: Clustered Deferred and Forward+ (SIGGRAPH 2012)](https://www.cse.chalmers.se/~uffe/clustered_shading_preprint.pdf)
+
+---
+
+## Lightmapping and Baked GI
+
+Baked lighting pre-computes the irradiance contribution of static lights onto static geometry, storing results in UV-mapped textures (lightmaps). The runtime shader reads the lightmap and combines it with dynamic direct lighting, enabling high-quality indirect illumination at near-zero runtime cost. Lightmapping is the dominant static GI technique in games, archviz, and VR where ray-budget limits dynamic GI quality.
+
+**Shader stage**: Baking runs as a specialised GPU render: texel-space path tracing dispatched from a **compute shader** or via a specialised rasterisation pipeline. Runtime lightmap sampling runs in the **fragment shader** — typically just a `texture()` call.
+
+#### Texel-Space Path Tracing
+For each lightmap texel, reconstructs the world-space surface position and normal from the UV layout, then traces N hemisphere rays using the TLAS and accumulates radiance. The output is a noisy irradiance map that is subsequently denoised.
+
+**Use cases** — the standard GPU lightmap baking algorithm; used in Blender's Cycles bake, Unity's GPU Lightmapper, UE5's GPU Lightmass.  
+**Reference** — [UE5 GPU Lightmass](https://docs.unrealengine.com/5.0/en-US/gpu-lightmass-global-illumination-in-unreal-engine/)
+
+#### Lightmap Denoising
+Applies a spatial/temporal denoiser (Intel OIDN, NVIDIA OptiX Denoiser) to the noisy path-traced output to produce a clean irradiance map at low sample counts (16–64 spp rather than 4096).
+
+**Use cases** — required for any production lightmap pipeline; reduces bake time by 10–100× at equivalent visual quality.  
+**Reference** — [Intel Open Image Denoise](https://www.openimagedenoise.org/)
+
+#### Runtime Lightmap Sampling
+The fragment shader samples the baked irradiance at lightmap UV2 coordinates and multiplies by the material albedo to produce the indirect diffuse contribution.
+
+```glsl
+layout(set=1, binding=0) uniform sampler2D lightmap;
+layout(set=1, binding=1) uniform sampler2D directional_lm;  // HL2 dominant direction
+
+layout(location=2) in vec2 v_lm_uv;
+
+// In the fragment shader:
+vec3 irradiance = texture(lightmap, v_lm_uv).rgb;
+// Directional lightmap: modulate by NdotL with baked dominant direction
+vec3 dominant_dir = texture(directional_lm, v_lm_uv).rgb * 2.0 - 1.0;
+irradiance *= max(0.5, dot(world_normal, dominant_dir));
+vec3 indirect_diffuse = albedo * irradiance;
+```
+
+**Use cases** — all static geometry in lightmapped scenes; the baseline runtime cost of baked GI is one texture fetch.
+
+#### Directional Lightmaps (HL2 Basis)
+Stores the baked irradiance projected onto three or four basis directions (the HL2 half-life 2 basis: three hemispheric lobes), enabling normal maps to respond to baked indirect lighting with correct self-shadowing.
+
+**Use cases** — whenever surface normal detail must be preserved in lightmapped scenes; the standard in Source engine, Unity, and UE5 lightmass.  
+**Reference** — [Valve: Half-Life 2 Shading (SIGGRAPH 2004)](https://advances.realtimerendering.com/s2004/)
+
+---
+
+## Foveated and Multiview Rendering
+
+VR/XR rendering must produce two views per frame at high resolution and high frame rate. Two Vulkan techniques reduce this cost: multiview renders geometry once for both eyes simultaneously; variable-rate shading coarsens shading in the peripheral visual field where the eye has low resolution.
+
+**Shader stage**: Multiview uses a standard **vertex shader** that reads `gl_ViewIndex` to select the correct transform. FSR writes a shading rate image from **compute** before the main render pass. ATW reprojection runs as a **compute** or **fragment** shader.
+
+#### VK_KHR_multiview
+Renders a single draw call into a 2D array render target with two layers. The vertex shader uses `gl_ViewIndex` to index into an array of view matrices, writing `gl_Position` for both eyes from one geometry submission.
+
+```glsl
+#extension GL_EXT_multiview : require
+layout(set=0, binding=0) uniform ViewUB { mat4 view_proj[2]; };
+
+layout(location=0) in vec3 in_pos;
+
+void main() {
+    gl_Position = view_proj[gl_ViewIndex] * vec4(in_pos, 1.0);
+}
+```
+
+**Use cases** — stereo VR rendering; reduces geometry processing and draw call overhead by up to 50%; mandatory for high-performance VR on mobile XR hardware (Quest).  
+**Reference** — [Khronos: VK_KHR_multiview specification](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_KHR_multiview.html)
+
+#### Variable Rate Shading — Fixed Foveated (VK_KHR_fragment_shading_rate)
+Writes a shading rate image (one tile per N×N pixels) before the main render pass. Tiles in the peripheral screen region are marked 2×2 or 4×4 (one shader invocation per 4 or 16 pixels); the central fovea region is marked 1×1 (full rate). The rasterizer applies the coarser rate automatically during fragment dispatch.
+
+**Use cases** — fixed foveated rendering on Quest, PSVR2, and PC VR headsets; 30–50% fragment shader cost reduction with minimal perceptual quality loss.  
+**Reference** — [Qualcomm: Fixed Foveated Rendering Best Practices](https://developer.qualcomm.com/software/adreno-gpu-sdk/tools)
+
+#### Eye-Tracked Foveated Rendering
+Updates the shading rate image every frame from eye tracker coordinates: full-rate 1×1 region is centred on the gaze point rather than the screen centre. Requires per-frame compute dispatch to write the rate image before the main render pass begins.
+
+**Use cases** — high-end VR headsets with eye tracking (Apple Vision Pro, Varjo, Pico); 40–60% fragment shader reduction; requires latency-hiding to avoid smearing artefacts.  
+**Reference** — [Foveated Rendering Overview — Khronos Blog](https://www.khronos.org/blog/vulkan-variable-rate-shading)
+
+#### Asynchronous TimeWarp / SpaceWarp (ATW/ASW)
+Reprojects the last rendered frame to the current head pose using depth and motion vectors when a new frame is not ready in time, synthesising a valid display frame with minimal latency. The reprojection runs as a high-priority compute or graphics pass on a separate GPU queue.
+
+**Use cases** — VR compositor reprojection fallback; prevents judder when the application misses its frame deadline; implemented in Oculus, OpenVR, and Monado runtimes.  
+**Reference** — [Oculus: Asynchronous TimeWarp](https://developer.oculus.com/documentation/native/android/mobile-timewarp-overview/)
+
+---
+
+## Outline and Selection Rendering
+
+Object outline rendering is universal in games and editors — selection highlight in Blender, enemy detection outlines in stealth games, UI focus rings. The algorithms range from simple stencil tricks to full-screen distance field passes.
+
+**Shader stage**: Stencil outlines use **vertex + fragment** for the scaled re-render. JFA uses a **compute** or **fragment** shader for each flooding step (O(log N) passes). Edge detection runs as a full-screen **fragment** or **compute** pass.
+
+#### Stencil Buffer Outline
+Render the selected object into the stencil buffer (write 1). Re-render the object with a slightly scaled model matrix (scale by 1 + outline_width in view space) using a solid colour shader, discarding fragments where stencil = 1. The ring outside the object but inside the scaled version is the outline.
+
+**Use cases** — cheap selection highlight; correct depth testing; aliased at low outline widths; width is model-scale not screen-pixel-scale.  
+**Limitations** — outline width is geometry-dependent (nonuniform for complex objects); no sub-pixel width; does not work with skinned meshes without re-binding the skinned vertex buffer.
+
+#### Jump Flood Algorithm (JFA) Outline
+Renders the selected object into a seed image (object pixels = screen coordinate, background = sentinel). JFA then runs log₂(max_dim) passes: each pass reads 8 neighbours at step size 2^(pass) and keeps the nearest seed coordinate. The resulting Voronoi distance field gives each pixel the distance to the nearest object pixel — threshold to produce the outline.
+
+```glsl
+// JFA step — fragment or compute shader
+layout(set=0, binding=0) uniform sampler2D jfa_input;
+layout(set=0, binding=1) writeonly uniform image2D jfa_output;
+layout(set=0, binding=2) uniform JfaUB { ivec2 step_size; };
+
+void main() {
+    ivec2 px   = ivec2(gl_FragCoord.xy);
+    vec2  best = texelFetch(jfa_input, px, 0).xy;
+    float best_dist = best.x < 0.0 ? 1e9 : distance(vec2(px), best);
+
+    for (int dy = -1; dy <= 1; ++dy)
+    for (int dx = -1; dx <= 1; ++dx) {
+        if (dx == 0 && dy == 0) continue;
+        ivec2 nb   = px + ivec2(dx, dy) * step_size;
+        vec2  seed = texelFetch(jfa_input, nb, 0).xy;
+        if (seed.x < 0.0) continue;
+        float d    = distance(vec2(px), seed);
+        if (d < best_dist) { best = seed; best_dist = d; }
+    }
+    imageStore(jfa_output, px, vec4(best, 0.0, 0.0));
+}
+// Resolve: distance < outline_px → outline colour
+```
+
+**Use cases** — anti-aliased outlines at arbitrary pixel width; Blender's object selection uses a variant; works correctly with any geometry including skinned characters.  
+**Reference** — [Rong & Tan: Jump Flooding in GPU with Applications to Voronoi Diagram and Distance Transform (I3D 2006)](https://doi.org/10.1145/1111411.1111431)
+
+#### Screen-Space Edge Detection Outline
+Applies a Sobel or Laplacian operator to the depth buffer (and optionally the normal buffer) to find geometric edges; writes an edge mask used as the outline colour. Detects all scene edges, not just selected objects — useful for a "blueprint" or "sketch" visualisation of the full scene.
+
+**Use cases** — NPR full-scene edge rendering; technical visualisation; debug normal/depth display; combining with cel shading for a toon-shaded edge pass.  
+**Reference** — [GPU Gems 2 Ch19: Generic Refraction Simulation](https://developer.nvidia.com/gpugems/gpugems2/part-ii-shading-antialiasing-and-shadows/chapter-19-generic-refraction-simulation) | [Roberts: Edge Detection (NVIDIA)](https://developer.nvidia.com/gpugems/gpugems/part-iv-image-processing/chapter-24-fast-fourth-order-partial-differential-equations)
+
+#### Post-Process Halo (Convolution Outline)
+Renders selected objects into an offscreen mask, blurs the mask with a Gaussian or box filter, subtracts the unblurred mask, and composites the resulting halo over the scene. Width and softness are controlled by the blur radius and the subtraction coefficient.
+
+**Use cases** — soft selection glow; XP-style health aura; any effect needing a smooth width-controllable halo rather than a sharp edge.
 
 ---
 
