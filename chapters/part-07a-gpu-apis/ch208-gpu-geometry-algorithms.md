@@ -18,6 +18,7 @@
    - 2.2 [GPU Tessellation of Bézier Patches (TCS/TES)](#22-gpu-tessellation-of-bézier-patches-tcstes)
    - 2.3 [OpenCASCADE NURBS Tessellation for GPU Upload](#23-opencascade-nurbs-tessellation-for-gpu-upload)
    - 2.4 [Displacement Mapping on Tessellated Surfaces](#24-displacement-mapping-on-tessellated-surfaces)
+   - 2.5 [PN Triangles and Phong Tessellation](#25-pn-triangles-and-phong-tessellation)
 3. [Metaballs and Implicit Surfaces](#3-metaballs-and-implicit-surfaces)
    - 3.1 [Field Functions](#31-field-functions)
    - 3.2 [Marching Cubes on the GPU](#32-marching-cubes-on-the-gpu)
@@ -26,6 +27,8 @@
    - 3.5 [Procedural Noise Density Fields](#35-procedural-noise-density-fields)
    - 3.6 [NanoVDB: Sparse GPU Volumes](#36-nanovdb-sparse-gpu-volumes)
    - 3.7 [SDF CSG Operations](#37-sdf-csg-operations)
+   - 3.8 [SPH Particle Fluid Surface Extraction](#38-sph-particle-fluid-surface-extraction)
+   - 3.9 [GPU Delaunay Triangulation and Voronoi](#39-gpu-delaunay-triangulation-and-voronoi)
 4. [Skeletal Animation: Skinning](#4-skeletal-animation-skinning)
    - 4.1 [Forward Kinematics on GPU](#41-forward-kinematics-on-gpu)
    - 4.2 [Linear Blend Skinning (LBS)](#42-linear-blend-skinning-lbs)
@@ -49,10 +52,14 @@
    - 7.4 [LOD Selection in Mesh Shaders](#74-lod-selection-in-mesh-shaders)
    - 7.5 [Smooth Normals Post-Pass](#75-smooth-normals-post-pass)
    - 7.6 [Procedural GPU Instancing: Grass, Hair, Fur](#76-procedural-gpu-instancing-grass-hair-fur)
+   - 7.7 [Billboard and Impostor LOD Atlases](#77-billboard-and-impostor-lod-atlases)
+   - 7.8 [Bent Normals Precomputation](#78-bent-normals-precomputation)
+   - 7.9 [Geometry Compression and Quantization](#79-geometry-compression-and-quantization)
 8. [GPU BVH Construction](#8-gpu-bvh-construction)
    - 8.1 [Morton Codes and LBVH](#81-morton-codes-and-lbvh)
    - 8.2 [LBVH Tree Construction (Karras 2012)](#82-lbvh-tree-construction-karras-2012)
    - 8.3 [AABB Propagation](#83-aabb-propagation)
+   - 8.4 [GPU Narrow-Phase Collision: SAT and GJK](#84-gpu-narrow-phase-collision-sat-and-gjk)
 9. [Library Landscape](#9-library-landscape)
 10. [Performance Reference](#10-performance-reference)
 11. [Integrations](#integrations)
@@ -634,6 +641,78 @@ void main() {
 
 In production, a precomputed tangent-space normal map (baked from a high-poly mesh) in the fragment shader replaces the real-time TES normal derivation. The TES provides the coarse displaced position; the normal map provides the per-pixel shading normal. This combination — hardware tessellation + displacement + tangent-space normals — is the standard terrain pipeline in Unreal Engine's Landscape system, Godot's `ShaderMaterial` terrain nodes, and id Tech 7's surface subdivision.
 
+### 2.5 PN Triangles and Phong Tessellation
+
+Hardware TCS/TES requires OpenGL 4.0 / Vulkan 1.0 and has non-trivial pipeline complexity. For mobile and integrated GPUs where tessellation is slow or unsupported, **PN Triangles** (Alex Vlachos et al., GDC 2001) and **Phong Tessellation** (Boubekeur & Alexa 2008) achieve smooth silhouettes using only a vertex shader — no tessellation stage — by generating curved geometry in a geometry shader or through mesh-shader subdivision.
+
+**PN Triangles** replace each input triangle with a cubic Bézier patch defined entirely by the triangle's three vertex positions and normals. The 10 Bézier control points are:
+
+```glsl
+// Compute PN triangle control points from 3 vertices (positions p0-p2, normals n0-n2)
+// Corner points: b300=p0, b030=p1, b003=p2
+vec3 b300 = p0, b030 = p1, b003 = p2;
+
+// Edge points: project neighbour along normal plane
+vec3 b210 = (2.0*p0 + p1 - dot(p1-p0, n0)*n0) / 3.0;
+vec3 b120 = (2.0*p1 + p0 - dot(p0-p1, n1)*n1) / 3.0;
+vec3 b021 = (2.0*p1 + p2 - dot(p2-p1, n1)*n1) / 3.0;
+vec3 b012 = (2.0*p2 + p1 - dot(p1-p2, n2)*n2) / 3.0;
+vec3 b102 = (2.0*p2 + p0 - dot(p0-p2, n2)*n2) / 3.0;
+vec3 b201 = (2.0*p0 + p2 - dot(p2-p0, n0)*n0) / 3.0;
+
+// Centre point: average of edge midpoints, pulled toward triangle interior
+vec3 E    = (b210+b120+b021+b012+b102+b201) / 6.0;
+vec3 V    = (p0+p1+p2) / 3.0;
+vec3 b111 = E + (E - V) * 0.5;
+
+// Normal quadratic blending: linear interpolation of normals
+vec3 n200 = n0, n020 = n1, n002 = n2;
+vec3 n110 = normalize(n0 + n1 - 2.0*dot(p1-p0, n0+n1)/dot(p1-p0, p1-p0)*(p1-p0));
+vec3 n011 = normalize(n1 + n2 - 2.0*dot(p2-p1, n1+n2)/dot(p2-p1, p2-p1)*(p2-p1));
+vec3 n101 = normalize(n2 + n0 - 2.0*dot(p0-p2, n2+n0)/dot(p0-p2, p0-p2)*(p0-p2));
+```
+
+In the TES (or equivalent), evaluate at barycentric coordinate `(u, v, w)` where `u+v+w=1`:
+
+```glsl
+// Evaluate cubic Bernstein on PN control points
+vec3 pn_position(float u, float v, float w,
+    vec3 b300, vec3 b030, vec3 b003,
+    vec3 b210, vec3 b120, vec3 b021,
+    vec3 b012, vec3 b102, vec3 b201, vec3 b111) {
+    return b300*u*u*u + b030*v*v*v + b003*w*w*w
+         + b210*3.0*u*u*v + b120*3.0*u*v*v
+         + b021*3.0*v*v*w + b012*3.0*v*w*w
+         + b102*3.0*u*w*w + b201*3.0*u*u*w
+         + b111*6.0*u*v*w;
+}
+
+vec3 pn_normal(float u, float v, float w,
+    vec3 n200, vec3 n020, vec3 n002,
+    vec3 n110, vec3 n011, vec3 n101) {
+    return normalize(n200*u*u + n020*v*v + n002*w*w
+                   + n110*u*v + n011*v*w + n101*u*w);
+}
+```
+
+**Phong Tessellation** (simpler, slightly lower quality) linearly interpolates the flat-shaded position, then projects each interpolated point onto the tangent plane of the nearest corner vertex normal:
+
+```glsl
+// Phong tessellation in TES — α controls blend between flat and curved
+vec3 phong_tessellate(vec3 p_interp, vec3 p0, vec3 p1, vec3 p2,
+                      vec3 n0, vec3 n1, vec3 n2,
+                      float u, float v, float w, float alpha) {
+    // Project interpolated point onto each vertex's tangent plane
+    vec3 proj0 = p_interp - dot(p_interp - p0, n0) * n0;
+    vec3 proj1 = p_interp - dot(p_interp - p1, n1) * n1;
+    vec3 proj2 = p_interp - dot(p_interp - p2, n2) * n2;
+    vec3 curved = u*proj0 + v*proj1 + w*proj2;
+    return mix(p_interp, curved, alpha);  // alpha=0: flat, alpha=1: full curve
+}
+```
+
+**Mobile and no-TES path.** Without hardware tessellation, emit subdivided triangles from a compute shader pre-pass: each input triangle fans into 4 or 16 sub-triangles, with PN control points evaluated per-vertex. The output writes to a vertex/index buffer consumed by a standard draw call. This produces the same visual result with zero pipeline complexity. [Source: Vlachos et al. "Curved PN Triangles", GDC 2001; Boubekeur & Alexa "Phong Tessellation", SIGGRAPH Asia 2008]
+
 ---
 
 ## 3. Metaballs and Implicit Surfaces
@@ -1113,6 +1192,120 @@ void main() {
 ```
 
 The baked volume is then sphere-traced via a 3D texture lookup at runtime with trilinear interpolation — much faster than re-evaluating the full scene function per frame, at the cost of discretization error proportional to `cellSize`.
+
+### 3.8 SPH Particle Fluid Surface Extraction
+
+Smoothed Particle Hydrodynamics (SPH) simulations output per-particle positions and densities each frame. Converting this particle cloud to a renderable mesh requires reconstructing a continuous scalar density field and then extracting the isosurface — connecting the SPH simulator to the marching cubes pipeline of §3.2.
+
+**SPH kernel.** The standard cubic-spline kernel in GLSL: given a particle at `xⱼ` with smoothing radius `h`, its contribution to the density field at point `x` is:
+
+```glsl
+float sph_kernel(float r, float h) {
+    float q = r / h;
+    float sigma = 8.0 / (3.14159265 * h * h * h);
+    if (q < 0.5) return sigma * (6.0*(q*q*q - q*q) + 1.0);
+    if (q < 1.0) return sigma * 2.0 * pow(1.0 - q, 3.0);
+    return 0.0;
+}
+```
+
+**Density grid bake (`sph_density.comp`).** Each thread evaluates the density at one grid voxel by summing contributions from nearby particles. A spatial hash grid (bucket sort by cell) accelerates the neighbour query to O(1) average cost:
+
+```glsl
+// sph_density.comp — one thread per voxel
+layout(local_size_x=8, local_size_y=8, local_size_z=8) in;
+
+struct Particle { vec3 pos; float mass; };
+layout(set=0, binding=0) readonly  buffer Particles { Particle particles[]; };
+layout(set=0, binding=1) readonly  buffer HashCells { uint cellStart[];  };  // prefix sum
+layout(set=0, binding=2) readonly  buffer HashParts { uint partIdx[];    };  // sorted particle IDs
+layout(set=0, binding=3, r32f)     uniform image3D   densityGrid;
+
+layout(push_constant) uniform PC {
+    vec3  gridOrigin;
+    float cellSize;      // voxel size in world units
+    float h;             // SPH smoothing radius
+    uint  gridDim;       // grid dimension (cubic)
+};
+
+void main() {
+    ivec3 id   = ivec3(gl_GlobalInvocationID);
+    vec3  x    = gridOrigin + (vec3(id) + 0.5) * cellSize;
+
+    float rho  = 0.0;
+    // Iterate over 3x3x3 neighbourhood in the hash grid
+    ivec3 ci   = ivec3(floor((x - gridOrigin) / h));
+    for (int dz=-1; dz<=1; ++dz)
+    for (int dy=-1; dy<=1; ++dy)
+    for (int dx=-1; dx<=1; ++dx) {
+        ivec3 nc = ci + ivec3(dx, dy, dz);
+        if (any(lessThan(nc, ivec3(0))) || any(greaterThanEqual(nc, ivec3(gridDim)))) continue;
+        uint cell = nc.x + nc.y*gridDim + nc.z*gridDim*gridDim;
+        for (uint p = cellStart[cell]; p < cellStart[cell+1]; ++p) {
+            Particle pk = particles[partIdx[p]];
+            float r = length(x - pk.pos);
+            rho += pk.mass * sph_kernel(r, h);
+        }
+    }
+    imageStore(densityGrid, id, vec4(rho));
+}
+```
+
+Once the density grid is written, it feeds directly into the two-pass marching cubes pipeline from §3.2 (replace the metaball field with a 3D image sampler bound to `densityGrid`). The isosurface level is typically set to the SPH rest density `ρ₀` of the fluid.
+
+**Frame pipeline.** The per-frame GPU pipeline for fluid rendering is:
+1. **SPH simulation** — pressure-force compute → velocity integrate → position update
+2. **Spatial hash rebuild** — count, prefix-scan, scatter by cell
+3. **Density grid bake** — `sph_density.comp`
+4. **Marching cubes** — count + emit (§3.2) using density grid as input field
+5. **Smooth normals** — §7.5 post-pass on the extracted mesh
+6. **Render** — PBR shading with refraction and foam opacity
+
+This pipeline is used in real-time fluid demos on NVIDIA Flex (GPU PhysX), AMD's fluid demo for RDNA3, and Houdini's Karma GPU renderer for SPH particle renders. [Source: Müller et al. "Particle-based Fluid Simulation for Interactive Applications", SCA 2003; NVIDIA Flex SDK documentation]
+
+### 3.9 GPU Delaunay Triangulation and Voronoi
+
+Delaunay triangulation maximizes the minimum angle of all triangles, producing meshes with no degenerate slivers — ideal for point-cloud surface reconstruction, procedural terrain meshing from scattered elevation samples, and fluid surface refinement. Its dual, the Voronoi diagram, partitions space into nearest-neighbour regions useful for level-of-detail seeding and tiling.
+
+**Jump flooding Voronoi (JFA revisited).** The JFA pass from §3.4 also computes the 2D/3D Voronoi diagram: each cell stores the ID (and position) of its nearest seed. On the GPU, JFA runs in O(log N) passes, each of O(N) thread cost, where N is the grid dimension — far faster than CPU Fortune's sweep for large grids.
+
+For 2D terrain Voronoi (procedural biome regions, tiling):
+
+```glsl
+// voronoi_jfa.comp — 2D version; each texel stores nearest seed pos + ID
+layout(local_size_x=16, local_size_y=16) in;
+layout(set=0, binding=0)        uniform sampler2D inputMap;   // (seedX, seedY, seedID, dist)
+layout(set=0, binding=1, rgba32f) uniform image2D  outputMap;
+layout(push_constant) uniform PC { int step; ivec2 dims; };
+
+void main() {
+    ivec2 id  = ivec2(gl_GlobalInvocationID.xy);
+    vec4  best = texelFetch(sampler2D(inputMap, ...), id, 0);
+    float bestDist = (best.z >= 0.0) ? length(vec2(id) - best.xy) : 1e30;
+
+    for (int dy = -1; dy <= 1; ++dy)
+    for (int dx = -1; dx <= 1; ++dx) {
+        ivec2 nc = id + ivec2(dx, dy) * step;
+        if (any(lessThan(nc, ivec2(0))) || any(greaterThanEqual(nc, dims))) continue;
+        vec4 cand = texelFetch(sampler2D(inputMap, ...), nc, 0);
+        if (cand.z < 0.0) continue;
+        float d = length(vec2(id) - cand.xy);
+        if (d < bestDist) { bestDist = d; best = cand; }
+    }
+    imageStore(outputMap, id, best);
+}
+```
+
+**Bowyer-Watson incremental Delaunay on GPU.** Full GPU Delaunay triangulation is algorithmically complex (circumcircle conflict sets form data-dependent dependency chains). The practical GPU approach is:
+
+1. **Rasterize Voronoi cones** — render an N-sided pyramid per seed (apex at seed position, slope = 1.0) into a depth buffer; the depth test produces the exact Voronoi partition in O(N) rasterization work.
+2. **Extract edges from Voronoi image** — identify adjacent region boundaries (pixels where the seed ID changes between neighbours) via a compute pass.
+3. **Connect Delaunay edges** — each Voronoi edge corresponds to a Delaunay edge between the two seed IDs sharing that boundary; emit into an edge list.
+4. **Fan-triangulate** — sort edges by seed, form Delaunay triangles from each seed's neighbour list.
+
+The rasterized Voronoi approach runs in O(N) GPU time for N seeds, producing the exact Voronoi diagram and an approximate Delaunay triangulation (exact up to rasterization resolution). For terrain meshing at 100k sample points, this runs in <2 ms on a modern GPU.
+
+**Applications.** GPU Voronoi/Delaunay is used in: procedural biome generation (each Voronoi cell = one biome with coherent terrain parameters), fluid mesh reconstruction (Poisson surface reconstruction seeds from SPH particles), and GPU-side LOD meshing where scattered high-frequency samples (from adaptive tessellation) need triangulation before mesh simplification (§7.1). [Source: Hoff et al. "Fast Computation of Generalized Voronoi Diagrams Using Graphics Hardware", SIGGRAPH 1999; Rong & Tan "Jump Flooding in GPU with Applications to Voronoi Diagram and Distance Transform", I3D 2006]
 
 ---
 
@@ -1897,6 +2090,34 @@ meshopt_optimizeOverdraw(lod.data(), lod.data(), lodCount,
 
 `meshopt_simplify` also supports attribute-weighted simplification (`meshopt_simplifyWithAttributes`) to preserve UV seams, normal discontinuities, and vertex colors during edge collapse.
 
+**Vertex cache optimization — why it matters.** Modern GPUs have a post-transform vertex cache (PTVC) of 16–32 entries. If a vertex is transformed once and cached, a second triangle referencing it within the FIFO window pays no vertex-shader cost. A pathological index order (e.g., sequential insertion order from a DCC tool) may achieve ACMR (average cache miss ratio) above 1.5 — far from the theoretical minimum near 0.5 for a typical mesh. `meshopt_optimizeVertexCache` reorders indices using the Forsyth algorithm (linear scan with a per-vertex score function combining cache position and vertex valence), reducing ACMR to ~0.6 on dense triangle meshes.
+
+```cpp
+// Vertex cache optimization — reorders index buffer in-place
+meshopt_optimizeVertexCache(indices, indices, indexCount, vertexCount);
+
+// Measure ACMR before and after (cache_size = 16 simulates typical GPU PTVC)
+meshopt_VertexCacheStatistics stats =
+    meshopt_analyzeVertexCache(indices, indexCount, vertexCount,
+                               /*cache_size=*/16, /*warp_size=*/0, /*prim_group_size=*/0);
+// stats.acmr < 0.7 is good; < 0.55 is excellent
+// stats.atvr (average transformed vertex ratio) should be close to 1.0
+```
+
+After vertex cache reordering, `meshopt_optimizeVertexFetch` remaps vertex data to match the new access pattern, improving L2 cache hit rate during vertex fetch:
+
+```cpp
+// Remap vertices to match the cache-optimized index order
+std::vector<uint32_t> remap(vertexCount);
+size_t uniqueVerts = meshopt_optimizeVertexFetchRemap(
+    remap.data(), indices, indexCount, vertexCount);
+meshopt_remapVertexBuffer(vertices, vertices, vertexCount,
+                          sizeof(Vertex), remap.data());
+meshopt_remapIndexBuffer(indices, indices, indexCount, remap.data());
+```
+
+For meshlet-based rendering (§7.4), meshoptimizer's `meshopt_buildMeshlets` already incorporates vertex cache awareness at the meshlet granularity: each meshlet's local index buffer is a tight 64-vertex / 124-triangle unit that fits entirely within the mesh shader's per-workgroup registers, making PTVC optimization less critical at draw time but more important within the meshlet build step.
+
 ### 7.3 Vertex Clustering on GPU
 
 Vertex clustering groups all vertices falling within a spatial cell and replaces each group with a representative (centroid or QEM-minimizer). Unlike QEM edge collapse, it requires no adjacency data — each vertex independently maps to its cell, making it GPU-friendly:
@@ -2109,6 +2330,173 @@ void main() {
 
 [Source: Acton (2021) "Procedural Grass in 'Ghost of Tsushima'" GDC; Epic Games "UE5 Nanite Foliage" tech blog]
 
+### 7.7 Billboard and Impostor LOD Atlases
+
+At extreme camera distances (>200m for a tree, >50m for a shrub), even a single-lod low-poly mesh wastes vertex processing on subpixel geometry. **Impostors** replace the 3D mesh entirely with a camera-facing quad whose texture captures the mesh rendered from multiple discrete angles — a camera-view-dependent atlas lookup that is visually identical to the mesh at distances where the angular delta between atlas samples is below the pixel error threshold.
+
+**Atlas baking pipeline (offline GPU pass):**
+
+```glsl
+// impostor_bake.comp — renders the mesh from N×N hemisphere directions
+// into a texture atlas, one tile per direction
+// Typical: 8×4=32 tiles, each 128×128px for small to medium foliage
+layout(push_constant) uniform PC {
+    mat4   model;
+    uint   tileX, tileY;         // which tile to render (direction index)
+    uint   atlasW, atlasH;       // full atlas dimensions
+    uint   tileSize;             // pixels per tile
+    float  hemiFov;              // in radians, 0..PI/2
+};
+// Render call: draw the full mesh to a sub-region of the atlas using
+// an offset viewport/scissor for each (tileX, tileY)
+// Store albedo+normal in RGBA8 GBuffer tiles; alpha = coverage mask
+```
+
+**Runtime billboard rendering.** The mesh shader amplification stage selects `IMPOSTOR_LOD` when the projected object diameter falls below a threshold:
+
+```glsl
+// In the amplification/task shader LOD decision:
+float projectedDiam = objectRadius * 2.0 / (dist * tan(halfFov));
+if (projectedDiam < IMPOSTOR_THRESHOLD) {
+    // Encode view direction as atlas tile index
+    vec3  viewDir = normalize(objectCenter - cameraPos);
+    float azimuth = atan(viewDir.x, viewDir.z);          // -PI..PI
+    float elevation = asin(clamp(viewDir.y, -1.0, 1.0)); // -PI/2..PI/2
+    uint  tileX  = uint((azimuth   / (2.0*PI) + 0.5) * float(atlasGridX)) % atlasGridX;
+    uint  tileY  = uint((elevation / (PI)      + 0.5) * float(atlasGridY)) % atlasGridY;
+    payload.impostorTile = tileX + tileY * atlasGridX;
+    EmitMeshTasksEXT(1, 1, 1);  // emit one impostor quad
+} else {
+    EmitMeshTasksEXT(meshletCount, 1, 1);
+}
+```
+
+**Octahedral impostors** (Baker 2021) parameterize the hemisphere with an octahedral projection, achieving uniform angular sample density with fewer tiles than spherical grids. Each tile stores albedo, normal (in octahedral encoding), and a depth silhouette for parallax-corrected reprojection.
+
+**Transition blending.** Cross-fade between mesh LOD and impostor by alpha-blending the two draw calls during a distance hysteresis band. Unreal Engine's `HISM` (Hierarchical Instanced Static Mesh) uses exactly this pattern for foliage at >200k instances. [Source: Baker "Octahedral Impostor Rendering", GPU Gems 3 Ch13; Klauder "Efficient Impostors in UE4", GDC 2019]
+
+### 7.8 Bent Normals Precomputation
+
+A **bent normal** at a surface point is the average unoccluded hemisphere direction — pointing toward the open sky rather than toward nearby occluders. When used to look up an irradiance probe or environment map, bent normals dramatically reduce light leaking under overhangs, inside concave surfaces, and near contact shadows, at zero fragment-shader cost beyond the texture lookup.
+
+**Baking pass (`bent_normal_bake.comp`):** For each surface vertex, cast N rays in a cosine-weighted hemisphere and accumulate the directions of unoccluded rays. The BVH built in §8 provides the ray-cast primitive:
+
+```glsl
+// bent_normal_bake.comp — one thread per surface vertex
+layout(local_size_x=64) in;
+
+layout(set=0, binding=0) readonly  buffer Positions { vec4 positions[]; };
+layout(set=0, binding=1) readonly  buffer Normals   { vec4 normals[];   };
+layout(set=0, binding=2) readonly  buffer BVH       { /* LBVH nodes from §8 */ };
+layout(set=0, binding=3) writeonly buffer BentNorms { vec4 bentNormals[]; };
+layout(push_constant) uniform PC { uint vertCount; uint raysPerVertex; uint frameSeed; };
+
+// Cosine-weighted hemisphere sample (Malley's method)
+vec3 cosineSampleHemisphere(vec2 xi) {
+    float r   = sqrt(xi.x);
+    float phi = 2.0 * 3.14159265 * xi.y;
+    vec2  d   = r * vec2(cos(phi), sin(phi));
+    float z   = sqrt(max(0.0, 1.0 - dot(d, d)));
+    return vec3(d.x, d.y, z);
+}
+
+void main() {
+    uint  vi  = gl_GlobalInvocationID.x;
+    if (vi >= vertCount) return;
+    vec3  pos = positions[vi].xyz + normals[vi].xyz * 0.001;  // bias off surface
+    vec3  N   = normals[vi].xyz;
+
+    // Build TBN frame from N
+    vec3 T  = abs(N.x) < 0.9 ? vec3(1,0,0) : vec3(0,1,0);
+    vec3 B  = normalize(cross(N, T));
+    T       = cross(B, N);
+
+    vec3 bentSum = vec3(0.0);
+    for (uint r = 0; r < raysPerVertex; ++r) {
+        vec2 xi  = vec2(hashFloat(vi*raysPerVertex+r + frameSeed*65537u),
+                        hashFloat(vi*raysPerVertex+r + frameSeed*131071u));
+        vec3 ls  = cosineSampleHemisphere(xi);
+        vec3 dir = T*ls.x + B*ls.y + N*ls.z;
+
+        // BVH ray cast (shadow ray, any-hit)
+        float tHit = bvh_ray_cast(pos, dir, 2.0);  // max AO distance = 2m
+        if (tHit > 2.0) bentSum += dir;             // unoccluded
+    }
+    bentNormals[vi] = vec4(normalize(bentSum), 0.0);
+}
+```
+
+For 64 rays per vertex on a 100k-vertex mesh, the bake dispatches ~6.4M ray tests — approximately 50–200 ms on a midrange GPU. Accumulate across multiple frames (each frame uses a different `frameSeed` for stratified sampling) and EMA-blend results for a progressive bake. Store the baked bent normal as an `SNORM16` vertex attribute or bake into a UV-mapped texture for static geometry.
+
+**Runtime usage.** In the PBR fragment shader, replace the surface normal for the irradiance probe lookup:
+
+```glsl
+vec3 bentN   = normalize(texture(bentNormalMap, uv).xyz * 2.0 - 1.0);
+vec3 irrDir  = TBN * bentN;   // transform from tangent to world space
+vec3 irr     = texture(irradianceCube, irrDir).rgb;
+vec3 diffuse = albedo * irr;
+```
+
+[Source: Landis "Production-Ready Global Illumination", SIGGRAPH 2002; UE4 "Ambient Occlusion and Bent Normal" documentation]
+
+### 7.9 Geometry Compression and Quantization
+
+Memory bandwidth is the dominant cost in geometry-heavy rendering. Compressing vertex attributes before upload to VRAM reduces bandwidth on every draw call and meshlet dispatch.
+
+**Position quantization.** Store positions as `SNORM16` (3 × 16-bit signed normalized integers) relative to an object bounding-box:
+
+```cpp
+// CPU-side quantization: map [bbox.min, bbox.max] → [-32767, 32767]
+glm::vec3 scale  = 2.0f / (bbox.max - bbox.min);
+glm::vec3 offset = -(bbox.min + bbox.max) * 0.5f;
+for (auto& v : vertices) {
+    glm::vec3 q = (v.pos + offset) * scale;
+    v.posQ[0] = int16_t(clamp(q.x, -1.f, 1.f) * 32767.f);
+    v.posQ[1] = int16_t(clamp(q.y, -1.f, 1.f) * 32767.f);
+    v.posQ[2] = int16_t(clamp(q.z, -1.f, 1.f) * 32767.f);
+}
+// In Vulkan: VK_FORMAT_R16G16B16_SNORM vertex attribute
+// In vertex shader: pos = vec3(posQ) / 32767.0 * halfExtent + center;
+```
+
+This reduces position bandwidth from 12 bytes to 6 bytes per vertex (50% saving) with sub-millimetre error on a 10m bounding box.
+
+**Normal quantization.** Octahedral encoding packs a unit normal into two `SNORM8` values with uniform angular error (< 0.1°):
+
+```glsl
+// Encode (in CPU preprocessing)
+vec2 octEncode(vec3 n) {
+    vec2 p = n.xy * (1.0 / (abs(n.x) + abs(n.y) + abs(n.z)));
+    return (n.z <= 0.0) ? (1.0 - abs(p.yx)) * sign(p) : p;
+}
+// Decode (in vertex shader)
+vec3 octDecode(vec2 e) {
+    vec3 v = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
+    if (v.z < 0.0) v.xy = (1.0 - abs(v.yx)) * sign(v.xy);
+    return normalize(v);
+}
+```
+
+Store as `VK_FORMAT_R8G8_SNORM`. Combined with `VK_FORMAT_R16G16_SNORM` for UVs, a full vertex (position + normal + UV) compresses from 32 bytes to 12 bytes — a 62% bandwidth saving.
+
+**Index buffer compression.** meshoptimizer's `meshopt_encodeIndexBuffer` / `meshopt_decodeIndexBuffer` compresses an index buffer to ~1.5 bits per index (vs. 4 bytes = 32 bits for uint32): a 20× reduction for streaming. At load time, the decode runs on CPU in ~0.1 ns per index, and for GPU-resident streaming, a compute shader can decode a compressed chunk directly into a VkBuffer:
+
+```cpp
+// Encode at asset build time
+std::vector<uint8_t> compressed(meshopt_encodeIndexBufferBound(indexCount, vertexCount));
+size_t compSize = meshopt_encodeIndexBuffer(
+    compressed.data(), compressed.size(),
+    indices, indexCount);
+
+// Decode at runtime (CPU)
+meshopt_decodeIndexBuffer(indices, indexCount, sizeof(uint32_t),
+    compressed.data(), compSize);
+```
+
+**Vertex buffer compression.** `meshopt_encodeVertexBuffer` / `meshopt_decodeVertexBuffer` compress arbitrary vertex streams using delta coding and bit-packing, achieving ~3–5× compression on typical meshes. Combined with GPU-side `meshopt_decodeVertexBuffer` (C code compilable to a compute shader with minor adaptation), full mesh streaming from network/disk to GPU can proceed without intermediate CPU decompression.
+
+[Source: Kapoulkine "meshoptimizer: Mesh Optimization Library", GitHub README; Meyer et al. "Octahedral Normal Vector Encoding", ShaderX3]
+
 ---
 
 ## 8. GPU BVH Construction
@@ -2252,6 +2640,111 @@ The `atomicAdd` introduces a data-dependent execution path, but each node is vis
 **Applications.** The GPU-built LBVH feeds directly into `VkAccelerationStructureBuildGeometryInfoKHR` for Vulkan ray tracing (Ch135) via `VK_ACCELERATION_STRUCTURE_BUILD_MODE_UPDATE_KHR` — the LBVH topology is provided as a host-side hint and the driver refines it. The same structure serves as a broad-phase collision structure for compute-side ragdoll and IK ray-casting (§5) without leaving the GPU.
 
 [Source: Lauterbach et al. (2009), "Fast BVH Construction on GPUs", Eurographics; Karras (2012), "Maximizing Parallelism in the Construction of BVHs, Octrees, and k-d Trees", HPG]
+
+### 8.4 GPU Narrow-Phase Collision: SAT and GJK
+
+The BVH (§8.1–8.3) is a broad-phase structure: it quickly eliminates non-overlapping bounding box pairs. Candidate pairs that pass the broad-phase need a **narrow-phase** test to determine actual geometric contact — position, normal, and penetration depth — for physics constraint generation. Two algorithms dominate GPU narrow-phase: SAT (Separating Axis Theorem) for OBB pairs, and GJK (Gilbert-Johnson-Keerthi) for general convex hulls.
+
+**OBB SAT (`sat_obb.comp`).** Two oriented bounding boxes are separated if a separating axis exists among the 15 candidates (3 face normals per box + 9 cross-product axes). Each candidate axis generates an interval overlap test:
+
+```glsl
+// sat_obb.comp — one workgroup per candidate OBB pair
+layout(local_size_x=15) in;  // one thread per SAT axis
+
+struct OBB { vec3 center; vec3 half;    // half-extents
+             mat3 axes; };              // columns = local X,Y,Z in world space
+
+layout(set=0, binding=0) readonly  buffer OBBs    { OBB obbs[]; };
+layout(set=0, binding=1) readonly  buffer Pairs   { uvec2 pairs[]; };   // (idA, idB)
+layout(set=0, binding=2) writeonly buffer Contacts{ vec4 contacts[]; }; // (normal, depth), sentinel if no contact
+layout(set=0, binding=3) coherent  buffer Counter { uint count; };
+
+shared float minPen;    // minimum penetration across all 15 axes
+shared vec3  minAxis;
+
+void main() {
+    uint pairIdx = gl_WorkGroupID.x;
+    uint axisIdx = gl_LocalInvocationID.x;   // 0..14
+
+    uvec2 ids = pairs[pairIdx];
+    OBB A = obbs[ids.x], B = obbs[ids.y];
+
+    // Build 15 test axes
+    vec3 axes[15];
+    axes[0]=A.axes[0]; axes[1]=A.axes[1]; axes[2]=A.axes[2];
+    axes[3]=B.axes[0]; axes[4]=B.axes[1]; axes[5]=B.axes[2];
+    for (int i=0; i<3; ++i)
+    for (int j=0; j<3; ++j)
+        axes[6+i*3+j] = cross(A.axes[i], B.axes[j]);
+
+    vec3 T   = B.center - A.center;
+    vec3 ax  = normalize(axes[axisIdx] + vec3(1e-10)); // degenerate guard
+
+    // Project both OBBs onto ax
+    float rA = abs(dot(A.half.x * A.axes[0], ax))
+             + abs(dot(A.half.y * A.axes[1], ax))
+             + abs(dot(A.half.z * A.axes[2], ax));
+    float rB = abs(dot(B.half.x * B.axes[0], ax))
+             + abs(dot(B.half.y * B.axes[1], ax))
+             + abs(dot(B.half.z * B.axes[2], ax));
+    float pen = rA + rB - abs(dot(T, ax));
+
+    // Reduce: find minimum penetration
+    if (axisIdx == 0) { minPen = 1e30; }
+    barrier(); memoryBarrierShared();
+
+    atomicMin(floatBitsToUint(minPen), floatBitsToUint(pen > 0.0 ? pen : -1.0));
+    barrier();
+
+    if (pen == uintBitsToFloat(atomicOr(floatBitsToUint(minPen), 0u)) && pen > 0.0) {
+        minAxis = dot(T, ax) < 0.0 ? -ax : ax;
+    }
+    barrier();
+
+    if (axisIdx == 0) {
+        float p = uintBitsToFloat(atomicOr(floatBitsToUint(minPen), 0u));
+        if (p > 0.0) {
+            uint slot = atomicAdd(count, 1u);
+            contacts[slot] = vec4(minAxis, p);
+        }
+    }
+}
+```
+
+**GJK for convex hulls.** GJK iteratively finds the closest point between two convex shapes by building a simplex (point, line, triangle, tetrahedron) in Minkowski difference space and walking toward the origin. If the origin is inside the simplex, the shapes overlap.
+
+```glsl
+// support() returns the point in Minkowski difference furthest along dir
+vec3 support(vec3[] hullA, uint nA, vec3[] hullB, uint nB, vec3 dir) {
+    // Furthest point in A along dir
+    float maxA = -1e30; vec3 ptA;
+    for (uint i=0; i<nA; ++i) { float d=dot(hullA[i],dir); if(d>maxA){maxA=d;ptA=hullA[i];} }
+    // Furthest point in B along -dir
+    float maxB = -1e30; vec3 ptB;
+    for (uint i=0; i<nB; ++i) { float d=dot(hullB[i],-dir); if(d>maxB){maxB=d;ptB=hullB[i];} }
+    return ptA - ptB;
+}
+
+bool gjk(vec3[] hullA, uint nA, vec3[] hullB, uint nB, out float dist) {
+    vec3 d = vec3(1,0,0);
+    vec3 simplex[4]; uint n = 0;
+    simplex[n++] = support(hullA, nA, hullB, nB, d);
+    d = -simplex[0];
+    for (int iter = 0; iter < 64; ++iter) {
+        vec3 a = support(hullA, nA, hullB, nB, d);
+        if (dot(a, d) < 0.0) { dist = length(d); return false; }  // no intersection
+        simplex[n++] = a;
+        if (doSimplex(simplex, n, d)) { dist = 0.0; return true; } // origin inside
+    }
+    dist = length(d); return false;
+}
+```
+
+`doSimplex` selects the voronoi region of the simplex closest to the origin and updates `d` accordingly — the standard 2/3/4-vertex cases from van den Bergen 2003.
+
+**GPU dispatch pattern.** Assign one workgroup per candidate pair from the BVH broad-phase output. For 1000 candidate pairs, a single dispatch of 1000 workgroups (one per pair) completes narrow-phase in ~0.05 ms on a midrange GPU. Contact results feed into a physics constraint solver (PBD §4.6 or a rigid-body impulse solver) in the next compute pass.
+
+[Source: Gilbert, Johnson, Keerthi "A Fast Procedure for Computing the Distance Between Complex Objects in Three-Dimensional Space", IEEE RA 1988; van den Bergen "Collision Detection in Interactive 3D Environments", 2003]
 
 ---
 
