@@ -106,7 +106,19 @@ The distribution of sections in this catalog mirrors the actual distribution of 
 82. [Variable Rate Shading](#variable-rate-shading)
 83. [Shader Execution Reordering](#shader-execution-reordering)
 84. [World-Space Radiance Cache](#world-space-radiance-cache)
-85. [References](#references)
+85. [PCSS and Contact-Hardening Shadows](#pcss-and-contact-hardening-shadows)
+86. [Screen-Space Reflections](#screen-space-reflections)
+87. [Anisotropic BRDF](#anisotropic-brdf)
+88. [Iridescence and Thin-Film Interference](#iridescence-and-thin-film-interference)
+89. [Eye Rendering](#eye-rendering)
+90. [Glint and Sparkle Microstructure BRDF](#glint-and-sparkle-microstructure-brdf)
+91. [Lens Flare](#lens-flare)
+92. [Film Grain](#film-grain)
+93. [Catmull-Clark Subdivision on GPU](#catmull-clark-subdivision-on-gpu)
+94. [Displacement Mapping via Compute](#displacement-mapping-via-compute)
+95. [3D Gaussian Splatting](#3d-gaussian-splatting)
+96. [ReSTIR PT — Path Tracing Resampling](#restir-pt--path-tracing-resampling)
+97. [References](#references)
 
 ---
 
@@ -6271,6 +6283,932 @@ vec3 wsrc_irradiance(vec3 P, vec3 N, vec3 V) {
 
 **Use cases** — Unreal Engine 5 Lumen (WSRC + SSGI + hardware RT fallback); DDGI (id Software, Wolfenstein II); any open-world dynamic GI where screen-space techniques alone are insufficient.  
 **Reference** — [Majercik et al.: Dynamic Diffuse Global Illumination with Ray-Traced Irradiance Fields (JCGT 2019)](https://jcgt.org/published/0008/02/01/); [Lumen Technical Details (UE5 Docs)](https://docs.unrealengine.com/5.0/en-US/lumen-technical-details-in-unreal-engine/)
+
+---
+
+## PCSS and Contact-Hardening Shadows
+
+Percentage Closer Soft Shadows (PCSS) produces shadows with physically correct **contact hardening**: penumbrae widen as the receiver moves farther from the occluder, and shadows are sharp at contact points. Standard PCF uses a fixed filter kernel; PCSS adapts the kernel width per-pixel by first searching for the average blocker depth in a region around the receiver, then using the blocker-to-receiver ratio to compute the penumbra width. This two-phase approach (blocker search then PCF) enables plausible area light shadows at moderate cost.
+
+**Shader stage**: runs in the **fragment shader** (or deferred lighting compute) once per shadow-casting light.
+
+#### Phase 1 — Blocker Search
+Sample a disc region around the projected receiver position in the shadow map and compute the average depth of texels that are in front of the receiver (i.e., are potential occluders).
+
+```glsl
+// PCSS blocker search — average occluder depth in search radius
+layout(set=1, binding=0) uniform sampler2D shadow_map;
+
+uniform float light_size_uv;    // light radius in shadow-map UV space (e.g. 0.05)
+uniform int   blocker_samples;  // e.g. 16
+
+float find_blocker_distance(vec2 uv, float z_recv, float search_radius) {
+    float blocker_sum   = 0.0;
+    int   blocker_count = 0;
+
+    for (int i = 0; i < blocker_samples; ++i) {
+        vec2  offset    = poisson_disk_16[i] * search_radius;
+        float z_occ     = texture(shadow_map, uv + offset).r;
+        if (z_occ < z_recv) {
+            blocker_sum += z_occ;
+            ++blocker_count;
+        }
+    }
+    return (blocker_count > 0) ? blocker_sum / float(blocker_count) : -1.0;
+}
+```
+
+#### Phase 2 — Variable-Width PCF
+Use the penumbra width derived from the blocker distance to scale the PCF filter kernel.
+
+```glsl
+// PCSS full evaluation
+uniform int   pcf_samples;      // e.g. 32
+uniform float near_plane;       // light camera near plane (for depth linearisation)
+
+float pcss_shadow(vec3 world_pos, mat4 light_pv) {
+    vec4  lclip    = light_pv * vec4(world_pos, 1.0);
+    vec3  lndc     = lclip.xyz / lclip.w;
+    vec2  uv       = lndc.xy * 0.5 + 0.5;
+    float z_recv   = lndc.z;
+
+    // --- Phase 1: blocker search ---
+    float search_r = light_size_uv * (z_recv - near_plane) / z_recv;
+    float z_avg    = find_blocker_distance(uv, z_recv, search_r);
+    if (z_avg < 0.0) return 1.0;   // no blockers → fully lit
+
+    // --- Penumbra width (thin lens formula) ---
+    float penumbra = (z_recv - z_avg) / z_avg * light_size_uv;
+
+    // --- Phase 2: PCF with variable kernel ---
+    float shadow = 0.0;
+    for (int i = 0; i < pcf_samples; ++i) {
+        vec2  offset = poisson_disk_32[i] * penumbra;
+        shadow += texture(shadow_map, vec3(uv + offset, z_recv - 0.001)).r;
+    }
+    return shadow / float(pcf_samples);
+}
+```
+
+#### PCSS with Blue-Noise Rotation
+Rotate the Poisson disc pattern per-pixel using a blue-noise angle to remove structured banding artifacts, then denoise with TAA.
+
+```glsl
+float angle   = texture(blue_noise_tex, gl_FragCoord.xy / 128.0).r * 6.2832;
+float c = cos(angle), s = sin(angle);
+mat2  rot = mat2(c, s, -s, c);
+// Rotate each sample offset: offset = rot * poisson_disk_32[i] * penumbra
+```
+
+**Reference** — [Fernando: Percentage-Closer Soft Shadows (GDC 2005)](https://developer.download.nvidia.com/shaderlibrary/docs/shadow_PCSS.pdf); [Jimenez: Practical Real-Time Strategies for Accurate Indirect Occlusion (SIGGRAPH 2016)](https://iryoku.com/groundtruth-based-mr-ao/)
+
+---
+
+## Screen-Space Reflections
+
+Screen-Space Reflections (SSR) ray-marches the reflected ray in screen space — sampling the depth buffer to find intersections — then reads the reflected colour from the colour buffer. It is cheap for rough reflections where the approximation's artifacts (missing off-screen geometry, incorrect self-occlusion) are hidden by the blur, and it complements WSRC (§84) and IBL (§7) which lack high-frequency surface detail.
+
+**Shader stage**: runs as a **compute** pass (one thread per pixel) on the G-buffer and previous-frame colour buffer.
+
+#### Linear Ray March
+March the reflected ray in clip space in fixed steps, comparing the ray depth against the depth buffer at each step.
+
+```glsl
+// SSR — linear ray march (basic)
+layout(set=0, binding=0) uniform sampler2D depth_buf;
+layout(set=0, binding=1) uniform sampler2D color_buf;     // previous frame
+layout(set=0, binding=2) uniform sampler2D normal_buf;
+layout(set=0, binding=3, rgba16f) uniform image2D ssr_out;
+
+uniform mat4 proj;
+uniform mat4 inv_proj;
+uniform mat4 inv_view;
+uniform int  num_steps;       // e.g. 64
+uniform float step_size;      // NDC units per step, e.g. 0.02
+uniform float thickness;      // depth tolerance (e.g. 0.1)
+
+vec3 view_from_depth(vec2 uv, float depth) {
+    vec4 ndc = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+    vec4 view = inv_proj * ndc;
+    return view.xyz / view.w;
+}
+
+void main() {
+    ivec2 px    = ivec2(gl_GlobalInvocationID.xy);
+    vec2  uv    = (vec2(px) + 0.5) / vec2(imageSize(ssr_out));
+
+    float depth = texture(depth_buf, uv).r;
+    vec3  N_vs  = texture(normal_buf, uv).xyz * 2.0 - 1.0;  // view-space normal
+    vec3  P_vs  = view_from_depth(uv, depth);
+    vec3  V_vs  = normalize(-P_vs);
+    vec3  R_vs  = reflect(-V_vs, N_vs);
+
+    vec4  hit_color = vec4(0.0);
+    float hit_mask  = 0.0;
+
+    vec3  ray_pos = P_vs;
+    for (int i = 0; i < num_steps; ++i) {
+        ray_pos += R_vs * step_size;
+
+        // Project back to screen UV
+        vec4  clip  = proj * vec4(ray_pos, 1.0);
+        vec3  ndc   = clip.xyz / clip.w;
+        vec2  s_uv  = ndc.xy * 0.5 + 0.5;
+        if (any(lessThan(s_uv, vec2(0.0))) || any(greaterThan(s_uv, vec2(1.0)))) break;
+
+        float s_depth   = texture(depth_buf, s_uv).r;
+        vec3  s_pos_vs  = view_from_depth(s_uv, s_depth);
+
+        float ray_depth = -ray_pos.z;   // view-space depth (positive forward)
+        float surf_depth = -s_pos_vs.z;
+
+        if (ray_depth > surf_depth && ray_depth < surf_depth + thickness) {
+            // Fade at screen edges and steep angles
+            float edge_fade = 1.0 - smoothstep(0.8, 1.0, max(abs(ndc.x), abs(ndc.y)));
+            float angle_fade = max(0.0, dot(R_vs, -normalize(P_vs)));
+            hit_color = texture(color_buf, s_uv) * edge_fade * angle_fade;
+            hit_mask  = 1.0;
+            break;
+        }
+    }
+    imageStore(ssr_out, px, hit_color);
+}
+```
+
+#### Hi-Z Ray March
+Replace linear stepping with **hierarchical Z traversal**: advance the ray to the next tile boundary using the coarser mip levels of a pre-built Hi-Z pyramid, then step down to finer mips when an intersection is found. This finds the first hit in O(log N) steps instead of O(N), enabling far longer ray distances.
+
+```glsl
+// Hi-Z SSR step (one iteration)
+float hiz_trace_step(vec3 ray_pos_vs, vec3 ray_dir_vs, inout int mip) {
+    vec4 clip   = proj * vec4(ray_pos_vs, 1.0);
+    vec2 uv     = (clip.xy / clip.w) * 0.5 + 0.5;
+    float z_ray = -ray_pos_vs.z;
+    float z_hiz = textureLod(hiz_pyramid, uv, float(mip)).r;  // min-Z at this mip
+
+    if (z_ray > z_hiz) {
+        mip = max(mip - 1, 0);  // potential hit: descend mip
+    } else {
+        // Advance ray to next tile boundary at this mip level
+        vec2  tile_size = 1.0 / vec2(textureSize(hiz_pyramid, mip));
+        vec2  t_max     = (floor(uv / tile_size + 0.5) * tile_size - uv)
+                        / (ray_dir_vs.xy / z_ray + 1e-6);
+        float t_step    = min(t_max.x, t_max.y) + 1e-4;
+        mip = min(mip + 1, max_mip);
+        return t_step;
+    }
+    return 0.0;
+}
+```
+
+**Roughness integration**: for rough surfaces, jitter the reflected ray by the GGX VNDF lobe (§29) and blur the SSR result with a radius proportional to roughness, then composite with IBL at the same roughness level.
+
+**Reference** — [Stachowiak: Stochastic Screen-Space Reflections (SIGGRAPH 2015)](https://www.gdcvault.com/play/1022260); [Uludag: Hi-Z Screen-Space Cone-Traced Reflections (GPU Pro 5)](https://gpupro5.com/)
+
+---
+
+## Anisotropic BRDF
+
+Isotropic BRDFs (§3) depend only on the half-angle `θ_h` between view and light and are rotationally symmetric around the normal. **Anisotropic** BRDFs additionally depend on the azimuthal angle `φ` relative to the surface tangent, producing elongated specular highlights along one axis — characteristic of brushed metal, satin fabric, hair, CD tracks, and skin pores aligned in a direction.
+
+**Shader stage**: evaluated per light or per environment sample in the **fragment shader**. The tangent direction is either from the mesh's tangent attribute or a flow map.
+
+#### GGX Anisotropic (Heitz 2014)
+Extends the isotropic GGX NDF with separate roughness values `α_x` and `α_y` along the tangent `T` and bitangent `B`. The NDF becomes a bivariate Gaussian in `(h·T, h·B)` space.
+
+```glsl
+// Anisotropic GGX NDF — Heitz 2014
+float D_GGX_aniso(vec3 H, vec3 N, vec3 T, vec3 B, float alpha_x, float alpha_y) {
+    float HdotT = dot(H, T);
+    float HdotB = dot(H, B);
+    float HdotN = dot(H, N);
+    float denom = (HdotT * HdotT) / (alpha_x * alpha_x)
+                + (HdotB * HdotB) / (alpha_y * alpha_y)
+                + HdotN * HdotN;
+    return 1.0 / (3.14159 * alpha_x * alpha_y * denom * denom);
+}
+
+// Anisotropic Smith masking-shadowing (approximate)
+float G1_GGX_aniso(vec3 V, vec3 N, vec3 T, vec3 B, float alpha_x, float alpha_y) {
+    float VdotN = abs(dot(V, N));
+    float VdotT = dot(V, T);
+    float VdotB = dot(V, B);
+    float alpha2 = sqrt((VdotT * alpha_x) * (VdotT * alpha_x)
+                      + (VdotB * alpha_y) * (VdotB * alpha_y)) / VdotN;
+    return 2.0 / (1.0 + sqrt(1.0 + alpha2 * alpha2));
+}
+
+// Full anisotropic BRDF evaluation
+vec3 brdf_aniso(vec3 L, vec3 V, vec3 N, vec3 T, vec3 B,
+                float alpha_x, float alpha_y, vec3 F0) {
+    vec3  H    = normalize(L + V);
+    float NdotL = max(dot(N, L), 1e-4);
+    float NdotV = max(dot(N, V), 1e-4);
+    float D    = D_GGX_aniso(H, N, T, B, alpha_x, alpha_y);
+    float G    = G1_GGX_aniso(L, N, T, B, alpha_x, alpha_y)
+               * G1_GGX_aniso(V, N, T, B, alpha_x, alpha_y);
+    vec3  F    = F0 + (1.0 - F0) * pow(1.0 - max(dot(H, V), 0.0), 5.0);
+    return (D * G * F) / (4.0 * NdotL * NdotV);
+}
+```
+
+#### Tangent Bending and Kajiya-Kay (Hair)
+Hair strands use the **Kajiya-Kay** model where the NDF is evaluated along the hair tangent rather than the surface normal — producing the characteristic shifted specular band seen in real hair.
+
+```glsl
+// Kajiya-Kay hair specular — one lobe
+float kajiya_kay_specular(vec3 T, vec3 L, vec3 V, float roughness, float shift) {
+    // Shift tangent by 'shift' along normal direction (two lobes: primary + secondary)
+    vec3  Ts     = normalize(T + shift * N);
+    float TdotL  = dot(Ts, L);
+    float TdotV  = dot(Ts, V);
+    float sinTL  = sqrt(max(0.0, 1.0 - TdotL * TdotL));
+    float sinTV  = sqrt(max(0.0, 1.0 - TdotV * TdotV));
+    float spec   = max(0.0, sinTL * sinTV + TdotL * TdotV);
+    return pow(spec, 1.0 / max(roughness * roughness, 0.001));
+}
+```
+
+#### Anisotropy from Flow Map
+For surfaces without explicit tangent attributes (cloth weave, brushed surface), read the anisotropy direction from a 2-channel flow map and rotate the tangent frame accordingly.
+
+```glsl
+vec2  flow      = texture(flow_map, uv).rg * 2.0 - 1.0;  // direction in tangent space
+vec3  aniso_T   = normalize(T * flow.x + B * flow.y);
+vec3  aniso_B   = cross(N, aniso_T);
+float alpha_x   = roughness * (1.0 + anisotropy);    // stretch in T direction
+float alpha_y   = roughness * (1.0 - anisotropy);    // compress in B direction
+```
+
+**Reference** — [Heitz: Understanding the Masking-Shadowing Function in Microfacet-Based BRDFs (JCGT 2014)](https://jcgt.org/published/0003/02/03/); [Marschner et al.: Light Scattering from Human Hair Fibers (SIGGRAPH 2003)](https://dl.acm.org/doi/10.1145/1201775.882345)
+
+---
+
+## Iridescence and Thin-Film Interference
+
+Iridescence is structural colour arising from thin-film interference: a transparent coating of thickness `d` (tens to hundreds of nanometres — soap bubble membrane, butterfly wing scale, oil slick, car paint clear-coat) causes light to reflect from both its top and bottom surfaces; the two reflected beams interfere constructively or destructively depending on wavelength and angle, producing a hue shift that changes with viewing direction.
+
+**Shader stage**: evaluated in the **fragment shader** as a modification to the Fresnel term of the BRDF.
+
+#### Thin-Film Phase Shift
+The optical path difference between the two reflections is `2 * n * d * cos(θ_t)` where `θ_t` is the refraction angle inside the film (Snell's law). The interference produces wavelength-dependent reflectance `R(λ)`.
+
+```glsl
+// Thin-film iridescence Fresnel (single-layer, monochromatic evaluation)
+// Call once per RGB wavelength (450nm, 550nm, 650nm) for colour
+float thin_film_reflectance(float cos_theta_i, float n_film, float d_nm, float lambda_nm) {
+    // Refraction angle in film (Snell's law)
+    float sin_t2 = (1.0 - cos_theta_i * cos_theta_i) / (n_film * n_film);
+    if (sin_t2 >= 1.0) return 1.0;  // total internal reflection
+    float cos_theta_t = sqrt(1.0 - sin_t2);
+
+    // Fresnel at air→film and film→substrate interfaces (assuming n_substrate ~ 1.5)
+    float n0 = 1.0, n1 = n_film, n2 = 1.5;
+    float rs01 = (n0 * cos_theta_i - n1 * cos_theta_t) / (n0 * cos_theta_i + n1 * cos_theta_t);
+    float rs12 = (n1 * cos_theta_t - n2 * sqrt(max(0.0, 1.0 - (n1*n1*(1.0-cos_theta_t*cos_theta_t))/(n2*n2))))
+               / (n1 * cos_theta_t + n2 * sqrt(max(0.0, 1.0 - (n1*n1*(1.0-cos_theta_t*cos_theta_t))/(n2*n2))));
+
+    // Optical path difference and phase
+    float opd   = 2.0 * n1 * d_nm * cos_theta_t;
+    float phi   = 2.0 * 3.14159 * opd / lambda_nm;
+
+    // Interference formula
+    float t01   = 1.0 - rs01 * rs01;
+    float r01_2 = rs01 * rs01;
+    float r12_2 = rs12 * rs12;
+    float denom = 1.0 + r01_2 * r12_2 - 2.0 * rs01 * rs12 * cos(phi);
+    float r_num = r01_2 + r12_2 - 2.0 * rs01 * rs12 * cos(phi);
+    return clamp(r_num / max(denom, 1e-6), 0.0, 1.0);
+}
+
+// Sample at RGB representative wavelengths
+vec3 iridescence_fresnel(float cos_theta, float n_film, float d_nm) {
+    return vec3(
+        thin_film_reflectance(cos_theta, n_film, d_nm, 650.0),  // red
+        thin_film_reflectance(cos_theta, n_film, d_nm, 550.0),  // green
+        thin_film_reflectance(cos_theta, n_film, d_nm, 450.0)   // blue
+    );
+}
+```
+
+#### Integration with PBR BRDF
+Replace the standard scalar Fresnel with the thin-film Fresnel vector in the specular lobe, and blend with the base BRDF Fresnel by an `iridescence_factor` parameter.
+
+```glsl
+// Blend thin-film Fresnel into PBR specular
+vec3  F0        = mix(vec3(0.04), albedo, metallic);
+vec3  F_base    = F_schlick(F0, HdotV);
+vec3  F_film    = iridescence_fresnel(HdotV, iridescence_ior, iridescence_thickness);
+vec3  F         = mix(F_base, F_film, iridescence_factor);
+
+// Specular contribution with film Fresnel
+float D = D_GGX(NdotH, roughness);
+float G = G_smith(NdotV, NdotL, roughness);
+vec3  specular = (D * G * F) / (4.0 * NdotV * NdotL + 1e-5);
+```
+
+**Use cases** — car paint second-layer coat; insect wings in nature scenes; oil-on-water puddles; holographic material; dragon/beetle character scales.  
+**Reference** — [Belcour & Barla: A Practical Extension to Microfacet Theory for the Modeling of Varying Iridescence (SIGGRAPH 2017)](https://belcour.fr/blog/research/2017/05/01/brdf-thin-film.html); [KhronosGroup: KHR_materials_iridescence (glTF 2.0 extension)](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_iridescence)
+
+---
+
+## Eye Rendering
+
+The human eye is optically complex: a roughly spherical sclera (white) with a hemispherical transparent cornea that refracts and magnifies the iris beneath it, a coloured iris with radial detail and a dark pupil, a thin limbal ring at the iris–sclera boundary, and subsurface scattering in both the sclera and iris. Accurate real-time eye rendering requires modelling corneal refraction, iris parallax depth, and directional limbal scatter.
+
+**Shader stage**: all evaluated in the **fragment shader** per eye mesh. The eye is typically a two-mesh setup: an inner sphere (iris+pupil on a flat disc or curved surface) and an outer sphere (sclera+cornea).
+
+#### Corneal Refraction and Iris Parallax
+The iris appears behind the curved cornea. The refracted view ray is approximated by offsetting the iris UV lookup by the view angle, giving a parallax effect that makes the pupil appear to move as the camera orbits.
+
+```glsl
+// Cornea refraction — iris UV offset from view direction
+layout(set=0, binding=0) uniform sampler2D iris_tex;
+layout(set=0, binding=1) uniform sampler2D normal_map;
+layout(set=0, binding=2) uniform sampler2D sclera_tex;
+layout(set=0, binding=3) uniform sampler2D blood_vessel_tex;
+
+uniform float iris_depth;        // distance behind cornea surface (e.g. 0.006 m)
+uniform float cornea_ior;        // e.g. 1.336 (aqueous humour)
+uniform float pupil_scale;       // 0 = fully open, 1 = closed
+
+layout(location=0) in vec3 v_normal;
+layout(location=1) in vec3 v_tangent;
+layout(location=2) in vec2 v_uv;
+layout(location=3) in vec3 v_view_dir;   // world-space camera direction
+
+void main() {
+    vec3 N  = normalize(v_normal);
+    vec3 V  = normalize(-v_view_dir);
+
+    // Refract view ray through cornea
+    float eta   = 1.0 / cornea_ior;
+    vec3  R_ref = refract(-V, N, eta);
+
+    // Iris UV with parallax: offset by projected refracted ray at iris plane depth
+    vec2  iris_offset = R_ref.xy / max(-R_ref.z, 0.001) * iris_depth;
+    vec2  iris_uv     = v_uv + iris_offset * 0.5;  // scale to UV units
+
+    // Pupil mask: scale UV toward centre
+    vec2  centred_uv = iris_uv - 0.5;
+    float r          = length(centred_uv);
+    float pupil_r    = mix(0.35, 0.1, pupil_scale);    // adapt pupil radius
+    float is_pupil   = step(r, pupil_r);
+    vec4  iris_col   = mix(texture(iris_tex, iris_uv), vec4(0.01), is_pupil);
+
+    // Cornea specular — GGX, very smooth (roughness ~ 0.0)
+    float NdotL     = max(dot(N, light_dir), 0.0);
+    vec3  H         = normalize(light_dir + V);
+    float cornea_spec = D_GGX(dot(N, H), 0.02) * 0.04;  // F0 = 0.04 (water)
+
+    // Sclera with veins and limbal ring darkening
+    float limbal = 1.0 - smoothstep(0.47, 0.50, r);  // dark ring at iris edge
+    vec4  sclera_col  = texture(sclera_tex, v_uv)
+                      * texture(blood_vessel_tex, v_uv)
+                      * limbal;
+
+    // Blend iris and sclera
+    float iris_mask = smoothstep(0.50, 0.48, r);
+    vec3  surface   = mix(sclera_col.rgb, iris_col.rgb, iris_mask);
+    frag_color = vec4(surface * NdotL + vec3(cornea_spec), 1.0);
+}
+```
+
+#### Sclera Subsurface Scattering
+The sclera scatters light below the surface, giving a soft translucent appearance near the limbal ring. Apply a separable SSS blur (§77) with a tight radius (sclera diffusion profile is narrow, ~1–2 mm) on the sclera stencil region.
+
+**Reference** — [Jimenez et al.: Practical and Realistic Facial Wrinkles Animation (i3D 2011)](https://iryoku.com/wrinkles/); [Lim: Rendering Eyes in UE4 (GDC 2016)](https://www.gdcvault.com/play/1023510)
+
+---
+
+## Glint and Sparkle Microstructure BRDF
+
+Standard microfacet BRDFs integrate over millions of sub-pixel facets, producing a smooth averaged specular lobe. **Glint rendering** resolves individual facets — producing sharp, flickering specular spots on metallic flake, glitter, sequins, and sparkle-finish car paint. Each visible micro-facet produces a point-like specular reflection; at normal-map resolution each texel covers thousands of facets, but the GPU can stochastically evaluate a per-pixel representative sample.
+
+**Shader stage**: evaluated in the **fragment shader** per lit pixel. Requires a precomputed normal distribution texture or procedural normal sampling.
+
+#### Discrete Stochastic Glint (Chermain 2021)
+Sample a small number of facet normals per pixel using a hierarchical normal distribution precomputed into a multi-level texture. Each sampled normal produces a sharp Dirac-delta specular contribution if it is close enough to the half-vector to be visible.
+
+```glsl
+// Stochastic glint BRDF — discrete facet sampling
+layout(set=0, binding=5) uniform sampler2DArray glint_ndf;  // hierarchical NDF atlas
+uniform int   glint_samples;    // typically 4–8 per pixel
+uniform float glint_density;    // facets per mm²
+uniform float glint_roughness;  // individual facet roughness
+
+// Per-pixel RNG seeded by UV and frame (temporal variation)
+uint rng = pcg_init(uvec2(gl_FragCoord.xy), frame_index);
+
+vec3 glint_radiance = vec3(0.0);
+float pixel_footprint = length(fwidth(v_uv)) * tex_size_mm;  // pixel size in mm
+
+for (int i = 0; i < glint_samples; ++i) {
+    // Sample a facet normal from the NDF at this footprint scale
+    // (In full implementation: hierarchical NDF texture lookup per Chermain 2021)
+    float u1 = pcg_float(rng), u2 = pcg_float(rng);
+
+    // GGX-distributed facet normal in tangent space
+    float phi   = u1 * 6.2832;
+    float cos_t = sqrt((1.0 - u2) / (1.0 + (glint_roughness*glint_roughness - 1.0) * u2));
+    float sin_t = sqrt(1.0 - cos_t * cos_t);
+    vec3  m     = normalize(T * sin_t * cos(phi) + B * sin_t * sin(phi) + N * cos_t);
+
+    // Specular if half-vector matches facet normal within pixel footprint
+    vec3  H_pixel = normalize(L + V);
+    float angular_dist = acos(clamp(dot(m, H_pixel), -1.0, 1.0));
+    float footprint_angle = pixel_footprint / (2.0 * view_dist);  // half-angle of pixel
+
+    if (angular_dist < footprint_angle) {
+        // This facet is visible and facing toward H — sharp specular contribution
+        float NdotL = max(dot(m, L), 0.0);
+        float NdotV = max(dot(m, V), 0.0);
+        // Weight by probability of sampling this facet in this pixel
+        float w = 1.0 / float(glint_samples) / max(footprint_angle * footprint_angle, 1e-6);
+        glint_radiance += F_schlick(F0, dot(m, V)) * NdotL * w * light_color;
+    }
+}
+// Blend with smooth GGX for base roughness (covers all non-glint contribution)
+vec3 base_brdf = brdf_cook_torrance(N, V, L, roughness, F0);
+frag_color = vec4(base_brdf + glint_radiance * glint_density, 1.0);
+```
+
+**Reference** — [Chermain et al.: Glint Rendering Based on a Multiple-Scattering Patch BRDF (CGF 2021)](https://doi.org/10.1111/cgf.14382); [Chiang et al.: A Practical and Controllable Hair and Fur Model Based on a Separable Analytic BRDF (CGF 2015)](https://dl.acm.org/doi/10.1111/cgf.12511)
+
+---
+
+## Lens Flare
+
+Lens flares are optical artifacts produced when bright light sources (sun, headlights) interact with the multiple glass elements of a real camera lens: light bounces between element surfaces producing **ghosts** (circular or polygonal copies of the aperture), a **halo** (circular glow), and **streaks** (diffraction spikes from the aperture blades). In games and film compositing, these are replicated in screen space as a post-process applied after tone mapping.
+
+**Shader stage**: runs as a **fragment or compute** full-screen pass. Ghosts and halos are rendered as 2D primitives blended additively into the output.
+
+#### Ghost Generation
+Project the sun/light position into screen space. For each ghost, place a scaled copy of the light's aperture shape at a position along the lens axis between the light and the screen centre (flipped reflection point).
+
+```glsl
+// Lens flare ghost — evaluated per fragment in ghost pass
+uniform vec2  sun_uv;           // sun position in [0,1] screen UV
+uniform vec4  ghost_params[8];  // per ghost: (offset, scale, falloff, unused)
+uniform vec4  ghost_colors[8];  // per ghost colour tint
+
+layout(set=0, binding=0) uniform sampler2D aperture_tex;  // hexagonal aperture mask
+layout(set=0, binding=1) uniform sampler2D lens_color_tex;// spectral shift texture
+
+layout(location=0) out vec4 flare_out;
+
+void main() {
+    vec2 uv     = gl_FragCoord.xy / resolution;
+    vec3 result = vec3(0.0);
+
+    // Flare axis: line from sun through screen centre
+    vec2 axis   = sun_uv - 0.5;
+
+    for (int g = 0; g < 8; ++g) {
+        float offset = ghost_params[g].x;   // 0 = sun, 1 = opposite side
+        float scale  = ghost_params[g].y;
+        float falloff= ghost_params[g].z;
+
+        // Ghost centre: reflected along the axis
+        vec2  ghost_uv  = 0.5 + axis * (1.0 - 2.0 * offset);
+        vec2  local_uv  = (uv - ghost_uv) / scale + 0.5;
+
+        if (any(lessThan(local_uv, vec2(0.0))) || any(greaterThan(local_uv, vec2(1.0))))
+            continue;
+
+        float mask  = texture(aperture_tex, local_uv).r;
+        float dist  = length(uv - ghost_uv);
+        float fade  = exp(-dist * dist * falloff);
+
+        // Chromatic tint from lens colour texture (spectral fringe)
+        vec3  tint  = texture(lens_color_tex, vec2(float(g) / 8.0 + 0.5/8.0, 0.5)).rgb;
+        result     += mask * fade * tint * ghost_colors[g].rgb;
+    }
+
+    flare_out = vec4(result, 1.0);
+}
+```
+
+#### Halo and Streak
+The halo is a Gaussian ring around the sun position: `exp(-abs(r - halo_radius)² / width²)`. Streaks are drawn as thin quads emanating from the sun position, with length proportional to sun luminance and a diffraction pattern envelope.
+
+```glsl
+// Halo contribution
+float r         = length(uv - sun_uv);
+float halo      = exp(-pow(abs(r - 0.12) / 0.05, 2.0)) * sun_luminance;
+
+// Streak contribution (one streak, replicate for blade count)
+float streak_dir = atan(uv.y - sun_uv.y, uv.x - sun_uv.x);
+float streak_w   = exp(-pow(mod(streak_dir, 3.14159/3.0) / 0.08, 2.0));
+float streak     = streak_w * exp(-r / 0.3) * sun_luminance;
+
+result += vec3(halo * 0.8, halo * 0.9, halo) + vec3(streak);
+```
+
+**Occlusion**: multiply flare intensity by a sun visibility term computed from the shadow map or a ray cast to a screen-space depth sample at the sun UV, fading out when the sun is behind geometry.
+
+**Reference** — [Flare Tool (Lens Flares in Unity HDRP)](https://docs.unity3d.com/Packages/com.unity.render-pipelines.high-definition@14.0/manual/lens-flares-reference.html); [Jimenez: Next-Gen Post Processing (SIGGRAPH 2014)](https://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare/)
+
+---
+
+## Film Grain
+
+Film grain simulates the silver halide crystal structure of analogue film: random brightness variation correlated across colour channels (luminance grain) with a characteristic frequency spectrum — high spatial frequency, slightly red-biased for ISO 800+ emulsions. Unlike simple white noise, authentic grain has a specific power spectrum (not flat), temporal variation, and is masked in the shadows and highlights (darkest and brightest areas show less grain than midtones).
+
+**Shader stage**: runs as a **fragment or compute** pass applied to the LDR output after colour grading and tone mapping, before display encoding.
+
+#### Procedural Grain via Blue-Noise Modulation
+Tile a precomputed blue-noise texture (128×128 RGBA, each frame offset by a different RNG value) with temporal animation, then modulate by a grain strength that peaks at midtones.
+
+```glsl
+// Film grain — fragment shader
+layout(set=0, binding=0) uniform sampler2D ldr_color;
+layout(set=0, binding=1) uniform sampler2D blue_noise;  // 128×128 RGBA tileable
+
+uniform float grain_strength;    // e.g. 0.04 for ISO 400, 0.1 for ISO 3200
+uniform float grain_size;        // texel scale factor (> 1 = coarser grain)
+uniform uint  frame_index;
+
+layout(location=0) out vec3 grain_out;
+
+void main() {
+    vec2  uv      = gl_FragCoord.xy / resolution;
+    vec3  color   = texture(ldr_color, uv).rgb;
+    float lum     = dot(color, vec3(0.2126, 0.7152, 0.0722));
+
+    // Temporal offset: shift blue noise each frame to avoid static pattern
+    vec2  noise_uv  = gl_FragCoord.xy / (128.0 * grain_size);
+    vec2  frame_off = vec2(
+        fract(float(frame_index) * 0.61803),   // golden-ratio offset
+        fract(float(frame_index) * 0.38197)
+    );
+    vec4  bn = texture(blue_noise, noise_uv + frame_off);
+
+    // Grain amplitude: peaks at midtones (lum ~ 0.5), falls off in blacks and whites
+    float mid_mask = 4.0 * lum * (1.0 - lum);   // parabola: 0 at 0 and 1, 1 at 0.5
+    float amp      = grain_strength * mid_mask;
+
+    // Chromatic grain: R/G/B channels use different noise samples (slight correlation)
+    vec3  grain = vec3(bn.r, bn.g, bn.b) * 2.0 - 1.0;
+    // Bias red channel slightly (film grain is more visible in luma/red)
+    grain.r *= 1.2;
+    grain.g *= 0.9;
+    grain.b *= 0.8;
+
+    grain_out = color + grain * amp;
+}
+```
+
+#### Grain Power Spectrum (Frequency-Correct Grain)
+For a more physically accurate grain spectrum, filter white noise through a Gaussian kernel that matches real film's power spectrum — coarser grain at higher ISO. In practice this is precomputed into the blue-noise texture; at runtime, additional resolution-dependent scaling of `grain_size` reproduces the correct spatial frequency for the output resolution.
+
+```glsl
+// Resolution-adaptive grain size: real grain is fixed physical size on sensor
+// Higher render resolution = smaller grain in pixels = divide grain_size accordingly
+float adaptive_grain_size = grain_size * (native_resolution.y / render_resolution.y);
+vec2  noise_uv = gl_FragCoord.xy / (128.0 * adaptive_grain_size);
+```
+
+**Reference** — [Jimenez (2014), ibid. §Film Grain]; [Nosseir: Implementing a Practical Rendering Model for Neon Lights (2020)](https://bartwronski.com/2020/10/10/neon-neon-neon/); [Wronski: Good Random — Low Discrepancy Blue Noise in Temporal Domain (2022)](https://bartwronski.com/)
+
+---
+
+## Catmull-Clark Subdivision on GPU
+
+Catmull-Clark subdivision (CCS) converts a coarse control-mesh into a smooth limit surface by iterative refinement: each subdivision step inserts a face point at each polygon centroid, an edge point at each edge midpoint, and updates each vertex using its valence-dependent stencil. The key GPU challenge is **extraordinary vertices** (valence ≠ 4) which require special evaluation stencils and cannot be processed by the uniform patch pipeline. Three GPU approaches exist: **full refinement** (compute all levels), **feature-adaptive subdivision** (ACC, Patney 2009 — refine only near extraordinary vertices), and **tessellation-shader-based** evaluation (GLSL/HLSL hull+domain shaders with precomputed ACC patches).
+
+**Shader stage**: the compact on-GPU approach uses **tessellation control and evaluation shaders** (TCS/TES) to evaluate B-spline patches (regular regions) and precomputed ACC limit patches (extraordinary regions).
+
+#### Regular B-Spline Patch Evaluation (Valence-4 Regions)
+Regular regions of a CCS surface converge to a bicubic B-spline at the limit. The TES evaluates this directly from the 16-point control cage patch.
+
+```glsl
+// TES — bicubic B-spline patch evaluation (regular Catmull-Clark region)
+layout(quads, fractional_odd_spacing, ccw) in;
+
+layout(location=0) in  vec3 tc_pos[];   // 16 control points from TCS
+layout(location=0) out vec3 te_pos;
+layout(location=1) out vec3 te_normal;
+
+// Bicubic B-spline basis functions
+vec4 cubic_bspline_basis(float t) {
+    float t2 = t * t, t3 = t2 * t;
+    return vec4(
+        (-t3 + 3.0*t2 - 3.0*t + 1.0) / 6.0,
+        ( 3.0*t3 - 6.0*t2 + 4.0) / 6.0,
+        (-3.0*t3 + 3.0*t2 + 3.0*t + 1.0) / 6.0,
+        t3 / 6.0
+    );
+}
+
+void main() {
+    float u = gl_TessCoord.x, v = gl_TessCoord.y;
+    vec4  Bu = cubic_bspline_basis(u);
+    vec4  Bv = cubic_bspline_basis(v);
+
+    // Evaluate position from 4×4 control points
+    vec3 pos = vec3(0.0);
+    for (int j = 0; j < 4; ++j)
+        for (int i = 0; i < 4; ++i)
+            pos += Bu[i] * Bv[j] * tc_pos[j*4 + i];
+    te_pos = pos;
+
+    // Evaluate tangents (derivative of B-spline basis)
+    vec4 dBu = vec4(-Bu.x + Bu.y,   // dB/dt
+                    -3.0*Bu.x/2.0 + Bu.z/2.0,
+                    3.0*Bu.x/2.0 - Bu.z/2.0,
+                    Bu.x - Bu.y);
+    vec3 dPdu = vec3(0.0), dPdv = vec3(0.0);
+    for (int j = 0; j < 4; ++j)
+        for (int i = 0; i < 4; ++i) {
+            dPdu += dBu[i] * Bv[j]  * tc_pos[j*4 + i];
+            dPdv += Bu[i]  * dBu[j] * tc_pos[j*4 + i];  // same basis, swap axes
+        }
+    te_normal = normalize(cross(dPdu, dPdv));
+    gl_Position = mvp * vec4(pos, 1.0);
+}
+```
+
+#### Extraordinary Vertex Handling (ACC)
+For extraordinary vertices (valence ≠ 4), precompute a set of 32-point **ACC (Approximation of Catmull-Clark) patches** offline, store them in a per-patch buffer, and evaluate them in the TES using the ACC evaluation formulae (Schäfer & Warren 2007). This avoids the combinatorial complexity of explicit iterative refinement.
+
+**Reference** — [DeRose, Kass & Truong: Subdivision Surfaces in Character Animation (SIGGRAPH 1998)](https://dl.acm.org/doi/10.1145/280814.280836); [Schäfer & Warren: Exact Evaluation of Catmull-Clark Subdivision Surfaces at Arbitrary Parameter Values (CGF 2007)](https://dl.acm.org/doi/10.1145/1073204.1073333); [OpenSubdiv (Pixar)](https://graphics.pixar.com/opensubdiv/docs/intro.html)
+
+---
+
+## Displacement Mapping via Compute
+
+Tessellation-based displacement (§51) displaces mesh vertices in the TES and is limited by the tessellation rate and the fixed function pipeline. **Compute-based displacement** instead runs a pre-pass that reads the displacement map and writes a fully displaced vertex buffer, giving greater flexibility: the displaced mesh can be used for both rasterisation and as a BVH input for ray tracing, and any compute operation (procedural noise, physics-driven, cache coherent) can drive the displacement.
+
+**Shader stage**: displacement pre-pass runs in **compute**; the displaced vertex buffer is then consumed by the standard **vertex shader** draw.
+
+#### Compute Displacement Pre-Pass
+Dispatch over the tessellated mesh's vertex count. Each thread reads the vertex position, samples the displacement map, offsets along the normal, and writes to the output vertex buffer.
+
+```glsl
+// Compute displacement — one thread per vertex
+layout(local_size_x=64) in;
+
+struct Vertex {
+    vec3 position;
+    vec3 normal;
+    vec2 uv;
+    vec4 tangent;
+};
+
+layout(set=0, binding=0) readonly  buffer SrcVertices { Vertex src[]; };
+layout(set=0, binding=1) writeonly buffer DstVertices { Vertex dst[]; };
+layout(set=0, binding=2) uniform sampler2D displacement_map;
+layout(set=0, binding=3) uniform sampler2D normal_map;   // for re-normals after displace
+
+uniform float displace_scale;   // world-space displacement strength (e.g. 0.1 m)
+uniform uint  num_vertices;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= num_vertices) return;
+
+    Vertex v = src[idx];
+
+    // Sample displacement and displace along normal
+    float height   = texture(displacement_map, v.uv).r;
+    v.position    += v.normal * (height * displace_scale);
+
+    // Optionally update normal from displacement map gradient
+    float eps      = 1.0 / 2048.0;
+    float h_dx     = texture(displacement_map, v.uv + vec2(eps, 0.0)).r;
+    float h_dy     = texture(displacement_map, v.uv + vec2(0.0, eps)).r;
+    // Finite difference normal: gradient of height → tangent-space normal
+    vec3  disp_normal = normalize(vec3(-(h_dx - height) / eps * displace_scale,
+                                       -(h_dy - height) / eps * displace_scale,
+                                       1.0));
+    // Transform tangent-space normal to object space using TBN
+    vec3  T = v.tangent.xyz;
+    vec3  B = cross(v.normal, T) * v.tangent.w;
+    v.normal = normalize(T * disp_normal.x + B * disp_normal.y + v.normal * disp_normal.z);
+
+    dst[idx] = v;
+}
+```
+
+#### BVH Rebuild After Displacement
+For ray-traced shadows or reflections to see the displaced geometry, the TLAS must be rebuilt against the displaced vertex buffer each frame (for dynamic/animated displacement) or once at load time (for static terrain). The BVH rebuild cost is the primary limit on displacement frequency.
+
+```c
+// After compute displacement, trigger BLAS rebuild against new vertex buffer
+VkAccelerationStructureBuildGeometryInfoKHR build_info = {
+    .type  = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+    .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR,
+    .mode  = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR,  // update from prior BLAS
+    // geometry points to displaced vertex buffer
+};
+vkCmdBuildAccelerationStructuresKHR(cmd, 1, &build_info, &pRangeInfo);
+```
+
+**Use cases** — terrain heightmap with RT shadow contact; ocean surface swell with correct silhouette; character skin wrinkle system driven by blend shape weights.  
+**Reference** — [Donnelly: GPU Gems 2: Per-Pixel Displacement Mapping (2005)](https://developer.nvidia.com/gpugems/gpugems2/part-i-geometric-complexity/chapter-8-pixel-displacement-mapping-distance-functions)
+
+---
+
+## 3D Gaussian Splatting
+
+3D Gaussian Splatting (3DGS, Kerbl et al. 2023) represents a scene as a set of M anisotropic 3D Gaussians — each described by a world-space position μ, a covariance matrix Σ (encoded as a rotation quaternion q and scale s), an opacity α, and spherical harmonic (SH) coefficients for view-dependent colour. At render time, the Gaussians are projected to 2D screen-space ellipses, sorted front-to-back by depth, and alpha-composited in a tile-based rasterizer. This pipeline replaces both the NeRF MLP inference (§46) and traditional geometry, achieving real-time novel-view synthesis quality.
+
+**Shader stage**: projection and depth sorting run in **compute**; tile-based rasterization and alpha compositing run in a **compute** forward pass (one workgroup per screen tile).
+
+#### Gaussian Projection to 2D
+Each 3D Gaussian is projected to a 2D screen-space Gaussian using the Jacobian of the perspective projection.
+
+```glsl
+// Project one 3D Gaussian to screen-space ellipse params
+// Input: position, quaternion rotation, scale (log), opacity, SH coefficients
+// Output: 2D mean, 2D covariance inverse, colour, opacity
+
+struct Gaussian3D {
+    vec3  pos;
+    vec4  rot;      // unit quaternion (w, x, y, z)
+    vec3  scale;    // log scale per axis
+    float opacity;  // before sigmoid
+    float sh[48];   // SH coefficients, degree 3 = 16 * RGB
+};
+
+struct Gaussian2D {
+    vec2  mean;     // screen UV
+    mat2  cov_inv;  // inverse 2D covariance for Gaussian eval
+    float opacity;
+    vec3  color;
+    float depth;    // for sort
+};
+
+Gaussian2D project_gaussian(Gaussian3D g, mat4 view, mat4 proj, vec2 resolution) {
+    // Build 3D covariance: Σ = R * S * S^T * R^T
+    mat3 R = quat_to_mat3(g.rot);
+    vec3 sc = exp(g.scale);
+    mat3 S = mat3(sc.x, 0, 0,  0, sc.y, 0,  0, 0, sc.z);
+    mat3 Sigma3D = R * S * transpose(S) * transpose(R);
+
+    // Project: Σ_2D = J * W * Σ3D * W^T * J^T (Zwicker 2002)
+    vec4 pos_view = view * vec4(g.pos, 1.0);
+    float tx = pos_view.x, ty = pos_view.y, tz = pos_view.z;
+    float f = proj[1][1];   // focal length y from projection matrix
+    // Jacobian of perspective projection (at this point)
+    mat3 J = mat3(
+        f / tz,     0.0,        -f * tx / (tz * tz),
+        0.0,        f / tz,     -f * ty / (tz * tz),
+        0.0,        0.0,         0.0
+    );
+    mat3 W = mat3(view);  // upper-left 3×3 of view matrix
+    mat3 Sigma2D3 = J * W * Sigma3D * transpose(W) * transpose(J);
+    mat2 cov2D = mat2(Sigma2D3[0][0] + 0.3, Sigma2D3[0][1],
+                      Sigma2D3[1][0],        Sigma2D3[1][1] + 0.3);
+
+    // Invert 2D covariance
+    float det   = cov2D[0][0] * cov2D[1][1] - cov2D[0][1] * cov2D[1][0];
+    mat2  cov_i = mat2( cov2D[1][1], -cov2D[0][1],
+                       -cov2D[1][0],  cov2D[0][0]) / max(det, 1e-6);
+
+    // Project mean to screen
+    vec4  clip  = proj * pos_view;
+    vec2  mean  = (clip.xy / clip.w * 0.5 + 0.5) * resolution;
+
+    // Evaluate SH for view-dependent colour (degree 1 for brevity)
+    vec3  dir   = normalize(g.pos - cam_pos);
+    vec3  color = sh_l0(g.sh) + sh_l1(g.sh, dir);  // + higher SH degrees
+
+    return Gaussian2D(mean, cov_i, sigmoid(g.opacity), color, pos_view.z);
+}
+```
+
+#### Tile-Based Alpha Compositing
+Divide the screen into 16×16 pixel tiles. Sort the Gaussians by depth within each tile. Each tile's workgroup composites all overlapping Gaussians front-to-back using Porter-Duff OVER.
+
+```glsl
+// Tile compositing — one workgroup per 16×16 tile
+layout(local_size_x=16, local_size_y=16) in;
+layout(set=0, binding=0, rgba8) uniform image2D output_image;
+layout(set=0, binding=1) readonly buffer SortedGaussians { Gaussian2D gs[]; };
+layout(set=0, binding=2) readonly buffer TileRanges { ivec2 tile_range[]; }; // [start, end]
+
+void main() {
+    ivec2 px    = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 tile  = ivec2(gl_WorkGroupID.xy);
+    vec2  px_f  = vec2(px) + 0.5;
+
+    ivec2 range = tile_range[tile.y * num_tiles_x + tile.x];
+    vec3  accum = vec3(0.0);
+    float T     = 1.0;   // transmittance, starts at 1
+
+    for (int i = range.x; i < range.y && T > 0.001; ++i) {
+        Gaussian2D g  = gs[i];
+        vec2       d  = px_f - g.mean;
+
+        // Gaussian power: G(d) = exp(-0.5 * d^T * cov_inv * d)
+        float power = -0.5 * (g.cov_inv[0][0]*d.x*d.x
+                            + 2.0*g.cov_inv[0][1]*d.x*d.y
+                            + g.cov_inv[1][1]*d.y*d.y);
+        if (power > 0.0) continue;
+
+        float alpha = min(0.99, g.opacity * exp(power));
+        accum      += T * alpha * g.color;
+        T          *= (1.0 - alpha);
+    }
+    accum += T * background_color;
+    imageStore(output_image, px, vec4(accum, 1.0));
+}
+```
+
+**Use cases** — real-time novel-view synthesis from captured scenes; digital twins; NeRF-to-3DGS baking for game-ready assets; environment capture for VR.  
+**Reference** — [Kerbl et al.: 3D Gaussian Splatting for Real-Time Novel View Synthesis (SIGGRAPH 2023)](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/)
+
+---
+
+## ReSTIR PT — Path Tracing Resampling
+
+ReSTIR DI (§29) resamples direct illumination from millions of candidate light samples. **ReSTIR PT** extends this to the **full path**: rather than resampling only the first-vertex light sample, it resamples entire path suffixes — the sequence of vertices from the first bounce to the light. Each pixel stores a **reservoir** holding a complete subpath (a sequence of scattering events), and neighbouring pixels and previous-frame pixels are used as additional sample donors through **spatiotemporal resampling**, dramatically reducing variance at low sample-per-pixel counts.
+
+**Shader stage**: all passes run as **ray generation (rgen) shaders** or **compute shaders** (for non-RT resampling steps). Each pixel's reservoir is stored in a G-buffer–like storage image.
+
+#### Path Reservoir Structure
+A path reservoir holds a reconnection vertex (the point at which the path is "split" for reuse), the outgoing path suffix as an opaque token (compressed as MC seed or explicit vertices), and the reservoir weight.
+
+```glsl
+// ReSTIR PT reservoir — stored per pixel in a storage buffer
+struct PathReservoir {
+    vec3  reconnect_pos;      // world-space vertex where suffix begins
+    vec3  reconnect_normal;
+    vec3  path_contribution;  // L_i at the reconnection vertex (from cached path)
+    float M;                  // number of candidates contributing to this reservoir
+    float W;                  // unbiased contribution weight (= p_hat / p_proposal)
+    uint  rng_seed;           // RNG seed to reproduce the full path if needed
+};
+```
+
+#### Initial Candidate Generation (rgen)
+For each pixel, trace a primary path (k bounces), storing the path's radiance contribution and selecting a reconnection vertex using weighted reservoir sampling (WRS) over the path vertices.
+
+```glsl
+// ReSTIR PT initial sampling — rgen shader (simplified)
+layout(location=0) rayPayloadEXT PathPayload payload;
+
+void main() {
+    ivec2 px    = ivec2(gl_LaunchIDEXT.xy);
+    uint  rng   = pcg_init(uvec2(px), frame_index);
+
+    // Trace primary path (1 rgen + k rchit bounces via payload continuation)
+    payload = init_payload(cam_ray_origin(px), cam_ray_dir(px), rng);
+    trace_path(payload, MAX_BOUNCES);
+
+    // Build reservoir from path vertices using WRS (§29 Reservoir struct)
+    Reservoir res = reservoir_init();
+    float accum_w = 0.0;
+    for (int b = 0; b < payload.num_vertices; ++b) {
+        float p_hat = luminance(payload.vertex_contrib[b]);  // target PDF: contribution
+        float w     = p_hat / max(payload.vertex_pdf[b], 1e-6);
+        if (reservoir_update(res, b, w, pcg_float(rng))) {
+            // selected vertex b as reconnection point
+        }
+    }
+
+    // Compute unbiased weight W = (1/p_hat(selected)) * (res.w_sum / res.M)
+    float p_hat_sel = luminance(payload.vertex_contrib[res.selected]);
+    res.W = (p_hat_sel > 0.0) ? res.w_sum / (res.M * p_hat_sel) : 0.0;
+
+    path_reservoirs[px.y * resolution.x + px.x] = pack_reservoir(res, payload);
+}
+```
+
+#### Spatiotemporal Resampling
+For each pixel, gather neighbouring pixels' reservoirs and the previous-frame reservoir (reprojected via motion vectors). Merge them using WRS with the **MIS weights** to maintain unbiasedness. The merged reservoir has M candidates from all donors; its W is renormalised accordingly.
+
+```glsl
+// ReSTIR PT temporal reuse — merge current reservoir with previous frame's
+PathReservoir curr = path_reservoirs[px.y * w + px.x];
+ivec2 prev_px = reproject(px, motion_vectors);
+PathReservoir prev = prev_path_reservoirs[prev_px.y * w + prev_px.x];
+
+// Reconnection shift: check if previous path's reconnection vertex is visible from current pixel
+bool shift_valid = test_reconnection_visibility(curr.primary_hit, prev.reconnect_pos, prev.reconnect_normal);
+
+if (shift_valid) {
+    // Compute Jacobian of the path shift (accounts for geometry change between pixels)
+    float jacobian = reconnection_jacobian(curr.primary_hit, prev.reconnect_pos);
+    float p_hat_prev = luminance(prev.path_contribution) * jacobian;
+    float w_prev     = p_hat_prev * prev.W * float(prev.M);
+
+    // Merge into current reservoir
+    if (reservoir_update(curr, PREV_SOURCE, w_prev, pcg_float(rng))) {
+        curr.reconnect_pos    = prev.reconnect_pos;
+        curr.path_contribution = prev.path_contribution;
+    }
+    curr.M += prev.M;
+    curr.W  = reservoir_w_sum(curr) / (float(curr.M) * luminance(curr.path_contribution) + 1e-6);
+}
+path_reservoirs[px.y * w + px.x] = curr;
+```
+
+**Unbiasedness**: the reconnection shift's Jacobian ensures the resampling is unbiased — the estimator converges to the correct path integral. Without the Jacobian, spatial reuse introduces bias (the so-called "shift mapping" requirement).
+
+**Reference** — [Ouyang et al.: ReSTIR GI: Path Resampling for Real-Time Path Tracing (HPG 2021)](https://dl.acm.org/doi/10.1145/3478512.3488613); [Lin et al.: ReSTIR PT: Generalized Resampling of Paths in Path Tracing (SIGGRAPH 2022)](https://research.nvidia.com/publication/2022-07_restir-pt-generalized-resampling-paths-path-tracing)
 
 ---
 
