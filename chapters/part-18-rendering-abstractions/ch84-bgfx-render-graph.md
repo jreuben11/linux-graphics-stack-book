@@ -686,6 +686,24 @@ The tradeoff: G-Buffer textures consume significant VRAM bandwidth and VRAM foot
 
 The G-Buffer pipeline is the canonical frame graph resource edge: the geometry pass *produces* transient G-Buffer textures; the lighting pass *consumes* them; both textures are meaningless outside this single frame. This is precisely the data dependency pattern a frame graph was designed to express.
 
+**Advantages of deferred rendering:**
+
+- **Lighting complexity decoupled from geometry complexity.** The lighting pass evaluates *n* lights × *screen pixels* — not *n* lights × *total fragments including overdraw*. For a scene with 200 analytical lights, this is typically an order-of-magnitude reduction in lighting work.
+- **No overdraw in lighting.** The depth test eliminates overdrawn fragments before they are written to the G-Buffer, so the lighting pass touches each pixel exactly once. Forward rendering evaluates lighting on fragments later discarded by a nearer draw.
+- **Material and lighting shaders are fully decoupled.** The geometry pass writes fixed G-Buffer slots regardless of how many material variants the scene uses. The lighting pass reads albedo/normal/roughness/metallic without knowing which material shader produced them. Adding a new light type requires no changes to material shaders; changing a material BRDF requires no changes to the lighting pass.
+- **Arbitrary dynamic light counts at near-constant material cost.** Adding a 50th point light costs the same as the 5th. Forward rendering typically imposes a per-object light limit enforced at draw call submission.
+- **Screen-space effects are natural.** SSAO, SSR, SSGI, contact shadows, and screen-space subsurface scattering all need per-pixel surface data for the full screen. The G-Buffer provides it for free as a by-product of the geometry pass; forward rendering requires a separate depth pre-pass to get even partial coverage.
+
+**Costs and limitations:**
+
+- **Transparency is broken.** The depth test means only the closest opaque surface per pixel survives. Transparent geometry cannot write into the G-Buffer correctly and must be rendered forward on top in a separate pass, with its own per-object light loop.
+- **MSAA is expensive or incompatible.** Resolving 4× MSAA across 4–6 full-resolution G-Buffer render targets multiplies VRAM bandwidth by 4×. Most deferred renderers use TAA in place of MSAA.
+- **G-Buffer DRAM bandwidth on desktop IMR GPUs.** Writing and reading 4–6 full-resolution render targets every frame costs real bandwidth — typically 60–120 MB/frame at 1080p, scaling with resolution and attachment count. This cost is unavoidable on desktop GPUs.
+- **Fixed G-Buffer schema limits material diversity.** All materials must fit their properties into the G-Buffer's fixed attachment layout. Heterogeneous material systems (different BRDF models per object) require a material-ID field plus branching in the lighting shader, or multiple specialised lighting passes.
+- **On TBDR mobile, subpass merging is required to recover efficiency.** Without merging the geometry and lighting passes into a single Vulkan render pass, the G-Buffer is written to DRAM and read back — the same bandwidth cost as desktop, on hardware with a fraction of the memory bandwidth. With subpass merging (or tile shaders, §10b of ch86), the G-Buffer stays in on-chip tile SRAM and the DRAM round-trip disappears entirely.
+
+The practical choice: deferred is the right default for scenes with many dynamic lights and predominantly opaque geometry (games, archviz, Blender EEVEE Next, production film renderers). Forward is better for scenes dominated by transparency, for mobile targets without good subpass support, or for workloads with few lights where the G-Buffer bandwidth exceeds the lighting savings.
+
 ### 7.1 The Problem Frame Graphs Solve
 
 Modern rendering pipelines are sequences of interdependent passes: a shadow map pass writes a depth texture read by a lighting pass; a G-buffer pass writes colour, normal, and roughness textures read by a deferred shading pass; a shading pass writes a colour buffer read by bloom and TAA. Each intermediate texture has a *lifetime* — it is first written by one pass and last read by another.
