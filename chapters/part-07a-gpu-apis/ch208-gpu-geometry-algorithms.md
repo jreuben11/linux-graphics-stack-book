@@ -328,6 +328,8 @@ Osd::GLPatchTable *glPatchTable = Osd::GLPatchTable::Create(patchTable, nullptr)
 
 The `GLComputeEvaluator` dispatches OpenGL 4.3+ compute shaders stored in `opensubdiv/osd/glComputeEvaluator.cpp` in the OpenSubdiv source tree. There is no `Osd::VkComputeEvaluator` in OpenSubdiv 3.6.0; the available evaluators are: `CpuEvaluator`, `GLComputeEvaluator`, `GLXFBEvaluator`, `CudaEvaluator`, `CLEvaluator`, `MTLComputeEvaluator` (Metal, added in 3.5.1).
 
+**GPU porting status.** The Far layer (`TopologyRefiner`, `StencilTableFactory`, `PatchTableFactory`) remains CPU-only and is unlikely to be ported. Topology analysis requires pointer-chasing over irregular adjacency graphs — valence lookup, half-edge traversal, crease propagation — which are data-dependent serial traversals that map poorly to GPU SIMD. The OpenSubdiv team's explicit position is that the topology phase belongs on CPU; GPU parallelism begins at stencil evaluation (Osd). A `Osd::VkComputeEvaluator` has been discussed in OpenSubdiv GitHub issues (e.g., #1116) but has not been implemented as of 3.6.0. The custom Vulkan stencil evaluator in §1.5 is the current recommended workaround for Vulkan-native pipelines.
+
 ### 1.5 Custom Vulkan Stencil Evaluator
 
 For pure Vulkan pipelines, replicate the stencil evaluation in a Vulkan compute shader. The `Far::StencilTable` can be serialized as three arrays:
@@ -598,6 +600,8 @@ for (; faceExp.More(); faceExp.Next()) {
 ```
 
 [Source: OCCT `src/ModelingAlgorithms/TKMesh/BRepMesh/BRepMesh_IncrementalMesh.cxx`]
+
+**GPU porting status.** `BRepMesh_IncrementalMesh` is CPU-only and no GPU port is in progress. The tessellator is tightly coupled to OpenCASCADE's BRep topology kernel (half-edge structures, `TopoDS_Shape` ownership graphs), making extraction into a data-parallel GPU kernel impractical without redesigning the data model. For real-time use, the recommended alternative is to bypass OpenCASCADE tessellation entirely and evaluate NURBS surfaces directly via TCS/TES (§2.2), at the cost of losing exact BRep topology. CAD pipelines that must preserve topology (e.g., engineering simulation, CNC toolpath generation) have no GPU alternative and must run tessellation on CPU at asset-load time.
 
 ### 2.4 Displacement Mapping on Tessellated Surfaces
 
@@ -1452,6 +1456,8 @@ The circumcentre of each bad triangle is computed and inserted as a new vertex, 
 
 **Applications.** Constrained Delaunay + Ruppert refinement is the standard meshing pipeline for: FEM terrain simulation (seismic, hydrology), game terrain LOD transition zones, road/river network embedding into height-field meshes. The `Triangle` library (Shewchuk, public domain) provides the CPU CDT/Ruppert reference; libigl wraps it. For fully GPU terrain meshing pipelines, the CDT step typically runs on CPU for constraint insertion (milliseconds for road networks) while the refinement iterations run on GPU. [Source: Shewchuk "Triangle: Engineering a 2D Quality Mesh Generator and Delaunay Triangulator", WACG 1996; Ruppert "A Delaunay Refinement Algorithm for Quality 2-Dimensional Mesh Generation", J. Algorithms 1995]
 
+**GPU porting status.** Unconstrained GPU Delaunay is largely solved (§3.9 JFA/rasterized-cone approach). The hard part — constraint edge insertion — remains CPU-only in all production tools. Constraint insertion requires locating the existing triangles that cross each constraint segment and re-triangulating the cavity, a data-dependent traversal that serializes easily. Academic GPU CDT work exists (Qi et al. "Computing Two-Dimensional Delaunay Triangulation Using Graphics Hardware", I3D 2012; rGPU-CDT) but none handles general constraint polylines robustly enough for production terrain pipelines. The GPU Ruppert refinement shown above (parallel bad-triangle detection + circumcentre scatter) is itself a GPU contribution — the angle classification and point insertion can run on GPU, while the CPU only manages the outer convergence loop.
+
 ### 3.12 Poisson Surface Reconstruction
 
 Poisson surface reconstruction (Kazhdan & Hoppe 2013, "Screened Poisson Surface Reconstruction") converts an oriented point cloud — positions plus normals — into a watertight triangle mesh. It is the standard algorithm for reconstructing meshes from LiDAR scans, photogrammetry point clouds, SPH simulation particles (§3.8), and SDF-sampled surfaces.
@@ -1527,6 +1533,8 @@ layout(local_size_x=8, local_size_y=8, local_size_z=8) in;
 **Screened Poisson.** The 2013 "screened" variant adds a data-fitting term that pulls the solution toward the original point positions (not just their normals), improving reconstruction accuracy near sparse regions and at open boundaries. The screening modifies the linear system: `(L + αI)χ = b - α·w` where `w` is a point-value constraint vector and α controls the screening weight.
 
 **Library.** The reference implementation `PoissonRecon` (Kazhdan, MIT) runs on CPU in 10–60 s for 1M-point clouds; the GPU-accelerated steps (splat, divergence, CG solve, MC extract) reduce this to 1–5 s. CloudCompare and MeshLab expose PoissonRecon as a plugin. [Source: Kazhdan & Hoppe "Screened Poisson Surface Reconstruction", TOG 2013; Kazhdan et al. "Poisson Surface Reconstruction", SGP 2006]
+
+**GPU porting status.** This is the most complete GPU port among the CPU-dominant sections. The pipeline shown above — normal splatting, divergence, Poisson solve, isosurface extraction — maps directly to GPU compute, and all four steps have GPU implementations. What does not yet exist is a production-quality open-source library that integrates all steps under a single GPU-native API. NVIDIA cuSPARSE handles the sparse CG solve; the splat and divergence steps are straightforward compute shaders as shown. The octree management and adaptive refinement (used in the full screened Poisson for non-uniform point densities) are harder to GPU-port because they require dynamic tree modification, which is the remaining CPU work in a hybrid pipeline. For uniform-grid Poisson (fixed voxel resolution), a fully GPU implementation is straightforward from the code in this section.
 
 ---
 
@@ -2338,6 +2346,10 @@ meshopt_remapIndexBuffer(indices, indices, indexCount, remap.data());
 ```
 
 For meshlet-based rendering (§7.4), meshoptimizer's `meshopt_buildMeshlets` already incorporates vertex cache awareness at the meshlet granularity: each meshlet's local index buffer is a tight 64-vertex / 124-triangle unit that fits entirely within the mesh shader's per-workgroup registers, making PTVC optimization less critical at draw time but more important within the meshlet build step.
+
+**GPU porting status — simplification.** `meshopt_simplify` (QEM edge collapse) is CPU-only. GPU simplification is an active area: Unreal Engine 5's Nanite performs cluster-level hierarchical simplification on the GPU as part of its virtual geometry system, but this is not a direct port of QEM — it uses a custom cluster-DAG structure built offline. There is no production GPU port of the meshoptimizer simplification API. For real-time LOD generation (e.g., runtime terrain or streaming), GPU vertex clustering (§7.3) is the practical GPU alternative at the cost of lower quality than QEM.
+
+**GPU porting status — encode/decode.** `meshopt_decodeIndexBuffer` and `meshopt_decodeVertexBuffer` are explicitly designed to be portable to GPU compute. The decode algorithms are tight loops with no irregular branching, and Kapoulkine has noted that a GLSL/HLSL compute shader decode pass is a stated roadmap goal. The encode step (delta coding, bit packing) remains CPU-only. A GPU decode pass would enable streaming compressed geometry directly from a staging buffer into a vertex/index buffer in a single compute dispatch, eliminating CPU decompression latency.
 
 ### 7.3 Vertex Clustering on GPU
 
@@ -3386,6 +3398,8 @@ for (uint32_t i = 0; i < vhacd->GetNConvexHulls(); ++i) {
 ```
 
 V-HACD runs on CPU in 0.1–2 s depending on resolution; the resulting convex pieces are uploaded once as static SSBOs for GJK dispatch at runtime. [Source: Mamou & Ghazali "A Simple and Efficient Approach for 3D Mesh Approximate Convex Decomposition", ICIP 2009; V-HACD v4.0 GitHub https://github.com/kmammou/v-hacd]
+
+**GPU porting status.** No GPU port of VHACD exists or is in active development. The VHACD algorithm's inner loop — iterative voxelization, PCA convex hull approximation, and concavity-driven splitting — involves adaptive tree decomposition with data-dependent termination that does not parallelize efficiently. The more significant shift is that NVIDIA PhysX 5 (Ch69) and GPU-native physics engines increasingly use SDF-based collision geometry rather than convex decomposition: the SDF is computed once on GPU and ray-cast for collision queries, entirely bypassing the need for convex decomposition. For engines that still require explicit convex hulls (e.g., for GJK §8.4 or network-replicated physics shapes), VHACD remains a CPU-only offline preprocessing step.
 
 ---
 
