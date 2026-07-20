@@ -70,6 +70,7 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 114: OpenCV and GPU-Accelerated Computer Vision on Linux](#chapter-114-opencv-and-gpu-accelerated-computer-vision-on-linux)
   - [Chapter 209: OpenSLAM — Classical and Graph-Based SLAM on the Linux Stack](#chapter-209-openslam--classical-and-graph-based-slam-on-the-linux-stack)
   - [Chapter 210: SLAM Theory and State of the Art](#chapter-210-slam-theory-and-state-of-the-art)
+  - [Chapter 211: ROS 2 Multimodal Sensor and Perception Pipeline](#chapter-211-ros-2-multimodal-sensor-and-perception-pipeline)
   - [Chapter 206: SDL3 — Cross-Platform Multimedia Integration on Linux](#chapter-206-sdl3--cross-platform-multimedia-integration-on-linux)
 - **Part VIII — Gaming Layer**
   - [Chapter 28: Windows Compatibility](#chapter-28-windows-compatibility)
@@ -849,6 +850,24 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - Benchmarks and evaluation: TUM RGB-D, EuRoC MAV, KITTI Odometry, Hilti SLAM Challenge, MulRan; ATE and RPE metrics; evaluation pitfalls (training-set leakage, selective sequence reporting, loop closure toggle, sensor calibration)
 - GPU and CPU parallelism: CUDA requirements per system (DBA solver, 3DGS rasteriser); CPU thread pinning with `pthread_setaffinity_np`; Vulkan compute (`kompute`) as CUDA alternative; NUMA-aware thread placement for PCIe LiDAR buses
 - **Integrations**: Ch114 §14 (DROID-SLAM, SplaTAM, MonoGS GPU implementation), Ch209 (GMapping, G2O, TORO, Basalt VIO — classical SLAM cross-reference), Ch208 (Monado `xrt_slam_sinks` for headset pose), Ch206 (V4L2/libcamera capture pipeline), Ch205 (ROS 2 middleware, REP-2007 zero-copy, composable nodes), Ch203 (Vulkan compute for GPU-resident map operations)
+
+### Chapter 211: ROS 2 Multimodal Sensor and Perception Pipeline *(Part VII-B)*
+
+- ROS 2 middleware: rmw abstraction; DDS implementations (CycloneDDS, FastDDS, Zenoh); `ROS_DOMAIN_ID`; QoS profiles (`rclcpp::SensorDataQoS`, Reliable+TransientLocal for maps); composable node containers and intra-process zero-copy
+- `sensor_msgs` taxonomy: PointCloud2 binary layout (`fields[]`, `point_step`, `is_dense`); Imu (angular_velocity, linear_acceleration, orientation + covariance sentinels); NavSatFix (lat/lon/alt, `STATUS_FIX`); LaserScan; Range; MagneticField; JointState; BatteryState
+- `point_cloud_transport`: draco (lossy), zlib, zstd plugins; C++ `PointCloudTransport::subscribe/advertise` API; runtime transport selection via ROS parameter
+- TF2 transform tree: REP-105 frame conventions (`map → odom → base_link → sensor_link`); `TransformBroadcaster::sendTransform`; `StaticTransformBroadcaster`; `tf2_ros::Buffer::lookupTransform` with timeout; URDF + `robot_state_publisher` for static extrinsics
+- Camera pipeline: `image_transport` plugins (compressed, compressed_depth, zstd, theora); `apt install ros-humble-image-transport-plugins`; `camera_calibration` interactive calibrator; `CameraInfo.K` intrinsic matrix; `depth_image_proc` nodes (`PointCloudXyzrgbNode`, `RegisterDepthNode`); depth projection formula; RealSense / ZED / OAK-D ROS 2 wrappers
+- Message synchronisation: `message_filters::TimeSynchronizer` (ExactTime); `message_filters::Synchronizer<ApproximateTime>` up to 9 topics; `setMaxIntervalDuration` for camera-LiDAR fusion
+- `vision_msgs`: `Detection2DArray` (header, detections[], bbox.center, results[].hypothesis.class_id/score), `Detection3DArray`, `ObjectHypothesisWithPose`, `LabelInfo`, `VisionInfo`; algorithm-agnostic bus between detector and consumer
+- Object detection on ROS 2: `ultralytics_ros` tracker_node (YOLOv8–YOLO11, `vision_msgs/Detection2DArray` output, `device:=cuda:0`); topic remapping in composable containers; reference to Ch114 for model internals
+- Multi-sensor fusion: `robot_localization` `ekf_filter_node` (15-DOF state; odom/imu/pose/twist inputs; `odomN_config` 15-element bool arrays); `navsat_transform_node` (subscribes `gps/fix` + `odometry/filtered`, publishes `odometry/gps`; `magnetic_declination_radians`, `use_local_cartesian`); full GPS+IMU+wheel-odometry YAML example
+- `nav_msgs` output types: `Odometry` (pose+twist with covariance); `OccupancyGrid` (−1/0/100 semantics); `Path`; `map_saver_cli` for PNG+YAML persistence; Nvblox TSDF-to-costmap integration
+- Isaac ROS / NITROS: REP-2007 (type adaptation) + REP-2009 (type negotiation); GXF acceleration graph; NITROS package roster (`isaac_ros_nitros`, `isaac_ros_triton`, `isaac_ros_tensor_rt`, `isaac_ros_dnn_image_encoder`, `isaac_ros_detectnet`, `isaac_ros_segformer`, `isaac_ros_ess`); Jetson unified memory (`cudaMallocManaged`) vs. discrete GPU DMA path; 3-stage pipeline: DNN encoder → Triton → DetectNet decoder → `Detection2DArray`; Nvblox GPU TSDF reconstruction (`nvblox_msgs/Mesh`, `DistanceMapSlice`)
+- Diagnostics: `diagnostic_updater` C++ API; `diagnostic_aggregator`; `ros2 doctor --report`; `tracetools`/LTTng per-callback latency; `ros2 topic hz/bw`; `pthread_setaffinity_np` for real-time callbacks
+- Data recording: `rosbag2` + `rosbag2_storage_mcap` (`-s mcap --storage-preset-profile fastwrite`); MCAP indexed random access; `ros2 bag play --rate`; Foxglove Studio bridge (`ros-humble-foxglove-bridge`, WebSocket on port 8765)
+- System integration example: Ubuntu 22.04, RealSense D435i + Velodyne VLP-16 + u-blox F9P; full `ros2 launch` file; complete topic graph
+- **Integrations**: Ch96 (libcamera + V4L2 hardware pipeline — upstream of image_transport); Ch114 (YOLO/segmentation/monocular-depth model internals, CUDA inference, DROID-SLAM); Ch209 (G2O, RTAB-Map, Basalt VIO — classical SLAM consuming TF2 and odometry from this chapter); Ch210 (FAST-LIO2/LIO-SAM/Cartographer consuming PointCloud2 and IMU from sensor_msgs); Ch133 (Vulkan compute as CUDA alternative for non-NVIDIA GPU inference); Ch141 (Vulkan cooperative matrices for AMD/Intel GPU ML); Ch48 (ROCm/HIP for training YOLO models deployed via ultralytics_ros)
 
 ### Chapter 206: SDL3 — Cross-Platform Multimedia Integration on Linux *(Part VII-B)*
 
