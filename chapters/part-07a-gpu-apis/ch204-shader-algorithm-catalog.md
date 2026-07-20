@@ -118,7 +118,19 @@ The distribution of sections in this catalog mirrors the actual distribution of 
 94. [Displacement Mapping via Compute](#displacement-mapping-via-compute)
 95. [3D Gaussian Splatting](#3d-gaussian-splatting)
 96. [ReSTIR PT — Path Tracing Resampling](#restir-pt--path-tracing-resampling)
-97. [References](#references)
+97. [Cascaded Shadow Maps](#cascaded-shadow-maps)
+98. [Clustered Forward+ Shading](#clustered-forward-shading)
+99. [Clear Coat and Sheen BRDFs](#clear-coat-and-sheen-brdfs)
+100. [Parallax Occlusion Mapping](#parallax-occlusion-mapping)
+101. [Software BVH Traversal](#software-bvh-traversal)
+102. [Parallel Bitonic Sort](#parallel-bitonic-sort)
+103. [Contrast Adaptive Sharpening](#contrast-adaptive-sharpening)
+104. [Chromatic Aberration](#chromatic-aberration)
+105. [Multi-Channel SDF Font Rendering](#multi-channel-sdf-font-rendering)
+106. [Object-Space and Texture-Space Shading](#object-space-and-texture-space-shading)
+107. [Fur and Shell Rendering](#fur-and-shell-rendering)
+108. [Stochastic Lightmap Baking via GPU Path Tracing](#stochastic-lightmap-baking-via-gpu-path-tracing)
+109. [References](#references)
 
 ---
 
@@ -7209,6 +7221,1015 @@ path_reservoirs[px.y * w + px.x] = curr;
 **Unbiasedness**: the reconnection shift's Jacobian ensures the resampling is unbiased — the estimator converges to the correct path integral. Without the Jacobian, spatial reuse introduces bias (the so-called "shift mapping" requirement).
 
 **Reference** — [Ouyang et al.: ReSTIR GI: Path Resampling for Real-Time Path Tracing (HPG 2021)](https://dl.acm.org/doi/10.1145/3478512.3488613); [Lin et al.: ReSTIR PT: Generalized Resampling of Paths in Path Tracing (SIGGRAPH 2022)](https://research.nvidia.com/publication/2022-07_restir-pt-generalized-resampling-paths-path-tracing)
+
+---
+
+## Cascaded Shadow Maps
+
+A single shadow map for a directional light must cover the entire view frustum, leading to coarse depth resolution at close range and wasted resolution far away. **Cascaded Shadow Maps (CSM)** partition the view frustum into N depth slices and render a separate shadow map per slice, each with its own light-space projection tuned to cover only that slice. The result is high shadow resolution near the camera (sub-pixel accuracy on nearby geometry) that degrades gracefully at distance.
+
+**Shader stage**: shadow map rendering uses the **vertex/fragment shader** (N draw calls or geometry shader with `gl_Layer`). Shadow lookup runs in the **fragment shader** of the lighting pass, selecting the correct cascade by the fragment's view-space depth.
+
+#### Cascade Split Calculation
+The standard split scheme is a blend of logarithmic and uniform splits (Parallel-Split Shadow Maps, Zhang 2006):
+
+```glsl
+// CPU-side cascade split calculation
+void compute_cascade_splits(float near, float far, int n, float lambda,
+                             float out_splits[]) {
+    // lambda = 0: uniform, lambda = 1: logarithmic
+    for (int i = 0; i < n; ++i) {
+        float uniform_split = near + (far - near) * float(i + 1) / float(n);
+        float log_split     = near * pow(far / near, float(i + 1) / float(n));
+        out_splits[i]       = mix(uniform_split, log_split, lambda);
+    }
+}
+// Typical: n=4, lambda=0.75, near=0.1, far=500.0
+```
+
+#### Per-Cascade Light-Space Matrix
+For each cascade, compute a tight orthographic projection that fits the cascade's frustum slice viewed from the light direction. Snap to texel boundaries to prevent shimmering when the camera moves.
+
+```c
+// Per-cascade tight orthographic projection (CPU, repeated n times)
+// cascade_frustum_corners[8]: world-space corners of the cascade frustum slice
+vec3 light_space_corners[8];
+for (int i = 0; i < 8; ++i)
+    light_space_corners[i] = vec3(light_view * vec4(cascade_frustum_corners[i], 1.0));
+
+// AABB of corners in light space
+vec3 mn = light_space_corners[0], mx = light_space_corners[0];
+for (int i = 1; i < 8; ++i) {
+    mn = min(mn, light_space_corners[i]);
+    mx = max(mx, light_space_corners[i]);
+}
+
+// Snap min/max to shadow-map texel grid (prevents shimmer)
+float texel_size = (mx.x - mn.x) / shadow_map_resolution;
+mn.x = floor(mn.x / texel_size) * texel_size;
+mn.y = floor(mn.y / texel_size) * texel_size;
+mx.x =  ceil(mx.x / texel_size) * texel_size;
+mx.y =  ceil(mx.y / texel_size) * texel_size;
+
+mat4 cascade_ortho = ortho(mn.x, mx.x, mn.y, mx.y, mn.z - pull_back, mx.z);
+mat4 cascade_pv    = cascade_ortho * light_view;
+```
+
+#### Cascade Selection and Blend in Fragment Shader
+```glsl
+// CSM lookup — fragment shader (4 cascades, stored in a texture array)
+layout(set=1, binding=0) uniform sampler2DArrayShadow csm_shadow;
+
+uniform mat4  cascade_pv[4];
+uniform float cascade_splits[4];   // view-space depth at each split
+uniform float blend_range;         // blend band width (e.g. 0.05 * split distance)
+
+float csm_shadow_factor(vec3 world_pos, float view_depth) {
+    // Select cascade index
+    int  cascade = 3;
+    for (int i = 0; i < 4; ++i) {
+        if (view_depth < cascade_splits[i]) { cascade = i; break; }
+    }
+
+    // Shadow lookup in selected cascade
+    vec4  lclip = cascade_pv[cascade] * vec4(world_pos, 1.0);
+    vec3  lndc  = lclip.xyz / lclip.w;
+    vec3  suv   = vec3(lndc.xy * 0.5 + 0.5, float(cascade));
+    float shadow = texture(csm_shadow, vec4(suv, lndc.z - 0.001));
+
+    // Blend at cascade boundary into next cascade
+    if (cascade < 3) {
+        float blend_t = smoothstep(cascade_splits[cascade] - blend_range,
+                                   cascade_splits[cascade], view_depth);
+        if (blend_t > 0.0) {
+            vec4  lclip2 = cascade_pv[cascade + 1] * vec4(world_pos, 1.0);
+            vec3  lndc2  = lclip2.xyz / lclip2.w;
+            vec3  suv2   = vec3(lndc2.xy * 0.5 + 0.5, float(cascade + 1));
+            float shadow2 = texture(csm_shadow, vec4(suv2, lndc2.z - 0.001));
+            shadow = mix(shadow, shadow2, blend_t);
+        }
+    }
+    return shadow;
+}
+```
+
+**Use cases** — every outdoor/open-world game; all real-time directional-light shadow systems; combined with PCSS (§85) per-cascade for contact-hardening outdoor shadows.  
+**Reference** — [Zhang et al.: Parallel-Split Shadow Maps for Large-Scale Virtual Environments (VRCIA 2006)](https://dl.acm.org/doi/10.1145/1128923.1128975); [Engel: ShaderX6: Cascaded Shadow Maps (2007)](https://www.shaderx6.com/)
+
+---
+
+## Clustered Forward+ Shading
+
+In a scene with hundreds or thousands of dynamic lights, naïve forward shading evaluates every light per fragment. **Clustered Forward+** (Olsson et al. 2012) divides the view frustum into a 3D grid of clusters (typically 16×9×24 = 3456 cells), assigns lights to the clusters they overlap in a compute pre-pass, then each fragment only evaluates the lights in its cluster — typically 0–20 lights even in a 1000-light scene. This is the dominant lighting architecture in modern game engines (Frostbite, UE4/5 forward path, Godot 4).
+
+**Shader stage**: cluster AABB generation and light assignment run in **compute**. Fragment shading reads the cluster light list from a storage buffer.
+
+#### Cluster AABB Generation
+Precompute the view-space AABB (or frustum slice) for each cluster tile. This only needs recomputing when the projection matrix changes.
+
+```glsl
+// Cluster AABB generation — compute, one thread per cluster
+layout(local_size_x=1, local_size_y=1, local_size_z=1) in;
+
+struct AABB { vec3 mn; vec3 mx; };
+layout(set=0, binding=0) writeonly buffer ClusterAABBs { AABB aabbs[]; };
+
+uniform uvec3 cluster_dims;   // e.g. (16, 9, 24)
+uniform mat4  inv_proj;
+uniform float z_near, z_far;
+
+vec3 screen_to_view(vec2 screen_uv, float view_z) {
+    vec4 ndc  = vec4(screen_uv * 2.0 - 1.0, -1.0, 1.0);
+    vec4 view = inv_proj * ndc;
+    return view.xyz / view.w * (view_z / view.z);  // scale to given depth
+}
+
+void main() {
+    uvec3 c  = gl_GlobalInvocationID;
+    uint  idx = c.x + c.y * cluster_dims.x + c.z * cluster_dims.x * cluster_dims.y;
+
+    // Cluster depth slice boundaries (exponential partition matches log-Z distribution)
+    float z_near_slice = z_near * pow(z_far / z_near, float(c.z)     / float(cluster_dims.z));
+    float z_far_slice  = z_near * pow(z_far / z_near, float(c.z + 1) / float(cluster_dims.z));
+
+    // Screen-space tile corners
+    vec2 uv_min = vec2(c.xy)           / vec2(cluster_dims.xy);
+    vec2 uv_max = vec2(c.xy + uvec2(1)) / vec2(cluster_dims.xy);
+
+    // Four corners of frustum slice at near and far depths
+    vec3 corners[8];
+    corners[0] = screen_to_view(vec2(uv_min.x, uv_min.y), -z_near_slice);
+    corners[1] = screen_to_view(vec2(uv_max.x, uv_min.y), -z_near_slice);
+    corners[2] = screen_to_view(vec2(uv_min.x, uv_max.y), -z_near_slice);
+    corners[3] = screen_to_view(vec2(uv_max.x, uv_max.y), -z_near_slice);
+    corners[4] = screen_to_view(vec2(uv_min.x, uv_min.y), -z_far_slice);
+    corners[5] = screen_to_view(vec2(uv_max.x, uv_min.y), -z_far_slice);
+    corners[6] = screen_to_view(vec2(uv_min.x, uv_max.y), -z_far_slice);
+    corners[7] = screen_to_view(vec2(uv_max.x, uv_max.y), -z_far_slice);
+
+    AABB ab;
+    ab.mn = corners[0]; ab.mx = corners[0];
+    for (int i = 1; i < 8; ++i) { ab.mn = min(ab.mn, corners[i]); ab.mx = max(ab.mx, corners[i]); }
+    aabbs[idx] = ab;
+}
+```
+
+#### Light Assignment (Culling Compute Pass)
+For each light, test against cluster AABBs and append to the cluster's light list using atomic counters.
+
+```glsl
+// Light assignment — one thread per light
+layout(local_size_x=64) in;
+
+struct PointLight { vec3 pos_vs; float radius; vec3 color; float intensity; };
+layout(set=0, binding=0) readonly buffer Lights      { PointLight lights[]; };
+layout(set=0, binding=1) readonly buffer ClusterAABBs{ AABB aabbs[]; };
+layout(set=0, binding=2) writeonly buffer LightGrid  { uint light_offset_count[]; }; // [offset, count] per cluster
+layout(set=0, binding=3) writeonly buffer LightList  { uint light_indices[]; };
+layout(set=0, binding=4) buffer    GlobalCounter     { uint global_light_count; };
+
+uniform uint  num_lights;
+uniform uvec3 cluster_dims;
+uniform uint  max_lights_per_cluster;  // e.g. 128
+
+void main() {
+    uint light_idx = gl_GlobalInvocationID.x;
+    if (light_idx >= num_lights) return;
+
+    PointLight L = lights[light_idx];
+    // Sphere-AABB overlap test for each cluster
+    for (uint z = 0u; z < cluster_dims.z; ++z)
+    for (uint y = 0u; y < cluster_dims.y; ++y)
+    for (uint x = 0u; x < cluster_dims.x; ++x) {
+        uint  cid  = x + y * cluster_dims.x + z * cluster_dims.x * cluster_dims.y;
+        AABB  ab   = aabbs[cid];
+        // Closest point on AABB to sphere centre
+        vec3  cp   = clamp(L.pos_vs, ab.mn, ab.mx);
+        float dist2 = dot(cp - L.pos_vs, cp - L.pos_vs);
+        if (dist2 <= L.radius * L.radius) {
+            uint slot = atomicAdd(light_offset_count[cid * 2u + 1u], 1u);
+            if (slot < max_lights_per_cluster) {
+                uint list_idx = atomicAdd(global_light_count, 1u);
+                light_indices[list_idx] = light_idx;
+                // Store list_idx as offset (simplified; production uses two-pass for contiguous offsets)
+            }
+        }
+    }
+}
+```
+
+#### Fragment Light Evaluation
+```glsl
+// Fragment shader — clustered light evaluation
+uniform uvec3 cluster_dims;
+uniform float z_near, z_far;
+
+uint cluster_index(vec3 pos_vs) {
+    float z_ratio  = log(-pos_vs.z / z_near) / log(z_far / z_near);
+    uint  z_tile   = uint(z_ratio * float(cluster_dims.z));
+    vec2  screen_uv = gl_FragCoord.xy / resolution;
+    uvec2 xy_tile  = uvec2(screen_uv * vec2(cluster_dims.xy));
+    return xy_tile.x + xy_tile.y * cluster_dims.x + z_tile * cluster_dims.x * cluster_dims.y;
+}
+
+void main() {
+    uint  cid    = cluster_index(v_pos_vs);
+    uint  offset = light_offset_count[cid * 2u];
+    uint  count  = light_offset_count[cid * 2u + 1u];
+
+    vec3  radiance = vec3(0.0);
+    for (uint i = 0u; i < count; ++i) {
+        uint      lid = light_indices[offset + i];
+        PointLight L  = lights[lid];
+        radiance     += evaluate_point_light(L, world_pos, N, V, albedo, roughness, metallic);
+    }
+    frag_color = vec4(radiance, 1.0);
+}
+```
+
+**Reference** — [Olsson, Billeter & Assarsson: Clustered Deferred and Forward Shading (HPG 2012)](https://www.cse.chalmers.se/~uffe/clustered_shading_preprint.pdf)
+
+---
+
+## Clear Coat and Sheen BRDFs
+
+Two additional material layers that extend the base PBR model (§3) for common real-world materials:
+
+- **Clear coat**: a thin, smooth dielectric layer on top of the base BRDF (car paint, lacquered wood, nail polish). It adds a second specular lobe with its own roughness and attenuates the base layer by the coat's Fresnel term.
+- **Sheen**: a retroreflective rim highlight for fabric microfibre (velvet, silk, satin). The Charlie distribution peaks at grazing angles, opposite to GGX which peaks at normal incidence.
+
+**Shader stage**: both are additions to the **fragment shader** BRDF evaluation, combined additively (clear coat) or as a separate lobe (sheen).
+
+#### Clear Coat BRDF (KHR_materials_clearcoat)
+```glsl
+// Clear coat layer — dielectric coat over base BRDF
+uniform float coat_roughness;   // typically 0.0–0.1 (smooth lacquer)
+uniform float coat_ior;         // e.g. 1.5 (polyurethane)
+uniform float coat_weight;      // 0–1 blend factor
+
+vec3 brdf_clearcoat(vec3 N, vec3 V, vec3 L, vec3 base_brdf_result) {
+    vec3  H       = normalize(V + L);
+    float NdotH   = max(dot(N, H), 1e-4);
+    float NdotV   = max(dot(N, V), 1e-4);
+    float NdotL   = max(dot(N, L), 1e-4);
+    float HdotV   = max(dot(H, V), 0.0);
+
+    // Coat specular: GGX with coat roughness
+    float alpha_c = coat_roughness * coat_roughness;
+    float D_c     = D_GGX(NdotH, alpha_c);
+    float G_c     = G_smith(NdotV, NdotL, alpha_c);
+    // Coat Fresnel: dielectric (F0 from IOR)
+    float f0_coat = pow((coat_ior - 1.0) / (coat_ior + 1.0), 2.0);
+    float F_c     = f0_coat + (1.0 - f0_coat) * pow(1.0 - HdotV, 5.0);
+
+    float coat_spec = D_c * G_c * F_c / (4.0 * NdotV * NdotL + 1e-5);
+
+    // Coat attenuates base: energy absorbed by coat Fresnel
+    vec3 result = base_brdf_result * (1.0 - coat_weight * F_c)
+                + vec3(coat_spec) * coat_weight;
+    return result;
+}
+```
+
+#### Sheen BRDF — Charlie Distribution
+The **Charlie distribution** (Estevez & Kulla 2017) models fabric microfibre: the NDF has a sinusoidal shape that peaks at grazing incidence, producing the soft rim glow of velvet.
+
+```glsl
+// Charlie sheen NDF (Estevez & Kulla, "Production Friendly Microfacet Sheen BRDF" 2017)
+float D_charlie(float NdotH, float sheen_roughness) {
+    float invAlpha = 1.0 / max(sheen_roughness, 0.001);
+    float cos2h    = NdotH * NdotH;
+    float sin2h    = max(1.0 - cos2h, 0.0078125);  // avoid zero
+    return (2.0 + invAlpha) * pow(sin2h, invAlpha * 0.5) / (2.0 * 3.14159);
+}
+
+// Sheen visibility (Neubelt approximate for cloth)
+float V_sheen(float NdotL, float NdotV) {
+    return clamp(1.0 / (4.0 * (NdotL + NdotV - NdotL * NdotV)), 0.0, 1.0);
+}
+
+vec3 brdf_sheen(vec3 N, vec3 V, vec3 L, vec3 sheen_color, float sheen_roughness) {
+    vec3  H     = normalize(V + L);
+    float NdotH = max(dot(N, H), 1e-4);
+    float NdotV = max(dot(N, V), 1e-4);
+    float NdotL = max(dot(N, L), 1e-4);
+    float D = D_charlie(NdotH, sheen_roughness);
+    float V_vis = V_sheen(NdotL, NdotV);
+    return sheen_color * D * V_vis * NdotL;
+}
+
+// Combined in fragment shader:
+// total = base_brdf + sheen_weight * brdf_sheen(...) + clearcoat layer
+```
+
+**Energy conservation**: the sheen lobe adds energy on top of the base diffuse; scale the base diffuse by `(1 - sheen_weight * sheen_albedo)` to maintain energy conservation.
+
+**Reference** — [Estevez & Kulla: Production Friendly Microfacet Sheen BRDF (2017)](https://blog.selfshadow.com/publications/s2017-shading-course/); [KhronosGroup: KHR_materials_clearcoat (glTF 2.0)](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_clearcoat)
+
+---
+
+## Parallax Occlusion Mapping
+
+Parallax Occlusion Mapping (POM) simulates geometric surface depth using only a heightmap — producing correct self-occlusion, silhouette parallax, and self-shadowing at the cost of multiple texture samples in the fragment shader. It is superior to basic parallax mapping (which does a single offset) and to tessellation-based displacement (which requires extra geometry), and is the standard technique for brick walls, stone surfaces, and worn metal in AAA games.
+
+**Shader stage**: runs entirely in the **fragment shader** using the tangent-space view direction.
+
+#### Iterative Ray March (Linear + Binary Refinement)
+March the view ray through the height field until it dips below the surface, then binary-search for the precise intersection.
+
+```glsl
+// Parallax Occlusion Mapping — fragment shader
+layout(set=0, binding=0) uniform sampler2D albedo_map;
+layout(set=0, binding=1) uniform sampler2D height_map;
+layout(set=0, binding=2) uniform sampler2D normal_map;
+
+uniform float pom_depth_scale;    // world-space depth range (e.g. 0.05)
+uniform int   pom_min_steps;      // e.g. 8
+uniform int   pom_max_steps;      // e.g. 32
+
+layout(location=0) in vec3 v_view_ts;   // view direction in tangent space (unnormalized)
+layout(location=1) in vec2 v_uv;
+
+// Compute number of steps based on viewing angle (fewer for steep views)
+int num_steps(vec3 V_ts) {
+    float NdotV = abs(dot(vec3(0,0,1), normalize(V_ts)));
+    return int(mix(float(pom_max_steps), float(pom_min_steps), NdotV));
+}
+
+vec2 pom_uv(vec2 uv, vec3 V_ts) {
+    int   steps    = num_steps(V_ts);
+    vec3  V_norm   = normalize(V_ts);
+    // Step direction in UV space (XY of view in tangent space / Z)
+    vec2  uv_step  = V_norm.xy * pom_depth_scale / (float(steps) * V_norm.z);
+    float h_step   = 1.0 / float(steps);
+
+    float ray_h    = 1.0;   // ray height (1 = surface, 0 = deepest)
+    float surf_h   = texture(height_map, uv).r;
+    vec2  cur_uv   = uv;
+
+    // Linear march until ray goes below surface
+    for (int i = 0; i < steps; ++i) {
+        if (ray_h < surf_h) break;
+        cur_uv  -= uv_step;
+        ray_h   -= h_step;
+        surf_h   = texture(height_map, cur_uv).r;
+    }
+
+    // Binary refinement (4 iterations)
+    vec2  prev_uv  = cur_uv + uv_step;
+    float prev_h   = ray_h  + h_step;
+    for (int b = 0; b < 4; ++b) {
+        vec2  mid_uv = (cur_uv + prev_uv) * 0.5;
+        float mid_h  = (ray_h  + prev_h)  * 0.5;
+        float mid_s  = texture(height_map, mid_uv).r;
+        if (mid_h < mid_s) { prev_uv = mid_uv; prev_h = mid_h; }
+        else               { cur_uv  = mid_uv; ray_h  = mid_h; }
+    }
+    return (cur_uv + prev_uv) * 0.5;
+}
+
+void main() {
+    vec2  disp_uv  = pom_uv(v_uv, v_view_ts);
+    vec4  albedo   = texture(albedo_map, disp_uv);
+    vec3  N_ts     = texture(normal_map, disp_uv).xyz * 2.0 - 1.0;
+    // Continue with standard PBR lighting using displaced UV and normal
+}
+```
+
+#### POM Self-Shadowing
+After finding the displaced surface point, march a second ray toward the light in tangent space. If the ray goes above the surface height, the point is self-shadowed by the heightmap.
+
+```glsl
+float pom_shadow(vec2 disp_uv, vec3 L_ts, float surface_height) {
+    vec3  L_norm   = normalize(L_ts);
+    if (L_norm.z <= 0.0) return 0.0;  // light below surface tangent plane
+
+    vec2  uv_step  = L_norm.xy * pom_depth_scale / (16.0 * L_norm.z);
+    float h_step   = surface_height / 16.0;
+
+    float shadow   = 0.0;
+    float ray_h    = surface_height;
+    vec2  cur_uv   = disp_uv;
+
+    for (int i = 0; i < 16; ++i) {
+        cur_uv  += uv_step;
+        ray_h   += h_step;
+        float h  = texture(height_map, cur_uv).r;
+        shadow   = max(shadow, (h - ray_h) * (1.0 - float(i) / 16.0));
+    }
+    return clamp(shadow * 10.0, 0.0, 1.0);  // 0 = lit, 1 = fully shadowed
+}
+```
+
+**Reference** — [Tatarchuk: Practical Parallax Occlusion Mapping for Highly Detailed Surface Rendering (SIGGRAPH 2006)](https://dl.acm.org/doi/10.1145/1185657.1185830); [Welsh: Parallax Mapping with Offset Limiting (2004)](https://www.infiscape.com/doc/parallax_mapping.pdf)
+
+---
+
+## Software BVH Traversal
+
+Hardware ray tracing (§22, §55) requires RTX-class GPUs. **Software BVH traversal** implements the same ray-AABB and ray-triangle intersection in a compute shader, enabling ray casting on any GPU. This is used for: occlusion queries in path guidng, proxy shadow casting on mobile, BVH debug visualisation, and custom intersection types (hair curves, displacement) not supported by hardware RT.
+
+**Shader stage**: all traversal runs in **compute**. The BVH (precomputed on CPU or GPU) is stored in a storage buffer.
+
+#### BVH Node Layout
+```glsl
+// Compressed BVH2 node (32 bytes — fits one cache line)
+struct BVHNode {
+    vec3  aabb_min;
+    int   left_child;   // > 0: inner node index; < 0: -(leaf_tri_offset + 1)
+    vec3  aabb_max;
+    int   prim_count;   // 0 = inner node; > 0 = leaf with this many triangles
+};
+layout(set=0, binding=0) readonly buffer BVHNodes { BVHNode nodes[]; };
+layout(set=0, binding=1) readonly buffer Triangles { vec4  tri_data[]; };  // packed positions
+```
+
+#### Stackless BVH Traversal (Restart Trail)
+GPU stacks are expensive (per-thread register pressure). A simple alternative is the **restart trail** method: traverse nodes sequentially from the root, re-descending from the lowest ancestor that still has unvisited children. For small trees (< 64 nodes) this is cheaper than allocating a per-thread stack.
+
+```glsl
+// Iterative BVH traversal with explicit stack (32-entry stack in shared memory)
+bool bvh_any_hit(vec3 origin, vec3 dir, float t_max) {
+    float inv_dir[3] = {1.0/dir.x, 1.0/dir.y, 1.0/dir.z};
+    int   stack[32];
+    int   stack_top = 0;
+    stack[stack_top++] = 0;   // push root
+
+    while (stack_top > 0) {
+        int  node_idx = stack[--stack_top];
+        BVHNode node  = nodes[node_idx];
+
+        // Ray-AABB intersection (slab method)
+        float t_min_x = (node.aabb_min.x - origin.x) * inv_dir[0];
+        float t_max_x = (node.aabb_max.x - origin.x) * inv_dir[0];
+        float t_min_y = (node.aabb_min.y - origin.y) * inv_dir[1];
+        float t_max_y = (node.aabb_max.y - origin.y) * inv_dir[1];
+        float t_min_z = (node.aabb_min.z - origin.z) * inv_dir[2];
+        float t_max_z = (node.aabb_max.z - origin.z) * inv_dir[2];
+
+        float t_enter = max(max(min(t_min_x, t_max_x), min(t_min_y, t_max_y)), min(t_min_z, t_max_z));
+        float t_exit  = min(min(max(t_min_x, t_max_x), max(t_min_y, t_max_y)), max(t_min_z, t_max_z));
+
+        if (t_enter > t_exit || t_exit < 0.0 || t_enter > t_max) continue;
+
+        if (node.prim_count > 0) {
+            // Leaf: test triangles
+            int base = -node.left_child - 1;
+            for (int t = 0; t < node.prim_count; ++t) {
+                int ti = (base + t) * 3;
+                vec3 v0 = tri_data[ti    ].xyz;
+                vec3 v1 = tri_data[ti + 1].xyz;
+                vec3 v2 = tri_data[ti + 2].xyz;
+                // Möller–Trumbore intersection
+                vec3  e1 = v1 - v0, e2 = v2 - v0;
+                vec3  h  = cross(dir, e2);
+                float a  = dot(e1, h);
+                if (abs(a) < 1e-8) continue;
+                float f  = 1.0 / a;
+                vec3  s  = origin - v0;
+                float u  = f * dot(s, h);
+                if (u < 0.0 || u > 1.0) continue;
+                vec3  q  = cross(s, e1);
+                float v  = f * dot(dir, q);
+                if (v < 0.0 || u + v > 1.0) continue;
+                float t_hit = f * dot(e2, q);
+                if (t_hit > 0.001 && t_hit < t_max) return true;  // any-hit
+            }
+        } else {
+            // Inner: push children (push farther first for front-to-back order)
+            stack[stack_top++] = node.left_child;
+            stack[stack_top++] = node.left_child + 1;
+        }
+    }
+    return false;
+}
+```
+
+**Reference** — [Aila & Laine: Understanding the Efficiency of Ray Traversal on GPUs (HPG 2009)](https://research.nvidia.com/publication/understanding-efficiency-ray-traversal-gpus); [Möller & Trumbore: Fast, Minimum Storage Ray/Triangle Intersection (JGT 1997)](https://dl.acm.org/doi/10.1145/1198555.1198748)
+
+---
+
+## Parallel Bitonic Sort
+
+**Bitonic sort** is a comparison network that sorts N elements using O(N log² N) compare-and-swap operations. Unlike radix sort (§80) it works for any data type with a comparison operator and is simple to implement in a single compute shader dispatch: all compare-and-swap pairs are independent within each pass and can execute in parallel. It is the standard choice for sorting within a single workgroup (particle depth sort, draw call reordering by material, small N < 4096).
+
+**Shader stage**: runs as a **compute shader**, either within a single dispatch for small N (using shared memory) or across multiple dispatches for large N.
+
+#### Shared-Memory Bitonic Sort (N ≤ workgroup size × 2)
+```glsl
+// Bitonic sort — single workgroup, shared memory (N must be power of 2, N ≤ 2048)
+layout(local_size_x=1024) in;
+
+layout(set=0, binding=0) buffer Keys   { float keys[]; };
+layout(set=0, binding=1) buffer Values { uint  vals[]; };
+
+shared float s_keys[2048];
+shared uint  s_vals[2048];
+
+uniform uint N;  // number of elements, power of 2
+
+void main() {
+    uint lid = gl_LocalInvocationIndex;
+
+    // Load into shared memory
+    if (lid < N)       { s_keys[lid]     = keys[lid];     s_vals[lid]     = vals[lid]; }
+    if (lid + 1024 < N){ s_keys[lid+1024]= keys[lid+1024];s_vals[lid+1024]= vals[lid+1024]; }
+    barrier();
+
+    // Bitonic sort network
+    for (uint k = 2u; k <= N; k <<= 1u) {
+        for (uint j = k >> 1u; j >= 1u; j >>= 1u) {
+            uint i = lid;
+            uint l = i ^ j;
+            if (l > i) {
+                bool ascending = ((i & k) == 0u);
+                if ((ascending && s_keys[i] > s_keys[l]) ||
+                    (!ascending && s_keys[i] < s_keys[l])) {
+                    // Swap keys and values
+                    float tmp_k = s_keys[i]; s_keys[i] = s_keys[l]; s_keys[l] = tmp_k;
+                    uint  tmp_v = s_vals[i]; s_vals[i] = s_vals[l]; s_vals[l] = tmp_v;
+                }
+            }
+            barrier();
+        }
+    }
+
+    // Write back
+    if (lid < N)        { keys[lid]      = s_keys[lid];      vals[lid]      = s_vals[lid]; }
+    if (lid + 1024 < N) { keys[lid+1024] = s_keys[lid+1024]; vals[lid+1024] = s_vals[lid+1024]; }
+}
+```
+
+#### Multi-Pass Bitonic Sort (Large N)
+For N > workgroup capacity, split into multiple dispatches — each dispatch executes one (k, j) pair of the bitonic network using global memory. The compare-and-swap pattern is identical; the index calculation uses `gl_GlobalInvocationID`.
+
+```glsl
+// Multi-pass bitonic sort — one dispatch per (k, j) pair
+layout(local_size_x=256) in;
+layout(set=0, binding=0) buffer Keys { float keys[]; };
+layout(set=0, binding=1) buffer Vals { uint  vals[]; };
+
+uniform uint k_uniform;   // current k (outer loop, set via push constant each dispatch)
+uniform uint j_uniform;   // current j (inner loop)
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint l = i ^ j_uniform;
+    if (l <= i) return;
+    bool ascending = ((i & k_uniform) == 0u);
+    if ((ascending && keys[i] > keys[l]) || (!ascending && keys[i] < keys[l])) {
+        float tk = keys[i]; keys[i] = keys[l]; keys[l] = tk;
+        uint  tv = vals[i]; vals[i] = vals[l]; vals[l] = tv;
+    }
+}
+```
+
+**Use cases** — particle Z-sort (§24); transparent draw call reordering; cluster light list ordering; any per-frame sort of N < 100k where radix sort setup cost dominates.  
+**Reference** — [Batcher: Sorting Networks and Their Applications (AFIPS 1968)](https://dl.acm.org/doi/10.1145/1468075.1468121); [NVIDIA GPU Gems 2: Fast Sorting (2005)](https://developer.nvidia.com/gpugems/gpugems2/part-vi-simulation-and-numerical-algorithms/chapter-46-improved-gpu-sorting)
+
+---
+
+## Contrast Adaptive Sharpening
+
+**Contrast Adaptive Sharpening (CAS)**, released by AMD in FidelityFX, applies a spatially-adaptive sharpening filter that increases edge contrast without amplifying noise — sharpening is proportional to the local contrast minimum, so flat regions (already sharp, or just noise) receive little sharpening while low-contrast edges (genuinely blurred by temporal AA or upscaling) are boosted. CAS is universally used as a post-pass after DLSS, FSR, or TAA.
+
+**Shader stage**: runs as a **compute shader** (one thread per output pixel, or 8×8 tiles for cache efficiency).
+
+```glsl
+// Contrast Adaptive Sharpening — compute shader (AMD FidelityFX CAS)
+layout(local_size_x=8, local_size_y=8) in;
+layout(set=0, binding=0) uniform  sampler2D input_tex;
+layout(set=0, binding=1, rgba8)   uniform image2D output_img;
+
+uniform float sharpness;   // 0.0 = full sharpening, 1.0 = none (counter-intuitive: 0 = max)
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    vec2  sz = vec2(textureSize(input_tex, 0));
+    vec2  uv = (vec2(px) + 0.5) / sz;
+    vec2  d  = 1.0 / sz;
+
+    // Sample 3×3 neighbourhood (5-tap cross only: cheaper, sufficient)
+    vec3  a  = texture(input_tex, uv + vec2(-d.x, -d.y)).rgb;  // top-left
+    vec3  b  = texture(input_tex, uv + vec2( 0.0, -d.y)).rgb;  // top
+    vec3  c  = texture(input_tex, uv + vec2( d.x, -d.y)).rgb;  // top-right
+    vec3  d_ = texture(input_tex, uv + vec2(-d.x,  0.0)).rgb;  // left
+    vec3  e  = texture(input_tex, uv).rgb;                       // centre
+    vec3  f  = texture(input_tex, uv + vec2( d.x,  0.0)).rgb;  // right
+    vec3  g  = texture(input_tex, uv + vec2(-d.x,  d.y)).rgb;  // bottom-left
+    vec3  h  = texture(input_tex, uv + vec2( 0.0,  d.y)).rgb;  // bottom
+    vec3  i_ = texture(input_tex, uv + vec2( d.x,  d.y)).rgb;  // bottom-right
+
+    // Local contrast: min/max of cross neighbours (b, d, f, h) + centre
+    vec3  mn = min(min(min(b, d_), min(f, h)), e);
+    vec3  mx = max(max(max(b, d_), max(f, h)), e);
+
+    // Adaptive sharpening weight: inversely proportional to contrast
+    // (more contrast = less sharpening needed = lower weight)
+    vec3  rcp_mx = vec3(1.0) / max(mx, vec3(1e-4));
+    vec3  amp    = clamp(min(mn, 2.0 - mx) * rcp_mx, 0.0, 1.0);
+    // Map sharpness [0,1] to weight: 0 -> sqrt(0.125) (max), 1 -> 0 (no sharpening)
+    amp = sqrt(amp);
+    float peak = -3.0 / 8.0 * sharpness - 1.0 / 8.0 * (1.0 - sharpness);
+    // peak is in range [-0.125, -0.5]
+    vec3  w    = amp * peak;  // negative kernel weight (sharpening via unsharp mask)
+
+    // Sharpen: centre boosted, cross neighbours reduced by weight
+    // Normalised: sum of weights = 1 + 4*w
+    vec3  result = (e * (1.0 - 4.0 * w) + (b + d_ + f + h) * w)
+                 / max(1.0 - 4.0 * w + 4.0 * w, 1e-4);
+    // Clamp to [mn, mx] to prevent ringing
+    result = clamp(result, mn, mx);
+
+    imageStore(output_img, px, vec4(result, 1.0));
+}
+```
+
+**Use cases** — mandatory post-pass after any spatial or temporal upscaler (DLSS, FSR 1/2, XeSS); also useful standalone after TAA to recover perceived sharpness lost to temporal blending.  
+**Reference** — [AMD FidelityFX CAS source (GPUOpen)](https://github.com/GPUOpen-Effects/FidelityFX-CAS); [Drobot: FidelityFX CAS (GDC 2019)](https://gpuopen.com/fidelityfx-cas/)
+
+---
+
+## Chromatic Aberration
+
+**Chromatic aberration** is the failure of a lens to focus all wavelengths at the same point — different colours are refracted by slightly different amounts, producing colour fringing at high-contrast edges. Two variants exist: **lateral** (transverse) CA, where fringing appears as RGB UV offset in the radial direction from the image centre, and **longitudinal** CA, where the blur circle varies per wavelength (requires per-channel defocus blur). In post-processing, lateral CA is simulated by per-channel radial UV offset, optionally combined with per-channel barrel distortion (§67).
+
+**Shader stage**: runs as a **fragment or compute** full-screen pass, applied after tone mapping.
+
+#### Lateral Chromatic Aberration (Per-Channel UV Offset)
+```glsl
+// Lateral chromatic aberration — radial RGB UV offset
+layout(set=0, binding=0) uniform sampler2D ldr_scene;
+
+uniform float ca_strength;   // e.g. 0.005 (fraction of image width)
+uniform vec2  ca_centre;     // typically (0.5, 0.5)
+
+layout(location=0) out vec3 ca_out;
+
+void main() {
+    vec2  uv     = gl_FragCoord.xy / resolution;
+    vec2  offset = (uv - ca_centre);         // radial direction from centre
+    float r2     = dot(offset, offset);       // distance² from centre
+
+    // Per-channel UV offset: R outward, B inward (or both scaled differently)
+    // Offset is proportional to r² (matches real lens behaviour)
+    vec2  r_uv = uv + offset * ca_strength * r2 * 0.8;
+    vec2  g_uv = uv;                                       // green channel unshifted
+    vec2  b_uv = uv - offset * ca_strength * r2 * 1.2;
+
+    ca_out = vec3(
+        texture(ldr_scene, r_uv).r,
+        texture(ldr_scene, g_uv).g,
+        texture(ldr_scene, b_uv).b
+    );
+}
+```
+
+#### Spectral CA (Multi-Sample Wavelength)
+For higher quality, sample at 5–8 wavelengths between 400 nm and 700 nm and blend the results using CIE colour matching functions, giving a physically plausible rainbow fringe that fades to white at low contrast.
+
+```glsl
+// Spectral chromatic aberration — 6 wavelength samples
+const float wavelengths[6] = float[](400.0, 450.0, 500.0, 550.0, 600.0, 650.0);
+const vec3  cmf_xyz[6] = vec3[](  // CIE 1931 colour matching (simplified)
+    vec3(0.014, 0.000, 0.068), vec3(0.091, 0.004, 0.461),
+    vec3(0.005, 0.323, 0.272), vec3(0.434, 0.995, 0.008),
+    vec3(1.062, 0.631, 0.000), vec3(0.341, 0.175, 0.000)
+);
+uniform mat3 xyz_to_srgb;   // CIE XYZ → sRGB matrix
+
+vec3 spectral_ca(sampler2D scene, vec2 uv, vec2 direction) {
+    vec3 xyz = vec3(0.0);
+    for (int i = 0; i < 6; ++i) {
+        float dispersion = (wavelengths[i] - 550.0) / 300.0;  // −0.5 to +0.5
+        vec2  s_uv = uv + direction * ca_strength * dispersion;
+        float lum  = dot(texture(scene, s_uv).rgb, vec3(0.2126, 0.7152, 0.0722));
+        xyz += cmf_xyz[i] * lum;
+    }
+    return max(xyz_to_srgb * xyz / 6.0, vec3(0.0));
+}
+```
+
+**Reference** — [Pettineo: Physically-Based Lens Flares (Rastertek, 2017)](https://mynameismjp.wordpress.com/); [Jimenez (2014), ibid.]
+
+---
+
+## Multi-Channel SDF Font Rendering
+
+GPU text rendering at arbitrary scale without rasterisation at each size requires precomputed **Signed Distance Field (SDF)** glyph atlases. A plain SDF (§2) produces rounded corners at high zoom; **Multi-Channel SDF (MSDF)**, developed by Viktor Chlumský (2016), encodes corner information in three independent colour channels, preserving sharp corners at all zoom levels. The fragment shader reconstructs the correct coverage by taking the median of the three channels.
+
+**Shader stage**: atlas generation runs offline (CPU or compute). Runtime rendering runs in the **vertex shader** (billboard quad per glyph) and **fragment shader** (median SDF coverage evaluation).
+
+#### MSDF Fragment Evaluation
+```glsl
+// MSDF glyph rendering — fragment shader
+layout(set=0, binding=0) uniform sampler2D msdf_atlas;
+
+uniform float px_range;      // distance range in pixels (e.g. 4.0 — set at atlas gen time)
+uniform vec4  text_color;
+uniform float gamma_correct; // 1.0 for sRGB output, 2.2 for linear
+
+layout(location=0) in  vec2 v_uv;      // UV into glyph sub-rect of atlas
+layout(location=1) in  float v_size;   // glyph rendered size in pixels
+layout(location=0) out vec4 frag;
+
+// Median of three values (MSDF corner reconstruction)
+float median(float r, float g, float b) {
+    return max(min(r, g), min(max(r, g), b));
+}
+
+void main() {
+    vec3  msd     = texture(msdf_atlas, v_uv).rgb;
+    float sd      = median(msd.r, msd.g, msd.b);  // signed distance (0.5 = on boundary)
+
+    // Convert from [0,1] SDF value to pixel distance
+    float px_dist = (sd - 0.5) * px_range * (v_size / float(textureSize(msdf_atlas, 0).x));
+
+    // Anti-aliased coverage: smooth step over 1 pixel around the boundary
+    float opacity  = clamp(px_dist + 0.5, 0.0, 1.0);
+
+    // Optional: screen gamma for correct perceived weight
+    opacity = pow(opacity, 1.0 / gamma_correct);
+
+    frag = vec4(text_color.rgb, text_color.a * opacity);
+}
+```
+
+#### Bold / Outline via SDF Bias
+Adjust the threshold away from 0.5 to fatten or thin the glyph, or add a second threshold for an outline ring — all without regenerating the atlas.
+
+```glsl
+// Outline: inner edge at sd > outline_inner, outer at sd > outline_outer
+float inner = clamp((sd - 0.5 + outline_width) * px_range + 0.5, 0.0, 1.0);
+float outer = clamp((sd - 0.5)                 * px_range + 0.5, 0.0, 1.0);
+vec4 out_col = mix(outline_color * inner, text_color, outer);
+frag = out_col;
+```
+
+#### Glyph Atlas Layout
+Each glyph occupies a rectangular cell in the atlas with a padding of `px_range/2` pixels around the tight bounding box. At runtime, a CPU-side text shaper (HarfBuzz) produces glyph IDs and advances; a vertex buffer is filled with one quad per glyph, each with UV coordinates into the atlas cell.
+
+**Reference** — [Chlumský: Shape Decomposition for Multi-Channel Distance Fields (Master's Thesis, 2015)](https://github.com/Chlumsky/msdfgen); [msdfgen on GitHub](https://github.com/Chlumsky/msdfgen)
+
+---
+
+## Object-Space and Texture-Space Shading
+
+Standard deferred shading (§8) and forward+ (§98) shade fragments in screen space — the same surface point may be shaded multiple times as the camera moves. **Object-space shading** (also called **texture-space shading** or **surface cache shading**) instead renders shading into a world-space texture atlas (the object's unwrapped UV layout), storing the result per surface texel. Subsequent frames read from this cache rather than re-shading, amortising expensive operations (GI evaluation, SSS blur, lightmapping) across many frames. Unreal Engine 5's Lumen Surface Cache, which stores indirect irradiance per texel for use in reflections and GI, is the primary production example.
+
+**Shader stage**: shading runs in a **compute or rasterisation** pass writing into an atlas-space texture. Cache reading runs in the **fragment or compute** lighting pass, sampling the atlas by UV.
+
+#### Surface Cache Rasterisation
+Render the object using its lightmap/second UV channel. Each fragment writes shading into the atlas rather than the framebuffer.
+
+```glsl
+// Vertex shader — rasterise into texture-space (lightmap UV as position)
+layout(location=0) in vec3 position;
+layout(location=1) in vec2 uv_surface;   // primary UV (for materials)
+layout(location=2) in vec2 uv_lightmap;  // lightmap UV (becomes clip-space position)
+
+layout(location=0) out vec3 v_world_pos;
+layout(location=1) out vec3 v_world_normal;
+layout(location=2) out vec2 v_surface_uv;
+
+uniform mat4 model;
+
+void main() {
+    v_world_pos    = (model * vec4(position, 1.0)).xyz;
+    v_world_normal = normalize(mat3(model) * normal);
+    v_surface_uv   = uv_surface;
+    // Map lightmap UV [0,1] to NDC [-1,1] — renders into the atlas texture
+    gl_Position    = vec4(uv_lightmap * 2.0 - 1.0, 0.5, 1.0);
+}
+
+// Fragment shader — write shading into surface cache atlas
+layout(location=0) in  vec3 v_world_pos;
+layout(location=1) in  vec3 v_world_normal;
+layout(location=2) in  vec2 v_surface_uv;
+layout(location=0) out vec4 surface_cache_irradiance;   // indirect diffuse
+layout(location=1) out vec4 surface_cache_albedo;
+
+void main() {
+    // Evaluate world-space radiance cache at this surface point (§84)
+    vec3 indirect = wsrc_irradiance(v_world_pos, v_world_normal, vec3(0.0));
+    surface_cache_irradiance = vec4(indirect, 1.0);
+    surface_cache_albedo     = texture(albedo_map, v_surface_uv);
+}
+```
+
+#### Reading the Surface Cache in Screen-Space Lighting
+```glsl
+// Fragment shader — read surface cache during screen-space lighting
+layout(set=1, binding=0) uniform sampler2D surface_cache_irr;   // atlas
+layout(set=1, binding=1) uniform sampler2D surface_cache_alb;
+
+layout(location=2) in vec2 v_lightmap_uv;
+
+void main() {
+    vec3 cached_irr = texture(surface_cache_irr, v_lightmap_uv).rgb;
+    vec3 cached_alb = texture(surface_cache_alb, v_lightmap_uv).rgb;
+
+    // Combine cached indirect with direct
+    vec3 direct   = evaluate_direct_lights(N, V, albedo, roughness, metallic);
+    vec3 indirect = cached_irr * cached_alb / 3.14159;   // Lambertian indirect
+    frag_color    = vec4(direct + indirect, 1.0);
+}
+```
+
+**Temporal update**: update only a fraction of atlas texels per frame (e.g., 1/16th of texels per frame in a fixed pattern), spreading the shading cost over 16 frames. Track which texels are stale using a generation counter.
+
+**Reference** — [UE5 Lumen: Surface Cache Technical Details](https://docs.unrealengine.com/5.0/en-US/lumen-technical-details-in-unreal-engine/); [Wihlidal: Decoupled Deferred Shading on the GPU (HPG 2017)](https://dl.acm.org/doi/10.1145/3105762.3105763)
+
+---
+
+## Fur and Shell Rendering
+
+Fur, grass, and short hair cannot be represented faithfully by a single surface mesh — individual strands must be visible at close range and silhouette edges must show the fibrous structure. **Shell rendering** approximates this by extruding N concentric offset shells of the base mesh, each rendered with an alpha-masked strand texture that thins toward the tips. **Fin rendering** adds billboard quads along silhouette edges for a correct fur silhouette. Together they form the standard real-time fur pipeline.
+
+**Shader stage**: shells use the **vertex shader** (offset along normal per shell index) and **fragment shader** (alpha discard). Fins use a **geometry shader** or are generated in **compute** as a billboard vertex buffer.
+
+#### Shell Generation (Vertex Shader)
+Each shell is a separate draw of the base mesh. A push constant or uniform carries the shell index `k` and total shell count `K`. The vertex is displaced along the normal by `k/K` scaled by the fur length.
+
+```glsl
+// Shell vertex shader — one draw call per shell
+layout(location=0) in vec3 position;
+layout(location=1) in vec3 normal;
+layout(location=2) in vec2 uv;
+
+uniform mat4  mvp;
+uniform int   shell_index;    // 0 = base, K-1 = tip
+uniform int   shell_count;    // typically 16–32
+uniform float fur_length;     // max extrusion (e.g. 0.05 m)
+uniform float fur_gravity;    // downward sag (e.g. 0.3)
+
+layout(location=0) out vec2 v_uv;
+layout(location=1) out float v_shell_t;  // 0 = root, 1 = tip
+
+void main() {
+    float t    = float(shell_index) / float(shell_count - 1);
+    // Gravity sag: blend normal toward -Y as t increases
+    vec3  dir  = normalize(mix(normal, vec3(0.0, -1.0, 0.0), t * fur_gravity));
+    vec3  pos  = position + dir * (t * fur_length);
+    gl_Position = mvp * vec4(pos, 1.0);
+    v_uv        = uv;
+    v_shell_t   = t;
+}
+```
+
+#### Shell Alpha Masking (Fragment Shader)
+At each shell, sample a fur strand texture (thin lines on black background, generated from a noise pattern) and discard fragments where the strand is absent. Strands thin toward the tips — scale the alpha threshold by `t`.
+
+```glsl
+// Shell fragment shader — alpha discard for strand presence
+layout(set=0, binding=0) uniform sampler2D fur_strand_tex;   // tileable strand mask
+layout(set=0, binding=1) uniform sampler2D fur_color_tex;
+
+layout(location=0) in vec2  v_uv;
+layout(location=1) in float v_shell_t;
+
+uniform float fur_density;   // UV tiling scale (e.g. 30.0)
+uniform float fur_thickness; // strand width at root (e.g. 0.8)
+uniform vec3  light_dir;
+uniform vec3  tip_color;
+uniform vec3  root_color;
+
+layout(location=0) out vec4 frag;
+
+void main() {
+    vec2  fur_uv = v_uv * fur_density;
+    float strand = texture(fur_strand_tex, fur_uv).r;
+
+    // Thin strands toward tips: threshold rises from 0 to (1 - fur_thickness)
+    float threshold = v_shell_t * (1.0 - fur_thickness);
+    if (strand < threshold) discard;
+
+    // Colour: blend root to tip colour
+    vec3  col  = mix(root_color, tip_color, v_shell_t);
+    // Simple diffuse + ambient
+    float ndotl = max(dot(normalize(normal), light_dir), 0.0) * 0.8 + 0.2;
+    frag = vec4(col * ndotl, 1.0);
+}
+```
+
+#### Fin Rendering (Silhouette Quads)
+For each silhouette edge (edges shared by a front-facing and back-facing triangle), emit a billboard quad extruded along the average of the two edge vertex normals. The fin uses the same strand texture with UVs spanning the full fur length.
+
+```glsl
+// Geometry shader — emit fin quads at silhouette edges
+layout(triangles) in;
+layout(triangle_strip, max_vertices=4) out;
+
+layout(location=0) in  vec3 g_world_pos[];
+layout(location=1) in  vec3 g_world_normal[];
+layout(location=0) out vec2 f_uv;
+layout(location=1) out float f_t;
+
+uniform mat4 mvp;
+uniform float fur_length;
+
+void emit_fin(vec3 p0, vec3 p1, vec3 n0, vec3 n1) {
+    gl_Position = mvp * vec4(p0,                           1.0); f_uv = vec2(0.0, 0.0); f_t = 0.0; EmitVertex();
+    gl_Position = mvp * vec4(p1,                           1.0); f_uv = vec2(1.0, 0.0); f_t = 0.0; EmitVertex();
+    gl_Position = mvp * vec4(p0 + n0 * fur_length,         1.0); f_uv = vec2(0.0, 1.0); f_t = 1.0; EmitVertex();
+    gl_Position = mvp * vec4(p1 + n1 * fur_length,         1.0); f_uv = vec2(1.0, 1.0); f_t = 1.0; EmitVertex();
+    EndPrimitive();
+}
+```
+
+**Use cases** — animal characters at close range (Ratchet & Clank, Spyro); grass fields (shells used for density with low K); carpet and velvet materials at close zoom; fur coats on character periphery.  
+**Reference** — [Lengyel: Rendering with Fur (GDC 2000)](https://dl.acm.org/doi/10.1145/344779.344844); [Yuksel & Keyser: Deep Opacity Maps (CGF 2008)](https://dl.acm.org/doi/10.1111/j.1467-8659.2008.01149.x)
+
+---
+
+## Stochastic Lightmap Baking via GPU Path Tracing
+
+Static scene lighting is baked offline into lightmap textures that are read at no runtime shading cost. Traditional lightmap bakers (Autodesk Beast, Enlighten, Lumen static) use hemisphere sampling or form factors; GPU path-tracing bakers (Blender Cycles on GPU, UE5's GPU Lightmass) use Monte Carlo path tracing from each lightmap texel, accumulating samples across multiple frames until convergence. This section covers the per-texel accumulation loop and the denoising strategy that makes fast GPU baking practical.
+
+**Shader stage**: path tracing runs in **ray generation + closest-hit shaders**. Denoising runs in **compute**. The final result is written to a persistent `RGBA32F` lightmap texture accumulated over N frames.
+
+#### Per-Texel Accumulation Loop
+Each texel in the lightmap corresponds to a world-space position and normal (recovered from the mesh's UV parameterisation). A path is traced per sample, accumulating irradiance. Samples are accumulated over many frames using running average (Welford online algorithm for variance tracking).
+
+```glsl
+// Lightmap baking rgen shader — one ray per lightmap texel per frame
+layout(set=0, binding=0) uniform accelerationStructureEXT tlas;
+layout(set=0, binding=1) uniform sampler2D  position_atlas;  // world-space XYZ per texel
+layout(set=0, binding=2) uniform sampler2D  normal_atlas;    // world-space normal per texel
+layout(set=0, binding=3, rgba32f) uniform image2D accum_irr; // running sum
+layout(set=0, binding=4, r32ui)   uniform uimage2D sample_count; // samples so far
+
+uniform uint frame_seed;   // changes each frame for temporal stratification
+
+layout(location=0) rayPayloadEXT PathPayload payload;
+
+void main() {
+    ivec2 px  = ivec2(gl_LaunchIDEXT.xy);
+    vec3  P   = texelFetch(position_atlas, px, 0).xyz;
+    vec3  N   = normalize(texelFetch(normal_atlas, px, 0).xyz);
+    if (length(P) < 1e-6) return;   // unoccupied texel
+
+    uint  rng = pcg_init(uvec2(px), frame_seed);
+    vec3  L   = cosine_hemisphere_sample(N, pcg_float(rng), pcg_float(rng));
+
+    payload = init_path_payload(P + N * 0.001, L, rng);
+    // Trace k-bounce path (rchit shader handles bounces via payload recursion)
+    traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0,
+                P + N * 0.001, 0.001, L, 1e27, 0);
+
+    vec3  sample_irr = payload.radiance;
+
+    // Online Welford accumulation
+    uint  n_prev = imageLoad(sample_count, px).r;
+    vec4  prev   = imageLoad(accum_irr, px);
+    vec3  accum  = prev.rgb + (sample_irr - prev.rgb) / float(n_prev + 1u);
+    imageStore(accum_irr,    px, vec4(accum, 1.0));
+    imageStore(sample_count, px, uvec4(n_prev + 1u));
+}
+```
+
+#### Lightmap Denoising (OIDN via Compute)
+After accumulating enough samples (or as a real-time preview after just 8–16 samples), apply Intel Open Image Denoise (OIDN) or a SVGF-style À-Trous filter (§40) to the raw lightmap. OIDN is a neural denoiser that accepts the noisy colour, optional surface normal, and albedo as auxiliary buffers.
+
+```c
+// CPU side: launch OIDN on the GPU-rendered lightmap
+OIDNDevice device = oidnNewDevice(OIDN_DEVICE_TYPE_GPU);
+oidnCommitDevice(device);
+OIDNFilter filter = oidnNewFilter(device, "RTLightmap");
+oidnSetFilterImage(filter, "color",  gpu_lightmap_ptr, OIDN_FORMAT_FLOAT3, w, h, 0, 0, 0);
+oidnSetFilterImage(filter, "output", denoised_ptr,     OIDN_FORMAT_FLOAT3, w, h, 0, 0, 0);
+oidnSetFilter1b(filter, "hdr", true);
+oidnCommitFilter(filter);
+oidnExecuteFilter(filter);
+```
+
+#### UV Chart Seam Handling
+Lightmap charts (UV islands) have seams at their boundaries. After baking and before denoising, dilate the border texels of each chart outward by 2–4 pixels to prevent black seams visible at the boundary between charts when bilinear filtering reads across the padding.
+
+```glsl
+// Seam dilation compute — expand valid texels outward into empty padding
+// One thread per texel; if this texel is empty and any neighbour is valid, copy nearest valid
+layout(local_size_x=8, local_size_y=8) in;
+layout(set=0, binding=0, rgba32f) uniform image2D lightmap;
+layout(set=0, binding=1, r8ui)    uniform uimage2D valid_mask;  // 1 = baked, 0 = padding
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (imageLoad(valid_mask, px).r == 1u) return;  // already valid
+    // Search 4-connected neighbours
+    const ivec2 DIRS[4] = ivec2[](ivec2(1,0),ivec2(-1,0),ivec2(0,1),ivec2(0,-1));
+    for (int d = 0; d < 4; ++d) {
+        ivec2 nb = px + DIRS[d];
+        if (imageLoad(valid_mask, nb).r == 1u) {
+            imageStore(lightmap, px, imageLoad(lightmap, nb));
+            return;
+        }
+    }
+}
+```
+
+**Use cases** — arch-viz static GI; game levels with static geometry; any scenario where pre-baked lighting quality needs to exceed what real-time GI can deliver.  
+**Reference** — [UE5 GPU Lightmass documentation](https://docs.unrealengine.com/5.0/en-US/gpu-lightmass-global-illumination-in-unreal-engine/); [Intel OIDN](https://www.openimagedenoise.org/); [Christensen & Jarosz: The Path to Path-Traced Movies (2016)](https://dl.acm.org/doi/10.1145/2988458.2988459)
 
 ---
 
