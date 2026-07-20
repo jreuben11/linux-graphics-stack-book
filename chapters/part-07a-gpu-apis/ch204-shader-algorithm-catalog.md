@@ -69,7 +69,15 @@ The distribution of sections in this catalog mirrors the actual distribution of 
 45. [Terrain Material Splatting](#terrain-material-splatting)
 46. [Neural Rendering Primitives](#neural-rendering-primitives)
 47. [Omnidirectional Shadow Maps](#omnidirectional-shadow-maps)
-48. [References](#references)
+48. [Motion Vector Generation](#motion-vector-generation)
+49. [Virtual Texturing and Sparse Virtual Textures](#virtual-texturing-and-sparse-virtual-textures)
+50. [Screen-Space Global Illumination (SSGI)](#screen-space-global-illumination-ssgi)
+51. [Phong Tessellation and Adaptive Tessellation](#phong-tessellation-and-adaptive-tessellation)
+52. [Exponential and Height Fog](#exponential-and-height-fog)
+53. [Cooperative Matrix and Tensor Core Operations](#cooperative-matrix-and-tensor-core-operations)
+54. [3D SDF Voxelization from Mesh](#3d-sdf-voxelization-from-mesh)
+55. [Complete Path Tracer Pipeline](#complete-path-tracer-pipeline)
+56. [References](#references)
 
 ---
 
@@ -3136,6 +3144,712 @@ void main() {
 **Use cases** — point lights with tight shadow budget; mobile/VR where six render passes are too expensive.  
 **Limitations** — triangles crossing the paraboloid boundary must be clipped (handled by the geometry shader); lower quality than cube maps at face boundaries.  
 **Reference** — [Brabec et al.: Single Sample Soft Shadows Using Depth Maps (VMV 2002)](https://cg.cs.uni-bonn.de/publication/brabec-2002-single/); [GPU Gems Ch12: Omnidirectional Shadow Mapping](https://developer.nvidia.com/gpugems/gpugems/part-ii-lighting-and-shadows/chapter-12-omnidirectional-shadow-mapping)
+
+---
+
+## Motion Vector Generation
+
+Motion vectors (also called velocity vectors) store the 2D screen-space displacement of each pixel from the previous frame to the current frame. They are consumed by TAA (§17) for reprojection, SVGF denoising (§40) for temporal accumulation, and motion blur (§10). Without correct motion vectors, TAA ghosts on moving objects and SVGF fails to reuse history at dynamic surfaces.
+
+**Shader stage**: motion vectors are written by a dedicated **fragment shader** output (or as an additional G-Buffer MRT) during the geometry pass. Static objects can use a depth-reprojection fallback; dynamic objects (skinned meshes, rigid bodies, particles) must write per-vertex motion using their previous-frame transform.
+
+#### Static Object Reprojection (Depth-Based)
+For geometry that does not move, the motion vector is computed entirely in the fragment shader from the current-frame world position (reconstructed from depth) reprojected through the previous frame's view-projection matrix. No additional vertex data required.
+
+```glsl
+// Fragment shader — motion vector pass for static geometry
+layout(set=0, binding=0) uniform sampler2D g_depth;
+layout(set=0, binding=1) uniform CameraUB {
+    mat4 curr_inv_proj_view;   // current frame inverse VP
+    mat4 prev_proj_view;       // previous frame VP
+};
+layout(location=0) out vec2 motion_vector;
+
+void main() {
+    ivec2 px      = ivec2(gl_FragCoord.xy);
+    float depth   = texelFetch(g_depth, px, 0).r;
+
+    // Reconstruct world position from current depth
+    vec2  ndc     = (vec2(px) + 0.5) / vec2(textureSize(g_depth, 0)) * 2.0 - 1.0;
+    vec4  clip    = vec4(ndc, depth, 1.0);
+    vec4  world_h = curr_inv_proj_view * clip;
+    vec3  world_p = world_h.xyz / world_h.w;
+
+    // Reproject into previous frame clip space
+    vec4 prev_clip = prev_proj_view * vec4(world_p, 1.0);
+    vec2 prev_ndc  = prev_clip.xy / prev_clip.w;
+
+    // Motion vector: current NDC − previous NDC (in [−1, 1] space)
+    motion_vector  = ndc - prev_ndc;
+}
+```
+
+#### Dynamic Object Motion Vectors (Per-Vertex)
+Dynamic objects (skinned characters, rigid bodies, vehicles) must track their previous-frame world transform. The vertex shader computes both current and previous clip positions; the fragment shader writes the 2D difference.
+
+```glsl
+// Vertex shader — outputs current and previous clip position
+layout(set=1, binding=0) uniform ObjectUB {
+    mat4 curr_model;
+    mat4 prev_model;   // model matrix from last frame
+};
+layout(set=0, binding=0) uniform CameraUB {
+    mat4 curr_proj_view;
+    mat4 prev_proj_view;
+};
+
+layout(location=0) in vec3 in_pos;
+layout(location=0) out vec4 v_curr_clip;
+layout(location=1) out vec4 v_prev_clip;
+
+void main() {
+    vec4 world_curr = curr_model * vec4(in_pos, 1.0);
+    vec4 world_prev = prev_model * vec4(in_pos, 1.0);  // previous transform
+    v_curr_clip     = curr_proj_view * world_curr;
+    v_prev_clip     = prev_proj_view * world_prev;
+    gl_Position     = v_curr_clip;
+}
+```
+
+```glsl
+// Fragment shader — write motion vector MRT
+layout(location=0) out vec4 g_albedo;
+layout(location=1) out vec2 g_motion;   // RG16F motion vector target
+
+layout(location=0) in vec4 v_curr_clip;
+layout(location=1) in vec4 v_prev_clip;
+
+void main() {
+    vec2 curr_ndc = v_curr_clip.xy / v_curr_clip.w;
+    vec2 prev_ndc = v_prev_clip.xy / v_prev_clip.w;
+    g_motion = curr_ndc - prev_ndc;
+    // ... write other G-Buffer MRTs
+}
+```
+
+**Skinned meshes**: run the compute skinning pre-pass (§23) twice — once for the current-frame skeleton and once for the previous-frame skeleton — producing two skinned vertex buffers. The vertex shader reads both and computes the motion vector from the position difference.
+
+#### Disocclusion and History Invalidation
+TAA and SVGF must detect pixels where the reprojected history is invalid: the surface has been newly revealed (disocclusion) or the material has changed. The standard test compares the reprojected depth against the current depth; a depth difference exceeding a threshold marks the history as invalid, forcing the temporal filter to fall back to the current frame only.
+
+```glsl
+// Disocclusion test — in TAA or SVGF temporal accumulation pass
+float prev_depth_reproj = texture(prev_depth, prev_uv).r;
+float curr_depth        = texture(curr_depth, curr_uv).r;
+bool  disoccluded       = abs(prev_depth_reproj - curr_depth) > 0.01 * curr_depth;
+float alpha = disoccluded ? 1.0 : 0.1;  // 1.0 = no history; 0.1 = 90% history
+```
+
+**Reference** — [Karis: High-Quality Temporal Supersampling (SIGGRAPH 2014)](https://advances.realtimerendering.com/s2014/); [Schied et al.: SVGF (HPG 2017)](https://research.nvidia.com/publication/2017-07_spatiotemporal-variance-guided-filtering-real-time-reconstruction-path-traced)
+
+---
+
+## Virtual Texturing and Sparse Virtual Textures
+
+Virtual texturing (megatextures, sparse virtual textures) decouples texture coordinate space from GPU memory residency. Each mesh uses a large virtual UV space (e.g., 16k×16k per unique surface); the actual texture data is divided into fixed-size pages (128×128 or 256×256 texels) stored in a streaming atlas. Only pages visible in the current frame are resident; the rest remain on disk or host memory.
+
+The pipeline has three components: (1) a **feedback pass** identifies which virtual pages are accessed; (2) a **streaming system** (CPU) loads missing pages and uploads them to the physical atlas; (3) a **final render pass** translates virtual UV to physical atlas UV using an indirection (page table) texture.
+
+**Shader stage**: feedback writes in the **fragment shader** of a low-resolution prepass. Page table lookup and atlas sampling run in the **fragment shader** of the main render pass.
+
+#### Page Table Texture (Indirection Texture)
+A 2D texture where each texel represents one virtual page. The texel value encodes the physical atlas page coordinates where that virtual page's data lives. Resolution = `(virtual_size / page_size)²` — for 16k virtual / 256 page = 64×64 page table.
+
+```glsl
+layout(set=0, binding=0) uniform sampler2D page_table;    // RG8: physical page XY coords
+layout(set=0, binding=1) uniform sampler2DArray phys_atlas; // tiled physical pages
+
+uniform vec2 virtual_size;   // e.g. 16384.0
+uniform vec2 page_size;      // e.g. 256.0
+uniform vec2 atlas_size;     // physical atlas size in pages
+
+vec4 virtual_texture_sample(vec2 virtual_uv) {
+    // Which page does this UV fall in?
+    vec2 page_uv    = virtual_uv * virtual_size / page_size;
+    vec2 page_coord = floor(page_uv);
+    vec2 texel_frac = fract(page_uv);   // position within page
+
+    // Look up physical page location from indirection texture
+    vec2 page_table_uv = (page_coord + 0.5) / (virtual_size / page_size);
+    vec2 phys_page     = texture(page_table, page_table_uv).rg * 255.0; // decode RG8
+
+    // Compute UV into physical atlas
+    vec2 atlas_uv = (phys_page + texel_frac) / atlas_size;
+    return texture(phys_atlas, vec3(atlas_uv, 0.0));
+}
+```
+
+#### Feedback Buffer (Page Request)
+A low-resolution framebuffer (1/4 or 1/8 resolution) where each fragment writes the virtual page coordinates it needs. The CPU reads this buffer asynchronously (with one frame latency via `vkGetQueryPoolResults` or persistent-mapped staging buffer) and schedules missing pages for streaming.
+
+```glsl
+// Feedback fragment shader — low-res prepass
+layout(location=0) out uvec2 page_request;  // R16G16_UINT: virtual page XY
+
+void main() {
+    vec2  page_uv   = virtual_uv * virtual_size / page_size;
+    uvec2 page_coord = uvec2(floor(page_uv));
+    page_request    = page_coord;   // CPU reads this to know what to stream
+}
+```
+
+**LOD selection**: incorporate the texture MIP level into the page request so coarser pages are streamed for distant surfaces. The MIP level maps directly to a coarser page table level.
+
+#### Page Upload (CPU → GPU)
+When the streaming system identifies a missing page, it copies from disk/host to a staging buffer and calls `vkCmdCopyBufferToImage` to upload the page into the correct slot in the physical atlas. The page table texture is then updated to point to the new location.
+
+**Use cases** — id Tech 7 (Doom Eternal), UE5 Virtual Textures, Unity Adaptive Probe Volumes; any open-world game with unique per-surface texturing at scale.  
+**Reference** — [id Software: MegaTexture (id Tech 4/5)](https://en.wikipedia.org/wiki/MegaTexture); [UE5 Virtual Texturing Documentation](https://docs.unrealengine.com/5.0/en-US/virtual-texturing-in-unreal-engine/)
+
+---
+
+## Screen-Space Global Illumination (SSGI)
+
+SSGI extends SSAO's per-pixel hemisphere tracing to also read the *colour* at the traced hit point, accumulating indirect diffuse irradiance instead of just occlusion. The result is a per-pixel indirect light colour that captures colour bleeding and single-bounce GI without probes or ray tracing hardware. It is used in UE5 as a fast GI fallback ("Lumen Screen Space") and in many mid-budget games where DDGI or ReSTIR GI is too expensive.
+
+**Shader stage**: SSGI runs as a **compute or full-screen fragment shader** reading the depth buffer, normal buffer, and HDR colour buffer from the previous frame (or the current frame's early-Z pass for normal/depth).
+
+**Difference from SSAO**: SSAO writes a scalar occlusion factor; SSGI writes a `vec3` indirect irradiance colour. The sampling loop is the same structure but accumulates `colour × NdotL` instead of `NdotL` alone.
+
+```glsl
+// SSGI compute shader — one thread per pixel
+layout(local_size_x=8, local_size_y=8) in;
+
+layout(set=0, binding=0) uniform sampler2D g_depth;
+layout(set=0, binding=1) uniform sampler2D g_normal;     // world-space normals
+layout(set=0, binding=2) uniform sampler2D hdr_color;    // previous or current frame colour
+layout(set=0, binding=3, rgba16f) uniform image2D ssgi_out;
+
+layout(set=0, binding=4) uniform sampler2D blue_noise;   // 64×64 blue noise
+
+uniform mat4  proj_view;
+uniform mat4  inv_proj_view;
+uniform vec2  resolution;
+uniform uint  frame_index;
+uniform float max_distance;   // world-space max trace distance (e.g. 2.0 m)
+uniform int   num_samples;    // typically 4–8
+
+vec3 reconstruct_world(ivec2 px) {
+    vec2  uv  = (vec2(px) + 0.5) / resolution;
+    float d   = texelFetch(g_depth, px, 0).r;
+    vec4  h   = inv_proj_view * vec4(uv * 2.0 - 1.0, d, 1.0);
+    return h.xyz / h.w;
+}
+
+vec2 world_to_uv(vec3 p) {
+    vec4 clip = proj_view * vec4(p, 1.0);
+    return clip.xy / clip.w * 0.5 + 0.5;
+}
+
+void main() {
+    ivec2 px     = ivec2(gl_GlobalInvocationID.xy);
+    vec3  P      = reconstruct_world(px);
+    vec3  N      = texelFetch(g_normal, px, 0).xyz;
+
+    // Blue noise base sample — temporally decorrelated
+    float bn     = texelFetch(blue_noise, px % 64, 0).r;
+    bn           = fract(bn + float(frame_index) * 0.61803398875);
+
+    vec3 indirect = vec3(0.0);
+    float weight  = 0.0;
+
+    for (int i = 0; i < num_samples; ++i) {
+        // Cosine-weighted hemisphere sample (Malley's method)
+        float u1  = fract(bn + float(i) / float(num_samples));
+        float u2  = fract(bn * 1.618 + float(i) * 0.382);
+        float phi = 2.0 * 3.14159 * u1;
+        float r   = sqrt(u2);
+        vec3  dir = vec3(cos(phi)*r, sin(phi)*r, sqrt(1.0 - u2)); // hemisphere local
+        // Transform to world space using N as up
+        vec3  T   = normalize(abs(N.x) > 0.9 ? cross(N, vec3(0,1,0)) : cross(N, vec3(1,0,0)));
+        vec3  B   = cross(N, T);
+        vec3  L   = T*dir.x + B*dir.y + N*dir.z;
+
+        // Step along ray in screen space — ray march 8 steps
+        vec3  hit  = P;
+        bool  found = false;
+        for (int s = 1; s <= 8; ++s) {
+            hit = P + L * (max_distance * float(s) / 8.0);
+            vec2 uv  = world_to_uv(hit);
+            if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) break;
+            float scene_d = texture(g_depth, uv).r;
+            vec4  scene_h = inv_proj_view * vec4(uv*2.0-1.0, scene_d, 1.0);
+            vec3  scene_p = scene_h.xyz / scene_h.w;
+            float hit_d   = length(hit - P);
+            float scene_hit_d = length(scene_p - P);
+            if (hit_d > scene_hit_d && hit_d - scene_hit_d < 0.3) {
+                // Hit! Sample colour at this screen location
+                vec3 col  = texture(hdr_color, uv).rgb;
+                float ndotl = max(0.0, dot(N, L));
+                indirect += col * ndotl;
+                weight   += ndotl;
+                found = true;
+                break;
+            }
+        }
+        if (!found) weight += max(0.0, dot(N, L));
+    }
+
+    indirect = (weight > 0.0) ? indirect / weight : vec3(0.0);
+    imageStore(ssgi_out, px, vec4(indirect, 1.0));
+}
+```
+
+**Temporal accumulation**: the SSGI output is temporally accumulated with TAA-style reprojection (using motion vectors, §48) to reduce noise at 4–8 samples/pixel.
+
+**Use cases** — UE5 Lumen Screen Space mode, HDRP Screen Space GI (Unity), mid-budget deferred engines; provides colour bleeding in corners, under overhangs, between coloured walls.  
+**Limitations** — screen-space: off-screen surfaces contribute no indirect light; breaks in disoccluded regions; limited trace distance.  
+**Reference** — [UE5: Lumen Technical Details](https://docs.unrealengine.com/5.0/en-US/lumen-technical-details-in-unreal-engine/); [Unity HDRP: Screen Space Global Illumination](https://docs.unity3d.com/Packages/com.unity.render-pipelines.high-definition@latest)
+
+---
+
+## Phong Tessellation and Adaptive Tessellation
+
+The geometry/mesh shader section covers PN Triangles for smooth curved surfaces and mesh shader cluster culling. Two missing tessellation patterns are in universal use: **Phong tessellation** (simpler curved-surface approximation than PN Triangles) and **adaptive tessellation** (dynamically scaling the tessellation factor to maintain roughly one triangle per pixel).
+
+**Shader stage**: tessellation runs in the **tessellation control shader** (TCS, sets tessellation levels) and **tessellation evaluation shader** (TES, computes displaced vertex positions). Vulkan exposes this via the `tessellationShader` pipeline stage.
+
+#### Phong Tessellation
+Phong tessellation projects each tessellated interior point onto the average of the three vertex tangent planes, weighted by barycentric coordinates. It is simpler than PN Triangles (no cubic Bézier patch construction) and produces smoother silhouettes than flat tessellation with minimal extra cost.
+
+```glsl
+// Tessellation Evaluation Shader — Phong tessellation
+layout(triangles, equal_spacing, ccw) in;
+
+layout(location=0) in vec3 in_pos[];    // 3 control point positions
+layout(location=1) in vec3 in_normal[]; // 3 control point normals
+
+layout(location=0) out vec3 out_pos;
+layout(location=1) out vec3 out_normal;
+
+uniform mat4 proj_view;
+uniform float phong_strength;   // 0.0 = flat, 1.0 = full Phong; typically 0.75
+
+// Project point p onto tangent plane at vertex v with normal n
+vec3 project_to_plane(vec3 p, vec3 v, vec3 n) {
+    return p - dot(p - v, n) * n;
+}
+
+void main() {
+    vec3 bc = gl_TessCoord;   // barycentric coordinates
+
+    // Linear interpolation (flat tessellation baseline)
+    vec3 P = bc.x * in_pos[0] + bc.y * in_pos[1] + bc.z * in_pos[2];
+    vec3 N = normalize(bc.x * in_normal[0] + bc.y * in_normal[1] + bc.z * in_normal[2]);
+
+    // Phong projection: project P onto each vertex tangent plane, blend
+    vec3 P0 = project_to_plane(P, in_pos[0], in_normal[0]);
+    vec3 P1 = project_to_plane(P, in_pos[1], in_normal[1]);
+    vec3 P2 = project_to_plane(P, in_pos[2], in_normal[2]);
+    vec3 P_phong = bc.x * P0 + bc.y * P1 + bc.z * P2;
+
+    // Blend between flat and Phong
+    out_pos    = mix(P, P_phong, phong_strength);
+    out_normal = N;
+    gl_Position = proj_view * vec4(out_pos, 1.0);
+}
+```
+
+**Use cases** — character skin subdivision, smooth terrain, any mesh intended for smooth silhouettes without authoring Bézier patches.  
+**Reference** — [Boubekeur & Alexa: Phong Tessellation (SIGGRAPH Asia 2008)](https://dl.acm.org/doi/10.1145/1457515.1409020)
+
+#### Adaptive Tessellation (Distance and Screen-Space Edge Length)
+The tessellation control shader computes a tessellation factor for each edge proportional to the projected screen-space length of that edge, targeting approximately N pixels per tessellated edge. This concentrates triangles where the mesh is close and reduces them where it is distant — maintaining nearly constant screen-space triangle density.
+
+```glsl
+// Tessellation Control Shader — adaptive level-of-detail
+layout(vertices = 3) out;
+
+layout(location=0) in vec3 in_pos[];
+layout(location=0) out vec3 out_pos[];
+
+uniform mat4  proj_view;
+uniform vec2  screen_size;
+uniform float target_pixels_per_edge;  // e.g. 16.0
+
+float screen_edge_length(vec3 a, vec3 b) {
+    vec4 ca = proj_view * vec4(a, 1.0);
+    vec4 cb = proj_view * vec4(b, 1.0);
+    vec2 sa = ca.xy / ca.w * screen_size * 0.5;
+    vec2 sb = cb.xy / cb.w * screen_size * 0.5;
+    return length(sa - sb);
+}
+
+float tess_level(vec3 a, vec3 b) {
+    return clamp(screen_edge_length(a, b) / target_pixels_per_edge, 1.0, 64.0);
+}
+
+void main() {
+    out_pos[gl_InvocationID] = in_pos[gl_InvocationID];
+    if (gl_InvocationID == 0) {
+        gl_TessLevelOuter[0] = tess_level(in_pos[1], in_pos[2]);
+        gl_TessLevelOuter[1] = tess_level(in_pos[2], in_pos[0]);
+        gl_TessLevelOuter[2] = tess_level(in_pos[0], in_pos[1]);
+        gl_TessLevelInner[0] = (gl_TessLevelOuter[0] +
+                                 gl_TessLevelOuter[1] +
+                                 gl_TessLevelOuter[2]) / 3.0;
+    }
+}
+```
+
+**Frustum and backface culling in TCS**: before computing tessellation levels, cull the entire patch if its bounding sphere is outside the view frustum or all three normals face away from the camera — avoiding tessellation of invisible geometry.
+
+**Use cases** — terrain heightmap tessellation (pairs with §14 CDLOD), character skin refinement, displacement-mapped surfaces; universal in all production tessellation pipelines.  
+**Reference** — [Cantlay: DirectX 11 Terrain Tessellation (NVIDIA GPU Pro)](https://developer.nvidia.com/sites/default/files/akamai/gameworks/samples/PN-AEN-Triangles.pdf)
+
+---
+
+## Exponential and Height Fog
+
+Ray-marched volumetric fog (§9) provides physically correct in-scattering but costs one ray per pixel per step. Analytical fog functions compute the fog transmittance and in-scattered luminance exactly along the view ray through a homogeneous or height-stratified atmosphere in a single fragment shader instruction — at near-zero cost. Every game uses analytical fog for baseline atmospheric depth; volumetric fog is layered on top for local effects.
+
+**Shader stage**: analytical fog is applied in the **fragment shader** at the end of the lighting evaluation, or as a full-screen post-process combining the depth buffer with the scene colour.
+
+#### Exponential Fog
+Density is constant throughout the volume; transmittance along a ray of length `d` through density `ρ` is `T = exp(-ρ·d)`. In-scattered colour is the fog colour modulated by `1 - T`.
+
+```glsl
+// Exponential fog — applied after lighting in fragment shader
+uniform float fog_density;    // e.g. 0.002
+uniform vec3  fog_color;      // sky or ambient colour
+uniform vec3  cam_pos;
+
+vec3 apply_exponential_fog(vec3 lit_color, vec3 world_pos) {
+    float dist = length(world_pos - cam_pos);
+    float T    = exp(-fog_density * dist);           // transmittance
+    return mix(fog_color, lit_color, T);             // blend scene with fog
+}
+```
+
+**Sun scattering variant**: bias the fog colour toward a brighter value when the view direction aligns with the sun direction, simulating the Mie forward-scattering peak:
+
+```glsl
+float sun_factor  = pow(max(0.0, dot(view_dir, sun_dir)), 8.0);
+vec3  fog_col_sun = mix(fog_color, sun_color * 2.0, sun_factor * 0.5);
+```
+
+#### Exponential Height Fog
+Density falls off exponentially with altitude: `ρ(y) = ρ₀ · exp(-β · y)`. The integral of this along a view ray has a closed-form solution, giving analytically correct height-stratified fog that is thick in valleys and thin on hilltops.
+
+```glsl
+// Height fog — analytic integral along view ray
+// Based on: Gu et al. (2006) and UE4 ExponentialHeightFog
+uniform float fog_density;     // surface density ρ₀
+uniform float fog_falloff;     // height falloff β (larger = thinner layer)
+uniform float fog_height;      // altitude at which fog begins (world-space Y)
+uniform vec3  fog_color;
+uniform vec3  cam_pos;
+
+float height_fog_integral(vec3 ray_start, vec3 ray_end) {
+    float dy   = ray_end.y - ray_start.y;
+    float y0   = ray_start.y - fog_height;
+    float y1   = ray_end.y   - fog_height;
+    float len  = length(ray_end - ray_start);
+    float beta = fog_falloff;
+
+    // Analytic integral: ∫ ρ₀·exp(-β·y) dy = (ρ₀/β)·(exp(-β·y0) - exp(-β·y1))
+    float col_den;
+    if (abs(dy) < 1e-4) {
+        col_den = fog_density * exp(-beta * y0) * len;
+    } else {
+        col_den = fog_density / beta *
+                  abs((exp(-beta * y0) - exp(-beta * y1)) / (dy / len));
+    }
+    return col_den;
+}
+
+vec3 apply_height_fog(vec3 lit_color, vec3 world_pos) {
+    float optical_depth = height_fog_integral(cam_pos, world_pos);
+    float T             = exp(-optical_depth);
+    return mix(fog_color, lit_color, T);
+}
+```
+
+**Use cases** — atmospheric depth in every 3D game; height fog for ground-level haze, morning mist, rain-soaked urban streets; used as the base fog layer in UE4/UE5, Unity HDRP, and Godot 4.  
+**Reference** — [Unreal Engine 4: Exponential Height Fog](https://docs.unrealengine.com/4.27/en-US/BuildingWorlds/FogEffects/HeightFog/); [Wenzel: Real-Time Atmospheric Effects in Games (GDC 2006)](https://developer.nvidia.com/gpugems/gpugems2/part-ii-shading-antialiasing-and-shadows/chapter-16-accurate-atmospheric-scattering)
+
+---
+
+## Cooperative Matrix and Tensor Core Operations
+
+Modern GPUs (NVIDIA Turing+, AMD RDNA3+, Intel Arc) contain dedicated matrix-multiply-accumulate (MMA) hardware — tensor cores on NVIDIA, matrix cores on AMD. `VK_KHR_cooperative_matrix` exposes these as GLSL/SPIR-V operations: a cooperative matrix multiply `C += A × B` executes as a single SPIR-V instruction across an entire subgroup (warp), completing a 16×16 half-precision matrix multiply in ~4 clock cycles rather than ~256.
+
+**Shader stage**: cooperative matrix operations run in **compute shaders** using the `GL_KHR_cooperative_matrix` GLSL extension (maps to `OpCooperativeMatrixMulAddKHR` in SPIR-V). The subgroup must be the correct size (typically 32 threads on NVIDIA) and must all execute the cooperative instruction together.
+
+**Why it matters**: the tiny MLP inference in §46 uses scalar loops — O(W²) multiply-adds per layer, executed serially in registers. With cooperative matrices, an entire 16×16 weight layer executes in one instruction, achieving peak tensor core throughput (e.g., 1000 TFLOPS on RTX 4090 at FP16 vs ~80 TFLOPS scalar).
+
+#### Cooperative Matrix Multiply (GEMM)
+Computes `C = A × B + C` where `A`, `B`, `C` are cooperative matrix types loaded from shared memory or buffers. Each cooperative matrix is distributed across the subgroup — no single thread holds the full matrix.
+
+```glsl
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_shader_subgroup_basic : require
+
+layout(local_size_x = 32) in;  // one subgroup per workgroup
+
+layout(set=0, binding=0) readonly buffer MatA { float16_t A[]; };
+layout(set=0, binding=1) readonly buffer MatB { float16_t B[]; };
+layout(set=0, binding=2) buffer          MatC { float      C[]; };
+
+uniform uint M, N, K;   // matrix dimensions: A is M×K, B is K×N, C is M×N
+
+void main() {
+    // Each workgroup computes one 16×16 tile of C
+    uint tile_row = gl_WorkGroupID.y;
+    uint tile_col = gl_WorkGroupID.x;
+
+    // Declare cooperative matrix types (16×16 tiles)
+    coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> cmat_a;
+    coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> cmat_b;
+    coopmat<float,     gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> cmat_c;
+
+    // Zero accumulator
+    coopMatFillKHR(cmat_c, 0.0);
+
+    // Accumulate over K dimension in 16-wide tiles
+    for (uint k = 0; k < K; k += 16) {
+        uint a_offset = tile_row * 16 * K + k;
+        uint b_offset = k * N + tile_col * 16;
+
+        coopMatLoadKHR(cmat_a, A, a_offset, K, gl_CooperativeMatrixLayoutRowMajorKHR);
+        coopMatLoadKHR(cmat_b, B, b_offset, N, gl_CooperativeMatrixLayoutRowMajorKHR);
+        coopMatMulAddKHR(cmat_c, cmat_a, cmat_b, cmat_c);  // C += A × B — tensor core
+    }
+
+    // Store result tile
+    uint c_offset = tile_row * 16 * N + tile_col * 16;
+    coopMatStoreKHR(cmat_c, C, c_offset, N, gl_CooperativeMatrixLayoutRowMajorKHR);
+}
+```
+
+#### Tiny MLP Inference with Cooperative Matrices
+Replace the scalar loops in the tiny MLP inference (§46) with cooperative matrix multiplications. Batch multiple pixel queries into a `M×IN_DIM` input matrix, execute one `coopMatMulAddKHR` per layer, then scatter output rows back to pixels. The cooperative matrix tiles the work across the subgroup automatically.
+
+**Sizing**: cooperative matrix requires M, N, K to be multiples of 16. Pad the feature vector and layer width to the next multiple of 16; pad the pixel batch to the next multiple of 16.
+
+**Use cases** — accelerated tiny MLP inference for neural textures and NeRF; neural radiance cache query throughput; any GPU compute workload involving dense matrix products.  
+**Reference** — [Vulkan: VK_KHR_cooperative_matrix specification](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_KHR_cooperative_matrix.html); [NVIDIA: Programming Tensor Cores in CUDA](https://developer.nvidia.com/blog/programming-tensor-cores-cuda-9/)
+
+---
+
+## 3D SDF Voxelization from Mesh
+
+The SDF sphere-marching section (§2) renders an *existing* signed distance field. Generating a 3D SDF from a triangle mesh requires a different pipeline: for each voxel, compute the signed distance to the nearest triangle. This is used to initialise VXGI volumes (§6), build collision distance fields (for soft-body and cloth, §37), and provide the initial SDF for dynamic mesh deformation.
+
+**Shader stage**: voxelization runs in a **compute shader** dispatched over the 3D voxel grid. A BVH (§42 LBVH) accelerates the nearest-triangle query; a brute-force scan over all triangles is feasible for small meshes (< 10k triangles) or coarse volumes.
+
+#### Triangle-Distance Voxelization (Brute Force)
+For each voxel centre, find the closest triangle and compute the signed distance. Sign is determined by the dot product of the triangle normal with the voxel-to-closest-point vector (positive = outside, negative = inside).
+
+```glsl
+layout(local_size_x=4, local_size_y=4, local_size_z=4) in;
+layout(set=0, binding=0, r32f) uniform image3D sdf_volume;
+layout(set=0, binding=1) readonly buffer Vertices  { vec4 verts[]; };
+layout(set=0, binding=2) readonly buffer Indices   { uint idxs[]; };
+layout(set=0, binding=3) readonly buffer Normals   { vec4 norms[]; };  // per-triangle
+
+uniform vec3  vol_min;    // world-space AABB of volume
+uniform vec3  vol_max;
+uniform ivec3 vol_res;    // voxel grid resolution
+uniform uint  tri_count;
+
+// Closest point on triangle (p0, p1, p2) to point p
+vec3 closest_point_on_triangle(vec3 p, vec3 p0, vec3 p1, vec3 p2) {
+    vec3 ab = p1 - p0, ac = p2 - p0, ap = p - p0;
+    float d1 = dot(ab,ap), d2 = dot(ac,ap);
+    if (d1 <= 0.0 && d2 <= 0.0) return p0;
+    vec3 bp = p - p1;
+    float d3 = dot(ab,bp), d4 = dot(ac,bp);
+    if (d3 >= 0.0 && d4 <= d3) return p1;
+    vec3 cp = p - p2;
+    float d5 = dot(ab,cp), d6 = dot(ac,cp);
+    if (d6 >= 0.0 && d5 <= d6) return p2;
+    float vc = d1*d4 - d3*d2;
+    if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) {
+        return p0 + (d1 / (d1 - d3)) * ab;
+    }
+    float vb = d5*d2 - d1*d6;
+    if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) {
+        return p0 + (d2 / (d2 - d6)) * ac;
+    }
+    float va = d3*d6 - d5*d4;
+    float w  = d4 - d3, x = d5 - d6;
+    if (va <= 0.0 && w >= 0.0 && x >= 0.0) {
+        return p1 + (w / (w + x)) * (p2 - p1);
+    }
+    float denom = 1.0 / (va + vb + vc);
+    return p0 + (vb*denom)*ab + (vc*denom)*ac;
+}
+
+void main() {
+    ivec3 vox  = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(vox, vol_res))) return;
+    vec3  p    = vol_min + (vec3(vox) + 0.5) / vec3(vol_res) * (vol_max - vol_min);
+
+    float min_dist  = 1e9;
+    float sign_val  = 1.0;
+
+    for (uint t = 0; t < tri_count; ++t) {
+        uint i0 = idxs[t*3+0], i1 = idxs[t*3+1], i2 = idxs[t*3+2];
+        vec3 p0 = verts[i0].xyz, p1 = verts[i1].xyz, p2 = verts[i2].xyz;
+        vec3 cp = closest_point_on_triangle(p, p0, p1, p2);
+        float d = length(p - cp);
+        if (d < min_dist) {
+            min_dist = d;
+            // Sign from triangle normal: negative = inside mesh
+            vec3 tri_normal = norms[t].xyz;
+            sign_val = (dot(p - cp, tri_normal) >= 0.0) ? 1.0 : -1.0;
+        }
+    }
+    imageStore(sdf_volume, vox, vec4(sign_val * min_dist));
+}
+```
+
+**Optimisation**: the brute-force O(voxels × triangles) complexity is only feasible for coarse volumes. For production use, build an LBVH (§42) over triangles and traverse it per voxel, reducing the complexity to O(voxels × log(triangles)).
+
+**Sign robustness**: the per-triangle sign test is not robust at surface boundaries. More robust alternatives: (1) winding number (Jacobson 2013, exact but expensive); (2) ray casting — count intersections along multiple axis-aligned rays and take the majority vote.
+
+**Use cases** — VXGI voxel grid initialisation, rigid-body SDF collision fields, cloth-obstacle distance fields for PBD constraints (§37), starting volume for GPU sculpting.  
+**Reference** — [Bærentzen & Aanæs: Generating Signed Distance Fields From Triangle Meshes (DTU 2002)](https://orbit.dtu.dk/files/146201972/Signed_Distance_Fields.pdf); [Jacobson et al.: Robust Inside-Outside Segmentation Using Generalized Winding Numbers (SIGGRAPH 2013)](https://dl.acm.org/doi/10.1145/2461912.2461916)
+
+---
+
+## Complete Path Tracer Pipeline
+
+The ray tracing shader stages (§22) described individual shader types in isolation. This section shows how they wire together into a complete unidirectional Monte Carlo path tracer — the reference algorithm that all production hybrid and real-time RT pipelines approximate. Understanding the full pipeline contextualises why each denoising, importance sampling, and ReSTIR technique exists.
+
+**Shader stage**: the pipeline is driven by a **ray generation shader** (`rgen`) dispatching one thread per pixel. It calls `traceRayEXT()` which invokes **closest-hit** (`rchit`), **any-hit** (`rahit`), and **miss** (`rmiss`) shaders. The path state is passed via a `rayPayloadEXT` struct.
+
+#### Path Payload
+The payload struct is the only communication channel between shader stages across a `traceRayEXT()` call. It must be small (register pressure), self-contained (the path state for one bounce), and include an RNG state for reproducible sampling.
+
+```glsl
+struct PathPayload {
+    vec3  throughput;     // accumulated path weight (starts at vec3(1))
+    vec3  radiance;       // accumulated emitted/direct light
+    vec3  origin;         // next ray origin
+    vec3  direction;      // next ray direction
+    uint  rng_state;      // random number generator state (PCG hash)
+    bool  terminated;     // set by any-hit or miss shaders to stop the path
+};
+layout(location=0) rayPayloadEXT PathPayload payload;
+```
+
+#### Ray Generation Shader (rgen)
+Drives the path tracing loop: initialise the payload, trace the primary ray, then iterate for up to `MAX_BOUNCES` secondary bounces. Each bounce accumulates the `radiance` contribution from direct light evaluated at the hit and updates `throughput` by the BRDF weight.
+
+```glsl
+layout(set=0, binding=0) uniform accelerationStructureEXT tlas;
+layout(set=0, binding=1, rgba32f) uniform image2D accumulation;   // running average
+uniform uint  frame_index;
+uniform int   max_bounces;    // typically 4–8
+
+void main() {
+    ivec2 px      = ivec2(gl_LaunchIDEXT.xy);
+    vec2  jitter  = vec2(pcg_float(px, frame_index * 2u),
+                         pcg_float(px, frame_index * 2u + 1u));
+    vec2  uv      = (vec2(px) + jitter) / vec2(gl_LaunchSizeEXT.xy);
+    vec4  clip    = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
+    vec4  world_h = inv_proj_view * clip;
+    vec3  ray_dir = normalize(world_h.xyz / world_h.w - cam_pos);
+
+    payload.throughput  = vec3(1.0);
+    payload.radiance    = vec3(0.0);
+    payload.origin      = cam_pos;
+    payload.direction   = ray_dir;
+    payload.rng_state   = pcg_init(px, frame_index);
+    payload.terminated  = false;
+
+    for (int bounce = 0; bounce < max_bounces && !payload.terminated; ++bounce) {
+        traceRayEXT(tlas,
+            gl_RayFlagsOpaqueEXT,
+            0xFF,           // cull mask
+            0, 1, 0,        // SBT offsets: hitgroup 0, stride 1, miss 0
+            payload.origin,
+            0.001,          // tmin (avoid self-intersection)
+            payload.direction,
+            1e9,            // tmax
+            0);             // payload location
+    }
+
+    // Temporal accumulation: running mean
+    vec3 prev = imageLoad(accumulation, px).rgb;
+    float t   = 1.0 / float(frame_index + 1u);
+    imageStore(accumulation, px, vec4(mix(prev, payload.radiance, t), 1.0));
+}
+```
+
+#### Closest-Hit Shader (rchit)
+Evaluates the material at the ray hit: loads geometry (position, normal, UV) via barycentric interpolation, samples material textures, computes direct lighting using MIS (§29), then samples the BRDF for the next bounce direction.
+
+```glsl
+layout(location=0) rayPayloadInEXT PathPayload payload;
+hitAttributeEXT vec2 bary;   // barycentric coordinates from rasterizer
+
+void main() {
+    // 1. Reconstruct hit geometry (barycentric interpolation)
+    vec3 P = interpolate_position(gl_PrimitiveID, bary);
+    vec3 N = interpolate_normal(gl_PrimitiveID, bary);
+    vec2 uv= interpolate_uv(gl_PrimitiveID, bary);
+
+    // 2. Load material
+    MaterialData mat = load_material(gl_InstanceCustomIndexEXT, uv);
+
+    // 3. Emission: if the hit surface is emissive, add contribution
+    payload.radiance += payload.throughput * mat.emission;
+
+    // 4. Direct light via MIS (sample one light + one BRDF direction, combine)
+    payload.radiance += payload.throughput *
+        evaluate_direct_mis(P, N, mat, -payload.direction, payload.rng_state);
+
+    // 5. Sample BRDF for next bounce
+    float pdf;
+    vec3  L = sample_BRDF(N, -payload.direction, mat.roughness,
+                           mat.F0, payload.rng_state, pdf);
+    if (pdf < 1e-6) { payload.terminated = true; return; }
+
+    vec3 brdf = eval_BRDF(-payload.direction, L, N, mat);
+    payload.throughput *= brdf * max(0.0, dot(N, L)) / pdf;
+
+    // Russian roulette path termination
+    float p_survive = min(1.0, max(payload.throughput.r,
+                          max(payload.throughput.g, payload.throughput.b)));
+    if (pcg_float_rng(payload.rng_state) > p_survive) {
+        payload.terminated = true; return;
+    }
+    payload.throughput /= p_survive;
+
+    // 6. Setup next ray
+    payload.origin    = P + N * 0.001;
+    payload.direction = L;
+}
+```
+
+#### Miss Shader (rmiss)
+Called when the ray escapes the scene. Samples the environment map for sky radiance. Sets `terminated = true` to stop the path.
+
+```glsl
+layout(location=0) rayPayloadInEXT PathPayload payload;
+layout(set=0, binding=2) uniform samplerCube env_map;
+
+void main() {
+    payload.radiance  += payload.throughput * texture(env_map, payload.direction).rgb;
+    payload.terminated = true;
+}
+```
+
+#### Russian Roulette and Path Termination
+Paths are terminated probabilistically when throughput falls below a threshold: survive with probability `p = luminance(throughput)`, boost throughput by `1/p` if it survives. This keeps the estimator unbiased while capping path length in low-contribution regions.
+
+**Complete pipeline summary**:
+1. `rgen` — one thread per pixel, iterates bounces
+2. `traceRayEXT()` → `rchit` — material eval + MIS direct light + BRDF sample
+3. `traceRayEXT()` (shadow) → `rmiss` or `rahit` — visibility test for direct light
+4. `rmiss` — environment map sample, terminate path
+5. Accumulation image — running mean over frames
+6. TAA / SVGF denoiser — clean up the noisy per-frame accumulation
+
+**Reference** — [Pharr, Jakob, Humphreys: PBRT-v4 (free online)](https://pbrt.org/); [NVIDIA Vulkan Ray Tracing Tutorial](https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/)
 
 ---
 
