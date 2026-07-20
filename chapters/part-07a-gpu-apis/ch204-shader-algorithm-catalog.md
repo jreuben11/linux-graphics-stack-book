@@ -77,7 +77,15 @@ The distribution of sections in this catalog mirrors the actual distribution of 
 53. [Cooperative Matrix and Tensor Core Operations](#cooperative-matrix-and-tensor-core-operations)
 54. [3D SDF Voxelization from Mesh](#3d-sdf-voxelization-from-mesh)
 55. [Complete Path Tracer Pipeline](#complete-path-tracer-pipeline)
-56. [References](#references)
+56. [Spherical Harmonics Lighting](#spherical-harmonics-lighting)
+57. [Direct Volume Rendering](#direct-volume-rendering)
+58. [Dynamic Environment Map Capture](#dynamic-environment-map-capture)
+59. [Caustics](#caustics)
+60. [Spherical Gaussians](#spherical-gaussians)
+61. [Ordered Dithering and Output Quantization](#ordered-dithering-and-output-quantization)
+62. [Meshlet Generation](#meshlet-generation)
+63. [Shadow Atlas and Cached Shadows](#shadow-atlas-and-cached-shadows)
+64. [References](#references)
 
 ---
 
@@ -3850,6 +3858,604 @@ Paths are terminated probabilistically when throughput falls below a threshold: 
 6. TAA / SVGF denoiser — clean up the noisy per-frame accumulation
 
 **Reference** — [Pharr, Jakob, Humphreys: PBRT-v4 (free online)](https://pbrt.org/); [NVIDIA Vulkan Ray Tracing Tutorial](https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/)
+
+---
+
+## Spherical Harmonics Lighting
+
+Spherical Harmonics (SH) are a set of orthonormal basis functions defined on the unit sphere, analogous to the Fourier basis on the circle. Any spherical function — an environment map, the irradiance at a surface point, the visibility from a probe — can be projected into SH coefficients and reconstructed at runtime with a dot product. Order-2 SH (9 coefficients per colour channel = 27 floats) captures all low-frequency lighting including directional light, sky gradient, and diffuse colour bleeding, at the cost of 27 multiply-adds per pixel.
+
+**Why SH matters**: irradiance probes (§6), lightmaps, and character ambient lighting all ultimately store SH coefficients. DDGI probes store irradiance as 2nd-order SH. Directional lightmaps (§26) encode the dominant direction as an SH-motivated basis. Understanding SH is prerequisite to understanding any probe-based GI system.
+
+**Shader stage**: SH projection runs in **compute** (one thread per probe direction sample). SH evaluation runs in the **fragment shader** during lighting, as a simple dot product with the surface normal.
+
+#### SH Basis Functions and Coefficients
+The real SH basis functions `Y_l^m(θ, φ)` are grouped by band `l` (0, 1, 2, …). Each band `l` has `2l+1` functions. For rendering, bands 0–2 (9 functions) are sufficient for diffuse irradiance.
+
+```glsl
+// Real spherical harmonic basis functions up to l=2 (9 terms)
+// Input: normalised direction vector (x, y, z)
+// Conventions follow Sloan 2008 (ZH ordering, Condon-Shortley excluded)
+void sh_basis_L2(vec3 d, out float Y[9]) {
+    // Band 0 (l=0): constant
+    Y[0] = 0.282095;                               // 1/2 * sqrt(1/π)
+
+    // Band 1 (l=1): linear
+    Y[1] = 0.488603 * d.y;                         // sqrt(3/4π) * y
+    Y[2] = 0.488603 * d.z;                         // sqrt(3/4π) * z
+    Y[3] = 0.488603 * d.x;                         // sqrt(3/4π) * x
+
+    // Band 2 (l=2): quadratic
+    Y[4] = 1.092548 * d.x * d.y;                  // sqrt(15/4π)   * xy
+    Y[5] = 1.092548 * d.y * d.z;                  // sqrt(15/4π)   * yz
+    Y[6] = 0.315392 * (3.0*d.z*d.z - 1.0);        // 1/4 sqrt(5/π) * (3z²-1)
+    Y[7] = 1.092548 * d.x * d.z;                  // sqrt(15/4π)   * xz
+    Y[8] = 0.546274 * (d.x*d.x - d.y*d.y);        // sqrt(15/16π)  * (x²-y²)
+}
+```
+
+#### Projecting a Radiance Environment into SH
+Numerically integrates the radiance function `L(ω)` over the sphere, weighted by each SH basis function. For an environment map this samples N directions distributed over the hemisphere (cosine-weighted or uniform).
+
+```glsl
+// Compute SH projection in a compute shader — one thread contributes one sample
+// Each sample direction d has radiance rgb; accumulate into 9×3 coefficient array
+layout(set=0, binding=0) buffer SHCoeffs { vec4 coeffs[9]; }; // vec3 packed as vec4
+
+shared vec4 s_coeffs[9][64];  // per-thread partial sums (64 threads/group)
+
+layout(local_size_x=64) in;
+void main() {
+    uint  tid  = gl_LocalInvocationID.x;
+    uint  gid  = gl_GlobalInvocationID.x;
+    vec3  d    = fibonacci_sphere(gid, total_samples);   // equidistributed direction
+    vec3  rgb  = sample_env_map(d);
+    float pdf  = 1.0 / (4.0 * 3.14159);                 // uniform sphere
+
+    float Y[9];
+    sh_basis_L2(d, Y);
+
+    for (int i = 0; i < 9; ++i)
+        s_coeffs[i][tid] = vec4(rgb * Y[i] / pdf / float(total_samples), 0.0);
+
+    barrier();
+    // Parallel reduction within workgroup
+    for (uint stride = 32; stride > 0; stride >>= 1) {
+        if (tid < stride)
+            for (int i = 0; i < 9; ++i)
+                s_coeffs[i][tid] += s_coeffs[i][tid + stride];
+        barrier();
+    }
+    if (tid == 0)
+        for (int i = 0; i < 9; ++i)
+            atomicAdd_vec4(coeffs[i], s_coeffs[i][0]);  // accumulate globally
+}
+```
+
+#### SH Irradiance Evaluation
+Given 9 SH coefficients (from a probe or lightmap), evaluate the irradiance incident on a surface with normal `N` by a dot product of the coefficients with the SH-projected clamped-cosine kernel (the "ZH × SH convolution" — precomputed scaling constants `A_l`).
+
+```glsl
+// Evaluate irradiance from 9 SH coefficients at surface normal N
+// Coefficients are pre-convolved with the clamped-cosine kernel (Ramamoorthi 2001)
+// so no A_l scaling needed at runtime — just evaluate the SH basis.
+uniform vec3 sh[9];   // 9 coefficient vectors (one per colour channel)
+
+vec3 sh_irradiance(vec3 N) {
+    float Y[9];
+    sh_basis_L2(N, Y);
+    vec3 irr = vec3(0.0);
+    for (int i = 0; i < 9; ++i) irr += sh[i] * Y[i];
+    return max(vec3(0.0), irr);
+}
+// Alternatively: Sloan's polynomial form (avoids basis function calls)
+vec3 sh_irradiance_fast(vec3 N) {
+    // Coefficients pre-multiplied by Ramamoorthi-Hanrahan A_l and π
+    return max(vec3(0.0),
+        sh[0]
+      + sh[1]*N.y + sh[2]*N.z + sh[3]*N.x
+      + sh[4]*N.x*N.y + sh[5]*N.y*N.z + sh[6]*(3.0*N.z*N.z-1.0)
+      + sh[7]*N.x*N.z + sh[8]*(N.x*N.x-N.y*N.y));
+}
+```
+
+**Use cases** — DDGI probe irradiance storage (27 floats/probe), ambient character lighting from nearest probe, directional lightmap irradiance, sky-colour ambient in outdoor scenes.  
+**Reference** — [Ramamoorthi & Hanrahan: An Efficient Representation for Irradiance Environment Maps (SIGGRAPH 2001)](https://dl.acm.org/doi/10.1145/383259.383317); [Sloan: Stupid Spherical Harmonics (GDC 2008)](https://www.ppsloan.org/publications/StupidSH36.pdf)
+
+---
+
+## Direct Volume Rendering
+
+Direct Volume Rendering (DVR) ray-casts through a 3D scalar or RGBA volume texture, accumulating colour and opacity along the ray using a **transfer function** that maps each voxel value to a colour and opacity. Unlike isosurface extraction (§39), DVR does not produce a mesh — it renders the interior of the volume directly, revealing all density layers simultaneously. This is the primary rendering technique for CT/MRI medical imaging, scientific field visualization (fluid vorticity, electromagnetic fields), and smoke/explosion rendering from simulation volumes.
+
+**Shader stage**: DVR runs as a full-screen **fragment shader** or **compute shader** that ray-marches through the bounding box of the volume. The volume is stored in a `sampler3D` (or `image3D` for write access). Each step samples the volume and composites the result into the running accumulator using front-to-back Porter-Duff OVER.
+
+#### Transfer Function
+Maps a scalar voxel density to a `(RGB, α)` emission-absorption tuple. A 1D texture lookup encodes the user-controlled mapping; multiple opacity peaks isolate different density layers (e.g., skin vs bone in a CT scan).
+
+```glsl
+layout(set=0, binding=0) uniform sampler3D volume;        // scalar density [0,1]
+layout(set=0, binding=1) uniform sampler1D transfer_func; // density → RGBA
+```
+
+#### Front-to-Back Ray Casting
+Composites N sample slabs along the view ray using the front-to-back OVER operator. Terminates early when accumulated opacity reaches 1.
+
+```glsl
+// DVR fragment shader — ray cast through axis-aligned volume bounding box
+layout(location=0) out vec4 frag_color;
+
+uniform mat4  inv_model;      // world → volume local space [0,1]³
+uniform vec3  cam_pos_world;
+uniform float step_size;      // in volume space (e.g. 1/256)
+
+void main() {
+    // Reconstruct world ray from fragment position
+    vec3 ray_origin = (inv_model * vec4(cam_pos_world, 1.0)).xyz;
+    vec3 ray_dir    = normalize((inv_model * vec4(reconstruct_world_dir(), 0.0)).xyz);
+
+    // Intersect with unit cube [0,1]³
+    vec3 tmin3 = (vec3(0.0) - ray_origin) / ray_dir;
+    vec3 tmax3 = (vec3(1.0) - ray_origin) / ray_dir;
+    vec3 t1    = min(tmin3, tmax3);
+    vec3 t2    = max(tmin3, tmax3);
+    float tenter = max(max(t1.x, t1.y), t1.z);
+    float texit  = min(min(t2.x, t2.y), t2.z);
+    if (tenter >= texit || texit < 0.0) discard;
+    tenter = max(tenter, 0.0);
+
+    // Front-to-back compositing
+    vec4  result    = vec4(0.0);   // accumulated (RGB premultiplied, A)
+    float t         = tenter;
+
+    while (t < texit && result.a < 0.99) {
+        vec3  pos     = ray_origin + t * ray_dir;
+        float density = texture(volume, pos).r;
+        vec4  sample  = texture(transfer_func, density); // RGBA from TF
+        sample.a      = 1.0 - pow(1.0 - sample.a, step_size * 200.0); // opacity correction
+
+        // Front-to-back OVER: C_out = C_in + (1 - A_in) * C_sample * A_sample
+        result.rgb += (1.0 - result.a) * sample.rgb * sample.a;
+        result.a   += (1.0 - result.a) * sample.a;
+
+        t += step_size;
+    }
+    frag_color = vec4(result.rgb / max(result.a, 1e-6), result.a); // un-premultiply
+}
+```
+
+#### Empty Space Skipping
+A 3D min-max mip pyramid over the volume lets the ray skip regions that map to fully transparent transfer function values. For each ray step, look up the min-max at the current mip level; if the entire block is transparent, jump to the next non-empty block.
+
+**Use cases** — medical CT/MRI visualisation, smoke and explosion rendering from simulation grids, scientific field visualization (fluid vorticity, temperature), cloud volume rendering.  
+**Reference** — [Engel et al.: Real-Time Volume Graphics (AK Peters 2006)](https://www.real-time-volume-graphics.org/); [Krüger & Westermann: Acceleration Techniques for GPU-based Volume Rendering (IEEE Vis 2003)](https://doi.org/10.1109/VIS.2003.10056)
+
+---
+
+## Dynamic Environment Map Capture
+
+The IBL section (§7) covers consuming pre-captured environment maps. This section covers the capture pipeline itself: rendering the scene from a probe position into all 6 faces of a cubemap, generating specular pre-filtered mipmaps, and managing probe update scheduling for runtime use.
+
+**Shader stage**: the capture render uses the standard scene pipeline with a **90° FOV perspective view matrix** rotated for each face. Mipmap generation runs in **compute**. The probe blend and lookup use the IBL fragment shader patterns from §7.
+
+#### Six-Face Capture
+Render the scene 6 times from the probe origin, each time with a view matrix targeting one cube face (±X, ±Y, ±Z) and a 90° square FOV projection. Write into a `VkImageViewType::CUBE` render target. A geometry shader multi-view variant can render all 6 faces in one pass by layering output (`gl_Layer`).
+
+```glsl
+// Geometry shader — single-pass cube face selection
+layout(triangles) in;
+layout(triangle_strip, max_vertices=18) out;  // 6 faces × 3 vertices
+
+uniform mat4 face_proj_views[6];   // 6 view-projection matrices
+layout(location=0) in  vec3 v_world_pos[];
+layout(location=0) out vec3 g_world_pos;
+layout(location=1) out flat int g_face;
+
+void main() {
+    for (int face = 0; face < 6; ++face) {
+        gl_Layer = face;
+        g_face   = face;
+        for (int v = 0; v < 3; ++v) {
+            g_world_pos = v_world_pos[v];
+            gl_Position = face_proj_views[face] * vec4(v_world_pos[v], 1.0);
+            EmitVertex();
+        }
+        EndPrimitive();
+    }
+}
+```
+
+#### Specular Pre-Filtering (Runtime)
+After capture, generate the specular pre-filtered mip pyramid for use with the split-sum IBL (§7). Each mip level corresponds to a roughness value; for each mip, importance-sample the captured radiance using the GGX VNDF (§29) with the appropriate roughness.
+
+```glsl
+// Compute shader — pre-filter captured cubemap mip level for roughness r
+layout(set=0, binding=0) uniform samplerCube env_capture;
+layout(set=0, binding=1, rgba16f) uniform imageCube env_prefilter;
+
+uniform float roughness;   // 0.0 = mirror, 1.0 = fully diffuse
+uniform int   num_samples; // typically 1024
+
+void main() {
+    ivec3 px       = ivec3(gl_GlobalInvocationID);
+    vec2  uv       = (vec2(px.xy) + 0.5) / vec2(imageSize(env_prefilter).xy);
+    vec3  R        = cube_uv_to_dir(uv, px.z);  // reflection direction for this texel
+    vec3  N        = R;                           // assume N = V = R (split-sum approx)
+    vec3  prefiltered = vec3(0.0);
+    float total_weight = 0.0;
+    for (int i = 0; i < num_samples; ++i) {
+        vec2  xi  = hammersley(i, num_samples);
+        vec3  H   = sample_GGX_VNDF(R, roughness*roughness, roughness*roughness, xi.x, xi.y);
+        vec3  L   = reflect(-R, H);
+        float NdL = max(0.0, dot(N, L));
+        if (NdL > 0.0) {
+            prefiltered  += texture(env_capture, L).rgb * NdL;
+            total_weight += NdL;
+        }
+    }
+    imageStore(env_prefilter, px, vec4(prefiltered / max(total_weight, 1e-4), 1.0));
+}
+```
+
+#### Probe Update Scheduling
+Rendering 6 faces × full scene per probe per frame is prohibitive. Production strategies:
+
+- **Dirty-flag update**: only re-capture a probe when dynamic geometry within its influence radius has moved (animated characters, opening doors).
+- **Interleaved face update**: update one face per frame (6-frame full refresh), suitable for slowly changing environments.
+- **Temporal blending**: blend the new capture with the previous result using a slow alpha (e.g., α = 0.05 per frame) to avoid pop.
+
+**Use cases** — car paint reflections (interior/exterior environment), glossy office floors, wet streets, any scene requiring high-quality specular reflections beyond SSR and DDGI.  
+**Reference** — [Lagarde & de Rousiers: Moving Frostbite to PBR — Reflection Captures (SIGGRAPH 2014)](https://seblagarde.wordpress.com/2015/07/14/siggraph-2014-moving-frostbite-to-physically-based-rendering/)
+
+---
+
+## Caustics
+
+Caustics are the bright concentrated patterns of light formed when light refracts through a transparent medium (glass, water) or reflects off a curved specular surface and focuses onto a diffuse receiver. They are absent from standard rasterization pipelines (which cannot trace refracted paths) and require dedicated techniques.
+
+**Shader stage**: photon splatting uses a **vertex shader** to project photon hit positions into screen space and a **fragment shader** to blend the photon contribution. Screen-space caustics use a **compute or fragment shader** ray-marching from the surface. RT caustics use a `rchit` shader accumulating onto a caustic buffer.
+
+#### Photon Splatting (GPU Caustic Map)
+Trace photons from the light through the refracting surface (CPU or compute), recording where each photon hits the receiver surface. Splat each photon hit as an additive point sprite or small Gaussian into a caustic irradiance map aligned to the receiver, then apply the caustic map as an additive light contribution during shading.
+
+```glsl
+// Photon splat vertex shader — one vertex per photon hit point
+layout(location=0) in vec3 photon_world_pos;   // where photon hit the diffuse receiver
+layout(location=1) in vec3 photon_flux;         // RGB power of this photon
+
+layout(location=0) out vec3 v_flux;
+layout(location=1) out vec2 v_offset;           // offset within point sprite
+
+uniform mat4  proj_view;          // caustic map projection (light POV or world-aligned)
+uniform float splat_radius;       // Gaussian radius in caustic map texels
+
+void main() {
+    gl_Position  = proj_view * vec4(photon_world_pos, 1.0);
+    gl_PointSize = splat_radius * 2.0;
+    v_flux       = photon_flux;
+    v_offset     = vec2(0.0);  // filled by rasterizer for point sprite
+}
+```
+
+```glsl
+// Photon splat fragment shader — additive Gaussian splat
+layout(location=0) in vec3 v_flux;
+layout(location=0) out vec4 caustic_out;  // additive blend enabled
+
+void main() {
+    vec2  d = gl_PointCoord - 0.5;
+    float r = dot(d, d) * 4.0;
+    float w = exp(-r * 2.0);               // Gaussian kernel
+    caustic_out = vec4(v_flux * w, 1.0);  // additive — accumulate photon contributions
+}
+```
+
+**Apply caustic map in deferred lighting**: read the caustic irradiance map at the surface UV and add to the diffuse component.
+
+#### Screen-Space Caustics (Wyman 2005)
+For underwater scenes: each water surface fragment traces a refracted ray to find where it would hit the receiver. Splat the estimated flux concentration (inversely proportional to the refracted beam divergence) into a screen-space caustic buffer.
+
+```glsl
+// Screen-space caustic accumulation — fragment shader on the water surface
+uniform vec3  light_dir;
+uniform float ior;   // index of refraction (water ≈ 1.333)
+layout(location=0) in vec3 world_pos;
+layout(location=1) in vec3 world_normal;
+
+layout(location=0) out vec4 caustic_contribution;  // additive
+
+void main() {
+    vec3 refracted = refract(-light_dir, world_normal, 1.0 / ior);
+    // Trace to receiver plane (y = receiver_y)
+    float t   = (receiver_y - world_pos.y) / refracted.y;
+    vec3  hit = world_pos + t * refracted;
+
+    // Estimate flux concentration from Jacobian of refraction map
+    vec3 N_dx  = dFdx(world_normal);
+    vec3 N_dy  = dFdy(world_normal);
+    float jacobian = abs(1.0 / (1.0 + dot(N_dx, N_dx) + dot(N_dy, N_dy)));
+
+    // Project hit to screen and write additive contribution
+    vec4 hit_clip = proj_view * vec4(hit, 1.0);
+    gl_FragDepth  = hit_clip.z / hit_clip.w;
+    caustic_contribution = vec4(light_color * jacobian * 0.1, 1.0);
+}
+```
+
+**RT Caustics**: with `VK_KHR_ray_tracing_pipeline`, trace refracted/reflected paths from light sources; accumulate hit radiance into a caustic buffer; denoise with SVGF. Correct but expensive.
+
+**Use cases** — underwater swimming pool caustics, wine glass shadows, gemstone sparkle, aquarium walls.  
+**Reference** — [Wyman: Interactive Image-Space Caustics (Eurographics 2005)](https://www.cs.uiowa.edu/~cwyman/publications/files/caustics2005.pdf); [Jensen: A Practical Guide to Global Illumination using Photon Mapping (SIGGRAPH 2002 Course)](https://graphics.ucsd.edu/~henrik/papers/book/)
+
+---
+
+## Spherical Gaussians
+
+Spherical Gaussians (SGs) are an alternative basis to SH for representing directional functions on the sphere. An SG lobe is defined by a centre direction `µ`, a sharpness `λ`, and an amplitude `a`:
+
+`G(d; µ, λ, a) = a · exp(λ · (dot(µ, d) − 1))`
+
+Unlike SH (which is a global polynomial basis, smooth but incapable of sharp features), a single SG can represent an arbitrarily sharp directional lobe. Multiple SGs are summed to approximate an environment. SGs support analytic products, integrals, and BRDF convolution — making them more flexible than SH for glossy and specular GI.
+
+**Shader stage**: SG lighting evaluation runs in the **fragment shader** — one dot product + exp per SG per fragment. SG projection runs in **compute** (gradient descent or EM fitting against a set of sample directions).
+
+#### SG Evaluation and Irradiance Integral
+The integral of an SG over the hemisphere (for diffuse irradiance) has a closed form. The product of two SGs (for BRDF × lighting) is another SG.
+
+```glsl
+struct SG {
+    vec3  amplitude;   // RGB colour weight
+    vec3  axis;        // normalised centre direction µ
+    float sharpness;   // λ — larger = narrower lobe
+};
+
+// Evaluate SG lobe at direction d
+vec3 sg_eval(SG sg, vec3 d) {
+    return sg.amplitude * exp(sg.sharpness * (dot(sg.axis, d) - 1.0));
+}
+
+// Product of two SGs — result is a new SG (exact, up to normalisation)
+SG sg_product(SG a, SG b) {
+    SG result;
+    result.sharpness = a.sharpness + b.sharpness;
+    result.axis      = normalize(a.sharpness * a.axis + b.sharpness * b.axis);
+    float norm_factor = exp(dot(a.sharpness * a.axis + b.sharpness * b.axis,
+                                result.axis) - a.sharpness - b.sharpness);
+    result.amplitude = a.amplitude * b.amplitude * norm_factor;
+    return result;
+}
+
+// Hemispherical integral of SG × clamped cosine (for diffuse irradiance)
+// Wang et al. 2009 approximation
+vec3 sg_diffuse_irradiance(SG sg, vec3 N) {
+    float mu_dot_n = dot(sg.axis, N);
+    float c0 = 0.36, c1 = 0.25 / 0.36;
+    float eml  = exp(-sg.sharpness);
+    float em2l = eml * eml;
+    float rl   = 1.0 / sg.sharpness;
+    float scale = 1.0 + 2.0 * em2l / 3.0 - eml;
+    float b  = clamp(mu_dot_n, -1.0, 1.0);
+    float t  = sqrt(1.0 - b*b);
+    float d  = (1.0 - eml * (1.0 - 2.0*rl*(1.0 - eml) + rl * rl * (2.0 - em2l)));
+    return sg.amplitude * scale * (c0 * t * sin(acos(b)) + (1.0 - c0*t) * b) * d;
+}
+```
+
+#### SG Environment Lighting
+An environment map projected into N=12 SG lobes (a common approximation) can be evaluated per-fragment as the sum of N SG irradiance integrals — far fewer shader instructions than environment map importance sampling.
+
+```glsl
+#define NUM_SG 12
+uniform SG sg_lights[NUM_SG];
+
+vec3 sg_env_irradiance(vec3 N) {
+    vec3 irr = vec3(0.0);
+    for (int i = 0; i < NUM_SG; ++i)
+        irr += sg_diffuse_irradiance(sg_lights[i], N);
+    return irr;
+}
+```
+
+**Use cases** — Lumen uses SGs for storing radiance in surface cache probes; mobile GI systems use SGs as a specular-capable alternative to SH probes; baked GI with glossy response.  
+**Reference** — [Wang et al.: All-Frequency Rendering of Dynamic, Spatially-Varying Reflectance (SIGGRAPH 2009)](https://dl.acm.org/doi/10.1145/1618452.1618479); [Pettineo: Baking and Rendering with Spherical Gaussians (The Danger Zone)](https://therealmjp.github.io/posts/sg-series-part-1-a-brief-and-incomplete-history-of-baked-lighting-representations/)
+
+---
+
+## Ordered Dithering and Output Quantization
+
+When a smooth gradient is written to an 8-bit render target (`VK_FORMAT_R8G8B8A8_UNORM`), the 8-bit quantization step (1/255 ≈ 0.004) is visible as discrete colour bands — posterisation. **Dithering** adds a carefully chosen noise pattern to the signal before quantization, distributing the quantization error spatially rather than temporally, making it perceptually invisible. This is required whenever an HDR or high-precision value is written to an 8-bit surface: the final output stage, lightmap encoding, and screen-door transparency thresholds.
+
+**Shader stage**: dithering is applied in the **fragment shader** immediately before writing the final output value, as a one-line addition before the implicit or explicit quantization.
+
+#### Bayer Matrix Ordered Dithering
+A Bayer matrix `M_n` is a spatially tiled threshold matrix whose entries are distributed to maximally spread quantization error across pixels. An 8×8 Bayer matrix is common; it is typically stored as a 64-entry `uint` lookup or computed analytically.
+
+```glsl
+// 4×4 Bayer matrix (normalised to [0,1) range)
+float bayer4x4(ivec2 px) {
+    const float M[16] = float[](
+         0.0/16.0,  8.0/16.0,  2.0/16.0, 10.0/16.0,
+        12.0/16.0,  4.0/16.0, 14.0/16.0,  6.0/16.0,
+         3.0/16.0, 11.0/16.0,  1.0/16.0,  9.0/16.0,
+        15.0/16.0,  7.0/16.0, 13.0/16.0,  5.0/16.0
+    );
+    return M[(px.y % 4) * 4 + (px.x % 4)];
+}
+
+// Apply dithering before writing to 8-bit target
+vec3 dither_output(vec3 color, ivec2 px) {
+    float threshold = bayer4x4(px) - 0.5;          // centre around zero
+    color += threshold / 255.0;                      // one quantization step
+    return color;                                     // will be rounded on write
+}
+```
+
+#### Blue-Noise Dithered Quantization
+Blue-noise dithering (using the precomputed blue noise texture from §29) spreads error at high spatial frequencies rather than the grid-aligned pattern of Bayer dithering. Preferred for organic gradients; Bayer is preferred for geometric patterns.
+
+```glsl
+layout(set=0, binding=0) uniform sampler2D blue_noise;  // 64×64 void-and-cluster
+uniform uint frame_index;
+
+vec3 dither_blue_noise(vec3 color, ivec2 px) {
+    float noise = texelFetch(blue_noise, px % 64, 0).r;
+    // Temporal decorrelation
+    noise = fract(noise + float(frame_index) * 0.61803398875);
+    color += (noise - 0.5) / 255.0;
+    return color;
+}
+```
+
+#### Temporal Dithering
+Alternates dither thresholds across frames so that TAA's temporal accumulation removes the dithered noise entirely, leaving a clean gradient. Each pixel receives a different threshold each frame (using frame_index modulo the dither matrix period). The average over N frames has zero dither error.
+
+```glsl
+// Temporal Bayer — shift spatial phase by frame index
+float bayer_temporal(ivec2 px, uint frame) {
+    ivec2 shifted = (px + ivec2(frame * 17u, frame * 31u)) % 4;  // coprime shifts
+    return bayer4x4(shifted) - 0.5;
+}
+```
+
+**Applications beyond output**: dithered alpha thresholds for stochastic transparency (§44); dithered LOD crossfade thresholds (§44); dithered AO quantization when storing to 8-bit G-Buffer.  
+**Reference** — [Roberts: The Unreasonable Effectiveness of Quasirandom Sequences (2018)](http://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/); [Ulichney: Digital Halftoning (MIT Press 1987)]
+
+---
+
+## Meshlet Generation
+
+The mesh shader pipeline (§32) dispatches one task shader workgroup per **meshlet** — a small cluster of ≤64 vertices and ≤126 primitives with a precomputed bounding sphere and normal cone for efficient culling. Meshlets are not a GPU runtime algorithm; they are generated offline (or at asset-load time) by a preprocessing step that partitions the mesh. This section explains the algorithm so that the mesh shader cluster data format is fully understood.
+
+**Tool**: the reference implementation is [meshoptimizer](https://github.com/zeux/meshoptimizer) (`meshopt_buildMeshlets`). The algorithm described here matches its output format.
+
+#### Meshlet Cluster Data Layout
+Each meshlet stores:
+- An index into a shared **vertex buffer** (64 entries max): `uint8_t vertices[64]` — local vertex indices into the mesh's global vertex array.
+- A packed **triangle list** (126 entries max): `uint8_t indices[378]` — triplets of indices into the local `vertices[]` array (3 bytes per triangle).
+- A **bounding sphere** (centre + radius) for frustum culling.
+- A **normal cone** (apex, axis direction, cutoff angle) for backface cluster culling.
+
+```c
+// meshoptimizer meshlet structure (CPU-side, matches GPU SSBO layout)
+struct Meshlet {
+    uint32_t vertex_offset;    // offset into global meshlet_vertices[] array
+    uint32_t triangle_offset;  // offset into global meshlet_triangles[] array
+    uint32_t vertex_count;     // ≤ 64
+    uint32_t triangle_count;   // ≤ 126
+
+    // Bounding sphere (for frustum cull in task shader)
+    float    center[3];
+    float    radius;
+
+    // Normal cone (for backface cull in task shader)
+    int8_t   cone_axis[3];     // quantised normalised axis
+    int8_t   cone_cutoff;      // cos(half_angle) × 127
+    float    cone_apex[3];
+};
+```
+
+#### Greedy Flood-Fill Partitioning
+The core algorithm grows meshlet clusters by a greedy flood-fill over the mesh adjacency graph:
+
+1. Start with an unused triangle as the seed.
+2. For each candidate adjacent triangle: if adding it keeps vertex count ≤ 64 and triangle count ≤ 126, add it to the current meshlet.
+3. When no adjacent triangle fits, close the meshlet, record it, start a new one.
+4. Score candidates by the number of vertices they share with the current meshlet (maximising vertex cache reuse and minimising meshlet count).
+
+```glsl
+// This runs CPU-side or in a compute preprocessing shader
+// Pseudocode for the greedy partitioner:
+//   for each unused_triangle t:
+//     if current_meshlet.try_add(t): continue
+//     else: finalise(current_meshlet); current_meshlet = new Meshlet(); current_meshlet.add(t)
+//   finalise(current_meshlet)
+// try_add: check if all 3 vertices of t are already in vertex_map OR
+//   vertex_count + new_vertices ≤ MAX_VERTICES AND triangle_count < MAX_TRIANGLES
+```
+
+#### Normal Cone Computation
+For each meshlet, compute the tightest cone enclosing all triangle normals. In the task shader, if the cone's apex direction (negated) has a dot product with the view direction greater than `cos(cone_angle + 90°)`, the entire meshlet is backfacing and can be discarded without invoking the mesh shader.
+
+```glsl
+// Task shader backface cone culling — from §32, explained here
+// cone_axis: average normal direction of meshlet's triangles
+// cone_cutoff: cos(max deviation of any triangle normal from cone_axis)
+bool meshlet_is_backface(Meshlet m, vec3 cam_pos) {
+    vec3 apex      = vec3(m.cone_apex);
+    vec3 axis      = vec3(m.cone_axis) / 127.0;  // dequantise
+    float cutoff   = float(m.cone_cutoff) / 127.0;
+    vec3  view_dir = normalize(apex - cam_pos);
+    // If all normals face away from camera: dot(view, axis) > cutoff
+    return dot(view_dir, axis) >= cutoff;
+}
+```
+
+**Performance impact**: meshlet generation enables the task shader to cull 40–70% of clusters on typical scene geometry before any triangle rasterization occurs, as measured in Nanite and id Tech 7 presentations.  
+**Reference** — [Wihlidal: GPU-Driven Rendering (GDC 2016)](https://advances.realtimerendering.com/s2016/); [meshoptimizer: zeux/meshoptimizer](https://github.com/zeux/meshoptimizer); [Kubisch: Turing Mesh Shaders (NVIDIA 2018)](https://developer.nvidia.com/blog/introduction-turing-mesh-shaders/)
+
+---
+
+## Shadow Atlas and Cached Shadows
+
+Individual shadow maps for point, spot, and directional lights are described in §4 and §47. In a scene with dozens of shadow-casting lights, allocating a separate framebuffer per light is impractical. A **shadow atlas** packs all lights' shadow maps into a single large texture, with a region allocated per light proportional to its screen-space influence. **Shadow caching** avoids re-rendering shadow faces whose content (static geometry only) has not changed, dramatically reducing shadow rendering cost.
+
+**Shader stage**: the shadow atlas sampler lookup uses standard `texture(shadow_atlas, uv)` with per-light UV transform. Atlas management and cache invalidation run on the **CPU** or in **compute** (dirty-flag evaluation, region assignment).
+
+#### Shadow Atlas Layout
+A `4096×4096` or `8192×8192` depth texture subdivided into tiles. Each light is assigned a tile whose size is proportional to the light's projected screen area (larger tiles for nearby lights, smaller for distant). The assignment is recalculated each frame as lights move or appear.
+
+```glsl
+// Per-light atlas metadata (in a SSBO)
+struct ShadowAtlasEntry {
+    vec4  uv_rect;       // (x, y, width, height) in [0,1] atlas UV space
+    mat4  proj_view;     // light's shadow projection-view matrix
+    float near, far;     // for linear depth reconstruction
+    uint  is_cached;     // 1 if static-only content is still valid
+};
+layout(set=0, binding=0) readonly buffer AtlasSSBO { ShadowAtlasEntry entries[]; };
+layout(set=0, binding=1) uniform sampler2DShadow shadow_atlas;
+
+// Shadow lookup for light i
+float atlas_shadow(uint light_idx, vec3 world_pos) {
+    ShadowAtlasEntry e = entries[light_idx];
+    vec4  light_clip   = e.proj_view * vec4(world_pos, 1.0);
+    vec3  ndc          = light_clip.xyz / light_clip.w;
+    vec2  atlas_uv     = e.uv_rect.xy + (ndc.xy * 0.5 + 0.5) * e.uv_rect.zw;
+    float compare      = ndc.z;
+    return texture(shadow_atlas, vec3(atlas_uv, compare));  // hardware PCF
+}
+```
+
+#### Shadow Map Caching (Static Geometry)
+Shadow maps containing only static geometry can be rendered once and cached indefinitely, re-rendered only when:
+- A dynamic object enters the light's view frustum (invalidates the affected region).
+- The light parameters (position, angle, range) change.
+- Static geometry is modified (level streaming, destruction).
+
+The cache maintains a dirty flag per atlas tile. Each frame, only dirty tiles are rendered. Static tiles are rendered in a separate, persistent shadow pass; dynamic objects are overlaid in a second pass.
+
+```glsl
+// Two-pass cached shadow rendering:
+// Pass 1 (conditional): render static geometry into cached tile if dirty
+//   → clear dirty flag, retain tile content across frames
+// Pass 2 (always):      render dynamic objects into a temporary tile
+//   → composited with the cached static tile during shadow lookup
+//   result: shadow = static_shadow * dynamic_shadow
+
+float cached_shadow_lookup(uint light_idx, vec3 world_pos) {
+    float s_static  = atlas_shadow_layer(light_idx, world_pos, LAYER_STATIC);
+    float s_dynamic = atlas_shadow_layer(light_idx, world_pos, LAYER_DYNAMIC);
+    return min(s_static, s_dynamic);  // both must be unshadowed to be lit
+}
+```
+
+#### Atlas Region Assignment Heuristics
+- **Screen-space footprint**: compute the projected area of the light's influence sphere in screen pixels; assign a tile of proportional size (e.g., 512² for lights covering > 30% of screen, 128² for < 5%).
+- **LRU eviction**: when the atlas is full and a new light requests a tile, evict the least-recently-used tile.
+- **Stable assignment**: avoid reassigning tiles across frames (causes one-frame shadow pop); prefer keeping the same tile between frames unless the light has moved significantly.
+
+**Use cases** — Frostbite many-light shadow atlas, id Tech 7 cached shadows, Unity HDRP shadow atlas; used whenever more than 4 lights cast shadows simultaneously.  
+**Reference** — [Valient: Rendering of COD:AW (SIGGRAPH 2014)](https://advances.realtimerendering.com/s2014/); [Ubisoft: Cascaded Shadow Map Caching in For Honor (GDC 2018)](https://advances.realtimerendering.com/s2018/)
 
 ---
 
