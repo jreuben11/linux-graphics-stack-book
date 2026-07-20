@@ -2,6 +2,14 @@
 
 **Audiences:** Graphics application developers implementing character animation, procedural geometry, or physics-driven deformation pipelines on Linux using Vulkan or OpenGL compute.
 
+**CPU vs. GPU split.** Roughly 70% of the material in this chapter is GPU-centric: algorithms that are data-parallel over vertices, triangles, or voxels map directly to Vulkan compute shaders and run entirely on the GPU after an initial dispatch. The remaining 30% is CPU-centric or hybrid, falling into two categories:
+
+*CPU-only:* Mature production libraries whose APIs are inherently serial or topology-dependent — OpenSubdiv's Far layer (`TopologyRefiner`, `StencilTableFactory`), OpenCASCADE's `BRepMesh_IncrementalMesh`, meshoptimizer's simplification and encode/decode passes, and VHACD convex decomposition. These run on the CPU and upload their results (index buffers, stencil tables, convex hull vertex sets) as Vulkan buffers for GPU consumption.
+
+*Hybrid:* Operations with a fast parallel component and a slower serial or data-dependent component. Examples: OpenSubdiv (CPU Far → GPU Osd evaluator), Poisson surface reconstruction (CPU reference library vs. GPU splat/solve/MC pipeline), mesh Boolean operations (GPU BVH broad-phase and clipping kernel, CPU global inside/outside classification), and constrained Delaunay triangulation (CPU Triangle library for constraint insertion, GPU for Ruppert refinement). In all hybrid cases the chapter shows the GPU-accelerable portion in compute shader code and notes which steps remain on CPU.
+
+The sections below are ordered by geometry domain rather than CPU/GPU split. Where a section covers a CPU library, the practical GPU integration pattern (data layout for upload, barrier placement, descriptor set structure) is always shown alongside the library API.
+
 ---
 
 ## Table of Contents
