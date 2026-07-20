@@ -20,8 +20,13 @@
 - [11. Desktop Toolkit Origins: Qt, GTK, and the Linux Desktop Wars](#11-desktop-toolkit-origins-qt-gtk-and-the-linux-desktop-wars)
 - [12. Blender: Open-Source 3D's Long March to GPU-First Rendering](#12-blender-open-source-3ds-long-march-to-gpu-first-rendering)
 - [13. The Web's 3D History: VRML, Flash, WebGL, and WebGPU](#13-the-webs-3d-history-vrml-flash-webgl-and-webgpu)
-- [14. Recurring Design Themes](#14-recurring-design-themes)
-- [15. The Road Ahead: 2026 and Beyond](#15-the-road-ahead-2026-and-beyond)
+- [14. NVIDIA's Proprietary Kernel Driver (1999–2022)](#14-nvidias-proprietary-kernel-driver-19992022)
+- [15. Android Graphics: The Largest Linux Graphics Deployment](#15-android-graphics-the-largest-linux-graphics-deployment)
+- [16. Linux Audio: From OSS to PipeWire](#16-linux-audio-from-oss-to-pipewire)
+- [17. Video Codec Standards and Hardware Decode](#17-video-codec-standards-and-hardware-decode)
+- [18. Display Hardware Evolution: CRT to HDR](#18-display-hardware-evolution-crt-to-hdr)
+- [19. Recurring Design Themes](#19-recurring-design-themes)
+- [20. The Road Ahead: 2026 and Beyond](#20-the-road-ahead-2026-and-beyond)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -495,7 +500,207 @@ The historical arc is complete: VRML failed because hardware was not ubiquitous 
 
 ---
 
-## 14. Recurring Design Themes
+## 14. NVIDIA's Proprietary Kernel Driver (1999–2022)
+
+The Nouveau story (§6) tells how the community reverse-engineered NVIDIA's hardware from outside. The complementary narrative is what NVIDIA actually shipped, why the Linux community found it so architecturally disruptive, and what the 2022 partial opening ultimately means.
+
+### The Binary Kernel Module Model
+
+NVIDIA began shipping a Linux driver for its consumer GPU lines around 1999–2000, initially targeting the TNT2 and GeForce 256 chipsets. From its first release, the driver used the **binary kernel module** model: a small open-source wrapper exposed the kernel API surface, but the vast majority of driver logic lived in a precompiled binary object that NVIDIA linked at install time. The kernel module was recompiled against each kernel release via a build script; the binary blob was not.
+
+This created immediate tension with Linux kernel development practices. Kernel internal APIs are not stable; they change between releases in ways that require semantic understanding, not just mechanical substitution. Binary drivers could not track these changes. The result was the **DKMS** (Dynamic Kernel Module Support) ecosystem: a framework for rebuilding out-of-tree modules against new kernels, developed by the community to manage exactly this problem.
+
+The userspace side was equally disruptive. NVIDIA's OpenGL implementation lived in a private `libGL.so` that bypassed Mesa entirely. Linux distributions had begun shipping Mesa's `libGL.so` as the system OpenGL library; NVIDIA's installer would overwrite it, creating a `libGL` conflict that affected every OpenGL application on the system. The `update-alternatives` mechanism in Debian-based distributions was significantly shaped by the need to manage NVIDIA's `libGL` versus Mesa's, and it remains in use for that purpose today.
+
+### The Firmware Lockout Escalation
+
+Through the mid-2000s (GeForce 6000 and 7000 series), Nouveau could implement basic 3D rendering because the GPU command interface, while undocumented, was technically accessible via MMIO tracing. The G80 generation (2006, GeForce 8000 series) introduced a microcode-dependent PMU (Power Management Unit) requiring signed firmware for power management. Nouveau could not properly reclock the G80 family.
+
+The Fermi generation (GF100, 2010, GeForce GTX 400 series) escalated this further. Fermi's 3D command processor required signed PMU microcode for authentication before enabling full 3D rendering — a hardware-enforced barrier against open-source 3D drivers. Nouveau on Fermi hardware ran at safe, low clock speeds because reclocking without authenticated firmware risked hardware damage. Maxwell (2014) and Pascal (2016) continued this pattern.
+
+By Turing (2018), the **GSP-RM** (GPU System Processor Resource Manager) architecture was established: a dedicated ARM Cortex-based microcontroller on the GPU die ran NVIDIA's proprietary resource manager firmware, and the host driver communicated with it via a message-passing interface rather than directly programming hardware registers. Chapter 9 covers GSP-RM in technical depth.
+
+### The Wayland Integration Problem
+
+NVIDIA's proprietary driver lagged behind the Linux graphics ecosystem's Wayland transition by several years. The Wayland protocol's core buffer-sharing mechanism — `linux-dmabuf-v1`, through which clients pass DMA-BUF file descriptors to the compositor — required that the GPU driver support DMA-BUF buffer export. NVIDIA's proprietary driver did not add DMA-BUF export support until 2018 (driver version 390).
+
+More disruptively, NVIDIA initially proposed **EGLStreams** as an alternative to the **GBM** (Generic Buffer Manager) buffer allocation interface that the rest of the Linux graphics stack used for Wayland. EGLStreams used a producer-consumer model rather than GBM's handle-based sharing. GNOME adopted EGLStreams in Mutter (2017–2020) to enable NVIDIA Wayland support; KDE Plasma never did. The maintainability cost of supporting two compositor buffer management paths was significant. NVIDIA added GBM support in driver version 495 (October 2021); GNOME dropped EGLStreams support shortly thereafter.
+
+The explicit synchronization gap was the final major integration problem. Wayland's `linux-dmabuf-v1` protocol used implicit fences — fence state embedded in DMA-BUF objects — for buffer synchronization. NVIDIA's proprietary driver's fences were not interoperable with the DRM implicit fence infrastructure. The **linux-drm-syncobj-v1** Wayland protocol (finalized 2023), which uses explicit syncobj timeline fences instead of implicit DMA-BUF fences, was designed specifically to provide a synchronization model that NVIDIA's driver could implement correctly. The explicit sync protocol's design reflects the constraint: it must work for drivers that do not participate in the DRM implicit fence infrastructure.
+
+### The 2022 Opening and Its Limits
+
+On 11 May 2022, NVIDIA published the `open-gpu-kernel-modules` repository on GitHub, releasing the kernel driver source code for Turing and later GPUs under a dual MIT/GPL license. [Source](https://developer.nvidia.com/blog/nvidia-releases-open-source-gpu-kernel-modules)
+
+The release was significant and simultaneously limited. NVIDIA published source code, not hardware documentation. The source code was opaque — written for NVIDIA's internal engineering purposes with NVIDIA-internal naming conventions and minimal explanatory comments. It provided register name headers that the Nouveau community could use to accelerate reverse-engineering, but not the architectural documentation (GPU memory model, shader ISA, power management constraints) that would enable a community driver written from first principles.
+
+More fundamentally, the open kernel module still required the GSP-RM firmware binary — a closed, signed binary that NVIDIA ships with its driver. A source-open driver that requires a signed firmware blob is not the same as a documented, community-maintainable hardware interface. Chapter 9 addresses this distinction in depth.
+
+The 2022 release enabled NVK's development (§6.4) by providing register definitions and accelerated the community's understanding of the Turing command interface. Whether a hardware interface mediated by closed firmware qualifies as "open" in any meaningful sense remains the central unresolved question of NVIDIA's relationship with the Linux graphics community.
+
+---
+
+## 15. Android Graphics: The Largest Linux Graphics Deployment
+
+Android uses the Linux kernel as its base, making it quantitatively the largest single deployment of the Linux graphics stack. As of 2024, over 3 billion active Android devices run Linux DRM kernel drivers, OpenGL ES, and (increasingly) Vulkan. The Android graphics stack evolved in parallel with the desktop Linux stack but with different constraints: mobile SoC hardware, tight power budgets, and an ecosystem long dominated by proprietary GPU drivers from ARM, Qualcomm, and Imagination Technologies.
+
+### SurfaceFlinger and the Compositor Model
+
+Android's compositor, **SurfaceFlinger**, was written primarily by Mathias Agopian at Google and shipped with Android 1.0 in 2008. SurfaceFlinger's architecture predates Wayland but shares its fundamental insight: the compositor manages the display; applications submit rendering output as buffers; the compositor composites them using hardware planes where available.
+
+SurfaceFlinger uses Android's **Binder** IPC mechanism — a kernel-level message-passing interface specific to Android — rather than Unix domain sockets. It allocates shared graphics buffers through **Gralloc** (Graphics Allocator), Android's HAL-based buffer allocation interface, analogous to GBM on the Linux desktop. The **Hardware Composer (HWC)** HAL determines which layers can be handled by display hardware planes and which must be GPU-composited — a split analogous to KMS atomic plane assignment.
+
+### The OpenGL ES and Vulkan Trajectory
+
+Android's graphics API from day one was EGL and OpenGL ES. The evolution tracks GPU hardware capability:
+
+- Android 2.2 (2010): OpenGL ES 2.0 — programmable shaders, required for apps after 2012
+- Android 4.3 (2013): OpenGL ES 3.0 — multiple render targets, transform feedback, 3D textures
+- Android 5.0 (2014): OpenGL ES 3.1 — compute shaders, SSBO, atomics
+- Android 7.0 (2016): Vulkan 1.0 mandatory for hardware launched after 2016
+
+Google's **ANGLE** (Almost Native Graphics Layer Engine, originally a Chrome project) became Android's default OpenGL ES implementation starting with Android 12 (2021), translating OpenGL ES over Vulkan. OpenGL ES is no longer expected to be natively implemented in Android hardware drivers; it is translated to Vulkan. This parallels the desktop trend toward Vulkan as the single universal target: Mesa's `zink` driver provides OpenGL over Vulkan by the same logic.
+
+### freedreno: Reverse-Engineering Adreno
+
+Qualcomm's Adreno GPU series powers the Snapdragon SoC family — among the most widely deployed mobile GPU architectures in existence. Like NVIDIA and ARM, Qualcomm shipped exclusively proprietary drivers through the 2010s.
+
+Rob Clark began reverse-engineering the Adreno A2xx GPU in 2010, starting the **freedreno** project using the same mmiotrace methodology Nouveau employed. The freedreno kernel DRM driver merged into mainline Linux in 3.4 (2012). [Source](https://lwn.net/Articles/493987/)
+
+The Mesa **Turnip** Vulkan driver for Adreno, developed by Valve and Igalia engineers, landed in Mesa 19.3 (2019) and achieved Vulkan 1.3 conformance by 2023. Turnip is now the default Vulkan driver for Adreno hardware on PostmarketOS, Fedora Mobile, and other mainline-kernel Android distributions. A conformant, open-source Vulkan driver for one of the world's most common mobile GPU architectures — reached through reverse engineering without any vendor cooperation — is among the most significant achievements of the open-source graphics community in the 2020s.
+
+### Android/Linux Convergence
+
+The Android and desktop Linux graphics stacks have converged significantly since 2016. Android's DRM HWC (introduced in Android 5.0 and refined in Android 12) uses the DRM/KMS kernel interface directly, replacing the earlier HAL-based framebuffer model. Mesa drivers (Turnip for Adreno, Panfrost/Panthor for Mali) run on Android devices booting mainline Linux kernels.
+
+The persistent divergence is in the HAL layer: Android's Gralloc, HWC2, and camera HAL interfaces remain Android-specific abstractions with no direct desktop Linux equivalent. Bridging them — enabling Android userspace on a mainline Linux kernel without Android-specific patches — is the goal of **Waydroid**, which runs Android in an LXC container using the host kernel's GPU driver and Wayland compositor. [Source](https://waydro.id/) The existence of Waydroid underscores how close the two stacks have become: the same Mesa Vulkan driver, the same DRM kernel, the same Wayland compositor, serving both a native Linux desktop and a full Android userspace.
+
+---
+
+## 16. Linux Audio: From OSS to PipeWire
+
+The evolution of Linux audio from exclusive device access to session-managed multimedia routing mirrors the graphics stack's trajectory from direct framebuffer access to Wayland's compositor model. Both stacks independently converged on graph-based session management as the correct architecture for a multi-application multimedia desktop — and both took roughly the same time to get there.
+
+### OSS: The Single-Application Model (1992–2002)
+
+The **Open Sound System** (OSS), developed by Hannu Savolainen beginning in 1992, exposed audio hardware as character devices: `/dev/dsp` for PCM audio, `/dev/midi` for MIDI, `/dev/mixer` for volume control. Applications opened `/dev/dsp` and wrote PCM samples directly. OSS was functionally analogous to the pre-DRI model for graphics: the application had exclusive, direct hardware access. Only one application could use the sound card at a time.
+
+The structural problem was identical to the GLX bottleneck: exclusive hardware access was correct for a single-application workstation but broke when multiple applications needed simultaneous audio — a universal desktop requirement.
+
+### ALSA: The Kernel Framework (2002–)
+
+**ALSA** (Advanced Linux Sound Architecture), developed by Jaroslav Kysela and Takashi Iwai, merged into the Linux 2.6 kernel in 2002, replacing OSS as the kernel audio subsystem. ALSA provided a proper kernel driver model — PCM streams, mixer controls, MIDI sequencing — with per-card, per-stream access control. ALSA's **dmix** plugin enabled software mixing in the ALSA library layer, allowing multiple applications to share one output without kernel changes.
+
+ALSA's architecture corresponds to the DRM/KMS layer in the graphics stack: it provides the kernel mechanism but not the session-management policy a desktop environment requires.
+
+### PulseAudio and JACK: Two Audiences, Two Daemons (2002–2022)
+
+**JACK** (JACK Audio Connection Kit, 2002) introduced a graph-based low-latency audio routing model targeted at professional audio production — DAWs, live performance, studio monitoring. JACK exposed explicit connection management between audio sources and sinks, achieving sub-millisecond round-trip latency on RT-patched kernels. Its complexity and manual configuration made it inaccessible to typical desktop users.
+
+**PulseAudio**, written by Lennart Poettering beginning in 2004 and default in most major distributions by 2008, placed a daemon between ALSA and applications. PulseAudio implemented software mixing, per-application volume control, audio routing between devices, network audio via RTP, and Bluetooth audio — analogous to the Wayland compositor's role as the session-scoped display manager. It solved the simultaneous-audio problem but had known limitations: high latency relative to JACK (making it unsuitable for professional production), and a plugin architecture that accumulated complexity over time.
+
+The result was two incompatible sound servers serving two audiences, with no path for a professional audio user also running a standard GNOME desktop to use both simultaneously.
+
+### PipeWire: The Unified Multimedia Graph (2017–)
+
+**PipeWire**, developed by Wim Taymans at Red Hat beginning in 2017, unifies the PulseAudio and JACK models into a single session-aware graph that also handles V4L2 camera streams. PipeWire's design explicitly targets what neither predecessor could deliver alone:
+
+- **Consumer audio** (PulseAudio replacement): per-application volume, Bluetooth, automatic device switching, PulseAudio-compatible API for existing applications
+- **Professional audio** (JACK replacement): low-latency operation matching JACK on RT kernels, graph-based signal routing, JACK-compatible API for DAW applications
+- **Camera and video routing**: V4L2 camera streams are nodes in the same PipeWire graph as audio, enabling a single portal for multimedia access in the Flatpak sandbox model
+
+PipeWire became the default sound server in **Fedora 34** (April 2021) and **Ubuntu 22.10** (October 2022). The `xdg-desktop-portal` camera portal routes through PipeWire, making it the session multimedia manager for both audio and camera streams. [Source](https://pipewire.org/)
+
+The architectural parallel to the graphics stack is precise. OSS corresponds to DRI1's direct hardware access; ALSA corresponds to the DRM kernel arbitration layer; PulseAudio corresponds to the session compositor owning the hardware and routing client access; PipeWire corresponds to Wayland's zero-copy, explicit-routing graph model. Both stacks independently converged on the same architectural answer to the same underlying problem: a session manager that owns the hardware resource, provides explicit routing between producers and consumers, and achieves zero-copy handoff where hardware permits.
+
+---
+
+## 17. Video Codec Standards and Hardware Decode
+
+Video decoding has been a driver of Linux graphics hardware capability since the DVD era. The codec standard landscape — characterized by competing patent pools, royalty disputes, and royalty-free alternatives — has directly shaped which hardware acceleration paths are available to Linux applications and which have required software fallbacks.
+
+### The Codec Standard Timeline
+
+**MPEG-1** (ISO/IEC 11172, 1993) was the first widely deployed digital video codec, targeting CD-ROM-speed storage at approximately 1.5 Mbit/s. **MPEG-2** (H.262, 1995) scaled to DVD and broadcast HDTV, becoming the dominant distribution codec for a decade. Both used a patent pool administered by MPEG LA.
+
+**H.264** (MPEG-4 AVC, 2003) achieved roughly 2× the compression of MPEG-2 at equivalent quality, making streaming HD video practical. H.264 dominated internet video delivery for fifteen years. Its MPEG LA patent pool drove investment in royalty-free alternatives.
+
+**VP8** (Google, 2010, acquired via On2 Technologies) and **VP9** (Google, 2013) were open, royalty-free codecs for web delivery. Google's open-sourcing of VP8 and MPEG LA's agreement not to pursue patent claims against it established the viability of the royalty-free model. VP9 became the dominant codec for YouTube delivery.
+
+**HEVC** (H.265, 2013) offered a further 2× compression improvement over H.264 but created a patent licensing catastrophe: multiple competing patent pools (MPEG LA, HEVC Advance, Velos Media) with incompatible licensing terms made adoption by streaming services and browser vendors commercially risky.
+
+**AV1** (Alliance for Open Media, 2018) was the response: a royalty-free codec with HEVC-comparable compression, co-developed by Apple, Google, Microsoft, Netflix, Amazon, ARM, Intel, NVIDIA, and AMD. AV1 hardware decode shipped in Intel Ice Lake (2019), NVIDIA Ampere (2020), and AMD RDNA2 (2020). AV1 hardware encode followed: Intel Arc (2022), AMD RDNA3 (2023). [Source](https://aomedia.org/)
+
+### The Linux Hardware Decode Architecture
+
+**VDPAU** (Video Decode and Presentation API for Unix, NVIDIA, 2008) was the first GPU-accelerated video decode API on Linux. It exposed H.264, MPEG-2, and VC-1 decode on NVIDIA GPUs via a proprietary userspace library. VDPAU was X11-specific and NVIDIA-specific, making it an architectural dead end.
+
+**VA-API** (Video Acceleration API, Intel, 2007) became the dominant open hardware decode API. Originally developed for Intel's GMA hardware, VA-API is now maintained as a cross-vendor API with backend implementations for Intel (`intel-media-driver`), AMD (via Mesa's radeonsi VA-API state tracker), NVIDIA (via both a proprietary NVDEC backend and a Mesa-based NVK path), and Broadcom VideoCore. VA-API is the API used by FFmpeg, GStreamer, MPV, and Chromium on Linux for hardware-accelerated video decode. Chapter 26 covers VA-API in depth.
+
+**V4L2 Stateless Codec API**, merged into the Linux kernel between 2019 and 2022, represents a different model. Classical hardware video decoders are **stateful**: the kernel driver manages the codec's internal state machine — reference frame management, prediction filters, entropy decoder state. The stateless model pushes that state management to userspace: the kernel driver receives fully-parsed compressed slices and a description of the decoding parameters; the application manages the codec state. This model is better suited to the ARM SoC decoders common in embedded Linux devices — Hantro (NXP, Rockchip), Cedrus (Allwinner), rkvdec (Rockchip) — where the hardware decoder is a small, stateless accelerator rather than a full codec engine. The `libva-v4l2-request` library bridges V4L2 stateless drivers into the VA-API surface, enabling VA-API consumers to use these SoC decoders. [Source](https://www.kernel.org/doc/html/latest/userspace-api/media/v4l/dev-stateless-decoder.html)
+
+### The Zero-Copy Video Pipeline
+
+The convergence of VA-API, DMA-BUF, and Wayland enables a fully zero-copy decode-to-display pipeline:
+
+1. A VA-API decode call writes decoded frames into a DMA-BUF-backed surface
+2. The DMA-BUF file descriptor is exported and passed to the Wayland compositor via `linux-dmabuf-v1`
+3. The compositor assigns the surface to a KMS plane via atomic modesetting
+4. The display hardware scans out directly from the decoded frame buffer
+
+No CPU copy occurs in this pipeline. For 4K video decode at 60 Hz, this zero-copy path is the difference between GPU-exclusive operation and requiring substantial CPU memory bandwidth for copy operations. The pipeline is the same zero-copy principle that drove the DRI project's design in 1998, now realized across the full decode-to-display chain. Chapter 26 covers this pipeline end-to-end.
+
+---
+
+## 18. Display Hardware Evolution: CRT to HDR
+
+The display hardware the Linux graphics stack drives has changed more rapidly in the 2010s than in any prior decade. Each generation exposed architectural gaps in the existing stack and drove new kernel, protocol, and toolkit infrastructure.
+
+### The CRT Era and Analog Timing
+
+CRTs shaped display timing for the first four decades of the Linux graphics stack. A CRT required the video card to output an analog signal synchronized to precise horizontal and vertical blanking intervals — the electron beam needed to retrace between lines and between frames. These timing parameters (horizontal sync frequency, vertical refresh rate, pixel clock) were hardware constants the X server had to know for each monitor.
+
+**VESA** defined the standard mode timings — VGA (640×480@60Hz), SVGA (800×600), XGA (1024×768), SXGA (1280×1024), UXGA (1600×1200) — that X11's mode database encoded as detailed timing parameters. The `xorg.conf` `HorizSync` and `VertRefresh` specifications that veteran Linux administrators remember were protecting CRT monitors from out-of-specification sync signals that could physically damage the display.
+
+**DDC** (Display Data Channel) and **EDID** (Extended Display Identification Data, 1994) automated monitor capability discovery: the monitor announces its supported timings over an I²C bus on the VGA connector. Modern KMS drivers call `drm_get_edid()` during connector detection — a direct descendant of this CRT-era model.
+
+### Digital Interfaces: DVI, HDMI, and DisplayPort
+
+**DVI** (Digital Visual Interface, 1999) was the first widely adopted digital display interface, carrying pixel data as a parallel digital stream. Dual-link DVI doubled the pixel clock bandwidth to support 2560×1600@60Hz — the maximum resolution of 30-inch LCD monitors in the mid-2000s.
+
+**HDMI** (High-Definition Multimedia Interface, 2002) unified video and audio on a single consumer connector. HDMI 1.4 (2009) added 4K@30Hz support. HDMI 2.0 (2013) raised bandwidth to 18 Gbit/s for 4K@60Hz with HDR metadata. HDMI 2.1 (2017) reached 48 Gbit/s, supporting 4K@144Hz and 8K@30Hz. HDMI also carries **HDCP** (High-bandwidth Digital Content Protection), which interacts with the KMS pipeline via `DRM_MODE_PROP_CONTENT_TYPE` properties.
+
+**DisplayPort** (VESA, 2006) used a packetized data model — conceptually a high-speed serial bus rather than a pixel clock interface — and became the standard for PC monitors. DisplayPort 1.4 (2016) added DSC (Display Stream Compression) and HDR10 metadata, enabling 4K@120Hz or 8K@60Hz with compression. DisplayPort 2.1 (2022) increased bandwidth to 80 Gbit/s for 16K displays or 4K@240Hz without compression. **MST** (Multi-Stream Transport) allows one DisplayPort connection to drive multiple monitors through a hub; the DRM MST topology implementation (`drm_dp_mst_topology.c`) is among the most complex code in the display subsystem.
+
+### The 4K/HiDPI Crisis (2013–2017)
+
+Apple's Retina displays (MacBook Pro, 2012) demonstrated the market for 2× pixel density. The first 4K desktop monitors for PC appeared in 2013–2014. Linux toolkit support for HiDPI was effectively absent.
+
+GTK 2 had no HiDPI support — widget sizing was in pixels, and doubling the pixel density produced unreadably small UI. Qt had partial scaling via `QT_DEVICE_PIXEL_RATIO`, but fractional scaling (1.25×, 1.5×, 1.75×) was incorrect in various ways. GNOME Shell gained integer 2× scaling in GNOME 3.14 (2014); fractional scaling arrived experimentally in Mutter circa 2019 and stabilized by 2021.
+
+The Wayland **wp_fractional_scale_v1** protocol (stable 2023) provides a compositor-to-client mechanism for communicating the precise fractional scale factor for a surface, enabling clients to render at the exact required resolution without coordinate rounding artifacts. This was a ten-year gap between the HiDPI problem's appearance (2012) and a proper protocol solution (2023) — a timeline that illustrates both how long standards processes take and how difficult fractional scaling is to implement correctly across the full application-to-compositor-to-KMS stack.
+
+### Variable Refresh Rate
+
+**G-Sync** (NVIDIA, announced October 2013) was the first consumer variable-refresh-rate (VRR) display technology: a proprietary NVIDIA-developed module installed in the monitor that accepted variable frame timing from the GPU, eliminating tearing when the game's frame rate diverged from the monitor's fixed refresh.
+
+**FreeSync** (AMD, announced January 2014) implemented the same concept using **VESA Adaptive-Sync**, an open standard added to the DisplayPort specification. FreeSync required no proprietary monitor module — any display implementing Adaptive-Sync in its DisplayPort receiver could support it. HDMI Forum VRR (HDMI 2.1, 2017) extended variable refresh to HDMI connections.
+
+KMS VRR support for amdgpu merged in Linux 5.0 (March 2019), exposing a `VRR_ENABLED` KMS property on connectors. The Wayland compositor signals VRR intent via `wp_presentation` timing hints; the KMS commit loop enables VRR mode when the application indicates it is frame-rate variable. Chapter 3 covers the KMS VRR implementation in depth.
+
+### HDR: The Current Frontier
+
+**HDR10** (2015) is the dominant HDR standard: 10-bit color depth, BT.2020 wide color gamut, the SMPTE ST 2084 (PQ, Perceptual Quantizer) transfer function, and static HDR metadata (MaxCLL, MaxFALL values) carried via HDMI/DisplayPort HDR infoframes. **Dolby Vision** adds per-frame dynamic metadata but requires Dolby licensing. **HLG** (Hybrid Log-Gamma, BBC/NHK) is used for broadcast HDR.
+
+The KMS infrastructure for HDR — `DRM_MODE_OBJECT_PROPERTY` for HDR10 static metadata, per-plane tone-mapping LUTs, CTM (Color Transform Matrix), degamma and gamma LUT pipeline stages — has been present since around 2017. The end-to-end stack (application → surface color annotation → compositor tone mapping → KMS scanout in HDR mode) required Wayland protocols that did not stabilize until 2023–2025.
+
+**`color-management-v1`** (Wayland protocol, stable 2024) allows clients to annotate their surface color space and HDR metadata. The compositor reads these annotations, tone-maps the surface if needed, and configures the KMS color pipeline for the physical display. **`frog-color-management`** (an older, widely deployed staging protocol from Collabora) filled this gap while `color-management-v1` was in development. GNOME 47 (2024) shipped end-to-end HDR support for AMD hardware using this pipeline.
+
+The completion of the HDR stack — from a GPU-rendered surface with correct BT.2020 color metadata to a physical HDR display panel — is the current frontier of the Linux display stack as of 2026. Chapter 74 covers the HDR pipeline in depth.
+
+---
+
+## 19. Recurring Design Themes
 
 Reading the history above, certain design themes appear repeatedly, across different eras and different engineering teams. They are not coincidences. They are responses to the same underlying forces.
 
@@ -549,7 +754,7 @@ The failures in the Linux graphics stack's history can often be traced to violat
 
 ---
 
-## 15. The Road Ahead: 2026 and Beyond
+## 20. The Road Ahead: 2026 and Beyond
 
 ### Rust in the Kernel and Mesa
 
@@ -603,7 +808,7 @@ This chapter is deliberately the connective tissue for the entire book. The majo
 
 **Parts XVI–XVII (Intel, AMD ecosystems):** Ch71 (Intel Xe) and Ch72 (AMD FidelityFX) represent the current generation of the open-hardware collaboration that §5 and §8 describe historically.
 
-**Part XX (AI/ML):** §11 (accel subsystem) connects to Ch88 (NPU and AI accelerator integration).
+**Part XX (AI/ML):** §20 (Road Ahead — accel subsystem) connects to Ch88 (NPU and AI accelerator integration).
 
 **ARM open drivers:** §9 (Panfrost, Asahi) connects directly to Ch73 (Asahi/AGX), Ch90 (Lima, Panfrost, Panthor), and Ch92 (Raspberry Pi/V3D).
 
@@ -635,6 +840,12 @@ This chapter is deliberately the connective tissue for the entire book. The majo
 - GamingOnLinux: "Nova — a Rust-based Linux driver for NVIDIA GPUs announced," March 2024. [Source](https://gamingonlinux.com/2024/03/nova-a-rust-based-linux-driver-for-nvidia-gpus-announced/)
 - Fedora Project Wiki: Changes/WaylandByDefault (Fedora 25 GNOME default). [Source](https://fedoraproject.org/wiki/Changes/WaylandByDefault)
 - Linux Kernel Documentation: Kernel Mode Setting. [Source](https://docs.kernel.org/gpu/drm-kms.html)
+- NVIDIA Developer Blog: "NVIDIA Releases Open-Source GPU Kernel Modules," May 2022. [Source](https://developer.nvidia.com/blog/nvidia-releases-open-source-gpu-kernel-modules)
+- LWN.net: "freedreno merged into mainline," 2012. [Source](https://lwn.net/Articles/493987/)
+- PipeWire project documentation. [Source](https://pipewire.org/)
+- Waydroid project. [Source](https://waydro.id/)
+- Alliance for Open Media: AV1 codec. [Source](https://aomedia.org/)
+- Linux kernel V4L2 stateless decoder API documentation. [Source](https://www.kernel.org/doc/html/latest/userspace-api/media/v4l/dev-stateless-decoder.html)
 
 ## Roadmap
 
