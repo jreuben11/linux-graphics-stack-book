@@ -50,7 +50,8 @@ The distribution of sections in this catalog mirrors the actual distribution of 
 26. [Lightmapping and Baked GI](#lightmapping-and-baked-gi)
 27. [Foveated and Multiview Rendering](#foveated-and-multiview-rendering)
 28. [Outline and Selection Rendering](#outline-and-selection-rendering)
-29. [References](#references)
+29. [Sampling Techniques](#sampling-techniques)
+30. [References](#references)
 
 ---
 
@@ -1499,6 +1500,336 @@ Applies a Sobel or Laplacian operator to the depth buffer (and optionally the no
 Renders selected objects into an offscreen mask, blurs the mask with a Gaussian or box filter, subtracts the unblurred mask, and composites the resulting halo over the scene. Width and softness are controlled by the blur radius and the subtraction coefficient.
 
 **Use cases** — soft selection glow; XP-style health aura; any effect needing a smooth width-controllable halo rather than a sharp edge.
+
+---
+
+## Sampling Techniques
+
+**What sampling is and why it matters.** Every rendered pixel represents a question: "what is the radiance arriving at this point on the sensor from this direction?" The exact answer requires integrating over all light paths connecting the scene to that pixel — an integral over a high-dimensional space of possible paths that has no closed form for real scenes. *Sampling* is the strategy for choosing which paths to evaluate so that their weighted average converges to the true integral as efficiently as possible.
+
+Sampling problems appear throughout the rendering pipeline:
+
+- **Direct lighting** — which point on an area light should we test for shadow? A hemisphere of directions must be sampled.
+- **Indirect/global illumination** — what secondary direction should a ray reflect or scatter into?
+- **Ray tracing denoising** — how do we distribute 1 ray/pixel so the noise pattern denoises well?
+- **TAA/upscaling** — which sub-pixel offset should we jitter the camera by this frame?
+- **Texture filtering** — which texel neighbours should we blend, and by how much?
+- **Lightmap baking** — how many rays per texel, and in which directions?
+
+The core trade-off is *variance* (how much the estimate fluctuates from frame to frame or pixel to pixel) versus *cost* (how many samples we can afford). Better sampling strategies reduce variance for the same sample count — they are free performance gains at the algorithm level, invisible to the rasterizer and memory subsystem.
+
+**Key sampling vocabulary:**
+
+| Term | Meaning |
+|------|---------|
+| **PDF** (probability density function) | The probability of choosing a given sample direction or point; must integrate to 1 over the domain. |
+| **Unbiased** | Expected value equals the true integral regardless of sample count. |
+| **Consistent** | Converges to the true integral as sample count → ∞. |
+| **Importance sampling** | Draw samples proportional to the integrand so high-contribution directions are sampled more. |
+| **MC estimator** | `(1/N) Σ f(xᵢ)/pdf(xᵢ)` — the unbiased estimator for ∫f(x)dx when samples are drawn from pdf. |
+| **Low-discrepancy** | Samples that fill the domain more uniformly than pseudorandom; faster convergence. |
+| **Blue noise** | Noise whose energy is concentrated at high spatial frequencies; errors are perceptually small. |
+
+---
+
+### Texture Sampling and Filtering
+
+Texture sampling is the most frequent sampling operation on the GPU: the fixed-function texture unit interpolates between neighbouring texels using the surface's UV coordinates and the screen-space derivatives of those coordinates.
+
+**Bilinear filtering** — interpolates the four nearest texels weighted by fractional UV position. Blurs the texture at close range; free on all hardware.
+
+**Trilinear filtering** — blends between two adjacent mip levels in addition to bilinear, eliminating the mip-seam pop. Costs one extra bilinear sample per access.
+
+**Anisotropic filtering** — samples along the anisotropy direction (the elongated texture-space footprint of a near-grazing surface) using multiple bilinear samples at a single mip level. Eliminates the blurring of trilinear on slanted surfaces. AF×8 or AF×16 is standard in modern games at near-zero performance cost.
+
+```glsl
+// Manual LOD bias — sharpen a texture by biasing the mip selection
+layout(set=0, binding=0) uniform sampler2D albedo;
+float lod_bias = -1.0; // sample one mip level finer than default
+vec4  color    = texture(albedo, uv, lod_bias);
+
+// Explicit LOD — compute level manually (e.g. in compute, where dFdx is unavailable)
+float lod = textureQueryLod(albedo, uv).y; // .x = accessed level, .y = computed level
+vec4  c2  = textureLod(albedo, uv, lod);
+```
+
+**EWA (Elliptical Weighted Average)** filtering uses an elliptical Gaussian footprint matched to the true screen-space anisotropy, giving higher quality than the hardware AF approximation. Implemented in software (rarely in real-time, more common in offline renderers).
+
+**Reference** — [OpenGL 4.6 Core Profile §8.14: Texture Minification](https://registry.khronos.org/OpenGL/specs/gl/glspec46.core.pdf)
+
+---
+
+### Monte Carlo Hemisphere Sampling
+
+To compute diffuse irradiance at a point, we integrate incoming radiance over the hemisphere above the surface normal — an integral of the form `∫_Ω L(ω) (N·ω) dω`. Monte Carlo estimation draws random samples from a distribution covering the hemisphere and averages the weighted result.
+
+#### Uniform Hemisphere Sampling
+Draws samples uniformly over the hemisphere; pdf = `1/(2π)`. Simple but suboptimal: samples near the horizon (where `cos θ` is small) contribute little radiance.
+
+```glsl
+// Map a 2D uniform random pair (u1, u2) ∈ [0,1)² to a hemisphere direction
+vec3 sample_hemisphere_uniform(float u1, float u2) {
+    float phi      = 2.0 * PI * u1;
+    float cos_theta = u2;             // uniform in [0,1]
+    float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
+    return vec3(cos(phi) * sin_theta, sin(phi) * sin_theta, cos_theta);
+}
+// pdf = 1.0 / (2.0 * PI)
+```
+
+#### Cosine-Weighted Hemisphere Sampling (Malley's Method)
+Draws samples proportional to `cos θ`; pdf = `cos θ / π`. Eliminates the cosine weighting from the MC estimator for Lambertian diffuse — the integrand simplifies to L(ω), reducing variance.
+
+```glsl
+vec3 sample_hemisphere_cosine(float u1, float u2) {
+    float phi       = 2.0 * PI * u1;
+    float cos_theta = sqrt(u2);       // cosine-weighted: CDF inversion gives sqrt(u)
+    float sin_theta = sqrt(1.0 - u2);
+    return vec3(cos(phi) * sin_theta, sin(phi) * sin_theta, cos_theta);
+}
+// pdf = cos_theta / PI  (i.e. dot(sample, N) / PI)
+```
+
+**Use cases** — diffuse irradiance estimation for RTAO, lightmap baking, DDGI probe tracing. Reduces variance by ~2–3× compared to uniform sampling for Lambertian surfaces.  
+**Reference** — [Shirley: Realistic Ray Tracing §12](https://www.realtimerendering.com/)
+
+#### Stratified Sampling
+Divides the sample domain into N equal strata and draws one sample per stratum, preventing clumping. Provides O(N^(d+1)/d) convergence in d dimensions versus O(√N) for random.
+
+**Use cases** — lightmap baking where sample count per texel is small; 2D stratification with N = k² samples per pixel.
+
+---
+
+### Low-Discrepancy Sequences
+
+Pseudorandom sampling produces clumps and gaps that slow convergence. Low-discrepancy (LD) sequences fill the sample domain more uniformly, giving deterministically faster convergence — called *quasi-Monte Carlo* (QMC). LD sequences are particularly effective in 1–4 dimensions (single-pixel path tracing, per-frame jitter).
+
+**Convergence comparison**: random MC converges at O(1/√N); QMC sequences converge at O((log N)^d / N) in d dimensions — asymptotically much faster.
+
+#### Halton Sequence
+Generates d-dimensional points by interleaving radical inverses in d coprime bases. Base-2 for x, base-3 for y, base-5 for z, etc. The first few hundred samples are well-distributed; quality degrades in high dimensions (>6).
+
+```glsl
+// Halton base-b radical inverse
+float halton(uint index, uint base) {
+    float result = 0.0;
+    float f      = 1.0;
+    uint  i      = index;
+    while (i > 0u) {
+        f      /= float(base);
+        result += f * float(i % base);
+        i      /= base;
+    }
+    return result;
+}
+// Sample index: combine frame index with pixel index to avoid repetition
+float jitter_x = halton(frame_index * pixel_count + pixel_index, 2u);
+float jitter_y = halton(frame_index * pixel_count + pixel_index, 3u);
+```
+
+**Use cases** — TAA jitter pattern (frame index as sequence index, base 2/3); per-frame 2D jitter in path tracers; shadow soft sampling.  
+**Reference** — [Keller: Quasi-Monte Carlo Methods in Computer Graphics (SIGGRAPH Course 2003)](https://www.cs.dartmouth.edu/~wjarosz/publications/dissertation/appendixA.pdf)
+
+#### Sobol Sequence
+Generates samples using bit-reversal and direction numbers, providing very low discrepancy in 2D and reasonable quality up to ~10 dimensions. Standard in production path tracers (Cycles, Arnold, Mitsuba 3).
+
+```glsl
+// Sobol 2D — dimension 0 (base 2), dimension 1 (Sobol direction numbers)
+// Scrambled Sobol via Owen scrambling for decorrelated pixel estimates:
+uint sobol_sample(uint index, uint dimension, uint scramble) {
+    // See: Burley 2020, Practical Hash-Based Owen Scrambling
+    // Implementation: bit-reverse(index) XOR with direction-number accumulation
+    // [abbreviated; production implementations use precomputed direction tables]
+    return sobol_unscrambled(index, dimension) ^ scramble;
+}
+```
+
+**Use cases** — path tracer primary sample sequence; lightmap baking; denoiser-friendly noise patterns (Sobol's blue-noise-like spectrum after Owen scrambling).  
+**Reference** — [Burley: Practical Hash-Based Owen Scrambling (JCGT 2020)](http://jcgt.org/published/0009/04/01/)
+
+#### R2 Sequence (Roberts)
+A 2D additive recurrence sequence using irrational golden-ratio-like constants: `x_{n+1} = (x_n + α) mod 1` where α = `(√5-1)/2`, `(√3-1)/2` for x and y. The simplest LD sequence: one addition per dimension, no lookup tables.
+
+```glsl
+const float R2_X = 0.7548776662466927;  // 1/φ², φ = golden ratio
+const float R2_Y = 0.5698402909980532;  // 1/φ
+vec2 r2_sample(uint n) {
+    return fract(vec2(0.5) + float(n) * vec2(R2_X, R2_Y));
+}
+```
+
+**Use cases** — TAA sub-pixel jitter (1 addition per frame), blue noise approximation, soft shadow kernel.  
+**Reference** — [Roberts: The Unreasonable Effectiveness of Quasirandom Sequences (2018)](http://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/)
+
+---
+
+### Blue Noise Sampling
+
+Blue noise masks contain energy only at high spatial frequencies — their Fourier spectrum is dark (zero energy) at low frequencies and bright (non-zero) at high frequencies. Errors from blue-noise-distributed samples are small, high-frequency, and perceptually invisible to the human visual system; they denoise better than white noise at equal sample count.
+
+**Why it matters for denoising**: a denoiser's kernel suppresses low-frequency error well but struggles with low-frequency (correlated) noise. Blue noise pushes all error to high frequencies where the denoiser performs best.
+
+#### Precomputed Blue Noise Texture
+Store a 64×64 (or 128×128) tileable blue noise texture generated by the void-and-cluster algorithm. Each frame, combine pixel coordinates and frame index to index the texture, producing temporally stable blue-noise jitter without sequence generation cost.
+
+```glsl
+layout(set=0, binding=5) uniform sampler2D blue_noise;  // 64x64 R8 void-and-cluster
+
+// Per-pixel, per-frame blue noise sample in [0,1)
+float bn = texture(blue_noise, (vec2(px) + 0.5) / 64.0).r;
+// Temporal decorrelation: XOR frame index into the tile address
+bn = fract(bn + float(frame_index % 64) * 0.61803398875);  // golden ratio increment
+```
+
+**Use cases** — per-pixel RTAO ray direction jitter, soft shadow sampling offset, dithered transparency, per-sample TAA jitter.  
+**Reference** — [Christoph Peters: Free Blue Noise Textures (2016)](http://momentsingraphics.de/BlueNoise.html); [Heitz & Belcour: A Low-Discrepancy Sampler Using a Blue Noise Mask](https://belcour.github.io/blog/slides/2019-sampling-bluenoise/index.html)
+
+#### Temporal Blue Noise (TBN)
+Animates a blue noise pattern over time such that the combined spatio-temporal distribution is also blue. Each frame, shift the lookup by a golden ratio increment: errors that are spatially blue-noise become also temporally uncorrelated, ideal for TAA denoising.
+
+**Use cases** — RTAO, RTGI, screen-space effects where TAA accumulates the result; the de facto standard in production deferred engines post-2020.  
+**Reference** — [Wolfe et al.: Temporal Blue Noise (EGSR 2022)](https://doi.org/10.1111/cgf.14616)
+
+---
+
+### Importance Sampling
+
+Plain Monte Carlo draws samples uniformly and weights by the integrand value, leading to high variance when the integrand has a sharply peaked distribution (e.g., a specular BRDF lobe). *Importance sampling* instead draws samples proportionally to the integrand — or an approximation of it — so each sample contributes approximately equal weight. The estimator is still `f(x)/pdf(x)`, but with pdf ≈ f, the ratio is nearly constant and variance collapses.
+
+**When to use**: any Monte Carlo integral where the integrand is concentrated in a small fraction of the domain — specular BRDF evaluation, area light sampling, environment map lighting.
+
+#### GGX VNDF Importance Sampling
+Samples the visible normal distribution function (VNDF) of the GGX/Trowbridge-Reitz microfacet model — the distribution of microfacet normals visible from the view direction. Produces candidate half-vectors `H` from which the reflection direction `L = reflect(-V, H)` is computed. The VNDF-weighted pdf converges dramatically faster than sampling the full NDF.
+
+```glsl
+// Heitz 2018: Sampling the GGX Distribution of Visible Normals
+vec3 sample_GGX_VNDF(vec3 Ve, float alpha_x, float alpha_y, float u1, float u2) {
+    // Transform to hemispherical configuration
+    vec3 Vh = normalize(vec3(alpha_x * Ve.x, alpha_y * Ve.y, Ve.z));
+    // Orthonormal basis around Vh
+    float lensq = Vh.x * Vh.x + Vh.y * Vh.y;
+    vec3 T1     = lensq > 0.0 ? vec3(-Vh.y, Vh.x, 0.0) / sqrt(lensq) : vec3(1.0, 0.0, 0.0);
+    vec3 T2     = cross(Vh, T1);
+    // Sample point on disk
+    float r   = sqrt(u1);
+    float phi = 2.0 * PI * u2;
+    float t1  = r * cos(phi);
+    float t2  = r * sin(phi);
+    float s   = 0.5 * (1.0 + Vh.z);
+    t2        = mix(sqrt(1.0 - t1 * t1), t2, s);
+    // Back to ellipsoid and sphere
+    vec3 Nh   = t1 * T1 + t2 * T2 + sqrt(max(0.0, 1.0 - t1*t1 - t2*t2)) * Vh;
+    return normalize(vec3(alpha_x * Nh.x, alpha_y * Nh.y, max(0.0, Nh.z)));
+}
+// Usage: H = sample_GGX_VNDF(V, roughness², roughness², u1, u2);
+//        L = reflect(-V, H);  then evaluate BRDF/pdf and accumulate
+```
+
+**Use cases** — primary specular sampling in path tracers; RT reflection ray direction selection; environment map specular convolution.  
+**Reference** — [Heitz: Sampling the GGX Distribution of Visible Normals (JCGT 2018)](http://jcgt.org/published/0007/04/01/)
+
+#### Cosine-Weighted Light Sampling
+For area lights, draws a sample point on the light surface weighted by the geometric term `cos θ_L / dist²` rather than uniformly by surface area, concentrating samples toward the centre of the light as seen from the receiver.
+
+**Use cases** — disk and sphere area light sampling in Monte Carlo renderers; correctness requires matching pdf in the MC estimator.  
+**Reference** — [Shirley et al.: Monte Carlo Techniques for Direct Lighting Calculations (TOGS 1996)](https://doi.org/10.1145/226150.226155)
+
+#### Environment Map Importance Sampling
+Builds a 2D CDF pyramid over the environment map HDR texels (sum-area table or hierarchical marginal/conditional 1D CDFs). Samples draw directions proportional to the environment luminance — sunrise/sunset and bright sky regions are sampled more; dark regions less.
+
+```glsl
+// At precompute time: build 1D marginal PDF over rows (Y), 1D conditional PDF over cols (X)
+// At sample time: invert both CDFs to get (u,v) → spherical direction with pdf
+// pdf(θ,φ) = luminance(u,v) / total_luminance * (width * height) / (2π² sin θ)
+```
+
+**Use cases** — HDRI-lit path tracing; environment map specular in hybrid rasterization+RT pipelines; denoising quality improves dramatically with IS vs uniform env sampling.  
+**Reference** — [Pharr, Jakob, Humphreys: PBRT-v4 §12.6 — Infinite Area Light Sampling](https://pbrt.org/chapters/pbrt-4ed-chapters.pdf)
+
+---
+
+### Multiple Importance Sampling (MIS)
+
+A scene has two strategies for sampling a direct lighting integral: sample the BRDF (good for specular; bad for large area lights) or sample the light (good for area lights; bad for mirror-like BRDFs). Neither dominates the other in all cases. MIS combines both strategies in a single unbiased estimator:
+
+```
+L_direct ≈ (1/N) Σ [ f(x_BRDF) * L(x_BRDF) / (w_BRDF * pdf_BRDF + w_light * pdf_light_for_x_BRDF) ]
+          + (1/M) Σ [ f(x_light) * L(x_light) / (w_BRDF * pdf_BRDF_for_x_light + w_light * pdf_light) ]
+```
+
+The balance heuristic weights are `w_k = pdf_k / Σ pdf_i`; the power heuristic uses `pdf_k^β / Σ pdf_i^β` with β=2, reducing variance further.
+
+```glsl
+// Power heuristic with beta=2
+float mis_power(float pdf_a, float pdf_b) {
+    float a2 = pdf_a * pdf_a;
+    float b2 = pdf_b * pdf_b;
+    return a2 / (a2 + b2);
+}
+
+// One MIS direct light estimate: N=1 BRDF sample + M=1 light sample
+vec3 direct = vec3(0.0);
+// BRDF sample
+{
+    vec3 L_s   = sample_BRDF(V, N, roughness, u1, u2);
+    float p_s  = pdf_BRDF(V, N, L_s, roughness);
+    float p_l  = pdf_light(P, L_s);   // chance the light sampler would have chosen L_s
+    float w_s  = mis_power(p_s, p_l);
+    direct    += w_s * eval_BRDF(V, L_s, N) * sample_light_radiance(P, L_s) / p_s;
+}
+// Light sample
+{
+    vec3 L_l   = sample_light(P, u3, u4);
+    float p_l  = pdf_light(P, L_l);
+    float p_s  = pdf_BRDF(V, N, L_l, roughness);
+    float w_l  = mis_power(p_l, p_s);
+    direct    += w_l * eval_BRDF(V, L_l, N) * light_radiance(P, L_l) / p_l;
+}
+```
+
+**Use cases** — any scene mixing specular surfaces and area lights; standard in all production path tracers (Cycles, Arnold, V-Ray, PBRT). Reduces direct lighting variance by 5–50× over single-strategy sampling in typical scenes.  
+**Reference** — [Veach & Guibas: Optimally Combining Sampling Techniques for Monte Carlo Rendering (SIGGRAPH 1995)](https://dl.acm.org/doi/10.1145/218380.218498)
+
+---
+
+### ReSTIR — Reservoir-Based Spatiotemporal Importance Resampling
+
+ReSTIR is the dominant technique for real-time many-light GI, enabling sampling from thousands of virtual point lights (VPLs) or path-traced light samples at 1–4 samples/pixel with low variance. It combines reservoir sampling (Weighted Reservoir Sampling, WRS) with temporal and spatial reuse of past-frame and neighbouring-pixel reservoirs.
+
+**Why this matters**: environment and emissive GI with thousands of lights would require hundreds of samples/pixel to converge with standard MC. ReSTIR achieves near-converged results at 1 sample/pixel by sharing reservoirs across pixels and frames, effectively borrowing sample quality from neighbours and past frames.
+
+#### Weighted Reservoir Sampling (WRS)
+Maintains a reservoir `(y, W_sum, M)`: a single selected candidate `y`, accumulated weight `W_sum`, and sample count `M`. To stream in a new candidate `x` with weight `w(x)`:
+
+```glsl
+struct Reservoir {
+    uint  y;       // selected sample (e.g., light index)
+    float W_sum;   // sum of weights seen so far
+    float W;       // unbiased contribution weight = W_sum / (M * p_hat(y))
+    uint  M;       // number of samples seen
+};
+
+void reservoir_update(inout Reservoir r, uint x, float w, float u) {
+    r.W_sum += w;
+    r.M     += 1u;
+    if (u < w / r.W_sum)   // accept x with probability proportional to w
+        r.y = x;
+}
+```
+
+After streaming N candidates: the selected `y` is drawn with probability proportional to its weight. The unbiased contribution weight `W = W_sum / (M * p_hat(y))` corrects for the resampling bias when combining reservoirs from different pixels.
+
+#### ReSTIR DI — Direct Illumination
+Each pixel generates K candidate lights (K = 32 is common), builds a reservoir from them, then reuses reservoirs from temporal (same pixel, previous frame) and spatial (8 random neighbours) reservoirs. Result: effective sample count of `K × N_temporal × N_spatial` at 1 final shadow ray per pixel per frame.
+
+**Use cases** — many-light direct illumination in deferred engines; Cyberpunk 2077 RT mode (2022); all major DXR/Vulkan RT titles post-2022.  
+**Reference** — [Bitterli et al.: Spatiotemporal Reservoir Resampling for Real-Time Ray Tracing with Dynamic Direct Lighting (SIGGRAPH 2020)](https://research.nvidia.com/publication/2020-07_spatiotemporal-reservoir-resampling-real-time-ray-tracing-dynamic-direct)
+
+#### ReSTIR GI — Global Illumination
+Extends ReSTIR to indirect light paths: each reservoir stores a complete path (hit point, direction, incident radiance) rather than a light index. Spatial and temporal reservoir reuse applies the same WRS mechanism across indirect paths, enabling real-time diffuse+specular GI without a probe grid.
+
+**Use cases** — real-time RTGI in AAA titles; replaces or supplements DDGI probe grids for dynamic geometry; high quality with 1 indirect path/pixel + denoising.  
+**Reference** — [Ouyang et al.: ReSTIR GI: Path Resampling for Real-Time Path Tracing (EGSR 2021)](https://research.nvidia.com/publication/2021-06_restir-gi-path-resampling-real-time-path-tracing)
 
 ---
 
