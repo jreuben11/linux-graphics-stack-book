@@ -29,18 +29,19 @@ The distribution of sections in this catalog mirrors the actual distribution of 
 5. [Ambient Occlusion](#ambient-occlusion)
 6. [Global Illumination](#global-illumination)
 7. [Image-Based Lighting](#image-based-lighting)
-8. [Volumetric Rendering and Participating Media](#volumetric-rendering-and-participating-media)
-9. [Post-Processing and Image Effects](#post-processing-and-image-effects)
-10. [Screen-Space Techniques](#screen-space-techniques)
-11. [Texture Mapping and Surface Detail](#texture-mapping-and-surface-detail)
-12. [Water, Ocean, and Fluid Surface](#water-ocean-and-fluid-surface)
-13. [Terrain, Vegetation, and Foliage](#terrain-vegetation-and-foliage)
-14. [Skin, Hair, and Character Rendering](#skin-hair-and-character-rendering)
-15. [Non-Photorealistic Rendering (NPR)](#non-photorealistic-rendering-npr)
-16. [Anti-Aliasing, TAA, and ML Upscaling](#anti-aliasing-taa-and-ml-upscaling)
-17. [Geometry and Mesh Shader Patterns](#geometry-and-mesh-shader-patterns)
-18. [GPU Compute Algorithm Primitives](#gpu-compute-algorithm-primitives)
-19. [References](#references)
+8. [Deferred Shading and G-Buffer Rendering](#deferred-shading-and-g-buffer-rendering)
+9. [Volumetric Rendering and Participating Media](#volumetric-rendering-and-participating-media)
+10. [Post-Processing and Image Effects](#post-processing-and-image-effects)
+11. [Screen-Space Techniques](#screen-space-techniques)
+12. [Texture Mapping and Surface Detail](#texture-mapping-and-surface-detail)
+13. [Water, Ocean, and Fluid Surface](#water-ocean-and-fluid-surface)
+14. [Terrain, Vegetation, and Foliage](#terrain-vegetation-and-foliage)
+15. [Skin, Hair, and Character Rendering](#skin-hair-and-character-rendering)
+16. [Non-Photorealistic Rendering (NPR)](#non-photorealistic-rendering-npr)
+17. [Anti-Aliasing, TAA, and ML Upscaling](#anti-aliasing-taa-and-ml-upscaling)
+18. [Geometry and Mesh Shader Patterns](#geometry-and-mesh-shader-patterns)
+19. [GPU Compute Algorithm Primitives](#gpu-compute-algorithm-primitives)
+20. [References](#references)
 
 ---
 
@@ -462,6 +463,135 @@ Adjusts the IBL fetch direction to account for the finite distance of the local 
 
 **Use cases** — indoor scenes, corridors, rooms — any confined space where the environment map should appear at a specific distance.  
 **Reference** — [GPU Gems: Environment Mapping Techniques](https://developer.nvidia.com/gpugems/gpugems/part-iii-materials/chapter-17-ambient-occlusionmicrogeometry)
+
+---
+
+## Deferred Shading and G-Buffer Rendering
+
+Deferred shading is a rendering pipeline architecture that decouples geometry rasterization from lighting evaluation. Instead of computing the full lighting equation for every fragment as it is drawn (forward rendering), a geometry pass writes per-pixel surface attributes — the **G-Buffer** — into multiple render targets, and a subsequent lighting pass reads those attributes and evaluates all light contributions once per pixel. See §7.0 of ch84 for the architectural overview; this section contains the shader-level recipes.
+
+**Shader stage**: The geometry pass runs in a standard **vertex + fragment shader** pair with multiple render target outputs. The lighting pass runs as a full-screen **fragment shader** (one triangle covering the screen) or a **compute shader** dispatched over the framebuffer grid. Compute is preferred when per-tile light culling is implemented (tiled deferred / clustered deferred), since compute threads naturally map to screen tiles and can share a tile-local light list via shared memory.
+
+#### G-Buffer Write (Geometry Pass)
+
+Writes per-pixel surface attributes into multiple render targets in a single draw call. The fragment shader encodes material properties rather than computing lighting.
+
+```glsl
+// Geometry pass fragment shader — writes G-Buffer MRTs
+// Vulkan GLSL, layout locations match VkRenderPass attachment indices
+
+layout(location = 0) out vec4 g_albedo_rough;   // RGB = albedo, A = roughness
+layout(location = 1) out vec4 g_normal_metal;   // RGB = world normal (oct-encoded), A = metallic
+layout(location = 2) out vec4 g_emissive;       // RGB = emissive, A = unused
+
+layout(set = 1, binding = 0) uniform sampler2D albedo_tex;
+layout(set = 1, binding = 1) uniform sampler2D normal_map;
+layout(set = 1, binding = 2) uniform sampler2D arm_tex; // R=AO, G=roughness, B=metallic
+
+layout(location = 0) in vec3 v_world_normal;
+layout(location = 1) in vec3 v_world_tangent;
+layout(location = 2) in vec2 v_uv;
+
+void main() {
+    vec4  albedo_smp = texture(albedo_tex, v_uv);
+    vec3  arm        = texture(arm_tex, v_uv).rgb;
+    vec3  ts_normal  = texture(normal_map, v_uv).rgb * 2.0 - 1.0;
+
+    // TBN transform: tangent-space normal → world space
+    vec3 T  = normalize(v_world_tangent);
+    vec3 N  = normalize(v_world_normal);
+    vec3 B  = cross(N, T);
+    vec3 wN = normalize(mat3(T, B, N) * ts_normal);
+
+    g_albedo_rough = vec4(albedo_smp.rgb, arm.g);      // roughness in alpha
+    g_normal_metal = vec4(wN * 0.5 + 0.5, arm.b);     // pack normal to [0,1]
+    g_emissive     = vec4(albedo_smp.rgb * arm.r, 0.0); // emissive driven by AO channel
+}
+```
+
+**Use cases** — any renderer with >~8 dynamic lights per scene; standard architecture for Unreal Engine, Unity (URP deferred), Godot, Blender EEVEE Next.  
+**Key variants** — packed G-Buffer (fit all attributes into 2 render targets using oct-encoding for normals); thin G-Buffer (albedo + packed normal only, reconstruct roughness from SSAO).  
+**Reference** — [LearnOpenGL: Deferred Shading](https://learnopengl.com/Advanced-Lighting/Deferred-Shading) | [Filament deferred shading design](https://google.github.io/filament/Filament.html)
+
+#### Deferred Lighting Pass (Full-Screen Fragment or Compute)
+
+Reads the G-Buffer and evaluates all analytical lights, one thread per pixel. The lighting accumulation loop iterates over visible lights — either all lights globally or a tile-culled subset.
+
+```glsl
+// Deferred lighting pass — full-screen fragment shader
+// Reconstruct position from depth; evaluate PBR per pixel.
+// Vulkan GLSL
+
+layout(set = 0, binding = 0) uniform sampler2D g_albedo_rough;
+layout(set = 0, binding = 1) uniform sampler2D g_normal_metal;
+layout(set = 0, binding = 2) uniform sampler2D g_depth;
+
+layout(set = 0, binding = 3) uniform CameraUB {
+    mat4 inv_proj;
+    mat4 inv_view;
+    vec3 cam_pos;
+};
+
+struct PointLight { vec3 pos; float radius; vec3 color; float intensity; };
+layout(set = 0, binding = 4) readonly buffer LightBuf { PointLight lights[]; };
+layout(set = 0, binding = 5) uniform LightCount { uint num_lights; };
+
+layout(location = 0) in  vec2 v_uv;
+layout(location = 0) out vec4 frag_color;
+
+// Reconstruct world-space position from depth and inverse projection
+vec3 reconstruct_position(vec2 uv, float depth) {
+    vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 view = inv_proj * clip;
+    view /= view.w;
+    return (inv_view * vec4(view.xyz, 1.0)).xyz;
+}
+
+void main() {
+    float depth  = texture(g_depth,        v_uv).r;
+    vec4  alb_r  = texture(g_albedo_rough, v_uv);
+    vec4  nor_m  = texture(g_normal_metal, v_uv);
+
+    vec3 albedo    = alb_r.rgb;
+    float roughness = alb_r.a;
+    vec3 N          = normalize(nor_m.rgb * 2.0 - 1.0);
+    float metallic  = nor_m.a;
+    vec3 P          = reconstruct_position(v_uv, depth);
+    vec3 V          = normalize(cam_pos - P);
+
+    vec3 Lo = vec3(0.0);
+    for (uint i = 0u; i < num_lights; ++i) {
+        PointLight l   = lights[i];
+        vec3  L        = normalize(l.pos - P);
+        float dist     = length(l.pos - P);
+        float atten    = max(0.0, 1.0 - dist / l.radius);
+        vec3  radiance = l.color * l.intensity * atten * atten;
+        Lo += brdf_cook_torrance(albedo, metallic, roughness, N, V, L) * radiance;
+    }
+    frag_color = vec4(Lo, 1.0);
+}
+```
+
+**Use cases** — standard deferred renderer lighting accumulation; combined with shadow map sampling and IBL contribution added after the loop.  
+**Key variants** — tiled deferred: dispatch compute with one workgroup per screen tile, load a tile-local light list into shared memory, iterate only those lights; clustered deferred: extends tiling into depth slices for correct lighting at varying depths.  
+**Reference** — [Olsson & Assarsson: Tiled Shading (JCGT 2011)](https://jcgt.org/published/0001/01/03/) | [Harada et al.: A 2.5D Culling for Forward+ (SIGGRAPH Asia 2012)](https://dl.acm.org/doi/10.1145/2407746.2407780)
+
+#### Tiled/Clustered Light Culling (Compute Prepass)
+
+Before the lighting pass, a compute shader divides the screen into tiles (typically 16×16 pixels) and builds a per-tile list of lights whose bounding sphere overlaps the tile's frustum slice. The lighting pass reads the per-tile list, avoiding global light iteration.
+
+**Use cases** — scenes with >32 analytical lights; required for Forward+ (applies the same tile list to a forward renderer) and tiled deferred.  
+**Key variants** — clustered: extends tiles into *z* slices (froxels) for correct behaviour with wide depth ranges (outdoor scenes).  
+**Limitations** — the prepass itself costs ~0.1–0.3 ms; breakeven versus full-loop deferred is around 50 lights depending on scene geometry complexity.  
+**Reference** — [Dufresne: Adventures in Clustered Shading (GDC 2018)](https://advances.realtimerendering.com/s2018/) | [Filament clustered light implementation](https://github.com/google/filament/blob/main/shaders/src/light_indirect.fs)
+
+#### Subpass-Merged G-Buffer on TBDR (Mobile)
+
+On TBDR mobile GPUs (Adreno, Mali, PowerVR) the geometry pass and lighting pass can be expressed as Vulkan subpasses within a single render pass. The driver merges them into one tile pass: the G-Buffer attachments live in on-chip tile SRAM throughout, never written to DRAM. The lighting subpass reads G-Buffer data via `inputAttachment` samplers (or `VK_EXT_shader_tile_image` framebuffer fetch), which the hardware routes from tile SRAM rather than issuing DRAM reads.
+
+**Use cases** — mobile deferred renderers (Unity mobile deferred, Unreal Mobile deferred); the only way to make deferred rendering bandwidth-competitive with forward on TBDR hardware.  
+**Limitations** — subpass input attachments can only read the current fragment's texel (no neighbouring pixels); screen-space effects that need neighbour access (SSAO, SSR) must still break the tile pass.  
+**Reference** — [ARM Mali GPU Best Practices — Deferred shading](https://developer.arm.com/documentation/101897/latest/) | ch86 §10 and §10b of this book
 
 ---
 

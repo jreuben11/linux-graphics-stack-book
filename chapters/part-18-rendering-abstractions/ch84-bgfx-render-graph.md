@@ -661,6 +661,31 @@ The bgfx approach is simpler but defers all GPU work to the render thread. With 
 
 ## 7. The Frame Graph Pattern
 
+### 7.0 Deferred Rendering and the G-Buffer
+
+The canonical example used throughout this section is **deferred rendering** — the technique whose data dependencies most directly motivated the frame graph abstraction. Understanding the G-Buffer makes the frame graph's design choices immediately legible.
+
+**Forward rendering** computes lighting for every fragment as it is drawn: geometry is submitted, the fragment shader reads material properties and evaluates the full lighting equation — shadow maps, IBL, AO — in a single pass. This is correct but scales poorly. If a scene has *n* light sources and *f* visible fragments, the lighting loop runs *n × f* times, including for fragments later overdrawn by closer geometry.
+
+**Deferred rendering** splits the work into two passes:
+
+**Pass 1 — Geometry pass.** Draw all opaque geometry, but instead of computing lighting each fragment shader writes per-pixel surface attributes into multiple render targets simultaneously — the **G-Buffer** (Geometry Buffer):
+
+| Attachment | Typical format | Contents |
+|---|---|---|
+| Albedo | RGBA8 | Base colour RGB + roughness or AO in alpha |
+| Normal | RGBA16F | World-space surface normal |
+| Material | RGBA8 | Metallic (R), roughness (G), emissive (B), flags (A) |
+| Depth | D24S8 | Depth (for position reconstruction) + stencil |
+
+The depth test discards overdrawn fragments before the fragment shader runs, so only the *closest* surface per pixel is written into the G-Buffer. The geometry pass output is complete coverage of the screen with no overdraw in the attribute buffers.
+
+**Pass 2 — Lighting pass.** Read the G-Buffer as shader inputs. For every pixel, reconstruct world-space position from depth, sample the material attributes, and evaluate the full lighting equation. With *n* lights, each evaluation runs once per pixel rather than once per fragment per light. For a typical scene — millions of fragments, dozens to hundreds of analytical lights — the efficiency gain is large.
+
+The tradeoff: G-Buffer textures consume significant VRAM bandwidth and VRAM footprint (typically 4–6 full-resolution render targets). On desktop IMR GPUs this means the G-Buffer is written to and read from DRAM on every frame. On TBDR mobile GPUs (§10 in ch86), the G-Buffer can live entirely in on-chip tile SRAM if the geometry and lighting passes are expressed as subpasses of the same Vulkan render pass, eliminating the DRAM round-trip entirely.
+
+The G-Buffer pipeline is the canonical frame graph resource edge: the geometry pass *produces* transient G-Buffer textures; the lighting pass *consumes* them; both textures are meaningless outside this single frame. This is precisely the data dependency pattern a frame graph was designed to express.
+
 ### 7.1 The Problem Frame Graphs Solve
 
 Modern rendering pipelines are sequences of interdependent passes: a shadow map pass writes a depth texture read by a lighting pass; a G-buffer pass writes colour, normal, and roughness textures read by a deferred shading pass; a shading pass writes a colour buffer read by bloom and TAA. Each intermediate texture has a *lifetime* — it is first written by one pass and last read by another.

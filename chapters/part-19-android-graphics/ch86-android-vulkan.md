@@ -991,6 +991,8 @@ When available (`VkPhysicalDeviceMultisampledRenderToSingleSampledFeaturesEXT.mu
 
 ## 10b. Tile Shaders: Exposing TBDR Tile Memory to Shaders
 
+The principal target of tile shaders is the **G-Buffer** — the set of per-pixel surface attribute render targets (albedo, normal, material, depth) written by a deferred renderer's geometry pass and read by its lighting pass (see ch84 §7.0 and ch204 "Deferred Shading and G-Buffer Rendering" for a full explanation). On desktop IMR GPUs, the G-Buffer is written to DRAM by the geometry pass and then read back from DRAM by the lighting pass, consuming substantial bandwidth for a 1080p or 4K scene (typically 60–120 MB/frame for a full G-Buffer). On TBDR hardware, the G-Buffer attachments can remain in on-chip tile SRAM for the entire tile's rendering — but only if the geometry and lighting passes are merged into a single Vulkan render pass, either via subpass input attachments or via the tile shader extensions below. Tile shaders extend this beyond subpass limitations, enabling compute dispatches and arbitrary reads within the tile pass.
+
 Apple Metal has had tile shaders since Metal 2 (A11 Bionic, 2017): compute shaders that execute within the TBDR tile pass, reading and writing the current tile's colour, depth, and stencil attachments directly from tile SRAM without DRAM round-trips. Vulkan is catching up through two complementary extensions.
 
 ### VK_EXT_shader_tile_image
