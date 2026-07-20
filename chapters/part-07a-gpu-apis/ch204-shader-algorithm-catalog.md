@@ -60,7 +60,16 @@ The distribution of sections in this catalog mirrors the actual distribution of 
 36. [Translucency and Backlit Thin-Surface Materials](#translucency-and-backlit-thin-surface-materials)
 37. [Cloth and Soft-Body Simulation](#cloth-and-soft-body-simulation)
 38. [Reversed-Z and Logarithmic Depth](#reversed-z-and-logarithmic-depth)
-39. [References](#references)
+39. [Isosurface Extraction — Marching Cubes and Surface Nets](#isosurface-extraction--marching-cubes-and-surface-nets)
+40. [RT Denoising — SVGF and NRD](#rt-denoising--svgf-and-nrd)
+41. [Fluid Simulation — SPH and Eulerian Grids](#fluid-simulation--sph-and-eulerian-grids)
+42. [GPU Spatial Data Structures](#gpu-spatial-data-structures)
+43. [Planar Reflections](#planar-reflections)
+44. [Stochastic Rendering](#stochastic-rendering)
+45. [Terrain Material Splatting](#terrain-material-splatting)
+46. [Neural Rendering Primitives](#neural-rendering-primitives)
+47. [Omnidirectional Shadow Maps](#omnidirectional-shadow-maps)
+48. [References](#references)
 
 ---
 
@@ -2464,6 +2473,669 @@ void main() {
 
 **Use cases** — Kerbal Space Program 2, Space Engine, any game with 6+ orders of magnitude depth range.  
 **Reference** — [Brano Kemen: Logarithmic Depth Buffer (2009)](https://outerra.blogspot.com/2009/08/logarithmic-z-buffer.html); [Thatcher Ulrich: Continuous LOD Terrains (Game Programming Gems, 2000)]
+
+---
+
+## Isosurface Extraction — Marching Cubes and Surface Nets
+
+Isosurface extraction converts a scalar field stored in a 3D grid (a signed distance field, a density volume, a voxel occupancy grid) into a triangle mesh. The scalar field exists on GPU-side SSBOs or 3D textures; the extraction runs entirely in **compute shaders**, producing a vertex and index buffer ready for standard rendering without CPU readback.
+
+**Use cases** — procedural voxel terrain (Minecraft-style and smooth), GPU fluid surface meshes, SDF-to-mesh export, medical volume rendering, Dual Contouring for sharp features.
+
+#### Marching Cubes
+Each voxel cell is a cube whose 8 corners have scalar values. If a corner is inside the isosurface (value < iso_level) it is "active". The 8 corner states produce a `uint8` case index (0–255) indexing into a precomputed lookup table of up to 5 triangles per cube.
+
+```glsl
+// Marching Cubes compute shader — one workgroup per voxel cell
+layout(local_size_x=4, local_size_y=4, local_size_z=4) in;
+
+layout(set=0, binding=0) uniform sampler3D density_vol;       // scalar field
+layout(set=0, binding=1) writeonly buffer VertexBuf { vec4 verts[]; };
+layout(set=0, binding=2) writeonly buffer IndexBuf  { uint  idxs[]; };
+layout(set=0, binding=3) buffer Counters { uint vert_count; uint idx_count; };
+
+// Precomputed tables (uploaded as SSBOs at init):
+layout(set=0, binding=4) readonly buffer EdgeTable { int edge_table[256]; };
+layout(set=0, binding=5) readonly buffer TriTable  { int tri_table[256][16]; };
+
+uniform float iso_level;
+uniform vec3  cell_size;
+
+vec3 interp_vertex(vec3 p0, float v0, vec3 p1, float v1) {
+    float t = (iso_level - v0) / (v1 - v0);
+    return mix(p0, p1, clamp(t, 0.0, 1.0));
+}
+
+void main() {
+    ivec3 cell = ivec3(gl_GlobalInvocationID);
+    // Sample 8 corners
+    float val[8];
+    vec3  pos[8];
+    for (int i = 0; i < 8; ++i) {
+        ivec3 c = cell + ivec3((i)&1, (i>>1)&1, (i>>2)&1);
+        pos[i]  = vec3(c) * cell_size;
+        val[i]  = texelFetch(density_vol, c, 0).r;
+    }
+    // Build case index
+    uint cube_idx = 0u;
+    for (int i = 0; i < 8; ++i)
+        if (val[i] < iso_level) cube_idx |= (1u << i);
+    if (cube_idx == 0u || cube_idx == 255u) return;  // entirely inside or outside
+
+    // Compute edge intersections
+    vec3 edge_verts[12];
+    int emask = edge_table[cube_idx];
+    // [12 edge cases abbreviated — each edge connects two corners; interp if bit set]
+    if ((emask & 1)   != 0) edge_verts[0]  = interp_vertex(pos[0],val[0],pos[1],val[1]);
+    if ((emask & 2)   != 0) edge_verts[1]  = interp_vertex(pos[1],val[1],pos[2],val[2]);
+    if ((emask & 4)   != 0) edge_verts[2]  = interp_vertex(pos[2],val[2],pos[3],val[3]);
+    if ((emask & 8)   != 0) edge_verts[3]  = interp_vertex(pos[3],val[3],pos[0],val[0]);
+    if ((emask & 16)  != 0) edge_verts[4]  = interp_vertex(pos[4],val[4],pos[5],val[5]);
+    if ((emask & 32)  != 0) edge_verts[5]  = interp_vertex(pos[5],val[5],pos[6],val[6]);
+    if ((emask & 64)  != 0) edge_verts[6]  = interp_vertex(pos[6],val[6],pos[7],val[7]);
+    if ((emask & 128) != 0) edge_verts[7]  = interp_vertex(pos[7],val[7],pos[4],val[4]);
+    if ((emask & 256) != 0) edge_verts[8]  = interp_vertex(pos[0],val[0],pos[4],val[4]);
+    if ((emask & 512) != 0) edge_verts[9]  = interp_vertex(pos[1],val[1],pos[5],val[5]);
+    if ((emask & 1024)!= 0) edge_verts[10] = interp_vertex(pos[2],val[2],pos[6],val[6]);
+    if ((emask & 2048)!= 0) edge_verts[11] = interp_vertex(pos[3],val[3],pos[7],val[7]);
+
+    // Emit triangles via atomic counter
+    for (int t = 0; tri_table[cube_idx][t] != -1; t += 3) {
+        uint base = atomicAdd(vert_count, 3u);
+        verts[base + 0] = vec4(edge_verts[tri_table[cube_idx][t+0]], 1.0);
+        verts[base + 1] = vec4(edge_verts[tri_table[cube_idx][t+1]], 1.0);
+        verts[base + 2] = vec4(edge_verts[tri_table[cube_idx][t+2]], 1.0);
+    }
+}
+```
+
+**Limitations** — produces vertices independently per cell (no shared vertices); a welding pass or a surface-net approach is needed for a proper indexed mesh. Normals can be computed from the SDF gradient (`normalize(grad(density))`).  
+**Reference** — [Lorensen & Cline: Marching Cubes (SIGGRAPH 1987)](https://dl.acm.org/doi/10.1145/37402.37422); [Paul Bourke's Marching Cubes lookup tables](http://paulbourke.net/geometry/polygonise/)
+
+#### Surface Nets (Naive Surface Nets)
+An alternative to Marching Cubes that places a single vertex per active cell (one whose corners straddle the isosurface) at the average of all edge-crossing positions, then connects adjacent active cells with quads. Produces a coarser but topologically simpler mesh with shared vertices and no lookup tables.
+
+**Use cases** — smooth voxel terrain where the lookup table complexity of MC is undesirable; the basis for Dual Contouring (which refines vertex placement using SDF gradients to preserve sharp features).  
+**Reference** — [Gibson: Constrained Elastic Surface Nets (MICCAI 1998)](https://dl.acm.org/doi/10.5555/646290.687765); [0fps: Meshing in a Minecraft Game (2012)](https://0fps.net/2012/07/12/smooth-voxel-terrain-part-2/)
+
+---
+
+## RT Denoising — SVGF and NRD
+
+Ray tracing at 1–4 samples per pixel produces extremely noisy images. Denoising reconstructs a clean image by exploiting temporal coherence (the current frame is similar to the last) and spatial coherence (neighbouring pixels with similar depth/normal have similar radiance). Without denoising, every RT technique in §22 produces unusable output at real-time sample budgets.
+
+**Shader stage**: all denoising runs in **compute shaders** operating on the noisy input and G-Buffer (depth, normal, motion vectors) render targets. The output overwrites or accumulates into the final HDR framebuffer.
+
+#### SVGF — Spatiotemporal Variance-Guided Filtering
+SVGF (Schied et al., 2017) is the standard academic and industry starting point for RT denoising. It has three stages:
+
+1. **Temporal accumulation** — reproject the previous frame's filtered output using motion vectors; blend with current frame using an alpha of ~0.1 (10% current, 90% history). Track per-pixel sample count for variance estimation.
+
+2. **Variance estimation** — compute the spatial variance of luminance in a 7×7 neighbourhood of the noisy input.
+
+3. **À-Trous wavelet filter** — run 5 iterations of an edge-stopping spatial filter with exponentially increasing kernel step sizes (1, 2, 4, 8, 16 pixels). At each iteration, the bilateral weight combines luminance variance, normal similarity, and depth similarity — stopping the blur across geometric edges.
+
+```glsl
+// SVGF À-Trous filter pass — one of 5 iterations
+layout(local_size_x=8, local_size_y=8) in;
+layout(set=0, binding=0) uniform sampler2D input_color;   // noisy or previous iteration
+layout(set=0, binding=1) uniform sampler2D g_normal;
+layout(set=0, binding=2) uniform sampler2D g_depth;
+layout(set=0, binding=3) uniform sampler2D g_variance;
+layout(set=0, binding=4, rgba16f) uniform image2D output_color;
+
+uniform int   step_size;   // 1, 2, 4, 8, 16 per iteration
+uniform float sigma_l;     // luminance weight (typically 4.0)
+uniform float sigma_n;     // normal weight (typically 128.0)
+uniform float sigma_d;     // depth weight (typically 1.0)
+
+// 3×3 À-Trous kernel weights
+const float kernel[3] = float[](3.0/8.0, 1.0/4.0, 1.0/16.0);
+
+void main() {
+    ivec2 px    = ivec2(gl_GlobalInvocationID.xy);
+    vec4  c_p   = texelFetch(input_color, px, 0);
+    vec3  n_p   = texelFetch(g_normal, px, 0).xyz;
+    float d_p   = texelFetch(g_depth, px, 0).r;
+    float var_p = texelFetch(g_variance, px, 0).r;
+    float lum_p = dot(c_p.rgb, vec3(0.2126, 0.7152, 0.0722));
+
+    vec4  sum_c = vec4(0.0);
+    float sum_w = 0.0;
+
+    for (int dy = -1; dy <= 1; ++dy)
+    for (int dx = -1; dx <= 1; ++dx) {
+        ivec2 nb   = px + ivec2(dx, dy) * step_size;
+        vec4  c_nb = texelFetch(input_color, nb, 0);
+        vec3  n_nb = texelFetch(g_normal, nb, 0).xyz;
+        float d_nb = texelFetch(g_depth, nb, 0).r;
+        float lum_nb = dot(c_nb.rgb, vec3(0.2126, 0.7152, 0.0722));
+
+        // Edge-stopping weights
+        float w_l = exp(-abs(lum_p - lum_nb) / (sigma_l * sqrt(var_p) + 1e-4));
+        float w_n = pow(max(0.0, dot(n_p, n_nb)), sigma_n);
+        float w_d = exp(-abs(d_p - d_nb) / (sigma_d * abs(d_p) + 1e-4));
+
+        float h   = kernel[abs(dx)] * kernel[abs(dy)];
+        float w   = h * w_l * w_n * w_d;
+        sum_c    += w * c_nb;
+        sum_w    += w;
+    }
+    imageStore(output_color, px, sum_c / max(sum_w, 1e-4));
+}
+```
+
+**Reference** — [Schied et al.: Spatiotemporal Variance-Guided Filtering (HPG 2017)](https://research.nvidia.com/publication/2017-07_spatiotemporal-variance-guided-filtering-real-time-reconstruction-path-traced)
+
+#### A-SVGF — Adaptive SVGF
+Replaces fixed temporal accumulation with per-pixel adaptive history length: pixels with high temporal variance (disocclusions, fast-moving objects) use shorter history; stable pixels accumulate longer. Reduces ghosting at the cost of more bookkeeping.
+
+**Reference** — [Schied et al.: Gradient Estimation for Real-Time Adaptive Temporal Filtering (HPG 2018)](https://cg.ivd.kit.edu/atf.php)
+
+#### NRD — NVIDIA Real-Time Denoisers
+NVIDIA's open-source NRD library provides production-quality denoisers for specific signal types: `REBLUR` (recurrent blur, world-space signal) and `RELAX` (relaxed Lyman-alpha, designed for ReSTIR DI/GI noisy input). Both are multi-pass compute pipelines operating in a different signal domain than SVGF, with separate denoisers for diffuse, specular, and shadow signals.
+
+**Reference** — [NVIDIA NRD GitHub](https://github.com/NVIDIAGameWorks/RayTracingDenoiser); [NRD Integration Guide](https://github.com/NVIDIAGameWorks/NRDSample)
+
+---
+
+## Fluid Simulation — SPH and Eulerian Grids
+
+Real-time fluid simulation on the GPU uses either **particle-based (Lagrangian) SPH** — where each particle carries mass, velocity, and pressure — or **grid-based (Eulerian) Navier-Stokes** — where velocity and pressure are stored on a voxel grid and advected each step. Both run entirely in compute shaders, writing results into SSBOs or 3D textures that feed the rendering pipeline.
+
+**Shader stage**: all simulation dispatches are **compute shaders**. SPH rendering uses the particle billboard pipeline from §24; grid-based fluids render via isosurface extraction (§39) or direct volume rendering.
+
+#### SPH — Smoothed Particle Hydrodynamics
+SPH approximates fluid quantities (density, pressure, velocity) as a weighted sum over nearby particles using a smooth kernel function `W(r, h)` (e.g., the cubic spline or the Poly6 kernel), where `h` is the smoothing radius. Each frame: build neighbour list, compute density/pressure, accumulate forces, integrate.
+
+```glsl
+// SPH density computation — one thread per particle
+layout(local_size_x=256) in;
+layout(set=0, binding=0) buffer Positions { vec4 pos[]; };
+layout(set=0, binding=1) buffer Densities { float density[]; };
+// Neighbour list built in prior pass (spatial hash, §42)
+layout(set=0, binding=2) readonly buffer Neighbors { uint neighbors[MAX_PART][MAX_NEIGH]; };
+layout(set=0, binding=3) readonly buffer NCount    { uint ncount[]; };
+
+uniform float h;       // smoothing radius
+uniform float mass;    // particle mass (uniform for all particles)
+uniform float poly6_k; // 315 / (64π h^9)
+
+float poly6(float r2, float h2) {
+    float x = h2 - r2;
+    return (x > 0.0) ? poly6_k * x * x * x : 0.0;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= particle_count) return;
+    vec3  pi  = pos[i].xyz;
+    float rho = 0.0;
+    float h2  = h * h;
+    for (uint k = 0; k < ncount[i]; ++k) {
+        uint j   = neighbors[i][k];
+        vec3 r   = pi - pos[j].xyz;
+        float r2 = dot(r, r);
+        rho     += mass * poly6(r2, h2);
+    }
+    density[i] = rho;
+}
+```
+
+**Pressure force** (Spiky kernel gradient) and **viscosity force** (Laplacian) follow the same neighbour loop with different kernel functions. Pressure is computed from the equation of state `p = k(ρ - ρ₀)`.
+
+**Use cases** — GPU water splashes, fluid-coupled particles, lava, granular materials.  
+**Limitations** — SPH is compressible and requires small timesteps; WCSPH or PCISPH correct for density errors.  
+**Reference** — [Müller et al.: Particle-Based Fluid Simulation for Interactive Applications (SCA 2003)](https://dl.acm.org/doi/10.5555/846276.846298); [NVIDIA FleX](https://developer.nvidia.com/flex)
+
+#### Eulerian Grid Fluid (Stable Fluids)
+Stores velocity `u` and pressure `p` on a MAC (Marker-and-Cell) staggered 3D grid in 3D textures or SSBOs. Each simulation step:
+
+1. **Advect** velocity semi-Lagrangian: trace particle backward `x' = x - u(x)·dt`, sample velocity at `x'` via trilinear interpolation.
+2. **Apply forces** (gravity, buoyancy, vorticity confinement).
+3. **Pressure solve** (Jacobi or conjugate gradient iterations): ensure divergence-free velocity field via Poisson equation `∇²p = ∇·u/dt`.
+4. **Project**: subtract pressure gradient from velocity `u := u - ∇p·dt`.
+
+```glsl
+// Jacobi pressure iteration — one compute pass per iteration (20–50 iterations)
+layout(set=0, binding=0) uniform sampler3D pressure_in;
+layout(set=0, binding=1) uniform sampler3D divergence;
+layout(set=0, binding=2, r32f) uniform image3D pressure_out;
+
+void main() {
+    ivec3 p    = ivec3(gl_GlobalInvocationID);
+    float div  = texelFetch(divergence, p, 0).r;
+    float p_xm = texelFetch(pressure_in, p + ivec3(-1,0,0), 0).r;
+    float p_xp = texelFetch(pressure_in, p + ivec3( 1,0,0), 0).r;
+    float p_ym = texelFetch(pressure_in, p + ivec3(0,-1,0), 0).r;
+    float p_yp = texelFetch(pressure_in, p + ivec3(0, 1,0), 0).r;
+    float p_zm = texelFetch(pressure_in, p + ivec3(0,0,-1), 0).r;
+    float p_zp = texelFetch(pressure_in, p + ivec3(0,0, 1), 0).r;
+    float new_p = (p_xm + p_xp + p_ym + p_yp + p_zm + p_zp - div) / 6.0;
+    imageStore(pressure_out, p, vec4(new_p));
+}
+```
+
+**Use cases** — smoke, fire, explosions, weather effects; grid resolution of 64³–256³ is real-time feasible on desktop GPUs.  
+**Reference** — [Stam: Stable Fluids (SIGGRAPH 1999)](https://dl.acm.org/doi/10.1145/311535.311548); [Harris: Fast Fluid Dynamics Simulation on the GPU (GPU Gems Ch38)](https://developer.nvidia.com/gpugems/gpugems/part-vi-beyond-triangles/chapter-38-fast-fluid-dynamics-simulation-gpu)
+
+---
+
+## GPU Spatial Data Structures
+
+Neighbour queries ("find all particles within radius h of particle i") are the inner loop of SPH, cloth collision, and particle interaction. On the CPU, k-d trees and BVHs handle this; on the GPU, cache-coherent alternatives are required: spatial hash maps and Linear BVHs built via Morton codes.
+
+#### GPU Spatial Hashing
+Hashes each particle's grid cell coordinate into a fixed-size table of bucket lists. Construction: one compute pass writes (cell_hash, particle_id) pairs; a sort (radix sort, §19) puts same-bucket particles contiguous; a scan writes per-bucket start offsets. Query: hash the query cell, walk the bucket list.
+
+```glsl
+// Spatial hash: 3D cell → table index
+uint spatial_hash(ivec3 cell, uint table_size) {
+    const uint p1 = 73856093u, p2 = 19349663u, p3 = 83492791u;
+    return (uint(cell.x)*p1 ^ uint(cell.y)*p2 ^ uint(cell.z)*p3) % table_size;
+}
+
+// Query: enumerate neighbours of particle i within radius h
+void find_neighbors(uint i, float h) {
+    vec3  pi   = positions[i];
+    ivec3 cell = ivec3(floor(pi / h));
+    for (int dz = -1; dz <= 1; ++dz)
+    for (int dy = -1; dy <= 1; ++dy)
+    for (int dx = -1; dx <= 1; ++dx) {
+        uint bucket = spatial_hash(cell + ivec3(dx,dy,dz), TABLE_SIZE);
+        uint start  = bucket_start[bucket];
+        uint end    = bucket_start[bucket + 1];
+        for (uint k = start; k < end; ++k) {
+            uint j = particle_ids[k];
+            if (length(positions[j] - pi) < h)
+                process_neighbor(i, j);
+        }
+    }
+}
+```
+
+**Use cases** — SPH neighbour search, cloth self-collision, crowd simulation, particle-particle interaction.  
+**Reference** — [Ihmsen et al.: A Parallel SPH Implementation on Multi-Core CPUs (CGF 2011)](https://doi.org/10.1111/j.1467-8659.2010.01832.x)
+
+#### LBVH — Linear BVH via Morton Codes
+Builds a BVH over dynamic geometry (for TLAS rebuild of deformable objects) without the CPU. Three compute passes: (1) compute 30-bit Morton code for each primitive by interleaving its centroid's quantised x, y, z bits; (2) radix sort primitives by Morton code — spatially nearby primitives become contiguous; (3) build internal BVH nodes bottom-up using the radix tree structure implicit in sorted Morton codes (Karras 2012), computing AABBs with a parallel reduction.
+
+```glsl
+// Morton code — interleave 10-bit quantised coordinates
+uint expand_bits(uint v) {
+    v = (v * 0x00010001u) & 0xFF0000FFu;
+    v = (v * 0x00000101u) & 0x0F00F00Fu;
+    v = (v * 0x00000011u) & 0xC30C30C3u;
+    v = (v * 0x00000005u) & 0x49249249u;
+    return v;
+}
+uint morton3D(float x, float y, float z) {
+    x = clamp(x * 1024.0, 0.0, 1023.0);
+    y = clamp(y * 1024.0, 0.0, 1023.0);
+    z = clamp(z * 1024.0, 0.0, 1023.0);
+    return expand_bits(uint(x)) | (expand_bits(uint(y)) << 1) | (expand_bits(uint(z)) << 2);
+}
+```
+
+**Use cases** — per-frame TLAS rebuild for deformable meshes (skinned characters, cloth) without CPU involvement; dynamic ray tracing scenes.  
+**Reference** — [Karras: Maximizing Parallelism in the Construction of BVHs, Octrees, and k-d Trees (HPG 2012)](https://dl.acm.org/doi/10.2312/EGGH/HPG12/033-037)
+
+---
+
+## Planar Reflections
+
+A mirror or calm water surface reflects the world as seen from a camera position symmetrically reflected across the plane of the surface. The reflected image is rendered into a separate render target by rendering the entire scene from this reflected viewpoint, then sampled on the reflective surface using its clip-space coordinates. This produces pixel-perfect reflections including off-screen content, geometry detail, and correct parallax — at the cost of an additional scene render.
+
+**Shader stage**: the reflection render uses the full scene render pipeline with the **view matrix replaced**. The sampling runs in the **fragment shader** of the reflective surface.
+
+#### Reflected Camera Setup
+The reflected view matrix is computed by reflecting the camera position and forward vector across the reflection plane and constructing a new look-at matrix. An oblique projection matrix clips geometry below the reflection plane to avoid rendering objects behind the mirror into the reflection.
+
+```glsl
+// CPU-side: compute reflected view matrix for plane (normal N, point P0)
+// Reflect camera position: pos' = pos - 2 * (dot(pos - P0, N)) * N
+// Reflect look direction: dir' = dir - 2 * dot(dir, N) * N
+// Then standard lookAt(pos', pos' + dir', up')
+
+// Oblique near-plane clipping (Lengyel 2007) — clip geometry behind the plane
+// Modify projection matrix column 2 to match the reflection plane:
+vec4 clip_plane = vec4(N, -dot(N, P0)); // in view space of reflected camera
+// c = sign(clip_plane) * inv(proj)ᵀ row 3 / dot(clip_plane, that row)
+// proj[2] = c - proj[3]  (replaces near plane with reflection plane)
+```
+
+#### Reflection Sampling in Fragment Shader
+The reflective surface's fragment shader projects the fragment's world position into the reflected camera's clip space and samples the reflection render target using the resulting screen-space UV, adding a normal-map distortion for water ripples.
+
+```glsl
+layout(set=1, binding=0) uniform sampler2D reflection_rt;
+layout(set=1, binding=1) uniform mat4 reflected_proj_view;
+layout(set=1, binding=2) uniform sampler2D water_normal_map;
+
+layout(location=0) in vec3 world_pos;
+layout(location=0) out vec4 frag_color;
+
+void main() {
+    // Normal map distortion for water ripples
+    vec2 ripple = texture(water_normal_map, world_pos.xz * 0.1).rg * 2.0 - 1.0;
+
+    // Project world position into reflected camera clip space
+    vec4 refl_clip = reflected_proj_view * vec4(world_pos, 1.0);
+    vec2 refl_uv   = (refl_clip.xy / refl_clip.w) * 0.5 + 0.5;
+    refl_uv       += ripple * 0.02;  // distort by ripple normal
+
+    vec3 reflection = texture(reflection_rt, refl_uv).rgb;
+
+    // Fresnel blend: more reflection at grazing angles
+    float fresnel = pow(1.0 - max(0.0, dot(normalize(cam_pos - world_pos),
+                                           vec3(0,1,0))), 5.0);
+    frag_color = vec4(mix(water_color, reflection, fresnel), 1.0);
+}
+```
+
+**Use cases** — calm water, mirrors, polished floors, portal surfaces; used in Source Engine, Godot, and Unity for water rendering; combined with SSR for rough surfaces.  
+**Limitations** — doubles draw call count; geometry below the plane must be excluded or the render double-renders; does not work for curved reflectors.  
+**Reference** — [Lengyel: Oblique View Frustum Depth Projection (JGTE 2007)](http://www.terathink.com/lengyel/GPUGems2/GPUGems2_ch42.pdf); [Valve: Water in Half-Life 2 (GDC 2006)]
+
+---
+
+## Stochastic Rendering
+
+Stochastic rendering uses random or blue-noise per-pixel decisions that are perceptually smooth after temporal accumulation by TAA. The key insight: if per-pixel noise has a blue-noise spatial distribution and is uncorrelated across frames, TAA's temporal accumulation converges to the correct average faster and with fewer ghosting artefacts than correlated dithering patterns.
+
+**Shader stage**: the random decision runs in the **vertex or fragment shader**; the result is smoothed by the TAA pass in post-processing.
+
+#### Alpha Dithering (Stochastic Transparency)
+Replaces alpha blending with a 1-bit per-pixel stochastic accept/reject: if `rand(px, frame) < alpha`, keep the fragment; otherwise discard. No blending, no sorting, full depth-correct transparency — at the cost of per-pixel noise that TAA must clean up. Used by Unreal Engine for foliage LOD crossfade and Nanite fallback geometry.
+
+```glsl
+// Stochastic transparency — fragment shader
+layout(set=0, binding=0) uniform sampler2D blue_noise;
+uniform float alpha;
+uniform uint  frame_index;
+
+void main() {
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    float bn = texelFetch(blue_noise, px % 64, 0).r;
+    // Temporal decorrelation via golden ratio
+    bn = fract(bn + float(frame_index) * 0.61803398875);
+    if (bn >= alpha) discard;  // stochastic discard — no blending needed
+    // ... continue with opaque shading
+}
+```
+
+**Use cases** — foliage LOD crossfade without z-sorting; alpha-tested hair with soft edges after TAA; cross-dissolve transitions.  
+**Reference** — [Enderton et al.: Stochastic Transparency (I3D 2010)](https://dl.acm.org/doi/10.1145/1730804.1730838)
+
+#### Stochastic LOD Selection
+Randomly selects between discrete LOD levels with a probability proportional to the interpolation weight between levels, then lets TAA average across frames. Eliminates the sharp LOD pop without cross-fade geometry. The selection probability for LOD `n` ramps from 0 to 1 as the camera-to-object distance crosses the transition range.
+
+```glsl
+// In vertex shader or culling compute:
+float lod_frac = smoothstep(lod_near, lod_far, distance_to_object);
+float noise    = hash(object_id ^ frame_index);
+uint  lod      = (noise < lod_frac) ? lod_high : lod_low;
+// Submit the draw with the selected LOD mesh
+```
+
+**Use cases** — vegetation LOD, distant building LOD; requires TAA to be enabled; correct temporal statistics require blue-noise object-id-based hash.  
+**Reference** — [Wihlidal: Stochastic LOD (GDC 2016)](https://advances.realtimerendering.com/s2016/)
+
+#### Interleaved Sampling / Checkerboard Rendering
+Renders only every other pixel each frame in a checkerboard pattern (or quarter-resolution for 2×2 tiles), reconstructing the missing pixels using a bilateral filter or the previous frame's reprojected pixels. Halves fragment shader cost; TAA accumulates to full resolution over two frames.
+
+**Use cases** — half-rate AO, half-rate reflections, half-rate volumetric fog; standard technique for expensive per-pixel effects.  
+**Reference** — [Drobot: Checkerboard Rendering (Digital Dragons 2017)](http://advances.realtimerendering.com/s2017/)
+
+---
+
+## Terrain Material Splatting
+
+Terrain surfaces blend between multiple materials (rock, grass, dirt, snow) based on altitude, slope angle, and curvature — not a single material UV-mapped over the mesh. A **splat map** encodes material weights per terrain texel (one channel per material layer, up to 4 per RGBA8 splat texture), sampled in the fragment shader and used to blend tiled material textures.
+
+**Shader stage**: terrain material blending runs in the **fragment shader** of the terrain mesh (heightmap tessellated or mesh-based).
+
+#### RGBA Splat Map Blending
+The simplest implementation: sample the splat map at the terrain UV, use the four channels as blend weights, trilinearly sample four tiled material textures, and lerp between them.
+
+```glsl
+layout(set=0, binding=0) uniform sampler2D splat_map;      // RGBA8: per-channel weight
+layout(set=0, binding=1) uniform sampler2DArray mat_albedo; // layer 0..3 albedo
+layout(set=0, binding=2) uniform sampler2DArray mat_normal; // layer 0..3 normal
+layout(set=0, binding=3) uniform sampler2DArray mat_height; // layer 0..3 height for blend
+
+layout(location=0) in vec2 terrain_uv;
+layout(location=1) in vec2 tiled_uv;    // terrain_uv * tile_scale
+
+void main() {
+    vec4 weights = texture(splat_map, terrain_uv);
+    weights /= (weights.r + weights.g + weights.b + weights.a + 1e-6); // renormalise
+
+    vec3 albedo = vec3(0.0);
+    vec3 normal = vec3(0.0);
+    for (int i = 0; i < 4; ++i) {
+        albedo += weights[i] * texture(mat_albedo, vec3(tiled_uv, float(i))).rgb;
+        normal += weights[i] * texture(mat_normal, vec3(tiled_uv, float(i))).rgb;
+    }
+    // ... lighting with blended albedo and normal
+}
+```
+
+#### Height-Based Blend Sharpening
+Naïve linear blending produces blurry material transitions. Sharpening by the material height map at the transition gives natural overlap (rock peaks through grass in crevices, snow settles on flat areas only):
+
+```glsl
+// Height-aware blend — each material's height map biases its weight at transitions
+vec4 h = vec4(
+    texture(mat_height, vec3(tiled_uv, 0.0)).r,
+    texture(mat_height, vec3(tiled_uv, 1.0)).r,
+    texture(mat_height, vec3(tiled_uv, 2.0)).r,
+    texture(mat_height, vec3(tiled_uv, 3.0)).r
+);
+// Add height to base weight, then sharpen with a contrast parameter
+vec4 blend = weights + h * 0.4;
+float blend_max = max(max(blend.r,blend.g), max(blend.b,blend.a));
+blend = max(blend - (blend_max - 0.2), vec4(0.0));  // contrast=0.2
+blend /= (blend.r + blend.g + blend.b + blend.a + 1e-6);
+```
+
+**Reference** — [Golus: Avoiding Texture Repetition (2018)](https://bgolus.medium.com/normal-mapping-for-a-triplanar-shader-10bf39dca05a)
+
+#### Slope-Based and Altitude-Based Layer Assignment
+Computes per-fragment material weight from the terrain surface normal slope and world-space height, without a pre-baked splat map:
+
+```glsl
+// Slope-based: rock on steep slopes, grass on flat
+float slope   = 1.0 - abs(dot(world_normal, vec3(0,1,0)));  // 0=flat, 1=vertical
+float w_grass = smoothstep(0.5, 0.3, slope);
+float w_rock  = smoothstep(0.3, 0.5, slope);
+
+// Altitude-based: snow above a height threshold
+float altitude = world_pos.y;
+float w_snow   = smoothstep(snow_altitude - 5.0, snow_altitude + 5.0, altitude);
+
+// Final 3-way blend (normalise to sum to 1):
+float total  = w_grass + w_rock + w_snow + 1e-6;
+w_grass /= total;  w_rock /= total;  w_snow /= total;
+```
+
+**Use cases** — procedural terrain without artist-painted splat maps; runtime material selection for infinite procedural worlds.  
+**Reference** — [UE5 Landscape Technical Guide](https://docs.unrealengine.com/5.0/en-US/landscape-technical-guide-in-unreal-engine/)
+
+#### Puddle Accumulation (Wetness / Rain)
+Modulates material roughness and blends in a water normal map in concave areas (where rain would collect), estimated by the world-space up-facing fraction of the surface normal:
+
+```glsl
+float flatness   = pow(max(0.0, dot(world_normal, vec3(0,1,0))), 4.0);
+float wetness    = rain_intensity * flatness;
+float roughness  = mix(dry_roughness, 0.0, wetness);  // wet = very smooth
+vec3  wet_normal = mix(surface_normal, water_ripple_normal, wetness * 0.5);
+```
+
+**Reference** — [Lagarde & de Rousiers: Moving Frostbite to PBR (SIGGRAPH 2014)](https://seblagarde.wordpress.com/2015/07/14/siggraph-2014-moving-frostbite-to-physically-based-rendering/)
+
+---
+
+## Neural Rendering Primitives
+
+Neural rendering augments or replaces traditional texture/geometry lookups with small learned models evaluated at runtime on the GPU. The key enabler is **hash grid encoding** (Müller et al. 2022): instead of a large MLP mapping 3D position to colour, position is first encoded by a multi-resolution hash table of learned feature vectors, and only a tiny 2–4 layer MLP processes the encoded features. This makes inference fast enough for real-time use.
+
+**Shader stage**: hash grid lookup and tiny MLP inference run in **compute shaders** (or fragment shaders for view-dependent effects). Weight SSBOs store the network parameters.
+
+#### Instant-NGP Hash Grid Encoding
+The scene is divided into L multi-resolution grids. For a query point `x`, each level `l` has a grid of resolution `N_l = ⌊N_min · b^l⌋` and a hash table of size `T` (typically 2^14 to 2^24). The 8 corners of the cell containing `x` are hashed to table indices; their feature vectors are trilinearly interpolated and concatenated across all L levels into a single feature vector.
+
+```glsl
+// Hash grid lookup — one level
+layout(set=0, binding=0) buffer HashTable { vec2 features[]; };  // F=2 features per entry
+
+uint grid_hash(ivec3 cell, uint T) {
+    const uint p1 = 1u, p2 = 2654435761u, p3 = 805459861u;
+    return (uint(cell.x)*p1 ^ uint(cell.y)*p2 ^ uint(cell.z)*p3) & (T - 1u);
+}
+
+vec2 hash_grid_lookup(vec3 x, float resolution, uint T) {
+    vec3  scaled = x * resolution;
+    ivec3 base   = ivec3(floor(scaled));
+    vec3  frac   = fract(scaled);
+
+    // 8-corner trilinear interpolation
+    vec2 result = vec2(0.0);
+    for (int dz=0; dz<=1; ++dz)
+    for (int dy=0; dy<=1; ++dy)
+    for (int dx=0; dx<=1; ++dx) {
+        uint h = grid_hash(base + ivec3(dx,dy,dz), T);
+        vec2 f = features[h];
+        float w = (dx==0 ? 1.0-frac.x : frac.x)
+                * (dy==0 ? 1.0-frac.y : frac.y)
+                * (dz==0 ? 1.0-frac.z : frac.z);
+        result += w * f;
+    }
+    return result;
+}
+// Concatenate L=16 levels → 32-dimensional feature vector → tiny MLP
+```
+
+**Reference** — [Müller et al.: Instant Neural Graphics Primitives (SIGGRAPH 2022)](https://nvlabs.github.io/instant-ngp/)
+
+#### Tiny MLP Inference in Compute
+A 2–4 layer fully-connected network with 64 neurons per layer fits entirely in registers on modern GPUs. Each layer is a matrix-vector product followed by a ReLU (or exponential for the final colour output). Weights are stored in a small SSBO read once per network query.
+
+```glsl
+// Tiny MLP inference — 2 hidden layers, width W
+layout(set=1, binding=0) readonly buffer Weights0 { float w0[W * IN_DIM]; };
+layout(set=1, binding=1) readonly buffer Weights1 { float w1[W * W]; };
+layout(set=1, binding=2) readonly buffer Weights2 { float w2[OUT_DIM * W]; };
+layout(set=1, binding=3) readonly buffer Biases0  { float b0[W]; };
+// ... similar for b1, b2
+
+vec4 mlp_infer(float features[IN_DIM]) {
+    float h0[W], h1[W];
+    // Layer 0: h0 = ReLU(W0 * features + b0)
+    for (int j = 0; j < W; ++j) {
+        float acc = b0[j];
+        for (int i = 0; i < IN_DIM; ++i) acc += w0[j * IN_DIM + i] * features[i];
+        h0[j] = max(0.0, acc);
+    }
+    // Layer 1: h1 = ReLU(W1 * h0 + b1)
+    for (int j = 0; j < W; ++j) {
+        float acc = b1[j];
+        for (int i = 0; i < W; ++i) acc += w1[j * W + i] * h0[i];
+        h1[j] = max(0.0, acc);
+    }
+    // Output layer
+    vec4 out = vec4(0.0);
+    for (int j = 0; j < OUT_DIM; ++j) {
+        float acc = b2[j];
+        for (int i = 0; i < W; ++i) acc += w2[j * W + i] * h1[i];
+        out[j] = acc;
+    }
+    return out;
+}
+```
+
+**Use cases** — neural radiance caching (NRC, §6); neural texture compression (trained per-texture decoder); view-dependent appearance model for baked scenes.  
+**Reference** — [Müller et al.: Real-Time Neural Radiance Caching (SIGGRAPH 2021)](https://research.nvidia.com/publication/2021-06_real-time-neural-radiance-caching-path-tracing)
+
+#### NeRF — Neural Radiance Fields (Conceptual)
+A NeRF stores a scene as a neural function `f(x, d) → (RGB, σ)` mapping 3D position `x` and view direction `d` to colour and density. Rendering requires ray marching through the volume, sampling the network at each step to accumulate colour and opacity via volume rendering (Beer-Lambert integration over learned density). Real-time NeRF rendering uses the hash grid to replace positional encoding, reducing network width and enabling interactive rates.
+
+**Relevance** — WebGPU/compute-capable browsers can run tiny NeRF inference; the technique is increasingly deployed for 3D content on the web (Google Immersive View, ARCore Geospatial).  
+**Reference** — [Mildenhall et al.: NeRF (ECCV 2020)](https://www.matthewtancik.com/nerf); [instant-ngp project](https://nvlabs.github.io/instant-ngp/)
+
+---
+
+## Omnidirectional Shadow Maps
+
+Point lights cast shadows in all directions — a spotlight's cone-bounded shadow map does not apply. The standard solution is a **cube shadow map**: render the scene six times from the light's position into the six faces of a cube texture, then during shading sample the cube map with the light-to-fragment vector to retrieve the stored depth and compare. A cheaper alternative is **dual paraboloid shadow mapping** (DPSM), which projects the scene onto two paraboloid surfaces (front/back hemisphere) in a single geometry pass using a mesh shader.
+
+**Shader stage**: shadow map generation uses the standard **vertex + fragment** pipeline (or geometry shader for single-pass cube rendering). Shadow sampling runs in the **fragment shader** of the lighting pass.
+
+#### Cube Shadow Map
+Renders the scene six times with projection matrices pointing along ±X, ±Y, ±Z from the light position. Stores linear depth `length(frag_pos - light_pos)` (not projected NDC depth) to avoid distortion artefacts at cube face edges.
+
+```glsl
+// Shadow cube map generation — fragment shader (one face per render pass)
+layout(location=0) in vec3 frag_world_pos;
+layout(location=0) out float out_depth;
+
+uniform vec3  light_pos;
+uniform float far_plane;
+
+void main() {
+    out_depth = length(frag_world_pos - light_pos) / far_plane;  // [0, 1]
+}
+```
+
+```glsl
+// Shadow cube map sampling — deferred lighting fragment shader
+layout(set=1, binding=0) uniform samplerCube shadow_cube;
+
+float point_shadow(vec3 frag_pos, vec3 light_pos, float far_plane) {
+    vec3  L    = frag_pos - light_pos;
+    float dist = length(L) / far_plane;
+    float closest = texture(shadow_cube, L).r;  // samplerCube auto-selects face
+    return (dist - 0.005 > closest) ? 0.0 : 1.0;  // 0.005 = bias
+}
+```
+
+**PCF for cube maps**: sample `textureCubeShadow` with a `samplerCubeShadow` for hardware PCF support, or manually sample neighbouring cube texels and average.
+
+```glsl
+layout(set=1, binding=0) uniform samplerCubeShadow shadow_cube_pcf;
+
+float point_shadow_pcf(vec3 L, float compare_depth) {
+    // Hardware PCF: returns interpolated result
+    return texture(shadow_cube_pcf, vec4(L, compare_depth)).r;
+}
+```
+
+**Use cases** — point lights (street lights, torches, explosions); any omni-directional shadow caster. Single-face rendering per frame (rotating through faces over multiple frames) can amortize the 6× cost for static scenes.  
+**Reference** — [de Vries: LearnOpenGL — Point Shadows](https://learnopengl.com/Advanced-Lighting/Shadows/Point-Shadows)
+
+#### Dual Paraboloid Shadow Mapping (DPSM)
+Projects the scene onto two paraboloid surfaces (forward and backward hemispheres) using a non-linear vertex transform, producing two 2D shadow maps instead of six. A geometry shader or mesh shader routes each triangle to the correct hemisphere. Shadow lookup transforms the light-to-fragment vector to paraboloid UV space.
+
+```glsl
+// DPSM vertex transform — forward hemisphere (back hemisphere uses -pos.z)
+layout(location=0) in vec3 in_pos;
+uniform mat4 model;
+uniform vec3 light_pos;
+uniform float near, far;
+
+void main() {
+    vec3 P = (model * vec4(in_pos, 1.0)).xyz - light_pos;
+    float L = length(P);
+    P /= L;  // normalize
+    // Paraboloid projection: map hemisphere to [-1,1]² disk
+    float k = P.z + 1.0;
+    gl_Position = vec4(P.x / k, P.y / k, (L - near) / (far - near), 1.0);
+}
+```
+
+**Use cases** — point lights with tight shadow budget; mobile/VR where six render passes are too expensive.  
+**Limitations** — triangles crossing the paraboloid boundary must be clipped (handled by the geometry shader); lower quality than cube maps at face boundaries.  
+**Reference** — [Brabec et al.: Single Sample Soft Shadows Using Depth Maps (VMV 2002)](https://cg.cs.uni-bonn.de/publication/brabec-2002-single/); [GPU Gems Ch12: Omnidirectional Shadow Mapping](https://developer.nvidia.com/gpugems/gpugems/part-ii-lighting-and-shadows/chapter-12-omnidirectional-shadow-mapping)
 
 ---
 
