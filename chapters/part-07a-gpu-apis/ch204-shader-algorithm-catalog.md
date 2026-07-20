@@ -85,7 +85,15 @@ The distribution of sections in this catalog mirrors the actual distribution of 
 61. [Ordered Dithering and Output Quantization](#ordered-dithering-and-output-quantization)
 62. [Meshlet Generation](#meshlet-generation)
 63. [Shadow Atlas and Cached Shadows](#shadow-atlas-and-cached-shadows)
-64. [References](#references)
+64. [Bindless Texturing and Descriptor Indexing](#bindless-texturing-and-descriptor-indexing)
+65. [Normal Map Blending](#normal-map-blending)
+66. [Volumetric Light Shafts and God Rays](#volumetric-light-shafts-and-god-rays)
+67. [Vignette and Lens Distortion](#vignette-and-lens-distortion)
+68. [Exponential Shadow Maps](#exponential-shadow-maps)
+69. [Bent Normal and AO Baking](#bent-normal-and-ao-baking)
+70. [Light Propagation Volumes](#light-propagation-volumes)
+71. [Ray Differentials](#ray-differentials)
+72. [References](#references)
 
 ---
 
@@ -4456,6 +4464,677 @@ float cached_shadow_lookup(uint light_idx, vec3 world_pos) {
 
 **Use cases** — Frostbite many-light shadow atlas, id Tech 7 cached shadows, Unity HDRP shadow atlas; used whenever more than 4 lights cast shadows simultaneously.  
 **Reference** — [Valient: Rendering of COD:AW (SIGGRAPH 2014)](https://advances.realtimerendering.com/s2014/); [Ubisoft: Cascaded Shadow Map Caching in For Honor (GDC 2018)](https://advances.realtimerendering.com/s2018/)
+
+---
+
+## Bindless Texturing and Descriptor Indexing
+
+Traditional Vulkan pipelines bind a fixed set of textures per draw call via descriptor sets — one `VkDescriptorSet` update per material, one `vkCmdBindDescriptorSets` per draw. With many unique materials this becomes the CPU bottleneck. `VK_EXT_descriptor_indexing` (core in Vulkan 1.2 as `descriptorIndexing`) allows a shader to index into an **unbounded array** of textures using a runtime integer — eliminating per-draw rebinding entirely and enabling the GPU-driven rendering (§32) and visibility buffer (§21) pipelines to work with heterogeneous material sets.
+
+**Shader stage**: bindless arrays are declared in the **fragment shader** (or any shader stage). The index may be non-uniform (different across fragments in the same draw), which requires the `nonuniformEXT` qualifier to ensure correct GPU memory access.
+
+#### Unbounded Descriptor Array
+Declare a descriptor array with no fixed size using `[]`. The binding must use the `UPDATE_AFTER_BIND` flag and the array must be allocated with a large enough descriptor pool.
+
+```glsl
+#extension GL_EXT_nonuniform_qualifier : require
+
+// Bindless texture array — all scene textures bound once, indexed by material ID
+layout(set=0, binding=0) uniform sampler2D tex_array[];       // unbounded albedo/normal/etc.
+layout(set=0, binding=1) uniform sampler2D normal_array[];
+layout(set=0, binding=2) uniform sampler2D roughness_array[];
+
+// Per-draw or per-instance material index (from InstanceSSBO or push constant)
+layout(location=2) flat in uint v_material_id;
+
+void main() {
+    // nonuniformEXT: tells the GPU that material_id varies across fragments —
+    // required for correct wave/quad execution when different pixels hit different textures
+    vec4 albedo    = texture(tex_array[nonuniformEXT(v_material_id)],     uv);
+    vec3 normal_ts = texture(normal_array[nonuniformEXT(v_material_id)],  uv).xyz * 2.0 - 1.0;
+    float rough    = texture(roughness_array[nonuniformEXT(v_material_id)], uv).r;
+    // ... continue with shading
+}
+```
+
+**Without `nonuniformEXT`**: the GPU may read the texture index from lane 0 and use it for all lanes in the wave — producing wrong results when different fragments have different material IDs. This is a correctness issue, not a performance one.
+
+#### Material SSBO + Bindless Index
+In a GPU-driven renderer, the material index comes from the per-instance SSBO (§32) rather than a uniform. The fragment shader reads the instance data to find which textures to sample.
+
+```glsl
+struct MaterialRecord {
+    uint albedo_idx;
+    uint normal_idx;
+    uint roughness_idx;
+    uint emissive_idx;
+    vec4 base_color_factor;
+    float roughness_factor;
+    float metallic_factor;
+};
+layout(set=1, binding=0) readonly buffer MaterialSSBO { MaterialRecord materials[]; };
+
+layout(location=2) flat in uint v_instance_id;
+
+void main() {
+    MaterialRecord mat = materials[v_instance_id];
+    vec4 albedo = texture(tex_array[nonuniformEXT(mat.albedo_idx)], uv)
+                * mat.base_color_factor;
+    // ...
+}
+```
+
+#### Vulkan Setup for Bindless
+On the CPU side, the descriptor pool and layout must be created with the correct flags:
+
+```c
+// Descriptor pool flag (allows descriptors updated after bind)
+VkDescriptorPoolCreateInfo pool_info = {
+    .flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+    ...
+};
+// Descriptor set layout binding flag
+VkDescriptorBindingFlags binding_flags =
+    VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+    VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
+    VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT;
+// Descriptor count: allocate the maximum number of textures in the scene
+uint32_t max_textures = 65536;
+```
+
+**Use cases** — every GPU-driven renderer (Nanite, id Tech 7, Frostbite, Bevy); visibility buffer material evaluation (§21); any scene with > 16 unique textures.  
+**Reference** — [Vulkan: VK_EXT_descriptor_indexing](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_EXT_descriptor_indexing.html); [Wicked Engine: Bindless Descriptors](https://wickedengine.net/2021/04/bindless-descriptors/)
+
+---
+
+## Normal Map Blending
+
+A surface often needs multiple normal maps combined: a tiling detail normal map on top of a base surface normal, a decal normal overlaid on both, a terrain blend between rock and soil normals. Simple addition of normal vectors breaks normalization and produces incorrect lighting. Two well-established blending methods handle this correctly.
+
+**Shader stage**: normal blending runs in the **fragment shader** immediately before the lighting evaluation, producing a single world-space normal from two or more tangent-space inputs.
+
+#### UDN Blending (Unreal Detail Normals)
+Designed for overlaying a detail normal map `n2` onto a base normal map `n1`. Whiteout-extends `n1` (treats it as the dominant base) and re-normalizes. Cheap: one normalize, no cross products.
+
+```glsl
+// UDN blend — n1 is base (low-frequency), n2 is detail (high-frequency)
+// Both normals in tangent space, range [−1, 1]
+vec3 blend_normals_udn(vec3 n1, vec3 n2) {
+    // Treat n1 as a perturbation of (0,0,1); add n2 as a second perturbation
+    return normalize(vec3(n1.xy + n2.xy, n1.z));
+}
+```
+
+**Limitation**: UDN assumes `n1.z > 0` (normals pointing generally upward in tangent space). It breaks for normals with large angles from the tangent plane (e.g., under strong displacement). For those cases use whiteout blending.
+
+#### Whiteout Blending
+Treats both normals symmetrically, giving them equal influence. More correct for arbitrary normal angles; slightly more expensive (one extra multiply).
+
+```glsl
+// Whiteout blend — symmetric, works for large angular differences
+vec3 blend_normals_whiteout(vec3 n1, vec3 n2) {
+    return normalize(vec3(n1.xy + n2.xy, n1.z * n2.z));
+}
+```
+
+**When to use**: UDN for detail normal maps at small scales (pores, scratches, fabric weave); whiteout for blending between two equal-weight materials (terrain rock/grass normals, decal normals at steep angles).  
+**Reference** — [Mikkelsen: Blending in Detail (2010)](https://blog.selfshadow.com/publications/blending-in-detail/)
+
+#### Reoriented Normal Mapping (RNM)
+Blends a detail normal map whose local Z axis is rotated to align with the base normal, using a full rotation. The most correct method: preserves the correct normal frame for large base-normal variations (e.g., curved walls), at the cost of a `cross` and two normalizations.
+
+```glsl
+// RNM blend — full rotation of n2 into n1's frame
+vec3 blend_normals_rnm(vec3 n1, vec3 n2) {
+    vec3 t  = n1 + vec3(0.0, 0.0, 1.0);
+    vec3 u  = n2 * vec3(-1.0, -1.0, 1.0);
+    return normalize(t * dot(t, u) - u * t.z);
+}
+```
+
+**Reference** — [Colin Barré-Brisebois: Practical Layered Materials in Call of Duty: Infinite Warfare (SIGGRAPH 2016)](https://advances.realtimerendering.com/s2016/)
+
+#### Decal Normal Compositing
+When applying a decal normal (in world space or object space) on top of a surface normal, transform both to the same space, blend with whiteout, then transform the result to world space for lighting.
+
+```glsl
+// Decal normal (world space) blended onto surface normal (world space)
+// weight: 0 = full surface, 1 = full decal influence
+vec3 composite_decal_normal(vec3 surface_n, vec3 decal_n, float weight) {
+    vec3 blended = blend_normals_whiteout(surface_n, mix(vec3(0,0,1), decal_n, weight));
+    return normalize(blended);
+}
+```
+
+---
+
+## Volumetric Light Shafts and God Rays
+
+Volumetric light shafts — visible beams of sunlight through foliage, dust motes in a cathedral, fog illuminated by headlights — require computing how much light from a directional source reaches each point in the atmosphere before it reaches the camera. Two implementations exist at very different cost points.
+
+**Shader stage**: screen-space god rays run as a full-screen **fragment or compute** post-process. Ray-marched volumetric shafts run as a **compute** pass producing a half-resolution volume texture that is upsampled and composited.
+
+#### Screen-Space Radial Blur (Shaft Approximation)
+Projects the sun position into screen space, then radially blurs the scene colour (or an occlusion mask) from each pixel toward the sun position. Fast and plausible for outdoor daylight; breaks for occluders not at screen centre and does not capture correct in-scattering physics.
+
+```glsl
+// Screen-space god ray — radial blur from sun screen position
+layout(set=0, binding=0) uniform sampler2D scene_color;
+layout(set=0, binding=1) uniform sampler2D occlusion_mask;  // 1 = sky, 0 = occluded
+
+uniform vec2  sun_screen_pos;   // sun position in [0,1] UV
+uniform float decay;            // attenuation per step (e.g. 0.97)
+uniform float density;          // step scale (e.g. 0.9)
+uniform float weight;           // light weight (e.g. 0.5)
+uniform int   num_samples;      // typically 64–100
+
+layout(location=0) out vec3 god_ray_out;
+
+void main() {
+    vec2  uv      = gl_FragCoord.xy / resolution;
+    vec2  delta   = (uv - sun_screen_pos) * (density / float(num_samples));
+    vec2  sample_uv = uv;
+    float illum_decay = 1.0;
+    vec3  accum   = vec3(0.0);
+
+    for (int i = 0; i < num_samples; ++i) {
+        sample_uv   -= delta;
+        vec3  s      = texture(scene_color, sample_uv).rgb
+                     * texture(occlusion_mask, sample_uv).r;
+        accum       += s * illum_decay * weight;
+        illum_decay *= decay;
+    }
+    god_ray_out = accum;
+}
+```
+
+**Composite pass**: add the god ray buffer additively to the HDR scene before tone mapping.
+
+#### Ray-Marched Volumetric Shafts
+For each screen pixel, march a ray from the camera through the scene, sampling the light visibility at each step (shadow map lookup for the directional light) and accumulating in-scattered light using the Henyey-Greenstein phase function (§9). This is the physically correct approach used in UE4/UE5's volumetric atmosphere.
+
+```glsl
+// Volumetric shaft compute — one thread per pixel, half resolution
+layout(set=0, binding=0) uniform sampler2DShadow shadow_csm;
+layout(set=0, binding=1, rgba16f) uniform image2D shaft_out;
+
+uniform mat4  light_proj_view;
+uniform vec3  light_dir;
+uniform vec3  light_color;
+uniform float g;              // HG asymmetry (e.g. 0.7 for forward scatter)
+uniform float extinction;     // σ_t (density × extinction coeff)
+uniform int   num_steps;      // 16–32 for half-res
+
+float hg_phase(float cos_theta, float g_val) {
+    float g2 = g_val * g_val;
+    return (1.0 - g2) / (4.0 * 3.14159 * pow(1.0 + g2 - 2.0*g_val*cos_theta, 1.5));
+}
+
+void main() {
+    ivec2 px      = ivec2(gl_GlobalInvocationID.xy);
+    vec3  ray_dir = reconstruct_ray_dir(px);
+    float cos_theta = dot(ray_dir, -light_dir);
+    float phase   = hg_phase(cos_theta, g);
+
+    vec3  accum   = vec3(0.0);
+    float transmit = 1.0;
+
+    for (int i = 0; i < num_steps; ++i) {
+        float t   = scene_depth * float(i) / float(num_steps);
+        vec3  pos = cam_pos + ray_dir * t;
+
+        // Shadow map visibility at this position
+        vec4  lclip  = light_proj_view * vec4(pos, 1.0);
+        vec3  lndc   = lclip.xyz / lclip.w;
+        float shadow = texture(shadow_csm, vec3(lndc.xy*0.5+0.5, lndc.z));
+
+        float step_ext = extinction * (scene_depth / float(num_steps));
+        accum    += transmit * shadow * phase * light_color * step_ext;
+        transmit *= exp(-step_ext);
+    }
+    imageStore(shaft_out, px, vec4(accum, 1.0 - transmit));
+}
+```
+
+**Use cases** — outdoor sunlight shafts through trees, interior cathedral beams, vehicle headlights in fog, spot-lit stage haze.  
+**Reference** — [Hoffman & Preetham: Rendering Outdoor Light Scattering in Real Time (GDC 2002)](https://www.terathink.com/lengyel/GPUGems2/GPUGems2_ch16.pdf); [Crassin: Cascaded Light Propagation Volumes (I3D 2011)](https://research.nvidia.com/publication/cascaded-light-propagation-volumes-real-time-indirect-illumination)
+
+---
+
+## Vignette and Lens Distortion
+
+Two universal post-processing effects that complete the camera simulation pipeline: **vignette** darkens the frame edges to simulate real lens light falloff; **lens distortion** warps the image to match the barrel or pincushion distortion of a real or stylised optical system (required for VR optics compensation and cinematic fisheye looks).
+
+**Shader stage**: both run as a **fragment shader** in the final post-processing pass, applied after tone mapping and before display output.
+
+#### Vignette
+Reduces brightness near the screen edges as a function of radial distance from the screen centre. The falloff exponent and radius control the effect strength.
+
+```glsl
+// Vignette — applied to tone-mapped LDR output
+uniform float vignette_strength;  // 0.0 = none, 1.0 = heavy
+uniform float vignette_radius;    // typically 0.75–0.85
+uniform float vignette_softness;  // feather width, typically 0.45
+
+vec3 apply_vignette(vec3 color, vec2 uv) {
+    vec2  center = uv - 0.5;          // centre at (0,0)
+    float dist   = length(center);
+    float vign   = smoothstep(vignette_radius,
+                              vignette_radius - vignette_softness,
+                              dist);
+    return color * mix(1.0 - vignette_strength, 1.0, vign);
+}
+```
+
+**Chromatic vignette variant**: apply different vignette strengths per colour channel (stronger on blue), mimicking lens colour falloff.
+
+#### Barrel / Pincushion Distortion
+Warps texture coordinates before sampling the rendered scene to compensate for or simulate lens distortion. Barrel distortion (outward bulge, negative k) is produced by wide-angle and fisheye lenses; pincushion (inward pull, positive k) by telephoto lenses. VR headsets apply barrel distortion to pre-compensate for the headset lens's pincushion.
+
+```glsl
+// Radial lens distortion — Brown-Conrady model (k1, k2 coefficients)
+// k1 < 0: barrel (wide-angle, VR pre-distortion)
+// k1 > 0: pincushion (telephoto)
+uniform float k1;   // primary distortion coefficient
+uniform float k2;   // secondary (quartic) coefficient
+uniform vec2  lens_centre;   // typically (0.5, 0.5)
+
+vec2 distort_uv(vec2 uv) {
+    vec2  d  = uv - lens_centre;
+    float r2 = dot(d, d);
+    float factor = 1.0 + k1 * r2 + k2 * r2 * r2;
+    return lens_centre + d * factor;
+}
+
+// Sample the rendered scene through the distorted UV
+vec3 apply_lens_distortion(sampler2D scene, vec2 uv) {
+    vec2 distorted = distort_uv(uv);
+    if (any(lessThan(distorted, vec2(0.0))) ||
+        any(greaterThan(distorted, vec2(1.0))))
+        return vec3(0.0);   // outside frame — show black
+    return texture(scene, distorted).rgb;
+}
+```
+
+#### Chromatic Aberration via Per-Channel Distortion
+Apply slightly different distortion strengths per colour channel, simulating longitudinal chromatic aberration (colour fringing at high-contrast edges). Combine with the main distortion pass for efficiency.
+
+```glsl
+// Per-channel distortion for chromatic aberration + barrel distortion
+vec3 distort_chromatic(sampler2D scene, vec2 uv) {
+    vec2 r_uv = distort_uv_k(uv, k1 * 1.00, k2 * 1.00);  // red: base distortion
+    vec2 g_uv = distort_uv_k(uv, k1 * 1.02, k2 * 1.02);  // green: slightly more
+    vec2 b_uv = distort_uv_k(uv, k1 * 1.04, k2 * 1.04);  // blue: most distorted
+    return vec3(
+        texture(scene, r_uv).r,
+        texture(scene, g_uv).g,
+        texture(scene, b_uv).b
+    );
+}
+```
+
+**VR usage**: each eye's final blit applies a per-eye distortion mesh (precomputed by the VR runtime, e.g., via OpenXR `xrGetSwapchainImage`) rather than a polynomial approximation, achieving sub-pixel accurate optics compensation.
+
+**Reference** — [Valve: VR Distortion (SteamVR SDK)](https://github.com/ValveSoftware/openvr); [Brown: Decentering Distortion of Lenses (1966)](https://www.semanticscholar.org/paper/Decentering-distortion-of-lenses-Brown/7a2b4b22e94d29196e4c9f2c8a07636ca5af527)
+
+---
+
+## Exponential Shadow Maps
+
+Variance Shadow Maps (VSM, §4) filter the shadow map with a Gaussian blur and reconstruct a probability-of-being-lit using Chebyshev's inequality. A known failure mode of VSM is **light bleeding**: when a fully-lit receiver near a shadowed one receives incorrect bright light due to the variance inequality's looseness. **Exponential Shadow Maps (ESM)** avoid this by storing `exp(c · depth)` in the shadow map instead of raw depth, enabling exact multiplicative compositing without the Chebyshev approximation. **EVSM** (Exponential Variance Shadow Maps) combines ESM and VSM for both filtering quality and reduced light bleeding.
+
+**Shader stage**: ESM generation uses the **fragment shader** during the shadow pass (writes `exp(c · depth)`). ESM lookup uses the **fragment shader** of the lighting pass (compares via division/clamping rather than depth compare).
+
+#### ESM Generation and Lookup
+Store `exp(c · z_linear)` where `c` is a positive constant (typically 40–100; larger = harder shadow edge, less light bleeding but more precision issues).
+
+```glsl
+// ESM shadow map generation — fragment shader in shadow pass
+uniform float esm_c;       // exponent constant, typically 80.0
+
+layout(location=0) out float esm_depth;
+
+void main() {
+    float z_linear = gl_FragCoord.z;   // or linearise from NDC if needed
+    esm_depth = exp(esm_c * z_linear);
+}
+```
+
+```glsl
+// ESM shadow map lookup — lighting fragment shader
+layout(set=1, binding=0) uniform sampler2D esm_map;   // pre-blurred with Gaussian
+
+float esm_shadow(vec3 world_pos, mat4 light_proj_view, float esm_c) {
+    vec4  lclip  = light_proj_view * vec4(world_pos, 1.0);
+    vec3  lndc   = lclip.xyz / lclip.w;
+    vec2  uv     = lndc.xy * 0.5 + 0.5;
+    float z_recv = lndc.z;   // depth of receiver in light space
+
+    float esm_occluder = texture(esm_map, uv).r;  // exp(c * z_occluder), blurred
+    // Receiver is lit if exp(c * z_recv) ≤ exp(c * z_occluder)
+    // Visibility = clamp(exp(c * (z_occluder - z_recv)), 0, 1)
+    float visibility = clamp(esm_occluder * exp(-esm_c * z_recv), 0.0, 1.0);
+    return visibility;
+}
+```
+
+**Key property**: because `exp(a) · exp(b) = exp(a+b)`, ESM shadow maps can be convolved with a Gaussian using standard texture filtering hardware — no PCF needed, full hardware bilinear works correctly.
+
+#### EVSM — Exponential Variance Shadow Maps
+Stores four moments: `(exp(c·z), exp(2c·z), -exp(-c·z), exp(-2c·z))` in an RGBA16F shadow map. The positive exponent handles standard receiver depths; the negative exponent handles receivers behind the occluder (reducing light bleeding). Chebyshev's inequality is applied separately to the positive and negative exponent distributions, and the minimum is taken.
+
+```glsl
+// EVSM moment generation — fragment shader
+layout(location=0) out vec4 evsm_moments;
+uniform float pos_c;   // positive exponent, e.g. 40.0
+uniform float neg_c;   // negative exponent, e.g. 40.0
+
+void main() {
+    float z  = gl_FragCoord.z;
+    float ep = exp( pos_c * z);
+    float en = exp(-neg_c * z);
+    evsm_moments = vec4(ep, ep*ep, en, en*en);
+}
+```
+
+**Reference** — [Lauritzen: Rendering Antialiased Shadows with Variance Shadow Maps (GDC 2008)](https://developer.nvidia.com/gpugems/gpugems3/part-ii-light-and-shadows/chapter-8-summed-area-variance-shadow-maps); [Salvi: Rendering Filtered Shadows with Exponential Shadow Maps (ShaderX6, 2008)](https://dl.acm.org/doi/10.5555/1407073.1407086)
+
+---
+
+## Bent Normal and AO Baking
+
+Real-time RTAO (§5) and SSAO compute per-frame approximate AO; for static geometry the same result can be baked offline into UV-mapped textures, giving exact occlusion at zero runtime cost. **Bent normals** extend this: instead of just storing a scalar AO factor, they store the average unoccluded hemisphere direction — the direction from which the most light arrives unobstructed. The bent normal replaces the geometric normal for diffuse IBL lookups, giving correct ambient shadowing including directional bias toward open sky.
+
+**Shader stage**: baking runs as a **compute shader** dispatched over UV-space texels of the target texture, sampling rays from the mesh surface reconstructed from the UV layout.
+
+#### AO Baking via Hemisphere Ray Sampling
+For each texel, reconstruct the world-space surface position and normal from the UV parameterisation (using the same chart-to-world transform used during lightmapping). Then trace N cosine-weighted rays and count the fraction that do not intersect the mesh within a maximum distance.
+
+```glsl
+// AO bake compute shader — one thread per UV texel
+layout(local_size_x=8, local_size_y=8) in;
+layout(set=0, binding=0) uniform accelerationStructureEXT tlas;
+layout(set=0, binding=1, r16f) uniform image2D ao_out;
+layout(set=0, binding=2, rgba16f) uniform image2D bent_normal_out;
+
+layout(set=0, binding=3) uniform sampler2D position_atlas;   // world-space XYZ
+layout(set=0, binding=4) uniform sampler2D normal_atlas;     // world-space normal
+layout(set=0, binding=5) uniform sampler2D blue_noise;
+
+uniform int   num_samples;    // typically 64–256
+uniform float max_distance;   // AO ray max length (e.g. 0.5 m)
+
+layout(location=0) rayPayloadEXT bool ray_hit;
+
+void main() {
+    ivec2 px   = ivec2(gl_GlobalInvocationID.xy);
+    vec3  P    = texelFetch(position_atlas, px, 0).xyz;
+    vec3  N    = normalize(texelFetch(normal_atlas, px, 0).xyz);
+    if (length(P) < 1e-6) return;  // empty texel
+
+    float ao       = 0.0;
+    vec3  bent_sum = vec3(0.0);
+    uint  rng      = pcg_init(uvec2(px), 0u);
+
+    for (int i = 0; i < num_samples; ++i) {
+        vec3 L = cosine_hemisphere_sample(N, pcg_float(rng), pcg_float(rng));
+        ray_hit = false;
+        traceRayEXT(tlas,
+            gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
+            0xFF, 0, 0, 0,
+            P + N * 0.001,   // offset to avoid self-intersection
+            0.0,
+            L,
+            max_distance,
+            0);
+        if (!ray_hit) {
+            ao       += 1.0;
+            bent_sum += L;
+        }
+    }
+    float ao_factor   = ao / float(num_samples);
+    vec3  bent_normal = length(bent_sum) > 0.0 ? normalize(bent_sum) : N;
+
+    imageStore(ao_out,          px, vec4(ao_factor, 0.0, 0.0, 0.0));
+    imageStore(bent_normal_out, px, vec4(bent_normal * 0.5 + 0.5, 1.0));
+}
+```
+
+#### Using Baked Bent Normals at Runtime
+Replace the geometric normal with the baked bent normal when sampling diffuse IBL or SH irradiance. The bent normal points toward the most unoccluded sky direction, giving correct shadowing for recessed surfaces (cavities, under overhangs) without any runtime ray tracing.
+
+```glsl
+// Runtime bent normal application — fragment shader
+layout(set=2, binding=0) uniform sampler2D ao_map;
+layout(set=2, binding=1) uniform sampler2D bent_normal_map;
+
+vec2 lm_uv = v_lightmap_uv;
+float ao          = texture(ao_map, lm_uv).r;
+vec3  bent_normal = normalize(texture(bent_normal_map, lm_uv).rgb * 2.0 - 1.0);
+
+// Use bent normal for diffuse IBL — captures directional occlusion
+vec3 diffuse_irr  = sh_irradiance(bent_normal) * ao;   // §56 SH evaluation
+vec3 diffuse      = albedo * diffuse_irr;
+```
+
+**Use cases** — arch-viz, static game environments, character skin pre-baked occlusion; combined with lightmapping for complete static surface lighting.  
+**Reference** — [Landis: Production-Ready Global Illumination (SIGGRAPH 2002 Course)](https://graphics.pixar.com/library/ProductionReadyGI/); [UE4: Baked Bent Normals](https://docs.unrealengine.com/4.27/en-US/RenderingAndGraphics/LightingAndShadows/BentNormalMaps/)
+
+---
+
+## Light Propagation Volumes
+
+Light Propagation Volumes (LPV) is CryEngine's 2009 real-time GI technique: inject light samples from a Reflective Shadow Map (RSM) into a 3D grid of SH probes, propagate the SH radiance through the grid over several iterations, then evaluate the accumulated radiance at each surface point for indirect diffuse lighting. LPV runs on any GPU without ray tracing hardware and at lower cost than DDGI (no per-probe ray tracing), at the cost of lower quality (light leaks through thin walls, no specular GI).
+
+**Shader stage**: RSM injection runs in **compute**. Propagation runs in **compute** (one pass per grid cell per iteration). Evaluation runs in the **fragment shader** by sampling the 3D SH grid texture.
+
+#### Reflective Shadow Map (RSM) Generation
+An RSM is a shadow map augmented with additional MRTs: world-space position, world-space normal, and reflected flux (albedo × incoming irradiance) at each visible lit texel. It captures the first-bounce indirect light sources.
+
+```glsl
+// RSM generation — additional fragment outputs beyond depth
+layout(location=0) out vec3 rsm_world_pos;
+layout(location=1) out vec3 rsm_world_normal;
+layout(location=2) out vec3 rsm_flux;     // albedo × direct irradiance
+
+void main() {
+    rsm_world_pos    = v_world_pos;
+    rsm_world_normal = normalize(v_world_normal);
+    // Flux: albedo × NdotL × light_power / (num_rsm_samples)
+    float NdotL  = max(0.0, dot(rsm_world_normal, light_dir));
+    rsm_flux     = albedo * NdotL * light_color * rsm_texel_area;
+}
+```
+
+#### LPV Injection (RSM → Grid)
+For each RSM texel, find the grid cell containing its world position and accumulate the texel's flux as an SH lobe (oriented in the RSM normal direction) into the cell's SH coefficients.
+
+```glsl
+// LPV injection compute — one thread per RSM texel sample
+layout(set=0, binding=0) uniform sampler2D rsm_pos;
+layout(set=0, binding=1) uniform sampler2D rsm_normal;
+layout(set=0, binding=2) uniform sampler2D rsm_flux;
+layout(set=0, binding=3, rgba16f) uniform image3D lpv_r;  // SH coefficients for R
+layout(set=0, binding=4, rgba16f) uniform image3D lpv_g;  // SH coefficients for G
+layout(set=0, binding=5, rgba16f) uniform image3D lpv_b;  // SH coefficients for B
+
+uniform vec3  grid_min;
+uniform vec3  grid_cell_size;
+uniform ivec3 grid_res;
+
+void main() {
+    ivec2 rsm_px = ivec2(gl_GlobalInvocationID.xy);
+    vec3  P      = texelFetch(rsm_pos,    rsm_px, 0).xyz;
+    vec3  N      = texelFetch(rsm_normal, rsm_px, 0).xyz;
+    vec3  flux   = texelFetch(rsm_flux,   rsm_px, 0).rgb;
+
+    ivec3 cell   = ivec3((P - grid_min) / grid_cell_size);
+    if (any(lessThan(cell, ivec3(0))) || any(greaterThanEqual(cell, grid_res))) return;
+
+    // Project flux into SH2 lobe oriented along N
+    float Y[9]; sh_basis_L2(N, Y);
+    vec4  sh_r = vec4(flux.r * Y[0], flux.r * Y[1], flux.r * Y[2], flux.r * Y[3]);
+    vec4  sh_g = vec4(flux.g * Y[0], flux.g * Y[1], flux.g * Y[2], flux.g * Y[3]);
+    vec4  sh_b = vec4(flux.b * Y[0], flux.b * Y[1], flux.b * Y[2], flux.b * Y[3]);
+
+    // Atomic add into 3D SH grid (imageAtomicAdd for float requires extension)
+    // In practice: accumulate per-cell with subgroup operations or two-pass reduce
+    imageStore(lpv_r, cell, imageLoad(lpv_r, cell) + sh_r);
+    imageStore(lpv_g, cell, imageLoad(lpv_g, cell) + sh_g);
+    imageStore(lpv_b, cell, imageLoad(lpv_b, cell) + sh_b);
+}
+```
+
+#### LPV Propagation
+Run 4–8 propagation iterations. Each iteration, every cell distributes its SH radiance to its 6 face-neighbours through a solid-angle-weighted transfer, approximating how radiance would propagate through the diffuse volume.
+
+```glsl
+// LPV propagation — one pass, one compute thread per cell
+layout(set=0, binding=0) uniform sampler3D lpv_in_r;
+layout(set=0, binding=3, rgba16f) uniform image3D lpv_out_r;
+// ... similarly for G and B channels
+
+const ivec3 FACES[6] = ivec3[](
+    ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0),
+    ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1)
+);
+
+void main() {
+    ivec3 cell   = ivec3(gl_GlobalInvocationID);
+    vec4  accum  = vec4(0.0);
+    for (int f = 0; f < 6; ++f) {
+        ivec3 nb     = cell - FACES[f];  // neighbour sending to us
+        vec4  nb_sh  = texelFetch(lpv_in_r, nb, 0);
+        // Evaluate SH of nb in direction FACES[f] (outgoing from nb toward us)
+        vec3  face_dir = vec3(FACES[f]);
+        float Y[9]; sh_basis_L2(face_dir, Y);
+        float contrib = max(0.0, nb_sh.x*Y[0] + nb_sh.y*Y[1] + nb_sh.z*Y[2] + nb_sh.w*Y[3]);
+        // Re-project onto SH lobe facing the incoming direction
+        vec3 in_dir = -face_dir;
+        float Yin[9]; sh_basis_L2(in_dir, Yin);
+        accum += contrib * vec4(Yin[0], Yin[1], Yin[2], Yin[3]);
+    }
+    imageStore(lpv_out_r, cell, imageLoad(lpv_out_r, cell) + accum * 0.25);
+}
+```
+
+#### LPV Evaluation
+Sample the 3D SH grid at the world-space fragment position, evaluate the SH irradiance in the surface normal direction.
+
+```glsl
+// LPV evaluation — fragment shader
+layout(set=1, binding=0) uniform sampler3D lpv_r;
+layout(set=1, binding=1) uniform sampler3D lpv_g;
+layout(set=1, binding=2) uniform sampler3D lpv_b;
+
+vec3 lpv_indirect(vec3 P, vec3 N) {
+    vec3 uvw    = (P - grid_min) / (grid_res * grid_cell_size);
+    vec4 sh_r   = texture(lpv_r, uvw);
+    vec4 sh_g   = texture(lpv_g, uvw);
+    vec4 sh_b   = texture(lpv_b, uvw);
+    float Y[9]; sh_basis_L2(N, Y);
+    float basis = Y[0]*1.0 + Y[1]*1.0 + Y[2]*1.0 + Y[3]*1.0; // L1 only (4 coefficients)
+    return max(vec3(0.0), vec3(dot(sh_r, vec4(Y[0],Y[1],Y[2],Y[3])),
+                                dot(sh_g, vec4(Y[0],Y[1],Y[2],Y[3])),
+                                dot(sh_b, vec4(Y[0],Y[1],Y[2],Y[3]))));
+}
+```
+
+**Use cases** — mid-range hardware GI where DDGI is too expensive; dynamic GI for games without RT hardware; Crysis 2/3, Far Cry 3/4, Ryse: Son of Rome.  
+**Reference** — [Kaplanyan & Dachsbacher: Cascaded Light Propagation Volumes for Real-Time Indirect Illumination (I3D 2010)](https://dl.acm.org/doi/10.1145/1730804.1730821)
+
+---
+
+## Ray Differentials
+
+In a path tracer, each camera ray corresponds to a small frustum on the image sensor. When the ray hits a surface and samples a texture, the correct mip level is determined by the texture's screen-space footprint — analogous to `dFdx`/`dFdy` in rasterization but unavailable in ray tracing shaders. **Ray differentials** propagate a pair of auxiliary rays (offset by one pixel in X and Y) through the scene alongside the primary ray, tracking how the footprint evolves through reflection, refraction, and travel. The result is a texture LOD that is correct for reflections, refractions, and indirect paths — eliminating aliasing from undersampled textures.
+
+**Shader stage**: ray differentials are maintained in the **path payload** (alongside throughput and direction) and updated in the **closest-hit shader** at each bounce.
+
+#### Ray Differential Payload
+Extend the path payload (§55) with the spatial and directional differentials of the ray footprint.
+
+```glsl
+struct RayDiff {
+    vec3 dP_dx;   // derivative of ray origin w.r.t. pixel X
+    vec3 dP_dy;   // derivative of ray origin w.r.t. pixel Y
+    vec3 dD_dx;   // derivative of ray direction w.r.t. pixel X
+    vec3 dD_dy;   // derivative of ray direction w.r.t. pixel Y
+};
+
+struct PathPayload {
+    vec3     throughput;
+    vec3     radiance;
+    vec3     origin;
+    vec3     direction;
+    RayDiff  diff;       // ray differential for texture LOD
+    uint     rng_state;
+    bool     terminated;
+};
+```
+
+#### Primary Ray Differential Initialisation
+The primary ray's differential is set from the camera's pixel footprint: `dD/dx` is the change in ray direction when moving one pixel in X, derived from the inverse projection matrix.
+
+```glsl
+// rgen shader — compute primary ray differentials
+vec3 ray_dir       = normalize(world_dir_from_pixel(px));
+vec3 ray_dir_dx    = normalize(world_dir_from_pixel(px + ivec2(1, 0)));
+vec3 ray_dir_dy    = normalize(world_dir_from_pixel(px + ivec2(0, 1)));
+
+payload.diff.dP_dx = vec3(0.0);   // camera is a point; origin has no footprint
+payload.diff.dP_dy = vec3(0.0);
+payload.diff.dD_dx = ray_dir_dx - ray_dir;   // directional differential in X
+payload.diff.dD_dy = ray_dir_dy - ray_dir;   // directional differential in Y
+```
+
+#### Differential Propagation at a Surface Hit
+After the ray travels a distance `t` to the hit point, propagate the differential: the footprint grows as the ray travels (spreading). At the surface, project the differential onto the tangent plane to get the UV footprint.
+
+```glsl
+// In rchit shader — propagate ray differential to hit surface
+float t = gl_HitTEXT;
+
+// Propagate origin differential: new dP = old dP + t * old dD + dt * D
+// dt = -(dP · N + t * dD · N) / (D · N)  [from the ray-plane intersection]
+float denom  = dot(payload.direction, hit_normal);
+float dt_dx  = -dot(payload.diff.dP_dx + t * payload.diff.dD_dx, hit_normal) / denom;
+float dt_dy  = -dot(payload.diff.dP_dy + t * payload.diff.dD_dy, hit_normal) / denom;
+
+vec3 new_dP_dx = payload.diff.dP_dx + t * payload.diff.dD_dx + dt_dx * payload.direction;
+vec3 new_dP_dy = payload.diff.dP_dy + t * payload.diff.dD_dy + dt_dy * payload.direction;
+
+// Project dP onto UV space using the surface tangent frame (T, B)
+// duv/dx = (dP_dx · T / |T|², dP_dx · B / |B|²)
+vec2 duv_dx = vec2(dot(new_dP_dx, hit_tangent)   / dot(hit_tangent,   hit_tangent),
+                   dot(new_dP_dx, hit_bitangent)  / dot(hit_bitangent, hit_bitangent));
+vec2 duv_dy = vec2(dot(new_dP_dy, hit_tangent)   / dot(hit_tangent,   hit_tangent),
+                   dot(new_dP_dy, hit_bitangent)  / dot(hit_bitangent, hit_bitangent));
+
+// Compute LOD from UV footprint (same formula as rasterizer's implicit LOD)
+float lod = 0.5 * log2(max(dot(duv_dx, duv_dx), dot(duv_dy, duv_dy)) * tex_size * tex_size);
+vec4 albedo = textureLod(material_tex, uv, lod);
+```
+
+#### Differential Update for Specular Reflection
+For a mirror reflection, the differential is updated by reflecting `dD` about the surface normal and adding a curvature term from the normal differential `dN` (which depends on the surface second derivative). For diffuse bounces, differentials are typically reset — the bounce direction is random, so the footprint is determined by the new solid angle, not the previous path.
+
+```glsl
+// Specular reflection — reflect directional differential
+vec3 reflect_diff(vec3 dD, vec3 N, vec3 dN) {
+    // dR/dx = dD/dx - 2*(dD/dx · N + D · dN/dx) * N - 2*(D · N) * dN/dx
+    float dDdotN = dot(dD, N);
+    float DdotN  = dot(payload.direction, N);
+    return dD - 2.0*(dDdotN * N + DdotN * dN);
+}
+payload.diff.dD_dx = reflect_diff(payload.diff.dD_dx, hit_normal, dN_dx);
+payload.diff.dD_dy = reflect_diff(payload.diff.dD_dy, hit_normal, dN_dy);
+payload.diff.dP_dx = new_dP_dx;
+payload.diff.dP_dy = new_dP_dy;
+```
+
+**Use cases** — production path tracers (Cycles, Arnold, PBRT) all implement ray differentials or a cone approximation (ray cones); eliminates aliasing on glossy reflections of high-frequency textures; critical when the path tracer renders fine detail at low sample counts with denoising.  
+**Reference** — [Igehy: Tracing Ray Differentials (SIGGRAPH 1999)](https://dl.acm.org/doi/10.1145/311535.311555); [Akenine-Möller et al.: Texture Level of Detail Strategies for Real-Time Ray Tracing (Ray Tracing Gems, 2019)](https://www.realtimerendering.com/raytracinggems/)
 
 ---
 
