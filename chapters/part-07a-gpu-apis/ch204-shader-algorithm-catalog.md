@@ -93,7 +93,20 @@ The distribution of sections in this catalog mirrors the actual distribution of 
 69. [Bent Normal and AO Baking](#bent-normal-and-ao-baking)
 70. [Light Propagation Volumes](#light-propagation-volumes)
 71. [Ray Differentials](#ray-differentials)
-72. [References](#references)
+72. [Bloom — Dual Kawase and FFT Convolution](#bloom--dual-kawase-and-fft-convolution)
+73. [Depth of Field — CoC and Scatter-as-Gather](#depth-of-field--coc-and-scatter-as-gather)
+74. [Motion Blur — Per-Object Reconstruction Filter](#motion-blur--per-object-reconstruction-filter)
+75. [Color Grading and 3D LUT](#color-grading-and-3d-lut)
+76. [Histogram-Based Auto-Exposure](#histogram-based-auto-exposure)
+77. [Subsurface Scattering](#subsurface-scattering)
+78. [Capsule and Tube Area Lights](#capsule-and-tube-area-lights)
+79. [Octahedral Impostor LOD](#octahedral-impostor-lod)
+80. [GPU Radix Sort](#gpu-radix-sort)
+81. [Sparse Texture and Tiled Resources](#sparse-texture-and-tiled-resources)
+82. [Variable Rate Shading](#variable-rate-shading)
+83. [Shader Execution Reordering](#shader-execution-reordering)
+84. [World-Space Radiance Cache](#world-space-radiance-cache)
+85. [References](#references)
 
 ---
 
@@ -5135,6 +5148,1129 @@ payload.diff.dP_dy = new_dP_dy;
 
 **Use cases** — production path tracers (Cycles, Arnold, PBRT) all implement ray differentials or a cone approximation (ray cones); eliminates aliasing on glossy reflections of high-frequency textures; critical when the path tracer renders fine detail at low sample counts with denoising.  
 **Reference** — [Igehy: Tracing Ray Differentials (SIGGRAPH 1999)](https://dl.acm.org/doi/10.1145/311535.311555); [Akenine-Möller et al.: Texture Level of Detail Strategies for Real-Time Ray Tracing (Ray Tracing Gems, 2019)](https://www.realtimerendering.com/raytracinggems/)
+
+---
+
+## Bloom — Dual Kawase and FFT Convolution
+
+Bloom simulates the scattering of intense light by the camera lens and sensor, producing a soft glow around bright highlights. It is a mandatory HDR post-process: applied after tone mapping would clip the bright regions that drive it, so bloom operates on the pre-tone-map HDR buffer. Two implementations dominate: the **dual Kawase blur** (fast, separable, hardware-bilinear-exploiting) used by Unity and Godot, and **FFT convolution bloom** (physically accurate, captures any lens kernel shape) used in film and offline rendering.
+
+**Shader stage**: all bloom passes are **compute or fragment** full-screen passes.
+
+#### Threshold and Downsample
+First, extract pixels above the bloom threshold into a half-resolution HDR buffer, then progressively downsample into a mip chain.
+
+```glsl
+// Bloom threshold pass — extract bright regions
+layout(set=0, binding=0) uniform sampler2D hdr_scene;
+layout(set=0, binding=1, rgba16f) uniform image2D bloom_0;  // half-res
+
+uniform float threshold;      // e.g. 1.0 (in scene-linear units)
+uniform float knee;           // soft knee width, e.g. 0.5
+
+float bloom_knee(float x, float t, float k) {
+    // Smooth knee: remap [t-k, t+k] quadratically
+    float h = t - k;
+    float s = 2.0 * k;
+    if (x < h)       return 0.0;
+    if (x > t + k)   return x - t;
+    float v = x - h;
+    return v * v / (4.0 * k);
+}
+
+void main() {
+    ivec2 px   = ivec2(gl_GlobalInvocationID.xy);
+    vec2  uv   = (vec2(px) + 0.5) / vec2(imageSize(bloom_0));
+    vec3  col  = texture(hdr_scene, uv).rgb;
+    float lum  = dot(col, vec3(0.2126, 0.7152, 0.0722));
+    float scale = bloom_knee(lum, threshold, knee) / max(lum, 1e-5);
+    imageStore(bloom_0, px, vec4(col * scale, 1.0));
+}
+```
+
+#### Dual Kawase Blur (Downsample + Upsample)
+The dual Kawase blur performs iterative downsampling (each step takes 4 bilinear samples offset at ±0.5 texels) followed by upsampling (each step takes 8 bilinear samples). The two-pass structure avoids ring artifacts of single-direction Gaussian separability while being cheaper than a full Gaussian.
+
+```glsl
+// Dual Kawase downsample — sample 4 corners at half-texel offset
+layout(set=0, binding=0) uniform sampler2D src;
+layout(set=0, binding=1, rgba16f) uniform image2D dst;
+uniform int iteration;  // controls offset size
+
+void main() {
+    ivec2 px  = ivec2(gl_GlobalInvocationID.xy);
+    vec2  sz  = vec2(imageSize(dst));
+    vec2  uv  = (vec2(px) + 0.5) / sz;
+    vec2  off = 0.5 / vec2(textureSize(src, 0));
+
+    vec4 col  = texture(src, uv + vec2(-off.x, -off.y)) * 0.25;
+    col      += texture(src, uv + vec2( off.x, -off.y)) * 0.25;
+    col      += texture(src, uv + vec2(-off.x,  off.y)) * 0.25;
+    col      += texture(src, uv + vec2( off.x,  off.y)) * 0.25;
+    imageStore(dst, px, col);
+}
+
+// Dual Kawase upsample — sample 8 neighbours
+void main_upsample() {
+    ivec2 px  = ivec2(gl_GlobalInvocationID.xy);
+    vec2  sz  = vec2(imageSize(dst));
+    vec2  uv  = (vec2(px) + 0.5) / sz;
+    vec2  off = 0.5 / vec2(textureSize(src, 0));
+
+    vec4 col  = vec4(0.0);
+    col += texture(src, uv + vec2(-2.0*off.x, 0.0))         * (1.0/12.0);
+    col += texture(src, uv + vec2(-off.x,  off.y))          * (2.0/12.0);
+    col += texture(src, uv + vec2( 0.0,    2.0*off.y))      * (1.0/12.0);
+    col += texture(src, uv + vec2( off.x,  off.y))          * (2.0/12.0);
+    col += texture(src, uv + vec2( 2.0*off.x, 0.0))         * (1.0/12.0);
+    col += texture(src, uv + vec2( off.x, -off.y))          * (2.0/12.0);
+    col += texture(src, uv + vec2( 0.0,   -2.0*off.y))      * (1.0/12.0);
+    col += texture(src, uv + vec2(-off.x, -off.y))          * (2.0/12.0);
+    imageStore(dst, px, col);
+}
+```
+
+The final pass additively composites all upsampled levels onto the HDR scene before tone mapping with a user-controlled `bloom_strength`.
+
+#### FFT Convolution Bloom
+Physically accurate bloom convolves the HDR buffer with a lens flare kernel (captured or designed as a 512×512 or 1024×1024 texture). The convolution is performed in frequency space: FFT the scene, FFT the kernel (precomputed), multiply complex spectra, inverse FFT. GPU FFT is implemented as a series of compute passes (Cooley-Tukey butterfly stages). Used in Unreal Engine's cinematic bloom mode and film compositing.
+
+**Reference** — [Jimenez: Next Generation Post Processing in Call of Duty: Advanced Warfare (SIGGRAPH 2014)](https://www.iryoku.com/next-generation-post-processing-in-call-of-duty-advanced-warfare/); [Kawase: Frame Buffer Postprocessing Effects in DOUBLE-S.T.E.A.L. (GDC 2003)](https://www.daionet.gr.jp/~masa/archives/GDC2003_DSTEAL.ppt)
+
+---
+
+## Depth of Field — CoC and Scatter-as-Gather
+
+Depth of Field (DoF) simulates camera lens defocus: objects outside the focal plane form a blurred **circle of confusion (CoC)** on the sensor whose radius is proportional to distance from the focus plane. Real-time DoF on GPU works in three stages: CoC computation per pixel, near/far field separation, and a gather-based reconstruction blur.
+
+**Shader stage**: all passes are **compute or fragment**.
+
+#### Circle of Confusion
+Compute the CoC radius in pixels for each fragment from its linear depth and the lens parameters.
+
+```glsl
+// CoC computation — runs on depth buffer
+uniform float focus_distance;   // focal plane distance (world units)
+uniform float focus_range;      // half-width of in-focus zone
+uniform float max_coc_pixels;   // maximum CoC radius in pixels (e.g. 16)
+uniform float sensor_height;    // sensor height in world units (for physical model)
+uniform float focal_length;     // lens focal length in world units
+uniform float aperture;         // f-number (e.g. 1.4)
+
+// Simplified linear model (game-style)
+float compute_coc(float depth) {
+    float dist_from_focus = abs(depth - focus_distance) - focus_range;
+    return clamp(dist_from_focus / focus_distance * max_coc_pixels, -max_coc_pixels, max_coc_pixels);
+    // positive CoC = far field (behind focus), negative = near field (in front)
+}
+
+// Physical thin-lens model
+float compute_coc_physical(float depth) {
+    float image_dist = focal_length * focus_distance / (focus_distance - focal_length);
+    float image_dist_sample = focal_length * depth / (depth - focal_length);
+    float coc_m = abs(aperture * focal_length * (image_dist_sample - image_dist))
+                / (image_dist_sample * (focus_distance - focal_length));
+    return coc_m / sensor_height * resolution_y;  // convert to pixels
+}
+```
+
+#### Near/Far Field Separation and Gather Blur
+The far field (objects behind focus) can simply be blurred; the near field (objects in front) bleeds over in-focus geometry and requires separate treatment. The standard approach: separate near and far CoC into two half-resolution buffers, blur each with a disc kernel using gather (loop over Poisson or Fibonacci disc samples), then composite back using a CoC-weighted alpha blend.
+
+```glsl
+// Scatter-as-gather DoF blur — far field
+layout(set=0, binding=0) uniform sampler2D hdr_color;
+layout(set=0, binding=1) uniform sampler2D coc_tex;       // R = far CoC in px, G = near CoC
+layout(set=0, binding=2, rgba16f) uniform image2D dof_far;
+
+// Fibonacci disc samples (25 taps)
+const int   NUM_SAMPLES = 25;
+const float GOLDEN = 2.399963229;  // 2π / φ²
+vec2 fibonacci_disc(int i, int n) {
+    float r   = sqrt(float(i) / float(n));
+    float phi = float(i) * GOLDEN;
+    return r * vec2(cos(phi), sin(phi));
+}
+
+void main() {
+    ivec2 px     = ivec2(gl_GlobalInvocationID.xy);
+    vec2  uv     = (vec2(px) + 0.5) / vec2(imageSize(dof_far));
+    float coc    = texture(coc_tex, uv).r;    // far CoC in pixels
+
+    vec4  accum  = vec4(0.0);
+    float weight = 0.0;
+    for (int i = 0; i < NUM_SAMPLES; ++i) {
+        vec2  off   = fibonacci_disc(i, NUM_SAMPLES) * coc / vec2(textureSize(hdr_color, 0));
+        vec2  s_uv  = uv + off;
+        float s_coc = texture(coc_tex, s_uv).r;
+        // Accept sample only if its CoC covers this pixel (prevents leaking)
+        float w     = step(length(off * vec2(textureSize(hdr_color, 0))), s_coc);
+        accum      += texture(hdr_color, s_uv) * w;
+        weight     += w;
+    }
+    imageStore(dof_far, px, (weight > 0.0) ? accum / weight : texture(hdr_color, uv));
+}
+```
+
+#### Bokeh Shape
+For artistic bokeh (hexagonal, star, anamorphic), replace the Fibonacci disc samples with samples from a precomputed bokeh shape texture. For physically accurate bokeh simulation, use the **scatter** approach: each bright pixel emits a sprite the size of its CoC — expensive but used in offline rendering and cinematic engines.
+
+**Reference** — [Jimenez (2014), ibid.]; [Cantlay: Practical Post-Process Depth of Field (GPU Gems 3)](https://developer.nvidia.com/gpugems/gpugems3/part-iv-image-effects/chapter-28-practical-post-process-depth-field)
+
+---
+
+## Motion Blur — Per-Object Reconstruction Filter
+
+Motion blur simulates camera shutter integration over time: objects moving during the exposure interval appear streaked. GPU implementations avoid the cost of temporal integration by reconstructing blur from per-pixel velocity vectors. The **McGuire reconstruction filter** (used in UE, DOOM, most AAA titles) operates in a single gather pass with velocity dilation to handle disocclusion.
+
+**Shader stage**: the velocity buffer is written by the **vertex/geometry shader** (or rasterized in a separate pass). The blur reconstruction runs as a **compute or fragment** post-process.
+
+#### Velocity Buffer Generation
+Each vertex outputs both its current and previous clip-space positions. The fragment writes the screen-space velocity (in pixels per frame or NDC delta).
+
+```glsl
+// Vertex shader — output motion vectors
+layout(location=0) in vec3 position;
+
+uniform mat4 curr_mvp;
+uniform mat4 prev_mvp;
+
+layout(location=0) out vec4 v_curr_clip;
+layout(location=1) out vec4 v_prev_clip;
+
+void main() {
+    v_curr_clip  = curr_mvp * vec4(position, 1.0);
+    v_prev_clip  = prev_mvp * vec4(position, 1.0);
+    gl_Position  = v_curr_clip;
+}
+
+// Fragment shader — write velocity in NDC space
+layout(location=0) in  vec4 v_curr_clip;
+layout(location=1) in  vec4 v_prev_clip;
+layout(location=0) out vec2 velocity_out;
+
+void main() {
+    vec2 curr_ndc = v_curr_clip.xy / v_curr_clip.w;
+    vec2 prev_ndc = v_prev_clip.xy / v_prev_clip.w;
+    velocity_out  = (curr_ndc - prev_ndc) * 0.5;  // in [−1,1] NDC delta
+}
+```
+
+#### Velocity Tile Dilation
+Before the reconstruction gather, build a tile-max buffer: for each N×N tile (typically 20×20 pixels), store the velocity vector with the largest magnitude. This is the "neighbourhood max velocity" used to detect motion blur boundaries. Implemented as two passes: per-tile horizontal max, then vertical max.
+
+```glsl
+// Tile max — compute horizontal max velocity magnitude per tile row
+layout(set=0, binding=0) uniform sampler2D velocity_buf;
+layout(set=0, binding=1, rg16f) uniform image2D tile_max_h;
+
+uniform int tile_size;  // e.g. 20
+
+void main() {
+    ivec2 tile = ivec2(gl_GlobalInvocationID.xy);
+    vec2  max_vel = vec2(0.0);
+    float max_len = 0.0;
+    for (int x = 0; x < tile_size; ++x) {
+        ivec2 px  = ivec2(tile.x * tile_size + x, tile.y);
+        vec2  vel = texelFetch(velocity_buf, px, 0).rg;
+        float l   = dot(vel, vel);
+        if (l > max_len) { max_len = l; max_vel = vel; }
+    }
+    imageStore(tile_max_h, tile, vec4(max_vel, 0.0, 0.0));
+}
+```
+
+#### Reconstruction Gather
+For each pixel, gather samples along the dominant tile velocity direction, weighting by depth (foreground over background) and velocity similarity.
+
+```glsl
+// Motion blur reconstruction gather
+layout(set=0, binding=0) uniform sampler2D hdr_color;
+layout(set=0, binding=1) uniform sampler2D velocity_buf;
+layout(set=0, binding=2) uniform sampler2D depth_buf;
+layout(set=0, binding=3) uniform sampler2D tile_max;    // dilated tile velocity
+layout(set=0, binding=4, rgba16f) uniform image2D mb_out;
+
+uniform int   num_samples;   // typically 15
+uniform float shutter_scale; // controls blur length, e.g. 0.5
+
+void main() {
+    ivec2 px   = ivec2(gl_GlobalInvocationID.xy);
+    vec2  uv   = (vec2(px) + 0.5) / vec2(imageSize(mb_out));
+    vec2  tile_uv = uv;  // could subsample tile
+    vec2  tile_vel = texture(tile_max, tile_uv).rg * shutter_scale;
+
+    if (dot(tile_vel, tile_vel) < 0.5/resolution.x) {
+        imageStore(mb_out, px, texture(hdr_color, uv));
+        return;
+    }
+
+    vec4  accum  = vec4(0.0);
+    float total  = 0.0;
+    float depth0 = texture(depth_buf, uv).r;
+
+    for (int i = 0; i < num_samples; ++i) {
+        float t    = mix(-1.0, 1.0, (float(i) + 0.5) / float(num_samples));
+        vec2  s_uv = uv + tile_vel * t;
+        s_uv       = clamp(s_uv, vec2(0.0), vec2(1.0));
+
+        float s_depth = texture(depth_buf, s_uv).r;
+        vec2  s_vel   = texture(velocity_buf, s_uv).rg * shutter_scale;
+
+        // Foreground weight: samples in front of receiver get full weight
+        float fg_w    = float(s_depth <= depth0 + 0.001);
+        // Velocity similarity: samples with velocity covering this pixel
+        float vel_w   = clamp(1.0 - abs(dot(s_vel - tile_vel, tile_vel) /
+                              max(dot(tile_vel, tile_vel), 1e-5)), 0.0, 1.0);
+        float w       = fg_w * vel_w + 0.01;
+        accum        += texture(hdr_color, s_uv) * w;
+        total        += w;
+    }
+    imageStore(mb_out, px, accum / total);
+}
+```
+
+**Reference** — [McGuire et al.: A Reconstruction Filter for Plausible Motion Blur (I3D 2012)](https://casual-effects.com/research/McGuire2012Blur/index.html)
+
+---
+
+## Color Grading and 3D LUT
+
+Color grading maps the scene-linear HDR values (after tone mapping to SDR or HDR display output) through a 3D lookup table (LUT) that encodes the creative colour grade: saturation, contrast, colour casts, per-channel curves, and any film print emulation. The 3D LUT is a 32³ or 64³ cube of RGB output values indexed by (R, G, B) input; the GPU samples it with trilinear interpolation in a single texture fetch per pixel.
+
+**Shader stage**: 3D LUT application is a **fragment or compute** post-process, the last colour-space operation before display encoding.
+
+#### 3D LUT Application
+```glsl
+// 3D LUT application — fragment shader
+layout(set=0, binding=0) uniform sampler2D ldr_scene;  // tone-mapped [0,1]
+layout(set=0, binding=1) uniform sampler3D color_lut;  // 32³ or 64³ RGBA8/16F
+
+uniform float lut_size;    // e.g. 32.0 — number of entries per axis
+uniform float lut_scale;   // (lut_size - 1.0) / lut_size
+uniform float lut_offset;  // 0.5 / lut_size
+
+layout(location=0) out vec3 graded;
+
+void main() {
+    vec2  uv    = gl_FragCoord.xy / resolution;
+    vec3  col   = texture(ldr_scene, uv).rgb;
+
+    // Map [0,1] input to LUT texel centre coordinates
+    vec3  lut_uv = col * lut_scale + lut_offset;
+    graded = texture(color_lut, lut_uv).rgb;
+}
+```
+
+#### LUT Baking on CPU / Offline
+The 3D LUT is precomputed by applying the full colour grade (ASC CDL, film curve, per-channel splines, CST) to every texel of an identity LUT. The result is exported as a `.cube` file (DaVinci Resolve, Nuke standard) and uploaded as a `VK_FORMAT_R16G16B16A16_SFLOAT` 3D texture at load time.
+
+#### Neutral/Identity LUT Generation
+At content load time, generate an identity LUT (no grade applied) to verify the pipeline is correct before injecting the creative grade.
+
+```glsl
+// Identity LUT generation — compute shader
+layout(set=0, binding=0, rgba16f) uniform image3D identity_lut;
+uniform int lut_size;  // 32 or 64
+
+void main() {
+    ivec3 px  = ivec3(gl_GlobalInvocationID.xyz);
+    vec3  col = (vec3(px) + 0.5) / float(lut_size);
+    imageStore(identity_lut, px, vec4(col, 1.0));
+}
+```
+
+#### Per-Channel Curve (In-Shader Grade)
+For run-time-adjustable grades (e.g., in a game with day/night colour temperature shifts), apply a simple per-channel lift/gamma/gain before the LUT:
+
+```glsl
+// Lift-Gamma-Gain colour grade
+vec3 lift_gamma_gain(vec3 col, vec3 lift, vec3 gamma, vec3 gain) {
+    col = col * gain + lift;
+    return pow(max(col, vec3(0.0)), 1.0 / max(gamma, vec3(0.01)));
+}
+```
+
+**Reference** — [Hable: Filmic Tonemapping (2010)](http://filmicworlds.com/blog/filmic-tonemapping-operators/); [ACES: Academy Color Encoding System](https://acescentral.com/)
+
+---
+
+## Histogram-Based Auto-Exposure
+
+Auto-exposure (AE) adapts the scene's exposure value (EV) so the average luminance of the rendered frame maps to a target midtone, mimicking the eye's adaptation to changing light levels. GPU AE uses a luminance histogram computed from the full HDR frame each frame, filters it to a stable average, and smoothly adapts the exposure over time using the adaptation speed parameter.
+
+**Shader stage**: histogram build and reduce run as **compute**. The adapted EV is stored in a 1×1 `R32F` buffer read by the tone-mapping pass.
+
+#### Luminance Histogram Build
+Build a 256-bin histogram of log-luminance values in a single compute dispatch using shared-memory atomics.
+
+```glsl
+// Histogram build — one thread per pixel, shared histogram per workgroup
+layout(local_size_x=16, local_size_y=16) in;
+layout(set=0, binding=0) uniform sampler2D hdr_scene;
+layout(set=0, binding=1) buffer HistogramBuffer { uint bins[256]; };
+
+shared uint s_hist[256];
+
+uniform float lum_min_log2;   // e.g. -10.0 (minimum log2 luminance)
+uniform float lum_max_log2;   // e.g.   4.0 (maximum log2 luminance)
+uniform float lum_range_inv;  // 1.0 / (lum_max_log2 - lum_min_log2)
+
+void main() {
+    uint lid = gl_LocalInvocationIndex;
+    if (lid < 256u) s_hist[lid] = 0u;
+    barrier();
+
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (all(lessThan(px, textureSize(hdr_scene, 0)))) {
+        vec3  col = texelFetch(hdr_scene, px, 0).rgb;
+        float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+        if (lum > 0.0) {
+            float log_lum = log2(lum);
+            float t       = clamp((log_lum - lum_min_log2) * lum_range_inv, 0.0, 1.0);
+            uint  bin     = uint(t * 255.0);
+            atomicAdd(s_hist[bin], 1u);
+        }
+    }
+    barrier();
+
+    // Accumulate workgroup histogram into global histogram
+    if (lid < 256u) atomicAdd(bins[lid], s_hist[lid]);
+}
+```
+
+#### Histogram Average and EV Adaptation
+Compute the weighted average log-luminance from the histogram (excluding the darkest and brightest pixels), then adapt the current EV toward the target using a time-weighted blend.
+
+```glsl
+// Histogram reduce and EV adaptation — single-thread compute (256 threads total)
+layout(local_size_x=256) in;
+layout(set=0, binding=0) buffer HistogramBuffer { uint bins[256]; };
+layout(set=0, binding=1) buffer ExposureBuffer  { float ev_current; };
+
+uniform float lum_min_log2;
+uniform float lum_range_inv;
+uniform float low_cutoff;      // fraction of pixels to discard from dark end (e.g. 0.6)
+uniform float high_cutoff;     // fraction to discard from bright end (e.g. 0.95)
+uniform float adaptation_speed;  // seconds to adapt half-way (e.g. 1.0)
+uniform float delta_time;
+uniform float ev_compensation; // artist bias (stops), e.g. 0.0
+uniform uint  pixel_count;
+
+shared float s_accum[256];
+
+void main() {
+    uint bin    = gl_LocalInvocationIndex;
+    float count = float(bins[bin]);
+
+    // Compute cumulative count for cutoff
+    // (simplified: accumulate in shared memory then reduce)
+    s_accum[bin] = count * (float(bin) / 255.0 / lum_range_inv + lum_min_log2);
+    barrier();
+
+    // Parallel reduction — sum weighted log luminances
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (bin < stride) s_accum[bin] += s_accum[bin + stride];
+        barrier();
+    }
+
+    if (bin == 0u) {
+        float avg_log_lum = s_accum[0] / float(pixel_count);
+        float target_ev   = avg_log_lum + ev_compensation;
+        // Smooth adaptation: exponential blend
+        float adapt_factor = 1.0 - exp(-delta_time / max(adaptation_speed, 0.001));
+        ev_current = mix(ev_current, target_ev, adapt_factor);
+        // Clear histogram for next frame
+        for (uint i = 0u; i < 256u; ++i) bins[i] = 0u;
+    }
+}
+```
+
+**EV to exposure scalar**: in the tone-mapping pass, `exposure = exp2(-ev_current)` (more positive EV = darker image). The EV buffer is read as a storage buffer or via a descriptor update.
+
+**Reference** — [Lagarde & de Rousiers: Moving Frostbite to PBR (SIGGRAPH 2014, §4 Exposure)](https://media.contentapi.ea.com/content/dam/eacom/frostbite/files/course-notes-moving-frostbite-to-pbr-v32.pdf); [Karis: Automatic Exposure (2013)](https://placeholderart.wordpress.com/2014/11/21/implementing-a-physically-based-camera-manual-exposure/)
+
+---
+
+## Subsurface Scattering
+
+Subsurface scattering (SSS) models materials where light enters the surface, scatters through the volume, and exits at a different point — skin, marble, wax, milk. In rasterized real-time rendering the primary approaches are **screen-space SSS** (Jimenez), **separable SSS** (Jimenez et al. 2009, used in Unreal Engine's skin shading), and **pre-integrated skin shading** (Penner 2011, used in UE4). The common thread: approximate the diffusion profile as a weighted sum of Gaussian blurs in screen space.
+
+**Shader stage**: the spatial blur passes run as **compute or fragment** post-processes on the subsurface-tagged pixels. The irradiance accumulation runs in the main **fragment shader**.
+
+#### Pre-Integrated Skin Shading (Penner)
+Bakes the diffuse SSS integration over a sphere of varying curvature into a 2D LUT indexed by `(NdotL * 0.5 + 0.5, curvature)`, precomputed offline. At runtime a single `texture()` fetch gives the colour-shifted BRDF integral — cheap and smooth.
+
+```glsl
+// Pre-integrated SSS — fragment shader (skin material)
+layout(set=2, binding=4) uniform sampler2D sss_lut;  // 2D pre-integrated skin LUT
+layout(set=2, binding=5) uniform sampler2D sss_thickness; // thickness map for back-scatter
+
+uniform vec3 light_dir;
+uniform vec3 light_color;
+
+void main() {
+    float NdotL       = dot(N, light_dir);
+    // Estimate surface curvature from ddx/ddy of world normal
+    float curvature   = length(fwidth(N)) / length(fwidth(v_world_pos)) * curvature_scale;
+
+    // LUT encodes colour-shifted skin response per curvature
+    vec3  sss_diffuse = texture(sss_lut, vec2(NdotL * 0.5 + 0.5, curvature)).rgb;
+    sss_diffuse      *= light_color * shadow;
+
+    // Thin-surface transmitted light (back-scatter, e.g. ear lobes)
+    float thickness   = texture(sss_thickness, uv).r;
+    vec3  transmit    = vec3(0.25, 0.05, 0.01)   // skin scatter tint (R > G >> B)
+                      * light_color
+                      * max(0.0, dot(-light_dir, V))
+                      * exp(-thickness * 8.0);
+
+    frag_color = vec4((sss_diffuse + transmit) * albedo, 1.0);
+}
+```
+
+#### Separable SSS — Screen-Space Blur
+After the lighting pass, objects tagged as SSS are blurred in screen space using a 1D kernel whose weights are derived from the sum-of-Gaussians diffusion profile. Two passes: horizontal then vertical. The kernel is colour-dependent (wider for red channel, narrower for blue).
+
+```glsl
+// Separable SSS blur — one axis (run twice: horizontal, vertical)
+layout(set=0, binding=0) uniform sampler2D lighting_buf;  // colour buffer from main pass
+layout(set=0, binding=1) uniform sampler2D depth_buf;
+layout(set=0, binding=2) uniform sampler2D stencil_sss;   // 1 = SSS pixel
+layout(set=0, binding=3, rgba16f) uniform image2D sss_out;
+
+uniform vec2  blur_dir;      // (1,0) or (0,1) for horiz/vert pass
+uniform float blur_width_mm; // e.g. 25.0 mm (skin scatter radius at 1m)
+uniform float proj_scale;    // pixels per meter at depth 1m
+
+// Sum-of-3-Gaussians kernel weights for skin (Jimenez 2010 profile)
+// 7-tap kernel (simplified): weights for R/G/B per tap index
+const float kernel_weights[7] = float[](0.006, 0.061, 0.242, 0.383, 0.242, 0.061, 0.006);
+const vec3  kernel_rgb[7] = vec3[](
+    vec3(0.006, 0.002, 0.001), vec3(0.061, 0.020, 0.005), vec3(0.242, 0.120, 0.030),
+    vec3(0.383, 0.298, 0.080), vec3(0.242, 0.120, 0.030), vec3(0.061, 0.020, 0.005),
+    vec3(0.006, 0.002, 0.001)
+);
+
+void main() {
+    ivec2 px   = ivec2(gl_GlobalInvocationID.xy);
+    vec2  uv   = (vec2(px) + 0.5) / vec2(imageSize(sss_out));
+    if (texture(stencil_sss, uv).r < 0.5) {
+        imageStore(sss_out, px, texture(lighting_buf, uv));
+        return;
+    }
+
+    float depth  = texture(depth_buf, uv).r;
+    float scale  = proj_scale * blur_width_mm / (1000.0 * depth);  // kernel in pixels
+
+    vec4  accum  = vec4(0.0);
+    for (int i = 0; i < 7; ++i) {
+        float t    = float(i - 3) * scale;
+        vec2  s_uv = uv + blur_dir * t / resolution;
+        // Depth similarity weight: clamp blur at depth discontinuities
+        float s_depth = texture(depth_buf, s_uv).r;
+        float dw      = exp(-abs(s_depth - depth) * depth_edge_scale);
+        accum.rgb    += texture(lighting_buf, s_uv).rgb * kernel_rgb[i] * dw;
+        accum.a      += kernel_weights[i] * dw;
+    }
+    imageStore(sss_out, px, vec4(accum.rgb / max(accum.a, 0.001), 1.0));
+}
+```
+
+**Reference** — [Jimenez et al.: Separable Subsurface Scattering (CGF 2015)](https://iryoku.com/separable-sss/); [Penner: Pre-Integrated Skin Shading (GPU Pro 2, 2011)](https://developer.nvidia.com/gpugems/gpugems3)
+
+---
+
+## Capsule and Tube Area Lights
+
+Analytical area light shading (§30 LTC for polygonal area lights) has a cheaper analytic solution for **line/tube** light sources: fluorescent tubes, neon signs, lightsabers, streetlights viewed close-up. The key observation is that the closest point on a line segment to the reflection ray can be computed analytically, enabling a specular highlight that correctly stretches into a streak along the tube. For diffuse, the irradiance from an infinite line has a closed-form solution; for a finite segment a simple integral approximation suffices.
+
+**Shader stage**: evaluated in the **fragment shader** per light per lit pixel, or in a deferred lighting **compute** pass.
+
+#### Specular — Representative Point Method (Karis 2013)
+Find the point on the tube line segment closest to the reflected ray direction, clamp to the segment endpoints, use it as the light direction for specular evaluation. Correct the normalisation so energy is preserved as the tube radius decreases to a point.
+
+```glsl
+// Tube area light specular — representative point (UE4 method)
+vec3 tube_light_specular(vec3 P, vec3 N, vec3 V, vec3 tube_start, vec3 tube_end,
+                          float tube_radius, float roughness, vec3 light_color) {
+    vec3  R         = reflect(-V, N);
+    vec3  L0        = tube_start - P;
+    vec3  L1        = tube_end   - P;
+    vec3  Ld        = L1 - L0;
+    float len2      = dot(Ld, Ld);
+
+    // Closest point on segment to reflection ray
+    float t = dot(R, L0) * dot(R, Ld) - dot(L0, Ld);
+    t = t / (len2 - dot(R, Ld) * dot(R, Ld) + 1e-6);
+    t = clamp(t, 0.0, 1.0);
+
+    vec3  closest   = L0 + t * Ld;
+    vec3  centre_to_ray = closest - dot(closest, R) * R;
+    // Move to tube surface if within radius
+    vec3  L_spec    = normalize(closest + centre_to_ray *
+                        clamp(tube_radius / length(centre_to_ray + vec3(1e-6)), 0.0, 1.0));
+
+    // Effective roughness: GGX roughness blown up by tube solid angle
+    float alpha     = roughness * roughness;
+    float sphere_angle = clamp(tube_radius / length(closest), 0.0, 1.0);
+    float alpha_tube = clamp(alpha + sphere_angle / (2.0 * clamp(dot(N, L_spec), 0.01, 1.0)), 0.0, 1.0);
+
+    float NdotL     = max(dot(N, L_spec), 0.0);
+    return GGX_specular(N, V, L_spec, alpha_tube) * NdotL * light_color;
+}
+```
+
+#### Diffuse — Segment Irradiance Integral
+Integrate the Lambertian irradiance from a finite line segment. The closed-form integral of `max(0, dot(N, L(t)))` over a segment of uniform radiance reduces to an arctan formula.
+
+```glsl
+// Tube area light diffuse — closed-form line integral (Picott 1992)
+vec3 tube_light_diffuse(vec3 P, vec3 N, vec3 tube_start, vec3 tube_end, vec3 light_color) {
+    vec3  L0   = tube_start - P;
+    vec3  L1   = tube_end   - P;
+    float d0   = length(L0); L0 /= d0;
+    float d1   = length(L1); L1 /= d1;
+    float NdotL0 = dot(N, L0);
+    float NdotL1 = dot(N, L1);
+    float LdotL  = dot(L0, L1);
+
+    // Irradiance from a line segment using the solid-angle subtended formula
+    vec3  Ld   = normalize(L1 - L0);
+    float sin_theta0 = sqrt(max(0.0, 1.0 - LdotL * LdotL));
+    float irr  = (NdotL0 + NdotL1) / (d0 + d1 + length(tube_start - tube_end))
+               * max(0.0, sin_theta0);
+
+    return max(irr, 0.0) * light_color;
+}
+```
+
+**Reference** — [Karis: Real Shading in Unreal Engine 4 (SIGGRAPH 2013)](https://cdn2.unrealengine.com/Resources/files/2013SiggraphPresentationsNotes-26915738.pdf)
+
+---
+
+## Octahedral Impostor LOD
+
+At large distances, complex 3D objects (trees, rocks, vehicles) can be replaced with a **billboard** — a camera-facing quad — textured with a prerendered view of the object. **Octahedral impostors** generalise flat billboards: the impostor atlas contains views of the object sampled at directions distributed over the hemisphere (or full sphere) of an octahedron; at runtime the two nearest atlas views are blended based on the actual camera direction, giving correct silhouettes from all angles without 3D geometry.
+
+**Shader stage**: impostor rendering uses a **vertex shader** (align billboard to camera) and **fragment shader** (atlas lookup + view blending).
+
+#### Octahedral Atlas Layout
+The 2D atlas is arranged so that each cell in an N×N grid corresponds to one view direction mapped from the octahedron (§35 octahedral mapping). A 16×16 atlas = 256 views covering the upper hemisphere, each rendered offline into RGBA8 (albedo+alpha) or GBuffer MRTs.
+
+```glsl
+// Convert camera direction to atlas UV (octahedral hemisphere map)
+vec2 dir_to_impostor_uv(vec3 view_dir, int atlas_n) {
+    // Project direction onto octahedron (upper hemisphere)
+    vec3 d   = view_dir / (abs(view_dir.x) + abs(view_dir.y) + abs(view_dir.z));
+    vec2 oct = d.xz;  // top-down hemisphere: use XZ plane
+    if (d.y < 0.0) {  // fold lower hemisphere (mirror edges)
+        oct = (1.0 - abs(oct.yx)) * sign(oct);
+    }
+    // Map [-1,1] to [0, atlas_n-1] grid cell (bilinear between 4 nearest cells)
+    return oct * 0.5 + 0.5;
+}
+```
+
+#### Impostor Fragment Shader
+Look up the two nearest atlas frames (by quantising the view direction to the nearest octahedral grid point and its neighbour), blend between them, and discard transparent pixels to preserve the silhouette.
+
+```glsl
+// Impostor fragment shader — blend two nearest views
+layout(set=0, binding=0) uniform sampler2DArray impostor_atlas;  // array of N*N cells
+uniform int   atlas_n;        // views per axis (e.g. 16)
+uniform vec3  impostor_scale; // world-space size of billboard
+
+layout(location=0) in vec3 v_cam_dir;  // camera→impostor direction (world space)
+layout(location=1) in vec2 v_uv;       // billboard surface UV [0,1]
+
+layout(location=0) out vec4 frag;
+
+void main() {
+    // Quantise camera direction to nearest grid cell
+    vec2  oct    = dir_to_impostor_uv(normalize(v_cam_dir), atlas_n) * float(atlas_n - 1);
+    ivec2 cell0  = ivec2(floor(oct));
+    ivec2 cell1  = ivec2(ceil(oct));
+    vec2  frac   = fract(oct);
+
+    // Map surface UV into each cell's sub-rect within the atlas
+    vec2 atlas_uv0 = (v_uv + vec2(cell0)) / float(atlas_n);
+    vec2 atlas_uv1 = (v_uv + vec2(cell1)) / float(atlas_n);
+
+    vec4 s0 = texture(impostor_atlas, vec3(atlas_uv0, 0.0));
+    vec4 s1 = texture(impostor_atlas, vec3(atlas_uv1, 0.0));
+
+    // Blend based on fractional position between cells
+    float blend_w = length(frac);
+    frag = mix(s0, s1, blend_w);
+    if (frag.a < 0.1) discard;
+}
+```
+
+**LOD integration**: the impostor replaces the full mesh below a screen-coverage threshold (computed from projected bounding sphere radius vs. pixel coverage). A smooth transition can blend the impostor alpha with the mesh at the crossover distance.
+
+**Reference** — [Loos & Sloan: Volumetric Billboards (CGF 2010)](https://dl.acm.org/doi/10.1111/j.1467-8659.2010.01663.x); [Shaderbits: Octahedral Impostors](https://shaderbits.com/blog/octahedral-impostors/)
+
+---
+
+## GPU Radix Sort
+
+Sorting is a fundamental GPU primitive needed by many rendering algorithms: LBVH Morton code sorting (§42), particle Z-sort for transparency, shadow map priority, visibility buffer triangle ID sorting. **Radix sort** is the fastest comparison-free GPU sort: it makes `K` passes over the data (one per `b`-bit digit), each computing a prefix-sum histogram to determine each element's output position. On GPU, the most efficient variant uses **single-pass decoupled lookback** (Merrill & Garland 2016) which avoids inter-pass global synchronisation barriers.
+
+**Shader stage**: all radix sort passes run as **compute shaders**. A typical 32-bit key sort with 4-bit digits requires 8 passes.
+
+#### Per-Workgroup Histogram (Upsweep)
+Each workgroup counts how many elements fall in each digit bucket for its assigned input range, writing partial histograms to a global histogram buffer.
+
+```glsl
+// Radix sort upsweep — per-workgroup histogram (4-bit digit, 16 buckets)
+layout(local_size_x=256) in;
+layout(set=0, binding=0) readonly  buffer Keys       { uint keys_in[]; };
+layout(set=0, binding=1) writeonly buffer Histograms { uint histo[]; };  // [num_wg * 16]
+
+shared uint s_hist[16];
+
+uniform uint num_elements;
+uniform uint digit_shift;  // 0, 4, 8, 12, 16, 20, 24, 28 for 8 passes
+
+void main() {
+    uint lid  = gl_LocalInvocationIndex;
+    uint gid  = gl_GlobalInvocationID.x;
+    uint wg   = gl_WorkGroupID.x;
+
+    if (lid < 16u) s_hist[lid] = 0u;
+    barrier();
+
+    if (gid < num_elements) {
+        uint digit = (keys_in[gid] >> digit_shift) & 0xFu;
+        atomicAdd(s_hist[digit], 1u);
+    }
+    barrier();
+
+    if (lid < 16u)
+        histo[wg * 16u + lid] = s_hist[lid];
+}
+```
+
+#### Global Prefix Sum (Scan)
+A separate pass computes an exclusive prefix sum across all workgroup histograms for each bucket — the output position offset for each (workgroup, bucket) pair.
+
+```glsl
+// Global prefix scan over histogram buckets — one thread per bucket per workgroup
+// (simplified: in practice use a 2-level tree reduction for large workgroup counts)
+layout(local_size_x=256) in;
+layout(set=0, binding=0) buffer Histograms { uint histo[]; };  // in-place scan
+uniform uint num_workgroups;
+
+shared uint s_val[256];
+
+void main() {
+    uint bucket = gl_GlobalInvocationID.x;  // 0..15
+    // Scan across workgroup counts for this bucket
+    uint accum = 0u;
+    for (uint wg = 0u; wg < num_workgroups; ++wg) {
+        uint idx = wg * 16u + bucket;
+        uint cnt = histo[idx];
+        histo[idx] = accum;  // exclusive prefix
+        accum += cnt;
+    }
+}
+```
+
+#### Scatter (Downsweep)
+Each element reads its digit's scanned position offset, adds its local rank within the workgroup, and writes to the output array.
+
+```glsl
+// Radix sort scatter — reorder keys from input to output using prefix sums
+layout(local_size_x=256) in;
+layout(set=0, binding=0) readonly  buffer KeysIn     { uint keys_in[]; };
+layout(set=0, binding=1) writeonly buffer KeysOut    { uint keys_out[]; };
+layout(set=0, binding=2) readonly  buffer ValuesIn   { uint vals_in[]; };
+layout(set=0, binding=3) writeonly buffer ValuesOut  { uint vals_out[]; };
+layout(set=0, binding=4) readonly  buffer Histograms { uint histo[]; };
+
+shared uint s_rank[256];  // local rank within workgroup per thread
+
+uniform uint num_elements;
+uniform uint digit_shift;
+
+void main() {
+    uint lid = gl_LocalInvocationIndex;
+    uint gid = gl_GlobalInvocationID.x;
+    uint wg  = gl_WorkGroupID.x;
+
+    uint key    = (gid < num_elements) ? keys_in[gid] : 0xFFFFFFFFu;
+    uint digit  = (key >> digit_shift) & 0xFu;
+
+    // Local rank: count how many earlier threads have the same digit (ballot prefix)
+    uint rank = 0u;
+    for (uint d = 0u; d < 16u; ++d) {
+        uvec4 ballot = subgroupBallot(digit == d);
+        if (digit == d) rank = subgroupBallotExclusiveBitCount(ballot);
+    }
+
+    if (gid < num_elements) {
+        uint dst = histo[wg * 16u + digit] + rank;
+        keys_out[dst]  = key;
+        vals_out[dst]  = vals_in[gid];
+    }
+}
+```
+
+A full implementation alternates ping-pong between two key/value buffers for each of the 8 digit passes. The result is a fully sorted array in O(n) GPU time, typically outperforming GPU comparison sorts for n > 100k.
+
+**Reference** — [Merrill & Garland: Single-pass Parallel Prefix Scan with Decoupled Lookback (NVIDIA TR 2016)](https://research.nvidia.com/publication/2016-03_single-pass-parallel-prefix-scan-decoupled-look-back); [CUB: cub::DeviceRadixSort](https://nvlabs.github.io/cub/)
+
+---
+
+## Sparse Texture and Tiled Resources
+
+Standard textures allocate a contiguous block of GPU memory for every mip level — even levels that are never sampled at runtime (distant objects never need mip 0). **Sparse textures** (`VK_EXT_sparse_binding`, OpenGL `ARB_sparse_texture`, Direct3D tiled resources) allocate only the tiles that are actually accessed: 64KB tiles are committed on demand as the camera moves. This enables textures of arbitrary logical size (16k×16k or larger) backed by a physical memory budget orders of magnitude smaller, and is foundational to **Virtual Texturing** (§49) at the hardware level.
+
+**Shader stage**: sparse texture sampling uses the **fragment shader** with the `sparseTextureSparseARB` (GLSL) or `Vulkan OpImageSparseSampleImplicitLod` (SPIR-V) instruction, which returns both the texel colour and a **residency code** indicating whether the tile was resident.
+
+#### Vulkan Sparse Texture Setup (CPU)
+Creating a sparse texture requires `VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT`. Memory is bound per-tile using `vkQueueBindSparse` rather than `vkBindImageMemory`.
+
+```c
+// Sparse image creation
+VkImageCreateInfo sparse_ci = {
+    .flags       = VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT |
+                   VK_IMAGE_CREATE_SPARSE_BINDING_BIT,
+    .format      = VK_FORMAT_R8G8B8A8_SRGB,
+    .extent      = { 16384, 16384, 1 },
+    .mipLevels   = 15,
+    .usage       = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+};
+vkCreateImage(device, &sparse_ci, NULL, &sparse_image);
+
+// Bind individual tiles after the camera has determined which are needed
+VkSparseImageMemoryBind tile_bind = {
+    .subresource = { VK_IMAGE_ASPECT_COLOR_BIT, mip_level, 0 },
+    .offset      = { tile_x * tile_width, tile_y * tile_height, 0 },
+    .extent      = { tile_width, tile_height, 1 },
+    .memory      = tile_memory_allocation,
+    .memoryOffset= 0,
+};
+VkBindSparseInfo bind_info = {
+    .imageBindCount = 1,
+    .pImageBinds    = &(VkSparseImageMemoryBindInfo){ sparse_image, 1, &tile_bind },
+};
+vkQueueBindSparse(sparse_queue, 1, &bind_info, VK_NULL_HANDLE);
+```
+
+#### Residency Check in Fragment Shader
+The `sparseTexelResidentARB` function tests the residency code returned by the sparse sample. Unresident tiles can fall back to a lower mip level (always fully resident) or a solid colour placeholder.
+
+```glsl
+#extension GL_ARB_sparse_texture2 : require
+
+layout(set=0, binding=0) uniform sampler2D sparse_tex;
+
+void main() {
+    vec4  color;
+    int   residency = sparseTexture2DARB(sparse_tex, uv, color);
+    if (!sparseTexelResidentARB(residency)) {
+        // Tile not resident — fall back to coarse mip (always resident)
+        color = texture(sparse_tex, uv, max_mip_bias);
+    }
+    // Record the UV for feedback streaming (which tile needs to be loaded)
+    if (!sparseTexelResidentARB(residency)) {
+        imageStore(feedback_buf, ivec2(gl_FragCoord.xy >> 3), vec4(uv, mip_level, 1.0));
+    }
+    frag_color = color;
+}
+```
+
+#### Mip Tail
+The mip tail (smallest mip levels, below the tile granularity) is always packed into a single non-sparse allocation and committed at image creation time, guaranteeing a fallback for any unresident tile.
+
+**Reference** — [Vulkan: Sparse Resources](https://registry.khronos.org/vulkan/specs/1.3/html/chap30.html#sparsememory); [Crassin & Green: Sparse Virtual Textures (GDC 2011)](https://silverspaceship.com/src/svt/)
+
+---
+
+## Variable Rate Shading
+
+Variable Rate Shading (VRS) decouples the shading rate from the pixel rate: rather than running one fragment shader invocation per pixel, the GPU can shade a 2×2, 4×2, or 4×4 tile of pixels with a single invocation and fill the whole tile with that result. VRS reduces fragment shader cost in image regions where full shading rate is wasteful — low-frequency regions, peripheral VR field of view, motion-blurred areas, or any region that will be upscaled. In Vulkan, VRS is provided by `VK_KHR_fragment_shading_rate` (core in Vulkan 1.3 on supporting hardware).
+
+**Shader stage**: the shading rate can be set **per-draw** (uniform), **per-primitive** (vertex/geometry shader output), or **per-tile** (a shading-rate image read before rasterisation). Evaluation of the actual shading happens in the **fragment shader**, which sees the tile as a single invocation.
+
+#### Per-Draw Uniform Rate
+Set a single shading rate for an entire draw call — useful for secondary geometry (decals, particles, foliage) where full rate is unnecessary.
+
+```c
+// Vulkan: set per-draw fragment shading rate
+VkFragmentShadingRateAttachmentInfoKHR sri = {
+    .fragmentShadingRateAttachment       = NULL,
+    .shadingRateAttachmentTexelSize      = { 1, 1 },
+};
+vkCmdSetFragmentShadingRateKHR(cmd,
+    &(VkExtent2D){ 2, 2 },   // 2×2 pixel tile per shading invocation
+    (VkFragmentShadingRateCombinerOpKHR[]){
+        VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR,
+        VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR,
+    });
+```
+
+#### Shading Rate Image (Per-Tile)
+Build a 2D image where each texel covers an N×N tile (typically 16×16 pixels) of the render target and contains the packed shading rate for that tile. Content-adaptive VRS reads luminance variance, velocity magnitude, or foveation radius to determine per-tile rates.
+
+```glsl
+// Build shading rate image — compute shader, one thread per tile
+layout(set=0, binding=0) uniform sampler2D luma_buffer;   // previous-frame luminance
+layout(set=0, binding=1) uniform sampler2D velocity_buf;
+layout(set=0, binding=2, r8ui) uniform uimage2D shading_rate_img;
+
+uniform float variance_threshold;  // e.g. 0.01 — below this: use 4×4
+uniform float velocity_threshold;  // e.g. 0.003 — above this: use 1×1
+
+void main() {
+    ivec2 tile  = ivec2(gl_GlobalInvocationID.xy);
+    vec2  uv    = (vec2(tile) + 0.5) / vec2(imageSize(shading_rate_img));
+
+    // Sample 2×2 region of luminance and compute variance
+    float l00   = texture(luma_buffer, uv + vec2(-0.5, -0.5) / resolution).r;
+    float l10   = texture(luma_buffer, uv + vec2( 0.5, -0.5) / resolution).r;
+    float l01   = texture(luma_buffer, uv + vec2(-0.5,  0.5) / resolution).r;
+    float l11   = texture(luma_buffer, uv + vec2( 0.5,  0.5) / resolution).r;
+    float mean  = (l00 + l10 + l01 + l11) * 0.25;
+    float var   = dot(vec4(l00,l10,l01,l11)-mean, vec4(l00,l10,l01,l11)-mean) * 0.25;
+
+    float vel   = length(texture(velocity_buf, uv).rg);
+
+    // VK_KHR_fragment_shading_rate packed rates:
+    // 0 = 1×1, 1 = 1×2, 4 = 2×1, 5 = 2×2, 10 = 4×2, etc.
+    uint rate;
+    if (vel > velocity_threshold || var > variance_threshold) {
+        rate = 0u;   // 1×1 full rate
+    } else if (var > variance_threshold * 0.1) {
+        rate = 5u;   // 2×2
+    } else {
+        rate = 10u;  // 4×2 (check hardware support)
+    }
+    imageStore(shading_rate_img, tile, uvec4(rate));
+}
+```
+
+#### Per-Primitive Rate (VRS from Vertex Shader)
+The vertex shader can output a primitive shading rate as a built-in:
+
+```glsl
+// Vertex shader — set per-primitive shading rate for this triangle
+layout(location=5) out gl_PerVertex {
+    vec4 gl_Position;
+};
+// VK_KHR_fragment_shading_rate built-in (SPIR-V PrimitiveShadingRateKHR)
+layout(location=1) out int gl_PrimitiveShadingRateEXT;
+
+void main() {
+    // Dynamic objects always shaded at 1×1; distant static at 2×2
+    gl_PrimitiveShadingRateEXT = is_dynamic ? 0 : 5;
+}
+```
+
+**Use cases** — VR foveated rendering where 4×4 is used at the periphery (§27); TAA passes where full rate is wasted; particle/foliage secondary passes; always combined with TAA or DLSS to restore temporal detail at reduced rates.  
+**Reference** — [Vulkan: VK_KHR_fragment_shading_rate](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_KHR_fragment_shading_rate.html); [Turner: Variable Rate Shading (NVIDIA DX12/Vulkan)](https://developer.nvidia.com/variable-rate-shading)
+
+---
+
+## Shader Execution Reordering
+
+In ray tracing, the GPU executes shaders in the order that rays hit geometry — determined by the BVH traversal hardware, not the programmer. This causes **wavefront divergence**: rays in the same wave hit different materials, execute different shader code, and access different textures, resulting in poor SIMD utilisation and cache thrash. **Shader Execution Reordering (SER)**, introduced by NVIDIA on Ada Lovelace (RTX 4000), defers the closest-hit shader invocation until similar shaders are grouped together, improving SIMD coherence by 2–3× for complex scenes.
+
+SER is exposed through `VK_NV_ray_tracing_invocation_reorder` (Vulkan) and GLSL `GL_NV_shader_invocation_reorder`.
+
+**Shader stage**: SER is applied in the **closest-hit shader** (and optionally miss shader) by wrapping the shader body with `hitObjectNV` construction and a `reorderThreadNV` call before the actual shading.
+
+#### HitObject Construction and Reorder
+```glsl
+#extension GL_NV_shader_invocation_reorder : require
+
+layout(set=0, binding=0) uniform accelerationStructureEXT tlas;
+
+// Payload
+layout(location=0) rayPayloadNV vec3 payload_radiance;
+
+void main() {
+    hitObjectNV hit;
+
+    // Trace ray without invoking any shaders — capture the hit in a hitObject
+    hitObjectTraceRayNV(hit,
+        tlas,
+        gl_RayFlagsNoneNV,
+        0xFF,           // cull mask
+        0, 1, 0,        // SBT offsets
+        gl_WorldRayOriginNV,
+        0.001,          // tmin
+        gl_WorldRayDirectionNV,
+        1e27,           // tmax
+        0               // payload location
+    );
+
+    // Provide a hint to the hardware scheduler: group threads by material/shader
+    // The 5-bit coherence hint encodes material type (affects SIMD grouping)
+    uint material_hint = hitObjectGetInstanceIdNV(hit) & 0x1Fu;
+    reorderThreadNV(hit, material_hint, 5 /*hint bits*/);
+
+    // After reordering, invoke the closest-hit shader
+    hitObjectExecuteShaderNV(hit, 0);
+}
+```
+
+#### Coherence Hint Design
+The quality of SER depends on the coherence hint accurately predicting shader divergence. A good hint encodes: material shader index, whether the surface uses alpha masking (potentially invokes any-hit), and BRDF type. A bad hint (all-zeros) still produces valid output but provides no reordering benefit.
+
+```glsl
+// Build a coherence hint from instance data
+uint build_coherence_hint(hitObjectNV hit) {
+    int inst_id   = hitObjectGetInstanceIdNV(hit);
+    int geom_id   = hitObjectGetGeometryIndexNV(hit);
+    // Encode shader type in high bits, geometry variation in low bits
+    uint shader_type = (inst_id >> 8) & 0x0Fu;  // from instance custom index
+    uint geom_var    = geom_id & 0x0Fu;
+    return (shader_type << 1u) | (geom_var & 0x1u);
+}
+```
+
+**Performance impact**: for scenes with many material types (e.g., an urban environment with glass, metal, painted surfaces, vegetation), SER can improve closest-hit throughput by 2–3×. For scenes with a single dominant material (e.g., a terrain with one BRDF), the benefit is minimal. SER is transparent to correctness — the output is identical whether or not reordering occurs.
+
+**Reference** — [NVIDIA: Shader Execution Reordering (GTC 2022)](https://developer.nvidia.com/blog/improve-shader-performance-and-in-game-frame-rates-with-shader-execution-reordering/); [Vulkan: VK_NV_ray_tracing_invocation_reorder](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_ray_tracing_invocation_reorder.html)
+
+---
+
+## World-Space Radiance Cache
+
+The **World-Space Radiance Cache (WSRC)** is the GI architecture at the core of Unreal Engine 5's **Lumen** GI system: a sparse set of probes distributed through the world, each storing SH2 (or SH3) radiance computed by shooting short screen-space and hardware-traced rays, updated asynchronously and filtered spatially and temporally. WSRC extends screen-space GI (§50) to surfaces not visible to the camera and provides stable indirect lighting for large open worlds where DDGI probe count would be prohibitive.
+
+The broader concept also describes other world-space probe caches: **DDGI** (Dynamic Diffuse GI, Majercik et al. 2019) stores per-probe irradiance and visibility in 2D octahedral maps and traces rays from probes; **Radiance Caching** (Müller et al. 2021) stores per-vertex or per-cell 5D radiance for path guiding. This section covers the algorithmic pattern common to all of them.
+
+**Shader stage**: probe ray tracing runs as a **ray generation shader**. Probe update (irradiance SH projection) and spatial filtering run in **compute**. Probe evaluation (interpolation at surface points) runs in the **fragment or compute** lighting pass.
+
+#### Probe Placement and Ray Tracing
+Probes are placed on a world-space grid (or sparse voxel structure); each frame a subset are updated. Each probe shoots N rays (typically 64–256) uniformly distributed over the hemisphere (or full sphere), traces them via TLAS, and accumulates radiance. For Lumen, the rays are short (~3 m) and terminate against screen-space geometry first, falling back to hardware RT or SSDF for longer distances.
+
+```glsl
+// Probe ray generation shader — DDGI-style
+layout(set=0, binding=0) uniform accelerationStructureEXT tlas;
+layout(set=0, binding=1, rgba16f) uniform image2D probe_radiance; // N_probes × N_rays
+layout(set=0, binding=2, rg16f)   uniform image2D probe_visibility;// depth+depth²
+
+uniform int    rays_per_probe;   // e.g. 64
+uniform vec3   grid_origin;
+uniform vec3   grid_spacing;
+uniform ivec3  grid_dims;
+uniform mat3   random_rotation;  // changes each frame (temporal stratification)
+
+layout(location=0) rayPayloadEXT vec4 ray_payload;  // .rgb = radiance, .a = hit_dist
+
+void main() {
+    ivec2 dispatch_id = ivec2(gl_LaunchIDEXT.xy);
+    int   probe_idx   = dispatch_id.x;
+    int   ray_idx     = dispatch_id.y;
+
+    ivec3 probe_coords = ivec3(probe_idx % grid_dims.x,
+                               (probe_idx / grid_dims.x) % grid_dims.y,
+                               probe_idx / (grid_dims.x * grid_dims.y));
+    vec3  probe_pos    = grid_origin + vec3(probe_coords) * grid_spacing;
+
+    // Stratified spherical ray direction (Fibonacci + random rotation)
+    vec3  ray_dir  = random_rotation * spherical_fibonacci(ray_idx, rays_per_probe);
+
+    ray_payload = vec4(0.0, 0.0, 0.0, 1e27);
+    traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0,
+        probe_pos, 0.001, ray_dir, max_ray_dist, 0);
+
+    imageStore(probe_radiance,   ivec2(probe_idx, ray_idx), ray_payload);
+    imageStore(probe_visibility, ivec2(probe_idx, ray_idx),
+               vec4(ray_payload.a, ray_payload.a * ray_payload.a, 0.0, 1.0));
+}
+```
+
+#### Irradiance Update (Rays → SH)
+Project the N ray samples into SH2 coefficients for each probe. Run as a compute shader with one workgroup per probe, each lane processing one ray.
+
+```glsl
+// Probe irradiance update — project ray samples into SH2
+layout(local_size_x=64) in;  // one thread per ray
+layout(set=0, binding=0) readonly  uniform image2D probe_radiance;
+layout(set=0, binding=1) buffer    ProbesSH { vec4 probes_sh[][9]; };  // L0+L1+L2 = 9 coeffs
+
+shared vec4 s_sh[9][64];  // per-thread partial SH accumulation
+
+void main() {
+    int probe_idx = int(gl_WorkGroupID.x);
+    int ray_idx   = int(gl_LocalInvocationIndex);
+
+    vec3 L  = imageLoad(probe_radiance, ivec2(probe_idx, ray_idx)).rgb;
+    vec3 dir = spherical_fibonacci(ray_idx, 64);
+
+    float Y[9]; sh_basis_L2(dir, Y);
+    for (int b = 0; b < 9; ++b)
+        s_sh[b][ray_idx] = vec4(L * Y[b], 0.0);
+    barrier();
+
+    // Parallel reduction
+    for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+        if (ray_idx < int(stride))
+            for (int b = 0; b < 9; ++b)
+                s_sh[b][ray_idx] += s_sh[b][ray_idx + stride];
+        barrier();
+    }
+
+    if (ray_idx == 0) {
+        float normalization = 4.0 * 3.14159 / 64.0;
+        // Temporal blend: mix new SH with existing (hysteresis ~0.97)
+        for (int b = 0; b < 9; ++b)
+            probes_sh[probe_idx][b] = mix(s_sh[b][0] * normalization,
+                                          probes_sh[probe_idx][b], 0.97);
+    }
+}
+```
+
+#### Probe Interpolation at Surface (Fragment)
+At the lit surface, find the 8 surrounding probes, weight by distance and visibility (to avoid light leaking through thin walls using Chebyshev visibility), accumulate SH irradiance.
+
+```glsl
+// Fragment: evaluate world-space radiance cache
+vec3 wsrc_irradiance(vec3 P, vec3 N, vec3 V) {
+    ivec3 probe_coord = ivec3((P - grid_origin) / grid_spacing);
+    vec3  blend       = fract((P - grid_origin) / grid_spacing);
+    vec3  irr         = vec3(0.0);
+    float total_w     = 0.0;
+
+    // Trilinear interpolation over 8 surrounding probes
+    for (int ox = 0; ox <= 1; ++ox) for (int oy = 0; oy <= 1; ++oy) for (int oz = 0; oz <= 1; ++oz) {
+        ivec3 c    = clamp(probe_coord + ivec3(ox, oy, oz), ivec3(0), grid_dims - 1);
+        int   pidx = c.x + c.y * grid_dims.x + c.z * grid_dims.x * grid_dims.y;
+
+        // Trilinear weight
+        float w = mix(1.0-blend.x, blend.x, float(ox))
+                * mix(1.0-blend.y, blend.y, float(oy))
+                * mix(1.0-blend.z, blend.z, float(oz));
+
+        // Visibility weight: Chebyshev test using stored depth moments
+        vec3  probe_pos = grid_origin + vec3(c) * grid_spacing;
+        float dist      = length(P - probe_pos);
+        vec2  vis       = texelFetch(probe_vis_tex, ivec2(pidx, 0), 0).rg;
+        float var       = abs(vis.y - vis.x * vis.x);
+        float vis_w     = (dist <= vis.x) ? 1.0
+                        : var / (var + (dist - vis.x) * (dist - vis.x));
+        w *= max(vis_w * vis_w * vis_w, 0.0001);
+
+        // Evaluate SH irradiance in normal direction
+        float Y[9]; sh_basis_L2(N, Y);
+        vec3  probe_irr = vec3(0.0);
+        for (int b = 0; b < 9; ++b)
+            probe_irr += probes_sh[pidx][b].rgb * Y[b];
+        irr     += max(probe_irr, vec3(0.0)) * w;
+        total_w += w;
+    }
+    return irr / max(total_w, 1e-5);
+}
+```
+
+**Use cases** — Unreal Engine 5 Lumen (WSRC + SSGI + hardware RT fallback); DDGI (id Software, Wolfenstein II); any open-world dynamic GI where screen-space techniques alone are insufficient.  
+**Reference** — [Majercik et al.: Dynamic Diffuse Global Illumination with Ray-Traced Irradiance Fields (JCGT 2019)](https://jcgt.org/published/0008/02/01/); [Lumen Technical Details (UE5 Docs)](https://docs.unrealengine.com/5.0/en-US/lumen-technical-details-in-unreal-engine/)
 
 ---
 
