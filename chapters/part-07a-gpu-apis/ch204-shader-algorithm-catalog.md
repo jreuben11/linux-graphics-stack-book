@@ -51,7 +51,16 @@ The distribution of sections in this catalog mirrors the actual distribution of 
 27. [Foveated and Multiview Rendering](#foveated-and-multiview-rendering)
 28. [Outline and Selection Rendering](#outline-and-selection-rendering)
 29. [Sampling Techniques](#sampling-techniques)
-30. [References](#references)
+30. [LTC Area Lights](#ltc-area-lights)
+31. [Punctual Light Attenuation and IES Profiles](#punctual-light-attenuation-and-ies-profiles)
+32. [GPU-Driven Rendering](#gpu-driven-rendering)
+33. [Wave and Subgroup Intrinsics](#wave-and-subgroup-intrinsics)
+34. [Color Science in Shaders](#color-science-in-shaders)
+35. [Normal and HDR Encoding](#normal-and-hdr-encoding)
+36. [Translucency and Backlit Thin-Surface Materials](#translucency-and-backlit-thin-surface-materials)
+37. [Cloth and Soft-Body Simulation](#cloth-and-soft-body-simulation)
+38. [Reversed-Z and Logarithmic Depth](#reversed-z-and-logarithmic-depth)
+39. [References](#references)
 
 ---
 
@@ -1830,6 +1839,631 @@ Extends ReSTIR to indirect light paths: each reservoir stores a complete path (h
 
 **Use cases** — real-time RTGI in AAA titles; replaces or supplements DDGI probe grids for dynamic geometry; high quality with 1 indirect path/pixel + denoising.  
 **Reference** — [Ouyang et al.: ReSTIR GI: Path Resampling for Real-Time Path Tracing (EGSR 2021)](https://research.nvidia.com/publication/2021-06_restir-gi-path-resampling-real-time-path-tracing)
+
+---
+
+## LTC Area Lights
+
+Area lights — spheres, disks, rectangles, tubes — emit radiance from a surface rather than a point. Evaluating their contribution analytically (without Monte Carlo sampling) requires integrating the BRDF over the solid angle subtended by the light, which has no closed form for rough GGX specular.
+
+**Linearly Transformed Cosines** (Heitz & de Dreu 2016) solve this by finding a 3×3 linear transformation `M` that maps the clamped cosine distribution into the GGX BRDF lobe for the current roughness and view angle. The area light integral in the transformed space reduces to the integral of a clamped cosine over a polygon — which has an exact analytic formula. `M` and its normalisation are stored in two RGBA16F lookup textures indexed by `(NdotV, roughness)` and fetched once per fragment.
+
+**Shader stage**: evaluated in the **fragment shader** (deferred lighting pass or forward shading) after the BRDF LUT lookup. No ray tracing required.
+
+```glsl
+// LTC area light evaluation — rectangle light example
+// Heitz et al. 2016: Real-Time Polygonal-Light Shading with LTC
+// Two precomputed textures: ltc_mat (inverse transform matrix) and ltc_amp (scale factor)
+layout(set=1, binding=0) uniform sampler2D ltc_mat;   // RGBA → columns of M⁻¹
+layout(set=1, binding=1) uniform sampler2D ltc_amp;   // RG  → amplitude, fresnel scale
+
+const float LUT_SIZE  = 64.0;
+const float LUT_SCALE = (LUT_SIZE - 1.0) / LUT_SIZE;
+const float LUT_BIAS  = 0.5 / LUT_SIZE;
+
+// Look up LTC matrix for this (roughness, NdotV)
+vec2 uv      = vec2(roughness, sqrt(1.0 - NdotV));
+uv           = uv * LUT_SCALE + LUT_BIAS;
+vec4 ltc     = texture(ltc_mat, uv);
+mat3 Minv    = mat3(
+    vec3(ltc.x, 0.0, ltc.y),
+    vec3(  0.0, 1.0,   0.0),
+    vec3(ltc.z, 0.0, ltc.w)
+);
+
+// Transform rectangle light corners into LTC space and integrate
+vec3 L[4];
+L[0] = normalize(Minv * (rect[0] - P));
+L[1] = normalize(Minv * (rect[1] - P));
+L[2] = normalize(Minv * (rect[2] - P));
+L[3] = normalize(Minv * (rect[3] - P));
+
+// Polygon irradiance — exact analytic integral of clamped cosine over polygon
+float irr = 0.0;
+for (int i = 0; i < 4; ++i) {
+    vec3 a = L[i], b = L[(i+1)%4];
+    irr += acos(clamp(dot(a, b), -1.0, 1.0)) * normalize(cross(a, b)).z;
+}
+irr = abs(irr) / (2.0 * PI);
+
+// Scale by BRDF amplitude and Fresnel term from second LUT
+vec2 amp     = texture(ltc_amp, uv).rg;
+vec3 specular = light_color * irr * (amp.x + (1.0 - F0) * amp.y);
+```
+
+**Diffuse term**: use the same polygon irradiance formula with `Minv = identity` (clamped cosine is already the correct diffuse kernel).
+
+**Disk and sphere lights**: approximate the shape by a quad or use the sphere solid-angle formula; the LTC matrix encodes roughness response regardless of light shape.
+
+**Use cases** — rectangle lights (windows, monitors, LEDs), disk lights (ceiling panels, headlights), tube lights (fluorescent strips); standard in Frostbite, Filament, Three.js, and Unity HDRP.  
+**Reference** — [Heitz et al.: Real-Time Polygonal-Light Shading with Linearly Transformed Cosines (SIGGRAPH 2016)](https://eheitzresearch.wordpress.com/415-2/); [Eric Heitz's LTC demo and LUT generator](https://github.com/selfshadow/ltc_code)
+
+---
+
+## Punctual Light Attenuation and IES Profiles
+
+Punctual lights (point, spot, directional) are the simplest lighting primitives, but physically correct attenuation and realistic beam profiles require a few non-obvious details.
+
+**Shader stage**: evaluated in the **fragment shader** (deferred lighting pass or forward pass) once per light per fragment.
+
+#### Inverse-Square Attenuation
+Physical light intensity falls off as `1/distance²`. A bare `1/d²` diverges at zero distance; the standard fix is a small epsilon bias or a windowed falloff that smoothly goes to zero at the light's influence radius.
+
+```glsl
+// UE4 smooth windowed inverse-square attenuation
+float point_attenuation(float dist, float inv_radius) {
+    float d_norm = dist * inv_radius;
+    float falloff = 1.0 / (dist * dist + 1.0);           // avoid singularity at d=0
+    float window  = pow(max(0.0, 1.0 - d_norm * d_norm * d_norm * d_norm), 2.0);
+    return falloff * window;
+}
+```
+
+**Reference** — [Karis: Real Shading in Unreal Engine 4 (SIGGRAPH 2013)](https://cdn2.unrealengine.com/Resources/files/2013SiggraphPresentationsNotes-26915738.pdf)
+
+#### Spot Light Angular Attenuation
+A spotlight's cone is characterised by inner and outer half-angles. Attenuation falls from 1 inside the inner cone to 0 at the outer cone, typically with a smooth Hermite curve.
+
+```glsl
+float spot_attenuation(vec3 L, vec3 spot_dir, float cos_inner, float cos_outer) {
+    float cos_angle = dot(-L, spot_dir);
+    float t = clamp((cos_angle - cos_outer) / (cos_inner - cos_outer), 0.0, 1.0);
+    return t * t;   // smoothstep-equivalent; use t*t*(3-2t) for C1 continuity
+}
+```
+
+#### IES Photometric Profiles
+Real luminaires (streetlights, theatre spots, LEDs) have complex asymmetric emission distributions measured and distributed as IES files. The 2D distribution (vertical angle, horizontal angle → candela) is baked into a 2D `LUMINANCE` texture at content-load time and sampled in the fragment shader using the light-to-fragment direction.
+
+```glsl
+layout(set=2, binding=0) uniform sampler2D ies_profile;  // (θ, φ) → luminous intensity
+
+// direction L = normalize(fragment_pos - light_pos), in light local space
+float theta = acos(clamp(-L.z, -1.0, 1.0));          // vertical: 0=up, π=down
+float phi   = atan(L.y, L.x) / (2.0 * PI) + 0.5;    // horizontal: [0,1)
+float ies_scale = texture(ies_profile, vec2(theta / PI, phi)).r;
+// Multiply point_attenuation() by ies_scale before BRDF integration
+```
+
+**Use cases** — architectural visualisation, cinematic lighting, any scene using real fixture data; standard in Unreal, Blender Cycles, Filament.  
+**Reference** — [IES LM-63 Standard](https://www.iesna.org/); [Lagarde: Moving Frostbite to PBR (SIGGRAPH 2014)](https://seblagarde.wordpress.com/2015/07/14/siggraph-2014-moving-frostbite-to-physically-based-rendering/)
+
+---
+
+## GPU-Driven Rendering
+
+Traditional rendering submits one draw call per mesh per frame from the CPU, which bottlenecks at CPU-GPU command throughput and CPU-side visibility testing. **GPU-driven rendering** moves all per-draw decisions (culling, LOD selection, draw count) into compute shaders that write `VkDrawIndexedIndirectCommand` structs into a buffer, then submits a single `vkCmdDrawIndexedIndirectCount` that executes only the surviving draws.
+
+**Why this matters**: at 10,000 draw calls/frame, CPU submission overhead is significant. GPU-driven rendering makes draw call count a GPU-compute cost (cheap) rather than a CPU cost (expensive), enabling scenes with 100k+ draw calls at constant CPU overhead.
+
+**Shader stage**: culling and LOD selection run in a **compute shader**. Drawing uses standard **vertex + fragment** shaders reading from per-draw SSBO arrays instead of per-draw uniform updates.
+
+#### Per-Instance Data SSBO
+Replace per-draw uniform buffers with a single large SSBO of per-instance data (transform, material index, bounds). All instances are always resident on the GPU; the cull pass selects which ones draw.
+
+```glsl
+struct InstanceData {
+    mat4  model;
+    uint  material_id;
+    uint  mesh_id;
+    vec3  aabb_min;
+    float _pad0;
+    vec3  aabb_max;
+    float _pad1;
+};
+layout(set=0, binding=0) readonly buffer InstanceSSBO { InstanceData instances[]; };
+layout(set=0, binding=1) writeonly buffer DrawCmdSSBO { VkDrawIndexedIndirectCommand cmds[]; };
+layout(set=0, binding=2) buffer DrawCount { uint draw_count; };
+```
+
+#### GPU Frustum Culling Compute
+One thread per instance tests the instance AABB against the six frustum planes (in view space). Surviving instances atomically increment the draw count and write their draw command.
+
+```glsl
+layout(local_size_x=64) in;
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= instance_count) return;
+
+    InstanceData inst = instances[id];
+    // Test all 8 AABB corners against 6 frustum planes
+    bool visible = frustum_cull(inst.aabb_min, inst.aabb_max, frustum_planes);
+    if (!visible) return;
+
+    uint cmd_idx = atomicAdd(draw_count, 1u);
+    cmds[cmd_idx].indexCount    = mesh_index_count[inst.mesh_id];
+    cmds[cmd_idx].instanceCount = 1u;
+    cmds[cmd_idx].firstIndex    = mesh_first_index[inst.mesh_id];
+    cmds[cmd_idx].vertexOffset  = mesh_vertex_offset[inst.mesh_id];
+    cmds[cmd_idx].firstInstance = id;   // instance ID → indexes into InstanceSSBO
+}
+```
+
+#### Two-Pass Hi-Z Occlusion Culling
+A more powerful variant uses the previous frame's Hi-Z (hierarchical Z) mip pyramid to also cull occluded instances. Pass 1 culls against the previous frame's Hi-Z (fast, approximate). Pass 2 re-renders occluders to update Hi-Z, then a second cull pass tests instances that failed pass 1 against the updated Hi-Z.
+
+```
+Pass 1: cull with prev-frame Hi-Z → indirect draw surviving instances
+Build Hi-Z mip from current depth buffer (compute)
+Pass 2: test previously-rejected instances against new Hi-Z → draw late survivors
+```
+
+**Use cases** — standard in UE5 Nanite front-end, Frostbite, id Tech 7. Reduces GPU vertex work by 30–80% in dense urban scenes.  
+**Reference** — [Wihlidal: Optimising the Graphics Pipeline with Compute (GDC 2016)](https://frostbite-wp-prd.s3.amazonaws.com/wp-content/uploads/2016/03/29204330/GDC_2016_Compute.pdf); [Aaltonen: GPU-Driven Rendering Pipelines (SIGGRAPH 2015)](https://advances.realtimerendering.com/s2015/)
+
+#### Meshlet / Mesh Shader Cluster Pipeline
+With `VK_EXT_mesh_shader`, the vertex-processing stage is replaced by a **task shader** (one threadgroup per meshlet cluster, does frustum and cone culling, emits surviving meshlets) and a **mesh shader** (one threadgroup per meshlet, reads ~64 vertices and ~126 triangles, writes `gl_MeshPrimitivesEXT`). No index buffer rasterization; all vertex amplification and culling happen in the shader.
+
+```glsl
+// Task shader — one workgroup per meshlet cluster
+layout(local_size_x=32) in;
+taskPayloadSharedEXT MeshPayload payload;
+
+void main() {
+    uint meshlet_id = gl_WorkGroupID.x * 32 + gl_LocalInvocationID.x;
+    bool visible = cone_cull(meshlets[meshlet_id]) && frustum_cull(meshlets[meshlet_id]);
+    uvec4 vote   = subgroupBallot(visible);
+    uint count   = subgroupBallotBitCount(vote);
+    uint idx     = subgroupBallotExclusiveBitCount(vote);
+    if (visible) payload.meshlet_ids[idx] = meshlet_id;
+    if (gl_LocalInvocationID.x == 0) EmitMeshTasksEXT(count, 1, 1);
+}
+```
+
+**Use cases** — Nanite meshlet rasterization, GPU-driven LOD without CPU involvement, efficient backface cluster culling.  
+**Reference** — [Kubisch: Turing Mesh Shaders (NVIDIA 2018)](https://developer.nvidia.com/blog/introduction-turing-mesh-shaders/); [Vulkan Mesh Shader Spec](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_EXT_mesh_shader.html)
+
+---
+
+## Wave and Subgroup Intrinsics
+
+Vulkan subgroup operations (`VK_KHR_shader_subgroup_extended_types`, GLSL `GL_KHR_shader_subgroup_*`) expose direct warp/wavefront communication between threads executing in lockstep on the GPU's SIMD unit. This eliminates the need for shared memory round-trips for many common reductions, prefix sums, and compaction patterns. On NVIDIA hardware a subgroup is 32 threads (a warp); on AMD it is 32 or 64 (a wavefront); on mobile it is typically 4 or 8.
+
+**Shader stage**: subgroup intrinsics are available in **compute, vertex, fragment, and mesh shaders** wherever `gl_SubgroupSize` > 1.
+
+#### Subgroup Reduction
+Computes a reduction (sum, min, max, AND, OR) across all active lanes in a subgroup in a single instruction — no shared memory, no barrier.
+
+```glsl
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+layout(local_size_x=256) in;
+shared float s_partial[8];  // one slot per subgroup
+
+void main() {
+    float val = load_data(gl_GlobalInvocationID.x);
+
+    // Subgroup-level reduction — single instruction, no barrier
+    float sub_sum = subgroupAdd(val);
+
+    // Only one thread per subgroup writes to shared memory
+    if (subgroupElect())
+        s_partial[gl_SubgroupID] = sub_sum;
+
+    barrier();
+
+    // Final reduction across subgroups by first subgroup
+    if (gl_SubgroupID == 0) {
+        float partial = (gl_SubgroupInvocationID < gl_NumSubgroups) ?
+            s_partial[gl_SubgroupInvocationID] : 0.0;
+        float total = subgroupAdd(partial);
+        if (subgroupElect()) output_sum = total;
+    }
+}
+```
+
+**Speedup vs shared-memory-only**: 2–4× on typical workloads; eliminates one `barrier()` per reduction level.
+
+#### Subgroup Ballot and Compaction
+`subgroupBallot(condition)` returns a bitmask of which lanes satisfy the condition. `subgroupBallotBitCount` counts set bits; `subgroupBallotExclusiveBitCount` gives each lane its compacted output index — the building block of warp-efficient stream compaction.
+
+```glsl
+#extension GL_KHR_shader_subgroup_ballot : require
+
+bool active = test_condition(gl_GlobalInvocationID.x);
+uvec4 ballot = subgroupBallot(active);
+uint  count  = subgroupBallotBitCount(ballot);
+uint  idx    = subgroupBallotExclusiveBitCount(ballot);
+
+if (active) output_buf[base + idx] = compute_result();
+if (subgroupElect()) atomicAdd(total_count, count);
+```
+
+**Use cases** — GPU-driven rendering task shader lane compaction (see §32), particle death compaction, sparse light list building.
+
+#### Subgroup Shuffle
+Reads a value from an arbitrary lane within the subgroup without shared memory. Enables butterfly networks for prefix sums, efficient transpose, and warp-level matrix operations.
+
+```glsl
+#extension GL_KHR_shader_subgroup_shuffle : require
+
+// Parallel prefix sum within a subgroup (4 steps for 16-wide subgroup)
+float v = in_val;
+for (uint offset = 1; offset < gl_SubgroupSize; offset <<= 1) {
+    float neighbor = subgroupShuffleUp(v, offset);
+    if (gl_SubgroupInvocationID >= offset) v += neighbor;
+}
+// v now contains inclusive prefix sum for this lane
+```
+
+#### Quad Operations
+`dFdx`/`dFdy` operate on 2×2 pixel quads; subgroup quad ops expose the same mechanism explicitly: `subgroupQuadSwapHorizontal`, `subgroupQuadSwapVertical`, `subgroupQuadBroadcast`. Useful for computing finite-difference normals or depth derivatives in compute shaders that process the framebuffer tile.
+
+**Reference** — [Vulkan Subgroup Tutorial (Khronos Blog)](https://www.khronos.org/blog/vulkan-subgroup-tutorial); [GLSL_KHR_shader_subgroup spec](https://registry.khronos.org/OpenGL/extensions/KHR/KHR_shader_subgroup.txt)
+
+---
+
+## Color Science in Shaders
+
+HDR rendering and wide-color-gamut display output require correct color space transforms at several points in the pipeline: on texture read (decode), during lighting accumulation (scene-linear), before display output (encode). Getting any transform wrong results in crushed shadows, blown highlights, or wrong hue on wide-gamut displays.
+
+**Shader stage**: color space transforms appear in the **fragment shader** (texture decode, final tone-map and encode pass) and in **compute** (post-processing chain).
+
+#### sRGB ↔ Linear Conversion
+Most albedo textures are stored in sRGB; the GPU can linearise on read via `VK_FORMAT_R8G8B8A8_SRGB`, but manual conversion is needed for data stored in non-SRGB formats or for output encoding.
+
+```glsl
+// sRGB → linear (manual, for formats without hardware decode)
+vec3 srgb_to_linear(vec3 c) {
+    return mix(c / 12.92,
+               pow((c + 0.055) / 1.055, vec3(2.4)),
+               step(0.04045, c));
+}
+
+// Linear → sRGB (for manual output encoding)
+vec3 linear_to_srgb(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c * 12.92,
+               1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055,
+               step(0.0031308, c));
+}
+```
+
+**When needed** — output framebuffer is `VK_FORMAT_R8G8B8A8_UNORM` (not SRGB): encode manually. Input texture is `VK_FORMAT_R8G8B8A8_UNORM` but contains sRGB data: decode manually.
+
+#### BT.709 ↔ BT.2020 Color Space Transform
+Rec.2020 is the wide-color-gamut space used by HDR10 displays. Converting scene-linear BT.709 primaries to BT.2020 uses a fixed 3×3 matrix (derived from the primaries' xy chromaticities).
+
+```glsl
+// BT.709 scene-linear → BT.2020 scene-linear (for HDR10 output)
+const mat3 BT709_TO_BT2020 = mat3(
+    0.6274040,  0.0690970,  0.0163916,
+    0.3292820,  0.9195400,  0.0880132,
+    0.0433136,  0.0113612,  0.8955950
+);
+vec3 c_2020 = BT709_TO_BT2020 * c_709;
+```
+
+#### ACEScg and ACES Tone Mapping
+ACEScg is the ACES scene-linear working space used in film and HDR game pipelines. The ACES RRT (Reference Rendering Transform) + ODT (Output Display Transform) maps ACEScg scene linear to display-referred BT.709 or BT.2020 with a perceptually pleasing tone curve including a subtle S-curve in shadows and a roll-off in highlights.
+
+```glsl
+// Narkowicz ACES approximation (fast, BT.709 output)
+vec3 aces_approx(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
+}
+
+// Full ACES RRT+ODT: apply input transform, then RRT, then ODT
+// Requires the ACES matrices (BT.709→ACEScg, ACEScg→BT.709)
+const mat3 AP1_TO_AP0 = mat3(...); // ACEScg → ACES2065-1
+const mat3 AP0_TO_AP1 = mat3(...); // ACES2065-1 → ACEScg
+```
+
+**Reference** — [ACES GitHub: aces-dev](https://github.com/ampas/aces-dev); [Narkowicz: ACES Filmic Tone Mapping Curve](https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/)
+
+#### PQ (ST 2084) Transfer Function — HDR10 Output
+The Perceptual Quantizer EOTF maps scene-linear luminance (in nits) to a 0–1 PQ signal for HDR10 displays. The display reconstructs the nit value from the PQ signal and drives the panel at that brightness. Correct PQ encoding is required for HDR10 Vulkan swapchain output (`VK_COLOR_SPACE_HDR10_ST2084_EXT`).
+
+```glsl
+// Linear luminance (nits) → PQ signal [0,1]
+vec3 linear_to_pq(vec3 L_nits) {
+    const float m1 = 2610.0 / 16384.0;
+    const float m2 = 2523.0 / 4096.0 * 128.0;
+    const float c1 = 3424.0 / 4096.0;
+    const float c2 = 2413.0 / 4096.0 * 32.0;
+    const float c3 = 2392.0 / 4096.0 * 32.0;
+    vec3 Lm = pow(L_nits / 10000.0, vec3(m1));
+    return pow((c1 + c2 * Lm) / (1.0 + c3 * Lm), vec3(m2));
+}
+```
+
+**Reference** — [SMPTE ST 2084 Specification](https://ieeexplore.ieee.org/document/7291452); [Wayland color-management-v1 protocol](https://gitlab.freedesktop.org/wayland/wayland-protocols)
+
+#### HLG (Hybrid Log-Gamma)
+HLG is the HDR broadcast standard (BBC/NHK) that is backward-compatible with SDR displays. Unlike PQ, HLG is a relative transfer function (no absolute nit mapping); useful for live video pipelines.
+
+```glsl
+vec3 linear_to_hlg(vec3 L) {
+    const float a = 0.17883277, b = 0.28466892, c_hlg = 0.55991073;
+    return mix(sqrt(3.0 * L),
+               a * log(12.0 * L - b) + c_hlg,
+               step(vec3(1.0 / 12.0), L));
+}
+```
+
+**Reference** — [BBC R&D: Hybrid Log-Gamma](https://www.bbc.co.uk/rd/publications/whitepaper309)
+
+---
+
+## Normal and HDR Encoding
+
+G-Buffers and light probe atlases must store normals and HDR values in compact, GPU-friendly formats. Naïve storage (3×`RGBA16F` per normal) wastes bandwidth; careful encoding halves or quarters the footprint with negligible quality loss.
+
+**Shader stage**: encode in the **geometry pass fragment shader** (G-Buffer write); decode in the **deferred lighting fragment or compute shader**.
+
+#### Octahedral Normal Encoding
+Maps the unit normal sphere to a 2D unit square via octahedral projection, encoding it in two 16-bit (or 8-bit) channels. Provably the most uniform encoding with respect to angular error per bit; no hemisphere ambiguity; decode requires only a `sign()` and normalise.
+
+```glsl
+// Encode: unit normal → octahedral [−1, 1]²
+vec2 oct_encode(vec3 n) {
+    vec2 p = n.xy / (abs(n.x) + abs(n.y) + abs(n.z));
+    return (n.z < 0.0) ? (1.0 - abs(p.yx)) * sign(p) : p;
+}
+
+// Decode: octahedral [−1, 1]² → unit normal
+vec3 oct_decode(vec2 e) {
+    vec3 v = vec3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    if (v.z < 0.0) v.xy = (1.0 - abs(v.yx)) * sign(v.xy);
+    return normalize(v);
+}
+```
+
+**Use cases** — G-Buffer normal encoding in `RG16F` (saves one channel vs RGB16F); light probe normal maps; bent normal storage.  
+**Reference** — [Meyer et al.: Survey of Efficient Representations for Independent Unit Vectors (JCGT 2010)](http://jcgt.org/published/0003/02/01/)
+
+#### Spheremap (Lambert Azimuthal) Encoding
+A cheaper alternative to octahedral: encodes the normal as a 2D point via the Lambert azimuthal equal-area projection. Slightly lower quality than octahedral but simpler arithmetic.
+
+```glsl
+vec2 spheremap_encode(vec3 n) {
+    return n.xy / sqrt(8.0 * n.z + 8.0) + 0.5;
+}
+vec3 spheremap_decode(vec2 enc) {
+    vec2 f = enc * 4.0 - 2.0;
+    float r = dot(f, f);
+    return vec3(f * sqrt(1.0 - r / 4.0), 1.0 - r / 2.0);
+}
+```
+
+**Reference** — [Crytek: A Non-Integer Power Efficient Floating-Point Compressor (2009)](https://www.crytek.com/)
+
+#### RGBM HDR Encoding
+Stores HDR colour as an RGB mantissa plus a shared exponent in the alpha channel: `RGB = colour / (maxVal * M)`, `A = M`. Encodes values up to `maxVal` (typically 6 or 8) in a standard RGBA8 texture.
+
+```glsl
+vec4 rgbm_encode(vec3 color, float max_range) {
+    color /= max_range;
+    float M = max(max(color.r, color.g), max(color.b, 1e-6));
+    M = ceil(M * 255.0) / 255.0;
+    return vec4(color / M, M);
+}
+vec3 rgbm_decode(vec4 rgbm, float max_range) {
+    return rgbm.rgb * rgbm.a * max_range;
+}
+```
+
+**Use cases** — HDR environment map storage in RGBA8 textures (legacy mobile, WebGL 1); baked lightmap HDR storage; probe atlas.  
+**Limitations** — `M` clamped to range; introduces banding at low values. Prefer `R11G11B10_UFLOAT` on hardware that supports it.
+
+#### R11G11B10 Unsigned Float
+The Vulkan format `VK_FORMAT_B10G11R11_UFLOAT_PACK32` packs 11 bits of mantissa for R/G and 10 bits for B into a 32-bit uint, covering ~[0, 65504] with no sign bit (HDR only, no negatives). Uses the same exponent for all three channels, giving excellent precision for non-negative HDR colour.
+
+**Use cases** — HDR framebuffer, light accumulation buffer, bloom targets; preferred over RGBM on all desktop hardware.  
+**Reference** — [Quilez: Packing Floats](https://iquilezles.org/articles/floatpacking/)
+
+#### LogLuv HDR Encoding
+Encodes luminance logarithmically and chrominance (u′v′) linearly in an RGBA8 texture, exploiting the logarithmic response of human vision. Better perceptual uniformity than RGBM for wide dynamic range; higher decode cost.
+
+**Reference** — [Ward: LogLuv Encoding for Full Gamut, High Dynamic Range Images (JGTE 1998)](https://dl.acm.org/doi/10.1145/271895.271938)
+
+---
+
+## Translucency and Backlit Thin-Surface Materials
+
+Subsurface scattering (SSS) models thick media like skin or marble where light enters one point and exits at a different point. Translucency handles the simpler case: **thin surfaces** (leaves, ears, fabric, paper, petals) where light passes through the material and exits on the far side with a colour shift determined by the material thickness. This is a single-scatter approximation, not full SSS.
+
+**Shader stage**: evaluated in the **fragment shader** alongside the standard BRDF, requiring only the light direction, view direction, surface normal, and a thickness value (from a pre-baked thickness map or a constant).
+
+#### Wrap Lighting
+Extends the Lambertian `max(0, NdotL)` term to wrap around the silhouette by a `wrap` factor `w ∈ [0, 1]`, so the dark side of a thin object receives some illumination even when `NdotL < 0`. A simple and cheap first approximation for backlit leaves or fabric.
+
+```glsl
+// Wrap lighting — simulates light wrapping around thin surfaces
+float diffuse_wrap(vec3 N, vec3 L, float w) {
+    return max(0.0, (dot(N, L) + w) / ((1.0 + w) * (1.0 + w)));
+}
+```
+
+#### Thickness-Map Translucency (Epic Games / UE4)
+Adds a transmitted light lobe on the back face of the surface, driven by a pre-baked thickness texture. The transmitted colour is the light colour tinted by a sub-surface colour parameter and attenuated exponentially by the thickness value. The lobe is view-dependent (maximised when looking through the surface toward the light — the "backlit leaf" effect).
+
+```glsl
+// UE4-style translucency — evaluated in addition to standard BRDF
+vec3 translucency(vec3 L, vec3 V, vec3 N,
+                  vec3 subsurface_color, float thickness,
+                  vec3 light_color) {
+    float scatter_power   = 12.0;   // controls lobe width
+    float scatter_scale   = 0.5;    // overall intensity
+    // Transmitted direction: light through the surface toward the viewer
+    vec3  H_trans         = normalize(L + N * 0.1);  // slightly bent into surface
+    float trans_NdotL     = pow(clamp(dot(V, -H_trans), 0.0, 1.0), scatter_power)
+                          * scatter_scale;
+    float attenuation     = exp(-thickness * 8.0);   // thickness map: 0=thin, 1=thick
+    return light_color * subsurface_color * trans_NdotL * attenuation;
+}
+```
+
+**Use cases** — foliage (leaves, grass), ears, thin cloth, paper lanterns; adds negligible cost (one texture fetch + a few multiplies) when a thickness map is available.  
+**Reference** — [Penner: Pre-Integrated Skin Shading (GPU Pro 2, 2011)]; [UE4 Shading Models: Two-Sided Foliage](https://docs.unrealengine.com/en-US/shading-models/)
+
+#### Dual-Lobe Transmission (Volumetric Thin-Surface)
+A more accurate model uses two Henyey-Greenstein lobes — a forward-scattering lobe and a back-scattering lobe — weighted by the material's mean free path and the Fresnel transmission coefficient. Used for high-quality foliage in film rendering.
+
+**Reference** — [Jakob et al.: A Radiative Transfer Framework for Rendering Materials with Anisotropic Structure (SIGGRAPH 2010)](https://dl.acm.org/doi/10.1145/1778765.1778834)
+
+---
+
+## Cloth and Soft-Body Simulation
+
+Cloth and soft-body dynamics in games run entirely on the GPU in compute shaders, updating particle positions each frame without CPU readback. The two main paradigms are **spring-mass systems** (each edge is a Hooke spring; velocity integration) and **Position-Based Dynamics** (PBD, constraints enforced by direct position projection — the method used by Unreal Engine's Chaos Cloth and Unity DOTS Physics).
+
+**Shader stage**: all simulation runs in **compute shaders**. The final vertex positions are written into a vertex buffer read by the standard rendering pipeline.
+
+#### Spring-Mass Cloth
+Stores cloth as a 2D grid of particle positions and velocities in SSBOs. Each frame: accumulate forces (gravity, spring forces on structural/shear/bend springs, wind), integrate velocity (Verlet or semi-implicit Euler), apply constraints (collision with collider objects, pin constraints for fixed attachment points).
+
+```glsl
+layout(local_size_x=16, local_size_y=16) in;
+layout(set=0, binding=0) buffer Positions { vec4 pos[]; };
+layout(set=0, binding=1) buffer Velocities{ vec4 vel[]; };
+
+uniform float dt, stiffness, damping;
+uniform vec3  gravity;
+
+void main() {
+    uvec2 gid = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(gid, grid_size))) return;
+    uint idx = gid.y * grid_size.x + gid.x;
+
+    vec3 p = pos[idx].xyz;
+    vec3 v = vel[idx].xyz;
+
+    // Accumulate spring forces from 4 structural neighbours
+    vec3 force = gravity;
+    for (int d = 0; d < 4; ++d) {
+        ivec2 nb_gid = ivec2(gid) + neighbour_offsets[d];
+        if (any(lessThan(nb_gid, ivec2(0))) ||
+            any(greaterThanEqual(nb_gid, ivec2(grid_size)))) continue;
+        uint nb_idx = uint(nb_gid.y) * grid_size.x + uint(nb_gid.x);
+        vec3 delta  = pos[nb_idx].xyz - p;
+        float len   = length(delta);
+        float rest  = rest_lengths[d];
+        force      += stiffness * (len - rest) / max(len, 1e-6) * delta;
+    }
+
+    // Semi-implicit Euler integration
+    v += force * dt;
+    v *= (1.0 - damping * dt);  // velocity damping
+    p += v * dt;
+
+    pos[idx].xyz = p;
+    vel[idx].xyz = v;
+}
+```
+
+**Use cases** — flags, banners, character cloaks; multiple dispatch passes per frame (substeps) for stability at high stiffness.  
+**Reference** — [Jakobsen: Advanced Character Physics (GDC 2001)](https://www.cs.cmu.edu/afs/cs/academic/class/15462-s13/www/lec_slides/Jakobsen.pdf)
+
+#### Position-Based Dynamics (PBD)
+PBD replaces force-based integration with direct constraint projection. Each substep: (1) integrate gravity into predicted positions `p*`; (2) iteratively project distance constraints (edge length preservation), collision constraints (no penetration), and pin constraints (fixed vertices); (3) commit `p* → p`, derive velocity from `(p_new - p_old) / dt`. PBD is unconditionally stable at any dt — it cannot explode.
+
+```glsl
+// PBD distance constraint projection — one invocation per edge
+layout(set=0, binding=0) buffer Positions { vec4 pos[]; };
+
+uniform float compliance;   // 0 = rigid; larger = softer spring (XPBD)
+
+void main() {
+    uint e    = gl_GlobalInvocationID.x;
+    uint i    = edges[e].a;
+    uint j    = edges[e].b;
+    float rest = edges[e].rest_length;
+
+    vec3 delta  = pos[j].xyz - pos[i].xyz;
+    float len   = length(delta);
+    float C     = len - rest;                       // constraint violation
+    float w_i   = inv_mass[i], w_j = inv_mass[j];
+
+    float lambda = -C / (w_i + w_j + compliance);  // XPBD: compliance / dt²
+    vec3 grad    = delta / max(len, 1e-6);
+
+    // Atomic position update — race condition: requires parallel Gauss-Seidel or graph colouring
+    pos[i].xyz -= w_i * lambda * grad;
+    pos[j].xyz += w_j * lambda * grad;
+}
+```
+
+**Parallelism caveat**: naïve PBD has read-write races. Production implementations use **graph colouring** (partition edges into independent sets, dispatch one colour at a time) or **XPBD with Jacobi updates** (accumulate corrections, apply once after all constraints).
+
+**Use cases** — Unreal Engine Chaos Cloth, Unity DOTS Cloth, any soft-body or rope simulation. Supports inextensibility constraints (distance), volume preservation (sum-of-tetrahedra volume), and collision constraints in the same framework.  
+**Reference** — [Müller et al.: Position-Based Dynamics (VRIPHYS 2006)](https://doi.org/10.1016/j.jvcir.2007.01.005); [Macklin et al.: XPBD: Position-Based Simulation of Compliant Constrained Dynamics (MIG 2016)](https://doi.org/10.1145/2994258.2994272)
+
+---
+
+## Reversed-Z and Logarithmic Depth
+
+Standard depth buffers map the near plane to `z = 0` and the far plane to `z = 1` in NDC. With a standard 24-bit depth buffer and typical near/far ratios (0.1m / 1000m = 1:10000), IEEE floating-point precision is extremely unequal: 50% of all representable depth values fall within the first 0.1% of the depth range. The result is severe Z-fighting on distant geometry.
+
+**Shader stage**: reversed-Z requires a projection matrix change (CPU-side) and `VK_COMPARE_OP_GREATER_OR_EQUAL` in the depth compare op. Logarithmic depth requires a **vertex shader** modification. Both are orthogonal and composable.
+
+#### Reversed-Z (Reversed Depth Buffer)
+Flips the depth range: near plane maps to `z = 1.0`, far plane maps to `z = 0.0`. Because IEEE 32-bit floats have their highest density near zero, reversed-Z gives maximum precision to the most important region: the far field. Near-plane precision is largely wasted in standard depth (near objects are already close to `z = 0`); reversed-Z redirects that precision budget to where Z-fighting actually occurs.
+
+```glsl
+// Reversed-Z projection matrix (right-hand, Vulkan NDC convention)
+// Standard: near → 0, far → 1. Reversed: near → 1, far → 0.
+// Change the matrix on the CPU:
+float fov_y_rad = ..., aspect = ..., near = 0.1;  // NO far plane needed!
+float f = 1.0 / tan(fov_y_rad * 0.5);
+mat4 proj_reversed_z = mat4(
+    f / aspect,  0.0,  0.0,   0.0,
+    0.0,          f,   0.0,   0.0,
+    0.0,         0.0,  0.0,  -1.0,   // z = -near * w  (maps near → w, far → 0)
+    0.0,         0.0, near,   0.0
+);
+// With infinite far plane: no far-plane Z-fighting at all — far clips to 0 exactly
+```
+
+**API changes required**:
+- Vulkan `VkPipelineDepthStencilStateCreateInfo::depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL`
+- Clear depth to `0.0` (was `1.0`)
+- Viewport `minDepth = 0.0`, `maxDepth = 1.0` unchanged
+
+**Use cases** — every modern game engine uses reversed-Z: UE4+, Unity HDRP, Godot 4, Bevy, id Tech 7. The infinite far plane variant eliminates far-plane clipping entirely.  
+**Reference** — [Everitt & Rákos: Depth Precision Visualized (NVIDIADevBlog 2015)](https://developer.nvidia.com/blog/depth-precision-visualized/)
+
+#### Logarithmic Depth
+For extremely large scale differences (planetary rendering, flight simulators, space games: near = 0.1m, far = 6400km), even reversed-Z floats cannot provide enough precision. Logarithmic depth remaps NDC depth to a logarithmic scale, distributing precision evenly in log space.
+
+```glsl
+// Logarithmic depth — applied in vertex shader after standard transform
+uniform float log_depth_C;   // typically 1.0; controls precision curve
+
+void main() {
+    vec4 clip = standard_proj_view * vec4(in_pos, 1.0);
+    // Overwrite clip.z with log-depth: log(C * clip.w + 1) / log(C * far + 1) * clip.w
+    gl_Position = clip;
+    float Fcoef = 2.0 / log2(far_plane * log_depth_C + 1.0);
+    gl_Position.z = (log2(max(1e-6, clip.w * log_depth_C + 1.0)) * Fcoef - 1.0) * clip.w;
+}
+```
+
+**Fragment shader**: optionally recompute for higher precision (GPU interpolates `gl_FragCoord.z` linearly in clip space by default).
+
+**Use cases** — Kerbal Space Program 2, Space Engine, any game with 6+ orders of magnitude depth range.  
+**Reference** — [Brano Kemen: Logarithmic Depth Buffer (2009)](https://outerra.blogspot.com/2009/08/logarithmic-z-buffer.html); [Thatcher Ulrich: Continuous LOD Terrains (Game Programming Gems, 2000)]
 
 ---
 
