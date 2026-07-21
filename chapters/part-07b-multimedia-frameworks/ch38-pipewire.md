@@ -181,7 +181,139 @@ The *quantum* is the number of samples (for audio) or frames (for video) process
 
 The data thread runs with `SCHED_FIFO` real-time priority to prevent preemption by other processes. This is granted either via the `module-rt` module (which requires `RLIMIT_RTPRIO` to be set sufficiently for the calling process — typically via `/etc/security/limits.d/`) or via the RTKit D-Bus service (which implements privilege escalation for ordinary users without requiring raised resource limits). The kernel's `RLIMIT_RTTIME` limit caps the maximum wall-clock time a thread may spend in real-time scheduling without yielding, providing a safety valve against runaway real-time threads consuming all CPU. [Source: PipeWire RT module docs](https://docs.pipewire.org/page_module_rt.html)
 
-### 1.5 Format Negotiation via SPA Pods
+### 1.5 Real-Time Scheduling and RTKit
+
+**RTKit** (`org.freedesktop.RealtimeKit1`) is a D-Bus system service that allows unprivileged user processes to obtain real-time scheduling priorities without `CAP_SYS_NICE` or elevated `RLIMIT_RTPRIO`. It is the standard mechanism on desktop Linux for audio/video daemons to safely acquire `SCHED_FIFO` — used by PipeWire, PulseAudio, JACK, and any other latency-sensitive service running as a normal user account.
+
+RTKit enforces its own policy limits independently of the kernel's per-process resource limits, making it a controlled, auditable privilege-escalation path rather than a blanket `setuid` binary. [Source: RTKit specification](https://github.com/heftig/rtkit)
+
+#### The RTKit D-Bus Interface
+
+The service exposes a single object at path `/org/freedesktop/RealtimeKit1` on the system bus. The two principal methods are:
+
+```
+org.freedesktop.RealtimeKit1.MakeThreadRealtime(thread: u64, priority: u32)
+org.freedesktop.RealtimeKit1.MakeThreadHighPriority(thread: u64, niceness: i32)
+```
+
+`MakeThreadRealtime` applies `SCHED_FIFO` at the requested priority (subject to `MaxRealtimePriority`). `MakeThreadHighPriority` applies `SCHED_OTHER` with a negative nice value — useful for threads that need preference over normal workloads but do not need hard real-time guarantees.
+
+The `thread` argument is the **kernel thread ID** (TID) of the calling thread, obtained with `gettid(2)` — not the pthread `pthread_t` handle. The caller must be the owning process (RTKit verifies `procfs` ownership before accepting the request).
+
+RTKit also exposes readable properties that advertise the active policy limits:
+
+| Property | Type | Typical value | Meaning |
+|---|---|---|---|
+| `MaxRealtimePriority` | `i32` | 20 | Highest `SCHED_FIFO` priority RTKit will grant |
+| `MaxNiceLevel` | `i32` | −15 | Most-negative nice value for `MakeThreadHighPriority` |
+| `RTTimeUSecMax` | `i64` | 200,000 | Per-thread `RLIMIT_RTTIME` ceiling (µs) |
+| `MinNiceLevel` | `i32` | −15 | Same as `MaxNiceLevel` (legacy alias) |
+
+`RTTimeUSecMax` sets `RLIMIT_RTTIME` on the thread after granting real-time priority. If the thread runs continuously in `SCHED_FIFO` for longer than this budget without voluntarily blocking, the kernel sends `SIGXCPU` (by default) and eventually `SIGKILL`, preventing a runaway real-time thread from starving the system.
+
+#### Calling RTKit from C
+
+PipeWire's `module-rt` wraps this sequence. The pattern is:
+
+```c
+#include <dbus/dbus.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+/* Obtain kernel TID of the calling thread */
+static pid_t get_tid(void) { return (pid_t)syscall(SYS_gettid); }
+
+/* Ask RTKit to promote this thread to SCHED_FIFO at 'priority' */
+static int rtkit_make_realtime(DBusConnection *bus, int priority) {
+    DBusMessage *m = dbus_message_new_method_call(
+        "org.freedesktop.RealtimeKit1",          /* destination */
+        "/org/freedesktop/RealtimeKit1",          /* object path */
+        "org.freedesktop.RealtimeKit1",           /* interface */
+        "MakeThreadRealtime");                    /* method */
+    if (!m) return -ENOMEM;
+
+    dbus_uint64_t tid  = (dbus_uint64_t)get_tid();
+    dbus_uint32_t prio = (dbus_uint32_t)priority;
+    dbus_message_append_args(m,
+        DBUS_TYPE_UINT64, &tid,
+        DBUS_TYPE_UINT32, &prio,
+        DBUS_TYPE_INVALID);
+
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *r = dbus_connection_send_with_reply_and_block(bus, m, -1, &err);
+    dbus_message_unref(m);
+
+    int ret = 0;
+    if (dbus_error_is_set(&err)) {
+        fprintf(stderr, "RTKit error: %s\n", err.message);
+        dbus_error_free(&err);
+        ret = -EPERM;
+    }
+    if (r) dbus_message_unref(r);
+    return ret;
+}
+```
+
+[Source: PipeWire `module-rt.c`](https://gitlab.freedesktop.org/pipewire/pipewire/-/blob/master/src/modules/module-rt.c)
+
+#### How PipeWire's `module-rt` Uses RTKit
+
+`module-rt` is loaded by the PipeWire daemon at startup via `pipewire.conf`:
+
+```
+context.modules = [
+  { name = libpipewire-module-rt
+    args = {
+      nice.level    = -11      # nice level for the main thread
+      rt.prio       = 88       # SCHED_FIFO priority for data threads
+      rt.time.soft  = 200000   # RLIMIT_RTTIME soft limit (µs)
+      rt.time.hard  = 200000   # RLIMIT_RTTIME hard limit (µs)
+    }
+    flags = [ ifexists nofail ]
+  }
+]
+```
+
+At runtime `module-rt` attempts two strategies in order:
+
+1. **Direct `sched_setscheduler(2)`** — succeeds if the process has `RLIMIT_RTPRIO` set high enough (e.g., via `/etc/security/limits.d/95-pipewire.conf`: `@audio - rtprio 95`). This is the preferred path on professional audio setups running `realtime-privileges` or `audio` group membership.
+
+2. **RTKit fallback** — if `sched_setscheduler` is denied with `EPERM`, the module connects to the system bus and calls `MakeThreadRealtime` for each data thread. This is the default path on stock desktop installs where the user is not in the `audio` group.
+
+The module also sets `RLIMIT_RTTIME` directly on the thread after either path succeeds, using the `rt.time.soft` / `rt.time.hard` values from configuration. The soft limit triggers `SIGXCPU`; the hard limit causes `SIGKILL`. This ensures no PipeWire data thread can lock up the machine even if a plugin enters an infinite loop.
+
+#### RTKit Security Model
+
+RTKit enforces several additional guards beyond the priority cap:
+
+- **Process ownership**: the calling process must own the TID it passes (checked via `/proc/<tid>/status`). Cross-process escalation is rejected.
+- **`PolKit` integration** (optional, via `rtkit-daemon` policy): on some distributions, RTKit checks a `polkit` policy before granting real-time priority to processes not in the `audio` group. The policy is at `/usr/share/polkit-1/actions/org.freedesktop.RealtimeKit1.policy`.
+- **Per-process thread count limit**: RTKit tracks how many threads each process has had promoted. Exceeding the limit (default: 20) is rejected, preventing a rogue process from monopolising real-time priority across a large thread pool.
+- **`RLIMIT_RTTIME` enforcement**: RTKit sets the limit on the thread, not just the process, and the kernel enforces it independently per-thread — the limit is not inherited by child threads.
+
+#### Verifying Real-Time Priority
+
+After PipeWire starts, confirm its data thread obtained `SCHED_FIFO`:
+
+```bash
+# Find the PipeWire data thread TID
+ps -eLo pid,tid,cls,rtprio,comm | grep pipewire
+
+# Expected output (SCHED_FIFO = FF class, rtprio = 88):
+# 12345  12347 FF      88 pipewire
+
+# Inspect RTKit properties
+dbus-send --system --print-reply \
+  --dest=org.freedesktop.RealtimeKit1 \
+  /org/freedesktop/RealtimeKit1 \
+  org.freedesktop.DBus.Properties.GetAll \
+  string:org.freedesktop.RealtimeKit1
+```
+
+If the `cls` column shows `TS` (time-sharing) instead of `FF`, the data thread did not obtain real-time scheduling — audio glitches and xruns are likely. Common causes: `RLIMIT_RTPRIO = 0` and RTKit not running (check `systemctl status rtkit-daemon`).
+
+### 1.6 Format Negotiation via SPA Pods
 
 Format negotiation between two nodes proceeds in two phases. During the *enumeration* phase, each port calls `spa_node_port_enum_params(SPA_PARAM_EnumFormat)` to list all format capabilities as an array of SPA pod objects — each encoding constraints on media type, format, size, and framerate using `SPA_CHOICE_Enum` or `SPA_CHOICE_Range` pods. The session manager or the adapter node intersects the capability sets to find a mutually acceptable format.
 
