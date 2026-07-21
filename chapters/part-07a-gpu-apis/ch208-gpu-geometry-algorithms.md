@@ -3520,19 +3520,27 @@ outAO[i]        = mix(cachedAO, newAO, 1.0/16.0);      // 16-frame EMA
 
 ## 10. Library Landscape
 
-| Library | Version | GPU Backend | Subdivision | Skinning | Splines | NURBS | LOD/BVH | Best Use |
-|---|---|---|---|---|---|---|---|---|
-| **OpenSubdiv** | 3.6.0 | GL compute, CUDA, Metal | Yes (CC, Loop, Bilinear) | No | No | No | No | Production subdivision in VFX/games |
-| **CGAL** | 6.1 | None (CPU + TBB) | Yes (CC, Loop, Doo-Sabin) | No | No | No | No | CPU preprocessing, export to GPU |
-| **GeometricTools** | 6.x | None | Yes (CC, Doo-Sabin) | No | Yes | Yes | No | CPU reference for offline pipelines |
-| **libigl** | 2.5.0 | None (CPU + Eigen) | No | Yes (LBS, DQS) | No | No | No | Automatic skinning weights, ARAP |
-| **OpenCASCADE** | 8.0.0p1 | None (OpenGL vis only) | No | No | No | Yes (BRep) | No | CAD NURBS → tessellation → VkBuffer |
-| **meshoptimizer** | 0.22 | None (CPU output → GPU) | No | No | No | No | LOD simplify | Production LOD chain and mesh optimization |
-| **NanoVDB** | OpenVDB 9.x | CUDA / Vulkan SSBO | No | No | No | No | No | Sparse volume GPU rendering and sphere tracing |
+**Coverage gap.** No single open-source library covers more than a narrow slice of the algorithms in this chapter. The table below maps the available libraries against the chapter's topic areas; empty cells represent functionality that must be implemented directly in shader/compute code using the patterns shown in the preceding sections. This fragmentation is the norm in GPU geometry programming: the field is young enough that GPU-native algorithmic libraries have not yet consolidated around a common abstraction layer comparable to what BLAS/LAPACK provide for linear algebra.
+
+The closest approximation to a broad GPU geometry toolkit is **NVIDIA's** ecosystem when CUDA is available: cuSPARSE (sparse solvers for Poisson/LSCM), Thrust (prefix scans, radix sort, stream compaction), and NVCC-compiled versions of CPU libraries. On non-NVIDIA hardware the pattern in this chapter — implementing each algorithm as a self-contained Vulkan compute shader from first principles — remains the only portable path.
+
+| Library | Version | GPU Backend | Subdivision | Skinning | Splines | NURBS | LOD/BVH | Implicit/Vol | Best Use |
+|---|---|---|---|---|---|---|---|---|---|
+| **OpenSubdiv** | 3.6.0 | GL compute, CUDA, Metal | ✓ (CC, Loop, Bilinear) | — | — | — | — | — | Production subdivision in VFX/games |
+| **CGAL** | 6.1 | None (CPU + TBB) | ✓ (CC, Loop, Doo-Sabin) | — | — | — | CDT, Ruppert | ✓ (MC, DC) | CPU preprocessing, export to GPU |
+| **GeometricTools** | 6.x | None | ✓ (CC, Doo-Sabin) | — | ✓ | ✓ | — | — | CPU reference for offline pipelines |
+| **libigl** | 2.5.0 | None (CPU + Eigen) | — | ✓ (LBS, DQS, BBW) | — | — | — | ✓ (MC, DC, MT) | Automatic skinning weights, UV parameterization |
+| **OpenCASCADE** | 8.0.0p1 | None (OpenGL vis only) | — | — | — | ✓ (BRep) | — | — | CAD NURBS → tessellation → VkBuffer |
+| **meshoptimizer** | 0.22 | None (CPU output → GPU) | — | — | — | — | ✓ LOD, cache | — | Production LOD chain and mesh optimization |
+| **NanoVDB** | OpenVDB 9.x | CUDA / Vulkan SSBO | — | — | — | — | — | ✓ sparse vol | Sparse volume GPU rendering and sphere tracing |
+| **xatlas** | 2.x | None | — | — | — | — | — | — | UV atlas layout (precedes texture baking §7.13) |
+| **PoissonRecon** | 13.x | None (CPU, multi-threaded) | — | — | — | — | — | ✓ surface recon | Point cloud → mesh (§3.12); GPU port is per-step |
+| **V-HACD** | 4.0 | None (CPU) | — | — | — | — | ✓ convex decomp | — | Convex decomposition for GJK (§8.4–8.5) |
+| **Triangle** | 1.6 | None | — | — | — | — | CDT, Ruppert | — | 2D CDT/quality meshing (§3.11) |
 
 **OpenSubdiv** ([source](https://github.com/PixarAnimationStudios/OpenSubdiv)) is the right choice for any production subdivision pipeline. The lack of a Vulkan evaluator requires the custom SSBO stencil approach described in §1.5.
 
-**CGAL** ([source](https://www.cgal.org), [subdivision](https://doc.cgal.org/latest/Subdivision_method_3/index.html)) provides `CGAL::Subdivision_method_3::CatmullClark_subdivision()` and `Loop_subdivision()` as single-call in-place operations on a `Surface_mesh`:
+**CGAL** ([source](https://www.cgal.org), [subdivision](https://doc.cgal.org/latest/Subdivision_method_3/index.html)) provides `CGAL::Subdivision_method_3::CatmullClark_subdivision()` and `Loop_subdivision()` as single-call in-place operations on a `Surface_mesh`. It also covers 2D/3D Delaunay triangulation, constrained Delaunay, and Ruppert refinement — the broadest algorithmic coverage of any library in this table, though all CPU-only:
 
 ```cpp
 #include <CGAL/subdivision_method_3.h>
@@ -3541,13 +3549,23 @@ Sub::CatmullClark_subdivision(mesh,
     CGAL::parameters::number_of_iterations(2));
 ```
 
-**libigl** ([source](https://github.com/libigl/libigl)) provides `igl::lbs_matrix()` and `igl::dqs()` for computing LBS and DQS skinning, and `igl::bbw()` for computing bounded biharmonic weights (automatic skinning weight painting). All computations are CPU-side; results are uploaded to the GPU as vertex buffers.
+**libigl** ([source](https://github.com/libigl/libigl)) provides `igl::lbs_matrix()` and `igl::dqs()` for computing LBS and DQS skinning, `igl::bbw()` for bounded biharmonic skinning weights, `igl::lscm()` and `igl::harmonic()` for UV parameterization, and `igl::marching_tets()` for isosurface extraction. All computations are CPU-side using Eigen; results upload to GPU as vertex buffers. libigl has the second-broadest algorithmic coverage — skinning, UV, isosurface — but with no GPU path.
 
 **GeometricTools** ([source](https://github.com/davideberly/GeometricTools), Boost license) provides `GTL::NURBSSurface<float, 3>` and `GTL::CatmullClarkSurface` as header-only CPU implementations. Use for offline asset preprocessing: evaluate on the CPU, upload to Vulkan vertex buffers via staging.
 
 **meshoptimizer** ([source](https://github.com/zeux/meshoptimizer), MIT) provides `meshopt_simplify()` (QEM edge collapse), `meshopt_simplifyWithAttributes()` (attribute-preserving QEM), `meshopt_optimizeVertexCache()`, and `meshopt_optimizeOverdraw()`. Generate the full LOD chain offline (one call per LOD level), upload all LOD index buffers to a single `VkBuffer`, and select the active LOD per draw via `firstIndex`/`indexCount` offsets.
 
 **NanoVDB** ([source](https://github.com/AcademySoftwareFoundation/openvdb), Apache 2.0, included in OpenVDB 9.0+) converts OpenVDB trees to flat GPU buffers via `nanovdb::openToNanoVDB()`. The companion GLSL header (`nanovdb/util/NanoVDB.glsl`) provides tree-descent accessors. Requires `VK_EXT_scalar_block_layout` for correct `std430` packing of the NanoVDB node arrays.
+
+**xatlas** ([source](https://github.com/jpcy/xatlas), MIT) generates UV atlases (chart segmentation, parameterization, packing) as a preprocessing step for texture baking (§7.13). CPU-only; outputs UV coordinates and a remapped index buffer ready for GPU upload.
+
+**PoissonRecon** ([source](https://github.com/mkazhdan/PoissonRecon), MIT) is the reference implementation of screened Poisson surface reconstruction (§3.12). CPU multi-threaded (TBB); 10–60 s for 1M-point clouds. The GPU pipeline in §3.12 reimplements its core steps as Vulkan compute shaders.
+
+**V-HACD 4.0** ([source](https://github.com/kmammou/v-hacd), BSD-3) decomposes non-convex meshes into convex hull approximations for physics (§8.5). CPU-only; results upload as static SSBOs for runtime GJK dispatch.
+
+**Triangle** ([source](https://www.cs.cmu.edu/~quake/triangle.html), Shewchuk, public domain) is the reference 2D CDT and Ruppert quality-mesh generator (§3.11). Single-file C library; wraps into any pipeline via `triangulateio` struct.
+
+**What is missing.** The table reveals a structural gap: no library provides GPU-native implementations across skinning, implicit surfaces, BVH construction, splines, and LOD in a single dependency. The closest analogue would be a "geometry shader toolkit" equivalent to what Thrust is for parallel primitives or FFTW is for transforms — and it does not yet exist. Practitioners building production GPU geometry pipelines must either assemble per-algorithm compute shaders from scratch (as this chapter does), use NVIDIA's CUDA ecosystem (cuSPARSE for solvers, Thrust for scans/sorts, OptiX for BVH), or wait for a future convergence of the field around Vulkan compute abstractions.
 
 ---
 
