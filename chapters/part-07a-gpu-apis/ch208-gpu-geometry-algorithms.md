@@ -188,9 +188,19 @@ The sections below are ordered by geometry domain rather than CPU/GPU split. Whe
 77. [Spectral Mesh Processing](#77-spectral-mesh-processing)
 78. [GPU Structure from Motion and Multi-View Stereo](#78-gpu-structure-from-motion-and-multi-view-stereo)
 79. [Terrain Sculpting and Hydraulic Erosion](#79-terrain-sculpting-and-hydraulic-erosion)
-80. [Library Landscape](#80-library-landscape)
-81. [Performance Reference](#81-performance-reference)
-82. [Integrations](#82-integrations)
+80. [GPU Fluid Surface Extraction](#80-gpu-fluid-surface-extraction)
+81. [Continuous Collision Detection (CCD)](#81-continuous-collision-detection-ccd)
+82. [GPU Convex Hull Computation](#82-gpu-convex-hull-computation)
+83. [GPU-Accelerated Remeshing](#83-gpu-accelerated-remeshing)
+84. [Screen-Space Reflections (SSR/SSSR)](#84-screen-space-reflections-ssrsssr)
+85. [Silhouette Detection and Feature Lines](#85-silhouette-detection-and-feature-lines)
+86. [3D Feature Descriptors and Pose Estimation](#86-3d-feature-descriptors-and-pose-estimation)
+87. [GPU Mesh Segmentation and Part Decomposition](#87-gpu-mesh-segmentation-and-part-decomposition)
+88. [GPU Radiosity: Form Factor Computation](#88-gpu-radiosity-form-factor-computation)
+89. [GPU Mesh Repair and Waterproofing](#89-gpu-mesh-repair-and-waterproofing)
+90. [Library Landscape](#90-library-landscape)
+91. [Performance Reference](#91-performance-reference)
+92. [Integrations](#92-integrations)
 
 ---
 
@@ -11284,7 +11294,1225 @@ void main() {
 
 ---
 
-## 80. Library Landscape
+## 80. GPU Fluid Surface Extraction
+
+*Audience: graphics application developers.*
+
+§11 (SPH/FLIP fluid simulation) produces particle positions and velocities; §61 (isosurface extraction) expects a grid scalar field. Bridging them for liquid rendering requires: (1) splatting anisotropic kernels from particles into a density grid; (2) running marching cubes on that grid; (3) smoothing the resulting mesh. This pipeline differs from generic isosurface extraction because the kernels are oriented by the local velocity gradient to produce smooth water surfaces without blobby artefacts.
+
+### 80.1 Isotropic Density Splatting
+
+The simplest approach: for each particle i, add a radial kernel contribution to nearby grid cells. Parallelise over particles with atomic accumulation:
+
+```glsl
+// fluid_splat_iso.comp — isotropic kernel splatting into density grid
+layout(set=0,binding=0) readonly buffer Particles { vec4 pos[]; };  // w = mass
+layout(set=0,binding=1) buffer Density { float rho[]; };
+layout(push_constant) uniform PC {
+    vec3 gridMin; float dx; ivec3 dim; float h; uint N;
+} pc;
+layout(local_size_x=64) in;
+void main() {
+    uint p   = gl_GlobalInvocationID.x;
+    if (p >= pc.N) return;
+    vec3  pi  = pos[p].xyz;
+    float m   = pos[p].w;
+    ivec3 ci  = ivec3(floor((pi - pc.gridMin) / pc.dx));
+    int   r   = int(ceil(pc.h / pc.dx));
+    for (int dz=-r;dz<=r;dz++) for(int dy=-r;dy<=r;dy++) for(int dx=-r;dx<=r;dx++) {
+        ivec3 nb = ci + ivec3(dx,dy,dz);
+        if (any(lessThan(nb,ivec3(0)))||any(greaterThanEqual(nb,pc.dim))) continue;
+        vec3  xg = pc.gridMin + (vec3(nb)+0.5)*pc.dx;
+        float r2 = dot(pi-xg,pi-xg);
+        if (r2 > pc.h*pc.h) continue;
+        float q  = sqrt(r2)/pc.h;
+        float W  = max(0.0, 1.0-q*q) * (315.0/(64.0*3.14159*pow(pc.h,3.0)));
+        atomicAdd_float(rho[nb.z*pc.dim.y*pc.dim.x + nb.y*pc.dim.x + nb.x], m*W);
+    }
+}
+```
+
+[Source: Zhu & Bridson "Animating Sand as a Fluid", SIGGRAPH 2005; Müller et al. "Particle-Based Fluid Simulation", SCA 2003]
+
+### 80.2 Anisotropic Kernel Splatting
+
+Yu & Turk (2013) orient each particle's kernel using the local velocity gradient covariance matrix, producing smooth surface sheets rather than blobs:
+
+```glsl
+// fluid_splat_aniso.comp — anisotropic kernel splatting (Yu & Turk 2013)
+layout(set=0,binding=0) readonly buffer Particles { vec3 pos[]; };
+layout(set=0,binding=1) readonly buffer KernelG   { mat3 G[];   };  // per-particle anisotropy
+layout(set=0,binding=2) buffer Density { float rho[]; };
+layout(push_constant) uniform PC { vec3 gridMin; float dx; ivec3 dim; uint N; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint p  = gl_GlobalInvocationID.x;
+    if (p >= pc.N) return;
+    mat3  Gp = G[p];
+    // Bounding box of anisotropic kernel in grid space
+    vec3  ext = vec3(length(Gp[0]), length(Gp[1]), length(Gp[2]));
+    ivec3 ci  = ivec3(floor((pos[p]-pc.gridMin)/pc.dx));
+    ivec3 r   = ivec3(ceil(ext/pc.dx)) + 1;
+    for (int dz=-r.z;dz<=r.z;dz++) for(int dy=-r.y;dy<=r.y;dy++) for(int dx=-r.x;dx<=r.x;dx++) {
+        ivec3 nb  = ci + ivec3(dx,dy,dz);
+        if (any(lessThan(nb,ivec3(0)))||any(greaterThanEqual(nb,pc.dim))) continue;
+        vec3  xg  = pc.gridMin + (vec3(nb)+0.5)*pc.dx;
+        vec3  d   = Gp * (xg - pos[p]);  // transform to kernel space
+        float r2  = dot(d,d);
+        if (r2 >= 1.0) continue;
+        float W   = pow(1.0-r2, 3.0) * (315.0/(64.0*3.14159));
+        atomicAdd_float(rho[flatIdx(nb,pc.dim)], W * determinant(Gp));
+    }
+}
+```
+
+[Source: Yu & Turk "Reconstructing Surfaces of Particle-Based Fluids Using Anisotropic Kernels", ACM TOG 2013]
+
+### 80.3 Screen-Space Fluid Rendering (Depth Smoothing)
+
+An alternative to volumetric splatting: render particle spheres to a depth buffer, blur the depth field with a curvature-flow filter, then shade the resulting surface as a thin dielectric:
+
+```glsl
+// fluid_depthsmooth.comp — bilateral curvature-flow filter on fluid depth buffer
+layout(set=0,binding=0) uniform sampler2D fluidDepth;   // particle sphere depth
+layout(set=0,binding=1, r32f) uniform writeonly image2D smoothedDepth;
+layout(push_constant) uniform PC { float sigmaD; float sigmaZ; int radius; } pc;
+layout(local_size_x=8,local_size_y=8) in;
+void main() {
+    ivec2 pix  = ivec2(gl_GlobalInvocationID.xy);
+    float zc   = texelFetch(fluidDepth, pix, 0).r;
+    if (zc <= 0.0) { imageStore(smoothedDepth, pix, vec4(0)); return; }
+    float sum  = 0.0, wSum = 0.0;
+    for (int dy=-pc.radius;dy<=pc.radius;dy++) for(int dx=-pc.radius;dx<=pc.radius;dx++) {
+        float zn  = texelFetch(fluidDepth, pix+ivec2(dx,dy), 0).r;
+        if (zn <= 0.0) continue;
+        float wD  = exp(-(dx*dx+dy*dy)/(2.0*pc.sigmaD*pc.sigmaD));
+        float wZ  = exp(-(zc-zn)*(zc-zn)/(2.0*pc.sigmaZ*pc.sigmaZ));
+        sum  += wD*wZ*zn; wSum += wD*wZ;
+    }
+    imageStore(smoothedDepth, pix, vec4(wSum>0.0 ? sum/wSum : zc));
+}
+```
+
+[Source: van der Laan et al. "Screen Space Fluid Rendering with Curvature Flow", I3D 2009; Green "Screen Space Fluid Rendering", GDC 2010]
+
+### 80.4 Surface Normal and Shading
+
+Reconstruct the surface normal from the smoothed depth buffer, then shade as a thin glass/water surface using Fresnel reflectance and refraction with a cubemap:
+
+```glsl
+// fluid_shade.frag — shade fluid surface from smoothed depth
+uniform sampler2D smoothDepth;
+uniform samplerCube envMap;
+uniform mat4 invProj;
+in vec2 texUV;
+void main() {
+    float z  = texture(smoothDepth, texUV).r;
+    if (z <= 0.0) discard;
+    // Reconstruct view-space position
+    vec4  vp = invProj * vec4(texUV*2-1, z*2-1, 1); vp /= vp.w;
+    // Finite-difference normal from depth buffer
+    vec3  n  = normalize(vec3(
+        dFdx(vp.z), dFdy(vp.z), -length(vec2(dFdx(vp.z),dFdy(vp.z)))));
+    // Fresnel reflection + refraction
+    vec3  v  = normalize(-vp.xyz);
+    float F  = 0.02 + 0.98*pow(1.0-max(dot(n,v),0.0), 5.0);
+    vec3  r  = reflect(-v, n);
+    vec3  t  = refract(-v, n, 1.0/1.33);  // water IOR
+    fragColor = vec4(mix(texture(envMap,t).rgb, texture(envMap,r).rgb, F), 1.0);
+}
+```
+
+[Source: Green 2010; James & Fatahalian "Precomputing Interactive Dynamic Deformable Scenes", SIGGRAPH 2003]
+
+---
+
+## 81. Continuous Collision Detection (CCD)
+
+*Audience: systems developers, graphics application developers.*
+
+Discrete collision detection (§52) checks for overlap at a single instant; fast-moving or thin objects may tunnel through each other between frames. Continuous collision detection finds the time of first contact (TOC) τ ∈ [0,1] within a timestep by solving the polynomial distance equation between swept primitives. GPU parallelism runs independent TOC solves for all candidate pairs simultaneously.
+
+### 81.1 Vertex–Triangle CCD via Conservative Advancement
+
+Conservative advancement (Zhang et al. 2007) iteratively advances the time along the minimum separation distance until contact or the interval is exhausted:
+
+```glsl
+// ccd_vertex_tri.comp — vertex-triangle CCD via conservative advancement
+layout(set=0,binding=0) readonly buffer PosT0 { vec3 p0[]; };   // positions at t=0
+layout(set=0,binding=1) readonly buffer PosT1 { vec3 p1[]; };   // positions at t=1
+layout(set=0,binding=2) readonly buffer Pairs  { uvec4 vt[];    };  // vertex idx + 3 tri verts
+layout(set=0,binding=3) writeonly buffer TOC   { float toc[];   };  // time of contact (-1=none)
+layout(local_size_x=64) in;
+void main() {
+    uint pi = gl_GlobalInvocationID.x;
+    uint vi = vt[pi].x;
+    uint ai = vt[pi].y, bi = vt[pi].z, ci = vt[pi].w;
+    float t  = 0.0;
+    for (int iter=0; iter<64; iter++) {
+        vec3 v  = mix(p0[vi],p1[vi],t);
+        vec3 a  = mix(p0[ai],p1[ai],t);
+        vec3 b  = mix(p0[bi],p1[bi],t);
+        vec3 c  = mix(p0[ci],p1[ci],t);
+        float d = pointTriDist(v, a, b, c);
+        if (d < 1e-6) { toc[pi]=t; return; }
+        // Motion bound: max speed × remaining time
+        float vMax = max(length(p1[vi]-p0[vi]),
+                     max(length(p1[ai]-p0[ai]),
+                     max(length(p1[bi]-p0[bi]), length(p1[ci]-p0[ci]))));
+        float dt   = d / (vMax + 1e-8);
+        t += dt;
+        if (t >= 1.0) break;
+    }
+    toc[pi] = -1.0;  // no contact
+}
+```
+
+[Source: Zhang et al. "Continuous Collision Detection for Rigid and Articulated Bodies", SIGGRAPH 2007; Tang et al. "ICCD: Interactive Continuous Collision Detection between Deformable Models Using Connectivity-Based Culling", IEEE TVCG 2009]
+
+### 81.2 Edge–Edge CCD via Cubic Root Finding
+
+For edge-edge contact between two moving line segments, the coplanarity condition produces a cubic polynomial in τ whose roots are the candidate contact times:
+
+```glsl
+// ccd_edge_edge.comp — edge-edge CCD via cubic root isolation
+layout(set=0,binding=0) readonly buffer PosT0 { vec3 p0[]; };
+layout(set=0,binding=1) readonly buffer PosT1 { vec3 p1[]; };
+layout(set=0,binding=2) readonly buffer EEPairs { uvec4 ee[]; };
+layout(set=0,binding=3) writeonly buffer TOC { float toc[]; };
+layout(local_size_x=64) in;
+
+// Cubic coefficients of (e1(τ) × e2(τ)) · (v1(τ) - v3(τ)) = 0
+void cubicCoeffs(vec3 a0,vec3 a1,vec3 b0,vec3 b1,vec3 c0,vec3 c1,vec3 d0,vec3 d1,
+                 out float A, out float B, out float C, out float D) {
+    vec3 da=a1-a0, db=b1-b0, dc=c1-c0, dd=d1-d0;
+    // A*t³ + B*t² + C*t + D = scalar triple product of swept edge vectors
+    vec3 e1=b0-a0, e2=d0-c0, r=c0-a0;
+    A = dot(cross(da-db, dc-dd), da-db) + dot(cross(e1,dc-dd), da-db)
+      + dot(cross(da-db, e2), da-db);
+    // (simplified — full derivation in Bridson et al. 2002)
+    B = dot(cross(e1,e2), da-db) + dot(cross(da-db,e2),r)
+      + dot(cross(e1,dc-dd),r);
+    C = dot(cross(e1,e2),r) + dot(cross(da-db,e2),r);
+    D = dot(cross(e1,e2),r);
+}
+void main() {
+    uint pi = gl_GlobalInvocationID.x;
+    float A,B,C,D;
+    cubicCoeffs(p0[ee[pi].x],p1[ee[pi].x], p0[ee[pi].y],p1[ee[pi].y],
+                p0[ee[pi].z],p1[ee[pi].z], p0[ee[pi].w],p1[ee[pi].w], A,B,C,D);
+    float roots[3]; int nr = solveCubic(A,B,C,D,roots);
+    float earliest = 1.0;
+    for (int r=0; r<nr; r++) if (roots[r]>0&&roots[r]<earliest&&verifyContact(roots[r],pi)) earliest=roots[r];
+    toc[pi] = (earliest < 1.0) ? earliest : -1.0;
+}
+```
+
+[Source: Bridson et al. "Robust Treatment of Collisions, Contact and Friction for Cloth Animation", SIGGRAPH 2002; Provot "Collision and Self-Collision Handling in Cloth Model Dedicated to Design Garments", CAS 1997]
+
+### 81.3 Broadphase CCD via Swept AABB
+
+Before running exact CCD, cull pairs whose swept bounding boxes (union of AABB at t=0 and t=1) do not overlap:
+
+```glsl
+// ccd_broadphase.comp — swept AABB overlap test for CCD culling
+layout(set=0,binding=0) readonly buffer AABB_T0 { vec6 aabb0[]; };
+layout(set=0,binding=1) readonly buffer AABB_T1 { vec6 aabb1[]; };
+layout(set=0,binding=2) readonly buffer Candidates { uvec2 pairs[]; };
+layout(set=0,binding=3) buffer Survivors { uvec2 surv[]; uint count; };
+layout(local_size_x=64) in;
+void main() {
+    uint pi  = gl_GlobalInvocationID.x;
+    uint a   = pairs[pi].x, b = pairs[pi].y;
+    // Swept AABB: union of t=0 and t=1 box
+    vec3 aminS = min(aabb0[a].xyz, aabb1[a].xyz);
+    vec3 amaxS = max(aabb0[a].xyz+aabb0[a].xyz, aabb1[a].xyz+aabb1[a].xyz);
+    vec3 bminS = min(aabb0[b].xyz, aabb1[b].xyz);
+    vec3 bmaxS = max(aabb0[b].xyz+aabb0[b].xyz, aabb1[b].xyz+aabb1[b].xyz);
+    if (all(lessThan(aminS,bmaxS)) && all(lessThan(bminS,amaxS))) {
+        uint slot = atomicAdd(count, 1u);
+        surv[slot] = pairs[pi];
+    }
+}
+```
+
+[Source: Ericson "Real-Time Collision Detection", Morgan Kaufmann 2005, §5.3]
+
+### 81.4 CCD Response: Impact Zone Projection
+
+After finding τ, project the impacting vertices out of collision along the contact normal and apply impulses. The impact zone (Bridson et al. 2002) groups all vertices involved in a contact cluster:
+
+```glsl
+// ccd_response.comp — apply collision response at TOC τ
+layout(set=0,binding=0) buffer Pos { vec3 pos[]; };
+layout(set=0,binding=1) buffer Vel { vec3 vel[]; };
+layout(set=0,binding=2) readonly buffer Contacts { CCDContact contacts[]; };
+layout(push_constant) uniform PC { float restitution; float friction; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint c  = gl_GlobalInvocationID.x;
+    CCDContact ct = contacts[c];
+    vec3  n = ct.normal;
+    float vRel = dot(vel[ct.v] - vel[ct.a]*ct.w0 - vel[ct.b]*ct.w1 - vel[ct.c]*ct.w2, n);
+    if (vRel >= 0.0) return;  // separating: no impulse needed
+    float j = -(1.0+pc.restitution)*vRel /
+              (ct.invMassV + ct.w0*ct.w0*ct.invMassA + ct.w1*ct.w1*ct.invMassB + ct.w2*ct.w2*ct.invMassC);
+    atomicAdd_vec3(vel[ct.v],  j*n*ct.invMassV);
+    atomicAdd_vec3(vel[ct.a], -j*n*ct.invMassA*ct.w0);
+    atomicAdd_vec3(vel[ct.b], -j*n*ct.invMassB*ct.w1);
+    atomicAdd_vec3(vel[ct.c], -j*n*ct.invMassC*ct.w2);
+}
+```
+
+[Source: Bridson et al. 2002; Harmon et al. "Robust Treatment of Simultaneous Collisions", SIGGRAPH 2008]
+
+---
+
+## 82. GPU Convex Hull Computation
+
+*Audience: systems developers, graphics application developers.*
+
+Convex hulls are needed to bootstrap rigid body shapes (§22), compute GJK support functions (§8), and fit BVH leaf bounds (§70). GPU QuickHull operates on point clouds of up to tens of millions of points; GPU incremental insertion processes batches of points in parallel.
+
+### 82.1 GPU QuickHull: Initial Simplex
+
+QuickHull begins by finding the 6 extreme points (±X, ±Y, ±Z), forming an initial tetrahedron. Find extremes in parallel via a reduction:
+
+```glsl
+// qhull_extremes.comp — find 6 axis-aligned extremes via parallel reduction
+layout(set=0,binding=0) readonly buffer Pts { vec3 pts[]; };
+layout(set=0,binding=1) buffer Extremes { vec3 extr[6]; };  // ±x, ±y, ±z extremes
+layout(local_size_x=256) in;
+shared vec3 sMin[256], sMax[256];
+void main() {
+    uint i  = gl_GlobalInvocationID.x;
+    uint li = gl_LocalInvocationID.x;
+    sMin[li] = (i < N_PTS) ? pts[i] : vec3(1e30);
+    sMax[li] = (i < N_PTS) ? pts[i] : vec3(-1e30);
+    barrier();
+    for (uint s=128u; s>0u; s>>=1) {
+        if (li<s) { sMin[li]=min(sMin[li],sMin[li+s]); sMax[li]=max(sMax[li],sMax[li+s]); }
+        barrier();
+    }
+    if (li==0) {
+        atomicMin_vec3(extr[0], sMin[0]);  // -x extreme
+        atomicMax_vec3(extr[1], sMax[0]);  // +x, etc.
+    }
+}
+```
+
+### 82.2 GPU QuickHull: Furthest-Point Assignment
+
+For each face of the current hull, find the point furthest above it (positive distance). Points inside all faces are discarded:
+
+```glsl
+// qhull_assign.comp — assign outside points to faces, find furthest per face
+layout(set=0,binding=0) readonly buffer Pts   { vec3 pts[];   };
+layout(set=0,binding=1) readonly buffer Faces { vec4 planes[]; };  // normal + d
+layout(set=0,binding=2) buffer Assignment { int assign[];  };  // face index or -1 (inside)
+layout(set=0,binding=3) buffer FurthestD  { float maxDist[]; };  // per face
+layout(set=0,binding=4) buffer FurthestI  { uint  maxIdx[];  };  // per face
+layout(local_size_x=64) in;
+void main() {
+    uint p = gl_GlobalInvocationID.x;
+    if (p >= N_PTS) return;
+    float bestD = 0.0; int bestF = -1;
+    for (uint f=0; f<N_FACES; f++) {
+        float d = dot(planes[f].xyz, pts[p]) + planes[f].w;
+        if (d > bestD) { bestD=d; bestF=int(f); }
+    }
+    assign[p] = bestF;
+    if (bestF >= 0) atomicMax_float_idx(maxDist[bestF], maxIdx[bestF], bestD, p);
+}
+```
+
+[Source: Barber et al. "The Quickhull Algorithm for Convex Hulls", ACM TOMS 1996; GPU QuickHull: Cao et al. "Parallel Bounding Volume Hierarchies", SIGGRAPH 2010]
+
+### 82.3 Horizon Edge and Face Expansion
+
+Once the furthest point p for a face is found, compute the horizon ridge (edges visible from p), create new faces from p to each horizon edge, and remove the visible faces:
+
+```glsl
+// qhull_expand.comp — find horizon edges visible from furthest point
+layout(set=0,binding=0) readonly buffer Faces { HullFace faces[]; };  // v0,v1,v2 + neighbours
+layout(set=0,binding=1) readonly buffer Pts   { vec3 pts[]; };
+layout(set=0,binding=2) buffer HorizonEdges { uvec2 hedges[]; uint hedgeCount; };
+layout(push_constant) uniform PC { uint apexIdx; uint seedFace; } pc;
+layout(local_size_x=1) in;  // serial BFS; parallelism across separate hull operations
+void main() {
+    // BFS from seedFace: mark faces visible from pts[apexIdx], collect horizon edges
+    uint queue[MAX_FACES]; uint head=0, tail=0;
+    queue[tail++] = pc.seedFace; visibleMask[pc.seedFace]=1u;
+    while (head<tail) {
+        uint f = queue[head++];
+        for (int e=0;e<3;e++) {
+            uint nb = faces[f].neighbours[e];
+            float d  = dot(faces[nb].plane.xyz, pts[pc.apexIdx]) + faces[nb].plane.w;
+            if (d > 0.0) { if (!visibleMask[nb]) { visibleMask[nb]=1u; queue[tail++]=nb; }}
+            else {  // horizon edge: boundary between visible and non-visible
+                uint slot = atomicAdd(hedgeCount, 1u);
+                hedges[slot] = uvec2(faces[f].verts[e], faces[f].verts[(e+1)%3]);
+            }
+        }
+    }
+}
+```
+
+[Source: Barber et al. 1996; O'Brien "Fast and Simple Physics Using Sequential Impulses", GDC 2006]
+
+### 82.4 Incremental Parallel Hull for Point Batches
+
+For massive point clouds, process points in batches: run §82.1–82.3 serially on a random initial subset (1000 points), then for the remaining points, classify inside/outside in parallel (§82.2) and only add points outside the current hull:
+
+```glsl
+// qhull_batch_classify.comp — classify new batch against current hull
+layout(set=0,binding=0) readonly buffer NewPts  { vec3 newPts[];  };
+layout(set=0,binding=1) readonly buffer HullPlanes { vec4 planes[]; };
+layout(set=0,binding=2) buffer Outside { vec3 outside[]; uint count; };
+layout(local_size_x=64) in;
+void main() {
+    uint p = gl_GlobalInvocationID.x;
+    for (uint f=0; f<N_HULL_FACES; f++)
+        if (dot(planes[f].xyz, newPts[p]) + planes[f].w > 1e-5) {
+            uint slot = atomicAdd(count, 1u);
+            outside[slot] = newPts[p];
+            return;
+        }
+    // Inside all planes → discard (already enclosed by hull)
+}
+```
+
+[Source: Preparata & Shamos "Computational Geometry: An Introduction", 1985; GPU hull: Lauterbach et al. 2009 §70.1]
+
+---
+
+## 83. GPU-Accelerated Remeshing
+
+*Audience: systems developers, graphics application developers.*
+
+Remeshing adapts a mesh's triangle density and quality to a target: uniform edge length (isotropic remeshing), curvature-adaptive sizing (anisotropic), or structured quads (quad remeshing). GPU parallelism targets the per-edge operations (split, collapse, flip) executed in rounds of non-conflicting edges.
+
+### 83.1 Edge Flip for Delaunay Quality
+
+Given the cotangent Laplacian weights, flip edges that violate the local Delaunay condition (circumcircle test). Parallelise over independent edge sets (graph colouring):
+
+```glsl
+// remesh_flip.comp — Delaunay edge flip (one colour class per dispatch)
+layout(set=0,binding=0) buffer HalfEdge { HalfEdgeDS he[]; };
+layout(set=0,binding=1) readonly buffer Color { uint color[]; };
+layout(push_constant) uniform PC { uint currentColor; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint e = gl_GlobalInvocationID.x;
+    if (color[e] != pc.currentColor) return;
+    // Check Delaunay condition: sum of opposite angles < π
+    float a0 = oppositeAngle(he, e, 0);
+    float a1 = oppositeAngle(he, e, 1);
+    if (a0 + a1 > 3.14159 + 1e-5) {
+        flipEdge(he, e);  // atomic flip: swap diagonal of adjacent quad
+    }
+}
+```
+
+[Source: Botsch & Kobbelt "A Remeshing Approach to Multiresolution Modeling", SGP 2004]
+
+### 83.2 Edge Split and Collapse
+
+Split edges longer than 4/3 × target length; collapse edges shorter than 4/5 × target length. Each operation is applied to non-conflicting edge sets in parallel:
+
+```glsl
+// remesh_split.comp — split edges exceeding target length
+layout(set=0,binding=0) buffer Pos      { vec3 pos[];  };
+layout(set=0,binding=1) buffer HalfEdge { HalfEdgeDS he[]; };
+layout(set=0,binding=2) buffer NewVerts { vec3 nv[];   uint nvCount; };
+layout(set=0,binding=3) readonly buffer Color { uint color[]; };
+layout(push_constant) uniform PC { float targetLen; uint currentColor; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint e   = gl_GlobalInvocationID.x;
+    if (color[e] != pc.currentColor) return;
+    uint  vi = he[e].vert, vj = he[he[e].twin].vert;
+    float len= length(pos[vi]-pos[vj]);
+    if (len > pc.targetLen * 4.0/3.0) {
+        uint slot = atomicAdd(nvCount, 1u);
+        nv[slot]  = (pos[vi]+pos[vj])*0.5;
+        splitEdge(he, e, slot);  // insert midpoint vertex, update topology
+    }
+}
+// Similarly: collapse_edge for edges shorter than 4/5 * targetLen
+```
+
+[Source: Botsch & Kobbelt 2004; Dunyach et al. "Adaptive Remeshing for Real-Time Mesh Deformation", EG 2013]
+
+### 83.3 Tangential Smoothing
+
+After flips and splits, move each vertex to the centroid of its 1-ring *projected onto the local tangent plane* — preserving volume while improving triangle quality:
+
+```glsl
+// remesh_tangential.comp — tangential relaxation of vertex positions
+layout(set=0,binding=0) readonly buffer Pos  { vec3 pos[];  };
+layout(set=0,binding=1) readonly buffer Norm { vec3 nor[];  };
+layout(set=0,binding=2) writeonly buffer PosOut { vec3 posOut[]; };
+layout(set=0,binding=3) readonly buffer AdjV { uint adjV[]; uint adjStart[]; };
+layout(local_size_x=64) in;
+void main() {
+    uint v   = gl_GlobalInvocationID.x;
+    vec3 p   = pos[v], n = nor[v];
+    vec3 c   = vec3(0.0);
+    uint deg = adjStart[v+1]-adjStart[v];
+    for (uint e=adjStart[v];e<adjStart[v+1];e++) c += pos[adjV[e]];
+    c /= float(deg);
+    // Project onto tangent plane: subtract normal component of (c - p)
+    vec3 q   = c - dot(c-p,n)*n;
+    posOut[v] = q;
+}
+```
+
+[Source: Botsch & Kobbelt 2004; Lévy & Bonneel "Variational Anisotropic Surface Meshing with Voronoi Parallel Linear Enumeration", IMSH 2012]
+
+### 83.4 Centroidal Voronoi Tessellation (CVT) Remeshing
+
+CVT remeshing places N sample points on the surface such that each sample is the centroid of its Voronoi region (Lloyd's algorithm). GPU parallelism: for each sample, find the nearest surface point; for each surface triangle, find the nearest sample:
+
+```glsl
+// cvt_assign.comp — assign each surface vertex to nearest CVT sample
+layout(set=0,binding=0) readonly buffer Pos     { vec3 pos[];  };
+layout(set=0,binding=1) readonly buffer Samples { vec3 samp[]; };
+layout(set=0,binding=2) writeonly buffer ClusterID { uint cid[]; };
+layout(local_size_x=64) in;
+void main() {
+    uint v   = gl_GlobalInvocationID.x;
+    float bestD=1e30; uint bestS=0u;
+    for (uint s=0; s<N_SAMPLES; s++) {
+        float d = length(pos[v]-samp[s]);
+        if (d<bestD) { bestD=d; bestS=s; }
+    }
+    cid[v] = bestS;
+}
+// Second pass: for each sample, compute weighted centroid over its cluster → new sample position
+// Repeat until convergence (10-50 iterations typical)
+```
+
+[Source: Du et al. "Centroidal Voronoi Tessellations: Applications and Algorithms", SIAM Review 1999; GPU CVT: Rong et al. 2011 §67.2]
+
+---
+
+## 84. Screen-Space Reflections (SSR/SSSR)
+
+*Audience: graphics application developers.*
+
+Screen-space reflections (SSR) trace reflection rays against the depth buffer using hierarchical Z-buffer ray marching, providing real-time specular GI for surfaces visible on screen. Stochastic SSR (SSSR) adds per-pixel random ray selection and temporal accumulation to handle rough surfaces with variable BRDF lobe widths.
+
+### 84.1 Hierarchical Z-Buffer Ray Marching
+
+Build a mip chain of the depth buffer where each level stores the maximum depth in each 2×2 tile. March the reflection ray through increasing mip levels, stepping coarsely over empty space:
+
+```glsl
+// ssr_hiz_march.comp — hierarchical Z ray march for reflection
+layout(set=0,binding=0) uniform sampler2D hiZPyramid;  // max-depth mip chain
+layout(set=0,binding=1) uniform sampler2D gNormal;
+layout(set=0,binding=2) uniform sampler2D gDepth;
+layout(set=0,binding=3, rgba16f) uniform writeonly image2D ssrOut;
+layout(push_constant) uniform PC { mat4 proj; mat4 invProj; mat4 invView; float maxDist; } pc;
+layout(local_size_x=8,local_size_y=8) in;
+void main() {
+    ivec2 pix  = ivec2(gl_GlobalInvocationID.xy);
+    vec3  N    = texelFetch(gNormal, pix, 0).xyz;
+    float d    = texelFetch(gDepth,  pix, 0).r;
+    vec3  P    = viewSpacePos(pix, d, pc.invProj);
+    vec3  V    = normalize(-P);
+    vec3  R    = reflect(-V, N);
+    // March R through HiZ pyramid
+    vec3  Q    = P; int mip = 0;
+    vec4  hit  = vec4(0);
+    for (int i=0; i<64; i++) {
+        Q += R * (0.01 * float(1<<mip));
+        vec4  clip = pc.proj * vec4(Q,1); clip /= clip.w;
+        vec2  uv   = clip.xy*0.5+0.5;
+        float zHiZ = textureLod(hiZPyramid, uv, float(mip)).r;
+        if (Q.z < zHiZ - 0.01) { if (mip==0) { hit=vec4(uv,Q.z,1); break; } mip=max(0,mip-1); }
+        else mip = min(mip+1, MAX_MIP);
+        if (uv.x<0||uv.x>1||uv.y<0||uv.y>1||Q.z>0) break;
+    }
+    imageStore(ssrOut, pix, hit);
+}
+```
+
+[Source: McGuire & Mara "Efficient GPU Screen-Space Ray Tracing", JCGT 2014; Stachowiak "Stochastic All The Things" 2018]
+
+### 84.2 Stochastic SSR with GGX Importance Sampling
+
+SSSR (Stachowiak 2018) samples one ray per pixel per frame from the GGX BRDF lobe, giving rough-surface reflections at the cost of one sample per pixel plus temporal accumulation:
+
+```glsl
+// sssr_sample.comp — sample one GGX reflection ray per pixel
+layout(set=0,binding=0) uniform sampler2D gRoughness;
+layout(set=0,binding=1) readonly buffer BlueNoise { vec2 bn[]; };  // §47 blue noise
+layout(set=0,binding=2, rgba16f) uniform writeonly image2D rayDirOut;
+layout(push_constant) uniform PC { uint frameIdx; } pc;
+layout(local_size_x=8,local_size_y=8) in;
+void main() {
+    ivec2 pix  = ivec2(gl_GlobalInvocationID.xy);
+    float rough= texelFetch(gRoughness, pix, 0).r;
+    uint  seed = (pix.y*WIDTH+pix.x + pc.frameIdx*WIDTH*HEIGHT) % BN_SIZE;
+    vec2  xi   = bn[seed];
+    // GGX importance sample: half-vector H from roughness
+    float a    = rough*rough;
+    float phi  = 2.0*3.14159*xi.x;
+    float cosT = sqrt((1.0-xi.y)/(1.0+(a*a-1.0)*xi.y));
+    float sinT = sqrt(1.0-cosT*cosT);
+    vec3  H    = tangentToWorld(vec3(sinT*cos(phi), sinT*sin(phi), cosT), gNormal(pix));
+    vec3  R    = reflect(-viewDir(pix), H);
+    imageStore(rayDirOut, pix, vec4(R,rough));
+}
+```
+
+[Source: Stachowiak 2018; Walter et al. "Microfacet Models for Refraction through Rough Surfaces", EGSR 2007]
+
+### 84.3 Temporal Accumulation and Reprojection
+
+Accumulate SSR samples over multiple frames by reprojecting the previous frame's result:
+
+```glsl
+// ssr_temporal.comp — temporal accumulation for SSR
+layout(set=0,binding=0) uniform sampler2D ssrCurrent;   // this frame's SSR sample
+layout(set=0,binding=1) uniform sampler2D ssrHistory;   // previous accumulated result
+layout(set=0,binding=2) uniform sampler2D motionVec;    // §76.2 motion vectors
+layout(set=0,binding=3, rgba16f) uniform writeonly image2D ssrAccum;
+layout(local_size_x=8,local_size_y=8) in;
+void main() {
+    ivec2 pix  = ivec2(gl_GlobalInvocationID.xy);
+    vec2  uv   = (vec2(pix)+0.5)/vec2(imageSize(ssrAccum));
+    vec2  mv   = texture(motionVec, uv).rg;
+    vec4  cur  = texelFetch(ssrCurrent, pix, 0);
+    vec4  hist = texture(ssrHistory, uv-mv);
+    // Neighbourhood clamp to prevent ghosting
+    vec4  mn   = vec4(1e30), mx = vec4(-1e30);
+    for (int dy=-1;dy<=1;dy++) for(int dx=-1;dx<=1;dx++) {
+        vec4 s = texelFetch(ssrCurrent,pix+ivec2(dx,dy),0);
+        mn=min(mn,s); mx=max(mx,s);
+    }
+    hist       = clamp(hist, mn, mx);
+    imageStore(ssrAccum, pix, mix(hist, cur, 0.1));
+}
+```
+
+[Source: Karis "High Quality Temporal Supersampling", SIGGRAPH 2014; Stachowiak 2018]
+
+### 84.4 SSR Fade and Composite
+
+Fade reflections at screen edges (where the ray exits the screen) and blend with the specular IBL (§44) fallback:
+
+```glsl
+// ssr_composite.frag — blend SSR with IBL fallback
+uniform sampler2D ssrAccum;    // §84.3 accumulated SSR
+uniform sampler2D iblSpecular; // §44 IBL specular
+uniform sampler2D gRoughness;
+uniform sampler2D gMetallic;
+in vec2 texUV;
+void main() {
+    vec4  ssr  = texture(ssrAccum, texUV);
+    float conf = ssr.a;  // hit confidence (0=miss, 1=hit)
+    // Fade at screen edges
+    float edgeFade = 1.0;
+    edgeFade *= smoothstep(0.0, 0.05, texUV.x) * smoothstep(1.0, 0.95, texUV.x);
+    edgeFade *= smoothstep(0.0, 0.05, texUV.y) * smoothstep(1.0, 0.95, texUV.y);
+    conf *= edgeFade;
+    // Fade with roughness (SSR valid only for smooth surfaces)
+    conf *= 1.0 - smoothstep(0.3, 0.6, texture(gRoughness,texUV).r);
+    vec3  ibl  = texture(iblSpecular, texUV).rgb;
+    fragColor  = vec4(mix(ibl, ssr.rgb, conf), 1.0);
+}
+```
+
+[Source: McGuire & Mara 2014; Yasin "Screen Space Reflections in The Surge", GDC 2018]
+
+---
+
+## 85. Silhouette Detection and Feature Lines
+
+*Audience: graphics application developers.*
+
+Silhouette edges are mesh edges where one adjacent face is front-facing and the other is back-facing relative to the view direction. GPU detection operates on the half-edge data structure, parallelising over all edges. Feature lines (ridges, valleys, suggestive contours) require curvature information from §77 spectral processing.
+
+### 85.1 Silhouette Edge Detection on Half-Edge Mesh
+
+For each edge, test the dot product of the face normals with the view vector. Emit geometry for silhouette edges:
+
+```glsl
+// silhouette_detect.comp — detect silhouette edges from half-edge mesh
+layout(set=0,binding=0) readonly buffer Pos       { vec3 pos[];   };
+layout(set=0,binding=1) readonly buffer FaceNorm  { vec3 fnorm[]; };
+layout(set=0,binding=2) readonly buffer HalfEdge  { HalfEdgeDS he[]; };
+layout(set=0,binding=3) buffer SilEdges { uvec2 silEdges[]; uint count; };
+layout(push_constant) uniform PC { vec3 viewPos; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint e   = gl_GlobalInvocationID.x;
+    if (he[e].twin == INVALID) return;  // boundary edge: always emit
+    uint f0  = he[e].face, f1 = he[he[e].twin].face;
+    vec3 eP  = pos[he[e].vert];
+    float d0 = dot(fnorm[f0], pc.viewPos - eP);
+    float d1 = dot(fnorm[f1], pc.viewPos - eP);
+    if (d0 * d1 < 0.0) {  // sign change → silhouette
+        uint slot = atomicAdd(count, 1u);
+        silEdges[slot] = uvec2(he[e].vert, he[he[e].twin].vert);
+    }
+}
+```
+
+[Source: Gooch et al. "A Non-Photorealistic Lighting Model For Automatic Technical Illustration", SIGGRAPH 1998; Card & Mitchell "Non-Photorealistic Rendering with Pixel and Vertex Shaders", ShaderX 2002]
+
+### 85.2 Silhouette Fattening via Mesh Shader
+
+Expand silhouette edges into thin quads (fin geometry) in the mesh shader to produce anti-aliased outlines without geometry shader overhead:
+
+```glsl
+// silhouette_mesh.mesh.glsl — emit fin quad for each silhouette edge
+layout(local_size_x=32) in;
+layout(triangles, max_vertices=4, max_primitives=2) out;
+void main() {
+    uint e    = gl_WorkGroupID.x;
+    vec3 v0   = worldPos[silEdges[e].x];
+    vec3 v1   = worldPos[silEdges[e].y];
+    vec3 view = normalize(cameraPos - (v0+v1)*0.5);
+    vec3 edge = normalize(v1-v0);
+    vec3 outDir = normalize(cross(edge, view));  // extrude direction
+    // Emit 4 vertices: inner edge v0,v1; outer edge v0+w*out, v1+w*out
+    SetMeshOutputsEXT(4, 2);
+    gl_MeshVerticesEXT[0].gl_Position = viewProj*vec4(v0,1);
+    gl_MeshVerticesEXT[1].gl_Position = viewProj*vec4(v1,1);
+    gl_MeshVerticesEXT[2].gl_Position = viewProj*vec4(v0+outDir*OUTLINE_WIDTH,1);
+    gl_MeshVerticesEXT[3].gl_Position = viewProj*vec4(v1+outDir*OUTLINE_WIDTH,1);
+    gl_PrimitiveTriangleIndicesEXT[0] = uvec3(0,1,2);
+    gl_PrimitiveTriangleIndicesEXT[1] = uvec3(1,3,2);
+}
+```
+
+[Source: Raskar & Cohen "Image Precision Silhouette Edges on a GPU", I3D 1999; Isenberg et al. "A Developer's Guide to Silhouette Algorithms for Polygonal Models", IEEE CGA 2003]
+
+### 85.3 Ridge and Valley Lines from Principal Curvature
+
+Ridges are loci where the maximum principal curvature κ₁ is locally maximal along its curvature direction e₁. Detect them per-edge by sign change of the directional derivative of κ₁:
+
+```glsl
+// ridge_valley.comp — detect ridge/valley lines from principal curvature
+layout(set=0,binding=0) readonly buffer Kappa  { vec2 kappa[]; };  // k1,k2 per vertex
+layout(set=0,binding=1) readonly buffer E1dir  { vec3 e1[];    };  // max curvature direction
+layout(set=0,binding=2) readonly buffer HalfEdge { HalfEdgeDS he[]; };
+layout(set=0,binding=3) buffer RidgeEdges { uvec2 ridges[]; uint count; };
+layout(local_size_x=64) in;
+void main() {
+    uint e  = gl_GlobalInvocationID.x;
+    uint vi = he[e].vert, vj = he[he[e].twin].vert;
+    // Directional derivative of k1 along edge direction
+    vec3  edgeDir = normalize(pos[vj]-pos[vi]);
+    float dk1i    = dot(e1[vi], edgeDir) * kappa[vi].x;
+    float dk1j    = dot(e1[vj], edgeDir) * kappa[vj].x;
+    if (dk1i * dk1j < 0.0 && max(kappa[vi].x, kappa[vj].x) > RIDGE_THRESHOLD) {
+        uint slot = atomicAdd(count, 1u);
+        ridges[slot] = uvec2(vi, vj);
+    }
+}
+```
+
+[Source: Ohtake et al. "Ridge-Valley Lines on Meshes via Implicit Surface Fitting", SIGGRAPH 2004; DeCarlo et al. "Suggestive Contours for Conveying Shape", SIGGRAPH 2003]
+
+### 85.4 Suggestive Contours
+
+Suggestive contours are where the radial curvature κᵣ (curvature in the view direction projected onto the surface) crosses zero with negative derivative — predicting silhouettes that would appear under small view perturbations:
+
+```glsl
+// suggestive_contour.comp — find suggestive contour edges
+layout(set=0,binding=0) readonly buffer Kappa  { vec2 kappa[]; };   // k1, k2
+layout(set=0,binding=1) readonly buffer PrinDir { vec3 e1[]; vec3 e2[]; };
+layout(set=0,binding=2) readonly buffer Pos    { vec3 pos[]; };
+layout(set=0,binding=3) readonly buffer HalfEdge { HalfEdgeDS he[]; };
+layout(set=0,binding=4) buffer SCEdges { uvec2 sc[]; uint count; };
+layout(push_constant) uniform PC { vec3 viewPos; } pc;
+layout(local_size_x=64) in;
+
+float radialCurvature(uint v) {
+    vec3  w    = normalize(pc.viewPos - pos[v]);
+    vec3  wt   = normalize(w - dot(w, nor[v])*nor[v]);  // project to tangent
+    float cosA = dot(wt, e1[v]);
+    float sinA = dot(wt, e2[v]);
+    return kappa[v].x*cosA*cosA + kappa[v].y*sinA*sinA;
+}
+void main() {
+    uint e  = gl_GlobalInvocationID.x;
+    uint vi = he[e].vert, vj = he[he[e].twin].vert;
+    float ki = radialCurvature(vi), kj = radialCurvature(vj);
+    if (ki * kj < 0.0)  {  // zero crossing of radial curvature
+        uint slot = atomicAdd(count, 1u);
+        sc[slot] = uvec2(vi, vj);
+    }
+}
+```
+
+[Source: DeCarlo et al. 2003; Judd et al. "Apparent Ridges for Line Drawing", SIGGRAPH 2007]
+
+---
+
+## 86. 3D Feature Descriptors and Pose Estimation
+
+*Audience: systems developers, graphics application developers.*
+
+3D feature descriptors encode local geometry around a keypoint into a compact vector used for point cloud matching and pose estimation. GPU algorithms compute Fast Point Feature Histograms (FPFH) and SHOT descriptors in parallel across all keypoints, then use GPU-RANSAC (§78.2 pattern) to estimate the 6-DOF rigid transform aligning two point clouds.
+
+### 86.1 Normal Estimation via PCA
+
+Before computing descriptors, estimate the surface normal at each point from its k-NN via PCA. The smallest eigenvector of the 3×3 covariance matrix of the neighbour positions is the normal:
+
+```glsl
+// normal_pca.comp — PCA normal estimation from k-NN
+layout(set=0,binding=0) readonly buffer Pts { vec3 pts[]; };
+layout(set=0,binding=1) readonly buffer KNN { uint knn[K_NN]; };  // k-NN indices per point
+layout(set=0,binding=2) writeonly buffer Normals { vec3 nor[]; };
+layout(local_size_x=64) in;
+void main() {
+    uint p  = gl_GlobalInvocationID.x;
+    vec3 c  = pts[p];
+    for (uint k=0;k<K_NN;k++) c += pts[knn[p*K_NN+k]];
+    c /= float(K_NN+1);
+    mat3 Cov = mat3(0.0);
+    for (uint k=0;k<K_NN;k++) {
+        vec3 d = pts[knn[p*K_NN+k]] - c;
+        Cov   += outerProduct(d,d);
+    }
+    // Smallest eigenvalue of Cov → normal (power iteration on inverse)
+    vec3 n = smallestEigenvec3x3(Cov);
+    // Orient toward view point (flip if dot < 0)
+    nor[p] = dot(n, VIEW_ORIGIN - pts[p]) > 0.0 ? n : -n;
+}
+```
+
+[Source: Rusu et al. "Towards 3D Point Cloud Based Object Maps for Household Environments", Robotics and Autonomous Systems 2008]
+
+### 86.2 FPFH Descriptor Computation
+
+FPFH (Rusu et al. 2009) encodes the pairwise angular relationships between a point and its k-neighbours into a 33-dimensional histogram:
+
+```glsl
+// fpfh.comp — compute FPFH descriptor for each keypoint
+layout(set=0,binding=0) readonly buffer Pts { vec3 pts[]; };
+layout(set=0,binding=1) readonly buffer Nor { vec3 nor[]; };
+layout(set=0,binding=2) readonly buffer KNN { uint knn[]; };
+layout(set=0,binding=3) writeonly buffer FPFH { float fpfh[N_PTS][33]; };
+layout(local_size_x=64) in;
+void main() {
+    uint p  = gl_GlobalInvocationID.x;
+    float hist[33] = {0.0};
+    for (uint k=0; k<K_NN; k++) {
+        uint q   = knn[p*K_NN+k];
+        vec3 d   = normalize(pts[q]-pts[p]);
+        // Darboux frame angles: α, φ, θ
+        vec3 u   = nor[p];
+        vec3 v   = cross(d, u);
+        vec3 w   = cross(u, v);
+        float alpha = dot(v, nor[q]);
+        float phi   = dot(u, d);
+        float theta = atan(dot(w,nor[q]), dot(u,nor[q]));
+        // Bin into 11-bin histograms for each angle
+        hist[int((alpha+1.0)*5.0)]     += 1.0/float(K_NN);
+        hist[11+int((phi+1.0)*5.0)]    += 1.0/float(K_NN);
+        hist[22+int((theta+3.14159)*11.0/6.28318)] += 1.0/float(K_NN);
+    }
+    for (int i=0;i<33;i++) fpfh[p][i] = hist[i];
+}
+```
+
+[Source: Rusu et al. "Fast Point Feature Histograms (FPFH) for 3D Registration", ICRA 2009]
+
+### 86.3 Descriptor Matching via GPU k-NN
+
+Match FPFH descriptors between two point clouds by finding the nearest-neighbour in descriptor space. Brute-force is O(N·M·33); approximate GPU k-NN via product quantization for large clouds:
+
+```glsl
+// fpfh_match.comp — brute-force nearest-neighbour matching in FPFH space
+layout(set=0,binding=0) readonly buffer FPFH_A { float fA[N_A][33]; };
+layout(set=0,binding=1) readonly buffer FPFH_B { float fB[N_B][33]; };
+layout(set=0,binding=2) writeonly buffer Matches { uint match[N_A]; float matchDist[N_A]; };
+layout(local_size_x=64) in;
+void main() {
+    uint i   = gl_GlobalInvocationID.x;
+    float bestD = 1e30; uint bestJ = 0u;
+    for (uint j=0; j<N_B; j++) {
+        float d = 0.0;
+        for (int k=0; k<33; k++) { float diff=fA[i][k]-fB[j][k]; d+=diff*diff; }
+        if (d < bestD) { bestD=d; bestJ=j; }
+    }
+    match[i]=bestJ; matchDist[i]=bestD;
+}
+```
+
+[Source: Rusu et al. 2009; GPU ANN: Johnson & Hebert "Using Spin Images for Efficient Object Recognition in Cluttered 3D Scenes", IEEE TPAMI 1999]
+
+### 86.4 6-DOF Pose Estimation via GPU-RANSAC
+
+Use the §78.2 GPU-RANSAC pattern with 3-point samples (minimum for a rigid transform) to estimate the transformation matrix aligning the two point clouds:
+
+```glsl
+// pose_ransac.comp — GPU-RANSAC for 6-DOF point cloud alignment
+layout(set=0,binding=0) readonly buffer Pts_A { vec3 pA[]; };
+layout(set=0,binding=1) readonly buffer Pts_B { vec3 pB[]; };
+layout(set=0,binding=2) readonly buffer Matches { uint match[]; };
+layout(set=0,binding=3) readonly buffer Seeds   { uint seeds[][3]; };
+layout(set=0,binding=4) buffer InlierCount { uint cnt[]; };
+layout(set=0,binding=5) buffer BestTransform { mat4 T[]; };
+layout(push_constant) uniform PC { uint N_HYPO; uint N_MATCHES; float thresh; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint h  = gl_GlobalInvocationID.x;
+    if (h >= pc.N_HYPO) return;
+    // Compute rigid transform from 3 point correspondences (SVD-based)
+    mat4 Th = computeRigidTransform3(pA, pB, match, seeds[h]);
+    uint inl = 0u;
+    for (uint m=0; m<pc.N_MATCHES; m++) {
+        vec3 ta = (Th * vec4(pA[m],1.0)).xyz;
+        if (length(ta - pB[match[m]]) < pc.thresh) inl++;
+    }
+    cnt[h]=inl; T[h]=Th;
+}
+// CPU: pick argmax(cnt), refine with all inliers via ICP (§21)
+```
+
+[Source: Rusu et al. "Fast Global Registration", ECCV 2016; Fischler & Bolles "Random Sample Consensus: A Paradigm for Model Fitting", CACM 1981]
+
+---
+
+## 87. GPU Mesh Segmentation and Part Decomposition
+
+*Audience: graphics application developers, systems developers.*
+
+Mesh segmentation partitions a mesh into semantically meaningful regions — limbs, torso, head — for applications including automated rigging, per-part LOD generation, texture atlasing (§66), and physics proxy generation (§22). GPU algorithms include geodesic k-means clustering, random walk segmentation, and the shape diameter function (SDF-based thickness measure).
+
+### 87.1 Shape Diameter Function (SDF Thickness)
+
+The shape diameter function (Shapira et al. 2008) at each vertex is the mean length of inward rays that hit the opposite surface — a measure of local thickness used to distinguish thin (arm) from thick (torso) regions:
+
+```glsl
+// sdf_thickness.comp — compute SDF thickness via inward ray bundle
+layout(set=0,binding=0) readonly buffer Pos  { vec3 pos[];  };
+layout(set=0,binding=1) readonly buffer Norm { vec3 nor[];  };
+layout(set=0,binding=2) uniform accelerationStructureEXT tlas;
+layout(set=0,binding=3) writeonly buffer Thickness { float sdf[]; };
+layout(push_constant) uniform PC { int nRays; float maxLen; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint v   = gl_GlobalInvocationID.x;
+    vec3 p   = pos[v] - nor[v]*1e-3;  // offset inward
+    float sum = 0.0; int hits = 0;
+    for (int r=0; r<pc.nRays; r++) {
+        vec3 d = -nor[v] + sampleCone(nor[v], 0.3, halton2D(r));
+        d = normalize(d);
+        rayQueryEXT rq;
+        rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, 0xFF, p, 0.0, d, pc.maxLen);
+        rayQueryProceedEXT(rq);
+        if (rayQueryGetIntersectionTypeEXT(rq,true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+            sum  += rayQueryGetIntersectionTEXT(rq,true);
+            hits++;
+        }
+    }
+    sdf[v] = (hits>0) ? sum/float(hits) : pc.maxLen;
+}
+```
+
+[Source: Shapira et al. "Consistent Mesh Partitioning and Skeletonisation Using the Shape Diameter Function", The Visual Computer 2008]
+
+### 87.2 Geodesic K-Means Clustering
+
+Assign each vertex to the nearest cluster centre in geodesic distance; update centres to the Fréchet mean of their cluster. GPU heat method (§65) computes geodesic distances from each centre:
+
+```glsl
+// geodesic_kmeans_assign.comp — assign vertices to nearest geodesic cluster centre
+layout(set=0,binding=0) readonly buffer GeoDist { float gd[K_CLUSTERS][N_VERTS]; };  // from §65
+layout(set=0,binding=1) writeonly buffer ClusterID { uint cid[]; };
+layout(set=0,binding=2) writeonly buffer ClusterDist { float cdist[]; };
+layout(local_size_x=64) in;
+void main() {
+    uint v = gl_GlobalInvocationID.x;
+    float bestD=1e30; uint bestC=0u;
+    for (uint c=0; c<K_CLUSTERS; c++)
+        if (gd[c][v] < bestD) { bestD=gd[c][v]; bestC=c; }
+    cid[v]=bestC; cdist[v]=bestD;
+}
+// Update pass: for each cluster, find vertex minimising sum of geodesic distances (Fréchet mean)
+// Repeat assignment+update until convergence (5-20 iterations)
+```
+
+[Source: Shlafman et al. "Metamorphosis of Polyhedral Surfaces Using Decomposition", EG 2002; Katz & Tal "Hierarchical Mesh Decomposition Using Fuzzy Clustering and Cuts", SIGGRAPH 2003]
+
+### 87.3 Random Walk Segmentation
+
+Random walk segmentation (Grady 2006) marks a subset of vertices as seeds (one per segment) and solves a linear system to find the probability that a random walk from each vertex first reaches each seed. The label with highest probability wins:
+
+```glsl
+// rw_segment.comp — one Jacobi iteration for random walk segmentation
+// Solve L·x = b where L is graph Laplacian, x is probability of reaching seed s
+layout(set=0,binding=0) readonly buffer L_val { float Lv[]; uint Lcol[]; uint Lrow[]; };
+layout(set=0,binding=1) buffer X { float x[]; };  // probability field
+layout(set=0,binding=2) readonly buffer Seeds { uint isSeed[]; float seedVal[]; };
+layout(local_size_x=64) in;
+void main() {
+    uint v   = gl_GlobalInvocationID.x;
+    if (isSeed[v]) { x[v] = seedVal[v]; return; }  // boundary condition
+    float num = 0.0, denom = 0.0;
+    for (uint e=Lrow[v]; e<Lrow[v+1]; e++) {
+        float w = -Lv[e];  // off-diagonal weights are negative
+        num   += w * x[Lcol[e]];
+        denom += w;
+    }
+    x[v] = (denom>1e-8) ? num/denom : 0.0;
+}
+// Run for each seed label; assign vertex to label with highest probability
+```
+
+[Source: Grady "Random Walks for Image Segmentation", IEEE TPAMI 2006; applied to meshes: Lai et al. "Mesh Decomposition with Cross-Boundary Brushes", EG 2009]
+
+### 87.4 Part Adjacency Graph and Skeleton Extraction
+
+From the segmentation (§87.2–87.3), build a part adjacency graph and extract a curve skeleton via medial axis of the SDF thickness field (§87.1):
+
+```glsl
+// part_adjacency.comp — build part adjacency graph from segmentation
+layout(set=0,binding=0) readonly buffer ClusterID { uint cid[]; };
+layout(set=0,binding=1) readonly buffer HalfEdge  { HalfEdgeDS he[]; };
+layout(set=0,binding=2) buffer AdjMatrix { uint adj[K_CLUSTERS][K_CLUSTERS]; };
+layout(local_size_x=64) in;
+void main() {
+    uint e  = gl_GlobalInvocationID.x;
+    uint ci = cid[he[e].face];
+    uint cj = cid[he[he[e].twin].face];
+    if (ci != cj) atomicOr(adj[ci][cj], 1u);  // mark adjacency
+}
+// From adjacency graph: build skeleton by contracting each part to its geodesic centroid
+// Connect centroids following adjacency → curve skeleton usable for §58 rigging
+```
+
+[Source: Au et al. "Skeleton Extraction by Mesh Contraction", SIGGRAPH 2008; Tagliasacchi et al. "3D Skeletons: A State-of-the-Art Report", EG 2016]
+
+---
+
+## 88. GPU Radiosity: Form Factor Computation
+
+*Audience: graphics application developers.*
+
+Radiosity (Goral et al. 1984) computes diffuse inter-reflections by solving a linear system where the coefficient matrix contains *form factors* F_{ij} — the fraction of energy leaving patch i that arrives at patch j. GPU hemicube rendering computes form factors for all patches in a scene in parallel.
+
+### 88.1 Hemicube Rendering for Form Factors
+
+For each patch i, render the scene from i's centroid onto a hemicube (five 90° faces). The delta form factor ΔF_{ij} for each hemicube texel is a precomputed weight; the form factor F_{ij} is the sum over all texels covered by patch j:
+
+```glsl
+// hemicube_project.comp — project patches onto hemicube face, accumulate form factors
+layout(set=0,binding=0) readonly buffer PatchCentroid { vec3 cen[];  };
+layout(set=0,binding=1) readonly buffer PatchNormal   { vec3 nor[];  };
+layout(set=0,binding=2) readonly buffer PatchArea     { float area[]; };
+layout(set=0,binding=3) buffer FormFactor { float F[MAX_PATCHES][MAX_PATCHES]; };
+layout(push_constant) uniform PC { uint srcPatch; uint hemiFace; uvec2 hemiRes; } pc;
+layout(local_size_x=8,local_size_y=8) in;
+void main() {
+    ivec2 pix  = ivec2(gl_GlobalInvocationID.xy);
+    // Ray from patch centroid through hemicube texel
+    vec3  rayDir = hemicubeRayDir(pix, pc.hemiFace, pc.hemiRes);
+    float dff    = deltaFormFactor(pix, pc.hemiFace, pc.hemiRes);  // precomputed weight
+    // Find which patch this ray hits (via BVH traverse §70)
+    uint  hitPatch = bvhRayQuery(cen[pc.srcPatch] + nor[pc.srcPatch]*1e-3, rayDir);
+    if (hitPatch == INVALID) return;
+    atomicAdd_float(F[pc.srcPatch][hitPatch], dff);
+}
+```
+
+[Source: Cohen & Greenberg "The Hemi-Cube: A Radiosity Solution for Complex Environments", SIGGRAPH 1985; GPU radiosity: Stamminger et al. "Hierarchical Solution for Radiosity on GPUs", EG 2002]
+
+### 88.2 Progressive Radiosity Solve
+
+The radiosity system B = E + ρ·F·B (B=radiosity, E=emission, ρ=reflectance, F=form factor matrix) is solved by iterative shooting: in each step, the patch with the most unshot energy broadcasts to all others:
+
+```glsl
+// radiosity_shoot.comp — shoot energy from max-energy patch to all others
+layout(set=0,binding=0) buffer Radiosity { vec3 B[];       };  // per-patch radiosity
+layout(set=0,binding=1) buffer Unshot    { vec3 unshot[];  };  // energy waiting to be shot
+layout(set=0,binding=2) readonly buffer FormFactor { float F[MAX_PATCHES][MAX_PATCHES]; };
+layout(set=0,binding=3) readonly buffer Reflectance { vec3 rho[]; };
+layout(push_constant) uniform PC { uint srcPatch; float srcArea; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint j  = gl_GlobalInvocationID.x;
+    vec3 dB = rho[j] * F[pc.srcPatch][j] * unshot[pc.srcPatch] * pc.srcArea / area[j];
+    B[j]       += dB;
+    unshot[j]  += dB;
+}
+// CPU: after each pass, zero unshot[srcPatch], find next max-energy patch, repeat
+```
+
+[Source: Cohen et al. "A Progressive Refinement Approach for Fast Radiosity Image Generation", SIGGRAPH 1988; Neumann "Monte Carlo Radiosity", Computing 1995]
+
+### 88.3 Hierarchical Radiosity
+
+For large scenes, hierarchical radiosity (Hanrahan et al. 1991) subdivides patches and only computes form factors at the appropriate refinement level. GPU kernel: for each patch pair, test whether their form factor contribution exceeds a threshold; if so, subdivide:
+
+```glsl
+// hrad_refine.comp — decide whether patch pair (i,j) needs subdivision
+layout(set=0,binding=0) readonly buffer PatchArea { float area[]; };
+layout(set=0,binding=1) readonly buffer FormFactor { float F[][]; };
+layout(set=0,binding=2) buffer RefineFlags { uint subdivide[]; };
+layout(push_constant) uniform PC { float eps; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint pair = gl_GlobalInvocationID.x;
+    uint i = patchPairs[pair].x, j = patchPairs[pair].y;
+    // BF oracle: if F[i][j] * B[i] * area[i] > eps → need finer form factor
+    float BF = length(unshot[i]) * F[i][j] * area[i];
+    if (BF > pc.eps) {
+        atomicOr(subdivide[i], 1u);
+        atomicOr(subdivide[j], 1u);
+    }
+}
+```
+
+[Source: Hanrahan et al. "A Rapid Hierarchical Radiosity Algorithm", SIGGRAPH 1991]
+
+### 88.4 Irradiance Caching for Radiosity Rendering
+
+Store per-vertex irradiance from the radiosity solve; interpolate at shade points using the irradiance cache (Ward & Heckbert 1992):
+
+```glsl
+// irradiance_cache.frag — lookup interpolated irradiance from radiosity patches
+uniform sampler2D gWorldPos;
+uniform sampler2D gNormal;
+layout(set=0,binding=0) readonly buffer IrradCache { IrradSample samples[]; };
+layout(set=0,binding=1) readonly buffer KDTree { uint kd[]; };
+in vec2 texUV;
+void main() {
+    vec3  P  = texture(gWorldPos, texUV).xyz;
+    vec3  N  = texture(gNormal,   texUV).xyz;
+    vec3  E  = vec3(0.0); float wSum = 0.0;
+    // k-NN lookup in irradiance cache (§65.1 pattern → BVH §70)
+    for (int k=0; k<CACHE_K; k++) {
+        IrradSample s = findKthNearest(kd, samples, P, k);
+        float w = 1.0 / (length(P-s.pos) + s.Ri * (1.0-dot(N,s.nor)));
+        E    += w * s.irrad;
+        wSum += w;
+    }
+    fragColor = vec4(E/wSum * albedo, 1.0);
+}
+```
+
+[Source: Ward & Heckbert "Irradiance Gradients", EGWR 1992; Krivánek et al. "Radiance Caching for Efficient Global Illumination Computation", IEEE TVCG 2005]
+
+---
+
+## 89. GPU Mesh Repair and Waterproofing
+
+*Audience: systems developers.*
+
+Meshes from 3D scanning, CAD export, isosurface extraction (§61), or CSG operations (§63) frequently contain gaps, T-junctions, non-manifold edges, and inconsistent winding. GPU mesh repair identifies and fixes these defects, producing a watertight manifold mesh suitable for simulation (§22, §59), 3D printing slicing, and CSG (§63).
+
+### 89.1 Non-Manifold Edge Detection
+
+A non-manifold edge is shared by more than two faces, or a boundary edge connecting to a non-manifold vertex. Detect in parallel across all edges:
+
+```glsl
+// nonmanifold_detect.comp — count face valence per edge
+layout(set=0,binding=0) readonly buffer EdgeFaces { uint ef[]; uint efStart[]; };
+layout(set=0,binding=1) writeonly buffer ManifoldFlag { uint flag[]; };
+layout(local_size_x=64) in;
+void main() {
+    uint e = gl_GlobalInvocationID.x;
+    uint n = efStart[e+1] - efStart[e];  // face count per edge
+    // Manifold: n==2 (interior) or n==1 (boundary). Non-manifold: n==0 or n>2.
+    flag[e] = (n == 1u || n == 2u) ? 0u : 1u;
+}
+```
+
+[Source: Botsch et al. "Polygon Mesh Processing", A K Peters 2010, §1.3]
+
+### 89.2 Hole Detection via Boundary Loop Tracing
+
+Boundary edges (valence 1) form closed loops. GPU BFS traces each loop to find its length and classify it as a small gap (2–4 edges), medium hole, or large hole:
+
+```glsl
+// hole_detect.comp — trace boundary loops, compute loop lengths
+layout(set=0,binding=0) readonly buffer HalfEdge { HalfEdgeDS he[]; };
+layout(set=0,binding=1) buffer BoundaryFlag { uint isBoundary[]; };
+layout(set=0,binding=2) buffer HoleLoops { uint loopStart[]; uint loopLen[]; uint nLoops; };
+layout(local_size_x=1) in;  // serial BFS; parallelism across separate loops
+void main() {
+    for (uint e=0; e<N_EDGES; e++) {
+        if (!isBoundary[e] || visited[e]) continue;
+        uint loop = atomicAdd(nLoops, 1u);
+        loopStart[loop] = e;
+        uint cur = e; uint len = 0u;
+        do { visited[cur]=1u; cur=he[cur].next; len++; } while (cur!=e && len<MAX_LOOP);
+        loopLen[loop] = len;
+    }
+}
+```
+
+### 89.3 Hole Filling via Minimum-Area Triangulation
+
+Fill a boundary loop by triangulating the polygon using the minimum-area fan triangulation. For small loops (≤8 edges), exhaustive search is feasible on GPU; for large holes, use the advancing front method:
+
+```glsl
+// hole_fill.comp — fill boundary loop with minimum-area fan triangulation
+layout(set=0,binding=0) readonly buffer LoopVerts { uint loop[MAX_LOOP_LEN]; };
+layout(set=0,binding=1) readonly buffer Pos       { vec3 pos[]; };
+layout(set=0,binding=2) buffer NewTris { uvec3 tris[]; uint count; };
+layout(push_constant) uniform PC { uint loopLen; uint loopOffset; } pc;
+layout(local_size_x=1) in;
+void main() {
+    // Fan triangulation from first vertex (pivot): N-2 triangles for N-gon
+    uint v0 = loop[pc.loopOffset];
+    for (uint i=1; i+1<pc.loopLen; i++) {
+        uint slot = atomicAdd(count, 1u);
+        tris[slot] = uvec3(v0, loop[pc.loopOffset+i], loop[pc.loopOffset+i+1]);
+    }
+    // For higher quality: Liepa "Filling Holes in Meshes" minimum-area DP algorithm
+}
+```
+
+[Source: Liepa "Filling Holes in Meshes", SGP 2003; Zhao et al. "A Robust Hole-Filling Algorithm for Triangular Mesh", The Visual Computer 2007]
+
+### 89.4 T-Junction Resolution and Winding Consistency
+
+T-junctions (a vertex of one triangle lying on the edge of another without being shared) cause cracks in rendering. Detect and fix by inserting the T-vertex into the adjacent edge:
+
+```glsl
+// tjunction_fix.comp — detect T-junctions: vertex near (but not on) adjacent edge
+layout(set=0,binding=0) readonly buffer Pos  { vec3 pos[]; };
+layout(set=0,binding=1) readonly buffer Tris { uvec3 tris[]; };
+layout(set=0,binding=2) buffer TJunctions { uint tjEdge[]; uint tjVert[]; uint count; };
+layout(push_constant) uniform PC { float thresh; uint N_TRIS; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint t  = gl_GlobalInvocationID.x;
+    for (int e=0; e<3; e++) {
+        uint va=tris[t][e], vb=tris[t][(e+1)%3];
+        // Check all vertices of neighbouring triangles for proximity to edge (va,vb)
+        for (uint nt=0; nt<pc.N_TRIS; nt++) {
+            if (nt==t) continue;
+            for (int k=0; k<3; k++) {
+                uint vc = tris[nt][k];
+                if (vc==va||vc==vb) continue;
+                float d = pointEdgeDist(pos[vc], pos[va], pos[vb]);
+                if (d < pc.thresh) {
+                    uint slot = atomicAdd(count, 1u);
+                    tjEdge[slot] = t*3+e; tjVert[slot]=vc;
+                }
+            }
+        }
+    }
+}
+// CPU post-pass: for each T-junction, split edge (va,vb) at projected point, retopologize
+```
+
+[Source: Attene et al. "Polygon Mesh Repairing: An Application Perspective", ACM Computing Surveys 2013; Murali & Funkhouser "Consistent Solid and Boundary Representations from Arbitrary Polygonal Data", I3D 1997]
+
+---
+
+## 90. Library Landscape
 
 **Coverage gap.** No single open-source library covers more than a narrow slice of the algorithms in this chapter. The table below maps the available libraries against the chapter's topic areas; empty cells represent functionality that must be implemented directly in shader/compute code using the patterns shown in the preceding sections. This fragmentation is the norm in GPU geometry programming: the field is young enough that GPU-native algorithmic libraries have not yet consolidated around a common abstraction layer comparable to what BLAS/LAPACK provide for linear algebra.
 
@@ -11530,9 +12758,33 @@ Sub::CatmullClark_subdivision(mesh,
 
 **What is missing.** Spanning all eight tables, the most significant gaps on Vulkan are: GPU BVH construction (covered by RadeonRays on Vulkan; Embree on SYCL), SDF baking (§71 — no Vulkan library; jump-flooding compute patterns are the only path), mesh fairing (§72 — CPU-only in geometry-central), and terrain erosion (§79 — Unity/CUDA reference only). Neural geometry (§73) is CUDA-exclusive. Spectral processing (§77) has no GPU library. The CUDA ecosystem now covers approximately thirty-five of the seventy-nine sections; the Vulkan compute shader patterns across §10–§79 remain the primary portable path for the remainder.
 
+**Table I — §80–§89 coverage**
+
+| Library | Ver | GPU Backend | §80 Fluid Surf | §81 CCD | §82 ConvHull | §83 Remesh | §84 SSR | §85 Silhouette | §86 Descriptors | §87 Segment | §88 Radiosity | §89 Repair | Best Use |
+|---------|-----|-------------|:--------------:|:-------:|:------------:|:----------:|:-------:|:--------------:|:---------------:|:-----------:|:-------------:|:----------:|----------|
+| SplishSplash | 2.13 | CUDA | ✓ (anisotropic §80.2) | — | — | — | — | — | — | — | — | — | SPH/FLIP fluid simulation |
+| bullet3 | 3.25 | CUDA/OpenCL | — | ✓ (§81.1 conservative) | ✓ (GJK-based) | — | — | — | — | — | — | — | Rigid body + CCD |
+| Open3D | 0.18 | CUDA/Tensor | — | — | ✓ (GPU QuickHull §82) | ✓ (CVT §83.4) | — | — | ✓ (FPFH §86.2) | — | — | ✓ (§89.1) | Point cloud processing |
+| PCL | 1.14 | CUDA (partial) | — | — | — | — | — | — | ✓ (FPFH/SHOT §86) | ✓ (k-means §87.2) | — | — | Robotics point cloud |
+| meshoptimizer | 0.21 | CPU | — | — | — | ✓ (edge ops §83.2) | — | — | — | — | — | ✓ (§89.4) | Mesh optimisation/repair |
+| libigl | 2.5 | CPU+OpenGL | — | — | — | ✓ (ARAP §66) | — | ✓ (§85.3) | — | ✓ (rw §87.3) | — | ✓ (§89.3) | Geometry processing research |
+| geometry-central | 1.0 | CPU | — | — | — | ✓ (flip §83.1) | — | ✓ (§85.4) | — | — | — | — | Differential geometry |
+| Radeon Rays | 4.0 | Vulkan/HIP | — | — | — | — | — | — | — | — | — | — | Ray query (used by §84.1 HiZ) |
+| drjit / Mitsuba 3 | 0.4 | CUDA/LLVM | ✓ (§80.3 depth smooth) | — | — | — | — | — | — | — | ✓ (§88.2 radiosiy) | — | Differentiable rendering |
+| NVIDIA VKRay | SDK | Vulkan | — | — | — | — | ✓ (§84.1 HiZ) | — | — | — | — | — | RTX ray tracing SDK |
+| Manifold | 2.4 | CPU | — | — | — | — | — | — | — | — | — | ✓ (watertight CSG §89) | Robust mesh operations |
+
+**SplishSplash** (Bender et al., MIT) implements DFSPH and PCISPH with CUDA kernels for neighbour search, pressure solve, and anisotropic kernel computation (§80.2). Its surface reconstruction pipeline calls the GPU marching cubes of §61 on a density grid built with the Yu & Turk anisotropic splatting kernel.
+
+**Open3D** (Intel/NVIDIA, MIT) provides a GPU tensor API covering point cloud k-NN, GPU convex hull (§82), CVT-based resampling (§83.4), FPFH descriptor computation (§86.2), and mesh repair (§89.1 non-manifold detection). Its CUDA backend is the most complete open GPU geometry library for the §80–§89 range.
+
+**Manifold** (Knyszewski, Apache 2.0) implements exact, robust Boolean operations on manifold meshes and produces watertight output guaranteed to be manifold. It underpins the §89 repair discussion and is the recommended library for 3D printing pipeline repair.
+
+**What is missing in §80–§89.** GPU CCD (§81) has no Vulkan library; bullet3's CCD is CPU-based with CUDA broadphase only. GPU radiosity (§88) has no modern GPU library; all production engines compute it offline on the CPU or bake it with ray tracing (§34). Screen-space reflections (§84) are universally engine-internal (Unreal TSR, Unity URP). Silhouette detection (§85) and suggestive contours (§85.4) have no GPU library. Spanning all nine tables (§1–§89), the Vulkan compute shader patterns remain the primary portable path for the majority of sections not served by CUDA-exclusive libraries.
+
 ---
 
-## 81. Performance Reference
+## 91. Performance Reference
 
 **Subdivision** (OpenSubdiv stencil evaluation, RTX 4080):
 
@@ -11576,7 +12828,7 @@ Sub::CatmullClark_subdivision(mesh,
 
 ---
 
-## 82. Integrations
+## 92. Integrations
 
 - **Ch24 (Vulkan/EGL)** — Vulkan resource allocation patterns for SSBO-based subdivision and skinning buffers; pipeline barrier placement between compute passes.
 - **Ch25 (GPU Compute)** — Compute shader dispatch setup, shared memory usage for marching cubes tile optimization, prefix-scan patterns for compaction, and radix sort for Morton-code-based LBVH (§8).
