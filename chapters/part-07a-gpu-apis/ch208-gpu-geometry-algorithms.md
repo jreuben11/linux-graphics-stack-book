@@ -4777,7 +4777,9 @@ Flow fields scale to thousands of agents at constant cost per frame (one texture
 
 The closest approximation to a broad GPU geometry toolkit is **NVIDIA's** ecosystem when CUDA is available: cuSPARSE (sparse solvers for Poisson/LSCM), Thrust (prefix scans, radix sort, stream compaction), and NVCC-compiled versions of CPU libraries. On non-NVIDIA hardware the pattern in this chapter — implementing each algorithm as a self-contained Vulkan compute shader from first principles — remains the only portable path.
 
-Columns map to a subset of the chapter's major sections (§1–§9, the original nine); the ten new sections §10–§19 have no library coverage at all. — means no coverage.
+Two tables follow — one per group of nine sections — because a single 22-column table is unreadable. — means no coverage in that section.
+
+**Table A — §1–§9 coverage**
 
 | Library | Ver | GPU Backend | §1 Subdiv | §2 NURBS | §3 Implicit | §4 Skeletal | §5 IK | §6 Splines | §7 Mesh | §8 BVH/Coll | §9 SS | Best Use |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -4793,9 +4795,24 @@ Columns map to a subset of the chapter's major sections (§1–§9, the original
 | [V-HACD](https://github.com/kmammou/v-hacd) | 4.0 | None (CPU) | — | — | — | — | — | — | — | ✓ decomp | — | Convex hull for GJK |
 | [Triangle](https://www.cs.cmu.edu/~quake/triangle.html) | 1.6 | None | — | — | — | — | — | — | ✓ CDT | — | — | 2D CDT/quality meshing |
 
+**Table B — §10–§19 coverage**
+
+| Library | Ver | GPU Backend | §10 GPU-Driven | §11 Fluid | §12 Deform | §13 Proc | §14 Geo | §15 Shape | §16 3DGS | §17 Spatial | §18 Spectral | §19 NavMesh | Best Use |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| [meshoptimizer](https://github.com/zeux/meshoptimizer) | 0.22 | None (CPU → GPU output) | ✓ meshlets | — | — | — | — | — | — | — | — | — | Meshlet build + bounds |
+| [NanoVDB](https://github.com/AcademySoftwareFoundation/openvdb) | OVDBv9 | CUDA / Vulkan SSBO | — | — | — | — | — | — | — | ✓ SVO | — | — | Sparse voxel GPU traversal |
+| [CGAL](https://www.cgal.org) | 6.1 | None (CPU + TBB) | — | — | — | — | partial cotan | — | — | ✓ k-d tree | partial | — | CPU k-d tree, Laplacian |
+| [libigl](https://github.com/libigl/libigl) | 2.5.0 | None (CPU + Eigen) | — | — | partial FEM | — | ✓ cotan/geo | ✓ ARAP/MVC | — | — | ✓ spectral | — | Geodesics, deformation, spectral |
+| [SPlisHSPlasH](https://github.com/InteractiveComputerGraphics/SPlisHSPlasH) | 2.13 | CUDA | — | ✓ SPH/PBF/FLIP | — | — | — | — | — | — | — | — | GPU fluid simulation |
+| [PhysX 5](https://github.com/NVIDIA-Omniverse/PhysX) | 5.4 | CUDA | — | ✓ PBD fluid | ✓ FEM/cloth | — | — | — | — | — | — | — | GPU rigid + soft body + fluid |
+| [geometry-central](https://github.com/nmwsharp/geometry-central) | 0.x | None (CPU) | — | — | — | — | ✓ heat/cotan | partial | — | — | ✓ spectral | — | Geodesics, DDG reference |
+| [gsplat](https://github.com/nerfstudio-project/gsplat) | 1.x | CUDA / ROCm | — | — | — | — | — | — | ✓ 3DGS raster | — | — | — | GPU Gaussian splatting |
+| [FastNoise2](https://github.com/Auburn/FastNoise2) | 0.10 | SIMD / CUDA node graph | — | — | — | ✓ GPU noise | — | — | — | — | — | — | Procedural terrain noise |
+| [Recast/Detour](https://github.com/recastnavigation/recastnavigation) | 1.6 | None (CPU) | — | — | — | — | — | — | — | — | — | ✓ (CPU ref) | NavMesh voxelise + pathfind |
+
 **OpenSubdiv** ([source](https://github.com/PixarAnimationStudios/OpenSubdiv)) is the right choice for any production subdivision pipeline. The lack of a Vulkan evaluator requires the custom SSBO stencil approach described in §1.5.
 
-**CGAL** ([source](https://www.cgal.org), [subdivision](https://doc.cgal.org/latest/Subdivision_method_3/index.html)) provides `CGAL::Subdivision_method_3::CatmullClark_subdivision()` and `Loop_subdivision()` as single-call in-place operations on a `Surface_mesh`. It also covers 2D/3D Delaunay triangulation, constrained Delaunay, and Ruppert refinement — the broadest algorithmic coverage of any library in this table, though all CPU-only:
+**CGAL** ([source](https://www.cgal.org), [subdivision](https://doc.cgal.org/latest/Subdivision_method_3/index.html)) provides `CGAL::Subdivision_method_3::CatmullClark_subdivision()` and `Loop_subdivision()` as single-call in-place operations on a `Surface_mesh`. It also covers 2D/3D Delaunay triangulation, constrained Delaunay, Ruppert refinement, a CPU k-d tree (`CGAL::Kd_tree<>`), and a partial cotangent Laplacian via `CGAL::Polygon_mesh_processing::compute_vertex_normals()` — the broadest algorithmic span of any library here, though entirely CPU-only:
 
 ```cpp
 #include <CGAL/subdivision_method_3.h>
@@ -4804,23 +4821,35 @@ Sub::CatmullClark_subdivision(mesh,
     CGAL::parameters::number_of_iterations(2));
 ```
 
-**libigl** ([source](https://github.com/libigl/libigl)) provides `igl::lbs_matrix()` and `igl::dqs()` for computing LBS and DQS skinning, `igl::bbw()` for bounded biharmonic skinning weights, `igl::lscm()` and `igl::harmonic()` for UV parameterization, and `igl::marching_tets()` for isosurface extraction. All computations are CPU-side using Eigen; results upload to GPU as vertex buffers. libigl has the second-broadest algorithmic coverage — skinning, UV, isosurface — but with no GPU path.
+**libigl** ([source](https://github.com/libigl/libigl)) provides `igl::lbs_matrix()` and `igl::dqs()` for skinning, `igl::bbw()` for bounded biharmonic weights, `igl::lscm()` and `igl::harmonic()` for UV parameterization, `igl::marching_tets()` for isosurface extraction, `igl::heat_geodesics()` and `igl::cotmatrix()` for geodesics and the cotangent Laplacian, `igl::arap()` for ARAP deformation, `igl::mvc()` for mean value coordinates, and `igl::eigs()` for spectral geometry. All CPU-side using Eigen; upload results to GPU as vertex buffers. libigl has the widest algorithmic breadth of any portable library in this chapter — it spans §1, §3, §4, §7, §14, §15, and §18 — but has no GPU execution path.
 
-**GeometricTools** ([source](https://github.com/davideberly/GeometricTools), Boost license) provides `GTL::NURBSSurface<float, 3>` and `GTL::CatmullClarkSurface` as header-only CPU implementations. Use for offline asset preprocessing: evaluate on the CPU, upload to Vulkan vertex buffers via staging.
+**GeometricTools** ([source](https://github.com/davideberly/GeometricTools), Boost license) provides `GTL::NURBSSurface<float, 3>` and `GTL::CatmullClarkSurface` as header-only CPU implementations. Use for offline asset preprocessing.
 
-**meshoptimizer** ([source](https://github.com/zeux/meshoptimizer), MIT) provides `meshopt_simplify()` (QEM edge collapse), `meshopt_simplifyWithAttributes()` (attribute-preserving QEM), `meshopt_optimizeVertexCache()`, and `meshopt_optimizeOverdraw()`. Generate the full LOD chain offline (one call per LOD level), upload all LOD index buffers to a single `VkBuffer`, and select the active LOD per draw via `firstIndex`/`indexCount` offsets.
+**meshoptimizer** ([source](https://github.com/zeux/meshoptimizer), MIT) provides `meshopt_simplify()`, `meshopt_optimizeVertexCache()`, and `meshopt_buildMeshlets()` with `meshopt_computeMeshletBounds()` — the last two are §10 GPU-Driven Rendering directly. Generate the full LOD chain and meshlet data offline, upload to a single `VkBuffer`, and dispatch via the task/mesh shader pipeline.
 
-**NanoVDB** ([source](https://github.com/AcademySoftwareFoundation/openvdb), Apache 2.0, included in OpenVDB 9.0+) converts OpenVDB trees to flat GPU buffers via `nanovdb::openToNanoVDB()`. The companion GLSL header (`nanovdb/util/NanoVDB.glsl`) provides tree-descent accessors. Requires `VK_EXT_scalar_block_layout` for correct `std430` packing of the NanoVDB node arrays.
+**NanoVDB** ([source](https://github.com/AcademySoftwareFoundation/openvdb), Apache 2.0, OpenVDB 9.0+) converts OpenVDB trees to flat GPU buffers via `nanovdb::openToNanoVDB()`. The companion GLSL header provides tree-descent accessors matching §17.3 (SVO traversal). Requires `VK_EXT_scalar_block_layout`.
 
-**xatlas** ([source](https://github.com/jpcy/xatlas), MIT) generates UV atlases (chart segmentation, parameterization, packing) as a preprocessing step for texture baking (§7.13). CPU-only; outputs UV coordinates and a remapped index buffer ready for GPU upload.
+**xatlas** ([source](https://github.com/jpcy/xatlas), MIT) generates UV atlases as a preprocessing step for texture baking (§7.13). CPU-only; outputs UV coordinates and a remapped index buffer ready for GPU upload.
 
-**PoissonRecon** ([source](https://github.com/mkazhdan/PoissonRecon), MIT) is the reference implementation of screened Poisson surface reconstruction (§3.12). CPU multi-threaded (TBB); 10–60 s for 1M-point clouds. The GPU pipeline in §3.12 reimplements its core steps as Vulkan compute shaders.
+**PoissonRecon** ([source](https://github.com/mkazhdan/PoissonRecon), MIT) is the reference screened Poisson surface reconstruction (§3.12). CPU multi-threaded (TBB); 10–60 s for 1M-point clouds.
 
-**V-HACD 4.0** ([source](https://github.com/kmammou/v-hacd), BSD-3) decomposes non-convex meshes into convex hull approximations for physics (§8.5). CPU-only; results upload as static SSBOs for runtime GJK dispatch.
+**V-HACD 4.0** ([source](https://github.com/kmammou/v-hacd), BSD-3) decomposes non-convex meshes into convex hull approximations for physics (§8.5). CPU-only.
 
-**Triangle** ([source](https://www.cs.cmu.edu/~quake/triangle.html), Shewchuk, public domain) is the reference 2D CDT and Ruppert quality-mesh generator (§3.11). Single-file C library; wraps into any pipeline via `triangulateio` struct.
+**Triangle** ([source](https://www.cs.cmu.edu/~quake/triangle.html), Shewchuk, public domain) is the reference 2D CDT and Ruppert quality-mesh generator (§3.11). Single-file C library.
 
-**What is missing.** The table reveals a structural gap: no library provides GPU-native implementations across skinning, implicit surfaces, BVH construction, splines, and LOD in a single dependency. The closest analogue would be a "geometry shader toolkit" equivalent to what Thrust is for parallel primitives or FFTW is for transforms — and it does not yet exist. Practitioners building production GPU geometry pipelines must either assemble per-algorithm compute shaders from scratch (as this chapter does), use NVIDIA's CUDA ecosystem (cuSPARSE for solvers, Thrust for scans/sorts, OptiX for BVH), or wait for a future convergence of the field around Vulkan compute abstractions.
+**SPlisHSPlasH** ([source](https://github.com/InteractiveComputerGraphics/SPlisHSPlasH), MIT) is the most complete open-source GPU fluid simulation library. It implements SPH, PBF (Macklin 2013), DFSPH (divergence-free SPH), IISPH, PBD, and FLIP variants, all with CUDA backends. Spatial hashing for neighbour search runs on GPU; pressure and density solvers run fully on-device. The library outputs particle positions each step — couple to the SPH surface extraction pipeline from §3.8 to produce renderable meshes in real time.
+
+**PhysX 5** ([source](https://github.com/NVIDIA-Omniverse/PhysX), BSD-3) adds GPU-native FEM soft bodies (corotational linear elasticity on tet meshes, §12.2) and GPU cloth (Position-Based Dynamics, matching §4.6 and §12.1) alongside GPU rigid body simulation and PBD fluid. The soft body solver runs entirely on CUDA; results are available as CUDA device pointers that map directly to Vulkan external memory via `VK_KHR_external_memory` + `VK_EXT_external_memory_host`. No Vulkan-native API; requires interop.
+
+**geometry-central** ([source](https://github.com/nmwsharp/geometry-central), MIT) is the research reference implementation for discrete differential geometry: `HeatMethodDistance` (§14.2), cotangent Laplacian assembly, `StripePatterns` for seamless parameterization, vector heat method, and spectral basis computation (§18.1). CPU-only; results upload to GPU. Essential for verifying custom Vulkan compute DDG implementations against a known-correct baseline.
+
+**gsplat** ([source](https://github.com/nerfstudio-project/gsplat), Apache 2.0) is a production-quality GPU 3DGS rasterizer supporting CUDA and ROCm backends. It implements the full pipeline from §16 — Gaussian projection, tile assignment, radix sort, and per-tile alpha compositing — with forward and backward passes for training. For Vulkan integration, render to a CUDA surface then copy via external memory, or port the tile rasterizer kernels to Vulkan compute using the same algorithm (§16.2).
+
+**FastNoise2** ([source](https://github.com/Auburn/FastNoise2), MIT) provides a SIMD node-graph noise system supporting Perlin, OpenSimplex2, Cellular, Domain Warp, and fractal combinations (§13.1 terrain fBm). A CUDA backend is available for GPU-side evaluation. On CPU, AVX2/AVX-512 SIMD makes it fast enough for real-time heightmap generation.
+
+**Recast/Detour** ([source](https://github.com/recastnavigation/recastnavigation), Zlib) is the canonical navmesh library used by most game engines. Recast's voxelisation and region-labelling steps (§19.1–19.2) are CPU-only; no GPU port exists. The flow-field construction in §19.3 is implemented directly in compute shaders without a library equivalent. Recast is the correct preprocessing tool for static navmesh geometry; Detour handles the runtime pathfinding query API.
+
+**What is missing.** Even spanning both tables, no single library covers more than four of the nineteen algorithm sections, and no library provides GPU-native implementations across the four most algorithmically demanding sections — fluids, deformable bodies, geodesics, and 3DGS — in a single dependency with a Vulkan backend. The CUDA ecosystem (PhysX 5 + SPlisHSPlasH + gsplat + NanoVDB) comes closest for NVIDIA hardware, but requires CUDA–Vulkan interop for every GPU-resident result. On non-NVIDIA hardware or with a Vulkan-only constraint, all algorithms in §10–§19 must be implemented from first principles using the compute shader patterns in this chapter.
 
 ---
 
