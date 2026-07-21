@@ -3524,19 +3524,21 @@ outAO[i]        = mix(cachedAO, newAO, 1.0/16.0);      // 16-frame EMA
 
 The closest approximation to a broad GPU geometry toolkit is **NVIDIA's** ecosystem when CUDA is available: cuSPARSE (sparse solvers for Poisson/LSCM), Thrust (prefix scans, radix sort, stream compaction), and NVCC-compiled versions of CPU libraries. On non-NVIDIA hardware the pattern in this chapter — implementing each algorithm as a self-contained Vulkan compute shader from first principles — remains the only portable path.
 
-| Library | Version | GPU Backend | Subdivision | Skinning | Splines | NURBS | LOD/BVH | Implicit/Vol | Best Use |
-|---|---|---|---|---|---|---|---|---|---|
-| **OpenSubdiv** | 3.6.0 | GL compute, CUDA, Metal | ✓ (CC, Loop, Bilinear) | — | — | — | — | — | Production subdivision in VFX/games |
-| **CGAL** | 6.1 | None (CPU + TBB) | ✓ (CC, Loop, Doo-Sabin) | — | — | — | CDT, Ruppert | ✓ (MC, DC) | CPU preprocessing, export to GPU |
-| **GeometricTools** | 6.x | None | ✓ (CC, Doo-Sabin) | — | ✓ | ✓ | — | — | CPU reference for offline pipelines |
-| **libigl** | 2.5.0 | None (CPU + Eigen) | — | ✓ (LBS, DQS, BBW) | — | — | — | ✓ (MC, DC, MT) | Automatic skinning weights, UV parameterization |
-| **OpenCASCADE** | 8.0.0p1 | None (OpenGL vis only) | — | — | — | ✓ (BRep) | — | — | CAD NURBS → tessellation → VkBuffer |
-| **meshoptimizer** | 0.22 | None (CPU output → GPU) | — | — | — | — | ✓ LOD, cache | — | Production LOD chain and mesh optimization |
-| **NanoVDB** | OpenVDB 9.x | CUDA / Vulkan SSBO | — | — | — | — | — | ✓ sparse vol | Sparse volume GPU rendering and sphere tracing |
-| **xatlas** | 2.x | None | — | — | — | — | — | — | UV atlas layout (precedes texture baking §7.13) |
-| **PoissonRecon** | 13.x | None (CPU, multi-threaded) | — | — | — | — | — | ✓ surface recon | Point cloud → mesh (§3.12); GPU port is per-step |
-| **V-HACD** | 4.0 | None (CPU) | — | — | — | — | ✓ convex decomp | — | Convex decomposition for GJK (§8.4–8.5) |
-| **Triangle** | 1.6 | None | — | — | — | — | CDT, Ruppert | — | 2D CDT/quality meshing (§3.11) |
+Columns map to the nine major sections of this chapter; — means no coverage.
+
+| Library | Ver | GPU Backend | §1 Subdiv | §2 NURBS | §3 Implicit | §4 Skeletal | §5 IK | §6 Splines | §7 Mesh | §8 BVH/Coll | §9 SS | Best Use |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| [OpenSubdiv](https://github.com/PixarAnimationStudios/OpenSubdiv) | 3.6.0 | GL compute, CUDA, Metal | ✓ CC/Loop | — | — | — | — | — | — | — | — | Production subdivision |
+| [CGAL](https://www.cgal.org) | 6.1 | None (CPU + TBB) | ✓ CC/Loop/DS | — | ✓ MC/DC | — | — | — | ✓ CDT/repair | ✓ AABB tree | — | CPU preprocessing |
+| [GeometricTools](https://github.com/davideberly/GeometricTools) | 6.x | None | ✓ CC/DS | ✓ NURBS | partial | — | — | ✓ | — | ✓ BVH | — | CPU offline reference |
+| [libigl](https://github.com/libigl/libigl) | 2.5.0 | None (CPU + Eigen) | ✓ | — | ✓ MC/DC/MT | ✓ LBS/DQS | — | — | ✓ UV/Bool | — | — | Skinning weights, UV |
+| [OpenCASCADE](https://www.opencascade.com/) | 8.0.0p1 | None (OpenGL vis only) | — | ✓ BRep | — | — | — | — | ✓ tess | — | — | CAD NURBS → VkBuffer |
+| [meshoptimizer](https://github.com/zeux/meshoptimizer) | 0.22 | None (CPU → GPU output) | — | — | — | — | — | — | ✓ QEM/cache | — | — | LOD chain, compression |
+| [NanoVDB](https://github.com/AcademySoftwareFoundation/openvdb) | OVDBv9 | CUDA / Vulkan SSBO | — | — | ✓ sparse vol | — | — | — | — | — | — | Sparse volume GPU |
+| [xatlas](https://github.com/jpcy/xatlas) | 2.x | None | — | — | — | — | — | — | ✓ UV atlas | — | — | UV layout for baking |
+| [PoissonRecon](https://github.com/mkazhdan/PoissonRecon) | 13.x | None (CPU MT) | — | — | ✓ recon | — | — | — | — | — | — | Point cloud → mesh |
+| [V-HACD](https://github.com/kmammou/v-hacd) | 4.0 | None (CPU) | — | — | — | — | — | — | — | ✓ decomp | — | Convex hull for GJK |
+| [Triangle](https://www.cs.cmu.edu/~quake/triangle.html) | 1.6 | None | — | — | — | — | — | — | ✓ CDT | — | — | 2D CDT/quality meshing |
 
 **OpenSubdiv** ([source](https://github.com/PixarAnimationStudios/OpenSubdiv)) is the right choice for any production subdivision pipeline. The lack of a Vulkan evaluator requires the custom SSBO stencil approach described in §1.5.
 
