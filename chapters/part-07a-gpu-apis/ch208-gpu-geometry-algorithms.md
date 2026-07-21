@@ -128,9 +128,19 @@ The sections below are ordered by geometry domain rather than CPU/GPU split. Whe
     - 19.1 [Voxelisation for NavMesh Generation (Recast-style)](#191-voxelisation-for-navmesh-generation-recast-style)
     - 19.2 [Parallel Region Labelling via GPU BFS](#192-parallel-region-labelling-via-gpu-bfs)
     - 19.3 [GPU Flow Fields for Navigation](#193-gpu-flow-fields-for-navigation)
-20. [Library Landscape](#20-library-landscape)
-21. [Performance Reference](#21-performance-reference)
-22. [Integrations](#integrations)
+20. [Ray Tracing Geometry Pipeline](#20-ray-tracing-geometry-pipeline)
+21. [Point Cloud Processing](#21-point-cloud-processing)
+22. [Rigid Body Dynamics on GPU](#22-rigid-body-dynamics-on-gpu)
+23. [Crowd and Multi-Agent Simulation](#23-crowd-and-multi-agent-simulation)
+24. [GPU Remeshing](#24-gpu-remeshing)
+25. [Fracture and Destruction](#25-fracture-and-destruction)
+26. [Terrain LOD and Streaming](#26-terrain-lod-and-streaming)
+27. [Geometric Deep Learning](#27-geometric-deep-learning)
+28. [2D Vector Graphics on GPU](#28-2d-vector-graphics-on-gpu)
+29. [Scientific Visualization Geometry](#29-scientific-visualization-geometry)
+30. [Library Landscape](#30-library-landscape)
+31. [Performance Reference](#31-performance-reference)
+32. [Integrations](#32-integrations)
 
 ---
 
@@ -4771,7 +4781,1002 @@ Flow fields scale to thousands of agents at constant cost per frame (one texture
 
 ---
 
-## 20. Library Landscape
+## 20. Ray Tracing Geometry Pipeline
+
+*Audience: graphics application developers, systems developers.*
+
+Vulkan ray tracing (VK_KHR_ray_tracing_pipeline, core in Vulkan 1.2+ with KHR extensions) organises geometry into a two-level hierarchy. §8 covered LBVH *construction* as a compute algorithm; this section covers the Vulkan RT *pipeline* as a geometry-consumption interface — acceleration structure management, procedural geometry via intersection shaders, and animated geometry update strategies.
+
+### 20.1 Acceleration Structure Fundamentals: BLAS and TLAS
+
+- **BLAS (Bottom-Level Acceleration Structure):** Contains actual geometry — triangle meshes or AABBs for procedural geometry. Built once per unique mesh shape.
+- **TLAS (Top-Level Acceleration Structure):** Contains instances of BLASes with per-instance 3×4 transforms, visibility masks, and shader binding table offsets. Rebuilt each frame for animated scenes.
+
+Queries traverse TLAS → BLAS → geometry test. RT cores (NVIDIA) and BVH hardware (AMD RDNA3+) handle traversal; application provides shader callbacks at each intersection event.
+
+### 20.2 Building BLAS from Vertex/Index Buffers
+
+```cpp
+VkAccelerationStructureGeometryKHR geom{};
+geom.sType        = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+geom.flags        = VK_GEOMETRY_OPAQUE_BIT_KHR;
+auto& tri = geom.geometry.triangles;
+tri.sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+tri.vertexFormat  = VK_FORMAT_R32G32B32_SFLOAT;
+tri.vertexData.deviceAddress = vertexBufferDeviceAddress;
+tri.vertexStride  = sizeof(Vertex);
+tri.maxVertex     = vertexCount - 1;
+tri.indexType     = VK_INDEX_TYPE_UINT32;
+tri.indexData.deviceAddress  = indexBufferDeviceAddress;
+
+VkAccelerationStructureBuildGeometryInfoKHR buildInfo{};
+buildInfo.sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+buildInfo.type          = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+buildInfo.flags         = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+buildInfo.geometryCount = 1;
+buildInfo.pGeometries   = &geom;
+
+VkAccelerationStructureBuildSizesInfoKHR sizeInfo{};
+uint32_t primCount = triangleCount;
+vkGetAccelerationStructureBuildSizesKHR(device,
+    VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+    &buildInfo, &primCount, &sizeInfo);
+// Allocate result and scratch buffers, create AS handle, then:
+buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+buildInfo.dstAccelerationStructure  = blas;
+buildInfo.scratchData.deviceAddress = scratchAddress;
+VkAccelerationStructureBuildRangeInfoKHR range{triangleCount, 0, 0, 0};
+const auto* pRange = &range;
+vkCmdBuildAccelerationStructuresKHR(cmd, 1, &buildInfo, &pRange);
+```
+
+For multiple submeshes in one BLAS, pass an array of `VkAccelerationStructureGeometryKHR` and corresponding `VkAccelerationStructureBuildRangeInfoKHR` — one per submesh, different hit group offsets for different materials. [Source: Vulkan Spec §37.9; NVIDIA Vulkan Ray Tracing Tutorial https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/]
+
+### 20.3 TLAS and Instance Transforms
+
+```cpp
+VkAccelerationStructureInstanceKHR inst{};
+memcpy(inst.transform.matrix, glm::value_ptr(glm::transpose(modelMatrix)),
+       sizeof(inst.transform.matrix));          // row-major 3×4
+inst.instanceCustomIndex                    = objectID;          // gl_InstanceCustomIndexEXT
+inst.mask                                   = 0xFF;
+inst.instanceShaderBindingTableRecordOffset = hitGroupIndex;
+inst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+inst.accelerationStructureReference         = blasDeviceAddress;
+```
+
+For dynamic scenes, rebuild the TLAS each frame (instances are just a flat buffer of 64-byte structs — fast) while BLASes stay fixed unless mesh topology changes. For skinned meshes use BLAS refit (§20.5) then TLAS rebuild.
+
+### 20.4 Procedural Geometry via Intersection Shaders
+
+Geometry that cannot be represented as triangle soups (analytic spheres, SDF primitives, Bézier patches) uses AABB-based BLASes and a custom intersection shader. The AABB defines the bounding volume; the intersection shader computes the exact hit point:
+
+```glsl
+// sphere.rint — analytic sphere intersection
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+struct SphereData { vec3 center; float radius; };
+layout(set=0,binding=2) readonly buffer Spheres { SphereData spheres[]; };
+
+void main() {
+    SphereData s = spheres[gl_PrimitiveID];
+    vec3  oc = gl_WorldRayOriginEXT - s.center;
+    float a  = dot(gl_WorldRayDirectionEXT, gl_WorldRayDirectionEXT);
+    float b  = 2.0 * dot(oc, gl_WorldRayDirectionEXT);
+    float c  = dot(oc, oc) - s.radius * s.radius;
+    float disc = b*b - 4.0*a*c;
+    if (disc < 0.0) return;
+    float t = (-b - sqrt(disc)) / (2.0 * a);
+    if (t < gl_RayTminEXT || t > gl_RayTmaxEXT) {
+        t = (-b + sqrt(disc)) / (2.0 * a);
+        if (t < gl_RayTminEXT || t > gl_RayTmaxEXT) return;
+    }
+    reportIntersectionEXT(t, 0u);
+}
+```
+
+SDF sphere tracing (§3.7) runs as a hybrid: coarse BVH traversal from RT hardware, fine sphere-march inside the custom intersection shader — combining hardware AS traversal efficiency with analytical SDF accuracy. [Source: Vulkan Spec §14.7 Ray Tracing Shaders; Quilez "Raymarching Signed Distance Fields"]
+
+### 20.5 BLAS Refit for Animated Geometry
+
+When vertex positions change (skinning, cloth, fluid surface) but triangle topology stays constant, **refit** updates the BLAS tree in O(N) rather than rebuilding in O(N log N):
+
+```cpp
+// First frame: build with ALLOW_UPDATE flag
+buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR |
+                  VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+buildInfo.mode  = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+// ...build...
+
+// Each subsequent frame after skinning pre-pass (§4.4):
+buildInfo.mode    = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+buildInfo.srcAccelerationStructure = blas;   // refit in place
+buildInfo.dstAccelerationStructure = blas;
+vkCmdBuildAccelerationStructuresKHR(cmd, 1, &buildInfo, &pRange);
+```
+
+Refit traverses the existing BLAS bottom-up recomputing AABBs from updated vertex positions without re-sorting primitives. Quality degrades over many frames as the tree drifts from optimal. A common strategy: refit for K frames, then full rebuild every K+1th frame. [Source: Wyman et al. "Introduction to DirectX Raytracing" §3; NVIDIA Vulkan RT best practices]
+
+---
+
+## 21. Point Cloud Processing
+
+*Audience: systems developers, graphics application developers.*
+
+Point clouds are the direct output of depth cameras (structured light, LiDAR, stereo), photogrammetry pipelines, and 3DGS/NeRF density fields. GPU point cloud processing bridges raw sensor data and the mesh/SDF representations used throughout this chapter.
+
+### 21.1 GPU k-NN via Tiled Brute-Force
+
+For N ≤ 100k points and k ≤ 32, a **tiled brute-force** approach exploiting shared memory beats tree traversal by eliminating branch divergence:
+
+```glsl
+// knn_brute.comp — k=16 nearest neighbours, TILE=64
+layout(set=0,binding=0) readonly buffer Points { vec4 pts[]; };
+layout(set=0,binding=1) writeonly buffer KNN   { uint knn[16 * N_POINTS]; };
+layout(local_size_x=64) in;
+shared vec4 tile[64];
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    vec3 pi = pts[i].xyz;
+    float dist[16]; uint idx[16];
+    for (int j=0; j<16; j++) { dist[j]=1e30; idx[j]=0; }
+
+    for (uint base=0; base<N_POINTS; base+=64) {
+        tile[gl_LocalInvocationID.x] = pts[base + gl_LocalInvocationID.x];
+        barrier();
+        for (uint t=0; t<64; t++) {
+            float d = length(pi - tile[t].xyz);
+            if (d < dist[15]) {
+                dist[15]=d; idx[15]=base+t;
+                for (int s=14; s>=0 && dist[s]>dist[s+1]; s--)
+                    { float td=dist[s]; dist[s]=dist[s+1]; dist[s+1]=td;
+                      uint ti=idx[s];  idx[s]=idx[s+1];   idx[s+1]=ti; }
+            }
+        }
+        barrier();
+    }
+    for (int j=0; j<16; j++) knn[i*16+j]=idx[j];
+}
+```
+
+For larger clouds use the GPU k-d tree (§17.1) or uniform grid radius search (§17.2). [Source: Garcia et al. "Fast k Nearest Neighbor Search Using GPU", CVPR Workshop 2008]
+
+### 21.2 Normal Estimation from k-NN
+
+Per-point normals are the smallest eigenvector of the 3×3 neighbourhood covariance matrix. Each thread computes its local covariance and solves the 3×3 symmetric eigenproblem via cyclic Jacobi iteration:
+
+```glsl
+// normal_est.comp
+layout(local_size_x=64) in;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    vec3 pi = pts[i].xyz;
+    vec3 mean = vec3(0);
+    for (int j=0; j<K; j++) mean += pts[knn[i*K+j]].xyz;
+    mean /= float(K);
+    mat3 C = mat3(0.0);
+    for (int j=0; j<K; j++) {
+        vec3 d = pts[knn[i*K+j]].xyz - mean;
+        C += outerProduct(d,d);
+    }
+    // 3x3 symmetric Jacobi eigensolver (5-6 sweeps)
+    mat3 V; vec3 lambda;
+    jacobiEigen3x3(C, V, lambda);  // lambda[0] ≤ lambda[1] ≤ lambda[2]
+    normals[i] = vec4(V[0], 0.0);  // normal = eigenvector of smallest eigenvalue
+}
+```
+
+Orientation consistency (pointing toward the sensor) requires a minimum spanning tree propagation — a CPU post-pass for static clouds. [Source: Rusu "Semantic 3D Object Maps for Everyday Manipulation", PhD 2009]
+
+### 21.3 GPU ICP Registration
+
+**Iterative Closest Point** (Besl & McKay 1992) aligns source cloud P to target Q. Each iteration: (1) GPU k-NN finds nearest neighbours; (2) GPU reduction accumulates the 3×3 cross-covariance H = Σ(pᵢ−μₚ)(qᵢ−μ_q)ᵀ; (3) CPU SVD of H gives R = V Uᵀ; (4) apply R,t and repeat.
+
+```glsl
+// icp_reduce.comp — accumulate cross-covariance and means per workgroup
+layout(set=0,binding=0) readonly buffer Src { vec4 src[]; };
+layout(set=0,binding=1) readonly buffer NN  { uint nn[]; };
+layout(set=0,binding=2) readonly buffer Tgt { vec4 tgt[]; };
+layout(set=0,binding=3) buffer Reduction { float H[9]; float meanP[3]; float meanQ[3]; };
+layout(local_size_x=64) in;
+shared mat3 sH[64]; shared vec3 sMp[64], sMq[64];
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    vec3 p=src[i].xyz, q=tgt[nn[i]].xyz;
+    sH[gl_LocalInvocationID.x]=outerProduct(p,q);
+    sMp[gl_LocalInvocationID.x]=p; sMq[gl_LocalInvocationID.x]=q;
+    barrier();
+    for (uint s=32; s>0; s>>=1) {
+        if (gl_LocalInvocationID.x<s) {
+            sH[gl_LocalInvocationID.x]  += sH[gl_LocalInvocationID.x+s];
+            sMp[gl_LocalInvocationID.x] += sMp[gl_LocalInvocationID.x+s];
+            sMq[gl_LocalInvocationID.x] += sMq[gl_LocalInvocationID.x+s];
+        }
+        barrier();
+    }
+    if (gl_LocalInvocationID.x==0) {
+        for (int r=0;r<3;r++) for (int c=0;c<3;c++)
+            atomicAdd(Reduction.H[r*3+c], sH[0][r][c]);
+        for (int r=0;r<3;r++) {
+            atomicAdd(Reduction.meanP[r], sMp[0][r]);
+            atomicAdd(Reduction.meanQ[r], sMq[0][r]);
+        }
+    }
+}
+```
+
+Point-to-plane ICP (project residual onto surface normal) converges 3× faster and has a closed-form 6×6 linear system solve per iteration. [Source: Besl & McKay "A Method for Registration of 3-D Shapes", PAMI 1992; Chen & Medioni "Object Modeling by Registration of Multiple Range Images", IVC 1992]
+
+### 21.4 GPU RANSAC Primitive Fitting
+
+RANSAC scores each candidate model against all points in parallel. Generate N candidates (plane, sphere, cylinder) from random minimal subsets; dispatch one kernel to count inliers for all N simultaneously:
+
+```glsl
+// ransac_score.comp — score N candidate planes against M points
+layout(set=0,binding=0) readonly buffer Points     { vec4 pts[]; };     // M points
+layout(set=0,binding=1) readonly buffer Candidates { vec4 planes[]; };  // N (n,d) planes
+layout(set=0,binding=2) buffer InlierCounts { uint counts[]; };          // N counters
+layout(push_constant) uniform PC { float threshold; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint p=gl_GlobalInvocationID.x % M_POINTS;
+    uint c=gl_GlobalInvocationID.x / M_POINTS;
+    float dist = abs(dot(pts[p].xyz, Candidates[c].xyz) + Candidates[c].w);
+    if (dist < pc.threshold) atomicAdd(counts[c], 1u);
+}
+```
+
+Dispatch with `(N*M/64, 1, 1)` workgroups — all N×M scores evaluate in one pass. Read back the winning candidate index. [Source: Fischler & Bolles "Random Sample Consensus", CACM 1981; Schnabel et al. "Efficient RANSAC for Point-Cloud Shape Detection", CGF 2007]
+
+### 21.5 Euclidean Segmentation via Label Propagation
+
+Cluster points within distance δ using the same iterative label-propagation pattern from §19.2 and §22.2, but in 3D over a spatial hash grid:
+
+```glsl
+// seg_label.comp
+layout(local_size_x=64) in;
+void main() {
+    uint i  = gl_GlobalInvocationID.x;
+    uint lm = label[i];
+    ivec3 ci = gridCell(pts[i].xyz);
+    for (int dz=-1;dz<=1;dz++) for(int dy=-1;dy<=1;dy++) for(int dx=-1;dx<=1;dx++) {
+        uint cell = hashCell(ci+ivec3(dx,dy,dz));
+        for (uint k=gridStart[cell]; k<gridEnd[cell]; k++) {
+            uint j = gridPts[k];
+            if (length(pts[i].xyz-pts[j].xyz) < DELTA)
+                lm = min(lm, label[j]);
+        }
+    }
+    if (lm < label[i]) { label[i]=lm; atomicOr(changed,1u); }
+}
+```
+
+Iterate until `changed==0`. Compact to dense cluster IDs via prefix scan. [Source: Rusu et al. "Towards 3D Point Cloud Based Object Maps", Robotics and Autonomous Systems 2008]
+
+---
+
+## 22. Rigid Body Dynamics on GPU
+
+*Audience: graphics application developers, systems developers.*
+
+PhysX 5 (§30 Library Landscape Table B) provides a production GPU rigid body solver; this section covers the algorithms so implementors can build Vulkan-native physics or understand what PhysX does under the hood.
+
+### 22.1 Broadphase: SAP Pair Generation
+
+Sweep-and-prune (SAP) sorts AABB extents along one axis; overlapping intervals on that axis are candidate pairs, checked against the other two axes:
+
+```glsl
+// sap_pairs.comp — overlapping AABB pairs from sorted X-extents
+layout(set=0,binding=0) readonly buffer SortedMin { float minX[]; uint objID[]; };
+layout(set=0,binding=1) readonly buffer MaxX      { float maxX[]; };
+layout(set=0,binding=2) buffer Pairs     { uvec2 pairs[]; };
+layout(set=0,binding=3) buffer PairCount { uint count; };
+layout(local_size_x=64) in;
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    uint a=objID[i];
+    for (uint j=i+1; j<N_OBJECTS && minX[j]<=maxX[a]; j++) {
+        uint b=objID[j];
+        if (aabbOverlap(aabb[a], aabb[b])) {
+            uint slot=atomicAdd(count,1u);
+            pairs[slot]=uvec2(a,b);
+        }
+    }
+}
+```
+
+Pairs feed the island detection and narrowphase (§8.4 SAT/GJK). [Source: Tonge "Iterative Rigid Body Simulation", GDC 2013]
+
+### 22.2 Island Detection via GPU Label Propagation
+
+Rigid body simulation islands (connected components of the contact graph) must be solved together. Parallel label propagation over active contact pairs:
+
+```glsl
+// island_label.comp
+layout(set=0,binding=0) readonly buffer Contacts { uvec2 contacts[]; };
+layout(set=0,binding=1) buffer Labels  { uint label[]; };
+layout(set=0,binding=2) buffer Changed { uint changed; };
+layout(local_size_x=64) in;
+void main() {
+    uint c=gl_GlobalInvocationID.x;
+    uint a=contacts[c].x, b=contacts[c].y;
+    uint lm=min(label[a],label[b]);
+    if (label[a]!=lm) { atomicMin(label[a],lm); atomicOr(changed,1u); }
+    if (label[b]!=lm) { atomicMin(label[b],lm); atomicOr(changed,1u); }
+}
+```
+
+After convergence, islands with disjoint label values dispatch independently in parallel.
+
+### 22.3 Sequential Impulse Solver with Graph Colouring
+
+The sequential impulse (SI) solver applies corrective velocity impulses at each contact. GPU parallelism requires contacts sharing no body to run in the same pass — enforced by graph colouring (4–8 colours suffice for most scenes):
+
+```glsl
+// si_solve.comp — one colour pass
+layout(set=0,binding=0) buffer Contacts { ContactData c[]; };
+layout(set=0,binding=1) buffer BodyVel  { BodyVelocity vel[]; };
+layout(local_size_x=64) in;
+void main() {
+    uint ci=gl_GlobalInvocationID.x;
+    ContactData co=c[ci];
+    vec3 vrel=linearVelAtPoint(vel[co.bodyA],co.rA)
+             -linearVelAtPoint(vel[co.bodyB],co.rB);
+    float vn=dot(vrel,co.normal);
+    float dL=-(vn+co.bias)/co.effectiveMass;
+    dL=max(co.lambda+dL,0.0)-co.lambda;
+    c[ci].lambda+=dL;
+    applyImpulse(vel[co.bodyA],+dL,co.normal,co.rA,co.invMassA,co.invInertiaA);
+    applyImpulse(vel[co.bodyB],-dL,co.normal,co.rB,co.invMassB,co.invInertiaB);
+}
+```
+
+Run 4–20 iterations; each iteration dispatches one kernel per colour. [Source: Catto "Iterative Dynamics with Temporal Coherence", GDC 2005; Tonge "Solving Rigid Body Contacts", GDC 2013]
+
+### 22.4 Featherstone Articulated Body Algorithm
+
+For articulated bodies (ragdolls, robot arms) the Articulated Body Algorithm (Featherstone 1987) propagates joint quantities in three O(n)-per-chain passes. Independent chains (multiple ragdolls) execute in parallel; joints within one chain are serialised by their topological depth:
+
+```glsl
+// aba_pass1.comp — root-to-leaf velocity propagation (one joint per thread)
+layout(local_size_x=64) in;
+void main() {
+    uint j=gl_GlobalInvocationID.x;
+    uint p=parent[j];
+    if (p==INVALID) { v[j]=externalVel[j]; return; }
+    // 6D spatial velocity: v[j] = X[j]*v[p] + S[j]*qdot[j]
+    v[j]=spatialTransform(X[j],v[p]) + motionSubspace[j]*qdot[j];
+}
+// Pass 2 (leaves→root): articulated inertia recursion (reverse topological)
+// Pass 3 (root→leaves): acceleration propagation
+// Each pass is one dispatch with a barrier before the next.
+```
+
+[Source: Featherstone "Rigid Body Dynamics Algorithms", 2008; GPU implementation in NVIDIA PhysX 5 articulation solver]
+
+---
+
+## 23. Crowd and Multi-Agent Simulation
+
+*Audience: graphics application developers.*
+
+Navigation meshes (§19) compute flow fields telling each agent which direction to move. This section covers the per-agent algorithms that consume those fields and avoid collisions with other agents at run time.
+
+### 23.1 ORCA: Optimal Reciprocal Collision Avoidance
+
+ORCA (van den Berg et al. 2011) computes a collision-free velocity for each agent by solving a small 2D linear programme over velocity-obstacle half-planes from nearby neighbours:
+
+```glsl
+// orca.comp
+layout(set=0,binding=0) readonly buffer Agents { AgentData a[]; };
+layout(set=0,binding=1) writeonly buffer NewVel { vec2 nv[]; };
+layout(local_size_x=64) in;
+
+struct HalfPlane { vec2 point, normal; };
+
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    vec2 pi=a[i].pos, vi=a[i].vel; float ri=a[i].radius;
+    HalfPlane planes[MAX_NEIGHBOURS]; uint nPlanes=0;
+
+    // iterate nearby agents via spatial hash (§17.2)
+    ivec2 ci=ivec2(floor(pi/CELL_SIZE));
+    for (int dy=-1;dy<=1;dy++) for(int dx=-1;dx<=1;dx++) {
+        uint cell=hash2D(ci+ivec2(dx,dy));
+        for (uint k=gridStart[cell];k<gridEnd[cell];k++) {
+            uint j=gridAgents[k]; if(j==i) continue;
+            vec2 relPos=a[j].pos-pi, relVel=vi-a[j].vel;
+            float combR=ri+a[j].radius;
+            // compute velocity obstacle boundary and closest-point offset u
+            vec2 w=relVel-relPos/ORCA_TAU;
+            float wlen=length(w);
+            vec2 u=(combR/ORCA_TAU-wlen)*w/max(wlen,1e-6);
+            planes[nPlanes++]=HalfPlane(vi+0.5*u, normalize(u));
+            if(nPlanes>=MAX_NEIGHBOURS) break;
+        }
+    }
+    nv[i]=solveLP2D(planes, nPlanes, a[i].prefVel, a[i].maxSpeed);
+}
+```
+
+`solveLP2D` is an incremental 2D LP running entirely in registers — O(k) expected per agent. [Source: van den Berg et al. "Reciprocal n-Body Collision Avoidance", ISRR 2011; RVO2 https://gamma.cs.unc.edu/RVO2/]
+
+### 23.2 Reynolds Boid Flocking
+
+Three-rule boid steering (separation, alignment, cohesion) over a spatial-hash neighbourhood:
+
+```glsl
+// boids.comp
+layout(local_size_x=64) in;
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    vec3 pi=pos[i], vi=vel[i];
+    vec3 sep=vec3(0), ali=vec3(0), coh=vec3(0); uint n=0;
+    // iterate neighbours within BOID_RADIUS via §17.2 grid
+    for each neighbour j: {
+        vec3 d=pi-pos[j];
+        sep+=normalize(d)/max(length(d),0.01);
+        ali+=vel[j]; coh+=pos[j]; n++;
+    }
+    if(n>0){ali=normalize(ali/float(n)); coh=normalize(coh/float(n)-pi);}
+    vec3 steer=W_SEP*sep+W_ALI*ali+W_COH*coh+W_GOAL*normalize(goal-pi);
+    vel[i]=normalize(vi+steer*DT)*BOID_SPEED;
+    pos[i]=pi+vel[i]*DT;
+}
+```
+
+[Source: Reynolds "Flocks, Herds, and Schools", SIGGRAPH 1987]
+
+### 23.3 Agent Steering over Flow Fields
+
+Blend ORCA collision-avoidance velocity with flow-field global direction:
+
+```glsl
+// steer_integrate.comp
+layout(local_size_x=64) in;
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    ivec2 ci=ivec2(floor(pos[i].xz/CELL_SIZE));
+    vec2 flow=flowField[ci.y*GRID_W+ci.x].dir;   // §19.3
+    vec2 orca=newVel[i];                            // §23.1
+    vec2 steer=normalize(mix(flow,orca,ORCA_BLEND))*MAX_SPEED;
+    vel[i].xz=steer;
+    pos[i]+=vel[i]*DT;
+}
+```
+
+### 23.4 GPU Crowd Rendering via Task Shaders
+
+Each agent selects a pre-skinned LOD meshlet cluster; the task shader culls and emits only visible agents:
+
+```glsl
+// crowd_task.glsl
+layout(local_size_x=32) in;
+taskPayloadSharedEXT struct { uint agentIdx[32]; uint count; } payload;
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    if(gl_LocalInvocationID.x==0) payload.count=0;
+    barrier();
+    AgentData ag=agents[i];
+    bool visible=sphereInFrustum(ag.pos, AGENT_RADIUS)
+              && length(ag.pos-cameraPos)<CULL_DIST;
+    if(visible){ uint slot=atomicAdd(payload.count,1u); payload.agentIdx[slot]=i; }
+    barrier();
+    if(gl_LocalInvocationID.x==0) EmitMeshTasksEXT(payload.count,1,1);
+}
+```
+
+Distant agents use billboard impostors (§7.7); close agents use full animated meshlets (§10.1–10.2). [Source: Reynolds 1987; van den Berg et al. 2011]
+
+---
+
+## 24. GPU Remeshing
+
+*Audience: graphics application developers, systems developers.*
+
+Remeshing reshapes mesh geometry — changing edge lengths, valences, and alignment — without changing the underlying surface. It sits between simplification (§7, which reduces vertex count) and repair (§7.14, which fixes pathological topology).
+
+### 24.1 Isotropic Remeshing
+
+Botsch–Kobbelt isotropic remeshing (2004) iterates five operations targeting a uniform edge length ℓ. Operations 1–3 modify topology and require graph-coloured parallel dispatch; operations 4–5 are purely per-vertex:
+
+**Operation 4 — Tangential relaxation** (fully parallel):
+
+```glsl
+// tangential_relax.comp
+layout(set=0,binding=0) readonly buffer Positions { vec3 pos[]; };
+layout(set=0,binding=1) readonly buffer Normals   { vec3 nor[]; };
+layout(set=0,binding=2) readonly buffer Adj       { uint adjStart[]; uint adjList[]; };
+layout(set=0,binding=3) writeonly buffer NewPos   { vec3 newpos[]; };
+layout(local_size_x=64) in;
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    vec3 c=vec3(0); uint n=0;
+    for (uint k=adjStart[i];k<adjStart[i+1];k++) { c+=pos[adjList[k]]; n++; }
+    c/=float(n);
+    vec3 ni=nor[i];
+    // project centroid onto tangent plane
+    newpos[i]=pos[i]+(c-pos[i])-dot(c-pos[i],ni)*ni;
+}
+```
+
+**Operations 1–3** (edge split/collapse/flip) use graph-coloured dispatches: colour edges so no two same-colour edges share a vertex. Split and collapse use `atomicAdd` into a free-list counter for new vertex/index slots. [Source: Botsch & Kobbelt "A Remeshing Approach to Multiresolution Modeling", SGP 2004]
+
+### 24.2 Anisotropic Curvature-Aligned Remeshing
+
+Aligns quad/triangle edges to principal curvature directions (§14.4). Pipeline:
+
+1. Compute principal curvature directions per vertex (§14.4 GPU kernel).
+2. Smooth a cross-field (4-RoSy) by solving ∇²θ=0 on the mesh (sparse CG, same Laplacian as §14.1).
+3. Trace streamlines along cross-field directions via RK4 on-surface integration.
+4. Extract quad mesh from streamline network intersections (CPU topology extraction).
+
+Steps 1–3 run on GPU; step 4 is CPU-side. [Source: Bommes et al. "Mixed-Integer Quadrangulation", SIGGRAPH 2009]
+
+### 24.3 Incremental Delaunay Refinement for FEM Meshes
+
+Generating volumetric tet meshes with quality guarantees (minimum dihedral angle > θ) uses Delaunay refinement (Shewchuk 1998): identify poor-quality tets (circumradius/shortest-edge > threshold), insert circumcenter, re-triangulate the star cavity. GPU parallelism: independently bad tets whose circumcenters do not spatially conflict process simultaneously; the §17.2 grid detects conflicts. [Source: Shewchuk "Tetrahedral Mesh Generation by Delaunay Refinement", SoCG 1998]
+
+---
+
+## 25. Fracture and Destruction
+
+*Audience: graphics application developers.*
+
+Fracture combines geometry processing (§3, §7, §12) with physics (§22) to produce visually plausible breaking and crumbling. GPU implementations pre-fracture offline for performance-critical paths and use runtime SDF crack propagation for interactive destruction.
+
+### 25.1 Voronoi Pre-Fracture
+
+Pre-computed Voronoi fracture assigns each voxel to its nearest fracture seed using 3D JFA (§3.9 extended to 3D). Each Voronoi cell becomes a convex fragment:
+
+```glsl
+// voronoi_fracture_3d.comp — 3D JFA step
+layout(local_size_x=8,local_size_y=8,local_size_z=8) in;
+layout(set=0,binding=0) buffer SeedMap { ivec4 seedMap[]; };  // xyz=nearest seed, w=unused
+void main() {
+    ivec3 vox=ivec3(gl_GlobalInvocationID);
+    ivec4 best=seedMap[flatIdx(vox)]; float bestDist=1e30;
+    for(int dz=-1;dz<=1;dz++) for(int dy=-1;dy<=1;dy++) for(int dx=-1;dx<=1;dx++) {
+        ivec3 n=clamp(vox+ivec3(dx,dy,dz)*JFA_STEP, ivec3(0), GRID_SIZE-1);
+        ivec4 s=seedMap[flatIdx(n)];
+        float d=length(vec3(vox-s.xyz));
+        if(d<bestDist){bestDist=d; best=s;}
+    }
+    seedMap[flatIdx(vox)]=best;
+}
+```
+
+After JFA, run GPU marching cubes (§3.2) on boundaries between adjacent seed regions to extract per-fragment surface meshes. Each fragment becomes an independent BLAS (§20.2) and rigid body (§22). [Source: Müller et al. "Real Time Dynamic Fracture with Volumetric Approximate Convex Decompositions", SIGGRAPH 2013]
+
+### 25.2 Runtime Brittle Fracture via SDF Crack Propagation
+
+Crack fronts advance as an SDF in a 3D grid, driven by a stress threshold:
+
+```glsl
+// crack_advance.comp
+layout(set=0,binding=0) buffer CrackSDF { float sdf[]; };
+layout(set=0,binding=1) readonly buffer Stress { float stress[]; };
+layout(local_size_x=8,local_size_y=8,local_size_z=8) in;
+void main() {
+    uint v=flatIdx(ivec3(gl_GlobalInvocationID));
+    if(sdf[v]>0.0 && sdf[v]<CRACK_SEARCH_RADIUS && stress[v]>FRACTURE_THRESHOLD)
+        sdf[v]=-1.0;  // crack this voxel
+}
+```
+
+Re-extract crack surface with GPU MC after each advance step; add new triangle geometry to the BLAS. [Source: Parker & O'Brien "Real-Time Deformation and Fracture in a Game Context", SCA 2009]
+
+### 25.3 FEM Ductile Fracture
+
+Per-element failure criterion on the corotational FEM from §12.2:
+
+```glsl
+// fem_fracture_check.comp
+layout(set=0,binding=0) readonly buffer Stress { mat3 cauchyStress[]; };
+layout(set=0,binding=1) buffer Failed { uint failedBits[]; };
+layout(local_size_x=64) in;
+void main() {
+    uint t=gl_GlobalInvocationID.x;
+    float maxEig=maxEigenvalue3x3sym(cauchyStress[t]);
+    if(maxEig>FRACTURE_STRESS)
+        atomicOr(failedBits[t/32], 1u<<(t%32));
+}
+```
+
+Compact failed elements, patch crack surface (dual MC on failure boundary), add patch to BLAS. [Source: Irving et al. "Invertible Finite Elements for Robust Simulation", SCA 2004]
+
+---
+
+## 26. Terrain LOD and Streaming
+
+*Audience: graphics application developers.*
+
+§13 covered procedural terrain *generation*. This section covers runtime terrain *rendering*: quadtree LOD selection, geomorphing to prevent popping, virtual texture streaming, and GPU heightfield collision.
+
+### 26.1 CDLOD: Continuous Distance-Dependent Level of Detail
+
+CDLOD (Strugar 2010) traverses a heightmap quadtree in compute, selecting per-node LOD based on projected screen-space error:
+
+```glsl
+// cdlod_traverse.comp
+struct QuadNode { vec2 min, max; int level; };
+layout(set=0,binding=0) readonly buffer QuadTree { QuadNode nodes[]; };
+layout(set=0,binding=1) writeonly buffer DrawList { uint ids[]; };
+layout(set=0,binding=2) buffer DrawCount { uint count; };
+layout(local_size_x=64) in;
+
+float screenError(QuadNode n, vec3 cam) {
+    float dist=max(0.0,length(cam.xz-(n.min+n.max)*0.5)-length(n.max-n.min)*0.5);
+    return ERROR_SCALE*float(1<<n.level)/max(dist,0.001);
+}
+void main() {
+    uint id=gl_GlobalInvocationID.x;
+    QuadNode n=nodes[id];
+    if(!nodeInFrustum(n)) return;
+    if(n.level==0 || screenError(n,camPos)<SCREEN_ERROR_THRESHOLD) {
+        uint slot=atomicAdd(count,1u); ids[slot]=id;
+    }
+}
+```
+
+Selected nodes drive `vkCmdDrawIndirect`. [Source: Strugar "Continuous Distance-Dependent Level of Detail for Rendering Heightmaps", JGT 2010]
+
+### 26.2 Geomorphing to Prevent LOD Popping
+
+Vertices blend between fine and coarse grid positions as a node enters/leaves its LOD range:
+
+```glsl
+// terrain.vert
+float morphFactor(float dist, float mStart, float mEnd) {
+    return clamp((dist-mStart)/(mEnd-mStart), 0.0, 1.0);
+}
+void main() {
+    vec2 uv      = (aPos.xz - nodeMin) / nodeSize;
+    float hFine  = texture(heightmap, uv).r * HEIGHT_SCALE;
+    float hCoarse= sampleSnappedHeight(uv);  // nearest even-grid sample
+    float mf     = morphFactor(length(aPos-camPos), morphStart, morphEnd);
+    float h      = mix(hFine, hCoarse, mf);
+    gl_Position  = vp * vec4(aPos.x, h, aPos.z, 1.0);
+}
+```
+
+### 26.3 Virtual Terrain Texturing: Sparse Clipmaps
+
+A clipmap stores terrain texture as a stack of annular rings centred on the camera, each ring at a progressively coarser resolution. When the camera moves, GPU compute fills new tiles into the ring boundary:
+
+```glsl
+// clipmap_update.comp
+layout(set=0,binding=0, rgba8) uniform writeonly image2DArray clipmap;
+layout(local_size_x=16,local_size_y=16) in;
+void main() {
+    ivec3 coord=ivec3(gl_GlobalInvocationID.xy, CURRENT_LEVEL);
+    vec2  uv=(vec2(coord.xy)+clipmapOffset[CURRENT_LEVEL])*texelScale[CURRENT_LEVEL];
+    imageStore(clipmap, coord, sampleTerrainTex(uv));
+}
+```
+
+[Source: Tanner et al. "The Clipmap: A Virtual Mipmap", SIGGRAPH 1998; GPU Gems 2 §2]
+
+### 26.4 GPU Heightfield Ray Intersection
+
+Binary search along the ray's XZ projection finds the terrain hit point for physics queries (vehicle wheels, character stepping):
+
+```glsl
+// heightfield_ray.comp
+layout(local_size_x=64) in;
+void main() {
+    uint r=gl_GlobalInvocationID.x;
+    vec3 o=rayOrigin[r], d=rayDir[r];
+    float tLo=0.0, tHi=MAX_T;
+    for(int i=0; i<20; i++) {
+        float tMid=(tLo+tHi)*0.5;
+        vec3 p=o+tMid*d;
+        float h=texture(heightmap, p.xz/TERRAIN_SIZE).r*HEIGHT_SCALE;
+        if(p.y<h) tHi=tMid; else tLo=tMid;
+    }
+    hitT[r]=(tLo+tHi)*0.5;
+    hitNorm[r]=terrainNormal(o+hitT[r]*d);
+}
+```
+
+---
+
+## 27. Geometric Deep Learning
+
+*Audience: graphics application developers, systems developers.*
+
+Geometric deep learning runs neural network inference directly on point clouds and triangle meshes, enabling semantic segmentation, shape completion, and neural implicit surface extraction on the same GPU that renders the scene.
+
+### 27.1 PointNet on GPU
+
+PointNet (Qi et al. 2017) applies a shared MLP per point then aggregates via symmetric max-pool. The per-point MLP is fully parallel — one thread per point per layer:
+
+```glsl
+// pointnet_mlp.comp — one fully-connected layer
+layout(set=0,binding=0) readonly buffer InFeat  { float inF[N_POINTS*IN_DIM]; };
+layout(set=0,binding=1) readonly buffer Weights { float W[IN_DIM*OUT_DIM]; float B[OUT_DIM]; };
+layout(set=0,binding=2) writeonly buffer OutFeat { float outF[N_POINTS*OUT_DIM]; };
+layout(local_size_x=64) in;
+void main() {
+    uint p=gl_GlobalInvocationID.x;
+    for(uint o=0; o<OUT_DIM; o++) {
+        float acc=B[o];
+        for(uint i=0; i<IN_DIM; i++) acc+=inF[p*IN_DIM+i]*W[i*OUT_DIM+o];
+        outF[p*OUT_DIM+o]=max(acc,0.0);  // ReLU
+    }
+}
+```
+
+Global max-pool over all points aggregates per-point features into a global descriptor via a parallel reduce (same pattern as §11.3). [Source: Qi et al. "PointNet", CVPR 2017; https://github.com/charlesq34/pointnet]
+
+### 27.2 Graph Convolution on Mesh Edge Graphs
+
+Graph neural network message passing on mesh edges — structurally identical to the cotangent Laplacian evaluation (§14.1) with learned weights:
+
+```glsl
+// graph_conv.comp — one GNN message-passing layer
+layout(set=0,binding=0) readonly buffer NodeFeat { float nf[N_VERTS*FEAT_DIM]; };
+layout(set=0,binding=1) readonly buffer Edges    { uvec2 edges[N_EDGES]; };
+layout(set=0,binding=2) readonly buffer EdgeW    { float ew[N_EDGES*FEAT_DIM*FEAT_DIM]; };
+layout(set=0,binding=3) buffer AggFeat { float agg[N_VERTS*FEAT_DIM]; };
+layout(local_size_x=64) in;
+void main() {
+    uint e=gl_GlobalInvocationID.x;
+    uint i=edges[e].x, j=edges[e].y;
+    for(uint f=0; f<FEAT_DIM; f++) {
+        float msg=0.0;
+        for(uint g=0; g<FEAT_DIM; g++)
+            msg+=ew[e*FEAT_DIM*FEAT_DIM+f*FEAT_DIM+g]*nf[j*FEAT_DIM+g];
+        atomicAdd(agg[i*FEAT_DIM+f], msg);   // VK_EXT_shader_atomic_float
+    }
+}
+```
+
+Supports ChebNet, GAT (Graph Attention Networks), and DGCNN with minor modifications. [Source: Kipf & Welling "Semi-Supervised Classification with GCNs", ICLR 2017; Wang et al. "Dynamic Graph CNN for Learning on Point Clouds", SIGGRAPH 2019]
+
+### 27.3 Neural SDF Inference on GPU
+
+Evaluate a two-layer MLP at each voxel of a 256³ grid in parallel, then extract the isosurface with GPU MC (§3.2):
+
+```glsl
+// neural_sdf.comp
+layout(set=0,binding=0) readonly buffer W1 { float w1[IN_DIM*H_DIM]; float b1[H_DIM]; };
+layout(set=0,binding=1) readonly buffer W2 { float w2[H_DIM];         float b2;        };
+layout(set=0,binding=2, r32f) uniform writeonly image3D sdfGrid;
+layout(local_size_x=8,local_size_y=8,local_size_z=8) in;
+void main() {
+    ivec3 vox=ivec3(gl_GlobalInvocationID);
+    vec3  x=(vec3(vox)/vec3(GRID_SIZE))*2.0-1.0;
+    float h[H_DIM];
+    for(int j=0; j<H_DIM; j++) {
+        float acc=b1[j];
+        acc+=w1[j*3+0]*x.x+w1[j*3+1]*x.y+w1[j*3+2]*x.z;
+        h[j]=max(acc,0.0);
+    }
+    float sdf=b2;
+    for(int j=0; j<H_DIM; j++) sdf+=w2[j]*h[j];
+    imageStore(sdfGrid, vox, vec4(sdf));
+}
+```
+
+[Source: Mescheder et al. "Occupancy Networks", CVPR 2019; Müller et al. "Instant NGP", SIGGRAPH 2022]
+
+### 27.4 Feature Distillation from 3DGS to Mesh Atlas
+
+Bake semantic/appearance features from a trained 3DGS scene (§16) into a mesh UV atlas (§7.13) for downstream editing or segmentation:
+
+```glsl
+// feature_bake.comp
+layout(set=0,binding=0) readonly buffer AtlasPos  { vec4 worldPos[];  };
+layout(set=0,binding=1) readonly buffer Gaussians { GaussianData g[]; };
+layout(set=0,binding=2, rgba32f) uniform writeonly image2D featureAtlas;
+layout(local_size_x=8,local_size_y=8) in;
+void main() {
+    ivec2 texel=ivec2(gl_GlobalInvocationID.xy);
+    vec3  p=worldPos[texel.y*ATLAS_W+texel.x].xyz;
+    vec4  feat=vec4(0);
+    for(uint i=0; i<N_GAUSSIANS; i++) {
+        float d=length(g[i].pos-p);
+        float alpha=g[i].opacity*exp(-0.5*d*d/(g[i].scale*g[i].scale));
+        feat+=alpha*g[i].semanticFeature;
+    }
+    imageStore(featureAtlas, texel, feat);
+}
+```
+
+[Source: Kerbl et al. SIGGRAPH 2023; Lerf "Language Embedded Radiance Fields", ICCV 2023]
+
+---
+
+## 28. 2D Vector Graphics on GPU
+
+*Audience: graphics application developers.*
+
+GPU geometry algorithms are not exclusive to 3D. 2D vector graphics — Bézier curves, fonts, strokes, filled paths — have their own GPU-native rendering techniques that avoid tessellation entirely.
+
+### 28.1 Loop-Blinn Bézier Rendering
+
+Loop & Blinn (2005) cover each cubic Bézier with one triangle; the fragment shader evaluates the implicit polynomial (k³ − lm) and discards pixels outside the fill:
+
+```glsl
+// bezier_fill.frag
+in vec3 klm;  // (k, l, m) per-fragment via barycentric interpolation
+out vec4 fragColor;
+void main() {
+    float f=klm.x*klm.x*klm.x - klm.y*klm.z;
+    float fw=fwidth(f);
+    float alpha=smoothstep(fw,-fw,f);
+    fragColor=vec4(color.rgb, color.a*alpha);
+}
+```
+
+Vertex shader assigns (k,l,m) from the Bézier canonical form (serpentine, cusp, loop, quadratic — classified by the curve's discriminant). No tessellation; correct at any resolution. [Source: Loop & Blinn "Resolution Independent Curve Rendering", SIGGRAPH 2005]
+
+### 28.2 MSDF Font Atlas Rendering
+
+Multi-channel SDF (Chlumský 2017) encodes edge orientation into RGB channels to restore sharp corners lost by single-channel SDF:
+
+```glsl
+// msdf.frag
+uniform sampler2D msdfAtlas;
+uniform float pxRange;
+in vec2 uv;
+float median(float r,float g,float b){ return max(min(r,g),min(max(r,g),b)); }
+void main() {
+    vec3  s=texture(msdfAtlas,uv).rgb;
+    float sd=median(s.r,s.g,s.b);
+    float px=pxRange*(sd-0.5);
+    float a=clamp(px+0.5,0.0,1.0);
+    fragColor=vec4(textColor.rgb, textColor.a*a);
+}
+```
+
+Generate the atlas offline with `msdfgen` ([source](https://github.com/Chlumsky/msdfgen)). [Source: Chlumský "Shape Decomposition for Multi-Channel Distance Fields", master's thesis 2017]
+
+### 28.3 Stroke Expansion in Compute
+
+Expand a 2D polyline to a quad strip with miter joins in a compute shader:
+
+```glsl
+// stroke_expand.comp
+layout(set=0,binding=0) readonly buffer Poly { vec2 pts[]; };
+layout(set=0,binding=1) writeonly buffer Strip{ vec2 strip[]; };
+layout(push_constant) uniform PC { float hw; } pc;  // half-width
+layout(local_size_x=64) in;
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    if(i>=N_SEGS) return;
+    vec2 a=pts[i], b=pts[i+1];
+    vec2 dir=normalize(b-a), perp=vec2(-dir.y,dir.x)*pc.hw;
+    vec2 miter=perp;
+    if(i>0){
+        vec2 pd=normalize(a-pts[i-1]);
+        vec2 tang=normalize(dir+pd);
+        miter=vec2(-tang.y,tang.x)*pc.hw/max(dot(vec2(-tang.y,tang.x),perp/pc.hw),0.1);
+    }
+    strip[i*4+0]=a+miter; strip[i*4+1]=a-miter;
+    strip[i*4+2]=b+perp;  strip[i*4+3]=b-perp;
+}
+```
+
+[Source: Rougier "Antialiased 2D Grid, Marker, and Arrow Shaders", JCGT 2014]
+
+### 28.4 Stencil-Then-Cover for Filled Paths
+
+Fill arbitrary paths without tessellation: (1) stencil pass renders a triangle fan from the path origin, incrementing/decrementing stencil per edge crossing direction; (2) cover pass draws a bounding quad with stencil test — only non-zero stencil pixels get filled. Implemented via `vkCmdSetStencilOp` and two draw calls. [Source: Kilgard & Bolz "GPU-accelerated Path Rendering", SIGGRAPH Asia 2012]
+
+---
+
+## 29. Scientific Visualization Geometry
+
+*Audience: systems developers, graphics application developers.*
+
+Simulation output — velocity fields, scalar fields, tensor fields — requires geometry algorithms to extract, integrate, and render meaningful visual structures. All compute patterns here reuse infrastructure from earlier sections: RK4 integration, marching cubes, mesh shaders.
+
+### 29.1 Streamline and Pathline Integration
+
+Streamlines trace tangent curves of a vector field v(x); pathlines follow time-varying fields. 4th-order Runge-Kutta in compute — one thread per seed:
+
+```glsl
+// streamline.comp
+layout(set=0,binding=0) uniform sampler3D velField;
+layout(set=0,binding=1) writeonly buffer Lines { vec4 pts[MAX_SEEDS*MAX_STEPS]; };
+layout(set=0,binding=2) writeonly buffer Counts{ uint len[]; };
+layout(push_constant) uniform PC { float dt; uint maxSteps; vec3 fMin,fScale; } pc;
+layout(local_size_x=64) in;
+
+vec3 sample(vec3 p){ return texture(velField,(p-pc.fMin)/pc.fScale).xyz; }
+vec3 rk4(vec3 p,float dt){
+    vec3 k1=sample(p), k2=sample(p+0.5*dt*k1),
+         k3=sample(p+0.5*dt*k2), k4=sample(p+dt*k3);
+    return p+dt/6.0*(k1+2*k2+2*k3+k4);
+}
+void main() {
+    uint lid=gl_GlobalInvocationID.x;
+    vec3 pos=seedPoints[lid];
+    uint base=lid*MAX_STEPS, step;
+    for(step=0; step<pc.maxSteps && !outsideDomain(pos); step++){
+        pts[base+step]=vec4(pos,0.0); pos=rk4(pos,pc.dt);
+    }
+    len[lid]=step;
+}
+```
+
+Tube geometry (§6.3) converts streamlines to renderable ribbons. [Source: Jobard & Lefer "Creating Evenly-Spaced Streamlines", EuroVis 1997]
+
+### 29.2 Empty-Space Skipping for Volume Ray Casting
+
+Volume rendering casts one ray per pixel accumulating colour and opacity via front-to-back compositing. A min-max mipmap skips empty regions:
+
+```glsl
+// volume_cast.frag
+uniform sampler3D vol; uniform sampler3D minMaxMip;
+in vec3 entryPos, exitPos;
+void main() {
+    vec3 dir=normalize(exitPos-entryPos);
+    float tMax=length(exitPos-entryPos);
+    vec3 col=vec3(0); float T=1.0, t=0.0;
+    while(t<tMax && T>0.01) {
+        vec3 p=entryPos+t*dir;
+        float maxD=textureLod(minMaxMip,p,SKIP_MIP).g;
+        if(maxD<ISO_THRESHOLD){ t+=SKIP_STEP; continue; }
+        float density=texture(vol,p).r;
+        vec4 c=transferFunction(density);
+        col+=(1.0-T)*c.a*c.rgb; T*=(1.0-c.a);
+        t+=FINE_STEP;
+    }
+    fragColor=vec4(col,1.0-T);
+}
+```
+
+[Source: Krueger & Westermann "Acceleration Techniques for GPU-based Volume Rendering", VIS 2003]
+
+### 29.3 Tensor Field Glyphs in Mesh Shaders
+
+Superquadric tensor glyphs (Kindlmann 2004) encode tensor eigenvalues/eigenvectors in glyph shape and orientation. Generated entirely in the mesh shader — no precomputed glyph mesh — one workgroup per grid point:
+
+```glsl
+// tensor_glyph.mesh.glsl
+layout(triangles, max_vertices=96, max_primitives=64) out;
+layout(local_size_x=64) in;
+taskPayloadSharedEXT struct { uint count; uint glyphIdx[32]; } payload;
+void main() {
+    uint g=payload.glyphIdx[gl_WorkGroupID.x];
+    vec3 evals=eigenvalues[g]; mat3 evecs=eigenvectors[g];
+    // sample superquadric on (theta,phi) parametric grid
+    // scale by eigenvalues, apply superquadric nonlinearity, rotate by evecs
+    // emit vertices and triangle indices
+    SetMeshOutputsEXT(96, 64);
+}
+```
+
+[Source: Kindlmann "Superquadric Tensor Glyphs", EuroVis 2004]
+
+### 29.4 Time-Varying Isosurface Extraction
+
+For animated scalar fields, limit GPU marching cubes (§3.2) to **dirty voxels** where the field changed:
+
+```glsl
+// dirty_mark.comp — mark voxels changed between frames
+layout(set=0,binding=0) readonly buffer FieldOld { float fOld[]; };
+layout(set=0,binding=1) readonly buffer FieldNew { float fNew[]; };
+layout(set=0,binding=2) buffer DirtyBits { uint dirty[]; };
+layout(local_size_x=64) in;
+void main() {
+    uint v=gl_GlobalInvocationID.x;
+    if(abs(fNew[v]-fOld[v])>CHANGE_THRESHOLD)
+        atomicOr(dirty[v/32], 1u<<(v%32));
+}
+```
+
+The MC dispatch skips voxels with `dirty[v/32] & (1<<(v%32)) == 0`. For slowly evolving simulations the dirty fraction is typically < 5% per frame, reducing MC compute by ~20×. [Source: Lorensen & Cline SIGGRAPH 1987; temporal delta technique from Kazhdan et al. "Streaming Multigrid", SIGGRAPH 2008]
+
+---
+
+## 30. Library Landscape
 
 **Coverage gap.** No single open-source library covers more than a narrow slice of the algorithms in this chapter. The table below maps the available libraries against the chapter's topic areas; empty cells represent functionality that must be implemented directly in shader/compute code using the patterns shown in the preceding sections. This fragmentation is the norm in GPU geometry programming: the field is young enough that GPU-native algorithmic libraries have not yet consolidated around a common abstraction layer comparable to what BLAS/LAPACK provide for linear algebra.
 
@@ -4849,11 +5854,44 @@ Sub::CatmullClark_subdivision(mesh,
 
 **Recast/Detour** ([source](https://github.com/recastnavigation/recastnavigation), Zlib) is the canonical navmesh library used by most game engines. Recast's voxelisation and region-labelling steps (§19.1–19.2) are CPU-only; no GPU port exists. The flow-field construction in §19.3 is implemented directly in compute shaders without a library equivalent. Recast is the correct preprocessing tool for static navmesh geometry; Detour handles the runtime pathfinding query API.
 
-**What is missing.** Even spanning both tables, no single library covers more than four of the nineteen algorithm sections, and no library provides GPU-native implementations across the four most algorithmically demanding sections — fluids, deformable bodies, geodesics, and 3DGS — in a single dependency with a Vulkan backend. The CUDA ecosystem (PhysX 5 + SPlisHSPlasH + gsplat + NanoVDB) comes closest for NVIDIA hardware, but requires CUDA–Vulkan interop for every GPU-resident result. On non-NVIDIA hardware or with a Vulkan-only constraint, all algorithms in §10–§19 must be implemented from first principles using the compute shader patterns in this chapter.
+**Table C — §20–§29 coverage**
+
+| Library | Ver | GPU Backend | §20 RT Geom | §21 Point Cloud | §22 Rigid Body | §23 Crowd | §24 Remesh | §25 Fracture | §26 Terrain | §27 Geo DL | §28 2D Vector | §29 Sci Vis | Best Use |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| [Vulkan RT Extensions](https://www.khronos.org/registry/vulkan/) | 1.3 | Vulkan | ✓ BLAS/TLAS | — | — | — | — | — | — | — | — | — | Ray tracing AS build |
+| [PCL](https://pointclouds.org) | 1.14 | None (CPU) | — | ✓ k-NN/ICP | — | — | — | — | — | — | — | ✓ vis | Point cloud CPU pipeline |
+| [Open3D](https://www.open3d.org) | 0.18 | CUDA (partial) | — | ✓ k-NN/ICP/RANSAC | — | — | — | — | — | ✓ PointNet | — | ✓ vis | GPU point cloud + DL |
+| [Bullet Physics](https://github.com/bulletphysics/bullet3) | 3.25 | OpenCL (btGpu) | — | — | ✓ SAP/SI/ABA | — | — | ✓ Voronoi | — | — | — | — | Physics + fracture |
+| [RVO2](https://gamma.cs.unc.edu/RVO2/) | 2.0 | None (CPU MT) | — | — | — | ✓ ORCA | — | — | — | — | — | — | ORCA reference impl |
+| [OpenMesh](https://www.graphics.rwth-aachen.de/OpenMesh/) | 10.0 | None (CPU) | — | — | — | — | ✓ isotropic | — | — | — | — | — | Remeshing, halfedge ops |
+| [msdfgen](https://github.com/Chlumsky/msdfgen) | 1.12 | None (CPU) | — | — | — | — | — | — | — | — | ✓ MSDF atlas | — | Font atlas generation |
+| [PyTorch Geometric](https://pyg.org) | 2.5 | CUDA / ROCm | — | ✓ k-NN | — | — | — | — | — | ✓ GNN/PointNet | — | — | Geometric deep learning |
+| [VTK](https://vtk.org) | 9.3 | OpenGL compute | — | — | — | — | — | — | — | — | — | ✓ streams/glyphs | Scientific vis |
+| [Recast/Detour](https://github.com/recastnavigation/recastnavigation) | 1.6 | None (CPU) | — | — | — | — | — | — | ✓ terrain voxel | — | — | — | Terrain navmesh preprocessing |
+
+**Vulkan RT Extensions** (KHR, Vulkan 1.2+) are the only "library" for §20 — AS build/update APIs are in the driver. VulkanMemoryAllocator ([source](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)) simplifies the scratch/result buffer lifecycle for BLAS/TLAS operations.
+
+**PCL** ([source](https://pointclouds.org), BSD-3) provides `pcl::KdTreeFLANN<pcl::PointXYZ>` for CPU k-NN, `pcl::IterativeClosestPoint<>` for ICP, `pcl::SACSegmentation<>` for RANSAC plane/sphere fitting, and `pcl::visualization::PCLVisualizer` for scientific vis. No GPU backend; use for preprocessing before uploading point clouds to Vulkan SSBOs.
+
+**Open3D** ([source](https://www.open3d.org), MIT) adds a CUDA k-NN search (`open3d.core.nns.NearestNeighborSearch`), GPU ICP variants (point-to-plane, colored ICP), RANSAC registration, and a PointNet++ training pipeline via PyTorch. The `open3d.visualization.Visualizer` covers §29 scientific vis. Open3D is the most capable GPU point cloud toolkit outside CUDA-only paths.
+
+**Bullet 3** ([source](https://github.com/bulletphysics/bullet3), Zlib) implements SAP broadphase, sequential impulse (Catto solver), and Featherstone ABA for articulated bodies (§22). A partial OpenCL backend (`btGpuBroadphaseProxy`) parallelises the broadphase; the narrow-phase and solver remain on CPU. The `HACD` component provides Voronoi-style approximate convex decomposition for pre-fracture (§25.1).
+
+**RVO2** ([source](https://gamma.cs.unc.edu/RVO2/), Apache 2.0) is the reference CPU implementation of ORCA (van den Berg 2011) for crowd simulation (§23.1). For GPU port use the compute shader pattern from §23.1 with the §17.2 spatial hash for neighbourhood queries.
+
+**OpenMesh** ([source](https://www.graphics.rwth-aachen.de/OpenMesh/), LGPL) provides a halfedge-based mesh data structure with `OpenMesh::Subdivider::Uniform::CatmullClarkT<>` and edge split/collapse/flip operations for isotropic remeshing (§24.1). CPU-only; use for offline remesh passes before GPU upload.
+
+**msdfgen** ([source](https://github.com/Chlumsky/msdfgen), MIT) generates multi-channel SDF atlases from font outlines or SVG paths — the offline preprocessing step for §28.2 MSDF font rendering. Produces a `VkImage` data asset; no runtime GPU component.
+
+**PyTorch Geometric** ([source](https://pyg.org), MIT) provides `torch_geometric.nn.PointNetConv`, graph convolution layers, and batched k-NN search (`torch_cluster.knn_graph`) all running on CUDA or ROCm. The trained model weights (§27) can be extracted and run as a Vulkan compute shader MLP inference pass.
+
+**VTK** ([source](https://vtk.org), BSD-3) covers §29 scientific visualization: `vtkStreamTracer` for streamlines, `vtkVolume` with GPU ray casting, `vtkTensorGlyph` for superquadrics, and `vtkMarchingCubes` for isosurface extraction. The OpenGL compute backend (`vtkOpenGLGPUVolumeRayCastMapper`) uses GL compute shaders; Vulkan integration requires the VTK-m ([source](https://m.vtk.org)) parallel framework with a Kokkos backend.
+
+**What is missing.** Spanning all three tables, no single library covers more than five of the twenty-nine algorithm sections, and no library provides GPU-native Vulkan implementations across the most algorithmically demanding sections — fluids, deformable bodies, geodesics, 3DGS, point cloud processing, rigid body dynamics, and geometric deep learning — without CUDA dependency. The CUDA ecosystem (PhysX 5 + SPlisHSPlasH + gsplat + Open3D + PyTorch Geometric + NanoVDB) comes closest for NVIDIA hardware, but requires CUDA–Vulkan interop for every GPU-resident result. On non-NVIDIA hardware or with a Vulkan-only constraint, the algorithms across §10–§29 must be implemented from first principles using the compute shader patterns in this chapter.
 
 ---
 
-## 21. Performance Reference
+## 31. Performance Reference
 
 **Subdivision** (OpenSubdiv stencil evaluation, RTX 4080):
 
@@ -4897,13 +5935,15 @@ Sub::CatmullClark_subdivision(mesh,
 
 ---
 
-## 22. Integrations
+## 32. Integrations
 
 - **Ch24 (Vulkan/EGL)** — Vulkan resource allocation patterns for SSBO-based subdivision and skinning buffers; pipeline barrier placement between compute passes.
 - **Ch25 (GPU Compute)** — Compute shader dispatch setup, shared memory usage for marching cubes tile optimization, prefix-scan patterns for compaction, and radix sort for Morton-code-based LBVH (§8).
 - **Ch127 (Mesh Shaders and VRS)** — Mesh shaders replace the tessellation pipeline for subdivision patches; the amplification shader's LOD selection (§7.4) uses cluster bounding spheres from the same meshlet data structures described in Ch127.
 - **Ch133 (Vulkan Compute Queues)** — Skinning pre-pass, IK compute, and BVH rebuild should run on the async compute queue to overlap with graphics rendering; see Ch133 for synchronization between compute and graphics queues.
-- **Ch135 (Vulkan Ray Tracing)** — The GPU-built LBVH (§8) feeds into `VkAccelerationStructureBuildGeometryInfoKHR` via `VK_ACCELERATION_STRUCTURE_BUILD_MODE_UPDATE_KHR` for dynamic geometry; Ch135 covers the full AS build and GLSL ray-tracing shader integration.
-- **Ch141 (Cooperative Matrices)** — QEF matrix accumulation in dual contouring (§3.3) and Jacobian construction in IK (§5.3) benefit from cooperative matrix operations when matrix sizes exceed the warp-level primitive dimensions.
-- **Ch154 (GPU-Driven Rendering)** — GPU-driven pipelines require that geometry (subdivision patches, skinned meshes, LOD index buffers) be finalized in compute before indirect draw commands are issued; see Ch154's indirect dispatch patterns.
-- **Ch204 (Shader Algorithm Catalog)** — Reference for quaternion arithmetic primitives (`quat_mul`, `quat_from_axis_angle`) used in CCD and DQS shaders.
+- **Ch135 (Vulkan Ray Tracing)** — The GPU-built LBVH (§8) feeds into `VkAccelerationStructureBuildGeometryInfoKHR` via `VK_ACCELERATION_STRUCTURE_BUILD_MODE_UPDATE_KHR` for dynamic geometry; Ch135 covers the full AS build and GLSL ray-tracing shader integration. The BLAS/TLAS pipeline in §20 of this chapter provides the geometry layer that Ch135's ray tracing shaders query.
+- **Ch141 (Cooperative Matrices)** — QEF matrix accumulation in dual contouring (§3.3) and Jacobian construction in IK (§5.3) benefit from cooperative matrix operations when matrix sizes exceed the warp-level primitive dimensions. The MLP inference in §27 (PointNet, neural SDF) maps directly to cooperative matrix multiply-accumulate patterns.
+- **Ch154 (GPU-Driven Rendering)** — GPU-driven pipelines require that geometry (subdivision patches, skinned meshes, LOD index buffers) be finalized in compute before indirect draw commands are issued; see Ch154's indirect dispatch patterns. The task-shader crowd rendering in §23.4 uses the same indirect draw compaction flow as Ch154's two-phase occlusion pass.
+- **Ch204 (Shader Algorithm Catalog)** — Reference for quaternion arithmetic primitives (`quat_mul`, `quat_from_axis_angle`) used in CCD and DQS shaders; also covers RK4 integration primitives reused in §26.4 heightfield collision and §29.1 streamline tracing.
+- **Ch209 (GPU Simulation Pipelines)** — The fluid (§11), deformable body (§12), rigid body (§22), fracture (§25), and crowd (§23) sections of this chapter provide the algorithm kernels; Ch209 covers how to assemble these kernels into a full simulation pipeline with shared memory layouts, double-buffering, and cross-queue synchronization.
+- **Ch210 (Terrain and Streaming)** — The CDLOD quadtree (§26.1), sparse clipmap (§26.3), and heightfield ray intersection (§26.4) in this chapter are the GPU geometry algorithms; Ch210 covers the full terrain system including heightmap streaming, virtual texture feedback, and integration with the Vulkan sparse binding API.
