@@ -24,6 +24,7 @@
 - [15. Android Graphics: The Largest Linux Graphics Deployment](#15-android-graphics-the-largest-linux-graphics-deployment)
 - [16. Linux Audio: From OSS to PipeWire](#16-linux-audio-from-oss-to-pipewire)
 - [17. Video Codec Standards and Hardware Decode](#17-video-codec-standards-and-hardware-decode)
+  - [The MPEG-4 Part 2 Era: DivX, XviD, Theora, and VC-1 (2000–2010)](#the-mpeg-4-part-2-era-divx-xvid-theora-and-vc-1-20002010)
 - [18. Display Hardware Evolution: CRT to HDR](#18-display-hardware-evolution-crt-to-hdr)
 - [19. Recurring Design Themes](#19-recurring-design-themes)
 - [20. The Road Ahead: 2026 and Beyond](#20-the-road-ahead-2026-and-beyond)
@@ -622,6 +623,65 @@ Video decoding has been a driver of Linux graphics hardware capability since the
 ### The Codec Standard Timeline
 
 **MPEG-1** (ISO/IEC 11172, 1993) was the first widely deployed digital video codec, targeting CD-ROM-speed storage at approximately 1.5 Mbit/s. **MPEG-2** (H.262, 1995) scaled to DVD and broadcast HDTV, becoming the dominant distribution codec for a decade. Both used a patent pool administered by MPEG LA.
+
+### The MPEG-4 Part 2 Era: DivX, XviD, Theora, and VC-1 (2000–2010)
+
+Between MPEG-2 and H.264 there was a chaotic interregnum of competing proprietary and
+semi-open codecs, software-only decode on consumer PCs, and the first major collision
+between codec patent law and the open-source ecosystem.
+
+**MPEG-4 Part 2** (ISO/IEC 14496-2, 1999) was the direct successor to MPEG-2 at roughly
+half the bitrate for equivalent quality — enough to fit a feature film on a single 700 MB
+CD-ROM at watchable resolution. Its story on Linux is inseparable from its grey-market
+origins. In 1999 a group of coders reverse-engineered and modified Microsoft's proprietary
+MPEG-4 v3 codec (bundled with Windows Media Player) to remove its "ASF-only" container
+restriction, distributing the result as **DivX** — originally a play on "DiVX", the ill-
+fated Circuit City pay-per-use DVD format they were mocking. DivX became the codec of
+internet piracy from 2000 to 2006, distributed in `.avi` files with typical bitrates of
+700 kbit/s–1 Mbit/s for VCD-quality content.
+[Source: DivX history — en.wikipedia.org/wiki/DivX]
+
+**XviD** (2001) was the GPL response: a from-scratch MPEG-4 Part 2 encoder/decoder
+developed by a team that had been involved with the original DivX hack but wanted a fully
+open implementation. XviD produced output bitstream-compatible with DivX players but was
+cleaner code, actively maintained, and free of the original hack's licensing baggage. For
+several years XviD was the encoder of choice for the Linux ripping community via `mencoder`
+(the MPlayer encoder frontend) and `transcode`.
+[Source: github.com/xvid-labs/xvid — historical mirror]
+
+On Linux, software MPEG-4 Part 2 decode ran through **`libavcodec`** (the FFmpeg codec
+library, originally written by Fabrice Bellard in 2000 as "ffmpeg") and **`libmpeg4`** in
+the MPlayer project. There was no hardware acceleration path — the MPEG-4 Part 2 era was
+entirely software decode on x86 CPUs, which by 2002 were fast enough for 720×480@25fps.
+The GPU existed only as a display output device; not until VDPAU (2008) did GPU decode
+acceleration reach Linux desktops.
+
+**Windows Media Video 9 / VC-1** (SMPTE 421M, 2006) was Microsoft's MPEG-4-era codec,
+formally standardized after Microsoft submitted WMV9 to SMPTE. VC-1 was technically
+comparable to H.264 in compression efficiency and was one of three mandatory codecs for
+Blu-ray (alongside MPEG-2 and H.264). On Linux, VC-1 mattered because NVIDIA's VDPAU
+(2008) included VC-1 hardware decode, making it the first codec beyond H.264 and MPEG-2
+to receive GPU decode acceleration on Linux. VA-API later gained VC-1 profiles via the
+`VASurfaceAttribMemoryType` decode infrastructure.
+
+**Theora** (Xiph.org, 2004 — derived from On2's VP3 codec, donated royalty-free in 2001)
+was the first serious attempt at a patent-unencumbered video codec for the web. Mozilla
+and Opera backed Theora for the HTML5 `<video>` element in 2007, and it was the codec of
+choice for Wikipedia video until 2014. Theora failed to displace H.264 for two reasons:
+it produced noticeably lower quality at equivalent bitrates (VP3-derived motion estimation
+was below the MPEG-4 state-of-the-art), and Apple refused to implement it in Safari,
+blocking the HTML5 `<video>` codec consensus. The Theora vs. H.264 stalemate was broken
+not by Theora but by VP8's open-sourcing in 2010 and eventually by AV1 in 2018.
+[Source: xiph.org/theora/]
+
+**Patent expiry.** The MPEG-4 Part 2 patent pool, administered by MPEG LA, covered patents
+filed between approximately 1998 and 2002. With a standard 20-year patent term, the last
+MPEG-4 Part 2 patents expired around 2019–2022. As of 2026 MPEG-4 Part 2 is fully in the
+public domain — `libavcodec`'s `mpeg4` decoder and `libxvid` encoder can be distributed
+without patent liability in any jurisdiction. Similarly, MPEG-2 patents (filed 1991–1994)
+expired between 2007 and 2011; distributing MPEG-2 decode has been royalty-free for over
+a decade. H.264 (filed 2001–2004) will begin expiring in earnest around 2026–2028. The
+HEVC patent situation remains unresolved due to multiple competing pools.
 
 **H.264** (MPEG-4 AVC, 2003) achieved roughly 2× the compression of MPEG-2 at equivalent quality, making streaming HD video practical. H.264 dominated internet video delivery for fifteen years. Its MPEG LA patent pool drove investment in royalty-free alternatives.
 

@@ -1857,6 +1857,19 @@ ffmpeg -hwaccel d3d11va \
        -c:a copy output_amf.mp4
 ```
 
+**Kodi's FFmpeg fork (`ffmpeg-kodi`).** Kodi maintains a downstream fork of FFmpeg at
+[github.com/xbmc/FFmpeg](https://github.com/xbmc/FFmpeg) that it links statically into
+the `kodi` binary. The fork carries patches not yet upstream: tighter VA-API surface
+lifetime management (surfaces released at `av_frame_unref` time rather than at context
+close), custom DRM/DMA-BUF interop for zero-copy frame handoff to Kodi's GL/Vulkan
+display path, and VDPAU interop patches for legacy NVIDIA. Kodi does not shell out to an
+`ffmpeg` process — it calls `libavcodec` directly via the same `AVCodecContext` /
+`AVHWFramesContext` API described in §5. The VA-API decoder path in Kodi's `VideoPlayer`
+sets `AVCodecContext.hw_device_ctx` to a `AV_HWDEVICE_TYPE_VAAPI` context, then maps
+decoded `AV_PIX_FMT_VAAPI` frames to an OpenGL texture via `EGL_EXT_image_dma_buf_import`
+— the same zero-copy chain covered in Ch26 §3.
+[Source: github.com/xbmc/FFmpeg](https://github.com/xbmc/FFmpeg)
+
 ---
 
 ### 13.6 Audio Handling

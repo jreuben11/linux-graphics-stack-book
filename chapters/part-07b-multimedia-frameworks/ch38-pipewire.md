@@ -12,7 +12,8 @@
 - [3. Video Capture Pipeline: V4L2 and libcamera Sources](#3-video-capture-pipeline-v4l2-and-libcamera-sources)
 - [4. Screen Capture and Portal Integration](#4-screen-capture-and-portal-integration)
 - [5. Remote Desktop and Streaming](#5-remote-desktop-and-streaming)
-- [6. Buffer Formats and GPU Interop](#6-buffer-formats-and-gpu-interop)
+- [6. D-Bus Interface Reference](#6-dbus-interface-reference)
+- [7. Buffer Formats and GPU Interop](#7-buffer-formats-and-gpu-interop)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -49,7 +50,7 @@ Remote desktop extends screen capture via **`org.freedesktop.portal.RemoteDeskto
 
 Buffer format and **GPU** interop is governed by **DRM format modifiers** — 64-bit values such as **`DRM_FORMAT_MOD_LINEAR`**, **`I915_FORMAT_MOD_X_TILED`**, **`I915_FORMAT_MOD_Y_TILED_CCS`**, and **`AMD_FMT_MOD_*`** — negotiated through **SPA** pod choices with **`SPA_POD_PROP_FLAG_DONT_FIXATE`** and **`DRM_FORMAT_MOD_INVALID`** as a fallback signal. Producers announce modifier capabilities via **`SPA_FORMAT_VIDEO_modifier`** in **`SPA_PARAM_EnumFormat`** pods; after fixation via **`spa_format_video_raw_parse()`** and **`pw_stream_update_params()`**, buffers are allocated with **`gbm_bo_create_with_modifiers2()`** or **`VkImageDrmFormatModifierExplicitCreateInfoEXT`** and exported via **`gbm_bo_get_modifier()`** / **`VkImageDrmFormatModifierPropertiesEXT`**. The **`on_add_buffer`** callback signals whether the negotiated type is **`SPA_DATA_DmaBuf`** (zero-copy) or **`SPA_DATA_MemFd`** (CPU-copy fallback, used with **`PW_STREAM_FLAG_MAP_BUFFERS`**). GPU-to-**PipeWire** injection is demonstrated by the **`pw-capture`** **`VkLayer`** (intercepting **`vkQueuePresentKHR`** and exporting via **`VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT`**) and natively by the **`spa/plugins/vulkan/`** **SPA** plugin introduced in **PipeWire 0.3.80**.
 
-- **Graphics application developers** — sections 4 and 6: the portal **ScreenCast** flow and the **DMA-BUF** modifier negotiation that determines whether screen capture is zero-copy or falls back to a CPU blit.
+- **Graphics application developers** — sections 4 and 7: the portal **ScreenCast** flow and the **DMA-BUF** modifier negotiation that determines whether screen capture is zero-copy or falls back to a CPU blit.
 - **Systems and driver developers** — sections 1–3: the **SPA** plugin **ABI**, the graph scheduler, the **V4L2** / **libcamera** source nodes, and the buffer-lifecycle contracts that cross kernel/userspace boundaries.
 - **Browser and compositor engineers** — sections 4–5: the exact **D-Bus** interfaces, portal backend choices per compositor, and the **WebRTC** plumbing that makes in-browser screen sharing work.
 
@@ -317,7 +318,7 @@ If the `cls` column shows `TS` (time-sharing) instead of `FF`, the data thread d
 
 Format negotiation between two nodes proceeds in two phases. During the *enumeration* phase, each port calls `spa_node_port_enum_params(SPA_PARAM_EnumFormat)` to list all format capabilities as an array of SPA pod objects — each encoding constraints on media type, format, size, and framerate using `SPA_CHOICE_Enum` or `SPA_CHOICE_Range` pods. The session manager or the adapter node intersects the capability sets to find a mutually acceptable format.
 
-During the *fixation* phase, the negotiated format is committed with `spa_node_port_set_param(SPA_PARAM_Format)`, followed by buffer negotiation (`SPA_PARAM_Buffers`) that determines memory type (`SPA_DATA_MemFd`, `SPA_DATA_DmaBuf`), buffer count, stride, and alignment. This two-phase model is the foundation of the zero-copy DMA-BUF path explored in section 6.
+During the *fixation* phase, the negotiated format is committed with `spa_node_port_set_param(SPA_PARAM_Format)`, followed by buffer negotiation (`SPA_PARAM_Buffers`) that determines memory type (`SPA_DATA_MemFd`, `SPA_DATA_DmaBuf`), buffer count, stride, and alignment. This two-phase model is the foundation of the zero-copy DMA-BUF path explored in section 7.
 
 ---
 
@@ -529,7 +530,7 @@ struct pw_stream *stream = pw_stream_new(core, "screen-capture",
                       NULL));
 
 /* 3. Announce DMA-BUF capability: offer both DMA-BUF and MemFd */
-/* (format pod construction omitted for brevity; see section 6) */
+/* (format pod construction omitted for brevity; see section 7) */
 pw_stream_connect(stream, PW_DIRECTION_INPUT,
                   PW_ID_ANY,
                   PW_STREAM_FLAG_AUTOCONNECT |
@@ -555,6 +556,168 @@ The `SPA_META_Header` metadata block on each buffer carries a `pts` field (prese
 **OBS Studio** implements PipeWire screen capture via its `pipewire` plugin (`plugins/linux-pipewire/`). It calls `org.freedesktop.portal.ScreenCast` internally (through `libportal` or direct D-Bus), handles the `pw_stream` setup, and then feeds frames into OBS's internal buffer pipeline for encoding and streaming.
 
 **Chromium / Chrome** has supported PipeWire-based screen capture since Chrome 110 (2023), where it was enabled by default on Wayland. When running under Wayland and a WebRTC `getDisplayMedia()` call is made, Chrome invokes the portal D-Bus interface, receives the PipeWire fd, and reads frames through its `webrtc_desktop_capture` `PipeWireCapturer` implementation. Mozilla Firefox uses a similar path via its own portal-aware screen-capture code. [Source: Screen Sharing on Wayland research](https://botmonster.com/self-hosting/wayland-screen-sharing-fix-video-calls-linux/)
+
+### 4.5 libportal: The Application-Side Portal Client
+
+Raw D-Bus portal access requires implementing the two-phase `Request`/`Response` protocol by hand: create a request object path, subscribe to its `Response` signal, parse the `(u response, a{sv} results)` tuple, and manage the session object lifetime across multiple method calls. **libportal** (LGPL-3.0, [github.com/flatpak/libportal](https://github.com/flatpak/libportal), current version 0.10.0, 2025-06-18) wraps all of this in GIO-style async callbacks, making portal calls look identical to any other GLib `GAsyncReadyCallback`-based API. It is the recommended client library for GTK and GObject-based applications. [Source: libportal documentation](https://libportal.org)
+
+#### Core Types
+
+```c
+#include <libportal/portal.h>  /* pkg-config: libportal; GIR namespace: Xdp */
+
+XdpPortal *xdp_portal_initable_new (GError **error);
+/* XdpPortal implements GInitable; returns NULL on D-Bus failure instead of aborting */
+```
+
+The four central types (`libportal/types.h`):
+
+```c
+typedef struct _XdpPortal   XdpPortal;   /* main entry point; one per app */
+typedef struct _XdpSession  XdpSession;  /* long-lived session (screencast, remote desktop) */
+typedef struct _XdpParent   XdpParent;   /* opaque window handle for dialog parenting */
+typedef struct _XdpSettings XdpSettings; /* portal-exposed system settings */
+```
+
+`XdpParent` is an opaque struct populated by a companion library — the core does not depend on any toolkit:
+
+| Companion library | Pkg-config | Header | Constructor |
+|---|---|---|---|
+| `libportal-gtk4` | `libportal-gtk4` | `<libportal-gtk4/portal-gtk4.h>` | `xdp_parent_new_gtk(GtkWindow *)` |
+| `libportal-gtk3` | `libportal-gtk3` | `<libportal-gtk3/portal-gtk3.h>` | `xdp_parent_new_gtk(GtkWindow *)` |
+| `libportal-qt6` | `libportal-qt6` | `<libportal-qt6/portal-qt6.h>` | `xdp_parent_new_qt(QWindow *)` |
+| `libportal-qt5` | `libportal-qt5` | `<libportal-qt5/portal-qt5.h>` | `xdp_parent_new_qt(QWindow *)` |
+
+`XdpSession` is a `GObject` subclass. Its most important signal for video applications is `closed`, emitted when the compositor or portal daemon terminates the session:
+
+```c
+g_signal_connect (session, "closed", G_CALLBACK (on_session_closed), data);
+```
+
+#### ScreenCast Flow
+
+The enumerations from `libportal/remote.h`:
+
+```c
+typedef enum {
+    XDP_OUTPUT_MONITOR = 1 << 0,   /* whole display */
+    XDP_OUTPUT_WINDOW  = 1 << 1,   /* individual application window */
+    XDP_OUTPUT_VIRTUAL = 1 << 2,   /* virtual / synthetic display */
+} XdpOutputType;                   /* bitmask */
+
+typedef enum {
+    XDP_CURSOR_MODE_HIDDEN   = 1 << 0,  /* no cursor in stream */
+    XDP_CURSOR_MODE_EMBEDDED = 1 << 1,  /* cursor composited into video */
+    XDP_CURSOR_MODE_METADATA = 1 << 2,  /* cursor as side-channel metadata */
+} XdpCursorMode;
+
+typedef enum {
+    XDP_PERSIST_MODE_NONE       = 0,  /* one-shot; no restore token */
+    XDP_PERSIST_MODE_TRANSIENT  = 1,  /* token valid for process lifetime */
+    XDP_PERSIST_MODE_PERSISTENT = 2,  /* token stored until user revokes */
+} XdpPersistMode;
+```
+
+A complete capture session from an application's perspective:
+
+```c
+/* Step 1: create the session (shows the source-chooser dialog) */
+xdp_portal_create_screencast_session (
+    portal,
+    XDP_OUTPUT_MONITOR | XDP_OUTPUT_WINDOW,   /* allowed source types */
+    XDP_SCREENCAST_FLAG_NONE,
+    XDP_CURSOR_MODE_EMBEDDED,
+    XDP_PERSIST_MODE_PERSISTENT,
+    restore_token,                    /* NULL on first use */
+    cancellable, on_session_created, data);
+
+static void on_session_created (GObject *source, GAsyncResult *result,
+                                gpointer data) {
+    XdpSession *session =
+        xdp_portal_create_screencast_session_finish (XDP_PORTAL (source),
+                                                     result, &error);
+
+    /* Step 2: start the session (may show a confirmation dialog) */
+    xdp_session_start (session, parent, cancellable, on_session_started, data);
+}
+
+static void on_session_started (GObject *source, GAsyncResult *result,
+                                gpointer data) {
+    xdp_session_start_finish (XDP_SESSION (source), result, &error);
+
+    /* Step 3: retrieve the selected PipeWire node IDs */
+    GVariant *streams = xdp_session_get_streams (session);
+    /* streams: a(ua{sv})
+       Each tuple: (pipewire_node_id, {"position"->(ii), "size"->(ii)}) */
+
+    /* Step 4: open the restricted PipeWire remote */
+    int pw_fd = xdp_session_open_pipewire_remote (session);
+    /* pw_fd: UNIX fd; only stream nodes authorised for this session are visible */
+
+    struct pw_core *core = pw_context_connect_fd (pw_ctx, pw_fd, NULL, 0);
+    /* Connect a pw_stream to the node ID from get_streams() */
+}
+
+/* Save the restore token so the next run skips the chooser dialog */
+char *token = xdp_session_get_restore_token (session); /* caller frees */
+```
+
+#### Camera Flow
+
+The camera flow is simpler — there is no `XdpSession` object, and camera nodes are discovered by enumerating the PipeWire graph after connecting with the returned fd:
+
+```c
+/* Check hardware availability */
+if (!xdp_portal_is_camera_present (portal))
+    return;
+
+/* Request access (may show a consent dialog) */
+xdp_portal_access_camera (portal, parent, XDP_CAMERA_FLAG_NONE,
+                          cancellable, on_camera_access, data);
+
+static void on_camera_access (GObject *source, GAsyncResult *result,
+                              gpointer data) {
+    xdp_portal_access_camera_finish (XDP_PORTAL (source), result, &error);
+
+    /* Get the PipeWire fd scoped to camera nodes only */
+    int pw_fd = xdp_portal_open_pipewire_remote_for_camera (portal);
+    struct pw_core *core = pw_context_connect_fd (pw_ctx, pw_fd, NULL, 0);
+    /* Enumerate pw_registry to discover camera Video/Source nodes */
+}
+```
+
+Unlike the screencast case, `xdp_portal_open_pipewire_remote_for_camera()` does not return a node ID list — the application must enumerate the restricted PipeWire graph's `pw_registry` to find camera nodes, since a system may expose multiple cameras and libportal has no mechanism to present a camera chooser.
+
+#### Portals Wrapped by libportal
+
+libportal 0.10 wraps the following portal interfaces. Multimedia-relevant ones are highlighted:
+
+| Portal interface | libportal module | Multimedia relevance |
+|---|---|---|
+| `org.freedesktop.portal.ScreenCast` | `remote.h` | **Primary** — see ScreenCast flow above |
+| `org.freedesktop.portal.RemoteDesktop` | `remote.h` | Combined session with ScreenCast; exposes `NotifyPointerMotion` etc. |
+| `org.freedesktop.portal.Camera` | `camera.h` | **Primary** — see Camera flow above |
+| `org.freedesktop.portal.InputCapture` | `inputcapture.h` | Pointer-barrier capture for VM displays; `ConnectToEIS` fd |
+| `org.freedesktop.portal.Inhibit` | `inhibit.h` | Prevent idle/sleep during playback |
+| `org.freedesktop.portal.Screenshot` | `screenshot.h` | Single-frame grab; `PickColor` |
+| `org.freedesktop.portal.Clipboard` | `clipboard.h` | Clipboard sync within a remote desktop session |
+| `org.freedesktop.portal.Settings` | `settings.h` | Read `color-scheme`, `accent-color` |
+| `org.freedesktop.portal.Notification` | `notification.h` | Desktop notifications |
+| `org.freedesktop.portal.FileChooser` | `filechooser.h` | Save-to-disk for recorders |
+| `org.freedesktop.portal.OpenURI` | `openuri.h` | Open URLs or files |
+| `org.freedesktop.portal.Account` | `account.h` | User identity |
+| `org.freedesktop.portal.Background` | `background.h` | Background process permission |
+| `org.freedesktop.portal.DynamicLauncher` | `dynamic-launcher.h` | Install app launchers |
+| `org.freedesktop.portal.Email` | `email.h` | Compose email |
+| `org.freedesktop.portal.Location` | `location.h` | Geolocation |
+| `org.freedesktop.portal.Print` | `print.h` | Printing |
+| `org.freedesktop.portal.Spawn` | `spawn.h` | Spawn processes outside sandbox |
+| `org.freedesktop.portal.Trash` | `trash.h` | Move files to trash |
+| `org.freedesktop.portal.Wallpaper` | `wallpaper.h` | Set desktop background |
+
+Portals **not** wrapped by libportal 0.10 (applications must use raw D-Bus): `GlobalShortcuts`, `GameMode`, `MemoryMonitor`, `NetworkMonitor`, `PowerProfileMonitor`, `Realtime`, `Documents`, `FileTransfer`, `Secret`, `USB`, `Registry`.
+
+[Source: libportal source](https://github.com/flatpak/libportal); [libportal API docs](https://libportal.org)
 
 ---
 
@@ -633,9 +796,257 @@ Format translation between GStreamer caps (`video/x-raw,format=NV12,width=1920,.
 
 ---
 
-## 6. Buffer Formats and GPU Interop
+## 6. D-Bus Interface Reference
 
-### 6.1 Exporting a Rendered Frame into PipeWire
+PipeWire is not a D-Bus service itself — it communicates through a UNIX domain socket using its own native protocol — but it sits at the centre of a web of D-Bus interfaces that gate access to its streams, grant scheduling privileges, and manage device permissions. This section collects all freedesktop D-Bus interfaces relevant to the PipeWire and video-session-layer stack in one place, organised by bus and scope.
+
+D-Bus interfaces in this space span two buses:
+
+- **Session bus** — per-user, per-login-session. The XDG Desktop Portal frontend and all its backend implementations live here. Applications access these directly; Flatpak-sandboxed processes are restricted to specific portal interfaces.
+- **System bus** — system-wide, runs as root. RTKit, `systemd-logind`, `colord`, and PolicyKit are here. Applications and portal backends call across from the session bus via privileged system services.
+
+### 6.1 XDG Desktop Portal Frontend Interfaces (`org.freedesktop.portal.*`)
+
+All portal frontend interfaces are registered by the `xdg-desktop-portal` daemon under the well-known D-Bus service name **`org.freedesktop.portal.Desktop`** on the session bus. Every method that involves user interaction is asynchronous: it returns a `Request` object immediately, and the `Response` signal fires when the user completes or cancels the dialog. Long-lived sessions (ScreenCast, RemoteDesktop, GlobalShortcuts, InputCapture) return a `Session` object that persists across multiple method calls.
+
+#### Session Helper Objects
+
+| Interface | Object Path | Key Members |
+|---|---|---|
+| `org.freedesktop.portal.Request` | `/org/freedesktop/portal/desktop/request/`*SENDER*`/`*TOKEN* | `Close()` method; `Response(u response, a{sv} results)` signal (`response`: 0=success, 1=cancelled, 2=other) |
+| `org.freedesktop.portal.Session` | `/org/freedesktop/portal/desktop/session/`*SENDER*`/`*TOKEN* | `Close()` method; `Closed(a{sv} details)` signal; `version` property |
+
+#### Multimedia and Input Portal Interfaces
+
+The following table covers interfaces that directly affect PipeWire stream access, input injection, scheduling, and related session-layer concerns. All reside at object path `/org/freedesktop/portal/desktop`.
+
+| Interface | Ver | Key Methods / Properties | PipeWire / Multimedia Relevance |
+|---|---|---|---|
+| `org.freedesktop.portal.ScreenCast` | 6 | `CreateSession(a{sv})→o`, `SelectSources(o,a{sv})→o` *(types: MONITOR=1, WINDOW=2, VIRTUAL=4; cursor_mode; persist_mode)*, `Start(o,s,a{sv})→o` *(response: `streams` array, `restore_token`)*, **`OpenPipeWireRemote(o,a{sv})→h`** *(scoped PW fd)*; properties `AvailableSourceTypes(u)`, `AvailableCursorModes(u)` | Primary portal for screen capture. `OpenPipeWireRemote` returns the fd passed to `pw_context_connect_fd()`; the response `pipewire-serial` is the `PW_KEY_TARGET_OBJECT` for `pw_stream_connect()`. Used by OBS, Chrome `getDisplayMedia()`, Firefox, WebRTC stacks |
+| `org.freedesktop.portal.RemoteDesktop` | 2 | `CreateSession(a{sv})→o`, `SelectDevices(o,a{sv})→o` *(types: KEYBOARD=1, POINTER=2, TOUCHSCREEN=4)*, `Start(o,s,a{sv})→o`, **`ConnectToEIS(o,a{sv})→h`** *(v2+, libei fd)*, `NotifyPointerMotion(o,a{sv},dd)`, `NotifyPointerMotionAbsolute(o,a{sv},udd)`, `NotifyPointerButton(o,a{sv},iu)`, `NotifyPointerAxis(o,a{sv},dd)`, `NotifyPointerAxisDiscrete(o,a{sv},ui)`, `NotifyKeyboardKeycode(o,a{sv},iu)`, `NotifyKeyboardKeysym(o,a{sv},iu)`, touch variants; property `AvailableDeviceTypes(u)` | Extends ScreenCast with input injection. `ConnectToEIS` (v2) replaces individual `Notify*` calls with a `libei` file descriptor; `mapping_id` in stream properties correlates libei device regions to PW streams for absolute pointer positioning |
+| `org.freedesktop.portal.Camera` | 1 | `AccessCamera(a{sv})→o` *(user consent dialog)*, **`OpenPipeWireRemote(a{sv})→h`** *(PW camera fd)*; property `IsCameraPresent(b)` | Same PW fd mechanism as ScreenCast but scoped to camera nodes (V4L2 / libcamera sources). Sandboxed apps (Flatpak) must use this instead of connecting to `/dev/videoN` directly |
+| `org.freedesktop.portal.Realtime` | 1 | `MakeThreadRealtimeWithPID(tt,u)`, `MakeThreadHighPriorityWithPID(tt,i)`; properties `MaxRealtimePriority(i)=20`, `MinNiceLevel(i)=−15`, `RTTimeUSecMax(x)=200000` µs | Proxies `org.freedesktop.RealtimeKit1` on the system bus with PID-namespace translation. Sandboxed PipeWire clients (e.g. inside Flatpak) call this instead of RTKit directly. The non-sandboxed `pipewire` daemon calls RTKit on the system bus directly via `module-rt` |
+| `org.freedesktop.portal.Inhibit` | 3 | `Inhibit(s window, u flags, a{sv})→o` *(flags: Logout=1, UserSwitch=2, Suspend=4, **Idle=8**)*, `CreateMonitor(s,a{sv})→o` *(v2+)*, `QueryEndResponse(o)` *(v3+, must ack within 1 s)*; signal `StateChanged(o,a{sv})` *(session-state: Running=1, QueryEnd=2, Ending=3)* | Used by media players, screen-sharing daemons, and conferencing apps to prevent display sleep or session lock during active capture or playback |
+| `org.freedesktop.portal.Screenshot` | 3 | `Screenshot(s,a{sv})→o` *(options: interactive, target — Screen=1/Window=2/Area=4/ActiveWindow=8)*, `PickColor(s,a{sv})→o` *(response: `color` (ddd) sRGB [0,1])*; property `AvailableTargets(u)` | Single-frame screen grab; lighter-weight alternative to a ScreenCast session when only one image is needed |
+| `org.freedesktop.portal.GlobalShortcuts` | 2 | `CreateSession(a{sv})→o`, `BindShortcuts(o,a(sa{sv}),s,a{sv})→o` *(each shortcut: `(id, {description, preferred_trigger})`)*, `ListShortcuts(o,a{sv})→o`, `ConfigureShortcuts(o,s,a{sv})` *(v2+)*; signals `Activated(o,s,t,a{sv})`, `Deactivated(o,s,t,a{sv})`, `ShortcutsChanged(o,a(sa{sv}))` | Used by OBS, screen recorders, and media players to register global hotkeys (e.g. record toggle) independent of input focus |
+| `org.freedesktop.portal.InputCapture` | 2 | `CreateSession2(a{sv})→a{sv}`, `Start(o,s,a{sv})→o`, `GetZones(o,a{sv})→o`, `SetPointerBarriers(o,a{sv},aa{sv},u)→o`, `Enable/Disable(o,a{sv})`, `Release(o,a{sv})` *(option: `cursor_position`)*, **`ConnectToEIS(o,a{sv})→h`**; signals `Activated(o,a{sv})` *(activation_id, cursor_position, barrier_id)*, `Deactivated`, `ZonesChanged`; property `SupportedCapabilities(u)` | Pointer barrier / mouse-capture for VM display viewers and KVM-over-IP clients; pairs with `ConnectToEIS` to feed captured input into a libei backend |
+| `org.freedesktop.portal.Clipboard` | 1 | `RequestClipboard(o,a{sv})`, `SetSelection(o,a{sv})`, `SelectionWrite(o,u)→h`, `SelectionWriteDone(o,u,b)`, `SelectionRead(o,s)→h`; signals `SelectionOwnerChanged(o,a{sv})`, `SelectionTransfer(o,s,u)` | Attaches clipboard sync to an existing ScreenCast or RemoteDesktop session; clipboard content is transferred via file descriptors |
+| `org.freedesktop.portal.PowerProfileMonitor` | 1 | Property `power-saver-enabled(b)` | Lets multimedia applications back off GPU/encode workloads when the system is in battery-saver mode |
+| `org.freedesktop.portal.Settings` | 2 | `ReadAll(as)→a{sa{sv}}`, `ReadOne(s,s)→v` *(v2+)*; signal `SettingChanged(s,s,v)`; key namespaces: `org.freedesktop.appearance` (`color-scheme`, `accent-color`, `contrast`, `reduced-motion`) | Read-only system appearance preferences; compositors and media players read `color-scheme` (0=none, 1=dark, 2=light) to match system theme |
+| `org.freedesktop.portal.MemoryMonitor` | 1 | Signal `LowMemoryWarning(y level)` *(0–255 severity byte)* | Allows media daemons to release decode buffers or lower quality under memory pressure |
+| `org.freedesktop.portal.NetworkMonitor` | 3 | `GetStatus()→a{sv}`, `GetConnectivity()→u` *(1=local, 2=limited, 3=captive, 4=full)*, `GetMetered()→b`, `CanReach(s,u)→b`; signal `changed()` | Streaming apps use this to detect metered connections and adapt bitrate accordingly |
+| `org.freedesktop.portal.GameMode` | 4 | `RegisterGameByPIDFd(h,h)→i`, `UnregisterGameByPIDFd(h,h)→i`, `QueryStatusByPIDFd(h,h)→i`; return values: 0=inactive, 1=active, 2=active+registered, −1=error; property `Active(b)` | Proxies `com.feralinteractive.GameMode` with PID-fd sandboxing; boosts CPU governor and GPU performance profiles — relevant when PipeWire must compete with a game for real-time CPU budget |
+| `org.freedesktop.portal.Documents` | 5 | `Add(h,b,b)→s`, `AddFull(ah,u,s,as)→(as,a{sv})`, `GrantPermissions(s,s,as)`, `GetMountPoint()→ay`; FUSE mount at `/run/user/$UID/doc/` | Grants sandboxed apps access to specific files; relevant when a capture app needs to write to a user-chosen output file path |
+
+### 6.2 XDG Desktop Portal Backend Interfaces (`org.freedesktop.impl.portal.*`)
+
+Backend interfaces are the private D-Bus contracts between `xdg-desktop-portal` and desktop-environment-specific backend daemons. Applications never call these directly; `xdg-desktop-portal` selects the correct backend at runtime and forwards frontend calls to it. On GNOME/Wayland, `xdg-desktop-portal-gnome` and GNOME Shell's `org.gnome.Shell.Portal` service together implement these.
+
+| Interface | Implementing Daemon | Key Notes |
+|---|---|---|
+| `org.freedesktop.impl.portal.ScreenCast` | `xdg-desktop-portal-gnome`, `xdg-desktop-portal-kde`, `xdg-desktop-portal-wlr`, `xdg-desktop-portal-hyprland` | Methods mirror the frontend (`CreateSession`, `SelectSources`, `Start`) but responses are **synchronous** `(u response, a{sv} results)` pairs. The backend creates `pw_node` instances on the PipeWire daemon and returns their serials to the frontend. Properties `AvailableSourceTypes` and `AvailableCursorModes` reflect compositor capability |
+| `org.freedesktop.impl.portal.RemoteDesktop` | Same backends | Mirrors the frontend interface; wraps compositor-specific input injection (Mutter `org.gnome.Mutter.RemoteDesktop`, KWin internal API). `ConnectToEIS` (v2) returns a compositor-side `libei` socket |
+| `org.freedesktop.impl.portal.Inhibit` | `xdg-desktop-portal-gtk` | `Inhibit`, `CreateMonitor`, `QueryEndResponse`; emits `StateChanged`. On GNOME, forwards to `org.gnome.SessionManager.Inhibitor` |
+| `org.freedesktop.impl.portal.Settings` | `xdg-desktop-portal-gtk`, compositor backends | `ReadAll(as)→a{sa{sv}}`, `SettingChanged` signal; reads from GSettings (`org.gnome.desktop.interface`) and emits changes as portal settings |
+| `org.freedesktop.impl.portal.Lockdown` | `xdg-desktop-portal-gtk` | Properties-only: `disable-camera(b)`, `disable-microphone(b)`, `disable-sound-output(b)`, `disable-printing(b)`, `disable-save-to-disk(b)`. When `disable-camera` is `true`, the Camera portal frontend rejects all `AccessCamera` calls |
+| `org.freedesktop.impl.portal.GlobalShortcuts` | Compositor backends | Relays shortcut registration to the compositor's keybinding system |
+| `org.freedesktop.impl.portal.InputCapture` | Compositor backends | Same method set as frontend; compositor implements the actual pointer barrier and `libei` backend |
+| `org.freedesktop.impl.portal.Background` | `xdg-desktop-portal-gtk` | `GetAppState()→a{sv}`, `NotifyBackground(o,s,s)→(u,a{sv})`; `RunningApplicationsChanged` signal |
+
+#### Permission Store
+
+| Interface | Service | Object Path | Key Members |
+|---|---|---|---|
+| `org.freedesktop.impl.portal.PermissionStore` | `org.freedesktop.impl.portal.PermissionStore` | `/org/freedesktop/impl/portal/PermissionStore` | `Lookup(s table, s id)→(a{sas}, v)`, `Set(s,b,s,a{sas},v)`, `SetPermission(s,b,s,s,as)`, `DeletePermission(s,s,s)` *(v2+)*, `GetPermission(s,s,s)→as`, `List(s)→as`; signal `Changed(s,s,b,v,a{sas})` |
+
+WirePlumber's `portal-permissionstore` plugin queries this store (tables `"camera"`, `"screencast"`, `"microphone"`, `"background"`) to determine per-application PipeWire object permissions (`PW_PERM_R | PW_PERM_X` for approved apps; zero for denied). This is the bridge between portal user-consent dialogs and PipeWire graph access control.
+
+### 6.3 System Bus Services
+
+#### RTKit — Real-Time Scheduling (`org.freedesktop.RealtimeKit1`)
+
+| Attribute | Value |
+|---|---|
+| Bus | System |
+| Service | `org.freedesktop.RealtimeKit1` |
+| Object path | `/org/freedesktop/RealtimeKit1` |
+| Interface | `org.freedesktop.RealtimeKit1` |
+
+| Member | Type | Signature | Notes |
+|---|---|---|---|
+| `MakeThreadRealtime` | method | `(t thread_id, u priority) → ()` | `thread_id` = kernel TID from `gettid(2)`, not `pthread_t`. Applies `SCHED_FIFO` at `priority` (≤ `MaxRealtimePriority`) |
+| `MakeThreadHighPriority` | method | `(t thread_id, i niceness) → ()` | Applies `SCHED_OTHER` with negative nice value (≥ `MinNiceLevel`) |
+| `MakeThreadRealtimeWithPID` | method | `(t process, t thread_id, u priority) → ()` | For promoting threads in another process; both PIDs verified via `/proc` |
+| `MakeThreadHighPriorityWithPID` | method | `(t process, t thread_id, i niceness) → ()` | Cross-process high-priority variant |
+| `MaxRealtimePriority` | property `i` | `20` | Ceiling `SCHED_FIFO` priority RTKit will grant |
+| `MinNiceLevel` | property `i` | `−15` | Most-negative nice value grantable |
+| `RTTimeUSecMax` | property `x` | `200000` | Per-thread `RLIMIT_RTTIME` cap (µs); triggers `SIGXCPU` at this threshold |
+
+See section 1.5 for PipeWire's usage pattern and the `module-rt` fallback sequence.
+
+#### systemd-logind (`org.freedesktop.login1`)
+
+| Attribute | Value |
+|---|---|
+| Bus | System |
+| Service | `org.freedesktop.login1` |
+
+The logind interfaces most critical to the graphics stack are the **Manager** (for system-wide inhibition and sleep lifecycle) and the **Session** (for DRM device access and VT switching signals).
+
+**Manager** — object path `/org/freedesktop/login1`:
+
+| Member | Signature | Notes |
+|---|---|---|
+| `Inhibit` | `(s what, s who, s why, s mode) → h fd` | `what`: `"idle"`, `"sleep"`, `"shutdown"`, `"handle-power-key"`. `mode`: `"block"` (prevents action) or `"delay"` (defers action). Close the returned fd to release inhibit. Used by compositors, media players, and screen-sharing daemons |
+| `PrepareForSleep` | signal `(b start)` | `start=true` fires before suspend; `start=false` fires after resume. Compositors drop DRM master before sleep and reacquire it after resume |
+| `PrepareForShutdown` | signal `(b start)` | Same pattern for shutdown; critical for orderly GPU teardown |
+| `GetSession` / `GetSessionByPID` | `(s id) → o` / `(u pid) → o` | Obtain the session object path for a given session or process |
+| `ListSessions` | `() → a(susso)` | All active sessions: (id, uid, username, seat, object_path) |
+
+**Session** — object path `/org/freedesktop/login1/session/`*ID*:
+
+| Member | Signature | Notes |
+|---|---|---|
+| `TakeControl` | `(b force) → ()` | Must be called before `TakeDevice`. Makes the calling process the *session controller* (compositor acquires exclusive DRM access here) |
+| `ReleaseControl` | `() → ()` | Releases session controller role; DRM master is returned |
+| `TakeDevice` | `(u major, u minor) → (h fd, b inactive)` | Opens a DRM device (e.g. `/dev/dri/card0`, major=226) with DRM master; `inactive=true` if session is not currently active. The **primary mechanism** by which Wayland compositors acquire the DRM fd without `CAP_SYS_ADMIN` |
+| `ReleaseDevice` | `(u major, u minor) → ()` | Returns a DRM fd previously taken |
+| `PauseDeviceComplete` | `(u major, u minor) → ()` | Synchronous acknowledgement required when `PauseDevice` signal type is `"pause"` (as opposed to `"force"` or `"gone"`) |
+| `SetBrightness` | `(s subsystem, s name, u brightness) → ()` | Backlight control: `("backlight", "intel_backlight", 500)` |
+| `PauseDevice` | signal `(u major, u minor, s type)` | Fires when VT switch away or suspend begins. `type`: `"pause"` (ack required via `PauseDeviceComplete`), `"force"` (no ack), `"gone"` (device removed). Compositor must stop rendering and release DRM master on receipt |
+| `ResumeDevice` | signal `(u major, u minor, h fd)` | Fires when VT returns or system resumes. Delivers a fresh, valid DRM fd — the old fd is invalid and must not be used |
+| `Type` | property `s` | `"wayland"` / `"x11"` / `"tty"` — indicates the display server type for this session |
+| `Active` | property `b` | `true` when this session is in the foreground |
+| `VTNr` | property `u` | Virtual terminal number (e.g. `2` for the first graphical session) |
+
+**Seat** — object path `/org/freedesktop/login1/seat/`*ID*:
+
+| Member | Notes |
+|---|---|
+| `SwitchTo(u vtnr)` | Programmatic VT switch |
+| `ActivateSession(s id)` | Bring a named session to the foreground |
+| `CanGraphical` property `b` | Whether this seat supports a graphical display |
+
+#### colord Color Management (`org.freedesktop.ColorManager`)
+
+| Attribute | Value |
+|---|---|
+| Bus | System |
+| Service | `org.freedesktop.ColorManager` |
+| Object path | `/org/freedesktop/ColorManager` |
+
+| Member | Signature | Notes |
+|---|---|---|
+| `CreateDevice` | `(s device_id, s scope, a{ss} props) → o` | Register a display device (called by compositors via `xrandr` or KMS connector name as `device_id`) |
+| `CreateProfile` | `(s profile_id, s scope, a{ss} props) → o` | Register an ICC profile |
+| `CreateProfileWithFd` | `(s profile_id, s scope, h fd, a{ss} props) → o` | Register ICC profile from an open file descriptor |
+| `FindDeviceByProperty` | `(s name, s value) → o` | e.g. `("XRANDR_name", "eDP-1")` to locate a connector's device object |
+| `GetDevices` / `GetProfiles` | `() → ao` | Enumerate all registered devices or profiles |
+| `DeviceAdded` / `DeviceChanged` / `DeviceRemoved` | signals `(o device)` | Compositors subscribe to reload ICC profiles on hotplug |
+| `ProfileAdded` / `ProfileChanged` / `ProfileRemoved` | signals `(o profile)` | |
+
+**ColorDevice** — object path `/org/freedesktop/ColorManager/devices/`*id*:
+
+| Member | Notes |
+|---|---|
+| `AddProfile(s relation, o profile)` | Attach ICC profile: `"soft"` (user intent) or `"hard"` (mandatory) |
+| `MakeProfileDefault(o profile)` | Set the active ICC profile for rendering |
+| `ProfilingInhibit()` / `ProfilingUninhibit()` | Disable colour correction during hardware calibration |
+| `Embedded` property `b` | `true` for built-in panels |
+| `Metadata` property `a{ss}` | `OutputEdidMd5`, `XRANDR_name` (connector name), `OutputPriority` |
+
+**ColorProfile** — object path `/org/freedesktop/ColorManager/profiles/`*hash*:
+
+| Property | Notes |
+|---|---|
+| `HasVcgt(b)` | Whether profile contains a VCGT (Video Card Gamma Table) for hardware LUT upload via `xcalib`/`dispwin` |
+| `Filename(s)` | Absolute path to the ICC file |
+| `Kind(s)` | `"display-device"`, `"input-device"`, `"output-device"` |
+| `Metadata(a{ss})` | `STANDARD_space` (`"srgb"`, `"adobe-rgb"`), `GAMUT_coverage(srgb)` |
+
+Mutter (GNOME) and KWin (KDE) register each connected output with colord at compositor startup, subscribe to `DeviceChanged`, and reload ICC profiles into their colour-managed compositing pipeline (see Chapter 22).
+
+#### PolicyKit (`org.freedesktop.PolicyKit1`)
+
+| Attribute | Value |
+|---|---|
+| Bus | System |
+| Service | `org.freedesktop.PolicyKit1` |
+| Object path | `/org/freedesktop/PolicyKit1/Authority` |
+| Interface | `org.freedesktop.PolicyKit1.Authority` |
+
+PolicyKit is the privilege-decision broker that RTKit, logind, and colord consult before acting. Portal backends also call it when they need to verify whether an operation is permitted for the requesting user.
+
+| Member | Signature | Notes |
+|---|---|---|
+| `CheckAuthorization` | `((sa{sv}) subject, s action_id, a{ss} details, u flags, s cancellation_id) → (b is_authorized, b is_challenge, a{ss} details)` | `flags`: 0=none, 1=AllowUserInteraction. Returns `is_challenge=true` if a polkit authentication agent dialog is needed |
+| `EnumerateActions` | `(s locale) → a(ssssssuuua{ss})` | Returns all known action descriptors |
+| `Changed` | signal `()` | Fired when authorizations change (user added to `audio` group, etc.) |
+| `BackendName` property `s` | `"js"` (JavaScript rules engine, polkit ≥ 0.106) |
+
+Key action IDs for the multimedia stack:
+
+| Action ID | Used By | Default (active session) |
+|---|---|---|
+| `org.freedesktop.RealtimeKit1.acquire-real-time` | RTKit `MakeThreadRealtime` | allowed |
+| `org.freedesktop.RealtimeKit1.acquire-high-priority` | RTKit `MakeThreadHighPriority` | allowed |
+| `org.freedesktop.color-manager.create-device` | colord (compositor) | allowed |
+| `org.freedesktop.color-manager.create-profile` | colord (compositor) | allowed |
+| `org.freedesktop.color-manager.install-icc-file` | `InstallSystemWide()` | auth-required |
+| `org.freedesktop.login1.suspend` | logind suspend | allowed |
+| `org.freedesktop.login1.inhibit-block-idle` | `Inhibit("idle","block")` | allowed |
+
+### 6.4 Compositor-Specific Backend Interfaces (GNOME)
+
+These interfaces are GNOME-internal and not part of the freedesktop specification, but they are the concrete mechanism by which `xdg-desktop-portal-gnome` and GNOME Shell implement the `org.freedesktop.impl.portal.ScreenCast` and `RemoteDesktop` backends on GNOME/Wayland systems.
+
+| Interface | Service | Object Path | Version | Notes |
+|---|---|---|---|---|
+| `org.gnome.Mutter.ScreenCast` | `org.gnome.Shell.Portal` | `/org/gnome/Mutter/ScreenCast` | 4 | `CreateSession(a{sv})→o session`; session exposes `RecordMonitor`, `RecordWindow`, `RecordArea`, `RecordVirtualMonitor`; `PipeWireStreamAdded(u node_id)` signal delivers the PW source node ID |
+| `org.gnome.Mutter.RemoteDesktop` | `org.gnome.Shell.Portal` | `/org/gnome/Mutter/RemoteDesktop` | 1 | `CreateSession()→o session`; property `SupportedDeviceTypes(u)=7` (all: KEYBOARD\|POINTER\|TOUCHSCREEN) |
+| `org.gnome.Mutter.InputCapture` | `org.gnome.Shell.Portal` | `/org/gnome/Mutter/InputCapture` | — | Compositor side of `org.freedesktop.impl.portal.InputCapture` |
+| `org.gnome.Mutter.DisplayConfig` | `org.gnome.Shell.Portal` | `/org/gnome/Mutter/DisplayConfig` | — | KMS/DRM output configuration (logical monitors, CRTC modes, output properties); used by GNOME Settings and colord to correlate connectors with display devices |
+
+### 6.5 Interface Interaction Map
+
+The following summarises the cross-bus call paths involved in a ScreenCast session from a sandboxed application through to PipeWire frames:
+
+```
+Flatpak app (session bus)
+  │
+  ▼  org.freedesktop.portal.ScreenCast.CreateSession / Start
+xdg-desktop-portal (session bus)
+  │
+  ├─▶  org.freedesktop.impl.portal.ScreenCast (to backend, session bus)
+  │         │
+  │         ▼  org.gnome.Mutter.ScreenCast.CreateSession (GNOME Shell, session bus)
+  │         │
+  │         ▼  PipeWire native protocol (UNIX socket)
+  │              GNOME Shell creates pw_node (Video/Source)
+  │
+  ├─▶  org.freedesktop.impl.portal.PermissionStore.Lookup("screencast", app_id)
+  │         │   → WirePlumber grants PW_PERM_R|PW_PERM_X on the node
+  │
+  └─▶  org.freedesktop.portal.ScreenCast.OpenPipeWireRemote → h fd (to app)
+
+App calls pw_context_connect_fd(fd)     ← PipeWire native protocol only from here
+App calls pw_stream_connect(serial)
+App receives SPA_DATA_DmaBuf frames
+  │
+  │  (PipeWire data thread needs SCHED_FIFO)
+  │
+  ▼  org.freedesktop.portal.Realtime.MakeThreadRealtimeWithPID (session bus)
+  ▼  org.freedesktop.RealtimeKit1.MakeThreadRealtimeWithPID  (system bus)
+  ▼  polkitd checks org.freedesktop.RealtimeKit1.acquire-real-time (system bus)
+```
+
+[Sources: [XDG Desktop Portal documentation](https://flatpak.github.io/xdg-desktop-portal/docs/); [RTKit specification](https://github.com/heftig/rtkit); [PipeWire module-rt](https://gitlab.freedesktop.org/pipewire/pipewire/-/blob/master/src/modules/module-rt.c); [colord D-Bus API](https://www.freedesktop.org/software/colord/gtk-doc/ref-dbus.html); [systemd-logind D-Bus API](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.login1.html)]
+
+---
+
+## 7. Buffer Formats and GPU Interop
+
+### 7.1 Exporting a Rendered Frame into PipeWire
 
 A Vulkan or EGL application that produces video frames on the GPU can inject them into PipeWire as a producer (output) `pw_stream` with `SPA_DATA_DmaBuf` buffers. This enables a rendered scene to flow through the PipeWire graph to recorders, encoders, or virtual camera outputs without any GPU→CPU readback. [Source](https://docs.pipewire.org/page_dma_buf.html)
 
@@ -672,7 +1083,7 @@ static void build_format_with_modifiers(struct spa_pod_builder *b,
 }
 ```
 
-### 6.2 The `spa_video_info_raw` Modifier Field
+### 7.2 The `spa_video_info_raw` Modifier Field
 
 Once the consumer has selected a format, `param_changed` fires on the producer with `SPA_PARAM_Format`. The producer parses the negotiated pod:
 
@@ -705,7 +1116,7 @@ static void on_param_changed(void *data, uint32_t id,
 
 The `modifier` field in `spa_video_info_raw` is the primary carrier of DRM format modifier information. It is valid only when the negotiated buffer type is `SPA_DATA_DmaBuf`; for shared-memory buffers the field is zero.
 
-### 6.3 DRM Format and Modifier Negotiation
+### 7.3 DRM Format and Modifier Negotiation
 
 DRM format modifiers encode tiling and compression layout information as a 64-bit value. Examples relevant to screen capture:
 
@@ -721,7 +1132,7 @@ A producer that renders into a GPU framebuffer typically creates the allocation 
 
 A consumer (such as the VA-API encoder or a compositor) imports the DMA-BUF using the modifier as a hint for its memory-access engine. If the consumer does not support the modifier, the negotiation phase eliminates it from consideration and falls back to `DRM_FORMAT_MOD_LINEAR` or, ultimately, to `SPA_DATA_MemFd`.
 
-### 6.4 Zero-Copy Round-Trip vs CPU Fallback
+### 7.4 Zero-Copy Round-Trip vs CPU Fallback
 
 The complete zero-copy path from GPU render to encode/stream is:
 
@@ -757,7 +1168,7 @@ static void on_add_buffer(void *data, struct pw_buffer *buf) {
 }
 ```
 
-### 6.5 Practical GPU-to-PipeWire Injection
+### 7.5 Practical GPU-to-PipeWire Injection
 
 The `pw-capture` project (archived 2025) demonstrated the Vulkan-layer approach: a `VkLayer` intercepts `vkQueuePresentKHR`, exports the swapchain image as a DMA-BUF via `VkExternalMemoryImageCreateInfo` with `VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT`, and pushes the fd into a `pw_stream` with `SPA_DATA_DmaBuf`. The consumer sees it as a standard PipeWire `Video/Source` node. [Source](https://github.com/EHfive/pw-capture)
 
@@ -789,6 +1200,14 @@ From PipeWire 0.3.80 onwards, the built-in Vulkan SPA plugin (`spa/plugins/vulka
 - **Neural network audio processing integration**: Exploratory work toward in-graph text-to-speech, speech-to-text, and noise suppression using ONNX Runtime or similar inference engines as SPA plugin backends, potentially exposing these as standard filter nodes that compositors and portals can insert on demand. Implementation approach remains undetermined. [Source](https://arunraghavan.net/2026/06/notes-from-the-pipewire-hackfest-2026-part-2/)
 - **Unified multimedia session bus**: The longer-term architectural vision expressed at the 2026 hackfest is for PipeWire to absorb more session management concern currently split across BlueZ, PulseAudio compatibility shims, and V4L2 management daemons, positioning it as the single IPC substrate for all Linux A/V session state, analogous to the role D-Bus plays for system services. Note: needs verification as a formally committed direction.
 - **`ext-image-capture-source-v1` full ecosystem adoption**: The replacement Wayland protocols for screen capture (`ext-image-capture-source-v1`, `ext-image-copy-capture-v1`) are still rolling out across compositor portal backends; long-term, all portal backends should use these protocols uniformly, deprecating the wlroots-specific `wlr-screencopy-unstable-v1` path and enabling richer capture semantics (cursor visibility, window-level capture) across all compositors. [Source](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html)
+
+### IPC Substrate Tensions
+
+PipeWire's portal layer sits on D-Bus, but D-Bus is under pressure from two directions in the broader Linux ecosystem. Neither has produced a concrete proposal touching PipeWire or WirePlumber as of mid-2026, but both are worth tracking.
+
+**Varlink.** Varlink ([varlink.org](https://varlink.org)) is systemd's own peer-to-peer IPC protocol: JSON encoding over AF_UNIX sockets, no bus daemon, a text-based IDL, and runtime-discoverable interfaces via `GetInterfaceDescription()`. systemd 257 (late 2024) promoted it to a first-class library (`sd-varlink`) and is migrating `io.systemd.*` interfaces to it while retaining the `org.freedesktop.systemd1` D-Bus surface for compatibility. A community discussion exists on the xdg-desktop-portal issue tracker proposing that portal interfaces migrate to Varlink ([flatpak/xdg-desktop-portal #1449](https://github.com/flatpak/xdg-desktop-portal/discussions/1449)), but it has attracted no maintainer engagement. The structural obstacle for the multimedia stack is file descriptor passing: the portal interfaces for ScreenCast, Camera, and Realtime all return UNIX fds (`OpenPipeWireRemote`, `open_pipewire_remote_for_camera`, the RTKit `h` return types), and Varlink's original design had no fd-passing support. Whether systemd's `sd-varlink` layer closes this gap via AF_UNIX ancillary data is not yet settled for the portal use-case. [Source: LWN Varlink analysis](https://lwn.net/Articles/742675/); [systemd Varlink future — Phoronix](https://www.phoronix.com/news/Systemd-Varlink-D-Bus-Future)
+
+**Hyprwire and Hyprtavern.** The Hyprland compositor project ([hyprwm](https://github.com/hyprwm)) is building its own D-Bus-free IPC stack. **Hyprwire** ([github.com/hyprwm/hyprwire](https://github.com/hyprwm/hyprwire), v0.3.0, February 2026) is a strictly-typed C++ wire-protocol library — the name refers to *wire protocol*, not WirePlumber — designed as a direct counterpoint to D-Bus's permissive `a{sv}` variant data. It supports file descriptor passing (added in v0.3.0) and is already used as the transport for hyprpaper, hyprlauncher, and hyprctl. **Hyprtavern** ([github.com/hyprwm/hyprtavern](https://github.com/hyprwm/hyprtavern), pre-release) sits above Hyprwire as a session-bus-equivalent: service discovery and IPC routing for the Hyprland ecosystem, explicitly positioned as a D-Bus session bus replacement. Its motivation is stated directly in Hyprland lead developer vaxry's post "D-Bus is a disgrace to the Linux desktop" ([blog.vaxry.net](https://blog.vaxry.net/articles/2025-dbusSucks)): enforced strict typing, a built-in permission model, and no dependency on GLib or a bus daemon. Neither Hyprwire nor Hyprtavern has any documented relationship to PipeWire or WirePlumber; they are compositor-tooling IPC, not multimedia session infrastructure. However, if Hyprtavern matures and Hyprland ships `xdg-desktop-portal-hyprland` on top of it rather than D-Bus, the portal backend landscape would diverge further from the current all-D-Bus assumption. [Source: hyprwire releases](https://github.com/hyprwm/hyprwire/releases); [Debian ITP hyprtavern Bug#1122656](https://lists.debian.org/debian-devel/2025/12/msg00102.html)
 
 ---
 

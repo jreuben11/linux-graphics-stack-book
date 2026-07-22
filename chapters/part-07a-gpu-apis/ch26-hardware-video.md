@@ -1498,6 +1498,39 @@ The NVDEC SDK path is the only one with zero-copy to CUDA compute (DeepStream, T
 
 ---
 
+## Media Server Hardware Acceleration on Linux
+
+The three dominant open and widely-deployed media servers on Linux all drive VA-API
+(and NVENC/NVDEC) through FFmpeg's hwaccel layer:
+
+**Jellyfin** ([jellyfin.org](https://jellyfin.org), GPL-2.0) — the leading fully open-source
+media server. Hardware transcode is enabled in *Dashboard → Playback → Transcoding*:
+select `VA-API` and set the device path (`/dev/dri/renderD128`). Jellyfin invokes FFmpeg
+with `-hwaccel vaapi -vaapi_device /dev/dri/renderD128 -hwaccel_output_format vaapi`
+followed by `-vf "scale_vaapi=w=-2:h=1080" -c:v h264_vaapi` for the encode leg.
+On NVIDIA hardware it falls back to `h264_nvenc`/`hevc_nvenc` via the same FFmpeg path.
+[Source: Jellyfin hardware acceleration docs](https://jellyfin.org/docs/general/administration/hardware-acceleration/)
+
+**Plex Media Server** ([plex.tv](https://www.plex.tv), proprietary, free tier) — the
+largest user base. Hardware transcode requires a Plex Pass subscription. On Linux it uses
+VA-API for Intel/AMD and the NVIDIA Video Codec SDK (`libnvcuvid.so` / `libnvidia-encode.so`)
+for NVIDIA, accessed via FFmpeg's `h264_cuvid` decoder and `h264_nvenc` encoder.
+[Source: Plex hardware transcoding docs](https://support.plex.tv/articles/115002178853-using-hardware-accelerated-streaming/)
+
+**Kodi** ([kodi.tv](https://kodi.tv), Apache-2.0) — a local media player with an optional
+library server (Kodi PVR / Kodi Companion). Unlike Jellyfin and Plex, Kodi drives VA-API
+*directly* through its internal `VideoPlayer` pipeline without shelling out to FFmpeg:
+it links against `libva` and calls `vaBeginPicture`/`vaRenderPicture`/`vaEndPicture`
+from its `VAAPI::CDecoder` class in `xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp`.
+It also supports VDPAU (legacy NVIDIA), and V4L2 M2M for Raspberry Pi and Rockchip SoCs.
+[Source: Kodi VAAPI decoder source](https://github.com/xbmc/xbmc/blob/master/xbmc/cores/VideoPlayer/DVDCodecs/Video/VAAPI.cpp)
+
+All three consume the same VA-API surface export path (`vaExportSurfaceHandle` →
+`VADRMPRIMESurfaceDescriptor`) described in §1–§3. The choice of decode path (VA-API vs.
+NVDEC SDK vs. VDPAU) follows exactly the comparison in §12.6.
+
+---
+
 ## Roadmap
 
 ### Near-term (6–12 months)

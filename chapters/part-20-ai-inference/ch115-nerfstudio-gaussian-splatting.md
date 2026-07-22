@@ -23,7 +23,19 @@
 13. [Dynamic and Temporal Gaussian Splatting (4DGS)](#13-dynamic-and-temporal-gaussian-splatting-4dgs)
 14. [Python Differentiable Rendering: nvdiffrast, PyTorch3D, and Kaolin](#14-python-differentiable-rendering-nvdiffrast-pytorch3d-and-kaolin)
 15. [GVDB Sparse Voxels: GPU Volume Compute and Rendering](#15-gvdb-sparse-voxels-gpu-volume-compute-and-rendering)
-16. [Integrations](#16-integrations)
+16. [threestudio: Text-to-3D via Score Distillation](#16-threestudio-text-to-3d-via-score-distillation)
+17. [DUSt3R: Uncalibrated Multi-View Reconstruction](#17-dust3r-uncalibrated-multi-view-reconstruction)
+18. [MASt3R: Matching and 3D Reconstruction](#18-mast3r-matching-and-3d-reconstruction)
+19. [Mip-NeRF 360: Unbounded Anti-Aliased Radiance Fields](#19-mip-nerf-360-unbounded-anti-aliased-radiance-fields)
+20. [2D Gaussian Splatting: Surface-Aligned Radiance Fields](#20-2d-gaussian-splatting-surface-aligned-radiance-fields)
+21. [Gaussian Mesh Extraction: SuGaR and Gaussian Opacity Fields](#21-gaussian-mesh-extraction-sugar-and-gaussian-opacity-fields)
+22. [InstantSplat: COLMAP-Free Sparse-View 3DGS](#22-instantsplat-colmap-free-sparse-view-3dgs)
+23. [Monocular Depth Priors for NeRF and 3DGS](#23-monocular-depth-priors-for-nerf-and-3dgs)
+24. [3DGUT: Distorted Cameras and Secondary Rays in Gaussian Splatting](#24-3dgut-distorted-cameras-and-secondary-rays-in-gaussian-splatting)
+25. [Scaffold-GS: Anchor-Based Structured Gaussians for View-Adaptive Rendering](#25-scaffold-gs-anchor-based-structured-gaussians-for-view-adaptive-rendering)
+26. [Zip-NeRF: Anti-Aliased Grid-Based Neural Radiance Fields](#26-zip-nerf-anti-aliased-grid-based-neural-radiance-fields)
+27. [Language and Feature Fields: LERF, LangSplat, Feature 3DGS, and Gaussian Grouping](#27-language-and-feature-fields-lerf-langsplat-feature-3dgs-and-gaussian-grouping)
+28. [Integrations](#28-integrations)
 
 ---
 
@@ -1610,6 +1622,10 @@ occupancy = kal.ops.spc.query_spc(spc, query_points)
 
 **AMD/ROCm note.** nvdiffrast requires CUDA. PyTorch3D and Kaolin both have experimental ROCm/HIP paths via `hipify-clang` but are not officially supported on ROCm as of mid-2026. The Slang autodiff path (Ch117) is the most portable differentiable renderer on Linux across NVIDIA/AMD/Intel.
 
+For the full data structure and preprocessing APIs of PyTorch3D and Kaolin — heterogeneous
+mesh batching, `Meshes`/`Pointclouds`/`Volumes`, SPC octree operations, USD I/O, and
+Open3D point cloud registration and reconstruction — see **Chapter 212**.
+
 ---
 
 ## 15. GVDB Sparse Voxels: GPU Volume Compute and Rendering
@@ -1721,7 +1737,1223 @@ cmake --build build -j$(nproc)
 
 ---
 
-## 16. Integrations
+## 16. threestudio: Text-to-3D via Score Distillation
+
+threestudio ([github.com/threestudio-project/threestudio](https://github.com/threestudio-project/threestudio),
+Apache 2.0) is a unified PyTorch Lightning framework for 3D content generation that
+assembles interchangeable `geometry`, `renderer`, `guidance`, and `background` modules
+via OmegaConf YAML configs. It implements the main text-to-3D and image-to-3D families
+published between 2023 and 2024, all sharing the same training harness and CLI.
+
+### 16.1 Score Distillation: SDS and VSD
+
+Most text-to-3D methods use **Score Distillation Sampling (SDS)** to distil a 2D
+diffusion model's prior into an optimisable 3D representation. At each training step,
+the current 3D scene is rendered to a 2D image, that image is noised to a random
+timestep, and a pre-trained diffusion model (Stable Diffusion, DeepFloyd IF) predicts the
+score gradient, which is backpropagated into the 3D parameters:
+
+```
+∇_θ L_SDS = E_{t,ε} [w(t)(ε̂_φ(z_t; y, t) − ε) ∂x/∂θ]
+```
+
+where `z_t` is the noised rendering, `ε̂_φ` is the diffusion model noise prediction, and
+`y` is the text embedding. The SDS gradient is computed inside each guidance module
+(`threestudio/guidance/stable_diffusion_guidance.py`), which returns a `loss_sds` key.
+
+**ProlificDreamer** replaces SDS with **Variational Score Distillation (VSD)**: it
+fine-tunes a LoRA adapter on the diffusion model in parallel with the 3D optimisation,
+using the LoRA model to estimate a per-step variational distribution that better
+approximates the diffusion score. This removes the over-saturation artefact characteristic
+of SDS at high guidance scale.
+[Source: arXiv:2305.16213](https://arxiv.org/abs/2305.16213)
+
+### 16.2 Implemented Methods and Geometry Backends
+
+| Method | Geometry | Renderer | Guidance |
+|---|---|---|---|
+| DreamFusion | `implicit-volume` (HashGrid+MLP) | `nerf-volume-renderer` | Stable Diffusion SDS |
+| Magic3D coarse | `implicit-volume` | `nerf-volume-renderer` | SDS |
+| Magic3D refine | `tetrahedra-sdf-grid` (DMTet) | `nvdiff-rasterizer` | SDS |
+| Fantasia3D | `implicit-sdf` | `nvdiff-rasterizer` | SDS |
+| TextMesh | `implicit-sdf` (NeuS) | `neus-volume-renderer` | SDS |
+| ProlificDreamer | `implicit-volume` | `nerf-volume-renderer` | VSD (LoRA fine-tune) |
+| GaussianDreamer | 3D Gaussian Splatting | `gaussian-splatting` | SDS |
+| Zero-1-to-3, Magic123 | `implicit-volume` | `nerf-volume-renderer` | Image-conditioned SDS |
+
+GaussianDreamer lives in a separate extension
+([github.com/DSaurus/threestudio-3dgs](https://github.com/DSaurus/threestudio-3dgs)) cloned
+into `custom/`, which installs `diff-gaussian-rasterization` and `simple-knn`. It
+initialises a coarse Gaussian cloud from Shap-E then refines with SDS in ~15 minutes on
+an A100.
+[Source: github.com/threestudio-project/threestudio/tree/main/configs](https://github.com/threestudio-project/threestudio/tree/main/configs)
+
+### 16.3 Training CLI
+
+All training is driven by `launch.py` with a config YAML and optional OmegaConf dot-notation overrides:
+
+```bash
+# DreamFusion — SDS with Stable Diffusion, NeRF backbone
+python launch.py --config configs/dreamfusion-sd.yaml --train --gpu 0 \
+  system.prompt_processor.prompt="a baby bunny sitting on a mushroom"
+
+# Magic3D — two-stage: coarse NeRF then refine to DMTet mesh
+python launch.py --config configs/magic3d-coarse-sd.yaml --train --gpu 0 \
+  system.prompt_processor.prompt="a delicious hamburger"
+python launch.py --config configs/magic3d-refine-sd.yaml --train --gpu 0 \
+  resume=outputs/magic3d-coarse-sd/.../ckpts/last.ckpt \
+  system.prompt_processor.prompt="a delicious hamburger"
+
+# ProlificDreamer — VSD, resolution-progressive (64² → 512² over 25k steps)
+python launch.py --config configs/prolificdreamer.yaml --train --gpu 0 \
+  system.prompt_processor.prompt="a DSLR photo of a hamburger"
+
+# GaussianDreamer — 3DGS with Grow&Perturb initialisation from Shap-E
+python launch.py --config configs/gaussiandreamer-sd.yaml --train --gpu 0 \
+  system.prompt_processor.prompt="a fox"
+
+# Multi-GPU
+python launch.py --config configs/dreamfusion-if.yaml --train --gpu 0,1,2,3 \
+  system.prompt_processor.prompt="a pineapple" data.batch_size=2
+
+# Export mesh after training
+python launch.py --config path/to/trial/configs/parsed.yaml --export \
+  --gpu 0 resume=path/to/trial/ckpts/last.ckpt
+```
+
+Key config parameters (all overridable):
+
+```yaml
+system_type: dreamfusion-system
+geometry_type: implicit-volume
+renderer_type: nerf-volume-renderer
+guidance_type: stable-diffusion-guidance
+trainer:
+  max_steps: 10000
+system:
+  prompt_processor:
+    prompt: "..."
+  guidance:
+    guidance_scale: 100.0
+  loss:
+    lambda_sds: 1.0
+    lambda_orient: [0, 10, 1000, 5000]  # step-annealed
+    lambda_sparsity: 1.0
+```
+
+### 16.4 Installation
+
+```bash
+python3 -m virtualenv venv && . venv/bin/activate
+pip install torch==2.0.0+cu118 torchvision --extra-index-url \
+    https://download.pytorch.org/whl/cu118
+pip install ninja   # speeds CUDA extension compilation
+pip install -r requirements.txt
+```
+
+Key compiled CUDA dependencies (installed via `requirements.txt`):
+
+- `tiny-cuda-nn` — hash grid encoding (see §4)
+- `nerfacc` v0.5.2 — efficient NeRF ray marching (see §5)
+- `nvdiffrast` — differentiable rasterization for DMTet (see §14)
+- `diff-gaussian-rasterization` — 3DGS rasterizer (threestudio-3dgs extension)
+- `diffusers<0.20`, `transformers==4.28.1` — Stable Diffusion guidance
+
+GPU: ≥6 GB VRAM (A100 recommended for ProlificDreamer); CUDA 11.3 or 11.8.
+[Source: github.com/threestudio-project/threestudio/blob/main/README.md](https://github.com/threestudio-project/threestudio/blob/main/README.md)
+
+---
+
+## 17. DUSt3R: Uncalibrated Multi-View Reconstruction
+
+**DUSt3R** ("Dense and Unconstrained Stereo 3D Reconstruction", Wang et al., CVPR 2024,
+[arXiv:2312.14132](https://arxiv.org/abs/2312.14132),
+[github.com/naver/dust3r](https://github.com/naver/dust3r)) replaces the classical
+structure-from-motion pipeline — feature matching → pose estimation → SfM → MVS —
+with a single feed-forward regression network that outputs dense 3D point maps from image
+pairs with **no requirement for camera calibration or EXIF data**.
+
+### 17.1 Pointmaps: the Core Data Structure
+
+A **pointmap** X ∈ ℝ^{W×H×3} is a dense 2D field of 3D coordinates — one 3D point per
+pixel. For a stereo pair (image 1, image 2), the network outputs *both* pointmaps X^{1,1}
+and X^{2,1} **in image 1's coordinate frame**. This unification eliminates separate
+extrinsic estimation; relative pose is recovered by Procrustes alignment of the two
+pointmaps.
+
+The confidence-weighted training loss penalises normalised pointmap error:
+
+```
+L_conf = Σ_{v,i} C_i^{v,1} · ||X_norm − X̄_norm|| − α · log C_i^{v,1}
+```
+
+where C is a learned per-pixel confidence (prevents trivially low confidence), and
+normalisation is by the pointmap norm z for scale invariance.
+[Source: arXiv:2312.14132 §3.2](https://arxiv.org/abs/2312.14132)
+
+### 17.2 Architecture
+
+The network (`AsymmetricCroCo3DStereo`, built on the CroCo self-supervised backbone) is:
+
+1. **Dual siamese ViT encoders** (shared weights) process both images independently via
+   patch embeddings + transformer encoder blocks.
+2. **Two asymmetric decoder branches** with cross-attention exchange per-view information.
+3. **Per-branch regression heads** output X^{v,1} (pointmap) and C^{v,1} (confidence),
+   both expressed in view 1's frame.
+
+[Source: arXiv:2312.14132 §3.1](https://arxiv.org/abs/2312.14132)
+
+### 17.3 Inference API
+
+```python
+from dust3r.inference import inference
+from dust3r.model import AsymmetricCroCo3DStereo
+from dust3r.utils.image import load_images
+from dust3r.image_pairs import make_pairs
+from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
+
+# Load pretrained model from Hugging Face Hub
+model = AsymmetricCroCo3DStereo.from_pretrained(
+    "naver/DUSt3R_ViTLarge_BaseDecoder_512_dpt"   # best quality
+).to("cuda")
+
+# Load and resize images (JPEG, PNG, etc.)
+images = load_images(["img1.jpg", "img2.jpg", "img3.jpg"], size=512)
+
+# Make all pairs; symmetrize=True doubles each pair for consistency
+pairs = make_pairs(images, scene_graph="complete", symmetrize=True)
+
+# Pairwise inference — no gradients needed
+output = inference(pairs, model, device="cuda", batch_size=1)
+```
+
+**Global alignment** fuses pairwise pointmaps into a globally consistent scene via a
+differentiable optimiser (`PointCloudOptimizer`) that jointly optimises camera poses,
+depth maps, and focal lengths via Adam (300 iterations, cosine LR schedule, lr=0.01):
+
+```python
+scene = global_aligner(output, device="cuda",
+                        mode=GlobalAlignerMode.PointCloudOptimizer)
+scene.compute_global_alignment(init="mst", niter=300,
+                                schedule="cosine", lr=0.01)
+
+pts3d  = scene.get_pts3d()     # list of (H, W, 3) tensors in world frame
+focals = scene.get_focals()    # list of estimated focal lengths (scalar per cam)
+poses  = scene.get_im_poses()  # list of (4, 4) camera-to-world matrices
+masks  = scene.get_masks()     # confidence-thresholded validity masks
+scene.show()                   # Open3D / viser 3D visualisation
+```
+
+**Pretrained models** (CC BY-NC-SA 4.0):
+
+| Model | Resolution | Head |
+|---|---|---|
+| `DUSt3R_ViTLarge_BaseDecoder_224_linear` | 224×224 | Linear |
+| `DUSt3R_ViTLarge_BaseDecoder_512_linear` | 512×(160–384) | Linear |
+| `DUSt3R_ViTLarge_BaseDecoder_512_dpt` | 512×(160–384) | DPT (best) |
+
+**Installation:**
+
+```bash
+conda create -n dust3r python=3.11 cmake=3.14.0
+conda activate dust3r
+conda install pytorch torchvision pytorch-cuda=12.1 -c pytorch -c nvidia
+pip install -r requirements.txt
+# Optional: compile CUDA RoPE kernels for ~10% inference speedup
+cd croco/models/curope && python setup.py build_ext --inplace
+```
+
+[Source: github.com/naver/dust3r](https://github.com/naver/dust3r)
+
+---
+
+## 18. MASt3R: Matching and 3D Reconstruction
+
+**MASt3R** ("Matching And Stereo 3D Reconstruction", Leroy et al., ECCV 2024,
+[arXiv:2406.09756](https://arxiv.org/abs/2406.09756),
+[github.com/naver/mast3r](https://github.com/naver/mast3r)) extends DUSt3R by adding a
+dense local feature descriptor head to the network, enabling *joint* 3D reconstruction
+and precise image matching in a single forward pass.
+
+### 18.1 Descriptor Head and Fast Reciprocal Matching
+
+MASt3R adds a descriptor regression head alongside the DUSt3R pointmap and confidence
+heads. For each decoder branch it outputs D ∈ ℝ^{W×H×24} (d=24 L2-normalised
+descriptors per pixel), trained with an InfoNCE contrastive loss at temperature τ=0.07.
+
+Dense matching between two (H×W) descriptor maps naively requires O((HW)²) comparisons.
+**Fast Reciprocal Matching (FRM)** (from `mast3r/fast_nn.py`) starts from a sparse
+subsample of k points, alternates forward/backward nearest-neighbour queries, and removes
+converged reciprocal pairs at each step. Convergence occurs in approximately 6 iterations.
+
+MASt3R's `AsymmetricMASt3R` extends `AsymmetricCroCo3DStereo` with additional
+`downstream_head1`/`downstream_head2` descriptor branches via `mast3r_head_factory`,
+while the pretrained checkpoint `MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric` is
+calibrated to metric scale.
+
+### 18.2 Inference API
+
+```python
+from mast3r.model import AsymmetricMASt3R
+from mast3r.fast_nn import fast_reciprocal_NNs
+from dust3r.inference import inference
+from dust3r.utils.image import load_images
+
+device = "cuda"
+model = AsymmetricMASt3R.from_pretrained(
+    "naver/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric"
+).to(device)
+
+images = load_images(["img_a.jpg", "img_b.jpg"], size=512)
+output = inference([tuple(images)], model, device, batch_size=1)
+
+# Dense descriptor maps from both decoder branches
+desc1 = output["pred1"]["desc"]   # (1, H, W, 24)
+desc2 = output["pred2"]["desc"]   # (1, H, W, 24)
+
+# Fast reciprocal nearest-neighbour matching
+matches_im0, matches_im1 = fast_reciprocal_NNs(
+    desc1, desc2,
+    subsample_or_initxy1=8,   # subsample stride for initialisation
+    device=device,
+    dist="dot",               # dot-product similarity (L2-normalised descriptors)
+)
+# matches_im0, matches_im1: (N, 2) pixel coordinates of matched points
+```
+
+Multi-image reconstruction reuses DUSt3R's `global_aligner` stack identically — only the
+model class differs. For large image collections, the optional `Retriever` module in
+`mast3r/retrieval/processor.py` builds an ASMK inverted-file index to select which pairs
+to run inference on (requires `pip install asmk`).
+
+Output tensors per prediction dict:
+- `pred1['pts3d']` — pointmap in view 1 frame, `(B, H, W, 3)`
+- `pred1['conf']` — confidence map, `(B, H, W)`
+- `pred1['desc']` — descriptor map, `(B, H, W, 24)`
+
+After `global_aligner`: same `get_pts3d()`, `get_focals()`, `get_im_poses()` interface as
+DUSt3R.
+
+### 18.3 Benchmark Improvements over DUSt3R
+
+| Benchmark | DUSt3R | MASt3R |
+|---|---|---|
+| DTU MVS Overall (mm, lower=better) | 1.741 | 0.374 |
+| DTU Accuracy (mm) | 2.67 | 0.403 |
+| Map-free localisation VCRE AUC | baseline | +30% absolute |
+| Aachen Day-Night (Day, 0.25/0.5/5°) | — | 79.6 / 93.5 / 98.7 |
+
+MASt3R reduces DTU reconstruction error by ~5× versus DUSt3R.
+
+**Installation:**
+
+```bash
+conda create -n mast3r python=3.11 cmake=3.14.0
+conda activate mast3r
+conda install pytorch torchvision pytorch-cuda=12.1 -c pytorch -c nvidia
+pip install -r requirements.txt
+pip install -r dust3r/requirements.txt   # MASt3R ships DUSt3R as a git submodule
+# Optional ASMK retrieval:
+cd asmk && python setup.py build_ext --inplace
+# Optional CUDA RoPE:
+cd dust3r/croco/models/curope && python setup.py build_ext --inplace
+```
+
+**License:** code Apache 2.0; pretrained weights CC BY-NC-SA 4.0 (non-commercial).
+
+**Lineage:** DUSt3R → MASt3R → MASt3R-SfM (arXiv:2409.19152) → SLAM3R / MASt3R-SLAM —
+Naver Labs Europe is building a stack of 3D geometric foundation models on the CroCo
+pretraining backbone.
+[Source: github.com/naver/mast3r](https://github.com/naver/mast3r)
+
+---
+
+## 19. Mip-NeRF 360: Unbounded Anti-Aliased Radiance Fields
+
+**Mip-NeRF 360** (Barron et al., CVPR 2022, [arXiv:2111.12077](https://arxiv.org/abs/2111.12077)) addresses the two failures of vanilla NeRF in unbounded outdoor scenes: aliasing (the single-point PE is scale-blind) and the inability to represent background at arbitrary distance. It is the direct architectural predecessor of Nerfacto — nerfstudio does not ship a standalone `mip_nerf_360` method; rather, Nerfacto absorbs all three of its key contributions and replaces the large density MLP with a hash grid.
+[Source: nerfstudio paper arXiv:2302.04264](https://arxiv.org/abs/2302.04264)
+
+### 19.1 Integrated Positional Encoding
+
+Vanilla NeRF encodes infinitesimal points, making it blind to the footprint of a pixel ray. Mip-NeRF (the 2021 predecessor, [arXiv:2103.13415](https://arxiv.org/abs/2103.13415)) replaces this with **Integrated Positional Encoding (IPE)**: each conical frustum along the ray is approximated as a multivariate Gaussian (μ, Σ), and the expected encoding E[γ(x)] over that Gaussian is computed in closed form. For each sinusoidal frequency band 2^ℓ the expectation becomes:
+
+```
+E[γ(x)] = sin(2^ℓ μ) · exp(−½ · 4^ℓ · diag(Σ))
+          cos(2^ℓ μ) · exp(−½ · 4^ℓ · diag(Σ))
+```
+
+High-frequency components (large 2^ℓ) are **attenuated** in proportion to the frustum width — this is the anti-aliasing. Distant, small frustums retain high-frequency detail; large, nearby frustums lose it. Mip-NeRF 360 inherits IPE unchanged.
+
+### 19.2 Scene Contraction
+
+To handle unbounded scenes, Mip-NeRF 360 maps all coordinates into a bounded region using a smooth contraction that preserves geometry near the origin while compressing the far field:
+
+```
+contract(x) = x                              if ‖x‖ ≤ 1
+            = (2 − 1/‖x‖) · (x / ‖x‖)       if ‖x‖ > 1
+```
+
+The paper applies the L2 norm, contracting to a ball of radius 2. Nerfstudio's `SceneContraction` in `nerfstudio/field_components/spatial_distortions.py` uses `order=float("inf")` (L∞ norm) instead, producing a **cube of side 4** that aligns to the hash grid axes:
+
+```python
+def contract(x):
+    mag = torch.linalg.norm(x, ord=self.order, dim=-1)[..., None]
+    return torch.where(mag < 1, x, (2 - (1 / mag)) * (x / mag))
+```
+
+[Source: spatial_distortions.py](https://docs.nerf.studio/_modules/nerfstudio/field_components/spatial_distortions.html)
+
+### 19.3 Proposal Network and Two Loss Functions
+
+**Proposal network.** Replaces vanilla NeRF's coarse-MLP/fine-MLP hierarchy with a lightweight density-only **proposal MLP** evaluated in multiple rounds to concentrate samples, followed by a single full radiance MLP evaluation. The paper samples 64 + 64 proposal samples then 32 radiance samples; Nerfacto uses `(256, 96)` proposal samples then 48 radiance samples, with small hash-grid proposal nets (`hidden_dim=16`, `num_levels=5`).
+
+**`interlevel_loss`** (proposal supervision): ties each proposal histogram to the final NeRF weight histogram. It penalises the extent to which a proposal weight *exceeds* an upper envelope derived from the NeRF weights — ensuring proposal densities are consistent with the true density so sampled points land where radiance actually exists. Nerfacto default: `interlevel_loss_mult = 1.0`.
+
+**`distortion_loss`** (ray compactness): implements the paper's `L_dist(s, w) = ∬ w(u)w(v)|u−v| du dv`, computed discretely as a pairwise term (`Σ w_i · w_j · |mid_i − mid_j|`) plus a self term (`⅓ · Σ w_i² · Δs_i`). Encourages weight along each ray to collapse to a single compact interval, killing floaters and background collapse. Nerfacto default: `distortion_loss_mult = 0.002`.
+[Source: nerfstudio losses](https://docs.nerf.studio/_modules/nerfstudio/model_components/losses.html)
+
+### 19.4 Results and Nerfacto Lineage
+
+On the Mip-NeRF 360 benchmark (9 unbounded scenes):
+
+| Method | PSNR ↑ | SSIM ↑ | LPIPS ↓ |
+|---|---|---|---|
+| Zip-NeRF | 28.55 | 0.829 | 0.218 |
+| **Mip-NeRF 360** | **27.68** | **0.792** | **0.272** |
+| 3DGS | 27.43 | 0.814 | 0.257 |
+| Nerfacto | 26.39 | 0.731 | 0.343 |
+| Instant-NGP | 25.51 | 0.684 | 0.398 |
+
+Nerfacto inherits scene contraction, the proposal-network sampler, `interlevel_loss`, and `distortion_loss` from Mip-NeRF 360 verbatim. It replaces the large density MLP with Instant-NGP's hash grid (§4), adds appearance embeddings from NeRF-W, and pose refinement from NeRF−−.
+[Source: nerfbaselines leaderboard](https://nerfbaselines.github.io/mipnerf360)
+
+---
+
+## 20. 2D Gaussian Splatting: Surface-Aligned Radiance Fields
+
+**2DGS** (Huang et al., SIGGRAPH 2024, [arXiv:2403.17888](https://arxiv.org/abs/2403.17888),
+[github.com/hbb1/2d-gaussian-splatting](https://github.com/hbb1/2d-gaussian-splatting))
+replaces 3D volumetric Gaussians with **2D oriented planar disks (surfels)** embedded in
+local tangent planes. The motivation: 3D Gaussians have view-dependent silhouettes, so
+their implied depth and normal are multi-view inconsistent and unreliable for geometry
+reconstruction. A planar surfel has a well-defined normal that is view-consistent.
+
+### 20.1 Surfel Parameterization
+
+Each surfel is defined by: center `p_k`, two orthogonal tangent vectors `t_u`, `t_v` (and
+normal `t_w = t_u × t_v`), scales `(s_u, s_v)`, opacity α, and spherical-harmonic colour
+coefficients. A point on the surfel:
+
+```
+P(u, v) = p_k + s_u · t_u · u + s_v · t_v · v
+```
+
+Homogeneous transform: `H = [[RS, p_k], [0, 1]]` where `R = [t_u, t_v, t_w]` and
+`S = diag(s_u, s_v, 0)`. The zero third diagonal collapses the Gaussian to a plane.
+
+### 20.2 Ray-Splat Intersection
+
+Instead of EWA projection (which approximates the 3D Gaussian in screen space), 2DGS
+**explicitly intersects the pixel ray with the surfel's plane**. The pixel ray is
+expressed as the intersection of two orthogonal planes `h_x = (−1,0,0,x)` and
+`h_y = (0,−1,0,y)`, transformed to the splat's local frame via `(WH)^T`. This gives 2D
+splat coordinates `(u, v)` at the intersection. The 2D Gaussian value `G(u,v) =
+exp(−(u²+v²)/2)` is then read at the intersection.
+
+An object-space low-pass filter prevents aliasing for thin or edge-on surfels:
+`Ĝ(x) = max{ G(u(x)), G((x−c)/σ) }`, using a screen-space fallback Gaussian when the
+surfel is near-degenerate. Standard front-to-back alpha blending composites the result.
+
+### 20.3 Geometry Losses
+
+Two regularisation losses enforce surface consistency:
+
+**Depth distortion loss:** `L_d = Σ_{i,j} ω_i ω_j |z_i − z_j|` — pulls the ray-splat
+intersection depths along each ray toward a single surface, eliminating floaters. Adapted
+from Mip-NeRF 360's distortion loss but computed over actual intersection depths rather
+than sample weights.
+
+**Normal consistency loss:** `L_n = Σ_i ω_i (1 − n_i^T N)` — aligns each surfel's
+geometric normal with the macro-surface normal N estimated from the depth-map gradient
+`N = (∇_x p_s × ∇_y p_s) / ‖·‖`.
+
+Total loss: `L = L_colour + α · L_d + β · L_n`, with α = 1000 (bounded) / 100
+(unbounded) and β = 0.05.
+
+### 20.4 Training and Mesh Extraction
+
+```bash
+# Training (standalone fork of 3DGS, not a nerfstudio method):
+python train.py -s <COLMAP/NeRF-synthetic path>
+python train.py -s <DTU path> -m output/dtu/scan105 -r 2 --depth_ratio 1
+
+# Mesh extraction via TSDF fusion of rendered depth maps:
+python render.py -m <model> -s <data>                           # bounded, adjustable --voxel_size --depth_trunc
+python render.py -s <data> -m <model> --unbounded --mesh_res 1024  # sphere contraction + adaptive TSDF
+```
+
+`--depth_ratio 1` uses median depth (better for scenes with depth discontinuities).
+`--lambda_normal` and `--lambda_dist` are the β, α loss weights.
+
+**Geometry results (DTU dataset):** mean Chamfer distance 0.80 mm, vs 3DGS at 1.96 mm;
+render quality is comparable to 3DGS at similar training time after CUDA kernel fusion.
+[Source: github.com/hbb1/2d-gaussian-splatting](https://github.com/hbb1/2d-gaussian-splatting)
+
+---
+
+## 21. Gaussian Mesh Extraction: SuGaR and Gaussian Opacity Fields
+
+3DGS produces high-quality novel-view renders but no mesh — Gaussians are volumetric
+primitives, not surfaces. Two CVPR/ECCV 2024 methods extract production-quality triangle
+meshes from trained 3DGS checkpoints.
+
+### 21.1 SuGaR: Surface-Aligned Gaussian Splatting
+
+**SuGaR** (Guédon & Lepetit, CVPR 2024, [arXiv:2311.12775](https://arxiv.org/abs/2311.12775),
+[github.com/Anttwo/SuGaR](https://github.com/Anttwo/SuGaR)) runs a three-stage pipeline.
+
+**Stage 1 — 3DGS warm-up (~7k iterations):** standard 3DGS training to initialise Gaussian parameters.
+
+**Stage 2 — Surface-alignment regularisation (~15k iterations):** three concurrent regularisers force Gaussians to behave as surface elements. First, an SDF-consistency loss penalises the gap between the SDF implied by each Gaussian's density (approximated along view rays) and an ideal flat-Gaussian SDF. Second, a normal-consistency regulariser aligns the gradient of the density field with the flat Gaussian's normal `n_g*`. Third, opacity is pushed toward 1 and the minor scale toward 0, collapsing the Gaussian to a flat disk.
+
+Regularisation variant (`-r` flag): `density` (object-centric), `sdf` (stronger, better backgrounds), `dn_consistency` (density + depth-normal, recommended).
+
+**Stage 3 — Poisson reconstruction and Gaussian binding:** the regularised Gaussians are sampled at their density level-set (threshold λ = 0.3) to produce an oriented point cloud; Poisson reconstruction builds a triangle mesh. Then `n` thin Gaussians per triangle are bound at fixed barycentric coordinates and jointly optimised with mesh vertex positions — high-poly mode binds 1 Gaussian per triangle (~1M vertices); low-poly binds 6 per triangle (~200k vertices). Optional UV-unwrap and texture export via nvdiffrast.
+
+```bash
+# Full pipeline (COLMAP input):
+python train_full_pipeline.py -s <COLMAP> -r dn_consistency --high_poly True --export_obj True
+
+# Reuse an existing 3DGS checkpoint:
+python train_full_pipeline.py -s <COLMAP> -r dn_consistency --gs_output_dir <ckpt_dir>
+# --refinement_time short|medium|long  (2k / 7k / 15k iterations)
+```
+
+**Output:** refined Gaussians as PLY (standard 3DGS viewer compatible); mesh as OBJ with UV texture. Poisson mesh is detailed but not guaranteed watertight. MipNeRF360 benchmark: PSNR 27.27 / SSIM 0.820 / LPIPS 0.253.
+[Source: github.com/Anttwo/SuGaR](https://github.com/Anttwo/SuGaR)
+
+### 21.2 Gaussian Opacity Fields (GOF)
+
+**GOF** ([arXiv:2404.10772](https://arxiv.org/abs/2404.10772),
+[github.com/autonomousvision/gaussian-opacity-fields](https://github.com/autonomousvision/gaussian-opacity-fields))
+avoids Poisson reconstruction entirely. It derives a **position-only opacity field** from
+the 3DGS volume rendering formulation by taking the minimum accumulated opacity over all
+training rays through each point, producing a view-independent scalar field:
+
+```
+O(o, r, t) = Σ_k α_k O_k ∏_{j<k}(1 − α_j O_j)   # accumulated opacity per ray
+O(x) = min_{(o,r)} O(o,r,t)                        # view-independent field: min over all training rays
+```
+
+The surface is the **0.5 level-set** of this field.
+
+**Mesh extraction — Marching Tetrahedra:** a tetrahedral grid is induced adaptively from
+the Gaussians themselves (each Gaussian contributes a bbox ~3× its scale extent; these are
+Delaunay-triangulated, with edges between non-overlapping Gaussians pruned). Because the
+opacity field is non-linear, standard linear interpolation for marching cubes is
+inaccurate; GOF performs an **8-iteration binary search per edge** (~256-sample effective
+accuracy) to locate the level-set crossing. The tet code is adapted from NVIDIA Kaolin
+(ch212 §3).
+
+```bash
+python train.py -s <data> -m <out> -r 2 --use_decoupled_appearance
+python extract_mesh.py -m <out> --iteration 30000
+python mesh_viewer.py <mesh.ply>
+```
+
+**Benchmark (Tanks & Temples F1 ↑):** GOF 0.46 · 2DGS 0.32 · SuGaR 0.19 · 3DGS 0.09.  
+**DTU Chamfer ↓ (mm):** GOF 0.74 · 2DGS 0.80 · SuGaR not reported · 3DGS 1.96.  
+GOF leads on geometry; its speed advantage over neural methods (Neuralangelo 0.61 Chamfer but ~24h) is ~60×.
+[Source: github.com/autonomousvision/gaussian-opacity-fields](https://github.com/autonomousvision/gaussian-opacity-fields)
+
+---
+
+## 22. InstantSplat: COLMAP-Free Sparse-View 3DGS
+
+**InstantSplat** ([arXiv:2403.20309](https://arxiv.org/abs/2403.20309),
+[github.com/NVlabs/InstantSplat](https://github.com/NVlabs/InstantSplat)) replaces the
+COLMAP structure-from-motion step with a geometric foundation model (DUSt3R or MASt3R,
+§17–18) that predicts dense pixel-aligned 3D pointmaps from a small set of input images
+in one forward pass, then initialises 3DGS training directly from the resulting point
+cloud. The repository ships with MASt3R weights (`MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth`).
+
+### 22.1 Pointmap-to-Gaussian Initialisation
+
+DUSt3R/MASt3R global alignment produces a dense point cloud in a shared world frame plus
+initial camera poses and intrinsics for each view. Because every pixel contributes a 3D
+point the raw cloud is heavily over-parameterised; InstantSplat reduces it via
+**confidence-aware Farthest Point Sampling on an adaptive voxel grid** (64³ voxels) to
+select spatially diverse, high-confidence seed points. Each retained point becomes the
+centre of one Gaussian; scale is initialised from the nearest-neighbour distance (the
+standard 3DGS heuristic); covariance and opacity use the same 3DGS defaults.
+
+### 22.2 Gaussian Bundle Adjustment
+
+After initialisation, InstantSplat jointly optimises Gaussian attributes and camera
+extrinsics via photometric loss — a **Gaussian Bundle Adjustment** step — without the
+Adaptive Density Control (ADC) strategy used in full 3DGS. This keeps the optimisation
+tractable for sparse-view settings where ADC would over-split.
+
+### 22.3 CLI and Backends
+
+InstantSplat is **standalone**, not a nerfstudio method. It supports 3DGS, 2DGS, and
+Mip-Splatting as interchangeable rendering backends:
+
+```bash
+# assets/examples/<scene>/images/ — place 3–12 input images here
+bash scripts/run_infer.sh    # train + render interpolated novel-view video; no GT required
+bash scripts/run_eval.sh     # train + evaluate render quality against GT poses
+```
+
+Dependencies: forked `dust3r/`, `mast3r/`, `diff-gaussian-rasterization`, `simple-knn`,
+`fused-ssim`. CUDA required.
+
+### 22.4 Performance and Benchmarks
+
+Target: 3–12 input views (vs hundreds for COLMAP-based pipelines). Training on Tanks &
+Temples scenes, 12 views:
+
+| Method | SSIM ↑ | LPIPS ↓ | ATE ↓ | Time |
+|---|---|---|---|---|
+| InstantSplat-S | 0.8172 | 0.2199 | 0.0143 | ~32 s |
+| InstantSplat-XL | 0.8795 | 0.1093 | 0.0143 | ~62 s |
+| COLMAP + 3DGS | 0.7163 | 0.2505 | **0.0026** | minutes–hours |
+| NoPe-NeRF | 0.6096 | 0.5067 | 0.1029 | ~33 min |
+| CF-3DGS | 0.5077 | 0.4189 | 0.1031 | — |
+
+InstantSplat beats COLMAP+3DGS on render quality (SSIM/LPIPS) for sparse views but
+**does not match COLMAP on pose accuracy** (ATE 0.0143 vs 0.0026) — the geometric
+foundation model produces plausible poses, not survey-grade ones. The win is the order-of-
+magnitude speed-up and the ability to operate on as few as 3 images where COLMAP would
+fail entirely.
+[Source: arXiv:2403.20309](https://arxiv.org/abs/2403.20309)
+
+---
+
+## 23. Monocular Depth Priors for NeRF and 3DGS
+
+COLMAP fails or is unreliable on textureless scenes, large camera baselines, and
+in-the-wild video. Monocular depth estimation models provide a per-frame depth
+prior that supplements sparse SfM or replaces it as a training signal, improving geometry
+in under-constrained regions.
+
+### 23.1 DepthAnything V2
+
+**DepthAnything V2** ([arXiv:2406.09414](https://arxiv.org/abs/2406.09414),
+[github.com/DepthAnything/Depth-Anything-V2](https://github.com/DepthAnything/Depth-Anything-V2))
+uses a DINOv2 encoder with a DPT (Dense Prediction Transformer) decoder. Four variants:
+ViT-S (~25M), ViT-B (~86M), ViT-L (~304M), ViT-G (~1.3B parameters).
+
+The default output is **affine-invariant inverse depth** — relative, no metric scale.
+Separate fine-tuned **metric checkpoints** are available: indoor scenes (Hypersim
+training) and outdoor scenes (Virtual KITTI 2 training).
+
+Training objective: a scale-shift-invariant loss `L_ssi` (affine-invariant, from MiDaS)
+combined with a gradient-matching loss `L_gm` for boundary sharpness (1:2 ratio). The
+data recipe trains a ViT-G teacher on 595K synthetic labelled images, then uses it to
+generate pseudo-labels for 62M real unlabelled images, training ViT-S/B/L students on the
+pseudo-labelled real set with the top-10% highest-loss regions masked.
+
+```python
+from transformers import pipeline
+pipe = pipeline(task="depth-estimation",
+                model="depth-anything/Depth-Anything-V2-Large-hf")
+depth = pipe(image)["depth"]   # PIL Image → affine-invariant relative depth
+```
+
+[Source: github.com/DepthAnything/Depth-Anything-V2](https://github.com/DepthAnything/Depth-Anything-V2)
+
+### 23.2 Depth Pro (Apple)
+
+**Depth Pro** ([github.com/apple/ml-depth-pro](https://github.com/apple/ml-depth-pro))
+predicts **metric depth without any calibration data or EXIF** at 2.25-megapixel
+resolution in ~0.3 s/frame. A dedicated focal-length prediction head estimates absolute
+scale from the image content alone.
+
+```python
+import depth_pro
+
+model, transform = depth_pro.create_model_and_transforms()
+model.eval()
+
+image, _, f_px = depth_pro.load_rgb("frame.jpg")
+image_t = transform(image)
+prediction = model.infer(image_t, f_px=f_px)   # f_px optional — predicted if absent
+
+depth_m          = prediction["depth"]           # metric depth, metres, (H, W)
+focallength_px   = prediction["focallength_px"]  # predicted focal length in pixels
+```
+
+[Source: github.com/apple/ml-depth-pro](https://github.com/apple/ml-depth-pro)
+
+### 23.3 Integration with depth-nerfacto
+
+Nerfstudio's **`depth-nerfacto`** model (`DepthNerfactoModelConfig`) adds depth
+supervision on top of Nerfacto. Plain `nerfacto` has no depth loss.
+
+**Supplying depth maps.** `DepthDataset`
+(`nerfstudio/data/datasets/depth_dataset.py`) loads depth in two ways:
+
+1. **Auto-generate (ZoeDepth):** if `depth_filenames` are absent from `transforms.json`,
+   the dataset loads `torch.hub.load('isl-org/ZoeDepth', 'ZoeD_NK')`, runs it over all
+   frames, and caches the results as `.npy` files.
+2. **Manual path (for DepthAnything / Depth Pro):** run the estimator offline, save
+   per-frame depth maps, add `"depth_file_path"` per frame in `transforms.json` with a
+   `"depth_unit_scale_factor"` to convert to world units. When `depth_filenames` are
+   present, they take priority over ZoeDepth.
+
+`ns-process-data` does **not** generate depth; depth generation is a training-time
+concern.
+
+**Key config knobs:**
+
+```python
+# DepthNerfactoModelConfig
+depth_loss_mult:       float = 1e-3
+is_euclidean_depth:    bool  = False      # False = z-depth (monocular maps); True = euclidean
+depth_sigma:           float = 0.01
+should_decay_sigma:    bool  = False
+starting_depth_sigma:  float = 0.2
+sigma_decay_rate:      float = 0.99985
+depth_loss_type: DepthLossType = DepthLossType.DS_NERF
+```
+
+CLI: `ns-train depth-nerfacto --pipeline.model.depth-loss-mult 1e-3 --pipeline.model.depth-loss-type DS_NERF`
+
+**Depth loss types** (`DepthLossType` enum, `nerfstudio/model_components/losses.py`):
+
+| Loss type | What it does | When to use |
+|---|---|---|
+| `DS_NERF` | Gaussian log-likelihood on ray termination weights: `−log(w+ε) · exp(−(t−d)²/2σ²) · Δt` | Metric depth (Depth Pro, ZoeDepth) |
+| `URF` | Expected-depth L2 + line-of-sight near/empty terms | Metric depth, outdoor scenes |
+| `SPARSENERF_RANKING` | Penalises only **relative depth ordering** of adjacent pixels (margin 1e-4); uses `PairPixelSampler` | Relative/affine-invariant depth (DepthAnything default output) |
+
+**Practical mapping:** Depth Pro (metric) → `DS_NERF` or `URF`. DepthAnything V2 with
+default relative output → `SPARSENERF_RANKING`. DepthAnything V2 metric checkpoint →
+`DS_NERF`.
+[Source: depth_nerfacto.py](https://github.com/nerfstudio-project/nerfstudio/blob/main/nerfstudio/models/depth_nerfacto.py)
+
+---
+
+## 24. 3DGUT: Distorted Cameras and Secondary Rays in Gaussian Splatting
+
+**3DGUT** ("3DGUT: Enabling Distorted Cameras and Secondary Rays in Gaussian Splatting",
+CVPR 2025 Oral, arXiv:2412.12507) solves a fundamental limitation of standard 3DGS: the
+EWA splatting model projects each 3D Gaussian into 2D using a first-order Jacobian
+linearisation of the camera projection. This approximation is accurate only near the
+optical axis of a pinhole camera. For fisheye lenses (> ~90° FoV), rolling-shutter
+cameras (each scan line has a different extrinsic pose), or any secondary ray (reflection,
+refraction), the linearisation error becomes large enough to produce visible artefacts.
+
+**GitHub:** [github.com/nv-tlabs/3dgrut](https://github.com/nv-tlabs/3dgrut)
+(Apache-2.0; implements both 3DGUT rasterisation and 3DGRT ray-tracing under one repo)
+
+### 24.1 The Unscented Transform
+
+3DGUT replaces the Jacobian projection with the **Unscented Transform (UT)**: the
+Gaussian distribution is represented by a set of deterministic **sigma points** that are
+projected *exactly* through any differentiable camera model, and the projected mean and
+covariance are recovered from the transformed points.
+
+Seven sigma points are constructed from each 3D Gaussian (mean μ, covariance Σ):
+
+```
+x₀     = μ
+xᵢ     = μ + √[(3 + λ)Σ]ᵢ    i = 1, 2, 3
+xᵢ₊₃   = μ − √[(3 + λ)Σ]ᵢ    i = 1, 2, 3
+λ      = α²(3 + κ) − 3
+```
+
+Each sigma point is projected through the full camera model (fisheye polynomial,
+equidistant, or standard pinhole) with no approximation. The projected 2D mean and
+covariance are recovered from the weighted sum of projected sigma points:
+
+```
+v_μ = Σᵢ wᵢᵐ · π(xᵢ)
+Σ'  = Σᵢ wᵢᶜ · (π(xᵢ) − v_μ)(π(xᵢ) − v_μ)ᵀ
+```
+
+**Rolling-shutter support** follows directly: sigma points falling on different sensor
+scan lines receive different interpolated extrinsic poses, capturing the per-row readout
+geometry without any per-row Jacobian.
+[Source: arXiv:2412.12507 §3](https://arxiv.org/abs/2412.12507)
+
+### 24.2 3DGRT: Ray-Tracing Variant
+
+The same `3dgrut` repository also implements **3DGRT** (3D Gaussian Ray Tracing, SIGGRAPH
+Asia 2024): each 3D Gaussian is treated as a volumetric primitive, and secondary rays
+(for reflections, path tracing effects) are traced through the Gaussian field via OptiX
+RT cores. The hybrid **3DGRUT** mode rasterises primary rays (fast) and traces secondary
+rays (correct) in a single frame.
+[Source: github.com/nv-tlabs/3dgrut README](https://github.com/nv-tlabs/3dgrut)
+
+### 24.3 3DGRUT CLI
+
+```bash
+git clone --recursive https://github.com/nv-tlabs/3dgrut.git
+cd 3dgrut && pip install -e .
+
+# Train 3DGUT on a COLMAP dataset (fisheye camera model auto-detected):
+python train.py dataset=colmap dataset.data_dir=/data/scannet_scene   \
+    model=threedgut                                                     \
+    hydra.run.dir=outputs/scannet_scene
+
+# Train 3DGRT (ray tracing):
+python train.py dataset=colmap dataset.data_dir=/data/scene            \
+    model=threedgrt
+
+# Render and evaluate:
+python render.py checkpoint=outputs/scannet_scene/ckpt/last.pt
+```
+
+3DGUT is also integrated into **gsplat** (nerfstudio-project/gsplat) as a production
+module for fisheye/automotive datasets.
+
+### 24.4 Benchmark Results
+
+| Dataset | Method | PSNR | SSIM | Notes |
+|---------|--------|------|------|-------|
+| MipNeRF360 | 3DGUT | 27.26 | 0.810 | Pinhole; similar to 3DGS |
+| ScanNet++ (fisheye) | 3DGUT | **29.11** | **0.910** | vs FisheyeGS 28.15 / 0.901 |
+| ScanNet++ (fisheye) | 3DGUT | **0.38M** Gaussians | — | vs FisheyeGS 1.07M |
+| Waymo (rolling shutter) | 3DGUT | **30.16** | **0.900** | — |
+| Waymo (rolling shutter) | 3DGRT | 29.99 | 0.897 | RT path |
+
+[Source: arXiv:2412.12507 Tables 1, 3, 5; note: verify against CVPR 2025 camera-ready PDF]
+
+### 24.5 OptiX Cooperative Vectors for Neural Rendering
+
+**OptiX Cooperative Vectors** (OptiX 9.0, announced April 2025) are a separate NVIDIA
+technology — independent of 3DGUT — that allows tiny MLP inference to run *inside* OptiX
+ray-tracing shaders using tensor core matrix multiplications. This enables approaches like
+neural texture decompression or neural radiance caching directly in a closest-hit shader,
+without leaving the ray-tracing kernel.
+[Source: NVIDIA developer blog, April 17 2025](https://developer.nvidia.com/blog/neural-rendering-in-nvidia-optix-using-cooperative-vectors/)
+
+The core type is `OptixCoopVec<T, N>` — an opaque SIMD vector mapped across warp threads
+in a way the compiler can route to tensor cores. A single MLP layer in a shader looks
+like:
+
+```cpp
+// In an OptiX closest-hit program:
+using FeatVec = OptixCoopVec<half, 32>;
+using OutVec  = OptixCoopVec<half, 16>;
+
+FeatVec h = optixCoopVecLoad<FeatVec>(featurePtr + threadIdx * 32);
+
+// Affine layer: out = h × W + b  (weights in FP8 E4M3, pre-converted layout)
+OutVec h1 = optixCoopVecMatMul<OutVec, FeatVec,
+                OPTIX_COOP_VEC_ELEM_TYPE_FLOAT8_E4M3,
+                OPTIX_COOP_VEC_MATRIX_LAYOUT_INFERENCE_OPTIMAL,
+                /*transpose=*/false,
+                /*M=*/16, /*K=*/32>(h, weightsBuf, w1Offset, weightsBuf, b1Offset);
+h1 = optixCoopVecMax(h1, OutVec(0.0f));   // ReLU
+// ... chain subsequent layers
+```
+
+Key API functions:
+
+| Function | Purpose |
+|----------|---------|
+| `optixCoopVecLoad<T>(ptr)` | Load features into a cooperative vector |
+| `optixCoopVecMatMul<T_OUT,T_IN,...>(vec, wPtr, wOff, bPtr, bOff)` | `out = vec×W + b` |
+| `optixCoopVecMax` / `optixCoopVecMin` | Element-wise activation helpers |
+| `optixCoopVecOuterProductAccumulate` | Weight gradient accumulation (training) |
+| `optixCoopVecMatrixConvert` | Pre-convert weights to hardware-optimal layout |
+
+Supported weight element types: `OPTIX_COOP_VEC_ELEM_TYPE_FLOAT8_E4M3` (highest
+throughput), `FLOAT16`, `FLOAT32`. The same cooperative vector concept ships
+simultaneously in `VK_NV_cooperative_vector` (Vulkan), DirectX Agility SDK, and Slang.
+
+Cooperative Vectors and 3DGUT are **separate NVIDIA technologies** with no dependency
+on each other. A future combination (neural appearance MLP evaluated inside a 3DGRT
+closest-hit shader via Cooperative Vectors) is architecturally natural but had not been
+published as of the writing of this chapter.
+
+---
+
+## 25. Scaffold-GS: Anchor-Based Structured Gaussians for View-Adaptive Rendering
+
+**Scaffold-GS** ("Scaffold-GS: Structured 3D Gaussians for View-Adaptive Rendering",
+CVPR 2024 Highlight, arXiv:2312.00109) introduces a two-level hierarchy over vanilla
+3DGS. The core problem with unstructured 3DGS is that individual Gaussians optimise
+independently and overfit specific training views, producing millions of near-duplicate
+primitives with poor generalisation. Scaffold-GS places a sparse set of **anchors** on
+scene geometry, each of which generates `n_offsets=10` **neural Gaussians** whose
+attributes are predicted on-the-fly by small MLPs rather than stored directly.
+[Source: arXiv:2312.00109](https://arxiv.org/abs/2312.00109)
+[Source: github.com/city-super/Scaffold-GS](https://github.com/city-super/Scaffold-GS)
+
+**License:** Same non-commercial research license as the original 3DGS (Inria/MPII).
+
+### 25.1 Anchor Data Structure
+
+All optimisable state lives in the anchors (`scene/gaussian_model.py`):
+
+| Field | Shape | Description |
+|-------|-------|-------------|
+| `_anchor` | `[N, 3]` | Anchor 3D position |
+| `_offset` | `[N, 10, 3]` | Learnable offsets from anchor to each neural Gaussian centre |
+| `_anchor_feat` | `[N, 32]` | Per-anchor feature vector (`feat_dim = 32`) |
+| `_scaling` | `[N, 6]` | First 3: scale offset vectors; last 3: Gaussian covariance scale |
+| `_rotation` | `[N, 4]` | Anchor orientation quaternion |
+
+The `_offset` and `_anchor_feat` tensors are directly optimised by Adam alongside the
+geometry fields. Neural Gaussian attributes (opacity, colour, covariance) are *never*
+stored — they exist only as MLP outputs during rendering.
+
+### 25.2 Neural Attribute Prediction
+
+Three small MLPs (one hidden layer, 32 neurons each) decode view-dependent attributes
+from anchor features and camera geometry:
+
+```python
+ob_view = anchor - camera_center               # (N, 3) direction to camera
+ob_dist = ob_view.norm(dim=1, keepdim=True)    # (N, 1) distance
+ob_view = ob_view / ob_dist                    # normalised
+
+# Opacity MLP  →  n_offsets opacity values
+# Input: [anchor_feat(32), ob_view(3)] →  32  →  n_offsets
+opacity = tanh(opacity_mlp(cat(anchor_feat, ob_view)))    # (N, 10)
+
+# Covariance MLP  →  7 × n_offsets (3 log-scale + 4 quaternion per Gaussian)
+# Input: [anchor_feat(32), ob_view(3)] →  32  →  7×n_offsets
+cov_raw = cov_mlp(cat(anchor_feat, ob_view))              # (N, 70) → split & normalise
+
+# Color MLP  →  3 × n_offsets RGB
+# Input: [anchor_feat(32), ob_view(3), appearance_embed(32)] →  32  →  3×n_offsets
+color = sigmoid(color_mlp(cat(anchor_feat, ob_view, appearance)))  # (N, 30)
+```
+
+Opacity masking: neural Gaussians with `opacity > 0.0` are passed to the tile-based
+rasteriser; the rest are discarded. This dynamic selection is the key to Scaffold-GS's
+storage efficiency.
+
+### 25.3 Anchor Growing and Pruning
+
+Anchors start from the SfM/COLMAP point cloud quantised onto a voxel grid
+(`voxel_size = 0.001`, auto-computed from median SfM point spacing if set to 0).
+
+**Growing** (every 100 iterations, from step 1500 to 15000): view-space position
+gradients are accumulated per neural Gaussian. When a gradient magnitude exceeds
+`densify_grad_threshold = 0.0002`, new anchors are planted by quantising those
+high-gradient Gaussians into a 3-level hierarchical finer voxel grid (factor of 4 per
+level). Duplicate anchors at identical grid coordinates are deduplicated.
+
+**Pruning**: anchors whose mean predicted opacity across all 10 neural Gaussians falls
+below `min_opacity = 0.005` are removed each pruning step.
+
+### 25.4 CLI and NeRFStudio
+
+```bash
+git clone --recursive https://github.com/city-super/Scaffold-GS.git
+conda env create --file environment.yml && conda activate scaffold_gs
+
+# Train on Mip-NeRF 360:
+bash train_mip360.sh
+
+# Single scene:
+python train.py -s /data/scene -m outputs/scene --voxel_size 0 --update_init_factor 16
+
+# Evaluate:
+python render.py -m outputs/scene
+python metrics.py -m outputs/scene
+
+# Via nerfstudio (PR #3623):
+ns-train scaffold-gs --max-num-iterations 30000
+```
+
+### 25.5 Benchmark Results
+
+| Method | MipNeRF360 PSNR | T&T PSNR | Deep Blending PSNR | Storage (DB) |
+|--------|-----------------|----------|---------------------|--------------|
+| 3DGS | ~27.46 | 23.14 | ~29.4 | 676 MB |
+| Scaffold-GS | **27.71** | **23.96** | **~30.2** | **66 MB** |
+
+The headline gain is **10× storage reduction** (Deep Blending: 66 MB vs 676 MB), achieved
+by storing only anchors rather than all Gaussian attributes. Raw PSNR improvement is
+modest (< 0.6 dB); LPIPS on Mip-NeRF 360 is *slightly worse* (0.262 vs 0.222) — a known
+trade-off. Rendering speed: ~102 FPS vs ~97 FPS for 3DGS (slightly faster due to opacity
+masking reducing active primitive count).
+[Source: NerfBaselines — Scaffold-GS](https://nerfbaselines.github.io/m-scaffold-gs)
+
+---
+
+## 26. Zip-NeRF: Anti-Aliased Grid-Based Neural Radiance Fields
+
+**Zip-NeRF** ("Zip-NeRF: Anti-Aliased Grid-Based Neural Radiance Fields", ICCV 2023
+Oral / Best Paper Finalist, arXiv:2304.06706) solves the incompatibility between
+Mip-NeRF 360's anti-aliasing and instant-NGP's hash-grid speed. The two methods are
+complementary but naive combination produces aliasing:
+[Source: arXiv:2304.06706](https://arxiv.org/abs/2304.06706)
+[Source: jonbarron.info/zipnerf](https://jonbarron.info/zipnerf/)
+
+- **Mip-NeRF 360** integrates positional encodings over conical frustums (IPE), giving
+  anti-aliasing, but uses a slow MLP backbone (~22 hours to train).
+- **instant-NGP** queries the hash grid at a *single point* per sample, giving speed but
+  no frustum-area awareness — naively plugging it into the Mip-NeRF 360 framework
+  reintroduces aliasing.
+
+### 26.1 Hexagonal Multisampling
+
+Zip-NeRF represents each conical frustum by **6 hexagonal samples** chosen to match the
+frustum's first and second moments exactly with minimum sample count. The design
+requirement (mean and covariance match; minimum n) has a unique solution at n = 6 with
+two angular offsets:
+
+```
+Sample angles:   θⱼ = [0, 2π/3, 4π/3, π, 5π/3, π/3]   j = 0, …, 5
+
+Sample depth along ray (tμ = (t₀+t₁)/2, tδ = (t₁−t₀)/2):
+tⱼ derived from moment-matching conditions (paper §3.2; verify tⱼ formula against PDF)
+
+Sample 3D positions (ṙ = cone radius per unit depth):
+xⱼ = [ṙtⱼcos(θⱼ)/√2,  ṙtⱼsin(θⱼ)/√2,  tⱼ]
+```
+
+[Source: arXiv:2304.06706 §3, note: tⱼ closed-form extracted from ar5iv HTML; verify against PDF]
+
+### 26.2 Scale-Dependent Hash Feature Attenuation
+
+Each sample xⱼ is associated with an isotropic Gaussian of standard deviation
+`σⱼ = ṙtⱼ / √2`. At hash grid level ℓ with resolution nℓ, a downweighting factor
+suppresses high-frequency features when the sample footprint spans multiple grid cells:
+
+```
+ωⱼ,ℓ = erf(1 / √(8 σⱼ² nℓ²))
+```
+
+The feature vector at level ℓ is the weighted mean across the 6 multisamples:
+
+```
+fℓ = meanⱼ( ωⱼ,ℓ · trilerp(nℓ · xⱼ ; Vℓ) )
+```
+
+When σⱼ is large relative to `1/nℓ` (coarse/distant samples), `ωⱼ,ℓ → 0`, suppressing
+aliased high-frequency content — the spatial anti-aliasing mechanism.
+
+### 26.3 Smoother Proposal Loss (z-Aliasing Fix)
+
+Mip-NeRF 360's interlevel loss compares NeRF histogram mass against proposal bins with
+discontinuous bin-boundary penalties, causing z-aliasing (scene content flickering along
+camera translations). Zip-NeRF replaces this with a **blurred NeRF histogram** compared
+against the proposal distribution:
+
+```
+ℒprop = Σᵢ (1/ŵᵢ) max(0, w̃ᵢ − ŵᵢ)²
+```
+
+where ŵᵢ is the proposal weight and w̃ᵢ is the convolve-smoothed NeRF weight. This is
+continuous and smooth with respect to camera translations, eliminating z-aliasing.
+
+### 26.4 Architecture Summary
+
+- Hash grid: 10 levels, resolutions 16 → 8192; 4 channels/level (vs iNGP's 2)
+- Sampling: 2 × 64 proposal samples + 32 final NeRF samples per ray
+- View-dependent MLP: 3 layers, 256 hidden units
+
+### 26.5 Benchmark Results
+
+**Mip-NeRF 360 dataset** (PSNR, from paper Table 2):
+
+| Method | PSNR | SSIM | LPIPS | Train time |
+|--------|------|------|-------|-----------|
+| Zip-NeRF | **28.54** | **0.828** | **0.189** | 0.90 hr |
+| Mip-NeRF 360 | 27.57 | 0.793 | 0.234 | 21.69 hr |
+| instant-NGP | 25.68 | 0.705 | 0.302 | ~mins |
+
+On Tanks & Temples (NerfBaselines re-run): PSNR 24.63, SSIM 0.840. On NeRF-Synthetic:
+PSNR 33.67, SSIM 0.973.
+
+Note: 3DGS (~28.0 PSNR on Mip-NeRF 360) was published after Zip-NeRF; Mip-Splatting
+benchmarks show Zip-NeRF outperforming standard 3DGS on most per-scene metrics.
+
+### 26.6 Code and NeRFStudio
+
+```bash
+# Official JAX implementation (Apache-2.0):
+git clone https://github.com/jonbarron/camp_zipnerf.git
+
+# Community PyTorch port (Apache-2.0; reproduces paper PSNR within ~0.5 dB):
+pip install git+https://github.com/SuLvXiangXin/zipnerf-pytorch#subdirectory=extensions/cuda
+pip install git+https://github.com/SuLvXiangXin/zipnerf-pytorch
+
+# NeRFStudio (uses PyTorch port):
+ns-train zipnerf --data {DATA_DIR/SCENE}
+# Requires torch_scatter matching your CUDA version.
+```
+
+[Source: NerfBaselines Zip-NeRF](https://nerfbaselines.github.io/m-zipnerf)
+[Source: nerfstudio docs — zipnerf](https://docs.nerf.studio/nerfology/methods/zipnerf.html)
+
+---
+
+## 27. Language and Feature Fields: LERF, LangSplat, Feature 3DGS, and Gaussian Grouping
+
+The four methods in this section extend NeRF and 3DGS with per-point semantic features
+distilled from 2D foundation models (CLIP, SAM, DINO), enabling open-vocabulary querying,
+instance segmentation, and scene editing directly in the 3D representation.
+
+### 27.1 LERF: Language Embedded Radiance Fields
+
+**LERF** ("LERF: Language Embedded Radiance Fields", ICCV 2023, arXiv:2303.09553) adds a
+dense, multi-scale CLIP language field to a NeRF. During training, CLIP embeddings are
+**volume-rendered** along each ray and supervised against multi-scale CLIP features
+extracted from the training images.
+[Source: github.com/kerrj/lerf (MIT)](https://github.com/kerrj/lerf)
+
+**Multi-scale CLIP supervision:** Seven logarithmically-spaced image crop scales
+(s_min = 0.05 to s_max = 0.5) are sampled per training view, each producing a CLIP patch
+embedding from **OpenCLIP ViT-B/16 (LAION-2B)**. The scale at each ray sample grows with
+depth: `s(t) = s_img · f_xy / t`, capturing the physical patch size seen at distance t.
+
+**Volume-rendered language embedding:**
+
+```
+φ_lang = normalize( Σ w(t) · F_lang(r(t), s(t)) dt )
+```
+
+where `w(t) = T(t)·σ(t)` are the standard NeRF transmittance-weighted density weights,
+and F_lang is a parallel MLP branch alongside colour. The output is L2-normalised to the
+unit CLIP embedding sphere.
+
+**Training loss:**
+
+```
+L_total = L_lang + L_DINO
+L_lang = −0.01 · (φ_lang · φ_lang_gt)      # cosine similarity vs ground-truth CLIP
+L_DINO = MSE(φ_dino_rendered, φ_dino_gt)   # DINO regularises object boundaries (no normalisation)
+```
+
+**Query-time relevancy:** A text query is scored against canonical distractor phrases
+{"object", "things", "stuff", "texture"} via pairwise softmax (temperature 10):
+
+```python
+R_i = exp(φ_lang · φ_query) / (exp(φ_lang · φ_canon_i) + exp(φ_lang · φ_query))
+relevancy = min_i(R_i)   # high only if query beats ALL canonical distractors
+```
+
+**NeRFStudio integration:**
+
+```bash
+pip install git+https://github.com/kerrj/lerf
+ns-install-cli
+
+ns-train lerf       --data <folder>   # ViT-B/16, ~15 GB VRAM
+ns-train lerf-big   --data <folder>   # ViT-L/14, ~22 GB VRAM
+ns-train lerf-lite  --data <folder>   # reduced network, ~8 GB VRAM (RTX 2080)
+
+# In viewer: set "Output Render" to relevancy_0, type text query
+```
+
+### 27.2 LangSplat: 3D Language Gaussian Splatting
+
+**LangSplat** (CVPR 2024, arXiv:2312.16084) replaces LERF's NeRF backbone with 3DGS and
+adds two key optimisations for speed and memory:
+[Source: github.com/minghanqin/LangSplat](https://github.com/minghanqin/LangSplat)
+
+1. **Scene-specific autoencoder compression:** A small encoder/decoder pair maps 512-dim
+   CLIP embeddings → 3-dim latents (35× memory reduction). Each Gaussian stores only the
+   3-dim compressed representation; the decoder recovers CLIP embeddings at query time.
+   Trained with L1 + cosine loss on SAM-masked features per scene.
+
+2. **SAM-based three-scale hierarchy:** Rather than LERF's 7-scale image pyramid, LangSplat
+   uses SAM with a 32×32 grid of point prompts to extract three semantic scales (subpart /
+   part / whole). Each Gaussian stores three language embeddings `{f^s, f^p, f^w}`.
+
+Language features are rendered using the same alpha-blending as RGB — no special rendering
+code. The **199× speedup** over LERF (at 1440×1080) comes primarily from replacing
+ray-marching with tile-based 3DGS rasterisation.
+
+| Task | LangSplat | LERF |
+|------|-----------|------|
+| LERF-Mask localisation (%) | **84.3** | 73.6 |
+| LERF-Mask seg IoU (%) | **51.4** | 37.4 |
+| 3D-OVS mIoU (%) | **93.4** | 54.8 |
+| Speed at 1440×1080 | **199× faster** | baseline |
+
+### 27.3 Feature 3DGS
+
+**Feature 3DGS** (CVPR 2024 Highlight, arXiv:2312.03203) gives each 3D Gaussian an
+N-dimensional semantic feature vector `f ∈ ℝ^N` distilled from a frozen 2D foundation
+model. Features are rendered via the same alpha-blending as colour:
+[Source: github.com/ShijieZhou-UCLA/feature-3dgs (MIT)](https://github.com/ShijieZhou-UCLA/feature-3dgs)
+
+```
+F_s = Σᵢ  fᵢ · αᵢ · Tᵢ        # feature map (parallel to RGB)
+C   = Σᵢ  cᵢ · αᵢ · Tᵢ        # standard RGB
+```
+
+The tile-based rasteriser from 3DGS is extended to handle both RGB and arbitrary-
+dimension feature channels simultaneously. A lightweight 1×1 convolutional decoder
+renders compact features (dim=128) then upsamples to the full foundation-model dimension
+(512 for LSeg, 256 for SAM), giving **2.7× faster distillation** than NeRF-based feature
+fields.
+
+**Training loss:**
+
+```
+L = L_rgb + 1.0 · L_f
+L_f = ‖ F_t(I) − F_s(Î) ‖₁       # L1 distillation vs teacher features
+```
+
+Primary supported foundation models: **LSeg** (language-guided segmentation) and **SAM**
+(Segment Anything).
+
+```bash
+# Train with LSeg:
+python train.py -s data/DATASET -m output/OUTPUT -f lseg --speedup --iterations 7000
+# Render:
+python render.py -s data/DATASET -m output/OUTPUT -f lseg --iteration 3000 --novel_view
+# SAM prompt:
+python segment_prompt.py --checkpoint sam_vit_h_4b8939.pth --model-type vit_h \
+    --data output/OUTPUT --point 500 800
+```
+
+Benchmark on Replica dataset: mIoU 0.787 vs NeRF-DFF 0.636, at 6.84 FPS vs 5.38 FPS.
+
+### 27.4 Gaussian Grouping: Instance Segmentation via Identity Encoding
+
+**Gaussian Grouping** (ECCV 2024, arXiv:2312.00732) augments each 3D Gaussian with a
+compact **16-dimensional learnable identity encoding** `eᵢ ∈ ℝ^16`, jointly optimised
+with geometry and colour. This enables instance-level grouping, object removal,
+inpainting, and scene recomposition without any 3D annotations.
+[Source: github.com/lkeab/gaussian-grouping (Apache-2.0)](https://github.com/lkeab/gaussian-grouping)
+
+**Identity rendering via alpha-blending:**
+
+```
+E_id = Σᵢ  eᵢ · αᵢ · Tᵢ
+```
+
+A small linear classifier on top of the rendered `E_id` map produces per-pixel instance
+logits, supervised against 2D SAM masks:
+
+```
+L_id = CrossEntropy(LinearClassifier(E_id), SAM_mask_labels)
+```
+
+**3D spatial consistency regularisation** encourages nearby Gaussians to share the same
+identity via KL divergence between each Gaussian's softmax-identity distribution and those
+of its k-nearest 3D neighbours:
+
+```
+L_3d = (1/mk) Σⱼ Σᵢ F(eⱼ) · log(F(eⱼ) / F(e'ᵢ))
+```
+
+**Benchmark on LERF-Mask dataset (mIoU):**
+
+| Scene | Gaussian Grouping | LERF |
+|-------|-------------------|------|
+| Figurines | **69.7%** | 33.5% |
+| Ramen | **77.0%** | 28.3% |
+
+Panoptic segmentation on Replica: 71.15% mIoU at ~140 FPS vs Panoptic Lifting 66.22% at
+~10 FPS. Object inpainting runs in ~1 hour vs ~5 hours for SPIn-NeRF.
+
+---
+
+## 28. Integrations
 
 This chapter connects to the following parts of the Linux graphics stack:
 
@@ -1734,6 +2966,8 @@ This chapter connects to the following parts of the Linux graphics stack:
 **Chapter 94 — ComfyUI / ComfyScript:** GenAI image models and NeRF inpainting overlap at generfacto (the `[gen]` optional extras: `diffusers`, `transformers`, `accelerate`). ComfyUI and nerfstudio can share a PyTorch CUDA environment but may conflict on pinned dependency versions.
 
 **Chapter 73 — Asahi (Apple Silicon):** The `MachineConfig.device_type = "mps"` setting enables nerfstudio on Apple Silicon Macs via PyTorch MPS. MPS lacks the custom CUDA kernels of tcnn and gsplat, so performance is limited to the pure-torch fallback path.
+
+**Chapter 212 — Python 3D ML Libraries:** The data structure and preprocessing layer beneath the training pipelines in this chapter — PyTorch3D `Meshes`/`Pointclouds`, Kaolin SPC octrees and USD I/O, Open3D TSDF integration, trimesh mesh loading, and sparse 3D convolution (spconv/torchsparse for LiDAR perception) — is covered in Chapter 212. threestudio's DMTet/NeuS geometry backends feed the FlexiCubes and marching-tetrahedra conversions described there; DUSt3R/MASt3R dense point map outputs feed directly into Open3D Poisson reconstruction (ch212 §1.6) and PyTorch3D `Pointclouds` (ch212 §2.1).
 
 **Chapter 46 — Vulkan Compute:** Section 11 of this chapter covers `vk_gaussian_splatting`, which demonstrates the Vulkan compute and ray-tracing pipeline for real-time splat rendering. Chapter 46 covers the Vulkan compute model in depth.
 
@@ -1754,6 +2988,15 @@ This chapter connects to the following parts of the Linux graphics stack:
 - [gsplat: An Open-Source Library for Gaussian Splatting](https://github.com/nerfstudio-project/gsplat)
 - [tiny-cuda-nn: Lightning Fast C++/CUDA Neural Networks](https://github.com/NVlabs/tiny-cuda-nn)
 - [viser: Web-based 3D Visualization](https://github.com/nerfstudio-project/viser)
+- [3DGUT: Enabling Distorted Cameras and Secondary Rays in Gaussian Splatting](https://arxiv.org/abs/2412.12507) — CVPR 2025
+- [3DGRUT GitHub](https://github.com/nv-tlabs/3dgrut)
+- [Neural Rendering in NVIDIA OptiX Using Cooperative Vectors](https://developer.nvidia.com/blog/neural-rendering-in-nvidia-optix-using-cooperative-vectors/) — NVIDIA blog, April 2025
+- [Scaffold-GS: Structured 3D Gaussians for View-Adaptive Rendering](https://arxiv.org/abs/2312.00109) — CVPR 2024
+- [Zip-NeRF: Anti-Aliased Grid-Based Neural Radiance Fields](https://arxiv.org/abs/2304.06706) — ICCV 2023
+- [LERF: Language Embedded Radiance Fields](https://arxiv.org/abs/2303.09553) — ICCV 2023
+- [LangSplat: 3D Language Gaussian Splatting](https://arxiv.org/abs/2312.16084) — CVPR 2024
+- [Feature 3DGS: Supercharging 3D Gaussian Splatting to Enable Distilled Feature Fields](https://arxiv.org/abs/2312.03203) — CVPR 2024
+- [Gaussian Grouping: Segment and Edit Anything in 3D Scenes](https://arxiv.org/abs/2312.00732) — ECCV 2024
 - [NVIDIA Vulkan Gaussian Splatting Samples](https://github.com/nvpro-samples/vk_gaussian_splatting)
 - [PlayCanvas SuperSplat](https://github.com/playcanvas/supersplat)
 - [COLMAP: Structure-from-Motion Revisited](https://colmap.github.io/)
