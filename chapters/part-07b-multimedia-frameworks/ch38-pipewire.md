@@ -72,32 +72,32 @@ graph TD
     end
 
     ALSA   -->|"PCM buffers"| SPALSA
-    V4L2HW -->|"DMA-BUF fd\nVIDIOC_EXPBUF"| SPV4L2
+    V4L2HW -->|"DMA-BUF fd / VIDIOC_EXPBUF"| SPV4L2
     LCAM   -->|"FrameBuffer DMA-BUF"| SPLC
-    WLCOMP -->|"screencopy frames\nDMA-BUF"| XDP
+    WLCOMP -->|"screencopy frames / DMA-BUF"| XDP
 
     SPALSA  --> PWD
     SPV4L2  --> PWD
     SPLC    --> PWD
     SPCONV  --- PWD
 
-    WP -->|"udev · loads SPA monitor plugins\ninstantiates pw_node per device"| SPALSA
-    WP -->|""| SPV4L2
-    WP -->|""| SPLC
-    WP <-->|"native protocol\npw_registry · pw_link policy"| PWD
-    WP <-->|"portal-permissionstore\nPW_PERM_R / PW_PERM_X grants"| PERM
+    WP -->|"loads SPA monitor plugins / instantiates pw_node"| SPALSA
+    WP --> SPV4L2
+    WP --> SPLC
+    WP <-->|"native protocol: pw_registry / pw_link policy"| PWD
+    WP <-->|"portal-permissionstore: PW_PERM_R / PW_PERM_X"| PERM
 
-    PWD -->|"MakeThreadRealtime\nthread TID"| RTKIT
+    PWD -->|"MakeThreadRealtime / thread TID"| RTKIT
 
     OBS    -->|"D-Bus ScreenCast call"| LP
     BROWSER -->|"D-Bus ScreenCast call"| LP
-    LP     -->|"org.freedesktop.portal.ScreenCast\nOpenPipeWireRemote → scoped fd"| XDP
+    LP     -->|"ScreenCast.OpenPipeWireRemote / scoped fd"| XDP
     XDP   <-->|"consent check / record"| PERM
-    XDP    -->|"scoped PW fd\npw_context_connect_fd()"| PWD
+    XDP    -->|"scoped PW fd / pw_context_connect_fd()"| PWD
     XDP    -->|"org.freedesktop.impl.portal.ScreenCast"| WLCOMP
 
-    GST    -->|"pw_context_connect()\npipewiresrc DMA-BUF frames"| PWD
-    OBS    -->|"pw_stream_dequeue_buffer()\nDMA-BUF frames"| PWD
+    GST    -->|"pipewiresrc / DMA-BUF frames"| PWD
+    OBS    -->|"pw_stream_dequeue_buffer() / DMA-BUF"| PWD
     BROWSER -->|"pw_stream frames"| PWD
 ```
 
