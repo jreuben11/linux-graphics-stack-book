@@ -198,9 +198,19 @@ The sections below are ordered by geometry domain rather than CPU/GPU split. Whe
 87. [GPU Mesh Segmentation and Part Decomposition](#87-gpu-mesh-segmentation-and-part-decomposition)
 88. [GPU Radiosity: Form Factor Computation](#88-gpu-radiosity-form-factor-computation)
 89. [GPU Mesh Repair and Waterproofing](#89-gpu-mesh-repair-and-waterproofing)
-90. [Library Landscape](#90-library-landscape)
-91. [Performance Reference](#91-performance-reference)
-92. [Integrations](#92-integrations)
+90. [Virtual Geometry: GPU-Driven Cluster LOD](#90-virtual-geometry-gpu-driven-cluster-lod)
+91. [GPU Path Tracing Pipeline](#91-gpu-path-tracing-pipeline)
+92. [Iterative Closest Point (ICP) Registration](#92-iterative-closest-point-icp-registration)
+93. [Micro-Polygon Displacement and GPU Tessellation](#93-micro-polygon-displacement-and-gpu-tessellation)
+94. [GPU Sparse Narrow-Band Level-Set Evolution](#94-gpu-sparse-narrow-band-level-set-evolution)
+95. [GPU SDF Font and Curve Rendering](#95-gpu-sdf-font-and-curve-rendering)
+96. [Atmospheric Scattering and Sky Rendering](#96-atmospheric-scattering-and-sky-rendering)
+97. [Subsurface Scattering Geometry](#97-subsurface-scattering-geometry)
+98. [GPU Geospatial Processing: Large-Scale Terrain](#98-gpu-geospatial-processing-large-scale-terrain)
+99. [Molecular Surface Computation](#99-molecular-surface-computation)
+100. [Library Landscape](#100-library-landscape)
+101. [Performance Reference](#101-performance-reference)
+102. [Integrations](#102-integrations)
 
 ---
 
@@ -12512,7 +12522,1197 @@ void main() {
 
 ---
 
-## 90. Library Landscape
+## 90. Virtual Geometry: GPU-Driven Cluster LOD
+
+*Audience: graphics application developers, systems developers.*
+
+Virtual geometry (Epic's Nanite, 2021) eliminates traditional LOD selection in favour of a GPU-driven pipeline that culls and renders micro-triangle clusters at a granularity finer than a draw call. The key insight: precompute a DAG of cluster groups from coarse to fine, then at runtime traverse the DAG on the GPU to select the finest clusters whose projected screen error stays below one pixel. §10 covers GPU-driven indirect draw; this section covers the cluster DAG construction, GPU traversal, software rasterisation, and visibility buffer shading.
+
+### 90.1 Cluster DAG Construction (Offline)
+
+The mesh is partitioned into clusters of 128 triangles each using METIS-style graph partitioning. Adjacent clusters are then grouped (8 clusters per group) and simplified with QEM (§7) to produce a coarser level. The DAG encodes, for each cluster group, a bounding sphere and a maximum screen-space error:
+
+```glsl
+// cluster_dag_build.comp — compute max edge error for a simplified cluster group
+layout(set=0,binding=0) readonly buffer ClusterVerts { vec3 verts[]; };
+layout(set=0,binding=1) readonly buffer OrigVerts    { vec3 orig[];  };
+layout(set=0,binding=2) writeonly buffer ClusterError { float err[];  };
+layout(push_constant) uniform PC { uint N_CLUSTERS; float epsilon; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint c   = gl_GlobalInvocationID.x;
+    // Error = max Hausdorff distance from simplified cluster to original
+    float maxD = 0.0;
+    for (uint v=clusterStart[c]; v<clusterEnd[c]; v++) {
+        float d = closestPointDist(verts[v], orig, origStart[c], origEnd[c]);
+        maxD = max(maxD, d);
+    }
+    err[c] = maxD;
+}
+```
+
+[Source: Karis et al. "A Deep Dive into Nanite Virtualized Geometry", SIGGRAPH 2021; Garland & Heckbert §7]
+
+### 90.2 GPU Cluster DAG Traversal
+
+At runtime, traverse the LOD DAG top-down using a persistent thread group. For each cluster group, project its bounding sphere to screen space and compare the error to one pixel. If the error is acceptable, emit all clusters in this group; otherwise, recurse into finer children:
+
+```glsl
+// cluster_traverse.comp — GPU DAG traversal, emit visible clusters
+layout(set=0,binding=0) readonly buffer DAGNodes { ClusterGroup dag[]; };
+layout(set=0,binding=1) buffer QueueIn  { uint queue[]; uint qHead; uint qTail; };
+layout(set=0,binding=2) buffer QueueOut { uint visible[]; uint count; };
+layout(push_constant) uniform PC { mat4 viewProj; vec3 camPos; float pixelError; uint N_ROOTS; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint tid = gl_GlobalInvocationID.x;
+    // Persistent: each thread pulls one group from the queue
+    while (true) {
+        uint slot = atomicAdd(qHead, 1u);
+        if (slot >= qTail) break;
+        uint g   = queue[slot];
+        ClusterGroup cg = dag[g];
+        // Project bounding sphere: screen-space error = worldError * focalLen / dist
+        float dist  = length(cg.boundSphere.xyz - pc.camPos);
+        float ssErr = cg.maxError * FOCAL_LEN / max(dist - cg.boundSphere.w, 1e-3);
+        if (ssErr < pc.pixelError || cg.childCount == 0u) {
+            // Accept this LOD level: emit all clusters in group
+            for (uint c=0; c<cg.clusterCount; c++) {
+                uint vs = atomicAdd(count, 1u);
+                visible[vs] = cg.firstCluster + c;
+            }
+        } else {
+            // Recurse into children
+            for (uint ci=0; ci<cg.childCount; ci++) {
+                uint cs = atomicAdd(qTail, 1u);
+                queue[cs] = cg.firstChild + ci;
+            }
+        }
+    }
+}
+```
+
+[Source: Karis et al. 2021; Wihlidal "Optimizing the Graphics Pipeline with Compute", GDC 2016]
+
+### 90.3 Software Rasterisation for Micro-Triangles
+
+Clusters selected at the finest LOD often contain triangles smaller than a pixel. Nanite uses software rasterisation via atomicMax on a 64-bit depth+cluster ID buffer, bypassing the hardware rasteriser for these tiny triangles:
+
+```glsl
+// software_rast.comp — rasterise micro-triangles via 64-bit atomic depth buffer
+layout(set=0,binding=0) readonly buffer Clusters  { ClusterData clusters[]; };
+layout(set=0,binding=1) readonly buffer Verts     { vec3 verts[];  };
+layout(set=0,binding=2) readonly buffer Indices   { uint  idx[];   };
+layout(set=0,binding=3) buffer DepthCluster { uint64_t depthCluster[]; };  // hi=depth, lo=cluster+tri
+layout(push_constant) uniform PC { mat4 mvp; uvec2 res; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint tri  = gl_GlobalInvocationID.x;
+    // Project triangle vertices
+    vec2 p0 = project(verts[idx[tri*3+0]], pc.mvp, pc.res);
+    vec2 p1 = project(verts[idx[tri*3+1]], pc.mvp, pc.res);
+    vec2 p2 = project(verts[idx[tri*3+2]], pc.mvp, pc.res);
+    float z0=projZ(verts[idx[tri*3+0]],pc.mvp), z1=projZ(verts[idx[tri*3+1]],pc.mvp), z2=projZ(verts[idx[tri*3+2]],pc.mvp);
+    // Scan-line rasterise AABB of triangle
+    ivec2 minP=ivec2(floor(min(p0,min(p1,p2)))), maxP=ivec2(ceil(max(p0,max(p1,p2))));
+    for (int y=minP.y;y<=maxP.y;y++) for(int x=minP.x;x<=maxP.x;x++) {
+        vec3 bary = barycentrics(vec2(x,y),p0,p1,p2);
+        if (any(lessThan(bary,vec3(0)))) continue;
+        float z    = bary.x*z0+bary.y*z1+bary.z*z2;
+        uint64_t depthID = (uint64_t(floatBitsToUint(z))<<32)|uint64_t(tri);
+        atomicMax(depthCluster[y*pc.res.x+x], depthID);
+    }
+}
+```
+
+[Source: Karis et al. 2021 §8; Wihlidal 2016; Olsson "Cluster-Based Rendering", SIGGRAPH 2020]
+
+### 90.4 Visibility Buffer Shading
+
+The visibility buffer (Burns & Hunt 2013) stores cluster ID + triangle ID per pixel instead of shading attributes. A deferred shading pass reconstructs material attributes by re-deriving barycentric coordinates:
+
+```glsl
+// vbuffer_shade.comp — shade from visibility buffer (cluster+tri ID per pixel)
+layout(set=0,binding=0) readonly buffer DepthCluster { uint64_t depthCluster[]; };
+layout(set=0,binding=1) readonly buffer Verts        { vec3 verts[];   };
+layout(set=0,binding=2) readonly buffer UV           { vec2 uvs[];     };
+layout(set=0,binding=3) uniform sampler2DArray atlas; // virtual texture atlas (§34)
+layout(set=0,binding=4, rgba16f) writeonly image2D shaded;
+layout(push_constant) uniform PC { mat4 mvp; uvec2 res; } pc;
+layout(local_size_x=8,local_size_y=8) in;
+void main() {
+    ivec2 pix  = ivec2(gl_GlobalInvocationID.xy);
+    uint64_t dc = depthCluster[pix.y*pc.res.x+pix.x];
+    uint triID = uint(dc & 0xFFFFFFFF);
+    // Re-derive barycentrics from pixel position + triangle vertices
+    vec2 p     = vec2(pix)+0.5;
+    vec2 p0=project(verts[idx[triID*3+0]],pc.mvp,pc.res);
+    vec2 p1=project(verts[idx[triID*3+1]],pc.mvp,pc.res);
+    vec2 p2=project(verts[idx[triID*3+2]],pc.mvp,pc.res);
+    vec3 bary  = barycentrics(p,p0,p1,p2);
+    vec2 uv    = bary.x*uvs[idx[triID*3+0]]+bary.y*uvs[idx[triID*3+1]]+bary.z*uvs[idx[triID*3+2]];
+    vec4 color = texture(atlas, vec3(uv, float(materialID(triID))));
+    imageStore(shaded, pix, color);
+}
+```
+
+[Source: Burns & Hunt "The Visibility Buffer: A Cache-Friendly Approach to Deferred Shading", JCGT 2013; Engel "Deferred+", GDC 2019]
+
+---
+
+## 91. GPU Path Tracing Pipeline
+
+*Audience: graphics application developers, systems developers.*
+
+Unbiased Monte Carlo path tracing produces reference-quality global illumination by simulating light transport directly. GPU path tracing uses the TLAS/BLAS hierarchy of `VK_KHR_ray_tracing_pipeline` or ray queries, with multiple importance sampling (MIS) weighting direct-light and BRDF samples. The challenge is per-ray divergence: shader sorting (wavefront path tracing) groups coherent rays together before dispatch.
+
+### 91.1 Primary Ray Generation and TLAS Traversal
+
+```glsl
+// pt_raygen.rgen — generate primary rays from a thin-lens camera model
+#version 460
+#extension GL_EXT_ray_tracing : require
+layout(set=0,binding=0) uniform accelerationStructureEXT tlas;
+layout(set=0,binding=1, rgba32f) uniform image2D accumBuffer;
+layout(set=0,binding=2) readonly buffer BlueNoise { vec2 bn[]; };
+layout(push_constant) uniform PC { mat4 invViewProj; vec3 camPos; float lensR; uint frame; } pc;
+layout(location=0) rayPayloadEXT PathPayload payload;
+void main() {
+    ivec2 pix  = ivec2(gl_LaunchIDEXT.xy);
+    uint  seed = (pix.y*gl_LaunchSizeEXT.x + pix.x + pc.frame*gl_LaunchSizeEXT.x*gl_LaunchSizeEXT.y) % BN_SIZE;
+    vec2  jitter = bn[seed];
+    vec2  uv   = (vec2(pix)+jitter) / vec2(gl_LaunchSizeEXT.xy) * 2.0 - 1.0;
+    vec4  target = pc.invViewProj * vec4(uv, 1.0, 1.0); target /= target.w;
+    // Thin-lens DoF
+    vec2  lens  = concentricDiskSample(bn[(seed+1)%BN_SIZE]) * pc.lensR;
+    vec3  fPoint = target.xyz;
+    vec3  origin = pc.camPos + vec3(lens,0);
+    vec3  dir    = normalize(fPoint - origin);
+    payload.radiance = vec3(0); payload.throughput = vec3(1); payload.depth = 0;
+    traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0, origin, 1e-3, dir, 1e4, 0);
+    vec4 prev  = imageLoad(accumBuffer, pix);
+    imageStore(accumBuffer, pix, prev + vec4(payload.radiance, 1.0));
+}
+```
+
+[Source: Pharr et al. "Physically Based Rendering", 4th ed. 2023, §16; Shirley et al. "Ray Tracing in One Weekend" series]
+
+### 91.2 Closest-Hit Shader: MIS Direct Lighting
+
+Multiple importance sampling (MIS) combines a direct-light sample and a BRDF sample using power heuristic weights to reduce variance:
+
+```glsl
+// pt_closesthit.rchit — shade surface point with MIS direct lighting + BRDF sample
+#extension GL_EXT_ray_tracing : require
+#extension GL_EXT_ray_query   : require
+layout(location=0) rayPayloadInEXT PathPayload payload;
+layout(location=1) rayPayloadEXT   ShadowPayload shadow;
+hitAttributeEXT vec2 bary;
+void main() {
+    SurfacePoint sp = reconstructSurface(gl_PrimitiveID, bary);
+    if (sp.emission != vec3(0)) { payload.radiance += payload.throughput * sp.emission; return; }
+    // --- Direct light sample (NEE) ---
+    LightSample ls = sampleLight(sp.pos, sp.nor, payload.seed);
+    float pdfBRDF  = evalBRDFpdf(sp, ls.dir);
+    float wLight   = misPowerHeuristic(ls.pdf, pdfBRDF);
+    bool visible   = shadowRay(sp.pos, ls.dir, ls.dist);
+    if (visible)
+        payload.radiance += payload.throughput * evalBRDF(sp, ls.dir) * ls.Le * wLight / ls.pdf;
+    // --- BRDF sample (continue path) ---
+    vec3 wi; float pdfW;
+    vec3 f   = sampleBRDF(sp, payload.seed, wi, pdfW);
+    float pdfLight = lightPdf(sp.pos, wi);
+    float wBRDF    = misPowerHeuristic(pdfW, pdfLight);
+    payload.throughput *= f * abs(dot(wi,sp.nor)) * wBRDF / max(pdfW, 1e-8);
+    // Russian roulette
+    float q = max(payload.throughput.r, max(payload.throughput.g, payload.throughput.b));
+    if (rand(payload.seed) > q) { payload.throughput=vec3(0); return; }
+    payload.throughput /= q;
+    // Spawn next ray
+    payload.origin = sp.pos + sp.nor*1e-3; payload.dir = wi; payload.depth++;
+}
+```
+
+[Source: Pharr et al. 2023 §12.2 MIS; Veach "Robust Monte Carlo Methods for Light Transport Simulation", PhD 1997]
+
+### 91.3 Wavefront Path Tracing: Shader Sorting
+
+GPU warp divergence kills throughput when adjacent paths hit different materials. Wavefront path tracing (Laine et al. 2013) uses separate queues per shader type. After intersection, paths are sorted by material ID and dispatched in homogeneous waves:
+
+```glsl
+// pt_sort_queues.comp — classify intersection records by material type
+layout(set=0,binding=0) readonly buffer HitRecords { HitRecord hits[]; };
+layout(set=0,binding=1) buffer Queue_Lambert  { uint q[]; uint cnt; };
+layout(set=0,binding=2) buffer Queue_GGX      { uint q[]; uint cnt; };
+layout(set=0,binding=3) buffer Queue_Glass    { uint q[]; uint cnt; };
+layout(set=0,binding=4) buffer Queue_Miss     { uint q[]; uint cnt; };
+layout(local_size_x=64) in;
+void main() {
+    uint p = gl_GlobalInvocationID.x;
+    if (hits[p].miss) {
+        uint s = atomicAdd(Queue_Miss.cnt, 1u); Queue_Miss.q[s]=p; return;
+    }
+    switch (hits[p].materialType) {
+        case MAT_LAMBERT: { uint s=atomicAdd(Queue_Lambert.cnt,1u); Queue_Lambert.q[s]=p; break; }
+        case MAT_GGX:     { uint s=atomicAdd(Queue_GGX.cnt,1u);     Queue_GGX.q[s]=p;     break; }
+        case MAT_GLASS:   { uint s=atomicAdd(Queue_Glass.cnt,1u);    Queue_Glass.q[s]=p;   break; }
+    }
+}
+// Each queue is then dispatched as a separate compute shader (material kernel)
+```
+
+[Source: Laine et al. "Megakernels Considered Harmful: Wavefront Path Tracing on GPUs", HPG 2013]
+
+### 91.4 Denoising: SVGF À-trous Wavelet Filter
+
+After accumulating N samples, SVGF (§51.4 pattern applied to path tracing) denoises via spatially-varying À-trous wavelets guided by geometry buffers:
+
+```glsl
+// svgf_atrous.comp — SVGF À-trous wavelet denoise pass k
+layout(set=0,binding=0) uniform sampler2D colorIn;    // noisy accumulated radiance
+layout(set=0,binding=1) uniform sampler2D gNormal;
+layout(set=0,binding=2) uniform sampler2D gDepth;
+layout(set=0,binding=3) uniform sampler2D gAlbedo;
+layout(set=0,binding=4, rgba32f) writeonly image2D colorOut;
+layout(push_constant) uniform PC { int stepWidth; float phiColor; float phiNorm; float phiDepth; } pc;
+layout(local_size_x=8,local_size_y=8) in;
+void main() {
+    ivec2 pix  = ivec2(gl_GlobalInvocationID.xy);
+    vec3  cC   = texelFetch(colorIn,pix,0).rgb / texelFetch(gAlbedo,pix,0).rgb;  // modulate albedo
+    vec3  nC   = texelFetch(gNormal,pix,0).xyz;
+    float dC   = texelFetch(gDepth, pix,0).r;
+    vec3  sum  = vec3(0); float wSum=0.0;
+    const float kernel[3] = {3.0/8.0, 1.0/4.0, 1.0/16.0};
+    for (int dy=-2;dy<=2;dy++) for(int dx=-2;dx<=2;dx++) {
+        ivec2 nb   = pix + ivec2(dx,dy)*pc.stepWidth;
+        vec3  cN   = texelFetch(colorIn,nb,0).rgb / texelFetch(gAlbedo,nb,0).rgb;
+        float wC   = exp(-dot(cN-cC,cN-cC)/pc.phiColor);
+        float wN   = pow(max(dot(nC,texelFetch(gNormal,nb,0).xyz),0.0),pc.phiNorm);
+        float wD   = exp(-abs(dC-texelFetch(gDepth,nb,0).r)/pc.phiDepth);
+        float h    = kernel[abs(dx)]*kernel[abs(dy)];
+        float w    = h*wC*wN*wD; sum+=w*cN; wSum+=w;
+    }
+    imageStore(colorOut,pix,vec4(sum/wSum * texelFetch(gAlbedo,pix,0).rgb,1.0));
+}
+```
+
+[Source: Schied et al. "Spatiotemporal Variance-Guided Filtering", HPG 2017; §51.4]
+
+---
+
+## 92. Iterative Closest Point (ICP) Registration
+
+*Audience: systems developers, graphics application developers.*
+
+ICP (Besl & McKay 1992) aligns two point clouds by alternating: (1) find nearest-neighbour correspondences; (2) compute the rigid transform minimising their sum-squared distance. GPU parallelism covers both steps. §86 covers FPFH-based initialisation; ICP refines the result.
+
+### 92.1 GPU k-NN Correspondence Search
+
+For each point in the source cloud, find the nearest point in the target cloud. Brute-force on GPU: O(N·M) dot products, but with SIMD parallelism across 10s of millions of pairs:
+
+```glsl
+// icp_nn.comp — nearest-neighbour correspondences between source and target
+layout(set=0,binding=0) readonly buffer Src { vec3 src[]; };
+layout(set=0,binding=1) readonly buffer Tgt { vec3 tgt[]; };
+layout(set=0,binding=2) writeonly buffer Corr { uint corrIdx[]; float corrDist[]; };
+layout(local_size_x=64) in;
+void main() {
+    uint i   = gl_GlobalInvocationID.x;
+    if (i >= N_SRC) return;
+    float bestD=1e30; uint bestJ=0u;
+    for (uint j=0; j<N_TGT; j++) {
+        float d = dot(src[i]-tgt[j],src[i]-tgt[j]);
+        if (d<bestD) { bestD=d; bestJ=j; }
+    }
+    corrIdx[i]=bestJ; corrDist[i]=sqrt(bestD);
+}
+```
+
+[Source: Besl & McKay "A Method for Registration of 3-D Shapes", IEEE TPAMI 1992; GPU ICP: Tamaki et al. "Softassign and EM-ICP on GPU", IVCNZ 2010]
+
+### 92.2 Cross-Covariance Matrix via Parallel Reduction
+
+From N correspondence pairs (pᵢ, qᵢ), compute the cross-covariance H = Σ (pᵢ − p̄)(qᵢ − q̄)ᵀ needed for SVD. Use a parallel reduction:
+
+```glsl
+// icp_crosscov.comp — parallel reduction of cross-covariance matrix
+layout(set=0,binding=0) readonly buffer Src  { vec3 src[];  };
+layout(set=0,binding=1) readonly buffer Corr { uint corrIdx[]; };
+layout(set=0,binding=2) readonly buffer Tgt  { vec3 tgt[];  };
+layout(set=0,binding=3) readonly buffer Means { vec3 srcMean; vec3 tgtMean; };
+layout(set=0,binding=4) buffer H { float H[9]; };  // 3x3 cross-covariance
+layout(local_size_x=64) in;
+shared float sH[64][9];
+void main() {
+    uint i  = gl_GlobalInvocationID.x;
+    uint li = gl_LocalInvocationID.x;
+    mat3 local_H = mat3(0.0);
+    if (i < N_SRC) {
+        vec3 p = src[i] - srcMean;
+        vec3 q = tgt[corrIdx[i]] - tgtMean;
+        local_H = outerProduct(p,q);
+    }
+    // Store to shared, reduce
+    for (int k=0;k<9;k++) sH[li][k] = local_H[k/3][k%3];
+    barrier();
+    for (uint s=32u;s>0u;s>>=1) {
+        if (li<s) for(int k=0;k<9;k++) sH[li][k]+=sH[li+s][k];
+        barrier();
+    }
+    if (li==0) for(int k=0;k<9;k++) atomicAdd_float(H[k], sH[0][k]);
+}
+```
+
+[Source: Besl & McKay 1992; Segal & Akeley "The OpenGL Graphics System", 2004 §ICP appendix]
+
+### 92.3 SVD-Based Transform Estimation
+
+The optimal rotation is R = V·Uᵀ where H = U·Σ·Vᵀ. Compute on CPU after the GPU reduction for a 3×3 matrix (negligible cost); translation is t = q̄ − R·p̄:
+
+```glsl
+// icp_transform_apply.comp — apply current R,t to source point cloud
+layout(set=0,binding=0) readonly buffer SrcIn  { vec3 srcIn[];  };
+layout(set=0,binding=1) writeonly buffer SrcOut { vec3 srcOut[]; };
+layout(set=0,binding=2) readonly buffer RT { mat3 R; vec3 t; };
+layout(local_size_x=64) in;
+void main() {
+    uint i    = gl_GlobalInvocationID.x;
+    if (i >= N_SRC) return;
+    srcOut[i] = R * srcIn[i] + t;
+}
+// Iterate: dispatch icp_nn → icp_crosscov → CPU SVD → icp_transform_apply
+// Converges in 20-50 iterations for ≤45° initial misalignment
+```
+
+### 92.4 Point-to-Plane ICP for Faster Convergence
+
+Point-to-plane ICP (Chen & Medioni 1992) minimises the sum of squared distances along the target normal, converging roughly 10× faster than point-to-point. The optimal transform is solved by a 6×6 linear system:
+
+```glsl
+// icp_point2plane.comp — accumulate 6x6 linear system for point-to-plane ICP
+layout(set=0,binding=0) readonly buffer Src     { vec3 src[];  };
+layout(set=0,binding=1) readonly buffer TgtPts  { vec3 tgt[];  };
+layout(set=0,binding=2) readonly buffer TgtNors { vec3 tnor[]; };
+layout(set=0,binding=3) readonly buffer Corr    { uint corrIdx[]; };
+layout(set=0,binding=4) buffer AtA { float ata[36]; float atb[6]; };  // 6x6 system
+layout(local_size_x=64) in;
+void main() {
+    uint i  = gl_GlobalInvocationID.x;
+    if (i>=N_SRC) return;
+    vec3 p  = src[i], q = tgt[corrIdx[i]], n = tnor[corrIdx[i]];
+    // Row of A: [n × p, n]
+    vec3 cn = cross(p, n);
+    float a[6] = {cn.x,cn.y,cn.z,n.x,n.y,n.z};
+    float b    = dot(n, q-p);
+    for (int r=0;r<6;r++) {
+        atomicAdd_float(atb[r], a[r]*b);
+        for(int c=r;c<6;c++) atomicAdd_float(ata[r*6+c], a[r]*a[c]);
+    }
+}
+// Solve 6x6 AtA·x = Atb on CPU → x = [ω₁,ω₂,ω₃,t₁,t₂,t₃] → compose transform
+```
+
+[Source: Chen & Medioni "Object Modeling by Registration of Multiple Range Images", IVC 1992; Low "Linear Least-Squares Optimization for Point-to-Plane ICP Surface Registration", UNC TR 2004]
+
+---
+
+## 93. Micro-Polygon Displacement and GPU Tessellation
+
+*Audience: graphics application developers.*
+
+Displacement mapping (Cook 1984) adds fine surface detail by offsetting vertices along the normal by a scalar value sampled from a height texture. GPU tessellation via the hardware tessellator (Vulkan tessellation shaders) or mesh shaders generates the dense vertex grid at runtime; §1 subdivision surfaces and §90 virtual geometry represent related approaches. True micro-polygon displacement requires crack-free patch stitching and adaptive tessellation factor computation.
+
+### 93.1 Adaptive Tessellation Factor Computation
+
+Tessellation factors are set per-edge based on projected edge length or curvature, ensuring one tessellation sample per pixel:
+
+```glsl
+// tess_control.tesc — adaptive edge tessellation factors from projected length
+#version 460
+layout(vertices=3) out;
+layout(push_constant) uniform PC { mat4 mvp; vec2 viewportRes; float targetEdgePx; } pc;
+void main() {
+    gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;
+    if (gl_InvocationID == 0) {
+        // Project each edge midpoint, compute screen-space length
+        for (int e=0;e<3;e++) {
+            vec4 p0 = pc.mvp * gl_in[e].gl_Position;
+            vec4 p1 = pc.mvp * gl_in[(e+1)%3].gl_Position;
+            vec2 s0 = (p0.xy/p0.w*0.5+0.5)*pc.viewportRes;
+            vec2 s1 = (p1.xy/p1.w*0.5+0.5)*pc.viewportRes;
+            gl_TessLevelOuter[e] = clamp(length(s1-s0)/pc.targetEdgePx, 1.0, 64.0);
+        }
+        gl_TessLevelInner[0] = (gl_TessLevelOuter[0]+gl_TessLevelOuter[1]+gl_TessLevelOuter[2])/3.0;
+    }
+}
+```
+
+[Source: Schwarz & Stamminger "Bitmask Soft Shadows", EG 2007; Nießner et al. "Feature-Adaptive GPU Rendering of Catmull-Clark Subdivision Surfaces", SIGGRAPH 2012]
+
+### 93.2 Displacement Evaluation in Tessellation Evaluation Shader
+
+```glsl
+// tess_eval.tese — displacement along interpolated normal
+#version 460
+layout(triangles, fractional_odd_spacing, ccw) in;
+layout(push_constant) uniform PC { mat4 mvp; float dispScale; } pc;
+uniform sampler2D heightTex;
+in vec3 tcNormal[];
+in vec2 tcUV[];
+void main() {
+    // Barycentric interpolation of position, normal, UV
+    vec3 pos = gl_TessCoord.x*gl_in[0].gl_Position.xyz
+             + gl_TessCoord.y*gl_in[1].gl_Position.xyz
+             + gl_TessCoord.z*gl_in[2].gl_Position.xyz;
+    vec3 nor = normalize(gl_TessCoord.x*tcNormal[0]
+                        +gl_TessCoord.y*tcNormal[1]
+                        +gl_TessCoord.z*tcNormal[2]);
+    vec2 uv  = gl_TessCoord.x*tcUV[0]+gl_TessCoord.y*tcUV[1]+gl_TessCoord.z*tcUV[2];
+    float h  = texture(heightTex, uv).r;
+    pos     += nor * h * pc.dispScale;
+    gl_Position = pc.mvp * vec4(pos, 1.0);
+}
+```
+
+[Source: Cook "Shade Trees", SIGGRAPH 1984; Tatarchuk "Practical Parallax Occlusion Mapping for Highly Detailed Surface Rendering", ShaderX 5, 2006]
+
+### 93.3 Crack-Free Patch Stitching
+
+Adjacent patches with different tessellation factors produce T-junctions and cracks. The hardware tessellator handles this within a patch, but between patches the outer tessellation levels must match. Compute the outer tessellation factor for each shared edge identically from both patches:
+
+```glsl
+// tess_control_crackfree.tesc — crack-free outer tessellation via shared edge hash
+layout(push_constant) uniform PC { mat4 mvp; vec2 res; float targetPx; } pc;
+float edgeTessLevel(vec3 p0, vec3 p1) {
+    vec4 c0=pc.mvp*vec4(p0,1), c1=pc.mvp*vec4(p1,1);
+    vec2 s0=(c0.xy/c0.w*0.5+0.5)*pc.res, s1=(c1.xy/c1.w*0.5+0.5)*pc.res;
+    return clamp(length(s1-s0)/pc.targetPx, 1.0, 64.0);
+}
+void main() {
+    // Both patches sharing edge (v0,v1) must call edgeTessLevel(v0,v1)
+    // in the same vertex order → sorted by vertex index
+    uvec2 e = uvec2(min(vIdx[0],vIdx[1]), max(vIdx[0],vIdx[1]));
+    gl_TessLevelOuter[0] = edgeTessLevel(pos[e.x],pos[e.y]);
+    // ... similarly for other edges
+}
+```
+
+[Source: Nießner et al. 2012; Walton "Tessellation on Any Budget", GDC 2011]
+
+### 93.4 Mesh Shader Displacement for Nanite-Compatible Micro-Polygons
+
+When using §90 virtual geometry, displacement can be applied in the mesh shader itself, offsetting cluster vertices along normals sampled from a virtual texture:
+
+```glsl
+// disp_mesh.mesh.glsl — apply displacement in mesh shader for cluster rendering
+layout(local_size_x=128) in;
+layout(triangles, max_vertices=128, max_primitives=126) out;
+void main() {
+    uint v = gl_LocalInvocationID.x;
+    SetMeshOutputsEXT(N_VERTS, N_TRIS);
+    if (v < N_VERTS) {
+        vec3 pos = clusterVerts[v];
+        vec3 nor = clusterNormals[v];
+        vec2 uv  = clusterUVs[v];
+        float h  = texture(heightMap, uv).r;
+        pos     += nor * h * dispScale;
+        gl_MeshVerticesEXT[v].gl_Position = mvp * vec4(pos,1.0);
+        outUV[v] = uv; outNor[v] = nor;
+    }
+    if (v < N_TRIS) gl_PrimitiveTriangleIndicesEXT[v] = clusterTris[v];
+}
+```
+
+[Source: Karis et al. 2021 §90; Kubisch "Turing Mesh Shaders", NVIDIA 2018]
+
+---
+
+## 94. GPU Sparse Narrow-Band Level-Set Evolution
+
+*Audience: systems developers, graphics application developers.*
+
+Dense level sets (§31) compute on every voxel; the interface occupies only the narrow band |φ| ≤ 3Δx. Sparse narrow-band representations (VDB/OpenVDB §29.1) store only active voxels, enabling much finer grids for the same memory budget. GPU sparse level sets maintain an active list and update only band voxels per timestep.
+
+### 94.1 Active Voxel List Construction
+
+At each timestep, collect all voxels within the narrow band |φ| ≤ k·Δx into a compact active list:
+
+```glsl
+// narrowband_collect.comp — collect active voxels into compact list
+layout(set=0,binding=0) readonly buffer Phi    { float phi[];  };
+layout(set=0,binding=1) buffer ActiveList { uint active[]; uint count; };
+layout(push_constant) uniform PC { ivec3 dim; float dx; float bandWidth; } pc;
+layout(local_size_x=8,local_size_y=8,local_size_z=8) in;
+void main() {
+    ivec3 c = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(c,pc.dim))) return;
+    uint idx = c.z*pc.dim.y*pc.dim.x + c.y*pc.dim.x + c.x;
+    if (abs(phi[idx]) <= pc.bandWidth * pc.dx) {
+        uint slot = atomicAdd(count, 1u);
+        active[slot] = idx;
+    }
+}
+```
+
+[Source: Museth et al. "OpenVDB: An Open Source Data Structure and Toolkit for High-Resolution Volumes", SIGGRAPH 2013; Nielsen & Museth "Dynamic Tubular Grid: An Efficient Data Structure and Algorithms for High Resolution Level Sets", JCGT 2006]
+
+### 94.2 Narrow-Band Reinitialization via Fast Sweeping
+
+Reinitialise the SDF to exact distance values within the narrow band using a fast sweeping / Godunov scheme applied only to active voxels:
+
+```glsl
+// narrowband_reinit.comp — Godunov upwind reinitialization (one sweep pass)
+layout(set=0,binding=0) readonly buffer ActiveList { uint active[]; uint count; };
+layout(set=0,binding=1) buffer Phi { float phi[]; };
+layout(push_constant) uniform PC { ivec3 dim; float dx; int sweep; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint li  = gl_GlobalInvocationID.x;
+    if (li >= count) return;
+    uint idx = active[li];
+    ivec3 c  = unflatten(idx, pc.dim);
+    // Godunov upwind: pick upwind neighbour in each axis
+    float px = minNeighbour(phi, c, ivec3(1,0,0), pc.dim, pc.sweep);
+    float py = minNeighbour(phi, c, ivec3(0,1,0), pc.dim, pc.sweep);
+    float pz = minNeighbour(phi, c, ivec3(0,0,1), pc.dim, pc.sweep);
+    float d  = solveGodunovEikonal(px, py, pz, pc.dx);
+    phi[idx] = sign(phi[idx]) * min(abs(phi[idx]), d);
+}
+```
+
+[Source: Zhao "A Fast Sweeping Method for Eikonal Equations", Mathematics of Computation 2004; Bridson "Fluid Simulation for Computer Graphics", 2008 §3]
+
+### 94.3 Level-Set Advection on Active Voxels
+
+Advect the level set under a velocity field using a 5th-order WENO scheme for the spatial derivative and TVD-RK3 for time integration, applied only to active voxels:
+
+```glsl
+// narrowband_advect.comp — WENO5 spatial derivative, Euler time step on active voxels
+layout(set=0,binding=0) readonly buffer Vel      { vec3 vel[];  };
+layout(set=0,binding=1) readonly buffer PhiIn    { float phiIn[]; };
+layout(set=0,binding=2) writeonly buffer PhiOut  { float phiOut[]; };
+layout(set=0,binding=3) readonly buffer ActiveList { uint active[]; uint count; };
+layout(push_constant) uniform PC { ivec3 dim; float dx; float dt; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint li  = gl_GlobalInvocationID.x;
+    if (li >= count) return;
+    uint idx = active[li];
+    ivec3 c  = unflatten(idx, pc.dim);
+    vec3  v  = vel[idx];
+    // WENO5 upwind: select direction per-axis based on sign of velocity
+    float dpx = (v.x>0) ? weno5Minus(phiIn, c, ivec3(1,0,0), pc.dim, pc.dx)
+                        : weno5Plus (phiIn, c, ivec3(1,0,0), pc.dim, pc.dx);
+    float dpy = (v.y>0) ? weno5Minus(phiIn, c, ivec3(0,1,0), pc.dim, pc.dx)
+                        : weno5Plus (phiIn, c, ivec3(0,1,0), pc.dim, pc.dx);
+    float dpz = (v.z>0) ? weno5Minus(phiIn, c, ivec3(0,0,1), pc.dim, pc.dx)
+                        : weno5Plus (phiIn, c, ivec3(0,0,1), pc.dim, pc.dx);
+    phiOut[idx] = phiIn[idx] - pc.dt * (v.x*dpx + v.y*dpy + v.z*dpz);
+}
+```
+
+[Source: Osher & Fedkiw "Level Set Methods and Dynamic Implicit Surfaces", Springer 2003; Jiang & Peng "Weighted ENO Schemes on Triangular Meshes", JCP 2000]
+
+### 94.4 Topology Change and Band Rebuild
+
+After each advection step, check whether previously inactive voxels have entered the band (zero crossing propagation) and add them to the active list:
+
+```glsl
+// narrowband_expand.comp — add newly active voxels (|phi|<band) to active list
+layout(set=0,binding=0) readonly buffer Phi { float phi[]; };
+layout(set=0,binding=1) buffer ActiveList { uint active[]; uint count; };
+layout(set=0,binding=2) buffer ActiveMask { uint mask[];  };  // 1 if currently active
+layout(push_constant) uniform PC { ivec3 dim; float dx; float band; } pc;
+layout(local_size_x=8,local_size_y=8,local_size_z=8) in;
+void main() {
+    ivec3 c = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(c,pc.dim))) return;
+    uint idx = flatIdx(c,pc.dim);
+    if (mask[idx]!=0u) return;  // already active
+    if (abs(phi[idx]) <= pc.band*pc.dx) {
+        mask[idx]=1u;
+        uint slot=atomicAdd(count,1u);
+        active[slot]=idx;
+    }
+}
+```
+
+[Source: Museth et al. 2013; Houston et al. "A Unified Particle/Grid Fluid Simulation Algorithm", Proceedings of Graphics Interface 2006]
+
+---
+
+## 95. GPU SDF Font and Curve Rendering
+
+*Audience: graphics application developers.*
+
+Signed distance field (SDF) fonts (Green 2007) pre-render each glyph to a low-resolution SDF texture; at runtime, the fragment shader reconstructs sharp edges regardless of scale by thresholding the interpolated SDF value. Multi-channel SDF (MSDF, Chlumský 2016) encodes the distance in three colour channels to preserve sharp corners. Loop-Blinn (2005) renders cubic Bézier curves exactly on the GPU without pre-baking.
+
+### 95.1 Offline SDF Glyph Baking
+
+Bake glyph outlines (from FreeType) into a low-resolution SDF texture by computing the signed distance from each texel to the nearest contour edge:
+
+```glsl
+// sdf_bake.comp — bake SDF for a single glyph from filled scanline bitmap
+layout(set=0,binding=0) readonly buffer GlyphBitmap { uint bitmap[]; };  // 1-bit per pixel
+layout(set=0,binding=1, r8_snorm) writeonly image2D sdfOut;
+layout(push_constant) uniform PC { ivec2 bitmapDim; ivec2 sdfDim; int searchRadius; } pc;
+layout(local_size_x=8,local_size_y=8) in;
+void main() {
+    ivec2 sdfPix = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(sdfPix,pc.sdfDim))) return;
+    // Map SDF pixel to bitmap space (upsample factor)
+    ivec2 bPix  = sdfPix * pc.bitmapDim / pc.sdfDim;
+    bool inside = bitfieldExtract(bitmap[bPix.y*(pc.bitmapDim.x/32)+bPix.x/32], bPix.x%32, 1) != 0;
+    float minD  = float(pc.searchRadius);
+    for (int dy=-pc.searchRadius;dy<=pc.searchRadius;dy++)
+    for (int dx=-pc.searchRadius;dx<=pc.searchRadius;dx++) {
+        ivec2 nb  = bPix+ivec2(dx,dy);
+        if (any(lessThan(nb,ivec2(0)))||any(greaterThanEqual(nb,pc.bitmapDim))) continue;
+        bool nbIn = bitfieldExtract(bitmap[nb.y*(pc.bitmapDim.x/32)+nb.x/32], nb.x%32, 1) != 0;
+        if (nbIn != inside) minD = min(minD, length(vec2(dx,dy)));
+    }
+    float sdf = (inside ? 1.0 : -1.0) * minD / float(pc.searchRadius) * 0.5;
+    imageStore(sdfOut, sdfPix, vec4(sdf));
+}
+```
+
+[Source: Green "Improved Alpha-Tested Magnification for Vector Textures and Special Effects", SIGGRAPH 2007]
+
+### 95.2 Runtime SDF Font Rendering
+
+In the fragment shader, threshold the SDF and apply anti-aliasing using the screen-space derivative of the SDF:
+
+```glsl
+// sdf_font.frag — render SDF glyph with smooth anti-aliased edges
+uniform sampler2D sdfAtlas;
+uniform vec4 textColor;
+in vec2 texUV;
+void main() {
+    float d     = texture(sdfAtlas, texUV).r;
+    // Width of the AA region in SDF units: ~0.5 / (screen pixels per SDF texel)
+    float width = fwidth(d) * 0.7;
+    float alpha = smoothstep(0.5 - width, 0.5 + width, d);
+    fragColor   = vec4(textColor.rgb, textColor.a * alpha);
+}
+```
+
+[Source: Green 2007; Behdad "State of Text Rendering 2", 2024]
+
+### 95.3 Multi-Channel SDF (MSDF) for Sharp Corners
+
+MSDF (Chlumský 2016) stores the minimum distance to the nearest contour edge in three separate colour channels (one per pseudo-distance direction), then takes the median at render time to reconstruct sharp corners that single-channel SDF blurs:
+
+```glsl
+// msdf_font.frag — render MSDF glyph: median of three channels for sharp corners
+uniform sampler2D msdfAtlas;
+uniform vec4 textColor;
+in vec2 texUV;
+float median(float r, float g, float b) { return max(min(r,g),min(max(r,g),b)); }
+void main() {
+    vec3  msd   = texture(msdfAtlas, texUV).rgb;
+    float d     = median(msd.r, msd.g, msd.b);
+    float width = fwidth(d) * 0.7;
+    float alpha = smoothstep(0.5-width, 0.5+width, d);
+    fragColor   = vec4(textColor.rgb, textColor.a * alpha);
+}
+```
+
+[Source: Chlumský "Shape Decomposition for Multi-Channel Distance Fields", Master's thesis, Czech Technical University 2015]
+
+### 95.4 Loop-Blinn Cubic Bézier Rendering
+
+Loop & Blinn (2005) render cubic Bézier curves exactly on the GPU by encoding each bezier patch as a quad, computing a cubic discriminant texture, and discarding fragments outside the curve in the fragment shader:
+
+```glsl
+// loop_blinn.frag — inside/outside test for cubic Bézier via Loop-Blinn klmn coords
+in vec3 klmn;  // per-vertex cubic texture coordinates from vertex shader
+void main() {
+    // Fragment is inside the loop/serpentine/cusp if klmn.x³ - klmn.y*klmn.z < 0
+    float f = klmn.x*klmn.x*klmn.x - klmn.y*klmn.z;
+    if (f > 0.0) discard;  // outside curve fill region
+    fragColor = vec4(vec3(0), 1.0);  // inside: fill with text color
+}
+```
+
+[Source: Loop & Blinn "Resolution Independent Curve Rendering Using Programmable Graphics Hardware", SIGGRAPH 2005; Nehab & Hoppe "Random-Access Rendering of General Vector Graphics", SIGGRAPH Asia 2008]
+
+---
+
+## 96. Atmospheric Scattering and Sky Rendering
+
+*Audience: graphics application developers.*
+
+Atmospheric scattering (Mie + Rayleigh) produces realistic sky colours, horizon glow, and aerial perspective. GPU implementations precompute transmittance and in-scatter into 2D/4D lookup tables (LUTs), then evaluate them at runtime with two texture samples — following Bruneton & Neyret (2008) and the Unreal/Unity production extensions.
+
+### 96.1 Transmittance LUT Precomputation
+
+For each (view zenith, altitude) pair, integrate extinction along the ray to space using the Chapman function approximation:
+
+```glsl
+// atmo_transmittance.comp — precompute transmittance LUT T(h, cosθ)
+layout(set=0,binding=0, rg32f) writeonly image2D transmittanceLUT;  // (Rₑ, Rₘ) transmittance
+layout(push_constant) uniform PC { float Rg; float Rt; float HR; float HM;
+    float betaR; float betaM; int numSteps; } pc;
+layout(local_size_x=8,local_size_y=8) in;
+void main() {
+    vec2  uv  = (vec2(gl_GlobalInvocationID.xy)+0.5)/vec2(imageSize(transmittanceLUT));
+    float h   = pc.Rg + uv.x*(pc.Rt-pc.Rg);          // altitude
+    float cosT= uv.y * 2.0 - 1.0;                     // cos of view-zenith
+    float dt  = atmosphericRayLength(h, cosT, pc.Rt) / float(pc.numSteps);
+    vec2  tau = vec2(0.0);  // optical depth (Rayleigh, Mie)
+    for (int i=0; i<pc.numSteps; i++) {
+        float ri = h + (float(i)+0.5)*dt*cosT;
+        tau.x   += exp(-(ri-pc.Rg)/pc.HR) * dt;
+        tau.y   += exp(-(ri-pc.Rg)/pc.HM) * dt;
+    }
+    vec2 T = exp(-vec2(pc.betaR,pc.betaM) * tau);
+    imageStore(transmittanceLUT, ivec2(gl_GlobalInvocationID.xy), vec4(T,0,0));
+}
+```
+
+[Source: Bruneton & Neyret "Precomputed Atmospheric Scattering", EGSR 2008; Hillaire "A Scalable and Production Ready Sky and Atmosphere Rendering Technique", EGSR 2020]
+
+### 96.2 Single-Scatter In-Scatter LUT
+
+For each (altitude, view zenith, sun zenith) triple, integrate the single-scatter contribution (light reaching a point, scattering toward the viewer) using the transmittance LUT:
+
+```glsl
+// atmo_inscatter.comp — single in-scatter LUT (3D texture: altitude × viewZen × sunZen)
+layout(set=0,binding=0) uniform sampler2D transmittanceLUT;
+layout(set=0,binding=1, rgba32f) writeonly image3D inScatterLUT;
+layout(local_size_x=4,local_size_y=4,local_size_z=4) in;
+void main() {
+    vec3 uvw  = (vec3(gl_GlobalInvocationID)+0.5)/vec3(imageSize(inScatterLUT));
+    float h   = Rg + uvw.x*(Rt-Rg);
+    float cosV= uvw.y*2.0-1.0;
+    float cosS= uvw.z*2.0-1.0;
+    float dt  = atmosphericRayLength(h,cosV,Rt)/float(STEPS);
+    vec3  inR=vec3(0), inM=vec3(0);
+    for (int i=0; i<STEPS; i++) {
+        float t  = (float(i)+0.5)*dt;
+        float ri = sqrt(h*h + t*t + 2.0*h*t*cosV);
+        vec2  Ti = textureLod(transmittanceLUT, txUV(ri,cosS), 0.0).rg;  // sun→point
+        vec2  Tv = textureLod(transmittanceLUT, txUV(h, cosV), 0.0).rg;  // point→cam
+        float rhoR = exp(-(ri-Rg)/HR), rhoM = exp(-(ri-Rg)/HM);
+        inR += rhoR * Ti * Tv * dt;
+        inM += rhoM * Ti * Tv * dt;
+    }
+    imageStore(inScatterLUT, ivec3(gl_GlobalInvocationID),
+               vec4(betaR*inR + betaM/(4.0*PI)*inM, 1.0));
+}
+```
+
+[Source: Bruneton & Neyret 2008; Elek "Rendering Parametrizable Planetary Atmospheres with Multiple Scattering in Real-Time", CESCG 2009]
+
+### 96.3 Runtime Sky Evaluation
+
+At runtime, the sky colour in direction d from camera altitude h is the in-scatter LUT lookup, attenuated by the sun's phase function:
+
+```glsl
+// sky.frag — evaluate sky colour from precomputed LUTs
+uniform sampler2D transmittanceLUT;
+uniform sampler3D inScatterLUT;
+uniform vec3 sunDir;
+in vec3 viewDir;
+void main() {
+    vec3  V    = normalize(viewDir);
+    float cosV = V.y;                       // view zenith angle
+    float cosS = sunDir.y;                  // sun zenith
+    float h    = cameraAltitude + Rg;       // metres from planet center
+    vec3  inS  = texture(inScatterLUT, vec3(altToUV(h), cosToUV(cosV), cosToUV(cosS))).rgb;
+    // Phase functions
+    float mu   = dot(V, sunDir);
+    float phR  = 3.0/(16.0*PI) * (1.0+mu*mu);
+    float phM  = 3.0/(8.0*PI) * (1.0-g*g)*(1.0+mu*mu) / ((2.0+g*g)*pow(1.0+g*g-2.0*g*mu, 1.5));
+    fragColor  = vec4(inS * (phR + phM) * SOLAR_IRRADIANCE, 1.0);
+}
+```
+
+[Source: Bruneton & Neyret 2008; Hillaire 2020]
+
+### 96.4 Aerial Perspective (Depth-Based Fog)
+
+Apply aerial perspective to scene geometry by integrating the in-scatter and transmittance along the view ray to each depth sample:
+
+```glsl
+// aerial_perspective.comp — compute aerial perspective for each depth sample
+layout(set=0,binding=0) uniform sampler2D depthBuffer;
+layout(set=0,binding=1) uniform sampler3D inScatterLUT;
+layout(set=0,binding=2) uniform sampler2D transmittanceLUT;
+layout(set=0,binding=3, rgba16f) writeonly image2D aerialFog;
+layout(local_size_x=8,local_size_y=8) in;
+void main() {
+    ivec2 pix  = ivec2(gl_GlobalInvocationID.xy);
+    float depth= texelFetch(depthBuffer, pix, 0).r;
+    vec3  worldPos = worldSpacePos(pix, depth);
+    float dist     = length(worldPos - cameraPos);
+    // Transmittance and inscatter from camera to world position
+    vec2  T    = texture(transmittanceLUT, txUV(cameraAlt, dot(normalize(worldPos-cameraPos), UP))).rg;
+    vec3  inS  = texture(inScatterLUT, scatterUV(cameraAlt, viewAngle, sunAngle)).rgb;
+    vec3  fog  = (1.0-T.x) * inS * SOLAR_IRRADIANCE;
+    imageStore(aerialFog, pix, vec4(fog, T.x));  // apply in composite pass
+}
+```
+
+[Source: Bruneton & Neyret 2008; Lagarde & de Rousiers "Moving Frostbite to Physically Based Rendering", SIGGRAPH 2014]
+
+---
+
+## 97. Subsurface Scattering Geometry
+
+*Audience: graphics application developers.*
+
+Subsurface scattering (SSS) models light penetrating translucent materials (skin, marble, wax) and exiting at a different surface point. GPU implementations use the separable screen-space SSS blur (Jiménez et al. 2009), the pre-integrated skin BRDF (d'Eon & Luebke 2007), and ray-traced diffusion profiles via `VK_KHR_ray_query` for high-quality offline SSS.
+
+### 97.1 Screen-Space SSS Blur (Jiménez et al. 2009)
+
+Blur the irradiance buffer in screen space along each of three directions using a Gaussian kernel shaped by the diffusion profile of the material:
+
+```glsl
+// sss_blur.comp — separable screen-space SSS blur along one axis
+layout(set=0,binding=0) uniform sampler2D irradianceTex;
+layout(set=0,binding=1) uniform sampler2D depthTex;
+layout(set=0,binding=2, rgba16f) writeonly image2D ssssOut;
+layout(push_constant) uniform PC { vec2 dir; float sssStrength; float correction; } pc;
+// Skin diffusion kernel: 6 Gaussians (d'Eon & Luebke 2007), precomputed
+const vec4 KERNEL[6] = {
+    vec4(0.233, 0.455, 0.649, 0.0),   // variance 0.0064
+    vec4(0.1,   0.336, 0.344, 0.0064),
+    vec4(0.118, 0.198, 0.0,  0.0484),
+    vec4(0.113, 0.007, 0.007, 0.187),
+    vec4(0.358, 0.004, 0.0,  0.567),
+    vec4(0.078, 0.0,   0.0,  1.99)
+};
+layout(local_size_x=8,local_size_y=8) in;
+void main() {
+    ivec2 pix   = ivec2(gl_GlobalInvocationID.xy);
+    float depth = texelFetch(depthTex, pix, 0).r;
+    vec4  color = vec4(0.0);
+    for (int i=-KERNEL_SIZE; i<=KERNEL_SIZE; i++) {
+        float s   = KERNEL[abs(i)%6].w;
+        ivec2 nb  = pix + ivec2(round(pc.dir * float(i) / sqrt(s)));
+        float dnb = texelFetch(depthTex, nb, 0).r;
+        float wD  = exp(-abs(depth-dnb)*pc.correction);
+        color    += texelFetch(irradianceTex, nb, 0) * KERNEL[abs(i)%6].xyzw * wD;
+    }
+    imageStore(ssssOut, pix, color);
+}
+```
+
+[Source: Jiménez et al. "Screen-Space Perceptual Rendering of Human Skin", ACM TAP 2009; d'Eon & Luebke "Advanced Techniques for Realistic Real-Time Skin Rendering", GPU Gems 3 2007]
+
+### 97.2 Pre-Integrated Skin BRDF
+
+The pre-integrated skin shading model (d'Eon & Luebke 2007) precomputes the integral of the diffusion profile over a sphere of radius 1/κ (curvature) and stores it as a 2D LUT indexed by (N·L, curvature):
+
+```glsl
+// skin_brdf.frag — evaluate pre-integrated skin BRDF from LUT
+uniform sampler2D skinBRDF_LUT;   // (NdotL, curvature) → pre-integrated diffusion
+uniform sampler2D curvatureTex;   // per-pixel mean curvature (1/radius)
+uniform vec3 lightDir;
+in vec3 worldNor;
+in vec2 texUV;
+void main() {
+    float NdotL  = dot(worldNor, lightDir) * 0.5 + 0.5;  // remap [−1,1]→[0,1]
+    float kappa  = texture(curvatureTex, texUV).r;         // curvature in 1/m
+    // LUT stores RGBE irradiance for each (NdotL, curvature) pair
+    vec3  irrad  = texture(skinBRDF_LUT, vec2(NdotL, kappa * 0.1)).rgb;
+    vec3  albedo = texture(skinAlbedo, texUV).rgb;
+    fragColor    = vec4(irrad * albedo, 1.0);
+}
+```
+
+[Source: d'Eon & Luebke 2007; Penner "Pre-Integrated Skin Shading", ShaderX 9 2011]
+
+### 97.3 Ray-Traced SSS via Diffusion Dipole Ray Queries
+
+For high-quality SSS, shoot diffusion probe rays below the surface and accumulate the dipole contribution from each hit:
+
+```glsl
+// sss_raytrace.comp — ray-traced SSS via dipole model and ray query
+layout(set=0,binding=0) readonly buffer SurfacePoints { vec3 pos[]; vec3 nor[]; };
+layout(set=0,binding=1) uniform accelerationStructureEXT tlas;
+layout(set=0,binding=2) writeonly buffer SSSIrrad { vec3 irrad[]; };
+layout(push_constant) uniform PC { int nRays; float sigma_a; float sigma_s; float eta; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint v    = gl_GlobalInvocationID.x;
+    vec3 p    = pos[v], n = nor[v];
+    float mfp = 1.0 / (pc.sigma_a + pc.sigma_s);  // mean free path
+    vec3  E   = vec3(0.0);
+    for (int r=0; r<pc.nRays; r++) {
+        // Sample a point on the surface within ~3 MFP using disc sampling
+        vec3 probe = p + sampleDisk(n, mfp*3.0, halton2D(r));
+        float dist = length(probe - p);
+        // Dipole BSSRDF: R_d(dist)
+        float Rd   = dipoleRd(dist, pc.sigma_a, pc.sigma_s, pc.eta);
+        // Test visibility from probe to light
+        rayQueryEXT rq;
+        rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
+                              probe+n*1e-3, 0.0, lightDir, 1e4);
+        rayQueryProceedEXT(rq);
+        if (rayQueryGetIntersectionTypeEXT(rq,true)==gl_RayQueryCommittedIntersectionNoneEXT)
+            E += Rd * lightColor * max(dot(n,lightDir),0.0);
+    }
+    irrad[v] = E * 2.0 * PI * mfp / float(pc.nRays);
+}
+```
+
+[Source: Jensen et al. "A Practical Model for Subsurface Light Transport", SIGGRAPH 2001; d'Eon & Luebke 2007]
+
+### 97.4 Translucency: Thin-Slab Transmission
+
+For thin translucent objects (ears, leaves), approximate SSS by transmitting direct light through the slab using Beer's law with a transmitted thickness map:
+
+```glsl
+// translucency.frag — thin-slab SSS via transmitted thickness (Beer's law)
+uniform sampler2D thicknessMap;   // pre-baked or real-time ray-traced thickness
+uniform vec3 lightDir;
+uniform vec3 lightColor;
+uniform vec3 subsurfaceColor;     // material absorption spectrum
+in vec3 worldNor;
+in vec2 texUV;
+void main() {
+    float thickness = texture(thicknessMap, texUV).r;  // metres
+    vec3  V         = normalize(viewDir);
+    // Wrap lighting for back-face transmittance
+    float NdotL_wrap = dot(-worldNor, lightDir) * 0.5 + 0.5;
+    // Beer–Lambert attenuation: T = exp(-sigma_a * thickness)
+    vec3  T         = exp(-subsurfaceColor * thickness);
+    vec3  backLight = lightColor * T * NdotL_wrap;
+    // Add to front-face diffuse
+    vec3  diffuse   = max(dot(worldNor, lightDir), 0.0) * lightColor;
+    fragColor       = vec4((diffuse + backLight) * texture(albedo, texUV).rgb, 1.0);
+}
+```
+
+[Source: Green "Real-Time Approximations to Subsurface Scattering", GPU Gems 1 2004; Jiménez et al. 2010 "Separable Subsurface Scattering"]
+
+---
+
+## 98. GPU Geospatial Processing: Large-Scale Terrain
+
+*Audience: systems developers, graphics application developers.*
+
+Real-world terrain from LIDAR point clouds or satellite DEMs requires GPU processing pipelines distinct from procedural terrain (§26): reprojection from geographic coordinates (WGS84/UTM), sparse tiling, massive point cloud decimation, and multi-level terrain mesh streaming. Applications include mapping, simulation, autonomous vehicle testing, and digital twins.
+
+### 98.1 WGS84 to ECEF and Local Frame Projection
+
+Reproject geographic coordinates (longitude, latitude, altitude) to Earth-Centred Earth-Fixed (ECEF) Cartesian coordinates, then to a local ENU (East-North-Up) frame for rendering:
+
+```glsl
+// geo_project.comp — WGS84 → ECEF → local ENU frame
+layout(set=0,binding=0) readonly buffer LLA  { vec3 lla[];  };  // lon,lat,alt in degrees/metres
+layout(set=0,binding=1) writeonly buffer ECEF { vec3 ecef[]; };
+layout(push_constant) uniform PC { vec3 origin_LLA; uint N; } pc;  // local origin for ENU
+layout(local_size_x=64) in;
+const float a = 6378137.0;           // WGS84 semi-major
+const float e2 = 0.00669437999014;   // eccentricity²
+void main() {
+    uint i   = gl_GlobalInvocationID.x;
+    if (i >= pc.N) return;
+    float lat = radians(lla[i].y), lon = radians(lla[i].x), alt = lla[i].z;
+    float N_  = a / sqrt(1.0 - e2*sin(lat)*sin(lat));
+    ecef[i]   = vec3((N_+alt)*cos(lat)*cos(lon),
+                     (N_+alt)*cos(lat)*sin(lon),
+                     (N_*(1.0-e2)+alt)*sin(lat));
+}
+// Second pass: rotate ECEF to local ENU using rotation matrix from origin LLA
+```
+
+[Source: Bowring "Transformation from Spatial to Geographic Coordinates", Survey Review 1976; EPSG:4978 WGS84 specification]
+
+### 98.2 GPU LIDAR Point Cloud Decimation
+
+Reduce massive LIDAR datasets (billions of points) to a renderable density using a GPU voxel-grid filter: keep one point per grid cell, selected by highest return intensity:
+
+```glsl
+// lidar_decimate.comp — voxel-grid decimation of LIDAR point cloud
+layout(set=0,binding=0) readonly buffer Points { vec4 pts[]; };  // xyz + intensity
+layout(set=0,binding=1) buffer VoxelBest { vec4 best[]; };       // best point per voxel
+layout(set=0,binding=2) buffer VoxelInt  { float bestInt[]; };   // best intensity per voxel
+layout(push_constant) uniform PC { vec3 gridMin; float cellSize; ivec3 dim; uint N; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint p  = gl_GlobalInvocationID.x;
+    if (p >= pc.N) return;
+    ivec3 c = ivec3((pts[p].xyz - pc.gridMin) / pc.cellSize);
+    if (any(lessThan(c,ivec3(0)))||any(greaterThanEqual(c,pc.dim))) return;
+    uint idx = c.z*pc.dim.y*pc.dim.x + c.y*pc.dim.x + c.x;
+    // Atomic max on intensity to select best return per cell
+    atomicMax_float_idx(bestInt[idx], /* index field in best[] */ p, pts[p].w, p);
+    // After: compact best[] to output cloud (see §33.2 prefix-scan pattern)
+}
+```
+
+[Source: Rusu & Cousins "3D is Here: Point Cloud Library", ICRA 2011; Hornung et al. "OctoMap: An Efficient Probabilistic 3D Mapping Framework", Autonomous Robots 2013]
+
+### 98.3 GPU Terrain Mesh Streaming with CDLOD
+
+Continuous Distance-Dependent Level of Detail (CDLOD, Strugar 2010) generates terrain meshes from a height map hierarchy on-the-fly with no precomputed meshes. The GPU produces one quad-grid per visible tile at the appropriate LOD:
+
+```glsl
+// cdlod_terrain.vert — CDLOD terrain vertex: sample heightmap with LOD blend
+layout(push_constant) uniform PC { vec2 tileOffset; float tileScale; int lod;
+    vec3 cameraPos; mat4 mvp; } pc;
+uniform sampler2D heightmapMip;   // mip chain of heightmap
+in vec2 vertexUV;                 // grid vertex [0,1]²
+void main() {
+    vec2 worldXZ  = pc.tileOffset + vertexUV * pc.tileScale;
+    // Sample two LOD levels and blend based on camera distance
+    float h0 = textureLod(heightmapMip, worldXZ/TERRAIN_SIZE, float(pc.lod)).r;
+    float h1 = textureLod(heightmapMip, worldXZ/TERRAIN_SIZE, float(pc.lod+1)).r;
+    float dist   = length(vec2(worldXZ.x,worldXZ.y) - pc.cameraPos.xz);
+    float blend  = clamp((dist - pc.tileScale*MORPH_START) / (pc.tileScale*MORPH_RANGE), 0.0, 1.0);
+    float height = mix(h0, h1, blend) * MAX_HEIGHT;
+    gl_Position  = pc.mvp * vec4(worldXZ.x, height, worldXZ.y, 1.0);
+}
+```
+
+[Source: Strugar "Continuous Distance-Dependent Level of Detail for Rendering Heightmaps", JCGT 2010; Ulrich "Rendering Massive Terrains Using Chunked LOD", SIGGRAPH 2002]
+
+### 98.4 GPU Terrain Normal and Slope Computation
+
+Compute normals and slope maps from height map data for lighting, road gradient analysis, and erosion simulation (§79):
+
+```glsl
+// terrain_normals.comp — compute normals from heightmap via finite differences
+layout(set=0,binding=0) uniform sampler2D heightmap;
+layout(set=0,binding=1, rgba16_snorm) writeonly image2D normalMap;
+layout(local_size_x=8,local_size_y=8) in;
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    float hL  = texelFetchOffset(heightmap, pix, 0, ivec2(-1,0)).r;
+    float hR  = texelFetchOffset(heightmap, pix, 0, ivec2( 1,0)).r;
+    float hD  = texelFetchOffset(heightmap, pix, 0, ivec2(0,-1)).r;
+    float hU  = texelFetchOffset(heightmap, pix, 0, ivec2(0, 1)).r;
+    vec3  n   = normalize(vec3(hL-hR, 2.0*CELL_SIZE/MAX_HEIGHT, hD-hU));
+    imageStore(normalMap, pix, vec4(n*0.5+0.5, 0.0));
+}
+```
+
+[Source: Strugar 2010; Turkowski "Filters for Common Resampling Tasks", Graphics Gems 1990]
+
+---
+
+## 99. Molecular Surface Computation
+
+*Audience: systems developers.*
+
+Molecular surfaces (solvent-accessible surface, SAS; solvent-excluded surface, SES; Connolly surface) define the geometric boundary between a protein and its solvent. GPU algorithms compute these surfaces for real-time docking visualization, drug discovery pipelines, and volumetric electrostatics. Inputs are atom positions and van der Waals radii; outputs are triangle meshes or SDF grids.
+
+### 99.1 Solvent-Accessible Surface via SDF Grid
+
+The SAS is the union of spheres of radius rᵢ + rₛ centred on each atom (rᵢ = van der Waals, rₛ = solvent probe). Compute as a SDF grid and extract with marching cubes (§61):
+
+```glsl
+// molsurf_sas.comp — compute SAS SDF: min distance to expanded atom spheres
+layout(set=0,binding=0) readonly buffer Atoms { vec4 atoms[]; };  // xyz + vdW radius
+layout(set=0,binding=1) buffer SDF { float sdf[]; };
+layout(push_constant) uniform PC { vec3 gridMin; float dx; ivec3 dim; float probeR; uint N; } pc;
+layout(local_size_x=8,local_size_y=8,local_size_z=8) in;
+void main() {
+    ivec3 c  = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(c,pc.dim))) return;
+    vec3  xg = pc.gridMin + (vec3(c)+0.5)*pc.dx;
+    float d  = 1e30;
+    for (uint a=0; a<pc.N; a++) {
+        float r = atoms[a].w + pc.probeR;  // expanded radius
+        d = min(d, length(xg - atoms[a].xyz) - r);
+    }
+    sdf[c.z*pc.dim.y*pc.dim.x + c.y*pc.dim.x + c.x] = d;
+}
+// Then run §61 marching cubes on sdf[] at isovalue 0.0
+```
+
+[Source: Connolly "Analytical Molecular Surface Calculation", Journal of Applied Crystallography 1983; Krone et al. "GPU-Based Interactive Visualization Techniques for Molecular Dynamics Simulations", Computer Graphics Forum 2012]
+
+### 99.2 Solvent-Excluded Surface via Rolling Probe
+
+The SES (Connolly surface) accounts for where the probe sphere cannot fit between atoms — the re-entrant surface. GPU computation identifies contact circles and toroidal re-entrant patches:
+
+```glsl
+// molsurf_ses.comp — classify SES patch type per grid voxel
+layout(set=0,binding=0) readonly buffer Atoms { vec4 atoms[]; };
+layout(set=0,binding=1) buffer SDF { float sdf[]; };
+layout(push_constant) uniform PC { vec3 gridMin; float dx; ivec3 dim; float probeR; uint N; } pc;
+layout(local_size_x=8,local_size_y=8,local_size_z=8) in;
+void main() {
+    ivec3 c  = ivec3(gl_GlobalInvocationID);
+    vec3  xg = pc.gridMin + (vec3(c)+0.5)*pc.dx;
+    // Probe-center-accessible surface: min distance from probe centre to SAS
+    float dSAS = 1e30;
+    for (uint a=0; a<pc.N; a++) dSAS = min(dSAS, length(xg-atoms[a].xyz) - (atoms[a].w+pc.probeR));
+    // SES: subtract probe radius from probe-accessible SDF
+    sdf[flatIdx(c,pc.dim)] = dSAS - pc.probeR;
+    // Result: negative inside SES, positive outside; isovalue 0 gives the surface
+}
+```
+
+[Source: Connolly 1983; Parulek & Viola "Implicit Representation of Molecular Surfaces", IEEE TVCG 2012]
+
+### 99.3 Ambient Occlusion for Molecular Visualization
+
+Molecular AO integrates over the hemisphere above each surface point whether other atoms occlude it — a proxy for solvent accessibility and electrostatic exposure:
+
+```glsl
+// mol_ao.comp — ambient occlusion for molecular surface via ray queries
+layout(set=0,binding=0) readonly buffer SurfPts { vec3 spts[];  };
+layout(set=0,binding=1) readonly buffer SurfNor  { vec3 snor[];  };
+layout(set=0,binding=2) uniform accelerationStructureEXT tlas;  // BVH of atom spheres §70
+layout(set=0,binding=3) writeonly buffer AO { float ao[]; };
+layout(push_constant) uniform PC { int nRays; float maxDist; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint v = gl_GlobalInvocationID.x;
+    vec3 p = spts[v] + snor[v]*1e-3;
+    float occ = 0.0;
+    for (int r=0; r<pc.nRays; r++) {
+        vec3 d = cosineWeightedDir(snor[v], halton2D(r));
+        rayQueryEXT rq;
+        rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT, 0xFF, p, 0.0, d, pc.maxDist);
+        rayQueryProceedEXT(rq);
+        if (rayQueryGetIntersectionTypeEXT(rq,true)!=gl_RayQueryCommittedIntersectionNoneEXT)
+            occ += 1.0;
+    }
+    ao[v] = 1.0 - occ / float(pc.nRays);
+}
+```
+
+[Source: Tarini et al. "Ambient Occlusion and Edge Cueing to Enhance Real Time Molecular Visualization", IEEE TVCG 2006; §62 RTAO pattern]
+
+### 99.4 Electrostatic Potential on Surface (Poisson-Boltzmann)
+
+Map the Poisson-Boltzmann electrostatic potential onto the molecular surface by solving the linearised PB equation on the SDF grid with a conjugate gradient solver (§65.2 pattern):
+
+```glsl
+// poisson_boltzmann.comp — one Jacobi iteration of linearised PB equation
+// ∇²φ = κ²φ - ρ/ε₀ (inside cavity: κ=0; outside: κ=Debye screening)
+layout(set=0,binding=0) readonly buffer SDF     { float sdf[];   };  // §99.2 surface
+layout(set=0,binding=1) readonly buffer Charges { vec4  charges[]; }; // xyz + charge
+layout(set=0,binding=2) buffer Phi { float phi[]; };
+layout(push_constant) uniform PC { ivec3 dim; float dx; float kappa2_out; } pc;
+layout(local_size_x=8,local_size_y=8,local_size_z=8) in;
+void main() {
+    ivec3 c   = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(c,pc.dim))) return;
+    uint idx  = flatIdx(c,pc.dim);
+    float inside = step(sdf[idx], 0.0);  // 1=inside, 0=outside
+    float kappa2  = pc.kappa2_out * (1.0-inside);  // screening only outside
+    // 6-point Laplacian
+    float lap = (phi[flatIdx(c+ivec3(1,0,0),pc.dim)] + phi[flatIdx(c-ivec3(1,0,0),pc.dim)]
+               + phi[flatIdx(c+ivec3(0,1,0),pc.dim)] + phi[flatIdx(c-ivec3(0,1,0),pc.dim)]
+               + phi[flatIdx(c+ivec3(0,0,1),pc.dim)] + phi[flatIdx(c-ivec3(0,0,1),pc.dim)]) / (pc.dx*pc.dx);
+    float rho = atomChargeDensity(c, charges);
+    phi[idx]  = (lap - rho) / (6.0/(pc.dx*pc.dx) + kappa2);
+}
+```
+
+[Source: Baker et al. "Electrostatics of Nanosystems: Application to Microtubules and the Ribosome", PNAS 2001; APBS software; Sharp & Honig "Electrostatic Interactions in Macromolecules", Annual Review 1990]
+
+---
+
+## 100. Library Landscape
 
 **Coverage gap.** No single open-source library covers more than a narrow slice of the algorithms in this chapter. The table below maps the available libraries against the chapter's topic areas; empty cells represent functionality that must be implemented directly in shader/compute code using the patterns shown in the preceding sections. This fragmentation is the norm in GPU geometry programming: the field is young enough that GPU-native algorithmic libraries have not yet consolidated around a common abstraction layer comparable to what BLAS/LAPACK provide for linear algebra.
 
@@ -12782,9 +13982,33 @@ Sub::CatmullClark_subdivision(mesh,
 
 **What is missing in §80–§89.** GPU CCD (§81) has no Vulkan library; bullet3's CCD is CPU-based with CUDA broadphase only. GPU radiosity (§88) has no modern GPU library; all production engines compute it offline on the CPU or bake it with ray tracing (§34). Screen-space reflections (§84) are universally engine-internal (Unreal TSR, Unity URP). Silhouette detection (§85) and suggestive contours (§85.4) have no GPU library. Spanning all nine tables (§1–§89), the Vulkan compute shader patterns remain the primary portable path for the majority of sections not served by CUDA-exclusive libraries.
 
+**Table J — §90–§99 coverage**
+
+| Library | Ver | GPU Backend | §90 VirtGeom | §91 PathTrace | §92 ICP | §93 Displace | §94 LevelSet | §95 SDF Font | §96 Atmo | §97 SSS | §98 Geo | §99 MolSurf | Best Use |
+|---------|-----|-------------|:------------:|:-------------:|:-------:|:------------:|:------------:|:------------:|:--------:|:-------:|:-------:|:-----------:|----------|
+| Nanite (Unreal 5) | UE5.4 | Vulkan/D3D12 | ✓ (§90 native) | — | — | ✓ (§93 mesh shader) | — | — | ✓ (§96 plugin) | — | — | — | Production virtual geometry |
+| NVIDIA Falcor | 7.0 | Vulkan/D3D12 | — | ✓ (§91 full PT) | — | — | — | — | — | — | — | — | Research path tracing framework |
+| Mitsuba 3 | 3.5 | CUDA/LLVM | — | ✓ (§91 MIS PT) | — | — | — | — | ✓ (§96 spectral) | ✓ (§97.3) | — | — | Differentiable physically-based |
+| Open3D | 0.18 | CUDA/Tensor | — | — | ✓ (§92 GPU ICP) | — | — | — | — | — | ✓ (§98.2 LIDAR) | — | Point cloud & terrain processing |
+| OpenVDB | 11.0 | CUDA/NanoVDB | — | — | — | — | ✓ (§94 sparse LS) | — | — | — | — | — | Sparse volumetric computation |
+| msdfgen | 1.12 | CPU | — | — | — | — | — | ✓ (§95.3 MSDF) | — | — | — | — | Multi-channel SDF glyph baking |
+| SkyAtmosphere (UE) | UE5.4 | Vulkan | — | — | — | — | — | — | ✓ (§96 LUT) | — | — | — | Production sky rendering |
+| SSSS (Jiménez) | 2.0 | D3D11 (port) | — | — | — | — | — | — | — | ✓ (§97.1) | — | — | Separable screen-space skin SSS |
+| PDAL | 2.7 | CPU | — | — | — | — | — | — | — | — | ✓ (§98 pipeline) | — | LIDAR/geospatial pipeline |
+| APBS | 3.4 | CUDA | — | — | — | — | — | — | — | — | — | ✓ (§99.4 PB) | Molecular electrostatics solver |
+| VMD | 1.9 | CUDA/OpenCL | — | — | — | — | — | — | — | — | — | ✓ (§99 SAS/SES) | Molecular visualization |
+
+**Nanite** (Epic Games, built into Unreal Engine 5, proprietary) implements §90 end-to-end: offline cluster DAG construction (§90.1), GPU persistent-thread traversal (§90.2), software rasterisation via 64-bit atomic depth buffer (§90.3), and visibility buffer shading (§90.4). The Unreal sky atmosphere plugin implements §96 LUT-based scattering. Nanite's displacement (§93) is applied via mesh shader at cluster granularity.
+
+**NVIDIA Falcor** (BSD-3-Clause) is a real-time rendering research framework implementing a full wavefront path tracer (§91): MIS direct lighting, shader sorting (§91.3), and SVGF denoising (§91.4). It uses Vulkan or D3D12 ray tracing pipelines and serves as the reference implementation for §91.
+
+**OpenVDB / NanoVDB** (Academy Software Foundation, MPL-2.0) implements the VDB hierarchical sparse grid — the reference structure for §94 narrow-band level sets. NanoVDB provides a CUDA/Vulkan-compatible read-only view of the VDB tree enabling GPU advection (§94.3) and reinitialization (§94.2) on the GPU.
+
+**What is missing in §90–§99.** GPU path tracing (§91) is dominated by CUDA/OptiX (Falcor, LuxCoreRender); Vulkan ray tracing pipeline equivalents exist (Vulkan-glTF-PBR, Kajiya) but lack the MIS+wavefront sorting of production PT. Atmospheric scattering (§96) is engine-internal in all production renderers; the Bruneton LUT approach (§96.1–96.2) is the only open, portable reference. Molecular surface (§99) GPU libraries are exclusively CUDA (VMD/APBS). Spanning all ten tables (§1–§99), the CUDA ecosystem dominates approximately forty-five sections; the Vulkan compute patterns remain the sole portable path for the remainder.
+
 ---
 
-## 91. Performance Reference
+## 101. Performance Reference
 
 **Subdivision** (OpenSubdiv stencil evaluation, RTX 4080):
 
@@ -12828,7 +14052,7 @@ Sub::CatmullClark_subdivision(mesh,
 
 ---
 
-## 92. Integrations
+## 102. Integrations
 
 - **Ch24 (Vulkan/EGL)** — Vulkan resource allocation patterns for SSBO-based subdivision and skinning buffers; pipeline barrier placement between compute passes.
 - **Ch25 (GPU Compute)** — Compute shader dispatch setup, shared memory usage for marching cubes tile optimization, prefix-scan patterns for compaction, and radix sort for Morton-code-based LBVH (§8).
