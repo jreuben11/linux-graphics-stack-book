@@ -140,6 +140,8 @@ The sections below are ordered by geometry domain rather than CPU/GPU split. Whe
 
 ## I. Surface Representation and Modeling
 
+Covers the mathematical primitives used to represent smooth, curved, and implicit geometry on the GPU: Catmull-Clark and Loop subdivision surfaces that refine coarse control meshes toward smooth limit surfaces; parametric NURBS and Bézier patches used in CAD and precision engineering visualization; implicit surfaces defined by scalar field functions (metaballs, SDF CSG); Bézier and B-spline curve tessellation; and 2D vector graphics rendered via GPU fragment shaders. These algorithms determine the geometric representation before any simulation, texturing, or shading is applied.
+
 ### 1. Subdivision Surfaces on the GPU
 
 Subdivision surfaces refine a coarse control mesh toward a smooth limit surface through repeated topological splitting and vertex averaging. Two schemes dominate GPU workloads: Catmull-Clark (quadrilateral input, used in film VFX and CAD) and Loop (triangle input, used in game engines and real-time rendering).
@@ -2312,6 +2314,8 @@ void main() {
 
 ## II. Mesh Processing and Topology
 
+Covers algorithms that operate on triangle or polygon meshes to change their connectivity, complexity, or parameterization: simplification and remeshing for runtime LOD, UV parameterization and atlas packing for texture baking, Delaunay triangulation for quality-guaranteed mesh generation, voxelization for collision and SDF computation, mesh fairing and smoothing for noise removal, segmentation for part decomposition, repair for watertightness, and streaming-friendly compression codecs (Draco, meshopt). These algorithms typically run as offline preprocess steps or as compute dispatches that feed data into the real-time rendering pipeline.
+
 ### 7. GPU Mesh Simplification and LOD
 
 GPU subdivision (§1) adds geometric detail; the inverse — removing detail for distant objects — is equally critical for real-time budgets. Two complementary approaches exist: quadric-error-metric (QEM) edge collapse for quality-preserving offline LOD generation, and vertex clustering for GPU-parallel online simplification.
@@ -4413,6 +4417,8 @@ void main() {
 
 ## III. Spatial Data Structures and Visibility
 
+Spatial data structures are the acceleration infrastructure for ray traversal, occlusion culling, and GPU-driven indirect rendering. This category covers GPU BVH construction (§8 introduces the LBVH radix-sort approach; §70 covers the full parallel SAH-guided builder), Sparse Voxel DAGs for compact voxel scene representation, SDF baking via jump flooding, visibility buffer patterns for decoupled shading, precomputed visibility for portal-based culling, and the GPU-driven indirect draw pipeline that uses these structures to cull meshlets before rasterization.
+
 ### 8. GPU BVH Construction
 
 A Bounding Volume Hierarchy (BVH) is the spatial acceleration structure underlying Vulkan ray tracing (Ch135), GPU collision detection, and ray-cast inverse kinematics. For dynamic geometry (skinned characters, deforming cloth), rebuilding the BVH every frame on the GPU eliminates the CPU bottleneck.
@@ -5830,6 +5836,8 @@ void main() {
 
 ## IV. Differential Geometry and Analysis
 
+Differential geometry provides the mathematical language for curvature, geodesics, and spectral analysis on discrete triangle meshes. This category covers the cotangent-weighted Laplace-Beltrami operator and its use in curvature estimation and smoothing, geodesic distance computation via the heat method (which reduces to two linear solves), spectral decomposition of the mesh Laplacian for shape analysis and compression, and functional maps for correspondence and shape transfer between meshes with different connectivity. These techniques are primarily used in geometry processing tools and offline analysis pipelines rather than in real-time rendering.
+
 ### 14. Geodesics and Discrete Differential Geometry
 
 *Audience: graphics application developers, systems developers.*
@@ -6301,6 +6309,8 @@ void main() {
 ---
 
 ## V. Animation, Skinning, and Deformation
+
+Character animation on the GPU covers the full pipeline from skeletal joint transforms through vertex deformation to secondary motion dynamics. Linear blend skinning (LBS) and its quality improvements (dual-quaternion skinning, corrective blendshapes) drive the base mesh; IK solvers (CCD, FABRIK, Jacobian) compute joint angles from end-effector constraints in compute shaders; cage-based methods (Mean Value Coordinates, Green Coordinates) and Laplacian mesh editing provide smooth artist-controlled shape deformation; and projective dynamics and FEM handle soft-body secondary motion. Hair strand simulation and secondary dynamics add organic motion on top of the primary skeleton.
 
 ### 4. Skeletal Animation: Skinning
 
@@ -7572,6 +7582,8 @@ void main() {
 ---
 
 ## VI. Physics and Simulation
+
+GPU simulation covers the full range of physical phenomena relevant to real-time and offline rendering: rigid body dynamics with parallel broad-phase collision detection (BVH, spatial hashing), continuous collision detection for fast-moving objects, fluid simulation via SPH particle methods and Eulerian pressure-projection grids, position-based and projective dynamics for cloth and soft bodies, the Discrete Element Method (DEM) for granular materials, and fracture/destruction via Voronoi decomposition. The Minkowski sum and swept volumes appear here because they are the geometric primitives underlying GJK and EPA collision algorithms. All systems run as compute dispatches that write updated vertex positions consumed by the rendering pipeline each frame.
 
 ### 11. Fluid Simulation on the GPU
 
@@ -9164,6 +9176,8 @@ void main() {
 
 ## VII. SDF and Volumetric Methods
 
+Signed Distance Functions provide a unified representation for implicit geometry, collision proximity queries, and volumetric rendering effects. This category covers level-set evolution equations for simulating moving interfaces (flame fronts, water surfaces), TSDF volumetric reconstruction from depth sensor streams, isosurface extraction algorithms (Marching Cubes, Dual Contouring) that recover triangle meshes from scalar fields, SDF-based proximity collision detection, volumetric ray marching for clouds and participating media, and GPU ambient occlusion estimated by ray marching against an SDF volume. The GPU sparse narrow-band level-set solver is the real-time counterpart to OpenVDB-style offline VFX pipelines.
+
 ### 31. Level Set Methods
 
 *Audience: systems developers, graphics application developers.*
@@ -10056,6 +10070,8 @@ void main() {
 
 ## VIII. Terrain, Procedural Content, and Environment
 
+Large-scale environment geometry requires specialized LOD, streaming, and simulation approaches. This category covers GPU terrain rendering with quadtree or clipmap LOD and streaming from disk, hydraulic erosion simulation that produces naturalistic height fields, ocean wave synthesis via inverse FFT of a Philips/JONSWAP spectrum, GPU geospatial processing for satellite-scale terrain meshes, procedural geometry generation via compute shaders (L-systems, instanced geometry), particle and ribbon geometry systems for VFX, and navigation mesh construction for AI pathfinding on dynamically generated terrain. All of these share a common challenge: representing continuous, kilometre-scale natural phenomena efficiently on GPU.
+
 ### 13. Procedural Geometry Generation
 
 *Audience: graphics application developers.*
@@ -10788,6 +10804,8 @@ void main() {
 ---
 
 ## IX. Ray Tracing and Optical Geometry
+
+Ray tracing unifies shadowing, reflection, ambient occlusion, global illumination, and caustics under a single BVH traversal abstraction. This category covers the Vulkan ray tracing pipeline (ray generation, closest-hit, any-hit, miss shaders), full path-tracer construction, shadow geometry algorithms viewed from a geometry perspective (shadow volumes, shadow map ray casting), IBL preprocessing (importance sampling, SH projection from environment maps), radiosity form-factor computation via hemicube or GPU ray casting, atmospheric scattering geometry (Rayleigh/Mie phase functions in world space), screen-space reflection ray generation and reprojection, subsurface scattering geometry (dipole and BSSRDF volumetric model), and order-independent transparency as an optical compositing problem. GPU polygon clipping is included here as a core primitive for software rasterizers and ray-geometry intersection pipelines.
 
 ### 20. Ray Tracing Geometry Pipeline
 
@@ -12239,6 +12257,8 @@ void main() {
 
 ## X. Point Cloud, Reconstruction, and Perception
 
+Point clouds are the native output of depth sensors, LiDAR scanners, and multi-view reconstruction pipelines. This category covers GPU-accelerated point cloud processing (normal estimation via PCA on local neighbourhoods, outlier removal, voxel downsampling), Structure from Motion and multi-view stereo for recovering 3D geometry from unstructured image collections, Iterative Closest Point (ICP) registration for aligning successive point cloud frames, and 3D feature descriptor computation (FPFH, SHOT, learned descriptors) for recognition and pose estimation. These algorithms form the geometry perception pipeline for robotics, autonomous vehicles, and AR/VR applications.
+
 ### 21. Point Cloud Processing
 
 *Audience: systems developers, graphics application developers.*
@@ -12771,6 +12791,8 @@ void main() {
 ---
 
 ## XI. Neural and Learned Geometry
+
+Neural geometry methods replace hand-designed algorithms with learned representations trained on image or geometry supervision. 3D Gaussian Splatting (§16 provides the conceptual overview; §60 covers the full implementation including the differentiable rasterizer and densification) renders scenes as oriented Gaussian splats fitted to multi-view images; Neural Radiance Fields (NeRF) and neural SDFs represent geometry as MLPs queried at continuous 3D positions; Geometric Deep Learning applies graph neural networks and SE(3)-equivariant architectures to mesh classification and segmentation; and differentiable rendering enables gradient-based inverse problems — recovering geometry, materials, and lighting from image observations. These workloads run as CUDA or Vulkan compute dispatches and typically require tensor core acceleration.
 
 ### 16. 3D Gaussian Splatting and Neural Geometry
 
@@ -13360,6 +13382,8 @@ void main() {
 ---
 
 ## XII. Specialized and Cross-Domain Applications
+
+This category collects geometry algorithms that serve specific application domains rather than the general rendering pipeline. Scientific visualization renders isosurfaces and streamlines from simulation scalar and vector fields; acoustic ray tracing models sound propagation geometry; molecular surface computation (Connolly, SAS) supports biochemistry visualization; VR/XR reprojection geometry warps previously rendered frames to reduce latency; GPU SDF font rendering produces crisp text at all scales without rasterization artefacts; micro-polygon displacement adds film-quality surface detail via tessellation; silhouette detection drives both NPR rendering and shadow volume construction; and GPU texture synthesis generates tileable detail patterns. Each draws on core GPU geometry primitives but targets a narrow, well-defined application context.
 
 ### 29. Scientific Visualization Geometry
 
@@ -14307,6 +14331,8 @@ void main() {
 ---
 
 ## XIII. GPU Algorithm Primitives for Geometry
+
+These are the low-level compute algorithms that serve as building blocks for the higher-level geometry techniques throughout this chapter. GPU Poisson disk and blue noise sampling underpin mesh point distribution, lightmap texel placement, and stochastic rendering; parallel convex hull computation (the Quickhull algorithm parallelized over GPU threads) appears inside GJK collision detection and computational geometry tools; and GPU radix sort is the enabling primitive for LBVH BVH construction, depth-sorting for OIT, and particle simulation step reordering. These three algorithms rarely appear in isolation — they are invoked implicitly inside the vast majority of the algorithms in the other twelve categories.
 
 ### 47. GPU Sampling: Poisson Disk and Blue Noise
 

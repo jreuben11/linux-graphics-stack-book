@@ -149,6 +149,8 @@ The distribution of sections in this catalog mirrors the actual distribution of 
 
 ## I. Rendering Architecture and Pipeline
 
+Covers the high-level decisions that determine how the GPU processes a frame: when shading happens (forward vs. deferred), how many pixels receive full shading evaluation (VRS, foveated), and how draw calls are issued (GPU-driven indirect). These techniques are prerequisites for understanding every shading choice that follows — the material and lighting categories below assume one of these pipeline configurations is already in place. GPU-driven rendering and clustered shading in particular set the upper bound on how many lights and draw calls a scene can afford, which in turn constrains every technique that builds on top.
+
 ### GPU-Driven Rendering
 
 Traditional rendering submits one draw call per mesh per frame from the CPU, which bottlenecks at CPU-GPU command throughput and CPU-side visibility testing. **GPU-driven rendering** moves all per-draw decisions (culling, LOD selection, draw count) into compute shaders that write `VkDrawIndexedIndirectCommand` structs into a buffer, then submits a single `vkCmdDrawIndexedIndirectCount` that executes only the surviving draws.
@@ -872,6 +874,8 @@ bool meshlet_is_backface(Meshlet m, vec3 cam_pos) {
 
 ## II. Direct and Area Lighting
 
+Covers the mathematical models for evaluating individual light-source contributions at a surface point: punctual lights (point, spot, directional) with physically accurate distance attenuation and IES photometric profiles, analytically integrated area lights via Linearly Transformed Cosines (LTC), and extended geometric shapes (capsule, tube). Volumetric light shafts and caustics are included here because both are direct-lighting phenomena — they arise from directed light interacting with participating media or refractive surfaces, not from indirect bounces.
+
 ### Punctual Light Attenuation and IES Profiles
 
 Punctual lights (point, spot, directional) are the simplest lighting primitives, but physically correct attenuation and realistic beam profiles require a few non-obvious details.
@@ -1225,6 +1229,8 @@ void main() {
 ---
 
 ## III. Shadows and Occlusion
+
+Shadows and ambient occlusion share a common computational problem: determining how much of the upper hemisphere above a surface point is blocked by other geometry. This category covers the major shadow map variants — basic shadow maps, cascaded shadow maps for sun lights, omnidirectional cube maps for point lights, the atlas and caching strategies needed for many shadow-casting lights, and the Percentage-Closer Soft Shadows (PCSS) technique for contact-hardening penumbrae — together with the screen-space (SSAO) and baked (bent normal, AO maps) approaches to ambient occlusion.
 
 ### Shadow Rendering Techniques
 
@@ -1786,6 +1792,8 @@ vec3 diffuse      = albedo * diffuse_irr;
 ---
 
 ## IV. Global Illumination and Radiance
+
+Global illumination addresses light that arrives at a surface after one or more bounces — indirect diffuse, indirect specular, and the accumulated irradiance from the full hemisphere. The techniques here range from cheap pre-baked solutions (lightmaps, spherical harmonic coefficients) through GPU-resident radiance structures (Light Propagation Volumes, world-space radiance caches) to screen-space and ML-upscaled approaches (SSGI). Spherical Gaussians and SH are placed here because they are radiance encoding schemes rather than material models. Entries are ordered roughly from static/offline to fully dynamic.
 
 ### Global Illumination
 
@@ -2629,6 +2637,8 @@ vec3 sg_env_irradiance(vec3 N) {
 
 ## V. Material Models and BRDF
 
+A BRDF (Bidirectional Reflectance Distribution Function) describes how a surface scatters incident light. This category covers the complete material model vocabulary used in production rendering: the GGX-based physically based core, anisotropic extensions for brushed metals and fabrics, microstructure models for glitter and sparkle, thin-film interference for soap bubbles and iridescent paint, and the volumetric sub-surface models required for skin, wax, and leaves. Non-photorealistic rendering is included here because it is also a per-pixel shading decision — one that deliberately relaxes physical constraints for stylistic effect.
+
 ### Physically Based Shading — BRDF Models
 
 A BRDF (Bidirectional Reflectance Distribution Function) describes how a surface scatters light as a function of incoming and outgoing direction. Modern real-time PBR pipelines build the shading equation from three independently swappable components: the normal distribution function (NDF, which governs highlight shape), the masking-shadowing term (G, which prevents energy from dark grazing angles), and the Fresnel term (F, which controls the view-angle reflectance balance). GGX + Smith + Schlick is the de facto standard combination, wrapped in the Disney "Principled" parameterisation for artist friendliness. The entries below move from the simplest building blocks (Lambertian, Cook-Torrance) through the individual NDF/G/F components to specialised models for cloth, iridescence, and anisotropy.
@@ -3237,6 +3247,8 @@ Renders tonal variation via procedurally or pre-baked stroke textures (lines, cr
 
 ## VI. Character and Organic Rendering
 
+Characters and creatures have specialized rendering requirements that cut across the material, geometry, and animation domains. Skin requires subsurface scattering and careful BRDF parameterization; hair and fur require strand geometry and multiple-scattering BSDFs; cloth requires both a simulation back-end and anisotropic shading; and skeletal animation provides the vertex positions that all of the above are evaluated at. These four topics are collected here because they are tightly coupled in production character pipelines — optimizing one typically affects the others.
+
 ### Skin, Hair, and Character Rendering
 
 Human characters demand the highest fidelity in most applications, because viewers are exquisitely sensitive to subtle errors in skin tone, hair light transport, and eye gaze. Skin requires subsurface scattering (light enters the surface, scatters through the dermis, and exits at a different point) — the techniques here span cheap pre-integrated LUT approaches to full separable screen-space filters. Hair requires a BSDF that models the cylindrical fibre geometry (Kajiya-Kay for games, Marschner for film). Eyes combine multiple distinct shading regions — sclera, iris, cornea, pupil — each with different optical behaviour. These algorithms are high-cost and high-reward: they are where the "uncanny valley" crossing happens.
@@ -3523,6 +3535,8 @@ A compute shader skins the mesh once per frame into a `VkBuffer` acting as a ver
 ---
 
 ## VII. Ray Tracing
+
+Ray tracing unifies several previously separate techniques — shadows, reflections, ambient occlusion, global illumination, and caustics — under a single BVH traversal abstraction. This category covers the Vulkan ray tracing pipeline structure (ray generation, closest-hit, any-hit, miss shaders), the complete path-tracer pattern, the ReSTIR resampling algorithm that makes many-light path tracing tractable in real time, and the denoising passes (SVGF, NRD) that make undersampled ray budgets visually acceptable. Ray differentials and software BVH traversal are included as the supporting mathematical and algorithmic infrastructure.
 
 ### Ray Tracing Shader Patterns
 
@@ -4078,6 +4092,8 @@ bool bvh_any_hit(vec3 origin, vec3 dir, float t_max) {
 ---
 
 ## VIII. Procedural Content and Geometry
+
+Procedural techniques generate geometry and surface detail algorithmically rather than from artist-authored data. Noise functions (value, gradient, simplex, FBM, domain warping) are the primitive from which terrains, clouds, and procedural textures are constructed; signed distance functions provide a unified representation for implicit surfaces, collision queries, and font rendering; isosurface extraction bridges between volumetric scalar fields and renderable triangle meshes; and tessellation and subdivision add geometric detail at render time without storing it on disk. Mesh shader patterns expose fine-grained GPU control over the vertex/primitive pipeline for procedural geometry generation.
 
 ### Procedural Generation and Noise
 
@@ -4662,6 +4678,8 @@ Computes a flat face normal in the fragment shader as the cross product of `dFdx
 
 ## IX. Environment and Simulation
 
+Environmental effects — terrain, water, foliage, fog, and volumetrics — span the geometry and shading domains. Terrain systems manage LOD and streaming for kilometre-scale meshes; water surfaces require FFT-based wave spectra and fluid-surface shaders; particle systems and GPU simulation drive foliage motion and dynamic environmental detail; and volumetrics and height fog add atmospheric depth and aerial perspective. These techniques are grouped because they share a common concern: representing continuous, large-scale natural phenomena on a GPU that prefers discrete, bounded geometry.
+
 ### Terrain, Vegetation, and Foliage
 
 Large-scale natural environments present a distinct set of rendering problems: terrain must remain detailed near the camera and degrade gracefully at distance (LOD), foliage must be instanced at counts impossible to process on the CPU, and wind animation must be cheap enough to run per-vertex for millions of blades or leaves simultaneously. These techniques are tightly coupled to the GPU-driven rendering pipeline described in Ch154: terrain LOD decisions (CDLOD), grass instance culling, and draw-call generation all happen in compute shaders, with the results consumed by mesh or vertex shaders for final rendering.
@@ -5140,6 +5158,8 @@ A 3D min-max mip pyramid over the volume lets the ray skip regions that map to f
 ---
 
 ## X. Texturing and Surface Detail
+
+Texturing adds high-frequency surface detail without increasing geometric complexity. This category covers the full texture pipeline from storage (virtual texturing, sparse/tiled resources, bindless descriptors for large texture arrays) through surface detail encoding (normal maps, parallax occlusion mapping, normal-map blending) to specialized formats (HDR encoding, multi-channel SDF font atlases). Bindless texturing belongs here because it is fundamentally a texturing scalability solution — it removes the per-draw descriptor set limit that constrains material variety.
 
 ### Texture Mapping and Surface Detail
 
@@ -5688,6 +5708,8 @@ Each glyph occupies a rectangular cell in the atlas with a padding of `px_range/
 ---
 
 ## XI. Transparency, Reflections, and Compositing
+
+These techniques share a dependency on rendering order or on compositing multiple layers of geometry. Order-independent transparency and stochastic alpha solve the depth-sorting problem for transparent surfaces; planar and screen-space reflections require a second rendering pass or screen-space approximation; decals and outlines composite over already-rasterized geometry; octahedral impostors and 3D Gaussian Splatting represent geometry as screen-space splats. The unifying theme is that none of these fit cleanly into a single opaque forward or deferred pass — all require some form of multi-layer or order-sensitive compositing.
 
 ### Order-Independent Transparency
 
@@ -6332,6 +6354,8 @@ A NeRF stores a scene as a neural function `f(x, d) → (RGB, σ)` mapping 3D po
 ---
 
 ## XII. Post-Processing and Image Effects
+
+Post-processing operates on a fully-rendered image buffer rather than on geometry or lights, running in fragment or compute shaders on fullscreen quads or compute dispatches. This category covers the canonical post-processing pipeline: temporal anti-aliasing and reconstruction (TAA, motion vectors for temporal reprojection), camera lens simulation (depth of field, motion blur, bloom, chromatic aberration, lens flare, vignette), image quality steps (contrast-adaptive sharpening, film grain, ordered dithering), and the colour pipeline (colour science transforms, 3D LUT grading, histogram-based auto-exposure).
 
 ### Post-Processing and Image Effects
 
@@ -7482,6 +7506,8 @@ float bayer_temporal(ivec2 px, uint frame) {
 ---
 
 ## XIII. GPU Compute Primitives
+
+These are the low-level algorithmic building blocks that appear inside many of the higher-level techniques above. Radix sort and bitonic sort underpin BVH construction, depth-sorted OIT linked-list management, and particle simulation. Wave/subgroup intrinsics enable prefix sums, reductions, and ballot operations without shared-memory round-trips. Cooperative matrices expose Tensor Core throughput for ML inference inside shaders. Sampling theory and low-discrepancy sequences are the mathematical foundation of every Monte Carlo renderer. Reversed-Z is a depth-buffer precision technique that every rasterisation renderer should apply. Understanding these primitives is prerequisite to implementing or optimising any of the algorithms in the preceding categories.
 
 ### GPU Compute Algorithm Primitives
 
