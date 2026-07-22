@@ -32,6 +32,73 @@
 
 **PipeWire** unifies all of these under a single graph-based multimedia engine, providing zero-copy **DMA-BUF** buffer passing, real-time scheduling, and a robust security model built on portal-controlled permissions.
 
+The diagram below maps the full integration landscape before the sections dive into each layer individually. **WirePlumber** sits alongside the **pipewire daemon** as the control-plane companion: its Lua policy engine watches the `pw_registry` and instantiates hardware nodes by loading SPA monitor plugins — `spa-alsa` for ALSA audio cards, `spa-v4l2` for V4L2 UVC webcams, and `spa-libcamera` for ISP-managed cameras — all discovered via **udev**. Hardware buffers travel up through these SPA plugins into the PipeWire graph as DMA-BUF file descriptors (or shared-memory fallbacks), where `spa-videoconvert` performs any required format conversion on the data thread. Screen content from the **Wayland compositor** enters PipeWire through a different path: the **`xdg-desktop-portal`** ScreenCast backend calls the compositor's `ext-image-copy-capture-v1` (or `wlr-screencopy-unstable-v1`) protocol, creates a `pw_node` screen-cast source, and returns a scoped PipeWire file descriptor to the requesting application. Applications call into that portal via **libportal** (`XdpPortal` / `xdp_session_open_pipewire_remote()`) or via raw D-Bus; **OBS Studio** and web browsers (**Chromium**, **Firefox**) both follow this path. **GStreamer** bypasses the portal entirely and connects its `pipewiresrc` / `pipewiresink` elements directly to the PipeWire socket. Two system D-Bus services complete the control plane: **RTKit** (`org.freedesktop.RealtimeKit1`) grants the data thread `SCHED_FIFO` scheduling, and the **PermissionStore** records per-application portal consents that WirePlumber enforces as PipeWire graph permission bitmasks (`PW_PERM_R | PW_PERM_X`).
+
+```mermaid
+graph TD
+    subgraph KERN["Kernel / Hardware"]
+        ALSA["ALSA\n/dev/snd/*"]
+        V4L2HW["V4L2\n/dev/videoN"]
+        LCAM["libcamera\nlibcamera::Camera\nFrameBufferAllocator"]
+        WLCOMP["Wayland compositor\next-image-copy-capture-v1\nwlr-screencopy-unstable-v1"]
+    end
+
+    subgraph SPAPLUGINS["SPA Plugins"]
+        SPALSA["spa-alsa\nAudio/Sink · Audio/Source"]
+        SPV4L2["spa-v4l2\nVideo/Source\nVIDIOC_EXPBUF DMA-BUF"]
+        SPLC["spa-libcamera\nVideo/Source\nFrameBuffer DMA-BUF"]
+        SPCONV["spa-videoconvert\nformat conversion"]
+    end
+
+    subgraph PWCORE["PipeWire Core"]
+        WP["WirePlumber\nLua policy · WpObjectManager\nportal-permissionstore plugin"]
+        PWD["pipewire daemon\nnode/link/port graph · SPA pods\n$XDG_RUNTIME_DIR/pipewire-0"]
+    end
+
+    subgraph PORTALSTACK["XDG Portal Stack · session D-Bus"]
+        LP["libportal\nXdpPortal · XdpSession\nxdp_session_open_pipewire_remote()"]
+        XDP["xdg-desktop-portal\nScreenCast · Camera · RemoteDesktop"]
+        PERM["PermissionStore\nscreencast · camera · microphone"]
+    end
+
+    RTKIT["RTKit · system D-Bus\norg.freedesktop.RealtimeKit1\nSCHED_FIFO for data thread"]
+
+    subgraph APPS["Applications"]
+        OBS["OBS Studio\npipewire plugin"]
+        GST["GStreamer\npipewiresrc / pipewiresink"]
+        BROWSER["Chromium / Firefox\ngetDisplayMedia / WebRTC"]
+    end
+
+    ALSA   -->|"PCM buffers"| SPALSA
+    V4L2HW -->|"DMA-BUF fd\nVIDIOC_EXPBUF"| SPV4L2
+    LCAM   -->|"FrameBuffer DMA-BUF"| SPLC
+    WLCOMP -->|"screencopy frames\nDMA-BUF"| XDP
+
+    SPALSA  --> PWD
+    SPV4L2  --> PWD
+    SPLC    --> PWD
+    SPCONV  --- PWD
+
+    WP -->|"udev · loads SPA monitor plugins\ninstantiates pw_node per device"| SPALSA
+    WP -->|""| SPV4L2
+    WP -->|""| SPLC
+    WP <-->|"native protocol\npw_registry · pw_link policy"| PWD
+    WP <-->|"portal-permissionstore\nPW_PERM_R / PW_PERM_X grants"| PERM
+
+    PWD -->|"MakeThreadRealtime\nthread TID"| RTKIT
+
+    OBS    -->|"D-Bus ScreenCast call"| LP
+    BROWSER -->|"D-Bus ScreenCast call"| LP
+    LP     -->|"org.freedesktop.portal.ScreenCast\nOpenPipeWireRemote → scoped fd"| XDP
+    XDP   <-->|"consent check / record"| PERM
+    XDP    -->|"scoped PW fd\npw_context_connect_fd()"| PWD
+    XDP    -->|"org.freedesktop.impl.portal.ScreenCast"| WLCOMP
+
+    GST    -->|"pw_context_connect()\npipewiresrc DMA-BUF frames"| PWD
+    OBS    -->|"pw_stream_dequeue_buffer()\nDMA-BUF frames"| PWD
+    BROWSER -->|"pw_stream frames"| PWD
+```
+
 The core architectural abstraction is the **node/link/port graph**: every multimedia entity is a **`pw_node`** exposing typed **`pw_link`**-connected ports. Applications typically use the higher-level **`pw_stream`** API, which wraps a **`pw_client_node`** proxy. Below **`libpipewire`** sits **SPA** (**Simple Plugin API**) — the plugin **ABI** that every codec, device backend, format negotiator, and buffer allocator implements via the **`spa_node`** interface. Parameters and format capabilities are exchanged as **SPA pods** (**`spa_pod`**), with video formats described by **`spa_video_info_raw`** and constructed using **`spa_pod_builder`**. The two-phase format negotiation — an enumeration phase using **`spa_node_port_enum_params(SPA_PARAM_EnumFormat)`** followed by a fixation phase using **`spa_node_port_set_param(SPA_PARAM_Format)`** and buffer negotiation via **`SPA_PARAM_Buffers`** — determines whether the data path uses **`SPA_DATA_DmaBuf`**, **`SPA_DATA_MemFd`**, or **`SPA_DATA_MemPtr`**. The daemon process owns the **UNIX domain socket** at **`$XDG_RUNTIME_DIR/pipewire-0`** and is accessed through **`libpipewire-0.3.so`**, with clients creating a **`pw_context`**, a **`pw_core`**, and monitoring objects through the **`pw_registry`**. Legacy protocol compatibility is provided by **`pipewire-pulse`** (a **PulseAudio** wire-protocol server), the **`pw-jack`** **`LD_LIBRARY_PATH`** shim, and the **ALSA PCM plugin**. The real-time data thread is driven by a *driver node* running at **`SCHED_FIFO`** priority, with the *quantum* (cycle size) governed by **`default.clock.quantum`** in **`pipewire.conf`**; real-time privileges are granted by **`module-rt`** (via **`RLIMIT_RTPRIO`**) or the **RTKit** D-Bus service, with **`RLIMIT_RTTIME`** acting as a safety cap.
 
 Session policy — which nodes to link and which formats to negotiate — is entirely the domain of **WirePlumber**, a **GObject**-based daemon embedding a **Lua 5.4/5.5** scripting engine via **`wplua`**. **WirePlumber** uses **`WpObjectManager`** and **`WpObjectInterest`** to watch the **`pw_registry`** and react to device events via an *event dispatcher* model. It creates **`pw_node`** instances for hardware devices by loading **SPA** monitor plugins: **`api.v4l2.enum.udev`** for **V4L2** video devices, **`api.libcamera.enum.devices`** for **libcamera**-managed cameras, and **`api.alsa.enum.udev`** for ALSA cards — all discovered through **`udev`**. The linker maps `media.class` properties (e.g. **`Stream/Input/Video`**, **`Video/Source`**, **`Audio/Sink`**) to route streams to devices. Default sink/source assignments are persisted in a **`pw_metadata`** object (the `default` metadata), storing keys such as **`default.audio.sink`** and **`default.video.source`**. The security model uses per-object permission bitmasks (**`PW_PERM_R`**, **`PW_PERM_W`**, **`PW_PERM_X`**, **`PW_PERM_M`**); the **`portal-permissionstore`** plugin bridges **PipeWire** to the **XDG Desktop Portal** permission store for sandboxed application access.
