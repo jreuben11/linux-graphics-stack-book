@@ -14,6 +14,8 @@
 - [5. Remote Desktop and Streaming](#5-remote-desktop-and-streaming)
 - [6. D-Bus Interface Reference](#6-dbus-interface-reference)
 - [7. Buffer Formats and GPU Interop](#7-buffer-formats-and-gpu-interop)
+- [8. systemd Unit Files and Socket Activation](#8-systemd-unit-files-and-socket-activation)
+- [9. Management CLIs](#9-management-clis)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -1240,6 +1242,447 @@ static void on_add_buffer(void *data, struct pw_buffer *buf) {
 The `pw-capture` project (archived 2025) demonstrated the Vulkan-layer approach: a `VkLayer` intercepts `vkQueuePresentKHR`, exports the swapchain image as a DMA-BUF via `VkExternalMemoryImageCreateInfo` with `VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT`, and pushes the fd into a `pw_stream` with `SPA_DATA_DmaBuf`. The consumer sees it as a standard PipeWire `Video/Source` node. [Source](https://github.com/EHfive/pw-capture)
 
 From PipeWire 0.3.80 onwards, the built-in Vulkan SPA plugin (`spa/plugins/vulkan/`) also supports DMA-BUF, enabling PipeWire itself to run Vulkan compute shaders on frames passing through the graph — for example, deinterlacing or colour-correction filters applied in the data thread without any CPU involvement. [Source](https://www.phoronix.com/news/PipeWire-0.3.80)
+
+---
+
+## 8. systemd Unit Files and Socket Activation
+
+PipeWire ships a set of systemd **user-session** unit files installed under `/usr/lib/systemd/user/`. Being user-scoped rather than system-scoped, they run inside the desktop session's systemd manager and are activated per-seat when the user logs in. [Source](https://gitlab.freedesktop.org/pipewire/pipewire/-/tree/master/systemd)
+
+### 8.1 The Seven Unit Files
+
+| File | Type | Purpose |
+|------|------|---------|
+| `pipewire.socket` | socket | Creates `$XDG_RUNTIME_DIR/pipewire-0`; activates `pipewire.service` on first connect |
+| `pipewire.service` | service | Main PipeWire daemon (`/usr/bin/pipewire`) |
+| `wireplumber.service` | service | WirePlumber session manager (single-instance mode) |
+| `wireplumber@.service` | template | Per-PipeWire-instance WirePlumber; `%i` = PipeWire instance name (split mode) |
+| `pipewire-pulse.socket` | socket | Creates `$XDG_RUNTIME_DIR/pulse/native` for PulseAudio clients |
+| `pipewire-pulse.service` | service | PulseAudio compatibility daemon (`/usr/bin/pipewire-pulse`) |
+| `filter-chain.service` | service | Optional DSP chain daemon (`/usr/bin/pipewire -c filter-chain.conf`) |
+
+### 8.2 Socket Activation
+
+PipeWire uses systemd socket activation so the daemon starts on demand the moment any client first opens the socket. `%t` is a systemd specifier for `$XDG_RUNTIME_DIR` (typically `/run/user/1000`):
+
+```ini
+# /usr/lib/systemd/user/pipewire.socket
+[Unit]
+Description=PipeWire Multimedia System Sockets
+
+[Socket]
+ListenStream=%t/pipewire-0
+ListenStream=%t/pipewire-0-manager
+
+[Install]
+WantedBy=sockets.target
+```
+
+The service unit is pulled in automatically by the socket unit:
+
+```ini
+# /usr/lib/systemd/user/pipewire.service
+[Unit]
+Description=PipeWire Multimedia Service
+Requires=pipewire.socket
+After=pipewire.socket
+
+[Service]
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+RestrictNamespaces=yes
+SystemCallFilter=@system-service
+Type=simple
+ExecStart=/usr/bin/pipewire
+
+[Install]
+WantedBy=default.target
+```
+
+The PulseAudio compatibility socket is independent and creates the path PulseAudio clients probe at startup:
+
+```ini
+# /usr/lib/systemd/user/pipewire-pulse.socket
+[Unit]
+Description=PipeWire PulseAudio
+BindsTo=pipewire.service
+
+[Socket]
+Priority=6
+Backlog=5
+ListenStream=%t/pulse/native
+
+[Install]
+WantedBy=sockets.target
+```
+
+### 8.3 WirePlumber: Single-Instance vs. Split Mode
+
+Standard `wireplumber.service` uses `BindsTo=` so that stopping `pipewire.service` immediately stops WirePlumber as well:
+
+```ini
+# /usr/lib/systemd/user/wireplumber.service
+[Unit]
+Description=Multimedia Service Session Manager
+Requires=pipewire.service
+After=pipewire.service
+BindsTo=pipewire.service
+
+[Service]
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+RestrictNamespaces=yes
+SystemCallFilter=@system-service
+Type=simple
+ExecStart=/usr/bin/wireplumber
+
+[Install]
+WantedBy=default.target
+```
+
+The instantiable template `wireplumber@.service` supports **split mode**: one WirePlumber per PipeWire daemon instance. The `%i` specifier is the instance name passed via `systemctl --user start wireplumber@myinstance`:
+
+```ini
+# /usr/lib/systemd/user/wireplumber@.service
+[Unit]
+Description=Multimedia Service Session Manager (%i)
+BindsTo=pipewire@%i.service
+After=pipewire@%i.service
+CollectMode=inactive-or-failed
+
+[Service]
+Environment=WIREPLUMBER_DAEMON_NAME=wireplumber-%i
+ExecStart=/usr/bin/wireplumber
+```
+
+Split mode is used in embedded and kiosk deployments where hardware audio capture and screen-cast capture need isolated session managers. [Source](https://pipewire.pages.freedesktop.org/wireplumber/daemon/wireplumber-daemon.html)
+
+### 8.4 Dependency and Activation Graph
+
+```
+sockets.target
+    ├── pipewire.socket ──────────────► pipewire.service
+    │       ListenStream=%t/pipewire-0                  │
+    │       ListenStream=%t/pipewire-0-manager          └──► wireplumber.service
+    │                                                         (BindsTo pipewire.service)
+    └── pipewire-pulse.socket ────────► pipewire-pulse.service
+            ListenStream=%t/pulse/native   (BindsTo pipewire.service)
+```
+
+The `BindsTo=` directives on both `wireplumber.service` and `pipewire-pulse.service` mean that a `systemctl --user stop pipewire.service` cascades to stop all three companions simultaneously.
+
+### 8.5 Enabling PipeWire
+
+Most distributions enable PipeWire by default. To verify or enable manually:
+
+```bash
+# Enable socket-activated PipeWire and PulseAudio compat + the session manager
+systemctl --user enable --now \
+    pipewire.socket pipewire-pulse.socket wireplumber.service
+
+# Check status
+systemctl --user status pipewire pipewire-pulse wireplumber
+
+# Confirm sockets exist
+ls -la "$XDG_RUNTIME_DIR/pipewire-0" "$XDG_RUNTIME_DIR/pulse/native"
+```
+
+To migrate a system that still runs PulseAudio alongside PipeWire:
+
+```bash
+systemctl --user disable --now pulseaudio.socket pulseaudio.service
+systemctl --user enable  --now pipewire-pulse.socket
+```
+
+### 8.6 filter-chain.service and Audio DSP Presets
+
+`filter-chain.service` loads `/etc/pipewire/filter-chain.conf` (or `~/.config/pipewire/filter-chain.conf`) and creates a chain of virtual audio nodes backed by LADSPA/LV2 plugins. Three reference presets ship with PipeWire:
+
+| Preset file | Effect |
+|------------|--------|
+| `source-rnnoise.conf` | ML-based microphone noise suppression via the LADSPA RNNoise plugin |
+| `sink-eq4.conf` | Four-band parametric equalizer applied to the default audio sink |
+| `sink-virtual-surround-7.1-hesuvi.conf` | HRTF virtual surround (7.1→stereo) using HeSuVi impulse responses |
+
+```bash
+# Enable RNNoise microphone denoising
+cp /usr/share/pipewire/filter-chain/source-rnnoise.conf \
+   ~/.config/pipewire/filter-chain.conf
+systemctl --user enable --now filter-chain.service
+```
+
+### 8.7 Security Hardening in Unit Files
+
+All PipeWire user service units ship the same hardening stanza (verified PipeWire 1.2.4, Ubuntu 24.04 / Arch Linux):
+
+| Directive | Effect |
+|-----------|--------|
+| `LockPersonality=yes` | Blocks `personality(2)` — prevents execution-domain switching |
+| `MemoryDenyWriteExecute=yes` | No W+X memory mappings; SPA plugins and LADSPA plugins must not use JIT |
+| `NoNewPrivileges=yes` | `execve()` cannot acquire capabilities or setuid |
+| `RestrictNamespaces=yes` | Blocks all `clone(CLONE_NEW*)` namespace creation |
+| `SystemCallFilter=@system-service` | Allowlist: standard POSIX service syscalls only |
+
+`MemoryDenyWriteExecute=yes` in practice means any LV2/LADSPA synthesis plugin that compiles bytecode on the fly must run inside a separate sandboxed process; PipeWire's own `filter-chain` does not JIT, so it is unaffected.
+
+---
+
+## 9. Management CLIs
+
+PipeWire ships a suite of command-line tools for introspection, performance monitoring, graph manipulation, and audio playback. They are grouped below by functional area.
+
+### 9.1 Tool Summary
+
+| Tool | Binary | Package | Level |
+|------|--------|---------|-------|
+| `pw-cli` | `/usr/bin/pw-cli` | `pipewire` | Core introspection REPL |
+| `pw-top` | `/usr/bin/pw-top` | `pipewire-utils` | Real-time performance monitor |
+| `pw-dump` | `/usr/bin/pw-dump` | `pipewire-utils` | JSON object graph dump |
+| `pw-mon` | `/usr/bin/pw-mon` | `pipewire-utils` | Event stream monitor |
+| `pw-dot` | `/usr/bin/pw-dot` | `pipewire-utils` | Graphviz graph export |
+| `pw-cat` | `/usr/bin/pw-cat` | `pipewire-utils` | Audio file playback/capture |
+| `pw-play` | symlink → `pw-cat` | `pipewire-utils` | Playback convenience alias |
+| `pw-record` | symlink → `pw-cat` | `pipewire-utils` | Capture convenience alias |
+| `pw-link` | `/usr/bin/pw-link` | `pipewire-utils` | Port listing and link management |
+| `pw-metadata` | `/usr/bin/pw-metadata` | `pipewire-utils` | Read/write metadata store |
+| `pw-loopback` | `/usr/bin/pw-loopback` | `pipewire-utils` | Create loopback nodes |
+| `pw-profiler` | `/usr/bin/pw-profiler` | `pipewire-utils` | Capture timing profiler data |
+| `pw-jack` | `/usr/bin/pw-jack` | `pipewire-jack` | JACK LD_PRELOAD shim |
+| `pw-mididump` | `/usr/bin/pw-mididump` | `pipewire-utils` | Print raw MIDI event stream |
+| `pw-midiplay` | `/usr/bin/pw-midiplay` | `pipewire-utils` | Play SMF MIDI file |
+| `pw-midirecord` | `/usr/bin/pw-midirecord` | `pipewire-utils` | Record MIDI to SMF file |
+| `pw-reserve` | `/usr/bin/pw-reserve` | `pipewire-utils` | Hold D-Bus device reservation |
+| `pw-config` | `/usr/bin/pw-config` | `pipewire-utils` | Show merged config values |
+| `wpctl` | `/usr/bin/wpctl` | `wireplumber` | WirePlumber session manager control |
+| `pactl` | `/usr/bin/pactl` | `pulseaudio-utils` | PulseAudio-compat control |
+| `wpexec` | `/usr/bin/wpexec` | `wireplumber` | Standalone Lua script runner |
+
+### 9.2 pw-cli — Core Introspection REPL
+
+`pw-cli` is an interactive read-eval-print loop that connects directly to `$XDG_RUNTIME_DIR/pipewire-0` and exposes the full PipeWire object management API. [Source](https://docs.pipewire.org/page_man_pw-cli_1.html)
+
+```bash
+pw-cli                         # enter interactive mode
+pw-cli help                    # list all subcommands
+pw-cli list-objects            # list all objects with type, id, version
+pw-cli info <id>               # dump properties and params for one object
+pw-cli set-param <id> <param> <pod>   # set a SPA param on an object
+pw-cli create-node <factory> <props>  # instantiate a node from a factory
+pw-cli create-link <out-node> <out-port> <in-node> <in-port>
+pw-cli dump node               # dump all nodes to stdout (non-interactive)
+```
+
+Non-interactive one-shot form: `pw-cli info 0` dumps the core object (ID 0 is always the `pw_core`). The output includes the server version, cookie, and default latency quantum.
+
+### 9.3 pw-top — Real-Time Performance Monitor
+
+`pw-top` renders an ncurses table updated every quantum (~10 ms) showing data-thread timing for every active node. [Source](https://docs.pipewire.org/page_man_pw-top_1.html)
+
+```
+ S   ID  QUANT   RATE  WAIT  BUSY  W-Q  B-Q  ERR   FORMAT    NAME
+ R    7    256  48000  1.2ms  0.3ms  0   0    0   s16 2 48000  alsa_output.pci-0000…
+ R   12    256  48000  0.1ms  0.2ms  0   0    0   s32le 2 48000  Firefox
+```
+
+Column meanings:
+
+| Column | Meaning |
+|--------|---------|
+| `S` | State: `R`=running, `I`=idle, `S`=suspended, `E`=error |
+| `QUANT` | Buffer quantum (samples) for this cycle |
+| `RATE` | Sample rate in Hz |
+| `WAIT` | Time waiting for upstream data in current cycle |
+| `BUSY` | Time spent in node processing callback |
+| `W-Q` / `B-Q` | Accumulated wait / busy quantum over last 1 s |
+| `ERR` | Consecutive xrun count |
+| `FORMAT` | Sample format, channels, sample rate |
+| `NAME` | Node name |
+
+A `BUSY` consistently greater than `QUANT/RATE` indicates the data thread is overrunning its budget, causing xruns.
+
+### 9.4 pw-dump — JSON Object Graph Dump
+
+`pw-dump` prints the entire PipeWire object graph as a JSON array. With `--monitor` it streams change events as JSON objects until killed. [Source](https://docs.pipewire.org/page_man_pw-dump_1.html)
+
+```bash
+pw-dump                        # dump full graph to stdout
+pw-dump --monitor              # stream change events (added/changed/removed)
+pw-dump | jq '.[] | select(.type == "PipeWire:Interface:Node") | {id, name: .info.props["node.name"]}'
+```
+
+The JSON schema mirrors the native PipeWire protocol object structure: each entry has `id`, `type`, `version`, `info`, and `params` (SPA pod parameters decoded to JSON). This is the canonical data source for tooling that needs to inspect graph state without implementing the native protocol.
+
+### 9.5 pw-mon — Event Stream Monitor
+
+`pw-mon` connects and prints a text representation of every registry event (objects added, changed, removed) until killed. Unlike `pw-dump --monitor`, which emits JSON, `pw-mon` uses a human-readable multi-line format:
+
+```bash
+pw-mon                         # live event stream
+pw-mon 2>&1 | grep "node.name" # filter for node names
+```
+
+Useful for debugging transient objects (capture sessions, screen-cast nodes) that appear and disappear.
+
+### 9.6 pw-dot — Graphviz Export
+
+`pw-dot` exports the live PipeWire graph as a Graphviz `.dot` file:
+
+```bash
+pw-dot | dot -Tsvg > graph.svg          # render to SVG
+pw-dot -s | dot -Tsvg > graph-smart.svg # -s: smart mode (omit internal detail nodes)
+```
+
+In smart mode, `spa-node-driver` and format-converter proxy nodes are collapsed, leaving only the user-visible source/sink/filter/stream nodes and their links — more legible for diagnosing routing problems.
+
+### 9.7 pw-cat / pw-play / pw-record
+
+`pw-cat` reads or writes audio files to/from PipeWire. `pw-play` and `pw-record` are symlinks to `pw-cat` that default to playback and capture modes respectively. [Source](https://docs.pipewire.org/page_man_pw-cat_1.html)
+
+```bash
+pw-play /path/to/audio.wav             # play a WAV file through the default sink
+pw-play --target=<id> audio.flac       # play through a specific node id
+pw-record --format=s16 --rate=48000 --channels=1 capture.wav
+pw-cat --playback --media-type=audio --media-category=Movie audio.opus
+```
+
+Under the hood `pw-cat` creates a `pw_stream` in `PW_DIRECTION_INPUT` (for capture) or `PW_DIRECTION_OUTPUT` (for playback), negotiates format via SPA pods, and drives its own event loop until EOF. It respects `PIPEWIRE_REMOTE` for targeting a non-default daemon instance.
+
+### 9.8 pw-link — Port and Link Management
+
+`pw-link` lists ports and creates or destroys links between them. [Source](https://docs.pipewire.org/page_man_pw-link_1.html)
+
+```bash
+pw-link -l                     # list all ports (output and input)
+pw-link -lo                    # list output ports only
+pw-link -li                    # list input ports only
+pw-link -o                     # list existing links
+# Create a link between two ports by name:
+pw-link "alsa_output.pci…:playback_FL" "effect_input.FL"
+# Destroy a link:
+pw-link -d "alsa_output.pci…:playback_FL" "effect_input.FL"
+```
+
+Port names follow the convention `<node.name>:<port.name>`. Numeric IDs (from `pw-dump` or `pw-cli`) can also be used.
+
+### 9.9 pw-metadata — Runtime Settings Store
+
+PipeWire maintains a key-value metadata store (the `PipeWire:Interface:Metadata` object, ID 0 by convention) for runtime configuration that must survive across node restarts. [Source](https://docs.pipewire.org/page_man_pw-metadata_1.html)
+
+```bash
+pw-metadata                    # dump all metadata entries
+pw-metadata 0                  # dump entries for subject ID 0 (clock settings)
+# Adjust driver quantum at runtime (256, 512, 1024, …):
+pw-metadata 0 clock.quantum 256
+# Change sample rate:
+pw-metadata 0 clock.rate 44100
+# Set the default sink by node.name:
+pw-metadata 0 default.audio.sink '{"name":"alsa_output.pci-0000_00_1f.3"}'
+```
+
+The `clock.quantum` and `clock.rate` keys are read by the graph driver each cycle, so changes take effect within ~100 ms without restarting any service.
+
+### 9.10 pw-loopback — Software Loopback Node
+
+`pw-loopback` creates a capture source that feeds from another node's output, useful for routing audio between applications or recording desktop audio:
+
+```bash
+# Create a loopback: monitor the default sink, appear as a new capture source
+pw-loopback --capture-props='node.name=monitor.sink media.class=Audio/Source'
+```
+
+The resulting node appears in `pw-cli list-objects` and can be selected as the microphone input inside any application.
+
+### 9.11 pw-profiler — Timing Data Capture
+
+`pw-profiler` connects to PipeWire's built-in profiler interface and saves per-cycle timing measurements to a binary file that can be post-processed with `pw-profiler --print`:
+
+```bash
+pw-profiler                    # record to pipewire.prof (Ctrl-C to stop)
+pw-profiler --print pipewire.prof  # dump CSV-like timing table
+```
+
+Each line contains: driver node id, cycle index, signal time, awake time, finish time, and xrun count. This is the primary tool for diagnosing whether latency spikes are caused by the driver node, a processing node, or the kernel scheduler.
+
+### 9.12 pw-jack — JACK Compatibility Shim
+
+`pw-jack` wraps a command with `LD_LIBRARY_PATH` pointing to PipeWire's JACK-replacement shared library so JACK applications connect to PipeWire instead of the JACK daemon: [Source](https://docs.pipewire.org/page_man_pw-jack_1.html)
+
+```bash
+pw-jack ardour                 # launch Ardour against PipeWire's JACK layer
+pw-jack -r 48000 qjackctl     # JACK apps see a 48 kHz server
+```
+
+The shim implements the full JACK API (libjack.so.0) including `jack_client_open`, `jack_port_register`, `jack_set_process_callback`, and `jack_transport_*`. JACK metadata and the JACK D-Bus control interface are not emulated.
+
+### 9.13 pw-reserve — D-Bus Device Reservation
+
+`pw-reserve` claims an `org.freedesktop.ReserveDevice1` D-Bus reservation on a named device, blocking other daemons from opening it while the reservation is held:
+
+```bash
+pw-reserve Audio0              # reserve ALSA card 0 until Ctrl-C
+```
+
+This tool is primarily useful for testing the device contention logic between PipeWire and other ALSA clients (e.g., JACK, VirtualBox audio).
+
+### 9.14 pw-config — Configuration Inspection
+
+`pw-config` shows the merged, post-override configuration values that PipeWire will use, accounting for `/etc/pipewire/`, `~/.config/pipewire/`, and drop-in `.conf.d/` fragments:
+
+```bash
+pw-config                      # show merged config tree
+pw-config -L                   # list config search paths in load order
+```
+
+### 9.15 wpctl — WirePlumber Session Manager Control
+
+`wpctl` is the primary control interface for WirePlumber and the most important management CLI for day-to-day use. [Source](https://pipewire.pages.freedesktop.org/wireplumber/daemon/wpctl.html)
+
+```bash
+wpctl status                   # print all audio/video devices and streams with IDs
+wpctl inspect <id>             # dump all properties for a WirePlumber object
+wpctl set-default <id>         # set the default sink, source, or camera
+wpctl set-volume <id> <vol>    # set volume (0.0–1.5); @DEFAULT_SINK@ alias works
+wpctl set-volume @DEFAULT_SINK@ 0.8
+wpctl set-mute <id> toggle     # toggle mute; 1=mute 0=unmute also accepted
+wpctl set-mute @DEFAULT_SOURCE@ 1
+wpctl settings                 # list all WirePlumber settings
+wpctl settings clock.quantum 512  # write a setting (equivalent to pw-metadata)
+wpctl set-log-level <level>    # change log verbosity at runtime (0–5)
+```
+
+The `@DEFAULT_SINK@`, `@DEFAULT_SOURCE@`, `@DEFAULT_AUDIO_SINK@`, and `@DEFAULT_AUDIO_SOURCE@` aliases resolve to whatever WirePlumber has designated as the system default, matching the behaviour applications see. These aliases can be used in any `wpctl` subcommand that takes a numeric ID.
+
+`wpctl status` output groups objects by section — *Audio* (sinks, sources, filters, streams) and *Video* (sinks, sources, streams) — with WirePlumber object IDs on the left that are stable within a session. Volumes are printed as `[vol: 0.80]` and the default device is marked with `*`.
+
+### 9.16 pactl — PulseAudio-Compatible Control
+
+`pactl` from the `pulseaudio-utils` package communicates over the PulseAudio native protocol and works transparently against `pipewire-pulse`. All common administrative subcommands function correctly: [Source](https://linux.die.net/man/1/pactl)
+
+```bash
+pactl info                     # server version, default sink/source, cookie
+pactl list sinks               # detailed sink listing including volume, format, port
+pactl list sink-inputs         # running streams connected to sinks
+pactl set-sink-volume @DEFAULT_SINK@ 80%
+pactl set-source-mute @DEFAULT_SOURCE@ toggle
+pactl load-module module-null-sink sink_name=virtual
+pactl unload-module <id>
+pactl subscribe                # stream change events in PulseAudio text format
+```
+
+**Important**: `pacmd`, the PulseAudio interactive shell, does **not** work with `pipewire-pulse`. It uses the PulseAudio native protocol's CLI extension which PipeWire does not implement. Use `wpctl` or `pw-cli` for interactive graph manipulation instead. [Source](https://gitlab.freedesktop.org/pipewire/pipewire/-/issues/2267)
+
+### 9.17 wpexec — Standalone Lua Script Runner
+
+`wpexec` loads and runs a WirePlumber Lua script in an isolated environment that connects to the live PipeWire session, without starting the full WirePlumber daemon. It is intended for automation and testing:
+
+```bash
+wpexec my-script.lua           # run script, exit when it completes
+wpexec --json my-script.lua    # pass JSON args accessible as `Json.raw_string`
+```
+
+Scripts have access to the full WirePlumber Lua API (`Core`, `ObjectManager`, `Node`, `Link`, etc.) and can perform one-shot operations such as linking two specific nodes, querying metadata, or exercising a portal flow for integration testing.
 
 ---
 

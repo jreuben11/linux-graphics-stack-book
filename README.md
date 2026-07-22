@@ -1,6 +1,6 @@
 # The Linux Graphics Stack: From Kernel to Compositor, Browser, and Terminal
 
-An expert-level technical reference (~1,100 pages, 168 chapters) tracing every layer of the Linux graphics stack — from the DRM kernel subsystem and GPU memory management through Mesa's shader compilers, Wayland compositors, application APIs, the browser rendering pipeline, game compatibility layers, terminal pixel protocols, GPU-accelerated video streaming, AI inference, and both open and proprietary GPU ecosystems. Each chapter is written for practitioners: code snippets reference real upstream source at specific commits or releases, API signatures are verified against current kernel and Mesa trees, and architectural claims cite primary sources.
+An expert-level technical reference (~1,400 pages, 200 chapters) tracing every layer of the Linux graphics stack — from the DRM kernel subsystem and GPU memory management through Mesa's shader compilers, Wayland compositors, application APIs, the browser rendering pipeline, game compatibility layers, terminal pixel protocols, GPU-accelerated video streaming, AI inference, and both open and proprietary GPU ecosystems. Each chapter is written for practitioners: code snippets reference real upstream source at specific commits or releases, API signatures are verified against current kernel and Mesa trees, and architectural claims cite primary sources.
 
 By the final chapter the reader holds a continuous mental model from a `DRM_IOCTL_MODE_ATOMIC` kernel call all the way to a photon leaving a display panel, and from a WebGPU `drawIndexed` call in JavaScript all the way to the same panel.
 
@@ -52,6 +52,9 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 126: Hybrid Graphics and Laptop Power Management](chapters/part-02-gpu-drivers/ch126-hybrid-graphics-laptop.md)
 - [Ch 155: USB DisplayLink and the evdi Virtual DRM Driver](chapters/part-02-gpu-drivers/ch155-usb-displaylink-evdi.md)
 - [Ch 160: Freedreno, Turnip, and the Qualcomm Adreno Driver](chapters/part-02-gpu-drivers/ch160-freedreno-turnip-adreno.md)
+- [Ch 169: Snapdragon X Elite on Linux — Adreno X1-85, freedreno, and the Arm Laptop Era](chapters/part-02-gpu-drivers/ch169-snapdragon-x-elite-linux.md)
+- [Ch 172: eGPU on Linux — Thunderbolt, USB4, and PCIe Hot-Plug](chapters/part-02-gpu-drivers/ch172-egpu-thunderbolt-usb4.md)
+- [Ch 179: The Linux `accel` Subsystem: NPU and AI Accelerator Drivers](chapters/part-02-gpu-drivers/ch179-linux-accel-subsystem.md)
 - [Ch 196: The GPU as Embedded Computer — Firmware-as-OS Architecture Across Vendors](chapters/part-02-gpu-drivers/ch196-gpu-firmware-as-os.md)
 
 ---
@@ -97,6 +100,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Part Overview](chapters/part-05-mesa-gpu-drivers/part-intro.md)
 - [Ch 18: Vulkan Drivers](chapters/part-05-mesa-gpu-drivers/ch18-vulkan-drivers.md)
 - [Ch 19: OpenGL and Compatibility Drivers](chapters/part-05-mesa-gpu-drivers/ch19-opengl-compatibility-drivers.md)
+- [Ch 177: NVK — NVIDIA Vulkan in Mesa](chapters/part-05-mesa-gpu-drivers/ch177-nvk-nvidia-vulkan.md)
 
 ---
 
@@ -116,6 +120,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 145: XWayland: Architecture and the X11-to-Wayland Bridge](chapters/part-06a-wayland-compositor/ch145-xwayland-architecture.md)
 - [Ch 151: Wayland Text Input and Input Method Editors](chapters/part-06a-wayland-compositor/ch151-wayland-text-input-ime.md)
 - [Ch 175: Linux Compositor Accessibility: AT-SPI2, Screen Readers, and the Wayland Gap](chapters/part-06a-wayland-compositor/ch175-atspie2-compositor-accessibility.md)
+- [Ch 207: xdg-desktop-portal — Sandboxed Desktop Integration](chapters/part-06a-wayland-compositor/ch207-xdg-desktop-portal.md)
 
 ---
 
@@ -163,6 +168,8 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 165: Vulkan Video: Hardware Decode and Encode via the Vulkan API](chapters/part-07a-gpu-apis/ch165-vulkan-video.md)
 - [Ch 173: VK_EXT_shader_object — Pipeline-Free Shader Binding in Vulkan](chapters/part-07a-gpu-apis/ch173-vk-ext-shader-object.md)
 - [Ch 192: GPU-Generated Commands — VK_EXT_device_generated_commands and Work Graphs](chapters/part-07a-gpu-apis/ch192-vk-ext-device-generated-commands.md)
+- [Ch 204: Shader Algorithm Catalog — Recipes, References, and Use Cases](chapters/part-07a-gpu-apis/ch204-shader-algorithm-catalog.md)
+- [Ch 208: GPU Geometry Algorithms — Subdivision, Implicit Surfaces, Skinning, and IK](chapters/part-07a-gpu-apis/ch208-gpu-geometry-algorithms.md)
 
 ---
 
@@ -178,6 +185,10 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 96: libcamera and the Linux Camera Stack](chapters/part-07b-multimedia-frameworks/ch96-libcamera.md)
 - [Ch 111: Flatpak Graphics — GPU Access in Sandboxed Applications](chapters/part-07b-multimedia-frameworks/ch111-flatpak-graphics.md)
 - [Ch 114: OpenCV and GPU-Accelerated Computer Vision on Linux](chapters/part-07b-multimedia-frameworks/ch114-opencv-gpu-vision.md)
+- [Ch 206: SDL3 — Cross-Platform Multimedia Integration on Linux](chapters/part-07b-multimedia-frameworks/ch206-sdl-multimedia.md)
+- [Ch 209: OpenSLAM — Classical and Graph-Based SLAM on the Linux Stack](chapters/part-07b-multimedia-frameworks/ch209-openslam.md)
+- [Ch 210: SLAM Theory and State of the Art](chapters/part-07b-multimedia-frameworks/ch210-slam-theory-sota.md)
+- [Ch 211: ROS 2 Multimodal Sensor and Perception Pipeline](chapters/part-07b-multimedia-frameworks/ch211-ros2-sensor-perception-pipeline.md)
 
 ---
 
@@ -191,6 +202,8 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 56: Ray Tracing on Linux](chapters/part-08-gaming-layer/ch56-ray-tracing-linux.md)
 - [Ch 78: Gamescope and the Steam Deck: A Complete Gaming Graphics Stack](chapters/part-08-gaming-layer/ch78-gamescope-steam-deck.md)
 - [Ch 104: DXVK and VKD3D-Proton — D3D-to-Vulkan Translation](chapters/part-08-gaming-layer/ch104-dxvk-vkd3d-proton.md)
+- [Ch 167: NTSYNC — NT Synchronization Primitives in the Linux Kernel](chapters/part-08-gaming-layer/ch167-ntsync-nt-synchronization-linux.md)
+- [Ch 171: Linux Gaming Anti-Cheat — EasyAntiCheat, BattlEye, and the Ring-0 Problem](chapters/part-08-gaming-layer/ch171-linux-gaming-anti-cheat.md)
 
 ---
 
@@ -214,6 +227,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 136: WSL2 Linux Graphics — dxgkrnl and Mesa D3D12](chapters/part-09-tooling-contributing/ch136-wsl2-linux-graphics.md)
 - [Ch 137: GPU Performance Profiling — RGP, GPA, and VK_EXT_performance_query](chapters/part-09-tooling-contributing/ch137-gpu-performance-profiling.md)
 - [Ch 153: OBS Studio GPU Pipeline: Capture, Encode, and Stream](chapters/part-09-tooling-contributing/ch153-obs-studio-gpu-pipeline.md)
+- [Ch 180: GPU Reverse Engineering — Tools, Methodology, and Case Studies](chapters/part-09-tooling-contributing/ch180-gpu-reverse-engineering.md)
 
 ---
 
@@ -234,6 +248,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 168: WebNN — The Web Neural Network API](chapters/part-10-browser-rendering-stack/ch168-webnn-web-neural-network-api.md)
 - [Ch 193: Tauri — Rust-Native Desktop Applications via WebKitGTK](chapters/part-10-browser-rendering-stack/ch193-tauri-webkitgtk-desktop.md)
 - [Ch 195: Browser Image Formats — Decode Pipelines, Compression Mechanisms, and HDR](chapters/part-10-browser-rendering-stack/ch195-browser-image-formats.md)
+- [Ch 203: WebXR — Browser-Based Immersive Experiences on Linux](chapters/part-10-browser-rendering-stack/ch203-webxr.md)
 
 ---
 
@@ -247,6 +262,8 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 42: Blender GPU — Cycles and EEVEE](chapters/part-11-engine-creative-tools/ch42-blender-gpu.md)
 - [Ch 97: Unreal Engine 5 on Linux](chapters/part-11-engine-creative-tools/ch97-unreal-engine-5.md)
 - [Ch 176: OpenCASCADE Technology — The BRep Kernel and 3D Visualization Stack](chapters/part-11-engine-creative-tools/ch176-opencascade-cad-kernel.md)
+- [Ch 190: VTK — Scientific Visualization on the Linux Graphics Stack](chapters/part-11-engine-creative-tools/ch190-vtk-scientific-visualization.md)
+- [Ch 205: AI-Driven 3D Creation — Blender MCP, Claude Code, and Generative Tools](chapters/part-11-engine-creative-tools/ch205-blender-ai-mcp.md)
 
 ---
 
@@ -274,7 +291,10 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 59: NVIDIA DeepStream SDK](chapters/part-13-video-streaming/ch59-deepstream.md)
 - [Ch 60: Video Compression Algorithms: DCT, Motion Estimation, and Modern Codecs](chapters/part-13-video-streaming/ch60-video-codecs.md)
 - [Ch 60b: Video Streaming Protocols and Adaptive Bitrate Delivery](chapters/part-13-video-streaming/ch60b-video-streaming-protocols.md)
+- [Ch 60c: WebRTC Server Infrastructure on Linux](chapters/part-13-video-streaming/ch60c-webrtc-server-infrastructure.md)
+- [Ch 60d: BitTorrent Adaptive Streaming on Linux — libtorrent, WebTorrent, and the GPU Decode Pipeline](chapters/part-13-video-streaming/ch60d-bittorrent-streaming.md)
 - [Ch 142: V4L2 and the Linux Media Subsystem](chapters/part-13-video-streaming/ch142-v4l2-media-subsystem.md)
+- [Ch 189: VLC Media Player — Architecture, GPU Acceleration, and the Linux Graphics Stack](chapters/part-13-video-streaming/ch189-vlc-architecture-gpu-linux.md)
 
 ---
 
@@ -323,6 +343,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Part Overview](chapters/part-17-amd-ecosystem/part-intro.md)
 - [Ch 72: AMD FidelityFX SDK and Radeon Developer Tools](chapters/part-17-amd-ecosystem/ch72-amd-fidelityfx-tools.md)
 - [Ch 143: RADV Internals: The Mesa AMD Vulkan Driver](chapters/part-17-amd-ecosystem/ch143-radv-internals.md)
+- [Ch 170: AMDVLK vs. RADV — AMD's Two Open Vulkan Drivers](chapters/part-17-amd-ecosystem/ch170-amdvlk-vs-radv.md)
 
 ---
 
@@ -347,6 +368,8 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 85: Android Compositor: SurfaceFlinger, HardwareBuffer, and the Buffer Pipeline](chapters/part-19-android-graphics/ch85-android-surfaceflinger.md)
 - [Ch 86: Vulkan on Android: Drivers, ANGLE, and Mobile GPU Performance](chapters/part-19-android-graphics/ch86-android-vulkan.md)
 - [Ch 87: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform](chapters/part-19-android-graphics/ch87-android-ar-arcore.md)
+- [Ch 161: Android Game Development Kit (AGDK) — Native Game Architecture, Input, Audio, and Frame Pacing](chapters/part-19-android-graphics/ch161-android-game-development-kit.md)
+- [Ch 164: Android Runtime and Native Interop — ART, JNI, and the NDK](chapters/part-19-android-graphics/ch164-android-runtime-native-interop.md)
 - [Ch 166: Android XR](chapters/part-19-android-graphics/ch166-android-xr.md)
 - [Ch 191: LiteRT and MediaPipe](chapters/part-19-android-graphics/ch191-litert-mediapipe.md)
 
@@ -363,6 +386,8 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 108: ROCm and HIP — AMD's GPU Compute Stack](chapters/part-20-ai-inference/ch108-rocm-hip.md)
 - [Ch 115: NeRFStudio, Neural Radiance Fields, and 3D Gaussian Splatting on Linux](chapters/part-20-ai-inference/ch115-nerfstudio-gaussian-splatting.md)
 - [Ch 124: Local LLM Inference on Linux GPUs](chapters/part-20-ai-inference/ch124-llm-inference-linux.md)
+- [Ch 199: Jupyter Internals — Architecture, Python Runtime, Multi-Kernel Support, and GPU Computing](chapters/part-20-ai-inference/ch199-jupyter-internals.md)
+- [Ch 212: Python 3D ML Libraries — Open3D, PyTorch3D, and Kaolin](chapters/part-20-ai-inference/ch212-open3d-pytorch3d-kaolin.md)
 
 ---
 
@@ -393,6 +418,20 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 
 ---
 
+### Part XXVIII — Linux Multimedia: Audio, Communication, and Music Production
+
+*Beyond the graphics stack lies a rich multimedia layer that shares the same Linux audio and video infrastructure: PipeWire, ALSA, V4L2, GStreamer, and the Wayland compositor. This part covers VoIP, Bluetooth audio, video playback architecture, speech synthesis, DLNA home media, broadcast streaming, and MIDI/synthesis — topics that application developers encounter when building communication and creative software on Linux.*
+
+- [Ch 213: VoIP on Linux — SIP, WebRTC, and Real-Time Communication](chapters/part-28-linux-multimedia/ch213-voip-on-linux.md)
+- [Ch 214: Bluetooth Audio on Linux — BlueZ, A2DP, HFP, and LE Audio](chapters/part-28-linux-multimedia/ch214-bluetooth-audio.md)
+- [Ch 215: MPV Architecture — libmpv, libplacebo, and GPU Video Output](chapters/part-28-linux-multimedia/ch215-mpv-architecture.md)
+- [Ch 216: Speech Synthesis and ASR on Linux — espeak-ng, Piper, and Whisper](chapters/part-28-linux-multimedia/ch216-speech-synthesis-asr.md)
+- [Ch 217: DLNA and Home Theater — GUPnP, Rygel, Kodi, and Network Media Streaming](chapters/part-28-linux-multimedia/ch217-dlna-home-theater.md)
+- [Ch 218: Broadcast Streaming on Linux — SRT, NDI, RTSP, and Live Production](chapters/part-28-linux-multimedia/ch218-srt-broadcast-streaming.md)
+- [Ch 219: MIDI, Synthesis, and Music Production on Linux — FluidSynth, LV2, SuperCollider, and DAW Integration](chapters/part-28-linux-multimedia/ch219-midi-synthesis-music-production.md)
+
+---
+
 ### Appendices
 
 - [Appendix A: Glossary](chapters/appendices/appendix-a-glossary.md)
@@ -408,8 +447,16 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Appendix K: Remote Display Technologies](chapters/appendices/appendix-k-remote-display.md)
 - [Appendix L: Shader Toolchain Matrix](chapters/appendices/appendix-l-shader-toolchain-matrix.md)
 - [Appendix M: Kernel Configuration Reference](chapters/appendices/appendix-m-kernel-config-reference.md)
+- [Appendix N: Vulkan on Linux — Platform Extensions Reference](chapters/appendices/appendix-n-vulkan-linux-platform-extensions.md)
+- [Appendix O: SPIR-V Binary Format Reference](chapters/appendices/appendix-o-spirv-binary-format-reference.md)
+- [Appendix P: WGSL Language Reference](chapters/appendices/appendix-p-wgsl-language-reference.md)
+- [Appendix Q: Shader Language Comparison Reference](chapters/appendices/appendix-q-shader-language-comparison.md)
+- [Appendix R: EGL Platform Reference](chapters/appendices/appendix-r-egl-platform-reference.md)
+- [Appendix S: DRM/KMS ioctl Quick Reference](chapters/appendices/appendix-s-drm-kms-ioctl-reference.md)
+- [Appendix T: Terminal Graphics Protocol Reference](chapters/appendices/appendix-t-terminal-graphics-protocol-reference.md)
+- [Appendix U: WebGPU API Quick Reference](chapters/appendices/appendix-u-webgpu-api-reference.md)
 
-**Total: 168 chapters + 13 appendices**
+**Total: 200 chapters + 21 appendices**
 
 ## Repository Structure
 
@@ -447,6 +494,9 @@ chapters/
     ch126-hybrid-graphics-laptop.md
     ch155-usb-displaylink-evdi.md
     ch160-freedreno-turnip-adreno.md
+    ch169-snapdragon-x-elite-linux.md
+    ch172-egpu-thunderbolt-usb4.md
+    ch179-linux-accel-subsystem.md
     ch196-gpu-firmware-as-os.md
   part-03-nouveau-story/
     ch07-reverse-engineering-nvidia.md
@@ -471,6 +521,7 @@ chapters/
   part-05-mesa-gpu-drivers/
     ch18-vulkan-drivers.md
     ch19-opengl-compatibility-drivers.md
+    ch177-nvk-nvidia-vulkan.md
   part-06a-wayland-compositor/
     ch20-wayland-protocol-fundamentals.md
     ch21-building-compositors-wlroots.md
@@ -483,6 +534,7 @@ chapters/
     ch145-xwayland-architecture.md
     ch151-wayland-text-input-ime.md
     ch175-atspie2-compositor-accessibility.md
+    ch207-xdg-desktop-portal.md
   part-06b-display-services/
     ch53-display-calibration-colord.md
     ch54-linux-input-stack.md
@@ -517,6 +569,8 @@ chapters/
     ch165-vulkan-video.md
     ch173-vk-ext-shader-object.md
     ch192-vk-ext-device-generated-commands.md
+    ch204-shader-algorithm-catalog.md
+    ch208-gpu-geometry-algorithms.md
   part-07b-multimedia-frameworks/
     ch38-pipewire.md
     ch38b-alsa-linux-audio-subsystem.md
@@ -526,12 +580,18 @@ chapters/
     ch96-libcamera.md
     ch111-flatpak-graphics.md
     ch114-opencv-gpu-vision.md
+    ch206-sdl-multimedia.md
+    ch209-openslam.md
+    ch210-slam-theory-sota.md
+    ch211-ros2-sensor-perception-pipeline.md
   part-08-gaming-layer/
     ch28-windows-compatibility.md
     ch29-upscaling-effects-overlays.md
     ch56-ray-tracing-linux.md
     ch78-gamescope-steam-deck.md
     ch104-dxvk-vkd3d-proton.md
+    ch167-ntsync-nt-synchronization-linux.md
+    ch171-linux-gaming-anti-cheat.md
   part-09-tooling-contributing/
     ch30-debugging-profiling.md
     ch31-conformance-regression-testing.md
@@ -548,6 +608,7 @@ chapters/
     ch136-wsl2-linux-graphics.md
     ch137-gpu-performance-profiling.md
     ch153-obs-studio-gpu-pipeline.md
+    ch180-gpu-reverse-engineering.md
   part-10-browser-rendering-stack/
     ch33-chromium-gpu-architecture.md
     ch34-angle-webgl.md
@@ -558,24 +619,35 @@ chapters/
     ch98-webassembly-webgpu.md
     ch146-webcodecs-browser-hardware-acceleration.md
     ch147-chrome-firefox-vaapi-video-decode.md
+    ch168-webnn-web-neural-network-api.md
+    ch193-tauri-webkitgtk-desktop.md
     ch195-browser-image-formats.md
+    ch203-webxr.md
   part-11-engine-creative-tools/
     ch40-bevy-wgpu.md
     ch41-godot4-rendering-device.md
     ch42-blender-gpu.md
     ch97-unreal-engine-5.md
     ch176-opencascade-cad-kernel.md
+    ch190-vtk-scientific-visualization.md
+    ch205-blender-ai-mcp.md
   part-12-terminal-graphics/
     ch43-terminal-pixel-protocols.md
     ch44-terminal-gpu-rendering.md
     ch45-terminal-compositor-integration.md
+    ch174-wezterm-alacritty-architecture.md
+    ch178-pty-tty-kernel-layer.md
+    ch192-ratatui-tui-framework.md
   part-13-video-streaming/
     ch57-ffmpeg.md
     ch58-gstreamer.md
     ch59-deepstream.md
     ch60-video-codecs.md
     ch60b-video-streaming-protocols.md
+    ch60c-webrtc-server-infrastructure.md
+    ch60d-bittorrent-streaming.md
     ch142-v4l2-media-subsystem.md
+    ch189-vlc-architecture-gpu-linux.md
   part-14-khronos-ecosystem/
     ch61-spirv-ecosystem.md
     ch62-sycl.md
@@ -596,6 +668,7 @@ chapters/
   part-17-amd-ecosystem/
     ch72-amd-fidelityfx-tools.md
     ch143-radv-internals.md
+    ch170-amdvlk-vs-radv.md
   part-18-rendering-abstractions/
     ch81-sdl3-gpu.md
     ch82-vma-vulkan-helpers.md
@@ -606,6 +679,8 @@ chapters/
     ch85-android-surfaceflinger.md
     ch86-android-vulkan.md
     ch87-android-ar-arcore.md
+    ch161-android-game-development-kit.md
+    ch164-android-runtime-native-interop.md
     ch166-android-xr.md
     ch191-litert-mediapipe.md
   part-20-ai-inference/
@@ -615,10 +690,29 @@ chapters/
     ch108-rocm-hip.md
     ch115-nerfstudio-gaussian-splatting.md
     ch124-llm-inference-linux.md
+    ch199-jupyter-internals.md
+    ch212-open3d-pytorch3d-kaolin.md
   part-21-platform-legacy/
     ch95-x11-xorg-dri-legacy.md
     ch103-history-design-philosophy.md
     ch197-linux-windows-macos-graphics-comparison.md
+  part-27-display-hardware-connectors/
+    ch181-modern-display-interface-standards.md
+    ch182-digital-display-connectors-physical-layer.md
+    ch183-edid-displayid-capability-discovery.md
+    ch184-embedded-displayport-laptop-panel.md
+    ch185-wireless-display-linux.md
+    ch186-video-pixel-formats-signal-encoding.md
+    ch187-hdmi-cec-linux-subsystem.md
+    ch188-display-power-states-dpms-psr.md
+  part-28-linux-multimedia/
+    ch213-voip-on-linux.md
+    ch214-bluetooth-audio.md
+    ch215-mpv-architecture.md
+    ch216-speech-synthesis-asr.md
+    ch217-dlna-home-theater.md
+    ch218-srt-broadcast-streaming.md
+    ch219-midi-synthesis-music-production.md
   appendices/
     appendix-a-glossary.md
     appendix-b-environment-variables.md
@@ -633,11 +727,19 @@ chapters/
     appendix-k-remote-display.md
     appendix-l-shader-toolchain-matrix.md
     appendix-m-kernel-config-reference.md
+    appendix-n-vulkan-linux-platform-extensions.md
+    appendix-o-spirv-binary-format-reference.md
+    appendix-p-wgsl-language-reference.md
+    appendix-q-shader-language-comparison.md
+    appendix-r-egl-platform-reference.md
+    appendix-s-drm-kms-ioctl-reference.md
+    appendix-t-terminal-graphics-protocol-reference.md
+    appendix-u-webgpu-api-reference.md
 ```
 
 ## How to Read
 
-Start with [intro.md](intro.md) for curated reading paths by audience. Each part directory contains a `part-intro.md` that summarises the part's scope and links to its chapters. The master chapter outline with per-chapter bullet points is in [plan.md](plan.md). For a forward-looking synthesis of where the stack is heading, read [conclusion.md](conclusion.md), which weaves the roadmap sections from all twenty-two part introductions into a coherent picture across short-, medium-, and long-term horizons.
+Start with [intro.md](intro.md) for curated reading paths by audience. Each part directory contains a `part-intro.md` that summarises the part's scope and links to its chapters. The master chapter outline with per-chapter bullet points is in [plan.md](plan.md). For a forward-looking synthesis of where the stack is heading, read [conclusion.md](conclusion.md), which weaves the roadmap sections from all part introductions into a coherent picture across short-, medium-, and long-term horizons.
 
 Suggested paths:
 - **Kernel/driver developer:** Parts I → II → III → IV → V
@@ -646,6 +748,7 @@ Suggested paths:
 - **Gaming/compatibility:** Parts VII-A → VIII → XI → XV
 - **Terminal developer:** Parts VI-A → XII
 - **AI/ML practitioner:** Parts VII-A → XV → XX
+- **Multimedia/audio developer:** Parts VII-B → XIII → XXVIII
 
 ## Writing Standards
 
