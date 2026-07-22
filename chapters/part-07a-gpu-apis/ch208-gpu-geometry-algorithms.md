@@ -208,9 +208,17 @@ The sections below are ordered by geometry domain rather than CPU/GPU split. Whe
 97. [Subsurface Scattering Geometry](#97-subsurface-scattering-geometry)
 98. [GPU Geospatial Processing: Large-Scale Terrain](#98-gpu-geospatial-processing-large-scale-terrain)
 99. [Molecular Surface Computation](#99-molecular-surface-computation)
-100. [Library Landscape](#100-library-landscape)
-101. [Performance Reference](#101-performance-reference)
-102. [Integrations](#102-integrations)
+100. [Soft Body FEM and Projective Dynamics](#100-soft-body-fem-and-projective-dynamics)
+101. [Cage-Based Deformation: Mean Value and Green Coordinates](#101-cage-based-deformation-mean-value-and-green-coordinates)
+102. [Laplacian Mesh Editing and Interactive Deformation](#102-laplacian-mesh-editing-and-interactive-deformation)
+103. [Constrained Delaunay Refinement](#103-constrained-delaunay-refinement)
+104. [Minkowski Sum and GPU Motion Planning](#104-minkowski-sum-and-gpu-motion-planning)
+105. [Order-Independent Transparency](#105-order-independent-transparency)
+106. [GPU Polygon and Frustum Clipping](#106-gpu-polygon-and-frustum-clipping)
+107. [GPU Radix Sort as a Geometry Primitive](#107-gpu-radix-sort-as-a-geometry-primitive)
+108. [Library Landscape](#108-library-landscape)
+109. [Performance Reference](#109-performance-reference)
+110. [Integrations](#110-integrations)
 
 ---
 
@@ -13712,7 +13720,954 @@ void main() {
 
 ---
 
-## 100. Library Landscape
+## 100. Soft Body FEM and Projective Dynamics
+
+*Audience: systems developers, graphics application developers.*
+
+Finite element method (FEM) soft body simulation deforms a tetrahedral mesh under elastic forces derived from a continuum mechanics energy functional. Projective dynamics (Bouaziz et al. 2014) reformulates FEM as a sequence of local projections plus a global linear solve, enabling GPU parallelism across both steps. This is distinct from XPBD cloth (§50), which applies position constraints on surface triangles; FEM/PD operates on volumetric tetrahedra with material parameters (Young's modulus, Poisson ratio).
+
+### 100.1 Tetrahedral Mesh Construction from Surface
+
+Convert a watertight surface mesh (§89) to a tetrahedral volume mesh using constrained Delaunay tetrahedralization. The GPU accelerates the initial point insertion; CPU TetGen handles the constrained phase:
+
+```glsl
+// tet_classify.comp — classify surface samples as inside/outside via ray query
+layout(set=0,binding=0) readonly buffer SurfPts { vec3 pts[]; };
+layout(set=0,binding=1) uniform accelerationStructureEXT surfaceTLAS;
+layout(set=0,binding=2) writeonly buffer Inside { uint inside[]; };
+layout(local_size_x=64) in;
+void main() {
+    uint i  = gl_GlobalInvocationID.x;
+    vec3 p  = pts[i];
+    // Count intersections along +X ray; odd = inside
+    rayQueryEXT rq;
+    uint hits = 0u;
+    rayQueryInitializeEXT(rq, surfaceTLAS, gl_RayFlagsNoneEXT, 0xFF, p, 1e-4, vec3(1,0,0), 1e9);
+    while (rayQueryProceedEXT(rq))
+        if (rayQueryGetIntersectionTypeEXT(rq,false)==gl_RayQueryCandidateIntersectionTriangleEXT)
+            { hits++; rayQueryConfirmIntersectionEXT(rq); }
+    inside[i] = hits % 2u;
+}
+```
+
+[Source: Si "TetGen: A Delaunay-Based Quality Tetrahedral Mesh Generator", ACM TOMS 2015]
+
+### 100.2 Deformation Gradient and Elastic Force
+
+For each tetrahedron, compute the deformation gradient F = DS·Dm⁻¹ (D = deformed shape matrix, Dm = rest-shape matrix), then derive the elastic force from the corotational or neo-Hookean energy:
+
+```glsl
+// fem_elastic_force.comp — corotational FEM: compute nodal forces per tet
+layout(set=0,binding=0) readonly buffer RestPos  { vec3 rest[];  };
+layout(set=0,binding=1) readonly buffer CurPos   { vec3 cur[];   };
+layout(set=0,binding=2) readonly buffer Tets     { uvec4 tets[]; };
+layout(set=0,binding=3) readonly buffer DmInv    { mat3 DmInv[]; };  // precomputed rest inverse
+layout(set=0,binding=4) readonly buffer Material { float mu[]; float lambda[]; };
+layout(set=0,binding=5) buffer Forces { vec3 f[]; };  // accumulated per vertex
+layout(local_size_x=64) in;
+void main() {
+    uint t   = gl_GlobalInvocationID.x;
+    uvec4 vi = tets[t];
+    // Deformed shape matrix
+    mat3 Ds  = mat3(cur[vi.y]-cur[vi.x], cur[vi.z]-cur[vi.x], cur[vi.w]-cur[vi.x]);
+    mat3 F   = Ds * DmInv[t];
+    // Corotational: polar decompose F = R*S, compute stress from S
+    mat3 R, S; polarDecompose(F, R, S);
+    mat3 E   = S - mat3(1.0);  // Green strain (linearised)
+    float trE= E[0][0]+E[1][1]+E[2][2];
+    mat3 P   = R * (2.0*mu[t]*E + lambda[t]*trE*mat3(1.0));  // 1st Piola-Kirchhoff
+    // Nodal force: f_i = -P * DmInv^T * volume (scattered to vertices)
+    mat3 H   = -P * transpose(DmInv[t]) * tetVolume(rest, vi);
+    atomicAdd_vec3(f[vi.x], -(H[0]+H[1]+H[2]));
+    atomicAdd_vec3(f[vi.y],   H[0]);
+    atomicAdd_vec3(f[vi.z],   H[1]);
+    atomicAdd_vec3(f[vi.w],   H[2]);
+}
+```
+
+[Source: Sifakis & Barbic "FEM Simulation of 3D Deformable Solids", SIGGRAPH Course 2012; Irving et al. "Invertible Finite Elements for Robust Simulation of Large Deformation", SCA 2004]
+
+### 100.3 Projective Dynamics: Local Projection Step
+
+Projective dynamics (Bouaziz et al. 2014) replaces the nonlinear force evaluation with a local projection: for each constraint (tetrahedral volume, edge length, etc.), project the current positions onto the constraint manifold. Massively parallel across constraints:
+
+```glsl
+// pd_local_project.comp — PD local step: project tetrahedra onto volume constraint
+layout(set=0,binding=0) readonly buffer Pos      { vec3 pos[];  };
+layout(set=0,binding=1) readonly buffer Tets     { uvec4 tets[]; };
+layout(set=0,binding=2) readonly buffer RestVol  { float rv[];   };
+layout(set=0,binding=3) writeonly buffer Aux     { vec3 aux[];   };  // auxiliary positions p_i
+layout(local_size_x=64) in;
+void main() {
+    uint t   = gl_GlobalInvocationID.x;
+    uvec4 vi = tets[t];
+    vec3  p[4]; for(int k=0;k<4;k++) p[k] = pos[vi[k]];
+    // Current volume: V = dot(p1-p0, cross(p2-p0, p3-p0)) / 6
+    float V  = dot(p[1]-p[0], cross(p[2]-p[0], p[3]-p[0])) / 6.0;
+    // Project: scale positions uniformly to restore rest volume
+    float scale = cbrt(rv[t] / max(abs(V), 1e-8));
+    vec3 c = (p[0]+p[1]+p[2]+p[3])*0.25;
+    for (int k=0;k<4;k++) aux[t*4+k] = c + scale*(p[k]-c);
+}
+```
+
+[Source: Bouaziz et al. "Projective Dynamics: Fusing Constraint Projections for Fast Simulation", SIGGRAPH 2014]
+
+### 100.4 Projective Dynamics: Global Linear Solve
+
+The global step solves a fixed sparse linear system (the system matrix factors once at setup) for each iteration. Use a pre-factored Cholesky solve — compute the right-hand side on GPU, solve on CPU or GPU with cuSolver:
+
+```glsl
+// pd_global_rhs.comp — assemble RHS for PD global step
+layout(set=0,binding=0) readonly buffer Aux      { vec3 aux[];  };   // from local step
+layout(set=0,binding=1) readonly buffer Mass     { float m[];   };
+layout(set=0,binding=2) readonly buffer PrevPos  { vec3 s[];    };   // inertial target s = q + h²M⁻¹f_ext
+layout(set=0,binding=3) buffer RHS { vec3 rhs[]; };
+layout(push_constant) uniform PC { float h2; uint N_VERTS; } pc;  // h²
+layout(local_size_x=64) in;
+void main() {
+    uint v   = gl_GlobalInvocationID.x;
+    if (v >= pc.N_VERTS) return;
+    // RHS_i = M_i/h² * s_i + sum_{constraints c containing i} w_c * p_c
+    // Constraint auxiliary sums accumulated separately via atomicAdd
+    rhs[v]  = m[v]/pc.h2 * s[v];  // inertial term
+    // Constraint terms added by a second pass over constraints
+}
+// Then solve: (M/h² + sum w_c A_c^T A_c) * q_{n+1} = rhs
+// System matrix is constant → prefactor Cholesky once at startup
+```
+
+[Source: Bouaziz et al. 2014; Liu et al. "Fast Simulation of Mass-Spring Systems", SIGGRAPH Asia 2013]
+
+---
+
+## 101. Cage-Based Deformation: Mean Value and Green Coordinates
+
+*Audience: graphics application developers.*
+
+Cage-based deformation encloses a detailed mesh inside a coarse control cage. Moving cage vertices deforms the interior mesh via barycentric-like weights computed from the cage. Mean value coordinates (Floater 2003; Ju et al. 2005) and Green coordinates (Lipman et al. 2008) provide smooth, volume-preserving deformation. GPU precomputes per-vertex weights at bind time; runtime deformation is a weighted sum — embarrassingly parallel.
+
+### 101.1 Mean Value Coordinate Weight Computation (Bind)
+
+For each interior vertex v, integrate the mean value weights w_j(v) over each cage triangle by summing spherical wedge angles:
+
+```glsl
+// mvc_bind.comp — compute mean value coordinates for each mesh vertex wrt cage
+layout(set=0,binding=0) readonly buffer MeshPos  { vec3 mesh[];  };
+layout(set=0,binding=1) readonly buffer CagePos  { vec3 cage[];  };
+layout(set=0,binding=2) readonly buffer CageTris { uvec3 ctri[]; };
+layout(set=0,binding=3) writeonly buffer Weights { float w[];    };  // [N_MESH][N_CAGE]
+layout(push_constant) uniform PC { uint N_MESH; uint N_CAGE; uint N_TRI; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint v   = gl_GlobalInvocationID.x;
+    if (v >= pc.N_MESH) return;
+    vec3 p   = mesh[v];
+    float wSum = 0.0;
+    // Accumulate mean value weight for each cage vertex
+    for (uint t=0; t<pc.N_TRI; t++) {
+        uvec3 ci = ctri[t];
+        vec3 u[3]; float l[3];
+        for(int k=0;k<3;k++){ u[k]=normalize(cage[ci[k]]-p); l[k]=length(cage[ci[k]]-p); }
+        // Spherical triangle contribution (Ju et al. 2005 §3)
+        float theta[3];
+        theta[0] = 2.0*asin(length(u[1]-u[2])*0.5);
+        theta[1] = 2.0*asin(length(u[0]-u[2])*0.5);
+        theta[2] = 2.0*asin(length(u[0]-u[1])*0.5);
+        float h  = (theta[0]+theta[1]+theta[2])*0.5;
+        if (abs(PI-h)<1e-5) continue;  // on triangle plane
+        float c[3]; for(int k=0;k<3;k++) c[k]=2.0*sin(h)*sin(h-theta[k])/sin(theta[(k+1)%3])/sin(theta[(k+2)%3])-1.0;
+        float sign_ = (determinant(mat3(u[0],u[1],u[2]))<0)?-1.0:1.0;
+        float d[3]; for(int k=0;k<3;k++) d[k]=sign_*sqrt(1.0-c[k]*c[k]);
+        for(int k=0;k<3;k++){ float wi=(theta[k]-c[(k+2)%3]*theta[(k+1)%3]-c[(k+1)%3]*theta[(k+2)%3])/(l[k]*sin(theta[(k+1)%3])*d[(k+2)%3]); w[v*pc.N_CAGE+ci[k]]+=wi; wSum+=wi; }
+    }
+    // Normalise
+    for(uint c=0;c<pc.N_CAGE;c++) w[v*pc.N_CAGE+c] /= wSum;
+}
+```
+
+[Source: Ju et al. "Mean Value Coordinates for Closed Triangular Meshes", SIGGRAPH 2005; Floater "Mean Value Coordinates", CAGD 2003]
+
+### 101.2 Runtime MVC Deformation
+
+With precomputed weights, deform each mesh vertex as a weighted sum of displaced cage vertices — trivially parallel:
+
+```glsl
+// mvc_deform.comp — apply cage deformation to mesh vertices
+layout(set=0,binding=0) readonly buffer Weights    { float w[];     };  // [N_MESH][N_CAGE]
+layout(set=0,binding=1) readonly buffer CagePos    { vec3 cage[];   };  // deformed cage
+layout(set=0,binding=2) writeonly buffer MeshPosOut { vec3 mout[];  };
+layout(push_constant) uniform PC { uint N_MESH; uint N_CAGE; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint v  = gl_GlobalInvocationID.x;
+    if (v >= pc.N_MESH) return;
+    vec3 p  = vec3(0.0);
+    for (uint c=0; c<pc.N_CAGE; c++) p += w[v*pc.N_CAGE+c] * cage[c];
+    mout[v] = p;
+}
+```
+
+### 101.3 Green Coordinates (Conformal Cage)
+
+Green coordinates (Lipman et al. 2008) add normal-scaled terms to MVC so that the deformation is approximately conformal — preserving local shape under cage rotation:
+
+```glsl
+// green_deform.comp — Green coordinate deformation with normal scaling terms
+layout(set=0,binding=0) readonly buffer PhiWeights { float phi[]; };   // vertex weights [N_MESH][N_CAGE]
+layout(set=0,binding=1) readonly buffer PsiWeights { float psi[]; };   // normal weights [N_MESH][N_TRI]
+layout(set=0,binding=2) readonly buffer CagePos    { vec3 cage[];  };
+layout(set=0,binding=3) readonly buffer CageNorm   { vec3 cnor[];  };  // deformed cage face normals
+layout(set=0,binding=4) writeonly buffer MeshOut   { vec3 mout[];  };
+layout(push_constant) uniform PC { uint N_MESH; uint N_CAGE; uint N_TRI; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint v  = gl_GlobalInvocationID.x;
+    if (v >= pc.N_MESH) return;
+    vec3 p  = vec3(0.0);
+    for (uint c=0; c<pc.N_CAGE; c++) p += phi[v*pc.N_CAGE+c] * cage[c];
+    for (uint t=0; t<pc.N_TRI;  t++) p += psi[v*pc.N_TRI+t]  * cnor[t];
+    mout[v] = p;
+}
+```
+
+[Source: Lipman et al. "Green Coordinates", SIGGRAPH 2008; Ben-Chen et al. "Variational Harmonic Maps for Space Deformation", SIGGRAPH 2009]
+
+### 101.4 Cage Editing and Undo via Differential Coordinates
+
+Store the mesh deformation in differential (Laplacian) coordinates (§102) relative to the cage transform so that cage edits propagate smoothly and undo is cheap:
+
+```glsl
+// cage_differential.comp — convert mesh positions to cage-relative Laplacian coords
+layout(set=0,binding=0) readonly buffer MeshPos  { vec3 mesh[];  };
+layout(set=0,binding=1) readonly buffer MeshAdj  { uint adj[]; uint adjStart[]; };
+layout(set=0,binding=2) readonly buffer CageXform { mat4 xform; };  // cage rigid transform
+layout(set=0,binding=3) writeonly buffer Delta    { vec3 delta[]; };
+layout(local_size_x=64) in;
+void main() {
+    uint v   = gl_GlobalInvocationID.x;
+    vec3 p   = (inverse(xform)*vec4(mesh[v],1.0)).xyz;  // cage-local position
+    vec3 lap = vec3(0.0); uint deg = adjStart[v+1]-adjStart[v];
+    for (uint e=adjStart[v];e<adjStart[v+1];e++)
+        lap += (inverse(xform)*vec4(mesh[adjStart[e]],1.0)).xyz;
+    delta[v] = p - lap/float(deg);  // Laplacian coordinate in cage-local frame
+}
+```
+
+[Source: Sorkine et al. "Laplacian Surface Editing", SGP 2004 §102; Botsch & Sorkine "On Linear Variational Surface Deformation Methods", IEEE TVCG 2008]
+
+---
+
+## 102. Laplacian Mesh Editing and Interactive Deformation
+
+*Audience: graphics application developers.*
+
+Laplacian mesh editing (Sorkine et al. 2004) deforms a mesh by specifying a sparse set of handle constraints and solving a bilaplacian linear system to minimise changes in the Laplacian coordinates (differential coordinates that encode local shape). GPU compute accelerates the constraint-assembly and iterative CG solve; the system matrix factors once for a given handle topology.
+
+### 102.1 Cotangent Laplacian Assembly
+
+Assemble the cotangent-weighted Laplacian matrix L (§65.1 pattern) from the mesh connectivity. Store as a sparse CSR matrix:
+
+```glsl
+// lap_cotangent.comp — assemble cotangent weights for each half-edge
+layout(set=0,binding=0) readonly buffer Pos       { vec3 pos[];  };
+layout(set=0,binding=1) readonly buffer HalfEdge  { HalfEdgeDS he[]; };
+layout(set=0,binding=2) writeonly buffer CotWeight { float cot[]; };  // per half-edge weight
+layout(local_size_x=64) in;
+void main() {
+    uint e  = gl_GlobalInvocationID.x;
+    // Cotangent of the angle opposite to edge e in its face
+    uint vi = he[e].vert, vj = he[he[e].next].vert, vk = he[he[he[e].next].next].vert;
+    vec3 a  = pos[vi]-pos[vk], b = pos[vj]-pos[vk];
+    float cotA = dot(a,b) / max(length(cross(a,b)), 1e-8);
+    cot[e]  = cotA * 0.5;
+    // Symmetric: cot[twin(e)] added by the twin edge's pass
+}
+```
+
+[Source: Sorkine et al. "Laplacian Surface Editing", SGP 2004; Desbrun et al. "Implicit Fairing of Irregular Meshes Using Diffusion and Curvature Flow", SIGGRAPH 1999]
+
+### 102.2 Differential Coordinate Encoding
+
+Encode each vertex as its Laplacian coordinate δᵢ = Lᵢ·p (the difference between a vertex and its weighted neighbours). Handle vertices are constrained; the solve minimises ‖Lp − δ‖² subject to handle positions:
+
+```glsl
+// lap_delta.comp — compute differential (Laplacian) coordinates per vertex
+layout(set=0,binding=0) readonly buffer Pos       { vec3 pos[];     };
+layout(set=0,binding=1) readonly buffer AdjV      { uint adjV[];    };
+layout(set=0,binding=2) readonly buffer AdjW      { float adjW[];   };  // cotangent weights
+layout(set=0,binding=3) readonly buffer AdjStart  { uint adjStart[]; };
+layout(set=0,binding=4) writeonly buffer Delta    { vec3 delta[];   };
+layout(local_size_x=64) in;
+void main() {
+    uint v   = gl_GlobalInvocationID.x;
+    float wSum = 0.0; vec3 lap = vec3(0.0);
+    for (uint e=adjStart[v]; e<adjStart[v+1]; e++) {
+        lap  += adjW[e] * pos[adjV[e]];
+        wSum += adjW[e];
+    }
+    delta[v] = pos[v] - (wSum>0.0 ? lap/wSum : vec3(0.0));
+}
+```
+
+### 102.3 CG Solve for Handle-Constrained Deformation
+
+With handles fixed, solve the augmented system [L; λI_handles]·p = [δ; λ·c_handles] via conjugate gradient. One CG iteration per dispatch:
+
+```glsl
+// lap_cg_iter.comp — one CG iteration for Laplacian deformation solve
+layout(set=0,binding=0) readonly buffer A_val  { float Av[]; };   // sparse L^T L + λ I_handles
+layout(set=0,binding=1) readonly buffer A_col  { uint  Ac[]; };
+layout(set=0,binding=2) readonly buffer A_row  { uint  Ar[]; };
+layout(set=0,binding=3) buffer X    { vec3 x[]; };    // current solution
+layout(set=0,binding=4) buffer R    { vec3 r[]; };    // residual
+layout(set=0,binding=5) buffer P    { vec3 p[]; };    // search direction
+layout(set=0,binding=6) buffer Ap   { vec3 ap[]; };   // A·p
+layout(set=0,binding=7) buffer Alpha_beta { float alpha; float beta; float rr_old; float rr_new; };
+layout(local_size_x=64) in;
+void main() {
+    uint v   = gl_GlobalInvocationID.x;
+    // Ap = A * p (sparse matrix-vector multiply)
+    vec3 Apv = vec3(0.0);
+    for (uint e=Ar[v]; e<Ar[v+1]; e++) Apv += Av[e] * p[Ac[e]];
+    ap[v] = Apv;
+    // alpha, beta computed by CPU reduction between dispatches; apply x, r updates here
+    x[v] += alpha * p[v];
+    r[v] -= alpha * ap[v];
+}
+// CPU: compute rr_new = sum |r|², beta = rr_new/rr_old, update p: p = r + beta*p; repeat ~50 iters
+```
+
+[Source: Sorkine et al. 2004; Botsch & Sorkine 2008; Shewchuk "An Introduction to the Conjugate Gradient Method Without the Agonizing Pain", 1994]
+
+### 102.4 As-Rigid-As-Possible (ARAP) Surface Modelling
+
+ARAP (Sorkine & Alexa 2007) alternates between a local step (fit a rigid rotation to each vertex neighbourhood) and a global Laplacian solve. The local step is parallel; the global step reuses the same prefactored system as §102.3:
+
+```glsl
+// arap_local.comp — ARAP local step: fit rotation Rᵢ to each vertex neighbourhood
+layout(set=0,binding=0) readonly buffer RestPos { vec3 rest[];  };
+layout(set=0,binding=1) readonly buffer CurPos  { vec3 cur[];   };
+layout(set=0,binding=2) readonly buffer AdjV    { uint adjV[];  };
+layout(set=0,binding=3) readonly buffer AdjW    { float adjW[]; };
+layout(set=0,binding=4) readonly buffer AdjStart{ uint adjStart[]; };
+layout(set=0,binding=5) writeonly buffer Rotations { mat3 R[];  };
+layout(local_size_x=64) in;
+void main() {
+    uint v   = gl_GlobalInvocationID.x;
+    // Covariance: S = sum_j w_ij (rest_i - rest_j)^T (cur_i - cur_j)
+    mat3 S   = mat3(0.0);
+    for (uint e=adjStart[v]; e<adjStart[v+1]; e++) {
+        uint j = adjV[e]; float w = adjW[e];
+        vec3 dr= rest[v]-rest[j], dc = cur[v]-cur[j];
+        S += w * outerProduct(dr, dc);
+    }
+    // SVD of S → R = V U^T
+    mat3 U,V; vec3 sigma; svd3x3(S, U, sigma, V);
+    R[v] = V * transpose(U);
+}
+// Global step: RHS_i = sum_j w_ij/2 * (Ri+Rj)*(rest_i-rest_j); solve same Laplacian system
+```
+
+[Source: Sorkine & Alexa "As-Rigid-As-Possible Surface Modeling", SGP 2007; §66.3 ARAP UV parameterization uses the same local step]
+
+---
+
+## 103. Constrained Delaunay Refinement
+
+*Audience: systems developers.*
+
+Quality mesh generation for FEM (§100) and simulation requires triangles with bounded aspect ratio (no slivers). Ruppert's algorithm (1995) and Chew's second algorithm iteratively insert circumcentre points to eliminate poor-quality triangles. GPU parallelism targets the parallel circumcentre cavity identification and point insertion, with CPU fallback for conflict resolution.
+
+### 103.1 Triangle Quality Classification
+
+Classify all triangles by their minimum angle (or aspect ratio). Triangles with minimum angle < θ_min (typically 20°–25°) are queued for refinement:
+
+```glsl
+// delref_quality.comp — classify triangles by minimum angle
+layout(set=0,binding=0) readonly buffer Pos  { vec3 pos[];  };
+layout(set=0,binding=1) readonly buffer Tris { uvec3 tri[]; };
+layout(set=0,binding=2) buffer BadTris { uint bad[]; uint count; };
+layout(push_constant) uniform PC { float minAngle; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint t  = gl_GlobalInvocationID.x;
+    vec3 a  = pos[tri[t].x], b = pos[tri[t].y], c = pos[tri[t].z];
+    float A = acos(clamp(dot(normalize(b-a),normalize(c-a)),-1.0,1.0));
+    float B = acos(clamp(dot(normalize(a-b),normalize(c-b)),-1.0,1.0));
+    float C = 3.14159 - A - B;
+    if (min(A,min(B,C)) < pc.minAngle) {
+        uint slot = atomicAdd(count, 1u);
+        bad[slot]  = t;
+    }
+}
+```
+
+[Source: Ruppert "A Delaunay Refinement Algorithm for Quality 2-Dimensional Mesh Generation", JACM 1995; Shewchuk "Delaunay Refinement Algorithms for Triangular Mesh Generation", Computational Geometry 2002]
+
+### 103.2 Circumcentre Computation and Encroachment Test
+
+For each bad triangle, compute its circumcentre. If the circumcentre is inside the domain and does not encroach on any constrained edge (i.e., does not fall in any constrained edge's diametral circle), it can be inserted:
+
+```glsl
+// delref_circumcentre.comp — compute circumcentre and test encroachment
+layout(set=0,binding=0) readonly buffer Pos      { vec3 pos[];  };
+layout(set=0,binding=1) readonly buffer Tris     { uvec3 tri[]; };
+layout(set=0,binding=2) readonly buffer BadTris  { uint bad[];  uint count; };
+layout(set=0,binding=3) readonly buffer ConstrEdges { uvec2 cedges[]; uint nCE; };
+layout(set=0,binding=4) writeonly buffer InsertPts { vec3 ipts[]; uint valid[]; };
+layout(local_size_x=64) in;
+void main() {
+    uint li = gl_GlobalInvocationID.x;
+    if (li >= count) return;
+    uint t  = bad[li];
+    vec3 a  = pos[tri[t].x], b = pos[tri[t].y], c = pos[tri[t].z];
+    // Circumcentre in 2D (project to XZ plane for terrain meshes)
+    vec2 cc = circumcentre2D(a.xz, b.xz, c.xz);
+    bool enc = false;
+    for (uint e=0; e<nCE && !enc; e++) {
+        vec2 p = pos[cedges[e].x].xz, q = pos[cedges[e].y].xz;
+        enc = dot(cc-(p+q)*0.5, cc-(p+q)*0.5) < dot((q-p)*0.5,(q-p)*0.5);
+    }
+    ipts[li] = vec3(cc.x, 0.0, cc.y);
+    valid[li] = enc ? 0u : 1u;
+}
+```
+
+### 103.3 Parallel Point Insertion with Conflict Detection
+
+Insert non-conflicting circumcentres in parallel. Two insertions conflict if their cavities (circumscribed empty circles) overlap. Detect and defer conflicts:
+
+```glsl
+// delref_insert.comp — parallel insertion with cavity conflict detection
+layout(set=0,binding=0) readonly buffer InsertPts { vec3 ipts[];  };
+layout(set=0,binding=1) readonly buffer Valid     { uint valid[]; uint count; };
+layout(set=0,binding=2) buffer Pos   { vec3 pos[];   };
+layout(set=0,binding=3) buffer Tris  { uvec3 tri[];  };
+layout(set=0,binding=4) buffer ConflictMask { uint conflict[]; };
+layout(local_size_x=64) in;
+void main() {
+    uint i  = gl_GlobalInvocationID.x;
+    if (i>=count || !valid[i]) return;
+    // Find all triangles whose circumcircle contains ipts[i] (the cavity)
+    // If another insertion point j is also in this cavity, mark as conflict
+    for (uint j=0; j<count; j++) {
+        if (j==i || !valid[j]) continue;
+        if (pointInCircumcircle(ipts[j], pos, tri, cavityTris[i])) {
+            atomicOr(conflict[i], 1u);
+            atomicOr(conflict[j], 1u);
+        }
+    }
+}
+// Non-conflicting points (conflict[i]==0) are inserted; conflicting points deferred to next round
+```
+
+[Source: Shewchuk 2002; Chernikov & Chrisochoides "Parallel Guaranteed Quality Planar Delaunay Mesh Generation by Concurrent Point Insertion", SIAM 2006]
+
+### 103.4 Bowyer-Watson Cavity Retriangulation
+
+After inserting a point, retriangulate its cavity (the set of triangles whose circumcircle contains the new point) using the Bowyer-Watson algorithm:
+
+```glsl
+// bowyer_watson.comp — cavity retriangulation after point insertion
+layout(set=0,binding=0) buffer Pos  { vec3 pos[];  };
+layout(set=0,binding=1) buffer Tris { uvec3 tri[]; };
+layout(set=0,binding=2) readonly buffer Cavity { uint cavTris[]; uint nCav; uint newVert; };
+layout(set=0,binding=3) buffer BoundaryEdges { uvec2 bEdge[]; uint nBE; };
+layout(local_size_x=1) in;  // serial per-point; parallelism across non-conflicting points
+void main() {
+    // Collect boundary edges of cavity (edges shared by exactly one cavity triangle)
+    for (uint i=0;i<nCav;i++) for(int e=0;e<3;e++) {
+        uvec2 edge = sortedEdge(tri[cavTris[i]], e);
+        bool inner = false;
+        for(uint j=0;j<nCav&&!inner;j++) if(j!=i&&hasEdge(tri[cavTris[j]],edge)) inner=true;
+        if (!inner) { uint s=atomicAdd(nBE,1u); bEdge[s]=edge; }
+    }
+    // Delete cavity triangles; connect new vertex to each boundary edge
+    for (uint e=0; e<nBE; e++) {
+        uint slot = allocTri();
+        tri[slot] = uvec3(newVert, bEdge[e].x, bEdge[e].y);
+    }
+}
+```
+
+[Source: Bowyer "Computing Dirichlet Tessellations", Computer Journal 1981; Watson "Computing the n-Dimensional Delaunay Tessellation with Application to Voronoi Polytopes", Computer Journal 1981]
+
+---
+
+## 104. Minkowski Sum and GPU Motion Planning
+
+*Audience: systems developers.*
+
+The Minkowski sum A⊕B of two convex shapes A and B is the shape swept by placing B's centre on every point of A; it is the configuration-space obstacle (C-obstacle) for robot motion planning. GPU computation of Minkowski sums on convex polytopes and GPU-parallel probabilistic roadmap (PRM) and RRT planning enable real-time collision-free path queries.
+
+### 104.1 Minkowski Sum of Convex Polytopes (GJK-Based)
+
+For two convex polytopes A and B with n_A and n_B vertices respectively, the Minkowski sum has at most O(n_A · n_B) vertices. GPU enumerates candidate extreme points and culls non-hull points:
+
+```glsl
+// mink_sum_vertices.comp — generate Minkowski sum vertex candidates
+layout(set=0,binding=0) readonly buffer VertsA { vec3 vA[]; };
+layout(set=0,binding=1) readonly buffer VertsB { vec3 vB[]; };
+layout(set=0,binding=2) writeonly buffer SumVerts { vec3 sv[]; };
+layout(local_size_x=16,local_size_y=16) in;
+void main() {
+    uint i  = gl_GlobalInvocationID.x;
+    uint j  = gl_GlobalInvocationID.y;
+    if (i >= N_A || j >= N_B) return;
+    sv[i*N_B+j] = vA[i] + vB[j];  // Minkowski sum vertex candidate
+}
+// Then run §82 GPU convex hull on sv[] to get the actual Minkowski sum hull
+```
+
+[Source: Edelsbrunner "Algorithms in Combinatorial Geometry", Springer 1987; van den Bergen "Collision Detection in Interactive 3D Environments", Morgan Kaufmann 2004]
+
+### 104.2 Minkowski Difference for GJK Collision
+
+The GJK distance algorithm (§8) operates implicitly on the Minkowski difference A⊖B = A⊕(−B) via support functions. GPU parallelises GJK for a large batch of shape pairs simultaneously:
+
+```glsl
+// gjk_batch.comp — GJK distance for a batch of (convex A, convex B) pairs
+layout(set=0,binding=0) readonly buffer ShapeA { ConvexShape shapesA[]; };
+layout(set=0,binding=1) readonly buffer ShapeB { ConvexShape shapesB[]; };
+layout(set=0,binding=2) writeonly buffer Dist  { float dist[]; };  // negative = penetrating
+layout(local_size_x=64) in;
+void main() {
+    uint p  = gl_GlobalInvocationID.x;
+    ConvexShape A = shapesA[p], B = shapesB[p];
+    vec3 v  = A.centre - B.centre;
+    vec3 simplex[4]; int nSimplex = 0;
+    for (int iter=0; iter<64; iter++) {
+        // Support on Minkowski difference: sup_{A⊖B}(v) = sup_A(v) - sup_B(-v)
+        vec3 w  = support(A, v) - support(B, -v);
+        if (dot(v,v) - dot(w,v) < 1e-8) { dist[p]=length(v); return; }
+        addToSimplex(simplex, nSimplex, w);
+        v = nearestSimplexPoint(simplex, nSimplex);
+    }
+    dist[p] = -1.0;  // penetrating
+}
+```
+
+[Source: Gilbert et al. "A Fast Procedure for Computing the Distance Between Complex Objects in Three-Dimensional Space", IEEE T-RA 1988; §8]
+
+### 104.3 Probabilistic Roadmap (PRM) on GPU
+
+GPU-parallel PRM builds a configuration-space roadmap by sampling random configurations, testing each for collision (§104.2 GJK batch), and connecting collision-free neighbours:
+
+```glsl
+// prm_sample.comp — sample random configurations and test collision-free
+layout(set=0,binding=0) readonly buffer BlueNoise { vec2 bn[]; };
+layout(set=0,binding=1) readonly buffer Obstacles { ConvexShape obs[]; };
+layout(set=0,binding=2) buffer Roadmap { vec3 configs[]; uint count; };
+layout(push_constant) uniform PC { vec3 cMin; vec3 cRange; uint N_SAMPLE; uint N_OBS; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint s   = gl_GlobalInvocationID.x;
+    if (s >= pc.N_SAMPLE) return;
+    vec3 q   = pc.cMin + vec3(bn[s*3%BN_SIZE],bn[(s*3+1)%BN_SIZE].x,bn[(s*3+2)%BN_SIZE].x)*pc.cRange;
+    // Test q against all obstacles via GJK
+    bool free = true;
+    for (uint o=0; o<pc.N_OBS && free; o++) {
+        ConvexShape robot = robotAt(q);  // robot shape at config q
+        if (gjkPenetrating(robot, obs[o])) free=false;
+    }
+    if (free) { uint slot=atomicAdd(count,1u); configs[slot]=q; }
+}
+```
+
+[Source: Kavraki et al. "Probabilistic Roadmaps for Path Planning in High-Dimensional Configuration Spaces", IEEE T-RA 1996; Lauterbach et al. "gProximity: Hierarchical GPU-Based Operations for Collision and Distance Queries", EG 2010]
+
+### 104.4 RRT Nearest-Neighbour on GPU
+
+Rapidly-exploring random tree (RRT) nearest-neighbour search — finding the closest existing tree node to a random sample — is the bottleneck. GPU parallelises the linear search across all tree nodes:
+
+```glsl
+// rrt_nearest.comp — find nearest tree node to random sample q_rand
+layout(set=0,binding=0) readonly buffer Tree   { vec3 nodes[]; uint treeSize; };
+layout(set=0,binding=1) readonly buffer QRand  { vec3 qRand;  };
+layout(set=0,binding=2) buffer NearestIdx { uint idx; float dist; };
+layout(local_size_x=256) in;
+shared uint sIdx[256]; shared float sDist[256];
+void main() {
+    uint i  = gl_GlobalInvocationID.x;
+    uint li = gl_LocalInvocationID.x;
+    float d = (i < treeSize) ? length(nodes[i]-qRand) : 1e30;
+    sIdx[li]=i; sDist[li]=d; barrier();
+    for (uint s=128u;s>0u;s>>=1) {
+        if (li<s && sDist[li+s]<sDist[li]) { sDist[li]=sDist[li+s]; sIdx[li]=sIdx[li+s]; }
+        barrier();
+    }
+    if (li==0) { atomicMin_float_idx(dist, idx, sDist[0], sIdx[0]); }
+}
+```
+
+[Source: LaValle "Rapidly-Exploring Random Trees: A New Tool for Path Planning", TR 1998; GPU RRT: Murray et al. "GPU Acceleration of the Fast Marching Method", Parallel Computing 2009]
+
+---
+
+## 105. Order-Independent Transparency
+
+*Audience: graphics application developers.*
+
+Transparent geometry must be composited in back-to-front depth order, but sorting draw calls per-frame is expensive and breaks GPU parallelism for complex scenes (particle systems, hair, foliage). Order-independent transparency (OIT) algorithms resolve alpha blending on the GPU without sorting: per-pixel linked lists (PPLL), k-buffer, and weighted blended OIT (WBOIT) cover the quality/performance trade-off.
+
+### 105.1 Per-Pixel Linked List Construction
+
+Append each transparent fragment to a per-pixel linked list stored in a flat buffer. A head-pointer image stores the list head per pixel; atomic exchange chains fragments together:
+
+```glsl
+// oit_ppll_build.frag — append fragment to per-pixel linked list
+layout(set=0,binding=0, r32ui) uniform uimage2D headImg;   // per-pixel head pointer
+layout(set=0,binding=1) buffer FragList { OITFragment frags[]; uint count; };
+layout(location=0) in vec4 fragColor;
+void main() {
+    uint slot = atomicAdd(count, 1u);
+    if (slot >= MAX_FRAGS) return;
+    frags[slot].color = packUnorm4x8(fragColor);
+    frags[slot].depth = gl_FragCoord.z;
+    // Atomically prepend to per-pixel list
+    uint prev = imageAtomicExchange(headImg, ivec2(gl_FragCoord.xy), slot);
+    frags[slot].next = prev;
+}
+```
+
+[Source: Yang et al. "Real-Time Concurrent Linked List Construction on the GPU", EG 2010; Crassin "OIT and GBuffer Compositing Using the New D3D11 Atomic Counting and UAVs", NVIDIA 2010]
+
+### 105.2 Per-Pixel Linked List Resolve (Sort and Blend)
+
+In a fullscreen pass, traverse the linked list for each pixel, sort fragments by depth, and composite back-to-front:
+
+```glsl
+// oit_ppll_resolve.comp — sort and blend per-pixel fragment list
+layout(set=0,binding=0, r32ui) uniform readonly uimage2D headImg;
+layout(set=0,binding=1) readonly buffer FragList { OITFragment frags[]; };
+layout(set=0,binding=2, rgba16f) uniform writeonly image2D outColor;
+layout(local_size_x=8,local_size_y=8) in;
+void main() {
+    ivec2 pix   = ivec2(gl_GlobalInvocationID.xy);
+    uint  head  = imageLoad(headImg, pix).r;
+    // Collect up to MAX_LAYERS fragments into a local array
+    uint  idx[MAX_LAYERS]; int n=0;
+    for (uint cur=head; cur!=0xFFFFFFFF && n<MAX_LAYERS; cur=frags[cur].next) idx[n++]=cur;
+    // Insertion sort by depth (small n: 4-16 typical)
+    for(int i=1;i<n;i++) { uint k=idx[i]; int j=i-1;
+        while(j>=0 && frags[idx[j]].depth < frags[k].depth) { idx[j+1]=idx[j]; j--; } idx[j+1]=k; }
+    // Back-to-front alpha blend
+    vec4 color = vec4(0.0);
+    for(int i=0;i<n;i++) {
+        vec4 fc = unpackUnorm4x8(frags[idx[i]].color);
+        color   = fc.a*fc + (1.0-fc.a)*color;
+    }
+    imageStore(outColor, pix, color);
+}
+```
+
+### 105.3 Weighted Blended OIT (McGuire & Bavoil 2013)
+
+WBOIT avoids sorting entirely by accumulating a weighted sum and weight sum in two render targets. The final composite divides out the weights. Approximate but hardware-friendly and suitable for particles:
+
+```glsl
+// wboit_accum.frag — accumulate weighted OIT into two render targets
+layout(location=0) out vec4 accumRT;   // sum: w(z) * premultAlpha(color)
+layout(location=1) out float revealRT; // product: (1 - alpha) per pixel
+in vec4 fragColor;
+void main() {
+    float z = gl_FragCoord.z;
+    // McGuire & Bavoil weight function: balances near/far coverage
+    float w = clamp(pow(min(1.0, fragColor.a*10.0)+0.01, 3.0)*1e8
+              * pow(1.0-z*0.9, 3.0), 1e-2, 3e3);
+    accumRT  = vec4(fragColor.rgb*fragColor.a, fragColor.a) * w;
+    revealRT = fragColor.a;  // blended with glBlendFunc(ZERO, ONE_MINUS_SRC_ALPHA)
+}
+```
+
+```glsl
+// wboit_composite.frag — reconstruct final colour from WBOIT accum buffers
+uniform sampler2D accumTex;
+uniform sampler2D revealTex;
+in vec2 texUV;
+void main() {
+    vec4  accum  = texture(accumTex,  texUV);
+    float reveal = texture(revealTex, texUV).r;
+    if (reveal >= 1.0 - 1e-4) discard;  // fully opaque: skip
+    fragColor = vec4(accum.rgb / max(accum.a, 1e-5), 1.0-reveal);
+}
+```
+
+[Source: McGuire & Bavoil "Weighted Blended Order-Independent Transparency", JCGT 2013]
+
+### 105.4 K-Buffer Stochastic Transparency
+
+K-buffer (Sintorn & Assarsson 2009) keeps only the k nearest fragments per pixel. For k=4, use a 4-entry insertion sort in the fragment shader with atomic compare-and-swap on the sorted buffer:
+
+```glsl
+// kbuffer_build.frag — maintain sorted k-nearest fragments per pixel
+layout(set=0,binding=0) buffer KBuffer { uint64_t kbuf[][K]; };  // packed depth+color, K per pixel
+in vec4 fragColor;
+void main() {
+    ivec2 pix  = ivec2(gl_FragCoord.xy);
+    uint  flat = pix.y*WIDTH+pix.x;
+    uint64_t entry = (uint64_t(floatBitsToUint(gl_FragCoord.z))<<32)|uint64_t(packUnorm4x8(fragColor));
+    // Insert entry into sorted k-buffer at this pixel (max depth evicted)
+    for (int k=0; k<K; k++) {
+        uint64_t old = atomicMax(kbuf[flat][k], entry);
+        if (old == 0UL || entry < old) break;  // inserted in sorted position
+        entry = max(entry, old);  // propagate evicted entry to next slot
+    }
+}
+```
+
+[Source: Sintorn & Assarsson "A Real-Time Shadow Algorithm for Unstructured Meshes", SIGGRAPH 2009; Myers & Bavoil "Stochastic Transparency", I3D 2007]
+
+---
+
+## 106. GPU Polygon and Frustum Clipping
+
+*Audience: systems developers, graphics application developers.*
+
+Clipping geometry against a frustum or arbitrary half-spaces is required for: shadow map rendering (clip to light frustum), portal rendering, decal projection (§38), constructive solid geometry (§63), and conservative rasterisation. GPU Sutherland-Hodgman clips polygons against each plane independently; hardware clipping handles triangle-level frustum culling automatically, but compute-shader clipping is needed for non-standard clip volumes.
+
+### 106.1 Sutherland-Hodgman on GPU (Per-Polygon Thread)
+
+Run the Sutherland-Hodgman algorithm independently for each polygon. Each thread processes one input polygon against all clip planes, outputting a clipped polygon:
+
+```glsl
+// sh_clip.comp — Sutherland-Hodgman polygon clipping against N half-spaces
+layout(set=0,binding=0) readonly buffer InPolys   { Polygon inP[];  };   // variable-length vertex lists
+layout(set=0,binding=1) readonly buffer ClipPlanes { vec4 planes[]; };   // ax+by+cz+d≥0 = inside
+layout(set=0,binding=2) writeonly buffer OutPolys  { Polygon outP[]; };
+layout(push_constant) uniform PC { uint N_POLYS; uint N_PLANES; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint poly = gl_GlobalInvocationID.x;
+    if (poly >= pc.N_POLYS) return;
+    // Copy input polygon to local registers (≤16 vertices typical)
+    vec3  buf[32]; int nv = inP[poly].n;
+    for(int i=0;i<nv;i++) buf[i]=inP[poly].v[i];
+    for (uint pl=0; pl<pc.N_PLANES; pl++) {
+        vec4  P = planes[pl];
+        vec3  tmp[32]; int nt=0;
+        for (int i=0; i<nv; i++) {
+            vec3 a=buf[i], b=buf[(i+1)%nv];
+            bool aIn=(dot(P.xyz,a)+P.w)>=0.0, bIn=(dot(P.xyz,b)+P.w)>=0.0;
+            if (aIn) tmp[nt++]=a;
+            if (aIn!=bIn) {
+                float t=(dot(P.xyz,a)+P.w)/(dot(P.xyz,a)-dot(P.xyz,b));
+                tmp[nt++]=mix(a,b,t);
+            }
+        }
+        nv=nt; for(int i=0;i<nv;i++) buf[i]=tmp[i];
+        if (nv<3) break;
+    }
+    outP[poly].n=nv; for(int i=0;i<nv;i++) outP[poly].v[i]=buf[i];
+}
+```
+
+[Source: Sutherland & Hodgman "Reentrant Polygon Clipping", CACM 1974; Blinn & Newell "Clipping Using Homogeneous Coordinates", SIGGRAPH 1978]
+
+### 106.2 Triangle Frustum Culling via Mesh Shader Amplification
+
+The task/amplification shader phase (§85.2 mesh shader pattern) naturally implements per-cluster frustum culling before spawning mesh shader workgroups:
+
+```glsl
+// frustum_cull.task.glsl — amplification shader: cull clusters against view frustum
+layout(local_size_x=32) in;
+taskPayloadSharedEXT uint visibleClusters[32];
+void main() {
+    uint c   = gl_GlobalInvocationID.x;
+    bool vis = sphereInFrustum(clusterBounds[c].sphere, frustumPlanes);
+    // Stream compaction via ballot: emit only visible clusters
+    uvec4 ballot = subgroupBallot(vis);
+    uint  nVis   = subgroupBallotBitCount(ballot);
+    if (gl_LocalInvocationID.x==0) EmitMeshTasksEXT(nVis,1,1);
+    if (vis) {
+        uint slot = subgroupBallotExclusiveBitCount(ballot);
+        visibleClusters[slot] = c;
+    }
+}
+```
+
+[Source: Wihlidal 2016 §90; Kubisch 2018; Harris "GPU-Driven Rendering Pipelines", SIGGRAPH 2015]
+
+### 106.3 Conservative Rasterisation for Voxelisation
+
+Conservative rasterisation expands each triangle outward so every voxel column touched by the triangle is rasterised — required for §41 solid voxelisation. Implement via geometry shader triangle expansion or the `VK_EXT_conservative_rasterization` extension:
+
+```glsl
+// conservative_rast.geom — expand triangle for conservative rasterisation
+layout(triangles) in;
+layout(triangle_strip, max_vertices=3) out;
+uniform vec2 pixelSize;  // 1/viewport
+void main() {
+    vec2 p[3]; for(int i=0;i<3;i++) p[i]=gl_in[i].gl_Position.xy/gl_in[i].gl_Position.w;
+    // Edge half-planes and their outward normals (scaled by half-pixel diagonal)
+    float diag = length(pixelSize)*0.5*sqrt(2.0);
+    for (int i=0;i<3;i++) {
+        vec2 e   = p[(i+1)%3]-p[i];
+        vec2 n   = normalize(vec2(-e.y,e.x));
+        p[i]    += n*diag;
+    }
+    for (int i=0;i<3;i++) {
+        gl_Position=vec4(p[i]*gl_in[i].gl_Position.w, gl_in[i].gl_Position.zw);
+        EmitVertex();
+    }
+    EndPrimitive();
+}
+```
+
+[Source: Hasselgren et al. "Conservative Rasterization", GPU Gems 2 2005; §41 voxelisation]
+
+### 106.4 Clip-Space W-Buffer and Homogeneous Clipping
+
+Clipping in homogeneous coordinates before the perspective divide handles the near-plane clipping case exactly, preventing division-by-zero artefacts for triangles crossing the camera:
+
+```glsl
+// homogeneous_clip.comp — clip triangle in homogeneous space against w=ε near plane
+layout(set=0,binding=0) readonly buffer InTris  { vec4 hVerts[][3]; };  // homogeneous clip coords
+layout(set=0,binding=1) buffer OutTris { vec4 oVerts[][3]; uint count; };
+layout(local_size_x=64) in;
+void main() {
+    uint t  = gl_GlobalInvocationID.x;
+    vec4 v[3]; for(int i=0;i<3;i++) v[i]=hVerts[t][i];
+    float eps = 1e-4;
+    // Sutherland-Hodgman against w≥ε (near plane in homogeneous space)
+    vec4 out_[4]; int no=0;
+    for(int i=0;i<3;i++) {
+        vec4 a=v[i], b=v[(i+1)%3];
+        bool aIn=(a.w>=eps), bIn=(b.w>=eps);
+        if(aIn) out_[no++]=a;
+        if(aIn!=bIn) { float t2=(a.w-eps)/(a.w-b.w); out_[no++]=mix(a,b,t2); }
+    }
+    // Fan-triangulate out_ into output
+    for(int i=1;i<no-1;i++) {
+        uint s=atomicAdd(count,1u);
+        oVerts[s][0]=out_[0]; oVerts[s][1]=out_[i]; oVerts[s][2]=out_[i+1];
+    }
+}
+```
+
+[Source: Blinn & Newell 1978; Heckbert & Moreton "Interpolation for Polygon Texture Mapping and Shading", State of the Art in Computer Graphics 1991]
+
+---
+
+## 107. GPU Radix Sort as a Geometry Primitive
+
+*Audience: systems developers.*
+
+Radix sort underlies a surprising fraction of GPU geometry algorithms: Morton code sorting for BVH construction (§70), particle bucket assignment (§11), mesh edge/face key sorting for adjacency construction (§67, §82), histogram prefix sums for stream compaction (§10, §33), and order-independent transparency (§105). This section presents the canonical 4-pass GPU radix sort (Merrill & Grimshaw 2010 / CUB/Thrust pattern) in Vulkan compute, applicable as a geometry primitive throughout the chapter.
+
+### 107.1 Histogram Pass: Count Digit Frequencies
+
+For each 2-bit digit position, count the frequency of each of the 4 digit values within each thread block:
+
+```glsl
+// radix_histogram.comp — count 2-bit digit frequencies per workgroup
+layout(set=0,binding=0) readonly buffer Keys   { uint keys[];  };
+layout(set=0,binding=1) buffer Histograms { uint hist[N_WORKGROUPS][4]; };
+layout(push_constant) uniform PC { uint N; uint bitOffset; } pc;
+layout(local_size_x=256) in;
+shared uint sharedHist[4];
+void main() {
+    if (gl_LocalInvocationID.x < 4u) sharedHist[gl_LocalInvocationID.x]=0u;
+    barrier();
+    uint i  = gl_GlobalInvocationID.x;
+    if (i < pc.N) {
+        uint digit = (keys[i] >> pc.bitOffset) & 3u;
+        atomicAdd(sharedHist[digit], 1u);
+    }
+    barrier();
+    if (gl_LocalInvocationID.x < 4u)
+        hist[gl_WorkGroupID.x][gl_LocalInvocationID.x] = sharedHist[gl_LocalInvocationID.x];
+}
+```
+
+[Source: Merrill & Grimshaw "Revisiting Sorting for GPGPU Stream Architectures", PACT 2010; CUB DeviceRadixSort]
+
+### 107.2 Prefix Sum (Scan) Across Histograms
+
+Exclusive prefix-sum the per-workgroup histograms to produce the global scatter offsets for each digit value:
+
+```glsl
+// radix_scan.comp — exclusive prefix sum of histograms across workgroups
+layout(set=0,binding=0) readonly buffer Histograms { uint hist[N_WORKGROUPS][4]; };
+layout(set=0,binding=1) writeonly buffer Offsets   { uint offsets[N_WORKGROUPS][4]; };
+layout(local_size_x=N_WORKGROUPS) in;
+shared uint sharedScan[N_WORKGROUPS];
+void main() {
+    uint digit = gl_WorkGroupID.x;  // one workgroup per digit value
+    uint wg    = gl_LocalInvocationID.x;
+    sharedScan[wg] = (wg < N_WORKGROUPS) ? hist[wg][digit] : 0u;
+    barrier();
+    // Hillis-Steele inclusive scan
+    for (uint s=1u; s<N_WORKGROUPS; s<<=1) {
+        uint v = (wg>=s) ? sharedScan[wg-s] : 0u;
+        barrier(); sharedScan[wg] += v; barrier();
+    }
+    // Convert to exclusive by shifting right
+    offsets[wg][digit] = (wg>0) ? sharedScan[wg-1] : 0u;
+}
+```
+
+[Source: Harris et al. "Parallel Prefix Sum (Scan) with CUDA", GPU Gems 3 2007; Hillis & Steele "Data Parallel Algorithms", CACM 1986]
+
+### 107.3 Scatter Pass: Place Keys at Computed Offsets
+
+Each thread computes its output position from the workgroup-local prefix sum and the global offset, then scatters the key-value pair:
+
+```glsl
+// radix_scatter.comp — scatter keys and values to sorted positions
+layout(set=0,binding=0) readonly buffer KeysIn   { uint keysIn[];   };
+layout(set=0,binding=1) readonly buffer ValsIn   { uint valsIn[];   };
+layout(set=0,binding=2) readonly buffer Offsets  { uint offsets[][4]; };
+layout(set=0,binding=3) writeonly buffer KeysOut { uint keysOut[];  };
+layout(set=0,binding=4) writeonly buffer ValsOut { uint valsOut[];  };
+layout(push_constant) uniform PC { uint N; uint bitOffset; } pc;
+layout(local_size_x=256) in;
+shared uint sharedRanks[256];
+void main() {
+    uint i     = gl_GlobalInvocationID.x;
+    uint li    = gl_LocalInvocationID.x;
+    uint wg    = gl_WorkGroupID.x;
+    uint digit = (i < pc.N) ? (keysIn[i] >> pc.bitOffset) & 3u : 0u;
+    // Compute local rank within workgroup for this digit using shared ballot
+    uint rank  = localRank(digit, li);  // count of same digit before li
+    sharedRanks[li] = offsets[wg][digit] + rank;
+    barrier();
+    if (i < pc.N) { keysOut[sharedRanks[li]]=keysIn[i]; valsOut[sharedRanks[li]]=valsIn[i]; }
+}
+```
+
+[Source: Merrill & Grimshaw 2010; Satish et al. "Designing Efficient Sorting Algorithms for Manycore GPUs", IPDPS 2009]
+
+### 107.4 Full 32-Bit Sort and Application to Geometry
+
+Compose 16 passes of 2-bit radix sort (or 8 passes of 4-bit) to sort 32-bit keys. Apply to geometry: sort triangle indices by Morton code (§70.1) for BVH construction, or sort vertex indices by material ID (§91.3 wavefront path tracing), or sort particle cell IDs for spatial hash (§17):
+
+```glsl
+// morton_sort_dispatch.comp — sort primitives by 30-bit Morton code for LBVH
+layout(set=0,binding=0) readonly buffer Centers { vec3 cen[]; };
+layout(set=0,binding=1) writeonly buffer MortonKeys { uint mortonKey[]; };
+layout(set=0,binding=2) writeonly buffer SortVals   { uint triIdx[];    };
+layout(push_constant) uniform PC { vec3 sceneMin; float invSceneSize; uint N; } pc;
+layout(local_size_x=64) in;
+void main() {
+    uint t   = gl_GlobalInvocationID.x;
+    if (t >= pc.N) return;
+    vec3  n  = (cen[t]-pc.sceneMin)*pc.invSceneSize;  // normalise to [0,1]³
+    uvec3 q  = uvec3(n*1023.0);  // 10 bits per axis
+    // Interleave bits: Morton code
+    uint m = 0u;
+    for(int b=0;b<10;b++) m|=((q.x>>b)&1u)<<(3*b)|((q.y>>b)&1u)<<(3*b+1)|((q.z>>b)&1u)<<(3*b+2);
+    mortonKey[t]=m; triIdx[t]=t;
+}
+// Then run §107.1–107.3 for 15 passes (30-bit sort); result is LBVH input order (§70.2)
+```
+
+[Source: Lauterbach et al. "Fast BVH Construction on GPUs", EG 2009 §70; Karras "Maximizing Parallelism in the Construction of BVHs, Octrees, and k-d Trees", HPG 2012]
+
+---
+
+## 108. Library Landscape
 
 **Coverage gap.** No single open-source library covers more than a narrow slice of the algorithms in this chapter. The table below maps the available libraries against the chapter's topic areas; empty cells represent functionality that must be implemented directly in shader/compute code using the patterns shown in the preceding sections. This fragmentation is the norm in GPU geometry programming: the field is young enough that GPU-native algorithmic libraries have not yet consolidated around a common abstraction layer comparable to what BLAS/LAPACK provide for linear algebra.
 
@@ -14006,9 +14961,36 @@ Sub::CatmullClark_subdivision(mesh,
 
 **What is missing in §90–§99.** GPU path tracing (§91) is dominated by CUDA/OptiX (Falcor, LuxCoreRender); Vulkan ray tracing pipeline equivalents exist (Vulkan-glTF-PBR, Kajiya) but lack the MIS+wavefront sorting of production PT. Atmospheric scattering (§96) is engine-internal in all production renderers; the Bruneton LUT approach (§96.1–96.2) is the only open, portable reference. Molecular surface (§99) GPU libraries are exclusively CUDA (VMD/APBS). Spanning all ten tables (§1–§99), the CUDA ecosystem dominates approximately forty-five sections; the Vulkan compute patterns remain the sole portable path for the remainder.
 
+**Table K — §100–§107 coverage**
+
+| Library | Ver | GPU Backend | §100 Soft FEM | §101 Cage Deform | §102 Lap Edit | §103 Del Refine | §104 Mink/PRM | §105 OIT | §106 Clipping | §107 Radix Sort | Best Use |
+|---------|-----|-------------|:-------------:|:----------------:|:-------------:|:---------------:|:-------------:|:--------:|:-------------:|:---------------:|----------|
+| projective-dynamics | research | CUDA | ✓ (§100.3–100.4) | — | — | — | — | — | — | — | PD soft body research |
+| FEBio | 4.0 | CPU+CUDA | ✓ (§100.2 FEM) | — | — | — | — | — | — | — | Biomedical FEM |
+| libigl | 2.5 | CPU | — | ✓ (§101 MVC) | ✓ (§102 ARAP) | — | — | — | — | — | Geometry processing |
+| geometry-central | 1.0 | CPU | — | — | ✓ (§102.1 cotLap) | — | — | — | — | — | Differential geometry |
+| TetGen | 1.6 | CPU | ✓ (§100.1 tets) | — | — | ✓ (§103 CDT) | — | — | — | — | Quality tet meshing |
+| Triangle (Shewchuk) | 1.6 | CPU | — | — | — | ✓ (§103 Ruppert) | — | — | — | — | 2D quality meshing |
+| FCL | 0.7 | CPU | — | — | — | — | ✓ (§104.2 GJK) | — | — | — | Robot collision/planning |
+| OMPL | 1.6 | CPU | — | — | — | — | ✓ (§104.3 PRM/RRT) | — | — | — | Motion planning |
+| OIT (McGuire) | 2013 | OpenGL/Vulkan | — | — | — | — | — | ✓ (§105.3 WBOIT) | — | — | OIT reference impl |
+| Vulkan SDK samples | 1.3 | Vulkan | — | — | — | — | — | ✓ (§105.1 PPLL) | ✓ (§106.2 task) | — | Vulkan OIT + culling |
+| VkRadixSort | 2023 | Vulkan | — | — | — | — | — | — | — | ✓ (§107 full sort) | Vulkan compute radix sort |
+| CUB / Thrust | CUDA 12 | CUDA | — | — | — | — | — | — | — | ✓ (§107 reference) | CUDA sort primitive |
+
+**VkRadixSort** (Wihlidal, MIT) implements the full 4-pass radix sort (§107.1–107.3) in Vulkan compute shaders, directly applicable to §70 LBVH Morton code sorting and §11 particle spatial hashing. It serves as the portable Vulkan equivalent of CUB's `DeviceRadixSort`. **CUB** (NVIDIA, BSD-3) is the authoritative CUDA implementation, used internally by Thrust, cuBLAS, and all CUDA geometry libraries in this chapter.
+
+**TetGen** (Si, AGPL-3.0) implements constrained Delaunay tetrahedralization (§103 in 3D) and Ruppert-quality refinement. The §100.1 inside/outside GPU classify pass feeds TetGen; its output provides the tetrahedral mesh for §100.2 FEM and §100.3 projective dynamics.
+
+**OMPL** (Rice/CMU, BSD-3) implements PRM (§104.3) and RRT (§104.4) with pluggable collision checkers. Connecting it to the GPU GJK batch checker (§104.2) via FCL's CUDA backend closes the gap between GPU broadphase and CPU planning.
+
+**What is missing in §100–§107.** Soft body FEM (§100) has no Vulkan GPU library; the projective dynamics research code is CUDA-only. Cage deformation (§101) and Laplacian editing (§102) have CPU implementations in libigl/geometry-central but no GPU libraries. Constrained Delaunay refinement (§103) is CPU-only universally. Motion planning (§104) GPU acceleration is an active research area with no production library. OIT (§105) is widely engine-internal; the PPLL and WBOIT patterns are the only portable open references. Radix sort (§107) has VkRadixSort as the sole Vulkan open library; all other geometry libraries use CUDA/CUB internally.
+
+**Overall library landscape summary (§1–§107).** Across all eleven tables, approximately fifty sections have production GPU library support (mostly CUDA). The remaining fifty-seven sections — spanning IK (§5), Laplacian processing (§72, §102), spectral methods (§77), constrained meshing (§103), motion planning (§104), atmospheric scattering (§96), molecular surfaces (§99), and others — rely on the Vulkan compute shader patterns presented in this chapter as the primary portable implementation path. This reflects the general state of the GPU geometry ecosystem: the CUDA library layer is mature and deep; the Vulkan/portable compute layer is the frontier, with the patterns in §1–§107 constituting a practical reference implementation guide.
+
 ---
 
-## 101. Performance Reference
+## 109. Performance Reference
 
 **Subdivision** (OpenSubdiv stencil evaluation, RTX 4080):
 
@@ -14052,7 +15034,7 @@ Sub::CatmullClark_subdivision(mesh,
 
 ---
 
-## 102. Integrations
+## 110. Integrations
 
 - **Ch24 (Vulkan/EGL)** — Vulkan resource allocation patterns for SSBO-based subdivision and skinning buffers; pipeline barrier placement between compute passes.
 - **Ch25 (GPU Compute)** — Compute shader dispatch setup, shared memory usage for marching cubes tile optimization, prefix-scan patterns for compaction, and radix sort for Morton-code-based LBVH (§8).
