@@ -42,7 +42,13 @@ graph TD
         ALSA["ALSA\n/dev/snd/*"]
         V4L2HW["V4L2\n/dev/videoN"]
         LCAM["libcamera\nlibcamera::Camera\nFrameBufferAllocator"]
-        WLCOMP["Wayland compositor\next-image-copy-capture-v1\nwlr-screencopy-unstable-v1"]
+    end
+
+    WLCOMP["Wayland compositor\next-image-copy-capture-v1\nwlr-screencopy-unstable-v1"]
+
+    subgraph DBUS["D-Bus"]
+        SDBUS["session bus\norg.freedesktop.portal.*"]
+        SYSDBUS["system bus\norg.freedesktop.RealtimeKit1\norg.freedesktop.login1"]
     end
 
     subgraph SPAPLUGINS["SPA Plugins"]
@@ -57,13 +63,13 @@ graph TD
         PWD["pipewire daemon\nnode/link/port graph · SPA pods\n$XDG_RUNTIME_DIR/pipewire-0"]
     end
 
-    subgraph PORTALSTACK["XDG Portal Stack · session D-Bus"]
+    subgraph PORTALSTACK["XDG Portal Stack"]
         LP["libportal\nXdpPortal · XdpSession\nxdp_session_open_pipewire_remote()"]
         XDP["xdg-desktop-portal\nScreenCast · Camera · RemoteDesktop"]
         PERM["PermissionStore\nscreencast · camera · microphone"]
     end
 
-    RTKIT["RTKit · system D-Bus\norg.freedesktop.RealtimeKit1\nSCHED_FIFO for data thread"]
+    RTKIT["RTKit\norg.freedesktop.RealtimeKit1\nSCHED_FIFO for data thread"]
 
     subgraph APPS["Applications"]
         OBS["OBS Studio\npipewire plugin"]
@@ -87,14 +93,17 @@ graph TD
     WP <-->|"native protocol: pw_registry / pw_link policy"| PWD
     WP <-->|"portal-permissionstore: PW_PERM_R / PW_PERM_X"| PERM
 
-    PWD -->|"MakeThreadRealtime / thread TID"| RTKIT
+    PWD -->|"MakeThreadRealtime / thread TID"| SYSDBUS
+    SYSDBUS --> RTKIT
 
-    OBS    -->|"D-Bus ScreenCast call"| LP
-    BROWSER -->|"D-Bus ScreenCast call"| LP
-    LP     -->|"ScreenCast.OpenPipeWireRemote / scoped fd"| XDP
+    OBS    -->|"ScreenCast call"| LP
+    BROWSER -->|"ScreenCast call"| LP
+    LP     -->|"OpenPipeWireRemote / scoped fd"| SDBUS
+    SDBUS  --> XDP
     XDP   <-->|"consent check / record"| PERM
     XDP    -->|"scoped PW fd / pw_context_connect_fd()"| PWD
     XDP    -->|"org.freedesktop.impl.portal.ScreenCast"| WLCOMP
+    WP     -->|"portal-permissionstore"| SDBUS
 
     GST    -->|"pipewiresrc / DMA-BUF frames"| PWD
     OBS    -->|"pw_stream_dequeue_buffer() / DMA-BUF"| PWD
