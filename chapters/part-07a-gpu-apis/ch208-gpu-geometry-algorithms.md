@@ -138,6 +138,373 @@ The sections below are ordered by geometry domain rather than CPU/GPU split. Whe
 
 ---
 
+## Algorithm Selection Guide
+
+This chapter spans 107 algorithms across 13 categories. Use this guide to identify the right
+starting point for your problem without reading all 15,000 lines.
+
+### Quick Reference: By Problem Type
+
+| Your starting point / goal | Go to |
+|---|---|
+| Smooth curved surface from control points (CAD, film VFX) | §I — Surface Representation |
+| Triangle mesh needs cleaning, LOD, or UV layout | §II — Mesh Processing |
+| Accelerate ray traversal or cull draw calls before the GPU sees them | §III — Spatial Data Structures |
+| Measure curvature, geodesic distance, or shape similarity | §IV — Differential Geometry |
+| Deform a character mesh — skeleton, IK, blendshapes | §V — Animation & Deformation |
+| Simulate fluids, cloth, rigid bodies, or fracture | §VI — Physics & Simulation |
+| Represent geometry as a scalar field, reconstruct a surface from sensors | §VII — SDF & Volumetric |
+| Generate or render terrain, ocean, particles, or procedural environments | §VIII — Terrain & Procedural |
+| Ray-traced shadows, reflections, GI, or atmospheric effects | §IX — Ray Tracing & Optical |
+| Input is a point cloud (LiDAR, depth sensor, SfM) | §X — Point Cloud |
+| Novel-view synthesis, learned shape representation, differentiable rendering | §XI — Neural Geometry |
+| Domain-specific: acoustics, molecular surfaces, VR reprojection, SDF fonts | §XII — Specialized |
+| Need a low-level parallel primitive: sort, sample, convex hull | §XIII — GPU Primitives |
+
+### Quick Reference: By Runtime Constraint
+
+| Constraint | Preferred approaches | Avoid |
+|---|---|---|
+| Real-time (< 16 ms frame) | §III BVH/GPU-driven, §V LBS/DQS, §VII SDF collision, §IX SSR/shadow maps | §IV spectral, §VI FEM, §XI NeRF inference without baking |
+| Interactive offline (seconds) | §VI SPH/PBD, §VII TSDF fusion, §X ICP registration | §XI full NeRF training |
+| Offline preprocess (minutes–hours) | §II UV parameterization, §IV geodesics/spectral, §VIII erosion, §IX path tracing bake | Real-time use of offline results without caching |
+| GPU memory < 1 GB | §III SVDAG (voxels), §VII narrow-band level sets, §VIII clipmap (stream tiles) | §XI full 3DGS scene (can be 500 MB–4 GB) |
+| Must run on integrated GPU / no discrete GPU | §V PBD (CPU-fallback friendly), §II meshopt compression | §VI Eulerian fluids, §XI 3DGS rasterizer |
+
+---
+
+### Choosing Within Category I — Surface Representation
+
+**Use subdivision surfaces (§1)** when: the input is a low-polygon control cage (from a DCC
+tool or CAD package) and you need a smooth, watertight surface with guaranteed tangent
+continuity. Catmull-Clark for quad-dominant meshes (film/VFX), Loop for triangle meshes
+(games/real-time). Use OpenSubdiv; do not roll your own stencil evaluator.
+
+**Use NURBS / B-splines (§2)** when: geometry originates from a CAD system (STEP/IGES) and
+exact representation matters — machining tolerances, engineering analysis. Tessellate to a mesh
+once and cache; do not evaluate NURBS per frame in a rendering loop.
+
+**Use metaballs / implicit SDF (§3, §8)** when: shapes must blend, merge, or split dynamically
+(fluid surface, clay sculpting, creature morphing). If the shape is static, bake to a mesh
+instead — implicit evaluation per frame is expensive. Prefer §8 (SDF blending via `smin`) over
+classic metaball field functions for GPU efficiency.
+
+**Use spline curve tessellation (§4)** when: geometry is inherently 1D (roads, cables, hair
+guide curves, animation paths). Use adaptive tessellation matched to screen-space chord length;
+fixed subdivision wastes triangles at distance.
+
+**Use 2D vector graphics on GPU (§5, §6)** when: UI, text (prefer §103 SDF fonts for small
+sizes), SVG icons, or CAD line drawings need resolution-independent rendering. Do not use for
+filled polygon rendering at scale — a rasterized texture atlas is faster above ~10,000 paths.
+
+**Use GPU CSG / boolean operations (§7)** sparingly — GPU boolean mesh operations are expensive
+and numerically fragile. Prefer SDF-based CSG (§3, §8) for dynamic operations, or precompute
+boolean results offline with a robust library (Cork, CGAL) and upload the result mesh.
+
+---
+
+### Choosing Within Category II — Mesh Processing
+
+**Simplification (§10)** vs **remeshing (§11, §20)**: use simplification to generate LOD
+levels of an existing mesh (preserving topology, just reducing triangles). Use remeshing when
+you need uniform triangle quality for simulation (FEM, cloth) or when the input mesh is too
+irregular. Meshoptimizer covers both for game pipelines.
+
+**UV parameterization (§17)** vs **atlas packing (§12)**: these are sequential. Parameterize
+first (each chart gets UV coordinates), then pack charts into an atlas. Use xatlas for
+automated pipelines; manual seam placement only for hero assets. Always run after final
+topology changes — UV seams survive neither remeshing nor simplification.
+
+**Delaunay triangulation (§18, §23)**: use when building quality meshes for FEM or when
+triangulating 2D domains (terrain heightmaps, navmesh). Not needed for rendering meshes — the
+GPU does not care about Delaunay quality.
+
+**Voxelization (§13)**: use when you need a solid occupancy representation (collision, SDF
+initialization, ambient occlusion baking). Surface voxelization is fast; solid voxelization
+(conservative) is 5–10× slower and only necessary when interior/exterior matters.
+
+**Compression (§16, §15)**: always compress before network transmission or disk storage. Use
+meshopt for game/engine pipelines (best decode speed), Draco for WebGL/glTF targets, and
+`KTX2` + `Basis Universal` for textures bundled with geometry. Do not compress real-time
+geometry in flight — decompress once, cache the GPU buffer.
+
+**Mesh repair (§22)**: run before any simulation or boolean operation. A non-watertight mesh
+will produce incorrect SDF bakes, broken FEM meshes, and wrong voxelizations. Use MeshFix or
+manifold as a preprocessing step.
+
+---
+
+### Choosing Within Category III — Spatial Data Structures
+
+**BVH (§24, §31)** is the default acceleration structure for ray traversal, broad-phase
+collision detection, and frustum culling. Prefer Vulkan hardware BVH (BLAS/TLAS) when
+ray-tracing extensions are available; fall back to LBVH (§24 radix-sort construction) in
+compute for software traversal. Use §31 (SAH-guided BVH) only when build time is not a
+bottleneck and traversal quality matters more — it builds 3–5× slower than LBVH but produces
+30–40% fewer traversal steps.
+
+**Spatial hashing** (not covered as a standalone section but mentioned in §27): prefer over
+BVH for particle systems with uniform density. BVH rebuild per frame is expensive when
+particles move; a GPU hash grid rebuilds in O(N) with radix sort (§107).
+
+**SVDAG (§30)**: use only for static, very large voxel scenes (city-scale, terrain) where
+memory is the primary constraint. Construction is offline; not suitable for dynamic geometry.
+
+**GPU-driven indirect rendering (§26, §33)**: mandatory for scenes with > 5,000 unique draw
+calls or > 50,000 meshlets. The CPU cannot submit that many draw calls at 60 Hz. Use
+`vkCmdDrawMeshTasksIndirectEXT` (mesh shaders) or `vkCmdDrawIndexedIndirectCount` (traditional
+pipeline) depending on hardware support.
+
+**Screen-space techniques (§25)**: use for effects that do not require world-space geometry —
+SSAO, SSR, screen-space shadows. They fail at silhouettes and for off-screen occluders; always
+provide a fallback (precomputed AO, reflection cubemaps).
+
+**Precomputed visibility (§28)**: worthwhile for indoor/portal-based scenes (rooms, caves,
+buildings) where the view graph is known at asset time. Not applicable for open-world terrain
+or procedurally generated environments.
+
+---
+
+### Choosing Within Category IV — Differential Geometry
+
+All algorithms in this category are **offline preprocessing tools**, not real-time algorithms.
+Run them as asset pipeline steps and cache results.
+
+**Geodesic distance (§37, §34)**: use the heat method (§37) on GPU — it reduces to two sparse
+linear solves and is 10–100× faster than exact algorithms for the accuracy levels needed in
+graphics. Use exact geodesics (Dijkstra on edges) only when topological accuracy is required
+(e.g., seam placement for UV parameterization).
+
+**Laplacian / cotangent weights (§34 — referenced in curvature, smoothing)**: the cotangent
+Laplacian is the correct discrete operator for most geometry processing tasks. Do not use
+uniform (graph) Laplacian for geometry — it produces area-dependent results.
+
+**Spectral methods (§35, §38)**: use for shape correspondence, partial matching, and
+dimensionality reduction of shape collections. Do not use for per-frame processing — eigensolver
+cost is O(kN) with k eigenvectors and is not GPU-friendly for large k.
+
+**Functional maps (§36)**: prefer over point-to-point correspondence when shapes have
+significant deformation. Output is a compact matrix; convert to a dense correspondence map only
+when needed.
+
+---
+
+### Choosing Within Category V — Animation & Deformation
+
+**Linear blend skinning (§39)** for speed; **dual-quaternion skinning (§39)** for quality.
+DQS eliminates the "candy-wrapper" collapse artefact at joints twisted > 45°. The GPU cost
+difference is negligible — prefer DQS by default for any character that will be seen up close.
+Add corrective blendshapes on top for hero characters.
+
+**IK (§40)**: FABRIK converges faster than CCD for most game chains and requires no matrix
+inversion. Use Jacobian (pseudo-inverse or transpose) only when you need precise end-effector
+orientation and have < 10 joints in the chain. For full-body IK, use a commercial solver
+(PhysX, IK Rig) rather than implementing from scratch.
+
+**Cage-based deformation (§46)**: best when an artist needs to push/pull the cage and see
+smooth deformation. More intuitive than blendshapes for large-scale shape changes. Use Green
+Coordinates rather than Mean Value Coordinates when the cage is not guaranteed to enclose the
+mesh.
+
+**Projective dynamics / PBD (§45)**: the standard for game soft bodies and cloth. Fast,
+stable, and easy to control. Prefer over FEM for real-time; use FEM only when physical
+accuracy is required (medical simulation, engineering).
+
+**Hair / strand geometry (§42)**: render with line strips or ribbon geometry (camera-facing
+quads). Simulate with position-based dynamics (PBD) or XPBD for interactive rates. Do not use
+full FEM for hair — it is unnecessarily expensive and not more accurate for the stiffness range
+of hair.
+
+---
+
+### Choosing Within Category VI — Physics & Simulation
+
+**SPH (§48)** vs **Eulerian grid (§48)**: SPH is Lagrangian (particles follow the fluid) and
+is easier to implement on GPU, handles free surfaces well, and scales to ~10M particles at
+interactive rates. Eulerian (grid-based pressure projection) handles turbulence and smoke
+better but requires a velocity field grid that can consume large amounts of GPU memory. Use SPH
+for water/liquid effects; use Eulerian for smoke and fire.
+
+**PBD / XPBD (§45, §54)** vs **FEM (§45)**: PBD is the right choice for games and VFX —
+stable at large timesteps, tunable stiffness, GPU-parallelizable per constraint island.
+FEM with implicit time integration is more physically accurate but requires a sparse linear
+solver per frame, which is difficult to parallelize efficiently. Use FEM for offline simulation
+or when engineering accuracy is required.
+
+**Rigid body broad phase**: spatial hashing for uniform object distributions, BVH for highly
+varied object sizes. Rebuild every frame with radix sort (§107) rather than updating
+incrementally — incremental BVH updates are rarely faster than full rebuild on GPU.
+
+**CCD (§59)**: only use when objects move more than their own size in a single timestep.
+For most game scenarios (objects < 10 m/s, timesteps ~16 ms), discrete collision detection
+is sufficient and 5–10× cheaper. Enable CCD selectively for fast-moving thin objects (bullets,
+blades, cloth).
+
+**DEM (§56)**: specifically for granular materials — sand, gravel, powder. Do not use for
+general rigid bodies; per-particle DEM with 10,000+ grains is expensive. Use instanced
+rendering with a pre-baked simulation for decorative granular effects.
+
+**Fracture (§52)**: pre-fracture assets with Voronoi decomposition at asset-creation time
+(Blender, Houdini). Runtime fracture requires re-triangulating crack surfaces in a compute
+shader and is expensive. Use runtime fracture only for hero destruction moments.
+
+---
+
+### Choosing Within Category VII — SDF & Volumetric
+
+**Level sets (§61)** when the surface topology changes (bubbles merging, flame fronts).
+Level sets handle topology change for free; meshes do not. The cost is a 3D voxel grid that
+must be advected and re-extracted every frame. Use a sparse narrow-band representation (§68)
+rather than a dense grid — typically only ~5% of voxels are near the surface.
+
+**TSDF fusion (§63)**: the standard algorithm for depth-sensor reconstruction (Kinect,
+RealSense, structured light). Use KinectFusion-style TSDF for small scenes (room-scale);
+use hash-based sparse TSDF for larger scenes. Output is an SDF grid, not a mesh — extract
+with marching cubes (§65) when a mesh is needed downstream.
+
+**Marching cubes (§65)** vs **dual contouring**: use marching cubes for speed and simplicity
+— it is faster and trivially parallelizable. Use dual contouring when sharp features (edges,
+corners) must be preserved (CAD surfaces, architecture). For terrain heightmaps, neither is
+needed — generate the mesh directly from the heightfield.
+
+**SDF collision detection (§64)**: ideal for soft body vs rigid environment (character against
+terrain, cloth against a character body). Not well-suited for rigid body vs rigid body at high
+accuracy — GJK/EPA (§60) is more precise for convex shapes. Combine both: SDF for
+broad/medium queries, GJK for narrow-phase.
+
+**Volumetric ray marching (§67)**: for clouds, fire, and participating media. Do not use for
+opaque solid geometry — rasterization is 10–100× faster. Always ray-march at half or quarter
+resolution and upscale with a depth-aware bilateral filter.
+
+---
+
+### Choosing Within Category VIII — Terrain & Procedural
+
+**Clipmap LOD (§71)** vs **quadtree LOD**: clipmaps give smooth, predictable LOD transitions
+at low CPU overhead (just update the ring buffers). Quadtrees give finer LOD control and are
+better for non-uniform terrain (dense urban vs flat plains) but require more CPU work per
+frame. Use clipmaps for open-world terrain; quadtrees for scenes where you can afford the
+CPU budget.
+
+**Hydraulic erosion (§57)**: run once offline. The GPU erosion simulation (particle-based or
+grid-based) takes seconds to minutes on a high-res heightmap. Never run at runtime — cache the
+eroded heightmap as a texture.
+
+**FFT ocean (§73)**: use for open ocean and large bodies of water. The Philips/JONSWAP
+spectrum produces physically plausible wave statistics. Do not use for enclosed bodies of water
+(swimming pools, rivers) — a simpler sine-wave sum or gerstner wave is adequate and cheaper.
+
+**Particle systems (§72)**: GPU particle simulation via compute shaders handles millions of
+particles in real-time. Separate simulation (position update) from rendering (billboard
+generation) — do not store per-particle geometry in the simulation buffer. For VFX effects,
+use a combination of particle forces and the FFT advection field from a fluid simulation (§48).
+
+---
+
+### Choosing Within Category IX — Ray Tracing & Optical
+
+**When hardware RT is available (Vulkan RT extensions)**: always use it for primary ray
+traversal. The TLAS/BLAS pipeline is 5–20× faster than software BVH traversal in compute.
+
+**Shadow maps** vs **ray-traced shadows**: use shadow maps (cascaded for sun, cube maps for
+point lights) as the default. Enable ray-traced shadows only for hero shadow-casters where
+softness and contact hardening are critical. PCSS shadow maps approximate soft shadows well
+enough for most scenes.
+
+**Screen-space reflections (§80)** vs **ray-traced reflections**: SSR is the primary
+reflection method — fast, plausible for low-roughness surfaces, runs in a single compute pass.
+Fail gracefully to a reflection cubemap or IBL (§77) for off-screen geometry. Use ray-traced
+reflections only for mirror-like surfaces or architectural visualization where accuracy is
+required.
+
+**Path tracing (§82)**: real-time path tracing requires ReSTIR (§82) for many-light
+rendering and SVGF/NRD denoising to make undersampled output acceptable. Offline baking
+(lightmaps, irradiance volumes) is still the right choice for most shipped games — path
+tracing for baking is well-established; real-time path tracing requires very recent hardware.
+
+**IBL preprocessing (§77)**: always precompute the split-sum DFG LUT and the pre-filtered
+environment map mip chain offline. Cache as DDS/KTX2 textures. Do not evaluate the full
+environment integral per frame.
+
+**Subsurface scattering (§84)**: use the screen-space SSS approximation (scatter in a
+separable blur along screen-space normals) for real-time skin rendering — it matches the
+dipole/BSSRDF result well enough for most viewing distances. Use the full volumetric dipole
+only for offline path-traced character renders.
+
+---
+
+### Choosing Within Category X — Point Cloud
+
+**ICP (§90)**: ICP converges only within the basin of attraction of the correct alignment —
+typically when the initial misalignment is < 30°. Always provide a coarse initial alignment
+first (FPFH feature matching §89, manual landmark alignment, or IMU data). Use point-to-plane
+ICP rather than point-to-point — it converges ~3× faster for smooth surfaces.
+
+**SfM / MVS (§88)**: requires dense, overlapping image coverage (> 60% overlap between
+adjacent images). Does not work in texture-less or reflective environments. Use a commercial
+or mature open-source pipeline (COLMAP, OpenMVG) rather than implementing from scratch — the
+robust estimation, bundle adjustment, and outlier rejection are the hard parts.
+
+**Feature descriptors (§89)**: FPFH is the GPU-friendly choice for coarse registration.
+For learned descriptors (3DMatch, FCGF), use only if you have a trained model that matches
+your point cloud density and domain — generalization across sensor types and scene scales is
+poor.
+
+---
+
+### Choosing Within Category XI — Neural Geometry
+
+**3DGS (§91, §94)** vs **NeRF (§95)**: 3DGS renders faster at inference time (real-time at
+1080p on RTX 3080-class hardware) and produces sharper results for textured surfaces. NeRF
+(and its successors — Instant-NGP, Zip-NeRF) produces better results in fine detail (thin
+structures, semi-transparent materials) and is more compact in memory for large scenes. Use
+3DGS when render-time performance is critical; use NeRF-family methods when quality and
+memory efficiency are critical.
+
+**Geometric deep learning (§92)**: use for classification, segmentation, and correspondence
+tasks on shape collections — not for rendering or real-time geometry processing. Requires a
+trained model; training time is hours to days.
+
+**Differentiable rendering (§93)**: use for inverse problems — fitting geometry, materials,
+or camera parameters from images. Not a rendering algorithm; the differentiable rasterizer is
+used to compute gradients, not to produce the final image.
+
+---
+
+### Choosing Within Category XII — Specialized
+
+Each section addresses a narrow domain. Consult the section directly when building:
+- **§96** scientific visualization: isosurface rendering of scalar fields (CT, CFD, finite element output)
+- **§99** acoustic simulation: sound propagation geometry, diffraction, reverb computation via ray tracing
+- **§104** molecular surfaces: Connolly/SAS surfaces for docking, electrostatics visualization
+- **§100** VR/XR: reprojection and foveated rendering for latency reduction
+- **§103** SDF font rendering: crisp text at all scales using multi-channel SDF atlases
+- **§102** micro-polygon displacement: film-quality tessellation displacement for hero assets
+- **§101** silhouette detection: NPR rendering outlines and shadow volume edge lists
+- **§98** procedural texture synthesis: tileable detail textures generated in compute shaders
+- **§97** decal projection: decal geometry via UV-space projection for surface detail
+
+---
+
+### Choosing Within Category XIII — GPU Primitives
+
+**Radix sort (§107)** vs **bitonic sort**: always prefer radix sort for N > 100,000 keys —
+it is O(N) vs O(N log² N) and is 3–10× faster in practice on GPU. Bitonic sort is simpler to
+implement and competitive for N < 10,000 (fits in shared memory). For BVH construction,
+particle simulation step ordering, and OIT depth sorting, radix sort is the right choice.
+
+**Poisson disk sampling (§105)**: use for geometry distribution (foliage, stones, debris) and
+Monte Carlo sample generation. Use blue noise specifically for ordered dithering and
+screen-space sample patterns — blue noise has better high-frequency spectral properties than
+Poisson disk for 2D screen-space use.
+
+**Convex hull (§106)**: needed as a preprocessing step for GJK collision detection (§60), for
+computing inertia tensors for rigid bodies (§50), and as a simplification of complex geometry
+for broad-phase queries. Compute offline when the mesh is static; only recompute at runtime
+for dynamically deforming geometry where the convex hull changes significantly.
+
+---
+
 ## I. Surface Representation and Modeling
 
 Covers the mathematical primitives used to represent smooth, curved, and implicit geometry on the GPU: Catmull-Clark and Loop subdivision surfaces that refine coarse control meshes toward smooth limit surfaces; parametric NURBS and Bézier patches used in CAD and precision engineering visualization; implicit surfaces defined by scalar field functions (metaballs, SDF CSG); Bézier and B-spline curve tessellation; and 2D vector graphics rendered via GPU fragment shaders. These algorithms determine the geometric representation before any simulation, texturing, or shading is applied.
