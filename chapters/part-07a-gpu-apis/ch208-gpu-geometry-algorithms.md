@@ -457,6 +457,8 @@ Osd::GLComputeEvaluator::EvalStencils(vbo, uvDescSrc, vbo, uvDescDst, fvarStenci
 
 ### 2. NURBS and B-Spline Surfaces
 
+NURBS (Non-Uniform Rational B-Splines) are the standard surface representation in CAD, engineering, and industrial design — they describe smooth curves and surfaces exactly, without the approximation error introduced by triangle tessellation. GPU evaluation requires reformulating the Cox-de Boor recursion into parallel form: each thread evaluates one basis function independently, then a weighted sum (rational NURBS) or barycentric combination (tensor-product B-spline patches) assembles the surface point. Tessellation shaders or compute dispatches emit the resulting triangle mesh at a level of detail matched to screen-space curvature and, for engineering applications, to a configurable chord-tolerance threshold.
+
 ### 2.1 Cox-de Boor Recursion and De Boor's Algorithm
 
 A B-spline basis function of degree p is defined by the Cox-de Boor recursion:
@@ -796,6 +798,8 @@ vec3 phong_tessellate(vec3 p_interp, vec3 p0, vec3 p1, vec3 p2,
 ---
 
 ### 3. Metaballs and Implicit Surfaces
+
+Metaballs and implicit surfaces represent geometry as the iso-level of a scalar field f(x,y,z) = c, where the visible surface is the set of points where f equals a chosen threshold. Metaballs define f as a sum of radially symmetric falloff kernels centred on control points, producing organic blended shapes that merge and separate as control points move. On the GPU the scalar field is evaluated across a 3D voxel grid in a compute shader, and isosurface extraction (Marching Cubes, Dual Contouring, or Surface Nets) converts it to a triangle mesh each frame. SDF-based CSG — building complex shapes by composing min, max, and complement operations on primitive signed-distance fields — is a generalization of the same idea and is covered alongside metaballs here because it shares the same evaluation and extraction pipeline.
 
 ### 3.1 Field Functions
 
@@ -1593,6 +1597,8 @@ layout(local_size_x=8, local_size_y=8, local_size_z=8) in;
 ---
 
 ### 6. Spline Curves: GPU Tessellation
+
+B-spline and Bézier curve tessellation converts a compact control-point representation into dense polyline or ribbon geometry suitable for rasterization. The central challenge is adaptive tessellation — generating more vertices where curvature is high or the curve is close to the camera, and fewer elsewhere — without a serial dependency between curve segments. Tessellation shaders (hull + domain stage) are the native API path for Bézier patches; compute-shader approaches writing to vertex buffers offer more flexibility for non-standard curve types such as Catmull-Rom splines, cubic Hermite curves used in animation paths, and NURBS curves from CAD data. Both paths are covered here together with the screen-space flatness metric that drives LOD selection.
 
 ### 6.1 Catmull-Rom Splines
 
@@ -6313,6 +6319,8 @@ void main() {
 Character animation on the GPU covers the full pipeline from skeletal joint transforms through vertex deformation to secondary motion dynamics. Linear blend skinning (LBS) and its quality improvements (dual-quaternion skinning, corrective blendshapes) drive the base mesh; IK solvers (CCD, FABRIK, Jacobian) compute joint angles from end-effector constraints in compute shaders; cage-based methods (Mean Value Coordinates, Green Coordinates) and Laplacian mesh editing provide smooth artist-controlled shape deformation; and projective dynamics and FEM handle soft-body secondary motion. Hair strand simulation and secondary dynamics add organic motion on top of the primary skeleton.
 
 ### 4. Skeletal Animation: Skinning
+
+Skeletal animation is the standard character deformation pipeline: a hierarchy of bones drives the skin mesh through linear blend skinning (LBS) or dual-quaternion skinning (DQS) evaluated in a vertex or compute shader. Each vertex stores up to eight (bone index, weight) pairs; the shader fetches each bone's current world-space transform from a joint-matrix buffer, blends the weighted transforms, and applies the result to the rest-pose vertex position and normal. The skinned output is consumed unchanged by subsequent rendering passes — shadow maps, depth pre-pass, and collision queries — making the skinning dispatch a natural compute pre-pass that writes GPU-resident vertex buffers rather than a fixed-function vertex-shader stage.
 
 ### 4.1 Forward Kinematics on GPU
 
