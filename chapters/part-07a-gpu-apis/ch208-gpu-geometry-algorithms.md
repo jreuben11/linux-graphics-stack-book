@@ -18,121 +18,121 @@ The sections below are ordered by geometry domain rather than CPU/GPU split. Whe
   - [1. Subdivision Surfaces on the GPU](#1-subdivision-surfaces-on-the-gpu)
   - [2. NURBS and B-Spline Surfaces](#2-nurbs-and-b-spline-surfaces)
   - [3. Metaballs and Implicit Surfaces](#3-metaballs-and-implicit-surfaces)
-  - [6. Spline Curves: GPU Tessellation](#6-spline-curves-gpu-tessellation)
-  - [28. 2D Vector Graphics on GPU](#28-2d-vector-graphics-on-gpu)
-  - [57. GPU Curve Rendering for CAD and Precision Graphics](#57-gpu-curve-rendering-for-cad-and-precision-graphics)
-  - [63. GPU Boolean Mesh Operations (CSG)](#63-gpu-boolean-mesh-operations-csg)
-  - [74. Implicit Surface Blending: MetaBalls and SDF Primitives](#74-implicit-surface-blending-metaballs-and-sdf-primitives)
-  - [75. Poisson Surface Reconstruction](#75-poisson-surface-reconstruction)
+  - [4. Spline Curves: GPU Tessellation](#4-spline-curves-gpu-tessellation)
+  - [5. 2D Vector Graphics on GPU](#5-2d-vector-graphics-on-gpu)
+  - [6. GPU Curve Rendering for CAD and Precision Graphics](#6-gpu-curve-rendering-for-cad-and-precision-graphics)
+  - [7. GPU Boolean Mesh Operations (CSG)](#7-gpu-boolean-mesh-operations-csg)
+  - [8. Implicit Surface Blending: MetaBalls and SDF Primitives](#8-implicit-surface-blending-metaballs-and-sdf-primitives)
+  - [9. Poisson Surface Reconstruction](#9-poisson-surface-reconstruction)
 - **[II. Mesh Processing and Topology](#ii-mesh-processing-and-topology)**
-  - [7. GPU Mesh Simplification and LOD](#7-gpu-mesh-simplification-and-lod)
-  - [24. GPU Remeshing](#24-gpu-remeshing)
-  - [35. UV Seam Optimization and Atlas Packing](#35-uv-seam-optimization-and-atlas-packing)
-  - [41. Mesh Voxelisation](#41-mesh-voxelisation)
-  - [46. Morphological Operations and Medial Axis](#46-morphological-operations-and-medial-axis)
-  - [48. Progressive Meshes and Geometry Streaming](#48-progressive-meshes-and-geometry-streaming)
-  - [55. Mesh Compression and Streaming Codecs](#55-mesh-compression-and-streaming-codecs)
-  - [66. Mesh Parameterization and UV Unwrapping](#66-mesh-parameterization-and-uv-unwrapping)
-  - [67. GPU Delaunay Triangulation](#67-gpu-delaunay-triangulation)
-  - [72. Mesh Fairing and Geometric Smoothing](#72-mesh-fairing-and-geometric-smoothing)
-  - [83. GPU-Accelerated Remeshing](#83-gpu-accelerated-remeshing)
-  - [87. GPU Mesh Segmentation and Part Decomposition](#87-gpu-mesh-segmentation-and-part-decomposition)
-  - [89. GPU Mesh Repair and Waterproofing](#89-gpu-mesh-repair-and-waterproofing)
-  - [103. Constrained Delaunay Refinement](#103-constrained-delaunay-refinement)
+  - [10. GPU Mesh Simplification and LOD](#10-gpu-mesh-simplification-and-lod)
+  - [11. GPU Remeshing](#11-gpu-remeshing)
+  - [12. UV Seam Optimization and Atlas Packing](#12-uv-seam-optimization-and-atlas-packing)
+  - [13. Mesh Voxelisation](#13-mesh-voxelisation)
+  - [14. Morphological Operations and Medial Axis](#14-morphological-operations-and-medial-axis)
+  - [15. Progressive Meshes and Geometry Streaming](#15-progressive-meshes-and-geometry-streaming)
+  - [16. Mesh Compression and Streaming Codecs](#16-mesh-compression-and-streaming-codecs)
+  - [17. Mesh Parameterization and UV Unwrapping](#17-mesh-parameterization-and-uv-unwrapping)
+  - [18. GPU Delaunay Triangulation](#18-gpu-delaunay-triangulation)
+  - [19. Mesh Fairing and Geometric Smoothing](#19-mesh-fairing-and-geometric-smoothing)
+  - [20. GPU-Accelerated Remeshing](#20-gpu-accelerated-remeshing)
+  - [21. GPU Mesh Segmentation and Part Decomposition](#21-gpu-mesh-segmentation-and-part-decomposition)
+  - [22. GPU Mesh Repair and Waterproofing](#22-gpu-mesh-repair-and-waterproofing)
+  - [23. Constrained Delaunay Refinement](#23-constrained-delaunay-refinement)
 - **[III. Spatial Data Structures and Visibility](#iii-spatial-data-structures-and-visibility)**
-  - [8. GPU BVH Construction](#8-gpu-bvh-construction)
-  - [9. Screen-Space Geometry Techniques](#9-screen-space-geometry-techniques)
-  - [10. GPU-Driven Rendering and Virtual Geometry](#10-gpu-driven-rendering-and-virtual-geometry)
-  - [17. Spatial Data Structures Beyond BVH](#17-spatial-data-structures-beyond-bvh)
-  - [34. Precomputed Visibility and Lightmap Baking](#34-precomputed-visibility-and-lightmap-baking)
-  - [39. Visibility Queries and GPU Occlusion](#39-visibility-queries-and-gpu-occlusion)
-  - [68. Sparse Voxel DAG (SVDAG)](#68-sparse-voxel-dag-svdag)
-  - [70. GPU BVH Construction](#70-gpu-bvh-construction)
-  - [71. SDF Baking and 3D Jump Flooding](#71-sdf-baking-and-3d-jump-flooding)
-  - [90. Virtual Geometry: GPU-Driven Cluster LOD](#90-virtual-geometry-gpu-driven-cluster-lod)
+  - [24. GPU BVH Construction](#24-gpu-bvh-construction)
+  - [25. Screen-Space Geometry Techniques](#25-screen-space-geometry-techniques)
+  - [26. GPU-Driven Rendering and Virtual Geometry](#26-gpu-driven-rendering-and-virtual-geometry)
+  - [27. Spatial Data Structures Beyond BVH](#27-spatial-data-structures-beyond-bvh)
+  - [28. Precomputed Visibility and Lightmap Baking](#28-precomputed-visibility-and-lightmap-baking)
+  - [29. Visibility Queries and GPU Occlusion](#29-visibility-queries-and-gpu-occlusion)
+  - [30. Sparse Voxel DAG (SVDAG)](#30-sparse-voxel-dag-svdag)
+  - [31. GPU BVH Construction](#31-gpu-bvh-construction)
+  - [32. SDF Baking and 3D Jump Flooding](#32-sdf-baking-and-3d-jump-flooding)
+  - [33. Virtual Geometry: GPU-Driven Cluster LOD](#33-virtual-geometry-gpu-driven-cluster-lod)
 - **[IV. Differential Geometry and Analysis](#iv-differential-geometry-and-analysis)**
-  - [14. Geodesics and Discrete Differential Geometry](#14-geodesics-and-discrete-differential-geometry)
-  - [18. Spectral Geometry Processing](#18-spectral-geometry-processing)
-  - [37. Geometric Shape Morphing and Functional Maps](#37-geometric-shape-morphing-and-functional-maps)
-  - [65. Geodesic Distance: Heat Method](#65-geodesic-distance-heat-method)
-  - [77. Spectral Mesh Processing](#77-spectral-mesh-processing)
+  - [34. Geodesics and Discrete Differential Geometry](#34-geodesics-and-discrete-differential-geometry)
+  - [35. Spectral Geometry Processing](#35-spectral-geometry-processing)
+  - [36. Geometric Shape Morphing and Functional Maps](#36-geometric-shape-morphing-and-functional-maps)
+  - [37. Geodesic Distance: Heat Method](#37-geodesic-distance-heat-method)
+  - [38. Spectral Mesh Processing](#38-spectral-mesh-processing)
 - **[V. Animation, Skinning, and Deformation](#v-animation-skinning-and-deformation)**
-  - [4. Skeletal Animation: Skinning](#4-skeletal-animation-skinning)
-  - [5. Inverse Kinematics on the GPU](#5-inverse-kinematics-on-the-gpu)
-  - [15. Shape Deformation Beyond Skinning](#15-shape-deformation-beyond-skinning)
-  - [30. Hair and Strand Geometry](#30-hair-and-strand-geometry)
-  - [45. Secondary Animation Dynamics](#45-secondary-animation-dynamics)
-  - [58. Skeletal Mesh Retargeting](#58-skeletal-mesh-retargeting)
-  - [100. Soft Body FEM and Projective Dynamics](#100-soft-body-fem-and-projective-dynamics)
-  - [101. Cage-Based Deformation: Mean Value and Green Coordinates](#101-cage-based-deformation-mean-value-and-green-coordinates)
-  - [102. Laplacian Mesh Editing and Interactive Deformation](#102-laplacian-mesh-editing-and-interactive-deformation)
+  - [39. Skeletal Animation: Skinning](#39-skeletal-animation-skinning)
+  - [40. Inverse Kinematics on the GPU](#40-inverse-kinematics-on-the-gpu)
+  - [41. Shape Deformation Beyond Skinning](#41-shape-deformation-beyond-skinning)
+  - [42. Hair and Strand Geometry](#42-hair-and-strand-geometry)
+  - [43. Secondary Animation Dynamics](#43-secondary-animation-dynamics)
+  - [44. Skeletal Mesh Retargeting](#44-skeletal-mesh-retargeting)
+  - [45. Soft Body FEM and Projective Dynamics](#45-soft-body-fem-and-projective-dynamics)
+  - [46. Cage-Based Deformation: Mean Value and Green Coordinates](#46-cage-based-deformation-mean-value-and-green-coordinates)
+  - [47. Laplacian Mesh Editing and Interactive Deformation](#47-laplacian-mesh-editing-and-interactive-deformation)
 - **[VI. Physics and Simulation](#vi-physics-and-simulation)**
-  - [11. Fluid Simulation on the GPU](#11-fluid-simulation-on-the-gpu)
-  - [12. Deformable Bodies and Continuum Mechanics](#12-deformable-bodies-and-continuum-mechanics)
-  - [22. Rigid Body Dynamics on GPU](#22-rigid-body-dynamics-on-gpu)
-  - [23. Crowd and Multi-Agent Simulation](#23-crowd-and-multi-agent-simulation)
-  - [25. Fracture and Destruction](#25-fracture-and-destruction)
-  - [49. Rope and Cable Simulation](#49-rope-and-cable-simulation)
-  - [50. GPU Cloth Simulation](#50-gpu-cloth-simulation)
-  - [59. GPU Fluid-Solid Coupling](#59-gpu-fluid-solid-coupling)
-  - [69. Granular Material Simulation (DEM)](#69-granular-material-simulation-dem)
-  - [79. Terrain Sculpting and Hydraulic Erosion](#79-terrain-sculpting-and-hydraulic-erosion)
-  - [80. GPU Fluid Surface Extraction](#80-gpu-fluid-surface-extraction)
-  - [81. Continuous Collision Detection (CCD)](#81-continuous-collision-detection-ccd)
-  - [104. Minkowski Sum and GPU Motion Planning](#104-minkowski-sum-and-gpu-motion-planning)
+  - [48. Fluid Simulation on the GPU](#48-fluid-simulation-on-the-gpu)
+  - [49. Deformable Bodies and Continuum Mechanics](#49-deformable-bodies-and-continuum-mechanics)
+  - [50. Rigid Body Dynamics on GPU](#50-rigid-body-dynamics-on-gpu)
+  - [51. Crowd and Multi-Agent Simulation](#51-crowd-and-multi-agent-simulation)
+  - [52. Fracture and Destruction](#52-fracture-and-destruction)
+  - [53. Rope and Cable Simulation](#53-rope-and-cable-simulation)
+  - [54. GPU Cloth Simulation](#54-gpu-cloth-simulation)
+  - [55. GPU Fluid-Solid Coupling](#55-gpu-fluid-solid-coupling)
+  - [56. Granular Material Simulation (DEM)](#56-granular-material-simulation-dem)
+  - [57. Terrain Sculpting and Hydraulic Erosion](#57-terrain-sculpting-and-hydraulic-erosion)
+  - [58. GPU Fluid Surface Extraction](#58-gpu-fluid-surface-extraction)
+  - [59. Continuous Collision Detection (CCD)](#59-continuous-collision-detection-ccd)
+  - [60. Minkowski Sum and GPU Motion Planning](#60-minkowski-sum-and-gpu-motion-planning)
 - **[VII. SDF and Volumetric Methods](#vii-sdf-and-volumetric-methods)**
-  - [31. Level Set Methods](#31-level-set-methods)
-  - [36. Swept Volumes and Minkowski Sums](#36-swept-volumes-and-minkowski-sums)
-  - [42. Volumetric 3D Reconstruction (TSDF Fusion)](#42-volumetric-3d-reconstruction-tsdf-fusion)
-  - [52. SDF-Based Collision Detection](#52-sdf-based-collision-detection)
-  - [61. Isosurface Extraction](#61-isosurface-extraction)
-  - [62. GPU Ambient Occlusion](#62-gpu-ambient-occlusion)
-  - [64. Volumetric Ray Marching](#64-volumetric-ray-marching)
-  - [94. GPU Sparse Narrow-Band Level-Set Evolution](#94-gpu-sparse-narrow-band-level-set-evolution)
+  - [61. Level Set Methods](#61-level-set-methods)
+  - [62. Swept Volumes and Minkowski Sums](#62-swept-volumes-and-minkowski-sums)
+  - [63. Volumetric 3D Reconstruction (TSDF Fusion)](#63-volumetric-3d-reconstruction-tsdf-fusion)
+  - [64. SDF-Based Collision Detection](#64-sdf-based-collision-detection)
+  - [65. Isosurface Extraction](#65-isosurface-extraction)
+  - [66. GPU Ambient Occlusion](#66-gpu-ambient-occlusion)
+  - [67. Volumetric Ray Marching](#67-volumetric-ray-marching)
+  - [68. GPU Sparse Narrow-Band Level-Set Evolution](#68-gpu-sparse-narrow-band-level-set-evolution)
 - **[VIII. Terrain, Procedural Content, and Environment](#viii-terrain-procedural-content-and-environment)**
-  - [13. Procedural Geometry Generation](#13-procedural-geometry-generation)
-  - [19. Navigation Meshes and GPU Pathfinding](#19-navigation-meshes-and-gpu-pathfinding)
-  - [26. Terrain LOD and Streaming](#26-terrain-lod-and-streaming)
-  - [33. GPU Particle Systems and Ribbon Geometry](#33-gpu-particle-systems-and-ribbon-geometry)
-  - [40. GPU Ocean and Wave Simulation](#40-gpu-ocean-and-wave-simulation)
-  - [98. GPU Geospatial Processing: Large-Scale Terrain](#98-gpu-geospatial-processing-large-scale-terrain)
+  - [69. Procedural Geometry Generation](#69-procedural-geometry-generation)
+  - [70. Navigation Meshes and GPU Pathfinding](#70-navigation-meshes-and-gpu-pathfinding)
+  - [71. Terrain LOD and Streaming](#71-terrain-lod-and-streaming)
+  - [72. GPU Particle Systems and Ribbon Geometry](#72-gpu-particle-systems-and-ribbon-geometry)
+  - [73. GPU Ocean and Wave Simulation](#73-gpu-ocean-and-wave-simulation)
+  - [74. GPU Geospatial Processing: Large-Scale Terrain](#74-gpu-geospatial-processing-large-scale-terrain)
 - **[IX. Ray Tracing and Optical Geometry](#ix-ray-tracing-and-optical-geometry)**
-  - [20. Ray Tracing Geometry Pipeline](#20-ray-tracing-geometry-pipeline)
-  - [43. Shadow Geometry Algorithms](#43-shadow-geometry-algorithms)
-  - [44. IBL and Environment Map Preprocessing](#44-ibl-and-environment-map-preprocessing)
-  - [51. Global Illumination Geometry](#51-global-illumination-geometry)
-  - [56. Geometric Optics: Lens, Caustics, and Beam Tracing](#56-geometric-optics-lens-caustics-and-beam-tracing)
-  - [84. Screen-Space Reflections (SSR/SSSR)](#84-screen-space-reflections-ssrsssr)
-  - [88. GPU Radiosity: Form Factor Computation](#88-gpu-radiosity-form-factor-computation)
-  - [91. GPU Path Tracing Pipeline](#91-gpu-path-tracing-pipeline)
-  - [96. Atmospheric Scattering and Sky Rendering](#96-atmospheric-scattering-and-sky-rendering)
-  - [97. Subsurface Scattering Geometry](#97-subsurface-scattering-geometry)
-  - [105. Order-Independent Transparency](#105-order-independent-transparency)
-  - [106. GPU Polygon and Frustum Clipping](#106-gpu-polygon-and-frustum-clipping)
+  - [75. Ray Tracing Geometry Pipeline](#75-ray-tracing-geometry-pipeline)
+  - [76. Shadow Geometry Algorithms](#76-shadow-geometry-algorithms)
+  - [77. IBL and Environment Map Preprocessing](#77-ibl-and-environment-map-preprocessing)
+  - [78. Global Illumination Geometry](#78-global-illumination-geometry)
+  - [79. Geometric Optics: Lens, Caustics, and Beam Tracing](#79-geometric-optics-lens-caustics-and-beam-tracing)
+  - [80. Screen-Space Reflections (SSR/SSSR)](#80-screen-space-reflections-ssrsssr)
+  - [81. GPU Radiosity: Form Factor Computation](#81-gpu-radiosity-form-factor-computation)
+  - [82. GPU Path Tracing Pipeline](#82-gpu-path-tracing-pipeline)
+  - [83. Atmospheric Scattering and Sky Rendering](#83-atmospheric-scattering-and-sky-rendering)
+  - [84. Subsurface Scattering Geometry](#84-subsurface-scattering-geometry)
+  - [85. Order-Independent Transparency](#85-order-independent-transparency)
+  - [86. GPU Polygon and Frustum Clipping](#86-gpu-polygon-and-frustum-clipping)
 - **[X. Point Cloud, Reconstruction, and Perception](#x-point-cloud-reconstruction-and-perception)**
-  - [21. Point Cloud Processing](#21-point-cloud-processing)
-  - [78. GPU Structure from Motion and Multi-View Stereo](#78-gpu-structure-from-motion-and-multi-view-stereo)
-  - [86. 3D Feature Descriptors and Pose Estimation](#86-3d-feature-descriptors-and-pose-estimation)
-  - [92. Iterative Closest Point (ICP) Registration](#92-iterative-closest-point-icp-registration)
+  - [87. Point Cloud Processing](#87-point-cloud-processing)
+  - [88. GPU Structure from Motion and Multi-View Stereo](#88-gpu-structure-from-motion-and-multi-view-stereo)
+  - [89. 3D Feature Descriptors and Pose Estimation](#89-3d-feature-descriptors-and-pose-estimation)
+  - [90. Iterative Closest Point (ICP) Registration](#90-iterative-closest-point-icp-registration)
 - **[XI. Neural and Learned Geometry](#xi-neural-and-learned-geometry)**
-  - [16. 3D Gaussian Splatting and Neural Geometry](#16-3d-gaussian-splatting-and-neural-geometry)
-  - [27. Geometric Deep Learning](#27-geometric-deep-learning)
-  - [32. Differentiable Rendering and Inverse Geometry](#32-differentiable-rendering-and-inverse-geometry)
-  - [60. 3D Gaussian Splatting](#60-3d-gaussian-splatting)
-  - [73. Neural Geometry: NeRF and Neural Implicit Surfaces](#73-neural-geometry-nerf-and-neural-implicit-surfaces)
+  - [91. 3D Gaussian Splatting and Neural Geometry](#91-3d-gaussian-splatting-and-neural-geometry)
+  - [92. Geometric Deep Learning](#92-geometric-deep-learning)
+  - [93. Differentiable Rendering and Inverse Geometry](#93-differentiable-rendering-and-inverse-geometry)
+  - [94. 3D Gaussian Splatting](#94-3d-gaussian-splatting)
+  - [95. Neural Geometry: NeRF and Neural Implicit Surfaces](#95-neural-geometry-nerf-and-neural-implicit-surfaces)
 - **[XII. Specialized and Cross-Domain Applications](#xii-specialized-and-cross-domain-applications)**
-  - [29. Scientific Visualization Geometry](#29-scientific-visualization-geometry)
-  - [38. Decal and Surface Projection Geometry](#38-decal-and-surface-projection-geometry)
-  - [53. GPU Texture Synthesis and Procedural Shading Geometry](#53-gpu-texture-synthesis-and-procedural-shading-geometry)
-  - [54. Acoustic Ray Tracing and Sound Geometry](#54-acoustic-ray-tracing-and-sound-geometry)
-  - [76. VR/XR Geometry: Reprojection and Foveation](#76-vrxr-geometry-reprojection-and-foveation)
-  - [85. Silhouette Detection and Feature Lines](#85-silhouette-detection-and-feature-lines)
-  - [93. Micro-Polygon Displacement and GPU Tessellation](#93-micro-polygon-displacement-and-gpu-tessellation)
-  - [95. GPU SDF Font and Curve Rendering](#95-gpu-sdf-font-and-curve-rendering)
-  - [99. Molecular Surface Computation](#99-molecular-surface-computation)
+  - [96. Scientific Visualization Geometry](#96-scientific-visualization-geometry)
+  - [97. Decal and Surface Projection Geometry](#97-decal-and-surface-projection-geometry)
+  - [98. GPU Texture Synthesis and Procedural Shading Geometry](#98-gpu-texture-synthesis-and-procedural-shading-geometry)
+  - [99. Acoustic Ray Tracing and Sound Geometry](#99-acoustic-ray-tracing-and-sound-geometry)
+  - [100. VR/XR Geometry: Reprojection and Foveation](#100-vrxr-geometry-reprojection-and-foveation)
+  - [101. Silhouette Detection and Feature Lines](#101-silhouette-detection-and-feature-lines)
+  - [102. Micro-Polygon Displacement and GPU Tessellation](#102-micro-polygon-displacement-and-gpu-tessellation)
+  - [103. GPU SDF Font and Curve Rendering](#103-gpu-sdf-font-and-curve-rendering)
+  - [104. Molecular Surface Computation](#104-molecular-surface-computation)
 - **[XIII. GPU Algorithm Primitives for Geometry](#xiii-gpu-algorithm-primitives-for-geometry)**
-  - [47. GPU Sampling: Poisson Disk and Blue Noise](#47-gpu-sampling-poisson-disk-and-blue-noise)
-  - [82. GPU Convex Hull Computation](#82-gpu-convex-hull-computation)
+  - [105. GPU Sampling: Poisson Disk and Blue Noise](#105-gpu-sampling-poisson-disk-and-blue-noise)
+  - [106. GPU Convex Hull Computation](#106-gpu-convex-hull-computation)
   - [107. GPU Radix Sort as a Geometry Primitive](#107-gpu-radix-sort-as-a-geometry-primitive)
 
 
@@ -430,7 +430,7 @@ A practical dilemma in character rendering: should you skin the coarse control m
 Apply LBS or DQS to the N_base control cage vertices each frame, then run stencil evaluation on the deformed cage to produce the refined positions:
 
 ```cpp
-// 1. Compute skinned_base_positions[] via GPU compute pre-pass (§4.3)
+// 1. Compute skinned_base_positions[] via GPU compute pre-pass (§39.3)
 // 2. Upload skinned_base to the OpenSubdiv source vertex buffer
 vbo->UpdateData(skinned_base_positions.data(), 0, numControlVerts);
 // 3. Stencil evaluation: deformed cage → refined limit positions
@@ -1342,7 +1342,7 @@ Once the density grid is written, it feeds directly into the two-pass marching c
 2. **Spatial hash rebuild** — count, prefix-scan, scatter by cell
 3. **Density grid bake** — `sph_density.comp`
 4. **Marching cubes** — count + emit (§3.2) using density grid as input field
-5. **Smooth normals** — §7.5 post-pass on the extracted mesh
+5. **Smooth normals** — §10.5 post-pass on the extracted mesh
 6. **Render** — PBR shading with refraction and foam opacity
 
 This pipeline is used in real-time fluid demos on NVIDIA Flex (GPU PhysX), AMD's fluid demo for RDNA3, and Houdini's Karma GPU renderer for SPH particle renders. [Source: Müller et al. "Particle-based Fluid Simulation for Interactive Applications", SCA 2003; NVIDIA Flex SDK documentation]
@@ -1389,7 +1389,7 @@ void main() {
 
 The rasterized Voronoi approach runs in O(N) GPU time for N seeds, producing the exact Voronoi diagram and an approximate Delaunay triangulation (exact up to rasterization resolution). For terrain meshing at 100k sample points, this runs in <2 ms on a modern GPU.
 
-**Applications.** GPU Voronoi/Delaunay is used in: procedural biome generation (each Voronoi cell = one biome with coherent terrain parameters), fluid mesh reconstruction (Poisson surface reconstruction seeds from SPH particles), and GPU-side LOD meshing where scattered high-frequency samples (from adaptive tessellation) need triangulation before mesh simplification (§7.1). [Source: Hoff et al. "Fast Computation of Generalized Voronoi Diagrams Using Graphics Hardware", SIGGRAPH 1999; Rong & Tan "Jump Flooding in GPU with Applications to Voronoi Diagram and Distance Transform", I3D 2006]
+**Applications.** GPU Voronoi/Delaunay is used in: procedural biome generation (each Voronoi cell = one biome with coherent terrain parameters), fluid mesh reconstruction (Poisson surface reconstruction seeds from SPH particles), and GPU-side LOD meshing where scattered high-frequency samples (from adaptive tessellation) need triangulation before mesh simplification (§10.1). [Source: Hoff et al. "Fast Computation of Generalized Voronoi Diagrams Using Graphics Hardware", SIGGRAPH 1999; Rong & Tan "Jump Flooding in GPU with Applications to Voronoi Diagram and Distance Transform", I3D 2006]
 
 ### 3.10 Marching Tetrahedra
 
@@ -1524,7 +1524,7 @@ Poisson surface reconstruction (Kazhdan & Hoppe 2013, "Screened Poisson Surface 
 
 **GPU-accelerable Poisson pipeline:**
 
-1. **Octree construction** — build an adaptive octree over the point cloud; deeper cells near high-point-density regions. One approach: Morton-sort points (§8.1 pattern), then split cells that exceed a count threshold.
+1. **Octree construction** — build an adaptive octree over the point cloud; deeper cells near high-point-density regions. One approach: Morton-sort points (§24.1 pattern), then split cells that exceed a count threshold.
 
 2. **Vector field splatting (`poisson_splat.comp`)** — splat each oriented point's normal into the octree's function values at surrounding nodes:
 
@@ -1577,7 +1577,7 @@ void main() {
 }
 ```
 
-4. **Poisson solve** — solve ∇²χ = div on the grid. On GPU, a Conjugate Gradient solver (same pattern as §7.12 CG step) handles the sparse 7-point stencil Laplacian. For large grids (256³+), a multigrid V-cycle reduces iteration count from O(N²) to O(N log N):
+4. **Poisson solve** — solve ∇²χ = div on the grid. On GPU, a Conjugate Gradient solver (same pattern as §10.12 CG step) handles the sparse 7-point stencil Laplacian. For large grids (256³+), a multigrid V-cycle reduces iteration count from O(N²) to O(N log N):
 
 ```glsl
 // poisson_jacobi.comp — one Jacobi relaxation step (simpler than CG, more iterations)
@@ -1596,11 +1596,11 @@ layout(local_size_x=8, local_size_y=8, local_size_z=8) in;
 
 ---
 
-### 6. Spline Curves: GPU Tessellation
+### 4. Spline Curves: GPU Tessellation
 
 B-spline and Bézier curve tessellation converts a compact control-point representation into dense polyline or ribbon geometry suitable for rasterization. The central challenge is adaptive tessellation — generating more vertices where curvature is high or the curve is close to the camera, and fewer elsewhere — without a serial dependency between curve segments. Tessellation shaders (hull + domain stage) are the native API path for Bézier patches; compute-shader approaches writing to vertex buffers offer more flexibility for non-standard curve types such as Catmull-Rom splines, cubic Hermite curves used in animation paths, and NURBS curves from CAD data. Both paths are covered here together with the screen-space flatness metric that drives LOD selection.
 
-### 6.1 Catmull-Rom Splines
+### 4.1 Catmull-Rom Splines
 
 Catmull-Rom interpolates through control points (unlike B-splines, which only approximate them). The uniform parameterization with tension τ = 0.5:
 
@@ -1649,7 +1649,7 @@ void main() {
 
 [Source: Catmull & Rom (1974), "A class of local interpolating splines", Computer Aided Geometric Design]
 
-### 6.2 Cubic Hermite and B-Spline Curves
+### 4.2 Cubic Hermite and B-Spline Curves
 
 **Cubic Hermite spline** — interpolates endpoints P₀, P₁ with explicit tangent vectors T₀, T₁:
 
@@ -1683,7 +1683,7 @@ vec4 OsdBSplineBasis(float t) {
 
 For **non-uniform B-splines**, apply De Boor's algorithm (§2.1) with a general knot vector.
 
-### 6.3 Tube Geometry via Compute
+### 4.3 Tube Geometry via Compute
 
 A curve tube is generated by evaluating the spline tangent, building a Frenet-Serret frame (or parallel-transport frame to avoid singularities at inflection points), and emitting a circle of vertices at each sampled point:
 
@@ -1741,7 +1741,7 @@ void main() {
 
 Generate triangle indices (quad strips around the tube) on the CPU once, since the topology is static for a given number of segments and circle subdivisions.
 
-### 6.4 Arc-Length Reparameterization
+### 4.4 Arc-Length Reparameterization
 
 Uniform parameter t gives non-uniform spacing along a spline: the curve moves faster through near-linear sections and slower through tight bends. For constant-speed animation (camera paths, particle rails, conveyor belts), reparameterize by arc length s ∈ [0, S_total].
 
@@ -1811,7 +1811,7 @@ void main() {
     if (span > 1e-8)
         tLocal += (targetS - cumArc[lo]) / span / float(numSamples - 1u);
 
-    // Evaluate spline at tLocal (same as §6.1 TES logic)
+    // Evaluate spline at tLocal (same as §4.1 TES logic)
     // ...
     framePos[frame] = vec4(evaluatedPos, 1.0);
 }
@@ -1821,13 +1821,13 @@ The cumulative arc-length table is computed once (or whenever control points cha
 
 ---
 
-### 28. 2D Vector Graphics on GPU
+### 5. 2D Vector Graphics on GPU
 
 *Audience: graphics application developers.*
 
 GPU geometry algorithms are not exclusive to 3D. 2D vector graphics — Bézier curves, fonts, strokes, filled paths — have their own GPU-native rendering techniques that avoid tessellation entirely.
 
-### 28.1 Loop-Blinn Bézier Rendering
+### 5.1 Loop-Blinn Bézier Rendering
 
 Loop & Blinn (2005) cover each cubic Bézier with one triangle; the fragment shader evaluates the implicit polynomial (k³ − lm) and discards pixels outside the fill:
 
@@ -1845,7 +1845,7 @@ void main() {
 
 Vertex shader assigns (k,l,m) from the Bézier canonical form (serpentine, cusp, loop, quadratic — classified by the curve's discriminant). No tessellation; correct at any resolution. [Source: Loop & Blinn "Resolution Independent Curve Rendering", SIGGRAPH 2005]
 
-### 28.2 MSDF Font Atlas Rendering
+### 5.2 MSDF Font Atlas Rendering
 
 Multi-channel SDF (Chlumský 2017) encodes edge orientation into RGB channels to restore sharp corners lost by single-channel SDF:
 
@@ -1866,7 +1866,7 @@ void main() {
 
 Generate the atlas offline with `msdfgen` ([source](https://github.com/Chlumsky/msdfgen)). [Source: Chlumský "Shape Decomposition for Multi-Channel Distance Fields", master's thesis 2017]
 
-### 28.3 Stroke Expansion in Compute
+### 5.3 Stroke Expansion in Compute
 
 Expand a 2D polyline to a quad strip with miter joins in a compute shader:
 
@@ -1894,19 +1894,19 @@ void main() {
 
 [Source: Rougier "Antialiased 2D Grid, Marker, and Arrow Shaders", JCGT 2014]
 
-### 28.4 Stencil-Then-Cover for Filled Paths
+### 5.4 Stencil-Then-Cover for Filled Paths
 
 Fill arbitrary paths without tessellation: (1) stencil pass renders a triangle fan from the path origin, incrementing/decrementing stencil per edge crossing direction; (2) cover pass draws a bounding quad with stencil test — only non-zero stencil pixels get filled. Implemented via `vkCmdSetStencilOp` and two draw calls. [Source: Kilgard & Bolz "GPU-accelerated Path Rendering", SIGGRAPH Asia 2012]
 
 ---
 
-### 57. GPU Curve Rendering for CAD and Precision Graphics
+### 6. GPU Curve Rendering for CAD and Precision Graphics
 
 *Audience: graphics application developers, systems developers.*
 
 §2 covered NURBS *tessellation* to triangle meshes for rendering. CAD and precision graphics require *exact* curve and trimmed surface rendering — displaying NURBS without tessellation error, handling trimming boundaries pixel-precisely, and rendering parametric curves at any zoom level without LOD artifacts.
 
-### 57.1 Direct NURBS Rasterization via Ray Casting
+### 6.1 Direct NURBS Rasterization via Ray Casting
 
 Ray cast each screen pixel against the NURBS surface by inverting the parametric mapping (Newton iteration). The fragment shader solves for (u,v) such that S(u,v) = p_ray:
 
@@ -1936,9 +1936,9 @@ void main() {
 
 [Source: Guthe et al. "GPU-Based Trimmed NURBS Rendering", IEEE VIS 2005; Loop & Blinn "Real-Time GPU Rendering of Piecewise Algebraic Surfaces", SIGGRAPH 2006]
 
-### 57.2 Trimming Curves via Stencil
+### 6.2 Trimming Curves via Stencil
 
-NURBS trimming boundaries are 2D curves in (u,v) parameter space. Rasterize them into a trim mask using the stencil approach from §28.4 (stencil-then-cover), applied in UV parameter space:
+NURBS trimming boundaries are 2D curves in (u,v) parameter space. Rasterize them into a trim mask using the stencil approach from §5.4 (stencil-then-cover), applied in UV parameter space:
 
 ```glsl
 // trim_stencil.vert — project trim curve segment to parameter space
@@ -1947,12 +1947,12 @@ void main() {
     // Map (u,v) → NDC: trim mask rendered into a 1024×1024 texture
     gl_Position = vec4(paramPos*2.0 - 1.0, 0.5, 1.0);
 }
-// Render with stencil increment/decrement; then test trim mask in §57.1 fragment shader
+// Render with stencil increment/decrement; then test trim mask in §6.1 fragment shader
 ```
 
 [Source: Moreton "Watertight Tessellation Using Forward Differencing", HWWS 2001; Steinberg et al. "GPU-Accelerated Trimmed NURBS", IEEE CAD 2023]
 
-### 57.3 Offset Curves and Parallel Curves for Machining
+### 6.3 Offset Curves and Parallel Curves for Machining
 
 Offset curves (for CNC tool radius compensation) are not NURBS — they require approximation. GPU-accelerated piecewise Bézier offset: sample the original curve at N points, compute offset points by moving along the normal, then fit a Bézier to the offset samples:
 
@@ -1971,20 +1971,20 @@ void main() {
     vec2  n   = normalize(vec2(-Ct.y, Ct.x));  // normal to tangent
     opt[i]    = C + pc.r * n;
 }
-// Follow with GPU Bézier least-squares fit (§47.2 area sampling + linear solve)
+// Follow with GPU Bézier least-squares fit (§105.2 area sampling + linear solve)
 ```
 
 [Source: Tiller & Hanson "Offsets of Two-Dimensional Profiles", IEEE CGA 1984; Piegl & Tiller "The NURBS Book", 2nd ed., §8.4]
 
 ---
 
-### 63. GPU Boolean Mesh Operations (CSG)
+### 7. GPU Boolean Mesh Operations (CSG)
 
 *Audience: graphics application developers, systems developers.*
 
 Constructive Solid Geometry (CSG) computes the union, intersection, or difference of two closed meshes. GPU algorithms use either depth-peeling for screen-space CSG or BSP-tree decomposition for exact mesh-to-mesh boolean operations.
 
-### 63.1 Depth-Peeling CSG
+### 7.1 Depth-Peeling CSG
 
 Depth peeling (Everitt 2001) renders the scene in multiple passes, each time extracting the next depth layer. CSG boolean operations are implemented by combining pairs of depth layers from two meshes:
 
@@ -2009,7 +2009,7 @@ void main() {
 
 [Source: Everitt "Interactive Order-Independent Transparency", NVIDIA Whitepaper 2001; Kirsch & Döllner "Rendering Techniques for Hardware-Accelerated Image-Space CSG", WSCG 2004]
 
-### 63.2 Mesh BSP Boolean Operations
+### 7.2 Mesh BSP Boolean Operations
 
 For exact (non-screen-space) CSG, decompose each mesh into a BSP tree, then evaluate the boolean predicate recursively. GPU parallelises the per-triangle BSP-insert test:
 
@@ -2037,7 +2037,7 @@ void main() {
 
 [Source: Naylor et al. "Merging BSP Trees Yields Polyhedral Set Operations", SIGGRAPH 1990; Bernstein & Fussell "Fast, Exact, Linear Booleans", SGP 2009]
 
-### 63.3 Cork-Style Winding Number CSG
+### 7.3 Cork-Style Winding Number CSG
 
 The winding-number approach (Jacobson et al. 2013) avoids BSP trees: for each triangle of mesh B, determine inside/outside relative to mesh A by evaluating the generalised winding number W(p) at the centroid. GPU evaluation of W(p) for all triangles simultaneously:
 
@@ -2065,9 +2065,9 @@ void main() {
 
 [Source: Jacobson et al. "Robust Inside-Outside Segmentation Using Generalized Winding Numbers", SIGGRAPH 2013; Cork CSG: https://github.com/gilbo/cork]
 
-### 63.4 Real-Time Destruction via Voronoi Fracture
+### 7.4 Real-Time Destruction via Voronoi Fracture
 
-CSG applied to destruction: pre-fracture a mesh into Voronoi cells (§25 adjacency graph), then use depth-peeling CSG at runtime to reveal internal surfaces when a cell breaks:
+CSG applied to destruction: pre-fracture a mesh into Voronoi cells (§52 adjacency graph), then use depth-peeling CSG at runtime to reveal internal surfaces when a cell breaks:
 
 ```glsl
 // fracture_reveal.comp — mark Voronoi cells as broken, emit internal face geometry
@@ -2093,13 +2093,13 @@ void main() {
 
 ---
 
-### 74. Implicit Surface Blending: MetaBalls and SDF Primitives
+### 8. Implicit Surface Blending: MetaBalls and SDF Primitives
 
 *Audience: graphics application developers.*
 
-SDF primitives — spheres, capsules, tori, rounded boxes — are analytically defined functions φ(p) returning the signed distance from any point p to the surface. Composing them via smooth-minimum (smin) blends shapes without discrete topology. This procedural SDF modelling is the basis of character shapes in games (Clayxels, ZBrush DynaMesh), real-time destruction, and fluid surface reconstruction (§11 FLIP → metaball surface).
+SDF primitives — spheres, capsules, tori, rounded boxes — are analytically defined functions φ(p) returning the signed distance from any point p to the surface. Composing them via smooth-minimum (smin) blends shapes without discrete topology. This procedural SDF modelling is the basis of character shapes in games (Clayxels, ZBrush DynaMesh), real-time destruction, and fluid surface reconstruction (§48 FLIP → metaball surface).
 
-### 74.1 Analytic SDF Primitives
+### 8.1 Analytic SDF Primitives
 
 ```glsl
 // sdf_primitives.glsl — common analytic SDF functions
@@ -2126,9 +2126,9 @@ float smin(float a, float b, float k) {
 
 [Source: Quilez "Inigo Quilez — SDF Primitives" https://iquilezles.org/articles/distfunctions/]
 
-### 74.2 Metaball Field Composition
+### 8.2 Metaball Field Composition
 
-A metaball field sums falloff contributions from N sphere centres. The field value at p is the sum of Gaussian-like falloffs; the isosurface (§61 marching cubes at field=1) gives the blobby shape:
+A metaball field sums falloff contributions from N sphere centres. The field value at p is the sum of Gaussian-like falloffs; the isosurface (§65 marching cubes at field=1) gives the blobby shape:
 
 ```glsl
 // metaball_field.comp — evaluate metaball field over a voxel grid
@@ -2147,14 +2147,14 @@ void main() {
     }
     imageStore(fieldOut, id, vec4(f));
 }
-// Then run §61.1 marching cubes at isovalue=1.0 to extract the metaball surface
+// Then run §65.1 marching cubes at isovalue=1.0 to extract the metaball surface
 ```
 
 [Source: Blinn "A Generalization of Algebraic Surface Drawing", ACM TOG 1982; Wyvill et al. "Data Structure for Soft Objects", The Visual Computer 1986]
 
-### 74.3 SDF-Based Character Body Assembly
+### 8.3 SDF-Based Character Body Assembly
 
-Assemble a character body from per-bone SDF capsules (§74.1), blending adjacent bones with smin. Each bone capsule is defined by the skinned joint endpoints (§4 output):
+Assemble a character body from per-bone SDF capsules (§8.1), blending adjacent bones with smin. Each bone capsule is defined by the skinned joint endpoints (§39 output):
 
 ```glsl
 // character_sdf.comp — assemble character body SDF from bone capsules
@@ -2172,14 +2172,14 @@ void main() {
     }
     imageStore(characterSDF, id, vec4(d));
 }
-// Character body SDF supports: §52 collision, §63 CSG destruction, §61 mesh extraction
+// Character body SDF supports: §64 collision, §7 CSG destruction, §65 mesh extraction
 ```
 
 [Source: Turk & O'Brien "Shape Transformation Using Variational Implicit Functions", SIGGRAPH 1999; SDF character: Perlin "An Image Synthesizer", SIGGRAPH 1985; modern use: Clayxels Unity plugin]
 
-### 74.4 Real-Time SDF Ray Marching
+### 8.4 Real-Time SDF Ray Marching
 
-Render the assembled SDF scene (§74.3 character + §74.1 primitives + §36 Minkowski sum obstacles) via sphere tracing (Lipschitz ray marching), stepping by φ(p) at each sample:
+Render the assembled SDF scene (§8.3 character + §8.1 primitives + §62 Minkowski sum obstacles) via sphere tracing (Lipschitz ray marching), stepping by φ(p) at each sample:
 
 ```glsl
 // sphere_trace.frag — sphere tracing through composite SDF scene
@@ -2212,13 +2212,13 @@ void main() {
 
 ---
 
-### 75. Poisson Surface Reconstruction
+### 9. Poisson Surface Reconstruction
 
 *Audience: systems developers, graphics application developers.*
 
-Poisson surface reconstruction (Kazhdan et al. 2006, screened variant 2013) converts an oriented point cloud (positions + normals) into a watertight triangle mesh. It solves a Poisson equation on an adaptively refined octree, then extracts the isosurface (§61.1 marching cubes). GPU acceleration targets the octree assembly and the sparse linear solve.
+Poisson surface reconstruction (Kazhdan et al. 2006, screened variant 2013) converts an oriented point cloud (positions + normals) into a watertight triangle mesh. It solves a Poisson equation on an adaptively refined octree, then extracts the isosurface (§65.1 marching cubes). GPU acceleration targets the octree assembly and the sparse linear solve.
 
-### 75.1 Oriented Point Splatting into Octree
+### 9.1 Oriented Point Splatting into Octree
 
 Insert each point's normal contribution into the octree's vector field grid. The indicator function gradient ∇χ is approximated by the point normals smoothed by a B-spline basis:
 
@@ -2242,7 +2242,7 @@ void main() {
 
 [Source: Kazhdan et al. "Poisson Surface Reconstruction", SGP 2006; Kazhdan & Hoppe "Screened Poisson Surface Reconstruction", ACM TOG 2013]
 
-### 75.2 Octree Laplacian Assembly
+### 9.2 Octree Laplacian Assembly
 
 Assemble the sparse Laplacian for the octree by summing stencil contributions from each cell's 6-face neighbours. GPU parallelises over octree cells:
 
@@ -2263,10 +2263,10 @@ void main() {
     }
     rows[c].diag = diag; rows[c].n = nNbr;
 }
-// Solve: L·χ = div(vecField) via Gauss-Seidel or conjugate gradient (§65.1 pattern)
+// Solve: L·χ = div(vecField) via Gauss-Seidel or conjugate gradient (§37.1 pattern)
 ```
 
-### 75.3 Adaptive Octree Refinement
+### 9.3 Adaptive Octree Refinement
 
 Refine the octree where point density is high (more points → smaller cells → more detail). GPU atomic counting of points per cell at each level:
 
@@ -2290,9 +2290,9 @@ void main() {
 
 [Source: Kazhdan et al. 2006; GPU Poisson: Kazhdan & Hoppe "Screened Poisson Surface Reconstruction", 2013 §5; implementation: https://github.com/mkazhdan/PoissonRecon]
 
-### 75.4 Isovalue Selection and Mesh Extraction
+### 9.4 Isovalue Selection and Mesh Extraction
 
-After solving for χ, choose the isovalue as the mean χ value at the input point positions, then run §61.1 marching cubes. The screened variant (2013) adds point-interpolation constraints that automatically set the isovalue:
+After solving for χ, choose the isovalue as the mean χ value at the input point positions, then run §65.1 marching cubes. The screened variant (2013) adds point-interpolation constraints that automatically set the isovalue:
 
 ```glsl
 // poisson_isovalue.comp — compute average χ at input point positions
@@ -2308,7 +2308,7 @@ void main() {
     atomicAdd(IsoSum.cnt, 1u);
 }
 // isovalue = IsoSum.sum / IsoSum.cnt
-// Then: §61.1 marching cubes on the chi volume at this isovalue → watertight mesh
+// Then: §65.1 marching cubes on the chi volume at this isovalue → watertight mesh
 ```
 
 [Source: Kazhdan & Hoppe 2013; Fuhrmann & Goesele "Floating Scale Surface Reconstruction", ACM TOG 2014]
@@ -2322,11 +2322,11 @@ void main() {
 
 Covers algorithms that operate on triangle or polygon meshes to change their connectivity, complexity, or parameterization: simplification and remeshing for runtime LOD, UV parameterization and atlas packing for texture baking, Delaunay triangulation for quality-guaranteed mesh generation, voxelization for collision and SDF computation, mesh fairing and smoothing for noise removal, segmentation for part decomposition, repair for watertightness, and streaming-friendly compression codecs (Draco, meshopt). These algorithms typically run as offline preprocess steps or as compute dispatches that feed data into the real-time rendering pipeline.
 
-### 7. GPU Mesh Simplification and LOD
+### 10. GPU Mesh Simplification and LOD
 
 GPU subdivision (§1) adds geometric detail; the inverse — removing detail for distant objects — is equally critical for real-time budgets. Two complementary approaches exist: quadric-error-metric (QEM) edge collapse for quality-preserving offline LOD generation, and vertex clustering for GPU-parallel online simplification.
 
-### 7.1 Quadric Error Metric (Garland-Heckbert)
+### 10.1 Quadric Error Metric (Garland-Heckbert)
 
 The QEM (Garland & Heckbert, 1997) assigns each vertex v a 4×4 error matrix Q = ΣᵢKᵢ where Kᵢ = ppᵀ for each adjacent face plane p = [nₓ, nᵧ, nᵤ, d]ᵀ (plane equation as a 4-vector). The cost of collapsing edge (v₁, v₂) to optimal position v̄:
 
@@ -2338,7 +2338,7 @@ cost = v̄ᵀ Q_combined v̄
 
 Collapse edges in order of cost using a min-heap; after each collapse, update the affected neighbor quadrics. The algorithm is inherently sequential due to topological dependencies between collapses.
 
-### 7.2 meshoptimizer
+### 10.2 meshoptimizer
 
 The dominant production simplifier is `meshoptimizer` by Arseny Kapoulkine ([GitHub](https://github.com/zeux/meshoptimizer), MIT), used in Godot, Unreal, Bevy, and most modern game engines. It runs on the CPU and produces LOD index buffers ready for GPU upload:
 
@@ -2397,13 +2397,13 @@ meshopt_remapVertexBuffer(vertices, vertices, vertexCount,
 meshopt_remapIndexBuffer(indices, indices, indexCount, remap.data());
 ```
 
-For meshlet-based rendering (§7.4), meshoptimizer's `meshopt_buildMeshlets` already incorporates vertex cache awareness at the meshlet granularity: each meshlet's local index buffer is a tight 64-vertex / 124-triangle unit that fits entirely within the mesh shader's per-workgroup registers, making PTVC optimization less critical at draw time but more important within the meshlet build step.
+For meshlet-based rendering (§10.4), meshoptimizer's `meshopt_buildMeshlets` already incorporates vertex cache awareness at the meshlet granularity: each meshlet's local index buffer is a tight 64-vertex / 124-triangle unit that fits entirely within the mesh shader's per-workgroup registers, making PTVC optimization less critical at draw time but more important within the meshlet build step.
 
-**GPU porting status — simplification.** `meshopt_simplify` (QEM edge collapse) is CPU-only. GPU simplification is an active area: Unreal Engine 5's Nanite performs cluster-level hierarchical simplification on the GPU as part of its virtual geometry system, but this is not a direct port of QEM — it uses a custom cluster-DAG structure built offline. There is no production GPU port of the meshoptimizer simplification API. For real-time LOD generation (e.g., runtime terrain or streaming), GPU vertex clustering (§7.3) is the practical GPU alternative at the cost of lower quality than QEM.
+**GPU porting status — simplification.** `meshopt_simplify` (QEM edge collapse) is CPU-only. GPU simplification is an active area: Unreal Engine 5's Nanite performs cluster-level hierarchical simplification on the GPU as part of its virtual geometry system, but this is not a direct port of QEM — it uses a custom cluster-DAG structure built offline. There is no production GPU port of the meshoptimizer simplification API. For real-time LOD generation (e.g., runtime terrain or streaming), GPU vertex clustering (§10.3) is the practical GPU alternative at the cost of lower quality than QEM.
 
 **GPU porting status — encode/decode.** `meshopt_decodeIndexBuffer` and `meshopt_decodeVertexBuffer` are explicitly designed to be portable to GPU compute. The decode algorithms are tight loops with no irregular branching, and Kapoulkine has noted that a GLSL/HLSL compute shader decode pass is a stated roadmap goal. The encode step (delta coding, bit packing) remains CPU-only. A GPU decode pass would enable streaming compressed geometry directly from a staging buffer into a vertex/index buffer in a single compute dispatch, eliminating CPU decompression latency.
 
-### 7.3 Vertex Clustering on GPU
+### 10.3 Vertex Clustering on GPU
 
 Vertex clustering groups all vertices falling within a spatial cell and replaces each group with a representative (centroid or QEM-minimizer). Unlike QEM edge collapse, it requires no adjacency data — each vertex independently maps to its cell, making it GPU-friendly:
 
@@ -2430,7 +2430,7 @@ void main() {
 
 After clustering: radix-sort vertices by `clusterID`, compute per-cluster centroid via segmented reduction, and rebuild connectivity (triangles whose all three vertices map to the same cluster are degenerate and dropped). The resulting mesh has at most one vertex per grid cell. Cell size controls the LOD level — halving cell size doubles vertex count.
 
-### 7.4 LOD Selection in Mesh Shaders
+### 10.4 LOD Selection in Mesh Shaders
 
 With `VK_EXT_mesh_shader` (Ch127), the amplification (task) shader can select per-meshlet LOD based on projected screen-space size, without any CPU round-trip:
 
@@ -2461,7 +2461,7 @@ This pattern (per-cluster LOD in the amplification shader) is the basis of Unrea
 
 [Source: Garland & Heckbert (1997), "Surface Simplification Using Quadric Error Metrics", SIGGRAPH; https://github.com/zeux/meshoptimizer]
 
-### 7.5 Smooth Normals Post-Pass
+### 10.5 Smooth Normals Post-Pass
 
 Meshes imported from CAD or sculpting tools may have per-face normals, producing faceted shading. Recomputing angle-weighted per-vertex smooth normals on the GPU requires atomic accumulation — each triangle contributes its face normal (scaled by vertex angle) to all three of its vertices' accumulators, then a normalize pass finalizes.
 
@@ -2519,7 +2519,7 @@ void main() {
 
 With `VK_EXT_shader_atomic_float`, replace the integer accum buffer with a `float` SSBO and use `atomicAdd` on `float` directly (declared with `layout(buffer_reference, std430)` or just standard SSBO binding). The integer-scaled approach runs on all Vulkan 1.2+ hardware without extensions.
 
-### 7.6 Procedural GPU Instancing: Grass, Hair, Fur
+### 10.6 Procedural GPU Instancing: Grass, Hair, Fur
 
 Dense surface detail (grass fields, fur, hair cards) cannot be stored as conventional meshes — a 100m² grass field at 64 blades/m² is 6.4 million blades. Mesh shaders solve this by generating geometry on-chip from a compact procedural description, with the amplification (task) shader culling and LOD-selecting clusters before the mesh shader emits blade geometry.
 
@@ -2611,11 +2611,11 @@ void main() {
 }
 ```
 
-**LOD.** The task shader can switch to a billboard card (2 triangles per blade) beyond ~50m and suppress blades entirely past ~150m. For hair, replace the 5-vertex blade with a 10–16 vertex strand following a Catmull-Rom spline through simulation control points output by a PBD pass (§4.6). Fur uses a shorter, denser strand with a random length distribution driven by a density-map alpha channel.
+**LOD.** The task shader can switch to a billboard card (2 triangles per blade) beyond ~50m and suppress blades entirely past ~150m. For hair, replace the 5-vertex blade with a 10–16 vertex strand following a Catmull-Rom spline through simulation control points output by a PBD pass (§39.6). Fur uses a shorter, denser strand with a random length distribution driven by a density-map alpha channel.
 
 [Source: Acton (2021) "Procedural Grass in 'Ghost of Tsushima'" GDC; Epic Games "UE5 Nanite Foliage" tech blog]
 
-### 7.7 Billboard and Impostor LOD Atlases
+### 10.7 Billboard and Impostor LOD Atlases
 
 At extreme camera distances (>200m for a tree, >50m for a shrub), even a single-lod low-poly mesh wastes vertex processing on subpixel geometry. **Impostors** replace the 3D mesh entirely with a camera-facing quad whose texture captures the mesh rendered from multiple discrete angles — a camera-view-dependent atlas lookup that is visually identical to the mesh at distances where the angular delta between atlas samples is below the pixel error threshold.
 
@@ -2660,11 +2660,11 @@ if (projectedDiam < IMPOSTOR_THRESHOLD) {
 
 **Transition blending.** Cross-fade between mesh LOD and impostor by alpha-blending the two draw calls during a distance hysteresis band. Unreal Engine's `HISM` (Hierarchical Instanced Static Mesh) uses exactly this pattern for foliage at >200k instances. [Source: Baker "Octahedral Impostor Rendering", GPU Gems 3 Ch13; Klauder "Efficient Impostors in UE4", GDC 2019]
 
-### 7.8 Bent Normals Precomputation
+### 10.8 Bent Normals Precomputation
 
 A **bent normal** at a surface point is the average unoccluded hemisphere direction — pointing toward the open sky rather than toward nearby occluders. When used to look up an irradiance probe or environment map, bent normals dramatically reduce light leaking under overhangs, inside concave surfaces, and near contact shadows, at zero fragment-shader cost beyond the texture lookup.
 
-**Baking pass (`bent_normal_bake.comp`):** For each surface vertex, cast N rays in a cosine-weighted hemisphere and accumulate the directions of unoccluded rays. The BVH built in §8 provides the ray-cast primitive:
+**Baking pass (`bent_normal_bake.comp`):** For each surface vertex, cast N rays in a cosine-weighted hemisphere and accumulate the directions of unoccluded rays. The BVH built in §24 provides the ray-cast primitive:
 
 ```glsl
 // bent_normal_bake.comp — one thread per surface vertex
@@ -2672,7 +2672,7 @@ layout(local_size_x=64) in;
 
 layout(set=0, binding=0) readonly  buffer Positions { vec4 positions[]; };
 layout(set=0, binding=1) readonly  buffer Normals   { vec4 normals[];   };
-layout(set=0, binding=2) readonly  buffer BVH       { /* LBVH nodes from §8 */ };
+layout(set=0, binding=2) readonly  buffer BVH       { /* LBVH nodes from §24 */ };
 layout(set=0, binding=3) writeonly buffer BentNorms { vec4 bentNormals[]; };
 layout(push_constant) uniform PC { uint vertCount; uint raysPerVertex; uint frameSeed; };
 
@@ -2724,7 +2724,7 @@ vec3 diffuse = albedo * irr;
 
 [Source: Landis "Production-Ready Global Illumination", SIGGRAPH 2002; UE4 "Ambient Occlusion and Bent Normal" documentation]
 
-### 7.9 Geometry Compression and Quantization
+### 10.9 Geometry Compression and Quantization
 
 Memory bandwidth is the dominant cost in geometry-heavy rendering. Compressing vertex attributes before upload to VRAM reduces bandwidth on every draw call and meshlet dispatch.
 
@@ -2782,9 +2782,9 @@ meshopt_decodeIndexBuffer(indices, indexCount, sizeof(uint32_t),
 
 [Source: Kapoulkine "meshoptimizer: Mesh Optimization Library", GitHub README; Meyer et al. "Octahedral Normal Vector Encoding", ShaderX3]
 
-### 7.10 Mesh Stitching and Seam Welding
+### 10.10 Mesh Stitching and Seam Welding
 
-DCC tools and glTF exporters produce meshes with split vertices at UV seams, hard-normal boundaries, and part joints — positions that are geometrically coincident but stored as separate vertices with different attributes. This produces visual cracks in subdivision (§1), incorrect smooth normals (§7.5), and doubles the vertex count along every seam. GPU-side stitching merges these before any geometry processing.
+DCC tools and glTF exporters produce meshes with split vertices at UV seams, hard-normal boundaries, and part joints — positions that are geometrically coincident but stored as separate vertices with different attributes. This produces visual cracks in subdivision (§1), incorrect smooth normals (§10.5), and doubles the vertex count along every seam. GPU-side stitching merges these before any geometry processing.
 
 **Vertex deduplication with `meshopt_generateVertexRemap`.** meshoptimizer's remap pass compares vertices by a caller-supplied equality predicate and produces a remap table:
 
@@ -2830,11 +2830,11 @@ After GPU sort-by-bucket, a merge pass within each bucket identifies canonical r
 
 **Seam handling for UV/normal attributes.** Welding on position alone discards UV and normal discontinuities needed for correct texturing. The standard approach: weld to a per-vertex record `{position, roundedNormal, roundedUV}` where the normal and UV are rounded to a tolerance that preserves hard edges (angle > 30°) while merging smooth neighbours. `meshopt_generateVertexRemapMulti` accepts multiple streams and per-stream equality tolerances. [Source: meshoptimizer `generateVertexRemap` API documentation; Turk "Re-Tiling Polygonal Surfaces", SIGGRAPH 1992]
 
-### 7.11 Mesh Boolean Operations: Polygon Clipping on GPU
+### 10.11 Mesh Boolean Operations: Polygon Clipping on GPU
 
 SDF Boolean operations (§3.7) approximate the result via a distance field. **Polygon clipping** produces exact Boolean operations on triangle meshes by clipping each triangle of mesh A against each triangle of mesh B at their intersection contour, then classifying and keeping the desired inside/outside fragments.
 
-**Sutherland-Hodgman polygon clipping on GPU.** For each candidate pair of triangles (A_i, B_j) from the BVH broad-phase (§8.1–8.3), clip triangle A_i against the plane of B_j:
+**Sutherland-Hodgman polygon clipping on GPU.** For each candidate pair of triangles (A_i, B_j) from the BVH broad-phase (§24.1–8.3), clip triangle A_i against the plane of B_j:
 
 ```glsl
 // clip_tri_against_plane.glsl — called per candidate pair
@@ -2862,7 +2862,7 @@ int clipPolygon(vec3 poly[], int n, vec3 planeN, float planeD, vec3 out[]) {
 
 **GPU pipeline for mesh Boolean:**
 
-1. **BVH broad-phase** — find all (A_i, B_j) AABB pairs that overlap (§8.1–8.3)
+1. **BVH broad-phase** — find all (A_i, B_j) AABB pairs that overlap (§24.1–8.3)
 2. **Triangle-triangle intersection** (compute) — for each pair, compute the intersection line segment; discard non-intersecting pairs
 3. **Sutherland-Hodgman clipping** (compute) — clip each intersecting triangle against the other's plane; emit sub-triangles into output buffer
 4. **Inside/outside classification** — ray-cast from each sub-triangle centroid to classify interior/exterior using the opposite mesh's BVH
@@ -2870,7 +2870,7 @@ int clipPolygon(vec3 poly[], int n, vec3 planeN, float planeD, vec3 out[]) {
 
 Full mesh Boolean on GPU is an active research area. Production tools (Blender's `bmesh`, OpenCASCADE `BRepAlgoAPI`) run on CPU, but GPU broad-phase acceleration can reduce step 1–2 from minutes to seconds for complex meshes. The GPU pipeline above handles the intersection kernel; CPU coordinates the global classification. [Source: Greiner & Hormann "Efficient Clipping of Arbitrary Polygons", TOG 1998; Bernstein & Fussell "Fast, Exact, Linear Booleans", SGP 2009]
 
-### 7.12 Harmonic and LSCM UV Parameterization
+### 10.12 Harmonic and LSCM UV Parameterization
 
 UV parameterization maps a 3D mesh surface to a 2D texture domain with minimal distortion. Two methods dominate production use: **Harmonic maps** (minimize Dirichlet energy, angle-preserving near boundaries) and **Least Squares Conformal Maps** (LSCM, Lévy 2002 — minimizes angle distortion globally, requires only 2 pinned vertices).
 
@@ -2924,9 +2924,9 @@ void main() {
 
 For LSCM specifically, pin two boundary vertices (e.g., the two vertices of the longest boundary edge) and solve the 2×2 block system simultaneously for u and v coordinates. LSCM minimizes the complex Dirichlet energy `‖∂f/∂z̄‖²` which is equivalent to conformal (angle-preserving) mapping.
 
-**Practical output.** For a 100k-triangle mesh, GPU Laplacian assembly takes ~5 ms; CG convergence (50–200 iterations) takes ~10–50 ms. The result feeds directly into the baking pipeline (§7.13). Production tools: xatlas (MIT, CPU-only) for automatic atlas layout with seam optimization; libigl `igl::lscm` + `igl::harmonic` (CPU); uvatlas (DirectX SDK, CPU). [Source: Lévy et al. "Least Squares Conformal Maps for Automatic Texture Atlas Generation", SIGGRAPH 2002; Desbrun et al. "Intrinsic Parameterizations of Surface Meshes", Eurographics 2002]
+**Practical output.** For a 100k-triangle mesh, GPU Laplacian assembly takes ~5 ms; CG convergence (50–200 iterations) takes ~10–50 ms. The result feeds directly into the baking pipeline (§10.13). Production tools: xatlas (MIT, CPU-only) for automatic atlas layout with seam optimization; libigl `igl::lscm` + `igl::harmonic` (CPU); uvatlas (DirectX SDK, CPU). [Source: Lévy et al. "Least Squares Conformal Maps for Automatic Texture Atlas Generation", SIGGRAPH 2002; Desbrun et al. "Intrinsic Parameterizations of Surface Meshes", Eurographics 2002]
 
-### 7.13 GPU Parametric Texture Baking
+### 10.13 GPU Parametric Texture Baking
 
 Texture baking transfers high-frequency surface detail from a high-poly mesh to a low-poly mesh via UV projection. The GPU pipeline renders the high-poly mesh once per baked channel (normal, AO, curvature, thickness, albedo) using the low-poly UV layout as the render target coordinate system.
 
@@ -2943,7 +2943,7 @@ layout(set=0,binding=0, rgba8snorm) uniform image2D normalMap;   // output
 layout(set=0,binding=1) readonly buffer LowPolyPos { vec3 lpPos[]; };
 layout(set=0,binding=2) readonly buffer LowPolyUV  { vec2 lpUV[];  };
 layout(set=0,binding=3) readonly buffer LowPolyIdx { uvec3 lpTri[];};
-layout(set=0,binding=4) readonly buffer HiPolyBVH  { /* LBVH §8 */ };
+layout(set=0,binding=4) readonly buffer HiPolyBVH  { /* LBVH §24 */ };
 layout(set=0,binding=5) readonly buffer HiPolyNorm { vec3 hpNorm[];};
 layout(push_constant) uniform PC { ivec2 atlasSize; uint triCount; float cageOffset; };
 
@@ -2980,7 +2980,7 @@ void main() {
 
 **Baked channels.** The same pipeline handles:
 - **Normal map** — high-poly surface normal in low-poly tangent space
-- **AO / bent normals** — §7.8 bent normal bake using BVH ray casting
+- **AO / bent normals** — §10.8 bent normal bake using BVH ray casting
 - **Curvature** — mean curvature `H = ½ tr(shape operator)` at the hit point; sign indicates convex/concave; used for edge highlights and cavity shading
 - **Thickness** — bidirectional ray: shoot forward and backward along normal, record total distance inside the mesh; used for subsurface scattering approximation
 - **Albedo transfer** — sample the high-poly diffuse texture at the hit UV
@@ -3003,7 +3003,7 @@ void main() {
 
 Production bakers: xNormal (GPU-accelerated), Marmoset Toolbag (GPU), Blender Cycles bake (GPU compute via HLBVH). xatlas handles the UV layout step preceding bake. [Source: Cignoni et al. "Metro: Measuring Error on Simplified Surfaces", Eurographics 1998; xNormal v3 GPU baking whitepaper]
 
-### 7.14 GPU Mesh Repair
+### 10.14 GPU Mesh Repair
 
 Meshes from external sources — CAD exports, photogrammetry reconstruction, physics simulation output, format converters — routinely contain: degenerate triangles (zero-area, collinear vertices), T-junctions (a vertex of one triangle lying on the edge of another without a shared vertex), non-manifold edges (three or more triangles sharing one edge), and holes (boundary edge loops). GPU compute can detect and partially repair these at asset-load time.
 
@@ -3066,9 +3066,9 @@ Non-manifold edges require human-guided repair (split vertex, fill hole, or dele
 
 Production mesh repair tools: MeshFix (Attene 2010, C++), Open3D `mesh.remove_degenerate_triangles()` (CPU), Blender's `Clean Up` operators. The GPU pipeline above handles the detection and simple repairs; complex topology repair (genus changes, overlapping shells) remains a CPU task. [Source: Attene "A lightweight approach to repairing digitized polygon meshes", VC 2010; Ju "Fixing Geometric Errors on Polygonal Models", JCAM 2009]
 
-### 7.15 Sphere Packing and Farthest-Point Sampling
+### 10.15 Sphere Packing and Farthest-Point Sampling
 
-**Farthest-point sampling (FPS)** selects a subset of N points from a larger set M such that each selected point is as far as possible from all previously selected points. It produces a well-distributed, coverage-maximizing sample set — ideal for: light probe placement (maximize coverage of the scene), LOD seed selection (§7.1 QEM clustering), impostor view-direction sampling (§7.7), and point-cloud downsampling before Poisson reconstruction (§3.12).
+**Farthest-point sampling (FPS)** selects a subset of N points from a larger set M such that each selected point is as far as possible from all previously selected points. It produces a well-distributed, coverage-maximizing sample set — ideal for: light probe placement (maximize coverage of the scene), LOD seed selection (§10.1 QEM clustering), impostor view-direction sampling (§10.7), and point-cloud downsampling before Poisson reconstruction (§3.12).
 
 **Sequential FPS is inherently serial** (each new point depends on all previously selected). The GPU-parallel approximation maintains a per-point `minDist` buffer — the distance from each unselected point to its nearest already-selected point — and performs a reduce-max to find the next sample:
 
@@ -3144,13 +3144,13 @@ Parallel dart throwing has race conditions (two threads may both accept points t
 
 ---
 
-### 24. GPU Remeshing
+### 11. GPU Remeshing
 
 *Audience: graphics application developers, systems developers.*
 
-Remeshing reshapes mesh geometry — changing edge lengths, valences, and alignment — without changing the underlying surface. It sits between simplification (§7, which reduces vertex count) and repair (§7.14, which fixes pathological topology).
+Remeshing reshapes mesh geometry — changing edge lengths, valences, and alignment — without changing the underlying surface. It sits between simplification (§10, which reduces vertex count) and repair (§10.14, which fixes pathological topology).
 
-### 24.1 Isotropic Remeshing
+### 11.1 Isotropic Remeshing
 
 Botsch–Kobbelt isotropic remeshing (2004) iterates five operations targeting a uniform edge length ℓ. Operations 1–3 modify topology and require graph-coloured parallel dispatch; operations 4–5 are purely per-vertex:
 
@@ -3176,30 +3176,30 @@ void main() {
 
 **Operations 1–3** (edge split/collapse/flip) use graph-coloured dispatches: colour edges so no two same-colour edges share a vertex. Split and collapse use `atomicAdd` into a free-list counter for new vertex/index slots. [Source: Botsch & Kobbelt "A Remeshing Approach to Multiresolution Modeling", SGP 2004]
 
-### 24.2 Anisotropic Curvature-Aligned Remeshing
+### 11.2 Anisotropic Curvature-Aligned Remeshing
 
-Aligns quad/triangle edges to principal curvature directions (§14.4). Pipeline:
+Aligns quad/triangle edges to principal curvature directions (§34.4). Pipeline:
 
-1. Compute principal curvature directions per vertex (§14.4 GPU kernel).
-2. Smooth a cross-field (4-RoSy) by solving ∇²θ=0 on the mesh (sparse CG, same Laplacian as §14.1).
+1. Compute principal curvature directions per vertex (§34.4 GPU kernel).
+2. Smooth a cross-field (4-RoSy) by solving ∇²θ=0 on the mesh (sparse CG, same Laplacian as §34.1).
 3. Trace streamlines along cross-field directions via RK4 on-surface integration.
 4. Extract quad mesh from streamline network intersections (CPU topology extraction).
 
 Steps 1–3 run on GPU; step 4 is CPU-side. [Source: Bommes et al. "Mixed-Integer Quadrangulation", SIGGRAPH 2009]
 
-### 24.3 Incremental Delaunay Refinement for FEM Meshes
+### 11.3 Incremental Delaunay Refinement for FEM Meshes
 
-Generating volumetric tet meshes with quality guarantees (minimum dihedral angle > θ) uses Delaunay refinement (Shewchuk 1998): identify poor-quality tets (circumradius/shortest-edge > threshold), insert circumcenter, re-triangulate the star cavity. GPU parallelism: independently bad tets whose circumcenters do not spatially conflict process simultaneously; the §17.2 grid detects conflicts. [Source: Shewchuk "Tetrahedral Mesh Generation by Delaunay Refinement", SoCG 1998]
+Generating volumetric tet meshes with quality guarantees (minimum dihedral angle > θ) uses Delaunay refinement (Shewchuk 1998): identify poor-quality tets (circumradius/shortest-edge > threshold), insert circumcenter, re-triangulate the star cavity. GPU parallelism: independently bad tets whose circumcenters do not spatially conflict process simultaneously; the §27.2 grid detects conflicts. [Source: Shewchuk "Tetrahedral Mesh Generation by Delaunay Refinement", SoCG 1998]
 
 ---
 
-### 35. UV Seam Optimization and Atlas Packing
+### 12. UV Seam Optimization and Atlas Packing
 
 *Audience: graphics application developers.*
 
-§7.12 covered LSCM and harmonic UV parameterization algorithms. This section covers the upstream problem (where to cut seams to minimise distortion) and the downstream problem (how to pack resulting UV charts into an atlas with minimal wasted space).
+§10.12 covered LSCM and harmonic UV parameterization algorithms. This section covers the upstream problem (where to cut seams to minimise distortion) and the downstream problem (how to pack resulting UV charts into an atlas with minimal wasted space).
 
-### 35.1 Seam Placement via Graph Cuts
+### 12.1 Seam Placement via Graph Cuts
 
 Optimal seam placement minimises total parameterization distortion. Model as a minimum-cut problem on the dual graph: edge weight = penalty for cutting that mesh edge (e.g., proportional to curvature or visibility). GPU-accelerated max-flow for mesh graphs is still an open problem; in practice, a heuristic spanning tree approach runs on CPU (Levy 2002 autoseams) and the resulting topology is uploaded for GPU parameterization.
 
@@ -3221,7 +3221,7 @@ void main() {
 
 [Source: Levy et al. "Least Squares Conformal Maps for Automatic Texture Atlas Generation", SIGGRAPH 2002]
 
-### 35.2 SLIM: Scalable Locally Injective Mappings on GPU
+### 12.2 SLIM: Scalable Locally Injective Mappings on GPU
 
 SLIM (Rabinovich et al. 2017) minimises a distortion energy (symmetric Dirichlet) via local-global ARAP-style iterations. Each local step computes a per-triangle optimal transformation; each global step solves a linear system. The local step is fully parallel:
 
@@ -3242,9 +3242,9 @@ void main() {
 }
 ```
 
-The global step is a sparse linear system (same Laplacian structure as §14.1) solved by conjugate gradient on CPU or GPU sparse CG (§11.2). [Source: Rabinovich et al. "SLIM: Scalable Locally Injective Mappings", SIGGRAPH Asia 2017]
+The global step is a sparse linear system (same Laplacian structure as §34.1) solved by conjugate gradient on CPU or GPU sparse CG (§48.2). [Source: Rabinovich et al. "SLIM: Scalable Locally Injective Mappings", SIGGRAPH Asia 2017]
 
-### 35.3 GPU Atlas Bin-Packing: Skyline Algorithm
+### 12.3 GPU Atlas Bin-Packing: Skyline Algorithm
 
 After parameterization, pack UV chart rectangles (bounding boxes) into the atlas texture. The skyline packing algorithm places each chart at the lowest possible y in the skyline contour:
 
@@ -3272,13 +3272,13 @@ Chart placement is inherently serial (each placement modifies the skyline for th
 
 ---
 
-### 41. Mesh Voxelisation
+### 13. Mesh Voxelisation
 
 *Audience: systems developers, graphics application developers.*
 
-Mesh voxelisation converts a triangle soup into a 3D voxel grid, producing either a *surface shell* (conservative voxelisation) or a filled *solid* (solid voxelisation). The output is consumed by §31 LSM initialisation, §25 fracture setup, §34 AO baking, physics collision, and GPU fabrication slicing.
+Mesh voxelisation converts a triangle soup into a 3D voxel grid, producing either a *surface shell* (conservative voxelisation) or a filled *solid* (solid voxelisation). The output is consumed by §61 LSM initialisation, §52 fracture setup, §28 AO baking, physics collision, and GPU fabrication slicing.
 
-### 41.1 Conservative Voxelisation
+### 13.1 Conservative Voxelisation
 
 Conservative voxelisation marks every voxel whose cell overlaps the triangle surface. Schwarz & Seidel (2010) test each triangle against candidate voxels in its AABB:
 
@@ -3309,7 +3309,7 @@ void main() {
 
 `triBoxOverlap` uses the separating axis theorem (SAT) with 13 axes: 3 face normals, 3 box normals, 9 edge cross products. [Source: Schwarz & Seidel "Fast Parallel Surface and Solid Voxelization", SIGGRAPH Asia 2010]
 
-### 41.2 Solid Voxelisation via Parity Ray Casting
+### 13.2 Solid Voxelisation via Parity Ray Casting
 
 Fill the interior by counting triangle crossings along one axis per column. Sort triangles by Z-slab; for each (x,y) column cast a ray in Z and toggle fill at each crossing:
 
@@ -3336,26 +3336,26 @@ void main() {
 
 [Source: Schwarz & Seidel 2010; Pantaleoni "VoxelPipe: A Programmable Pipeline for 3D Voxelization", HPG 2011]
 
-### 41.3 Output Formats
+### 13.3 Output Formats
 
 | Format | Vulkan type | Use |
 |---|---|---|
 | Bitfield SSBO (1 bit/voxel) | `VkBuffer` | Minimal memory; used for Boolean ops, parity fill |
-| R8 3D image (0/255) | `VkImage` (3D) | Accessible as `sampler3D`; used for ray marching, §31 LSM |
-| R32F SDF 3D image | `VkImage` (3D) | Distance field; used for §3 CSG, §31 redistancing init |
-| SSBO of voxel centroids | `VkBuffer` | Sparse point cloud; used for §21 ICP, §34 AO |
+| R8 3D image (0/255) | `VkImage` (3D) | Accessible as `sampler3D`; used for ray marching, §61 LSM |
+| R32F SDF 3D image | `VkImage` (3D) | Distance field; used for §3 CSG, §61 redistancing init |
+| SSBO of voxel centroids | `VkBuffer` | Sparse point cloud; used for §87 ICP, §28 AO |
 
-Convert bitfield to SDF by running GPU JFA (§3.4) or FMM (§31.3) on the surface shell voxels. [Source: Jones et al. "3D Distance Fields: A Survey", TVCG 2006]
+Convert bitfield to SDF by running GPU JFA (§3.4) or FMM (§61.3) on the surface shell voxels. [Source: Jones et al. "3D Distance Fields: A Survey", TVCG 2006]
 
 ---
 
-### 46. Morphological Operations and Medial Axis
+### 14. Morphological Operations and Medial Axis
 
 *Audience: systems developers, graphics application developers.*
 
-Morphological operations (erosion, dilation, opening, closing) on 3D binary voxel grids are foundational in medical image processing, GPU fabrication, and shape analysis. §36.3 showed SDF offset (equivalent to dilation of the zero level set); this section covers full morphological operators on voxel bitfields and GPU medial axis extraction.
+Morphological operations (erosion, dilation, opening, closing) on 3D binary voxel grids are foundational in medical image processing, GPU fabrication, and shape analysis. §62.3 showed SDF offset (equivalent to dilation of the zero level set); this section covers full morphological operators on voxel bitfields and GPU medial axis extraction.
 
-### 46.1 Binary Dilation and Erosion
+### 14.1 Binary Dilation and Erosion
 
 Dilation: a voxel is set if any voxel in its structuring element neighbourhood is set. Erosion: a voxel is set only if *all* neighbours are set. For a 3×3×3 ball structuring element:
 
@@ -3382,7 +3382,7 @@ void main() {
 
 Opening (erosion then dilation) removes small protrusions; closing (dilation then erosion) fills small holes. [Source: Serra "Image Analysis and Mathematical Morphology", 1982; GPU morphology: Ritter et al. "GPU-based Morphological Reconstruction", TVCG 2008]
 
-### 46.2 Parallel 3D Thinning for Medial Axis
+### 14.2 Parallel 3D Thinning for Medial Axis
 
 The medial axis (topological skeleton) is extracted by iteratively removing simple surface voxels — voxels on the surface whose removal does not change the topology. GPU parallel thinning alternates six directional sub-iterations (±X, ±Y, ±Z):
 
@@ -3411,9 +3411,9 @@ void main() {
 
 Iterate until `changed==0`. The result is the curve skeleton of the solid object — used for rigging assistance, vessel centreline extraction, and shape-matching. [Source: Palágyi & Kuba "A Parallel 3D 12-Subiteration Thinning Algorithm", Graphical Models 1999; Lee et al. "Building Skeleton Models via 3-D Medial Surface Axis Thinning", CVGIP 1994]
 
-### 46.3 Distance-Field Medial Axis
+### 14.3 Distance-Field Medial Axis
 
-A faster (but approximate) medial axis: extract ridges of the distance transform where ∇²D is locally maximally negative (D is the Euclidean distance field). Compute via GPU FMM (§31.3) then threshold on Laplacian:
+A faster (but approximate) medial axis: extract ridges of the distance transform where ∇²D is locally maximally negative (D is the Euclidean distance field). Compute via GPU FMM (§61.3) then threshold on Laplacian:
 
 ```glsl
 // medial_laplacian.comp
@@ -3436,13 +3436,13 @@ void main() {
 
 ---
 
-### 48. Progressive Meshes and Geometry Streaming
+### 15. Progressive Meshes and Geometry Streaming
 
 *Audience: graphics application developers, systems developers.*
 
-Static LOD (§7) simplifies meshes offline and selects one resolution at runtime. Progressive meshes (Hoppe 1996) stream detail *incrementally* — the mesh grows from coarse to fine as data arrives or the camera approaches, without discrete LOD pops. GPU-side vertex split playback and geomorphic interpolation are compute shader tasks.
+Static LOD (§10) simplifies meshes offline and selects one resolution at runtime. Progressive meshes (Hoppe 1996) stream detail *incrementally* — the mesh grows from coarse to fine as data arrives or the camera approaches, without discrete LOD pops. GPU-side vertex split playback and geomorphic interpolation are compute shader tasks.
 
-### 48.1 Vertex Split Records
+### 15.1 Vertex Split Records
 
 A progressive mesh encodes a sequence of vertex splits (the inverse of edge collapses). Each record stores:
 
@@ -3456,9 +3456,9 @@ struct VertexSplit {
 };
 ```
 
-Offline: run QEM (§7.1) edge collapse sequence, record the inverse. Upload the full split sequence as an SSBO. At runtime, replay splits in reverse order to refine.
+Offline: run QEM (§10.1) edge collapse sequence, record the inverse. Upload the full split sequence as an SSBO. At runtime, replay splits in reverse order to refine.
 
-### 48.2 GPU Vertex Split Playback
+### 15.2 GPU Vertex Split Playback
 
 Each frame, identify how many splits to apply (based on view distance or network arrival). Apply splits in a compute dispatch:
 
@@ -3486,7 +3486,7 @@ void main() {
 
 [Source: Hoppe "Progressive Meshes", SIGGRAPH 1996; Hoppe "Efficient Implementation of Progressive Meshes", CGF 1998]
 
-### 48.3 Geomorphic Position Interpolation
+### 15.3 Geomorphic Position Interpolation
 
 When a split is applied, the new vertex position interpolates between the collapsed position (vs.pos_s) and the split position (vs.pos_new) to prevent popping:
 
@@ -3504,7 +3504,7 @@ void main() {
 
 t[v] increases from 0 to 1 over N frames after the split is applied, smoothing the transition. [Source: Hoppe 1996; Losasso et al. "Smooth Geometry Images", SGP 2003]
 
-### 48.4 View-Dependent Refinement
+### 15.4 View-Dependent Refinement
 
 Refine faces visible to the camera and simplify back-facing or distant faces each frame. Compute per-face refinement priority in a GPU pass:
 
@@ -3527,13 +3527,13 @@ void main() {
 
 ---
 
-### 55. Mesh Compression and Streaming Codecs
+### 16. Mesh Compression and Streaming Codecs
 
 *Audience: systems developers, graphics application developers.*
 
 GPU geometry reaches the device as raw vertex and index buffers — but the upstream pipeline that produces those buffers involves lossy and lossless compression codecs, streaming decode, and quantization. This section covers the GPU-accelerable parts of that pipeline.
 
-### 55.1 Geometry Quantization
+### 16.1 Geometry Quantization
 
 Vertex positions, normals, and UV coordinates are quantized before transmission. GPU decode (dequantisation) runs in a compute pre-pass before skinning:
 
@@ -3554,9 +3554,9 @@ void main() {
 }
 ```
 
-meshoptimizer (§30 Table A) provides `meshopt_quantizePosition()` and `meshopt_decodeVertexBuffer()` — decode on CPU then upload, or port the bit-unpacking to a compute shader for GPU-side decode. [Source: Zeux "meshoptimizer" https://github.com/zeux/meshoptimizer]
+meshoptimizer (§42 Table A) provides `meshopt_quantizePosition()` and `meshopt_decodeVertexBuffer()` — decode on CPU then upload, or port the bit-unpacking to a compute shader for GPU-side decode. [Source: Zeux "meshoptimizer" https://github.com/zeux/meshoptimizer]
 
-### 55.2 Draco: Connectivity and Position Compression
+### 16.2 Draco: Connectivity and Position Compression
 
 Draco (Google 2017) uses edgebreaker connectivity encoding (Rossignac 1999) and parallelogram prediction for positions. The full decoder runs on CPU; however, the final attribute prediction step is GPU-parallelisable because it is a per-vertex linear combination of neighbours:
 
@@ -3577,9 +3577,9 @@ void main() {
 
 [Source: Rossignac "Edgebreaker: Connectivity Compression for Triangle Meshes", TVCG 1999; Galligan et al. "Draco: A Method for Compressing and Decompressing 3D Geometric Meshes and Point Clouds", Google Research 2018; https://github.com/google/draco]
 
-### 55.3 Basis Universal / ETC2 for Geometry Textures
+### 16.3 Basis Universal / ETC2 for Geometry Textures
 
-Normal maps and displacement maps used in §50 (cloth), §53 (procedural textures), and §26 (terrain) are compressed with Basis Universal (transcoded to ETC2/BC7 at load time). GPU transcoding converts Basis's intermediate format to the target compressed format in compute:
+Normal maps and displacement maps used in §54 (cloth), §98 (procedural textures), and §71 (terrain) are compressed with Basis Universal (transcoded to ETC2/BC7 at load time). GPU transcoding converts Basis's intermediate format to the target compressed format in compute:
 
 ```glsl
 // basis_transcode.comp — ETC2 block encoding (simplified RGB mode)
@@ -3595,9 +3595,9 @@ void main() {
 
 [Source: Binstock "Basis Universal GPU Texture Codec" https://github.com/BinomialLLC/basis_universal; Ström & Akenine-Möller "iPACKMAN: High-Quality, Low-Complexity Texture Compression for Mobile Phones", HWWS 2005]
 
-### 55.4 Index Buffer Compression: Meshlet Delta Encoding
+### 16.4 Index Buffer Compression: Meshlet Delta Encoding
 
-For GPU-driven rendering (§10), index buffers within meshlets (max 64 vertices) use delta encoding + VByte: store the first index as full 32-bit, then encode subsequent indices as signed 8-bit deltas. Decode in the task shader:
+For GPU-driven rendering (§26), index buffers within meshlets (max 64 vertices) use delta encoding + VByte: store the first index as full 32-bit, then encode subsequent indices as signed 8-bit deltas. Decode in the task shader:
 
 ```glsl
 // meshlet_decode.task.glsl
@@ -3622,15 +3622,15 @@ void main() {
 
 ---
 
-### 66. Mesh Parameterization and UV Unwrapping
+### 17. Mesh Parameterization and UV Unwrapping
 
 *Audience: graphics application developers, systems developers.*
 
 Mesh parameterization maps a 3D surface to 2D UV coordinates while minimising distortion. GPU-accelerated methods solve large sparse linear systems or run iterative local/global optimisation (ARAP, LSCM) per vertex in parallel, enabling parameterization of million-triangle meshes in seconds.
 
-### 66.1 LSCM: Least-Squares Conformal Maps
+### 17.1 LSCM: Least-Squares Conformal Maps
 
-LSCM (Lévy et al. 2002) minimises angle distortion (conformal energy) by solving a least-squares system with two pinned vertices. The normal equation (AᵀA)x = Aᵀb has the same cotangent Laplacian structure as the heat method (§65):
+LSCM (Lévy et al. 2002) minimises angle distortion (conformal energy) by solving a least-squares system with two pinned vertices. The normal equation (AᵀA)x = Aᵀb has the same cotangent Laplacian structure as the heat method (§37):
 
 ```glsl
 // lscm_residual.comp — compute residual of LSCM normal equation for CG iteration
@@ -3651,7 +3651,7 @@ void main() {
 
 [Source: Lévy et al. "Least Squares Conformal Maps for Automatic Texture Atlas Generation", SIGGRAPH 2002]
 
-### 66.2 ARAP: As-Rigid-As-Possible Parameterization
+### 17.2 ARAP: As-Rigid-As-Possible Parameterization
 
 ARAP (Liu et al. 2008) alternates between (1) a local step fitting per-triangle rotations to the current UV map, and (2) a global step solving a sparse linear system to update UV coordinates:
 
@@ -3683,7 +3683,7 @@ void main() {
 
 [Source: Liu et al. "A Local/Global Approach to Mesh Parameterization", SGP 2008; Sorkine & Alexa "As-Rigid-As-Possible Surface Modeling", SGP 2007]
 
-### 66.3 Seam Selection via Minimum Spanning Tree
+### 17.3 Seam Selection via Minimum Spanning Tree
 
 Before parameterization, the mesh must be cut into a topological disk. GPU BFS finds the minimum spanning tree of the dual graph (face adjacency) weighted by edge distortion potential:
 
@@ -3712,7 +3712,7 @@ void main() {
 
 [Source: Gu et al. "Geometry Images", SIGGRAPH 2002; Sheffer et al. "ABF++: Fast and Robust Angle Based Flattening", ACM TOG 2005]
 
-### 66.4 Atlas Packing
+### 17.4 Atlas Packing
 
 After parameterization, pack UV charts into a rectangular atlas minimising wasted space. GPU bin-packing using sorted-area decreasing + shelf algorithm:
 
@@ -3736,13 +3736,13 @@ void main() {
 
 ---
 
-### 67. GPU Delaunay Triangulation
+### 18. GPU Delaunay Triangulation
 
 *Audience: systems developers, graphics application developers.*
 
 Delaunay triangulation of a 2D or 3D point set produces a triangulation where no point lies inside the circumcircle (2D) or circumsphere (3D) of any triangle, maximising minimum angles. GPU algorithms use massive parallel point insertion with conflict graph management, or jump flooding for the dual Voronoi diagram.
 
-### 67.1 Jump Flooding for Voronoi Diagrams
+### 18.1 Jump Flooding for Voronoi Diagrams
 
 Jump flooding (Rong & Tan 2006) computes the Voronoi diagram of seed points in a 2D texture in O(log N) passes — each pass propagates closest-seed information at exponentially decreasing step sizes:
 
@@ -3773,7 +3773,7 @@ void main() {
 
 [Source: Rong & Tan "Jump Flooding in GPU with Applications to Voronoi Diagram and Distance Transform", I3D 2006]
 
-### 67.2 Incremental Delaunay Insertion on GPU
+### 18.2 Incremental Delaunay Insertion on GPU
 
 Massive parallel Delaunay: insert all points in random rounds, each round testing point-triangle conflicts and flipping non-Delaunay edges via cavity re-triangulation:
 
@@ -3794,7 +3794,7 @@ void main() {
 
 [Source: Rong et al. "GPU-Assisted Computation of Centroidal Voronoi Tessellation", IEEE TVCG 2011; Navarro et al. "A Survey on Parallel Computing and its Applications in Data-Parallel Problems Using GPU Architecture", SIAM 2014]
 
-### 67.3 Bowyer-Watson on GPU via Atomic Cavity Locking
+### 18.3 Bowyer-Watson on GPU via Atomic Cavity Locking
 
 Bowyer-Watson inserts each point by finding the cavity (set of conflicting triangles), re-triangulating, and updating the mesh. GPU parallelism: multiple non-conflicting points are inserted simultaneously via atomic ownership of cavity triangles:
 
@@ -3821,7 +3821,7 @@ void main() {
 
 [Source: Blandford et al. "Compact Representations of Simplicial Meshes in Two and Three Dimensions", IJCGA 2005; GPU Bowyer-Watson: Cao et al. "Parallel Delaunay Triangulation on GPU", CGA 2014]
 
-### 67.4 3D Delaunay and Weighted Voronoi
+### 18.4 3D Delaunay and Weighted Voronoi
 
 3D Delaunay triangulation of point clouds (for surface reconstruction, simulation mesh generation) uses the same jump flooding approach extended to a 3D texture, or a GPU-accelerated CGAL Delaunay via CUDA:
 
@@ -3852,13 +3852,13 @@ void main() {
 
 ---
 
-### 72. Mesh Fairing and Geometric Smoothing
+### 19. Mesh Fairing and Geometric Smoothing
 
 *Audience: systems developers, graphics application developers.*
 
-Mesh fairing removes high-frequency noise from geometry while preserving the shape's global structure. It is a preprocessing step before parameterization (§66), isosurface output (§61), and physics mesh preparation. GPU implementations exploit the same cotangent Laplacian structure as the heat method (§65) but with different energy functionals.
+Mesh fairing removes high-frequency noise from geometry while preserving the shape's global structure. It is a preprocessing step before parameterization (§17), isosurface output (§65), and physics mesh preparation. GPU implementations exploit the same cotangent Laplacian structure as the heat method (§37) but with different energy functionals.
 
-### 72.1 Laplacian Smoothing
+### 19.1 Laplacian Smoothing
 
 Explicit Laplacian smoothing moves each vertex toward its umbrella-weighted centroid. One iteration:
 
@@ -3886,7 +3886,7 @@ void main() {
 
 Pure Laplacian smoothing shrinks meshes. Taubin smoothing (1995) alternates λ > 0 (smooth) and μ < 0 (anti-shrink, |μ| > |λ|) passes to preserve volume. [Source: Taubin "A Signal Processing Approach To Fair Surface Design", SIGGRAPH 1995]
 
-### 72.2 Implicit Fairing via Sparse Linear Solve
+### 19.2 Implicit Fairing via Sparse Linear Solve
 
 Implicit fairing (Desbrun et al. 1999) solves (I − λLc)p' = p in one step, where Lc is the normalised cotangent Laplacian. This is unconditionally stable and equivalent to many explicit steps:
 
@@ -3910,7 +3910,7 @@ void main() {
 
 [Source: Desbrun et al. "Implicit Fairing of Irregular Meshes Using Diffusion and Curvature Flow", SIGGRAPH 1999]
 
-### 72.3 Mean Curvature Flow
+### 19.3 Mean Curvature Flow
 
 Mean curvature flow (MCF) moves each vertex along the mean curvature normal — a geometry-driven smoothing that minimises surface area. The mean curvature vector at vertex v is H(v) = (1/2A)·Lc·pos:
 
@@ -3933,9 +3933,9 @@ void main() {
 
 [Source: Meyer et al. "Discrete Differential-Geometry Operators for Triangulated 2-Manifolds", VisMath 2003; Desbrun et al. 1999]
 
-### 72.4 Feature-Preserving Smoothing: Bilateral Mesh Filter
+### 19.4 Feature-Preserving Smoothing: Bilateral Mesh Filter
 
-Bilateral filtering (Fleishman et al. 2003) preserves edges and corners by weighting neighbour positions by both spatial proximity and normal similarity — the mesh analogue of the §43 bilateral depth filter and §51.4 SVGF:
+Bilateral filtering (Fleishman et al. 2003) preserves edges and corners by weighting neighbour positions by both spatial proximity and normal similarity — the mesh analogue of the §76 bilateral depth filter and §78.4 SVGF:
 
 ```glsl
 // bilateral_mesh.comp — bilateral mesh smoothing
@@ -3964,13 +3964,13 @@ void main() {
 
 ---
 
-### 83. GPU-Accelerated Remeshing
+### 20. GPU-Accelerated Remeshing
 
 *Audience: systems developers, graphics application developers.*
 
 Remeshing adapts a mesh's triangle density and quality to a target: uniform edge length (isotropic remeshing), curvature-adaptive sizing (anisotropic), or structured quads (quad remeshing). GPU parallelism targets the per-edge operations (split, collapse, flip) executed in rounds of non-conflicting edges.
 
-### 83.1 Edge Flip for Delaunay Quality
+### 20.1 Edge Flip for Delaunay Quality
 
 Given the cotangent Laplacian weights, flip edges that violate the local Delaunay condition (circumcircle test). Parallelise over independent edge sets (graph colouring):
 
@@ -3994,7 +3994,7 @@ void main() {
 
 [Source: Botsch & Kobbelt "A Remeshing Approach to Multiresolution Modeling", SGP 2004]
 
-### 83.2 Edge Split and Collapse
+### 20.2 Edge Split and Collapse
 
 Split edges longer than 4/3 × target length; collapse edges shorter than 4/5 × target length. Each operation is applied to non-conflicting edge sets in parallel:
 
@@ -4022,7 +4022,7 @@ void main() {
 
 [Source: Botsch & Kobbelt 2004; Dunyach et al. "Adaptive Remeshing for Real-Time Mesh Deformation", EG 2013]
 
-### 83.3 Tangential Smoothing
+### 20.3 Tangential Smoothing
 
 After flips and splits, move each vertex to the centroid of its 1-ring *projected onto the local tangent plane* — preserving volume while improving triangle quality:
 
@@ -4048,7 +4048,7 @@ void main() {
 
 [Source: Botsch & Kobbelt 2004; Lévy & Bonneel "Variational Anisotropic Surface Meshing with Voronoi Parallel Linear Enumeration", IMSH 2012]
 
-### 83.4 Centroidal Voronoi Tessellation (CVT) Remeshing
+### 20.4 Centroidal Voronoi Tessellation (CVT) Remeshing
 
 CVT remeshing places N sample points on the surface such that each sample is the centroid of its Voronoi region (Lloyd's algorithm). GPU parallelism: for each sample, find the nearest surface point; for each surface triangle, find the nearest sample:
 
@@ -4075,13 +4075,13 @@ void main() {
 
 ---
 
-### 87. GPU Mesh Segmentation and Part Decomposition
+### 21. GPU Mesh Segmentation and Part Decomposition
 
 *Audience: graphics application developers, systems developers.*
 
-Mesh segmentation partitions a mesh into semantically meaningful regions — limbs, torso, head — for applications including automated rigging, per-part LOD generation, texture atlasing (§66), and physics proxy generation (§22). GPU algorithms include geodesic k-means clustering, random walk segmentation, and the shape diameter function (SDF-based thickness measure).
+Mesh segmentation partitions a mesh into semantically meaningful regions — limbs, torso, head — for applications including automated rigging, per-part LOD generation, texture atlasing (§17), and physics proxy generation (§50). GPU algorithms include geodesic k-means clustering, random walk segmentation, and the shape diameter function (SDF-based thickness measure).
 
-### 87.1 Shape Diameter Function (SDF Thickness)
+### 21.1 Shape Diameter Function (SDF Thickness)
 
 The shape diameter function (Shapira et al. 2008) at each vertex is the mean length of inward rays that hit the opposite surface — a measure of local thickness used to distinguish thin (arm) from thick (torso) regions:
 
@@ -4114,13 +4114,13 @@ void main() {
 
 [Source: Shapira et al. "Consistent Mesh Partitioning and Skeletonisation Using the Shape Diameter Function", The Visual Computer 2008]
 
-### 87.2 Geodesic K-Means Clustering
+### 21.2 Geodesic K-Means Clustering
 
-Assign each vertex to the nearest cluster centre in geodesic distance; update centres to the Fréchet mean of their cluster. GPU heat method (§65) computes geodesic distances from each centre:
+Assign each vertex to the nearest cluster centre in geodesic distance; update centres to the Fréchet mean of their cluster. GPU heat method (§37) computes geodesic distances from each centre:
 
 ```glsl
 // geodesic_kmeans_assign.comp — assign vertices to nearest geodesic cluster centre
-layout(set=0,binding=0) readonly buffer GeoDist { float gd[K_CLUSTERS][N_VERTS]; };  // from §65
+layout(set=0,binding=0) readonly buffer GeoDist { float gd[K_CLUSTERS][N_VERTS]; };  // from §37
 layout(set=0,binding=1) writeonly buffer ClusterID { uint cid[]; };
 layout(set=0,binding=2) writeonly buffer ClusterDist { float cdist[]; };
 layout(local_size_x=64) in;
@@ -4137,7 +4137,7 @@ void main() {
 
 [Source: Shlafman et al. "Metamorphosis of Polyhedral Surfaces Using Decomposition", EG 2002; Katz & Tal "Hierarchical Mesh Decomposition Using Fuzzy Clustering and Cuts", SIGGRAPH 2003]
 
-### 87.3 Random Walk Segmentation
+### 21.3 Random Walk Segmentation
 
 Random walk segmentation (Grady 2006) marks a subset of vertices as seeds (one per segment) and solves a linear system to find the probability that a random walk from each vertex first reaches each seed. The label with highest probability wins:
 
@@ -4164,9 +4164,9 @@ void main() {
 
 [Source: Grady "Random Walks for Image Segmentation", IEEE TPAMI 2006; applied to meshes: Lai et al. "Mesh Decomposition with Cross-Boundary Brushes", EG 2009]
 
-### 87.4 Part Adjacency Graph and Skeleton Extraction
+### 21.4 Part Adjacency Graph and Skeleton Extraction
 
-From the segmentation (§87.2–87.3), build a part adjacency graph and extract a curve skeleton via medial axis of the SDF thickness field (§87.1):
+From the segmentation (§21.2–87.3), build a part adjacency graph and extract a curve skeleton via medial axis of the SDF thickness field (§21.1):
 
 ```glsl
 // part_adjacency.comp — build part adjacency graph from segmentation
@@ -4181,20 +4181,20 @@ void main() {
     if (ci != cj) atomicOr(adj[ci][cj], 1u);  // mark adjacency
 }
 // From adjacency graph: build skeleton by contracting each part to its geodesic centroid
-// Connect centroids following adjacency → curve skeleton usable for §58 rigging
+// Connect centroids following adjacency → curve skeleton usable for §44 rigging
 ```
 
 [Source: Au et al. "Skeleton Extraction by Mesh Contraction", SIGGRAPH 2008; Tagliasacchi et al. "3D Skeletons: A State-of-the-Art Report", EG 2016]
 
 ---
 
-### 89. GPU Mesh Repair and Waterproofing
+### 22. GPU Mesh Repair and Waterproofing
 
 *Audience: systems developers.*
 
-Meshes from 3D scanning, CAD export, isosurface extraction (§61), or CSG operations (§63) frequently contain gaps, T-junctions, non-manifold edges, and inconsistent winding. GPU mesh repair identifies and fixes these defects, producing a watertight manifold mesh suitable for simulation (§22, §59), 3D printing slicing, and CSG (§63).
+Meshes from 3D scanning, CAD export, isosurface extraction (§65), or CSG operations (§7) frequently contain gaps, T-junctions, non-manifold edges, and inconsistent winding. GPU mesh repair identifies and fixes these defects, producing a watertight manifold mesh suitable for simulation (§50, §55), 3D printing slicing, and CSG (§7).
 
-### 89.1 Non-Manifold Edge Detection
+### 22.1 Non-Manifold Edge Detection
 
 A non-manifold edge is shared by more than two faces, or a boundary edge connecting to a non-manifold vertex. Detect in parallel across all edges:
 
@@ -4213,7 +4213,7 @@ void main() {
 
 [Source: Botsch et al. "Polygon Mesh Processing", A K Peters 2010, §1.3]
 
-### 89.2 Hole Detection via Boundary Loop Tracing
+### 22.2 Hole Detection via Boundary Loop Tracing
 
 Boundary edges (valence 1) form closed loops. GPU BFS traces each loop to find its length and classify it as a small gap (2–4 edges), medium hole, or large hole:
 
@@ -4235,7 +4235,7 @@ void main() {
 }
 ```
 
-### 89.3 Hole Filling via Minimum-Area Triangulation
+### 22.3 Hole Filling via Minimum-Area Triangulation
 
 Fill a boundary loop by triangulating the polygon using the minimum-area fan triangulation. For small loops (≤8 edges), exhaustive search is feasible on GPU; for large holes, use the advancing front method:
 
@@ -4259,7 +4259,7 @@ void main() {
 
 [Source: Liepa "Filling Holes in Meshes", SGP 2003; Zhao et al. "A Robust Hole-Filling Algorithm for Triangular Mesh", The Visual Computer 2007]
 
-### 89.4 T-Junction Resolution and Winding Consistency
+### 22.4 T-Junction Resolution and Winding Consistency
 
 T-junctions (a vertex of one triangle lying on the edge of another without being shared) cause cracks in rendering. Detect and fix by inserting the T-vertex into the adjacent edge:
 
@@ -4296,13 +4296,13 @@ void main() {
 
 ---
 
-### 103. Constrained Delaunay Refinement
+### 23. Constrained Delaunay Refinement
 
 *Audience: systems developers.*
 
-Quality mesh generation for FEM (§100) and simulation requires triangles with bounded aspect ratio (no slivers). Ruppert's algorithm (1995) and Chew's second algorithm iteratively insert circumcentre points to eliminate poor-quality triangles. GPU parallelism targets the parallel circumcentre cavity identification and point insertion, with CPU fallback for conflict resolution.
+Quality mesh generation for FEM (§45) and simulation requires triangles with bounded aspect ratio (no slivers). Ruppert's algorithm (1995) and Chew's second algorithm iteratively insert circumcentre points to eliminate poor-quality triangles. GPU parallelism targets the parallel circumcentre cavity identification and point insertion, with CPU fallback for conflict resolution.
 
-### 103.1 Triangle Quality Classification
+### 23.1 Triangle Quality Classification
 
 Classify all triangles by their minimum angle (or aspect ratio). Triangles with minimum angle < θ_min (typically 20°–25°) are queued for refinement:
 
@@ -4328,7 +4328,7 @@ void main() {
 
 [Source: Ruppert "A Delaunay Refinement Algorithm for Quality 2-Dimensional Mesh Generation", JACM 1995; Shewchuk "Delaunay Refinement Algorithms for Triangular Mesh Generation", Computational Geometry 2002]
 
-### 103.2 Circumcentre Computation and Encroachment Test
+### 23.2 Circumcentre Computation and Encroachment Test
 
 For each bad triangle, compute its circumcentre. If the circumcentre is inside the domain and does not encroach on any constrained edge (i.e., does not fall in any constrained edge's diametral circle), it can be inserted:
 
@@ -4357,7 +4357,7 @@ void main() {
 }
 ```
 
-### 103.3 Parallel Point Insertion with Conflict Detection
+### 23.3 Parallel Point Insertion with Conflict Detection
 
 Insert non-conflicting circumcentres in parallel. Two insertions conflict if their cavities (circumscribed empty circles) overlap. Detect and defer conflicts:
 
@@ -4387,7 +4387,7 @@ void main() {
 
 [Source: Shewchuk 2002; Chernikov & Chrisochoides "Parallel Guaranteed Quality Planar Delaunay Mesh Generation by Concurrent Point Insertion", SIAM 2006]
 
-### 103.4 Bowyer-Watson Cavity Retriangulation
+### 23.4 Bowyer-Watson Cavity Retriangulation
 
 After inserting a point, retriangulate its cavity (the set of triangles whose circumcircle contains the new point) using the Bowyer-Watson algorithm:
 
@@ -4423,13 +4423,13 @@ void main() {
 
 ## III. Spatial Data Structures and Visibility
 
-Spatial data structures are the acceleration infrastructure for ray traversal, occlusion culling, and GPU-driven indirect rendering. This category covers GPU BVH construction (§8 introduces the LBVH radix-sort approach; §70 covers the full parallel SAH-guided builder), Sparse Voxel DAGs for compact voxel scene representation, SDF baking via jump flooding, visibility buffer patterns for decoupled shading, precomputed visibility for portal-based culling, and the GPU-driven indirect draw pipeline that uses these structures to cull meshlets before rasterization.
+Spatial data structures are the acceleration infrastructure for ray traversal, occlusion culling, and GPU-driven indirect rendering. This category covers GPU BVH construction (§24 introduces the LBVH radix-sort approach; §31 covers the full parallel SAH-guided builder), Sparse Voxel DAGs for compact voxel scene representation, SDF baking via jump flooding, visibility buffer patterns for decoupled shading, precomputed visibility for portal-based culling, and the GPU-driven indirect draw pipeline that uses these structures to cull meshlets before rasterization.
 
-### 8. GPU BVH Construction
+### 24. GPU BVH Construction
 
 A Bounding Volume Hierarchy (BVH) is the spatial acceleration structure underlying Vulkan ray tracing (Ch135), GPU collision detection, and ray-cast inverse kinematics. For dynamic geometry (skinned characters, deforming cloth), rebuilding the BVH every frame on the GPU eliminates the CPU bottleneck.
 
-### 8.1 Morton Codes and LBVH
+### 24.1 Morton Codes and LBVH
 
 The Linear BVH (LBVH) algorithm (Lauterbach et al., 2009; Karras, 2012) builds a complete BVH in O(n log n) via three stages: (1) map primitive centroids to 30-bit Morton codes, (2) GPU radix sort by code, (3) build binary tree from the sorted code sequence using longest-common-prefix analysis.
 
@@ -4468,7 +4468,7 @@ void main() {
 
 After this pass, run a GPU radix sort (e.g., the 4-pass 8-bit-per-pass radix sort from [GPUSorting](https://github.com/b0nes164/GPUSorting)) to produce a sorted index array. The radix sort is the dominant cost: O(n) passes of 256-bin histogram + scatter.
 
-### 8.2 LBVH Tree Construction (Karras 2012)
+### 24.2 LBVH Tree Construction (Karras 2012)
 
 Karras's insight: given n primitives sorted by Morton code, the binary tree structure is fully determined by the position of the most-significant differing bit between adjacent codes. Each internal node i (there are n−1 of them) covers a range [first_i, last_i] in the sorted array, found via the `clz` (count-leading-zeros) of adjacent code XORs:
 
@@ -4525,7 +4525,7 @@ void main() {
 }
 ```
 
-### 8.3 AABB Propagation
+### 24.3 AABB Propagation
 
 After the tree topology is built, propagate bounding boxes from leaves (initialized from primitive AABBs) up to the root. Use an atomic counter per node: each node's second arriving child computes the merged AABB and continues upward:
 
@@ -4563,13 +4563,13 @@ void main() {
 
 The `atomicAdd` introduces a data-dependent execution path, but each node is visited at most twice (once per child), so total work is O(n) with no warp divergence bottleneck beyond the first barrier.
 
-**Applications.** The GPU-built LBVH feeds directly into `VkAccelerationStructureBuildGeometryInfoKHR` for Vulkan ray tracing (Ch135) via `VK_ACCELERATION_STRUCTURE_BUILD_MODE_UPDATE_KHR` — the LBVH topology is provided as a host-side hint and the driver refines it. The same structure serves as a broad-phase collision structure for compute-side ragdoll and IK ray-casting (§5) without leaving the GPU.
+**Applications.** The GPU-built LBVH feeds directly into `VkAccelerationStructureBuildGeometryInfoKHR` for Vulkan ray tracing (Ch135) via `VK_ACCELERATION_STRUCTURE_BUILD_MODE_UPDATE_KHR` — the LBVH topology is provided as a host-side hint and the driver refines it. The same structure serves as a broad-phase collision structure for compute-side ragdoll and IK ray-casting (§40) without leaving the GPU.
 
 [Source: Lauterbach et al. (2009), "Fast BVH Construction on GPUs", Eurographics; Karras (2012), "Maximizing Parallelism in the Construction of BVHs, Octrees, and k-d Trees", HPG]
 
-### 8.4 GPU Narrow-Phase Collision: SAT and GJK
+### 24.4 GPU Narrow-Phase Collision: SAT and GJK
 
-The BVH (§8.1–8.3) is a broad-phase structure: it quickly eliminates non-overlapping bounding box pairs. Candidate pairs that pass the broad-phase need a **narrow-phase** test to determine actual geometric contact — position, normal, and penetration depth — for physics constraint generation. Two algorithms dominate GPU narrow-phase: SAT (Separating Axis Theorem) for OBB pairs, and GJK (Gilbert-Johnson-Keerthi) for general convex hulls.
+The BVH (§24.1–8.3) is a broad-phase structure: it quickly eliminates non-overlapping bounding box pairs. Candidate pairs that pass the broad-phase need a **narrow-phase** test to determine actual geometric contact — position, normal, and penetration depth — for physics constraint generation. Two algorithms dominate GPU narrow-phase: SAT (Separating Axis Theorem) for OBB pairs, and GJK (Gilbert-Johnson-Keerthi) for general convex hulls.
 
 **OBB SAT (`sat_obb.comp`).** Two oriented bounding boxes are separated if a separating axis exists among the 15 candidates (3 face normals per box + 9 cross-product axes). Each candidate axis generates an interval overlap test:
 
@@ -4668,13 +4668,13 @@ bool gjk(vec3[] hullA, uint nA, vec3[] hullB, uint nB, out float dist) {
 
 `doSimplex` selects the voronoi region of the simplex closest to the origin and updates `d` accordingly — the standard 2/3/4-vertex cases from van den Bergen 2003.
 
-**GPU dispatch pattern.** Assign one workgroup per candidate pair from the BVH broad-phase output. For 1000 candidate pairs, a single dispatch of 1000 workgroups (one per pair) completes narrow-phase in ~0.05 ms on a midrange GPU. Contact results feed into a physics constraint solver (PBD §4.6 or a rigid-body impulse solver) in the next compute pass.
+**GPU dispatch pattern.** Assign one workgroup per candidate pair from the BVH broad-phase output. For 1000 candidate pairs, a single dispatch of 1000 workgroups (one per pair) completes narrow-phase in ~0.05 ms on a midrange GPU. Contact results feed into a physics constraint solver (PBD §39.6 or a rigid-body impulse solver) in the next compute pass.
 
 [Source: Gilbert, Johnson, Keerthi "A Fast Procedure for Computing the Distance Between Complex Objects in Three-Dimensional Space", IEEE RA 1988; van den Bergen "Collision Detection in Interactive 3D Environments", 2003]
 
-### 8.5 Convex Hull Generation on GPU
+### 24.5 Convex Hull Generation on GPU
 
-A convex hull is the tightest convex polytope enclosing a point set. It is required as: (a) a preprocessing step before GJK (§8.4) — GJK requires convex inputs; (b) the physics collider for rigid bodies before VHACD convex decomposition; (c) the initial seed polytope for EPA (Expanding Polytope Algorithm) penetration depth computation.
+A convex hull is the tightest convex polytope enclosing a point set. It is required as: (a) a preprocessing step before GJK (§24.4) — GJK requires convex inputs; (b) the physics collider for rigid bodies before VHACD convex decomposition; (c) the initial seed polytope for EPA (Expanding Polytope Algorithm) penetration depth computation.
 
 **GPU QuickHull.** The classic QuickHull algorithm adapts to GPU with a wave-front parallelism model:
 
@@ -4726,21 +4726,21 @@ vhacd->Compute(vertices, vertCount, indices, triCount, params);
 for (uint32_t i = 0; i < vhacd->GetNConvexHulls(); ++i) {
     VHACD::IVHACD::ConvexHull ch;
     vhacd->GetConvexHull(i, ch);
-    // Upload ch.m_points as the convex hull vertex set for GJK §8.4
+    // Upload ch.m_points as the convex hull vertex set for GJK §24.4
 }
 ```
 
 V-HACD runs on CPU in 0.1–2 s depending on resolution; the resulting convex pieces are uploaded once as static SSBOs for GJK dispatch at runtime. [Source: Mamou & Ghazali "A Simple and Efficient Approach for 3D Mesh Approximate Convex Decomposition", ICIP 2009; V-HACD v4.0 GitHub https://github.com/kmammou/v-hacd]
 
-**GPU porting status.** No GPU port of VHACD exists or is in active development. The VHACD algorithm's inner loop — iterative voxelization, PCA convex hull approximation, and concavity-driven splitting — involves adaptive tree decomposition with data-dependent termination that does not parallelize efficiently. The more significant shift is that NVIDIA PhysX 5 (Ch69) and GPU-native physics engines increasingly use SDF-based collision geometry rather than convex decomposition: the SDF is computed once on GPU and ray-cast for collision queries, entirely bypassing the need for convex decomposition. For engines that still require explicit convex hulls (e.g., for GJK §8.4 or network-replicated physics shapes), VHACD remains a CPU-only offline preprocessing step.
+**GPU porting status.** No GPU port of VHACD exists or is in active development. The VHACD algorithm's inner loop — iterative voxelization, PCA convex hull approximation, and concavity-driven splitting — involves adaptive tree decomposition with data-dependent termination that does not parallelize efficiently. The more significant shift is that NVIDIA PhysX 5 (Ch69) and GPU-native physics engines increasingly use SDF-based collision geometry rather than convex decomposition: the SDF is computed once on GPU and ray-cast for collision queries, entirely bypassing the need for convex decomposition. For engines that still require explicit convex hulls (e.g., for GJK §24.4 or network-replicated physics shapes), VHACD remains a CPU-only offline preprocessing step.
 
 ---
 
-### 9. Screen-Space Geometry Techniques
+### 25. Screen-Space Geometry Techniques
 
 Screen-space methods approximate geometry operations using the depth buffer, G-buffer, or reprojected history — achieving results close to full geometric solutions at a fraction of the cost by operating in the 2D screen domain rather than the 3D object domain.
 
-### 9.1 Screen-Space Tessellation and Dynamic LOD
+### 25.1 Screen-Space Tessellation and Dynamic LOD
 
 Screen-space tessellation drives triangle subdivision level from the current depth buffer rather than a pre-authored LOD chain. Each frame, a compute pass reads the depth buffer, estimates the projected edge length (in pixels) for each triangle edge, and emits a variable-resolution mesh via a mesh shader.
 
@@ -4766,7 +4766,7 @@ gl_TessLevelOuter[0] = tessLevel;
 
 **Depth-based displacement.** A depth pre-pass in the vertex shader outputs only depth; a subsequent pass reads the depth buffer to estimate per-vertex curvature (depth Laplacian in screen space) and applies proportional tessellation — high curvature areas receive more triangles. This is the algorithm behind Unreal Engine's "Runtime Virtual Texture" terrain tessellation and Godot's terrain LOD shader.
 
-### 9.2 Parallax Occlusion Mapping
+### 25.2 Parallax Occlusion Mapping
 
 Parallax Occlusion Mapping (POM) simulates geometric displacement entirely in the fragment shader by ray-marching through a heightmap, producing self-shadowing, depth-correct silhouettes, and contact hardening — without any tessellated geometry.
 
@@ -4812,7 +4812,7 @@ vec3  normal    = texture(normalMap, displaced).rgb * 2.0 - 1.0;
 
 **POM vs. tessellation displacement.** POM works entirely in the fragment shader (no geometry overhead) and is effective for viewing angles <60° from the normal. At grazing angles, the silhouette reveals the flat underlying geometry — tessellated displacement (§2.4) is required for correct silhouettes. The standard production hybrid: POM for mid-range surfaces, tessellation+displacement for hero assets at <5m camera distance.
 
-### 9.3 Temporal Geometry Reprojection
+### 25.3 Temporal Geometry Reprojection
 
 Temporal reprojection caches per-pixel geometry computations from previous frames and reprojects them into the current frame using per-pixel motion vectors (from a dedicated motion vector pass or velocity G-buffer). This amortizes expensive per-frame geometry costs across multiple frames.
 
@@ -4837,7 +4837,7 @@ vec2 prevNDC = prevClip.xy / prevClip.w;
 outMotionVec = (curNDC - prevNDC) * 0.5;   // in [0,1] UV space delta
 ```
 
-**Geometry reprojection for bent normals / AO.** Progressive bakes (§7.8) use temporal reprojection to accumulate AO samples across frames: each frame adds N new ray samples per vertex; the EMA blend `result = mix(cached, newSample, alpha)` converges to the full-sample result over 1/alpha frames. Motion vectors from the motion-vector pass reproject the cached AO from last frame's vertex positions:
+**Geometry reprojection for bent normals / AO.** Progressive bakes (§10.8) use temporal reprojection to accumulate AO samples across frames: each frame adds N new ray samples per vertex; the EMA blend `result = mix(cached, newSample, alpha)` converges to the full-sample result over 1/alpha frames. Motion vectors from the motion-vector pass reproject the cached AO from last frame's vertex positions:
 
 ```glsl
 // reproject_ao.comp — one thread per vertex
@@ -4851,13 +4851,13 @@ outAO[i]        = mix(cachedAO, newAO, 1.0/16.0);      // 16-frame EMA
 
 ---
 
-### 10. GPU-Driven Rendering and Virtual Geometry
+### 26. GPU-Driven Rendering and Virtual Geometry
 
 *Audience: graphics application developers, systems developers.*
 
 Modern GPU-driven pipelines invert the CPU↔GPU command relationship: the GPU selects what to draw, computes per-object transforms, culls occluded geometry, and emits indirect draw commands — the CPU only submits one or a handful of dispatch calls. This section covers the core GPU data structures and algorithms that make this possible, from meshlet decomposition through cluster-DAG LOD selection.
 
-### 10.1 Meshlets and Cluster Hierarchies
+### 26.1 Meshlets and Cluster Hierarchies
 
 A **meshlet** is a small, cache-coherent patch of mesh triangles — typically 64 or 128 vertices and 64 or 126 triangles — chosen to maximise vertex reuse within the cluster. The vertex count limit is set so the meshlet's vertex data fits in the mesh shader's per-workgroup register file, and the triangle count limit matches the maximum primitive output the mesh shader can emit in one invocation.
 
@@ -4903,7 +4903,7 @@ layout(set=0, binding=3) readonly buffer Positions  { vec3 positions[]; };
 layout(set=0, binding=4) readonly buffer DrawCmds   { DrawIndexedIndirectCommand cmds[]; };
 ```
 
-### 10.2 Amplification/Task Shader Culling Pipeline
+### 26.2 Amplification/Task Shader Culling Pipeline
 
 The Vulkan mesh shading pipeline (VK_EXT_mesh_shader, Vulkan 1.3+) uses a two-stage dispatch: an **amplification (task) shader** runs one workgroup per meshlet and either discards it or emits a mesh shader workgroup via `EmitMeshTasksEXT`:
 
@@ -4985,7 +4985,7 @@ void main() {
 
 [Source: Vulkan Mesh Shading spec §14.2; Wihlidal "Optimizing the Graphics Pipeline with Compute", GDC 2016]
 
-### 10.3 Hierarchical Z-Buffer Occlusion Culling
+### 26.3 Hierarchical Z-Buffer Occlusion Culling
 
 A **Hierarchical Z-Buffer (HZB)** is a mip-chain of the depth buffer where each texel stores the *maximum* (farthest) depth of its children — the safe conservative bound for occlusion testing. An object is occluded if its projected bounding sphere falls within a texel whose max-depth is nearer than the object's near depth.
 
@@ -5020,7 +5020,7 @@ if (projCenter.z - b.radius > hzbDepth)
 
 [Source: Uludag "Hi-Z GPU Occlusion Culling", GPU Pro 2; Schied "A Hierarchical Depth Buffer", ShaderX6]
 
-### 10.4 Two-Phase Occlusion and Indirect Draw Compaction
+### 26.4 Two-Phase Occlusion and Indirect Draw Compaction
 
 A single-frame HZB test has a bootstrap problem: the depth buffer is empty at frame start. **Two-phase occlusion** resolves this using the previous frame's HZB:
 
@@ -5049,7 +5049,7 @@ void main() {
 
 [Source: Wihlidal "Cluster Culling", SIGGRAPH 2015; Karis "Nanite: A Deep Dive", SIGGRAPH 2021]
 
-### 10.5 Virtual Geometry: Cluster DAG and Error-Metric LOD
+### 26.5 Virtual Geometry: Cluster DAG and Error-Metric LOD
 
 Nanite-style virtual geometry organises all mesh clusters into a directed acyclic graph (DAG) by simplifying and re-clustering iteratively. Each cluster group has a **parent error** and **self error** metric (QEM-based screen-space error approximation). At runtime a single GPU traversal selects the finest cluster whose projected screen-space error falls below a pixel threshold:
 
@@ -5065,13 +5065,13 @@ The traversal runs as a persistent compute kernel reading the cluster DAG from a
 
 ---
 
-### 17. Spatial Data Structures Beyond BVH
+### 27. Spatial Data Structures Beyond BVH
 
 *Audience: systems developers, graphics application developers.*
 
-§8 covers GPU LBVH construction for ray-surface intersection. Other spatial data structures serve different access patterns: k-d trees for nearest-neighbour queries, uniform grids for short-range interactions (SPH, collision), and sparse voxel octrees for multi-resolution volume traversal.
+§24 covers GPU LBVH construction for ray-surface intersection. Other spatial data structures serve different access patterns: k-d trees for nearest-neighbour queries, uniform grids for short-range interactions (SPH, collision), and sparse voxel octrees for multi-resolution volume traversal.
 
-### 17.1 GPU k-d Trees
+### 27.1 GPU k-d Trees
 
 A **left-balanced k-d tree** stored as a flat array supports GPU traversal without pointer chasing: node i has left child 2i and right child 2i+1. Construction sorts points by each split dimension using a radix sort, picks the median as the root, and recurses on the two halves:
 
@@ -5108,7 +5108,7 @@ void main() {
 
 GPU k-d trees suit static point clouds. For dynamic scenes (particles, agents) the rebuild cost at each frame makes uniform grids preferable.
 
-### 17.2 Uniform Grids and Cell-List Hashing
+### 27.2 Uniform Grids and Cell-List Hashing
 
 A **uniform grid** (cell-list / spatial hash) divides space into axis-aligned cells of side length h. For each particle, its cell index is `floor((p - origin) / h)`. A two-pass GPU algorithm builds the structure:
 
@@ -5143,7 +5143,7 @@ void main() {
 
 Rebuild cost is O(N) and fits within a single frame budget for N < 1M particles. [Source: Green "Particle Simulation using CUDA", NVIDIA 2010]
 
-### 17.3 Sparse Voxel Octrees (SVO)
+### 27.3 Sparse Voxel Octrees (SVO)
 
 An SVO stores only non-empty octree nodes, indexed by Morton (Z-curve) codes. GPU construction (Laine & Karras 2010):
 
@@ -5155,13 +5155,13 @@ GPU ray traversal follows the standard octree DDA: descend to the deepest non-em
 
 ---
 
-### 34. Precomputed Visibility and Lightmap Baking
+### 28. Precomputed Visibility and Lightmap Baking
 
 *Audience: graphics application developers.*
 
-Lightmap baking pre-integrates indirect illumination into per-texel texture samples, allowing high-quality global illumination at zero runtime cost. The GPU-accelerated bake pipeline dispatches one ray (or hemisphere of rays) per atlas texel using the VK_KHR_ray_tracing_pipeline from §20.
+Lightmap baking pre-integrates indirect illumination into per-texel texture samples, allowing high-quality global illumination at zero runtime cost. The GPU-accelerated bake pipeline dispatches one ray (or hemisphere of rays) per atlas texel using the VK_KHR_ray_tracing_pipeline from §75.
 
-### 34.1 Texel-World Position Atlas
+### 28.1 Texel-World Position Atlas
 
 The bake begins by rasterising the mesh into UV space to produce per-texel world-space position and normal. A G-buffer pass with the UV as clip-space position fills this atlas:
 
@@ -5179,9 +5179,9 @@ void main() {
 }
 ```
 
-### 34.2 Hemisphere Ray Batching for AO
+### 28.2 Hemisphere Ray Batching for AO
 
-Each texel dispatches N ray queries against the scene TLAS (§20.3) in a hemisphere centred on the surface normal. Uses `VK_KHR_ray_query` (inline ray queries in compute) to avoid full RT pipeline overhead for AO:
+Each texel dispatches N ray queries against the scene TLAS (§75.3) in a hemisphere centred on the surface normal. Uses `VK_KHR_ray_query` (inline ray queries in compute) to avoid full RT pipeline overhead for AO:
 
 ```glsl
 // ao_bake.comp
@@ -5211,7 +5211,7 @@ void main() {
 }
 ```
 
-### 34.3 Irradiance Baking with Spherical Harmonics
+### 28.3 Irradiance Baking with Spherical Harmonics
 
 For indirect light, accumulate SH coefficients per texel from hemisphere samples. Each sample contributes to the 9 L2 SH basis functions:
 
@@ -5238,7 +5238,7 @@ void main() {
 
 [Source: Ramamoorthi & Hanrahan "An Efficient Representation for Irradiance Environment Maps", SIGGRAPH 2001; Loos & Sloan "Volumetric Obscurance", GDC 2010]
 
-### 34.4 Lightmap Dilation and Padding
+### 28.4 Lightmap Dilation and Padding
 
 After baking, un-baked texels (seams, invalid UV coverage) must be dilated from their neighbours to prevent bleeding artefacts. A simple iterative 4-connectivity dilation in compute:
 
@@ -5265,13 +5265,13 @@ Iterate 4–8 times to fill gaps up to 8 texels wide. [Source: Bjorke "High Qual
 
 ---
 
-### 39. Visibility Queries and GPU Occlusion
+### 29. Visibility Queries and GPU Occlusion
 
 *Audience: graphics application developers, systems developers.*
 
-§10.3 covered Hierarchical Z-Buffer (HZB) occlusion culling within the GPU-Driven Rendering pipeline. This section covers the broader family of GPU visibility query mechanisms: hardware occlusion queries, software occlusion rasterisers in compute, and portal/sector GPU culling for indoor scenes.
+§26.3 covered Hierarchical Z-Buffer (HZB) occlusion culling within the GPU-Driven Rendering pipeline. This section covers the broader family of GPU visibility query mechanisms: hardware occlusion queries, software occlusion rasterisers in compute, and portal/sector GPU culling for indoor scenes.
 
-### 39.1 Hardware Occlusion Queries
+### 29.1 Hardware Occlusion Queries
 
 Vulkan's `VK_QUERY_TYPE_OCCLUSION` counts fragments that pass depth test. Typical use: render a cheap proxy (AABB) for each object, query the count, skip full rendering if zero:
 
@@ -5287,9 +5287,9 @@ vkGetQueryPoolResults(device, queryPool, 0, N_OBJECTS,
 
 The GPU–CPU readback latency (typically 1–2 frames) means hardware OQ is best for large objects with stable visibility. [Source: Bittner et al. "Coherent Hierarchical Culling", EuroGraphics 2004; Vulkan Spec §18.2]
 
-### 39.2 Software Occlusion Rasteriser in Compute
+### 29.2 Software Occlusion Rasteriser in Compute
 
-A software occlusion rasteriser (SOR) in compute shaders allows the same-frame query results needed for GPU-driven pipelines (§10.4 two-phase occlusion). The SOR builds a low-resolution depth buffer (e.g., 256×128) from occluder proxies in compute, then tests occludee AABBs against it:
+A software occlusion rasteriser (SOR) in compute shaders allows the same-frame query results needed for GPU-driven pipelines (§26.4 two-phase occlusion). The SOR builds a low-resolution depth buffer (e.g., 256×128) from occluder proxies in compute, then tests occludee AABBs against it:
 
 ```glsl
 // sor_raster.comp — rasterise occluder triangle into software depth buffer
@@ -5313,7 +5313,7 @@ void main() {
 
 [Source: Hasselgren & Akenine-Möller "An Efficient Multi-View Rasterizer", EGSR 2006; Intel ISPC Sample "Masked Software Occlusion Culling" https://github.com/GameTechDev/OcclusionCulling]
 
-### 39.3 Portal and Sector Visibility Culling
+### 29.3 Portal and Sector Visibility Culling
 
 Indoor scenes (buildings, caves) achieve near-perfect culling by modelling rooms as convex sectors connected by portal polygons. GPU visibility: starting from the camera sector, BFS through visible portals, clipping the portal frustum at each step:
 
@@ -5336,11 +5336,11 @@ void main() {
 }
 ```
 
-Iterate BFS until no new sectors are added. Objects in non-visible sectors are excluded from the indirect draw buffer (§10.4). [Source: Luebke & Georges "Portals and Mirrors: Simple, Fast Evaluation of Potentially Visible Sets", I3D 1995]
+Iterate BFS until no new sectors are added. Objects in non-visible sectors are excluded from the indirect draw buffer (§26.4). [Source: Luebke & Georges "Portals and Mirrors: Simple, Fast Evaluation of Potentially Visible Sets", I3D 1995]
 
-### 39.4 Conditional Rendering via Predication
+### 29.4 Conditional Rendering via Predication
 
-`VK_EXT_conditional_rendering` allows draw calls to be skipped based on a buffer value without CPU readback, closing the loop between hardware OQ results (§39.1) and draw culling in a single frame:
+`VK_EXT_conditional_rendering` allows draw calls to be skipped based on a buffer value without CPU readback, closing the loop between hardware OQ results (§29.1) and draw culling in a single frame:
 
 ```cpp
 VkConditionalRenderingBeginInfoEXT cond{};
@@ -5353,19 +5353,19 @@ vkCmdDrawIndexed(cmd, ...);        // skipped if queryResultBuffer[objectID] == 
 vkCmdEndConditionalRenderingEXT(cmd);
 ```
 
-This avoids the 1–2 frame readback latency of §39.1 at the cost of conservative culling (last frame's results drive this frame's draws). [Source: Vulkan Spec VK_EXT_conditional_rendering]
+This avoids the 1–2 frame readback latency of §29.1 at the cost of conservative culling (last frame's results drive this frame's draws). [Source: Vulkan Spec VK_EXT_conditional_rendering]
 
 ---
 
-### 68. Sparse Voxel DAG (SVDAG)
+### 30. Sparse Voxel DAG (SVDAG)
 
 *Audience: systems developers.*
 
 The Sparse Voxel DAG (Kampe et al. 2013) is a losslessly compressed SVO: identical subtrees are merged into a directed acyclic graph, achieving 5–10× compression over SVO while supporting the same ray traversal. The DAG represents binary (solid/empty) voxel geometry and is the standard data structure for GPU ambient occlusion precomputation at extreme resolution (up to 2²⁴ voxels).
 
-### 68.1 SVDAG Construction: Subtree Hashing
+### 30.1 SVDAG Construction: Subtree Hashing
 
-Build the SVO bottom-up (§17.3), then hash each internal node by its children's hashes. Nodes with identical hash are merged:
+Build the SVO bottom-up (§27.3), then hash each internal node by its children's hashes. Nodes with identical hash are merged:
 
 ```glsl
 // svdag_hash.comp — hash each SVO node at level L (leaves first)
@@ -5389,9 +5389,9 @@ void main() {
 
 [Source: Kampe et al. "High Resolution Sparse Voxel DAGs", SIGGRAPH 2013; https://github.com/Phyronnaz/DAGCompression]
 
-### 68.2 SVDAG Ray Traversal
+### 30.2 SVDAG Ray Traversal
 
-SVDAG traversal is identical to SVO DDA (§17.3) except that multiple SVO nodes map to the same DAG node:
+SVDAG traversal is identical to SVO DDA (§27.3) except that multiple SVO nodes map to the same DAG node:
 
 ```glsl
 // svdag_traverse.comp — ray traverse SVDAG for AO visibility
@@ -5424,7 +5424,7 @@ void main() {
 
 [Source: Kampe et al. 2013; Villanueva et al. "SSVDAG: Symmetry-Aware Sparse Voxel DAGs", I3D 2016]
 
-### 68.3 Clustered SVDAG for Dynamic Scenes
+### 30.3 Clustered SVDAG for Dynamic Scenes
 
 For dynamic objects, maintain a Clustered SVDAG (CDAG): the scene is split into static (full SVDAG) and dynamic (per-object SVO, merged at runtime). Each frame, re-insert dynamic SVOs into the DAG:
 
@@ -5451,13 +5451,13 @@ void main() {
 
 ---
 
-### 70. GPU BVH Construction
+### 31. GPU BVH Construction
 
 *Audience: systems developers, graphics application developers.*
 
-Every ray tracing pipeline (§20), rigid body collision system (§22), and acoustic ray tracer (§54) consumes a BVH — but §20 only covers traversal. This section covers GPU construction: Linear BVH (LBVH) via Morton codes and radix sort, the SAH-HLBVH hybrid for better tree quality, and PLOC for parallel locally-ordered clustering that approaches offline SAH quality at GPU speeds.
+Every ray tracing pipeline (§75), rigid body collision system (§50), and acoustic ray tracer (§99) consumes a BVH — but §75 only covers traversal. This section covers GPU construction: Linear BVH (LBVH) via Morton codes and radix sort, the SAH-HLBVH hybrid for better tree quality, and PLOC for parallel locally-ordered clustering that approaches offline SAH quality at GPU speeds.
 
-### 70.1 Morton Code Generation
+### 31.1 Morton Code Generation
 
 Assign each primitive a 30-bit Morton code by interleaving the x, y, z bits of its normalised centroid coordinate. All codes are computed in parallel:
 
@@ -5489,9 +5489,9 @@ void main() {
 
 [Source: Lauterbach et al. "Fast BVH Construction on GPUs", EG 2009; Pantaleoni & Luebke "HLBVH: Hierarchical LBVH Construction for Real-Time Ray Tracing of Dynamic Geometry", HPG 2010]
 
-### 70.2 LBVH Internal Node Construction
+### 31.2 LBVH Internal Node Construction
 
-After GPU radix sort of Morton codes (§9.4), construct the binary radix tree in O(N) by finding the split position of each internal node (the highest differing bit between the leftmost and rightmost Morton code in its range):
+After GPU radix sort of Morton codes (§25.4), construct the binary radix tree in O(N) by finding the split position of each internal node (the highest differing bit between the leftmost and rightmost Morton code in its range):
 
 ```glsl
 // lbvh_build.comp — construct LBVH internal nodes from sorted Morton codes
@@ -5522,9 +5522,9 @@ void main() {
 
 [Source: Karras "Maximizing Parallelism in the Construction of BVHs, Octrees, and k-d Trees", HPG 2012]
 
-### 70.3 Bottom-Up AABB Refitting
+### 31.3 Bottom-Up AABB Refitting
 
-After building the tree topology in §70.2, refit each internal node's AABB bottom-up using an atomic counter to ensure each parent is processed only after both children are done:
+After building the tree topology in §31.2, refit each internal node's AABB bottom-up using an atomic counter to ensure each parent is processed only after both children are done:
 
 ```glsl
 // lbvh_refit.comp — bottom-up AABB refit via atomic parent counter
@@ -5551,7 +5551,7 @@ void main() {
 
 [Source: Karras 2012; Aila & Laine "Understanding the Efficiency of Ray Traversal on GPUs", HPG 2009]
 
-### 70.4 PLOC: Parallel Locally-Ordered Clustering
+### 31.4 PLOC: Parallel Locally-Ordered Clustering
 
 PLOC (Meister & Bittner 2018) achieves near-SAH quality by iteratively merging nearest neighbours in Morton-code-sorted order. Each pass considers a fixed neighbourhood radius r, finds the best merge partner for each cluster, and forms parent nodes:
 
@@ -5583,13 +5583,13 @@ void main() {
 
 ---
 
-### 71. SDF Baking and 3D Jump Flooding
+### 32. SDF Baking and 3D Jump Flooding
 
 *Audience: systems developers, graphics application developers.*
 
-§52 uses SDFs for collision detection and §63 for CSG, but both assume the SDF already exists. This section covers GPU algorithms for *generating* an SDF from a triangle mesh: brute-force per-voxel closest-triangle search, 3D jump flooding, and the exact two-pass method used in game engines for runtime SDF baking.
+§64 uses SDFs for collision detection and §7 for CSG, but both assume the SDF already exists. This section covers GPU algorithms for *generating* an SDF from a triangle mesh: brute-force per-voxel closest-triangle search, 3D jump flooding, and the exact two-pass method used in game engines for runtime SDF baking.
 
-### 71.1 Brute-Force SDF: Closest Triangle per Voxel
+### 32.1 Brute-Force SDF: Closest Triangle per Voxel
 
 For small meshes or low-resolution grids, compute each voxel's signed distance by checking all triangles:
 
@@ -5616,9 +5616,9 @@ void main() {
 
 [Source: Bridson "Fluid Simulation for Computer Graphics", 2nd ed., §3; Jones et al. "3D Distance Fields: A Survey of Techniques and Applications", IEEE TVCG 2006]
 
-### 71.2 3D Jump Flooding for Unsigned Distance
+### 32.2 3D Jump Flooding for Unsigned Distance
 
-Extend the 2D JFA (§67.1) to 3D: each voxel stores the nearest seed (surface sample) position. Run log₂(max(W,H,D)) passes with halving step sizes:
+Extend the 2D JFA (§18.1) to 3D: each voxel stores the nearest seed (surface sample) position. Run log₂(max(W,H,D)) passes with halving step sizes:
 
 ```glsl
 // jfa3d_sdf.comp — 3D jump flooding pass for SDF baking
@@ -5646,7 +5646,7 @@ void main() {
 
 [Source: Rong & Tan 2006 (§67.1); Cao et al. "Parallel Banding Algorithm to Compute Exact Distance Transform with the GPU", I3D 2010]
 
-### 71.3 Sign Determination via Parity Ray Cast
+### 32.3 Sign Determination via Parity Ray Cast
 
 After JFA gives unsigned distance, determine the sign with a parity test: cast a ray from each voxel along +X, count triangle intersections; odd count → inside:
 
@@ -5673,9 +5673,9 @@ void main() {
 
 [Source: Sethian "Level Set Methods and Fast Marching Methods", 1999; Osman "GPU-Accelerated SDF Generation for Real-Time Physics", GDC 2019]
 
-### 71.4 Narrow-Band SDF via BVH Lookup
+### 32.4 Narrow-Band SDF via BVH Lookup
 
-For production use (game engine physics baking), limit the expensive closest-triangle search to a narrow band near the surface (|φ| < threshold), using the BVH (§70) to accelerate the nearest-triangle query:
+For production use (game engine physics baking), limit the expensive closest-triangle search to a narrow band near the surface (|φ| < threshold), using the BVH (§31) to accelerate the nearest-triangle query:
 
 ```glsl
 // sdf_bvh.comp — narrow-band SDF via BVH nearest-triangle traversal
@@ -5699,15 +5699,15 @@ void main() {
 
 ---
 
-### 90. Virtual Geometry: GPU-Driven Cluster LOD
+### 33. Virtual Geometry: GPU-Driven Cluster LOD
 
 *Audience: graphics application developers, systems developers.*
 
-Virtual geometry (Epic's Nanite, 2021) eliminates traditional LOD selection in favour of a GPU-driven pipeline that culls and renders micro-triangle clusters at a granularity finer than a draw call. The key insight: precompute a DAG of cluster groups from coarse to fine, then at runtime traverse the DAG on the GPU to select the finest clusters whose projected screen error stays below one pixel. §10 covers GPU-driven indirect draw; this section covers the cluster DAG construction, GPU traversal, software rasterisation, and visibility buffer shading.
+Virtual geometry (Epic's Nanite, 2021) eliminates traditional LOD selection in favour of a GPU-driven pipeline that culls and renders micro-triangle clusters at a granularity finer than a draw call. The key insight: precompute a DAG of cluster groups from coarse to fine, then at runtime traverse the DAG on the GPU to select the finest clusters whose projected screen error stays below one pixel. §26 covers GPU-driven indirect draw; this section covers the cluster DAG construction, GPU traversal, software rasterisation, and visibility buffer shading.
 
-### 90.1 Cluster DAG Construction (Offline)
+### 33.1 Cluster DAG Construction (Offline)
 
-The mesh is partitioned into clusters of 128 triangles each using METIS-style graph partitioning. Adjacent clusters are then grouped (8 clusters per group) and simplified with QEM (§7) to produce a coarser level. The DAG encodes, for each cluster group, a bounding sphere and a maximum screen-space error:
+The mesh is partitioned into clusters of 128 triangles each using METIS-style graph partitioning. Adjacent clusters are then grouped (8 clusters per group) and simplified with QEM (§10) to produce a coarser level. The DAG encodes, for each cluster group, a bounding sphere and a maximum screen-space error:
 
 ```glsl
 // cluster_dag_build.comp — compute max edge error for a simplified cluster group
@@ -5730,7 +5730,7 @@ void main() {
 
 [Source: Karis et al. "A Deep Dive into Nanite Virtualized Geometry", SIGGRAPH 2021; Garland & Heckbert §7]
 
-### 90.2 GPU Cluster DAG Traversal
+### 33.2 GPU Cluster DAG Traversal
 
 At runtime, traverse the LOD DAG top-down using a persistent thread group. For each cluster group, project its bounding sphere to screen space and compare the error to one pixel. If the error is acceptable, emit all clusters in this group; otherwise, recurse into finer children:
 
@@ -5771,7 +5771,7 @@ void main() {
 
 [Source: Karis et al. 2021; Wihlidal "Optimizing the Graphics Pipeline with Compute", GDC 2016]
 
-### 90.3 Software Rasterisation for Micro-Triangles
+### 33.3 Software Rasterisation for Micro-Triangles
 
 Clusters selected at the finest LOD often contain triangles smaller than a pixel. Nanite uses software rasterisation via atomicMax on a 64-bit depth+cluster ID buffer, bypassing the hardware rasteriser for these tiny triangles:
 
@@ -5804,7 +5804,7 @@ void main() {
 
 [Source: Karis et al. 2021 §8; Wihlidal 2016; Olsson "Cluster-Based Rendering", SIGGRAPH 2020]
 
-### 90.4 Visibility Buffer Shading
+### 33.4 Visibility Buffer Shading
 
 The visibility buffer (Burns & Hunt 2013) stores cluster ID + triangle ID per pixel instead of shading attributes. A deferred shading pass reconstructs material attributes by re-deriving barycentric coordinates:
 
@@ -5813,7 +5813,7 @@ The visibility buffer (Burns & Hunt 2013) stores cluster ID + triangle ID per pi
 layout(set=0,binding=0) readonly buffer DepthCluster { uint64_t depthCluster[]; };
 layout(set=0,binding=1) readonly buffer Verts        { vec3 verts[];   };
 layout(set=0,binding=2) readonly buffer UV           { vec2 uvs[];     };
-layout(set=0,binding=3) uniform sampler2DArray atlas; // virtual texture atlas (§34)
+layout(set=0,binding=3) uniform sampler2DArray atlas; // virtual texture atlas (§28)
 layout(set=0,binding=4, rgba16f) writeonly image2D shaded;
 layout(push_constant) uniform PC { mat4 mvp; uvec2 res; } pc;
 layout(local_size_x=8,local_size_y=8) in;
@@ -5844,13 +5844,13 @@ void main() {
 
 Differential geometry provides the mathematical language for curvature, geodesics, and spectral analysis on discrete triangle meshes. This category covers the cotangent-weighted Laplace-Beltrami operator and its use in curvature estimation and smoothing, geodesic distance computation via the heat method (which reduces to two linear solves), spectral decomposition of the mesh Laplacian for shape analysis and compression, and functional maps for correspondence and shape transfer between meshes with different connectivity. These techniques are primarily used in geometry processing tools and offline analysis pipelines rather than in real-time rendering.
 
-### 14. Geodesics and Discrete Differential Geometry
+### 34. Geodesics and Discrete Differential Geometry
 
 *Audience: graphics application developers, systems developers.*
 
 Discrete differential geometry provides a rigorous framework for computing smooth differential quantities (curvature, Laplacian, geodesic distance) on triangle meshes. All core operations reduce to sparse linear algebra on the mesh adjacency graph — well-suited for GPU conjugate gradient solvers.
 
-### 14.1 Cotangent Laplacian
+### 34.1 Cotangent Laplacian
 
 The **cotangent Laplacian** is the discrete analogue of the smooth Laplace-Beltrami operator. For an edge (i,j) adjacent to triangles with opposite angles αᵢⱼ and βᵢⱼ:
 
@@ -5885,7 +5885,7 @@ void main() {
 
 [Source: Botsch et al. "Polygon Mesh Processing" §3; Meyer et al. "Discrete Differential-Geometry Operators for Triangulated 2-Manifolds", 2003]
 
-### 14.2 Heat Method for Geodesic Distance
+### 34.2 Heat Method for Geodesic Distance
 
 The **heat method** (Crane, Weischedel, Wardetzky 2013) computes exact geodesic distances on triangle meshes in three GPU steps:
 
@@ -5902,7 +5902,7 @@ The **heat method** (Crane, Weischedel, Wardetzky 2013) computes exact geodesic 
 
 All three steps use the same cotangent Laplacian built once per mesh. Total GPU time for a 100k-vertex mesh: ∼5 ms on modern hardware. [Source: Crane et al. "Geodesics in Heat", ACM TOG 2013; code at https://github.com/nmwsharp/geometry-central]
 
-### 14.3 Mean Curvature Flow and Mesh Smoothing
+### 34.3 Mean Curvature Flow and Mesh Smoothing
 
 **Mean curvature flow** moves each vertex in the direction of the mean curvature normal H n = L x (Laplacian of position). Implicit integration avoids instability:
 
@@ -5930,7 +5930,7 @@ void main() {
 
 [Source: Taubin "A Signal Processing Approach to Fair Surface Design", SIGGRAPH 1995; Desbrun et al. "Implicit Fairing of Irregular Meshes using Diffusion and Curvature Flow", SIGGRAPH 1999]
 
-### 14.4 Principal Curvature Estimation on GPU
+### 34.4 Principal Curvature Estimation on GPU
 
 Principal curvatures κ₁, κ₂ and their directions e₁, e₂ are the eigenvalues/vectors of the shape operator at each vertex. GPU estimation uses the per-triangle curvature tensor method (Rusinkiewicz 2004):
 
@@ -5942,13 +5942,13 @@ Principal curvatures feed downstream algorithms: anisotropic remeshing (align qu
 
 ---
 
-### 18. Spectral Geometry Processing
+### 35. Spectral Geometry Processing
 
 *Audience: systems developers, graphics application developers.*
 
 Spectral geometry processing applies signal-processing concepts (filtering, frequency decomposition) to triangle meshes by treating the cotangent Laplacian as the mesh's "frequency operator". Low-frequency eigenvectors correspond to smooth, large-scale shape variations; high-frequency eigenvectors capture fine surface detail.
 
-### 18.1 Graph Laplacian Eigenbasis
+### 35.1 Graph Laplacian Eigenbasis
 
 The graph Laplacian L = D − A (degree matrix minus adjacency) has V eigenvectors Φ = [φ₁, …, φ_V] and eigenvalues Λ = diag(λ₁, …, λ_V). Any per-vertex scalar function f decomposes as f̂ = Φᵀ f. Filtered reconstruction: f' = Φ h(Λ) f̂ where h is the frequency filter (e.g., low-pass: h(λ) = exp(−t λ)).
 
@@ -5956,7 +5956,7 @@ Full eigenbasis computation (O(V³)) is impractical for large meshes. **Chebyshe
 
 [Source: Shuman et al. "The Emerging Field of Signal Processing on Graphs", IEEE Signal Processing Magazine 2013; Defferrard et al. "Convolutional Neural Networks on Graphs with Fast Localized Spectral Filtering", NIPS 2016]
 
-### 18.2 Bilateral Mesh Filtering
+### 35.2 Bilateral Mesh Filtering
 
 Bilateral filtering on meshes (Jones et al. 2003) weights the neighbour contribution by both spatial proximity and normal similarity, preserving sharp features while smoothing noise:
 
@@ -5987,7 +5987,7 @@ void main() {
 
 3–10 iterations converge. `SIGMA_S` controls spatial spread (typically 2–5× mean edge length), `SIGMA_R` controls feature sharpness (0.1–0.5 radians). [Source: Jones et al. "Non-iterative, Feature-Preserving Mesh Smoothing", SIGGRAPH 2003]
 
-### 18.3 Anisotropic Diffusion and Curvature Flow
+### 35.3 Anisotropic Diffusion and Curvature Flow
 
 **Anisotropic diffusion** (Clarenz et al. 2000) generalises the Laplacian smoother by introducing a per-vertex diffusion tensor D(∇n) that suppresses diffusion across edges (where the normal gradient is large) while amplifying diffusion along edges:
 
@@ -6001,15 +6001,15 @@ On a triangle mesh, the per-edge weight replaces the cotangent weight in the Lap
 
 ---
 
-### 37. Geometric Shape Morphing and Functional Maps
+### 36. Geometric Shape Morphing and Functional Maps
 
 *Audience: graphics application developers.*
 
-Shape morphing creates a smooth geometric transition between two shapes with potentially different topology. Unlike blend shapes (§4.5, which require identical topology), functional maps establish point-to-point correspondence between different meshes via their spectral representations, enabling morphing between a human hand and a cat paw, or completing a partial scan.
+Shape morphing creates a smooth geometric transition between two shapes with potentially different topology. Unlike blend shapes (§39.5, which require identical topology), functional maps establish point-to-point correspondence between different meshes via their spectral representations, enabling morphing between a human hand and a cat paw, or completing a partial scan.
 
-### 37.1 Functional Maps: Spectral Correspondence
+### 36.1 Functional Maps: Spectral Correspondence
 
-A functional map C ∈ ℝ^{k×k} represents a map between two shapes M and N in the basis of their first k Laplacian eigenfunctions (§18.1). Given descriptor functions on M (e.g., WKS, HKS), solve for C minimising:
+A functional map C ∈ ℝ^{k×k} represents a map between two shapes M and N in the basis of their first k Laplacian eigenfunctions (§35.1). Given descriptor functions on M (e.g., WKS, HKS), solve for C minimising:
 
 ‖C · Φ_M^T · F_M − Φ_N^T · F_N‖²_F
 
@@ -6039,7 +6039,7 @@ void main() {
 
 [Source: Ovsjanikov et al. "Functional Maps", SIGGRAPH 2012; Sun et al. "A Concise and Provably Informative Multi-Scale Signature", SGP 2009]
 
-### 37.2 Point-to-Point Map from Functional Map
+### 36.2 Point-to-Point Map from Functional Map
 
 Given C, recover point-to-point correspondence: for each vertex v on M, find its image on N by nearest-neighbour search in the transformed spectral embedding:
 
@@ -6069,7 +6069,7 @@ void main() {
 }
 ```
 
-### 37.3 Vertex-Interpolated Morphing
+### 36.3 Vertex-Interpolated Morphing
 
 Given correspondence, interpolate vertex positions frame-by-frame. Unmatched vertices (different counts) use barycentric interpolation on the target mesh:
 
@@ -6091,15 +6091,15 @@ void main() {
 
 ---
 
-### 65. Geodesic Distance: Heat Method
+### 37. Geodesic Distance: Heat Method
 
 *Audience: graphics application developers, systems developers.*
 
 The heat method (Crane et al. 2013, 2017) computes geodesic distances on a surface mesh by: (1) solving the heat equation for a short time from source vertices; (2) computing the gradient field of the heat solution; (3) solving a Poisson equation on the gradient field to recover the distance function. All three steps are linear solves — GPU-parallelizable via iterative methods or direct sparse factorization.
 
-### 65.1 Heat Diffusion Step
+### 37.1 Heat Diffusion Step
 
-Solve (I + t·L)u = u₀ once, where L is the cotangent Laplacian, t is the timestep, and u₀ is 1 at sources and 0 elsewhere. Use conjugate gradient on the GPU (Jacobi preconditioned, §21.2 pattern):
+Solve (I + t·L)u = u₀ once, where L is the cotangent Laplacian, t is the timestep, and u₀ is 1 at sources and 0 elsewhere. Use conjugate gradient on the GPU (Jacobi preconditioned, §87.2 pattern):
 
 ```glsl
 // heat_diffuse.comp — one Gauss-Seidel / Jacobi iteration for (I + tL)u = u0
@@ -6125,7 +6125,7 @@ void main() {
 
 [Source: Crane et al. "Geodesics in Heat: A New Approach to Computing Distance Based on Heat Flow", ACM TOG 2013]
 
-### 65.2 Gradient Field Computation
+### 37.2 Gradient Field Computation
 
 After convergence of the heat solve, compute the normalised gradient field X = -∇u / |∇u| per face:
 
@@ -6148,9 +6148,9 @@ void main() {
 }
 ```
 
-### 65.3 Poisson Solve for Distance
+### 37.3 Poisson Solve for Distance
 
-Solve ∆φ = ∇·X where X is the gradient field from §65.2. The divergence of X becomes the right-hand side of a Poisson equation with the same cotangent Laplacian:
+Solve ∆φ = ∇·X where X is the gradient field from §37.2. The divergence of X becomes the right-hand side of a Poisson equation with the same cotangent Laplacian:
 
 ```glsl
 // heat_divergence.comp — RHS: divergence of gradient field X at vertex v
@@ -6170,13 +6170,13 @@ void main() {
     }
     div[v] = d;
 }
-// Then: solve L·phi = div using same Jacobi CG as §65.1
+// Then: solve L·phi = div using same Jacobi CG as §37.1
 // Subtract phi[source] to get distance (phi is unique up to a constant)
 ```
 
 [Source: Crane et al. 2013; implementation: https://github.com/nmwsharp/geometry-central]
 
-### 65.4 Polyhedral Distance via Vector Heat Method
+### 37.4 Polyhedral Distance via Vector Heat Method
 
 The vector heat method (Sharp et al. 2019) extends the heat method to parallel transport of vectors on surfaces — computing logarithmic maps, Voronoi diagrams on meshes, and mean curvature flow, all via GPU linear solves:
 
@@ -6205,13 +6205,13 @@ void main() {
 
 ---
 
-### 77. Spectral Mesh Processing
+### 38. Spectral Mesh Processing
 
 *Audience: systems developers, graphics application developers.*
 
-Spectral geometry processing analyses meshes via the eigenvectors and eigenvalues of the cotangent Laplacian — the manifold analogue of Fourier analysis. Low-frequency eigenvectors capture global shape; high-frequency ones capture fine detail. GPU applications include shape-preserving deformation, mesh segmentation, and shape descriptor computation for registration (§21 ICP complement).
+Spectral geometry processing analyses meshes via the eigenvectors and eigenvalues of the cotangent Laplacian — the manifold analogue of Fourier analysis. Low-frequency eigenvectors capture global shape; high-frequency ones capture fine detail. GPU applications include shape-preserving deformation, mesh segmentation, and shape descriptor computation for registration (§87 ICP complement).
 
-### 77.1 Laplacian Eigenvector Computation via Power Iteration
+### 38.1 Laplacian Eigenvector Computation via Power Iteration
 
 For the k smallest eigenvalues of the cotangent Laplacian L, use the GPU-parallel power iteration (inverse iteration) with deflation:
 
@@ -6234,7 +6234,7 @@ void main() {
 
 [Source: Vallet & Lévy "Spectral Geometry Processing with Manifold Harmonics", EG 2008; Taubin "A Signal Processing Approach" 1995]
 
-### 77.2 Heat Kernel Signature (HKS)
+### 38.2 Heat Kernel Signature (HKS)
 
 HKS (Sun et al. 2009) is a shape descriptor invariant to isometric deformations, computed from the diagonal of the heat kernel K(x,x,t) = Σₖ exp(−λₖ t)φₖ(x)² for multiple time scales t:
 
@@ -6259,7 +6259,7 @@ void main() {
 
 [Source: Sun et al. "A Concise and Provably Informative Multi-Scale Signature Based on Heat Diffusion", SGP 2009]
 
-### 77.3 Spectral Shape Correspondence
+### 38.3 Spectral Shape Correspondence
 
 Given HKS descriptors for two meshes, find correspondences by nearest-neighbour matching in descriptor space. GPU k-NN on the HKS feature matrix (N_VERTS × N_TIMES):
 
@@ -6286,9 +6286,9 @@ void main() {
 
 [Source: Ovsjanikov et al. "Functional Maps: A Flexible Representation of Maps Between Shapes", SIGGRAPH 2012]
 
-### 77.4 Low-Pass Mesh Filtering via Spectral Truncation
+### 38.4 Low-Pass Mesh Filtering via Spectral Truncation
 
-A low-pass filter retains only the first K eigenvectors, suppressing high-frequency noise. This is the spectral equivalent of §72.1 Laplacian smoothing but with controllable frequency cutoff:
+A low-pass filter retains only the first K eigenvectors, suppressing high-frequency noise. This is the spectral equivalent of §19.1 Laplacian smoothing but with controllable frequency cutoff:
 
 ```glsl
 // spectral_filter.comp — reconstruct mesh from truncated eigenvectors
@@ -6318,11 +6318,11 @@ void main() {
 
 Character animation on the GPU covers the full pipeline from skeletal joint transforms through vertex deformation to secondary motion dynamics. Linear blend skinning (LBS) and its quality improvements (dual-quaternion skinning, corrective blendshapes) drive the base mesh; IK solvers (CCD, FABRIK, Jacobian) compute joint angles from end-effector constraints in compute shaders; cage-based methods (Mean Value Coordinates, Green Coordinates) and Laplacian mesh editing provide smooth artist-controlled shape deformation; and projective dynamics and FEM handle soft-body secondary motion. Hair strand simulation and secondary dynamics add organic motion on top of the primary skeleton.
 
-### 4. Skeletal Animation: Skinning
+### 39. Skeletal Animation: Skinning
 
 Skeletal animation is the standard character deformation pipeline: a hierarchy of bones drives the skin mesh through linear blend skinning (LBS) or dual-quaternion skinning (DQS) evaluated in a vertex or compute shader. Each vertex stores up to eight (bone index, weight) pairs; the shader fetches each bone's current world-space transform from a joint-matrix buffer, blends the weighted transforms, and applies the result to the rest-pose vertex position and normal. The skinned output is consumed unchanged by subsequent rendering passes — shadow maps, depth pre-pass, and collision queries — making the skinning dispatch a natural compute pre-pass that writes GPU-resident vertex buffers rather than a fixed-function vertex-shader stage.
 
-### 4.1 Forward Kinematics on GPU
+### 39.1 Forward Kinematics on GPU
 
 A skeleton is a directed tree of joints; each joint's world transform depends on its parent's. Forward kinematics (FK) computes every joint's global transform by traversing the tree root-to-leaf. On the CPU this is a serial depth-first walk; on the GPU, the tree is processed one depth level per compute dispatch, so all joints at the same depth execute in parallel.
 
@@ -6400,7 +6400,7 @@ void main() {
 
 NLerp is not constant-speed (unlike SLerp) but runs with no transcendental instructions and is indistinguishable from SLerp for blending weights below 0.5 angular distance. For game characters with 50–200 joints, both the NLerp blend and the FK dispatch complete in well under 0.1 ms on discrete GPUs, making full GPU skeletal pipelines practical. [Source: ARM Mali GPU Best Practices, skeletal animation chapter; CDLOD2 paper §5.2 for level-of-detail FK scheduling]
 
-### 4.2 Linear Blend Skinning (LBS)
+### 39.2 Linear Blend Skinning (LBS)
 
 Linear Blend Skinning blends vertex positions across bone influences: 
 
@@ -6452,7 +6452,7 @@ void main() {
 
 LBS suffers from the "candy-wrapper" artifact at high-twist rotations (the mesh collapses toward the bone axis). Dual Quaternion Skinning corrects this.
 
-### 4.3 Dual Quaternion Skinning (DQS)
+### 39.3 Dual Quaternion Skinning (DQS)
 
 A dual quaternion encodes rotation and translation as `DQ = q_r + ε·q_d` where `ε² = 0` and `q_d = 0.5·t̂·q_r` (t̂ = translation as pure quaternion).
 
@@ -6501,7 +6501,7 @@ vec3 dqs_apply(uvec4 joints, vec4 weights, vec3 pos) {
 
 [Source: Kavan et al. (2007), "Skinning with Dual Quaternions", I3D. DOI: 10.1145/1230100.1230107]
 
-### 4.4 GPU Compute Skinning Pre-Pass
+### 39.4 GPU Compute Skinning Pre-Pass
 
 Computing skinning in a compute pass and writing to a pre-skinned vertex buffer allows all subsequent rendering passes (opaque, shadow, reflections) to reuse the result without re-executing the vertex shader skinning math:
 
@@ -6550,7 +6550,7 @@ jointMatrix[i] = globalNodeTransform(skin.joints[i]) × inverseBindMatrix[i]
 where `inverseBindMatrix[i]` is stored as accessor type `MAT4` in the glTF binary.
 [Source: https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#skins]
 
-### 4.5 Blend Shapes (Morph Targets)
+### 39.5 Blend Shapes (Morph Targets)
 
 Morph targets store per-vertex position deltas from the base mesh. The vertex shader interpolates among targets using weight values animated on the CPU:
 
@@ -6572,7 +6572,7 @@ void main() {
 
 For large numbers of targets (100+ FACS blend shapes for facial animation), store deltas as a 2D texture atlas indexed by vertex and target index, and evaluate in a compute pre-pass analogous to the skinning pre-pass above.
 
-### 4.6 PBD Cloth and Soft-Body Simulation
+### 39.6 PBD Cloth and Soft-Body Simulation
 
 Position-Based Dynamics (Müller et al. 2007, Macklin et al. 2016 XPBD) simulates cloth by iteratively projecting constraint violations rather than solving forces. Every vertex carries position `p`, predicted position `p̃`, and velocity `v`. A GPU PBD frame consists of:
 
@@ -6663,11 +6663,11 @@ vec3 capsuleConstraint(vec3 p, vec3 capA, vec3 capB, float r) {
 
 ---
 
-### 5. Inverse Kinematics on the GPU
+### 40. Inverse Kinematics on the GPU
 
 IK solvers within a single chain are inherently sequential, but multiple independent chains (different characters, tentacles, ragdoll limbs) parallelize trivially: one workgroup per chain.
 
-### 5.1 CCD: Cyclic Coordinate Descent
+### 40.1 CCD: Cyclic Coordinate Descent
 
 CCD iterates from the end-effector's parent joint back to the root, rotating each joint to bring the end-effector closer to the target:
 
@@ -6718,7 +6718,7 @@ void main() {
 
 [Source: Kenwright (2012), "Inverse Kinematics — CCD", JCGT 1(1)]
 
-### 5.2 FABRIK: Forward and Backward Reaching IK
+### 40.2 FABRIK: Forward and Backward Reaching IK
 
 FABRIK (Aristidou & Lasenby, 2011) operates directly on positions and avoids explicit rotation computations, converging faster than CCD for 3D chains.
 
@@ -6790,7 +6790,7 @@ void main() {
 
 [Source: Aristidou & Lasenby (2011), "FABRIK: A fast, iterative solver for the Inverse Kinematics problem", Graphical Models 73(5)]
 
-### 5.3 Jacobian-Based IK and Damped Least Squares
+### 40.3 Jacobian-Based IK and Damped Least Squares
 
 For revolute joint i with world-space rotation axis aᵢ and joint position pᵢ, the Jacobian column for position IK is:
 
@@ -6829,13 +6829,13 @@ Each substep projects all constraints (after graph coloring to identify independ
 
 ---
 
-### 15. Shape Deformation Beyond Skinning
+### 41. Shape Deformation Beyond Skinning
 
 *Audience: graphics application developers.*
 
-Skeletal skinning (§4) deforms a mesh by blending bone transforms. More general deformation methods impose different structural constraints: ARAP preserves local rigidity cell-by-cell, cage deformation provides artistic control via a coarse proxy, and RBF deformation scatters influence from a sparse set of handles.
+Skeletal skinning (§39) deforms a mesh by blending bone transforms. More general deformation methods impose different structural constraints: ARAP preserves local rigidity cell-by-cell, cage deformation provides artistic control via a coarse proxy, and RBF deformation scatters influence from a sparse set of handles.
 
-### 15.1 As-Rigid-As-Possible (ARAP) Deformation
+### 41.1 As-Rigid-As-Possible (ARAP) Deformation
 
 ARAP (Sorkine & Alexa 2007) minimises the distortion energy:
 
@@ -6868,7 +6868,7 @@ void main() {
 
 3–5 local+global iterations converge to a near-optimal deformation. [Source: Sorkine & Alexa "As-Rigid-As-Possible Surface Modeling", SGP 2007; implementation in libigl `igl::arap()`]
 
-### 15.2 Cage-Based Deformation: Mean Value Coordinates
+### 41.2 Cage-Based Deformation: Mean Value Coordinates
 
 A **cage** is a coarse triangulated hull enclosing the high-resolution mesh. Each mesh vertex is expressed as a weighted combination of cage vertices via **Mean Value Coordinates** (MVC):
 
@@ -6900,7 +6900,7 @@ void main() {
 
 [Source: Floater "Mean Value Coordinates", CAGD 2003; Ju et al. "Mean Value Coordinates for Closed Triangular Meshes", SIGGRAPH 2005]
 
-### 15.3 Radial Basis Function Deformation
+### 41.3 Radial Basis Function Deformation
 
 RBF deformation places N control points (handles) in space. Moving a handle from xᵢ to xᵢ' induces a displacement field:
 
@@ -6931,13 +6931,13 @@ For many handles (N > 64), use a spatial partition to evaluate only nearby handl
 
 ---
 
-### 30. Hair and Strand Geometry
+### 42. Hair and Strand Geometry
 
 *Audience: graphics application developers.*
 
 Hair simulation and rendering sit at the intersection of geometry generation, physics simulation, and LOD management. Unlike mesh-based geometry, strand geometry is one-dimensional (a piecewise curve) but must interact with a 3D collision surface, self-collide at high density, and transition between strand, shell (hair card), and volume representations across LOD levels.
 
-### 30.1 Strand Representation and Cosserat Rods
+### 42.1 Strand Representation and Cosserat Rods
 
 Each hair strand is a sequence of N control points {p₀, p₁, …, p_{N-1}} plus a reference frame per segment (bishop frame or material frame). The Cosserat rod model tracks both centerline position and cross-section orientation, enabling simulation of bending, twisting, and stretching:
 
@@ -6973,7 +6973,7 @@ void main() {
 
 [Source: Müller et al. "Position Based Dynamics", J. Visual Communication 2007; AMD TressFX https://github.com/GPUOpen-Effects/TressFX]
 
-### 30.2 Bending and Torsion Constraints
+### 42.2 Bending and Torsion Constraints
 
 Bending is resisted by a dihedral angle constraint between consecutive segment pairs. Per strand, thread i handles the joint at control point i:
 
@@ -7003,9 +7003,9 @@ void main() {
 }
 ```
 
-### 30.3 Strand Self-Collision via Spatial Hashing
+### 42.3 Strand Self-Collision via Spatial Hashing
 
-At hair densities of 50–200k strands, brute-force self-collision is infeasible. Uniform grid hashing (§17.2 pattern) detects strand segment pairs within a collision radius:
+At hair densities of 50–200k strands, brute-force self-collision is infeasible. Uniform grid hashing (§27.2 pattern) detects strand segment pairs within a collision radius:
 
 ```glsl
 // strand_selfcol.comp — push apart overlapping segments
@@ -7032,7 +7032,7 @@ void main() {
 
 [Source: TressFX 4.0 source, GPUOpen; Daviet et al. "A Semi-Implicit Material Point Method for the Continuum Simulation of Granular Materials", SIGGRAPH 2011]
 
-### 30.4 LOD: Strand-to-Shell-to-Volume Transitions
+### 42.4 LOD: Strand-to-Shell-to-Volume Transitions
 
 At distance d:
 - **Close** (d < d₁): render individual strands as triangle strips (2 triangles per segment via geometry expansion in mesh shader).
@@ -7068,13 +7068,13 @@ void main() {
 
 ---
 
-### 45. Secondary Animation Dynamics
+### 43. Secondary Animation Dynamics
 
 *Audience: graphics application developers.*
 
-Primary animation (§4) drives bones via forward kinematics or motion capture. Secondary dynamics add physical plausibility to appendages — hair, clothing tails, antennas, cheeks — without full simulation. The three algorithms here all run as a per-bone post-pass on the GPU after the main FK/IK solve.
+Primary animation (§39) drives bones via forward kinematics or motion capture. Secondary dynamics add physical plausibility to appendages — hair, clothing tails, antennas, cheeks — without full simulation. The three algorithms here all run as a per-bone post-pass on the GPU after the main FK/IK solve.
 
-### 45.1 Jiggle Bones: Per-Bone Damped Spring
+### 43.1 Jiggle Bones: Per-Bone Damped Spring
 
 A jiggle bone tracks a target position (animated joint position) with a damped spring. The spring mass follows a delayed, oscillating trajectory:
 
@@ -7094,9 +7094,9 @@ void main() {
 }
 ```
 
-The resulting world position replaces the animated bone position before skinning (§4.4), propagating jiggle through the bone hierarchy. [Source: Lander "Oh My God, I Inverted Kine!", Game Developer Magazine 1998]
+The resulting world position replaces the animated bone position before skinning (§39.4), propagating jiggle through the bone hierarchy. [Source: Lander "Oh My God, I Inverted Kine!", Game Developer Magazine 1998]
 
-### 45.2 Volume-Preserving Squash and Stretch
+### 43.2 Volume-Preserving Squash and Stretch
 
 Scaling a bone along its primary axis by s requires compensating the perpendicular axes by 1/√s to conserve volume. Computed per-bone after FK:
 
@@ -7118,9 +7118,9 @@ void main() {
 }
 ```
 
-### 45.3 Pose-Space Corrective Blend Shapes
+### 43.3 Pose-Space Corrective Blend Shapes
 
-Corrective shapes fix skinning artefacts (candy-wrapping at elbows, volume collapse at shoulders) by activating blend shapes driven by joint angle. Each corrective is a blend shape (§4.5) with weight interpolated by RBF over pose space:
+Corrective shapes fix skinning artefacts (candy-wrapping at elbows, volume collapse at shoulders) by activating blend shapes driven by joint angle. Each corrective is a blend shape (§39.5) with weight interpolated by RBF over pose space:
 
 ```glsl
 // corrective_rbf.comp — evaluate corrective weights at current pose
@@ -7136,20 +7136,20 @@ void main() {
     blendWeight[c] = weights[c] * phi;
 }
 // Sum blendWeight[] → corrective blend shape activation scalar
-// Then apply blend shape displacement (§4.5 kernel)
+// Then apply blend shape displacement (§39.5 kernel)
 ```
 
 [Source: Lewis et al. "Pose Space Deformation", SIGGRAPH 2000; Sloan et al. "Shape by Example", I3D 2001]
 
 ---
 
-### 58. Skeletal Mesh Retargeting
+### 44. Skeletal Mesh Retargeting
 
 *Audience: graphics application developers.*
 
 Retargeting transfers skeletal animation from a source skeleton (e.g., a motion-capture actor) to a target skeleton (a game character) with different bone lengths, proportions, and topology. GPU-accelerated retargeting enables real-time animation remapping for procedural character diversity.
 
-### 58.1 Skeleton Normalization
+### 44.1 Skeleton Normalization
 
 Normalize both source and target skeletons to a height-1 T-pose by dividing each bone's rest-pose length by the total skeleton height. Store per-bone scale factors:
 
@@ -7168,7 +7168,7 @@ void main() {
 }
 ```
 
-### 58.2 Rotation Retargeting via Quaternion Mapping
+### 44.2 Rotation Retargeting via Quaternion Mapping
 
 Copy source joint rotations to target joints (by name match or user-defined mapping), scale translation components by the bone length ratio:
 
@@ -7190,9 +7190,9 @@ void main() {
 
 [Source: Gleicher "Retargetting Motion to New Characters", SIGGRAPH 1998; Monzani et al. "Using an Intermediate Skeleton and Inverse Kinematics for Motion Retargeting", EG 2000]
 
-### 58.3 Foot Planting Constraint
+### 44.3 Foot Planting Constraint
 
-After rotation retargeting, the character's feet may float above or sink below the target's terrain. Project foot effectors to the terrain surface via IK (§5 FABRIK) with a constraint that the foot contact point remains on the terrain SDF (§52.3):
+After rotation retargeting, the character's feet may float above or sink below the target's terrain. Project foot effectors to the terrain surface via IK (§40 FABRIK) with a constraint that the foot contact point remains on the terrain SDF (§64.3):
 
 ```glsl
 // foot_plant.comp — pull foot to terrain surface using SDF query + FABRIK
@@ -7203,7 +7203,7 @@ void main() {
     float phi    = terrainSDF(ankle);
     if (phi < 0.0) {
         vec3 target = ankle - terrainNormal(ankle) * phi;
-        // FABRIK solve from ankle to target (§5.2)
+        // FABRIK solve from ankle to target (§40.2)
         fabrik(ankleJoint[foot], target, MAX_IK_ITER);
     }
 }
@@ -7211,9 +7211,9 @@ void main() {
 
 [Source: Lander "Making Kine More Flexible", Game Developer Magazine 1998; Kovar et al. "Motion Graphs", SIGGRAPH 2002]
 
-### 58.4 Procedural Diversity via Pose Blending
+### 44.4 Procedural Diversity via Pose Blending
 
-Generate a crowd of diverse characters from one animation by blending retargeted poses with procedurally varied joint angles (noise-driven secondary motion §45.1, body proportions via ratio[], gesture libraries):
+Generate a crowd of diverse characters from one animation by blending retargeted poses with procedurally varied joint angles (noise-driven secondary motion §43.1, body proportions via ratio[], gesture libraries):
 
 ```glsl
 // pose_blend.comp — blend retargeted base pose with per-character variation
@@ -7233,15 +7233,15 @@ void main() {
 
 ---
 
-### 100. Soft Body FEM and Projective Dynamics
+### 45. Soft Body FEM and Projective Dynamics
 
 *Audience: systems developers, graphics application developers.*
 
-Finite element method (FEM) soft body simulation deforms a tetrahedral mesh under elastic forces derived from a continuum mechanics energy functional. Projective dynamics (Bouaziz et al. 2014) reformulates FEM as a sequence of local projections plus a global linear solve, enabling GPU parallelism across both steps. This is distinct from XPBD cloth (§50), which applies position constraints on surface triangles; FEM/PD operates on volumetric tetrahedra with material parameters (Young's modulus, Poisson ratio).
+Finite element method (FEM) soft body simulation deforms a tetrahedral mesh under elastic forces derived from a continuum mechanics energy functional. Projective dynamics (Bouaziz et al. 2014) reformulates FEM as a sequence of local projections plus a global linear solve, enabling GPU parallelism across both steps. This is distinct from XPBD cloth (§54), which applies position constraints on surface triangles; FEM/PD operates on volumetric tetrahedra with material parameters (Young's modulus, Poisson ratio).
 
-### 100.1 Tetrahedral Mesh Construction from Surface
+### 45.1 Tetrahedral Mesh Construction from Surface
 
-Convert a watertight surface mesh (§89) to a tetrahedral volume mesh using constrained Delaunay tetrahedralization. The GPU accelerates the initial point insertion; CPU TetGen handles the constrained phase:
+Convert a watertight surface mesh (§22) to a tetrahedral volume mesh using constrained Delaunay tetrahedralization. The GPU accelerates the initial point insertion; CPU TetGen handles the constrained phase:
 
 ```glsl
 // tet_classify.comp — classify surface samples as inside/outside via ray query
@@ -7265,7 +7265,7 @@ void main() {
 
 [Source: Si "TetGen: A Delaunay-Based Quality Tetrahedral Mesh Generator", ACM TOMS 2015]
 
-### 100.2 Deformation Gradient and Elastic Force
+### 45.2 Deformation Gradient and Elastic Force
 
 For each tetrahedron, compute the deformation gradient F = DS·Dm⁻¹ (D = deformed shape matrix, Dm = rest-shape matrix), then derive the elastic force from the corotational or neo-Hookean energy:
 
@@ -7300,7 +7300,7 @@ void main() {
 
 [Source: Sifakis & Barbic "FEM Simulation of 3D Deformable Solids", SIGGRAPH Course 2012; Irving et al. "Invertible Finite Elements for Robust Simulation of Large Deformation", SCA 2004]
 
-### 100.3 Projective Dynamics: Local Projection Step
+### 45.3 Projective Dynamics: Local Projection Step
 
 Projective dynamics (Bouaziz et al. 2014) replaces the nonlinear force evaluation with a local projection: for each constraint (tetrahedral volume, edge length, etc.), project the current positions onto the constraint manifold. Massively parallel across constraints:
 
@@ -7326,7 +7326,7 @@ void main() {
 
 [Source: Bouaziz et al. "Projective Dynamics: Fusing Constraint Projections for Fast Simulation", SIGGRAPH 2014]
 
-### 100.4 Projective Dynamics: Global Linear Solve
+### 45.4 Projective Dynamics: Global Linear Solve
 
 The global step solves a fixed sparse linear system (the system matrix factors once at setup) for each iteration. Use a pre-factored Cholesky solve — compute the right-hand side on GPU, solve on CPU or GPU with cuSolver:
 
@@ -7354,13 +7354,13 @@ void main() {
 
 ---
 
-### 101. Cage-Based Deformation: Mean Value and Green Coordinates
+### 46. Cage-Based Deformation: Mean Value and Green Coordinates
 
 *Audience: graphics application developers.*
 
 Cage-based deformation encloses a detailed mesh inside a coarse control cage. Moving cage vertices deforms the interior mesh via barycentric-like weights computed from the cage. Mean value coordinates (Floater 2003; Ju et al. 2005) and Green coordinates (Lipman et al. 2008) provide smooth, volume-preserving deformation. GPU precomputes per-vertex weights at bind time; runtime deformation is a weighted sum — embarrassingly parallel.
 
-### 101.1 Mean Value Coordinate Weight Computation (Bind)
+### 46.1 Mean Value Coordinate Weight Computation (Bind)
 
 For each interior vertex v, integrate the mean value weights w_j(v) over each cage triangle by summing spherical wedge angles:
 
@@ -7401,7 +7401,7 @@ void main() {
 
 [Source: Ju et al. "Mean Value Coordinates for Closed Triangular Meshes", SIGGRAPH 2005; Floater "Mean Value Coordinates", CAGD 2003]
 
-### 101.2 Runtime MVC Deformation
+### 46.2 Runtime MVC Deformation
 
 With precomputed weights, deform each mesh vertex as a weighted sum of displaced cage vertices — trivially parallel:
 
@@ -7421,7 +7421,7 @@ void main() {
 }
 ```
 
-### 101.3 Green Coordinates (Conformal Cage)
+### 46.3 Green Coordinates (Conformal Cage)
 
 Green coordinates (Lipman et al. 2008) add normal-scaled terms to MVC so that the deformation is approximately conformal — preserving local shape under cage rotation:
 
@@ -7446,9 +7446,9 @@ void main() {
 
 [Source: Lipman et al. "Green Coordinates", SIGGRAPH 2008; Ben-Chen et al. "Variational Harmonic Maps for Space Deformation", SIGGRAPH 2009]
 
-### 101.4 Cage Editing and Undo via Differential Coordinates
+### 46.4 Cage Editing and Undo via Differential Coordinates
 
-Store the mesh deformation in differential (Laplacian) coordinates (§102) relative to the cage transform so that cage edits propagate smoothly and undo is cheap:
+Store the mesh deformation in differential (Laplacian) coordinates (§47) relative to the cage transform so that cage edits propagate smoothly and undo is cheap:
 
 ```glsl
 // cage_differential.comp — convert mesh positions to cage-relative Laplacian coords
@@ -7471,15 +7471,15 @@ void main() {
 
 ---
 
-### 102. Laplacian Mesh Editing and Interactive Deformation
+### 47. Laplacian Mesh Editing and Interactive Deformation
 
 *Audience: graphics application developers.*
 
 Laplacian mesh editing (Sorkine et al. 2004) deforms a mesh by specifying a sparse set of handle constraints and solving a bilaplacian linear system to minimise changes in the Laplacian coordinates (differential coordinates that encode local shape). GPU compute accelerates the constraint-assembly and iterative CG solve; the system matrix factors once for a given handle topology.
 
-### 102.1 Cotangent Laplacian Assembly
+### 47.1 Cotangent Laplacian Assembly
 
-Assemble the cotangent-weighted Laplacian matrix L (§65.1 pattern) from the mesh connectivity. Store as a sparse CSR matrix:
+Assemble the cotangent-weighted Laplacian matrix L (§37.1 pattern) from the mesh connectivity. Store as a sparse CSR matrix:
 
 ```glsl
 // lap_cotangent.comp — assemble cotangent weights for each half-edge
@@ -7500,7 +7500,7 @@ void main() {
 
 [Source: Sorkine et al. "Laplacian Surface Editing", SGP 2004; Desbrun et al. "Implicit Fairing of Irregular Meshes Using Diffusion and Curvature Flow", SIGGRAPH 1999]
 
-### 102.2 Differential Coordinate Encoding
+### 47.2 Differential Coordinate Encoding
 
 Encode each vertex as its Laplacian coordinate δᵢ = Lᵢ·p (the difference between a vertex and its weighted neighbours). Handle vertices are constrained; the solve minimises ‖Lp − δ‖² subject to handle positions:
 
@@ -7523,7 +7523,7 @@ void main() {
 }
 ```
 
-### 102.3 CG Solve for Handle-Constrained Deformation
+### 47.3 CG Solve for Handle-Constrained Deformation
 
 With handles fixed, solve the augmented system [L; λI_handles]·p = [δ; λ·c_handles] via conjugate gradient. One CG iteration per dispatch:
 
@@ -7553,9 +7553,9 @@ void main() {
 
 [Source: Sorkine et al. 2004; Botsch & Sorkine 2008; Shewchuk "An Introduction to the Conjugate Gradient Method Without the Agonizing Pain", 1994]
 
-### 102.4 As-Rigid-As-Possible (ARAP) Surface Modelling
+### 47.4 As-Rigid-As-Possible (ARAP) Surface Modelling
 
-ARAP (Sorkine & Alexa 2007) alternates between a local step (fit a rigid rotation to each vertex neighbourhood) and a global Laplacian solve. The local step is parallel; the global step reuses the same prefactored system as §102.3:
+ARAP (Sorkine & Alexa 2007) alternates between a local step (fit a rigid rotation to each vertex neighbourhood) and a global Laplacian solve. The local step is parallel; the global step reuses the same prefactored system as §47.3:
 
 ```glsl
 // arap_local.comp — ARAP local step: fit rotation Rᵢ to each vertex neighbourhood
@@ -7593,13 +7593,13 @@ void main() {
 
 GPU simulation covers the full range of physical phenomena relevant to real-time and offline rendering: rigid body dynamics with parallel broad-phase collision detection (BVH, spatial hashing), continuous collision detection for fast-moving objects, fluid simulation via SPH particle methods and Eulerian pressure-projection grids, position-based and projective dynamics for cloth and soft bodies, the Discrete Element Method (DEM) for granular materials, and fracture/destruction via Voronoi decomposition. The Minkowski sum and swept volumes appear here because they are the geometric primitives underlying GJK and EPA collision algorithms. All systems run as compute dispatches that write updated vertex positions consumed by the rendering pipeline each frame.
 
-### 11. Fluid Simulation on the GPU
+### 48. Fluid Simulation on the GPU
 
 *Audience: graphics application developers, systems developers.*
 
 Fluid simulation divides into two major families: **Eulerian** (fixed grid, track field values at cell centers/faces) and **Lagrangian** (particles follow the fluid). Hybrid schemes (FLIP, APIC) combine both. GPU implementations exploit the data-parallelism in per-cell and per-particle updates, with the bottleneck usually being the pressure Poisson solve.
 
-### 11.1 MAC Grid and Semi-Lagrangian Advection
+### 48.1 MAC Grid and Semi-Lagrangian Advection
 
 The **Marker-and-Cell (MAC) grid** stores pressure at cell centers and velocity components at face centers (staggered). For an N³ grid a Vulkan compute layout maps naturally: one thread per cell for pressure, one thread per axis-face pair for velocity.
 
@@ -7626,7 +7626,7 @@ void main() {
 
 Third-order BFECC (Back and Forth Error Compensation and Correction) halves the dissipation with two additional advection passes and an error correction term. [Source: Kim et al. "Advections With Significantly Reduced Diffusion and Diffusion", SCA 2005]
 
-### 11.2 Pressure Projection via Conjugate Gradient
+### 48.2 Pressure Projection via Conjugate Gradient
 
 After advection the velocity field is not divergence-free. The **pressure Poisson solve** enforces incompressibility:
 
@@ -7658,7 +7658,7 @@ void main() {
 
 For production, replace Jacobi with a **multigrid V-cycle**: restrict residual to a coarser grid, smooth there, then prolongate the correction back. Each level halves the grid in each dimension; total work is O(N³) rather than O(N³ log N). [Source: Fedkiw, Stam, Jensen "Visual Simulation of Smoke", SIGGRAPH 2001; McAdams et al. "A Parallel Multigrid Poisson Solver", SCA 2010]
 
-### 11.3 Position-Based Fluids (PBF) on GPU
+### 48.3 Position-Based Fluids (PBF) on GPU
 
 **Position-Based Fluids** (Macklin & Müller 2013) treats each particle as a density constraint rather than a force, solving for position corrections that keep density at ρ₀:
 
@@ -7698,7 +7698,7 @@ void main() {
 
 After computing λ, position corrections Δpᵢ = (1/ρ₀) Σⱼ (λᵢ + λⱼ) ∇W accumulate via a scatter pass (atomic floats or separate reduction). Surface tension, vorticity confinement, and XPBD compliance extend PBF without structural changes to the GPU pipeline. [Source: Macklin & Müller "Position Based Fluids", SIGGRAPH 2013; Macklin et al. "Unified Particle Physics for Real-Time Applications", SIGGRAPH 2014]
 
-### 11.4 FLIP: Hybrid Particle-Grid
+### 48.4 FLIP: Hybrid Particle-Grid
 
 **FLIP** (Fluid Implicit Particles) transfers velocity between particles and a MAC grid each step, combining the detail of Lagrangian particles with the stability of an Eulerian pressure solve:
 
@@ -7723,7 +7723,7 @@ vkCmdDispatch(advect_pipeline, ceil(N_grid/512),     1, 1)
 
 [Source: Bridson "Fluid Simulation for Computer Graphics" §7; Zhu & Bridson "Animating Sand as a Fluid", SIGGRAPH 2005]
 
-### 11.5 Lattice Boltzmann Method (LBM)
+### 48.5 Lattice Boltzmann Method (LBM)
 
 LBM replaces the Navier-Stokes equations with a kinetic model on a regular lattice (D2Q9 in 2D, D3Q19 or D3Q27 in 3D). Each cell stores 19 distribution functions fᵢ that represent particle populations moving in 19 directions. One step = **collision** (relax toward equilibrium) + **stream** (shift each fᵢ to its neighbor):
 
@@ -7765,13 +7765,13 @@ LBM is embarrassingly parallel: every cell updates independently. It handles com
 
 ---
 
-### 12. Deformable Bodies and Continuum Mechanics
+### 49. Deformable Bodies and Continuum Mechanics
 
 *Audience: graphics application developers, systems developers.*
 
-PBD cloth (§4.6) handles thin surfaces via distance and bending constraints. Volumetric deformable bodies require a continuum mechanics formulation — FEM for stiff materials, MPM for materials that fracture, flow, or undergo large deformation. Both decompose naturally into per-element parallel local steps and a global linear solve.
+PBD cloth (§39.6) handles thin surfaces via distance and bending constraints. Volumetric deformable bodies require a continuum mechanics formulation — FEM for stiff materials, MPM for materials that fracture, flow, or undergo large deformation. Both decompose naturally into per-element parallel local steps and a global linear solve.
 
-### 12.1 Mass-Spring Systems on GPU
+### 49.1 Mass-Spring Systems on GPU
 
 The simplest volumetric deformable body discretises the mesh into a spring network: each edge becomes a damped spring with rest length ℓ₀, stiffness k, and damping d. Forces integrate via explicit Verlet:
 
@@ -7800,7 +7800,7 @@ void main() {
 
 Stiff springs require implicit integration (backward Euler, sparse linear solve) to avoid instability at large time steps.
 
-### 12.2 Corotational FEM on GPU
+### 49.2 Corotational FEM on GPU
 
 **Corotational FEM** factors out rigid-body rotation from the deformation so the elastic energy is measured relative to the rotated rest configuration. For a tetrahedral mesh:
 
@@ -7845,7 +7845,7 @@ void main() {
 
 [Source: Müller & Gross "Interactive Virtual Materials", GI 2004; Irving et al. "Invertible Finite Elements for Robust Simulation", SCA 2004]
 
-### 12.3 Material Point Method (MPM) on GPU
+### 49.3 Material Point Method (MPM) on GPU
 
 MPM represents material as particles carrying mass, velocity, and deformation gradient, and transfers momentum through a background grid each step. The GPU pipeline alternates between particle-centric and grid-centric passes:
 
@@ -7870,13 +7870,13 @@ The cubic B-spline weight function wᵢₚ = N(xᵢ − xₚ/dx) covers a 3×3×
 
 ---
 
-### 22. Rigid Body Dynamics on GPU
+### 50. Rigid Body Dynamics on GPU
 
 *Audience: graphics application developers, systems developers.*
 
-PhysX 5 (§30 Library Landscape Table B) provides a production GPU rigid body solver; this section covers the algorithms so implementors can build Vulkan-native physics or understand what PhysX does under the hood.
+PhysX 5 (§42 Library Landscape Table B) provides a production GPU rigid body solver; this section covers the algorithms so implementors can build Vulkan-native physics or understand what PhysX does under the hood.
 
-### 22.1 Broadphase: SAP Pair Generation
+### 50.1 Broadphase: SAP Pair Generation
 
 Sweep-and-prune (SAP) sorts AABB extents along one axis; overlapping intervals on that axis are candidate pairs, checked against the other two axes:
 
@@ -7900,9 +7900,9 @@ void main() {
 }
 ```
 
-Pairs feed the island detection and narrowphase (§8.4 SAT/GJK). [Source: Tonge "Iterative Rigid Body Simulation", GDC 2013]
+Pairs feed the island detection and narrowphase (§24.4 SAT/GJK). [Source: Tonge "Iterative Rigid Body Simulation", GDC 2013]
 
-### 22.2 Island Detection via GPU Label Propagation
+### 50.2 Island Detection via GPU Label Propagation
 
 Rigid body simulation islands (connected components of the contact graph) must be solved together. Parallel label propagation over active contact pairs:
 
@@ -7923,7 +7923,7 @@ void main() {
 
 After convergence, islands with disjoint label values dispatch independently in parallel.
 
-### 22.3 Sequential Impulse Solver with Graph Colouring
+### 50.3 Sequential Impulse Solver with Graph Colouring
 
 The sequential impulse (SI) solver applies corrective velocity impulses at each contact. GPU parallelism requires contacts sharing no body to run in the same pass — enforced by graph colouring (4–8 colours suffice for most scenes):
 
@@ -7948,7 +7948,7 @@ void main() {
 
 Run 4–20 iterations; each iteration dispatches one kernel per colour. [Source: Catto "Iterative Dynamics with Temporal Coherence", GDC 2005; Tonge "Solving Rigid Body Contacts", GDC 2013]
 
-### 22.4 Featherstone Articulated Body Algorithm
+### 50.4 Featherstone Articulated Body Algorithm
 
 For articulated bodies (ragdolls, robot arms) the Articulated Body Algorithm (Featherstone 1987) propagates joint quantities in three O(n)-per-chain passes. Independent chains (multiple ragdolls) execute in parallel; joints within one chain are serialised by their topological depth:
 
@@ -7971,13 +7971,13 @@ void main() {
 
 ---
 
-### 23. Crowd and Multi-Agent Simulation
+### 51. Crowd and Multi-Agent Simulation
 
 *Audience: graphics application developers.*
 
-Navigation meshes (§19) compute flow fields telling each agent which direction to move. This section covers the per-agent algorithms that consume those fields and avoid collisions with other agents at run time.
+Navigation meshes (§70) compute flow fields telling each agent which direction to move. This section covers the per-agent algorithms that consume those fields and avoid collisions with other agents at run time.
 
-### 23.1 ORCA: Optimal Reciprocal Collision Avoidance
+### 51.1 ORCA: Optimal Reciprocal Collision Avoidance
 
 ORCA (van den Berg et al. 2011) computes a collision-free velocity for each agent by solving a small 2D linear programme over velocity-obstacle half-planes from nearby neighbours:
 
@@ -7994,7 +7994,7 @@ void main() {
     vec2 pi=a[i].pos, vi=a[i].vel; float ri=a[i].radius;
     HalfPlane planes[MAX_NEIGHBOURS]; uint nPlanes=0;
 
-    // iterate nearby agents via spatial hash (§17.2)
+    // iterate nearby agents via spatial hash (§27.2)
     ivec2 ci=ivec2(floor(pi/CELL_SIZE));
     for (int dy=-1;dy<=1;dy++) for(int dx=-1;dx<=1;dx++) {
         uint cell=hash2D(ci+ivec2(dx,dy));
@@ -8016,7 +8016,7 @@ void main() {
 
 `solveLP2D` is an incremental 2D LP running entirely in registers — O(k) expected per agent. [Source: van den Berg et al. "Reciprocal n-Body Collision Avoidance", ISRR 2011; RVO2 https://gamma.cs.unc.edu/RVO2/]
 
-### 23.2 Reynolds Boid Flocking
+### 51.2 Reynolds Boid Flocking
 
 Three-rule boid steering (separation, alignment, cohesion) over a spatial-hash neighbourhood:
 
@@ -8027,7 +8027,7 @@ void main() {
     uint i=gl_GlobalInvocationID.x;
     vec3 pi=pos[i], vi=vel[i];
     vec3 sep=vec3(0), ali=vec3(0), coh=vec3(0); uint n=0;
-    // iterate neighbours within BOID_RADIUS via §17.2 grid
+    // iterate neighbours within BOID_RADIUS via §27.2 grid
     for each neighbour j: {
         vec3 d=pi-pos[j];
         sep+=normalize(d)/max(length(d),0.01);
@@ -8042,7 +8042,7 @@ void main() {
 
 [Source: Reynolds "Flocks, Herds, and Schools", SIGGRAPH 1987]
 
-### 23.3 Agent Steering over Flow Fields
+### 51.3 Agent Steering over Flow Fields
 
 Blend ORCA collision-avoidance velocity with flow-field global direction:
 
@@ -8052,15 +8052,15 @@ layout(local_size_x=64) in;
 void main() {
     uint i=gl_GlobalInvocationID.x;
     ivec2 ci=ivec2(floor(pos[i].xz/CELL_SIZE));
-    vec2 flow=flowField[ci.y*GRID_W+ci.x].dir;   // §19.3
-    vec2 orca=newVel[i];                            // §23.1
+    vec2 flow=flowField[ci.y*GRID_W+ci.x].dir;   // §70.3
+    vec2 orca=newVel[i];                            // §51.1
     vec2 steer=normalize(mix(flow,orca,ORCA_BLEND))*MAX_SPEED;
     vel[i].xz=steer;
     pos[i]+=vel[i]*DT;
 }
 ```
 
-### 23.4 GPU Crowd Rendering via Task Shaders
+### 51.4 GPU Crowd Rendering via Task Shaders
 
 Each agent selects a pre-skinned LOD meshlet cluster; the task shader culls and emits only visible agents:
 
@@ -8081,17 +8081,17 @@ void main() {
 }
 ```
 
-Distant agents use billboard impostors (§7.7); close agents use full animated meshlets (§10.1–10.2). [Source: Reynolds 1987; van den Berg et al. 2011]
+Distant agents use billboard impostors (§10.7); close agents use full animated meshlets (§26.1–10.2). [Source: Reynolds 1987; van den Berg et al. 2011]
 
 ---
 
-### 25. Fracture and Destruction
+### 52. Fracture and Destruction
 
 *Audience: graphics application developers.*
 
-Fracture combines geometry processing (§3, §7, §12) with physics (§22) to produce visually plausible breaking and crumbling. GPU implementations pre-fracture offline for performance-critical paths and use runtime SDF crack propagation for interactive destruction.
+Fracture combines geometry processing (§3, §10, §49) with physics (§50) to produce visually plausible breaking and crumbling. GPU implementations pre-fracture offline for performance-critical paths and use runtime SDF crack propagation for interactive destruction.
 
-### 25.1 Voronoi Pre-Fracture
+### 52.1 Voronoi Pre-Fracture
 
 Pre-computed Voronoi fracture assigns each voxel to its nearest fracture seed using 3D JFA (§3.9 extended to 3D). Each Voronoi cell becomes a convex fragment:
 
@@ -8112,9 +8112,9 @@ void main() {
 }
 ```
 
-After JFA, run GPU marching cubes (§3.2) on boundaries between adjacent seed regions to extract per-fragment surface meshes. Each fragment becomes an independent BLAS (§20.2) and rigid body (§22). [Source: Müller et al. "Real Time Dynamic Fracture with Volumetric Approximate Convex Decompositions", SIGGRAPH 2013]
+After JFA, run GPU marching cubes (§3.2) on boundaries between adjacent seed regions to extract per-fragment surface meshes. Each fragment becomes an independent BLAS (§75.2) and rigid body (§50). [Source: Müller et al. "Real Time Dynamic Fracture with Volumetric Approximate Convex Decompositions", SIGGRAPH 2013]
 
-### 25.2 Runtime Brittle Fracture via SDF Crack Propagation
+### 52.2 Runtime Brittle Fracture via SDF Crack Propagation
 
 Crack fronts advance as an SDF in a 3D grid, driven by a stress threshold:
 
@@ -8132,9 +8132,9 @@ void main() {
 
 Re-extract crack surface with GPU MC after each advance step; add new triangle geometry to the BLAS. [Source: Parker & O'Brien "Real-Time Deformation and Fracture in a Game Context", SCA 2009]
 
-### 25.3 FEM Ductile Fracture
+### 52.3 FEM Ductile Fracture
 
-Per-element failure criterion on the corotational FEM from §12.2:
+Per-element failure criterion on the corotational FEM from §49.2:
 
 ```glsl
 // fem_fracture_check.comp
@@ -8153,13 +8153,13 @@ Compact failed elements, patch crack surface (dual MC on failure boundary), add 
 
 ---
 
-### 49. Rope and Cable Simulation
+### 53. Rope and Cable Simulation
 
 *Audience: graphics application developers.*
 
-Ropes and cables are one-dimensional elastic bodies with stretch stiffness, bending stiffness, torsion, and friction/contact with other objects. Unlike hair (§30, many thin non-extensible strands) ropes are single extensible bodies with full Cosserat rod dynamics, catenary rest configuration, and pulley/constraint coupling.
+Ropes and cables are one-dimensional elastic bodies with stretch stiffness, bending stiffness, torsion, and friction/contact with other objects. Unlike hair (§42, many thin non-extensible strands) ropes are single extensible bodies with full Cosserat rod dynamics, catenary rest configuration, and pulley/constraint coupling.
 
-### 49.1 Extensible Cosserat Rod Dynamics
+### 53.1 Extensible Cosserat Rod Dynamics
 
 Model the rope as N segments with position **d**ᵢ and material frame (bishop frame) **eᵢ¹, eᵢ², eᵢ³**. Forces: stretch (resists length change), bending (resists curvature change), torsion (resists frame twist):
 
@@ -8198,7 +8198,7 @@ void main() {
 
 [Source: Bergou et al. "Discrete Elastic Rods", SIGGRAPH 2008; Kaufman et al. "Adaptive Nonlinearity for Collisions in Complex Rod Assemblies", SIGGRAPH 2014]
 
-### 49.2 Catenary Initialisation
+### 53.2 Catenary Initialisation
 
 A rope under gravity with fixed endpoints hangs in a catenary. Initialise segment positions analytically to avoid transient oscillations from a straight-line start:
 
@@ -8227,7 +8227,7 @@ void main() {
 
 [Source: Irvine "Irvine on Cable Statics", 1981]
 
-### 49.3 Pulley Constraint
+### 53.3 Pulley Constraint
 
 A pulley maintains constant total rope length L_total = L_left + L_right while allowing the split point to slide:
 
@@ -8252,9 +8252,9 @@ void main() {
 }
 ```
 
-### 49.4 Rope-Rigid Body Contact
+### 53.4 Rope-Rigid Body Contact
 
-When the rope collides with a rigid body sphere (§22), apply position correction pushing the rope segment outside the sphere and a friction impulse tangent to the surface:
+When the rope collides with a rigid body sphere (§50), apply position correction pushing the rope segment outside the sphere and a friction impulse tangent to the surface:
 
 ```glsl
 // rope_contact.comp
@@ -8280,13 +8280,13 @@ void main() {
 
 ---
 
-### 50. GPU Cloth Simulation
+### 54. GPU Cloth Simulation
 
 *Audience: graphics application developers.*
 
-§4.6 introduced PBD cloth as a subsection of skeletal animation; §12.1 covered mass-spring systems. This section provides the dedicated treatment cloth deserves: woven fabric orthotropy, large-scale self-collision, runtime cutting and tearing, and aerodynamic forces. These distinguish cloth from both hair (§30, one-dimensional strands) and continuum FEM (§12, volumetric solids).
+§39.6 introduced PBD cloth as a subsection of skeletal animation; §49.1 covered mass-spring systems. This section provides the dedicated treatment cloth deserves: woven fabric orthotropy, large-scale self-collision, runtime cutting and tearing, and aerodynamic forces. These distinguish cloth from both hair (§42, one-dimensional strands) and continuum FEM (§49, volumetric solids).
 
-### 50.1 Orthotropic Cloth Constraints
+### 54.1 Orthotropic Cloth Constraints
 
 Woven fabric resists stretch differently along warp (thread direction) and weft (cross-thread) axes. Encode per-face stiffness as an orthotropic tensor rather than a single Young's modulus:
 
@@ -8326,9 +8326,9 @@ void main() {
 
 [Source: Provot "Deformation Constraints in a Mass-Spring Model to Describe Rigid Cloth Behaviour", Graphics Interface 1995; Baraff & Witkin "Large Steps in Cloth Simulation", SIGGRAPH 1998]
 
-### 50.2 Cloth Self-Collision via Spatial Hash
+### 54.2 Cloth Self-Collision via Spatial Hash
 
-Self-collision at cloth densities (50k–500k triangles) uses the §17.2 spatial hash: each cloth vertex is hashed into a grid cell; pairs within one cell test for proximity:
+Self-collision at cloth densities (50k–500k triangles) uses the §27.2 spatial hash: each cloth vertex is hashed into a grid cell; pairs within one cell test for proximity:
 
 ```glsl
 // cloth_selfcol.comp — vertex-vertex self-collision
@@ -8359,7 +8359,7 @@ void main() {
 
 [Source: Bridson et al. "Robust Treatment of Collisions, Contact and Friction for Cloth Animation", SIGGRAPH 2002]
 
-### 50.3 Aerodynamic Forces: Lift and Drag
+### 54.3 Aerodynamic Forces: Lift and Drag
 
 Wind interaction applies lift and drag forces per cloth triangle based on the panel normal and relative wind velocity:
 
@@ -8389,7 +8389,7 @@ void main() {
 
 [Source: Leaf et al. "Interactive Design of Periodic Yarn-Level Cloth Patterns", SIGGRAPH 2018; Volino & Magnenat-Thalmann "Aerodynamic Effects on Cloth", Computers & Graphics 2001]
 
-### 50.4 Runtime Cloth Cutting and Tearing
+### 54.4 Runtime Cloth Cutting and Tearing
 
 When edge stress exceeds a threshold, duplicate the shared vertex and update face connectivity:
 
@@ -8413,15 +8413,15 @@ void main() {
 
 ---
 
-### 59. GPU Fluid-Solid Coupling
+### 55. GPU Fluid-Solid Coupling
 
 *Audience: systems developers, graphics application developers.*
 
-§11 (GPU fluid) and §22 (rigid body dynamics) operate independently. Two-way coupling means: (a) the solid moves fluid at the fluid-solid boundary (*no-slip* velocity boundary condition); (b) the fluid exerts pressure and viscous forces on the solid that accelerate it. This section covers the GPU geometry algorithms that implement this coupling.
+§48 (GPU fluid) and §50 (rigid body dynamics) operate independently. Two-way coupling means: (a) the solid moves fluid at the fluid-solid boundary (*no-slip* velocity boundary condition); (b) the fluid exerts pressure and viscous forces on the solid that accelerate it. This section covers the GPU geometry algorithms that implement this coupling.
 
-### 59.1 Solid Boundary Voxelisation for Fluid Grids
+### 55.1 Solid Boundary Voxelisation for Fluid Grids
 
-At each frame, rasterise rigid body geometry into the fluid MAC grid cells. Voxels inside the solid are marked as solid cells; the fluid solver's pressure projection (§11.2) excludes them:
+At each frame, rasterise rigid body geometry into the fluid MAC grid cells. Voxels inside the solid are marked as solid cells; the fluid solver's pressure projection (§48.2) excludes them:
 
 ```glsl
 // solid_vox_fluid.comp — mark MAC grid cells as solid or fluid
@@ -8446,7 +8446,7 @@ void main() {
 }
 ```
 
-### 59.2 No-Slip Velocity Boundary Condition
+### 55.2 No-Slip Velocity Boundary Condition
 
 Fluid cells adjacent to a solid boundary inherit the solid's velocity at the boundary face. For face (i+½, j, k) between a fluid and solid cell:
 
@@ -8468,7 +8468,7 @@ void main() {
 
 [Source: Bridson "Fluid Simulation for Computer Graphics", 2nd ed., §4; Batty et al. "A Fast Variational Framework for Accurate Solid-Fluid Coupling", SIGGRAPH 2007]
 
-### 59.3 Fluid Pressure Force on Solid
+### 55.3 Fluid Pressure Force on Solid
 
 Integrate fluid pressure over the solid surface to compute net force and torque on the rigid body. Sample pressure at each solid surface triangle's centroid from the MAC grid:
 
@@ -8492,31 +8492,31 @@ void main() {
 }
 ```
 
-### 59.4 Two-Way Coupling Loop
+### 55.4 Two-Way Coupling Loop
 
 The per-frame GPU pipeline for two-way fluid-solid coupling:
 
 ```
-1. vkCmdDispatch(solid_vox_fluid)    — §59.1: mark solid cells
-2. vkCmdDispatch(noslip)             — §59.2: set boundary velocities
-3. vkCmdDispatch(fluid_advect)       — §11.1: semi-Lagrangian advection
-4. vkCmdDispatch(fluid_pressure_cg)  — §11.2: pressure projection (respects solid cells)
-5. vkCmdDispatch(fluid_force)        — §59.3: compute force on solid
-6. vkCmdDispatch(rigid_body_step)    — §22.3: integrate solid velocity with fluid force
-7. vkCmdDispatch(blas_refit)         — §20.5: refit solid BLAS for next frame's ray queries
+1. vkCmdDispatch(solid_vox_fluid)    — §55.1: mark solid cells
+2. vkCmdDispatch(noslip)             — §55.2: set boundary velocities
+3. vkCmdDispatch(fluid_advect)       — §48.1: semi-Lagrangian advection
+4. vkCmdDispatch(fluid_pressure_cg)  — §48.2: pressure projection (respects solid cells)
+5. vkCmdDispatch(fluid_force)        — §55.3: compute force on solid
+6. vkCmdDispatch(rigid_body_step)    — §50.3: integrate solid velocity with fluid force
+7. vkCmdDispatch(blas_refit)         — §75.5: refit solid BLAS for next frame's ray queries
 ```
 
 [Source: Batty et al. 2007; Robinson-Mosher et al. "Two-way Coupling of Fluids to Rigid and Deformable Solids and Shells", SIGGRAPH 2008]
 
 ---
 
-### 69. Granular Material Simulation (DEM)
+### 56. Granular Material Simulation (DEM)
 
 *Audience: systems developers, graphics application developers.*
 
-The Discrete Element Method (DEM) simulates granular materials — sand, gravel, powder, pebbles — as collections of rigid spheres or polyhedral grains interacting via contact forces. Each particle-particle contact generates a spring-dashpot force; GPU parallelism comes from the same spatial hashing (§17.2) used in SPH (§11.4) and cloth self-collision (§50.2).
+The Discrete Element Method (DEM) simulates granular materials — sand, gravel, powder, pebbles — as collections of rigid spheres or polyhedral grains interacting via contact forces. Each particle-particle contact generates a spring-dashpot force; GPU parallelism comes from the same spatial hashing (§27.2) used in SPH (§48.4) and cloth self-collision (§54.2).
 
-### 69.1 DEM Force Computation: Hertz Contact
+### 56.1 DEM Force Computation: Hertz Contact
 
 For sphere-sphere contact, the Hertz contact model computes a non-linear spring force proportional to δ^(3/2) where δ is the overlap depth:
 
@@ -8560,9 +8560,9 @@ void main() {
 
 [Source: Cundall & Strack "A Discrete Numerical Model for Granular Assemblies", Géotechnique 1979; Šmilauer et al. "Yade Documentation 2nd ed.", 2015]
 
-### 69.2 Spatial Hashing for DEM Neighbour Search
+### 56.2 Spatial Hashing for DEM Neighbour Search
 
-Reuse the §17.2 / §50.2 spatial hash to find all particle pairs within contact range each frame. The hash cell size equals the maximum particle diameter:
+Reuse the §27.2 / §54.2 spatial hash to find all particle pairs within contact range each frame. The hash cell size equals the maximum particle diameter:
 
 ```glsl
 // dem_hash.comp — insert particles into spatial hash, find contacts
@@ -8591,9 +8591,9 @@ void main() {
 }
 ```
 
-### 69.3 DEM–Fluid Coupling (CFD-DEM)
+### 56.3 DEM–Fluid Coupling (CFD-DEM)
 
-For wet granular flows (slurry, sediment transport), couple DEM with the fluid solver (§11 / §59): the fluid exerts drag on each particle; each particle displaces fluid from its volume:
+For wet granular flows (slurry, sediment transport), couple DEM with the fluid solver (§48 / §55): the fluid exerts drag on each particle; each particle displaces fluid from its volume:
 
 ```glsl
 // dem_fluid_drag.comp — compute drag force on DEM sphere from local fluid velocity
@@ -8618,7 +8618,7 @@ void main() {
 
 [Source: Di Felice "The Voidage Function for Fluid-Particle Interaction Systems", IJMF 1994; Kloss et al. "Models, Algorithms and Validation for Opensource DEM and CFD-DEM", Progress in CFD 2012]
 
-### 69.4 Granular Surface Rendering: Instanced Sphere Splatting
+### 56.4 Granular Surface Rendering: Instanced Sphere Splatting
 
 Render millions of DEM spheres efficiently as GPU-instanced impostors: a single quad per particle, oriented toward the camera, with a ray-sphere intersection in the fragment shader:
 
@@ -8645,13 +8645,13 @@ void main() {
 
 ---
 
-### 79. Terrain Sculpting and Hydraulic Erosion
+### 57. Terrain Sculpting and Hydraulic Erosion
 
 *Audience: graphics application developers.*
 
-Procedural terrain generation (§26 covers runtime rendering; §40 covers ocean simulation) leaves open the sculpting and erosion simulation that shapes the terrain heightfield before rendering. GPU hydraulic erosion simulates millions of water droplets carrying sediment down gradient-following paths; thermal erosion redistributes material based on angle-of-repose; and interactive sculpting applies brush strokes at render resolution.
+Procedural terrain generation (§71 covers runtime rendering; §73 covers ocean simulation) leaves open the sculpting and erosion simulation that shapes the terrain heightfield before rendering. GPU hydraulic erosion simulates millions of water droplets carrying sediment down gradient-following paths; thermal erosion redistributes material based on angle-of-repose; and interactive sculpting applies brush strokes at render resolution.
 
-### 79.1 Particle-Based Hydraulic Erosion
+### 57.1 Particle-Based Hydraulic Erosion
 
 Each virtual water droplet carries sediment, picks up material where excess capacity exists, and deposits where at capacity. Millions of droplets run in parallel, each as an independent compute thread:
 
@@ -8700,7 +8700,7 @@ void main() {
 
 [Source: Olsen "Realtime Procedural Terrain Generation", 2004; Beneš & Forsbach "Layered Data Representation for Visual Simulation of Terrain Erosion", SCCG 2001; GPU erosion: Št'ava et al. "Interactive Terrain Modeling Using Hydraulic Erosion", SCA 2008]
 
-### 79.2 Thermal Erosion
+### 57.2 Thermal Erosion
 
 Thermal erosion redistributes material from cells whose slope exceeds the angle of repose (typically 30–40° for soil). Each grid cell checks its 4 neighbours:
 
@@ -8734,7 +8734,7 @@ void main() {
 
 [Source: Musgrave et al. "The Synthesis and Rendering of Eroded Fractal Terrains", SIGGRAPH 1989; Št'ava et al. 2008]
 
-### 79.3 Interactive Terrain Sculpting Brushes
+### 57.3 Interactive Terrain Sculpting Brushes
 
 Real-time sculpting applies a Gaussian-weighted height offset inside a brush radius. The brush follows the user's cursor position at interactive rates:
 
@@ -8769,9 +8769,9 @@ void main() {
 
 [Source: Gain et al. "Terrain Sketching", I3D 2009; Hnaidi et al. "Feature Based Terrain Generation Using Diffusion Equation", CGF 2010]
 
-### 79.4 Heightmap Normal and LOD Update
+### 57.4 Heightmap Normal and LOD Update
 
-After sculpting or erosion, recompute normals and terrain LOD tiles (§26 pattern) for the dirty region:
+After sculpting or erosion, recompute normals and terrain LOD tiles (§71 pattern) for the dirty region:
 
 ```glsl
 // terrain_normals.comp — recompute normals for a dirty tile after sculpting
@@ -8788,20 +8788,20 @@ void main() {
     nor[c]    = n;
 }
 // vkCmdUpdateBuffer the dirty tile heightmap → GPU; then dispatch normal update
-// Optionally: rebuild LOD quadtree for the dirty tile (§26 clipmap update)
+// Optionally: rebuild LOD quadtree for the dirty tile (§71 clipmap update)
 ```
 
 [Source: Losasso & Hoppe "Geometry Clipmaps: Terrain Rendering Using Nested Regular Grids", SIGGRAPH 2004; Bruneton & Neyret "Real-time Realistic Ocean Lighting using Seamless Transitions from Geometry to BRDF", EG 2010]
 
 ---
 
-### 80. GPU Fluid Surface Extraction
+### 58. GPU Fluid Surface Extraction
 
 *Audience: graphics application developers.*
 
-§11 (SPH/FLIP fluid simulation) produces particle positions and velocities; §61 (isosurface extraction) expects a grid scalar field. Bridging them for liquid rendering requires: (1) splatting anisotropic kernels from particles into a density grid; (2) running marching cubes on that grid; (3) smoothing the resulting mesh. This pipeline differs from generic isosurface extraction because the kernels are oriented by the local velocity gradient to produce smooth water surfaces without blobby artefacts.
+§48 (SPH/FLIP fluid simulation) produces particle positions and velocities; §65 (isosurface extraction) expects a grid scalar field. Bridging them for liquid rendering requires: (1) splatting anisotropic kernels from particles into a density grid; (2) running marching cubes on that grid; (3) smoothing the resulting mesh. This pipeline differs from generic isosurface extraction because the kernels are oriented by the local velocity gradient to produce smooth water surfaces without blobby artefacts.
 
-### 80.1 Isotropic Density Splatting
+### 58.1 Isotropic Density Splatting
 
 The simplest approach: for each particle i, add a radial kernel contribution to nearby grid cells. Parallelise over particles with atomic accumulation:
 
@@ -8835,7 +8835,7 @@ void main() {
 
 [Source: Zhu & Bridson "Animating Sand as a Fluid", SIGGRAPH 2005; Müller et al. "Particle-Based Fluid Simulation", SCA 2003]
 
-### 80.2 Anisotropic Kernel Splatting
+### 58.2 Anisotropic Kernel Splatting
 
 Yu & Turk (2013) orient each particle's kernel using the local velocity gradient covariance matrix, producing smooth surface sheets rather than blobs:
 
@@ -8869,7 +8869,7 @@ void main() {
 
 [Source: Yu & Turk "Reconstructing Surfaces of Particle-Based Fluids Using Anisotropic Kernels", ACM TOG 2013]
 
-### 80.3 Screen-Space Fluid Rendering (Depth Smoothing)
+### 58.3 Screen-Space Fluid Rendering (Depth Smoothing)
 
 An alternative to volumetric splatting: render particle spheres to a depth buffer, blur the depth field with a curvature-flow filter, then shade the resulting surface as a thin dielectric:
 
@@ -8897,7 +8897,7 @@ void main() {
 
 [Source: van der Laan et al. "Screen Space Fluid Rendering with Curvature Flow", I3D 2009; Green "Screen Space Fluid Rendering", GDC 2010]
 
-### 80.4 Surface Normal and Shading
+### 58.4 Surface Normal and Shading
 
 Reconstruct the surface normal from the smoothed depth buffer, then shade as a thin glass/water surface using Fresnel reflectance and refraction with a cubemap:
 
@@ -8928,13 +8928,13 @@ void main() {
 
 ---
 
-### 81. Continuous Collision Detection (CCD)
+### 59. Continuous Collision Detection (CCD)
 
 *Audience: systems developers, graphics application developers.*
 
-Discrete collision detection (§52) checks for overlap at a single instant; fast-moving or thin objects may tunnel through each other between frames. Continuous collision detection finds the time of first contact (TOC) τ ∈ [0,1] within a timestep by solving the polynomial distance equation between swept primitives. GPU parallelism runs independent TOC solves for all candidate pairs simultaneously.
+Discrete collision detection (§64) checks for overlap at a single instant; fast-moving or thin objects may tunnel through each other between frames. Continuous collision detection finds the time of first contact (TOC) τ ∈ [0,1] within a timestep by solving the polynomial distance equation between swept primitives. GPU parallelism runs independent TOC solves for all candidate pairs simultaneously.
 
-### 81.1 Vertex–Triangle CCD via Conservative Advancement
+### 59.1 Vertex–Triangle CCD via Conservative Advancement
 
 Conservative advancement (Zhang et al. 2007) iteratively advances the time along the minimum separation distance until contact or the interval is exhausted:
 
@@ -8971,7 +8971,7 @@ void main() {
 
 [Source: Zhang et al. "Continuous Collision Detection for Rigid and Articulated Bodies", SIGGRAPH 2007; Tang et al. "ICCD: Interactive Continuous Collision Detection between Deformable Models Using Connectivity-Based Culling", IEEE TVCG 2009]
 
-### 81.2 Edge–Edge CCD via Cubic Root Finding
+### 59.2 Edge–Edge CCD via Cubic Root Finding
 
 For edge-edge contact between two moving line segments, the coplanarity condition produces a cubic polynomial in τ whose roots are the candidate contact times:
 
@@ -9011,7 +9011,7 @@ void main() {
 
 [Source: Bridson et al. "Robust Treatment of Collisions, Contact and Friction for Cloth Animation", SIGGRAPH 2002; Provot "Collision and Self-Collision Handling in Cloth Model Dedicated to Design Garments", CAS 1997]
 
-### 81.3 Broadphase CCD via Swept AABB
+### 59.3 Broadphase CCD via Swept AABB
 
 Before running exact CCD, cull pairs whose swept bounding boxes (union of AABB at t=0 and t=1) do not overlap:
 
@@ -9039,7 +9039,7 @@ void main() {
 
 [Source: Ericson "Real-Time Collision Detection", Morgan Kaufmann 2005, §5.3]
 
-### 81.4 CCD Response: Impact Zone Projection
+### 59.4 CCD Response: Impact Zone Projection
 
 After finding τ, project the impacting vertices out of collision along the contact normal and apply impulses. The impact zone (Bridson et al. 2002) groups all vertices involved in a contact cluster:
 
@@ -9069,13 +9069,13 @@ void main() {
 
 ---
 
-### 104. Minkowski Sum and GPU Motion Planning
+### 60. Minkowski Sum and GPU Motion Planning
 
 *Audience: systems developers.*
 
 The Minkowski sum A⊕B of two convex shapes A and B is the shape swept by placing B's centre on every point of A; it is the configuration-space obstacle (C-obstacle) for robot motion planning. GPU computation of Minkowski sums on convex polytopes and GPU-parallel probabilistic roadmap (PRM) and RRT planning enable real-time collision-free path queries.
 
-### 104.1 Minkowski Sum of Convex Polytopes (GJK-Based)
+### 60.1 Minkowski Sum of Convex Polytopes (GJK-Based)
 
 For two convex polytopes A and B with n_A and n_B vertices respectively, the Minkowski sum has at most O(n_A · n_B) vertices. GPU enumerates candidate extreme points and culls non-hull points:
 
@@ -9091,14 +9091,14 @@ void main() {
     if (i >= N_A || j >= N_B) return;
     sv[i*N_B+j] = vA[i] + vB[j];  // Minkowski sum vertex candidate
 }
-// Then run §82 GPU convex hull on sv[] to get the actual Minkowski sum hull
+// Then run §106 GPU convex hull on sv[] to get the actual Minkowski sum hull
 ```
 
 [Source: Edelsbrunner "Algorithms in Combinatorial Geometry", Springer 1987; van den Bergen "Collision Detection in Interactive 3D Environments", Morgan Kaufmann 2004]
 
-### 104.2 Minkowski Difference for GJK Collision
+### 60.2 Minkowski Difference for GJK Collision
 
-The GJK distance algorithm (§8) operates implicitly on the Minkowski difference A⊖B = A⊕(−B) via support functions. GPU parallelises GJK for a large batch of shape pairs simultaneously:
+The GJK distance algorithm (§24) operates implicitly on the Minkowski difference A⊖B = A⊕(−B) via support functions. GPU parallelises GJK for a large batch of shape pairs simultaneously:
 
 ```glsl
 // gjk_batch.comp — GJK distance for a batch of (convex A, convex B) pairs
@@ -9124,9 +9124,9 @@ void main() {
 
 [Source: Gilbert et al. "A Fast Procedure for Computing the Distance Between Complex Objects in Three-Dimensional Space", IEEE T-RA 1988; §8]
 
-### 104.3 Probabilistic Roadmap (PRM) on GPU
+### 60.3 Probabilistic Roadmap (PRM) on GPU
 
-GPU-parallel PRM builds a configuration-space roadmap by sampling random configurations, testing each for collision (§104.2 GJK batch), and connecting collision-free neighbours:
+GPU-parallel PRM builds a configuration-space roadmap by sampling random configurations, testing each for collision (§60.2 GJK batch), and connecting collision-free neighbours:
 
 ```glsl
 // prm_sample.comp — sample random configurations and test collision-free
@@ -9151,7 +9151,7 @@ void main() {
 
 [Source: Kavraki et al. "Probabilistic Roadmaps for Path Planning in High-Dimensional Configuration Spaces", IEEE T-RA 1996; Lauterbach et al. "gProximity: Hierarchical GPU-Based Operations for Collision and Distance Queries", EG 2010]
 
-### 104.4 RRT Nearest-Neighbour on GPU
+### 60.4 RRT Nearest-Neighbour on GPU
 
 Rapidly-exploring random tree (RRT) nearest-neighbour search — finding the closest existing tree node to a random sample — is the bottleneck. GPU parallelises the linear search across all tree nodes:
 
@@ -9186,19 +9186,19 @@ void main() {
 
 Signed Distance Functions provide a unified representation for implicit geometry, collision proximity queries, and volumetric rendering effects. This category covers level-set evolution equations for simulating moving interfaces (flame fronts, water surfaces), TSDF volumetric reconstruction from depth sensor streams, isosurface extraction algorithms (Marching Cubes, Dual Contouring) that recover triangle meshes from scalar fields, SDF-based proximity collision detection, volumetric ray marching for clouds and participating media, and GPU ambient occlusion estimated by ray marching against an SDF volume. The GPU sparse narrow-band level-set solver is the real-time counterpart to OpenVDB-style offline VFX pipelines.
 
-### 31. Level Set Methods
+### 61. Level Set Methods
 
 *Audience: systems developers, graphics application developers.*
 
-Level set methods (Osher & Sethian 1988) represent surfaces implicitly as the zero crossing of a scalar field φ(x,t) stored on a grid. Unlike JFA (§3.4), which constructs SDFs from point sources, LSM *evolves* the SDF forward in time using a PDE. Key applications: fluid free surfaces (§11 uses MAC grid + LSM hybrid), phase-field fracture (§25), topology-changing surface animation.
+Level set methods (Osher & Sethian 1988) represent surfaces implicitly as the zero crossing of a scalar field φ(x,t) stored on a grid. Unlike JFA (§3.4), which constructs SDFs from point sources, LSM *evolves* the SDF forward in time using a PDE. Key applications: fluid free surfaces (§48 uses MAC grid + LSM hybrid), phase-field fracture (§52), topology-changing surface animation.
 
-### 31.1 Level Set Advection
+### 61.1 Level Set Advection
 
 The fundamental LSM PDE for a velocity field **v**:
 
 ∂φ/∂t + **v** · ∇φ = 0
 
-Discretise using semi-Lagrangian advection (same stencil as §11.1 MAC advection, but applied to the scalar SDF field):
+Discretise using semi-Lagrangian advection (same stencil as §48.1 MAC advection, but applied to the scalar SDF field):
 
 ```glsl
 // ls_advect.comp — semi-Lagrangian level set advection
@@ -9217,7 +9217,7 @@ void main() {
 }
 ```
 
-### 31.2 SDF Reinitialization (Redistancing)
+### 61.2 SDF Reinitialization (Redistancing)
 
 After advection, φ is no longer a true SDF (|∇φ| ≠ 1). Sussman et al. (1994) solve:
 
@@ -9256,7 +9256,7 @@ void main() {
 
 [Source: Osher & Sethian "Fronts Propagating with Curvature-Dependent Speed", J. Comput. Phys. 1988; Sussman et al. "A Level Set Approach for Computing Solutions to Incompressible Two-Phase Flow", J. Comput. Phys. 1994]
 
-### 31.3 GPU Fast Marching Method (FMM)
+### 61.3 GPU Fast Marching Method (FMM)
 
 FMM builds the SDF outward from an initialised narrow band using a heap-like wavefront. GPU parallelism: Jeong & Whitaker (2008) parallel FMM tiles each grid block and uses a local heap per workgroup, merging wavefronts at block boundaries:
 
@@ -9281,19 +9281,19 @@ void main() {
 
 Iterate until no trial nodes remain. [Source: Jeong & Whitaker "A Fast Iterative Method for Eikonal Equations", SIAM J. Sci. Comput. 2008]
 
-### 31.4 Narrow-Band Level Sets
+### 61.4 Narrow-Band Level Sets
 
-Only voxels within a band of width ±W·dx of φ=0 need updating. Compact active voxels with prefix scan (§25 dirty-bitmask pattern) before each sweep to avoid dispatching over the full grid. For a 256³ grid with W=3, this limits active voxels to ~5% of the grid at typical surface areas.
+Only voxels within a band of width ±W·dx of φ=0 need updating. Compact active voxels with prefix scan (§52 dirty-bitmask pattern) before each sweep to avoid dispatching over the full grid. For a 256³ grid with W=3, this limits active voxels to ~5% of the grid at typical surface areas.
 
 ---
 
-### 36. Swept Volumes and Minkowski Sums
+### 62. Swept Volumes and Minkowski Sums
 
 *Audience: systems developers, graphics application developers.*
 
-The swept volume of an object O moving along a trajectory T is the union of all instantaneous placements O(t). GPU computation is used in robot workspace analysis, CNC toolpath collision avoidance, and dynamic broad-phase proximity queries (§22.1 SAP needs swept AABBs for fast-moving objects).
+The swept volume of an object O moving along a trajectory T is the union of all instantaneous placements O(t). GPU computation is used in robot workspace analysis, CNC toolpath collision avoidance, and dynamic broad-phase proximity queries (§50.1 SAP needs swept AABBs for fast-moving objects).
 
-### 36.1 Swept AABB for Broadphase
+### 62.1 Swept AABB for Broadphase
 
 For a rigid body moving from pose A to pose B in one frame, the swept AABB bounds all intermediate positions. Compute per-object:
 
@@ -9310,9 +9310,9 @@ void main() {
 }
 ```
 
-Feed swept AABBs into the SAP broadphase (§22.1) for CCD (Continuous Collision Detection).
+Feed swept AABBs into the SAP broadphase (§50.1) for CCD (Continuous Collision Detection).
 
-### 36.2 Minkowski Sum of Convex Polyhedra
+### 62.2 Minkowski Sum of Convex Polyhedra
 
 The Minkowski sum A ⊕ B has vertices at {a + b : a ∈ A, b ∈ B}. For convex polytopes, the exact sum is computed by merging the Gauss maps: sort all face normals of A and B on the Gauss sphere, merge-sort by angle, emit a new face for each angular range. GPU parallelism on the Gauss map merge:
 
@@ -9329,9 +9329,9 @@ void main() {
 // Follow with GPU radix sort on w (longitude), then CPU merge of A and B sorted arrays
 ```
 
-For non-convex objects: decompose via V-HACD (§30 Table A) then sum each convex part pair and union the resulting meshes. [Source: Dobkin et al. "Computing the Minkowski Sum of Convex Polytopes", Discrete & Computational Geometry 1993]
+For non-convex objects: decompose via V-HACD (§42 Table A) then sum each convex part pair and union the resulting meshes. [Source: Dobkin et al. "Computing the Minkowski Sum of Convex Polytopes", Discrete & Computational Geometry 1993]
 
-### 36.3 CNC Toolpath Swept Volume via SDF Dilation
+### 62.3 CNC Toolpath Swept Volume via SDF Dilation
 
 In CNC verification, the swept volume of a tool along a path equals the SDF of the path dilated by the tool radius. GPU implementation: rasterise the toolpath as a polyline SDF (JFA, §3.4) then dilate by the tool radius as a post-process (morphological dilation on 3D SDF voxel grid):
 
@@ -9352,13 +9352,13 @@ The Minkowski sum A ⊕ B_sphere(r) equals offsetting A's SDF by −r everywhere
 
 ---
 
-### 42. Volumetric 3D Reconstruction (TSDF Fusion)
+### 63. Volumetric 3D Reconstruction (TSDF Fusion)
 
 *Audience: systems developers, graphics application developers.*
 
 Truncated Signed Distance Function (TSDF) fusion (Newcombe et al. "KinectFusion" 2011) integrates a stream of depth images into a persistent 3D SDF volume on the GPU in real time. Each new depth frame updates the TSDF; GPU marching cubes extracts the current surface mesh on demand.
 
-### 42.1 Depth Map Ray Casting and TSDF Update
+### 63.1 Depth Map Ray Casting and TSDF Update
 
 For each depth pixel (u,v) with depth z, back-project into world space, then update all voxels along the ray within truncation distance μ:
 
@@ -9398,9 +9398,9 @@ void main() {
 
 [Source: Newcombe et al. "KinectFusion: Real-Time Dense Surface Mapping and Tracking", ISMAR 2011]
 
-### 42.2 Camera Pose Tracking via ICP on TSDF Normal Field
+### 63.2 Camera Pose Tracking via ICP on TSDF Normal Field
 
-Each incoming depth frame is aligned to the current TSDF by ICP (§21.3) against the TSDF surface normal field. Project current TSDF normals to a normal map, then run point-to-plane ICP between the new depth frame's point cloud and the TSDF normal map:
+Each incoming depth frame is aligned to the current TSDF by ICP (§87.3) against the TSDF surface normal field. Project current TSDF normals to a normal map, then run point-to-plane ICP between the new depth frame's point cloud and the TSDF normal map:
 
 ```glsl
 // tsdf_normal.comp — extract surface normal from TSDF gradient
@@ -9417,7 +9417,7 @@ void main() {
 }
 ```
 
-### 42.3 Mesh Extraction from TSDF
+### 63.3 Mesh Extraction from TSDF
 
 Run GPU marching cubes (§3.2) on the TSDF volume at the zero crossing. For real-time KinectFusion the MC runs every frame on a 256³ grid in ~2 ms (RTX 3070); for offline processing a 512³ grid runs every 10th frame.
 
@@ -9429,7 +9429,7 @@ Run GPU marching cubes (§3.2) on the TSDF volume at the zero crossing. For real
 
 [Source: Newcombe et al. 2011; Steinbrücker et al. "Real-Time Visual Odometry from Dense RGB-D Images", ICCVW 2011; open-source reference: Open3D KinectFusion https://www.open3d.org]
 
-### 42.4 Voxel Hashing for Unbounded Reconstruction
+### 63.4 Voxel Hashing for Unbounded Reconstruction
 
 The 256³ bounded grid of basic KinectFusion limits scene size. Voxel hashing (Nießner et al. 2013) stores only occupied voxel blocks in a GPU hash table:
 
@@ -9448,13 +9448,13 @@ uint hashKey(ivec3 blockCoord) {
 
 ---
 
-### 52. SDF-Based Collision Detection
+### 64. SDF-Based Collision Detection
 
 *Audience: graphics application developers, systems developers.*
 
-§8 covered BVH/GJK collision for convex polyhedra. SDF-based collision detection uses the signed distance field representation directly: query the SDF at the penetrating point for depth and gradient direction, or run GJK over SDF-defined primitives. This is the standard approach for deformable body–rigid body coupling, character–environment collision, and SDF CSG contact.
+§24 covered BVH/GJK collision for convex polyhedra. SDF-based collision detection uses the signed distance field representation directly: query the SDF at the penetrating point for depth and gradient direction, or run GJK over SDF-defined primitives. This is the standard approach for deformable body–rigid body coupling, character–environment collision, and SDF CSG contact.
 
-### 52.1 Point-SDF Penetration Query
+### 64.1 Point-SDF Penetration Query
 
 For a rigid body with vertices {vᵢ}, query each vertex against the scene SDF. If φ(vᵢ) < 0, the point is inside; depth = |φ(vᵢ)|, normal = ∇φ at vᵢ:
 
@@ -9487,7 +9487,7 @@ void main() {
 
 [Source: Müller et al. "Unified Particle Physics for Real-Time Applications", SIGGRAPH 2014; Macklin et al. "XPBD: Position-Based Simulation of Compliant Constrained Dynamics", MIG 2016]
 
-### 52.2 SDF-SDF Collision via Gradient Descent
+### 64.2 SDF-SDF Collision via Gradient Descent
 
 When both objects are represented as SDFs, find the closest pair of surface points by gradient-following one SDF's zero-crossing in the other's field:
 
@@ -9511,9 +9511,9 @@ void main() {
 }
 ```
 
-### 52.3 SDF-Based Character–Terrain Collision
+### 64.3 SDF-Based Character–Terrain Collision
 
-For character capsule vs heightfield terrain (§26.4), the SDF approach is exact and fast. Evaluate the terrain SDF at the capsule centre and hemispheres; push the capsule out by the penetration depth along the SDF gradient:
+For character capsule vs heightfield terrain (§71.4), the SDF approach is exact and fast. Evaluate the terrain SDF at the capsule centre and hemispheres; push the capsule out by the penetration depth along the SDF gradient:
 
 ```glsl
 // capsule_terrain.comp
@@ -9538,9 +9538,9 @@ void main() {
 
 [Source: Erleben et al. "Physics-Based Animation", Charles River Media 2005; Macklin et al. 2014]
 
-### 52.4 EPA: Expanding Polytope Algorithm for SDF Primitives
+### 64.4 EPA: Expanding Polytope Algorithm for SDF Primitives
 
-When GJK (§8.4) determines that two SDF-defined convex primitives intersect, EPA finds the minimum penetration depth by expanding a polytope outward until it touches the Minkowski difference boundary. Each EPA iteration runs on GPU for independent object pairs:
+When GJK (§24.4) determines that two SDF-defined convex primitives intersect, EPA finds the minimum penetration depth by expanding a polytope outward until it touches the Minkowski difference boundary. Each EPA iteration runs on GPU for independent object pairs:
 
 ```glsl
 // epa_step.comp — one EPA polytope expansion step
@@ -9565,13 +9565,13 @@ void main() {
 
 ---
 
-### 61. Isosurface Extraction
+### 65. Isosurface Extraction
 
 *Audience: graphics application developers, systems developers.*
 
-Isosurface extraction converts a scalar field φ(x,y,z) into a triangle or quad mesh at a given isovalue τ. The field may be a density grid (CT/MRI), a level set (§31), a TSDF (§42), or an SDF (§52). Three GPU-native algorithms exist: Marching Cubes, Dual Contouring, and Surface Nets.
+Isosurface extraction converts a scalar field φ(x,y,z) into a triangle or quad mesh at a given isovalue τ. The field may be a density grid (CT/MRI), a level set (§61), a TSDF (§63), or an SDF (§64). Three GPU-native algorithms exist: Marching Cubes, Dual Contouring, and Surface Nets.
 
-### 61.1 Marching Cubes on GPU
+### 65.1 Marching Cubes on GPU
 
 Marching Cubes (Lorensen & Cline 1987) classifies each grid cell by the sign pattern of its 8 corner values, looks up the triangle configuration (256-entry table), and emits triangles. GPU implementation uses a two-pass approach:
 
@@ -9598,7 +9598,7 @@ void main() {
 
 For pass 2, each cell looks up the edge intersection table, interpolates vertex positions on the 12 edges, and writes into a vertex buffer at the prefix-summed offset. [Source: Lorensen & Cline "Marching Cubes: A High Resolution 3D Surface Construction Algorithm", SIGGRAPH 1987; GPU MC: Nguyen "GPU Gems 3 — Chapter 1: Generating Complex Procedural Terrains", 2007]
 
-### 61.2 Dual Contouring
+### 65.2 Dual Contouring
 
 Dual Contouring (Ju et al. 2002) places a vertex inside each active cell (one that straddles the isosurface) rather than on edges — producing sharp features by solving a quadratic error function (QEF) from the edge intersection normals:
 
@@ -9628,7 +9628,7 @@ void main() {
 
 [Source: Ju et al. "Dual Contouring of Hermite Data", SIGGRAPH 2002; Schaefer & Warren "Dual Contouring: The Secret Sauce", 2002]
 
-### 61.3 Surface Nets
+### 65.3 Surface Nets
 
 Surface Nets (Gibson 1998) places a vertex at the centroid of all active edge intersection points in a cell — a simpler, smoother alternative to Dual Contouring, GPU-parallelizable per cell:
 
@@ -9659,9 +9659,9 @@ void main() {
 
 [Source: Gibson "Constrained Elastic Surface Nets: Generating Smooth Surfaces from Binary Segmented Data", MICCAI 1998; Naive Surface Nets implementation: https://0fps.net/2012/07/12/smooth-voxel-terrain/]
 
-### 61.4 Adaptive Isosurface via SVO
+### 65.4 Adaptive Isosurface via SVO
 
-For large sparse volumes, run marching cubes only on leaf nodes of the sparse voxel octree (§17.3) that straddle the isosurface. The SVO traversal is a BFS over active nodes:
+For large sparse volumes, run marching cubes only on leaf nodes of the sparse voxel octree (§27.3) that straddle the isosurface. The SVO traversal is a BFS over active nodes:
 
 ```glsl
 // mc_svo.comp — dispatch MC only on active SVO leaves near isosurface
@@ -9678,20 +9678,20 @@ void main() {
         leaves[slot] = n;
     }
 }
-// vkCmdDispatchIndirect with count → MC pass 1 (§61.1) over leaves only
+// vkCmdDispatchIndirect with count → MC pass 1 (§65.1) over leaves only
 ```
 
 [Source: Kazhdan et al. "Screened Poisson Surface Reconstruction", TOG 2013; SVO MC: Crassin & Green "Octree-Based Sparse Voxelization", GPU Pro 4, 2013]
 
 ---
 
-### 62. GPU Ambient Occlusion
+### 66. GPU Ambient Occlusion
 
 *Audience: graphics application developers.*
 
 Ambient occlusion quantifies how much of the hemisphere above a surface point is occluded by nearby geometry — a geometric signal, not a lighting model. Four GPU algorithm families span the quality/performance spectrum: SSAO (screen-space), HBAO+ (horizon-based), GTAO (ground-truth AO), and precomputed baked AO (ray traced).
 
-### 62.1 SSAO: Screen-Space Ambient Occlusion
+### 66.1 SSAO: Screen-Space Ambient Occlusion
 
 SSAO (Crytek 2007) samples random positions in a hemisphere around each G-buffer point, tests each against the depth buffer, and counts occlusions:
 
@@ -9730,7 +9730,7 @@ void main() {
 
 [Source: Mittring "Finding Next Gen — CryEngine 2", SIGGRAPH 2007; Shanmugam & Arikan "Hardware Accelerated Ambient Occlusion Techniques on GPUs", I3D 2007]
 
-### 62.2 HBAO+: Horizon-Based Ambient Occlusion
+### 66.2 HBAO+: Horizon-Based Ambient Occlusion
 
 HBAO (Bavoil & Sainz 2008) marches along multiple screen-space directions from each pixel, finds the maximum elevation angle (horizon), and integrates the sine of the horizon to estimate AO. HBAO+ (NVIDIA 2012) adds interleaved sampling to reduce noise:
 
@@ -9767,7 +9767,7 @@ void main() {
 
 [Source: Bavoil & Sainz "Image-Space Horizon-Based Ambient Occlusion", SIGGRAPH 2008 Sketches; NVIDIA HBAO+ SDK]
 
-### 62.3 GTAO: Ground-Truth Ambient Occlusion
+### 66.3 GTAO: Ground-Truth Ambient Occlusion
 
 GTAO (Jimenez et al. 2016) corrects the hemisphere integration formula so that the result converges to ray-traced AO as sample count increases — unlike SSAO and HBAO which use ad-hoc approximations. The bent normal (the direction of least occlusion) is also computed:
 
@@ -9786,7 +9786,7 @@ float integrateArc(float h1, float h2, float n) {
 
 [Source: Jimenez et al. "Practical Real-Time Strategies for Accurate Indirect Occlusion", SIGGRAPH 2016; XeGTAO implementation: https://github.com/GameTechDev/XeGTAO]
 
-### 62.4 Ray-Traced AO and Bent Normals
+### 66.4 Ray-Traced AO and Bent Normals
 
 With `VK_KHR_ray_query`, AO becomes a direct ray cast from each G-buffer point into the hemisphere, returning a binary hit/miss:
 
@@ -9823,13 +9823,13 @@ void main() {
 
 ---
 
-### 64. Volumetric Ray Marching
+### 67. Volumetric Ray Marching
 
 *Audience: graphics application developers.*
 
-Volumetric rendering integrates light scattering and absorption through a participating medium — clouds, fog, smoke, fire, subsurface scattering in skin. The GPU algorithm is ray marching through a 3D volume from the near plane to the far plane or until the accumulated opacity reaches 1. This is distinct from TSDF (§42, geometry reconstruction) and level sets (§31, surface evolution).
+Volumetric rendering integrates light scattering and absorption through a participating medium — clouds, fog, smoke, fire, subsurface scattering in skin. The GPU algorithm is ray marching through a 3D volume from the near plane to the far plane or until the accumulated opacity reaches 1. This is distinct from TSDF (§63, geometry reconstruction) and level sets (§61, surface evolution).
 
-### 64.1 Basic Ray Marching
+### 67.1 Basic Ray Marching
 
 Ray march from the eye through a 3D density volume, accumulating scattered radiance and transmitted light:
 
@@ -9869,7 +9869,7 @@ void main() {
 
 [Source: Wrenninge & Bin Zafar "Production Volume Rendering", SIGGRAPH 2011; Fong et al. "Production Volume Rendering: Design and Implementation", SIGGRAPH 2017 Course]
 
-### 64.2 Froxel Volumetrics
+### 67.2 Froxel Volumetrics
 
 Froxels (frustum voxels, Hillaire 2016) discretize the camera frustum into a 3D grid in clip space — typically 160×90×64. A compute shader fills density/scattering into the froxel grid, then ray marches through it in-place:
 
@@ -9893,7 +9893,7 @@ void main() {
 
 [Source: Hillaire "Physically Based Sky, Atmosphere and Cloud Rendering in Frostbite", SIGGRAPH 2016; Wronski "Volumetric Fog: Unified, Compute Shader Based Solution to Atmospheric Scattering", ACM Digital Library 2014]
 
-### 64.3 Atmospheric Scattering
+### 67.3 Atmospheric Scattering
 
 Physically based sky rendering (Bruneton & Neyret 2008) precomputes multiple-scattering LUTs (transmittance, scattering, irradiance) and samples them at runtime for sky colour and aerial perspective. The precomputation runs as a series of 2D/3D compute passes:
 
@@ -9921,9 +9921,9 @@ void main() {
 
 [Source: Bruneton & Neyret "Precomputed Atmospheric Scattering", CGF 2008; Hillaire "A Scalable and Production Ready Sky and Atmosphere Rendering Technique", EG 2020]
 
-### 64.4 VDB Volume Traversal for Rendering
+### 67.4 VDB Volume Traversal for Rendering
 
-OpenVDB / NanoVDB sparse volumes (§17 SVO ancestry) are traversed for rendering via DDA (Digital Differential Analyzer) through the active voxel tree:
+OpenVDB / NanoVDB sparse volumes (§27 SVO ancestry) are traversed for rendering via DDA (Digital Differential Analyzer) through the active voxel tree:
 
 ```glsl
 // nanovdb_march.comp — ray march through NanoVDB sparse volume
@@ -9959,13 +9959,13 @@ void main() {
 
 ---
 
-### 94. GPU Sparse Narrow-Band Level-Set Evolution
+### 68. GPU Sparse Narrow-Band Level-Set Evolution
 
 *Audience: systems developers, graphics application developers.*
 
-Dense level sets (§31) compute on every voxel; the interface occupies only the narrow band |φ| ≤ 3Δx. Sparse narrow-band representations (VDB/OpenVDB §29.1) store only active voxels, enabling much finer grids for the same memory budget. GPU sparse level sets maintain an active list and update only band voxels per timestep.
+Dense level sets (§61) compute on every voxel; the interface occupies only the narrow band |φ| ≤ 3Δx. Sparse narrow-band representations (VDB/OpenVDB §96.1) store only active voxels, enabling much finer grids for the same memory budget. GPU sparse level sets maintain an active list and update only band voxels per timestep.
 
-### 94.1 Active Voxel List Construction
+### 68.1 Active Voxel List Construction
 
 At each timestep, collect all voxels within the narrow band |φ| ≤ k·Δx into a compact active list:
 
@@ -9988,7 +9988,7 @@ void main() {
 
 [Source: Museth et al. "OpenVDB: An Open Source Data Structure and Toolkit for High-Resolution Volumes", SIGGRAPH 2013; Nielsen & Museth "Dynamic Tubular Grid: An Efficient Data Structure and Algorithms for High Resolution Level Sets", JCGT 2006]
 
-### 94.2 Narrow-Band Reinitialization via Fast Sweeping
+### 68.2 Narrow-Band Reinitialization via Fast Sweeping
 
 Reinitialise the SDF to exact distance values within the narrow band using a fast sweeping / Godunov scheme applied only to active voxels:
 
@@ -10014,7 +10014,7 @@ void main() {
 
 [Source: Zhao "A Fast Sweeping Method for Eikonal Equations", Mathematics of Computation 2004; Bridson "Fluid Simulation for Computer Graphics", 2008 §3]
 
-### 94.3 Level-Set Advection on Active Voxels
+### 68.3 Level-Set Advection on Active Voxels
 
 Advect the level set under a velocity field using a 5th-order WENO scheme for the spatial derivative and TVD-RK3 for time integration, applied only to active voxels:
 
@@ -10045,7 +10045,7 @@ void main() {
 
 [Source: Osher & Fedkiw "Level Set Methods and Dynamic Implicit Surfaces", Springer 2003; Jiang & Peng "Weighted ENO Schemes on Triangular Meshes", JCP 2000]
 
-### 94.4 Topology Change and Band Rebuild
+### 68.4 Topology Change and Band Rebuild
 
 After each advection step, check whether previously inactive voxels have entered the band (zero crossing propagation) and add them to the active list:
 
@@ -10080,13 +10080,13 @@ void main() {
 
 Large-scale environment geometry requires specialized LOD, streaming, and simulation approaches. This category covers GPU terrain rendering with quadtree or clipmap LOD and streaming from disk, hydraulic erosion simulation that produces naturalistic height fields, ocean wave synthesis via inverse FFT of a Philips/JONSWAP spectrum, GPU geospatial processing for satellite-scale terrain meshes, procedural geometry generation via compute shaders (L-systems, instanced geometry), particle and ribbon geometry systems for VFX, and navigation mesh construction for AI pathfinding on dynamically generated terrain. All of these share a common challenge: representing continuous, kilometre-scale natural phenomena efficiently on GPU.
 
-### 13. Procedural Geometry Generation
+### 69. Procedural Geometry Generation
 
 *Audience: graphics application developers.*
 
 Procedural generation creates geometry analytically rather than from stored mesh data, enabling effectively infinite variation at GPU-native speed. The common pattern: a compute shader writes vertex/index data into a pre-allocated SSBO that is then consumed directly by the rasterizer — no CPU roundtrip.
 
-### 13.1 GPU Terrain: Fractional Brownian Motion and Erosion
+### 69.1 GPU Terrain: Fractional Brownian Motion and Erosion
 
 A terrain heightmap can be generated entirely in a compute shader using layered noise (fBm):
 
@@ -10151,7 +10151,7 @@ void main() {
 
 100–200 iterations produce visually plausible erosion channels and alluvial fans. [Source: Mei et al. "Fast Hydraulic Erosion Simulation", 2007; Olsen "Realtime Procedural Terrain Generation", 2004]
 
-### 13.2 L-Systems in Compute Shaders
+### 69.2 L-Systems in Compute Shaders
 
 L-systems expand a string of symbols by applying production rules iteratively. GPU parallelisation uses a **parallel prefix scan** to determine output positions before writing:
 
@@ -10180,7 +10180,7 @@ void main() {
 
 A turtle interpretation pass then converts the symbol string to vertex data: `F` → emit cylinder segment, `+`/`−` → rotate, `[`/`]` → push/pop transform stack. Branch stacks require serialization but can be pre-computed in a first pass. [Source: Prusinkiewicz & Lindenmayer "The Algorithmic Beauty of Plants" §1; Lienhard et al. "Fast and Simple Creation of GPU Tree Models", TPCG 2010]
 
-### 13.3 Wave Function Collapse for Tile Geometry
+### 69.3 Wave Function Collapse for Tile Geometry
 
 Wave Function Collapse (WFC) generates tile-map geometry consistent with local adjacency constraints extracted from an example. The GPU implementation adapts the AC-3 arc-consistency propagation as a BFS wavefront:
 
@@ -10219,7 +10219,7 @@ void main() {
 
 Iterate until `changed == 0`. A CPU-side collapse step picks the lowest-entropy cell, collapses its mask to one tile, and re-runs the propagation kernel. [Source: Gumin "Wave Function Collapse" (2016); Merrell "Example-Based Model Synthesis", I3D 2007]
 
-### 13.4 Task Shader Procedural Instancing
+### 69.4 Task Shader Procedural Instancing
 
 For buildings, rocks, and foliage, the amplification/task shader is an ideal procedural generator: given a sparse set of placement points in a SSBO, the task shader evaluates placement rules (slope, altitude, biome mask), generates per-instance transforms, and emits mesh shader workgroups only for visible, rule-passing instances:
 
@@ -10257,13 +10257,13 @@ void main() {
 
 ---
 
-### 19. Navigation Meshes and GPU Pathfinding
+### 70. Navigation Meshes and GPU Pathfinding
 
 *Audience: graphics application developers.*
 
 Navigation mesh (navmesh) generation and pathfinding are geometry algorithms in disguise: voxelisation is a rasterization problem, region labelling is a BFS problem on a graph, and flow field computation is a parallel shortest-path problem on a grid — all map to Vulkan compute naturally.
 
-### 19.1 Voxelisation for NavMesh Generation (Recast-style)
+### 70.1 Voxelisation for NavMesh Generation (Recast-style)
 
 Recast's CPU navmesh generation begins with a **solid heightfield**: rasterize each triangle onto a voxel column grid, producing spans of solid voxels. The GPU equivalent uses depth-peeling compute:
 
@@ -10293,7 +10293,7 @@ void main() {
 
 After voxelisation, a walkability filter checks each span's clearance (vertical space above), slope (triangle normal vs. up), and step height — fully parallel per span.
 
-### 19.2 Parallel Region Labelling via GPU BFS
+### 70.2 Parallel Region Labelling via GPU BFS
 
 Recast clusters walkable spans into **regions** for polygon extraction. The GPU equivalent is a parallel iterative BFS flood-fill: each thread checks its 4-connected neighbours and updates its label to the minimum neighbour label if smaller:
 
@@ -10317,7 +10317,7 @@ void main() {
 
 Iterate until `changed == 0`. Convergence requires O(diameter) iterations (typically 20–50 for game-scale meshes). A path-compression step (like union-find) can accelerate convergence. [Source: Recast navigation: https://github.com/recastnavigation/recastnavigation; parallel label propagation: Soman et al. "Fast Transitive Closure using Graph Partitioning", SC 2011]
 
-### 19.3 GPU Flow Fields for Navigation
+### 70.3 GPU Flow Fields for Navigation
 
 A **flow field** precomputes for every cell a steering direction towards the goal, avoiding obstacles. Construction is a parallel BFS from the goal cell, computing a distance field, then differencing adjacent cells to obtain the gradient (steering direction):
 
@@ -10346,13 +10346,13 @@ Flow fields scale to thousands of agents at constant cost per frame (one texture
 
 ---
 
-### 26. Terrain LOD and Streaming
+### 71. Terrain LOD and Streaming
 
 *Audience: graphics application developers.*
 
-§13 covered procedural terrain *generation*. This section covers runtime terrain *rendering*: quadtree LOD selection, geomorphing to prevent popping, virtual texture streaming, and GPU heightfield collision.
+§69 covered procedural terrain *generation*. This section covers runtime terrain *rendering*: quadtree LOD selection, geomorphing to prevent popping, virtual texture streaming, and GPU heightfield collision.
 
-### 26.1 CDLOD: Continuous Distance-Dependent Level of Detail
+### 71.1 CDLOD: Continuous Distance-Dependent Level of Detail
 
 CDLOD (Strugar 2010) traverses a heightmap quadtree in compute, selecting per-node LOD based on projected screen-space error:
 
@@ -10380,7 +10380,7 @@ void main() {
 
 Selected nodes drive `vkCmdDrawIndirect`. [Source: Strugar "Continuous Distance-Dependent Level of Detail for Rendering Heightmaps", JGT 2010]
 
-### 26.2 Geomorphing to Prevent LOD Popping
+### 71.2 Geomorphing to Prevent LOD Popping
 
 Vertices blend between fine and coarse grid positions as a node enters/leaves its LOD range:
 
@@ -10399,7 +10399,7 @@ void main() {
 }
 ```
 
-### 26.3 Virtual Terrain Texturing: Sparse Clipmaps
+### 71.3 Virtual Terrain Texturing: Sparse Clipmaps
 
 A clipmap stores terrain texture as a stack of annular rings centred on the camera, each ring at a progressively coarser resolution. When the camera moves, GPU compute fills new tiles into the ring boundary:
 
@@ -10416,7 +10416,7 @@ void main() {
 
 [Source: Tanner et al. "The Clipmap: A Virtual Mipmap", SIGGRAPH 1998; GPU Gems 2 §2]
 
-### 26.4 GPU Heightfield Ray Intersection
+### 71.4 GPU Heightfield Ray Intersection
 
 Binary search along the ray's XZ projection finds the terrain hit point for physics queries (vehicle wheels, character stepping):
 
@@ -10440,13 +10440,13 @@ void main() {
 
 ---
 
-### 33. GPU Particle Systems and Ribbon Geometry
+### 72. GPU Particle Systems and Ribbon Geometry
 
 *Audience: graphics application developers.*
 
-Particle systems are the standard GPU geometry for effects (fire, smoke, sparks, rain, magic). Unlike §11 physics-driven SPH, this section covers the *rendering geometry pipeline*: how particles are born, evolved, compacted, and converted into drawable primitives each frame.
+Particle systems are the standard GPU geometry for effects (fire, smoke, sparks, rain, magic). Unlike §48 physics-driven SPH, this section covers the *rendering geometry pipeline*: how particles are born, evolved, compacted, and converted into drawable primitives each frame.
 
-### 33.1 Particle Lifecycle: Emit, Age, Kill
+### 72.1 Particle Lifecycle: Emit, Age, Kill
 
 Particles are stored in a flat SSBO pool. Each frame: (1) increment age and kill dead particles; (2) emit new particles into freed slots. Stream compaction (prefix scan) packs live particles to a dense range for rendering:
 
@@ -10472,7 +10472,7 @@ void main() {
 
 Emission fills slots after compaction using a free-list counter. [Source: Harris "GPU Gems 3 §39: Parallel Prefix Sum"; Fatahalian et al. "Sequentially Consistent Atomic Operations in GLSL"]
 
-### 33.2 Billboard Expansion in Mesh Shaders
+### 72.2 Billboard Expansion in Mesh Shaders
 
 Each live particle becomes a screen-aligned quad. The mesh shader generates 4 vertices and 2 triangles per particle, avoiding geometry shader overhead:
 
@@ -10502,7 +10502,7 @@ void main() {
 }
 ```
 
-### 33.3 Ribbon / Trail Geometry via Rolling Ring Buffer
+### 72.3 Ribbon / Trail Geometry via Rolling Ring Buffer
 
 A ribbon is the surface swept by a particle along its path — N recent positions stored in a ring buffer, converted to a quad strip each frame:
 
@@ -10529,7 +10529,7 @@ void main() {
 }
 ```
 
-### 33.4 Soft Particles via Depth Comparison
+### 72.4 Soft Particles via Depth Comparison
 
 Soft particles fade out where they intersect scene geometry, avoiding hard silhouettes. The fragment shader reads the depth buffer and blends by proximity:
 
@@ -10551,13 +10551,13 @@ Requires the depth buffer to be readable as a texture (`VK_IMAGE_LAYOUT_DEPTH_RE
 
 ---
 
-### 40. GPU Ocean and Wave Simulation
+### 73. GPU Ocean and Wave Simulation
 
 *Audience: graphics application developers.*
 
 Ocean rendering combines two complementary techniques: an FFT-based statistical wave model (Tessendorf 2001) for large-scale height-field waves, and Gerstner (trochoidal) waves for deterministic art-directed swells. Both produce vertex-displacement maps consumed by a tessellated grid each frame.
 
-### 40.1 Phillips Spectrum and Initial Conditions
+### 73.1 Phillips Spectrum and Initial Conditions
 
 The Phillips spectrum P(k) models the energy distribution of ocean waves as a function of wave vector **k**:
 
@@ -10592,7 +10592,7 @@ void main() {
 
 [Source: Tessendorf "Simulating Ocean Water", SIGGRAPH Course Notes 2001]
 
-### 40.2 Time Evolution and IFFT
+### 73.2 Time Evolution and IFFT
 
 Each frame, propagate h₀ to h(**k**,t) using the dispersion relation ω(k) = √(g·|**k**|):
 
@@ -10623,9 +10623,9 @@ void main() {
 }
 ```
 
-Apply a 2D IFFT to `hkt`, `dxt`, `dzt` using a GPU FFT library (VkFFT, §40.5) to obtain height field H(x,z,t) and choppy displacement (Dx, Dz).
+Apply a 2D IFFT to `hkt`, `dxt`, `dzt` using a GPU FFT library (VkFFT, §73.5) to obtain height field H(x,z,t) and choppy displacement (Dx, Dz).
 
-### 40.3 Choppy Waves via Jacobian
+### 73.3 Choppy Waves via Jacobian
 
 Horizontal displacement (choppiness) moves water particles toward wave crests, sharpening peaks. The Jacobian J of the displacement field detects wave breaking (J < 0 → foam):
 
@@ -10651,7 +10651,7 @@ void main() {
 
 [Source: Tessendorf 2001; Bruneton & Neyret "Real-time Realistic Ocean Lighting", EuroGraphics 2010]
 
-### 40.4 Gerstner Wave Summation
+### 73.4 Gerstner Wave Summation
 
 For art-directed waves, sum N Gerstner (trochoidal) waves analytically — no FFT required, suitable for 4–8 waves with precise control:
 
@@ -10679,9 +10679,9 @@ void main() {
 
 [Source: Finch "Effective Water Simulation from Physical Models", GPU Gems 1, Ch. 1]
 
-### 40.5 VkFFT Integration
+### 73.5 VkFFT Integration
 
-VkFFT ([source](https://github.com/DTolm/VkFFT), MIT) provides Vulkan-native FFT on the GPU — the compute backbone for §40.2. It generates SPIR-V at runtime for the target device:
+VkFFT ([source](https://github.com/DTolm/VkFFT), MIT) provides Vulkan-native FFT on the GPU — the compute backbone for §73.2. It generates SPIR-V at runtime for the target device:
 
 ```cpp
 VkFFTApplication app{};
@@ -10703,13 +10703,13 @@ VkFFTAppend(&app, -1, &lp);  // inverse FFT
 
 ---
 
-### 98. GPU Geospatial Processing: Large-Scale Terrain
+### 74. GPU Geospatial Processing: Large-Scale Terrain
 
 *Audience: systems developers, graphics application developers.*
 
-Real-world terrain from LIDAR point clouds or satellite DEMs requires GPU processing pipelines distinct from procedural terrain (§26): reprojection from geographic coordinates (WGS84/UTM), sparse tiling, massive point cloud decimation, and multi-level terrain mesh streaming. Applications include mapping, simulation, autonomous vehicle testing, and digital twins.
+Real-world terrain from LIDAR point clouds or satellite DEMs requires GPU processing pipelines distinct from procedural terrain (§71): reprojection from geographic coordinates (WGS84/UTM), sparse tiling, massive point cloud decimation, and multi-level terrain mesh streaming. Applications include mapping, simulation, autonomous vehicle testing, and digital twins.
 
-### 98.1 WGS84 to ECEF and Local Frame Projection
+### 74.1 WGS84 to ECEF and Local Frame Projection
 
 Reproject geographic coordinates (longitude, latitude, altitude) to Earth-Centred Earth-Fixed (ECEF) Cartesian coordinates, then to a local ENU (East-North-Up) frame for rendering:
 
@@ -10735,7 +10735,7 @@ void main() {
 
 [Source: Bowring "Transformation from Spatial to Geographic Coordinates", Survey Review 1976; EPSG:4978 WGS84 specification]
 
-### 98.2 GPU LIDAR Point Cloud Decimation
+### 74.2 GPU LIDAR Point Cloud Decimation
 
 Reduce massive LIDAR datasets (billions of points) to a renderable density using a GPU voxel-grid filter: keep one point per grid cell, selected by highest return intensity:
 
@@ -10754,13 +10754,13 @@ void main() {
     uint idx = c.z*pc.dim.y*pc.dim.x + c.y*pc.dim.x + c.x;
     // Atomic max on intensity to select best return per cell
     atomicMax_float_idx(bestInt[idx], /* index field in best[] */ p, pts[p].w, p);
-    // After: compact best[] to output cloud (see §33.2 prefix-scan pattern)
+    // After: compact best[] to output cloud (see §72.2 prefix-scan pattern)
 }
 ```
 
 [Source: Rusu & Cousins "3D is Here: Point Cloud Library", ICRA 2011; Hornung et al. "OctoMap: An Efficient Probabilistic 3D Mapping Framework", Autonomous Robots 2013]
 
-### 98.3 GPU Terrain Mesh Streaming with CDLOD
+### 74.3 GPU Terrain Mesh Streaming with CDLOD
 
 Continuous Distance-Dependent Level of Detail (CDLOD, Strugar 2010) generates terrain meshes from a height map hierarchy on-the-fly with no precomputed meshes. The GPU produces one quad-grid per visible tile at the appropriate LOD:
 
@@ -10784,9 +10784,9 @@ void main() {
 
 [Source: Strugar "Continuous Distance-Dependent Level of Detail for Rendering Heightmaps", JCGT 2010; Ulrich "Rendering Massive Terrains Using Chunked LOD", SIGGRAPH 2002]
 
-### 98.4 GPU Terrain Normal and Slope Computation
+### 74.4 GPU Terrain Normal and Slope Computation
 
-Compute normals and slope maps from height map data for lighting, road gradient analysis, and erosion simulation (§79):
+Compute normals and slope maps from height map data for lighting, road gradient analysis, and erosion simulation (§57):
 
 ```glsl
 // terrain_normals.comp — compute normals from heightmap via finite differences
@@ -10815,20 +10815,20 @@ void main() {
 
 Ray tracing unifies shadowing, reflection, ambient occlusion, global illumination, and caustics under a single BVH traversal abstraction. This category covers the Vulkan ray tracing pipeline (ray generation, closest-hit, any-hit, miss shaders), full path-tracer construction, shadow geometry algorithms viewed from a geometry perspective (shadow volumes, shadow map ray casting), IBL preprocessing (importance sampling, SH projection from environment maps), radiosity form-factor computation via hemicube or GPU ray casting, atmospheric scattering geometry (Rayleigh/Mie phase functions in world space), screen-space reflection ray generation and reprojection, subsurface scattering geometry (dipole and BSSRDF volumetric model), and order-independent transparency as an optical compositing problem. GPU polygon clipping is included here as a core primitive for software rasterizers and ray-geometry intersection pipelines.
 
-### 20. Ray Tracing Geometry Pipeline
+### 75. Ray Tracing Geometry Pipeline
 
 *Audience: graphics application developers, systems developers.*
 
-Vulkan ray tracing (VK_KHR_ray_tracing_pipeline, core in Vulkan 1.2+ with KHR extensions) organises geometry into a two-level hierarchy. §8 covered LBVH *construction* as a compute algorithm; this section covers the Vulkan RT *pipeline* as a geometry-consumption interface — acceleration structure management, procedural geometry via intersection shaders, and animated geometry update strategies.
+Vulkan ray tracing (VK_KHR_ray_tracing_pipeline, core in Vulkan 1.2+ with KHR extensions) organises geometry into a two-level hierarchy. §24 covered LBVH *construction* as a compute algorithm; this section covers the Vulkan RT *pipeline* as a geometry-consumption interface — acceleration structure management, procedural geometry via intersection shaders, and animated geometry update strategies.
 
-### 20.1 Acceleration Structure Fundamentals: BLAS and TLAS
+### 75.1 Acceleration Structure Fundamentals: BLAS and TLAS
 
 - **BLAS (Bottom-Level Acceleration Structure):** Contains actual geometry — triangle meshes or AABBs for procedural geometry. Built once per unique mesh shape.
 - **TLAS (Top-Level Acceleration Structure):** Contains instances of BLASes with per-instance 3×4 transforms, visibility masks, and shader binding table offsets. Rebuilt each frame for animated scenes.
 
 Queries traverse TLAS → BLAS → geometry test. RT cores (NVIDIA) and BVH hardware (AMD RDNA3+) handle traversal; application provides shader callbacks at each intersection event.
 
-### 20.2 Building BLAS from Vertex/Index Buffers
+### 75.2 Building BLAS from Vertex/Index Buffers
 
 ```cpp
 VkAccelerationStructureGeometryKHR geom{};
@@ -10867,7 +10867,7 @@ vkCmdBuildAccelerationStructuresKHR(cmd, 1, &buildInfo, &pRange);
 
 For multiple submeshes in one BLAS, pass an array of `VkAccelerationStructureGeometryKHR` and corresponding `VkAccelerationStructureBuildRangeInfoKHR` — one per submesh, different hit group offsets for different materials. [Source: Vulkan Spec §37.9; NVIDIA Vulkan Ray Tracing Tutorial https://nvpro-samples.github.io/vk_raytracing_tutorial_KHR/]
 
-### 20.3 TLAS and Instance Transforms
+### 75.3 TLAS and Instance Transforms
 
 ```cpp
 VkAccelerationStructureInstanceKHR inst{};
@@ -10880,9 +10880,9 @@ inst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
 inst.accelerationStructureReference         = blasDeviceAddress;
 ```
 
-For dynamic scenes, rebuild the TLAS each frame (instances are just a flat buffer of 64-byte structs — fast) while BLASes stay fixed unless mesh topology changes. For skinned meshes use BLAS refit (§20.5) then TLAS rebuild.
+For dynamic scenes, rebuild the TLAS each frame (instances are just a flat buffer of 64-byte structs — fast) while BLASes stay fixed unless mesh topology changes. For skinned meshes use BLAS refit (§75.5) then TLAS rebuild.
 
-### 20.4 Procedural Geometry via Intersection Shaders
+### 75.4 Procedural Geometry via Intersection Shaders
 
 Geometry that cannot be represented as triangle soups (analytic spheres, SDF primitives, Bézier patches) uses AABB-based BLASes and a custom intersection shader. The AABB defines the bounding volume; the intersection shader computes the exact hit point:
 
@@ -10913,7 +10913,7 @@ void main() {
 
 SDF sphere tracing (§3.7) runs as a hybrid: coarse BVH traversal from RT hardware, fine sphere-march inside the custom intersection shader — combining hardware AS traversal efficiency with analytical SDF accuracy. [Source: Vulkan Spec §14.7 Ray Tracing Shaders; Quilez "Raymarching Signed Distance Fields"]
 
-### 20.5 BLAS Refit for Animated Geometry
+### 75.5 BLAS Refit for Animated Geometry
 
 When vertex positions change (skinning, cloth, fluid surface) but triangle topology stays constant, **refit** updates the BLAS tree in O(N) rather than rebuilding in O(N log N):
 
@@ -10924,7 +10924,7 @@ buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR |
 buildInfo.mode  = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
 // ...build...
 
-// Each subsequent frame after skinning pre-pass (§4.4):
+// Each subsequent frame after skinning pre-pass (§39.4):
 buildInfo.mode    = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
 buildInfo.srcAccelerationStructure = blas;   // refit in place
 buildInfo.dstAccelerationStructure = blas;
@@ -10935,13 +10935,13 @@ Refit traverses the existing BLAS bottom-up recomputing AABBs from updated verte
 
 ---
 
-### 43. Shadow Geometry Algorithms
+### 76. Shadow Geometry Algorithms
 
 *Audience: graphics application developers.*
 
 Shadows are the most geometry-intensive secondary effect in real-time rendering. Each technique represents a different geometry computation on the GPU: CSM partitions the view frustum, shadow volumes extrude silhouette edges, VSM filters depth maps, and RT shadows cast rays against the scene TLAS.
 
-### 43.1 Cascaded Shadow Maps: Frustum Partitioning
+### 76.1 Cascaded Shadow Maps: Frustum Partitioning
 
 CSM splits the view frustum into N subfrusta, each rendered to its own shadow map at a resolution appropriate for that depth range. GPU frustum split computation:
 
@@ -10966,7 +10966,7 @@ void main() {
 
 Each cascade renders the scene with a tight ortho projection enclosing the cascade subfustum intersected with the scene AABB. [Source: Engel "Cascaded Shadow Maps", ShaderX 5, 2006]
 
-### 43.2 Shadow Volume Stencil: Silhouette Detection
+### 76.2 Shadow Volume Stencil: Silhouette Detection
 
 GPU shadow volumes (Everitt & Kilgard "Robust Shadow Volumes" 2002) require detecting silhouette edges — edges where one adjacent face is front-lit and the other is back-lit. Compute silhouette in a pre-pass:
 
@@ -10991,7 +10991,7 @@ void main() {
 
 Then extrude silhouette edges to infinity in a mesh shader or vertex shader, render front/back faces into stencil with zfail. [Source: Everitt & Kilgard "Practical and Robust Stenciled Shadow Volumes", 2002]
 
-### 43.3 VSM / EVSM: Moment Shadow Maps
+### 76.3 VSM / EVSM: Moment Shadow Maps
 
 Variance Shadow Maps (Donnelly & Lauritzen 2006) store E[d] and E[d²] in a two-channel shadow map, enabling hardware PCF filtering and Gaussian blur for soft shadows:
 
@@ -11015,9 +11015,9 @@ float chebyshev(vec2 moments, float d) {
 
 EVSM (Annen et al. 2008) extends to 4 moments (positive/negative exponential warp) to eliminate light bleeding. [Source: Donnelly & Lauritzen "Variance Shadow Maps", I3D 2006]
 
-### 43.4 Ray-Traced Shadows via VK_KHR_ray_query
+### 76.4 Ray-Traced Shadows via VK_KHR_ray_query
 
-Inline ray queries against the scene TLAS (§20.3) produce ground-truth shadow masks in a deferred lighting pass:
+Inline ray queries against the scene TLAS (§75.3) produce ground-truth shadow masks in a deferred lighting pass:
 
 ```glsl
 // rt_shadow.comp
@@ -11046,13 +11046,13 @@ void main() {
 
 ---
 
-### 44. IBL and Environment Map Preprocessing
+### 77. IBL and Environment Map Preprocessing
 
 *Audience: graphics application developers.*
 
 Image-Based Lighting (IBL) precomputes the integral of incoming radiance over a hemisphere, storing the result in two GPU textures: a prefiltered radiance map (PMREM) and a BRDF integration LUT. A third preprocessing step projects the environment into L2 spherical harmonics for diffuse irradiance.
 
-### 44.1 Spherical Harmonics Projection
+### 77.1 Spherical Harmonics Projection
 
 Project an HDR cubemap into 9 L2 SH coefficients (one per colour channel × 9 basis functions). Each pixel contributes to all 9 bands:
 
@@ -11083,7 +11083,7 @@ void main() {
 
 [Source: Ramamoorthi & Hanrahan "An Efficient Representation for Irradiance Environment Maps", SIGGRAPH 2001]
 
-### 44.2 PMREM: Prefiltered Radiance Mip Chain
+### 77.2 PMREM: Prefiltered Radiance Mip Chain
 
 Each mip level stores the GGX-filtered radiance for a different roughness value. Importance-sample the GGX NDF to generate sample directions, then accumulate:
 
@@ -11113,7 +11113,7 @@ void main() {
 
 [Source: Karis "Real Shading in Unreal Engine 4", SIGGRAPH 2013]
 
-### 44.3 BRDF Integration LUT
+### 77.3 BRDF Integration LUT
 
 Precompute the split-sum BRDF integral for all (NdotV, roughness) pairs into a 2D R16G16 LUT:
 
@@ -11149,13 +11149,13 @@ At runtime: `Lr = pmrem.sample(R, roughness) * (F0*A + B)` where A,B are from th
 
 ---
 
-### 51. Global Illumination Geometry
+### 78. Global Illumination Geometry
 
 *Audience: graphics application developers.*
 
 Global illumination algorithms compute indirect lighting — light that bounces one or more times before reaching the eye. Three GPU geometry methods dominate real-time GI: Reflective Shadow Maps (RSM) sample the first indirect bounce from shadow map geometry; Light Propagation Volumes (LPV) propagate SH-encoded radiance through a 3D grid; Voxel Cone Tracing (VXGI) traces cones through a sparse voxel scene representation.
 
-### 51.1 Reflective Shadow Maps
+### 78.1 Reflective Shadow Maps
 
 RSM (Dachsbacher & Stamminger 2005) treats each shadow map texel as a virtual point light (VPL) for the first indirect bounce. Each G-buffer pixel gathers from a random subset of RSM VPLs:
 
@@ -11190,7 +11190,7 @@ void main() {
 
 [Source: Dachsbacher & Stamminger "Reflective Shadow Maps", I3D 2005]
 
-### 51.2 Light Propagation Volumes
+### 78.2 Light Propagation Volumes
 
 LPV (Kaplanyan & Dachsbacher 2010) propagates SH-encoded radiance through a 3D grid of 32×32×32 cells in 8 GPU passes (one per direction of the 6-faced propagation kernel plus diagonals):
 
@@ -11222,9 +11222,9 @@ void main() {
 
 [Source: Kaplanyan & Dachsbacher "Cascaded Light Propagation Volumes for Real-Time Indirect Illumination", I3D 2010]
 
-### 51.3 Voxel Cone Tracing (VXGI)
+### 78.3 Voxel Cone Tracing (VXGI)
 
-VXGI (Crassin et al. 2011) stores a sparse voxel octree (§17.3) of scene radiance, then traces cones through it using anisotropic voxel mip-maps. The cone traces N levels of the SVO hierarchy to compute indirect diffuse and specular:
+VXGI (Crassin et al. 2011) stores a sparse voxel octree (§27.3) of scene radiance, then traces cones through it using anisotropic voxel mip-maps. The cone traces N levels of the SVO hierarchy to compute indirect diffuse and specular:
 
 ```glsl
 // vxgi_cone.glsl — diffuse cone trace for one fragment
@@ -11254,7 +11254,7 @@ void main() {
 
 [Source: Crassin et al. "Interactive Indirect Illumination Using Voxel Cone Tracing", CGF 2011; NVIDIA VXGI SDK]
 
-### 51.4 GI Denoising Geometry Buffer
+### 78.4 GI Denoising Geometry Buffer
 
 All three GI methods produce noisy output. Spatiotemporal denoising (SVGF, Schied et al. 2017) uses a geometry-guided bilateral filter with 3×3 À-trous wavelet passes, rejecting samples across depth and normal discontinuities:
 
@@ -11290,13 +11290,13 @@ void main() {
 
 ---
 
-### 56. Geometric Optics: Lens, Caustics, and Beam Tracing
+### 79. Geometric Optics: Lens, Caustics, and Beam Tracing
 
 *Audience: graphics application developers.*
 
 Geometric optics models light as rays that refract at dielectric surfaces and focus into caustics. GPU implementations use the scene TLAS for refraction ray tracing, photon mapping for caustic density estimation, and beam tracing for specular-specular transport.
 
-### 56.1 Lens Flare Geometry
+### 79.1 Lens Flare Geometry
 
 GPU lens flares place starburst and halo sprites along the screen-space line from light source to screen centre. A depth-aware occlusion test determines flare intensity:
 
@@ -11328,7 +11328,7 @@ void main() {
 
 [Source: Mittring "Finding Next Gen — CryEngine 2", SIGGRAPH 2007; Jimenez et al. "Practical Real-Time Lens-Flare Rendering", CGF 2012]
 
-### 56.2 Caustic Photon Mapping
+### 79.2 Caustic Photon Mapping
 
 Caustics (focused light through glass/water) are computed via bidirectional photon tracing. Photons are emitted from the light source, refracted through dielectrics using Snell's law, and collected on diffuse surfaces:
 
@@ -11353,9 +11353,9 @@ void main() {
 
 [Source: Jensen "Realistic Image Synthesis Using Photon Mapping", 2001; GPU photon mapping: Hachisuka et al. "Progressive Photon Mapping", SIGGRAPH Asia 2008]
 
-### 56.3 Caustic Density Estimation
+### 79.3 Caustic Density Estimation
 
-After tracing N photons, estimate caustic irradiance at each surface point via GPU k-NN in the photon buffer (§21.1 pattern) and kernel density estimation:
+After tracing N photons, estimate caustic irradiance at each surface point via GPU k-NN in the photon buffer (§87.1 pattern) and kernel density estimation:
 
 ```glsl
 // caustic_kde.comp — k-NN density estimation at G-buffer pixels
@@ -11366,7 +11366,7 @@ layout(local_size_x=8,local_size_y=8) in;
 void main() {
     ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
     vec3  p   = gPos[pix.y*WIDTH+pix.x].xyz;
-    // Find K nearest photons (brute force for small N, §21.1 k-d tree for large)
+    // Find K nearest photons (brute force for small N, §87.1 k-d tree for large)
     float r2  = KDE_RADIUS*KDE_RADIUS;
     vec3  E   = vec3(0.0);
     for (uint i=0; i<N_PHOTONS; i++) {
@@ -11381,13 +11381,13 @@ void main() {
 
 ---
 
-### 84. Screen-Space Reflections (SSR/SSSR)
+### 80. Screen-Space Reflections (SSR/SSSR)
 
 *Audience: graphics application developers.*
 
 Screen-space reflections (SSR) trace reflection rays against the depth buffer using hierarchical Z-buffer ray marching, providing real-time specular GI for surfaces visible on screen. Stochastic SSR (SSSR) adds per-pixel random ray selection and temporal accumulation to handle rough surfaces with variable BRDF lobe widths.
 
-### 84.1 Hierarchical Z-Buffer Ray Marching
+### 80.1 Hierarchical Z-Buffer Ray Marching
 
 Build a mip chain of the depth buffer where each level stores the maximum depth in each 2×2 tile. March the reflection ray through increasing mip levels, stepping coarsely over empty space:
 
@@ -11424,14 +11424,14 @@ void main() {
 
 [Source: McGuire & Mara "Efficient GPU Screen-Space Ray Tracing", JCGT 2014; Stachowiak "Stochastic All The Things" 2018]
 
-### 84.2 Stochastic SSR with GGX Importance Sampling
+### 80.2 Stochastic SSR with GGX Importance Sampling
 
 SSSR (Stachowiak 2018) samples one ray per pixel per frame from the GGX BRDF lobe, giving rough-surface reflections at the cost of one sample per pixel plus temporal accumulation:
 
 ```glsl
 // sssr_sample.comp — sample one GGX reflection ray per pixel
 layout(set=0,binding=0) uniform sampler2D gRoughness;
-layout(set=0,binding=1) readonly buffer BlueNoise { vec2 bn[]; };  // §47 blue noise
+layout(set=0,binding=1) readonly buffer BlueNoise { vec2 bn[]; };  // §105 blue noise
 layout(set=0,binding=2, rgba16f) uniform writeonly image2D rayDirOut;
 layout(push_constant) uniform PC { uint frameIdx; } pc;
 layout(local_size_x=8,local_size_y=8) in;
@@ -11453,7 +11453,7 @@ void main() {
 
 [Source: Stachowiak 2018; Walter et al. "Microfacet Models for Refraction through Rough Surfaces", EGSR 2007]
 
-### 84.3 Temporal Accumulation and Reprojection
+### 80.3 Temporal Accumulation and Reprojection
 
 Accumulate SSR samples over multiple frames by reprojecting the previous frame's result:
 
@@ -11461,7 +11461,7 @@ Accumulate SSR samples over multiple frames by reprojecting the previous frame's
 // ssr_temporal.comp — temporal accumulation for SSR
 layout(set=0,binding=0) uniform sampler2D ssrCurrent;   // this frame's SSR sample
 layout(set=0,binding=1) uniform sampler2D ssrHistory;   // previous accumulated result
-layout(set=0,binding=2) uniform sampler2D motionVec;    // §76.2 motion vectors
+layout(set=0,binding=2) uniform sampler2D motionVec;    // §100.2 motion vectors
 layout(set=0,binding=3, rgba16f) uniform writeonly image2D ssrAccum;
 layout(local_size_x=8,local_size_y=8) in;
 void main() {
@@ -11483,14 +11483,14 @@ void main() {
 
 [Source: Karis "High Quality Temporal Supersampling", SIGGRAPH 2014; Stachowiak 2018]
 
-### 84.4 SSR Fade and Composite
+### 80.4 SSR Fade and Composite
 
-Fade reflections at screen edges (where the ray exits the screen) and blend with the specular IBL (§44) fallback:
+Fade reflections at screen edges (where the ray exits the screen) and blend with the specular IBL (§77) fallback:
 
 ```glsl
 // ssr_composite.frag — blend SSR with IBL fallback
-uniform sampler2D ssrAccum;    // §84.3 accumulated SSR
-uniform sampler2D iblSpecular; // §44 IBL specular
+uniform sampler2D ssrAccum;    // §80.3 accumulated SSR
+uniform sampler2D iblSpecular; // §77 IBL specular
 uniform sampler2D gRoughness;
 uniform sampler2D gMetallic;
 in vec2 texUV;
@@ -11513,13 +11513,13 @@ void main() {
 
 ---
 
-### 88. GPU Radiosity: Form Factor Computation
+### 81. GPU Radiosity: Form Factor Computation
 
 *Audience: graphics application developers.*
 
 Radiosity (Goral et al. 1984) computes diffuse inter-reflections by solving a linear system where the coefficient matrix contains *form factors* F_{ij} — the fraction of energy leaving patch i that arrives at patch j. GPU hemicube rendering computes form factors for all patches in a scene in parallel.
 
-### 88.1 Hemicube Rendering for Form Factors
+### 81.1 Hemicube Rendering for Form Factors
 
 For each patch i, render the scene from i's centroid onto a hemicube (five 90° faces). The delta form factor ΔF_{ij} for each hemicube texel is a precomputed weight; the form factor F_{ij} is the sum over all texels covered by patch j:
 
@@ -11536,7 +11536,7 @@ void main() {
     // Ray from patch centroid through hemicube texel
     vec3  rayDir = hemicubeRayDir(pix, pc.hemiFace, pc.hemiRes);
     float dff    = deltaFormFactor(pix, pc.hemiFace, pc.hemiRes);  // precomputed weight
-    // Find which patch this ray hits (via BVH traverse §70)
+    // Find which patch this ray hits (via BVH traverse §31)
     uint  hitPatch = bvhRayQuery(cen[pc.srcPatch] + nor[pc.srcPatch]*1e-3, rayDir);
     if (hitPatch == INVALID) return;
     atomicAdd_float(F[pc.srcPatch][hitPatch], dff);
@@ -11545,7 +11545,7 @@ void main() {
 
 [Source: Cohen & Greenberg "The Hemi-Cube: A Radiosity Solution for Complex Environments", SIGGRAPH 1985; GPU radiosity: Stamminger et al. "Hierarchical Solution for Radiosity on GPUs", EG 2002]
 
-### 88.2 Progressive Radiosity Solve
+### 81.2 Progressive Radiosity Solve
 
 The radiosity system B = E + ρ·F·B (B=radiosity, E=emission, ρ=reflectance, F=form factor matrix) is solved by iterative shooting: in each step, the patch with the most unshot energy broadcasts to all others:
 
@@ -11568,7 +11568,7 @@ void main() {
 
 [Source: Cohen et al. "A Progressive Refinement Approach for Fast Radiosity Image Generation", SIGGRAPH 1988; Neumann "Monte Carlo Radiosity", Computing 1995]
 
-### 88.3 Hierarchical Radiosity
+### 81.3 Hierarchical Radiosity
 
 For large scenes, hierarchical radiosity (Hanrahan et al. 1991) subdivides patches and only computes form factors at the appropriate refinement level. GPU kernel: for each patch pair, test whether their form factor contribution exceeds a threshold; if so, subdivide:
 
@@ -11593,7 +11593,7 @@ void main() {
 
 [Source: Hanrahan et al. "A Rapid Hierarchical Radiosity Algorithm", SIGGRAPH 1991]
 
-### 88.4 Irradiance Caching for Radiosity Rendering
+### 81.4 Irradiance Caching for Radiosity Rendering
 
 Store per-vertex irradiance from the radiosity solve; interpolate at shade points using the irradiance cache (Ward & Heckbert 1992):
 
@@ -11608,7 +11608,7 @@ void main() {
     vec3  P  = texture(gWorldPos, texUV).xyz;
     vec3  N  = texture(gNormal,   texUV).xyz;
     vec3  E  = vec3(0.0); float wSum = 0.0;
-    // k-NN lookup in irradiance cache (§65.1 pattern → BVH §70)
+    // k-NN lookup in irradiance cache (§37.1 pattern → BVH §31)
     for (int k=0; k<CACHE_K; k++) {
         IrradSample s = findKthNearest(kd, samples, P, k);
         float w = 1.0 / (length(P-s.pos) + s.Ri * (1.0-dot(N,s.nor)));
@@ -11623,13 +11623,13 @@ void main() {
 
 ---
 
-### 91. GPU Path Tracing Pipeline
+### 82. GPU Path Tracing Pipeline
 
 *Audience: graphics application developers, systems developers.*
 
 Unbiased Monte Carlo path tracing produces reference-quality global illumination by simulating light transport directly. GPU path tracing uses the TLAS/BLAS hierarchy of `VK_KHR_ray_tracing_pipeline` or ray queries, with multiple importance sampling (MIS) weighting direct-light and BRDF samples. The challenge is per-ray divergence: shader sorting (wavefront path tracing) groups coherent rays together before dispatch.
 
-### 91.1 Primary Ray Generation and TLAS Traversal
+### 82.1 Primary Ray Generation and TLAS Traversal
 
 ```glsl
 // pt_raygen.rgen — generate primary rays from a thin-lens camera model
@@ -11660,7 +11660,7 @@ void main() {
 
 [Source: Pharr et al. "Physically Based Rendering", 4th ed. 2023, §16; Shirley et al. "Ray Tracing in One Weekend" series]
 
-### 91.2 Closest-Hit Shader: MIS Direct Lighting
+### 82.2 Closest-Hit Shader: MIS Direct Lighting
 
 Multiple importance sampling (MIS) combines a direct-light sample and a BRDF sample using power heuristic weights to reduce variance:
 
@@ -11698,7 +11698,7 @@ void main() {
 
 [Source: Pharr et al. 2023 §12.2 MIS; Veach "Robust Monte Carlo Methods for Light Transport Simulation", PhD 1997]
 
-### 91.3 Wavefront Path Tracing: Shader Sorting
+### 82.3 Wavefront Path Tracing: Shader Sorting
 
 GPU warp divergence kills throughput when adjacent paths hit different materials. Wavefront path tracing (Laine et al. 2013) uses separate queues per shader type. After intersection, paths are sorted by material ID and dispatched in homogeneous waves:
 
@@ -11726,9 +11726,9 @@ void main() {
 
 [Source: Laine et al. "Megakernels Considered Harmful: Wavefront Path Tracing on GPUs", HPG 2013]
 
-### 91.4 Denoising: SVGF À-trous Wavelet Filter
+### 82.4 Denoising: SVGF À-trous Wavelet Filter
 
-After accumulating N samples, SVGF (§51.4 pattern applied to path tracing) denoises via spatially-varying À-trous wavelets guided by geometry buffers:
+After accumulating N samples, SVGF (§78.4 pattern applied to path tracing) denoises via spatially-varying À-trous wavelets guided by geometry buffers:
 
 ```glsl
 // svgf_atrous.comp — SVGF À-trous wavelet denoise pass k
@@ -11763,13 +11763,13 @@ void main() {
 
 ---
 
-### 96. Atmospheric Scattering and Sky Rendering
+### 83. Atmospheric Scattering and Sky Rendering
 
 *Audience: graphics application developers.*
 
 Atmospheric scattering (Mie + Rayleigh) produces realistic sky colours, horizon glow, and aerial perspective. GPU implementations precompute transmittance and in-scatter into 2D/4D lookup tables (LUTs), then evaluate them at runtime with two texture samples — following Bruneton & Neyret (2008) and the Unreal/Unity production extensions.
 
-### 96.1 Transmittance LUT Precomputation
+### 83.1 Transmittance LUT Precomputation
 
 For each (view zenith, altitude) pair, integrate extinction along the ray to space using the Chapman function approximation:
 
@@ -11797,7 +11797,7 @@ void main() {
 
 [Source: Bruneton & Neyret "Precomputed Atmospheric Scattering", EGSR 2008; Hillaire "A Scalable and Production Ready Sky and Atmosphere Rendering Technique", EGSR 2020]
 
-### 96.2 Single-Scatter In-Scatter LUT
+### 83.2 Single-Scatter In-Scatter LUT
 
 For each (altitude, view zenith, sun zenith) triple, integrate the single-scatter contribution (light reaching a point, scattering toward the viewer) using the transmittance LUT:
 
@@ -11829,7 +11829,7 @@ void main() {
 
 [Source: Bruneton & Neyret 2008; Elek "Rendering Parametrizable Planetary Atmospheres with Multiple Scattering in Real-Time", CESCG 2009]
 
-### 96.3 Runtime Sky Evaluation
+### 83.3 Runtime Sky Evaluation
 
 At runtime, the sky colour in direction d from camera altitude h is the in-scatter LUT lookup, attenuated by the sun's phase function:
 
@@ -11855,7 +11855,7 @@ void main() {
 
 [Source: Bruneton & Neyret 2008; Hillaire 2020]
 
-### 96.4 Aerial Perspective (Depth-Based Fog)
+### 83.4 Aerial Perspective (Depth-Based Fog)
 
 Apply aerial perspective to scene geometry by integrating the in-scatter and transmittance along the view ray to each depth sample:
 
@@ -11883,13 +11883,13 @@ void main() {
 
 ---
 
-### 97. Subsurface Scattering Geometry
+### 84. Subsurface Scattering Geometry
 
 *Audience: graphics application developers.*
 
 Subsurface scattering (SSS) models light penetrating translucent materials (skin, marble, wax) and exiting at a different surface point. GPU implementations use the separable screen-space SSS blur (Jiménez et al. 2009), the pre-integrated skin BRDF (d'Eon & Luebke 2007), and ray-traced diffusion profiles via `VK_KHR_ray_query` for high-quality offline SSS.
 
-### 97.1 Screen-Space SSS Blur (Jiménez et al. 2009)
+### 84.1 Screen-Space SSS Blur (Jiménez et al. 2009)
 
 Blur the irradiance buffer in screen space along each of three directions using a Gaussian kernel shaped by the diffusion profile of the material:
 
@@ -11926,7 +11926,7 @@ void main() {
 
 [Source: Jiménez et al. "Screen-Space Perceptual Rendering of Human Skin", ACM TAP 2009; d'Eon & Luebke "Advanced Techniques for Realistic Real-Time Skin Rendering", GPU Gems 3 2007]
 
-### 97.2 Pre-Integrated Skin BRDF
+### 84.2 Pre-Integrated Skin BRDF
 
 The pre-integrated skin shading model (d'Eon & Luebke 2007) precomputes the integral of the diffusion profile over a sphere of radius 1/κ (curvature) and stores it as a 2D LUT indexed by (N·L, curvature):
 
@@ -11949,7 +11949,7 @@ void main() {
 
 [Source: d'Eon & Luebke 2007; Penner "Pre-Integrated Skin Shading", ShaderX 9 2011]
 
-### 97.3 Ray-Traced SSS via Diffusion Dipole Ray Queries
+### 84.3 Ray-Traced SSS via Diffusion Dipole Ray Queries
 
 For high-quality SSS, shoot diffusion probe rays below the surface and accumulate the dipole contribution from each hit:
 
@@ -11985,7 +11985,7 @@ void main() {
 
 [Source: Jensen et al. "A Practical Model for Subsurface Light Transport", SIGGRAPH 2001; d'Eon & Luebke 2007]
 
-### 97.4 Translucency: Thin-Slab Transmission
+### 84.4 Translucency: Thin-Slab Transmission
 
 For thin translucent objects (ears, leaves), approximate SSS by transmitting direct light through the slab using Beer's law with a transmitted thickness map:
 
@@ -12015,13 +12015,13 @@ void main() {
 
 ---
 
-### 105. Order-Independent Transparency
+### 85. Order-Independent Transparency
 
 *Audience: graphics application developers.*
 
 Transparent geometry must be composited in back-to-front depth order, but sorting draw calls per-frame is expensive and breaks GPU parallelism for complex scenes (particle systems, hair, foliage). Order-independent transparency (OIT) algorithms resolve alpha blending on the GPU without sorting: per-pixel linked lists (PPLL), k-buffer, and weighted blended OIT (WBOIT) cover the quality/performance trade-off.
 
-### 105.1 Per-Pixel Linked List Construction
+### 85.1 Per-Pixel Linked List Construction
 
 Append each transparent fragment to a per-pixel linked list stored in a flat buffer. A head-pointer image stores the list head per pixel; atomic exchange chains fragments together:
 
@@ -12043,7 +12043,7 @@ void main() {
 
 [Source: Yang et al. "Real-Time Concurrent Linked List Construction on the GPU", EG 2010; Crassin "OIT and GBuffer Compositing Using the New D3D11 Atomic Counting and UAVs", NVIDIA 2010]
 
-### 105.2 Per-Pixel Linked List Resolve (Sort and Blend)
+### 85.2 Per-Pixel Linked List Resolve (Sort and Blend)
 
 In a fullscreen pass, traverse the linked list for each pixel, sort fragments by depth, and composite back-to-front:
 
@@ -12072,7 +12072,7 @@ void main() {
 }
 ```
 
-### 105.3 Weighted Blended OIT (McGuire & Bavoil 2013)
+### 85.3 Weighted Blended OIT (McGuire & Bavoil 2013)
 
 WBOIT avoids sorting entirely by accumulating a weighted sum and weight sum in two render targets. The final composite divides out the weights. Approximate but hardware-friendly and suitable for particles:
 
@@ -12106,7 +12106,7 @@ void main() {
 
 [Source: McGuire & Bavoil "Weighted Blended Order-Independent Transparency", JCGT 2013]
 
-### 105.4 K-Buffer Stochastic Transparency
+### 85.4 K-Buffer Stochastic Transparency
 
 K-buffer (Sintorn & Assarsson 2009) keeps only the k nearest fragments per pixel. For k=4, use a 4-entry insertion sort in the fragment shader with atomic compare-and-swap on the sorted buffer:
 
@@ -12131,13 +12131,13 @@ void main() {
 
 ---
 
-### 106. GPU Polygon and Frustum Clipping
+### 86. GPU Polygon and Frustum Clipping
 
 *Audience: systems developers, graphics application developers.*
 
-Clipping geometry against a frustum or arbitrary half-spaces is required for: shadow map rendering (clip to light frustum), portal rendering, decal projection (§38), constructive solid geometry (§63), and conservative rasterisation. GPU Sutherland-Hodgman clips polygons against each plane independently; hardware clipping handles triangle-level frustum culling automatically, but compute-shader clipping is needed for non-standard clip volumes.
+Clipping geometry against a frustum or arbitrary half-spaces is required for: shadow map rendering (clip to light frustum), portal rendering, decal projection (§97), constructive solid geometry (§7), and conservative rasterisation. GPU Sutherland-Hodgman clips polygons against each plane independently; hardware clipping handles triangle-level frustum culling automatically, but compute-shader clipping is needed for non-standard clip volumes.
 
-### 106.1 Sutherland-Hodgman on GPU (Per-Polygon Thread)
+### 86.1 Sutherland-Hodgman on GPU (Per-Polygon Thread)
 
 Run the Sutherland-Hodgman algorithm independently for each polygon. Each thread processes one input polygon against all clip planes, outputting a clipped polygon:
 
@@ -12175,9 +12175,9 @@ void main() {
 
 [Source: Sutherland & Hodgman "Reentrant Polygon Clipping", CACM 1974; Blinn & Newell "Clipping Using Homogeneous Coordinates", SIGGRAPH 1978]
 
-### 106.2 Triangle Frustum Culling via Mesh Shader Amplification
+### 86.2 Triangle Frustum Culling via Mesh Shader Amplification
 
-The task/amplification shader phase (§85.2 mesh shader pattern) naturally implements per-cluster frustum culling before spawning mesh shader workgroups:
+The task/amplification shader phase (§101.2 mesh shader pattern) naturally implements per-cluster frustum culling before spawning mesh shader workgroups:
 
 ```glsl
 // frustum_cull.task.glsl — amplification shader: cull clusters against view frustum
@@ -12199,9 +12199,9 @@ void main() {
 
 [Source: Wihlidal 2016 §90; Kubisch 2018; Harris "GPU-Driven Rendering Pipelines", SIGGRAPH 2015]
 
-### 106.3 Conservative Rasterisation for Voxelisation
+### 86.3 Conservative Rasterisation for Voxelisation
 
-Conservative rasterisation expands each triangle outward so every voxel column touched by the triangle is rasterised — required for §41 solid voxelisation. Implement via geometry shader triangle expansion or the `VK_EXT_conservative_rasterization` extension:
+Conservative rasterisation expands each triangle outward so every voxel column touched by the triangle is rasterised — required for §13 solid voxelisation. Implement via geometry shader triangle expansion or the `VK_EXT_conservative_rasterization` extension:
 
 ```glsl
 // conservative_rast.geom — expand triangle for conservative rasterisation
@@ -12227,7 +12227,7 @@ void main() {
 
 [Source: Hasselgren et al. "Conservative Rasterization", GPU Gems 2 2005; §41 voxelisation]
 
-### 106.4 Clip-Space W-Buffer and Homogeneous Clipping
+### 86.4 Clip-Space W-Buffer and Homogeneous Clipping
 
 Clipping in homogeneous coordinates before the perspective divide handles the near-plane clipping case exactly, preventing division-by-zero artefacts for triangles crossing the camera:
 
@@ -12267,13 +12267,13 @@ void main() {
 
 Point clouds are the native output of depth sensors, LiDAR scanners, and multi-view reconstruction pipelines. This category covers GPU-accelerated point cloud processing (normal estimation via PCA on local neighbourhoods, outlier removal, voxel downsampling), Structure from Motion and multi-view stereo for recovering 3D geometry from unstructured image collections, Iterative Closest Point (ICP) registration for aligning successive point cloud frames, and 3D feature descriptor computation (FPFH, SHOT, learned descriptors) for recognition and pose estimation. These algorithms form the geometry perception pipeline for robotics, autonomous vehicles, and AR/VR applications.
 
-### 21. Point Cloud Processing
+### 87. Point Cloud Processing
 
 *Audience: systems developers, graphics application developers.*
 
 Point clouds are the direct output of depth cameras (structured light, LiDAR, stereo), photogrammetry pipelines, and 3DGS/NeRF density fields. GPU point cloud processing bridges raw sensor data and the mesh/SDF representations used throughout this chapter.
 
-### 21.1 GPU k-NN via Tiled Brute-Force
+### 87.1 GPU k-NN via Tiled Brute-Force
 
 For N ≤ 100k points and k ≤ 32, a **tiled brute-force** approach exploiting shared memory beats tree traversal by eliminating branch divergence:
 
@@ -12308,9 +12308,9 @@ void main() {
 }
 ```
 
-For larger clouds use the GPU k-d tree (§17.1) or uniform grid radius search (§17.2). [Source: Garcia et al. "Fast k Nearest Neighbor Search Using GPU", CVPR Workshop 2008]
+For larger clouds use the GPU k-d tree (§27.1) or uniform grid radius search (§27.2). [Source: Garcia et al. "Fast k Nearest Neighbor Search Using GPU", CVPR Workshop 2008]
 
-### 21.2 Normal Estimation from k-NN
+### 87.2 Normal Estimation from k-NN
 
 Per-point normals are the smallest eigenvector of the 3×3 neighbourhood covariance matrix. Each thread computes its local covariance and solves the 3×3 symmetric eigenproblem via cyclic Jacobi iteration:
 
@@ -12337,7 +12337,7 @@ void main() {
 
 Orientation consistency (pointing toward the sensor) requires a minimum spanning tree propagation — a CPU post-pass for static clouds. [Source: Rusu "Semantic 3D Object Maps for Everyday Manipulation", PhD 2009]
 
-### 21.3 GPU ICP Registration
+### 87.3 GPU ICP Registration
 
 **Iterative Closest Point** (Besl & McKay 1992) aligns source cloud P to target Q. Each iteration: (1) GPU k-NN finds nearest neighbours; (2) GPU reduction accumulates the 3×3 cross-covariance H = Σ(pᵢ−μₚ)(qᵢ−μ_q)ᵀ; (3) CPU SVD of H gives R = V Uᵀ; (4) apply R,t and repeat.
 
@@ -12376,7 +12376,7 @@ void main() {
 
 Point-to-plane ICP (project residual onto surface normal) converges 3× faster and has a closed-form 6×6 linear system solve per iteration. [Source: Besl & McKay "A Method for Registration of 3-D Shapes", PAMI 1992; Chen & Medioni "Object Modeling by Registration of Multiple Range Images", IVC 1992]
 
-### 21.4 GPU RANSAC Primitive Fitting
+### 87.4 GPU RANSAC Primitive Fitting
 
 RANSAC scores each candidate model against all points in parallel. Generate N candidates (plane, sphere, cylinder) from random minimal subsets; dispatch one kernel to count inliers for all N simultaneously:
 
@@ -12397,9 +12397,9 @@ void main() {
 
 Dispatch with `(N*M/64, 1, 1)` workgroups — all N×M scores evaluate in one pass. Read back the winning candidate index. [Source: Fischler & Bolles "Random Sample Consensus", CACM 1981; Schnabel et al. "Efficient RANSAC for Point-Cloud Shape Detection", CGF 2007]
 
-### 21.5 Euclidean Segmentation via Label Propagation
+### 87.5 Euclidean Segmentation via Label Propagation
 
-Cluster points within distance δ using the same iterative label-propagation pattern from §19.2 and §22.2, but in 3D over a spatial hash grid:
+Cluster points within distance δ using the same iterative label-propagation pattern from §70.2 and §50.2, but in 3D over a spatial hash grid:
 
 ```glsl
 // seg_label.comp
@@ -12424,13 +12424,13 @@ Iterate until `changed==0`. Compact to dense cluster IDs via prefix scan. [Sourc
 
 ---
 
-### 78. GPU Structure from Motion and Multi-View Stereo
+### 88. GPU Structure from Motion and Multi-View Stereo
 
 *Audience: systems developers, graphics application developers.*
 
-Structure from Motion (SfM) and Multi-View Stereo (MVS) reconstruct 3D geometry from multiple camera images. GPU acceleration targets: feature detection and matching (ORB, AKAZE), fundamental matrix estimation via GPU-RANSAC, depth map computation via semi-global matching (SGM), and depth map fusion into a dense point cloud (§75 Poisson surface).
+Structure from Motion (SfM) and Multi-View Stereo (MVS) reconstruct 3D geometry from multiple camera images. GPU acceleration targets: feature detection and matching (ORB, AKAZE), fundamental matrix estimation via GPU-RANSAC, depth map computation via semi-global matching (SGM), and depth map fusion into a dense point cloud (§9 Poisson surface).
 
-### 78.1 GPU-Accelerated ORB Feature Detection
+### 88.1 GPU-Accelerated ORB Feature Detection
 
 ORB (Rublee et al. 2011) combines FAST corner detection with binary BRIEF descriptors. The FAST response at each pixel is computed in parallel:
 
@@ -12463,7 +12463,7 @@ void main() {
 
 [Source: Rublee et al. "ORB: An Efficient Alternative to SIFT or SURF", ICCV 2011; Sinha et al. "GPU-Based Video Feature Tracking And Matching", EDGE 2006]
 
-### 78.2 RANSAC Fundamental Matrix Estimation
+### 88.2 RANSAC Fundamental Matrix Estimation
 
 GPU RANSAC samples N hypothesis sets in parallel, each computing the 7/8-point fundamental matrix and counting inliers:
 
@@ -12494,7 +12494,7 @@ void main() {
 
 [Source: Hartley & Zisserman "Multiple View Geometry in Computer Vision", 2004; GPU RANSAC: Ni et al. "Out-of-core Bundle Adjustment for Large-scale 3D Reconstruction", ICCV 2007]
 
-### 78.3 Semi-Global Matching (SGM) Depth Estimation
+### 88.3 Semi-Global Matching (SGM) Depth Estimation
 
 SGM (Hirschmüller 2008) computes dense stereo depth maps by aggregating matching costs along multiple scan-line paths. GPU parallelism runs all rows simultaneously:
 
@@ -12522,9 +12522,9 @@ void main() {
 
 [Source: Hirschmüller "Stereo Processing by Semiglobal Matching and Mutual Information", IEEE TPAMI 2008; GPU SGM: Hernandez-Juarez et al. "Embedded Real-Time Stereo Estimation via Semi-Global Matching on the GPU", CVPRW 2016]
 
-### 78.4 Depth Map Fusion into Point Cloud
+### 88.4 Depth Map Fusion into Point Cloud
 
-Fuse per-image depth maps into a consistent dense point cloud using confidence-weighted averaging, then optionally feed into §75 Poisson surface reconstruction:
+Fuse per-image depth maps into a consistent dense point cloud using confidence-weighted averaging, then optionally feed into §9 Poisson surface reconstruction:
 
 ```glsl
 // depth_fuse.comp — back-project depth map pixels into world-space point cloud
@@ -12552,13 +12552,13 @@ void main() {
 
 ---
 
-### 86. 3D Feature Descriptors and Pose Estimation
+### 89. 3D Feature Descriptors and Pose Estimation
 
 *Audience: systems developers, graphics application developers.*
 
-3D feature descriptors encode local geometry around a keypoint into a compact vector used for point cloud matching and pose estimation. GPU algorithms compute Fast Point Feature Histograms (FPFH) and SHOT descriptors in parallel across all keypoints, then use GPU-RANSAC (§78.2 pattern) to estimate the 6-DOF rigid transform aligning two point clouds.
+3D feature descriptors encode local geometry around a keypoint into a compact vector used for point cloud matching and pose estimation. GPU algorithms compute Fast Point Feature Histograms (FPFH) and SHOT descriptors in parallel across all keypoints, then use GPU-RANSAC (§88.2 pattern) to estimate the 6-DOF rigid transform aligning two point clouds.
 
-### 86.1 Normal Estimation via PCA
+### 89.1 Normal Estimation via PCA
 
 Before computing descriptors, estimate the surface normal at each point from its k-NN via PCA. The smallest eigenvector of the 3×3 covariance matrix of the neighbour positions is the normal:
 
@@ -12587,7 +12587,7 @@ void main() {
 
 [Source: Rusu et al. "Towards 3D Point Cloud Based Object Maps for Household Environments", Robotics and Autonomous Systems 2008]
 
-### 86.2 FPFH Descriptor Computation
+### 89.2 FPFH Descriptor Computation
 
 FPFH (Rusu et al. 2009) encodes the pairwise angular relationships between a point and its k-neighbours into a 33-dimensional histogram:
 
@@ -12622,7 +12622,7 @@ void main() {
 
 [Source: Rusu et al. "Fast Point Feature Histograms (FPFH) for 3D Registration", ICRA 2009]
 
-### 86.3 Descriptor Matching via GPU k-NN
+### 89.3 Descriptor Matching via GPU k-NN
 
 Match FPFH descriptors between two point clouds by finding the nearest-neighbour in descriptor space. Brute-force is O(N·M·33); approximate GPU k-NN via product quantization for large clouds:
 
@@ -12646,9 +12646,9 @@ void main() {
 
 [Source: Rusu et al. 2009; GPU ANN: Johnson & Hebert "Using Spin Images for Efficient Object Recognition in Cluttered 3D Scenes", IEEE TPAMI 1999]
 
-### 86.4 6-DOF Pose Estimation via GPU-RANSAC
+### 89.4 6-DOF Pose Estimation via GPU-RANSAC
 
-Use the §78.2 GPU-RANSAC pattern with 3-point samples (minimum for a rigid transform) to estimate the transformation matrix aligning the two point clouds:
+Use the §88.2 GPU-RANSAC pattern with 3-point samples (minimum for a rigid transform) to estimate the transformation matrix aligning the two point clouds:
 
 ```glsl
 // pose_ransac.comp — GPU-RANSAC for 6-DOF point cloud alignment
@@ -12672,20 +12672,20 @@ void main() {
     }
     cnt[h]=inl; T[h]=Th;
 }
-// CPU: pick argmax(cnt), refine with all inliers via ICP (§21)
+// CPU: pick argmax(cnt), refine with all inliers via ICP (§87)
 ```
 
 [Source: Rusu et al. "Fast Global Registration", ECCV 2016; Fischler & Bolles "Random Sample Consensus: A Paradigm for Model Fitting", CACM 1981]
 
 ---
 
-### 92. Iterative Closest Point (ICP) Registration
+### 90. Iterative Closest Point (ICP) Registration
 
 *Audience: systems developers, graphics application developers.*
 
-ICP (Besl & McKay 1992) aligns two point clouds by alternating: (1) find nearest-neighbour correspondences; (2) compute the rigid transform minimising their sum-squared distance. GPU parallelism covers both steps. §86 covers FPFH-based initialisation; ICP refines the result.
+ICP (Besl & McKay 1992) aligns two point clouds by alternating: (1) find nearest-neighbour correspondences; (2) compute the rigid transform minimising their sum-squared distance. GPU parallelism covers both steps. §89 covers FPFH-based initialisation; ICP refines the result.
 
-### 92.1 GPU k-NN Correspondence Search
+### 90.1 GPU k-NN Correspondence Search
 
 For each point in the source cloud, find the nearest point in the target cloud. Brute-force on GPU: O(N·M) dot products, but with SIMD parallelism across 10s of millions of pairs:
 
@@ -12709,7 +12709,7 @@ void main() {
 
 [Source: Besl & McKay "A Method for Registration of 3-D Shapes", IEEE TPAMI 1992; GPU ICP: Tamaki et al. "Softassign and EM-ICP on GPU", IVCNZ 2010]
 
-### 92.2 Cross-Covariance Matrix via Parallel Reduction
+### 90.2 Cross-Covariance Matrix via Parallel Reduction
 
 From N correspondence pairs (pᵢ, qᵢ), compute the cross-covariance H = Σ (pᵢ − p̄)(qᵢ − q̄)ᵀ needed for SVD. Use a parallel reduction:
 
@@ -12744,7 +12744,7 @@ void main() {
 
 [Source: Besl & McKay 1992; Segal & Akeley "The OpenGL Graphics System", 2004 §ICP appendix]
 
-### 92.3 SVD-Based Transform Estimation
+### 90.3 SVD-Based Transform Estimation
 
 The optimal rotation is R = V·Uᵀ where H = U·Σ·Vᵀ. Compute on CPU after the GPU reduction for a 3×3 matrix (negligible cost); translation is t = q̄ − R·p̄:
 
@@ -12763,7 +12763,7 @@ void main() {
 // Converges in 20-50 iterations for ≤45° initial misalignment
 ```
 
-### 92.4 Point-to-Plane ICP for Faster Convergence
+### 90.4 Point-to-Plane ICP for Faster Convergence
 
 Point-to-plane ICP (Chen & Medioni 1992) minimises the sum of squared distances along the target normal, converging roughly 10× faster than point-to-point. The optimal transform is solved by a 6×6 linear system:
 
@@ -12800,15 +12800,15 @@ void main() {
 
 ## XI. Neural and Learned Geometry
 
-Neural geometry methods replace hand-designed algorithms with learned representations trained on image or geometry supervision. 3D Gaussian Splatting (§16 provides the conceptual overview; §60 covers the full implementation including the differentiable rasterizer and densification) renders scenes as oriented Gaussian splats fitted to multi-view images; Neural Radiance Fields (NeRF) and neural SDFs represent geometry as MLPs queried at continuous 3D positions; Geometric Deep Learning applies graph neural networks and SE(3)-equivariant architectures to mesh classification and segmentation; and differentiable rendering enables gradient-based inverse problems — recovering geometry, materials, and lighting from image observations. These workloads run as CUDA or Vulkan compute dispatches and typically require tensor core acceleration.
+Neural geometry methods replace hand-designed algorithms with learned representations trained on image or geometry supervision. 3D Gaussian Splatting (§91 provides the conceptual overview; §94 covers the full implementation including the differentiable rasterizer and densification) renders scenes as oriented Gaussian splats fitted to multi-view images; Neural Radiance Fields (NeRF) and neural SDFs represent geometry as MLPs queried at continuous 3D positions; Geometric Deep Learning applies graph neural networks and SE(3)-equivariant architectures to mesh classification and segmentation; and differentiable rendering enables gradient-based inverse problems — recovering geometry, materials, and lighting from image observations. These workloads run as CUDA or Vulkan compute dispatches and typically require tensor core acceleration.
 
-### 16. 3D Gaussian Splatting and Neural Geometry
+### 91. 3D Gaussian Splatting and Neural Geometry
 
 *Audience: graphics application developers.*
 
 3DGS (Kerbl et al. 2023) replaces triangle meshes with a set of 3D Gaussian primitives, each parameterised by position, covariance, opacity, and view-dependent colour encoded in spherical harmonics. Rendering is a differentiable rasterization pipeline that has overtaken NeRF for real-time novel-view synthesis. The GPU pipeline is fully Vulkan/compute-compatible.
 
-### 16.1 3DGS Representation and Projection
+### 91.1 3DGS Representation and Projection
 
 Each Gaussian g has:
 
@@ -12849,7 +12849,7 @@ void main() {
 
 [Source: Kerbl et al. "3D Gaussian Splatting for Real-Time Novel View Synthesis", SIGGRAPH 2023; https://github.com/graphdeco-inria/gaussian-splatting]
 
-### 16.2 Tile Rasterizer: Sort-by-Depth and Alpha Compositing
+### 91.2 Tile Rasterizer: Sort-by-Depth and Alpha Compositing
 
 Rendering proceeds in four steps:
 
@@ -12891,25 +12891,25 @@ void main() {
 
 [Source: Kerbl et al. 2023 §4; GPU rasterizer implementation at https://github.com/graphdeco-inria/diff-gaussian-rasterization]
 
-### 16.3 Mesh Extraction from 3DGS and NeRF
+### 91.3 Mesh Extraction from 3DGS and NeRF
 
 Converting a trained 3DGS scene to a triangle mesh enables traditional rendering pipelines and physics simulation. Two approaches:
 
 **SuGaR** (Guédon & Lepetit 2023) adds a regularisation term during training that aligns Gaussians to surface sheets, then extracts a mesh by Poisson reconstruction (§3.12) from Gaussian centers weighted by opacity.
 
-**NeRF → mesh** (using Instant NGP): marching cubes on the NeRF density field at a threshold σ_surface. The density grid is evaluated at each voxel center in a compute dispatch, then piped into the two-pass GPU MC pipeline from §3.2. Texture maps are baked by computing the NeRF colour at each surface point (§7.13 GPU texture baking pipeline).
+**NeRF → mesh** (using Instant NGP): marching cubes on the NeRF density field at a threshold σ_surface. The density grid is evaluated at each voxel center in a compute dispatch, then piped into the two-pass GPU MC pipeline from §3.2. Texture maps are baked by computing the NeRF colour at each surface point (§10.13 GPU texture baking pipeline).
 
 **Occupancy networks** predict binary occupancy o(x) ∈ {0,1} for any query point. Run inference on a 256³ voxel grid in parallel (batched MLP evaluation in compute), then extract the isosurface with GPU marching cubes. [Source: Guédon & Lepetit "SuGaR: Surface-Aligned Gaussian Splatting", CVPR 2024; Müller et al. "Instant Neural Graphics Primitives", SIGGRAPH 2022]
 
 ---
 
-### 27. Geometric Deep Learning
+### 92. Geometric Deep Learning
 
 *Audience: graphics application developers, systems developers.*
 
 Geometric deep learning runs neural network inference directly on point clouds and triangle meshes, enabling semantic segmentation, shape completion, and neural implicit surface extraction on the same GPU that renders the scene.
 
-### 27.1 PointNet on GPU
+### 92.1 PointNet on GPU
 
 PointNet (Qi et al. 2017) applies a shared MLP per point then aggregates via symmetric max-pool. The per-point MLP is fully parallel — one thread per point per layer:
 
@@ -12929,11 +12929,11 @@ void main() {
 }
 ```
 
-Global max-pool over all points aggregates per-point features into a global descriptor via a parallel reduce (same pattern as §11.3). [Source: Qi et al. "PointNet", CVPR 2017; https://github.com/charlesq34/pointnet]
+Global max-pool over all points aggregates per-point features into a global descriptor via a parallel reduce (same pattern as §48.3). [Source: Qi et al. "PointNet", CVPR 2017; https://github.com/charlesq34/pointnet]
 
-### 27.2 Graph Convolution on Mesh Edge Graphs
+### 92.2 Graph Convolution on Mesh Edge Graphs
 
-Graph neural network message passing on mesh edges — structurally identical to the cotangent Laplacian evaluation (§14.1) with learned weights:
+Graph neural network message passing on mesh edges — structurally identical to the cotangent Laplacian evaluation (§34.1) with learned weights:
 
 ```glsl
 // graph_conv.comp — one GNN message-passing layer
@@ -12956,7 +12956,7 @@ void main() {
 
 Supports ChebNet, GAT (Graph Attention Networks), and DGCNN with minor modifications. [Source: Kipf & Welling "Semi-Supervised Classification with GCNs", ICLR 2017; Wang et al. "Dynamic Graph CNN for Learning on Point Clouds", SIGGRAPH 2019]
 
-### 27.3 Neural SDF Inference on GPU
+### 92.3 Neural SDF Inference on GPU
 
 Evaluate a two-layer MLP at each voxel of a 256³ grid in parallel, then extract the isosurface with GPU MC (§3.2):
 
@@ -12983,9 +12983,9 @@ void main() {
 
 [Source: Mescheder et al. "Occupancy Networks", CVPR 2019; Müller et al. "Instant NGP", SIGGRAPH 2022]
 
-### 27.4 Feature Distillation from 3DGS to Mesh Atlas
+### 92.4 Feature Distillation from 3DGS to Mesh Atlas
 
-Bake semantic/appearance features from a trained 3DGS scene (§16) into a mesh UV atlas (§7.13) for downstream editing or segmentation:
+Bake semantic/appearance features from a trained 3DGS scene (§91) into a mesh UV atlas (§10.13) for downstream editing or segmentation:
 
 ```glsl
 // feature_bake.comp
@@ -13010,13 +13010,13 @@ void main() {
 
 ---
 
-### 32. Differentiable Rendering and Inverse Geometry
+### 93. Differentiable Rendering and Inverse Geometry
 
 *Audience: graphics application developers, systems developers.*
 
 Differentiable rendering computes the gradient ∂L/∂θ of a scalar loss L (e.g., image reconstruction error) with respect to scene geometry parameters θ (vertex positions, SDF values, Gaussian means). This enables gradient-based geometry optimisation: mesh fitting to photographs, geometry parameter tuning, neural inverse rendering.
 
-### 32.1 Differentiable Rasterization: Soft Visibility
+### 93.1 Differentiable Rasterization: Soft Visibility
 
 Standard rasterisation is not differentiable at triangle edges (step-function coverage). SoftRas (Liu et al. 2019) and NVDiffRast (Laine et al. 2020) smooth the triangle edge boundary:
 
@@ -13033,7 +13033,7 @@ void main() {
 
 The backward pass accumulates ∂coverage/∂vertex_position via the chain rule; each edge contributes a gradient proportional to the sigmoid derivative. [Source: Liu et al. "Soft Rasterizer", ICCV 2019; Laine et al. "Modular Primitives for High-Performance Differentiable Rendering", SIGGRAPH Asia 2020]
 
-### 32.2 Differentiable Ray Tracing: Geometry Gradients
+### 93.2 Differentiable Ray Tracing: Geometry Gradients
 
 For ray-traced images, the gradient of a pixel colour L w.r.t. a vertex position p is:
 
@@ -13061,9 +13061,9 @@ void main() {
 
 [Source: Laine et al. 2020; Li et al. "Differentiable Monte Carlo Ray Tracing through Edge Sampling", SIGGRAPH Asia 2018]
 
-### 32.3 3DGS Gradient Flow
+### 93.3 3DGS Gradient Flow
 
-For 3D Gaussian splatting (§16), the backward pass of the tile rasterizer propagates image-space gradients back to per-Gaussian mean μ, covariance Σ, opacity α, and spherical harmonic coefficients. The forward-pass tile rasterizer stores per-pixel transmittance T for the backward pass:
+For 3D Gaussian splatting (§91), the backward pass of the tile rasterizer propagates image-space gradients back to per-Gaussian mean μ, covariance Σ, opacity α, and spherical harmonic coefficients. The forward-pass tile rasterizer stores per-pixel transmittance T for the backward pass:
 
 ```glsl
 // gs_backward.comp — gradient w.r.t. Gaussian means and opacity
@@ -13087,16 +13087,16 @@ void main() {
 
 [Source: Kerbl et al. "3D Gaussian Splatting for Real-Time Radiance Field Rendering", SIGGRAPH 2023 (supplemental training code); https://github.com/graphdeco-inria/gaussian-splatting]
 
-### 32.4 Geometry Optimisation Loop
+### 93.4 Geometry Optimisation Loop
 
 The full loop: forward render → compute loss → backward pass → gradient descent step on vertex positions/SDF values:
 
 ```python
 # Host-side loop (pseudo-code; actual dispatch via Vulkan compute)
 for iteration in range(MAX_ITERS):
-    vkCmdDispatch(forward_render)      # §32.1 soft rasteriser or §20 RT
+    vkCmdDispatch(forward_render)      # §93.1 soft rasteriser or §75 RT
     vkCmdDispatch(loss_compute)        # MSE / perceptual loss
-    vkCmdDispatch(backward_pass)       # §32.2 or §32.3 gradient accumulation
+    vkCmdDispatch(backward_pass)       # §93.2 or §93.3 gradient accumulation
     vkCmdDispatch(adam_update)         # Adam: m = β1*m + (1-β1)*g; ...
     # After convergence: extract mesh from optimised SDF via §3.2 GPU MC
 ```
@@ -13105,13 +13105,13 @@ Adam per-parameter momentum/variance update also runs in compute — one thread 
 
 ---
 
-### 60. 3D Gaussian Splatting
+### 94. 3D Gaussian Splatting
 
 *Audience: graphics application developers.*
 
 3D Gaussian Splatting (3DGS, Kerbl et al. 2023) represents a scene as a set of anisotropic 3D Gaussians — each with a position, covariance matrix, opacity, and spherical harmonic colour coefficients — and rasterizes them via a GPU tile-based alpha compositing pipeline. It achieves real-time novel-view synthesis quality matching NeRF at 30–120 fps without ray marching.
 
-### 60.1 Gaussian Representation and SH Coefficients
+### 94.1 Gaussian Representation and SH Coefficients
 
 Each Gaussian stores: centre μ ∈ ℝ³, scale s ∈ ℝ³, rotation quaternion q ∈ ℝ⁴ (which together define the 3D covariance Σ = R·S·Sᵀ·Rᵀ), opacity α ∈ [0,1], and spherical harmonic coefficients for view-dependent colour (up to degree 3, 48 floats per Gaussian):
 
@@ -13154,9 +13154,9 @@ void main() {
 
 [Source: Kerbl et al. "3D Gaussian Splatting for Real-Time Radiance Field Rendering", SIGGRAPH 2023; Zwicker et al. "EWA Splatting", IEEE TVCG 2002]
 
-### 60.2 Tile-Based Sorting and Rasterization
+### 94.2 Tile-Based Sorting and Rasterization
 
-After projection, sort Gaussians by tile+depth key using GPU radix sort (§9.4), then rasterize each tile in a compute shader doing back-to-front alpha compositing:
+After projection, sort Gaussians by tile+depth key using GPU radix sort (§25.4), then rasterize each tile in a compute shader doing back-to-front alpha compositing:
 
 ```glsl
 // gaussian_raster.comp — tile-based alpha compositing of sorted Gaussians
@@ -13188,7 +13188,7 @@ void main() {
 
 [Source: Kerbl et al. 2023; implementation reference: https://github.com/graphdeco-inria/gaussian-splatting]
 
-### 60.3 Gaussian Culling and LOD
+### 94.3 Gaussian Culling and LOD
 
 For large scenes (millions of Gaussians), cull those outside the view frustum and those below a screen-space size threshold in the projection pass:
 
@@ -13215,7 +13215,7 @@ void main() {
 
 [Source: Ye et al. "AbsGS: Recovering Fine Details for 3D Gaussian Splatting", 2024; Mallick et al. "Taming 3DGS: High-Quality Radiance Fields with Limited Resources", SIGGRAPH Asia 2024]
 
-### 60.4 Gaussian Densification and Pruning
+### 94.4 Gaussian Densification and Pruning
 
 During training (offline, CUDA), over-reconstructed regions require splitting large Gaussians and cloning small ones; under-reconstructed regions require pruning transparent Gaussians. The GPU densification kernel:
 
@@ -13242,15 +13242,15 @@ __global__ void densifyAndPrune(
 
 ---
 
-### 73. Neural Geometry: NeRF and Neural Implicit Surfaces
+### 95. Neural Geometry: NeRF and Neural Implicit Surfaces
 
 *Audience: graphics application developers.*
 
 Neural Radiance Fields (NeRF, Mildenhall et al. 2020) and neural signed distance functions (DeepSDF, Park et al. 2019) represent geometry implicitly as the weights of a neural network. At inference time, GPU shaders evaluate these networks along camera rays, producing novel views or surface geometry without an explicit triangle mesh. Instant-NGP (Müller et al. 2022) replaces the large MLP with a multiresolution hash grid, achieving real-time NeRF rendering.
 
-### 73.1 NeRF: Volume Rendering with MLP Inference
+### 95.1 NeRF: Volume Rendering with MLP Inference
 
-A NeRF MLP maps (x, y, z, θ, φ) → (colour, density). Each camera ray is sampled at N stratified depths and the MLP is evaluated at each sample, then composited via the volume rendering equation (§64.1):
+A NeRF MLP maps (x, y, z, θ, φ) → (colour, density). Each camera ray is sampled at N stratified depths and the MLP is evaluated at each sample, then composited via the volume rendering equation (§67.1):
 
 ```glsl
 // nerf_inference.comp — evaluate NeRF MLP for one camera ray
@@ -13288,7 +13288,7 @@ void main() {
 
 [Source: Mildenhall et al. "NeRF: Representing Scenes as Neural Radiance Fields for View Synthesis", ECCV 2020; https://www.matthewtancik.com/nerf]
 
-### 73.2 Instant-NGP: Multiresolution Hash Grid
+### 95.2 Instant-NGP: Multiresolution Hash Grid
 
 Instant-NGP (Müller et al. 2022) replaces the large positional encoding + deep MLP with a multi-resolution hash table of learnable feature vectors (16 levels, 2^19 entries each, 2 features per entry), followed by a tiny 2-layer MLP. GPU inference uses CUDA/Vulkan shared memory to batch hash lookups:
 
@@ -13325,9 +13325,9 @@ void main() {
 
 [Source: Müller et al. "Instant Neural Graphics Primitives with a Multiresolution Hash Encoding", SIGGRAPH 2022; https://github.com/NVlabs/instant-ngp]
 
-### 73.3 Neural SDF: DeepSDF Inference
+### 95.3 Neural SDF: DeepSDF Inference
 
-DeepSDF (Park et al. 2019) represents a shape as φ(x) = MLP(x, z) where z is a learned latent code. At inference, evaluate the MLP at each query point. Combined with §61 marching cubes on the neural SDF grid, this produces a mesh:
+DeepSDF (Park et al. 2019) represents a shape as φ(x) = MLP(x, z) where z is a learned latent code. At inference, evaluate the MLP at each query point. Combined with §65 marching cubes on the neural SDF grid, this produces a mesh:
 
 ```glsl
 // deepsdf_infer.comp — evaluate DeepSDF MLP on a voxel grid for isosurface extraction
@@ -13347,19 +13347,19 @@ void main() {
     }
     imageStore(sdfGrid, id, vec4(tanh(h[0])));  // output: signed distance
 }
-// Then run §61.1 marching cubes on the sdfGrid to extract the surface
+// Then run §65.1 marching cubes on the sdfGrid to extract the surface
 ```
 
 [Source: Park et al. "DeepSDF: Learning Continuous Signed Distance Functions for Shape Representation", CVPR 2019]
 
-### 73.4 NeuS: Neural Implicit Surface for Reconstruction
+### 95.4 NeuS: Neural Implicit Surface for Reconstruction
 
 NeuS (Wang et al. 2021) learns an SDF-parameterised volume density function s(φ) = sigmoid(−φ/ε) that correctly renders the zero-level-set surface from multi-view images. The rendering integral uses the SDF value to bias the density toward the surface:
 
 ```glsl
 // neus_render.comp — NeuS volume rendering with SDF-derived density
-// After training, inference evaluates the same §73.3 MLP + colour network
-// The key difference from NeRF (§73.1) is the density function:
+// After training, inference evaluates the same §95.3 MLP + colour network
+// The key difference from NeRF (§95.1) is the density function:
 // ρ(t) = max(-dφ/dt, 0) * sigmoid(-φ/ε) / (sigmoid(-φ/ε) + sigmoid(φ/ε))
 // This makes the surface lie exactly on the SDF zero crossing.
 layout(local_size_x=8,local_size_y=8) in;
@@ -13393,13 +13393,13 @@ void main() {
 
 This category collects geometry algorithms that serve specific application domains rather than the general rendering pipeline. Scientific visualization renders isosurfaces and streamlines from simulation scalar and vector fields; acoustic ray tracing models sound propagation geometry; molecular surface computation (Connolly, SAS) supports biochemistry visualization; VR/XR reprojection geometry warps previously rendered frames to reduce latency; GPU SDF font rendering produces crisp text at all scales without rasterization artefacts; micro-polygon displacement adds film-quality surface detail via tessellation; silhouette detection drives both NPR rendering and shadow volume construction; and GPU texture synthesis generates tileable detail patterns. Each draws on core GPU geometry primitives but targets a narrow, well-defined application context.
 
-### 29. Scientific Visualization Geometry
+### 96. Scientific Visualization Geometry
 
 *Audience: systems developers, graphics application developers.*
 
 Simulation output — velocity fields, scalar fields, tensor fields — requires geometry algorithms to extract, integrate, and render meaningful visual structures. All compute patterns here reuse infrastructure from earlier sections: RK4 integration, marching cubes, mesh shaders.
 
-### 29.1 Streamline and Pathline Integration
+### 96.1 Streamline and Pathline Integration
 
 Streamlines trace tangent curves of a vector field v(x); pathlines follow time-varying fields. 4th-order Runge-Kutta in compute — one thread per seed:
 
@@ -13428,9 +13428,9 @@ void main() {
 }
 ```
 
-Tube geometry (§6.3) converts streamlines to renderable ribbons. [Source: Jobard & Lefer "Creating Evenly-Spaced Streamlines", EuroVis 1997]
+Tube geometry (§4.3) converts streamlines to renderable ribbons. [Source: Jobard & Lefer "Creating Evenly-Spaced Streamlines", EuroVis 1997]
 
-### 29.2 Empty-Space Skipping for Volume Ray Casting
+### 96.2 Empty-Space Skipping for Volume Ray Casting
 
 Volume rendering casts one ray per pixel accumulating colour and opacity via front-to-back compositing. A min-max mipmap skips empty regions:
 
@@ -13457,7 +13457,7 @@ void main() {
 
 [Source: Krueger & Westermann "Acceleration Techniques for GPU-based Volume Rendering", VIS 2003]
 
-### 29.3 Tensor Field Glyphs in Mesh Shaders
+### 96.3 Tensor Field Glyphs in Mesh Shaders
 
 Superquadric tensor glyphs (Kindlmann 2004) encode tensor eigenvalues/eigenvectors in glyph shape and orientation. Generated entirely in the mesh shader — no precomputed glyph mesh — one workgroup per grid point:
 
@@ -13478,7 +13478,7 @@ void main() {
 
 [Source: Kindlmann "Superquadric Tensor Glyphs", EuroVis 2004]
 
-### 29.4 Time-Varying Isosurface Extraction
+### 96.4 Time-Varying Isosurface Extraction
 
 For animated scalar fields, limit GPU marching cubes (§3.2) to **dirty voxels** where the field changed:
 
@@ -13499,13 +13499,13 @@ The MC dispatch skips voxels with `dirty[v/32] & (1<<(v%32)) == 0`. For slowly e
 
 ---
 
-### 38. Decal and Surface Projection Geometry
+### 97. Decal and Surface Projection Geometry
 
 *Audience: graphics application developers.*
 
 Decals project surface detail (bullet holes, dirt, emblems) onto arbitrary geometry without modifying the underlying mesh. GPU decal systems fall into two families: *deferred decals* (project in screen space using the deferred G-buffer) and *mesh decals* (clip decal polygon against scene triangles on GPU to generate a coplanar mesh).
 
-### 38.1 Deferred Screen-Space Decals
+### 97.1 Deferred Screen-Space Decals
 
 A decal volume is an axis-aligned box in world space. In the deferred pass, each decal dispatches a full-screen quad; the fragment shader tests whether each G-buffer pixel falls inside the decal box and blends the decal texture:
 
@@ -13530,7 +13530,7 @@ void main() {
 
 For normal-map decals, also unproject the G-buffer normal and blend in tangent space. [Source: Nota "Rendering Wounds: Decal Projection in 'The Last of Us'", SIGGRAPH 2014; Valient "Killzone Shadow Fall: Deferred Rendering", GDC 2014]
 
-### 38.2 Mesh Decal: GPU Polygon Clipping
+### 97.2 Mesh Decal: GPU Polygon Clipping
 
 For masked decals that must respect depth discontinuities or work in forward rendering, clip the decal polygon against each scene triangle using the Sutherland-Hodgman algorithm on GPU:
 
@@ -13573,7 +13573,7 @@ void main() {
 
 [Source: Sutherland & Hodgman "Reentrant Polygon Clipping", CACM 1974; Tatarchuk "Practical Parallax Occlusion Mapping with Self-Shadowing", GDC 2006]
 
-### 38.3 Stencil-Volume Projection
+### 97.3 Stencil-Volume Projection
 
 A third approach uses the stencil buffer to mask the decal projection volume: draw back faces incrementing stencil, draw front faces decrementing. Pixels with stencil=1 are inside the volume. Then draw the decal with stencil test = equal(1):
 
@@ -13589,13 +13589,13 @@ VkStencilOpState frontFace{VK_STENCIL_OP_KEEP, VK_STENCIL_OP_DECREMENT_AND_CLAMP
 
 ---
 
-### 53. GPU Texture Synthesis and Procedural Shading Geometry
+### 98. GPU Texture Synthesis and Procedural Shading Geometry
 
 *Audience: graphics application developers.*
 
 Procedural texturing generates surface detail without pre-authored texture assets — essential for infinite terrain, aged materials, and biological patterns. The geometric outputs (normal maps, displacement maps, colour masks) feed directly into the rendering pipeline as GPU images.
 
-### 53.1 Reaction-Diffusion on GPU
+### 98.1 Reaction-Diffusion on GPU
 
 Turing's reaction-diffusion system (1952) generates biological patterns — spots, stripes, labyrinth textures — by iterating two coupled PDEs on a 2D grid. The Gray-Scott model is GPU-friendly:
 
@@ -13627,7 +13627,7 @@ void main() {
 
 Iterate 500–5000 steps offline or stream frames in real time for animated biological textures. [Source: Pearson "Complex Patterns in a Simple System", Science 1993; GPU RD: Rumpf & Strzodka "Numerical Methods for the Gray-Scott Model", 2000]
 
-### 53.2 Wang Tiles for Non-Repeating Textures
+### 98.2 Wang Tiles for Non-Repeating Textures
 
 Wang tiles (Wang 1961, Cohen et al. 2003) tile the plane aperiodically by ensuring adjacent tile edges match colour constraints — eliminating the visible repetition of tiled textures:
 
@@ -13648,9 +13648,9 @@ void main() {
 
 GPU generation of valid Wang tilings: assign edge colours to a grid via a compute shader respecting the Wang constraint, then look up the corresponding tile from the set of 2^(2E) tiles for E edge colours. [Source: Cohen et al. "Wang Tiles for Image and Texture Generation", SIGGRAPH 2003]
 
-### 53.3 Noise-Based Displacement and Normal Map Generation
+### 98.3 Noise-Based Displacement and Normal Map Generation
 
-Generate displacement maps from procedural noise for real-time terrain detail, without pre-authored assets. Combine fBm (§13.1) with domain warping:
+Generate displacement maps from procedural noise for real-time terrain detail, without pre-authored assets. Combine fBm (§69.1) with domain warping:
 
 ```glsl
 // displace_gen.comp — generate displacement + normal map from fBm + domain warp
@@ -13678,15 +13678,15 @@ void main() {
 
 ---
 
-### 54. Acoustic Ray Tracing and Sound Geometry
+### 99. Acoustic Ray Tracing and Sound Geometry
 
 *Audience: systems developers, graphics application developers.*
 
-Geometric acoustics treats sound as rays that reflect off surfaces according to the angle of incidence, attenuate with distance, and are absorbed by surface materials. GPU acceleration uses the same TLAS/BLAS infrastructure as visual ray tracing (§20) but with a much larger number of rays per source and a different termination criterion.
+Geometric acoustics treats sound as rays that reflect off surfaces according to the angle of incidence, attenuate with distance, and are absorbed by surface materials. GPU acceleration uses the same TLAS/BLAS infrastructure as visual ray tracing (§75) but with a much larger number of rays per source and a different termination criterion.
 
-### 54.1 Acoustic Ray Emission
+### 99.1 Acoustic Ray Emission
 
-Each sound source emits N rays uniformly distributed over the unit sphere using Halton sampling (§47.1). Rays carry energy and terminate when energy falls below a threshold or when the maximum reflection count is reached:
+Each sound source emits N rays uniformly distributed over the unit sphere using Halton sampling (§105.1). Rays carry energy and terminate when energy falls below a threshold or when the maximum reflection count is reached:
 
 ```glsl
 // acoustic_emit.raygen.glsl — emit acoustic rays from point source
@@ -13711,7 +13711,7 @@ void main() {
 }
 ```
 
-### 54.2 Acoustic Closest-Hit: Reflection and Absorption
+### 99.2 Acoustic Closest-Hit: Reflection and Absorption
 
 Each surface has a frequency-dependent absorption coefficient α. At each hit, attenuate the ray energy by (1-α) and reflect according to the surface normal:
 
@@ -13745,9 +13745,9 @@ void main() {
 
 [Source: Vorländer "Auralization: Fundamentals of Acoustics", 2008; GPU acoustic ray tracing: Schissler et al. "High-Order Diffraction and Diffuse Reflections for Interactive Sound Propagation in Large Environments", SIGGRAPH 2014]
 
-### 54.3 Sound Occlusion Query via Ray Query
+### 99.3 Sound Occlusion Query via Ray Query
 
-A cheaper occlusion-only query (no reflection) determines whether a sound source is audible from the listener position — equivalent to a shadow ray (§43.4) but in the audio domain:
+A cheaper occlusion-only query (no reflection) determines whether a sound source is audible from the listener position — equivalent to a shadow ray (§76.4) but in the audio domain:
 
 ```glsl
 // sound_occlusion.comp
@@ -13773,13 +13773,13 @@ void main() {
 
 ---
 
-### 76. VR/XR Geometry: Reprojection and Foveation
+### 100. VR/XR Geometry: Reprojection and Foveation
 
 *Audience: graphics application developers, systems developers.*
 
 VR headsets have stringent per-eye frame rate requirements (90–120 Hz) and eye-tracking hardware that identifies the foveal region with sub-1° accuracy. GPU geometry algorithms support two XR-specific techniques: (1) reprojection (ATW/ASW) synthesises missing frames from depth and motion; (2) foveated rendering reduces triangle and shading work outside the fixation point.
 
-### 76.1 Asynchronous TimeWarp (ATW)
+### 100.1 Asynchronous TimeWarp (ATW)
 
 ATW (Oculus 2014) re-projects the previous frame's colour+depth into the current head pose. For each output pixel, un-project using the previous frame's depth, transform to the new pose, and re-project:
 
@@ -13812,7 +13812,7 @@ void main() {
 
 [Source: Oculus "Asynchronous TimeWarp", Meta Developer Blog 2014; Valve "Low Latency VR Rendering" GDC 2015]
 
-### 76.2 Application SpaceWarp (ASW)
+### 100.2 Application SpaceWarp (ASW)
 
 ASW (Meta 2021) synthesises interleaved frames at half the application frame rate using optical flow. A motion vector field (from depth+pose) warps the previous frame to produce the synthesised frame:
 
@@ -13837,7 +13837,7 @@ void main() {
 
 [Source: Meta "Asynchronous SpaceWarp" Developer Blog 2021; Liang et al. "NSFF: Neural Scene Flow Fields for Space-Time View Synthesis", CVPR 2021]
 
-### 76.3 Fixed-Foveated Rendering: Variable Rate Shading
+### 100.3 Fixed-Foveated Rendering: Variable Rate Shading
 
 Fixed foveation divides the render target into centre (1×1 shading rate), mid-ring (1×2), and periphery (2×4) regions and uses `VK_KHR_fragment_shading_rate` to reduce shading work. The shading rate image is written by a compute pass using the eye-tracking gaze position:
 
@@ -13860,7 +13860,7 @@ void main() {
 
 [Source: Guenter et al. "Foveated 3D Graphics", SIGGRAPH Asia 2012; Vulkan `VK_KHR_fragment_shading_rate` specification]
 
-### 76.4 Foveated Mesh LOD
+### 100.4 Foveated Mesh LOD
 
 For geometry workload, reduce triangle density in the periphery. A task shader computes the screen-space distance from the foveal centre and selects a meshlet LOD tier accordingly:
 
@@ -13885,13 +13885,13 @@ void main() {
 
 ---
 
-### 85. Silhouette Detection and Feature Lines
+### 101. Silhouette Detection and Feature Lines
 
 *Audience: graphics application developers.*
 
-Silhouette edges are mesh edges where one adjacent face is front-facing and the other is back-facing relative to the view direction. GPU detection operates on the half-edge data structure, parallelising over all edges. Feature lines (ridges, valleys, suggestive contours) require curvature information from §77 spectral processing.
+Silhouette edges are mesh edges where one adjacent face is front-facing and the other is back-facing relative to the view direction. GPU detection operates on the half-edge data structure, parallelising over all edges. Feature lines (ridges, valleys, suggestive contours) require curvature information from §38 spectral processing.
 
-### 85.1 Silhouette Edge Detection on Half-Edge Mesh
+### 101.1 Silhouette Edge Detection on Half-Edge Mesh
 
 For each edge, test the dot product of the face normals with the view vector. Emit geometry for silhouette edges:
 
@@ -13919,7 +13919,7 @@ void main() {
 
 [Source: Gooch et al. "A Non-Photorealistic Lighting Model For Automatic Technical Illustration", SIGGRAPH 1998; Card & Mitchell "Non-Photorealistic Rendering with Pixel and Vertex Shaders", ShaderX 2002]
 
-### 85.2 Silhouette Fattening via Mesh Shader
+### 101.2 Silhouette Fattening via Mesh Shader
 
 Expand silhouette edges into thin quads (fin geometry) in the mesh shader to produce anti-aliased outlines without geometry shader overhead:
 
@@ -13947,7 +13947,7 @@ void main() {
 
 [Source: Raskar & Cohen "Image Precision Silhouette Edges on a GPU", I3D 1999; Isenberg et al. "A Developer's Guide to Silhouette Algorithms for Polygonal Models", IEEE CGA 2003]
 
-### 85.3 Ridge and Valley Lines from Principal Curvature
+### 101.3 Ridge and Valley Lines from Principal Curvature
 
 Ridges are loci where the maximum principal curvature κ₁ is locally maximal along its curvature direction e₁. Detect them per-edge by sign change of the directional derivative of κ₁:
 
@@ -13974,7 +13974,7 @@ void main() {
 
 [Source: Ohtake et al. "Ridge-Valley Lines on Meshes via Implicit Surface Fitting", SIGGRAPH 2004; DeCarlo et al. "Suggestive Contours for Conveying Shape", SIGGRAPH 2003]
 
-### 85.4 Suggestive Contours
+### 101.4 Suggestive Contours
 
 Suggestive contours are where the radial curvature κᵣ (curvature in the view direction projected onto the surface) crosses zero with negative derivative — predicting silhouettes that would appear under small view perturbations:
 
@@ -14010,13 +14010,13 @@ void main() {
 
 ---
 
-### 93. Micro-Polygon Displacement and GPU Tessellation
+### 102. Micro-Polygon Displacement and GPU Tessellation
 
 *Audience: graphics application developers.*
 
-Displacement mapping (Cook 1984) adds fine surface detail by offsetting vertices along the normal by a scalar value sampled from a height texture. GPU tessellation via the hardware tessellator (Vulkan tessellation shaders) or mesh shaders generates the dense vertex grid at runtime; §1 subdivision surfaces and §90 virtual geometry represent related approaches. True micro-polygon displacement requires crack-free patch stitching and adaptive tessellation factor computation.
+Displacement mapping (Cook 1984) adds fine surface detail by offsetting vertices along the normal by a scalar value sampled from a height texture. GPU tessellation via the hardware tessellator (Vulkan tessellation shaders) or mesh shaders generates the dense vertex grid at runtime; §1 subdivision surfaces and §33 virtual geometry represent related approaches. True micro-polygon displacement requires crack-free patch stitching and adaptive tessellation factor computation.
 
-### 93.1 Adaptive Tessellation Factor Computation
+### 102.1 Adaptive Tessellation Factor Computation
 
 Tessellation factors are set per-edge based on projected edge length or curvature, ensuring one tessellation sample per pixel:
 
@@ -14043,7 +14043,7 @@ void main() {
 
 [Source: Schwarz & Stamminger "Bitmask Soft Shadows", EG 2007; Nießner et al. "Feature-Adaptive GPU Rendering of Catmull-Clark Subdivision Surfaces", SIGGRAPH 2012]
 
-### 93.2 Displacement Evaluation in Tessellation Evaluation Shader
+### 102.2 Displacement Evaluation in Tessellation Evaluation Shader
 
 ```glsl
 // tess_eval.tese — displacement along interpolated normal
@@ -14070,7 +14070,7 @@ void main() {
 
 [Source: Cook "Shade Trees", SIGGRAPH 1984; Tatarchuk "Practical Parallax Occlusion Mapping for Highly Detailed Surface Rendering", ShaderX 5, 2006]
 
-### 93.3 Crack-Free Patch Stitching
+### 102.3 Crack-Free Patch Stitching
 
 Adjacent patches with different tessellation factors produce T-junctions and cracks. The hardware tessellator handles this within a patch, but between patches the outer tessellation levels must match. Compute the outer tessellation factor for each shared edge identically from both patches:
 
@@ -14093,9 +14093,9 @@ void main() {
 
 [Source: Nießner et al. 2012; Walton "Tessellation on Any Budget", GDC 2011]
 
-### 93.4 Mesh Shader Displacement for Nanite-Compatible Micro-Polygons
+### 102.4 Mesh Shader Displacement for Nanite-Compatible Micro-Polygons
 
-When using §90 virtual geometry, displacement can be applied in the mesh shader itself, offsetting cluster vertices along normals sampled from a virtual texture:
+When using §33 virtual geometry, displacement can be applied in the mesh shader itself, offsetting cluster vertices along normals sampled from a virtual texture:
 
 ```glsl
 // disp_mesh.mesh.glsl — apply displacement in mesh shader for cluster rendering
@@ -14121,13 +14121,13 @@ void main() {
 
 ---
 
-### 95. GPU SDF Font and Curve Rendering
+### 103. GPU SDF Font and Curve Rendering
 
 *Audience: graphics application developers.*
 
 Signed distance field (SDF) fonts (Green 2007) pre-render each glyph to a low-resolution SDF texture; at runtime, the fragment shader reconstructs sharp edges regardless of scale by thresholding the interpolated SDF value. Multi-channel SDF (MSDF, Chlumský 2016) encodes the distance in three colour channels to preserve sharp corners. Loop-Blinn (2005) renders cubic Bézier curves exactly on the GPU without pre-baking.
 
-### 95.1 Offline SDF Glyph Baking
+### 103.1 Offline SDF Glyph Baking
 
 Bake glyph outlines (from FreeType) into a low-resolution SDF texture by computing the signed distance from each texel to the nearest contour edge:
 
@@ -14158,7 +14158,7 @@ void main() {
 
 [Source: Green "Improved Alpha-Tested Magnification for Vector Textures and Special Effects", SIGGRAPH 2007]
 
-### 95.2 Runtime SDF Font Rendering
+### 103.2 Runtime SDF Font Rendering
 
 In the fragment shader, threshold the SDF and apply anti-aliasing using the screen-space derivative of the SDF:
 
@@ -14178,7 +14178,7 @@ void main() {
 
 [Source: Green 2007; Behdad "State of Text Rendering 2", 2024]
 
-### 95.3 Multi-Channel SDF (MSDF) for Sharp Corners
+### 103.3 Multi-Channel SDF (MSDF) for Sharp Corners
 
 MSDF (Chlumský 2016) stores the minimum distance to the nearest contour edge in three separate colour channels (one per pseudo-distance direction), then takes the median at render time to reconstruct sharp corners that single-channel SDF blurs:
 
@@ -14199,7 +14199,7 @@ void main() {
 
 [Source: Chlumský "Shape Decomposition for Multi-Channel Distance Fields", Master's thesis, Czech Technical University 2015]
 
-### 95.4 Loop-Blinn Cubic Bézier Rendering
+### 103.4 Loop-Blinn Cubic Bézier Rendering
 
 Loop & Blinn (2005) render cubic Bézier curves exactly on the GPU by encoding each bezier patch as a quad, computing a cubic discriminant texture, and discarding fragments outside the curve in the fragment shader:
 
@@ -14218,15 +14218,15 @@ void main() {
 
 ---
 
-### 99. Molecular Surface Computation
+### 104. Molecular Surface Computation
 
 *Audience: systems developers.*
 
 Molecular surfaces (solvent-accessible surface, SAS; solvent-excluded surface, SES; Connolly surface) define the geometric boundary between a protein and its solvent. GPU algorithms compute these surfaces for real-time docking visualization, drug discovery pipelines, and volumetric electrostatics. Inputs are atom positions and van der Waals radii; outputs are triangle meshes or SDF grids.
 
-### 99.1 Solvent-Accessible Surface via SDF Grid
+### 104.1 Solvent-Accessible Surface via SDF Grid
 
-The SAS is the union of spheres of radius rᵢ + rₛ centred on each atom (rᵢ = van der Waals, rₛ = solvent probe). Compute as a SDF grid and extract with marching cubes (§61):
+The SAS is the union of spheres of radius rᵢ + rₛ centred on each atom (rᵢ = van der Waals, rₛ = solvent probe). Compute as a SDF grid and extract with marching cubes (§65):
 
 ```glsl
 // molsurf_sas.comp — compute SAS SDF: min distance to expanded atom spheres
@@ -14245,12 +14245,12 @@ void main() {
     }
     sdf[c.z*pc.dim.y*pc.dim.x + c.y*pc.dim.x + c.x] = d;
 }
-// Then run §61 marching cubes on sdf[] at isovalue 0.0
+// Then run §65 marching cubes on sdf[] at isovalue 0.0
 ```
 
 [Source: Connolly "Analytical Molecular Surface Calculation", Journal of Applied Crystallography 1983; Krone et al. "GPU-Based Interactive Visualization Techniques for Molecular Dynamics Simulations", Computer Graphics Forum 2012]
 
-### 99.2 Solvent-Excluded Surface via Rolling Probe
+### 104.2 Solvent-Excluded Surface via Rolling Probe
 
 The SES (Connolly surface) accounts for where the probe sphere cannot fit between atoms — the re-entrant surface. GPU computation identifies contact circles and toroidal re-entrant patches:
 
@@ -14274,7 +14274,7 @@ void main() {
 
 [Source: Connolly 1983; Parulek & Viola "Implicit Representation of Molecular Surfaces", IEEE TVCG 2012]
 
-### 99.3 Ambient Occlusion for Molecular Visualization
+### 104.3 Ambient Occlusion for Molecular Visualization
 
 Molecular AO integrates over the hemisphere above each surface point whether other atoms occlude it — a proxy for solvent accessibility and electrostatic exposure:
 
@@ -14282,7 +14282,7 @@ Molecular AO integrates over the hemisphere above each surface point whether oth
 // mol_ao.comp — ambient occlusion for molecular surface via ray queries
 layout(set=0,binding=0) readonly buffer SurfPts { vec3 spts[];  };
 layout(set=0,binding=1) readonly buffer SurfNor  { vec3 snor[];  };
-layout(set=0,binding=2) uniform accelerationStructureEXT tlas;  // BVH of atom spheres §70
+layout(set=0,binding=2) uniform accelerationStructureEXT tlas;  // BVH of atom spheres §31
 layout(set=0,binding=3) writeonly buffer AO { float ao[]; };
 layout(push_constant) uniform PC { int nRays; float maxDist; } pc;
 layout(local_size_x=64) in;
@@ -14304,14 +14304,14 @@ void main() {
 
 [Source: Tarini et al. "Ambient Occlusion and Edge Cueing to Enhance Real Time Molecular Visualization", IEEE TVCG 2006; §62 RTAO pattern]
 
-### 99.4 Electrostatic Potential on Surface (Poisson-Boltzmann)
+### 104.4 Electrostatic Potential on Surface (Poisson-Boltzmann)
 
-Map the Poisson-Boltzmann electrostatic potential onto the molecular surface by solving the linearised PB equation on the SDF grid with a conjugate gradient solver (§65.2 pattern):
+Map the Poisson-Boltzmann electrostatic potential onto the molecular surface by solving the linearised PB equation on the SDF grid with a conjugate gradient solver (§37.2 pattern):
 
 ```glsl
 // poisson_boltzmann.comp — one Jacobi iteration of linearised PB equation
 // ∇²φ = κ²φ - ρ/ε₀ (inside cavity: κ=0; outside: κ=Debye screening)
-layout(set=0,binding=0) readonly buffer SDF     { float sdf[];   };  // §99.2 surface
+layout(set=0,binding=0) readonly buffer SDF     { float sdf[];   };  // §104.2 surface
 layout(set=0,binding=1) readonly buffer Charges { vec4  charges[]; }; // xyz + charge
 layout(set=0,binding=2) buffer Phi { float phi[]; };
 layout(push_constant) uniform PC { ivec3 dim; float dx; float kappa2_out; } pc;
@@ -14342,13 +14342,13 @@ void main() {
 
 These are the low-level compute algorithms that serve as building blocks for the higher-level geometry techniques throughout this chapter. GPU Poisson disk and blue noise sampling underpin mesh point distribution, lightmap texel placement, and stochastic rendering; parallel convex hull computation (the Quickhull algorithm parallelized over GPU threads) appears inside GJK collision detection and computational geometry tools; and GPU radix sort is the enabling primitive for LBVH BVH construction, depth-sorting for OIT, and particle simulation step reordering. These three algorithms rarely appear in isolation — they are invoked implicitly inside the vast majority of the algorithms in the other twelve categories.
 
-### 47. GPU Sampling: Poisson Disk and Blue Noise
+### 105. GPU Sampling: Poisson Disk and Blue Noise
 
 *Audience: graphics application developers, systems developers.*
 
-Low-discrepancy sampling, Poisson disk distributions, and blue noise are foundational primitives used throughout the chapter: AO hemisphere samples (§34), particle seeding (§33), LOD representative points (§7), and Monte Carlo integration in §44 IBL preprocessing. This section covers GPU-native generation of these distributions.
+Low-discrepancy sampling, Poisson disk distributions, and blue noise are foundational primitives used throughout the chapter: AO hemisphere samples (§28), particle seeding (§72), LOD representative points (§10), and Monte Carlo integration in §77 IBL preprocessing. This section covers GPU-native generation of these distributions.
 
-### 47.1 Low-Discrepancy Sequences: Halton and Sobol
+### 105.1 Low-Discrepancy Sequences: Halton and Sobol
 
 Halton sequences in base b are computed per-sample with no state — fully parallel:
 
@@ -14365,7 +14365,7 @@ vec2 halton2D(uint i) { return vec2(halton(i,2), halton(i,3)); }
 
 Sobol sequences require a precomputed direction-number table (max 21201 dimensions, 32 bits each) stored in a GPU buffer. [Source: Joe & Kuo "Constructing Sobol Sequences with Better Two-Dimensional Projections", SIAM J. Sci. Comput. 2010; GPU Sobol: Pharr et al. "Physically Based Rendering", 4th ed.]
 
-### 47.2 Area-Weighted Triangle Sampling on Mesh Surfaces
+### 105.2 Area-Weighted Triangle Sampling on Mesh Surfaces
 
 Sample a uniform point on a mesh surface: select a triangle with probability ∝ area (CDF inversion on prefix-sum area array), then sample within the triangle using Osada's square-root method:
 
@@ -14389,7 +14389,7 @@ void main() {
 
 [Source: Osada et al. "Shape Distributions", SIGGRAPH 2002]
 
-### 47.3 GPU Poisson Disk Dart Throwing
+### 105.3 GPU Poisson Disk Dart Throwing
 
 Generate a Poisson disk distribution with minimum distance r via GPU dart throwing with spatial hash rejection:
 
@@ -14397,7 +14397,7 @@ Generate a Poisson disk distribution with minimum distance r via GPU dart throwi
 // poisson_dart.comp — one round of dart throwing
 layout(set=0,binding=0) buffer Accepted { vec3 pts[]; };
 layout(set=0,binding=1) buffer AccCount { uint count; };
-layout(set=0,binding=2) buffer Grid     { uint gridPts[]; uint gridCnt[]; };  // §17.2 hash
+layout(set=0,binding=2) buffer Grid     { uint gridPts[]; uint gridCnt[]; };  // §27.2 hash
 layout(push_constant) uniform PC { float minDist; uint round; uint nDarts; } pc;
 layout(local_size_x=64) in;
 void main() {
@@ -14420,7 +14420,7 @@ void main() {
 
 [Source: Bridson "Fast Poisson Disk Sampling in Arbitrary Dimensions", SIGGRAPH 2007 Sketches]
 
-### 47.4 Blue Noise via Lloyd Relaxation on Mesh
+### 105.4 Blue Noise via Lloyd Relaxation on Mesh
 
 Centroidal Voronoi tessellation (CVT) gives blue-noise-quality distributions with perfectly uniform coverage. Iterate: (1) partition surface into Voronoi cells (nearest-sample per surface point); (2) move each sample to the centroid of its Voronoi cell:
 
@@ -14432,7 +14432,7 @@ layout(set=0,binding=2) buffer CentAcc { vec3 acc[]; uint cnt[]; };
 layout(local_size_x=64) in;
 void main() {
     uint p = gl_GlobalInvocationID.x;   // surface point index
-    // Find nearest Poisson disk sample (GPU k-NN §21.1 or brute force for small N)
+    // Find nearest Poisson disk sample (GPU k-NN §87.1 or brute force for small N)
     uint nearest = findNearest(surf[p], pts, N_SAMPLES);
     atomicAdd_vec3(acc[nearest], surf[p]);
     atomicAdd(cnt[nearest], 1u);
@@ -14444,13 +14444,13 @@ void main() {
 
 ---
 
-### 82. GPU Convex Hull Computation
+### 106. GPU Convex Hull Computation
 
 *Audience: systems developers, graphics application developers.*
 
-Convex hulls are needed to bootstrap rigid body shapes (§22), compute GJK support functions (§8), and fit BVH leaf bounds (§70). GPU QuickHull operates on point clouds of up to tens of millions of points; GPU incremental insertion processes batches of points in parallel.
+Convex hulls are needed to bootstrap rigid body shapes (§50), compute GJK support functions (§24), and fit BVH leaf bounds (§31). GPU QuickHull operates on point clouds of up to tens of millions of points; GPU incremental insertion processes batches of points in parallel.
 
-### 82.1 GPU QuickHull: Initial Simplex
+### 106.1 GPU QuickHull: Initial Simplex
 
 QuickHull begins by finding the 6 extreme points (±X, ±Y, ±Z), forming an initial tetrahedron. Find extremes in parallel via a reduction:
 
@@ -14477,7 +14477,7 @@ void main() {
 }
 ```
 
-### 82.2 GPU QuickHull: Furthest-Point Assignment
+### 106.2 GPU QuickHull: Furthest-Point Assignment
 
 For each face of the current hull, find the point furthest above it (positive distance). Points inside all faces are discarded:
 
@@ -14504,7 +14504,7 @@ void main() {
 
 [Source: Barber et al. "The Quickhull Algorithm for Convex Hulls", ACM TOMS 1996; GPU QuickHull: Cao et al. "Parallel Bounding Volume Hierarchies", SIGGRAPH 2010]
 
-### 82.3 Horizon Edge and Face Expansion
+### 106.3 Horizon Edge and Face Expansion
 
 Once the furthest point p for a face is found, compute the horizon ridge (edges visible from p), create new faces from p to each horizon edge, and remove the visible faces:
 
@@ -14536,9 +14536,9 @@ void main() {
 
 [Source: Barber et al. 1996; O'Brien "Fast and Simple Physics Using Sequential Impulses", GDC 2006]
 
-### 82.4 Incremental Parallel Hull for Point Batches
+### 106.4 Incremental Parallel Hull for Point Batches
 
-For massive point clouds, process points in batches: run §82.1–82.3 serially on a random initial subset (1000 points), then for the remaining points, classify inside/outside in parallel (§82.2) and only add points outside the current hull:
+For massive point clouds, process points in batches: run §106.1–82.3 serially on a random initial subset (1000 points), then for the remaining points, classify inside/outside in parallel (§106.2) and only add points outside the current hull:
 
 ```glsl
 // qhull_batch_classify.comp — classify new batch against current hull
@@ -14566,7 +14566,7 @@ void main() {
 
 *Audience: systems developers.*
 
-Radix sort underlies a surprising fraction of GPU geometry algorithms: Morton code sorting for BVH construction (§70), particle bucket assignment (§11), mesh edge/face key sorting for adjacency construction (§67, §82), histogram prefix sums for stream compaction (§10, §33), and order-independent transparency (§105). This section presents the canonical 4-pass GPU radix sort (Merrill & Grimshaw 2010 / CUB/Thrust pattern) in Vulkan compute, applicable as a geometry primitive throughout the chapter.
+Radix sort underlies a surprising fraction of GPU geometry algorithms: Morton code sorting for BVH construction (§31), particle bucket assignment (§48), mesh edge/face key sorting for adjacency construction (§18, §106), histogram prefix sums for stream compaction (§26, §72), and order-independent transparency (§85). This section presents the canonical 4-pass GPU radix sort (Merrill & Grimshaw 2010 / CUB/Thrust pattern) in Vulkan compute, applicable as a geometry primitive throughout the chapter.
 
 ### 107.1 Histogram Pass: Count Digit Frequencies
 
@@ -14653,7 +14653,7 @@ void main() {
 
 ### 107.4 Full 32-Bit Sort and Application to Geometry
 
-Compose 16 passes of 2-bit radix sort (or 8 passes of 4-bit) to sort 32-bit keys. Apply to geometry: sort triangle indices by Morton code (§70.1) for BVH construction, or sort vertex indices by material ID (§91.3 wavefront path tracing), or sort particle cell IDs for spatial hash (§17):
+Compose 16 passes of 2-bit radix sort (or 8 passes of 4-bit) to sort 32-bit keys. Apply to geometry: sort triangle indices by Morton code (§31.1) for BVH construction, or sort vertex indices by material ID (§82.3 wavefront path tracing), or sort particle cell IDs for spatial hash (§27):
 
 ```glsl
 // morton_sort_dispatch.comp — sort primitives by 30-bit Morton code for LBVH
@@ -14672,7 +14672,7 @@ void main() {
     for(int b=0;b<10;b++) m|=((q.x>>b)&1u)<<(3*b)|((q.y>>b)&1u)<<(3*b+1)|((q.z>>b)&1u)<<(3*b+2);
     mortonKey[t]=m; triIdx[t]=t;
 }
-// Then run §107.1–107.3 for 15 passes (30-bit sort); result is LBVH input order (§70.2)
+// Then run §107.1–107.3 for 15 passes (30-bit sort); result is LBVH input order (§31.2)
 ```
 
 [Source: Lauterbach et al. "Fast BVH Construction on GPUs", EG 2009 §70; Karras "Maximizing Parallelism in the Construction of BVHs, Octrees, and k-d Trees", HPG 2012]
@@ -14690,9 +14690,9 @@ The closest approximation to a broad GPU geometry toolkit is **NVIDIA's** ecosys
 
 Two tables follow — one per group of nine sections — because a single 22-column table is unreadable. — means no coverage in that section.
 
-**Table A — §1–§9 coverage**
+**Table A — §1–§25 coverage**
 
-| Library | Ver | GPU Backend | §1 Subdiv | §2 NURBS | §3 Implicit | §4 Skeletal | §5 IK | §6 Splines | §7 Mesh | §8 BVH/Coll | §9 SS | Best Use |
+| Library | Ver | GPU Backend | §1 Subdiv | §2 NURBS | §3 Implicit | §39 Skeletal | §40 IK | §4 Splines | §10 Mesh | §24 BVH/Coll | §25 SS | Best Use |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | [OpenSubdiv](https://github.com/PixarAnimationStudios/OpenSubdiv) | 3.6.0 | GL compute, CUDA, Metal | ✓ CC/Loop | — | — | — | — | — | — | — | — | Production subdivision |
 | [CGAL](https://www.cgal.org) | 6.1 | None (CPU + TBB) | ✓ CC/Loop/DS | — | ✓ MC/DC | — | — | — | ✓ CDT/repair | ✓ AABB tree | — | CPU preprocessing |
@@ -14706,9 +14706,9 @@ Two tables follow — one per group of nine sections — because a single 22-col
 | [V-HACD](https://github.com/kmammou/v-hacd) | 4.0 | None (CPU) | — | — | — | — | — | — | — | ✓ decomp | — | Convex hull for GJK |
 | [Triangle](https://www.cs.cmu.edu/~quake/triangle.html) | 1.6 | None | — | — | — | — | — | — | ✓ CDT | — | — | 2D CDT/quality meshing |
 
-**Table B — §10–§19 coverage**
+**Table B — §26–§70 coverage**
 
-| Library | Ver | GPU Backend | §10 GPU-Driven | §11 Fluid | §12 Deform | §13 Proc | §14 Geo | §15 Shape | §16 3DGS | §17 Spatial | §18 Spectral | §19 NavMesh | Best Use |
+| Library | Ver | GPU Backend | §26 GPU-Driven | §48 Fluid | §49 Deform | §69 Proc | §34 Geo | §41 Shape | §91 3DGS | §27 Spatial | §35 Spectral | §70 NavMesh | Best Use |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | [meshoptimizer](https://github.com/zeux/meshoptimizer) | 0.22 | None (CPU → GPU output) | ✓ meshlets | — | — | — | — | — | — | — | — | — | Meshlet build + bounds |
 | [NanoVDB](https://github.com/AcademySoftwareFoundation/openvdb) | OVDBv9 | CUDA / Vulkan SSBO | — | — | — | — | — | — | — | ✓ SVO | — | — | Sparse voxel GPU traversal |
@@ -14732,37 +14732,37 @@ Sub::CatmullClark_subdivision(mesh,
     CGAL::parameters::number_of_iterations(2));
 ```
 
-**libigl** ([source](https://github.com/libigl/libigl)) provides `igl::lbs_matrix()` and `igl::dqs()` for skinning, `igl::bbw()` for bounded biharmonic weights, `igl::lscm()` and `igl::harmonic()` for UV parameterization, `igl::marching_tets()` for isosurface extraction, `igl::heat_geodesics()` and `igl::cotmatrix()` for geodesics and the cotangent Laplacian, `igl::arap()` for ARAP deformation, `igl::mvc()` for mean value coordinates, and `igl::eigs()` for spectral geometry. All CPU-side using Eigen; upload results to GPU as vertex buffers. libigl has the widest algorithmic breadth of any portable library in this chapter — it spans §1, §3, §4, §7, §14, §15, and §18 — but has no GPU execution path.
+**libigl** ([source](https://github.com/libigl/libigl)) provides `igl::lbs_matrix()` and `igl::dqs()` for skinning, `igl::bbw()` for bounded biharmonic weights, `igl::lscm()` and `igl::harmonic()` for UV parameterization, `igl::marching_tets()` for isosurface extraction, `igl::heat_geodesics()` and `igl::cotmatrix()` for geodesics and the cotangent Laplacian, `igl::arap()` for ARAP deformation, `igl::mvc()` for mean value coordinates, and `igl::eigs()` for spectral geometry. All CPU-side using Eigen; upload results to GPU as vertex buffers. libigl has the widest algorithmic breadth of any portable library in this chapter — it spans §1, §3, §39, §10, §34, §41, and §35 — but has no GPU execution path.
 
 **GeometricTools** ([source](https://github.com/davideberly/GeometricTools), Boost license) provides `GTL::NURBSSurface<float, 3>` and `GTL::CatmullClarkSurface` as header-only CPU implementations. Use for offline asset preprocessing.
 
-**meshoptimizer** ([source](https://github.com/zeux/meshoptimizer), MIT) provides `meshopt_simplify()`, `meshopt_optimizeVertexCache()`, and `meshopt_buildMeshlets()` with `meshopt_computeMeshletBounds()` — the last two are §10 GPU-Driven Rendering directly. Generate the full LOD chain and meshlet data offline, upload to a single `VkBuffer`, and dispatch via the task/mesh shader pipeline.
+**meshoptimizer** ([source](https://github.com/zeux/meshoptimizer), MIT) provides `meshopt_simplify()`, `meshopt_optimizeVertexCache()`, and `meshopt_buildMeshlets()` with `meshopt_computeMeshletBounds()` — the last two are §26 GPU-Driven Rendering directly. Generate the full LOD chain and meshlet data offline, upload to a single `VkBuffer`, and dispatch via the task/mesh shader pipeline.
 
-**NanoVDB** ([source](https://github.com/AcademySoftwareFoundation/openvdb), Apache 2.0, OpenVDB 9.0+) converts OpenVDB trees to flat GPU buffers via `nanovdb::openToNanoVDB()`. The companion GLSL header provides tree-descent accessors matching §17.3 (SVO traversal). Requires `VK_EXT_scalar_block_layout`.
+**NanoVDB** ([source](https://github.com/AcademySoftwareFoundation/openvdb), Apache 2.0, OpenVDB 9.0+) converts OpenVDB trees to flat GPU buffers via `nanovdb::openToNanoVDB()`. The companion GLSL header provides tree-descent accessors matching §27.3 (SVO traversal). Requires `VK_EXT_scalar_block_layout`.
 
-**xatlas** ([source](https://github.com/jpcy/xatlas), MIT) generates UV atlases as a preprocessing step for texture baking (§7.13). CPU-only; outputs UV coordinates and a remapped index buffer ready for GPU upload.
+**xatlas** ([source](https://github.com/jpcy/xatlas), MIT) generates UV atlases as a preprocessing step for texture baking (§10.13). CPU-only; outputs UV coordinates and a remapped index buffer ready for GPU upload.
 
 **PoissonRecon** ([source](https://github.com/mkazhdan/PoissonRecon), MIT) is the reference screened Poisson surface reconstruction (§3.12). CPU multi-threaded (TBB); 10–60 s for 1M-point clouds.
 
-**V-HACD 4.0** ([source](https://github.com/kmammou/v-hacd), BSD-3) decomposes non-convex meshes into convex hull approximations for physics (§8.5). CPU-only.
+**V-HACD 4.0** ([source](https://github.com/kmammou/v-hacd), BSD-3) decomposes non-convex meshes into convex hull approximations for physics (§24.5). CPU-only.
 
 **Triangle** ([source](https://www.cs.cmu.edu/~quake/triangle.html), Shewchuk, public domain) is the reference 2D CDT and Ruppert quality-mesh generator (§3.11). Single-file C library.
 
 **SPlisHSPlasH** ([source](https://github.com/InteractiveComputerGraphics/SPlisHSPlasH), MIT) is the most complete open-source GPU fluid simulation library. It implements SPH, PBF (Macklin 2013), DFSPH (divergence-free SPH), IISPH, PBD, and FLIP variants, all with CUDA backends. Spatial hashing for neighbour search runs on GPU; pressure and density solvers run fully on-device. The library outputs particle positions each step — couple to the SPH surface extraction pipeline from §3.8 to produce renderable meshes in real time.
 
-**PhysX 5** ([source](https://github.com/NVIDIA-Omniverse/PhysX), BSD-3) adds GPU-native FEM soft bodies (corotational linear elasticity on tet meshes, §12.2) and GPU cloth (Position-Based Dynamics, matching §4.6 and §12.1) alongside GPU rigid body simulation and PBD fluid. The soft body solver runs entirely on CUDA; results are available as CUDA device pointers that map directly to Vulkan external memory via `VK_KHR_external_memory` + `VK_EXT_external_memory_host`. No Vulkan-native API; requires interop.
+**PhysX 5** ([source](https://github.com/NVIDIA-Omniverse/PhysX), BSD-3) adds GPU-native FEM soft bodies (corotational linear elasticity on tet meshes, §49.2) and GPU cloth (Position-Based Dynamics, matching §39.6 and §49.1) alongside GPU rigid body simulation and PBD fluid. The soft body solver runs entirely on CUDA; results are available as CUDA device pointers that map directly to Vulkan external memory via `VK_KHR_external_memory` + `VK_EXT_external_memory_host`. No Vulkan-native API; requires interop.
 
-**geometry-central** ([source](https://github.com/nmwsharp/geometry-central), MIT) is the research reference implementation for discrete differential geometry: `HeatMethodDistance` (§14.2), cotangent Laplacian assembly, `StripePatterns` for seamless parameterization, vector heat method, and spectral basis computation (§18.1). CPU-only; results upload to GPU. Essential for verifying custom Vulkan compute DDG implementations against a known-correct baseline.
+**geometry-central** ([source](https://github.com/nmwsharp/geometry-central), MIT) is the research reference implementation for discrete differential geometry: `HeatMethodDistance` (§34.2), cotangent Laplacian assembly, `StripePatterns` for seamless parameterization, vector heat method, and spectral basis computation (§35.1). CPU-only; results upload to GPU. Essential for verifying custom Vulkan compute DDG implementations against a known-correct baseline.
 
-**gsplat** ([source](https://github.com/nerfstudio-project/gsplat), Apache 2.0) is a production-quality GPU 3DGS rasterizer supporting CUDA and ROCm backends. It implements the full pipeline from §16 — Gaussian projection, tile assignment, radix sort, and per-tile alpha compositing — with forward and backward passes for training. For Vulkan integration, render to a CUDA surface then copy via external memory, or port the tile rasterizer kernels to Vulkan compute using the same algorithm (§16.2).
+**gsplat** ([source](https://github.com/nerfstudio-project/gsplat), Apache 2.0) is a production-quality GPU 3DGS rasterizer supporting CUDA and ROCm backends. It implements the full pipeline from §91 — Gaussian projection, tile assignment, radix sort, and per-tile alpha compositing — with forward and backward passes for training. For Vulkan integration, render to a CUDA surface then copy via external memory, or port the tile rasterizer kernels to Vulkan compute using the same algorithm (§91.2).
 
-**FastNoise2** ([source](https://github.com/Auburn/FastNoise2), MIT) provides a SIMD node-graph noise system supporting Perlin, OpenSimplex2, Cellular, Domain Warp, and fractal combinations (§13.1 terrain fBm). A CUDA backend is available for GPU-side evaluation. On CPU, AVX2/AVX-512 SIMD makes it fast enough for real-time heightmap generation.
+**FastNoise2** ([source](https://github.com/Auburn/FastNoise2), MIT) provides a SIMD node-graph noise system supporting Perlin, OpenSimplex2, Cellular, Domain Warp, and fractal combinations (§69.1 terrain fBm). A CUDA backend is available for GPU-side evaluation. On CPU, AVX2/AVX-512 SIMD makes it fast enough for real-time heightmap generation.
 
-**Recast/Detour** ([source](https://github.com/recastnavigation/recastnavigation), Zlib) is the canonical navmesh library used by most game engines. Recast's voxelisation and region-labelling steps (§19.1–19.2) are CPU-only; no GPU port exists. The flow-field construction in §19.3 is implemented directly in compute shaders without a library equivalent. Recast is the correct preprocessing tool for static navmesh geometry; Detour handles the runtime pathfinding query API.
+**Recast/Detour** ([source](https://github.com/recastnavigation/recastnavigation), Zlib) is the canonical navmesh library used by most game engines. Recast's voxelisation and region-labelling steps (§70.1–19.2) are CPU-only; no GPU port exists. The flow-field construction in §70.3 is implemented directly in compute shaders without a library equivalent. Recast is the correct preprocessing tool for static navmesh geometry; Detour handles the runtime pathfinding query API.
 
-**Table C — §20–§29 coverage**
+**Table C — §75–§96 coverage**
 
-| Library | Ver | GPU Backend | §20 RT Geom | §21 Point Cloud | §22 Rigid Body | §23 Crowd | §24 Remesh | §25 Fracture | §26 Terrain | §27 Geo DL | §28 2D Vector | §29 Sci Vis | Best Use |
+| Library | Ver | GPU Backend | §75 RT Geom | §87 Point Cloud | §50 Rigid Body | §51 Crowd | §11 Remesh | §52 Fracture | §71 Terrain | §92 Geo DL | §5 2D Vector | §96 Sci Vis | Best Use |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | [Vulkan RT Extensions](https://www.khronos.org/registry/vulkan/) | 1.3 | Vulkan | ✓ BLAS/TLAS | — | — | — | — | — | — | — | — | — | Ray tracing AS build |
 | [PCL](https://pointclouds.org) | 1.14 | None (CPU) | — | ✓ k-NN/ICP | — | — | — | — | — | — | — | ✓ vis | Point cloud CPU pipeline |
@@ -14775,27 +14775,27 @@ Sub::CatmullClark_subdivision(mesh,
 | [VTK](https://vtk.org) | 9.3 | OpenGL compute | — | — | — | — | — | — | — | — | — | ✓ streams/glyphs | Scientific vis |
 | [Recast/Detour](https://github.com/recastnavigation/recastnavigation) | 1.6 | None (CPU) | — | — | — | — | — | — | ✓ terrain voxel | — | — | — | Terrain navmesh preprocessing |
 
-**Vulkan RT Extensions** (KHR, Vulkan 1.2+) are the only "library" for §20 — AS build/update APIs are in the driver. VulkanMemoryAllocator ([source](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)) simplifies the scratch/result buffer lifecycle for BLAS/TLAS operations.
+**Vulkan RT Extensions** (KHR, Vulkan 1.2+) are the only "library" for §75 — AS build/update APIs are in the driver. VulkanMemoryAllocator ([source](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)) simplifies the scratch/result buffer lifecycle for BLAS/TLAS operations.
 
 **PCL** ([source](https://pointclouds.org), BSD-3) provides `pcl::KdTreeFLANN<pcl::PointXYZ>` for CPU k-NN, `pcl::IterativeClosestPoint<>` for ICP, `pcl::SACSegmentation<>` for RANSAC plane/sphere fitting, and `pcl::visualization::PCLVisualizer` for scientific vis. No GPU backend; use for preprocessing before uploading point clouds to Vulkan SSBOs.
 
-**Open3D** ([source](https://www.open3d.org), MIT) adds a CUDA k-NN search (`open3d.core.nns.NearestNeighborSearch`), GPU ICP variants (point-to-plane, colored ICP), RANSAC registration, and a PointNet++ training pipeline via PyTorch. The `open3d.visualization.Visualizer` covers §29 scientific vis. Open3D is the most capable GPU point cloud toolkit outside CUDA-only paths.
+**Open3D** ([source](https://www.open3d.org), MIT) adds a CUDA k-NN search (`open3d.core.nns.NearestNeighborSearch`), GPU ICP variants (point-to-plane, colored ICP), RANSAC registration, and a PointNet++ training pipeline via PyTorch. The `open3d.visualization.Visualizer` covers §96 scientific vis. Open3D is the most capable GPU point cloud toolkit outside CUDA-only paths.
 
-**Bullet 3** ([source](https://github.com/bulletphysics/bullet3), Zlib) implements SAP broadphase, sequential impulse (Catto solver), and Featherstone ABA for articulated bodies (§22). A partial OpenCL backend (`btGpuBroadphaseProxy`) parallelises the broadphase; the narrow-phase and solver remain on CPU. The `HACD` component provides Voronoi-style approximate convex decomposition for pre-fracture (§25.1).
+**Bullet 3** ([source](https://github.com/bulletphysics/bullet3), Zlib) implements SAP broadphase, sequential impulse (Catto solver), and Featherstone ABA for articulated bodies (§50). A partial OpenCL backend (`btGpuBroadphaseProxy`) parallelises the broadphase; the narrow-phase and solver remain on CPU. The `HACD` component provides Voronoi-style approximate convex decomposition for pre-fracture (§52.1).
 
-**RVO2** ([source](https://gamma.cs.unc.edu/RVO2/), Apache 2.0) is the reference CPU implementation of ORCA (van den Berg 2011) for crowd simulation (§23.1). For GPU port use the compute shader pattern from §23.1 with the §17.2 spatial hash for neighbourhood queries.
+**RVO2** ([source](https://gamma.cs.unc.edu/RVO2/), Apache 2.0) is the reference CPU implementation of ORCA (van den Berg 2011) for crowd simulation (§51.1). For GPU port use the compute shader pattern from §51.1 with the §27.2 spatial hash for neighbourhood queries.
 
-**OpenMesh** ([source](https://www.graphics.rwth-aachen.de/OpenMesh/), LGPL) provides a halfedge-based mesh data structure with `OpenMesh::Subdivider::Uniform::CatmullClarkT<>` and edge split/collapse/flip operations for isotropic remeshing (§24.1). CPU-only; use for offline remesh passes before GPU upload.
+**OpenMesh** ([source](https://www.graphics.rwth-aachen.de/OpenMesh/), LGPL) provides a halfedge-based mesh data structure with `OpenMesh::Subdivider::Uniform::CatmullClarkT<>` and edge split/collapse/flip operations for isotropic remeshing (§11.1). CPU-only; use for offline remesh passes before GPU upload.
 
-**msdfgen** ([source](https://github.com/Chlumsky/msdfgen), MIT) generates multi-channel SDF atlases from font outlines or SVG paths — the offline preprocessing step for §28.2 MSDF font rendering. Produces a `VkImage` data asset; no runtime GPU component.
+**msdfgen** ([source](https://github.com/Chlumsky/msdfgen), MIT) generates multi-channel SDF atlases from font outlines or SVG paths — the offline preprocessing step for §5.2 MSDF font rendering. Produces a `VkImage` data asset; no runtime GPU component.
 
-**PyTorch Geometric** ([source](https://pyg.org), MIT) provides `torch_geometric.nn.PointNetConv`, graph convolution layers, and batched k-NN search (`torch_cluster.knn_graph`) all running on CUDA or ROCm. The trained model weights (§27) can be extracted and run as a Vulkan compute shader MLP inference pass.
+**PyTorch Geometric** ([source](https://pyg.org), MIT) provides `torch_geometric.nn.PointNetConv`, graph convolution layers, and batched k-NN search (`torch_cluster.knn_graph`) all running on CUDA or ROCm. The trained model weights (§92) can be extracted and run as a Vulkan compute shader MLP inference pass.
 
-**VTK** ([source](https://vtk.org), BSD-3) covers §29 scientific visualization: `vtkStreamTracer` for streamlines, `vtkVolume` with GPU ray casting, `vtkTensorGlyph` for superquadrics, and `vtkMarchingCubes` for isosurface extraction. The OpenGL compute backend (`vtkOpenGLGPUVolumeRayCastMapper`) uses GL compute shaders; Vulkan integration requires the VTK-m ([source](https://m.vtk.org)) parallel framework with a Kokkos backend.
+**VTK** ([source](https://vtk.org), BSD-3) covers §96 scientific visualization: `vtkStreamTracer` for streamlines, `vtkVolume` with GPU ray casting, `vtkTensorGlyph` for superquadrics, and `vtkMarchingCubes` for isosurface extraction. The OpenGL compute backend (`vtkOpenGLGPUVolumeRayCastMapper`) uses GL compute shaders; Vulkan integration requires the VTK-m ([source](https://m.vtk.org)) parallel framework with a Kokkos backend.
 
-**Table D — §30–§39 coverage**
+**Table D — §42–§29 coverage**
 
-| Library | Ver | GPU Backend | §30 Hair | §31 LSM | §32 DiffRender | §33 Particles | §34 Lightmap | §35 UV Pack | §36 Swept Vol | §37 Morphing | §38 Decals | §39 Occlusion | Best Use |
+| Library | Ver | GPU Backend | §42 Hair | §61 LSM | §93 DiffRender | §72 Particles | §28 Lightmap | §12 UV Pack | §62 Swept Vol | §36 Morphing | §97 Decals | §29 Occlusion | Best Use |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | [TressFX](https://github.com/GPUOpen-Effects/TressFX) | 4.1 | Vulkan / DX12 | ✓ sim+render | — | — | — | — | — | — | — | — | — | GPU hair simulation |
 | [NvCloth](https://github.com/NVIDIAGameWorks/NvCloth) | 1.1 | CUDA | partial strand | — | — | — | — | — | — | — | — | — | Cloth+strand PBD |
@@ -14808,19 +14808,19 @@ Sub::CatmullClark_subdivision(mesh,
 | [Radeon Rays](https://github.com/GPUOpen-LibrariesAndSDKs/RadeonRays_SDK) | 4.1 | Vulkan / HIP | — | — | partial | — | ✓ AO GPU | — | — | — | — | — | GPU ray casting for bake |
 | [LightBaker](https://github.com/ands/lightmapper) | 1.x | OpenGL | — | — | — | — | ✓ hemicube | — | — | — | — | — | CPU/GPU lightmap bake |
 
-**TressFX 4.1** ([source](https://github.com/GPUOpen-Effects/TressFX), MIT) is the most complete open-source GPU hair library, implementing the full §30 pipeline: position-based strand simulation (stretch, bending, torsion constraints), strand self-collision via spatial hashing, collision with scene geometry, and LOD-controlled strand-to-shell transitions. Vulkan and DX12 backends. Integrates with the engine's TLAS via `VK_KHR_ray_tracing_pipeline` for strand shadow rays.
+**TressFX 4.1** ([source](https://github.com/GPUOpen-Effects/TressFX), MIT) is the most complete open-source GPU hair library, implementing the full §42 pipeline: position-based strand simulation (stretch, bending, torsion constraints), strand self-collision via spatial hashing, collision with scene geometry, and LOD-controlled strand-to-shell transitions. Vulkan and DX12 backends. Integrates with the engine's TLAS via `VK_KHR_ray_tracing_pipeline` for strand shadow rays.
 
-**NvDiffRast** ([source](https://github.com/NVIDIAGameWorks/nvdiffrast), Apache 2.0) provides CUDA-accelerated differentiable rasterisation (§32.1): forward rasteriser with anti-aliased edge gradients, texture sample backward pass, and interpolation gradients. Includes a `torch.autograd.Function` wrapper. For Vulkan integration, run the forward pass in nvdiffrast (CUDA) and extract gradients into a Vulkan-mapped buffer via `VK_KHR_external_memory`.
+**NvDiffRast** ([source](https://github.com/NVIDIAGameWorks/nvdiffrast), Apache 2.0) provides CUDA-accelerated differentiable rasterisation (§93.1): forward rasteriser with anti-aliased edge gradients, texture sample backward pass, and interpolation gradients. Includes a `torch.autograd.Function` wrapper. For Vulkan integration, run the forward pass in nvdiffrast (CUDA) and extract gradients into a Vulkan-mapped buffer via `VK_KHR_external_memory`.
 
-**PyTorch3D** ([source](https://github.com/facebookresearch/pytorch3d), BSD) extends §27 (geometric deep learning) with differentiable mesh rendering (§32), functional map utilities (§37), and point cloud operations. The `pytorch3d.renderer.MeshRasterizer` implements the soft rasterisation from §32.1.
+**PyTorch3D** ([source](https://github.com/facebookresearch/pytorch3d), BSD) extends §92 (geometric deep learning) with differentiable mesh rendering (§93), functional map utilities (§36), and point cloud operations. The `pytorch3d.renderer.MeshRasterizer` implements the soft rasterisation from §93.1.
 
-**Embree 4** ([source](https://www.embree.org), Apache 2.0) provides CPU ray tracing via AVX-512/AVX2 SIMD — the standard reference backend for offline lightmap baking (§34). `rtcOccluded1M()` batches occlusion queries for AO hemisphere sampling. Pair with a GPU denoiser (OIDN) for high-quality baked lighting.
+**Embree 4** ([source](https://www.embree.org), Apache 2.0) provides CPU ray tracing via AVX-512/AVX2 SIMD — the standard reference backend for offline lightmap baking (§28). `rtcOccluded1M()` batches occlusion queries for AO hemisphere sampling. Pair with a GPU denoiser (OIDN) for high-quality baked lighting.
 
-**Radeon Rays 4** ([source](https://github.com/GPUOpen-LibrariesAndSDKs/RadeonRays_SDK), MIT) is the GPU counterpart: Vulkan and HIP ray query acceleration for AO baking (§34) and differentiable rendering (§32) on AMD hardware. Complements the `VK_KHR_ray_query` inline queries in §34.2 with a higher-level batch API.
+**Radeon Rays 4** ([source](https://github.com/GPUOpen-LibrariesAndSDKs/RadeonRays_SDK), MIT) is the GPU counterpart: Vulkan and HIP ray query acceleration for AO baking (§28) and differentiable rendering (§93) on AMD hardware. Complements the `VK_KHR_ray_query` inline queries in §28.2 with a higher-level batch API.
 
-**Table E — §40–§49 coverage**
+**Table E — §73–§53 coverage**
 
-| Library | Ver | GPU Backend | §40 Ocean | §41 Voxelise | §42 TSDF | §43 Shadows | §44 IBL | §45 SecAnim | §46 Morph | §47 Sampling | §48 ProgMesh | §49 Rope | Best Use |
+| Library | Ver | GPU Backend | §73 Ocean | §13 Voxelise | §63 TSDF | §76 Shadows | §77 IBL | §43 SecAnim | §14 Morph | §105 Sampling | §15 ProgMesh | §53 Rope | Best Use |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | [VkFFT](https://github.com/DTolm/VkFFT) | 1.3 | Vulkan / CUDA / HIP | ✓ IFFT core | — | — | — | — | — | — | — | — | — | GPU FFT for ocean |
 | [Crest Ocean](https://github.com/wave-harmonic/crest) | 4.x | Unity (Vulkan) | ✓ full pipeline | — | — | — | — | — | — | — | — | — | Production ocean system |
@@ -14833,23 +14833,23 @@ Sub::CatmullClark_subdivision(mesh,
 | [Discrete Elastic Rods](https://github.com/bastibl/der) | research | None (CPU) | — | — | — | — | — | — | — | — | — | ✓ Cosserat sim | Cosserat rod reference impl |
 | [OIIO](https://github.com/AcademySoftwareFoundation/OpenImageIO) | 2.5 | None (CPU) | — | — | — | — | ✓ env filter | — | — | — | — | — | HDR env map processing |
 
-**VkFFT** ([source](https://github.com/DTolm/VkFFT), MIT) is the only portable GPU FFT with a Vulkan backend. It generates optimal SPIR-V at runtime for the target device's subgroup size and supports batch 2D FFTs — the exact operation §40.2 requires for the Tessendorf ocean IFFT.
+**VkFFT** ([source](https://github.com/DTolm/VkFFT), MIT) is the only portable GPU FFT with a Vulkan backend. It generates optimal SPIR-V at runtime for the target device's subgroup size and supports batch 2D FFTs — the exact operation §73.2 requires for the Tessendorf ocean IFFT.
 
-**Crest Ocean** ([source](https://github.com/wave-harmonic/crest), MIT) is a production GPU ocean system implementing the full §40 pipeline: Phillips spectrum initialisation, GPU FFT via Unity's compute, choppy wave Jacobian foam, Gerstner wave blending, and LOD-aware shoreline interaction. The Unity Vulkan backend means its shader source maps directly to the GLSL compute patterns in §40.
+**Crest Ocean** ([source](https://github.com/wave-harmonic/crest), MIT) is a production GPU ocean system implementing the full §73 pipeline: Phillips spectrum initialisation, GPU FFT via Unity's compute, choppy wave Jacobian foam, Gerstner wave blending, and LOD-aware shoreline interaction. The Unity Vulkan backend means its shader source maps directly to the GLSL compute patterns in §73.
 
-**Open3D** covers §42 (TSDF fusion) with its `open3d.pipelines.integration.ScalableTSDFVolume` (voxel hashing, §42.4) and `open3d.pipelines.odometry` (ICP tracking, §42.2). The CUDA backend fuses 512³ volumes at 30 fps on modern hardware.
+**Open3D** covers §63 (TSDF fusion) with its `open3d.pipelines.integration.ScalableTSDFVolume` (voxel hashing, §63.4) and `open3d.pipelines.odometry` (ICP tracking, §63.2). The CUDA backend fuses 512³ volumes at 30 fps on modern hardware.
 
-**OpenVDB** ([source](https://www.openvdb.org), MPL-2.0) provides `openvdb::tools::meshToVolume()` for conservative mesh voxelisation (§41.1) and `openvdb::tools::morphology::dilateVoxels()` / `erodeVoxels()` for morphological operations (§46.1). No GPU execution path; NanoVDB (Table A) handles the GPU-side sparse volume traversal.
+**OpenVDB** ([source](https://www.openvdb.org), MPL-2.0) provides `openvdb::tools::meshToVolume()` for conservative mesh voxelisation (§13.1) and `openvdb::tools::morphology::dilateVoxels()` / `erodeVoxels()` for morphological operations (§14.1). No GPU execution path; NanoVDB (Table A) handles the GPU-side sparse volume traversal.
 
-**Falcor** ([source](https://github.com/NVIDIAGameWorks/Falcor), BSD-3) is NVIDIA's research renderer with Vulkan/DX12 backends. It implements cascaded shadow maps (§43.1), ray-traced shadows via `VK_KHR_ray_query` (§43.4), PMREM prefiltering (§44.2), BRDF LUT baking (§44.3), and low-discrepancy samplers (Halton, Sobol — §47.1). Its shader source is the best available reference for §43–§44 on Vulkan.
+**Falcor** ([source](https://github.com/NVIDIAGameWorks/Falcor), BSD-3) is NVIDIA's research renderer with Vulkan/DX12 backends. It implements cascaded shadow maps (§76.1), ray-traced shadows via `VK_KHR_ray_query` (§76.4), PMREM prefiltering (§77.2), BRDF LUT baking (§77.3), and low-discrepancy samplers (Halton, Sobol — §105.1). Its shader source is the best available reference for §76–§77 on Vulkan.
 
-**Filament** ([source](https://github.com/google/filament), Apache 2.0) is Google's production PBR renderer with a Vulkan backend. It implements DPCF (Distance-field Percentage Closer Filtering) soft shadows, a custom cascaded shadow system (§43.1), IBL prefiltering (§44.2–44.3), and the split-sum approximation. The Filament material compiler generates GLSL/SPIR-V from a material definition language — a useful reference for §44 IBL integration in Vulkan.
+**Filament** ([source](https://github.com/google/filament), Apache 2.0) is Google's production PBR renderer with a Vulkan backend. It implements DPCF (Distance-field Percentage Closer Filtering) soft shadows, a custom cascaded shadow system (§76.1), IBL prefiltering (§77.2–44.3), and the split-sum approximation. The Filament material compiler generates GLSL/SPIR-V from a material definition language — a useful reference for §77 IBL integration in Vulkan.
 
-**libigl** (Table A/B) also covers §48: `igl::decimate()` generates the edge-collapse sequence, and `igl::qslim()` records vertex split data in Hoppe-compatible format. The progressive mesh implementation is CPU-side; upload the pre-computed split stream as an SSBO for GPU playback (§48.2).
+**libigl** (Table A/B) also covers §15: `igl::decimate()` generates the edge-collapse sequence, and `igl::qslim()` records vertex split data in Hoppe-compatible format. The progressive mesh implementation is CPU-side; upload the pre-computed split stream as an SSBO for GPU playback (§15.2).
 
-**Table F — §50–§59 coverage**
+**Table F — §54–§55 coverage**
 
-| Library | Ver | GPU Backend | §50 Cloth | §51 GI | §52 SDF-Col | §53 ProcTex | §54 Acoustic | §55 Compress | §56 Caustics | §57 NURBS | §58 Retarget | §59 Fluid-Solid | Best Use |
+| Library | Ver | GPU Backend | §54 Cloth | §78 GI | §64 SDF-Col | §98 ProcTex | §99 Acoustic | §16 Compress | §79 Caustics | §6 NURBS | §44 Retarget | §55 Fluid-Solid | Best Use |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | [XPBD (Matthias Müller)](https://matthias.game-tech.ch/research/small-steps-in-physics-simulation/) | research | CPU/CUDA | ✓ cloth XPBD | — | — | — | — | — | — | — | — | — | XPBD cloth reference |
 | [Nvidia Flex / PhysX 5](https://developer.nvidia.com/flex) | 5.x | CUDA | ✓ cloth | — | ✓ SDF contacts | — | — | — | — | — | ✓ coupling | CUDA cloth + fluid coupling |
@@ -14862,23 +14862,23 @@ Sub::CatmullClark_subdivision(mesh,
 | [Cem Yuksel Yarn](https://www.cemyuksel.com/research/yarnrendering/) | research | CUDA | ✓ orthotropy | — | — | — | — | — | — | — | — | — | Woven fabric orthotropy |
 | [Mixamo / Rokoko](https://www.rokoko.com) | SaaS | Cloud | — | — | — | — | — | — | — | — | ✓ retarget | — | Animation retargeting service |
 
-**XPBD cloth** (Müller et al. 2020 "Small Steps in Physics Simulation") is the reference implementation for §50. Orthotropic constraints (§50.1), self-collision (§50.2), and tearing (§50.4) follow the patterns in the paper. No Vulkan port exists; the compute shader implementations in §50 are the primary Vulkan-native path.
+**XPBD cloth** (Müller et al. 2020 "Small Steps in Physics Simulation") is the reference implementation for §54. Orthotropic constraints (§54.1), self-collision (§54.2), and tearing (§54.4) follow the patterns in the paper. No Vulkan port exists; the compute shader implementations in §54 are the primary Vulkan-native path.
 
-**NVIDIA Flex / PhysX 5** (CUDA backend) covers §50 (cloth via particle position constraints and shape matching), §52.1 (SDF contact generation), and §59.4 (two-way fluid-solid coupling via SPH). It is CUDA-only; the Vulkan-native equivalents are the custom compute pipelines in each section.
+**NVIDIA Flex / PhysX 5** (CUDA backend) covers §54 (cloth via particle position constraints and shape matching), §64.1 (SDF contact generation), and §55.4 (two-way fluid-solid coupling via SPH). It is CUDA-only; the Vulkan-native equivalents are the custom compute pipelines in each section.
 
-**meshoptimizer** (§55.1, §55.4) provides `meshopt_quantizePosition()` for geometry quantization and the meshlet delta encoding scheme. The CPU decode runs before GPU upload; §55.1 shows the GPU dequantisation compute pass for streaming scenarios.
+**meshoptimizer** (§16.1, §16.4) provides `meshopt_quantizePosition()` for geometry quantization and the meshlet delta encoding scheme. The CPU decode runs before GPU upload; §16.1 shows the GPU dequantisation compute pass for streaming scenarios.
 
-**Draco** (§55.2) implements edgebreaker connectivity compression and parallelogram position prediction. The GPU-side prediction pass (§55.2 listing) accelerates the final attribute decode for large meshes.
+**Draco** (§16.2) implements edgebreaker connectivity compression and parallelogram position prediction. The GPU-side prediction pass (§16.2 listing) accelerates the final attribute decode for large meshes.
 
-**Basis Universal** (§55.3) transcodes to ETC2/BC7 on CPU or GPU. The GPU transcoding compute shader pattern in §55.3 maps to `basisu_gpu.comp` in the upstream codebase.
+**Basis Universal** (§16.3) transcodes to ETC2/BC7 on CPU or GPU. The GPU transcoding compute shader pattern in §16.3 maps to `basisu_gpu.comp` in the upstream codebase.
 
-**Steam Audio** (§54) provides GPU-accelerated acoustic ray tracing via CPU path tracing with AVX2 vectorisation and optional GPU occlusion queries. The Vulkan ray query approach in §54.3 is the Vulkan-native complement; Steam Audio is the production-quality reference.
+**Steam Audio** (§99) provides GPU-accelerated acoustic ray tracing via CPU path tracing with AVX2 vectorisation and optional GPU occlusion queries. The Vulkan ray query approach in §99.3 is the Vulkan-native complement; Steam Audio is the production-quality reference.
 
-**OpenCASCADE** (§57) is the reference CAD kernel implementing exact NURBS evaluation, trimming via boundary representation, and offset curve approximation. The CPU-side evaluation in §57.1-57.3 uses OCC geometry; the GPU Newton iteration in §57.1 replaces the OCC evaluator for display.
+**OpenCASCADE** (§6) is the reference CAD kernel implementing exact NURBS evaluation, trimming via boundary representation, and offset curve approximation. The CPU-side evaluation in §6.1-57.3 uses OCC geometry; the GPU Newton iteration in §6.1 replaces the OCC evaluator for display.
 
-**Table G — §60–§69 coverage**
+**Table G — §94–§56 coverage**
 
-| Library | Ver | GPU Backend | §60 3DGS | §61 Isosurface | §62 AO | §63 CSG | §64 VolRender | §65 Geodesic | §66 UV Param | §67 Delaunay | §68 SVDAG | §69 DEM | Best Use |
+| Library | Ver | GPU Backend | §94 3DGS | §65 Isosurface | §66 AO | §7 CSG | §67 VolRender | §37 Geodesic | §17 UV Param | §18 Delaunay | §30 SVDAG | §56 DEM | Best Use |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | [gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting) | research | CUDA | ✓ full pipeline | — | — | — | — | — | — | — | — | — | Reference 3DGS training+render |
 | [gsplat](https://github.com/nerfstudio-project/gsplat) | 1.x | CUDA / Vulkan | ✓ optimized | — | — | — | — | — | — | — | — | — | Production 3DGS rasterizer |
@@ -14891,19 +14891,19 @@ Sub::CatmullClark_subdivision(mesh,
 | [DAGCompression](https://github.com/Phyronnaz/DAGCompression) | research | CUDA | — | — | — | — | — | — | — | — | ✓ SVDAG build | — | SVO→DAG compression |
 | [LIGGGHTS/YADE](https://yade-dem.org) | 3.x | None (CPU+MPI) | — | — | — | — | — | — | — | — | — | ✓ DEM sim | Reference DEM solver |
 
-**gaussian-splatting** (Kerbl et al. 2023, MIT) is the original reference implementation of §60 in CUDA PyTorch. The **gsplat** library ([nerfstudio-project](https://github.com/nerfstudio-project/gsplat)) is a faster, more maintainable CUDA rasterizer with an emerging Vulkan compute backend, implementing the tile-based radix-sort + compositing pipeline of §60.2 at production performance.
+**gaussian-splatting** (Kerbl et al. 2023, MIT) is the original reference implementation of §94 in CUDA PyTorch. The **gsplat** library ([nerfstudio-project](https://github.com/nerfstudio-project/gsplat)) is a faster, more maintainable CUDA rasterizer with an emerging Vulkan compute backend, implementing the tile-based radix-sort + compositing pipeline of §94.2 at production performance.
 
-**NanoVDB** covers §61.4 (adaptive isosurface extraction from sparse volumes) and §64.4 (DDA traversal for volumetric ray marching). Its GLSL bindings allow direct use in Vulkan compute shaders without CUDA. OpenVDB's `tools::VolumeToMesh` implements Dual Contouring (§61.2) on the CPU; GPU marching cubes on OpenVDB nodes uses the §61.1 pattern applied to NanoVDB leaf data.
+**NanoVDB** covers §65.4 (adaptive isosurface extraction from sparse volumes) and §67.4 (DDA traversal for volumetric ray marching). Its GLSL bindings allow direct use in Vulkan compute shaders without CUDA. OpenVDB's `tools::VolumeToMesh` implements Dual Contouring (§65.2) on the CPU; GPU marching cubes on OpenVDB nodes uses the §65.1 pattern applied to NanoVDB leaf data.
 
-**XeGTAO** ([Intel GameTechDev](https://github.com/GameTechDev/XeGTAO), MIT) is the reference implementation of §62.3 GTAO with spatial denoising, a HLSL/DX12 implementation straightforwardly portable to GLSL/Vulkan. It includes bent-normal computation and temporal accumulation.
+**XeGTAO** ([Intel GameTechDev](https://github.com/GameTechDev/XeGTAO), MIT) is the reference implementation of §66.3 GTAO with spatial denoising, a HLSL/DX12 implementation straightforwardly portable to GLSL/Vulkan. It includes bent-normal computation and temporal accumulation.
 
-**geometry-central** ([nmwsharp](https://github.com/nmwsharp/geometry-central), MIT) implements the heat method (§65) and the vector heat method (§65.4) with cotangent Laplacian assembly and Cholesky factorization (via Eigen). The linear system structure is GPU-amenable via the Jacobi-CG patterns in §65.1–65.3; geometry-central provides the reference for the operator assembly step. It also implements LSCM and ARAP parameterization (§66.1–66.2).
+**geometry-central** ([nmwsharp](https://github.com/nmwsharp/geometry-central), MIT) implements the heat method (§37) and the vector heat method (§37.4) with cotangent Laplacian assembly and Cholesky factorization (via Eigen). The linear system structure is GPU-amenable via the Jacobi-CG patterns in §37.1–65.3; geometry-central provides the reference for the operator assembly step. It also implements LSCM and ARAP parameterization (§17.1–66.2).
 
-**xatlas** (§66.4, MIT) is the most widely deployed GPU-rendering UV atlas library (used in Unity, Blender, many game studios). It generates seam cuts (§66.3 spanning tree approach) and packs charts into a rectangle atlas. CPU-only; the GPU upload of the resulting UV buffer is the standard integration path.
+**xatlas** (§17.4, MIT) is the most widely deployed GPU-rendering UV atlas library (used in Unity, Blender, many game studios). It generates seam cuts (§17.3 spanning tree approach) and packs charts into a rectangle atlas. CPU-only; the GPU upload of the resulting UV buffer is the standard integration path.
 
-**Table H — §70–§79 coverage**
+**Table H — §31–§57 coverage**
 
-| Library | Ver | GPU Backend | §70 BVH Build | §71 SDF Bake | §72 Fairing | §73 Neural Geom | §74 MetaBalls | §75 Poisson | §76 VR/XR | §77 Spectral | §78 SfM/MVS | §79 Erosion | Best Use |
+| Library | Ver | GPU Backend | §31 BVH Build | §32 SDF Bake | §19 Fairing | §95 Neural Geom | §8 MetaBalls | §9 Poisson | §100 VR/XR | §38 Spectral | §88 SfM/MVS | §57 Erosion | Best Use |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | [RadeonRays 4](https://github.com/GPUOpen-LibrariesAndSDKs/RadeonRays_SDK) | 4.x | Vulkan/HIP | ✓ LBVH+PLOC | — | — | — | — | — | — | — | — | — | GPU BVH build on AMD/Vulkan |
 | [Embree 4](https://github.com/embree/embree) | 4.x | ISPC/SYCL | ✓ SAH-HLBVH | — | — | — | — | — | — | — | — | — | High-quality CPU/SYCL BVH |
@@ -14916,92 +14916,92 @@ Sub::CatmullClark_subdivision(mesh,
 | [OpenMVS](https://github.com/cdcseacave/openMVS) | 2.x | CUDA | — | — | — | — | — | — | — | — | ✓ MVS dense | — | Dense multi-view stereo |
 | [Terrain erosion (GPU)](https://github.com/bshishov/UnityTerrainErosionGPU) | research | Vulkan/Unity | — | — | — | — | — | — | — | — | — | ✓ hydraulic+thermal | GPU erosion reference impl |
 
-**RadeonRays 4** ([GPUOpen](https://github.com/GPUOpen-LibrariesAndSDKs/RadeonRays_SDK), MIT) implements LBVH and PLOC BVH construction (§70.1–70.4) with a Vulkan backend — the only portable Vulkan-native BVH builder available as a library. Its construction pipeline matches the Morton-code + radix-sort + refit pattern of §70 exactly; it exports `VkAccelerationStructure`-compatible BVH data for use with `VK_KHR_ray_tracing_pipeline`.
+**RadeonRays 4** ([GPUOpen](https://github.com/GPUOpen-LibrariesAndSDKs/RadeonRays_SDK), MIT) implements LBVH and PLOC BVH construction (§31.1–70.4) with a Vulkan backend — the only portable Vulkan-native BVH builder available as a library. Its construction pipeline matches the Morton-code + radix-sort + refit pattern of §31 exactly; it exports `VkAccelerationStructure`-compatible BVH data for use with `VK_KHR_ray_tracing_pipeline`.
 
-**Embree 4** (Intel, Apache 2.0) implements SAH-HLBVH and PLOC with an ISPC CPU backend and an emerging SYCL (oneAPI) GPU backend. On x86 CPUs it is the quality reference; the SYCL path targets Intel Arc GPUs and provides a template for §70.4 PLOC on non-AMD Vulkan hardware.
+**Embree 4** (Intel, Apache 2.0) implements SAH-HLBVH and PLOC with an ISPC CPU backend and an emerging SYCL (oneAPI) GPU backend. On x86 CPUs it is the quality reference; the SYCL path targets Intel Arc GPUs and provides a template for §31.4 PLOC on non-AMD Vulkan hardware.
 
-**instant-ngp** (§73.2, NVIDIA, custom license) implements the multiresolution hash grid encoding and tiny-MLP inference in CUDA. Its Vulkan interop path (for display) uses CUDA–Vulkan semaphore synchronisation; the hash grid structure in §73.2 is taken directly from its CUDA kernel. **nerfstudio** provides a training framework around gsplat (§60), instant-ngp, and NeuS (§73.4) with a Python API for inference export.
+**instant-ngp** (§95.2, NVIDIA, custom license) implements the multiresolution hash grid encoding and tiny-MLP inference in CUDA. Its Vulkan interop path (for display) uses CUDA–Vulkan semaphore synchronisation; the hash grid structure in §95.2 is taken directly from its CUDA kernel. **nerfstudio** provides a training framework around gsplat (§94), instant-ngp, and NeuS (§95.4) with a Python API for inference export.
 
-**PoissonRecon** (Kazhdan, MIT) is the reference implementation of §75 with adaptive octree refinement, screened Poisson solve, and isovalue selection. CPU+TBB; the GPU patterns in §75.1–75.4 show how to accelerate the splatting, Laplacian assembly, and isovalue computation passes.
+**PoissonRecon** (Kazhdan, MIT) is the reference implementation of §9 with adaptive octree refinement, screened Poisson solve, and isovalue selection. CPU+TBB; the GPU patterns in §9.1–75.4 show how to accelerate the splatting, Laplacian assembly, and isovalue computation passes.
 
-**COLMAP** (§78, BSD-3) implements the full SfM pipeline (feature detection, matching, geometric verification, bundle adjustment) with CUDA-accelerated feature extraction and matching (§78.1). **OpenMVS** extends it with GPU-accelerated SGM depth estimation (§78.3) and depth map fusion (§78.4) on CUDA.
+**COLMAP** (§88, BSD-3) implements the full SfM pipeline (feature detection, matching, geometric verification, bundle adjustment) with CUDA-accelerated feature extraction and matching (§88.1). **OpenMVS** extends it with GPU-accelerated SGM depth estimation (§88.3) and depth map fusion (§88.4) on CUDA.
 
-**What is missing.** Spanning all eight tables, the most significant gaps on Vulkan are: GPU BVH construction (covered by RadeonRays on Vulkan; Embree on SYCL), SDF baking (§71 — no Vulkan library; jump-flooding compute patterns are the only path), mesh fairing (§72 — CPU-only in geometry-central), and terrain erosion (§79 — Unity/CUDA reference only). Neural geometry (§73) is CUDA-exclusive. Spectral processing (§77) has no GPU library. The CUDA ecosystem now covers approximately thirty-five of the seventy-nine sections; the Vulkan compute shader patterns across §10–§79 remain the primary portable path for the remainder.
+**What is missing.** Spanning all eight tables, the most significant gaps on Vulkan are: GPU BVH construction (covered by RadeonRays on Vulkan; Embree on SYCL), SDF baking (§32 — no Vulkan library; jump-flooding compute patterns are the only path), mesh fairing (§19 — CPU-only in geometry-central), and terrain erosion (§57 — Unity/CUDA reference only). Neural geometry (§95) is CUDA-exclusive. Spectral processing (§38) has no GPU library. The CUDA ecosystem now covers approximately thirty-five of the seventy-nine sections; the Vulkan compute shader patterns across §26–§57 remain the primary portable path for the remainder.
 
-**Table I — §80–§89 coverage**
+**Table I — §58–§22 coverage**
 
-| Library | Ver | GPU Backend | §80 Fluid Surf | §81 CCD | §82 ConvHull | §83 Remesh | §84 SSR | §85 Silhouette | §86 Descriptors | §87 Segment | §88 Radiosity | §89 Repair | Best Use |
+| Library | Ver | GPU Backend | §58 Fluid Surf | §59 CCD | §106 ConvHull | §20 Remesh | §80 SSR | §101 Silhouette | §89 Descriptors | §21 Segment | §81 Radiosity | §22 Repair | Best Use |
 |---------|-----|-------------|:--------------:|:-------:|:------------:|:----------:|:-------:|:--------------:|:---------------:|:-----------:|:-------------:|:----------:|----------|
-| SplishSplash | 2.13 | CUDA | ✓ (anisotropic §80.2) | — | — | — | — | — | — | — | — | — | SPH/FLIP fluid simulation |
-| bullet3 | 3.25 | CUDA/OpenCL | — | ✓ (§81.1 conservative) | ✓ (GJK-based) | — | — | — | — | — | — | — | Rigid body + CCD |
-| Open3D | 0.18 | CUDA/Tensor | — | — | ✓ (GPU QuickHull §82) | ✓ (CVT §83.4) | — | — | ✓ (FPFH §86.2) | — | — | ✓ (§89.1) | Point cloud processing |
-| PCL | 1.14 | CUDA (partial) | — | — | — | — | — | — | ✓ (FPFH/SHOT §86) | ✓ (k-means §87.2) | — | — | Robotics point cloud |
-| meshoptimizer | 0.21 | CPU | — | — | — | ✓ (edge ops §83.2) | — | — | — | — | — | ✓ (§89.4) | Mesh optimisation/repair |
-| libigl | 2.5 | CPU+OpenGL | — | — | — | ✓ (ARAP §66) | — | ✓ (§85.3) | — | ✓ (rw §87.3) | — | ✓ (§89.3) | Geometry processing research |
-| geometry-central | 1.0 | CPU | — | — | — | ✓ (flip §83.1) | — | ✓ (§85.4) | — | — | — | — | Differential geometry |
-| Radeon Rays | 4.0 | Vulkan/HIP | — | — | — | — | — | — | — | — | — | — | Ray query (used by §84.1 HiZ) |
-| drjit / Mitsuba 3 | 0.4 | CUDA/LLVM | ✓ (§80.3 depth smooth) | — | — | — | — | — | — | — | ✓ (§88.2 radiosiy) | — | Differentiable rendering |
-| NVIDIA VKRay | SDK | Vulkan | — | — | — | — | ✓ (§84.1 HiZ) | — | — | — | — | — | RTX ray tracing SDK |
-| Manifold | 2.4 | CPU | — | — | — | — | — | — | — | — | — | ✓ (watertight CSG §89) | Robust mesh operations |
+| SplishSplash | 2.13 | CUDA | ✓ (anisotropic §58.2) | — | — | — | — | — | — | — | — | — | SPH/FLIP fluid simulation |
+| bullet3 | 3.25 | CUDA/OpenCL | — | ✓ (§59.1 conservative) | ✓ (GJK-based) | — | — | — | — | — | — | — | Rigid body + CCD |
+| Open3D | 0.18 | CUDA/Tensor | — | — | ✓ (GPU QuickHull §106) | ✓ (CVT §20.4) | — | — | ✓ (FPFH §89.2) | — | — | ✓ (§22.1) | Point cloud processing |
+| PCL | 1.14 | CUDA (partial) | — | — | — | — | — | — | ✓ (FPFH/SHOT §89) | ✓ (k-means §21.2) | — | — | Robotics point cloud |
+| meshoptimizer | 0.21 | CPU | — | — | — | ✓ (edge ops §20.2) | — | — | — | — | — | ✓ (§22.4) | Mesh optimisation/repair |
+| libigl | 2.5 | CPU+OpenGL | — | — | — | ✓ (ARAP §17) | — | ✓ (§101.3) | — | ✓ (rw §21.3) | — | ✓ (§22.3) | Geometry processing research |
+| geometry-central | 1.0 | CPU | — | — | — | ✓ (flip §20.1) | — | ✓ (§101.4) | — | — | — | — | Differential geometry |
+| Radeon Rays | 4.0 | Vulkan/HIP | — | — | — | — | — | — | — | — | — | — | Ray query (used by §80.1 HiZ) |
+| drjit / Mitsuba 3 | 0.4 | CUDA/LLVM | ✓ (§58.3 depth smooth) | — | — | — | — | — | — | — | ✓ (§81.2 radiosiy) | — | Differentiable rendering |
+| NVIDIA VKRay | SDK | Vulkan | — | — | — | — | ✓ (§80.1 HiZ) | — | — | — | — | — | RTX ray tracing SDK |
+| Manifold | 2.4 | CPU | — | — | — | — | — | — | — | — | — | ✓ (watertight CSG §22) | Robust mesh operations |
 
-**SplishSplash** (Bender et al., MIT) implements DFSPH and PCISPH with CUDA kernels for neighbour search, pressure solve, and anisotropic kernel computation (§80.2). Its surface reconstruction pipeline calls the GPU marching cubes of §61 on a density grid built with the Yu & Turk anisotropic splatting kernel.
+**SplishSplash** (Bender et al., MIT) implements DFSPH and PCISPH with CUDA kernels for neighbour search, pressure solve, and anisotropic kernel computation (§58.2). Its surface reconstruction pipeline calls the GPU marching cubes of §65 on a density grid built with the Yu & Turk anisotropic splatting kernel.
 
-**Open3D** (Intel/NVIDIA, MIT) provides a GPU tensor API covering point cloud k-NN, GPU convex hull (§82), CVT-based resampling (§83.4), FPFH descriptor computation (§86.2), and mesh repair (§89.1 non-manifold detection). Its CUDA backend is the most complete open GPU geometry library for the §80–§89 range.
+**Open3D** (Intel/NVIDIA, MIT) provides a GPU tensor API covering point cloud k-NN, GPU convex hull (§106), CVT-based resampling (§20.4), FPFH descriptor computation (§89.2), and mesh repair (§22.1 non-manifold detection). Its CUDA backend is the most complete open GPU geometry library for the §58–§22 range.
 
-**Manifold** (Knyszewski, Apache 2.0) implements exact, robust Boolean operations on manifold meshes and produces watertight output guaranteed to be manifold. It underpins the §89 repair discussion and is the recommended library for 3D printing pipeline repair.
+**Manifold** (Knyszewski, Apache 2.0) implements exact, robust Boolean operations on manifold meshes and produces watertight output guaranteed to be manifold. It underpins the §22 repair discussion and is the recommended library for 3D printing pipeline repair.
 
-**What is missing in §80–§89.** GPU CCD (§81) has no Vulkan library; bullet3's CCD is CPU-based with CUDA broadphase only. GPU radiosity (§88) has no modern GPU library; all production engines compute it offline on the CPU or bake it with ray tracing (§34). Screen-space reflections (§84) are universally engine-internal (Unreal TSR, Unity URP). Silhouette detection (§85) and suggestive contours (§85.4) have no GPU library. Spanning all nine tables (§1–§89), the Vulkan compute shader patterns remain the primary portable path for the majority of sections not served by CUDA-exclusive libraries.
+**What is missing in §58–§22.** GPU CCD (§59) has no Vulkan library; bullet3's CCD is CPU-based with CUDA broadphase only. GPU radiosity (§81) has no modern GPU library; all production engines compute it offline on the CPU or bake it with ray tracing (§28). Screen-space reflections (§80) are universally engine-internal (Unreal TSR, Unity URP). Silhouette detection (§101) and suggestive contours (§101.4) have no GPU library. Spanning all nine tables (§1–§22), the Vulkan compute shader patterns remain the primary portable path for the majority of sections not served by CUDA-exclusive libraries.
 
-**Table J — §90–§99 coverage**
+**Table J — §33–§104 coverage**
 
-| Library | Ver | GPU Backend | §90 VirtGeom | §91 PathTrace | §92 ICP | §93 Displace | §94 LevelSet | §95 SDF Font | §96 Atmo | §97 SSS | §98 Geo | §99 MolSurf | Best Use |
+| Library | Ver | GPU Backend | §33 VirtGeom | §82 PathTrace | §90 ICP | §102 Displace | §68 LevelSet | §103 SDF Font | §83 Atmo | §84 SSS | §74 Geo | §104 MolSurf | Best Use |
 |---------|-----|-------------|:------------:|:-------------:|:-------:|:------------:|:------------:|:------------:|:--------:|:-------:|:-------:|:-----------:|----------|
-| Nanite (Unreal 5) | UE5.4 | Vulkan/D3D12 | ✓ (§90 native) | — | — | ✓ (§93 mesh shader) | — | — | ✓ (§96 plugin) | — | — | — | Production virtual geometry |
-| NVIDIA Falcor | 7.0 | Vulkan/D3D12 | — | ✓ (§91 full PT) | — | — | — | — | — | — | — | — | Research path tracing framework |
-| Mitsuba 3 | 3.5 | CUDA/LLVM | — | ✓ (§91 MIS PT) | — | — | — | — | ✓ (§96 spectral) | ✓ (§97.3) | — | — | Differentiable physically-based |
-| Open3D | 0.18 | CUDA/Tensor | — | — | ✓ (§92 GPU ICP) | — | — | — | — | — | ✓ (§98.2 LIDAR) | — | Point cloud & terrain processing |
-| OpenVDB | 11.0 | CUDA/NanoVDB | — | — | — | — | ✓ (§94 sparse LS) | — | — | — | — | — | Sparse volumetric computation |
-| msdfgen | 1.12 | CPU | — | — | — | — | — | ✓ (§95.3 MSDF) | — | — | — | — | Multi-channel SDF glyph baking |
-| SkyAtmosphere (UE) | UE5.4 | Vulkan | — | — | — | — | — | — | ✓ (§96 LUT) | — | — | — | Production sky rendering |
-| SSSS (Jiménez) | 2.0 | D3D11 (port) | — | — | — | — | — | — | — | ✓ (§97.1) | — | — | Separable screen-space skin SSS |
-| PDAL | 2.7 | CPU | — | — | — | — | — | — | — | — | ✓ (§98 pipeline) | — | LIDAR/geospatial pipeline |
-| APBS | 3.4 | CUDA | — | — | — | — | — | — | — | — | — | ✓ (§99.4 PB) | Molecular electrostatics solver |
-| VMD | 1.9 | CUDA/OpenCL | — | — | — | — | — | — | — | — | — | ✓ (§99 SAS/SES) | Molecular visualization |
+| Nanite (Unreal 5) | UE5.4 | Vulkan/D3D12 | ✓ (§33 native) | — | — | ✓ (§102 mesh shader) | — | — | ✓ (§83 plugin) | — | — | — | Production virtual geometry |
+| NVIDIA Falcor | 7.0 | Vulkan/D3D12 | — | ✓ (§82 full PT) | — | — | — | — | — | — | — | — | Research path tracing framework |
+| Mitsuba 3 | 3.5 | CUDA/LLVM | — | ✓ (§82 MIS PT) | — | — | — | — | ✓ (§83 spectral) | ✓ (§84.3) | — | — | Differentiable physically-based |
+| Open3D | 0.18 | CUDA/Tensor | — | — | ✓ (§90 GPU ICP) | — | — | — | — | — | ✓ (§74.2 LIDAR) | — | Point cloud & terrain processing |
+| OpenVDB | 11.0 | CUDA/NanoVDB | — | — | — | — | ✓ (§68 sparse LS) | — | — | — | — | — | Sparse volumetric computation |
+| msdfgen | 1.12 | CPU | — | — | — | — | — | ✓ (§103.3 MSDF) | — | — | — | — | Multi-channel SDF glyph baking |
+| SkyAtmosphere (UE) | UE5.4 | Vulkan | — | — | — | — | — | — | ✓ (§83 LUT) | — | — | — | Production sky rendering |
+| SSSS (Jiménez) | 2.0 | D3D11 (port) | — | — | — | — | — | — | — | ✓ (§84.1) | — | — | Separable screen-space skin SSS |
+| PDAL | 2.7 | CPU | — | — | — | — | — | — | — | — | ✓ (§74 pipeline) | — | LIDAR/geospatial pipeline |
+| APBS | 3.4 | CUDA | — | — | — | — | — | — | — | — | — | ✓ (§104.4 PB) | Molecular electrostatics solver |
+| VMD | 1.9 | CUDA/OpenCL | — | — | — | — | — | — | — | — | — | ✓ (§104 SAS/SES) | Molecular visualization |
 
-**Nanite** (Epic Games, built into Unreal Engine 5, proprietary) implements §90 end-to-end: offline cluster DAG construction (§90.1), GPU persistent-thread traversal (§90.2), software rasterisation via 64-bit atomic depth buffer (§90.3), and visibility buffer shading (§90.4). The Unreal sky atmosphere plugin implements §96 LUT-based scattering. Nanite's displacement (§93) is applied via mesh shader at cluster granularity.
+**Nanite** (Epic Games, built into Unreal Engine 5, proprietary) implements §33 end-to-end: offline cluster DAG construction (§33.1), GPU persistent-thread traversal (§33.2), software rasterisation via 64-bit atomic depth buffer (§33.3), and visibility buffer shading (§33.4). The Unreal sky atmosphere plugin implements §83 LUT-based scattering. Nanite's displacement (§102) is applied via mesh shader at cluster granularity.
 
-**NVIDIA Falcor** (BSD-3-Clause) is a real-time rendering research framework implementing a full wavefront path tracer (§91): MIS direct lighting, shader sorting (§91.3), and SVGF denoising (§91.4). It uses Vulkan or D3D12 ray tracing pipelines and serves as the reference implementation for §91.
+**NVIDIA Falcor** (BSD-3-Clause) is a real-time rendering research framework implementing a full wavefront path tracer (§82): MIS direct lighting, shader sorting (§82.3), and SVGF denoising (§82.4). It uses Vulkan or D3D12 ray tracing pipelines and serves as the reference implementation for §82.
 
-**OpenVDB / NanoVDB** (Academy Software Foundation, MPL-2.0) implements the VDB hierarchical sparse grid — the reference structure for §94 narrow-band level sets. NanoVDB provides a CUDA/Vulkan-compatible read-only view of the VDB tree enabling GPU advection (§94.3) and reinitialization (§94.2) on the GPU.
+**OpenVDB / NanoVDB** (Academy Software Foundation, MPL-2.0) implements the VDB hierarchical sparse grid — the reference structure for §68 narrow-band level sets. NanoVDB provides a CUDA/Vulkan-compatible read-only view of the VDB tree enabling GPU advection (§68.3) and reinitialization (§68.2) on the GPU.
 
-**What is missing in §90–§99.** GPU path tracing (§91) is dominated by CUDA/OptiX (Falcor, LuxCoreRender); Vulkan ray tracing pipeline equivalents exist (Vulkan-glTF-PBR, Kajiya) but lack the MIS+wavefront sorting of production PT. Atmospheric scattering (§96) is engine-internal in all production renderers; the Bruneton LUT approach (§96.1–96.2) is the only open, portable reference. Molecular surface (§99) GPU libraries are exclusively CUDA (VMD/APBS). Spanning all ten tables (§1–§99), the CUDA ecosystem dominates approximately forty-five sections; the Vulkan compute patterns remain the sole portable path for the remainder.
+**What is missing in §33–§104.** GPU path tracing (§82) is dominated by CUDA/OptiX (Falcor, LuxCoreRender); Vulkan ray tracing pipeline equivalents exist (Vulkan-glTF-PBR, Kajiya) but lack the MIS+wavefront sorting of production PT. Atmospheric scattering (§83) is engine-internal in all production renderers; the Bruneton LUT approach (§83.1–96.2) is the only open, portable reference. Molecular surface (§104) GPU libraries are exclusively CUDA (VMD/APBS). Spanning all ten tables (§1–§104), the CUDA ecosystem dominates approximately forty-five sections; the Vulkan compute patterns remain the sole portable path for the remainder.
 
-**Table K — §100–§107 coverage**
+**Table K — §45–§107 coverage**
 
-| Library | Ver | GPU Backend | §100 Soft FEM | §101 Cage Deform | §102 Lap Edit | §103 Del Refine | §104 Mink/PRM | §105 OIT | §106 Clipping | §107 Radix Sort | Best Use |
+| Library | Ver | GPU Backend | §45 Soft FEM | §46 Cage Deform | §47 Lap Edit | §23 Del Refine | §60 Mink/PRM | §85 OIT | §86 Clipping | §107 Radix Sort | Best Use |
 |---------|-----|-------------|:-------------:|:----------------:|:-------------:|:---------------:|:-------------:|:--------:|:-------------:|:---------------:|----------|
-| projective-dynamics | research | CUDA | ✓ (§100.3–100.4) | — | — | — | — | — | — | — | PD soft body research |
-| FEBio | 4.0 | CPU+CUDA | ✓ (§100.2 FEM) | — | — | — | — | — | — | — | Biomedical FEM |
-| libigl | 2.5 | CPU | — | ✓ (§101 MVC) | ✓ (§102 ARAP) | — | — | — | — | — | Geometry processing |
-| geometry-central | 1.0 | CPU | — | — | ✓ (§102.1 cotLap) | — | — | — | — | — | Differential geometry |
-| TetGen | 1.6 | CPU | ✓ (§100.1 tets) | — | — | ✓ (§103 CDT) | — | — | — | — | Quality tet meshing |
-| Triangle (Shewchuk) | 1.6 | CPU | — | — | — | ✓ (§103 Ruppert) | — | — | — | — | 2D quality meshing |
-| FCL | 0.7 | CPU | — | — | — | — | ✓ (§104.2 GJK) | — | — | — | Robot collision/planning |
-| OMPL | 1.6 | CPU | — | — | — | — | ✓ (§104.3 PRM/RRT) | — | — | — | Motion planning |
-| OIT (McGuire) | 2013 | OpenGL/Vulkan | — | — | — | — | — | ✓ (§105.3 WBOIT) | — | — | OIT reference impl |
-| Vulkan SDK samples | 1.3 | Vulkan | — | — | — | — | — | ✓ (§105.1 PPLL) | ✓ (§106.2 task) | — | Vulkan OIT + culling |
+| projective-dynamics | research | CUDA | ✓ (§45.3–100.4) | — | — | — | — | — | — | — | PD soft body research |
+| FEBio | 4.0 | CPU+CUDA | ✓ (§45.2 FEM) | — | — | — | — | — | — | — | Biomedical FEM |
+| libigl | 2.5 | CPU | — | ✓ (§46 MVC) | ✓ (§47 ARAP) | — | — | — | — | — | Geometry processing |
+| geometry-central | 1.0 | CPU | — | — | ✓ (§47.1 cotLap) | — | — | — | — | — | Differential geometry |
+| TetGen | 1.6 | CPU | ✓ (§45.1 tets) | — | — | ✓ (§23 CDT) | — | — | — | — | Quality tet meshing |
+| Triangle (Shewchuk) | 1.6 | CPU | — | — | — | ✓ (§23 Ruppert) | — | — | — | — | 2D quality meshing |
+| FCL | 0.7 | CPU | — | — | — | — | ✓ (§60.2 GJK) | — | — | — | Robot collision/planning |
+| OMPL | 1.6 | CPU | — | — | — | — | ✓ (§60.3 PRM/RRT) | — | — | — | Motion planning |
+| OIT (McGuire) | 2013 | OpenGL/Vulkan | — | — | — | — | — | ✓ (§85.3 WBOIT) | — | — | OIT reference impl |
+| Vulkan SDK samples | 1.3 | Vulkan | — | — | — | — | — | ✓ (§85.1 PPLL) | ✓ (§86.2 task) | — | Vulkan OIT + culling |
 | VkRadixSort | 2023 | Vulkan | — | — | — | — | — | — | — | ✓ (§107 full sort) | Vulkan compute radix sort |
 | CUB / Thrust | CUDA 12 | CUDA | — | — | — | — | — | — | — | ✓ (§107 reference) | CUDA sort primitive |
 
-**VkRadixSort** (Wihlidal, MIT) implements the full 4-pass radix sort (§107.1–107.3) in Vulkan compute shaders, directly applicable to §70 LBVH Morton code sorting and §11 particle spatial hashing. It serves as the portable Vulkan equivalent of CUB's `DeviceRadixSort`. **CUB** (NVIDIA, BSD-3) is the authoritative CUDA implementation, used internally by Thrust, cuBLAS, and all CUDA geometry libraries in this chapter.
+**VkRadixSort** (Wihlidal, MIT) implements the full 4-pass radix sort (§107.1–107.3) in Vulkan compute shaders, directly applicable to §31 LBVH Morton code sorting and §48 particle spatial hashing. It serves as the portable Vulkan equivalent of CUB's `DeviceRadixSort`. **CUB** (NVIDIA, BSD-3) is the authoritative CUDA implementation, used internally by Thrust, cuBLAS, and all CUDA geometry libraries in this chapter.
 
-**TetGen** (Si, AGPL-3.0) implements constrained Delaunay tetrahedralization (§103 in 3D) and Ruppert-quality refinement. The §100.1 inside/outside GPU classify pass feeds TetGen; its output provides the tetrahedral mesh for §100.2 FEM and §100.3 projective dynamics.
+**TetGen** (Si, AGPL-3.0) implements constrained Delaunay tetrahedralization (§23 in 3D) and Ruppert-quality refinement. The §45.1 inside/outside GPU classify pass feeds TetGen; its output provides the tetrahedral mesh for §45.2 FEM and §45.3 projective dynamics.
 
-**OMPL** (Rice/CMU, BSD-3) implements PRM (§104.3) and RRT (§104.4) with pluggable collision checkers. Connecting it to the GPU GJK batch checker (§104.2) via FCL's CUDA backend closes the gap between GPU broadphase and CPU planning.
+**OMPL** (Rice/CMU, BSD-3) implements PRM (§60.3) and RRT (§60.4) with pluggable collision checkers. Connecting it to the GPU GJK batch checker (§60.2) via FCL's CUDA backend closes the gap between GPU broadphase and CPU planning.
 
-**What is missing in §100–§107.** Soft body FEM (§100) has no Vulkan GPU library; the projective dynamics research code is CUDA-only. Cage deformation (§101) and Laplacian editing (§102) have CPU implementations in libigl/geometry-central but no GPU libraries. Constrained Delaunay refinement (§103) is CPU-only universally. Motion planning (§104) GPU acceleration is an active research area with no production library. OIT (§105) is widely engine-internal; the PPLL and WBOIT patterns are the only portable open references. Radix sort (§107) has VkRadixSort as the sole Vulkan open library; all other geometry libraries use CUDA/CUB internally.
+**What is missing in §45–§107.** Soft body FEM (§45) has no Vulkan GPU library; the projective dynamics research code is CUDA-only. Cage deformation (§46) and Laplacian editing (§47) have CPU implementations in libigl/geometry-central but no GPU libraries. Constrained Delaunay refinement (§23) is CPU-only universally. Motion planning (§60) GPU acceleration is an active research area with no production library. OIT (§85) is widely engine-internal; the PPLL and WBOIT patterns are the only portable open references. Radix sort (§107) has VkRadixSort as the sole Vulkan open library; all other geometry libraries use CUDA/CUB internally.
 
-**Overall library landscape summary (§1–§107).** Across all eleven tables, approximately fifty sections have production GPU library support (mostly CUDA). The remaining fifty-seven sections — spanning IK (§5), Laplacian processing (§72, §102), spectral methods (§77), constrained meshing (§103), motion planning (§104), atmospheric scattering (§96), molecular surfaces (§99), and others — rely on the Vulkan compute shader patterns presented in this chapter as the primary portable implementation path. This reflects the general state of the GPU geometry ecosystem: the CUDA library layer is mature and deep; the Vulkan/portable compute layer is the frontier, with the patterns in §1–§107 constituting a practical reference implementation guide.
+**Overall library landscape summary (§1–§107).** Across all eleven tables, approximately fifty sections have production GPU library support (mostly CUDA). The remaining fifty-seven sections — spanning IK (§40), Laplacian processing (§19, §47), spectral methods (§38), constrained meshing (§23), motion planning (§60), atmospheric scattering (§83), molecular surfaces (§104), and others — rely on the Vulkan compute shader patterns presented in this chapter as the primary portable implementation path. This reflects the general state of the GPU geometry ecosystem: the CUDA library layer is mature and deep; the Vulkan/portable compute layer is the frontier, with the patterns in §1–§107 constituting a practical reference implementation guide.
 
 ### 108.12 Why No Comprehensive Vulkan/Slang Geometry Library Exists
 
@@ -15017,7 +15017,7 @@ The preceding eleven tables reveal a striking asymmetry: roughly half of the alg
 
 **Driver fragmentation multiplies the validation burden.** A CUDA library ships against a single driver stack across homogeneous hardware. A Vulkan compute library must validate correctness and performance across AMD RDNA 2/3/4, NVIDIA Turing/Ampere/Ada/Blackwell, Intel Arc/Xe, ARM Mali-G series, Qualcomm Adreno, and MoltenVK on Apple Silicon — each with distinct driver bugs, subgroup sizes (4 to 128), memory models, cooperative matrix extension support, and occupancy characteristics. The quality-assurance surface is roughly eight times larger for the same algorithm, and most of those driver combinations generate bug reports only sporadically. A sustained engineering investment in cross-driver testing is required before a first release can be trusted — a cost that individual research groups cannot absorb.
 
-**Dynamic GPU memory allocation is still painful in Vulkan.** Several algorithms in this chapter — BVH cavity expansion (§82), Delaunay refinement (§103.3), QuickHull horizon-edge collection (§82.3), PPLL fragment append (§105.1) — need to grow output buffers based on runtime-computed sizes. In CUDA, device-side `malloc` and `new` are supported directly inside kernels. In Vulkan compute, the idiomatic approach is to pre-allocate worst-case buffers (wasting memory), use atomic counters with a two-pass pattern (adding latency), or bounce back to the host for reallocation (adding synchronisation overhead). None of these alternatives packages cleanly as a library call with a simple size parameter, because the output size depends on data-dependent control flow that only resolves at runtime on the device.
+**Dynamic GPU memory allocation is still painful in Vulkan.** Several algorithms in this chapter — BVH cavity expansion (§106), Delaunay refinement (§23.3), QuickHull horizon-edge collection (§106.3), PPLL fragment append (§85.1) — need to grow output buffers based on runtime-computed sizes. In CUDA, device-side `malloc` and `new` are supported directly inside kernels. In Vulkan compute, the idiomatic approach is to pre-allocate worst-case buffers (wasting memory), use atomic counters with a two-pass pattern (adding latency), or bounce back to the host for reallocation (adding synchronisation overhead). None of these alternatives packages cleanly as a library call with a simple size parameter, because the output size depends on data-dependent control flow that only resolves at runtime on the device.
 
 **The users who need portability do not currently need heavy algorithms.** The applications that run sophisticated BVH construction, spectral mesh processing, or projective dynamics soft bodies are, in practice, running on NVIDIA workstation or datacenter GPUs — hardware where CUDA is already available and preferred. The users who genuinely require Vulkan portability — browser-based (WebGPU), mobile (ARM Mali, Adreno), Apple Silicon (via Metal/MoltenVK) — typically need terrain rendering, particle effects, and basic skinning, not Poisson surface reconstruction or acoustic ray tracing. The portability need and the algorithm complexity need exist in largely disjoint user populations.
 
@@ -15074,19 +15074,19 @@ The preceding eleven tables reveal a striking asymmetry: roughly half of the alg
 ## 110. Integrations
 
 - **Ch24 (Vulkan/EGL)** — Vulkan resource allocation patterns for SSBO-based subdivision and skinning buffers; pipeline barrier placement between compute passes.
-- **Ch25 (GPU Compute)** — Compute shader dispatch setup, shared memory usage for marching cubes tile optimization, prefix-scan patterns for compaction, and radix sort for Morton-code-based LBVH (§8).
-- **Ch127 (Mesh Shaders and VRS)** — Mesh shaders replace the tessellation pipeline for subdivision patches; the amplification shader's LOD selection (§7.4) uses cluster bounding spheres from the same meshlet data structures described in Ch127.
+- **Ch25 (GPU Compute)** — Compute shader dispatch setup, shared memory usage for marching cubes tile optimization, prefix-scan patterns for compaction, and radix sort for Morton-code-based LBVH (§24).
+- **Ch127 (Mesh Shaders and VRS)** — Mesh shaders replace the tessellation pipeline for subdivision patches; the amplification shader's LOD selection (§10.4) uses cluster bounding spheres from the same meshlet data structures described in Ch127.
 - **Ch133 (Vulkan Compute Queues)** — Skinning pre-pass, IK compute, and BVH rebuild should run on the async compute queue to overlap with graphics rendering; see Ch133 for synchronization between compute and graphics queues.
-- **Ch135 (Vulkan Ray Tracing)** — The GPU-built LBVH (§8) feeds into `VkAccelerationStructureBuildGeometryInfoKHR` via `VK_ACCELERATION_STRUCTURE_BUILD_MODE_UPDATE_KHR` for dynamic geometry; Ch135 covers the full AS build and GLSL ray-tracing shader integration. The BLAS/TLAS pipeline in §20 of this chapter provides the geometry layer that Ch135's ray tracing shaders query.
-- **Ch141 (Cooperative Matrices)** — QEF matrix accumulation in dual contouring (§3.3) and Jacobian construction in IK (§5.3) benefit from cooperative matrix operations when matrix sizes exceed the warp-level primitive dimensions. The MLP inference in §27 (PointNet, neural SDF) maps directly to cooperative matrix multiply-accumulate patterns.
-- **Ch154 (GPU-Driven Rendering)** — GPU-driven pipelines require that geometry (subdivision patches, skinned meshes, LOD index buffers) be finalized in compute before indirect draw commands are issued; see Ch154's indirect dispatch patterns. The task-shader crowd rendering in §23.4 uses the same indirect draw compaction flow as Ch154's two-phase occlusion pass.
-- **Ch204 (Shader Algorithm Catalog)** — Reference for quaternion arithmetic primitives (`quat_mul`, `quat_from_axis_angle`) used in CCD and DQS shaders; also covers RK4 integration primitives reused in §26.4 heightfield collision and §29.1 streamline tracing.
-- **Ch209 (GPU Simulation Pipelines)** — The fluid (§11), deformable body (§12), rigid body (§22), fracture (§25), and crowd (§23) sections of this chapter provide the algorithm kernels; Ch209 covers how to assemble these kernels into a full simulation pipeline with shared memory layouts, double-buffering, and cross-queue synchronization. Hair strand simulation (§30) and level set evolution (§31) connect to the same pipeline architecture.
-- **Ch210 (Terrain and Streaming)** — The CDLOD quadtree (§26.1), sparse clipmap (§26.3), and heightfield ray intersection (§26.4) in this chapter are the GPU geometry algorithms; Ch210 covers the full terrain system including heightmap streaming, virtual texture feedback, and integration with the Vulkan sparse binding API.
-- **Ch135 (Vulkan Ray Tracing, lightmap baking)** — §34 uses `VK_KHR_ray_query` inline queries for per-texel AO baking; Ch135 covers the full RT pipeline, acceleration structure lifetime management, and shader binding table layout needed to build the bake pipeline.
-- **Ch152 (Rust GPU)** — Differentiable rendering (§32) and geometric deep learning (§27) are active areas for GPU-accelerated training in Rust; the neural SDF inference kernel from §27.3 maps directly to rust-gpu compute shaders for Vulkan-native ML inference.
-- **Ch154 (GPU-Driven Rendering, visibility)** — The software occlusion rasteriser (§39.2) and portal BFS (§39.3) feed into the two-phase occlusion pass (§10.4) described in Ch154; §39 provides the culling query algorithms, Ch154 provides the indirect draw compaction that acts on their results.
-- **Ch133 (Vulkan Compute Queues, ocean)** — The ocean FFT pipeline (§40) dispatches four compute passes per frame (spectrum evolve, IFFT ×3 for height/Dx/Dz, Jacobian). These passes run on the async compute queue overlapping with shadow map rendering (§43); Ch133's multi-queue synchronisation patterns apply directly.
-- **Ch24 (Vulkan/EGL, IBL)** — The PMREM compute dispatch (§44.2) and BRDF LUT bake (§44.3) write to cubemap array images and 2D images respectively. Ch24 covers the image layout transitions (`VK_IMAGE_LAYOUT_GENERAL` during compute write, `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL` during fragment read) required for these preprocessing resources.
-- **Ch210 (Terrain and Streaming, progressive mesh)** — Progressive mesh streaming (§48) and terrain clipmap streaming (§26.3) use the same pattern: a ring-buffer SSBO refilled by a background transfer queue while the graphics queue renders from already-uploaded data. Ch210 covers the transfer queue + sparse binding setup.
+- **Ch135 (Vulkan Ray Tracing)** — The GPU-built LBVH (§24) feeds into `VkAccelerationStructureBuildGeometryInfoKHR` via `VK_ACCELERATION_STRUCTURE_BUILD_MODE_UPDATE_KHR` for dynamic geometry; Ch135 covers the full AS build and GLSL ray-tracing shader integration. The BLAS/TLAS pipeline in §75 of this chapter provides the geometry layer that Ch135's ray tracing shaders query.
+- **Ch141 (Cooperative Matrices)** — QEF matrix accumulation in dual contouring (§3.3) and Jacobian construction in IK (§40.3) benefit from cooperative matrix operations when matrix sizes exceed the warp-level primitive dimensions. The MLP inference in §92 (PointNet, neural SDF) maps directly to cooperative matrix multiply-accumulate patterns.
+- **Ch154 (GPU-Driven Rendering)** — GPU-driven pipelines require that geometry (subdivision patches, skinned meshes, LOD index buffers) be finalized in compute before indirect draw commands are issued; see Ch154's indirect dispatch patterns. The task-shader crowd rendering in §51.4 uses the same indirect draw compaction flow as Ch154's two-phase occlusion pass.
+- **Ch204 (Shader Algorithm Catalog)** — Reference for quaternion arithmetic primitives (`quat_mul`, `quat_from_axis_angle`) used in CCD and DQS shaders; also covers RK4 integration primitives reused in §71.4 heightfield collision and §96.1 streamline tracing.
+- **Ch209 (GPU Simulation Pipelines)** — The fluid (§48), deformable body (§49), rigid body (§50), fracture (§52), and crowd (§51) sections of this chapter provide the algorithm kernels; Ch209 covers how to assemble these kernels into a full simulation pipeline with shared memory layouts, double-buffering, and cross-queue synchronization. Hair strand simulation (§42) and level set evolution (§61) connect to the same pipeline architecture.
+- **Ch210 (Terrain and Streaming)** — The CDLOD quadtree (§71.1), sparse clipmap (§71.3), and heightfield ray intersection (§71.4) in this chapter are the GPU geometry algorithms; Ch210 covers the full terrain system including heightmap streaming, virtual texture feedback, and integration with the Vulkan sparse binding API.
+- **Ch135 (Vulkan Ray Tracing, lightmap baking)** — §28 uses `VK_KHR_ray_query` inline queries for per-texel AO baking; Ch135 covers the full RT pipeline, acceleration structure lifetime management, and shader binding table layout needed to build the bake pipeline.
+- **Ch152 (Rust GPU)** — Differentiable rendering (§93) and geometric deep learning (§92) are active areas for GPU-accelerated training in Rust; the neural SDF inference kernel from §92.3 maps directly to rust-gpu compute shaders for Vulkan-native ML inference.
+- **Ch154 (GPU-Driven Rendering, visibility)** — The software occlusion rasteriser (§29.2) and portal BFS (§29.3) feed into the two-phase occlusion pass (§26.4) described in Ch154; §29 provides the culling query algorithms, Ch154 provides the indirect draw compaction that acts on their results.
+- **Ch133 (Vulkan Compute Queues, ocean)** — The ocean FFT pipeline (§73) dispatches four compute passes per frame (spectrum evolve, IFFT ×3 for height/Dx/Dz, Jacobian). These passes run on the async compute queue overlapping with shadow map rendering (§76); Ch133's multi-queue synchronisation patterns apply directly.
+- **Ch24 (Vulkan/EGL, IBL)** — The PMREM compute dispatch (§77.2) and BRDF LUT bake (§77.3) write to cubemap array images and 2D images respectively. Ch24 covers the image layout transitions (`VK_IMAGE_LAYOUT_GENERAL` during compute write, `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL` during fragment read) required for these preprocessing resources.
+- **Ch210 (Terrain and Streaming, progressive mesh)** — Progressive mesh streaming (§15) and terrain clipmap streaming (§71.3) use the same pattern: a ring-buffer SSBO refilled by a background transfer queue while the graphics queue renders from already-uploaded data. Ch210 covers the transfer queue + sparse binding setup.
 
