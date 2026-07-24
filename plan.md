@@ -72,6 +72,13 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 210: SLAM Theory and State of the Art](#chapter-210-slam-theory-and-state-of-the-art)
   - [Chapter 211: ROS 2 Multimodal Sensor and Perception Pipeline](#chapter-211-ros-2-multimodal-sensor-and-perception-pipeline)
   - [Chapter 206: SDL3 — Cross-Platform Multimedia Integration on Linux](#chapter-206-sdl3--cross-platform-multimedia-integration-on-linux)
+- **Part VII-C — Desktop Frameworks**
+  - [Chapter 39a: Qt6 — The Application Framework, from QObject to QRhi](#chapter-39a-qt6--the-application-framework-from-qobject-to-qrhi)
+  - [Chapter 39b: KDE Frameworks and KWin](#chapter-39b-kde-frameworks-and-kwin)
+  - [Chapter 39c: GTK4 and the GNOME Widget Toolkit](#chapter-39c-gtk4-and-the-gnome-widget-toolkit)
+  - [Chapter 39d: GNOME Shell, Mutter, and the GNOME Extension Model](#chapter-39d-gnome-shell-mutter-and-the-gnome-extension-model)
+  - [Chapter 39e: iced — A Pure-Rust UI Framework](#chapter-39e-iced--a-pure-rust-ui-framework)
+  - [Chapter 39f: libcosmic and the COSMIC Desktop](#chapter-39f-libcosmic-and-the-cosmic-desktop)
 - **Part VIII — Gaming Layer**
   - [Chapter 28: Windows Compatibility](#chapter-28-windows-compatibility)
   - [Chapter 29: Upscaling, Effects & Overlays](#chapter-29-upscaling-effects--overlays)
@@ -770,7 +777,10 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - Post-2021 deployment: PipeWire as the ALSA owner on modern desktops; direct `libasound` use on embedded/headless; when to use ALSA directly vs. PipeWire API; the `pw-jack` JACK compatibility shim (Ch38)
 - **Integrations**: Ch38 (PipeWire — owns ALSA devices on modern desktops; ALSA PCM plugin routes libasound calls into PipeWire graph), Ch140 (HDMI/DisplayPort Audio — HDA codec widget chain for HDMI audio), Ch39 (Qt Multimedia and GStreamer-GTK audio capture use ALSA or PipeWire-ALSA bridge), Ch57/Ch58 (FFmpeg/GStreamer ALSA source/sink elements), Ch26 (VA-API video decode outputs PCM via ALSA or PipeWire)
 
-### Chapter 39: Qt and GTK GPU Rendering
+### Chapter 39: Qt and GTK GPU Rendering *(superseded — see Part VII-C)*
+> **Note**: Chapter 39 has been expanded into six chapters in Part VII-C — Desktop Frameworks.
+> See ch39a (Qt6), ch39b (KDE), ch39c (GTK4), ch39d (GNOME), ch39e (iced), ch39f (libcosmic).
+
 - Qt6 rendering architecture: the `QRhi` (Qt Rendering Hardware Interface) abstraction; backends — Vulkan, OpenGL, Metal, D3D12; `QSGRenderNode` and the scene graph; `QQuickRenderControl` for off-screen rendering
 - Qt Wayland integration: `QPA` (Qt Platform Abstraction); `qwayland` QPA plugin; `xdg-shell` surface creation; linux-dmabuf swapchain; `zwp_linux_explicit_synchronization_v1` handshake (Ch3, Ch20)
 - Qt shader pipeline: Qt Shader Tools (`qsb`); GLSL → SPIR-V via `glslang`; SPIR-V → HLSL/MSL cross-compilation; how Qt-emitted SPIR-V enters Mesa NIR (Ch14); the QSBC shader cache
@@ -890,6 +900,40 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - SDL2 → SDL3 migration: `bool` init return; `SDL_EVENT_*` constants; flat window events; `SDL_Keysym` removed; float mouse coords; audio stream model; pixel format renames; env var renames; `SDL_INIT_EVERYTHING` removed; sdl2-compat shim for binaries
 - Building and packaging: CMake config, Wayland/PipeWire/HIDAPI/Vulkan build flags; `find_package(SDL3)` in CMake; `pkg-config sdl3`; `SDL_VIDEO_DRIVER=offscreen` for headless CI; `SDL_VIDEO_DRIVER=kmsdrm` for embedded kiosk
 - **Integrations**: Ch38 (PipeWire — SDL3's preferred audio backend, SDL_AudioStream maps to PipeWire graph nodes), Ch38b (ALSA — direct fallback when PipeWire absent), Ch39 (Qt/GTK — SDL's toolkit counterpart on Linux; all share EGL/Vulkan drivers), Ch20 (Wayland protocols — xdg-shell, relative-pointer, text-input-v3, fractional-scale that SDL3 implements), Ch18 (Mesa Vulkan — SDL_Vulkan_CreateSurface delivers surfaces to ANV/RADV/NVK), Ch24 (EGL/Vulkan for application developers — EGL context SDL uses on Wayland), Ch81 (SDL3 GPU API — the modern compute/graphics API above SDL_Renderer), Ch111 (Flatpak — SDL3 apps in sandbox use `--device=dri` and xdg-desktop-portal for dialogs/camera)
+
+---
+
+## Part VII-C — Desktop Frameworks
+
+### Chapter 39a: Qt6 — The Application Framework, from QObject to QRhi *(Part VII-C)*
+- **Scope**: All Qt modules — Core (meta-object, signals/slots, properties/bindings, events, strings, containers, timers, animation, resources, serialization, files/I-O/IPC/QDBus), GUI (paint, rich text, drag/drop), Network (QNAM, TLS, QHttpServer, WebSockets, gRPC/Protobuf), QML/Qt Quick (V4 engine, type registration, qmltc, input handlers, states/transitions, models/views, particles, shapes, Controls 2, Quick 3D), Scene graph + QRhi (Vulkan/OpenGL ES/Metal/D3D11 backends, qsb shader pipeline), Widgets, QtWayland (QPA, QWaylandWindow), Multimedia (FFmpeg default since Qt 6.5), Concurrency, i18n, Accessibility (AT-SPI2), Security, Testing (Qt Test, QSignalSpy), Dev Tools (Qt Creator, CMake-first), Linux Deployment (Flatpak, AppImage), Porting Qt5→6, Add-on modules (WebEngine, SQL, Bluetooth, Charts, Qt Graphs 6.8, Quick 3D Physics)
+- **Key types**: `QRhi`, `QSGNode`, `QSGMaterial`, `QSGRenderLoop`, `QMetaObject`, `QProperty<T>`, `QBindable<T>`, `QQmlEngine`, `QWaylandWindow`, `QThread`, `QPromise<T>`, `QHttpServer`, `QRhiWidget` (Qt 6.7), `QQuickRhiItem`
+- **Integrations**: Ch18 (Mesa Vulkan — QRhi Vulkan backend), Ch14 (NIR — Qt SPIR-V enters Mesa NIR), Ch20 (Wayland protocols — QtWayland QPA), Ch38 (PipeWire — Qt Multimedia capture backend on Linux), Ch39b (KDE Frameworks build on Qt6), Ch39c (GTK4 comparison), Ch47 (Font rendering — Qt FreeType/HarfBuzz), Ch111 (Flatpak — Qt app sandbox deployment)
+
+### Chapter 39b: KDE Frameworks and KWin *(Part VII-C)*
+- **Scope**: KDE Frameworks 6 (KF6) tier system (Functional, Integration, Solutions, Ecosystem); Extra CMake Modules (ECM); KWin compositor (DRM backend, Vulkan renderer, scene graph, Effect system, QML effects); Plasma Shell (plasmoids, containments, PlasmoidItem); Kirigami (adaptive QML UI); KWindowSystem, KIO, KConfig, KAuth, KScreen, KNotifications, Breeze theme, KSvg; KDE accessibility; Flatpak manifests for KDE apps
+- **Key types**: `KWin::Effect`, `KWin::EffectWindow`, `KWin::Scene`, `KIO::TransferJob`, `KWindowSystem`, `KConfig`, `KService`; QML: `PlasmoidItem`, `Kirigami.ApplicationWindow`, `PlasmaCore`
+- **Integrations**: Ch39a (Qt6 — KF6 is built on Qt6), Ch22 (Mutter/KWin compositor comparison), Ch21 (wlroots — Plasma Wayland compositor uses KWin, not wlroots), Ch18 (Mesa Vulkan — KWin Vulkan renderer), Ch111 (Flatpak — KDE app packaging with org.kde.Platform)
+
+### Chapter 39c: GTK4 and the GNOME Widget Toolkit *(Part VII-C)*
+- **Scope**: GObject type system (g_object_new, GParamSpec, GValue, GClosure, GSignal, GInterface, GTypeClass); GLib (GMainLoop/GMainContext, GSource, GVariant, GHashTable, GList/GSList, GString, GBytes, GDateTime, GSpawnFlags, GTask, GCancellable); GIO (GFile, GSettings, GInputStream/GOutputStream, GDBusConnection/GDBusProxy, GNetworkMonitor, GTlsConnection, GVfs, GMount); GTK4 widget system (GtkWidget, GtkBox, GtkListView, GtkColumnView, GtkBuilder/GtkBuildable); GDK Wayland backend (GdkSurface, GdkVulkanContext, linux-dmabuf); GSK rendering (GskRenderNode tree, GtkSnapshot, GskVulkanRenderer default GTK 4.16+, GskNglRenderer, explicit sync GTK 4.16); libadwaita (AdwApplicationWindow, AdwHeaderBar, AdwDialog, AdwTabView); CSS rendering model; WebKitGTK; Pango (PangoLayout, text shaping); gtk4-rs Rust bindings; language bindings (Python-gi, Vala)
+- **Key types**: `GskRenderer`, `GskRenderNode`, `GtkSnapshot`, `GdkPaintable`, `GtkBuildable`, `GtkListItemFactory`, `AdwDialog`, `GDBusProxy`, `GCancellable`, `GFile`, `GSettings`
+- **Integrations**: Ch39d (GNOME — GTK4 is the toolkit GNOME Shell extensions use), Ch39a (Qt6 comparison), Ch47 (Font rendering — Pango/Cairo), Ch20 (Wayland — GDK Wayland backend), Ch18 (Mesa Vulkan — GskVulkanRenderer), Ch111 (Flatpak — GNOME apps use org.gnome.Platform)
+
+### Chapter 39d: GNOME Shell, Mutter, and the GNOME Extension Model *(Part VII-C)*
+- **Scope**: Mutter compositor (MetaDisplay, MetaKmsDevice, MetaWaylandCompositor, MetaWindow, Clutter actor tree, MetaShapedTexture); GNOME Shell (GJS/SpiderMonkey, St toolkit, Overview, GNOME 45+ ESM Extension base class, deprecated ExtensionUtils migration); GJS (GObject Introspection, gi.repository imports, ByteArray, Gio.DBusProxy); GObject Introspection system (typelib generation, g-ir-scanner); GNOME accessibility (AT-SPI2 bridge); GSettings schema system; GVfs and GVFS monitor; Flatpak runtime; GNOME Builder and development tooling
+- **Key types**: `Meta.Display`, `Meta.KmsDevice`, `Meta.WaylandCompositor`, `Clutter.Actor`, `St.Widget`, `Gio.DBusProxy`, `Extension` (ESM base class), `GObject.Object` (GJS side)
+- **Integrations**: Ch39c (GTK4 — GNOME Shell uses GTK4/libadwaita for app UI), Ch22 (Mutter as the reference Wayland compositor), Ch18 (Mesa — GskVulkanRenderer and Mutter's Vulkan path), Ch111 (Flatpak — GNOME runtime), Ch39a (Qt6 comparison for application frameworks)
+
+### Chapter 39e: iced — A Pure-Rust UI Framework *(Part VII-C)*
+- **Scope**: iced 0.14.0 architecture — Elm-inspired (Application trait functional API as of 0.13); widget system (Element, Column, Row, Container, Scrollable, Canvas, Shader); `iced_wgpu` rendering backend (wgpu 0.20+, Vulkan/Metal/D3D12/OpenGL); `iced_tiny_skia` software fallback; `shader::Primitive` trait with associated `type Pipeline`; winit 0.30 platform integration; Wayland via winit + `iced_layershell` (waycrate) for layer-shell surfaces; async runtime (tokio/async_std subscriptions); custom widget implementation; `iced_futures` subscription model; AccessKit tracking (issue #552, not yet merged); `iced_graphics` abstraction layer
+- **Key types**: `Application`, `Element<Message>`, `Command<Message>`, `Subscription<Message>`, `Canvas`, `shader::Primitive`, `iced_wgpu::Backend`, `iced_layershell::Application`
+- **Integrations**: Ch39f (libcosmic — iced superset), Ch40 (wgpu/Bevy — iced_wgpu shares the wgpu rendering layer), Ch39a (Qt6 comparison), Ch20 (Wayland — winit Wayland backend for iced)
+
+### Chapter 39f: libcosmic and the COSMIC Desktop *(Part VII-C)*
+- **Scope**: COSMIC desktop stack — smithay-based compositor (cosmic-comp), libcosmic widget library (iced superset with CosmicWidget, CosmicTheme, cosmic-config RON files, LayerShell surfaces), CosmicTheme (semantic color tokens, palette generation), COSMIC settings daemon, cosmic-panel, cosmic-dock; pure-Rust architecture (no GTK, no Qt dependency); XWayland integration; COSMIC app ecosystem; comparison table COSMIC vs GNOME vs KDE vs elementary OS vs Budgie; deployment on Pop!_OS and other distributions; `iced_sctk` fork (pop-os/libcosmic, not upstream iced); cosmic-text (text rendering in COSMIC)
+- **Key types**: `CosmicWidget`, `CosmicTheme`, `CosmicButton`, `cosmic_config::Config`, `LayerShellSettings`, `CosmicApplication`
+- **Integrations**: Ch39e (iced — libcosmic is built on iced), Ch21 (wlroots vs. smithay for compositor implementation), Ch40 (wgpu — COSMIC rendering backend), Ch39a (Qt6 comparison for application portability)
 
 ---
 
