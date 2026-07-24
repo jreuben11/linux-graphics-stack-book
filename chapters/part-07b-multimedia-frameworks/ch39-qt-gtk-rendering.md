@@ -8,6 +8,8 @@
 
 - [Overview](#overview)
 - [1. Qt6 Rendering Architecture: QRhi and Scene Graph](#1-qt6-rendering-architecture-qrhi-and-scene-graph)
+  - [1.4 What is Qt6?](#14-what-is-qt6)
+  - [1.5 What is GTK4?](#15-what-is-gtk4)
 - [2. Qt Wayland Integration and Swapchain](#2-qt-wayland-integration-and-swapchain)
 - [3. Qt Shader Pipeline: qsb and SPIR-V](#3-qt-shader-pipeline-qsb-and-spir-v)
 - [3.5 The Qt Meta-Object System](#35-the-qt-meta-object-system)
@@ -212,6 +214,14 @@ graph TD
     I --> D
     I --> E
 ```
+
+### 1.4 What is Qt6?
+
+Qt6 is the sixth major release of the Qt application and UI framework, a cross-platform toolkit for building graphical applications in C++ with optional QML-based declarative interfaces via Qt Quick. Qt is licensed under commercial and open-source (LGPL/GPL) terms and maintained under the Qt Project umbrella. On Linux, Qt6 targets Wayland and X11 display servers through its platform abstraction layer, the Qt Platform Abstraction (QPA), which isolates application and framework code from display-server specifics. The GPU rendering infrastructure was substantially redesigned for Qt6: instead of scattering direct OpenGL calls throughout the codebase, Qt6 introduced the Rendering Hardware Interface (QRhi), a unified internal API layer that abstracts Vulkan, OpenGL ES 2.0+, Metal, and Direct3D 11/12. Qt Quick — the QML-based declarative UI framework — builds a retained scene graph of QSGNode objects and renders it entirely through QRhi, with the backend selectable at runtime via the QSG_RHI_BACKEND environment variable. Qt6.6 elevated QRhi to a fully public API, allowing application code to use it directly for custom rendering independent of Qt Quick. The relevant source subtrees are qtbase/src/gui/rhi/ for the QRhi core, qtdeclarative/src/quick/scenegraph/ for the scene graph, and qtwayland/src/client/ for the Wayland platform plugin. This chapter focuses on the Vulkan and OpenGL ES paths on Linux Wayland compositors.
+
+### 1.5 What is GTK4?
+
+GTK4 is the fourth major version of the GTK toolkit, a C-language widget library and GPU rendering framework used by the GNOME desktop environment and a wide range of Linux applications. GTK is licensed under LGPL and developed under the GNOME Project. GTK4 replaced the Cairo-based immediate-mode drawing model of GTK 3 with a two-stage retained-mode architecture: widget code populates an immutable tree of GskRenderNode objects via the GtkSnapshot API, and a separate GskRenderer then traverses that tree to issue GPU draw calls. This separation decouples application-level widget logic from the rendering backend, allowing the renderer to be upgraded or replaced without touching widget code. GTK4 ships three renderer backends selectable at runtime via the GSK_RENDERER environment variable: GskVulkanRenderer for Vulkan 1.0+, GskNglRenderer for OpenGL 3.3+ / GLES 3.0+ (the unified GPU renderer introduced in GTK 4.14), and a legacy Cairo-based software fallback. From GTK 4.16 onward, GskVulkanRenderer is the default on Wayland with capable drivers. The GTK source tree places the unified GPU renderer in gsk/gpu/, the Vulkan backend in gsk/vulkan/, and the Wayland display backend in gdk/wayland/. GTK4 integrates with Wayland compositors through the GDK (GNOME Display Kit) Wayland backend, which manages surfaces, EGL contexts, and, from GTK 4.16, explicit GPU synchronisation via the wp_linux_drm_syncobj_v1 protocol.
 
 ---
 

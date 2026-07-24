@@ -9,6 +9,10 @@
 ## Table of Contents
 
 1. [Wine: Architecture and the PE Loader](#1-wine-architecture-and-the-pe-loader)
+   - [1.1 What is Wine?](#11-what-is-wine)
+   - [1.2 What is Proton?](#12-what-is-proton)
+   - [1.3 What is DXVK?](#13-what-is-dxvk)
+   - [1.4 What is VKD3D-Proton?](#14-what-is-vkd3d-proton)
 2. [Wine Graphics Driver Shims](#2-wine-graphics-driver-shims)
 3. [DXVK: D3D9/10/11 to Vulkan Translation](#3-dxvk-d3d91011-to-vulkan-translation)
 4. [VKD3D-Proton: D3D12 to Vulkan Translation](#4-vkd3d-proton-d3d12-to-vulkan-translation)
@@ -133,6 +137,32 @@ Wine 7.x introduced a "single-process WoW64" mode (`--enable-wow64`, also called
 At every boundary between Windows PE code and Linux-native ELF code — such as the Wine thunk stubs that call into `glibc` — a calling convention translation must occur. Windows uses the Microsoft x64 ABI (first four integer arguments in RCX, RDX, R8, R9; shadow space on the stack; XMM0–XMM3 for floating-point) while Linux uses the System V AMD64 ABI (first six integer arguments in RDI, RSI, RDX, RCX, R8, R9; no shadow space). Each Wine thunk stub that calls a Linux library function must arrange arguments accordingly.
 
 The Thread Environment Block (TEB) — the per-thread Windows data structure accessible via `%gs` on 64-bit Windows — must also be set up by Wine. Wine allocates TEB storage in the process address space and loads its address into `%gs` before entering Windows PE code, ensuring that code that reads from `%gs:0x30` (the Self pointer) or `%gs:0x8` (the current stack limit) gets correct values.
+
+### 1.1 What is Wine?
+
+Wine (the acronym expands to "Wine Is Not an Emulator") is a compatibility layer that allows Windows applications and games to run on Linux and other POSIX-compliant operating systems without the presence of a Windows kernel. The name is precise: Wine does not emulate the CPU or translate machine code. Instead, it re-implements the Windows NT API surface — the Win32 system call interface, the NT object manager, the PE loader contract, and the graphics dispatch chain — as a collection of Linux shared libraries and a small broker process. A Windows binary running under Wine on an x86-64 Linux host executes its machine instructions natively on the processor; only the operating system interface that the binary expects to find is intercepted and translated into equivalent POSIX calls.
+
+Wine operates entirely in user space. It provides implementations of Windows DLLs (`kernel32.dll`, `user32.dll`, `ntdll.dll`, and several hundred more) as Linux ELF shared objects. When a Windows executable calls `CreateFile`, Wine's `ntdll` translates the call to `open(2)`; when it calls `CreateEvent`, a helper process called the wineserver brokers the object because Linux has no direct kernel equivalent. On the graphics side, Wine provides driver backends — `winex11.drv` and `winewayland.drv` — that translate the Windows window and surface model into X11 or Wayland primitives, and routes GPU API calls through either the built-in wined3d translator or the higher-performance DXVK and VKD3D-Proton layers. Wine is the foundational layer on which the entire Linux gaming compatibility stack described in this chapter is built.
+
+### 1.2 What is Proton?
+
+Proton is a compatibility distribution maintained by Valve that packages Wine, DXVK, VKD3D-Proton, and a set of supplementary libraries into a deployable product shipped through Steam. Its purpose is to allow Windows games distributed on Steam to run on Linux with minimal or no user configuration, bridging the gap between a bare Wine installation — which requires manual setup per title — and a production-quality, centrally-managed compatibility stack.
+
+Beyond bundling existing tools, Proton adds several integration layers. A container technology called pressure-vessel uses bubblewrap (`bwrap`) to mount a Valve-curated Steam Runtime rootfs (in variants named `scout`, `soldier`, and `sniper`) as the execution environment while bind-mounting the host system's Mesa and Vulkan driver libraries so GPU-specific optimisations remain current. A per-game compatibility database applies DXVK version selections, environment variable overrides (`VKD3D_CONFIG`, `RADV_PERFTEST`, and others), and registry tweaks appropriate to individual titles. The `dxvk-nvapi` component emulates enough of the NVIDIA NVAPI interface to unblock titles that query GPU information through that proprietary path.
+
+On the Steam Deck, Proton games run as nested Wayland clients inside the gamescope compositor (Chapter 22), with AMD FidelityFX Super Resolution applied post-frame. The community-maintained Proton-GE fork extends the distribution with additional patches including proprietary media codec support. Proton is therefore both a packaging layer and a compatibility integration point that coordinates all of the technologies described in this chapter into a unified product.
+
+### 1.3 What is DXVK?
+
+DXVK is a Vulkan-based translation layer for the Direct3D 9, 10, and 11 graphics APIs. It runs as a set of Linux ELF shared libraries — implementing `d3d9.dll`, `d3d10core.dll`, `d3d11.dll`, and `dxgi.dll` — placed in a Wine prefix. Wine's DLL loader selects them over its built-in wined3d implementation via the `WINEDLLOVERRIDES` environment variable. When a game calls `D3D11CreateDevice()`, the call lands in DXVK's implementation rather than wined3d, and every subsequent Direct3D API call is translated into Vulkan API calls.
+
+The shader translation path converts DXBC (DirectX Bytecode, the binary shader format used by Direct3D 9–11) into SPIR-V via DXVK's own compiler in `src/spirv/`. The resulting SPIR-V is handed to the Vulkan driver, where Mesa's SPIR-V-to-NIR front end and a driver-specific backend (such as RADV's ACO compiler for AMD GPUs) lower it to GPU machine code. Resource management maps the Direct3D implicit hazard tracking model to explicit Vulkan synchronisation primitives such as `VkImageMemoryBarrier2`. Pipeline state caching via `VK_EXT_graphics_pipeline_library` and an on-disk state cache (`~/.cache/dxvk/`) mitigate shader compilation stutter on cold starts by allowing asynchronous background compilation and reuse across sessions. DXVK covers Direct3D 9 through 11 only; Direct3D 12 is handled by the separate VKD3D-Proton project.
+
+### 1.4 What is VKD3D-Proton?
+
+VKD3D-Proton is a Vulkan-based translation layer for the Direct3D 12 API, maintained as a gaming-focused fork of the upstream vkd3d project. It runs as `d3d12.dll` inside a Wine prefix and translates the Direct3D 12 command model — which shares significant design philosophy with Vulkan — into Vulkan API calls. VKD3D-Proton is a distinct codebase from DXVK; the two projects address different Direct3D generations and solve different translation problems.
+
+The translation mapping is relatively direct because Direct3D 12 and Vulkan were both designed around explicit GPU programming models. Direct3D 12 command lists (`ID3D12CommandList`) map to Vulkan command buffers (`VkCommandBuffer`); resource barrier transitions (`ResourceBarrier`) map to `VkImageMemoryBarrier2`; descriptor heaps (flat arrays of CBV, SRV, and UAV descriptors) map to Vulkan bindless descriptors via `VK_EXT_descriptor_indexing` and `VK_EXT_mutable_descriptor_type`. Shaders arrive as DXIL (an LLVM 3.7 bitcode dialect using `dx.op` intrinsics) and are translated to SPIR-V via the `dxil-spirv` library. The DirectX Raytracing interface maps to `VK_KHR_ray_tracing_pipeline` and `VK_KHR_acceleration_structure`. Sub-allocations within Direct3D 12 heap types are managed through the Vulkan Memory Allocator (VMA) library. DirectStorage, the Direct3D 12-adjacent asset streaming API, is currently supported as a CPU-side staging-buffer fallback. VKD3D-Proton is the component that makes modern AAA titles built on Direct3D 12 playable under Proton.
 
 ---
 

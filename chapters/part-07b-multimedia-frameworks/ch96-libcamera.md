@@ -15,6 +15,9 @@ The Linux camera subsystem has historically been one of the most fragmented area
 ## Table of Contents
 
 1. [Introduction: The Camera Fragmentation Problem](#1-introduction-the-camera-fragmentation-problem)
+   - [1.3 What is libcamera?](#13-what-is-libcamera)
+   - [1.4 What is V4L2 (Video4Linux2)?](#14-what-is-v4l2-video4linux2)
+   - [1.5 What is an ISP (Image Signal Processor)?](#15-what-is-an-isp-image-signal-processor)
 2. [V4L2 Media Controller Framework](#2-v4l2-media-controller-framework)
 3. [libcamera Architecture](#3-libcamera-architecture)
 4. [PipelineHandler: Per-Platform Subclasses](#4-pipelinehandler-per-platform-subclasses)
@@ -66,6 +69,18 @@ libcamera C++ API (CameraManager, Camera, Request)
         ▼
   Camera Sensor (OV5647, IMX219, IMX477, IMX708, …)
 ```
+
+### 1.3 What is libcamera?
+
+libcamera is an open-source userspace camera stack for Linux that provides a single, stable C++ API above a heterogeneous collection of kernel drivers. Prior to libcamera, each camera pipeline on embedded Linux required platform-specific configuration sequences and vendor-supplied ISP tuning libraries; libcamera encapsulates that per-platform knowledge in a `PipelineHandler` subclass while exposing a common `CameraManager`/`Camera`/`Request` model to all callers. The library communicates with the kernel exclusively through standard V4L2 and Media Controller ioctls — no new kernel ABIs were introduced — which means it runs on kernels already shipping in production. IPA modules execute inside libcamera's sandboxed subprocess or in-process depending on their trust level, allowing proprietary ISP tuning code to be isolated without burdening applications with that complexity. The public API surface is declared in `include/libcamera/` and is versioned to provide ABI stability; Python bindings exist in the `src/py/` subtree. libcamera is the camera backend for PipeWire's camera portal, the Raspberry Pi `rpicam-apps` suite, and GStreamer's `libcamerasrc` element. [Source](https://libcamera.org/)
+
+### 1.4 What is V4L2 (Video4Linux2)?
+
+V4L2, defined in `include/uapi/linux/videodev2.h`, is the Linux kernel's primary API for video capture, output, and processing hardware. An application opens a character device at `/dev/video*`, calls `VIDIOC_QUERYCAP` to discover capabilities, negotiates pixel format and frame dimensions with `VIDIOC_S_FMT`, allocates kernel-managed buffers with `VIDIOC_REQBUFS`, and streams frames by cycling buffers through `VIDIOC_QBUF`/`VIDIOC_DQBUF` with `VIDIOC_STREAMON` active. This model works well for self-contained capture devices — USB webcams, frame grabbers — where the entire pipeline fits inside device firmware. For SoC cameras, V4L2 is extended by the Media Controller API, which exposes the individual hardware blocks — sensors, CSI-2 receivers, ISPs — as separately configurable entities connected by directed links. Each entity is accessible at a `/dev/v4l-subdev*` node using the V4L2 subdevice ioctls (`VIDIOC_SUBDEV_S_FMT`, `VIDIOC_SUBDEV_S_SELECTION`). libcamera drives both layers: it uses the Media Controller API to discover and configure the pipeline graph, then uses standard V4L2 streaming ioctls on the output video node to acquire frames into DMA-BUF-backed memory. [Source](https://docs.kernel.org/userspace-api/media/v4l/v4l2.html)
+
+### 1.5 What is an ISP (Image Signal Processor)?
+
+An ISP is a hardware block, present in virtually every smartphone SoC and many embedded Linux platforms, that transforms raw Bayer-pattern pixel data from a CMOS image sensor into a usable image. Raw sensor output is a mosaiced grid of red, green, and blue photosites that requires a pipeline of operations before it resembles a photograph: black-level subtraction, lens shading correction (LSC) to compensate for optical vignetting, demosaicing (Bayer-to-RGB interpolation), auto-white balance (AWB) to remove color casts, auto-exposure and auto-gain control (AEC/AGC) to maintain correct exposure, noise reduction, and color correction matrix (CCM) application. On the Linux stack these operations are performed either by dedicated ISP hardware — Rockchip RkISP1, Intel IPU3/IPU6, Raspberry Pi PiSP — or by libcamera's software ISP path when no hardware ISP is available. The ISP feeds statistics (histograms, grid-based luminance and color measurements, focus metrics) to an IPA module, which in turn returns control parameters (analogue gain, exposure time, CCM coefficients) that are applied back to the hardware. This closed-loop runs at every frame and is what transforms a raw sensor into a stable, color-accurate video stream. libcamera's PipelineHandler layer mediates both directions of this feedback path. [Source](https://libcamera.org/camera-sensor-model.html)
 
 ---
 

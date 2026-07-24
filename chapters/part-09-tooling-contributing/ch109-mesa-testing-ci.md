@@ -21,6 +21,9 @@ This chapter is the operational companion to [Chapter 31: Conformance and Regres
 ## Table of Contents
 
 1. [Why GPU Driver Testing Is Hard](#1-why-gpu-driver-testing-is-hard)
+   - [1.1 What is piglit?](#11-what-is-piglit)
+   - [1.2 What is dEQP?](#12-what-is-deqp)
+   - [1.3 What is Mesa's CI Pipeline?](#13-what-is-mesas-ci-pipeline)
 2. [piglit — Mesa's OpenGL Regression Suite](#2-piglit--mesas-opengl-regression-suite)
    - [Test Categories and Directory Layout](#21-test-categories-and-directory-layout)
    - [Running piglit](#22-running-piglit)
@@ -90,6 +93,24 @@ Testing a GPU driver is qualitatively harder than testing most other software. T
 3. **Fast hardware subset**: a curated subset of dEQP and piglit tests runs on real GPUs during the merge request pipeline, targeting tests known to catch regressions in the changed driver code.
 4. **Full nightly CTS**: complete VK-GL-CTS and piglit runs scheduled nightly against all supported hardware configurations.
 5. **Trace replay**: application traces captured from real games and applications replay headlessly and compare rendered frames against stored checksums.
+
+### 1.1 What is piglit?
+
+piglit is Mesa's primary OpenGL regression test suite, hosted at `gitlab.freedesktop.org/mesa/piglit`. It provides thousands of small, focused tests that exercise OpenGL and OpenGL ES specification compliance, shader compiler correctness, extension behavior, and hardware-specific driver paths. Each test is either a standalone C program linked against OpenGL or a text-format `.shader_test` file parsed by the `shader_runner` interpreter. Tests run directly against the Mesa driver stack — software renderers such as llvmpipe and Lavapipe as well as hardware drivers — and report one of four outcomes: pass, fail, skip, or crash.
+
+piglit predates dEQP and continues to cover legacy extension cases and regression tests for historically fixed driver bugs that the Khronos conformance suite does not address. In Mesa's CI pipeline, a curated piglit subset runs on every merge request to catch OpenGL regressions before a change lands. The result format is JSON; the bundled summary tooling compares two result sets and filters changes into regressions, fixes, and unchanged failures, making it straightforward to determine which tests a given patch affected. Contributors are expected to add a piglit test when fixing a driver bug to prevent the defect from reappearing in future changes. [Source](https://gitlab.freedesktop.org/mesa/piglit)
+
+### 1.2 What is dEQP?
+
+dEQP (drawElements Quality Program) is the GPU conformance test suite maintained by the Khronos Group. The full repository is named VK-GL-CTS (Vulkan-GL Conformance Test Suite) and is hosted at `github.com/KhronosGroup/VK-GL-CTS`. dEQP provides test coverage for OpenGL ES (modules dEQP-GLES2, dEQP-GLES3, dEQP-GLES31), OpenGL (dEQP-GL45), and Vulkan (dEQP-VK), along with extension and portability profile tests. As of 2026, the Vulkan module alone contains over 700,000 test cases covering pipeline state, synchronization primitives, SPIR-V compilation paths, render pass behavior, image format support, and every ratified Vulkan extension.
+
+Passing the relevant dEQP mustpass list is required for Khronos conformance certification, which hardware vendors must obtain to advertise Vulkan or OpenGL ES compliance on shipping devices. Mesa uses dEQP both as a specification compliance check for its hardware drivers and as the primary test payload in CI. Because the full VK-GL-CTS run takes eight or more hours on real hardware, Mesa runs a fast curated subset on merge requests and schedules complete nightly runs post-merge. The deqp-runner tool (§4) handles parallel execution, expected-failure baselines, and flake detection when driving dEQP from Mesa's CI pipeline. [Source](https://github.com/KhronosGroup/VK-GL-CTS)
+
+### 1.3 What is Mesa's CI Pipeline?
+
+Mesa's CI pipeline is a GitLab-hosted automated testing system that validates every merge request and post-merge commit across a broad set of build configurations, software renderer runs, and hardware GPU tests. The pipeline is defined in `.gitlab-ci.yml` at the repository root, with driver-specific workloads split into include files under `.gitlab-ci/`. Build jobs span Linux x86_64, ARM64, and cross-compilation targets; test jobs execute piglit, dEQP (via deqp-runner), shader-db, and trace-replay tests against both software renderers and real GPU hardware. Physical lab machines running GitLab Runner expose hardware-specific tags such as `radv`, `anv`, `freedreno`, and `panfrost`; the CI scheduler dispatches jobs only to runners with the matching tag.
+
+A merge bot (marge-bot) gates final landing on a green pipeline, preventing contributors from bypassing the test gate. For ARM SBCs and embedded GPU boards that cannot run a GitLab Runner directly, the pipeline uses LAVA (Linaro Automation and Validation Architecture) to provision and control remote devices over USB or serial. The result is a single pipeline definition that can test driver code on Intel, AMD, Qualcomm Adreno, Arm Mali, and Broadcom VideoCore GPUs from a unified CI configuration. [Source](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/.gitlab-ci.yml)
 
 ---
 

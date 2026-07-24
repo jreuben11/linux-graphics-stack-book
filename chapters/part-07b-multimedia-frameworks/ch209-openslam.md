@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Overview](#1-overview)
+   - [1.1 What is SLAM?](#11-what-is-slam)
+   - [1.2 What is OpenSLAM?](#12-what-is-openslam)
+   - [1.3 What is Pose Graph Optimization?](#13-what-is-pose-graph-optimization)
 2. [SLAM Fundamentals: The Front-End/Back-End Split](#2-slam-fundamentals-the-front-endback-end-split)
 3. [The OpenSLAM Repository and Its Scope](#3-the-openslam-repository-and-its-scope)
 4. [Particle Filter SLAM: GMapping](#4-particle-filter-slam-gmapping)

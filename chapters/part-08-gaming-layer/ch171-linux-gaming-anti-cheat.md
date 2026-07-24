@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Introduction: The Anti-Cheat Ecosystem on Linux](#1-introduction-the-anti-cheat-ecosystem-on-linux)
+   - [1.1 What is Anti-Cheat Software?](#11-what-is-anti-cheat-software)
+   - [1.2 What is Wine and Proton?](#12-what-is-wine-and-proton)
+   - [1.3 What is the Ring-0 Problem?](#13-what-is-the-ring-0-problem)
 2. [Why Ring-0 Anti-Cheat Cannot Work on Linux](#2-why-ring-0-anti-cheat-cannot-work-on-linux)
 3. [EasyAntiCheat on Linux](#3-easyanticheat-on-linux)
 4. [BattlEye on Linux](#4-battleye-on-linux)
@@ -37,6 +40,30 @@ The major anti-cheat systems in the PC gaming ecosystem in 2026 are:
 Of these, **EAC** and **BattlEye** have provided working Linux support since late 2021, making the vast majority of titles that use them technically runnable on Linux if their developers opt in. **Vanguard**, **XIGNCODE3**, and **nProtect GameGuard** rely on Windows kernel-mode drivers that are architecturally incompatible with Wine/Proton. **VAC** is server-side and works on Linux without any special handling.
 
 The story of anti-cheat on Linux is therefore not a single technical narrative but a spectrum: at one end, systems that have solved the problem; at the other, systems that are structurally incapable of porting; and in the middle, a large number of games that have capable anti-cheat but whose publishers have not taken the few configuration steps required to enable Linux support.
+
+### 1.1 What is Anti-Cheat Software?
+
+Anti-cheat software is a category of security technology deployed by online game operators to detect and prevent cheating — unauthorized modifications to the game client that give a player an unfair advantage over others. Common cheating techniques include aimbots (software that automatically targets opponents), wallhacks (bypassing rendering to reveal player positions through solid geometry), speed hacks (modifying timing variables to move faster than the game allows), and memory editors that directly modify game-process memory to alter values such as ammunition counts or health points.
+
+Anti-cheat systems take two complementary approaches. Client-side anti-cheat runs on the same machine as the game and scans the game process for known cheat signatures, unauthorized code injections, or suspicious memory modifications. Server-side anti-cheat analyzes network traffic and player behavior statistics — anomalously accurate aim, superhuman reaction times — to detect cheating that client-side software might miss. The most effective deployments combine both: client-side detection to block the most common and detectable cheats, and server-side heuristics to catch sophisticated cheats that evade client scanning.
+
+The major commercial anti-cheat vendors covered in this chapter — Easy Anti-Cheat (EAC), BattlEye, Riot Vanguard, and nProtect GameGuard — all deploy client-side components. On Windows, these components span both user space (DLLs loaded into the game process) and kernel space (drivers loaded into the Windows kernel). The kernel-mode component is the central technical differentiator that determines whether a given anti-cheat system can function on Linux, and it is the subject of §2.
+
+### 1.2 What is Wine and Proton?
+
+Wine is a compatibility layer that implements the Windows API on POSIX-compliant operating systems, including Linux and macOS. Wine translates Windows application programming interfaces — the Win32 API, the NT native API, COM, DirectX, and related subsystems — into equivalent Linux system calls and library calls, allowing unmodified Windows executables (`.exe` and `.dll` files) to run as Linux processes without hardware emulation or a full virtual machine. Wine implements the entire Windows API surface as native Linux ELF shared libraries and launches Windows PE-format executables in a customized Linux process running entirely in user space.
+
+Proton is Valve's distribution of Wine extended with gaming-specific components for Steam. It incorporates DXVK (Direct3D 9, 10, and 11 to Vulkan translation), VKD3D-Proton (Direct3D 12 to Vulkan), Steam Input integration, and patches that improve compatibility with recent Windows game releases. Proton also integrates the Steam Linux Runtime container, which provides a stable library environment independent of the host Linux distribution. Games running through Proton on SteamOS and Steam Deck use this stack as their compatibility layer.
+
+Wine's user-space architecture is the reason anti-cheat software presents a Linux-specific challenge. Because Wine has no kernel-mode component and cannot load Windows kernel drivers (`.sys` files), an anti-cheat system that relies on such a driver operating at ring 0 has no execution environment available within a Proton-hosted process. This architectural constraint is the foundation for the analysis in §2 and §7.
+
+### 1.3 What is the Ring-0 Problem?
+
+The "ring-0 problem" refers to the architectural incompatibility between kernel-mode Windows anti-cheat drivers and the Linux user-space environment that Wine and Proton provide. The term "ring 0" describes the highest CPU privilege level in the x86 protection ring model: ring 0 is where the operating system kernel runs, with unrestricted access to physical memory, CPU control registers, and all hardware devices. Ring 3 is the unprivileged level at which ordinary application code executes.
+
+On Windows, anti-cheat vendors ship kernel drivers — `.sys` files compiled against the Windows Driver Kit — that load into the Windows kernel at ring 0. From this position, they can intercept system calls before the kernel processes them, strip memory-access rights from process handles using `ObRegisterCallbacks`, enumerate all loaded kernel modules, and integrate with the Trusted Platform Module (TPM) to verify that the boot chain has not been tampered with. These capabilities collectively prevent cheat software from reading or modifying the game process's memory from an external process, or from hiding inside kernel space itself.
+
+Wine runs entirely at ring 3. It implements Windows API calls as user-space code making Linux system calls, but has no kernel component and cannot load Windows `.sys` drivers. A kernel-mode anti-cheat driver launched under Wine would immediately fault on its first call into Windows kernel infrastructure — `ntoskrnl.exe` exports, the kernel object manager, or KMDF — that simply does not exist inside Wine's process space. This structural gap is the root cause of Linux incompatibility for the class of anti-cheat systems analyzed in §2, §6, and §7.
 
 ---
 

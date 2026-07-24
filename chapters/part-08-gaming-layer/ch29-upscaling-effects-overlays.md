@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [The Vulkan Layer Mechanism](#1-the-vulkan-layer-mechanism)
+   - [1.1 What is GPU Upscaling?](#11-what-is-gpu-upscaling)
+   - [1.2 What is the Vulkan Layer Mechanism?](#12-what-is-the-vulkan-layer-mechanism)
+   - [1.3 What are Post-Processing Effects and Performance Overlays?](#13-what-are-post-processing-effects-and-performance-overlays)
 2. [FSR 1, 2, and 3: Algorithms and Architecture](#2-fsr-1-2-and-3-algorithms-and-architecture)
 3. [gamescope Integration: FSR, NIS, and HDR](#3-gamescope-integration-fsr-nis-and-hdr)
 4. [vkBasalt: Vulkan Layer Post-Processing](#4-vkbasalt-vulkan-layer-post-processing)
@@ -207,6 +210,30 @@ graph TD
 
     CI --> CD --> PCI --> DD --> DI
 ```
+
+### 1.1 What is GPU Upscaling?
+
+GPU upscaling is a class of real-time image reconstruction techniques that render a frame at a lower internal resolution than the display's native resolution, then derive a higher-quality full-resolution image on the GPU before it reaches the display. The motivation is performance: rendering at half-resolution can reduce GPU load substantially due to the quadratic relationship between pixel count and shading cost, while a well-designed upscaling algorithm recovers much of the lost perceptual quality. The alternative — scaling pixels with a bilinear or nearest-neighbor filter — produces visible blurring or aliasing, which upscalers are designed to avoid.
+
+Upscalers divide into two broad categories. Spatial upscalers (such as FSR1 and NIS) operate entirely on the current frame, using edge-detection heuristics and contrast-adaptive sharpening to reconstruct high-frequency detail. Temporal upscalers (such as FSR2, XeSS, and DLSS) accumulate information across multiple previous frames using motion vectors and depth data, allowing them to reconstruct detail that was never present in any single low-resolution frame. Frame generation (FSR3) extends the temporal approach to synthesise entirely new intermediate frames from adjacent rendered frames, further increasing perceived frame rate.
+
+On Linux, upscaling is applied at two distinct points in the stack: inside the game process itself using vendor-provided libraries linked directly into the application, or at the Wayland compositor level in tools such as gamescope, which receive a rendered frame over a shared DMA-BUF buffer and apply an upscaling compute pass before forwarding the result to the KMS display pipeline. Understanding where in the stack upscaling occurs determines which algorithms are feasible: compositor-level upscaling has access only to the final composited image, ruling out temporal techniques that require motion vectors from the renderer.
+
+### 1.2 What is the Vulkan Layer Mechanism?
+
+The Vulkan layer mechanism is a first-class extensibility system defined by the Vulkan specification and implemented by the Khronos Vulkan Loader (`libvulkan.so.1`). It allows third-party software to intercept, augment, or monitor every Vulkan API call made by an application without modifying the application binary or the GPU driver. Layers are dynamic libraries inserted between the application and the ICD (Installable Client Driver) at instance creation time, forming an ordered dispatch chain through which every Vulkan call flows before reaching the hardware.
+
+The design is grounded in the specification's requirement that every dispatchable Vulkan handle (`VkInstance`, `VkPhysicalDevice`, `VkDevice`, `VkQueue`, `VkCommandBuffer`) begins with a pointer to a dispatch table. This invariant allows the loader and each layer to forward calls efficiently and to recover per-device state from any handle without additional context. Layers are discovered from JSON manifest files placed in well-known filesystem directories, and they are classified as either explicit (activated per-application via `VK_INSTANCE_LAYERS` or `ppEnabledLayerNames`) or implicit (active for every Vulkan application on the system unless suppressed by a `disable_environment` variable).
+
+This mechanism is the technical foundation for all of the tools covered in this chapter. MangoHud installs as an implicit Vulkan layer to inject its metrics overlay at `vkQueuePresentKHR` time; vkBasalt installs as an implicit layer to apply post-processing effects by wrapping the swapchain; and the `disable_environment` key in each manifest provides a compatibility boundary that allows games and anti-cheat systems to suppress specific layers. Section 1 covers this mechanism in depth because every subsequent section depends on it.
+
+### 1.3 What are Post-Processing Effects and Performance Overlays?
+
+Post-processing effects are image-space operations applied to a fully rendered frame before it is displayed, without re-rendering scene geometry. In the Linux gaming context, these include anti-aliasing passes (FXAA, SMAA), contrast-adaptive sharpening (CAS), colour grading via lookup tables (LUTs), depth-of-field simulation, and arbitrary effect shaders written in the ReShade FX shader language. Because these operations are applied to the completed swapchain image rather than during scene rendering, they integrate naturally with the Vulkan layer mechanism: a post-processing layer wraps `vkCreateSwapchainKHR` and `vkQueuePresentKHR` to acquire the rendered frame, dispatches one or more compute or fragment shader passes over it, and presents the modified image in place of the original.
+
+Performance overlays are a specialised application of the same layer infrastructure. Rather than modifying the rendered image aesthetically, a performance overlay renders real-time GPU and system metrics — frame time, GPU utilisation, VRAM consumption, CPU load, clock frequencies, and temperatures — as an on-screen display superimposed over the game's output. The overlay is drawn into the swapchain image at `vkQueuePresentKHR` time using a retained-mode UI library, then the modified image is forwarded downstream to the display.
+
+Both categories operate without driver modification, without game-side code changes, and without kernel patches. The only system requirements are that the Vulkan loader discovers the layer's JSON manifest and that no `disable_environment` variable suppresses it. This makes them portable across GPU vendors and Wayland compositors, provided the application uses Vulkan. On OpenGL applications, tools such as MangoHud fall back to `LD_PRELOAD` interception of `glXSwapBuffers` or `eglSwapBuffers`, which is a distinct mechanism covered in Section 5.
 
 ---
 

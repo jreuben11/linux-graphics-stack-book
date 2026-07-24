@@ -13,6 +13,8 @@ This chapter targets **systems and driver developers** who need to understand ho
 ## Table of Contents
 
 1. [Hardware Ray Tracing Overview](#1-hardware-ray-tracing-overview)
+   - [1.5 What is Ray Tracing?](#15-what-is-ray-tracing)
+   - [1.6 What is an Acceleration Structure?](#16-what-is-an-acceleration-structure)
 2. [Vulkan Ray Tracing Extension Suite](#2-vulkan-ray-tracing-extension-suite)
 3. [Acceleration Structure Lifecycle](#3-acceleration-structure-lifecycle)
 4. [Ray Tracing Shader Model](#4-ray-tracing-shader-model)
@@ -115,6 +117,24 @@ In RDNA 3 and RDNA 4 the RA units are enlarged and additional BVH node types are
 Intel's Xe-HPG architecture (DG2/Arc Alchemist, 2022) includes a Ray Tracing Unit (RTU) per Render Slice. The RTU handles BVH traversal, ray/box intersection, ray/triangle intersection, and instance transform application. Intel's implementation is architecturally closest to NVIDIA's: the RTU is a semi-autonomous accelerator that takes over from EU (Execution Unit) threads.
 
 The ANV (Intel's Vulkan driver in Mesa) exposes ray tracing through `VK_KHR_ray_tracing_pipeline` and `VK_KHR_ray_query` for DG2 and later hardware. Intel's internal BVH memory format is documented in the ANV source under `src/intel/vulkan/grl/` and differs from both AMD's and NVIDIA's layouts. The BVH node coordinates are compressed to 8-bit integers in memory, decompressed on load. [Source: Intel Arc Graphics Developer Guide for Real-time Ray Tracing](https://www.intel.com/content/www/us/en/developer/articles/guide/real-time-ray-tracing-in-games.html)
+
+### 1.5 What is Ray Tracing?
+
+Ray tracing is a rendering algorithm that models light transport by simulating the paths of individual rays as they travel through a scene. For each pixel in the output image, one or more rays are cast from a virtual camera into the scene. When a ray intersects geometry, the renderer evaluates the surface's material properties and optionally casts secondary rays — shadow rays toward light sources, reflection rays along the mirror direction, refraction rays through transmissive materials — to compute the final colour at the intersection point.
+
+Unlike rasterisation, which projects geometry onto a 2D plane and processes each triangle in isolation, ray tracing naturally models global illumination effects: accurate penumbra shadows, physically correct mirror and glossy reflections, refractive caustics, and diffuse inter-reflections. Rasterisation approximates these effects with auxiliary techniques (shadow maps, screen-space reflections, pre-baked lightmaps) that introduce artefacts and require significant engineering to compose. Ray tracing unifies them under one coherent physical model at the cost of higher per-pixel computation.
+
+The dominant cost in ray tracing is the ray/scene intersection test. For a scene with N triangles, naive per-ray exhaustive testing is O(N). Acceleration structures — primarily Bounding Volume Hierarchies (BVHs) — reduce average-case intersection cost to O(log N) by spatially partitioning geometry into a tree, so rays skip large subtrees that their bounding boxes cannot intersect. Offline production renderers (path tracers such as Blender Cycles) have relied on BVH-accelerated ray tracing for decades; real-time use only became practical when GPU vendors added fixed-function or instruction-level BVH traversal hardware, eliminating the bottleneck of running the traversal loop on general-purpose shader cores. In the Linux graphics stack, this hardware is exposed through the Vulkan KHR ray tracing extension suite described in section 2.
+
+### 1.6 What is an Acceleration Structure?
+
+An acceleration structure (AS) is the GPU-resident data structure that organises scene geometry so ray traversal can skip large portions of the scene in O(log N) time. Vulkan and the underlying hardware divide acceleration structures into two levels, referred to as BLAS and TLAS.
+
+A Bottom-Level Acceleration Structure (BLAS) wraps one set of primitives — triangles from a mesh, or axis-aligned bounding boxes (AABBs) for procedural geometry. It is typically built once from vertex and index buffers and cached across frames. A Top-Level Acceleration Structure (TLAS) contains a list of instances, each of which references a BLAS and supplies a per-instance 3x4 row-major world transform, a shader binding table (SBT) offset, and a visibility mask. The TLAS is rebuilt or refitted each frame to reflect object movement; the BLASes underneath it remain stable unless mesh topology changes.
+
+Both BLAS and TLAS are implemented internally as BVH trees, with the TLAS BVH wrapping instance bounding boxes and each BLAS BVH wrapping primitive bounding boxes. The binary layout in GPU memory — node format, child count, coordinate compression scheme — is vendor-specific and opaque to applications. AMD, Intel, and NVIDIA each use different formats (AMD's layout is documented in the RADV source; Intel's compressed 8-bit node format is in `src/intel/vulkan/grl/`; NVIDIA's is proprietary). All three are represented uniformly to the application as `VkAccelerationStructureKHR` handles backed by `VkBuffer` allocations.
+
+Vulkan's `VK_KHR_acceleration_structure` extension provides `vkCmdBuildAccelerationStructuresKHR` for GPU-side builds and `vkBuildAccelerationStructuresKHR` for CPU-side builds. After construction, a compaction step — querying the compacted size with `vkCmdWriteAccelerationStructuresPropertiesKHR` and copying with `vkCmdCopyAccelerationStructureKHR` — typically reduces VRAM usage by 30–50 percent for triangle geometry. The full lifecycle is detailed in section 3.
 
 ---
 

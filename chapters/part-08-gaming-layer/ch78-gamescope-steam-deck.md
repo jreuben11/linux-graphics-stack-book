@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Steam Deck Hardware: The Van Gogh APU](#1-steam-deck-hardware-the-van-gogh-apu)
+   - [1.6 What is Gamescope?](#16-what-is-gamescope)
+   - [1.7 What is SteamOS?](#17-what-is-steamos)
+   - [1.8 What is the Van Gogh APU?](#18-what-is-the-van-gogh-apu)
 2. [SteamOS 3 Architecture](#2-steamos-3-architecture)
 3. [Gamescope Architecture](#3-gamescope-architecture)
 4. [FSR Scaling in Gamescope](#4-fsr-scaling-in-gamescope)
@@ -73,6 +76,26 @@ A discrete GPU connected via PCIe adds at least two heavyweight cost factors to 
 2. **Separate memory pools** — a discrete GPU cannot directly read the CPU's working set without an explicit copy or pinning operation.
 
 On the Steam Deck both constraints vanish. Gamescope can perform zero-copy direct scanout when the game's output framebuffer satisfies the display hardware's format requirements. When compositing is needed — for overlays, upscaling, or HDR tone mapping — the Vulkan compute pass operates on the same physical pages the game just rendered into, without staging buffers.
+
+### 1.6 What is Gamescope?
+
+Gamescope is a micro-compositor developed for gaming on Linux, designed to run as an exclusive display session rather than as a general-purpose desktop compositor. Unlike compositors such as KWin or Mutter, which manage arbitrary collections of windows across multiple applications, Gamescope assumes a single-application model: one primary rendering surface (the game) plus optional overlays. This narrow contract allows Gamescope to make optimisations that general compositors cannot — most importantly, KMS direct scanout, where the game's framebuffer is presented to the display hardware without any GPU copy.
+
+Gamescope implements its own Wayland compositor server, embeds XWayland for X11 application compatibility, and uses the Direct Rendering Manager (DRM) kernel subsystem for display output. Its rendering pipeline has two paths: when the game's framebuffer meets the display engine's hardware requirements, Gamescope issues a direct `drmModeAtomicCommit()` call to scan out the frame; otherwise it invokes a Vulkan compute pass to perform upscaling, HDR tone mapping, or overlay compositing before scanout. Plane assignment to the hardware's multiple display engine layers is handled by libliftoff, which tests plane configurations via `DRM_MODE_ATOMIC_TEST_ONLY` before committing them. On the Steam Deck, Gamescope is the session compositor in Game Mode, replacing the display manager entirely and running Steam's Big Picture interface as one of its Wayland clients. The repository lives at `https://github.com/ValveSoftware/gamescope`. [Source: Gamescope README](https://github.com/ValveSoftware/gamescope/blob/master/README.md)
+
+### 1.7 What is SteamOS?
+
+SteamOS is a Linux distribution built by Valve for gaming hardware. Version 3, which ships on the Steam Deck, is derived from Arch Linux and introduces several characteristics that distinguish it from a conventional desktop distribution. The root filesystem is immutable: at runtime the OS is read-only, preventing configuration drift and ensuring that every device in the field runs a known-good system state. Persistent user data and application installations live on separate writeable partitions mounted under `/home` and `/var`.
+
+System updates are delivered via an A/B partition scheme. Two root partitions exist on the device; at update time the inactive partition receives the new system image, and the bootloader is instructed to switch to it on next boot. If the new version causes problems, reverting to the previous partition is a single bootloader operation, giving Valve the ability to deploy rapid, atomic OTA updates reliably at scale.
+
+SteamOS 3 exposes two runtime modes. Game Mode boots directly into Gamescope as the compositor, with Steam Big Picture running inside it — no desktop environment is involved. Desktop Mode launches a full KDE Plasma session via KWin on Wayland, providing a conventional Linux desktop. The graphics stack covered in this chapter primarily concerns Game Mode, where Gamescope owns the display and drives it directly through the AMDGPU KMS driver. [Source: SteamOS Wikipedia](https://en.wikipedia.org/wiki/SteamOS)
+
+### 1.8 What is the Van Gogh APU?
+
+The Van Gogh APU (Accelerated Processing Unit) is the system-on-chip at the centre of the Steam Deck's hardware design. An APU integrates CPU cores and a GPU fabric onto the same die and, critically, onto the same physical memory substrate. On Van Gogh, four AMD Zen 2 CPU cores and eight RDNA 2 Compute Units share a unified 16 GB LPDDR5 memory pool: there is no separate video memory, and no PCIe bus separating CPU and GPU workloads. The OLED revision of the Steam Deck uses a shrunk version of the same design at TSMC 6 nm, marketed internally as Sephiroth.
+
+This integration has direct consequences for the graphics stack. When Gamescope composites a frame, the game's framebuffer does not need to be copied from a discrete GPU's VRAM to system RAM — both the game's rendering output and the display engine's scanout buffer reside in the same physical address space. The AMDGPU kernel driver manages residency of GPU allocations within this unified pool via TTM (Translation Table Manager), and DMA-BUF handles sharing between the game process, Gamescope, and the display engine without staging copies. The display hardware in Van Gogh implements AMD's DCN 3.0 (Display Core Next, generation 3) pipeline, which provides hardware overlay planes, per-plane colour space conversion, and the infrastructure that Gamescope's HDR pipeline and mura-correction pass build upon. [Source: Chips and Cheese, Van Gogh analysis](https://chipsandcheese.com/p/van-gogh-amds-steam-deck-apu)
 
 ---
 

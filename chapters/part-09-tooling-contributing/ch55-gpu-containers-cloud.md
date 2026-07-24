@@ -111,6 +111,24 @@ The `--group-add keep-groups` option in Podman preserves the host user's supplem
 
 For Kubernetes workloads, the device plugin (see §5) injects device file paths into the container spec, and the kubelet configures the container's cgroup to allow access to the device major:minor numbers.
 
+### 1.1 What is a Linux Container?
+
+A Linux container is a group of processes isolated from the rest of the system using Linux kernel namespaces and cgroups, sharing the host kernel rather than running a separate OS kernel as in full virtualisation. Namespaces partition the kernel's global resources — process IDs, mount points, network stacks, IPC objects, and user credentials — so that processes in different namespace sets see distinct, non-overlapping views of those resources. Control groups (cgroups) enforce resource limits on CPU time, memory, I/O bandwidth, and device access for groups of processes. Container runtimes such as runc, crun, containerd, and Podman combine these primitives with union filesystems (OverlayFS) to create the illusion of a private operating environment from a layered image.
+
+From the GPU's perspective, namespaces and cgroups do not partition the DRM subsystem. The character devices under `/dev/dri/` and `/dev/kfd` are visible to any process with permission to open them, regardless of namespace boundaries. Container GPU access is therefore achieved by explicitly bind-mounting device nodes into the container's mount namespace, combined with Unix group-based access control on the host. This model — and its implications for security, device plugin integration, and multi-tenant scheduling — is the central theme of this chapter.
+
+### 1.2 What is the OCI Container Runtime Specification?
+
+The Open Container Initiative (OCI) is a Linux Foundation project that publishes two open standards: the OCI Image Specification, which defines how container filesystem layers and metadata are packaged, and the OCI Runtime Specification, which defines how a conforming runtime creates and runs a container from an unpacked image bundle. The runtime spec describes a `config.json` document that encodes the container's root filesystem path, Linux namespace and cgroup configuration, the initial process to execute, environment variables, bind-mount definitions, and a lifecycle hook mechanism.
+
+Within the hook mechanism, OCI defines `prestart`, `createRuntime`, `createContainer`, `startContainer`, and `poststop` hook points. The NVIDIA Container Toolkit's core injection mechanism is implemented as an OCI `prestart` hook: after the Linux namespaces are created but before the container's init process starts, the runtime executes the hook binary, which uses access to the container's mount namespace to bind-mount GPU device files and driver libraries. Any OCI-compliant runtime — runc, crun, cri-o, or containerd's shim — can carry a prestart hook, making this mechanism portable across container engines. The CDI specification is an alternative declarative approach that encodes injection rules in a vendor-neutral YAML file consumed directly by the runtime, removing the need for a runtime-specific hook binary.
+
+### 1.3 What is the Container Device Interface (CDI)?
+
+The Container Device Interface (CDI) is a vendor-neutral specification for describing how a complex device resource — potentially comprising multiple device nodes, library bind-mounts, environment variables, and OCI hooks — should be injected into a container. Before CDI, each GPU vendor required its own OCI runtime hook or runtime shim, creating tight coupling between the container engine and vendor-specific tooling. CDI externalises the device description into a YAML file placed in `/etc/cdi/` or `/var/run/cdi/` that any CDI-aware OCI runtime can parse directly.
+
+A CDI specification identifies devices under a vendor/class naming scheme (for example, `nvidia.com/gpu=0` or `intel.com/gpu=renderD128`) and lists all `containerEdits` required to expose that device: device node paths with their type, major, and minor numbers; mount entries for userspace libraries or firmware directories; environment variable additions; and optional OCI hooks for post-injection setup. The specification is generated and maintained by vendor CLI tools — `nvidia-ctk cdi generate` for NVIDIA hardware and equivalent tooling for AMD and Intel — and is registered with the runtime automatically. Kubernetes Dynamic Resource Allocation (DRA), promoted to stable in Kubernetes 1.31, integrates with CDI to express device claims in pod specifications declaratively, enabling topology-aware GPU scheduling without device-plugin daemonsets writing directly to the kubelet device socket.
+
 ---
 
 ## 2. NVIDIA Container Toolkit

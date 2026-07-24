@@ -11,6 +11,9 @@ This chapter targets three audiences:
 ## Table of Contents
 
 1. [Introduction: The NT Synchronization Problem](#1-introduction-the-nt-synchronization-problem)
+   - [1.1 What is the NT Synchronization Object Model?](#11-what-is-the-nt-synchronization-object-model)
+   - [1.2 What is Wine and the wineserver?](#12-what-is-wine-and-the-wineserver)
+   - [1.3 What is ntsync?](#13-what-is-ntsync)
 2. [esync and fsync: The Userspace Predecessors](#2-esync-and-fsync-the-userspace-predecessors)
 3. [The ntsync Kernel Module](#3-the-ntsync-kernel-module)
 4. [Wine Integration](#4-wine-integration)
@@ -37,6 +40,18 @@ The solution required moving synchronization into the kernel. The challenge was 
 3. Is acceptable to upstream Linux kernel maintainers.
 
 This chapter traces the journey from userspace workarounds to a merged kernel driver.
+
+### 1.1 What is the NT Synchronization Object Model?
+
+Windows NT exposes a synchronization object model through system calls in the `Nt*` family. The model provides three principal primitive types — mutexes, semaphores, and events — which differ from POSIX equivalents in important ways. The central operation is `NtWaitForMultipleObjects`, which allows a thread to block on up to 64 handles simultaneously. Its wait-all mode atomically acquires every listed object in a single indivisible operation: no other thread can observe a partial acquisition state. Auto-reset events, which de-signal themselves upon successful wait, and abandoned-mutex detection, which propagates `WAIT_ABANDONED` when a thread exits while holding a mutex, add further semantics that POSIX pthreads and Linux futexes do not provide. This combination — vectored, multi-typed, state-mutating atomic wait — is what makes faithful NT synchronization difficult to implement on Linux without kernel support. The ntsync driver directly models these three object types and both wait modes, exposing them through ioctls on a character device at `/dev/ntsync`. [Source](https://docs.kernel.org/userspace-api/ntsync.html)
+
+### 1.2 What is Wine and the wineserver?
+
+Wine is a compatibility layer that runs Windows binaries on Linux and other Unix-like systems without hardware virtualization. It implements the Windows API surface — Win32, COM, DirectX, and the underlying NT system call layer — using Linux system calls and libraries. A special component called the wineserver acts as the Windows kernel surrogate: it maintains global state such as window management, process and thread objects, and the NT synchronization object tables. When a Windows application calls `WaitForSingleObject` or `CreateMutex`, Wine's ntdll implementation marshals those calls as RPCs to the wineserver over Unix domain sockets and waits for a reply. This design enforces correct semantics but introduces a context switch to and from the wineserver process for every synchronization operation. Modern D3D12 games that create tens of thousands of synchronization objects and call wait functions at high frequency expose this round-trip cost as a measurable bottleneck. The ntsync driver bypasses the wineserver for synchronization, moving object ownership and wait logic into the kernel where it can be served without inter-process communication. [Source](https://www.winehq.org/documentation)
+
+### 1.3 What is ntsync?
+
+ntsync is a Linux kernel misc character device, first merged in Linux 6.14, that implements the NT synchronization object model in kernel space. Applications open `/dev/ntsync` to obtain an isolated device instance, then issue ioctls on that instance fd to create semaphore, mutex, and event objects, each represented by a new file descriptor. Wait operations — `NTSYNC_IOC_WAIT_ANY` and `NTSYNC_IOC_WAIT_ALL` — are ioctls on the device fd that accept an array of per-object file descriptors. The driver guarantees that wait-all acquisition is atomic: it holds all relevant per-object spinlocks simultaneously before modifying any object's state, so no partial acquisition is ever visible to another thread. The driver source lives in `drivers/misc/ntsync.c` and its user-space API is declared in `include/uapi/linux/ntsync.h`. The primary consumer is Wine's ntdll layer, which detects `/dev/ntsync` at startup and, when present, creates all NT synchronization objects through the kernel interface rather than routing them through the wineserver. Support landed in upstream Wine 11.0 and in Valve's Proton beginning with GE-Proton 10.9. [Source](https://docs.kernel.org/userspace-api/ntsync.html)
 
 ---
 

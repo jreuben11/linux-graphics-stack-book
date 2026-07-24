@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. FreeType 2: Glyph Rasterisation Pipeline](#1-freetype-2-glyph-rasterisation-pipeline)
+  - [1.6 What is FreeType 2?](#16-what-is-freetype-2)
+  - [1.7 What is OpenType?](#17-what-is-opentype)
+  - [1.8 What is Glyph Rasterisation?](#18-what-is-glyph-rasterisation)
 - [2. HarfBuzz: OpenType Shaping Engine](#2-harfbuzz-opentype-shaping-engine)
 - [3. fontconfig: Font Matching and Configuration](#3-fontconfig-font-matching-and-configuration)
 - [4. Cairo: 2D Compositing Library](#4-cairo-2d-compositing-library)
@@ -263,6 +266,20 @@ output = (uint8_t)(pow(blended, 1.0f / 2.2f) * 255.0f);
 ```
 
 FreeType itself does not perform gamma correction; that responsibility belongs to the rendering layer (Cairo, Skia, GPU shader). Cairo does not linearise colours before blending by default — it composites in the surface's encoded (gamma) colour space, which is a known limitation — so applications that require perceptually uniform text weight should use a GPU shader path or a toolkit that performs linear-light blending. GPU-accelerated text renderers (Skia with Ganesh/Graphite, WebRender) typically perform the linearisation in the fragment shader or work entirely in a linear colour space end-to-end.
+
+### 1.6 What is FreeType 2?
+
+FreeType 2 is an open-source library written in C that loads, decodes, and rasterises glyph outlines from font files into anti-aliased pixel bitmaps. It sits at the foundation of the Linux text rendering stack: virtually every application that draws text on a Linux desktop ultimately calls into FreeType, whether directly or through a higher-level library such as Pango, Cairo, Skia, or Qt. The library supports a wide range of font formats — TrueType (.ttf), OpenType (.otf, with both TrueType and CFF outline flavours), Type 1 (.pfa/.pfb), WOFF and WOFF2 web font containers, bitmap font formats including BDF and PCF, and the Windows FNT/FON format. Its primary entry points are `FT_Load_Glyph()`, which decodes a glyph outline and optionally applies hinting, and `FT_Render_Glyph()`, which rasterises the hinted outline into a pixel bitmap. FreeType does not perform Unicode text shaping or multi-glyph layout — those responsibilities belong to HarfBuzz and Pango respectively. Its domain is strictly single-glyph rasterisation: given a font face, a glyph index, and a pixel size, it produces a coverage bitmap ready for blending. The library is hosted at [freetype.org](https://freetype.org/) and its source is maintained at [gitlab.freedesktop.org/freetype/freetype](https://gitlab.freedesktop.org/freetype/freetype).
+
+### 1.7 What is OpenType?
+
+OpenType is a font format specification developed jointly by Microsoft and Adobe, now published as ISO/IEC 14496-22 and maintained as an open standard by the OpenType specification working group. An OpenType font file is an SFNT binary container of named tables that together encode everything needed to render a typeface: glyph outlines in either TrueType quadratic Bézier (`glyf` table) or CFF/CFF2 cubic Bézier (`CFF ` table) form, Unicode character-to-glyph-index mappings (`cmap`), advance widths and vertical metrics (`hmtx`, `vmtx`), OpenType substitution rules (`GSUB`) and positioning rules (`GPOS`), TrueType hinting bytecode (`fpgm`, `prep`, `cvt `), and — for variable fonts — variation axis definitions (`fvar`) and per-glyph delta tables (`gvar`, `CFF2`). The SFNT container format is shared with the original TrueType specification, which is why the two are collectively referred to as OpenType. FreeType reads OpenType files through its SFNT and CFF drivers, decoding the outline tables into its internal `FT_Outline` structure before rasterisation. The shaping tables (GSUB and GPOS) are not consumed by FreeType; HarfBuzz reads them independently. OpenType features most relevant to this chapter are the TrueType bytecode tables processed by FreeType's bytecode interpreter and the variation delta tables used by `FT_Set_Var_Design_Coordinates()` for variable font support. [Source: OpenType specification](https://learn.microsoft.com/en-us/typography/opentype/spec/)
+
+### 1.8 What is Glyph Rasterisation?
+
+Glyph rasterisation is the process of converting a vector glyph outline — a set of Bézier curves describing the geometric boundary of a character's visual shape — into a pixel coverage bitmap suitable for blending onto a screen buffer. A glyph stored in a font file is a sequence of contours composed of on-curve and off-curve control points. At rasterisation time, the outline is scaled to the requested pixel size, optionally hinted to align stems and stroke features to the pixel grid, and then scan-converted: for each row of output pixels, the rasteriser computes how much of each pixel's area falls inside the glyph contour, producing a coverage value between 0 (fully outside) and 255 (fully inside). This coverage bitmap is then alpha-blended over the background colour by the calling toolkit or GPU shader.
+
+The distinction between a Unicode codepoint and a glyph is fundamental throughout this chapter. A codepoint is an abstract character identity (e.g. U+0041 LATIN CAPITAL LETTER A), while a glyph is a specific visual rendering of that character in a specific font, identified by a non-negative integer glyph index within that font. A single codepoint may map to different glyph indices in different fonts, and OpenType shaping may cause multiple codepoints to map to a single glyph (a ligature) or a single codepoint to expand into multiple glyphs (a decomposition). FreeType operates entirely at the glyph-index level. The codepoint-to-glyph-index mapping for simple scripts is performed by `FT_Get_Char_Index()` using the font's `cmap` table; complex script mappings are delegated to HarfBuzz before FreeType is invoked. [Source: FreeType glyph conventions](https://freetype.org/freetype2/docs/glyphs/glyphs-1.html)
 
 ---
 

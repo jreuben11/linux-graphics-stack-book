@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Introduction](#1-introduction)
+   - [1.1 What is RenderDoc?](#11-what-is-renderdoc)
+   - [1.2 What is GPU Frame Capture?](#12-what-is-gpu-frame-capture)
+   - [1.3 What is the Vulkan Layer System?](#13-what-is-the-vulkan-layer-system)
 2. [RenderDoc Architecture](#2-renderdoc-architecture)
 3. [Installation on Linux](#3-installation-on-linux)
 4. [Vulkan Frame Capture](#4-vulkan-frame-capture)
@@ -38,6 +41,18 @@ RenderDoc's utility spans four categories of problem:
 As of v1.44 (May 2026, the latest stable release at time of writing), RenderDoc runs on x86_64 and AArch64 Linux, supports Vulkan 1.3 and OpenGL 3.2 through 4.6 / OpenGL ES 2.0+, and ships a Python 3 module for scriptable replay.
 
 This chapter covers the architecture, capture mechanisms, UI tools, programmatic API, and Mesa developer workflows in depth. Chapter 30 introduces RenderDoc in the broader debugging context; this chapter is the dedicated deep-dive.
+
+### 1.1 What is RenderDoc?
+
+RenderDoc is an open-source, MIT-licensed GPU debugger and frame capture tool designed to give graphics developers complete visibility into a single rendered frame. It targets the Vulkan, OpenGL, and OpenGL ES APIs and runs on Linux (x86_64 and AArch64), Windows, and Android. The core problem it addresses is that GPU execution is opaque to conventional debuggers: a CPU-side breakpoint cannot pause a running shader or expose the state of a buffer residing in VRAM at an arbitrary pipeline stage. RenderDoc solves this by intercepting every graphics API call that the application issues during a designated frame, serialising the full call stream and all referenced resource contents into a self-contained capture file (`.rdc`). That file can be opened by the replay tool on the same machine or transferred to a different system and replayed against any compatible driver build. Within the capture, the developer can inspect pipeline state, resource contents, and shader execution results at the boundary of any individual draw or dispatch call. On Linux, RenderDoc integrates with the Vulkan loader's layer mechanism and with Mesa's CI infrastructure, making it useful both as an interactive visual debugging tool and as a headless automation component in driver regression pipelines. [Source: RenderDoc documentation](https://renderdoc.org/docs/introduction.html)
+
+### 1.2 What is GPU Frame Capture?
+
+GPU frame capture is a debugging technique in which a tool intercepts all graphics API calls issued by an application during a single rendered frame and records them, along with the state of every referenced GPU resource, into a replay archive. The fundamental insight behind frame capture is that GPU bugs manifest as incorrect outputs from a deterministic sequence of API calls and resource states: if the replay faithfully reconstructs that sequence, it can reproduce the bug on demand without requiring the original application to run again. A frame capture archive for a Vulkan application contains the ordered sequence of `vkCmd*` calls within each command buffer, the contents of every buffer and image referenced by those commands at the time the frame began, all descriptor set bindings and pipeline state objects, and the push constant and specialisation constant values in effect at each draw or dispatch. During replay, the capture tool re-issues these calls through the system's current Vulkan or OpenGL driver. Because the capture records API calls rather than hardware command packets, it is portable across GPU models from the same driver family and decoupled from the specific hardware that produced it. This API-level fidelity is what distinguishes frame capture from hardware performance counters and GPU traces, which record lower-level activity but cannot replay it.
+
+### 1.3 What is the Vulkan Layer System?
+
+The Vulkan layer system is an officially-specified interception mechanism built into the Vulkan loader that allows external libraries to intercept, modify, or augment every Vulkan API call without modifying the application or the driver. Every dispatchable Vulkan object (`VkInstance`, `VkPhysicalDevice`, `VkDevice`, `VkCommandBuffer`, and `VkQueue`) stores a pointer to a dispatch table as its first member. When the Vulkan loader initialises, it constructs a chain of dispatch tables: the application calls into the first layer in the chain, which may perform its own work and then forwards the call to the next layer, until the call reaches the ICD (Installable Client Driver) — the actual GPU driver. Layers can be implicit, activated automatically for every Vulkan application when their manifest is present in the loader's search paths, or explicit, activated only when named in `VK_INSTANCE_LAYERS`. RenderDoc uses an implicit layer (`VK_LAYER_RENDERDOC_Capture`) registered via a JSON manifest in `/usr/share/vulkan/implicit_layer.d/` or the per-user equivalent. Because the layer receives every Vulkan call before the driver does, it can record the full API call stream and resource accesses without requiring any cooperation from the application. This design is what makes RenderDoc's Vulkan capture path robust and portable: it operates entirely within the loader's documented interception contract, unlike the OpenGL capture path which must use library hooking. [Source: Vulkan Loader and Validation Layers](https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderLayerInterface.md)
 
 ---
 

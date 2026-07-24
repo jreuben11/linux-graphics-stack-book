@@ -13,6 +13,9 @@ This chapter targets **graphics application developers** writing Vulkan renderer
 ## Table of Contents
 
 - [Why Vulkan Sync Is Hard](#why-vulkan-sync-is-hard)
+  - [1.1 What is a Pipeline Barrier?](#11-what-is-a-pipeline-barrier)
+  - [1.2 What is a Vulkan Synchronisation Primitive?](#12-what-is-a-vulkan-synchronisation-primitive)
+  - [1.3 What is drm_syncobj?](#13-what-is-drm_syncobj)
 - [The Three Synchronisation Primitives](#the-three-synchronisation-primitives)
 - [Fences in Depth](#fences-in-depth)
 - [Binary Semaphores](#binary-semaphores)
@@ -50,6 +53,32 @@ The Vulkan specification models memory operations in terms of **availability** a
 > *"A memory dependency is an execution dependency which includes availability and visibility operations such that: the first set of operations happens-before the availability operation; the availability operation happens-before the visibility operation; the visibility operation happens-before the second set of operations."*
 
 The `srcAccessMask` in a barrier specifies which writes to **flush and make available** (cache writeback from the writing unit). The `dstAccessMask` specifies which reads to **invalidate and make visible** (cache invalidation so the reading unit sees fresh data). A critical insight: a write-after-read hazard (WAR) requires only an **execution dependency** — reads do not dirty caches, so no cache flush is needed, only ordering. This is why WAR barriers may have empty `srcAccessMask` and `dstAccessMask` in the sync2 API, using `VK_ACCESS_2_NONE` for both, with only the stage masks set.
+
+### 1.1 What is a Pipeline Barrier?
+
+A pipeline barrier is the fundamental mechanism in Vulkan for expressing both execution and memory dependencies between commands within a command buffer. When two commands access the same resource — one writing and one reading — the GPU has no implicit obligation to order those accesses or flush caches between them. A pipeline barrier inserts the necessary ordering constraints and cache operations at a precisely specified point in the command stream.
+
+The synchronisation2 API, promoted to Vulkan 1.3 core from `VK_KHR_synchronization2`, expresses pipeline barriers through `vkCmdPipelineBarrier2`, which accepts a `VkDependencyInfo` struct containing arrays of global memory barriers, buffer memory barriers, and image memory barriers. Each barrier specifies a source pipeline stage mask (`srcStageMask`) and destination pipeline stage mask (`dstStageMask`) that encode the execution dependency, plus a source access mask (`srcAccessMask`) and destination access mask (`dstAccessMask`) that encode the memory dependency.
+
+The stage masks select which pipeline stages are participating in the dependency. The access masks select which memory operations those stages performed. Together they direct the GPU to: complete the operations described by `srcStageMask` and `srcAccessMask`, flush and make those writes available in the memory subsystem, then invalidate the caches on the destination side so that reads described by `dstStageMask` and `dstAccessMask` see the updated data. Image barriers additionally specify old and new `VkImageLayout` values, triggering an in-place image layout transition as part of the barrier operation. [Source: Vulkan Specification — Pipeline Barriers](https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#synchronization-pipeline-barriers)
+
+### 1.2 What is a Vulkan Synchronisation Primitive?
+
+Vulkan provides three distinct synchronisation primitives — `VkFence`, `VkSemaphore`, and `VkEvent` — each addressing a different scope and direction of ordering. Together they cover GPU-to-CPU notification, GPU-queue-to-GPU-queue sequencing, and fine-grained intra-queue pipelining.
+
+A `VkFence` is the coarsest-grained primitive: the GPU signals it at the completion of an entire queue submission batch, and the CPU waits on it with `vkWaitForFences`. Fences alone carry no memory ordering guarantee for subsequent CPU reads of GPU-produced data; the command buffer must include appropriate barriers before the fence signal to ensure the CPU sees coherent results.
+
+A `VkSemaphore` coordinates ordering between GPU queues. Binary semaphores operate in strict 1:1 signal/wait pairs: one queue signals, one queue waits, and the wait consumes the signal. Timeline semaphores, promoted to Vulkan 1.2 core, replace the binary state with a monotonically increasing integer that multiple waiters can observe without consuming the signal, and that the CPU can wait on or signal directly via `vkWaitSemaphores` and `vkSignalSemaphore`.
+
+A `VkEvent` is a split barrier scoped to a single queue. `vkCmdSetEvent2` inserts the producer-side synchronisation scope; `vkCmdWaitEvents2` inserts the consumer-side scope. The GPU can execute unrelated commands between the two, enabling overlap of otherwise serialised work. Events cannot cross queues. None of these primitives replace pipeline barriers for memory ordering within a queue; they handle scheduling relationships between submission contexts, not the cache-coherency operations that barriers perform. [Source: Vulkan Specification — Synchronisation Primitives](https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#synchronization-primitives)
+
+### 1.3 What is drm_syncobj?
+
+`drm_syncobj` is a Linux DRM (Direct Rendering Manager) kernel object that wraps a DMA fence reference and exposes it to userspace. Because DMA fences live entirely inside the kernel scheduler and cannot be shared directly with userspace, `drm_syncobj` provides the bridge: a userspace handle created via `DRM_IOCTL_SYNCOBJ_CREATE` that can be signaled, waited on, and exported to or imported from a synchronisation file descriptor (`sync_file`).
+
+Vulkan drivers on Linux implement `VkFence` and `VkSemaphore` using `drm_syncobj`. When a Vulkan driver submits commands to the GPU, it uses `DRM_IOCTL_SYNCOBJ_RESET` to clear the syncobj and then passes its kernel handle to the GPU scheduler. When the GPU completes the work, the kernel signals the underlying DMA fence, marking the syncobj as signaled. A subsequent `DRM_IOCTL_SYNCOBJ_WAIT` blocks the calling thread until the work is done, underpinning `vkWaitForFences`.
+
+The timeline variant of `drm_syncobj` extends the binary model to a sequence of fence points identified by monotonically increasing 64-bit integers. This maps directly onto the Vulkan timeline semaphore counter model and is exposed via `DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT` and `DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL`. Explicit synchronisation across the Wayland compositor boundary also relies on `drm_syncobj`: a client exports a release fence as a `sync_file` descriptor and passes it to the compositor, which imports it and waits before sampling the buffer. The implementation lives in `drivers/gpu/drm/drm_syncobj.c` in the Linux kernel tree and is consumed by all DRM-class Vulkan drivers. [Source: Linux kernel DRM sync objects](https://www.kernel.org/doc/html/latest/gpu/drm-mm.html#drm-sync-objects)
 
 ---
 

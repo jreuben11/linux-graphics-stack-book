@@ -455,6 +455,15 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 224: 3D Shape Analysis Algorithms](chapters/part-29-graphics-algorithms/ch224-3d-shape-analysis-algorithms.md)
 - [Ch 225: Computational Topology Algorithms on GPU](chapters/part-29-graphics-algorithms/ch225-computational-topology-algorithms.md)
 
+**Mathematical and AI Algorithm Foundations (Ch 226–232)**
+- [Ch 226: GPU Linear Algebra and Sparse Solvers](chapters/part-29-graphics-algorithms/ch226-gpu-linear-algebra-sparse-solvers.md)
+- [Ch 227: GPU Random Number Generation and Monte Carlo Methods](chapters/part-29-graphics-algorithms/ch227-gpu-rng-monte-carlo.md)
+- [Ch 228: GPU Graph Algorithms](chapters/part-29-graphics-algorithms/ch228-gpu-graph-algorithms.md)
+- [Ch 229: GPU Machine Learning Inference Algorithms](chapters/part-29-graphics-algorithms/ch229-gpu-ml-inference-algorithms.md)
+- [Ch 230: GPU Signal Processing and Audio DSP](chapters/part-29-graphics-algorithms/ch230-gpu-signal-processing-audio-dsp.md)
+- [Ch 231: GPU Compression Algorithms](chapters/part-29-graphics-algorithms/ch231-gpu-compression-algorithms.md)
+- [Ch 232: GPU Generative AI and LLM Inference on Linux](chapters/part-29-graphics-algorithms/ch232-gpu-generative-ai-llm-inference.md)
+
 ---
 
 ### Appendices
@@ -481,7 +490,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Appendix T: Terminal Graphics Protocol Reference](chapters/appendices/appendix-t-terminal-graphics-protocol-reference.md)
 - [Appendix U: WebGPU API Quick Reference](chapters/appendices/appendix-u-webgpu-api-reference.md)
 
-**Total: 213 chapters + 21 appendices**
+**Total: 220 chapters + 21 appendices**
 
 ## Repository Structure
 
@@ -755,6 +764,13 @@ chapters/
     ch223-gpu-video-processing-algorithms.md
     ch224-3d-shape-analysis-algorithms.md
     ch225-computational-topology-algorithms.md
+    ch226-gpu-linear-algebra-sparse-solvers.md
+    ch227-gpu-rng-monte-carlo.md
+    ch228-gpu-graph-algorithms.md
+    ch229-gpu-ml-inference-algorithms.md
+    ch230-gpu-signal-processing-audio-dsp.md
+    ch231-gpu-compression-algorithms.md
+    ch232-gpu-generative-ai-llm-inference.md
   appendices/
     appendix-a-glossary.md
     appendix-b-environment-variables.md

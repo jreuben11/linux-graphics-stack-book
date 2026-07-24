@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction](#1-introduction)
+   - [1.1 What is WSL2?](#11-what-is-wsl2)
+   - [1.2 What is GPU Paravirtualisation (GPU-P)?](#12-what-is-gpu-paravirtualisation-gpu-p)
+   - [1.3 What is dxgkrnl?](#13-what-is-dxgkrnl)
 2. [WSL2 Architecture Overview](#2-wsl2-architecture-overview)
 3. [dxgkrnl: The Linux Paravirtual GPU Driver](#3-dxgkrnl-the-linux-paravirtual-gpu-driver)
 4. [Mesa D3D12 Gallium Driver](#4-mesa-d3d12-gallium-driver)
@@ -36,6 +39,24 @@ The architecture is unique in the GPU driver ecosystem: the Linux kernel's conve
 This chapter maps the complete technical stack — from the Hyper-V transport layer through the kernel module, Mesa driver, Vulkan implementation, CUDA runtime, and the WSLg display system — so that developers understand both what the stack provides and what it fundamentally cannot provide when compared to native Linux.
 
 The WSL2 kernel is maintained by Microsoft at [github.com/microsoft/WSL2-Linux-Kernel](https://github.com/microsoft/WSL2-Linux-Kernel). As of June 2026, the active branch is **linux-msft-wsl-6.18.y**, tracking upstream Linux 6.18 with Microsoft-specific patches — including `dxgkrnl` — layered on top. The latest release at time of writing is **linux-msft-wsl-6.18.35.2** (June 19, 2026).
+
+### 1.1 What is WSL2?
+
+Windows Subsystem for Linux 2 (WSL2) is a compatibility layer in Windows 10 version 2004 and later that boots a real Linux kernel inside a lightweight Hyper-V virtual machine. Unlike its predecessor WSL1, which translated Linux system calls into Windows NT equivalents, WSL2 runs a genuine Linux kernel binary — currently a Microsoft-maintained fork tracking upstream Linux 6.18 — giving true POSIX and system call compatibility within the constraints of a VM boundary.
+
+WSL2 integrates tightly with the Windows host: the user's home directory is accessible across the boundary, Windows executables can be called from Linux, and Linux processes see host GPU resources via a paravirtualised driver. This design makes WSL2 attractive for workflows that require a Linux toolchain (gcc, gdb, perf, Vulkan SDK, CUDA toolkit) against hardware that has only a Windows driver. From a graphics perspective, WSL2 is notable for what it omits: there is no DRM/KMS stack, no `/dev/dri/card*` device node, and no traditional display pipeline. The GPU is accessed exclusively through a purpose-built paravirtual path described in the rest of this chapter. The WSL2 kernel is maintained at [github.com/microsoft/WSL2-Linux-Kernel](https://github.com/microsoft/WSL2-Linux-Kernel).
+
+### 1.2 What is GPU Paravirtualisation (GPU-P)?
+
+GPU Paravirtualisation (GPU-P) is the mechanism WSL2 uses to expose host GPU capabilities to Linux applications without giving the virtual machine direct hardware access. In contrast to SR-IOV — which partitions the GPU at the hardware level into Virtual Functions — or VFIO passthrough, which grants the VM exclusive PCI ownership, GPU-P keeps the physical GPU under full Windows driver control at all times. The VM submits D3D12 command streams over a VMBus channel; the Windows kernel driver executes them on the GPU hardware and returns results over the same channel. This arrangement allows the host and guest to share the GPU simultaneously — Windows desktop composition, games, and WSL2 compute workloads coexist on the same physical device with time-sliced hardware access managed by the Windows scheduler.
+
+GPU-P requires a Windows Display Driver Model version 2.9 (WDDMv2.9) or later driver on the host. Any discrete GPU with a driver released from 2020 onwards typically satisfies this requirement. From the Linux application developer's perspective, the GPU appears as a render-only device with no display outputs, accessed through the `/dev/dxg` miscdevice node. GPU memory management, command scheduling, and hardware fault recovery remain opaque — handled entirely by the Windows-side driver stack.
+
+### 1.3 What is dxgkrnl?
+
+`dxgkrnl` is the Linux kernel driver that implements the guest side of GPU-P inside the WSL2 virtual machine. It lives at `drivers/hv/dxgkrnl/` in the Microsoft WSL2 kernel fork and registers a miscdevice at `/dev/dxg`. Rather than implementing the DRM subsystem's standard interfaces — there are no GEM buffers, no KMS pipelines, no `drm_driver` struct registration — `dxgkrnl` exposes a WDDM D3DKMT (Kernel Mode Thunk) compatible IOCTL interface that mirrors the API used by `d3d12.dll` on Windows. This deliberate API correspondence means the same D3D12 runtime source can target either the Windows kernel or the Linux VM by changing only the underlying IOCTL dispatch path.
+
+Userspace libraries mounted from the host at `/usr/lib/wsl/lib/` — including `libd3d12.so` and `libdxcore.so` — speak this IOCTL interface, forwarding D3D12 operations as VMBus messages to the Windows kernel component (`dxgkrnl.sys`), which in turn submits work to the physical GPU driver. Mesa's D3D12 Gallium driver and the `dzn` Vulkan driver link against these host-provided libraries, allowing standard OpenGL and Vulkan applications to run on WSL2 without modification. As of mid-2026, `dxgkrnl` is under active review for mainline Linux inclusion (v4 patch series on LKML) but ships only in the Microsoft WSL2 kernel tree.
 
 ---
 

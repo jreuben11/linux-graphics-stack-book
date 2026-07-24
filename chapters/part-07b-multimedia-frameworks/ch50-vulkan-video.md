@@ -11,6 +11,9 @@ Vulkan Video is the Khronos Group's answer to a decade of fragmented hardware vi
 ## Table of Contents
 
 1. [Why Vulkan Video: Fragmentation and the Unified Vision](#1-why-vulkan-video-fragmentation-and-the-unified-vision)
+   - [1.1 What is Vulkan Video?](#11-what-is-vulkan-video)
+   - [1.2 What is Hardware Video Acceleration?](#12-what-is-hardware-video-acceleration)
+   - [1.3 What is the Decoded Picture Buffer (DPB)?](#13-what-is-the-decoded-picture-buffer-dpb)
 2. [VK_KHR_video_queue: Sessions, Profiles, and Format Queries](#2-vk_khr_video_queue-sessions-profiles-and-format-queries)
 3. [VK_KHR_video_decode_queue: Decode Lifecycle and DPB Management](#3-vk_khr_video_decode_queue-decode-lifecycle-and-dpb-management)
 4. [Codec Extensions: H.264, H.265, and AV1 Decode](#4-codec-extensions-h264-h265-and-av1-decode)

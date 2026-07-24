@@ -23,8 +23,12 @@
 - [9. HDA: High Definition Audio](#9-hda-high-definition-audio)
 - [10. ALSA Sequencer and MIDI](#10-alsa-sequencer-and-midi)
 - [11. Debugging and Diagnostics](#11-debugging-and-diagnostics)
-- [12. Roadmap](#12-roadmap)
-- [13. Integrations](#13-integrations)
+- [12. Sound Open Firmware (SOF)](#12-sound-open-firmware-sof)
+- [13. Bluetooth LE Audio and the LC3 Codec](#13-bluetooth-le-audio-and-the-lc3-codec)
+- [14. USB Audio Class 3 (UAC3)](#14-usb-audio-class-3-uac3)
+- [15. Audio Codec Comparison](#15-audio-codec-comparison)
+- [16. Roadmap](#16-roadmap)
+- [17. Integrations](#17-integrations)
 
 ---
 
@@ -1202,11 +1206,316 @@ The `latency` tool from `alsa-utils` measures the minimum achievable round-trip 
 
 ---
 
-## 12. Roadmap
+## 12. Sound Open Firmware (SOF)
+
+*Audience: systems developers working on modern Intel, AMD, and NXP laptop/tablet audio; anyone debugging why a Meteor Lake or Ryzen AI laptop boots with a "Dummy Output" and no sound.*
+
+Since Skylake (2015) most Intel client SoCs embed an **Audio DSP (ADSP)** — an on-die co-processor (historically a Cadence Tensilica Xtensa core; AMD ACP and NXP i.MX use their own cores) that offloads mixing, sample-rate conversion, digital-microphone (DMIC) capture, echo cancellation, and wake-word detection from the application cores so they can remain in deep package-C sleep states. **Sound Open Firmware (SOF)** is the open-source firmware that runs on that DSP, together with the Linux kernel driver that loads it, boots it, and streams audio to it. [Source — SOF kernel documentation](https://www.kernel.org/doc/html/latest/sound/soc/sof.html) SOF replaced Intel's earlier closed "SST" firmware blobs with a buildable open firmware image plus an open, human-readable topology description. [Source — thesofproject/sof](https://github.com/thesofproject/sof)
+
+### 12.1 Why a DSP, and where SOF sits
+
+On a modern laptop the analog codec is no longer wired to an HD-Audio link; it hangs off an I2S/PCM or SoundWire bus driven by the ADSP. The application cores cannot reach the codec directly — they hand PCM buffers to the DSP over shared memory (via host-DMA "copier" modules) and the DSP runs the pipeline that ultimately clocks samples out to the codec. SOF turns that DSP into a programmable audio graph: a set of processing **modules** (gain/PGA, mixer, SRC, DMIC, EQ, host/DAI copiers) wired into **pipelines** described by a topology binary. The kernel never touches the codec registers on these platforms; it sends the DSP high-level Inter-Processor Communication (IPC) commands and lets the firmware own the hardware.
+
+### 12.2 Kernel driver layout
+
+Two driver stacks can drive the same Intel ADSP hardware:
+
+| Path | Kernel subtree | Role |
+|------|----------------|------|
+| Generic SOF | `sound/soc/sof/` | Firmware-agnostic core: loader, IPC, PCM, topology, debug |
+| SOF Intel glue | `sound/soc/sof/intel/` | Per-platform HDA/ACE register access, DSP power, DMA |
+| SOF AMD/NXP glue | `sound/soc/sof/amd/`, `sound/soc/sof/imx/` | ACP and i.MX back-ends |
+| Intel AVS | `sound/soc/intel/avs/` | Alternative in-tree DSP driver for cAVS 1.5 (Skylake–Apollo Lake), no external firmware project |
+
+The PCI entry point is the `snd-sof-pci` module (`sof-audio-pci-intel-tgl`, `…-mtl`, etc. as platform-specific PCI ID tables); it registers the ADSP PCI function and hands control to the SOF core. AVS is a separate, self-contained option for older cAVS 1.5 SKUs — see §16.2 for the legacy-HDA removal that made AVS the default there. [Source — SOF Intel driver tree](https://git.kernel.org/pub/scm/linux/kernel/git/tiwai/sound.git/tree/sound/soc/sof/intel)
+
+### 12.3 Choosing the DSP driver: `snd_intel_dspcfg`
+
+On Skylake+ the same PCI audio device can be claimed by legacy `snd-hda-intel`, by SST, by SOF, or by AVS. The arbiter is `sound/hda/intel-dsp-config.c`, exposed through the `snd_intel_dspcfg` module and its `dsp_driver` parameter:
+
+```bash
+# Inspect / force the DSP driver selection
+cat /sys/module/snd_intel_dspcfg/parameters/dsp_driver
+# 0 = auto-detect, 1 = legacy HD-Audio, 2 = SST, 3 = SOF, 4 = AVS
+options snd_intel_dspcfg dsp_driver=3      # force SOF
+```
+
+`dsp_driver=0` (the default) auto-selects based on a per-platform allow-list plus the presence of an NHLT ACPI table (§12.6) describing non-HDA endpoints. When the machine has I2S/DMIC endpoints that legacy HDA cannot drive, auto-detect chooses SOF. [Source — intel-dsp-config](https://git.kernel.org/pub/scm/linux/kernel/git/tiwai/sound.git/tree/sound/hda/intel-dsp-config.c)
+
+### 12.4 Firmware and topology loading
+
+Boot is a four-stage handshake, all driven from the SOF core (`sound/soc/sof/loader.c`, `sound/soc/sof/core.c`):
+
+1. **Fetch the image.** The platform ops table (`struct snd_sof_dsp_ops`, reached via `sof_ops(sdev)`) provides a `load_firmware` callback that pulls the signed DSP image with `request_firmware()`. For the IPC4 generation the file is a `.ri` (signed ROM image), e.g. `/lib/firmware/intel/sof-ipc4/mtl/sof-mtl.ri`; the older IPC3 generation loads `sof-<plat>.ri` from `/lib/firmware/intel/sof/`.
+2. **Boot the DSP.** `run_firmware` releases the core from reset and waits for a **"firmware ready"** IPC message posted by the DSP into the host mailbox, which reports firmware version and mailbox/window offsets.
+3. **Load topology.** `snd_sof_load_topology()` reads the `.tplg` binary — `/lib/firmware/intel/sof-ipc4-tplg/` for IPC4, `/lib/firmware/intel/sof-tplg/` for IPC3 — and, as each ASoC DAI link binds, instantiates the pipelines and modules it describes by sending component-create IPCs to the DSP.
+4. **Stream.** PCM `hw_params` map to host-copier DMA setup; `trigger` start/stop become pipeline-state IPCs.
+
+The `.tplg` files are compiled from human-readable topology sources in the SOF tree (`tools/topology/topology2/*.conf`; older trees used `.m4` macros) by `alsatplg`, the ALSA topology compiler shipped in alsa-utils, so an integrator can inspect exactly which modules a board instantiates. [Source — SOF topology2](https://github.com/thesofproject/sof/tree/main/tools/topology/topology2), [alsatplg](https://github.com/alsa-project/alsa-utils/tree/master/topology)
+
+Note: the exact `.ri`/`.tplg` filenames are platform-specific; a missing or mismatched topology file is the single most common cause of a silent SOF machine (`dmesg` shows `error: tplg component load failed` or `Direct firmware load for intel/sof-tplg/… failed`).
+
+### 12.5 IPC3 versus IPC4
+
+SOF has two wire protocols for host↔DSP communication, both over a shared-memory **mailbox** with a doorbell interrupt:
+
+- **IPC3** — the original protocol used up to and including Tiger Lake era firmware. Fixed message structs grouped into topology, PM, component, stream, DAI, and trace classes.
+- **IPC4** — the protocol used by the Intel **ACE** (Audio Compute Engine) DSPs from Meteor Lake onward, aligned with the closed AVS/Windows IPC ABI. IPC4 adds a modular firmware model: a base image plus loadable **library** modules (bundles) that are fetched and loaded into the booted DSP on demand (Meteor Lake / ACE1 and newer). [Source — SOF Linux driver architecture](https://thesofproject.github.io/latest/architectures/host/linux_driver/architecture/sof_driver_arch.html)
+
+The kernel selects the IPC generation from platform data; `sound/soc/sof/ipc3-*.c` and `sound/soc/sof/ipc4-*.c` provide the two implementations behind a common ops interface. For the SOF firmware release timeline (v2.12–v2.14, the move to Zephyr RTOS, and per-platform IPC4 support), see §16.3.
+
+### 12.6 NHLT: describing non-HDA endpoints
+
+An ADSP platform still needs to know how many DMICs exist, which SSP (I2S) ports are wired to which codec, and at what format. That board description is not on any probeable bus — it is baked into ACPI as the **NHLT (Non-HD-Audio Link Table)**. The SOF and AVS drivers parse it through the `intel_nhlt_*` API declared in `include/sound/intel-nhlt.h` (e.g. `intel_nhlt_init()`, `intel_nhlt_get_dmic_geo()`, `intel_nhlt_get_endpoint_blob()`), and feed the resulting endpoint blobs to the DSP so its DMIC/SSP modules are configured to match the board wiring. [Source — intel-nhlt](https://git.kernel.org/pub/scm/linux/kernel/git/tiwai/sound.git/tree/include/sound/intel-nhlt.h)
+
+### 12.7 SoundWire links
+
+Where earlier laptops used I2S/SSP to reach the codec, current Intel and AMD platforms increasingly use **SoundWire** (MIPI SoundWire), a two-wire bus managed by `sound/soundwire/` and driven by the same ADSP. The DSP owns the SoundWire master; SOF topology wires SoundWire DAI copiers into the pipeline exactly as it would an SSP DAI. Auto-enumeration of SoundWire codecs via the SoundWire Device Class for Audio (SDCA) is covered as roadmap in §16.4.
+
+### 12.8 Debugging SOF
+
+```bash
+# Confirm which driver claimed the audio PCI device
+cat /sys/module/snd_intel_dspcfg/parameters/dsp_driver
+
+# SOF debugfs: firmware state, IPC flood test, mailbox/registers
+ls /sys/kernel/debug/sof/
+cat /sys/kernel/debug/sof/fw_version
+
+# Verbose IPC / loader tracing
+echo 'module snd_sof +p' | sudo tee /sys/kernel/debug/dynamic_debug/control
+# or at boot: snd_sof.dyndbg=+p
+
+# Live DSP firmware trace (mtrace / dtrace) decoded on the host
+sof-logger -t -f /etc/sof/sof-<plat>.ldc
+```
+
+`sof-logger` decodes the firmware's on-DSP trace ring using the platform's `.ldc` (log dictionary) file; combined with `snd_sof.dyndbg=+p` on the host side it gives a two-sided view of the IPC handshake. [Source — SOF kernel documentation](https://www.kernel.org/doc/html/latest/sound/soc/sof.html)
+
+---
+
+## 13. Bluetooth LE Audio and the LC3 Codec
+
+*Audience: application and systems developers integrating Bluetooth audio; anyone comparing wireless codecs or wiring `liblc3` into a capture/playback path.*
+
+**Bluetooth LE Audio** (introduced with Bluetooth 5.2, 2020) is a ground-up replacement for Classic BR/EDR A2DP/HFP audio. It carries audio over **isochronous** channels on the Low Energy radio and mandates a new default codec, **LC3**. Two isochronous transports exist: **CIS** (Connected Isochronous Stream) for point-to-point links such as earbuds and hearing aids, and **BIS** (Broadcast Isochronous Stream) for one-to-many broadcast (Auracast) with no pairing. [Source — Bluetooth SIG LE Audio](https://www.bluetooth.com/learn-about-bluetooth/le-audio/)
+
+### 13.1 Capability discovery: PACS and ASCS
+
+LE Audio endpoints advertise and negotiate over GATT rather than the Classic SDP:
+
+- **PACS** (Published Audio Capabilities Service) — a sink/source publishes its supported codecs, sample rates, frame durations, and channel counts as **PAC** records. For LC3 a record encodes which of the standard sampling frequencies and 7.5/10 ms frame durations the device accepts.
+- **ASCS** (Audio Stream Control Service) — drives per-stream state machines (Audio Stream Endpoints, ASEs) through *codec-configured → QoS-configured → enabling → streaming*. The **BAP** (Basic Audio Profile) sits on top of PACS/ASCS and defines the Unicast Client/Server and Broadcast Source/Sink roles.
+
+BlueZ implements the full LE Audio profile stack (BAP, plus BASS, VCP, MCP, CCP, MICP, CSIP, TMAP); the completion/enable status of that stack is tracked in §16.5.
+
+### 13.2 The LC3 codec
+
+**LC3** (Low Complexity Communication Codec, specified by the Bluetooth SIG) is an MDCT-based transform codec designed to beat SBC at every bitrate while adding graceful loss concealment. Its defining property is very short, configurable framing: **frame durations of 7.5 ms or 10 ms** for LE Audio, with sample rates from 8 kHz to 48 kHz and a per-frame octet budget that directly sets the bitrate. [Source — Bluetooth SIG LC3](https://www.bluetooth.com/specifications/specs/low-complexity-communication-codec-1-0/)
+
+The bitrate is chosen by picking the encoded frame size: `bitrate = frame_octets × 8 / frame_duration`. At 48 kHz / 10 ms, a 120-octet frame is 96 kbps; the spec's usable range spans roughly 16 kbps (narrowband voice) to 320 kbps (high-quality stereo music at 48 kHz).
+
+### 13.3 `liblc3`: the reference implementation
+
+Google's `liblc3` is the portable, allocation-free reference encoder/decoder used by BlueZ/PipeWire. All working memory is caller-provided, sized up front. [Source — google/liblc3](https://github.com/google/liblc3) The supported parameters are `dt_us ∈ {2500, 5000, 7500, 10000}` (LE Audio uses 7500/10000) and `sr_hz ∈ {8000, 16000, 24000, 32000, 48000}`, with the PCM format selected per call:
+
+```c
+enum lc3_pcm_format {
+    LC3_PCM_FORMAT_S16, LC3_PCM_FORMAT_S24,
+    LC3_PCM_FORMAT_S24_3LE, LC3_PCM_FORMAT_FLOAT,
+};
+```
+
+Encoder lifecycle (48 kHz LC3, 10 ms frames, S16 PCM, 96 kbps → 120 octets/frame):
+
+```c
+#include <lc3.h>
+
+const int dt_us  = 10000;   /* 10 ms frame            */
+const int sr_hz  = 48000;   /* LC3 internal rate      */
+const int nbytes = 120;     /* encoded octets → 96kbps */
+
+unsigned mem_sz   = lc3_encoder_size(dt_us, sr_hz);
+void    *enc_mem  = malloc(mem_sz);
+lc3_encoder_t enc = lc3_setup_encoder(dt_us, sr_hz, sr_hz, enc_mem);
+
+int      nsamples = lc3_frame_samples(dt_us, sr_hz);   /* 480 samples */
+int16_t  pcm[480];
+uint8_t  frame[120];
+
+/* Once per 10 ms of captured audio: */
+lc3_encode(enc, LC3_PCM_FORMAT_S16, pcm, /*stride=*/1, nbytes, frame);
+```
+
+Decoder lifecycle is symmetric; a lost frame is concealed by passing a NULL input:
+
+```c
+unsigned dmem_sz  = lc3_decoder_size(dt_us, sr_hz);
+lc3_decoder_t dec = lc3_setup_decoder(dt_us, sr_hz, sr_hz, malloc(dmem_sz));
+
+int16_t out[480];
+/* in == NULL → packet-loss concealment for this frame */
+lc3_decode(dec, frame, nbytes, LC3_PCM_FORMAT_S16, out, /*stride=*/1);
+```
+
+`lc3_frame_samples(dt_us, sr_hz)` returns the PCM samples per frame (480 at 48 kHz/10 ms); `lc3_frame_bytes(dt_us, bitrate)` converts a target bitrate to the octet budget. The `sr_pcm_hz` argument to `lc3_setup_encoder` lets the input PCM rate differ from the LC3 internal rate, so `liblc3` resamples on the fly.
+
+### 13.4 Kernel and userspace plumbing
+
+**Kernel ISO sockets.** Linux 6.0 added the isochronous socket family for LE Audio: `BTPROTO_ISO` over `AF_BLUETOOTH`/`SOCK_SEQPACKET`, with QoS configured through `struct bt_iso_qos` and the `BT_ISO_QOS` socket option. [Source — Linux Bluetooth ISO support](https://git.kernel.org/pub/scm/linux/kernel/git/bluetooth/bluetooth-next.git/)
+
+```c
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/iso.h>
+
+int sk = socket(AF_BLUETOOTH, SOCK_SEQPACKET, BTPROTO_ISO);
+struct bt_iso_qos qos = { /* interval, latency, SDU size, PHY, RTN */ };
+setsockopt(sk, SOL_BLUETOOTH, BT_ISO_QOS, &qos, sizeof(qos));
+/* connect() a CIS or bind() a BIS, then read()/write() LC3 frames */
+```
+
+Encoded LC3 frames are what traverse the socket; the kernel schedules them onto the CIS/BIS isochronous slots, and the controller handles the air interface.
+
+**PipeWire/BlueZ.** In userspace, BlueZ (5.68+) owns the GATT profile stack and hands the negotiated ISO file descriptor to PipeWire's `libspa-bluetooth` (`bluez5` SPA plugin). That plugin runs `liblc3` to encode/decode between the ISO frames and the PipeWire graph, exposing each stream as an ordinary `pw_node`. LE Audio (`BAP`) profiles thus appear alongside the Classic `A2DP` and `HEADSET_HEAD_UNIT` profiles in `wpctl`/`bluetoothctl`. The LC3 encode/decode path lives in `spa/plugins/bluez5/bap-codec-lc3.c`, gated on the `bluez5-codec-lc3` build option. [Source — PipeWire bluez5 SPA plugin](https://github.com/PipeWire/pipewire/tree/master/spa/plugins/bluez5)
+
+For current enablement status — LC3 gated behind BlueZ/PipeWire experimental flags, controller availability (Intel AX210 for CIS, BE200 for Auracast/BIS), and interoperability qualification — see §16.5. The comparison of LC3 against SBC/aptX/LDAC/LC3plus is in §15.
+
+---
+
+## 14. USB Audio Class 3 (UAC3)
+
+*Audience: systems developers on USB-C audio, docks, and headsets; driver developers touching `sound/usb/`.*
+
+USB audio devices are enumerated by the class driver at `sound/usb/` (module `snd-usb-audio`, `CONFIG_SND_USB_AUDIO`) with no per-device driver required — the descriptors fully describe the device. Three generations of the USB Audio Class exist:
+
+| Class | USB gen | Isochronous model | Notable |
+|-------|---------|-------------------|---------|
+| UAC1 | USB 1.x (full-speed) | Synchronous | 24-bit ceiling in practice, no explicit feedback |
+| UAC2 | USB 2.0 (high-speed) | Async with explicit feedback EP | The workhorse for pro/DAC devices |
+| UAC3 | USB 3.x / USB-C | Async | Power Domains, BADD profiles, DisplayPort tunnelled audio |
+
+### 14.1 What UAC3 adds
+
+UAC3 (spec 3.0, USB-IF, 2016) is not merely "UAC2 on SuperSpeed"; it introduces several structural additions aimed at low-power and commodity devices: [Source — USB Audio Device Class 3.0, LWN](https://lwn.net/Articles/749822/)
+
+- **Power Domains.** Entities are grouped into power domains that can be transitioned independently (D0 active, D1/D2 low-power), so a dock can suspend its audio clock while keeping the USB link and other functions alive. Each domain advertises its wake-up recovery time.
+- **BADD (Basic Audio Device Definition).** A set of fixed, pre-canned device profiles (headphone, speaker, microphone, headset, speakerphone, generic I/O) with predefined entity IDs, so a compliant device needs almost no custom class descriptors and a host can support it with zero device-specific code.
+- **Cluster descriptors.** Channel layout is described by a dedicated cluster descriptor (segments of spatial-location information) rather than the flat channel-config bitmap of UAC2.
+- **DisplayPort audio.** UAC3 defines carriage of DisplayPort audio tunnelled over the USB-C connector.
+
+### 14.2 The UAC3 descriptor set
+
+UAC3 defines a fresh class-specific descriptor layout, declared in the kernel header `include/linux/usb/audio-v3.h`. The parser in `sound/usb/stream.c` and `sound/usb/mixer.c` walks these structures during enumeration: [Source — audio-v3.h](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/include/linux/usb/audio-v3.h)
+
+| Descriptor struct | Role |
+|-------------------|------|
+| `struct uac3_ac_header_descriptor` | AudioControl interface header |
+| `struct uac3_input_terminal_descriptor` | Input terminal (ADC, USB streaming in) |
+| `struct uac3_output_terminal_descriptor` | Output terminal (DAC, USB streaming out) |
+| `struct uac3_feature_unit_descriptor` | Volume/mute controls |
+| `struct uac3_clock_source_descriptor` | Clock entity and validity control |
+| `struct uac3_cluster_header_descriptor` | Channel cluster / spatial layout |
+| `struct uac3_power_domain_descriptor` | Power domain grouping and recovery times |
+| `struct uac3_as_header_descriptor` | AudioStreaming interface header |
+| `struct uac3_iso_endpoint_descriptor` | Isochronous data endpoint |
+
+BADD profiles are selected by the AudioFunction's `bFunctionSubClass`, whose values are fixed in the header:
+
+```c
+/* include/linux/usb/audio-v3.h — BADD profiles */
+#define UAC3_FUNCTION_SUBCLASS_GENERIC_IO       0x20
+#define UAC3_FUNCTION_SUBCLASS_HEADPHONE        0x21
+#define UAC3_FUNCTION_SUBCLASS_SPEAKER          0x22
+#define UAC3_FUNCTION_SUBCLASS_MICROPHONE       0x23
+#define UAC3_FUNCTION_SUBCLASS_HEADSET          0x24
+#define UAC3_FUNCTION_SUBCLASS_HEADSET_ADAPTER  0x25
+#define UAC3_FUNCTION_SUBCLASS_SPEAKERPHONE     0x26
+```
+
+Each BADD profile fixes its entity IDs (Input Terminal ID1, Feature Unit ID2, Output Terminal ID3, …) and its endpoint packet sizes; BADD sampling is always 48 kHz (`UAC3_BADD_SAMPLING_RATE`). Power-domain recovery constants are likewise fixed (`UAC3_BADD_PD_RECOVER_D1D0` = 30 ms, `…_D2D0` = 300 ms). This is why a UAC3 BADD headset works on any conforming host with no vendor descriptors at all.
+
+### 14.3 Probe and streaming path
+
+The class driver's probe chain is shared across UAC1/2/3:
+
+```
+usb_audio_probe()                 /* sound/usb/card.c, on interface match */
+  → snd_usb_audio_create()        /* allocate struct snd_usb_audio, ALSA card */
+  → snd_usb_create_streams()      /* walk AudioStreaming interfaces */
+      → for UAC3: parse uac3_as_header_descriptor + cluster + iso endpoint
+  → create PCM / mixer / clock entities
+```
+
+Power-domain handling lives in `sound/usb/power.c`. Control-parameter changes use the standard class request pair `SET_CUR`/`GET_CUR` on the AudioControl interface (clock frequency, feature-unit volume/mute), and an optional interrupt endpoint delivers asynchronous notifications (e.g. jack insertion via the insertion control block `struct uac3_insertion_ctl_blk`, message `struct uac3_interrupt_data_msg`).
+
+Initial UAC3 support was merged in **Linux 4.17** (2018), with BADD profiles following in 4.18 and Power Domains in 4.19; the merge timeline and the later CVE-2025-38729 descriptor-validation fix are covered in §16.6.
+
+### 14.4 Debugging UAC3 devices
+
+```bash
+lsusb -v -d <vid>:<pid>        # dump class-specific UAC3 descriptors
+cat /proc/asound/cards         # confirm the device registered as an ALSA card
+arecord -l ; aplay -l          # list capture/playback PCMs
+dmesg | grep -i snd_usb_audio  # probe errors, descriptor parse failures
+# Capture the enumeration on the wire:
+modprobe usbmon ; cat /sys/kernel/debug/usb/usbmon/<bus>u
+```
+
+`lsusb -v` is the fastest triage: it prints the parsed AudioControl/AudioStreaming descriptors, so a device that enumerates but produces no PCM can be diagnosed by checking whether its terminal/cluster descriptors decoded correctly. [Source — sound/usb](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/sound/usb)
+
+---
+
+## 15. Audio Codec Comparison
+
+*Audience: application developers choosing a codec for recording, streaming, or wireless output on Linux.*
+
+Two distinct codec families appear in the Linux audio stack: **wireless codecs** negotiated over Bluetooth (encode/decode happens in BlueZ/PipeWire, never in ALSA itself), and **software media codecs** used by players and pipelines above the PCM layer. ALSA and PipeWire transport *PCM*; every compressed format below is decoded to PCM before the DAC (or IEC 61937 passthrough, §16 / Ch140, is used for AC3/DTS/E-AC3 over HDMI/SPDIF).
+
+### 15.1 Bluetooth audio codecs
+
+| Codec | Max bitrate | Frame latency | Compression | Patent | Linux support |
+|-------|-------------|---------------|-------------|--------|---------------|
+| SBC | ~328 kbps | ~40 ms | Sub-band ADPCM | Royalty-free | Full (BlueZ, mandatory) |
+| AAC | 320 kbps | ~60 ms | MPEG-4 transform | Licensed | BlueZ + `libfdk-aac` |
+| aptX | 352 kbps | ~40 ms | ADPCM-derived | Qualcomm | BlueZ + codec plugin |
+| aptX-HD | 576 kbps | ~40 ms | ADPCM-derived | Qualcomm | BlueZ + codec plugin |
+| aptX-LL | 352 kbps | ~15 ms | ADPCM-derived | Qualcomm | Partial |
+| LDAC | 990 kbps | ~20 ms | Wavelet/MDCT | Sony | BlueZ + codec plugin |
+| LC3 | 320 kbps | 7.5–10 ms | MDCT | Royalty-free | `liblc3` (LE Audio) |
+| LC3plus | 500 kbps | 2.5 ms | MDCT extension | Fraunhofer | Partial |
+
+SBC is mandatory and always available; everything else in the Classic A2DP column requires an optional codec plug-in in `libspa-codec`/BlueZ, and the Qualcomm/Sony codecs are shipped by distributions only where licensing permits. LC3 is the LE Audio default and the only high-quality codec in the table that is both royalty-free and sub-10-ms — the property that makes it viable for real-time voice and hearing aids where A2DP codecs' 20–60 ms framing is disqualifying. LC3plus (Fraunhofer, ETSI TS 103 634) extends LC3 with a 2.5 ms frame and higher bitrates for wired/pro links but is not part of the base LE Audio profile. [Source — Bluetooth SIG LC3](https://www.bluetooth.com/specifications/specs/low-complexity-communication-codec-1-0/)
+
+Latency figures are codec framing/algorithmic latency only; end-to-end wireless latency adds controller buffering and retransmission. aptX-LL and LC3 exist specifically to attack that budget.
+
+### 15.2 Software media codecs
+
+Above the PCM layer, players (Ch189 VLC), pipelines (Ch58 GStreamer, Ch57 FFmpeg), and browsers decode compressed media to PCM before it reaches PipeWire/ALSA:
+
+- **FLAC** — Xiph.org lossless. Ideal for archival/recording; decodes losslessly to `SND_PCM_FORMAT_S16`/`S24`/`S32`. PipeWire can pass FLAC through to a capable sink but the common path is decode-to-PCM in the player. [Source — Xiph FLAC](https://xiph.org/flac/)
+- **Opus** — Xiph.org, 6–510 kbps, 20 ms default frame (2.5–60 ms configurable), the WebRTC voice/music default. Low-latency and royalty-free; GStreamer `opusdec`/`opusenc`, or the PipeWire path for network audio. [Source — Opus](https://opus-codec.org/)
+- **MP3** — MPEG-1/2 Layer III. Ubiquitous lossy playback; decoded in software (`libmpg123`, GStreamer `mpg123audiodec`) or on SoC hardware decoders.
+- **AAC** — MPEG-4 AAC-LC / HE-AAC. Streaming and broadcast default; open decode via `libfdk-aac` (GStreamer `fdkaacdec`/`faad`), platform decoders on mobile SoCs.
+
+### 15.3 Choosing a codec by use case
+
+| Use case | Recommended codec | Why |
+|----------|-------------------|-----|
+| Local recording / mastering | FLAC | Lossless, wide tool support |
+| Real-time voice / WebRTC | Opus | Low latency, royalty-free, robust to loss |
+| Bluetooth music (Classic) | LDAC or aptX-HD | Highest bitrate over A2DP where licensed; SBC as fallback |
+| Bluetooth voice / hearing aids | LC3 (LE Audio) | Sub-10 ms framing, royalty-free, dual voice+music |
+| Streaming / broadcast | AAC-LC / HE-AAC | Ecosystem and CDN support |
+
+The decisive axes are latency (Opus/LC3 for interactive, FLAC/LDAC where latency is irrelevant), licensing (SBC/LC3/Opus/FLAC are royalty-free; AAC/aptX/LDAC are licensed), and whether the sink is local (software codec → PCM) or wireless (Bluetooth codec negotiated by BlueZ/PipeWire).
+
+---
+
+## 16. Roadmap
 
 ALSA's kernel-side development is conservative — the public `libasound` API has been stable for over a decade and the core PCM/control/sequencer model is unlikely to change. Active development concentrates on new hardware protocols, power efficiency, and MIDI 2.0. The following areas represent the most significant in-progress and recently landed work.
 
-### 12.1 MIDI 2.0 and Universal MIDI Packet (UMP)
+### 16.1 MIDI 2.0 and Universal MIDI Packet (UMP)
 
 Linux 6.5 (September 2023) merged the foundational MIDI 2.0 / UMP kernel support. New character device nodes (`/dev/snd/umpC{N}D{D}`) complement the legacy sequencer interface (`/dev/snd/seq`). UMP encodes all message types as 32-bit-aligned packets, eliminating MIDI 1.0's 7-bit value resolution ceiling and 16-channel limit. [Source — MIDI 2.0 merge, Linux 6.5](https://git.kernel.org/pub/scm/linux/kernel/git/tiwai/sound.git/log/)
 
@@ -1216,15 +1525,15 @@ PipeWire 1.2+ exposes UMP streams as PipeWire ports, giving compatible DAW softw
 
 **Status**: base UMP merged (6.5); USB gadget merged (6.6); API enhancements ongoing (6.14+); PipeWire integration functional; DAW/plugin ecosystem still maturing.
 
-### 12.2 Intel AVS Driver and Legacy HDA Removal
+### 16.2 Intel AVS Driver and Legacy HDA Removal
 
 The Intel **Audio Value Stream** (AVS) driver, targeting cAVS 1.5 platforms (Skylake, Kaby Lake, Amber Lake, Apollo Lake), provides a cleaner DSP firmware interface than the original `snd-hda-intel` path for those platforms. Linux 6.12 removed the legacy HDA-based paths for these SKUs, deleting approximately 32,600 lines of code and consolidating all cAVS 1.5 support under AVS.
 
 Linux 6.15 added **PEAKVOL** and **GAIN** DSP module types to the AVS topology, enabling hardware peak metering and programmable gain stages inside the audio DSP without involving the CPU. This is relevant for low-power voice-detection pipelines where the SoC's audio DSP processes microphone input while the application cores remain in C10. [Source — Intel AVS driver](https://git.kernel.org/pub/scm/linux/kernel/git/tiwai/sound.git/tree/sound/soc/intel/avs)
 
-### 12.3 Sound Open Firmware (SOF) Evolution
+### 16.3 Sound Open Firmware (SOF) Evolution
 
-SOF is the open-source firmware framework for Intel, AMD, and NXP audio DSPs. The SOF project coordinates driver (`sound/soc/sof/`) and firmware releases on a separate cadence from the kernel itself.
+SOF is the open-source firmware framework for Intel, AMD, and NXP audio DSPs. See §12 for its architecture, firmware/topology loading, and IPC internals; this subsection tracks the release timeline. The SOF project coordinates driver (`sound/soc/sof/`) and firmware releases on a separate cadence from the kernel itself.
 
 | Release | Date | Key additions |
 |---------|------|--------------|
@@ -1237,7 +1546,7 @@ Linux 6.14 added SOF **pause operation** support, allowing the DSP to pause/resu
 
 The shift from Cadence Xtensa + Zephyr to Zephyr RTOS as the canonical SOF RTOS (v2.14) reduces the firmware build toolchain complexity and aligns SOF with the broader embedded RTOS ecosystem. [Source — SOF project](https://thesofproject.github.io/)
 
-### 12.4 SoundWire and SDCA Auto-Enumeration
+### 16.4 SoundWire and SDCA Auto-Enumeration
 
 SoundWire (MIPI SWD) is a two-wire digital audio bus designed for connecting codecs to SoC audio subsystems on laptops and tablets. The ALSA SoundWire core (`sound/soundwire/`) handles enumeration, link management, and stream scheduling.
 
@@ -1248,19 +1557,19 @@ SoundWire (MIPI SWD) is a two-wire digital audio bus designed for connecting cod
 
 MIPI SDCA v1.1 was adopted in July 2025 and adds multifunction device support; kernel support is expected to follow within 1–2 kernel cycles.
 
-### 12.5 Bluetooth LE Audio and LC3 Codec
+### 16.5 Bluetooth LE Audio and LC3 Codec
 
-Bluetooth LE Audio (Bluetooth 5.2+) replaces Classic BR/EDR audio with isochronous channels and the **LC3** (Low Complexity Communication Codec) designed for voice, music, and hearing aids. The Linux stack requires cooperation between the kernel's Bluetooth stack (`net/bluetooth/`), BlueZ userspace, and PipeWire.
+Bluetooth LE Audio (Bluetooth 5.2+) replaces Classic BR/EDR audio with isochronous channels and the **LC3** (Low Complexity Communication Codec) designed for voice, music, and hearing aids. See §13 for LC3, the `liblc3` API, and the ISO-socket/PipeWire plumbing; this subsection tracks enablement status. The Linux stack requires cooperation between the kernel's Bluetooth stack (`net/bluetooth/`), BlueZ userspace, and PipeWire.
 
 BlueZ 5.8x added full profiles required for LE Audio: BAP (Basic Audio Profile), BASS (Broadcast Audio Scan Service), VCP (Volume Control Profile), MCP (Media Control Profile), CCP (Call Control Profile), MICP, CSIP, and TMAP. PipeWire handles BAP in all four roles (Unicast Source/Sink, Broadcast Source/Sink) and exposes LE Audio streams as PipeWire audio nodes.
 
 The **LC3 codec** decoding path is still experimental and disabled by default in most distributions as of 2026 — distributions enable it via a BlueZ `experimental` flag or a PipeWire codec plugin. Hardware availability is expanding: Intel AX210 supports LE Audio, and Intel BE200 adds Auracast (public broadcast LE Audio). The Bluetooth SIG targets full interoperability qualification by 2026. [Source — BlueZ LE Audio](https://www.bluez.org/)
 
-### 12.6 USB Audio Class 3 (UAC3)
+### 16.6 USB Audio Class 3 (UAC3)
 
-UAC3 was merged in Linux 4.17 and is feature-stable. Active work is primarily CVE fixes and minor conformance improvements. A notable recent fix was **CVE-2025-38729** (June 2025): a missing `bLength` validation in the UAC3 descriptor parser that could cause an out-of-bounds read when handling a malformed USB audio device. The patch added bounds checking before accessing `bClockID` and related fields in the UAC3 Audio Streaming Interface parsing code. [Source — CVE-2025-38729](https://www.cve.org/CVERecord?id=CVE-2025-38729)
+UAC3 was merged in Linux 4.17 (BADD profiles in 4.18, Power Domains in 4.19) and is feature-stable; see §14 for its architecture and descriptor set. Active work is primarily CVE fixes and minor conformance improvements. A notable recent fix was **CVE-2025-38729** (June 2025): a missing `bLength` validation in the UAC3 descriptor parser that could cause an out-of-bounds read when handling a malformed USB audio device. The patch added bounds checking before accessing `bClockID` and related fields in the UAC3 Audio Streaming Interface parsing code. [Source — CVE-2025-38729](https://www.cve.org/CVERecord?id=CVE-2025-38729)
 
-### 12.7 Real-Time Scheduling Path
+### 16.7 Real-Time Scheduling Path
 
 ALSA itself does not implement real-time scheduling; that responsibility belongs to the audio session manager. The evolution of RT privilege on Linux:
 
@@ -1270,13 +1579,13 @@ ALSA itself does not implement real-time scheduling; that responsibility belongs
 
 The MIDI 2.0 UMP bridge in PipeWire 1.2+ inherits the same RT scheduling as audio graphs, meaning MIDI 2.0 event delivery can be co-scheduled with audio period callbacks at `SCHED_FIFO` priority. [Source — FOSDEM 2025, Wim Taymans — PipeWire RT scheduling](https://fosdem.org/2025/)
 
-### 12.8 PCM API Stability
+### 16.8 PCM API Stability
 
 Despite repeated discussion in the ALSA mailing list about a "PCM API v2", no concrete replacement proposal is underway as of 2026. The `snd_pcm_hw_params` negotiation model — while verbose — is understood to cover every hardware combination that has shipped in the past 20 years. The most likely evolution is additional `snd_pcm_*` helpers and format enumerations (e.g., DSD512, FLOAT64) rather than a new API surface. The primary complaint — that hw_params negotiation is trial-and-error — is addressed in practice by the `snd_pcm_hw_params_set_*_near()` family of helpers.
 
 ---
 
-## 13. Integrations
+## 17. Integrations
 
 **Ch38 (PipeWire and the Video Session Layer)**
 PipeWire's `spa-alsa` plugin uses the MMAP zero-copy path described in §4.4 of this chapter to read/write the ALSA DMA ring buffer without an extra copy. The `api.alsa.enum.udev` WirePlumber monitor (described in Ch38 §2) detects ALSA card hotplug events and instantiates `pw_node` objects. The `pipewire-alsa` PCM plugin described in §6.2 of this chapter is the reverse bridge: it routes `libasound` API calls into PipeWire streams, providing transparent compatibility for legacy applications. PipeWire's graph cycle timing is driven by the ALSA DMA period interrupt via the `api.alsa.pcm.sink` driver node.

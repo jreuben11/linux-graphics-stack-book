@@ -39,6 +39,30 @@ This chapter traces the complete Linux OBS GPU pipeline from screen capture to e
 
 [OBS Studio source](https://github.com/obsproject/obs-studio) | [obs-vkcapture](https://github.com/nowrep/obs-vkcapture)
 
+### 1.1 What is OBS Studio?
+
+OBS Studio (Open Broadcaster Software) is a free and open-source application for video recording and live streaming. On Linux it is built on **libobs**, a modular C framework that abstracts input sources, scene composition, output encoding, and streaming services into a unified plugin architecture. The libobs framework manages a GPU-backed scene graph: each video source — screen capture, webcam feed, browser window, or media file — arrives as a GPU texture, and the compositor blends and transforms those textures using OpenGL or Vulkan before delivering frames to a video encoder.
+
+OBS is relevant to this book because it is one of the most demanding real-world consumers of the Linux GPU stack. A working OBS pipeline requires correct operation of the DRM/KMS subsystem, the Wayland compositor and xdg-desktop-portal, PipeWire, DMA-BUF import via EGL, and hardware video encoding through VA-API, NVENC, or AMF. Each of those subsystems has a dedicated chapter in this book; this chapter examines how OBS ties them together into an end-to-end recording and streaming pipeline. The primary source repository is at [https://github.com/obsproject/obs-studio](https://github.com/obsproject/obs-studio).
+
+### 1.2 What is PipeWire?
+
+PipeWire is a Linux multimedia server that provides a unified graph-based API for audio and video streams. On Wayland desktops it has replaced PulseAudio for audio routing and GStreamer-based screen grabbing for video capture. For the screen capture use case, PipeWire operates as the transport layer between the Wayland compositor and consuming applications such as OBS.
+
+When OBS requests a screen capture session on a Wayland desktop, the compositor — GNOME Shell, KDE Plasma, or a wlroots-based compositor — creates a PipeWire stream. OBS connects to that stream through the `pw_stream` API and receives frames as either shared-memory buffers or DMA-BUF file descriptors. The DMA-BUF path is zero-copy: the compositor hands OBS a file descriptor referencing a GPU buffer that was never read by the CPU. PipeWire negotiates the buffer type, pixel format, and resolution, then delivers frames in real time. WirePlumber, the PipeWire session and policy manager, handles stream routing and permission decisions that the xdg-desktop-portal initiates on behalf of the user. PipeWire documentation is at [https://docs.pipewire.org/](https://docs.pipewire.org/).
+
+### 1.3 What is DMA-BUF?
+
+DMA-BUF is a Linux kernel subsystem for sharing memory buffers across drivers and user-space subsystems without copying data through the CPU. A DMA-BUF object is represented in user space as a file descriptor; passing that descriptor to another process or driver hands over a reference to the same underlying physical memory, which may reside in GPU VRAM or in system memory pinned for device access.
+
+In the OBS pipeline, DMA-BUF file descriptors carry screen content from the compositor to OBS. The compositor renders a frame into a GPU buffer, exports that buffer as a DMA-BUF file descriptor via `drmPrimeHandleToFD`, and delivers it over the PipeWire stream. OBS receives the descriptor, imports it into OpenGL as an EGLImage using the `EGL_EXT_image_dma_buf_import` extension, and binds the EGLImage to a GL texture with `glEGLImageTargetTexture2DOES`. From that point on the frame is a native GPU texture OBS can composite and encode without any CPU-side copy. The kernel DMA-BUF infrastructure lives in `drivers/dma-buf/` and is documented at [https://www.kernel.org/doc/html/latest/driver-api/dma-buf.html](https://www.kernel.org/doc/html/latest/driver-api/dma-buf.html).
+
+### 1.4 What is VA-API?
+
+VA-API (Video Acceleration API) is a Linux API defined by the `libva` library that provides access to GPU-accelerated video encoding and decoding. It abstracts the hardware-specific interfaces of Intel Quick Sync Video, AMD VCN, and other fixed-function video accelerators behind a common set of structures and entry points, allowing applications to submit raw frames and receive compressed bitstreams without knowing the details of the underlying hardware block.
+
+In OBS, VA-API is the primary hardware encoding path on Intel and AMD systems. The OBS VA-API encoder plugin submits raw frames — exported as DMA-BUF descriptors from the GPU compositor — directly to the hardware encoder, completing an end-to-end path that begins and ends on the GPU with no CPU-side pixel copy. On Intel hardware the VA-API driver is `iHD` (Intel Media Driver) or the legacy `i965` driver; on AMD it is the `radeonsi_drv_video.so` backend inside Mesa. NVIDIA hardware uses a separate proprietary NVENC API rather than VA-API, and AMD also exposes AMF on Linux as an alternative. The libva source repository is at [https://github.com/intel/libva](https://github.com/intel/libva).
+
 ---
 
 ## OBS Architecture Overview

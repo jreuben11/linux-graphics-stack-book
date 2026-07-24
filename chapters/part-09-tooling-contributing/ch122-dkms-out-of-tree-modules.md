@@ -18,6 +18,9 @@ GPU kernel modules sit at the most turbulent intersection of hardware and softwa
 ## Table of Contents
 
 1. [Introduction: The Recompilation Problem](#1-introduction-the-recompilation-problem)
+   - [1.1 What is a Kernel Module?](#11-what-is-a-kernel-module)
+   - [1.2 What is DKMS?](#12-what-is-dkms)
+   - [1.3 What is an Out-of-Tree Module?](#13-what-is-an-out-of-tree-module)
 2. [The Kernel Module ABI Problem](#2-the-kernel-module-abi-problem)
 3. [DKMS: Dynamic Kernel Module Support](#3-dkms-dynamic-kernel-module-support)
 4. [NVIDIA Proprietary Kernel Modules](#4-nvidia-proprietary-kernel-modules)
@@ -45,6 +48,30 @@ The landscape in 2026 spans several distinct strategies:
 - **Intel i915/Xe**: fully upstreamed; no DKMS; but requires separate firmware blob packages from `linux-firmware`.
 
 Understanding these strategies helps sysadmins choose the right packaging approach, and helps driver developers understand the tradeoffs before deciding whether to upstream their work.
+
+### 1.1 What is a Kernel Module?
+
+A Linux kernel module is a compiled object file (`.ko`) that the kernel's module loader can link into the running kernel image at runtime without requiring a system reboot. Modules provide a mechanism for adding driver support, filesystem implementations, or kernel extensions without building them permanently into the kernel binary. The kernel exposes a fixed set of symbols — functions and data structures that modules can reference — but this set is not a stable ABI: symbol signatures, struct layouts, and configuration-dependent exports change freely across kernel versions.
+
+GPU drivers are among the most complex kernel modules. They interact with several kernel subsystems simultaneously: the PCI bus layer for device enumeration, the DRM (Direct Rendering Manager) subsystem for display and rendering abstraction, the memory management system for VRAM-backed buffer objects, the interrupt controller for GPU interrupt routing, and power management infrastructure for runtime PM. A GPU kernel module must conform to the DRM subsystem's driver model, implementing function-pointer tables defined in `struct drm_driver` and `struct drm_gpu_scheduler`.
+
+Modules are installed under `/lib/modules/$(uname -r)/`, organized by subsystem. The `modprobe` utility handles loading, resolving inter-module dependencies declared in `modules.dep`. Modules compiled with `=y` in the kernel configuration are linked permanently into the `vmlinux` image and cannot be unloaded; loadable modules compiled with `=m` exist as separate `.ko` files that can be inserted and removed dynamically. This chapter focuses on the loadable case, where the module binary must match the running kernel precisely. [Source](https://docs.kernel.org/kbuild/modules.html)
+
+### 1.2 What is DKMS?
+
+DKMS (Dynamic Kernel Module Support) is a framework for managing kernel modules whose source code ships separately from the kernel tree. The central problem DKMS solves is the recompilation requirement: because kernel modules must be compiled against the specific kernel they will run on, any time a new kernel is installed the modules must be rebuilt. Without automation, this creates a window where a system boots a new kernel but has no valid GPU driver, or where a system administrator must manually track down the correct pre-built module package.
+
+DKMS addresses this by storing module source trees under `/usr/src/<module>-<version>/` and recording metadata about them in `/var/lib/dkms/`. When a package manager installs a new kernel, a DKMS hook triggers automatically, invoking the registered build commands for every DKMS-managed module. The compiled `.ko` files are cached per kernel version and installed into the appropriate `/lib/modules/` subdirectory.
+
+The build configuration for each module lives in a `dkms.conf` file — a shell script that declares the module name, version, build commands, and installation paths. DKMS integrates with distribution package managers through kernel package hooks (Debian's `kernel-install` hooks, RPM scriptlets, Pacman hooks), making the recompilation transparent to end users on kernel upgrades. GPU vendors that cannot or choose not to upstream their kernel components — most prominently NVIDIA for its proprietary driver — rely on DKMS as the primary distribution mechanism. [Source](https://github.com/dkms-project/dkms)
+
+### 1.3 What is an Out-of-Tree Module?
+
+An out-of-tree kernel module is a kernel module whose source code lives outside the official Linux kernel source tree. The term distinguishes such modules from in-tree drivers, which are compiled as part of the standard kernel build system under `drivers/` or `include/`. Out-of-tree modules are built against kernel headers installed on the target system — typically via the `/lib/modules/$(uname -r)/build` symlink — rather than being compiled alongside the kernel itself.
+
+The reasons a GPU driver might be out-of-tree are varied. The driver source may be proprietary and unavailable for upstream submission. The driver may be in active development and not yet ready for mainline inclusion. The hardware vendor may target a specific distribution kernel that lags behind mainline. Or the driver may support hardware not yet accepted by the upstream community.
+
+Out-of-tree status imposes concrete costs. The module cannot use `EXPORT_SYMBOL_GPL` symbols if it carries a non-GPL license declaration. It must track kernel API changes manually, which grows increasingly burdensome as the kernel evolves. It cannot benefit from automatic refactoring that in-tree drivers receive when kernel internals change. The Linux kernel community maintains a documented path for moving drivers in-tree: RFC posting to the relevant DRM mailing list, inclusion in the `drivers/staging/` tree, and eventual promotion to a mainline subdirectory once quality and review standards are met. This chapter covers both the operational reality of out-of-tree modules today and the path toward upstream inclusion. [Source](https://docs.kernel.org/process/submitting-patches.html)
 
 ---
 

@@ -3902,3 +3902,115 @@ This part covers the Linux multimedia stack beyond graphics and video: real-time
 - Topological mesh repair: non-manifold detection, GPU BFS orientation repair, boundary loop detection, Liepa hole filling, MeshFix/libigl/CGAL tools
 - Topology-aware rendering: marching cubes filtered by Betti number, topology-preserving LOD, persistence diagram Vulkan scatter-plot, TTK ParaView pipeline
 - Integrations: Ch208 (mesh repair using topology), Ch224 (shape analysis using topological descriptors), Ch210 (SDF/volumetric level sets and contour topology), GUDHI/TTK libraries
+
+### Chapter 226: GPU Linear Algebra and Sparse Solvers *(Part XXIX)*
+
+- Scope: systems and driver developers optimising GPU workload throughput; graphics application developers using physics simulation, geometry processing, or ML inference pipelines on Linux.
+- Linear algebra as a GPU algorithm domain: arithmetic intensity of GEMM vs SpMV; memory hierarchy impact; roofline positioning
+- Dense BLAS operations: Level 1/2/3 taxonomy; batched GEMM (strided, grouped); TRSM; SYMM/SYRK; register blocking and tiling strategies
+- Dense factorizations: LU with partial pivoting (panel + TRSM + GEMM update); QR (Householder, Tall-Skinny QR); Cholesky (left/right-looking); SVD (divide-and-conquer vs Jacobi); one-sided Jacobi for batched small SVD
+- Eigensolvers: power iteration, Lanczos/Arnoldi Krylov subspace, LOBPCG for symmetric problems; thick-restart, locking, deflation
+- Sparse matrix formats: CSR, CSC, COO, ELLPACK, HYB, BSR, BCSR; format selection guide by density and row-length variance
+- SpMV and SpGEMM: load-balancing strategies (scalar/vector/warp/merge-based); adaptive SpMV; SpGEMM symbolic+numeric phases; hash-map vs heap vs ESC methods
+- Iterative solvers: CG, BiCGSTAB, GMRES with restarts; Jacobi/ILU(0)/AMG preconditioners; GPU-resident iteration
+- Multigrid and AMG: geometric multigrid (restriction/prolongation as sparse matvec); AMG aggregation, Ruge-Stüben; Gauss-Seidel coloring smoother; AMGX and rocALUTION
+- Structured systems: FFT-based Toeplitz matvec; circulant preconditioners
+- Production libraries: rocBLAS, rocSOLVER, rocSPARSE, Intel oneMKL (SYCL), MAGMA, VkFFT, cuSolver/cuSPARSE (reference)
+- Mixed precision: FP64→FP32→FP16 iterative refinement; BF16; INT8 graph Laplacian; VK_KHR_cooperative_matrix GEMM blocks
+- Integrations: Ch210 (physics simulation), Ch221 (GPU performance), Ch224 (shape analysis eigensolver), Ch225 (topology sparse Laplacian), Ch227 (Monte Carlo sampling using LA), Ch229 (ML inference GEMM)
+
+### Chapter 227: GPU Random Number Generation and Monte Carlo Methods *(Part XXIX)*
+
+- Scope: graphics application developers implementing path tracers, stochastic GI, or GPU-based simulation; systems developers building random-number infrastructure for GPU workloads on Linux.
+- RNG on the GPU: SIMT parallelism and per-thread state; requirements (independence, long period, fast generation, reproducibility)
+- Pseudorandom number generators: LCG, XORSHIFT128+, PCG, Philox and Threefry (counter-based), MTGP32; BigCrush/PractRand quality
+- Counter-based RNGs: Philox 4×32 and 2×64; Threefry; ARS; implementation pattern: (seed, sequence, offset) → values in GLSL/HIP
+- Quasi-random low-discrepancy sequences: Halton; Sobol (Joe-Kuo tables); Owen scrambling; GPU parallel Sobol generation
+- Sampling distributions: Box-Muller, Ziggurat for Gaussian; inverse CDF; rejection sampling; Walker alias method on GPU
+- Multiple importance sampling: power heuristic MIS; balance heuristic; stratified sampling; blue noise; cosine-weighted hemisphere; GGX VNDF (Heitz 2018)
+- Reservoir sampling and ReSTIR: A-Res and A-ExpJ WRS; GPU-parallel WRS with prefix-sum; ReSTIR DI three-pass Vulkan pipeline
+- GPU MCMC: Metropolis-Hastings parallel chains; HMC leapfrog; parallel tempering; R-hat/ESS convergence on GPU
+- Monte Carlo integration: control variates, antithetic variates; env-map 2D CDF; NEE/BDPT estimators
+- Production libraries: rocRAND, hipRAND, oneMKL PRNG (SYCL), PBRT-v4 samplers
+- Integrations: Ch205 (stochastic GI), Ch206 (path tracing), Ch221 (RNG throughput profiling), Ch226 (LA for MCMC), Ch229 (dropout/augmentation sampling)
+
+### Chapter 228: GPU Graph Algorithms *(Part XXIX)*
+
+- Scope: graphics application developers implementing nav mesh path queries, scene dependency graphs, or GPU-accelerated analytics; systems developers building GPU-resident graph data structures.
+- Graphs on the GPU: frontier-based vs work-efficient models; CSR/COO/adjacency matrix layouts; irregular memory access
+- Parallel BFS: level-synchronous (top-down, bottom-up); direction-optimising (Beamer); atomic queue vs bitmask frontier; multi-source BFS
+- Single-source shortest path: Bellman-Ford parallel edge relaxation; delta-stepping bucket queue; GPU Dijkstra min-heap
+- Connected components: Shiloach-Vishkin hooking; ECL-CC (adaptive granularity); GPU union-find; SCC (Kosaraju two-BFS)
+- PageRank and centrality: SpMV power iteration; personalised PageRank; Brandes betweenness approximation
+- Minimum spanning tree: Borůvka parallel find-min-edge+hooking; Kruskal GPU (sort + union-find); Prim's GPU priority queue
+- Graph coloring and independent sets: JP parallel coloring; Luby's randomised MIS; applications for Gauss-Seidel smoother ordering
+- Triangle counting and listing: adjacency set intersection (binary search, merge); warp-per-edge; clustering coefficient
+- Community detection: Louvain GPU (parallel reassignment + coarsening); LPA; scene partitioning and LOD clustering
+- GPU GNN inference: message passing scatter-gather over CSR; GraphSAGE, GAT; DGL and PyG CUDA sparse ops
+- Production libraries: cuGraph (RAPIDS), Gunrock v2 operator model, SuiteSparse:GraphBLAS (LAGraph), RAPIDS on ROCm
+- Integrations: Ch209 (scene structure), Ch210 (physics island detection), Ch222 (CG graph structures), Ch224 (GNN for shape), Ch226 (graph Laplacian sparse LA), Ch229 (GNN inference)
+
+### Chapter 229: GPU Machine Learning Inference Algorithms *(Part XXIX)*
+
+- Scope: graphics application developers integrating neural SR, denoising, or style transfer into GPU pipelines; systems developers building ML inference runtimes on Linux with ROCm, CUDA, or Vulkan.
+- ML inference as a GPU domain: training vs inference; prefill vs decode arithmetic intensity; memory bandwidth bottleneck
+- Dense layer and GEMM: FC as batched GEMM; im2col Conv2D lowering; Winograd F(2×2,3×3) and F(4×4,3×3); depthwise separable
+- Transformer attention: QKV projection, FlashAttention-2 tiled online softmax, FlashAttention-3 (wgmma+TMA); GQA/MQA; KV-cache layout
+- Quantization: symmetric/asymmetric INT8; per-tensor/per-channel/per-group; GPTQ (Hessian rounding); AWQ (activation-aware); SmoothQuant; GGUF block layout
+- Speculative decoding: draft+verifier rejection sampling; token tree speculation; Medusa heads; EAGLE embedding-space drafts
+- CNN inference: BN fusion, activation fusion, pooling; TensorRT and ONNXRuntime graph optimisation
+- Graph optimisation and fusion: horizontal/vertical fusion; MLIR-IREE fusion; XLA/HLO on ROCm (hipXLA); TVM AutoTVM/MetaSchedule
+- Neural rendering inference: NeRF ray march + MLP; 3DGS SH eval; diffusion UNet attention; VAE encode/decode; DDIM/DPM-Solver++ schedulers
+- Inference runtimes on Linux: ONNX Runtime MIGraphX EP; TensorRT; OpenVINO; mlc-llm (TVM, ROCm, Vulkan); llama.cpp Vulkan; whisper.cpp
+- Vulkan compute: VK_KHR_cooperative_matrix for GEMM tiles; llama.cpp SPIR-V per-quantization shaders; Kompute; Dawn WebGPU WGSL attention
+- Memory management: mmap weight loading; activation liveness analysis; GPU memory pools; GGUF format; DMA-BUF for zero-copy neural SR
+- Integrations: Ch207 (TAA/DLSS/FSR), Ch212 (neural geometry), Ch220 (neural SR), Ch221 (profiling), Ch223 (video SR), Ch226 (GEMM substrate), Ch228 (GNN inference)
+
+### Chapter 230: GPU Signal Processing and Audio DSP *(Part XXIX)*
+
+- Scope: systems developers building GPU-accelerated audio or signal processing pipelines on Linux; graphics application developers integrating audio spatialization or spectral analysis; multimedia engineers extending GStreamer/PipeWire with GPU DSP.
+- Signal processing on GPU: 1D/2D/nD signals; temporal vs spectral domain; arithmetic intensity; PipeWire and JACK as Linux entry points
+- FFT algorithms: radix-2/4/mixed-radix; DIT vs DIF; 1D multi-batch (rocFFT plan API, VkFFT); 2D/3D; real-to-complex (conjugate symmetry packing)
+- Overlap-add and overlap-save: OLA vs OLS; GPU OLA for convolution reverb; partitioned convolution for long IRs
+- FIR filter design and GPU: windowed sinc (Hamming, Blackman, Kaiser); Parks-McClellan; polyphase SRC; direct-form II; multichannel warp-per-channel
+- IIR filters: biquad Direct Forms I/II; cascaded sections; parallel biquad look-ahead (prefix-product); equalizer/crossover applications
+- Discrete Wavelet Transform: lifting scheme (predict+update); Daubechies families; separable 2D DWT in shared memory; denoising applications
+- Filter banks: WOLA, MDCT, QMF, polyphase channeliser; GPU parallel channeliser; MPEG psychoacoustic subband output
+- Audio spatialization and HRTF: per-ear FIR convolution; binaural GPU rendering; OpenAL Soft path; HOA (B-format, SH encoder, rotation, decoder)
+- Spectral analysis: STFT batch; Mel filterbank (MFCC pipeline); CQT; onset detection (spectral flux); YIN/MPM pitch via FFT autocorrelation
+- Real-time audio GPU pipeline: PipeWire spa_node graph; JACK2 net backend; ping-pong VkBuffer; timeline semaphore for audio-render sync
+- Production libraries: rocFFT, VkFFT, FFTW3 (reference), cupyx.scipy.signal, GStreamer GPU elements
+- Integrations: Ch220 (2D FFT for image processing), Ch221 (GPU performance for DSP kernels), Ch223 (video audio track), Ch226 (LA for filter design), Ch227 (stochastic signal processing)
+
+### Chapter 231: GPU Compression Algorithms *(Part XXIX)*
+
+- Scope: graphics application developers managing GPU texture memory, mesh streaming, or video codec integration; systems developers optimising GPU data pipelines with on-the-fly compression.
+- Compression as a GPU domain: read bandwidth vs compute; fixed-rate vs variable-rate; lossy vs lossless taxonomy
+- BC/DXT block compression: BC1–BC7 format details; mode selection and endpoint/index optimization; quality vs speed
+- ASTC: variable block footprints (4×4 to 12×12); LDR/HDR; partition count; astc-encoder GPU acceleration (OpenCL backend)
+- ETC and PVRTC: ETC1/ETC2/EAC modes; PVRTC bilinear signal architecture; embedded Linux relevance (Mali, Adreno, VideoCore)
+- GPU texture compression encoders: Compressonator (AMD OpenCL/Vulkan), bc7enc_rdo, rgbcx, ISPCTextureCompressor; real-time BC7 encode pipeline
+- Geometry compression: Draco edgebreaker+quantization+entropy; meshoptimizer encode/decode API; OpenCTM
+- Lossless GPU compression: nvcomp/hipcomp (LZ4, Snappy, GDeflate, Bitcomp); parallel LZ4 block decompress architecture
+- Entropy coding: Huffman parallel frequency+encode; rANS parallel multi-stream; tANS; CABAC tile parallelism
+- Image/video codec entropy stages: GPU JPEG encode (nvjpeg, rocJPEG); PNG parallel filter+deflate; AVIF/WebP
+- Framebuffer and display compression: AFBC (ARM), AMD DCC, Intel FBC; DRM format modifier flags (DRM_FORMAT_MOD_ARM_AFBC, DRM_FORMAT_MOD_AMD_DCC)
+- Delta and prediction compression: GPU vertex delta encode; dirty-tile detection; DPCM depth prediction; remote desktop GPU compression
+- Integrations: Ch139 (DRM hardware plane format modifiers), Ch162 (framebuffer compression in kernel), Ch208 (mesh compression), Ch220 (image compression), Ch223 (video entropy), Ch226 (entropy model computation)
+
+### Chapter 232: GPU Generative AI and LLM Inference on Linux *(Part XXIX)*
+
+- Scope: systems developers deploying LLM or diffusion model inference on Linux with ROCm, Vulkan, or CUDA; graphics application developers integrating generative AI into rendering pipelines; browser engineers understanding WebGPU ML inference paths.
+- Generative AI on Linux: LLM autoregressive decode + diffusion sampling; ROCm vs CUDA vs Vulkan; VRAM requirements by model size and precision
+- LLM compute graph: LayerNorm, QKV GEMM, attention, FFN; GQA/MoE/RoPE variants; prefill vs decode arithmetic intensity
+- KV-cache and memory: PagedAttention 16-token blocks, block table, copy-on-write; prefix caching via radix tree; KV-cache sizing
+- Quantization: W4A16, GPTQ, AWQ, SmoothQuant; GGUF block layout (Q4_0 through IQ4_NL); mixed-precision and KV-cache INT8/FP8
+- Attention kernels: FlashAttention-2 online softmax; FA3 (wgmma+TMA, Hopper); ROCm composable_kernel; PagedAttention gather; ring attention
+- Speculative decoding: draft+target rejection sampling; token trees; Medusa heads; EAGLE embedding-space drafts
+- Diffusion pipeline: VAE+UNet+scheduler; DDPM/DDIM/DPM-Solver++; SDXL two-stage; ControlNet conditioning
+- Diffusion optimization: INT8 PTQ (torch.ao); attention slicing; CPU offload; xformers; torch.compile ROCm
+- ROCm stack: rocblas_gemm_ex, MIGraphX C++ API, vLLM ROCm/AITER, llama.cpp HIP dispatch, gfx targets
+- Vulkan compute: llama.cpp SPIR-V shaders; VK_KHR_cooperative_matrix; Kompute framework; Dawn WebGPU WGSL attention
+- Linux deployment: Ollama REST API; LocalAI Podman passthrough; ComfyUI ROCm; systemd service; Podman ROCm device passthrough
+- Profiling: TTFT vs throughput; roofline for decode; rocprof trace; chunked prefill; thermal/power via rocm-smi
+- Integrations: Ch25 (GPU compute API), Ch141 (cooperative matrices), Ch152 (Rust GPU), Ch221 (profiling), Ch226 (GEMM substrate), Ch227 (diffusion sampling), Ch229 (inference algorithm layer)

@@ -43,6 +43,30 @@ GPUs sit at an unusually exposed position in the system security model. Unlike a
 
 The remainder of this chapter addresses each category in depth.
 
+### 1.1 What is GPU Process Isolation?
+
+GPU process isolation is the mechanism by which the kernel and GPU hardware prevent one userspace process from accessing the GPU memory of another. Just as the CPU's Memory Management Unit (MMU) gives each process its own virtual address space backed by per-process page tables, modern GPUs include a GPU Memory Management Unit (GMMU) that enforces per-process GPU virtual address spaces. Each process receives its own set of GPU page tables, and the GPU translates virtual addresses through those tables before accessing physical VRAM. A failure to correctly set up or tear down these page tables — or to scrub GPU-local memory between process tenants — creates a path for data leakage across security boundaries.
+
+In the Linux DRM subsystem, this isolation is managed through the DRM_GPUVM framework. Each `drm_gem_object` carries a list of GPU virtual address mappings (`gpuva` entries) that must be invalidated when the owning process exits. The `drm_file` release path is responsible for tearing down the GPU MMU context, unmapping all page table entries, and returning VRAM pages to the allocator in a state that cannot expose prior-tenant data to subsequent allocations. This chapter examines how different GPU vendors implement and enforce this boundary, including AMD's cleaner shader mechanism for clearing registers and Local Data Store between jobs.
+
+### 1.2 What is an IOMMU?
+
+An IOMMU (Input-Output Memory Management Unit) is a hardware unit that interposes on DMA (Direct Memory Access) transactions from peripheral devices — including GPUs — and enforces a device-visible page table called an IOMMU domain. Without an IOMMU, a GPU performing DMA has unrestricted access to all host physical memory. A single driver vulnerability that permits an attacker to redirect GPU DMA therefore bypasses the CPU MMU entirely, compromising the whole host.
+
+On x86 systems, Intel provides this capability through VT-d (Virtualisation Technology for Directed I/O) and AMD through AMD-Vi. ARM systems rely on the ARM SMMU (System Memory Management Unit). The Linux kernel exposes a unified IOMMU API in `include/linux/iommu.h`, allowing drivers to create and attach IOMMU domains that restrict the physical addresses a device can reach. PCIe devices that cannot be isolated from each other — typically because they share a bridge lacking ACS (Access Control Services) capability — are grouped into IOMMU groups, and the kernel refuses to assign them individually to virtual machines via VFIO without complete group isolation. This chapter covers both the kernel IOMMU API and the VFIO framework that uses IOMMU isolation to enable secure GPU passthrough to virtual machines.
+
+### 1.3 What is HDCP?
+
+HDCP (High-bandwidth Digital Content Protection) is a cryptographic protocol that authenticates the display path from a GPU transmitter to a connected display sink — a monitor, television panel, or AV receiver — before permitting transmission of protected premium video content. Content licensing agreements require HDCP for 4K Ultra HD playback and for streams classified as "Type 1" by the DCP LLC, which may only traverse HDCP 2.2-authenticated links. HDCP 1.4 uses a 56-bit symmetric key exchange over the DDC (I²C) channel; HDCP 2.2 replaces this with a three-phase exchange — AKE (Authentication and Key Exchange), LC (Locality Check), and SKE (Session Key Exchange) — using RSA public-key certificates signed by the DCP LLC certificate authority and incorporating the shared LC128 global constant in key derivation.
+
+In Linux, HDCP authentication is implemented in the DRM subsystem through driver-specific code in the Intel i915, Intel Xe, and AMD display drivers, with shared helper functions in `drivers/gpu/drm/display/drm_hdcp_helper.c`. The DRM connector-level API exposes content protection state to userspace via the `DRM_MODE_CONTENT_PROTECTION_DESIRED` and `DRM_MODE_CONTENT_PROTECTION_ENABLED` connector properties. On Intel platforms from DG2 (Alchemist) onward, HDCP 2.2 authentication messages are routed through the GSC (Graphics Security Controller) firmware, moving cryptographic operations out of the driver proper.
+
+### 1.4 What is Confidential Computing on GPUs?
+
+Confidential computing refers to hardware-enforced execution environments in which data and code remain encrypted and isolated even from the host operating system and cloud infrastructure operator. On CPUs, this capability is delivered by technologies such as AMD SEV-SNP (Secure Encrypted Virtualization with Secure Nested Paging) and Intel TDX. As AI inference and training workloads move to shared cloud platforms, the same threat model extends to GPU memory: a cloud customer may not wish to expose model weights, inference inputs, or activation data stored in GPU HBM or GDDR to the host kernel or hypervisor.
+
+GPU Trusted Execution Environments (GPU TEEs) address this by combining hardware-enforced memory encryption within the GPU, a protected VRAM region inaccessible from the host, and a remote attestation path that allows a verifier to confirm the GPU is genuine and operating in the correct security mode before transmitting sensitive data. The NVIDIA H100 (Hopper) is the first GPU to deliver this via its Confidential Computing (CC) mode, using AES-GCM-encrypted bounce buffers for host-GPU data transfer, a Compute Protected Region (CPR) carved from HBM2e, and SPDM-based attestation against NVIDIA's certificate chain. AMD is extending SEV-SNP toward GPU workloads through the HSP (Host Security Processor) and related platform interfaces. This chapter covers both vendor implementations and the open-source attestation tooling available on Linux.
+
 ---
 
 ## 2. GPU Process Isolation

@@ -8,6 +8,10 @@
 
 - [Overview](#overview)
 - [1. PipeWire Architecture: The Graph Model and SPA](#1-pipewire-architecture-the-graph-model-and-spa)
+  - [1.7 What is PipeWire?](#17-what-is-pipewire)
+  - [1.8 What is SPA (Simple Plugin API)?](#18-what-is-spa-simple-plugin-api)
+  - [1.9 What is WirePlumber?](#19-what-is-wireplumber)
+  - [1.10 What is DMA-BUF?](#110-what-is-dma-buf)
 - [2. Session Management: WirePlumber and Policy](#2-session-management-wireplumber-and-policy)
 - [3. Video Capture Pipeline: V4L2 and libcamera Sources](#3-video-capture-pipeline-v4l2-and-libcamera-sources)
 - [4. Screen Capture and Portal Integration](#4-screen-capture-and-portal-integration)
@@ -397,6 +401,30 @@ If the `cls` column shows `TS` (time-sharing) instead of `FF`, the data thread d
 Format negotiation between two nodes proceeds in two phases. During the *enumeration* phase, each port calls `spa_node_port_enum_params(SPA_PARAM_EnumFormat)` to list all format capabilities as an array of SPA pod objects — each encoding constraints on media type, format, size, and framerate using `SPA_CHOICE_Enum` or `SPA_CHOICE_Range` pods. The session manager or the adapter node intersects the capability sets to find a mutually acceptable format.
 
 During the *fixation* phase, the negotiated format is committed with `spa_node_port_set_param(SPA_PARAM_Format)`, followed by buffer negotiation (`SPA_PARAM_Buffers`) that determines memory type (`SPA_DATA_MemFd`, `SPA_DATA_DmaBuf`), buffer count, stride, and alignment. This two-phase model is the foundation of the zero-copy DMA-BUF path explored in section 7.
+
+### 1.7 What is PipeWire?
+
+PipeWire is the unified session-layer multimedia daemon for Linux desktops, designed to handle audio, video, and MIDI streams under a single graph-based engine. The core problem it solves is the historical fragmentation of the Linux multimedia stack: audio routing, professional low-latency audio, direct ALSA access, video capture, and ad-hoc GStreamer pipelines all required separate daemons and APIs with no coherent security model or buffer-sharing story. PipeWire replaces this with a single daemon (`/usr/bin/pipewire`) that owns a UNIX domain socket at `$XDG_RUNTIME_DIR/pipewire-0` and exposes a unified object graph to all clients.
+
+In the Linux graphics stack, PipeWire is the conduit through which compositor output (for screen sharing), camera sensor frames (for video conferencing), and GPU-rendered buffers (for recording and remote desktop) pass between producers and consumers. It operates entirely in userspace, communicating with kernel subsystems such as V4L2 and ALSA through SPA plugin libraries. Security — deciding which applications may access which streams — is delegated to a companion session manager (WirePlumber) and to the XDG Desktop Portal permission store for sandboxed applications. Legacy protocol compatibility is provided by `pipewire-pulse` (a PulseAudio wire-protocol server), the `pw-jack` `LD_LIBRARY_PATH` shim, and the ALSA PCM plugin. The PipeWire project source lives at `https://gitlab.freedesktop.org/pipewire/pipewire` and the stable public ABI is `libpipewire-0.3.so`. [Source](https://docs.pipewire.org/page_overview.html)
+
+### 1.8 What is SPA (Simple Plugin API)?
+
+SPA (Simple Plugin API) is the low-level C plugin ABI that sits beneath `libpipewire` and provides the extension points for every device backend, format converter, buffer allocator, and codec that PipeWire uses. It was designed around three constraints: zero heap allocation inside plugin code (callers supply pre-sized memory for every object), a purely asynchronous result model (no blocking calls allowed), and stable binary compatibility across PipeWire versions. Every functional unit in the PipeWire stack — `spa-v4l2` for video capture, `spa-alsa` for audio, `spa-libcamera` for ISP-managed cameras, and `spa-videoconvert` for format conversion — is an SPA plugin.
+
+An SPA plugin is a shared library installed under `/usr/lib/spa-0.2/` that exports a single public entry point, `spa_handle_factory_enum`, returning an array of `spa_handle_factory` structs. Each factory can instantiate one or more interfaces; the central one for data processing is `spa_node`, whose `process` method is invoked once per graph cycle. Parameters, format capabilities, and buffer requirements are exchanged as SPA pods (`spa_pod`), a compact self-describing binary value format: a 32-bit size followed by a 32-bit type tag, then the payload. Pods compose into objects — for example, an `SPA_TYPE_OBJECT_Format` pod containing `SPA_FORMAT_VIDEO_format`, `SPA_FORMAT_VIDEO_size`, and `SPA_FORMAT_VIDEO_modifier` property pods. The combination of the `spa_node` ABI and pod serialization gives PipeWire a stable, composable extension mechanism that works across language bindings including C, Rust (`pipewire-rs`), and GObject (`libwireplumber`). [Source](https://docs.pipewire.org/page_spa_plugins.html)
+
+### 1.9 What is WirePlumber?
+
+WirePlumber is the session manager that provides all policy decisions for the PipeWire graph. PipeWire itself is deliberately policy-free: it creates and manipulates graph objects but never decides which microphone to route to which application, which camera a sandboxed Flatpak may access, or which format to negotiate between a screen-capture source and an encoder. WirePlumber takes on all of these responsibilities as a privileged PipeWire client that monitors the object registry and acts on it.
+
+WirePlumber is a GObject-based daemon embedding a Lua 5.4/5.5 scripting engine via the `wplua` library. All policy logic is implemented in Lua scripts executed at runtime, making the policy layer fully configurable without recompiling. The key C abstractions are `WpObjectManager` (watching the `pw_registry` for objects matching a `WpObjectInterest` type and property filter) and an event-dispatcher model that routes graph events — new stream, device plug, link state change — through prioritised hook chains. WirePlumber also drives hardware discovery: it loads SPA monitor plugins (`api.v4l2.enum.udev`, `api.libcamera.enum.devices`, `api.alsa.enum.udev`) to instantiate `pw_node` objects for physical devices as they appear via udev. Default sink and source assignments are persisted in a `pw_metadata` object keyed by names such as `default.audio.sink` and `default.video.source`. The project source is at `https://gitlab.freedesktop.org/pipewire/wireplumber`. [Source](https://pipewire.pages.freedesktop.org/wireplumber/)
+
+### 1.10 What is DMA-BUF?
+
+DMA-BUF is a Linux kernel framework, introduced in kernel 3.3, for sharing memory buffers between different kernel subsystems and userspace processes without copying data. The core abstraction is a file descriptor — a DMA-BUF fd — that represents a contiguous or scatter-gather memory region residing in GPU VRAM, IOMMU-mapped DMA memory, or ordinary RAM. Any driver or userspace process that holds the fd can map or import the buffer into its own device context, provided it holds the fd and the kernel grants the import.
+
+In the PipeWire context, DMA-BUF is the mechanism that makes zero-copy buffer paths possible across the entire stack. A V4L2 camera driver exports its capture buffers as DMA-BUF fds via `VIDIOC_EXPBUF`; PipeWire's `spa-v4l2` plugin passes these fds through the graph as `SPA_DATA_DmaBuf` buffer entries, which a consumer such as a Vulkan encoder can import via `VkImportMemoryFdInfoKHR` or `eglCreateImageKHR(EGL_LINUX_DMA_BUF_EXT)`. The `modifier` field of `spa_video_info_raw` carries a DRM format modifier — a 64-bit value such as `DRM_FORMAT_MOD_LINEAR` or `I915_FORMAT_MOD_Y_TILED_CCS` — that encodes the GPU-specific memory layout agreed between producer and consumer during SPA format negotiation. When DMA-BUF negotiation fails (for example, because producer and consumer use different GPU devices), PipeWire falls back to `SPA_DATA_MemFd` shared memory with a CPU copy. The kernel DMA-BUF framework documentation is at `https://www.kernel.org/doc/html/latest/driver-api/dma-buf.html`.
 
 ---
 

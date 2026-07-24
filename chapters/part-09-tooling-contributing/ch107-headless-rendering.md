@@ -17,6 +17,8 @@ Every section of the standard EGL/Wayland/X11 path assumes a connected display a
 ## Table of Contents
 
 1. [Introduction — Defining Headless Rendering](#1-introduction--defining-headless-rendering)
+   - [1.1 What is EGL?](#11-what-is-egl)
+   - [1.2 What is GBM?](#12-what-is-gbm)
 2. [Software Rendering: llvmpipe and lavapipe](#2-software-rendering-llvmpipe-and-lavapipe)
 3. [EGL Surfaceless Platform](#3-egl-surfaceless-platform)
 4. [GBM-Based Offscreen Rendering](#4-gbm-based-offscreen-rendering)
@@ -63,6 +65,22 @@ udevadm info --query=property --name=/dev/dri/renderD128 | grep -E "ID_VENDOR|ID
 When multiple GPUs are present — common in CI runners with both an integrated Intel GPU and a discrete AMD or NVIDIA GPU — the choice of render node matters for performance and feature availability. Tools such as `vulkaninfo` and `eglinfo` enumerate all available devices; applications can use `drmGetDevices2()` to iterate them programmatically.
 
 Each section below builds on this render-node foundation. Sections 3–4 open the render node explicitly; software renderers (Section 2) and virtual compositors (Section 6) may open it internally or bypass it entirely when running in pure CPU mode.
+
+### 1.1 What is EGL?
+
+EGL is the Khronos Group's window system integration layer that sits between a platform-specific display system — X11, Wayland, a GBM device, or nothing at all — and a client rendering API such as OpenGL ES, OpenGL, or Vulkan. It provides three core services: display connection (`eglGetDisplay` / `eglGetPlatformDisplay`), rendering surface allocation (`eglCreateWindowSurface`, `eglCreatePbufferSurface`), and context management (`eglCreateContext`, `eglMakeCurrent`). On Linux, EGL is implemented by Mesa (`src/egl/`) and dispatches to hardware drivers through DRI3 on X11 or directly to a DRM render node via platform extensions such as `EGL_EXT_platform_device` and `EGL_MESA_platform_surfaceless`.
+
+In the headless context this chapter covers, EGL's role shifts from bridging an application to a running compositor to bridging it directly to a render node. The `EGL_MESA_platform_surfaceless` extension (Section 3) allows an `EGLDisplay` to be opened against `/dev/dri/renderD*` with no `DISPLAY` or `WAYLAND_DISPLAY` environment variable set. Once the display is obtained and a context is made current, all rendering targets explicitly created framebuffer objects (FBOs) rather than a window surface, and pixels are retrieved via `glReadPixels` or exported as a DMA-BUF for further processing. EGL 1.5, released in 2014, absorbed several earlier extension mechanisms; the `EGL_EXT_platform_base` extension provides backward compatibility with EGL 1.4 implementations.
+
+[Sources: [EGL 1.5 specification, Khronos Group](https://registry.khronos.org/EGL/); [Mesa EGL source `src/egl/`](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/egl)]
+
+### 1.2 What is GBM?
+
+GBM (Generic Buffer Management) is a Mesa library that allocates GPU-backed scanout buffers tied to a DRM device without involving a window system or compositor. It lives at `src/gbm/` in the Mesa tree and exposes a small C API built around three opaque types: `gbm_device` (wraps an open DRM file descriptor), `gbm_bo` (a single allocated buffer object), and `gbm_surface` (a swapchain of buffer objects that EGL can present). An application creates a `gbm_device` from a `/dev/dri/renderD*` file descriptor, requests a `gbm_bo` with a specific pixel format (for example `GBM_FORMAT_ARGB8888` defined in `drm_fourcc.h`) and usage flags (`GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR`), and then imports that buffer into EGL as an `EGLImage` using the `EGL_LINUX_DMA_BUF_EXT` extension for GPU rendering.
+
+Because GBM buffer objects carry DMA-BUF file descriptors, they can be shared across process boundaries or handed directly to a V4L2 or VAAPI encode pipeline without a CPU copy. In the headless scenario, GBM fills the gap that EGL surfaceless deliberately leaves open: EGL surfaceless provides a context with no presentable surface, while GBM provides the concrete off-screen buffer to render into. The two are commonly combined — open a render node, create a `gbm_device`, allocate a `gbm_bo`, attach it to an FBO via an EGL image, render, then export the DMA-BUF for readback or encoding. Section 4 covers this pipeline in full detail.
+
+[Sources: [Mesa GBM source `src/gbm/`](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/gbm); [libdrm `drm_fourcc.h`](https://gitlab.freedesktop.org/mesa/drm/-/blob/main/include/drm/drm_fourcc.h)]
 
 ---
 

@@ -67,6 +67,34 @@ embedded boards such as Jetson Nano or Raspberry Pi 4; incremental smoothers typ
 ≥512 MB RAM and benefit significantly from NEON/AVX SIMD in Eigen or from GPU-resident
 sparse solvers (cuSolver, ROCm hipSolver).
 
+### 1.1 What is SLAM?
+
+SLAM (Simultaneous Localization and Mapping) is the problem of building a consistent map of an unknown environment while simultaneously tracking position within that map — a circular dependency that makes it one of the central challenges in mobile robotics. Without a map, accurate localization is impossible; without accurate localization, building a consistent map is impossible. Classical solutions break this circularity through probabilistic state estimation: the robot maintains a probability distribution over all possible poses and map configurations, then refines it incrementally as new sensor data arrives.
+
+In Linux robotics pipelines, SLAM typically consumes data from one or more range sensors (LiDAR, stereo cameras, RGB-D) combined with an inertial measurement unit. The output is a pose estimate in a global or local reference frame, plus a map representation — occupancy grid, point cloud, signed-distance field, or factor graph — that downstream planners and task executors consume via ROS 2 topics or shared memory.
+
+This chapter treats SLAM at the algorithmic level: the probabilistic formulations, optimisation structures, and open-source implementations available on Linux. Hardware-level sensor drivers (LiDAR kernel drivers, V4L2, the IIO IMU subsystem) are covered in earlier parts; GPU acceleration of SLAM back-ends appears in Chapter 114.
+
+### 1.2 What is a Factor Graph?
+
+A factor graph is a bipartite graphical model used to represent the joint probability distribution over all unknowns in the SLAM problem. One class of nodes represents variables — robot poses at each timestep, landmark positions in the map, and IMU bias parameters. The other class represents factors — probabilistic constraints derived from sensor measurements, each linking a small subset of variable nodes. The joint distribution factorises as a product of these local factors, which is why the structure is called a factor graph.
+
+The key advantage over full-covariance representations such as EKF-SLAM is sparsity: most factors connect only two or three variable nodes, so the corresponding information matrix has very few non-zero entries. Sparse direct solvers (Cholesky, QR) can therefore solve systems with thousands of poses efficiently. Factor graphs also support incremental updates — adding a new factor and solving only the affected portion of the graph — which is the foundation of iSAM2 (§5).
+
+On Linux, the GTSAM library (available as `libgtsam-dev` on Ubuntu 22.04 and 24.04) provides the canonical C++ factor-graph implementation. GTSAM is used internally by LIO-SAM and is compatible with ROS 2 through standard CMake integration. [Source: github.com/borglab/gtsam](https://github.com/borglab/gtsam)
+
+### 1.3 What is LiDAR?
+
+LiDAR (Light Detection and Ranging) is an active range sensor that measures distances by timing the round-trip of emitted laser pulses. Modern spinning LiDAR units (Velodyne VLP-16, Ouster OS1, Livox Avia) emit hundreds of thousands to millions of points per second, each tagged with range, azimuth, elevation, and return intensity, forming a structured 3D point cloud. Solid-state LiDAR variants use MEMS mirrors or optical phased arrays to eliminate moving parts, reducing cost and size at the expense of a narrower field of view.
+
+On Linux, LiDAR devices connect primarily over Ethernet (UDP broadcast) or USB, exposing raw packet streams. ROS 2 driver packages such as `velodyne_driver` and `ouster-ros` parse these packets into `sensor_msgs/PointCloud2` messages on the `/points` topic. LiDAR data suits SLAM particularly well because range measurements are metric and largely illumination-independent, unlike camera images. The point cloud density and the structure of LiDAR returns (single vs. multiple returns per pulse) affect which scan-matching algorithm — NDT, ICP, or LOAM-style feature extraction — is most appropriate, and those choices propagate directly into the factor-graph formulation used in §§7–9.
+
+### 1.4 What is an IMU?
+
+An IMU (Inertial Measurement Unit) is a sensor package that measures linear acceleration and angular velocity at high rates — typically 100 Hz to 1 kHz — using MEMS accelerometers and gyroscopes. Some units also integrate a magnetometer for heading reference. In SLAM systems, the IMU provides motion predictions between slower sensor updates (LiDAR at 10–20 Hz, cameras at 30–60 Hz), dramatically improving pose estimation during fast motion, aggressive rotations, or temporary sensor occlusion.
+
+On Linux, IMU devices appear in the IIO (Industrial I/O) subsystem when connected via I2C or SPI, or as USB HID devices. Common units used in robotics — VectorNav VN-100, Xsens MTi, Phidgets Spatial — provide calibrated data over USB serial or Ethernet. The ROS 2 package `imu_tools` provides complementary filters and calibration utilities operating on `sensor_msgs/Imu` messages. A critical preprocessing step is IMU pre-integration (§6): instead of adding a variable node to the factor graph for every IMU sample, measurements between two keyframe timestamps are combined into a single relative-motion constraint. This keeps the graph size proportional to the number of keyframes rather than the number of IMU samples, which is essential for real-time operation on resource-constrained Linux hardware.
+
 ---
 
 ## 2. Bayesian Filtering: The Online Backbone
