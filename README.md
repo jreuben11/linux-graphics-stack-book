@@ -432,10 +432,20 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 
 ### Part XXIX — Graphics Algorithms
 
-*A paired reference catalog for the algorithms that run on top of the Linux graphics stack: 108 named shader techniques spanning rendering architecture, PBR lighting, shadows, texturing, post-processing, global illumination, ray tracing, GPU simulation, and neural rendering (Ch 204); and 107 GPU geometry algorithms spanning surface representation, mesh processing, spatial data structures, differential geometry, animation, physics, SDF and volumetric rendering, terrain, ray tracing acceleration structures, point cloud processing, and neural geometry (Ch 208).*
+*Nine reference catalogs covering the algorithms that run on top of the Linux graphics stack: 108 named shader techniques (Ch 204–207) and 107 GPU geometry algorithms (Ch 208–212), each entry structured as a decision tool — what it computes, when to use it, named variants, costs, and a primary reference.*
 
-- [Ch 204: Shader Algorithm Catalog — Recipes, References, and Use Cases](chapters/part-29-graphics-algorithms/ch204-shader-algorithm-catalog.md)
-- [Ch 208: GPU Geometry Algorithms — Subdivision, Implicit Surfaces, Skinning, and IK](chapters/part-29-graphics-algorithms/ch208-gpu-geometry-algorithms.md)
+**Shader Algorithm Catalog (Ch 204–207)**
+- [Ch 204: Shader Algorithm Catalog — Rendering Pipeline, Lighting, and Shadows](chapters/part-29-graphics-algorithms/ch204-shader-algorithm-catalog.md)
+- [Ch 205: Shader Algorithm Catalog — Global Illumination and Materials](chapters/part-29-graphics-algorithms/ch205-shader-gi-and-materials.md)
+- [Ch 206: Shader Algorithm Catalog — Ray Tracing and Procedural Content](chapters/part-29-graphics-algorithms/ch206-shader-raytracing-and-procedural.md)
+- [Ch 207: Shader Algorithm Catalog — Visual Effects, Post-Processing, and GPU Compute](chapters/part-29-graphics-algorithms/ch207-shader-vfx-postprocess-compute.md)
+
+**GPU Geometry Algorithms (Ch 208–212)**
+- [Ch 208: GPU Geometry Algorithms — Surface Representation and Mesh Processing](chapters/part-29-graphics-algorithms/ch208-gpu-geometry-algorithms.md)
+- [Ch 209: GPU Geometry Algorithms — Spatial Structures, Differential Geometry, and Animation](chapters/part-29-graphics-algorithms/ch209-gpu-spatial-differential-animation.md)
+- [Ch 210: GPU Geometry Algorithms — Physics Simulation and Volumetric Methods](chapters/part-29-graphics-algorithms/ch210-gpu-physics-and-volumetric.md)
+- [Ch 211: GPU Geometry Algorithms — Terrain, Ray Tracing Geometry, and Point Clouds](chapters/part-29-graphics-algorithms/ch211-gpu-terrain-raytracing-pointcloud.md)
+- [Ch 212: GPU Geometry Algorithms — Neural Geometry, Specialized Techniques, and GPU Primitives](chapters/part-29-graphics-algorithms/ch212-gpu-neural-specialized-primitives.md)
 
 ---
 
@@ -463,7 +473,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Appendix T: Terminal Graphics Protocol Reference](chapters/appendices/appendix-t-terminal-graphics-protocol-reference.md)
 - [Appendix U: WebGPU API Quick Reference](chapters/appendices/appendix-u-webgpu-api-reference.md)
 
-**Total: 200 chapters + 21 appendices**
+**Total: 207 chapters + 21 appendices**
 
 ## Repository Structure
 
@@ -723,7 +733,14 @@ chapters/
   part-29-graphics-algorithms/
     part-intro.md
     ch204-shader-algorithm-catalog.md
+    ch205-shader-gi-and-materials.md
+    ch206-shader-raytracing-and-procedural.md
+    ch207-shader-vfx-postprocess-compute.md
     ch208-gpu-geometry-algorithms.md
+    ch209-gpu-spatial-differential-animation.md
+    ch210-gpu-physics-and-volumetric.md
+    ch211-gpu-terrain-raytracing-pointcloud.md
+    ch212-gpu-neural-specialized-primitives.md
   appendices/
     appendix-a-glossary.md
     appendix-b-environment-variables.md
