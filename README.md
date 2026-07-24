@@ -464,6 +464,16 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 231: GPU Compression Algorithms](chapters/part-29-graphics-algorithms/ch231-gpu-compression-algorithms.md)
 - [Ch 232: GPU Generative AI and LLM Inference on Linux](chapters/part-29-graphics-algorithms/ch232-gpu-generative-ai-llm-inference.md)
 
+**3D Rendering Algorithm Chapters (Ch 233–235)**
+- [Ch 233: GPU Denoising Algorithms](chapters/part-29-graphics-algorithms/ch233-gpu-denoising-algorithms.md)
+- [Ch 234: GPU Spectral Rendering and Colorimetric Algorithms](chapters/part-29-graphics-algorithms/ch234-gpu-spectral-rendering-colorimetric.md)
+- [Ch 235: GPU Vector Graphics and 2D Path Rendering](chapters/part-29-graphics-algorithms/ch235-gpu-vector-graphics-2d-rendering.md)
+
+**Scene Analysis Algorithm Chapters (Ch 236–238)**
+- [Ch 236: GPU 3D Scene Understanding and Semantic Segmentation](chapters/part-29-graphics-algorithms/ch236-gpu-scene-understanding-segmentation.md)
+- [Ch 237: GPU Depth Estimation and Dense Reconstruction](chapters/part-29-graphics-algorithms/ch237-gpu-depth-estimation-reconstruction.md)
+- [Ch 238: GPU Object Detection and 6DoF Pose Estimation](chapters/part-29-graphics-algorithms/ch238-gpu-object-detection-pose-estimation.md)
+
 ---
 
 ### Appendices
@@ -490,7 +500,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Appendix T: Terminal Graphics Protocol Reference](chapters/appendices/appendix-t-terminal-graphics-protocol-reference.md)
 - [Appendix U: WebGPU API Quick Reference](chapters/appendices/appendix-u-webgpu-api-reference.md)
 
-**Total: 220 chapters + 21 appendices**
+**Total: 226 chapters + 21 appendices**
 
 ## Repository Structure
 
@@ -771,6 +781,12 @@ chapters/
     ch230-gpu-signal-processing-audio-dsp.md
     ch231-gpu-compression-algorithms.md
     ch232-gpu-generative-ai-llm-inference.md
+    ch233-gpu-denoising-algorithms.md
+    ch234-gpu-spectral-rendering-colorimetric.md
+    ch235-gpu-vector-graphics-2d-rendering.md
+    ch236-gpu-scene-understanding-segmentation.md
+    ch237-gpu-depth-estimation-reconstruction.md
+    ch238-gpu-object-detection-pose-estimation.md
   appendices/
     appendix-a-glossary.md
     appendix-b-environment-variables.md
