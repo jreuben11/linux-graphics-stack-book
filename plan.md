@@ -4014,3 +4014,84 @@ This part covers the Linux multimedia stack beyond graphics and video: real-time
 - Linux deployment: Ollama REST API; LocalAI Podman passthrough; ComfyUI ROCm; systemd service; Podman ROCm device passthrough
 - Profiling: TTFT vs throughput; roofline for decode; rocprof trace; chunked prefill; thermal/power via rocm-smi
 - Integrations: Ch25 (GPU compute API), Ch141 (cooperative matrices), Ch152 (Rust GPU), Ch221 (profiling), Ch226 (GEMM substrate), Ch227 (diffusion sampling), Ch229 (inference algorithm layer)
+
+### Chapter 233: GPU Denoising Algorithms *(Part XXIX)*
+
+- Scope: graphics application developers implementing path-traced or ray-traced rendering pipelines; systems developers integrating denoising into Vulkan compute workloads on Linux.
+- Denoising as a rendering stage: noisy estimator variance, sample-count vs filter tradeoff, input buffer requirements (albedo, normals, motion vectors, variance)
+- Spatio-temporal variance-guided filtering (SVGF): temporal accumulation with history validation, variance estimation, À-Trous wavelet bilateral filter passes, edge-stopping functions
+- Adaptive SVGF (ASVGF): per-pixel sample count, adaptive spatial filter width, gradient estimation
+- À-Trous wavelet filter standalone: 5-tap stencil with 2^level offsets, wavelet coefficient thresholding, GPU dispatch pattern
+- NRD (NVIDIA Real-time Denoisers): ReBLUR (blur radius from hit-distance), ReLAX (Atrous Least Squares — history clamping via YCoCg), signal normalisation, API integration
+- OIDN (Intel Open Image Denoise): U-Net architecture, GPU execution path (SYCL/Level Zero, HIP backend), filter types (RT, RTLightmap), Vulkan interop via external memory
+- Firefly clamping and outlier rejection: luminance histogram clamp, neighbourhood variance clamp
+- History rejection heuristics: disocclusion detection (depth/normal discontinuity), fast-moving object ghosting, reprojection validity mask
+- Denoising for specific signal types: soft shadows (hit-distance guided), AO, indirect diffuse/specular (separate denoising passes), subsurface scattering
+- Integrations: Ch206 (path tracing signal being denoised), Ch207 (temporal AA pipeline that shares history buffers), Ch221 (GPU performance of denoiser passes), Ch229 (neural denoiser inference)
+
+### Chapter 234: GPU Spectral Rendering and Colorimetric Algorithms *(Part XXIX)*
+
+- Scope: graphics application developers implementing physically accurate colour in path tracers or display pipelines; systems developers building wide-colour and HDR rendering on Linux.
+- Spectral vs tristimulus rendering: metamerism, fluorescence, polarisation — why RGB is insufficient for physical accuracy
+- Hero-wavelength path tracing: single wavelength per ray, MIS across wavelength samples, spectral power distribution (SPD) storage and sampling
+- Spectral upsampling: Mallett–Yuksel smooth spectrum from RGB; Meng et al. sigmoid-based upsampling; Jakob–Hanika bounded spectrum; GPU lookup table approach
+- Dispersion: Cauchy equation (wavelength-dependent IOR), Sellmeier coefficients, GPU refraction with wavelength offset, chromatic aberration as a degenerate case
+- Fluorescence simulation: bispectral BRDF (reradiation matrix), Stokes shift, GPU bispectral path tracer extensions
+- Polarised light rendering: Stokes vector propagation, Mueller matrix for reflections and transmission, GPU polarisation state tracking
+- Spectral sky and atmosphere: Preetham analytic model GPU evaluation; Hosek–Wilkie dataset lookup (GPU texture); Bruneton–Neyret precomputed atmospheric scattering (transmittance LUT, in-scattering LUT, multiple scattering)
+- Spectral-to-XYZ integration: CIE 1931 CMF quadrature on GPU, metamerism index computation
+- Gamut mapping algorithms: CUSP gamut boundary descriptor, soft-knee compression, perceptual intent (ZCAM, CAM16), GPU gamut mapping for HDR display output
+- Integrations: Ch101 (ICC colour management API), Ch158 (HDR display pipeline), Ch205 (BRDF models that feed spectral rendering), Ch207 (colour grading and 3D LUT post-processing)
+
+### Chapter 235: GPU Vector Graphics and 2D Path Rendering *(Part XXIX)*
+
+- Scope: graphics application developers implementing GPU-accelerated 2D UIs, SVG renderers, or font systems; browser engineers mapping CSS/SVG rendering onto Vulkan compute.
+- GPU 2D rendering problem: analytical anti-aliasing, correct painter's model, fill rule (even-odd, non-zero winding), stroke expansion
+- Loop–Blinn GPU cubic Bézier rendering: implicit function sign test, triangle hull covering, GPU fragment shader classification (serpentine/cusp/loop/quadratic)
+- Polar Stroking (Nehab–Hoppe): stroke outline as polar parametrisation, GPU tessellation-free stroke expansion, round/miter/bevel join GPU geometry
+- Jump Flooding Algorithm for 2D SDF generation: seeding, k-pass JFA, exact distance field vs approximate; GPU JFA for font SDF baking
+- GPU path rendering pipelines: Pathfinder (Metal/Vulkan, tile-based bin-and-render); Vello/piet-gpu (Vulkan compute, prefix-sum based encoding); NV_path_rendering (OpenGL extension, reference); WR (WebRender) GPU rasterisation model
+- GPU SVG rasterisation: path command decoding on GPU, Bézier flattening to line segments, scanline fill via atomic counters, clip path GPU evaluation
+- Colour font rendering: COLRv1 paint graph DAG evaluation on GPU (PaintComposite, PaintLinearGradient, PaintGlyph), GPU COLRv1 atlas
+- Signed distance field fonts: multi-channel SDF (MSDF — msdfgen algorithm), GPU MSDF atlas generation, runtime rendering with median-of-three anti-aliasing; distance field soft shadows for text
+- 2D gradient and pattern rendering: linear/radial/conic gradients in GPU fragment shaders; tiled pattern via texture wrap; mesh gradient (Coons patch) GPU evaluation
+- Integrations: Ch105 (font rendering API layer), Ch20 (Wayland surface model that 2D rendering targets), Ch208 (vector graphics on GPU brief), Ch222 (2D computational geometry feeding path rendering)
+
+### Chapter 236: GPU 3D Scene Understanding and Semantic Segmentation *(Part XXIX)*
+
+- Scope: graphics application developers integrating semantic understanding into AR/XR pipelines; systems developers building GPU-accelerated vision workloads on Linux; robotics engineers using semantic maps from GPU inference.
+- Scene understanding as a GPU algorithm domain: 2D vs 3D understanding, GPU inference pipeline from sensor to label, Linux deployment stack (ROCm, Vulkan, ONNX Runtime)
+- 2D semantic segmentation on GPU: FCN/DeepLab encoder-decoder; Mask2Former pixel decoder + transformer decoder GPU inference; SAM (Segment Anything) GPU pipeline — image encoder (ViT), prompt encoder, mask decoder; real-time segmentation (MobileViT, SegFormer-B0) for embedded Linux
+- 2D instance and panoptic segmentation: Mask R-CNN GPU inference (FPN backbone + RoIAlign + mask head); DETR/RT-DETR panoptic head; panoptic fusion on GPU
+- 3D point cloud semantic segmentation: PointNet++ set abstraction on GPU (farthest point sampling, ball query, grouping); RandLA-Net local feature aggregation; sparse convolution (MinkowskiEngine, TorchSparse, spconv) for voxelised point clouds; SparseConvNet GPU kernel dispatch
+- Open-vocabulary 3D scene understanding: CLIP feature distillation into 3DGS (Gaussian Grouping, LangSplat); LERF (Language Embedded Radiance Fields) — CLIP feature field query; GPU relevancy score volume rendering
+- GPU occupancy and voxel grids for semantic mapping: 3D occupancy prediction (TPVFormer, OccNet); GPU voxel grid update (log-odds, ray casting); semantic octree GPU operations
+- 3D scene graph generation: object-level node extraction from segmentation, relation prediction (GPU GNN inference), scene graph spatial reasoning
+- Integrations: Ch224 (3D shape analysis feeds object-level understanding), Ch228 (GNN for scene graph), Ch229 (GPU inference runtime), Ch232 (LLM/VLM for open-vocabulary understanding), Ch238 (object detection feeding scene understanding)
+
+### Chapter 237: GPU Depth Estimation and Dense Reconstruction *(Part XXIX)*
+
+- Scope: graphics application developers building AR/XR depth pipelines; systems developers integrating GPU-based depth and reconstruction into Linux robotics or scanning workflows.
+- Depth estimation and reconstruction as a GPU domain: monocular vs stereo vs structured light; sparse (SfM) vs dense (MVS, TSDF) reconstruction; sensor fusion pipelines
+- Monocular depth estimation: DPT (Dense Prediction Transformer) GPU inference; MiDaS multi-scale fusion; Depth Anything v2 (ViT backbone, metric and relative variants); ZoeDepth metric depth; real-time monocular depth for AR (FastDepth, MobileDepth GPU inference)
+- Stereo depth beyond SGM: RAFT-Stereo (GRU-based iterative refinement, correlation volume on GPU); CREStereo (cascaded recurrent stereo); HITNet (slanted plane hypotheses on GPU); SELECTIVE-IGEV; GPU correlation layer implementation (4D cost volume construction)
+- RGB-D processing: normal estimation from depth (cross-product neighbourhood, integral image on GPU); hole-filling (bilateral inpainting); temporal depth smoothing (GPU IIR filter); depth-to-point-cloud GPU kernel; structured light decoding on GPU (Gray code, phase shifting)
+- Structure-from-Motion GPU stages: COLMAP GPU feature extraction (GPU SIFT — cuSIFT, PopSIFT); GPU feature matching (FLANN GPU ANN, exhaustive match with FAISS GPU); geometric verification (GPU RANSAC — USAC-GPU, MAGSAC++ on GPU)
+- Multi-View Stereo GPU inference: MVSNet depth hypothesis plane sweep on GPU; UniMVSNet, IterMVS; cost volume regularisation (3D CNN GPU inference); depth fusion from MVS hypotheses
+- NeRF and 3DGS reconstruction pipelines: Instant-NGP hash encoding + MLP training GPU loop; Zip-NeRF anti-aliased sample construction; 3DGS densification + pruning training step on GPU; mesh extraction from NeRF (MarchingCubes on SDF/density field) and from 3DGS (SuGaR, GOF)
+- Volumetric fusion: TSDF update kernel (already Ch210 — focus here on GPU-accelerated large-scale: Voxblox, OpenVDB GPU, NeuralRecon); point cloud to mesh (screened Poisson Ch208 — focus on GPU BPA and alpha wrapping)
+- Integrations: Ch210 (TSDF volumetric fusion), Ch211 (point cloud processing), Ch220 (image processing feeding depth), Ch224 (shape analysis on reconstructed meshes), Ch236 (semantic labels fused into reconstruction)
+
+### Chapter 238: GPU Object Detection and 6DoF Pose Estimation *(Part XXIX)*
+
+- Scope: graphics application developers building AR object anchoring or robotic manipulation pipelines; systems developers deploying detection and pose inference on Linux with ROCm/Vulkan/ONNX Runtime.
+- Detection and pose as a GPU algorithm domain: 2D detection → 3D lifting → 6DoF refinement pipeline; sensor modalities (RGB, LiDAR, RGB-D); Linux deployment (ONNX Runtime EP, TensorRT, mlc-llm)
+- 2D object detection GPU inference: YOLO family (YOLOv8/v9/v10/11 architecture — decoupled head, anchor-free, GPU NMS); RT-DETR (ResNet + transformer decoder, GPU deformable attention); GPU Non-Maximum Suppression algorithms (class-wise, batched, soft-NMS, GPU-NMS with parallel reduction)
+- 3D detection from LiDAR point clouds: PointPillars (pillar feature GPU encoding → 2D pseudo-image → SSD head); CenterPoint (voxel backbone → BEV heatmap + regression head); VoxelNet (voxel feature encoding GPU); GPU voxelisation kernel (scatter with atomics)
+- RGB-D and multimodal 3D detection: frustum PointNets; ImVoxelNet; BEVFusion (camera + LiDAR BEV feature fusion on GPU); depth-guided 2D detection lifting
+- 6DoF pose estimation — keypoint-based: PVNet (pixel-wise voting → PnP); PVIO; FFB6D (full flow bidirectional fusion); GPU PnP solvers (EPnP, DLT, RANSAC P3P on GPU)
+- 6DoF pose estimation — direct and dense: FoundPose (foundation model + retrieval); DUSt3R (dense uncalibrated stereo reconstruction — transformer GPU inference); MASt3R (matching + 3D structure); GPU iterative refinement (ICP from Ch224 as final pose refiner)
+- GPU feature matching: SuperPoint GPU inference (homographic adaptation-trained detector + descriptor); SuperGlue (graph neural network matching on GPU); LightGlue (adaptive depth attention, faster GPU inference); LoFTR (transformer-based dense matching)
+- GPU RANSAC and robust estimation: USAC framework GPU (MAGSAC++, DEGENSAC); parallel RANSAC (independent hypothesis threads); LO-RANSAC (local optimisation); GPU minimal solvers (5-point essential, P3P, homography DLT)
+- Pose tracking and temporal refinement: DeepIM GPU pose refinement (render-and-compare); FoundationPose tracking; GPU Kalman filter for pose; 6DoF pose graph optimisation (GPU sparse Cholesky from Ch226)
+- Integrations: Ch27 (AR/XR applications consuming pose), Ch224 (shape analysis for model matching), Ch228 (GNN in pose matching networks), Ch229 (GPU inference runtime for detection models), Ch236 (semantic segmentation feeding instance-level detection), Ch237 (depth providing 3D lifting)
