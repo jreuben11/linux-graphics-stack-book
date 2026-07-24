@@ -10,6 +10,9 @@
 
 - [Overview](#overview)
 - [1. Introduction and Architecture](#1-introduction-and-architecture)
+  - [1.3 What is PCM?](#13-what-is-pcm)
+  - [1.4 What is a Mixer?](#14-what-is-a-mixer)
+  - [1.5 What is a Sequencer?](#15-what-is-a-sequencer)
 - [2. ALSA Kernel Architecture](#2-alsa-kernel-architecture)
 - [3. libasound PCM Programming](#3-libasound-pcm-programming)
 - [4. Hardware Parameters in Depth](#4-hardware-parameters-in-depth)
@@ -20,7 +23,8 @@
 - [9. HDA: High Definition Audio](#9-hda-high-definition-audio)
 - [10. ALSA Sequencer and MIDI](#10-alsa-sequencer-and-midi)
 - [11. Debugging and Diagnostics](#11-debugging-and-diagnostics)
-- [12. Integrations](#12-integrations)
+- [12. Roadmap](#12-roadmap)
+- [13. Integrations](#13-integrations)
 
 ---
 
@@ -70,6 +74,52 @@ On most Linux desktops since Fedora 34 (2021), PipeWire holds exclusive access t
 - Professional audio applications using the MMAP zero-copy path directly.
 - Diagnostic tools (`aplay`, `speaker-test`, `hda-verb`) that need to bypass the session layer.
 - Kernel driver development where testing against the raw PCM device is required.
+
+### 1.3 What is PCM?
+
+PCM stands for **Pulse-Code Modulation** — the universal encoding used to represent audio as a stream of digital samples. A microphone converts air pressure variations into a continuous electrical signal; an ADC samples that signal at a fixed rate (the *sample rate*, typically 44,100 or 48,000 Hz) and quantises each measurement to a fixed bit depth (16, 24, or 32 bits). Playback is the reverse: a stream of integer values drives a DAC that reconstructs an analogue waveform, then amplified to drive a speaker. All other audio formats (MP3, AAC, FLAC, Opus) are compressed representations that must be decoded back to PCM before the DAC can consume them.
+
+In ALSA's model, a **PCM device** is a hardware or virtual audio path that accepts or produces a stream of PCM frames. One *frame* contains one sample for each channel — a stereo 16-bit frame is 4 bytes, a 5.1 32-bit frame is 24 bytes. The hardware DMA engine moves frames between RAM and the codec's FIFO in chunks called *periods*. A *buffer* holds multiple periods; the application writes new frames before the hardware plays the last period (playback) or reads frames after the hardware fills the next period (capture). The ALSA PCM API (`snd_pcm_*`) exposes the full parameter negotiation (sample rate, format, channel count, period size, buffer size) and the ring-buffer I/O calls (`snd_pcm_writei`, `snd_pcm_readi`, and the MMAP path) needed to drive this engine.
+
+Key PCM device parameters:
+| Parameter | Meaning | Typical values |
+|-----------|---------|---------------|
+| Sample rate | ADC/DAC clock frequency | 8,000 – 192,000 Hz |
+| Format | Sample encoding | S16_LE, S24_3LE, S32_LE, FLOAT_LE |
+| Channels | Number of audio streams | 1 (mono), 2 (stereo), 6 (5.1), 8 (7.1) |
+| Period size | Frames per DMA interrupt | 64 – 8,192 frames |
+| Buffer size | Total ring-buffer capacity | 2 × to 8 × period size |
+
+[Source — PCM interface documentation](https://www.alsa-project.org/alsa-doc/alsa-lib/pcm.html)
+
+### 1.4 What is a Mixer?
+
+A **mixer** is the set of hardware controls that govern how audio signals are routed, amplified, and combined inside the audio codec. The name comes from the physical mixing desk metaphor, but in modern codecs a "mixer" is implemented entirely as register writes to the DSP or DAC silicon — there is no analogue circuitry being blended at software layer.
+
+ALSA exposes mixer controls through the **control interface** (`/dev/snd/controlC{N}`). Each control has a name (e.g., `"Master Playback Volume"`, `"PCM Capture Switch"`), a type (integer, boolean, enumeration), and a value range. The command-line tool `alsamixer` and the library call `snd_mixer_selem_get_playback_volume()` both read and write these controls. [Source — control interface](https://www.alsa-project.org/alsa-doc/alsa-lib/control.html)
+
+At the hardware level, the **HD Audio** codec topology (§9) is built from functional groups: audio converters, pin complexes, audio selectors, and mixer widgets. Each widget has input and output connections that can be enabled or disabled by writing **verbs** to the codec. The kernel's HDA codec drivers translate high-level ALSA control names into the correct verb sequences for a given codec — the same abstract `"Headphone Playback Switch"` control may correspond to completely different verbs on a Realtek ALC3246 versus a Cirrus CS8409.
+
+On SoC (embedded) hardware, the **ASoC DAPM** (Dynamic Audio Power Management) system (§8) extends the mixer model to power management: enabling a route automatically powers up the intermediate widgets and keeps them powered only while audio is flowing.
+
+Common mixer controls in a desktop system:
+- **Master / PCM / Headphone Playback Volume** — DAC digital or analogue gain.
+- **Capture / Mic Boost** — ADC gain and microphone preamplifier.
+- **IEC958 Output** — enable S/PDIF passthrough from the digital output pin.
+- **Auto-Mute Mode** — firmware-level headphone/speaker switching on jack detect.
+
+### 1.5 What is a Sequencer?
+
+The ALSA **sequencer** is a kernel subsystem for routing, scheduling, and transforming MIDI events. MIDI (Musical Instrument Digital Interface) is a serial protocol that carries *events* — Note On, Note Off, Control Change, Program Change, SysEx — rather than audio samples. A MIDI stream describes a musical performance; it carries no audio data itself. The synthesiser, sampler, or hardware sound module that receives the events is responsible for turning them into sound.
+
+ALSA's sequencer (`/dev/snd/seq`) provides:
+
+- **Ports** — logical endpoints that can send or receive events. A MIDI keyboard's kernel driver registers a read port; a software synthesiser (`fluidsynth`, `timidity++`) opens a write port.
+- **Subscriptions** — directed connections between ports. `aconnect 24:0 128:0` wires a hardware MIDI keyboard to a software synth, meaning every Note On from the keyboard is forwarded to the synth without the user needing to manage an explicit pipe.
+- **Scheduling** — events can be tagged with a tick timestamp (relative to a sequencer clock) or a real-time timestamp. The sequencer delivers events at the scheduled time, enabling sample-accurate playback of MIDI files independent of CPU scheduling jitter.
+- **Queues** — each client can create tempo queues with `snd_seq_queue_tempo_t`; the kernel counts 24 PPQN (Pulses Per Quarter Note) ticks by default and triggers delivery callbacks.
+
+For MIDI 2.0, Linux 6.5 introduced **UMP (Universal MIDI Packet)** support, exposed as `/dev/snd/umpC{N}D{D}` character devices alongside the legacy `/dev/snd/seq` interface. UMP encodes all MIDI 2.0 messages (high-resolution controllers, per-note pitch bend, 32-bit velocity) as 32-bit aligned packets, removing the channel-count and resolution limits of MIDI 1.0. [Source — UMP kernel documentation, Linux 6.5](https://www.kernel.org/doc/html/latest/sound/midi2.html)
 
 ---
 
@@ -1152,7 +1202,81 @@ The `latency` tool from `alsa-utils` measures the minimum achievable round-trip 
 
 ---
 
-## 12. Integrations
+## 12. Roadmap
+
+ALSA's kernel-side development is conservative — the public `libasound` API has been stable for over a decade and the core PCM/control/sequencer model is unlikely to change. Active development concentrates on new hardware protocols, power efficiency, and MIDI 2.0. The following areas represent the most significant in-progress and recently landed work.
+
+### 12.1 MIDI 2.0 and Universal MIDI Packet (UMP)
+
+Linux 6.5 (September 2023) merged the foundational MIDI 2.0 / UMP kernel support. New character device nodes (`/dev/snd/umpC{N}D{D}`) complement the legacy sequencer interface (`/dev/snd/seq`). UMP encodes all message types as 32-bit-aligned packets, eliminating MIDI 1.0's 7-bit value resolution ceiling and 16-channel limit. [Source — MIDI 2.0 merge, Linux 6.5](https://git.kernel.org/pub/scm/linux/kernel/git/tiwai/sound.git/log/)
+
+Linux 6.6 added the USB MIDI 2.0 **class gadget driver**, enabling a Linux device to appear as a MIDI 2.0 USB peripheral to a host. Linux 6.14 extended the UMP core API with additional property accessors and improved ALSA sequencer ↔ UMP bridge fidelity.
+
+PipeWire 1.2+ exposes UMP streams as PipeWire ports, giving compatible DAW software (`Ardour`, JACK-based hosts) access to MIDI 2.0 per-note expression. Hardware support is sparse as of 2026: Roland's V-Piano and several Yamaha digital pianos are among the first shipping MIDI 2.0 instruments.
+
+**Status**: base UMP merged (6.5); USB gadget merged (6.6); API enhancements ongoing (6.14+); PipeWire integration functional; DAW/plugin ecosystem still maturing.
+
+### 12.2 Intel AVS Driver and Legacy HDA Removal
+
+The Intel **Audio Value Stream** (AVS) driver, targeting cAVS 1.5 platforms (Skylake, Kaby Lake, Amber Lake, Apollo Lake), provides a cleaner DSP firmware interface than the original `snd-hda-intel` path for those platforms. Linux 6.12 removed the legacy HDA-based paths for these SKUs, deleting approximately 32,600 lines of code and consolidating all cAVS 1.5 support under AVS.
+
+Linux 6.15 added **PEAKVOL** and **GAIN** DSP module types to the AVS topology, enabling hardware peak metering and programmable gain stages inside the audio DSP without involving the CPU. This is relevant for low-power voice-detection pipelines where the SoC's audio DSP processes microphone input while the application cores remain in C10. [Source — Intel AVS driver](https://git.kernel.org/pub/scm/linux/kernel/git/tiwai/sound.git/tree/sound/soc/intel/avs)
+
+### 12.3 Sound Open Firmware (SOF) Evolution
+
+SOF is the open-source firmware framework for Intel, AMD, and NXP audio DSPs. The SOF project coordinates driver (`sound/soc/sof/`) and firmware releases on a separate cadence from the kernel itself.
+
+| Release | Date | Key additions |
+|---------|------|--------------|
+| SOF v2.12 | Q1 2024 | Intel Panther Lake IPC4 support |
+| SOF v2.13 | Q2 2024 | AMD ACP 7.0 (Strix Point / Ryzen AI 300), NXP Zephyr targets, Pipeline 2.0 redesign |
+| SOF v2.14 | Q4 2024 | LLEXT loadable module support; Zephyr RTOS adopted as primary RTOS target |
+| v2.14.3 | Q1 2025 | Stability and AMD ACP 7.0 fixes |
+
+Linux 6.14 added SOF **pause operation** support, allowing the DSP to pause/resume audio pipelines without a full DSP reset — improving latency on system suspend/resume for platforms where the audio DSP keeps running in low-power mode.
+
+The shift from Cadence Xtensa + Zephyr to Zephyr RTOS as the canonical SOF RTOS (v2.14) reduces the firmware build toolchain complexity and aligns SOF with the broader embedded RTOS ecosystem. [Source — SOF project](https://thesofproject.github.io/)
+
+### 12.4 SoundWire and SDCA Auto-Enumeration
+
+SoundWire (MIPI SWD) is a two-wire digital audio bus designed for connecting codecs to SoC audio subsystems on laptops and tablets. The ALSA SoundWire core (`sound/soundwire/`) handles enumeration, link management, and stream scheduling.
+
+- **Linux 6.9**: AMD ACP 6.3 SoundWire support merged; Intel link manager gained DSPless mode for platforms where the SoC audio DSP is bypassed.
+- **Linux 6.13**: AMD ACP 6.3 legacy stack SoundWire support.
+- **Linux 6.15**: Groundwork for generic SDCA (SoundWire Device Class for Audio) control handling.
+- **Linux 6.16**: **Automatic DAI enumeration** for SDCA-conformant devices — the driver reads the device's SDCA conformance descriptor and instantiates ALSA DAI links without a board-specific binding, significantly reducing the per-platform driver burden for commodity laptop audio. [Source — SoundWire SDCA patch series, Linux 6.16](https://lore.kernel.org/alsa-devel/)
+
+MIPI SDCA v1.1 was adopted in July 2025 and adds multifunction device support; kernel support is expected to follow within 1–2 kernel cycles.
+
+### 12.5 Bluetooth LE Audio and LC3 Codec
+
+Bluetooth LE Audio (Bluetooth 5.2+) replaces Classic BR/EDR audio with isochronous channels and the **LC3** (Low Complexity Communication Codec) designed for voice, music, and hearing aids. The Linux stack requires cooperation between the kernel's Bluetooth stack (`net/bluetooth/`), BlueZ userspace, and PipeWire.
+
+BlueZ 5.8x added full profiles required for LE Audio: BAP (Basic Audio Profile), BASS (Broadcast Audio Scan Service), VCP (Volume Control Profile), MCP (Media Control Profile), CCP (Call Control Profile), MICP, CSIP, and TMAP. PipeWire handles BAP in all four roles (Unicast Source/Sink, Broadcast Source/Sink) and exposes LE Audio streams as PipeWire audio nodes.
+
+The **LC3 codec** decoding path is still experimental and disabled by default in most distributions as of 2026 — distributions enable it via a BlueZ `experimental` flag or a PipeWire codec plugin. Hardware availability is expanding: Intel AX210 supports LE Audio, and Intel BE200 adds Auracast (public broadcast LE Audio). The Bluetooth SIG targets full interoperability qualification by 2026. [Source — BlueZ LE Audio](https://www.bluez.org/)
+
+### 12.6 USB Audio Class 3 (UAC3)
+
+UAC3 was merged in Linux 4.17 and is feature-stable. Active work is primarily CVE fixes and minor conformance improvements. A notable recent fix was **CVE-2025-38729** (June 2025): a missing `bLength` validation in the UAC3 descriptor parser that could cause an out-of-bounds read when handling a malformed USB audio device. The patch added bounds checking before accessing `bClockID` and related fields in the UAC3 Audio Streaming Interface parsing code. [Source — CVE-2025-38729](https://www.cve.org/CVERecord?id=CVE-2025-38729)
+
+### 12.7 Real-Time Scheduling Path
+
+ALSA itself does not implement real-time scheduling; that responsibility belongs to the audio session manager. The evolution of RT privilege on Linux:
+
+1. **Legacy**: application calls `sched_setscheduler(SCHED_FIFO)` directly — requires `CAP_SYS_NICE` or elevated `RLIMIT_RTPRIO`.
+2. **RTKit**: D-Bus daemon (`rtkit-daemon`) grants `SCHED_FIFO` to approved PIDs on request — the path used by PulseAudio and early PipeWire.
+3. **Portal Realtime interface**: `org.freedesktop.portal.Realtime` (merged xdg-desktop-portal) delegates the rt-grant decision to the portal, which enforces per-app policy. PipeWire 1.0+ uses this path on systems with a running portal session.
+
+The MIDI 2.0 UMP bridge in PipeWire 1.2+ inherits the same RT scheduling as audio graphs, meaning MIDI 2.0 event delivery can be co-scheduled with audio period callbacks at `SCHED_FIFO` priority. [Source — FOSDEM 2025, Wim Taymans — PipeWire RT scheduling](https://fosdem.org/2025/)
+
+### 12.8 PCM API Stability
+
+Despite repeated discussion in the ALSA mailing list about a "PCM API v2", no concrete replacement proposal is underway as of 2026. The `snd_pcm_hw_params` negotiation model — while verbose — is understood to cover every hardware combination that has shipped in the past 20 years. The most likely evolution is additional `snd_pcm_*` helpers and format enumerations (e.g., DSD512, FLOAT64) rather than a new API surface. The primary complaint — that hw_params negotiation is trial-and-error — is addressed in practice by the `snd_pcm_hw_params_set_*_near()` family of helpers.
+
+---
+
+## 13. Integrations
 
 **Ch38 (PipeWire and the Video Session Layer)**
 PipeWire's `spa-alsa` plugin uses the MMAP zero-copy path described in §4.4 of this chapter to read/write the ALSA DMA ring buffer without an extra copy. The `api.alsa.enum.udev` WirePlumber monitor (described in Ch38 §2) detects ALSA card hotplug events and instantiates `pw_node` objects. The `pipewire-alsa` PCM plugin described in §6.2 of this chapter is the reverse bridge: it routes `libasound` API calls into PipeWire streams, providing transparent compatibility for legacy applications. PipeWire's graph cycle timing is driven by the ALSA DMA period interrupt via the `api.alsa.pcm.sink` driver node.
