@@ -11,6 +11,9 @@ This chapter traces the complete lifecycle of the Linux display stack from the m
 ## Table of Contents
 
 1. [The Boot Display Timeline](#the-boot-display-timeline)
+   - [1.1 What is KMS?](#11-what-is-kms)
+   - [1.2 What is DRM?](#12-what-is-drm)
+   - [1.3 What is simpledrm?](#13-what-is-simpledrm)
 2. [UEFI GOP: Graphics Output Protocol](#uefi-gop-graphics-output-protocol)
 3. [simplefb: Device-Tree Framebuffers on ARM SBCs](#simplefb-device-tree-framebuffers-on-arm-sbcs)
 4. [simpledrm: DRM Wrapper Before the Native Driver](#simpledrm-drm-wrapper-before-the-native-driver)
@@ -55,6 +58,24 @@ The introduction of simpledrm in 5.14 (tracked via the `[PATCH v4] drm/simpledrm
 Fedora 36 (kernel ~5.17, released April 2022) was the first major distribution to make `CONFIG_DRM_SIMPLEDRM=y` the default and actively replace `efifb`/`vesafb`/`simplefb` with simpledrm as the boot framebuffer driver. Critically, Fedora also set `CONFIG_DRM=y` (built-in rather than a module) to ensure the DRM console is available during early boot before initrd modules load — essential for displaying error messages if the initrd itself fails.
 
 [Source: Fedora Change — Replace efifb+simplefb with simpledrm](https://fedoraproject.org/wiki/Changes/ReplaceFbdevDrivers)
+
+### 1.1 What is KMS?
+
+Kernel Mode Setting is the Linux kernel subsystem responsible for programming display hardware — scanout engines, encoders, connectors, and clock PLLs — directly from kernel space rather than from userspace drivers or BIOS calls. Before KMS, display mode configuration was handled by X.Org server userspace drivers that accessed hardware registers directly, which led to race conditions during VT switches, an inability to display kernel crash screens, and broken suspend/resume paths. The KMS API is exposed through the DRM subsystem via the `/dev/dri/card*` device nodes and provides two levels of interface: the legacy `drmModeSetCrtc()` ioctl and the modern atomic API (`DRM_IOCTL_MODE_ATOMIC`), which commits all display pipeline changes in a single transactional operation. In the boot context, KMS is the mechanism through which the handoff from simpledrm to the native GPU driver is expressed: the native driver takes over the CRTC, plane, and encoder objects, performs its first atomic modeset, and thereby claims exclusive ownership of the display from the firmware-backed framebuffer. The kernel implementation of atomic modesetting lives in `drivers/gpu/drm/drm_atomic.c` and `drivers/gpu/drm/drm_atomic_helper.c`.
+
+[Source: linux/drivers/gpu/drm/drm_atomic.c](https://elixir.bootlin.com/linux/latest/source/drivers/gpu/drm/drm_atomic.c)
+
+### 1.2 What is DRM?
+
+The Direct Rendering Manager is the Linux kernel subsystem that manages GPU hardware and exposes display control to userspace. Originally introduced to allow multiple clients secure access to 3D rendering hardware, DRM has evolved into a unified framework covering both rendering (through GEM buffer management and command submission) and display (through the KMS layer). From a boot graphics perspective, the relevant DRM interfaces are those for display: a DRM driver exposes CRTC objects representing scanout engines, encoder objects that convert signals for the physical link, connector objects representing physical outputs such as HDMI or DisplayPort, and plane objects that composite pixel sources into the final scanout. Device nodes appear under `/dev/dri/` as `card0`, `card1`, and so on, with `renderD128` and `renderD129` for render-only access. The DRM core is located at `drivers/gpu/drm/` in the kernel tree. During the boot pipeline described in this chapter, two different DRM devices may coexist on the same GPU hardware simultaneously: the simpledrm device backed by the firmware framebuffer, and the native GPU driver device during its probe sequence. The aperture subsystem at `drivers/gpu/drm/drm_aperture.c` mediates this coexistence and ensures a clean transition between them.
+
+[Source: linux/drivers/gpu/drm/](https://elixir.bootlin.com/linux/latest/source/drivers/gpu/drm)
+
+### 1.3 What is simpledrm?
+
+simpledrm (`CONFIG_DRM_SIMPLEDRM`) is a minimal DRM driver introduced in Linux 5.14 that wraps a pre-existing linear framebuffer — either from the UEFI GOP via sysfb or from a Device Tree `simple-framebuffer` node — and presents it as a proper DRM device. Unlike its predecessor simplefb, which is a plain fbdev driver with no DRM interface, simpledrm creates a `drm_device`, registers CRTC, plane, encoder, and connector objects, and exposes a `/dev/dri/card*` device node that userspace display stacks such as Plymouth can consume through the standard DRM API. simpledrm does not program any display hardware: the physical timings were set by firmware, and simpledrm simply blits pixel data into the existing framebuffer mapping. Its critical role in the boot pipeline is to provide a working DRM device from early userspace until the native GPU driver is ready, and then to yield cleanly: when the native driver calls `aperture_remove_conflicting_pci_devices()` or `aperture_remove_conflicting_devices()`, simpledrm releases its framebuffer mapping and unregisters its DRM device, leaving the native driver as the sole owner of the display. The driver source is at `drivers/gpu/drm/simpledrm.c`.
+
+[Source: linux/drivers/gpu/drm/simpledrm.c](https://elixir.bootlin.com/linux/latest/source/drivers/gpu/drm/simpledrm.c)
 
 ---
 

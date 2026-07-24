@@ -7,6 +7,8 @@
 ## Table of Contents
 - [Overview](#overview)
 - [1. The nvkm Object Model: Engines, Subdevices, and Objects](#1-the-nvkm-object-model-engines-subdevices-and-objects)
+  - [1.1 What is Nouveau?](#11-what-is-nouveau)
+  - [1.2 What is nvkm?](#12-what-is-nvkm)
 - [2. Falcon Microcontrollers: PMU, PDAEMON, and Engine Controllers](#2-falcon-microcontrollers-pmu-pdaemon-and-engine-controllers)
 - [3. Channel and Pushbuffer Management](#3-channel-and-pushbuffer-management)
 - [4. The GPU Scheduler and Fence Handling](#4-the-gpu-scheduler-and-fence-handling)
@@ -174,6 +176,14 @@ Subdevices initialise in two phases. The first phase, `oneinit`, runs once durin
 The ordering of subdevice init is encoded implicitly by the `nvkm_device_init()` call sequence in `drivers/gpu/drm/nouveau/nvkm/engine/device/base.c`. The framebuffer controller (`fb`) must complete `oneinit` before instance memory (`instmem`) can allocate from VRAM. The MMU must be live before any engine attempts to create a virtual address space. The `top` subdevice, which reads the GPU's hardware topology registers to discover which engines are physically present, must initialise before the FIFO engine constructs its runlist. The fixed init order both encodes and enforces these dependencies.
 
 The subdev init implementation can be read in `drivers/gpu/drm/nouveau/nvkm/core/subdev.c`: `nvkm_subdev_init_()` calls `nvkm_subdev_oneinit_()` on the first invocation (guarded by the `subdev->oneinit` boolean flag), then calls the `func->init` vtable entry regardless. This design separates idempotent hardware programming from one-time resource allocation in a straightforward, auditable way.
+
+### 1.1 What is Nouveau?
+
+Nouveau is the open-source, reverse-engineered kernel driver for NVIDIA GPUs, developed by the Linux kernel and Mesa communities without vendor documentation or official hardware specifications. It targets the full range of NVIDIA discrete and integrated graphics hardware from the NV04 RIVA TNT (1998) through Ada Lovelace (2022), providing DRM/KMS display management, OpenGL and Vulkan rendering through Mesa, and video decode acceleration via VDPAU and VA-API. Nouveau loads as a kernel module that registers with the Linux Direct Rendering Manager (DRM) subsystem, creating device nodes under `/dev/dri/` and exposing the standard set of DRM ioctls to userspace. On hardware through Turing, Nouveau manages all GPU resources in software — context scheduling, memory allocation, command submission — entirely without vendor firmware involvement. On Ampere and later, mandatory signed firmware and the GSP-RM firmware stack impose new constraints covered in Chapter 9. The absence of hardware documentation forced reverse-engineering of register layouts, hardware class namespaces, and engine programming sequences through experimentation and tools such as the Envytools suite. This history explains much of nvkm's design: the pervasive use of vtables, the chipset-indexed constructor tables, and the careful separation between confirmed hardware behaviour and inferred behaviour throughout the source code comments.
+
+### 1.2 What is nvkm?
+
+nvkm (NVIDIA Kernel Module) is the hardware abstraction layer at the core of the Nouveau kernel driver, located under `drivers/gpu/drm/nouveau/nvkm/` in the Linux kernel source tree. It sits between the DRM/KMS driver interface layer (`nouveau_drm.c` and related files) and the physical GPU hardware, providing a unified programming model across a dozen NVIDIA GPU architectural families. Where a vendor-supplied driver typically targets a narrow hardware range and hard-codes hardware behaviour, nvkm must accommodate silicon that varies in its memory subsystem layout, engine complement, context switching mechanism, power management architecture, and command processor design. It achieves this through a C-language object-oriented design: every hardware abstraction is an `nvkm_object` with a `func` vtable whose implementation is selected at device probe time based on the detected chipset. The nvkm source tree organises implementations by functional category — `nvkm/engine/gr/` for graphics, `nvkm/subdev/fb/` for the framebuffer controller, `nvkm/falcon/` for Falcon microcontroller support — with each directory containing per-GPU-family source files that provide the concrete implementations of the shared vtable interfaces. Understanding nvkm's object model and initialisation sequence is the prerequisite for reading any other part of the Nouveau kernel driver.
 
 ---
 

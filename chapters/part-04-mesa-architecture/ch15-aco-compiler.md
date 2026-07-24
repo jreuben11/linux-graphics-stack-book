@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. Motivation: Why Not LLVM?](#1-motivation-why-not-llvm)
+  - [1.1 What is ACO?](#11-what-is-aco)
+  - [1.2 What is NIR?](#12-what-is-nir)
+  - [1.3 What is the VGPR/SGPR Register Split?](#13-what-is-the-vgprsgpr-register-split)
 - [2. ACO's Place in the RADV Pipeline](#2-acos-place-in-the-radv-pipeline)
 - [3. ACO IR: The Internal Representation](#3-aco-ir-the-internal-representation)
 - [4. Instruction Selection: NIR to ACO IR](#4-instruction-selection-nir-to-aco-ir)
@@ -118,6 +121,28 @@ The table below makes the architectural differences between ACO and the LLVM AMD
 | Use in Mesa | RADV Vulkan driver | RadeonSI OpenGL driver; historical RADV path |
 | Wave32 / Wave64 | Fully supported (RDNA) | Supported |
 | Code quality (shipping games) | Matches or exceeds LLVM in practice | Production-proven; reference baseline |
+
+### 1.1 What is ACO?
+
+ACO (AMD Compiler) is Mesa's purpose-built shader compiler backend for AMD GCN and RDNA GPUs. It operates exclusively within the RADV Vulkan driver, translating NIR — Mesa's architecture-neutral intermediate representation — into the binary machine code that AMD GPU hardware executes. ACO was introduced in 2019 to replace a compilation path through LLVM's AMDGPU backend that proved too slow for the real-time shader compilation demands imposed by Vulkan's pipeline model.
+
+ACO lives entirely within Mesa's source tree under `src/amd/compiler/` and depends only on NIR and Mesa's AMD common utilities, not on LLVM. Its design is deliberately narrow: it handles one hardware family (AMD GCN and RDNA), one input format (NIR), and one output format (AMD GPU machine code packaged as an `ac_shader_binary` structure). Every pass — instruction selection, register allocation, scheduling, and code emission — is written with AMD ISA semantics as first-class constraints, allowing ACO to achieve significantly lower compilation latency than LLVM while matching or exceeding LLVM's runtime code quality for the workloads RADV encounters in practice. The compilation entry point is `aco_compile_shader()` defined in `src/amd/compiler/aco_interface.cpp`.
+
+ACO handles all RADV Vulkan shader compilation by default: graphics shaders, compute shaders, and ray tracing traversal shaders on supported hardware generations. It does not replace LLVM for radeonsi (Mesa's OpenGL driver for AMD hardware) or for ROCm HIP compute — those stacks continue to use LLVM. This scope boundary matters for developers profiling compile latency in non-Vulkan workloads on AMD hardware.
+
+### 1.2 What is NIR?
+
+NIR (New Internal Representation) is Mesa's architecture-neutral intermediate representation for GPU shaders. It is the primary input to ACO and serves as the common IR across all Mesa drivers for both OpenGL and Vulkan shader compilation. NIR is an SSA-based (Static Single Assignment) representation that models a shader program as a set of basic blocks containing typed instructions. Values are `nir_ssa_def` nodes; operations are `nir_instr` records with typed sources and definitions. A class of special instructions — `nir_intrinsic_*` — encodes GPU-specific operations such as reading push constants (`nir_intrinsic_load_push_constant`), sampling textures, and writing render-target outputs (`nir_intrinsic_store_output`), without committing to any particular hardware instruction encoding.
+
+In the RADV pipeline, a shader begins as SPIR-V bytecode supplied by the Vulkan application. `spirv_to_nir()` translates the SPIR-V into NIR. RADV then applies a sequence of driver-specific optimisation and lowering passes collected in `radv_optimize_nir()`, reducing the NIR to a form that ACO's instruction selector can handle directly. ACO performs divergence analysis on this NIR, classifying each SSA value as uniform across all wavefront lanes or divergent per lane. This classification drives every subsequent decision in ACO: instruction format selection, register file assignment (SGPR for uniform, VGPR for divergent), and memory access encoding. NIR is covered in depth in Chapter 14; this chapter assumes familiarity with NIR's block and instruction structure and focuses on how ACO consumes and transforms it.
+
+### 1.3 What is the VGPR/SGPR Register Split?
+
+AMD GCN and RDNA GPUs execute shaders as groups of threads called wavefronts — 64 threads in wave64 mode (GCN and RDNA default) or 32 threads in RDNA wave32 mode. The GPU provides two physically distinct register files to each wavefront. Vector General Purpose Registers (VGPRs) hold one independent value per lane: each thread in the wavefront has its own copy of a VGPR, allowing all lanes to carry different values simultaneously. Scalar General Purpose Registers (SGPRs) hold a single value that is identical across all lanes in the wavefront at the same time.
+
+This split maps directly onto how GPU programs access data. Values derived from thread ID, texture coordinates, or per-vertex attributes differ across lanes and must reside in VGPRs. Uniform buffer addresses, descriptor table base addresses, and values that are the same for all lanes can be held in SGPRs. VGPR operations execute on the VALU (Vector ALU) processing all lanes in parallel; SGPR operations execute on the SALU (Scalar ALU) as a single computation that applies to the whole wavefront.
+
+For ACO, the VGPR/SGPR split is the defining constraint that shapes the entire compiler. Divergence analysis classifies every NIR SSA value as uniform (mapped to SGPR) or divergent (mapped to VGPR). The register allocator maintains separate pools for each file: GFX10 hardware provides 106 addressable SGPRs and 256 VGPRs per compute unit, partitioned among concurrent wavefronts. VGPR count determines occupancy — a shader using 64 VGPRs can sustain four concurrent wavefronts on a compute unit, while one using 128 VGPRs sustains only two, directly reducing the GPU's ability to hide memory latency through wavefront switching.
 
 ---
 

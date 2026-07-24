@@ -14,6 +14,9 @@ This chapter targets four audiences:
 ## Table of Contents
 
 1. [Introduction](#1-introduction)
+   - [1.1 What is a Vulkan Queue Family?](#11-what-is-a-vulkan-queue-family)
+   - [1.2 What is Async Compute?](#12-what-is-async-compute)
+   - [1.3 What is a Frame Graph (Task Graph)?](#13-what-is-a-frame-graph-task-graph)
 2. [GPU Hardware Queue Model](#2-gpu-hardware-queue-model)
 3. [Queue Families and Discovery](#3-queue-families-and-discovery)
 4. [Timeline Semaphores](#4-timeline-semaphores)
@@ -36,6 +39,24 @@ Modern discrete GPUs contain several independent command processors. On AMD RDNA
 Vulkan maps these hardware engines to **queue families**: groups of queues that share the same capability flags. An application that uses only one queue family leaves performance on the table. A well-structured frame can run TAA compute and particle simulation on an ACE queue while the main GFX queue is processing the Z-prepass; simultaneously a DMA engine streams next-frame textures over PCIe. Getting all three to cooperate without data races or redundant stalls is what this chapter is about.
 
 The tools are: `VkQueueFamilyProperties` for capability discovery, `VkDeviceQueueCreateInfo` for queue reservation, timeline semaphores (`VK_KHR_timeline_semaphore`, core in Vulkan 1.2) for cross-queue and CPU–GPU signalling, `vkCmdPipelineBarrier2` (Vulkan 1.3 / `VK_KHR_synchronization2`) for cache and execution ordering within a queue, and the **frame graph** pattern for coordinating dozens of render and compute passes without hand-inserting every barrier.
+
+### 1.1 What is a Vulkan Queue Family?
+
+A Vulkan queue family is a group of one or more command queues that share the same set of hardware capabilities, expressed as a bitmask of `VkQueueFlagBits`. The Vulkan specification uses queue families as the indirection layer between the application's abstract work submissions and the GPU's actual fixed-function command processors. When an application calls `vkGetPhysicalDeviceQueueFamilyProperties`, the driver reports how many distinct engine types exist on the physical device and how many independent queues the application may open on each. A queue from a given family can only execute the operations its capability flags permit: a pure compute family cannot record draw calls; a dedicated transfer family can only perform memory copies.
+
+This design reflects real GPU silicon. AMD RDNA exposes a graphics front-end engine, separate Asynchronous Compute Engines (ACEs), and System DMA (SDMA) engines, each mapped to a distinct queue family. Intel Xe2 similarly exposes render, compute, copy, and video engine families. When an application opens queues from multiple families simultaneously and submits work to them in parallel, different hardware engines execute that work concurrently on the GPU die — through physical parallelism, not time-slicing. Sections 2 and 3 of this chapter cover how GPU hardware maps to queue families and how to enumerate and create queues correctly at device initialisation time.
+
+### 1.2 What is Async Compute?
+
+Async compute is the practice of submitting GPU compute dispatches through a queue family that is distinct from the main graphics queue, allowing compute work to run concurrently with rendering on separate hardware engines. On AMD RDNA hardware, each Asynchronous Compute Engine (ACE) is an independent command processor that schedules compute wave-fronts onto the same Compute Unit (CU/WGP) array as the graphics pipeline without being serialised by the graphics front-end state machine. When the graphics pipeline is vertex-bound or stalled between draw calls, the ACEs can fill the unused shader lanes with compute dispatches such as particle simulation, culling, temporal anti-aliasing, or post-processing. The result is higher GPU utilisation for the same wall-clock frame time, or equivalently, more compute work completed within a fixed frame budget.
+
+Async compute requires explicit cross-queue synchronisation: a compute dispatch that reads geometry buffers written by a prior draw call must be gated behind a timeline semaphore or barrier to guarantee visibility. Incorrectly synchronised async compute causes rendering artifacts or GPU hangs that are difficult to diagnose. Section 6 of this chapter provides the API patterns and measurement techniques needed to implement async compute correctly and to verify that the expected hardware overlap actually occurs on the target GPU.
+
+### 1.3 What is a Frame Graph (Task Graph)?
+
+A frame graph — also called a task graph or render graph — is a directed acyclic graph (DAG) that represents all rendering and compute passes in a frame along with the resources (buffers, images) they produce and consume. Rather than requiring the application to manually insert `vkCmdPipelineBarrier2` calls between every pass, a frame graph compiler analyses the producer-consumer relationships and emits the minimal set of barriers, image layout transitions, and semaphore signals that guarantee correct execution order. The compiler also determines which passes can run asynchronously on compute queues, which resources can be allocated transiently and reused across passes, and which sequential passes can be merged into a single Vulkan render pass for on-tile hardware.
+
+This pattern emerged in the game engine community as a response to the unmaintainable tangle of hand-authored barriers that accumulates as real-time rendering pipelines grow more complex. In Vulkan, a frame graph maps cleanly onto the synchronisation primitives covered in this chapter: timeline semaphores for cross-queue ordering, `VkDependencyInfo` structures for intra-queue resource transitions, and render-pass merge for subpass optimisation. Section 8 examines practical frame graph designs and the trade-offs between compile-time and runtime graph evaluation in production engines.
 
 ---
 

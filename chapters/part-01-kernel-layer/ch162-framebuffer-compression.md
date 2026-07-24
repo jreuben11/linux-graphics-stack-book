@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is Framebuffer Compression?](#11-what-is-framebuffer-compression)
+   - [1.2 What is a DRM Format Modifier?](#12-what-is-a-drm-format-modifier)
+   - [1.3 What is Memory Tiling?](#13-what-is-memory-tiling)
 2. [Why Framebuffer Compression?](#why-framebuffer-compression)
 3. [AFBC: ARM Frame Buffer Compression](#afbc-arm-frame-buffer-compression)
 4. [AMD DCC: Delta Colour Compression](#amd-dcc-delta-colour-compression)
@@ -30,6 +33,24 @@ Vendors use proprietary compression schemes:
 - **UBWC** (Universal Bandwidth Compression) — Qualcomm Adreno
 
 The Linux kernel represents compressed buffers via **DRM format modifiers** — a 64-bit value appended to the DRM format (e.g. `DRM_FORMAT_XRGB8888 | modifier`) that encodes the compression scheme, tiling layout, and tile size. This chapter covers each compression scheme and the kernel/Mesa/Wayland infrastructure for modifier negotiation.
+
+### 1.1 What is Framebuffer Compression?
+
+Framebuffer compression is a hardware technique in which a GPU's memory controller transparently compresses pixel data as it is written to DRAM and decompresses it on read, reducing the effective memory bandwidth consumed by rendering and display operations. The framebuffer — the region of GPU-accessible memory that holds the rendered image awaiting display — is the dominant bandwidth consumer in a graphics pipeline: a 4K display at 60 Hz with 32 bits per pixel requires roughly 1.9 GB/s of read bandwidth from the display controller alone, before accounting for render traffic from draw calls, shadow maps, and post-processing passes.
+
+GPU vendors implement proprietary compression algorithms tuned to the statistical properties of rendered imagery. Large uniform regions, smooth colour gradients, and repeated values are exploited for high compression ratios, while the compression and decompression logic sits entirely inside the GPU and display hardware, making the scheme transparent to the CPU and to software operating on unmodified pixel coordinates. Compression ratios of 2× to 4× are typical for UI content; complex scene geometry yields roughly 1.5× to 2×. Because hardware compression is always vendor-specific and often generation-specific, the Linux kernel requires a standardised mechanism — the DRM format modifier — to communicate which compressed layout a buffer uses. This chapter describes the four dominant framebuffer compression schemes on Linux — AFBC, DCC, CCS, and UBWC — and the kernel, Mesa, and Wayland infrastructure that coordinates compressed buffer sharing among the GPU, display controller, video decoder, and compositor.
+
+### 1.2 What is a DRM Format Modifier?
+
+A DRM format modifier is a 64-bit vendor-specific token that extends a DRM pixel format (such as `DRM_FORMAT_XRGB8888`) to describe how a buffer's pixels are arranged in memory beyond a simple row-by-row layout. Modifiers encode tiling patterns, compression schemes, the presence and layout of auxiliary surfaces (DCC keys, CCS planes, AFBC header tables), and hardware-generation-specific swizzle modes. When two kernel drivers — for example a GPU render driver and a display controller driver — want to share a buffer without a copy, they must agree on the modifier describing that buffer's layout; the negotiation happens at buffer allocation time through kernel APIs.
+
+In the kernel, modifiers appear in `struct drm_format_modifier_blob`, attached to KMS plane properties via `DRM_IOCTL_MODE_OBJ_SETPROPERTY`, and in the `GBM_BO_WITH_MODIFIERS` path of the Generic Buffer Manager library. User space exposes them through `EGL_EXT_image_dma_buf_import_modifiers` and Wayland's `zwp_linux_dmabuf_v1` protocol, which allow the compositor and client to enumerate and select a mutually supported modifier before the buffer is allocated. The modifier namespace is partitioned by vendor bits in the upper 56 bits of the 64-bit value: Intel uses the `INTEL` vendor namespace, AMD uses `AMD_FMT_MOD`, ARM uses `DRM_FORMAT_MOD_VENDOR_ARM`, and Qualcomm uses `DRM_FORMAT_MOD_VENDOR_QCOM`. All standardised modifier definitions are in `include/uapi/drm/drm_fourcc.h` in the kernel source tree.
+
+### 1.3 What is Memory Tiling?
+
+Memory tiling is a pixel-storage strategy in which the framebuffer is partitioned into rectangular blocks (tiles) and the pixels within each tile are stored contiguously in memory, rather than in the row-by-row scanline order a CPU would naturally use. A typical tile is 64×64 pixels: all pixels in the top-left 64×64 region are stored together, then all pixels in the next 64×64 region, and so on. Tiling improves GPU cache utilisation for 2D texture reads because accesses to neighbouring pixels in both the X and Y dimensions land in the same or adjacent cache lines; scanline order optimises only the X dimension, causing cache misses on every GPU texture fetch that steps downward in Y.
+
+Hardware framebuffer compression is almost always layered on top of tiling because the compression unit operates on individual tiles or superblocks rather than on arbitrary spans of pixels, and the compression state — whether a tile is solid colour, partially compressed, or uncompressed — is stored in a separate small auxiliary surface whose addressing depends on the tile geometry of the main surface. Understanding tiling is therefore a prerequisite to understanding how AFBC organises its superblock header table, how DCC indexes its per-tile key bytes, and how CCS stores its 2-bit per-block tags. In the DRM modifier namespace, tiling and compression are expressed together: `I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS` encodes both the Intel Y-tile layout and the Gen12 render-compression CCS auxiliary surface in a single 64-bit value, while `AMD_FMT_MOD_TILE_GFX9_64K_R_X` describes AMD's RDNA swizzle mode, on top of which DCC bits are OR-ed in.
 
 ---
 

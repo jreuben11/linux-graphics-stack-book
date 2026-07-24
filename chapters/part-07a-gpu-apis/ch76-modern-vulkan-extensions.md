@@ -10,6 +10,9 @@
 ## Table of Contents
 
 1. [The Extension Model](#1-the-extension-model)
+   - [1.1 What is Vulkan?](#11-what-is-vulkan)
+   - [1.2 What is a Vulkan Extension?](#12-what-is-a-vulkan-extension)
+   - [1.3 What is SPIR-V?](#13-what-is-spir-v)
 2. [VK_KHR_dynamic_rendering (Vulkan 1.3)](#2-vk_khr_dynamic_rendering-vulkan-13)
 3. [Descriptor Indexing and Bindless Resources](#3-descriptor-indexing-and-bindless-resources)
 4. [Mesh Shaders (VK_EXT_mesh_shader)](#4-mesh-shaders-vk_ext_mesh_shader)
@@ -143,6 +146,34 @@ The extensions that together define post-1.2 usage patterns — the ones that Va
 **`VK_EXT_extended_dynamic_state3`** (**EDS3**) adds approximately 33 additional dynamic states beyond those promoted to **Vulkan** 1.3 core by **`VK_EXT_extended_dynamic_state`** and **`VK_EXT_extended_dynamic_state2`**. Coverage includes rasterisation mode (**`vkCmdSetPolygonModeEXT`**), sample count (**`vkCmdSetRasterizationSamplesEXT`**), per-attachment colour blend (**`vkCmdSetColorBlendEnableEXT`**, **`vkCmdSetColorBlendEquationEXT`**, **`vkCmdSetColorWriteMaskEXT`**), conservative rasterisation, and **NVIDIA**-specific states. Driver state tracking impact on **RADV** (via `radv_dynamic_state`) and **ANV** (Xe-HPG 3D-state packets) is analysed. EDS3 is implicitly required by **`VK_EXT_shader_object`**.
 
 The chapter concludes with a driver adoption matrix spanning **RADV**, **ANV**, **NVK**, the **NVIDIA** proprietary driver, and **AMDVLK** as of **Mesa 25.x–26.x**, **Vulkan CTS** conformance notes (including the **AMDGPU** gang-submit kernel requirement for mesh-shader task-payload correctness), and real-world adoption profiles for **DXVK**, **VKD3D-Proton 3.0**, **Bevy 0.14**, **Godot 4**, and **Unreal Engine 5**.
+
+### 1.1 What is Vulkan?
+
+Vulkan is a low-overhead, explicit graphics and compute API standardised by the Khronos Group. Unlike its predecessor OpenGL, Vulkan exposes GPU resources — command queues, memory heaps, synchronisation primitives, descriptor sets, and pipeline state objects — directly to the application layer with minimal driver abstraction. This design shifts responsibility for resource lifetime, memory allocation, synchronisation, and pipeline compilation from the driver to the application, enabling deterministic performance at the cost of verbosity.
+
+Within the Linux graphics stack, Vulkan sits between user-space applications and the kernel DRM subsystem. User-space Installable Client Drivers (ICDs) — RADV for AMD hardware, ANV for Intel, NVK for NVIDIA — implement the `libvulkan.so` ABI and communicate with GPU hardware via DRM `ioctl` calls and kernel GEM buffer management. The Vulkan loader (`libvulkan.so.1`) dispatches API calls to the correct ICD based on physical device enumeration. The API is versioned via minor versions (1.0 through 1.4 as of 2026); each minor version promotes a set of previously optional extensions into the mandatory core, progressively narrowing what applications must query before use.
+
+This chapter focuses on the extensions promoted to Vulkan 1.2 and 1.3 core, and the multi-vendor EXT extensions that together define post-1.2 "modern Vulkan" as used by DXVK, VKD3D-Proton, Unreal Engine 5, and the Mesa RADV, ANV, and NVK drivers.
+
+[Source: Khronos Vulkan Overview](https://www.vulkan.org/learn/vulkan-overview)
+
+### 1.2 What is a Vulkan Extension?
+
+A Vulkan extension is an optional, named increment to the Vulkan API — a set of new entry points, structures, enumerants, or SPIR-V capabilities that a physical device may or may not support. The extension mechanism is the primary vehicle through which Vulkan evolves without breaking backwards compatibility; no application is required to use an extension it has not explicitly queried and enabled via `vkEnumerateDeviceExtensionProperties` and `VkDeviceCreateInfo`.
+
+Extensions are categorised by prefix: `VK_KHR_` for Khronos-ratified extensions, `VK_EXT_` for multi-vendor agreements, and vendor-specific prefixes (`VK_NV_`, `VK_AMD_`, `VK_QCOM_`, etc.) for proprietary feature exposure. The standard lifecycle runs from single-vendor experimentation through multi-vendor consensus to KHR ratification and eventual promotion into a core Vulkan version. On Linux, driver support for a given extension is reported by the Mesa ICD; the Khronos CTS tracks conformance per-extension.
+
+Each extension that introduces new structures or feature bits requires the application to chain those structures into the `pNext` field of creation or query structs. Failing to enable an extension before using its entry points results in undefined behaviour; the Vulkan Validation Layers (`VK_LAYER_KHRONOS_validation`) catch this class of error during development and are a required tool when integrating any extension for the first time.
+
+[Source: Khronos Vulkan Guide — Enabling Extensions](https://github.com/KhronosGroup/Vulkan-Guide/blob/main/chapters/enabling_extensions.adoc)
+
+### 1.3 What is SPIR-V?
+
+SPIR-V (Standard Portable Intermediate Representation — Vulkan) is the binary intermediate representation that Vulkan accepts as shader input. Rather than compiling GLSL, HLSL, or WGSL source directly to GPU machine code at the driver level, Vulkan accepts SPIR-V modules produced by an offline compiler such as `glslangValidator`, DXC, or Tint. The GPU driver's ICD then translates SPIR-V to vendor ISA — AMDGPU ISA via the ACO or LLVM backend in RADV, Intel EU ISA via the BRWA compiler in ANV, or NVIDIA's internal IR in NVK via the NAK backend.
+
+SPIR-V is extended by Vulkan extensions through named capability declarations and `OpExtension` instructions embedded in the module header. Several extensions covered in this chapter introduce new SPIR-V opcodes: `VK_EXT_mesh_shader` adds `OpEmitMeshTasksEXT` and `OpSetMeshOutputsEXT`; `VK_KHR_cooperative_matrix` adds `OpCooperativeMatrixMulAddKHR`; `VK_EXT_descriptor_indexing` enables the `RuntimeDescriptorArray` capability. The shader compiler toolchain — `glslangValidator` for GLSL, DXC for HLSL — emits these opcodes when the corresponding GLSL extensions (`GL_EXT_mesh_shader`, `GL_KHR_cooperative_matrix`) or HLSL Shader Model 6.x targets are activated.
+
+[Source: Khronos SPIR-V Specification](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html)
 
 ---
 

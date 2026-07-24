@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [OpenXR Programming Model: Sessions, Swapchains, and the Action System](#1-openxr-programming-model-sessions-swapchains-and-the-action-system)
+   - [1.1 What is XR (Extended Reality)?](#11-what-is-xr-extended-reality)
+   - [1.2 What is OpenXR?](#12-what-is-openxr)
+   - [1.3 What is Monado?](#13-what-is-monado)
 2. [OpenXR Swapchains and Compositor Layers](#2-openxr-swapchains-and-compositor-layers)
 3. [Monado: Runtime Architecture and the Driver Interface](#3-monado-runtime-architecture-and-the-driver-interface)
 4. [Display Backend: Direct Mode and the DRM Path](#4-display-backend-direct-mode-and-the-drm-path)
@@ -200,6 +203,18 @@ xrCreateAction(action_set, &trigger_info, &trigger_action);
 ```
 
 After attaching the action set to the session with **`xrAttachSessionActionSets`**, the per-frame loop calls **`xrSyncActions`** to update all action states, then **`xrGetActionStateBoolean`** to read the trigger. Haptic output uses **`xrApplyHapticFeedback`** with an **`XrHapticVibration`** specifying amplitude, frequency (Hz), and duration (nanoseconds).
+
+### 1.1 What is XR (Extended Reality)?
+
+XR is the umbrella term for the spectrum of immersive computing experiences: Virtual Reality (VR) presents a fully synthetic environment replacing the user's physical view, Augmented Reality (AR) overlays digital content onto a camera feed or see-through display, and Mixed Reality (MR) anchors digital objects to real-world geometry detected by spatial sensors. On Linux these experiences share the same software stack: the kernel exposes display and input hardware through DRM/KMS and V4L2 respectively, Mesa and Vulkan provide GPU rendering, and a runtime such as Monado mediates between applications and hardware. An XR headset (HMD, Head-Mounted Display) typically combines a high-resolution stereo display driven at 72–120 Hz, one or more inside-out tracking cameras, and a MEMS IMU for orientation measurement. The central software challenge is compositing rendered frames at the correct predicted pose with enough precision that the latency between head movement and display update (motion-to-photon latency) stays below 20 ms to avoid discomfort. The Linux kernel stack addresses this through low-latency DRM direct-mode display paths, V4L2 camera capture with DMA-BUF zero-copy transfer, and GPU compute-based reprojection. This chapter covers all of these infrastructure layers — DRM leasing, Vulkan compositor pipelines, IMU fusion, and SLAM-based inside-out tracking — using OpenXR as the unified API surface that ties them together.
+
+### 1.2 What is OpenXR?
+
+OpenXR is the Khronos Group cross-platform API standard for XR devices, released at version 1.0 in July 2019 and updated to 1.1 in 2024. It defines a portable C API covering device discovery, session management, frame rendering, spatial coordinate frames, and controller input abstraction in a hardware-agnostic way. An application links against the OpenXR loader (`libopenxr_loader.so` on Linux), which at runtime discovers an active runtime via a JSON manifest file — typically at `XDG_CONFIG_HOME/openxr/1/active_runtime.json` or overridden with `XR_RUNTIME_JSON`. The runtime is the privileged component that owns the display pipeline and sensor fusion; the loader dispatches API calls to it through a well-defined function-pointer table. OpenXR mirrors Vulkan's ICD/loader design: the same application binary operates unchanged with Monado, SteamVR, or any conformant runtime without recompilation. The API organises its objects hierarchically: `XrInstance` (one per process), `XrSystemId` (identifies the hardware set), `XrSession` (ties rendering to a specific graphics API), `XrSwapchain` (image pools owned by the runtime compositor), and `XrSpace` (coordinate frame for spatial queries). Extensions follow the `XR_KHR_*`, `XR_EXT_*`, and vendor-prefix naming conventions. [Source: OpenXR 1.1 Specification](https://registry.khronos.org/OpenXR/specs/1.1/html/xrspec.html)
+
+### 1.3 What is Monado?
+
+Monado is the open-source OpenXR runtime for Linux, hosted under the Freedesktop.org umbrella and licensed under the Boost Software License. It serves as the reference implementation for understanding how OpenXR maps onto Linux kernel and Mesa primitives, and is the runtime this chapter uses for concrete examples. Monado's internal architecture is built around the XR Framework (XRT) layer: a set of C interfaces (`xrt_device`, `xrt_compositor`, `xrt_swapchain`) that decouple the OpenXR API surface from hardware-specific driver code. Hardware support is provided through plug-in drivers: `survive` wraps `libsurvive` for Valve Lighthouse-tracked devices, `wmr` drives Windows Mixed Reality headsets, `rs` interfaces with Intel RealSense depth cameras, and `simulated` provides a headless device for CI and development. Monado runs in two modes: a system service (`monado-service`) reachable over a Unix domain socket, where multiple clients share the runtime via IPC with `SCM_RIGHTS`-passed `DMA-BUF` file descriptors; or linked directly in-process for single-application deployments. The internal compositor pipeline is a Vulkan compute pass that performs lens distortion correction, Asynchronous Timewarp (ATW) reprojection, and layer compositing, writing the result to a GBM-allocated scanout buffer that the kernel DRM subsystem presents directly to the HMD display connector. [Source: Monado repository](https://gitlab.freedesktop.org/monado/monado)
 
 ---
 

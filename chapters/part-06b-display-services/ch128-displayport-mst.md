@@ -14,6 +14,10 @@ It assumes familiarity with the KMS atomic modesetting framework (Chapter 2) and
 ## Table of Contents
 
 1. [Introduction: What MST Solves](#1-introduction-what-mst-solves)
+   - [1.1 What is DisplayPort?](#11-what-is-displayport)
+   - [1.2 What is Multi-Stream Transport (MST)?](#12-what-is-multi-stream-transport-mst)
+   - [1.3 What is an MST Branch Device?](#13-what-is-an-mst-branch-device)
+   - [1.4 What is drm_dp_mst_topology?](#14-what-is-drm_dp_mst_topology)
 2. [DisplayPort Physical and Link Layer](#2-displayport-physical-and-link-layer)
 3. [SST vs MST Architecture](#3-sst-vs-mst-architecture)
 4. [Kernel drm_dp_mst_topology](#4-kernel-drm_dp_mst_topology)
@@ -40,6 +44,38 @@ On Linux the entire MST machinery lives in `drivers/gpu/drm/display/drm_dp_mst_t
 - **Handles hotplug** by processing upstream request messages from branch devices.
 
 This chapter walks through the complete stack: from DP electrical layers and sideband protocol, through the kernel topology manager and its atomic integration, through USB-C Alt Mode and Thunderbolt docking, to real-world bandwidth budgeting and debugging.
+
+### 1.1 What is DisplayPort?
+
+DisplayPort (DP) is a royalty-free digital display interface standardized by the Video Electronics Standards Association (VESA). It operates over a differential high-speed serial main link of one to four lane pairs, with a separate bidirectional AUX channel for control traffic. Unlike HDMI, which carries audio-video alongside consumer-electronics control signaling, DisplayPort was designed as a packetized, computer-centric interface capable of transporting multiple independent video streams over a single physical connector.
+
+The main link transmits video data in a source-synchronous fashion, with the source controlling symbol rate and the sink's pixel-clock derived from the recovered stream clock. Successive specification revisions—DP 1.1 through DP 2.1—have increased per-lane symbol rates from 2.7 Gbd to 20 Gbd, and have refined channel coding from 8b/10b to the more efficient 128b/132b (UHBR) encoding. A four-lane UHBR20 link can sustain over 77 Gbps of payload bandwidth, sufficient for 16K@60Hz or multiple 4K streams simultaneously.
+
+On Linux, hardware AUX channel access is abstracted by `struct drm_dp_aux` and its `.transfer` callback, implemented by each display driver. DPCD (DisplayPort Configuration Data) registers accessible through the AUX channel define the capability and status of every sink device. The kernel's DisplayPort helper library in `drivers/gpu/drm/display/` provides unified access to link training, EDID retrieval, and MST control independent of GPU vendor, meaning that the same MST enumeration code runs across i915, amdgpu, and nouveau without duplication.
+
+### 1.2 What is Multi-Stream Transport (MST)?
+
+Multi-Stream Transport (MST) is a DisplayPort protocol extension introduced in DP 1.2 that allows a single physical DP link to carry multiple independent video streams simultaneously. Without MST, a standard Single-Stream Transport (SST) link is a point-to-point connection: one source port, one sink port, and one video stream consuming the entire link bandwidth. MST replaces this with a time-division multiplexed scheme in which the main link bandwidth is partitioned into 64 payload slots per Multi-stream Transport Packet (MTP) cycle, each slot carrying 54 bytes of video payload.
+
+Each active video stream is assigned a contiguous range of payload slots, forming a Virtual Channel (VC). The source GPU allocates and de-allocates VCs dynamically using ALLOCATE_PAYLOAD sideband messages, negotiating bandwidth in units called Payload Bandwidth Numbers (PBN). A DP link operating at HBR2 (4-lane) provides roughly 17.28 Gbps of raw bandwidth; MST allows that bandwidth to be split among, for example, a 4K@60Hz stream and a 1080p@60Hz stream on the same cable without either stream being aware of the other.
+
+MST requires both the source GPU and every intermediate branch device to support the protocol. A non-MST-capable sink connected through a branch device still receives its stream correctly because the branch device extracts the relevant VC and presents it as SST. The kernel capability check `drm_dp_read_mst_cap()` reads DPCD register `DP_MSTM_CAP` (`0x0021`) to determine whether an attached device supports the full MST sideband protocol or only a single stream.
+
+### 1.3 What is an MST Branch Device?
+
+An MST branch device is any hardware component that sits between the GPU's DP source port and one or more display sinks, participates in the MST sideband protocol, and routes payload slots to the correct downstream port. Common examples include USB-C docking stations with multiple display outputs, dedicated MST hubs (small adapters with one DP input and two or more DP outputs), and daisy-chain-capable monitors that expose an additional DP output connector on their chassis.
+
+A branch device maintains a port list, where each port either connects to another branch device or to a display sink. The device reports its topology through LINK_ADDRESS sideband replies, which the kernel uses to build an in-memory tree of `struct drm_dp_mst_branch` and `struct drm_dp_mst_port` objects. Each sink port on a branch device maps to one KMS connector (for example `DP-1-1`, `DP-1-2`) created dynamically as the kernel walks the topology.
+
+Branch devices also forward ALLOCATE_PAYLOAD and CLEAR_PAYLOAD_ID_TABLE commands to downstream branches, maintain local payload tables, and generate upstream CONNECTION_STATUS_NOTIFY and RESOURCE_STATUS_NOTIFY messages when a monitor is connected or disconnected. The routing of sideband messages through a branch tree is governed by the Link Count Total (LCT), Link Count Remaining (LCR), and Relative Address (RAD) fields embedded in each message header, allowing the source to address any node in a tree up to seven hops deep.
+
+### 1.4 What is drm_dp_mst_topology?
+
+`drm_dp_mst_topology` is the Linux kernel subsystem that implements all client-side MST protocol logic shared across GPU drivers. The core implementation lives in `drivers/gpu/drm/display/drm_dp_mst_topology.c` [Source](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/display/drm_dp_mst_topology.c) with its public API in `include/drm/display/drm_dp_mst_helper.h`. The subsystem handles topology enumeration, sideband message encoding and decoding, VC payload slot allocation integrated with KMS atomic modesetting, and hotplug event processing.
+
+Drivers that support MST—including i915, amdgpu, and nouveau—allocate a `struct drm_dp_mst_topology_mgr` per DP port and call `drm_dp_mst_topology_mgr_set_mst()` when MST capability is detected on a newly connected link. The manager spawns a kernel worker that sends LINK_ADDRESS requests, walking the branch tree and creating KMS connectors for each discovered sink. The atomic modesetting path integrates through `drm_dp_mst_atomic_check()`, which validates that the total PBN demand across all active streams on a link does not exceed available link bandwidth, and through `drm_dp_mst_atomic_setup_commit()` and `drm_dp_mst_atomic_wait_for_dependencies()`, which coordinate the sequencing of payload table updates with display enable and disable transitions.
+
+This subsystem eliminates the need for each GPU driver to re-implement the MST protocol layer; drivers provide only the hardware-specific AUX transfer callback and expose the resulting KMS connectors to compositors through the standard DRM UAPI.
 
 ---
 

@@ -9,6 +9,9 @@
 ## Table of Contents
 
 - [1. Introduction — Two Frameworks, One Problem](#1-introduction--two-frameworks-one-problem)
+  - [1.1 What is GEM?](#11-what-is-gem)
+  - [1.2 What is TTM?](#12-what-is-ttm)
+  - [1.3 What is the PCIe BAR?](#13-what-is-the-pcie-bar)
 - [2. GPU Memory Topology](#2-gpu-memory-topology)
 - [3. GEM Internals: Shmem, DMA-Contiguous, and Driver-Specific Variants](#3-gem-internals-shmem-dma-contiguous-and-driver-specific-variants)
 - [4. TTM: Translation Table Manager in Depth](#4-ttm-translation-table-manager-in-depth)
@@ -52,6 +55,30 @@ This chapter goes deeper into internals that Ch4 only sketches:
 - **drm_gpuvm/drm_exec locking protocol**
 - **Resizable BAR upgrade path**
 - **debugging interfaces** — let you observe GPU memory state in production
+
+### 1.1 What is GEM?
+
+GEM (Graphics Execution Manager) is the kernel framework that provides the foundational object model for GPU buffer management in Linux. Before GEM landed in Linux 2.6.28, each DRM driver managed its own private memory allocation scheme with no shared infrastructure, making cross-driver sharing, handle-based access control, and memory accounting impossible at the framework level.
+
+GEM defines a single primitive: the `drm_gem_object`, a reference-counted kernel object representing a GPU-accessible buffer. Userspace refers to GEM objects through opaque integer handles obtained via `DRM_IOCTL_GEM_CREATE` or equivalent driver-specific ioctls. The kernel enforces handle-to-object lookup through a per-file handle table (`drm_gem_handle_create` / `drm_gem_handle_delete`), providing isolation between processes.
+
+Critically, GEM does not dictate where memory lives. It provides the lifecycle scaffold — creation, reference counting, file descriptor export via `DRM_IOCTL_PRIME_HANDLE_TO_FD`, and destruction — but leaves physical placement, CPU mapping, and GPU address assignment entirely to the driver. This deliberate minimalism allows GEM to serve both simple integrated-GPU drivers (panfrost, lima, v3d) that back objects with anonymous shmem pages and complex discrete-GPU drivers (amdgpu, nouveau) that layer TTM on top. The `drm_gem_object_funcs` vtable is the extension point where drivers plug in their specialised behaviour. Chapter 4 of this book covers the GEM object lifecycle in detail; this chapter focuses on the specialised helper types and internal mechanics.
+
+### 1.2 What is TTM?
+
+TTM (Translation Table Manager) is the kernel subsystem that provides multi-domain GPU memory management on top of the GEM object model. It was developed originally for the VMware virtual GPU driver (vmwgfx) and subsequently adopted by amdgpu, nouveau, and the discrete-memory path of i915 (for DG1/DG2/Arc hardware).
+
+The central insight behind TTM is that GPU buffers have placement requirements that change over time. A texture may be resident in VRAM during rendering, evicted to GTT (system RAM mapped for GPU DMA access) under memory pressure, and later migrated back to VRAM when the workload resumes. TTM models this through the concept of memory types — named resource domains indexed by integer constants (`TTM_PL_SYSTEM`, `TTM_PL_TT`, `TTM_PL_VRAM`) — each managed by a pluggable `ttm_resource_manager` with its own allocator, capacity, and LRU eviction list.
+
+Each TTM buffer object (`ttm_buffer_object`) carries a placement policy (`ttm_placement`) specifying a prioritised list of acceptable memory domains. When allocation in the preferred domain fails, TTM walks the LRU and evicts other objects to free space, relocating them to lower-priority domains. This eviction loop runs transparently to userspace. TTM also manages the CPU-side mapping layer (`ttm_tt`) that backs the scatter-gather table used for GTT mappings and, on the CPU side, the virtual memory mappings surfaced via `mmap`. The locking discipline around eviction and CPU access is one of the most intricate aspects of the subsystem and is examined in §4.
+
+### 1.3 What is the PCIe BAR?
+
+A Base Address Register (BAR) is an entry in a PCIe device's configuration space that describes a range of physical memory address space the device exposes to the CPU. The system firmware maps BARs into the host physical address space during boot, allowing the CPU to perform MMIO reads and writes directly to device-side memory without involving DMA. For discrete GPUs, the BAR is the only mechanism by which the CPU can directly read or write VRAM.
+
+The historical constraint on GPU BARs arose from the PCI specification's requirement that 32-bit MMIO resources fit within the 4 GB address space, which BIOS implementations interpreted as a 256 MB ceiling on BAR0 even when the GPU carried 8–80 GB of VRAM. This forced drivers to implement a windowing scheme: only a 256 MB slice of VRAM is CPU-addressable at any moment, and large CPU-to-VRAM transfers must be staged through GTT.
+
+Resizable BAR (ReBAR), standardised in the PCIe 4.0 specification, allows firmware and the operating system to negotiate a BAR size equal to the full VRAM capacity. When enabled, the entire VRAM aperture becomes CPU-visible, eliminating the need for GTT staging on upload paths and enabling zero-copy CPU-side writes to GPU buffers. AMD markets this feature as Smart Access Memory (SAM) in the context of Ryzen platforms with RDNA2+ GPUs. The kernel side of ReBAR negotiation lives in the PCI subsystem (`pci_resize_resource`), while the DRM driver then re-maps the expanded BAR through `pci_iomap`. Section §7 of this chapter covers the driver-level implementation.
 
 ---
 

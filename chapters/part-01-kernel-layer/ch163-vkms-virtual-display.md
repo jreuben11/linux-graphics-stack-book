@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is Kernel Mode Setting (KMS)?](#11-what-is-kernel-mode-setting-kms)
+   - [1.2 What is a Virtual Display Driver?](#12-what-is-a-virtual-display-driver)
+   - [1.3 What is a DRM Writeback Connector?](#13-what-is-a-drm-writeback-connector)
 2. [VKMS: Virtual Kernel Modesetting Driver](#vkms-virtual-kernel-modesetting-driver)
 3. [VKMS Architecture and Source Layout](#vkms-architecture-and-source-layout)
 4. [Vblank Simulation and the Composition Worker](#vblank-simulation-and-the-composition-worker)
@@ -43,6 +46,28 @@ Together, these enable running Wayland compositors, IGT tests, and Vulkan/OpenGL
 VKMS is the most important of these for kernel-level graphics testing. It was first merged in Linux 4.14 and has grown steadily into a reference implementation of the DRM atomic modesetting API, a substrate for compositor CI, and a platform for developing and validating new DRM subsystem features before they reach real hardware drivers.
 
 Sources: [VKMS in kernel](https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/vkms) | [IGT GPU tests](https://gitlab.freedesktop.org/drm/igt-gpu-tools) | [VKMS kernel documentation](https://docs.kernel.org/gpu/vkms.html)
+
+### 1.1 What is Kernel Mode Setting (KMS)?
+
+Kernel Mode Setting is the Linux DRM subsystem's mechanism for configuring display hardware from within the kernel. Before KMS, mode-setting—selecting display resolution, refresh rate, and pixel format—was handled by userspace graphics servers, which caused flickering during boot and mode transitions. KMS moves this responsibility into the kernel, giving the DRM layer exclusive ownership of display hardware configuration.
+
+The KMS API centers on four object types: CRTCs (scanout controllers), encoders (signal converters), connectors (physical display outputs), and planes (pixel sources blended together for scanout). A modern "atomic" KMS path bundles property changes across all these objects into a single atomic commit that the driver validates and applies in one operation. The atomic path eliminates the partial-update races inherent in legacy modesetting and is the foundation for tear-free display. VKMS implements the full atomic KMS interface (`DRIVER_MODESET | DRIVER_ATOMIC`), making it a complete software reference of the DRM atomic modesetting API.
+
+Kernel documentation for the DRM/KMS API: [https://www.kernel.org/doc/html/latest/gpu/drm-kms.html](https://www.kernel.org/doc/html/latest/gpu/drm-kms.html)
+
+### 1.2 What is a Virtual Display Driver?
+
+A virtual display driver is a DRM driver that exposes the full display infrastructure—connector, CRTC, encoder, and planes—without connecting to physical scanout hardware. It exists to satisfy the DRM API surface so that compositors, userspace clients, and test suites can operate as if a real display were attached.
+
+Virtual display drivers are essential for CI pipelines, containerized environments, and headless servers where no GPU or physical monitor is present. They allow a Wayland compositor to start, allocate framebuffers, submit atomic commits, and receive vblank events entirely in software—enabling pixel-accurate rendering tests and compositor integration tests in automated environments with no display hardware.
+
+Linux includes several virtual display solutions suited to different parts of the stack. VKMS is a software-only DRM driver that lives entirely in the kernel and simulates every aspect of display hardware, from vblank timing to pixel composition. The evdi driver provides a userspace-backed virtual display used by DisplayLink devices. The virtio-gpu driver implements a paravirtualized GPU interface for virtual machines. The DRM writeback connector extends any CRTC with an output-capture path. This chapter covers all of these, with VKMS as the primary focus.
+
+### 1.3 What is a DRM Writeback Connector?
+
+A DRM writeback connector is a special connector type (`DRM_MODE_CONNECTOR_WRITEBACK`) that routes the pixel output of a CRTC into a userspace-provided framebuffer instead of driving a physical display. It is defined in the DRM core (`drivers/gpu/drm/drm_writeback.c`) and exposed to userspace through the standard KMS property interface using a `WRITEBACK_FB_ID` property that the client sets before an atomic commit.
+
+The writeback connector enables pixel-exact verification: a test submits a frame via atomic commit, reads the composed output back through the writeback path, and compares it against a reference image byte for byte. VKMS implements a writeback connector alongside its virtual display connector, giving tests two complementary verification paths—per-frame CRC values via the DRM debugfs CRC interface for fast pass/fail assertions, and full pixel readback via writeback for detailed comparison or golden-image diffing. The writeback path also drives the DRM content protection test suite and is used by compositors for screenshot capture and frame streaming pipelines.
 
 ---
 

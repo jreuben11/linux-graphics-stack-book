@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction — The Multi-Process GPU Problem](#1-introduction--the-multi-process-gpu-problem)
+   - [1.1 What is the DRM GPU Scheduler?](#11-what-is-the-drm-gpu-scheduler)
+   - [1.2 What is a DMA Fence?](#12-what-is-a-dma-fence)
+   - [1.3 What is a Scheduling Entity?](#13-what-is-a-scheduling-entity)
 2. [Core Data Structures](#2-core-data-structures)
 3. [Job Lifecycle](#3-job-lifecycle)
 4. [The CFS-Inspired Fair Scheduling Algorithm](#4-the-cfs-inspired-fair-scheduling-algorithm)
@@ -34,6 +37,24 @@ The **DRM GPU scheduler** (`drivers/gpu/drm/scheduler/`) is that arbiter. It sit
 The scheduler is a shared library used by virtually every modern DRM driver: AMDGPU, Intel i915 and Xe, Nouveau, the ARM Mali Panfrost/Panthor drivers, and others all depend on it. Understanding it is prerequisite knowledge for any work touching GPU command submission in the Linux kernel.
 
 All source paths in this chapter are relative to the kernel tree at commit [`8c13415c8a43`](https://github.com/torvalds/linux/tree/8c13415c8a4383447c21ec832b20b3b283f0e01a) (Linux `master`, post-v6.19, targeting v6.20, June 2026). Where behaviour differs between v6.19 and v6.20-development is noted explicitly. [Source: `drivers/gpu/drm/scheduler/`](https://github.com/torvalds/linux/tree/8c13415c8a4383447c21ec832b20b3b283f0e01a/drivers/gpu/drm/scheduler)
+
+### 1.1 What is the DRM GPU Scheduler?
+
+The DRM GPU scheduler (`drm_gpu_scheduler`) is a kernel subsystem located in `drivers/gpu/drm/scheduler/` that mediates access to GPU hardware engines across competing processes. On consumer-class GPUs, command buffers submitted to hardware rings execute atomically to completion — the hardware offers no mechanism to preempt a running buffer mid-execution and switch to a higher-priority context. Without a software arbiter, any process could fill a ring and hold the GPU for an arbitrary duration, starving all others. The scheduler addresses this by queuing jobs in software before dispatch, ordering them by a virtual runtime algorithm analogous to the Completely Fair Scheduler used for CPU tasks, and enforcing credit limits so no single client can saturate the hardware's submission capacity.
+
+Because it is implemented as a shared library within the DRM subsystem rather than inside individual drivers, every major DRM driver — including AMDGPU, Intel i915 and Xe, Nouveau, Panfrost, and Panthor — uses the same scheduler infrastructure. Drivers interact with it through a small set of callback operations defined in `struct drm_sched_backend_ops`: preparing a job before dispatch, submitting it to hardware, handling a timeout, and freeing resources after completion. The scheduler manages a separate `drm_gpu_scheduler` instance per hardware engine (GFX ring, compute ring, video decode engine), so work on independent engines can proceed concurrently without mutual interference. This chapter examines the internal data structures, the job lifecycle, the fairness algorithm, and the fence model that connects the scheduler to the broader DMA-fence synchronization framework.
+
+### 1.2 What is a DMA Fence?
+
+A DMA fence (`struct dma_fence`, defined in `include/linux/dma-fence.h`) is the kernel's fundamental primitive for expressing a point-in-time completion event on a hardware timeline. Each fence carries a 64-bit context identifier and a monotonically increasing sequence number. A fence is in one of two states: unsignaled (the associated work has not yet completed) or signaled (it has). Code that must wait for GPU work to finish before proceeding — such as a display engine that needs a frame fully rendered before scanout, or a job that reads a buffer written by a prior job — holds a reference to the fence and either polls it, installs a software callback via `dma_fence_add_callback()`, or blocks with `dma_fence_wait()`.
+
+The DRM GPU scheduler creates two fences per job through the `drm_sched_fence` wrapper: a `scheduled` fence that signals when the job begins executing on the GPU, and a `finished` fence that signals when execution completes. Jobs declare their prerequisites as an xarray of fences via `drm_sched_job_add_dependency()`, and the scheduler waits for all of them before dispatching the job to hardware. The fence abstraction is driver-agnostic: fences from the display engine, the video decoder, and the 3D pipeline all compose uniformly, enabling cross-engine synchronization without driver-specific logic inside the scheduler. This model is also how `drm_syncobj` timeline points expose GPU synchronization to user space through the `DRM_IOCTL_SYNCOBJ_TRANSFER` and related interfaces.
+
+### 1.3 What is a Scheduling Entity?
+
+A DRM scheduling entity (`struct drm_sched_entity`) represents a single client's submission stream to one or more GPU engines. Concretely, when a user-space process opens a DRM device and creates a GPU context — whether through an AMDGPU GEM context, an Intel context, or a Vulkan queue — the driver allocates a `drm_sched_entity` and associates it with a run queue on the target scheduler. The entity owns a single-producer single-consumer job queue (`spsc_queue`) into which the client pushes jobs before they become visible to the scheduler's dispatch workqueue.
+
+The entity also carries a `drm_sched_entity_stats` object (reference-counted separately so it can outlive the entity itself) that accumulates the virtual runtime used by the fairness algorithm. As jobs execute, elapsed GPU time is charged to the entity's vruntime, and the run queue's red-black tree is updated so that recently serviced entities move right (higher vruntime), giving less-serviced entities priority at the next dispatch cycle. An entity can be associated with a list of schedulers — for example, when a context can run on any of several compute rings — and the scheduler transparently load-balances by selecting the least-loaded ring when the job queue drains between submissions. Understanding the entity model is the entry point to both the fairness algorithm in §4 and the per-process GPU time accounting in §8.
 
 ---
 

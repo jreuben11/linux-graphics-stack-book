@@ -18,6 +18,10 @@
   - [1.6 Allwinner D1 / T-Head C906 — No GPU](#16-allwinner-d1--t-head-c906--no-gpu)
   - [1.7 Imagination GPU IP Portfolio: A-Series, B-Series, C-Series, and D-Series](#17-imagination-gpu-ip-portfolio-a-series-b-series-c-series-and-d-series)
   - [1.8 Imagination's Strategic Position in the RISC-V Ecosystem](#18-imaginations-strategic-position-in-the-risc-v-ecosystem)
+  - [1.9 What is RISC-V?](#19-what-is-risc-v)
+  - [1.10 What is Imagination Technologies GPU IP?](#110-what-is-imagination-technologies-gpu-ip)
+  - [1.11 What is drm/imagination?](#111-what-is-drmimagination)
+  - [1.12 What is BVNC?](#112-what-is-bvnc)
 - [Imagination's Commercial Software Stack: DDK, SDK, and Developer Tooling](#imaginations-commercial-software-stack-ddk-sdk-and-developer-tooling)
   - [pvrsrvkm vs drm/imagination: When to Use Which](#pvrsrvkm-vs-drimagination-when-to-use-which)
   - [PowerVR SDK and Native_SDK](#powervr-sdk-and-native_sdk)
@@ -223,6 +227,38 @@ In January 2025, Imagination exited the RISC-V CPU market entirely, discontinuin
 The SpacemiT K3 is notable: its BXM-4-64-MC1 is the same GPU IP tier as the TH1520 milestone, and its announced software stack includes Vulkan 1.3 and OpenCL 3.0 via the proprietary DDK — meaning that when the K3 ships, it will be the first RISC-V consumer product with OpenCL GPU compute [Source: https://blog.imaginationtech.com/risc-v-and-gpu-synergy-in-practice-a-path-towards-high-performance-socs-from-spacemit-k3].
 
 **The upstreaming dividend.** Imagination's decision to support `drm/imagination` as an upstream kernel driver (rather than keeping all RISC-V SoC vendors on the proprietary pvrsrvkm DDK path) creates a long-term ecosystem effect: each new RISC-V SoC design win that adopts a supported GPU BVNC can reach the mainline kernel with weeks of device-tree work rather than years of DDK porting. This is a structurally different position from the one ARM Mali occupies with Panfrost — where Arm provides no upstream driver and community engineers reverse-engineer the hardware — or from the situation that prevailed for Imagination itself before the drm/imagination rewrite.
+
+### 1.9 What is RISC-V?
+
+RISC-V (pronounced "risk-five") is an open-standard instruction set architecture (ISA) based on reduced instruction set computing principles, released under open, royalty-free licenses. Unlike proprietary ISAs such as x86 or Arm, RISC-V is defined by the RISC-V International consortium, and its specifications are freely implementable without per-unit licensing fees, making it attractive to SoC vendors seeking hardware-level freedom analogous to what Linux provides in software.
+
+The base integer ISA exists in 32-bit (RV32I) and 64-bit (RV64I) variants. Optional standard extensions cover multiplication (M), atomic operations (A), floating point (F, D), compressed instructions (C), and the vector extension (V), ratified as RVV 1.0 in 2021. Linux on RISC-V targets RV64GC as the minimum supported baseline — the G shorthand for IMAFD plus Zicsr/Zifencei — and is supported as a first-class architecture in mainline Linux since version 5.0.
+
+For graphics, RISC-V presents specific bring-up challenges addressed throughout this chapter: no decades of driver heritage exist for the architecture, GPU firmware processors may themselves implement a RISC-V ISA requiring separate boot code, and the platform power management model (power domains, clock controllers, mailboxes) differs from the Arm SoC conventions that most existing GPU driver code implicitly assumes. The RISC-V SoC landscape in this area is young — the TH1520 platform, the first to achieve hardware-accelerated 3D graphics with a fully mainline kernel driver, reached that milestone in Linux 6.18.
+
+### 1.10 What is Imagination Technologies GPU IP?
+
+Imagination Technologies is a semiconductor IP licensing company that designs GPU and neural-network accelerator IP blocks for integration into third-party SoCs. Its GPU product line — commercially branded PowerVR — spans multiple generations: the A-Series targets IoT and industrial footprints; the B-Series serves the mainstream mobile and embedded market; the C-Series and D-Series add hardware ray tracing (PowerVR Photon) and functional-safety certification; and the E-Series integrates neural compute directly into the GPU die.
+
+Imagination's GPU IP is delivered as a synthesizable RTL block that connects to the SoC fabric through standard AXI or TCI interconnect, independent of the application CPU architecture. This ISA-agnostic licensing model is the structural reason every RISC-V SoC with an integrated GPU catalogued in this chapter uses Imagination IP: competing GPU IP from Arm (Mali, Immortalis) is commercially available only to SoC vendors that also license Arm CPU cores, making it unavailable by default to RISC-V-based designs.
+
+Each GPU IP block is paired with a software DDK (Driver Development Kit). The DDK historically included a proprietary kernel module (`pvrsrvkm`); since Linux 6.8, an open upstream DRM driver (`drm/imagination`) covers the B-Series and parts of the A-Series, providing the mainline kernel path that this chapter focuses on. The specific hardware variant in use is identified by a four-integer BVNC tuple (see §1.12), which the driver reads from GPU registers during probe to select the correct firmware, feature set, and hardware errata workarounds.
+
+### 1.11 What is drm/imagination?
+
+`drm/imagination` is the mainline Linux kernel DRM driver for Imagination Technologies A-Series and B-Series GPU IP. It resides at `drivers/gpu/drm/imagination/` in the kernel tree and builds as the `powervr` loadable module, selected by `CONFIG_DRM_POWERVR`. The driver was written from scratch rather than adapted from the proprietary `pvrsrvkm` DDK codebase, and was merged into Linux 6.8 in early 2024.
+
+The driver exposes a DRM file descriptor with a custom UAPI ioctl set defined in `include/uapi/drm/pvr_drm.h`. Its subsystems cover: GPU MMU and per-process virtual address space management; GEM buffer objects backed by `shmem`; a firmware loader supporting META, MIPS, and RISC-V embedded processor variants inside the GPU (the RISC-V path is handled by `pvr_fw_riscv.c`); hardware render target (HWRT) management for tile-based deferred rendering; a four-queue job scheduler (geometry, fragment, compute, transfer) built on the kernel's `drm_sched` infrastructure; and runtime power management via the Linux generic power domain (`genpd`) and `devfreq` frameworks.
+
+Mesa's PowerVR Vulkan driver (`src/imagination/`) is the primary userspace client; OpenGL ES support is delivered through the Zink Gallium driver, which translates GL calls to Vulkan. RISC-V platform support entered `drm/imagination` in Linux 6.18 via device tree enablement for the TH1520, making it the first open DRM driver to provide hardware-accelerated 3D graphics on a RISC-V SoC. Kernel documentation is available at `https://docs.kernel.org/gpu/imagination/index.html`.
+
+### 1.12 What is BVNC?
+
+BVNC is the four-integer identifier that Imagination Technologies uses to uniquely specify every variant of its GPU IP. The four fields are Branch, Version, Number of clusters, and Config. Together they encode the hardware description of a GPU core: Branch identifies the ISA generation and architecture family; Version identifies the feature-set revision within that generation; Number of clusters records the count of shader-processing clusters instantiated in this specific SoC integration; and Config encodes the pixel-fill rate and ALU configuration index. A BXM-4-64 MC1 GPU on the TH1520 reads BVNC 36.52.104.182 — Branch 36 maps to the B-Series ISA, Version 52 identifies BXM-4-64 features, and the remaining fields reflect the single-cluster instantiation and hardware register configuration.
+
+In `drm/imagination`, the BVNC is read from the GPU identification register during the `probe` callback and matched against a table in `pvr_device_info.c`. That table records per-BVNC quirks (hardware errata), feature presence (geometry partitioning, FBC compression, ray-tracing units), and supported API tiers. If a BVNC is absent from the table the driver refuses to enumerate the device — this is why ESWIN's AXM-8-256 requires a new entry in `pvr_device_info.c` before the open driver can support that platform (§1.4).
+
+BVNC is also the traceability token across the full software stack: Imagination firmware blobs are distributed with BVNC-encoded filenames (e.g., `rogue_36.52.104.182_v1.fw`), and Mesa's PowerVR Vulkan driver uses the same 4-tuple internally to gate feature queries and Vulkan property values. System integrators encountering a new Imagination GPU on a RISC-V board begin by reading the BVNC from the identification register to determine driver compatibility before any other bring-up step.
 
 ---
 

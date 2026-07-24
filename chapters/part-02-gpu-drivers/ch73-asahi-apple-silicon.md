@@ -10,6 +10,8 @@
 
 - [Overview](#overview)
 - [1. Apple Silicon GPU Architecture: The AGX Family](#1-apple-silicon-gpu-architecture-the-agx-family)
+  - [1.1 What is Asahi Linux?](#11-what-is-asahi-linux)
+  - [1.2 What is AGX?](#12-what-is-agx)
 - [2. The Reverse Engineering Story](#2-the-reverse-engineering-story)
 - [3. Lina's Rust AGX Kernel Driver (drm/asahi)](#3-linas-rust-agx-kernel-driver-drmasahi)
 - [4. The UAPI: Explicit VM and Submission Model](#4-the-uapi-explicit-vm-and-submission-model)
@@ -178,6 +180,22 @@ A helper program — a compute-like kernel supplied by userspace and dispatched 
 Apple Silicon SOCs use a single unified memory subsystem: there is no discrete VRAM, no PCI-E memory controller, and no distinct address space that the GPU "owns." CPU cores, GPU clusters, the Neural Engine, the DCP display controller, and the ISP image signal processor all share the same LPDDR5 or LPDDR5X memory physically attached to the SoC package. A high-bandwidth interconnect fabric routes accesses from each client through its own view of this shared pool.
 
 From the GPU driver's perspective, every GEM buffer object allocated via `DRM_IOCTL_ASAHI_GEM_CREATE` resides in system RAM. There is no heap-of-VRAM to manage. The memory is cache-coherent between CPU and GPU without explicit cache maintenance operations by the driver, simplifying the zero-copy path for DMA-BUF sharing between GPU and camera ISP or video decoder. The implication of this shared bandwidth is examined in [Section 8](#8-unified-memory-architecture-implications).
+
+### 1.1 What is Asahi Linux?
+
+Asahi Linux is an open-source project targeting full Linux support on Apple Silicon SoCs — the family of ARM64 processors Apple designs for its Mac product line. The project addresses a specific problem: Apple does not publish hardware specifications for the subsystems on these SoCs, making conventional driver development impossible. Instead, Asahi Linux employs systematic reverse engineering of macOS binary interfaces to reconstruct sufficient knowledge to write independent Linux drivers.
+
+Within the Linux kernel, Asahi Linux contributes to two subsystems: the DRM (Direct Rendering Manager) subsystem for the GPU and display controller, and the platform driver layer for SoC peripherals such as the PCIe controller, USB, NVMe, and audio. The GPU driver (`drm/asahi`), written in Rust, is the project's most technically complex contribution. It drives the AGX GPU through a firmware-mediated interface rather than direct hardware register programming, requiring the driver to speak a binary protocol that the GPU firmware binary enforces. The firmware manages scheduling, preemption, power management, and fault recovery — responsibilities that on most other architectures belong to fixed-function hardware or the kernel driver itself.
+
+The project's deliverables span both kernel and userspace: the kernel driver manages GPU memory, virtual address spaces, command submission, and synchronisation; the Mesa Asahi Gallium driver and Honeykrisp Vulkan driver provide conformant OpenGL, OpenCL, and Vulkan implementations. Together they deliver the only conformant graphics stack on Apple Silicon hardware under Linux, reaching OpenGL 4.6, OpenGL ES 3.2, OpenCL 3.0, and Vulkan 1.4 — standards higher than those Apple's own Metal-based stack achieves via cross-API translation layers. [Source: Asahi Linux about page](https://asahilinux.org/about/)
+
+### 1.2 What is AGX?
+
+AGX is Apple's in-house GPU architecture, integrated into every Apple Silicon SoC since the A11 Bionic in 2017 and reaching its first desktop-class form with the M1 (chip ID T8103) in 2020. The name appears in Apple's internal firmware structures and co-processor identifiers; the Asahi project adopted it as the canonical designation for the GPU family. Apple has never published a formal architecture guide for AGX; the entire description of its internal organisation has been recovered through reverse engineering of macOS drivers, GPU command streams, and firmware binaries.
+
+AGX belongs to the tile-based deferred rendering (TBDR) family of GPU architectures, sharing lineage with PowerVR designs. Its execution units are Unified Shader Cores (USCs) — shared across vertex, fragment, and compute workloads — running the G13, G14, or G15 ISA depending on the SoC generation. The SoC's Unified Memory Architecture means AGX has no discrete VRAM; it accesses the same LPDDR5/LPDDR5X pool as the CPU, the Neural Engine, and all other SoC clients through a cache-coherent interconnect fabric.
+
+Within the Linux DRM subsystem, AGX is exposed through the `drm/asahi` kernel driver. The UAPI (`include/uapi/drm/asahi_drm.h`) reflects AGX's firmware-centric design: rather than programming hardware registers directly, userspace submits pre-formed data structures — carry render command descriptors, tile dimensions, synchronisation objects, and helper program addresses — to the kernel, which forwards them to GPU co-processor firmware for scheduling and execution. The Mesa Asahi Gallium driver and Honeykrisp Vulkan driver translate standard OpenGL and Vulkan semantics into this AGX-specific binary protocol. [Source: `include/uapi/drm/asahi_drm.h` in Linux mainline](https://github.com/torvalds/linux/blob/master/include/uapi/drm/asahi_drm.h)
 
 ---
 

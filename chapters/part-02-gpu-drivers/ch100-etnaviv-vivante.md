@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction: The Vivante GC-Series GPU Family](#1-introduction-the-vivante-gc-series-gpu-family)
+   - [1.1 What is the Vivante GC-Series?](#11-what-is-the-vivante-gc-series)
+   - [1.2 What is etnaviv?](#12-what-is-etnaviv)
+   - [1.3 What is Gallium3D?](#13-what-is-gallium3d)
 2. [Reverse Engineering History](#2-reverse-engineering-history)
 3. [Vivante GPU Architecture](#3-vivante-gpu-architecture)
 4. [etnaviv Kernel Driver](#4-etnaviv-kernel-driver)
@@ -41,6 +44,30 @@ The driver stack lives across three upstream repositories:
 - **Mesa**: `src/gallium/drivers/etnaviv/` — the Gallium3D userspace driver with NIR-based shader compiler.
 
 This chapter focuses on the 3D-capable path: GC2000 through GC7000UL, using the etnaviv DRM kernel driver paired with the Mesa Gallium driver.
+
+### 1.1 What is the Vivante GC-Series?
+
+The Vivante GC-series refers to a family of GPU IP cores — physical chip designs licensed to SoC manufacturers — produced by Vivante Corporation (later acquired by VeriSilicon). These cores are embedded into systems-on-chip rather than sold as discrete graphics cards: the SoC vendor integrates a GC-series core alongside CPUs, memory controllers, and peripheral interfaces on a single die. The result is a GPU that shares system memory with the CPU, draws a few hundred milliwatts, and targets embedded Linux products such as industrial controllers, smartphones, and single-board computers.
+
+The GC prefix stands for "Graphics Core," and the number following it loosely tracks capability generation: GC320 and GC400 are 2D-only blitting engines, GC600 and GC1000 are OpenGL ES 2.0-class 3D cores, and GC7000 is the most capable generation supporting OpenGL ES 3.x and compute shaders. Each core exposes a register-mapped programming interface over an AXI or AHB bus, and the GPU's firmware and ISA are entirely proprietary — no public programmer's reference manual exists for any GC-series GPU.
+
+In the Linux device tree, a Vivante GC core appears as a node with `compatible = "vivante,gc"`, matched by the etnaviv DRM kernel driver. The hardware appears most commonly in NXP i.MX6 and i.MX8 SoCs, which dominate the embedded Linux market segment where Vivante GPUs are found.
+
+### 1.2 What is etnaviv?
+
+etnaviv is the open-source Linux graphics driver for Vivante GC-series GPUs. The name derives from the original reverse-engineering project (etna_viv), and the driver spans two upstream code trees: a DRM kernel driver at `drivers/gpu/drm/etnaviv/` (mainlined in Linux 4.5) and a Gallium3D Mesa driver at `src/gallium/drivers/etnaviv/`. Together these provide a complete OpenGL ES 2.0 and partial OpenGL ES 3.x implementation without relying on any proprietary code.
+
+The kernel driver handles GPU command submission, memory management through a GPU-side MMU, device power management, and the DRM infrastructure for buffer sharing (GEM, PRIME/DMA-BUF). The Mesa driver implements the OpenGL ES API on top of the Gallium3D state-tracker abstraction and uses a NIR-based shader compiler to translate GLSL shaders into Vivante ISA instruction sequences.
+
+etnaviv operates as a full DRM driver in the direct-rendering model: userspace applications (via EGL/GLES) construct command buffers, validate them through the kernel's command-buffer parser, and submit them for GPU execution. The proprietary GalCore kernel module (`galcore.ko`) and its accompanying userspace libraries are not needed and are replaced entirely by the etnaviv stack.
+
+### 1.3 What is Gallium3D?
+
+Gallium3D is the driver architecture used by Mesa to implement hardware-accelerated 3D graphics APIs. It separates the work of a GPU driver into two components: a state tracker, which implements the graphics API (OpenGL, OpenGL ES, Vulkan, or OpenCL) and emits a hardware-independent intermediate representation, and a pipe driver, which translates that representation into hardware-specific commands. etnaviv is a Gallium3D pipe driver.
+
+The pipe driver interface is defined in `src/gallium/include/pipe/` inside the Mesa source tree. A pipe driver implements callbacks for resource creation, draw calls, shader program compilation, render state binding, and transfer operations (CPU-to-GPU data upload). The state tracker invokes these callbacks; the pipe driver emits register writes or command-stream packets for the specific GPU.
+
+For etnaviv, the Gallium3D separation means that OpenGL ES 2.0 and 3.0 conformance is handled by Mesa's existing state trackers, and the etnaviv pipe driver focuses exclusively on translating Gallium3D draw calls and resource operations into Vivante-specific command streams. NIR (the Mesa IR) is the intermediate representation passed from the state tracker to the etnaviv shader compiler, which then emits Vivante ISA binaries for upload to the GPU.
 
 ---
 

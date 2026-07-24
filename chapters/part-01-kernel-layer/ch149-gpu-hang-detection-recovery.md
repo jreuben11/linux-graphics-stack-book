@@ -10,6 +10,9 @@
 ## Table of Contents
 
 1. [Introduction — Why GPU Hangs Are Different](#1-introduction--why-gpu-hangs-are-different)
+   - [1.1 What is a GPU Hang?](#11-what-is-a-gpu-hang)
+   - [1.2 What is TDR (Timeout Detection and Recovery)?](#12-what-is-tdr-timeout-detection-and-recovery)
+   - [1.3 What is the DRM GPU Scheduler?](#13-what-is-the-drm-gpu-scheduler)
 2. [Linux GPU Hang Taxonomy](#2-linux-gpu-hang-taxonomy)
 3. [The DRM GPU Scheduler Timeout Mechanism](#3-the-drm-gpu-scheduler-timeout-mechanism)
 4. [AMD amdgpu Hang Detection and Recovery](#4-amd-amdgpu-hang-detection-and-recovery)
@@ -44,6 +47,30 @@ The consequences of a GPU hang depend on its severity:
 This chapter traces the complete hang detection and recovery path from the scheduler timeout through driver-specific reset sequences to the userspace API surface.
 
 All source paths are pinned to kernel commit [`8c13415c8a43`](https://github.com/torvalds/linux/tree/8c13415c8a4383447c21ec832b20b3b283f0e01a) (Linux `master`, post-v6.19, targeting v6.20, June 2026).
+
+### 1.1 What is a GPU Hang?
+
+A GPU hang is a condition in which the graphics processing unit stops making forward progress on submitted work. Unlike a CPU fault, which produces an immediate hardware exception with a precise instruction pointer, a GPU hang is typically silent from the kernel's perspective: no interrupt fires, no error is reported, and the hardware simply ceases to complete the jobs it has been given. Pending DMA fences never signal, command queues stall, and any software waiting for GPU completion — a Wayland compositor, a Vulkan application, a video decoder — blocks indefinitely.
+
+GPU hangs arise from several distinct root causes. A shader may enter an infinite loop on hardware that lacks GPU-level preemption, preventing any other work on the same engine from proceeding. A command buffer may reference a corrupted or unmapped GPU virtual address, halting the command processor. Firmware running on the GPU's embedded microcontroller may crash, silencing the interrupt delivery mechanism entirely. ECC hardware may detect an uncorrectable multi-bit memory error and latch the device into a fault state.
+
+Because the kernel receives no automatic notification, the Linux DRM subsystem uses active polling via the DRM GPU scheduler's watchdog timer to detect when a job has exceeded its deadline. The subsequent recovery path — which may involve resetting individual engine rings, the entire GPU, or declaring the device permanently lost — is the primary subject of this chapter. The hang taxonomy in §2 classifies these failure modes systematically.
+
+### 1.2 What is TDR (Timeout Detection and Recovery)?
+
+Timeout Detection and Recovery (TDR) is the software mechanism for detecting and recovering from GPU hangs using a watchdog timer. The term originates in the Windows Driver Model (WDDM), where the operating system mandates a kernel-level watchdog: if a GPU job runs longer than a configurable threshold (two seconds by default via `TdrDelay`), the display driver is forcibly reloaded and applications receive a device-removed error. This behavior is required for all WDDM-compliant display drivers and gives Windows a well-defined, if disruptive, recovery model.
+
+Linux has no kernel-wide mandatory TDR requirement. Instead, the DRM GPU scheduler provides an optional but widely adopted timeout mechanism. When a driver initialises a scheduler with `drm_sched_init()`, it supplies a `timeout` value in jiffies. If the job at the head of the scheduler's pending list has not completed within that window, a delayed work item — `work_tdr` — fires on a kernel workqueue. The work item calls the driver's `timedout_job` callback, which is responsible for assessing whether the GPU is truly hung and performing the appropriate recovery action.
+
+Unlike Windows TDR, Linux TDR behavior is entirely driver-defined: some drivers attempt a per-ring soft reset, others perform a full GPU reset including a PCIe bus reset (BACO or FLR), and some mark the device permanently lost. The callback's return value — `DRM_GPU_SCHED_STAT_ENODEV`, `DRM_GPU_SCHED_STAT_NO_HANG`, or the default reset path — determines whether the TDR timer restarts, the device is declared gone, or a false alarm is acknowledged and the job re-queued.
+
+### 1.3 What is the DRM GPU Scheduler?
+
+The DRM GPU scheduler is a kernel framework located at `drivers/gpu/drm/scheduler/` that provides job queuing, priority scheduling, and hang detection for GPU command submission across multiple DRM drivers. Rather than requiring each driver to implement its own submission queues and timeout machinery independently, the scheduler provides shared infrastructure that drivers integrate via the `drm_sched_backend_ops` callback table, which declares `run_job`, `timedout_job`, and `free_job` entry points.
+
+Each GPU engine (or ring) that a driver manages gets its own `drm_gpu_scheduler` instance, initialised with `drm_sched_init()`. Userspace clients submit work through `drm_sched_entity` objects, which map to priority-ranked run queues inside the scheduler. The scheduler dispatches jobs to the hardware by calling `run_job`, tracks them on a `pending_list`, and monitors completion via DMA fences. When a job completes, its fence is signaled and the next job is dispatched.
+
+The scheduler's hang detection integrates directly with the TDR mechanism: the `work_tdr` delayed work item monitors the head of `pending_list` and invokes `timedout_job` if the deadline is exceeded. Drivers using the DRM GPU scheduler — including amdgpu, i915, xe, panfrost, lima, etnaviv, and v3d — receive this hang detection capability without reimplementing it. The scheduler also supports per-entity priority adjustment, credit-based fairness limiting via `credit_limit`, and load-balancing across multiple hardware queues, making it the central coordination point between TTM/GEM memory management, the DMA fence framework, and the GPU hardware. §3 examines its internals in detail.
 
 ---
 

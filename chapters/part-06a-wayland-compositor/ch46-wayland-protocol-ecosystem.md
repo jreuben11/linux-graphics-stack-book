@@ -17,6 +17,9 @@ Readers should treat version references as tied to the mid-2026 snapshot (Mutter
 ## Table of Contents
 
 1. [Background: The Staging Tier](#1-background-the-staging-tier)
+   - [1.1 What is wayland-protocols?](#11-what-is-wayland-protocols)
+   - [1.2 What is the Staging Tier?](#12-what-is-the-staging-tier)
+   - [1.3 What is `wl_registry` and Protocol Discovery?](#13-what-is-wl_registry-and-protocol-discovery)
 2. [Explicit Synchronisation: `wp_linux_drm_syncobj_v1`](#2-explicit-synchronisation-wp_linux_drm_syncobj_v1)
 3. [HDR Colour Management: `wp_color_management_v1`](#3-hdr-colour-management-wp_color_management_v1)
 4. [Cross-Compositor Screen Capture: `ext-image-copy-capture-v1`](#4-cross-compositor-screen-capture-ext-image-copy-capture-v1)
@@ -89,6 +92,30 @@ This chapter covers five major protocol areas. Section 2 examines **`wp_linux_dr
 | `wp_fifo_v1` | 1.38 (2024) | staging | in-progress | in-progress | ✓ (Smithay) |
 | `wp_commit_timing_v1` | 1.38 (2024) | staging | in-progress | in-progress | ✓ (Smithay) |
 | `wp_security_context_v1` | 1.41 (2024) | staging | partial | ✓ Plasma 6.0 | ✓ |
+
+### 1.1 What is wayland-protocols?
+
+wayland-protocols is the upstream repository that hosts protocol extension specifications for the Wayland display server protocol. Where the core Wayland protocol — defined in `wayland.xml` — covers fundamental objects such as the display, compositor, surface, seat, and output, it deliberately omits higher-level functionality. wayland-protocols fills that gap with a curated set of XML protocol definitions that compositors and clients voluntarily implement on top of the core.
+
+Each protocol is expressed as a Wayland XML file describing interfaces, requests, events, and enumerations. The `wayland-scanner` tool processes these files at build time, generating the C header and glue code that both compositor and client link against. The repository is governed by the Wayland protocol committee, which reviews submissions for correctness, completeness, and absence of known design flaws before advancing a protocol toward stable status.
+
+The repository is hosted at `https://gitlab.freedesktop.org/wayland/wayland-protocols`. Its directory layout reflects the three-tier classification system — `stable/`, `staging/`, and `unstable/` — that determines how freely a protocol's interface may change over time. All protocols examined in this chapter live under `staging/`, meaning they carry a commitment to backward compatibility within a major version while the design continues to mature. Understanding the staging tier is essential context for evaluating the implementation-status tables throughout this chapter.
+
+### 1.2 What is the Staging Tier?
+
+The staging tier is the intermediate maturity level in the wayland-protocols classification system, positioned between the draft `unstable/` tier and the frozen `stable/` tier. A staging protocol has achieved sufficient implementation experience to be considered ready for broad adoption but has not yet satisfied all graduation criteria required for a stability guarantee.
+
+In practical terms, staging protocols use unprefixed or lightly prefixed interface names — such as `wp_` for Wayland-protocol extensions or `ext_` for cross-desktop extensions — rather than the `zwp_` prefix that marks an unstable draft. Compositors and toolkits are encouraged to ship staging protocols in production. Breaking interface changes within a major version are prohibited; if the protocol committee identifies a design flaw requiring a backward-incompatible fix, a new major version is issued. Minor additions with backward-compatible semantics may land without a major version increment.
+
+The staging tier exists because Wayland's stable guarantee is intentionally strict: once a protocol enters `stable/`, its interface is frozen permanently. The staging tier provides a proving ground where implementation experience can surface design issues before locking the ecosystem into a flawed interface. For application developers, staging protocols are generally safe to adopt, with the understanding that occasional major-version migrations do occur. The protocols covered in this chapter — explicit synchronisation, HDR colour management, screen capture, frame scheduling, and portal expansion — all occupy the staging tier as of mid-2026.
+
+### 1.3 What is `wl_registry` and Protocol Discovery?
+
+`wl_registry` is the Wayland mechanism through which a client discovers which protocol extensions a compositor supports at runtime. When a client connects to the Wayland socket, the compositor sends a sequence of `wl_registry.global` events — one per advertised global object — each carrying an interface name string, a unique numeric name, and a version number. A client registers a listener on its `wl_registry` and responds to these events by calling `wl_registry_bind()` for each interface it recognises and requires.
+
+If `wl_registry_bind()` returns `NULL` for a given interface because the compositor did not advertise it, the client must degrade gracefully to an alternative code path. There is no separate capability-query mechanism in the Wayland protocol; the `global` event stream is the sole discovery channel for extensions. This design has direct consequences for the staging protocol ecosystem: every staging protocol a client wants to use requires a runtime check and a corresponding fallback. The code example earlier in this section illustrates the pattern applied to `wp_linux_drm_syncobj_manager_v1` and `wp_color_manager_v1`.
+
+Protocol namespace conventions — `wp_` for staging Wayland extensions, `ext_` for cross-desktop stable or staging protocols, `zwlr_` for wlroots-specific unstable protocols, and `xdp_` for the xdg-desktop-portal D-Bus API — help developers identify the origin and stability tier of each interface without consulting the full XML specification, though the wire format itself does not enforce these conventions.
 
 ---
 

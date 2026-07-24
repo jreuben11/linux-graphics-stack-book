@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is an Input Method Editor (IME)?](#11-what-is-an-input-method-editor-ime)
+   - [1.2 What is `zwp_text_input_v3`?](#12-what-is-zwp_text_input_v3)
+   - [1.3 What is `zwp_input_method_v2`?](#13-what-is-zwp_input_method_v2)
 2. [The IME Problem on Wayland](#the-ime-problem-on-wayland)
 3. [zwp_text_input_v3: The Stable Protocol](#zwp_text_input_v3-the-stable-protocol)
 4. [zwp_input_method_v2: The Input Method Side](#zwp_input_method_v2-the-input-method-side)
@@ -46,6 +49,20 @@ It then traces how the following implement these protocols:
 - **XWayland** — bridges text input back to X11 apps
 
 Key upstream specifications live in [wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols).
+
+### 1.1 What is an Input Method Editor (IME)?
+
+An Input Method Editor (IME) is software that intercepts keyboard events and converts sequences of keystrokes into characters or words that cannot be typed directly on a standard keyboard. The primary use case is East Asian languages (Chinese, Japanese, Korean — collectively CJK), where thousands of distinct characters must be entered using keyboards designed for a few hundred keys at most. An IME presents a candidate window showing possible character matches for a phonetic or stroke-based input sequence; the user selects the intended character, which is then committed to the application. IMEs are equally relevant for Arabic, Indic scripts, and emoji composition on desktop systems.
+
+On Linux, the IME layer consists of two parts: a framework daemon (such as fcitx5 or IBus) that manages input engines and candidate selection logic, and a protocol layer that allows the compositor to broker communication between the IME daemon and the focused application. Without compositor mediation, an IME would require global keyboard access — a security model Wayland deliberately eliminates. The protocols covered in this chapter (`zwp_text_input_v3` and `zwp_input_method_v2`) define how the compositor performs this mediation safely, replacing the X11 XIM mechanism with a three-party model involving the application, the IME process, and the compositor.
+
+### 1.2 What is `zwp_text_input_v3`?
+
+`zwp_text_input_v3` is the application-side Wayland protocol for text input and IME integration. It is defined in the `wayland-protocols` repository under `unstable/text-input/text-input-unstable-v3.xml` and, despite its "unstable" designation, is the de-facto standard used by GTK4, Qt6, and wlroots-based compositors. The protocol defines a `zwp_text_input_v3` object that a toolkit or application creates per seat to communicate text-editing state to the compositor. Through this object, the application reports when focus enters or leaves an editable field, provides the cursor rectangle so the IME can position its candidate window, and sends surrounding text for context-sensitive completion. The compositor in turn delivers pre-edit strings (in-progress candidate text displayed with an underline in the application), commit strings (the final text to insert), and surrounding-text deletion requests. A serial-based commit scheme ensures that rapid state changes — such as cursor movement while the IME is composing — do not produce race conditions between the application and the compositor. The `ext_text_input_v1` successor protocol is under development as a stable replacement.
+
+### 1.3 What is `zwp_input_method_v2`?
+
+`zwp_input_method_v2` is the IME-side counterpart to `zwp_text_input_v3`. Where `zwp_text_input_v3` is used by applications (or their toolkits) to expose editable fields to the compositor, `zwp_input_method_v2` is used by IME processes — fcitx5, IBus, on-screen keyboards — to receive input events from the compositor and send composed text back. The compositor acts as a switchboard: when the user types, raw key events are forwarded to the IME via `zwp_input_method_v2`; when the IME produces a commit string, it sends that back to the compositor, which delivers it to the focused application via `zwp_text_input_v3`. The protocol also carries surrounding text and content-type hints (password fields, numeric input, multiline) so the IME can adapt its behavior appropriately. `zwp_input_method_v2` is defined alongside `zwp_text_input_v3` in `wayland-protocols` ([protocol XML](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/unstable/input-method/input-method-unstable-v2.xml)) and is implemented by the same compositor backends — wlroots, Mutter (GNOME Shell), and KWin (KDE Plasma).
 
 ---
 

@@ -8,6 +8,10 @@
 
 - [Overview](#overview)
 - [1. Why Mesa Needed a New IR: Limitations of TGSI](#1-why-mesa-needed-a-new-ir-limitations-of-tgsi)
+  - [1.1 What is NIR?](#11-what-is-nir)
+  - [1.2 What is TGSI?](#12-what-is-tgsi)
+  - [1.3 What is SSA Form?](#13-what-is-ssa-form)
+  - [1.4 What is SPIR-V?](#14-what-is-spir-v)
 - [2. NIR Data Structures: The In-Memory Representation](#2-nir-data-structures-the-in-memory-representation)
 - [3. The SPIR-V to NIR Front End](#3-the-spir-v-to-nir-front-end)
 - [4. The GLSL to NIR Front End](#4-the-glsl-to-nir-front-end)
@@ -88,6 +92,38 @@ The problems accumulated as GPU hardware evolved. TGSI had no notion of static s
 The decision to build NIR was taken in 2014. Eric Anholt, then at Intel, initiated the design with the explicit goals of providing a clean SSA-form IR, a rich type system with explicit bit widths, a pointer and dereference model sufficient for the full range of modern GPU memory models, and a modular pass infrastructure where optimisation passes could be written once and reused across all drivers. The initial implementation was largely the work of Connor Abbott during a summer internship, and the first public discussion of NIR appeared around Mesa 10.3. SPIR-V support was added in 2016, driven by the need to support early Vulkan drivers, and the SPIR-V-to-NIR path is now the primary compilation route for all Vulkan shaders in Mesa.
 
 The transition from TGSI to NIR was gradual and took nearly a decade to complete. The GLSL-to-NIR path was added alongside the existing GLSL-to-TGSI path, and drivers migrated individually. The Intel i965 driver moved to NIR first. AMD's radeonsi followed. Drivers that could not migrate fully used a NIR-to-TGSI translation bridge. The GLSL-to-TGSI path was finally removed in Mesa 22.2, representing the deletion of over twenty thousand lines of code and ending a decade-long transition. Any remaining TGSI-consuming driver goes through a NIR-to-TGSI bridge, so NIR is now on every compilation path. Understanding this history is important because you will encounter references to TGSI in older documentation and in the handful of legacy drivers still on the NIR-to-TGSI path; the code for those is in `src/gallium/auxiliary/nir/tgsi_to_nir.c`.
+
+### 1.1 What is NIR?
+
+NIR, the New Intermediate Representation, is the universal shader compiler IR at the centre of Mesa's compilation pipeline. Every shader that enters Mesa — whether arriving as GLSL source for an OpenGL application or as a SPIR-V binary for a Vulkan program — is translated into NIR before any hardware-specific compilation work begins. NIR then flows to one of many backend compilers that convert it into GPU machine code: ACO and LLVM for AMD hardware, the Intel EU ISA compiler for Intel GPUs, and similar backends for NVIDIA, ARM, Qualcomm, and other vendors via drivers such as NVK, Panfrost, Turnip, and Etnaviv.
+
+NIR is a structured, typed, SSA-form IR defined almost entirely in `src/compiler/nir/nir.h` within the Mesa source tree. It represents a shader program as a hierarchy of functions, structured control flow nodes (basic blocks, if-else constructs, loops), and typed instructions that produce and consume SSA definitions. The IR is rich enough to represent the full range of concepts found in GLSL, SPIR-V, and the GLSL ES shading languages: arithmetic and logic operations, texture sampling, memory loads and stores, function calls, shader stage input/output, and GPU-specific operations expressed as intrinsics.
+
+NIR is not an ABI. It is a transient, in-process representation that does not persist across Mesa process boundaries in its raw form. When Mesa's disk shader cache stores a compiled shader, it stores the driver's final binary, not the NIR. This design allows NIR to evolve freely without backward-compatibility constraints. Since Mesa 22.2, NIR is on every shader compilation path in Mesa, making it the only IR that every Mesa driver and every supported shader source language have in common.
+
+### 1.2 What is TGSI?
+
+TGSI, the Tungsten Graphics Shader Infrastructure, was Mesa's original universal shader IR before NIR. It was designed as part of the Gallium3D architecture around 2007–2008 and modelled closely on the register-based, assembly-like instruction sets that GPUs used during that era. A TGSI shader is a flat sequence of fixed-format instructions that read named registers — temporaries, inputs, outputs, constants — and write results back to registers, with a small set of branching instructions for control flow.
+
+For hardware of the 2005–2010 generation, TGSI was a workable abstraction. Its problems became apparent as GPU hardware and shader languages advanced. TGSI had no SSA form, which meant that compiler optimisation passes could not assume each value was written exactly once, making analyses conservative and imprecise. It had no concept of function calls in the IR (shaders were compiled as flat, inlined sequences), no pointer or dereference model for buffer objects, and a type system limited to 32-bit floats and integers with vector swizzles and write masks. When Vulkan was introduced, bringing SPIR-V, descriptor sets, push constants, and the full GLSL storage class system, TGSI had no way to represent these concepts natively.
+
+The NIR-to-TGSI translation bridge at `src/gallium/auxiliary/nir/tgsi_to_nir.c` kept legacy TGSI-consuming drivers functional during the long migration. The GLSL-to-TGSI path was removed in Mesa 22.2, deleting over twenty thousand lines of code. Today any driver that still consumes TGSI receives it from a NIR-to-TGSI translation pass, so TGSI is effectively a legacy output format rather than a live IR.
+
+### 1.3 What is SSA Form?
+
+Static Single Assignment (SSA) form is the algebraic property of an IR in which every variable is defined (written) exactly once, and every use of a variable refers unambiguously to that single definition site. NIR is an SSA-form IR: every instruction result is an `nir_def` that is produced once and then consumed by any number of `nir_src` references. No instruction overwrites an existing definition; instead, a new definition is introduced for each computed value.
+
+SSA form is the standard foundation of modern compiler optimisation because it makes the relationship between definitions and uses explicit and direct. Passes such as constant propagation, dead code elimination, and common subexpression elimination can be implemented as simple traversals of the use-def chains rather than expensive fixed-point data flow analyses. In NIR, when `nir_opt_constant_folding` folds an operation to a constant, it immediately replaces all uses of the old definition by following the use list embedded in the `nir_def` struct, without needing to search the entire shader.
+
+SSA form handles join points in control flow — places where two code paths merge after a branch — through phi instructions (`nir_phi_instr`). A phi node at a join point selects one of several incoming definitions depending on which predecessor block was actually executed at runtime. If an if-else construct assigns two different computed values to the same logical variable, the block following the if-else receives a phi node whose sources are the two possible values. Understanding phi nodes is essential for reading raw NIR dumps, since Mesa's textual dump format prints phi instructions at the top of every basic block that follows a join point.
+
+### 1.4 What is SPIR-V?
+
+SPIR-V (Standard Portable Intermediate Representation, Version 5) is the portable binary shader format defined by the Khronos Group as part of the Vulkan API specification. It is the primary input format for Mesa's NIR pipeline across all Vulkan drivers. When a Vulkan application calls `vkCreateShaderModule`, it supplies a SPIR-V binary blob; the driver's implementation calls `spirv_to_nir()` to translate that binary into a `nir_shader` in memory, after which all normal NIR optimisation and lowering passes run.
+
+SPIR-V is itself an SSA IR, structured as a sequence of typed instructions that operate on virtual IDs. Each instruction assigns a result to an ID that is referenced by subsequent instructions. The format is designed to be straightforward to generate — GLSL, HLSL, and WGSL compilers all target SPIR-V — easy to validate using the Khronos SPIRV-Tools suite, and simple to consume in a driver. SPIR-V uses explicit storage classes — `UniformConstant`, `Uniform`, `StorageBuffer`, `Input`, `Output`, `PushConstant`, `Image`, and others — that map directly to the `nir_variable_mode` values in NIR.
+
+The `spirv_to_nir()` function lives in `src/compiler/spirv/` and is one of Mesa's most critical code paths. It handles SPIR-V extensions such as `SPV_KHR_ray_tracing`, `SPV_EXT_mesh_shader`, and `SPV_KHR_cooperative_matrix`. SPIR-V is also the transport format for shaders distributed through DXVK and VKD3D-Proton, which translate Direct3D bytecode to SPIR-V before calling Vulkan, meaning that virtually all Windows-game-on-Linux shader compilation flows through `spirv_to_nir()`.
 
 ---
 

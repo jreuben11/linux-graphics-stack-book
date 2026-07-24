@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. The VR Latency Problem](#1-the-vr-latency-problem)
+  - [1.1 What is DRM Lease?](#11-what-is-drm-lease)
+  - [1.2 What is Kernel Mode Setting (KMS)?](#12-what-is-kernel-mode-setting-kms)
+  - [1.3 What is a VR Direct Display Path?](#13-what-is-a-vr-direct-display-path)
 - [2. DRM Lease API](#2-drm-lease-api)
 - [3. Connector Discovery for VR HMDs](#3-connector-discovery-for-vr-hmds)
 - [4. Monado OpenXR Runtime](#4-monado-openxr-runtime)
@@ -66,6 +69,18 @@ Even with direct display, the GPU render may occasionally run long and miss the 
 ### Why DRM Lease Rather Than VFIO
 
 An alternative — assigning the GPU entirely to a VM via VFIO passthrough — exists for some VFIO-capable systems but introduces its own problems: the GPU driver stack does not run inside the host kernel, making sharing between the VR workload and the desktop non-trivial; VFIO passthrough has non-negligible latency from IOMMU mapping and VM context switches; and it requires hardware that supports multi-GPU or SR-IOV configurations. DRM lease is strictly preferable when the VR headset and the desktop monitor are both attached to the same GPU: the kernel driver remains fully active, existing buffer sharing via DMA-BUF works normally, and the overhead is a single ioctl rather than a VM boundary crossing.
+
+### 1.1 What is DRM Lease?
+
+DRM Lease is a kernel mechanism introduced in Linux 4.15 that allows the holder of KMS master authority over a DRM device to delegate exclusive control of a subset of display objects — specifically CRTCs, connectors, and planes — to another process via a new file descriptor. The delegating process is called the **lessor** (typically the desktop compositor), and the receiving process is the **lessee** (typically a VR runtime). The lessee receives a DRM file descriptor granting it full modesetting authority over its assigned objects, enabling it to configure display modes and submit frames directly to the hardware display pipeline without routing through the compositor. The leased objects remain unavailable to the lessor while the lease is active, enforcing exclusive access. When the lessee closes its file descriptor or the lessor issues an explicit revocation via `DRM_IOCTL_MODE_REVOKE_LEASE`, the leased objects return to the lessor's authority automatically. In the Linux VR context, DRM Lease is the mechanism by which a VR runtime gains exclusive control of the HMD connector and its associated CRTC and plane, enabling the low-latency direct display path that comfortable VR requires. The kernel implementation lives in `drivers/gpu/drm/drm_lease.c`, with userspace wrappers in libdrm ≥ 2.4.89.
+
+### 1.2 What is Kernel Mode Setting (KMS)?
+
+Kernel Mode Setting (KMS) is the Linux kernel subsystem responsible for configuring the display pipeline: selecting screen resolutions, refresh rates, and pixel formats, and driving display outputs to connected monitors and other display devices. Before KMS, display mode configuration was handled entirely in user space — the X server's mode-setting code — which caused flickering during transitions, prevented full-resolution console output, and created races when multiple programs competed for hardware control. KMS moves all display configuration into the DRM (Direct Rendering Manager) subsystem, where display objects are managed under a unified API. The primary display objects are: **CRTCs** (display controllers that scan out a framebuffer to one or more connectors), **connectors** (physical output ports such as DisplayPort or HDMI), **planes** (hardware compositing layers fed into a CRTC), and **framebuffers** (GPU memory regions containing pixel data). The **atomic KMS API** (`DRM_IOCTL_MODE_ATOMIC`) submits a set of property changes as an all-or-nothing transaction, making display updates flicker-free and race-free. For this chapter, KMS is the layer that DRM Lease operates on: a lease transfers authority over a specific KMS object set — connector, CRTC, and primary plane — from the compositor to the VR runtime, allowing the runtime to call `DRM_IOCTL_MODE_ATOMIC` directly on those objects.
+
+### 1.3 What is a VR Direct Display Path?
+
+A VR direct display path is a rendering architecture in which a VR runtime submits frames directly to the HMD's hardware display controller, bypassing the desktop compositor's compositing and scheduling logic. In a conventional desktop setup every frame from every application passes through the compositor, which blends them and submits the merged result to KMS for display. For VR, that extra compositing step injects an additional frame of latency — 8 ms at 120 Hz, 11 ms at 90 Hz — that pushes total motion-to-photon latency above the threshold for comfortable use. The direct display path eliminates this by giving the VR runtime a DRM lease over the HMD connector: the runtime holds its own `drm_master`, calls `DRM_IOCTL_MODE_ATOMIC` on its own schedule synchronized to the HMD's VBLANK, and never waits for the compositor to finish its compositing pass. On the Vulkan side, the `VK_EXT_acquire_drm_display` extension provides a standard bridge from a DRM lease file descriptor to a `VkDisplayKHR` handle, enabling the Vulkan swapchain to target the leased display directly without any window-system integration layer. The direct display path is the architectural foundation of all modern Linux VR runtimes covered in this chapter: Monado (OpenXR), SteamVR on Linux, and wireless streaming runtimes such as ALVR.
 
 ---
 

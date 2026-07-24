@@ -26,6 +26,10 @@ This chapter is the color science companion to Chapter 53 (Display Calibration a
 ## Table of Contents
 
 1. [Introduction — The Journey from (r, g, b) to Photons](#1-introduction--the-journey-from-r-g-b-to-photons)
+   - [1.1 What is Color Management?](#11-what-is-color-management)
+   - [1.2 What is a CIE Color Space?](#12-what-is-a-cie-color-space)
+   - [1.3 What is an ICC Profile?](#13-what-is-an-icc-profile)
+   - [1.4 What is LittleCMS (lcms2)?](#14-what-is-littlecms-lcms2)
 2. [CIE Color Science Foundations](#2-cie-color-science-foundations)
 3. [Transfer Functions and Gamma](#3-transfer-functions-and-gamma)
 4. [ICC Profiles: Structure and Content](#4-icc-profiles-structure-and-content)
@@ -47,6 +51,30 @@ When a shader outputs `vec3(0.8, 0.2, 0.1)`, that triplet carries no absolute me
 Color science solves this by defining device-*independent* reference spaces through which colors pass on their way between devices. The International Commission on Illumination (CIE) defined such a space — CIE XYZ — from human psychophysical experiments in 1931. The International Color Consortium (ICC) codified a profile format that characterizes each device relative to this reference space. Software color management engines such as LittleCMS (lcms2) apply the profiles to transform pixels between device spaces. And the Linux graphics stack — from KMS color pipeline properties through colord to compositor protocols — carries this metadata from hardware measurement to final display.
 
 This chapter works through each layer in that pipeline: the science, the data formats, the APIs, and their Linux-specific plumbing.
+
+### 1.1 What is Color Management?
+
+Color management is the process of preserving the visual intent of an image as it moves between devices — cameras, displays, printers, projectors — each of which has different physical characteristics. A photograph captured by a camera sensor and stored as RGB values carries no guaranteed meaning: the numbers 0.8, 0.2, 0.1 describe red, green, and blue channel intensities, but the actual wavelengths of light they correspond to depend entirely on the primaries that specific device uses. Without color management, images appear different on different displays — some too saturated, others washed out — because each device maps those code values to different colors of light.
+
+Color management solves this by routing every color transformation through a device-independent reference space. The color management system (CMS) characterizes each device by measuring how it responds to known stimuli, encodes those measurements in a standardized profile format (the ICC profile), and uses a color management engine (CME) to transform pixel data from the source device's color space, through the reference space, into the destination device's color space. On Linux this pipeline begins with hardware measurement tools such as ArgyllCMS, passes through the colord daemon which assigns profiles to connected devices, reaches applications through APIs such as LittleCMS, and ultimately reaches the display hardware through KMS color pipeline properties or the `wp_color_management_v1` Wayland protocol.
+
+### 1.2 What is a CIE Color Space?
+
+The International Commission on Illumination (CIE) defined a family of device-independent color spaces that serve as the common reference in which all device-specific measurements are expressed. The foundation is CIE XYZ, derived from psychophysical experiments measuring how human observers match colored light: the result is three tristimulus values X, Y, Z that uniquely describe any color stimulus visible to the standard observer, independent of which device produced it. Y encodes luminance (perceptual brightness); X and Z carry chromaticity information without direct perceptual significance.
+
+From CIE XYZ, the CIE derived additional spaces suited to different tasks. The xy chromaticity diagram projects XYZ to a 2D plane, enabling visualization of color gamuts as triangles whose vertices are the xy coordinates of device primaries. CIELAB (L\*a\*b\*) applies a non-linear transform to XYZ to produce a more perceptually uniform space in which equal numerical distances correspond more closely to equal perceived color differences — a property raw XYZ lacks. This uniformity makes Lab the practical working space for color difference measurement (the ΔE metric) and gamut-mapping algorithms. The ICC Profile Connection Space (PCS) is defined in CIE XYZ, or equivalently in CIELAB, relative to the D50 reference illuminant, making CIE spaces the language that every ICC-compliant color management engine speaks.
+
+### 1.3 What is an ICC Profile?
+
+An ICC (International Color Consortium) profile is a binary file that characterizes a color device or color space by describing the mathematical relationship between that device's native values and the CIE XYZ reference space. Defined by the ICC specification (currently ICC.1:2022, [icc.color.org](https://www.color.org/specification/ICC.1-2022-05.pdf)), a profile begins with a 128-byte header identifying the profile class (display, printer, scanner, or abstract), the device's native color space, and the rendering intents it supports. The body consists of a tag table followed by tag data elements: each tag carries specific colorimetric data such as primary chromaticity (rXYZ, gXYZ, bXYZ tags), tone response curves (rTRC, gTRC, bTRC), or full multidimensional lookup tables (A2B and B2A tags) for complex device behaviors that cannot be expressed as a simple matrix.
+
+On Linux, ICC profiles for monitors are stored in `/usr/share/color/icc/` (system-wide) or `~/.local/share/icc/` (per-user), and the colord daemon manages which profile is active for each connected display. Applications retrieve the active profile through colord's D-Bus API, then pass it to a color management engine such as LittleCMS to build pixel-transforming pipelines. The kernel itself is profile-unaware; ICC profile application happens in userspace, and the final hardware color correction is typically applied either through Video Card Gamma Table (VCGT) data loaded into the KMS gamma LUT, or through the full KMS color pipeline properties (`DEGAMMA_LUT`, `CTM`, `GAMMA_LUT`) on modern kernels.
+
+### 1.4 What is LittleCMS (lcms2)?
+
+LittleCMS (lcms2) is the open-source color management engine that implements ICC profile interpretation and pixel transformation on Linux and most other platforms. Where ICC profiles are passive data files, lcms2 is the engine that reads them and builds optimized transform pipelines: given a source profile, a destination profile, and a rendering intent, it constructs a `cmsTransform` object that converts pixels from the source color space to the destination color space with ICC-compliant gamut mapping. LittleCMS handles the full ICC tag vocabulary — matrix-shaper profiles for simple display characterizations, CLUT-based A2B/B2A transforms for print devices with non-linear gamut behavior, and device-link profiles that chain multiple transforms into a single optimized operation.
+
+In the Linux graphics stack, lcms2 is used by GIMP, Inkscape, darktable, LibreOffice, and the Ghostscript print pipeline, as well as by colord itself for verifying profile consistency. The lcms2 library exposes a C API whose central types — `cmsHPROFILE`, `cmsHTRANSFORM`, and `cmsColorSpaceSignature` — map directly to ICC profile concepts. A compositor that needs to apply a monitor profile to composited output either uses lcms2 to build a software transform, or extracts the profile's VCGT data and loads it into the KMS display controller's hardware gamma LUT for zero-overhead per-scanout correction. Section 5 of this chapter covers the lcms2 API in detail.
 
 ---
 

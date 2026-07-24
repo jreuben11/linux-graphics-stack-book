@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is DisplayLink?](#11-what-is-displaylink)
+   - [1.2 What is evdi?](#12-what-is-evdi)
+   - [1.3 What is the DisplayLink Manager (DLM)?](#13-what-is-the-displaylink-manager-dlm)
 2. [DisplayLink Hardware and Protocol](#displaylink-hardware-and-protocol)
 3. [evdi: Extensible Virtual Display Interface](#evdi-extensible-virtual-display-interface)
 4. [evdi Kernel Module Architecture](#evdi-kernel-module-architecture)
@@ -41,6 +44,24 @@ Understanding evdi requires decomposing it into four distinct layers:
 Each layer interacts with upstream DRM infrastructure in ways that illuminate the broader Linux graphics stack.
 
 Sources: [evdi on GitHub](https://github.com/DisplayLink/evdi) | [DisplayLink Linux driver](https://www.synaptics.com/products/displaylink-graphics/downloads/ubuntu)
+
+### 1.1 What is DisplayLink?
+
+DisplayLink is a USB-to-display technology by Synaptics that enables a USB 3.0 or USB-C connection to drive one or more external monitors. It is found in USB docking stations and adapters from many vendors. Rather than exposing a GPU or hardware-accelerated display pipeline, DisplayLink delegates all rendering work to the host processor: the host captures the framebuffer, compresses it using the proprietary DL3 codec, and streams the result over USB bulk transfers to a DisplayLink chip in the dock, which decodes the stream and drives the physical display output (HDMI or DisplayPort).
+
+On Linux, DisplayLink support requires the **evdi** kernel module and the proprietary **DisplayLink Manager (DLM)** daemon working in tandem. The DisplayLink chip itself contains no GPU and performs no compositing; its role is limited to decoding the compressed stream and managing display timing. This software-defined architecture makes DisplayLink broadly compatible across host systems but introduces constraints around CPU overhead, encoding latency, and USB bandwidth that distinguish it from native GPU-connected displays. Current chip generations span from DL-3xxx (USB 2.0/3.0, up to 1080p) through DL-6xxx (USB 3.2, up to 5K) to the DL-7400 (USB4/Thunderbolt, quad 4K@120Hz or dual 8K@60Hz). [Source](https://www.synaptics.com/products/displaylink-graphics)
+
+### 1.2 What is evdi?
+
+evdi (Extensible Virtual Display Interface) is a Linux kernel module that presents a virtual DRM (Direct Rendering Manager) device to the rest of the graphics stack. It is distributed as an out-of-tree module installed via DKMS and creates one or more `/dev/dri/cardN` device nodes that compositors treat as ordinary DRM modesetting devices. The key distinction from a conventional DRM driver is that evdi's "hardware" is not a physical GPU but a userspace consumer: the module captures committed framebuffers, tracks dirty regions via the `FB_DAMAGE_CLIPS` DRM plane property, and delivers pixel data to whichever userspace process connects through the custom ioctl interface.
+
+evdi is transport-agnostic — any client that speaks the `EVDI_CONNECT` / `EVDI_REQUEST_UPDATE` / `EVDI_GRABPIX` ioctl protocol can consume its output. In the DisplayLink stack that client is the proprietary DLM daemon, but the same mechanism works for network-based virtual displays, screen capture pipelines, or automated test harnesses. The module source lives at [github.com/DisplayLink/evdi](https://github.com/DisplayLink/evdi) and implements the DRM subsystem conventions defined in `drivers/gpu/drm/`. Understanding evdi is an exercise in how the DRM atomic modesetting API can be implemented for non-physical hardware and how the kernel/userspace boundary is drawn in an unusual driver architecture. [Source](https://github.com/DisplayLink/evdi)
+
+### 1.3 What is the DisplayLink Manager (DLM)?
+
+The DisplayLink Manager (DLM) is the proprietary userspace daemon that connects the evdi kernel module to the physical DisplayLink USB hardware. It is the only component in the stack that speaks both the evdi ioctl protocol and the DisplayLink USB wire format; without it, evdi creates a visible DRM device that compositors can drive but no pixels reach the monitor.
+
+At runtime the DLM opens the evdi DRM device node, sends the monitor EDID via the `EVDI_CONNECT` ioctl to make the virtual connector appear plugged in to the compositor, and then enters a frame update loop: it calls `EVDI_REQUEST_UPDATE` to wait for a frame commit, calls `EVDI_GRABPIX` to copy dirty pixel regions into a client buffer, compresses the result using the DL3 codec, and sends the compressed stream to the DisplayLink chip via USB bulk transfers through libusb. Internally the DLM is organized as a plugin pipeline with distinct source (evdi pixel capture), transform (DL3 encoding), and sink (libusb USB transfer) stages, which allows the same core logic to target different hardware generations. The DLM is distributed as a closed binary by Synaptics and is the only proprietary component in an otherwise open stack. [Source](https://www.synaptics.com/products/displaylink-graphics/downloads/ubuntu)
 
 ---
 

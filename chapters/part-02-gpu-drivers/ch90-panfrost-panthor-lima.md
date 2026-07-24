@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction: ARM's Mali GPU Family and the Open-Driver Landscape](#1-introduction-arms-mali-gpu-family-and-the-open-driver-landscape)
+   - [1.1 What is the ARM Mali GPU Family?](#11-what-is-the-arm-mali-gpu-family)
+   - [1.2 What is Tile-Based Deferred Rendering (TBDR)?](#12-what-is-tile-based-deferred-rendering-tbdr)
+   - [1.3 What is the Command Stream Frontend (CSF)?](#13-what-is-the-command-stream-frontend-csf)
 2. [Lima: Mali Utgard Driver](#2-lima-mali-utgard-driver)
 3. [Panfrost: Midgard and Bifrost](#3-panfrost-midgard-and-bifrost)
 4. [Bifrost Shader Compilation Deep Dive](#4-bifrost-shader-compilation-deep-dive)
@@ -57,6 +60,30 @@ The open-source driver ecosystem today covers the full Mali product line from **
 | **Panthor** | Valhall v10+ (CSF-based) | `drivers/gpu/drm/panthor/` (kernel 6.10+) | `src/panfrost/` (shared with Panfrost userspace) |
 
 Key deployment targets include: **PinePhone**/**PinePhone Pro** (**Rockchip RK3399**, **Mali-T860**), **Pinebook Pro** (**RK3399**, **Mali-T860 MP4**), **Librem 5** (**NXP i.MX8MQ**, **Vivante GC7000Lite** — though that uses the **etnaviv** driver, not **Panfrost**), **Rock Pi** and **Orange Pi 5** (**RK3588**, **Mali-G610** MC4, served by **Panthor**), and **NXP i.MX8M Plus** evaluation boards. An in-progress Rust reimplementation of the **Panthor** kernel driver, **Tyr**, mirrors the pattern of other Rust **DRM** driver efforts. The drivers are tested in **Mesa**'s CI via **LAVA** (Linaro Automated Validation Architecture), with **dEQP** conformance results tracked by **deqp-runner** against expected-failure lists, shader compilation quality tracked via **shader-db**, and a **drm-shim** at `src/panfrost/drm-shim/` for hardware-free regression testing. Contributions flow through the **dri-devel** mailing list for kernel patches and **GitLab** merge requests for **Mesa** changes.
+
+### 1.1 What is the ARM Mali GPU Family?
+
+The ARM Mali GPU family is a series of tile-based mobile GPU designs licensed by ARM Holdings to SoC vendors for integration into embedded and mobile processors. Mali GPUs are among the most widely deployed graphics processors in the world, appearing in Allwinner, Rockchip, Amlogic, Samsung Exynos, NXP, and MediaTek system-on-chip designs that power smartphones, single-board computers, and embedded Linux platforms.
+
+The Mali product line spans five distinct microarchitectural generations — Utgard, Midgard, Bifrost, Valhall, and the fifth generation (v12–v14) — each introducing different execution models, instruction set architectures, and hardware scheduling mechanisms. This generational fragmentation is central to the open-source driver situation: each generation requires a separate kernel driver and Mesa backend, because the programming interfaces differ fundamentally rather than evolving incrementally.
+
+On Linux, the DRM (Direct Rendering Manager) subsystem hosts three open-source Mali kernel drivers — Lima, Panfrost, and Panthor — while the Mesa project provides the corresponding userspace Gallium and Vulkan drivers. These drivers emerged from reverse-engineering because ARM's proprietary Mali DDK is tied to specific Android kernel versions and is incompatible with upstream Linux. As of DDK r52 (2024), ARM dropped Bifrost and older support from the proprietary stack, leaving embedded Linux users of those GPUs entirely dependent on the open drivers. The open driver ecosystem now covers the full Mali range from Utgard through fifth-generation Valhall, enabling mainstream Linux distributions and compositor stacks on Mali-equipped hardware without proprietary blobs for all but the newest generations.
+
+### 1.2 What is Tile-Based Deferred Rendering (TBDR)?
+
+Tile-Based Deferred Rendering is the rendering architecture used by all Mali GPU generations. Instead of processing a frame as a single stream of primitives that immediately write to the framebuffer — the immediate-mode model used by many desktop GPUs — a TBDR GPU divides the render target into small rectangular tiles, typically 16×16 or 32×32 pixels, and processes each tile independently in two phases.
+
+In the binning phase, the GPU runs vertex shaders and records which triangles overlap each tile into a per-tile polygon list held in a compact tiler heap buffer. In the fragment phase, each tile is processed independently: geometry is re-fetched from the tile list, fragment shaders execute, and the completed tile is written to memory. Because only one tile is live in the GPU's on-chip memory at a time, depth testing, blending, and hidden-surface removal all occur without touching DRAM, yielding significant memory bandwidth savings compared to immediate-mode rendering.
+
+This architecture explains several driver-visible details covered in this chapter. The Mali-400's physical separation into a Geometry Processor and a Pixel Processor directly reflects the two TBDR phases. The job chain model in Panfrost submits vertex/tiler jobs to slot 1 and fragment jobs to slot 0 as distinct stages. The tiler heap — the buffer that holds per-tile polygon lists — appears as an explicit kernel-managed object in Panthor via `panthor_heap_grow()` and in PanVK via `DRM_IOCTL_PANTHOR_TILER_HEAP_CREATE`. Understanding TBDR is prerequisite to understanding why the driver models job submission as two sequenced stages rather than a single dispatch.
+
+### 1.3 What is the Command Stream Frontend (CSF)?
+
+The Command Stream Frontend is a dedicated microcontroller embedded within Valhall-generation and later Mali GPUs that replaces the hardware-managed job-slot submission model used by Midgard and Bifrost. In pre-CSF GPUs, the kernel driver directly writes job descriptor addresses into hardware Job Slot registers, and the hardware fetches and executes the job chain with no firmware involvement. With CSF, the GPU hosts a small firmware processor — loaded from `mali_csffw.bin` at driver initialization — that reads a structured command stream from a shared ring buffer and schedules work across the shader cores on behalf of the driver.
+
+This architectural change has several concrete consequences for the Panthor driver and PanVK. The kernel driver no longer writes directly to job slot registers; instead it enqueues commands into per-queue ring buffers managed via `DRM_IOCTL_PANTHOR_GROUP_SUBMIT`. The userspace driver constructs those command streams using the CS Builder API (`cs_builder.h`). Firmware is mandatory — the GPU cannot process any work without `mali_csffw.bin` — which means Panthor cannot operate on systems where the firmware file is absent, unlike Lima and Panfrost which require no firmware for older generations.
+
+The CSF model also enables finer-grained scheduling: the firmware can context-switch between GPU queues within a job rather than only at job boundaries. This underpins the group/queue abstraction in Panthor, where a group represents a collection of queues that share a set of shader cores and can be scheduled together or preempted atomically. The CSF firmware interface is documented in part through ARM's publicly released architecture reference manuals, supplemented by reverse-engineering incorporated into the open driver.
 
 ---
 

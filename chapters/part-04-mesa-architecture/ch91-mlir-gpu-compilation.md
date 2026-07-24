@@ -8,6 +8,10 @@
 
 - [Scope](#scope)
 - [1. Introduction: The Modern GPU Compilation Stack](#1-introduction-the-modern-gpu-compilation-stack)
+  - [1.1 What is MLIR?](#11-what-is-mlir)
+  - [1.2 What is SPIR-V?](#12-what-is-spir-v)
+  - [1.3 What is Triton?](#13-what-is-triton)
+  - [1.4 What is IREE?](#14-what-is-iree)
 - [2. MLIR Architecture for GPU Compilation](#2-mlir-architecture-for-gpu-compilation)
 - [3. The GPU Dialect](#3-the-gpu-dialect)
   - [3.3 The NVVM Dialect](#33-the-nvvm-dialect)
@@ -77,6 +81,38 @@ GPU ISA (PTX → SASS / AMDGCN / Intel EU ISA)
 **Cooperative matrix and Tensor Core access.** Section 9 covers the hardware matrix-multiply units — **Tensor Cores** on **NVIDIA**, **WMMA** on **RDNA3**, **MFMA** on **CDNA**, and **XMX** (**Xe Matrix Extensions**) on **Intel** — and their exposure through `**VK_KHR_cooperative_matrix**` and `**SPV_KHR_cooperative_matrix**`. It covers the **Vulkan** query API (`**vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR**`), the **SPIR-V** instructions `**OpTypeCooperativeMatrixKHR**` and `**OpCooperativeMatrixMulAddKHR**`, **RADV**'s mapping to **RDNA3** **WMMA** via **NIR** (`**nir_intrinsic_cooperative_matrix_mul_add**`) and **ACO**, **ANV**'s mapping to **DPAS** (Dot Product Accumulate Systolic) on **Gfx12.5+** / **DG2** (**Alchemist**) and **Xe2+**, **Triton**'s `**tl.dot**` lowering via `**#nvidia_mma**` and `**#amd_wmma**` layouts, and cooperative matrix use in **FlashAttention** attention computation.
 
 **The Mesa connection.** **SPIR-V** is the lingua franca between the higher-level GPU compiler world and **Mesa**'s driver layer. When **IREE**, **Triton** (via its **Vulkan** backend), or any other **MLIR**-based system targets **Vulkan**, it serialises **MLIR**'s **SPIR-V** dialect to a binary **SPIR-V** module and hands it to `**vkCreateShaderModule**`. **Mesa**'s **SPIR-V** reader (`**src/compiler/spirv/spirv_to_nir.c**`) then translates this binary into **NIR** (Chapter 14), where **Mesa**'s own optimisation and lowering passes take over. Section 10 traces the full path including the `**spirv_to_nir_options**` struct for configuring **ML**-specific capabilities (`**cooperative_matrix**`, `**float16**`, `**int8**`), debugging environment variables (`**RADV_DEBUG**`, `**MESA_SPIRV_DUMP_PATH**`), and the precise sequence of calls by which an **IREE** workload reaches **RADV** or **ANV** and is ultimately dispatched via `**vkCmdDispatch**`. This chapter explains the upstream compilers; Chapters 14 and 15 explain what happens once the **SPIR-V** arrives.
+
+### 1.1 What is MLIR?
+
+MLIR (Multi-Level Intermediate Representation) is a compiler infrastructure framework that is part of the LLVM project. It addresses a fragmentation problem that arose as machine learning frameworks each developed bespoke compiler pipelines: TensorFlow had its graph IR, PyTorch had TorchScript, and TVM had Relay, with each requiring custom lowering paths to GPU hardware. MLIR provides a shared foundation for building compiler intermediate representations, called *dialects*, that can be mixed within a single compilation unit and progressively lowered toward machine code.
+
+Each MLIR dialect defines a set of operations, types, and attributes scoped to a particular abstraction level. The `linalg` dialect expresses structured numerical computations such as matrix multiplication; the `gpu` dialect abstracts GPU execution models across NVIDIA, AMD, and Intel hardware; the `spirv` dialect represents SPIR-V modules directly in MLIR form before serialization. Lowering passes translate operations from higher-level dialects to lower-level ones in a sequence of well-defined steps, allowing optimizations to operate at the most appropriate abstraction level.
+
+In the Linux GPU stack, MLIR occupies a layer above Mesa's driver layer. ML frameworks compile computation graphs through MLIR's dialect hierarchy and emit SPIR-V or PTX binary, which Mesa's Vulkan drivers then consume through the `spirv_to_nir` pipeline. MLIR is hosted at [mlir.llvm.org](https://mlir.llvm.org/) and ships as part of the LLVM monorepo under `mlir/` within [github.com/llvm/llvm-project](https://github.com/llvm/llvm-project).
+
+### 1.2 What is SPIR-V?
+
+SPIR-V (Standard Portable Intermediate Representation — V) is a binary intermediate language defined by the Khronos Group for use with Vulkan, OpenCL, and OpenGL compute shaders. It serves as the interchange format between GPU compilers and GPU drivers: a compiler targeting SPIR-V does not need to know the GPU's native instruction set, and a driver consuming SPIR-V does not need to parse high-level shading languages. This separation is the key architectural decision that makes cross-vendor GPU programming practical on Linux.
+
+A SPIR-V module is a sequence of 32-bit words with a fixed five-word header containing a magic number (`0x07230203`), version, generator ID, bound on result IDs, and a reserved schema word. Module-level instructions declare capabilities, extensions, the memory model, and entry points before the function bodies appear. The Khronos SPIRV-Tools suite provides `spirv-val` for validation, `spirv-opt` for optimization passes, and `spirv-dis` for disassembly to human-readable text form.
+
+In the MLIR ecosystem, the `spirv` dialect represents SPIR-V in MLIR form; `mlir-translate --serialize-spirv` serializes it to a binary module. That binary is passed to `vkCreateShaderModule`, at which point Mesa's `spirv_to_nir()` function (in `src/compiler/spirv/spirv_to_nir.c`) translates it into Mesa's NIR intermediate representation for driver-specific optimization and code generation. The SPIR-V specification lives at [registry.khronos.org/SPIR-V](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html).
+
+### 1.3 What is Triton?
+
+Triton is a Python-to-GPU compiler that allows programmers to write high-performance GPU kernels in Python using tile-level abstractions rather than explicit CUDA or HIP thread indexing. A function decorated with `@triton.jit` accepts tensor arguments and uses `tl.load`, `tl.store`, and `tl.dot` operations acting on entire tiles of data; the Triton compiler determines how those tiles map to hardware threads, registers, and shared memory.
+
+Internally, Triton compiles through a multi-stage MLIR pipeline. Python source is lowered to the `tt` (Triton) dialect, which captures tile-level semantics. A subsequent pass introduces hardware layout annotations in the `ttgpu` (TritonGPU) dialect — `#blocked`, `#shared`, `#nvidia_mma`, and `#amd_mfma` — encoding how tiles are distributed across warps and registers. From there, the compiler lowers to NVVM intrinsics for NVIDIA targets (emitting PTX via the LLVM NVPTX backend) or to ROCDL intrinsics for AMD targets (emitting AMDGCN assembly). An experimental Vulkan/SPIR-V backend targets Mesa-based drivers.
+
+Triton is the compiler behind PyTorch's TorchInductor backend for GPU workloads: when code is compiled with `torch.compile`, matrix-multiply-heavy operations are often emitted as Triton kernels. The FlashAttention-2 implementation is a canonical example of a production-critical Triton kernel, analyzed in detail in Section 5. The Triton source is at [github.com/triton-lang/triton](https://github.com/triton-lang/triton).
+
+### 1.4 What is IREE?
+
+IREE (Intermediate Representation Execution Environment) is an end-to-end ML compiler and runtime designed to compile neural network models for deployment across GPU and CPU targets, including Linux Vulkan. It is hosted at [github.com/iree-org/iree](https://github.com/iree-org/iree) and is used in production inference serving pipelines.
+
+IREE ingests models from PyTorch, TFLite, and ONNX by first translating them to StableHLO, a portable HLO (High-Level Operations) dialect used as the stable compiler input boundary across XLA, IREE, and other ML compilers. From StableHLO, IREE's pipeline lowers through the Flow dialect (data flow and dispatch region scheduling), the Stream dialect (asynchronous execution and buffer scheduling), and the HAL (Hardware Abstraction Layer) dialect before emitting SPIR-V binary for Vulkan targets, PTX for CUDA, or LLVM IR for CPU targets.
+
+The output of `iree-compile` for a Vulkan target is a `.vmfb` (VM FlatBuffer) file containing embedded SPIR-V shader modules. At runtime, IREE's HAL C API wraps Vulkan calls such as `vkCreateComputePipeline` and `vkCmdDispatch`, bridging from IREE's abstract execution model to the Vulkan driver. On Linux, IREE workloads reach Mesa's RADV or ANV driver as ordinary Vulkan compute dispatches, traversing the `spirv_to_nir` path that Section 10 analyzes in detail.
 
 ---
 

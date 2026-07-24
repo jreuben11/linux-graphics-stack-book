@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. Design Goals and History](#1-design-goals-and-history)
+  - [1.1 What is Gallium3D?](#11-what-is-gallium3d)
+  - [1.2 What is Mesa?](#12-what-is-mesa)
+  - [1.3 What is NIR?](#13-what-is-nir)
 - [2. The pipe_screen Interface](#2-the-pipe_screen-interface)
 - [3. The pipe_context Interface](#3-the-pipe_context-interface)
 - [4. CSO: Constant State Objects](#4-cso-constant-state-objects)
@@ -133,6 +136,30 @@ Gallium deliberately does not standardise certain things. Shader ISA is entirely
 In the years since the original design, Gallium has become the only path for hardware OpenGL in Mesa. All Mesa hardware OpenGL drivers — radeonsi, iris, nouveau, freedreno, etnaviv, panfrost, lima, vc4, v3d, and many others — are Gallium backends. All Mesa OpenCL uses Gallium, first through the legacy Clover frontend and now through rusticl (see Section 8). Zink, a Gallium backend that translates pipe calls to Vulkan, enables OpenGL on hardware where only a Vulkan driver exists. The only paths in Mesa that bypass Gallium entirely are the Vulkan drivers (RADV, ANV, Turnip, and others), which have their own independent infrastructure and do not use `pipe_context` at all.
 
 The terminology around Gallium has shifted. The Mesa source tree uses `state_tracker` in directory names (`src/mesa/state_tracker/`) — this was the original term for the OpenGL-to-Gallium translation layer. Around 2020, the Mesa community standardised on "frontend" as the preferred term, with "backend" replacing "pipe driver." The directory names were not uniformly renamed; both `src/mesa/state_tracker/` and `src/gallium/frontends/` exist in the current tree. This chapter uses "frontend" and "backend" in prose and uses the source paths verbatim.
+
+### 1.1 What is Gallium3D?
+
+Gallium3D is the internal architecture inside Mesa that separates API-level state management from hardware-specific GPU command encoding. Before Gallium3D, Mesa maintained a separate rendering implementation inside each hardware driver, duplicating the OpenGL state machine, texture management, shader compilation pipeline, and fixed-function emulation code across every supported GPU. Gallium3D replaces that fragmented model with a single shared frontend and a narrow hardware abstraction interface — the Gallium pipe interface — through which any hardware backend plugs in.
+
+At its core, Gallium3D defines two C interface structs: `pipe_screen`, which represents a GPU device and answers capability queries, and `pipe_context`, which records rendering commands for execution on that device. A frontend — the component that implements an API such as OpenGL, OpenGL ES, or OpenCL — drives these two interfaces. A backend — the component that knows the GPU's command encoding, memory layout, and shader ISA — implements them. The two sides communicate only through those structs; neither knows about the other's internal data structures.
+
+In the Mesa source tree, Gallium3D frontends live under `src/mesa/state_tracker/` and `src/gallium/frontends/`. Backends live under `src/gallium/drivers/`. The interface headers live under `src/gallium/include/pipe/`. All Mesa hardware OpenGL drivers are Gallium3D backends; only the Vulkan drivers (RADV, ANV, Turnip) bypass Gallium3D entirely and implement their own command-recording infrastructure.
+
+### 1.2 What is Mesa?
+
+Mesa is the open source userspace implementation of OpenGL, OpenGL ES, Vulkan, OpenCL, and related graphics and compute APIs on Linux and other platforms. It is the component that application developers link against when they call `glDrawArrays()` or `vkCreateDevice()` on a Linux system. Mesa itself does not generate GPU machine code or submit GPU command buffers — those tasks belong to the hardware-specific drivers that Mesa hosts. Mesa provides the API entry points, validates parameters, manages API-visible state, and then delegates hardware-specific work to the appropriate driver.
+
+On a typical Linux desktop, Mesa ships as a set of shared libraries: `libGL.so` (for classic OpenGL), `libGLESv2.so` (for OpenGL ES), `libvulkan_radeon.so` and `libvulkan_intel.so` (for Vulkan), and `libMesaOpenCL.so` (for OpenCL). These libraries are loaded by applications either directly or via an intermediary such as `libEGL` or the Vulkan loader. The DRI infrastructure, covered in Chapter 12, handles the platform-specific plumbing between Mesa and the kernel DRM subsystem.
+
+Within Mesa, Gallium3D is the architecture that organises the non-Vulkan driver stack. It is Mesa's answer to the driver proliferation problem: rather than one monolithic driver per GPU, Mesa hosts a single shared frontend for each API and a compact hardware abstraction interface that each GPU vendor's backend must implement. [Source: Mesa project documentation](https://docs.mesa3d.org/gallium/intro.html)
+
+### 1.3 What is NIR?
+
+NIR (initially shorthand for "New IR", Mesa's internal shader intermediate representation) is the form in which shader programs cross the Gallium3D frontend/backend boundary. After a frontend compiles GLSL or another shading language into an initial AST or high-level IR, the code is lowered into NIR before being handed to the backend for hardware-specific compilation. NIR is a typed, SSA-form control-flow graph whose nodes represent shader operations in terms close to what GPU hardware executes: texture samples, arithmetic on vec4 registers, memory loads and stores, image atomics, and so on.
+
+Gallium3D's pipe interface passes shaders across the frontend/backend boundary in `pipe_shader_state` structs that carry a NIR module as a `nir_shader*`. The backend receives that module and is responsible for lowering it to the GPU's native ISA: some backends hand NIR to LLVM and use its AMDGPU or NVPTX backend; others run a custom register allocator and instruction selector. NIR's design separates the frontend's concern — producing a correct, API-conformant shader — from the backend's concern — producing efficient GPU machine code.
+
+NIR is covered in depth in Chapter 14. In this chapter, NIR appears at two points: in Section 5, where the GLSL frontend compiles GLSL source through `glsl_to_nir()` and passes the result to `create_fs_state()` on the pipe context; and in Section 7, where the requirements placed on a new backend driver include consuming a `nir_shader*` and returning a compiled binary or opaque handle. [Source: Mesa NIR documentation](https://docs.mesa3d.org/nir.html)
 
 ---
 

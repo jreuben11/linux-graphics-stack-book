@@ -66,6 +66,24 @@ Camera / LiDAR Sensor
   └──────────────────────────────────────────┘
 ```
 
+### 1.1 What is SLAM?
+
+SLAM (Simultaneous Localisation and Mapping) is the problem of building a consistent map of an unknown environment while simultaneously estimating the sensor platform's pose within that map. The challenge is circular: accurate mapping requires knowing where the sensor is, and accurate localisation requires knowing the map. Classical solutions break this circularity probabilistically by maintaining a joint distribution over robot pose and map, updated incrementally as new sensor measurements arrive.
+
+In the Linux graphics and XR context, SLAM is the enabling technology for inside-out tracking on XR headsets: a headset running Monado uses camera feeds from the V4L2 or libcamera stack to estimate its own position in a room without external trackers. In robotics, SLAM provides the map and trajectory that autonomous navigation (ROS 2 nav2) needs to plan collision-free paths. The two principal algorithmic families — recursive Bayesian filtering and pose-graph optimisation — trade completeness of the posterior for scalability, and each has different GPU-acceleration characteristics that connect to the Vulkan compute and OpenCL runtimes available on the Linux stack.
+
+### 1.2 What is OpenSLAM?
+
+OpenSLAM (openslam-org.github.io) is an open-source repository and publication platform for SLAM algorithm implementations. Founded in 2006 and migrated to GitHub in 2018, it provides reference C++ implementations of approximately thirty distinct SLAM algorithms, including particle-filter approaches (GMapping, FastSLAM variants), pose-graph optimisers (G2O, TORO, HOG-Man), feature extractors for laser range data (FLIRTLib), and early RGB-D and visual SLAM systems.
+
+OpenSLAM occupies a specific niche in the Linux robotics stack: it sits between the sensor drivers (V4L2, libcamera, urg_node for LiDAR) and the navigation consumers (ROS 2 nav2, Monado's SLAM tracking module). Its implementations are research-grade code that became the algorithmic cores of production-grade packages — G2O is embedded in ORB-SLAM3 and Google Cartographer. Most OpenSLAM packages carry BSD or LGPL licenses compatible with embedding in larger open-source stacks, though some carry GPLv3 restrictions that affect how they can be combined with proprietary middleware. On Linux, the build toolchain for OpenSLAM components is CMake-based, with external dependencies on Eigen, SuiteSparse, and optionally Qt for visualisation.
+
+### 1.3 What is Pose Graph Optimization?
+
+A pose graph is a directed graph in which each vertex represents a sensor platform pose (position and orientation) at a specific point in time, and each edge encodes a noisy relative-pose measurement between two poses — either an odometry measurement linking consecutive poses, or a loop-closure constraint linking two non-adjacent poses identified as returning to the same physical location. The SLAM back-end solves a nonlinear least-squares problem over the graph to find the pose assignment that best satisfies all constraints simultaneously, in a maximum-likelihood sense under Gaussian noise.
+
+Pose graph optimisation superseded Kalman-filter SLAM for large-scale environments because the sparse factor graph structure enables efficient Cholesky factorisation via SuiteSparse, scaling to hundreds of thousands of poses where EKF methods would require O(n²) storage. The optimisation iterates Gauss-Newton or Levenberg-Marquardt steps on the graph Jacobian, converging in a small number of iterations when initialised from odometry estimates. On the Linux stack, pose graph optimisers (G2O, TORO, HOG-Man) link against SuiteSparse or Eigen for the linear algebra back-end, and their integration with GPU compute is indirect: the front-end producing the constraints may use Vulkan compute or CUDA for feature extraction, while the optimiser itself runs on CPU sparse linear algebra.
+
 ---
 
 ## 2. SLAM Fundamentals: The Front-End/Back-End Split

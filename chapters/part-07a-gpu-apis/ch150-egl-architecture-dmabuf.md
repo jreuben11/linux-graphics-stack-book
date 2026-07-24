@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is EGL?](#11-what-is-egl)
+   - [1.2 What is DMA-BUF?](#12-what-is-dma-buf)
+   - [1.3 What is EGLImage?](#13-what-is-eglimage)
 2. [EGL Architecture and Concepts](#egl-architecture-and-concepts)
 3. [EGL Platforms: DRM, Wayland, and X11](#egl-platforms-drm-wayland-and-x11)
 4. [EGLImage and Zero-Copy Buffer Sharing](#eglimage-and-zero-copy-buffer-sharing)
@@ -32,6 +35,24 @@ Despite its ubiquity, EGL is often treated as boilerplate. This chapter examines
 - **`EGL_EXT_image_dma_buf_import` extension chain** — the foundation of all DMA-BUF-based workflows on Linux
 
 [EGL specification](https://registry.khronos.org/EGL/specs/eglspec.1.5.pdf) | [Mesa EGL source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/egl)
+
+### 1.1 What is EGL?
+
+EGL is a specification maintained by the Khronos Group that defines the interface between Khronos rendering APIs — OpenGL, OpenGL ES, and OpenVG — and the native windowing or display system of the host platform. Originally designed for embedded environments where OpenGL ES targets mobile and embedded GPUs, EGL has become the canonical binding layer on Linux desktops, Wayland compositors, Android, and any system where GPU rendering must connect to a display pipeline without a platform-specific binding such as WGL on Windows or CGL on macOS.
+
+On Linux, EGL operates between Mesa's per-driver rendering implementations and the display stack comprising DRM/KMS, the Wayland protocol layer, and X11. The three central objects EGL provides — EGLDisplay, EGLSurface, and EGLContext — map to a GPU device connection, a renderable buffer target, and a client API rendering state machine respectively. The platform extension mechanism introduced in EGL 1.5 allows the same API to serve compositor-side rendering onto a GBM surface backed by DRM framebuffers, client-side rendering into a Wayland window surface, and headless offscreen rendering on a DRM render node. EGL extension discovery at runtime via `eglQueryString(display, EGL_EXTENSIONS)` and function pointer lookup via `eglGetProcAddress` are the two mechanisms by which implementations expose optional capabilities without breaking the stable core ABI. The current specification is EGL 1.5, hosted at [registry.khronos.org](https://registry.khronos.org/EGL/specs/eglspec.1.5.pdf).
+
+### 1.2 What is DMA-BUF?
+
+DMA-BUF is a Linux kernel subsystem, introduced in kernel 3.3, for sharing memory buffers between independent device drivers without copying the underlying data. A DMA-BUF is represented to userspace as a plain file descriptor. Passing that descriptor between processes or subsystems transfers a reference to the same physical memory pages that the originating driver allocated. Any driver that supports DMA-BUF — V4L2 camera, VA-API video decoder, DRM/KMS display engine, or GPU — can import a buffer from any other supporting driver and map it into its own address space or submit it directly over PCIe, without involving the CPU as an intermediary.
+
+The kernel DMA-BUF API is defined in `include/linux/dma-buf.h` ([source](https://elixir.bootlin.com/linux/latest/source/include/linux/dma-buf.h)). The userspace interface exposes file descriptors that carry the buffer's memory layout metadata (format, dimensions, stride, offset per plane) separately through companion mechanisms: DRM's `DRM_IOCTL_PRIME_FD_TO_HANDLE` / `DRM_IOCTL_PRIME_HANDLE_TO_FD` for GEM-backed buffers, and the `DMA_BUF_IOCTL_SYNC` ioctl for explicit CPU cache coherence. On Wayland, the `zwp_linux_dmabuf_v1` protocol extension allows clients to present DMA-BUF file descriptors directly to the compositor as surface content, bypassing shared memory entirely. This chapter covers how EGL imports those file descriptors into GPU textures via the `EGL_EXT_image_dma_buf_import` extension chain.
+
+### 1.3 What is EGLImage?
+
+EGLImage is an opaque handle type defined by the `EGL_KHR_image_base` extension that wraps a GPU resource — a texture, a renderbuffer, or an externally allocated buffer — in a form that can be shared across EGL contexts and even across different Khronos client APIs bound to the same display. Unlike an ordinary OpenGL texture, which is private to the context and API that created it, an EGLImage exists at the EGL layer and can be referenced by multiple contexts simultaneously, enabling zero-copy composition and cross-API resource sharing without round-tripping through CPU-accessible memory.
+
+When combined with the `EGL_EXT_image_dma_buf_import` extension, EGLImage becomes the bridge that imports a DMA-BUF file descriptor — whether produced by a V4L2 decoder, a GBM allocation, or a Wayland compositor — into the GPU driver as a texture or framebuffer attachment. The image is created with `eglCreateImageKHR` using the target `EGL_LINUX_DMA_BUF_EXT`, accompanied by a set of attributes specifying the DRM fourcc pixel format, per-plane file descriptor, offset, stride, and (for protected content or modifier-aware allocation) the DRM format modifier. On the OpenGL ES side, `glEGLImageTargetTexture2DOES` from `GL_OES_EGL_image` binds the imported image to a texture unit. The `EGL_KHR_image_base` specification is available at [registry.khronos.org](https://registry.khronos.org/EGL/extensions/KHR/EGL_KHR_image_base.txt).
 
 ---
 

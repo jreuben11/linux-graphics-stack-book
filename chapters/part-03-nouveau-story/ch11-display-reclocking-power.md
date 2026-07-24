@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. The NV50 Display Engine Architecture](#1-the-nv50-display-engine-architecture)
+  - [1.1 What is the NV50 Display Engine?](#11-what-is-the-nv50-display-engine)
+  - [1.2 What is Reclocking?](#12-what-is-reclocking)
+  - [1.3 What is GSP-RM?](#13-what-is-gsp-rm)
 - [2. KMS Integration: Connectors, Encoders, and CRTCs](#2-kms-integration-connectors-encoders-and-crtcs)
 - [3. The Display PHY: HDMI and DisplayPort Signal Integrity](#3-the-display-phy-hdmi-and-displayport-signal-integrity)
 - [4. Reclocking: The Central Challenge of nouveau Performance](#4-reclocking-the-central-challenge-of-nouveau-performance)
@@ -176,6 +179,30 @@ core507d_head_set_output(struct nvkm_push *push, int head, int or, int link)
 ```
 
 This pattern — where every display state change is encoded as a pushbuffer method rather than a direct register write — is what makes the EVO programming model fundamentally different from the register-mapped model used by simpler display controllers.
+
+### 1.1 What is the NV50 Display Engine?
+
+The NV50 display engine, also referred to as PDISPLAY, is a self-contained hardware block present in every NVIDIA GPU from the G80 (GeForce 8800, 2006) generation through current Ada Lovelace silicon. Unlike the shader and compute engines that share the GPC (Graphics Processing Cluster) architecture, PDISPLAY occupies its own register space, maintains its own DMA channel infrastructure, and contains dedicated microcontrollers for output sequencing. It is responsible for the complete pipeline from framebuffer readout to physical signal transmission: reading pixels from GPU memory via dedicated DMA engines, performing display processing such as color conversion and dithering, driving the PHY blocks that generate HDMI and DisplayPort signals, routing audio to digital output encoders, and detecting hot-plug events on physical connectors.
+
+Within the Linux kernel, the display engine is exposed through the DRM/KMS subsystem. The nouveau driver implements KMS objects — CRTCs, encoders, connectors, and planes — that map onto PDISPLAY hardware blocks. The core kernel interface for applications and compositors is `/dev/dri/card0`, through which user space submits modesetting requests via `ioctl(DRM_IOCTL_MODE_SETCRTC)` or the atomic `DRM_IOCTL_MODE_ATOMIC`. Inside the driver, all display state changes are encoded as DMA pushbuffer methods directed at the EVO (Evolved Display Object) or NVDisplay channel rather than as direct register writes.
+
+The architectural boundary between EVO (NV50 through Maxwell) and NVDisplay (Pascal and later) is the primary generational division within the PDISPLAY codebase and is reflected in the source layout under `drivers/gpu/drm/nouveau/dispnv50/`.
+
+### 1.2 What is Reclocking?
+
+Reclocking is the process of switching a GPU between different operating performance states, called P-states, each of which specifies a different set of GPU core clock, memory clock, voltage, and thermal parameters. At boot time or after a reset, firmware initialises the GPU at a conservative, low-power P-state — typically the minimum safe state that guarantees correct operation regardless of what software will subsequently do. For interactive graphics work or GPU compute, this boot P-state represents a small fraction of the hardware's rated throughput, often 10–20% of peak memory bandwidth and similar fractions of compute throughput.
+
+In NVIDIA hardware, the set of valid P-states and the PLL (Phase-Locked Loop) configuration parameters required to reach each state are stored in the VBIOS (Video BIOS) as a set of binary tables. Reclocking to a higher P-state requires parsing these tables, reprogramming the GPC core PLL, the memory interface PLL (MPLL), and the display pixel clock PLLs (VPLLs), adjusting voltage through the appropriate regulator interface, and coordinating these changes so that the memory PHY remains operational during the transition.
+
+The proprietary NVIDIA driver performs reclocking transparently in response to GPU workload. In nouveau, reclocking support is partial and generation-dependent: it works on NV50 and Fermi hardware, is limited on Kepler, and is effectively absent on Maxwell and later due to signed firmware requirements. The debugfs interface at `/sys/kernel/debug/dri/0/pstate` provides user-space control of the P-state on hardware where reclocking is implemented. Section 4 details the technical basis for each generation's limitation, and Section 5 describes how GSP-RM resolves the gap on Turing and later hardware.
+
+### 1.3 What is GSP-RM?
+
+GSP-RM is the GPU System Processor Resource Manager: proprietary NVIDIA firmware that runs on a dedicated management processor (the GSP, a RISC-V or Falcon core embedded in Turing and later GPUs) and handles resource management tasks that would otherwise require driver-level access to privileged GPU registers. On Ampere and later hardware, GSP-RM is mandatory for the proprietary driver; for nouveau, GSP-RM support was added to enable Turing+ GPUs to reclock and to allow correct display engine initialisation on those generations.
+
+The GSP-RM firmware is distributed as a signed binary in the linux-firmware repository under `nvidia/GPUXXX/gsp.bin`. The firmware is loaded by the kernel driver at GPU initialisation time and then receives commands through a shared memory region. Driver-to-firmware communication uses an RPC (Remote Procedure Call) protocol implemented via `nvkm_gsp_rm_ctrl()` within the nvkm GSP subdevice at `drivers/gpu/drm/nouveau/nvkm/subdev/gsp/`.
+
+For reclocking, GSP-RM handles P-state transitions on Turing+ hardware transparently: the driver requests a P-state change via RPC and GSP-RM performs the necessary PLL reprogramming, voltage adjustment, and memory PHY training that would otherwise require reverse-engineered knowledge of the signed PMU firmware blobs. For display, GSP-RM initialises the display engine and handles high-bandwidth DisplayPort link training on Turing+. The practical effect is that GSP-RM closes the reclocking performance gap on Turing and later while leaving Maxwell and earlier hardware dependent on the partial reclocking support described in Section 4.
 
 ---
 

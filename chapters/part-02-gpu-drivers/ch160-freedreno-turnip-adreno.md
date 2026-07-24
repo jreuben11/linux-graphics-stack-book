@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is the Adreno GPU?](#11-what-is-the-adreno-gpu)
+   - [1.2 What is Freedreno?](#12-what-is-freedreno)
+   - [1.3 What is Turnip?](#13-what-is-turnip)
 2. [Qualcomm Adreno GPU Architecture](#qualcomm-adreno-gpu-architecture)
 3. [Adreno TBDR: Binning, VSC, and LRZ](#adreno-tbdr-binning-vsc-and-lrz)
 4. [GMU: Graphics Management Unit](#gmu-graphics-management-unit)
@@ -48,6 +51,30 @@ This chapter covers the complete open-source Adreno stack in depth:
 - **Profiling and debugging tools** — tooling for profiling and debugging Adreno hardware on Linux
 
 Sources: [freedreno/turnip Mesa source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/freedreno) | [msm_drm kernel](https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/msm)
+
+### 1.1 What is the Adreno GPU?
+
+Adreno is Qualcomm's proprietary GPU IP, integrated into the Snapdragon system-on-chip family that powers the majority of Android smartphones worldwide and, since the Snapdragon X series, ARM-based laptops for the PC market. The Adreno name spans a wide generational range: from the scalar A3xx series through the wave-based A5xx architecture, the widely-deployed A6xx generation (Snapdragon 845 through 888), and the current A7xx and A8xx generations present in Snapdragon 8 Gen 2/3 and Snapdragon X Elite/X2 Elite.
+
+Architecturally, Adreno is a Tile-Based Deferred Renderer (TBDR). The GPU performs a lightweight binning pass first, recording which triangles land within each screen tile, and then renders tiles one at a time using a small, fast on-chip SRAM called GMEM. This avoids the bandwidth cost of reading and writing intermediate color and depth data to main system memory during a render pass. Every component of the open-source driver stack — Freedreno, Turnip, and the kernel's msm_drm — is architected around this TBDR model, and understanding it is prerequisite for understanding any part of the stack.
+
+The open-source stack targets A5xx and later, with full Vulkan 1.3 support on A6xx and Vulkan 1.3 plus ray tracing and mesh shaders on A7xx. In the Linux kernel, Adreno hardware is exposed through the `msm_drm` DRM driver under `drivers/gpu/drm/msm/`, which provides command submission, GPU memory management via IOMMU/SMMU, and power management through the Graphics Management Unit (GMU) firmware.
+
+### 1.2 What is Freedreno?
+
+Freedreno is the open-source OpenGL and OpenGL ES driver for Qualcomm Adreno GPUs within the Mesa 3D project. It implements the Gallium3D driver interface, sitting above Mesa's shared state tracker infrastructure and translating draw calls, shader programs, and render state into the command packets that the Adreno CP (Command Processor) understands. OpenGL-specific driver code lives in `src/gallium/drivers/freedreno/` within the Mesa repository, with shared infrastructure across all Adreno generations in `src/freedreno/`.
+
+Freedreno supports the full Adreno GPU generation range from A2xx through A7xx/A8xx. For each generation it generates binary shaders using the ir3 compiler (A3xx and later), assembles command streams using generation-specific PM4 packet formats, and submits GPU work to the kernel via the `MSM_GEM_SUBMIT` ioctl of the msm_drm driver.
+
+On Linux systems, Freedreno is the driver for Adreno hardware running OpenGL applications, Wayland compositors that use EGL/OpenGL ES, and X11 clients. For pure Vulkan workloads, Turnip is the preferred path; Freedreno remains important for OpenGL ES compatibility on embedded and automotive platforms where OpenGL ES 3.2 is the required API surface. Since Mesa 23, Freedreno can alternatively route its OpenGL path through Zink (OpenGL-over-Vulkan), using Turnip as the Vulkan backend and inheriting Turnip's more aggressively optimized command submission paths.
+
+### 1.3 What is Turnip?
+
+Turnip is the open-source Vulkan driver for Qualcomm Adreno GPUs, also part of the Mesa project. Unlike Freedreno, it does not use a Gallium state tracker; instead it translates Vulkan API calls and render pass structures directly into Adreno PM4 command stream packets, submitted via the `MSM_GEM_SUBMIT` ioctl. Its driver source lives in `src/freedreno/vulkan/` within the Mesa repository, sharing the ir3 compiler and common Adreno register header infrastructure with Freedreno.
+
+Turnip targets Adreno A6xx, A7xx, and A8xx. On A6xx it supports Vulkan 1.3 with most optional extensions; on A7xx it adds hardware ray tracing, mesh shaders, and variable rate shading — making it the most feature-complete open-source mobile Vulkan driver as of Mesa 25. Its design maps directly onto Adreno's TBDR architecture: Vulkan render passes become binning-plus-tile-render sequences, leveraging hardware features such as VSC (Visibility Stream Compressor) and LRZ (Low Resolution Z) to reach GPU performance close to the proprietary Qualcomm driver on Android.
+
+Turnip is deployed in production on postmarketOS, Arch Linux ARM, and Qualcomm's reference Linux distributions for Snapdragon X Elite laptops. It also serves as the Vulkan backend for Zink on Adreno hardware, enabling full desktop OpenGL 4.6 through the OpenGL-over-Vulkan layer when paired with Mesa's Zink driver.
 
 ---
 

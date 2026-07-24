@@ -93,6 +93,9 @@ Section 12 covers **NVDEC**, NVIDIA's fixed-function hardware decode engine, acc
 ## Table of Contents
 
 1. [VA-API: Architecture and Surface Model](#1-va-api-architecture-and-surface-model)
+   - [1.1 What is VA-API?](#11-what-is-va-api)
+   - [1.2 What is DMA-BUF?](#12-what-is-dma-buf)
+   - [1.3 What is VASurface?](#13-what-is-vasurface)
 2. [VA-API Drivers: Mesa and Vendor Implementations](#2-va-api-drivers-mesa-and-vendor-implementations)
 3. [VA-API Encode Pipeline](#3-va-api-encode-pipeline)
 4. [VDPAU: NVIDIA's Video Path and Its Limitations](#4-vdpau-nvidias-video-path-and-its-limitations)
@@ -265,6 +268,24 @@ Linux provides several hardware video decode APIs, each with distinct design phi
 | V4L2 stateless | Newer ARM SoCs; Hantro, RKVDEC, Cedrus | Yes | Limited (10-bit on newer cores) | H.264, H.265, VP9, AV1 (growing) | Yes (DMA-BUF) | Future direction for kernel video decode |
 | Vulkan Video (KHR) | AMD (RADV), NVIDIA (NVK), Intel (ANV) on supported HW | Yes (`VkImage`/DMA-BUF interop) | Yes | H.264 decode/encode, H.265 decode/encode, AV1 decode | Via `VkImage`→DMA-BUF export | Stable spec (2023+); growing driver support; unified decode + encode |
 | VDPAU | NVIDIA (legacy), Mesa (partial via OpenGL) | Limited (surface sharing) | Limited | H.264, VC-1, MPEG-2, H.265 (partial) | X11 only | Deprecated; NVIDIA discourages; no Wayland path |
+
+### 1.1 What is VA-API?
+
+VA-API (Video Acceleration API) is a vendor-neutral open-source API for offloading video decode, encode, and post-processing operations from the CPU to dedicated fixed-function hardware units on GPUs and SoCs. It provides an ICD-style dispatch layer through `libva.so` that routes API calls to hardware-specific driver plugins at runtime, typically loaded from `/usr/lib/dri/`, isolating applications from driver internals in the same way that OpenGL ICDs isolate rendering code from vendor drivers. The driver is selected at runtime via the `LIBVA_DRIVER_NAME` environment variable or by querying the DRM device for a hint; on AMD hardware the plugin is `radeonsi_drv_video.so`, on Intel Gen8+ it is `iHD_drv_video.so`, and the open-source NVIDIA wrapper loads `nvidia_drv_video.so`.
+
+On Linux, VA-API is the primary path for GPU-accelerated video in media players such as mpv and VLC, in web browsers for hardware decode of H.264, HEVC, and AV1 streams, and in transcoding pipelines built with FFmpeg or GStreamer. It sits above the kernel DRM layer — VA-API drivers submit work to the GPU through the same DRM kernel interfaces used by 3D rendering — and below application frameworks that handle container demuxing and stream management. The API covers the full codec pipeline: capability discovery via `vaQueryConfigProfiles` and `vaQueryConfigEntrypoints`, surface allocation through `vaCreateSurfaces`, bitstream submission via the `vaBeginPicture`/`vaRenderPicture`/`vaEndPicture` loop, and export of decoded frames as DMA-BUF file descriptors for zero-copy handoff to display or further GPU processing. The libva source lives at `https://github.com/intel/libva` and the specification is maintained at `https://intel.github.io/libva/`.
+
+### 1.2 What is DMA-BUF?
+
+DMA-BUF is a Linux kernel framework for sharing GPU and DMA-accessible memory buffers between subsystems and drivers without copying data through the CPU. A DMA-BUF is represented as a regular Unix file descriptor; the kernel's `dma_buf` framework, implemented in `drivers/dma-buf/dma-buf.c`, manages reference counting and implicit synchronization fences, while individual drivers implement the `dma_buf_ops` interface to export and import these buffers. Because a DMA-BUF fd is a file descriptor, it can be passed between processes via `sendmsg(2)` or inherited across `fork(2)`, enabling zero-copy pipelines that span the graphics driver, video decoder, compositor, and display controller as separate processes.
+
+In the hardware video pipeline, DMA-BUF is the connective mechanism at every API boundary. A VA-API surface decoded by the GPU is exported as a DMA-BUF fd via `vaExportSurfaceHandle`; that fd is then imported into Vulkan via `VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT`, or into EGL via `EGL_EXT_image_dma_buf_import`, or presented directly to the Wayland compositor as a `wl_buffer` backed by the `zwp_linux_dmabuf_v1` protocol. V4L2 video capture uses `V4L2_MEMORY_DMABUF` buffer type and `VIDIOC_EXPBUF` to export capture buffers; GStreamer propagates DMA-BUF ownership through `GstDmaBufAllocator` and the `memory:DMABuf` caps feature. DRM format modifiers accompany DMA-BUF fds to convey GPU tiling layout, allowing the importing driver to address the buffer without first detiling it to a linear arrangement. The kernel DMA-BUF documentation lives at `Documentation/driver-api/dma-buf.rst`.
+
+### 1.3 What is VASurface?
+
+A `VASurface` is the central GPU-resident buffer abstraction in VA-API, representing exactly one video frame allocated in the hardware driver's native memory layout. Unlike CPU-side pixel arrays, a `VASurface` is opaque: applications cannot directly read or write its contents. The driver allocates the backing GPU memory in the format best suited to the fixed-function codec or display hardware, which is typically a vendor-specific tiled layout that cannot be read by the CPU as a linear pixel array. The tiling format is conveyed to downstream APIs through a DRM format modifier when the surface is exported as a DMA-BUF fd.
+
+Applications create pools of `VASurface` objects via `vaCreateSurfaces`, specifying a chroma format family such as `VA_RT_FORMAT_YUV420` and an exact pixel format fourcc such as `VA_FOURCC_NV12` or `VA_FOURCC_P010` for 10-bit HDR content. The `VA_SURFACE_ATTRIB_USAGE_HINT` attribute — `VA_SURFACE_ATTRIB_USAGE_HINT_DECODER`, `_ENCODER`, or `_DISPLAY` — signals the intended role so the driver can select the optimal tiling mode at allocation time. Surfaces serve as the render target for `VAContext` decode submissions, as the source for encode submissions, and as intermediate buffers for `VAEntrypointVideoProc` post-processing operations such as deinterlacing and color space conversion. A `VASurface` retains its GPU allocation until `vaDestroySurfaces` is called, making lifetime management explicit and decoupled from the decode or encode context that produced its content. The `VASurfaceID` is an integer handle valid only within a single `VADisplay` connection.
 
 ---
 

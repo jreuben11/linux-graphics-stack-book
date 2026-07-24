@@ -13,6 +13,9 @@ As of mid-2026, xdg-desktop-portal **1.22.1** is the current stable release (202
 ## Table of Contents
 
 - [1. Architecture: The Three-Party Model](#1-architecture-the-three-party-model)
+  - [1.1 What is D-Bus?](#11-what-is-d-bus)
+  - [1.2 What is Flatpak?](#12-what-is-flatpak)
+  - [1.3 What is PipeWire?](#13-what-is-pipewire)
 - [2. Caller Identification: From D-Bus Sender to AppID](#2-caller-identification-from-d-bus-sender-to-appid)
 - [3. The Request/Session Pattern](#3-the-requestsession-pattern)
 - [4. Backend Discovery and Configuration](#4-backend-discovery-and-configuration)
@@ -75,6 +78,24 @@ Two auxiliary services live on separate D-Bus bus names:
 |---|---|---|---|
 | Document portal | `org.freedesktop.portal.Documents` | `/org/freedesktop/portal/documents` | FUSE filesystem exposing per-app file grants |
 | Permission store | `org.freedesktop.impl.portal.PermissionStore` | `/org/freedesktop/impl/portal/PermissionStore` | Per-app, per-resource permission database |
+
+### 1.1 What is D-Bus?
+
+D-Bus is a message-passing system for inter-process communication (IPC) on Linux. It provides a structured, type-safe protocol over a shared Unix socket, with two standard buses: the system bus (one per machine, for system-wide services such as `systemd` and `NetworkManager`) and the session bus (one per user login session, for desktop services). Each process connecting to a bus receives a unique name in the form `:1.N`, and named service identifiers such as `org.freedesktop.portal.Desktop` are registered on top of those unique names. Messages carry typed data encoded in D-Bus wire format and are described by XML introspection documents. D-Bus supports method calls (request/reply with a return), signals (asynchronous one-to-many notifications), and property access through the `org.freedesktop.DBus.Properties` standard interface.
+
+The portal system runs entirely on the session bus. The portal frontend registers `org.freedesktop.portal.Desktop`; each desktop-environment backend registers one or more `org.freedesktop.impl.portal.*` names. When a sandboxed application needs a capability — a file chooser dialog, a camera feed, a screen capture — it sends a D-Bus method call to the portal bus name. The portal daemon authenticates the caller using `GetConnectionCredentials`, maps the connection to a PID, determines the sandbox type, enforces the permission store, and replies with results or a handle for async interactions. Because a Flatpak sandbox restricts what Wayland sockets and device nodes the app can open directly, the session D-Bus bus relayed through `xdg-dbus-proxy` is the only sanctioned communication channel available to it.
+
+### 1.2 What is Flatpak?
+
+Flatpak is an application packaging and sandboxing system for Linux desktops. An application is bundled with its runtime dependencies and confined at launch using a combination of Linux user namespaces, `seccomp-bpf` filters, and `bubblewrap` — a privilege-free sandboxer that constructs a new mount namespace without requiring a setuid binary. When a Flatpak application starts, `bubblewrap` mounts the application's own filesystem tree into the new namespace and writes a metadata file at `.flatpak-info` inside the sandbox root. This file records the application ID (for example, `org.gnome.Eog`), the unique instance identifier, and the set of sandbox permissions declared in the application's manifest.
+
+The Flatpak sandbox deliberately blocks direct access to device nodes such as `/dev/video0`, to Wayland compositor sockets, and to arbitrary D-Bus services. Communication with the host session bus is relayed through `xdg-dbus-proxy`, which enforces a per-application D-Bus filter policy listing which bus names and interfaces the application may call. The portal system relies on the presence of `.flatpak-info` inside the caller's mount namespace to determine that the caller is a Flatpak application and to extract its AppID. That AppID is the key under which the portal's permission store records per-application grants — recording, for instance, whether `org.gnome.Eog` has previously been granted access to the camera.
+
+### 1.3 What is PipeWire?
+
+PipeWire is a low-latency multimedia server for Linux that handles both audio and video streams through a unified graph model. It supersedes PulseAudio for desktop audio routing and serves as the video transport layer beneath the portal's ScreenCast and Camera interfaces. A running PipeWire instance maintains a graph of nodes — sources such as camera devices or compositor screen-capture outputs, sinks such as recording applications or displays, and processing filters — connected by links. Data flows between nodes as buffers through shared memory regions mapped between the PipeWire server and its clients, avoiding unnecessary kernel copies for the critical media path.
+
+The ScreenCast and Camera portals use PipeWire as the actual data channel once the user has granted consent. After a successful `SelectSources`/`Start` sequence, the portal signals the application a PipeWire **node ID** along with a file descriptor obtained through `OpenPipeWireRemote`. The application passes that fd to `pw_core_connect_fd` to join the portal's restricted PipeWire graph and then links its consumer node to the provided source node to receive video frames. This design keeps the compositor's native capture mechanism — `wlr-screencopy`, GNOME's Mutter `org.gnome.Mutter.ScreenCast` D-Bus service, or KWin's equivalent — entirely inside the portal backend and the privileged PipeWire server process. The application itself sees only an opaque PipeWire stream node, with no direct compositor access.
 
 ---
 

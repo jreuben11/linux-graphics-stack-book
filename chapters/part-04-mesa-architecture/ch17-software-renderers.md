@@ -8,6 +8,9 @@
 ## Table of Contents
 
 1. [Why Software Renderers Matter](#1-why-software-renderers-matter)
+   - [1.1 What is llvmpipe?](#11-what-is-llvmpipe)
+   - [1.2 What is Lavapipe?](#12-what-is-lavapipe)
+   - [1.3 What is Zink?](#13-what-is-zink)
 2. [llvmpipe: Architecture and Design](#2-llvmpipe-architecture-and-design)
 3. [llvmpipe Performance Characteristics](#3-llvmpipe-performance-characteristics)
 4. [Lavapipe: CPU-Based Vulkan](#4-lavapipe-cpu-based-vulkan)
@@ -67,6 +70,18 @@ graph TD
 A fourth renderer, **softpipe** (`src/gallium/drivers/softpipe/`), predates **llvmpipe**. It is a pure software **Gallium** driver written without **LLVM**, used historically as a reference implementation. It still exists in the tree but is unmaintained and not used by default anywhere. New code should not target **softpipe**; it exists primarily for archaeology.
 
 Historically, **Lavapipe** was briefly known as "vallium" during its earliest development in 2020. Readers encountering early blog posts or commit messages from that period will see this name; it was renamed to **Lavapipe** before the first **Mesa** release containing it.
+
+### 1.1 What is llvmpipe?
+
+llvmpipe is a Gallium pipe driver that implements the OpenGL API entirely in software on the CPU, using LLVM as a just-in-time compiler to generate native SIMD machine code for shader execution. It sits within Mesa's Gallium driver framework, implementing the `pipe_screen` and `pipe_context` interfaces exactly as a hardware GPU driver would, but dispatching all rendering work to CPU threads rather than submitting commands to GPU hardware. llvmpipe uses a tile-based rendering architecture: the framebuffer is divided into 64×64-pixel tiles, and primitives are binned into those tiles before being dispatched to a pool of worker threads for rasterisation. Fragment shaders are compiled from NIR — Mesa's internal shader IR — through LLVM IR down to native x86-64 code with SSE4.1, AVX2, or AVX-512 vector operations, processing multiple pixels per instruction using a Structure-of-Arrays layout. This makes llvmpipe substantially faster than naive scalar software renderers. Within the Linux graphics stack, llvmpipe activates when `LIBGL_ALWAYS_SOFTWARE=1` is set, when no hardware DRM device is available, or when a Wayland compositor falls back to CPU rendering in a virtual machine. It is Mesa's primary OpenGL-capable software renderer and is the rasterisation backend upon which Lavapipe is built.
+
+### 1.2 What is Lavapipe?
+
+Lavapipe is a Vulkan Installable Client Driver (ICD) that implements the Vulkan API entirely on the CPU, exposed to Vulkan loaders via `lvp_icd.x86_64.json`. It uses llvmpipe's Gallium infrastructure as its rasterisation backend. From a Vulkan application's perspective, Lavapipe behaves as an ordinary Vulkan driver: it presents a `VkPhysicalDevice`, accepts SPIR-V shaders, manages descriptor sets, and processes command buffers. Internally, Vulkan commands are translated into Gallium pipe calls executed synchronously on the calling CPU thread via `lvp_execute_cmds()`. SPIR-V shaders are converted to NIR by the `spirv_to_nir` library and then JIT-compiled through the same gallivm infrastructure that llvmpipe uses for OpenGL. All `VkDeviceMemory` allocations are backed by ordinary CPU-heap memory, with every memory type exposed as host-visible and host-coherent, which eliminates the distinction between device and host memory. Lavapipe is conformant to Vulkan 1.3 and supports extensions including ray tracing (via a software BVH built from `lvp_bvh_box_node` and `lvp_bvh_triangle_node`), mesh shaders, and descriptor buffer. Within the Linux graphics stack, Lavapipe is the standard Vulkan software renderer used in Mesa's CI pipelines and serves as the Vulkan target when Zink requires a full CPU-software path.
+
+### 1.3 What is Zink?
+
+Zink is a Gallium pipe driver that translates the Gallium interface — and therefore OpenGL — into Vulkan API calls. Unlike llvmpipe or Lavapipe, Zink contains no rasteriser of its own; it maps Gallium state such as draw calls, shader bindings, resource barriers, and render targets onto Vulkan objects and submits work to whatever Vulkan driver is available. That driver can be a hardware ICD such as RADV, ANV, or NVK, or it can be Lavapipe for a fully CPU-software path. Zink's purpose is enabling OpenGL support on platforms where only a Vulkan driver exists: embedded configurations without a native OpenGL driver, macOS via MoltenVK, and Mesa CI environments that exercise the complete OpenGL-over-Vulkan-on-CPU stack. Shader translation flows in the opposite direction from Lavapipe: Gallium delivers NIR to Zink, and Zink converts NIR to SPIR-V using `nir_to_spirv()` in `nir_to_spirv/nir_to_spirv.c` before passing the result to the Vulkan driver. State translation relies on `VK_EXT_extended_dynamic_state` to avoid pipeline explosion and `VK_EXT_graphics_pipeline_library` to amortise compilation cost. Within the Linux graphics stack, Zink occupies the Gallium driver position whose backend is the Vulkan layer rather than GPU command streams, making it the translation bridge between the OpenGL and Vulkan ecosystems in Mesa.
 
 ---
 

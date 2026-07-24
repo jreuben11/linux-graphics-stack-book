@@ -8,6 +8,9 @@
 
 - [Scope](#scope)
 - [1. Introduction: Hardware Generations and the Road to Openness](#1-introduction-hardware-generations-and-the-road-to-openness)
+  - [1.1 What is VideoCore IV?](#11-what-is-videocore-iv)
+  - [1.2 What is V3D?](#12-what-is-v3d)
+  - [1.3 What is a QPU (Quad Processor Unit)?](#13-what-is-a-qpu-quad-processor-unit)
 - [2. VideoCore IV Architecture (VC4 / Pi 1–3)](#2-videocore-iv-architecture-vc4--pi-13)
 - [3. VideoCore VI and the V3D Driver (Pi 4)](#3-videocore-vi-and-the-v3d-driver-pi-4)
 - [4. V3D Shader Compiler: NIR to VIR to QPU Binary](#4-v3d-shader-compiler-nir-to-vir-to-qpu-binary)
@@ -74,6 +77,26 @@ When the original Pi shipped in 2012, its GPU was driven entirely by a closed fi
 The first crack in that wall was Herman Hermitage's reverse engineering of the **VideoCore IV** ISA starting in 2012. The [videocoreiv](https://github.com/hermanhermitage/videocoreiv) project documented the assembly language, **QPU** pipeline, and control list format, providing the foundation that later driver work depended on.
 
 Eric Anholt (then at Intel, later at Broadcom/Raspberry Pi) wrote the open-source **vc4** kernel **DRM** driver and accompanying **Mesa** Gallium driver, merged into Linux 4.4 and **Mesa** 10.6 respectively. For the first time, a Pi could render **OpenGL ES** using standard, firmware-free kernel interfaces. Eric subsequently authored the **v3d** kernel driver and **Mesa** driver for Pi 4, completing the transition to a fully open graphics stack. **Igalia** then led the development of the **v3dv** Vulkan driver, achieving Khronos conformance in 2020.
+
+### 1.1 What is VideoCore IV?
+
+VideoCore IV is the multimedia processing system embedded in Broadcom's BCM2835, BCM2836, and BCM2837 system-on-chip packages that power the Raspberry Pi 1 through Pi 3 and the original Pi Zero. In Broadcom's architecture, "VideoCore IV" describes more than a 3D graphics block: the VideoCore IV processor runs the boot firmware that initializes the SoC before releasing the ARM core from reset, and it manages peripheral pipelines — video decode, audio, and camera — through the VCHI (VideoCore Host Interface) inter-processor communication channel. The 3D acceleration portion within VideoCore IV is driven by QPU (Quad Processor Unit) slices: 16-way SIMD vector processors executing 64-bit instruction words, each word encoding both an add-ALU and a multiply-ALU operation simultaneously.
+
+From the Linux kernel perspective, the VideoCore IV 3D block is exposed through the `vc4` DRM driver at `drivers/gpu/drm/vc4/`, while the corresponding Mesa Gallium driver at `src/gallium/drivers/vc4/` provides OpenGL ES 2.0 to userspace applications. Because VideoCore IV lacks a hardware MMU, all GPU-accessible memory must be physically contiguous and is allocated through the kernel's CMA (Contiguous Memory Allocator) subsystem. The GPU uses a tile-based deferred rendering (TBDR) architecture that divides frames into 64×64 pixel tiles, processes them first in a binning pass that sorts geometry into per-tile Tile Control Lists, then in a rendering pass that executes fragment shading entirely in fast on-chip tile buffer SRAM, writing completed tiles to system SDRAM only at tile boundary.
+
+### 1.2 What is V3D?
+
+V3D is the name Broadcom uses for the standalone 3D acceleration hardware block introduced with the BCM2711 SoC in the Raspberry Pi 4. Unlike VideoCore IV — where the 3D QPUs were embedded within a larger multimedia firmware processor — V3D communicates directly with the Linux kernel through its own DRM driver (`drivers/gpu/drm/v3d/`) with no firmware involvement in the rendering path. The boot firmware on Pi 4 and later runs on a separate VideoCore VI processor that handles thermal policy and peripheral initialization, but V3D hardware registers are memory-mapped directly into the kernel address space and driven entirely by the open-source `v3d` driver.
+
+V3D 4.2 (BCM2711, Raspberry Pi 4) introduced capabilities absent from VideoCore IV: a two-level MMU providing per-context 4 GB GPU virtual address spaces that eliminate the requirement for physically contiguous CMA buffers; a Compute Shader Dispatch (CSD) unit for OpenGL ES 3.1 compute shaders and Vulkan compute workloads; and a Texture Formatting Unit (TFU) for fixed-function mipmap generation and format conversion without shader involvement. The BCM2712 in Raspberry Pi 5 advances to V3D 7.1, widening the QPU slice count and increasing memory bandwidth while preserving the same programming model. The kernel driver exposes four independent hardware queues — bin, render, TFU, and CSD — each integrated with the DRM GPU scheduler (`drm_gpu_scheduler`) to allow concurrent execution of independent jobs.
+
+### 1.3 What is a QPU (Quad Processor Unit)?
+
+A QPU (Quad Processor Unit) is the programmable vector shader processor at the core of Broadcom's VideoCore GPU architecture, present in both VideoCore IV and V3D. The name is historical: early documentation described four groups of four SIMD lanes, but the hardware executes across 16 lanes simultaneously in a single QPU. Each QPU contains two parallel ALU pipelines — an add-ALU and a multiply-ALU — both expressed in a single 64-bit instruction word, allowing up to two floating-point operations per QPU per clock cycle across all 16 lanes.
+
+QPUs handle all programmable GPU workloads: coordinate shading (the reduced first-pass vertex stage in the TBDR binning pass), full vertex shading, and fragment shading. Texture lookups are asynchronous: a shader writes texture coordinates to the TMU (Texture and Memory Unit) request registers, continues executing other instructions, then reads results from a dedicated register after a fixed latency. To hide this latency, V3D supports interleaving up to four hardware threads per QPU — the hardware switches between shader thread contexts on each TMU stall, keeping the ALU pipelines occupied. Uniform parameters (per-draw constants passed from the CPU) are consumed from a dedicated LDUNIF FIFO rather than an indexed constant buffer: shaders read successive uniform values in program order from this FIFO.
+
+In the Mesa compiler stack, the shared V3D compiler at `src/broadcom/compiler/` lowers Mesa NIR through V3D-specific optimization and lowering passes into VIR (V3D Intermediate Representation), applies instruction scheduling to hide TMU latency, performs graph-coloring register allocation over QPU register files A and B, and emits 64-bit QPU binary words. This compiler pipeline is shared between the `v3d` Gallium driver (OpenGL ES) and the `v3dv` Vulkan driver.
 
 ---
 

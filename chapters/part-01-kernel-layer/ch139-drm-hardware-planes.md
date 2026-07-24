@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is a Hardware Overlay Plane?](#11-what-is-a-hardware-overlay-plane)
+   - [1.2 What is the Atomic KMS API?](#12-what-is-the-atomic-kms-api)
+   - [1.3 What is Composition Bypass (Direct Scanout)?](#13-what-is-composition-bypass-direct-scanout)
 2. [Display Engine Architecture](#display-engine-architecture)
 3. [KMS Plane API: Objects, Properties, and Atomic Commits](#kms-plane-api-objects-properties-and-atomic-commits)
 4. [Pixel Formats and DRM Modifiers](#pixel-formats-and-drm-modifiers)
@@ -81,6 +84,30 @@ flowchart LR
 | D — Direct KMS (no compositor) | No | 0 | KMS master / DRM lease | gamescope, VR runtimes (Monado), kiosk displays |
 
 Path A is the most efficient for video surfaces: the VA-API decoder exports a DMA-BUF, the compositor negotiates a matching modifier via `zwp_linux_dmabuf_v1`, and the KMS plane scans the buffer directly without GPU compositing. Path D goes further — the compositor is not involved at all, which is the approach used by Monado and gamescope for sub-millisecond latency.
+
+### 1.1 What is a Hardware Overlay Plane?
+
+A hardware overlay plane is a scanout unit inside the display engine — distinct from the GPU rendering pipeline — that composites one framebuffer layer directly onto the display at the scanout stage. Modern display engines contain multiple independent planes (primary, overlay, cursor), each with its own framebuffer pointer, source and destination rectangles, pixel format, Z-position, and alpha blending state. The display engine reads pixels from each plane's framebuffer and blends them in hardware during the active scanout period, producing the final image on the panel without any GPU involvement.
+
+In the Linux graphics stack, hardware planes are exposed to userspace through the Direct Rendering Manager (DRM) subsystem as `drm_plane` objects within the Kernel Mode Setting (KMS) framework. Each plane is associated with a CRTC (the kernel abstraction for a display output pipeline) and can be independently positioned and sized, enabling the display engine to present several independent image sources simultaneously.
+
+The number of planes per display output varies by hardware: Intel Tiger Lake provides up to seven planes per CRTC, AMD DCN 3.x provides four, and embedded SoCs may have two or three. The capabilities of each plane — supported pixel formats, modifiers, rotation, scaling, and colour-space conversion — are described by kernel properties exposed via the DRM property system. Understanding hardware overlay planes is the starting point for both display driver implementation and compositor-level plane allocation.
+
+### 1.2 What is the Atomic KMS API?
+
+The Atomic Kernel Mode Setting (KMS) API is the mechanism by which userspace configures the entire display pipeline state — CRTCs, planes, connectors, and encoders — in a single transactional commit. Introduced in Linux 4.2, it replaced the older page-flip and mode-set ioctls with a property-based model where all display object state is modified by setting named properties via `drmModeAtomicAddProperty()` and submitted atomically via `drmModeAtomicCommit()`.
+
+The transactional nature of atomic commits is critical for plane management. Before hardware configuration takes effect, userspace can issue a `DRM_MODE_ATOMIC_TEST_ONLY` commit to verify that the requested plane configuration is feasible — whether the hardware supports the requested format, modifier, scaling, and Z-order combination. Only if the test succeeds does userspace proceed with the actual commit, avoiding partial or undefined display states.
+
+Within the kernel, the atomic API serialises display state through `drm_atomic_state` objects, which collect the new state of all affected display objects before the driver's `atomic_check` and `atomic_commit` hooks validate and apply the configuration. Drivers signal hardware capabilities by populating plane properties such as `IN_FORMATS` (a blob listing supported format-modifier pairs), `ZPOS`, `ALPHA`, `ROTATION`, and `COLOR_ENCODING`. The `/dev/dri/card0` device node is the entry point; client capabilities `DRM_CLIENT_CAP_UNIVERSAL_PLANES` and `DRM_CLIENT_CAP_ATOMIC` must be enabled before the atomic API and overlay planes are accessible to userspace.
+
+### 1.3 What is Composition Bypass (Direct Scanout)?
+
+Composition bypass, also called direct scanout, is the technique of placing a client application's framebuffer directly on a hardware overlay plane, bypassing the GPU compositing pass that a Wayland compositor would otherwise perform. In a normal Wayland frame, the compositor renders all client surfaces into a single framebuffer using the GPU, then flips that framebuffer to the display. With composition bypass, the compositor assigns the client's DMA-BUF directly to a hardware plane and programs the display engine to blend it at scanout time, so no GPU render pass is needed for that layer.
+
+Direct scanout requires that several conditions align: the client's framebuffer must be allocated in a format and memory layout (modifier) supported by the hardware plane; the plane must be capable of scaling if the buffer dimensions differ from the screen region; and the format modifier must be negotiated between the GPU, the KMS driver, and the compositor using the `zwp_linux_dmabuf_v1` Wayland protocol extension. The compositor performs an atomic test-only commit to verify feasibility before assigning the plane.
+
+The primary use case is video playback: a VA-API or V4L2 decoder exports its output as a DMA-BUF with a hardware-specific YUV modifier, the compositor assigns it to an overlay plane with `COLOR_ENCODING` and `COLOR_RANGE` properties set, and the display engine performs colour-space conversion to the panel's native format at no GPU cost. Cursor movement is another canonical example: the cursor plane updates its position registers without triggering a full compositor repaint.
 
 ---
 

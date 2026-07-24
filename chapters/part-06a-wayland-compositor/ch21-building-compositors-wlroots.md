@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. wlroots Architecture Overview](#1-wlroots-architecture-overview)
+  - [1.1 What is wlroots?](#11-what-is-wlroots)
+  - [1.2 What is a Wayland Compositor?](#12-what-is-a-wayland-compositor)
+  - [1.3 What is DRM/KMS?](#13-what-is-drmkms)
 - [2. The Backend Abstraction](#2-the-backend-abstraction)
 - [3. Output and Mode Management](#3-output-and-mode-management)
 - [4. The Renderer Abstraction](#4-the-renderer-abstraction)
@@ -190,6 +193,32 @@ A critical aspect of using wlroots is its **ABI instability policy**: wlroots ex
 All public types use the **`wlr_` prefix**, with implementation details hidden in internal headers under `backend/*/`. The struct/vtable naming convention is consistent: the public struct carries the data members and a `const struct wlr_foo_impl *impl` pointer to the vtable of function pointers.
 
 Key source paths: [`wlroots/include/wlr/`](https://gitlab.freedesktop.org/wlroots/wlroots/-/tree/master/include/wlr), [`wlroots/backend/`](https://gitlab.freedesktop.org/wlroots/wlroots/-/tree/master/backend), [`wlroots/render/`](https://gitlab.freedesktop.org/wlroots/wlroots/-/tree/master/render).
+
+### 1.1 What is wlroots?
+
+wlroots is a C library that provides the foundational building blocks for Wayland compositors on Linux. Rather than delivering a working compositor, it supplies loosely coupled components — a hardware backend abstraction, a rendering layer, protocol implementations, and an input subsystem — that compositor authors assemble according to their own window management policies. The library connects directly to the Linux kernel's DRM/KMS subsystem for display output and to libinput for input device management.
+
+The architecture reflects a deliberate separation of mechanism from policy. wlroots implements the Wayland protocol infrastructure — buffer management, seat handling, surface lifecycles, XDG shell — without making any decisions about how windows should be arranged, which keybindings trigger which actions, or how animations work. Sway, Wayfire, labwc, and dozens of other compositors share the same wlroots foundation while exposing entirely different user-visible behaviour.
+
+The library follows a "bring your own event loop" model: compositors drive execution by calling `wl_display_run`, which dispatches the `wl_event_loop` that backs all wlroots asynchronous callbacks. There are no background threads in wlroots; every event — page flip, udev hotplug, libinput input report, Wayland client request — fires on the compositor's main loop. This single-threaded model simplifies state management at the cost of requiring compositors to keep their own handlers non-blocking.
+
+wlroots does not guarantee ABI or API stability between major releases. Compositors must be developed against a specific wlroots version; the examples in this chapter target wlroots 0.17+. [Source: wlroots repository](https://gitlab.freedesktop.org/wlroots/wlroots)
+
+### 1.2 What is a Wayland Compositor?
+
+A Wayland compositor is a privileged process that simultaneously acts as display server, window manager, and renderer. Unlike the X11 model, where the window manager and display server are separate processes, a Wayland compositor performs all three roles: it receives surface buffers from client applications via the `wl_surface.commit` request, decides where each surface appears on screen, composites the final frame, and submits it to the kernel display hardware through DRM/KMS.
+
+The Wayland protocol uses a client-server architecture over a Unix domain socket. The compositor is the server; every GUI application is a client. Clients allocate GPU buffers — typically via GBM and DMA-BUF — render into them, and attach them to `wl_surface` objects. The compositor receives these buffers as file descriptors through the `zwp_linux_dmabuf_v1` or `wl_shm` protocols, imports them into its own GPU context, and reads them during the compositing pass.
+
+Compositors are responsible for the complete output pipeline: accepting client commits, tracking damaged regions, scheduling redraws in synchronisation with display vertical blanking intervals, invoking the renderer to composite surfaces into an output framebuffer, and performing the KMS atomic commit that presents the frame on the physical display. All security boundaries between clients are enforced by the compositor — clients cannot read each other's buffers or inject input events without compositor cooperation. This chapter shows how wlroots handles each stage of this pipeline. [Wayland architecture overview](https://wayland.freedesktop.org/docs/html/ch04.html)
+
+### 1.3 What is DRM/KMS?
+
+Direct Rendering Manager/Kernel Mode Setting (DRM/KMS) is the Linux kernel subsystem that manages GPU hardware and display output. It provides access to GPU command submission, memory management via GEM objects, and display configuration through character device nodes at `/dev/dri/cardN` (modesetting) and `/dev/dri/renderDN` (GPU compute and rendering). Compositors use the modesetting node for display output; the render node is used for off-screen GPU work.
+
+The KMS portion of DRM exposes a hierarchy of hardware objects — connectors (physical display ports), encoders (signal conversion circuits), CRTCs (scanout engines), and planes (hardware layers that the display controller composites in silicon) — through the `drmModeGetResources` and `drmModeGetPlaneResources` ioctls. Modern KMS uses the atomic commit API: the compositor builds a property table with `drmModeAtomicAlloc`, sets the desired state for each object (framebuffer, display mode, position, blend mode), and submits it in a single `drmModeAtomicCommit` call. The kernel schedules the transition at the next VBlank and fires a page flip event via poll on the DRM file descriptor.
+
+wlroots wraps all KMS complexity inside the DRM backend (`backend/drm/`). A compositor never calls DRM ioctls directly; instead it manipulates `wlr_output` and `wlr_output_state` objects and calls `wlr_output_commit_state`. The backend section (§2) traces the path from each wlroots call to the underlying KMS ioctl. Comprehensive coverage of the DRM/KMS architecture is in Chapter 2. [Linux kernel DRM documentation](https://www.kernel.org/doc/html/latest/gpu/drm-kms.html)
 
 ---
 

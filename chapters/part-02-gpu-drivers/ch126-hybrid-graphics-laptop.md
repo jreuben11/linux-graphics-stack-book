@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. Introduction: The Dual-GPU Problem](#1-introduction-the-dual-gpu-problem)
+  - [1.3 What is Hybrid Graphics?](#13-what-is-hybrid-graphics)
+  - [1.4 What is PRIME Render Offload?](#14-what-is-prime-render-offload)
+  - [1.5 What is Runtime Power Management (Runtime PM)?](#15-what-is-runtime-power-management-runtime-pm)
 - [2. The Hardware Model: ACPI, MUX, and PCIe](#2-the-hardware-model-acpi-mux-and-pcie)
 - [3. vga_switcheroo: The Kernel Switching Subsystem](#3-vga_switcheroo-the-kernel-switching-subsystem)
 - [4. bbswitch: Forcible dGPU Power Cutoff](#4-bbswitch-forcible-dgpu-power-cutoff)
@@ -69,6 +72,18 @@ The history of hybrid graphics on Linux divides into three eras:
 | AMD APU + AMD dGPU | `DRI_PRIME=1`; `amdgpu.runpm=1`; SmartShift via sysfs |
 | AMD APU + NVIDIA | Same as Intel + NVIDIA; `amdgpu` drives iGPU natively |
 | Laptop with hardware MUX | Vendor-specific tool (`supergfxctl`, BIOS setting) + above PM |
+
+### 1.3 What is Hybrid Graphics?
+
+Hybrid graphics refers to a laptop design in which two physically distinct GPU dies share a single display and power envelope. The integrated GPU (iGPU) is fabricated inside the CPU package and accesses system DRAM over a high-bandwidth internal fabric; the discrete GPU (dGPU) is a separate PCIe endpoint device with its own dedicated VRAM. The iGPU is always powered because it is hardwired to the internal display panel's eDP connector, while the dGPU is optional and can be power-gated when idle. On Linux, both devices appear as separate PCI endpoints with their own `/dev/dri/cardN` and `/dev/dri/renderDN` nodes under separate kernel drivers. The central challenge is that the operating system must simultaneously minimize dGPU idle power draw—which can exceed fifteen watts on modern parts—while allowing applications to explicitly target the more capable hardware for compute-intensive workloads. Getting the balance wrong leads to either battery drain when the dGPU is left in D0 permanently, or performance shortfalls when applications are silently routed to the iGPU. This chapter covers every software layer that participates in that balance, from ACPI firmware tables through the kernel runtime PM framework to the Mesa GPU-selection environment variables that applications and compositors rely on.
+
+### 1.4 What is PRIME Render Offload?
+
+PRIME is the kernel and Mesa framework that allows one GPU to produce a rendered frame and have it displayed through a second GPU's display engine. The mechanism is built on DMA-BUF buffer sharing: the render GPU allocates a framebuffer in its address space, exports it as a DMA-BUF file descriptor, and the display GPU imports it for scanout. On the kernel side, this requires both DRM devices to implement `drm_prime_fd_to_handle` and `drm_prime_handle_to_fd` so that buffer handles can cross driver boundaries. On the user-space side, the Mesa loader selects the render GPU based on the `DRI_PRIME` environment variable for OpenGL and `MESA_VK_DEVICE_SELECT` for Vulkan enumeration. The `DRI_PRIME=pci-0000_01_00_0` form pins a specific PCIe device by sysfs bus address; `DRI_PRIME=1` selects the first non-default GPU. PRIME offload eliminates the need for a hardware MUX on MUX-less laptops because the iGPU's display engine handles all panel scanout regardless of which GPU produced the pixels. Section 5 covers the Mesa loader code paths, the `DRM_CLIENT_CAP_ATOMIC` offload coordinator, and the Vulkan device selection mechanism in detail.
+
+### 1.5 What is Runtime Power Management (Runtime PM)?
+
+Runtime power management (Runtime PM) is the Linux kernel framework that allows individual device drivers to power down a device when it is idle and restore power transparently when a new request arrives. For hybrid GPU laptops, Runtime PM is the mechanism that puts the discrete GPU into D3cold—the state in which the PCIe slot's VCC power rail is fully cut via the ACPI `_PS3` method—achieving the lowest possible idle power draw. The framework is implemented in `drivers/base/power/runtime.c` and exposes per-device callbacks (`runtime_suspend`, `runtime_resume`, `runtime_idle`) that a driver registers through `dev_pm_ops`. A device can only reach D3cold when three conditions hold: the ACPI table declares a `_PR3` power resource for the device, the PCIe bridge above it also allows D3cold, and the sysfs file `d3cold_allowed` reads `1`. For NVIDIA GPUs, the proprietary driver implements Runtime PM through a mechanism called RTD3 (Runtime D3), controlled by the `NVreg_DynamicPowerManagement` module parameter. For AMD discrete GPUs, `amdgpu` uses the `runpm` module parameter. Both paths ultimately invoke the same kernel Runtime PM core. Sections 3 through 7 examine how each driver and user-space tool layer interacts with this framework, and Section 10 provides diagnostic commands for verifying that each condition is met.
 
 ---
 

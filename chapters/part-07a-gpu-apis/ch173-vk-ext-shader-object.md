@@ -13,6 +13,9 @@ Readers should be comfortable with core Vulkan concepts — command buffers, des
 ## Table of Contents
 
 1. [Introduction: The Pipeline Compilation Problem](#1-introduction-the-pipeline-compilation-problem)
+   - [1.4 What is VK_EXT_shader_object?](#14-what-is-vk_ext_shader_object)
+   - [1.5 What is VkShaderEXT?](#15-what-is-vkshaderext)
+   - [1.6 What is SPIR-V?](#16-what-is-spir-v)
 2. [VK_EXT_shader_object Overview](#2-vk_ext_shader_object-overview)
 3. [Dynamic State: The Companion Feature](#3-dynamic-state-the-companion-feature)
 4. [Interaction with VK_KHR_dynamic_rendering](#4-interaction-with-vk_khr_dynamic_rendering)
@@ -53,6 +56,30 @@ The pipeline mitigations share a fundamental limitation: they are refinements of
 Applications adopted hash-and-cache patterns that effectively moved driver complexity into application code. The rigid static state model proved incompatible with the dynamic rendering patterns common in modern game engines, which frequently change material state within a frame in ways that cannot be enumerated at compile time. A more radical solution was needed.
 
 [Source — VK_EXT_shader_object proposal, KhronosGroup/Vulkan-Docs](https://github.com/KhronosGroup/Vulkan-Docs/blob/main/proposals/VK_EXT_shader_object.adoc)
+
+### 1.4 What is VK_EXT_shader_object?
+
+`VK_EXT_shader_object` is a Vulkan extension that replaces the `VkPipeline` object model for rendering work. In the traditional Vulkan API, every combination of shader code, rasterization state, depth-stencil configuration, colour-blend equations, and render-target format must be compiled into a monolithic `VkGraphicsPipeline` object before it can be used for rendering. The pipeline object acts as the unit of compilation: drivers translate SPIR-V shader code into GPU machine code during `vkCreateGraphicsPipelines`, and the resulting binary is inseparably bound to the full set of fixed-function state declared at creation time.
+
+`VK_EXT_shader_object` removes this coupling. It introduces `VkShaderEXT` handles — one per shader stage — that are compiled independently of any pipeline configuration. At draw time, the application binds these per-stage objects alongside dynamic state commands that replace the fixed-function fields previously baked into `VkPipeline`. No pipeline object is created, cached, or bound. The result is that shader compilation cost is proportional to the number of distinct shader programs, not to the combinatorial product of shaders, material configurations, and render-target formats.
+
+The extension was ratified in Vulkan 1.3.246 (March 2023) and placed in the Vulkan Roadmap 2026 profile, which targets high-capability devices. Enabling the extension requires setting `VkPhysicalDeviceShaderObjectFeaturesEXT::shaderObject` to `VK_TRUE` during device creation. The normative specification is maintained at the Khronos Vulkan Registry. [Source — VK_EXT_shader_object specification](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_EXT_shader_object.html)
+
+### 1.5 What is VkShaderEXT?
+
+`VkShaderEXT` is the opaque handle type introduced by `VK_EXT_shader_object` to represent a single compiled shader stage. Where `VkShaderModule` in core Vulkan is merely a container for SPIR-V bytecode that the driver parses during pipeline creation, `VkShaderEXT` is a fully compiled, ready-to-bind GPU program. The driver performs the translation from SPIR-V — or, when available, a cached binary blob — to GPU instruction set architecture code at `vkCreateShadersEXT` time, not at draw time.
+
+Each `VkShaderEXT` corresponds to exactly one pipeline stage: `VK_SHADER_STAGE_VERTEX_BIT`, `VK_SHADER_STAGE_FRAGMENT_BIT`, `VK_SHADER_STAGE_COMPUTE_BIT`, or one of the tessellation and geometry stage bits. A vertex `VkShaderEXT` can be paired with any compatible fragment `VkShaderEXT` at draw time without any per-combination compilation step. This is the property that collapses the pipeline variant explosion described in §1.1.
+
+Shader objects are created in batches via `vkCreateShadersEXT` and destroyed with `vkDestroyShaderEXT`. They carry their own descriptor set layout and push-constant range declarations, embedded in `VkShaderCreateInfoEXT`, so the driver can generate correct register assignments and interface code without knowing which other stages will be bound alongside. The `VK_SHADER_CREATE_LINK_STAGE_BIT_EXT` flag signals that two or more shaders are created together and the driver may perform cross-stage link-time optimisations, producing a linked set that executes more efficiently than independently compiled stages. [Source — vkCreateShadersEXT specification](https://registry.khronos.org/vulkan/specs/latest/man/html/vkCreateShadersEXT.html)
+
+### 1.6 What is SPIR-V?
+
+SPIR-V (Standard Portable Intermediate Representation — Vulkan) is the binary intermediate representation that Vulkan uses as its shader input format. Unlike OpenGL, which accepts GLSL source text and compiles it inside the driver, Vulkan requires applications to supply pre-compiled SPIR-V bytecode. SPIR-V is a typed, SSA-form (Static Single Assignment) IR specified by the Khronos Group; it is designed to be produced by offline compilers from GLSL, HLSL, or WGSL source, and consumed by GPU drivers that translate it into device-specific machine code.
+
+In the context of `VK_EXT_shader_object`, SPIR-V is the `codeType` value `VK_SHADER_CODE_TYPE_SPIRV_EXT`. When `vkCreateShadersEXT` receives SPIR-V, the driver's SPIR-V front-end parses the module, validates it against the execution-model constraints for the declared stage, performs driver-internal optimisations, and compiles it to ISA. The compiled result is stored inside the `VkShaderEXT` object. The driver-internal binary can subsequently be retrieved via `vkGetShaderBinaryDataEXT` and supplied back as `VK_SHADER_CODE_TYPE_BINARY_EXT` to skip recompilation in future runs.
+
+The SPIR-V specification is maintained by the Khronos Group at `https://registry.khronos.org/SPIR-V/`. Mesa drivers consume SPIR-V via the `spirv_to_nir` library, which translates SPIR-V into NIR — the Mesa shader IR — for further optimisation and backend code generation. The SPIR-V version required by `VK_EXT_shader_object` is at minimum SPIR-V 1.0, with optional use of features from SPIR-V 1.3 onward depending on the declared Vulkan version and extension capabilities. [Source — SPIR-V Registry, Khronos Group](https://registry.khronos.org/SPIR-V/)
 
 ---
 

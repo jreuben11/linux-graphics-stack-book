@@ -43,6 +43,9 @@ This chapter focuses exclusively on the encode side:
 ## Table of Contents
 
 1. [VK_KHR_video_encode_queue: Encode vs Decode Architecture](#1-vk_khr_video_encode_queue-encode-vs-decode-architecture)
+   - [1.1 What is Vulkan Video?](#11-what-is-vulkan-video)
+   - [1.2 What is Hardware Video Encoding?](#12-what-is-hardware-video-encoding)
+   - [1.3 What is the Decoded Picture Buffer (DPB)?](#13-what-is-the-decoded-picture-buffer-dpb)
 2. [H.264 Encode: VK_KHR_video_encode_h264](#2-h264-encode-vk_khr_video_encode_h264)
 3. [H.265/HEVC Encode: VK_KHR_video_encode_h265](#3-h265hevc-encode-vk_khr_video_encode_h265)
 4. [AV1 Encode: VK_KHR_video_encode_av1](#4-av1-encode-vk_khr_video_encode_av1)
@@ -216,6 +219,28 @@ VkImageCreateInfo src_img_ci = {
 ```
 
 The `encodeInputPictureGranularity` from the capability query dictates the alignment of `codedExtent` in `srcPictureResource`. If granularity is `{16, 16}` (H.264 macroblock size), a 1920×1080 source image must have its `codedExtent` set to `{1920, 1080}` (already aligned), while a 1280×720 image would similarly be fine. A non-aligned resolution like 1280×544 would need `codedExtent` padded to the next multiple.
+
+### 1.1 What is Vulkan Video?
+
+Vulkan Video is a family of Khronos extensions that expose GPU-accelerated video codec engines through the standard Vulkan API surface. The foundation is `VK_KHR_video_queue`, which introduces the `VkVideoSessionKHR` object, the `VkVideoSessionParametersKHR` object for codec header parameters, and a dedicated `VK_QUEUE_VIDEO_DECODE_BIT_KHR` / `VK_QUEUE_VIDEO_ENCODE_BIT_KHR` queue family type. Codec-specific extensions — `VK_KHR_video_encode_h264`, `VK_KHR_video_encode_h265`, and `VK_KHR_video_encode_av1` — layer on top, providing per-codec structures for sequence parameter sets, slice or tile parameters, and rate control hints.
+
+Before Vulkan Video, applications reached GPU video engines through vendor-specific or platform-specific APIs: VA-API on Linux (Chapter 26), NVENC on NVIDIA hardware, AMF on AMD hardware, and Media SDK on Intel. Vulkan Video provides a cross-vendor, explicit, low-level alternative that fits within the standard Vulkan execution model. Encode commands are recorded into `VkCommandBuffer` objects, submitted to a video queue, and synchronised with the rest of the Vulkan pipeline using the standard barrier and semaphore model. This enables zero-copy pipelines where a `VkImage` rendered by the graphics queue is passed directly to the encode queue without a CPU round-trip or format conversion. The encode extensions covered in this chapter were finalised by Khronos in December 2023, following the decode extensions that shipped in late 2022.
+
+### 1.2 What is Hardware Video Encoding?
+
+Modern GPUs include fixed-function silicon dedicated to video compression that operates independently of the shader cores. On AMD hardware this engine is called VCN (Video Core Next); on Intel it is called Quick Sync Video (or the Media Fixed Function pipeline); on NVIDIA it is NVENC. These blocks implement the inner loops of video codecs such as H.264, H.265/HEVC, and AV1 in hardware: motion estimation, transform and quantisation, entropy coding (CABAC for H.264/H.265, symbol coding for AV1), and in-loop deblocking or loop restoration filters.
+
+The value of hardware encoding is throughput and power efficiency. A fixed-function H.264 encoder can process 4K at 60 fps while consuming a fraction of the power of a software x264 encoder running on the CPU. This makes it suitable for real-time use cases: screen capture, game streaming, VR video, video conferencing, and live broadcast encoding. The trade-off is reduced per-frame flexibility: the hardware encoder follows a fixed algorithm, and quality at a given bitrate is typically lower than a slow-preset software encoder for the same codec.
+
+In the Vulkan Video model, the application owns the high-level encoding decisions — which frames to mark as IDR/I/P/B, which past frames to reference, and what quantisation parameters to target — while the hardware executes the per-block compression. Rate control (Section 5) is the mechanism by which the driver translates a target bitrate into per-frame QP adjustments, using either hardware rate control logic or a software algorithm running in the driver itself.
+
+### 1.3 What is the Decoded Picture Buffer (DPB)?
+
+The Decoded Picture Buffer is the pool of reference frames that a video encoder or decoder maintains across frames. In a decoder, the DPB holds reconstructed (decompressed) frames that future frames reference for motion compensation. The encoder mirrors this: after encoding a frame, it retains the reconstructed version of that frame — not the original uncompressed input, but the output of the encoder's own internal decode path — so that subsequent frames can reference it for inter-prediction. Using the reconstructed rather than the original ensures the encoder and decoder remain bit-exact about what the reference frames contain.
+
+In the Vulkan Video API, the DPB is backed by a `VkImage` with `arrayLayers` equal to `maxDpbSlots`, created with `VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR`. Each layer corresponds to one DPB slot, and each slot holds one reference frame. The `pSetupReferenceSlot` field in `VkVideoEncodeInfoKHR` tells the encoder which DPB slot to write the reconstructed frame into after encoding; `pReferenceSlots` lists which existing DPB slots to read from as references for the current frame.
+
+The application is responsible for tracking which slot holds which temporal frame, deciding the reference list composition for each frame, and issuing `vkCmdEncodeVideoKHR` with the correct slot indices. This explicit reference frame management — inherited from the underlying codec specifications — is the primary reason the Vulkan Video encode API targets driver implementers and multimedia framework contributors rather than general application developers.
 
 ---
 

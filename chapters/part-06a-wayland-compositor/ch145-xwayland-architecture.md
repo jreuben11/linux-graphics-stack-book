@@ -7,6 +7,10 @@ This chapter targets **systems and driver developers** who need to understand ho
 ## Table of Contents
 
 - [XWayland's Role and Overall Architecture](#xwaylands-role-and-overall-architecture)
+  - [1.1 What is XWayland?](#11-what-is-xwayland)
+  - [1.2 What is X11?](#12-what-is-x11)
+  - [1.3 What is Wayland?](#13-what-is-wayland)
+  - [1.4 What is DRI3?](#14-what-is-dri3)
 - [Process Model: Launching XWayland](#process-model-launching-xwayland)
   - [Compositor-Managed Launch](#compositor-managed-launch)
   - [Rootless vs. Rootful Mode](#rootless-vs-rootful-mode)
@@ -66,6 +70,38 @@ The XWayland DDX (Device Dependent X) lives in `hw/xwayland/` in the xorg-server
 A critical architectural subtlety: in rootless mode, the Wayland compositor is simultaneously the **Wayland server** to XWayland (which presents surfaces as a Wayland client) and an **X11 client** of XWayland (the XWM component of the compositor uses the X11 protocol to manage windows). This bidirectional dependency requires that all X11 communications from the compositor's XWM be **asynchronous** to prevent deadlock. If the compositor makes a synchronous X11 call while XWayland is blocked awaiting a Wayland reply from the compositor, the system deadlocks. This design constraint shapes the entire implementation.
 
 The compositor's X11 window manager (XWM) communicates with XWayland over a dedicated `xcb_connection_t`. It receives X11 events such as `MapRequest`, `ConfigureRequest`, and `ClientMessage`; reads window properties; and sends X11 protocol requests to position, resize, or configure windows. Simultaneously, the same compositor process is receiving Wayland events from XWayland (as a Wayland client) via the Wayland socket. Both channels must be serviced without blocking either. Compositors implement this with a two-event-loop architecture or by integrating both fd poll descriptors into a single `wl_event_loop`. [Source: Wayland Freedesktop XWayland documentation](https://wayland.freedesktop.org/docs/book/Xwayland.html)
+
+### 1.1 What is XWayland?
+
+XWayland is a compatibility server that allows unmodified X11 applications to run on Wayland compositors. It occupies a dual role: it acts as an X11 server for legacy applications, accepting X11 protocol connections over a Unix domain socket at a display address such as `:1`; simultaneously, it acts as a Wayland client, connecting to the running Wayland compositor and presenting X11 window content as `wl_surface` objects backed by shared GPU memory.
+
+The XWayland binary is the X11 server code base compiled as a standalone executable rather than being embedded in Xorg. It implements the Device Dependent X (DDX) layer found in `hw/xwayland/` of the xorg-server source tree. Since the xwayland 22.1 release in 2022, this code resides in its own [upstream repository](https://gitlab.freedesktop.org/xorg/xwayland), separating its release cycle from the Xorg server and allowing features specific to the Wayland compatibility use case to ship independently.
+
+XWayland is not a background daemon. Each Wayland compositor that supports X11 clients launches its own XWayland process on demand, and may terminate it when all X11 clients exit to reclaim memory and GPU resources. There is always exactly one XWayland instance per Wayland compositor session rather than a global X11 server shared across compositors.
+
+### 1.2 What is X11?
+
+The X Window System, version 11 (X11), is a network-transparent display protocol that has been the dominant windowing infrastructure on Unix and Linux systems since 1987. The protocol defines how client applications request drawing operations — rectangles, images, text, bitmaps — and how the server manages windows, input focus, and display output. Client-server separation is fundamental: X11 was designed so a client on one machine can display on a server running on another, over a network or a local Unix socket.
+
+On Linux, the traditional X11 server implementation is Xorg, which communicates with the kernel through the Direct Rendering Manager (DRM) subsystem and manages GPU rendering, display outputs, and input devices. X11 defines hundreds of protocol extensions accumulated over decades: MIT-SHM, DRI3, PRESENT, XRandR, XKB, SHAPE, and many others. Client-side libraries such as `libX11`, `libxcb`, and the older Xlib provide bindings to the wire protocol.
+
+Despite Wayland being its intended successor, X11 remains relevant because a large body of software — games, Java-based toolkits, Wine, legacy productivity applications — was written against the X11 API. XWayland implements full X11 server semantics for these applications while routing their output through the Wayland compositor, making the migration transparent to the application.
+
+### 1.3 What is Wayland?
+
+Wayland is a display server protocol designed as a modern replacement for X11 on Linux. Rather than a monolithic server, Wayland defines a lightweight protocol between clients and a compositor. The compositor manages window layout, display output, and GPU compositing; clients communicate with it directly via Unix domain sockets using the Wayland wire protocol. There is no separate display server process — the compositor is the display server.
+
+The Wayland protocol is defined as a set of XML interface files compiled by the `wayland-scanner` tool into C bindings. Core interfaces include `wl_surface` (a composited buffer region), `wl_buffer` (the underlying pixel data), `xdg_toplevel` and `xdg_popup` (window management roles from the xdg-shell protocol), and `wl_seat` (aggregated input devices). Extensions such as `zwp_linux_dmabuf_v1`, `xwayland-shell-v1`, and `linux-drm-syncobj-v1` are negotiated at runtime through the `wl_registry` global binding mechanism. [Source: Wayland Protocol Specification](https://wayland.freedesktop.org/docs/html/)
+
+Compositors in common use include Mutter (GNOME Shell), KWin (KDE Plasma), sway, Hyprland, and weston (the reference implementation). Each compositor implements its own Wayland server and manages its own XWayland subprocess when X11 compatibility is required. In this architecture, XWayland is a Wayland client of the compositor while simultaneously being an X11 server for the legacy applications it hosts.
+
+### 1.4 What is DRI3?
+
+DRI3 (Direct Rendering Infrastructure, version 3) is an X11 protocol extension that enables GPU-accelerated buffer sharing between X11 clients, the X11 server, and — in the XWayland context — the Wayland compositor. The extension is defined in the X.org protocol specification and implemented in `libxcb-dri3`. Its key mechanism is the ability to pass DMA-BUF file descriptors across process boundaries: a DMA-BUF is a kernel-managed shared buffer that GPU drivers can render into and that multiple processes can map or import without copying pixel data between address spaces.
+
+In the XWayland rendering pipeline, DRI3 works as follows: an X11 client or the GLAMOR OpenGL acceleration layer inside XWayland allocates a GBM (Generic Buffer Manager) buffer object, exports its DMA-BUF file descriptor, and imports it as a pixmap via the `DRI3PixmapFromBuffers` request. XWayland then exports that same DMA-BUF to the Wayland compositor via `zwp_linux_dmabuf_v1`, allowing the compositor to import it as a `wl_buffer` and scan it out to the display directly. This zero-copy path is the preferred rendering route; without DRI3, XWayland falls back to the SHM (shared memory) path, which requires a full CPU copy of each frame.
+
+DRI3 superseded DRI2, which relied on indirect rendering and per-request buffer negotiation with no file-descriptor exchange. The DRI3 model, combined with the `zwp_linux_dmabuf_v1` Wayland protocol, forms the backbone of the modern GPU buffer sharing architecture used throughout the Linux graphics stack.
 
 ---
 

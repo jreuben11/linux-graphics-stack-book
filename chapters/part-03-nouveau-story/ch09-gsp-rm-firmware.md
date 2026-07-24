@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. What GSP-RM Is: Architecture and Motivation](#1-what-gsp-rm-is-architecture-and-motivation)
+  - [1.1 What is Nouveau?](#11-what-is-nouveau)
+  - [1.2 What is GSP-RM?](#12-what-is-gsp-rm)
+  - [1.3 What is linux-firmware?](#13-what-is-linux-firmware)
 - [2. The nvidia-open Kernel Module: What Changed in 2022](#2-the-nvidia-open-kernel-module-what-changed-in-2022)
 - [3. Nouveau's GSP-RM Support: Technical Architecture](#3-nouveaus-gsp-rm-support-technical-architecture)
 - [4. Feature Parity and What GSP-RM Unlocks](#4-feature-parity-and-what-gsp-rm-unlocks)
@@ -103,6 +106,30 @@ The GSP-RM firmware ships as a collection of binary blobs in the `linux-firmware
 This means that while you can, in principle, read the CPU-side RPC stub code that ships in the open kernel module, the actual logic running on the GPU processor remains opaque unless you have access to the GSP firmware's disassembly — and since the Falcon/RISC-V instruction sets are embedded processor ISAs with limited public tooling, that analysis is nontrivial. The Envytools project has historically targeted Falcon, but the more capable RISC-V variants used in later GSP revisions require standard RISC-V tooling applied to a custom memory layout.
 
 The practical consequence for Linux users is that using GSP-RM on modern NVIDIA hardware requires fetching NVIDIA-signed firmware from `linux-firmware`. Distributions differ in their policies: Debian places these blobs in `firmware-nvidia-gsp` within the non-free-firmware section; Fedora packages them in `linux-firmware` and enables them by default for Turing+ hardware with the nvidia-open module.
+
+### 1.1 What is Nouveau?
+
+Nouveau is the mainline Linux kernel's open-source driver for NVIDIA GPUs. It lives under `drivers/gpu/drm/nouveau/` in the kernel tree and implements the standard DRM/KMS interfaces — the same subsystem interfaces used by AMD's amdgpu and Intel's i915 drivers. Unlike those drivers, which operate with varying degrees of official hardware documentation, Nouveau was built almost entirely through reverse engineering of NVIDIA's undocumented hardware interfaces over roughly fifteen years, covering generations from the early NV04 (TNT2) through Ada Lovelace (RTX 40).
+
+The driver is organised around an internal hardware abstraction layer called nvkm (Nouveau kernel module), which represents GPU hardware as a hierarchy of subdevice objects: the memory controller, the display engine, video decode engines, and — since Linux 6.7 — the GSP processor. Nouveau implements kernel mode-setting, GEM buffer management through TTM, command submission via drm_sched, and the `DRM_NOUVEAU_EXEC` and `DRM_NOUVEAU_VM_BIND` ioctls introduced to support the NVK Vulkan driver built in Mesa.
+
+This chapter examines a specific phase of Nouveau's evolution: the transition from pure reverse-engineered hardware control on Turing and later hardware to a model where Nouveau delegates resource management to NVIDIA's own GSP-RM firmware. Understanding Nouveau's architecture — and its deliberate separation from the nvidia-open kernel module covered in section 2 — is prerequisite to understanding what that transition means and what it changes for users and distributors.
+
+### 1.2 What is GSP-RM?
+
+GSP-RM stands for GPU System Processor Resource Manager. It is NVIDIA's firmware implementation of the resource management layer that, on Turing and later GPU families, runs on the GSP — a dedicated embedded processor on the GPU die — rather than on the host CPU as part of the kernel module. The Resource Manager is the software component responsible for hardware initialization, clock and voltage programming, thermal and fan control, engine context management, and virtualisation multiplexing: everything below rendering and compute in NVIDIA's internal software stack.
+
+Before the GSP architecture, this logic ran on the host CPU inside the proprietary `nvidia.ko` kernel module, where it required direct access to GPU register spaces, memory-mapped configuration interfaces, and power domain state machines. Moving it onto the GSP transforms the CPU-side driver into a thin RPC client: it submits structured requests to GSP-RM over a shared-memory message queue in GPU framebuffer memory, and the firmware carries out the actual hardware operations without exposing those interfaces to the host.
+
+From Nouveau's perspective, GSP-RM support means that on Turing, Ampere, and Ada Lovelace hardware, the driver no longer attempts to implement clock management, power state transitions, or hardware initialization from reverse-engineered register sequences. Instead, it boots NVIDIA's signed firmware blob, establishes the RPC session described in section 3, and relies on GSP-RM to manage those operations. The practical consequence is that features previously unavailable on these GPU generations — principally functional reclocking and full Ampere and Ada hardware acceleration — become accessible through a mainlined, distribution-integrated kernel driver.
+
+### 1.3 What is linux-firmware?
+
+linux-firmware is a repository of binary firmware blobs required by Linux kernel drivers to initialize specific hardware. The upstream source is maintained at `https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git`. Drivers request firmware through the kernel's firmware loading API via `request_firmware()`, which searches for the blob under `/lib/firmware/` on the running system. The kernel tree itself contains no firmware binaries; it relies on the initramfs or installed system to supply them at driver load time.
+
+For NVIDIA GSP-capable hardware, linux-firmware ships the GSP-RM firmware blobs — the signed binary images that boot the GSP processor and establish the resource management runtime on the GPU. These blobs are substantially larger than typical microcode files: 20–30 MB per GPU family, compared with the kilobytes typical of CPU microcode patches. They are organized under `nvidia/` within the firmware tree, with names encoding the GPU family and firmware revision.
+
+Whether these blobs are installed by default or placed in a restricted section of a distribution's package tree depends on distribution policy. Some treat signed vendor firmware as redistributable without source; others apply a stricter free-software policy and place them in a non-free or contrib section that must be explicitly enabled. For Nouveau users on Ada Lovelace hardware, the GSP-RM blobs are not optional — GSP-RM is the only supported initialization path for those GPUs, making linux-firmware a hard runtime dependency rather than an optional enhancement.
 
 ---
 

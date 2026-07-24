@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Why a Vertical Slice?](#1-why-a-vertical-slice)
+   - [1.1 What is Vulkan?](#11-what-is-vulkan)
+   - [1.2 What is Mesa?](#12-what-is-mesa)
+   - [1.3 What is DRM (Direct Rendering Manager)?](#13-what-is-drm-direct-rendering-manager)
 2. [Layer Zero: The Vulkan Loader](#2-layer-zero-the-vulkan-loader)
    - 2.1 [ICD Discovery and JSON Manifests](#21-icd-discovery-and-json-manifests)
    - 2.2 [Dispatch Table Construction](#22-dispatch-table-construction)
@@ -89,6 +92,24 @@
 The Linux graphics stack is routinely described as a set of horizontal layers — kernel DRM, libdrm, Mesa, Wayland, compositors — each with its own chapter. That layering is correct but incomplete: understanding what happens when an application calls `vkDraw*` and pixels appear on screen requires tracing a path that cuts *vertically* through every layer simultaneously. A bug that looks like a compositor artifact may root-cause in a kernel fence; a performance regression visible as a frame-rate drop may originate in the GLSL front-end or the GEM memory allocator.
 
 This chapter follows a single notional `vkCmdDraw` → `vkQueueSubmit` → `vkQueuePresentKHR` sequence from the application's perspective down to the display engine's scanout FIFO, naming every structure, ioctl, and kernel subsystem it touches along the way. NVIDIA receives extra attention because it presents three simultaneous driver stacks — proprietary closed, nvidia-open with closed userspace, and the fully open nouveau + NVK path — that share the same GPU but interact with the kernel and Mesa in fundamentally different ways.
+
+### 1.1 What is Vulkan?
+
+Vulkan is a low-level, explicit graphics and compute API maintained by the Khronos Group. Where OpenGL abstracted hardware state behind an implicit driver-managed state machine, Vulkan exposes GPU resources — memory, command queues, synchronisation primitives, shader pipeline objects — as explicit application-controlled objects. The API was designed around the realities of modern GPU hardware: many-core shader processors, tiled memory architectures, asynchronous DMA engines, and multi-queue scheduling.
+
+On Linux, Vulkan reaches hardware through the Vulkan Loader (`libvulkan.so.1`) dispatching into an Installable Client Driver (ICD) — either a Mesa driver such as RADV or ANV, or a proprietary ICD. The specification is expressed in the `vk.xml` Vulkan Registry and a set of VUID validation rules enforced by the Khronos validation layer. Every concept covered in this chapter — command buffers, descriptor sets, pipeline barriers, swapchains — is a Vulkan API object with a defined specification meaning that drivers must implement faithfully. [Source: Vulkan specification at vulkan.lunarg.com; Vulkan Registry `vk.xml` at github.com/KhronosGroup/Vulkan-Docs](https://github.com/KhronosGroup/Vulkan-Docs/blob/main/xml/vk.xml)
+
+### 1.2 What is Mesa?
+
+Mesa is the primary open-source implementation of GPU userspace drivers on Linux, covering OpenGL, OpenGL ES, Vulkan, OpenCL, and Video Acceleration API (VA-API) frontends. Rather than being a monolithic library, Mesa is a collection of per-GPU-family Vulkan drivers — RADV for AMD Radeon, ANV for Intel, NVK for NVIDIA, Turnip for Qualcomm Adreno, v3dv for Broadcom V3D — plus shared infrastructure: the NIR shader intermediate representation, the SPIR-V front-end, the Vulkan common runtime in `src/vulkan/runtime/`, Window System Integration (WSI) layers, and GBM (Generic Buffer Manager).
+
+Mesa userspace drivers communicate with the kernel via the DRM subsystem through two interfaces: `libdrm` wrapper calls for object management and memory allocation, and direct `ioctl()` calls on render-node device files (`/dev/dri/renderD128`) for command submission. Mesa does not interact with display hardware directly — that responsibility belongs to the compositor and the KMS subsystem. [Source: Mesa project at gitlab.freedesktop.org/mesa/mesa](https://gitlab.freedesktop.org/mesa/mesa)
+
+### 1.3 What is DRM (Direct Rendering Manager)?
+
+The Direct Rendering Manager (DRM) is the Linux kernel subsystem responsible for mediating access to GPU hardware from multiple concurrent userspace clients. DRM provides two classes of device nodes: `/dev/dri/card0` for privileged display operations and `/dev/dri/renderD128` for unprivileged render-only access. Through these nodes, userspace drivers submit commands, allocate GPU memory via the GEM (Graphics Execution Manager) object model, and share buffers across process boundaries via PRIME and DMA-BUF. The KMS (Kernel Mode Setting) component of DRM owns the display pipeline — planes, CRTCs, encoders, and connectors — used to deliver a framebuffer to a physical display output.
+
+In the vertical slice this chapter traces, DRM is the rendezvous point between the Mesa Vulkan driver and GPU hardware. Every `vkQueueSubmit` ultimately becomes an ioctl on a DRM render node; every presented swapchain image ultimately triggers a DRM atomic commit that hands the buffer to the display engine. The DRM subsystem source lives under `drivers/gpu/drm/` in the Linux kernel tree. [Source: Linux kernel DRM documentation at kernel.org/doc/html/latest/gpu/](https://www.kernel.org/doc/html/latest/gpu/)
 
 ---
 

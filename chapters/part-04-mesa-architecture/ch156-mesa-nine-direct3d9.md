@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is Direct3D 9?](#11-what-is-direct3d-9)
+   - [1.2 What is Gallium3D?](#12-what-is-gallium3d)
+   - [1.3 What is Wine?](#13-what-is-wine)
 2. [The D3D9 on Linux Problem](#the-d3d9-on-linux-problem)
 3. [Mesa Nine Architecture](#mesa-nine-architecture)
 4. [Gallium State Tracker Interface](#gallium-state-tracker-interface)
@@ -41,6 +44,24 @@ It did not work with Zink (which sits above a Vulkan driver) or with native Vulk
 The concept was pioneered by Axel Davy and others; it became a viable Wine integration via the `d3dadapter9` native module loaded by Wine's D3D9 stub. The project is now archived following removal in Mesa 25.2, but the design remains instructive as a near-minimal Gallium frontend: approximately 25 KLOC that cleanly maps a COM-based API to a pipe-level state machine.
 
 Sources: [Mesa Nine source (last tag with Nine: mesa-25.0)](https://gitlab.freedesktop.org/mesa/mesa/-/tree/mesa-25.0/src/gallium/frontends/nine) | [wine-nine-standalone](https://github.com/iXit/wine-nine-standalone) | [Mesa Gallium Nine docs](https://idr.pages.freedesktop.org/mesa/gallium-nine.html)
+
+### 1.1 What is Direct3D 9?
+
+Direct3D 9 (D3D9) is the graphics API introduced with Microsoft DirectX 9, released in 2002. It defines a COM-based interface through which Windows applications submit draw calls, manage GPU resources (textures, vertex buffers, index buffers, render targets), and control fixed-function and programmable pipeline state. The API's state model is built around integer-keyed render-state tokens (the `D3DRS_*` enum), texture-stage states, and sampler states, all set on a central `IDirect3DDevice9` object. Shader programs are expressed as Direct3D Shader Model 1 through 3 (SM1–SM3) bytecode, a binary format that predates GLSL text compilation and targets the vertex and pixel shader units of GPU hardware from that era.
+
+D3D9 titles remained commercially dominant through the mid-2010s: large portions of the PC gaming catalogue were built on it and continued shipping D3D9 executables long after DirectX 11 and 12 superseded the API. On Linux, running this catalogue requires either translating the D3D9 surface to an available native graphics API or implementing D3D9 directly atop the native Linux driver stack — the problem that Mesa Nine addressed. The D3D9 specification is documented in the Windows SDK; the SM1–SM3 bytecode format is also described in the Wine project source and in Valve's DXVK shader-compiler documentation.
+
+### 1.2 What is Gallium3D?
+
+Gallium3D is Mesa's internal hardware-abstraction layer. It sits between frontend state trackers — which implement APIs such as OpenGL, OpenCL, or, in Nine's case, Direct3D 9 — and backend pipe drivers such as RadeonSI for AMD GCN/RDNA hardware, Iris for Intel Gen9+, or Nouveau for NVIDIA. The contract between a frontend and a driver is the `pipe_context` interface, a C vtable of function pointers covering resource allocation, draw commands, state binding, and synchronisation.
+
+Key Gallium abstractions relevant to Nine include `pipe_screen`, which represents a GPU device and its capabilities and is used for resource allocation and format-support queries; `pipe_context`, the command-submission context whose methods Nine calls directly (`set_constant_buffer`, `bind_vs_state`, `draw_vbo`); CSO (Compiled State Objects), pre-compiled rasterizer, depth-stencil, and blend state objects that avoid redundant validation on every draw call; and `pipe_resource`, the generic buffer and texture type backed by driver-managed GPU memory. Gallium3D was introduced into Mesa around 2008 and had become the standard path for all hardware-accelerated Mesa drivers by the time Nine was developed, making it the natural target for a high-performance D3D9 implementation. [Source: Mesa Gallium documentation](https://docs.mesa3d.org/gallium/index.html)
+
+### 1.3 What is Wine?
+
+Wine is an open-source compatibility layer that enables Windows application binaries to run on Linux and other POSIX systems without a Windows kernel or virtual machine. It intercepts Windows API calls and translates them to equivalent POSIX or Linux-specific system calls, re-implementing the Win32, COM, and DirectX API surfaces in user space.
+
+In the context of graphics, Wine includes WineD3D, its own implementation of the Direct3D API family (D3D8 through D3D11). WineD3D historically translated all D3D calls to OpenGL, routing through Mesa's OpenGL state tracker and then through Gallium3D to the hardware driver — an inherently multi-layer path with significant overhead. Wine also includes a minimal D3D9 stub DLL (`d3d9.dll`) whose behaviour can be overridden by a native implementation; Mesa Nine exploited this mechanism by providing `d3d9.so` via the `d3dadapter9` Wine native module as a drop-in replacement that called Gallium directly. Wine is the primary deployment vehicle for Mesa Nine. Proton, Valve's fork of Wine used in Steam Play, later adopted DXVK — a Vulkan-based D3D9/D3D11 translator — as its default path, which contributed to the decision to deprecate Mesa Nine. [Source: wine-nine-standalone](https://github.com/iXit/wine-nine-standalone)
 
 ---
 

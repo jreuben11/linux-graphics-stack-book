@@ -13,6 +13,9 @@ SDL3.2.0 became the first stable, ABI-frozen release of the SDL 3 branch in Janu
 ## Table of Contents
 
 - [1. SDL Architecture: Subsystems and Hints](#1-sdl-architecture-subsystems-and-hints)
+  - [1.3 What is SDL (Simple DirectMedia Layer)?](#13-what-is-sdl-simple-directmedia-layer)
+  - [1.4 What is an SDL Subsystem?](#14-what-is-an-sdl-subsystem)
+  - [1.5 What is the SDL Hint System?](#15-what-is-the-sdl-hint-system)
 - [2. SDL on the Linux Stack: What It Wraps](#2-sdl-on-the-linux-stack-what-it-wraps)
 - [3. Video Backend: Windows, EGL, and Vulkan Surfaces](#3-video-backend-windows-egl-and-vulkan-surfaces)
 - [4. HiDPI and Fractional Scaling on Wayland](#4-hidpi-and-fractional-scaling-on-wayland)
@@ -93,6 +96,18 @@ SDL_SetHint(SDL_HINT_RENDER_DRIVER, "vulkan");
 // Joystick: disable HIDAPI raw HID, use evdev instead
 SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
 ```
+
+### 1.3 What is SDL (Simple DirectMedia Layer)?
+
+SDL is a portable C library that provides a unified programming interface for windowing, input, audio, 2D rendering, and — since SDL3 — direct GPU access. The library operates as an abstraction layer between application code and a heterogeneous set of platform APIs: on Linux, it wraps Wayland and X11 for display, EGL and GLX for OpenGL context creation, the Vulkan WSI extensions for GPU surfaces, PipeWire, PulseAudio, and ALSA for audio, evdev and HIDAPI for input devices, and V4L2 plus the xdg-desktop-portal for camera access. Rather than adding widget-level concepts such as buttons, text fields, or layout managers, SDL deliberately stops at the OS and driver boundary, giving application code direct control over rendering while hiding the platform-specific details needed to set up that rendering environment. SDL3 is structured as a shared library (`libSDL3.so.0`) with a stable, ABI-frozen API from the 3.2.0 release onward. The header namespace uses the `SDL_` prefix throughout, and applications link against it via CMake `find_package(SDL3 REQUIRED)` or `pkg-config --libs sdl3`. This chapter covers SDL3's Linux-specific backend choices and how each subsystem maps to the kernel and compositor interfaces described elsewhere in this book. [Source](https://wiki.libsdl.org/SDL3/FrontPage)
+
+### 1.4 What is an SDL Subsystem?
+
+SDL groups its functionality into named subsystems — audio, video, events, joystick, gamepad, haptic, sensor, and camera — each of which can be independently initialised and shut down. An application that never opens a window never initialises the video subsystem; a command-line encoder that only transcodes audio never touches the input subsystem. The subsystem model is reference-counted: if two independent components both initialise `SDL_INIT_AUDIO`, the audio backend is opened only once and is torn down only when both have called `SDL_QuitSubSystem(SDL_INIT_AUDIO)`. Initialisation order within `SDL_Init` is deterministic: the events subsystem is always brought up first because it is required by all others, and the video subsystem must be initialised from the process's main thread because both Wayland and X11 impose this constraint at the compositor-protocol level. Each subsystem maps directly to one or more Linux kernel interfaces or display-server protocols: the video subsystem connects to the Wayland compositor over a Unix domain socket (`/run/user/<uid>/wayland-0`) or to an X11 display; the audio subsystem opens a PipeWire or ALSA client; the gamepad subsystem monitors `/dev/input/event*` via inotify for hotplug events. SDL3 removes `SDL_INIT_EVERYTHING` and the formerly mandatory `SDL_INIT_TIMER` flag, reflecting the principle that applications should declare only the capabilities they actually use.
+
+### 1.5 What is the SDL Hint System?
+
+The SDL hint system is a key-value configuration mechanism that controls driver selection, backend behaviour, and compatibility options at runtime. Hints are string-valued settings identified by macro names such as `SDL_HINT_VIDEO_DRIVER` or `SDL_HINT_AUDIO_DRIVER`. They follow a strict priority order: environment variables of the same name override all programmatic settings; `SDL_SetHintWithPriority` with `SDL_HINT_OVERRIDE` matches environment-variable precedence; `SDL_SetHint` applies at normal priority; and SDL's compiled-in defaults fill in last. Because many hints affect subsystem initialisation — particularly which display server, audio server, or renderer backend to select — they must be set before the corresponding `SDL_Init` call to take effect. On Linux, the hint system is the standard way to force a specific rendering path (for example, `SDL_HINT_RENDER_DRIVER=vulkan`), to select between Wayland and X11 (`SDL_HINT_VIDEO_DRIVER=wayland,x11`), or to disable problematic input drivers for a specific controller model. Hints also bridge SDL's portable API to kernel-level tuning: `SDL_HINT_JOYSTICK_HIDAPI=0` instructs the gamepad subsystem to use the evdev path rather than raw HID, which matters when a device exposes both `/dev/input/eventN` and `/dev/hidrawN` interfaces. SDL3 renamed several SDL2 hint names — `SDL_VIDEODRIVER` became `SDL_VIDEO_DRIVER`, for example — so applications migrating from SDL2 must audit every hint string they set.
 
 ---
 

@@ -17,6 +17,9 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is HDR (High Dynamic Range)?](#11-what-is-hdr-high-dynamic-range)
+   - [1.2 What is EDID and the CTA-861 HDR Capability Block?](#12-what-is-edid-and-the-cta-861-hdr-capability-block)
+   - [1.3 What is drm_hdr_output_metadata?](#13-what-is-drm_hdr_output_metadata)
 2. [HDR Fundamentals and Standards](#hdr-fundamentals-and-standards)
 3. [HDMI HDR Signaling](#hdmi-hdr-signaling)
 4. [DisplayPort HDR Descriptor](#displayport-hdr-descriptor)
@@ -37,6 +40,24 @@ High Dynamic Range (HDR) displays — capable of peak luminances of 400–10,000
 This chapter traces the hardware signaling path: how the kernel discovers that a display supports HDR (via EDID CTA-861 extension blocks), how the `drm_hdr_output_metadata` structure carries mastering metadata from compositor to driver, how HDMI 2.x DRM InfoFrames and DisplayPort VSC SDP packets are constructed and transmitted, and what local dimming hardware the kernel can control. It also covers the VESA DisplayHDR certification framework so that driver developers understand the hardware guarantees they are targeting.
 
 [Source: drm HDR docs](https://www.kernel.org/doc/html/latest/gpu/drm-kms.html#hdr-metadata) | [Source: LWN HDR patch series](https://lwn.net/Articles/783575/)
+
+### 1.1 What is HDR (High Dynamic Range)?
+
+High Dynamic Range refers to display technology capable of reproducing a significantly wider range of luminance values than Standard Dynamic Range (SDR) content. A conventional SDR display operates at a peak of roughly 100 cd/m² (nits) with a minimum of approximately 0.1 nit; HDR displays target peaks from 400 nit (the entry-level VESA DisplayHDR 400 tier) to 10,000 nit (the ceiling of SMPTE ST 2084), and minimum blacks below 0.001 nit on OLED panels. HDR content also uses wider colour gamuts — DCI-P3 and BT.2020 — compared to the sRGB/BT.709 gamut of SDR.
+
+On Linux, HDR support is a two-layer problem. The software pipeline must produce correctly encoded pixel data using an appropriate transfer function (PQ for HDR10, HLG for broadcast HDR), and the kernel must simultaneously signal the display over the interface protocol — HDMI or DisplayPort — that HDR content is being delivered, along with the mastering parameters that tell the panel how to interpret it. Without the hardware signal, a display defaults to SDR interpretation even if the framebuffer contains PQ-encoded data. This chapter covers the hardware signaling half; the KMS software pipeline (LUT chains, tone mapping, compositor colour management) is covered in Ch74.
+
+### 1.2 What is EDID and the CTA-861 HDR Capability Block?
+
+The Extended Display Identification Data (EDID) is a standardised binary structure stored in non-volatile memory on every HDMI and DisplayPort display and read by the kernel over I²C (DDC) during connector hotplug detection. The base EDID 1.4 block (128 bytes) describes basic display attributes — resolution, refresh rate, physical dimensions — but HDR capability is declared in a 128-byte extension block defined by the Consumer Technology Association standard CTA-861-H.
+
+Within the CTA-861 extension block, a Colorimetry Data Block and an HDR Static Metadata Data Block together specify which transfer functions the display supports (SDR, HDR10 PQ, HLG), what its peak and minimum luminance are, and whether it accepts BT.2020 wide-gamut content. The kernel parses these blocks via the `libdisplay-info` library (or the legacy `drm_edid` helpers for older drivers). The parsed values determine which EOTF code and colorimetry field the kernel places in the HDMI DRM InfoFrame or DisplayPort VSC SDP when the compositor requests HDR output. Misreading or ignoring the CTA-861 HDR block is the most common reason a display fails to enter HDR mode despite correct software configuration above the driver layer.
+
+### 1.3 What is drm_hdr_output_metadata?
+
+`drm_hdr_output_metadata` is the kernel UAPI data structure that carries HDR mastering display metadata from a Wayland compositor (or any DRM userspace client) into the KMS driver. Compositors populate this structure with the SMPTE ST 2086 mastering display colour volume — the CIE xy chromaticity primaries, white point, and minimum and maximum luminance of the mastering monitor — plus the MaxCLL (Maximum Content Light Level) and MaxFALL (Maximum Frame-Average Light Level) values defined by CTA-861-H.
+
+The compositor attaches the populated structure as an opaque blob to the DRM connector property named `HDR_OUTPUT_METADATA`. When the kernel commits the display state, the display driver extracts this blob from `connector_state->hdr_output_metadata` and uses it to fill and transmit the HDMI DRM InfoFrame (type 0x87) or the DisplayPort VSC SDP HDR metadata payload to the physical panel. The structure is defined in `include/uapi/drm/drm_mode.h` and is the single handoff point between software pipeline decisions and the wire protocol. Correctly translating its luminance fields — which use units of 0.0001 cd/m² for minimum luminance — into the InfoFrame wire format without unit errors is a recurring source of driver bugs, as discussed in the Luminance Encoding Conventions section below.
 
 ---
 

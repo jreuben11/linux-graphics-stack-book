@@ -13,6 +13,9 @@ Readers should be comfortable with both the Gallium3D driver interface (Chapter 
 ## Table of Contents
 
 1. [Introduction](#1-introduction)
+   - [1.1 What is Zink?](#11-what-is-zink)
+   - [1.2 What is Gallium3D?](#12-what-is-gallium3d)
+   - [1.3 What is a Vulkan ICD?](#13-what-is-a-vulkan-icd)
 2. [Architecture Overview](#2-architecture-overview)
 3. [OpenGL State to Vulkan Translation](#3-opengl-state-to-vulkan-translation)
 4. [Shader Translation: GLSL → NIR → SPIR-V](#4-shader-translation-glsl--nir--spirv)
@@ -64,6 +67,18 @@ Zink requires a minimum of **Vulkan 1.0** for the most basic OpenGL 2.1 support,
 [Source: Mesa Zink documentation](https://docs.mesa3d.org/drivers/zink.html)
 
 Achieving the high-performance fast path additionally requires `VK_EXT_descriptor_buffer`, `VK_EXT_extended_dynamic_state{1,2,3}`, `VK_EXT_graphics_pipeline_library`, and `VK_KHR_dynamic_rendering`. All of these are available in RADV on RDNA2+, ANV on Xe+, and NVK on Turing+.
+
+### 1.1 What is Zink?
+
+Zink is a Mesa Gallium3D driver that implements the OpenGL and OpenGL ES APIs entirely by translating them into Vulkan API calls. It emits no GPU-vendor-specific commands; instead of communicating directly with kernel DRM interfaces or hardware registers, it issues standard Vulkan calls and relies on a conformant Vulkan implementation — called an Installable Client Driver (ICD) — to handle the actual GPU submission. This design decouples OpenGL support from GPU hardware: any GPU with a working Vulkan driver gains full OpenGL through Zink automatically. Zink resides in `src/gallium/drivers/zink/` in the Mesa repository and is built and distributed as part of the Mesa package on most Linux distributions. It became a production-grade, conformant OpenGL 4.6 implementation with Mesa 22.0 and has served as the default OpenGL implementation for NVIDIA Turing-and-later GPUs (over the NVK Vulkan driver) since Mesa 25.1. The chapter traces how every layer of the OpenGL API — state management, shader compilation, descriptors, framebuffers, synchronisation — is mapped onto its Vulkan counterpart inside Zink. [Source: Mesa Zink documentation](https://docs.mesa3d.org/drivers/zink.html)
+
+### 1.2 What is Gallium3D?
+
+Gallium3D is Mesa's internal driver framework that separates the OpenGL and OpenGL ES frontend from GPU-specific backend code. The framework defines a set of C interfaces — `pipe_screen`, `pipe_context`, `pipe_resource`, `pipe_transfer`, and related structures declared under `src/gallium/include/pipe/` — that every Gallium driver must implement. The OpenGL state tracker (`src/mesa/state_tracker/st_*.c`) converts GL API calls into operations on these interfaces, meaning a driver targeting a new GPU needs only to implement the `pipe_*` interfaces rather than understand the full GL specification. Gallium drivers include hardware-specific implementations such as radeonsi (for AMD GCN-and-later GPUs), iris (for Intel Gen8+ GPUs), and etnaviv (for Vivante embedded GPUs), as well as software renderers such as llvmpipe. Zink is architecturally a Gallium driver like any other; its distinguishing feature is that it satisfies the `pipe_*` interfaces by calling Vulkan rather than by programming GPU registers or issuing kernel IOCTLs. Understanding the Gallium interface is a prerequisite for following the implementation details in this chapter; Chapter 13 covers Gallium3D in depth. [Source: Mesa Gallium documentation](https://docs.mesa3d.org/gallium/index.html)
+
+### 1.3 What is a Vulkan ICD?
+
+An Installable Client Driver (ICD) is the vendor-supplied or open-source shared library that implements the Vulkan API for a specific GPU. When an application calls a Vulkan function such as `vkCreateDevice`, the Vulkan loader (`libvulkan.so`) dispatches the call to whichever ICD has been configured for the system — for example, RADV for AMD GPUs (part of Mesa), ANV for Intel GPUs (also Mesa), NVK for NVIDIA Turing+ GPUs (Mesa), or a proprietary vendor binary. The ICD translates the Vulkan call into GPU commands and submits them through the kernel DRM interface, completely hiding GPU microarchitecture details from the caller. From Zink's perspective, the ICD is its hardware abstraction layer: Zink issues Vulkan commands, and the ICD converts them into actual GPU work. Because Zink requires only a standards-conformant Vulkan ICD, it functions with any backend — including CPU-only implementations such as Lavapipe — without modification. The Vulkan loader discovers available ICDs through JSON manifests placed in `/usr/share/vulkan/icd.d/`, each of which points to an ICD shared library and declares the Vulkan API version it supports. [Source: Vulkan Loader and Validation Layers](https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderApplicationInterface.md)
 
 ---
 

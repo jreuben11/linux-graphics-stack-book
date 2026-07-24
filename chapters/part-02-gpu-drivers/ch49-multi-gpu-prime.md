@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. Hybrid Graphics Hardware: Topology and MUX Design](#1-hybrid-graphics-hardware-topology-and-mux-design)
+  - [1.5 What is Hybrid Graphics?](#15-what-is-hybrid-graphics)
+  - [1.6 What is PRIME?](#16-what-is-prime)
+  - [1.7 What is Render Offload?](#17-what-is-render-offload)
 - [2. PRIME DRM Buffer Sharing: DMA-BUF Export and Import](#2-prime-drm-buffer-sharing-dma-buf-export-and-import)
 - [3. DRI\_PRIME and Mesa Device Selection](#3-dri_prime-and-mesa-device-selection)
 - [4. NVIDIA PRIME Render Offload](#4-nvidia-prime-render-offload)
@@ -160,6 +163,30 @@ graph LR
 ### 1.4 MUX Switch on Modern Gaming Laptops
 
 Premium gaming laptops from ASUS ROG, Razer, MSI, and others have reintroduced hardware MUX in a new form: a software-controllable switch that puts the dGPU directly on the display bus for maximum gaming performance, with a reboot required to change the setting. On Linux, `supergfxctl` (Section 8.1) exposes this via D-Bus. NVIDIA documented the XDC 2024 presentation *"MUX: Mux Switch for Hybrid Graphics"* covering the state of Linux MUX support. [Source: XDC 2024 presentation on MUX switches](https://indico.freedesktop.org/event/6/contributions/297/)
+
+### 1.5 What is Hybrid Graphics?
+
+Hybrid graphics refers to a laptop or workstation configuration in which two physically separate GPU devices co-exist in the same system: an integrated GPU (iGPU) embedded in the CPU package and a discrete GPU (dGPU) connected over PCIe. The iGPU is optimised for low power draw and is responsible for driving the display in everyday use; the dGPU provides substantially higher compute and render throughput for games, 3D applications, and GPU-accelerated workloads, at the cost of significantly higher power consumption.
+
+Because the two GPUs are independent PCIe endpoint devices with separate kernel driver instances and separate memory address spaces, the Linux graphics stack must bridge them at multiple levels: kernel DRM drivers must share buffer objects across device boundaries, Mesa and Vulkan must select the correct device for each workload, and the system compositor must route rendered frames from the dGPU to the iGPU's display engine without introducing excessive latency. This chapter describes each of these bridging mechanisms in turn.
+
+The term "hybrid graphics" encompasses two physical designs: muxed configurations, in which a hardware display multiplexer chip can route the display panel's eDP link to either GPU, and muxless configurations, in which the iGPU is the sole owner of all display outputs and dGPU frames must be transferred into iGPU-accessible memory before being composited. The distinction is architecturally significant because it determines whether frame delivery requires a cross-device buffer copy on every rendered frame.
+
+### 1.6 What is PRIME?
+
+PRIME is the DRM subsystem's infrastructure for sharing GPU buffer objects (GEM objects) across device boundaries. It uses the kernel's `dma_buf` framework—introduced in Linux 3.3—to represent a buffer allocation as a file descriptor that can be passed between processes and imported by a different DRM driver. A pixel buffer rendered on the dGPU can be exported as a `dma_buf` fd, sent to the compositor over a Unix domain socket, and imported by the iGPU driver without any CPU-side copy of the pixel data, provided the IOMMU topology permits a direct DMA mapping.
+
+Two public ioctls define the cross-device interface: `DRM_IOCTL_PRIME_HANDLE_TO_FD` converts a local GEM handle on the exporting device into a shareable file descriptor, and `DRM_IOCTL_PRIME_FD_TO_HANDLE` imports that descriptor on the receiving device. GPU-side synchronisation is handled through `dma_resv` reservation objects, which carry timeline fences from both the exporting and importing GPU so that neither side reads partially written data. Since kernel 6.6, `DRM_CAP_PRIME` is always set, meaning every DRM driver in the mainline tree supports both ioctls.
+
+In userspace, PRIME surfaces through several interfaces: the `DRI_PRIME` environment variable for OpenGL device selection, the `VK_LAYER_MESA_device_select` implicit Vulkan layer, the `prime-run` shell wrapper, and the `gbm_bo_import()` GBM API used by Wayland compositors. PRIME is the foundational mechanism that makes muxless render offload feasible across all combinations of iGPU and dGPU vendor.
+
+### 1.7 What is Render Offload?
+
+Render offload is the operating mode in which a power-hungry dGPU executes a specific rendering or compute workload—a 3D game, a video encode pipeline, a GPGPU application—while the iGPU continues to own all physical display outputs and run the system compositor. The rendered frames are delivered from the dGPU to the compositor via PRIME buffer sharing (or, where direct DMA is not possible, via a CPU-side blit), then composited onto the iGPU's scanout plane as a normal KMS framebuffer.
+
+The motivation is battery life on muxless laptops: leaving the dGPU powered down during desktop use avoids the 10–25 W idle draw typical of a discrete NVIDIA or AMD chip. Render offload permits a user or application to selectively activate the dGPU for a single process—via `DRI_PRIME=1 application` or the `prime-run` wrapper—while all other processes continue to use the iGPU.
+
+On Linux, render offload spans at least three stack layers: the kernel PRIME buffer-sharing interface for frame delivery, a Mesa or vendor driver device-selection mechanism for directing draw calls to the dGPU, and compositor support for importing externally produced `dma_buf` frames. The mechanism differs between the open Mesa stack (which uses `DRI_PRIME` and the DRM PRIME ioctls) and the proprietary NVIDIA driver (which uses `__NV_PRIME_RENDER_OFFLOAD` and a GLVND dispatch chain). Both paths are examined in detail in this chapter.
 
 ---
 

@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is a Cooperative Matrix?](#11-what-is-a-cooperative-matrix)
+   - [1.2 What is a Matrix Multiply-Accumulate (MMA) Unit?](#12-what-is-a-matrix-multiply-accumulate-mma-unit)
+   - [1.3 What is VK_KHR_cooperative_matrix?](#13-what-is-vk_khr_cooperative_matrix)
 2. [The Matrix Multiply Problem and Hardware MMA Units](#the-matrix-multiply-problem-and-hardware-mma-units)
 3. [VK_KHR_cooperative_matrix API](#vk_khr_cooperative_matrix-api)
 4. [GLSL Cooperative Matrix Shaders](#glsl-cooperative-matrix-shaders)
@@ -36,6 +39,28 @@ This chapter covers:
 - **Real-world usage in LLM inference tools on Linux** — practical examples including llama.cpp and stable-diffusion.cpp
 
 [VK_KHR_cooperative_matrix specification](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_KHR_cooperative_matrix.html)
+
+### 1.1 What is a Cooperative Matrix?
+
+A cooperative matrix is a programming abstraction in which a group of GPU shader invocations — a subgroup or wavefront — collectively owns a small matrix tile rather than each invocation operating independently on scalar or vector values. Instead of one thread computing one output element, the entire subgroup (typically 32 invocations on AMD and NVIDIA, or 8–16 on Intel) jointly holds fragments of the A, B, and C matrices in registers. A single hardware matrix multiply-accumulate instruction then processes all those fragments simultaneously.
+
+This model exists because dedicated MMA hardware units operate at a fixed tile granularity — 16×16×16 elements on AMD RDNA3, 8×8 tiles on Intel Xe-HPG — and cannot be driven from a single thread. The data must be distributed across the wavefront's register file in a layout determined by the hardware. Cooperative matrices expose that distribution as a first-class API type, decoupling the programmer from the exact per-lane register layout while requiring explicit awareness of subgroup semantics: all invocations in a subgroup must execute the matrix operations together, and barrier-like synchronisation governs when tile fragments become valid.
+
+In Vulkan, the cooperative matrix programming model is surfaced through `VK_KHR_cooperative_matrix` and its GLSL counterpart `GL_KHR_cooperative_matrix`. The chapter uses this model to show how portable ML inference kernels can target AMD RDNA3 WMMA instructions, Intel Xe-HPG DPAS instructions, and (via the vendor extension) NVIDIA Tensor Cores through a single shader codebase.
+
+### 1.2 What is a Matrix Multiply-Accumulate (MMA) Unit?
+
+A matrix multiply-accumulate (MMA) unit is a fixed-function silicon block on a GPU dedicated to computing the operation C += A × B over small dense matrix tiles in a compact sequence of instructions. These units achieve substantially higher throughput than the GPU's general-purpose floating-point ALUs by using deep pipelining, shared multiplier arrays tightly coupled to the register file, and reduced per-instruction control overhead.
+
+On AMD RDNA3 (RX 7000 series) the MMA block executes the WMMA (Wave Matrix Multiply-Accumulate) family of instructions — for example `v_wmma_f32_16x16x16_f16` — processing a 16×16×16 FP16 tile per wavefront per few clock cycles. Intel Xe-HPG (Arc A-series) implements XMX (Xe Matrix eXtensions), driven by the `dpas` (Dot Product Accumulate Systolic) instruction, which implements a systolic array computing 8×8 tiles. The throughput gap relative to regular ALUs is substantial: AMD RDNA3 delivers roughly 82 TFLOPS at FP16 through WMMA, approximately twice the throughput of the ordinary shader ALUs at that precision.
+
+This hardware is the primary compute path for deep learning inference on Linux: transformer attention layers, feed-forward network GEMM operations in LLMs such as those run by llama.cpp, and convolutional layers in image upscaling pipelines. Accessing MMA units from application code requires the cooperative matrix programming model because the hardware mandates that tile data be distributed across all lanes in a wavefront simultaneously.
+
+### 1.3 What is VK_KHR_cooperative_matrix?
+
+`VK_KHR_cooperative_matrix` is a Vulkan extension ratified at KHR (cross-vendor) status in 2023 that exposes GPU MMA hardware through the Vulkan compute pipeline without requiring CUDA, ROCm/HIP, or SYCL. It provides two components: a host-side API for querying which matrix tile dimensions and numeric types the physical device supports, and a GLSL shader extension (`GL_KHR_cooperative_matrix`) that introduces the `coopmat<>` type template along with the built-in functions `coopMatLoad`, `coopMatStore`, `coopMatMulAdd`, and `coopMatConstruct`.
+
+On Linux, RADV (Mesa's AMD driver) lowers `coopmat` operations in NIR (Mesa's intermediate representation) to RDNA3 WMMA instructions, and ANV (Mesa's Intel driver) lowers them to Xe-HPG DPAS instructions. The extension is deliberately minimal: it does not prescribe memory layouts, caching strategies, or tile-iteration patterns. Applications must tile their workloads, manage shared memory, and select numeric types based on runtime property queries. The host-side query `vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR` returns an enumeration of supported (M, N, K, type) combinations that differ across vendors and must be checked at runtime before constructing compute pipelines. This chapter covers the full path from the Vulkan and GLSL API surface through Mesa driver lowering to the hardware ISA, with real-world examples in llama.cpp and stable-diffusion.cpp.
 
 ---
 

@@ -12,6 +12,9 @@ This chapter targets **systems and driver developers** who need to understand th
    - [Registering an Input Device](#13-registering-an-input-device)
    - [The evdev Driver](#14-the-evdev-driver)
    - [udev Rules for Device Permissions](#15-udev-rules-for-device-permissions)
+   - [1.6 What is the Linux Input Subsystem?](#16-what-is-the-linux-input-subsystem)
+   - [1.7 What is evdev?](#17-what-is-evdev)
+   - [1.8 What is libinput?](#18-what-is-libinput)
 2. [libinput: The Device Abstraction Layer](#2-libinput-the-device-abstraction-layer)
    - [Core API](#21-core-api)
    - [Device Type Detection](#22-device-type-detection)
@@ -243,6 +246,18 @@ SUBSYSTEM=="input", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="2009", \
 ```
 
 The `TAG+="uaccess"` directive delegates ownership to `systemd-logind`, which grants the currently active session user access to the device node regardless of group membership. This is the mechanism underlying Steam's ability to read controllers without a setuid helper.
+
+### 1.6 What is the Linux Input Subsystem?
+
+The Linux input subsystem, resident in `drivers/input/`, is the kernel layer responsible for receiving events from hardware input devices and exposing them to userspace through a unified, device-agnostic interface. Before this subsystem existed each class of input hardware required application-specific kernel glue; the input subsystem introduces a single abstraction — the `struct input_event` triple of type, code, and value — that covers keyboards, mice, touchscreens, tablets, gaming controllers, and any other human interface device through one consistent API. Kernel device drivers translate interrupts, USB HID reports, I2C reads, or Bluetooth streams into calls to `input_report_key()`, `input_report_abs()`, `input_report_rel()`, and `input_sync()`; the input core then fans those events out to registered handlers. The `evdev` handler is by far the most widely used: it provides a character device at `/dev/input/eventN` that userspace opens and reads with standard file I/O. The subsystem also maintains per-device capability bitmasks that declare which event types and codes a device can produce; these are exposed through `ioctl` calls and via sysfs at `/sys/class/input/`. This chapter builds upward from this layer, tracing how events flow from the kernel through libinput, Wayland compositor dispatch, and finally to application-visible protocol events. [Source: Linux kernel input documentation](https://docs.kernel.org/input/input.html)
+
+### 1.7 What is evdev?
+
+evdev (Event Device) is the kernel's primary input event interface, implemented in `drivers/input/evdev.c`. It is a generic handler that attaches to every input device registered with the kernel input core and exposes each device through a character device node at `/dev/input/eventN`. Userspace programs open these nodes and call `read()` to receive a stream of `struct input_event` records; `poll()` or `epoll()` waits efficiently for events without busy-looping. Before evdev, each device class had its own kernel interface — keyboards through `/dev/tty`, mice through a private protocol on `/dev/input/mouseN`, joysticks through the legacy `/dev/input/jsN` API — making it difficult to write software that handled multiple input types uniformly. evdev unifies all of these under a single read format and exposes device capabilities through `ioctl` calls (`EVIOCGBIT`, `EVIOCGABS`, `EVIOCGNAME`), allowing library code to discover what a device can produce before processing any events. Wayland compositors and libinput both consume input exclusively through the evdev interface; the legacy mouse and joystick interfaces are maintained only for backward compatibility. The `uinput` kernel module (`drivers/input/misc/uinput.c`) provides the reverse path: programs that open `/dev/uinput` can synthesise virtual input devices that appear to other software as real evdev nodes. [Source: kernel evdev documentation](https://docs.kernel.org/input/input.html)
+
+### 1.8 What is libinput?
+
+libinput ([upstream repository](https://gitlab.freedesktop.org/libinput/libinput)) is the canonical userspace library for consuming kernel input events on Linux desktops. It sits above the evdev layer and provides three services that raw evdev cannot: unified device lifecycle management, hardware-specific quirk correction, and semantic event interpretation. Device lifecycle management means that a single library context, attached to a udev seat, automatically handles device hotplug — device-added and device-removed events are delivered through the same event queue as pointer motion and key presses. Quirk correction applies per-device overrides stored in an ini-format database under `/usr/share/libinput/` (and locally under `/etc/libinput/local-overrides.quirks`) to compensate for firmware bugs such as incorrect axis ranges, touchpad pressure thresholds, or missing capability declarations. Semantic interpretation converts raw evdev events into higher-level libinput events: pointer acceleration is applied to `EV_REL` motion, tap-to-click detection converts `ABS_MT_*` contact data into `BTN_LEFT` presses, multi-finger swipes and pinch gestures are synthesised from concurrent touchpad contacts, and palm rejection suppresses contacts that match size or position heuristics for accidental touch. Wayland compositors such as wlroots and Mutter consume input exclusively through libinput; X.Org uses it via the `xf86-input-libinput` driver. [Source: libinput documentation](https://wayland.freedesktop.org/libinput/doc/latest/what-is-libinput.html)
 
 ---
 

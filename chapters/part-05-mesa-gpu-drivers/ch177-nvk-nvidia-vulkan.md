@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. History and Driver Lineage](#1-history-and-driver-lineage)
+  - [1.1 What is NVK?](#11-what-is-nvk)
+  - [1.2 What is NAK?](#12-what-is-nak)
+  - [1.3 What is GSP-RM?](#13-what-is-gsp-rm)
 - [2. Source Tree Layout and the NVKMD Abstraction](#2-source-tree-layout-and-the-nvkmd-abstraction)
 - [3. Memory Architecture: GEM, TTM, VRAM, and GART](#3-memory-architecture-gem-ttm-vram-and-gart)
 - [4. Command Encoding: Push Buffers, Class Headers, and the nv\_push API](#4-command-encoding-push-buffers-class-headers-and-the-nv_push-api)
@@ -69,6 +72,18 @@ Mesa 25.2 added Blackwell (RTX 5000 series) and Kepler (GeForce 600/700 series) 
 Mesa 26.0 (February 2026) brought additional extension coverage to NVK: `VK_KHR_maintenance10`, `VK_EXT_discard_rectangles`, `VK_EXT_shader_uniform_buffer_unsized_array`, `VK_KHR_robustness2`, and `VK_KHR_pipeline_binary`. NAK received pre-pass instruction scheduling across basic blocks and refined instruction latency models for Ampere and later architectures. Turing specifically gained improved warp occupancy by switching to the maximum warps-per-SM configuration for compute workloads. [Source](https://en.linuxadictos.com/Mesa-26.0-strengthens-Vulkan-support-and-adds-dozens-of-key-extensions-to-radv--anv--nvk--panvk--Venus--and-other-drivers..html)
 
 Ray tracing (`VK_KHR_ray_tracing_pipeline`, `VK_KHR_acceleration_structure`) and hardware video decode (`VK_KHR_video_decode_queue`) remain active development areas as of mid-2026. Experimental H.264 and H.265 video decode is available behind the `NVK_I_WANT_A_BROKEN_VULKAN_DRIVER=1` environment variable, requiring Linux kernel 6.12 or later. [Source](https://blogs.igalia.com/scerveau/vulkan-video-with-nvk-driver/)
+
+### 1.1 What is NVK?
+
+NVK is the open-source NVIDIA Vulkan driver located at `src/nouveau/vulkan/` in the Mesa repository. It is a clean-slate implementation: it does not wrap the legacy Gallium nouveau driver, does not call into NVIDIA's proprietary userspace runtime, and makes no use of NVIDIA's libGL or libEGL. NVK implements the Vulkan API directly on top of the nouveau kernel driver's formally specified uAPI — the `DRM_IOCTL_NOUVEAU_EXEC` and `DRM_IOCTL_NOUVEAU_VM_BIND` ioctls introduced in Linux 6.6 — using Mesa's shared Vulkan infrastructure (vk_common, vk_pipeline_cache, vk_descriptor_set) that also underpins RADV (AMD) and ANV (Intel). The driver covers GPU generations from Kepler (GeForce 600/700 series, 2012) through Blackwell (RTX 5000 series, 2025). From Mesa 25.1 onward, NVK paired with Zink (OpenGL over Vulkan) replaced the legacy Gallium nouveau driver as the default OpenGL path for Turing and later hardware. The name "NVK" distinguishes the Mesa Vulkan driver from the older "nouveau" OpenGL driver; both live in the same Mesa repository but share no rendering code. Understanding NVK requires familiarity with Mesa's Vulkan common layer, the DRM GEM buffer object model, and the nouveau kernel driver's submission and virtual memory ioctls, all of which this chapter documents in detail.
+
+### 1.2 What is NAK?
+
+NAK is the Rust-language shader compiler backend that NVK uses to translate NVIDIA-specific NIR (Mesa's typed SSA intermediate representation, shared by all Mesa drivers) into SASS (Shader Assembly), the native machine code executed by NVIDIA GPU shader processors. NVIDIA's GPU ISA is not publicly documented by NVIDIA; the SASS encoding used by NAK is derived from the Envytools project and from hardware validation. The ISA varies by GPU architecture: Kepler through Pascal use sm50–sm61 encodings, Volta and Turing use sm70 and sm75, Ampere through Ada use sm80–sm89, and Hopper and Blackwell use sm90 and sm100 respectively. NAK targets each of these ISAs and is invoked by NVK's pipeline compilation path after the driver lowers Vulkan SPIR-V to NIR via Mesa's SPIR-V reader. NAK lives in `src/nouveau/compiler/nak/` in the Mesa repository and integrates with Mesa's C codebase through a thin FFI boundary. Shipping NAK in Mesa 24.0 replaced the older Gallium-era `nv50_ir` compiler for NVK's Turing path and substantially improved shader throughput and correctness. The compiler performs NIR-level lowering passes before emitting SASS, and later releases added pre-pass instruction scheduling and refined latency models for Ampere and later architectures.
+
+### 1.3 What is GSP-RM?
+
+GSP-RM (GPU System Processor — Resource Manager) is a firmware component that runs on a dedicated microcontroller embedded inside every NVIDIA Turing and later GPU. On these hardware generations, NVIDIA relocated most of the GPU Resource Manager — the subsystem responsible for channel management, memory management, and power state transitions — from CPU-side kernel code onto the GSP microcontroller. The firmware binary is distributed through the linux-firmware repository and must be present for the nouveau kernel driver to initialize a Turing or later GPU; without it, the kernel driver falls back to display-only mode. Kepler, Maxwell, Pascal, and Volta GPUs do not use GSP-RM and are managed entirely by CPU-side kernel code. For NVK, the GSP-RM boundary means that operations that would be direct register writes on older hardware instead involve IPC round-trips to the firmware on Turing and later GPUs. This affects context switching latency and certain memory management operations. Section 6 of this chapter documents the IPC interface through which NVK communicates with GSP-RM and the practical implications for driver behaviour and performance tuning.
 
 ---
 

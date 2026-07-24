@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction: The Isolation Problem](#1-introduction-the-isolation-problem)
+   - [1.1 What is DMA-BUF?](#11-what-is-dma-buf)
+   - [1.2 What is PipeWire?](#12-what-is-pipewire)
+   - [1.3 What is xdg-desktop-portal?](#13-what-is-xdg-desktop-portal)
 2. [X11 Screen Capture (Legacy)](#2-x11-screen-capture-legacy)
 3. [KMS Writeback Connectors](#3-kms-writeback-connectors)
 4. [wlr-screencopy Protocol](#4-wlr-screencopy-protocol)
@@ -119,6 +122,18 @@ The four paths compared across the properties that most affect design decisions:
 **Path C** (X11 XComposite / XShmGetImage) is the legacy X11 approach: zero-copy relative to the X11 socket via MIT-SHM, but inherently CPU-land and carrying no access control. It persists under XWayland for legacy tool compatibility, but cannot capture the full Wayland desktop.
 
 **Path D** (DRM render node) bypasses the compositor entirely, making it the only option for headless rendering in CI pipelines, cloud rendering servers, and GPU benchmark tools. Because no compositor is involved, there is no window system overhead and no display output — only GPU memory that can be read back or exported as a DMA-BUF for file output or hardware encoding.
+
+### 1.1 What is DMA-BUF?
+
+DMA-BUF (Direct Memory Access Buffer) is a Linux kernel mechanism for sharing hardware memory buffers across device drivers without copying data through userspace or the CPU cache. Defined in `include/linux/dma-buf.h` and governed by the `dma_buf` subsystem, DMA-BUF allows a GPU driver to export a framebuffer as a file descriptor. Other drivers — video encoders, display controllers, network adapters — can import that file descriptor and access the same physical memory directly, each mapping it through their own IOMMU translation. On the Wayland graphics stack, DMA-BUF is the mechanism that enables zero-copy screen capture: the compositor exports its rendered framebuffer as a DMA-BUF file descriptor, which a PipeWire consumer can pass to a hardware video encoder such as VA-API or NVENC without ever touching CPU memory. The `linux-dmabuf` Wayland protocol extension (`zwp_linux_dmabuf_v1`, now at version 4) is the client-facing interface through which Wayland clients negotiate DMA-BUF buffer sharing with the compositor. In the capture pipeline diagrams in this chapter, any path labelled "zero-copy" or `SPA_DATA_DmaBuf` involves a DMA-BUF file descriptor crossing an API boundary. When DMA-BUF negotiation fails or the consumer device cannot import the exporter's buffers, the fallback is a CPU-mapped shared memory segment (`SPA_DATA_MemPtr` in PipeWire), which involves a copy but works universally. [Source](https://www.kernel.org/doc/html/latest/driver-api/dma-buf.html)
+
+### 1.2 What is PipeWire?
+
+PipeWire is a session-level media server for Linux that unifies audio routing (replacing PulseAudio and JACK) and video routing (replacing ad-hoc V4L2 and GStreamer pipelines) under a single graph-based processing framework. In the context of screen capture, PipeWire acts as the brokering layer between the compositor (producer) and recording or streaming applications (consumers). The compositor creates a PipeWire stream node; applications connect to that node and negotiate buffer formats. PipeWire's SPA (Simple Plugin API) layer handles this negotiation: both ends advertise supported formats in SPA POD (Plain Old Data) structures, and PipeWire selects the best mutually compatible format — preferably DMA-BUF for zero-copy, falling back to CPU-mapped shared memory. The `pw_stream` API is the primary interface applications use to receive video frames from the PipeWire graph. Policy decisions such as which application may connect to which node are managed by WirePlumber, the session manager that ships alongside PipeWire. In the screen capture domain, PipeWire is mandatory for any application running inside a Flatpak or Snap sandbox: the xdg-desktop-portal establishes the compositor's PipeWire stream node and hands the resulting node ID to the requesting application over D-Bus, allowing the sandboxed process to receive frames without any direct compositor access. [Source](https://gitlab.freedesktop.org/pipewire/pipewire)
+
+### 1.3 What is xdg-desktop-portal?
+
+The xdg-desktop-portal is a D-Bus service that mediates access to system resources for sandboxed desktop applications running under Flatpak or Snap confinement. It exposes standardised D-Bus interfaces under the `org.freedesktop.portal.*` namespace. For screen capture the relevant interface is `org.freedesktop.portal.ScreenCast`, which defines three methods: `CreateSession` establishes a capture session; `SelectSources` invokes a compositor-provided picker UI so the user can choose what to share (an entire output, a specific window, or a region); and `Start` returns a PipeWire stream node ID the application can connect to. The portal delegates the actual capture to a compositor-specific backend: on GNOME the backend is `xdg-desktop-portal-gnome`, on KDE Plasma it is `xdg-desktop-portal-kde`, and on wlroots-based compositors (sway, Hyprland, labwc) it is `xdg-desktop-portal-wlr`. Each backend speaks the compositor's native screencopy protocol — `wlr-screencopy-v1` or the standardised `ext-image-copy-capture-v1` — to acquire frames, then feeds them into the PipeWire stream the portal creates. From the application's perspective, all compositor differences are hidden: it sees only a PipeWire node ID. This abstraction allows OBS Studio running as a Flatpak, Firefox's `getDisplayMedia()`, and cloud recording tools to use the same capture path regardless of the underlying compositor. [Source](https://flatpak.github.io/xdg-desktop-portal/)
 
 ---
 

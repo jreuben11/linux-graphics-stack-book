@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. The Anatomy of a Mesa Vulkan Driver](#1-the-anatomy-of-a-mesa-vulkan-driver)
+  - [1.1 What is Vulkan?](#11-what-is-vulkan)
+  - [1.2 What is an ICD (Installable Client Driver)?](#12-what-is-an-icd-installable-client-driver)
+  - [1.3 What is the Winsys Abstraction Layer?](#13-what-is-the-winsys-abstraction-layer)
 - [2. RADV: AMD Vulkan in Mesa](#2-radv-amd-vulkan-in-mesa)
   - [2.1 Architecture Overview](#21-architecture-overview)
   - [2.2 Memory Management](#22-memory-management)
@@ -196,6 +199,24 @@ __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia vkcube
 ```
 
 The proprietary ICD supports features not yet available in NVK as of mid-2026: full ray tracing (`VK_KHR_ray_tracing_pipeline` on Turing+), video encode (`VK_KHR_video_encode_queue`), and CUDA–Vulkan interop (`VK_NV_external_memory` / `cudaImportExternalMemory`). NVK's advantage is full open-source auditability, integration with Mesa's WSI layer, and compatibility with open kernel modules. For most Vulkan rendering workloads on Turing+ hardware, NVK has reached parity; for CUDA interop or video encode, the proprietary ICD remains necessary.
+
+### 1.1 What is Vulkan?
+
+Vulkan is an explicit, low-level graphics and compute API developed by the Khronos Group and first released in 2016. Unlike its predecessor OpenGL, Vulkan imposes almost no implicit state on the driver: the application is responsible for memory allocation, synchronisation between the CPU and GPU, render pass management, and pipeline compilation. This explicit design eliminates the unpredictable driver-side work that made OpenGL frame times hard to reason about, but it transfers that responsibility to the application layer and, on Linux, to the Mesa driver implementations that sit beneath the API.
+
+On Linux, the Vulkan specification maps to a layered software stack. An application links against the Vulkan loader (`libvulkan.so.1`), which discovers available drivers through ICD manifest files and dispatches API calls to the correct driver implementation. The driver itself implements every `vk*` entry point defined in the specification, translating each into GPU command streams, kernel ioctls, or both. The Vulkan API version supported by a physical device — 1.0 through 1.4 as of this writing — reflects both hardware capability and driver completeness. Conformance is verified against the Khronos Conformance Test Suite (CTS), run as `dEQP-VK`. This chapter covers three Mesa drivers that have achieved full Vulkan 1.4 conformance: RADV (AMD), ANV (Intel), and Turnip (Qualcomm Adreno). [Source: Vulkan Specification](https://registry.khronos.org/vulkan/specs/latest/)
+
+### 1.2 What is an ICD (Installable Client Driver)?
+
+The Installable Client Driver (ICD) mechanism is the Vulkan loader's protocol for discovering and loading vendor GPU drivers at runtime without linking directly to any of them. Each driver ships a JSON manifest file describing the path to its shared library and the entry point the loader should call to resolve API function pointers. On Linux these manifests are installed under `/usr/share/vulkan/icd.d/` or `/etc/vulkan/icd.d/`; the loader scans these directories on instance creation.
+
+Within the shared library, the driver must export `vk_icdGetInstanceProcAddr`, the primary entry point through which the loader resolves all `VkInstance`-level and `VkDevice`-level function pointers. A conforming ICD must also export `vk_icdNegotiateLoaderICDInterfaceVersion` so that the loader and driver can agree on an ICD interface version (typically version 5 or 6 in current Mesa drivers), determining which calling conventions and loader-provided function pointers the driver may use. Multiple ICDs — for instance, both NVK and the proprietary NVIDIA ICD — can coexist on the same system; `vkEnumeratePhysicalDevices` returns a physical device from each. The environment variable `VK_ICD_FILENAMES` overrides discovery to select a specific ICD by absolute path. This section examines how RADV, ANV, and Turnip each implement the ICD entry points and build their physical device hierarchies on top of the loader interface. [Source: Vulkan Loader Interface Architecture](https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderInterfaceArchitecture.md)
+
+### 1.3 What is the Winsys Abstraction Layer?
+
+The winsys (window system) abstraction layer is the internal boundary inside a Mesa Vulkan driver that isolates the Vulkan-level driver code from direct kernel interface calls. Each driver implements a winsys vtable that exposes operations such as buffer object allocation and mapping, virtual GPU address management, command submission, and fence and semaphore signalling. The winsys layer is responsible for selecting the correct DRM ioctl path depending on which kernel driver is running: RADV's amdgpu winsys calls `amdgpu_bo_alloc()` and submits via `amdgpu_cs_submit_raw2()`; ANV's `anv_kmd_backend` switches between `i915_gem_exec_object2` submission on older kernels and `xe_exec` on the Xe driver introduced in Linux 6.8; Turnip's MSM submit path uses `DRM_IOCTL_MSM_GEM_SUBMIT`.
+
+This separation matters in two practical ways. First, it allows the driver to adapt to kernel API changes — the transition from i915 to Xe on Intel hardware, for example — without touching the Vulkan command recording or descriptor management code above the boundary. Second, it allows the same Vulkan conformance tests to exercise driver behaviour independent of which kernel interface version is in use. The winsys layer is not visible to Vulkan applications, but understanding it helps systems developers interpret submission failures, performance counter readings, and kernel error codes that surface through `VK_ERROR_DEVICE_LOST` or validation layer messages. The exact winsys interfaces for each driver are examined in §§2–4. [Source: Mesa amdgpu winsys](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/amd/vulkan/winsys/amdgpu)
 
 ---
 

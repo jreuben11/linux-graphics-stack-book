@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Why the Command Buffer Model Stalls at Scale](#1-why-the-command-buffer-model-stalls-at-scale)
+   - [1.1 What is GPU-Driven Rendering?](#11-what-is-gpu-driven-rendering)
+   - [1.2 What is VK_EXT_device_generated_commands?](#12-what-is-vk_ext_device_generated_commands)
+   - [1.3 What is a Work Graph?](#13-what-is-a-work-graph)
 2. [Extension Fundamentals — Objects and Lifecycle](#2-extension-fundamentals--objects-and-lifecycle)
    - [VkIndirectCommandsLayoutEXT — The Token Sequence](#21-vkindirectcommandslayoutext--the-token-sequence)
    - [VkIndirectExecutionSetEXT — GPU-Visible Pipeline Array](#22-vkindirectexecutionsetext--gpu-visible-pipeline-array)
@@ -43,6 +46,32 @@ Vulkan's command buffer model is deliberately CPU-authoritative. Each frame, the
 `VK_EXT_device_generated_commands` (DGC) resolves both problems. It lets a GPU compute shader write a complete command sequence — pipeline switch, index buffer bind, vertex buffer bind, push constant update, then draw — and then submit that sequence for execution without CPU intervention. The GPU fully drives the draw loop.
 
 The extension replaces the earlier NVIDIA-only `VK_NV_device_generated_commands`, broadening support to AMD (RADV), Intel (ANV), Qualcomm (Turnip), Nouveau (NVK), and software (Lavapipe). All five shipped conformant support by Mesa 24.3. [Source — Phoronix: RADV DGC merge](https://www.phoronix.com/news/RADV-VK-EXT-DGC)
+
+### 1.1 What is GPU-Driven Rendering?
+
+GPU-driven rendering is an approach to real-time scene drawing in which the GPU, rather than the CPU, determines which draw calls to issue and with what parameters. In a traditional rendering loop the CPU iterates over scene objects each frame, performs visibility and occlusion tests, selects appropriate pipelines and descriptor sets, records draw commands into a command buffer, and submits. This workflow couples rendering throughput to CPU clock speed and single-thread command recording bandwidth.
+
+GPU-driven rendering inverts this model: a compute pass runs on the GPU, culls geometry against the current view frustum, writes surviving draw arguments into device-local buffers, and dispatches the resulting draws without returning control to the CPU. The Vulkan API supports a basic form of this through `vkCmdDrawIndexedIndirectCount`, which reads a variable draw count and per-draw arguments from GPU buffers. However, indirect draw calls share a single pipeline and descriptor binding across all draws in the batch. Any per-draw variation in pipeline state — different materials, different vertex formats, different push-constant payloads — still requires CPU intervention to sort draws into batches and record separate commands per batch. `VK_EXT_device_generated_commands` removes this remaining constraint by letting the GPU write not just draw arguments but the full command stream, including pipeline switches and push-constant updates.
+
+[Source — Vulkan specification: Drawing Commands](https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#drawing)
+
+### 1.2 What is VK_EXT_device_generated_commands?
+
+`VK_EXT_device_generated_commands` is a Vulkan device extension that enables GPU compute shaders to write executable Vulkan command sequences into device-local memory and have those sequences dispatched without CPU involvement. The extension generalises the earlier `VK_NV_device_generated_commands`, which was limited to NVIDIA hardware, into a cross-vendor specification supported by AMD (RADV), Intel (ANV), Qualcomm (Turnip), and Nouveau (NVK).
+
+The extension introduces three core abstractions. A `VkIndirectCommandsLayoutEXT` defines the structure of a sequence record — a fixed-stride blob containing typed tokens at declared byte offsets. Each token encodes one GPU command: switch pipeline, bind index buffer, update push constants, or issue a draw. A `VkIndirectExecutionSetEXT` is a device-visible array of pipelines or shader objects that the GPU can index at runtime to select between material variants. Scratch memory, sized per the driver's reported requirements, buffers the internal command translation performed before execution.
+
+Commands are dispatched through `vkCmdExecuteGeneratedCommandsEXT`, which takes a source buffer of packed sequence records, a sequence count, and references to the layout and execution set. An optional explicit preprocess phase via `vkCmdPreprocessGeneratedCommandsEXT` separates command expansion from execution, enabling overlap with other GPU work on an async compute queue.
+
+[Source — Vulkan spec: VK_EXT_device_generated_commands](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_EXT_device_generated_commands.html)
+
+### 1.3 What is a Work Graph?
+
+Work graphs are a GPU scheduling abstraction in which shader nodes produce work items that directly launch subsequent shader nodes without the CPU recording a new dispatch. In a conventional compute pipeline the CPU determines dispatch dimensions before submission. Even with indirect dispatch (`vkCmdDispatchIndirectEXT`), a preceding compute pass writes dimensions for a following dispatch, but control still passes through the driver's indirect argument path and the two passes are recorded separately. Work graphs generalise this further: each node in the graph can emit records to named successor nodes at arbitrary granularity, forming a producer-consumer graph that executes entirely on the GPU.
+
+On AMD hardware the underlying mechanism is exposed through `VK_AMDX_shader_enqueue`, which allows shader threads to enqueue new shader invocations into a hardware scheduling queue by writing dispatch records to a payload buffer. The Khronos standardisation effort consolidates this into `VK_KHR_work_graphs`, a ratified extension targeting hardware with native support for node-to-node scheduling. The D3D12 Work Graphs API maps onto the same hardware capability, making `VK_KHR_work_graphs` the equivalent abstraction in the Linux graphics stack. VKD3D-Proton uses DGC and shader-enqueue primitives to emulate D3D12 Work Graphs on Linux when running Windows titles through Proton.
+
+[Source — Vulkan spec: VK_KHR_work_graphs](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_KHR_work_graphs.html)
 
 ---
 

@@ -13,6 +13,9 @@ Readers are expected to be familiar with basic Vulkan command buffer recording a
 ## Table of Contents
 
 - [Introduction: The Problem of GPU Parallelism](#introduction-the-problem-of-gpu-parallelism)
+  - [1.1 What is the Vulkan Memory Model?](#11-what-is-the-vulkan-memory-model)
+  - [1.2 What is a Memory Barrier?](#12-what-is-a-memory-barrier)
+  - [1.3 What is an Execution Scope?](#13-what-is-an-execution-scope)
 - [The Vulkan Memory Model Specification](#the-vulkan-memory-model-specification)
 - [Execution Scopes](#execution-scopes)
 - [Storage Classes and Visibility](#storage-classes-and-visibility)
@@ -54,6 +57,30 @@ The C++ memory model defines `memory_order_relaxed`, `memory_order_acquire`, `me
 - **Availability/visibility operations:** C++ assume cache-coherent hardware. Vulkan explicitly models non-coherent caches through availability (cache writeback / flush) and visibility (cache invalidation) operations that must be paired correctly for cross-invocation communication to be defined.
 
 Crucially, **`SequentiallyConsistent` memory semantics are not supported in Vulkan**. The Vulkan specification states this explicitly: *"SequentiallyConsistent memory semantics is not supported and must not be used."* [Source](https://docs.vulkan.org/spec/latest/appendices/memorymodel.html) The maximum ordering available is `AcquireRelease`, which the spec clarifies is treated as the effective replacement for sequential consistency in the Vulkan context.
+
+### 1.1 What is the Vulkan Memory Model?
+
+The Vulkan Memory Model is a formal specification that defines the memory ordering guarantees available to shader code running on a GPU. It was introduced as the Vulkan extension `VK_KHR_vulkan_memory_model` and promoted to core in Vulkan 1.2, with the formal definition occupying a dedicated appendix of the Vulkan specification. The accompanying SPIR-V extension `SPV_KHR_vulkan_memory_model` defines the shader-level encoding of these guarantees.
+
+Unlike the x86 Total Store Order model or the C++ memory model, the Vulkan Memory Model is designed for hardware with non-coherent L1 caches, deeply pipelined vector memory units, and tens of thousands of concurrent invocations. It does not assume that a write by one invocation is immediately visible to another — not because the hardware is defective, but because global coherency at GPU scale is prohibitively expensive. The model therefore specifies exactly which operations — with which scope and storage-class qualifiers — are required to make a write by one invocation reliably observable to a read by another, whether those invocations share a workgroup, a queue family submission, or the entire device.
+
+In this chapter the Vulkan Memory Model is examined through three lenses: the formal abstract machine defined in the specification, the SPIR-V instructions and operands that encode memory ordering semantics in shader binaries, and the way Mesa's compiler stack (NIR and ACO) lowers those abstractions to concrete hardware wait-state instructions on AMD RDNA and Intel Xe architectures.
+
+### 1.2 What is a Memory Barrier?
+
+A memory barrier is a synchronization instruction that constrains the order in which memory operations — loads and stores — become visible to other agents. On a CPU, an instruction such as `mfence` flushes the store buffer and waits for all outstanding loads to complete before any subsequent memory operation proceeds. On a GPU the concept is analogous but more structured: a barrier must specify both the set of invocations it synchronizes (the execution scope) and the categories of memory it applies to (the storage classes), because GPU memory subsystems are physically partitioned along both dimensions.
+
+In the Vulkan Memory Model, barriers appear as SPIR-V instructions — `OpMemoryBarrier` for memory-ordering only, and `OpControlBarrier` for combined execution and memory ordering. Each carries a memory scope operand and a memory semantics bitmask specifying whether the operation acts as an acquire, a release, or both, and which storage classes (StorageBuffer, Workgroup, Image, and so on) it covers. Barriers with narrower scopes — Workgroup or Subgroup — are less expensive than Device-scope barriers because they require less hardware coordination.
+
+Barriers map directly to hardware instructions: on AMD RDNA, `s_waitcnt` drains in-flight vector memory operations from the execution pipeline, while `buffer_gl0_inv` and `buffer_gl1_inv` invalidate the L0 and L1 vector caches respectively. Understanding what hardware instructions a barrier compiles to explains why redundant barriers impose measurable overhead and why incorrectly-scoped barriers are a common source of correctness bugs that do not reproduce under serialized test conditions.
+
+### 1.3 What is an Execution Scope?
+
+An execution scope is the set of shader invocations that participate in a given synchronization operation. The Vulkan Memory Model defines five scopes in ascending order of breadth: Invocation, Subgroup, Workgroup, QueueFamily, and Device. The scope of a synchronization operation determines both its correctness semantics and its performance cost: writes made visible within a Workgroup scope are not guaranteed to be visible to invocations in other workgroups, while a Device-scope operation must coordinate across every compute unit on the GPU simultaneously.
+
+The scope concept has no direct equivalent in the C++ memory model, which treats all threads as members of a single global synchronization domain. On GPU hardware this distinction is essential because each compute unit (the AMD term) or streaming multiprocessor (the NVIDIA term) maintains its own L1 cache, and propagating writes between units requires explicit cache writeback and invalidation. Confining synchronization to a Subgroup — a single wavefront of 32 or 64 lanes executing in lockstep under one program counter — requires no cache traffic at all on current hardware, since all lanes in a wavefront share the same register file. Scopes therefore allow applications to pay only for the degree of coherency the algorithm actually requires.
+
+The QueueFamily scope, which requires the `vulkanMemoryModelDeviceScope` feature to be enabled, extends visibility across all invocations submitted within a single Vulkan queue family. It is necessary when communicating between successive dispatch or draw calls within the same queue using pipeline barriers, rather than relying on workgroup or subgroup synchronization within a single dispatch.
 
 ---
 

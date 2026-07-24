@@ -15,6 +15,9 @@
   - [1.1 Multi-Queue GPU Architectures](#11-multi-queue-gpu-architectures)
   - [1.2 DMA-BUF as the Universal Buffer Abstraction](#12-dma-buf-as-the-universal-buffer-abstraction)
   - [1.3 The Cross-Process Boundary](#13-the-cross-process-boundary)
+  - [1.4 What is a GPU Fence?](#14-what-is-a-gpu-fence)
+  - [1.5 What is Explicit GPU Synchronization?](#15-what-is-explicit-gpu-synchronization)
+  - [1.6 What is drm_syncobj?](#16-what-is-drm_syncobj)
 - [Section 2: DMA-BUF Implicit Fences — The Legacy Model](#section-2-dma-buf-implicit-fences--the-legacy-model)
   - [2.1 struct dma_fence](#21-struct-dma_fence)
   - [2.2 struct dma_resv — The Implicit Fence Container](#22-struct-dma_resv--the-implicit-fence-container)
@@ -167,6 +170,30 @@ In a **Wayland** compositor pipeline, the rendering process and the compositing 
 This cross-process constraint is why the kernel synchronization primitive must be representable as a file descriptor: fd passing via Unix socket is the only general-purpose mechanism for sharing a kernel object reference across a process boundary without a shared parent process. A **DRM** handle integer is only meaningful within the **DRM** file context that created it; a **`drm_syncobj`** fd is a reference-counted kernel object reference that survives **`dup()`**, **`fork()`**, and **`sendmsg()`** across process boundaries, just like any file descriptor.
 
 The Linux graphics stack has evolved two distinct models for solving this: **implicit synchronization**, in which fences are attached invisibly to buffer objects and managed by the kernel without application involvement, and **explicit synchronization**, in which applications and drivers exchange fence file descriptors directly and wait on them deliberately. As of 2024–2026, the stack is in the middle of a migration from implicit to explicit, and understanding both models — their internal structures, their failure modes, and the conversion path between them — is essential for anyone writing or debugging code at any layer of the display pipeline.
+
+### 1.4 What is a GPU Fence?
+
+A GPU fence is a kernel-level synchronization primitive that represents the completion state of an asynchronous GPU operation. In the Linux DRM subsystem, the fundamental fence type is `struct dma_fence` (defined in `include/linux/dma-fence.h`), a one-shot, reference-counted kernel object that transitions from a pending state to a signalled state exactly once — when the GPU hardware reports that a corresponding command buffer or DMA transfer has finished executing. Fences are created by GPU drivers when work is submitted to a hardware engine, and signalled from interrupt handlers when that engine reports completion.
+
+Unlike a mutex or semaphore, a `dma_fence` cannot be reset or reused: once signalled it remains permanently in that state until all references are dropped and the object is freed. Consumers can wait for a fence in two ways. CPU-side waiting blocks a kernel thread via `dma_fence_wait()` until the fence signals. GPU-side waiting, by contrast, programs the GPU hardware itself to block execution of subsequent command buffers until a fence completes, avoiding any CPU involvement in the handoff. The latter is essential for low-latency pipelining between GPU engines and between the GPU and the display controller, because it avoids a round-trip through the kernel scheduler.
+
+Fences cross subsystem and process boundaries through `sync_file` — a file descriptor that wraps a `dma_fence` (or a merged set of fences, via `sync_merge()`). A `sync_file` can be passed via `SCM_RIGHTS` over a Unix domain socket, polled with `poll()` or `epoll()` to detect completion from an event loop, or handed directly to a KMS atomic commit as the `IN_FENCE_FD` property. This fd-based representation is what makes fences useful at the Wayland protocol layer and in cross-driver synchronization scenarios described throughout this chapter.
+
+### 1.5 What is Explicit GPU Synchronization?
+
+Explicit GPU synchronization is a model in which applications and drivers exchange fence file descriptors directly and declare synchronization dependencies by name, rather than relying on the kernel to infer ordering constraints from buffer access patterns. The contrasting model is implicit synchronization, in which fences are attached invisibly to buffer objects via `struct dma_resv` and the kernel attempts to track ordering automatically.
+
+In the implicit model, when a Vulkan driver finishes writing a buffer and a KMS atomic commit subsequently reads it, the kernel is supposed to detect the write-before-read dependency and insert an appropriate wait using the fences embedded in the buffer's `dma_resv`. In practice this approach has two fundamental weaknesses. First, it ties fence tracking to buffer identity rather than to the actual operation, which breaks down when a buffer transitions between multiple producers on different GPU engines or passes through multiple processes. Second, drivers that do not participate in the `dma_resv` protocol — historically NVIDIA's proprietary driver — attach no fences at all, so consumers assume the buffer is ready when it may not be, producing corruption and flickering.
+
+Explicit synchronization relocates fence exchange from the kernel's internal bookkeeping into the application or protocol layer. The Vulkan API exposes this through timeline semaphores (`VK_SEMAPHORE_TYPE_TIMELINE`). The Wayland compositor protocol exposes it through `wp_linux_drm_syncobj_v1`. KMS exposes it through the `IN_FENCE_FD` and `OUT_FENCE_PTR` atomic commit properties. All three ultimately rely on the same kernel primitive — `drm_syncobj` — to hold and transfer fence state across process and API boundaries. The ongoing migration from implicit to explicit synchronization across the Linux graphics stack is the central narrative arc of this chapter.
+
+### 1.6 What is drm_syncobj?
+
+`drm_syncobj` is the DRM subsystem's container for an explicit synchronization handle. Unlike a raw `dma_fence`, which is one-shot and inseparably tied to a single GPU operation, a `drm_syncobj` is a named, mutable container that can hold zero or one `dma_fence` at any point in time and can be updated to point to a new fence as work progresses frame by frame. The implementation lives in `drivers/gpu/drm/drm_syncobj.c`; userspace interacts with it through a family of ioctls on the DRM device node — `DRM_IOCTL_SYNCOBJ_CREATE`, `DRM_IOCTL_SYNCOBJ_DESTROY`, `DRM_IOCTL_SYNCOBJ_WAIT`, `DRM_IOCTL_SYNCOBJ_SIGNAL`, and their timeline variants.
+
+`drm_syncobj` comes in two variants. A binary `drm_syncobj` holds a single fence and must be explicitly reset via `DRM_IOCTL_SYNCOBJ_RESET` before it can be reused for the next frame. A timeline `drm_syncobj` carries a monotonically increasing 64-bit sequence counter: each submitted command buffer signals a named point on the timeline, and consumers declare which point they need to wait for before proceeding. The timeline variant enables wait-before-signal submission — a consumer can insert a dependency on timeline point N before the producer has even submitted the work that will signal N, because the kernel defers the wait until that point is eventually populated.
+
+`drm_syncobj` handles are process-local integer identifiers scoped to a DRM file context, analogous to GEM handles. They can be exported as file descriptors via `DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD` for cross-process sharing, and imported back via `DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE`. The file-descriptor form is what the `wp_linux_drm_syncobj_v1` Wayland protocol, Vulkan external semaphore export (`VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT`), and EGL fence sharing all use to move synchronization state across process boundaries without requiring a shared parent process.
 
 ---
 

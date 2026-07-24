@@ -96,6 +96,30 @@ graph TD
     IrisScreen --> IrisWinsys
 ```
 
+### 1.1 What is Gallium3D?
+
+Gallium3D is the hardware-abstraction layer inside Mesa that separates rendering API implementations — called state trackers — from hardware-specific driver code — called pipe drivers. It defines three central C interfaces that every pipe driver must implement. `pipe_screen` represents the GPU device and exposes capability queries through `get_param()` and `get_shader_param()`. `pipe_context` represents a command-submission context and carries all draw-call and state-mutation operations through function pointers such as `draw_vbo`, `set_blend_state`, and `transfer_map`. `pipe_resource` represents GPU-resident memory whether it is used as a vertex buffer, texture, or shader storage buffer.
+
+State trackers for OpenGL, OpenGL ES, and OpenCL (through the rusticl frontend) operate exclusively through these interfaces and never invoke hardware-specific code directly. This separation means a single pipe driver simultaneously serves OpenGL 4.6, OpenGL ES 3.2, and OpenCL workloads on the same physical GPU. The Zink translation layer extends the model further by implementing `pipe_context` operations as Vulkan API calls, allowing any sufficiently capable Vulkan driver to serve as a pipe driver backend for OpenGL.
+
+On Linux, the Mesa driver loader (Chapter 12) discovers and `dlopen()`s the appropriate pipe driver `.so` for the installed GPU, wires it to the requested API state tracker, and exposes the resulting context to applications through EGL or GLX. The Gallium3D interface contract is defined under `src/gallium/include/pipe/` in the Mesa source tree, with `p_context.h`, `p_screen.h`, and `p_state.h` specifying the complete set of function pointers and data structures that a conforming pipe driver must populate.
+
+### 1.2 What is OpenGL and Why Does It Still Matter on Linux?
+
+OpenGL is a cross-platform, vendor-neutral 2D/3D rendering API standardised by the Khronos Group. The current specification is OpenGL 4.6, published in 2017, which added direct-state-access objects, SPIR-V shader ingestion via `GL_ARB_gl_spirv`, and pipeline statistics queries. On Linux, OpenGL contexts reach applications via GLX (the X11 binding, defined in `src/glx/`) or EGL (the display-server-agnostic binding shared with OpenGL ES and Vulkan).
+
+Despite Vulkan's emergence as the preferred low-level API for new graphics software, OpenGL remains the dominant rendering interface for a large installed base: the Steam Linux back catalogue, Wine's D3D8 and D3D9 translation paths, scientific and engineering applications compiled against legacy GL headers, and the Glamor X11 acceleration layer used inside XWayland. Maintaining OpenGL 4.6 conformance on current GPU hardware therefore continues to require active driver work rather than passive maintenance.
+
+The "compatibility" framing in this chapter covers two overlapping concerns. The first is the continued optimisation of native Gallium pipe drivers — radeonsi for AMD and iris for Intel — that implement the full OpenGL 4.6 feature set directly against each GPU's command stream. The second is the use of Zink, Mesa's Vulkan-backed OpenGL implementation, to extend OpenGL coverage to GPU families whose native Gallium driver is absent or incomplete, allowing the same OpenGL state tracker to run over any conformant Vulkan implementation without requiring a separate hardware-specific pipe driver.
+
+### 1.3 What is Zink?
+
+Zink is a Mesa Gallium pipe driver whose `pipe_context` operations are implemented as Vulkan API calls rather than as direct hardware register writes. It sits between the standard Mesa OpenGL state tracker and an existing Vulkan driver — such as RADV for AMD GPUs or ANV for Intel GPUs — translating the Gallium interface into Vulkan objects and command buffer recording. GLSL shaders are compiled to NIR by the Mesa state tracker, then translated to SPIR-V by `nir_to_spirv()` inside Zink before being submitted to `vkCreateShaderModule`.
+
+The practical significance of Zink is that it decouples OpenGL support from hardware-specific implementation work. GPU families that have invested in a conformant Vulkan driver but lack a native Gallium pipe driver — including Mali (Panfrost/Panthor), Adreno (Turnip), and various embedded SoCs — can expose OpenGL ES 3.2 or OpenGL 4.6 through Zink without writing a separate OpenGL code path. Zink achieved OpenGL 4.6 conformance with RADV as its backend in Mesa 23.1 and with ANV in Mesa 24.0.
+
+Zink also serves as the default OpenGL implementation on platforms where no native Gallium driver exists, and it is selectable at runtime on platforms that have both by setting `GALLIUM_DRIVER=zink`. Its performance ceiling in draw-call-limited workloads is lower than a native pipe driver because each Gallium draw call incurs Vulkan API overhead, but for compute-heavy or throughput-bound workloads the gap is smaller. The Zink source lives under `src/gallium/drivers/zink/` in the Mesa repository.
+
 ---
 
 ## 2. radeonsi: AMD OpenGL/ES

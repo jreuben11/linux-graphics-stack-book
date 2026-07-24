@@ -7,6 +7,9 @@ This chapter targets kernel GPU driver developers, system integrators, and secur
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is GPU Firmware?](#11-what-is-gpu-firmware)
+   - [1.2 What is the linux-firmware Repository?](#12-what-is-the-linux-firmware-repository)
+   - [1.3 What are GPU Embedded Microcontrollers?](#13-what-are-gpu-embedded-microcontrollers)
 2. [The `request_firmware` API](#the-request_firmware-api)
 3. [AMD GPU Firmware Ecosystem](#amd-gpu-firmware-ecosystem)
 4. [Intel GPU Firmware: GuC, HuC, DMC](#intel-gpu-firmware-guc-huc-dmc)
@@ -32,6 +35,30 @@ Modern discrete and integrated GPUs are not mere silicon state machines driven e
 The kernel driver cannot initialise the GPU hardware without these blobs. They are not built into the kernel image (with rare exceptions) but are instead distributed separately via the `linux-firmware` repository at [git.kernel.org](https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git). On a running system they reside under `/lib/firmware/`. This separation exists for licence reasons: hardware vendors retain proprietary rights over the firmware binary and permit binary-only redistribution. Source code is generally not released.
 
 This chapter covers the full lifecycle of GPU firmware: why it exists, how each major vendor structures its firmware ecosystem, how the kernel discovers and loads blobs at runtime, how updates are distributed and applied, and what security properties (and vulnerabilities) the firmware subsystem carries.
+
+### 1.1 What is GPU Firmware?
+
+GPU firmware refers to the collection of binary executable images that the kernel GPU driver loads into the GPU hardware at device initialisation time. Unlike traditional device drivers that run entirely on the host CPU, modern GPUs contain several independent embedded microprocessors within the GPU die itself. Each of these processors requires its own firmware blob to become operational. Without the firmware, the GPU's command scheduler, power management controller, video decode engines, and display link hardware remain inert — the kernel driver cannot program them through register writes alone.
+
+GPU firmware blobs are proprietary binaries released by the hardware vendor under binary-redistribution-only licences. The source code is not publicly available. The firmware encapsulates hardware programming sequences, anti-reverse-engineering protections, and cryptographic keys that vendors do not release. The kernel driver treats each blob as an opaque byte sequence: it allocates GPU-accessible memory, copies the blob into it, and then notifies the embedded microcontroller to begin execution at a known entry point.
+
+The term "firmware" here is used in the strict embedded-systems sense — code that runs on dedicated processor silicon embedded within the device, not on the host CPU. Each GPU generation from AMD, Intel, and NVIDIA ships a distinct set of firmware images that must match the kernel driver version in use. Mismatched firmware causes GPU initialisation failure and is a common source of boot-time errors on systems with a recently upgraded kernel or an outdated linux-firmware package.
+
+### 1.2 What is the linux-firmware Repository?
+
+The linux-firmware repository, hosted at [git.kernel.org](https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git), is the canonical upstream source for firmware blobs used by Linux kernel drivers. It is a separate project from the Linux kernel itself and follows its own release cycle. Linux distributions package its contents as the `linux-firmware` package, which installs binary blobs into `/lib/firmware/` on the running system.
+
+GPU firmware represents by far the largest portion of the linux-firmware repository. AMD's AMDGPU firmware alone spans dozens of subdirectories, one per GPU generation, each containing thirty to fifty individual binary files covering every programmable engine on the die. Intel i915 firmware, NVIDIA GSP firmware, and firmware for older GPUs such as Nouveau's Kepler and Maxwell generations are also distributed here. Each blob is accompanied by a `WHENCE` file at the repository root that records the licence terms under which each vendor has permitted binary redistribution, along with SHA-256 checksums that distributions use to detect corruption or substitution.
+
+The kernel's firmware loading infrastructure (`request_firmware()`) searches `/lib/firmware/` by default, making the linux-firmware package the primary runtime dependency for GPU driver operation. Systems that do not install linux-firmware, or that install an outdated version, will see GPU initialisation failures logged to the kernel ring buffer. The repository also has its own versioning and tagging scheme, and distributions must synchronise updates to linux-firmware with kernel upgrades when new GPU hardware support requires new blobs.
+
+### 1.3 What are GPU Embedded Microcontrollers?
+
+Each modern GPU die integrates several independent programmable processor cores separate from the shader execution units. These embedded microcontrollers are small RISC processors — typically ARM Cortex-M derivatives, RISC-V cores, or vendor-specific architectures — running at low clock frequencies relative to the main GPU clock. They handle tasks that require tight coordination with hardware state machines or that must respond within microseconds to hardware events, latency windows that would be impractical to meet with a host CPU interrupt handler.
+
+AMD GPUs incorporate the Platform Security Processor (PSP), the System Management Unit (SMU), the Register Load Controller (RLC), the Micro Engine Compute (MEC), and the Display Micro-Controller Unit B (DMCUB), each implemented as a separate microcontroller with its own firmware image. Intel Xe and Gen12 GPUs contain the Graphics micro Controller (GuC) for workload scheduling, the HuC for video decode post-processing, and the Display Micro Controller (DMC) for display power gating. NVIDIA GPUs from the Turing generation onwards run the GPU System Processor (GSP) — a RISC-V core that executes a nearly complete copy of the GPU resource manager previously handled by the host-side driver.
+
+Each microcontroller runs from a dedicated local instruction memory loaded by the kernel driver from the firmware blob. The host driver communicates with these processors through shared VRAM ring buffers, doorbells (MMIO-mapped registers that trigger hardware interrupts on the microcontroller side), and mailboxes. Understanding this hardware model is prerequisite to interpreting the firmware loading sequences described in the AMD, Intel, and NVIDIA sections of this chapter.
 
 ---
 

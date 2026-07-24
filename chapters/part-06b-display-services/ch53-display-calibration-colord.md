@@ -19,6 +19,9 @@ It is relevant to graphics application developers who need consistent colour ren
 ## Table of Contents
 
 1. [The Calibration Problem](#1-the-calibration-problem)
+   - [1.1 What is Display Calibration?](#11-what-is-display-calibration)
+   - [1.2 What is an ICC Profile?](#12-what-is-an-icc-profile)
+   - [1.3 What is colord?](#13-what-is-colord)
 2. [ICC Profile Format](#2-icc-profile-format)
 3. [The colord Daemon](#3-the-colord-daemon)
 4. [VCGT: Video Card Gamma Table](#4-vcgt-video-card-gamma-table)
@@ -75,6 +78,30 @@ Calibration tools load the **VCGT** tag from the active **ICC** profile into **G
 **Night light and blue-light reduction.** Chapter 8 examines how tools such as **gammastep**, **wlsunset**, and **redshift** shift colour temperature after sunset by writing a warm gamma **LUT** via the **wlr-gamma-control-unstable-v1** protocol (**zwlr_gamma_control_v1.set_gamma()**) on **wlroots**-based compositors (**Sway**, **Hyprland**). On **GNOME**, night light is handled inside **gsd-color**, which composes the **VCGT** tone curves with a blackbody temperature ramp (**cd_color_get_blackbody_rgb_full()**) in a single **DRM** atomic write, avoiding the last-writer-wins conflict that affects wlroots compositors.
 
 **HDR calibration.** Chapter 9 addresses the distinct challenges of **HDR** display characterisation: **MaxCLL** and **MaxFALL** metadata (**CTA-861.3** / **SMPTE ST.2086**), **BT.2020** and **Display P3** colour primaries, the **ST.2084 PQ** (Perceptual Quantizer) **EOTF**, and **HLG**. It covers the current gaps in **ICC v4** and **colord** for **HDR** (no **PQ EOTF** support; no built-in **HDR** profiling workflow), the **iccMAX** (version 5) format additions, and how **KWin Plasma 6** reads **HDR** capabilities from the **EDID** HDR Static Metadata Data Block via the **HDR_OUTPUT_METADATA** **DRM** connector property and the **hdr_output_metadata** struct (defined in **include/uapi/linux/hdmi.h**), using **wp_color_management_v1** named transfer functions (**WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ**, **WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_HLG**) as the more mature **HDR** integration path on **Wayland**.
+
+### 1.1 What is Display Calibration?
+
+Display calibration is the process of adjusting a monitor's hardware and software response to reach a defined, reproducible colour state. Every LCD or OLED panel leaves the factory with measurable deviations from colour standards: white-point drift away from the target D65 illuminant, gamma curve non-linearity, and per-channel imbalances in colour primaries. Without correction, two panels of the same model can produce visibly different colours for identical RGB input values.
+
+The calibration workflow has two distinct phases. The first phase — calibration proper — adjusts the display toward a target state, typically a D65 white point, 2.2 gamma, and a luminance between 80 and 120 cd/m². These corrections are encoded as per-channel 1D lookup tables loaded into the GPU's hardware gamma ramp via the KMS `GAMMA_LUT` CRTC property. The second phase — profiling or characterisation — measures the calibrated display's remaining deviation from a standard colour space such as sRGB or DCI-P3 and encodes those deviations in an ICC profile file. Colour-aware applications then use this profile to transform pixel colours in software before handing them to the compositor.
+
+On Linux, the full calibration pipeline spans hardware measurement tools (colorimeters and spectrophotometers), command-line profiling software (ArgyllCMS), a system daemon (colord) that stores and dispatches profiles, and kernel-level GPU programming through the DRM/KMS colour pipeline described in Chapter 3.
+
+### 1.2 What is an ICC Profile?
+
+An ICC profile is a binary file that characterises the colour behaviour of an input, display, or output device relative to a device-independent reference — the ICC Profile Connection Space (PCS), defined as CIE XYZ or CIELAB at a D50 illuminant. The format is specified by the International Colour Consortium in ICC.1:2022 and consists of a 128-byte header, a tag table, and tagged data elements that encode the colour transforms.
+
+For display devices, two profile types are common. The matrix-plus-TRC model stores a per-channel Tone Reproduction Curve (mapping device values to linear light) and a 3×3 colourimetry matrix (mapping linearised RGB to PCS XYZ). For more accurate characterisation, multidimensional LUT profiles use `A2B0` and `B2A0` tags encoding full 3D lookup tables. ICC profiles also carry a `vcgt` private tag (signature `0x76636774`) holding per-channel gamma correction curves that are loaded into the GPU's hardware gamma ramp before any software colour transform is applied.
+
+The ICC profile is the lingua franca of colour management on Linux. The colord daemon stores and retrieves profiles; compositors receive profiles via the `wp_color_management_v1` Wayland protocol; and colour-aware applications use the profile data to convert between device colour spaces and standard working spaces. The binary structure of ICC profiles is covered in detail in Section 2.
+
+### 1.3 What is colord?
+
+colord is a D-Bus system service that provides a persistent, system-wide registry of colour devices and their associated ICC profiles. It runs under the well-known name `org.freedesktop.ColorManager` on the system bus and exposes a three-tier object model of Manager, Device, and Profile objects. Two SQLite databases under `/var/lib/colord/` store device-to-profile associations and profile metadata across reboots and user sessions.
+
+colord sits at the centre of the Linux colour management architecture. Calibration tools install ICC profiles via the colord D-Bus API. The daemon matches profiles to display outputs using EDID-derived device identifiers and signals the active compositor and session agent when a profile changes. On GNOME, the `gsd-color` plugin in `gnome-settings-daemon` responds to these signals by extracting the VCGT tag and programming the KMS `GAMMA_LUT` property, then forwarding the ICC profile to Mutter via the `wp_color_management_v1` Wayland protocol. On KDE Plasma, the `colord-kde` bridge connects KScreen's display enumeration to colord's device registry and drives KWin's colour management pipeline.
+
+The `libcolord` C library provides a GObject-based API (`CdClient`, `CdDevice`, `CdProfile`) for applications and compositors to interact with the daemon without parsing D-Bus messages directly. The full colord architecture is covered in Section 3.
 
 ---
 

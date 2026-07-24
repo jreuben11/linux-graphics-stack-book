@@ -8,6 +8,8 @@
 
 - [Overview](#overview)
 - [1. GEM: Object Lifecycle and the Handle Model](#1-gem-object-lifecycle-and-the-handle-model)
+  - [1.1 What is GEM?](#11-what-is-gem)
+  - [1.2 What is a GPU Buffer Object?](#12-what-is-a-gpu-buffer-object)
 - [2. TTM: Translation Table Manager](#2-ttm-translation-table-manager)
 - [3. DMA-BUF: The Cross-Driver Buffer Sharing Framework](#3-dma-buf-the-cross-driver-buffer-sharing-framework)
 - [4. Implicit vs. Explicit Fencing on DMA-BUF](#4-implicit-vs-explicit-fencing-on-dma-buf)
@@ -216,6 +218,20 @@ graph TD
     NouveauBO -- "embeds (base)" --> GemObj
     ShmemObj -- "embeds (base)" --> GemObj
 ```
+
+### 1.1 What is GEM?
+
+GEM, the Graphics Execution Manager, is the kernel-side framework within the Linux Direct Rendering Manager (DRM) subsystem that provides handle-based GPU memory management. Introduced with the i915 driver in Linux 2.6.28, GEM addresses a fundamental problem in the pre-DRM era: GPU drivers exposed raw physical addresses to userspace, offering no reference counting, no access control, and no standardised sharing mechanism between processes or drivers.
+
+At its core, GEM defines `struct drm_gem_object` as the common base type for GPU buffer objects across all DRM drivers. The framework provides three interrelated guarantees. First, kernel-enforced reference counting via `kref` ensures that a buffer is not freed while GPU work or kernel subsystems still reference it. Second, handles are opaque `uint32_t` integers scoped to a single open file descriptor on the DRM device node, so one process cannot access another process's buffers by guessing integers. Third, the `drm_gem_object_funcs` vtable decouples the generic GEM infrastructure from driver-specific behaviour, allowing every DRM driver — from the embedded Panfrost to the discrete amdgpu — to participate in the same handle lifecycle without sharing code.
+
+GEM is the foundation on which DMA-BUF sharing (Section 3), PRIME multi-GPU export (Section 5), and GBM userspace allocation (Section 6) are all built. Understanding the handle model described in this section is a prerequisite for every other section in this chapter. The kernel source for the GEM core lives in `drivers/gpu/drm/drm_gem.c` and `include/drm/drm_gem.h` in the mainline tree.
+
+### 1.2 What is a GPU Buffer Object?
+
+A GPU buffer object (BO) is the kernel's representation of a region of memory that a GPU can access. Unlike a CPU memory allocation, a GPU buffer object carries additional metadata that reflects the hardware's requirements: which memory domain the buffer currently occupies (video RAM, GART-mapped system RAM, or CPU system RAM), the physical or I/O virtual address range the GPU's memory management unit sees, alignment and size constraints imposed by the hardware, synchronisation state tracking in-flight GPU operations against the buffer, and a reference count that accounts for both userspace handles and kernel-side users such as command submission infrastructure.
+
+In the DRM subsystem, every GPU buffer object is represented by a `struct drm_gem_object` or a driver-specific structure that embeds it. The distinction between handle count and reference count is important: a buffer can have zero open userspace handles (no process holds a handle to it) while still having a non-zero reference count because a submitted GPU command has not yet completed and the driver holds the buffer alive until the GPU finishes. The `drm_gem_object_funcs` vtable defines how the kernel allocates, frees, pins, maps, and evicts the buffer, with each driver providing its own implementations tuned to its memory architecture. This abstraction means the same `DRM_IOCTL_GEM_CLOSE` ioctl works identically across AMD, Intel, and ARM Mali drivers, even though the underlying memory operations differ completely. Sections 1.3–1.6 below detail the concrete implementations the DRM subsystem provides: the shmem helper for demand-pageable allocations, the CMA/DMA helpers for contiguous hardware requirements, and the per-driver embedding pattern used by amdgpu, i915, and nouveau.
 
 ---
 

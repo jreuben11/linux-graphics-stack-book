@@ -51,6 +51,9 @@ The chapter deliberately avoids GPU algorithm design and parallel programming th
 ## Table of Contents
 
 1. [The OpenCL Landscape on Linux: ICD Discovery and Implementation Survey](#1-the-opencl-landscape-on-linux-icd-discovery-and-implementation-survey)
+   - [1.1 What is GPU Compute?](#11-what-is-gpu-compute)
+   - [1.2 What is OpenCL?](#12-what-is-opencl)
+   - [1.3 What is Vulkan Compute?](#13-what-is-vulkan-compute)
 2. [rusticl: OpenCL on Mesa's Gallium Infrastructure](#2-rusticl-opencl-on-mesas-gallium-infrastructure)
 3. [ROCm: AMD's Compute Stack](#3-rocm-amds-compute-stack)
 4. [Intel Level Zero, oneAPI, and the Intel Compute Runtime](#4-intel-level-zero-oneapi-and-the-intel-compute-runtime)
@@ -152,6 +155,24 @@ int main(void) {
 **Permissions** are the most common source of failure. All implementations ultimately open a DRM render node (`/dev/dri/renderD128` or similar). On most distributions the render node is owned by the `render` or `video` group, and the user must be a member. The command `stat /dev/dri/renderD128` shows the owning group; `groups $(whoami)` shows the current user's memberships. Rootless containers require the render node to be passed in explicitly. A process that lacks render-node access will receive `CL_DEVICE_NOT_FOUND` at `clGetPlatformIDs` or silently enumerate zero devices.
 
 The `CL_PLATFORM_EXTENSIONS` string signals which optional CL 3.0 features an implementation supports. Key extensions to check in compute workloads: `cl_khr_fp64` (double precision), `cl_khr_int64_base_atomics`, `cl_khr_subgroups`, and `cl_khr_external_memory_dma_buf` (cross-API buffer sharing, discussed in Section 6).
+
+### 1.1 What is GPU Compute?
+
+GPU compute is the practice of executing general-purpose, non-graphical workloads on a graphics processing unit. While a GPU was originally designed to rasterize triangles and shade pixels, its internal architecture — thousands of small arithmetic units executing the same instruction across different data simultaneously — is equally suited to mathematical workloads that exhibit data parallelism: matrix multiplication, image convolution, cryptographic hashing, physics simulation, and machine-learning inference or training.
+
+On Linux, GPU compute is not a single API but a family of APIs layered on the Direct Rendering Manager (DRM) kernel subsystem. Every compute workload ultimately reaches the hardware through a DRM render node (`/dev/dri/renderD128` and similar), which provides an unprivileged file descriptor for submitting command buffers to the GPU without access to the display scanout engine. The DRM infrastructure handles memory management through the Graphics Execution Manager (GEM) and, on recent kernels, exposes Heterogeneous Memory Management (HMM) for fine-grained shared virtual addressing between CPU and GPU. Above the kernel, userspace runtimes — OpenCL, Vulkan compute, CUDA, ROCm — implement different programming models on this common foundation. The choice between them depends on hardware vendor, portability requirements, ecosystem integration (primarily machine-learning frameworks), and the degree of control needed over memory placement and synchronisation. This chapter maps each runtime's path from userspace API call down to kernel command submission.
+
+### 1.2 What is OpenCL?
+
+OpenCL (Open Computing Language) is a cross-vendor, open standard for heterogeneous parallel computing maintained by the Khronos Group. It defines both a host API written in C and a kernel language (OpenCL C, a dialect of C99 with vector types and address-space qualifiers) that together allow a single application to dispatch work across CPUs, GPUs, DSPs, and FPGAs from any vendor. The specification describes a platform model (one or more devices beneath a platform), an execution model (NDRange kernels dispatched with a global work size and an optional local work-group size), and a memory model (global, local, constant, and private address spaces mapping onto different GPU memory hierarchies).
+
+On Linux, OpenCL is delivered through the Installable Client Driver (ICD) mechanism, which means the application links against a vendor-neutral `libOpenCL.so` loader and the loader dynamically discovers and multiplexes all installed implementations at runtime. This allows an application compiled against the OpenCL 3.0 headers to run without recompilation on a Mesa rusticl backend for AMD or Intel integrated GPUs, an Intel NEO runtime for Intel discrete GPUs, the ROCm OCL stack for AMD discrete GPUs, or the NVIDIA proprietary runtime — as long as the required device enumeration and feature queries succeed. OpenCL 3.0, the current specification, restructures the version numbering so that all previously optional features are now individually queryable, replacing the OpenCL 2.x optional-feature bundle with per-extension capability bits discoverable at runtime via `CL_PLATFORM_EXTENSIONS`.
+
+### 1.3 What is Vulkan Compute?
+
+Vulkan Compute refers to the general-purpose compute capability built into the Vulkan 1.0 and later graphics API. Unlike OpenCL, which was designed from the start as a compute-only API, Vulkan presents compute as a first-class execution mode alongside rasterization and ray tracing, unified within the same command buffer, synchronisation primitive, and memory allocation system that graphics workloads use. A compute workload in Vulkan is a GLSL compute shader or its HLSL or SPIR-V equivalent, compiled into a `VkComputePipeline`, dispatched with `vkCmdDispatch`, and coordinated with graphics or other compute passes using pipeline barriers.
+
+The key advantage over OpenCL for Linux workloads is breadth of driver coverage: any hardware that exposes a `VkQueueFamilyProperties` entry with `VK_QUEUE_COMPUTE_BIT` supports Vulkan compute, and that includes every major Mesa Vulkan driver (ANV for Intel, RADV for AMD, NVK for NVIDIA, Turnip for Qualcomm) as well as closed-source alternatives. Vulkan compute therefore reaches hardware that either lacks a separate compute runtime or whose compute runtime is unavailable in a given environment such as a container, an embedded system, or an older distribution. Descriptor sets carry buffer and image bindings; push constants supply small per-dispatch parameters without descriptor overhead; subgroup intrinsics expose warp-level parallelism portably across vendors. For inference workloads, Vulkan compute has become a common backend for engines such as llama.cpp and GGML because it provides a single code path that runs on nearly any GPU under Linux without requiring CUDA or ROCm to be installed.
 
 ---
 

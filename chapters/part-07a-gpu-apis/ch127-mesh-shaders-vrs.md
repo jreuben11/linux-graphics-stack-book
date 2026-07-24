@@ -19,6 +19,8 @@ It examines:
 ## Table of Contents
 
 1. [Introduction](#1-introduction)
+   - [1.1 What is a Mesh Shader?](#11-what-is-a-mesh-shader)
+   - [1.2 What is Variable Rate Shading (VRS)?](#12-what-is-variable-rate-shading-vrs)
 2. [The Traditional Vertex Pipeline and Its Limits](#2-the-traditional-vertex-pipeline-and-its-limits)
 3. [Mesh Shaders: Task and Mesh Stages](#3-mesh-shaders-task-and-mesh-stages)
 4. [Mesh Shader Programming](#4-mesh-shader-programming)
@@ -43,6 +45,22 @@ Two Vulkan extensions attack these problems from opposite directions:
 - **`VK_KHR_fragment_shading_rate`** ([spec](https://registry.khronos.org/vulkan/specs/latest/man/html/VkPhysicalDeviceFragmentShadingRateFeaturesKHR.html)) lets the application reduce the frequency of fragment shader invocations in regions of the framebuffer where full resolution is unnecessary. A single control image can make the GPU shade 1 sample per 4×4-pixel tile in featureless regions while keeping 1:1 resolution on foreground geometry — providing a performance multiplier with minimal perceptual impact.
 
 Both extensions are fully supported on RDNA2+ via RADV, Gen12.5+/Xe via ANV, and on NVIDIA Ampere+ via both the proprietary driver and (as of 2025–2026) the open-source NVK driver. This chapter covers their design, their API contracts, their hardware execution models, and how to combine them in production.
+
+### 1.1 What is a Mesh Shader?
+
+A mesh shader is a programmable GPU pipeline stage that replaces the traditional fixed Input Assembler → Vertex Shader → Geometry/Tessellation chain with a pair of compute-like stages: an optional task shader and a mandatory mesh shader. Exposed in Vulkan via `VK_EXT_mesh_shader` (ratified in Vulkan 1.3.226), the extension lets the GPU generate geometry entirely on-chip without routing vertex and index data through the fixed Input Assembler.
+
+The task shader runs one workgroup per coarse work unit — typically a cluster of geometry — and calls `EmitMeshTasksEXT` to dispatch zero or more mesh shader workgroups, implementing per-cluster culling and level-of-detail selection entirely on the GPU. The mesh shader workgroup then writes vertex positions, attributes, and triangle index lists directly into built-in output arrays (`gl_MeshVerticesEXT`, `gl_PrimitiveTriangleIndicesEXT`), declaring its output count dynamically via `SetMeshOutputsEXT`. The rasterizer consumes the resulting primitive stream with no fixed-function fetch stage in between.
+
+On Linux, `VK_EXT_mesh_shader` is implemented in RADV for AMD RDNA2 and newer hardware, in ANV for Intel Xe (Gen12.5+), and in NVK for NVIDIA Ampere and later. This chapter covers the API contracts, hardware execution model, and driver implementation details for mesh shaders, and in §9 shows how to combine them with variable rate shading for Nanite-scale GPU-driven rendering.
+
+### 1.2 What is Variable Rate Shading (VRS)?
+
+Variable Rate Shading (VRS) is a Vulkan capability that decouples the frequency of fragment shader invocations from the pixel resolution of the framebuffer. Exposed via `VK_KHR_fragment_shading_rate`, it allows the application or the GPU to designate rectangular tiles of the framebuffer — from 1×1 up to 4×4 pixels depending on hardware — as a single shading unit: one fragment shader invocation covers the entire tile and its output is broadcast to all pixels within it.
+
+The motivation is perceptual. Large areas of a typical frame — a clear sky, a distant matte surface, a peripheral-vision region in a VR headset — produce fragments that are visually indistinguishable whether shaded at full resolution or at a reduced rate. Cutting the invocation count in these regions lowers fragment shader execution time without noticeable quality loss.
+
+The extension offers three control granularities: a pipeline-level rate that applies to an entire draw call, a per-primitive rate that the mesh or vertex shader writes for individual triangles via a dedicated built-in, and an attachment-based rate that a coarse image specifies per tile across the full render pass. All three may be active simultaneously; the hardware resolves conflicts through a per-device combining equation configured at pipeline creation time. On Linux, VRS is supported in RADV (RDNA2+), ANV (Intel Xe), and both the proprietary NVIDIA driver and NVK (Ampere+), making it a broadly available optimization tool for both desktop rasterization and VR foveated rendering workloads.
 
 ---
 

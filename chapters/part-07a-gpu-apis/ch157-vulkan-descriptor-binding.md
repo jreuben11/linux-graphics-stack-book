@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is a Vulkan Descriptor?](#11-what-is-a-vulkan-descriptor)
+   - [1.2 What is a Descriptor Set?](#12-what-is-a-descriptor-set)
+   - [1.3 What is Bindless Descriptor Binding?](#13-what-is-bindless-descriptor-binding)
 2. [Descriptor Fundamentals](#descriptor-fundamentals)
 3. [Descriptor Set Layout and Pool](#descriptor-set-layout-and-pool)
 4. [Descriptor Updates: Write and Copy](#descriptor-updates-write-and-copy)
@@ -38,6 +41,18 @@ This chapter covers:
 - **`VK_EXT_descriptor_indexing`** — enables bindless rendering (covered briefly in Ch154 from an application perspective)
 - **`VK_EXT_descriptor_buffer`** — moves descriptor management entirely to GPU-visible memory
 - **RADV and ANV implementation** — how these drivers implement descriptors in hardware
+
+### 1.1 What is a Vulkan Descriptor?
+
+A descriptor in Vulkan is a compact, hardware-readable record that tells the GPU where to find a shader resource — a buffer, image, or sampler — and how to interpret it. Unlike OpenGL's implicit binding model, where the driver tracks resource state globally, Vulkan requires the application to explicitly construct descriptor records and group them for GPU consumption. The physical representation varies by hardware: on AMD hardware a uniform buffer descriptor is an 8-byte GPU virtual address and size pair embedded in a 16-byte record; on Intel hardware a sampled image uses a 32-byte surface state structure baked from the `VkImageView`. The Vulkan specification defines a fixed set of descriptor types — `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER`, `VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE`, `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER`, `VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER`, and others — each mapping to a distinct hardware encoding. Shaders reference descriptors through set and binding indices declared with GLSL `layout(set=N, binding=M)` qualifiers, which the SPIR-V compiler encodes as `Decoration` metadata on `OpVariable` instructions. The driver's pipeline compilation step translates those indices to GPU register slots or memory offsets, making the descriptor system the critical bridge between the high-level Vulkan API and hardware resource dispatch.
+
+### 1.2 What is a Descriptor Set?
+
+A descriptor set is the unit of resource grouping that Vulkan binds to a graphics or compute pipeline during command recording. Rather than updating individual resource bindings one at a time, Vulkan coalesces related bindings into a set, allowing the driver to switch entire resource groups in a single `vkCmdBindDescriptorSets` call. A descriptor set is described structurally by a `VkDescriptorSetLayout`, which specifies how many bindings the set contains, the type and array count of each binding, and which pipeline stages may access each one. Memory for descriptor sets is managed through a `VkDescriptorPool`, which pre-allocates a fixed block of descriptor storage and parcels it out to allocated sets; exhausting the pool returns `VK_ERROR_OUT_OF_POOL_MEMORY`. At command recording time, up to four descriptor sets (indices 0–3, matching the `set=N` qualifier in GLSL) can be bound simultaneously to a pipeline, enabling applications to partition resources by update frequency — per-frame uniforms in set 0, per-material textures in set 1, per-draw object data in set 2. This chapter covers the full descriptor lifecycle from layout creation and pool sizing through update strategies and the hardware register mapping performed by the RADV and ANV drivers.
+
+### 1.3 What is Bindless Descriptor Binding?
+
+Bindless descriptor binding is a GPU programming model in which shaders access resources through integer indices into large, GPU-resident descriptor arrays rather than through a small fixed set of discrete binding slots. In the traditional Vulkan model the number of simultaneously accessible resources is bounded by the declared binding count and hardware limits on descriptor set slots. Bindless removes that ceiling: a single array binding can hold thousands of descriptors, and the shader selects the target resource dynamically at runtime using a nonuniform index. On the Vulkan API side, `VK_EXT_descriptor_indexing` (promoted to core in Vulkan 1.2 via `VkPhysicalDeviceDescriptorIndexingFeatures`) provides the necessary mechanisms: `VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT` allows array slots to remain unpopulated, `VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT` permits descriptor writes while the set is simultaneously in use on the GPU, and `VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT` allows the array length to vary per allocated set. The complementary `VK_EXT_descriptor_buffer` extension takes bindless further by placing descriptors directly in application-managed GPU-visible memory, bypassing the pool abstraction entirely. Both extensions are examined in detail in sections 6 and 7 of this chapter.
 
 ---
 

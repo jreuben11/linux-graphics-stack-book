@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction: Wayland's Extensibility Model](#1-introduction-waylands-extensibility-model)
+   - [1.1 What is a Wayland Protocol Extension?](#11-what-is-a-wayland-protocol-extension)
+   - [1.2 What is wayland-scanner?](#12-what-is-wayland-scanner)
+   - [1.3 What is wayland-protocols?](#13-what-is-wayland-protocols)
 2. [Wayland Wire Protocol Fundamentals](#2-wayland-wire-protocol-fundamentals)
 3. [Protocol XML Grammar](#3-protocol-xml-grammar)
 4. [wayland-scanner: Generating C Bindings](#4-wayland-scanner-generating-c-bindings)
@@ -37,6 +40,24 @@ This chapter covers the full lifecycle of a Wayland protocol extension:
 - Testing tools and conformance infrastructure.
 
 By the end, you will be able to write a new protocol from scratch, wire it into a wlroots or Weston compositor, ship a reference client, and submit it for inclusion in `wayland-protocols`.
+
+### 1.1 What is a Wayland Protocol Extension?
+
+A Wayland protocol extension is a formally specified, versioned contract between a compositor and one or more clients that defines new object types, requests, and events beyond those in the core `wayland.xml` protocol. Extensions are described in XML files that share a common grammar, compiled to C bindings by `wayland-scanner`, and loaded at runtime through the `wl_registry` global advertisement mechanism. Because the core protocol deliberately limits itself to the lowest-common-denominator objects—displays, surfaces, inputs, and outputs—virtually all real desktop functionality is implemented as extensions: XDG shell windows, DMA-BUF buffer import, explicit GPU synchronisation, screen capture, HDR metadata signalling, and many others.
+
+A compositor that implements an extension registers a global for it; clients discover that global by listening to `wl_registry.global` events. If a client does not find a particular global, it gracefully degrades to a fallback code path or reports the feature unavailable. This negotiation model allows new capabilities to be deployed incrementally without breaking existing implementations. Each extension lives in its own namespace: the `wl_` prefix is reserved for the core Wayland protocol, `xdg_` for the XDG shell family, and `ext_`, `wp_`, `zwp_`, or compositor-specific prefixes for others. Extensions serve throughout this chapter as the vehicle for understanding the wire protocol, the XML grammar, the code-generation pipeline, and the governance model that allows experimental protocols to graduate to stable.
+
+### 1.2 What is wayland-scanner?
+
+`wayland-scanner` is the official code-generation tool that transforms a Wayland protocol XML file into C source code. It is distributed as part of the `wayland` package and is typically invoked as a build step—in Meson via `wayland_scanner.process()` or in Autotools via a `WAYLAND_SCANNER` substitution variable. Given a protocol XML file, `wayland-scanner` produces two outputs: a header (`-code=client-header` or `server-header`) that declares generated types, function prototypes, and opcode constants, and a C implementation file (`-code=private-code` or `public-code`) that defines the `wl_interface` descriptors and dispatch tables that libwayland uses to route messages to the correct handler functions.
+
+The generated code is purely mechanical; it encodes the argument types, opcodes, and version constraints described in the XML but adds no policy or logic of its own. Protocol authors never write the dispatch infrastructure by hand: `wayland-scanner` ensures that the C types match the XML exactly, that deprecated entries are flagged, and that version guards are consistently applied. For server-side code, the generated `wl_interface` structure is what `wl_resource_create` and `wl_global_create` reference when binding object implementations to incoming requests. For client-side code, the generated proxy helpers wrap `wl_proxy_marshal_flags` so callers never touch raw opcodes directly. Understanding `wayland-scanner`'s output is essential for debugging protocol dispatch failures and for writing correct version-gated code paths (§4).
+
+### 1.3 What is wayland-protocols?
+
+`wayland-protocols` is the canonical upstream repository for Wayland protocol extensions intended for broad ecosystem adoption rather than remaining compositor-specific. It is hosted at `https://gitlab.freedesktop.org/wayland/wayland-protocols` and maintained under freedesktop.org governance. The repository organises protocols into three stability tiers: **stable** protocols have completed a public review process, are considered API-frozen, and carry a guarantee of backwards compatibility; **staging** protocols are under active development and may change between minor releases; and **unstable** protocols (carrying the older `zwp_` prefix) exist for historical reasons and will not receive new versions.
+
+A protocol enters `wayland-protocols` through a merge-request process: the submitter provides the XML, a reference implementation in at least one compositor and one client, a rationale document, and test coverage. Reviewers evaluate the protocol for correctness, generality, and fit with the existing corpus before it advances from staging to stable. Protocols that remain compositor-specific—features not intended for general use—live in the compositor's own repository and are never submitted upstream. For systems engineers writing extensions, understanding the governance model determines whether to invest in a `wayland-protocols`-quality design (§7) or to ship a private protocol under a compositor-specific prefix. This chapter covers both paths.
 
 ---
 

@@ -7,6 +7,10 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is GPU-Driven Rendering?](#11-what-is-gpu-driven-rendering)
+   - [1.2 What is an Indirect Draw Command?](#12-what-is-an-indirect-draw-command)
+   - [1.3 What is a Meshlet?](#13-what-is-a-meshlet)
+   - [1.4 What is GPU Culling?](#14-what-is-gpu-culling)
 2. [The CPU-GPU Bottleneck: Why GPU-Driven?](#the-cpu-gpu-bottleneck-why-gpu-driven)
 3. [Indirect Draw Commands](#indirect-draw-commands)
 4. [Multi-Draw Indirect and Draw Count](#multi-draw-indirect-and-draw-count)
@@ -43,6 +47,38 @@ Key implementations studied:
 - **`vkguide.dev` GPU-driven tutorial** — step-by-step indirect draw and GPU culling walkthrough
 - **Niagara** — high-performance meshlet renderer by Arseny Kapoulkine
 - **Bevy's GPU culling pass** — open-source Rust game engine GPU-driven pipeline
+
+### 1.1 What is GPU-Driven Rendering?
+
+GPU-driven rendering is an architectural pattern for real-time 3D rendering where the GPU, rather than the CPU, is responsible for determining which objects to draw and generating the draw commands. In traditional CPU-driven pipelines, the application traverses the scene graph on the CPU, performs visibility culling, and issues one `vkCmdDraw` or `vkCmdDrawIndexed` call per visible object. At large scene scales — tens of thousands of draw calls per frame — this becomes a CPU bottleneck: command recording and driver overhead dominate the frame budget regardless of GPU utilization.
+
+GPU-driven rendering eliminates this bottleneck by storing the entire scene's geometry metadata, bounding volumes, and material indices in GPU-resident buffers. A compute shader reads this data, determines which objects pass frustum and occlusion tests, and writes `VkDrawIndexedIndirectCommand` structures into a draw command buffer. The graphics pipeline then consumes that buffer via `vkCmdDrawIndexedIndirectCount`, issuing only the surviving draw calls. The CPU contributes a single compute dispatch and a single indirect draw submission per frame, decoupling CPU cost from scene complexity.
+
+This pattern is central to modern game engines and renderers targeting scenes with 100,000 or more unique objects. Vulkan's explicit memory model and indirect drawing extensions make it the natural API for GPU-driven work on Linux, where driver overhead is lower than on older APIs but still non-zero. This chapter examines the full pipeline from GPU scene representation through indirect draw, culling, and mesh shader extensions.
+
+### 1.2 What is an Indirect Draw Command?
+
+An indirect draw command is a GPU draw call whose parameters — index count, instance count, vertex offset, and so on — are read from a GPU-resident buffer rather than supplied directly by the CPU at command-recording time. In Vulkan, this mechanism is exposed through `vkCmdDrawIndexedIndirect` and the more powerful `vkCmdDrawIndexedIndirectCount`, both of which accept a `VkBuffer` containing one or more `VkDrawIndexedIndirectCommand` structs.
+
+The key property of indirect drawing is that the buffer contents can be written by another GPU operation — typically a compute shader performing culling — before the draw is executed. This makes draw parameters data-dependent on GPU computation without any CPU readback. The GPU decides how many draws to issue, which geometry to render, and from which buffer offsets to fetch indices, all within a single frame and without stalling the CPU-GPU pipeline.
+
+The indirect mechanism originated in OpenGL with `glMultiDrawElementsIndirect`, was formalized in Direct3D 12's `ExecuteIndirect`, and is exposed in Vulkan 1.2 core through the `drawIndirectCount` feature flag (originally `VK_KHR_draw_indirect_count`). On Linux, all major Vulkan drivers — RADV, ANV, NVK, and the proprietary NVIDIA driver — support this feature on hardware from roughly 2016 onwards. `VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT` must be set on the buffer containing the commands, and a pipeline barrier with `VK_ACCESS_INDIRECT_COMMAND_READ_BIT` ensures the compute-written data is visible to the draw stage.
+
+### 1.3 What is a Meshlet?
+
+A meshlet is a small, fixed-size cluster of triangles carved from a larger mesh, designed to be processed by a single GPU workgroup in the mesh shader pipeline. Where traditional vertex processing works on individual triangles or entire meshes, meshlet decomposition groups roughly 64–126 triangles and up to 64–128 vertices into a self-contained unit with its own local index buffer and a set of precomputed bounding data. The bounding cone and bounding sphere stored per meshlet enable the GPU to cull entire clusters before invoking per-triangle rasterization work.
+
+Meshlet decomposition is performed offline using tools such as meshoptimizer, which optimizes clustering for vertex reuse and spatial coherence. At runtime, a task shader evaluates per-meshlet visibility and emits a variable number of mesh shader workgroups, each of which processes exactly one meshlet. The mesh shader generates the final rasterizable primitives — positions, attributes, and primitive indices — and outputs them in a compact primitive list rather than through a traditional vertex fetch.
+
+In Vulkan, mesh shaders are exposed via `VK_EXT_mesh_shader` (promoted from the earlier `VK_NV_mesh_shader`). The extension introduces two new programmable stages, `VK_SHADER_STAGE_TASK_BIT_EXT` and `VK_SHADER_STAGE_MESH_BIT_EXT`, which replace the vertex, tessellation, and geometry shader stages when active. Hardware support is available on NVIDIA Turing and later, AMD RDNA2 and later, and Intel Xe graphics. This chapter covers the Vulkan API, meshlet data structures, and cone culling within the mesh shader stage.
+
+### 1.4 What is GPU Culling?
+
+GPU culling is the process of discarding geometry that does not contribute to the final rendered image before issuing rasterization work, where the culling decision is made entirely by GPU-side compute shaders rather than by CPU code. Two primary strategies are relevant at the GPU-driven level: frustum culling, which rejects objects whose bounding volumes lie entirely outside the camera's view frustum, and occlusion culling, which additionally rejects objects hidden behind other geometry using a hierarchical depth buffer.
+
+In the GPU-driven pipeline, a culling compute shader receives an array of per-object bounding data (typically bounding spheres or axis-aligned bounding boxes), tests each against the camera frustum planes in parallel — one GPU thread per object — and for surviving objects atomically writes a `VkDrawIndexedIndirectCommand` into the draw buffer and increments a GPU-side draw count. Occlusion culling extends this by sampling the previous frame's depth buffer (the Hi-Z pyramid) to determine whether the projected bounding box is fully occluded by nearer geometry.
+
+The Hi-Z (hierarchical Z) pyramid is a mipmap-like structure built from the depth buffer: each level stores the maximum depth over a 2×2 block of the previous level, allowing a single texture sample to conservatively test whether an object's depth bounds exceed the nearest occluder in its screen-space footprint. This one-frame latency is an acceptable approximation for fast-moving cameras because geometry revealed after a missed cull simply appears one frame late rather than causing corruption. This chapter provides GLSL compute shader implementations of both frustum and Hi-Z occlusion culling in Vulkan.
 
 ---
 

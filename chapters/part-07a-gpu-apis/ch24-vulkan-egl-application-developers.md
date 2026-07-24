@@ -31,6 +31,9 @@ After reading this chapter, the reader will understand:
 ## Table of Contents
 
 1. [Vulkan Instance and Device Initialisation on Linux](#1-vulkan-instance-and-device-initialisation-on-linux)
+   - [1.1 What is Vulkan?](#11-what-is-vulkan)
+   - [1.2 What is EGL?](#12-what-is-egl)
+   - [1.3 What is GBM (Generic Buffer Management)?](#13-what-is-gbm-generic-buffer-management)
 2. [Vulkan Memory Management on AMD, Intel, and NVIDIA](#2-vulkan-memory-management-on-amd-intel-and-nvidia)
 2.5 [Shader Parameter Update Mechanisms](#25-shader-parameter-update-mechanisms-push-constants-ubos-and-specialization-constants)
 3. [EGL: Display, Context, and Surface Creation](#3-egl-display-context-and-surface-creation)
@@ -131,6 +134,18 @@ int score_device(VkPhysicalDevice dev, VkSurfaceKHR surface) {
     return score;
 }
 ```
+
+### 1.1 What is Vulkan?
+
+Vulkan is a low-overhead, explicit GPU API standardised by the Khronos Group, covering Linux, Windows, Android, and macOS (via MoltenVK). Where OpenGL and OpenGL ES maintain large driver-side state machines and perform implicit synchronisation, Vulkan places full control over command recording, memory allocation, render pass structure, and synchronisation directly in application code. On Linux the GPU driver splits into two components: a kernel-mode component accessed through the DRM subsystem at `/dev/dri/cardN` (for display) and `/dev/dri/renderDN` (for compute and rendering), and a user-space Installable Client Driver (ICD) loaded by the Vulkan loader (`libvulkan.so.1`). Mesa provides three open-source Vulkan ICDs — RADV for AMD GCN/RDNA hardware, ANV for Intel Gen 8 and later, and NVK for NVIDIA — all conformant to the Vulkan specification and available from distribution packages. ICD manifest JSON files in `/usr/share/vulkan/icd.d/` tell the loader which shared library implements which Vulkan API version. The API model is built around explicit objects: a `VkInstance` establishes the connection to the loader and enabled layers; a `VkPhysicalDevice` represents a GPU; a `VkDevice` is the logical handle with selected queues and extensions; `VkQueue` is the submission point for recorded `VkCommandBuffer` objects. This chapter covers the full initialisation path — instance creation, device selection, queue configuration, memory allocation, swapchain setup, and synchronisation — with an emphasis on the Linux-specific behaviour beneath the API surface.
+
+### 1.2 What is EGL?
+
+EGL is a platform integration API standardised by the Khronos Group that sits between a rendering API (OpenGL, OpenGL ES, or OpenVG) and the underlying native windowing system. On Linux, EGL creates GPU contexts and binds them to rendering surfaces without requiring application code to know the details of DRM, X11, or Wayland directly. The EGL display connection is established via `eglGetPlatformDisplayEXT`, which accepts platform tokens such as `EGL_PLATFORM_WAYLAND_EXT`, `EGL_PLATFORM_GBM_MESA`, or `EGL_PLATFORM_DEVICE_EXT` for headless use. Mesa's EGL implementation translates these platform calls into the appropriate DRM device node operations and Wayland protocol interactions. EGL predates Vulkan WSI and was designed for OpenGL ES environments; it remains the correct interface for three specific use cases on Linux: OpenGL ES rendering, zero-copy import of VA-API-decoded video frames into GPU textures via `EGL_EXT_image_dma_buf_import_modifiers`, and server-side headless rendering on render nodes. The `EGLImage` abstraction, defined by `EGL_KHR_image_base`, acts as a portable handle for GPU memory objects and is the bridge through which a DMA-BUF file descriptor becomes a texture accessible to OpenGL ES. For new Vulkan applications, EGL is not the presentation path — Vulkan WSI extensions handle that role directly — but it remains essential in the mixed-API workflows this chapter covers.
+
+### 1.3 What is GBM (Generic Buffer Management)?
+
+GBM, the Generic Buffer Management library (`libgbm`), is a Mesa-provided abstraction over DRM buffer allocation that lets applications create and manage GPU-accessible buffers through the `/dev/dri/renderDN` render node without using vendor-specific DRM ioctls directly. A `gbm_device` wraps a DRM file descriptor, a `gbm_surface` defines a scanout-capable buffer pool associated with that device, and a `gbm_bo` (buffer object) carries an opaque GEM handle plus format and modifier metadata needed to describe the buffer's tiling layout to the display engine. GBM is most relevant for two scenarios in this chapter: KMS-direct rendering (Section 4), where a GBM surface paired with an EGL context provides the buffer pool that `drmModeAtomicCommit` consumes for display scanout without any compositor intermediary; and headless EGL rendering (Section 8), where `EGL_PLATFORM_GBM_MESA` creates an EGL display from a GBM device. The library also underpins the `linux-dmabuf` buffer negotiation path: when Wayland compositors and Vulkan WSI allocate shared buffers, the DMA-BUF file descriptors and format modifiers exchanged over the protocol carry the same information that a `gbm_bo` stores internally. Understanding GBM therefore clarifies why modifiers appear throughout the explicit sync and presentation machinery even in purely Vulkan codebases, and why the render node — not the card node — is the correct device for application-level GPU access.
 
 ---
 

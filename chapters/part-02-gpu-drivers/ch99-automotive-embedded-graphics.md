@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. The Automotive and Embedded Graphics Landscape](#1-the-automotive-and-embedded-graphics-landscape)
+  - [1.1 What is IVI (In-Vehicle Infotainment)?](#11-what-is-ivi-in-vehicle-infotainment)
+  - [1.2 What is an SoC (System-on-Chip) in Automotive Linux?](#12-what-is-an-soc-system-on-chip-in-automotive-linux)
+  - [1.3 What is ISO 26262 and ASIL?](#13-what-is-iso-26262-and-asil)
 - [2. Automotive Grade Linux (AGL)](#2-automotive-grade-linux-agl)
 - [3. GENIVI/COVESA and the Wayland Transition](#3-genivicovesa-and-the-wayland-transition)
 - [4. Weston in Embedded Mode](#4-weston-in-embedded-mode)
@@ -88,6 +91,28 @@ The automotive SoC market as of 2026 is dominated by a handful of platforms, eac
 **Qualcomm SA8295P** ships the Adreno 695 GPU, which uses the mainline `msm` DRM driver (`drivers/gpu/drm/msm/`). Qualcomm has steadily upstreamed Adreno support; Adreno 800-series patches arrived in the kernel in late 2025 [Source](https://www.phoronix.com/news/Linux-Kernel-Adreno-800-Patches). Mesa's `turnip` Vulkan driver and `freedreno` OpenGL driver cover Adreno 6xx.
 
 **TI TDA4VM** carries a PowerVR Rogue 8XE GE8430 GPU providing ~100 GFLOPS for cluster and mirror-replacement rendering. The display subsystem (`tidss`) is mainline; GPU acceleration relies on TI's SDK with the PowerVR DDK. The TDA4VM targets ASIL-B/C applications and pairs its Cortex-A72 Linux environment with Cortex-R5F real-time cores for safety processing.
+
+### 1.1 What is IVI (In-Vehicle Infotainment)?
+
+In-Vehicle Infotainment (IVI) is the category of embedded computing hardware and software responsible for the centre-console display and head unit in a road vehicle. An IVI system integrates media playback, navigation, telephony, vehicle settings, and increasingly app ecosystems and over-the-air update clients into a single interactive display surface. On Linux, an IVI stack typically consists of a Yocto-built root filesystem, a Wayland compositor managing one or more display outputs, and an application framework that exposes vehicle data services to HMI processes.
+
+What distinguishes IVI from a general-purpose Linux desktop is the operating context: displays are fixed-resolution and non-detachable, graphics performance budgets are defined by the display refresh rate (60 Hz or 120 Hz), and the software must survive power cycles, CAN bus events, and thermal extremes without user intervention. The HMI must also interoperate with other Electronic Control Units (ECUs) on the vehicle network over protocols such as SOME/IP and CAN. On Linux, the DRM/KMS subsystem drives the display pipeline directly from kernel space, while the Wayland compositor — whether agl-compositor, Weston, or an OEM-proprietary stack — arbitrates surface visibility and manages GPU-rendered buffer queues from IVI applications.
+
+This chapter covers IVI as the primary deployment context for automotive Linux graphics, tracing the path from the SoC's DRM display controller through the compositor to the Qt Automotive or HTML5 application layer.
+
+### 1.2 What is an SoC (System-on-Chip) in Automotive Linux?
+
+A System-on-Chip (SoC) integrates a CPU cluster, GPU, display controller, video encoder/decoder, memory controller, and peripheral I/O fabric on a single die. In automotive Linux contexts, the SoC is the hardware platform against which a Board Support Package (BSP) is developed and maintained. Common automotive SoCs include the NXP i.MX8 family (Vivante GPU, `etnaviv` driver), the Renesas R-Car Gen3 (PowerVR GPU, `rcar-du` display), and the Qualcomm SA8155P/SA8295P (Adreno GPU, `msm` driver).
+
+The GPU on an automotive SoC typically exposes one or more of these interfaces to Linux: a 3D/compute engine accessed via OpenGL ES or Vulkan, a 2D blitter used for UI compositing, and a display controller that reads from framebuffers and drives physical display interfaces such as MIPI-DSI, LVDS, or HDMI. In the Linux DRM subsystem, the display controller is represented as a set of KMS objects — CRTCs, encoders, connectors, and planes — while the GPU 3D engine has a separate render node (`/dev/dri/renderD128`) accessed via the DRM render API.
+
+Bringing up a new automotive SoC on Linux requires both a display driver for the KMS modesetting path and a GPU driver for 3D/compute acceleration. This chapter addresses the bring-up workflow for both, covering the device-tree bindings, DRM driver registration, and Mesa backend configuration used in production deployments.
+
+### 1.3 What is ISO 26262 and ASIL?
+
+ISO 26262:2018, "Road Vehicles — Functional Safety", is an international standard that governs how electronic and electrical systems in passenger vehicles must be designed, verified, and validated to manage the risk of systematic and random hardware failures. It defines the Automotive Safety Integrity Level (ASIL), a four-tier classification — ASIL A (lowest), B, C, and D (highest) — derived from an analysis of each hazard's severity, exposure probability, and controllability. A system that displays a safety-critical warning to the driver may require ASIL B or ASIL D qualification depending on the severity of the failure mode.
+
+For Linux graphics software, ISO 26262 creates a fundamental architectural tension: the Linux kernel, Mesa, and Wayland compositors are developed under community processes that do not produce the design documentation, FMEA (Failure Mode and Effects Analysis), or traceability artefacts required for ASIL qualification. The standard response is mixed-criticality partitioning — the safety-critical rendering path (instrument cluster warnings, speed readout) runs in a separately qualified safety renderer, while the rich infotainment HMI runs in a Quality Management (QM) rated Linux process with no ASIL requirement. Communication between the two domains is constrained to formally specified interfaces such as shared memory with explicit ownership transfer or SOME/IP services. This architecture directly shapes the compositor design, GPU resource sharing strategy, and display controller configuration covered throughout this chapter.
 
 ---
 

@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is HDMI?](#11-what-is-hdmi)
+   - [1.2 What is DisplayPort?](#12-what-is-displayport)
+   - [1.3 What is ALSA?](#13-what-is-alsa)
 2. [HDMI Audio Protocol](#hdmi-audio-protocol)
 3. [EDID Audio Capabilities and ELD](#edid-audio-capabilities-and-eld)
 4. [drm_audio_component: The DRM–ALSA Bridge](#drm_audio_component-the-drm-alsa-bridge)
@@ -38,6 +41,24 @@ This chapter covers the complete chain:
 - **HDMI CEC** — for device control
 
 [Linux kernel audio documentation](https://www.kernel.org/doc/html/latest/sound/hd-audio/index.html)
+
+### 1.1 What is HDMI?
+
+HDMI (High-Definition Multimedia Interface) is a proprietary audio-video interface standard that transmits uncompressed digital video and compressed or uncompressed digital audio from a source device to a compatible display or audio device over a single cable. The electrical layer uses TMDS (Transition Minimised Differential Signalling), with version 2.1 adding the higher-bandwidth FRL (Fixed Rate Link) mode. HDMI versions 1.4b through 2.1b and beyond incrementally raised bandwidth ceilings, adding features such as eARC, 4K/8K video, and higher-fidelity audio formats.
+
+From the Linux kernel perspective, an HDMI connector is represented as a `drm_connector` with `DRM_MODE_CONNECTOR_HDMIA` or `DRM_MODE_CONNECTOR_HDMIB` type, attached to a DRM encoder in the GPU driver. The GPU reads the attached sink's EDID (Extended Display Identification Data) via DDC, a two-wire I2C bus embedded in the HDMI cable. Audio capabilities extracted from the EDID are condensed into an ELD (EDID-Like Data) structure and forwarded to the ALSA subsystem through the `drm_audio_component` bridge. The resulting ALSA PCM device node (for example, `hw:0,3`) allows applications and audio servers to stream audio to the HDMI-connected display or AV receiver. HDMI-specific display helpers live in `drivers/gpu/drm/display/` and `include/drm/`.
+
+### 1.2 What is DisplayPort?
+
+DisplayPort is an open digital display interface standard developed by VESA (Video Electronics Standards Association). Unlike HDMI's TMDS signalling, DisplayPort uses a packetised transport over a high-speed Main Link (one to four differential lanes) with a separate low-speed AUX channel used for link training, EDID retrieval, and DPCD (DisplayPort Configuration Data) register access. Audio samples are embedded in the Main Link stream as audio stream packets; supported formats and channel counts are negotiated over the AUX channel.
+
+DisplayPort appears in several physical forms: full-size DisplayPort (20-pin), Mini DisplayPort, and USB Type-C via the DP Alt Mode specification. In the Linux kernel, DisplayPort connectors carry the `DRM_MODE_CONNECTOR_DisplayPort` type. The DP AUX channel is managed through `drm_dp_aux` infrastructure in `drivers/gpu/drm/display/drm_dp_helper.c`, which provides I2C-over-AUX emulation for EDID reads and direct DPCD access. Multi-Stream Transport (MST) allows a single DP port to drive multiple displays through a branch device, introducing additional complexity in audio path management. From an audio-on-Linux standpoint, DisplayPort largely reuses the same DRM-ALSA bridge as HDMI, with a few protocol-level differences covered in a dedicated section of this chapter.
+
+### 1.3 What is ALSA?
+
+ALSA (Advanced Linux Sound Architecture) is the kernel's primary sound subsystem, replacing the older OSS (Open Sound System) framework. It provides a unified model for PCM playback and capture, MIDI sequencing, and mixer controls. At the user-visible level, ALSA exposes sound hardware as character device nodes under `/dev/snd/` (for example, `pcmC0D3p` for playback subdevice 3 on card 0). Internally, the subsystem organises hardware around `snd_card`, `snd_pcm`, and `snd_kcontrol` structures defined in `include/sound/`.
+
+For HDMI and DisplayPort audio, the key ALSA component is the HDA (High Definition Audio) Intel driver in `sound/pci/hda/`. The `snd_hda_codec_hdmi` module implements a virtual HDMI/DP audio codec: it receives ELD data from the DRM subsystem via the `drm_audio_component` bridge, then creates PCM substream devices for each active connector. Userspace audio servers — PipeWire and its predecessor PulseAudio — build on these ALSA PCM devices to provide session management, sample-rate conversion, and routing between applications and HDMI/DP sinks. The `/proc/asound/card*/eld*` procfs entries expose ELD contents for diagnostic purposes. Understanding ALSA's device model is essential context for this chapter because the HDMI audio stack is deliberately split between the DRM and ALSA subsystems, joined only by the `drm_audio_component` API.
 
 ---
 

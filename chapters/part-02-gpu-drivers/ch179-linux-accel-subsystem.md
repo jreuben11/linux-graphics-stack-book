@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Motivation: Why a Separate Subsystem?](#motivation)
+   - [1.1 What is an NPU?](#11-what-is-an-npu)
+   - [1.2 What is the Linux `accel` Subsystem?](#12-what-is-the-linux-accel-subsystem)
+   - [1.3 What is the `/dev/accel` Device Model?](#13-what-is-the-devaccel-device-model)
 2. [The DRM Foundation: Built On, Not Separated From](#drm-foundation)
 3. [Core Machinery: `ACCEL_MAJOR`, Device Nodes, and `accel_open`](#core-machinery)
 4. [The `DRIVER_COMPUTE_ACCEL` Flag and `drm_driver` Integration](#driver-flag)
@@ -40,6 +43,30 @@ Oded Gabbay (Intel, Habana Labs), who had written the production `habanalabs` dr
 3. **Establishing community standards.** A new subsystem under `drivers/accel/` gives maintainers a place to build shared conventions — consistent device naming, debugfs layout, DMA-BUF integration, sysfs attributes — that would otherwise accumulate as copy-paste between `misc` drivers.
 
 The subsystem was merged into the DRM tree for **Linux 6.2** (released February 2023), via Linus Torvalds' acceptance of Dave Airlie's `drm-next` pull. The merge included the core `drivers/accel/drm_accel.c`, documentation under `Documentation/accel/`, and the initial migration of `habanalabs` from `drivers/misc/` to `drivers/accel/`. [Source: Phoronix coverage](https://www.phoronix.com/news/Linux-6.2-Compute-Next)
+
+### 1.1 What is an NPU? {#11-what-is-an-npu}
+
+A Neural Processing Unit (NPU) is a hardware block specialized for the matrix-multiply-accumulate computations that dominate neural network inference. Where a GPU balances rasterization, shader dispatch, and bandwidth across a wide workload spectrum, an NPU is architected around a fixed set of tensor operations — convolutions, matrix projections, normalization, and activation functions — using wide systolic arrays or vector engines coupled with large on-chip SRAM to keep entire layer activations close to compute. The result is substantially better power efficiency per inference operation compared with a general-purpose GPU or CPU, at the cost of reduced programmability.
+
+NPUs appear in several form factors relevant to the Linux `accel` subsystem. Client SoCs embed them as discrete functional blocks alongside the CPU and integrated GPU, as seen in Intel Meteor Lake and AMD Phoenix Point. Data-centre products pair a host CPU with a dedicated PCIe-attached inference card exposing teraoperations-per-second throughput. Embedded edge SoCs integrate smaller NPU clusters for low-latency, low-power on-device inference at the network edge.
+
+In all these cases, firmware compiled into the NPU processes a computation graph. The host kernel driver manages descriptor submission, DMA buffer lifetime, and interrupt handling. The `/dev/accel` subsystem provides the standard Linux kernel interface for this host-side role, covering the full range from smartphone-class embedded NPUs to cloud-scale inference accelerators.
+
+### 1.2 What is the Linux `accel` Subsystem? {#12-what-is-the-linux-accel-subsystem}
+
+The Linux `accel` subsystem is a kernel framework introduced in Linux 6.2 for managing dedicated hardware accelerators — inference NPUs, neural network accelerator cards, and compute ASICs that lack a display or graphics pipeline. It lives under `drivers/accel/` and is built as an extension of the DRM subsystem, reusing DRM's device lifecycle infrastructure, GEM buffer object model, DRM GPU scheduler, and DMA-BUF interoperability helpers, while introducing a separate character device major number (261) and a separate sysfs class (`/sys/class/accel/`) to keep accelerator nodes entirely distinct from display and render device nodes.
+
+Before the `accel` subsystem, AI accelerator drivers were placed in `drivers/misc/` with inconsistent IOCTL conventions and no shared infrastructure for memory management or scheduling. The `accel` framework establishes common conventions: device nodes under `/dev/accel/`, debugfs entries under `/sys/kernel/debug/accel/`, and a clear driver registration path through the `DRIVER_COMPUTE_ACCEL` feature flag. It deliberately relaxes two DRM requirements that are inapplicable to inference hardware — KMS modesetting support and the expectation that upstream shader compiler toolchains accompany the driver — while preserving DRM's proven primitives for buffer lifetime, hardware scheduling, and cross-device DMA-BUF sharing.
+
+The subsystem currently includes production drivers for Intel's integrated NPU (`ivpu`), HabanaLabs Gaudi, Qualcomm Cloud AI 100 (`qaic`), AMD XDNA, Arm Ethos-U, and Rockchip RKNPU, covering the principal NPU architectures shipping in Linux systems as of 2024.
+
+### 1.3 What is the `/dev/accel` Device Model? {#13-what-is-the-devaccel-device-model}
+
+The `/dev/accel` device model is the userspace-visible interface that the `accel` subsystem exposes for each registered hardware accelerator. Each driver instance creates a character device node at `/dev/accel/accel0`, `/dev/accel/accel1`, and so on, using major device number 261 reserved exclusively for accelerators in the Linux kernel. A parallel sysfs class under `/sys/class/accel/` allows udev rules to assign device-specific permissions and labels without interfering with GPU and render nodes under `/dev/dri/`.
+
+Opening a `/dev/accel/accelN` node produces a file descriptor through which a userspace inference runtime — such as OpenVINO, ONNX Runtime, or a vendor-supplied hardware abstraction layer — communicates with the device via driver-specific `ioctl` calls. The `accel` subsystem mandates no shared IOCTL interface beyond the standard DRM version and capability queries; each driver defines its own command set suited to its firmware protocol. This deliberate absence of a required IOCTL ABI reflects the architectural diversity of accelerator hardware: an NPU submitting compiled firmware graph segments has fundamentally different command semantics from a DSP running kernel objects or an FPGA-backed matrix unit.
+
+Access control follows the DRM render-node model. Any process holding read-write permission on the device node may open it; there is no privileged master file handle. Driver-internal capability checks gate any operations that require elevated trust beyond basic device access.
 
 ---
 

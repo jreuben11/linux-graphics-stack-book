@@ -8,6 +8,10 @@
 
 - [Overview](#overview)
 - [1. Why Nova: Design Motivation and the Limits of Extending Nouveau](#1-why-nova-design-motivation-and-the-limits-of-extending-nouveau)
+  - [1.1 What is Nova?](#11-what-is-nova)
+  - [1.2 What is GSP-RM?](#12-what-is-gsp-rm)
+  - [1.3 What is Rust-for-Linux?](#13-what-is-rust-for-linux)
+  - [1.4 What is nvkm?](#14-what-is-nvkm)
 - [2. nova-core: The Hardware Abstraction Layer](#2-nova-core-the-hardware-abstraction-layer)
 - [3. nova-drm: The DRM Graphics Driver](#3-nova-drm-the-drm-graphics-driver)
 - [4. Rust Implementation: Abstractions and Safety Properties](#4-rust-implementation-abstractions-and-safety-properties)
@@ -144,6 +148,38 @@ graph TD
     DRMDev --> RenderNode
     NovaDrmDriver -- "delegates hardware calls" --> Cmdq
 ```
+
+### 1.1 What is Nova?
+
+Nova is a clean-sheet NVIDIA GPU kernel driver for Linux, written entirely in Rust, targeting Turing and later GPUs (GeForce RTX 20 series onward). Unlike Nouveau, which accumulated over two decades of reverse-engineered hardware knowledge for pre-GSP-RM GPU generations, Nova assumes from the outset that the GPU System Processor (GSP-RM) firmware is the authoritative source of hardware control. The host CPU driver's responsibility is therefore limited to booting the firmware, managing the command queue interface, and exposing a DRM interface to userspace.
+
+Nova consists of two kernel modules: `nova-core` (`drivers/gpu/nova-core/`), which handles PCI device discovery, firmware loading, and command queue management; and `nova-drm` (`drivers/gpu/drm/nova/`), which provides DRM interfaces including GEM buffer objects and render nodes at `/dev/dri/renderDN`. The two modules communicate through the Linux Auxiliary Bus, a kernel mechanism that allows a single hardware driver to supply a precisely defined interface to multiple higher-level subsystem drivers without those drivers sharing source code.
+
+Nova was merged into the mainline Linux kernel in version 6.15 (May 2025), making it the first Rust-written DRM driver in the upstream kernel. It is the kernel-side infrastructure that the Mesa NVK Vulkan driver is expected to eventually target, once Nova's user API stabilises around command submission (`DRM_NOVA_EXEC`) and GPU virtual memory management ioctls. [Source](https://rust-for-linux.com/nova-gpu-driver)
+
+### 1.2 What is GSP-RM?
+
+The GPU System Processor Resource Manager (GSP-RM) is proprietary NVIDIA firmware that runs on a dedicated RISC-V microcontroller embedded inside Turing and later NVIDIA GPUs. On pre-Turing hardware, resource management operations — clock control, power management, engine initialization, context setup — were driven entirely by software executing on the host CPU, using register sequences that Nouveau reverse-engineered. Beginning with the Turing architecture (GeForce RTX 20 series, 2018), NVIDIA moved that responsibility into GSP-RM firmware running inside the GPU itself.
+
+From a host driver perspective, GSP-RM presents a command-queue interface. The driver loads the firmware blob from the `linux-firmware` package, boots it through a multi-stage sequence involving the SEC2 Falcon processor and the GSP RISC-V core, and then communicates with the running firmware by writing structured Remote Procedure Call (RPC) messages into a shared DMA-coherent circular buffer. The firmware carries out the requested hardware operations and returns status through the same queue mechanism, with no need for the host to touch generation-specific engine registers directly.
+
+This interface is the architectural foundation that enables Nova's simplified design. Because hardware state management lives inside the firmware, the host driver needs no generation-spanning register-level knowledge for Turing and later hardware. Nova's `nova-core` module is specifically designed around this contract: it implements only the GSP-RM boot sequence and command queue protocol, with no code paths for pre-Turing GPU generations. [Source](https://github.com/torvalds/linux/tree/master/drivers/gpu/nova-core/gsp)
+
+### 1.3 What is Rust-for-Linux?
+
+Rust-for-Linux is the project that adds the Rust programming language as a supported implementation language for Linux kernel code. Its core infrastructure — compiler integration, a kernel-specific Rust standard library subset, and safe typed wrappers over kernel APIs — was merged into Linux 6.1 (December 2022) as the first mainline release with production Rust support.
+
+The project provides typed abstractions over kernel primitives: reference-counted handles (`ARef<T>`), pinned in-place initialization patterns (`PinInit`, `try_pin_init!`), safe MMIO access, and subsystem bindings for DRM, PCI, firmware loading, and the Auxiliary Bus. These wrappers enforce at compile time the ownership invariants that C code must maintain by convention. A missed `drm_gem_object_put()` on an error path in a C driver produces a kernel memory leak that survives until the next device probe; the Rust equivalents make that class of error a compile-time failure.
+
+GPU drivers are a high-value target for Rust adoption because DRM buffer management and device lifetime tracking are precisely the areas where latent bugs concentrate: missed reference-count releases, lock ordering violations, and use-after-free conditions on device unbind. Nova uses Rust-for-Linux's DRM bindings — `drm::Device<T>`, `drm::gem::Object<T>`, `drm::File<T>`, and `auxiliary::Driver` — so that resource management correctness is verified by the compiler. The ARM Mali `tyr` driver for CSF hardware, developed in parallel, uses the same DRM Rust abstraction layer. [Source](https://rust-for-linux.com)
+
+### 1.4 What is nvkm?
+
+nvkm (NVIDIA Kernel Module layer) is Nouveau's internal hardware abstraction layer, located at `drivers/gpu/drm/nouveau/nvkm/` in the Linux source tree. It is the subsystem that allows Nouveau to support NVIDIA GPU generations spanning from NV04 (RIVA TNT2, 1998) through Ada Lovelace under a single driver, by abstracting GPU functional units — memory controller, display engine, copy engine, graphics engine, video decode — as typed engine and subdevice objects.
+
+Hardware differences across GPU generations are handled through vtable dispatch: each engine type has generation-specific implementation structs with function pointers to appropriate register-level initialization sequences. The GSP subdevice (`nvkm_gsp`) was added to nvkm to handle GSP-RM firmware on Turing and later hardware, but it coexists within the same generation-spanning framework alongside the software-managed engine paths for older hardware, requiring `gsp_enabled` checks at numerous points in the engine initialization code.
+
+Nova's design explicitly does not extend or depend on nvkm. Nova has no dependency on the Nouveau source tree and implements no vtable-based engine abstraction. Understanding what nvkm is — and what problem its accumulated complexity represents — is the prerequisite for understanding why Nova chose a clean-slate design rather than a refactoring of the existing Nouveau codebase. [Source](https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/nouveau/nvkm)
 
 ---
 

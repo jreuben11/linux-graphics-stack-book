@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. Why the Community Had to Reverse-Engineer NVIDIA](#1-why-the-community-had-to-reverse-engineer-nvidia)
+  - [1.1 What is Nouveau?](#11-what-is-nouveau)
+  - [1.2 What is MMIO?](#12-what-is-mmio)
+  - [1.3 What is Envytools?](#13-what-is-envytools)
 - [2. Capturing Hardware Behaviour: mmiotrace](#2-capturing-hardware-behaviour-mmiotrace)
 - [3. Envytools: The Register Database and Microcontroller Toolchain](#3-envytools-the-register-database-and-microcontroller-toolchain)
 - [4. The HWDB: Organising Hardware Knowledge](#4-the-hwdb-organising-hardware-knowledge)
@@ -98,6 +101,30 @@ The practical problem Nouveau faced from the beginning was the same problem ever
 Before addressing those tools, it is worth establishing what changed in May 2022 when NVIDIA published the source code for its kernel module under a dual MIT/GPL license. The open-gpu-kernel-modules release was significant but bounded. It provided the source to the "Kernel RM" component — the code that runs in kernel space on the host CPU — but it did not provide documentation of the hardware register interface. The open module source code is, in many ways, harder to read than the register-level traces that Nouveau developers had been collecting for years: it is a large, complex codebase written for NVIDIA's own engineering purposes, not as a reference for external developers, and it uses NVIDIA's internal abstractions and naming conventions rather than any published standard. What it did provide, crucially, was header files defining register names and values — names that could be cross-referenced against the Envytools database and used in NVK (see Chapter 10).
 
 The open module release did not make Nouveau's reverse-engineering methodology obsolete. It changed the source of some register names from observed inference to official header, but it did not provide the architectural documentation — timing constraints, engine sequencing requirements, silicon errata — that makes a driver reliable rather than merely functional. For the hardware generations covered in the open module (Turing and later), Nouveau could lean more heavily on official headers; for older hardware, the entirely reverse-engineered knowledge base remained the only resource. The methodology this chapter describes remains the foundation on which the entire Nouveau project was built, and understanding it is necessary for understanding every architectural decision in the chapters that follow.
+
+### 1.1 What is Nouveau?
+
+Nouveau is the open-source kernel driver for NVIDIA graphics hardware, integrated into the mainline Linux kernel under `drivers/gpu/drm/nouveau/`. It provides the kernel-space **nvkm** (Nouveau Kernel Mode-setting) subsystem — managing hardware initialisation, display output, memory, power management, and the graphics and compute engines — along with a Mesa-based userspace stack. The userspace stack originally delivered a Gallium3D OpenGL implementation; it now additionally includes **NVK**, a Vulkan 1.3-conformant driver for Turing (TU100) and newer GPU families that was enabled by default in Mesa 24.0.
+
+What makes Nouveau historically unusual is its epistemological foundation: NVIDIA has never published register reference manuals or hardware interface documentation for the GPU families Nouveau supports. Every subsystem in the driver — from display mode-setting to shader compiler scheduling — is built on knowledge extracted entirely by observing the proprietary binary driver's interactions with hardware. The driver therefore cannot be described as a clean-room implementation from a published specification; it is an inference-driven reconstruction of an undocumented hardware interface accumulated over roughly two decades.
+
+Nouveau supports hardware from the NV04 (Riva TNT2) era through Ampere (GA100 series). For Turing and later hardware the driver increasingly delegates hardware management to NVIDIA's signed GSP firmware blob rather than programming registers directly — a significant architectural shift discussed in Chapter 9. The 2022 publication of open-gpu-kernel-modules provided official register name headers for Turing and later but did not replace the reverse-engineered knowledge base for older hardware nor supply the architectural documentation needed for timing-critical driver sequences.
+
+### 1.2 What is MMIO?
+
+Memory-Mapped I/O (MMIO) is the mechanism by which a CPU communicates with hardware peripherals such as a GPU's internal register file. Rather than relying on dedicated I/O port instructions, MMIO maps a range of physical addresses — advertised by the hardware through PCI Base Address Registers (BARs) — directly into the processor's physical address space. Any CPU read or write to those addresses is intercepted by the PCI bus and routed to the corresponding hardware register inside the peripheral rather than to system RAM.
+
+A kernel driver accesses an MMIO region by calling `ioremap()`, which creates a kernel virtual mapping over the BAR's physical range. Subsequent accesses through that mapping using `readl()`, `writel()`, or architecture-specific wrappers translate directly into hardware register reads and writes. For an NVIDIA GPU, BAR0 covers the primary control register space — typically 16 MB — encompassing registers for the display engines, memory controller, graphics pipeline, power management domain, and the internal Falcon microcontroller engines that manage firmware and context switching. BAR1 provides CPU-direct access to the GPU's framebuffer memory.
+
+MMIO is foundational to this chapter because it makes register-level tracing feasible. The Linux virtual memory subsystem can mark MMIO-mapped pages as not present in the page table, causing any driver access to raise a handled page fault. That fault handler records the access direction, address, value, and program counter before allowing the access to proceed — producing a complete, ordered log of every register operation a binary driver performs. This mechanism is the basis of mmiotrace, described in Section 2.
+
+### 1.3 What is Envytools?
+
+Envytools is the open-source toolchain and accumulated knowledge repository that the Nouveau community constructed to capture, organise, and apply understanding of NVIDIA GPU hardware. The project lives at `https://github.com/envytools/envytools` and provides several components that span the complete pipeline from raw hardware observation to driver source code.
+
+The central artefact is **rnndb**: a collection of XML files organised by GPU hardware block that records every characterised register in the GPU's BAR0 address space. Each entry specifies the register's offset within BAR0, its bitfield decomposition, the symbolic name of each bitfield, and the meaning of enumerated values. The **headergen2** utility generates C `#define` constants from the rnndb XML, which flow into the Nouveau kernel driver under `drivers/gpu/drm/nouveau/include/nvhw/` and into the NVK Vulkan driver under `src/nouveau/headers/`. Coverage is strongest for NV50 through Maxwell; Ampere and Ada Lovelace hardware remains partially characterised.
+
+Beyond the register database, Envytools provides **envydis** and **envyas**: a disassembler and assembler pair targeting the Falcon microcontroller ISA used by NVIDIA's internal firmware engines, as well as the GPU's shader ISAs for multiple architecture generations. The **demmt** tool decodes captured GPU command streams, translating raw method-value pairs into symbolic annotations drawn from rnndb. The project also maintains narrative hardware documentation at `https://envytools.readthedocs.io`, written in reStructuredText and built with Sphinx — the closest equivalent to a hardware reference manual the community has produced. Together these tools constitute the instrument set for converting observed hardware behaviour into reusable, symbolically annotated engineering knowledge.
 
 ---
 

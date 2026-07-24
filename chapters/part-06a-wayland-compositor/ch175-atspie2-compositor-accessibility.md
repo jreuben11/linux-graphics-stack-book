@@ -14,6 +14,9 @@ The chapter assumes familiarity with Wayland's core security model (Chapter 20) 
 ## Table of Contents
 
 1. [Introduction: Accessibility and the Graphics Stack](#1-introduction-accessibility-and-the-graphics-stack)
+   - [1.1 What is AT-SPI2?](#11-what-is-at-spi2)
+   - [1.2 What is a Screen Reader?](#12-what-is-a-screen-reader)
+   - [1.3 What is the Wayland Accessibility Gap?](#13-what-is-the-wayland-accessibility-gap)
 2. [AT-SPI2: The Assistive Technology Service Provider Interface](#2-at-spi2-the-assistive-technology-service-provider-interface)
 3. [Toolkit Integration: GTK4 and Qt6](#3-toolkit-integration-gtk4-and-qt6)
 4. [The Compositor Layer: X11 History and the Wayland Gap](#4-the-compositor-layer-x11-history-and-the-wayland-gap)
@@ -35,6 +38,30 @@ Each of these requirements reaches down into the graphics stack. The accessibili
 The Linux accessibility landscape in 2026 sits at an inflection point. The X11 era provided a working but deeply insecure model: screen readers could intercept all keystrokes and read all window properties with no permission controls. The Wayland era provides security-by-default isolation that inadvertently broke many accessibility tools. The community is now rebuilding the accessibility stack on Wayland-native foundations, with genuine progress but persistent gaps.
 
 This chapter explains the full picture: how the X11 model worked, why Wayland breaks it, what AT-SPI2 provides as a toolkit-side bridge, and what the community is doing to close the remaining gaps.
+
+### 1.1 What is AT-SPI2?
+
+AT-SPI2 (Assistive Technology Service Provider Interface, version 2) is a D-Bus-based protocol and library that exposes the widget trees of GUI applications as a queryable object graph, allowing assistive technologies to inspect and interact with application UI without modifying those applications directly. The interface defines a set of D-Bus interfaces under the `org.a11y.atspi` namespace — covering object roles, states, text content, actions, and spatial coordinates — that form a standardized accessibility bus for the Linux desktop.
+
+AT-SPI2 evolved from the original AT-SPI, which was implemented over CORBA as part of the GNOME 2 accessibility infrastructure. The D-Bus rewrite eliminated the CORBA runtime dependency and reduced overall complexity while preserving the same object model: every accessible element in a running application becomes a D-Bus object addressable by bus name and object path. The `at-spi2-core` package provides the registry daemon (`at-spi-registryd`), the accessibility bus launcher (`at-spi-bus-launcher`), and the core client library (`libatspi`) that assistive technologies use to traverse and monitor the object tree.
+
+On Linux, AT-SPI2 is the interoperability layer that lets a screen reader such as Orca work with applications built on GTK, Qt, or any other toolkit that implements the AT-SPI2 provider interfaces. This chapter covers both how AT-SPI2 itself is structured (Section 2) and how it interacts with the compositor, the toolkit, and the broader graphics stack to provide complete accessible experiences.
+
+### 1.2 What is a Screen Reader?
+
+A screen reader is an assistive technology that converts on-screen information into an alternative output modality — synthesized speech or a refreshable braille display — for users who cannot rely on visual output. On Linux, the primary screen reader is Orca, which runs as a user-space process and queries the AT-SPI2 accessibility bus to determine the current application state: which window has focus, which widget within that window is active, what text or label that widget presents, and what actions are available.
+
+A screen reader operates in an event-driven model rather than by polling. When a button gains keyboard focus, the screen reader receives a `StateChanged` signal over the accessibility bus and immediately synthesizes speech or dispatches braille output. When text is edited in a text field, a `TextChanged` signal carries the inserted or deleted range. For this low-latency pipeline to work correctly, the accessibility bus must remain live throughout the user session, every UI toolkit must emit events consistently, and the compositor must not block the keyboard event path that routes to the screen reader.
+
+Beyond read-only description, screen readers can also control applications: Orca can invoke named actions on accessible objects (clicking buttons, expanding menus) and inject synthetic keyboard events through the legacy `DeviceEventController` interface. The degree to which a screen reader can operate without mouse input depends directly on how completely the running application and its toolkit implement the AT-SPI2 provider interfaces.
+
+### 1.3 What is the Wayland Accessibility Gap?
+
+The Wayland accessibility gap refers to the set of capabilities that X11-based assistive technologies relied upon but that Wayland's security model explicitly removes. Under X11, a screen reader could install a global keyboard grab with `XGrabKey`, intercept all pointer events, read the window properties of any client, and inject synthetic input events — all without requiring cooperation from the target applications. This model was functionally powerful but violated the principle of client isolation that Wayland enforces from the ground up.
+
+Wayland grants each client access only to its own surfaces and its own input events. A compositor cannot legally forward global keyboard events to a screen reader unless the compositor implements a protocol extension for that purpose. Similarly, a magnification tool needs compositor-level access to the composited framebuffer — something no stable Wayland protocol exposes. The result is that naively porting accessibility tools from X11 to Wayland produces applications that cannot perform their core functions: the keyboard monitoring path is gone, synthetic input is blocked, and framebuffer capture is impossible.
+
+The Linux accessibility community is actively developing Wayland protocol extensions to restore these capabilities in a secure, permission-gated form. Section 8 of this chapter describes the current protocol proposals, which aim to re-establish keyboard monitoring, event injection, and magnification within Wayland's security boundaries rather than working around them.
 
 ---
 

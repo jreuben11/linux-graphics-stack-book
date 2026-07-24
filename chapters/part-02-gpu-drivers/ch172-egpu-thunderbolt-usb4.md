@@ -19,6 +19,10 @@ Understanding eGPU support exercises nearly every layer of the Linux graphics st
 ## Table of Contents
 
 1. [Introduction: External GPUs on Linux](#1-introduction-external-gpus-on-linux)
+   - [1.1 What is an eGPU?](#11-what-is-an-egpu)
+   - [1.2 What is Thunderbolt?](#12-what-is-thunderbolt)
+   - [1.3 What is USB4?](#13-what-is-usb4)
+   - [1.4 What is PCIe Hot-Plug?](#14-what-is-pcie-hot-plug)
 2. [Thunderbolt and USB4 Architecture](#2-thunderbolt-and-usb4-architecture)
 3. [The bolt Daemon: Device Authorization](#3-the-bolt-daemon-device-authorization)
 4. [Linux Kernel Thunderbolt/USB4 Subsystem](#4-linux-kernel-thunderboltusb4-subsystem)
@@ -54,6 +58,22 @@ eGPU on Linux exercises the following mechanisms simultaneously:
 - **PRIME reverse offload**: DMA-BUF sharing and blitting between two independently-managed DRM devices.
 - **Display pipeline switching**: Wayland compositors must discover the new DRM device, migrate rendering state, and optionally redirect scanout.
 - **Thunderbolt/USB4 security model**: the kernel must authorize a PCIe-capable device before creating tunnels, because Thunderbolt PCIe devices are DMA masters that can read system memory.
+
+### 1.1 What is an eGPU?
+
+An external GPU (eGPU) is a discrete graphics processor installed in a standalone enclosure that connects to a host system through a high-bandwidth cable interface rather than occupying a PCIe slot on the motherboard. The enclosure provides power, cooling, and a PCIe slot for the GPU card; the cable carries PCIe transactions between the host CPU complex and the GPU. From the perspective of the Linux kernel's PCI subsystem, an eGPU appears as a standard PCIe endpoint device at a dynamically allocated bus number, indistinguishable in its driver interaction from an internally installed GPU. What makes eGPUs architecturally distinct is that the PCIe link exists only while the cable is connected: the device can be attached and removed while the host system remains running, making it a hot-pluggable PCIe device. This runtime arrival and departure triggers the DRM device lifecycle — `drm_dev_register` on probe and `drm_dev_unplug` on removal — while potentially leaving open file descriptors in userspace that must be handled gracefully. The primary use cases are augmenting laptop compute capacity for GPU workloads and driving external displays through a GPU more capable than the laptop's integrated graphics.
+
+### 1.2 What is Thunderbolt?
+
+Thunderbolt is a high-bandwidth cable interconnect protocol that multiplexes PCIe and DisplayPort signals over a single physical link. The protocol encapsulates PCIe Transaction Layer Packets (TLPs) inside Thunderbolt protocol packets, routes them over a high-speed serial physical link, and decapsulates them at the destination controller, which presents a standard PCIe interface to any downstream device. Thunderbolt 3 and 4 operate at 40 Gbps total link bandwidth; the PCIe payload capacity depends on how much bandwidth is consumed by simultaneous DisplayPort tunnels. A defining feature of Thunderbolt relative to raw PCIe external connections such as OCuLink is its security model: because Thunderbolt devices are PCIe DMA masters capable of reading arbitrary system memory, the kernel requires explicit authorization before creating PCIe tunnels to a connected device. This authorization model, implemented through the sysfs `authorized` attribute and managed by the `bolt` daemon, is central to safely attaching eGPUs in environments where device trustworthiness cannot be assumed. The Linux kernel provides unified Thunderbolt and USB4 driver support in `drivers/thunderbolt/`, consolidated from generation-specific drivers starting with kernel 5.6.
+
+### 1.3 What is USB4?
+
+USB4 is the public interconnect specification derived from the Thunderbolt 3 protocol after the Thunderbolt 3 specification was contributed to the USB Implementers Forum. It retains the same fundamental architecture — PCIe tunneling, DisplayPort tunneling, and USB 3.2 tunneling over a shared high-speed serial link — but is defined as an open standard that any silicon vendor can implement. USB4 version 1 operates at up to 40 Gbps (USB4 Gen 3x2), providing PCIe throughput comparable to Thunderbolt 3. USB4 version 2 doubles the link to 80 Gbps bidirectional with an asymmetric Bandwidth Boost mode. On Linux, USB4 devices are handled by the same `drivers/thunderbolt/` subsystem that manages Thunderbolt devices; the kernel abstracts protocol differences internally. The `CONFIG_USB4` kernel configuration symbol (formerly `CONFIG_THUNDERBOLT`) enables this unified driver. For eGPU workloads, USB4 Gen 2x2 at 20 Gbps provides roughly PCIe 3.0 x2 throughput, adequate for compute offload but bandwidth-constrained for display-driving workloads, while USB4 v2 substantially narrows the gap to internally connected GPUs.
+
+### 1.4 What is PCIe Hot-Plug?
+
+PCIe hot-plug is the capability of a PCI Express system to enumerate, configure, and remove PCIe endpoint devices while the host system remains powered and running, without requiring a reboot. Standard PCIe hot-plug relies on hardware signals — the Presence Detect signal and Hot-Plug Surprise bit in the PCIe capability registers — to inform the root port that a device has been inserted or removed. For Thunderbolt and USB4 eGPUs, hot-plug events are mediated by the Thunderbolt controller: when a device is authorized and a PCIe tunnel is established, the downstream PCIe endpoint becomes visible and enumeration proceeds; when the cable is disconnected, the controller signals removal to the root port. In the Linux kernel, PCIe hot-plug is handled by the `pciehp` driver in `drivers/pci/hotplug/pciehp_ctrl.c`, which responds to hardware events by calling `pci_scan_slot()` on insertion and `pci_remove_bus_device()` on removal. For GPU drivers, surprise removal is the challenging case: the DRM subsystem's `drm_dev_unplug()` path must handle in-flight rendering operations, open file descriptors, and active display pipelines without accessing the now-missing hardware.
 
 ---
 

@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is HiDPI?](#11-what-is-hidpi)
+   - [1.2 What is Fractional Scaling?](#12-what-is-fractional-scaling)
+   - [1.3 What is wp_fractional_scale_v1?](#13-what-is-wp_fractional_scale_v1)
 2. [The HiDPI Problem](#the-hidpi-problem)
 3. [wl_output.scale: Integer Scaling Baseline](#wl_outputscale-integer-scaling-baseline)
 4. [wp_fractional_scale_v1: The Protocol](#wp_fractional_scale_v1-the-protocol)
@@ -40,6 +43,24 @@ This chapter covers the full HiDPI story on Wayland:
 - the practical challenges of mixed-DPI multi-monitor setups
 
 [wayland-protocols fractional-scale](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/staging/fractional-scale/fractional-scale-v1.xml)
+
+### 1.1 What is HiDPI?
+
+HiDPI (High Dots Per Inch) refers to display panels whose physical pixel density exceeds the threshold at which individual pixels are no longer discernible at typical viewing distances. Consumer laptop displays have crossed 200 PPI (pixels per inch) as a routine specification, and 4K panels at 15–16 inches reach nearly 300 PPI. At these densities, rendering a user interface at a 1:1 pixel mapping produces elements — text, icons, controls — that are physically too small for comfortable use.
+
+The concept maps directly onto the Linux graphics stack: the DRM/KMS layer exposes the physical display's native resolution via `drm_connector` EDID metadata, and userspace compositor software must decide the logical resolution it presents to applications. HiDPI is not a single Linux API but a property of the hardware; the Linux stack's response to it evolved from crude environment variable hacks through integer-only Wayland protocol extensions to the fractional scaling mechanisms this chapter examines. The Display Information architecture in the kernel (`drivers/gpu/drm/drm_edid.c`) provides the physical dimensions from which compositors derive the effective PPI and, from that, a recommended scale factor.
+
+### 1.2 What is Fractional Scaling?
+
+Fractional scaling is a rendering strategy in which the logical coordinate space presented to applications is smaller than the display's native resolution by a non-integer ratio — typically 1.25×, 1.5×, or 1.75×. An application targeting a logical window of 1000×600 pixels renders a physical buffer of `ceil(1000 × 1.5) = 1500` by `ceil(600 × 1.5) = 900` physical pixels. The compositor maps this oversized buffer onto the display using a viewport transform, producing crisp output that exploits the display's full pixel density while preserving a workable logical canvas size.
+
+The motivation is precision: integer scaling at 2× on a 4K/15-inch panel drops the logical canvas to 1920×1080, discarding resolution that the panel can render. Fractional scaling at 1.5× delivers 2560×1440 logical pixels on the same panel — enough to show more content while keeping UI elements at comfortable physical sizes. The tradeoff is that the compositor must perform a sub-pixel downsampling step, which, if done with a high-quality filter, is indistinguishable from native rendering to most users. This chapter covers how Wayland protocols, compositor implementations, and application toolkits cooperate to achieve this outcome on Linux.
+
+### 1.3 What is wp_fractional_scale_v1?
+
+`wp_fractional_scale_v1` is a Wayland extension protocol that provides a standardised mechanism for a compositor to advertise a preferred fractional scale factor to an individual surface and for the client to negotiate the correct buffer geometry in response. The protocol is defined in the `wayland-protocols` repository under `staging/fractional-scale/fractional-scale-v1.xml` and reached stable status in 2023 after being introduced in wayland-protocols 1.31 (2022).
+
+Before this protocol existed, Wayland offered only `wl_output.scale`, which is restricted to integer values. Applications needing sub-integer scaling had to resort to application-level workarounds, none of which were interoperable across toolkits and compositors. `wp_fractional_scale_v1` fills that gap: the compositor creates a `wp_fractional_scale_v1` object per surface and sends a `preferred_scale` event carrying the scale encoded as a fixed-point integer with denominator 120 (so 1.5× is transmitted as 180). The client pairs this with the `wp_viewporter` protocol to declare the buffer's logical destination size, leaving the compositor to perform the final viewport scaling step at compositing time. This chapter examines the protocol XML, the compositor-side implementation in Mutter and KWin, and the client-side integration in GTK4 and Qt6.
 
 ---
 

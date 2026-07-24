@@ -18,6 +18,10 @@ MonoGS) are covered in full in Chapter 114 and cross-referenced here.
 ## Table of Contents
 
 1. [The SLAM Problem: Formal Statement](#1-the-slam-problem-formal-statement)
+   - [1.1 What is SLAM?](#11-what-is-slam)
+   - [1.2 What is a Factor Graph?](#12-what-is-a-factor-graph)
+   - [1.3 What is LiDAR?](#13-what-is-lidar)
+   - [1.4 What is an IMU?](#14-what-is-an-imu)
 2. [Bayesian Filtering: The Online Backbone](#2-bayesian-filtering-the-online-backbone)
 3. [Factor Graphs and MAP Estimation](#3-factor-graphs-and-map-estimation)
 4. [Linearisation, Normal Equations, and Schur Complement](#4-linearisation-normal-equations-and-schur-complement)

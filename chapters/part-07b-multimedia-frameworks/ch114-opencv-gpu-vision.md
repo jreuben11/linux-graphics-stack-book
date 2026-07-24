@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Overview](#1-overview)
+   - [1.1 What is OpenCV?](#11-what-is-opencv)
+   - [1.2 What is OpenCL?](#12-what-is-opencl)
+   - [1.3 What is VA-API?](#13-what-is-va-api)
 2. [cv::Mat and cv::UMat — The CPU/GPU Memory Abstraction](#2-cvmat-and-cvumat--the-cpugpu-memory-abstraction)
 3. [T-API and OpenCL Dispatch](#3-t-api-and-opencl-dispatch)
 4. [CUDA Module: GpuMat, Stream, and Accelerated Algorithms](#4-cuda-module-gpumat-stream-and-accelerated-algorithms)
@@ -96,6 +99,22 @@ graph TD
 ```
 
 The diagram shows how each OpenCV subsystem maps onto a separate layer of the Linux GPU stack. This chapter examines each path in depth.
+
+### 1.1 What is OpenCV?
+
+OpenCV (Open Source Computer Vision Library) is a cross-platform, BSD-licensed library of computer vision and image-processing algorithms. It provides a unified C++ API — with Python and Java bindings — spanning image I/O, geometric transformations, feature detection, optical flow, camera calibration, 3D reconstruction, and neural-network inference. On Linux, OpenCV integrates directly with the kernel's V4L2 video subsystem for camera capture, with GStreamer for pipeline-based frame routing, and with the GPU compute stack via OpenCL through the Transparent API and NVIDIA CUDA through the `opencv_contrib` modules. The `cv::Mat` type is the fundamental image container for CPU paths; `cv::UMat` extends that abstraction to GPU memory without requiring the caller to manage device allocations explicitly. OpenCV is distributed as a set of shared libraries — `libopencv_core`, `libopencv_imgproc`, `libopencv_dnn`, and others — and is packaged for all major Linux distributions, though GPU acceleration typically requires building from source to link against the correct OpenCL ICD, CUDA toolkit, or VA-API headers. The library's modular structure means a downstream application pulls in only the subsystems it needs: a pure CPU vision pipeline depends only on `core` and `imgproc`; a GPU-accelerated inference pipeline additionally links `dnn` and, optionally, the CUDA or OpenCL back-ends.
+
+[Source: OpenCV documentation — Introduction](https://docs.opencv.org/4.x/d1/dfb/intro.html)
+
+### 1.2 What is OpenCL?
+
+OpenCL (Open Computing Language) is a royalty-free, open standard maintained by the Khronos Group that defines a portable programming model for heterogeneous parallel computing. An OpenCL application submits compute kernels — written in a C99-derived dialect — to a command queue associated with a device (GPU, DSP, FPGA, or multi-core CPU). The host runtime discovers available devices through an Installable Client Driver (ICD) loader at `/usr/lib/x86_64-linux-gnu/libOpenCL.so`, which delegates to vendor-specific ICDs at runtime: Intel's `intel-compute-runtime` for Gen9/Xe iGPUs, AMD's `ROCm OpenCL` for RDNA/Vega discrete GPUs, Mesa's `rusticl` (a Gallium3D-based OpenCL implementation) for open-source AMD and Intel drivers, and NVIDIA's proprietary OpenCL for its GPU lineup. Within OpenCV, OpenCL is the primary GPU backend for the T-API: when a function receives a `cv::UMat` argument, the dispatch layer attempts to run a hand-tuned `.cl` kernel rather than the CPU fallback. The OpenCL ICD selected at runtime is controlled by the environment variable `OCL_ICD_FILENAMES` or by the first platform returned from `clGetPlatformIDs`. On embedded SoCs with Mali, Adreno, or PowerVR GPUs, vendor-supplied OpenCL SDKs expose the same ICD interface, making the T-API the principal GPU acceleration path on devices where CUDA is unavailable. The OpenCL standard is defined at [khronos.org/opencl](https://www.khronos.org/opencl/).
+
+### 1.3 What is VA-API?
+
+VA-API (Video Acceleration API) is the Linux standard interface for hardware-accelerated video decode, encode, and post-processing. Defined in the `libva` library and its public header `/usr/include/va/va.h`, it exposes driver-agnostic entry points — `vaCreateSurfaces`, `vaBeginPicture`, `vaEndPicture`, `vaSyncSurface` — that delegate to backend drivers: the Intel Media Driver (`iHD`) for Intel GPUs, Mesa's `radeonsi` VAAPI driver for AMD, or the community `nvidia-vaapi-driver` wrapper for NVIDIA hardware. VA-API surfaces hold decoded frames in GPU-local or unified memory and are represented by opaque `VASurface` handles rather than CPU pointers, keeping the decoded data on the GPU side of the memory hierarchy. Within OpenCV, VA-API integration is exposed through `cv::VideoCapture` with the `cv::CAP_PROP_HW_ACCELERATION` property and through the `cv::vaapi` interop namespace, enabling zero-copy frame delivery from a hardware decoder directly into a `cv::UMat` or a CUDA `GpuMat`. This avoids the PCIe round-trip that would otherwise occur if decoded frames were first copied to system RAM before being re-uploaded to the GPU for processing — a significant throughput bottleneck in high-resolution or high-frame-rate pipelines. VA-API is covered in depth in Chapter 105; this chapter focuses on the OpenCV-side integration point.
+
+[Source: libva — Video Acceleration API](https://github.com/intel/libva)
 
 ---
 

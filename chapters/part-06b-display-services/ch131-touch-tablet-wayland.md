@@ -14,6 +14,10 @@ The chapter traces the full input chain — hardware → kernel HID driver → e
 ## Table of Contents
 
 1. [Introduction — The Touch and Tablet Input Chain](#1-introduction--the-touch-and-tablet-input-chain)
+   - [1.1 What is evdev?](#11-what-is-evdev)
+   - [1.2 What is libinput?](#12-what-is-libinput)
+   - [1.3 What is libwacom?](#13-what-is-libwacom)
+   - [1.4 What are the Wayland Tablet and Touch Protocols?](#14-what-are-the-wayland-tablet-and-touch-protocols)
 2. [Kernel-Level Touch and Tablet Input](#2-kernel-level-touch-and-tablet-input)
    - [HID Subsystem and Tablet Drivers](#21-hid-subsystem-and-tablet-drivers)
    - [evdev Event Codes for Tablets](#22-evdev-event-codes-for-tablets)
@@ -73,6 +77,22 @@ Drawing tablet (USB/Bluetooth/I2C)
 For multi-touch surfaces the path is identical but the Wayland layer uses `wl_touch` rather than the tablet extension.
 
 This chapter covers each layer in depth: the Linux kernel HID and evdev models, libinput's tablet and touch event API, libwacom for device capability querying, the `wl_touch` core protocol for touch surfaces, the `zwp_tablet_manager_v2` extension for professional stylus input, wlroots compositor implementation, and how creative applications (GIMP, Krita, Inkscape) consume tablet events on Wayland.
+
+### 1.1 What is evdev?
+
+evdev (event device) is the kernel interface through which userspace reads raw input events from hardware. Every keyboard, mouse, touchscreen, stylus, and drawing tablet presents itself as a character device node under `/dev/input/eventN`. Reads from this node return a stream of `struct input_event` records, each carrying a timestamp, an event type (`EV_KEY`, `EV_ABS`, `EV_SYN`, and others), a code identifying the specific axis or button, and an integer value. Pen tablets use absolute axes (`EV_ABS`) for position and pressure; touchscreens use a dedicated set of `ABS_MT_*` multi-touch axes to report simultaneous contacts. The event codes and their semantics are defined in `include/uapi/linux/input-event-codes.h` and documented at the [kernel event-codes page](https://docs.kernel.org/input/event-codes.html). Because evdev exposes raw, hardware-specific values — axis ranges that differ between device models, pressure scales that vary from 1024 to 8192 levels — userspace libraries, primarily libinput, normalise these into device-independent units and apply per-device calibration before compositors and applications see them. On a Wayland system, only libinput opens `/dev/input/eventN` directly; applications never touch the evdev node.
+
+### 1.2 What is libinput?
+
+libinput is the userspace input handling library used by virtually all Wayland compositors on Linux. It sits between the kernel evdev layer and the Wayland compositor, reading raw `struct input_event` records via `libevdev`, normalising axis values, and emitting high-level semantic events that compositors consume through `libinput_dispatch()`. For drawing tablets, libinput recognises three device capability flags — `LIBINPUT_DEVICE_CAP_TABLET_TOOL`, `LIBINPUT_DEVICE_CAP_TABLET_PAD`, and `LIBINPUT_DEVICE_CAP_TOUCH` — and routes events through dedicated handler paths that produce pressure values normalised to 0.0–1.0, tilt angles in degrees, and tool-type enumerations regardless of the underlying hardware model. libinput also implements touch arbitration, which suppresses accidental palm contacts when a stylus is in proximity, and handles pressure-offset calibration for pen-on-display tablets. The library is developed on freedesktop.org GitLab at [https://gitlab.freedesktop.org/libinput/libinput](https://gitlab.freedesktop.org/libinput/libinput) and exposes a stable C API declared in `<libinput.h>`. The X.Org `xf86-input-libinput` driver routes the same library output into the X input stack, making libinput the single normalisation layer for both X11 and Wayland sessions.
+
+### 1.3 What is libwacom?
+
+libwacom is a device database and query library that stores the hardware characteristics of Wacom, Huion, XP-Pen, and other drawing tablets in structured `.tablet` text files. Each database entry records vendor and product IDs, the physical dimensions of the active surface, the number and layout of express keys and ring controls on the tablet pad, the list of supported stylus serial numbers, and screen-mapping metadata for integrated pen displays. Compositors and configuration tools query this database at device hotplug time using the C API in `<libwacom/libwacom.h>` to determine how many pad button modes are valid, how rings and strips map to rotary or linear controls, and whether the device requires absolute-to-screen coordinate mapping. Without libwacom, compositors would need device-specific code for each tablet model; the database approach allows generic protocol implementations to adapt to hundreds of distinct devices. libwacom is maintained at [https://github.com/linuxwacom/libwacom](https://github.com/linuxwacom/libwacom) and is a build dependency of both libinput and all compositors that implement `zwp_tablet_manager_v2`.
+
+### 1.4 What are the Wayland Tablet and Touch Protocols?
+
+Wayland separates touch and stylus input into two distinct protocol namespaces. Touch surfaces use `wl_touch`, the core Wayland protocol object obtained from a `wl_seat`; it delivers per-contact down, up, motion, and cancel events identified by integer slot IDs, with optional shape and orientation extensions added in Wayland core version 6. Professional drawing tablets are handled by the `zwp_tablet_manager_v2` extension, defined in `wayland-protocols` under `unstable/tablet/tablet-unstable-v2.xml`. This extension exposes tablets as `zwp_tablet_v2` objects, individual tools (pen, eraser, airbrush, mouse, lens cursor) as `zwp_tablet_tool_v2` objects with normalised axes for pressure, tilt, rotation, distance, and slider, and the physical pad as `zwp_tablet_pad_v2` with rings, strips, and button-mode groups. Compositors implement these protocols by forwarding libinput tablet and touch events to the Wayland objects bound by each client. Applications reach this data through toolkit abstractions — GTK4 `GdkDeviceTool`, Qt `QTabletEvent` — rather than calling the Wayland protocol objects directly.
 
 ---
 

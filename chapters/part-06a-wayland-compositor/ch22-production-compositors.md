@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. Compositor Landscape Overview](#1-compositor-landscape-overview)
+  - [1.1 What is a Wayland Compositor?](#11-what-is-a-wayland-compositor)
+  - [1.2 What is DRM/KMS?](#12-what-is-drmkms)
+  - [1.3 What is wlroots?](#13-what-is-wlroots)
 - [2. Mutter: GNOME Shell's Compositor](#2-mutter-gnome-shells-compositor)
 - [3. KWin: KDE Plasma's Compositor](#3-kwin-kde-plasmas-compositor)
 - [4. Sway: Tiling with wlroots](#4-sway-tiling-with-wlroots)
@@ -170,6 +173,24 @@ The table below zooms in on feature support and maps each production compositor 
 Hyprland's migration to Aquamarine (§5) gives it the autonomy of the custom-backend compositors without the legacy C codebase: it can ship VRR, direct scanout, multi-GPU, and its own explicit-sync implementation on its own schedule, independent of wlroots releases. The cost is full ownership of the backend stack.
 
 gamescope stands apart from every other row: it is the only compositor that makes Vulkan the *primary* rendering API rather than a secondary renderer, and the only one where XWayland is a *hard dependency* (it hosts the game's X11 window) rather than an optional legacy bridge. Its HDR pipeline bypasses both `colord` and `wp_color_management_v1` in favour of direct `HDR_OUTPUT_METADATA` KMS blob writes, giving it lower latency at the cost of compositing-stack portability.
+
+### 1.1 What is a Wayland Compositor?
+
+A Wayland compositor is the privileged process that simultaneously acts as the display server, window manager, and rendering compositor on a Linux desktop running the Wayland protocol. Unlike X11, where the display server (Xorg), window manager, and compositing manager were historically separate programs that communicated over a socket, the Wayland architecture mandates that these functions reside in a single process: the compositor. The compositor owns one or more DRM device file descriptors, drives KMS to program display hardware, allocates GPU-accessible buffers via GBM or Vulkan, receives input events directly from the kernel input subsystem via `libinput`, and arbitrates surface visibility by scanning client buffers out to the display.
+
+A "production compositor" in the context of this chapter means a compositor that is deployed on real user hardware and actively maintained as part of a desktop environment or appliance platform. This distinguishes the eight compositors covered here — Mutter, KWin, Sway, Hyprland, Wayfire, labwc, gamescope, and cosmic-comp — from reference implementations, toy compositors used in driver development, or single-purpose kiosk compositors. Each production compositor makes distinct architectural trade-offs that propagate into which Wayland protocol extensions clients can rely on, which GPU features are exposed, and how the display pipeline responds to hardware events such as hotplug and VRR-capable monitor detection. Understanding what a compositor is and what it owns exclusively is the prerequisite for understanding why the eight compositors in this chapter differ as sharply as they do.
+
+### 1.2 What is DRM/KMS?
+
+The Direct Rendering Manager (DRM) is the Linux kernel subsystem that owns all access to graphics hardware. Programs obtain a DRM file descriptor by opening a device node such as `/dev/dri/card0` and communicate with the kernel through `ioctl` calls defined in `include/uapi/drm/drm.h` and in hardware-specific headers for each GPU family. Within DRM, the Kernel Mode Setting (KMS) interface is the component responsible for programming display hardware: it exposes an object model of connectors, encoders, CRTCs (display controllers), and planes, and allows the compositor to configure display modes, drive frame submission via page flips, and assign scanout buffers to overlay planes.
+
+Production compositors interact with KMS in one of two ways. wlroots-based and Smithay-based compositors use the respective library's DRM backend, which wraps the raw KMS ioctls behind a higher-level API. Mutter, KWin, and gamescope each implement their own KMS backend directly against `libdrm`, giving them full control over atomic commit scheduling, plane assignment policy, and VRR activation. The atomic commit path — `DRM_IOCTL_ATOMIC_COMMIT` — is the primary submission mechanism for all production compositors covered here; it enables transactional updates of multiple KMS objects simultaneously, which is necessary for tear-free multi-plane composition and for the explicit fence synchronisation required by `wp_linux_drm_syncobj_v1`. Chapter 2 covers KMS architecture in full; this chapter focuses on how each compositor's policy layer builds on top of the KMS object model.
+
+### 1.3 What is wlroots?
+
+wlroots is a modular compositor toolkit written in C that implements the low-level plumbing required to build a Wayland compositor: DRM/KMS backend, GBM buffer allocation, EGL context management, a GLES2 renderer, a Vulkan renderer, input handling via `libinput` and `xkbcommon`, the `wlr_scene` scene-graph API for hardware plane assignment, and implementations of the core Wayland protocols plus a collection of wlroots-specific extension protocols such as `zwlr_layer_shell_v1` and `zwlr_screencopy_manager_v1`. wlroots deliberately provides no window management policy, no effects system, and no configuration file format — those are the responsibility of the compositor that embeds it.
+
+Three of the eight compositors in this chapter — Sway, Wayfire, and labwc — embed wlroots as a shared library dependency. A fourth, Hyprland, was originally wlroots-based and migrated to its own Aquamarine backend in 2024. The practical consequence of the wlroots dependency is that capability additions land in multiple compositors simultaneously when wlroots ships a new release: when wlroots 0.18 added `wp_linux_drm_syncobj_v1` support in 2024, Sway, Wayfire, and labwc all gained explicit GPU synchronisation in the same release cycle without compositor-specific engineering effort. This shared inheritance model is contrasted throughout the chapter against the custom-backend compositors — Mutter, KWin, gamescope — which acquire new capabilities independently but gain full control over their display path in return. Chapter 21 covers wlroots architecture in detail; this chapter treats wlroots as a known quantity and concentrates on where each downstream compositor diverges from or extends the shared baseline.
 
 ---
 

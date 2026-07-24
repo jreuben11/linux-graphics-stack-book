@@ -8,6 +8,8 @@
 
 - [Overview](#overview)
 - [1. Variable Refresh Rate: FreeSync, G-Sync, and Adaptive Sync](#1-variable-refresh-rate-freesync-g-sync-and-adaptive-sync)
+  - [1.1 What is Variable Refresh Rate?](#11-what-is-variable-refresh-rate)
+  - [1.2 What is Adaptive Sync?](#12-what-is-adaptive-sync)
 - [2. HDR: Hardware Reality and the KMS Model](#2-hdr-hardware-reality-and-the-kms-model)
 - [3. The KMS Colour Management Pipeline](#3-the-kms-colour-management-pipeline)
 - [4. Explicit Synchronisation: The Problem and the Solution](#4-explicit-synchronisation-the-problem-and-the-solution)
@@ -95,6 +97,18 @@ int compositor_enable_vrr(int drm_fd, uint32_t crtc_id, uint32_t conn_id,
     return 0;
 }
 ```
+
+### 1.1 What is Variable Refresh Rate?
+
+Variable refresh rate (VRR) is a display technology that allows the refresh interval of a monitor to vary dynamically rather than running at a fixed cadence such as 60 Hz or 144 Hz. In a fixed-rate display, the display controller generates a vertical blanking interval (VBLANK) at a constant period; the GPU must deliver a completed frame before each VBLANK boundary or the display will repeat the previous frame. When rendering time does not align with this fixed period, the visible result is judder — some frames are shown for one refresh period, others for two, producing irregular motion cadence that is perceptible even at frame rates well above the display's nominal rate. VRR eliminates this mismatch by letting the display extend or compress its VBLANK interval so that the next frame begins scanning only when the GPU has signalled completion, within the display's supported refresh-rate window.
+
+In the Linux kernel's Direct Rendering Manager (DRM) subsystem, VRR is exposed through the KMS atomic property interface. The `vrr_capable` connector property indicates whether the attached display supports VRR, derived from EDID ranges and DPCD capability registers. The `VRR_ENABLED` CRTC property enables VRR on a given output path when the compositor submits an atomic commit. This model places VRR policy in the compositor rather than the kernel: the kernel validates hardware constraints during `atomic_check` and programs the display controller accordingly, but the decision to enable or disable VRR is the compositor's responsibility. VRR interacts with DMA-BUF fencing, the GPU scheduler, and Wayland frame-pacing protocols (`wp_presentation`, `wp_tearing_control_v1`) in ways that this section traces in detail.
+
+### 1.2 What is Adaptive Sync?
+
+Adaptive Sync is the VESA DisplayPort standard for variable refresh rate signalling, introduced in DisplayPort 1.4. It defines how a display source — the GPU — signals the end of the active video region and then holds the link in a blanking state until the next frame is ready, allowing the display to stretch its refresh interval accordingly. The specification describes the timing constraints and DPCD register fields (including DPCD address 0x700 for Adaptive-Sync capability and configuration) that enable source-to-sink VRR negotiation over a DisplayPort link. HDMI 2.1 defines a parallel variable-refresh mechanism using different negotiation fields in the EDID and a Vendor-Specific InfoFrame, achieving the same variable-interval effect over an HDMI link.
+
+Consumer marketing has layered several brand names over these underlying standards. AMD's FreeSync encompasses both DP Adaptive Sync and HDMI VRR across multiple certification tiers. NVIDIA's G-Sync Compatible designation marks displays that pass conformance testing for standard DP Adaptive Sync; the older G-Sync hardware module used proprietary out-of-band signalling that the open-source kernel stack cannot replicate, so only G-Sync Compatible monitors function with the open-source DRM driver. In the Linux DRM subsystem, the `vrr_capable` connector property reflects the hardware's EDID- and DPCD-reported capability without distinguishing marketing tiers. A compositor that checks `vrr_capable` and sets `VRR_ENABLED` interacts with DP Adaptive Sync or HDMI VRR transparently, regardless of the display's brand certification.
 
 ---
 

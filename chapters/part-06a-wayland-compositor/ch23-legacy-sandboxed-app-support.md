@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [The Compatibility Problem](#1-the-compatibility-problem)
+   - [1.1 What is XWayland?](#11-what-is-xwayland)
+   - [1.2 What is xdg-desktop-portal?](#12-what-is-xdg-desktop-portal)
+   - [1.3 What is Flatpak?](#13-what-is-flatpak)
 2. [XWayland Architecture](#2-xwayland-architecture)
 3. [Glamor: GPU-Accelerated X11 Rendering](#3-glamor-gpu-accelerated-x11-rendering)
 4. [Clipboard, Selection, and Drag-and-Drop Bridging](#4-clipboard-selection-and-drag-and-drop-bridging)
@@ -68,6 +71,24 @@ graph TD
     XWayland -- "Glamor / DRI3\n(host GPU access)" --> GPU
     SandboxedApp -. "--device=dri\n(OpenGL/Vulkan only)" .-> GPU
 ```
+
+### 1.1 What is XWayland?
+
+XWayland is a compatibility server that implements the X11 protocol as a Wayland client, enabling X11 applications to run on Wayland-based desktops without modification. It incorporates the full X Window System server architecture — the DIX/DDX split from the X.Org Server codebase — while simultaneously maintaining a Wayland client connection to the host compositor. X11 applications connect to XWayland over a Unix domain socket (typically `/tmp/.X11-unix/X0`) and receive a complete X11 server interface, including support for X extensions, GLX, DRI3, and XRender. From the compositor's perspective, XWayland is an ordinary Wayland client that creates `wl_surface` objects for each X11 top-level window, allowing X11 content to be composited alongside native Wayland surfaces without any modification to the application.
+
+The motivation for XWayland is the fundamental protocol incompatibility between X11 and Wayland. The Wayland protocol has no equivalent to the X11 network-transparent drawing model, and several X11 extensions — XGrabKey for global hotkeys, XTest for synthetic input injection, RECORD for input monitoring — have no direct Wayland counterpart. Rather than requiring years of porting effort across the existing X11 application base, XWayland provides a transparent translation layer. The binary lives in `xserver/hw/xwayland/` in the X.Org Server repository and does not require a framebuffer device, delegating all output to the compositor. This chapter covers XWayland's startup sequence, rootless and full-screen operating modes, the internal `xwl_window` structure that maps X11 window IDs to Wayland surfaces, input focus bridging, and the Glamor DDX that provides GPU-accelerated 2D rendering within XWayland.
+
+### 1.2 What is xdg-desktop-portal?
+
+xdg-desktop-portal is a D-Bus service that gives sandboxed applications mediated access to desktop resources without requiring direct access to kernel device nodes or the Wayland compositor socket. Applications running inside a Flatpak or Snap sandbox cannot open `/dev/dri` or connect to the Wayland socket directly unless granted explicit permissions; instead, they call portal D-Bus methods to request screen capture, file selection, camera access, notifications, and GPU context creation. The portal service runs outside the sandbox, validates the request, checks per-application permissions stored in a `permissions.db` SQLite database, and translates the call into compositor-native operations without exposing the underlying kernel interfaces to the sandboxed process.
+
+The architecture separates a desktop-agnostic frontend from compositor-specific backends. The frontend exposes the `org.freedesktop.portal.*` D-Bus namespace and enforces permission policy. The backends — xdg-desktop-portal-gnome for Mutter, xdg-desktop-portal-kde for KWin, and xdg-desktop-portal-wlr for wlroots-based compositors — perform the actual compositor operations (invoking `zwlr_screencopy_manager_v1` for screen capture, for example) and return results to the frontend. Backend selection is driven by the `XDG_CURRENT_DESKTOP` environment variable. All portal operations use an asynchronous D-Bus Request/Response pattern in which the caller receives a handle to an `org.freedesktop.portal.Request` object and waits for the `Response` signal. This chapter covers the full portal interface reference, the PipeWire DMA-BUF zero-copy path for screen casting, synthetic input via the RemoteDesktop portal, and the experimental GPU surface sharing portal.
+
+### 1.3 What is Flatpak?
+
+Flatpak is a Linux application distribution and sandboxing system that packages applications together with their runtime dependencies and runs them inside a restricted sandbox enforced by Linux namespaces, seccomp system call filtering, and cgroups. Applications are distributed via OSTree-based repositories such as Flathub and installed into a content-addressed store under `/var/lib/flatpak` or `~/.local/share/flatpak`. Each Flatpak application declares a set of permissions in its manifest; the Flatpak runtime enforces those permissions at startup by constructing the namespace jail and applying a seccomp filter derived from the declared permission set.
+
+For graphics-intensive applications, the critical permission is `--device=dri`, which grants the sandboxed process access to all DRM device nodes under `/dev/dri/` — both render nodes (`renderD*`, used for GPU compute and rendering) and card nodes (`card*`, used for modesetting). This permission is required for Mesa's DRI3 client code to open the render node and allocate GPU buffers directly, enabling OpenGL and Vulkan hardware acceleration inside the sandbox. The permission is coarse-grained: it grants simultaneous access to all DRM nodes, with no Flatpak-level isolation between the sandboxed application and other GPU users on the host. GPU separation relies entirely on the DRM subsystem's per-process GPU virtual memory address spaces. The long-term goal of portal-mediated GPU context creation — avoiding direct `/dev/dri` access entirely — remains an active area of development as of 2025. This chapter audits the `--device=dri` security model in detail and compares it with the Snap `hardware-observe`/`opengl` AppArmor interface model.
 
 ---
 

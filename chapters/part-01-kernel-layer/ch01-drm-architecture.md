@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. Locating DRM in the Kernel and Software Stack](#1-locating-drm-in-the-kernel-and-software-stack)
+  - [1.1 What is DRM (Direct Rendering Manager)?](#11-what-is-drm-direct-rendering-manager)
+  - [1.2 What is KMS (Kernel Mode Setting)?](#12-what-is-kms-kernel-mode-setting)
+  - [1.3 What is GEM (Graphics Execution Manager)?](#13-what-is-gem-graphics-execution-manager)
   - [UAPI: The Kernel–Userspace Contract](#uapi-the-kernelâuserspace-contract)
 - [2. The DRM Driver Model: Probe, Bind, and the Component Framework](#2-the-drm-driver-model-probe-bind-and-the-component-framework)
 - [3. Device Nodes: Primary vs. Render Nodes](#3-device-nodes-primary-vs-render-nodes)
@@ -175,6 +178,24 @@ struct drm_syncobj_create {
 **The libdrm abstraction.** Userspace is strongly discouraged from including UAPI headers directly and calling `ioctl(2)` with raw structs. The **libdrm** library ([source](https://gitlab.freedesktop.org/mesa/drm)) wraps every UAPI ioctl in a typed C function (`drmModeGetResources()`, `drmPrimeHandleToFD()`, `drmModeAtomicCommit()`, etc.) and handles struct-size differences between kernel versions. Section 9 of this chapter covers libdrm in detail. The key point is that the UAPI headers are the *contract*; libdrm is the *recommended implementation* of that contract for userspace C programs.
 
 **UAPI review process.** Any kernel patch that adds or modifies a DRM UAPI header must receive explicit sign-off from the DRM maintainers and typically from the broader kernel community. The patch must include documentation of the new ioctl's semantics, preconditions, and error codes in `Documentation/gpu/`. A common review comment on first-time submissions is "add a reserved/pad field for future extension" — this is enforced as a matter of policy, not preference, because forgetting to reserve space means the next capability will require a new ioctl number. Chapter 32 covers the contribution and review process in detail.
+
+### 1.1 What is DRM (Direct Rendering Manager)?
+
+The Direct Rendering Manager is the Linux kernel's unified abstraction layer for GPU and display hardware. It lives in `drivers/gpu/drm/` and serves two roles simultaneously: a framework that hardware driver modules register with at load time, and a set of character device nodes in `/dev/dri/` that userspace programs open to access the GPU. Before DRM existed, graphics access required either routing every command through a single privileged server process or granting applications direct hardware access with elevated privilege. DRM solved both problems by providing access-controlled device nodes that separate display ownership from GPU compute access, backed by a stable UAPI that the kernel guarantees remains binary-compatible across versions.
+
+DRM is not itself a rendering engine and does not produce pixel output. Instead, it provides the kernel-side infrastructure for two activities: configuring the display pipeline from GPU framebuffer output through signal encoders to the physical monitor (the KMS half), and accepting GPU command buffers from applications, managing GPU memory, and scheduling workloads on the GPU (the GEM/render half). Mesa, Vulkan drivers, and OpenGL implementations sit above DRM and use it as their kernel interface. Wayland compositors use DRM's KMS interface directly for display control without going through Mesa at all. The subsystem is covered in its entirety across this chapter and Chapters 2 through 4; this chapter addresses the overall driver model and privilege architecture.
+
+### 1.2 What is KMS (Kernel Mode Setting)?
+
+Kernel Mode Setting is the display-pipeline half of DRM. It moves control of the GPU's display hardware — the blocks that scan out a framebuffer, apply colour transforms, drive a digital video encoder, and signal a monitor — from userspace into the kernel. Before KMS, graphics servers performed mode setting by directly programming hardware registers from userspace; this caused visible corruption during virtual-terminal switching and made suspend/resume unreliable because the kernel had no record of display state. KMS gives the kernel full ownership of the display state machine, which allows it to restore the display reliably across power transitions and VT switches.
+
+KMS models the display pipeline as a tree of typed objects: **planes** (sources of pixel data, including cursor and overlay planes in addition to the primary plane), **CRTCs** (display controllers that composite planes and drive scanout timing), **encoders** (signal converters from CRTC digital output to a wire protocol such as TMDS or DisplayPort), **connectors** (physical output ports — HDMI, DisplayPort, eDP, LVDS), and **bridges** (in-line signal processing blocks common on SoC display paths). The atomic modesetting extension, enabled per-driver by the `DRIVER_ATOMIC` flag and opted into by userspace via `DRM_CLIENT_CAP_ATOMIC`, allows all KMS object properties to be changed in a single validated commit, eliminating the intermediate torn display states that the older legacy API produced. Wayland compositors such as wlroots and mutter interact exclusively through KMS ioctls on the primary device node `/dev/dri/cardN`. Chapter 2 covers the full KMS object model, property types, and atomic commit path.
+
+### 1.3 What is GEM (Graphics Execution Manager)?
+
+GEM is the GPU memory management framework within DRM. It provides a standard model for allocating GPU-accessible memory, mapping it into a process's virtual address space, sharing it between processes using file descriptors, and coordinating access to it across the CPU and GPU. Every buffer that holds vertex data, a texture, a command ring, or a rendered framebuffer is represented in the kernel as a GEM object. Within a process, a GEM object is identified by an integer handle returned from the allocation ioctl; across process boundaries, objects are shared by exporting and importing DMA-BUF file descriptors using `DRM_IOCTL_PRIME_HANDLE_TO_FD` and `DRM_IOCTL_PRIME_FD_TO_HANDLE`.
+
+GEM is a framework rather than a single implementation. For discrete GPUs with dedicated VRAM, drivers build their GEM implementation on top of TTM (Translation Table Manager), which manages VRAM heap allocation and the migration of objects between VRAM and system RAM under memory pressure. For integrated GPUs and SoC display engines operating entirely from system RAM, drivers use the simpler CMA (Contiguous Memory Allocator) or plain slab-backed system memory. The common GEM object base type (`struct drm_gem_object` in `include/drm/drm_gem.h`) carries reference counting, DMA-BUF export state, and fence attachment points that are shared across all implementations. Synchronisation between a GEM buffer's producer and its consumers is handled by DMA-fences attached to the object, a mechanism covered in Chapter 3. Chapter 4 covers TTM, CMA, and the full GEM lifecycle in depth.
 
 ---
 

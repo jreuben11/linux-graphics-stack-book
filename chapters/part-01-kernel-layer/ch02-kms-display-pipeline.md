@@ -8,6 +8,8 @@
 
 - [Overview](#overview)
 - [1. KMS Objects: The Display Hardware Model](#1-kms-objects-the-display-hardware-model)
+  - [1.1 What is KMS?](#11-what-is-kms)
+  - [1.2 What is the Display Pipeline?](#12-what-is-the-display-pipeline)
 - [2. Legacy Mode Setting: The Original API](#2-legacy-mode-setting-the-original-api)
 - [3. Atomic Modesetting: Design and Mechanics](#3-atomic-modesetting-design-and-mechanics)
 - [4. Properties: The Configuration Language of KMS](#4-properties-the-configuration-language-of-kms)
@@ -131,6 +133,22 @@ int main(void) {
 ```
 
 The `DRM_CLIENT_CAP_UNIVERSAL_PLANES` and `DRM_CLIENT_CAP_ATOMIC` capabilities (introduced in kernels 3.15 and 4.2 respectively, as described in Chapter 1) must be set before attempting to use any of the APIs discussed in this chapter. Without `DRM_CLIENT_CAP_UNIVERSAL_PLANES`, only primary planes appear in the plane list; without `DRM_CLIENT_CAP_ATOMIC`, the atomic commit ioctl is unavailable.
+
+### 1.1 What is KMS?
+
+Kernel Mode Setting (KMS) is the display configuration subsystem within the Linux kernel's Direct Rendering Manager (DRM) framework. It handles the ownership and programming of display controller hardware — the circuits responsible for reading pixel data from GPU memory and driving signals out through physical connectors such as HDMI, DisplayPort, or eDP. The kernel exposes this hardware through the `/dev/dri/card*` device nodes, with KMS operations accessible as ioctl calls defined in `include/uapi/drm/drm_mode.h`.
+
+Before KMS existed, display programming was performed entirely in userspace, most commonly by the X server writing directly to memory-mapped hardware registers. This approach was workable when a single privileged process owned the display for the lifetime of a session, but it became untenable as Linux matured: suspend and resume required saving and restoring display state that no kernel-owned code tracked; multiple independent display servers could not safely share the display controller; and secure or encrypted output paths could not be enforced without kernel involvement. KMS solves these problems by moving all display hardware ownership into the kernel, wrapping it in a capability-gated ioctl interface, and ensuring that the display controller is always in a coherent state regardless of which userspace process is currently active.
+
+The KMS interface is exposed in two generations: the legacy ioctl API (`DRM_IOCTL_MODE_SETCRTC`, `DRM_IOCTL_MODE_PAGE_FLIP`) and the atomic modesetting API (`DRM_IOCTL_MODE_ATOMIC`) introduced in kernel 4.2. In this chapter, KMS refers specifically to the modesetting half of DRM — the path from buffer allocation through property configuration to the hardware scanout of pixels on an active display.
+
+### 1.2 What is the Display Pipeline?
+
+The display pipeline is the ordered sequence of hardware stages and software abstractions that carries rendered pixel data from GPU memory to a physical display panel. In the KMS model this pipeline is represented as a directed graph of typed kernel objects: a framebuffer wraps one or more GEM buffer objects holding pixel data; a plane maps that framebuffer onto a rectangular region of a CRTC's output; the CRTC generates the video timing signal; an encoder converts that timing signal into a protocol-level representation such as TMDS differential pairs for HDMI or 8b/10b-encoded lane data for DisplayPort; and a connector drives the physical pins that attach to a cable or panel.
+
+This object graph is not merely a software abstraction — it corresponds directly to discrete hardware blocks present in real GPU silicon. The scanout controller reads from DRAM using a DMA address obtained by pinning the GEM buffer through the IOMMU; the timing generator counts horizontal and vertical pixels to produce HSYNC, VSYNC, and pixel-clock signals at the rate specified by the active `drm_display_mode`; the encoder modulates those signals onto the appropriate physical medium. On embedded and mobile SoCs the pipeline often includes additional stages represented by the DRM bridge framework, such as a DSI-to-HDMI bridge chip or a USB-C Alt Mode multiplexer (covered in Section 12).
+
+Understanding this object graph — which objects are mandatory, which are optional, and which constraints govern their connections — is the prerequisite for all configuration work discussed in this chapter. The five object types introduced in the sections below map one-to-one onto the stages of this pipeline.
 
 ---
 

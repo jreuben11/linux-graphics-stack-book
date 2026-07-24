@@ -7,6 +7,10 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is wgpu?](#11-what-is-wgpu)
+   - [1.2 What is ash?](#12-what-is-ash)
+   - [1.3 What is naga?](#13-what-is-naga)
+   - [1.4 What is WGSL?](#14-what-is-wgsl)
    - [Stack Layer Taxonomy: What Each Library Actually Does](#stack-layer-taxonomy-what-each-library-actually-does)
    - [The Two Full-Stack Paths](#the-two-full-stack-paths)
    - [Detailed Path Comparison](#detailed-path-comparison)
@@ -151,6 +155,38 @@ The table below covers every axis that matters when choosing between the two pat
 **Combining both paths** is legitimate but uncommon. A typical scenario: a Linux desktop application uses `wgpu` + WGSL for real-time Vulkan rendering (cross-vendor) and also links `cudarc` for an NVIDIA-specific AI inference pass (cuDNN/TensorRT). The two subsystems share no code and communicate only through CPU buffers or CUDA–Vulkan interop (`VK_KHR_external_memory`).
 
 **rust-gpu's position within the Vulkan path** is as an alternative shader authoring language — not a different runtime. If you are already using `wgpu`, you can switch from WGSL to rust-gpu shaders without changing any host code: the SPIR-V module that `wgpu::Device::create_shader_module` receives looks identical to naga's WGSL-compiled output. The choice is purely about whether you want to write shader logic in Rust (with `#[spirv]` attributes and `spirv-builder` in `build.rs`) or in WGSL (with `include_str!` or `wgpu::ShaderSource::Wgsl`).
+
+### 1.1 What is wgpu?
+
+wgpu is a Rust implementation of the WebGPU API specification, providing a safe, cross-platform GPU abstraction that runs on top of Vulkan, Metal, DirectX 12, and the browser's native WebGPU. On Linux, wgpu targets Vulkan through its `wgpu-hal` backend abstraction layer. Unlike raw Vulkan, wgpu enforces memory safety at the type level and manages resource lifetimes through Rust ownership, eliminating classes of GPU programming errors such as use-after-free of command buffers or descriptor sets.
+
+The wgpu crate is organized into three layers: `wgpu` (the safe public API), `wgpu-core` (the platform-independent implementation), and `wgpu-hal` (the backend trait abstraction with per-platform implementations). On Linux, the `wgpu-hal/vulkan` backend translates wgpu command buffers into Vulkan command buffer recordings and submits them to `VkQueue`. The shader input is SPIR-V, compiled from WGSL text by `naga` at runtime or supplied directly from `rust-gpu`'s compile-time output.
+
+wgpu was extracted from Firefox's WebGPU implementation and is used by Firefox to execute WebGPU workloads in web content. It serves as the GPU backend for the Bevy game engine and as a portable compute backend for frameworks such as `burn`. On Linux, wgpu sits above the Vulkan ICD layer and below application-level code, occupying the same position in the stack that `SDL_GPU` or `bgfx` occupy in C/C++ projects. The crate is maintained under the `gfx-rs` organization at [https://github.com/gfx-rs/wgpu](https://github.com/gfx-rs/wgpu).
+
+### 1.2 What is ash?
+
+ash is the canonical Rust crate for raw Vulkan bindings. It provides zero-overhead, `unsafe` wrappers that mirror the Vulkan C API exactly, loading all function pointers at runtime through `vkGetInstanceProcAddr` and `vkGetDeviceProcAddr`. ash introduces no safety guarantees, lifetime tracking, or memory management — it is the Rust equivalent of including `<vulkan/vulkan.h>` and calling C functions directly, with the ergonomic benefit of Rust's type system for struct construction via builder patterns.
+
+The crate is structured around code generation from the official Vulkan XML registry (`vk.xml`). Every Vulkan extension is represented as a typed loader struct (for example, `ash::khr::swapchain::Device`) so that extension function pointers are only loaded when explicitly constructed. This design makes calling an unloaded extension function a compile-time error rather than a runtime crash. On Linux, ash targets the Vulkan ICD loader (`libvulkan.so.1`), which dispatches to whichever Vulkan driver is installed — RADV, ANV, NVK, or the proprietary NVIDIA ICD.
+
+ash is the foundation for custom Vulkan renderers that need direct control over render passes, pipeline layouts, synchronization primitives (`VkSemaphore`, `VkFence`, `VkEvent`), and memory allocation strategies. Because ash provides no allocator, it is typically paired with `gpu-allocator` for sub-allocation of `VkDeviceMemory` blocks. ash is maintained at [https://github.com/ash-rs/ash](https://github.com/ash-rs/ash).
+
+### 1.3 What is naga?
+
+naga is the shader translation and validation library used internally by wgpu. It defines an intermediate representation (IR) for GPU shaders and provides front-ends that parse WGSL, GLSL, and SPIR-V into the IR, along with back-ends that emit SPIR-V, GLSL, HLSL, MSL, and WGSL from that same IR. On the wgpu Vulkan path on Linux, naga translates WGSL source text into SPIR-V modules that are passed to `vkCreateShaderModule`.
+
+naga performs full type-checking, control-flow validation, and resource binding verification during translation. Shader errors — type mismatches, out-of-bounds accesses in uniform structs, missing vertex attributes — are caught at `device.create_shader_module()` time with structured diagnostics, rather than surfacing as GPU device-lost events or silent rendering artifacts. This validation replaces the role of the SPIR-V validation layer for code that arrives through naga's pipeline.
+
+The library is embedded inside the wgpu repository at `naga/` and is also published as a standalone crate for offline shader tooling. Projects such as `naga_oil` build shader module composition on top of naga's IR, and `rspirv` provides complementary SPIR-V assembly and disassembly. naga is maintained at [https://github.com/gfx-rs/wgpu/tree/trunk/naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga).
+
+### 1.4 What is WGSL?
+
+WGSL (WebGPU Shading Language) is the shader language specified by the W3C WebGPU working group as the standard shader input for the WebGPU API. It is a statically typed, C-like language designed for safe compilation in constrained environments: it forbids unbounded loops by requiring loop bounds to be statically analyzable, disallows pointer arithmetic, and eliminates undefined behavior by construction. WGSL is the primary shader authoring language for wgpu applications, and WGSL files are the direct counterpart of GLSL files in an OpenGL project.
+
+In the wgpu pipeline on Linux, WGSL source text is compiled to SPIR-V by naga at runtime inside `device.create_shader_module(ShaderSource::Wgsl(...))`. The resulting SPIR-V is passed to the Vulkan driver, which compiles it to native GPU machine code. No external shader compiler binary (such as `glslc` or `dxc`) is required at build time. The same WGSL shader source runs unchanged on Vulkan (Linux), Metal (macOS), DirectX 12 (Windows), and the browser's native WebGPU implementation, making it the portable shader format for cross-platform Rust GPU code.
+
+WGSL supports compute shaders, vertex and fragment shaders, and the full range of Vulkan descriptor binding types — uniform buffers, storage buffers, textures, and samplers. The specification is maintained by the W3C GPU for the Web Community Group at [https://www.w3.org/TR/WGSL/](https://www.w3.org/TR/WGSL/).
 
 ---
 

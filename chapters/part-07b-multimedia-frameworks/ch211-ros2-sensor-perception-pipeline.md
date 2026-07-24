@@ -22,6 +22,8 @@ complete Linux robot perception stack.
    - [1.1 rmw Abstraction and DDS Implementations](#11-rmw-abstraction-and-dds-implementations)
    - [1.2 QoS Profiles for Sensor Data](#12-qos-profiles-for-sensor-data)
    - [1.3 Composable Node Containers and Intra-Process Communication](#13-composable-node-containers-and-intra-process-communication)
+   - [1.4 What is ROS 2?](#14-what-is-ros-2)
+   - [1.5 What is DDS?](#15-what-is-dds)
 2. [Sensor Message Taxonomy: sensor_msgs](#2-sensor-message-taxonomy-sensor_msgs)
    - [2.1 The sensor_msgs Roster](#21-the-sensor_msgs-roster)
    - [2.2 PointCloud2 Internals](#22-pointcloud2-internals)
@@ -169,6 +171,52 @@ For larger messages (point clouds, full-resolution images), intra-process zero-c
 requires the publisher to use `rclcpp::PublisherOptionsWithAllocator` with a loaned-message
 allocator, or to rely on the **type adaptation** mechanism described in §8.1.
 [Source: docs.ros.org/en/humble/How-To-Guides/Using-ros2-launch-for-large-projects.html](https://docs.ros.org/en/humble/How-To-Guides/Using-ros2-launch-for-large-projects.html)
+
+### 1.4 What is ROS 2?
+
+ROS 2 (Robot Operating System 2) is an open-source middleware framework for building distributed
+robotic software systems on Linux and other platforms. Despite the name, ROS 2 is not an operating
+system; it is a structured communication layer that provides typed message passing, service calls,
+parameter management, a build system (ament/colcon), and an ecosystem of reusable packages. ROS 2
+replaces the original ROS 1 architecture with a design built on DDS for transport reliability and
+optional real-time capability.
+
+A ROS 2 application is organized into **nodes** — independent processes or composable
+shared-library units — that communicate over **topics** (publish/subscribe), **services**
+(request/response), and **actions** (long-running goals with incremental feedback). The two primary
+client libraries are `rclcpp` (C++) and `rclpy` (Python), both layered above the rmw abstraction
+described in §1.1.
+
+Long-term support releases on Ubuntu are the standard deployment target: Humble Hawksbill (Ubuntu
+22.04 LTS, supported to 2027) and Jazzy Jalisco (Ubuntu 24.04 LTS, supported to 2029). This
+chapter targets both distributions; all examples compile on either. The sensor and perception
+pipeline covered here relies on the `sensor_msgs`, `vision_msgs`, `tf2`, and `image_transport`
+packages distributed as first-party ROS 2 packages via `apt` from `packages.ros.org`.
+[Source: docs.ros.org/en/humble/](https://docs.ros.org/en/humble/)
+
+### 1.5 What is DDS?
+
+DDS (Data Distribution Service) is an OMG-standardized publish/subscribe middleware specification
+designed for real-time, decentralized, peer-to-peer data distribution. ROS 2 adopts DDS as its
+default transport because DDS already defines the QoS policies, discovery protocol, and wire format
+that ROS 1 had to reinvent ad hoc.
+
+In a DDS deployment each process is a **DomainParticipant**. Participants discover each other
+automatically via UDP multicast using SPDP (Simple Participant Discovery Protocol) and exchange
+data over unicast or multicast via SEDP (Simple Endpoint Discovery Protocol). These two protocols
+together form RTPS (Real-Time Publish Subscribe), the wire-level standard beneath DDS. Every topic
+is strongly typed: the data wire format is CDR (Common Data Representation), ensuring
+interoperability across vendors and language bindings.
+
+ROS 2 does not hard-code a DDS vendor. Instead the rmw C API (§1.1) allows any conforming DDS
+implementation to serve as the transport backend. On Linux, eProsima Fast DDS (default in Humble
+and Jazzy) and Eclipse CycloneDDS are the most widely deployed. Because all implementations speak
+RTPS, a Fast DDS publisher and a CycloneDDS subscriber can interoperate on the same subnet — a
+property useful for heterogeneous robot fleets. For the sensor pipeline in this chapter, DDS QoS
+policies — particularly Reliability and Durability — determine whether a subscriber receives every
+LiDAR scan or only the most recent one, making policy selection a performance-critical decision
+(§1.2).
+[Source: omg.org/spec/DDS/About-DDS](https://www.omg.org/spec/DDS/About-DDS/)
 
 ---
 

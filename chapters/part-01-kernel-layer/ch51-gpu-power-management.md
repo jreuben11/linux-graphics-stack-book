@@ -14,6 +14,9 @@ This chapter targets two audiences: **systems and driver developers** who need t
 
 1. [DRM Runtime PM Framework](#1-drm-runtime-pm-framework)
    - 1.4 [GPU DVFS: Dynamic Voltage and Frequency Scaling](#14-gpu-dvfs-dynamic-voltage-and-frequency-scaling)
+   - [1.5 What is GPU Power Management?](#15-what-is-gpu-power-management)
+   - [1.6 What is a Performance State (P-state)?](#16-what-is-a-performance-state-p-state)
+   - [1.7 What is Thermal Throttling?](#17-what-is-thermal-throttling)
 2. [amdgpu Power Management](#2-amdgpu-power-management)
 3. [Intel i915 and Xe Power Management](#3-intel-i915-and-xe-power-management)
 4. [NVIDIA Proprietary Power Management](#4-nvidia-proprietary-power-management)
@@ -198,6 +201,24 @@ static int panfrost_devfreq_target(struct device *dev,
 ```
 
 [Source: `drivers/gpu/drm/panfrost/panfrost_devfreq.c`](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/panfrost/panfrost_devfreq.c)
+
+### 1.5 What is GPU Power Management?
+
+GPU power management refers to the set of hardware mechanisms and software policies that control when and how much electrical power a graphics processing unit consumes. Unlike a CPU, which runs sequential workloads with relatively predictable memory access patterns, a GPU can transition between near-zero load during desktop idle and full compute throughput within milliseconds as rendering workloads arrive and drain. Without active power management, a discrete GPU would draw its rated thermal design power (TDP) continuously, accelerating battery drain on laptops, spinning fans to audible levels, and generating heat that feeds back into performance throttling.
+
+In the Linux kernel, GPU power management is implemented cooperatively between the generic Runtime Power Management framework (`drivers/base/power/`), the DRM subsystem's per-driver hooks, and vendor-specific on-GPU firmware — the SMU (System Management Unit) on AMD hardware, GuC-based SLPC on Intel Gen12 and newer, and the GSP (GPU System Processor) RTOS on NVIDIA Turing and later. The kernel determines when the GPU is powered on or off at the PCIe or ACPI level; the GPU firmware manages fine-grained clock and voltage adjustments within those power-on windows. This chapter covers the sysfs controls, kernel APIs, and ACPI/PCIe state transitions that connect those two layers and govern the full GPU power lifecycle on a Linux system.
+
+### 1.6 What is a Performance State (P-state)?
+
+A performance state, abbreviated as P-state, is a pre-characterised operating point that pairs a GPU engine clock frequency with the core supply voltage required to sustain that frequency reliably across process, voltage, and temperature variation. GPU vendors encode a table of these frequency-voltage pairs — called an Operating Performance Point (OPP) table in the Linux `devfreq` framework, or a power table in vendor firmware — that defines the valid operating envelope for power management software. Selecting a lower P-state cuts both frequency and voltage, reducing dynamic power consumption, which scales roughly with the square of voltage and linearly with frequency. Selecting a higher P-state delivers more GPU throughput at proportionally greater power draw.
+
+On Linux, P-states are exposed through driver-specific sysfs interfaces (`pp_od_clk_voltage` and `pp_power_profile_mode` on amdgpu, `pstate` debugfs on Nouveau), through the `devfreq` framework with OPP tables on ARM and mobile SoC platforms, and through firmware-controlled selection that the kernel influences only indirectly (SLPC on Intel Gen12+, the SMU DPM algorithm on AMD). The DRM subsystem does not define a vendor-neutral P-state sysfs ABI; each driver exposes its hardware's performance states in its own format. Application developers and system management daemons interact with these states primarily through the `power_dpm_force_performance_level` interface (AMD) or the devfreq governor interface (ARM/mobile) described in the sections that follow.
+
+### 1.7 What is Thermal Throttling?
+
+Thermal throttling is the automatic reduction of a GPU's operating frequency and voltage when its on-die junction temperature approaches the hardware's safe operating limit — typically 95–110 °C depending on GPU generation and die variant. The reduction is enforced by on-die thermal sensors read by the GPU's power management firmware: the SMU on AMD GPUs, the PMC on Intel, and the GSP-hosted RTOS on NVIDIA hardware. The firmware reduces the active P-state, lowering heat output, until sufficient thermal headroom is restored. From the kernel's perspective this activity is largely invisible: the firmware acts below the kernel's abstraction boundary, and the GPU simply delivers less throughput.
+
+The Linux kernel's thermal subsystem (`drivers/thermal/`) provides a parallel, kernel-visible view of the same hardware through thermal zones and cooling devices registered by each GPU driver. A thermal zone models a physical temperature sensor — for example the edge, junction, and VRAM temperature sensors on an AMD GPU, exposed as `temp1_input`, `temp2_input`, and `temp3_input` in hwmon — and associates it with cooling devices such as fan PWM control or a frequency cap. When a trip point is crossed, the thermal governor (`step_wise` or `power_allocator`) adjusts the associated cooling device. The firmware-driven throttle and the kernel thermal zone response operate concurrently and independently. Understanding both layers is essential for diagnosing GPU performance anomalies under sustained thermal load, as covered in detail in Section 6.
 
 ---
 

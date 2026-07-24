@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. The Compilation Landscape](#1-the-compilation-landscape)
+  - [1.4 What is SPIR-V?](#14-what-is-spir-v)
+  - [1.5 What is NIR?](#15-what-is-nir)
+  - [1.6 What is ISA (GPU Instruction Set Architecture)?](#16-what-is-isa-gpu-instruction-set-architecture)
 - [2. glslang: Reference GLSL→SPIR-V Compiler](#2-glslang-reference-glslspir-v-compiler)
 - [3. DXC — DirectX Shader Compiler (HLSL→SPIR-V)](#3-dxc--directx-shader-compiler-hlslspir-v)
 - [3.5 GLSL or HLSL for Vulkan? Making the Choice](#35-glsl-or-hlsl-for-vulkan-making-the-choice)
@@ -210,6 +213,30 @@ WGSL ──► Tint ────────────────────
 ```
 
 Portability is achieved at the SPIR-V boundary. Optimization can happen at every layer: glslang/DXC eliminate dead code before emitting SPIR-V; spirv-opt applies cross-vendor passes; each vendor backend runs its own target-specific optimizations.
+
+### 1.4 What is SPIR-V?
+
+SPIR-V (Standard Portable Intermediate Representation — Vulkan) is the binary intermediate representation defined by the Khronos Group as the standard shader bytecode format for Vulkan and OpenCL 2.1+. It sits at the boundary between portable front-end compilers and GPU vendor back ends, allowing the two halves to evolve independently under separate ownership. Rather than delivering proprietary GPU source languages across the driver interface, applications hand the Vulkan driver a SPIR-V module, which the driver translates into GPU-specific machine code at pipeline creation time.
+
+The format encodes shaders as a sequence of 32-bit words containing typed SSA (Static Single Assignment) instructions with explicit capability declarations, descriptor binding metadata, built-in variable references, and entry-point declarations. A SPIR-V module is self-describing: it carries type information, descriptor set and binding numbers, specialization constant layouts, and interface variable locations in the module header, so no separate reflection sidecar is required. The Khronos SPIR-V 1.6 specification governs the full instruction set and validation rules ([https://www.khronos.org/spir/](https://www.khronos.org/spir/)).
+
+In this chapter, SPIR-V is the output of every front-end compiler covered in Sections 2 and 3 (glslang, DXC), the subject of the SPIRV-Tools validator and optimizer in Section 4, the input to the spirv-cross reflection API in Section 5, and the sole input format accepted by Mesa's `spirv_to_nir()` translator in Section 6. Every modern shader execution path on Linux — whether the source language is GLSL, HLSL, WGSL, or Slang — passes through SPIR-V before reaching any GPU backend.
+
+### 1.5 What is NIR?
+
+NIR (Non-linear IR) is Mesa's primary internal typed SSA intermediate representation for GPU shaders. It occupies the position immediately downstream of `spirv_to_nir()` and immediately upstream of every vendor ISA backend in Mesa. All modern Mesa drivers — RADV (AMD Radeon), ANV (Intel Arc and integrated graphics), NVK (NVIDIA), the Asahi AGX driver (Apple Silicon on Linux), and the Broadcom V3D driver (Raspberry Pi) — accept NIR as their sole shader input, regardless of the original source language or front-end compiler that produced the SPIR-V module.
+
+NIR is defined in `src/compiler/nir/` of the Mesa repository ([https://gitlab.freedesktop.org/mesa/mesa](https://gitlab.freedesktop.org/mesa/mesa)). It models a shader as a set of `nir_function` objects, each containing a control-flow graph of `nir_block` basic blocks populated with `nir_instr` instructions. Values are represented as `nir_ssa_def` nodes; the type system covers scalars, vectors, matrices, arrays, and opaque handles. The `nir_variable` structure preserves shader interface metadata — descriptor set and binding numbers, interpolation qualifiers, built-in semantics — through the entire lowering process.
+
+Mesa ships a large library of reusable NIR passes covering algebraic simplification, dead-code elimination, constant folding, vectorization, loop unrolling, interface variable lowering, and hardware-specific legalization. Drivers assemble these passes into per-driver compilation pipelines suited to their hardware constraints. In this chapter, NIR appears as the translation target in Section 6 and as the input format consumed by the ACO, BRW, and NAK backends in Section 7.
+
+### 1.6 What is ISA (GPU Instruction Set Architecture)?
+
+A GPU Instruction Set Architecture (ISA) defines the binary machine instructions that a specific GPU microarchitecture executes natively. Unlike CPU ISAs, GPU ISAs are designed around massive data-level parallelism: instructions operate on wavefronts (AMD terminology) or warps (NVIDIA terminology), groups of 32 or 64 threads that execute the same instruction in lockstep across a SIMD-width register file. Shader compilers must reason explicitly about register pressure (the balance between VGPR — vector general-purpose registers — and SGPR — scalar GPRs in the AMD model), latency hiding through wavefront interleaving, and control-flow divergence when threads within a wavefront take different branches.
+
+Each GPU vendor owns its own ISA. AMD's GCN and RDNA ISAs target the compute units of Radeon discrete GPUs; AMD publishes ISA reference guides at [https://gpuopen.com/amd-isa-documentation/](https://gpuopen.com/amd-isa-documentation/). Intel's EU (Execution Unit) ISA targets the shader processors of Xe-class and earlier integrated and discrete graphics; Intel's programmer's reference manuals cover the instruction encoding. NVIDIA's SASS (Streaming ASSembler) ISA targets the CUDA cores of Turing, Ampere, Ada, and Blackwell GPUs; it is not officially documented but has been extensively reverse-engineered and captured in the Envytools project at [https://github.com/envytools/envytools](https://github.com/envytools/envytools).
+
+In this chapter, ISA generation is the final compilation step, performed by the ACO backend for AMD RDNA/GCN (Section 7.1), the BRW backend for Intel EU (Section 7.2), and NAK for NVIDIA Turing and newer (Section 7.3). The compiled ISA binary is what the shader cache in Section 8 stores on disk and what the GPU microarchitecture executes at draw or dispatch time.
 
 ---
 

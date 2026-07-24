@@ -16,6 +16,9 @@
 ## Table of Contents
 
 1. [HDR Fundamentals](#hdr-fundamentals)
+   - [1.1 What is HDR (High Dynamic Range)?](#11-what-is-hdr-high-dynamic-range)
+   - [1.2 What is Wide Color Gamut?](#12-what-is-wide-color-gamut)
+   - [1.3 What is the Linux DRM/KMS Color Pipeline?](#13-what-is-the-linux-drmkms-color-pipeline)
 2. [HDR Metadata Standards](#hdr-metadata-standards)
 3. [KMS Color Pipeline](#kms-color-pipeline)
 4. [Per-Plane HDR and the DRM Color Pipeline API](#per-plane-hdr-and-the-drm-color-pipeline-api)
@@ -119,6 +122,30 @@ Color gamut describes the range of reproducible chromaticities. The three domina
 **BT.2020 / Rec.2020** (**UHDTV**): Red at (0.708, 0.292), green at (0.170, 0.797), blue at (0.131, 0.046). **D65** white point. Covers about 75.8% of **CIE 1931**. **BT.2020** is the mandatory colour container for **HDR10**, **HDR10+**, and **HLG** content. Current consumer displays cover roughly 70–80% of **BT.2020** by area metric. [Source](https://en.wikipedia.org/wiki/Rec._2020)
 
 The combination of a large gamut (**BT.2020**) with an absolute-luminance transfer function (**PQ**) defines the **colour volume** — the set of colours representable at each luminance level. **HDR10** content is described in this colour volume; compositors must map it into whatever sub-volume the output display can actually reproduce.
+
+### 1.1 What is HDR (High Dynamic Range)?
+
+High Dynamic Range (HDR) is a display and content standard that expands the range of simultaneously reproducible luminance levels from the 80–100 cd/m² ceiling of standard dynamic range (SDR) displays to peak outputs of 1,000–10,000 cd/m², while achieving black levels below 0.001 cd/m² on OLED and mini-LED panels. The practical effect is that a single displayed frame can contain both detail in deep shadows and specular highlights that would clip or crush on an SDR panel.
+
+HDR is not a single specification but a family of standards. HDR10 pairs the SMPTE ST 2084 Perceptual Quantizer transfer function with BT.2020 color primaries and static mastering metadata (SMPTE ST 2086) to form a royalty-free baseline supported across streaming, gaming, and PC display hardware. HDR10+ extends HDR10 with per-scene dynamic metadata (SMPTE ST 2094-40). HLG (Hybrid Log-Gamma, ITU-R BT.2100) uses a scene-referred encoding that degrades gracefully on SDR receivers and is preferred for broadcast use.
+
+On Linux, HDR spans three layers: the kernel DRM subsystem exposes HDR metadata to the display via the `HDR_OUTPUT_METADATA` connector property and provides hardware color transforms through the KMS color pipeline; the Wayland compositor applies tone mapping and exposes color capabilities to applications via the `color-management-v1` protocol; and applications signal HDR intent through Vulkan swapchain extensions (`VK_EXT_swapchain_colorspace`, `VK_EXT_hdr_metadata`) or VA-API surface attributes for hardware-decoded video.
+
+### 1.2 What is Wide Color Gamut?
+
+Wide Color Gamut (WCG) refers to color spaces whose primary chromaticities define a triangle on the CIE 1931 chromaticity diagram that is significantly larger than the sRGB / Rec.709 triangle. sRGB covers approximately 35.9% of the visible chromaticity diagram and has been the default color space for PC monitors and the web since the late 1990s. DCI-P3 (the digital cinema standard, now common in consumer laptop and phone displays) covers roughly 45.5%. BT.2020 / Rec.2020 — the UHDTV color container mandated by all major HDR formats — covers approximately 75.8%.
+
+The practical significance is that highly saturated colors — the vivid greens of foliage, the deep reds of sunsets, the blue of the sky near the horizon — fall outside the sRGB gamut triangle but within the larger spaces. Clipping these colors to sRGB produces visible posterization in gradients and saturation loss in images and video. WCG display support requires the compositor to be aware of each surface's declared color space, to convert between gamuts during composition, and to communicate the output color space to the display.
+
+On Linux, the DRM `CTM` (color transform matrix) property performs 3×3 gamut conversion in the kernel color pipeline. The `wp_color_management_v1` Wayland protocol allows applications to declare their surface color space so the compositor can composite and tone-map correctly. Although HDR and WCG are technically independent, the major HDR standards mandate BT.2020 primaries, so both typically arrive together in the Linux display stack.
+
+### 1.3 What is the Linux DRM/KMS Color Pipeline?
+
+The Linux Direct Rendering Manager (DRM) subsystem is the kernel component responsible for GPU display output, including mode setting, framebuffer management, and hardware color processing. Kernel Mode Setting (KMS) is the interface through which userspace — a Wayland compositor, an X server, or a standalone application — configures display parameters such as resolution, refresh rate, and color pipeline state via the DRM API exposed through `/dev/dri/cardN` device nodes.
+
+The KMS color pipeline is the sequence of hardware color transforms applied to pixel data between framebuffer memory and the physical display connector. The classic three-stage model exposes three CRTC-level properties: `DEGAMMA_LUT` linearizes non-linear encoded input (such as sRGB or PQ transfer functions), `CTM` applies a 3×3 color transform matrix in S31.32 fixed-point format for gamut conversion, and `GAMMA_LUT` applies the display's output transfer function or a calibration gamma ramp. These stages are configured atomically via `drmModeAtomicCommit()`.
+
+The classic per-CRTC model cannot support simultaneous HDR and SDR surface composition, which requires per-plane color operations. Linux 6.19 introduced the DRM Color Pipeline API, adding the `drm_colorop` object model for per-plane hardware color transforms. GPU drivers expose available transform stages as a directed graph via the `COLOR_PIPELINE` enumeration property on each `drm_plane`. Compositors traverse this graph to program tone-mapping, gamut conversion, and transfer-function stages directly in display hardware, enabling HDR-to-SDR conversion at scan-out time and reducing GPU shader load during composition.
 
 ---
 

@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [The GPU as Embedded Computer: Architecture Overview](#1-the-gpu-as-embedded-computer-architecture-overview)
+   - [1.1 What is Firmware-as-OS?](#11-what-is-firmware-as-os)
+   - [1.2 What is a GPU Embedded Processor?](#12-what-is-a-gpu-embedded-processor)
+   - [1.3 What is a GPU Resource Manager?](#13-what-is-a-gpu-resource-manager)
 2. [NVIDIA GSP-RM: The Most Complete Firmware-OS](#2-nvidia-gsp-rm-the-most-complete-firmware-os)
 3. [AMD's Tiered Firmware Architecture](#3-amds-tiered-firmware-architecture)
 4. [Intel's GuC/HuC/GSC Model: Firmware-Assisted Submission](#4-intels-guchucgsc-model-firmware-assisted-submission)
@@ -44,6 +47,26 @@ This architectural shift has consequences at every level of the stack:
 - **Debugging**: Bugs that manifest as GPU hangs may be inside the firmware, unreachable by the community's debugging tools.
 - **Security**: The firmware is an independent trusted execution environment with DMA access to system memory. Its attack surface is separate from — and sometimes larger than — the host driver.
 - **Open-source feasibility**: A complete open-source driver now requires either firmware source code, documented firmware protocols, or reverse-engineered protocol knowledge. Without at least one of these, the driver is at best a partial implementation.
+
+### 1.1 What is Firmware-as-OS?
+
+The firmware-as-OS pattern describes a GPU architecture in which one or more dedicated embedded processors on the GPU die run their own operating system — with scheduling, inter-process communication, and hardware privilege separation — and the host CPU kernel driver communicates with that embedded OS through a defined messaging protocol rather than directly programming GPU registers. The term distinguishes this class of firmware from earlier, narrower firmware whose only job was to perform a fixed initialisation sequence and then hand control back to the host driver. In the firmware-as-OS model the embedded system continues to run for the full lifetime of the GPU session, handling power state transitions, resource arbitration, security enforcement, and virtual-machine guest isolation as ongoing services.
+
+The Linux kernel driver in this model becomes a firmware client: it expresses intent through structured RPC calls or message queues and receives completion events in return. The driver no longer has full knowledge of GPU hardware state at any given moment — the firmware is the authoritative source of truth for clock frequencies, power domains, engine allocation, and context membership. This shift changes the nature of driver bugs (from wrong register values to malformed protocol messages), changes the debugging surface (firmware logs are inaccessible to standard kernel tracing tools), and changes what open-source driver development requires (documented firmware protocols or firmware source, not just hardware register specifications).
+
+This chapter surveys how far each major GPU vendor has advanced along this spectrum, from narrow firmware-assisted scheduling through tiered domain-specific firmware to a complete relocated resource manager.
+
+### 1.2 What is a GPU Embedded Processor?
+
+A GPU embedded processor is a general-purpose microcontroller or application-class CPU integrated into the GPU die or SoC, distinct from the shader cores and fixed-function graphics units. These processors are not used for rendering workloads; they exist exclusively to manage the GPU as a system. The instruction sets span a wide range: NVIDIA uses a proprietary Falcon VLIW core on older silicon and a RISC-V configuration on Hopper and later; AMD integrates ARM Cortex-A5 cores for platform security, Tensilica Xtensa-class DSPs for display management, and smaller proprietary cores for power management; Intel uses a modified i486-class core called Minute IA for its Graphics Micro-Controller; ARM Mali's Command Stream Frontend embeds a Cortex-M7; Apple's AGX integrates a full ARM64 application-class processor running a proprietary firmware OS.
+
+Each embedded processor has its own private SRAM, interrupt controller, and DMA engine, and each runs firmware that is cryptographically signed and verified before execution begins. From the host side, these processors are visible only through the interfaces their firmware exposes — the Linux kernel driver has no general-purpose instruction bus to inspect or redirect them. The class of processor used by a vendor shapes its trust model, its debugging surface, and the theoretical feasibility of open firmware: a RISC-V core running open-ISA toolchains is in principle more amenable to community analysis than a proprietary Falcon core, even when the firmware image itself remains signed and closed.
+
+### 1.3 What is a GPU Resource Manager?
+
+A GPU resource manager is the software layer responsible for every aspect of GPU hardware management that is not directly part of rendering: hardware initialisation sequences, clock and voltage programming, power state transitions, engine context allocation, memory aperture configuration, display timing engine setup, interrupt routing, and, in virtualised environments, isolation and arbitration between competing virtual-machine guests. In the pre-firmware era this responsibility belonged entirely to the host CPU kernel driver. The firmware-as-OS trend represents the systematic migration of resource manager functions from the CPU side to GPU-embedded processors.
+
+NVIDIA's GSP-RM is the most complete example: the resource manager runs on a RISC-V or Falcon processor inside the GPU, and the CPU-side driver is reduced to a thin client that sends structured RPC calls across a shared-memory message queue. AMD's PSP, SMU, and DMCUB each absorb a specific domain of resource management — platform security, power and thermal control, and display — while leaving main graphics engine initialisation in open kernel code. Intel's GuC handles only scheduling policy, keeping the full resource manager on the CPU. The position of the resource manager boundary determines how much hardware interface detail must be publicly documented for a viable open-source driver. A vendor that relocates its entire resource manager to proprietary firmware effectively removes the hardware specification from the open-source driver's scope, replacing it with a firmware protocol specification.
 
 ---
 

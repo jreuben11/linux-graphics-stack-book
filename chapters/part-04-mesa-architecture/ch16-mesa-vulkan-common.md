@@ -7,6 +7,9 @@
 ## Table of Contents
 - [Overview](#overview)
 - [1. The Problem: Vulkan Driver Boilerplate Before the Common Layer](#1-the-problem-vulkan-driver-boilerplate-before-the-common-layer)
+  - [1.1 What is Vulkan?](#11-what-is-vulkan)
+  - [1.2 What is Mesa?](#12-what-is-mesa)
+  - [1.3 What is a Vulkan ICD?](#13-what-is-a-vulkan-icd)
 - [2. The vk_object Model: Type-Tagged Allocation and Lifetime](#2-the-vk_object-model-type-tagged-allocation-and-lifetime)
 - [3. Render Pass Lowering](#3-render-pass-lowering)
 - [4. Descriptor Set Infrastructure](#4-descriptor-set-infrastructure)
@@ -90,6 +93,30 @@ graph TD
     VKPC --> VKObj
     VKDsl --> VKObj
 ```
+
+### 1.1 What is Vulkan?
+
+Vulkan is a low-overhead, explicit graphics and compute API developed by the Khronos Group and first published in 2016. Unlike its predecessor OpenGL, Vulkan exposes the GPU at a level of abstraction closely aligned with modern GPU hardware architecture: applications manage memory explicitly, construct command buffers that record GPU work before submission, synchronise resource access through barriers and semaphores they control, and pre-compile shader pipelines into opaque objects the driver can submit without per-draw state validation. This explicitness eliminates the hidden state machine that OpenGL drivers maintained internally, transferring the bookkeeping burden to the application in exchange for lower CPU overhead and more predictable frame timing.
+
+On Linux, a Vulkan implementation is loaded through the Vulkan Loader, a shared library that reads JSON manifest files to locate installable client drivers (ICDs) installed on the system. Each ICD exposes a set of Vulkan entry points corresponding to the GPUs it supports. The Loader multiplexes calls across physical devices from multiple ICDs if more than one GPU is present. The Vulkan specification, maintained at `https://registry.khronos.org/vulkan/`, defines around 300 entry points and the precise semantics each must implement. Every driver that claims Vulkan conformance — verified through the Khronos Conformance Test Suite — must implement those semantics identically regardless of the underlying GPU.
+
+This chapter is specifically concerned with the entry points whose semantics are entirely specified by the Vulkan specification without reference to hardware: render pass management, descriptor set layout, pipeline cache serialisation, and extension boilerplate. These form the domain of Mesa's Vulkan common layer.
+
+### 1.2 What is Mesa?
+
+Mesa is the open-source implementation of graphics APIs for Linux and other operating systems. It provides userspace drivers for OpenGL, OpenGL ES, Vulkan, OpenCL, and related APIs, spanning a wide range of GPU hardware from embedded processors to discrete high-performance graphics cards. Mesa lives at `https://gitlab.freedesktop.org/mesa/mesa` and follows a monorepo structure: hardware-specific drivers for AMD (RADV, RadeonSI), Intel (ANV, Iris), NVIDIA (NVK, Nouveau), Qualcomm (Turnip), ARM Mali (PanVK), and Broadcom VideoCore (v3dv) all share a single source tree.
+
+Mesa is structured around a separation between generic GPU infrastructure and per-hardware driver code. The generic layers — compiler infrastructure based on the NIR intermediate representation, the Gallium3D OpenGL state tracker, and the Vulkan common runtime in `src/vulkan/runtime/` — implement API semantics that are hardware-independent. Per-driver directories implement only the hardware-specific portions: command encoding, memory management, and ISA code generation. This layering is both an engineering discipline and a quality multiplier: a bug fixed in the common layer is fixed for every driver that uses it simultaneously.
+
+The Mesa version numbering follows calendar versioning tied to quarterly releases. Mesa 25, the version current during this chapter's writing, marks a point at which all major Mesa Vulkan drivers have substantially migrated to the Vulkan common infrastructure described in the remainder of this chapter.
+
+### 1.3 What is a Vulkan ICD?
+
+A Vulkan Installable Client Driver (ICD) is the loadable shared library that implements the Vulkan API for a specific GPU. The Vulkan architecture places a loader between applications and ICDs: the loader (`libvulkan.so.1` on Linux) reads driver discovery manifests from well-known filesystem paths such as `/usr/share/vulkan/icd.d/`, loads each discovered ICD shared object, queries it for a negotiation entry point (`vk_icdNegotiateLoaderICDInterfaceVersion`), and builds a per-device dispatch table from the function pointers the ICD exposes. Applications call into the loader, which forwards calls to the correct ICD for the chosen physical device.
+
+From the ICD's perspective, it must expose a well-known symbol (`vk_icdGetInstanceProcAddr`) that returns function pointers for every Vulkan entry point the driver supports. The ICD is entirely responsible for implementing those entry points correctly according to the Vulkan specification. No validation is provided by the loader itself — the optional Vulkan Validation Layers are a separate ICD-like component that intercepts calls before forwarding them to the real driver, checking specification compliance.
+
+In Mesa, each Vulkan driver compiles to its own shared library (`radeon_icd.x86_64.so` for RADV, `intel_icd.x86_64.so` for ANV, `nouveau_icd.x86_64.so` for NVK, and so on). The entry point tables these libraries expose are assembled by the code-generation infrastructure described in §8, and the dispatch mechanism that routes calls within the driver after ICD entry is detailed in §7.
 
 ---
 

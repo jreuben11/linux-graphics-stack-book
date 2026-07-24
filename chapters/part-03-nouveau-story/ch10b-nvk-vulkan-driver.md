@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. Motivation: Starting Fresh](#1-motivation-starting-fresh)
+  - [1.1 What is NVK?](#11-what-is-nvk)
+  - [1.2 What is NIR?](#12-what-is-nir)
+  - [1.3 What is NAK?](#13-what-is-nak)
 - [2. Object Model and Memory Heaps](#2-object-model-and-memory-heaps)
 - [3. Shader Compilation: SPIR-V to NVIDIA ISA](#3-shader-compilation-spir-v-to-nvidia-isa)
 - [4. Pipeline Objects and Command Recording](#4-pipeline-objects-and-command-recording)
@@ -64,6 +67,24 @@ The practical performance story, however, is significantly more stratified. Olde
 For Turing and newer GPUs, GSP-RM is supported, reclocking works, and NVK delivers the full compute and rasterisation throughput of the hardware. This is the primary production target for NVK today, and it is where the performance story versus NVIDIA's proprietary driver is most meaningful.
 
 The hardware breadth — spanning a decade of NVIDIA microarchitectures — was also a deliberate design choice. A driver that correctly handles Kepler through Blackwell must have a principled abstraction layer between the Vulkan API and the hardware differences across generations. NVK's architecture delivers this: the core object model, memory allocation path, and synchronisation primitives are hardware-generation-agnostic, while the NAK compiler backend encodes generation-specific instruction encoding and register file differences in clearly bounded modules.
+
+### 1.1 What is NVK?
+
+NVK is a Vulkan driver for NVIDIA graphics hardware implemented within the Mesa open-source graphics library. Unlike the original Nouveau OpenGL driver, which was layered on the Gallium state tracker and grew incrementally from the pre-NIR era, NVK was designed from the ground up with Vulkan semantics as the primary architectural constraint. It resides in `src/nouveau/vulkan/` within the Mesa tree and participates fully in Mesa's modern Vulkan common infrastructure at `src/vulkan/`, sharing object lifecycle management, extension handling, pipeline caching, and render pass lowering with other Mesa Vulkan drivers such as ANV (Intel) and RADV (AMD).
+
+NVK targets NVIDIA hardware from Kepler (GK100, 2012) through Blackwell (GB202, 2025), providing Vulkan 1.2 conformance on Kepler, Vulkan 1.3 on Maxwell through Volta, and Vulkan 1.4 on Turing through Blackwell. Its primary production target is Turing and newer GPUs, where the GSP-RM firmware enables full hardware reclocking and rated GPU throughput. NVK is the recommended path for running Vulkan workloads, DXVK-based Windows game translation, and VKD3D-Proton on NVIDIA hardware under Linux with the open-source kernel driver. This chapter examines NVK's internal architecture in detail: how it represents Vulkan objects, how it compiles shaders, how it submits work to the GPU, and what its current conformance profile means for application developers targeting the open-source NVIDIA stack.
+
+### 1.2 What is NIR?
+
+NIR (Normalized Intermediate Representation) is Mesa's common shader intermediate representation, used as the shared language between Mesa's front ends (GLSL, SPIR-V) and its hardware-specific compiler backends. It is a typed, static single-assignment (SSA) IR in which shaders are expressed as control-flow graphs over basic blocks containing NIR instructions, each of which produces one or more SSA values. NIR replaced the fragmented per-driver IR landscape that preceded it — where each driver maintained entirely separate intermediate representations with no shared optimisation infrastructure.
+
+NIR's design made it the natural common substrate for Vulkan drivers. All Mesa Vulkan drivers receive shaders as SPIR-V and translate them to NIR through the shared `spirv_to_nir()` function in `src/compiler/spirv/`. From NIR, each driver applies a sequence of shared optimisation passes — algebraic simplification, constant folding, dead code elimination, copy propagation — before lowering to hardware-specific instructions. For NVK, NIR is the interface between the shared Mesa infrastructure and the NVIDIA-specific NAK compiler backend. The existence of a rich, shared NIR optimisation library was one of the primary architectural arguments for writing NVK as a fresh Mesa Vulkan driver rather than extending the legacy Gallium-based Nouveau driver: with NIR as the common IR, NVK inherits years of correctness work and optimisation tuning from ANV, RADV, and other Mesa drivers at no additional implementation cost.
+
+### 1.3 What is NAK?
+
+NAK (Nouveau Assembler Kit) is NVK's compiler backend, responsible for translating NIR shaders into NVIDIA SASS (Shader ASSembly) binaries suitable for execution on NVIDIA GPUs. It is located in `src/nouveau/compiler/nak/` in the Mesa tree and was introduced in the Mesa 24.0 release cycle. NAK is notable within the Mesa codebase for being written primarily in Rust, a deliberate choice to use Rust's type system and memory safety guarantees to reduce the class of compiler defects — particularly incorrect register aliasing and use-after-free in IR nodes — that commonly affect C-based compiler implementations.
+
+NAK defines its own intermediate representation, NAK IR, which sits between NIR's high-level SSA form and the final SASS binary. NAK IR is an explicit-register IR using named register files — general-purpose registers (GPRs), predicate registers, and carry flags — with operand slots that directly reflect hardware constraints such as register pair requirements for 64-bit values. NAK targets the full range of NVIDIA shader model variants from Kepler (SM 3.x) through Blackwell (SM 10.x), generating generation-specific instruction encodings for each target while sharing the register allocator, instruction scheduler, and common lowering passes across all generations. Before NAK, the Nouveau ecosystem lacked a production-quality NVIDIA code generator capable of correctly targeting the hardware range that NVK covers.
 
 ---
 

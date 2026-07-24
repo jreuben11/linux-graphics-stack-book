@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [IPC in the Linux Graphics Stack — Why It Matters](#1-ipc-in-the-linux-graphics-stack--why-it-matters)
+   - [1.1 What is D-Bus?](#11-what-is-d-bus)
+   - [1.2 What is dbus-broker?](#12-what-is-dbus-broker)
+   - [1.3 What is Varlink?](#13-what-is-varlink)
 2. [D-Bus Architecture and Wire Protocol](#2-d-bus-architecture-and-wire-protocol)
 3. [dbus-daemon vs dbus-broker](#3-dbus-daemon-vs-dbus-broker)
 4. [Programming D-Bus: sd-bus (C)](#4-programming-d-bus-sd-bus-c)
@@ -86,6 +89,30 @@ Every IPC bus mechanism discussed in this chapter is built on top of lower-level
 - **Android Binder** bypasses the userspace socket layer entirely: transactions go through a kernel ioctl on `/dev/binder`, and the kernel copies (or maps) the data directly between process address spaces.
 - **Anonymous pipes** appear in the graphics stack primarily as the stdin/stdout of external tools: a terminal emulator piping Sixel-encoded image data from `ffmpeg` or `img2sixel` reads it from the subprocess's stdout pipe. They are not used for service IPC.
 - **memfd + io_uring splice** is the emerging zero-copy path for high-throughput IPC: data written into a `memfd` by one process can be `splice()`d into another's socket buffer without any userspace copy — or, with io_uring, enqueued as an `IORING_OP_SPLICE` submission without blocking. PipeWire uses this for low-latency audio buffer handoff; Ghostty uses io_uring for PTY I/O.
+
+### 1.1 What is D-Bus?
+
+D-Bus (Desktop Bus) is a message-passing system for inter-process communication on Linux and other Unix-like operating systems. It defines a binary wire protocol, a typed message format, an object model, and a broker daemon that routes messages between connected processes. A D-Bus message targets a specific object identified by a bus name, object path, and interface name, and can be a method call expecting a reply, a method return, an error response, or a one-way signal broadcast to subscribers.
+
+D-Bus was designed to replace a fragmented landscape of ad-hoc Unix socket protocols used by desktop components with a single, well-specified bus. It operates as two distinct buses: the system bus (`/run/dbus/system_bus_socket`), shared across all users and started at boot, where privileged daemons such as logind, NetworkManager, and colord expose hardware management APIs; and the per-user session bus (`$DBUS_SESSION_BUS_ADDRESS`), which starts with the login session and carries traffic between applications, compositors, and desktop services.
+
+In the Linux graphics stack, D-Bus is the mechanism through which a Wayland compositor requests a revocable DRM device file descriptor from logind via `TakeDevice`, through which colour-managed compositors retrieve ICC profiles from colord, and through which sandboxed applications access screen-capture streams via xdg-desktop-portal. Nearly every high-level desktop service boundary in the stack crosses D-Bus. The specification is maintained at freedesktop.org and documented at [dbus.freedesktop.org/doc/dbus-specification.html](https://dbus.freedesktop.org/doc/dbus-specification.html).
+
+### 1.2 What is dbus-broker?
+
+dbus-broker is a Linux-native D-Bus message broker that replaces the earlier `dbus-daemon` on most modern distributions. Where `dbus-daemon` was a monolithic daemon implementing configuration parsing, service activation, and message routing in a single process, dbus-broker separates concerns: the routing logic runs in the broker process itself, while lifecycle management — service activation, socket setup, and configuration — is delegated to systemd or another service manager via the `dbus-broker-launch` controller.
+
+The broker is implemented without a third-party event loop, using Linux-specific APIs directly: epoll, signalfd, and `AF_UNIX` socket credential passing via `SO_PEERCRED`. This produces lower per-message latency and better integration with cgroup-based process tracking, so the broker can attribute a message to the correct cgroup even after `fork()`. Policy enforcement continues to use the same XML policy files as `dbus-daemon`, meaning existing deployments require no configuration changes when switching implementations.
+
+dbus-broker became the default D-Bus implementation on Fedora starting with Fedora 27 and has since been adopted by most major distributions. The source is at [github.com/bus1/dbus-broker](https://github.com/bus1/dbus-broker). For graphics stack work, the practical difference is that `journalctl -u dbus-broker` replaces `journalctl -u dbus` for log inspection, and the broker's tighter cgroup integration means that when a Wayland compositor crashes, the broker can immediately revoke its well-known name rather than waiting for socket close detection.
+
+### 1.3 What is Varlink?
+
+Varlink is an IPC interface description language and protocol developed as part of the systemd ecosystem to address cases where D-Bus is heavier than necessary. It uses JSON over Unix domain sockets, with service interfaces described in `.varlink` files using a compact IDL syntax that resembles a typed struct language. Each Varlink service binds a socket under `/run` and handles method calls and one-way notifications without requiring a central broker process.
+
+The design goals that distinguish Varlink from D-Bus are minimal dependencies, a human-readable wire format, and a straightforward implementation path in any language capable of reading from a Unix socket. Service discovery relies on socket path naming conventions (for example, `/run/io.systemd.Resolve`) rather than a registry daemon, and the absence of a broker means there is no single process to restart when a service crashes.
+
+In the Linux graphics stack, Varlink appears primarily in systemd-adjacent services. `systemd-resolved`, `systemd-hostnamed`, and `systemd-logind` expose Varlink interfaces alongside their D-Bus APIs, and systemd is routing new internal services to Varlink rather than D-Bus for reduced startup latency. For compositor authors, Varlink is most relevant when integrating with newer `systemd-logind` session APIs or with `io.systemd.Credentials` for credential passing. The specification lives at [varlink.org](https://varlink.org) and the systemd implementation is in `src/varlink/` of the systemd source tree.
 
 ---
 
