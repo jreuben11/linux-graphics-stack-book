@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Depth Estimation and Reconstruction as a GPU Domain](#1-depth-estimation-and-reconstruction-as-a-gpu-domain)
+   - [1.5 What is Depth Estimation?](#15-what-is-depth-estimation)
+   - [1.6 What is Dense 3D Reconstruction?](#16-what-is-dense-3d-reconstruction)
+   - [1.7 What is Neural Radiance Field (NeRF) Reconstruction?](#17-what-is-neural-radiance-field-nerf-reconstruction)
 2. [Monocular Depth Estimation](#2-monocular-depth-estimation)
 3. [Stereo Depth Beyond SGM](#3-stereo-depth-beyond-sgm)
 4. [RGB-D Processing](#4-rgb-d-processing)
@@ -72,6 +75,30 @@ As of mid-2026, three compute frameworks host these workloads on Linux:
 - **Intel Arc (oneAPI / Level Zero):** ONNX Runtime OpenVINO EP supports Depth Anything v2 and MiDaS on Intel discrete GPUs. OpenCV DNN module runs on OpenVINO backend.
 
 Embedded Linux deployments (NVIDIA Jetson Orin, Qualcomm Snapdragon 8cx) use CUDA and Hexagon DSP respectively. ROS 2 provides the system integration layer for sensor pipelines (§10).
+
+### 1.5 What is Depth Estimation?
+
+Depth estimation is the process of computing, for each pixel in a 2D image or sensor frame, the metric distance from the sensor to the corresponding point in the physical scene. The output is a depth map: a 2D array where each entry holds a distance value in meters, or an inverse-depth or disparity proxy. Depth maps are consumed by downstream 3D reconstruction, collision avoidance, AR scene understanding, and robotic manipulation pipelines.
+
+The fundamental challenge is that projecting a 3D scene onto a 2D image discards the depth dimension; recovering it requires additional constraints. Those constraints can be geometric — derived from a known stereo baseline between two cameras, from the coded pattern of a structured light projector, or from the time-of-flight of modulated light — or they can be learned from training data that associates image appearance with ground-truth geometry. GPU hardware is central to depth estimation because the dominant methods, whether classical stereo matching or deep neural inference, demand dense parallel computation across millions of pixels per frame at sensor rate.
+
+In the Linux graphics stack, depth estimation runs as GPU compute via CUDA on NVIDIA hardware, HIP/ROCm on AMD, or Vulkan compute shaders on any Khronos-compliant GPU. Inference pipelines are commonly packaged as ONNX models deployed through ONNX Runtime execution providers, or as PyTorch models executed through framework-native GPU dispatch. The V4L2 subsystem and vendor SDKs such as librealsense supply raw sensor frames into these pipelines; the depth output feeds into TSDF fusion volumes, point cloud processors, or display compositors.
+
+### 1.6 What is Dense 3D Reconstruction?
+
+Dense 3D reconstruction is the process of building a spatially complete geometric model of a scene — mesh, volumetric grid, or neural implicit function — from a collection of depth measurements or images, as opposed to sparse reconstruction which recovers only isolated 3D feature points. Dense reconstruction captures continuous surface geometry, enabling applications in scanning, manufacturing inspection, robotic grasping, terrain modelling, and XR scene anchoring.
+
+The core pipeline stages are: depth acquisition from sensor or estimation model; registration that aligns individual depth frames into a common coordinate frame; fusion that accumulates measurements into a persistent representation such as a Truncated Signed Distance Function (TSDF) volume, sparse octree, or GPU hash map; and surface extraction that converts the volumetric field to a triangle mesh via marching cubes or dual contouring. Each stage exposes GPU parallelism: registration uses GPU-accelerated ICP or feature matching, fusion dispatches one thread per voxel update with atomic floating-point operations, and surface extraction runs a massively parallel scan over voxel cells.
+
+On Linux, dense reconstruction frameworks include Voxblox and Open3D for TSDF-based pipelines, COLMAP for multi-view stereo, and Instant-NGP and gsplat for neural scene representations. ROS 2 orchestrates sensor ingestion and data flow between these components in robotics and scanning deployments.
+
+### 1.7 What is Neural Radiance Field (NeRF) Reconstruction?
+
+A Neural Radiance Field encodes a 3D scene as a continuous volumetric function — typically a multilayer perceptron (MLP) — mapping a 3D position and a viewing direction to colour and volume density. Rendering a pixel requires marching a ray through the scene, evaluating the network at many sample points along the ray, and compositing colour and opacity values via numerical integration of the volume rendering equation. Reconstruction consists of optimising the network parameters so that rendered training views match a set of photographs captured with known camera poses.
+
+NeRF-based reconstruction is GPU-bound at every stage: ray generation dispatches one GPU thread per pixel, MLP evaluation executes as batched matrix-multiply-plus-activation chains in tight compute kernels, and gradient computation for stochastic gradient descent runs via automatic differentiation. Instant-NGP replaces the large MLP with a multiresolution hash-encoded feature grid that fits in GPU L2 cache, reducing training time from hours to seconds on a single GPU. 3D Gaussian Splatting, also covered in this chapter, achieves comparable quality using explicit anisotropic Gaussian primitives rather than an implicit network, and supports real-time rasterisation once the scene is optimised.
+
+On Linux, NeRF training and inference run primarily on CUDA via PyTorch, tiny-cuda-nn, or nerfstudio. ROCm ports of nerfstudio and gsplat enable training on AMD RDNA3 and CDNA2 GPUs. Vulkan-based viewers integrate pre-trained radiance field renderers with the Linux compositor stack (§12).
 
 ---
 

@@ -11,6 +11,9 @@ This chapter surveys the principal GPU compression algorithm families — block 
 ## Table of Contents
 
 1. [Compression as a GPU Algorithm Domain](#1-compression-as-a-gpu-algorithm-domain)
+   - [1.5 What is GPU Texture Compression?](#15-what-is-gpu-texture-compression)
+   - [1.6 What is Block Compression?](#16-what-is-block-compression)
+   - [1.7 What is Framebuffer Compression?](#17-what-is-framebuffer-compression)
 2. [BC/DXT Texture Block Compression](#2-bcdxt-texture-block-compression)
 3. [ASTC Texture Compression](#3-astc-texture-compression)
 4. [ETC and PVRTC Formats](#4-etc-and-pvrtc-formats)
@@ -51,6 +54,28 @@ Texture block formats (BC, ASTC, ETC, PVRTC) are **lossy** by design — they re
 | Lossless buffer | LZ4, GDeflate, nvcomp | GPU compute | GPU compute |
 | Entropy coding | Huffman, rANS, CABAC | GPU (partial) | GPU (partial) |
 | Framebuffer/display | AFBC, DCC, FBC | Fixed-function GPU render | Fixed-function display engine |
+
+### 1.5 What is GPU Texture Compression?
+
+GPU texture compression is a set of techniques for storing image data in formats that GPU texture-sampling hardware can decompress at read time, trading storage space and memory bandwidth for a controlled reduction in visual fidelity. Unlike CPU-side image formats such as PNG or JPEG — which must be fully decompressed to raw pixels before any GPU processing — GPU texture compression formats are decoded block by block inside the texture unit during sampling, with no shader involvement and no round-trip through uncompressed VRAM. The result is that a compressed texture consumes less GPU memory and generates fewer bytes at the memory controller per sample operation, directly improving effective bandwidth.
+
+On the Linux stack, GPU texture compression formats are exposed through Vulkan `VK_FORMAT_*` tokens and through OpenGL/OpenGL ES `GL_COMPRESSED_*` internal formats. The kernel DRM layer does not interpret texture content; format negotiation happens at the Mesa driver level, where support is declared in `VkPhysicalDeviceFeatures` fields such as `textureCompressionBC` and `textureCompressionASTC_LDR`, or via extensions such as `VK_EXT_texture_compression_astc_hdr`. Applications query format support at runtime and select an appropriate format for the target GPU family. The chapter covers the four principal texture compression families (BC, ASTC, ETC, PVRTC), GPU-accelerated encoding tools, and the separate domain of lossless compression applied to GPU buffers and framebuffers.
+
+### 1.6 What is Block Compression?
+
+Block compression is the encoding paradigm shared by all GPU texture formats examined in this chapter (BC1–BC7, ASTC, ETC1/2, and PVRTC). The input image is partitioned into non-overlapping rectangular regions called *blocks* — 4×4 texels for BC, ETC, and ASTC at its finest footprint, or up to 12×12 texels for coarser ASTC settings. Each block is encoded independently into a fixed-size bitstream regardless of the complexity or uniformity of the block's content.
+
+The fixed block size is what makes these formats viable in GPU hardware: given an image base address and a block footprint, the GPU can compute the memory location of any block from its texel coordinates using integer arithmetic alone, with no metadata tables or variable-length indirection. This random-access property is a hardware requirement imposed by the pipelined nature of GPU texture sampling, not a quality-driven choice.
+
+Within each block, a compression model represents the colour field as a parameterised function — a pair of endpoints on a colour-space line segment (BC1), multiple partitioned endpoint pairs (BC7, ASTC), or interpolation planes (ETC2 planar mode). Each texel receives a short index selecting a quantised point on that function. Encoder quality is determined by how well the chosen model approximates the block's actual colour distribution; decoder complexity depends only on the model's fixed structure, making fixed-function hardware decoders area-efficient and power-frugal.
+
+### 1.7 What is Framebuffer Compression?
+
+Framebuffer compression — also called display compression or render compression — is a class of lossless compression applied to pixel data written by the GPU's render engine and subsequently read by the display engine or by later render passes. Unlike texture block compression, framebuffer compression must reproduce the exact pixel sequence; it is applied to render targets and scanout buffers where any pixel deviation is visible.
+
+On the Linux stack, framebuffer compression is implemented as a collaboration among the Mesa driver, the kernel DRM subsystem, and GPU hardware. The GPU's render engine writes tiles in a vendor-specific compressed layout — ARM AFBC (Arm Frame Buffer Compression), AMD DCC (Delta Color Compression), or Intel FBC/CCS (Framebuffer Compression/Color Control Surface) — alongside a metadata buffer recording per-tile compression state. The kernel DRM driver exposes the compressed buffer to the display engine via DMA-BUF with format modifiers, defined in `include/uapi/drm/drm_fourcc.h`, that encode both the pixel format and the compression layout in a 64-bit modifier token. The display engine reads the modifier, locates the metadata, and decompresses each tile as it scans out to the display without any intermediate copy to uncompressed VRAM.
+
+The bandwidth saving is substantial: on colour-uniform regions common in UI workloads, AFBC can reach 4:1 compression or better, substantially reducing memory traffic on the display bus. Section 10 covers the per-vendor implementations in detail.
 
 ---
 

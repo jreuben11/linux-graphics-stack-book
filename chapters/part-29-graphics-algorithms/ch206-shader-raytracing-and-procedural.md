@@ -9,6 +9,9 @@ This chapter is the third volume of the Shader Algorithm Catalog. It covers thre
 ## Table of Contents
 
 - **[VII. Ray Tracing](#vii-ray-tracing)**
+  - [1.1 What is Hardware Ray Tracing?](#11-what-is-hardware-ray-tracing)
+  - [1.2 What is a Bounding Volume Hierarchy?](#12-what-is-a-bounding-volume-hierarchy)
+  - [1.3 What is Procedural Content Generation?](#13-what-is-procedural-content-generation)
   - [Ray Tracing Shader Patterns](#ray-tracing-shader-patterns)
   - [Complete Path Tracer Pipeline](#complete-path-tracer-pipeline)
   - [ReSTIR PT — Path Tracing Resampling](#restir-pt-path-tracing-resampling)
@@ -591,6 +594,28 @@ bool bvh_any_hit(vec3 origin, vec3 dir, float t_max) {
 
 ---
 
+
+### 1.1 What is Hardware Ray Tracing?
+
+Hardware ray tracing is a GPU pipeline that computes ray-scene intersections using dedicated hardware traversal units, exposed on Linux through the Vulkan extension `VK_KHR_ray_tracing_pipeline`. Unlike rasterization, which projects geometry into screen space and approximates secondary effects with screen-space heuristics, ray tracing fires a ray from each pixel — or from any arbitrary surface point — into the scene and queries an acceleration structure for the nearest geometry intersection along that ray. This enables physically correct shadows, reflections, ambient occlusion, and global illumination that are free of the off-screen occlusion artifacts and contact shadow bias inherent in rasterized approximations.
+
+On Linux, hardware traversal is exposed through Mesa's RADV (AMD RDNA2 and later) and NVK (NVIDIA Turing and later) Vulkan drivers, which compile the five ray tracing shader stages — ray generation (`rgen`), intersection (`rint`), any-hit (`rahit`), closest-hit (`rchit`), and miss (`rmiss`) — into GPU ISA and construct acceleration structures via `vkCmdBuildAccelerationStructuresKHR`. Shaders communicate across `traceRayEXT()` calls through a `rayPayloadEXT` struct, and are dispatched via a Shader Binding Table (SBT) that maps geometry instances to material shader records. The dominant Linux production pattern is hybrid rendering: rasterize primary visibility through a G-Buffer, then trace secondary rays for shadows, reflections, and one-bounce global illumination. Category VII of this chapter covers this full wiring model alongside the unidirectional path tracer, ReSTIR resampling for many-light scalability, and the denoising filters (SVGF, NRD) that recover clean images from undersampled ray budgets.
+
+---
+
+### 1.2 What is a Bounding Volume Hierarchy (BVH)?
+
+A Bounding Volume Hierarchy is the spatial acceleration structure that makes ray-scene intersection tractable at GPU scale. Scene geometry is recursively partitioned into a binary tree of axis-aligned bounding boxes (AABBs): each leaf node contains a small set of triangles, and each interior node contains an AABB that encloses all geometry in its subtree. A ray traversal tests nodes in front-to-back order and prunes entire subtrees when the ray misses a node's AABB, reducing average intersection cost from O(N) for a brute-force triangle sweep to O(log N).
+
+In the Vulkan ray tracing model the BVH is split into two levels. Bottom-Level Acceleration Structures (BLASes) store per-object triangle geometry; the Top-Level Acceleration Structure (TLAS) stores per-instance transforms and BLAS references. This two-level design allows rigid-body animated scenes to update only the TLAS each frame, reusing per-object BLASes without rebuild. `vkCmdBuildAccelerationStructuresKHR` builds both levels on the GPU; quality-tuned builds use a Surface Area Heuristic (SAH) that minimises expected traversal cost, while `VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR` selects a cheaper binned SAH for dynamic geometry. RADV and NVK expose hardware BVH builders on AMD RDNA2 and NVIDIA Turing respectively, with Mesa also shipping compute-shader SAH fallback paths for devices without dedicated BVH hardware. The "Software BVH Traversal" section of this chapter covers a full BVH construction and traversal loop written entirely in compute shaders for platforms where the hardware ray tracing pipeline is unavailable.
+
+---
+
+### 1.3 What is Procedural Content Generation?
+
+Procedural content generation is the use of deterministic mathematical functions — rather than explicitly stored artist data — to produce geometry, surface detail, and environmental phenomena at runtime or offline. On the GPU, procedural techniques trade storage bandwidth and asset pipeline complexity for compute: a noise-derived terrain produces unlimited geometric detail from a compact parameter set, a signed-distance-function volume occupies no texture memory regardless of resolution, and a procedural ocean mesh is regenerated each frame without CPU involvement.
+
+The foundational primitive is spatial noise: spatially coherent pseudo-random scalar fields built from lattice interpolation (Value noise, Gradient/Perlin noise, Simplex noise) or hash-based methods (Voronoi/cellular noise), composed via Fractional Brownian Motion (FBM) and domain warping to produce organic, multi-scale results. Above noise, Signed Distance Functions (SDFs) represent implicit surfaces by encoding at each spatial sample the signed distance to the nearest surface boundary, enabling sphere marching for rendering, isosurface extraction (Marching Cubes, Surface Nets) for mesh generation, and GPU collision queries without triangle meshes. Geometry amplification at render time is handled by tessellation shaders (Phong tessellation, adaptive tessellation driven by screen-space error) and mesh shaders, which generate triangle primitives entirely on the GPU without a CPU-authored vertex buffer. Categories VIII and IX of this chapter cover the complete toolkit: noise primitives through marching cubes isosurface extraction, Catmull-Clark subdivision, displacement mapping, terrain and vegetation rendering, ocean and fluid simulation, and volumetric participating media.
 
 ---
 

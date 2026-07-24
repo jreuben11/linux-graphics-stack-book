@@ -8,6 +8,9 @@ This chapter is the fourth volume of the GPU Geometry Algorithms series. It cove
 
 ## Table of Contents
 
+- [1.1 What is GPU Terrain Rendering?](#11-what-is-gpu-terrain-rendering)
+- [1.2 What is a Ray Tracing Acceleration Structure?](#12-what-is-a-ray-tracing-acceleration-structure)
+- [1.3 What is a Point Cloud?](#13-what-is-a-point-cloud)
 - **[VIII. Terrain, Procedural Content, and Environment](#viii-terrain-procedural-content-and-environment)**
   - [69. Procedural Geometry Generation](#69-procedural-geometry-generation)
   - [70. Navigation Meshes and GPU Pathfinding](#70-navigation-meshes-and-gpu-pathfinding)
@@ -34,6 +37,24 @@ This chapter is the fourth volume of the GPU Geometry Algorithms series. It cove
   - [89. 3D Feature Descriptors and Pose Estimation](#89-3d-feature-descriptors-and-pose-estimation)
   - [90. Iterative Closest Point (ICP) Registration](#90-iterative-closest-point-icp-registration)
 
+
+### 1.1 What is GPU Terrain Rendering?
+
+GPU terrain rendering is the practice of generating, level-of-detailing, and drawing large-scale continuous natural environments entirely on the GPU, without requiring the CPU to store or tessellate a complete mesh of the world geometry. The core problem is that a realistic outdoor environment may span hundreds of square kilometres at centimetre-level detail — far exceeding GPU memory and rasterization budgets if treated naively as a single high-resolution mesh. The solution is a LOD hierarchy: nearby terrain is drawn at full resolution, while distant terrain uses progressively coarser geometry, with transitions managed so that visible cracks and popping artifacts are eliminated.
+
+On Linux with Vulkan, terrain systems store the world as a heightmap in a 2D texture — often a tiled format backed by VkSparseImageMemoryBind for on-demand streaming from disk — and generate the actual vertex geometry in a compute or tessellation shader at runtime. The two dominant LOD algorithms, quadtree subdivision and clipmap rings, are both expressible as Vulkan indirect dispatch calls or mesh shader workgroups. A terrain pipeline also integrates with GPU-driven erosion simulation that modifies the heightmap procedurally, navigation mesh construction that reads height data to build walkable surfaces, and geospatial reprojection that maps real-world digital elevation model (DEM) data into GPU-native tiled formats. Sections 69 through 74 of this chapter cover all of these terrain sub-systems in detail.
+
+### 1.2 What is a Ray Tracing Acceleration Structure?
+
+A ray tracing acceleration structure is a spatial data structure maintained on the GPU that allows ray-intersection queries — "which triangle does this ray hit first?" — to be answered in logarithmic rather than linear time relative to scene triangle count. Without such a structure, tracing even a single ray through a scene of millions of triangles would require testing every triangle, making real-time ray tracing impractical. The structure organizes triangles into a bounding volume hierarchy (BVH), where each node stores an axis-aligned bounding box (AABB) enclosing all geometry in its subtree; a traversing ray skips entire subtrees whose bounding box it misses.
+
+Vulkan Ray Tracing (VK_KHR_ray_tracing_pipeline, finalized in Vulkan 1.2) exposes a two-level hierarchy. The Bottom-Level Acceleration Structure (BLAS) encodes the triangles of a single mesh into a hardware-optimized BVH. The Top-Level Acceleration Structure (TLAS) references multiple BLAS instances, each with its own 3x4 affine transform, allowing the same mesh geometry to appear at different world positions without duplication. Hardware traversal is performed by dedicated ray/box and ray/triangle intersection units present on modern GPUs. The driver builds or updates these structures via vkCmdBuildAccelerationStructuresKHR. Dynamic objects use UPDATE mode to refit the BLAS around new vertex positions without a full rebuild, trading traversal quality for build speed. Sections 75 through 86 of this chapter cover the construction, traversal, and application of these structures across shadow, global illumination, and path tracing pipelines.
+
+### 1.3 What is a Point Cloud?
+
+A point cloud is a set of discrete 3D points sampled from the surface of a physical environment or object, with each point storing a position in 3D space and optionally additional per-point attributes such as RGB color, surface normal, reflectance intensity, or timestamp. Point clouds arise from active sensing — LiDAR, structured-light cameras, and time-of-flight depth sensors — and from passive reconstruction pipelines that estimate 3D positions by matching corresponding features across multiple 2D images (structure-from-motion, multi-view stereo). Because point clouds represent surfaces as unconnected samples rather than as an explicit mesh with connectivity, they require specialized algorithms for registration, feature extraction, and rendering.
+
+On Linux, GPU point cloud processing pipelines store point data in Vulkan storage buffers (SSBOs) and process them with compute shaders dispatched in parallel over all points. Rendering is done either via hardware point rasterization with a configurable point size, or via 3D Gaussian Splatting (3DGS), in which each point is modeled as an anisotropic 3D Gaussian and rendered by projecting it to a screen-space ellipse in depth-sorted order using a compute-driven rasterization pass. Registration pipelines use GPU-accelerated Iterative Closest Point (ICP), with nearest-neighbor search via k-d tree or grid hashing and SVD decomposition for the optimal rigid transform. Category X (sections 87 through 90) covers point cloud processing, reconstruction, pose estimation, and ICP registration in detail.
 
 ---
 

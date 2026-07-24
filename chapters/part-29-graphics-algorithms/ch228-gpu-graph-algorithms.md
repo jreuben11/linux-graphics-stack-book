@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Graphs on the GPU](#1-graphs-on-the-gpu)
+   - [1.3 What is a Graph?](#13-what-is-a-graph)
+   - [1.4 What is GPU-Accelerated Graph Processing?](#14-what-is-gpu-accelerated-graph-processing)
+   - [1.5 What is cuGraph?](#15-what-is-cugraph)
 2. [Parallel BFS](#2-parallel-bfs)
 3. [Single-Source Shortest Path](#3-single-source-shortest-path)
 4. [Connected Components](#4-connected-components)
@@ -63,6 +66,24 @@ Accessing all neighbours of vertex `v` is `col_indices[row_offsets[v] .. row_off
 **Memory layout for coalesced access.** Reordering vertices using a space-filling curve (Hilbert order, RCM bandwidth reduction) clusters spatially adjacent vertices in memory, improving neighbour gather locality by 3–5× on graphs derived from meshes or grids. For pure social graphs this helps less. [Source: Merrill, Garland, "Merge-based Parallel Sparse Matrix-Vector Multiplication", SC 2016, https://dl.acm.org/doi/10.5555/3014904.3014982]
 
 **Static vs dynamic graphs.** CSR is immutable: adding an edge requires rebuilding the entire structure. Dynamic GPU graphs use chunked adjacency lists or GPU hash tables (e.g., cuDF/cuGraph's `EdgeList` backed by a hash table) to support incremental edge insertion. The 2025 cuGraph release added streaming graph primitives through the `cugraph::GraphCSR` C++ API, but the Python `cugraph` layer targets static snapshots. [Source: cuGraph GitHub repository, https://github.com/rapidsai/cugraph]
+
+### 1.3 What is a Graph?
+
+A graph is a mathematical structure consisting of a set of vertices (also called nodes) and a set of edges connecting pairs of vertices. Edges may be directed (pointing from one vertex to another) or undirected (representing a symmetric relationship), and may carry numerical weights representing costs, distances, capacities, or similarities. The fundamental operations on a graph — traversal, shortest-path queries, component detection, and centrality ranking — underpin a wide range of problems in computer graphics and systems programming. A scene graph is a directed acyclic graph of transform nodes; a triangle mesh is an undirected graph of geometric faces sharing edges; a shader dependency graph is a directed graph of resource reads and writes; and a navigation mesh is a weighted undirected graph supporting shortest-path queries for agent pathfinding.
+
+Graph density varies from sparse (|E| = O(|V|), typical of road networks and polygon meshes) to dense (|E| = O(|V|²), typical of fully connected neural-network layers). All data structures and algorithms in this chapter target the sparse case, which dominates graphics and systems applications. The chapter uses the notation G = (V, E) where |V| denotes vertex count and |E| denotes edge count; weights are stored as a separate array parallel to the edge list.
+
+### 1.4 What is GPU-Accelerated Graph Processing?
+
+GPU-accelerated graph processing applies the massively parallel SIMT architecture of modern GPUs to graph algorithms that are traditionally executed sequentially on the CPU. The attraction is throughput: a contemporary GPU provides hundreds of gigabytes per second of memory bandwidth and thousands of concurrent threads, yielding potential speedups of 10–100× over a single CPU core for bandwidth-bound graph traversal on large graphs.
+
+The central challenge is the mismatch between SIMT execution and the irregular structure of graph algorithms, detailed in §1.1. Overcoming this mismatch requires GPU-specific data structures (CSR, COO, §1.2), load-balancing strategies (warp-per-edge, CTA-per-vertex dispatch), and frontier management techniques (top-down vs. bottom-up BFS switching, §2.2). The field has converged on a set of production libraries — NVIDIA cuGraph, Stanford Gunrock, and the GraphBLAS linear-algebra standard — that encapsulate these techniques behind high-level APIs. This chapter uses cuGraph's Python and C++ interfaces as the primary reference implementation and shows Gunrock operator-level code where fine-grained control of work distribution is instructive.
+
+### 1.5 What is cuGraph?
+
+cuGraph is the GPU graph analytics component of the RAPIDS open-source data science ecosystem maintained by NVIDIA. It provides a collection of graph algorithms — traversal, shortest path, connected components, centrality, community detection, and graph neural network primitives — implemented as CUDA kernels and exposed through both a Python API (`import cugraph`) and a C++ header-only library (`#include <cugraph/...>`). cuGraph operates on graphs stored in GPU memory as cuDF DataFrames or raw CSR arrays, keeping data on the device throughout an analytics pipeline and avoiding round-trip CPU-GPU copies.
+
+Internally, cuGraph builds on the Raft library for primitive CUDA operations (reductions, sorts, sparse linear algebra), cuSPARSE for SpMV-based algorithms such as PageRank, and Thrust for scan and compaction. The C++ template layer represents graphs as `cugraph::graph_view_t<int32_t, int32_t, float, false, false>`, where template parameters encode vertex-ID type, edge-ID type, weight type, storedness, and multipartite flag. Python callers construct a `cugraph.Graph` from a cuDF edge-list DataFrame and pass it directly to algorithm functions such as `cugraph.bfs`, `cugraph.sssp`, or `cugraph.louvain`. This chapter references cuGraph release 25.02 unless otherwise noted. [Source: cuGraph documentation, https://docs.rapids.ai/api/cugraph/stable/; GitHub repository, https://github.com/rapidsai/cugraph]
 
 ---
 

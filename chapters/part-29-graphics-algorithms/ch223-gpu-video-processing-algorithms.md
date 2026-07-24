@@ -18,6 +18,9 @@ computations in general-purpose Vulkan compute shaders.
 ## Table of Contents
 
 - [1. Video as a GPU Algorithm Domain](#1-video-as-a-gpu-algorithm-domain)
+  - [1.1 What is GPU-Accelerated Video Processing?](#11-what-is-gpu-accelerated-video-processing)
+  - [1.2 What is Block-Based Video Coding?](#12-what-is-block-based-video-coding)
+  - [1.3 What is Motion Estimation?](#13-what-is-motion-estimation)
 - [2. Motion Estimation and Compensation](#2-motion-estimation-and-compensation)
 - [3. Intra Prediction](#3-intra-prediction)
 - [4. Transform Coding on GPU](#4-transform-coding-on-gpu)
@@ -88,6 +91,69 @@ arbitrary bit depths, non-standard block sizes, algorithm experimentation, and o
 that lack dedicated codec hardware (e.g., Mali, PowerVR, or any GPU in a system where the
 fixed-function block is occupied). The sections below describe the shader-side algorithms
 regardless of whether they run on a dedicated block or on shader cores.
+
+### 1.1 What is GPU-Accelerated Video Processing?
+
+GPU-accelerated video processing refers to the use of general-purpose compute shaders or dedicated
+fixed-function hardware blocks on a GPU to perform the mathematical operations involved in
+encoding, decoding, filtering, and analysing video. On Linux, the interfaces to this hardware are
+VA-API (Video Acceleration API), V4L2 (Video for Linux 2, primarily for stateless codecs on
+embedded SoCs), and the Vulkan Video extensions. Behind all of these APIs lies a set of
+mathematical algorithms — motion search, transform coding, quantisation, and in-loop filtering —
+that the GPU executes on video data organised as frames and macroblocks. This chapter examines
+those algorithms independently of the API layer: the same operations occur whether they run on a
+fixed-function video engine such as AMD VCN or Intel Quick Sync Video, or in a Vulkan compute
+shader written to augment or replace the hardware path. Understanding the algorithms matters for
+two classes of use: implementing custom processing pipelines (for example, adding a neural
+super-resolution pass between decode and display) and diagnosing quality or performance problems by
+knowing which stage of the codec pipeline produces a given artefact. The GPU's massive thread
+parallelism makes it the natural execution target for the data-parallel stages of video processing,
+while its fixed-function blocks provide the power and latency characteristics required for
+real-time streaming workloads. [Source: Vulkan Video extensions overview,
+https://www.khronos.org/blog/an-introduction-to-vulkan-video]
+
+### 1.2 What is Block-Based Video Coding?
+
+Block-based video coding is the dominant architectural paradigm for video compression. A frame is
+partitioned into rectangular blocks — 16×16 macroblocks in H.264, variable-size coding tree units
+(CTUs) of up to 64×64 in HEVC, and superblocks of up to 128×128 in AV1. Each block is
+independently predicted, transformed, quantised, and entropy-coded. This block structure makes
+video processing naturally parallel: once the prediction dependencies between neighbouring blocks
+are satisfied, thousands of blocks in a frame can be processed simultaneously on GPU shader cores.
+The algorithms described throughout this chapter — motion estimation, intra prediction, DCT-based
+transform coding, and in-loop deblocking — all operate at the granularity of these coding blocks.
+Block boundaries are the source of the most common visible codec artefact (blockiness or
+"mosquito noise") and motivate the in-loop filters that smooth them. In Vulkan compute, the block
+grid maps naturally to the workgroup grid: a dispatch with workgroup size matching the block
+dimension processes one block per workgroup, enabling SAD computations, transform passes, and
+filter kernels to run without cross-workgroup synchronisation within a single frame row or
+anti-diagonal. The variable block partitioning of modern codecs (H.264 sub-macroblocks, HEVC
+coding units, AV1 partition tree) introduces additional complexity: the encoder must decide at
+rate-distortion cost which partition depth to use, and GPU implementations often evaluate multiple
+depths in parallel before selecting the winner. [Source: ITU-T H.264 specification §6,
+https://www.itu.int/rec/T-REC-H.264]
+
+### 1.3 What is Motion Estimation?
+
+Motion estimation (ME) is the process of finding, for each block in the current video frame, the
+spatial displacement (motion vector) that best predicts that block's content from a region in a
+previously encoded reference frame. The goal is to maximise prediction accuracy so that the
+residual signal — the difference between the block and its prediction — has low energy and can be
+compressed efficiently. The reference region located by the motion vector is then used to generate
+a motion-compensated prediction, and only the residual is stored in the encoded bitstream. Motion
+estimation is the most computationally expensive stage of video encoding: for a 1080p frame with
+16×16 macroblocks and a ±32-pixel search window, a naive full-search encoder must evaluate more
+than 17 million block matches per frame. GPU acceleration maps each block-candidate pair to a
+separate thread group, computing Sum of Absolute Differences (SAD) in shared memory using parallel
+reduction. Modern codec formats extend the concept: AV1 supports compound inter prediction blending
+two reference frames, HEVC supports merge mode propagating motion vectors spatially, and
+screen-content coding modes replace inter-frame references with intra-frame block copy. All of
+these are forms of motion estimation and are described in the sections that follow. The distinction
+between motion estimation (the search for the best vector, performed only during encode) and motion
+compensation (the application of the found vector to construct a prediction, performed during both
+encode and decode) is important: hardware decode engines perform only compensation, never
+estimation. [Source: H.264 specification §8.4 inter prediction,
+https://www.itu.int/rec/T-REC-H.264]
 
 ---
 

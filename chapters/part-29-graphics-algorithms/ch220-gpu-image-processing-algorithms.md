@@ -11,6 +11,9 @@ This chapter surveys the principal classes of GPU image processing algorithms �
 ## Table of Contents
 
 1. [GPU Image Processing Architecture](#1-gpu-image-processing-architecture)
+   - [1.4 What is GPU Image Processing?](#14-what-is-gpu-image-processing)
+   - [1.5 What is a Vulkan Compute Pipeline?](#15-what-is-a-vulkan-compute-pipeline)
+   - [1.6 What is an ISP Pipeline?](#16-what-is-an-isp-pipeline)
 2. [Spatial Filtering](#2-spatial-filtering)
 3. [Morphological Operations](#3-morphological-operations)
 4. [Edge and Feature Detection](#4-edge-and-feature-detection)
@@ -93,6 +96,24 @@ void main() {
 ```
 
 For a separable kernel (Gaussian, box, Lanczos) the two-pass (horizontal then vertical) approach reduces the per-output-pixel work from O(k²) to O(2k) and is strongly preferred for large radii.
+
+### 1.4 What is GPU Image Processing?
+
+GPU image processing is the execution of image analysis and transformation algorithms on a graphics processing unit rather than on a general-purpose CPU. A GPU contains thousands of small shader processors organized into warps or wavefronts that execute the same instruction across many data lanes simultaneously. Image data maps naturally onto this architecture: a 4K frame contains roughly 8 million pixels, each of which typically requires the same sequence of operations applied independently. By dispatching a compute shader with one workgroup invocation per pixel or per tile, the GPU can process an entire frame in the time a CPU core processes a single scanline.
+
+On the Linux stack, GPU image processing is accessed through three main paths. The Vulkan compute pipeline (`VkComputePipeline`) exposes raw GPU shader execution at low driver overhead; shaders are written in GLSL or HLSL and compiled to SPIR-V. Higher-level frameworks such as OpenCV's CUDA and OpenCL backends and Halide's GPU code-generation target abstract the shader programming model behind domain-specific APIs. For camera-sourced imagery, the kernel's Media Controller framework and the V4L2 subsystem carry frames from ISP hardware into GPU-accessible DMA-BUF buffers, enabling a zero-copy path from sensor to shader. This chapter covers all three layers, beginning with the fundamental compute patterns common to every algorithm class and concluding with the OpenCV and Halide backends that package them.
+
+### 1.5 What is a Vulkan Compute Pipeline?
+
+A Vulkan compute pipeline (`VkComputePipeline`) is the API object that packages a single compute shader stage for execution on the GPU outside of the traditional graphics render pass. Unlike a graphics pipeline, which sequences vertex, tessellation, geometry, and fragment stages to produce rasterized output, a compute pipeline consists of a single SPIR-V module with a defined entry point and a descriptor-set layout describing how buffers and images are bound. The host dispatches work with `vkCmdDispatch(x, y, z)`, where x, y, z are workgroup counts in three dimensions; each workgroup runs the shader on a grid of local invocations whose size is declared in the shader source via `layout(local_size_x, local_size_y, local_size_z)`.
+
+For 2D image processing, the canonical mapping dispatches a 2D grid where each invocation computes one output pixel or tile. Shared memory — declared with the `shared` qualifier in GLSL — allows threads within a workgroup to exchange data without accessing the GPU's main cache hierarchy, which is critical for convolutions and morphological operations that read overlapping neighborhoods. Images are bound either as combined image samplers for texture-unit-interpolated access, or as storage images (`VK_IMAGE_USAGE_STORAGE_BIT`) for direct `imageLoad`/`imageStore`. The compute pipeline is the foundation for every algorithm discussed in this chapter, from simple Gaussian blur through optical flow and neural super-resolution inference.
+
+### 1.6 What is an ISP Pipeline?
+
+An Image Signal Processor (ISP) is a hardware block, separate from the GPU, that transforms raw sensor data — Bayer or X-Trans mosaic patterns from a CMOS image sensor — into a processed RGB or YUV image suitable for display or encode. The ISP applies a sequential set of operations: black-level subtraction, lens shading correction, white balance, demosaicing, noise reduction, color correction matrix, gamma, and tone mapping. On Linux, ISP hardware is exposed through the kernel's Media Controller framework (`/dev/mediaX`) and the V4L2 subsystem (`/dev/videoX`). Capture pipelines built with libcamera or GStreamer's `v4l2src` element control ISP parameters through V4L2 controls and can expose intermediate buffers at any pipeline stage via DMA-BUF file descriptors.
+
+The GPU becomes relevant to the ISP pipeline in two complementary roles. When dedicated ISP hardware is present, the GPU receives the ISP's output over DMA-BUF and may apply additional GPU-side processing — AI-based super-resolution or learned noise reduction running as Vulkan compute shaders. When no ISP hardware is available, as is common with USB cameras or in embedded prototypes, the full ISP algorithm stack can be implemented as Vulkan compute shaders running entirely on the GPU. Section 10 details both deployment patterns with reference to the libcamera and V4L2 Linux interfaces, including how DMA-BUF import into `VkDeviceMemory` enables the zero-copy handoff between subsystems.
 
 ---
 

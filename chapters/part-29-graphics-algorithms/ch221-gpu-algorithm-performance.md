@@ -13,6 +13,8 @@ Cross-references: Ch 25 (Vulkan compute basics), Ch 133 (multi-queue architectur
 ## Table of Contents
 
 1. [The GPU Performance Model — Roofline Analysis](#1-the-gpu-performance-model--roofline-analysis)
+   - [1.5 What is the Roofline Model?](#15-what-is-the-roofline-model)
+   - [1.6 What is Arithmetic Intensity?](#16-what-is-arithmetic-intensity)
 2. [Occupancy Analysis](#2-occupancy-analysis)
 3. [Memory Access Optimisation](#3-memory-access-optimisation)
 4. [Shared Memory and LDS](#4-shared-memory-and-lds)
@@ -67,6 +69,14 @@ The roofline model conventionally plots DRAM bandwidth. Real GPUs have cache hie
 - **Shared memory / LDS** (explicitly managed): comparable bandwidth to L1 but programmer-controlled; covered in §4.
 
 Plotting on the roofline is therefore a family of ceilings, not just one. An element-wise op with high spatial reuse (e.g. processing adjacent pixels in a post-process pass with a 3×3 kernel) may achieve L1 bandwidth instead of DRAM bandwidth, lifting effective performance 10–20×.
+
+### 1.5 What is the Roofline Model?
+
+The roofline model is a performance-analysis framework that characterises the achievable performance of a compute workload on a given hardware platform by comparing the workload's arithmetic intensity against the platform's two fundamental throughput limits: peak floating-point operations per second (FLOPS) and peak memory bandwidth (bytes per second). The model plots attainable performance as a function of arithmetic intensity on a log-log chart, producing a roofline shape formed by two line segments: a sloped region where performance scales linearly with arithmetic intensity (the memory-bound regime) and a flat region where arithmetic throughput is the bottleneck (the compute-bound regime). The crossover point — the ridge point — is defined by the ratio of peak FLOPS to peak bandwidth in FLOPs per byte. Any algorithm whose arithmetic intensity falls below the ridge point is memory-bound regardless of how fast the shader cores run; any algorithm above the ridge point is compute-bound regardless of memory bandwidth. On Linux, the roofline model underlies the analysis workflow of tools such as AMD Radeon GPU Profiler, NVIDIA Nsight Compute, and Intel VTune: each tool exposes hardware performance counters for DRAM byte traffic and FP operation counts so that the measured arithmetic intensity can be plotted against the hardware roofline. Understanding where a workload sits on this chart — and which ceiling is the binding constraint — determines which class of optimisation will yield real gains: memory access restructuring for memory-bound kernels, arithmetic density improvement or register-pressure reduction for compute-bound ones.
+
+### 1.6 What is Arithmetic Intensity?
+
+Arithmetic intensity (AI) quantifies how much compute work an algorithm performs per byte of data it transfers to or from main memory (DRAM). It is expressed in FLOPs per byte, written as I = W / Q, where W is the total floating-point operation count and Q is the total number of bytes transferred between the GPU and off-chip memory. An element-wise array operation such as scaling or adding two vectors has AI near 0.08–0.17 FLOPs/byte (one multiply per two or three 4-byte memory accesses), placing it deep in the memory-bound region on every current GPU. A dense matrix multiplication of large matrices has AI proportional to matrix dimension N (approximately N/12 FLOPs/byte for FP32), placing it in the compute-bound region once N exceeds the ridge-point threshold. Arithmetic intensity is not fixed for a given algorithm in isolation: it depends on data reuse through cache hierarchy. Tiling a matrix multiplication so that the active sub-matrices fit in LDS or shared memory reduces DRAM traffic Q while leaving W unchanged, raising effective AI and shifting the workload toward the compute-bound region. On Linux, the primary instruments for measuring actual arithmetic intensity are hardware performance counters: AMD exposes vector-ALU instruction counts and L2/DRAM byte traffic through `rocprof` and Radeon GPU Profiler; NVIDIA exposes analogous counters (`flop_count_sp`, `dram_read_transactions`) through Nsight Compute. Dividing the measured FLOPs by the measured DRAM bytes gives the empirical AI, which can then be compared against the theoretical roofline to identify whether the kernel is close to its hardware ceiling or has room to improve.
 
 ---
 

@@ -8,6 +8,9 @@ This chapter is the fifth and final volume of the GPU Geometry Algorithms series
 
 ## Table of Contents
 
+- [1.1 What is 3D Gaussian Splatting?](#11-what-is-3d-gaussian-splatting)
+- [1.2 What is a Neural Radiance Field (NeRF)?](#12-what-is-a-neural-radiance-field-nerf)
+- [1.3 What is Differentiable Rendering?](#13-what-is-differentiable-rendering)
 - **[XI. Neural and Learned Geometry](#xi-neural-and-learned-geometry)**
   - [91. 3D Gaussian Splatting and Neural Geometry](#91-3d-gaussian-splatting-and-neural-geometry)
   - [92. Geometric Deep Learning](#92-geometric-deep-learning)
@@ -31,6 +34,18 @@ This chapter is the fifth and final volume of the GPU Geometry Algorithms series
 
 
 
+
+### 1.1 What is 3D Gaussian Splatting?
+
+3D Gaussian Splatting (3DGS) is a scene representation and real-time rendering technique that encodes a 3D scene as a collection of oriented, anisotropic Gaussian primitives — each defined by a 3D position, a covariance matrix encoding orientation and scale, an opacity value, and view-dependent colour represented by spherical harmonic coefficients. Unlike triangle meshes or voxel grids, Gaussian splats are continuous and differentiable, allowing them to be fitted to multi-view image observations via gradient descent without any explicit 3D supervision. Rendering proceeds by projecting each Gaussian into screen space as a 2D ellipse, sorting them by depth using GPU radix sort (§107), and alpha-compositing them front-to-back in a tile-based compute shader rasterizer. The technique emerged in 2023 as a practical alternative to Neural Radiance Fields for novel-view synthesis, offering substantially faster inference at comparable visual quality. In the Linux graphics stack, 3DGS runs as Vulkan compute dispatches or CUDA kernels; the trained scene can optionally be converted to a triangle mesh via Poisson reconstruction (§3.12) for integration with conventional rendering pipelines. The implementation is split across §91 (conceptual overview and the projection and tile-rasterizer pipeline) and §94 (the full differentiable backward pass, densification, and pruning).
+
+### 1.2 What is a Neural Radiance Field (NeRF)?
+
+A Neural Radiance Field (NeRF) is an implicit scene representation that stores geometry and appearance entirely inside the weights of a multilayer perceptron (MLP). Given a 3D query position and a viewing direction, the MLP returns a volume density — encoding how opaque that region of space is — and an RGB radiance value encoding how it appears from that direction. A novel-view image is synthesised by casting rays through each output pixel, sampling points along each ray, evaluating the MLP at every sample in a batched compute dispatch, and integrating density and colour along the ray using the volume rendering equation. Because every step from MLP evaluation to the rendering integral is differentiable, NeRF models train end-to-end from only a set of 2D photographs with known camera poses, with no 3D geometry annotations required. Instant NGP (covered in §95) accelerates the MLP query with a multi-resolution hash grid, replacing most of the floating-point operations with cached texture lookups and enabling near-real-time frame rates on modern GPUs. Neural implicit surfaces — occupancy networks and neural signed-distance fields — are a closely related family that use the same MLP-query-plus-isosurface-extraction pipeline but represent geometry as a binary occupancy or SDF rather than a density volume; §95 covers both variants.
+
+### 1.3 What is Differentiable Rendering?
+
+Differentiable rendering is a family of rendering algorithms that produce, alongside a rendered image, the gradient of that image with respect to scene parameters such as vertex positions, material properties, lighting coefficients, and camera pose. Making the full rendering pipeline differentiable enables gradient-based optimisation to recover scene parameters from image observations alone — a problem known as inverse rendering. The key algorithmic challenge is that standard rasterization is piecewise constant in vertex position: triangle coverage boundaries introduce discontinuities that block gradient flow. Solutions include soft rasterizers that replace hard coverage with smooth approximations, edge sampling approaches that evaluate the rendering integral along silhouette boundaries, and volume-rendering formulations (as used by NeRF) that are smooth by construction. On the Linux graphics stack, differentiable rasterizers such as NVDiffrast run as CUDA or Vulkan compute workloads; the backward pass computes gradients with respect to vertex positions and texture samples using the same sorted-triangle or sorted-splat data structures as the forward pass. Differentiable rendering is the algorithmic foundation for 3DGS training (§91–94), NeRF optimisation (§95), and all inverse geometry problems in this chapter. Section §93 covers the formal mathematical framework, the convergence properties of different gradient estimators, and the GPU implementation patterns for both rasterisation-based and volume-rendering-based pipelines.
 
 ---
 

@@ -11,6 +11,10 @@
 ## Table of Contents
 
 1. [GPU Computational Geometry Overview](#1-gpu-computational-geometry-overview)
+   - [1.1 What is Computational Geometry?](#11-what-is-computational-geometry)
+   - [1.2 What is a Convex Hull?](#12-what-is-a-convex-hull)
+   - [1.3 What is a Voronoi Diagram?](#13-what-is-a-voronoi-diagram)
+   - [1.4 What is Approximate Nearest Neighbour Search?](#14-what-is-approximate-nearest-neighbour-search)
 2. [Convex Hull on GPU](#2-convex-hull-on-gpu)
 3. [2D Polygon Boolean Operations](#3-2d-polygon-boolean-operations)
 4. [2D and 3D Triangulation](#4-2d-and-3d-triangulation)
@@ -49,6 +53,46 @@ Computational geometry algorithms decompose into two broad classes that respond 
 | Subgroup ballot | `subgroupBallot` | Fast AABB overlap masking (§6) |
 
 [Source: Vulkan Specification §9 — Compute Pipelines, https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html]
+
+### 1.1 What is Computational Geometry?
+
+Computational geometry is the branch of algorithm design concerned with problems that have a geometric structure: finding the convex hull of a point set, triangulating a planar polygon, computing intersections between geometric primitives, locating a query point within a planar subdivision, or constructing proximity structures such as Voronoi diagrams and k-d trees. Unlike general combinatorial algorithms, computational geometry exploits metric properties of Euclidean space — that orientations can be determined by cross products, and that space can be partitioned into half-planes or half-spaces — to design solutions with output-sensitive or worst-case optimal time complexity.
+
+On GPU-accelerated Linux graphics stacks, computational geometry arises at every layer: the kernel DRM subsystem's damage tracking uses rectangle intersection; Wayland compositors clip regions using polygon operations; GPU-accelerated UI toolkits run hit-testing for pointer events; ray-tracing engines build bounding volume hierarchies over triangulated scenes; and physics engines compute Minkowski sums for collision detection. This chapter covers both the CPU libraries (CGAL, Clipper2, libigl) that implement exact algorithms and the GPU compute shader patterns that accelerate the data-parallel inner loops of those algorithms.
+
+The key tension throughout is between exact arithmetic — required for correct topological results — and floating-point throughput — required for GPU efficiency. Robust predicates (§12) address this by providing exact sign computations via adaptive floating-point arithmetic at acceptable runtime cost.
+
+[Source: de Berg et al., *Computational Geometry: Algorithms and Applications*, 3rd ed., Springer 2008]
+
+### 1.2 What is a Convex Hull?
+
+The convex hull of a point set is the smallest convex region containing all points: in 2D it is a convex polygon whose vertices are a subset of the input; in 3D it is a convex polyhedron. The convex hull is a fundamental building block in computational geometry because many other structures depend on it: bounding volumes for ray traversal, support functions for GJK collision detection, extreme-point queries in linear programming, and the initial seed structure for incremental Delaunay algorithms.
+
+Classical sequential algorithms — Graham scan, Jarvis march, Quickhull — achieve O(n log n) worst-case time in 2D. CGAL's `convex_hull_2()` and `convex_hull_3()` provide reference implementations with exact arithmetic. On the GPU, the Quickhull algorithm's partition step — classifying all remaining points as inside or outside the current edge set — is embarrassingly parallel and maps naturally to a compute shader, while the recursive bookkeeping that tracks which partition each point belongs to remains on the CPU.
+
+The split between GPU partition passes and CPU topology management is representative of a broader pattern in this chapter: GPU threads handle data-parallel classification and distance computation, while the CPU manages graph structure. Section 2 covers both the CGAL reference and the GPU Quickhull implementation. The GPU implementation yields meaningful throughput gains for point sets larger than approximately 100,000 points, where parallel classification throughput outweighs the latency cost of CPU-GPU dispatch round-trips at each recursive level.
+
+[Source: CGAL 3D Convex Hull, https://doc.cgal.org/latest/Convex_hull_3/index.html]
+
+### 1.3 What is a Voronoi Diagram?
+
+A Voronoi diagram partitions a plane or space into regions — one per input site — such that every point in a region is closer to that region's site than to any other site. The dual graph of a 2D Voronoi diagram is the Delaunay triangulation: a triangulation of the sites such that no site lies inside the circumcircle of any triangle. The Delaunay property maximises the minimum angle across all triangles, producing numerically well-conditioned meshes for finite-element analysis and geometry processing.
+
+Voronoi diagrams and Delaunay triangulations appear throughout graphics and simulation: Voronoi patterns generate organic cell structures in texture synthesis; Delaunay meshing underlies surface reconstruction algorithms (ball-pivoting, cocone); physics simulation domains use Delaunay-conforming meshes for stable finite-element grids; and stratified sampling schemes partition pixel footprints into Voronoi cells to reduce variance in path tracing.
+
+On the GPU, jump flooding (§7) computes an approximate Voronoi diagram in O(log n) full-screen passes by propagating site IDs at exponentially decreasing step sizes — each pass is a flat compute shader with no topology construction, making it fully SIMT-parallel. The exact Bowyer-Watson algorithm runs on the CPU for numerically critical construction and uploads its result as a Vulkan vertex buffer. Section 7 covers both paths together with the tradeoffs between exact correctness and GPU throughput.
+
+[Source: Rong and Tan, "Jump Flooding in GPU with Applications to Voronoi Diagram and Distance Transform," I3D 2006, https://doi.org/10.1145/1111411.1111431]
+
+### 1.4 What is Approximate Nearest Neighbour Search?
+
+Given a dataset of n points in a d-dimensional space and a query point q, nearest-neighbour search finds the dataset point closest to q under some distance metric. Exact nearest-neighbour search in high dimensions suffers from the curse of dimensionality: tree-based indices such as k-d trees degrade toward O(n) query time as d grows, because the fraction of the dataset that must be inspected to prune branches increases with dimension.
+
+Approximate nearest-neighbour (ANN) search accepts a controlled accuracy loss — returning a point within a factor (1 + ε) of the true minimum distance — in exchange for dramatically better throughput. GPU-friendly ANN methods covered in §8 include: product quantisation (PQ), which compresses vectors into short codes enabling fast Hamming-distance table lookups in shared memory; hierarchical navigable small-world (HNSW) graphs, which support beam-search traversal with high recall; and locality-sensitive hashing (LSH), which maps nearby points to the same bucket with high probability.
+
+In the Linux graphics stack, ANN search appears in neural texture compression (finding the nearest codebook vector for each texel block), real-time global illumination (querying irradiance probe caches), and machine-learning inference pipelines executing on GPU. The FAISS library provides CPU-side index construction and GPU-side query kernels via CUDA; §8 shows the Vulkan compute shader equivalent for the PQ distance-table lookup pattern and how FAISS indices upload to Vulkan storage buffers.
+
+[Source: Johnson et al., "Billion-scale similarity search with GPUs," IEEE TPAMI 2021, https://doi.org/10.1109/TPAMI.2019.2921572] [Source: FAISS library, https://github.com/facebookresearch/faiss]
 
 ---
 

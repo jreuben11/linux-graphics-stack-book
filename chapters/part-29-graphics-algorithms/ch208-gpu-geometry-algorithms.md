@@ -16,6 +16,8 @@ The sections below are ordered by geometry domain rather than CPU/GPU split. Whe
 
 - **[I. Surface Representation and Modeling](#i-surface-representation-and-modeling)**
   - [1. Subdivision Surfaces on the GPU](#1-subdivision-surfaces-on-the-gpu)
+    - [1.7 What is a Subdivision Surface?](#17-what-is-a-subdivision-surface)
+    - [1.8 What is OpenSubdiv?](#18-what-is-opensubdiv)
   - [2. NURBS and B-Spline Surfaces](#2-nurbs-and-b-spline-surfaces)
   - [3. Metaballs and Implicit Surfaces](#3-metaballs-and-implicit-surfaces)
   - [4. Spline Curves: GPU Tessellation](#4-spline-curves-gpu-tessellation)
@@ -724,6 +726,26 @@ Osd::GLComputeEvaluator::EvalStencils(vbo, posDescSrc, vbo, posDescDst, posStenc
 // UV primvar (uses same topology stencils but different source/dest offsets)
 Osd::GLComputeEvaluator::EvalStencils(vbo, uvDescSrc, vbo, uvDescDst, fvarStencils);
 ```
+
+### 1.7 What is a Subdivision Surface?
+
+A subdivision surface is a smooth curved surface derived from a coarse polygonal control mesh by repeatedly applying a topological refinement rule. Each refinement step splits every polygon into smaller polygons and repositions each vertex as a weighted average of its neighbors. After infinitely many steps, the mesh converges to a smooth limit surface with guaranteed tangent continuity. In GPU pipelines, the limit surface is either evaluated analytically using stencil tables — compact sparse representations of the limit-position linear combinations — or approximated by refining to a target level and rendering the resulting triangles directly.
+
+Two schemes dominate: Catmull-Clark, which takes quad-dominant meshes as input and produces surfaces that are C2 continuous everywhere except at extraordinary vertices (valence not equal to four), and Loop, which takes triangle meshes and achieves C2 continuity everywhere except at extraordinary vertices (valence not equal to six). Both schemes decompose naturally to a sparse matrix-vector product over vertex positions, a structure that maps directly to parallel GPU compute: each output vertex is a weighted sum of input control vertices, executed independently across thousands of threads.
+
+In the Linux graphics stack, subdivision surfaces are the standard smooth geometry representation in VFX and games pipelines. Assets from DCC tools such as Blender are exported in OpenUSD `UsdGeomSubset` or Alembic format with subdivision parameters intact, and subdivision is evaluated at render time by the GPU using OpenSubdiv's Osd compute backend.
+
+[Source: Catmull & Clark (1978), "Recursively Generated B-Spline Surfaces on Arbitrary Topological Meshes", *Computer-Aided Design*; OpenSubdiv documentation https://graphics.pixar.com/opensubdiv/docs/subdivision_surfaces.html]
+
+### 1.8 What is OpenSubdiv?
+
+OpenSubdiv is the open-source, cross-platform C++ library for evaluating Catmull-Clark and Loop subdivision surfaces on GPU. Released under the Apache 2.0 license and hosted at https://github.com/PixarAnimationStudios/OpenSubdiv, it is the reference implementation used in VFX production pipelines and is supported on Linux via OpenGL and Vulkan compute backends.
+
+The library is split into two layers. The CPU-resident Far (Feature Adaptive Representation) layer performs topology analysis: it locates extraordinary vertices, builds a feature-adaptive patch hierarchy that isolates each extraordinary vertex within regular B-spline patches, and generates stencil tables — arrays of index-weight pairs that express every refined vertex position as a linear combination of base-mesh control vertices. Because the stencil tables are computed once per topology change, they can be cached and reused across every animation frame.
+
+The GPU-resident Osd (OpenSubdiv on Device) layer consumes the stencil tables and executes vertex evaluation as parallel compute dispatches. On Linux, `Osd::GLComputeEvaluator` targets OpenGL 4.3 compute shaders; for Vulkan-native pipelines, the Far stencil arrays are serialized as Vulkan SSBOs and evaluated in a custom compute shader (described in §1.5). The evaluator dispatches one thread per refined vertex, accumulates the weighted control-vertex contributions, and writes the limit positions into a Vulkan vertex buffer ready for the graphics pipeline.
+
+[Source: OpenSubdiv GitHub repository https://github.com/PixarAnimationStudios/OpenSubdiv; OpenSubdiv 3.6.0 release notes https://github.com/PixarAnimationStudios/OpenSubdiv/blob/release/CHANGES.md]
 
 ---
 

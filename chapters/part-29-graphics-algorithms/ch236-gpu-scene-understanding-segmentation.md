@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Scene Understanding as a GPU Algorithm Domain](#1-scene-understanding-as-a-gpu-algorithm-domain)
+   - [1.4 What is Scene Understanding?](#14-what-is-scene-understanding)
+   - [1.5 What is Semantic Segmentation?](#15-what-is-semantic-segmentation)
+   - [1.6 What is Panoptic Segmentation?](#16-what-is-panoptic-segmentation)
 2. [2D Semantic Segmentation on GPU](#2-2d-semantic-segmentation-on-gpu)
 3. [2D Instance and Panoptic Segmentation](#3-2d-instance-and-panoptic-segmentation)
 4. [SAM — Segment Anything Model](#4-sam--segment-anything-model)
@@ -60,6 +63,30 @@ Three principal runtimes handle GPU scene-understanding inference on Linux:
 For AMD hardware, the ONNX Runtime **MIGraphX Execution Provider** compiles ONNX operator graphs into MIGraphX's internal IR, applies operator fusion, and dispatches onto ROCm via HIP. [Source: ONNX Runtime MIGraphX EP docs, https://onnxruntime.ai/docs/execution-providers/MIGraphX-ExecutionProvider.html]
 
 Vulkan compute is the cross-vendor fallback, used in frameworks such as `llama.cpp` (for ViT-based vision encoders in multimodal models) and emerging direct-inference shaders; it requires hand-authoring SPIR-V or GLSL compute shaders for attention and convolution.
+
+### 1.4 What is Scene Understanding?
+
+Scene understanding refers to the class of GPU-accelerated perception algorithms that transform raw sensor inputs — camera frames, LiDAR scans, depth images — into structured semantic representations of the physical world. Where classical computer vision focuses on geometric reconstruction or low-level feature extraction, scene understanding targets the semantic layer: recognising that a region of pixels represents a road surface, that a cluster of LiDAR returns belongs to a pedestrian, or that two object instances are spatially related in a navigable scene.
+
+In the context of the Linux GPU stack, scene understanding pipelines run as compute workloads on the same hardware that drives display compositing and 3D rendering. They consume device memory buffers filled from V4L2 camera captures or PCL point cloud drivers, run multi-stage inference graphs dispatched through CUDA, ROCm/HIP, or OpenCL compute queues, and produce output tensors that downstream planners, AR compositors, or ROS 2 nodes consume via shared memory or DMA-buf handles.
+
+The computational demands are distinct from rasterisation: scene understanding kernels are dominated by matrix multiplication (GEMM) for neural network inference, fused convolution, and sparse data operations for 3D point processing. They are typically deployed through runtimes such as ONNX Runtime, TensorRT, or OpenVINO rather than through graphics APIs such as Vulkan or OpenGL, though Vulkan compute shaders represent an emerging cross-vendor path for inference on hardware without dedicated ML accelerators.
+
+### 1.5 What is Semantic Segmentation?
+
+Semantic segmentation is the task of assigning a discrete class label to every pixel in an image (2D) or every point in a point cloud (3D). Unlike image classification, which produces one label per image, or object detection, which produces bounding boxes, semantic segmentation produces a dense prediction map at the resolution of the input data. Each pixel or point receives exactly one label from a fixed class vocabulary — sky, road, building, vegetation, person — determined at training time.
+
+On GPU, semantic segmentation is implemented as an encoder–decoder neural network. The encoder (typically a ResNet, EfficientNet, or vision transformer backbone) applies successive convolutions and downsampling to extract multi-scale feature maps that capture context at increasing receptive field sizes. The decoder reconstructs spatial resolution via bilinear upsampling, transpose convolution, or learned upsampling, and a final 1×1 convolution projects the feature vector at each spatial location to per-class logits. An argmax across the class axis produces the label map.
+
+The GPU kernel workloads are standard: batched GEMM for transformer attention, im2col-lowered grouped convolution for CNN backbones, and parallel reduction for the per-pixel argmax. Semantic segmentation underpins all higher-level scene understanding tasks in this chapter — instance segmentation, panoptic segmentation, and 3D voxel semantic mapping all build on per-element dense classification as a foundational primitive.
+
+### 1.6 What is Panoptic Segmentation?
+
+Panoptic segmentation unifies semantic segmentation and instance segmentation into a single dense prediction that accounts for every pixel in an image. Every pixel receives both a semantic class label and, for object instances belonging to countable categories (things such as cars or persons), a unique instance identifier. Background regions belonging to uncountable categories (stuff such as sky, road, or vegetation) receive only a class label with no instance distinction.
+
+The distinction between thing classes and stuff classes is central to the panoptic formulation. A panoptic quality (PQ) metric evaluates both types jointly, decomposing into a segmentation quality term and a recognition quality term. On GPU, panoptic segmentation architectures such as Mask2Former run a shared encoder and pixel decoder, then separate heads for stuff classification and instance mask prediction, followed by a fusion step that assembles the final canvas by overlaying instance masks onto the stuff segmentation map.
+
+GPU-accelerated panoptic fusion resolves mask overlaps by confidence ordering: higher-scoring instance predictions overwrite lower-scoring ones, and residual unlabelled pixels fall through to the stuff prediction. The result is a complete, partition-of-the-image semantic map used in AR scene understanding to identify surfaces for anchor placement, in robotics to separate navigable space from dynamic obstacles, and in autonomous driving to distinguish static road structure from moving agents.
 
 ---
 

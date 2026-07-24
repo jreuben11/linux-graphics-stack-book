@@ -11,6 +11,9 @@ This chapter covers the full stack from hardware-appropriate RNG selection throu
 ## Table of Contents
 
 1. [RNG on the GPU — Why CPU RNG Doesn't Scale](#1-rng-on-the-gpu--why-cpu-rng-doesnt-scale)
+   - [1.4 What is Monte Carlo Integration?](#14-what-is-monte-carlo-integration)
+   - [1.5 What is a Pseudorandom Number Generator (PRNG)?](#15-what-is-a-pseudorandom-number-generator-prng)
+   - [1.6 What is a Low-Discrepancy Sequence?](#16-what-is-a-low-discrepancy-sequence)
 2. [Pseudorandom Number Generators](#2-pseudorandom-number-generators)
 3. [Counter-Based RNGs for GPU](#3-counter-based-rngs-for-gpu)
 4. [Quasi-Random Low-Discrepancy Sequences](#4-quasi-random-low-discrepancy-sequences)
@@ -58,6 +61,30 @@ Three architectural patterns handle per-thread state on GPU:
 3. **Shared-memory table RNG**: the generator (e.g. MTGP32) stores a shared state in LDS, cooperating across a threadgroup. High statistical quality at the cost of LDS pressure and a fixed group size.
 
 [Source: Salmon, J. K. et al., "Parallel Random Numbers: As Easy as 1, 2, 3", SC'11, https://dl.acm.org/doi/10.1145/2063384.2063405]
+
+### 1.4 What is Monte Carlo Integration?
+
+Monte Carlo integration is a numerical technique for approximating integrals, especially high-dimensional ones that resist closed-form or deterministic numerical solutions. The core idea is to estimate the value of an integral by drawing random samples from the integration domain, evaluating the integrand at those points, and averaging the results weighted by the reciprocal of their probability density. Formally, for an integral I = ∫f(x)dx over domain Ω, the Monte Carlo estimator is I ≈ (1/N) Σ f(x_i) / p(x_i), where x_i are samples drawn from probability density p. As N increases, the estimator converges to the true value at a rate of O(N^{-1/2}) regardless of the dimensionality of the domain — making it far more practical than deterministic quadrature for high-dimensional problems.
+
+In graphics, Monte Carlo integration appears wherever the rendering equation must be solved: computing how much light arrives at a surface from all directions requires integrating the incoming radiance over the hemisphere, weighted by the bidirectional reflectance distribution function (BRDF) and the cosine of the angle of incidence. A path tracer solves this integral by firing many rays and averaging their contributions. GPU acceleration multiplies the throughput of this sampling process across tens of thousands of parallel threads, but introduces the challenge of generating many statistically independent random streams simultaneously — the central problem addressed throughout this chapter.
+
+[Source: Pharr, M. et al., "Physically Based Rendering: From Theory to Implementation", 4th ed., MIT Press, 2023, Chapter 2, https://www.pbr-book.org/4ed/Monte_Carlo_Integration]
+
+### 1.5 What is a Pseudorandom Number Generator (PRNG)?
+
+A pseudorandom number generator (PRNG) is a deterministic algorithm that transforms an initial value — the seed — into a long sequence of values that are statistically indistinguishable from true random numbers within the limits of standard test batteries. The key word is "deterministic": a PRNG is not a source of true randomness but a mathematical function with a period, which is the length of the sequence before it repeats. For Monte Carlo work, two statistical properties matter most: uniformity (each output value is equally likely across the output range) and independence (knowing any portion of the sequence must not help predict other portions). Common evaluation suites include TestU01's BigCrush battery and PractRand.
+
+On a CPU, a single shared PRNG state advances sequentially. On a GPU, thousands of concurrent threads each need their own independent stream, which requires either per-thread state initialised at distinct starting points or a stateless design that computes outputs directly from a thread identifier. The choice of PRNG determines register pressure, instruction count, statistical quality, and the ability to skip ahead in a sequence (jump-ahead) — all of which interact directly with GPU occupancy and rendering correctness. The three main architectural approaches — per-thread stateful generators, counter-based stateless generators, and cooperative shared-memory generators — are the primary subject of §§1–3.
+
+[Source: L'Ecuyer, P. and Simard, R., "TestU01: A C Library for Empirical Testing of Random Number Generators", ACM TOMS 33(4), 2007, http://simul.iro.umontreal.ca/testu01/tu01.html]
+
+### 1.6 What is a Low-Discrepancy Sequence?
+
+A low-discrepancy sequence (LDS) is a deterministic sequence of points in a unit hypercube designed so that no sub-region of the domain is over- or under-sampled relative to its volume. "Discrepancy" is a formal measure of how far a finite point set deviates from a perfectly uniform distribution; sequences minimising it achieve convergence rates closer to O(N^{-1}(log N)^d) for smooth integrands — substantially faster than the O(N^{-1/2}) of pure Monte Carlo. This technique is known as Quasi-Monte Carlo (QMC) and underlies the sampler designs in production path tracers including PBRT-v4 and Blender Cycles.
+
+Examples include the Halton sequence (successive prime-base radical inverses across dimensions), the Sobol' sequence (based on primitive polynomials over GF(2)), and the stratified (0,2)-sequences used in multi-jittered sampling. On GPU, LDS generation must respect the same per-thread independence requirements as PRNGs: Sobol' sampling for path tracing typically pre-computes direction numbers on the CPU and uploads them as a shader storage buffer object (SSBO) or texture, then each thread reads the appropriate stratum without inter-thread communication. The tradeoff between LDS quality gains and the correlation artifacts that arise when LDS points are reused across spatially adjacent pixels is a central design constraint in the GPU sampling strategies covered in §4.
+
+[Source: Niederreiter, H., "Random Number Generation and Quasi-Monte Carlo Methods", SIAM, 1992; Burley, B., "Practical Hash-based Owen Scrambling", JCGT 9(4), 2020, https://jcgt.org/published/0009/04/01/]
 
 ---
 

@@ -18,10 +18,25 @@ The distribution of sections in this catalog mirrors the actual distribution of 
 
 **Tessellation (TCS/TES)** is similarly bounded: adaptive LOD, PN triangles, displacement mapping. Three patterns, well-understood, rarely evolving since the fixed-function era.
 
+### 1.1 What is a Shader Algorithm?
+
+A shader algorithm is a well-defined GPU computation expressed as a shader program — vertex, fragment, geometry, tessellation, compute, task, or mesh — that solves a specific rendering or general-purpose problem. Unlike CPU algorithms, shader algorithms are evaluated by thousands of GPU threads in parallel, so their design must account for wavefront divergence, register pressure, cache locality, and interactions with fixed-function hardware stages. This catalog organizes shader algorithms by the problem they solve: lighting, shadowing, post-processing, geometry processing, or general GPU computation. Each entry describes the algorithmic structure, the shader stage it runs in, the input and output data layout, and the performance characteristics that determine when the technique is appropriate. Shader algorithms are expressed in shading languages — GLSL for OpenGL and Vulkan (compiled to SPIR-V), HLSL for Direct3D, and WGSL for WebGPU — and are submitted to the GPU through draw and dispatch commands such as Vulkan's `vkCmdDraw*` and `vkCmdDispatch`. The catalog notes API-specific considerations where they affect algorithm structure or portability.
+
+### 1.2 What is a Fragment Shader?
+
+A fragment shader (called a pixel shader in Direct3D terminology) is the GPU program that runs once per rasterized fragment — approximately once per screen pixel covered by a primitive in a given draw call — to compute the output colour, depth, and stencil values written to render targets. Fragment shaders receive per-vertex attributes interpolated across the triangle (texture coordinates, world-space position, surface normals), sample bound textures, evaluate lighting and material models, and write results to one or more render targets. In the Vulkan graphics pipeline, the fragment shader stage (`VK_SHADER_STAGE_FRAGMENT_BIT`) executes between the rasterization stage and the per-fragment operations (depth test, blending). Fragment shaders dominate the algorithmic variety in this catalog because every visual effect — physically based material evaluation, shadow lookup, ambient occlusion, screen-space reflections, tone mapping — is ultimately resolved at the per-pixel stage. The performance metric for fragment-heavy workloads is fill rate (fragments per second) combined with ALU and texture-unit occupancy, which motivates techniques such as tile-based deferred rendering and variable rate shading that reduce the number of full-rate fragment shader invocations per frame.
+
+### 1.3 What is a Compute Shader?
+
+A compute shader is a GPU program that executes outside the graphics rasterization pipeline — no vertex processing, primitive assembly, rasterization, or render target binding is required. Compute shaders launch a three-dimensional grid of workgroups, each containing a fixed number of threads (a wavefront or warp on the hardware), and operate on arbitrary buffers and images bound through descriptor sets. In Vulkan, compute work is dispatched via `vkCmdDispatch` or its indirect variant `vkCmdDispatchIndirect`, targeting pipelines created with `VkComputePipelineCreateInfo`. Within a workgroup, threads can communicate through shared memory (`shared` in GLSL, `groupshared` in HLSL) and synchronize with `barrier()` and `memoryBarrier()`, enabling parallel reductions, prefix sums, sorting, and other collective operations that the rasterization pipeline cannot express. In this catalog, compute shaders appear wherever the algorithm does not fit the vertex→rasterize→fragment model: GPU-driven culling and draw call generation, light assignment, shadow atlas management, ambient occlusion accumulation, temporal reprojection, and image post-processing. Compute dispatches share GPU execution resources with graphics workloads and can be submitted to an async compute queue to overlap execution with in-flight rendering where the driver and hardware scheduler support it.
+
 ---
 
 ## Table of Contents
 
+- [1.1 What is a Shader Algorithm?](#11-what-is-a-shader-algorithm)
+- [1.2 What is a Fragment Shader?](#12-what-is-a-fragment-shader)
+- [1.3 What is a Compute Shader?](#13-what-is-a-compute-shader)
 - **[I. Rendering Architecture and Pipeline](#i-rendering-architecture-and-pipeline)**
   - [GPU-Driven Rendering](#gpu-driven-rendering)
   - [Clustered Forward+ Shading](#clustered-forward-shading)

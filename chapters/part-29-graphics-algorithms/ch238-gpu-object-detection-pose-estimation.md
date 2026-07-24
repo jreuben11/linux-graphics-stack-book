@@ -11,6 +11,9 @@ This chapter covers the complete detection-to-pose pipeline as a set of GPU algo
 ## Table of Contents
 
 1. [Detection and Pose as a GPU Algorithm Domain](#1-detection-and-pose-as-a-gpu-algorithm-domain)
+   - [1.5 What is Object Detection?](#15-what-is-object-detection)
+   - [1.6 What is 6DoF Pose Estimation?](#16-what-is-6dof-pose-estimation)
+   - [1.7 What is RANSAC?](#17-what-is-ransac)
 2. [2D Object Detection GPU Inference](#2-2d-object-detection-gpu-inference)
 3. [RT-DETR and Transformer-Based Detection](#3-rt-detr-and-transformer-based-detection)
 4. [3D Detection from LiDAR Point Clouds](#4-3d-detection-from-lidar-point-clouds)
@@ -87,6 +90,18 @@ On Linux, inference deployments for this pipeline are built on:
 - **TensorRT** — NVIDIA-only, highest-throughput quantised inference.
 - **OpenVINO** — Intel GPU (Arc/Xe) via Level Zero or OpenCL backend.
 - **Vulkan compute** — vendor-neutral via GLSL compute shaders or SPIR-V; used by llama.cpp and emerging inference stacks.
+
+### 1.5 What is Object Detection?
+
+Object detection is the task of locating and classifying every instance of a target category within an input image or video frame. The output is a set of bounding boxes — axis-aligned rectangles in 2D, or oriented boxes in 3D volumetric representations — each paired with a class label and a confidence score. Detection systems solve two sub-problems simultaneously: classification (what category is present?) and localisation (where in the image is the object?). Modern anchor-free convolutional detectors such as YOLOv8 solve both in a single forward pass over a dense spatial grid, while transformer-based models such as RT-DETR use a set of learned object queries to decode detections without heuristic post-anchoring. In both cases the detector emits box coordinates and class logits as output tensors that are consumed by downstream stages. On the Linux GPU stack, detection inference runs through ONNX Runtime with a ROCm or CUDA execution provider, TensorRT for quantised NVIDIA inference, or OpenVINO for Intel Arc GPUs. The detector's output — bounding boxes or 3D object proposals — feeds directly into depth-based lifting (§5), 6DoF pose estimation (§6–§7), and pose tracking (§10). Detection latency must be bounded to fit within the overall real-time budget; §1.3 details the per-stage timing targets for 60 Hz AR pipelines, and §11 covers the Linux deployment toolchain for production inference workloads.
+
+### 1.6 What is 6DoF Pose Estimation?
+
+Six degrees of freedom (6DoF) pose estimation determines the complete rigid-body transform that positions and orients a known 3D object within a camera's coordinate frame. The six degrees comprise three translational components (displacement along x, y, z) and three rotational components (equivalent to a rotation matrix R ∈ SO(3)), combined into a 4×4 homogeneous pose matrix with R and translation vector t ∈ ℝ³. Given this transform, any point on the object's 3D model surface can be projected into the camera image plane using the camera's intrinsic matrix K, enabling precise AR content overlay or robot grasp trajectory planning. Pose estimation methods fall into two families: keypoint-based methods (§6) match detected 2D image keypoints to corresponding 3D model points and solve the Perspective-n-Point (PnP) algebraic system for R and t; dense or direct methods (§7) regress the pose holistically from image or depth feature maps. Both families require GPU-accelerated post-processing beyond neural inference: PnP solving, RANSAC-based outlier rejection (§9), and iterative refinement via ICP or render-and-compare. On Linux, the GPU-native path for PnP solving uses custom CUDA or HIP kernels, while ONNX Runtime or TensorRT handles the neural inference stages. The interplay between neural and classical GPU computation makes 6DoF pose a representative case study for heterogeneous GPU algorithm design.
+
+### 1.7 What is RANSAC?
+
+RANSAC (Random Sample Consensus) is a robust model-fitting algorithm designed for datasets where a significant fraction of observations are outliers — measurements that do not conform to the true underlying model. In 6DoF pose estimation, the input is a set of 2D-to-3D correspondences between detected image keypoints and 3D model points. A subset of these correspondences will be mismatches due to appearance ambiguity or descriptor error, and solving the PnP pose system on the full contaminated set produces an incorrect estimate. RANSAC addresses this by iterating: it draws a minimal random subset of correspondences (typically four to six points for PnP), computes a candidate pose from that subset, then evaluates how many of the remaining correspondences agree with the candidate pose within a reprojection-error threshold. The subset producing the largest inlier count is retained, and the final pose is refined by re-solving PnP on all inliers. On the GPU, the structure of RANSAC — thousands of independent hypotheses each scored against the full correspondence set — is embarrassingly parallel and maps directly onto compute shader workgroups or CUDA thread blocks. GPU RANSAC libraries such as MAGSAC++ implement adaptive early stopping and probability-weighted sampling alongside parallel hypothesis evaluation, achieving order-of-magnitude speedups over CPU counterparts on dense feature sets. Section 9 of this chapter details the GPU kernel design for hypothesis generation, inlier scoring, and aggregation.
 
 ---
 

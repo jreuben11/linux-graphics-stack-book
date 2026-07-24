@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Linear Algebra as a GPU Algorithm Domain](#1-linear-algebra-as-a-gpu-algorithm-domain)
+   - [1.3 What is GPU Linear Algebra?](#13-what-is-gpu-linear-algebra)
+   - [1.4 What is a Sparse Matrix?](#14-what-is-a-sparse-matrix)
+   - [1.5 What is a Sparse Solver?](#15-what-is-a-sparse-solver)
 2. [Dense BLAS Operations](#2-dense-blas-operations)
 3. [Dense Matrix Factorizations](#3-dense-matrix-factorizations)
 4. [Eigensolvers](#4-eigensolvers)
@@ -53,6 +56,26 @@ RDNA/CDNA GPUs present a multi-level hierarchy:
 - **HBM / GDDR6:** 900 GB/s–3.28 TB/s; capacity limit for large matrices
 
 Dense GEMM tiling strategies deliberately stage sub-tiles through L1 and L2 to reuse data. Sparse algorithms — especially those with random column access — rarely achieve L1 reuse, making bandwidth the hard constraint.
+
+### 1.3 What is GPU Linear Algebra?
+
+GPU linear algebra is the discipline of executing the standard operations on vectors and matrices — dot products, matrix multiplications, triangular solves, factorizations, and eigendecompositions — using the massively parallel shader processors and high-bandwidth memory subsystems of modern GPUs rather than the scalar or SIMD units of a CPU. A GPU exposes thousands of arithmetic lanes organised into wavefronts (64 threads on CDNA/RDNA AMD hardware, 32 on NVIDIA), which are most efficient when all lanes perform identical arithmetic on contiguous memory. The dominant linear algebra kernels — dense matrix-matrix multiply (GEMM) and sparse matrix-vector product (SpMV) — match this character: regular compute patterns over large arrays whose performance is governed by arithmetic intensity (flops per byte of memory traffic), determining whether compute throughput or memory bandwidth is the bottleneck.
+
+In the Linux graphics stack, GPU linear algebra arises wherever a compute pipeline feeds into or back out of a graphics pipeline: physics simulation systems assemble stiffness matrices that require a linear solve before the next time step can produce vertex positions; geometry processing algorithms on meshes require eigensolutions of Laplacian matrices; and ML inference passes embedded in a render graph require batched GEMM over weight matrices. The ROCm software stack on Linux exposes these capabilities through rocBLAS (dense BLAS), rocSOLVER (LAPACK-compatible factorizations), and rocSPARSE (sparse formats and operations) — libraries that map industry-standard APIs onto the HIP runtime and AMD GPU hardware. [Source: ROCm Libraries overview, https://rocm.docs.amd.com/en/latest/reference/gpu-libraries/math.html]
+
+### 1.4 What is a Sparse Matrix?
+
+A sparse matrix is a matrix in which the overwhelming majority of entries are zero, such that storing and operating on only the non-zero values is both more memory-efficient and computationally faster than treating it as a dense array. Matrices arising from discretised partial differential equations (finite element or finite difference methods), graph adjacency problems, and geometry Laplacians on triangle meshes all share this structure: a mesh with N vertices typically produces an N×N Laplacian with O(N) non-zero entries rather than O(N²), because each vertex is adjacent only to its immediate neighbours.
+
+Sparse matrices are stored in compressed formats that record only the non-zero values and their coordinates. The most common on GPU is CSR (Compressed Sparse Row): a values array of the non-zero entries in row-major order, a col_indices array giving the column index of each entry, and a row_ptr array of length N+1 marking where each row begins in values. Memory cost scales with nnz (number of non-zeros) rather than N², but irregular column indices cause non-coalesced memory access on GPU — making SpMV (sparse matrix-vector multiply) memory-bound regardless of GPU generation. Alternative formats (COO, BSR, ELL, HYB) trade different access patterns for different sparsity structures; §5 covers these in detail.
+
+In this chapter, sparse matrices are the input to iterative solvers (§7), multigrid methods (§8), and structured system exploitations (§9). Their GPU performance characteristics follow directly from the roofline analysis in §1.1: SpMV arithmetic intensity is approximately 0.17 FLOP/byte for CSR, deeply below the hardware ridge point on all current GPUs. [Source: rocSPARSE documentation, https://rocm.docs.amd.com/projects/rocSPARSE/en/latest/]
+
+### 1.5 What is a Sparse Solver?
+
+A sparse solver is an algorithm that computes the solution vector x to the linear system Ax = b where A is a sparse matrix. Two broad families exist. Direct solvers (LU, Cholesky, QR factorization) transform A into triangular factors through a sequence of elimination steps and then solve by forward and backward substitution; they are robust and exact in floating-point arithmetic, but require explicit management of fill-in — the triangular factors of a sparse A can be substantially denser than A itself, consuming memory proportional to the factored sparsity pattern rather than nnz(A). Iterative solvers (Conjugate Gradient, GMRES, BiCGSTAB, and their preconditioned variants) apply a sequence of SpMV operations and vector updates that converge toward x; they never form factors, so their memory footprint stays proportional to nnz(A), but they require a convergence criterion and, for difficult problems, an effective preconditioner.
+
+On GPU, iterative solvers dominate for large sparse systems because each iteration is a sequence of SpMV operations — well-matched to the memory-bandwidth characteristics of GPU hardware — whereas direct factorization of large sparse systems involves complex dependency graphs (elimination trees) that are difficult to parallelise across thousands of GPU lanes. Algebraic multigrid (AMG, §8) constructs a hierarchy of progressively coarser problems to accelerate convergence of the iterative smoother, achieving mesh-independent convergence rates that pure Krylov methods cannot match for ill-conditioned systems. rocALUTION provides iterative solvers and AMG preconditioners on ROCm. [Source: rocALUTION documentation, https://rocm.docs.amd.com/projects/rocALUTION/en/latest/]
 
 ---
 

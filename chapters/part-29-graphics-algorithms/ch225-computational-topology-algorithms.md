@@ -11,6 +11,9 @@
 ## Table of Contents
 
 1. [Topology for Graphics Programmers](#1-topology-for-graphics-programmers)
+   - [1.3 What is Computational Topology?](#13-what-is-computational-topology)
+   - [1.4 What is Topological Data Analysis (TDA)?](#14-what-is-topological-data-analysis-tda)
+   - [1.5 What is Persistent Homology?](#15-what-is-persistent-homology)
 2. [Euler Characteristic and Genus Computation](#2-euler-characteristic-and-genus-computation)
 3. [Simplicial Complexes on GPU](#3-simplicial-complexes-on-gpu)
 4. [Persistent Homology](#4-persistent-homology)
@@ -64,6 +67,18 @@ For a closed orientable surface: β₁ = 2g. For a closed surface with g handles
 | Shape analysis | Betti numbers as rotation/scale-invariant descriptors |
 | 3D scan cleaning | Persistent homology distinguishes true handles from scanning noise |
 | Terrain analysis | Reeb graph encodes mountain ridges, valleys, passes |
+
+### 1.3 What is Computational Topology?
+
+Computational topology is the branch of computer science that develops algorithms for computing topological invariants — properties of geometric objects that remain unchanged under continuous deformations such as bending and stretching. Unlike computational geometry, which measures distances and angles, computational topology answers questions about connectivity: how many connected components does a shape have, how many independent loops exist, and how many enclosed voids are present. These questions are answered by algebraic invariants including the Euler characteristic, Betti numbers, and homology groups. In graphics and scientific visualisation, computational topology provides the algorithmic foundation for mesh repair (detecting non-manifold structure), shape analysis (pose-invariant descriptors), scalar field analysis (tracking level-set topology changes as an isovalue sweeps through a range), and skeletonisation. The Linux open-source ecosystem supports these algorithms through libraries such as GUDHI, the Topology ToolKit (TTK), and Ripser, with GPU backends for the most compute-intensive phases. This chapter's algorithms span simplex construction, Euler characteristic computation, persistent homology, discrete Morse theory, and Reeb graph extraction — each addressing a different class of topological question on geometry data.
+
+### 1.4 What is Topological Data Analysis (TDA)?
+
+Topological data analysis (TDA) is a collection of mathematical and computational methods that extract global shape features from data using tools from algebraic topology. The central insight is that data — whether a point cloud from a 3D scanner, a scalar field defined on a mesh, or a simulation output volume — has shape in a geometric sense, and that shape can be characterised by topological invariants that are robust to noise and to the choice of coordinate system. In contrast to purely statistical approaches, TDA descriptors such as persistent Betti numbers characterise how connected components, loops, and voids appear and disappear as a scale parameter varies, distinguishing persistent signal (true topological features) from transient noise (small fluctuations that create short-lived features). The three dominant TDA pipelines in the Linux scientific computing stack are: (1) GUDHI, a C++ and Python library covering Rips, Alpha, and Čech complex construction alongside persistent cohomology [https://gudhi.inria.fr]; (2) the Topology ToolKit (TTK), a VTK-based framework covering Reeb graphs, contour trees, and discrete Morse theory [https://topology-tool-kit.github.io]; and (3) Ripser and Ripser++, specialised fast persistent homology engines with GPU acceleration for point-cloud data [https://github.com/simonzhang00/ripser-plusplus]. This chapter uses TDA techniques to analyse meshes, point clouds, and scalar fields, with emphasis on where GPU parallelism provides practical speedups over CPU-only implementations.
+
+### 1.5 What is Persistent Homology?
+
+Persistent homology is the algorithmic core of TDA. Given a filtered simplicial complex — a nested sequence of simplicial complexes K₀ ⊆ K₁ ⊆ … ⊆ Kₙ parameterised by a filtration value such as pairwise distance or function level — persistent homology tracks the birth and death of topological features (connected components, loops, voids) as the filtration grows. Each feature is recorded as a point (birth, death) in a persistence diagram. Long-lived features, where the gap between death and birth is large, correspond to robust topological structure; short-lived features correspond to noise or numerical artefacts. The standard reduction algorithm operates on a boundary matrix over GF(2) using column operations; the worst-case complexity is O(n³) in the number of simplices, though sparse boundary matrices arising from geometric data yield much faster practical runtimes. For point-cloud data with Vietoris–Rips filtrations, Ripser++ achieves GPU acceleration by reformulating the computation in cohomology — the dual perspective — and operating directly on the compact pairwise distance matrix without materialising the full simplicial complex in memory, yielding reported speedups up to 30× over the CPU Ripser implementation [Source: Zhang et al., Ripser++, SC '20, https://dl.acm.org/doi/10.1145/3392717.3392780]. The persistence diagram output is used in this chapter for 3D scan cleaning (§7), scalar field analysis (§9), and cross-reference with shape matching in Ch224.
 
 ---
 

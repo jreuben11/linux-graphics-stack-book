@@ -15,6 +15,9 @@ integration with the Linux compositor and browser stacks.
 ## Table of Contents
 
 1. [The GPU 2D Rendering Problem](#1-the-gpu-2d-rendering-problem)
+   - [1.7 What is Vector Graphics?](#17-what-is-vector-graphics)
+   - [1.8 What is GPU Path Rendering?](#18-what-is-gpu-path-rendering)
+   - [1.9 What is a Signed Distance Field?](#19-what-is-a-signed-distance-field)
 2. [Bézier Curve GPU Rendering](#2-bézier-curve-gpu-rendering)
 3. [GPU Stroke Rendering](#3-gpu-stroke-rendering)
 4. [Signed Distance Field Generation — Jump Flooding Algorithm](#4-signed-distance-field-generation--jump-flooding-algorithm)
@@ -103,6 +106,36 @@ maintaining order within each tile; Pathfinder's composite pass (§7.4) assemble
 | NV_path_rendering | OpenGL (NVIDIA only) | Driver-level stencil-then-cover | NVIDIA proprietary; reference only |
 
 [Source: linebender/vello, https://github.com/linebender/vello; servo/pathfinder, https://github.com/servo/pathfinder; Skia Graphite design, https://skia.org/docs/dev/design/graphite/; WebRender, https://github.com/servo/webrender]
+
+### 1.7 What is Vector Graphics?
+
+Vector graphics represents images as mathematical descriptions of geometric shapes — paths, curves, fills, and strokes — rather than as a grid of discrete pixels. A vector image defines shapes in terms of Bézier curves, line segments, arcs, and closed regions, each with associated style properties such as fill colour, stroke width, and compositing mode. The renderer evaluates these descriptions at display time to produce a raster image at whatever resolution the output device requires.
+
+On Linux, vector graphics appears in SVG documents rendered by browsers, font outlines processed by FreeType and HarfBuzz, UI toolkit widgets drawn by GTK and Qt, and compositor surfaces produced by Wayland clients. The canonical exchange format is SVG (Scalable Vector Graphics, W3C specification), which exposes the full path grammar including Bézier curves, transforms, clip paths, and compositing operators. The PDF drawing model and CSS box-model painting use equivalent path primitives.
+
+Unlike raster images, vector graphics is resolution-independent: a path defined by Bézier control points scales to any display size without degradation. The cost of this resolution independence is rendering time — each frame the path geometry must be rasterised to pixels at the current scale. This chapter addresses how that rasterisation is shifted onto the GPU, eliminating the CPU bottleneck and achieving throughput sufficient for 4K displays at high frame rates.
+
+[Source: W3C SVG 2 specification, https://www.w3.org/TR/SVG2/]
+
+### 1.8 What is GPU Path Rendering?
+
+GPU path rendering is the discipline of evaluating vector graphics fill and stroke operations using the massively parallel execution units of a GPU rather than a CPU. A path in this context is a sequence of move-to, line-to, quadratic-Bézier, and cubic-Bézier commands, forming one or more closed or open contours — the same grammar as SVG `<path d="...">` and PDF content streams. Rendering a path means computing, for every pixel of the output surface, whether that pixel falls inside or outside the path boundary (accounting for the fill rule), and blending the result with the framebuffer using the Porter-Duff compositing operators.
+
+The challenge is that path fill has a fundamentally non-local structure: whether pixel (x, y) is inside the path depends on all edges that cross the ray from (x, y) to infinity. This global dependency is what makes direct GPU parallelisation difficult and why techniques such as tiled prefix scanning (Vello, §6), implicit curve evaluation (Loop-Blinn, §2.2), and tile-based mask atlases (Pathfinder, §7) were developed. Each approach restructures the winding-number computation into data-parallel GPU work while preserving the painter's model ordering required by the vector graphics specification.
+
+On Linux, GPU path rendering is exposed through Vulkan compute shaders (Vello, via the wgpu abstraction layer), OpenGL extensions (NV_path_rendering on NVIDIA hardware), and cross-platform GPU abstractions such as Dawn. The landscape table in §1.6 maps the major systems to their GPU APIs and rasterisation strategies.
+
+[Source: Vello, https://github.com/linebender/vello; NV_path_rendering extension specification, https://registry.khronos.org/OpenGL/extensions/NV/NV_path_rendering.txt]
+
+### 1.9 What is a Signed Distance Field?
+
+A signed distance field (SDF) is a 2D array — typically stored as a floating-point or 16-bit texture — where each texel stores the signed Euclidean distance from that texel's position to the nearest boundary of a shape. Texels inside the shape carry a negative distance; texels outside carry a positive distance; the zero-crossing contour reconstructs the shape boundary. This representation enables GPU-friendly rendering: the fragment shader samples the SDF texture and applies a threshold (with a smooth-step for anti-aliasing), requiring only a single texture lookup per pixel rather than per-edge geometry evaluation.
+
+SDFs for vector glyphs are precomputed offline and stored at modest resolution — typically 64×64 to 256×256 texels per glyph. At render time, the GPU bilinearly interpolates the stored distance values, reconstructing a smooth boundary that scales accurately across a range of display sizes without re-rasterising the source outlines. This makes SDF fonts particularly suitable for GPU-resident UI rendering where glyphs are drawn at varying scales every frame.
+
+Multi-channel signed distance fields (MSDFs, §5) extend the scalar SDF with three orthogonal distance channels encoded in RGB, preserving sharp corners that a single-channel SDF would round. The Jump Flooding Algorithm (JFA, §4) is the GPU compute method used to generate SDF textures at interactive rates directly on the GPU, enabling runtime SDF generation from arbitrary path geometry rather than only from precomputed offline tables.
+
+[Source: Chlumsky, "Shape Decomposition for Multi-Channel Distance Fields," master's thesis, Czech Technical University, 2015, https://github.com/Chlumsky/msdfgen]
 
 ---
 

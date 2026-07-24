@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Spectral vs Tristimulus Rendering — Why RGB Fails](#1-spectral-vs-tristimulus-rendering--why-rgb-fails)
+   - [1.7 What is Spectral Rendering?](#17-what-is-spectral-rendering)
+   - [1.8 What is Colorimetry?](#18-what-is-colorimetry)
+   - [1.9 What is Hero-Wavelength Sampling?](#19-what-is-hero-wavelength-sampling)
 2. [Hero-Wavelength Path Tracing](#2-hero-wavelength-path-tracing)
 3. [Spectral Upsampling](#3-spectral-upsampling)
 4. [Dispersion and Chromatic Effects](#4-dispersion-and-chromatic-effects)
@@ -62,6 +65,24 @@ On Linux, spectral rendering runs primarily through:
 - Custom Vulkan/GLSL or HIP/CUDA compute kernels implementing hero-wavelength sampling
 
 No mainline Linux rasterisation pipeline performs spectral rendering; spectral algorithms live exclusively in offline or research-oriented GPU compute.
+
+### 1.7 What is Spectral Rendering?
+
+Spectral rendering is a physically based rendering technique that models light as a continuous function of wavelength rather than as a fixed three-channel RGB triple. In a spectral renderer each ray carries radiance estimates at one or more discrete wavelengths sampled from the visible spectrum (typically 360–830 nm), and all optical interactions — absorption, emission, refraction, diffraction, and fluorescence — are evaluated per-wavelength using wavelength-dependent material properties. The resulting spectral image is converted to a display colour space only as a final step by integrating the per-pixel spectral power distribution against CIE colour matching functions.
+
+On Linux, GPU spectral rendering runs in compute-heavy offline workloads using CUDA, HIP/ROCm, or Vulkan compute pipelines. Renderers such as PBRT-v4 and Mitsuba 3 provide GPU spectral path tracers that expose this pipeline on AMD and NVIDIA hardware. The technique differs from RGB rendering in that it can faithfully reproduce metamerism (materials that match under one illuminant but differ under another), dispersion (wavelength-dependent refraction in glass and gemstones), and fluorescence (energy redistribution across the spectrum). This chapter covers the algorithms, data structures, and GPU implementation patterns used to realise spectral rendering on Linux hardware, together with the colorimetric pipeline that converts spectral output to a calibrated display signal through the Linux HDR display stack.
+
+### 1.8 What is Colorimetry?
+
+Colorimetry is the scientific discipline of measuring and quantifying colour in terms of human visual perception. Its foundation is the CIE 1931 2° standard observer model, which describes how the eye integrates spectral power into three perceptual dimensions via the colour matching functions x̄(λ), ȳ(λ), and z̄(λ), producing the CIE XYZ tristimulus values. All display-side colour spaces — sRGB, DCI-P3, Rec.2020, ACES2065-1 — are defined as linear transformations of XYZ anchored to a reference white point, most commonly D65 (6500 K daylight). Perceptually uniform spaces such as CIELAB and ICtCp are derived from XYZ through further nonlinear transforms and are used for gamut mapping and tone mapping because they better predict perceived colour difference.
+
+In a GPU rendering pipeline, colorimetric algorithms appear at the final stages of the rendering pipeline: gamut mapping projects out-of-gamut HDR values into the display colour volume, colour space conversion matrices run in vertex or fragment shaders, and tone mapping operators compress scene-linear HDR radiance to display output levels. On Linux, colorimetry intersects directly with the kernel-level HDR metadata path — the DRM connector properties `HDR_OUTPUT_METADATA` and `COLORSPACE` expose the display colour volume to user space, allowing a compositor or renderer to emit correctly tagged HDR signals. Sections 8 through 10 of this chapter cover GPU implementations of CIE observer computations, gamut mapping, and colour space conversion algorithms used in Linux display pipelines.
+
+### 1.9 What is Hero-Wavelength Sampling?
+
+Hero-wavelength sampling is the primary GPU algorithm for efficiently implementing spectral path tracing. Rather than tracing a separate geometric ray for every wavelength — which would multiply ray count by the number of spectral samples — hero-wavelength sampling assigns one representative wavelength (the hero) to each ray and bundles a small number of additional wavelengths alongside it, all sharing the same geometric path through the scene. PBRT-v4 uses four simultaneous wavelengths per ray, exploiting GPU SIMD width so that four wavelength-resolved BSDF evaluations execute in parallel at minimal additional cost over a single RGB evaluation. The four wavelengths map directly onto a `float4` register in GLSL, HIP, or CUDA.
+
+The algorithm achieves unbiasedness by holding the sampled wavelength set constant across every bounce of a path. At dispersive surfaces where each wavelength would refract at a different angle, secondary wavelength termination drops all wavelengths except the hero to prevent energy contamination between spectral channels. The hero wavelength is drawn uniformly from 360–830 nm or importance-sampled from the CIE luminous efficiency function V(λ); the sampling PDF is tracked alongside the wavelength value and used to form an unbiased estimator when the accumulated radiance values are accumulated into the spectral film buffer. This chapter covers the full GPU implementation in section 2, and its interaction with dispersion (section 4) and fluorescence (section 5).
 
 ---
 

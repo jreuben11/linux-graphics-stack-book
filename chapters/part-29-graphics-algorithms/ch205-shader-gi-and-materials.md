@@ -8,6 +8,9 @@ This chapter is the second volume of the Shader Algorithm Catalog. It covers the
 
 ## Table of Contents
 
+- [1.1 What is Global Illumination?](#11-what-is-global-illumination)
+- [1.2 What is Physically Based Rendering (PBR)?](#12-what-is-physically-based-rendering-pbr)
+- [1.3 What is a BRDF?](#13-what-is-a-brdf)
 - **[IV. Global Illumination and Radiance](#iv-global-illumination-and-radiance)**
   - [Global Illumination](#global-illumination)
   - [Image-Based Lighting](#image-based-lighting)
@@ -35,6 +38,18 @@ This chapter is the second volume of the Shader Algorithm Catalog. It covers the
   - [Cloth and Soft-Body Simulation](#cloth-and-soft-body-simulation)
   - [Skeletal Animation and Vertex Skinning](#skeletal-animation-and-vertex-skinning)
 
+
+### 1.1 What is Global Illumination?
+
+Global illumination (GI) is the collective term for rendering algorithms that account for light that has undergone at least one indirect bounce before reaching the camera. A direct lighting model computes only the contribution of light sources along the straight path from light to surface to camera. Global illumination extends this by also integrating the radiance that arrives from other surfaces — skylight scattered through a window, colour bleed from a painted wall, caustics focused through a lens, and the ambient fill that prevents shadow regions from going fully black. The physical basis is the rendering equation: the outgoing radiance at a surface point is the sum of its emitted radiance and the integral over the hemisphere of incoming radiance weighted by the surface's reflectance function and a cosine factor. Solving this integral analytically is intractable for real-time rendering, so the algorithms in Category IV approximate it through probe grids, voxel structures, screen-space heuristics, machine-learning surrogates, and Monte Carlo sampling. On the Linux graphics stack, GI compute workloads execute as Vulkan compute shader dispatches targeting ray tracing acceleration structures (`VkAccelerationStructureKHR`) or rasterised proxy geometry, with intermediate radiance results stored in `VkImage` resources in formats such as `VK_FORMAT_B10G11R11_UFLOAT_PACK32` or `VK_FORMAT_R16G16B16A16_SFLOAT`.
+
+### 1.2 What is Physically Based Rendering (PBR)?
+
+Physically based rendering (PBR) is a shading methodology that constrains material parameters and lighting calculations to obey the fundamental laws of energy conservation and reciprocity, producing results that remain plausible across a wide range of lighting conditions without per-material heuristic tuning. A PBR material is characterised by a small, perceptually linear set of parameters — base colour (albedo), metallic factor, and roughness — that feed into a microfacet BRDF whose response is anchored to real-world reflectance measurements. The metallic/roughness workflow is now the interchange standard for real-time engines on Linux, formalised in the glTF 2.0 specification ([Khronos glTF 2.0 BRDF Appendix](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#appendix-b-brdf-implementation)). PBR separates the problem into diffuse irradiance (typically sourced from lightmaps, irradiance probes, or spherical harmonic coefficients) and specular radiance (sourced from prefiltered environment maps or ray-traced reflections), combining them through the split-sum approximation. In Vulkan fragment shaders, a complete PBR evaluation invokes a GGX specular term, a Lambertian diffuse term, an image-based lighting (IBL) lookup pair, and a Fresnel blend determined by the metallic factor — all of which are catalogued in Categories IV and V of this chapter.
+
+### 1.3 What is a BRDF?
+
+A bidirectional reflectance distribution function (BRDF) is the mathematical description of how a surface reflects light: given an incoming light direction and an outgoing view direction, the BRDF returns a value (in sr⁻¹) describing what fraction of the incoming irradiance exits in the outgoing direction. The BRDF must satisfy three physical constraints: non-negativity, Helmholtz reciprocity (swapping light and view directions yields the same value), and energy conservation (the directional-hemispherical reflectance integrated over the full hemisphere must not exceed one). Real-time rendering uses analytic BRDF models built on microfacet theory, which models a rough surface as a statistical distribution of perfectly specular micro-mirrors oriented according to a normal distribution function (NDF). The GGX NDF and its associated shadowing-masking term (Smith G2) together with the Schlick Fresnel approximation define the Cook-Torrance specular BRDF that underlies nearly all PBR pipelines. Category V of this chapter catalogues the full range of BRDF models used in production: isotropic and anisotropic GGX, clear-coat layering, sheen, iridescence, and specialised organic tissue models for skin and hair. Each model targets Vulkan GLSL or SPIR-V fragment shaders, with roughness and base colour fed from G-buffer textures or material uniform buffers bound through descriptor sets.
 
 ---
 

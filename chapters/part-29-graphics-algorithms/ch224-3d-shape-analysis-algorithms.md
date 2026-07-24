@@ -11,6 +11,9 @@
 ## Table of Contents
 
 1. [Shape Analysis as a GPU Problem](#1-shape-analysis-as-a-gpu-problem)
+   - [1.1 What is a 3D Shape Descriptor?](#11-what-is-a-3d-shape-descriptor)
+   - [1.2 What is a Point Cloud?](#12-what-is-a-point-cloud)
+   - [1.3 What is the Laplace-Beltrami Operator?](#13-what-is-the-laplace-beltrami-operator)
 2. [Local Shape Descriptors](#2-local-shape-descriptors)
 3. [Global Shape Descriptors](#3-global-shape-descriptors)
 4. [Spectral Shape Analysis](#4-spectral-shape-analysis)
@@ -67,6 +70,30 @@ The bottleneck shifts across stages depending on problem size. For retrieval ove
 | Sparse matrix-vector multiply (SpMV) | cuSPARSE `cusparseSpMV`, rocSPARSE `rocsparse_spmv` | Laplacian solve, graph Laplacian eigenvectors, ARAP step |
 | Dense matrix multiply (GEMM) | cuBLAS `cublasSgemm`, rocBLAS `rocblas_sgemm` | Functional map computation, SH projection |
 | Radix sort | `thrust::sort_by_key` | k-NN index sorting, histogram bin ordering |
+
+### 1.1 What is a 3D Shape Descriptor?
+
+A 3D shape descriptor is a compact numerical representation — typically a fixed-length vector or histogram — that encodes the geometric character of a shape or a local surface patch in a way that supports comparison, retrieval, and classification. The central design requirement is *invariance*: two descriptors computed from the same shape under different rigid-body transformations (translation, rotation, reflection) or different surface parameterisations should produce identical or very similar vectors, while descriptors from geometrically distinct shapes should differ measurably.
+
+Descriptors divide into two families. **Local descriptors** characterise the geometry in the neighbourhood of a single point and are used for keypoint matching, feature-based registration, and part detection. Examples developed in this chapter include FPFH (Fast Point Feature Histogram), SHOT (Signature of Histograms of Orientations), and ROPS (Rotational Projection Statistics). **Global descriptors** summarise the entire shape with one feature vector and are used for coarse database retrieval and classification. Examples include D2 shape distributions, spherical harmonic (SH) descriptors, and Zernike moment expansions.
+
+On the GPU, descriptor extraction is embarrassingly parallel at the per-vertex level: each query point's descriptor depends only on its local neighbourhood, so N vertices produce N independent workgroups. The shared resource is the k-nearest-neighbour index (a BVH or KD-tree stored in a GPU buffer), which is read-only during extraction. Histogram accumulation within a workgroup uses shared-memory atomics, and the aggregation pass (e.g., FPFH's weighted SPFH sum) is a second kernel reading the output of the first. This two-pass structure is the recurring computational template across local descriptor algorithms in this chapter.
+
+### 1.2 What is a Point Cloud?
+
+A point cloud is an unordered set of 3D sample positions, typically produced by depth sensors (LiDAR, structured-light scanners, stereo cameras, or time-of-flight arrays), photogrammetry pipelines, or direct mesh sampling. Each point stores at minimum an (x, y, z) coordinate; richer representations add per-point surface normals, colour values (RGB or intensity), or per-point confidence weights derived from the sensor model.
+
+Unlike meshes, point clouds carry no explicit topology: there are no edges or faces, only proximity relationships inferred at runtime via nearest-neighbour queries. This makes them the natural output of real-world sensors but requires that shape analysis algorithms reconstruct local geometry on the fly — typically by querying the k nearest neighbours of each point from a spatial index (KD-tree or octree) and fitting a local plane or quadric to estimate normals and curvature.
+
+On the GPU, point clouds are stored as structure-of-arrays (SoA) or array-of-structures (AoS) buffers bound as SSBOs or as CUDA/HIP device arrays. The spatial index is built on the CPU (or using GPU-accelerated libraries such as cuSPARSE-based BVH builders in cuML or the KD-tree in Open3D's CUDA backend) and then transferred once to the GPU before the descriptor extraction kernels launch. Voxel downsampling — replacing all points in a voxel cell with their centroid — is a standard preprocessing step that controls point density and is itself a GPU-parallel reduction over Morton-coded voxel indices.
+
+### 1.3 What is the Laplace-Beltrami Operator?
+
+The Laplace-Beltrami operator (LBO) is the natural generalisation of the Euclidean Laplacian to curved surfaces. Given a smooth function f defined on a Riemannian manifold (such as the surface of a 3D mesh), the LBO Δf measures the local deviation of f from its neighbourhood average in a way that respects the intrinsic metric of the surface rather than the ambient 3D embedding. The LBO is self-adjoint and its spectrum — the eigenvalues λ₀ ≤ λ₁ ≤ λ₂ ≤ … and corresponding eigenfunctions φ₀, φ₁, φ₂, … — forms a basis for all square-integrable functions on the surface, analogous to Fourier modes on the circle.
+
+On a triangle mesh, the LBO is discretised as the **cotangent Laplacian**: the sparse matrix L where L[i,i] = Σⱼ (cot αᵢⱼ + cot βᵢⱼ)/2 and L[i,j] = −(cot αᵢⱼ + cot βᵢⱼ)/2 for adjacent vertices i, j, with αᵢⱼ, βᵢⱼ the angles opposite the shared edge in the two incident triangles. This matrix appears throughout the chapter: spectral descriptors (HKS, WKS) are computed from its leading eigenpairs; 3D mesh SIFT uses repeated SpMV against L to build a scale space; shape segmentation via spectral clustering uses eigenvectors of the normalised Laplacian; and as-rigid-as-possible (ARAP) deformation solves a linear system involving L at each iteration.
+
+On the GPU, the cotangent Laplacian is stored in CSR format and its eigenpairs are computed on the CPU (via ARPACK or LAPACK for small meshes, or LOBPCG for larger problems) before the eigenvectors are uploaded to GPU buffers for use in descriptor kernels. Per-iteration SpMV during scale-space or ARAP solves maps directly to cuSPARSE `cusparseSpMV` or rocSPARSE `rocsparse_spmv`.
 
 ---
 

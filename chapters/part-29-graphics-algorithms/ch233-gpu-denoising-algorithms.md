@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Denoising as a Rendering Stage](#1-denoising-as-a-rendering-stage)
+   - [1.5 What is GPU Denoising?](#15-what-is-gpu-denoising)
+   - [1.6 What is Spatio-Temporal Variance-Guided Filtering (SVGF)?](#16-what-is-spatio-temporal-variance-guided-filtering-svgf)
+   - [1.7 What is Neural Denoising?](#17-what-is-neural-denoising)
 2. [Spatio-Temporal Variance-Guided Filtering (SVGF)](#2-spatio-temporal-variance-guided-filtering-svgf)
 3. [Adaptive SVGF (ASVGF)](#3-adaptive-svgf-asvgf)
 4. [À-Trous Wavelet Filter Standalone](#4-à-trous-wavelet-filter-standalone)
@@ -64,6 +67,18 @@ Three software stacks provide denoising on Linux as of mid-2026:
 - **NRD (NVIDIA Real-Time Denoisers)**: open-source C++ SDK, ships compute shaders as HLSL/SPIRV, Vulkan-native via NRI abstraction. Hardware-agnostic at the API level; tuned primarily for NVIDIA RTX but runs on any Vulkan 1.2 device. [Source: NRD SDK, https://github.com/NVIDIAGameWorks/RayTracingDenoiser]
 - **OIDN (Intel Open Image Denoise)**: open-source neural denoiser, GPU execution via SYCL (Intel), HIP (AMD ROCm), and CUDA (NVIDIA). Vulkan interop through external memory import. Primary use-case is offline and semi-interactive rendering. [Source: OpenImageDenoise/oidn, https://github.com/OpenImageDenoise/oidn]
 - **Hand-rolled SVGF/ASVGF**: the Schied et al. technique [Source: Schied et al., SIGGRAPH 2017, https://research.nvidia.com/publication/2017-07_spatiotemporal-variance-guided-filtering-real-time-reconstruction-path-traced] is freely implementable in Vulkan compute; reference code is available in Falcor and Q2RTX.
+
+### 1.5 What is GPU Denoising?
+
+GPU denoising is the process of estimating a noise-free image from a low-sample-count Monte Carlo render, executed as compute workloads on the GPU rather than as CPU post-processing. When path tracing at interactive frame rates, renderers typically emit only 1–4 samples per pixel per frame — far below the hundreds of samples required for a perceptually clean image. The resulting output contains visible high-frequency noise: firefly artifacts on specular surfaces, grainy shadows, and flickering indirect illumination. A denoising pass sits immediately after the raw ray-trace output and before tonemapping; it reads not only the noisy radiance buffer but also G-buffer data (world-space normals, linearised depth, albedo) and screen-space motion vectors, using these auxiliary signals to guide spatially and temporally coherent filtering. On Linux, GPU denoising runs as Vulkan compute workloads, either through purpose-built SDKs such as NRD and OIDN or through application-implemented algorithms such as SVGF. The fundamental objective is to exploit redundancy between adjacent pixels and between successive frames to reconstruct a signal that approximates what a much higher sample count would produce, at a fraction of the rendering cost.
+
+### 1.6 What is Spatio-Temporal Variance-Guided Filtering (SVGF)?
+
+SVGF is an algorithm for real-time denoising of path-traced images that combines temporal accumulation with spatially adaptive bilateral filtering guided by per-pixel luminance variance. It operates in three sequential compute passes. The first pass reprojects the previous frame's filtered output into the current frame using screen-space motion vectors and blends it with the current noisy frame via an exponential moving average, accumulating both the radiance signal and its first and second moments. The second pass derives per-pixel variance from those accumulated moments, falling back to a 7×7 spatial estimate for pixels with insufficient history. The third pass iterates an à-trous bilateral filter — a separable kernel applied at exponentially increasing step sizes — using the variance estimate to modulate the edge-stopping luminance weight: high-variance (noisy) regions are filtered aggressively while low-variance (converged) regions preserve fine detail. Reference code is available in the Falcor research framework and in Quake 2 RTX (Q2RTX). SVGF and its adaptive extension ASVGF are the algorithmic core of §2 and §3 of this chapter, and their shader-level structure serves as the basis for understanding hand-rolled denoiser implementations on Linux Vulkan. [Source: Falcor SVGFPass.cpp, https://github.com/NVIDIAGameWorks/Falcor]
+
+### 1.7 What is Neural Denoising?
+
+Neural denoising replaces hand-crafted bilateral filters with a convolutional neural network (CNN) trained on pairs of noisy and reference images. Rather than deriving filter weights from heuristic edge-stopping functions computed at runtime, a neural denoiser learns a mapping from the noisy radiance, albedo, and normal buffers directly to a clean estimate. The resulting network can exploit non-local correlations and material-specific patterns that simple bilateral kernels cannot capture, particularly for specular reflections and caustics that variance-guided filters tend to over-smooth. The tradeoff relative to SVGF-class filters is latency: neural inference carries a fixed cost largely independent of image complexity, favouring offline and semi-interactive rendering over strict real-time budgets. On Linux, the primary neural denoiser is Intel Open Image Denoise (OIDN), which ships a family of UNet-style models trained on path-traced HDR imagery and runs GPU inference via SYCL on Intel GPUs, HIP on AMD GPUs through ROCm, and CUDA on NVIDIA GPUs; Vulkan workloads import the denoised output through external memory handles. §6 and §9 of this chapter cover OIDN integration and the broader landscape of neural denoising on Linux GPU hardware. [Source: OpenImageDenoise/oidn, https://github.com/OpenImageDenoise/oidn]
 
 ---
 

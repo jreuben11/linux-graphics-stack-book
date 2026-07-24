@@ -11,6 +11,9 @@ This chapter focuses on the *algorithms and GPU kernels* that power generative A
 ## Table of Contents
 
 1. [Generative AI Inference on Linux — Scope and Hardware Reality](#1-generative-ai-inference-on-linux--scope-and-hardware-reality)
+   - [1.1 What is Generative AI Inference?](#11-what-is-generative-ai-inference)
+   - [1.2 What is a Large Language Model?](#12-what-is-a-large-language-model)
+   - [1.3 What is a Diffusion Model?](#13-what-is-a-diffusion-model)
 2. [LLM Architecture and the Inference Compute Graph](#2-llm-architecture-and-the-inference-compute-graph)
 3. [KV-Cache and Memory Management](#3-kv-cache-and-memory-management)
 4. [Quantization for LLM Inference](#4-quantization-for-llm-inference)
@@ -50,6 +53,30 @@ Model size in VRAM is the first engineering constraint:
 | 70B (Q4_K_M GGUF) | — | — | ~41 GB (block overhead) |
 
 KV cache consumes additional VRAM proportional to batch size and sequence length, discussed in §3. The inference-versus-training distinction is critical: inference does not maintain gradient tensors or optimizer states, so memory is dominated by weights plus KV cache, not activations. This enables single-GPU deployment of models that require multi-node training.
+
+### 1.1 What is Generative AI Inference?
+
+Generative AI inference is the process of executing a pre-trained neural network model to produce new outputs — text tokens, image pixels, audio samples, or video frames — from a given prompt or conditioning signal. Unlike training, which updates model weights via gradient descent over large datasets, inference applies fixed weights to new inputs. On Linux, inference runs in GPU compute kernels: the host CPU schedules work, manages data movement, and coordinates the generation loop, while the GPU executes the weight matrix multiplications, normalization passes, and sampling operations that constitute each generation step.
+
+The distinction between inference and training has direct consequences for GPU memory layout and utilization. Training requires storing per-layer activations for backpropagation, optimizer state tensors, and gradients alongside the model weights — typically 12–16 bytes per parameter. Inference retains only the model weights and a working buffer for intermediate activations, reducing memory to roughly 2 bytes per parameter at FP16 precision. This disparity explains why models that require multi-node clusters for training can fit on a single GPU for inference.
+
+On Linux, the hardware paths for inference — CUDA through the NVIDIA proprietary kernel module, ROCm through the open-source `amdgpu` and `amdkfd` kernel drivers, and Vulkan compute through any conformant driver — each expose different hardware capabilities and impose different constraints on which kernels can be expressed efficiently. This chapter focuses on the algorithms and GPU kernels that operate within these paths, with deployment-level runtime plumbing covered in Chapter 124.
+
+### 1.2 What is a Large Language Model?
+
+A large language model is a transformer-based neural network trained to predict the next token in a sequence, where tokens are sub-word units drawn from a vocabulary of 32,000 to 200,000 entries. The model is parameterized by a stack of repeated decoder blocks, each containing a self-attention layer and a feed-forward network. During inference, the model generates text autoregressively: given an input prompt tokenized into a sequence, it produces a probability distribution over the vocabulary for the next token, samples from it, appends the sampled token, and repeats until an end-of-sequence token is emitted or a token budget is exhausted.
+
+The compute graph for a single decoder pass is dominated by matrix multiplications: the query, key, and value projections in the attention mechanism, the attention score computation itself, and the gate, up, and down projections in the feed-forward network. For a 70-billion-parameter model at FP16 precision, the weight matrices occupy approximately 140 GB of device memory, and every decode step requires reading the full weight set from GPU memory — making memory bandwidth, not floating-point throughput, the primary bottleneck for single-token-at-a-time generation.
+
+On Linux, large language models are served through frameworks such as vLLM, llama.cpp, and Hugging Face TGI, all of which compile to CUDA, ROCm, or Vulkan compute backends. The kernel-level mechanisms enabling efficient serving — KV caching, quantization, and fused attention — are the subject of §3 through §6.
+
+### 1.3 What is a Diffusion Model?
+
+A diffusion model is a generative neural network that learns to reverse a gradual noise-adding process. During training, Gaussian noise is incrementally added to training data across a fixed number of timesteps until the data is indistinguishable from pure noise. The model — typically a UNet or a transformer backbone (DiT, Diffusion Transformer) — learns to predict the noise component at each step, enabling it to reverse the process: starting from random noise and iteratively denoising toward a coherent output conditioned on a text prompt or other signal.
+
+In practice, inference operates in a compressed latent space rather than pixel space. A variational autoencoder (VAE) encodes the target image into a latent representation roughly 8× smaller in each spatial dimension; all denoising steps operate in this latent space, and the VAE decoder reconstructs the final image. This compression makes UNet or DiT inference tractable on consumer GPU memory — a 1024×1024 image in FP32 requires 12 MB as raw pixels but only about 192 KB as a 128×128 latent.
+
+The number of denoising steps — typically 20 to 50 for high-quality output using schedulers such as DDIM or DPM-Solver — determines both latency and output quality. Each step is a full forward pass of the backbone network, making diffusion inference a repeated compute workload rather than an autoregressive decode loop. Unlike LLM inference, diffusion model steps are largely compute-bound rather than bandwidth-bound, and parallelization across the batch dimension is more effective. §7 and §8 cover the GPU kernel strategies specific to this workload.
 
 ---
 

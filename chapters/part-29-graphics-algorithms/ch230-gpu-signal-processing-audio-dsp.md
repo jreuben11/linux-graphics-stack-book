@@ -21,6 +21,9 @@ multimedia stack.
 ## Table of Contents
 
 1. [Signal Processing on the GPU](#1-signal-processing-on-the-gpu)
+   - [1.4 What is Digital Signal Processing (DSP)?](#14-what-is-digital-signal-processing-dsp)
+   - [1.5 What is GPU Compute (Vulkan and ROCm)?](#15-what-is-gpu-compute-vulkan-and-rocm)
+   - [1.6 What is the Fast Fourier Transform (FFT)?](#16-what-is-the-fast-fourier-transform-fft)
 2. [FFT on the GPU](#2-fft-on-the-gpu)
 3. [Overlap-Add and Overlap-Save Convolution](#3-overlap-add-and-overlap-save-convolution)
 4. [FIR Filter Design and GPU Implementation](#4-fir-filter-design-and-gpu-implementation)
@@ -107,6 +110,30 @@ of 0.5–2 ms is non-trivial at short periods; GPU DSP therefore targets latency
 one 256-sample period (5.3 ms at 48 kHz) or operates in an offline/batch mode. JACK's net backend
 (`jack_net`) extends the period boundary across a network, which is compatible with the
 GPU-dispatch latency.
+
+### 1.4 What is Digital Signal Processing (DSP)?
+
+Digital signal processing is the mathematical discipline concerned with the analysis, synthesis, and transformation of discrete-time sequences that represent physical phenomena — sound pressure, electromagnetic field strength, sensor voltages, or image intensity. A DSP pipeline converts an analog signal to a discrete sequence of numeric samples through an analog-to-digital converter, processes those samples algorithmically, and optionally converts the result back to an analog output. In the audio domain the input sequence is a stream of 32-bit or 64-bit floating-point samples captured at a fixed rate — commonly 44100 Hz, 48000 Hz, or 96000 Hz on Linux systems configured through ALSA or PipeWire — and the operations include filtering, spectral analysis, equalization, reverberation, dynamic range compression, and spatialization.
+
+DSP algorithms divide into two broad families. Linear time-invariant (LTI) systems — including FIR and IIR filters and convolution reverb — admit exact analysis in the spectral domain through the Z-transform and Fourier transform. Non-linear operations — compressors, distortion, saturation, and pitch detection — operate in the temporal domain and may require sample-by-sample iteration. Both families appear in this chapter; the FFT provides the bridge between them by enabling frequency-domain implementations of LTI operations that would otherwise require O(M) per-sample multiplications for a length-M filter.
+
+On Linux, DSP workloads reach the GPU through two paths: direct Vulkan or OpenCL compute submissions from an application, or through GStreamer and PipeWire pipeline extensions that expose GPU processing nodes as graph elements. The `spa_node` abstraction in PipeWire and the GStreamer `GstBaseTransform` framework both present a uniform callback interface regardless of whether the underlying computation runs on CPU or GPU.
+
+### 1.5 What is GPU Compute (Vulkan and ROCm)?
+
+GPU compute refers to the use of a graphics processing unit's massively parallel execution units for general-purpose numerical workloads that extend beyond traditional rasterization and shading. On Linux, two primary frameworks expose GPU compute to DSP applications: Vulkan Compute and AMD ROCm.
+
+Vulkan Compute uses the same `VkPipeline` infrastructure as graphics rendering but omits all fixed-function graphics state: there is no render pass, no framebuffer, and no rasterizer. A compute pipeline consists of a single compute shader compiled from GLSL or HLSL to SPIR-V. Dispatch is expressed as a three-dimensional grid of workgroups, each containing a fixed number of invocations (threads) sharing a block of on-chip `shared` memory (Local Data Store on AMD, Shared Memory on NVIDIA). The `vkCmdDispatch(commandBuffer, groupCountX, groupCountY, groupCountZ)` command enqueues the grid. For 1D audio workloads `groupCountY = groupCountZ = 1` and `groupCountX` is set to `ceil(signalLength / workgroupSize)`.
+
+ROCm (Radeon Open Compute) is AMD's open-source GPU compute platform. It exposes the HIP (Heterogeneous-compute Interface for Portability) programming model, whose kernel-launch syntax parallels CUDA. HIP kernels are compiled by `hipcc` to the AMDGPU ISA and can target both AMD hardware and, with limited support, NVIDIA GPUs. ROCm includes domain libraries relevant to DSP: rocFFT for transforms, rocBLAS for linear algebra, and MIOpen for deep learning. The ROCm kernel driver (`amdgpu.ko`) provides the same `DRM_AMDGPU_CS` ioctl path used by the Vulkan radv driver, sharing hardware scheduling and memory management infrastructure at the kernel level. [Source: ROCm documentation, https://rocm.docs.amd.com/]
+
+### 1.6 What is the Fast Fourier Transform (FFT)?
+
+The Fast Fourier Transform is an algorithm that computes the Discrete Fourier Transform (DFT) of a length-N sequence in O(N log N) arithmetic operations rather than the O(N²) operations required by direct evaluation of the DFT sum. The DFT converts a signal from the time domain x[n] to the frequency domain X[k] according to X[k] = Σ_{n=0}^{N-1} x[n] · e^{−2πikn/N}, producing N complex coefficients representing the signal's content at N uniformly spaced frequencies from 0 Hz to the sampling rate f_s. The inverse DFT recovers x[n] from X[k] with the conjugate exponent and a 1/N normalization factor.
+
+The FFT's O(N log N) complexity arises from recursive decomposition: a length-N DFT is split into two length-N/2 DFTs (for radix-2) whose results are combined via butterfly operations involving complex twiddle factors e^{−2πik/N}. This decomposition requires N to be a power of two in its simplest form, though production implementations handle arbitrary N through mixed-radix strategies. The efficiency gain is dramatic: for N = 192000 (a 4-second room impulse response at 48 kHz), FFT-domain convolution via the overlap-add method (Section 3) requires approximately 17 operations per output sample rather than the ~192000 multiplications needed by direct convolution.
+
+In the GPU DSP context the FFT is the central primitive underlying frequency-domain convolution (Sections 2–3), FIR filter application in the spectral domain (Section 4), HRTF spatialization (Section 8), and spectral audio analysis (Section 9). Production libraries rocFFT and VkFFT implement FFT plans as SPIR-V or HIP kernels optimized for the GPU's shared-memory capacity and warp width, auto-selecting radix and tiling parameters at plan creation time. [Source: Cooley & Tukey, "An Algorithm for the Machine Computation of Complex Fourier Series", Mathematics of Computation, 1965]
 
 ---
 

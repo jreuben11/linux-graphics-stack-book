@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [ML Inference as a GPU Algorithm Domain](#1-ml-inference-as-a-gpu-algorithm-domain)
+   - [1.4 What is the Transformer Architecture?](#14-what-is-the-transformer-architecture)
+   - [1.5 What is GEMM?](#15-what-is-gemm)
+   - [1.6 What is Quantization?](#16-what-is-quantization)
 2. [Dense Layer and GEMM Inference](#2-dense-layer-and-gemm-inference)
 3. [Transformer Attention Mechanisms](#3-transformer-attention-mechanisms)
 4. [Quantization Algorithms](#4-quantization-algorithms)
@@ -53,6 +56,30 @@ The Linux ecosystem for GPU inference as of mid-2026 spans several distinct stac
 | OpenVINO | Intel GPU (Level Zero/OpenCL) | INT8, INT4 | No |
 
 See Ch124 for deployment configuration of each runtime. The remainder of this chapter covers the algorithms these runtimes implement.
+
+### 1.4 What is the Transformer Architecture?
+
+A transformer is a neural network architecture built around the self-attention mechanism, designed to process sequences of tokens without recurrence or convolution. A transformer decoder — the architecture used by large language models — stacks L identical layers, each containing two sub-modules: a multi-head self-attention block and a position-wise feed-forward network (FFN). The attention block computes pairwise relationships between every pair of token positions in the input sequence; the FFN applies an independent non-linear transformation to each position independently.
+
+On a GPU, each transformer layer maps to a sequence of matrix operations. The attention block requires projecting the input into query, key, and value tensors via weight GEMMs, computing pairwise attention scores via a scaled dot-product, applying softmax normalisation, and projecting the weighted output through a final GEMM. The FFN block consists of two weight GEMMs with a non-linearity — typically SiLU or GELU — applied element-wise between them. For a model with hidden dimension d_model and feed-forward dimension d_ff, the transformer parameters are dominated by these weight matrices, which are the primary targets for quantization (§4) and the central source of memory bandwidth pressure at inference time (§1.2).
+
+The transformer architecture's O(N²) attention score matrix — where N is the sequence length — is the central algorithmic challenge this chapter addresses: §3 covers FlashAttention and its variants for avoiding materialising that matrix, §3.4 covers grouped-query attention for reducing the KV-cache footprint, and §5 covers speculative decoding as a strategy to reduce the number of full-model forward passes required per generated token.
+
+### 1.5 What is GEMM?
+
+General Matrix-Matrix Multiplication (GEMM) computes C = α × A × B + β × C, where A has shape [M, K], B has shape [K, N], and C has shape [M, N]. GEMM is the dominant computational primitive in neural network inference: fully-connected layers, the Q/K/V projection and output projection in transformer attention heads, and both linear transformations in a feed-forward network layer are all GEMMs. The fraction of total inference compute time attributable to GEMMs typically exceeds 80% for large transformer models.
+
+On a GPU, GEMM is implemented through tiled, register-blocked kernels that load tiles of A and B into shared memory or registers, compute partial dot products within those tiles, and accumulate into the output tile. This tiling strategy exposes the data reuse necessary to achieve high arithmetic intensity and to keep tensor core units utilised: tiles dimensioned to match the hardware's matrix instruction shape — for example, 16×16×16 elements for AMD's WMMA on RDNA3, or 16×8×16 for NVIDIA's HMMA — are dispatched as single hardware instructions performing a full block of multiply-adds in one cycle.
+
+When the batch dimension M equals 1 (single-token decode), the GEMM degenerates into a matrix-vector multiply (GEMV), losing the K-dimension data reuse and becoming memory-bandwidth-bound. This is the fundamental throughput bottleneck at inference decode time described in §1.2. Optimised GEMM libraries on Linux include rocBLAS for ROCm, cuBLAS for CUDA, and Vulkan-based matrix kernels used in llama.cpp's Vulkan compute backend (§10).
+
+### 1.6 What is Quantization?
+
+Quantization in ML inference is the reduction of numeric precision used to represent model weights and activations, trading some numerical fidelity for lower memory footprint and higher throughput. A transformer with 7 billion parameters stored in float16 requires 14 GB of device memory; the same model quantized to 4-bit integers requires approximately 3.5 GB, bringing it within reach of a single consumer GPU. Because token generation at batch size 1 is memory-bandwidth-bound (§1.2), reducing the bytes transferred per weight directly increases tokens-per-second throughput.
+
+Quantization introduces a scale factor — and optionally a zero-point — that maps the floating-point range of a tensor to the integer representation. The granularity of this scale (per-tensor, per-channel, or per-group) controls the trade-off between memory savings and output quality: per-group quantization with groups of 64–128 weights retains most model quality while still achieving 4-bit compression. The quality gap from quantization is further reduced by calibration-data-aware methods such as GPTQ (§4.2) and AWQ (§4.3), which adjust weight values prior to quantizing in order to minimise reconstruction error on representative inputs.
+
+On Linux, quantized weights are packaged in formats such as GGUF (used by llama.cpp, with K-quant variants at Q4_K, Q5_K, Q8_K) or in GPTQ/AWQ checkpoints loaded by vLLM and HuggingFace Transformers. The dequantization step — converting stored integers back to float16 for the GEMM accumulator — is either fused into the matrix multiply kernel or performed as a separate preprocessing pass, depending on whether the runtime targets weight-only or fully-integer compute paths.
 
 ---
 
